@@ -15,7 +15,7 @@ class Renderer {
       const x = Math.floor(item.x + this.gridSize / 2);
       const y = Math.floor(item.y + this.gridSize / 2);
       if (x >= 0 && x < this.gridSize && y >= 0 && y < this.gridSize) {
-        grid[y][x] = item.symbol; // "#" is a placeholder for an item
+        grid[y][x] = item.symbol;
       }
     }
 
@@ -29,7 +29,7 @@ class Renderer {
 
   // Render the grid to the terminal
   render() {
-    this.clearTerminal();
+    // this.clearTerminal();
     const grid = this.toGrid();
     for (const row of grid) {
       console.log(row.join(" "));

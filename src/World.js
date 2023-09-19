@@ -1,10 +1,13 @@
 const { QuadTree, Rectangle, Point } = require("./utils/QuadTree");
+const { Player } = require("./Player");
 const fs = require("fs");
 
 class World {
   constructor(width, height) {
     this.quadtree = new QuadTree(new Rectangle(0, 0, width / 2, height / 2), 4);
     this.currentLocation = { x: 0, y: 0 };
+    this.player = new Player(0, 0);
+    this.addItem(this.player);
   }
 
   addItem(item) {
@@ -15,7 +18,7 @@ class World {
     const rawData = fs.readFileSync(filePath);
     const itemConfigs = JSON.parse(rawData);
 
-    for (let i = 0; i < this.quadtree.boundary.w; i++) {
+    for (let i = 0; i < this.quadtree.boundary.w / 10; i++) {
       // Assuming you want to add 1000 random items
       const randomConfig = itemConfigs[Math.floor(Math.random() * itemConfigs.length)];
       const x = Math.random() * this.quadtree.boundary.w * 2 - this.quadtree.boundary.w; // x coordinate

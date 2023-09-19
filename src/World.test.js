@@ -15,5 +15,8 @@ describe("World", () => {
     const itemsInVision = world.quadtree.query(new Rectangle(0, 0, 100, 100));
 
     expect(itemsInVision.length).toBeGreaterThan(0);
+    // expect a player to be in the world
+    world.addItem({ symbol: "X", x: 0, y: 0 });
+    expect(itemsInVision.some((item) => item.symbol === "X")).toBe(true);
   });
 });
