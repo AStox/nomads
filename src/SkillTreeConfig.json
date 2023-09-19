@@ -1,0 +1,47 @@
+[
+  {
+    "name": "Firemaking_1",
+    "experienceCost": 1,
+    "prerequisites": []
+  },
+  {
+    "name": "Firemaking_2",
+    "experienceCost": 2,
+    "prerequisites": ["Firemaking_1"]
+  },
+  {
+    "name": "Firemaking_3",
+    "experienceCost": 3,
+    "prerequisites": ["Firemaking_2"]
+  },
+  {
+    "name": "Fishing_1",
+    "experienceCost": 10,
+    "prerequisites": []
+  },
+  {
+    "name": "Fishing_2",
+    "experienceCost": 20,
+    "prerequisites": ["Fishing_1"]
+  },
+  {
+    "name": "Fishing_3",
+    "experienceCost": 30,
+    "prerequisites": ["Fishing_2"]
+  },
+  {
+    "name": "Cooking_1",
+    "experienceCost": 100,
+    "prerequisites": ["Firemaking_1"]
+  },
+  {
+    "name": "Cooking_2",
+    "experienceCost": 200,
+    "prerequisites": ["Cooking_1"]
+  },
+  {
+    "name": "Cooking_3",
+    "experienceCost": 300,
+    "prerequisites": ["Cooking_2"]
+  }
+]
