@@ -82,6 +82,19 @@ class QuadTree {
   }
 
   query(range, found) {
+    // Check if range is of type Rectangle
+    if (!(range instanceof Rectangle)) {
+      // Check if it has x, y, w, h properties
+      if (
+        range.x === undefined ||
+        range.y === undefined ||
+        range.w === undefined ||
+        range.h === undefined
+      ) {
+        throw new Error("range must be of type Rectangle or have properties x, y, w, h");
+      }
+      range = new Rectangle(range.x, range.y, range.w, range.h);
+    }
     if (!found) found = [];
 
     if (!this.boundary.intersects(range)) {

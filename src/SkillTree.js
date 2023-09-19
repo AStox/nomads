@@ -59,7 +59,7 @@ class SkillTree extends MultiBranchLinkedList {
   }
 
   loadFromConfig(filePath) {
-    const rawData = fs.readFileSync(__dirname + "/" + filePath);
+    const rawData = fs.readFileSync(filePath);
     const skillConfigs = JSON.parse(rawData);
 
     skillConfigs.forEach((config) => {

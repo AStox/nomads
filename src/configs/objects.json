@@ -1,0 +1,23 @@
+[
+  { "type": "tree", "symbol": "🌲", "passable": false },
+  { "type": "tree", "symbol": "🌳", "passable": false },
+  { "type": "palm tree", "symbol": "🌴", "passable": false },
+  { "type": "cactus", "symbol": "🌵", "passable": false },
+  { "type": "rice", "symbol": "🌾", "passable": true },
+  { "type": "herb", "symbol": "🌿", "passable": true },
+  { "type": "plant", "symbol": "🍀", "passable": true },
+  { "type": "maple leaf", "symbol": "🍁" },
+  { "type": "dead leaves", "symbol": "🍂" },
+  { "type": "rock", "symbol": "🪨" },
+  { "type": "mountain", "symbol": "⛰️" },
+  { "type": "volcano", "symbol": "🌋" },
+  { "type": "berry", "symbol": "🍓" },
+  { "type": "mushroom", "symbol": "🍄" },
+  { "type": "chestnut", "symbol": "🌰" },
+  { "type": "meat", "symbol": "🍖" },
+  { "type": "egg", "symbol": "🥚" },
+  { "type": "stick", "symbol": "🪵" },
+  { "type": "bone", "symbol": "🦴" },
+  { "type": "fruit", "symbol": "🍎" },
+  { "type": "fish", "symbol": "🐟" }
+]

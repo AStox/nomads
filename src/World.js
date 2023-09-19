@@ -1,8 +1,9 @@
-const { QuadTree, Rectangle, Point } = require("./utils/QuadTree"); // Assume you have a Quadtree implementation
+const { QuadTree, Rectangle, Point } = require("./utils/QuadTree");
+const fs = require("fs");
 
 class World {
-  constructor() {
-    this.quadtree = new Quadtree(new Rectangle(0, 0, 1000, 1000), 4);
+  constructor(width, height) {
+    this.quadtree = new QuadTree(new Rectangle(0, 0, width / 2, height / 2), 4);
     this.currentLocation = { x: 0, y: 0 };
   }
 
@@ -10,18 +11,19 @@ class World {
     this.quadtree.insert(item);
   }
 
-  getNearbyItems() {
-    // Define a search area around the current location
-    const searchArea = {
-      x: this.currentLocation.x - 10,
-      y: this.currentLocation.y - 10,
-      width: 20,
-      height: 20,
-    };
-    return this.quadtree.query(searchArea);
-  }
+  populateItemsFromConfig(filePath) {
+    const rawData = fs.readFileSync(filePath);
+    const itemConfigs = JSON.parse(rawData);
 
-  // Other methods to move the player, remove items, etc.
+    for (let i = 0; i < this.quadtree.boundary.w; i++) {
+      // Assuming you want to add 1000 random items
+      const randomConfig = itemConfigs[Math.floor(Math.random() * itemConfigs.length)];
+      const x = Math.random() * this.quadtree.boundary.w * 2 - this.quadtree.boundary.w; // x coordinate
+      const y = Math.random() * this.quadtree.boundary.h * 2 - this.quadtree.boundary.h; // y coordinate
+
+      this.quadtree.insert({ x, y, ...randomConfig });
+    }
+  }
 }
 
-module.exports = World;
+module.exports = { World, Rectangle };

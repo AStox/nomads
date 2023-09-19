@@ -9,7 +9,7 @@ describe("SkillTree", () => {
   let skillTree;
 
   beforeEach(() => {
-    skillTree = new SkillTree("SkillTreeConfig.json");
+    skillTree = new SkillTree("src/configs/SkillTreeConfig.json");
   });
 
   test("addSkill should add a new skill", () => {
