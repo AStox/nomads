@@ -1,0 +1,25 @@
+const { BehaviorNode } = require("./BaseNodes");
+const { SkillTree } = require("../SkillTree");
+
+class GetEarliestUnearnedGoalRequirement extends BehaviorNode {
+  constructor(player) {
+    super();
+    this.player = player;
+  }
+
+  run(context) {
+    const goal = context.currentGoal;
+    for (const requirement of goal.requirements) {
+      if (!requirement.earned) {
+        const skill = this.player.skillTree.findSkill(requirement.skill);
+        const earliest = this.player.skillTree.getFurthestPrev(skill);
+        console.log("Player goal has requirements. Requirement: " + skill.value);
+        console.log("Player has unearned goal requirements. Requirement: " + earliest[0].value);
+        return true;
+      }
+    }
+    console.log("Player has no longterm goals.");
+    return false;
+  }
+}
+module.exports = { GetEarliestUnearnedGoalRequirement };

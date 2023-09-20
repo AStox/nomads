@@ -1,12 +1,14 @@
 const { SkillTree } = require("./SkillTree");
 const { createBehaviorTree } = require("./PlayerBehaviourTree");
+const { Goals } = require("./configs/Goals");
+const { createSkillTree } = require("./CreateSkillTree");
 
 class Player {
   constructor(x, y) {
     this.x = x;
     this.y = y;
     this.symbol = "🧍";
-    this.skillTree = new SkillTree("src/configs/SkillTreeConfig.json");
+    this.skillTree = createSkillTree();
     this.hunger = 100;
     this.maxHunger = 100;
     this.hungerActionThreshold = 25;
@@ -14,7 +16,7 @@ class Player {
     this.maxHP = 100;
     this.HPActionThreshold = 50;
     this.speed = 5;
-    this.longGoals = [];
+    this.longGoals = [Goals.FIRE_STARTER];
     this.currentGoal = [];
 
     this.behaviorTree = createBehaviorTree(this);
@@ -41,7 +43,8 @@ class Player {
   }
 
   makeDecision() {
-    this.behaviorTree.run();
+    const context = { rng: 0 };
+    this.behaviorTree.run(context);
   }
 }
 

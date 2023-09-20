@@ -1,5 +1,5 @@
 class BehaviorNode {
-  run() {
+  run(context) {
     throw new Error("This method is abstract");
   }
 }
@@ -10,9 +10,9 @@ class SelectorNode extends BehaviorNode {
     this.children = children;
   }
 
-  run() {
+  run(context) {
     for (const child of this.children) {
-      if (child.run()) return true;
+      if (child.run(context)) return true;
     }
     return false;
   }
@@ -26,7 +26,7 @@ class SequenceNode extends BehaviorNode {
 
   run(context) {
     for (const child of this.children) {
-      if (!child.run()) return false;
+      if (!child.run(context)) return false;
     }
     return true;
   }
@@ -38,8 +38,8 @@ class NegateNode extends BehaviorNode {
     this.childNode = childNode;
   }
 
-  run() {
-    return !this.childNode.run();
+  run(context) {
+    return !this.childNode.run(context);
   }
 }
 
@@ -49,7 +49,7 @@ class LogNode extends BehaviorNode {
     this.message = message;
   }
 
-  run() {
+  run(context) {
     console.log(this.message);
     return true;
   }

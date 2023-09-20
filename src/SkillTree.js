@@ -53,17 +53,14 @@ class SkillNode extends Node {
 }
 
 class SkillTree extends MultiBranchLinkedList {
-  constructor(filePath) {
+  constructor(object) {
     super();
-    this.loadFromConfig(filePath);
+    this.loadFromObject(object);
   }
 
-  loadFromConfig(filePath) {
-    const rawData = fs.readFileSync(filePath);
-    const skillConfigs = JSON.parse(rawData);
-
-    skillConfigs.forEach((config) => {
-      this.addSkill(config.name, config.experienceCost, config.prerequisites);
+  loadFromObject(skillObject) {
+    skillObject.forEach((skill) => {
+      this.addSkill(skill.name, skill.experienceCost, skill.prerequisites);
     });
   }
 
@@ -80,6 +77,14 @@ class SkillTree extends MultiBranchLinkedList {
     });
 
     return skillNode;
+  }
+
+  findSkill(value) {
+    const foundSkill = this.nodes.find((node) => node.value.skill === value);
+    if (!foundSkill) {
+      throw new Error(`Skill with name ${value} not found.`);
+    }
+    return foundSkill;
   }
 }
 
