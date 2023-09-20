@@ -5,9 +5,6 @@ const fs = require("fs");
 class World {
   constructor(width, height) {
     this.quadtree = new QuadTree(new Rectangle(0, 0, width / 2, height / 2), 4);
-    this.currentLocation = { x: 0, y: 0 };
-    this.player = new Player(0, 0);
-    this.addItem(this.player);
   }
 
   addItem(item) {

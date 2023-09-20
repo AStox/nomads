@@ -16,7 +16,7 @@ describe("World", () => {
 
     expect(itemsInVision.length).toBeGreaterThan(0);
     // expect a player to be in the world
-    world.addItem({ symbol: "X", x: 0, y: 0 });
-    expect(itemsInVision.some((item) => item.symbol === "X")).toBe(true);
+    // world.addItem({ symbol: "X", x: 0, y: 0 });
+    expect(itemsInVision.some((item) => item.symbol === "🧍")).toBe(true);
   });
 });

@@ -61,7 +61,8 @@ class QuadTree {
 
   insert(point) {
     if (!this.boundary.contains(point)) {
-      throw new Error("Point is out of bounds");
+      // throw new Error("Point is out of bounds");
+      return false;
     }
 
     if (this.points.length < this.capacity) {
