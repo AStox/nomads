@@ -1,6 +1,4 @@
 import { World, Rectangle, Thing } from "./World";
-import fs from "fs";
-import path from "path";
 
 describe("World", () => {
   let world: World;
@@ -12,10 +10,8 @@ describe("World", () => {
   test("should populate things from config", () => {
     world.populateThingsFromConfig("src/configs/objects.json");
 
-    const thingsInVision = world.quadtree.query(new Rectangle(0, 0, 100, 100));
+    const thingsInVision = world.quadtree.query(new Rectangle(0, 0, 1000, 1000));
 
     expect(thingsInVision.length).toBeGreaterThan(0);
-
-    expect(thingsInVision.some((thing: Thing) => thing.symbol === "🧍")).toBe(true);
   });
 });

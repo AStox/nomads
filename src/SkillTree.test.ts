@@ -1,4 +1,4 @@
-import { SkillTree } from "./SkillTree";
+import { SkillTree, SkillNode } from "./SkillTree";
 import { createSkillTree } from "./CreateSkillTree";
 
 describe("SkillTree", () => {
@@ -8,8 +8,10 @@ describe("SkillTree", () => {
     skillTree = createSkillTree();
   });
 
-  test("addSkill should add a new skill", () => {
-    const node = skillTree.findNode("Firemaking_1");
+  test("addNode should add a new skill", () => {
+    const newSkill = new SkillNode("new skill", 10);
+    skillTree.addNode(newSkill);
+    const node = skillTree.findNode("new skill");
     expect(node).not.toBeNull();
   });
 

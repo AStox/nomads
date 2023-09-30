@@ -36,7 +36,6 @@ class World {
     const itemConfigs = JSON.parse(rawData as any);
 
     for (let i = 0; i < this.quadtree.boundary.w / 10; i++) {
-      // Assuming you want to add 1000 random items
       const randomConfig = itemConfigs[Math.floor(Math.random() * itemConfigs.length)];
       const x = Math.random() * this.quadtree.boundary.w * 2 - this.quadtree.boundary.w; // x coordinate
       const y = Math.random() * this.quadtree.boundary.h * 2 - this.quadtree.boundary.h; // y coordinate
