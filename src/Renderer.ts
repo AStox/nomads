@@ -1,13 +1,24 @@
-const { Rectangle } = require("./World");
+import { Rectangle } from "./World";
+
+type WorldType = {
+  quadtree: {
+    boundary: {
+      w: number;
+    };
+    query: (rect: Rectangle) => any[];
+  };
+};
 
 class Renderer {
-  constructor(world) {
+  world: WorldType;
+  gridSize: number;
+
+  constructor(world: WorldType) {
     this.world = world;
     this.gridSize = world.quadtree.boundary.w * 2;
   }
 
-  // Convert the world's items to grid positions
-  toGrid() {
+  toGrid(): string[][] {
     const grid = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill("."));
     const items = this.world.quadtree.query(new Rectangle(0, 0, this.gridSize, this.gridSize));
 
@@ -22,13 +33,11 @@ class Renderer {
     return grid;
   }
 
-  // Clear the terminal
-  clearTerminal() {
+  clearTerminal(): void {
     console.clear();
   }
 
-  // Render the grid to the terminal
-  render() {
+  render(): void {
     // this.clearTerminal();
     const grid = this.toGrid();
     for (const row of grid) {
@@ -37,4 +46,4 @@ class Renderer {
   }
 }
 
-module.exports = Renderer;
+export default Renderer;

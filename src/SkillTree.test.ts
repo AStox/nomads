@@ -1,15 +1,11 @@
-// SkillTree.test.js
-const { SkillTree, SkillNode } = require("./SkillTree");
-const fs = require("fs");
-
-// Mock fs for testing loadFromConfig function
-// jest.mock("fs");
+import { SkillTree } from "./SkillTree";
+import { createSkillTree } from "./CreateSkillTree";
 
 describe("SkillTree", () => {
-  let skillTree;
+  let skillTree: SkillTree;
 
   beforeEach(() => {
-    skillTree = new SkillTree("src/configs/SkillTreeConfig.json");
+    skillTree = createSkillTree();
   });
 
   test("addSkill should add a new skill", () => {
@@ -27,6 +23,6 @@ describe("SkillTree", () => {
     const node = skillTree.findNode("Firemaking_1");
     const result = node.spendExperience(1);
     expect(result).toBe("Skill Firemaking_1 learned.");
-    expect(node.isLearned).toBe(true);
+    expect(node.achieved).toBe(true);
   });
 });

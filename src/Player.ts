@@ -1,10 +1,25 @@
-const { SkillTree } = require("./SkillTree");
-const { createBehaviorTree } = require("./PlayerBehaviourTree");
-const { Goals } = require("./configs/Goals");
-const { createSkillTree } = require("./CreateSkillTree");
+// Player.ts
 
-class Player {
-  constructor(x, y) {
+import { SkillTree } from "./SkillTree";
+import { Goals } from "./configs/Goals";
+import { createSkillTree } from "./CreateSkillTree";
+
+export class Player {
+  x: number;
+  y: number;
+  symbol: string;
+  skillTree: SkillTree;
+  hunger: number;
+  maxHunger: number;
+  hungerActionThreshold: number;
+  HP: number;
+  maxHP: number;
+  HPActionThreshold: number;
+  speed: number;
+  longGoals: Goals[];
+  currentGoal: Goals[];
+
+  constructor(x: number, y: number) {
     this.x = x;
     this.y = y;
     this.symbol = "🧍";
@@ -18,11 +33,9 @@ class Player {
     this.speed = 5;
     this.longGoals = [Goals.FIRE_STARTER];
     this.currentGoal = [];
-
-    this.behaviorTree = createBehaviorTree(this);
   }
 
-  normalizeVector(dx, dy) {
+  normalizeVector(dx: number, dy: number): { dx: number; dy: number } {
     const length = Math.sqrt(dx * dx + dy * dy);
     return {
       dx: dx / length,
@@ -30,7 +43,7 @@ class Player {
     };
   }
 
-  moveTowards(targetX, targetY) {
+  moveTowards(targetX: number, targetY: number): void {
     let vector = {
       dx: targetX - this.x,
       dy: targetY - this.y,
@@ -41,11 +54,4 @@ class Player {
     this.x += Math.round(vector.dx * this.speed);
     this.y += Math.round(vector.dy * this.speed);
   }
-
-  makeDecision() {
-    const context = { rng: 0 };
-    this.behaviorTree.run(context);
-  }
 }
-
-module.exports = { Player };

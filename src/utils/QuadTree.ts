@@ -1,29 +1,28 @@
-class Point {
-  constructor(x, y, data) {
-    this.x = x;
-    this.y = y;
-    this.data = data;
-  }
-}
+import { Thing } from "../World";
 
 class Rectangle {
-  constructor(x, y, w, h) {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+
+  constructor(x: number, y: number, w: number, h: number) {
     this.x = x;
     this.y = y;
     this.w = w;
     this.h = h;
   }
 
-  contains(point) {
+  contains(thing: Thing): boolean {
     return (
-      point.x >= this.x - this.w &&
-      point.x < this.x + this.w &&
-      point.y >= this.y - this.h &&
-      point.y < this.y + this.h
+      thing.x >= this.x - this.w &&
+      thing.x < this.x + this.w &&
+      thing.y >= this.y - this.h &&
+      thing.y < this.y + this.h
     );
   }
 
-  intersects(range) {
+  intersects(range: Rectangle): boolean {
     return !(
       range.x - range.w > this.x + this.w ||
       range.x + range.w < this.x - this.w ||
@@ -34,10 +33,19 @@ class Rectangle {
 }
 
 class QuadTree {
-  constructor(boundary, capacity) {
+  boundary: Rectangle;
+  capacity: number;
+  things: Thing[];
+  divided: boolean;
+  northeast?: QuadTree;
+  northwest?: QuadTree;
+  southeast?: QuadTree;
+  southwest?: QuadTree;
+
+  constructor(boundary: Rectangle, capacity: number) {
     this.boundary = boundary;
     this.capacity = capacity;
-    this.points = [];
+    this.things = [];
     this.divided = false;
   }
 
@@ -59,14 +67,13 @@ class QuadTree {
     this.divided = true;
   }
 
-  insert(point) {
-    if (!this.boundary.contains(point)) {
-      // throw new Error("Point is out of bounds");
+  insert(thing: Thing): boolean {
+    if (!this.boundary.contains(thing)) {
       return false;
     }
 
-    if (this.points.length < this.capacity) {
-      this.points.push(point);
+    if (this.things.length < this.capacity) {
+      this.things.push(thing);
       return true;
     }
 
@@ -75,17 +82,15 @@ class QuadTree {
     }
 
     return (
-      this.northeast.insert(point) ||
-      this.northwest.insert(point) ||
-      this.southeast.insert(point) ||
-      this.southwest.insert(point)
+      this.northeast!.insert(thing) ||
+      this.northwest!.insert(thing) ||
+      this.southeast!.insert(thing) ||
+      this.southwest!.insert(thing)
     );
   }
 
-  query(range, found) {
-    // Check if range is of type Rectangle
+  query(range: Rectangle | any, found?: Thing[]): Thing[] {
     if (!(range instanceof Rectangle)) {
-      // Check if it has x, y, w, h properties
       if (
         range.x === undefined ||
         range.y === undefined ||
@@ -102,21 +107,21 @@ class QuadTree {
       return found;
     }
 
-    for (let p of this.points) {
+    for (let p of this.things) {
       if (range.contains(p)) {
         found.push(p);
       }
     }
 
     if (this.divided) {
-      this.northeast.query(range, found);
-      this.northwest.query(range, found);
-      this.southeast.query(range, found);
-      this.southwest.query(range, found);
+      this.northeast!.query(range, found);
+      this.northwest!.query(range, found);
+      this.southeast!.query(range, found);
+      this.southwest!.query(range, found);
     }
 
     return found;
   }
 }
 
-module.exports = { Point, Rectangle, QuadTree };
+export { Rectangle, QuadTree };
