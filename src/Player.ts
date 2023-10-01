@@ -1,7 +1,7 @@
 // Player.ts
 
 import { SkillTree } from "./SkillTree";
-import { Goals } from "./configs/Goals";
+import { Goals, Goal, GoalTypes } from "./configs/Goals";
 import { createSkillTree } from "./CreateSkillTree";
 import { createBehaviorTree } from "./PlayerBehaviourTree";
 import { BehaviorNode } from "./behaviorTree/BaseNodes";
@@ -18,8 +18,8 @@ export class Player {
   maxHP: number;
   HPActionThreshold: number;
   speed: number;
-  longGoals: Goals[];
-  currentGoal: Goals[];
+  longGoals: Goal[];
+  currentGoal: Goal[];
   behaviorTree: BehaviorNode;
 
   constructor(x: number, y: number) {
@@ -34,7 +34,7 @@ export class Player {
     this.maxHP = 100;
     this.HPActionThreshold = 50;
     this.speed = 5;
-    this.longGoals = [Goals.FIRE_STARTER];
+    this.longGoals = [Goals[GoalTypes.FIRE_STARTER], Goals[GoalTypes.CHEF]];
     this.currentGoal = [];
 
     this.behaviorTree = createBehaviorTree(this);
