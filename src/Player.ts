@@ -1,16 +1,15 @@
 // Player.ts
 
 import { SkillTree } from "./SkillTree";
-import { Goals, Goal, GoalTypes } from "./configs/Goals";
+import { Goals, Goal, GoalTypes } from "./goap/Goals";
 import { createSkillTree } from "./CreateSkillTree";
 import { createBehaviorTree } from "./PlayerBehaviourTree";
 import { BehaviorNode } from "./behaviorTree/BaseNodes";
+import { Thing } from "./World";
+import { GOAPPlanner } from "./goap/GOAPPlanner";
 
-export class Player {
-  x: number;
-  y: number;
-  symbol: string;
-  skillTree: SkillTree;
+export interface PlayerState {
+  inventory: string[];
   hunger: number;
   maxHunger: number;
   hungerActionThreshold: number;
@@ -20,22 +19,34 @@ export class Player {
   speed: number;
   longGoals: Goal[];
   currentGoal: Goal[];
+  skillTree: SkillTree;
+}
+
+export class Player extends Thing {
+  x: number;
+  y: number;
+  symbol: string;
   behaviorTree: BehaviorNode;
+  playerState: PlayerState;
 
   constructor(x: number, y: number) {
+    super(x, y, "🧍");
     this.x = x;
     this.y = y;
     this.symbol = "🧍";
-    this.skillTree = createSkillTree();
-    this.hunger = 100;
-    this.maxHunger = 100;
-    this.hungerActionThreshold = 25;
-    this.HP = 100;
-    this.maxHP = 100;
-    this.HPActionThreshold = 50;
-    this.speed = 5;
-    this.longGoals = [Goals[GoalTypes.FIRE_STARTER], Goals[GoalTypes.CHEF]];
-    this.currentGoal = [];
+    this.playerState = {
+      inventory: [] as string[],
+      hunger: 100,
+      maxHunger: 100,
+      hungerActionThreshold: 25,
+      HP: 100,
+      maxHP: 100,
+      HPActionThreshold: 50,
+      speed: 5,
+      longGoals: [Goals[GoalTypes.FIRE_STARTER], Goals[GoalTypes.CHEF]],
+      currentGoal: [],
+      skillTree: createSkillTree(),
+    };
 
     this.behaviorTree = createBehaviorTree(this);
   }
@@ -56,13 +67,18 @@ export class Player {
 
     vector = this.normalizeVector(vector.dx, vector.dy);
 
-    this.x += Math.round(vector.dx * this.speed);
-    this.y += Math.round(vector.dy * this.speed);
+    this.x += Math.round(vector.dx * this.playerState.speed);
+    this.y += Math.round(vector.dy * this.playerState.speed);
   }
 
-  makeDecision() {
+  makeDecision(worldState: any) {
+    // TODO: Specify worldState type
     const context = { rng: 0 };
-    console.log("Making decision.");
     this.behaviorTree.run(context);
+    const goal = this.playerState.currentGoal[0];
+    // let goal = new BuildHouse();
+    // let availableActions = [new GatherWood()];
+
+    let plan = GOAPPlanner.plan(this, this.playerState, worldState, goal, availableActions);
   }
 }

@@ -8,4 +8,10 @@ export enum Skills {
   COOKING_1 = "Cooking_1",
   COOKING_2 = "Cooking_2",
   COOKING_3 = "Cooking_3",
+  WOODCUTTING_1 = "Woodcutting_1",
+  WOODCUTTING_2 = "Woodcutting_2",
+  WOODCUTTING_3 = "Woodcutting_3",
+  BUILDING_1 = "Building_1",
+  BUILDING_2 = "Building_2",
+  BUILDING_3 = "Building_3",
 }

@@ -2,6 +2,8 @@ import { QuadTree, Rectangle } from "./utils/QuadTree";
 import { Player } from "./Player";
 import fs from "fs";
 
+// TODO: Add Items: smaller things that you could fit in your inventory
+
 class Thing {
   x: number;
   y: number;
@@ -14,7 +16,9 @@ class Thing {
   }
 }
 
+export interface WorldState {}
 class World {
+  state: WorldState = {};
   quadtree: QuadTree;
 
   constructor(width: number, height: number) {
