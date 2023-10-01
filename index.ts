@@ -11,7 +11,7 @@ world.addThing(player);
 
 const renderer = new Renderer(world);
 
-// setInterval(() => {
-//   player.makeDecision();
-//   // renderer.render();
-// }, 1000); // Re-renders every second
+setInterval(() => {
+  player.makeDecision();
+  // renderer.render();
+}, 1000); // Re-renders every second

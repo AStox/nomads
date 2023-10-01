@@ -3,6 +3,8 @@
 import { SkillTree } from "./SkillTree";
 import { Goals } from "./configs/Goals";
 import { createSkillTree } from "./CreateSkillTree";
+import { createBehaviorTree } from "./PlayerBehaviourTree";
+import { BehaviorNode } from "./behaviorTree/BaseNodes";
 
 export class Player {
   x: number;
@@ -18,6 +20,7 @@ export class Player {
   speed: number;
   longGoals: Goals[];
   currentGoal: Goals[];
+  behaviorTree: BehaviorNode;
 
   constructor(x: number, y: number) {
     this.x = x;
@@ -33,6 +36,8 @@ export class Player {
     this.speed = 5;
     this.longGoals = [Goals.FIRE_STARTER];
     this.currentGoal = [];
+
+    this.behaviorTree = createBehaviorTree(this);
   }
 
   normalizeVector(dx: number, dy: number): { dx: number; dy: number } {
@@ -53,5 +58,11 @@ export class Player {
 
     this.x += Math.round(vector.dx * this.speed);
     this.y += Math.round(vector.dy * this.speed);
+  }
+
+  makeDecision() {
+    const context = { rng: 0 };
+    console.log("Making decision.");
+    this.behaviorTree.run(context);
   }
 }
