@@ -18,18 +18,27 @@ class GOAPPlanner {
     playerState: PlayerState,
     worldState: WorldState,
     goal: Goal,
-    actions: Action[]
+    actions: Action[],
+    actionFactories: Function[]
   ): Action[] {
     let plan: Action[] = [];
 
     // Combine world and player states for comprehensive planning
     const combinedState: CombinedState = { ...worldState, ...playerState };
 
+    for (const factory of actionFactories) {
+      const dynamicAction = factory(combinedState, goal);
+      if (dynamicAction) {
+        actions.push(dynamicAction);
+      }
+    }
+
     // Initialize end goal node
     const startNode: Node = { parent: null, action: null, state: combinedState, cost: 0 };
 
     // Check if goal is already satisfied
     if (this.goalMet(goal, combinedState)) {
+      console.log("Goal met: ", this.goalMet(goal, combinedState));
       return plan;
     }
 
@@ -93,6 +102,11 @@ class GOAPPlanner {
       // TODO: And check required items and requiredthings
       const skill = state.skillTree.findNode(key);
       if (!skill?.achieved) {
+        return false;
+      }
+    }
+    for (const key in goal.requirements) {
+      if (state[key as keyof PlayerState] !== goal.requirements[key as keyof PlayerState]) {
         return false;
       }
     }

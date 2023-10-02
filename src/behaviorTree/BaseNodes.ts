@@ -56,7 +56,6 @@ class LogNode extends BehaviorNode {
   }
 
   run(context: any): boolean {
-    console.log(this.message);
     return true;
   }
 }
