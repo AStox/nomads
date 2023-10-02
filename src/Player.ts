@@ -56,8 +56,8 @@ export class Player extends Thing {
   }
 
   moveTo(x: number, y: number) {
-    this.x = x;
-    this.y = y;
+    this.playerState.x = x;
+    this.playerState.y = y;
     return true;
   }
 
@@ -69,8 +69,9 @@ export class Player extends Thing {
     let availableActions: Action[] = [];
     let actionFactories = [WalkTo];
 
+    let plan: Action[] = [];
     if (goal) {
-      let plan = GOAPPlanner.plan(
+      plan = GOAPPlanner.plan(
         this,
         this.playerState,
         state,
@@ -83,6 +84,14 @@ export class Player extends Thing {
       for (const action of plan) {
         console.log(action.name);
       }
+    }
+
+    console.log(" ");
+    console.log("~Performing plan~");
+
+    if (plan.length > 0) {
+      const firstAction = plan[0];
+      const success = firstAction.perform(this);
     }
   }
 }

@@ -29,7 +29,7 @@ setInterval(() => {
     );
     const combinedState: CombinedState = { ...world.state, ...player.playerState };
     player.makeDecision(combinedState);
-    console.log("----------------------------------------");
+    console.log("---------------------------------------------------------------");
   }
   turn++;
   // renderer.render();
