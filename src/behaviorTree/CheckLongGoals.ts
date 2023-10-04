@@ -11,10 +11,10 @@ class CheckLongGoals extends BehaviorNode {
 
   run(context: any): boolean {
     // specify the context type if you have one
-    if (this.player.playerState.longGoals.length > 0) {
-      const index = Math.floor(context.rng * this.player.playerState.longGoals.length);
-      this.player.playerState.currentGoal = this.player.playerState.longGoals[index];
-      console.log("Player has longterm goals. Goal: " + this.player.playerState.currentGoal.reward);
+    if (this.player.longGoals.length > 0) {
+      const index = Math.floor(context.rng * this.player.longGoals.length);
+      this.player.currentGoal = this.player.longGoals[index];
+      console.log("Player has longterm goals. Goal: " + this.player.currentGoal.reward);
       return true;
     }
     console.log("Player has no longterm goals.");

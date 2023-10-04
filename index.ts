@@ -1,14 +1,25 @@
-import { World, Rectangle } from "./src/World";
+import { World, Rectangle, Thing } from "./src/World";
 import { Player } from "./src/Player";
 import Renderer from "./src/Renderer";
 import { CombinedState } from "./src/goap/GOAPPlanner";
+import { WalkTo } from "./src/goap/Actions/WalkTo";
+import { ThingType } from "./src/Things";
 
 const width: number = 30;
 const world = new World(width, width);
-world.populateThingsFromConfig("src/configs/objects.json");
+// world.populateThingsFromConfig("src/configs/objects.json");
+const things: Thing[] = [
+  { name: ThingType.TREE, x: 0, y: 0, symbol: "🌲", actions: [WalkTo] },
+  { name: ThingType.TREE, x: 10, y: 10, symbol: "🌲", actions: [WalkTo] },
+  { name: ThingType.AXE, x: 5, y: 5, symbol: "🪓", actions: [WalkTo] },
+];
+
+for (const thing of things) {
+  world.addThing(thing);
+}
 
 // const player = new Player(0, 0);
-let players = [new Player(0, 0)];
+let players = [new Player(ThingType.PLAYER, 0, 10, "🧍", [WalkTo])];
 for (const player of players) {
   world.addThing(player);
 }
@@ -27,7 +38,7 @@ setInterval(() => {
         turn +
         " --------------------"
     );
-    const combinedState: CombinedState = { ...world.state, ...player.playerState };
+    const combinedState: CombinedState = { ...world.state, player: player };
     player.makeDecision(combinedState);
     console.log("---------------------------------------------------------------");
   }

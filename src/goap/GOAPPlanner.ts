@@ -1,4 +1,5 @@
-import { PlayerState } from "../Player";
+import { Item, ItemType } from "../Items";
+import { Player } from "../Player";
 import { WorldState } from "../World";
 import { Action } from "./Action";
 import { Goal } from "./Goals";
@@ -10,28 +11,43 @@ interface Node {
   cost: number;
 }
 
-export type CombinedState = WorldState & PlayerState;
+export interface CombinedState extends WorldState {
+  player: Player;
+}
 
 class GOAPPlanner {
   static plan(
-    agent: any,
-    playerState: PlayerState,
+    player: Player,
     worldState: WorldState,
     goal: Goal,
     actions: Action[],
-    actionFactories: Function[]
+    globalActions: Function[]
   ): Action[] {
     let plan: Action[] = [];
 
     // Combine world and player states for comprehensive planning
-    const combinedState: CombinedState = { ...worldState, ...playerState };
+    const combinedState: CombinedState = { ...worldState, player: player };
 
-    for (const factory of actionFactories) {
-      const dynamicAction = factory(combinedState, goal);
-      if (dynamicAction) {
-        actions.push(dynamicAction);
+    // add the global actions to the list of possible actions
+    for (const factory of globalActions) {
+      actions.push(factory(combinedState));
+    }
+
+    // for each thing, add its actions to the list of possible actions
+    for (const thing of worldState.things) {
+      for (const createAction of thing.actions) {
+        actions.push(createAction(thing));
       }
     }
+
+    // if (goal.requiredLocation) {
+    //   for (const factory of LocationActionFactories) {
+    //     const dynamicAction = factory(combinedState, goal);
+    //     if (dynamicAction) {
+    //       actions.push(dynamicAction);
+    //     }
+    //   }
+    // }
 
     // Initialize end goal node
     const startNode: Node = { parent: null, action: null, state: combinedState, cost: 0 };
@@ -97,17 +113,20 @@ class GOAPPlanner {
     return newState;
   }
 
-  private static goalMet(goal: Goal, state: PlayerState): boolean {
-    for (const key in goal.requiredSkills) {
-      // TODO: And check required items and requiredthings
-      const skill = state.skillTree.findNode(key);
-      if (!skill?.achieved) {
-        return false;
-      }
-    }
-    for (const key in goal.requirements) {
-      if (state[key as keyof PlayerState] !== goal.requirements[key as keyof PlayerState]) {
-        return false;
+  private static goalMet(goal: Goal, state: CombinedState): boolean {
+    return this.matchesNestedKeys(goal.requirements, state);
+  }
+
+  private static matchesNestedKeys(sub: any, obj: any): boolean {
+    for (const key in sub) {
+      if (typeof sub[key] === "object" && sub[key] !== null) {
+        if (!this.matchesNestedKeys(sub[key], obj[key])) {
+          return false;
+        }
+      } else {
+        if (sub[key] !== obj[key]) {
+          return false;
+        }
       }
     }
     return true;

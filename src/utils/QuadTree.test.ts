@@ -1,5 +1,5 @@
+import { Thing, ThingType } from "../Things";
 import { Rectangle, QuadTree } from "./QuadTree";
-import { Thing } from "../World";
 
 describe("QuadTree", () => {
   let boundary: Rectangle;
@@ -11,20 +11,25 @@ describe("QuadTree", () => {
   });
 
   test("Inserts points correctly", () => {
-    const point = new Thing(10, 10, "*");
+    const point = { name: ThingType.FISH, x: 10, y: 10, symbol: "*", actions: [] };
     qt.insert(point);
     expect(qt.things).toContain(point);
   });
 
   test("Splits when reaching capacity", () => {
     for (let i = 0; i < 5; i++) {
-      qt.insert(new Thing(i, i, "*"));
+      const point = { name: ThingType.FISH, x: 10 * i, y: 10 * i, symbol: "*", actions: [] };
+      qt.insert(point);
     }
     expect(qt.divided).toBe(true);
   });
 
   test("Query returns correct points", () => {
-    const points = [new Thing(10, 10, "a"), new Thing(20, 20, "b"), new Thing(90, 90, "c")];
+    const points = [
+      { name: ThingType.FISH, x: 10, y: 10, symbol: "a", actions: [] },
+      { name: ThingType.FISH, x: 20, y: 20, symbol: "b", actions: [] },
+      { name: ThingType.FISH, x: 90, y: 90, symbol: "c", actions: [] },
+    ];
 
     points.forEach((p) => qt.insert(p));
 

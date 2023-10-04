@@ -9,7 +9,7 @@ function StartFire(): Action {
     preconditions: { wood: 5 },
     effects: { wood: -5, firemaking_xp: 5, nearby_fire: true },
 
-    perform(agent: any): boolean {
+    perform(): boolean {
       return true;
     },
   };

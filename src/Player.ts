@@ -1,7 +1,7 @@
 // Player.ts
 
 import { SkillTree } from "./SkillTree";
-import { Goals, Goal, GoalTypes } from "./goap/Goals";
+import { Goal, GoalType } from "./goap/Goals";
 import { createSkillTree } from "./CreateSkillTree";
 import { createBehaviorTree } from "./PlayerBehaviourTree";
 import { BehaviorNode } from "./behaviorTree/BaseNodes";
@@ -9,76 +9,89 @@ import { Thing } from "./World";
 import { CombinedState, GOAPPlanner } from "./goap/GOAPPlanner";
 import { WalkTo } from "./goap/Actions/WalkTo";
 import { Action } from "./goap/Action";
+import { ItemType } from "./Items";
+import { ThingType } from "./Things";
+interface PartialWithMoveToPlayer extends Partial<Player> {
+  moveTo: (x: number, y: number) => boolean;
+}
 
-export interface PlayerState {
-  player: Player;
+export class Player implements Thing {
+  behaviorTree: BehaviorNode;
+  name: ThingType;
   x: number;
   y: number;
-  inventory: string[];
+  symbol: string;
+  actions: Function[];
+  speed: number;
+  inventory: ItemType[];
   hunger: number;
   maxHunger: number;
   hungerActionThreshold: number;
   HP: number;
   maxHP: number;
   HPActionThreshold: number;
-  speed: number;
   longGoals: Goal[];
   currentGoal: Goal | null;
   skillTree: SkillTree;
-}
 
-export class Player extends Thing {
-  symbol: string;
-  behaviorTree: BehaviorNode;
-  playerState: PlayerState;
-
-  constructor(x: number, y: number) {
-    super(x, y, "🧍");
+  constructor(name: ThingType, x: number, y: number, symbol: string, actions: Function[]) {
+    this.name = name;
+    this.x = x;
+    this.y = y;
     this.symbol = "🧍";
-    this.playerState = {
-      player: this,
-      x: x,
-      y: y,
-      inventory: [] as string[],
-      hunger: 100,
-      maxHunger: 100,
-      hungerActionThreshold: 25,
-      HP: 100,
-      maxHP: 100,
-      HPActionThreshold: 50,
-      speed: 5,
-      longGoals: [Goals[GoalTypes.GO_TO]],
-      currentGoal: null,
-      skillTree: createSkillTree(),
-    };
-
+    this.actions = actions;
+    this.speed = 5;
+    this.inventory = [] as ItemType[];
+    this.hunger = 100;
+    this.maxHunger = 100;
+    this.hungerActionThreshold = 25;
+    this.HP = 100;
+    this.maxHP = 100;
+    this.HPActionThreshold = 50;
+    this.longGoals = [
+      {
+        requiredSkills: [],
+        requirements: { player: { inventory: [] as ItemType[] } },
+        requiredItems: [ItemType.AXE],
+        reward: "Axe",
+      },
+    ];
+    this.currentGoal = null;
+    this.skillTree = createSkillTree();
     this.behaviorTree = createBehaviorTree(this);
   }
 
   moveTo(x: number, y: number) {
-    this.playerState.x = x;
-    this.playerState.y = y;
+    this.x = x;
+    this.y = y;
     return true;
+  }
+
+  pickUp(item: ItemType) {
+    this.inventory.push(item);
+    return true;
+  }
+
+  putDown(item: ItemType) {
+    const index = this.inventory.indexOf(item);
+    if (index > -1) {
+      this.inventory.splice(index, 1);
+      return true;
+    }
+    return false;
   }
 
   makeDecision(state: CombinedState) {
     const context = { rng: 0 };
     this.behaviorTree.run(context);
-    const goal = this.playerState.currentGoal;
+    const goal = this.currentGoal;
     // let goal = new BuildHouse();
     let availableActions: Action[] = [];
     let actionFactories = [WalkTo];
 
     let plan: Action[] = [];
     if (goal) {
-      plan = GOAPPlanner.plan(
-        this,
-        this.playerState,
-        state,
-        goal,
-        availableActions,
-        actionFactories
-      );
+      plan = GOAPPlanner.plan(this, state, goal, availableActions, actionFactories);
       console.log(" ");
       console.log("~~Plan~~");
       for (const action of plan) {
@@ -91,7 +104,7 @@ export class Player extends Thing {
 
     if (plan.length > 0) {
       const firstAction = plan[0];
-      const success = firstAction.perform(this);
+      const success = firstAction.perform();
     }
   }
 }

@@ -1,31 +1,37 @@
+import { Item, ItemType } from "../Items";
+import { Player } from "../Player";
+import { WorldState } from "../World";
 import { Skills } from "../configs/Skills";
 import { CombinedState } from "./GOAPPlanner";
 
+interface GoalWorldState extends Partial<WorldState> {
+  player: Partial<Player>;
+}
 export interface Goal {
-  requirements: Partial<CombinedState>;
+  requirements: GoalWorldState;
   requiredSkills: Skills[];
-  // requiredItems?: Items[];
+  requiredItems?: ItemType[];
   // requiredThings?: Things[];
 
   reward: string;
 }
 
-export enum GoalTypes {
+export enum GoalType {
   CHEF = "CHEF",
   FIRE_STARTER = "FIRE_STARTER",
   GO_TO = "GO_TO",
 }
 
-export const Goals: { [key in GoalTypes]: Goal } = {
-  [GoalTypes.CHEF]: { requiredSkills: [Skills.COOKING_3], requirements: {}, reward: "Chef" },
-  [GoalTypes.FIRE_STARTER]: {
-    requiredSkills: [Skills.FIRE_MAKING_3],
-    requirements: {},
-    reward: "Fire Starter",
-  },
-  [GoalTypes.GO_TO]: {
-    requiredSkills: [],
-    requirements: { x: 10, y: 10 },
-    reward: "Go To",
-  },
-};
+// export const Goals: { [GoalType]: Goal } = {
+//   [GoalType.CHEF]: { requiredSkills: [Skills.COOKING_3], requirements: {}, reward: "Chef" },
+// [GoalType.FIRE_STARTER]: {
+//   requiredSkills: [Skills.FIRE_MAKING_3],
+//   requirements: {},
+//   reward: "Fire Starter",
+// },
+// [GoalType.GO_TO]: {
+//   requiredSkills: [],
+//   requirements: { x: 10, y: 10 },
+//   reward: "Go To",
+// },
+// };
