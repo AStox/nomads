@@ -29,25 +29,16 @@ class GOAPPlanner {
     const combinedState: CombinedState = { ...worldState, player: player };
 
     // add the global actions to the list of possible actions
-    for (const factory of globalActions) {
-      actions.push(factory(combinedState));
-    }
+    // for (const factory of globalActions) {
+    //   actions.push(factory(combinedState));
+    // }
 
     // for each thing, add its actions to the list of possible actions
     for (const thing of worldState.things) {
       for (const createAction of thing.actions) {
-        actions.push(createAction(thing));
+        actions.push(createAction(combinedState, thing));
       }
     }
-
-    // if (goal.requiredLocation) {
-    //   for (const factory of LocationActionFactories) {
-    //     const dynamicAction = factory(combinedState, goal);
-    //     if (dynamicAction) {
-    //       actions.push(dynamicAction);
-    //     }
-    //   }
-    // }
 
     // Initialize end goal node
     const startNode: Node = { parent: null, action: null, state: combinedState, cost: 0 };
