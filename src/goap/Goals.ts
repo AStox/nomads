@@ -5,8 +5,9 @@ import { WorldState } from "../World";
 import { Skills } from "../configs/Skills";
 import { CombinedState } from "./GOAPPlanner";
 
-interface GoalWorldState extends Partial<Omit<WorldState, "player">> {
-  player: Partial<Omit<Player, "inventory">> & { inventory?: ThingType[] };
+interface GoalWorldState extends Partial<Omit<WorldState, "player" | "things">> {
+  player?: Partial<Omit<Player, "inventory">> & { inventory?: ThingType[] };
+  things?: ThingType[];
 }
 
 export interface Goal {

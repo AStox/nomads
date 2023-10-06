@@ -17,15 +17,15 @@ export interface CombinedState extends WorldState {
 }
 
 class GOAPPlanner {
+  static DEBUG = false;
+
   static plan(
     player: Player,
     worldState: WorldState,
     goal: Goal,
-    actions: Action[],
     globalActions: Function[]
   ): Action[] {
     let plan: Action[] = [];
-
     // Combine world and player states for comprehensive planning
     const combinedState: CombinedState = { ...worldState, player: player };
 
@@ -35,11 +35,7 @@ class GOAPPlanner {
     // }
 
     // for each thing, add its actions to the list of possible actions
-    for (const thing of worldState.things) {
-      for (const createAction of thing.actions) {
-        actions.push(createAction(combinedState, thing));
-      }
-    }
+    let actions = this.generateActions(combinedState, globalActions);
 
     console.log("Actions: ", actions);
 
@@ -55,19 +51,23 @@ class GOAPPlanner {
     // Perform planning using backtracking search
     let nodes: Node[] = [startNode];
     while (nodes.length > 0) {
+      console.log("actions: ", actions);
+      const newActions: Action[] = [];
       const currentNode = nodes.shift()!;
 
       // Generate child nodes
       for (const action of actions) {
-        // console.log(" ");
-        // console.log(" ");
-        // console.log("-------------------------------------------");
-        // console.log("Action: ", action.name);
-        // console.log("effects: ", action.effects);
-        // console.log("preconditions: ", action.preconditions);
-        // console.log("Action is executable: ", this.isActionExecutable(action, currentNode.state));
+        if (this.DEBUG) {
+          console.log(" ");
+          console.log("-------------------------------------------");
+          console.log("Action: ", action.name);
+          console.log("effects: ", action.effects);
+          console.log("preconditions: ", action.preconditions);
+          console.log("Action is executable: ", this.isActionExecutable(action, currentNode.state));
+        }
         if (this.isActionExecutable(action, currentNode.state)) {
           const newState = this.executeAction(action, currentNode.state);
+          newActions.push(...this.generateActions(newState, globalActions));
           const newCost = currentNode.cost + action.cost;
           const newNode: Node = {
             parent: currentNode,
@@ -89,10 +89,23 @@ class GOAPPlanner {
           nodes.push(newNode);
         }
       }
+      actions = newActions.length > 0 ? newActions : actions;
     }
 
     // No valid plan found
     return [];
+  }
+
+  private static generateActions(state: CombinedState, globalActions: Function[]): Action[] {
+    let actions: Action[] = [];
+
+    for (const thing of state.things) {
+      for (const createAction of thing.actions) {
+        actions.push(createAction(state, thing));
+        console.log(actions);
+      }
+    }
+    return actions;
   }
 
   private static isActionExecutable(action: Action, state: CombinedState): boolean {
@@ -139,16 +152,25 @@ class GOAPPlanner {
 
   private static matchesNestedKeys(sub: any, obj: any): boolean {
     for (const key in sub) {
+      if (this.DEBUG) console.log("Key: ", key);
       if (key === "inventory" && Array.isArray(sub[key])) {
         if (!this.inventoryRequirementsMet(sub[key], obj[key])) {
+          if (this.DEBUG) console.log("Inventory requirements not met");
+          return false;
+        }
+      } else if (key === "things" && Array.isArray(sub[key])) {
+        if (!this.inventoryRequirementsMet(sub[key], obj[key])) {
+          if (this.DEBUG) console.log("Inventory requirements not met");
           return false;
         }
       } else if (typeof sub[key] === "object" && sub[key] !== null) {
         if (!this.matchesNestedKeys(sub[key], obj[key])) {
+          if (this.DEBUG) console.log("Nested keys don't match");
           return false;
         }
       } else {
         if (sub[key] !== obj[key]) {
+          if (this.DEBUG) console.log("Keys don't match");
           return false;
         }
       }

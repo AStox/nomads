@@ -54,7 +54,8 @@ export class Player implements Thing {
     this.longGoals = [
       {
         requiredSkills: [],
-        requirements: { player: { inventory: [ThingType.AXE] } },
+        requirements: { player: { inventory: [ThingType.WOOD] } },
+        // requirements: { things: [ThingType.WOOD] },
         reward: "Axe",
       },
     ];
@@ -78,12 +79,11 @@ export class Player implements Thing {
     const context = { rng: 0 };
     this.behaviorTree.run(context);
     const goal = this.currentGoal;
-    let availableActions: Action[] = [];
     let actionFactories = [WalkTo];
 
     let plan: Action[] = [];
     if (goal) {
-      plan = GOAPPlanner.plan(this, state, goal, availableActions, actionFactories);
+      plan = GOAPPlanner.plan(this, state, goal, actionFactories);
       console.log(" ");
       console.log("~~Plan~~");
       for (const action of plan) {

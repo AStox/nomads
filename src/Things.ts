@@ -2,6 +2,7 @@ enum ThingType {
   PLAYER = "PLAYER",
   STONE = "STONE",
   STICK = "STICK",
+  WOOD = "WOOD",
   TREE = "TREE",
   AXE = "AXE",
   HAMMER = "HAMMER",

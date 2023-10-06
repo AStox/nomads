@@ -5,12 +5,13 @@ import { CombinedState } from "./src/goap/GOAPPlanner";
 import { WalkTo } from "./src/goap/Actions/WalkTo";
 import { PickUp } from "./src/goap/Actions/PickUp";
 import { ThingType } from "./src/Things";
+import { Chop } from "./src/goap/Actions/Chop";
 
 const width: number = 30;
 const world = new World(width, width);
 // world.populateThingsFromConfig("src/configs/objects.json");
 const things: Thing[] = [
-  // { name: ThingType.TREE, type: ThingType.TREE, x: 0, y: 0, symbol: "🌲", actions: [WalkTo] },
+  { name: ThingType.TREE, type: ThingType.TREE, x: 0, y: 0, symbol: "🌲", actions: [WalkTo, Chop] },
   // { name: ThingType.TREE, type: ThingType.TREE, x: 10, y: 10, symbol: "🌲", actions: [WalkTo] },
   {
     name: ThingType.AXE,
