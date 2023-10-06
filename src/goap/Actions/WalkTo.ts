@@ -30,7 +30,7 @@ function WalkTo(state: CombinedState, item: Item): Action {
     name: "WalkTo",
     cost: 1,
     preconditions: {},
-    effects: { ...destination },
+    effects: { player: { ...destination } },
 
     perform(): boolean {
       console.log("Moving to: ", newPlayerPosition);

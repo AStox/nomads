@@ -11,10 +11,12 @@ enum ItemType {
 }
 
 interface Item {
-  name: ItemType;
+  name: string;
+  type: ItemType;
   x: number;
   y: number;
   symbol: string;
+  actions: Function[];
 }
 
 export { Item, ItemType };

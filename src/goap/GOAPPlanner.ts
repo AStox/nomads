@@ -1,5 +1,6 @@
 import { Item, ItemType } from "../Items";
 import { Player } from "../Player";
+import { Thing, ThingType } from "../Things";
 import { WorldState } from "../World";
 import { Action } from "./Action";
 import { Goal } from "./Goals";
@@ -40,6 +41,8 @@ class GOAPPlanner {
       }
     }
 
+    console.log("Actions: ", actions);
+
     // Initialize end goal node
     const startNode: Node = { parent: null, action: null, state: combinedState, cost: 0 };
 
@@ -56,6 +59,13 @@ class GOAPPlanner {
 
       // Generate child nodes
       for (const action of actions) {
+        // console.log(" ");
+        // console.log(" ");
+        // console.log("-------------------------------------------");
+        // console.log("Action: ", action.name);
+        // console.log("effects: ", action.effects);
+        // console.log("preconditions: ", action.preconditions);
+        // console.log("Action is executable: ", this.isActionExecutable(action, currentNode.state));
         if (this.isActionExecutable(action, currentNode.state)) {
           const newState = this.executeAction(action, currentNode.state);
           const newCost = currentNode.cost + action.cost;
@@ -86,22 +96,41 @@ class GOAPPlanner {
   }
 
   private static isActionExecutable(action: Action, state: CombinedState): boolean {
-    for (const key in action.preconditions) {
-      if (state[key as keyof typeof state] !== action.preconditions[key as keyof typeof state]) {
-        return false;
-      }
-    }
-    return true;
+    return this.matchesNestedKeys(action.preconditions, state);
   }
 
+  private static deepClone(obj: any, hash = new WeakMap()): any {
+    if (Object(obj) !== obj) return obj;
+    if (hash.has(obj)) return hash.get(obj);
+    const result = Array.isArray(obj)
+      ? []
+      : obj.constructor
+      ? new obj.constructor()
+      : Object.create(null);
+    hash.set(obj, result);
+    return Object.assign(
+      result,
+      ...Object.keys(obj).map((key) => ({ [key]: this.deepClone(obj[key], hash) }))
+    );
+  }
+
+  // Then use deepClone in your executeAction function
   private static executeAction(action: Action, state: CombinedState): CombinedState {
-    const newState = { ...state } as any;
-    for (const key in action.effects) {
-      if (key in newState) {
-        newState[key as keyof CombinedState] = action.effects[key as keyof CombinedState];
+    const newState = this.deepClone(state) as CombinedState;
+    this.updateNestedFields(newState, action.effects);
+    return newState;
+  }
+
+  private static updateNestedFields(obj: any, effects: any) {
+    for (const key in effects) {
+      if (obj[key] === undefined) {
+        obj[key] = effects[key];
+      } else if (typeof effects[key] === "object" && effects[key] !== null) {
+        this.updateNestedFields(obj[key], effects[key]);
+      } else {
+        obj[key] = effects[key];
       }
     }
-    return newState;
   }
 
   private static goalMet(goal: Goal, state: CombinedState): boolean {
@@ -110,7 +139,11 @@ class GOAPPlanner {
 
   private static matchesNestedKeys(sub: any, obj: any): boolean {
     for (const key in sub) {
-      if (typeof sub[key] === "object" && sub[key] !== null) {
+      if (key === "inventory" && Array.isArray(sub[key])) {
+        if (!this.inventoryRequirementsMet(sub[key], obj[key])) {
+          return false;
+        }
+      } else if (typeof sub[key] === "object" && sub[key] !== null) {
         if (!this.matchesNestedKeys(sub[key], obj[key])) {
           return false;
         }
@@ -120,6 +153,29 @@ class GOAPPlanner {
         }
       }
     }
+    return true;
+  }
+
+  private static inventoryRequirementsMet(
+    requiredThings: ThingType[],
+    playerInventory: Thing[]
+  ): boolean {
+    const thingCounts = new Map<ThingType, number>();
+
+    // Count how many things of each type the player has
+    Object.values(playerInventory).forEach((thing) => {
+      thingCounts.set(thing.type, (thingCounts.get(thing.type) || 0) + 1);
+    });
+
+    // Check if each required item type is met
+    for (const requiredThing of requiredThings) {
+      const count = thingCounts.get(requiredThing) || 0;
+      if (count <= 0) {
+        return false;
+      }
+      thingCounts.set(requiredThing, count - 1);
+    }
+
     return true;
   }
 }

@@ -11,19 +11,21 @@ import { WalkTo } from "./goap/Actions/WalkTo";
 import { Action } from "./goap/Action";
 import { ItemType } from "./Items";
 import { ThingType } from "./Things";
+import { PickUp } from "./goap/Actions/PickUp";
 interface PartialWithMoveToPlayer extends Partial<Player> {
   moveTo: (x: number, y: number) => boolean;
 }
 
 export class Player implements Thing {
   behaviorTree: BehaviorNode;
-  name: ThingType;
+  name: string;
+  type: ThingType;
   x: number;
   y: number;
   symbol: string;
   actions: Function[];
   speed: number;
-  inventory: ItemType[];
+  inventory: { [key: string]: Thing };
   hunger: number;
   maxHunger: number;
   hungerActionThreshold: number;
@@ -34,14 +36,15 @@ export class Player implements Thing {
   currentGoal: Goal | null;
   skillTree: SkillTree;
 
-  constructor(name: ThingType, x: number, y: number, symbol: string, actions: Function[]) {
+  constructor(name: string, x: number, y: number, symbol: string, actions: Function[]) {
     this.name = name;
+    this.type = ThingType.PLAYER;
     this.x = x;
     this.y = y;
     this.symbol = "🧍";
     this.actions = actions;
     this.speed = 5;
-    this.inventory = [] as ItemType[];
+    this.inventory = {};
     this.hunger = 100;
     this.maxHunger = 100;
     this.hungerActionThreshold = 25;
@@ -51,8 +54,7 @@ export class Player implements Thing {
     this.longGoals = [
       {
         requiredSkills: [],
-        requirements: { player: { inventory: [] as ItemType[] } },
-        requiredItems: [ItemType.AXE],
+        requirements: { player: { inventory: [ThingType.AXE] } },
         reward: "Axe",
       },
     ];
@@ -67,25 +69,15 @@ export class Player implements Thing {
     return true;
   }
 
-  pickUp(item: ItemType) {
-    this.inventory.push(item);
+  pickUp(thing: Thing) {
+    this.inventory[thing.name] = thing;
     return true;
-  }
-
-  putDown(item: ItemType) {
-    const index = this.inventory.indexOf(item);
-    if (index > -1) {
-      this.inventory.splice(index, 1);
-      return true;
-    }
-    return false;
   }
 
   makeDecision(state: CombinedState) {
     const context = { rng: 0 };
     this.behaviorTree.run(context);
     const goal = this.currentGoal;
-    // let goal = new BuildHouse();
     let availableActions: Action[] = [];
     let actionFactories = [WalkTo];
 

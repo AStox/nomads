@@ -1,16 +1,18 @@
 import { Item, ItemType } from "../Items";
 import { Player } from "../Player";
+import { ThingType } from "../Things";
 import { WorldState } from "../World";
 import { Skills } from "../configs/Skills";
 import { CombinedState } from "./GOAPPlanner";
 
-interface GoalWorldState extends Partial<WorldState> {
-  player: Partial<Player>;
+interface GoalWorldState extends Partial<Omit<WorldState, "player">> {
+  player: Partial<Omit<Player, "inventory">> & { inventory?: ThingType[] };
 }
+
 export interface Goal {
   requirements: GoalWorldState;
   requiredSkills: Skills[];
-  requiredItems?: ItemType[];
+  // requiredItems?: ItemType[];
   // requiredThings?: Things[];
 
   reward: string;

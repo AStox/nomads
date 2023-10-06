@@ -13,7 +13,8 @@ enum ThingType {
 }
 
 interface Thing {
-  name: ThingType;
+  name: string;
+  type: ThingType;
   x: number;
   y: number;
   symbol: string;
