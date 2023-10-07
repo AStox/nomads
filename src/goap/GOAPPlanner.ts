@@ -1,9 +1,11 @@
 import { Item, ItemType } from "../Items";
-import { Player } from "../Player";
+import { Player, playerState } from "../Player";
 import { Thing, ThingType } from "../Things";
 import { WorldState } from "../World";
 import { Action } from "./Action";
 import { Goal } from "./Goals";
+import { omitFields } from "../utils/omitFields";
+import { deepCloneWithActionReference } from "../utils/DeepClone";
 
 interface Node {
   parent: Node | null;
@@ -13,7 +15,7 @@ interface Node {
 }
 
 export interface CombinedState extends WorldState {
-  player: Player;
+  player: playerState;
 }
 
 class GOAPPlanner {
@@ -26,48 +28,39 @@ class GOAPPlanner {
     globalActions: Function[]
   ): Action[] {
     let plan: Action[] = [];
-    // Combine world and player states for comprehensive planning
-    const combinedState: CombinedState = { ...worldState, player: player };
+    const combinedState: CombinedState = {
+      ...worldState,
+      player: omitFields(player, ["skillTree", "behaviorTree"]) as unknown as playerState,
+    };
 
-    // add the global actions to the list of possible actions
-    // for (const factory of globalActions) {
-    //   actions.push(factory(combinedState));
-    // }
-
-    // for each thing, add its actions to the list of possible actions
-    let actions = this.generateActions(combinedState, globalActions);
-
-    console.log("Actions: ", actions);
-
-    // Initialize end goal node
+    // Initialize the starting node
     const startNode: Node = { parent: null, action: null, state: combinedState, cost: 0 };
 
-    // Check if goal is already satisfied
+    // Early return if goal is already met
     if (this.goalMet(goal, combinedState)) {
-      console.log("Goal met: ", this.goalMet(goal, combinedState));
+      console.log("Goal already met. No actions needed.");
       return plan;
     }
 
-    // Perform planning using backtracking search
     let nodes: Node[] = [startNode];
-    while (nodes.length > 0) {
-      console.log("actions: ", actions);
-      const newActions: Action[] = [];
-      const currentNode = nodes.shift()!;
+    console.log("Starting plan generation...");
 
-      // Generate child nodes
-      for (const action of actions) {
-        if (this.DEBUG) {
-          console.log(" ");
-          console.log("-------------------------------------------");
-          console.log("Action: ", action.name);
-          console.log("effects: ", action.effects);
-          console.log("preconditions: ", action.preconditions);
-          console.log("Action is executable: ", this.isActionExecutable(action, currentNode.state));
-        }
+    let sequenceCount = 0;
+
+    while (nodes.length > 0) {
+      sequenceCount++;
+      console.log(`\n--- Considered Sequence ${sequenceCount} ---`);
+      const currentNode = nodes.shift()!;
+      const availableActions = this.generateActions(currentNode.state, globalActions);
+
+      // Log current state and available actions
+      console.log("Current Node, Things:", this.describeThings(currentNode.state.things));
+
+      console.log("Available Actions: ", this.describeActions(availableActions));
+
+      for (const action of availableActions) {
         if (this.isActionExecutable(action, currentNode.state)) {
           const newState = this.executeAction(action, currentNode.state);
-          newActions.push(...this.generateActions(newState, globalActions));
           const newCost = currentNode.cost + action.cost;
           const newNode: Node = {
             parent: currentNode,
@@ -76,33 +69,58 @@ class GOAPPlanner {
             cost: newCost,
           };
 
-          // Check if this node satisfies the goal
+          // Log actions taken and the resulting state
+          console.log(
+            `Action executed: ${action.name}(${
+              action.target?.name
+            }), New Things: ${currentNode.state.things
+              .map((thing) => `${thing.name} at (${thing.x}, ${thing.y})`)
+              .join(", ")}`
+          );
+
           if (this.goalMet(goal, newNode.state)) {
-            // Reconstruct the plan from this node
+            console.log("Goal met! Reconstructing plan...");
+
             let node = newNode;
             while (node.parent) {
-              if (node.action) plan.unshift(node.action);
+              if (node.action) {
+                plan.unshift(node.action);
+              }
               node = node.parent;
             }
+
+            console.log(
+              `Final Plan: ${plan.map((p) => `${p.name}(${p.target.name})`).join(" -> ")}`
+            );
             return plan;
           }
+
           nodes.push(newNode);
+        } else {
+          console.log(`Action not executable: ${action.name}(${action.target.name}})`);
         }
       }
-      actions = newActions.length > 0 ? newActions : actions;
     }
 
-    // No valid plan found
+    console.log("No valid plan found.");
     return [];
+  }
+
+  private static describeThings(things: Thing[]): string {
+    return things.map((t) => `${t.name} at (${t.x}, ${t.y})`).join(", ");
+  }
+
+  private static describeActions(actions: Action[]): string {
+    return actions.map((a) => `${a.name}(${a.target.name})`).join(", ");
   }
 
   private static generateActions(state: CombinedState, globalActions: Function[]): Action[] {
     let actions: Action[] = [];
 
     for (const thing of state.things) {
+      if (thing.id === state.player.id) {
       for (const createAction of thing.actions) {
         actions.push(createAction(state, thing));
-        console.log(actions);
       }
     }
     return actions;
@@ -127,10 +145,21 @@ class GOAPPlanner {
     );
   }
 
-  // Then use deepClone in your executeAction function
+  private static mergeObjects(target: any, source: any): any {
+    for (const key in source) {
+      if (typeof source[key] === "object" && source[key] !== null) {
+        if (!target[key]) target[key] = {};
+        this.mergeObjects(target[key], source[key]);
+      } else {
+        target[key] = source[key];
+      }
+    }
+    return target;
+  }
+
   private static executeAction(action: Action, state: CombinedState): CombinedState {
-    const newState = this.deepClone(state) as CombinedState;
-    this.updateNestedFields(newState, action.effects);
+    const newState = deepCloneWithActionReference(state);
+    this.mergeObjects(newState, action.effects);
     return newState;
   }
 
@@ -152,25 +181,20 @@ class GOAPPlanner {
 
   private static matchesNestedKeys(sub: any, obj: any): boolean {
     for (const key in sub) {
-      if (this.DEBUG) console.log("Key: ", key);
       if (key === "inventory" && Array.isArray(sub[key])) {
         if (!this.inventoryRequirementsMet(sub[key], obj[key])) {
-          if (this.DEBUG) console.log("Inventory requirements not met");
           return false;
         }
       } else if (key === "things" && Array.isArray(sub[key])) {
         if (!this.inventoryRequirementsMet(sub[key], obj[key])) {
-          if (this.DEBUG) console.log("Inventory requirements not met");
           return false;
         }
       } else if (typeof sub[key] === "object" && sub[key] !== null) {
         if (!this.matchesNestedKeys(sub[key], obj[key])) {
-          if (this.DEBUG) console.log("Nested keys don't match");
           return false;
         }
       } else {
         if (sub[key] !== obj[key]) {
-          if (this.DEBUG) console.log("Keys don't match");
           return false;
         }
       }

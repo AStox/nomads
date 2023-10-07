@@ -3,7 +3,7 @@ class Node {
   prevNodes: Node[];
   nextNodes: Node[];
   achieved: boolean;
-  manager: MultiBranchLinkedList | null = null;
+  // manager: MultiBranchLinkedList | null = null;
 
   constructor(name: string, prevNodes: Node[] = [], nextNodes: Node[] = []) {
     this.name = name;
@@ -13,36 +13,36 @@ class Node {
   }
 
   addPrev(node: Node): Node {
-    if (!this.manager) {
-      throw new Error("Node not added to manager.");
-    }
+    // if (!this.manager) {
+    //   throw new Error("Node not added to manager.");
+    // }
     if (this.prevNodes.includes(node)) {
       return node;
     }
     if (node.nextNodes.includes(this)) {
       return node;
     }
-    this.manager.nodes.push(node);
+    // this.manager.nodes.push(node);
     node.nextNodes.push(this);
     this.prevNodes.push(node);
-    node.manager = this.manager;
+    // node.manager = this.manager;
     return node;
   }
 
   addNext(node: Node): Node {
-    if (!this.manager) {
-      throw new Error("Node not added to manager.");
-    }
+    // if (!this.manager) {
+    //   throw new Error("Node not added to manager.");
+    // }
     if (this.nextNodes.includes(node)) {
       return node;
     }
     if (node.prevNodes.includes(this)) {
       return node;
     }
-    this.manager.nodes.push(node);
+    // this.manager.nodes.push(node);
     node.prevNodes.push(this);
     this.nextNodes.push(node);
-    node.manager = this.manager;
+    // node.manager = this.manager;
     return node;
   }
 }
@@ -58,7 +58,7 @@ class MultiBranchLinkedList {
     if (this.nodes.includes(node)) {
       return node;
     }
-    node.manager = this;
+    // node.manager = this;
     this.nodes.push(node);
     return node;
   }

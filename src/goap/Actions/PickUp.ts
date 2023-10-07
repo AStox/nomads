@@ -6,6 +6,7 @@ import { Action } from "../Action";
 function PickUp(state: CombinedState, thing: Thing): Action {
   return {
     name: "PickUp",
+    target: thing,
     cost: 1,
     preconditions: { player: { x: thing.x, y: thing.y } },
     effects: { player: { inventory: { [thing.name]: thing } } },

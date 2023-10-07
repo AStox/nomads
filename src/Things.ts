@@ -14,6 +14,7 @@ enum ThingType {
 }
 
 interface Thing {
+  id: string;
   name: string;
   type: ThingType;
   x: number;

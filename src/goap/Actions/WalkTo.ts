@@ -1,11 +1,12 @@
 import { Item } from "../../Items";
+import { Thing } from "../../Things";
 import { Action } from "../Action";
 import { CombinedState } from "../GOAPPlanner";
 import { Goal } from "../Goals";
 
-function WalkTo(state: CombinedState, item: Item): Action {
+function WalkTo(state: CombinedState, thing: Thing): Action {
   // find the vector between the agent and the destination, normalize it and multiple by player speed
-  const destination = { x: item.x, y: item.y };
+  const destination = { x: thing.x, y: thing.y };
   let newPlayerPosition: { x: number; y: number } = { x: state.player.x, y: state.player.y };
   if (destination.x !== undefined && destination.y !== undefined) {
     const dx = destination.x - state.player.x;
@@ -28,6 +29,7 @@ function WalkTo(state: CombinedState, item: Item): Action {
 
   return {
     name: "WalkTo",
+    target: thing,
     cost: 1,
     preconditions: {},
     effects: { player: { ...destination } },

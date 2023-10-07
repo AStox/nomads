@@ -16,8 +16,10 @@ interface PartialWithMoveToPlayer extends Partial<Player> {
   moveTo: (x: number, y: number) => boolean;
 }
 
+export type playerState = Omit<Player, "skillTree" | "behaviorTree">;
+
 export class Player implements Thing {
-  behaviorTree: BehaviorNode;
+  id: string;
   name: string;
   type: ThingType;
   x: number;
@@ -34,9 +36,10 @@ export class Player implements Thing {
   HPActionThreshold: number;
   longGoals: Goal[];
   currentGoal: Goal | null;
-  skillTree: SkillTree;
+  // skillTree: SkillTree;
 
-  constructor(name: string, x: number, y: number, symbol: string, actions: Function[]) {
+  constructor(id: string, name: string, x: number, y: number, symbol: string, actions: Function[]) {
+    this.id = id;
     this.name = name;
     this.type = ThingType.PLAYER;
     this.x = x;
@@ -56,12 +59,11 @@ export class Player implements Thing {
         requiredSkills: [],
         requirements: { player: { inventory: [ThingType.WOOD] } },
         // requirements: { things: [ThingType.WOOD] },
-        reward: "Axe",
+        reward: "WOOD",
       },
     ];
     this.currentGoal = null;
-    this.skillTree = createSkillTree();
-    this.behaviorTree = createBehaviorTree(this);
+    // this.skillTree = createSkillTree();
   }
 
   moveTo(x: number, y: number) {
@@ -77,7 +79,8 @@ export class Player implements Thing {
 
   makeDecision(state: CombinedState) {
     const context = { rng: 0 };
-    this.behaviorTree.run(context);
+    const behaviorTree = createBehaviorTree(this);
+    behaviorTree.run(context);
     const goal = this.currentGoal;
     let actionFactories = [WalkTo];
 

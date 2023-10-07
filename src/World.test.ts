@@ -4,7 +4,7 @@ describe("World", () => {
   let world: World;
 
   beforeEach(() => {
-    world = new World(1000, 1000);
+    world = World.newWorld(1000, 1000);
   });
 
   // test("should populate things from config", () => {

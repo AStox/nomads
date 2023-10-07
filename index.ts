@@ -8,12 +8,20 @@ import { ThingType } from "./src/Things";
 import { Chop } from "./src/goap/Actions/Chop";
 
 const width: number = 30;
-const world = new World(width, width);
+const world = World.newWorld(width, width);
 // world.populateThingsFromConfig("src/configs/objects.json");
 const things: Thing[] = [
-  { name: ThingType.TREE, type: ThingType.TREE, x: 0, y: 0, symbol: "🌲", actions: [WalkTo, Chop] },
-  // { name: ThingType.TREE, type: ThingType.TREE, x: 10, y: 10, symbol: "🌲", actions: [WalkTo] },
   {
+    id: "2",
+    name: ThingType.TREE,
+    type: ThingType.TREE,
+    x: 0,
+    y: 0,
+    symbol: "🌲",
+    actions: [WalkTo, Chop],
+  },
+  {
+    id: "3",
     name: ThingType.AXE,
     type: ThingType.AXE,
     x: 10,
@@ -28,7 +36,7 @@ for (const thing of things) {
 }
 
 // const player = new Player(0, 0);
-let players = [new Player(ThingType.PLAYER, 0, 10, "🧍", [WalkTo])];
+let players = [new Player("1", "John Plant", 0, 10, "🧍", [WalkTo])];
 for (const player of players) {
   world.addThing(player);
 }

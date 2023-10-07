@@ -8,18 +8,30 @@ export interface WorldState {
   things: Thing[];
   items: Item[];
 }
+
 class World {
+  private static instance: World;
   state: WorldState = { things: [], items: [] };
   quadtree: QuadTree;
 
-  constructor(width: number, height: number) {
+  private constructor(width: number, height: number) {
     this.quadtree = new QuadTree(new Rectangle(0, 0, width / 2, height / 2), 4);
   }
 
-  // addItem(item: Item) {
-  //   this.state.items.push(item);
-  //   this.quadtree.insert(item);
-  // }
+  public static newWorld(width: number, height: number): World {
+    if (World.instance) {
+      return World.instance;
+    }
+    World.instance = new World(width, height);
+    return World.instance;
+  }
+
+  public static getInstance(): World {
+    if (!World.instance) {
+      World.instance = new World(100, 100);
+    }
+    return World.instance;
+  }
 
   addThing(thing: Thing) {
     this.state.things.push(thing);
