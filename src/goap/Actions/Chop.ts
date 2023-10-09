@@ -13,20 +13,23 @@ function Chop(state: CombinedState, thing: Thing): Action {
     cost: 1,
     preconditions: { player: { x: thing.x, y: thing.y, inventory: [ThingType.AXE] } },
     effects: {
-      things: [
-        {
-          name: ThingType.WOOD,
-          type: ThingType.WOOD,
-          x: thing.x,
-          y: thing.y,
-          symbol: "🪵",
-          actions: [WalkTo, PickUp],
-        },
-      ],
+      toAdd: {
+        things: [
+          {
+            name: ThingType.WOOD,
+            type: ThingType.WOOD,
+            x: thing.x,
+            y: thing.y,
+            symbol: "🪵",
+            actions: [WalkTo, PickUp],
+          },
+        ],
+      },
     },
 
     perform(): boolean {
       World.getInstance().addThing({
+        id: "wood1",
         name: ThingType.WOOD,
         type: ThingType.WOOD,
         x: thing.x,

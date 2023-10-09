@@ -5,7 +5,7 @@ import { Goal, GoalType } from "./goap/Goals";
 import { createSkillTree } from "./CreateSkillTree";
 import { createBehaviorTree } from "./PlayerBehaviourTree";
 import { BehaviorNode } from "./behaviorTree/BaseNodes";
-import { Thing } from "./World";
+import { Thing, World } from "./World";
 import { CombinedState, GOAPPlanner } from "./goap/GOAPPlanner";
 import { WalkTo } from "./goap/Actions/WalkTo";
 import { Action } from "./goap/Action";
@@ -74,6 +74,9 @@ export class Player implements Thing {
 
   pickUp(thing: Thing) {
     this.inventory[thing.name] = thing;
+    // remove thing from world.things
+    const world = World.getInstance();
+    world.removeThing(thing);
     return true;
   }
 

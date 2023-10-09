@@ -4,8 +4,8 @@ import Renderer from "./src/Renderer";
 import { CombinedState } from "./src/goap/GOAPPlanner";
 import { WalkTo } from "./src/goap/Actions/WalkTo";
 import { PickUp } from "./src/goap/Actions/PickUp";
-import { ThingType } from "./src/Things";
 import { Chop } from "./src/goap/Actions/Chop";
+import { ThingType } from "./src/Things";
 
 const width: number = 30;
 const world = World.newWorld(width, width);

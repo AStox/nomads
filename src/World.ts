@@ -38,6 +38,11 @@ class World {
     this.quadtree.insert(thing);
   }
 
+  removeThing(thing: Thing) {
+    this.state.things = this.state.things.filter((t) => t.id !== thing.id);
+    this.quadtree.remove(thing);
+  }
+
   queryThingsInVision(player: Player): Thing[] {
     // const vision = player.getVision(); // TODO: Implement this
     const vision = new Rectangle(0, 0, 100, 100);

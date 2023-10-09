@@ -51,11 +51,19 @@ class GOAPPlanner {
       sequenceCount++;
       console.log(`\n--- Considered Sequence ${sequenceCount} ---`);
       const currentNode = nodes.shift()!;
+      console.log(
+        `parent node: ${currentNode.parent?.action?.name}(${currentNode.parent?.action?.target?.name})`
+      );
       const availableActions = this.generateActions(currentNode.state, globalActions);
 
-      // Log current state and available actions
-      console.log("Current Node, Things:", this.describeThings(currentNode.state.things));
-
+      console.log("Current Node. Things: [", this.describeThings(currentNode.state)), "]";
+      console.log(
+        `Player's Inventory: ${JSON.stringify(
+          Object.keys(currentNode.state.player.inventory).map(
+            (key) => currentNode.state.player.inventory[key].name
+          )
+        )}`
+      );
       console.log("Available Actions: ", this.describeActions(availableActions));
 
       for (const action of availableActions) {
@@ -73,9 +81,7 @@ class GOAPPlanner {
           console.log(
             `Action executed: ${action.name}(${
               action.target?.name
-            }), New Things: ${currentNode.state.things
-              .map((thing) => `${thing.name} at (${thing.x}, ${thing.y})`)
-              .join(", ")}`
+            }), New Things: [${this.describeThings(currentNode.state)}]`
           );
 
           if (this.goalMet(goal, newNode.state)) {
@@ -106,8 +112,14 @@ class GOAPPlanner {
     return [];
   }
 
-  private static describeThings(things: Thing[]): string {
-    return things.map((t) => `${t.name} at (${t.x}, ${t.y})`).join(", ");
+  private static describeThings(state: CombinedState): string {
+    return [
+      ...state.things
+        .filter((t) => t.id !== state.player.id)
+        .map((t) => `${t.name} at (${t.x}, ${t.y})`),
+      `Player at (${state.player.x}, ${state.player.y})`,
+    ].join(", ");
+    // return things.map((t) => `${t.name} at (${t.x}, ${t.y})`).join(", ");
   }
 
   private static describeActions(actions: Action[]): string {
@@ -118,9 +130,19 @@ class GOAPPlanner {
     let actions: Action[] = [];
 
     for (const thing of state.things) {
-      if (thing.id === state.player.id) {
-      for (const createAction of thing.actions) {
-        actions.push(createAction(state, thing));
+      if (thing.id !== state.player.id) {
+        // Skip player
+        for (const createAction of thing.actions) {
+          // exclude walkto action if player is already at the thing
+          if (
+            createAction.name === "WalkTo" &&
+            state.player.x === thing.x &&
+            state.player.y === thing.y
+          ) {
+            continue;
+          }
+          actions.push(createAction(state, thing));
+        }
       }
     }
     return actions;
@@ -157,22 +179,27 @@ class GOAPPlanner {
     return target;
   }
 
-  private static executeAction(action: Action, state: CombinedState): CombinedState {
-    const newState = deepCloneWithActionReference(state);
-    this.mergeObjects(newState, action.effects);
-    return newState;
-  }
-
-  private static updateNestedFields(obj: any, effects: any) {
-    for (const key in effects) {
-      if (obj[key] === undefined) {
-        obj[key] = effects[key];
-      } else if (typeof effects[key] === "object" && effects[key] !== null) {
-        this.updateNestedFields(obj[key], effects[key]);
+  private static removeFields(target: any, fieldsToRemove: any): void {
+    for (const key in fieldsToRemove) {
+      if (typeof fieldsToRemove[key] === "object" && fieldsToRemove[key] !== null) {
+        if (target[key]) {
+          this.removeFields(target[key], fieldsToRemove[key]);
+        }
       } else {
-        obj[key] = effects[key];
+        delete target[key];
       }
     }
+  }
+
+  private static executeAction(action: Action, state: CombinedState): CombinedState {
+    const newState = deepCloneWithActionReference(state);
+    if (action.effects.toAdd) {
+      this.mergeObjects(newState, action.effects.toAdd);
+    }
+    if (action.effects.toRemove) {
+      this.removeFields(newState, action.effects.toRemove);
+    }
+    return newState;
   }
 
   private static goalMet(goal: Goal, state: CombinedState): boolean {

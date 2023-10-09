@@ -89,6 +89,29 @@ class QuadTree {
     );
   }
 
+  remove(thing: Thing): boolean {
+    if (!this.boundary.contains(thing)) {
+      return false;
+    }
+
+    const index = this.things.findIndex((t) => t === thing);
+    if (index !== -1) {
+      this.things.splice(index, 1);
+      return true;
+    }
+
+    if (this.divided) {
+      return (
+        this.northeast!.remove(thing) ||
+        this.northwest!.remove(thing) ||
+        this.southeast!.remove(thing) ||
+        this.southwest!.remove(thing)
+      );
+    }
+
+    return false;
+  }
+
   query(range: Rectangle | any, found?: Thing[]): Thing[] {
     if (!(range instanceof Rectangle)) {
       if (

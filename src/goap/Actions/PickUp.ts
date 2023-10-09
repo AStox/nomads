@@ -9,7 +9,10 @@ function PickUp(state: CombinedState, thing: Thing): Action {
     target: thing,
     cost: 1,
     preconditions: { player: { x: thing.x, y: thing.y } },
-    effects: { player: { inventory: { [thing.name]: thing } } },
+    effects: {
+      toAdd: { player: { inventory: { [thing.name]: thing } } },
+      toRemove: { world: { things: { [thing.name]: thing } } },
+    },
 
     perform(): boolean {
       console.log("Picking up: ", thing);

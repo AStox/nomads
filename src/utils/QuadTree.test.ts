@@ -12,6 +12,7 @@ describe("QuadTree", () => {
 
   test("Inserts points correctly", () => {
     const point = {
+      id: "fish1",
       name: ThingType.FISH,
       type: ThingType.FISH,
       x: 10,
@@ -26,6 +27,7 @@ describe("QuadTree", () => {
   test("Splits when reaching capacity", () => {
     for (let i = 0; i < 5; i++) {
       const point = {
+        id: "fish1",
         name: ThingType.FISH,
         type: ThingType.FISH,
         x: 10 * i,
@@ -40,9 +42,33 @@ describe("QuadTree", () => {
 
   test("Query returns correct points", () => {
     const points = [
-      { name: ThingType.FISH, type: ThingType.FISH, x: 10, y: 10, symbol: "a", actions: [] },
-      { name: ThingType.FISH, type: ThingType.FISH, x: 20, y: 20, symbol: "b", actions: [] },
-      { name: ThingType.FISH, type: ThingType.FISH, x: 90, y: 90, symbol: "c", actions: [] },
+      {
+        id: "fish1",
+        name: ThingType.FISH,
+        type: ThingType.FISH,
+        x: 10,
+        y: 10,
+        symbol: "a",
+        actions: [],
+      },
+      {
+        id: "fish2",
+        name: ThingType.FISH,
+        type: ThingType.FISH,
+        x: 20,
+        y: 20,
+        symbol: "b",
+        actions: [],
+      },
+      {
+        id: "fish3",
+        name: ThingType.FISH,
+        type: ThingType.FISH,
+        x: 90,
+        y: 90,
+        symbol: "c",
+        actions: [],
+      },
     ];
 
     points.forEach((p) => qt.insert(p));
