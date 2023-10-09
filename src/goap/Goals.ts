@@ -1,6 +1,6 @@
 import { Item, ItemType } from "../Items";
 import { Player } from "../Player";
-import { ThingType } from "../Things";
+import { Thing, ThingType } from "../Things";
 import { WorldState } from "../World";
 import { Skills } from "../configs/Skills";
 import { CombinedState } from "./GOAPPlanner";
@@ -16,7 +16,7 @@ export interface Goal {
   // requiredItems?: ItemType[];
   // requiredThings?: Things[];
 
-  reward: string;
+  // reward: string;
 }
 
 export enum GoalType {

@@ -1,7 +1,9 @@
+// deepCloneWithActionReference.ts
 export function deepCloneWithActionReference<T>(obj: T): T {
-  if (obj === null || typeof obj !== "object") {
+  if (obj === null || typeof obj !== "object" || typeof obj === "function") {
     return obj;
   }
+
   if (Array.isArray(obj)) {
     const arrCopy = [] as any;
     for (const [index, value] of obj.entries()) {
@@ -11,11 +13,7 @@ export function deepCloneWithActionReference<T>(obj: T): T {
   } else {
     const objCopy = {} as any;
     for (const [key, value] of Object.entries(obj)) {
-      if (key === "actions") {
-        objCopy[key] = value;
-      } else {
-        objCopy[key] = deepCloneWithActionReference(value);
-      }
+      objCopy[key] = deepCloneWithActionReference(value);
     }
     return objCopy as T;
   }

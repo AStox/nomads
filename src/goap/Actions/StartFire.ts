@@ -8,8 +8,22 @@ function StartFire(state: CombinedState, thing: Thing): Action {
     name: "StartFire",
     target: thing,
     cost: 1,
-    preconditions: { player: { inventory: [ThingType.WOOD, ThingType.WOOD] } },
-    effects: { wood: -5, firemaking_xp: 5, nearby_fire: true },
+    preconditions: { player: { x: thing.x, y: thing.y } },
+    effects: {
+      toAdd: {
+        things: [
+          {
+            name: ThingType.CAMPFIRE,
+            type: ThingType.CAMPFIRE,
+            x: state.player.x,
+            y: state.player.y,
+            symbol: "🔥",
+            actions: [],
+          },
+        ],
+      },
+      toRemove: {},
+    },
 
     perform(): boolean {
       return true;

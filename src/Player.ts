@@ -57,9 +57,9 @@ export class Player implements Thing {
     this.longGoals = [
       {
         requiredSkills: [],
-        requirements: { player: { inventory: [ThingType.WOOD] } },
-        // requirements: { things: [ThingType.WOOD] },
-        reward: "WOOD",
+        requirements: {
+          things: [ThingType.CAMPFIRE],
+        },
       },
     ];
     this.currentGoal = null;

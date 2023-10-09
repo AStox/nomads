@@ -11,6 +11,7 @@ enum ThingType {
   BERRY = "BERRY",
   MUSHROOM = "MUSHROOM",
   TENT = "TENT",
+  CAMPFIRE = "CAMPFIRE",
 }
 
 interface Thing {

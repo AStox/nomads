@@ -6,7 +6,7 @@ function BuildHouse(): Goal {
   return {
     requiredSkills: [Skills.BUILDING_1],
     requirements: { player: {} },
-    reward: "Build House",
+    // reward: "Build House",
     // evaluate: (worldState: WorldState) => 10,
     // evaluate: (worldState: WorldState) => playerState.hasWood ? 10 : 0,
   };

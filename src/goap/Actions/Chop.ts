@@ -5,6 +5,7 @@ import { Action } from "../Action";
 import { ThingType } from "../../Things";
 import { WalkTo } from "./WalkTo";
 import { PickUp } from "./PickUp";
+import { StartFire } from "./StartFire";
 
 function Chop(state: CombinedState, thing: Thing): Action {
   return {
@@ -21,7 +22,7 @@ function Chop(state: CombinedState, thing: Thing): Action {
             x: thing.x,
             y: thing.y,
             symbol: "🪵",
-            actions: [WalkTo, PickUp],
+            actions: [WalkTo, PickUp, StartFire],
           },
         ],
       },
@@ -35,11 +36,9 @@ function Chop(state: CombinedState, thing: Thing): Action {
         x: thing.x,
         y: thing.y,
         symbol: "🪵",
-        actions: [WalkTo, PickUp],
+        actions: [WalkTo, PickUp, StartFire],
       });
       return true;
-      //   console.log("Picking up: ", thing);
-      //   return state.player.pickUp(thing);
     },
   };
 }

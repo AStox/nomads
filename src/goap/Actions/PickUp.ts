@@ -11,7 +11,7 @@ function PickUp(state: CombinedState, thing: Thing): Action {
     preconditions: { player: { x: thing.x, y: thing.y } },
     effects: {
       toAdd: { player: { inventory: { [thing.name]: thing } } },
-      toRemove: { world: { things: { [thing.name]: thing } } },
+      toRemove: { things: [thing] },
     },
 
     perform(): boolean {

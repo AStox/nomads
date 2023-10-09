@@ -19,8 +19,6 @@ export interface CombinedState extends WorldState {
 }
 
 class GOAPPlanner {
-  static DEBUG = false;
-
   static plan(
     player: Player,
     worldState: WorldState,
@@ -49,14 +47,17 @@ class GOAPPlanner {
 
     while (nodes.length > 0) {
       sequenceCount++;
-      console.log(`\n--- Considered Sequence ${sequenceCount} ---`);
-      const currentNode = nodes.shift()!;
       console.log(
-        `parent node: ${currentNode.parent?.action?.name}(${currentNode.parent?.action?.target?.name})`
+        `\n\n\n\n\n=================================================================\n=================== Considered Sequence ${sequenceCount} ======================\n=================================================================\n`
       );
-      const availableActions = this.generateActions(currentNode.state, globalActions);
+      const currentNode = nodes.shift()!;
+      this.printActionSequence(currentNode);
 
-      console.log("Current Node. Things: [", this.describeThings(currentNode.state)), "]";
+      console.log("Current Node (", this.printActionSequence(currentNode), "). ");
+      console.log(
+        "Things: ",
+        currentNode.state.things.map((t) => ({ name: t.name, actions: t.actions }))
+      );
       console.log(
         `Player's Inventory: ${JSON.stringify(
           Object.keys(currentNode.state.player.inventory).map(
@@ -64,6 +65,7 @@ class GOAPPlanner {
           )
         )}`
       );
+      const availableActions = this.generateActions(currentNode.state, globalActions);
       console.log("Available Actions: ", this.describeActions(availableActions));
 
       for (const action of availableActions) {
@@ -76,13 +78,8 @@ class GOAPPlanner {
             state: newState,
             cost: newCost,
           };
-
           // Log actions taken and the resulting state
-          console.log(
-            `Action executed: ${action.name}(${
-              action.target?.name
-            }), New Things: [${this.describeThings(currentNode.state)}]`
-          );
+          console.log(`Action executed: ${action.name}(${action.target?.name})`);
 
           if (this.goalMet(goal, newNode.state)) {
             console.log("Goal met! Reconstructing plan...");
@@ -110,20 +107,6 @@ class GOAPPlanner {
 
     console.log("No valid plan found.");
     return [];
-  }
-
-  private static describeThings(state: CombinedState): string {
-    return [
-      ...state.things
-        .filter((t) => t.id !== state.player.id)
-        .map((t) => `${t.name} at (${t.x}, ${t.y})`),
-      `Player at (${state.player.x}, ${state.player.y})`,
-    ].join(", ");
-    // return things.map((t) => `${t.name} at (${t.x}, ${t.y})`).join(", ");
-  }
-
-  private static describeActions(actions: Action[]): string {
-    return actions.map((a) => `${a.name}(${a.target.name})`).join(", ");
   }
 
   private static generateActions(state: CombinedState, globalActions: Function[]): Action[] {
@@ -181,7 +164,11 @@ class GOAPPlanner {
 
   private static removeFields(target: any, fieldsToRemove: any): void {
     for (const key in fieldsToRemove) {
-      if (typeof fieldsToRemove[key] === "object" && fieldsToRemove[key] !== null) {
+      if (fieldsToRemove[key] instanceof Array) {
+        for (const thingToRemove of fieldsToRemove[key]) {
+          target[key] = target[key].filter((thing: Thing) => !(thingToRemove.id === thing.id));
+        }
+      } else if (typeof fieldsToRemove[key] === "object" && fieldsToRemove[key] !== null) {
         if (target[key]) {
           this.removeFields(target[key], fieldsToRemove[key]);
         }
@@ -250,6 +237,31 @@ class GOAPPlanner {
     }
 
     return true;
+  }
+  private static printActionSequence(currentNode: Node): string {
+    let parentNode = currentNode;
+    const actionSequence: string[] = [];
+
+    while (parentNode.parent) {
+      if (parentNode.action) {
+        actionSequence.unshift(`${parentNode.action.name}(${parentNode.action.target?.name})`);
+      }
+      parentNode = parentNode.parent;
+    }
+
+    return `Action Sequence: ${actionSequence.join(" -> ")}`;
+  }
+  private static describeThings(state: CombinedState): string {
+    return [
+      ...state.things
+        .filter((t) => t.id !== state.player.id)
+        .map((t) => `${t.name} at (${t.x}, ${t.y})`),
+      `Player at (${state.player.x}, ${state.player.y})`,
+    ].join(", ");
+  }
+
+  private static describeActions(actions: Action[]): string {
+    return actions.map((a) => `${a.name}(${a.target.name})`).join(", ");
   }
 }
 
