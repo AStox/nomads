@@ -10,6 +10,7 @@ interface Action {
     toAdd?: DeepPartial<CombinedState>;
     toRemove?: DeepPartial<CombinedState>;
   };
+
   target: Thing;
 
   perform(): boolean;

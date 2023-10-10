@@ -13,6 +13,7 @@ function StartFire(state: CombinedState, thing: Thing): Action {
       toAdd: {
         things: [
           {
+            id: "4",
             name: ThingType.CAMPFIRE,
             type: ThingType.CAMPFIRE,
             x: state.player.x,

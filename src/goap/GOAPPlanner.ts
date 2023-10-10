@@ -60,9 +60,7 @@ class GOAPPlanner {
       );
       console.log(
         `Player's Inventory: ${JSON.stringify(
-          Object.keys(currentNode.state.player.inventory).map(
-            (key) => currentNode.state.player.inventory[key].name
-          )
+          currentNode.state.player.inventory.map((thing) => thing.name)
         )}`
       );
       const availableActions = this.generateActions(currentNode.state, globalActions);

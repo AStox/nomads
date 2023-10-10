@@ -10,7 +10,7 @@ function PickUp(state: CombinedState, thing: Thing): Action {
     cost: 1,
     preconditions: { player: { x: thing.x, y: thing.y } },
     effects: {
-      toAdd: { player: { inventory: { [thing.name]: thing } } },
+      toAdd: { player: { inventory: [thing] } },
       toRemove: { things: [thing] },
     },
 

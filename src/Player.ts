@@ -27,7 +27,7 @@ export class Player implements Thing {
   symbol: string;
   actions: Function[];
   speed: number;
-  inventory: { [key: string]: Thing };
+  inventory: Thing[];
   hunger: number;
   maxHunger: number;
   hungerActionThreshold: number;
@@ -47,7 +47,7 @@ export class Player implements Thing {
     this.symbol = "🧍";
     this.actions = actions;
     this.speed = 5;
-    this.inventory = {};
+    this.inventory = [];
     this.hunger = 100;
     this.maxHunger = 100;
     this.hungerActionThreshold = 25;
@@ -73,7 +73,7 @@ export class Player implements Thing {
   }
 
   pickUp(thing: Thing) {
-    this.inventory[thing.name] = thing;
+    this.inventory.push(thing);
     // remove thing from world.things
     const world = World.getInstance();
     world.removeThing(thing);

@@ -17,6 +17,7 @@ function Chop(state: CombinedState, thing: Thing): Action {
       toAdd: {
         things: [
           {
+            id: "wood1",
             name: ThingType.WOOD,
             type: ThingType.WOOD,
             x: thing.x,
