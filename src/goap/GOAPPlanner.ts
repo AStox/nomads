@@ -6,6 +6,8 @@ import { Action } from "./Action";
 import { Goal } from "./Goals";
 import { omitFields } from "../utils/omitFields";
 import { deepCloneWithActionReference } from "../utils/DeepClone";
+import { getCraftableRecipes } from "../Recipe";
+import { Craft } from "./Actions/Craft";
 
 interface Node {
   parent: Node | null;
@@ -47,11 +49,11 @@ class GOAPPlanner {
 
     while (nodes.length > 0) {
       sequenceCount++;
+      const currentNode = nodes.shift()!;
+      // ----------------- DEBUG -----------------
       console.log(
         `\n\n\n\n\n=================================================================\n=================== Considered Sequence ${sequenceCount} ======================\n=================================================================\n`
       );
-      const currentNode = nodes.shift()!;
-      this.printActionSequence(currentNode);
 
       console.log("Current Node (", this.printActionSequence(currentNode), "). ");
       console.log(
@@ -63,6 +65,8 @@ class GOAPPlanner {
           currentNode.state.player.inventory.map((thing) => thing.name)
         )}`
       );
+      // ----------------- DEBUG -----------------
+
       const availableActions = this.generateActions(currentNode.state, globalActions);
       console.log("Available Actions: ", this.describeActions(availableActions));
 
@@ -109,6 +113,17 @@ class GOAPPlanner {
 
   private static generateActions(state: CombinedState, globalActions: Function[]): Action[] {
     let actions: Action[] = [];
+
+    // Add crafting actions
+    const craftableRecipes = getCraftableRecipes(state.player.inventory);
+    console.log("Craftable Recipes: ", craftableRecipes);
+    const craftActions: Action[] = craftableRecipes.map((recipe) => {
+      // Return a new Craft action initialized with the recipe.
+      // Replace `Craft` with the actual Craft action class you have.
+      return Craft(state, recipe);
+    });
+
+    actions = [...actions, ...craftActions];
 
     for (const thing of state.things) {
       if (thing.id !== state.player.id) {

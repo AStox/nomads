@@ -5,15 +5,17 @@ import { WalkTo } from "./goap/Actions/WalkTo";
 
 interface Recipe {
   name: ThingType;
-  ingredients: ThingType[];
+  ingredients: Ingredient[];
   result: Thing[];
   actions: Function[];
 }
 
+type Ingredient = Thing | ThingType;
+
 const recipes: Recipe[] = [
   {
     name: ThingType.AXE,
-    ingredients: [ThingType.WOOD, ThingType.STONE],
+    ingredients: [ThingType.WOOD],
     result: [
       {
         id: "axe1",
@@ -45,7 +47,6 @@ const recipes: Recipe[] = [
   },
 ];
 
-// Assuming Recipe and ThingType are imported from their respective modules
 function getCraftableRecipes(inventory: Thing[]): Recipe[] {
   const inventoryCounts: Record<string, number> = {};
 
@@ -61,17 +62,23 @@ function getCraftableRecipes(inventory: Thing[]): Recipe[] {
   return recipes.filter((recipe) => {
     const recipeCounts: Record<string, number> = {};
 
-    // Count occurrences of each ThingType in the recipe ingredients
+    // Count occurrences of each ThingType or specific Thing in the recipe ingredients
     for (const ingredient of recipe.ingredients) {
-      if (!recipeCounts[ingredient]) {
-        recipeCounts[ingredient] = 0;
+      let ingredientKey: string;
+      if (typeof ingredient === "object" && ingredient !== null) {
+        ingredientKey = ingredient.id;
+      } else {
+        ingredientKey = ingredient;
       }
-      recipeCounts[ingredient]++;
+      if (!recipeCounts[ingredientKey]) {
+        recipeCounts[ingredientKey] = 0;
+      }
+      recipeCounts[ingredientKey]++;
     }
 
     // Check if there are enough ingredients in the inventory for each type
-    for (const [ingredient, quantity] of Object.entries(recipeCounts)) {
-      if (!inventoryCounts[ingredient] || inventoryCounts[ingredient] < quantity) {
+    for (const [ingredientKey, quantity] of Object.entries(recipeCounts)) {
+      if (!inventoryCounts[ingredientKey] || inventoryCounts[ingredientKey] < quantity) {
         return false;
       }
     }
@@ -80,4 +87,4 @@ function getCraftableRecipes(inventory: Thing[]): Recipe[] {
   });
 }
 
-export { getCraftableRecipes, Recipe };
+export { getCraftableRecipes, Recipe, Ingredient };

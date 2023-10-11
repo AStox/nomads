@@ -10,7 +10,7 @@ import { Recipe } from "../../Recipe";
 
 function Craft(state: CombinedState, recipe: Recipe): Action {
   return {
-    name: "Chop",
+    name: "Craft",
     target: recipe.result[0],
     cost: 1,
     preconditions: { player: { inventory: [...recipe.ingredients] } },

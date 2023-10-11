@@ -1,6 +1,7 @@
 import { Thing } from "../Things";
 import { CombinedState } from "./GOAPPlanner";
 import { DeepPartial } from "../utils/DeepPartial";
+import { Ingredient } from "../Recipe";
 
 interface Action {
   name: string;
@@ -8,7 +9,9 @@ interface Action {
   preconditions: any;
   effects: {
     toAdd?: DeepPartial<CombinedState>;
-    toRemove?: DeepPartial<CombinedState>;
+    toRemove?: DeepPartial<Omit<CombinedState, "player">> & {
+      player?: { inventory?: Ingredient[] };
+    };
   };
 
   target: Thing;

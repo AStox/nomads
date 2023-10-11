@@ -6,13 +6,14 @@ import { WalkTo } from "./src/goap/Actions/WalkTo";
 import { PickUp } from "./src/goap/Actions/PickUp";
 import { Chop } from "./src/goap/Actions/Chop";
 import { ThingType } from "./src/Things";
+import { StartFire } from "./src/goap/Actions/StartFire";
 
 const width: number = 30;
 const world = World.newWorld(width, width);
 // world.populateThingsFromConfig("src/configs/objects.json");
 const things: Thing[] = [
   {
-    id: "2",
+    id: "tree2",
     name: ThingType.TREE,
     type: ThingType.TREE,
     x: 0,
@@ -21,13 +22,13 @@ const things: Thing[] = [
     actions: [WalkTo, Chop],
   },
   {
-    id: "3",
-    name: ThingType.AXE,
-    type: ThingType.AXE,
+    id: "wood3",
+    name: ThingType.WOOD,
+    type: ThingType.WOOD,
     x: 10,
     y: 10,
-    symbol: "🪓",
-    actions: [WalkTo, PickUp],
+    symbol: "🪵",
+    actions: [WalkTo, PickUp, StartFire],
   },
 ];
 
