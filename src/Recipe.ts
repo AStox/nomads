@@ -1,4 +1,4 @@
-import { Thing, ThingType } from "./Things";
+import { Thing, ThingType, createThing } from "./Thing";
 import { Craft } from "./goap/Actions/Craft";
 import { PickUp } from "./goap/Actions/PickUp";
 import { WalkTo } from "./goap/Actions/WalkTo";
@@ -15,34 +15,14 @@ type Ingredient = Thing | ThingType;
 const recipes: Recipe[] = [
   {
     name: ThingType.AXE,
-    ingredients: [ThingType.WOOD],
-    result: [
-      {
-        id: "axe1",
-        name: ThingType.AXE,
-        type: ThingType.AXE,
-        x: 0,
-        y: 0,
-        symbol: "🪓",
-        actions: [WalkTo, PickUp],
-      },
-    ],
+    ingredients: [ThingType.WOOD, ThingType.STONE],
+    result: [createThing(ThingType.AXE)],
     actions: [Craft],
   },
   {
     name: ThingType.HAMMER,
-    ingredients: [ThingType.WOOD, ThingType.STONE],
-    result: [
-      {
-        id: "hammer1",
-        name: ThingType.HAMMER,
-        type: ThingType.HAMMER,
-        x: 0,
-        y: 0,
-        symbol: "🔨",
-        actions: [WalkTo, PickUp],
-      },
-    ],
+    ingredients: [ThingType.WOOD, ThingType.WOOD, ThingType.STONE],
+    result: [createThing(ThingType.HAMMER)],
     actions: [Craft],
   },
 ];

@@ -1,5 +1,5 @@
 import { Item } from "../../Items";
-import { Thing } from "../../Things";
+import { Thing } from "../../Thing";
 import { Action } from "../Action";
 import { CombinedState } from "../GOAPPlanner";
 import { Goal } from "../Goals";

@@ -1,4 +1,4 @@
-import { Thing } from "../Things";
+import { Thing } from "../Thing";
 
 export type DeepPartial<T> = T extends Function
   ? T

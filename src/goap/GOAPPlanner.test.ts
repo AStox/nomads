@@ -6,7 +6,7 @@ import { WalkTo } from "./Actions/WalkTo";
 import { WorldState } from "../World";
 import { Goal } from "./Goals";
 import { Action } from "./Action";
-import { ThingType } from "../Things";
+import { ThingType } from "../Thing";
 
 describe("GOAPPlanner", () => {
   // it("should make the player walk to the target position", () => {

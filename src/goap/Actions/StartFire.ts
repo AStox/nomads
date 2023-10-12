@@ -1,7 +1,7 @@
 import { CombinedState } from "../GOAPPlanner";
 import { Thing } from "../../World";
 import { Action } from "../Action";
-import { ThingType } from "../../Things";
+import { ThingType } from "../../Thing";
 
 function StartFire(state: CombinedState, thing: Thing): Action {
   return {

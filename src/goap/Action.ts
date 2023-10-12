@@ -1,4 +1,4 @@
-import { Thing } from "../Things";
+import { Thing } from "../Thing";
 import { CombinedState } from "./GOAPPlanner";
 import { DeepPartial } from "../utils/DeepPartial";
 import { Ingredient } from "../Recipe";

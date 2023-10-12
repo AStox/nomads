@@ -10,7 +10,7 @@ import { CombinedState, GOAPPlanner } from "./goap/GOAPPlanner";
 import { WalkTo } from "./goap/Actions/WalkTo";
 import { Action } from "./goap/Action";
 import { ItemType } from "./Items";
-import { ThingType } from "./Things";
+import { ThingType } from "./Thing";
 import { PickUp } from "./goap/Actions/PickUp";
 interface PartialWithMoveToPlayer extends Partial<Player> {
   moveTo: (x: number, y: number) => boolean;
@@ -58,7 +58,7 @@ export class Player implements Thing {
       {
         requiredSkills: [],
         requirements: {
-          things: [ThingType.CAMPFIRE],
+          things: [ThingType.AXE],
         },
       },
     ];

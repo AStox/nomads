@@ -5,31 +5,18 @@ import { CombinedState } from "./src/goap/GOAPPlanner";
 import { WalkTo } from "./src/goap/Actions/WalkTo";
 import { PickUp } from "./src/goap/Actions/PickUp";
 import { Chop } from "./src/goap/Actions/Chop";
-import { ThingType } from "./src/Things";
+import { ThingType, createThing } from "./src/Thing";
 import { StartFire } from "./src/goap/Actions/StartFire";
 
 const width: number = 30;
 const world = World.newWorld(width, width);
 // world.populateThingsFromConfig("src/configs/objects.json");
 const things: Thing[] = [
-  {
-    id: "tree2",
-    name: ThingType.TREE,
-    type: ThingType.TREE,
-    x: 0,
-    y: 0,
-    symbol: "🌲",
-    actions: [WalkTo, Chop],
-  },
-  {
-    id: "wood3",
-    name: ThingType.WOOD,
-    type: ThingType.WOOD,
-    x: 10,
-    y: 10,
-    symbol: "🪵",
-    actions: [WalkTo, PickUp, StartFire],
-  },
+  createThing(ThingType.TREE, { x: 0, y: 5 }),
+  createThing(ThingType.TREE, { x: 1, y: 1 }),
+  createThing(ThingType.WOOD, { x: 1, y: 2 }),
+  createThing(ThingType.STONE, { x: 1, y: 3 }),
+  createThing(ThingType.STONE, { x: 1, y: 4 }),
 ];
 
 for (const thing of things) {

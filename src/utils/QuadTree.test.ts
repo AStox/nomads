@@ -1,4 +1,4 @@
-import { Thing, ThingType } from "../Things";
+import { Thing, ThingType } from "../Thing";
 import { Rectangle, QuadTree } from "./QuadTree";
 
 describe("QuadTree", () => {

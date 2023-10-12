@@ -1,6 +1,6 @@
 import { Item, ItemType } from "../Items";
 import { Player, playerState } from "../Player";
-import { Thing, ThingType } from "../Things";
+import { Thing, ThingType } from "../Thing";
 import { WorldState } from "../World";
 import { Action } from "./Action";
 import { Goal } from "./Goals";

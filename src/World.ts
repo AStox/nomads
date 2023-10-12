@@ -2,7 +2,7 @@ import { QuadTree, Rectangle } from "./utils/QuadTree";
 import { Player } from "./Player";
 import { Item } from "./Items";
 import fs from "fs";
-import { Thing } from "./Things";
+import { Thing } from "./Thing";
 
 export interface WorldState {
   things: Thing[];
