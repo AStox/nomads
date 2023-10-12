@@ -48,18 +48,16 @@ class GOAPPlanner {
     let sequenceCount = 0;
 
     while (nodes.length > 0) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+
       sequenceCount++;
       const currentNode = nodes.shift()!;
       // ----------------- DEBUG -----------------
       console.log(
-        `\n\n\n\n\n=================================================================\n=================== Considered Sequence ${sequenceCount} ======================\n=================================================================\n`
+        `\n\\n=================== Considered Sequence ${sequenceCount} ======================\n`
       );
 
       console.log("Current Node (", this.printActionSequence(currentNode), "). ");
-      console.log(
-        "Things: ",
-        currentNode.state.things.map((t) => ({ name: t.name, actions: t.actions }))
-      );
       console.log(
         `Player's Inventory: ${JSON.stringify(
           currentNode.state.player.inventory.map((thing) => thing.name)
@@ -68,10 +66,13 @@ class GOAPPlanner {
       // ----------------- DEBUG -----------------
 
       const availableActions = this.generateActions(currentNode.state, globalActions);
-      console.log("Available Actions: ", this.describeActions(availableActions));
 
       for (const action of availableActions) {
         if (this.isActionExecutable(action, currentNode.state)) {
+          if (action.name === "WalkTo" && this.isBackAndForthWalk(currentNode, action.target.id)) {
+            console.log(`Skipping back-and-forth walk to ${action.target.name}`);
+            continue;
+          }
           const newState = this.executeAction(action, currentNode.state);
           const newCost = currentNode.cost + action.cost;
           const newNode: Node = {
@@ -251,6 +252,25 @@ class GOAPPlanner {
 
     return true;
   }
+
+  private static isBackAndForthWalk(currentNode: Node, targetId: string): boolean {
+    let tempNode = currentNode;
+    let actionHistory: string[] = [];
+    let visitedLocations: Set<string> = new Set();
+
+    while (tempNode.parent && actionHistory.length < 10) {
+      if (tempNode.action) {
+        actionHistory.push(tempNode.action.name);
+        if (tempNode.action.name === "WalkTo") {
+          visitedLocations.add(tempNode.action.target?.id || "");
+        }
+      }
+      tempNode = tempNode.parent;
+    }
+
+    return actionHistory.every((action) => action === "WalkTo") && visitedLocations.has(targetId);
+  }
+
   private static printActionSequence(currentNode: Node): string {
     let parentNode = currentNode;
     const actionSequence: string[] = [];

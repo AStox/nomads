@@ -23,7 +23,7 @@ function StartFire(state: CombinedState, thing: Thing): Action {
           },
         ],
       },
-      toRemove: {},
+      toRemove: { things: [thing] },
     },
 
     perform(): boolean {
