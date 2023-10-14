@@ -2,7 +2,7 @@ import { CombinedState } from "../GOAPPlanner";
 import { Thing, World } from "../../World";
 import { Item } from "../../Items";
 import { Action } from "../Action";
-import { ThingType } from "../../Thing";
+import { ThingType, createThing } from "../../Thing";
 import { WalkTo } from "./WalkTo";
 import { PickUp } from "./PickUp";
 import { StartFire } from "./StartFire";
@@ -15,18 +15,9 @@ function Chop(state: CombinedState, thing: Thing): Action {
     preconditions: { player: { x: thing.x, y: thing.y, inventory: [ThingType.AXE] } },
     effects: {
       toAdd: {
-        things: [
-          {
-            id: "wood1",
-            name: ThingType.WOOD,
-            type: ThingType.WOOD,
-            x: thing.x,
-            y: thing.y,
-            symbol: "🪵",
-            actions: [WalkTo, PickUp, StartFire],
-          },
-        ],
+        things: [createThing(ThingType.WOOD, { x: thing.x, y: thing.y })],
       },
+      toRemove: { things: [thing] },
     },
 
     perform(): boolean {

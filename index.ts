@@ -13,10 +13,10 @@ const world = World.newWorld(width, width);
 // world.populateThingsFromConfig("src/configs/objects.json");
 const things: Thing[] = [
   createThing(ThingType.TREE, { x: 0, y: 5 }),
-  createThing(ThingType.TREE, { x: 1, y: 1 }),
+  // createThing(ThingType.TREE, { x: 1, y: 1 }),
   createThing(ThingType.WOOD, { x: 1, y: 2 }),
   createThing(ThingType.STONE, { x: 1, y: 3 }),
-  createThing(ThingType.STONE, { x: 1, y: 4 }),
+  // createThing(ThingType.STONE, { x: 1, y: 4 }),
 ];
 
 for (const thing of things) {

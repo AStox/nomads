@@ -1,4 +1,3 @@
-import { Item, ItemType } from "../Items";
 import { Player, playerState } from "../Player";
 import { Thing, ThingType } from "../Thing";
 import { WorldState } from "../World";
@@ -6,6 +5,7 @@ import { Action } from "./Action";
 import { Goal } from "./Goals";
 import { omitFields } from "../utils/omitFields";
 import { deepCloneWithActionReference } from "../utils/DeepClone";
+import { deepEqual } from "../utils/DeepEqual";
 import { getCraftableRecipes } from "../Recipe";
 import { Craft } from "./Actions/Craft";
 
@@ -111,6 +111,10 @@ class GOAPPlanner {
             state: newState,
             cost: newCost,
           };
+          if (this.isStateInAncestry(newNode)) {
+            if (DEBUG) console.log(`Skipping node with duplicate state.`);
+            continue;
+          }
           // Log actions taken and the resulting state
           if (DEBUG) console.log(`Action executed: ${action.name}(${action.target?.name})`);
 
@@ -311,6 +315,20 @@ class GOAPPlanner {
   }
 
   // ----------------- HELPERS -----------------
+
+  private static isStateInAncestry(node: Node): boolean {
+    let currentNode = node;
+    const targetState = node.state;
+
+    while (currentNode.parent) {
+      currentNode = currentNode.parent;
+      if (deepEqual(currentNode.state, targetState)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
 
   private static getActionSequence(node: Node): string[] {
     const actions: string[] = [];

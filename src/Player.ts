@@ -59,7 +59,7 @@ export class Player implements Thing {
         requiredSkills: [],
         requirements: {
           player: {
-            inventory: [ThingType.HAMMER],
+            inventory: [ThingType.AXE, ThingType.WOOD],
           },
         },
       },
