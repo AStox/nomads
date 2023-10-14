@@ -58,7 +58,9 @@ export class Player implements Thing {
       {
         requiredSkills: [],
         requirements: {
-          things: [ThingType.AXE],
+          player: {
+            inventory: [ThingType.HAMMER],
+          },
         },
       },
     ];
@@ -92,8 +94,8 @@ export class Player implements Thing {
       plan = GOAPPlanner.plan(this, state, goal, actionFactories);
       console.log(" ");
       console.log("~~Plan~~");
-      for (const action of plan) {
-        console.log(action.name);
+      for (let i = 0; i < plan.length; i++) {
+        console.log(`${i + 1}. ${plan[i].name}(${plan[i].target.name})`);
       }
     }
 

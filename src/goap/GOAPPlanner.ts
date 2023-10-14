@@ -9,6 +9,8 @@ import { deepCloneWithActionReference } from "../utils/DeepClone";
 import { getCraftableRecipes } from "../Recipe";
 import { Craft } from "./Actions/Craft";
 
+let DEBUG = false;
+
 interface Node {
   parent: Node | null;
   action: Action | null;
@@ -48,29 +50,49 @@ class GOAPPlanner {
     let sequenceCount = 0;
 
     while (nodes.length > 0) {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+      DEBUG = false;
+      // Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
 
       sequenceCount++;
       const currentNode = nodes.shift()!;
-      // ----------------- DEBUG -----------------
-      console.log(
-        `\n\\n=================== Considered Sequence ${sequenceCount} ======================\n`
-      );
+      const sequence = this.getActionSequence(currentNode);
+      const pattern = [
+        "WalkTo(WOOD)",
+        "PickUp(WOOD)",
+        "WalkTo(STONE)",
+        "PickUp(STONE)",
+        "Craft(AXE)",
+        "WalkTo(TREE)",
+        "Chop(TREE)",
+        "PickUp(WOOD)",
+      ];
 
-      console.log("Current Node (", this.printActionSequence(currentNode), "). ");
-      console.log(
-        `Player's Inventory: ${JSON.stringify(
-          currentNode.state.player.inventory.map((thing) => thing.name)
-        )}`
-      );
+      if (this.isSequenceFollowingPattern(sequence, pattern)) {
+        DEBUG = true;
+      }
+      // ----------------- DEBUG -----------------
+      if (!DEBUG && sequenceCount % 10 === 0) {
+        console.log(sequenceCount);
+      }
+      if (DEBUG) {
+        console.log(
+          `\n=================== Considered Sequence ${sequenceCount} ======================\n`
+        );
+        console.log("Current Node (", this.printActionSequence(currentNode), "). ");
+        // print things
+        console.log("Things:", this.describeThings(currentNode.state));
+        console.log("");
+        console.log(`Player's Inventory:`, currentNode.state.player.inventory);
+      }
       // ----------------- DEBUG -----------------
 
       const availableActions = this.generateActions(currentNode.state, globalActions);
 
+      // if (DEBUG) console.log("CURRENT NODE STATE:", currentNode.state);
       for (const action of availableActions) {
         if (this.isActionExecutable(action, currentNode.state)) {
-          if (action.name === "WalkTo" && this.isBackAndForthWalk(currentNode, action.target.id)) {
-            console.log(`Skipping back-and-forth walk to ${action.target.name}`);
+          if (action.name === "WalkTo" && currentNode.action?.name === "WalkTo") {
+            if (DEBUG) console.log(`Skipping back-and-forth walk to ${action.target.name}`);
             continue;
           }
           const newState = this.executeAction(action, currentNode.state);
@@ -82,7 +104,7 @@ class GOAPPlanner {
             cost: newCost,
           };
           // Log actions taken and the resulting state
-          console.log(`Action executed: ${action.name}(${action.target?.name})`);
+          if (DEBUG) console.log(`Action executed: ${action.name}(${action.target?.name})`);
 
           if (this.goalMet(goal, newNode.state)) {
             console.log("Goal met! Reconstructing plan...");
@@ -103,7 +125,7 @@ class GOAPPlanner {
 
           nodes.push(newNode);
         } else {
-          console.log(`Action not executable: ${action.name}(${action.target.name}})`);
+          if (DEBUG) console.log(`Action not executable: ${action.name}(${action.target.name}})`);
         }
       }
     }
@@ -117,7 +139,7 @@ class GOAPPlanner {
 
     // Add crafting actions
     const craftableRecipes = getCraftableRecipes(state.player.inventory);
-    console.log("Craftable Recipes: ", craftableRecipes);
+    if (DEBUG) console.log("Craftable Recipes: ", craftableRecipes);
     const craftActions: Action[] = craftableRecipes.map((recipe) => {
       // Return a new Craft action initialized with the recipe.
       // Replace `Craft` with the actual Craft action class you have.
@@ -166,6 +188,10 @@ class GOAPPlanner {
 
   private static mergeObjects(target: any, source: any): any {
     for (const key in source) {
+      if (Array.isArray(source[key])) {
+        target[key] = [...(target[key] || []), ...(source[key] || [])];
+        continue;
+      }
       if (typeof source[key] === "object" && source[key] !== null) {
         if (!target[key]) target[key] = {};
         this.mergeObjects(target[key], source[key]);
@@ -253,22 +279,31 @@ class GOAPPlanner {
     return true;
   }
 
-  private static isBackAndForthWalk(currentNode: Node, targetId: string): boolean {
-    let tempNode = currentNode;
-    let actionHistory: string[] = [];
-    let visitedLocations: Set<string> = new Set();
+  // ----------------- HELPERS -----------------
 
-    while (tempNode.parent && actionHistory.length < 10) {
-      if (tempNode.action) {
-        actionHistory.push(tempNode.action.name);
-        if (tempNode.action.name === "WalkTo") {
-          visitedLocations.add(tempNode.action.target?.id || "");
+  private static getActionSequence(node: Node): string[] {
+    const actions: string[] = [];
+    let currentNode = node;
+    while (currentNode.parent) {
+      if (currentNode.action) {
+        actions.unshift(`${currentNode.action.name}(${currentNode.action.target?.name})`);
+      }
+      currentNode = currentNode.parent;
+    }
+    return actions;
+  }
+
+  private static isSequenceFollowingPattern(sequence: string[], pattern: string[]): boolean {
+    let patternIndex = 0;
+    for (const action of sequence) {
+      if (action === pattern[patternIndex]) {
+        patternIndex++;
+        if (patternIndex === pattern.length) {
+          return true;
         }
       }
-      tempNode = tempNode.parent;
     }
-
-    return actionHistory.every((action) => action === "WalkTo") && visitedLocations.has(targetId);
+    return false;
   }
 
   private static printActionSequence(currentNode: Node): string {
@@ -288,7 +323,7 @@ class GOAPPlanner {
     return [
       ...state.things
         .filter((t) => t.id !== state.player.id)
-        .map((t) => `${t.name} at (${t.x}, ${t.y})`),
+        .map((t) => `${t.name}[${t.actions.map((a) => a.name).join(", ")}]`),
       `Player at (${state.player.x}, ${state.player.y})`,
     ].join(", ");
   }
