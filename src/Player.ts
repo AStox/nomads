@@ -82,6 +82,13 @@ export class Player implements Thing {
     return true;
   }
 
+  drop(thing: Thing) {
+    this.inventory = this.inventory.filter((item) => item.id !== thing.id);
+    const world = World.getInstance();
+    world.addThing(thing);
+    return true;
+  }
+
   makeDecision(state: CombinedState) {
     const context = { rng: 0 };
     const behaviorTree = createBehaviorTree(this);

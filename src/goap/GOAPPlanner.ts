@@ -57,14 +57,14 @@ class GOAPPlanner {
       const currentNode = nodes.shift()!;
       const sequence = this.getActionSequence(currentNode);
       const pattern = [
-        "WalkTo(WOOD)",
+        // "Drop(STONE)",
         "PickUp(WOOD)",
-        "WalkTo(STONE)",
-        "PickUp(STONE)",
-        "Craft(AXE)",
-        "WalkTo(TREE)",
-        "Chop(TREE)",
-        "PickUp(WOOD)",
+        // "WalkTo(STONE)",
+        // "PickUp(STONE)",
+        // "Craft(AXE)",
+        // "WalkTo(TREE)",
+        // "Chop(TREE)",
+        // "PickUp(WOOD)",
       ];
 
       if (this.isSequenceFollowingPattern(sequence, pattern)) {
@@ -79,20 +79,28 @@ class GOAPPlanner {
           `\n=================== Considered Sequence ${sequenceCount} ======================\n`
         );
         console.log("Current Node (", this.printActionSequence(currentNode), "). ");
-        // print things
-        console.log("Things:", this.describeThings(currentNode.state));
         console.log("");
-        console.log(`Player's Inventory:`, currentNode.state.player.inventory);
+        // print things
+        console.log("THINGS:", this.describeThings(currentNode.state.things));
+        console.log(
+          "INVENTORY:",
+          this.describeThings(currentNode.state.player.inventory as Thing[])
+        );
+        // console.log(`Player's Inventory:`, currentNode.state.player.inventory);
       }
       // ----------------- DEBUG -----------------
 
       const availableActions = this.generateActions(currentNode.state, globalActions);
+      if (DEBUG) {
+        console.log("AVAILABLE ACTIONS: ", this.describeActions(availableActions));
+        console.log("");
+      }
 
       // if (DEBUG) console.log("CURRENT NODE STATE:", currentNode.state);
       for (const action of availableActions) {
         if (this.isActionExecutable(action, currentNode.state)) {
           if (action.name === "WalkTo" && currentNode.action?.name === "WalkTo") {
-            if (DEBUG) console.log(`Skipping back-and-forth walk to ${action.target.name}`);
+            if (DEBUG) console.log(`Skipping WalkTo action.`);
             continue;
           }
           const newState = this.executeAction(action, currentNode.state);
@@ -117,9 +125,6 @@ class GOAPPlanner {
               node = node.parent;
             }
 
-            console.log(
-              `Final Plan: ${plan.map((p) => `${p.name}(${p.target.name})`).join(" -> ")}`
-            );
             return plan;
           }
 
@@ -139,7 +144,11 @@ class GOAPPlanner {
 
     // Add crafting actions
     const craftableRecipes = getCraftableRecipes(state.player.inventory);
-    if (DEBUG) console.log("Craftable Recipes: ", craftableRecipes);
+    if (DEBUG)
+      console.log(
+        "CRAFTABLE RECIPES: ",
+        craftableRecipes.map((r) => r.name)
+      );
     const craftActions: Action[] = craftableRecipes.map((recipe) => {
       // Return a new Craft action initialized with the recipe.
       // Replace `Craft` with the actual Craft action class you have.
@@ -160,8 +169,21 @@ class GOAPPlanner {
           ) {
             continue;
           }
+          // exclude drop actions because player isn't holding the object
+          if (createAction.name === "Drop") {
+            continue;
+          }
           actions.push(createAction(state, thing));
         }
+      }
+    }
+    for (const thing of state.player.inventory) {
+      for (const createAction of thing.actions) {
+        // exclude walkTo and pickUp actions because player is already holding the object
+        if (createAction.name === "WalkTo" || createAction.name === "PickUp") {
+          continue;
+        }
+        actions.push(createAction(state, thing));
       }
     }
     return actions;
@@ -257,23 +279,32 @@ class GOAPPlanner {
   }
 
   private static inventoryRequirementsMet(
-    requiredThings: ThingType[],
+    requiredThings: (Thing | ThingType)[],
     playerInventory: Thing[]
   ): boolean {
     const thingCounts = new Map<ThingType, number>();
+    const thingInstances = new Set<Thing>();
 
     // Count how many things of each type the player has
     Object.values(playerInventory).forEach((thing) => {
       thingCounts.set(thing.type, (thingCounts.get(thing.type) || 0) + 1);
+      thingInstances.add(thing);
     });
 
-    // Check if each required item type is met
+    // Check if each required item type or item instance is met
     for (const requiredThing of requiredThings) {
-      const count = thingCounts.get(requiredThing) || 0;
-      if (count <= 0) {
-        return false;
+      if (typeof requiredThing === "object") {
+        if (!thingInstances.has(requiredThing as Thing)) {
+          return false;
+        }
+        thingInstances.delete(requiredThing as Thing);
+      } else {
+        const count = thingCounts.get(requiredThing as ThingType) || 0;
+        if (count <= 0) {
+          return false;
+        }
+        thingCounts.set(requiredThing as ThingType, count - 1);
       }
-      thingCounts.set(requiredThing, count - 1);
     }
 
     return true;
@@ -319,13 +350,10 @@ class GOAPPlanner {
 
     return `Action Sequence: ${actionSequence.join(" -> ")}`;
   }
-  private static describeThings(state: CombinedState): string {
-    return [
-      ...state.things
-        .filter((t) => t.id !== state.player.id)
-        .map((t) => `${t.name}[${t.actions.map((a) => a.name).join(", ")}]`),
-      `Player at (${state.player.x}, ${state.player.y})`,
-    ].join(", ");
+  private static describeThings(state: Thing[]): string {
+    return [...state.map((t) => `${t.name}[${t.actions.map((a) => a.name).join(", ")}]`)].join(
+      ", "
+    );
   }
 
   private static describeActions(actions: Action[]): string {

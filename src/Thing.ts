@@ -1,4 +1,5 @@
 import { Chop } from "./goap/Actions/Chop";
+import { Drop } from "./goap/Actions/Drop";
 import { PickUp } from "./goap/Actions/PickUp";
 import { StartFire } from "./goap/Actions/StartFire";
 import { WalkTo } from "./goap/Actions/WalkTo";
@@ -61,15 +62,15 @@ export const things: Record<ThingType, Partial<Thing>> = {
   },
   [ThingType.WOOD]: {
     symbol: "🪵",
-    actions: [...defaultThing.actions, PickUp, StartFire],
+    actions: [...defaultThing.actions, PickUp, Drop, StartFire],
   },
   [ThingType.STONE]: {
     symbol: "🪨",
-    actions: [...defaultThing.actions, PickUp],
+    actions: [...defaultThing.actions, PickUp, Drop],
   },
   [ThingType.STICK]: {
     symbol: "🪵",
-    actions: [...defaultThing.actions, PickUp],
+    actions: [...defaultThing.actions, PickUp, Drop],
   },
   [ThingType.TREE]: {
     symbol: "🌲",
@@ -77,35 +78,35 @@ export const things: Record<ThingType, Partial<Thing>> = {
   },
   [ThingType.AXE]: {
     symbol: "🪓",
-    actions: [...defaultThing.actions, PickUp],
+    actions: [...defaultThing.actions, PickUp, Drop],
   },
   [ThingType.HAMMER]: {
     symbol: "🔨",
-    actions: [...defaultThing.actions, PickUp],
+    actions: [...defaultThing.actions, PickUp, Drop],
   },
   [ThingType.KNIFE]: {
     symbol: "🔪",
-    actions: [...defaultThing.actions, PickUp],
+    actions: [...defaultThing.actions, PickUp, Drop],
   },
   [ThingType.FISH]: {
     symbol: "🐟",
-    actions: [...defaultThing.actions, PickUp],
+    actions: [...defaultThing.actions, PickUp, Drop],
   },
   [ThingType.BERRY]: {
     symbol: "🍓",
-    actions: [...defaultThing.actions, PickUp],
+    actions: [...defaultThing.actions, PickUp, Drop],
   },
   [ThingType.MUSHROOM]: {
     symbol: "🍄",
-    actions: [...defaultThing.actions, PickUp],
+    actions: [...defaultThing.actions, PickUp, Drop],
   },
   [ThingType.TENT]: {
     symbol: "⛺",
-    actions: [...defaultThing.actions, PickUp],
+    actions: [...defaultThing.actions, PickUp, Drop],
   },
   [ThingType.CAMPFIRE]: {
     symbol: "🔥",
-    actions: [...defaultThing.actions, PickUp],
+    actions: [...defaultThing.actions, PickUp, Drop],
   },
 };
 
