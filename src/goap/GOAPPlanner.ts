@@ -232,7 +232,17 @@ class GOAPPlanner {
     for (const key in fieldsToRemove) {
       if (fieldsToRemove[key] instanceof Array) {
         for (const thingToRemove of fieldsToRemove[key]) {
-          target[key] = target[key].filter((thing: Thing) => !(thingToRemove.id === thing.id));
+          if (typeof thingToRemove == "object") {
+            const index = target[key].findIndex((thing: Thing) => thingToRemove.id === thing.id);
+            if (index !== -1) {
+              target[key].splice(index, 1);
+            }
+          } else {
+            const index = target[key].findIndex((thing: Thing) => thingToRemove === thing.type);
+            if (index !== -1) {
+              target[key].splice(index, 1);
+            }
+          }
         }
       } else if (typeof fieldsToRemove[key] === "object" && fieldsToRemove[key] !== null) {
         if (target[key]) {
@@ -251,6 +261,7 @@ class GOAPPlanner {
     }
     if (action.effects.toRemove) {
       this.removeFields(newState, action.effects.toRemove);
+      // console.log("NEW STATE:", newState.player.inventory);
     }
     return newState;
   }
