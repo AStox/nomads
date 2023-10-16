@@ -1,4 +1,3 @@
-import { Item, ItemType } from "../Items";
 import { Player } from "../Player";
 import { Thing, ThingType } from "../Thing";
 import { WorldState } from "../World";

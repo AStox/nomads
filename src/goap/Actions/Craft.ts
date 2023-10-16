@@ -1,5 +1,4 @@
 import { CombinedState } from "../GOAPPlanner";
-import { Thing, World } from "../../World";
 import { Action } from "../Action";
 import { Recipe } from "../../Recipe";
 
@@ -18,8 +17,22 @@ function Craft(state: CombinedState, recipe: Recipe): Action {
       },
     },
 
-    perform(): boolean {
-      return true;
+    perform(state: CombinedState) {
+      for (const ingredient of recipe.ingredients) {
+        if (typeof ingredient === "object") {
+          state.player.inventory = state.player.inventory.filter(
+            (item) => item.id !== ingredient.id
+          );
+        } else {
+          state.player.inventory = state.player.inventory.filter(
+            (item) => item.type === ingredient
+          );
+        }
+      }
+      for (const result of recipe.result) {
+        state.player.inventory.push(result);
+      }
+      return state;
     },
   };
 }

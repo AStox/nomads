@@ -1,5 +1,6 @@
 import { Chop } from "./goap/Actions/Chop";
 import { Drop } from "./goap/Actions/Drop";
+import { Eat } from "./goap/Actions/Eat";
 import { PickUp } from "./goap/Actions/PickUp";
 import { StartFire } from "./goap/Actions/StartFire";
 import { WalkTo } from "./goap/Actions/WalkTo";
@@ -30,6 +31,10 @@ interface Thing {
   actions: Function[];
 }
 
+interface Food extends Thing {
+  satiation: number;
+}
+
 function createThing(type: ThingType, overrides: Partial<Thing> = {}): Thing {
   const defaultThing = ThingTemplates[type];
   if (!defaultThing) {
@@ -55,7 +60,7 @@ const defaultThing: Omit<Thing, "name" | "type" | "id" | "symbol"> = {
   actions: [WalkTo],
 };
 
-export const things: Record<ThingType, Partial<Thing>> = {
+export const things: Record<ThingType, Partial<Thing | Food>> = {
   [ThingType.PLAYER]: {
     symbol: "🧍",
     actions: [WalkTo],
@@ -90,15 +95,18 @@ export const things: Record<ThingType, Partial<Thing>> = {
   },
   [ThingType.FISH]: {
     symbol: "🐟",
-    actions: [...defaultThing.actions, PickUp, Drop],
+    actions: [...defaultThing.actions, PickUp, Drop, Eat],
+    satiation: 10,
   },
   [ThingType.BERRY]: {
     symbol: "🍓",
-    actions: [...defaultThing.actions, PickUp, Drop],
+    actions: [...defaultThing.actions, PickUp, Drop, Eat],
+    satiation: 5,
   },
   [ThingType.MUSHROOM]: {
     symbol: "🍄",
-    actions: [...defaultThing.actions, PickUp, Drop],
+    actions: [...defaultThing.actions, PickUp, Drop, Eat],
+    satiation: 5,
   },
   [ThingType.TENT]: {
     symbol: "⛺",
@@ -106,7 +114,7 @@ export const things: Record<ThingType, Partial<Thing>> = {
   },
   [ThingType.CAMPFIRE]: {
     symbol: "🔥",
-    actions: [...defaultThing.actions, PickUp, Drop],
+    actions: [...defaultThing.actions],
   },
 };
 
@@ -122,4 +130,4 @@ const ThingTemplates = Object.fromEntries(
   ])
 ) as Record<ThingType, Partial<Thing>>;
 
-export { Thing, ThingType, createThing };
+export { Thing, Food, ThingType, createThing };

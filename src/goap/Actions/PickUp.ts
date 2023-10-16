@@ -1,6 +1,5 @@
 import { CombinedState } from "../GOAPPlanner";
 import { Thing } from "../../World";
-import { Item } from "../../Items";
 import { Action } from "../Action";
 
 function PickUp(state: CombinedState, thing: Thing): Action {
@@ -14,9 +13,10 @@ function PickUp(state: CombinedState, thing: Thing): Action {
       toRemove: { things: [thing] },
     },
 
-    perform(): boolean {
-      console.log("Picking up: ", thing);
-      return state.player.pickUp(thing);
+    perform(state: CombinedState) {
+      state.things = state.things.filter((item) => item.id !== thing.id);
+      state.player.inventory.push(thing);
+      return state;
     },
   };
 }

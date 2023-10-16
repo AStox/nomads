@@ -1,24 +1,25 @@
 import { CombinedState } from "../GOAPPlanner";
-import { Thing } from "../../World";
+import { Thing, World } from "../../World";
 import { Action } from "../Action";
+import { Food, ThingType, createThing } from "../../Thing";
 
-function Drop(state: CombinedState, thing: Thing): Action {
+function Eat(state: CombinedState, thing: Thing): Action {
   return {
-    name: "Drop",
+    name: "Eat",
     target: thing,
     cost: 1,
     preconditions: { player: { inventory: [thing] } },
     effects: {
-      toAdd: { things: [{ ...thing, x: state.player.x, y: state.player.y }] },
-      toRemove: { player: { inventory: [thing] } },
+      toAdd: { player: { hunger: (thing as Food).satiation } },
+      toRemove: { things: [thing] },
     },
 
     perform(state: CombinedState) {
-      state.things.push({ ...thing, x: state.player.x, y: state.player.y });
+      state.player.hunger += (thing as Food).satiation;
       state.player.inventory = state.player.inventory.filter((item) => item.id !== thing.id);
       return state;
     },
   };
 }
 
-export { Drop };
+export { Eat };

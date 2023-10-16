@@ -1,11 +1,7 @@
 import { CombinedState } from "../GOAPPlanner";
-import { Thing, World } from "../../World";
-import { Item } from "../../Items";
+import { Thing } from "../../World";
 import { Action } from "../Action";
 import { ThingType, createThing } from "../../Thing";
-import { WalkTo } from "./WalkTo";
-import { PickUp } from "./PickUp";
-import { StartFire } from "./StartFire";
 
 function Chop(state: CombinedState, thing: Thing): Action {
   return {
@@ -20,17 +16,10 @@ function Chop(state: CombinedState, thing: Thing): Action {
       toRemove: { things: [thing] },
     },
 
-    perform(): boolean {
-      World.getInstance().addThing({
-        id: "wood1",
-        name: ThingType.WOOD,
-        type: ThingType.WOOD,
-        x: thing.x,
-        y: thing.y,
-        symbol: "🪵",
-        actions: [WalkTo, PickUp, StartFire],
-      });
-      return true;
+    perform(state: CombinedState) {
+      state.things = state.things.filter((item) => item.id !== thing.id);
+      state.things.push(createThing(ThingType.WOOD, { x: thing.x, y: thing.y }));
+      return state;
     },
   };
 }

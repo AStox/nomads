@@ -16,7 +16,7 @@ interface Action {
 
   target: Thing;
 
-  perform(): boolean;
+  perform(state: CombinedState): CombinedState;
 }
 
 export type { Action };

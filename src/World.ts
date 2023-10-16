@@ -1,17 +1,15 @@
 import { QuadTree, Rectangle } from "./utils/QuadTree";
 import { Player } from "./Player";
-import { Item } from "./Items";
 import fs from "fs";
 import { Thing } from "./Thing";
 
 export interface WorldState {
   things: Thing[];
-  items: Item[];
 }
 
 class World {
   private static instance: World;
-  state: WorldState = { things: [], items: [] };
+  state: WorldState = { things: [] };
   quadtree: QuadTree;
 
   private constructor(width: number, height: number) {

@@ -9,7 +9,6 @@ import { Thing, World } from "./World";
 import { CombinedState, GOAPPlanner } from "./goap/GOAPPlanner";
 import { WalkTo } from "./goap/Actions/WalkTo";
 import { Action } from "./goap/Action";
-import { ItemType } from "./Items";
 import { ThingType } from "./Thing";
 import { PickUp } from "./goap/Actions/PickUp";
 interface PartialWithMoveToPlayer extends Partial<Player> {
@@ -106,12 +105,12 @@ export class Player implements Thing {
       }
     }
 
-    console.log(" ");
-    console.log("~Performing plan~");
+    // console.log(" ");
+    // console.log("~Performing plan~");
 
-    if (plan.length > 0) {
-      const firstAction = plan[0];
-      const success = firstAction.perform();
-    }
+    // if (plan.length > 0) {
+    //   const firstAction = plan[0];
+    //   const success = firstAction.perform();
+    // }
   }
 }

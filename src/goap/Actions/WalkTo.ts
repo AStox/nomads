@@ -1,4 +1,3 @@
-import { Item } from "../../Items";
 import { Thing } from "../../Thing";
 import { Action } from "../Action";
 import { CombinedState } from "../GOAPPlanner";
@@ -34,8 +33,11 @@ function WalkTo(state: CombinedState, thing: Thing): Action {
     preconditions: {},
     effects: { toAdd: { player: { ...destination } } },
 
-    perform(): boolean {
-      return state.player.moveTo(newPlayerPosition.x, newPlayerPosition.y);
+    perform(state: CombinedState) {
+      // return state.player.moveTo(newPlayerPosition.x, newPlayerPosition.y);
+      state.player.x = destination.x;
+      state.player.y = destination.y;
+      return state;
     },
   };
 }

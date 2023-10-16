@@ -1,7 +1,7 @@
 import { CombinedState } from "../GOAPPlanner";
 import { Thing } from "../../World";
 import { Action } from "../Action";
-import { ThingType } from "../../Thing";
+import { ThingType, createThing } from "../../Thing";
 
 function StartFire(state: CombinedState, thing: Thing): Action {
   return {
@@ -11,23 +11,15 @@ function StartFire(state: CombinedState, thing: Thing): Action {
     preconditions: { player: { x: thing.x, y: thing.y } },
     effects: {
       toAdd: {
-        things: [
-          {
-            id: "4",
-            name: ThingType.CAMPFIRE,
-            type: ThingType.CAMPFIRE,
-            x: state.player.x,
-            y: state.player.y,
-            symbol: "🔥",
-            actions: [],
-          },
-        ],
+        things: [createThing(ThingType.CAMPFIRE, { x: state.player.x, y: state.player.y })],
       },
       toRemove: { things: [thing] },
     },
 
-    perform(): boolean {
-      return true;
+    perform(state: CombinedState) {
+      state.things = state.things.filter((item) => item.id !== thing.id);
+      state.things.push(createThing(ThingType.CAMPFIRE, { x: state.player.x, y: state.player.y }));
+      return state;
     },
   };
 }

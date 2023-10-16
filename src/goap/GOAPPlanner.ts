@@ -58,8 +58,8 @@ class GOAPPlanner {
       const sequence = this.getActionSequence(currentNode);
       const pattern = [
         // "Drop(STONE)",
-        "PickUp(WOOD)",
-        // "WalkTo(STONE)",
+        // "PickUp(WOOD)",
+        "WalkTo(STONE)",
         // "PickUp(STONE)",
         // "Craft(AXE)",
         // "WalkTo(TREE)",
@@ -68,8 +68,8 @@ class GOAPPlanner {
       ];
 
       if (this.isSequenceFollowingPattern(sequence, pattern)) {
-        DEBUG = true;
       }
+      DEBUG = true;
       // ----------------- DEBUG -----------------
       if (!DEBUG && sequenceCount % 10 === 0) {
         console.log(sequenceCount);
@@ -100,7 +100,10 @@ class GOAPPlanner {
       for (const action of availableActions) {
         if (this.isActionExecutable(action, currentNode.state)) {
           if (action.name === "WalkTo" && currentNode.action?.name === "WalkTo") {
-            if (DEBUG) console.log(`Skipping WalkTo action.`);
+            if (DEBUG)
+              console.log(
+                `Action not executed: ${action.name}(${action.target.name}) Consecutive WalkTo action.`
+              );
             continue;
           }
           const newState = this.executeAction(action, currentNode.state);
@@ -112,7 +115,10 @@ class GOAPPlanner {
             cost: newCost,
           };
           if (this.isStateInAncestry(newNode)) {
-            if (DEBUG) console.log(`Skipping node with duplicate state.`);
+            if (DEBUG)
+              console.log(
+                `Action not executed: ${action.name}(${action.target.name}) Duplicate state.`
+              );
             continue;
           }
           // Log actions taken and the resulting state
@@ -134,7 +140,7 @@ class GOAPPlanner {
 
           nodes.push(newNode);
         } else {
-          if (DEBUG) console.log(`Action not executable: ${action.name}(${action.target.name}})`);
+          if (DEBUG) console.log(`Action not executed: ${action.name}(${action.target.name})`);
         }
       }
     }
@@ -255,15 +261,15 @@ class GOAPPlanner {
   }
 
   private static executeAction(action: Action, state: CombinedState): CombinedState {
-    const newState = deepCloneWithActionReference(state);
-    if (action.effects.toAdd) {
-      this.mergeObjects(newState, action.effects.toAdd);
-    }
-    if (action.effects.toRemove) {
-      this.removeFields(newState, action.effects.toRemove);
-      // console.log("NEW STATE:", newState.player.inventory);
-    }
-    return newState;
+    let newState = deepCloneWithActionReference(state);
+    return action.perform(newState);
+    // if (action.effects.toAdd) {
+    //   this.mergeObjects(newState, action.effects.toAdd);
+    // }
+    // if (action.effects.toRemove) {
+    //   this.removeFields(newState, action.effects.toRemove);
+    // }
+    // return newState;
   }
 
   private static goalMet(goal: Goal, state: CombinedState): boolean {
