@@ -1,7 +1,7 @@
 import { CombinedState } from "../GOAPPlanner";
-import { Thing, World } from "../../World";
+import { Thing } from "../../World";
 import { Action } from "../Action";
-import { Food, ThingType, createThing } from "../../Thing";
+import { Food } from "../../Thing";
 
 function Eat(state: CombinedState, thing: Thing): Action {
   return {

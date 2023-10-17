@@ -1,7 +1,5 @@
 import { Thing, ThingType, createThing } from "./Thing";
 import { Craft } from "./goap/Actions/Craft";
-import { PickUp } from "./goap/Actions/PickUp";
-import { WalkTo } from "./goap/Actions/WalkTo";
 
 interface Recipe {
   name: ThingType;

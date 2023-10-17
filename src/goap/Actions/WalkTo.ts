@@ -1,7 +1,6 @@
 import { Thing } from "../../Thing";
 import { Action } from "../Action";
 import { CombinedState } from "../GOAPPlanner";
-import { Goal } from "../Goals";
 
 function WalkTo(state: CombinedState, thing: Thing): Action {
   // find the vector between the agent and the destination, normalize it and multiple by player speed

@@ -23,17 +23,3 @@ export enum GoalType {
   FIRE_STARTER = "FIRE_STARTER",
   GO_TO = "GO_TO",
 }
-
-// export const Goals: { [GoalType]: Goal } = {
-//   [GoalType.CHEF]: { requiredSkills: [Skills.COOKING_3], requirements: {}, reward: "Chef" },
-// [GoalType.FIRE_STARTER]: {
-//   requiredSkills: [Skills.FIRE_MAKING_3],
-//   requirements: {},
-//   reward: "Fire Starter",
-// },
-// [GoalType.GO_TO]: {
-//   requiredSkills: [],
-//   requirements: { x: 10, y: 10 },
-//   reward: "Go To",
-// },
-// };

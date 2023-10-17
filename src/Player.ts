@@ -1,16 +1,10 @@
-// Player.ts
-
-import { SkillTree } from "./SkillTree";
-import { Goal, GoalType } from "./goap/Goals";
-import { createSkillTree } from "./CreateSkillTree";
+import { Goal } from "./goap/Goals";
 import { createBehaviorTree } from "./PlayerBehaviourTree";
-import { BehaviorNode } from "./behaviorTree/BaseNodes";
-import { Thing, World } from "./World";
+import { Thing } from "./World";
 import { CombinedState, GOAPPlanner } from "./goap/GOAPPlanner";
 import { WalkTo } from "./goap/Actions/WalkTo";
 import { Action } from "./goap/Action";
 import { ThingType } from "./Thing";
-import { PickUp } from "./goap/Actions/PickUp";
 interface PartialWithMoveToPlayer extends Partial<Player> {
   moveTo: (x: number, y: number) => boolean;
 }
@@ -67,27 +61,6 @@ export class Player implements Thing {
     // this.skillTree = createSkillTree();
   }
 
-  moveTo(x: number, y: number) {
-    this.x = x;
-    this.y = y;
-    return true;
-  }
-
-  pickUp(thing: Thing) {
-    this.inventory.push(thing);
-    // remove thing from world.things
-    const world = World.getInstance();
-    world.removeThing(thing);
-    return true;
-  }
-
-  drop(thing: Thing) {
-    this.inventory = this.inventory.filter((item) => item.id !== thing.id);
-    const world = World.getInstance();
-    world.addThing(thing);
-    return true;
-  }
-
   makeDecision(state: CombinedState) {
     const context = { rng: 0 };
     const behaviorTree = createBehaviorTree(this);
@@ -104,13 +77,5 @@ export class Player implements Thing {
         console.log(`${i + 1}. ${plan[i].name}(${plan[i].target.name})`);
       }
     }
-
-    // console.log(" ");
-    // console.log("~Performing plan~");
-
-    // if (plan.length > 0) {
-    //   const firstAction = plan[0];
-    //   const success = firstAction.perform();
-    // }
   }
 }
