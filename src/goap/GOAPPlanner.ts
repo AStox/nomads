@@ -57,19 +57,19 @@ class GOAPPlanner {
       const currentNode = nodes.shift()!;
       const sequence = this.getActionSequence(currentNode);
       const pattern = [
-        // "Drop(STONE)",
-        // "PickUp(WOOD)",
+        "Drop(STONE)",
+        "PickUp(WOOD)",
         "WalkTo(STONE)",
-        // "PickUp(STONE)",
-        // "Craft(AXE)",
-        // "WalkTo(TREE)",
-        // "Chop(TREE)",
-        // "PickUp(WOOD)",
+        "PickUp(STONE)",
+        "Craft(AXE)",
+        "WalkTo(TREE)",
+        "Chop(TREE)",
+        "PickUp(WOOD)",
       ];
 
       if (this.isSequenceFollowingPattern(sequence, pattern)) {
       }
-      DEBUG = true;
+      // DEBUG = true;
       // ----------------- DEBUG -----------------
       if (!DEBUG && sequenceCount % 10 === 0) {
         console.log(sequenceCount);
@@ -78,6 +78,7 @@ class GOAPPlanner {
         console.log(
           `\n=================== Considered Sequence ${sequenceCount} ======================\n`
         );
+        console.log("GOAL:", goal.requirements);
         console.log("Current Node (", this.printActionSequence(currentNode), "). ");
         console.log("");
         // print things
@@ -273,7 +274,7 @@ class GOAPPlanner {
   }
 
   private static goalMet(goal: Goal, state: CombinedState): boolean {
-    return this.matchesNestedKeys(goal.requirements, state);
+    return goal.requirements(state);
   }
 
   private static matchesNestedKeys(sub: any, obj: any): boolean {

@@ -1,0 +1,22 @@
+import { Player } from "../Player";
+import { Goal } from "../goap/Goals";
+import { BehaviorNode } from "./BaseNodes";
+
+class SetGoal extends BehaviorNode {
+  player: Player;
+  goal: Goal;
+
+  constructor(player: any, goal: Goal) {
+    super();
+    this.player = player;
+    this.goal = goal;
+  }
+
+  run(context: any): boolean {
+    console.log("Setting goal.");
+    this.player.currentGoal = this.goal;
+    return true;
+  }
+}
+
+export { SetGoal };

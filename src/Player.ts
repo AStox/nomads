@@ -41,7 +41,7 @@ export class Player implements Thing {
     this.actions = actions;
     this.speed = 5;
     this.inventory = [];
-    this.hunger = 100;
+    this.hunger = 20;
     this.maxHunger = 100;
     this.hungerActionThreshold = 25;
     this.HP = 100;
@@ -50,11 +50,8 @@ export class Player implements Thing {
     this.longGoals = [
       {
         requiredSkills: [],
-        requirements: {
-          player: {
-            inventory: [ThingType.AXE, ThingType.WOOD],
-          },
-        },
+        requirements: (state: CombinedState) =>
+          state.player.inventory.some((item) => item.type === ThingType.WOOD),
       },
     ];
     this.currentGoal = null;

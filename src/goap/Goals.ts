@@ -10,7 +10,7 @@ interface GoalWorldState extends Partial<Omit<WorldState, "player" | "things">> 
 }
 
 export interface Goal {
-  requirements: GoalWorldState;
+  requirements: (state: CombinedState) => boolean;
   requiredSkills: Skills[];
   // requiredItems?: ItemType[];
   // requiredThings?: Things[];
