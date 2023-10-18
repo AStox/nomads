@@ -15,7 +15,7 @@ function createBehaviorTree(player: Player) {
       new CheckHunger(player),
       new SetGoal(player, {
         requiredSkills: [],
-        requirements: (state: CombinedState) => player.hunger >= state.player.hungerActionThreshold,
+        requirements: (state: CombinedState) => state.player.hunger > player.hunger,
       } as Goal),
     ]),
     new SelectorNode([
