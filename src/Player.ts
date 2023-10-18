@@ -74,5 +74,12 @@ export class Player implements Thing {
         console.log(`${i + 1}. ${plan[i].name}(${plan[i].target.name})`);
       }
     }
+    console.log("~~Execute Action~~");
+    if (plan.length > 0) {
+      const action = plan.shift();
+      if (action) {
+        action.perform(state);
+      }
+    }
   }
 }

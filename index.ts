@@ -32,21 +32,21 @@ for (const player of players) {
 const renderer = new Renderer(world);
 
 let turn = 1;
-// setInterval(() => {
-for (const player of players) {
-  console.log(
-    "-------------------- Player " +
-      player.x +
-      ", " +
-      player.y +
-      " -- Turn " +
-      turn +
-      " --------------------"
-  );
-  const combinedState: CombinedState = { ...world.state, player: player };
-  player.makeDecision(combinedState);
-  console.log("---------------------------------------------------------------");
-}
-turn++;
-// renderer.render();
-// }, 1000); // Re-renders every second
+setInterval(() => {
+  for (const player of players) {
+    console.log(
+      "-------------------- Player " +
+        player.x +
+        ", " +
+        player.y +
+        " -- Turn " +
+        turn +
+        " --------------------"
+    );
+    const combinedState: CombinedState = { ...world.state, player: player };
+    player.makeDecision(combinedState);
+    console.log("---------------------------------------------------------------");
+  }
+  turn++;
+  // renderer.render();
+}, 1000); // Re-renders every second
