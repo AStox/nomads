@@ -9,12 +9,6 @@ function StartFire(state: CombinedState, thing: Thing): Action {
     target: thing,
     cost: 1,
     preconditions: { player: { x: thing.x, y: thing.y } },
-    effects: {
-      toAdd: {
-        things: [createThing(ThingType.CAMPFIRE, { x: state.player.x, y: state.player.y })],
-      },
-      toRemove: { things: [thing] },
-    },
 
     perform(state: CombinedState) {
       state.things = state.things.filter((item) => item.id !== thing.id);

@@ -9,12 +9,6 @@ function Chop(state: CombinedState, thing: Thing): Action {
     target: thing,
     cost: 1,
     preconditions: { player: { x: thing.x, y: thing.y, inventory: [ThingType.AXE] } },
-    effects: {
-      toAdd: {
-        things: [createThing(ThingType.WOOD, { x: thing.x, y: thing.y })],
-      },
-      toRemove: { things: [thing] },
-    },
 
     perform(state: CombinedState) {
       state.things = state.things.filter((item) => item.id !== thing.id);

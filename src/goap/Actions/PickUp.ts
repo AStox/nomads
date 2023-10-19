@@ -8,10 +8,6 @@ function PickUp(state: CombinedState, thing: Thing): Action {
     target: thing,
     cost: 1,
     preconditions: { player: { x: thing.x, y: thing.y } },
-    effects: {
-      toAdd: { player: { inventory: [thing] } },
-      toRemove: { things: [thing] },
-    },
 
     perform(state: CombinedState) {
       state.things = state.things.filter((item) => item.id !== thing.id);

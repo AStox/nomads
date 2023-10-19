@@ -8,10 +8,6 @@ function Drop(state: CombinedState, thing: Thing): Action {
     target: thing,
     cost: 1,
     preconditions: { player: { inventory: [thing] } },
-    effects: {
-      toAdd: { things: [{ ...thing, x: state.player.x, y: state.player.y }] },
-      toRemove: { player: { inventory: [thing] } },
-    },
 
     perform(state: CombinedState) {
       state.things.push({ ...thing, x: state.player.x, y: state.player.y });

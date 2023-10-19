@@ -17,6 +17,7 @@ enum ThingType {
   FISH = "FISH",
   BERRY = "BERRY",
   MUSHROOM = "MUSHROOM",
+  ROASTED_MUSHROOM = "ROASTED_MUSHROOM",
   TENT = "TENT",
   CAMPFIRE = "CAMPFIRE",
 }
@@ -107,6 +108,11 @@ export const things: Record<ThingType, Partial<Thing | Food>> = {
     symbol: "🍄",
     actions: [...defaultThing.actions, PickUp, Drop, Eat],
     satiation: 10,
+  },
+  [ThingType.ROASTED_MUSHROOM]: {
+    symbol: "🍄",
+    actions: [...defaultThing.actions, PickUp, Drop, Eat],
+    satiation: 20,
   },
   [ThingType.TENT]: {
     symbol: "⛺",

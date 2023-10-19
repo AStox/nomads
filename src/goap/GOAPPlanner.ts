@@ -187,7 +187,7 @@ class GOAPPlanner {
     let actions: Action[] = [];
 
     // Add crafting actions
-    const craftableRecipes = getCraftableRecipes(state.player.inventory);
+    const craftableRecipes = getCraftableRecipes(state);
     if (DEBUG)
       console.log(
         "CRAFTABLE RECIPES: ",

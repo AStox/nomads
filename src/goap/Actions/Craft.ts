@@ -1,38 +1,19 @@
 import { CombinedState } from "../GOAPPlanner";
 import { Action } from "../Action";
 import { Recipe } from "../../Recipe";
+import { createThing } from "../../Thing";
 
 function Craft(state: CombinedState, recipe: Recipe): Action {
   return {
     name: "Craft",
-    target: recipe.result[0],
+    target: createThing(recipe.name), // TODO: This needs to not require a thing, but rather just a ThingType
     cost: 1,
-    preconditions: { player: { inventory: [...recipe.ingredients] } },
-    effects: {
-      toAdd: {
-        player: { inventory: [...recipe.result] },
-      },
-      toRemove: {
-        player: { inventory: [...recipe.ingredients] },
-      },
+    preconditions: (state: CombinedState) => {
+      return recipe.ingredients(state);
     },
 
     perform(state: CombinedState) {
-      for (const ingredient of recipe.ingredients) {
-        if (typeof ingredient === "object") {
-          state.player.inventory = state.player.inventory.filter(
-            (item) => item.id !== ingredient.id
-          );
-        } else {
-          state.player.inventory = state.player.inventory.filter(
-            (item) => item.type === ingredient
-          );
-        }
-      }
-      for (const result of recipe.result) {
-        state.player.inventory.push(result);
-      }
-      return state;
+      return recipe.result(state);
     },
   };
 }

@@ -1,68 +1,75 @@
 import { Thing, ThingType, createThing } from "./Thing";
+import { Rectangle, World } from "./World";
 import { Craft } from "./goap/Actions/Craft";
+import { CombinedState } from "./goap/GOAPPlanner";
 
 interface Recipe {
   name: ThingType;
-  ingredients: Ingredient[];
-  result: Thing[];
+  ingredients: (state: CombinedState) => boolean;
+  result: (state: CombinedState) => CombinedState;
   actions: Function[];
 }
-
-type Ingredient = Thing | ThingType;
 
 const recipes: Recipe[] = [
   {
     name: ThingType.AXE,
-    ingredients: [ThingType.WOOD, ThingType.STONE],
-    result: [createThing(ThingType.AXE)],
+    ingredients: (state: CombinedState) => {
+      if (
+        state.player.inventory.filter((item) => item.type === ThingType.STICK).length >= 1 ||
+        state.player.inventory.filter((item) => item.type === ThingType.STONE).length >= 1
+      ) {
+        return true;
+      }
+      return false;
+    },
+    result: (state: CombinedState) => {
+      const stick = state.player.inventory.find((item) => item.type === ThingType.STICK);
+      if (stick) {
+        state.player.inventory.splice(state.player.inventory.indexOf(stick), 1);
+      }
+      const stone = state.player.inventory.find((item) => item.type === ThingType.STONE);
+      if (stone) {
+        state.player.inventory.splice(state.player.inventory.indexOf(stone), 1);
+      }
+      const axe = createThing(ThingType.AXE);
+      state.player.inventory.push(axe);
+      return state;
+    },
     actions: [Craft],
   },
   {
-    name: ThingType.HAMMER,
-    ingredients: [ThingType.WOOD, ThingType.WOOD, ThingType.STONE],
-    result: [createThing(ThingType.HAMMER)],
+    name: ThingType.ROASTED_MUSHROOM,
+    ingredients: (state: CombinedState) => {
+      if (!state.player.inventory.some((item) => item.type === ThingType.MUSHROOM)) {
+        return false;
+      }
+      const campfires = World.getInstance()
+        .quadtree.query(new Rectangle(state.player.x - 2, state.player.y - 2, 4, 4))
+        .filter((thing) => thing.type === ThingType.CAMPFIRE);
+      if (campfires.length === 0) {
+        return false;
+      }
+      return true;
+    },
+    result: (state: CombinedState) => {
+      const mushroom = state.player.inventory.find((item) => item.type === ThingType.MUSHROOM);
+      if (mushroom) {
+        state.player.inventory.splice(state.player.inventory.indexOf(mushroom), 1);
+      }
+      const roastedMushroom = createThing(ThingType.ROASTED_MUSHROOM);
+      state.player.inventory.push(roastedMushroom);
+
+      return state;
+    },
     actions: [Craft],
   },
 ];
 
-function getCraftableRecipes(inventory: Thing[]): Recipe[] {
-  const inventoryCounts: Record<string, number> = {};
-
-  // Count occurrences of each ThingType in the inventory
-  for (const item of inventory) {
-    if (!inventoryCounts[item.type]) {
-      inventoryCounts[item.type] = 0;
-    }
-    inventoryCounts[item.type]++;
-  }
-
-  // Now filter the recipes
-  return recipes.filter((recipe) => {
-    const recipeCounts: Record<string, number> = {};
-
-    // Count occurrences of each ThingType or specific Thing in the recipe ingredients
-    for (const ingredient of recipe.ingredients) {
-      let ingredientKey: string;
-      if (typeof ingredient === "object" && ingredient !== null) {
-        ingredientKey = ingredient.id;
-      } else {
-        ingredientKey = ingredient;
-      }
-      if (!recipeCounts[ingredientKey]) {
-        recipeCounts[ingredientKey] = 0;
-      }
-      recipeCounts[ingredientKey]++;
-    }
-
-    // Check if there are enough ingredients in the inventory for each type
-    for (const [ingredientKey, quantity] of Object.entries(recipeCounts)) {
-      if (!inventoryCounts[ingredientKey] || inventoryCounts[ingredientKey] < quantity) {
-        return false;
-      }
-    }
-
-    return true;
+function getCraftableRecipes(state: CombinedState): Recipe[] {
+  const craftableRecipes = recipes.filter((recipe) => {
+    recipe.ingredients(state);
   });
+  return craftableRecipes;
 }
 
-export { getCraftableRecipes, Recipe, Ingredient };
+export { getCraftableRecipes, Recipe };

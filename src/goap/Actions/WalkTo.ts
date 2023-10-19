@@ -30,7 +30,6 @@ function WalkTo(state: CombinedState, thing: Thing): Action {
     target: thing,
     cost: 1,
     preconditions: {},
-    effects: { toAdd: { player: { ...destination } } },
 
     perform(state: CombinedState) {
       // return state.player.moveTo(newPlayerPosition.x, newPlayerPosition.y);
