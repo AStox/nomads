@@ -48,28 +48,31 @@ class GOAPPlanner {
     console.log("Starting plan generation...");
 
     let sequenceCount = 0;
+    let plans: Action[][] = [];
 
     while (nodes.length > 0) {
       DEBUG = false;
       // Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
 
       sequenceCount++;
+      nodes.sort((a, b) => a.cost - b.cost);
       const currentNode = nodes.shift()!;
       const sequence = this.getActionSequence(currentNode);
       const pattern = [
-        "Drop(STONE)",
+        // "Drop(STONE)",
         "PickUp(WOOD)",
-        "WalkTo(STONE)",
-        "PickUp(STONE)",
-        "Craft(AXE)",
-        "WalkTo(TREE)",
-        "Chop(TREE)",
-        "PickUp(WOOD)",
+        // "WalkTo(STONE)",
+        // "PickUp(STONE)",
+        // "Craft(AXE)",
+        // "WalkTo(TREE)",
+        // "Chop(TREE)",
+        // "PickUp(WOOD)",
       ];
 
-      if (this.isSequenceFollowingPattern(sequence, pattern)) {
-      }
+      // if (this.isSequenceFollowingPattern(sequence, pattern)) {
       // DEBUG = true;
+      // }
+      DEBUG = true;
       // ----------------- DEBUG -----------------
       if (!DEBUG && sequenceCount % 10 === 0) {
         console.log(sequenceCount);
@@ -78,8 +81,8 @@ class GOAPPlanner {
         console.log(
           `\n=================== Considered Sequence ${sequenceCount} ======================\n`
         );
-        console.log("GOAL:", goal.requirements);
-        console.log("Current Node (", this.printActionSequence(currentNode), "). ");
+        console.log("GOAL:", goal.requirements.toString());
+        console.log(this.printActionSequence(currentNode));
         console.log("");
         // print things
         console.log("THINGS:", this.describeThings(currentNode.state.things));
@@ -91,7 +94,8 @@ class GOAPPlanner {
       }
       // ----------------- DEBUG -----------------
 
-      const availableActions = this.generateActions(currentNode.state, globalActions);
+      let availableActions = this.generateActions(currentNode.state, globalActions);
+      availableActions.sort((a, b) => a.cost - b.cost);
       if (DEBUG) {
         console.log("AVAILABLE ACTIONS: ", this.describeActions(availableActions));
         console.log("");
@@ -124,7 +128,6 @@ class GOAPPlanner {
           }
           // Log actions taken and the resulting state
           if (DEBUG) console.log(`Action executed: ${action.name}(${action.target?.name})`);
-
           if (this.goalMet(goal, newNode.state)) {
             console.log("Goal met! Reconstructing plan...");
 
@@ -135,17 +138,47 @@ class GOAPPlanner {
               }
               node = node.parent;
             }
-
-            return plan;
+            if (DEBUG) {
+              console.log("\x1b[32m");
+              console.log("\nPlan found!");
+              console.log("Plan:", this.describeActions(plan));
+              console.log("");
+              console.log("\x1b[0m");
+            }
+            plans.push([...plan]);
+            plan = [];
           }
 
-          nodes.push(newNode);
+          if (plans.length < 1) nodes.push(newNode);
         } else {
           if (DEBUG) console.log(`Action not executed: ${action.name}(${action.target.name})`);
         }
       }
     }
-
+    if (DEBUG) {
+      console.log("\n================== FINISHED PLAN GENERATION =====================\n");
+    }
+    if (plans.length > 0) {
+      // choose the plan with the lowest cost
+      let lowestCost = Number.MAX_SAFE_INTEGER;
+      let lowestCostPlan: Action[] = [];
+      for (const plan of plans) {
+        let cost = 0;
+        for (const action of plan) {
+          cost += action.cost;
+        }
+        if (cost < lowestCost) {
+          lowestCost = cost;
+          lowestCostPlan = plan;
+        }
+      }
+      console.log("Total plans:", plans.length);
+      console.log(
+        "Plans:",
+        plans.map((p) => p.map((a) => `${a.name}(${a.target.name})`).join(" -> ")).join("\n")
+      );
+      return lowestCostPlan;
+    }
     console.log("No valid plan found.");
     return [];
   }

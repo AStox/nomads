@@ -7,7 +7,7 @@ function Eat(state: CombinedState, thing: Thing): Action {
   return {
     name: "Eat",
     target: thing,
-    cost: 1,
+    cost: 1 - (thing as Food).satiation / 50,
     preconditions: { player: { inventory: [thing] } },
     effects: {
       toAdd: { player: { hunger: (thing as Food).satiation } },
