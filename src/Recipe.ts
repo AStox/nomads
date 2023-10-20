@@ -46,6 +46,7 @@ const recipes: Recipe[] = [
       const campfires = World.getInstance()
         .quadtree.query(new Rectangle(state.player.x - 2, state.player.y - 2, 4, 4))
         .filter((thing) => thing.type === ThingType.CAMPFIRE);
+      console.log("campfires:", campfires);
       if (campfires.length === 0) {
         return false;
       }
@@ -66,9 +67,7 @@ const recipes: Recipe[] = [
 ];
 
 function getCraftableRecipes(state: CombinedState): Recipe[] {
-  const craftableRecipes = recipes.filter((recipe) => {
-    recipe.ingredients(state);
-  });
+  const craftableRecipes = recipes.filter((recipe) => recipe.ingredients(state));
   return craftableRecipes;
 }
 

@@ -52,27 +52,18 @@ class GOAPPlanner {
 
     while (nodes.length > 0) {
       DEBUG = false;
-      // Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
 
       sequenceCount++;
       nodes.sort((a, b) => a.cost - b.cost);
       const currentNode = nodes.shift()!;
       const sequence = this.getActionSequence(currentNode);
-      const pattern = [
-        // "Drop(STONE)",
-        "PickUp(WOOD)",
-        // "WalkTo(STONE)",
-        // "PickUp(STONE)",
-        // "Craft(AXE)",
-        // "WalkTo(TREE)",
-        // "Chop(TREE)",
-        // "PickUp(WOOD)",
-      ];
+      const pattern: string[] = ["Craft(ROASTED_MUSHROOM)"];
 
-      // if (this.isSequenceFollowingPattern(sequence, pattern)) {
+      if (pattern.length > 0 && this.isSequenceFollowingPattern(sequence, pattern)) {
+        DEBUG = true;
+      }
       // DEBUG = true;
-      // }
-      DEBUG = true;
       // ----------------- DEBUG -----------------
       if (!DEBUG && sequenceCount % 10 === 0) {
         console.log(sequenceCount);
