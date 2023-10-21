@@ -63,7 +63,6 @@ class GOAPPlanner {
       if (pattern.length > 0 && this.isSequenceFollowingPattern(sequence, pattern)) {
         DEBUG = true;
       }
-      // DEBUG = true;
       // ----------------- DEBUG -----------------
       if (!DEBUG && sequenceCount % 10 === 0) {
         console.log(sequenceCount);
