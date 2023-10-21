@@ -102,7 +102,7 @@ export const things: Record<ThingType, Partial<Thing | Food>> = {
   [ThingType.BERRY]: {
     symbol: "🍓",
     actions: [...defaultThing.actions, PickUp, Drop, Eat],
-    satiation: 5,
+    satiation: 15,
   },
   [ThingType.MUSHROOM]: {
     symbol: "🍄",

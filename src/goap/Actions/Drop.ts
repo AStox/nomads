@@ -10,7 +10,6 @@ function Drop(state: CombinedState, thing: Thing): Action {
     preconditions: { player: { inventory: [thing] } },
 
     perform(state: CombinedState) {
-      state.things.push({ ...thing, x: state.player.x, y: state.player.y });
       state.quadtree.insert({ ...thing, x: state.player.x, y: state.player.y });
       state.player.inventory = state.player.inventory.filter((item) => item.id !== thing.id);
       return state;

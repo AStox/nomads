@@ -3,7 +3,6 @@ import { Player } from "./Player";
 import { Thing } from "./Thing";
 
 export interface WorldState {
-  things: Thing[];
   quadtree: QuadTree;
 }
 
@@ -13,7 +12,6 @@ class World {
 
   private constructor(width: number, height: number) {
     this.state = {
-      things: [],
       quadtree: new QuadTree(new Rectangle(0, 0, width / 2, height / 2), 4),
     };
   }

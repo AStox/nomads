@@ -52,7 +52,7 @@ class GOAPPlanner {
 
     while (nodes.length > 0) {
       DEBUG = false;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
 
       sequenceCount++;
       nodes.sort((a, b) => a.cost - b.cost);
@@ -79,7 +79,7 @@ class GOAPPlanner {
         const quadtreeThings = currentNode.state.quadtree.query(
           currentNode.state.quadtree.boundary
         );
-        console.log("THINGS:", this.describeThings(currentNode.state.things));
+        console.log("THINGS:", this.describeThings(currentNode.state.quadtree.queryAll()));
         console.log("QUADTREE THINGS:", this.describeThings(quadtreeThings));
         console.log(
           "INVENTORY:",

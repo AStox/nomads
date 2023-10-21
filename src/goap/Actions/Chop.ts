@@ -11,11 +11,8 @@ function Chop(state: CombinedState, thing: Thing): Action {
     preconditions: { player: { x: thing.x, y: thing.y, inventory: [ThingType.AXE] } },
 
     perform(state: CombinedState) {
-      state.things = state.things.filter((t) => t.id === thing.id);
       state.quadtree.remove(thing);
-      const wood = createThing(ThingType.WOOD, { x: thing.x, y: thing.y });
-      state.things.push(wood);
-      state.quadtree.insert(wood);
+      state.quadtree.insert(createThing(ThingType.WOOD, { x: thing.x, y: thing.y }));
       return state;
     },
   };
