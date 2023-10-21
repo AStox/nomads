@@ -1,11 +1,13 @@
 import { Rectangle } from "./World";
 
 type WorldType = {
-  quadtree: {
-    boundary: {
-      w: number;
+  state: {
+    quadtree: {
+      boundary: {
+        w: number;
+      };
+      query: (rect: Rectangle) => any[];
     };
-    query: (rect: Rectangle) => any[];
   };
 };
 
@@ -15,12 +17,14 @@ class Renderer {
 
   constructor(world: WorldType) {
     this.world = world;
-    this.gridSize = world.quadtree.boundary.w * 2;
+    this.gridSize = world.state.quadtree.boundary.w * 2;
   }
 
   toGrid(): string[][] {
     const grid = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill("."));
-    const items = this.world.quadtree.query(new Rectangle(0, 0, this.gridSize, this.gridSize));
+    const items = this.world.state.quadtree.query(
+      new Rectangle(0, 0, this.gridSize, this.gridSize)
+    );
 
     for (const item of items) {
       const x = Math.floor(item.x + this.gridSize / 2);

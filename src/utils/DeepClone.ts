@@ -1,9 +1,13 @@
+import { QuadTree } from "./QuadTree";
+
 // deepCloneWithActionReference.ts
 export function deepCloneWithActionReference<T>(obj: T): T {
   if (obj === null || typeof obj !== "object" || typeof obj === "function") {
     return obj;
   }
-
+  if (obj instanceof QuadTree) {
+    return obj.clone() as any as T;
+  }
   if (Array.isArray(obj)) {
     const arrCopy = [] as any;
     for (const [index, value] of obj.entries()) {

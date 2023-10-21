@@ -12,21 +12,22 @@ const width: number = 30;
 const world = World.newWorld(width, width);
 // world.populateThingsFromConfig("src/configs/objects.json");
 const things: Thing[] = [
-  createThing(ThingType.TREE, { x: 0, y: 5 }),
+  // createThing(ThingType.TREE, { x: 0, y: 5 }),
   // createThing(ThingType.TREE, { x: 1, y: 1 }),
   createThing(ThingType.WOOD, { x: 1, y: 2 }),
-  createThing(ThingType.BERRY, { x: 1, y: 0 }),
+  // createThing(ThingType.BERRY, { x: 1, y: 0 }),
   createThing(ThingType.MUSHROOM, { x: 0, y: 1 }),
 ];
 
 for (const thing of things) {
-  world.addThing(thing);
+  world.state.things.push(thing);
+  world.state.quadtree.insert(thing);
 }
 
-// const player = new Player(0, 0);
 let players = [new Player("1", "John Plant", 0, 0, "🧍", [WalkTo])];
 for (const player of players) {
-  world.addThing(player);
+  world.state.things.push(player);
+  world.state.quadtree.insert(player);
 }
 
 const renderer = new Renderer(world);

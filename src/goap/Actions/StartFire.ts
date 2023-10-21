@@ -12,11 +12,11 @@ function StartFire(state: CombinedState, thing: Thing): Action {
 
     perform(state: CombinedState) {
       // TODO: make adding/removing to state and quadtree one call.
-      state.things = state.things.filter((item) => item.id !== thing.id);
-      World.getInstance().quadtree.remove(thing);
+      state.things = state.things.filter((t) => t.id != thing.id);
+      const result = state.quadtree.remove(thing);
       const campfire = createThing(ThingType.CAMPFIRE, { x: state.player.x, y: state.player.y });
       state.things.push(campfire);
-      World.getInstance().quadtree.insert(campfire);
+      state.quadtree.insert(campfire);
       return state;
     },
   };

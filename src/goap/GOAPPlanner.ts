@@ -52,7 +52,7 @@ class GOAPPlanner {
 
     while (nodes.length > 0) {
       DEBUG = false;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
 
       sequenceCount++;
       nodes.sort((a, b) => a.cost - b.cost);
@@ -63,6 +63,7 @@ class GOAPPlanner {
       if (pattern.length > 0 && this.isSequenceFollowingPattern(sequence, pattern)) {
         DEBUG = true;
       }
+      // DEBUG = true;
       // ----------------- DEBUG -----------------
       if (!DEBUG && sequenceCount % 10 === 0) {
         console.log(sequenceCount);
@@ -75,7 +76,11 @@ class GOAPPlanner {
         console.log(this.printActionSequence(currentNode));
         console.log("");
         // print things
+        const quadtreeThings = currentNode.state.quadtree.query(
+          currentNode.state.quadtree.boundary
+        );
         console.log("THINGS:", this.describeThings(currentNode.state.things));
+        console.log("QUADTREE THINGS:", this.describeThings(quadtreeThings));
         console.log(
           "INVENTORY:",
           this.describeThings(currentNode.state.player.inventory as Thing[])
@@ -191,7 +196,8 @@ class GOAPPlanner {
 
     actions = [...actions, ...craftActions];
 
-    for (const thing of state.things) {
+    const things = state.quadtree.queryAll();
+    for (const thing of things) {
       if (thing.id !== state.player.id) {
         // Skip player
         for (const createAction of thing.actions) {
@@ -287,13 +293,6 @@ class GOAPPlanner {
   private static executeAction(action: Action, state: CombinedState): CombinedState {
     let newState = deepCloneWithActionReference(state);
     return action.perform(newState);
-    // if (action.effects.toAdd) {
-    //   this.mergeObjects(newState, action.effects.toAdd);
-    // }
-    // if (action.effects.toRemove) {
-    //   this.removeFields(newState, action.effects.toRemove);
-    // }
-    // return newState;
   }
 
   private static goalMet(goal: Goal, state: CombinedState): boolean {

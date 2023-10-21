@@ -94,7 +94,10 @@ class QuadTree {
       return false;
     }
 
-    const index = this.things.findIndex((t) => t === thing);
+    // console.log("REMOVING:", thing);
+    // console.log("THINGS:", this.things);
+    const index = this.things.findIndex((t) => t.id === thing.id);
+    // console.log("INDEX:", index);
     if (index !== -1) {
       this.things.splice(index, 1);
       return true;
@@ -110,6 +113,10 @@ class QuadTree {
     }
 
     return false;
+  }
+
+  queryAll(): Thing[] {
+    return this.query(this.boundary);
   }
 
   query(range: Rectangle | any, found?: Thing[]): Thing[] {
@@ -144,6 +151,28 @@ class QuadTree {
     }
 
     return found;
+  }
+
+  clone(): QuadTree {
+    const boundaryClone = new Rectangle(
+      this.boundary.x,
+      this.boundary.y,
+      this.boundary.w,
+      this.boundary.h
+    );
+    const qtClone = new QuadTree(boundaryClone, this.capacity);
+
+    qtClone.things = [...this.things]; // Assuming Thing objects are safe to shallow-copy
+    qtClone.divided = this.divided;
+
+    if (this.divided) {
+      qtClone.northeast = this.northeast!.clone();
+      qtClone.northwest = this.northwest!.clone();
+      qtClone.southeast = this.southeast!.clone();
+      qtClone.southwest = this.southwest!.clone();
+    }
+
+    return qtClone;
   }
 }
 

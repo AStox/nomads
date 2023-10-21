@@ -43,10 +43,10 @@ const recipes: Recipe[] = [
       if (!state.player.inventory.some((item) => item.type === ThingType.MUSHROOM)) {
         return false;
       }
-      const campfires = World.getInstance()
-        .quadtree.query(new Rectangle(state.player.x - 2, state.player.y - 2, 4, 4))
+      const campfires = state.quadtree
+        .query(new Rectangle(state.player.x - 2, state.player.y - 2, 4, 4))
         .filter((thing) => thing.type === ThingType.CAMPFIRE);
-      console.log("campfires:", campfires);
+      console.log(campfires);
       if (campfires.length === 0) {
         return false;
       }
