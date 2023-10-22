@@ -8,7 +8,20 @@ function Chop(state: CombinedState, thing: Thing): Action {
     name: "Chop",
     target: thing,
     cost: 1,
-    preconditions: { player: { x: thing.x, y: thing.y, inventory: [ThingType.AXE] } },
+    preconditions: (state: CombinedState) => {
+      const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
+      // check if the players invenotry contains an thingtype.axe
+      if (
+        player &&
+        player.x === thing.x &&
+        player.y === thing.y &&
+        state.player.inventory.find((item) => item.type === ThingType.AXE)
+      ) {
+        return true;
+      }
+
+      return false;
+    },
 
     perform(state: CombinedState) {
       state.quadtree.remove(thing);

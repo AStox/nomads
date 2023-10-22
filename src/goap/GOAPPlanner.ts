@@ -52,7 +52,7 @@ class GOAPPlanner {
 
     while (nodes.length > 0) {
       DEBUG = false;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
 
       sequenceCount++;
       nodes.sort((a, b) => a.cost - b.cost);
@@ -68,6 +68,7 @@ class GOAPPlanner {
       if (!DEBUG && sequenceCount % 10 === 0) {
         console.log(sequenceCount);
       }
+      DEBUG = true;
       if (DEBUG) {
         console.log(
           `\n=================== Considered Sequence ${sequenceCount} ======================\n`
@@ -75,17 +76,12 @@ class GOAPPlanner {
         console.log("GOAL:", goal.requirements.toString());
         console.log(this.printActionSequence(currentNode));
         console.log("");
-        // print things
-        const quadtreeThings = currentNode.state.quadtree.query(
-          currentNode.state.quadtree.boundary
-        );
         console.log("THINGS:", this.describeThings(currentNode.state.quadtree.queryAll()));
-        console.log("QUADTREE THINGS:", this.describeThings(quadtreeThings));
         console.log(
-          "INVENTORY:",
-          this.describeThings(currentNode.state.player.inventory as Thing[])
+          "INVENTORY: [",
+          this.describeThings(currentNode.state.player.inventory as Thing[]),
+          "]"
         );
-        // console.log(`Player's Inventory:`, currentNode.state.player.inventory);
       }
       // ----------------- DEBUG -----------------
 
@@ -230,7 +226,8 @@ class GOAPPlanner {
   }
 
   private static isActionExecutable(action: Action, state: CombinedState): boolean {
-    return this.matchesNestedKeys(action.preconditions, state);
+    // return this.matchesNestedKeys(action.preconditions, state);
+    return action.preconditions(state);
   }
 
   private static deepClone(obj: any, hash = new WeakMap()): any {

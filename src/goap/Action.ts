@@ -5,7 +5,7 @@ interface Action {
   name: string;
   cost: number;
   target: Thing;
-  preconditions: any;
+  preconditions: (state: CombinedState) => boolean;
 
   perform(state: CombinedState): CombinedState;
 }

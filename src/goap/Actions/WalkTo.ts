@@ -29,12 +29,18 @@ function WalkTo(state: CombinedState, thing: Thing): Action {
     name: "WalkTo",
     target: thing,
     cost: 1,
-    preconditions: {},
+    preconditions: (state: CombinedState) => {
+      return true;
+    },
 
     perform(state: CombinedState) {
       // return state.player.moveTo(newPlayerPosition.x, newPlayerPosition.y);
-      state.player.x = destination.x;
-      state.player.y = destination.y;
+      // state.player.x = destination.x;
+      // state.player.y = destination.y;
+      if (state.quadtree.queryAll().find((t) => t.id === state.player.id)) {
+        state.quadtree.remove(state.player);
+        state.quadtree.insert({ ...state.player, x: newPlayerPosition.x, y: newPlayerPosition.y });
+      }
       return state;
     },
   };

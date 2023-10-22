@@ -8,7 +8,12 @@ function Eat(state: CombinedState, thing: Thing): Action {
     name: "Eat",
     target: thing,
     cost: 1 - (thing as Food).satiation / 50,
-    preconditions: { player: { inventory: [thing] } },
+    preconditions: (state: CombinedState) => {
+      if (state.player.inventory.find((item) => item.id === thing.id)) {
+        return true;
+      }
+      return false;
+    },
 
     perform(state: CombinedState) {
       state.player.hunger += (thing as Food).satiation;

@@ -7,7 +7,12 @@ function Drop(state: CombinedState, thing: Thing): Action {
     name: "Drop",
     target: thing,
     cost: 1,
-    preconditions: { player: { inventory: [thing] } },
+    preconditions: (state: CombinedState) => {
+      if (state.player.inventory.find((item) => item.id === thing.id)) {
+        return true;
+      }
+      return false;
+    },
 
     perform(state: CombinedState) {
       state.quadtree.insert({ ...thing, x: state.player.x, y: state.player.y });
