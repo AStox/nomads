@@ -4,7 +4,7 @@ import { Thing } from "./World";
 import { CombinedState, GOAPPlanner } from "./goap/GOAPPlanner";
 import { WalkTo } from "./goap/Actions/WalkTo";
 import { Action } from "./goap/Action";
-import { ThingType } from "./Thing";
+import { ThingType, createThing } from "./Thing";
 interface PartialWithMoveToPlayer extends Partial<Player> {
   moveTo: (x: number, y: number) => boolean;
 }
@@ -40,7 +40,7 @@ export class Player implements Thing {
     this.symbol = "🧍";
     this.actions = actions;
     this.speed = 5;
-    this.inventory = [];
+    this.inventory = [createThing(ThingType.AXE), createThing(ThingType.SAW)];
     this.hunger = 20;
     this.maxHunger = 100;
     this.hungerActionThreshold = 25;

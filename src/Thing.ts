@@ -10,10 +10,12 @@ enum ThingType {
   STONE = "STONE",
   STICK = "STICK",
   WOOD = "WOOD",
+  BOARD = "BOARD",
   TREE = "TREE",
   AXE = "AXE",
   HAMMER = "HAMMER",
   KNIFE = "KNIFE",
+  SAW = "SAW",
   FISH = "FISH",
   BERRY = "BERRY",
   MUSHROOM = "MUSHROOM",
@@ -121,6 +123,10 @@ export const things: Record<ThingType, Partial<Thing | Food>> = {
   [ThingType.CAMPFIRE]: {
     symbol: "🔥",
     actions: [...defaultThing.actions],
+  },
+  [ThingType.SAW]: {
+    symbol: "🪚",
+    actions: [...defaultThing.actions, PickUp, Drop],
   },
 };
 

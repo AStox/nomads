@@ -10,7 +10,6 @@ function Chop(state: CombinedState, thing: Thing): Action {
     cost: 1,
     preconditions: (state: CombinedState) => {
       const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
-      // check if the players invenotry contains an thingtype.axe
       if (
         player &&
         player.x === thing.x &&

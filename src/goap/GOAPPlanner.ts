@@ -52,7 +52,7 @@ class GOAPPlanner {
 
     while (nodes.length > 0) {
       DEBUG = false;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      // Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 0);
 
       sequenceCount++;
       nodes.sort((a, b) => a.cost - b.cost);
@@ -85,7 +85,8 @@ class GOAPPlanner {
       }
       // ----------------- DEBUG -----------------
 
-      let availableActions = this.generateActions(currentNode.state, globalActions);
+      // let availableActions = this.generateActions(currentNode.state, globalActions);
+      let availableActions = currentNode.action?.actionFilter(currentNode.state) || [];
       availableActions.sort((a, b) => a.cost - b.cost);
       if (DEBUG) {
         console.log("AVAILABLE ACTIONS: ", this.describeActions(availableActions));
@@ -94,56 +95,56 @@ class GOAPPlanner {
 
       // if (DEBUG) console.log("CURRENT NODE STATE:", currentNode.state);
       for (const action of availableActions) {
-        if (this.isActionExecutable(action, currentNode.state)) {
-          if (action.name === "WalkTo" && currentNode.action?.name === "WalkTo") {
-            if (DEBUG)
-              console.log(
-                `Action not executed: ${action.name}(${action.target.name}) Consecutive WalkTo action.`
-              );
-            continue;
-          }
-          const newState = this.executeAction(action, currentNode.state);
-          const newCost = currentNode.cost + action.cost;
-          const newNode: Node = {
-            parent: currentNode,
-            action: action,
-            state: newState,
-            cost: newCost,
-          };
-          if (this.isStateInAncestry(newNode)) {
-            if (DEBUG)
-              console.log(
-                `Action not executed: ${action.name}(${action.target.name}) Duplicate state.`
-              );
-            continue;
-          }
-          // Log actions taken and the resulting state
-          if (DEBUG) console.log(`Action executed: ${action.name}(${action.target?.name})`);
-          if (this.goalMet(goal, newNode.state)) {
-            console.log("Goal met! Reconstructing plan...");
-
-            let node = newNode;
-            while (node.parent) {
-              if (node.action) {
-                plan.unshift(node.action);
-              }
-              node = node.parent;
-            }
-            if (DEBUG) {
-              console.log("\x1b[32m");
-              console.log("\nPlan found!");
-              console.log("Plan:", this.describeActions(plan));
-              console.log("");
-              console.log("\x1b[0m");
-            }
-            plans.push([...plan]);
-            plan = [];
-          }
-
-          if (plans.length < 1) nodes.push(newNode);
-        } else {
-          if (DEBUG) console.log(`Action not executed: ${action.name}(${action.target.name})`);
+        // if (this.isActionExecutable(action, currentNode.state)) {
+        if (action.name === "WalkTo" && currentNode.action?.name === "WalkTo") {
+          if (DEBUG)
+            console.log(
+              `Action not executed: ${action.name}(${action.target.name}) Consecutive WalkTo action.`
+            );
+          continue;
         }
+        const newState = this.executeAction(action, currentNode.state);
+        const newCost = currentNode.cost + action.cost;
+        const newNode: Node = {
+          parent: currentNode,
+          action: action,
+          state: newState,
+          cost: newCost,
+        };
+        if (this.isStateInAncestry(newNode)) {
+          if (DEBUG)
+            console.log(
+              `Action not executed: ${action.name}(${action.target.name}) Duplicate state.`
+            );
+          continue;
+        }
+        // Log actions taken and the resulting state
+        if (DEBUG) console.log(`Action executed: ${action.name}(${action.target?.name})`);
+        if (this.goalMet(goal, newNode.state)) {
+          console.log("Goal met! Reconstructing plan...");
+
+          let node = newNode;
+          while (node.parent) {
+            if (node.action) {
+              plan.unshift(node.action);
+            }
+            node = node.parent;
+          }
+          if (DEBUG) {
+            console.log("\x1b[32m");
+            console.log("\nPlan found!");
+            console.log("Plan:", this.describeActions(plan));
+            console.log("");
+            console.log("\x1b[0m");
+          }
+          plans.push([...plan]);
+          plan = [];
+        }
+
+        if (plans.length < 1) nodes.push(newNode);
+        // } else {
+        //   if (DEBUG) console.log(`Action not executed: ${action.name}(${action.target.name})`);
+        // }
       }
     }
     if (DEBUG) {
@@ -164,6 +165,7 @@ class GOAPPlanner {
         }
       }
       console.log("Total plans:", plans.length);
+      console.log("Total sequences:", sequenceCount);
       console.log(
         "Plans:",
         plans.map((p) => p.map((a) => `${a.name}(${a.target.name})`).join(" -> ")).join("\n")
