@@ -44,8 +44,9 @@ const recipes: Recipe[] = [
         return false;
       }
       const size = 2;
+      const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
       const campfires = state.quadtree
-        .query(new Rectangle(state.player.x - size / 2, state.player.y - size / 2, size, size))
+        .query(new Rectangle((player?.x || 0) - size / 2, (player?.y || 0) - size / 2, size, size))
         .filter((thing) => thing.type === ThingType.CAMPFIRE);
       if (campfires.length === 0) {
         return false;

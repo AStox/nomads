@@ -1,4 +1,4 @@
-import { CombinedState } from "../GOAPPlanner";
+import { CombinedState, GOAPPlanner } from "../GOAPPlanner";
 import { Thing } from "../../World";
 import { Action } from "../Action";
 import { ThingType, createThing } from "../../Thing";
@@ -8,6 +8,9 @@ function Chop(state: CombinedState, thing: Thing): Action {
     name: "Chop",
     target: thing,
     cost: 1,
+    actionFilter: (state: CombinedState) => {
+      return GOAPPlanner.generateActions(state, []);
+    },
     preconditions: (state: CombinedState) => {
       const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
       if (

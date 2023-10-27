@@ -72,6 +72,10 @@ export const things: Record<ThingType, Partial<Thing | Food>> = {
     symbol: "🪵",
     actions: [...defaultThing.actions, PickUp, Drop, StartFire],
   },
+  [ThingType.BOARD]: {
+    symbol: "🪵",
+    actions: [...defaultThing.actions, PickUp, Drop],
+  },
   [ThingType.STONE]: {
     symbol: "🪨",
     actions: [...defaultThing.actions, PickUp, Drop],

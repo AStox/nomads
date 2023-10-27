@@ -1,4 +1,4 @@
-import { CombinedState } from "../GOAPPlanner";
+import { CombinedState, GOAPPlanner } from "../GOAPPlanner";
 import { Thing, World } from "../../World";
 import { Action } from "../Action";
 import { ThingType, createThing } from "../../Thing";
@@ -8,6 +8,9 @@ function StartFire(state: CombinedState, thing: Thing): Action {
     name: "StartFire",
     target: thing,
     cost: 1,
+    actionFilter: (state: CombinedState) => {
+      return GOAPPlanner.generateActions(state, []);
+    },
     preconditions: (state: CombinedState) => {
       const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
       if (player && player.x === thing.x && player.y === thing.y) {
@@ -18,9 +21,8 @@ function StartFire(state: CombinedState, thing: Thing): Action {
 
     perform(state: CombinedState) {
       state.quadtree.remove(thing);
-      state.quadtree.insert(
-        createThing(ThingType.CAMPFIRE, { x: state.player.x, y: state.player.y })
-      );
+      const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
+      state.quadtree.insert(createThing(ThingType.CAMPFIRE, { x: player?.x, y: player?.y }));
       return state;
     },
   };
