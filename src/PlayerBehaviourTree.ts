@@ -10,7 +10,13 @@ import { ThingType } from "./Thing";
 
 function createBehaviorTree(player: Player) {
   return new SelectorNode([
-    new SequenceNode([new CheckHP(player), new LogNode("HUNGER FLOW")]),
+    new SequenceNode([
+      new CheckHP(player),
+      new SetGoal(player, {
+        requiredSkills: [],
+        requirements: (state: CombinedState) => state.player.HP > 50,
+      } as Goal),
+    ]),
     new SequenceNode([
       new CheckHunger(player),
       new SetGoal(player, {

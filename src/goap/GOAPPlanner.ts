@@ -132,8 +132,6 @@ class GOAPPlanner {
           // Log actions taken and the resulting state
           if (DEBUG) console.log(`Action executed: ${action.name}(${action.target?.name})`);
           if (this.goalMet(goal, newNode.state)) {
-            console.log("Goal met! Reconstructing plan...");
-
             let node = newNode;
             while (node.parent) {
               if (node.action) {

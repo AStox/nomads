@@ -1,5 +1,6 @@
 import { Chop } from "./goap/Actions/Chop";
 import { Drop } from "./goap/Actions/Drop";
+import { Heal } from "./goap/Actions/Heal";
 import { Eat } from "./goap/Actions/Eat";
 import { PickUp } from "./goap/Actions/PickUp";
 import { StartFire } from "./goap/Actions/StartFire";
@@ -22,6 +23,7 @@ enum ThingType {
   ROASTED_MUSHROOM = "ROASTED_MUSHROOM",
   TENT = "TENT",
   CAMPFIRE = "CAMPFIRE",
+  POULTICE = "POULTICE",
 }
 
 interface Thing {
@@ -36,6 +38,10 @@ interface Thing {
 
 interface Food extends Thing {
   satiation: number;
+}
+
+interface Healable extends Thing {
+  healing: number;
 }
 
 function createThing(type: ThingType, overrides: Partial<Thing> = {}): Thing {
@@ -63,7 +69,7 @@ const defaultThing: Omit<Thing, "name" | "type" | "id" | "symbol"> = {
   actions: [WalkTo],
 };
 
-export const things: Record<ThingType, Partial<Thing | Food>> = {
+export const things: Record<ThingType, Partial<Thing | Food | Healable>> = {
   [ThingType.PLAYER]: {
     symbol: "🧍",
     actions: [WalkTo],
@@ -132,6 +138,11 @@ export const things: Record<ThingType, Partial<Thing | Food>> = {
     symbol: "🪚",
     actions: [...defaultThing.actions, PickUp, Drop],
   },
+  [ThingType.POULTICE]: {
+    symbol: "🩹",
+    actions: [...defaultThing.actions, PickUp, Drop, Heal],
+    healing: 50,
+  },
 };
 
 const ThingTemplates = Object.fromEntries(
@@ -146,4 +157,4 @@ const ThingTemplates = Object.fromEntries(
   ])
 ) as Record<ThingType, Partial<Thing>>;
 
-export { Thing, Food, ThingType, createThing };
+export { Thing, Food, Healable, ThingType, createThing };

@@ -44,7 +44,7 @@ export class Player implements Thing {
     this.hunger = 20;
     this.maxHunger = 100;
     this.hungerActionThreshold = 25;
-    this.HP = 100;
+    this.HP = 20;
     this.maxHP = 100;
     this.HPActionThreshold = 50;
     this.longGoals = [
