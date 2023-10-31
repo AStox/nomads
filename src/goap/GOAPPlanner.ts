@@ -64,10 +64,10 @@ class GOAPPlanner {
       const currentNode = nodes.shift()!;
       const sequence = this.getActionSequence(currentNode);
       const pattern: string[] = [
-        "StartFire(WOOD)",
-        "WalkTo(MUSHROOM)",
-        "PickUp(MUSHROOM)",
-        "WalkTo(CAMPFIRE)",
+        // "StartFire(WOOD)",
+        // "WalkTo(MUSHROOM)",
+        // "PickUp(MUSHROOM)",
+        // "WalkTo(CAMPFIRE)",
       ];
 
       if (pattern.length > 0 && this.isSequenceFollowingPattern(sequence, pattern)) {
@@ -75,7 +75,8 @@ class GOAPPlanner {
       }
       // ----------------- DEBUG -----------------
       if (!DEBUG && sequenceCount % 10 === 0) {
-        console.log(sequenceCount);
+        console.clear();
+        console.log(`Thinking... (${sequenceCount} sequences)`);
       }
       // DEBUG = true;
       if (DEBUG) {
@@ -296,7 +297,7 @@ class GOAPPlanner {
 
   private static executeAction(action: Action, state: CombinedState): CombinedState {
     let newState = deepCloneWithActionReference(state);
-    return action.perform(newState);
+    return action.simulate ? action.simulate(newState) : action.perform(newState);
   }
 
   private static goalMet(goal: Goal, state: CombinedState): boolean {

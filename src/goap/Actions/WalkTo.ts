@@ -37,13 +37,20 @@ function WalkTo(state: CombinedState, thing: Thing): Action {
       return true;
     },
 
+    simulate(state: CombinedState) {
+      if (state.quadtree.queryAll().find((t) => t.id === state.player.id)) {
+        state.quadtree.remove(state.player);
+        state.quadtree.insert({ ...state.player, x: destination.x, y: destination.y });
+      }
+      return state;
+    },
     perform(state: CombinedState) {
       // return state.player.moveTo(newPlayerPosition.x, newPlayerPosition.y);
       // state.player.x = destination.x;
       // state.player.y = destination.y;
       if (state.quadtree.queryAll().find((t) => t.id === state.player.id)) {
         state.quadtree.remove(state.player);
-        state.quadtree.insert({ ...state.player, x: destination.x, y: destination.y });
+        state.quadtree.insert({ ...state.player, x: newPlayerPosition.x, y: newPlayerPosition.y });
       }
       return state;
     },

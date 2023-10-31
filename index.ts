@@ -13,11 +13,11 @@ const world = World.newWorld(width, width);
 // world.populateThingsFromConfig("src/configs/objects.json");
 const things: Thing[] = [
   createThing(ThingType.TREE, { x: 10, y: 2 }),
-  createThing(ThingType.BERRY, { x: 1, y: 0 }),
   createThing(ThingType.BERRY, { x: 1, y: 1 }),
-  createThing(ThingType.BERRY, { x: 2, y: 1 }),
-  createThing(ThingType.MUSHROOM, { x: 0, y: 10 }),
-  createThing(ThingType.POULTICE, { x: 0, y: 11 }),
+  createThing(ThingType.BERRY, { x: 1, y: -1 }),
+  createThing(ThingType.BERRY, { x: -2, y: 1 }),
+  createThing(ThingType.MUSHROOM, { x: -5, y: 10 }),
+  createThing(ThingType.POULTICE, { x: 3, y: 7 }),
 ];
 
 for (const thing of things) {
@@ -32,21 +32,21 @@ for (const player of players) {
 const renderer = new Renderer(world);
 
 let turn = 1;
-// setInterval(() => {
-for (const player of players) {
-  console.log(
-    "-------------------- Player " +
-      player.x +
-      ", " +
-      player.y +
-      " -- Turn " +
-      turn +
-      " --------------------"
-  );
-  const combinedState: CombinedState = { ...world.state, player: player };
-  player.makeDecision(combinedState);
-  console.log("---------------------------------------------------------------");
-}
-turn++;
-// renderer.render();
-// }, 1000); // Re-renders every second
+setInterval(() => {
+  for (const player of players) {
+    console.log(
+      "-------------------- Player " +
+        player.x +
+        ", " +
+        player.y +
+        " -- Turn " +
+        turn +
+        " --------------------"
+    );
+    const combinedState: CombinedState = { ...world.state, player: player };
+    player.makeDecision(combinedState);
+    console.log("---------------------------------------------------------------");
+    renderer.render();
+  }
+  turn++;
+}, 1000);

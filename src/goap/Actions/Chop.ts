@@ -24,7 +24,6 @@ function Chop(state: CombinedState, thing: Thing): Action {
 
       return false;
     },
-
     perform(state: CombinedState) {
       state.quadtree.remove(thing);
       state.quadtree.insert(createThing(ThingType.WOOD, { x: thing.x, y: thing.y }));

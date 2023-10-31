@@ -10,6 +10,7 @@ interface Action {
   target: Thing;
   preconditions: (state: CombinedState) => boolean;
   actionFilter: (state: CombinedState) => Action[];
+  simulate?: (state: CombinedState) => CombinedState;
   perform(state: CombinedState): CombinedState;
 }
 

@@ -39,7 +39,7 @@ export class Player implements Thing {
     this.y = y;
     this.symbol = "🧍";
     this.actions = actions;
-    this.speed = 5;
+    this.speed = 2;
     this.inventory = [createThing(ThingType.AXE), createThing(ThingType.SAW)];
     this.hunger = 20;
     this.maxHunger = 100;
