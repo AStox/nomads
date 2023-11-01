@@ -8,7 +8,9 @@ function Drop(state: CombinedState, thing: Thing): Action {
     target: thing,
     cost: 1,
     actionFilter: (state: CombinedState) => {
-      return GOAPPlanner.generateActions(state, []);
+      return GOAPPlanner.generateActions(state, []).filter(
+        (action) => !(action.name === "WalkTo" && action.target.id === thing.id)
+      );
     },
     preconditions: (state: CombinedState) => {
       if (state.player.inventory.find((item) => item.id === thing.id)) {

@@ -31,7 +31,7 @@ function WalkTo(state: CombinedState, thing: Thing): Action {
     target: thing,
     cost: 1,
     actionFilter: (state: CombinedState) => {
-      return GOAPPlanner.generateActions(state, []);
+      return GOAPPlanner.generateActions(state, []).filter((action) => action.name !== "WalkTo");
     },
     preconditions: (state: CombinedState) => {
       return true;

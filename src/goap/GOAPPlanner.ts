@@ -75,8 +75,11 @@ class GOAPPlanner {
       }
       // ----------------- DEBUG -----------------
       if (!DEBUG && sequenceCount % 10 === 0) {
-        console.clear();
-        console.log(`Thinking... (${sequenceCount} sequences)`);
+        const status = `thinking... (${sequenceCount} sequences${
+          plans.length > 0 ? `, elapsed: ${nodesSinceLastPlan}` : ""
+        })`;
+        currentNode.state.player.GOAPStatus = status;
+        process.stdout.write(`\r${status}`);
       }
       // DEBUG = true;
       if (DEBUG) {
@@ -95,7 +98,6 @@ class GOAPPlanner {
       }
       // ----------------- DEBUG -----------------
 
-      // let availableActions = this.generateActions(currentNode.state, globalActions);
       let availableActions =
         currentNode.action?.actionFilter(currentNode.state) ||
         this.generateActions(currentNode.state, globalActions);
@@ -105,16 +107,8 @@ class GOAPPlanner {
         console.log("");
       }
 
-      // if (DEBUG) console.log("CURRENT NODE STATE:", currentNode.state);
       for (const action of availableActions) {
         if (this.isActionExecutable(action, currentNode.state)) {
-          if (action.name === "WalkTo" && currentNode.action?.name === "WalkTo") {
-            if (DEBUG)
-              console.log(
-                `Action not executed: ${action.name}(${action.target.name}) Consecutive WalkTo action.`
-              );
-            continue;
-          }
           const newState = this.executeAction(action, currentNode.state);
           const newCost = currentNode.cost + action.cost;
           const newNode: Node = {
@@ -123,14 +117,14 @@ class GOAPPlanner {
             state: newState,
             cost: newCost,
           };
-          // if (this.isStateInAncestry(newNode)) { // TODO: I dont think this was working
+          // if (this.isStateInAncestry(newNode)) {
+          //   // TODO: I dont think this was working
           //   if (DEBUG)
           //     console.log(
           //       `Action not executed: ${action.name}(${action.target.name}) Duplicate state.`
           //     );
           //   continue;
           // }
-          // Log actions taken and the resulting state
           if (DEBUG) console.log(`Action executed: ${action.name}(${action.target?.name})`);
           if (this.goalMet(goal, newNode.state)) {
             let node = newNode;

@@ -29,6 +29,8 @@ export class Player implements Thing {
   HPActionThreshold: number;
   longGoals: Goal[];
   currentGoal: Goal | null;
+  currentPlan: Action[] | null;
+  GOAPStatus: string;
   // skillTree: SkillTree;
 
   constructor(id: string, name: string, x: number, y: number, symbol: string, actions: Function[]) {
@@ -55,6 +57,8 @@ export class Player implements Thing {
       },
     ];
     this.currentGoal = null;
+    this.currentPlan = null;
+    this.GOAPStatus = "idle";
     // this.skillTree = createSkillTree();
   }
 
@@ -68,6 +72,7 @@ export class Player implements Thing {
     let plan: Action[] = [];
     if (goal) {
       plan = GOAPPlanner.plan(this, state, goal, actionFactories);
+      this.currentPlan = plan;
       console.log(" ");
       console.log("~~Plan~~");
       for (let i = 0; i < plan.length; i++) {

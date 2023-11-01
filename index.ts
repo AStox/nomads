@@ -1,12 +1,9 @@
-import { World, Rectangle, Thing } from "./src/World";
+import { World, Thing } from "./src/World";
 import { Player } from "./src/Player";
 import Renderer from "./src/Renderer";
 import { CombinedState } from "./src/goap/GOAPPlanner";
 import { WalkTo } from "./src/goap/Actions/WalkTo";
-import { PickUp } from "./src/goap/Actions/PickUp";
-import { Chop } from "./src/goap/Actions/Chop";
 import { ThingType, createThing } from "./src/Thing";
-import { StartFire } from "./src/goap/Actions/StartFire";
 
 const width: number = 30;
 const world = World.newWorld(width, width);
@@ -29,7 +26,7 @@ for (const player of players) {
   world.state.quadtree.insert(player);
 }
 
-const renderer = new Renderer(world);
+const renderer = new Renderer();
 
 let turn = 1;
 setInterval(() => {
@@ -43,10 +40,10 @@ setInterval(() => {
         turn +
         " --------------------"
     );
-    const combinedState: CombinedState = { ...world.state, player: player };
-    player.makeDecision(combinedState);
+    const state: CombinedState = { ...world.state, player: player };
+    player.makeDecision(state);
     console.log("---------------------------------------------------------------");
-    renderer.render();
+    renderer.render(state);
   }
   turn++;
 }, 1000);

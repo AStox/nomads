@@ -8,7 +8,13 @@ function PickUp(state: CombinedState, thing: Thing): Action {
     target: thing,
     cost: 1,
     actionFilter: (state: CombinedState) => {
-      return GOAPPlanner.generateActions(state, []);
+      return GOAPPlanner.generateActions(state, []).filter(
+        (action) =>
+          !(
+            (action.name === "PickUp" && action.target.id === thing.id) ||
+            (action.name === "WalkTo" && action.target.id === thing.id)
+          )
+      );
     },
     preconditions: (state: CombinedState) => {
       const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);

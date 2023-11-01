@@ -1,27 +1,25 @@
-// File: src/Renderer.ts
 import { World } from "./World";
+import { Action } from "./goap/Action";
+import { CombinedState } from "./goap/GOAPPlanner";
 import { SocketServer } from "./server/SocketServer";
 
 class Renderer {
-  world: World;
-  gridSize: number;
   socketServer: SocketServer;
 
-  constructor(world: World) {
-    this.world = world;
-    this.gridSize = world.state.quadtree.boundary.w * 2;
+  constructor() {
     this.socketServer = new SocketServer();
     this.socketServer.start(8080); // You can choose another port if 8080 is already in use
   }
 
-  toGrid(): string[][] {
-    const grid = Array.from({ length: this.gridSize }, () => Array(this.gridSize).fill(". "));
-    const items = this.world.state.quadtree.queryAll();
+  toGrid(state: CombinedState): string[][] {
+    const gridSize = state.quadtree.boundary.w * 2;
+    const grid = Array.from({ length: gridSize }, () => Array(gridSize).fill(". "));
+    const items = state.quadtree.queryAll();
 
     for (const item of items) {
-      const x = Math.floor(item.x + this.gridSize / 2);
-      const y = Math.floor(item.y + this.gridSize / 2);
-      if (x >= 0 && x < this.gridSize && y >= 0 && y < this.gridSize) {
+      const x = Math.floor(item.x + gridSize / 2);
+      const y = Math.floor(item.y + gridSize / 2);
+      if (x >= 0 && x < gridSize && y >= 0 && y < gridSize) {
         grid[y][x] = item.symbol;
       }
     }
@@ -29,10 +27,21 @@ class Renderer {
     return grid;
   }
 
-  render(): void {
-    const grid = this.toGrid();
+  render(state: CombinedState): void {
+    const grid = this.toGrid(state);
     const gridString = grid.map((row) => row.join("")).join("\n");
-    this.socketServer.send(gridString);
+    const statusString = `HP: ${state.player.HP}/${state.player.maxHP}\nHunger: ${
+      state.player.hunger
+    }/${state.player.maxHunger}\nInventory: ${
+      state.player.inventory.map((item) => item.name).join(", ") || []
+    }\nPlan: ${
+      state.player.currentPlan && state.player.currentPlan.length > 0
+        ? state.player.currentPlan
+            ?.map((action: Action) => `${action.name}(${action.target.name})`)
+            .join(" -> ")
+        : state.player.GOAPStatus
+    }`;
+    this.socketServer.send(gridString + "\n" + statusString);
   }
 }
 
