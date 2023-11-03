@@ -28,22 +28,28 @@ for (const player of players) {
 
 const renderer = new Renderer();
 
-let turn = 1;
-setInterval(() => {
+let turn = 1; // Keep track of the current turn outside processTurn to maintain state
+
+function processTurn(): void {
+  console.log(`-------------------- Turn ${turn} --------------------`);
+
   for (const player of players) {
-    console.log(
-      "-------------------- Player " +
-        player.x +
-        ", " +
-        player.y +
-        " -- Turn " +
-        turn +
-        " --------------------"
-    );
     const state: CombinedState = { ...world.state, player: player };
-    player.makeDecision(state);
+    console.log(
+      `Player ${player.name} at position (${
+        state.quadtree.queryAll().filter((t) => t.id === player.id)[0].x
+      }, ${state.quadtree.queryAll().filter((t) => t.id === player.id)[0].y})`
+    );
+    player.makeDecision(state); // Assuming makeDecision is synchronous
     console.log("---------------------------------------------------------------");
-    renderer.render(state);
+    renderer.render(state); // Assuming render is synchronous
   }
+
+  console.log(`-------------------- End of Turn ${turn} --------------------\n\n`);
   turn++;
-}, 1000);
+
+  // Schedule the next turn after a 1-second delay, ensuring the previous turn has fully completed
+  setTimeout(processTurn, 1000);
+}
+
+processTurn();

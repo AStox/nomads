@@ -6,7 +6,7 @@ function Drop(state: CombinedState, thing: Thing): Action {
   return {
     name: "Drop",
     target: thing,
-    cost: 1,
+    cost: 2,
     actionFilter: (state: CombinedState) => {
       return GOAPPlanner.generateActions(state, []).filter(
         (action) => !(action.name === "WalkTo" && action.target.id === thing.id)

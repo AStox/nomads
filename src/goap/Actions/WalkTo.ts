@@ -22,7 +22,7 @@ function WalkTo(state: CombinedState, thing: Thing): Action {
         y: player.y + normalizedVector.dy * speed,
       };
     } else {
-      newPlayerPosition = { x: destination.x, y: destination.y };
+      newPlayerPosition = { x: thing.x, y: thing.y };
     }
   }
 
@@ -39,8 +39,9 @@ function WalkTo(state: CombinedState, thing: Thing): Action {
 
     simulate(state: CombinedState) {
       if (state.quadtree.queryAll().find((t) => t.id === state.player.id)) {
-        state.quadtree.remove(state.player);
-        state.quadtree.insert({ ...state.player, x: destination.x, y: destination.y });
+        let player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
+        state.quadtree.remove(player as Thing);
+        state.quadtree.insert({ ...state.player, x: thing.x, y: thing.y });
       }
       return state;
     },
@@ -49,7 +50,8 @@ function WalkTo(state: CombinedState, thing: Thing): Action {
       // state.player.x = destination.x;
       // state.player.y = destination.y;
       if (state.quadtree.queryAll().find((t) => t.id === state.player.id)) {
-        state.quadtree.remove(state.player);
+        let player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
+        state.quadtree.remove(player as Thing);
         state.quadtree.insert({ ...state.player, x: newPlayerPosition.x, y: newPlayerPosition.y });
       }
       return state;

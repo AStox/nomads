@@ -33,11 +33,13 @@ class Renderer {
     const statusString = `HP: ${state.player.HP}/${state.player.maxHP}\nHunger: ${
       state.player.hunger
     }/${state.player.maxHunger}\nInventory: ${
-      state.player.inventory.map((item) => item.name).join(", ") || []
+      state.player.inventory.map((item) => `${item.name}${item.symbol}`).join(", ") || []
     }\nPlan: ${
       state.player.currentPlan && state.player.currentPlan.length > 0
         ? state.player.currentPlan
-            ?.map((action: Action) => `${action.name}(${action.target.name})`)
+            ?.map(
+              (action: Action) => `${action.name}(${action.target.name}${action.target.symbol})`
+            )
             .join(" -> ")
         : state.player.GOAPStatus
     }`;

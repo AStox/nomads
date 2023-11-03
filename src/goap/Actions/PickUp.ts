@@ -18,6 +18,7 @@ function PickUp(state: CombinedState, thing: Thing): Action {
     },
     preconditions: (state: CombinedState) => {
       const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
+      // log player positiong and thing poosition
       if (player && player.x === thing.x && player.y === thing.y) {
         return true;
       }

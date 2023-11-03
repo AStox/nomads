@@ -57,20 +57,25 @@ class GOAPPlanner {
         nodesSinceLastPlan += 1;
       }
       DEBUG = false;
-      // Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      // if (sequenceCount < 18) {
+      //   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+      //   DEBUG = true;
+      // }
 
       sequenceCount++;
       nodes.sort((a, b) => a.cost - b.cost);
       const currentNode = nodes.shift()!;
       const sequence = this.getActionSequence(currentNode);
       const pattern: string[] = [
-        // "StartFire(WOOD)",
         // "WalkTo(MUSHROOM)",
         // "PickUp(MUSHROOM)",
-        // "WalkTo(CAMPFIRE)",
+        // "WalkTo(TREE)",
+        // "Chop(TREE)",
+        // "StartFire(TREE)",
+        // "Craft(ROASTED_MUSHROOM)",
       ];
 
-      if (pattern.length > 0 && this.isSequenceFollowingPattern(sequence, pattern)) {
+      if (pattern.length > 0 && this.isSequenceFollowingPattern(sequence, pattern, true)) {
         DEBUG = true;
       }
       // ----------------- DEBUG -----------------
@@ -89,6 +94,11 @@ class GOAPPlanner {
         console.log("GOAL:", goal.requirements.toString());
         console.log(this.printActionSequence(currentNode));
         console.log("");
+        console.log(
+          "PLAYER:",
+          currentNode.state.quadtree.queryAll().find((t) => t.type === "PLAYER")?.x,
+          currentNode.state.quadtree.queryAll().find((t) => t.type === "PLAYER")?.y
+        );
         console.log("THINGS:", this.describeThings(currentNode.state.quadtree.queryAll()));
         console.log(
           "INVENTORY: [",
@@ -381,17 +391,32 @@ class GOAPPlanner {
     return actions;
   }
 
-  private static isSequenceFollowingPattern(sequence: string[], pattern: string[]): boolean {
-    let patternIndex = 0;
-    for (const action of sequence) {
-      if (action === pattern[patternIndex]) {
-        patternIndex++;
-        if (patternIndex === pattern.length) {
-          return true;
+  // File: GOAPPlanner.ts
+
+  private static isSequenceFollowingPattern(
+    sequence: string[],
+    pattern: string[],
+    exactMatch: boolean = false
+  ): boolean {
+    if (exactMatch) {
+      // Check if the sequence is exactly the same as the pattern
+      return (
+        sequence.length === pattern.length &&
+        sequence.every((value, index) => value === pattern[index])
+      );
+    } else {
+      // Check if all elements in the pattern are contained in the sequence in order
+      let patternIndex = 0;
+      for (const action of sequence) {
+        if (action === pattern[patternIndex]) {
+          patternIndex++;
+          if (patternIndex === pattern.length) {
+            return true;
+          }
         }
       }
+      return false;
     }
-    return false;
   }
 
   private static printActionSequence(currentNode: Node): string {
