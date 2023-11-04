@@ -8,6 +8,7 @@ import { deepCloneWithActionReference } from "../utils/DeepClone";
 import { deepEqual } from "../utils/DeepEqual";
 import { getCraftableRecipes } from "../Recipe";
 import { Craft } from "./Actions/Craft";
+import logger from "../utils/Logger";
 
 let DEBUG = false;
 
@@ -41,11 +42,13 @@ class GOAPPlanner {
     // Early return if goal is already met
     if (this.goalMet(goal, combinedState)) {
       console.log("Goal already met. No actions needed.");
+      logger.log("Goal already met. No actions needed.");
       return plan;
     }
 
     let nodes: Node[] = [startNode];
     console.log("Starting plan generation...");
+    logger.log("Starting plan generation...");
 
     let sequenceCount = 0;
     let plans: Action[][] = [];
