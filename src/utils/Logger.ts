@@ -9,15 +9,17 @@ class Logger {
     this.logFile = path.join(path.resolve("logs"), `log-${timestamp}.log`); // Create a new log file with timestamp
   }
 
-  log(message: string): void {
+  log(message: string, logToConsole = true, logToFile = true): void {
     const timestamp = new Date().toISOString();
     const logMessage = `${timestamp}: ${message}\n`;
-    try {
-      fs.appendFileSync(this.logFile, logMessage);
-    } catch (err) {
-      console.error("Failed to write to log file:", err);
+    if (logToFile) {
+      try {
+        fs.appendFileSync(this.logFile, logMessage);
+      } catch (err) {
+        console.error("Failed to write to log file:", err);
+      }
     }
-    console.log(message); // Optionally, also log to console
+    if (logToConsole) console.log(message); // Optionally, also log to console
   }
 }
 

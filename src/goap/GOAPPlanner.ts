@@ -10,8 +10,6 @@ import { getCraftableRecipes } from "../Recipe";
 import { Craft } from "./Actions/Craft";
 import logger from "../utils/Logger";
 
-let DEBUG = false;
-
 interface Node {
   parent: Node | null;
   action: Action | null;
@@ -57,63 +55,44 @@ class GOAPPlanner {
       if (plans.length > 0) {
         nodesSinceLastPlan += 1;
       }
-      DEBUG = false;
-      // if (sequenceCount < 18) {
       //   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
-      //   DEBUG = true;
-      // }
 
       sequenceCount++;
       nodes.sort((a, b) => a.cost - b.cost);
       const currentNode = nodes.shift()!;
-      const sequence = this.getActionSequence(currentNode);
-      const pattern: string[] = [
-        // "WalkTo(MUSHROOM)",
-        // "PickUp(MUSHROOM)",
-        // "WalkTo(TREE)",
-        // "Chop(TREE)",
-        // "StartFire(TREE)",
-        // "Craft(ROASTED_MUSHROOM)",
-      ];
 
-      // if (pattern.length > 0 && this.isSequenceFollowingPattern(sequence, pattern, true)) {
-      //   DEBUG = true;
-      // }
       // ----------------- DEBUG -----------------
-      if (!DEBUG && sequenceCount % 10 === 0) {
+      if (sequenceCount % 10 === 0) {
         const status = `thinking... (${sequenceCount} sequences${
           plans.length > 0 ? `, elapsed: ${nodesSinceLastPlan}` : ""
         })`;
         currentNode.state.player.GOAPStatus = status;
         process.stdout.write(`\r${status}`);
       }
-      DEBUG = true;
-      if (DEBUG) {
-        logger.log(
-          `\n=================== Considered Sequence ${sequenceCount} ======================\n`
-        );
-        logger.log(`GOAL: ${goal.requirements.toString()}`);
-        logger.log(this.printActionSequence(currentNode));
-        logger.log("");
-        logger.log(
-          `PLAYER: ${currentNode.state.quadtree.queryAll().find((t) => t.type === "PLAYER")?.x} ${
-            currentNode.state.quadtree.queryAll().find((t) => t.type === "PLAYER")?.y
-          }`
-        );
-        logger.log(`THINGS: ${this.describeThings(currentNode.state.quadtree.queryAll())}`);
-        logger.log(
-          `INVENTORY: [${this.describeThings(currentNode.state.player.inventory as Thing[])}]`
-        );
-      }
+      logger.log(
+        `\n=================== Considered Sequence ${sequenceCount} ======================\n`,
+        false
+      );
+      logger.log(`GOAL: ${goal.requirements.toString()}`, false);
+      logger.log(this.printActionSequence(currentNode), false);
+      logger.log(
+        `\nPLAYER: ${currentNode.state.quadtree.queryAll().find((t) => t.type === "PLAYER")?.x} ${
+          currentNode.state.quadtree.queryAll().find((t) => t.type === "PLAYER")?.y
+        }`,
+        false
+      );
+      logger.log(`THINGS: ${this.describeThings(currentNode.state.quadtree.queryAll())}`, false);
+      logger.log(
+        `INVENTORY: [${this.describeThings(currentNode.state.player.inventory as Thing[])}]`,
+        false
+      );
       // ----------------- DEBUG -----------------
 
       let availableActions =
         currentNode.action?.actionFilter(currentNode.state) ||
         this.generateActions(currentNode.state, globalActions);
       availableActions.sort((a, b) => a.cost - b.cost);
-      if (DEBUG) {
-        logger.log(`AVAILABLE ACTIONS: ${this.describeActions(availableActions)}\n`);
-      }
+      logger.log(`AVAILABLE ACTIONS: ${this.describeActions(availableActions)}\n`, false);
 
       for (const action of availableActions) {
         if (this.isActionExecutable(action, currentNode.state)) {
@@ -127,13 +106,12 @@ class GOAPPlanner {
           };
           // if (this.isStateInAncestry(newNode)) {
           //   // TODO: I dont think this was working
-          //   if (DEBUG)
           //     logger.log(
-          //       `Action not executed: ${action.name}(${action.target.name}) Duplicate state.`
+          //       `Action not executed: ${action.name}(${action.target.name}) Duplicate state.`, false
           //     );
           //   continue;
           // }
-          if (DEBUG) logger.log(`Action executed: ${action.name}(${action.target?.name})`);
+          logger.log(`Action executed: ${action.name}(${action.target?.name})`, false);
           if (this.goalMet(goal, newNode.state)) {
             let node = newNode;
             while (node.parent) {
@@ -144,8 +122,7 @@ class GOAPPlanner {
             }
             logger.log("\x1b[32m");
             logger.log("\nPlan found!");
-            logger.log(`Plan: ${this.describeActions(plan)}`);
-            logger.log("");
+            logger.log(`Plan: ${this.describeActions(plan)}\n`);
             logger.log("\x1b[0m");
             plans.push([...plan]);
             plan = [];
@@ -153,13 +130,11 @@ class GOAPPlanner {
 
           if (plans.length < 1) nodes.push(newNode);
         } else {
-          if (DEBUG) logger.log(`Action not executed: ${action.name}(${action.target.name})`);
+          logger.log(`Action not executed: ${action.name}(${action.target.name})`, false);
         }
       }
     }
-    if (DEBUG) {
-      logger.log("\n================== FINISHED PLAN GENERATION =====================\n");
-    }
+    logger.log("\n================== FINISHED PLAN GENERATION =====================\n", false);
     if (plans.length > 0) {
       // choose the plan with the lowest cost
       let lowestCost = Number.MAX_SAFE_INTEGER;
@@ -191,7 +166,7 @@ class GOAPPlanner {
     let actions: Action[] = [];
     // Add crafting actions
     const craftableRecipes = getCraftableRecipes(state);
-    if (DEBUG) logger.log(`CRAFTABLE RECIPES: ${craftableRecipes.map((r) => r.name)}`);
+    logger.log(`CRAFTABLE RECIPES: ${craftableRecipes.map((r) => r.name)}`, false);
     const craftActions: Action[] = craftableRecipes.map((recipe) => {
       // Return a new Craft action initialized with the recipe.
       // Replace `Craft` with the actual Craft action class you have.
@@ -250,48 +225,6 @@ class GOAPPlanner {
     );
   }
 
-  private static mergeObjects(target: any, source: any): any {
-    for (const key in source) {
-      if (Array.isArray(source[key])) {
-        target[key] = [...(target[key] || []), ...(source[key] || [])];
-        continue;
-      }
-      if (typeof source[key] === "object" && source[key] !== null) {
-        if (!target[key]) target[key] = {};
-        this.mergeObjects(target[key], source[key]);
-      } else {
-        target[key] = source[key];
-      }
-    }
-    return target;
-  }
-
-  private static removeFields(target: any, fieldsToRemove: any): void {
-    for (const key in fieldsToRemove) {
-      if (fieldsToRemove[key] instanceof Array) {
-        for (const thingToRemove of fieldsToRemove[key]) {
-          if (typeof thingToRemove == "object") {
-            const index = target[key].findIndex((thing: Thing) => thingToRemove.id === thing.id);
-            if (index !== -1) {
-              target[key].splice(index, 1);
-            }
-          } else {
-            const index = target[key].findIndex((thing: Thing) => thingToRemove === thing.type);
-            if (index !== -1) {
-              target[key].splice(index, 1);
-            }
-          }
-        }
-      } else if (typeof fieldsToRemove[key] === "object" && fieldsToRemove[key] !== null) {
-        if (target[key]) {
-          this.removeFields(target[key], fieldsToRemove[key]);
-        }
-      } else {
-        delete target[key];
-      }
-    }
-  }
-
   private static executeAction(action: Action, state: CombinedState): CombinedState {
     let newState = deepCloneWithActionReference(state);
     return action.simulate ? action.simulate(newState) : action.perform(newState);
@@ -299,61 +232,6 @@ class GOAPPlanner {
 
   private static goalMet(goal: Goal, state: CombinedState): boolean {
     return goal.requirements(state);
-  }
-
-  private static matchesNestedKeys(sub: any, obj: any): boolean {
-    for (const key in sub) {
-      if (key === "inventory" && Array.isArray(sub[key])) {
-        if (!this.inventoryRequirementsMet(sub[key], obj[key])) {
-          return false;
-        }
-      } else if (key === "things" && Array.isArray(sub[key])) {
-        if (!this.inventoryRequirementsMet(sub[key], obj[key])) {
-          return false;
-        }
-      } else if (typeof sub[key] === "object" && sub[key] !== null) {
-        if (!this.matchesNestedKeys(sub[key], obj[key])) {
-          return false;
-        }
-      } else {
-        if (sub[key] !== obj[key]) {
-          return false;
-        }
-      }
-    }
-    return true;
-  }
-
-  private static inventoryRequirementsMet(
-    requiredThings: (Thing | ThingType)[],
-    playerInventory: Thing[]
-  ): boolean {
-    const thingCounts = new Map<ThingType, number>();
-    const thingInstances = new Set<Thing>();
-
-    // Count how many things of each type the player has
-    Object.values(playerInventory).forEach((thing) => {
-      thingCounts.set(thing.type, (thingCounts.get(thing.type) || 0) + 1);
-      thingInstances.add(thing);
-    });
-
-    // Check if each required item type or item instance is met
-    for (const requiredThing of requiredThings) {
-      if (typeof requiredThing === "object") {
-        if (!thingInstances.has(requiredThing as Thing)) {
-          return false;
-        }
-        thingInstances.delete(requiredThing as Thing);
-      } else {
-        const count = thingCounts.get(requiredThing as ThingType) || 0;
-        if (count <= 0) {
-          return false;
-        }
-        thingCounts.set(requiredThing as ThingType, count - 1);
-      }
-    }
-
-    return true;
   }
 
   // ----------------- HELPERS -----------------
@@ -382,34 +260,6 @@ class GOAPPlanner {
       currentNode = currentNode.parent;
     }
     return actions;
-  }
-
-  // File: GOAPPlanner.ts
-
-  private static isSequenceFollowingPattern(
-    sequence: string[],
-    pattern: string[],
-    exactMatch: boolean = false
-  ): boolean {
-    if (exactMatch) {
-      // Check if the sequence is exactly the same as the pattern
-      return (
-        sequence.length === pattern.length &&
-        sequence.every((value, index) => value === pattern[index])
-      );
-    } else {
-      // Check if all elements in the pattern are contained in the sequence in order
-      let patternIndex = 0;
-      for (const action of sequence) {
-        if (action === pattern[patternIndex]) {
-          patternIndex++;
-          if (patternIndex === pattern.length) {
-            return true;
-          }
-        }
-      }
-      return false;
-    }
   }
 
   private static printActionSequence(currentNode: Node): string {
