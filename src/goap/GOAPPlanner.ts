@@ -41,13 +41,11 @@ class GOAPPlanner {
 
     // Early return if goal is already met
     if (this.goalMet(goal, combinedState)) {
-      console.log("Goal already met. No actions needed.");
       logger.log("Goal already met. No actions needed.");
       return plan;
     }
 
     let nodes: Node[] = [startNode];
-    console.log("Starting plan generation...");
     logger.log("Starting plan generation...");
 
     let sequenceCount = 0;
@@ -78,9 +76,9 @@ class GOAPPlanner {
         // "Craft(ROASTED_MUSHROOM)",
       ];
 
-      if (pattern.length > 0 && this.isSequenceFollowingPattern(sequence, pattern, true)) {
-        DEBUG = true;
-      }
+      // if (pattern.length > 0 && this.isSequenceFollowingPattern(sequence, pattern, true)) {
+      //   DEBUG = true;
+      // }
       // ----------------- DEBUG -----------------
       if (!DEBUG && sequenceCount % 10 === 0) {
         const status = `thinking... (${sequenceCount} sequences${
@@ -89,24 +87,22 @@ class GOAPPlanner {
         currentNode.state.player.GOAPStatus = status;
         process.stdout.write(`\r${status}`);
       }
-      // DEBUG = true;
+      DEBUG = true;
       if (DEBUG) {
-        console.log(
+        logger.log(
           `\n=================== Considered Sequence ${sequenceCount} ======================\n`
         );
-        console.log("GOAL:", goal.requirements.toString());
-        console.log(this.printActionSequence(currentNode));
-        console.log("");
-        console.log(
-          "PLAYER:",
-          currentNode.state.quadtree.queryAll().find((t) => t.type === "PLAYER")?.x,
-          currentNode.state.quadtree.queryAll().find((t) => t.type === "PLAYER")?.y
+        logger.log(`GOAL: ${goal.requirements.toString()}`);
+        logger.log(this.printActionSequence(currentNode));
+        logger.log("");
+        logger.log(
+          `PLAYER: ${currentNode.state.quadtree.queryAll().find((t) => t.type === "PLAYER")?.x} ${
+            currentNode.state.quadtree.queryAll().find((t) => t.type === "PLAYER")?.y
+          }`
         );
-        console.log("THINGS:", this.describeThings(currentNode.state.quadtree.queryAll()));
-        console.log(
-          "INVENTORY: [",
-          this.describeThings(currentNode.state.player.inventory as Thing[]),
-          "]"
+        logger.log(`THINGS: ${this.describeThings(currentNode.state.quadtree.queryAll())}`);
+        logger.log(
+          `INVENTORY: [${this.describeThings(currentNode.state.player.inventory as Thing[])}]`
         );
       }
       // ----------------- DEBUG -----------------
@@ -116,8 +112,7 @@ class GOAPPlanner {
         this.generateActions(currentNode.state, globalActions);
       availableActions.sort((a, b) => a.cost - b.cost);
       if (DEBUG) {
-        console.log("AVAILABLE ACTIONS: ", this.describeActions(availableActions));
-        console.log("");
+        logger.log(`AVAILABLE ACTIONS: ${this.describeActions(availableActions)}\n`);
       }
 
       for (const action of availableActions) {
@@ -133,12 +128,12 @@ class GOAPPlanner {
           // if (this.isStateInAncestry(newNode)) {
           //   // TODO: I dont think this was working
           //   if (DEBUG)
-          //     console.log(
+          //     logger.log(
           //       `Action not executed: ${action.name}(${action.target.name}) Duplicate state.`
           //     );
           //   continue;
           // }
-          if (DEBUG) console.log(`Action executed: ${action.name}(${action.target?.name})`);
+          if (DEBUG) logger.log(`Action executed: ${action.name}(${action.target?.name})`);
           if (this.goalMet(goal, newNode.state)) {
             let node = newNode;
             while (node.parent) {
@@ -147,25 +142,23 @@ class GOAPPlanner {
               }
               node = node.parent;
             }
-            // if (DEBUG) {
-            console.log("\x1b[32m");
-            console.log("\nPlan found!");
-            console.log("Plan:", this.describeActions(plan));
-            console.log("");
-            console.log("\x1b[0m");
-            // }
+            logger.log("\x1b[32m");
+            logger.log("\nPlan found!");
+            logger.log(`Plan: ${this.describeActions(plan)}`);
+            logger.log("");
+            logger.log("\x1b[0m");
             plans.push([...plan]);
             plan = [];
           }
 
           if (plans.length < 1) nodes.push(newNode);
         } else {
-          if (DEBUG) console.log(`Action not executed: ${action.name}(${action.target.name})`);
+          if (DEBUG) logger.log(`Action not executed: ${action.name}(${action.target.name})`);
         }
       }
     }
     if (DEBUG) {
-      console.log("\n================== FINISHED PLAN GENERATION =====================\n");
+      logger.log("\n================== FINISHED PLAN GENERATION =====================\n");
     }
     if (plans.length > 0) {
       // choose the plan with the lowest cost
@@ -181,15 +174,16 @@ class GOAPPlanner {
           lowestCostPlan = plan;
         }
       }
-      console.log("Total plans:", plans.length);
-      console.log("Total sequences:", sequenceCount);
-      console.log(
-        "Plans:",
-        plans.map((p) => p.map((a) => `${a.name}(${a.target.name})`).join(" -> ")).join("\n")
+      logger.log(`Total plans: ${plans.length}`);
+      logger.log(`Total sequences: ${sequenceCount}`);
+      logger.log(
+        `Plans: ${plans
+          .map((p) => p.map((a) => `${a.name}(${a.target.name})`).join(" -> "))
+          .join("\n")}`
       );
       return lowestCostPlan;
     }
-    console.log("No valid plan found.");
+    logger.log("No valid plan found.");
     return [];
   }
 
@@ -197,11 +191,7 @@ class GOAPPlanner {
     let actions: Action[] = [];
     // Add crafting actions
     const craftableRecipes = getCraftableRecipes(state);
-    if (DEBUG)
-      console.log(
-        "CRAFTABLE RECIPES: ",
-        craftableRecipes.map((r) => r.name)
-      );
+    if (DEBUG) logger.log(`CRAFTABLE RECIPES: ${craftableRecipes.map((r) => r.name)}`);
     const craftActions: Action[] = craftableRecipes.map((recipe) => {
       // Return a new Craft action initialized with the recipe.
       // Replace `Craft` with the actual Craft action class you have.

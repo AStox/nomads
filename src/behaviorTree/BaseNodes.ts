@@ -1,3 +1,5 @@
+import logger from "../utils/Logger";
+
 abstract class BehaviorNode {
   abstract run(context: any): boolean;
 }
@@ -56,7 +58,7 @@ class LogNode extends BehaviorNode {
   }
 
   run(context: any): boolean {
-    console.log(this.message);
+    logger.log(this.message);
     return true;
   }
 }

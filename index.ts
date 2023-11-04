@@ -4,6 +4,7 @@ import Renderer from "./src/Renderer";
 import { CombinedState } from "./src/goap/GOAPPlanner";
 import { WalkTo } from "./src/goap/Actions/WalkTo";
 import { ThingType, createThing } from "./src/Thing";
+import logger from "./src/utils/Logger";
 
 const width: number = 30;
 const world = World.newWorld(width, width);
@@ -31,21 +32,21 @@ const renderer = new Renderer();
 let turn = 1; // Keep track of the current turn outside processTurn to maintain state
 
 function processTurn(): void {
-  console.log(`-------------------- Turn ${turn} --------------------`);
+  logger.log(`-------------------- Turn ${turn} --------------------`);
 
   for (const player of players) {
     const state: CombinedState = { ...world.state, player: player };
-    console.log(
+    logger.log(
       `Player ${player.name} at position (${
         state.quadtree.queryAll().filter((t) => t.id === player.id)[0].x
       }, ${state.quadtree.queryAll().filter((t) => t.id === player.id)[0].y})`
     );
     player.makeDecision(state); // Assuming makeDecision is synchronous
-    console.log("---------------------------------------------------------------");
+    logger.log("---------------------------------------------------------------");
     renderer.render(state); // Assuming render is synchronous
   }
 
-  console.log(`-------------------- End of Turn ${turn} --------------------\n\n`);
+  logger.log(`-------------------- End of Turn ${turn} --------------------\n\n`);
   turn++;
 
   // Schedule the next turn after a 1-second delay, ensuring the previous turn has fully completed

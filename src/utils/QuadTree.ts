@@ -94,10 +94,7 @@ class QuadTree {
       return false;
     }
 
-    // console.log("REMOVING:", thing);
-    // console.log("THINGS:", this.things);
     const index = this.things.findIndex((t) => t.id === thing.id);
-    // console.log("INDEX:", index);
     if (index !== -1) {
       this.things.splice(index, 1);
       return true;

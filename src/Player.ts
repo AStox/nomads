@@ -5,6 +5,7 @@ import { CombinedState, GOAPPlanner } from "./goap/GOAPPlanner";
 import { WalkTo } from "./goap/Actions/WalkTo";
 import { Action } from "./goap/Action";
 import { ThingType, createThing } from "./Thing";
+import logger from "./utils/Logger";
 interface PartialWithMoveToPlayer extends Partial<Player> {
   moveTo: (x: number, y: number) => boolean;
 }
@@ -73,13 +74,13 @@ export class Player implements Thing {
     if (goal) {
       plan = GOAPPlanner.plan(this, state, goal, actionFactories);
       this.currentPlan = plan;
-      console.log(" ");
-      console.log("~~Plan~~");
+      logger.log(" ");
+      logger.log("~~Plan~~");
       for (let i = 0; i < plan.length; i++) {
-        console.log(`${i + 1}. ${plan[i].name}(${plan[i].target.name})`);
+        logger.log(`${i + 1}. ${plan[i].name}(${plan[i].target.name})`);
       }
     }
-    console.log("~~Execute Action~~");
+    logger.log("~~Execute Action~~");
     if (plan.length > 0) {
       const action = plan.shift();
       if (action) {

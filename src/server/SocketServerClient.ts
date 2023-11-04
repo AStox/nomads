@@ -1,5 +1,6 @@
 // File: src/server/SocketServerClient.ts
 import * as net from "net";
+import logger from "../utils/Logger";
 
 class SocketServerClient {
   private client!: net.Socket;
@@ -11,7 +12,7 @@ class SocketServerClient {
 
   private connect(): void {
     this.client = net.createConnection({ port: this.port }, () => {
-      console.log("Connected to server");
+      // logger.log("Connected to server");
     });
 
     this.client.on("data", (data: Buffer) => {
@@ -20,11 +21,11 @@ class SocketServerClient {
     });
 
     this.client.on("end", () => {
-      console.log("Disconnected from server");
+      // logger.log("Disconnected from server");
     });
 
     this.client.on("error", (error: Error) => {
-      console.error("Connection error:", error.message);
+      // logger.log(`Connection error: ${error.message}`);
       setTimeout(() => this.connect(), 2000); // Retry connection every 2 seconds
     });
   }

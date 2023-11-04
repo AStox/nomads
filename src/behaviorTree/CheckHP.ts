@@ -1,3 +1,4 @@
+import logger from "../utils/Logger";
 import { BehaviorNode } from "./BaseNodes";
 
 class CheckHP extends BehaviorNode {
@@ -12,10 +13,10 @@ class CheckHP extends BehaviorNode {
   run(context: any): boolean {
     // specify the context type if you have one
     if (this.player.HP < this.player.HPActionThreshold) {
-      console.log("HP below threshold.");
+      logger.log("HP below threshold.");
       return true;
     }
-    console.log("HP Okay.");
+    logger.log("HP Okay.");
     return false;
   }
 }

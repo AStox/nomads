@@ -1,5 +1,6 @@
 import { Player } from "../Player";
 import { Goal } from "../goap/Goals";
+import logger from "../utils/Logger";
 import { BehaviorNode } from "./BaseNodes";
 
 class SetGoal extends BehaviorNode {
@@ -13,7 +14,7 @@ class SetGoal extends BehaviorNode {
   }
 
   run(context: any): boolean {
-    console.log("Setting goal.");
+    logger.log("Setting goal.");
     this.player.currentGoal = this.goal;
     return true;
   }

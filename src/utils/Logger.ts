@@ -1,4 +1,3 @@
-// File: src/logger.ts
 import * as fs from "fs";
 import * as path from "path";
 
@@ -13,11 +12,11 @@ class Logger {
   log(message: string): void {
     const timestamp = new Date().toISOString();
     const logMessage = `${timestamp}: ${message}\n`;
-    fs.appendFile(this.logFile, logMessage, (err) => {
-      if (err) {
-        console.error("Failed to write to log file:", err);
-      }
-    });
+    try {
+      fs.appendFileSync(this.logFile, logMessage);
+    } catch (err) {
+      console.error("Failed to write to log file:", err);
+    }
     console.log(message); // Optionally, also log to console
   }
 }

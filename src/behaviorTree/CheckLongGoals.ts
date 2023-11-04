@@ -1,3 +1,4 @@
+import logger from "../utils/Logger";
 import { BehaviorNode } from "./BaseNodes";
 
 class CheckLongGoals extends BehaviorNode {
@@ -14,10 +15,10 @@ class CheckLongGoals extends BehaviorNode {
     if (this.player.longGoals.length > 0) {
       const index = Math.floor(context.rng * this.player.longGoals.length);
       this.player.currentGoal = this.player.longGoals[index];
-      console.log("Player has longterm goals. Goal: " + this.player.currentGoal.reward);
+      logger.log("Player has longterm goals. Goal: " + this.player.currentGoal.reward);
       return true;
     }
-    console.log("Player has no longterm goals.");
+    logger.log("Player has no longterm goals.");
     return false;
   }
 }
