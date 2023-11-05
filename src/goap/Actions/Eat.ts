@@ -2,6 +2,7 @@ import { CombinedState, GOAPPlanner } from "../GOAPPlanner";
 import { Thing } from "../../World";
 import { Action } from "../Action";
 import { Food } from "../../Thing";
+import logger from "../../utils/Logger";
 
 function Eat(state: CombinedState, thing: Thing): Action {
   return {

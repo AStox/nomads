@@ -1,5 +1,6 @@
 // File: src/SocketServer.ts
 import * as net from "net";
+import logger from "../utils/Logger";
 
 export class SocketServer {
   private server: net.Server;
@@ -16,7 +17,7 @@ export class SocketServer {
 
   start(port: number): void {
     this.server.listen(port, () => {
-      console.log(`Server listening on port ${port}`);
+      logger.log(`Server listening on port ${port}`);
     });
   }
 

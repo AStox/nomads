@@ -20,9 +20,14 @@ function StartFire(state: CombinedState, thing: Thing): Action {
     },
 
     perform(state: CombinedState) {
+      state.quadtree.insert(createThing(ThingType.CAMPFIRE, { x: thing.x, y: thing.y }));
       state.quadtree.remove(thing);
-      const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
-      state.quadtree.insert(createThing(ThingType.CAMPFIRE, { x: player?.x, y: player?.y }));
+      console.log("Thing qood", thing);
+      console.log(
+        "!!!!!!!!!!!",
+        state.quadtree.queryAll().filter((t) => t.type === ThingType.WOOD)
+      );
+
       return state;
     },
   };

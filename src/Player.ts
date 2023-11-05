@@ -43,11 +43,15 @@ export class Player implements Thing {
     this.symbol = "🧍";
     this.actions = actions;
     this.speed = 2;
-    this.inventory = [createThing(ThingType.AXE), createThing(ThingType.SAW)];
+    this.inventory = [
+      createThing(ThingType.AXE),
+      createThing(ThingType.SAW),
+      createThing(ThingType.MUSHROOM),
+    ];
     this.hunger = 20;
     this.maxHunger = 100;
     this.hungerActionThreshold = 25;
-    this.HP = 40;
+    this.HP = 90;
     this.maxHP = 100;
     this.HPActionThreshold = 50;
     this.longGoals = [
@@ -67,25 +71,51 @@ export class Player implements Thing {
     const context = { rng: 0 };
     const behaviorTree = createBehaviorTree(this);
     behaviorTree.run(context);
-    const goal = this.currentGoal;
     let actionFactories = [WalkTo];
 
-    let plan: Action[] = [];
-    if (goal) {
-      plan = GOAPPlanner.plan(this, state, goal, actionFactories);
-      this.currentPlan = plan;
-      logger.log(" ");
-      logger.log("~~Plan~~");
-      for (let i = 0; i < plan.length; i++) {
-        logger.log(`${i + 1}. ${plan[i].name}(${plan[i].target.name})`);
+    if (this.currentGoal) {
+      if (
+        !this.currentPlan ||
+        this.currentPlan.length === 0 ||
+        !this.currentPlan[0].preconditions(state)
+        //   // this.hasCompletedAction(state, this.currentPlan)
+      ) {
+        this.currentPlan = GOAPPlanner.plan(this, state, this.currentGoal, actionFactories);
+      }
+      logger.log("\n~~Plan~~");
+      for (let i = 0; i < this.currentPlan.length; i++) {
+        logger.log(
+          `${i + 1}. ${this.currentPlan[i].name}(${this.currentPlan[i].target.name})[${
+            this.currentPlan[i].target.id
+          }]}]`
+        );
       }
     }
     logger.log("~~Execute Action~~");
-    if (plan.length > 0) {
-      const action = plan.shift();
-      if (action) {
+    if (this.currentPlan && this.currentPlan.length > 0) {
+      const action = this.currentPlan[0];
+      if (action.preconditions(state)) {
         action.perform(state);
       }
+      if (this.hasCompletedAction(state, this.currentPlan)) {
+        this.currentPlan.shift();
+      }
+      logger.log(`${action.name}(${action.target.name})`);
     }
+  }
+
+  hasCompletedAction(state: CombinedState, plan: Action[]): boolean {
+    // console.log("!!!!!!!!!!!!!!!!!! has completed action");
+    // console.log("plan length", plan.length);
+    if (plan.length > 0) {
+      if (plan.length > 1) {
+        // console.log("plan[1].name", plan[1].name, plan[1].target.name);
+        // console.log("plan[1].preconditions(state);", plan[1].preconditions(state));
+        return plan[1].preconditions(state);
+      } else {
+        return this.currentGoal?.requirements(state) as boolean;
+      }
+    }
+    return true;
   }
 }

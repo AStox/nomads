@@ -250,18 +250,6 @@ class GOAPPlanner {
     return false;
   }
 
-  private static getActionSequence(node: Node): string[] {
-    const actions: string[] = [];
-    let currentNode = node;
-    while (currentNode.parent) {
-      if (currentNode.action) {
-        actions.unshift(`${currentNode.action.name}(${currentNode.action.target?.name})`);
-      }
-      currentNode = currentNode.parent;
-    }
-    return actions;
-  }
-
   private static printActionSequence(currentNode: Node): string {
     let parentNode = currentNode;
     const actionSequence: string[] = [];
