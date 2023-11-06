@@ -13,10 +13,14 @@ function Chop(state: CombinedState, thing: Thing): Action {
     },
     preconditions: (state: CombinedState) => {
       const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
+      const target = state.quadtree
+        .queryAll()
+        .find((t) => t.type === thing.type && t.x === thing.x && t.y === thing.y);
       if (
         player &&
-        player.x === thing.x &&
-        player.y === thing.y &&
+        target &&
+        player.x === target.x &&
+        player.y === target.y &&
         state.player.inventory.find((item) => item.type === ThingType.AXE)
       ) {
         return true;
@@ -25,8 +29,11 @@ function Chop(state: CombinedState, thing: Thing): Action {
       return false;
     },
     perform(state: CombinedState) {
-      state.quadtree.remove(thing);
       state.quadtree.insert(createThing(ThingType.WOOD, { x: thing.x, y: thing.y }));
+      const target = state.quadtree
+        .queryAll()
+        .find((t) => t.type === thing.type && t.x === thing.x && t.y === thing.y) as Thing;
+      state.quadtree.remove(target);
       return state;
     },
   };

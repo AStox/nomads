@@ -13,7 +13,7 @@ function Eat(state: CombinedState, thing: Thing): Action {
       return GOAPPlanner.generateActions(state, []);
     },
     preconditions: (state: CombinedState) => {
-      if (state.player.inventory.find((item) => item.id === thing.id)) {
+      if (state.player.inventory.find((item) => item.type === thing.type)) {
         return true;
       }
       return false;
@@ -21,7 +21,8 @@ function Eat(state: CombinedState, thing: Thing): Action {
 
     perform(state: CombinedState) {
       state.player.hunger += (thing as Food).satiation;
-      state.player.inventory = state.player.inventory.filter((item) => item.id !== thing.id);
+      const target = state.player.inventory.find((item) => item.type === thing.type) as Thing;
+      state.player.inventory = state.player.inventory.filter((item) => item.id !== target.id);
       return state;
     },
   };

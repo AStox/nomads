@@ -13,7 +13,7 @@ function Drop(state: CombinedState, thing: Thing): Action {
       );
     },
     preconditions: (state: CombinedState) => {
-      if (state.player.inventory.find((item) => item.id === thing.id)) {
+      if (state.player.inventory.find((item) => item.type === thing.type)) {
         return true;
       }
       return false;
@@ -21,8 +21,9 @@ function Drop(state: CombinedState, thing: Thing): Action {
 
     perform(state: CombinedState) {
       const player = state.quadtree.queryAll().find((t) => t.id === state.player.id) as Thing;
-      state.quadtree.insert({ ...thing, x: player.x, y: player.y });
-      state.player.inventory = state.player.inventory.filter((item) => item.id !== thing.id);
+      const target = state.player.inventory.find((item) => item.type === thing.type) as Thing;
+      state.quadtree.insert({ ...target, x: player.x, y: player.y });
+      state.player.inventory = state.player.inventory.filter((item) => item.id !== target.id);
       return state;
     },
   };

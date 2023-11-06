@@ -18,16 +18,21 @@ function PickUp(state: CombinedState, thing: Thing): Action {
     },
     preconditions: (state: CombinedState) => {
       const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
-      // log player positiong and thing poosition
-      if (player && player.x === thing.x && player.y === thing.y) {
+      const target = state.quadtree
+        .queryAll()
+        .find((t) => t.type === thing.type && t.x === thing.x && t.y === thing.y);
+      if (player && target && player.x === target.x && player.y === target.y) {
         return true;
       }
       return false;
     },
 
     perform(state: CombinedState) {
-      state.quadtree.remove(thing);
-      state.player.inventory.push(thing);
+      const target = state.quadtree
+        .queryAll()
+        .find((t) => t.type === thing.type && t.x === thing.x && t.y === thing.y) as Thing;
+      state.quadtree.remove(target);
+      state.player.inventory.push(target);
       return state;
     },
   };
