@@ -51,14 +51,14 @@ export class Player implements Thing {
     this.hunger = 20;
     this.maxHunger = 100;
     this.hungerActionThreshold = 25;
-    this.HP = 90;
+    this.HP = 40;
     this.maxHP = 100;
     this.HPActionThreshold = 50;
     this.longGoals = [
       {
         requiredSkills: [],
         requirements: (state: CombinedState) =>
-          state.player.inventory.some((item) => item.type === ThingType.WOOD),
+          state.player.inventory.some((item) => item.type === ThingType.BERRY),
       },
     ];
     this.currentGoal = null;

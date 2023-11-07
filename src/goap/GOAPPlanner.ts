@@ -9,6 +9,7 @@ import { deepEqual } from "../utils/DeepEqual";
 import { getCraftableRecipes } from "../Recipe";
 import { Craft } from "./Actions/Craft";
 import logger from "../utils/Logger";
+import { compareByProximity, removeDuplicatesByType } from "../utils/removeDuplicates";
 
 interface Node {
   parent: Node | null;
@@ -176,7 +177,12 @@ class GOAPPlanner {
     actions = [...actions, ...craftActions];
 
     const things = state.quadtree.queryAll();
-    for (const thing of things) {
+    const player = things.find((t) => t.id === state.player.id) as Thing;
+    const deduplicatedThings = removeDuplicatesByType(
+      things,
+      compareByProximity.bind(null, player)
+    );
+    for (const thing of deduplicatedThings) {
       if (thing.id !== state.player.id) {
         // Skip player
         for (const createAction of thing.actions) {
