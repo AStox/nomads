@@ -10,7 +10,13 @@ PROJECT_DIR="$(dirname "$(dirname "$DIR")")"
 OS=$(uname)
 
 if [[ "$OS" == "Darwin" ]]; then  # macOS
-    osascript -e 'tell application "Terminal" to activate' -e "tell app \"Terminal\" to do script \"cd $PROJECT_DIR && node dist/src/server/SocketServerClient.js\""
+    osascript -e 'tell application "Terminal"' \
+          -e 'activate' \
+          -e 'do script "cd '"$PROJECT_DIR"' && node dist/src/server/SocketServerClient.js"' \
+          -e 'set number of rows of front window to 100' \
+          -e 'set number of columns of front window to 200' \
+          -e 'end tell'
+
 elif [[ "$OS" == "Linux" ]]; then  # Linux
     gnome-terminal -- bash -c "cd $PROJECT_DIR && node dist/src/server/SocketServerClient.js; exec bash"
 elif [[ "$OS" == "MINGW64_NT-10.0" || "$OS" == "MSYS_NT-10.0" ]]; then  # Windows

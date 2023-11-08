@@ -6,17 +6,62 @@ import { WalkTo } from "./src/goap/Actions/WalkTo";
 import { ThingType, createThing } from "./src/Thing";
 import logger from "./src/utils/Logger";
 
-const width: number = 30;
+const width: number = 80;
 const world = World.newWorld(width, width);
 // world.populateThingsFromConfig("src/configs/objects.json");
-const things: Thing[] = [
-  createThing(ThingType.TREE, { x: 10, y: 2 }),
-  createThing(ThingType.BERRY, { x: 1, y: 1 }),
-  createThing(ThingType.BERRY, { x: 1, y: -1 }),
-  createThing(ThingType.BERRY, { x: -2, y: 1 }),
-  createThing(ThingType.MUSHROOM, { x: -5, y: 10 }),
-  createThing(ThingType.POULTICE, { x: 3, y: 7 }),
-];
+const things: Thing[] = [];
+// createThing(ThingType.TREE, { x: 10, y: 2 })];
+//   createThing(ThingType.TREE, { x: -10, y: -2 }),
+//   createThing(ThingType.TREE, { x: -4, y: 10 }),
+//   createThing(ThingType.TREE, { x: 3, y: -9 }),
+//   createThing(ThingType.BERRY, { x: 1, y: 1 }),
+//   createThing(ThingType.BERRY, { x: 1, y: -1 }),
+//   createThing(ThingType.BERRY, { x: -5, y: 1 }),
+//   createThing(ThingType.BERRY, { x: -5, y: 3 }),
+//   createThing(ThingType.BERRY, { x: -8, y: 2 }),
+//   createThing(ThingType.BERRY, { x: -2, y: 1 }),
+//   createThing(ThingType.MUSHROOM, { x: -5, y: 10 }),
+//   createThing(ThingType.POULTICE, { x: 3, y: 7 }),
+// ];
+
+// generate random things
+const numTrees = 10;
+const numBerries = 10;
+const numMushrooms = 10;
+
+for (let i = 0; i < numTrees; i++) {
+  const treeRNGx = Math.random();
+  const treeRNGy = Math.random();
+  logger.log(`TreeRng: ${treeRNGx}, ${treeRNGy}`);
+  things.push(
+    createThing(ThingType.TREE, {
+      x: treeRNGx * width - width / 2,
+      y: treeRNGy * width - width / 2,
+    })
+  );
+}
+for (let i = 0; i < numBerries; i++) {
+  const berryRNGx = Math.random();
+  const berryRNGy = Math.random();
+  logger.log(`BerryRng: ${berryRNGx}, ${berryRNGy}`);
+  things.push(
+    createThing(ThingType.BERRY, {
+      x: berryRNGx * width - width / 2,
+      y: berryRNGy * width - width / 2,
+    })
+  );
+}
+for (let i = 0; i < numMushrooms; i++) {
+  const mushroomRNGx = Math.random();
+  const mushroomRNGy = Math.random();
+  logger.log(`MushroomRng: ${mushroomRNGx}, ${mushroomRNGy}`);
+  things.push(
+    createThing(ThingType.MUSHROOM, {
+      x: mushroomRNGx * width - width / 2,
+      y: mushroomRNGy * width - width / 2,
+    })
+  );
+}
 
 for (const thing of things) {
   world.state.quadtree.insert(thing);
@@ -31,10 +76,11 @@ const renderer = new Renderer();
 
 let turn = 1; // Keep track of the current turn outside processTurn to maintain state
 
-function processTurn(): void {
+function tick(): void {
   logger.log(`-------------------- Turn ${turn} --------------------`);
 
   for (const player of players) {
+    player.hunger -= 1;
     const state: CombinedState = { ...world.state, player: player };
     logger.log(
       `Player ${player.name} at position (${
@@ -50,7 +96,9 @@ function processTurn(): void {
   turn++;
 
   // Schedule the next turn after a 1-second delay, ensuring the previous turn has fully completed
-  setTimeout(processTurn, 1000);
+  setTimeout(tick, 1000);
 }
 
-processTurn();
+const state: CombinedState = { ...world.state, player: players[0] };
+renderer.render(state);
+tick();

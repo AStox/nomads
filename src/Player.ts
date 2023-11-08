@@ -43,15 +43,11 @@ export class Player implements Thing {
     this.symbol = "🧍";
     this.actions = actions;
     this.speed = 2;
-    this.inventory = [
-      createThing(ThingType.AXE),
-      createThing(ThingType.SAW),
-      createThing(ThingType.MUSHROOM),
-    ];
+    this.inventory = [createThing(ThingType.AXE), createThing(ThingType.SAW)];
     this.hunger = 20;
     this.maxHunger = 100;
     this.hungerActionThreshold = 25;
-    this.HP = 40;
+    this.HP = 90;
     this.maxHP = 100;
     this.HPActionThreshold = 50;
     this.longGoals = [
