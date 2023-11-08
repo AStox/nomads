@@ -13,8 +13,8 @@ if [[ "$OS" == "Darwin" ]]; then  # macOS
     osascript -e 'tell application "Terminal"' \
           -e 'activate' \
           -e 'do script "cd '"$PROJECT_DIR"' && node dist/src/server/SocketServerClient.js"' \
-          -e 'set number of rows of front window to 100' \
-          -e 'set number of columns of front window to 200' \
+          -e 'set number of rows of front window to 80' \
+          -e 'set number of columns of front window to 160' \
           -e 'end tell'
 
 elif [[ "$OS" == "Linux" ]]; then  # Linux
