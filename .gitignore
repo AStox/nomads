@@ -1,3 +1,4 @@
 node_modules/
 dist/
 logs/*
+project_context.txt

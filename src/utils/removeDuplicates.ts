@@ -1,4 +1,3 @@
-// File: src/utils/removeDuplicates.ts
 import { Thing, ThingType } from "../Thing";
 
 type SortComparator<T> = (a: T, b: T) => number;
