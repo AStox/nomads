@@ -152,11 +152,14 @@ class GOAPPlanner {
       }
       logger.log(`Total plans: ${plans.length}`);
       logger.log(`Total sequences: ${sequenceCount}`);
-      logger.log(
-        `Plans: ${plans
-          .map((p) => p.map((a) => `${a.name}(${a.target.name})`).join(" -> "))
-          .join("\n")}`
-      );
+      plans.forEach((plan, index) => {
+        const planCost = plan.reduce((acc, action) => acc + action.cost, 0);
+        logger.log(
+          `${index + 1}. ${plan
+            .map((a) => `${a.name}(${a.target.name})`)
+            .join(" -> ")} - Cost: ${planCost}`
+        );
+      });
       return lowestCostPlan;
     }
     logger.log("No valid plan found.");

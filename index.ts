@@ -1,3 +1,4 @@
+import * as readline from "readline";
 import { World, Thing } from "./src/World";
 import { Player } from "./src/Player";
 import Renderer from "./src/Renderer";
@@ -74,7 +75,13 @@ for (const player of players) {
 
 const renderer = new Renderer();
 
-let turn = 1; // Keep track of the current turn outside processTurn to maintain state
+let turn = 1;
+let running = false;
+
+function processTick(): void {
+  if (!running) return;
+  tick();
+}
 
 function tick(): void {
   logger.log(`-------------------- Turn ${turn} --------------------`);
@@ -87,18 +94,33 @@ function tick(): void {
         state.quadtree.queryAll().filter((t) => t.id === player.id)[0].x
       }, ${state.quadtree.queryAll().filter((t) => t.id === player.id)[0].y})`
     );
-    player.makeDecision(state); // Assuming makeDecision is synchronous
+    player.makeDecision(state);
     logger.log("---------------------------------------------------------------");
-    renderer.render(state); // Assuming render is synchronous
+    renderer.render(state);
   }
 
   logger.log(`-------------------- End of Turn ${turn} --------------------\n\n`);
   turn++;
 
-  // Schedule the next turn after a 1-second delay, ensuring the previous turn has fully completed
-  setTimeout(tick, 1000);
+  setTimeout(processTick, 1000);
 }
 
-const state: CombinedState = { ...world.state, player: players[0] };
-renderer.render(state);
-tick();
+readline.emitKeypressEvents(process.stdin);
+process.stdin.setRawMode(true);
+process.stdin.on("keypress", (str, key) => {
+  if (key.ctrl && key.name === "c") {
+    process.exit(); // Exit on CTRL+C
+  } else if (key.name === "space") {
+    running = !running; // Toggle running state
+    console.log(running ? "Resuming simulation..." : "Simulation paused.");
+    if (running) processTick(); // If resuming, immediately process next tick
+  } else if (key.name === "right" && !running) {
+    console.log("Stepping...");
+    tick(); // Execute a single tick
+  }
+});
+
+console.log(
+  "Press SPACE to pause/resume the simulation, RIGHT arrow to step through while paused."
+);
+processTick(); // Start the simulation
