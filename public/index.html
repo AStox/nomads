@@ -17,6 +17,9 @@
     <div class="controls">
       <button id="play" type="button" aria-label="Pause"></button>
       <button id="speed" type="button" aria-label="Change speed">1×</button>
+      <button id="open-chronicle" type="button" aria-label="Chronicle">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path d="M4 5.5C6.5 4 9.5 4 12 6c2.5-2 5.5-2 8-.5V19c-2.5-1.5-5.5-1.5-8 .5-2.5-2-5.5-2-8-.5z M12 6v13.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+      </button>
       <button id="fit" type="button" aria-label="Show the whole map">
         <svg viewBox="0 0 24 24" width="20" height="20"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
@@ -26,17 +29,20 @@
   <main>
     <canvas id="map" aria-label="World map. Drag to pan, pinch or scroll to zoom, tap a person to open their ledger."></canvas>
     <p id="banner" class="banner" hidden></p>
+    <div id="hud" class="hud">
+      <section id="focus" class="focus" hidden aria-live="polite"></section>
+      <nav id="dock" class="dock" aria-label="People"></nav>
+    </div>
   </main>
 
-  <aside id="panel" class="panel" data-open="true">
-    <button id="grip" class="grip" type="button" aria-label="Show or hide the panel"><span></span></button>
+  <aside id="panel" class="panel" data-open="false">
     <nav class="tabs" id="tabs">
-      <button type="button" data-tab="people" aria-selected="true">People</button>
-      <button type="button" data-tab="chronicle" aria-selected="false">Chronicle</button>
+      <button type="button" data-tab="inspect" aria-selected="false">Ledger</button>
+      <button type="button" data-tab="chronicle" aria-selected="true">Chronicle</button>
       <span id="jev" class="jev"></span>
+      <button type="button" id="close" class="icon-btn" aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
     </nav>
-    <section id="people" class="view"></section>
-    <section id="chronicle" class="view" hidden>
+    <section id="chronicle" class="view">
       <div id="filters" class="filters"></div>
       <ol id="feed" class="feed"></ol>
     </section>

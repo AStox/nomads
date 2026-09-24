@@ -80,8 +80,9 @@ function frame(now) {
     const a = S.agents.get(selected);
     if (a) {
       const [x, y] = agentPos(a);
-      cam.x += (x - cam.x) * 0.2;
-      cam.y += (y + sheetCover() / 2 / cam.s - cam.y) * 0.2;
+      cam.x += (x + rightCover() / 2 / cam.s - cam.x) * 0.2;
+      cam.y += (y + bottomCover() / 2 / cam.s - cam.y) * 0.2;
+      clampCam();
     }
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -151,11 +152,16 @@ function drawAgents(now) {
 }
 
 // ---------- camera input ----------
+// Keep the visible area inside the map; the HUD and sheet count as margin you can scroll under.
 const clampCam = () => {
   const min = Math.min(cw / S.W, ch / S.H) * 0.7;
   cam.s = Math.max(min, Math.min(90, cam.s));
-  cam.x = Math.max(0, Math.min(S.W, cam.x));
-  cam.y = Math.max(0, Math.min(S.H, cam.y));
+  const axis = (c, size, view, extra) => {
+    const half = view / 2 / cam.s, pad = extra / cam.s;
+    return size + pad > 2 * half ? Math.max(half, Math.min(size - half + pad, c)) : size / 2 + pad / 2;
+  };
+  cam.x = axis(cam.x, S.W, cw, rightCover());
+  cam.y = axis(cam.y, S.H, ch, bottomCover());
 };
 function zoomAt(px, py, f) {
   const [wx, wy] = toWorld(px, py);
@@ -164,12 +170,15 @@ function zoomAt(px, py, f) {
   cam.x += wx - nx; cam.y += wy - ny; clampCam();
 }
 const panel = $("#panel");
-// Pixels of the map hidden under the bottom sheet on phones.
-const sheetCover = () => (window.innerWidth < 820 && panel.dataset.open === "true" ? panel.offsetHeight : 0);
+const phone = () => window.innerWidth < 820;
+const sheetOpen = () => panel.dataset.open === "true";
+// Pixels of map hidden under the HUD or the sheet, so the camera can frame what's still visible.
+const bottomCover = () => (phone() && sheetOpen() ? panel.offsetHeight : $("#hud").offsetHeight);
+const rightCover = () => (!phone() && sheetOpen() ? panel.offsetWidth : 0);
 function fit() {
-  const cover = sheetCover();
-  cam.s = Math.min(cw / S.W, (ch - cover) / S.H) * 0.96;
-  cam.x = S.W / 2; cam.y = S.H / 2 + cover / 2 / cam.s;
+  const b = bottomCover(), r = rightCover();
+  cam.s = Math.min((cw - r) / S.W, (ch - b) / S.H) * 0.96;
+  cam.x = S.W / 2 + r / 2 / cam.s; cam.y = S.H / 2 + b / 2 / cam.s;
   setFollow(false);
 }
 const pointers = new Map();
@@ -214,34 +223,72 @@ function tap(px, py) {
     const d = Math.hypot(x - px, y - py);
     if (d < bd) { best = a; bd = d; }
   }
-  if (best) inspect(best.id, true);
+  if (best) select(best.id);
+  else if (selected) select(null);
 }
 
-// ---------- panel ----------
-$("#grip").onclick = () => { panel.dataset.open = panel.dataset.open === "true" ? "false" : "true"; };
+// ---------- sheet ----------
+function openSheet(tab) {
+  panel.dataset.open = "true";
+  showTab(tab);
+  if (tab === "inspect") loadInspector();
+}
+function closeSheet() { panel.dataset.open = "false"; }
 function showTab(tab) {
-  for (const b of $("#tabs").querySelectorAll("button")) b.setAttribute("aria-selected", String(b.dataset.tab === (tab === "inspect" ? "people" : tab)));
-  for (const id of ["people", "chronicle", "inspect"]) $(`#${id}`).hidden = id !== tab;
-  if (tab !== "inspect") { selected = null; follow = false; }
+  for (const b of $("#tabs").querySelectorAll("button[data-tab]")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
+  for (const id of ["chronicle", "inspect"]) $(`#${id}`).hidden = id !== tab;
 }
-$("#tabs").addEventListener("click", (e) => { const t = e.target.closest("button")?.dataset.tab; if (t) showTab(t); });
+$("#tabs").addEventListener("click", (e) => { const t = e.target.closest("button[data-tab]")?.dataset.tab; if (t) openSheet(t); });
+$("#close").onclick = closeSheet;
+$("#open-chronicle").onclick = () => (sheetOpen() && !$("#chronicle").hidden ? closeSheet() : openSheet("chronicle"));
 
+// ---------- selection, focus card, dock ----------
+function select(id) {
+  selected = id;
+  follow = !!id;
+  if (id) cam.s = Math.max(cam.s, 24);
+  renderDock(); renderFocus();
+  if (id && sheetOpen() && !$("#inspect").hidden) loadInspector();
+  if (id) $(`#dock [data-id="${id}"]`)?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "smooth" });
+}
+const NEED_ICON = {
+  food: `<path d="M12 7c-3.5-2-7 0-7 4.5S8 20 12 18.5c4 1.5 7-2.5 7-7S15.5 5 12 7zM12 7c0-2 1-3.5 3-4" />`,
+  energy: `<path d="M13 3L6 13h5l-1 8 7-10h-5z" />`,
+  warmth: `<path d="M12 21c-3.5 0-6-2.4-6-5.8 0-3.6 3-5.2 3.5-9.2 2 1.2 3 3 3 4.8 1-.8 1.6-2 1.8-3.2 2 1.8 3.7 4.4 3.7 7.6 0 3.4-2.5 5.8-6 5.8z" />`,
+  social: `<circle cx="8.5" cy="9" r="3"/><circle cx="16" cy="10" r="2.5"/><path d="M3.5 19c.6-3 2.6-4.6 5-4.6s4.4 1.6 5 4.6M14 15.3c.6-.4 1.3-.6 2-.6 2 0 3.6 1.4 4 4.3" />`,
+  health: `<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z" />`,
+};
+const icon = (k) => `<svg viewBox="0 0 24 24" aria-hidden="true">${NEED_ICON[k]}</svg>`;
 function needBars(needs, big) {
   return `<div class="needs ${big ? "big" : ""}">${NEEDS.map((k) => {
     const v = Math.round(needs[k]);
-    return `<span class="need ${v < 30 ? "low" : ""}"><span class="nl">${k}${big ? `<em>${v}</em>` : ""}</span><i><b style="width:${v}%"></b></i></span>`;
+    return `<span class="need ${v < 30 ? "low" : ""}" title="${k} ${v}">${icon(k)}${big ? `<span class="nl"><span class="nk">${k}</span><em>${v}</em></span>` : ""}<i><b style="width:${v}%"></b></i></span>`;
   }).join("")}</div>`;
 }
-function renderPeople() {
-  $("#people").innerHTML = `<ul class="roster">${[...S.agents.values()].map((a) => `
-    <li><button type="button" class="person" data-id="${a.id}">
-      ${seal(a)}
-      <span class="who"><span class="name">${esc(a.name)}</span>${a.goal ? `<span class="tag">${human(a.goal)}${a.target ? ` · ${esc(nameOf(a.target))}` : ""}</span>` : ""}</span>
-      <span class="status ${a.thinking ? "thinking" : ""}">${a.down ? "Unconscious" : esc(a.status)}</span>
+const doing = (a) => (a.down ? "Unconscious" : a.status);
+function renderDock() {
+  $("#dock").innerHTML = [...S.agents.values()].map((a) => `
+    <button type="button" class="card ${a.id === selected ? "on" : ""}" data-id="${a.id}" aria-pressed="${a.id === selected}">
+      <span class="card-top">${seal(a, "sm")}<span class="card-name">${esc(a.name)}</span></span>
+      <span class="card-status ${a.thinking ? "thinking" : ""}">${esc(doing(a))}</span>
       ${needBars(a.needs)}
-    </button></li>`).join("")}</ul>`;
+    </button>`).join("");
 }
-$("#people").addEventListener("click", (e) => { const id = e.target.closest(".person")?.dataset.id; if (id) inspect(id, true); });
+$("#dock").addEventListener("click", (e) => { const id = e.target.closest(".card")?.dataset.id; if (id) select(id === selected ? null : id); });
+function renderFocus() {
+  const a = selected && S.agents.get(selected);
+  $("#focus").hidden = !a;
+  if (!a) return;
+  $("#focus").innerHTML = `
+    <div class="focus-head">${seal(a)}<div class="focus-title"><h2>${esc(a.name)}</h2>
+      <p class="focus-status ${a.thinking ? "thinking" : ""}">${esc(doing(a))}</p></div>
+      <button type="button" class="ghost" id="focus-ledger">Ledger</button>
+      <button type="button" class="icon-btn" id="focus-close" aria-label="Deselect"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
+    ${a.goal ? `<p class="focus-goal">Goal: ${human(a.goal)}${a.target ? ` with ${esc(nameOf(a.target))}` : ""}</p>` : ""}
+    ${needBars(a.needs, true)}`;
+  $("#focus-ledger").onclick = () => openSheet("inspect");
+  $("#focus-close").onclick = () => select(null);
+}
 
 // ---------- chronicle ----------
 const tone = (k) => (NOTABLE.has(k) ? "notable" : ROUTINE.has(k) ? "routine" : "social");
@@ -278,7 +325,8 @@ $("#filters").addEventListener("click", (e) => { const b = e.target.closest("but
 function jumpTo(e) {
   const b = e.target.closest("li.ev button");
   if (!b) return;
-  cam.x = +b.dataset.x + 0.5; cam.y = +b.dataset.y + 0.5 + sheetCover() / 2 / Math.max(cam.s, 28); cam.s = Math.max(cam.s, 28);
+  cam.s = Math.max(cam.s, 28);
+  cam.x = +b.dataset.x + 0.5 + rightCover() / 2 / cam.s; cam.y = +b.dataset.y + 0.5 + bottomCover() / 2 / cam.s;
   setFollow(false);
 }
 $("#feed").addEventListener("click", jumpTo);
@@ -291,22 +339,19 @@ function setFollow(v) {
   const b = $("#ins-head .follow");
   if (b) { b.setAttribute("aria-pressed", String(v)); b.lastElementChild.textContent = v ? "Following" : "Follow"; }
 }
-async function inspect(id, openPanel) {
-  showTab("inspect");
-  selected = id; follow = true; insData = null; insHistory = [];
-  cam.s = Math.max(cam.s, 26);
-  if (openPanel) panel.dataset.open = "true";
+async function loadInspector() {
+  const id = selected;
+  insData = null; insHistory = [];
+  if (!id) { $("#inspect").innerHTML = `<p class="muted pad">Tap someone on the map to open their ledger.</p>`; return; }
   const a = S.agents.get(id);
   $("#inspect").innerHTML = `
     <header class="ins-head" id="ins-head">
-      <button type="button" class="back" aria-label="Back to people"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       ${seal(a, "lg")}
       <div class="ins-title"><h2>${esc(a.name)}</h2><p id="ins-sub"></p></div>
       <button type="button" class="follow" aria-pressed="true"><svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Following</span></button>
     </header>
     <div id="ins-body"><p class="muted pad">Opening the ledger…</p></div>
     <section class="sec"><h3>History</h3><ol class="feed" id="ins-history"></ol><button type="button" class="more" id="ins-more" hidden>Load older entries</button></section>`;
-  $("#ins-head .back").onclick = () => showTab("people");
   $("#ins-head .follow").onclick = () => setFollow(!follow);
   $("#ins-history").addEventListener("click", jumpTo);
   $("#ins-more").onclick = loadOlder;
@@ -439,7 +484,7 @@ function connect() {
       await document.fonts.load('20px "IM Fell English"').catch(() => {});
       buildLayer(); applyControl(msg.control);
       if (!cam.init) { cam.init = true; resize(); fit(); }
-      renderPeople(); renderFilters(); renderFeed(); renderStatus();
+      renderDock(); renderFilters(); renderFeed(); renderStatus();
       document.body.classList.add("ready");
       return;
     }
@@ -467,7 +512,7 @@ function connect() {
       const mine = msg.events.filter((e) => selected && e.who.includes(selected));
       if (mine.length && $("#ins-history")) { insHistory.push(...mine); prependEvents($("#ins-history"), mine); }
     }
-    if (!$("#people").hidden) renderPeople();
+    renderDock(); renderFocus();
     renderStatus();
   };
 }
