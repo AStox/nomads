@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#231a12" />
+  <title>Nomads debug</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=IM+Fell+English+SC&family=Alegreya+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    html, body { height: auto; min-height: 100%; overflow: auto; }
+    body { background: var(--leather); }
+    .topbar .home {
+      display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 12px; border-radius: 10px; flex: none;
+      color: #e8d9b8; text-decoration: none; font: 400 16px/1 "IM Fell English", serif;
+      background: rgb(255 240 210 / .06); box-shadow: 0 0 0 1px rgb(217 181 108 / .18) inset;
+    }
+    .topbar .home:hover { background: rgb(255 240 210 / .12); }
+    .topbar .home:focus-visible { outline: 2px solid var(--gilt); outline-offset: 2px; }
+    .stamp { flex: 1; min-width: 0; margin: 0; text-align: right; color: #b9a680; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .stamp b { color: var(--gilt); font-weight: 700; letter-spacing: .04em; }
+    .controls button.wide { width: auto; padding: 0 12px; }
+    #auto[aria-pressed="true"] { background: rgb(217 181 108 / .85); color: var(--leather); }
+    #pause[aria-pressed="true"] { background: var(--seal); color: #fbf1dc; }
+
+    .dbg {
+      max-width: 1200px; margin: 0 auto; min-height: 100vh;
+      padding-top: calc(var(--bar-h) + env(safe-area-inset-top));
+      padding-bottom: env(safe-area-inset-bottom);
+      background: var(--grain), var(--paper);
+      box-shadow: 0 0 40px rgb(0 0 0 / .45);
+    }
+    .dbg .tabs {
+      position: sticky; top: calc(var(--bar-h) + env(safe-area-inset-top)); z-index: 2;
+      background: var(--grain), var(--paper); overflow-x: auto; scrollbar-width: none; padding: 6px 18px 0;
+    }
+    .dbg .tabs::-webkit-scrollbar { display: none; }
+    .dbg .tabs button[data-tab] { min-height: 40px; white-space: nowrap; }
+
+    .fbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 18px; border-bottom: 1px solid var(--rule); }
+    .fbar.in { padding: 0 0 10px; border: 0; }
+    .fbar label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-soft); }
+    .fbar select, .fbar input {
+      min-height: 36px; max-width: 100%; padding: 0 10px; border: 0; border-radius: 10px;
+      background: rgb(255 250 235 / .65); box-shadow: 0 0 0 1px var(--rule) inset;
+      font: 400 16px/1.2 "Alegreya Sans", sans-serif; color: var(--ink);
+    }
+    .fbar input[type="search"] { flex: 1 1 200px; min-width: 0; }
+    .fbar select:focus-visible, .fbar input:focus-visible { outline: 2px solid var(--seal); outline-offset: 1px; }
+    .tog {
+      min-height: 36px; border: 0; border-radius: 999px; padding: 0 14px; font-size: 15px;
+      background: rgb(113 92 69 / .1); box-shadow: 0 0 0 1px var(--rule) inset;
+      transition-property: background-color, color; transition-duration: .15s;
+    }
+    .tog[aria-pressed="true"] { background: var(--ink); color: var(--paper); box-shadow: none; }
+
+    .note { margin: 12px 18px 0; padding: 8px 12px; border-radius: 10px; background: rgb(168 50 31 / .08); color: var(--ink-soft); font-size: 14px; }
+    .res { padding: 14px 18px 18px; }
+    .res-tail { padding: 0 18px 40px; }
+    .count { margin: 0 0 10px; font-size: 14px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+    .nil { color: var(--ink-faint); font-style: italic; }
+    .sub { color: var(--ink-faint); font-size: 12.5px; }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 14px; align-items: start; }
+    .box { min-width: 0; padding: 12px 14px 14px; border-radius: 12px; background: rgb(255 250 235 / .35); box-shadow: 0 0 0 1px var(--rule) inset; }
+    .box.wide { grid-column: 1 / -1; }
+    .box h3 { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font: 400 16px/1 "IM Fell English SC", serif; color: var(--ink-soft); letter-spacing: .06em; }
+    .box h3::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--rule), transparent); }
+
+    table.kvt { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .kvt th { text-align: left; font-weight: 500; color: var(--ink-soft); padding: 4px 10px 4px 0; vertical-align: top; }
+    .kvt td { text-align: right; padding: 4px 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .kvt td.barc { width: 40%; padding-right: 10px; }
+    .kvt tr + tr > * { border-top: 1px dashed var(--rule); }
+    .kvt tr.total > * { font-weight: 700; color: var(--ink); }
+    .bar { display: block; height: 6px; min-width: 40px; border-radius: 3px; background: rgb(113 92 69 / .14); overflow: hidden; }
+    .bar b { display: block; height: 100%; border-radius: 3px; background: var(--seal); }
+
+    .ctr { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0 24px; font-size: 14px; }
+    .ctr div { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-top: 1px dashed var(--rule); }
+    .ctr span { overflow-wrap: anywhere; color: var(--ink-soft); }
+    .ctr b { font-weight: 500; font-variant-numeric: tabular-nums; }
+
+    .tw { overflow-x: auto; border-radius: 10px; box-shadow: 0 0 0 1px var(--rule) inset; -webkit-overflow-scrolling: touch; }
+    table.dt { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .dt th {
+      text-align: left; padding: 10px; white-space: nowrap; background: rgb(113 92 69 / .07); border-bottom: 1px solid var(--rule);
+      font: 700 11px/1 "Alegreya Sans", sans-serif; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint);
+    }
+    .dt td { padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; line-height: 20px; }
+    .dt .nw { white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .dt .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .dt tr.row { cursor: pointer; }
+    .dt tr.row:hover td { background: rgb(113 92 69 / .07); }
+    .dt tr.row:focus-visible { outline: 2px solid var(--seal); outline-offset: -2px; }
+    .dt tr.open td { background: rgb(217 181 108 / .2); }
+    .dt tr.err td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
+    .dt tr.det > td { background: rgb(255 250 235 / .55); padding: 10px 12px 12px; }
+    .dt td.pv { max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dt td.pv code { color: var(--ink-soft); }
+    .det h4 { margin: 6px 0 4px; font: 400 14px/1 "IM Fell English SC", serif; letter-spacing: .06em; color: var(--ink-soft); }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font: 700 10.5px/1 "Alegreya Sans", sans-serif; letter-spacing: .06em; text-transform: uppercase; background: var(--bad); color: #fbf1dc; }
+
+    .dbg code, .dbg pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+    .dbg pre {
+      margin: 0 0 8px; max-height: 340px; overflow: auto; padding: 10px 12px; border-radius: 8px;
+      background: rgb(51 37 26 / .06); box-shadow: 0 0 0 1px var(--rule) inset;
+      line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere;
+    }
+    code.j { overflow-wrap: anywhere; text-align: left; display: inline-block; }
+
+    .chip { display: inline-block; padding: 3px 8px; border-radius: 999px; font: 700 10.5px/1 "Alegreya Sans", sans-serif; letter-spacing: .06em; text-transform: uppercase; color: #fbf1dc; background: var(--c, var(--ink-faint)); white-space: nowrap; }
+    .pc { display: inline-block; margin: 0 4px 4px 0; padding: 2px 8px; border-radius: 999px; font-size: 12.5px; white-space: nowrap; background: rgb(168 50 31 / calc(var(--s) * .2 + .04)); }
+    .pc b { margin-left: 4px; font-weight: 500; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+    .kname { font: 400 16px/1.25 "IM Fell English", serif; }
+    .made .kname { color: #7a4b08; }
+
+    .laws { display: grid; gap: 10px; }
+    .law { padding: 12px 14px; border-radius: 12px; background: rgb(255 250 235 / .35); box-shadow: 0 0 0 1px var(--rule) inset; }
+    .law.jev { background: linear-gradient(90deg, rgb(217 181 108 / .35), transparent 80%); box-shadow: inset 3px 0 0 var(--gilt), 0 0 0 1px var(--rule) inset; }
+    .law-text { margin: 0; font: 400 18px/1.35 "IM Fell English", serif; }
+    .meta { margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--ink-faint); }
+    .meta .src { font-weight: 700; color: var(--ink-soft); }
+    .law.jev .src { color: #7a4b08; }
+    .law details { margin-top: 6px; }
+    .law summary { display: inline-flex; align-items: center; min-height: 36px; cursor: pointer; font-size: 13px; color: var(--ink-soft); }
+    .law summary:focus-visible { outline: 2px solid var(--seal); outline-offset: 2px; border-radius: 4px; }
+
+    @media (max-width: 560px) {
+      .topbar { gap: 8px; }
+      .topbar .home span, .stamp .lbl { display: none; }
+      .controls button.wide { padding: 0 10px; }
+      .res, .fbar { padding-left: 12px; padding-right: 12px; }
+      .res-tail { padding-left: 12px; padding-right: 12px; }
+      .dbg .tabs { padding-left: 12px; padding-right: 12px; }
+      .note { margin-left: 12px; margin-right: 12px; }
+      .fbar label { flex: 1 1 140px; }
+      .fbar label select { flex: 1; min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Nomads debug</h1>
+    <a class="home" href="./" aria-label="Back to the map">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Back to the map</span>
+    </a>
+    <p id="stamp" class="stamp" aria-live="off"></p>
+    <div class="controls">
+      <button id="auto" class="wide" type="button" aria-pressed="true">Auto 3s</button>
+      <button id="pause" class="wide" type="button" aria-pressed="false">Pause</button>
+      <button id="refresh" type="button" aria-label="Refresh now">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M19 12a7 7 0 1 1-2.05-4.95M19 4.5V8h-3.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="dbg">
+    <nav class="tabs" id="tabs" aria-label="Debug views">
+      <button type="button" data-tab="stats" aria-selected="true">Stats</button>
+      <button type="button" data-tab="jev" aria-selected="false">Jev calls</button>
+      <button type="button" data-tab="trace" aria-selected="false">Trace</button>
+      <button type="button" data-tab="laws" aria-selected="false">Laws</button>
+      <button type="button" data-tab="kinds" aria-selected="false">Kinds</button>
+    </nav>
+
+    <section id="stats">
+      <p class="note" hidden></p>
+      <div class="res"><p class="muted">Loading...</p></div>
+      <div class="res-tail">
+        <section class="box">
+          <h3>Counters</h3>
+          <div class="fbar in"><input id="ctr-q" type="search" placeholder="Filter counters" aria-label="Filter counters" autocomplete="off" /></div>
+          <div id="counters"><p class="muted">Loading...</p></div>
+        </section>
+      </div>
+    </section>
+
+    <section id="jev" hidden>
+      <div class="fbar">
+        <label>Agent <select id="jev-agent"><option value="">All agents</option></select></label>
+        <label>Purpose <select id="jev-purpose"><option value="">All purposes</option></select></label>
+      </div>
+      <p class="note" hidden></p>
+      <div class="res"><p class="muted">Loading...</p></div>
+    </section>
+
+    <section id="trace" hidden>
+      <div class="fbar">
+        <label>System
+          <select id="tr-sys">
+            <option value="">All</option>
+            <option>physics</option><option>plan</option><option>brain</option><option>belief</option><option>ecology</option>
+            <option>weather</option><option>fire</option><option>animal</option><option>social</option><option>world</option>
+          </select>
+        </label>
+        <label>Agent <select id="tr-agent"><option value="">All agents</option></select></label>
+        <label>Kind <select id="tr-kind"><option value="">All kinds</option></select></label>
+        <label>Limit <select id="tr-limit"><option>200</option><option selected>500</option><option>1000</option></select></label>
+        <input id="tr-q" type="search" placeholder="Search data, kind, system, agent" aria-label="Search trace" autocomplete="off" />
+      </div>
+      <p class="note" hidden></p>
+      <div class="res"><p class="muted">Loading...</p></div>
+    </section>
+
+    <section id="laws" hidden>
+      <p class="note" hidden></p>
+      <div class="res"><p class="muted">Loading...</p></div>
+    </section>
+
+    <section id="kinds" hidden>
+      <div class="fbar">
+        <input id="k-q" type="search" placeholder="Filter by name, id or property" aria-label="Filter kinds" autocomplete="off" />
+        <button id="k-made" class="tog" type="button" aria-pressed="false">Made only</button>
+      </div>
+      <p class="note" hidden></p>
+      <div class="res"><p class="muted">Loading...</p></div>
+    </section>
+  </div>
+
+  <script type="module" src="debug.js"></script>
+</body>
+</html>

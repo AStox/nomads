@@ -84,6 +84,141 @@ type Knowledge = {
 };
 ```
 
+## Emergence
+
+The recipe book only produces what we wrote. To get outcomes nobody planned, the world has to run on general rules that combine, and those rules have to collide with each other. This section replaces the fixed recipe book with a material system and adds world systems that push on the agents.
+
+### 1. Materials are bags of properties
+
+Every item and thing carries a set of properties with strengths from 0 to 1, instead of being a named type the code special-cases.
+
+| Property | Meaning | Examples |
+| --- | --- | --- |
+| hard | resists force, can strike | stone 0.9, log 0.6, clay 0.1 |
+| sharp | cuts and pierces | sharp stone 0.7, bone shard 0.6 |
+| heavy | carries force, slow to carry | stone 0.7, log 0.8 |
+| long | reaches, levers | stick 0.8, log 0.9 |
+| flexible | bends and springs back | fresh stick 0.6, cord 0.9 |
+| fibrous | can be split, twisted, woven | reeds 0.9, bark 0.7 |
+| binding | holds things together | cord 0.9, resin 0.8, wet clay 0.5 |
+| flammable | catches fire | dry grass 0.9, wood 0.7 |
+| dry / wet | state, changes with weather and fire | |
+| hot | state, fades over time | ember, fired pot |
+| edible | food value, with nutrition and risk | berry, fish, raw meat |
+| toxic | makes you sick | some mushrooms, rotten meat |
+| plastic | can be shaped | wet clay 0.9 |
+| container | holds liquid or small things | pot, hollow gourd, bark bowl |
+| insulating | keeps heat in | hide, fur, thatch |
+
+An item is `{ base: "stone", props: {...}, made?: { from, by, t } }`. Two stones are the same item until one gets chipped, and then it's a different one.
+
+Things in the world are made of materials too. A tree is a standing mass of wood with `integrity` (how much damage it can take) and `breaks_into` (what's left when integrity hits zero: logs, branches, bark). A boulder breaks into stones, a stone breaks into a sharp fragment and grit, and a dead deer breaks into meat, hide, and bone. Every material also has a `toughness` (how hard it is to damage) and a `grain` (whether it splits cleanly along one direction, like wood, or shatters, like flint).
+
+### 2. Verbs and material responses
+
+There are no tool actions like chop, mine, or butcher. Agents have a handful of basic verbs, and what happens depends only on the materials involved.
+
+Verbs:
+- **strike** a target with something held (or with bare hands)
+- **press / rub** one thing against another (grind, sharpen, start friction heat)
+- **join** things (bind with something binding, stack, lean, pack)
+- **heat / wet** by putting something in fire or water
+- **shape** something plastic
+- **move** (carry, drop, throw, dig, place)
+- **consume** (eat, drink, wear)
+
+The physics is a few response rules over properties, written once:
+
+- **Damage from a strike** = force x focus - target toughness. Force comes from the held thing's weight and length (leverage) plus the agent's strength. Focus comes from sharpness, so a sharp edge concentrates force and a blunt one spreads it. Damage lowers the target's integrity. At zero, the target turns into its `breaks_into` products.
+- **Recoil:** force the target doesn't absorb comes back. Hitting a tree with your fist hurts you. A weak binding snaps. A brittle tool chips and loses sharpness.
+- **Friction:** rubbing builds heat in proportion to pressure and speed, and dissipates it over time. Enough heat on something flammable and dry makes an ember.
+- **Heat:** past a material's threshold it changes state: wet becomes dry, raw becomes cooked, wet clay becomes fired, resin melts, flammable things burn.
+- **Joining:** a joined item's properties are its parts' properties, weighted by where they sit (the head gives sharpness, the handle gives length). It's only as strong as its weakest joint.
+
+Chopping isn't in this list, and it doesn't need to be. An agent who wants the tree down strikes it with whatever they have:
+
+| Held | What happens |
+| --- | --- |
+| nothing | almost no damage, their hand hurts, they give up |
+| a stone | slow, the tree takes most of a day, the stone may split |
+| a sharp stone | faster, but it's short, so there's little force |
+| sharp stone bound to a stick | fast, most of the force is focused; the binding may loosen |
+| a heavy sharp thing we never designed | also works, by the same rule |
+
+The same rule covers splitting logs (wood grain splits cleanly under a focused strike), knapping (stone struck at an angle breaks off a sharp fragment), butchering, breaking ice, and fighting. When two agents fight, a spear is simply a long, sharp thing, and it does what those properties do.
+
+### 2a. Planning without hard-coded effects
+
+GOAP needs to predict what a verb will do. It can't use the physics rules directly, because agents don't know the physics. It uses each agent's **beliefs**: the outcomes they've seen, stored as "strike tree with sharp stone on a stick: tree fell, took about 10 minutes." Goals are world states ("the tree is logs", "I have something that cuts meat"), and the planner picks verbs and objects the agent believes will get there.
+
+- An agent who has never seen a tree fall doesn't know striking works, so "get logs" isn't a goal they can plan for. They can still tinker, and a Jev choice picks what they try.
+- Beliefs come from doing, watching, and being told. They can be wrong or out of date, like thinking a blunt stone works when it only worked because the tree was already half cut.
+- A tool's "purpose" is also a belief: "the bound stone is good for felling trees." Nobody labels it an axe; the use is what the agents remember.
+
+What stays hard-coded is the physics rules and the material values. That's intentional: it's the one layer that has to be consistent for the world to make sense. Everything above it (tools, techniques, what's worth making) comes out of agents finding out what those rules do.
+
+### 3. Jev judges the edges, and its answers become law
+
+Rules can't cover every pair. When an agent tries something the rules don't cover (bind a mushroom to a fish, heat reeds in water), Jev answers a few typed questions about the physical result with world state as context: "Would this realistically hold together?", "Does the result stay sharp?", "Is this edible now?" The answers set the result's properties.
+
+Every Jev ruling is cached as a **world law** keyed by the operation and the rounded properties of the inputs. The next time anyone tries the same thing, the law applies without a Jev call. So the world stays consistent, the physics grows as agents explore it, and the list of laws is itself a record of what this world has learned. Laws are world facts; knowing them is per agent, the same way recipes work today.
+
+### 4. Naming things without writing text
+
+Jev can't invent a word, so names come from templates over the parts and properties: "stone-headed stick," "twisted reed cord," "fired clay bowl." When a compound becomes common, a Jev choice picks a short name from a generated list of candidates (the maker's name, the purpose, the material). This is how "Mara's hook" or "the long blade" can end up as the world's word for something.
+
+### 5. World systems that collide
+
+Each system is simple on its own. The interesting part is where they meet.
+
+- **Fire:** fires spread to adjacent flammable, dry things, faster in wind and slower after rain. A campfire left burning next to a lean-to can burn it down. A forest fire clears land (good for planting later) and drives off animals.
+- **Weather and seasons:** a year of about 40 days. Rain wets things, which puts out fires and stops fire-starting. Winter drops warmth fast, stops bushes from fruiting, and freezes shallow water. Summer drought makes everything flammable.
+- **Plants:** bushes, trees, and reeds grow, spread by seed, and die when overharvested. Seeds are items. Anyone who drops seeds near water may find a bush there later, which is how farming can be discovered instead of scripted.
+- **Animals:** a few species with simple needs (graze, drink, flee, breed). Deer flee people; wolves hunt deer and, in a hungry winter, people. Overhunting crashes a population; wolves follow deer; people follow both. Animals leave bones, hide, and meat, which spoil.
+- **Decay:** food spoils in days unless it's dried, smoked, or salted. Tools wear out with use. Buildings weaken in weather and need repair. Things left on the ground rot or get carried off. Decay is what makes storage, preservation, and upkeep worth inventing.
+- **Terrain change:** digging makes pits (traps, wells, clay), chopping makes clearings, paths form where agents walk often and make walking faster. Over time the map records where people live.
+- **Disease:** eating toxic or rotten food, or living crowded with no clean water, can make people sick. Sickness spreads to people nearby. This makes wells, cooking, and herbal remedies matter, and it gives settlements a reason to have a healer.
+
+### 6. Consequences flow into the social layer
+
+World events feed the same memory, bonds, and gossip the agents already have, so physical accidents become social stories.
+
+- If someone's fire burns another person's hut, the owner gets a "destroyed my home" bond with whoever lit it, and gossip spreads it.
+- A winter where one agent stored food and others didn't creates debts, begging, theft, or a first shared storehouse.
+- A wolf attack that someone fought off creates "saved my life" and makes huddling together safer than living alone. That's the pressure that forms camps.
+- Scarcity in one area pushes agents to migrate, which brings strangers into each other's territory.
+
+### 7. Knowledge is observation, not labels
+
+An agent learns laws by seeing them happen, not only by doing them. Watching lightning set a tree on fire teaches "hot plus flammable burns." Seeing a bush grow where berries rotted teaches that seeds grow. Many discoveries start as an accident someone noticed, the way many real ones did. Each agent keeps the laws they've seen, and the ones they believe but got wrong (a superstitious agent may decide the berries grew because they prayed). Wrong beliefs spread by gossip like true ones.
+
+### 8. Guardrails
+
+- **Budget:** at most a few Jev rulings per in-game hour. Most attempts hit a rule function or a cached law.
+- **Stability:** every law is consistent once made, and property values stay within 0 to 1, so nothing snowballs into infinite food or infinitely sharp stone.
+- **Replay:** the world seed, the law cache, and the event log are saved, so a run can be inspected afterward to see why something happened.
+- **Watchability:** every new law, a new named compound, a fire that destroys something, a population crash, and a first illness are all major chronicle events, so the surprises show up where you'll see them.
+
+### Seeing inside the world
+
+Everything the simulation decides is recorded, so any surprise can be traced back to its cause.
+
+- **Trace log:** every plan, interrupt, physics result (with the force, focus, damage, chance, and heat numbers), belief change, fire spread, weather change, and animal attack goes into an in-memory ring buffer and `data/logs/trace.jsonl`.
+- **Jev log:** every Jev call, with its full state, questions, answers, latency, and token count, goes into a ring buffer and `data/logs/jev.jsonl`.
+- **Debug API:** `api/debug/stats` (populations, weather, per-system tick cost, counters, Jev cost), `api/debug/jev`, `api/debug/trace` (filter by system, agent, kind), `api/debug/laws` (each law and who believes it, including mistaken versions), `api/debug/kinds`, `api/debug/rulings`, `api/debug/state` (the whole world).
+- **Debug page:** `debug.html` shows all of the above in the browser.
+- **CLI:** `bun scripts/inspect.ts stats|agent ID|jev|trace SYS AGENT|laws|kinds|events` reads the live server; `NOMADS_BRAIN=random bun scripts/run.ts --ticks N --seed S` runs a whole world offline without Jev and prints every law, invention, and belief.
+
+### Build order
+
+1. Materials with properties, toughness, integrity, and what they break into, plus the basic verbs and the physics rules (strike damage, recoil, friction, heat, joining). Swap GOAP's fixed effects for per-agent beliefs about outcomes. Check that the current 19 recipes still come out as things agents can figure out, without being written down anywhere.
+2. Jev rulings for combinations the rules don't cover, with the law cache and template names.
+3. Fire spread, weather, and seasons.
+4. Spoilage and tool wear.
+5. Plants spreading by seed, then animals with a simple predator and prey loop.
+6. Observation learning and wrong beliefs.
+7. Disease.
+
 ## Skills (111)
 
 Each skill is XP with a level from 0 to 10. A higher level means faster actions, better yields, and access to new recipes. Skills unlock in order, so you can't learn weaponsmithing before smithing.

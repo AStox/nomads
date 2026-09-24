@@ -1,8 +1,12 @@
 import { TRAITS } from "./traits";
+import { baseRegistry, type Registry } from "./materials";
+import type { Belief } from "./beliefs";
 
 export const W = 64;
 export const H = 64;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
+export const YEAR_DAYS = 40;
+export const VERSION = 3;
 
 export enum Tile {
   Grass = 0,
@@ -11,17 +15,25 @@ export enum Tile {
   Rock = 3,
 }
 
-export type Item =
-  | "berry" | "mushroom" | "fish" | "meal" | "stew"
-  | "stick" | "stone" | "fiber" | "clay"
-  | "sharp_stone" | "cord" | "axe" | "log" | "plank" | "wedge" | "bow_drill" | "fishing_line" | "pot" | "brick";
-export const FOOD: Partial<Record<Item, number>> = { berry: 20, mushroom: 18, fish: 14, meal: 45, stew: 70 };
-export type Inv = Partial<Record<Item, number>>;
-
 export type ThingKind =
-  | "tree" | "stump" | "bush" | "mushroom" | "stick" | "stone" | "reeds" | "clay"
-  | "fire" | "hearth" | "lean_to" | "log_hut" | "cabin";
-export type Thing = { id: string; kind: ThingKind; x: number; y: number; n?: number; owner?: string; until?: number };
+  | "tree" | "stump" | "burnt_stump" | "bush" | "dead_bush" | "sapling" | "mushroom" | "herb"
+  | "stick" | "stone" | "boulder" | "reeds" | "clay" | "fire" | "structure" | "item" | "ash";
+export type Shelter = { tier: 0 | 1 | 2 | 3; style: string; cover: number; insul: number; sturdy: number; flam: number };
+export type Thing = {
+  id: string; kind: ThingKind; x: number; y: number;
+  n?: number; owner?: string; hp?: number; maxHp?: number; burning?: number; contained?: boolean; stage?: number;
+  item?: string; parts?: Record<string, number>; shelter?: Shelter; until?: number; born?: number; burnedBy?: string;
+};
+export type Stack = { k: string; hp: number; born: number };
+export type Animal = {
+  id: string; species: "deer" | "wolf"; x: number; y: number; hp: number; maxHp: number;
+  hunger: number; state: string; target?: string; born: number; dx: number; dy: number;
+};
+export type Weather = {
+  season: "spring" | "summer" | "autumn" | "winter"; dayOfYear: number; year: number;
+  sky: "clear" | "cloudy" | "rain" | "storm"; temp: number; wind: { dx: number; dy: number }; drought: boolean; dryTicks: number;
+};
+export type Law = { id: string; key: string; text: string; verb: string; source: "physics" | "jev"; by: string; t: number; result?: unknown };
 
 export const BONDS = {
   saved_my_life: "They saved me when I was in real danger",
@@ -39,11 +51,13 @@ export const BONDS = {
   rival: "We want the same thing",
   kindred_spirit: "We think alike and get along easily",
   sweetheart: "I feel drawn to them romantically",
+  destroyed_my_home: "Their fire or doing destroyed my home",
+  defended_me: "They stood up for me when I was attacked",
   none: "Nothing lasting came of this",
 } as const;
 export type BondKind = keyof typeof BONDS;
 // weight kept per day; betrayals and life debts linger
-export const BOND_FADE: Partial<Record<BondKind, number>> = { saved_my_life: 0.97, stole_from_me: 0.97, lied_to_me: 0.97, humiliated_me: 0.97, sweetheart: 0.97 };
+export const BOND_FADE: Partial<Record<BondKind, number>> = { saved_my_life: 0.97, stole_from_me: 0.97, destroyed_my_home: 0.98, lied_to_me: 0.97, humiliated_me: 0.97, sweetheart: 0.97 };
 
 export const LABELS = {
   stranger: "Barely know each other",
@@ -58,21 +72,31 @@ export const LABELS = {
 } as const;
 export type Label = keyof typeof LABELS;
 
-export const BELIEFS = ["generous", "honest", "friendly", "dangerous", "hardworking"] as const;
-export type Belief = (typeof BELIEFS)[number];
+export const OPINIONS = ["generous", "honest", "friendly", "dangerous", "hardworking"] as const;
+export type Opinion = (typeof OPINIONS)[number];
 
 export type Relationship = {
   affinity: number; // -1..1
   trust: number; // 0..1
   label: Label;
   bonds: { kind: BondKind; t: number; weight: number }[];
-  beliefs: Partial<Record<Belief, number>>;
+  beliefs: Partial<Record<Opinion, number>>;
   ledger: number; // favors they did me minus favors I did them
   history: string[];
   met: number;
 };
 
-export type Step = { op: string; arg?: string; progress: number };
+export type Verb = "strike" | "rub" | "join" | "heat" | "wet" | "shape" | "place" | "plant" | "eat" | "wear";
+// One concrete attempt: which verb, with which held items, on what.
+export type Act = {
+  verb: Verb;
+  items: string[]; // kind ids from inventory that are used or worked on
+  tool?: string | null; // held kind used to strike or rub with; null = bare hands
+  target?: { thing?: string; animal?: string; kind?: string }; // world thing / animal id, and its kind
+  shape?: "bowl" | "block";
+  at?: string | null; // place the act needs: fire, water, home
+};
+export type Step = { op: string; arg?: string; progress: number; label?: string; act?: Act; heat?: number; tries?: number; key?: string; started?: number };
 export type Goal = { type: string; target?: string; since: number; odds: Record<string, number>; fails: number; stages?: number };
 
 export type Needs = { food: number; energy: number; warmth: number; health: number; social: number };
@@ -87,21 +111,24 @@ export type Agent = {
   traits: Record<string, number>;
   desires: string[];
   needs: Needs;
-  skills: Record<string, number>; // craft -> xp; a craft appears once they first use it
-  know: Record<string, { how: "discovered" | "watched" | "taught"; t: number; from?: string }>;
-  clues: Record<string, number>; // recipe id -> progress toward figuring it out
-  tried: Record<string, number>; // tinker combo -> times it led nowhere
-  inv: Inv;
-  home: { x: number; y: number } | null;
+  skills: Record<string, number>; // appears the first time they use a craft
+  inv: Stack[];
+  wearing: Stack | null;
+  beliefs: Record<string, Belief>; // what they think happens when they do things
+  facts: Record<string, string>; // what they've seen about the world
+  tried: Record<string, number>; // tinker attempts that led nowhere
+  watching: Record<string, number>; // progress toward learning a belief by watching someone
+  sickness: { until: number; severity: number } | null;
+  home: string | null; // structure id
   rel: Record<string, Relationship>;
   memory: string[];
   goal: Goal | null;
   plan: Step[];
   status: string;
-  lastDecision: { t: number; goal: Record<string, number>; who?: Record<string, number>; chosen: string; target?: string } | null;
+  lastDecision: { t: number; goal: Record<string, number>; labels: Record<string, string>; who?: Record<string, number>; chosen: string; target?: string } | null;
   thinking: boolean;
-  engaged: string | null; // id of the agent they're interacting with
-  down: number; // tick until they recover from collapse
+  engaged: string | null;
+  down: number;
   nextDecide: number;
   cooldowns: Record<string, number>;
   seen: Record<string, number>;
@@ -110,15 +137,21 @@ export type Agent = {
 export type Event = { id: number; t: number; kind: string; who: string[]; x: number; y: number; text: string };
 
 export type World = {
+  version: number;
   seed: number;
   t: number;
   tiles: Tile[];
+  paths: number[]; // walking wear per tile, 0..9
   things: Thing[];
   agents: Agent[];
+  animals: Animal[];
   events: Event[];
   nextId: number;
-  jev: { calls: number; tokens: number };
-  inventions: Record<string, { by: string; t: number }>;
+  jev: { calls: number; tokens: number; rulings: number };
+  kinds: Registry;
+  laws: Record<string, Law>;
+  rulings: Record<string, { useful: boolean; name: string; props: Record<string, number> }>; // Jev answers, cached forever
+  weather: Weather;
 };
 
 export function rng(seed: number) {
@@ -202,22 +235,30 @@ export function newWorld(seed: number, agentCount = 5): World {
       const water = wet(x, y) - Math.min(edge, 1) * 0.35;
       tiles.push(water > 0.62 ? Tile.Water : hills(x, y) > 0.72 ? Tile.Rock : woods(x, y) > 0.55 ? Tile.Forest : Tile.Grass);
     }
-  const w: World = { seed, t: Math.round(DAY * 0.3), tiles, things: [], agents: [], events: [], nextId: 1, jev: { calls: 0, tokens: 0 }, inventions: {} };
+  const w: World = {
+    version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, paths: new Array(W * H).fill(0), things: [], agents: [], animals: [], events: [],
+    nextId: 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {},
+    weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 14, wind: { dx: 0.3, dy: 0.1 }, drought: false, dryTicks: 0 },
+  };
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++) {
       const t = tiles[y * W + x], r = rand();
       if (t === Tile.Forest) {
-        if (r < 0.3) addThing(w, "tree", x, y);
+        if (r < 0.3) addThing(w, "tree", x, y, { hp: 100, maxHp: 100 });
         else if (r < 0.34) addThing(w, "stick", x, y);
         else if (r < 0.37) addThing(w, "mushroom", x, y);
+        else if (r < 0.39) addThing(w, "herb", x, y);
       } else if (t === Tile.Grass && nearWater(w, x, y, 1) && r < 0.12) {
-        addThing(w, r < 0.05 ? "clay" : "reeds", x, y);
+        addThing(w, r < 0.05 ? "clay" : "reeds", x, y, r < 0.05 ? {} : { hp: 6, maxHp: 6 });
       } else if (t === Tile.Grass) {
-        if (r < 0.025) addThing(w, "bush", x, y, { n: 3 });
-        else if (r < 0.03 && nearWater(w, x, y, 3)) addThing(w, "reeds", x, y);
+        if (r < 0.025) addThing(w, "bush", x, y, { n: 3, hp: 20, maxHp: 20 });
+        else if (r < 0.03 && nearWater(w, x, y, 3)) addThing(w, "reeds", x, y, { hp: 6, maxHp: 6 });
         else if (r < 0.03) addThing(w, "stick", x, y);
         else if (r < 0.034) addThing(w, "stone", x, y);
-      } else if (t === Tile.Rock && r < 0.12) addThing(w, "stone", x, y);
+      } else if (t === Tile.Rock) {
+        if (r < 0.12) addThing(w, "stone", x, y);
+        else if (r < 0.16) addThing(w, "boulder", x, y, { hp: 120, maxHp: 120 });
+      }
     }
   const traitNames = Object.keys(TRAITS);
   for (let i = 0; i < agentCount; i++) {
@@ -236,35 +277,28 @@ export function newWorld(seed: number, agentCount = 5): World {
     const name = NAMES[i % NAMES.length];
     const top = Object.entries(traits).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t]) => t);
     w.agents.push({
-      id: name.toLowerCase(),
-      name,
-      color: COLORS[i % COLORS.length],
-      x,
-      y,
+      id: name.toLowerCase(), name, color: COLORS[i % COLORS.length], x, y,
       bio: `${name} is ${top.slice(0, -1).join(", ")} and ${top.at(-1)}. ${name} wants to ${desires[0]} and to ${desires[1]}.`,
-      traits,
-      desires,
+      traits, desires,
       needs: { food: 55 + rand() * 30, energy: 60 + rand() * 30, warmth: 70 + rand() * 20, health: 100, social: 40 + rand() * 40 },
-      skills: {},
-      know: {},
-      clues: {},
-      tried: {},
-      inv: {},
-      home: null,
-      rel: {},
-      memory: [],
-      goal: null,
-      plan: [],
-      status: "Waking up in the wilderness",
-      lastDecision: null,
-      thinking: false,
-      engaged: null,
-      down: 0,
-      nextDecide: 0,
-      cooldowns: {},
-      seen: {},
+      skills: {}, inv: [], wearing: null, beliefs: {}, facts: {}, tried: {}, watching: {}, sickness: null, home: null,
+      rel: {}, memory: [], goal: null, plan: [], status: "Waking up in the wilderness", lastDecision: null,
+      thinking: false, engaged: null, down: 0, nextDecide: 0, cooldowns: {}, seen: {},
     });
   }
+  const openGrass = () => {
+    for (let i = 0; i < 500; i++) {
+      const x = Math.floor(rand() * W), y = Math.floor(rand() * H);
+      if (tileAt(w, x, y) === Tile.Grass && w.agents.every((a) => dist(a, { x, y }) > 8)) return { x, y };
+    }
+    return { x: W / 2, y: H / 2 };
+  };
+  for (let herd = 0; herd < 2; herd++) {
+    const c = openGrass();
+    for (let i = 0; i < 4; i++) addAnimal(w, "deer", c.x + (i % 2), c.y + (i >> 1));
+  }
+  const den = openGrass();
+  for (let i = 0; i < 3; i++) addAnimal(w, "wolf", den.x + i, den.y);
   for (const a of w.agents) log(w, "wake", [a.id], a, `${a.name} woke up alone in the wilderness.`);
   return w;
 }
@@ -274,9 +308,18 @@ export function addThing(w: World, kind: ThingKind, x: number, y: number, extra:
   w.things.push(t);
   return t;
 }
+export function addAnimal(w: World, species: "deer" | "wolf", x: number, y: number): Animal {
+  const hp = species === "deer" ? 30 : 35;
+  const a: Animal = { id: `a${w.nextId++}`, species, x, y, hp, maxHp: hp, hunger: 80, state: "wander", born: w.t, dx: 0, dy: 0 };
+  w.animals.push(a);
+  return a;
+}
+
+export const dayOfYear = (t: number) => Math.floor(t / DAY) % YEAR_DAYS;
+export const seasonOf = (t: number): Weather["season"] => (["spring", "summer", "autumn", "winter"] as const)[Math.floor(dayOfYear(t) / 10)];
 
 // Routine events stay in the chronicle but not in an agent's memory, so Jev and stories see what mattered.
-const QUIET: Record<string, true> = { goal: true, gather: true, eat: true, stuck: true };
+const QUIET: Record<string, true> = { goal: true, gather: true, eat: true, stuck: true, tinker: true, craft: true, spoil: true, grow: true, birth: true, weather: true, fire_spread: true, fire_out: true, level: true };
 
 export function log(w: World, kind: string, who: string[], at: { x: number; y: number }, text: string): Event {
   const e = { id: w.nextId++, t: w.t, kind, who, x: at.x, y: at.y, text };

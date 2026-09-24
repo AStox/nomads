@@ -1,165 +1,200 @@
-import type { Inv, Item } from "./world";
-import { HOMES, RECIPE, type Recipe } from "./recipes";
+// GOAP over what each agent believes. Agents can only plan with things they've seen work.
+import type { Belief } from "./beliefs";
+import { THING_MATERIAL, p, type Registry } from "./materials";
 
-// Abstract planning state: what I carry, what kind of place I'm standing at, what I've done.
-export type PState = { inv: Inv; at: string | null; flags: string[] };
-// dist: current distance to the nearest place of each kind. known: recipe ids this agent knows.
-export type Ctx = { dist: Record<string, number>; known: string[]; homeTier: number };
-export type PlanStep = { op: string; arg?: string };
-type Op = PlanStep & { cost: number; pre: (s: PState) => boolean; eff: (s: PState) => PState; makes: string[]; place?: string };
+export type PState = { inv: Record<string, number>; at: string | null; flags: string[] };
+export type Ctx = {
+  dist: Record<string, number>; // nearest distance to each kind of place
+  beliefs: Belief[];
+  facts: Record<string, string>;
+  kinds: Registry;
+  toxic: string[]; // kinds they believe make you sick
+};
+export type PlanStep = { op: string; arg?: string; key?: string };
+type Op = PlanStep & { cost: number; needs: string[]; makes: string[]; pre: (s: PState) => boolean; eff: (s: PState) => PState };
 
-const n = (s: PState, i: Item) => s.inv[i] ?? 0;
-const add = (s: PState, i: Item, k: number): PState => ({ ...s, inv: { ...s.inv, [i]: Math.min(20, n(s, i) + k) } });
-const flag = (s: PState, f: string): PState => ({ ...s, flags: [...s.flags, f].sort() });
+const n = (s: PState, k: string) => s.inv[k] ?? 0;
+const add = (s: PState, k: string, d: number): PState => ({ ...s, inv: { ...s.inv, [k]: Math.max(0, Math.min(24, n(s, k) + d)) } });
+const flag = (s: PState, f: string): PState => (s.flags.includes(f) ? s : { ...s, flags: [...s.flags, f].sort() });
 const at = (s: PState, place: string | null): PState => ({ ...s, at: place });
-export const RAW_FOOD: Item[] = ["berry", "mushroom", "fish"];
-export const EDIBLE: Item[] = ["stew", "meal", "berry", "mushroom", "fish"];
-export const foodCount = (inv: Inv) => EDIBLE.reduce((t, i) => t + (inv[i] ?? 0), 0);
 
-export const SOCIAL = ["talk", "give", "trade", "share_meal", "share_fire", "help", "gossip", "teach", "insult", "take", "steal"];
-export const SOCIAL_ITEM_NEEDS: Record<string, (s: PState) => boolean> = {
-  give: (s) => Object.entries(s.inv).some(([i, v]) => v && !["axe", "bow_drill", "fishing_line", "pot", "wedge"].includes(i)),
-  share_meal: (s) => foodCount(s.inv) > 0,
-  trade: (s) => Object.values(s.inv).some((v) => (v ?? 0) > 0),
+export const SOCIAL = ["talk", "give", "trade", "share_meal", "share_fire", "help", "gossip", "teach", "insult", "take", "steal", "attack"];
+export const SOCIAL_ITEM_NEEDS: Record<string, (s: PState, kinds: Registry) => boolean> = {
+  give: (s) => Object.values(s.inv).some((v) => v > 0),
+  share_meal: (s, kinds) => Object.entries(s.inv).some(([k, v]) => v && p(kinds[k], "edible") > 0.1),
+  trade: (s) => Object.values(s.inv).some((v) => v > 0),
 };
 
-// Things anyone can do from the start.
-const GATHER: [string, string, Item, number][] = [
-  ["pick_berries", "bush", "berry", 2],
-  ["pick_mushroom", "mushroom", "mushroom", 1],
-  ["pick_stick", "stick", "stick", 1],
-  ["pick_stone", "stone", "stone", 1],
-  ["pick_reeds", "reeds", "fiber", 2],
-  ["dig_clay", "clay", "clay", 2],
-];
-export const GATHER_OP: Record<string, { place: string; item: Item; n: number }> = Object.fromEntries(
-  GATHER.map(([op, place, item, k]) => [op, { place, item, n: k }]),
-);
+// What anyone can do from birth.
+export const GATHER: Record<string, { place: string; item: string; n: number; keep?: boolean }> = {
+  pick_berries: { place: "bush", item: "berry", n: 2, keep: true },
+  pick_mushroom: { place: "mushroom", item: "mushroom", n: 1 },
+  pick_herb: { place: "herb", item: "herb", n: 1 },
+  pick_stick: { place: "stick", item: "stick", n: 1 },
+  pick_stone: { place: "stone", item: "stone", n: 1 },
+  pull_reeds: { place: "reeds", item: "fiber", n: 2 },
+  dig_clay: { place: "clay", item: "clay", n: 2, keep: true },
+};
 
-const hasAll = (s: PState, r: Recipe) =>
-  Object.entries(r.inputs).every(([i, k]) => n(s, i as Item) >= k!) && (r.tools ?? []).every((t) => n(s, t) > 0);
-function recipeOp(r: Recipe, ctx: Ctx): Op {
-  const home = r.makes.thing && HOMES[r.makes.thing];
+export const edibleKinds = (ctx: Ctx) => Object.keys(ctx.kinds).filter((k) => p(ctx.kinds[k], "edible") >= 0.1 && !ctx.toxic.includes(k));
+export const foodIn = (inv: Record<string, number>, ctx: Ctx) => edibleKinds(ctx).reduce((t, k) => t + (inv[k] ?? 0), 0);
+
+// What the belief needs in hand, not counting what the world provides.
+function required(b: Belief): Record<string, number> {
+  const req: Record<string, number> = {};
+  for (const k of b.fields.inputs) req[k] = (req[k] ?? 0) + 1;
+  for (const [k, v] of Object.entries(b.uses)) req[k] = Math.max(req[k] ?? 0, v);
+  if (b.fields.tool) req[b.fields.tool] = (req[b.fields.tool] ?? 0) + 1; // held and swung, on top of what's worked
+  if (b.spurious) req[b.spurious] = Math.max(req[b.spurious] ?? 0, 1);
+  return req;
+}
+function outputs(b: Belief, ctx: Ctx): Record<string, number> {
+  if (Object.keys(b.out).length) return b.out;
+  const target = b.fields.target;
+  if (b.fields.verb === "strike" && target && !b.fields.inputs.length && (b.rate ?? 0) > 0 && ctx.facts[`breaks:${target}`]) return THING_MATERIAL[target]?.breaks ?? {};
+  return {};
+}
+const PLACE_OF: Record<string, string> = { fire: "fire", hearth: "fire", fed_fire: "fire" };
+
+function beliefOp(b: Belief, ctx: Ctx): Op | null {
+  const req = required(b), out = outputs(b, ctx);
+  const f = b.fields;
+  const target = f.verb === "strike" && f.target && !f.inputs.length ? f.target : null;
+  const place = target ?? f.at ?? null;
+  const builds = f.builds ?? (f.effect === "cure" ? "cured" : null);
+  if (!Object.keys(out).length && !builds) return null;
+  if (f.verb === "strike" && target && (b.rate ?? 0) <= 0) return null;
+  if (f.verb !== "strike" && b.wins === 0) return null;
+  if (f.verb === "eat") return null;
+  const wr = Math.max(0.2, (b.wins + 1) / (b.tries + 2));
+  const prey = target === "deer" || target === "wolf" ? `hunted:${target}` : null;
+  const makes = [...Object.keys(out), ...(builds ? [builds] : []), ...(prey ? [prey] : []), ...(PLACE_OF[builds ?? ""] ? [`place:${PLACE_OF[builds!]}`] : [])];
+  if (builds === "shelter") makes.push("place:home");
   return {
-    op: "craft",
-    arg: r.id,
-    cost: 1 + r.time / 8,
-    makes: [r.makes.item ?? `place:${home ? "home" : r.makes.thing === "hearth" ? "fire" : r.makes.thing}`],
-    place: r.near,
-    pre: (s) => hasAll(s, r) && (!r.near || s.at === r.near) && (!home || home.tier > ctx.homeTier) && (r.id !== "make_fire" || s.at !== "fire"),
+    op: "act", key: b.key, arg: b.key,
+    cost: 1 + b.ticks / 8 / wr,
+    needs: [...Object.keys(req), ...(place ? [`place:${place}`] : [])],
+    makes,
+    pre: (s) => Object.entries(req).every(([k, v]) => n(s, k) >= v) && (!place || s.at === place) && !(builds === "fire" && s.at === "fire"),
     eff: (s) => {
-      let out = s;
-      for (const [i, k] of Object.entries(r.inputs)) out = add(out, i as Item, -k!);
-      if (r.makes.item) out = add(out, r.makes.item, r.makes.n ?? 1);
-      if (r.makes.thing) out = at(out, home ? "home" : r.makes.thing === "hearth" ? "fire" : r.makes.thing);
-      if (r.fells) out = at(out, null);
-      return flag(out, `made:${r.id}`);
+      let o = s;
+      for (const [k, v] of Object.entries(b.uses)) o = add(o, k, -v);
+      for (const [k, v] of Object.entries(out)) o = add(o, k, v);
+      if (builds) o = flag(o, builds);
+      if (prey) o = flag(o, prey);
+      if (PLACE_OF[builds ?? ""]) o = at(o, PLACE_OF[builds!]);
+      if (builds === "shelter") o = at(o, "home");
+      if (target) o = at(o, null);
+      return o;
     },
   };
 }
 
 function ops(ctx: Ctx): Op[] {
-  const list: Op[] = Object.entries(ctx.dist).map(([kind, d]) => ({
-    op: "goto", arg: kind, cost: 1 + d / 4, makes: [`place:${kind}`], pre: (s) => s.at !== kind, eff: (s) => at(s, kind),
+  const list: Op[] = Object.entries(ctx.dist).map(([place, d]) => ({
+    op: "goto", arg: place, cost: 1 + d / 4, needs: [], makes: [`place:${place}`], pre: (s) => s.at !== place, eff: (s) => at(s, place),
   }));
-  for (const [op, place, item, k] of GATHER)
-    list.push({ op, cost: 1.5, makes: [item], place, pre: (s) => s.at === place, eff: (s) => at(add(s, item, k), place === "bush" ? place : null) });
-  for (const id of ctx.known) list.push(recipeOp(RECIPE[id], ctx));
-  list.push(
-    {
-      op: "eat", cost: 1, makes: ["ate"], pre: (s) => foodCount(s.inv) > 0,
-      eff: (s) => flag(add(s, EDIBLE.find((i) => n(s, i) > 0)!, -1), "ate"),
-    },
-    { op: "rest", cost: 4, makes: ["rested"], pre: (s) => s.at !== "home", eff: (s) => flag(s, "rested") },
-    { op: "rest", cost: 1, makes: ["rested"], place: "home", pre: (s) => s.at === "home", eff: (s) => flag(s, "rested") },
-    { op: "warm_up", cost: 1, makes: ["warm"], place: "fire", pre: (s) => s.at === "fire" || s.at === "home", eff: (s) => flag(s, "warm") },
-  );
-  for (const kind of SOCIAL)
+  for (const [op, g] of Object.entries(GATHER))
+    list.push({ op, cost: 1.5, needs: [`place:${g.place}`], makes: [g.item], pre: (s) => s.at === g.place, eff: (s) => at(add(s, g.item, g.n), g.keep ? g.place : null) });
+  for (const place of Object.keys(ctx.dist).filter((x) => x.startsWith("item:"))) {
+    const k = place.slice(5);
+    list.push({ op: "pick_up", arg: k, cost: 1, needs: [`place:${place}`], makes: [k], pre: (s) => s.at === place, eff: (s) => at(add(s, k, 1), null) });
+  }
+  for (const b of ctx.beliefs) { const o = beliefOp(b, ctx); if (o) list.push(o); }
+  // Anyone who has seen what an animal is inside can try to kill one with whatever they hold.
+  for (const sp of ["deer", "wolf"]) {
+    if (!ctx.facts[`breaks:${sp}`] || !(sp in ctx.dist)) continue;
+    const out = THING_MATERIAL[sp].breaks;
     list.push({
-      op: "social", arg: kind, cost: 1, makes: [`did_${kind}`], place: "agent",
-      pre: (s) => s.at === "agent" && (SOCIAL_ITEM_NEEDS[kind]?.(s) ?? true), eff: (s) => flag(s, `did_${kind}`),
+      op: "hunt", arg: sp, cost: 12, needs: [`place:${sp}`], makes: [`hunted:${sp}`, ...Object.keys(out)],
+      pre: (s) => s.at === sp, eff: (s) => { let o = flag(at(s, null), `hunted:${sp}`); for (const [k, v] of Object.entries(out)) o = add(o, k, v); return o; },
+    });
+  }
+  const edible = edibleKinds(ctx);
+  list.push(
+    { op: "eat", cost: 1, needs: edible, makes: ["ate"], pre: (s) => edible.some((k) => n(s, k) > 0), eff: (s) => flag(add(s, edible.find((k) => n(s, k) > 0)!, -1), "ate") },
+    { op: "rest", cost: 4, needs: [], makes: ["rested"], pre: (s) => s.at !== "home", eff: (s) => flag(s, "rested") },
+    { op: "rest", cost: 1, needs: ["place:home"], makes: ["rested"], pre: (s) => s.at === "home", eff: (s) => flag(s, "rested") },
+    { op: "warm_up", cost: 1, needs: ["place:fire"], makes: ["warm"], pre: (s) => s.at === "fire" || s.at === "home", eff: (s) => flag(s, "warm") },
+    { op: "warm_up", cost: 1, needs: ["place:home"], makes: ["warm"], pre: (s) => s.at === "home", eff: (s) => flag(s, "warm") },
+  );
+  for (const k of SOCIAL)
+    list.push({
+      op: "social", arg: k, cost: 1, needs: ["place:agent"], makes: [`did_${k}`],
+      pre: (s) => s.at === "agent" && (SOCIAL_ITEM_NEEDS[k]?.(s, ctx.kinds) ?? true), eff: (s) => flag(s, `did_${k}`),
     });
   return list;
 }
 
-const COLLECT: Record<string, Item> = { collect_stones: "stone", collect_sticks: "stick", collect_reeds: "fiber", collect_clay: "clay" };
-export const COLLECT_GOALS = COLLECT;
+export const COLLECT: Record<string, string> = { collect_stones: "stone", collect_sticks: "stick", collect_reeds: "fiber", collect_clay: "clay" };
 
-// Goal predicate plus what it needs, so the search only considers ops that can matter.
-function goal(type: string, start: PState): { done: (s: PState) => boolean; needs: string[] } | null {
-  if (type === "forage") return { done: (s) => foodCount(s.inv) >= Math.max(3, foodCount(start.inv) + 2), needs: RAW_FOOD };
-  if (type === "eat") return { done: (s) => s.flags.includes("ate"), needs: ["ate"] };
-  if (type === "rest") return { done: (s) => s.flags.includes("rested"), needs: ["rested"] };
-  if (type === "warm_up") return { done: (s) => s.flags.includes("warm"), needs: ["warm"] };
-  if (COLLECT[type]) { const i = COLLECT[type]; return { done: (s) => n(s, i) >= n(start, i) + 3, needs: [i] }; }
-  if (type.startsWith("make:")) { const id = type.slice(5); return { done: (s) => s.flags.includes(`made:${id}`), needs: [`craft:${id}`] }; }
-  if (type.startsWith("have:")) { const [, i, k] = type.split(":"); return { done: (s) => n(s, i as Item) >= +k, needs: [i] }; }
-  if (SOCIAL.includes(type)) return { done: (s) => s.flags.includes(`did_${type}`), needs: [`did_${type}`] };
+function goal(type: string, start: PState, ctx: Ctx): { done: (s: PState) => boolean; needs: string[] } | null {
+  const has = (flagName: string) => (s: PState) => s.flags.includes(flagName);
+  if (type === "forage") { const f0 = foodIn(start.inv, ctx); return { done: (s) => foodIn(s.inv, ctx) >= Math.max(3, f0 + 2), needs: edibleKinds(ctx) }; }
+  if (type === "eat") return { done: has("ate"), needs: ["ate"] };
+  if (type === "rest") return { done: has("rested"), needs: ["rested"] };
+  if (type === "warm_up") return { done: has("warm"), needs: ["warm"] };
+  if (COLLECT[type]) { const k = COLLECT[type]; return { done: (s) => n(s, k) >= n(start, k) + 3, needs: [k] }; }
+  if (type.startsWith("make:")) { const k = type.slice(5); return { done: (s) => n(s, k) > n(start, k), needs: [k] }; }
+  if (type.startsWith("have:")) { const [, k, c] = type.split(":"); return { done: (s) => n(s, k) >= +c, needs: [k] }; }
+  if (type.startsWith("hunt:")) { const f = `hunted:${type.slice(5)}`; return { done: has(f), needs: [f] }; }
+  if (type === "make_fire") return { done: has("fire"), needs: ["fire"] };
+  if (type === "build_shelter") return { done: has("shelter"), needs: ["shelter"] };
+  if (type === "contain_fire") return { done: has("hearth"), needs: ["hearth"] };
+  if (type === "plant") return { done: has("bush"), needs: ["bush"] };
+  if (type === "cure") return { done: has("cured"), needs: ["cured"] };
+  if (type === "put_on") return { done: has("worn"), needs: ["worn"] };
+  if (SOCIAL.includes(type)) return { done: has(`did_${type}`), needs: [`did_${type}`] };
   return null;
 }
 
-// Walk backwards from what the goal needs to every op that could help, including the places they need.
-function relevant(all: Op[], needs: string[], ctx: Ctx): Op[] {
+function relevant(all: Op[], needs: string[]): Op[] {
   const want = new Set(needs), keep = new Set<Op>();
   let grew = true;
   while (grew) {
     grew = false;
     for (const o of all) {
-      if (keep.has(o)) continue;
-      const hit = o.makes.some((m) => want.has(m)) || (o.op === "craft" && want.has(`craft:${o.arg}`));
-      if (!hit) continue;
+      if (keep.has(o) || !o.makes.some((m) => want.has(m))) continue;
       keep.add(o);
       grew = true;
-      // Only chase places that exist, except fire, which you can make.
-      for (const p of o.op === "warm_up" ? ["fire", "home"] : o.place ? [o.place] : [])
-        if (p in ctx.dist || p === "fire") want.add(`place:${p}`);
-      if (o.op === "craft") {
-        const r = RECIPE[o.arg!];
-        for (const i of [...Object.keys(r.inputs), ...(r.tools ?? [])]) want.add(i);
-      }
-      if (o.op === "eat") for (const i of EDIBLE) want.add(i);
+      for (const x of o.needs) want.add(x);
     }
   }
   return all.filter((o) => keep.has(o));
 }
 
-// Big projects (a cabin from nothing) are too deep to search in one go, so plan toward
-// the first missing ingredient instead. The agent keeps the goal and replans when that runs out.
-export function plan(start: PState, type: string, ctx: Ctx): PlanStep[] | null {
+// Big projects are too deep to search in one go, so plan toward the first missing ingredient.
+export function plan(start: PState, type: string, ctx: Ctx, depth = 2): PlanStep[] | null {
   const full = search(start, type, ctx);
-  if (full || !type.startsWith("make:")) return full;
-  return stepping(start, RECIPE[type.slice(5)], ctx, 3);
-}
-function stepping(start: PState, r: Recipe, ctx: Ctx, depth: number): PlanStep[] | null {
-  if (!r || !ctx.known.includes(r.id) || depth === 0) return null;
-  const needs: [Item, number][] = [...Object.entries(r.inputs), ...(r.tools ?? []).map((t) => [t, 1])] as [Item, number][];
-  for (const [i, k] of needs) {
-    if (n(start, i) >= k) continue;
-    const direct = search(start, `have:${i}:${n(start, i) + 1}`, ctx);
-    if (direct) return direct;
-    const maker = ctx.known.map((id) => RECIPE[id]).find((x) => x.makes.item === i);
-    const deeper = maker && stepping(start, maker, ctx, depth - 1);
-    if (deeper) return deeper;
+  if (full || !type.startsWith("make:") || depth <= 0) return full;
+  const k = type.slice(5);
+  const maker = ctx.beliefs.find((b) => (b.out[k] ?? 0) > 0);
+  if (!maker) return null;
+  for (const [need, c] of Object.entries(required(maker))) {
+    if (n(start, need) >= c) continue;
+    const sub = search(start, `have:${need}:${n(start, need) + 1}`, ctx) ?? plan(start, `make:${need}`, ctx, depth - 1);
+    if (sub) return sub;
   }
   return null;
 }
 
-// ponytail: uniform-cost search over a small abstract state, pruned per goal; stepping() covers what's too deep for it.
+// ponytail: uniform-cost search over a small abstract state, pruned per goal; plan() covers what's too deep.
 function search(start: PState, type: string, ctx: Ctx): PlanStep[] | null {
-  const g = goal(type, start);
+  const g = goal(type, start, ctx);
   if (!g) return null;
   if (g.done(start)) return [];
-  const all = relevant(ops(ctx), g.needs, ctx);
+  const all = relevant(ops(ctx), g.needs);
   const key = (s: PState) => `${s.at}|${s.flags.join(",")}|${Object.entries(s.inv).filter(([, v]) => v).sort().join(",")}`;
   const open = [{ s: start, cost: 0, steps: [] as PlanStep[] }];
   const seen = new Set<string>([key(start)]);
-  while (open.length && seen.size < 20000) {
+  // ponytail: node cap keeps a think under a few ms; raise it if plans start coming back null for reachable goals.
+  while (open.length && seen.size < 3000) {
     const cur = open.shift()!;
-    if (cur.steps.length >= 18) continue;
+    if (cur.steps.length >= 14) continue;
     for (const o of all) {
       if (!o.pre(cur.s)) continue;
       const s = o.eff(cur.s);
-      const steps = [...cur.steps, { op: o.op, arg: o.arg }];
+      const steps = [...cur.steps, { op: o.op, arg: o.arg, key: o.key }];
       if (g.done(s)) return steps;
       const k = key(s);
       if (seen.has(k)) continue;

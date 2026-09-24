@@ -38,9 +38,18 @@ button:focus-visible { outline: 2px solid var(--seal); outline-offset: 2px; }
   color: var(--paper);
 }
 .topbar h1 { margin: 0; font: 400 26px/1 "IM Fell English SC", serif; color: var(--gilt); letter-spacing: .04em; text-shadow: 0 1px 0 rgb(0 0 0 / .5); }
-.clock { margin: 0; flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; color: #d8c7a2; font: 400 16px/1 "IM Fell English", serif; white-space: nowrap; }
+.clock { margin: 0; flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; color: #d8c7a2; font: 400 16px/1 "IM Fell English", serif; white-space: nowrap; }
 .clock .phase { display: grid; color: var(--gilt); }
 .clock .time { font-family: "Alegreya Sans", sans-serif; font-variant-numeric: tabular-nums; color: #b9a680; font-size: 15px; }
+.clock .sky { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; padding-left: 10px; border-left: 1px solid rgb(217 181 108 / .25); font-size: 15px; }
+.clock .sky[hidden] { display: none; }
+.sky-wx { font: 400 14px/1 "Alegreya Sans", sans-serif; font-variant-numeric: tabular-nums; color: #b9a680; }
+@media (min-width: 481px) and (max-width: 640px) { .sky-word { display: none; } }
+@media (max-width: 480px) {
+  .clock { flex-wrap: wrap; align-content: center; row-gap: 4px; column-gap: 6px; }
+  .clock .sky { flex-basis: 100%; gap: 6px; padding-left: 24px; border: 0; font-size: 13px; }
+  .sky-wx { font-size: 12px; }
+}
 .controls { display: flex; gap: 6px; }
 .controls button {
   width: 40px; height: 38px; display: grid; place-items: center; border: 0; border-radius: 10px;
@@ -117,6 +126,18 @@ main::after { content: ""; position: absolute; inset: 0; pointer-events: none; b
 .focus-title h2 { margin: 0; font: 400 24px/1 "IM Fell English", serif; }
 .focus-status { margin: 4px 0 0; font: italic 400 17px/1.25 "IM Fell English", serif; color: var(--ink); }
 .focus-goal { margin: 8px 0 0 56px; font-size: 14px; color: var(--ink-soft); }
+.focus-kit { margin: 3px 0 0 56px; font: italic 400 14px/1.3 "IM Fell English", serif; color: var(--ink-soft); }
+.focus-title h2 .sick { margin-left: 8px; vertical-align: 3px; }
+.focus.mini { width: auto; max-width: min(440px, 100%); padding: 6px 6px 6px 8px; border-radius: 999px; }
+.focus-line { display: flex; align-items: center; gap: 10px; }
+.focus-line p { margin: 0; flex: 1; min-width: 0; font: 400 16px/1.25 "IM Fell English", serif; }
+.focus-line b { font-weight: 400; font-size: 18px; }
+.track { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 50%; background: rgb(113 92 69 / .12); color: #5f5c58; }
+.track.deer { color: #9a6f40; }
+.track svg { width: 18px; height: 18px; fill: currentColor; }
+.sick { flex: none; display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: rgb(125 122 30 / .16); color: #6d6a14; }
+.sick svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.card-top .sick { margin-left: auto; }
 .focus .needs { margin-top: 12px; }
 .dock { display: flex; gap: 8px; max-width: 100%; overflow-x: auto; padding: 4px 2px; scrollbar-width: none; scroll-snap-type: x proximity; }
 .dock::-webkit-scrollbar { display: none; }
@@ -213,7 +234,9 @@ main::after { content: ""; position: absolute; inset: 0; pointer-events: none; b
 .sec { padding: 16px 18px; border-bottom: 1px solid var(--rule); }
 .sec h3 { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font: 400 16px/1 "IM Fell English SC", serif; color: var(--ink-soft); letter-spacing: .06em; }
 .sec h3::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--rule), transparent); }
-.sec.two { display: grid; grid-template-columns: 1fr 1.4fr; gap: 20px; }
+.sec.two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 380px) { .sec.two { grid-template-columns: 1fr; } }
+.sick-line { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; font: italic 400 15px/1.3 "IM Fell English", serif; color: #5f5c14; }
 .bio { margin: 0; font: italic 400 17px/1.45 "IM Fell English", serif; }
 .now { margin: 0 0 4px; font: 400 19px/1.3 "IM Fell English", serif; }
 .plan { margin: 10px 0 0; padding: 0; list-style: none; counter-reset: step; }
@@ -223,7 +246,7 @@ main::after { content: ""; position: absolute; inset: 0; pointer-events: none; b
 .plan li.cur::before { background: var(--seal); color: #fbf1dc; box-shadow: none; }
 
 .odds { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
-.odds li { display: grid; grid-template-columns: 112px 1fr 40px; gap: 10px; align-items: center; font-size: 14px; color: var(--ink-soft); }
+.odds li { display: grid; grid-template-columns: minmax(0, 1.25fr) 1fr 40px; gap: 10px; align-items: center; font-size: 14px; line-height: 1.2; color: var(--ink-soft); }
 .odds li i { height: 6px; border-radius: 3px; background: rgb(113 92 69 / .14); overflow: hidden; }
 .odds li b { display: block; height: 100%; border-radius: 3px; background: var(--ink-faint); }
 .odds li span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
@@ -259,34 +282,53 @@ main::after { content: ""; position: absolute; inset: 0; pointer-events: none; b
 .hist li::marker { color: var(--ink-faint); }
 #ins-history .ev button { padding-left: 0; padding-right: 0; }
 #ins-history .day { padding-left: 0; padding-right: 0; top: 75px; background: var(--paper); }
+.kv.inv dt { text-transform: none; }
+.kv.inv dt::first-letter { text-transform: uppercase; }
+.kv.inv dd { display: flex; align-items: center; justify-content: flex-end; }
+.wear { display: inline-block; flex: none; width: 34px; height: 5px; margin-right: 8px; border-radius: 3px; background: rgb(113 92 69 / .16); overflow: hidden; vertical-align: middle; }
+.wear b { display: block; height: 100%; border-radius: 3px; background: var(--ink-faint); }
+.wear.low b { background: var(--bad); }
+.wearing .wear { margin: 0 0 0 8px; }
+.blf, .facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
+.blf li { display: flex; flex-direction: column; gap: 2px; font: 400 16px/1.3 "IM Fell English", serif; }
+.blf li.wrong { padding-left: 10px; box-shadow: inset 2px 0 0 rgb(168 50 31 / .45); }
+.blf small { font: 400 12px/1.3 "Alegreya Sans", sans-serif; color: var(--ink-faint); }
+.spur { font-style: italic; color: rgb(168 50 31 / .75); }
+.spur s { text-decoration-thickness: 1.5px; }
+.law-mark { font-style: normal; color: #b07d16; }
+.facts li { position: relative; padding-left: 16px; font: 400 15px/1.35 "IM Fell English", serif; }
+.facts li::before { content: "◆"; position: absolute; left: 0; top: 2px; font-size: 8px; color: var(--ink-faint); }
 
 /* ---------- discoveries ---------- */
 .ev.invention span { font: 400 17px/1.35 "IM Fell English", serif; color: #7a4b08; }
 .ev.invention button { background: linear-gradient(90deg, rgb(217 181 108 / .35), transparent 80%); box-shadow: inset 3px 0 0 var(--gilt); }
 .ev.invention time::after { content: " ✦"; color: #b07d16; }
-.knowhow { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.knowhow li { display: flex; flex-direction: column; gap: 2px; font: 400 16px/1.25 "IM Fell English", serif; }
-.knowhow small { font: 400 12px/1.3 "Alegreya Sans", sans-serif; color: var(--ink-faint); }
-.book-count { margin: 0; padding: 14px 18px 0; font: 400 16px/1 "IM Fell English", serif; color: var(--ink-soft); }
+.book-count { margin: 0; padding: 14px 18px 0; font: 400 16px/1.2 "IM Fell English", serif; color: var(--ink-soft); }
 .book-count b { font-size: 26px; color: var(--ink); font-weight: 400; }
 .rc { padding: 10px 0; }
 .rc + .rc { border-top: 1px dashed var(--rule); }
-.rc-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-.rc-name { font: 400 17px/1.25 "IM Fell English", serif; color: var(--ink-faint); }
-.rc.found .rc-name { color: var(--ink); }
-.rc-makes { font: 700 11px/1 "Alegreya Sans", sans-serif; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint); white-space: nowrap; }
-.rc.found .rc-makes { color: var(--seal); }
-.rc-needs { margin: 3px 0 0; font-size: 13px; color: var(--ink-faint); }
+.rc-name { margin: 0; font: 400 17px/1.3 "IM Fell English", serif; color: var(--ink); }
+.jev-mark { color: #b07d16; text-shadow: 0 0 6px rgb(217 181 108 / .6); }
+.chips { margin-top: 6px; }
+.chips li { padding: 2px 9px; font-size: 13px; }
+.rc-how { margin: 6px 0 0; font-size: 13px; color: var(--ink-soft); }
 .rc-who { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; min-height: 22px; }
 .rc-first { font: italic 400 14px/1.2 "IM Fell English", serif; color: #7a4b08; }
-.rc-first.none { color: var(--ink-faint); }
-.rc-seals { display: flex; gap: 4px; }
+.rc-seals { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .rc-seals .seal.xs { margin: 0; }
-.rc-seals .trying { border-radius: 50%; padding: 2px; background: conic-gradient(var(--seal) calc(var(--p) * 360deg), transparent 0); opacity: .8; }
-.rc-seals .trying .seal { filter: grayscale(.7); }
+.held { position: relative; display: grid; }
+.held.wrong .seal { opacity: .45; filter: grayscale(.6); }
+.held.wrong::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 2px; border-radius: 1px; background: var(--bad); transform: translateX(-50%) rotate(45deg); }
+.book-foot { margin: 0; padding: 16px 18px 24px; text-align: center; }
+.book-foot a { font: italic 400 15px/1 "IM Fell English", serif; color: var(--ink-soft); text-underline-offset: 3px; }
+.book-foot a:hover { color: var(--seal); }
 @media (max-width: 480px) {
   .tabs { gap: 14px; }
   .tabs button[data-tab] { font-size: 17px; }
   .tabs .jev { display: none; }
   .tabs .icon-btn { margin-left: auto; }
 }
+
+/* The cost counter lives on the debug page; the tab row has no room for it. */
+.tabs .jev { display: none; }
+.tabs .icon-btn { margin-left: auto; }

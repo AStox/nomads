@@ -1,26 +1,23 @@
 import {
-  DAY, FOOD, H, W, addThing, clock, dist, isNight, level, log, nearWater, walkable, Tile,
-  type Agent, type Item, type Thing, type ThingKind, type World,
+  DAY, H, W, clock, dist, isNight, level, log, nearWater, walkable, Tile, tileAt,
+  type Act, type Agent, type Animal, type Step, type Thing, type World,
 } from "./world";
-import { EDIBLE, GATHER_OP, SOCIAL, SOCIAL_ITEM_NEEDS, foodCount, plan, type PState } from "./plan";
-import { HOMES, RECIPE, RECIPES, signature, type Recipe } from "./recipes";
-import { chooseTinker, decide, fadeBonds, inventoryText, newRel, reflect, respond, sample } from "./brain";
+import { THING_MATERIAL, depth, noun, p, type Kind } from "./materials";
+import {
+  applyRuling, changed, count, counts, eat, force, giveItems, heat, homeOf, join, nameCandidates, place as placeItems, plant,
+  removeThing, rubTick, shape, strikeDamage, strikeTick, takeItems, wearIt, wet, type Outcome,
+} from "./physics";
+import { beliefKey, beliefText, record, see, sentence, teach, watchers, type Belief } from "./beliefs";
+import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState } from "./plan";
+import { attacked, burnedHomes, ecology, onGrew, trample } from "./ecology";
+import { chooseTinker, decide, describeKind, fadeBonds, nameIt, newRel, reflect, respond, rule, sample } from "./brain";
+import { clock as traceClock, count as bump, timed, trace } from "./trace";
 
 const VISION = 8;
-const TOOLS: Item[] = ["axe", "bow_drill", "fishing_line", "pot", "wedge", "sharp_stone"];
-
-// Things touched this tick, so the server can send deltas instead of the whole map.
-export const dirty = { things: new Set<string>(), removed: new Set<string>() };
-const touch = (t: Thing) => dirty.things.add(t.id);
-function removeThing(w: World, t: Thing) {
-  w.things = w.things.filter((x) => x !== t);
-  dirty.removed.add(t.id);
-}
-const spawn = (...args: Parameters<typeof addThing>) => {
-  const t = addThing(...args);
-  touch(t);
-  return t;
-};
+const nm = (w: World, k: string) => w.kinds[k]?.name ?? k.replaceAll("_", " ");
+const an = (s: string) => (s.includes("'s ") ? s : /^[aeiou]/.test(s) ? `an ${s}` : `a ${s}`);
+const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
+const agentById = (w: World, id?: string) => w.agents.find((a) => a.id === id);
 
 export const GOALS: Record<string, string> = {
   forage: "Gather berries or mushrooms to eat later",
@@ -28,11 +25,17 @@ export const GOALS: Record<string, string> = {
   rest: "Rest or sleep to recover energy",
   warm_up: "Get warm by a fire or at home",
   explore: "Wander off and explore new land",
-  tinker: "Tinker: try combining things to see what can be made",
+  tinker: "Experiment: try things with what's at hand to see what happens",
   collect_stones: "Collect stones",
   collect_sticks: "Collect sticks",
-  collect_reeds: "Collect reeds for fiber",
+  collect_reeds: "Pull up reeds for fiber",
   collect_clay: "Dig up clay",
+  make_fire: "Start a fire",
+  build_shelter: "Build or add to a shelter",
+  contain_fire: "Ring the fire with stones",
+  plant: "Plant something to grow",
+  cure: "Eat something that eases sickness",
+  put_on: "Put on something warm",
   talk: "Walk over and chat with someone",
   give: "Give someone food or materials as a gift",
   trade: "Offer someone a trade",
@@ -40,45 +43,39 @@ export const GOALS: Record<string, string> = {
   share_fire: "Invite someone to sit by a fire together",
   help: "Help someone with what they are doing",
   gossip: "Tell someone what you think of a third person",
-  teach: "Teach someone how to make something you know",
+  teach: "Show someone how to do something you know",
   insult: "Insult or mock someone",
   take: "Take something from someone openly",
   steal: "Secretly steal something from someone",
+  attack: "Attack someone",
   avoid: "Keep away from someone",
+  flee: "Run for safety",
 };
-const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
-export const goalText = (type: string) =>
-  type.startsWith("make:") ? cap(RECIPE[type.slice(5)].label) : GOALS[type] ?? cap(type.replaceAll("_", " "));
-const HOSTILE = ["insult", "take", "steal", "avoid"];
-const NEED_FIX: Record<string, (type: string) => boolean> = {
-  food: (t) => ["eat", "forage", "share_meal", "make:roast", "make:roast_fish", "make:stew", "make:fish"].includes(t),
-  energy: (t) => t === "rest",
-  warmth: (t) => ["warm_up", "share_fire", "make:make_fire", "make:lean_to", "make:log_hut", "make:cabin", "make:hearth"].includes(t),
-};
-
-const agent = (w: World, id?: string) => w.agents.find((a) => a.id === id);
-const nearestThing = (w: World, a: Agent, ok: (t: Thing) => boolean) => {
-  let best: Thing | null = null, bd = Infinity;
-  for (const t of w.things) if (ok(t) && dist(a, t) < bd) (best = t), (bd = dist(a, t));
-  return best;
-};
-export function homeOf(w: World, a: Agent): Thing | null {
-  let best: Thing | null = null;
-  for (const t of w.things) if (t.owner === a.id && HOMES[t.kind] && (!best || HOMES[t.kind]!.tier > HOMES[best.kind]!.tier)) best = t;
-  return best;
+export function goalText(w: World, type: string, target?: string) {
+  if (type.startsWith("make:")) return `Make ${an(nm(w, type.slice(5)))}`;
+  if (type.startsWith("hunt:")) return `Hunt ${an(type.slice(5))}`;
+  if (type === "defend") return `Fight off the wolf attacking ${agentById(w, target)?.name ?? "someone"}`;
+  if (type === "fight") return "Fight off a wolf";
+  const name = agentById(w, target)?.name;
+  const text = GOALS[type] ?? cap(type.replaceAll("_", " "));
+  return name && text.includes("someone") ? text.replace("someone", name) : text;
 }
-const isFire = (t: Thing) => t.kind === "fire" || t.kind === "hearth";
-const THING_PLACES: Record<string, (t: Thing) => boolean> = {
-  bush: (t) => t.kind === "bush" && (t.n ?? 0) > 0,
-  mushroom: (t) => t.kind === "mushroom",
-  stick: (t) => t.kind === "stick",
-  stone: (t) => t.kind === "stone",
-  reeds: (t) => t.kind === "reeds",
-  clay: (t) => t.kind === "clay",
-  tree: (t) => t.kind === "tree",
-  fire: isFire,
+const HOSTILE = ["insult", "take", "steal", "avoid", "attack"];
+const NEED_FIX: Record<string, (type: string, w: World) => boolean> = {
+  food: (t, w) => ["eat", "forage", "share_meal"].includes(t) || t.startsWith("hunt:") || (t.startsWith("make:") && p(w.kinds[t.slice(5)], "edible") > 0),
+  energy: (t) => t === "rest",
+  warmth: (t) => ["warm_up", "share_fire", "make_fire", "build_shelter", "put_on", "contain_fire"].includes(t),
 };
-// Shore tiles never change, so find them once per world.
+const isTool = (k?: Kind) => !!k && (k.verb === "join" || k.verb === "rub" || p(k, "sharp") >= 0.5 || p(k, "container") >= 0.6);
+
+// ---------- places ----------
+const THING_PLACES: Record<string, (t: Thing) => boolean> = {
+  bush: (t) => t.kind === "bush" && (t.n ?? 0) > 0 && !t.burning,
+  mushroom: (t) => t.kind === "mushroom", herb: (t) => t.kind === "herb", stick: (t) => t.kind === "stick", stone: (t) => t.kind === "stone",
+  reeds: (t) => t.kind === "reeds" && !t.burning, clay: (t) => t.kind === "clay", tree: (t) => t.kind === "tree" && !t.burning,
+  boulder: (t) => t.kind === "boulder", stump: (t) => t.kind === "stump", dead_bush: (t) => t.kind === "dead_bush",
+  fire: (t) => t.kind === "fire",
+};
 const shores = new WeakMap<World, { x: number; y: number }[]>();
 function shore(w: World) {
   let s = shores.get(w);
@@ -89,33 +86,25 @@ function shore(w: World) {
   }
   return s;
 }
-// Nearest spot of a place kind: a thing, a shore tile, your home, or another agent.
-function place(w: World, a: Agent, kind: string): { x: number; y: number; thing?: Thing } | null {
+type Spot = { x: number; y: number; thing?: Thing; animal?: Animal; agent?: Agent };
+function nearest<T extends { x: number; y: number }>(a: { x: number; y: number }, list: Iterable<T>, ok: (t: T) => boolean = () => true): T | null {
+  let best: T | null = null, bd = Infinity;
+  for (const t of list) if (ok(t)) { const d = dist(a, t); if (d < bd) { bd = d; best = t; } }
+  return best;
+}
+function spot(w: World, a: Agent, kind: string): Spot | null {
   if (kind === "home") { const h = homeOf(w, a); return h && { x: h.x, y: h.y, thing: h }; }
-  if (kind === "agent") return agent(w, a.goal?.target) ?? null;
-  if (kind === "water") {
-    let best = null, bd = Infinity;
-    for (const p of shore(w)) if (dist(a, p) < bd) (best = p), (bd = dist(a, p));
-    return best;
-  }
-  const t = nearestThing(w, a, THING_PLACES[kind]);
+  if (kind === "agent") { const b = agentById(w, a.goal?.target); return b ? { x: b.x, y: b.y, agent: b } : null; }
+  if (kind === "water") return nearest(a, shore(w));
+  if (kind === "deer" || kind === "wolf") { const x = nearest(a, w.animals, (m) => m.species === kind); return x && { x: x.x, y: x.y, animal: x }; }
+  if (kind.startsWith("item:")) { const k = kind.slice(5); const t = nearest(a, w.things, (t) => t.kind === "item" && t.item === k); return t && { x: t.x, y: t.y, thing: t }; }
+  const f = THING_PLACES[kind];
+  const t = f && nearest(a, w.things, f);
   return t && { x: t.x, y: t.y, thing: t };
 }
-const PLACE_KINDS = [...Object.keys(THING_PLACES), "water", "home"];
-const within = (w: World, a: Agent, kind: string, r = 1) => { const p = place(w, a, kind); return p && dist(a, p) <= r ? p : null; };
+const within = (w: World, a: Agent, kind: string, r = 1) => { const s = spot(w, a, kind); return s && dist(a, s) <= r ? s : null; };
 
-function gain(w: World, a: Agent, skill: string, n: number) {
-  const before = level(a.skills[skill] ?? 0);
-  a.skills[skill] = (a.skills[skill] ?? 0) + n;
-  if (level(a.skills[skill]) > before) log(w, "level", [a.id], a, `${a.name} got better at ${skill} (level ${level(a.skills[skill])}).`);
-}
-const speed = (a: Agent, skill?: string) => 1 + (skill ? level(a.skills[skill] ?? 0) : 0) * 0.15;
-const take = (a: Agent, i: Item, n = 1) => (a.inv[i] = Math.max(0, (a.inv[i] ?? 0) - n));
-const put = (a: Agent, i: Item, n = 1) => (a.inv[i] = (a.inv[i] ?? 0) + n);
-const bestFood = (a: Agent): Item | null => EDIBLE.find((i) => (a.inv[i] ?? 0) > 0) ?? null;
-const nice = (i: string) => i.replaceAll("_", " ");
-const plural = (i: string) => (i === "berry" ? "berries" : i.endsWith("s") || i === "fiber" || i === "clay" ? nice(i) : `${nice(i)}s`);
-
+// ---------- movement ----------
 // ponytail: plain BFS per move on a 64x64 grid; switch to cached A* if agent counts get into the hundreds.
 function stepToward(w: World, a: Agent, tx: number, ty: number, reach = 1): "arrived" | "moved" | "stuck" {
   if (Math.max(Math.abs(a.x - tx), Math.abs(a.y - ty)) <= reach) return "arrived";
@@ -139,92 +128,138 @@ function stepToward(w: World, a: Agent, tx: number, ty: number, reach = 1): "arr
   while (prev[c] !== start) c = prev[c];
   a.x = c % W;
   a.y = (c / W) | 0;
+  trample(w, a.x, a.y);
   return "moved";
 }
-
-function pstate(w: World, a: Agent): PState {
-  return { inv: { ...a.inv }, at: within(w, a, "fire", 2) ? "fire" : within(w, a, "home") ? "home" : null, flags: [] };
+function stepAway(w: World, a: Agent, from: { x: number; y: number }) {
+  const tx = Math.max(0, Math.min(W - 1, a.x + Math.sign(a.x - from.x) * 4));
+  const ty = Math.max(0, Math.min(H - 1, a.y + Math.sign(a.y - from.y) * 4));
+  stepToward(w, a, tx, ty, 0);
 }
-function planGoal(w: World, a: Agent, type: string, target?: string) {
+
+// ---------- planning glue ----------
+function ctxFor(w: World, a: Agent): Ctx {
+  const d: Record<string, number> = {};
+  for (const k of [...Object.keys(THING_PLACES), "water", "home", "deer", "wolf"]) { const s = spot(w, a, k); if (s) d[k] = dist(a, s); }
+  for (const t of w.things) if (t.kind === "item" && t.item && dist(a, t) <= 20) d[`item:${t.item}`] = Math.min(d[`item:${t.item}`] ?? 99, dist(a, t));
+  const target = agentById(w, a.goal?.target);
+  if (target) d.agent = dist(a, target);
+  const toxic = Object.values(a.beliefs).filter((b) => b.fields.verb === "eat" && b.fields.effect === "sick").map((b) => b.fields.inputs[0]);
+  return { dist: d, beliefs: Object.values(a.beliefs), facts: a.facts, kinds: w.kinds, toxic };
+}
+function pstate(w: World, a: Agent): PState {
+  return { inv: counts(a), at: within(w, a, "fire", 2) ? "fire" : within(w, a, "home") ? "home" : null, flags: [] };
+}
+function planGoal(w: World, a: Agent, type: string, target?: string, ctx = ctxFor(w, a)): Step[] | null {
+  const mk = (op: string, arg?: string): Step[] => [{ op, arg, progress: 0 }];
   if (type === "explore") {
     for (let i = 0; i < 40; i++) {
       const x = Math.round(a.x + (Math.random() - 0.5) * 50), y = Math.round(a.y + (Math.random() - 0.5) * 50);
-      if (walkable(w, x, y) && dist(a, { x, y }) > 12) return [{ op: "wander", arg: `${x},${y}` }];
+      if (walkable(w, x, y) && dist(a, { x, y }) > 12) return mk("wander", `${x},${y}`);
     }
     return null;
   }
-  if (type === "avoid") return [{ op: "avoid", arg: target }];
-  if (type === "tinker") return [{ op: "tinker" }];
-  const d: Record<string, number> = {};
-  for (const k of PLACE_KINDS) { const p = place(w, a, k); if (p) d[k] = dist(a, p); }
-  const t = agent(w, target);
-  if (t) d.agent = dist(a, t);
-  const home = homeOf(w, a);
-  return plan(pstate(w, a), type, { dist: d, known: Object.keys(a.know), homeTier: home ? HOMES[home.kind]!.tier : 0 });
+  if (type === "avoid") return mk("avoid", target);
+  if (type === "tinker") return mk("tinker");
+  if (type === "flee" || type === "fight" || type === "defend") return mk(type === "flee" ? "flee" : "fight", target);
+  const steps = plan(pstate(w, a), type, { ...ctx, dist: { ...ctx.dist, ...(target && agentById(w, target) ? { agent: dist(a, agentById(w, target)!) } : {}) } });
+  return steps?.map((s) => ({ op: s.op, arg: s.arg, key: s.key, progress: 0 })) ?? null;
+}
+function stepLabel(w: World, a: Agent, s: Step): string {
+  if (s.op === "goto") return s.arg === "agent" ? `Go to ${agentById(w, a.goal?.target)?.name}` : `Go to ${s.arg!.startsWith("item:") ? `the ${nm(w, s.arg!.slice(5))}` : `the ${s.arg!.replaceAll("_", " ")}`}`;
+  if (s.op === "act" && s.key && a.beliefs[s.key]) return actText(w, actFromBelief(a.beliefs[s.key]));
+  if (s.op === "tinker") return s.act ? actText(w, s.act) : "Experiment";
+  if (s.op === "social") return `${cap(s.arg!.replaceAll("_", " "))} with ${agentById(w, a.goal?.target)?.name}`;
+  if (s.op === "pick_up") return `Pick up the ${nm(w, s.arg!)}`;
+  if (s.op === "fight") return "Fight the wolf";
+  if (s.op === "wander") return "Explore";
+  return cap(s.op.replaceAll("_", " "));
 }
 
 function setGoal(w: World, a: Agent, type: string, odds: Record<string, number>, target?: string) {
   const steps = planGoal(w, a, type, target);
-  const who = target ? ` (${agent(w, target)?.name})` : "";
+  const who = target && type !== "defend" ? ` (${agentById(w, target)?.name})` : "";
   if (!steps) {
-    log(w, "stuck", [a.id], a, `${a.name} wanted to ${goalText(type).toLowerCase()}${who} but couldn't work out how.`);
+    log(w, "stuck", [a.id], a, `${a.name} wanted to ${goalText(w, type, target).toLowerCase()}${who} but couldn't work out how.`);
+    trace("plan", "no_plan", { type, target }, a.id);
     a.cooldowns[type] = w.t + 60;
     a.nextDecide = w.t + 2;
     return;
   }
   a.goal = { type, target, since: w.t, odds, fails: 0 };
-  a.plan = steps.map((s) => ({ ...s, progress: 0 }));
-  log(w, "goal", [a.id, ...(target ? [target] : [])], a,
-    `${a.name} decided to ${goalText(type).toLowerCase()}${who}. (${Math.round((odds[type] ?? 0) * 100)}% likely)`);
+  a.plan = steps;
+  trace("plan", "plan", { type, target, steps: steps.map((s) => stepLabel(w, a, s)) }, a.id);
+  if (odds[type] !== undefined)
+    log(w, "goal", [a.id, ...(target ? [target] : [])], a, `${a.name} decided to ${goalText(w, type, target).toLowerCase()}${who}. (${Math.round((odds[type] ?? 0) * 100)}% likely)`);
 }
-
 function endGoal(w: World, a: Agent, ok: boolean, why?: string) {
   if (!ok && a.goal) {
-    log(w, "fail", [a.id], a, `${a.name} gave up trying to ${goalText(a.goal.type).toLowerCase()}${why ? `: ${why}` : ""}.`);
+    log(w, "fail", [a.id], a, `${a.name} gave up trying to ${goalText(w, a.goal.type, a.goal.target).toLowerCase()}${why ? `: ${why}` : ""}.`);
     a.cooldowns[a.goal.type] = w.t + 30;
   }
+  trace("plan", "end", { type: a.goal?.type, ok, why }, a.id);
   a.goal = null;
   a.plan = [];
   a.nextDecide = w.t + 1;
 }
 
+// ---------- deciding ----------
+const canCache = new Map<string, Record<string, { t: number; ok: boolean }>>();
 function feasible(w: World, a: Agent) {
   const opts: Record<string, string> = {};
-  const fire = place(w, a, "fire");
+  const ctx = ctxFor(w, a);
+  const fire = spot(w, a, "fire");
   const people = w.agents.filter((b) => b !== a && b.down <= w.t && dist(a, b) <= 25 && (a.rel[b.id] || dist(a, b) <= VISION));
-  const holding = Object.values(a.inv).some((n) => n);
-  const ok: Record<string, boolean> = {
-    forage: true,
-    eat: foodCount(a.inv) > 0 || a.needs.food < 70,
-    rest: a.needs.energy < 75,
-    warm_up: a.needs.warmth < 75 && !!planGoal(w, a, "warm_up"),
-    explore: true,
-    tinker: holding,
-    collect_stones: (a.inv.stone ?? 0) < 6,
-    collect_sticks: (a.inv.stick ?? 0) < 6,
-    collect_reeds: (a.inv.fiber ?? 0) < 6 && !!place(w, a, "reeds"),
-    collect_clay: (a.inv.clay ?? 0) < 6 && !!place(w, a, "clay"),
+  const holding = a.inv.length > 0;
+  const home = homeOf(w, a);
+  const can = (type: string) => {
+    if (a.cooldowns[type] > w.t) return false;
+    const hit = canCache.get(a.id)?.[type];
+    if (hit && w.t - hit.t < 40) return hit.ok;
+    const ok = !!planGoal(w, a, type, undefined, ctx);
+    (canCache.get(a.id) ?? canCache.set(a.id, {}).get(a.id)!)[type] = { t: w.t, ok };
+    return ok;
   };
-  for (const [k, v] of Object.entries(ok)) if (v && !(a.cooldowns[k] > w.t)) opts[k] = GOALS[k];
-  for (const id of Object.keys(a.know)) {
-    const type = `make:${id}`;
-    if (a.cooldowns[type] > w.t) continue;
-    if (id === "make_fire" && fire && dist(a, fire) <= 8) continue;
-    const out = RECIPE[id].makes.item;
-    if (out && (a.inv[out] ?? 0) >= (TOOLS.includes(out) ? 1 : 4)) continue; // enough of that already
-    if (planGoal(w, a, type)) opts[type] = goalText(type);
+  const add = (type: string, ok: boolean) => { if (ok && !(a.cooldowns[type] > w.t)) opts[type] = goalText(w, type); };
+  add("forage", true);
+  add("eat", foodIn(counts(a), ctx) > 0 || a.needs.food < 70);
+  add("rest", a.needs.energy < 75);
+  add("warm_up", a.needs.warmth < 75 && can("warm_up"));
+  add("explore", true);
+  add("tinker", holding || w.things.some((t) => THING_MATERIAL[t.kind] && dist(a, t) <= 1));
+  for (const [type, k] of Object.entries(COLLECT)) add(type, count(a, k) < 6 && (k === "stone" || k === "stick" || !!ctx.dist[k === "fiber" ? "reeds" : k]));
+  const believes = Object.values(a.beliefs);
+  const builds = (b: string) => believes.some((x) => x.fields.builds === b && x.wins > 0);
+  add("make_fire", builds("fire") && (!fire || dist(a, fire) > 8) && can("make_fire"));
+  add("build_shelter", builds("shelter") && (home?.shelter?.tier ?? 0) < 3 && can("build_shelter"));
+  add("contain_fire", builds("hearth") && !!fire && !(fire.thing?.contained) && dist(a, fire) <= 10 && can("contain_fire"));
+  add("plant", builds("bush") && can("plant"));
+  add("cure", !!a.sickness && believes.some((b) => b.fields.effect === "cure") && can("cure"));
+  add("put_on", !a.wearing && builds("worn") && can("put_on"));
+  const products = new Set(believes.filter((b) => b.wins > 0 || (b.rate ?? 0) > 0).flatMap((b) => [...Object.keys(b.out), ...(b.fields.target && a.facts[`breaks:${b.fields.target}`] ? Object.keys(THING_MATERIAL[b.fields.target]?.breaks ?? {}) : [])]));
+  for (const k of products) {
+    if (["deer", "wolf"].some((s) => THING_MATERIAL[s].breaks[k])) continue;
+    const kind = w.kinds[k];
+    if (count(a, k) >= (isTool(kind) ? 1 : 4)) continue;
+    add(`make:${k}`, can(`make:${k}`));
+  }
+  for (const species of ["deer", "wolf"] as const) {
+    const hunter = believes.some((b) => b.fields.target === species && (b.rate ?? 0) > 0) || !!a.facts[`breaks:${species}`];
+    const prey = nearest(a, w.animals, (m) => m.species === species);
+    if (hunter && prey && dist(a, prey) <= 20) opts[`hunt:${species}`] = goalText(w, `hunt:${species}`);
   }
   const targets: Record<string, string[]> = {};
   for (const kind of [...SOCIAL, "avoid"]) {
     if (a.cooldowns[kind] > w.t) continue;
     const valid = people.filter((b) => {
-      if (kind === "trade") return Object.values(b.inv).some((n) => n) && holding;
-      if (kind === "give" || kind === "share_meal") return !!planGoal(w, a, kind, b.id);
-      if (kind === "take" || kind === "steal") return Object.values(b.inv).some((n) => n);
+      if (kind === "trade") return b.inv.length > 0 && holding;
+      if (kind === "give" || kind === "share_meal") return !!SOCIAL_ITEM_NEEDS[kind]?.({ inv: counts(a), at: "agent", flags: [] }, w.kinds);
+      if (kind === "take" || kind === "steal") return b.inv.length > 0;
       if (kind === "share_fire") return !!fire && dist(a, fire) <= 12;
-      if (kind === "help") return !!b.goal && !SOCIAL.includes(b.goal.type) && !["explore", "help", "avoid"].includes(b.goal.type);
+      if (kind === "help") return !!b.goal && !SOCIAL.includes(b.goal.type) && !["explore", "help", "avoid", "flee"].includes(b.goal.type);
       if (kind === "gossip") return w.agents.some((c) => c !== a && c !== b && a.rel[c.id]);
-      if (kind === "teach") return Object.keys(a.know).some((id) => !b.know[id]);
+      if (kind === "teach") return Object.keys(a.beliefs).some((k) => !b.beliefs[k] && a.beliefs[k].wins > 0);
+      if (kind === "attack") return (a.rel[b.id]?.affinity ?? 0) < -0.3 && b.needs.health > 30;
       return true;
     });
     if (!valid.length) continue;
@@ -246,153 +281,253 @@ async function think(w: World, a: Agent) {
       const pool = (HOSTILE.includes(type) ? res.against : res.towards) ?? {};
       target = sample(Object.fromEntries(targets[type].map((id) => [id, pool[id] ?? 0.01])));
     }
-    a.lastDecision = { t: w.t, goal: res.goal, who: target ? (HOSTILE.includes(type) ? res.against : res.towards) : undefined, chosen: type, target };
+    a.lastDecision = { t: w.t, goal: res.goal, labels: opts, who: target ? (HOSTILE.includes(type) ? res.against : res.towards) : undefined, chosen: type, target };
+    trace("brain", "decided", { chosen: type, target, odds: res.goal }, a.id);
     a.thinking = false;
     if (a.down > w.t || a.engaged || a.goal) return;
     setGoal(w, a, type, res.goal, target);
   } catch (e) {
     console.error(`decide ${a.name}:`, e);
+    trace("brain", "error", { error: String(e) }, a.id);
     a.thinking = false;
     a.status = "Lost in thought";
     a.nextDecide = w.t + 10;
   }
 }
 
-// ---------- knowledge ----------
-function learn(w: World, a: Agent, r: Recipe, how: "discovered" | "watched" | "taught", from?: Agent) {
-  if (a.know[r.id]) return;
-  a.know[r.id] = { how, t: w.t, from: from?.id };
-  delete a.clues[r.id];
-  gain(w, a, r.craft, 3);
-  if (how === "discovered") {
-    if (!w.inventions[r.id]) {
-      w.inventions[r.id] = { by: a.id, t: w.t };
-      log(w, "invent", [a.id], a, `${a.name} invented a way to ${r.label}. No one had ever done it before.`);
-    } else log(w, "discover", [a.id], a, `${a.name} worked out how to ${r.label} on their own.`);
-  } else if (how === "watched" && from) {
-    log(w, "learn", [a.id, from.id], a, `${a.name} learned how to ${r.label} by watching ${from.name}.`);
+// ---------- acts ----------
+export function actFromBelief(b: Belief): Act {
+  const f = b.fields;
+  if (f.verb === "strike") {
+    if (!f.inputs.length) return { verb: "strike", items: [], tool: f.tool ?? null, target: { kind: f.target } };
+    return { verb: "strike", items: [], tool: f.tool ?? null, target: { kind: f.inputs[0] } };
+  }
+  return { verb: f.verb as Act["verb"], items: f.verb === "rub" ? f.inputs.slice(0, 2) : [...f.inputs], tool: f.tool ?? null, shape: f.shape as Act["shape"], at: f.at ?? null };
+}
+export function actText(w: World, act: Act): string {
+  const tool = act.tool ? `the ${nm(w, act.tool)}` : "bare hands";
+  const items = act.items.map((k) => nm(w, k));
+  const same = items.length === 2 && items[0] === items[1];
+  switch (act.verb) {
+    case "strike": return `Strike ${act.target?.thing || act.target?.animal || ["tree", "bush", "boulder", "reeds", "stump", "dead_bush", "deer", "wolf"].includes(act.target?.kind ?? "") ? "the" : "a"} ${nm(w, act.target?.kind ?? "")} with ${act.tool ? tool : "bare hands"}`;
+    case "rub": return same ? `Rub two ${items[0]}s together` : `Rub the ${items[0]} against the ${items[1]}`;
+    case "join": return same && items.length === 2 ? `Twist two ${items[0]}s together` : `Bind ${items.map((x) => `the ${x}`).join(", ")} together`;
+    case "heat": return `Hold ${items.map((x) => `the ${x}`).join(" and ")} in the fire`;
+    case "wet": return `Dip the ${items[0]} in the water`;
+    case "shape": return `Press the ${items[0]} into a ${act.shape}`;
+    case "place": {
+      const c: Record<string, number> = {};
+      for (const k of items) c[k] = (c[k] ?? 0) + 1;
+      return `Set down ${Object.entries(c).map(([k, n]) => (n > 1 ? `${n} ${k}s` : `the ${k}`)).join(" and ")} here`;
+    }
+    case "plant": return `Push the ${items[0]} into the ground`;
+    case "wear": return `Wrap the ${items[0]} around themselves`;
+    case "eat": return `Eat the ${items[0]}`;
   }
 }
+const actSig = (act: Act) => [act.verb, [...act.items].sort().join("+"), act.tool ?? "-", act.target?.kind ?? "-", act.at ?? "-", act.shape ?? "-"].join("|");
 
-// Someone doing a craft in plain sight teaches anyone watching, a little at a time.
-function watch(w: World, doer: Agent, r: Recipe) {
-  for (const b of w.agents) {
-    if (b === doer || b.know[r.id] || b.down > w.t || dist(doer, b) > 6) continue;
-    const k = 1 + (b.traits.observant ?? 0) + (b.traits.clever ?? 0) + (b.traits.curious ?? 0) * 0.5;
-    b.clues[r.id] = (b.clues[r.id] ?? 0) + 0.08 * k;
-    if (b.clues[r.id] >= 2) learn(w, b, r, "watched", doer);
-  }
+const SKILL: Record<string, (act: Act, w: World) => string> = {
+  strike: (act) => act.target?.kind === "tree" || act.target?.kind === "stump" ? "woodcutting" : act.target?.kind === "deer" || act.target?.kind === "wolf" ? "hunting" : ["stone", "bone", "boulder"].includes(act.target?.kind ?? "") ? "stonework" : "toolwork",
+  rub: (act, w) => (act.items.some((k) => p(w.kinds[k], "flammable") >= 0.5) ? "firemaking" : "toolwork"),
+  join: () => "crafting", heat: (act, w) => (act.items.some((k) => p(w.kinds[k], "plastic") > 0.5) ? "pottery" : "cooking"),
+  wet: () => "fishing", shape: () => "pottery", place: () => "building", plant: () => "farming", wear: () => "crafting", eat: () => "foraging",
+};
+function gain(w: World, a: Agent, skill: string, n: number) {
+  const before = level(a.skills[skill] ?? 0);
+  a.skills[skill] = (a.skills[skill] ?? 0) + n;
+  if (level(a.skills[skill]) > before) log(w, "level", [a.id], a, `${a.name} got better at ${skill} (level ${level(a.skills[skill])}).`);
 }
 
-type Combo = { items: Item[]; place: string | null; key: string };
-function tinkerOptions(w: World, a: Agent): Combo[] {
-  const items = (Object.entries(a.inv) as [Item, number][]).filter(([i, n]) => n && i !== "meal" && i !== "stew").map(([i]) => i);
-  const places = [null, ...["tree", "water", "fire", "home"].filter((k) => within(w, a, k, k === "fire" ? 2 : 1))];
-  const subsets: Item[][] = [];
-  for (let i = 0; i < items.length; i++) {
-    subsets.push([items[i]]);
-    for (let j = i + 1; j < items.length; j++) {
-      subsets.push([items[i], items[j]]);
-      for (let k = j + 1; k < items.length; k++) subsets.push([items[i], items[j], items[k]]);
+const DURATION: Record<string, number> = { join: 8, heat: 8, wet: 10, shape: 6, place: 3, plant: 3, wear: 2 };
+const pendingRulings = new Set<string>();
+const namingNow = new Set<string>();
+const rulingKey = (act: Act) => `rule|${actSig(act)}`;
+
+// Run one tick of an act. Returns the outcome when it resolves, "wait" while working, or a reason string if it can't happen.
+function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
+  const act = s.act!;
+  if (act.verb === "strike") {
+    if (act.target && !act.target.thing && !act.target.animal && THING_MATERIAL[act.target.kind ?? ""]) {
+      const kind = act.target.kind!;
+      const reach = p(w.kinds[act.tool ?? ""], "long") >= 0.6 ? 2 : 1;
+      if (kind === "deer" || kind === "wolf") {
+        const prey = nearest(a, w.animals, (m) => m.species === kind);
+        if (!prey || dist(a, prey) > 25) return `the ${kind} got away`;
+        act.target.animal = prey.id;
+      } else {
+        const t = within(w, a, kind, reach);
+        if (!t?.thing) return `no ${kind} within reach`;
+        act.target.thing = t.thing.id;
+      }
+    }
+    if (act.target?.animal) {
+      const prey = w.animals.find((m) => m.id === act.target!.animal);
+      if (!prey) return "the animal was gone";
+      const reach = p(w.kinds[act.tool ?? ""], "long") >= 0.6 ? 2 : 1;
+      if (dist(a, prey) > reach) {
+        a.status = `Chasing the ${prey.species}`;
+        if ((s.tries = (s.tries ?? 0) + 1) > 60) return `the ${prey.species} got away`;
+        stepToward(w, a, prey.x, prey.y, reach);
+        return "wait";
+      }
+      if (prey.species === "deer") prey.state = "flee";
+      if (prey.species === "wolf") prey.target = a.id;
+    }
+    a.status = actText(w, act);
+    const r = strikeTick(w, a, act, s);
+    if (r.broke) log(w, "break", [a.id], a, `${a.name}: ${r.broke}`);
+    return r.done ? r.out! : "wait";
+  }
+  if (act.verb === "rub") {
+    a.status = actText(w, act);
+    const r = rubTick(w, a, act, s);
+    return r.done ? r.out! : "wait";
+  }
+  if (act.at && act.at !== "home" && !within(w, a, act.at, act.at === "fire" ? 2 : 1)) return `not at the ${act.at}`;
+  a.status = actText(w, act);
+  if ((s.progress += 1 + level(a.skills[SKILL[act.verb](act, w)] ?? 0) * 0.1) < (DURATION[act.verb] ?? 4)) return "wait";
+  switch (act.verb) {
+    case "join": case "heat": {
+      const res = act.verb === "join" ? join(w, a, act) : heat(w, a, act);
+      if (res !== "ask") return res;
+      if (act.items.some((k) => depth(w.kinds, w.kinds[k]) >= 2)) return applyRuling(w, a, act, rulingKey(act), { useful: false, name: "", props: {} });
+      const key = rulingKey(act);
+      const cached = w.rulings[key];
+      if (cached) return applyRuling(w, a, act, key, cached);
+      if (pendingRulings.has(key)) return "wait";
+      const hourly = w.jev.rulings - (rulingsAt.get(Math.floor(w.t / 12)) ?? w.jev.rulings);
+      if (!rulingsAt.has(Math.floor(w.t / 12))) rulingsAt.set(Math.floor(w.t / 12), w.jev.rulings);
+      if (hourly >= 6) return applyRuling(w, a, act, key, { useful: false, name: "", props: {} });
+      pendingRulings.add(key);
+      const parts = act.items.map((k) => w.kinds[k]).filter(Boolean);
+      const uniq = [...new Set(parts.map((k) => (k.parts ? noun(k) : k.name)))];
+      const soft = parts.find((k) => p(k, "plastic") >= 0.5 || p(k, "fibrous") >= 0.6);
+      const rest = [...new Set(parts.filter((k) => k !== soft).map((k) => (k.parts ? noun(k) : k.name)))];
+      const template = act.verb === "join"
+        ? soft && rest.length ? `${rest.join(" and ")} packed in ${soft.name}` : uniq.length === 1 ? `bundle of ${uniq[0]}s` : `${uniq[0]} wedged into ${uniq.slice(1).join(" and ")}`
+        : `fire-hardened ${uniq.join(" and ")}`;
+      rule(w, a, actText(w, act), parts, template)
+        .then((r) => { w.rulings[key] = r; trace("physics", "ruling", { key, ruling: r }, a.id); })
+        .catch((e) => { trace("brain", "error", { error: String(e), key }, a.id); })
+        .finally(() => pendingRulings.delete(key));
+      a.status = "Puzzling over what happened";
+      return "wait";
+    }
+    case "wet": return wet(w, a, act);
+    case "shape": return shape(w, a, act);
+    case "place": return placeItems(w, a, act);
+    case "plant": return plant(w, a, act);
+    case "wear": return wearIt(w, a, act);
+    case "eat": return eat(w, a, act.items[0]);
+  }
+  return "nothing to do";
+}
+const rulingsAt = new Map<number, number>();
+
+// Everything that follows from an act finishing: beliefs, watchers, the chronicle, skills, names.
+function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean) {
+  const act = s.act!;
+  const ticks = Math.max(1, w.t - (s.started ?? w.t));
+  trace("physics", "outcome", { act: actSig(act), ok: out.ok, text: out.text, uses: out.uses, gives: out.gives, builds: out.builds, effect: out.effect, numbers: out.numbers, ticks }, a.id);
+  const b = record(w, a, out, ticks);
+  if (tinkering && !b) a.tried[actSig(act)] = (a.tried[actSig(act)] ?? 0) + 1;
+  watchers(w, a, out, ticks);
+  const kind = out.builds === "fire" ? "fire" : out.builds === "shelter" || out.builds === "hearth" ? "build" : act.target?.animal && out.ok ? "hunt" : out.ok ? "craft" : "tinker";
+  log(w, kind, [a.id], a, `${a.name}: ${out.text}`);
+  if (out.ok) gain(w, a, SKILL[act.verb](act, w), tinkering ? 3 : 5);
+  if (act.verb === "strike") gain(w, a, "toolwork", 1);
+  if (out.ok && act.verb === "strike" && act.target?.kind && THING_MATERIAL[act.target.kind]) {
+    const breaks = THING_MATERIAL[act.target.kind].breaks;
+    see(w, a, `breaks:${act.target.kind}`, `A ${act.target.kind} breaks down into ${Object.keys(breaks).map((k) => nm(w, k)).join(", ")}.`);
+  }
+  for (const k of Object.keys(out.gives)) {
+    const kind = w.kinds[k];
+    if (!kind?.made) continue;
+    kind.count = (kind.count ?? 0) + 1;
+    if (kind.count >= 3 && !kind.named && !namingNow.has(k)) {
+      const candidates = nameCandidates(w, kind, a.name);
+      if (candidates.length < 2) { kind.named = true; continue; }
+      namingNow.add(k);
+      nameIt(w, a, kind, candidates).then((name) => {
+        kind.named = true;
+        if (name && name !== kind.name) {
+          kind.plain = kind.name;
+          log(w, "first", [a.id], a, `People have started calling the ${kind.name} ${an(name)}.`);
+          kind.name = name;
+          changedKinds.add(k);
+        }
+      }).catch(() => {}).finally(() => namingNow.delete(k));
     }
   }
-  const combos: Combo[] = [];
-  for (const s of subsets)
-    for (const p of places) {
-      const words = s.map((i) => (s.length === 1 && (a.inv[i] ?? 0) > 1 ? `two ${plural(i)} together` : nice(i)));
-      const key = `${words.join(" + ")}${p ? `, at the ${p}` : ""}`;
-      // Stop offering what already failed twice with no hint of anything.
-      if ((a.tried[key] ?? 0) < 2) combos.push({ items: [...s].sort(), place: p, key });
+}
+export const changedKinds = new Set<string>();
+
+// ---------- tinkering ----------
+type Option = { text: string; act: Act };
+function tinkerOptions(w: World, a: Agent): Option[] {
+  const c = counts(a);
+  const held = Object.keys(c).filter((k) => !k.startsWith("rotten:"));
+  const opts: Option[] = [];
+  const push = (act: Act) => { if ((a.tried[actSig(act)] ?? 0) < 2) opts.push({ text: actText(w, act), act }); };
+  const tools = [null, ...held];
+  const targets = w.things.filter((t) => THING_MATERIAL[t.kind] && dist(a, t) <= 1).map((t) => t.kind);
+  const animalsNear = w.animals.filter((m) => dist(a, m) <= 2).map((m) => m.species);
+  for (const kind of new Set([...targets, ...animalsNear])) for (const tool of tools) push({ verb: "strike", items: [], tool, target: { kind } });
+  for (const x of held) {
+    const k = w.kinds[x];
+    for (const tool of tools) if (tool !== x || c[x] >= 2) push({ verb: "strike", items: [], tool, target: { kind: x } });
+    if (within(w, a, "fire", 2)) push({ verb: "heat", items: [x], at: "fire" });
+    if (within(w, a, "water")) push({ verb: "wet", items: [x], at: "water" });
+    if (p(k, "plastic") >= 0.6) { push({ verb: "shape", items: [x], shape: "bowl" }); push({ verb: "shape", items: [x], shape: "block" }); }
+    if (p(k, "seed") > 0 || p(k, "edible") > 0) push({ verb: "plant", items: [x] });
+    if (p(k, "flexible") >= 0.4) push({ verb: "wear", items: [x] });
+    push({ verb: "place", items: Array(Math.min(c[x], 6)).fill(x) });
+  }
+  for (let i = 0; i < held.length; i++)
+    for (let j = i; j < held.length; j++) {
+      const [x, y] = [held[i], held[j]];
+      if (x === y && c[x] < 2) continue;
+      push({ verb: "rub", items: [x, y] });
+      push({ verb: "join", items: [x, y] });
+      if (x !== y) push({ verb: "place", items: [...Array(Math.min(c[x], 5)).fill(x), ...Array(Math.min(c[y], 3)).fill(y)] });
+      if (within(w, a, "fire", 2) && x !== y) push({ verb: "heat", items: [x, y], at: "fire" });
+      for (let k = j; k < held.length; k++) {
+        const z = held[k];
+        const need = [x, y, z].reduce<Record<string, number>>((m, q) => ((m[q] = (m[q] ?? 0) + 1), m), {});
+        if (Object.entries(need).some(([q, n]) => c[q] < n)) continue;
+        push({ verb: "join", items: [x, y, z] });
+      }
     }
   // ponytail: random cap to stay under Jev's 255 options and keep the prompt small.
-  return combos.sort(() => Math.random() - 0.5).slice(0, 120);
+  return opts.sort(() => Math.random() - 0.5).slice(0, 100);
 }
-const trait = (a: Agent, t: string) => a.traits[t] ?? 0;
-function attempt(w: World, a: Agent, c: Combo) {
-  const sig = c.items.join("+"), tried = c.key;
-  // A recipe tied to this exact place wins over one that works anywhere.
-  const hit = RECIPES.filter((r) => signature(r) === sig && (!r.near || r.near === c.place)).sort((x, y) => +(y.near === c.place) - +(x.near === c.place))[0];
-  if (hit) {
-    const short = Object.entries(hit.inputs).find(([i, k]) => (a.inv[i as Item] ?? 0) < k!);
-    if (short && !a.know[hit.id]) {
-      a.clues[hit.id] = Math.min(3, (a.clues[hit.id] ?? 0) + 1);
-      return log(w, "hint", [a.id], a, `${a.name} tried ${tried}. It felt close, but they needed more ${nice(short[0])}.`);
-    }
-    if (a.know[hit.id]) return perform(w, a, hit) === true ? undefined : log(w, "tinker", [a.id], a, `${a.name} tried ${tried} again, but it didn't come together.`);
-    const p = Math.max(0.05, Math.min(0.9, 0.3 + (a.clues[hit.id] ?? 0) * 0.22 + trait(a, "clever") * 0.2 + trait(a, "curious") * 0.12
-      + trait(a, "creative") * 0.1 + level(a.skills[hit.craft] ?? 0) * 0.04 - hit.difficulty * 0.25));
-    if (Math.random() < p) {
-      learn(w, a, hit, "discovered");
-      perform(w, a, hit);
-      return;
-    }
-    a.clues[hit.id] = Math.min(3, (a.clues[hit.id] ?? 0) + 1);
-    return log(w, "tinker", [a.id], a, `${a.name} tried ${tried}. Nothing yet, but it seemed promising.`);
-  }
-  // Partly right: these items are part of something they haven't worked out.
-  const partial = RECIPES.filter((r) => !a.know[r.id] && c.items.every((i) => signature(r).split("+").includes(i)) && (!r.near || !c.place || r.near === c.place)).slice(0, 3);
-  for (const r of partial) a.clues[r.id] = Math.min(3, (a.clues[r.id] ?? 0) + 0.35);
-  if (!partial.length) a.tried[c.key] = (a.tried[c.key] ?? 0) + 1;
-  log(w, "tinker", [a.id], a, `${a.name} tried ${tried}. ${partial.length ? "Nothing came of it, but it gave them an idea." : "Nothing came of it."}`);
-}
-
-// Actually make a recipe's output. Returns true, or why it couldn't.
-function perform(w: World, a: Agent, r: Recipe): true | string {
-  for (const [i, k] of Object.entries(r.inputs)) if ((a.inv[i as Item] ?? 0) < k!) return `missing ${nice(i)}`;
-  for (const t of r.tools ?? []) if (!a.inv[t]) return `no ${nice(t)}`;
-  const at = r.near && within(w, a, r.near, r.near === "fire" ? 2 : 1);
-  if (r.near && !at) return `not at the ${r.near}`;
-  const home = r.makes.thing && HOMES[r.makes.thing];
-  if (home) { const cur = homeOf(w, a); if (cur && HOMES[cur.kind]!.tier >= home.tier) return "already has a better home"; }
-  for (const [i, k] of Object.entries(r.inputs)) take(a, i as Item, k!);
-  gain(w, a, r.craft, 5);
-  if (r.fells && at && "thing" in at && at.thing) {
-    at.thing.kind = "stump";
-    at.thing.until = w.t + DAY * 4;
-    touch(at.thing);
-  }
-  if (r.makes.item) {
-    const n = (r.makes.n ?? 1) + (r.makes.n && level(a.skills[r.craft] ?? 0) >= 4 ? 1 : 0);
-    put(a, r.makes.item, n);
-    log(w, "craft", [a.id], a, `${a.name} made ${n > 1 ? `${n} ${nice(r.makes.item)}s` : `a ${nice(r.makes.item)}`}.`);
-  } else if (r.makes.thing) {
-    const kind = r.makes.thing as ThingKind;
-    if (kind === "fire") {
-      spawn(w, "fire", a.x, a.y, { owner: a.id, until: w.t + Math.round(DAY * 0.5 * speed(a, "firemaking")) });
-      log(w, "fire", [a.id], a, `${a.name} started a fire.`);
-    } else {
-      spawn(w, kind, a.x, a.y, { owner: a.id });
-      if (home) a.home = { x: a.x, y: a.y };
-      log(w, "build", [a.id], a, `${a.name} built ${r.label.replace(/^build /, "")}${home ? " and made it home" : ""}.`);
-    }
-  }
-  return true;
-}
+const tinkerWait = new Set<string>();
 
 // ---------- running plan steps ----------
 const GATHER_STATUS: Record<string, string> = {
-  pick_berries: "Picking berries", pick_mushroom: "Gathering a mushroom", pick_stick: "Picking up a stick",
-  pick_stone: "Picking up a stone", pick_reeds: "Cutting reeds", dig_clay: "Digging clay",
+  pick_berries: "Picking berries", pick_mushroom: "Gathering a mushroom", pick_herb: "Picking herbs", pick_stick: "Picking up a stick",
+  pick_stone: "Picking up a stone", pull_reeds: "Pulling up reeds", dig_clay: "Digging clay",
 };
-const PLACE_NAME: Record<string, string> = {
-  bush: "a berry bush", mushroom: "a mushroom", stick: "a stick", stone: "a stone", reeds: "the reeds", clay: "the clay bank",
-  tree: "a tree", fire: "the fire", home: "home", water: "the water",
-};
-const tinkering = new Set<string>(); // agents waiting on Jev to pick what to try
+function bestFood(w: World, a: Agent) {
+  const ctx = { kinds: w.kinds, toxic: ctxFor(w, a).toxic } as Ctx;
+  const ok = new Set(edibleKinds(ctx));
+  return [...new Set(a.inv.map((s) => s.k))].filter((k) => ok.has(k)).sort((x, y) => p(w.kinds[y], "edible") - p(w.kinds[x], "edible"))[0] ?? null;
+}
+const bestWeapon = (w: World, a: Agent) =>
+  [...new Set(a.inv.map((s) => s.k))].map((k) => w.kinds[k]).filter((k) => p(k, "sharp") > 0 || p(k, "heavy") > 0.4)
+    .sort((x, y) => strikeDamage(y, 0.15) - strikeDamage(x, 0.15))[0] ?? null;
 
 function run(w: World, a: Agent): boolean | string {
   const s = a.plan[0];
+  s.started ??= w.t;
   switch (s.op) {
     case "goto": {
-      const p = place(w, a, s.arg!);
-      if (!p) return `couldn't find ${PLACE_NAME[s.arg!] ?? s.arg}`;
-      if (s.arg === "agent") {
-        const b = p as Agent;
-        if (b.down > w.t) return `${b.name} was unconscious`;
-        if (dist(a, b) > 30) return `${b.name} was too far away`;
-        a.status = `Walking over to ${b.name}`;
-      } else a.status = `Walking to ${PLACE_NAME[s.arg!]}`;
-      const r = stepToward(w, a, p.x, p.y, s.arg === "fire" ? 2 : 1);
+      const t = spot(w, a, s.arg!);
+      if (!t) return `couldn't find ${s.arg}`;
+      if (t.agent && t.agent.down > w.t) return `${t.agent.name} was unconscious`;
+      a.status = stepLabel(w, a, s).replace(/^Go to/, "Walking to");
+      const r = stepToward(w, a, t.x, t.y, s.arg === "fire" ? 2 : s.arg === "home" || s.arg!.startsWith("item:") ? 0 : 1);
       return r === "stuck" ? "no path" : r === "arrived";
     }
     case "wander": {
@@ -402,116 +537,188 @@ function run(w: World, a: Agent): boolean | string {
       return r === "stuck" ? "no path" : r === "arrived";
     }
     case "avoid": {
-      const b = agent(w, s.arg);
+      const b = agentById(w, s.arg);
       if (!b || dist(a, b) >= 14 || s.progress++ > 40) return true;
       a.status = `Keeping away from ${b.name}`;
-      stepToward(w, a, Math.max(0, Math.min(W - 1, a.x + Math.sign(a.x - b.x) * 3)), Math.max(0, Math.min(H - 1, a.y + Math.sign(a.y - b.y) * 3)), 0);
+      stepAway(w, a, b);
       return false;
+    }
+    case "flee": {
+      const wolf = w.animals.find((m) => m.species === "wolf" && m.target === a.id) ?? nearest(a, w.animals, (m) => m.species === "wolf");
+      const burning = nearest(a, w.things, (t) => !!t.burning);
+      const danger = wolf && dist(a, wolf) < 6 ? wolf : burning && dist(a, burning) < 3 ? burning : null;
+      if (!danger || s.progress++ > 20) return true;
+      a.status = wolf === danger ? "Running from a wolf" : "Running from the fire";
+      const safe = nearest(a, w.agents, (b) => b !== a && b.down <= w.t) ?? nearest(a, w.things, (t) => t.kind === "fire");
+      if (wolf === danger && safe && dist(a, safe) < 15) stepToward(w, a, safe.x, safe.y);
+      else stepAway(w, a, danger);
+      return false;
+    }
+    case "fight": {
+      const wolf = w.animals.find((m) => m.species === "wolf" && (m.target === (s.arg ?? a.id) || dist(m, a) <= 3));
+      if (!wolf || s.progress++ > 40 || a.needs.health < 20) {
+        if (s.arg && s.arg !== a.id && !wolf) defended(w, a, s.arg);
+        return true;
+      }
+      const weapon = bestWeapon(w, a);
+      s.act ??= { verb: "strike", items: [], tool: weapon?.id ?? null, target: { kind: "wolf", animal: wolf.id } };
+      s.act.target!.animal = wolf.id;
+      const r = doAct(w, a, s);
+      if (typeof r === "object") { finishAct(w, a, s, r, false); if (s.arg && s.arg !== a.id) defended(w, a, s.arg); return true; }
+      a.status = "Fighting a wolf";
+      return false;
+    }
+    case "hunt": {
+      const prey = nearest(a, w.animals, (m) => m.species === s.arg);
+      if (!prey && !s.act) return `there were no ${s.arg} about`;
+      const weapon = bestWeapon(w, a);
+      s.act ??= { verb: "strike", items: [], tool: weapon?.id ?? null, target: { kind: s.arg } };
+      const r = doAct(w, a, s);
+      if (r === "wait") return false;
+      if (typeof r === "string") return r;
+      finishAct(w, a, s, r, false);
+      return r.ok ? true : r.text;
     }
     case "rest": {
       const home = within(w, a, "home")?.thing;
-      const kind = home ? nice(home.kind) : null;
+      const kind = home ? ["pile", "lean-to", "hut", "cabin"][home.shelter?.tier ?? 0] : null;
       a.status = isNight(w.t) ? (kind ? `Sleeping in the ${kind}` : "Sleeping on the ground") : kind ? `Resting in the ${kind}` : "Resting";
-      a.needs.energy = Math.min(100, a.needs.energy + 0.7 * (home ? 1 + HOMES[home.kind]!.rest : 1));
+      a.needs.energy = Math.min(100, a.needs.energy + 0.7 * (1 + (home?.shelter?.tier ?? 0) * 0.35));
       return a.needs.energy >= (isNight(w.t) ? 98 : 85);
     }
     case "warm_up": {
       a.status = "Warming up";
       if (!within(w, a, "fire", 2) && !within(w, a, "home")) return "the warmth was gone";
-      a.needs.warmth = Math.min(100, a.needs.warmth + 1.2);
+      a.needs.warmth = Math.min(100, a.needs.warmth + 0.6);
       return a.needs.warmth >= 95;
     }
     case "eat": {
-      const f = bestFood(a);
-      if (!f) return "nothing to eat";
-      take(a, f);
-      a.needs.food = Math.min(100, a.needs.food + FOOD[f]!);
-      log(w, "eat", [a.id], a, `${a.name} ate a ${nice(f)}.`);
+      const k = bestFood(w, a);
+      if (!k) return "nothing to eat";
+      s.act = { verb: "eat", items: [k] };
+      const out = eat(w, a, k);
+      if (out.effect) { finishAct(w, a, s, out, false); if (out.effect === "sick") see(w, a, `sick:${k}`, `${cap(nm(w, k))} can make you sick.`, 5); }
+      else log(w, "eat", [a.id], a, `${a.name} ate ${an(nm(w, k))}.`);
+      return true;
+    }
+    case "pick_up": {
+      const t = within(w, a, `item:${s.arg}`, 0)?.thing ?? within(w, a, `item:${s.arg}`, 1)?.thing;
+      if (!t) return "it was gone";
+      const n = Math.min(t.n ?? 1, 3);
+      t.n = (t.n ?? 1) - n;
+      if (t.n <= 0) removeThing(w, t); else changed.add(t.id);
+      giveItems(w, a, t.item!, n);
+      log(w, "gather", [a.id], a, `${a.name} picked up ${n > 1 ? `${n} ${nm(w, t.item!)}s` : an(nm(w, t.item!))}.`);
       return true;
     }
     case "assist": {
-      const b = agent(w, s.arg);
+      const b = agentById(w, s.arg);
       if (!b || !b.goal || s.progress++ > 30) return true;
       a.status = `Helping ${b.name}`;
       const theirs = b.plan[0];
-      if (stepToward(w, a, b.x, b.y) === "arrived" && theirs && (theirs.op === "craft" || GATHER_OP[theirs.op])) theirs.progress += 1;
+      if (stepToward(w, a, b.x, b.y) === "arrived" && theirs && (theirs.op === "act" || GATHER[theirs.op])) theirs.progress += 1;
       return false;
     }
+    case "act": {
+      const b = a.beliefs[s.key ?? ""];
+      if (!b) return "forgot how";
+      s.act ??= actFromBelief(b);
+      const r = doAct(w, a, s);
+      if (r === "wait") return false;
+      if (typeof r === "string") return r;
+      finishAct(w, a, s, r, false);
+      return r.ok ? true : r.text;
+    }
     case "tinker": {
-      if (s.arg) {
-        a.status = `Trying ${s.arg.split("|")[0]}`;
-        if ((s.progress += speed(a, "tinkering")) < 8) return false;
-        const [key, items, where] = s.arg.split("|");
-        attempt(w, a, { key, items: items.split("+") as Item[], place: where || null });
-        gain(w, a, "tinkering", 2);
+      if (s.act) {
+        const r = doAct(w, a, s);
+        if (r === "wait") return false;
+        if (typeof r === "string") { a.tried[actSig(s.act)] = (a.tried[actSig(s.act)] ?? 0) + 1; log(w, "tinker", [a.id], a, `${a.name} tried to ${actText(w, s.act).toLowerCase()}, but ${r}.`); return true; }
+        finishAct(w, a, s, r, true);
         return true;
       }
-      if (tinkering.has(a.id)) return false;
+      if (tinkerWait.has(a.id)) return false;
       const options = tinkerOptions(w, a);
-      if (!options.length) return "had nothing to tinker with";
-      tinkering.add(a.id);
+      if (!options.length) return "had nothing to try";
+      tinkerWait.add(a.id);
       a.status = "Turning things over in their hands";
-      chooseTinker(w, a, options.map((o) => o.key))
-        .then((key) => { const c = options.find((o) => o.key === key)!; s.arg = `${c.key}|${c.items.join("+")}|${c.place ?? ""}`; })
-        .catch((e) => { console.error(`tinker ${a.name}:`, e); a.plan = []; })
-        .finally(() => tinkering.delete(a.id));
+      chooseTinker(w, a, options.map((o) => o.text))
+        .then((text) => {
+          const o = options.find((x) => x.text === text)!;
+          s.act = structuredClone(o.act);
+          s.started = w.t;
+          trace("brain", "tinker_choice", { chose: text, from: options.length }, a.id);
+        })
+        .catch((e) => { trace("brain", "error", { error: String(e) }, a.id); a.plan = []; })
+        .finally(() => tinkerWait.delete(a.id));
       return false;
     }
     case "social": {
-      const b = agent(w, a.goal?.target);
+      const b = agentById(w, a.goal?.target);
       if (!b) return "they weren't around";
       if (s.progress === 0) {
-        if (b.engaged || b.down > w.t) return false; // wait for them to be free
+        if (b.engaged || b.down > w.t) return false;
         if (dist(a, b) > 1) { a.plan.unshift({ op: "goto", arg: "agent", progress: 0 }); return false; }
         s.progress = 1;
         a.engaged = b.id;
         b.engaged = a.id;
         a.status = `With ${b.name}`;
         b.status = `With ${a.name}`;
-        interact(w, a, b, s.arg!).catch((e) => console.error(`interact ${a.name}->${b.name}:`, e))
+        interact(w, a, b, s.arg!).catch((e) => { console.error(`interact ${a.name}->${b.name}:`, e); trace("social", "error", { error: String(e) }, a.id); })
           .finally(() => { a.engaged = null; b.engaged = null; s.progress = 2; });
         return false;
       }
       return s.progress === 2;
     }
-    case "craft": {
-      const r = RECIPE[s.arg!];
-      a.status = `Working: ${r.label}`;
-      watch(w, a, r);
-      if ((s.progress += speed(a, r.craft)) < r.time) return false;
-      return perform(w, a, r);
-    }
   }
-  const g = GATHER_OP[s.op];
+  const g = GATHER[s.op];
   if (!g) return true;
   a.status = GATHER_STATUS[s.op];
-  if ((s.progress += speed(a, "foraging")) < 2.5) return false;
+  if ((s.progress += 1 + level(a.skills.foraging ?? 0) * 0.1) < 2.5) return false;
   const t = within(w, a, g.place)?.thing;
-  if (!t) return `${PLACE_NAME[g.place]} was gone`;
+  if (!t) return `the ${g.place} was gone`;
   let n = g.n;
   if (t.kind === "bush") {
     n = Math.min(t.n!, 2 + Math.floor(level(a.skills.foraging ?? 0) / 4));
     t.n! -= n;
-    touch(t);
+    t.hp = (t.hp ?? 20) - 3;
+    changed.add(t.id);
+  } else if (t.kind === "reeds") {
+    t.hp = (t.hp ?? 6) - 3;
+    if (t.hp <= 0) removeThing(w, t); else changed.add(t.id);
+  } else if (t.kind === "clay") {
+    if (Math.random() < 0.25) removeThing(w, t);
   } else removeThing(w, t);
-  put(a, g.item, n);
-  if (t.kind === "bush" || t.kind === "mushroom") gain(w, a, "foraging", 2);
-  log(w, "gather", [a.id], a, `${a.name} gathered ${n > 1 ? `${n} ${plural(g.item)}` : g.item === "fiber" || g.item === "clay" ? `some ${g.item}` : `a ${nice(g.item)}`}.`);
+  giveItems(w, a, g.item, n);
+  if (t.kind === "bush" || t.kind === "mushroom" || t.kind === "herb") gain(w, a, "foraging", 2);
+  log(w, "gather", [a.id], a, `${a.name} gathered ${n > 1 ? `${n} ${g.item === "berry" ? "berries" : nm(w, g.item)}` : an(nm(w, g.item))}.`);
   return true;
 }
 
-const pickGift = (a: Agent): Item | null =>
-  bestFood(a) ?? (["stick", "stone", "fiber", "clay", "log", "cord", "plank"] as Item[]).find((i) => (a.inv[i] ?? 0) > 0) ?? null;
-const most = (a: Agent, except?: Item): Item | null =>
-  (Object.entries(a.inv) as [Item, number][]).filter(([i, n]) => n && i !== except && !TOOLS.includes(i)).sort((x, y) => y[1] - x[1])[0]?.[0] ?? null;
+// ---------- people ----------
+const gifts = (w: World, a: Agent) => [...new Set(a.inv.map((s) => s.k))].map((k) => w.kinds[k]).filter((k) => k && !isTool(k));
+const pickGift = (w: World, a: Agent) => gifts(w, a).sort((x, y) => p(y, "edible") - p(x, "edible"))[0]?.id ?? null;
+const most = (w: World, a: Agent, except?: string) => {
+  const c = counts(a);
+  return Object.keys(c).filter((k) => k !== except && !isTool(w.kinds[k])).sort((x, y) => c[y] - c[x])[0] ?? null;
+};
+function defended(w: World, defender: Agent, victimId: string) {
+  const v = agentById(w, victimId);
+  if (!v || v === defender) return;
+  const text = `${defender.name} fought off a wolf that was attacking ${v.name}.`;
+  log(w, "attack", [defender.id, v.id], v, text);
+  reflect(w, v, defender, text).then((r) => {
+    if (r.bond !== "none") log(w, "bond", [v.id], v, `${v.name} will remember this about ${defender.name}: ${r.bond.replaceAll("_", " ")}.`);
+  }).catch(() => {});
+}
 
 async function interact(w: World, a: Agent, b: Agent, kind: string) {
   const ra = (a.rel[b.id] ??= newRel(w.t));
   (b.rel[a.id] ??= newRel(w.t));
   const first = ra.history.length === 0 && b.rel[a.id].history.length === 0;
   let text = "";
-  const witnesses = [a, b];
   const reply = (situation: string, opts: Record<string, string>) => respond(w, b, a, situation, opts);
+  const trait = (x: Agent, t: string) => x.traits[t] ?? 0;
   switch (kind) {
     case "talk": {
       const r = await reply(`${a.name} walks up to ${b.name} to talk.`, { welcome: "Chat warmly", brush_off: "Brush them off" });
@@ -521,52 +728,54 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
         gain(w, a, "charm", 3);
         const story = a.memory.filter((m) => !m.includes(b.name)).at(-1 - Math.floor(Math.random() * 3));
         if (story) gain(w, a, "storytelling", 2);
+        // Talking passes on what you've seen of the world.
+        for (const [k, v] of Object.entries(a.facts)) if (!b.facts[k] && Math.random() < 0.5) b.facts[k] = v;
         text = `${a.name} and ${b.name}${first ? " met for the first time and" : ""} talked for a while.${story ? ` ${a.name} told ${b.name} about this: "${story.replace(/^Day \d+, \w+: /, "")}"` : ""}`;
       } else text = `${a.name} tried to talk to ${b.name}, but ${b.name} brushed them off.`;
       break;
     }
     case "give": {
-      const item = pickGift(a);
+      const item = pickGift(w, a);
       if (!item) return;
-      const n = Math.min(a.inv[item]!, item === "berry" ? 2 : 1);
-      const r = await reply(`${a.name} offers ${b.name} ${n} ${nice(item)} as a gift.`, { accept: "Accept the gift", refuse: "Refuse it" });
+      const n = Math.min(count(a, item), item === "berry" ? 2 : 1);
+      const r = await reply(`${a.name} offers ${b.name} ${n} ${nm(w, item)} as a gift.`, { accept: "Accept the gift", refuse: "Refuse it" });
       if (r === "accept") {
-        take(a, item, n); put(b, item, n);
+        takeItems(a, item, n); giveItems(w, b, item, n);
         b.rel[a.id].ledger++; ra.ledger--;
-        text = `${a.name} gave ${b.name} ${n} ${nice(item)}.${b.needs.food < 25 && FOOD[item] ? ` ${b.name} was starving.` : ""}`;
-      } else text = `${b.name} refused ${a.name}'s gift of ${nice(item)}.`;
+        text = `${a.name} gave ${b.name} ${n} ${nm(w, item)}.${b.needs.food < 25 && p(w.kinds[item], "edible") ? ` ${b.name} was starving.` : ""}`;
+      } else text = `${b.name} refused ${a.name}'s gift of ${nm(w, item)}.`;
       break;
     }
     case "trade": {
-      const give = most(a), want = most(b, give ?? undefined);
+      const give = most(w, a), want = most(w, b, give ?? undefined);
       if (!give || !want) return;
       gain(w, a, "bargaining", 2);
-      const r = await reply(`${a.name} offers ${b.name} 1 ${nice(give)} in exchange for 1 ${nice(want)}.`, { accept: "Make the trade", refuse: "Turn it down" });
+      const r = await reply(`${a.name} offers ${b.name} 1 ${nm(w, give)} in exchange for 1 ${nm(w, want)}.`, { accept: "Make the trade", refuse: "Turn it down" });
       if (r === "accept") {
-        take(a, give); put(b, give); take(b, want); put(a, want);
+        takeItems(a, give); giveItems(w, b, give); takeItems(b, want); giveItems(w, a, want);
         gain(w, a, "bargaining", 3);
-        text = `${a.name} traded 1 ${nice(give)} to ${b.name} for 1 ${nice(want)}.`;
-      } else text = `${b.name} turned down ${a.name}'s offer to trade ${nice(give)} for ${nice(want)}.`;
+        text = `${a.name} traded 1 ${nm(w, give)} to ${b.name} for 1 ${nm(w, want)}.`;
+      } else text = `${b.name} turned down ${a.name}'s offer to trade ${nm(w, give)} for ${nm(w, want)}.`;
       break;
     }
     case "share_meal": {
-      const f = bestFood(a);
+      const f = bestFood(w, a);
       if (!f) return;
       const r = await reply(`${a.name} invites ${b.name} to share some food and eat together.`, { join: "Eat together", decline: "Decline" });
       if (r === "join") {
-        take(a, f);
-        b.needs.food = Math.min(100, b.needs.food + FOOD[f]!);
-        const g = bestFood(a);
-        if (g) { take(a, g); a.needs.food = Math.min(100, a.needs.food + FOOD[g]!); }
+        takeItems(a, f);
+        b.needs.food = Math.min(100, b.needs.food + p(w.kinds[f], "edible") * 100);
+        const g = bestFood(w, a);
+        if (g) { takeItems(a, g); a.needs.food = Math.min(100, a.needs.food + p(w.kinds[g], "edible") * 100); }
         a.needs.social = Math.min(100, a.needs.social + 25);
         b.needs.social = Math.min(100, b.needs.social + 25);
         b.rel[a.id].ledger++; ra.ledger--;
-        text = `${a.name} shared a ${nice(f)} with ${b.name} and they ate together.`;
+        text = `${a.name} shared ${an(nm(w, f))} with ${b.name} and they ate together.`;
       } else text = `${b.name} declined ${a.name}'s offer to eat together.`;
       break;
     }
     case "share_fire": {
-      if (!place(w, a, "fire")) return;
+      if (!spot(w, a, "fire")) return;
       const r = await reply(`${a.name} invites ${b.name} to come sit by the fire together.`, { join: "Go sit by the fire", decline: "Decline" });
       if (r === "join") {
         for (const x of [a, b]) {
@@ -579,7 +788,7 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
       break;
     }
     case "help": {
-      const what = b.goal ? goalText(b.goal.type).toLowerCase() : "their work";
+      const what = b.goal ? goalText(w, b.goal.type, b.goal.target).toLowerCase() : "their work";
       const r = await reply(`${a.name} offers to help ${b.name} ${what}.`, { accept: "Accept the help", decline: "Say no thanks" });
       if (r === "accept") {
         a.goal = { type: "help", target: b.id, since: w.t, odds: a.goal?.odds ?? {}, fails: 0 };
@@ -590,18 +799,17 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
       break;
     }
     case "teach": {
-      const options = Object.keys(a.know).filter((id) => !b.know[id]);
+      const options = Object.keys(a.beliefs).filter((k) => !b.beliefs[k] && a.beliefs[k].wins > 0);
       if (!options.length) return;
-      const r = RECIPE[options[Math.floor(Math.random() * options.length)]];
-      const ans = await reply(`${a.name} offers to show ${b.name} how to ${r.label}.`, { accept: "Learn from them", refuse: "Not interested" });
+      const key = options[Math.floor(Math.random() * options.length)];
+      const what = sentence(w, a.beliefs[key].fields).replace(/\.$/, "");
+      const ans = await reply(`${a.name} offers to show ${b.name} something they know: ${what}.`, { accept: "Learn from them", refuse: "Not interested" });
       if (ans === "accept") {
-        b.know[r.id] = { how: "taught", t: w.t, from: a.id };
-        delete b.clues[r.id];
-        gain(w, b, r.craft, 3);
+        teach(w, a, b, key);
         gain(w, a, "teaching", 4);
         b.rel[a.id].ledger++; ra.ledger--;
-        text = `${a.name} taught ${b.name} how to ${r.label}.`;
-      } else text = `${b.name} wasn't interested when ${a.name} offered to show them how to ${r.label}.`;
+        text = `${a.name} showed ${b.name} that ${what.charAt(0).toLowerCase() + what.slice(1)}.${a.beliefs[key].spurious ? ` ${a.name} insisted you have to hold ${an(nm(w, a.beliefs[key].spurious!))} for it to work.` : ""}`;
+      } else text = `${b.name} wasn't interested when ${a.name} offered to show them something.`;
       break;
     }
     case "gossip": {
@@ -611,7 +819,7 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
       const rc = a.rel[c.id];
       const said = Object.entries(rc.beliefs).filter(([, v]) => v! > 0.65 || v! < 0.35).map(([k, v]) => (v! > 0.65 ? k : `not ${k}`));
       const opinion = `${a.name} says they ${rc.affinity > 0.2 ? "like" : rc.affinity < -0.2 ? "dislike" : "don't know what to make of"} ${c.name}${said.length ? `, and that ${c.name} is ${said.join(", ")}` : ""}.`;
-      const lie = a.traits.deceitful && rc.affinity < 0 && Math.random() < a.traits.deceitful;
+      const lie = trait(a, "deceitful") && rc.affinity < 0 && Math.random() < trait(a, "deceitful");
       const told = lie ? `${a.name} says ${c.name} is dishonest and dangerous.` : opinion;
       if (lie) gain(w, a, "deception", 3);
       const r = await reply(`${a.name} tells ${b.name} about ${c.name}: "${told}"`, { believe: "Believe it", doubt: "Doubt it" });
@@ -633,128 +841,215 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
       text = `${a.name} insulted ${b.name}. ${b.name} ${r === "shrug" ? "shrugged it off" : r === "insult_back" ? "insulted them right back" : "walked away hurt"}.`;
       break;
     }
+    case "attack": {
+      const weapon = bestWeapon(w, a);
+      const dmg = strikeDamage(weapon ?? { id: "hands", name: "fists", props: { hard: 0.2, heavy: 0.1 } }, 0.1, a) * 2;
+      b.needs.health = Math.max(0, b.needs.health - dmg);
+      const r = await reply(`${a.name} attacks ${b.name}${weapon ? ` with ${an(weapon.name)}` : ""}!`, { fight_back: "Fight back", flee: "Run away", submit: "Give up and cower" });
+      if (r === "fight_back") {
+        const theirs = bestWeapon(w, b);
+        a.needs.health = Math.max(0, a.needs.health - strikeDamage(theirs ?? { id: "hands", name: "fists", props: { hard: 0.2, heavy: 0.1 } }, 0.1, b) * 2);
+      } else if (r === "flee") { b.goal = { type: "flee", since: w.t, odds: {}, fails: 0 }; b.plan = [{ op: "avoid", arg: a.id, progress: 0 }]; }
+      a.cooldowns.attack = w.t + DAY;
+      text = `${a.name} attacked ${b.name}${weapon ? ` with ${an(weapon.name)}` : ""}. ${b.name} ${r === "fight_back" ? "fought back" : r === "flee" ? "ran away" : "cowered and took it"}.`;
+      trace("social", "attack", { dmg, weapon: weapon?.id, force: weapon ? force(weapon, a) : 0, reply: r }, a.id);
+      break;
+    }
     case "take": case "steal": {
-      const item = most(b) ?? (Object.entries(b.inv) as [Item, number][]).find(([, n]) => n)?.[0];
+      const item = most(w, b) ?? b.inv[0]?.k;
       if (!item) return;
       const hidden = kind === "steal";
       const noticed = !hidden || Math.random() < 0.35 + trait(b, "observant") * 0.4 + trait(b, "suspicious") * 0.2 - level(a.skills.pickpocketing ?? 0) * 0.05;
-      take(b, item); put(a, item);
+      takeItems(b, item); giveItems(w, a, item);
       if (hidden) gain(w, a, "pickpocketing", 4);
       if (!noticed) {
-        log(w, "steal", [a.id], a, `${a.name} secretly stole a ${nice(item)} from ${b.name}. ${b.name} didn't notice.`);
+        log(w, "steal", [a.id], a, `${a.name} secretly stole ${an(nm(w, item))} from ${b.name}. ${b.name} didn't notice.`);
         return;
       }
       const r = await reply(
-        hidden ? `${b.name} catches ${a.name} stealing a ${nice(item)} from them.` : `${a.name} grabs a ${nice(item)} from ${b.name} and keeps it.`,
+        hidden ? `${b.name} catches ${a.name} stealing ${an(nm(w, item))} from them.` : `${a.name} grabs ${an(nm(w, item))} from ${b.name} and keeps it.`,
         { let_it_go: "Let it go", confront: "Confront them and demand it back" },
       );
       const back = r === "confront" && Math.random() < 0.6;
-      if (back) { take(a, item); put(b, item); }
-      text = `${a.name} ${hidden ? "was caught stealing" : "took"} a ${nice(item)} from ${b.name}. ${b.name} ${r === "let_it_go" ? "let it go" : back ? "confronted them and got it back" : "confronted them, but didn't get it back"}.`;
+      if (back) { takeItems(a, item); giveItems(w, b, item); }
+      text = `${a.name} ${hidden ? "was caught stealing" : "took"} ${an(nm(w, item))} from ${b.name}. ${b.name} ${r === "let_it_go" ? "let it go" : back ? "confronted them and got it back" : "confronted them, but didn't get it back"}.`;
       break;
     }
     default:
       return;
   }
-  log(w, kind, witnesses.map((x) => x.id), a, text);
-  await Promise.all(witnesses.map((x) => {
+  log(w, kind, [a.id, b.id], a, text);
+  trace("social", kind, { with: b.id, text }, a.id);
+  await Promise.all([a, b].map((x) => {
     const other = x === a ? b : a;
     return reflect(w, x, other, text).then((r) => {
-      if (r.bond !== "none") log(w, "bond", [x.id], x, `${x.name} will remember this about ${other.name}: ${r.bond.replaceAll("_", " ")}. They now see ${other.name} as ${/^[aeiou]/.test(x.rel[other.id].label) ? "an" : "a"} ${x.rel[other.id].label}.`);
+      if (r.bond !== "none") log(w, "bond", [x.id], x, `${x.name} will remember this about ${other.name}: ${r.bond.replaceAll("_", " ")}. They now see ${other.name} as ${an(x.rel[other.id].label)}.`);
     });
   }));
 }
 
-function regrow(w: World) {
-  for (const t of [...w.things]) {
-    if (t.kind === "fire" && t.until! <= w.t) { removeThing(w, t); log(w, "fire_out", [], t, "A campfire burned out."); }
-    else if (t.kind === "stump" && t.until! <= w.t) { t.kind = "tree"; delete t.until; touch(t); }
-    else if (t.kind === "bush" && (t.n ?? 0) < 4 && Math.random() < 1 / 80) { t.n = (t.n ?? 0) + 1; touch(t); }
+// A planted seed that grew teaches its planter the connection, and the world a new law.
+onGrew((w, owner, from, at) => {
+  const a = agentById(w, owner);
+  if (!a) return;
+  const fields = { verb: "plant", inputs: [from], gives: [], builds: "bush" };
+  record(w, a, { ok: true, text: "", uses: { [from]: 1 }, gives: {}, builds: "bush", fields, newKinds: [] }, DAY * 3, "seen");
+  log(w, "first", [a.id], at, `${a.name} realized the ${nm(w, from)} they pushed into the ground grew into a bush.`);
+});
+
+function burned(w: World) {
+  for (const b of burnedHomes.splice(0)) {
+    const owner = agentById(w, b.owner), lighter = agentById(w, b.by);
+    if (!owner || !lighter || owner === lighter) continue;
+    const text = `${lighter.name}'s fire spread and burned down ${owner.name}'s home.`;
+    log(w, "burned", [owner.id, lighter.id], owner, text);
+    reflect(w, owner, lighter, text).then((r) => {
+      if (r.bond !== "none") log(w, "bond", [owner.id], owner, `${owner.name} will remember this about ${lighter.name}: ${r.bond.replaceAll("_", " ")}.`);
+    }).catch(() => {});
   }
-  if (Math.random() < 1 / 20) {
-    const x = Math.floor(Math.random() * W), y = Math.floor(Math.random() * H);
-    if (!walkable(w, x, y) || w.things.some((t) => t.x === x && t.y === y)) return;
-    const forest = w.tiles[y * W + x] === Tile.Forest, shoreSpot = nearWater(w, x, y, 1);
-    const kind: ThingKind = shoreSpot ? (Math.random() < 0.7 ? "reeds" : "clay") : forest ? (Math.random() < 0.5 ? "mushroom" : "stick") : Math.random() < 0.5 ? "stick" : "stone";
-    spawn(w, kind, x, y);
+}
+
+// ---------- needs ----------
+function needs(w: World, a: Agent) {
+  const n = a.needs, night = isNight(w.t), wx = w.weather;
+  n.food = Math.max(0, n.food - 0.18 - (a.sickness ? 0.05 : 0));
+  n.energy = Math.max(0, n.energy - (night ? 0.16 : 0.1));
+  n.social = Math.max(0, n.social - 0.05);
+  const worn = a.wearing ? p(w.kinds[a.wearing.k], "insulating") : 0;
+  // Below 12C the body loses heat; above it, the air gives some back.
+  const cold = Math.max(0, (12 - wx.temp) / 90) * (night ? 1.2 : 1) * (wx.sky === "rain" || wx.sky === "storm" ? 1.3 : 1) * (1 - worn * 0.6);
+  const mild = Math.max(0, (wx.temp - 12) / 60);
+  const fire = nearest(a, w.things, (t) => t.kind === "fire");
+  const home = homeOf(w, a);
+  let heat = 0;
+  if (fire && dist(a, fire) <= (fire.contained ? 4 : 3)) heat += fire.contained ? 1.1 : 0.9;
+  if (home && dist(a, home) <= 1) heat += 0.2 + (home.shelter?.insul ?? 0) * 0.8 + (home.shelter?.tier ?? 0) * 0.1;
+  if (night) heat += Math.min(2, w.agents.filter((b) => b !== a && dist(a, b) <= 1).length) * 0.25;
+  n.warmth = Math.max(0, Math.min(100, n.warmth + heat - cold + mild));
+  if (n.food <= 0 || n.warmth <= 0) n.health -= 0.4;
+  else if (n.food > 40 && n.warmth > 40 && !a.sickness) n.health = Math.min(100, n.health + 0.1);
+  if (w.things.some((t) => t.burning && t.burning > 0.4 && dist(a, t) <= 0)) n.health -= 1.5;
+}
+
+function perceive(w: World, a: Agent) {
+  for (const b of w.agents) {
+    if (b === a || dist(a, b) > VISION) continue;
+    if (!a.seen[b.id] || w.t - a.seen[b.id] > 150) {
+      if (!a.rel[b.id]) log(w, "notice", [a.id], a, `${a.name} spotted a stranger: ${b.name}.`);
+      a.nextDecide = Math.min(a.nextDecide, w.t);
+      if (a.goal && w.t - a.goal.since > 5 && !a.engaged && !tinkerWait.has(a.id) && !["flee", "fight", "defend"].includes(a.goal.type)) { a.goal = null; a.plan = []; }
+    }
+    a.seen[b.id] = w.t;
+  }
+  if (a.engaged || a.thinking) return;
+  const wolfId = attacked.get(a.id);
+  const busy = a.goal && ["flee", "fight", "defend"].includes(a.goal.type);
+  if (wolfId && !busy) {
+    const weapon = bestWeapon(w, a);
+    const bold = (a.traits.brave ?? 0) + (a.traits["hot-tempered"] ?? 0) + (weapon && p(weapon, "sharp") >= 0.5 ? 0.5 : 0);
+    const fight = a.needs.health > 30 && Math.random() < 0.2 + bold * 0.5;
+    a.goal = { type: fight ? "fight" : "flee", since: w.t, odds: {}, fails: 0 };
+    a.plan = [{ op: fight ? "fight" : "flee", arg: a.id, progress: 0 }];
+    trace("plan", "interrupt", { reason: "wolf", fight }, a.id);
+    for (const b of w.agents) {
+      if (b === a || b.down > w.t || b.engaged || dist(a, b) > 8 || (b.goal && ["flee", "fight", "defend"].includes(b.goal.type))) continue;
+      const care = (b.rel[a.id]?.affinity ?? 0) + (b.traits.protective ?? 0) + (b.traits.brave ?? 0) * 0.5 + (b.traits.selfless ?? 0) * 0.5;
+      if (Math.random() < care * 0.6) {
+        b.goal = { type: "defend", target: a.id, since: w.t, odds: {}, fails: 0 };
+        b.plan = [{ op: "goto", arg: "agent", progress: 0 }, { op: "fight", arg: a.id, progress: 0 }];
+        log(w, "attack", [b.id, a.id], b, `${b.name} rushed to help ${a.name} against the wolf.`);
+      }
+    }
+    return;
+  }
+  const flames = nearest(a, w.things, (t) => !!t.burning && t.burning > 0.3);
+  if (flames && dist(a, flames) <= 1 && !busy) {
+    a.goal = { type: "flee", since: w.t, odds: {}, fails: 0 };
+    a.plan = [{ op: "flee", progress: 0 }];
+    see(w, a, "fire_spreads", "Fire spreads to anything dry and wooden nearby.", 6);
+  }
+}
+
+function agentTick(w: World, a: Agent) {
+  needs(w, a);
+  const n = a.needs;
+  if (a.down > w.t) { a.status = "Unconscious"; return; }
+  if (n.health <= 0) {
+    const cause = attacked.has(a.id) ? "their wounds" : a.sickness ? "sickness" : n.food <= 0 ? "hunger" : "cold";
+    n.health = 25; n.food = Math.max(n.food, 15); n.warmth = Math.max(n.warmth, 20);
+    a.down = w.t + 60;
+    a.goal = null; a.plan = [];
+    log(w, "collapse", [a.id], a, `${a.name} collapsed from ${cause}.`);
+    return;
+  }
+  perceive(w, a);
+  if (a.thinking || a.engaged) return;
+  const critical = (["food", "energy", "warmth"] as const).find((k) => n[k] < 20);
+  if (a.goal && critical && !NEED_FIX[critical](a.goal.type, w) && !["flee", "fight", "defend"].includes(a.goal.type) && !(a.cooldowns.interrupt > w.t)) {
+    a.cooldowns.interrupt = w.t + 40;
+    trace("plan", "interrupt", { reason: critical, was: a.goal.type }, a.id);
+    a.goal = null; a.plan = [];
+  }
+  if (a.goal && w.t - a.goal.since > (a.goal.type.startsWith("make:") || a.goal.type === "build_shelter" ? DAY * 2 : DAY / 2)) endGoal(w, a, false, "took too long");
+  if (!a.goal) {
+    if (w.t >= a.nextDecide) void think(w, a);
+    else a.status = "Idle";
+    return;
+  }
+  if (!a.plan.length) { endGoal(w, a, true); return; }
+  const step = a.plan[0];
+  const r = run(w, a);
+  if (r === true) {
+    a.plan.shift();
+    const made = step.op === "act" && a.goal.type.startsWith("make:") && (a.beliefs[step.key ?? ""]?.out[a.goal.type.slice(5)] ?? 0) > 0;
+    if (made) { endGoal(w, a, true); return; }
+    if (!a.plan.length) {
+      // Big projects are planned one ingredient at a time; keep going until the thing is made.
+      if (a.goal.type.startsWith("make:") && (a.goal.stages ?? 0) < 20) {
+        const next = planGoal(w, a, a.goal.type, a.goal.target);
+        if (next?.length) { a.plan = next; a.goal.stages = (a.goal.stages ?? 0) + 1; return; }
+      }
+      endGoal(w, a, true);
+    }
+  } else if (typeof r === "string") {
+    trace("plan", "step_failed", { op: step.op, key: step.key, why: r }, a.id);
+    a.goal.fails++;
+    if (a.goal.fails > 2 || ["tinker", "flee", "fight", "defend"].includes(a.goal.type)) { endGoal(w, a, false, r); return; }
+    const steps = planGoal(w, a, a.goal.type, a.goal.target);
+    if (!steps) endGoal(w, a, false, r);
+    else a.plan = steps;
   }
 }
 
 export function tick(w: World) {
   w.t++;
-  const night = isNight(w.t);
-  regrow(w);
+  traceClock.t = w.t;
+  timed("ecology", () => ecology(w));
+  burned(w);
   if (w.t % DAY === 0) for (const a of w.agents) fadeBonds(a);
-
-  for (const a of w.agents) {
-    const n = a.needs;
-    const home = homeOf(w, a);
-    const atHome = home && dist(a, home) <= 1;
-    const byFire = w.things.some((t) => isFire(t) && dist(a, t) <= 3);
-    n.food = Math.max(0, n.food - 0.18);
-    n.energy = Math.max(0, n.energy - (night ? 0.16 : 0.1));
-    n.social = Math.max(0, n.social - 0.05);
-    // Sun by day; at night only fire, a home, or huddling close to someone keeps the cold off.
-    const huddle = night ? Math.min(2, w.agents.filter((b) => b !== a && dist(a, b) <= 1).length) * 0.3 : 0;
-    const heat = (byFire ? 0.8 : 0) + (atHome ? 0.8 * HOMES[home.kind]!.warmth : 0) + huddle;
-    n.warmth = Math.max(0, Math.min(100, n.warmth + (heat || (night ? -0.22 : 0.12))));
-    if (n.food <= 0 || n.warmth <= 0) n.health -= 0.4;
-    else if (n.food > 40 && n.warmth > 40) n.health = Math.min(100, n.health + 0.1);
-    if (a.down > w.t) { a.status = "Unconscious"; continue; }
-    if (n.health <= 0) {
-      const cause = n.food <= 0 ? "hunger" : "cold";
-      n.health = 25; n.food = Math.max(n.food, 15); n.warmth = Math.max(n.warmth, 20);
-      a.down = w.t + 60;
-      a.goal = null; a.plan = [];
-      log(w, "collapse", [a.id], a, `${a.name} collapsed from ${cause}.`);
-      continue;
-    }
-
-    for (const b of w.agents) {
-      if (b === a || dist(a, b) > VISION) continue;
-      if (!a.seen[b.id] || w.t - a.seen[b.id] > 150) {
-        if (!a.rel[b.id]) log(w, "notice", [a.id], a, `${a.name} spotted a stranger: ${b.name}.`);
-        a.nextDecide = Math.min(a.nextDecide, w.t);
-        if (a.goal && w.t - a.goal.since > 5 && !a.engaged && !tinkering.has(a.id)) { a.goal = null; a.plan = []; }
-      }
-      a.seen[b.id] = w.t;
-    }
-
-    if (a.thinking || a.engaged) continue;
-    const critical = (["food", "energy", "warmth"] as const).find((k) => n[k] < 20);
-    if (a.goal && critical && !NEED_FIX[critical](a.goal.type) && !(a.cooldowns.interrupt > w.t)) {
-      a.cooldowns.interrupt = w.t + 40;
-      a.goal = null; a.plan = [];
-    }
-    if (a.goal && w.t - a.goal.since > (a.goal.type.startsWith("make:") ? DAY * 2 : DAY / 2)) endGoal(w, a, false, "took too long");
-    if (!a.goal) {
-      if (w.t >= a.nextDecide) void think(w, a);
-      else a.status = "Idle";
-      continue;
-    }
-    if (!a.plan.length) { endGoal(w, a, true); continue; }
-    const step = a.plan[0];
-    const r = run(w, a);
-    if (r === true) {
-      a.plan.shift();
-      const made = step.op === "craft" && a.goal.type === `make:${step.arg}`;
-      if (made) { endGoal(w, a, true); continue; }
-      if (!a.plan.length) {
-        // Big projects are planned one ingredient at a time; keep going until the thing is made.
-        if (a.goal.type.startsWith("make:") && (a.goal.stages ?? 0) < 20) {
-          const next = planGoal(w, a, a.goal.type, a.goal.target);
-          if (next?.length) { a.plan = next.map((x) => ({ ...x, progress: 0 })); a.goal.stages = (a.goal.stages ?? 0) + 1; continue; }
-        }
-        endGoal(w, a, true);
-      }
-    } else if (typeof r === "string") {
-      a.goal.fails++;
-      if (a.goal.fails > 2) { endGoal(w, a, false, r); continue; }
-      const steps = planGoal(w, a, a.goal.type, a.goal.target);
-      if (!steps) endGoal(w, a, false, r);
-      else a.plan = steps.map((x) => ({ ...x, progress: 0 }));
-    }
-  }
+  timed("agents", () => { for (const a of w.agents) agentTick(w, a); });
+  bump("ticks");
 }
 
-export { inventoryText };
+export function summary(w: World, a: Agent) {
+  const weapon = bestWeapon(w, a);
+  return {
+    id: a.id, name: a.name, color: a.color, x: a.x, y: a.y, status: a.status,
+    goal: a.goal?.type ?? null, goalText: a.goal ? goalText(w, a.goal.type, a.goal.target) : null, target: a.goal?.target ?? null,
+    needs: a.needs, thinking: a.thinking, down: a.down > w.t, sick: !!a.sickness,
+    wearing: a.wearing ? nm(w, a.wearing.k) : null, holding: weapon?.name ?? null,
+  };
+}
+export function agentDetail(w: World, a: Agent) {
+  return {
+    ...a, ...summary(w, a),
+    goal: a.goal, sickness: a.sickness,
+    plan: a.plan.map((s) => ({ op: s.op, arg: s.arg, progress: s.progress, label: stepLabel(w, a, s) })),
+    beliefs: Object.fromEntries(Object.entries(a.beliefs).map(([k, b]) => [k, {
+      key: k, text: beliefText(w, b), how: b.how, from: b.from, t: b.t, tries: b.tries, wins: b.wins,
+      spurious: b.spurious ? nm(w, b.spurious) : undefined, law: b.law, gives: Object.keys(b.out),
+    }])),
+    inventoryText: a.inv.map((s) => describeKind(w.kinds[s.k])),
+  };
+}
+export { beliefText };
