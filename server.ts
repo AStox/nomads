@@ -26,7 +26,7 @@ function save() {
 }
 
 const summary = (a: Agent) => ({
-  id: a.id, name: a.name, emoji: a.emoji, color: a.color, x: a.x, y: a.y, status: a.status,
+  id: a.id, name: a.name, color: a.color, x: a.x, y: a.y, status: a.status,
   goal: a.goal?.type ?? null, target: a.goal?.target ?? null, needs: a.needs, thinking: a.thinking, down: a.down > w.t,
 });
 

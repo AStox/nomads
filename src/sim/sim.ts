@@ -190,7 +190,7 @@ function feasible(w: World, a: Agent) {
 
 async function think(w: World, a: Agent) {
   a.thinking = true;
-  a.status = "Thinking...";
+  a.status = "Thinking";
   try {
     const { opts, targets, people } = feasible(w, a);
     const res = await decide(w, a, opts, people, people);

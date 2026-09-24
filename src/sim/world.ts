@@ -90,7 +90,6 @@ export type Needs = { food: number; energy: number; warmth: number; health: numb
 export type Agent = {
   id: string;
   name: string;
-  emoji: string;
   color: string;
   x: number;
   y: number;
@@ -165,8 +164,8 @@ export const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =
 export const level = (xp: number) => Math.min(10, Math.floor(Math.sqrt(xp / 10)));
 
 const NAMES = ["Aldric", "Mara", "Osric", "Tamsin", "Brenna", "Wulf", "Edda", "Rowan", "Isolde", "Cedric"];
-const EMOJI = ["🧔", "👩", "👨‍🦰", "👩‍🦱", "🧑‍🦳", "👱", "👵", "🧑", "👩‍🦰", "👴"];
-const COLORS = ["#e4572e", "#29335c", "#f3a712", "#669bbc", "#a8c686", "#b56576", "#6d597a", "#e09f3e"];
+// Heraldic tinctures, muted to sit on parchment.
+const COLORS = ["#9e3b2f", "#2f4a6d", "#a8812a", "#4e6b3a", "#6b3f5e", "#8a5a2b", "#3d6b6b", "#7a2f3f"];
 const DESIRES = [
   "own a home of their own",
   "find someone to love",
@@ -238,7 +237,6 @@ export function newWorld(seed: number, agentCount = 5): World {
     w.agents.push({
       id: name.toLowerCase(),
       name,
-      emoji: EMOJI[i % EMOJI.length],
       color: COLORS[i % COLORS.length],
       x,
       y,
