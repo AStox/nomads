@@ -111,7 +111,7 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
       trace("physics", "knap", { tool: tool.id, target: tk.id, chance }, a.id);
       // Two very hard stones throw sparks; with fine dry tinder in hand, a spark can catch.
       const tinder = tinderOf(w, a);
-      if (tinder && p(tool, "hard") >= 0.8 && p(tk, "hard") >= 0.8 && !(raining(w) && !sheltered(w, a)) && Math.random() < 0.05) {
+      if (tinder && p(tool, "hard") >= 0.8 && p(tk, "hard") >= 0.8 && !(raining(w) && !sheltered(w, a)) && Math.random() < 0.12) {
         takeItems(a, tinder.id);
         changed.add(addThing(w, "fire", a.x, a.y, { owner: a.id, hp: 50, maxHp: 400, born: w.t }).id);
         fields.inputs = [tk.id, tinder.id].sort(); fields.builds = "fire";
@@ -206,10 +206,12 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
     fields.gives = [k.id];
     return { done: true, out: outcome({ ok: true, text: `Rubbing the ${soft.name} on the ${harder.name} ground it to a point.`, uses: { [soft.id]: 1 }, gives: { [k.id]: 1 }, fields, newKinds: nk }) };
   }
-  if (p(A, "hard") < 0.6 && p(B, "hard") < 0.6 && (p(A, "flammable") >= 0.5 || p(B, "flammable") >= 0.5)) {
+  // Friction needs something firm and long to spin or saw with; two limp fibers just slide.
+  const firm = (k: Kind) => p(k, "hard") >= 0.25 && p(k, "long") >= 0.5;
+  if (p(A, "hard") < 0.6 && p(B, "hard") < 0.6 && (p(A, "flammable") >= 0.5 || p(B, "flammable") >= 0.5) && (firm(A) || firm(B))) {
     const bow = isBow(A) || isBow(B);
     const wet = raining(w) && !sheltered(w, a);
-    st.heat = Math.max(0, (st.heat ?? 0) + (bow ? 0.11 : 0.035) * (wet ? 0.5 : 1) * (1 + level(a.skills.firemaking ?? 0) * 0.1) - 0.015);
+    st.heat = Math.max(0, (st.heat ?? 0) + (bow ? 0.11 : 0.05) * (wet ? 0.5 : 1) * (1 + level(a.skills.firemaking ?? 0) * 0.1) - 0.015);
     trace("physics", "friction", { a: ia, b: ib, bow, wet, heat: st.heat }, a.id);
     const tinder = tinderOf(w, a);
     if (st.heat >= 1 && tinder && !wet) {
@@ -222,7 +224,7 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
       fields.inputs = [...fields.inputs, tinder.id].sort();
       return { done: true, out: outcome({ ok: true, text: `Rubbing the ${A.name} against the ${B.name} got hot enough to catch the ${tinder.name}. A fire!`, uses: { [tinder.id]: 1, ...(fuel ? { [fuel.id]: 1 } : {}) }, builds: "fire", fields, numbers: { heat: st.heat } }) };
     }
-    if (st.progress >= 40 || (st.heat >= 1 && (!tinder || wet))) {
+    if (st.progress >= 60 || (st.heat >= 1 && (!tinder || wet))) {
       fields.effect = "heat";
       const why = wet ? " Everything was too damp to catch." : !tinder && st.heat >= 1 ? " It smoked, but there was nothing dry and fine to catch." : "";
       return { done: true, out: outcome({ text: `Rubbing the ${A.name} against the ${B.name} made them hot.${why}`, effect: "heat", fields, numbers: { heat: st.heat } }) };

@@ -306,6 +306,7 @@ function feasible(w: World, a: Agent) {
       if (kind === "trade") return b.inv.length > 0 && holding;
       if (kind === "give" || kind === "share_meal") return !!SOCIAL_ITEM_NEEDS[kind]?.({ inv: counts(a), at: "agent", flags: [] }, w.kinds);
       if (["take", "steal", "insult", "attack"].includes(kind) && a.cooldowns[`hostile:${b.id}`] > w.t) return false;
+      if (SOCIAL.includes(kind) && kind !== "tend" && a.cooldowns[`social:${b.id}`] > w.t) return false;
       if (kind === "take" || kind === "steal") return b.inv.length > 0;
       if (kind === "share_fire") return !!fire && dist(a, fire) <= 12;
       if (kind === "help") return !!b.goal && !SOCIAL.includes(b.goal.type) && !["explore", "help", "avoid", "flee"].includes(b.goal.type);
@@ -482,7 +483,7 @@ function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
       const soft = parts.find((k) => p(k, "plastic") >= 0.5 || p(k, "fibrous") >= 0.6);
       const rest = [...new Set(parts.filter((k) => k !== soft).map((k) => (k.parts ? noun(k) : k.name)))];
       const template = act.verb === "join"
-        ? soft && rest.length ? `${rest.join(" and ")} packed in ${soft.name}` : uniq.length === 1 ? `bundle of ${uniq[0]}s` : `${uniq[0]} wedged into ${uniq.slice(1).join(" and ")}`
+        ? soft && rest.length ? `${rest.join(" and ")} packed in ${soft.parts ? noun(soft) : soft.name}` : uniq.length === 1 ? `bundle of ${uniq[0]}s` : `${uniq[0]} wedged into ${uniq.slice(1).join(" and ")}`
         : `fire-hardened ${uniq.join(" and ")}`;
       rule(w, a, actText(w, act), parts, template)
         .then((r) => { w.rulings[key] = r; trace("physics", "ruling", { key, ruling: r }, a.id); })
@@ -1024,6 +1025,7 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
       return;
   }
   if (HOSTILE.includes(kind)) a.cooldowns[`hostile:${b.id}`] = w.t + DAY / 2;
+  a.cooldowns[`social:${b.id}`] = w.t + 40;
   log(w, kind, [a.id, b.id], a, text);
   trace("social", kind, { with: b.id, text }, a.id);
   await Promise.all([a, b].map((x) => {

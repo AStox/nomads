@@ -225,11 +225,19 @@ export async function reflect(w: World, me: Agent, them: Agent, happened: string
     them: { name: them.name, ...describeRel(w, me, them) },
     what_just_happened: happened,
   }, q);
-  r.affinity = clamp(r.affinity + (ans.feeling.score! - 2) * 0.12, -1, 1);
+  // Slights sting a little less than kindness warms, so one bad day doesn't sour everything.
+  const delta = ans.feeling.score! - 2;
+  r.affinity = clamp(r.affinity + delta * (delta < 0 ? 0.08 : 0.12), -1, 1);
   r.trust = clamp(r.trust + (ans.trust.score! - 2) * 0.1, 0, 1);
   const bond = ans.bond.choice as BondKind;
   if (bond !== "none") r.bonds.push({ kind: bond, t: w.t, weight: ans.bond.probabilities![bond] });
-  if (ans.label.confidence! > 0.3) r.label = ans.label.choice as Label;
+  // A label has to fit how they actually feel: one brush-off doesn't make an enemy.
+  const fits: Partial<Record<Label, boolean>> = {
+    enemy: r.affinity < -0.5, rival: r.affinity < 0.1, friend: r.affinity > 0.3, confidant: r.affinity > 0.6 && r.trust > 0.6,
+    sweetheart: r.affinity > 0.45, stranger: r.history.length < 3, kin: r.label === "kin",
+  };
+  const pick = ans.label.choice as Label;
+  if (r.label !== "kin" && ans.label.confidence! > 0.3 && (fits[pick] ?? true)) r.label = pick;
   for (const b of OPINIONS) r.beliefs[b] = ans[`believes_${b}`].noul;
   r.history = [...r.history, `${clock(w.t)}: ${happened}`].slice(-10);
   return { bond, label: r.label };
@@ -242,6 +250,8 @@ export function fadeBonds(a: Agent) {
     for (const b of r.bonds) b.weight *= BOND_FADE[b.kind] ?? 0.85;
     r.bonds = r.bonds.filter((b) => b.weight > 0.05);
     if (r.affinity < 0) r.affinity *= keep;
+    // A label that no longer matches how they feel wears off.
+    if ((r.label === "enemy" && r.affinity > -0.3) || (["friend", "confidant", "sweetheart"].includes(r.label) && r.affinity < 0.15)) r.label = "acquaintance";
     else if (r.label !== "kin") r.affinity *= 0.99;
     r.trust += (0.3 - r.trust) * 0.03;
     const together = a.near[id] ?? 0;

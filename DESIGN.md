@@ -199,6 +199,19 @@ An agent learns laws by seeing them happen, not only by doing them. Watching lig
 - **Replay:** the world seed, the law cache, and the event log are saved, so a run can be inspected afterward to see why something happened.
 - **Watchability:** every new law, a new named compound, a fire that destroys something, a population crash, and a first illness are all major chronicle events, so the surprises show up where you'll see them.
 
+### Generations and the land
+
+- **Lifespans:** a year is 40 days. People are children under 1, adults to 5, then elders; old age starts killing after 6.5. A second collapse within a day and a half of the first is fatal.
+- **Families:** sweethearts who both like each other, eat well, and share a home can conceive in the evening. Ten days later a child is born with a mix of their parents' traits plus a new one. Children walk at half speed, hit half as hard, carry less, and learn by watching twice as fast, so what a family knows passes down only if the young stay close.
+- **Death:** a grave marks the spot, belongings fall to the ground, and homes are left empty for anyone to claim. Close friends and kin grieve. Knowledge that was never taught is gone. When the land is nearly empty, strangers wander in knowing nothing, and find the tools and homes of the dead.
+- **Throwing and digging:** a heavy or sharp thing can be thrown at an animal from a distance, and it can miss. Digging makes a pit; a pit near water fills into a well; a pit covered with sticks or reeds is a hidden trap that catches animals, and people who don't know it's there.
+- **Homes as stores:** food set down inside a home is kept there, where it still spoils. Others can sneak in and take it, and anyone who sees remembers.
+- **Seasons that bite:** bushes barely fruit in winter, trees drop long-keeping nuts in autumn, hard frost freezes the shallows so people and animals can walk on the ice, and a thaw drops whoever is standing on it into the water. Crowds with no well nearby get sick.
+- **Fire without knowing how:** anything burning, like a tree struck by lightning, is a fire you can warm up by or take a flame from. Two very hard stones struck over dry tinder can throw a catching spark.
+- **Drives and care:** a starving or freezing person skips deliberation and goes for food or warmth, or huddles against the nearest body. Anyone can choose to tend someone who has collapsed, warming and feeding them back to their feet, which tends to leave a lasting bond.
+- **Aimed experiments:** besides open tinkering, people can set out to find a way to make shelter, fire, a better tool, or food. They still don't know how; the aim only narrows what they think to try.
+- **Grudges cool:** once a day, dislike fades (slower for the vengeful, faster for the forgiving), and time spent near someone slowly breeds familiarity.
+
 ### Seeing inside the world
 
 Everything the simulation decides is recorded, so any surprise can be traced back to its cause.
