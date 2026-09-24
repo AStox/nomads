@@ -1,144 +1,166 @@
 import type { Inv, Item } from "./world";
+import { HOMES, RECIPE, type Recipe } from "./recipes";
 
 // Abstract planning state: what I carry, what kind of place I'm standing at, what I've done.
 export type PState = { inv: Inv; at: string | null; flags: string[] };
-// dist: current distance to the nearest place of each kind ("bush", "tree", "fire", "home", "agent").
-export type Ctx = { dist: Record<string, number>; hasHome: boolean };
-type Op = { op: string; arg?: string; cost: number; pre: (s: PState) => boolean; eff: (s: PState) => PState };
+// dist: current distance to the nearest place of each kind. known: recipe ids this agent knows.
+export type Ctx = { dist: Record<string, number>; known: string[]; homeTier: number };
+export type PlanStep = { op: string; arg?: string };
+type Op = PlanStep & { cost: number; pre: (s: PState) => boolean; eff: (s: PState) => PState; makes: string[]; place?: string };
 
 const n = (s: PState, i: Item) => s.inv[i] ?? 0;
 const add = (s: PState, i: Item, k: number): PState => ({ ...s, inv: { ...s.inv, [i]: Math.min(20, n(s, i) + k) } });
 const flag = (s: PState, f: string): PState => ({ ...s, flags: [...s.flags, f].sort() });
 const at = (s: PState, place: string | null): PState => ({ ...s, at: place });
-export const foodCount = (inv: Inv) => (inv.berry ?? 0) + (inv.mushroom ?? 0) + (inv.meal ?? 0);
+export const RAW_FOOD: Item[] = ["berry", "mushroom", "fish"];
+export const EDIBLE: Item[] = ["stew", "meal", "berry", "mushroom", "fish"];
+export const foodCount = (inv: Inv) => EDIBLE.reduce((t, i) => t + (inv[i] ?? 0), 0);
 
+export const SOCIAL = ["talk", "give", "trade", "share_meal", "share_fire", "help", "gossip", "teach", "insult", "take", "steal"];
 export const SOCIAL_ITEM_NEEDS: Record<string, (s: PState) => boolean> = {
-  give: (s) => foodCount(s.inv) > 0 || n(s, "wood") > 0 || n(s, "stick") > 0 || n(s, "stone") > 0,
+  give: (s) => Object.entries(s.inv).some(([i, v]) => v && !["axe", "bow_drill", "fishing_line", "pot", "wedge"].includes(i)),
   share_meal: (s) => foodCount(s.inv) > 0,
   trade: (s) => Object.values(s.inv).some((v) => (v ?? 0) > 0),
 };
-export const SOCIAL = ["talk", "give", "trade", "share_meal", "share_fire", "help", "gossip", "insult", "take", "steal"];
+
+// Things anyone can do from the start.
+const GATHER: [string, string, Item, number][] = [
+  ["pick_berries", "bush", "berry", 2],
+  ["pick_mushroom", "mushroom", "mushroom", 1],
+  ["pick_stick", "stick", "stick", 1],
+  ["pick_stone", "stone", "stone", 1],
+  ["pick_reeds", "reeds", "fiber", 2],
+  ["dig_clay", "clay", "clay", 2],
+];
+export const GATHER_OP: Record<string, { place: string; item: Item; n: number }> = Object.fromEntries(
+  GATHER.map(([op, place, item, k]) => [op, { place, item, n: k }]),
+);
+
+const hasAll = (s: PState, r: Recipe) =>
+  Object.entries(r.inputs).every(([i, k]) => n(s, i as Item) >= k!) && (r.tools ?? []).every((t) => n(s, t) > 0);
+function recipeOp(r: Recipe, ctx: Ctx): Op {
+  const home = r.makes.thing && HOMES[r.makes.thing];
+  return {
+    op: "craft",
+    arg: r.id,
+    cost: 1 + r.time / 8,
+    makes: [r.makes.item ?? `place:${home ? "home" : r.makes.thing === "hearth" ? "fire" : r.makes.thing}`],
+    place: r.near,
+    pre: (s) => hasAll(s, r) && (!r.near || s.at === r.near) && (!home || home.tier > ctx.homeTier) && (r.id !== "make_fire" || s.at !== "fire"),
+    eff: (s) => {
+      let out = s;
+      for (const [i, k] of Object.entries(r.inputs)) out = add(out, i as Item, -k!);
+      if (r.makes.item) out = add(out, r.makes.item, r.makes.n ?? 1);
+      if (r.makes.thing) out = at(out, home ? "home" : r.makes.thing === "hearth" ? "fire" : r.makes.thing);
+      if (r.fells) out = at(out, null);
+      return flag(out, `made:${r.id}`);
+    },
+  };
+}
 
 function ops(ctx: Ctx): Op[] {
   const list: Op[] = Object.entries(ctx.dist).map(([kind, d]) => ({
-    op: "goto",
-    arg: kind,
-    cost: 1 + d / 4,
-    pre: (s) => s.at !== kind,
-    eff: (s) => at(s, kind),
+    op: "goto", arg: kind, cost: 1 + d / 4, makes: [`place:${kind}`], pre: (s) => s.at !== kind, eff: (s) => at(s, kind),
   }));
+  for (const [op, place, item, k] of GATHER)
+    list.push({ op, cost: 1.5, makes: [item], place, pre: (s) => s.at === place, eff: (s) => at(add(s, item, k), place === "bush" ? place : null) });
+  for (const id of ctx.known) list.push(recipeOp(RECIPE[id], ctx));
   list.push(
-    { op: "pick_berries", cost: 3, pre: (s) => s.at === "bush", eff: (s) => add(s, "berry", 2) },
-    { op: "pick_mushroom", cost: 2, pre: (s) => s.at === "mushroom", eff: (s) => at(add(s, "mushroom", 1), null) },
-    { op: "pick_stick", cost: 1, pre: (s) => s.at === "stick", eff: (s) => at(add(s, "stick", 1), null) },
-    { op: "pick_stone", cost: 1, pre: (s) => s.at === "stone", eff: (s) => at(add(s, "stone", 1), null) },
     {
-      op: "craft_axe",
-      cost: 3,
-      pre: (s) => n(s, "stick") > 0 && n(s, "stone") > 0,
-      eff: (s) => add(add(add(s, "stick", -1), "stone", -1), "axe", 1),
+      op: "eat", cost: 1, makes: ["ate"], pre: (s) => foodCount(s.inv) > 0,
+      eff: (s) => flag(add(s, EDIBLE.find((i) => n(s, i) > 0)!, -1), "ate"),
     },
-    { op: "chop", cost: 3, pre: (s) => s.at === "tree" && n(s, "axe") > 0, eff: (s) => at(add(s, "wood", 2), null) },
-    {
-      op: "light_fire",
-      cost: 2,
-      pre: (s) => s.at !== "fire" && n(s, "wood") > 0 && n(s, "stick") > 0,
-      eff: (s) => at(add(add(s, "wood", -1), "stick", -1), "fire"),
-    },
-    {
-      op: "cook",
-      cost: 2,
-      pre: (s) => s.at === "fire" && (n(s, "mushroom") > 0 || n(s, "berry") > 1),
-      eff: (s) => add(n(s, "mushroom") > 0 ? add(s, "mushroom", -1) : add(s, "berry", -2), "meal", 1),
-    },
-    {
-      op: "build_shelter",
-      cost: 5,
-      pre: (s) => !ctx.hasHome && !s.flags.includes("built") && n(s, "wood") >= 4 && n(s, "stick") >= 2,
-      eff: (s) => at(flag(add(add(s, "wood", -4), "stick", -2), "built"), "home"),
-    },
-    {
-      op: "eat",
-      cost: 1,
-      pre: (s) => foodCount(s.inv) > 0,
-      eff: (s) => flag(add(s, n(s, "meal") ? "meal" : n(s, "berry") ? "berry" : "mushroom", -1), "ate"),
-    },
-    { op: "rest", cost: 4, pre: (s) => s.at !== "home", eff: (s) => flag(s, "rested") },
-    { op: "rest", cost: 1, pre: (s) => s.at === "home", eff: (s) => flag(s, "rested") },
-    { op: "warm_up", cost: 1, pre: (s) => s.at === "fire" || s.at === "home", eff: (s) => flag(s, "warm") },
+    { op: "rest", cost: 4, makes: ["rested"], pre: (s) => s.at !== "home", eff: (s) => flag(s, "rested") },
+    { op: "rest", cost: 1, makes: ["rested"], place: "home", pre: (s) => s.at === "home", eff: (s) => flag(s, "rested") },
+    { op: "warm_up", cost: 1, makes: ["warm"], place: "fire", pre: (s) => s.at === "fire" || s.at === "home", eff: (s) => flag(s, "warm") },
   );
   for (const kind of SOCIAL)
     list.push({
-      op: "social",
-      arg: kind,
-      cost: 1,
-      pre: (s) => s.at === "agent" && (SOCIAL_ITEM_NEEDS[kind]?.(s) ?? true),
-      eff: (s) => flag(s, `did_${kind}`),
+      op: "social", arg: kind, cost: 1, makes: [`did_${kind}`], place: "agent",
+      pre: (s) => s.at === "agent" && (SOCIAL_ITEM_NEEDS[kind]?.(s) ?? true), eff: (s) => flag(s, `did_${kind}`),
     });
   return list;
 }
 
-// Goal predicates, built from the starting state so "gather more" goals mean more than I have now.
-export function goalTest(type: string, start: PState): ((s: PState) => boolean) | null {
-  const food0 = foodCount(start.inv);
-  switch (type) {
-    case "forage": return (s) => foodCount(s.inv) >= Math.max(3, food0 + 2);
-    case "eat": return (s) => s.flags.includes("ate");
-    case "gather_wood": return (s) => n(s, "wood") >= n(start, "wood") + 3;
-    case "craft_tool": return (s) => n(s, "axe") > 0;
-    case "build_shelter": return (s) => s.flags.includes("built");
-    case "start_fire": return (s) => s.at === "fire";
-    case "cook_meal": return (s) => n(s, "meal") > n(start, "meal");
-    case "rest": return (s) => s.flags.includes("rested");
-    case "warm_up": return (s) => s.flags.includes("warm");
-  }
-  return SOCIAL.includes(type) ? (s) => s.flags.includes(`did_${type}`) : null;
+const COLLECT: Record<string, Item> = { collect_stones: "stone", collect_sticks: "stick", collect_reeds: "fiber", collect_clay: "clay" };
+export const COLLECT_GOALS = COLLECT;
+
+// Goal predicate plus what it needs, so the search only considers ops that can matter.
+function goal(type: string, start: PState): { done: (s: PState) => boolean; needs: string[] } | null {
+  if (type === "forage") return { done: (s) => foodCount(s.inv) >= Math.max(3, foodCount(start.inv) + 2), needs: RAW_FOOD };
+  if (type === "eat") return { done: (s) => s.flags.includes("ate"), needs: ["ate"] };
+  if (type === "rest") return { done: (s) => s.flags.includes("rested"), needs: ["rested"] };
+  if (type === "warm_up") return { done: (s) => s.flags.includes("warm"), needs: ["warm"] };
+  if (COLLECT[type]) { const i = COLLECT[type]; return { done: (s) => n(s, i) >= n(start, i) + 3, needs: [i] }; }
+  if (type.startsWith("make:")) { const id = type.slice(5); return { done: (s) => s.flags.includes(`made:${id}`), needs: [`craft:${id}`] }; }
+  if (type.startsWith("have:")) { const [, i, k] = type.split(":"); return { done: (s) => n(s, i as Item) >= +k, needs: [i] }; }
+  if (SOCIAL.includes(type)) return { done: (s) => s.flags.includes(`did_${type}`), needs: [`did_${type}`] };
+  return null;
 }
 
-// Which ops can matter for each goal. Pruning here is what keeps the search small.
-const FOOD_OPS = ["pick_berries", "pick_mushroom"];
-const WOOD_OPS = ["pick_stick", "pick_stone", "craft_axe", "chop"];
-const FIRE_OPS = [...WOOD_OPS, "light_fire"];
-const RELEVANT: Record<string, string[]> = {
-  forage: FOOD_OPS,
-  eat: [...FOOD_OPS, "eat"],
-  gather_wood: WOOD_OPS,
-  craft_tool: ["pick_stick", "pick_stone", "craft_axe"],
-  build_shelter: [...WOOD_OPS, "build_shelter"],
-  start_fire: FIRE_OPS,
-  cook_meal: [...FOOD_OPS, ...FIRE_OPS, "cook"],
-  rest: ["rest"],
-  warm_up: [...FIRE_OPS, "warm_up"],
-  give: [...FOOD_OPS, "pick_stick", "pick_stone", "social"],
-  trade: [...FOOD_OPS, "pick_stick", "pick_stone", "social"],
-  share_meal: [...FOOD_OPS, "social"],
-};
-const PLACE_FOR: Record<string, string[]> = {
-  pick_berries: ["bush"], pick_mushroom: ["mushroom"], pick_stick: ["stick"], pick_stone: ["stone"],
-  chop: ["tree"], cook: ["fire"], light_fire: ["fire"], warm_up: ["fire", "home"], rest: ["home"], social: ["agent"],
-};
+// Walk backwards from what the goal needs to every op that could help, including the places they need.
+function relevant(all: Op[], needs: string[], ctx: Ctx): Op[] {
+  const want = new Set(needs), keep = new Set<Op>();
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const o of all) {
+      if (keep.has(o)) continue;
+      const hit = o.makes.some((m) => want.has(m)) || (o.op === "craft" && want.has(`craft:${o.arg}`));
+      if (!hit) continue;
+      keep.add(o);
+      grew = true;
+      // Only chase places that exist, except fire, which you can make.
+      for (const p of o.op === "warm_up" ? ["fire", "home"] : o.place ? [o.place] : [])
+        if (p in ctx.dist || p === "fire") want.add(`place:${p}`);
+      if (o.op === "craft") {
+        const r = RECIPE[o.arg!];
+        for (const i of [...Object.keys(r.inputs), ...(r.tools ?? [])]) want.add(i);
+      }
+      if (o.op === "eat") for (const i of EDIBLE) want.add(i);
+    }
+  }
+  return all.filter((o) => keep.has(o));
+}
 
-// ponytail: uniform-cost search over a tiny abstract state, pruned per goal; add a heuristic if plans get deeper than ~16 steps.
-export function plan(start: PState, type: string, ctx: Ctx): { op: string; arg?: string }[] | null {
-  const done = goalTest(type, start);
-  if (!done) return null;
-  if (done(start)) return [];
-  const allowed = RELEVANT[type] ?? ["social"];
-  const places = allowed.flatMap((o) => PLACE_FOR[o] ?? []);
-  const all = ops(ctx).filter((o) =>
-    o.op === "goto" ? places.includes(o.arg!) : allowed.includes(o.op) && (o.op !== "social" || o.arg === type),
-  );
+// Big projects (a cabin from nothing) are too deep to search in one go, so plan toward
+// the first missing ingredient instead. The agent keeps the goal and replans when that runs out.
+export function plan(start: PState, type: string, ctx: Ctx): PlanStep[] | null {
+  const full = search(start, type, ctx);
+  if (full || !type.startsWith("make:")) return full;
+  return stepping(start, RECIPE[type.slice(5)], ctx, 3);
+}
+function stepping(start: PState, r: Recipe, ctx: Ctx, depth: number): PlanStep[] | null {
+  if (!r || !ctx.known.includes(r.id) || depth === 0) return null;
+  const needs: [Item, number][] = [...Object.entries(r.inputs), ...(r.tools ?? []).map((t) => [t, 1])] as [Item, number][];
+  for (const [i, k] of needs) {
+    if (n(start, i) >= k) continue;
+    const direct = search(start, `have:${i}:${n(start, i) + 1}`, ctx);
+    if (direct) return direct;
+    const maker = ctx.known.map((id) => RECIPE[id]).find((x) => x.makes.item === i);
+    const deeper = maker && stepping(start, maker, ctx, depth - 1);
+    if (deeper) return deeper;
+  }
+  return null;
+}
+
+// ponytail: uniform-cost search over a small abstract state, pruned per goal; stepping() covers what's too deep for it.
+function search(start: PState, type: string, ctx: Ctx): PlanStep[] | null {
+  const g = goal(type, start);
+  if (!g) return null;
+  if (g.done(start)) return [];
+  const all = relevant(ops(ctx), g.needs, ctx);
   const key = (s: PState) => `${s.at}|${s.flags.join(",")}|${Object.entries(s.inv).filter(([, v]) => v).sort().join(",")}`;
-  const open = [{ s: start, cost: 0, steps: [] as { op: string; arg?: string }[] }];
+  const open = [{ s: start, cost: 0, steps: [] as PlanStep[] }];
   const seen = new Set<string>([key(start)]);
   while (open.length && seen.size < 20000) {
     const cur = open.shift()!;
-    if (cur.steps.length >= 16) continue;
+    if (cur.steps.length >= 18) continue;
     for (const o of all) {
       if (!o.pre(cur.s)) continue;
       const s = o.eff(cur.s);
       const steps = [...cur.steps, { op: o.op, arg: o.arg }];
-      if (done(s)) return steps;
+      if (g.done(s)) return steps;
       const k = key(s);
       if (seen.has(k)) continue;
       seen.add(k);

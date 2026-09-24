@@ -3,6 +3,18 @@ import {
   BELIEFS, BONDS, BOND_FADE, LABELS, clock, dist, level, type Agent, type BondKind, type Label, type Relationship, type World,
 } from "./world";
 import { TRAITS } from "./traits";
+import { RECIPE } from "./recipes";
+
+// Clues turn into hunches the agent can act on: the more clues, the more of the recipe they can see.
+function hunches(a: Agent) {
+  return Object.entries(a.clues).filter(([id, c]) => c >= 0.7 && !a.know[id]).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([id, c]) => {
+    const r = RECIPE[id];
+    const parts = [...Object.keys(r.inputs), ...(r.tools ?? [])].map((i) => i.replaceAll("_", " "));
+    const shown = c >= 1.5 ? parts : parts.slice(0, Math.max(1, parts.length - 1));
+    const rest = shown.length < parts.length ? " and something else" : "";
+    return `a hunch that ${shown.join(" and ")}${rest}${r.near ? ` near a ${r.near}` : ""} could make something useful`;
+  });
+}
 
 const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 
@@ -60,7 +72,8 @@ export function view(w: World, a: Agent) {
   for (const t of w.things) {
     const d = dist(a, t);
     if (d > 10 || (t.kind === "bush" && !t.n)) continue;
-    const label = t.kind === "shelter" ? (t.owner === a.id ? "your shelter" : `${w.agents.find((x) => x.id === t.owner)?.name}'s shelter`) : t.kind;
+    const kind = t.kind.replaceAll("_", " ");
+    const label = t.owner && t.kind !== "fire" ? (t.owner === a.id ? `your ${kind}` : `${w.agents.find((x) => x.id === t.owner)?.name}'s ${kind}`) : kind;
     const e = (near[label] ??= { count: 0, nearest: d });
     e.count++;
     e.nearest = Math.min(e.nearest, d);
@@ -84,6 +97,8 @@ export function view(w: World, a: Agent) {
     needs: Object.fromEntries(Object.entries(a.needs).map(([k, v]) => [k, needWord(v)])),
     skills: Object.fromEntries(Object.entries(a.skills).filter(([, xp]) => xp > 0).map(([s, xp]) => [s, `level ${level(xp)}`])),
     carrying: inventoryText(a),
+    knows_how_to: Object.keys(a.know).map((id) => RECIPE[id].label),
+    hunches: hunches(a),
     home: a.home ? `a shelter ${dist(a, a.home)} steps away` : "no home yet",
     current_goal: a.goal?.type ?? "none",
     nearby,
@@ -106,6 +121,18 @@ export async function decide(w: World, a: Agent, options: Record<string, string>
   const byName = (p?: Record<string, number>) =>
     p && Object.fromEntries(Object.entries(p).map(([n, v]) => [w.agents.find((b) => b.name === n)!.id, v]));
   return { goal: ans.goal.probabilities!, towards: byName(ans.towards?.probabilities), against: byName(ans.against?.probabilities) };
+}
+
+export async function chooseTinker(w: World, a: Agent, options: string[]) {
+  const failed = Object.entries(a.tried).sort((x, y) => y[1] - x[1]).slice(0, 10).map(([k]) => k);
+  const ans = await ask(w, { ...view(w, a), already_tried_with_no_luck: failed }, {
+    attempt: {
+      type: "choice",
+      instructions: `${a.name} is tinkering, trying to make something new and useful from what they're holding and what's around them. Which of these would ${a.name} most likely try?`,
+      criteria: Object.fromEntries(options.map((o) => [o, null])),
+    },
+  });
+  return sample(ans.attempt.probabilities!);
 }
 
 export async function respond(w: World, me: Agent, them: Agent, situation: string, options: Record<string, string>) {

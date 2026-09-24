@@ -1,6 +1,7 @@
 import { mkdirSync, renameSync } from "node:fs";
 import { newWorld, type Agent, type World } from "./src/sim/world";
 import { dirty, tick } from "./src/sim/sim";
+import { RECIPES } from "./src/sim/recipes";
 
 const PORT = Number(process.env.PORT ?? 8095);
 const SAVE = `${import.meta.dir}/data/world.json`;
@@ -11,7 +12,9 @@ async function load(): Promise<World> {
   const f = Bun.file(SAVE);
   if (!(await f.exists())) return newWorld(Math.floor(Math.random() * 1e9));
   const w = (await f.json()) as World;
+  w.inventions ??= {};
   for (const a of w.agents) {
+    a.know ??= {}; a.clues ??= {}; a.tried ??= {};
     a.thinking = false;
     a.engaged = null;
     for (const s of a.plan) if (s.op === "social") s.progress = 0;
@@ -82,6 +85,12 @@ Bun.serve({
       const a = w.agents.find((a) => a.id === p.slice(11));
       if (!a) return new Response("not found", { status: 404 });
       return json({ ...a, down: a.down > w.t });
+    }
+    if (p === "/api/knowledge") {
+      return json({
+        recipes: RECIPES, inventions: w.inventions,
+        agents: w.agents.map((a) => ({ id: a.id, know: a.know, clues: a.clues })),
+      });
     }
     if (p === "/api/events") {
       const who = url.searchParams.get("agent");

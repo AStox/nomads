@@ -25,6 +25,65 @@ type Relationship = {
 };
 ```
 
+## Discovery and knowledge
+
+Agents start knowing almost nothing: how to walk, pick things up, eat, sleep, and talk. Everything else is know-how they have to discover, watch, or be taught.
+
+### The hidden recipe book
+
+The world has a fixed recipe book in code that the agents can't see. Each recipe lists its inputs (items in hand), where it has to happen (next to a tree, a fire, water, clay), what it makes (an item, a structure, or a new ability), and which craft it belongs to. Adding content means adding rows, not writing code.
+
+Example chain:
+- two stones → a sharp stone (knapping)
+- sharp stone + stick + plant fiber → a stone axe
+- stone axe, next to a tree → logs
+- logs + fiber → a log shelter
+- dry wood + stick + fiber → a bow drill; bow drill + dry wood → fire
+- logs + axe + wedge, next to a flat stone → planks (milling)
+- planks + pegs → a plank cabin, a table, a door
+- clay next to fire → pottery; clay + straw next to fire → bricks
+
+### Tinkering: Jev is the intuition, code is the physics
+
+Tinkering is a goal like any other. When an agent tinkers, Jev picks which combination they'd think to try from what they're holding and what's nearby: "Mara is holding two stones and a stick, standing by a dry bush. What would she try?" Jev knows how the real world works, so it'll favor combinations that make sense (striking stones together, lashing a stone to a stick). Discoveries come out in a believable order without anyone scripting it.
+
+Code then checks the recipe book:
+- **Match:** a success roll based on how clever or curious they are and related craft skill. On success, they learn it.
+- **Near miss** (shares inputs with a recipe they don't know): they get a clue on that recipe, and each clue makes the next try more likely to work. "Mara noticed sparks when the stones struck."
+- **Nothing:** time and sometimes materials are lost. This matters, because tinkering competes with eating and staying warm, so curious agents with a full belly do most of the inventing.
+
+Every tinker attempt is logged. The first person in the world to discover something gets an **invention** entry in the chronicle, marked as a major event. Anyone who works it out independently later gets a rediscovery entry.
+
+### Spreading knowledge
+
+- **Watching:** when someone uses a recipe within sight of an agent who doesn't know it, the watcher gets progress on it. Enough progress and they learn it, faster if they're observant or clever.
+- **Teaching:** a social action. The teacher offers, the learner accepts or refuses (a Jev choice), and learning is fast. It creates a "taught me" bond.
+- **Secrets:** a greedy or suspicious agent can decline to teach, or avoid working where others can see. Know-how becomes something to trade, hoard, or steal by watching.
+
+Knowledge flows along relationships, so friends end up sharing a toolkit and rivals don't. That's where specialization and eventually professions come from.
+
+### Skills grow out of know-how
+
+There is no fixed skill list at the start. A craft (stonework, woodworking, firemaking, pottery) appears on an agent's page the first time they learn a recipe in it, and it levels up as they use that craft. Higher levels mean better success rates when tinkering nearby in the same craft, faster work, and better results. The 111 skills below become the eventual list of crafts, filled in as the recipe book grows.
+
+### State
+
+```ts
+type Recipe = {
+  id: string;                          // "knap_sharp_stone"
+  craft: string;                       // "stonework"
+  inputs: Partial<Record<Item, number>>;
+  tools?: Item[];                      // needed but not used up
+  near?: ThingKind;                    // "fire", "tree", "water"
+  makes: { item?: Item; thing?: ThingKind; ability?: string };
+  difficulty: number;                  // base failure rate for a first try
+};
+type Knowledge = {
+  known: Record<string, { how: "discovered" | "watched" | "taught"; t: number; from?: string }>;
+  clues: Record<string, number>;       // recipe id -> progress toward discovering or learning it
+};
+```
+
 ## Skills (111)
 
 Each skill is XP with a level from 0 to 10. A higher level means faster actions, better yields, and access to new recipes. Skills unlock in order, so you can't learn weaponsmithing before smithing.

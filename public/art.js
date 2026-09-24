@@ -251,36 +251,97 @@ export function drawThing(c, th, ownerColor) {
       c.beginPath(); c.moveTo(x - s * 0.25, y - s * 0.1); c.lineTo(x - s * 0.05, y - s * 0.22); c.stroke();
       break;
     }
-    case "shelter": {
-      const s = T * 1.5;
-      shadow(c, x + 3, y + s * 0.26, s * 0.5, s * 0.16);
-      c.beginPath(); c.moveTo(x - s * 0.44, y + s * 0.24); c.lineTo(x, y - s * 0.34); c.lineTo(x + s * 0.44, y + s * 0.24); c.closePath();
-      inked(c, "#c7a15c", 1.5);
-      c.strokeStyle = "rgba(90, 60, 25, .55)"; c.lineWidth = 1;
+    case "reeds": {
+      const s = T * 0.55;
+      c.strokeStyle = "#5d6e32"; c.lineWidth = 1.6;
       c.beginPath();
-      for (let i = 1; i < 6; i++) { const t = i / 6; c.moveTo(x, y - s * 0.34); c.lineTo(x - s * 0.44 + t * s * 0.88, y + s * 0.24); }
-      c.stroke();
-      c.beginPath(); c.moveTo(x - s * 0.12, y + s * 0.24); c.lineTo(x, y - s * 0.02); c.lineTo(x + s * 0.12, y + s * 0.24); c.closePath();
-      inked(c, "#3a2a1a", 1);
-      c.strokeStyle = INK; c.lineWidth = 1.6;
-      c.beginPath(); c.moveTo(x - s * 0.08, y - s * 0.44); c.lineTo(x + s * 0.08, y - s * 0.26); c.moveTo(x + s * 0.08, y - s * 0.44); c.lineTo(x - s * 0.08, y - s * 0.26); c.stroke();
-      if (ownerColor) {
-        c.strokeStyle = INK; c.lineWidth = 1.2;
-        c.beginPath(); c.moveTo(x + s * 0.3, y + s * 0.12); c.lineTo(x + s * 0.3, y - s * 0.3); c.stroke();
-        c.beginPath(); c.moveTo(x + s * 0.3, y - s * 0.3); c.lineTo(x + s * 0.5, y - s * 0.24); c.lineTo(x + s * 0.3, y - s * 0.17); c.closePath();
-        inked(c, ownerColor, 1);
+      for (let i = 0; i < 6; i++) {
+        const bx = x + (i - 2.5) * s * 0.16, lean = (hash(th.x, th.y, 50 + i) - 0.5) * s * 0.5, h = s * (0.6 + hash(th.x, th.y, 60 + i) * 0.5);
+        c.moveTo(bx, y + s * 0.3); c.quadraticCurveTo(bx + lean * 0.3, y, bx + lean, y + s * 0.3 - h);
       }
+      c.stroke();
+      c.fillStyle = "#7a5530";
+      for (let i = 0; i < 3; i++) {
+        const bx = x + (i - 1) * s * 0.22 + (hash(th.x, th.y, 70 + i) - 0.5) * 3;
+        c.beginPath(); c.ellipse(bx, y - s * 0.35 - i * 2, s * 0.05, s * 0.13, 0, 0, Math.PI * 2); c.fill();
+      }
+      break;
+    }
+    case "clay": {
+      const s = T * 0.5;
+      c.beginPath(); c.ellipse(x, y + s * 0.1, s * 0.55, s * 0.28, 0, 0, Math.PI * 2);
+      inked(c, "#b0703f", 1);
+      c.fillStyle = "rgba(255, 220, 180, .35)";
+      c.beginPath(); c.ellipse(x - s * 0.15, y, s * 0.2, s * 0.08, 0, 0, Math.PI * 2); c.fill();
+      break;
+    }
+    case "lean_to": {
+      const s = T * 1.3;
+      shadow(c, x + 3, y + s * 0.26, s * 0.5, s * 0.16);
+      c.beginPath(); c.moveTo(x - s * 0.45, y + s * 0.26); c.lineTo(x + s * 0.3, y - s * 0.3); c.lineTo(x + s * 0.42, y + s * 0.26); c.closePath();
+      inked(c, "#9c8a4e", 1.4);
+      c.strokeStyle = "rgba(60, 45, 20, .6)"; c.lineWidth = 1;
+      c.beginPath();
+      for (let i = 1; i < 6; i++) { const t = i / 6; c.moveTo(x - s * 0.45 + t * s * 0.75, y + s * 0.26 - t * s * 0.56); c.lineTo(x - s * 0.45 + t * s * 0.75 + s * 0.12, y + s * 0.26); }
+      c.stroke();
+      flag(c, x + s * 0.3, y - s * 0.3, s, ownerColor);
+      break;
+    }
+    case "log_hut": {
+      const s = T * 1.5;
+      shadow(c, x + 3, y + s * 0.3, s * 0.52, s * 0.16);
+      c.beginPath(); c.rect(x - s * 0.38, y - s * 0.06, s * 0.76, s * 0.34); inked(c, "#8a5a33", 1.4);
+      c.strokeStyle = "rgba(50, 30, 15, .7)"; c.lineWidth = 1;
+      c.beginPath();
+      for (let i = 1; i < 4; i++) { c.moveTo(x - s * 0.38, y - s * 0.06 + i * s * 0.085); c.lineTo(x + s * 0.38, y - s * 0.06 + i * s * 0.085); }
+      c.stroke();
+      c.beginPath(); c.moveTo(x - s * 0.46, y - s * 0.04); c.lineTo(x, y - s * 0.4); c.lineTo(x + s * 0.46, y - s * 0.04); c.closePath();
+      inked(c, "#c7a15c", 1.4);
+      c.beginPath(); c.rect(x - s * 0.07, y + s * 0.08, s * 0.14, s * 0.2); inked(c, INK, 1);
+      flag(c, x + s * 0.3, y - s * 0.26, s, ownerColor);
+      break;
+    }
+    case "cabin": {
+      const s = T * 1.7;
+      shadow(c, x + 4, y + s * 0.3, s * 0.55, s * 0.16);
+      c.beginPath(); c.rect(x - s * 0.4, y - s * 0.08, s * 0.8, s * 0.36); inked(c, "#c49a63", 1.4);
+      c.strokeStyle = "rgba(90, 60, 30, .55)"; c.lineWidth = 0.9;
+      c.beginPath();
+      for (let i = 1; i < 8; i++) { c.moveTo(x - s * 0.4 + i * s * 0.1, y - s * 0.08); c.lineTo(x - s * 0.4 + i * s * 0.1, y + s * 0.28); }
+      c.stroke();
+      c.beginPath(); c.moveTo(x - s * 0.48, y - s * 0.06); c.lineTo(x - s * 0.3, y - s * 0.38); c.lineTo(x + s * 0.3, y - s * 0.38); c.lineTo(x + s * 0.48, y - s * 0.06); c.closePath();
+      inked(c, "#7d3b2a", 1.4);
+      c.beginPath(); c.rect(x + s * 0.14, y - s * 0.5, s * 0.08, s * 0.16); inked(c, "#8c8478", 1);
+      c.beginPath(); c.rect(x - s * 0.06, y + s * 0.06, s * 0.13, s * 0.22); inked(c, "#4a2e1a", 1);
+      c.beginPath(); c.rect(x - s * 0.3, y + s * 0.02, s * 0.12, s * 0.1); inked(c, "#e8c77a", 1);
+      flag(c, x - s * 0.36, y - s * 0.34, s, ownerColor);
+      break;
+    }
+    case "hearth": {
+      const s = T * 0.9;
+      shadow(c, x + 1, y + s * 0.3, s * 0.5);
+      c.beginPath(); c.roundRect(x - s * 0.4, y - s * 0.1, s * 0.8, s * 0.38, 3); inked(c, "#9a4e32", 1.3);
+      c.strokeStyle = "rgba(240, 200, 170, .5)"; c.lineWidth = 0.8;
+      c.beginPath(); c.moveTo(x - s * 0.4, y + s * 0.08); c.lineTo(x + s * 0.4, y + s * 0.08); c.moveTo(x, y - s * 0.1); c.lineTo(x, y + s * 0.08); c.stroke();
+      c.beginPath(); c.ellipse(x, y - s * 0.1, s * 0.3, s * 0.1, 0, 0, Math.PI * 2); inked(c, "#3a2418", 1);
       break;
     }
   }
 }
+function flag(c, x, y, s, color) {
+  if (!color) return;
+  c.strokeStyle = INK; c.lineWidth = 1.2;
+  c.beginPath(); c.moveTo(x, y + s * 0.2); c.lineTo(x, y - s * 0.16); c.stroke();
+  c.beginPath(); c.moveTo(x, y - s * 0.16); c.lineTo(x + s * 0.2, y - s * 0.1); c.lineTo(x, y - s * 0.03); c.closePath();
+  inked(c, color, 1);
+}
 
 // Fires are drawn live so they flicker.
-export function drawFire(c, x, y, s, now, seed) {
+export function drawFire(c, x, y, s, now, seed, hearth = false) {
   c.save();
   c.translate(x, y);
   c.lineJoin = "round";
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < (hearth ? 0 : 6); i++) {
     const a = (i / 6) * Math.PI * 2;
     c.beginPath(); c.ellipse(Math.cos(a) * s * 0.28, Math.sin(a) * s * 0.12 + s * 0.12, s * 0.09, s * 0.06, 0, 0, Math.PI * 2);
     c.fillStyle = "#9a9080"; c.fill(); c.strokeStyle = INK; c.lineWidth = 0.8; c.stroke();

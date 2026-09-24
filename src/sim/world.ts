@@ -11,27 +11,17 @@ export enum Tile {
   Rock = 3,
 }
 
-export type Item = "berry" | "mushroom" | "meal" | "stick" | "stone" | "wood" | "axe";
-export const FOOD: Record<string, number> = { berry: 20, mushroom: 18, meal: 45 };
+export type Item =
+  | "berry" | "mushroom" | "fish" | "meal" | "stew"
+  | "stick" | "stone" | "fiber" | "clay"
+  | "sharp_stone" | "cord" | "axe" | "log" | "plank" | "wedge" | "bow_drill" | "fishing_line" | "pot" | "brick";
+export const FOOD: Partial<Record<Item, number>> = { berry: 20, mushroom: 18, fish: 14, meal: 45, stew: 70 };
 export type Inv = Partial<Record<Item, number>>;
 
-export type ThingKind = "tree" | "stump" | "bush" | "mushroom" | "stick" | "stone" | "fire" | "shelter";
+export type ThingKind =
+  | "tree" | "stump" | "bush" | "mushroom" | "stick" | "stone" | "reeds" | "clay"
+  | "fire" | "hearth" | "lean_to" | "log_hut" | "cabin";
 export type Thing = { id: string; kind: ThingKind; x: number; y: number; n?: number; owner?: string; until?: number };
-
-export const SKILLS = [
-  "foraging",
-  "woodcutting",
-  "crafting",
-  "firemaking",
-  "cooking",
-  "building",
-  "charm",
-  "bargaining",
-  "storytelling",
-  "deception",
-  "pickpocketing",
-] as const;
-export type Skill = (typeof SKILLS)[number];
 
 export const BONDS = {
   saved_my_life: "They saved me when I was in real danger",
@@ -83,7 +73,7 @@ export type Relationship = {
 };
 
 export type Step = { op: string; arg?: string; progress: number };
-export type Goal = { type: string; target?: string; since: number; odds: Record<string, number>; fails: number };
+export type Goal = { type: string; target?: string; since: number; odds: Record<string, number>; fails: number; stages?: number };
 
 export type Needs = { food: number; energy: number; warmth: number; health: number; social: number };
 
@@ -97,7 +87,10 @@ export type Agent = {
   traits: Record<string, number>;
   desires: string[];
   needs: Needs;
-  skills: Record<Skill, number>;
+  skills: Record<string, number>; // craft -> xp; a craft appears once they first use it
+  know: Record<string, { how: "discovered" | "watched" | "taught"; t: number; from?: string }>;
+  clues: Record<string, number>; // recipe id -> progress toward figuring it out
+  tried: Record<string, number>; // tinker combo -> times it led nowhere
   inv: Inv;
   home: { x: number; y: number } | null;
   rel: Record<string, Relationship>;
@@ -125,6 +118,7 @@ export type World = {
   events: Event[];
   nextId: number;
   jev: { calls: number; tokens: number };
+  inventions: Record<string, { by: string; t: number }>;
 };
 
 export function rng(seed: number) {
@@ -152,6 +146,10 @@ function noise(rand: () => number, cell: number) {
   };
 }
 
+export function nearWater(w: World, x: number, y: number, r: number) {
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) if (tileAt(w, x + dx, y + dy) === Tile.Water) return true;
+  return false;
+}
 export const tileAt = (w: World, x: number, y: number) =>
   x < 0 || y < 0 || x >= W || y >= H ? Tile.Water : w.tiles[y * W + x];
 export const walkable = (w: World, x: number, y: number) => {
@@ -204,7 +202,7 @@ export function newWorld(seed: number, agentCount = 5): World {
       const water = wet(x, y) - Math.min(edge, 1) * 0.35;
       tiles.push(water > 0.62 ? Tile.Water : hills(x, y) > 0.72 ? Tile.Rock : woods(x, y) > 0.55 ? Tile.Forest : Tile.Grass);
     }
-  const w: World = { seed, t: Math.round(DAY * 0.3), tiles, things: [], agents: [], events: [], nextId: 1, jev: { calls: 0, tokens: 0 } };
+  const w: World = { seed, t: Math.round(DAY * 0.3), tiles, things: [], agents: [], events: [], nextId: 1, jev: { calls: 0, tokens: 0 }, inventions: {} };
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++) {
       const t = tiles[y * W + x], r = rand();
@@ -212,8 +210,11 @@ export function newWorld(seed: number, agentCount = 5): World {
         if (r < 0.3) addThing(w, "tree", x, y);
         else if (r < 0.34) addThing(w, "stick", x, y);
         else if (r < 0.37) addThing(w, "mushroom", x, y);
+      } else if (t === Tile.Grass && nearWater(w, x, y, 1) && r < 0.12) {
+        addThing(w, r < 0.05 ? "clay" : "reeds", x, y);
       } else if (t === Tile.Grass) {
         if (r < 0.025) addThing(w, "bush", x, y, { n: 3 });
+        else if (r < 0.03 && nearWater(w, x, y, 3)) addThing(w, "reeds", x, y);
         else if (r < 0.03) addThing(w, "stick", x, y);
         else if (r < 0.034) addThing(w, "stone", x, y);
       } else if (t === Tile.Rock && r < 0.12) addThing(w, "stone", x, y);
@@ -244,7 +245,10 @@ export function newWorld(seed: number, agentCount = 5): World {
       traits,
       desires,
       needs: { food: 55 + rand() * 30, energy: 60 + rand() * 30, warmth: 70 + rand() * 20, health: 100, social: 40 + rand() * 40 },
-      skills: Object.fromEntries(SKILLS.map((s) => [s, 0])) as Record<Skill, number>,
+      skills: {},
+      know: {},
+      clues: {},
+      tried: {},
       inv: {},
       home: null,
       rel: {},

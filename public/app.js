@@ -3,8 +3,10 @@ import { T, buildBase, drawThing, drawFire, drawToken, drawLabel, drawThinking, 
 const $ = (s) => document.querySelector(s);
 const DAY = 288;
 const NEEDS = ["food", "energy", "warmth", "social", "health"];
-const ROUTINE = new Set(["gather", "eat", "goal", "stuck", "fail", "fire_out", "wake", "level"]);
-const NOTABLE = new Set(["bond", "steal", "lie", "take", "insult", "build", "collapse"]);
+const ROUTINE = new Set(["gather", "eat", "goal", "stuck", "fail", "fire_out", "wake", "level", "craft", "tinker", "hint"]);
+const NOTABLE = new Set(["bond", "steal", "lie", "take", "insult", "build", "collapse", "discover", "learn", "teach"]);
+const HOME_KINDS = new Set(["lean_to", "log_hut", "cabin"]);
+let RECIPES = {}; // id -> recipe, loaded once from the server
 
 const S = { W: 0, H: 0, tiles: "", things: new Map(), byTile: new Map(), agents: new Map(), t: 0, jev: null, control: { paused: false, speed: 1 } };
 const cam = { x: 32, y: 32, s: 10 };
@@ -50,7 +52,7 @@ function paint(x0, y0, x1, y1) {
         if (th && th.kind !== "fire") list.push(th);
       }
   list.sort((a, b) => a.y - b.y || a.x - b.x);
-  for (const th of list) drawThing(lctx, th, th.kind === "shelter" ? S.agents.get(th.owner)?.color : null);
+  for (const th of list) drawThing(lctx, th, HOME_KINDS.has(th.kind) ? S.agents.get(th.owner)?.color : null);
   lctx.restore();
 }
 function buildLayer() {
@@ -103,7 +105,7 @@ function frame(now) {
       ctx.globalCompositeOperation = "source-over";
     }
     for (const th of S.things.values()) {
-      if (th.kind !== "fire") continue;
+      if (th.kind !== "fire" && th.kind !== "hearth") continue;
       const [fx, fy] = toScreen(th.x + 0.5, th.y + 0.5);
       if (fx < -200 || fy < -200 || fx > cw + 200 || fy > ch + 200) continue;
       const glow = ctx.createRadialGradient(fx, fy, 0, fx, fy, cam.s * (2.5 + night * 2));
@@ -114,7 +116,8 @@ function frame(now) {
       ctx.fillStyle = glow;
       ctx.fillRect(fx - cam.s * 5, fy - cam.s * 5, cam.s * 10, cam.s * 10);
       ctx.globalCompositeOperation = "source-over";
-      drawFire(ctx, fx, fy + cam.s * 0.1, cam.s * 0.9, now, hash(th.x, th.y));
+      if (th.kind === "fire") drawFire(ctx, fx, fy + cam.s * 0.1, cam.s * 0.9, now, hash(th.x, th.y));
+      else drawFire(ctx, fx, fy - cam.s * 0.02, cam.s * 0.45, now, hash(th.x, th.y), true);
     }
     drawAgents(now);
   }
@@ -230,13 +233,15 @@ function tap(px, py) {
 // ---------- sheet ----------
 function openSheet(tab) {
   panel.dataset.open = "true";
+  clampCam();
   showTab(tab);
   if (tab === "inspect") loadInspector();
 }
-function closeSheet() { panel.dataset.open = "false"; }
+function closeSheet() { panel.dataset.open = "false"; clampCam(); }
 function showTab(tab) {
   for (const b of $("#tabs").querySelectorAll("button[data-tab]")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const id of ["chronicle", "inspect"]) $(`#${id}`).hidden = id !== tab;
+  for (const id of ["chronicle", "inspect", "book"]) $(`#${id}`).hidden = id !== tab;
+  if (tab === "book") loadBook();
 }
 $("#tabs").addEventListener("click", (e) => { const t = e.target.closest("button[data-tab]")?.dataset.tab; if (t) openSheet(t); });
 $("#close").onclick = closeSheet;
@@ -291,7 +296,7 @@ function renderFocus() {
 }
 
 // ---------- chronicle ----------
-const tone = (k) => (NOTABLE.has(k) ? "notable" : ROUTINE.has(k) ? "routine" : "social");
+const tone = (k) => (k === "invent" ? "invention" : NOTABLE.has(k) ? "notable" : ROUTINE.has(k) ? "routine" : "social");
 function eventLi(e, fresh) {
   return `<li class="ev ${tone(e.kind)}${fresh ? " new" : ""}" data-day="${dayOf(e.t)}"><button type="button" data-x="${e.x}" data-y="${e.y}"><time>${hhmm(e.t)}</time><span>${esc(e.text)}</span></button></li>`;
 }
@@ -387,6 +392,55 @@ function meter(label, v, centered) {
   return `<div class="meter ${centered ? (v >= 0 ? "pos" : "neg") : ""}"><span>${label}</span><i>${centered ? "<u></u>" : ""}<b style="${style}"></b></i></div>`;
 }
 const lvl = (xp) => Math.min(10, Math.floor(Math.sqrt(xp / 10)));
+const cap = (t) => t[0].toUpperCase() + t.slice(1);
+function stepText(s, a) {
+  if (s.op === "craft") return cap(RECIPES[s.arg]?.label ?? s.arg);
+  if (s.op === "goto") return `Go to ${s.arg === "agent" ? nameOf(a.goal?.target) : human(s.arg)}`;
+  if (s.op === "social") return `${cap(human(s.arg))} with ${nameOf(a.goal?.target)}`;
+  if (s.op === "tinker") return s.arg ? `Try ${s.arg.split("|")[0]}` : "Tinker";
+  if (s.op === "wander") return "Explore";
+  return cap(human(s.op));
+}
+
+// ---------- discoveries ----------
+let bookTimer = null;
+const itemText = (inv) => Object.entries(inv ?? {}).map(([i, n]) => `${n} ${human(i)}`).join(", ");
+async function loadBook() {
+  clearInterval(bookTimer);
+  const draw = async () => {
+    if ($("#book").hidden || !sheetOpen()) return clearInterval(bookTimer);
+    const k = await fetch("api/knowledge").then((r) => r.json());
+    RECIPES = Object.fromEntries(k.recipes.map((r) => [r.id, r]));
+    const crafts = [...new Set(k.recipes.map((r) => r.craft))];
+    const found = Object.keys(k.inventions).length;
+    const scroll = $("#book").scrollTop;
+    $("#book").innerHTML = `<p class="book-count"><b>${found}</b> of ${k.recipes.length} discovered</p>` + crafts.map((craft) => `
+      <section class="sec"><h3>${esc(cap(craft))}</h3>${k.recipes.filter((r) => r.craft === craft).map((r) => {
+        const inv = k.inventions[r.id];
+        const knowers = k.agents.filter((x) => x.know[r.id]);
+        const close = k.agents.filter((x) => !x.know[r.id] && x.clues[r.id] > 0);
+        const needs = [itemText(r.inputs), r.tools?.length ? `using ${r.tools.map(human).join(" and ")}` : "", r.near ? `at the ${human(r.near)}` : ""].filter(Boolean).join(", ");
+        const makes = r.makes.item ? `${r.makes.n ?? 1} ${human(r.makes.item)}` : human(r.makes.thing);
+        return `<article class="rc ${inv ? "found" : ""}">
+          <div class="rc-top"><span class="rc-name">${esc(cap(r.label))}</span><span class="rc-makes">${esc(makes)}</span></div>
+          <p class="rc-needs">${esc(needs)}</p>
+          <div class="rc-who">
+            ${inv ? `<span class="rc-first">First by ${esc(nameOf(inv.by))}, ${clockText(inv.t)}</span>` : `<span class="rc-first none">Not yet discovered</span>`}
+            <span class="rc-seals">${knowers.map((x) => {
+              const a = S.agents.get(x.id), how = x.know[r.id];
+              return a ? `<span title="${esc(a.name)}: ${how.how}${how.from ? ` from ${esc(nameOf(how.from))}` : ""}">${seal(a, "xs")}</span>` : "";
+            }).join("")}${close.map((x) => {
+              const a = S.agents.get(x.id);
+              return a ? `<span class="trying" style="--p:${Math.min(1, x.clues[r.id] / 2.5)}" title="${esc(a.name)} is getting closer">${seal(a, "xs")}</span>` : "";
+            }).join("")}</span>
+          </div>
+        </article>`;
+      }).join("")}</section>`).join("");
+    $("#book").scrollTop = scroll;
+  };
+  await draw();
+  bookTimer = setInterval(draw, 3000);
+}
 function renderInspector() {
   const a = insData;
   if (!a || !$("#ins-body")) return;
@@ -395,7 +449,7 @@ function renderInspector() {
   const inv = Object.entries(a.inv).filter(([, n]) => n);
   const rels = Object.entries(a.rel).sort((x, y) => Math.abs(y[1].affinity) - Math.abs(x[1].affinity));
   const trained = Object.entries(a.skills).filter(([, xp]) => xp > 0).sort((x, y) => y[1] - x[1]);
-  const untrained = Object.entries(a.skills).filter(([, xp]) => !xp).map(([s]) => s);
+  const known = Object.entries(a.know).sort((x, y) => x[1].t - y[1].t);
   $("#ins-sub").textContent = a.home ? "Has a shelter" : "Wandering, no home";
   const scroll = $("#inspect").scrollTop;
   $("#ins-body").innerHTML = `
@@ -403,7 +457,7 @@ function renderInspector() {
     <section class="sec"><h3>Right now</h3>
       <p class="now">${a.down ? "Unconscious" : esc(a.status)}</p>
       ${a.goal ? `<p class="muted">Goal: ${human(a.goal.type)}${a.goal.target ? `, with ${esc(nameOf(a.goal.target))}` : ""}</p>` : ""}
-      ${plan.length ? `<ol class="plan">${plan.map((s, i) => `<li class="${i === 0 ? "cur" : ""}">${human(s.op)}${s.arg && s.op !== "wander" ? ` ${esc(human(s.arg === "agent" ? nameOf(a.goal?.target) : s.arg))}` : ""}</li>`).join("")}</ol>` : ""}
+      ${plan.length ? `<ol class="plan">${plan.map((s, i) => `<li class="${i === 0 ? "cur" : ""}">${esc(stepText(s, a))}</li>`).join("")}</ol>` : ""}
     </section>
     ${d ? `<section class="sec"><h3>Last choice</h3><p class="muted">At ${clockText(d.t)}, Jev gave these odds for what ${esc(a.name)} would do next.</p>
       <ol class="odds">${oddsRows(d.goal, d.chosen)}</ol>
@@ -414,9 +468,9 @@ function renderInspector() {
       <p class="muted gap">Wants to ${a.desires.map(esc).join(", and to ")}.</p></section>
     <section class="sec two">
       <div><h3>Carrying</h3>${inv.length ? `<dl class="kv">${inv.map(([i, n]) => `<dt>${i}</dt><dd>${n}</dd>`).join("")}</dl>` : `<p class="muted">Nothing</p>`}</div>
-      <div><h3>Skills</h3>${trained.length ? `<dl class="kv">${trained.map(([s, xp]) => `<dt>${s}</dt><dd>Level ${lvl(xp)} <small>${Math.round(xp)} xp</small></dd>`).join("")}</dl>` : ""}
-        <p class="muted small">${untrained.length ? `Untrained: ${untrained.join(", ")}` : ""}</p></div>
+      <div><h3>Skills</h3>${trained.length ? `<dl class="kv">${trained.map(([s, xp]) => `<dt>${s}</dt><dd>Level ${lvl(xp)} <small>${Math.round(xp)} xp</small></dd>`).join("")}</dl>` : `<p class="muted">None yet</p>`}</div>
     </section>
+    <section class="sec"><h3>Know-how</h3>${known.length ? `<ul class="knowhow">${known.map(([id, k]) => `<li><span>${esc(cap(RECIPES[id]?.label ?? id))}</span><small>${k.how === "discovered" ? "worked it out" : k.how === "watched" ? `watched ${esc(nameOf(k.from))}` : `taught by ${esc(nameOf(k.from))}`}, ${clockText(k.t)}</small></li>`).join("")}</ul>` : `<p class="muted">Doesn't know how to make anything yet.</p>`}</section>
     <section class="sec"><h3>Relationships</h3>${rels.length ? rels.map(([id, r]) => {
       const other = S.agents.get(id);
       const beliefs = Object.entries(r.beliefs).filter(([, v]) => v > 0.65 || v < 0.35).map(([k, v]) => (v > 0.65 ? k : `not ${k}`));
@@ -485,6 +539,7 @@ function connect() {
       buildLayer(); applyControl(msg.control);
       if (!cam.init) { cam.init = true; resize(); fit(); }
       renderDock(); renderFilters(); renderFeed(); renderStatus();
+      fetch("api/knowledge").then((r) => r.json()).then((k) => { RECIPES = Object.fromEntries(k.recipes.map((r) => [r.id, r])); });
       document.body.classList.add("ready");
       return;
     }
