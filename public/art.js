@@ -72,6 +72,7 @@ export function buildBase(tiles, W, H) {
   const P = 8, lw = W * P, lh = H * P;
   const low = new OffscreenCanvas(lw, lh), lc = low.getContext("2d");
   const img = lc.createImageData(lw, lh), d = img.data;
+  const iceLow = new OffscreenCanvas(lw, lh), ic = iceLow.getContext("2d"), iceImg = ic.createImageData(lw, lh), id = iceImg.data;
   for (let py = 0; py < lh; py++)
     for (let px = 0; px < lw; px++) {
       const u = (px + 0.5) / P, v = (py + 0.5) / P;
@@ -93,8 +94,13 @@ export function buildBase(tiles, W, H) {
       d[i + 1] = (PAPER[1] * (1 - cover) + g * cover) * k;
       d[i + 2] = (PAPER[2] * (1 - cover) + b * cover) * k;
       d[i + 3] = 255;
+      // Ice fades out just inside the shore so the inked coastline stays visible.
+      const ia = Math.max(0, Math.min(1, (vals[2] - 0.53) * 7)), deep = Math.min(1, Math.max(0, (vals[2] - 0.6) * 2));
+      const ik = 1 + mottle * 0.6;
+      id[i] = (228 - deep * 22) * ik; id[i + 1] = (238 - deep * 14) * ik; id[i + 2] = (242 - deep * 6) * ik; id[i + 3] = ia * 245;
     }
   lc.putImageData(img, 0, 0);
+  ic.putImageData(iceImg, 0, 0);
 
   const base = new OffscreenCanvas(W * T, H * T), c = base.getContext("2d");
   c.imageSmoothingQuality = "high";
@@ -144,7 +150,60 @@ export function buildBase(tiles, W, H) {
   const g = c.createRadialGradient(W * T / 2, H * T / 2, W * T * 0.35, W * T / 2, H * T / 2, W * T * 0.75);
   g.addColorStop(0, "rgba(90, 60, 30, 0)"); g.addColorStop(1, "rgba(90, 60, 30, .28)");
   c.fillStyle = g; c.fillRect(0, 0, W * T, H * T);
-  return base;
+  return { base, ice: iceLow };
+}
+
+// Frozen water over the base. mask: 1 per frozen tile. The mask is upscaled smoothly so ice edges on open water are soft, and it
+// spills onto land tiles next to ice so the texture's own fade decides where ice meets the shore.
+let iceMaskFor = null, iceMask = null, iceTmp = null;
+export function drawIce(c, iceLow, mask, tiles, W, H, x0, y0, x1, y1) {
+  if (!mask || !iceLow) return;
+  const bx = Math.max(0, x0 - 1), by = Math.max(0, y0 - 1), ex = Math.min(W - 1, x1 + 1), ey = Math.min(H - 1, y1 + 1);
+  const frozen = [];
+  for (let y = by; y <= ey; y++) for (let x = bx; x <= ex; x++) if (mask[y * W + x]) frozen.push([x, y]);
+  if (!frozen.length) return;
+  if (iceMaskFor !== mask) {
+    iceMaskFor = mask;
+    iceMask ??= new OffscreenCanvas(W, H);
+    const mc = iceMask.getContext("2d"), img = mc.createImageData(W, H);
+    const at = (x, y) => x >= 0 && y >= 0 && x < W && y < H && mask[y * W + x];
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++) {
+        let on = at(x, y);
+        if (!on && tiles[y * W + x] !== "2") for (let j = -1; j <= 1 && !on; j++) for (let i = -1; i <= 1 && !on; i++) on = at(x + i, y + j);
+        img.data[(y * W + x) * 4 + 3] = on ? 255 : 0;
+      }
+    mc.putImageData(img, 0, 0);
+  }
+  const rx = bx * T, ry = by * T, rw = (ex - bx + 1) * T, rh = (ey - by + 1) * T;
+  iceTmp ??= new OffscreenCanvas(rw, rh);
+  if (iceTmp.width !== rw || iceTmp.height !== rh) { iceTmp.width = rw; iceTmp.height = rh; }
+  const t = iceTmp.getContext("2d");
+  t.globalCompositeOperation = "source-over";
+  t.clearRect(0, 0, rw, rh);
+  t.imageSmoothingEnabled = true;
+  t.drawImage(iceLow, -rx, -ry, W * T, H * T);
+  t.globalCompositeOperation = "source-atop";
+  t.lineCap = "round";
+  for (const [x, y] of frozen) {
+    if (tiles[y * W + x] !== "2") continue;
+    const h = (s) => hash(x, y, 220 + s);
+    if (h(0) < 0.5) {
+      let px = (x + 0.15 + h(1) * 0.7) * T - rx, py = (y + 0.15 + h(2) * 0.7) * T - ry, a = h(3) * Math.PI * 2;
+      t.beginPath(); t.moveTo(px, py);
+      for (let j = 0; j < 3; j++) { a += (h(4 + j) - 0.5) * 1.6; px += Math.cos(a) * T * 0.28; py += Math.sin(a) * T * 0.2; t.lineTo(px, py); }
+      t.strokeStyle = "rgba(96, 124, 140, .5)"; t.lineWidth = 0.9; t.stroke();
+    }
+    if (h(9) < 0.3) {
+      const px = (x + h(10)) * T - rx, py = (y + h(11)) * T - ry;
+      t.beginPath(); t.moveTo(px - T * 0.2, py + T * 0.06); t.lineTo(px + T * 0.18, py - T * 0.06);
+      t.strokeStyle = "rgba(255, 255, 255, .7)"; t.lineWidth = 1.4; t.stroke();
+    }
+  }
+  t.globalCompositeOperation = "destination-in";
+  t.drawImage(iceMask, -rx, -ry, W * T, H * T);
+  t.globalCompositeOperation = "source-over";
+  c.drawImage(iceTmp, rx, ry);
 }
 
 // ---------- glyphs ----------
@@ -167,8 +226,11 @@ export function drawThing(c, th, ownerColor, kinds) {
   const r = hash(th.x, th.y, 11), r2 = hash(th.x, th.y, 12);
   const [sx, sy] = thingSpot(th), x = sx * T, y = sy * T;
   c.lineJoin = "round"; c.lineCap = "round";
-  const scorched = th.burning > 0;
-  if (scorched) c.filter = `brightness(${(1 - th.burning * 0.45).toFixed(2)}) saturate(${(1 - th.burning * 0.5).toFixed(2)})`;
+  const tier = th.shelter?.tier ?? 0, abandoned = th.kind === "structure" && !th.owner && tier >= 1;
+  const filters = [];
+  if (th.burning > 0) filters.push(`brightness(${(1 - th.burning * 0.45).toFixed(2)}) saturate(${(1 - th.burning * 0.5).toFixed(2)})`);
+  if (abandoned) filters.push("saturate(.5) brightness(.95)");
+  if (filters.length) c.filter = filters.join(" ");
   switch (th.kind) {
     case "tree": {
       const s = T * (0.95 + r * 0.3);
@@ -376,10 +438,107 @@ export function drawThing(c, th, ownerColor, kinds) {
       c.beginPath(); c.moveTo(x + s * 0.06, y - s * 0.28); c.lineTo(x + s * 0.12, y - s * 0.1); c.lineTo(x + s * 0.06, y + s * 0.04); c.stroke();
       break;
     }
-    case "structure": drawStructure(c, th, x, y, ownerColor); break;
+    case "structure":
+      drawStructure(c, th, x, y, abandoned ? RAG : ownerColor);
+      if (abandoned) {
+        const w = T * (0.45 + tier * 0.12);
+        c.strokeStyle = "rgba(80, 96, 40, .85)"; c.lineWidth = 1.1;
+        c.beginPath();
+        for (let i = 0; i < 5; i++) {
+          const bx = x + (hash(th.x, th.y, 200 + i) - 0.5) * w * 1.6, by = y + T * (0.3 + tier * 0.05) + hash(th.x, th.y, 210 + i) * 3;
+          c.moveTo(bx - 3, by - 5); c.quadraticCurveTo(bx - 1, by - 1, bx, by);
+          c.moveTo(bx + 3, by - 6); c.quadraticCurveTo(bx + 1, by - 1, bx, by);
+          c.moveTo(bx, by - 7); c.lineTo(bx, by);
+        }
+        c.stroke();
+      }
+      break;
     case "item": drawItem(c, th, x, y, kinds); break;
+    case "pit": {
+      c.beginPath(); c.ellipse(x + T * 0.3, y - T * 0.1, T * 0.2, T * 0.1, -0.25, 0, Math.PI * 2); inked(c, "#8b6a45", 1);
+      c.fillStyle = "rgba(60, 40, 20, .45)";
+      for (let i = 0; i < 4; i++) { c.beginPath(); c.arc(x + T * (0.2 + hash(th.x, th.y, 160 + i) * 0.22), y - T * (0.04 + hash(th.x, th.y, 170 + i) * 0.1), 1, 0, Math.PI * 2); c.fill(); }
+      hole(c, x, y);
+      break;
+    }
+    case "trap": {
+      const reeds = !!th.parts?.reeds, hy = y + HOLE.dy * T, rx = HOLE.rx * T, ry = HOLE.ry * T;
+      if (th.caught) {
+        hole(c, x, y);
+        c.strokeStyle = INK; c.lineWidth = 3;
+        const sticks = [[-1.15, -0.3, -0.45, 0.25], [0.95, -0.5, 0.35, 0.3], [-0.2, -1.25, 0.1, -0.2], [0.55, 0.75, 1.1, 1.3]];
+        c.beginPath();
+        for (const [a, b, p, q] of sticks) { c.moveTo(x + a * rx, hy + b * ry); c.lineTo(x + p * rx, hy + q * ry); }
+        c.stroke(); c.strokeStyle = reeds ? "#a3a458" : "#8a6038"; c.lineWidth = 1.6; c.stroke();
+      } else {
+        c.beginPath(); c.ellipse(x, hy, rx * 1.22, ry * 1.32, 0, 0, Math.PI * 2); inked(c, "#9c7b52", 1);
+        c.beginPath(); c.ellipse(x, hy, rx * 1.05, ry * 1.1, 0, 0, Math.PI * 2); c.fillStyle = "#3a2a1a"; c.fill();
+        c.save(); c.clip();
+        c.strokeStyle = reeds ? "#b3b064" : "#94693f"; c.lineWidth = reeds ? 1.4 : 2.2;
+        c.beginPath();
+        for (let i = -4; i <= 4; i++) {
+          const o = i * rx * 0.26;
+          c.moveTo(x + o - rx, hy - ry * 1.4); c.lineTo(x + o + rx * 0.6, hy + ry * 1.4);
+          if (!reeds) { c.moveTo(x + o + rx, hy - ry * 1.4); c.lineTo(x + o - rx * 0.6, hy + ry * 1.4); }
+        }
+        c.stroke();
+        c.restore();
+        for (let i = 0; i < 4; i++) leaf(c, x + (hash(th.x, th.y, 180 + i) - 0.5) * rx * 1.4, hy + (hash(th.x, th.y, 185 + i) - 0.5) * ry, T * 0.12, hash(th.x, th.y, 190 + i) * 6, "#7f9448", 0.6);
+        c.beginPath(); c.ellipse(x, hy, rx * 1.05, ry * 1.1, 0, 0, Math.PI * 2); c.strokeStyle = INK; c.lineWidth = 1; c.stroke();
+      }
+      if (ownerColor) {
+        const px = x + rx * 1.35, py = hy - ry * 0.4;
+        c.strokeStyle = INK; c.lineWidth = 2.2; c.beginPath(); c.moveTo(px, py + T * 0.08); c.lineTo(px + T * 0.02, py - T * 0.3); c.stroke();
+        c.strokeStyle = "#8a6038"; c.lineWidth = 1; c.stroke();
+        c.beginPath(); c.moveTo(px + T * 0.02, py - T * 0.26); c.lineTo(px + T * 0.15, py - T * 0.2); c.lineTo(px + T * 0.01, py - T * 0.17); c.closePath(); inked(c, ownerColor, 0.8);
+      }
+      break;
+    }
+    case "well": {
+      const hy = y + HOLE.dy * T, rx = HOLE.rx * T, ry = HOLE.ry * T;
+      shadow(c, x + 1, hy + ry * 1.2, rx * 1.4, ry * 0.9);
+      c.beginPath(); c.ellipse(x, hy, rx * 1.1, ry * 1.1, 0, 0, Math.PI * 2); c.fillStyle = "#4a3524"; c.fill();
+      c.beginPath(); c.ellipse(x, hy + ry * 0.2, rx * 0.95, ry * 0.8, 0, 0, Math.PI * 2); c.fillStyle = "#4f7f92"; c.fill();
+      c.strokeStyle = "rgba(230, 245, 250, .7)"; c.lineWidth = 1;
+      c.beginPath(); c.ellipse(x - rx * 0.1, hy + ry * 0.25, rx * 0.5, ry * 0.3, 0, Math.PI * 1.1, Math.PI * 1.7); c.stroke();
+      const n = 11;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + 0.2, px = x + Math.cos(a) * rx * 1.18, py = hy + Math.sin(a) * ry * 1.25;
+        c.beginPath(); c.ellipse(px, py, T * 0.075, T * 0.05, 0, 0, Math.PI * 2);
+        inked(c, i % 3 ? "#a59c8c" : "#968d7d", 0.9);
+      }
+      break;
+    }
+    case "grave": {
+      const s = T * 0.55;
+      c.beginPath(); c.ellipse(x, y + s * 0.18, s * 0.5, s * 0.2, 0, 0, Math.PI * 2); inked(c, "#8a7650", 1);
+      c.fillStyle = "rgba(110, 135, 70, .45)"; c.beginPath(); c.ellipse(x - s * 0.1, y + s * 0.14, s * 0.3, s * 0.09, 0, 0, Math.PI * 2); c.fill();
+      if (r < 0.5) {
+        for (const [dx, dy, rr] of [[-0.2, 0.08, 0.15], [0.18, 0.1, 0.14], [0, 0.04, 0.15], [-0.08, -0.14, 0.12], [0.1, -0.13, 0.11], [0.01, -0.3, 0.09]]) {
+          c.beginPath(); c.ellipse(x + dx * s, y + dy * s, rr * s * 1.15, rr * s * 0.85, 0, 0, Math.PI * 2); inked(c, "#a59c8c", 1);
+        }
+      } else {
+        c.beginPath(); c.moveTo(x - s * 0.16, y + s * 0.14); c.lineTo(x - s * 0.16, y - s * 0.3); c.quadraticCurveTo(x, y - s * 0.48, x + s * 0.16, y - s * 0.3); c.lineTo(x + s * 0.16, y + s * 0.14); c.closePath();
+        inked(c, "#a07a4c", 1.1);
+        c.strokeStyle = "rgba(60, 40, 20, .55)"; c.lineWidth = 0.9;
+        c.beginPath(); c.moveTo(x - s * 0.08, y - s * 0.18); c.lineTo(x + s * 0.08, y - s * 0.18); c.moveTo(x - s * 0.06, y - s * 0.08); c.lineTo(x + s * 0.06, y - s * 0.08); c.stroke();
+      }
+      if (r2 > 0.55) for (const [dx, col] of [[-0.36, "#e9d57a"], [0.34, "#d98aa0"]]) { c.beginPath(); c.arc(x + dx * s, y + s * 0.2, s * 0.05, 0, Math.PI * 2); inked(c, col, 0.6); }
+      break;
+    }
   }
-  if (scorched) c.filter = "none";
+  if (filters.length) c.filter = "none";
+}
+// Tile-unit geometry of dug holes, shared by the cached glyph and the live trapped animal.
+const HOLE = { dy: 0.06, rx: 0.3, ry: 0.14 };
+function hole(c, x, y) {
+  const hy = y + HOLE.dy * T, rx = HOLE.rx * T, ry = HOLE.ry * T;
+  c.beginPath(); c.ellipse(x, hy, rx * 1.22, ry * 1.32, 0, 0, Math.PI * 2); inked(c, "#9c7b52", 1);
+  c.beginPath(); c.ellipse(x, hy, rx, ry, 0, 0, Math.PI * 2); c.fillStyle = "#5a4230"; c.fill();
+  c.save(); c.clip();
+  c.beginPath(); c.ellipse(x, hy + ry * 0.5, rx, ry * 0.9, 0, 0, Math.PI * 2); c.fillStyle = "#22170e"; c.fill();
+  c.restore();
+  c.beginPath(); c.ellipse(x, hy, rx, ry, 0, 0, Math.PI * 2); c.strokeStyle = INK; c.lineWidth = 1.2; c.stroke();
 }
 function leaf(c, x, y, len, ang, col, lw = 0.8) {
   c.save(); c.translate(x, y); c.rotate(ang);
@@ -693,8 +852,17 @@ function badge(c, x, y, n) {
   c.restore();
 }
 
+// Abandoned homes fly a faded, torn rag instead of an owner's color.
+const RAG = "rag";
 function flag(c, x, y, s, color) {
   if (!color) return;
+  if (color === RAG) {
+    c.strokeStyle = INK; c.lineWidth = 1.2;
+    c.beginPath(); c.moveTo(x, y + s * 0.2); c.lineTo(x + s * 0.02, y - s * 0.14); c.stroke();
+    c.beginPath(); c.moveTo(x + s * 0.02, y - s * 0.14); c.lineTo(x + s * 0.1, y - s * 0.1); c.lineTo(x + s * 0.07, y - s * 0.08); c.lineTo(x + s * 0.12, y - s * 0.05); c.lineTo(x + s * 0.015, y - s * 0.04); c.closePath();
+    inked(c, "#b7ab92", 0.9);
+    return;
+  }
   c.strokeStyle = INK; c.lineWidth = 1.2;
   c.beginPath(); c.moveTo(x, y + s * 0.2); c.lineTo(x, y - s * 0.16); c.stroke();
   c.beginPath(); c.moveTo(x, y - s * 0.16); c.lineTo(x + s * 0.2, y - s * 0.1); c.lineTo(x, y - s * 0.03); c.closePath();
@@ -789,7 +957,9 @@ export function drawToken(c, a, x, y, r, now, selected) {
   c.fillStyle = g; c.fill();
   c.strokeStyle = "rgba(30, 18, 10, .7)"; c.lineWidth = 1.2; c.stroke();
   c.beginPath(); c.arc(x, y, r * 0.72, 0, Math.PI * 2);
-  c.strokeStyle = "rgba(255, 240, 210, .45)"; c.lineWidth = 1; c.stroke();
+  if (a.stage === "elder") { c.strokeStyle = "rgba(226, 226, 222, .95)"; c.lineWidth = Math.max(1.6, r * 0.14); }
+  else { c.strokeStyle = "rgba(255, 240, 210, .45)"; c.lineWidth = 1; }
+  c.stroke();
   if (r >= 9) {
     c.fillStyle = "rgba(255, 244, 222, .95)";
     c.font = `${Math.round(r * 1.05)}px "IM Fell English", serif`;
@@ -926,17 +1096,18 @@ const hashId = (id) => {
 };
 export function drawAnimal(c, an, x, y, s, now, dir, moving, selected) {
   const deer = an.species !== "wolf", seed = hashId(an.id);
-  const rest = an.state === "rest", down = an.state === "graze" || an.state === "eat";
+  const trapped = an.state === "trapped", rest = an.state === "rest" || trapped, down = an.state === "graze" || an.state === "eat";
   const fast = an.state === "flee" || an.state === "hunt" || an.state === "attack";
   const t = now / (fast ? 60 : 110) + seed * 20;
   const body = deer ? "#b98a55" : "#8d8a84", dark = deer ? "#7e5a34" : "#5a5753", lw = Math.max(0.8, s * 0.045);
   c.save();
-  shadowEllipse(c, x, y + s * 0.3, s * 0.36);
+  if (!trapped) shadowEllipse(c, x, y + s * 0.3, s * 0.36);
   if (selected) {
     c.strokeStyle = "#a8321f"; c.lineWidth = 1.6; c.setLineDash([3, 4]); c.lineDashOffset = -now / 60;
     c.beginPath(); c.ellipse(x, y + s * 0.08, s * 0.6, s * 0.42, 0, 0, Math.PI * 2); c.stroke(); c.setLineDash([]);
   }
-  c.translate(x, y + (moving && !rest ? -Math.abs(Math.sin(t)) * s * 0.06 : 0));
+  if (trapped) c.translate(x + (moving ? Math.sin(now / 45 + seed * 9) * s * 0.025 : 0), y);
+  else c.translate(x, y + (moving && !rest ? -Math.abs(Math.sin(t)) * s * 0.06 : 0));
   c.scale(dir < 0 ? -1 : 1, 1);
   c.lineJoin = "round"; c.lineCap = "round";
   const by = rest ? s * 0.17 : 0;
@@ -952,13 +1123,13 @@ export function drawAnimal(c, an, x, y, s, now, dir, moving, selected) {
   if (deer) c.ellipse(-s * 0.3, by - s * 0.07, s * 0.05, s * 0.04, -0.5, 0, Math.PI * 2);
   else { c.moveTo(-s * 0.26, by - s * 0.06); c.quadraticCurveTo(-s * 0.46, by - s * 0.02, -s * 0.44, by + s * 0.14); c.quadraticCurveTo(-s * 0.36, by + s * 0.04, -s * 0.24, by + s * 0.02); c.closePath(); }
   inked(c, deer ? "#f1e8d6" : dark, lw);
-  const hx = s * 0.34, hy = down ? by + s * 0.14 : rest ? by - s * 0.12 : by - (deer ? s * 0.24 : s * 0.12);
+  const hx = s * 0.34, hy = down ? by + s * 0.14 : trapped ? by - s * 0.22 : rest ? by - s * 0.12 : by - (deer ? s * 0.24 : s * 0.12);
   c.beginPath(); c.moveTo(s * 0.14, by - s * 0.09); c.lineTo(hx - s * 0.04, hy - s * 0.04); c.lineTo(hx + s * 0.01, hy + s * 0.05); c.lineTo(s * 0.24, by + s * 0.06); c.closePath();
   inked(c, body, lw);
   c.beginPath(); c.ellipse(0, by, s * 0.29, s * 0.13, 0, 0, Math.PI * 2); inked(c, body, lw);
   c.fillStyle = deer ? "rgba(255, 240, 215, .45)" : "rgba(60, 55, 50, .45)";
   c.beginPath(); c.ellipse(0, by + (deer ? s * 0.06 : -s * 0.06), s * 0.2, s * 0.045, 0, 0, Math.PI * 2); c.fill();
-  c.save(); c.translate(hx, hy); c.rotate(down ? 0.9 : deer ? 0.15 : 0.05); c.scale(1.25, 1.25);
+  c.save(); c.translate(hx, hy); c.rotate(down ? 0.9 : trapped ? -0.35 : deer ? 0.15 : 0.05); c.scale(1.25, 1.25);
   c.beginPath();
   if (deer) c.ellipse(-s * 0.04, -s * 0.08, s * 0.03, s * 0.06, -0.5, 0, Math.PI * 2);
   else { c.moveTo(-s * 0.07, -s * 0.03); c.lineTo(-s * 0.05, -s * 0.13); c.lineTo(0, -s * 0.04); c.closePath(); }
@@ -975,5 +1146,23 @@ export function drawAnimal(c, an, x, y, s, now, dir, moving, selected) {
   c.fillStyle = an.state === "attack" || an.state === "hunt" ? "#a8321f" : INK;
   c.beginPath(); c.arc(-s * 0.005, -s * 0.025, s * 0.016, 0, Math.PI * 2); c.fill();
   c.restore();
+  c.restore();
+}
+// An animal stuck in a trap: drawn inside the hole, then the near rim over it. k is screen px per tile.
+export function drawTrapped(c, an, x, y, k, now, dir, shake, selected) {
+  const hy = y + HOLE.dy * k, rx = HOLE.rx * k, ry = HOLE.ry * k, s = k * (an.species === "wolf" ? 0.95 : 1.05);
+  c.save();
+  c.beginPath(); c.rect(x - k * 2, y - k * 2, k * 4, hy - (y - k * 2)); c.ellipse(x, hy, rx, ry, 0, 0, Math.PI * 2); c.clip();
+  drawAnimal(c, an, x, hy - s * 0.05, s * 0.9, now, dir, shake, false);
+  c.restore();
+  c.save();
+  c.lineCap = "round";
+  c.beginPath(); c.ellipse(x, hy, rx, ry, 0, 0.08, Math.PI - 0.08);
+  c.strokeStyle = "#9c7b52"; c.lineWidth = Math.max(2, k * 0.07); c.stroke();
+  c.strokeStyle = INK; c.lineWidth = Math.max(1, k * 0.035); c.stroke();
+  if (selected) {
+    c.strokeStyle = "#a8321f"; c.lineWidth = 1.6; c.setLineDash([3, 4]); c.lineDashOffset = -now / 60;
+    c.beginPath(); c.ellipse(x, hy - k * 0.1, rx * 1.9, k * 0.42, 0, 0, Math.PI * 2); c.stroke();
+  }
   c.restore();
 }

@@ -128,6 +128,11 @@
     .law summary { display: inline-flex; align-items: center; min-height: 36px; cursor: pointer; font-size: 13px; color: var(--ink-soft); }
     .law summary:focus-visible { outline: 2px solid var(--seal); outline-offset: 2px; border-radius: 4px; }
 
+    .who { white-space: nowrap; }
+    .who i { display: inline-block; width: 9px; height: 9px; margin-right: 6px; border-radius: 50%; background: var(--c); box-shadow: 0 0 0 1px rgb(30 18 10 / .5); vertical-align: 0; }
+    .who.dead { color: var(--ink-faint); font-style: italic; }
+    .who.dead i { filter: grayscale(.8); opacity: .6; }
+
     @media (max-width: 560px) {
       .topbar { gap: 8px; }
       .topbar .home span, .stamp .lbl { display: none; }

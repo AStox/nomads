@@ -1,6 +1,6 @@
 // What each agent thinks happens when they do something, and the laws of the world those beliefs come from.
 import type { Fields, Outcome } from "./physics";
-import { dist, log, type Agent, type World } from "./world";
+import { dist, log, stageOf, type Agent, type World } from "./world";
 import { trace } from "./trace";
 
 export type Belief = {
@@ -32,6 +32,7 @@ export function sentence(w: World, f: Fields, ticks?: number): string {
   const ins = f.inputs.map((k) => nm(w, k));
   switch (f.verb) {
     case "strike":
+      if (f.builds === "fire") return `Striking ${an(nm(w, f.target ?? "stone"))} ${with_(w, f.tool)} over dry tinder can throw a spark that lights a fire.`;
       if (f.target && !f.inputs.length)
         return f.gives.length ? `Striking ${an(f.target)} ${with_(w, f.tool)} breaks it into ${gives(w, f)}${time}.` : `Striking ${an(f.target)} ${with_(w, f.tool)} barely marks it.`;
       return f.gives.length ? `Striking ${an(ins[0])} ${with_(w, f.tool)} can break off ${gives(w, f)}.` : `Striking ${an(ins[0])} ${with_(w, f.tool)} does nothing much.`;
@@ -63,6 +64,10 @@ export function sentence(w: World, f: Fields, ticks?: number): string {
       return `${ins[0]} is good to eat.`;
     case "wear":
       return `Wearing ${ins[0]} keeps the cold out.`;
+    case "dig":
+      return `Digging ${with_(w, f.tool)} makes a deep pit.`;
+    case "throw":
+      return f.gives.length ? `Throwing ${an(ins[0])} at ${an(f.target ?? "animal")} can bring it down.` : `Throwing ${an(ins[0])} at ${an(f.target ?? "animal")} can wound it.`;
   }
   return `${f.verb} ${ins.join(", ")}`;
 }
@@ -129,7 +134,8 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number) {
       }
       continue;
     }
-    const k = 0.6 * (1 + (b.traits.observant ?? 0) + (b.traits.clever ?? 0) * 0.5 + (b.traits.curious ?? 0) * 0.5);
+    // Children soak up what the grown-ups around them do.
+    const k = 0.6 * (1 + (b.traits.observant ?? 0) + (b.traits.clever ?? 0) * 0.5 + (b.traits.curious ?? 0) * 0.5) * (stageOf(w, b) === "child" ? 2 : 1);
     b.watching[key] = (b.watching[key] ?? 0) + k;
     trace("belief", "watching", { key, progress: b.watching[key], doer: doer.id }, b.id);
     if (b.watching[key] < 1) continue;

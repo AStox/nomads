@@ -167,6 +167,7 @@ main::after { content: ""; position: absolute; inset: 0; pointer-events: none; b
 .focus .seal { --size: 44px; }
 .seal.sm { --size: 26px; }
 .seal.xs { --size: 20px; margin-right: 6px; }
+.seal.dead { filter: grayscale(.85) brightness(.95); opacity: .7; }
 
 .needs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
 .need { display: grid; justify-items: center; gap: 4px; color: var(--ink-soft); }
@@ -197,6 +198,8 @@ main::after { content: ""; position: absolute; inset: 0; pointer-events: none; b
 }
 .filters button:first-child { padding-left: 12px; }
 .filters button[aria-pressed="true"] { background: var(--ink); color: var(--paper); box-shadow: none; }
+.filters button.gone { color: var(--ink-faint); font-style: italic; }
+.filters button.gone[aria-pressed="true"] { color: var(--paper); }
 .feed { list-style: none; margin: 0; padding: 0 0 20px; }
 .feed .day { position: sticky; top: 0; z-index: 1; background: var(--grain), var(--paper); display: flex; align-items: center; gap: 12px; padding: 14px 18px 6px; font: 400 15px/1 "IM Fell English SC", serif; color: var(--ink-soft); letter-spacing: .05em; }
 #chronicle .feed .day { top: 49px; }
@@ -298,6 +301,14 @@ main::after { content: ""; position: absolute; inset: 0; pointer-events: none; b
 .law-mark { font-style: normal; color: #b07d16; }
 .facts li { position: relative; padding-left: 16px; font: 400 15px/1.35 "IM Fell English", serif; }
 .facts li::before { content: "◆"; position: absolute; left: 0; top: 2px; font-size: 8px; color: var(--ink-faint); }
+.fam { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; margin: 0; align-items: start; }
+.fam dt { font: 700 11px/22px "Alegreya Sans", sans-serif; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint); }
+.fam dd { margin: 0; min-width: 0; }
+.kin { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.kin li { display: inline-flex; align-items: center; font: 400 16px/22px "IM Fell English", serif; }
+.kin small, .rel .gone { margin-left: 6px; font: italic 400 13px/1 "IM Fell English", serif; color: var(--ink-faint); }
+.expecting { margin: 0 0 10px; padding: 6px 10px; border-radius: 8px; background: rgb(217 181 108 / .22); font: italic 400 15px/1.3 "IM Fell English", serif; color: #6b4408; }
+.store { font-style: italic; }
 
 /* ---------- discoveries ---------- */
 .ev.invention span { font: 400 17px/1.35 "IM Fell English", serif; color: #7a4b08; }

@@ -1,6 +1,6 @@
 // Every Jev call lives here: pick a goal, choose what to try, answer another agent, judge an unknown result, name a thing.
 import {
-  BONDS, BOND_FADE, LABELS, OPINIONS, clock, dist, level, type Agent, type BondKind, type Label, type Relationship, type World,
+  BONDS, BOND_FADE, DAY, LABELS, OPINIONS, YEAR_DAYS, ageOf, clock, dayOfYear, dist, level, stageOf, type Agent, type BondKind, type Label, type Relationship, type World,
 } from "./world";
 import { TRAITS } from "./traits";
 import { PROPS, type Kind, type Props } from "./materials";
@@ -56,9 +56,9 @@ async function ask(w: World, purpose: string, agent: string | undefined, state: 
 }
 
 // Flatten Jev's odds a little so a 30% option still happens sometimes; options Jev gives ~0% never do.
-export function sample(probs: Record<string, number>): string {
+export function sample(probs: Record<string, number>, sharpness = 0.8): string {
   const keys = Object.keys(probs);
-  const weights = keys.map((k) => Math.pow(probs[k], 0.8));
+  const weights = keys.map((k) => Math.pow(probs[k], sharpness));
   let r = Math.random() * weights.reduce((a, b) => a + b, 0);
   for (let i = 0; i < keys.length; i++) if ((r -= weights[i]) <= 0) return keys[i];
   return keys.at(-1)!;
@@ -126,13 +126,25 @@ export function view(w: World, a: Agent) {
     }));
   const home = a.home ? w.things.find((t) => t.id === a.home) : null;
   const wx = w.weather;
+  const stored: Record<string, number> = {};
+  for (const s of home?.store ?? []) stored[w.kinds[s.k]?.name ?? s.k] = (stored[w.kinds[s.k]?.name ?? s.k] ?? 0) + 1;
+  const toWinter = (30 - dayOfYear(w.t) + YEAR_DAYS) % YEAR_DAYS;
+  const name = (id: string) => w.people[id]?.name ?? id;
   return {
     you: a.name,
     bio: a.bio,
     traits: Object.entries(a.traits).map(([t, s]) => `${t} (${s > 0.75 ? "strongly" : s > 0.55 ? "fairly" : "slightly"}): ${TRAITS[t]}`),
     desires: a.desires,
+    age: `${Math.floor(ageOf(w, a))} years old (${stageOf(w, a)})`,
+    family: [
+      ...a.parents.map((id) => `parent: ${name(id)}${w.people[id]?.alive === false ? " (dead)" : ""}`),
+      ...a.children.map((id) => `child: ${name(id)}${w.people[id]?.alive === false ? " (dead)" : ""}`),
+    ],
+    expecting_a_child: a.pregnant ? `yes, in ${Math.ceil((a.pregnant.due - w.t) / DAY)} days` : undefined,
     time: clock(w.t),
-    weather: `${wx.season}, ${wx.sky}, ${Math.round(wx.temp)}C${wx.drought ? ", drought" : ""}`,
+    weather: `${wx.season}, ${wx.sky}, ${Math.round(wx.temp)}C${wx.drought ? ", drought" : ""}${w.ice.length ? ", the water is frozen" : ""}`,
+    days_until_winter: wx.season === "winter" ? "it is winter now" : toWinter,
+    kept_at_home: Object.keys(stored).length ? stored : undefined,
     needs: Object.fromEntries(Object.entries(a.needs).map(([k, v]) => [k, needWord(v)])),
     sick: a.sickness ? "yes, feeling ill" : undefined,
     skills: Object.fromEntries(Object.entries(a.skills).filter(([, xp]) => xp > 0).map(([s, xp]) => [s, `level ${level(xp)}`])),
@@ -184,7 +196,8 @@ export async function chooseTinker(w: World, a: Agent, options: string[]) {
       criteria: Object.fromEntries(options.map((o) => [o, null])),
     },
   });
-  return sample(ans.attempt.probabilities!);
+  // Over a long list of options, the long tail would win too often; lean harder on Jev's favorites.
+  return sample(ans.attempt.probabilities!, 1.6);
 }
 
 export async function respond(w: World, me: Agent, them: Agent, situation: string, options: Record<string, string>) {
@@ -222,11 +235,19 @@ export async function reflect(w: World, me: Agent, them: Agent, happened: string
   return { bond, label: r.label };
 }
 
+// Once a day: grudges and warmth both cool, faster for the forgiving; time spent near someone breeds familiarity.
 export function fadeBonds(a: Agent) {
-  for (const r of Object.values(a.rel)) {
+  const keep = 0.96 - (a.traits.forgiving ?? 0) * 0.04 + (a.traits.vengeful ?? 0) * 0.03;
+  for (const [id, r] of Object.entries(a.rel)) {
     for (const b of r.bonds) b.weight *= BOND_FADE[b.kind] ?? 0.85;
     r.bonds = r.bonds.filter((b) => b.weight > 0.05);
+    if (r.affinity < 0) r.affinity *= keep;
+    else if (r.label !== "kin") r.affinity *= 0.99;
+    r.trust += (0.3 - r.trust) * 0.03;
+    const together = a.near[id] ?? 0;
+    if (together > 40) r.affinity = Math.min(1, r.affinity + Math.min(0.06, together / 3000));
   }
+  a.near = {};
 }
 
 // The rules don't cover this combination. Ask what would realistically come of it; the answer becomes law.
@@ -257,7 +278,9 @@ export async function rule(w: World, a: Agent, attempt: string, parts: Kind[], t
   props.seed = Math.min(props.seed ?? 0, most("seed") * 0.5);
   props.binding = Math.min(props.binding ?? 0, Math.max(most("binding"), most("plastic") * 0.6, most("fibrous") * 0.5));
   props.sharp = Math.min(props.sharp ?? 0, most("sharp") + 0.2);
-  return { useful: ans.useful.noul! >= 0.5, name: templateName, props };
+  // A mix that can't do anything its parts couldn't already do is just a lump.
+  const novel = relevant.some((prop) => (props[prop] ?? 0) > Math.max(...parts.map((k) => k.props[prop] ?? 0)) + 0.15);
+  return { useful: ans.useful.noul! >= 0.6 && novel, name: templateName, props };
 }
 
 // When something has been made a few times, people settle on a word for it.

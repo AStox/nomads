@@ -99,15 +99,39 @@ function paint(el, html) {
   if (window.scrollY !== y) window.scrollTo(0, y);
 }
 
-function syncSelect(sel, set, allLabel) {
-  const vals = [...set].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+function syncSelect(sel, set, allLabel, text = (v) => v) {
+  const vals = [...set].sort((a, b) => String(text(a)).localeCompare(String(text(b)), undefined, { numeric: true }));
   const cur = sel.value;
   if (cur && !set.has(cur)) vals.push(cur);
-  const sig = vals.join("\u0000");
+  const sig = vals.map((v) => `${v}=${text(v)}`).join("\u0000");
   if (sel.dataset.sig === sig) return;
   sel.dataset.sig = sig;
-  sel.innerHTML = `<option value="">${esc(allLabel)}</option>${vals.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("")}`;
+  sel.innerHTML = `<option value="">${esc(allLabel)}</option>${vals.map((v) => `<option value="${esc(v)}">${esc(text(v))}</option>`).join("")}`;
   sel.value = cur;
+}
+
+// Names for agent ids, living and dead, from api/people. Refetched when an unknown id shows up.
+const PEOPLE = new Map();
+let peopleBusy = false, peopleAt = 0;
+async function loadPeople() {
+  if (peopleBusy || Date.now() - peopleAt < 5000) return;
+  peopleBusy = true;
+  try {
+    const list = await fetch("api/people", { cache: "no-store" }).then((r) => r.json());
+    if (Array.isArray(list)) for (const p of list) if (p?.id != null) PEOPLE.set(String(p.id), p);
+    peopleAt = Date.now();
+    RENDER[S.tab]();
+  } catch {} finally { peopleBusy = false; }
+}
+function who(id) {
+  const p = PEOPLE.get(String(id));
+  if (!p) loadPeople();
+  return p?.name ?? String(id);
+}
+function whoHtml(id) {
+  if (id == null) return nil();
+  const p = PEOPLE.get(String(id)), dead = p && p.alive === false;
+  return `<span class="who${dead ? " dead" : ""}" title="${esc(id)}${dead ? ", died" : ""}">${p?.color ? `<i style="--c:${esc(p.color)}"></i>` : ""}${esc(who(id))}</span>`;
 }
 
 function note(tab, bad) {
@@ -203,7 +227,8 @@ function renderStats() {
 
   const p = d.population;
   if (isObj(p)) {
-    cards.push(card("Population", kvTable([["Deer", p.deer], ["Wolf", p.wolf], ["Agents", p.agents], ...extras(p, ["deer", "wolf", "agents"])])));
+    const keys = ["agents", "children", "elders", "pregnant", "dead", "deer", "wolf"];
+    cards.push(card("Population", kvTable([...keys.filter((k) => k in p).map((k) => [label(k), p[k]]), ...extras(p, keys)])));
   } else if ("population" in d) other.push(["Population", p]);
 
   if (isObj(d.things)) {
@@ -267,7 +292,7 @@ function renderJev() {
     if (r?.agent != null) S.seen.jevAgent.add(String(r.agent));
     if (r?.purpose != null) S.seen.jevPurpose.add(String(r.purpose));
   }
-  syncSelect($("#jev-agent"), S.seen.jevAgent, "All agents");
+  syncSelect($("#jev-agent"), S.seen.jevAgent, "All agents", who);
   syncSelect($("#jev-purpose"), S.seen.jevPurpose, "All purposes");
   const pf = $("#jev-purpose").value;
   const rows = list.filter((r) => isObj(r) && (!pf || String(r.purpose) === pf)).reverse();
@@ -278,7 +303,7 @@ function renderJev() {
       const id = rowId(r);
       const open = S.open.jev.has(id);
       const tr = `<tr class="row${open ? " open" : ""}${r.error ? " err" : ""}" data-id="${esc(id)}" tabindex="0" aria-expanded="${open}">
-        <td class="nw">${esc(when(r.t))}</td><td>${r.agent != null ? esc(r.agent) : nil()}</td><td>${fmtVal(r.purpose)}</td>
+        <td class="nw">${esc(when(r.t))}</td><td>${whoHtml(r.agent)}</td><td>${fmtVal(r.purpose)}</td>
         <td class="num">${Number.isFinite(r.ms) ? esc(fmtNum(Math.round(r.ms))) : fmtVal(r.ms)}</td><td class="num">${fmtVal(r.tokens)}</td>
         <td>${r.error ? `<span class="badge">error</span>` : ""}</td></tr>`;
       if (!open) return tr;
@@ -303,11 +328,11 @@ function renderTrace() {
     if (r?.agent != null) S.seen.trAgent.add(String(r.agent));
     if (r?.kind != null) S.seen.trKind.add(String(r.kind));
   }
-  syncSelect($("#tr-agent"), S.seen.trAgent, "All agents");
+  syncSelect($("#tr-agent"), S.seen.trAgent, "All agents", who);
   syncSelect($("#tr-kind"), S.seen.trKind, "All kinds");
   const q = $("#tr-q").value.trim().toLowerCase();
   const rows = list
-    .filter((r) => isObj(r) && (!q || `${r.sys ?? ""} ${r.kind ?? ""} ${r.agent ?? ""} ${JSON.stringify(r.data) ?? ""}`.toLowerCase().includes(q)))
+    .filter((r) => isObj(r) && (!q || `${r.sys ?? ""} ${r.kind ?? ""} ${r.agent ?? ""} ${r.agent != null ? who(r.agent) : ""} ${JSON.stringify(r.data) ?? ""}`.toLowerCase().includes(q)))
     .reverse();
   const body = rows
     .map((r) => {
@@ -316,7 +341,7 @@ function renderTrace() {
       const color = SYS_COLOR[r.sys] ?? "var(--ink-faint)";
       const tr = `<tr class="row${open ? " open" : ""}" data-id="${esc(id)}" tabindex="0" aria-expanded="${open}">
         <td class="nw">${esc(when(r.t))}</td><td><span class="chip" style="--c:${color}">${esc(r.sys ?? "?")}</span></td>
-        <td>${fmtVal(r.kind)}</td><td>${r.agent != null ? esc(r.agent) : nil()}</td><td class="pv"><code>${esc(oneLine(r.data))}</code></td></tr>`;
+        <td>${fmtVal(r.kind)}</td><td>${whoHtml(r.agent)}</td><td class="pv"><code>${esc(oneLine(r.data))}</code></td></tr>`;
       if (!open) return tr;
       return `${tr}<tr class="det"><td colspan="5"><p class="sub">id ${esc(r.id ?? "none")}, tick ${esc(r.t)}</p>${block("Data", r.data, `t-${id}`)}</td></tr>`;
     })
@@ -345,7 +370,7 @@ function renderLaws() {
         `<code>${esc(l.id ?? "no id")}</code>`,
         l.verb != null ? `<span>verb ${esc(l.verb)}</span>` : "",
         l.source != null ? `<span class="src">${jev ? "\u2726 " : ""}${esc(l.source)}</span>` : "",
-        l.by != null ? `<span>by ${esc(l.by)}</span>` : "",
+        l.by != null ? `<span>by ${whoHtml(l.by)}</span>` : "",
         l.t != null ? `<span>${esc(when(l.t))}</span>` : "",
       ].join("");
       const det = Object.keys(more).length
@@ -390,7 +415,7 @@ function renderKinds() {
             .map(([p, v]) => `<span class="pc" style="--s:${Math.min(1, Math.max(0, v)).toFixed(2)}">${esc(p)}<b>${Number(v.toFixed(2))}</b></span>`)
             .join("")
         : "";
-      const made = isObj(k.made) ? `${k.made.by != null ? esc(k.made.by) : nil("unknown")} <span class="sub">${esc(when(k.made.t))}</span>` : nil("natural");
+      const made = isObj(k.made) ? `${k.made.by != null ? whoHtml(k.made.by) : nil("unknown")} <span class="sub">${esc(when(k.made.t))}</span>` : nil("natural");
       return `<tr${k.made ? ` class="made"` : ""}><td><span class="kname">${esc(k.name ?? k.id)}</span></td><td><code>${esc(k.id)}</code></td>
         <td>${k.base != null ? esc(k.base) : ""}</td><td>${k.verb != null ? esc(k.verb) : ""}</td><td class="nw">${made}</td>
         <td>${parts}</td><td>${props}</td></tr>`;
@@ -499,4 +524,5 @@ $("#k-made").addEventListener("click", (e) => {
 });
 
 syncButtons();
+loadPeople();
 setTab(location.hash.slice(1));

@@ -2,7 +2,8 @@ import { mkdirSync, renameSync } from "node:fs";
 import { DAY, VERSION, clock, newWorld, type World } from "./src/sim/world";
 import { agentDetail, changedKinds, summary, tick } from "./src/sim/sim";
 import { changed, newKinds, removed } from "./src/sim/physics";
-import { pathChanges } from "./src/sim/ecology";
+import { iceChanged, pathChanges } from "./src/sim/ecology";
+import { stageOf } from "./src/sim/world";
 import { beliefText } from "./src/sim/beliefs";
 import { counters, flush, jevCalls, logTo, tickMs, traces } from "./src/sim/trace";
 
@@ -19,6 +20,7 @@ async function load(): Promise<World> {
     const w = (await f.json()) as World;
     if (w.version === VERSION) {
       for (const a of w.agents) {
+        a.near ??= {};
         a.thinking = false;
         a.engaged = null;
         for (const s of a.plan) if (s.op === "social") s.progress = 0;
@@ -57,7 +59,9 @@ function loop() {
       things: w.things.filter((t) => changed.has(t.id)), removed: [...removed].filter((id) => !changed.has(id) || !w.things.some((t) => t.id === id)),
       kinds: kindsById([...newKinds, ...changedKinds]),
       paths: [...pathChanges].map((i) => ({ i, v: w.paths[i] })),
+      ...(iceChanged.now ? { ice: w.ice } : {}),
     };
+    iceChanged.now = false;
     changed.clear(); removed.clear(); newKinds.clear(); changedKinds.clear(); pathChanges.clear();
     for (const c of clients) send(c, msg);
     flush();
@@ -73,7 +77,9 @@ function stats() {
   for (const t of w.things) things[t.kind] = (things[t.kind] ?? 0) + 1;
   return {
     t: w.t, clock: clock(w.t), weather: w.weather,
-    population: { agents: w.agents.length, deer: w.animals.filter((a) => a.species === "deer").length, wolf: w.animals.filter((a) => a.species === "wolf").length },
+    population: {
+      agents: w.agents.length, children: w.agents.filter((a) => stageOf(w, a) === "child").length, elders: w.agents.filter((a) => stageOf(w, a) === "elder").length,
+      dead: Object.values(w.people).filter((x) => !x.alive).length, pregnant: w.agents.filter((a) => a.pregnant).length, deer: w.animals.filter((a) => a.species === "deer").length, wolf: w.animals.filter((a) => a.species === "wolf").length },
     things, fires: things.fire ?? 0, structures: things.structure ?? 0,
     laws: Object.keys(w.laws).length, kinds: Object.keys(w.kinds).length, madeKinds: Object.values(w.kinds).filter((k) => k.made).length,
     jev: { calls: w.jev.calls, tokens: w.jev.tokens, cost: (w.jev.tokens * 0.042) / 1e6, rulings: w.jev.rulings, costPerDay: w.t > DAY ? ((w.jev.tokens * 0.042) / 1e6) / (w.t / DAY) : null },
@@ -101,6 +107,7 @@ Bun.serve({
             type: "init", t: w.t, jev: w.jev, control, tiles: w.tiles.join(""), things: w.things,
             agents: w.agents.map((a) => summary(w, a)), animals: animalView(), events: w.events.slice(-300),
             kinds: w.kinds, weather: w.weather, paths: w.paths.join(""),
+            ice: w.tiles.map((_, i) => (w.ice.includes(i) ? "1" : "0")).join(""),
           });
         },
         cancel() { clients.delete(ctl); },
@@ -117,6 +124,7 @@ Bun.serve({
         agents: w.agents.map((a) => ({ id: a.id, beliefs: agentDetail(w, a).beliefs })),
       });
     }
+    if (p === "/api/people") return json(Object.values(w.people));
     if (p === "/api/events") {
       const who = q.get("agent"), before = num(q.get("before"), Infinity);
       return json(w.events.filter((e) => e.id < before && (!who || e.who.includes(who))).slice(-200));

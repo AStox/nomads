@@ -6,7 +6,8 @@ export const W = 64;
 export const H = 64;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export const YEAR_DAYS = 40;
-export const VERSION = 3;
+export const VERSION = 4;
+export const YEAR = DAY * YEAR_DAYS;
 
 export enum Tile {
   Grass = 0,
@@ -17,12 +18,14 @@ export enum Tile {
 
 export type ThingKind =
   | "tree" | "stump" | "burnt_stump" | "bush" | "dead_bush" | "sapling" | "mushroom" | "herb"
-  | "stick" | "stone" | "boulder" | "reeds" | "clay" | "fire" | "structure" | "item" | "ash";
+  | "stick" | "stone" | "boulder" | "reeds" | "clay" | "fire" | "structure" | "item" | "ash"
+  | "pit" | "trap" | "well" | "grave";
 export type Shelter = { tier: 0 | 1 | 2 | 3; style: string; cover: number; insul: number; sturdy: number; flam: number };
 export type Thing = {
   id: string; kind: ThingKind; x: number; y: number;
   n?: number; owner?: string; hp?: number; maxHp?: number; burning?: number; contained?: boolean; stage?: number;
   item?: string; parts?: Record<string, number>; shelter?: Shelter; until?: number; born?: number; burnedBy?: string;
+  store?: Stack[]; name?: string; died?: number; cause?: string; caught?: string; progress?: number;
 };
 export type Stack = { k: string; hp: number; born: number };
 export type Animal = {
@@ -69,6 +72,7 @@ export const LABELS = {
   sweetheart: "Romantic feelings",
   mentor: "I learn from them",
   apprentice: "They learn from me",
+  kin: "Family",
 } as const;
 export type Label = keyof typeof LABELS;
 
@@ -86,7 +90,7 @@ export type Relationship = {
   met: number;
 };
 
-export type Verb = "strike" | "rub" | "join" | "heat" | "wet" | "shape" | "place" | "plant" | "eat" | "wear";
+export type Verb = "strike" | "rub" | "join" | "heat" | "wet" | "shape" | "place" | "plant" | "eat" | "wear" | "throw" | "dig";
 // One concrete attempt: which verb, with which held items, on what.
 export type Act = {
   verb: Verb;
@@ -119,6 +123,10 @@ export type Agent = {
   tried: Record<string, number>; // tinker attempts that led nowhere
   watching: Record<string, number>; // progress toward learning a belief by watching someone
   sickness: { until: number; severity: number } | null;
+  born: number; // tick; negative for the first generation
+  parents: string[];
+  children: string[];
+  pregnant: { father: string; due: number } | null;
   home: string | null; // structure id
   rel: Record<string, Relationship>;
   memory: string[];
@@ -132,6 +140,7 @@ export type Agent = {
   nextDecide: number;
   cooldowns: Record<string, number>;
   seen: Record<string, number>;
+  near: Record<string, number>; // ticks spent close to each person today
 };
 
 export type Event = { id: number; t: number; kind: string; who: string[]; x: number; y: number; text: string };
@@ -149,6 +158,8 @@ export type World = {
   nextId: number;
   jev: { calls: number; tokens: number; rulings: number };
   kinds: Registry;
+  ice: number[]; // frozen water tiles
+  people: Record<string, { id: string; name: string; color: string; alive: boolean; died?: number; cause?: string }>;
   laws: Record<string, Law>;
   rulings: Record<string, { useful: boolean; name: string; props: Record<string, number> }>; // Jev answers, cached forever
   weather: Weather;
@@ -187,17 +198,21 @@ export const tileAt = (w: World, x: number, y: number) =>
   x < 0 || y < 0 || x >= W || y >= H ? Tile.Water : w.tiles[y * W + x];
 export const walkable = (w: World, x: number, y: number) => {
   const t = tileAt(w, x, y);
-  return t === Tile.Grass || t === Tile.Forest || t === Tile.Rock;
+  return t === Tile.Grass || t === Tile.Forest || t === Tile.Rock || (t === Tile.Water && iceAt(w, x, y));
 };
+// ponytail: linear scan of the ice list; index it if winters ever freeze more than a few hundred tiles.
+export const iceAt = (w: World, x: number, y: number) => w.ice.length > 0 && w.ice.includes(y * W + x);
+export const ageOf = (w: World, a: { born: number }) => (w.t - a.born) / YEAR;
+export const stageOf = (w: World, a: { born: number }) => { const y = ageOf(w, a); return y < 1 ? "child" : y < 5 ? "adult" : "elder"; };
 export const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
   Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
 
 export const level = (xp: number) => Math.min(10, Math.floor(Math.sqrt(xp / 10)));
 
-const NAMES = ["Aldric", "Mara", "Osric", "Tamsin", "Brenna", "Wulf", "Edda", "Rowan", "Isolde", "Cedric"];
+export const NAMES = ["Aldric", "Mara", "Osric", "Tamsin", "Brenna", "Wulf", "Edda", "Rowan", "Isolde", "Cedric", "Hild", "Bran", "Ysolt", "Gareth", "Sabine", "Anselm", "Elowen", "Tobin", "Maud", "Corwin", "Ailsa", "Fenwick", "Gwen", "Leof", "Rhosyn", "Odo", "Nell", "Piers"];
 // Heraldic tinctures, muted to sit on parchment.
-const COLORS = ["#9e3b2f", "#2f4a6d", "#a8812a", "#4e6b3a", "#6b3f5e", "#8a5a2b", "#3d6b6b", "#7a2f3f"];
-const DESIRES = [
+export const COLORS = ["#9e3b2f", "#2f4a6d", "#a8812a", "#4e6b3a", "#6b3f5e", "#8a5a2b", "#3d6b6b", "#7a2f3f", "#5a4a8a", "#2f6b52", "#8a3b6b", "#6b6b2f"];
+export const DESIRES = [
   "own a home of their own",
   "find someone to love",
   "be respected by others",
@@ -223,7 +238,7 @@ const OPPOSITES = [
   ["honorable", "opportunist"], ["pious", "cynical"], ["just", "ruthless"], ["scholarly", "practical"],
   ["discreet", "gossip"], ["domineering", "deferential"], ["shy", "charismatic"], ["adventurous", "cautious"],
 ];
-const clash = (a: string, b: string) => OPPOSITES.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
+export const clash = (a: string, b: string) => OPPOSITES.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
 
 export function newWorld(seed: number, agentCount = 5): World {
   const rand = rng(seed);
@@ -237,7 +252,7 @@ export function newWorld(seed: number, agentCount = 5): World {
     }
   const w: World = {
     version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, paths: new Array(W * H).fill(0), things: [], agents: [], animals: [], events: [],
-    nextId: 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {},
+    nextId: 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {}, ice: [], people: {},
     weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 14, wind: { dx: 0.3, dy: 0.1 }, drought: false, dryTicks: 0 },
   };
   for (let y = 0; y < H; y++)
@@ -282,8 +297,9 @@ export function newWorld(seed: number, agentCount = 5): World {
       traits, desires,
       needs: { food: 55 + rand() * 30, energy: 60 + rand() * 30, warmth: 70 + rand() * 20, health: 100, social: 40 + rand() * 40 },
       skills: {}, inv: [], wearing: null, beliefs: {}, facts: {}, tried: {}, watching: {}, sickness: null, home: null,
+      born: -Math.round(YEAR * (1.2 + rand() * 0.8)), parents: [], children: [], pregnant: null,
       rel: {}, memory: [], goal: null, plan: [], status: "Waking up in the wilderness", lastDecision: null,
-      thinking: false, engaged: null, down: 0, nextDecide: 0, cooldowns: {}, seen: {},
+      thinking: false, engaged: null, down: 0, nextDecide: 0, cooldowns: {}, seen: {}, near: {},
     });
   }
   const openGrass = () => {
@@ -299,7 +315,10 @@ export function newWorld(seed: number, agentCount = 5): World {
   }
   const den = openGrass();
   for (let i = 0; i < 3; i++) addAnimal(w, "wolf", den.x + i, den.y);
-  for (const a of w.agents) log(w, "wake", [a.id], a, `${a.name} woke up alone in the wilderness.`);
+  for (const a of w.agents) {
+    w.people[a.id] = { id: a.id, name: a.name, color: a.color, alive: true };
+    log(w, "wake", [a.id], a, `${a.name} woke up alone in the wilderness.`);
+  }
   return w;
 }
 

@@ -9,6 +9,7 @@ import {
 import { count, timed, trace } from "./trace";
 
 export const pathChanges = new Set<number>();
+export const iceChanged = { now: false };
 // Homes destroyed by fire this tick, for the social layer: [owner, whoseFire, text].
 export const burnedHomes: { owner: string; by?: string; text: string }[] = [];
 
@@ -43,6 +44,7 @@ function weather(w: World) {
   const hour = ((w.t % DAY) / DAY) * 24;
   wx.temp = BASE_TEMP[season] + Math.sin(((hour - 9) / 24) * Math.PI * 2) * 5 - (wx.sky === "cloudy" ? 2 : rainy(w) ? 4 : 0);
   wx.dryTicks = rainy(w) ? 0 : wx.dryTicks + 1;
+  if (w.t % 12 === 0) ice(w);
   const drought = season === "summer" && wx.dryTicks > DAY * 4;
   if (drought && !wx.drought) log(w, "weather", [], { x: W / 2, y: H / 2 }, "It hasn't rained in days. Everything is bone dry.");
   wx.drought = drought;
@@ -58,6 +60,91 @@ function weather(w: World) {
   }
 }
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+// ---------- ice ----------
+// Hard frost freezes the shallows, then further out; a thaw drops everyone standing on it into the water.
+function ice(w: World) {
+  const t = w.weather.temp;
+  if (t < -2 && w.weather.season === "winter") {
+    const frozen = new Set(w.ice);
+    let grew = false;
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        if (frozen.has(i) || tileAt(w, x, y) !== Tile.Water) continue;
+        const edge = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => { const nx = x + dx, ny = y + dy; return (tileAt(w, nx, ny) !== Tile.Water && nx >= 0 && ny >= 0 && nx < W && ny < H) || frozen.has(ny * W + nx); });
+        if (edge && Math.random() < 0.25) { w.ice.push(i); grew = true; }
+      }
+    if (grew) iceChanged.now = true;
+    if (grew && w.ice.length < 40) log(w, "weather", [], { x: W / 2, y: H / 2 }, "The water's edge froze over.");
+  } else if (t > 1 && w.ice.length) {
+    for (const a of w.agents) {
+      if (tileAt(w, a.x, a.y) !== Tile.Water) continue;
+      a.needs.health = Math.max(0, a.needs.health - 25);
+      a.needs.warmth = Math.max(0, a.needs.warmth - 50);
+      log(w, "attack", [a.id], a, `The ice gave way under ${a.name}. They crawled out soaked and freezing.`);
+      see(w, a, "thin_ice", "Ice melts when it warms up. Don't be standing on it.", 8);
+      for (let r = 1; r < 10; r++) {
+        const spot = [[r, 0], [-r, 0], [0, r], [0, -r]].find(([dx, dy]) => tileAt(w, a.x + dx, a.y + dy) !== Tile.Water);
+        if (spot) { a.x += spot[0]; a.y += spot[1]; break; }
+      }
+    }
+    for (const an of w.animals) if (tileAt(w, an.x, an.y) === Tile.Water) { an.hp = 0; }
+    w.ice = [];
+    iceChanged.now = true;
+    log(w, "weather", [], { x: W / 2, y: H / 2 }, "The ice broke up and melted.");
+  }
+}
+
+// ---------- pits, traps, wells ----------
+function holes(w: World) {
+  for (const t of w.things) {
+    if (t.kind === "pit" && nearWater(w, t.x, t.y, 2) && w.t - (t.born ?? w.t) > DAY) {
+      t.kind = "well"; changed.add(t.id);
+      log(w, "dig", t.owner ? [t.owner] : [], t, "Water seeped into a pit near the shore and filled it. A well.");
+      see(w, t, "well", "A pit dug near water fills up with water.", 8);
+    }
+    if (t.kind === "trap" && t.caught && w.t - (t.until ?? w.t) > DAY / 2) {
+      const an = w.animals.find((m) => m.state === "trapped" && m.x === t.x && m.y === t.y);
+      if (an) an.state = "wander";
+      delete t.caught; t.kind = "pit"; changed.add(t.id);
+      log(w, "trap", t.owner ? [t.owner] : [], t, "Something broke out of a trap and got away.");
+    }
+  }
+  for (const an of w.animals) {
+    if (an.state === "trapped") continue;
+    const trap = w.things.find((t) => t.kind === "trap" && !t.caught && t.x === an.x && t.y === an.y);
+    if (!trap) continue;
+    an.state = "trapped"; trap.caught = an.species; trap.until = w.t; changed.add(trap.id);
+    const owner = w.agents.find((a) => a.id === trap.owner);
+    log(w, "trap", owner ? [owner.id] : [], trap, `A ${an.species} fell into ${owner ? `${owner.name}'s` : "a"} hidden pit and couldn't get out.`);
+    see(w, trap, "trap_works", "An animal that walks over a hidden pit falls in and is stuck.", 10);
+  }
+}
+// A hidden pit catches people too.
+export function trapped(w: World, a: Agent) {
+  const trap = w.things.find((t) => t.kind === "trap" && t.x === a.x && t.y === a.y && t.owner !== a.id && !t.caught);
+  if (!trap) return false;
+  trap.kind = "pit"; changed.add(trap.id);
+  a.needs.health = Math.max(0, a.needs.health - 10);
+  const owner = w.agents.find((x) => x.id === trap.owner);
+  log(w, "trap", [a.id, ...(owner ? [owner.id] : [])], a, `${a.name} fell into ${owner ? `${owner.name}'s` : "a"} hidden pit and hurt themselves.`);
+  a.facts[`trap:${trap.id}`] = "There's a pit here.";
+  return owner ?? true;
+}
+
+// Crowds without clean water get sick.
+function crowding(w: World) {
+  if (w.t % DAY !== Math.round(DAY / 2)) return;
+  for (const a of w.agents) {
+    if (a.sickness) continue;
+    const crowd = w.agents.filter((b) => b !== a && dist(a, b) <= 3).length;
+    if (crowd < 3 || w.things.some((t) => t.kind === "well" && dist(t, a) <= 8)) continue;
+    if (Math.random() > 0.12) continue;
+    a.sickness = { until: w.t + DAY, severity: 0.4 };
+    log(w, "sick", [a.id], a, `${a.name} fell sick. Too many people, and no clean water.`);
+  }
+}
 
 // ---------- fire ----------
 function dryness(w: World) {
@@ -140,7 +227,8 @@ function plants(w: World) {
   for (const t of [...w.things]) {
     if (t.burning) continue;
     if (t.kind === "bush") {
-      if (growing && (t.n ?? 0) < 4 && Math.random() < (season === "autumn" ? 1 / 140 : 1 / 70)) { t.n = (t.n ?? 0) + 1; changed.add(t.id); }
+      const regrow = season === "winter" ? 1 / 500 : season === "autumn" ? 1 / 140 : 1 / 70;
+      if ((t.n ?? 0) < 4 && Math.random() < regrow) { t.n = (t.n ?? 0) + 1; changed.add(t.id); }
       if ((t.hp ?? 20) < (t.maxHp ?? 20)) t.hp = (t.hp ?? 20) + 0.02;
       if ((t.hp ?? 20) <= 0) { t.kind = "dead_bush"; t.n = 0; changed.add(t.id); log(w, "grow", [], t, "A berry bush was picked to death."); }
       if (growing && season !== "autumn" && Math.random() < 1 / 7000) seedNear(w, t);
@@ -153,13 +241,15 @@ function plants(w: World) {
     } else if ((t.kind === "stump" || t.kind === "burnt_stump") && t.until! <= w.t && growing) {
       t.kind = "tree"; t.hp = 100; t.maxHp = 100; delete t.until; changed.add(t.id);
     } else if (t.kind === "ash" && t.until! <= w.t) removeThing(w, t);
+    // Trees drop nuts in autumn. They keep for weeks, if someone gathers and stores them.
+    else if (t.kind === "tree" && season === "autumn" && Math.random() < 1 / 2500) dropPile(w, t.x + (Math.random() < 0.5 ? 1 : -1), t.y, "nut", 1);
   }
   if (Math.random() < (growing ? 1 / 18 : 1 / 60)) {
     const x = Math.floor(Math.random() * W), y = Math.floor(Math.random() * H);
     if (!walkable(w, x, y) || w.things.some((t) => t.x === x && t.y === y)) return;
     const forest = tileAt(w, x, y) === Tile.Forest, shore = nearWater(w, x, y, 1);
     const r = Math.random();
-    const kind = shore && growing ? (r < 0.7 ? "reeds" : "clay") : forest ? (!growing ? "stick" : r < 0.45 ? "mushroom" : r < 0.6 ? "herb" : "stick") : r < 0.5 ? "stick" : "stone";
+    const kind = shore && growing ? (r < 0.7 ? "reeds" : "clay") : forest ? (!growing ? (r < 0.2 ? "mushroom" : "stick") : r < 0.45 ? "mushroom" : r < 0.6 ? "herb" : "stick") : r < 0.5 ? "stick" : "stone";
     changed.add(addThing(w, kind, x, y, kind === "reeds" ? { hp: 6, maxHp: 6 } : {}).id);
   }
 }
@@ -209,6 +299,7 @@ function animals(w: World) {
   const deer = w.animals.filter((a) => a.species === "deer"), wolves = w.animals.filter((a) => a.species === "wolf");
   const awake = w.agents.filter((a) => a.down <= w.t);
   for (const d of deer) {
+    if (d.state === "trapped") continue;
     d.hunger -= winter ? 0.1 : 0.05;
     const wolf = nearestOf(d, wolves, 6), person = nearestOf(d, awake, 3);
     const threat = wolf ?? person;
@@ -231,6 +322,7 @@ function animals(w: World) {
     if (d.hunger <= 0) { carcass(w, d); log(w, "death", [], d, "A deer starved."); }
   }
   for (const wf of wolves) {
+    if (wf.state === "trapped") continue;
     wf.hunger -= winter ? 0.12 : 0.08;
     const fireNear = w.things.some((t) => t.kind === "fire" && dist(t, wf) <= 3);
     const crowd = awake.filter((a) => dist(a, wf) <= 2).length >= 2;
@@ -275,6 +367,11 @@ function animals(w: World) {
       trace("animal", "attack", { wolf: wf.id, victim: victim.id, health: victim.needs.health }, victim.id);
     }
   }
+  // Animals drift in from beyond the map when the land empties out.
+  const deerNow = w.animals.filter((a) => a.species === "deer").length;
+  const edge = () => { for (let i = 0; i < 50; i++) { const x = Math.random() < 0.5 ? 1 : W - 2, y = 2 + Math.floor(Math.random() * (H - 4)); if (walkable(w, x, y)) return { x, y }; } return null; };
+  if (deerNow < 4 && Math.random() < 1 / 1500) { const e = edge(); if (e) { addAnimal(w, "deer", e.x, e.y); addAnimal(w, "deer", e.x, e.y); log(w, "birth", [], e, "A pair of deer wandered in from beyond the hills."); } }
+  if (deerNow >= 8 && !wolves.some((x) => w.animals.includes(x)) && Math.random() < 1 / 4000) { const e = edge(); if (e) { addAnimal(w, "wolf", e.x, e.y); addAnimal(w, "wolf", e.x, e.y); log(w, "birth", [], e, "Wolves came down from the hills, following the deer."); } }
   const wolfCount = wolves.filter((x) => w.animals.includes(x)).length;
   if (spring && wolfCount >= 2 && wolfCount < 6 && Math.random() < 1 / 4000) {
     const mom = wolves.find((x) => w.animals.includes(x))!;
@@ -282,6 +379,7 @@ function animals(w: World) {
     log(w, "birth", [], mom, "A wolf pup was born.");
   }
   for (const wf of w.animals.filter((a) => a.species === "wolf" && a.hunger <= 0)) { carcass(w, wf); log(w, "death", [], wf, "A wolf starved."); }
+  for (const an of w.animals.filter((a) => a.hp <= 0)) { w.animals = w.animals.filter((x) => x !== an); log(w, "death", [], an, `A ${an.species} went through the ice and drowned.`); }
 }
 // Agents being attacked this tick, agent id -> wolf id.
 export const attacked = new Map<string, string>();
@@ -314,9 +412,16 @@ function decay(w: World) {
       if (t.item.startsWith("rotten:")) { removeThing(w, t); continue; }
       t.item = rot(t.item); t.born = w.t; changed.add(t.id);
     }
+    for (const s of t.store ?? []) {
+      if (!spoiled(s.k, s.born)) continue;
+      if (s.k.startsWith("rotten:")) { t.store!.splice(t.store!.indexOf(s), 1); continue; }
+      s.k = rot(s.k); s.born = w.t;
+    }
     if (t.kind === "structure" && t.shelter) {
       const sky = w.weather.sky;
-      t.hp = (t.hp ?? 100) - (0.03 + (sky === "rain" ? 0.1 : sky === "storm" ? 0.5 : 0)) * (1.2 - t.shelter.sturdy);
+      // Loose piles that aren't ringing a fire scatter within a few days.
+      const pile = t.shelter.tier === 0 && !w.things.some((f) => f.kind === "fire" && f.x === t.x && f.y === t.y);
+      t.hp = (t.hp ?? 100) - (0.03 + (pile ? 0.5 : 0) + (sky === "rain" ? 0.1 : sky === "storm" ? 0.5 : 0)) * (1.2 - t.shelter.sturdy);
       if (t.hp <= 0) {
         const owner = w.agents.find((a) => a.id === t.owner);
         log(w, "collapse", owner ? [owner.id] : [], t, `${owner ? `${owner.name}'s` : "A"} shelter fell apart in the weather.`);
@@ -366,6 +471,7 @@ export function ecology(w: World) {
   timed("plants", () => plants(w));
   timed("animals", () => animals(w));
   timed("decay", () => decay(w));
-  timed("disease", () => disease(w));
+  timed("disease", () => { disease(w); crowding(w); });
+  timed("holes", () => holes(w));
   paths(w);
 }

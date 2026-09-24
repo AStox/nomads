@@ -26,6 +26,7 @@ export type Kind = {
 // Raw materials. Everything else is made from these.
 export const BASE: Record<string, Omit<Kind, "id">> = {
   berry: { name: "berry", props: { edible: 0.2, seed: 0.6, toughness: 0.02 }, shelf: 2 },
+  nut: { name: "nut", props: { edible: 0.14, hard: 0.3, seed: 0.4, toughness: 0.2 }, shelf: 25 },
   mushroom: { name: "mushroom", props: { edible: 0.18, toxic: 0.12, toughness: 0.03 }, shelf: 1.5 },
   herb: { name: "herb", props: { edible: 0.04, medicinal: 0.8, fibrous: 0.3, toughness: 0.03 }, shelf: 3 },
   fish: { name: "fish", props: { edible: 0.18, toxic: 0.2, toughness: 0.05 }, shelf: 1 },

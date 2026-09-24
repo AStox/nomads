@@ -9,6 +9,7 @@ export type Ctx = {
   facts: Record<string, string>;
   kinds: Registry;
   toxic: string[]; // kinds they believe make you sick
+  store?: Record<string, number>; // what's kept in their home
 };
 export type PlanStep = { op: string; arg?: string; key?: string };
 type Op = PlanStep & { cost: number; needs: string[]; makes: string[]; pre: (s: PState) => boolean; eff: (s: PState) => PState };
@@ -18,7 +19,7 @@ const add = (s: PState, k: string, d: number): PState => ({ ...s, inv: { ...s.in
 const flag = (s: PState, f: string): PState => (s.flags.includes(f) ? s : { ...s, flags: [...s.flags, f].sort() });
 const at = (s: PState, place: string | null): PState => ({ ...s, at: place });
 
-export const SOCIAL = ["talk", "give", "trade", "share_meal", "share_fire", "help", "gossip", "teach", "insult", "take", "steal", "attack"];
+export const SOCIAL = ["talk", "give", "trade", "share_meal", "share_fire", "help", "gossip", "teach", "tend", "insult", "take", "steal", "attack"];
 export const SOCIAL_ITEM_NEEDS: Record<string, (s: PState, kinds: Registry) => boolean> = {
   give: (s) => Object.values(s.inv).some((v) => v > 0),
   share_meal: (s, kinds) => Object.entries(s.inv).some(([k, v]) => v && p(kinds[k], "edible") > 0.1),
@@ -51,20 +52,20 @@ function required(b: Belief): Record<string, number> {
 function outputs(b: Belief, ctx: Ctx): Record<string, number> {
   if (Object.keys(b.out).length) return b.out;
   const target = b.fields.target;
-  if (b.fields.verb === "strike" && target && !b.fields.inputs.length && (b.rate ?? 0) > 0 && ctx.facts[`breaks:${target}`]) return THING_MATERIAL[target]?.breaks ?? {};
+  if ((b.fields.verb === "strike" || b.fields.verb === "throw") && target && (b.rate ?? 0) > 0 && ctx.facts[`breaks:${target}`]) return THING_MATERIAL[target]?.breaks ?? {};
   return {};
 }
-const PLACE_OF: Record<string, string> = { fire: "fire", hearth: "fire", fed_fire: "fire" };
+const PLACE_OF: Record<string, string> = { fire: "fire", hearth: "fire", fed_fire: "fire", pit: "pit" };
 
 function beliefOp(b: Belief, ctx: Ctx): Op | null {
   const req = required(b), out = outputs(b, ctx);
   const f = b.fields;
-  const target = f.verb === "strike" && f.target && !f.inputs.length ? f.target : null;
-  const place = target ?? f.at ?? null;
+  const target = (f.verb === "strike" && f.target && !f.inputs.length) || f.verb === "throw" ? f.target ?? null : null;
+  const place = target ?? f.at ?? (f.builds === "shelter" && "home" in ctx.dist ? "home" : null);
   const builds = f.builds ?? (f.effect === "cure" ? "cured" : null);
   if (!Object.keys(out).length && !builds) return null;
-  if (f.verb === "strike" && target && (b.rate ?? 0) <= 0) return null;
-  if (f.verb !== "strike" && b.wins === 0) return null;
+  if ((f.verb === "strike" || f.verb === "throw") && target && (b.rate ?? 0) <= 0 && b.wins === 0) return null;
+  if (f.verb !== "strike" && f.verb !== "throw" && b.wins === 0) return null;
   if (f.verb === "eat") return null;
   const wr = Math.max(0.2, (b.wins + 1) / (b.tries + 2));
   const prey = target === "deer" || target === "wolf" ? `hunted:${target}` : null;
@@ -101,6 +102,12 @@ function ops(ctx: Ctx): Op[] {
     list.push({ op: "pick_up", arg: k, cost: 1, needs: [`place:${place}`], makes: [k], pre: (s) => s.at === place, eff: (s) => at(add(s, k, 1), null) });
   }
   for (const b of ctx.beliefs) { const o = beliefOp(b, ctx); if (o) list.push(o); }
+  // Anyone can put things away at home and take them back out.
+  if ("home" in ctx.dist) {
+    list.push({ op: "stash", cost: 1, needs: ["place:home"], makes: ["stashed"], pre: (s) => s.at === "home", eff: (s) => flag(s, "stashed") });
+    for (const [k, v] of Object.entries(ctx.store ?? {}))
+      if (v > 0) list.push({ op: "take_stored", arg: k, cost: 1, needs: ["place:home"], makes: [k], pre: (s) => s.at === "home", eff: (s) => add(s, k, Math.min(v, 3)) });
+  }
   // Anyone who has seen what an animal is inside can try to kill one with whatever they hold.
   for (const sp of ["deer", "wolf"]) {
     if (!ctx.facts[`breaks:${sp}`] || !(sp in ctx.dist)) continue;
@@ -144,6 +151,9 @@ function goal(type: string, start: PState, ctx: Ctx): { done: (s: PState) => boo
   if (type === "plant") return { done: has("bush"), needs: ["bush"] };
   if (type === "cure") return { done: has("cured"), needs: ["cured"] };
   if (type === "put_on") return { done: has("worn"), needs: ["worn"] };
+  if (type === "dig_pit") return { done: has("pit"), needs: ["pit"] };
+  if (type === "set_trap") return { done: has("trap"), needs: ["trap"] };
+  if (type === "store_food") return { done: has("stashed"), needs: ["stashed"] };
   if (SOCIAL.includes(type)) return { done: has(`did_${type}`), needs: [`did_${type}`] };
   return null;
 }
