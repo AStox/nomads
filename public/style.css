@@ -1,0 +1,130 @@
+:root {
+  --ink: #2b2418;
+  --ink-soft: #6b5b45;
+  --parchment: #f3ead6;
+  --parchment-deep: #e7dabd;
+  --line: #d4c29c;
+  --ember: #c4541d;
+  --good: #5f8a3a;
+  --bad: #a8352a;
+  --panel-w: 400px;
+  --bar-h: 52px;
+  font-family: "Alegreya Sans", system-ui, sans-serif;
+  color: var(--ink);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--ink); }
+button { font: inherit; color: inherit; cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+
+.topbar {
+  position: fixed; inset: 0 0 auto 0; height: calc(var(--bar-h) + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) 12px 0; display: flex; align-items: center; gap: 12px;
+  background: var(--ink); color: var(--parchment); z-index: 3;
+}
+.topbar h1 { margin: 0; font: 400 24px/1 "IM Fell English SC", serif; letter-spacing: .02em; }
+.clock { font-variant-numeric: tabular-nums; color: #d9c9a3; font-size: 15px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.controls { display: flex; gap: 6px; }
+.controls button {
+  min-width: 40px; height: 36px; border-radius: 8px; border: 1px solid #5a4b35;
+  background: #3a3021; font-size: 14px; color: var(--parchment); font-variant-numeric: tabular-nums;
+}
+.controls button:active { background: #4a3d2a; }
+
+main { position: fixed; inset: calc(var(--bar-h) + env(safe-area-inset-top)) 0 0 0; }
+#map { width: 100%; height: 100%; display: block; touch-action: none; background: #3b6a8f; }
+.banner {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%); margin: 0;
+  background: var(--ink); color: var(--parchment); padding: 6px 12px; border-radius: 999px; font-size: 14px;
+}
+
+.panel {
+  position: fixed; z-index: 2; background: var(--parchment); display: flex; flex-direction: column;
+  box-shadow: 0 -6px 24px rgb(0 0 0 / .25); transition: transform .28s cubic-bezier(.2,.8,.2,1);
+}
+.grip { display: none; }
+.tabs { display: flex; align-items: center; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--line); }
+.tabs button {
+  border: 0; background: none; padding: 8px 10px 10px; font-weight: 700; color: var(--ink-soft);
+  border-bottom: 3px solid transparent; margin-bottom: -1px;
+}
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ember); }
+.jev { margin-left: auto; font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; text-align: right; }
+.view { overflow-y: auto; flex: 1; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+
+@media (min-width: 820px) {
+  main { right: var(--panel-w); }
+  .panel { top: calc(var(--bar-h) + env(safe-area-inset-top)); right: 0; bottom: 0; width: var(--panel-w); border-left: 1px solid var(--line); }
+}
+@media (max-width: 819px) {
+  .panel { left: 0; right: 0; bottom: 0; height: 52vh; border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); }
+  .panel[data-open="false"] { transform: translateY(calc(52vh - 92px)); }
+  .grip { display: flex; justify-content: center; border: 0; background: none; padding: 8px 0 0; }
+  .grip span { width: 44px; height: 5px; border-radius: 3px; background: var(--line); }
+}
+
+/* People */
+.person {
+  display: grid; grid-template-columns: 44px 1fr; gap: 4px 10px; width: 100%; text-align: left;
+  border: 0; border-bottom: 1px solid var(--line); background: none; padding: 12px 14px;
+}
+.person:hover { background: var(--parchment-deep); }
+.avatar {
+  grid-row: span 3; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 24px; background: var(--parchment-deep); border: 3px solid var(--c);
+}
+.person .name { font-weight: 700; font-size: 17px; display: flex; gap: 8px; align-items: baseline; }
+.goal-chip { font-size: 12px; font-weight: 500; color: var(--ink-soft); }
+.status { font-size: 14px; color: var(--ink-soft); }
+.status.thinking::after { content: " 💭"; animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+.needs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.need { font-size: 11px; color: var(--ink-soft); }
+.need i { display: block; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; margin-top: 2px; }
+.need i b { display: block; height: 100%; background: var(--good); transition: width .5s; }
+.need.low i b { background: var(--bad); }
+
+/* Chronicle */
+.filters { display: flex; gap: 6px; padding: 10px 12px; overflow-x: auto; position: sticky; top: 0; background: var(--parchment); border-bottom: 1px solid var(--line); }
+.filters button { border: 1px solid var(--line); background: none; border-radius: 999px; padding: 4px 10px; white-space: nowrap; font-size: 14px; }
+.filters button[aria-pressed="true"] { background: var(--ink); color: var(--parchment); border-color: var(--ink); }
+.feed { list-style: none; margin: 0; padding: 0; }
+.feed li { padding: 8px 14px; border-bottom: 1px solid var(--line); font-size: 15px; line-height: 1.35; }
+.feed li button { all: unset; cursor: pointer; display: block; }
+.feed time { display: block; font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.feed .k-bond, .feed .k-steal, .feed .k-lie { background: #efe0c0; }
+.feed .k-gather, .feed .k-eat { color: var(--ink-soft); font-size: 14px; }
+.feed li.new { animation: arrive .6s ease-out; }
+@keyframes arrive { from { background: #f6d9a8; } }
+.more { display: block; margin: 12px auto; border: 1px solid var(--line); background: none; border-radius: 8px; padding: 6px 14px; }
+
+/* Inspector */
+.ins-head { position: sticky; top: 0; background: var(--parchment); z-index: 1; padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: center; }
+.ins-head .back { border: 0; background: none; font-size: 22px; padding: 0 6px 0 0; }
+.ins-head h2 { margin: 0; font: 400 24px/1 "IM Fell English SC", serif; flex: 1; }
+.ins-head .follow { border: 1px solid var(--line); background: none; border-radius: 8px; padding: 4px 10px; font-size: 14px; }
+.ins-head .follow[aria-pressed="true"] { background: var(--ember); color: #fff; border-color: var(--ember); }
+.sec { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.sec h3 { margin: 0 0 8px; font: 400 17px/1 "IM Fell English SC", serif; color: var(--ink-soft); letter-spacing: .03em; }
+.bio { margin: 0; font-size: 15px; line-height: 1.4; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-size: 13px; padding: 3px 9px; border-radius: 999px; background: rgb(196 84 29 / var(--s)); border: 1px solid var(--line); }
+.plan { margin: 6px 0 0; padding-left: 20px; font-size: 14px; color: var(--ink-soft); }
+.plan li.cur { color: var(--ink); font-weight: 700; }
+.odds { display: grid; grid-template-columns: 110px 1fr 38px; gap: 3px 8px; font-size: 13px; align-items: center; margin-top: 8px; }
+.odds .bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.odds .bar b { display: block; height: 100%; background: var(--ink-soft); }
+.odds .picked { font-weight: 700; }
+.odds .picked .bar b, .odds .bar.picked b { background: var(--ember); }
+.odds span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 14px; }
+.kv span:nth-child(even) { font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+.rel { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 10px; background: #f8f2e3; }
+.rel header { display: flex; justify-content: space-between; align-items: baseline; font-weight: 700; }
+.rel header small { font-weight: 500; color: var(--ember); text-transform: capitalize; }
+.meter { display: grid; grid-template-columns: 70px 1fr; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-soft); margin-top: 6px; }
+.meter i { height: 6px; border-radius: 3px; background: var(--line); position: relative; overflow: hidden; }
+.meter i b { position: absolute; top: 0; bottom: 0; }
+.rel ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
+.rel .beliefs { font-size: 13px; color: var(--ink-soft); margin-top: 6px; }
+.muted { color: var(--ink-soft); font-size: 14px; margin: 0; }

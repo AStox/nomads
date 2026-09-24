@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+  <meta name="theme-color" content="#2b2418" />
+  <title>Nomads</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=Alegreya+Sans:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Nomads</h1>
+    <span id="clock" class="clock">Connecting…</span>
+    <div class="controls">
+      <button id="play" type="button" aria-label="Pause">❚❚</button>
+      <button id="speed" type="button" aria-label="Speed">1×</button>
+      <button id="fit" type="button" aria-label="Show whole map">⤢</button>
+    </div>
+  </header>
+
+  <main>
+    <canvas id="map" aria-label="World map. Drag to pan, pinch or scroll to zoom, tap a person to inspect them."></canvas>
+    <p id="banner" class="banner" hidden></p>
+  </main>
+
+  <aside id="panel" class="panel" data-open="true">
+    <button id="grip" class="grip" type="button" aria-label="Toggle panel"><span></span></button>
+    <nav class="tabs" id="tabs">
+      <button type="button" data-tab="people" aria-selected="true">People</button>
+      <button type="button" data-tab="chronicle" aria-selected="false">Chronicle</button>
+      <span id="jev" class="jev"></span>
+    </nav>
+    <section id="people" class="view"></section>
+    <section id="chronicle" class="view" hidden>
+      <div id="filters" class="filters"></div>
+      <ol id="feed" class="feed"></ol>
+    </section>
+    <section id="inspect" class="view" hidden></section>
+  </aside>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
