@@ -300,8 +300,7 @@ const LEX = LEXICON as Lexicon;
 export async function nameIt(w: World, a: Agent, k: Kind, uses: string[]): Promise<string | null> {
   const state = {
     what_people_have_done_with_it: uses.length ? uses : ["nothing yet beyond making it"],
-    // The working name ("stone-headed stick") would anchor the choice, so describe it instead.
-    thing: { is: describeKind(k).replace(/^[^(]*\(?/, "").replace(/\)$/, ""), made_from: (k.parts ?? []).map((id) => w.kinds[id]?.name ?? id) },
+    thing: { called_for_now: k.name, is: describeKind(k).replace(/^[^(]*\(?/, "").replace(/\)$/, ""), made_from: (k.parts ?? []).map((id) => w.kinds[id]?.name ?? id) },
   };
   const kinds = Object.fromEntries(Object.entries(LEX).map(([id, c]) => [id, c.description]));
   const first = await ask(w, "name", a.id, state, {

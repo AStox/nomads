@@ -165,9 +165,9 @@ Every Jev ruling is cached as a **world law** keyed by the operation and the rou
 
 ### 4. Naming things without writing text
 
-Jev can't invent a word, so a made thing starts with a descriptive name built from its parts: "stone-headed stick," "twisted fiber cord," "stick packed in fiber." After it has been made three times, people settle on a common word, chosen by Jev from about 3,000 real object nouns taken from WordNet (`src/sim/lexicon.json`, rebuilt by `scripts/build-lexicon.ts`), grouped into 17 kinds of thing (cutting tool, weapon, vessel, rope, clothing, shelter, light, trap, dish, and so on).
+Jev can't invent a word, so a made thing starts with a working name that says what it physically is: "sharp stone lashed to a stick," "twisted fiber cord," "stick wrapped in fiber." As people use it, its most common use is added: "sharp stone lashed to a stick for felling trees," "stick wrapped in fiber for making fire." After it has been made three times, people settle on a common word, chosen by Jev from about 3,000 real object nouns taken from WordNet (`src/sim/lexicon.json`, rebuilt by `scripts/build-lexicon.ts`), grouped into 17 kinds of thing (cutting tool, weapon, vessel, rope, clothing, shelter, light, trap, dish, and so on).
 
-1. Jev is shown what people have actually done with the thing (from everyone's beliefs, like "striking a tree with it brings it down") plus what it's like and what it's made of. The working name is left out so it doesn't anchor the choice.
+1. Jev is shown the working name, what people have actually done with the thing (from everyone's beliefs), what it's like, and what it's made of.
 2. Jev picks what kind of thing it is. Every kind with at least a 15% chance goes forward, up to three.
 3. All the words in those kinds are split into lists of 240, Jev picks favorites from each list in one call, and then the final word from the top three of each list. "None of these" keeps the descriptive name.
 4. If another made thing already has that word, the new one gets its material in front ("bone knife").

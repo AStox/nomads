@@ -21,6 +21,8 @@ export type Kind = {
   count?: number; // times anyone has made it
   named?: boolean; // people settled on a common name
   plain?: string; // the descriptive name before that
+  desc?: string; // what it physically is, e.g. "sharp stone lashed to a stick"
+  uses?: Record<string, number>; // what people have done with it, e.g. "felling trees" -> 4
 };
 
 // Raw materials. Everything else is made from these.
@@ -79,20 +81,22 @@ export function ensure(reg: Registry, id: string, make: () => Omit<Kind, "id">):
 export function noun(k: Kind) {
   const name = k.name.includes("'s ") ? k.name.split("'s ").at(-1)! : k.name;
   if (name.includes("-headed ")) return name.split("-headed ")[1].split(" ").at(-1)!;
-  for (const sep of [" packed in ", " wedged into ", " strung with "]) if (name.includes(sep)) return name.split(sep)[0].split(" ").at(-1)!;
-  if (name.startsWith("bound ") || name.startsWith("bundle of ")) return "bundle";
+  const bare = name.split(" for ")[0];
+  for (const sep of [" lashed to ", " packed onto ", " wrapped in ", " pressed into ", " wedged into ", " strung with ", " packed in "]) if (bare.includes(sep)) return bare.split(sep)[0].split(" ").at(-1)!;
+  if (bare.startsWith("bound ") || bare.startsWith("bundle of ") || bare.endsWith(" tied together")) return "bundle";
+  return bare.split(" ").at(-1)!;
   return name.split(" ").at(-1)!;
 }
 export const depth = (reg: Registry, k?: Kind): number => (k?.parts?.length ? 1 + Math.max(...k.parts.map((id) => depth(reg, reg[id]))) : 0);
 export function compoundName(reg: Registry, parts: Kind[]): string {
+  const short = (k: Kind) => (k.parts ? (k.named ? k.name : noun(k)) : k.name);
   const binder = parts.find((x) => p(x, "binding") >= 0.6);
   const rest = parts.filter((x) => x !== binder);
-  if (rest.length === 1 && binder) return `${noun(rest[0])} strung with ${noun(binder)}`;
+  const how = binder && p(binder, "plastic") >= 0.5 ? "packed onto" : "lashed to";
+  if (rest.length === 1 && binder) return `${short(rest[0])} strung with ${short(binder)}`;
   const top = [...rest].sort((a, b) => p(b, "sharp") + p(b, "heavy") * 0.5 - p(a, "sharp") - p(a, "heavy") * 0.5)[0];
   const handle = rest.filter((x) => x !== top).sort((a, b) => p(b, "long") - p(a, "long"))[0];
-  if (top && handle && p(handle, "long") >= 0.5) {
-    return `${noun(top)}-headed ${noun(handle)}`;
-  }
-  return `bound ${[...new Set(rest.map(noun))].join(" and ")}`;
+  if (top && handle && p(handle, "long") >= 0.5) return `${short(top)} ${how} a ${short(handle)}`;
+  return `${[...new Set(rest.map(short))].join(" and ")} tied together`;
 }
 

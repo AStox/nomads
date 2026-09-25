@@ -483,7 +483,7 @@ function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
       const soft = parts.find((k) => p(k, "plastic") >= 0.5 || p(k, "fibrous") >= 0.6);
       const rest = [...new Set(parts.filter((k) => k !== soft).map((k) => (k.parts ? noun(k) : k.name)))];
       const template = act.verb === "join"
-        ? soft && rest.length ? `${rest.join(" and ")} packed in ${soft.parts ? noun(soft) : soft.name}` : uniq.length === 1 ? `bundle of ${uniq[0]}s` : `${uniq[0]} wedged into ${uniq.slice(1).join(" and ")}`
+        ? soft && rest.length ? `${rest.join(" and ")} ${p(soft, "plastic") >= 0.5 ? "pressed into" : "wrapped in"} ${soft.parts ? noun(soft) : soft.name}` : uniq.length === 1 ? `bundle of ${uniq[0]}s` : `${uniq[0]} wedged into ${uniq.slice(1).join(" and ")}`
         : `fire-hardened ${uniq.join(" and ")}`;
       rule(w, a, actText(w, act), parts, template)
         .then((r) => { w.rulings[key] = r; trace("physics", "ruling", { key, ruling: r }, a.id); })
@@ -519,6 +519,7 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
     const breaks = THING_MATERIAL[act.target.kind].breaks;
     see(w, a, `breaks:${act.target.kind}`, `A ${act.target.kind} breaks down into ${Object.keys(breaks).map((k) => nm(w, k)).join(", ")}.`);
   }
+  if (out.ok) for (const k of new Set([act.tool, ...act.items].filter(Boolean) as string[])) noteUse(w, k, act, out);
   for (const k of Object.keys(out.gives)) {
     const kind = w.kinds[k];
     if (!kind?.made) continue;
@@ -546,6 +547,40 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
   }
 }
 export const changedKinds = new Set<string>();
+
+// What a thing was just used for, in a few words.
+function usePhrase(k: string, act: Act, out: Outcome): string | null {
+  const t = act.target?.kind ?? "";
+  if (act.verb === "strike" && act.tool === k) {
+    if (out.builds === "fire") return "striking sparks";
+    const world: Record<string, string> = { tree: "felling trees", stump: "clearing stumps", bush: "clearing brush", dead_bush: "clearing brush", boulder: "breaking rock", reeds: "cutting reeds", deer: "hunting deer", wolf: "fighting wolves" };
+    if (world[t]) return world[t];
+    if (t === "log") return "splitting logs";
+    if (t === "stone" || t === "bone") return `chipping ${t}`;
+    return null;
+  }
+  if (act.verb === "dig" && act.tool === k) return "digging";
+  if (act.verb === "throw") return `throwing at ${t}`;
+  if (act.verb === "rub" && out.builds === "fire") return "making fire";
+  if (act.verb === "rub" && Object.keys(out.gives).length) return "grinding points";
+  if (act.verb === "wet" && out.gives.fish) return "fishing";
+  if (act.verb === "heat" && Object.keys(out.gives).some((g) => g.startsWith("stew:"))) return "cooking stew";
+  if (act.verb === "wear") return "keeping warm";
+  if (act.verb === "place" && out.builds === "fire") return "starting fires";
+  return null;
+}
+// Until people settle on a word, a made thing is called by what it is and what it's for.
+function noteUse(w: World, k: string, act: Act, out: Outcome) {
+  const kind = w.kinds[k];
+  const phrase = kind?.made && !kind.named ? usePhrase(k, act, out) : null;
+  if (!phrase) return;
+  kind.uses ??= {};
+  kind.uses[phrase] = (kind.uses[phrase] ?? 0) + 1;
+  kind.desc ??= kind.name;
+  const top = Object.entries(kind.uses).sort((x, y) => y[1] - x[1])[0][0];
+  const name = `${kind.desc} for ${top}`;
+  if (name !== kind.name) { kind.name = name; changedKinds.add(k); }
+}
 
 // ---------- tinkering ----------
 type Option = { text: string; act: Act };
