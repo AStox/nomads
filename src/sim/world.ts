@@ -6,7 +6,7 @@ export const W = 64;
 export const H = 64;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export const YEAR_DAYS = 40;
-export const VERSION = 4;
+export const VERSION = 5;
 export const YEAR = DAY * YEAR_DAYS;
 
 export enum Tile {
@@ -26,6 +26,10 @@ export type Thing = {
   n?: number; owner?: string; hp?: number; maxHp?: number; burning?: number; contained?: boolean; stage?: number;
   item?: string; parts?: Record<string, number>; shelter?: Shelter; until?: number; born?: number; burnedBy?: string;
   store?: Stack[]; name?: string; died?: number; cause?: string; caught?: string; progress?: number;
+  inside?: Record<string, number>; // hidden in a boulder until it breaks
+  scarred?: number; resin?: number; bark?: number; // when a tree was last cut into, resin beaded on it, bark peeled off it
+  covered?: boolean; charcoal?: number; air?: number; heat?: number; // fires: closed over, charcoal left, air blown in until, heat level
+  shared?: string; given?: Record<string, number>; // a store a camp treats as its own, and who put how much in
 };
 export type Stack = { k: string; hp: number; born: number };
 export type Animal = {
@@ -141,6 +145,39 @@ export type Agent = {
   cooldowns: Record<string, number>;
   seen: Record<string, number>;
   near: Record<string, number>; // ticks spent close to each person today
+  customs: Record<string, number>; // spoken customs they've heard, custom id -> when
+};
+
+// The five ways a camp can answer what someone did. Which acts get which answer is up to the camp's history.
+export const RESPONSES = {
+  let_go: "Let it go",
+  scold: "Scold them in front of everyone",
+  repay: "Demand they give it back, or make it up double",
+  shun: "Shun them: no one trades, shares, or talks with them for a few days",
+  drive_out: "Drive them out: they lose their place here and can't keep a home inside the camp",
+} as const;
+export type Response = keyof typeof RESPONSES;
+export type Incident = {
+  id: string; t: number; act: string; by: string; against?: string; x: number; y: number; text: string;
+  group?: string; // the camp that answered it
+  items?: string[]; // what changed hands, from `against` to `by` (or from giver to receiver)
+  features: {
+    against_member: boolean; against_kin: boolean; against_child: boolean;
+    value: number; need: number; season: string; scarcity: number; repeat: number; seenBy: string[];
+  };
+};
+export type Precedent = {
+  id: string; group: string; incident: Incident; response: Response; decidedBy: string; t: number;
+  followed: string[]; defied: string[];
+  open?: number; // still watching who goes along with it, until this tick
+};
+export type Custom = { id: string; key: string; text: string; response: Response; spokenBy: string; t: number; held: number; broken: number; faded?: number };
+export type Camp = {
+  id: string; name: string; named: boolean; founder: string; founded: number; members: string[]; x: number; y: number;
+  leader: string | null; precedents: Precedent[]; customs: Custom[];
+  shunned: Record<string, { until: number; precedent: string }>;
+  exiled: Record<string, { until: number; precedent: string }>;
+  store?: string; gone?: number; mergedInto?: string; from?: string;
 };
 
 export type Event = { id: number; t: number; kind: string; who: string[]; x: number; y: number; text: string };
@@ -163,6 +200,8 @@ export type World = {
   laws: Record<string, Law>;
   rulings: Record<string, { useful: boolean; name: string; props: Record<string, number> }>; // Jev answers, cached forever
   weather: Weather;
+  camps: Camp[];
+  incidents: Incident[]; // recent, judged or not
 };
 
 export function rng(seed: number) {
@@ -254,6 +293,7 @@ export function newWorld(seed: number, agentCount = 5): World {
     version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, paths: new Array(W * H).fill(0), things: [], agents: [], animals: [], events: [],
     nextId: 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {}, ice: [], people: {},
     weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 14, wind: { dx: 0.3, dy: 0.1 }, drought: false, dryTicks: 0 },
+    camps: [], incidents: [],
   };
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++) {
@@ -271,8 +311,11 @@ export function newWorld(seed: number, agentCount = 5): World {
         else if (r < 0.03) addThing(w, "stick", x, y);
         else if (r < 0.034) addThing(w, "stone", x, y);
       } else if (t === Tile.Rock) {
+        // Flint forms as nodules inside the rock; ore shows as reddish stones, and sometimes inside boulders too.
+        const q = (r - 0.12) / 0.04;
         if (r < 0.12) addThing(w, "stone", x, y);
-        else if (r < 0.16) addThing(w, "boulder", x, y, { hp: 120, maxHp: 120 });
+        else if (r < 0.16) addThing(w, "boulder", x, y, { hp: 120, maxHp: 120, ...(q < 0.45 ? { inside: { flint: q < 0.15 ? 2 : 1 } } : q > 0.85 ? { inside: { ore: 1 } } : {}) });
+        else if (r < 0.172) addThing(w, "item", x, y, { item: "ore", n: 1, born: 0 });
       }
     }
   const traitNames = Object.keys(TRAITS);
@@ -299,7 +342,7 @@ export function newWorld(seed: number, agentCount = 5): World {
       skills: {}, inv: [], wearing: null, beliefs: {}, facts: {}, tried: {}, watching: {}, sickness: null, home: null,
       born: -Math.round(YEAR * (1.2 + rand() * 0.8)), parents: [], children: [], pregnant: null,
       rel: {}, memory: [], goal: null, plan: [], status: "Waking up in the wilderness", lastDecision: null,
-      thinking: false, engaged: null, down: 0, nextDecide: 0, cooldowns: {}, seen: {}, near: {},
+      thinking: false, engaged: null, down: 0, nextDecide: 0, cooldowns: {}, seen: {}, near: {}, customs: {},
     });
   }
   const openGrass = () => {

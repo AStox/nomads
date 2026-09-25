@@ -6,6 +6,7 @@ import { tick } from "../src/sim/sim";
 import { changed, newKinds, removed } from "../src/sim/physics";
 import { beliefText } from "../src/sim/beliefs";
 import { counters, logTo, flush, tickMs } from "../src/sim/trace";
+import { patterns, patternText, standing } from "../src/sim/groups";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 const ticks = Number(arg("ticks", "5000")), seed = Number(arg("seed", String(Math.floor(Math.random() * 1e9))));
@@ -28,7 +29,15 @@ for (const l of Object.values(w.laws)) console.log(`  ${l.id} [${l.source}] ${cl
 console.log("\nMADE");
 for (const k of Object.values(w.kinds).filter((k) => k.made)) console.log(`  ${k.name}${k.plain ? ` (${k.plain})` : ""} x${k.count ?? 1}, first by ${k.made!.by} ${clock(k.made!.t)}: ${JSON.stringify(k.props)}`);
 console.log("\nNOTABLE");
-for (const e of w.events.filter((e) => ["invent", "law", "first", "burned", "mistaken", "learn", "teach", "attack", "hunt", "lightning", "collapse", "sick", "build", "fire"].includes(e.kind)).slice(-60)) console.log(`  ${clock(e.t)} ${e.kind}: ${e.text}`);
+for (const e of w.events.filter((e) => ["invent", "law", "first", "burned", "mistaken", "learn", "teach", "attack", "hunt", "lightning", "collapse", "sick", "build", "fire", "camp", "custom", "leader", "driven_out", "judged", "camp_named"].includes(e.kind)).slice(-80)) console.log(`  ${clock(e.t)} ${e.kind}: ${e.text}`);
+console.log("\nCAMPS");
+for (const c of w.camps) {
+  console.log(`  ${c.id} ${c.name}${c.gone ? ` (gone ${clock(c.gone)}${c.mergedInto ? `, into ${c.mergedInto}` : ""})` : ""}: ${c.members.join(", ")}; leader ${c.leader ?? "none"}; ${c.precedents.length} precedents`);
+  for (const x of patterns(c).slice(0, 6)) console.log(`    ~ ${patternText(x)}`);
+  for (const k of c.customs) console.log(`    * ${k.text} (${k.held} held, ${k.broken} broken${k.faded ? ", faded" : ""})`);
+  for (const id of new Set(c.precedents.map((p) => p.decidedBy))) { const s = standing(c, id); console.log(`    ${id}: followed ${s.followed}, defied ${s.defied}`); }
+}
+console.log(`incidents ${w.incidents.length}: ${JSON.stringify(w.incidents.reduce<Record<string, number>>((m, i) => ((m[i.act] = (m[i.act] ?? 0) + 1), m), {}))}`);
 console.log("\nAGENTS");
 for (const a of w.agents) {
   console.log(`  ${a.name}: ${a.status} | needs ${Object.entries(a.needs).map(([k, v]) => `${k} ${Math.round(v)}`).join(" ")} | carrying ${a.inv.map((s) => w.kinds[s.k]?.name).join(", ")}`);

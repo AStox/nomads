@@ -30,9 +30,12 @@ const gives = (w: World, f: Fields) => f.gives.map((k) => nm(w, k)).join(" and "
 export function sentence(w: World, f: Fields, ticks?: number): string {
   const time = ticks && ticks > 12 ? ` (about ${Math.max(1, Math.round((ticks * 5) / 60))} hours)` : "";
   const ins = f.inputs.map((k) => nm(w, k));
+  const fireWord = ({ hearth: "a ringed fire", kiln: "a ringed fire heaped over with stone", forge: "a ringed charcoal fire" } as Record<string, string>)[f.at ?? ""] ?? "a fire";
   switch (f.verb) {
     case "strike":
       if (f.builds === "fire") return `Striking ${an(nm(w, f.target ?? "stone"))} ${with_(w, f.tool)} over dry tinder can throw a spark that lights a fire.`;
+      if (f.effect === "dented") return `Hammering cold ${ins[0]} only dents it.`;
+      if (f.at === "forge" && f.gives.length) return `Hammering ${an(ins[0])} ${with_(w, f.tool)} at ${fireWord} draws it out into ${an(gives(w, f))}.`;
       if (f.target && !f.inputs.length)
         return f.gives.length ? `Striking ${an(f.target)} ${with_(w, f.tool)} breaks it into ${gives(w, f)}${time}.` : `Striking ${an(f.target)} ${with_(w, f.tool)} barely marks it.`;
       return f.gives.length ? `Striking ${an(ins[0])} ${with_(w, f.tool)} can break off ${gives(w, f)}.` : `Striking ${an(ins[0])} ${with_(w, f.tool)} does nothing much.`;
@@ -44,7 +47,9 @@ export function sentence(w: World, f: Fields, ticks?: number): string {
       return f.gives.length ? `Binding ${ins.join(", ")} together makes ${an(gives(w, f))}.` : `${ins.join(" and ")} won't hold together.`;
     case "heat":
       if (f.effect === "burned") return `${ins[0][0].toUpperCase() + ins[0].slice(1)} burns away in a fire.`;
-      return f.gives.length ? `Holding ${ins.join(" and ")} in a fire makes ${an(gives(w, f))}.` : `Fire doesn't change ${ins.join(" or ")}.`;
+      if (f.effect === "too_cool") return `${fireWord[0].toUpperCase() + fireWord.slice(1)} isn't hot enough to change ${ins.join(" or ")}.`;
+      if (f.effect === "scorched") return `An open fire only scorches ${ins[0]}.`;
+      return f.gives.length ? `Holding ${ins.join(" and ")} in ${fireWord}${f.tool ? `, blowing air at it with ${an(nm(w, f.tool))},` : ""} makes ${an(gives(w, f))}.` : `Fire doesn't change ${ins.join(" or ")}.`;
     case "wet":
       if (f.effect === "nibble") return `Something in the water tugs at ${an(ins[0])} dangled in it.`;
       return f.gives.length ? `Dipping ${an(ins[0])} in the water ${f.gives.includes("fish") ? "can catch a fish" : `gives ${gives(w, f)}`}.` : `Water does nothing to ${ins[0]}.`;
@@ -54,6 +59,8 @@ export function sentence(w: World, f: Fields, ticks?: number): string {
       if (f.builds === "fire") return `Setting ${an(ins.find((x) => x.startsWith("burning")) ?? ins[0])} into ${ins.filter((x) => !x.startsWith("burning")).join(" and ") || "a fire"} starts a campfire.`;
       if (f.builds === "fed_fire") return `Feeding ${ins.join(" and ")} to a fire keeps it going.`;
       if (f.builds === "hearth") return `Ringing a fire with ${ins.join(" and ")} keeps it contained and burning steady.`;
+      if (f.builds === "kiln") return `Heaping ${ins.join(" and ")} over a ringed fire closes it in to smolder.`;
+      if (f.builds === "forge") return `Feeding ${ins.join(" and ")} to a ringed fire makes it burn white-hot.`;
       if (f.builds === "shelter") return `Leaning and stacking ${ins.join(", ")} makes a shelter.`;
       return `Stacking ${ins.join(", ")} makes a pile.`;
     case "plant":

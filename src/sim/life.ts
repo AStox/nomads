@@ -53,7 +53,7 @@ function childOf(w: World, mother: Agent, father: Agent | undefined): Agent {
     skills: {}, inv: [], wearing: null, beliefs: {}, facts: {}, tried: {}, watching: {}, sickness: null, home: mother.home,
     born: w.t, parents: [mother.id, ...(father ? [father.id] : [])], children: [], pregnant: null,
     rel: {}, memory: [], goal: null, plan: [], status: "Just born", lastDecision: null,
-    thinking: false, engaged: null, down: 0, nextDecide: w.t + 5, cooldowns: {}, seen: {}, near: {},
+    thinking: false, engaged: null, down: 0, nextDecide: w.t + 5, cooldowns: {}, seen: {}, near: {}, customs: {},
   };
   for (const parent of [mother, father].filter(Boolean) as Agent[]) {
     parent.children.push(kid.id);

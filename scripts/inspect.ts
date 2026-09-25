@@ -1,4 +1,4 @@
-// Look inside the live world.  bun scripts/inspect.ts <stats|agent ID|jev [agent]|trace [sys] [agent]|laws|kinds|events [agent]>
+// Look inside the live world.  bun scripts/inspect.ts <stats|agent ID|jev [agent]|trace [sys] [agent]|laws|kinds|events [agent]|groups>
 const BASE = process.env.NOMADS_URL ?? "http://127.0.0.1:8095";
 const [cmd = "stats", a1, a2] = process.argv.slice(2);
 const get = async (path: string): Promise<unknown> => (await fetch(`${BASE}${path}`)).json();
@@ -12,6 +12,7 @@ switch (cmd) {
   case "laws": out(await get("/api/debug/laws")); break;
   case "kinds": out(Object.values((await get("/api/debug/kinds")) as Record<string, { made?: unknown }>).filter((k) => k.made)); break;
   case "events": for (const e of (await get(`/api/events?${qs({ agent: a1 })}`)) as { t: number; kind: string; text: string }[]) console.log(e.t, e.kind, e.text); break;
-  default: console.log("usage: stats | agent ID | jev [agent] | trace [sys] [agent] | laws | kinds | events [agent]");
+  case "groups": out(await get("/api/groups")); break;
+  default: console.log("usage: stats | agent ID | jev [agent] | trace [sys] [agent] | laws | kinds | events [agent] | groups");
 }
 export {};

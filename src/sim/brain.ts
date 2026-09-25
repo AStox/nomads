@@ -1,16 +1,18 @@
-// Every Jev call lives here: pick a goal, choose what to try, answer another agent, judge an unknown result, name a thing.
+// Every Jev call lives here: pick a goal, choose what to try, answer another agent, judge an unknown result, name a thing, answer for a camp.
 import {
-  BONDS, BOND_FADE, DAY, LABELS, OPINIONS, YEAR_DAYS, ageOf, clock, dayOfYear, dist, level, stageOf, type Agent, type BondKind, type Label, type Relationship, type World,
+  BONDS, BOND_FADE, DAY, LABELS, OPINIONS, RESPONSES, YEAR_DAYS, ageOf, clock, dayOfYear, dist, level, stageOf,
+  type Agent, type BondKind, type Label, type Relationship, type Response, type World,
 } from "./world";
 import { TRAITS } from "./traits";
 import { PROPS, type Kind, type Props } from "./materials";
 import { beliefText } from "./beliefs";
+import { campTag, campView } from "./groups";
 import { jevLog } from "./trace";
 import LEXICON from "./lexicon.json";
+import PLACES from "./places.json";
 
 const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
-// NOMADS_BRAIN=random answers every question with random numbers, for fast offline runs of the physics.
-const RANDOM = process.env.NOMADS_BRAIN === "random";
+// NOMADS_BRAIN=random answers every question with random numbers, for fast offline runs of the physics (and for tests).
 
 type Answer = { type: string; choice?: string; probabilities?: Record<string, number>; confidence?: number; noul?: number; score?: number };
 type Question = { type: "choice" | "noul" | "score"; instructions: unknown; criteria?: unknown };
@@ -31,8 +33,8 @@ function randomAnswer(q: Question, bias?: Record<string, number>): Answer {
 
 async function ask(w: World, purpose: string, agent: string | undefined, state: unknown, questions: Record<string, Question>, bias?: Record<string, number>) {
   const t0 = performance.now();
-  if (RANDOM) {
-    const answers = Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, randomAnswer(q, k === "goal" ? bias : undefined)]));
+  if (process.env.NOMADS_BRAIN === "random") {
+    const answers = Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, randomAnswer(q, bias)]));
     jevLog({ agent, purpose, ms: 0, tokens: 0, state, questions, answers });
     return answers;
   }
@@ -73,7 +75,7 @@ export function newRel(t: number): Relationship {
   return { affinity: 0, trust: 0.3, label: "stranger", bonds: [], beliefs: {}, ledger: 0, history: [], met: t };
 }
 
-function describeRel(w: World, a: Agent, b: Agent) {
+export function describeRel(w: World, a: Agent, b: Agent) {
   const r = a.rel[b.id];
   if (!r) return { relationship: "never met" };
   return {
@@ -92,7 +94,8 @@ function describeRel(w: World, a: Agent, b: Agent) {
 // What a held thing is like, in words Jev can reason with.
 export function describeKind(k?: Kind) {
   if (!k) return "";
-  const words = Object.entries(k.props).filter(([p, v]) => p !== "toughness" && (v ?? 0) >= 0.45).sort((x, y) => y[1]! - x[1]!).slice(0, 4).map(([p]) => p);
+  // Metal hidden in a stone isn't something anyone can see until it's smelted out.
+  const words = Object.entries(k.props).filter(([p, v]) => p !== "toughness" && (p !== "metal" || (v ?? 0) >= 0.9) && (v ?? 0) >= 0.45).sort((x, y) => y[1]! - x[1]!).slice(0, 4).map(([p]) => p);
   return words.length ? `${k.name} (${words.join(", ")})` : k.name;
 }
 export function inventoryText(w: World, a: Agent) {
@@ -108,7 +111,10 @@ export function view(w: World, a: Agent) {
     if (d > 10 || (t.kind === "bush" && !t.n)) continue;
     let kind = t.kind === "item" ? `${w.kinds[t.item ?? ""]?.name ?? "something"} on the ground` : t.kind === "structure" ? ["pile of stuff", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0] : t.kind.replaceAll("_", " ");
     if (t.burning) kind = `burning ${kind}`;
-    if (t.kind === "fire" && t.contained) kind = "ringed fire";
+    if (t.kind === "fire") kind = t.covered ? "fire heaped over with stone" : t.contained && (t.charcoal ?? 0) > 0 ? "ringed fire glowing white-hot with charcoal" : t.contained ? "ringed fire" : "fire";
+    if ((t.resin ?? 0) > 0) kind = `${kind} beaded with resin`;
+    if (t.kind === "boulder" && t.inside?.flint) kind = "boulder studded with dark nodules";
+    if (t.shared) kind = `${kind} kept as the camp's store`;
     const label = t.owner && t.kind !== "fire" && t.kind !== "sapling" ? (t.owner === a.id ? `your ${kind}` : `${w.agents.find((x) => x.id === t.owner)?.name}'s ${kind}`) : kind;
     const e = (near[label] ??= { count: 0, nearest: d });
     e.count++;
@@ -123,6 +129,7 @@ export function view(w: World, a: Agent) {
       distance: `${dist(a, b)} steps`,
       doing: dist(a, b) <= 12 ? b.status : "out of sight",
       carrying: dist(a, b) <= 6 ? inventoryText(w, b) : undefined,
+      camp: campTag(w, a, b),
       ...describeRel(w, a, b),
     }));
   const home = a.home ? w.things.find((t) => t.id === a.home) : null;
@@ -155,6 +162,7 @@ export function view(w: World, a: Agent) {
     what_they_have_seen: Object.values(a.facts).slice(-6),
     home: home ? `a ${["pile", "lean-to", "hut", "cabin"][home.shelter?.tier ?? 0]} ${dist(a, home)} steps away` : "no home yet",
     current_goal: a.goal?.type ?? "none",
+    ...campView(w, a),
     nearby,
     animals,
     people,
@@ -179,12 +187,13 @@ export async function decide(w: World, a: Agent, options: Record<string, string>
   const q: Record<string, Question> = {
     goal: { type: "choice", instructions: `Given who ${a.name} is, what they need, what they know how to do, and who is around, what will ${a.name} most likely do next?`, criteria: options },
   };
-  const names = (ids: string[]) => Object.fromEntries(ids.map((id) => [w.agents.find((b) => b.id === id)!.name, null]));
+  // Resolve names now: someone can die while Jev is thinking.
+  const idOf = new Map([...towards, ...against].map((id) => [w.people[id]?.name ?? id, id]));
+  const names = (ids: string[]) => Object.fromEntries(ids.map((id) => [w.people[id]?.name ?? id, null]));
   if (towards.length) q.towards = { type: "choice", instructions: `If ${a.name} sought someone out to be friendly, ask for something, or work together, who would it be?`, criteria: names(towards) };
   if (against.length) q.against = { type: "choice", instructions: `If ${a.name} acted against someone or wanted to keep away from them, who would it be?`, criteria: names(against) };
   const ans = await ask(w, "decide", a.id, view(w, a), q, needBias(a, options));
-  const byName = (p?: Record<string, number>) =>
-    p && Object.fromEntries(Object.entries(p).map(([n, v]) => [w.agents.find((b) => b.name === n)!.id, v]));
+  const byName = (p?: Record<string, number>) => p && Object.fromEntries(Object.entries(p).filter(([n]) => idOf.has(n)).map(([n, v]) => [idOf.get(n)!, v]));
   return { goal: ans.goal.probabilities!, towards: byName(ans.towards?.probabilities), against: byName(ans.against?.probabilities) };
 }
 
@@ -264,7 +273,8 @@ export function fadeBonds(a: Agent) {
 // The rules don't cover this combination. Ask what would realistically come of it; the answer becomes law.
 const LEVELS = ["not at all", "a little", "somewhat", "quite", "very"];
 export async function rule(w: World, a: Agent, attempt: string, parts: Kind[], templateName: string) {
-  const relevant = PROPS.filter((prop) => prop !== "toughness");
+  // Metal can't be made by mixing things; it only comes out of ore in a hot enough fire.
+  const relevant = PROPS.filter((prop) => prop !== "toughness" && prop !== "metal");
   const q: Record<string, Question> = {
     useful: { type: "noul", instructions: `Realistically, would a person doing this end up with a new object that holds together and could be used for something?`, criteria: { true: "A usable new object comes out of it", false: "It falls apart, does nothing, or just wastes the materials" } },
   };
@@ -302,27 +312,50 @@ export async function nameIt(w: World, a: Agent, k: Kind, uses: string[]): Promi
     what_people_have_done_with_it: uses.length ? uses : ["nothing yet beyond making it"],
     thing: { called_for_now: k.name, is: describeKind(k).replace(/^[^(]*\(?/, "").replace(/\)$/, ""), made_from: (k.parts ?? []).map((id) => w.kinds[id]?.name ?? id) },
   };
-  const kinds = Object.fromEntries(Object.entries(LEX).map(([id, c]) => [id, c.description]));
-  const first = await ask(w, "name", a.id, state, {
-    category: { type: "choice", instructions: "People keep making and using this thing. What kind of thing would they think of it as?", criteria: { ...kinds, none: "Not really a kind of thing anyone would have a word for" } },
-  });
-  // Keep every kind of thing Jev thinks is plausible, not just the top one, and let the words compete.
-  const cats = Object.entries(first.category.probabilities!).filter(([c, pr]) => c !== "none" && LEX[c] && pr >= 0.15).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([c]) => c);
+  return pickWord(w, a, "name", LEX, state,
+    { instructions: "People keep making and using this thing. What kind of thing would they think of it as?", none: "Not really a kind of thing anyone would have a word for" },
+    "People name tools after what they do with them. Given mainly what_people_have_done_with_it, which of these words would they most naturally come to call it?");
+}
+// A camp's lasting name comes from the land around it and what happened there.
+export async function nameCamp(w: World, a: Agent, state: object): Promise<string | null> {
+  return pickWord(w, a, "name_camp", PLACES as Lexicon, state,
+    { instructions: "People have lived together here for a season. What sort of place would they name it after?", none: "Nothing about the place stands out enough to name it for" },
+    "Given the land around it and what happened there, which of these words would the people who live here most naturally come to call their place?");
+}
+async function pickWord(w: World, a: Agent, purpose: string, lex: Lexicon, state: object, cat: { instructions: string; none: string }, instructions: string): Promise<string | null> {
+  const kinds = Object.fromEntries(Object.entries(lex).map(([id, c]) => [id, c.description]));
+  const first = await ask(w, purpose, a.id, state, { category: { type: "choice", instructions: cat.instructions, criteria: { ...kinds, none: cat.none } } });
+  // Keep every kind Jev thinks is plausible, not just the top one, and let the words compete.
+  const cats = Object.entries(first.category.probabilities!).filter(([c, pr]) => c !== "none" && lex[c] && pr >= 0.15).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([c]) => c);
   if (!cats.length) return null;
   // Every word in those kinds gets a look: split into Jev-sized lists, take each list's favorites, then pick among them.
-  const all = cats.flatMap((c) => LEX[c].words);
+  const all = cats.flatMap((c) => lex[c].words);
   const chunks: typeof all[] = [];
   for (let i = 0; i < all.length; i += 240) chunks.push(all.slice(i, i + 240));
-  const ctx = { ...state, kind_of_thing: cats.map((c) => LEX[c].description) };
-  const instructions = "People name tools after what they do with them. Given mainly what_people_have_done_with_it, which of these words would they most naturally come to call it?";
-  const heats = await ask(w, "name", a.id, ctx, Object.fromEntries(chunks.map((ch, i) => [`list${i}`, {
+  const ctx = { ...state, kind_of_thing: cats.map((c) => lex[c].description) };
+  const heats = await ask(w, purpose, a.id, ctx, Object.fromEntries(chunks.map((ch, i) => [`list${i}`, {
     type: "choice" as const, instructions, criteria: Object.fromEntries(ch.map((x) => [x.w, x.gloss])),
   }])));
   const finalists = Object.values(heats).flatMap((ans) => Object.entries(ans.probabilities!).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([word]) => word));
   const gloss = new Map(all.map((x) => [x.w, x.gloss]));
-  const second = await ask(w, "name", a.id, ctx, {
+  const second = await ask(w, purpose, a.id, ctx, {
     word: { type: "choice", instructions, criteria: { ...Object.fromEntries(finalists.map((x) => [x, gloss.get(x) ?? null])), "none of these": "No word here fits it well" } },
   });
   const word = second.word.choice!;
   return word === "none of these" ? null : word;
+}
+
+// Offline runs lean toward the milder answers, the way most camps do.
+const MILD: Partial<Record<Response, number>> = { let_go: 3, scold: 2, repay: 1.5, shun: 1, drive_out: 0.4 };
+// Someone decides how the camp answers what another person did. The same call asks whether the doer would make amends if told to.
+export async function judge(w: World, me: Agent, doer: string, state: object) {
+  const ans = await ask(w, "judge", me.id, state, {
+    response: {
+      type: "choice", criteria: RESPONSES,
+      instructions: `${me.name} decides how the camp answers what ${doer} did. Given who ${me.name} is, what happened, and how this camp has handled cases like it before, what does ${me.name} decide?`,
+    },
+    comply: { type: "noul", instructions: `If the camp told ${doer} to give it back or make up for it, would ${doer} actually do it?` },
+  }, MILD);
+  const odds = ans.response.probabilities!;
+  return { response: sample(odds, 1) as Response, odds, comply: ans.comply.noul ?? 0.5 };
 }

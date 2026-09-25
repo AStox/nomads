@@ -10,6 +10,7 @@ export type Ctx = {
   kinds: Registry;
   toxic: string[]; // kinds they believe make you sick
   store?: Record<string, number>; // what's kept in their home
+  shared?: Record<string, number>; // what's in their camp's shared store
 };
 export type PlanStep = { op: string; arg?: string; key?: string };
 type Op = PlanStep & { cost: number; needs: string[]; makes: string[]; pre: (s: PState) => boolean; eff: (s: PState) => PState };
@@ -18,8 +19,11 @@ const n = (s: PState, k: string) => s.inv[k] ?? 0;
 const add = (s: PState, k: string, d: number): PState => ({ ...s, inv: { ...s.inv, [k]: Math.max(0, Math.min(24, n(s, k) + d)) } });
 const flag = (s: PState, f: string): PState => (s.flags.includes(f) ? s : { ...s, flags: [...s.flags, f].sort() });
 const at = (s: PState, place: string | null): PState => ({ ...s, at: place });
+// A hearth is still a fire; a kiln or a charcoal forge is still a ringed hearth.
+const WITHIN: Record<string, string[]> = { fire: ["hearth", "kiln", "forge"], hearth: ["kiln", "forge"] };
+export const atPlace = (s: PState, place: string) => s.at === place || !!WITHIN[place]?.includes(s.at ?? "");
 
-export const SOCIAL = ["talk", "give", "trade", "share_meal", "share_fire", "help", "gossip", "teach", "tend", "insult", "take", "steal", "attack"];
+export const SOCIAL = ["talk", "give", "trade", "share_meal", "share_fire", "help", "gossip", "teach", "tend", "beg", "insult", "take", "steal", "attack"];
 export const SOCIAL_ITEM_NEEDS: Record<string, (s: PState, kinds: Registry) => boolean> = {
   give: (s) => Object.values(s.inv).some((v) => v > 0),
   share_meal: (s, kinds) => Object.entries(s.inv).some(([k, v]) => v && p(kinds[k], "edible") > 0.1),
@@ -35,6 +39,7 @@ export const GATHER: Record<string, { place: string; item: string; n: number; ke
   pick_stone: { place: "stone", item: "stone", n: 1 },
   pull_reeds: { place: "reeds", item: "fiber", n: 2 },
   dig_clay: { place: "clay", item: "clay", n: 2, keep: true },
+  scrape_resin: { place: "resin", item: "resin", n: 1 },
 };
 
 export const edibleKinds = (ctx: Ctx) => Object.keys(ctx.kinds).filter((k) => p(ctx.kinds[k], "edible") >= 0.1 && !ctx.toxic.includes(k));
@@ -55,7 +60,7 @@ function outputs(b: Belief, ctx: Ctx): Record<string, number> {
   if ((b.fields.verb === "strike" || b.fields.verb === "throw") && target && (b.rate ?? 0) > 0 && ctx.facts[`breaks:${target}`]) return THING_MATERIAL[target]?.breaks ?? {};
   return {};
 }
-const PLACE_OF: Record<string, string> = { fire: "fire", hearth: "fire", fed_fire: "fire", pit: "pit" };
+const PLACE_OF: Record<string, string> = { fire: "fire", hearth: "hearth", kiln: "kiln", forge: "forge", fed_fire: "fire", pit: "pit" };
 
 function beliefOp(b: Belief, ctx: Ctx): Op | null {
   const req = required(b), out = outputs(b, ctx);
@@ -76,7 +81,7 @@ function beliefOp(b: Belief, ctx: Ctx): Op | null {
     cost: 1 + b.ticks / 8 / wr,
     needs: [...Object.keys(req), ...(place ? [`place:${place}`] : [])],
     makes,
-    pre: (s) => Object.entries(req).every(([k, v]) => n(s, k) >= v) && (!place || s.at === place) && !(builds === "fire" && s.at === "fire"),
+    pre: (s) => Object.entries(req).every(([k, v]) => n(s, k) >= v) && (!place || atPlace(s, place)) && !(builds === "fire" && atPlace(s, "fire")),
     eff: (s) => {
       let o = s;
       for (const [k, v] of Object.entries(b.uses)) o = add(o, k, -v);
@@ -108,6 +113,10 @@ function ops(ctx: Ctx): Op[] {
     for (const [k, v] of Object.entries(ctx.store ?? {}))
       if (v > 0) list.push({ op: "take_stored", arg: k, cost: 1, needs: ["place:home"], makes: [k], pre: (s) => s.at === "home", eff: (s) => add(s, k, Math.min(v, 3)) });
   }
+  // A camp's shared store is open to its members.
+  if ("store" in ctx.dist)
+    for (const [k, v] of Object.entries(ctx.shared ?? {}))
+      if (v > 0) list.push({ op: "take_shared", arg: k, cost: 1.5, needs: ["place:store"], makes: [k], pre: (s) => s.at === "store", eff: (s) => add(s, k, Math.min(v, 3)) });
   // Anyone who has seen what an animal is inside can try to kill one with whatever they hold.
   for (const sp of ["deer", "wolf"]) {
     if (!ctx.facts[`breaks:${sp}`] || !(sp in ctx.dist)) continue;
@@ -122,7 +131,7 @@ function ops(ctx: Ctx): Op[] {
     { op: "eat", cost: 1, needs: edible, makes: ["ate"], pre: (s) => edible.some((k) => n(s, k) > 0), eff: (s) => flag(add(s, edible.find((k) => n(s, k) > 0)!, -1), "ate") },
     { op: "rest", cost: 4, needs: [], makes: ["rested"], pre: (s) => s.at !== "home", eff: (s) => flag(s, "rested") },
     { op: "rest", cost: 1, needs: ["place:home"], makes: ["rested"], pre: (s) => s.at === "home", eff: (s) => flag(s, "rested") },
-    { op: "warm_up", cost: 1, needs: ["place:fire"], makes: ["warm"], pre: (s) => s.at === "fire" || s.at === "home", eff: (s) => flag(s, "warm") },
+    { op: "warm_up", cost: 1, needs: ["place:fire"], makes: ["warm"], pre: (s) => atPlace(s, "fire") || s.at === "home", eff: (s) => flag(s, "warm") },
     { op: "warm_up", cost: 1, needs: ["place:home"], makes: ["warm"], pre: (s) => s.at === "home", eff: (s) => flag(s, "warm") },
   );
   for (const k of SOCIAL)
@@ -133,7 +142,9 @@ function ops(ctx: Ctx): Op[] {
   return list;
 }
 
-export const COLLECT: Record<string, string> = { collect_stones: "stone", collect_sticks: "stick", collect_reeds: "fiber", collect_clay: "clay" };
+export const COLLECT: Record<string, string> = {
+  collect_stones: "stone", collect_sticks: "stick", collect_reeds: "fiber", collect_clay: "clay", collect_resin: "resin", collect_bark: "bark", collect_ore: "ore",
+};
 
 function goal(type: string, start: PState, ctx: Ctx): { done: (s: PState) => boolean; needs: string[] } | null {
   const has = (flagName: string) => (s: PState) => s.flags.includes(flagName);
@@ -141,7 +152,8 @@ function goal(type: string, start: PState, ctx: Ctx): { done: (s: PState) => boo
   if (type === "eat") return { done: has("ate"), needs: ["ate"] };
   if (type === "rest") return { done: has("rested"), needs: ["rested"] };
   if (type === "warm_up") return { done: has("warm"), needs: ["warm"] };
-  if (COLLECT[type]) { const k = COLLECT[type]; return { done: (s) => n(s, k) >= n(start, k) + 3, needs: [k] }; }
+  // Resin, bark, and reddish stones turn up one or two at a time.
+  if (COLLECT[type]) { const k = COLLECT[type], want = k === "resin" || k === "ore" ? 1 : k === "bark" ? 2 : 3; return { done: (s) => n(s, k) >= n(start, k) + want, needs: [k] }; }
   if (type.startsWith("make:")) { const k = type.slice(5); return { done: (s) => n(s, k) > n(start, k), needs: [k] }; }
   if (type.startsWith("have:")) { const [, k, c] = type.split(":"); return { done: (s) => n(s, k) >= +c, needs: [k] }; }
   if (type.startsWith("hunt:")) { const f = `hunted:${type.slice(5)}`; return { done: has(f), needs: [f] }; }

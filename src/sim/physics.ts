@@ -2,6 +2,33 @@
 import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, type Kind, type Props } from "./materials";
 import { DAY, Tile, YEAR, addThing, dist, iceAt, level, log, nearWater, tileAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
 import { clock, trace } from "./trace";
+import { see } from "./beliefs";
+
+// Kinds of stuff the rules below care about, by what they're like rather than what they're called.
+export const greasy = (k?: Kind) => !!k && p(k, "edible") >= 0.1 && p(k, "flammable") >= 0.7;
+export const airy = (k?: Kind) => !!k && p(k, "flexible") >= 0.5 && p(k, "container") >= 0.5; // can pump or fan air
+const skin = (k?: Kind) => !!k && !k.parts?.length && p(k, "flexible") >= 0.5 && p(k, "insulating") >= 0.5 && p(k, "fibrous") < 0.6;
+const sticky = (k?: Kind) => !!k && p(k, "binding") >= 0.5 && p(k, "flammable") >= 0.6 && p(k, "fibrous") < 0.3 && p(k, "plastic") < 0.5;
+const short = (k: Kind) => (k.parts ? (k.named ? k.name : noun(k)) : k.name);
+
+// How hot a fire burns: a ring of stone holds heat in, charcoal burns far hotter than wood, air blown through a ring hotter still.
+export function fireHeat(w: World, f: Thing) {
+  if (f.kind !== "fire") return f.burning ? 1 : 0;
+  const coal = (f.charcoal ?? 0) > 0 ? (f.contained ? BASE.charcoal.burns! : 1.1) : 1;
+  return Math.round(((f.contained ? 1.3 : 1) * coal + ((f.air ?? 0) > w.t && f.contained ? 0.5 : 0)) * 100) / 100;
+}
+// What people would call the fire they're standing at, most specific first.
+export const fireKind = (f: Thing) =>
+  f.kind !== "fire" || !f.contained ? "fire" : (f.charcoal ?? 0) > 0 ? "forge" : f.covered ? "kiln" : "hearth";
+export function nearFire(w: World, a: { x: number; y: number }, r = 2) {
+  let best: Thing | null = null, bh = 0;
+  for (const t of w.things) {
+    if ((t.kind !== "fire" && (t.burning ?? 0) <= 0.3) || dist(a, t) > r) continue;
+    const h = fireHeat(w, t);
+    if (h > bh) { bh = h; best = t; }
+  }
+  return best;
+}
 
 export const CARRY = 16;
 export type Fields = { verb: string; inputs: string[]; tool?: string | null; target?: string; at?: string | null; gives: string[]; builds?: string; effect?: string; shape?: string };
@@ -105,13 +132,43 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
     if (!tk || !count(a, tk.id)) return { done: true, damage: 0, out: outcome({ text: `There was no ${act.target?.kind} to strike.`, fields }) };
     fields.inputs = [tk.id];
     const broke = wear(w, a, act, p(tk, "hard"));
+    // Hot, soft metal takes a shape under a heavy, hard striker; each blow at the fire draws the edge out and tightens it.
+    if (tk.cools && p(tk, "plastic") >= 0.5) {
+      const cold = kind(w, tk.parts?.[0]) ?? tk;
+      const fire = nearFire(w, a);
+      fields.at = "forge";
+      if (!fire || fireHeat(w, fire) < 1.5) return { done: true, broke: broke ?? undefined, damage: 0, out: outcome({ text: `Away from a hot enough fire, the ${tk.name} stiffened before it could be worked.`, fields }) };
+      const g = 0.2 * p(tool, "heavy") * p(tool, "hard");
+      st.progress++;
+      const sharp = 1 - (1 - p(cold, "sharp")) * (1 - g) ** st.progress;
+      trace("physics", "forge", { tool: tool.id, target: tk.id, g, blows: st.progress, sharp }, a.id);
+      if (g < 0.02) return st.progress < 6 ? { done: false, damage: 0 } : { done: true, damage: 0, out: outcome({ text: `Tapping the ${tk.name} with ${tool.id === "hands" ? "bare hands" : `the ${tool.name}`} barely moved it.`, fields }) };
+      if (sharp < 0.95 && st.progress < 30) return { done: false, broke: broke ?? undefined, damage: 1 };
+      const [k, isNew] = ensure(w.kinds, `forge:${cold.id}:${Math.round(sharp * 10)}`, () => ({
+        name: sharp >= 0.8 ? "metal blade" : sharp >= 0.5 ? "rough metal blade" : "hammered metal",
+        props: { ...cold.props, plastic: 0, sharp, heavy: p(cold, "heavy") * 0.7, toughness: 1 - (1 - p(cold, "toughness")) * (1 - g) ** st.progress },
+        parts: [cold.id], verb: "strike",
+      }));
+      takeItems(a, tk.id);
+      giveItems(w, a, k.id);
+      const nk: string[] = [];
+      made(w, a, k, isNew, nk);
+      fields.gives = [k.id];
+      return { done: true, broke: broke ?? undefined, damage: 1, out: outcome({ ok: true, text: `Hammering the ${tk.name} with the ${tool.name} at the fire drew it out into a ${k.name}.`, uses: { [tk.id]: 1 }, gives: { [k.id]: 1 }, fields, newKinds: nk, numbers: { blows: st.progress, sharp } }) };
+    }
+    if (p(tk, "metal") >= 0.8) {
+      if (++st.progress < 4) return { done: false, broke: broke ?? undefined, damage: 0 };
+      fields.effect = "dented";
+      return { done: true, broke: broke ?? undefined, damage: 0, out: outcome({ text: `Hammering the cold ${tk.name} only dented it.`, effect: "dented", fields }) };
+    }
     if (tk.grain === "shatter" && tk.breaks) {
       // Only something as hard as the stone can flake it.
       const chance = p(tool, "hard") ** 2 * p(tk, "hard") * 0.4 * (1 + level(a.skills.stonework ?? 0) * 0.08);
       trace("physics", "knap", { tool: tool.id, target: tk.id, chance }, a.id);
-      // Two very hard stones throw sparks; with fine dry tinder in hand, a spark can catch.
+      // Two very hard stones throw sparks, the harder the more; with fine dry tinder in hand, a spark can catch.
       const tinder = tinderOf(w, a);
-      if (tinder && p(tool, "hard") >= 0.8 && p(tk, "hard") >= 0.8 && !(raining(w) && !sheltered(w, a)) && Math.random() < 0.12) {
+      const spark = 0.12 * (1 + Math.max(0, Math.max(p(tool, "hard"), p(tk, "hard")) - 0.9) * 40);
+      if (tinder && p(tool, "hard") >= 0.8 && p(tk, "hard") >= 0.8 && !(raining(w) && !sheltered(w, a)) && Math.random() < spark) {
         takeItems(a, tinder.id);
         changed.add(addThing(w, "fire", a.x, a.y, { owner: a.id, hp: 50, maxHp: 400, born: w.t }).id);
         fields.inputs = [tk.id, tinder.id].sort(); fields.builds = "fire";
@@ -154,6 +211,15 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
   target.hp = (target.hp ?? mat.hp) - dmg;
   if ("maxHp" in target && target.maxHp === undefined) target.maxHp = mat.hp;
   if ("kind" in target) changed.add(target.id);
+  // A sharp edge driven into a standing tree peels strips of bark, and the wound beads resin over the next days.
+  if ("kind" in target && (target.kind === "tree" || target.kind === "stump") && dmg > 0) {
+    target.scarred = w.t;
+    if (p(tool, "sharp") >= 0.4 && (target.bark ?? 0) < 3 && Math.random() < 0.08 * p(tool, "sharp")) {
+      target.bark = (target.bark ?? 0) + 1;
+      dropPile(w, target.x, target.y, "bark", 1);
+      see(w, target, "bark", "A sharp edge struck into a tree peels off strips of bark.", 6);
+    }
+  }
   st.progress++;
   trace("physics", "strike", { tool: tool.id, target: act.target.kind, force: force(tool, a), focus: focus(tool), dmg, hp: target.hp }, a.id);
   const rate = dmg, ticksNeeded = rate > 0 ? Math.ceil(mat.hp / rate) : Infinity;
@@ -163,6 +229,7 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
     return { done: false, broke: broke ?? undefined, damage: dmg };
   }
   const gives = { ...mat.breaks };
+  for (const [k, n] of Object.entries(("inside" in target && target.inside) || {})) gives[k] = (gives[k] ?? 0) + n;
   fields.gives = Object.keys(gives);
   const where = { x: target.x, y: target.y };
   if ("species" in target) {
@@ -193,6 +260,18 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
   const fields: Fields = { verb: "rub", inputs: [ia, ib].filter(Boolean).sort(), gives: [] };
   if (!A || !B || count(a, ia) < 1 || count(a, ib) < (ia === ib ? 2 : 1)) return { done: true, out: outcome({ text: "They didn't have both things to rub together.", fields }) };
   st.progress++;
+  // Fat worked into a raw hide softens and cures it.
+  const fat = greasy(A) ? A : greasy(B) ? B : null, hide = skin(A) ? A : skin(B) ? B : null;
+  if (fat && hide && fat !== hide) {
+    if (st.progress < 10) return { done: false };
+    const [k, isNew] = leather(w, hide);
+    takeItems(a, fat.id); takeItems(a, hide.id);
+    giveItems(w, a, k.id);
+    const nk: string[] = [];
+    made(w, a, k, isNew, nk);
+    fields.gives = [k.id];
+    return { done: true, out: outcome({ ok: true, text: `Rubbing the ${fat.name} into the ${hide.name} softened it into ${k.name}.`, uses: { [fat.id]: 1, [hide.id]: 1 }, gives: { [k.id]: 1 }, fields, newKinds: nk }) };
+  }
   const soft = p(A, "hard") <= p(B, "hard") ? A : B, harder = soft === A ? B : A;
   if (p(harder, "hard") - p(soft, "hard") >= 0.35 && p(soft, "long") >= 0.5 && p(soft, "sharp") < 0.5 && soft.verb !== "rub") {
     if (st.progress < 10) return { done: false };
@@ -244,10 +323,31 @@ export function join(w: World, a: Agent, act: Act): Outcome | "ask" {
   if (parts.length < 2 || Object.entries(need).some(([k, n]) => count(a, k) < n)) return outcome({ text: "They didn't have those things to hand.", fields });
   const id = `join:${fields.inputs.join("+")}`;
   const nk: string[] = [];
-  // ponytail: two levels of making (fiber > cord > tool) covers every tool so far; lift when a real need shows up.
-  if (parts.some((x) => depth(w.kinds, x) >= 2)) return outcome({ text: `There was no way to tie anything more onto the ${parts.find((x) => depth(w.kinds, x) >= 2)!.name}.`, fields });
-  let k: Kind, isNew: boolean;
-  if (parts.every((x) => p(x, "fibrous") >= 0.6 && !x.parts)) {
+  let k: Kind, isNew: boolean, text = `Binding ${parts.map((x) => `the ${x.name}`).join(", ")} together made`;
+  // Fat with a wick in something hard and hollow: a lamp that burns slow and steady.
+  const hollow = parts.find((x) => p(x, "container") >= 0.6 && p(x, "hard") >= 0.5), fat = parts.find(greasy);
+  const wick = parts.find((x) => x !== fat && x !== hollow && p(x, "fibrous") >= 0.6 && p(x, "flammable") >= 0.6);
+  // Melted resin smeared over something soft and hollow seals it watertight.
+  const glue = parts.find((x) => p(x, "binding") >= 0.9 && p(x, "fibrous") < 0.3 && p(x, "flammable") >= 0.5);
+  const basket = parts.find((x) => x !== glue && p(x, "container") >= 0.4 && p(x, "hard") < 0.5);
+  if (parts.length === 3 && hollow && fat && wick) {
+    [k, isNew] = ensure(w.kinds, id, () => ({
+      name: `${short(hollow)} filled with ${short(fat)} and a ${short(wick)} wick`,
+      props: { container: p(hollow, "container"), hard: p(hollow, "hard"), heavy: p(hollow, "heavy"), flammable: 0.8, toughness: p(hollow, "toughness") },
+      parts: fields.inputs, verb: "join",
+    }));
+    text = `Filling the ${hollow.name} with ${fat.name} and a ${wick.name} wick made`;
+  } else if (parts.length === 2 && glue && basket) {
+    [k, isNew] = ensure(w.kinds, id, () => ({
+      name: `${short(basket)} sealed with ${short(glue)}`,
+      props: { ...basket.props, container: 0.9, binding: 0, flammable: Math.max(p(basket, "flammable"), p(glue, "flammable")), toughness: clamp01(p(basket, "toughness") + 0.1) },
+      parts: fields.inputs, verb: "join",
+    }));
+    text = `Smearing the ${glue.name} over the ${basket.name} sealed it tight. That made`;
+  } else if (parts.some((x) => depth(w.kinds, x) >= 2)) {
+    // ponytail: two levels of tying (fiber > cord > tool) covers every tool so far; lift when a real need shows up.
+    return outcome({ text: `There was no way to tie anything more onto the ${parts.find((x) => depth(w.kinds, x) >= 2)!.name}.`, fields });
+  } else if (parts.every((x) => p(x, "fibrous") >= 0.6 && !x.parts)) {
     const n = parts.length;
     [k, isNew] = ensure(w.kinds, id, () => n === 2
       ? { name: `twisted ${parts[0].name === parts[1].name ? parts[0].name : "fiber"} cord`, props: { binding: 0.85, flexible: 0.9, fibrous: 0.6, long: 0.5, flammable: 0.7, toughness: 0.3 }, parts: fields.inputs, verb: "join", fuel: 10 }
@@ -256,9 +356,16 @@ export function join(w: World, a: Agent, act: Act): Outcome | "ask" {
     const binder = [...parts].sort((x, y) => p(y, "binding") - p(x, "binding"))[0];
     if (p(binder, "binding") < 0.6) return "ask";
     const rest = parts.filter((x) => x !== binder);
+    const sheet = rest.length === 1 && p(rest[0], "flexible") >= 0.5 && p(rest[0], "long") < 0.5 && p(rest[0], "container") < 0.5 && p(rest[0], "fibrous") < 0.6 ? rest[0] : null;
     const headK = [...rest].sort((x, y) => p(y, "sharp") + p(y, "heavy") * 0.5 - p(x, "sharp") - p(x, "heavy") * 0.5)[0];
     const handle = rest.length > 1 ? [...rest].filter((x) => x !== headK).sort((x, y) => p(y, "long") - p(x, "long"))[0] : headK;
     [k, isNew] = ensure(w.kinds, id, () => {
+      // A soft sheet gathered up and tied closes into a bag.
+      if (sheet) return {
+        name: `${short(sheet)} bag tied with ${short(binder)}`,
+        props: { container: clamp01(0.45 + p(sheet, "flexible") * 0.3), flexible: p(sheet, "flexible"), insulating: p(sheet, "insulating") * 0.5, flammable: p(sheet, "flammable"), toughness: Math.min(p(sheet, "toughness") + 0.1, p(binder, "binding")) },
+        parts: fields.inputs, verb: "join",
+      };
       const props: Props = {
         sharp: p(headK, "sharp"), hard: p(headK, "hard"),
         heavy: clamp01(rest.reduce((t, x) => t + p(x, "heavy"), 0) * 0.9),
@@ -268,6 +375,7 @@ export function join(w: World, a: Agent, act: Act): Outcome | "ask" {
         flammable: parts.reduce((t, x) => t + p(x, "flammable"), 0) / parts.length,
         toughness: Math.min(p(headK, "toughness"), p(handle, "toughness") + 0.2, p(binder, "binding")),
         container: Math.max(...parts.map((x) => p(x, "container"))),
+        metal: p(headK, "metal"),
       };
       return { name: compoundName(w.kinds, parts), props, parts: fields.inputs, verb: "join" };
     });
@@ -277,23 +385,40 @@ export function join(w: World, a: Agent, act: Act): Outcome | "ask" {
   made(w, a, k, isNew, nk);
   fields.gives = [k.id];
   trace("physics", "join", { parts: fields.inputs, made: k.id, props: k.props }, a.id);
-  return outcome({ ok: true, text: `Binding ${parts.map((x) => `the ${x.name}`).join(", ")} together made a ${k.name}.`, uses: need, gives: { [k.id]: 1 }, fields, newKinds: nk });
+  return outcome({ ok: true, text: `${text} a ${k.name}.`, uses: need, gives: { [k.id]: 1 }, fields, newKinds: nk });
 }
 
 // ---------- heat ----------
+// Thresholds: cooking and melting resin 0.8, firing clay 1.2, softening metal 1.5, smelting ore 2.2. Wood only chars in a covered fire.
 export function heat(w: World, a: Agent, act: Act): Outcome | "ask" {
   const parts = act.items.map((id) => kind(w, id)!).filter(Boolean);
   const fields: Fields = { verb: "heat", inputs: [...act.items].sort(), at: "fire", gives: [] };
   const need = act.items.reduce<Record<string, number>>((m, k) => ((m[k] = (m[k] ?? 0) + 1), m), {});
   if (!parts.length || Object.entries(need).some(([k, n]) => count(a, k) < n)) return outcome({ text: "They didn't have those things to hand.", fields });
+  const fire = nearFire(w, a);
+  if (!fire) return outcome({ text: "The fire had gone out.", fields });
+  // Something soft and hollow squeezed or flapped at the flames drives air into them.
+  const fan = kind(w, act.tool);
+  if (fan && airy(fan) && count(a, fan.id)) {
+    fields.tool = fan.id;
+    if (fire.kind === "fire") { fire.air = w.t + 12; fire.heat = fireHeat(w, fire); changed.add(fire.id); }
+  }
+  const level = fireHeat(w, fire);
+  trace("physics", "heat", { items: act.items, fire: fireKind(fire), heat: level, fan: fields.tool }, a.id);
   const nk: string[] = [];
-  const done = (k: Kind, isNew: boolean, text: string, keep: string[] = []): Outcome => {
-    for (const [kk, n] of Object.entries(need)) if (!keep.includes(kk)) takeItems(a, kk, n);
-    giveItems(w, a, k.id);
+  const done = (k: Kind, isNew: boolean, text: string, keep: string[] = [], n = 1): Outcome => {
+    for (const [kk, c] of Object.entries(need)) if (!keep.includes(kk)) takeItems(a, kk, c);
+    giveItems(w, a, k.id, n);
     made(w, a, k, isNew, nk);
     fields.gives = [k.id];
     const uses = Object.fromEntries(Object.entries(need).filter(([kk]) => !keep.includes(kk)));
-    return outcome({ ok: true, text, uses, gives: { [k.id]: 1 }, fields, newKinds: nk });
+    return outcome({ ok: true, text, uses, gives: { [k.id]: n }, fields, newKinds: nk, numbers: { heat: level } });
+  };
+  // Not hot enough: remember where it was tried, so "a ringed fire isn't hot enough for this" is something people can learn.
+  const cool = (text: string) => {
+    fields.at = fireKind(fire);
+    fields.effect = "too_cool";
+    return outcome({ text, effect: "too_cool", fields, numbers: { heat: level } });
   };
   const pot = parts.find((x) => p(x, "container") >= 0.6 && p(x, "hard") >= 0.5);
   const foods = parts.filter((x) => p(x, "edible") > 0 && x !== pot);
@@ -308,7 +433,7 @@ export function heat(w: World, a: Agent, act: Act): Outcome | "ask" {
   }
   if (parts.length !== 1) return "ask";
   const x = parts[0];
-  if (x.id.startsWith("cooked:") || x.id.startsWith("fired:") || x.id.startsWith("burning:")) return outcome({ text: `Heating the ${x.name} again did nothing more.`, fields });
+  if (/^(cooked|fired|burning|hot|melt|forge):/.test(x.id)) return outcome({ text: `Heating the ${x.name} again did nothing more.`, fields });
   if (p(x, "edible") > 0) {
     const [k, isNew] = ensure(w.kinds, `cooked:${x.id}`, () => ({
       name: x.id === "meat" ? "roast meat" : `cooked ${x.name}`,
@@ -317,18 +442,54 @@ export function heat(w: World, a: Agent, act: Act): Outcome | "ask" {
     }));
     return done(k, isNew, `Holding the ${x.name} over the fire cooked it.`);
   }
+  if (sticky(x)) {
+    const [k, isNew] = ensure(w.kinds, `melt:${x.id}`, () => ({
+      name: `melted ${x.name}`, props: { binding: 0.95, flammable: p(x, "flammable"), plastic: 0.3, toughness: 0.1 }, parts: [x.id], verb: "heat", fuel: x.fuel,
+    }));
+    return done(k, isNew, `The ${x.name} softened in the heat and ran into a thick, sticky glue.`);
+  }
   if (p(x, "plastic") >= 0.6) {
+    if (level < 1.2) return cool(`The ${x.name} dried and cracked at the edges, but an open fire wasn't hot enough to harden it.`);
+    fields.at = "hearth";
     const [k, isNew] = ensure(w.kinds, `fired:${x.id}`, () => ({
       name: x.id === "clay" ? "fired clay lump" : `fired ${x.name.replace(/^clay |^wet clay /, "clay ")}`,
       props: { ...x.props, plastic: 0, binding: 0, hard: 0.75, toughness: 0.45 },
       parts: [x.id], verb: "heat",
     }));
-    return done(k, isNew, `The heat baked the ${x.name} hard.`);
+    return done(k, isNew, `The heat of the ringed fire baked the ${x.name} hard.`);
   }
-  if (p(x, "flammable") >= 0.6 && p(x, "long") >= 0.5) {
-    const [k, isNew] = ensure(w.kinds, `burning:${x.id}`, () => ({ name: `burning ${x.name}`, props: { ...x.props, flammable: 1 }, parts: [x.id], verb: "heat" }));
-    const out = done(k, isNew, `The end of the ${x.name} caught fire. They could carry the flame.`);
-    return out;
+  if (p(x, "metal") >= 0.8) {
+    if (level < 1.5) return cool(`The ${x.name} got hot, but stayed as hard as ever.`);
+    fields.at = "forge";
+    const [k, isNew] = ensure(w.kinds, `hot:${x.id}`, () => ({ name: `glowing ${x.name}`, props: { ...x.props, plastic: 0.7 }, parts: [x.id], verb: "heat", cools: 36 }));
+    return done(k, isNew, `The ${x.name} glowed orange in the charcoal and went soft enough to work.`);
+  }
+  if (p(x, "metal") >= 0.3) {
+    if (level < 2.2) return level >= 1.9 ? cool(`The ${x.name} glowed and sweated, but the fire wasn't quite hot enough.`) : outcome({ text: `The ${x.name} got hot, then cooled. Nothing changed.`, fields });
+    fields.at = "forge";
+    const [k, isNew] = ensure(w.kinds, `smelt:${x.id}`, () => ({
+      name: "metal lump", props: { hard: 0.8, heavy: 0.85, metal: 1, toughness: clamp01(p(x, "toughness") + 0.15) }, parts: [x.id], verb: "heat",
+    }));
+    return done(k, isNew, `In the roaring charcoal the ${x.name} bled bright metal, which cooled into a lump.`);
+  }
+  const woody = p(x, "flammable") >= 0.5 && p(x, "hard") >= 0.3 && x.verb !== "join";
+  if (woody && fire.covered) {
+    fields.at = "kiln";
+    return done(w.kinds.charcoal, false, `Starved of air under the cover, the ${x.name} blackened into charcoal instead of burning away.`, [], Math.max(1, Math.round(p(x, "heavy") * 2.5)));
+  }
+  if (skin(x)) {
+    if (!fire.covered) {
+      fields.effect = "scorched";
+      return outcome({ text: `The ${x.name} dried stiff and scorched at the edges.`, effect: "scorched", fields });
+    }
+    fields.at = "kiln";
+    const [k, isNew] = leather(w, x);
+    return done(k, isNew, `Held in the thick smoke, the ${x.name} cured into ${k.name}.`);
+  }
+  const lamp = p(x, "container") >= 0.5 && p(x, "hard") >= 0.4;
+  if (p(x, "flammable") >= 0.6 && (p(x, "long") >= 0.5 || lamp)) {
+    const [k, isNew] = ensure(w.kinds, `burning:${x.id}`, () => ({ name: `${lamp ? "lit" : "burning"} ${x.name}`, props: { ...x.props, flammable: 1 }, parts: [x.id], verb: "heat" }));
+    return done(k, isNew, lamp ? `The wick of the ${x.name} caught and burned low and steady. They could carry the flame.` : `The end of the ${x.name} caught fire. They could carry the flame.`);
   }
   if (p(x, "flammable") >= 0.7) {
     takeItems(a, x.id);
@@ -337,6 +498,13 @@ export function heat(w: World, a: Agent, act: Act): Outcome | "ask" {
   }
   if (p(x, "hard") >= 0.5 && p(x, "flammable") < 0.2) return outcome({ text: `The ${x.name} got hot, then cooled. Nothing changed.`, fields });
   return "ask";
+}
+export function leather(w: World, hide: Kind) {
+  return ensure(w.kinds, `leather:${hide.id}`, () => ({
+    name: hide.id === "hide" ? "leather" : `${hide.name} leather`,
+    props: { insulating: clamp01(p(hide, "insulating") + 0.05), flexible: clamp01(p(hide, "flexible") + 0.25), fibrous: p(hide, "fibrous") * 0.6, toughness: clamp01(p(hide, "toughness") + 0.3), flammable: p(hide, "flammable") * 0.6 },
+    parts: [hide.id], verb: "heat",
+  }));
 }
 
 // ---------- wet ----------
@@ -485,32 +653,43 @@ export function place(w: World, a: Agent, act: Act): Outcome {
   const flame = parts.find((k) => k.id.startsWith("burning:"));
   const fuels = parts.filter((k) => p(k, "flammable") >= 0.5 && k !== flame);
   if (flame && (fuels.length || fire)) {
-    take();
+    // A lamp lends its flame and keeps burning; a torch is used up.
+    for (const [k, n] of Object.entries(need)) takeItems(a, k, k === flame.id && p(flame, "container") >= 0.5 ? n - 1 : n);
     const fuel = fuels.reduce((t, k) => t + (k.fuel ?? 20), 20);
     if (fire) { fire.hp = Math.min(400, (fire.hp ?? 0) + fuel); changed.add(fire.id); }
-    else changed.add(addThing(w, "fire", a.x, a.y, { owner: a.id, hp: fuel, maxHp: 400, born: w.t }).id);
+    else changed.add(addThing(w, "fire", a.x, a.y, { owner: a.id, hp: fuel, maxHp: 400, born: w.t, heat: 1 }).id);
     fields.builds = "fire";
     return outcome({ ok: true, text: `Setting the ${flame.name} into ${fuels.length ? fuels.map((k) => `the ${k.name}`).join(" and ") : "the fire"} started a campfire.`, uses: need, builds: "fire", fields });
   }
   if (fire && fuels.length === parts.length) {
     take();
     fire.hp = Math.min(400, (fire.hp ?? 0) + fuels.reduce((t, k) => t + (k.fuel ?? 20), 0));
+    const coal = fuels.filter((k) => (k.burns ?? 1) > 1.2).reduce((t, k) => t + (k.fuel ?? 20), 0);
+    fire.charcoal = (fire.charcoal ?? 0) + coal;
+    fire.heat = fireHeat(w, fire);
     changed.add(fire.id);
-    fields.at = "fire"; fields.builds = "fed_fire";
-    return outcome({ ok: true, text: `Feeding ${list(w, need)} to the fire built it up.`, uses: need, builds: "fed_fire", fields });
+    const forge = coal > 0 && !!fire.contained;
+    fields.at = forge ? "hearth" : "fire"; fields.builds = forge ? "forge" : "fed_fire";
+    return outcome({ ok: true, text: forge ? `The ${list(w, need)} caught inside the ring and glowed white-hot.` : `Feeding ${list(w, need)} to the fire built it up.`, uses: need, builds: fields.builds, fields, numbers: { heat: fire.heat } });
   }
-  if (fire && parts.every((k) => p(k, "hard") >= 0.5 && p(k, "flammable") < 0.2)) {
+  // Stone or clay set around a fire rings it in; heaped over a fire that's already ringed, it closes it off to smolder.
+  if (fire && parts.every((k) => (p(k, "hard") >= 0.5 && p(k, "flammable") < 0.2) || p(k, "plastic") >= 0.6)) {
     take();
     let ring = w.things.find((t) => t.kind === "structure" && t.x === fire.x && t.y === fire.y);
     if (!ring) ring = addThing(w, "structure", fire.x, fire.y, { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t });
     for (const [k, n] of Object.entries(need)) ring.parts![k] = (ring.parts![k] ?? 0) + n;
     ring.shelter = { ...shelterOf(w, ring.parts!), tier: 0 };
-    const hard = Object.values(ring.parts!).reduce((t, n) => t + n, 0);
-    const wasContained = fire.contained;
-    fire.contained = hard >= 3;
+    const walls = Object.values(ring.parts!).reduce((t, n) => t + n, 0);
+    const was = { contained: !!fire.contained, covered: !!fire.covered };
+    fire.contained = walls >= 3;
+    fire.covered = was.covered || (was.contained && (walls >= 6 || parts.some((k) => p(k, "plastic") >= 0.6)));
+    fire.heat = fireHeat(w, fire);
     changed.add(ring.id); changed.add(fire.id);
-    fields.at = "fire"; fields.builds = fire.contained ? "hearth" : "ring";
-    return outcome({ ok: fire.contained && !wasContained, text: fire.contained ? `Ringing the fire with ${list(w, need)} closed it in. The flames stayed put and burned steady.` : `They set ${list(w, need)} beside the fire.`, uses: need, builds: fields.builds, fields });
+    fields.at = was.contained ? "hearth" : "fire";
+    fields.builds = fire.covered ? "kiln" : fire.contained ? "hearth" : "ring";
+    const text = fire.covered && !was.covered ? `Heaping ${list(w, need)} over the ringed fire closed it in. It smoldered low and smoky under the cover.`
+      : fire.contained && !was.contained ? `Ringing the fire with ${list(w, need)} closed it in. The flames stayed put and burned steady.` : `They set ${list(w, need)} beside the fire.`;
+    return outcome({ ok: (fire.contained && !was.contained) || (fire.covered && !was.covered), text, uses: need, builds: fields.builds, fields, numbers: { heat: fire.heat } });
   }
   const pit = w.things.find((t) => t.kind === "pit" && dist(a, t) <= 1);
   const cover = parts.filter((k) => p(k, "long") >= 0.5 || p(k, "fibrous") >= 0.6);
@@ -560,8 +739,7 @@ export function place(w: World, a: Agent, act: Act): Outcome {
 }
 
 // Putting things away inside a home keeps them out of your hands and out of the weather.
-export function stash(w: World, a: Agent, keepFood = 3) {
-  const home = homeOf(w, a);
+export function stash(w: World, a: Agent, keepFood = 3, home = homeOf(w, a)) {
   if (!home || dist(a, home) > 1) return 0;
   home.store ??= [];
   let food = 0, moved = 0;

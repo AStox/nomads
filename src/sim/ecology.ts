@@ -1,6 +1,6 @@
 // The world keeps moving on its own: weather, fire, plants, animals, rot, and sickness.
 import { THING_MATERIAL, clamp01, ensure, p } from "./materials";
-import { changed, dropPile, newKinds, removeThing } from "./physics";
+import { changed, dropPile, fireHeat, nearFire, newKinds, removeThing } from "./physics";
 import { see } from "./beliefs";
 import {
   DAY, H, W, Tile, addAnimal, addThing, dayOfYear, dist, isNight, log, nearWater, seasonOf, tileAt, walkable,
@@ -177,7 +177,11 @@ function fire(w: World) {
   const sources: { t: Thing; heat: number; by?: string }[] = [];
   for (const t of w.things) {
     if (t.kind === "fire") {
-      t.hp = (t.hp ?? 0) - (t.contained ? 0.5 : 1) - (rainy(w) && !t.contained ? 2 : 0);
+      const burn = t.covered ? 0.3 : t.contained ? 0.5 : 1;
+      t.hp = (t.hp ?? 0) - burn - (rainy(w) && !t.contained ? 2 : 0);
+      if (t.charcoal) t.charcoal = Math.max(0, t.charcoal - burn);
+      const h = fireHeat(w, t);
+      if (h !== (t.heat ?? 1)) { t.heat = h; changed.add(t.id); }
       if (t.hp <= 0) {
         removeThing(w, t);
         log(w, "fire_out", t.owner ? [t.owner] : [], t, rainy(w) ? "The rain put out a campfire." : "A campfire burned out.");
@@ -226,6 +230,10 @@ function plants(w: World) {
   const growing = season !== "winter";
   for (const t of [...w.things]) {
     if (t.burning) continue;
+    if (t.scarred && (t.kind === "tree" || t.kind === "stump") && (t.resin ?? 0) < 2 && w.t - t.scarred > DAY && Math.random() < 1 / (DAY * 1.5)) {
+      t.resin = (t.resin ?? 0) + 1;
+      changed.add(t.id);
+    }
     if (t.kind === "bush") {
       const regrow = season === "winter" ? 1 / 500 : season === "autumn" ? 1 / 140 : 1 / 70;
       if ((t.n ?? 0) < 4 && Math.random() < regrow) { t.n = (t.n ?? 0) + 1; changed.add(t.id); }
@@ -239,7 +247,7 @@ function plants(w: World) {
       if (Math.round((t.stage ?? 0) * 20) !== Math.round(((t.stage ?? 0) - 1 / (3 * DAY)) * 20)) changed.add(t.id);
       if (t.stage >= 1) matured(w, t);
     } else if ((t.kind === "stump" || t.kind === "burnt_stump") && t.until! <= w.t && growing) {
-      t.kind = "tree"; t.hp = 100; t.maxHp = 100; delete t.until; changed.add(t.id);
+      t.kind = "tree"; t.hp = 100; t.maxHp = 100; delete t.until; delete t.scarred; delete t.resin; delete t.bark; changed.add(t.id);
     } else if (t.kind === "ash" && t.until! <= w.t) removeThing(w, t);
     // Trees drop nuts in autumn. They keep for weeks, if someone gathers and stores them.
     else if (t.kind === "tree" && season === "autumn" && Math.random() < 1 / 2500) dropPile(w, t.x + (Math.random() < 0.5 ? 1 : -1), t.y, "nut", 1);
@@ -249,6 +257,8 @@ function plants(w: World) {
     if (!walkable(w, x, y) || w.things.some((t) => t.x === x && t.y === y)) return;
     const forest = tileAt(w, x, y) === Tile.Forest, shore = nearWater(w, x, y, 1);
     const r = Math.random();
+    // Weather wears reddish stones out of rocky ground now and then.
+    if (tileAt(w, x, y) === Tile.Rock && r > 0.94) { dropPile(w, x, y, "ore", 1); return; }
     const kind = shore && growing ? (r < 0.7 ? "reeds" : "clay") : forest ? (!growing ? (r < 0.2 ? "mushroom" : "stick") : r < 0.45 ? "mushroom" : r < 0.6 ? "herb" : "stick") : r < 0.5 ? "stick" : "stone";
     changed.add(addThing(w, kind, x, y, kind === "reeds" ? { hp: 6, maxHp: 6 } : {}).id);
   }
@@ -399,15 +409,22 @@ function decay(w: World) {
     return !!kind?.shelf && w.t - born > kind.shelf * DAY;
   };
   for (const a of w.agents) {
+    const f = nearFire(w, a);
+    const forge = !!f && fireHeat(w, f) >= 1.5;
     for (const s of a.inv) {
+      // Hot metal stays soft only while it's kept at a hot fire.
+      const k = w.kinds[s.k];
+      if (k?.cools && k.parts?.[0]) { if (forge) s.born = w.t; else if (w.t - s.born > k.cools) { s.k = k.parts[0]; s.born = w.t; } continue; }
       if (!spoiled(s.k, s.born)) continue;
       if (s.k.startsWith("rotten:")) { a.inv.splice(a.inv.indexOf(s), 1); continue; }
       log(w, "spoil", [a.id], a, `${a.name}'s ${w.kinds[s.k]?.name} went bad.`);
       s.k = rot(s.k); s.born = w.t;
     }
-    if (a.wearing && (a.wearing.hp -= 0.006) <= 0) { log(w, "break", [a.id], a, `${a.name}'s ${w.kinds[a.wearing.k]?.name} wore through.`); a.wearing = null; }
+    if (a.wearing && (a.wearing.hp -= 0.006 * (1.3 - p(w.kinds[a.wearing.k], "toughness"))) <= 0) { log(w, "break", [a.id], a, `${a.name}'s ${w.kinds[a.wearing.k]?.name} wore through.`); a.wearing = null; }
   }
   for (const t of [...w.things]) {
+    const cools = t.kind === "item" && t.item ? w.kinds[t.item]?.cools : undefined;
+    if (cools && w.t - (t.born ?? w.t) > cools) { t.item = w.kinds[t.item!].parts![0]; t.born = w.t; changed.add(t.id); }
     if (t.kind === "item" && t.item && spoiled(t.item, t.born ?? w.t)) {
       if (t.item.startsWith("rotten:")) { removeThing(w, t); continue; }
       t.item = rot(t.item); t.born = w.t; changed.add(t.id);

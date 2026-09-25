@@ -6,9 +6,11 @@ import { iceChanged, pathChanges } from "./src/sim/ecology";
 import { stageOf } from "./src/sim/world";
 import { beliefText } from "./src/sim/beliefs";
 import { counters, flush, jevCalls, logTo, tickMs, traces } from "./src/sim/trace";
+import { campSummary, groupsChanged, groupsDetail, liveCamps, standing } from "./src/sim/groups";
 
 const PORT = Number(process.env.PORT ?? 8095);
-const DATA = `${import.meta.dir}/data`;
+// NOMADS_DATA lets a second, offline copy run beside the live world without touching its save.
+const DATA = process.env.NOMADS_DATA ?? `${import.meta.dir}/data`;
 const SAVE = `${DATA}/world.json`;
 const BASE_MS = 500;
 if (!process.env.TYPESAFE_API_KEY && process.env.NOMADS_BRAIN !== "random") throw new Error("missing TYPESAFE_API_KEY");
@@ -60,8 +62,9 @@ function loop() {
       kinds: kindsById([...newKinds, ...changedKinds]),
       paths: [...pathChanges].map((i) => ({ i, v: w.paths[i] })),
       ...(iceChanged.now ? { ice: w.ice } : {}),
+      ...(groupsChanged.now ? { groups: campSummary(w) } : {}),
     };
-    iceChanged.now = false;
+    iceChanged.now = false; groupsChanged.now = false;
     changed.clear(); removed.clear(); newKinds.clear(); changedKinds.clear(); pathChanges.clear();
     for (const c of clients) send(c, msg);
     flush();
@@ -85,6 +88,17 @@ function stats() {
     jev: { calls: w.jev.calls, tokens: w.jev.tokens, cost: (w.jev.tokens * 0.042) / 1e6, rulings: w.jev.rulings, costPerDay: w.t > DAY ? ((w.jev.tokens * 0.042) / 1e6) / (w.t / DAY) : null },
     tickMs, counters,
     agents: w.agents.map((a) => ({ id: a.id, status: a.status, goal: a.goal?.type, beliefs: Object.keys(a.beliefs).length, inv: a.inv.length, needs: a.needs, sick: !!a.sickness })),
+    groups: {
+      camps: liveCamps(w).map((c) => ({
+        id: c.id, name: c.name, members: c.members.length, leader: c.leader, precedents: c.precedents.length,
+        customs: c.customs.filter((k) => !k.faded).map((k) => k.text),
+        standing: Object.fromEntries(c.members.filter((id) => standing(c, id).decided).map((id) => [id, standing(c, id)])),
+      })),
+      formerCamps: w.camps.length - liveCamps(w).length,
+      incidents: w.incidents.length,
+      judged: w.incidents.filter((i) => i.group).length,
+      precedents: w.camps.reduce((t, c) => t + c.precedents.length, 0),
+    },
   };
 }
 
@@ -108,6 +122,7 @@ Bun.serve({
             agents: w.agents.map((a) => summary(w, a)), animals: animalView(), events: w.events.slice(-300),
             kinds: w.kinds, weather: w.weather, paths: w.paths.join(""),
             ice: w.tiles.map((_, i) => (w.ice.includes(i) ? "1" : "0")).join(""),
+            groups: campSummary(w),
           });
         },
         cancel() { clients.delete(ctl); },
@@ -125,6 +140,7 @@ Bun.serve({
       });
     }
     if (p === "/api/people") return json(Object.values(w.people));
+    if (p === "/api/groups") return json(groupsDetail(w));
     if (p === "/api/events") {
       const who = q.get("agent"), before = num(q.get("before"), Infinity);
       return json(w.events.filter((e) => e.id < before && (!who || e.who.includes(who))).slice(-200));

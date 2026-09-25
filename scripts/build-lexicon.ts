@@ -43,32 +43,43 @@ const CATS: [string, string, string[]][] = [
   ["covering", "Something that covers or protects: a mat, a lid, a roof, a blanket", ["03127399"]],
   ["implement", "Some other kind of tool or device", ["03569147"]],
 ];
+// Words for places, for naming camps after the land around them.
+const PLACE_CATS: [string, string, string[]][] = [
+  ["landform", "A shape of the land: a hill, hollow, ridge, cliff, or valley", ["09310874"]],
+  ["water", "Water or wet ground: a lake, pool, stream, ford, marsh, or spring", ["09248053", "09501020", "09306529"]],
+  ["woodland", "Trees: a wood, grove, thicket, or clearing", ["09306921", "08455920", "08558851"]],
+  ["open_land", "Open ground: a field, meadow, heath, or moor", ["09416498", "08587527", "08521872", "09381648", "08615857", "08588163"]],
+];
 const BANNED = /match|electr|engine|motor|gasoline|petrol|plastic|nylon|steel|iron|gun|firearm|rifle|pistol|cannon|bomb|missile|computer|radio|telephon|battery|automobile|vehicle|machine|rocket|laser|nuclear|chemical|rubber|glass|aluminum|copper|brass|bronze|silver|gold|tin |zinc|canned|carton|cellophane|paper|cardboard|photograph|camera|television|film|tape|refriger|microwave|oven|stove|kitchen appliance|dental|surgical|medical|laboratory|scientific|mechanical|hydraulic|pneumatic|clock|watch|compass|telescope|lens|sewing machine|typewriter|printing|golf|tennis|baseball|basketball|football|hockey|cricket|billiard|toy|game|coin|money|banknote/i;
-const seen = new Set<string>();
-const out: Record<string, { description: string; words: { w: string; gloss: string }[] }> = {};
 const kids = new Map<string, string[]>();
 for (const s of syns.values()) for (const h of s.hyper) (kids.get(h) ?? kids.set(h, []).get(h)!).push(s.id);
-for (const [id, description, roots] of CATS) {
-  const stack = [...roots], words: { w: string; gloss: string; f: number }[] = [];
-  const mine = new Set<string>();
-  const visited = new Set<string>();
-  while (stack.length) {
-    const cur = syns.get(stack.pop()!)!;
-    if (visited.has(cur.id)) continue;
-    visited.add(cur.id);
-    if (BANNED.test(cur.gloss)) continue;
-    for (const k of kids.get(cur.id) ?? []) stack.push(k);
-    for (const w of cur.words) {
-      if (seen.has(w) || mine.has(w) || w.split(" ").length > 2 || /[^a-z ]/.test(w) || BANNED.test(w) || w.length < 3) continue;
-      mine.add(w);
-      words.push({ w, gloss: cur.gloss.slice(0, 90), f: freq.get(`${w.toLowerCase()}|${cur.id}`) ?? 0 });
+function build(cats: [string, string, string[]][]) {
+  const seen = new Set<string>();
+  const out: Record<string, { description: string; words: { w: string; gloss: string }[] }> = {};
+  for (const [id, description, roots] of cats) {
+    const stack = [...roots], words: { w: string; gloss: string; f: number }[] = [];
+    const mine = new Set<string>();
+    const visited = new Set<string>();
+    while (stack.length) {
+      const cur = syns.get(stack.pop()!)!;
+      if (visited.has(cur.id)) continue;
+      visited.add(cur.id);
+      if (BANNED.test(cur.gloss)) continue;
+      for (const k of kids.get(cur.id) ?? []) stack.push(k);
+      for (const w of cur.words) {
+        if (seen.has(w) || mine.has(w) || w.split(" ").length > 2 || /[^a-z ]/.test(w) || BANNED.test(w) || w.length < 3) continue;
+        mine.add(w);
+        words.push({ w, gloss: cur.gloss.slice(0, 90), f: freq.get(`${w.toLowerCase()}|${cur.id}`) ?? 0 });
+      }
     }
+    // Most familiar first; naming splits long lists across several Jev questions, so nothing is cut.
+    const top = words.sort((a, b) => b.f - a.f);
+    for (const x of top) seen.add(x.w);
+    out[id] = { description, words: top.map(({ w, gloss }) => ({ w, gloss })) };
+    console.log(id, words.length, "->", top.length, top.slice(0, 12).map((x) => x.w).join(", "));
   }
-  // Most familiar first; naming splits long lists across several Jev questions, so nothing is cut.
-  const top = words.sort((a, b) => b.f - a.f);
-  for (const x of top) seen.add(x.w);
-  out[id] = { description, words: top.map(({ w, gloss }) => ({ w, gloss })) };
-  console.log(id, words.length, "->", top.length, top.slice(0, 12).map((x) => x.w).join(", "));
+  console.log("words:", Object.values(out).reduce((t, c) => t + c.words.length, 0));
+  return out;
 }
-await Bun.write(`${import.meta.dir}/../src/sim/lexicon.json`, JSON.stringify(out));
-console.log("words:", Object.values(out).reduce((t, c) => t + c.words.length, 0));
+await Bun.write(`${import.meta.dir}/../src/sim/lexicon.json`, JSON.stringify(build(CATS)));
+await Bun.write(`${import.meta.dir}/../src/sim/places.json`, JSON.stringify(build(PLACE_CATS)));

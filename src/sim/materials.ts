@@ -1,7 +1,7 @@
 // Materials are bags of properties. Items are kinds in a registry that grows as people make new things.
 export const PROPS = [
   "hard", "sharp", "heavy", "long", "flexible", "fibrous", "binding", "flammable",
-  "edible", "toxic", "plastic", "container", "insulating", "medicinal", "seed", "toughness",
+  "edible", "toxic", "plastic", "container", "insulating", "medicinal", "seed", "toughness", "metal",
 ] as const;
 export type Prop = (typeof PROPS)[number];
 export type Props = Partial<Record<Prop, number>>;
@@ -18,6 +18,8 @@ export type Kind = {
   shelf?: number; // days before food spoils
   breaks?: Record<string, number>; // what it turns into when it fails
   fuel?: number; // ticks of fire it feeds
+  burns?: number; // how much hotter than wood it burns
+  cools?: number; // ticks before a hot thing goes back to what it was
   count?: number; // times anyone has made it
   named?: boolean; // people settled on a common name
   plain?: string; // the descriptive name before that
@@ -43,6 +45,13 @@ export const BASE: Record<string, Omit<Kind, "id">> = {
   clay: { name: "wet clay", props: { plastic: 0.9, heavy: 0.5, binding: 0.4, toughness: 0.1 } },
   log: { name: "log", props: { heavy: 0.8, long: 0.8, hard: 0.5, flammable: 0.6, toughness: 0.6 }, grain: "split", breaks: { plank: 2 }, fuel: 150 },
   plank: { name: "plank", props: { long: 0.7, hard: 0.5, heavy: 0.4, flammable: 0.6, toughness: 0.4 }, fuel: 80 },
+  bark: { name: "bark", props: { fibrous: 0.7, flexible: 0.6, flammable: 0.7, insulating: 0.3, binding: 0.3, toughness: 0.15 }, fuel: 15 },
+  resin: { name: "resin", props: { binding: 0.55, flammable: 0.8, toughness: 0.1 }, fuel: 30 },
+  flint: { name: "flint", props: { hard: 0.95, heavy: 0.4, toughness: 0.6 }, grain: "shatter", breaks: { flint_blade: 1 } },
+  flint_blade: { name: "flint blade", props: { hard: 0.9, sharp: 0.9, heavy: 0.2, toughness: 0.45 } },
+  fat: { name: "fat", props: { edible: 0.25, flammable: 0.9, binding: 0.15, toughness: 0.02 }, shelf: 4, fuel: 60 },
+  charcoal: { name: "charcoal", props: { flammable: 0.95, hard: 0.2, heavy: 0.1, toughness: 0.05 }, fuel: 150, burns: 1.54 },
+  ore: { name: "reddish stone", props: { hard: 0.8, heavy: 0.9, toughness: 0.7, metal: 0.6 } },
 };
 
 // World things are made of materials too.
@@ -53,8 +62,8 @@ export const THING_MATERIAL: Record<string, { toughness: number; hp: number; fla
   reeds: { toughness: 0.05, hp: 6, flammable: 0.8, breaks: { fiber: 2 } },
   boulder: { toughness: 0.85, hp: 120, flammable: 0, breaks: { stone: 3 } },
   stump: { toughness: 0.5, hp: 40, flammable: 0.4, breaks: { stick: 1 } },
-  deer: { toughness: 0.1, hp: 30, flammable: 0, breaks: { meat: 3, hide: 1, bone: 2 } },
-  wolf: { toughness: 0.15, hp: 35, flammable: 0, breaks: { meat: 2, hide: 1, bone: 1 } },
+  deer: { toughness: 0.1, hp: 30, flammable: 0, breaks: { meat: 3, hide: 1, bone: 2, fat: 1 } },
+  wolf: { toughness: 0.15, hp: 35, flammable: 0, breaks: { meat: 2, hide: 1, bone: 1, fat: 1 } },
 };
 
 export type Registry = Record<string, Kind>;
@@ -82,17 +91,19 @@ export function noun(k: Kind) {
   const name = k.name.includes("'s ") ? k.name.split("'s ").at(-1)! : k.name;
   if (name.includes("-headed ")) return name.split("-headed ")[1].split(" ").at(-1)!;
   const bare = name.split(" for ")[0];
-  for (const sep of [" lashed to ", " packed onto ", " wrapped in ", " pressed into ", " wedged into ", " strung with ", " packed in "]) if (bare.includes(sep)) return bare.split(sep)[0].split(" ").at(-1)!;
+  for (const sep of [" lashed to ", " glued to ", " packed onto ", " wrapped in ", " pressed into ", " wedged into ", " strung with ", " packed in ", " tied with ", " sealed with ", " filled with "]) if (bare.includes(sep)) return bare.split(sep)[0].split(" ").at(-1)!;
   if (bare.startsWith("bound ") || bare.startsWith("bundle of ") || bare.endsWith(" tied together")) return "bundle";
   return bare.split(" ").at(-1)!;
   return name.split(" ").at(-1)!;
 }
-export const depth = (reg: Registry, k?: Kind): number => (k?.parts?.length ? 1 + Math.max(...k.parts.map((id) => depth(reg, reg[id]))) : 0);
+// How many layers of tying-together a thing has; heating, rubbing, or hammering only change what it's made of.
+export const depth = (reg: Registry, k?: Kind): number =>
+  k?.parts?.length ? (k.verb === "join" ? 1 : 0) + Math.max(...k.parts.map((id) => depth(reg, reg[id]))) : 0;
 export function compoundName(reg: Registry, parts: Kind[]): string {
   const short = (k: Kind) => (k.parts ? (k.named ? k.name : noun(k)) : k.name);
-  const binder = parts.find((x) => p(x, "binding") >= 0.6);
+  const binder = [...parts].filter((x) => p(x, "binding") >= 0.6).sort((a, b) => p(b, "binding") - p(a, "binding"))[0];
   const rest = parts.filter((x) => x !== binder);
-  const how = binder && p(binder, "plastic") >= 0.5 ? "packed onto" : "lashed to";
+  const how = binder && p(binder, "plastic") >= 0.5 ? "packed onto" : binder && p(binder, "binding") >= 0.9 && p(binder, "fibrous") < 0.3 ? "glued to" : "lashed to";
   if (rest.length === 1 && binder) return `${short(rest[0])} strung with ${short(binder)}`;
   const top = [...rest].sort((a, b) => p(b, "sharp") + p(b, "heavy") * 0.5 - p(a, "sharp") - p(a, "heavy") * 0.5)[0];
   const handle = rest.filter((x) => x !== top).sort((a, b) => p(b, "long") - p(a, "long"))[0];
