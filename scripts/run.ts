@@ -1,7 +1,8 @@
 // Run a world headless and print what happened.
 //   NOMADS_BRAIN=random bun scripts/run.ts --ticks 20000 --seed 7     (no Jev, fast)
 //   bun scripts/run.ts --ticks 2000                                    (real Jev, needs TYPESAFE_API_KEY)
-import { newWorld, clock } from "../src/sim/world";
+//   NOMADS_BRAIN=random bun scripts/run.ts --minutes 60 --ticks 1e9    (stop on wall-clock time, with a progress line each day)
+import { DAY, newWorld, clock } from "../src/sim/world";
 import { tick } from "../src/sim/sim";
 import { changed, newKinds, removed } from "../src/sim/physics";
 import { beliefText } from "../src/sim/beliefs";
@@ -9,20 +10,26 @@ import { counters, logTo, flush, tickMs } from "../src/sim/trace";
 import { patterns, patternText, standing } from "../src/sim/groups";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
-const ticks = Number(arg("ticks", "5000")), seed = Number(arg("seed", String(Math.floor(Math.random() * 1e9))));
+const ticks = Number(arg("ticks", "5000")), minutes = Number(arg("minutes", "0")), seed = Number(arg("seed", String(Math.floor(Math.random() * 1e9))));
 const logs = arg("logs", "");
 if (logs) logTo(logs);
 const w = newWorld(seed);
 const t0 = performance.now();
-for (let i = 0; i < ticks; i++) {
+let ran = 0;
+for (let i = 0; i < ticks; i++, ran++) {
+  if (minutes && performance.now() - t0 > minutes * 60_000) break;
   tick(w);
+  if (w.t % DAY === 0) {
+    const alive = w.agents.length, dead = Object.values(w.people).filter((p) => !p.alive).length;
+    console.log(`[${Math.round((performance.now() - t0) / 1000)}s] ${clock(w.t)} ${w.weather.season}: ${alive} alive, ${dead} dead, ${w.agents.filter((a) => a.pregnant).length} expecting, camps ${w.camps.filter((c) => !c.gone).length}, laws ${Object.keys(w.laws).length}, made ${Object.values(w.kinds).filter((k) => k.made).length}, structures ${w.things.filter((t) => t.kind === "structure").length}, fires ${w.things.filter((t) => t.kind === "fire").length}, deer ${w.animals.filter((a) => a.species === "deer").length}, wolves ${w.animals.filter((a) => a.species === "wolf").length}, agentsMs ${(tickMs.agents ?? 0).toFixed(1)}`);
+  }
   changed.clear(); removed.clear(); newKinds.clear();
   if (logs) flush();
   await Bun.sleep(process.env.NOMADS_BRAIN === "random" ? 0 : 20);
 }
 const kinds: Record<string, number> = {};
 for (const e of w.events) kinds[e.kind] = (kinds[e.kind] ?? 0) + 1;
-console.log(`seed ${seed}, ${ticks} ticks, ${clock(w.t)}, ${Math.round(performance.now() - t0)}ms`);
+console.log(`seed ${seed}, ${ran} ticks, ${clock(w.t)}, ${Math.round(performance.now() - t0)}ms`);
 console.log("events", JSON.stringify(kinds));
 console.log("\nLAWS");
 for (const l of Object.values(w.laws)) console.log(`  ${l.id} [${l.source}] ${clock(l.t)} by ${l.by}: ${l.text}`);
@@ -38,6 +45,10 @@ for (const c of w.camps) {
   for (const id of new Set(c.precedents.map((p) => p.decidedBy))) { const s = standing(c, id); console.log(`    ${id}: followed ${s.followed}, defied ${s.defied}`); }
 }
 console.log(`incidents ${w.incidents.length}: ${JSON.stringify(w.incidents.reduce<Record<string, number>>((m, i) => ((m[i.act] = (m[i.act] ?? 0) + 1), m), {}))}`);
+console.log("\nPEOPLE");
+for (const p of Object.values(w.people)) console.log(`  ${p.name}: ${p.alive ? "alive" : `died ${clock(p.died!)} of ${p.cause}`}`);
+console.log("\nGOLD");
+for (const e of w.events.filter((e) => ["born", "died", "camp", "custom", "leader", "driven_out", "camp_named", "first", "law", "invent"].includes(e.kind))) console.log(`  ${clock(e.t)} ${e.kind}: ${e.text}`);
 console.log("\nAGENTS");
 for (const a of w.agents) {
   console.log(`  ${a.name}: ${a.status} | needs ${Object.entries(a.needs).map(([k, v]) => `${k} ${Math.round(v)}`).join(" ")} | carrying ${a.inv.map((s) => w.kinds[s.k]?.name).join(", ")}`);
