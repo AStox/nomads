@@ -219,46 +219,54 @@ An agent learns laws by seeing them happen, not only by doing them. Watching lig
 
 ### Groups and norms
 
-The step from a handful of people to a village. Nobody is assigned to a group; groups are noticed. Rules aren't written by us; they come out of what keeps going wrong, and only hold if people agree to them.
+The step from a handful of people to a village. Nobody is assigned to a group, and nobody writes the rules. Groups are noticed from who lives near whom, and customs build up from what the group actually did the last time something like this happened, the same way Jev's rulings on combinations become the world's physics.
 
-**Camps form on their own.** Once a day, code looks at who lives near whom. People whose homes are within 8 tiles of each other and who don't dislike each other (mutual affinity above 0.1) are linked, and each connected cluster of three or more is a camp. A camp keeps its identity from day to day by matching members, so it can grow, lose people, split when a feud cuts it in two, or merge with a neighbor. A new camp is a gold chronicle event. It starts with a place name from its founder and the nearest landmark ("Mara's camp by the lake"); after a season Jev picks a lasting name from the lexicon's place and landmark words the same way things get named.
+**Camps form on their own.** Once a day, code looks at who lives near whom. People whose homes are within 8 tiles of each other and who don't dislike each other (mutual affinity above 0.1) are linked, and each connected cluster of three or more is a camp. A camp keeps its identity from day to day by matching members, so it can grow, lose people, split when a feud cuts it in two, or merge with a neighbor. A new camp is a gold chronicle event. It starts with a place name from its founder and the nearest landmark ("Mara's camp by the lake"); after a season Jev picks a lasting name from the lexicon's place and landmark words, the same way things get named.
+
+**Incidents.** Anything one person does that lands on another, seen by at least one member, is an incident: the actions people already have (take, steal, raid a home, attack, insult, lie, refuse food or help, give, share, tend, teach), plus side effects from the world (a fire someone lit burning a home, a hidden pit catching someone, a hunter taking the last deer). Code records its features, not a verdict:
 
 ```ts
-type Group = {
-  id: string; name: string; founded: number;
-  members: string[]; center: { x: number; y: number }; radius: number;
-  rules: Norm[];
-  leader: string | null;
-  standing: Record<string, number>; // how much the others defer to each member, 0..1
-  incidents: { t: number; kind: string; by: string; against?: string; text: string }[]; // last 40, the raw material for rules
-  store?: string; // a structure the group treats as shared
-};
-type Norm = {
-  id: string; rule: RuleKey; text: string; // "Members don't steal from each other."
-  proposedBy: string; t: number; because: string; // the incident that prompted it
-  status: "proposed" | "agreed" | "rejected" | "lapsed";
-  votes: Record<string, "for" | "against" | "abstain">;
-  breaches: { t: number; by: string; seenBy: string[]; punished?: Punishment }[];
+type Incident = {
+  id: string; t: number; act: string;            // "raid", "steal", "burned_home", "refused_food", "tended"...
+  by: string; against?: string;
+  features: {
+    against_member: boolean; against_kin: boolean; against_child: boolean;
+    value: number;          // how much it cost them: items taken, health lost, a home
+    need: number;           // how desperate the doer was (hunger, cold)
+    season: string; scarcity: number; // how hard times were for everyone
+    repeat: number;         // how many times the doer has done this kind of thing before
+    seenBy: string[];
+  };
 };
 ```
 
-**Rules come from a closed set of shapes, chosen by incidents.** A rule is an action plus who it protects, forbidden or required. Actions: steal, take, raid a home, attack, insult, lie, start a fire near homes, take from the shared store, refuse food to someone starving, refuse to help someone collapsed, hunt alone in winter, teach outsiders. Scopes: members, children, the shared store, everyone. Required duties: share food with starving members, tend the collapsed, put a share of meat in the store, help rebuild a burned home. That's roughly 40 possible rules, and none of them is on until someone proposes it.
+**Reactions become precedents.** After an incident, the camp reacts. The person hurt, or the leader if there is one, chooses a response with a Jev choice from the few things a group can do: let it go, scold, demand it back (the item or double), shun (no trade, sharing, or talk for a few days), or drive them out (they lose their place in the camp and can't keep a home inside it). Jev sees the incident, the people involved and their standing, and the camp's precedents for similar cases. The chosen response runs through existing mechanics, and the pair becomes a precedent:
 
-- **Proposing:** when a member suffers or sees something from a fellow member that a rule could address (a theft, a raid, a burned home, being refused food while starving), Jev is asked whether they'd bring it to the group, and which rule shape they'd ask for, with "none" as an option. Lawful, just, or vengeful people propose more; rebels and opportunists less. Repeated incidents of the same kind raise the odds.
-- **Deciding:** a pending proposal is settled at the next council: an evening when at least half the members are within 4 tiles of a fire or the camp center. Each member present answers one Jev choice (for, against, abstain) with their traits, their relationship with the proposer, the incident, and whether the rule would stop something they themselves do. A thief tends to vote against a theft rule. It passes if "for" beats "against" and at least a third of all members voted for it. Passing is a gold event; failing is recorded too.
-- **Living under rules:** agreed rules appear in each member's Jev state as the group's rules, and any option that would break one is labeled as breaking it ("Steal from Tamsin, which breaks the camp's rule against stealing"). Nothing forbids it in code; people weigh it.
-- **Breaches:** a breach seen by a member within 6 tiles is recorded. The victim, or the leader if there is one, picks the response with a Jev choice: let it go, scold, demand it back (return the item or double), shun (members won't trade, share, or talk with them for a few days), or exile (dropped from the group; members treat them as hostile and they can't keep a home within the camp radius). Responses run through existing mechanics, and each one feeds everyone's reflections and reputations. Unseen breaches are still remembered by the one who did it.
-- **Lapsing:** a rule nobody has enforced in a year, or that was broken in front of the group and let go several times, lapses.
+```ts
+type Precedent = {
+  id: string; group: string; incident: Incident;
+  response: "let_go" | "scold" | "repay" | "shun" | "drive_out";
+  decidedBy: string; followed: string[]; defied: string[]; // who went along with it and who didn't
+};
+```
 
-**Leaders emerge from standing.** Standing is how much the others like and trust someone, weighted by age and skill. When one member's standing clearly leads, the members are asked (a Jev noul each, at a council) whether they'd accept that person settling disputes. If most would, they're the leader: they break tied votes, choose punishments, and later can ask members to do tasks (the start of professions). Standing that drops below someone else's, or a leader who breaks their own camp's rules in view, brings a challenge at the next council.
+Similar cases lean on earlier ones: when Jev judges a new incident, its state includes the most similar precedents from this camp (same act, same kind of victim, similar need and value), so a camp that shunned the last hungry thief will probably shun the next one. Nothing forces that; a sympathetic leader or an unusual case can break from it, and that break is a new precedent.
 
-**Shared store:** a member can set food or goods into a structure and call it the camp's (a new "share" action on place). Taking from it is fine; taking a lot while others go hungry is what the store rules are for.
+**Customs are just patterns in precedents.** Code summarizes each camp's precedents by act and feature: "Taking from a neighbor's store: shunned 3 times, let go once." Those summaries go into each member's Jev state as "what happens around here," so people weigh a theft against how the camp has actually treated thieves. When a pattern is strong enough (the same response to the same kind of act at least three times with no exceptions), a member may put it into words at an evening fire. The sentence is built from the pattern ("Here, anyone who raids a neighbor's home is driven out"), and it becomes the camp's spoken custom, a gold event. Spoken customs travel through gossip and teaching, so newcomers learn them faster, and they can be contradicted by later precedents until they fade.
 
-**Outsiders:** rules are about members. How a camp treats strangers is left to relationships and, later, territory.
+Different camps end up with different customs from different histories: one tolerates stealing from outsiders and exiles for stealing from kin; another lets the starving take food in winter and shuns hoarders instead.
 
-**UI:** a Groups tab (members with seals, leader, standing bars, rules with their vote tallies and breach counts, recent incidents); a faint ink outline of each camp's area on the map; memberships and standing in each person's ledger. Gold events for founding, rules agreed, exiles, and new leaders. Debug: `api/groups`, trace system "group" for every clustering, proposal, vote, breach, and punishment.
+**Leaders are whoever gets followed.** Everyone who reacts to a response either goes along with it (shuns when told to, returns the item) or defies it. Each person's standing is the share of their decisions that others followed, weighted by how many people were involved. Whoever's decisions keep getting followed ends up deciding more incidents, because people bring their grievances to them. That's a leader, with no title and no vote. A leader whose rulings start getting defied loses standing, and someone else's takes over. Their rise and fall are gold events.
 
-**Cost:** proposals are rare, and a council costs one Jev call per member present, at most once per camp per evening.
+**Shared store:** a member can set food or goods into a structure and treat it as the camp's (a new "share" action on place). Taking from it is fine; what counts as taking too much is up to the camp's precedents.
+
+**Outsiders:** incidents against non-members are recorded too, and camps react to them or not. Whether a camp protects strangers is just another pattern in its precedents.
+
+**UI:** a Groups tab (members with seals, whose decisions get followed, spoken customs, the precedent log with each incident and response, and the per-act patterns); a faint ink outline of each camp's area on the map; membership and standing in each person's ledger. Gold events for founding, spoken customs, being driven out, and changes in who leads. Debug: `api/groups`, trace system "group" for every clustering, incident, judgment, and follow or defy.
+
+**What's still fixed in code:** the actions people can take and the five ways a group can respond. Which acts matter, how harshly they're treated, and who decides all come from what happens.
+
+**Cost:** one Jev call per incident that someone saw, plus the reflections that already happen. Customs cost nothing; they're summaries.
 
 ### More materials
 
@@ -298,9 +306,9 @@ New raw materials, found in specific places so that where you live shapes what y
 ### Build order for these
 
 1. Camps: clustering, identity across days, names, the Groups tab and map outline.
-2. Incidents, proposals, councils, votes.
-3. Rules in Jev's state, breach detection, punishments, lapsing.
-4. Standing and leaders.
+2. Incidents and judged responses, recorded as precedents.
+3. Precedent summaries in Jev's state, similar-case lookup, spoken customs.
+4. Following and defying, standing, leaders.
 5. New materials and where they spawn: bark, resin, flint, fat, ore.
 6. Fire heat levels and thresholds, charcoal.
 7. Hot working and metal; resin glue, waterproofing, leather, lamps.
