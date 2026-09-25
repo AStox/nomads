@@ -1,5 +1,5 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
-import { BASE, NAME_WORDS, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, type Kind, type Props } from "./materials";
+import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, type Kind, type Props } from "./materials";
 import { DAY, Tile, YEAR, addThing, dist, iceAt, level, log, nearWater, tileAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
 import { clock, trace } from "./trace";
 
@@ -661,22 +661,4 @@ export function applyRuling(w: World, a: Agent, act: Act, key: string, r: Ruling
   return outcome({ ok: true, ruled: true, text: `${act.verb === "join" ? "Pressing" : "Working"} the ${names.join(" and ")} together made a ${k.name}.`, uses: need, gives: { [k.id]: 1 }, fields, newKinds: nk });
 }
 
-// Candidate common names for a made kind, from what it's like.
-export function nameCandidates(w: World, k: Kind, maker?: string): string[] {
-  const c = new Set<string>([k.name]);
-  const s = p(k, "sharp"), l = p(k, "long"), hv = p(k, "heavy"), fl = p(k, "flexible");
-  const pick = (...words: string[]) => words.forEach((x) => NAME_WORDS.includes(x) && c.add(x));
-  if (s >= 0.5 && l >= 0.5 && hv >= 0.35) pick("axe", "adze", "pick");
-  if (s >= 0.3 && l >= 0.6 && hv < 0.35) pick("spear", "digging stick");
-  if (s >= 0.5 && l < 0.5) pick("knife", "blade", "awl");
-  if (s < 0.3 && hv >= 0.4 && p(k, "hard") >= 0.4) pick("hammer", "club");
-  if (fl >= 0.8 && l >= 0.5) pick("line", "bow", "drill", "sling");
-  if (p(k, "container") >= 0.5) pick("bowl", "jar", "basket");
-  if (p(k, "insulating") >= 0.5) pick("mat", "cloak");
-  if (p(k, "binding") >= 0.8 && !l) pick("rope");
-  if (k.id.startsWith("burning:")) pick("torch");
-  if (k.id.startsWith("stew:")) pick("stew");
-  if (maker) c.add(`${maker}'s ${[...c].at(-1)}`);
-  return [...c].slice(0, 8);
-}
 export { BASE };

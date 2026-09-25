@@ -4,7 +4,7 @@ import {
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, type Kind } from "./materials";
 import {
-  applyRuling, changed, count, counts, digTick, eat, force, giveItems, heat, homeOf, join, nameCandidates, place as placeItems, plant,
+  applyRuling, changed, count, counts, digTick, eat, force, giveItems, heat, homeOf, join, place as placeItems, plant,
   removeThing, rubTick, shape, stash, strikeDamage, strikeTick, takeItems, throwTick, unstash, wearIt, wet, type Outcome,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
@@ -524,11 +524,17 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
     if (!kind?.made) continue;
     kind.count = (kind.count ?? 0) + 1;
     if (kind.count >= 3 && !kind.named && !namingNow.has(k)) {
-      const candidates = nameCandidates(w, kind, a.name);
-      if (candidates.length < 2) { kind.named = true; continue; }
       namingNow.add(k);
-      nameIt(w, a, kind, candidates).then((name) => {
+      // What people actually do with it matters more to what they call it than what it's made of.
+      const uses = [...new Set(w.agents.flatMap((x) => Object.values(x.beliefs))
+        .filter((b) => b.fields.tool === k || b.fields.inputs.includes(k))
+        .map((b) => sentence(w, b.fields, b.ticks)))].slice(0, 6);
+      nameIt(w, a, kind, uses).then((word) => {
         kind.named = true;
+        // Two different things can share a word; tell them apart by what they're made of.
+        const taken = word && Object.values(w.kinds).some((x) => x.id !== k && x.name === word);
+        const head = kind.parts?.map((id) => w.kinds[id]).find((x) => x && !x.parts)?.name.split(" ").at(-1);
+        const name = taken && head ? `${head} ${word}` : word;
         if (name && name !== kind.name) {
           kind.plain = kind.name;
           log(w, "first", [a.id], a, `People have started calling the ${kind.name} ${an(name)}.`);

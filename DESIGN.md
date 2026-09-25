@@ -165,7 +165,12 @@ Every Jev ruling is cached as a **world law** keyed by the operation and the rou
 
 ### 4. Naming things without writing text
 
-Jev can't invent a word, so names come from templates over the parts and properties: "stone-headed stick," "twisted reed cord," "fired clay bowl." When a compound becomes common, a Jev choice picks a short name from a generated list of candidates (the maker's name, the purpose, the material). This is how "Mara's hook" or "the long blade" can end up as the world's word for something.
+Jev can't invent a word, so a made thing starts with a descriptive name built from its parts: "stone-headed stick," "twisted fiber cord," "stick packed in fiber." After it has been made three times, people settle on a common word, chosen by Jev from about 3,000 real object nouns taken from WordNet (`src/sim/lexicon.json`, rebuilt by `scripts/build-lexicon.ts`), grouped into 17 kinds of thing (cutting tool, weapon, vessel, rope, clothing, shelter, light, trap, dish, and so on).
+
+1. Jev is shown what people have actually done with the thing (from everyone's beliefs, like "striking a tree with it brings it down") plus what it's like and what it's made of. The working name is left out so it doesn't anchor the choice.
+2. Jev picks what kind of thing it is. Every kind with at least a 15% chance goes forward, up to three.
+3. All the words in those kinds are split into lists of 240, Jev picks favorites from each list in one call, and then the final word from the top three of each list. "None of these" keeps the descriptive name.
+4. If another made thing already has that word, the new one gets its material in front ("bone knife").
 
 ### 5. World systems that collide
 

@@ -6,6 +6,7 @@ import { TRAITS } from "./traits";
 import { PROPS, type Kind, type Props } from "./materials";
 import { beliefText } from "./beliefs";
 import { jevLog } from "./trace";
+import LEXICON from "./lexicon.json";
 
 const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 // NOMADS_BRAIN=random answers every question with random numbers, for fast offline runs of the physics.
@@ -293,10 +294,36 @@ export async function rule(w: World, a: Agent, attempt: string, parts: Kind[], t
   return { useful: ans.useful.noul! >= 0.6 && novel, name: templateName, props };
 }
 
-// When something has been made a few times, people settle on a word for it.
-export async function nameIt(w: World, a: Agent, k: Kind, candidates: string[]) {
-  const ans = await ask(w, "name", a.id, { thing: { name: k.name, properties: k.props, made_from: (k.parts ?? []).map((id) => w.kinds[id]?.name ?? id) }, maker: a.name }, {
-    name: { type: "choice", instructions: `People keep making this thing. What would they most naturally come to call it?`, criteria: Object.fromEntries(candidates.map((c) => [c, null])) },
+// When something has been made a few times, people settle on a word for it: first what kind of thing it is, then which word.
+type Lexicon = Record<string, { description: string; words: { w: string; gloss: string }[] }>;
+const LEX = LEXICON as Lexicon;
+export async function nameIt(w: World, a: Agent, k: Kind, uses: string[]): Promise<string | null> {
+  const state = {
+    what_people_have_done_with_it: uses.length ? uses : ["nothing yet beyond making it"],
+    // The working name ("stone-headed stick") would anchor the choice, so describe it instead.
+    thing: { is: describeKind(k).replace(/^[^(]*\(?/, "").replace(/\)$/, ""), made_from: (k.parts ?? []).map((id) => w.kinds[id]?.name ?? id) },
+  };
+  const kinds = Object.fromEntries(Object.entries(LEX).map(([id, c]) => [id, c.description]));
+  const first = await ask(w, "name", a.id, state, {
+    category: { type: "choice", instructions: "People keep making and using this thing. What kind of thing would they think of it as?", criteria: { ...kinds, none: "Not really a kind of thing anyone would have a word for" } },
   });
-  return ans.name.choice!;
+  // Keep every kind of thing Jev thinks is plausible, not just the top one, and let the words compete.
+  const cats = Object.entries(first.category.probabilities!).filter(([c, pr]) => c !== "none" && LEX[c] && pr >= 0.15).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([c]) => c);
+  if (!cats.length) return null;
+  // Every word in those kinds gets a look: split into Jev-sized lists, take each list's favorites, then pick among them.
+  const all = cats.flatMap((c) => LEX[c].words);
+  const chunks: typeof all[] = [];
+  for (let i = 0; i < all.length; i += 240) chunks.push(all.slice(i, i + 240));
+  const ctx = { ...state, kind_of_thing: cats.map((c) => LEX[c].description) };
+  const instructions = "People name tools after what they do with them. Given mainly what_people_have_done_with_it, which of these words would they most naturally come to call it?";
+  const heats = await ask(w, "name", a.id, ctx, Object.fromEntries(chunks.map((ch, i) => [`list${i}`, {
+    type: "choice" as const, instructions, criteria: Object.fromEntries(ch.map((x) => [x.w, x.gloss])),
+  }])));
+  const finalists = Object.values(heats).flatMap((ans) => Object.entries(ans.probabilities!).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([word]) => word));
+  const gloss = new Map(all.map((x) => [x.w, x.gloss]));
+  const second = await ask(w, "name", a.id, ctx, {
+    word: { type: "choice", instructions, criteria: { ...Object.fromEntries(finalists.map((x) => [x, gloss.get(x) ?? null])), "none of these": "No word here fits it well" } },
+  });
+  const word = second.word.choice!;
+  return word === "none of these" ? null : word;
 }

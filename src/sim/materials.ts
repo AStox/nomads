@@ -96,7 +96,3 @@ export function compoundName(reg: Registry, parts: Kind[]): string {
   return `bound ${[...new Set(rest.map(noun))].join(" and ")}`;
 }
 
-export const NAME_WORDS = [
-  "axe", "adze", "spear", "knife", "blade", "club", "hammer", "pick", "awl", "hook", "line", "bow", "drill",
-  "bowl", "jar", "basket", "mat", "cloak", "rope", "torch", "stew", "brick", "tile", "wedge", "digging stick", "sling",
-];
