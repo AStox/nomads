@@ -174,7 +174,7 @@ export type Precedent = {
 export type Custom = { id: string; key: string; text: string; response: Response; spokenBy: string; t: number; held: number; broken: number; faded?: number };
 export type Camp = {
   id: string; name: string; named: boolean; founder: string; founded: number; members: string[]; x: number; y: number;
-  leader: string | null; precedents: Precedent[]; customs: Custom[];
+  leader: string | null; leaderSince?: number; precedents: Precedent[]; customs: Custom[];
   shunned: Record<string, { until: number; precedent: string }>;
   exiled: Record<string, { until: number; precedent: string }>;
   store?: string; gone?: number; mergedInto?: string; from?: string;

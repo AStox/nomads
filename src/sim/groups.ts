@@ -365,10 +365,13 @@ function leaders(w: World, camp: Camp) {
     .map((id) => ({ id, ...standing(camp, id) })).filter((x) => x.score >= 2 && (x.share ?? 0) >= 0.6).sort((x, y) => y.score - x.score)[0];
   const now = cur && camp.members.includes(cur) ? standing(camp, cur) : null;
   let next = cur;
-  if (!now || (now.share ?? 1) < 0.5) next = best?.id ?? null;
-  else if (best && best.id !== cur && best.score > now.score * 1.25 + 0.5) next = best.id;
+  // Standing shifts slowly: one good week doesn't unseat someone people have long listened to.
+  const settled = cur && w.t - (camp.leaderSince ?? 0) < DAY * 5;
+  if (!now || ((now.share ?? 1) < 0.4 && (!settled || (now.share ?? 1) < 0.25))) next = best?.id ?? null;
+  else if (!settled && best && best.id !== cur && (now.share ?? 1) < 0.6 && best.score > now.score * 2 + 1) next = best.id;
   if (next === cur) return;
   camp.leader = next;
+  camp.leaderSince = w.t;
   const s = next ? standing(camp, next) : null;
   const text = next
     ? `People in ${camp.name} now bring their grievances to ${nameOf(w, next)}, whose word has been followed ${s!.followed} times out of ${s!.followed + s!.defied}.${cur ? ` ${nameOf(w, cur)}'s word no longer carries the camp.` : ""}`
@@ -450,7 +453,8 @@ function speak(w: World) {
   const h = ((w.t % DAY) / DAY) * 24;
   if (h < 18 || h >= 22) return;
   for (const camp of liveCamps(w)) {
-    const pat = patterns(camp).find((x) => x.n >= 3 && Object.keys(x.counts).length === 1 && !camp.customs.some((c) => !c.faded && c.key === x.key));
+    // Leaving kindness alone goes without saying; only a response worth remarking on becomes a custom.
+    const pat = patterns(camp).find((x) => x.n >= 3 && Object.keys(x.counts).length === 1 && (HARM[x.act] || !x.counts.let_go) && !camp.customs.some((c) => !c.faded && c.key === x.key));
     if (!pat || Math.random() > 0.5) continue;
     const members = camp.members.map((id) => agentOf(w, id)).filter((a): a is Agent => !!a && a.down <= w.t && stageOf(w, a) !== "child");
     const company = (a: Agent, r: number) => members.filter((b) => b !== a && dist(a, b) <= r).length;

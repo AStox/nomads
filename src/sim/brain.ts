@@ -307,7 +307,8 @@ export async function rule(w: World, a: Agent, attempt: string, parts: Kind[], t
 
 // When something has been made a few times, people settle on a word for it: first what kind of thing it is, then which word.
 type Lexicon = Record<string, { description: string; words: { w: string; gloss: string }[] }>;
-const LEX = LEXICON as Lexicon;
+// Things people carry are never dwellings; homes are built, not made in the hand.
+const LEX = Object.fromEntries(Object.entries(LEXICON as Lexicon).filter(([c]) => c !== "shelter")) as Lexicon;
 export async function nameIt(w: World, a: Agent, k: Kind, uses: string[]): Promise<string | null> {
   const state = {
     what_people_have_done_with_it: uses.length ? uses : ["nothing yet beyond making it"],
