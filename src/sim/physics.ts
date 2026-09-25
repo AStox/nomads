@@ -57,16 +57,20 @@ const young = (a: Agent) => clock.t - a.born < YEAR;
 export const carryOf = (a: Agent) => (young(a) ? 8 : CARRY);
 export function giveItems(w: World, a: Agent, k: string, n = 1) {
   for (let i = 0; i < n; i++) {
-    if (a.inv.length >= carryOf(a) && !makeRoom(w, a, k)) { dropPile(w, a.x, a.y, k, n - i); return; }
+    if (a.inv.length >= carryOf(a) && !makeRoom(w, a, k)) { dropPile(w, a.x, a.y, k, n - i); return i; }
     a.inv.push({ k, hp: 1, born: w.t });
   }
+  return n;
 }
 // Hands full: set down one of whatever plain material they have most of, unless that's what they're picking up.
 function makeRoom(w: World, a: Agent, incoming: string) {
   const c = counts(a);
   // Keep one of each thing; beyond that, shed the most plentiful non-food, non-tool thing.
-  const spare = Object.keys(c).filter((x) => x !== incoming && p(w.kinds[x], "edible") < 0.1 && !isToolish(w.kinds[x]) && (c[x] >= 2 || w.kinds[x]?.parts?.length))
-    .sort((x, y) => c[y] - c[x])[0];
+  const food = (x: string) => p(w.kinds[x], "edible") >= 0.1;
+  const spare = Object.keys(c).filter((x) => x !== incoming && !food(x) && (c[x] >= 2 || (!isToolish(w.kinds[x]) && w.kinds[x]?.parts?.length)))
+    .sort((x, y) => c[y] - c[x])[0]
+    // A hungry hand drops anything that isn't food before it drops food.
+    ?? (food(incoming) ? Object.keys(c).filter((x) => !food(x)).sort((x, y) => Number(isToolish(w.kinds[x])) - Number(isToolish(w.kinds[y])))[0] : undefined);
   if (!spare) return false;
   takeItems(a, spare);
   dropPile(w, a.x, a.y, spare, 1);
@@ -724,7 +728,7 @@ export function place(w: World, a: Agent, act: Act): Outcome {
   s.hp = Math.min(s.maxHp!, (s.hp ?? 100) + 20);
   changed.add(s.id);
   const home = homeOf(w, a);
-  if (s.shelter.tier >= 1 && (!home || home === s || (home.shelter?.tier ?? 0) < s.shelter.tier)) {
+  if (s.shelter.tier >= 1 && (!home || home === s || (home.shelter?.tier ?? 0) < s.shelter.tier || ((home.shelter?.tier ?? 0) <= 1 && dist(home, s) > 8))) {
     // Moving into a better place leaves the old one empty for anyone to take.
     if (home && home !== s) { delete home.owner; changed.add(home.id); }
     a.home = s.id;

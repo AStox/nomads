@@ -31,10 +31,20 @@ export function die(w: World, a: Agent, cause: string) {
   }
 }
 
+const ROMAN = ["", "", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"];
+// Once every name is taken, children are named after someone long dead, the way families reuse a grandparent's name.
+function nameAfter(w: World, all: string[]) {
+  const living = new Set(w.agents.map((a) => a.name.split(" ")[0]));
+  const free = NAMES.filter((n) => !living.has(n));
+  const base = free[Math.floor(Math.random() * free.length)];
+  const n = all.filter((x) => x.split(" ")[0] === base).length + 1;
+  return `${base} ${ROMAN[n] ?? n}`;
+}
+
 function childOf(w: World, mother: Agent, father: Agent | undefined): Agent {
-  const used = new Set(Object.values(w.people).map((p) => p.name));
-  const name = NAMES.find((n) => !used.has(n)) ?? `${mother.name}'s child ${w.agents.length}`;
-  const id = w.people[name.toLowerCase()] ? `${name.toLowerCase()}${w.t}` : name.toLowerCase();
+  const all = Object.values(w.people).map((p) => p.name), used = new Set(all);
+  const name = NAMES.find((n) => !used.has(n)) ?? nameAfter(w, all);
+  const id = w.people[name.toLowerCase()] ? `${name.toLowerCase().replaceAll(" ", "_")}${w.t}` : name.toLowerCase();
   const pool = { ...(father?.traits ?? {}), ...mother.traits };
   const traits: Record<string, number> = {};
   for (const [t, s] of Object.entries(pool)) if (Math.random() < 0.5 && !Object.keys(traits).some((o) => clash(o, t))) traits[t] = s;
@@ -66,7 +76,7 @@ function childOf(w: World, mother: Agent, father: Agent | undefined): Agent {
 const paired = (a: Agent, b: Agent) => {
   const r = a.rel[b.id], s = b.rel[a.id];
   const sweet = (x?: typeof r) => !!x && (x.label === "sweetheart" || x.bonds.some((bd) => bd.kind === "sweetheart" && bd.weight > 0.3));
-  return !!r && !!s && r.affinity > 0.45 && s.affinity > 0.45 && (sweet(r) || sweet(s));
+  return !!r && !!s && r.affinity > 0.45 && s.affinity > 0.45 && (sweet(r) || sweet(s) || (r.affinity > 0.7 && s.affinity > 0.7));
 };
 
 // When the land is nearly empty, strangers drift in. They know nothing of what came before, except what they find.

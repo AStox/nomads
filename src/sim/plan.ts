@@ -66,7 +66,7 @@ function beliefOp(b: Belief, ctx: Ctx): Op | null {
   const req = required(b), out = outputs(b, ctx);
   const f = b.fields;
   const target = (f.verb === "strike" && f.target && !f.inputs.length) || f.verb === "throw" ? f.target ?? null : null;
-  const place = target ?? f.at ?? (f.builds === "shelter" && "home" in ctx.dist ? "home" : null);
+  const place = target ?? f.at ?? (f.builds !== "shelter" ? null : "home" in ctx.dist ? "home" : "homesite" in ctx.dist ? "homesite" : null);
   const builds = f.builds ?? (f.effect === "cure" ? "cured" : null);
   if (!Object.keys(out).length && !builds) return null;
   if ((f.verb === "strike" || f.verb === "throw") && target && (b.rate ?? 0) <= 0 && b.wins === 0) return null;
@@ -148,7 +148,10 @@ export const COLLECT: Record<string, string> = {
 
 function goal(type: string, start: PState, ctx: Ctx): { done: (s: PState) => boolean; needs: string[] } | null {
   const has = (flagName: string) => (s: PState) => s.flags.includes(flagName);
-  if (type === "forage") { const f0 = foodIn(start.inv, ctx); return { done: (s) => foodIn(s.inv, ctx) >= Math.max(3, f0 + 2), needs: edibleKinds(ctx) }; }
+  if (type === "forage") {
+    const ed = edibleKinds(ctx), food = (s: PState) => ed.reduce((t, k) => t + n(s, k), 0), want = Math.max(3, food(start) + 2);
+    return { done: (s) => food(s) >= want, needs: ed };
+  }
   if (type === "eat") return { done: has("ate"), needs: ["ate"] };
   if (type === "rest") return { done: has("rested"), needs: ["rested"] };
   if (type === "warm_up") return { done: has("warm"), needs: ["warm"] };
@@ -206,7 +209,11 @@ function search(start: PState, type: string, ctx: Ctx): PlanStep[] | null {
   if (!g) return null;
   if (g.done(start)) return [];
   const all = relevant(ops(ctx), g.needs);
-  const key = (s: PState) => `${s.at}|${s.flags.join(",")}|${Object.entries(s.inv).filter(([, v]) => v).sort().join(",")}`;
+  const key = (s: PState) => {
+    let k = `${s.at}|${s.flags.join(",")}|`;
+    for (const x of Object.keys(s.inv).sort()) if (s.inv[x]) k += `${x}:${s.inv[x]},`;
+    return k;
+  };
   const open = [{ s: start, cost: 0, steps: [] as PlanStep[] }];
   const seen = new Set<string>([key(start)]);
   // ponytail: node cap keeps a think under a few ms; raise it if plans start coming back null for reachable goals.
@@ -222,8 +229,9 @@ function search(start: PState, type: string, ctx: Ctx): PlanStep[] | null {
       if (seen.has(k)) continue;
       seen.add(k);
       const node = { s, cost: cur.cost + o.cost, steps };
-      const i = open.findIndex((x) => x.cost > node.cost);
-      open.splice(i < 0 ? open.length : i, 0, node);
+      let lo = 0, hi = open.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (open[m].cost > node.cost) hi = m; else lo = m + 1; }
+      open.splice(lo, 0, node);
     }
   }
   return null;

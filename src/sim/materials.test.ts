@@ -73,3 +73,14 @@ test("hammering hot metal at a charcoal fire draws out a blade sharper and tough
   expect(heavy.toughness!).toBeGreaterThan(w.kinds.flint_blade.props.toughness! + 0.3);
   expect(light.sharp!).toBeLessThan(heavy.sharp!);
 });
+
+test("hands full of tools still make room for food", () => {
+  const [w, a] = setup();
+  a.born = w.t - 1e6;
+  giveItems(w, a, "sharp_stone", 11);
+  for (const k of ["stick", "clay", "stone", "fiber", "bone"]) giveItems(w, a, k);
+  expect(a.inv.length).toBe(16);
+  expect(giveItems(w, a, "berry", 3)).toBe(3);
+  expect(count(a, "berry")).toBe(3);
+  expect(count(a, "sharp_stone")).toBe(8);
+});

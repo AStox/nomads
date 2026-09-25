@@ -196,10 +196,14 @@ function fire(w: World) {
       if (t.hp <= 0) { burnOut(w, t, t.burnedBy); continue; }
       sources.push({ t, heat: t.burning, by: t.burnedBy });
     }
-    if (flammability(w, t) > 0 && !t.burning && t.kind !== "fire") {
-      const i = t.y * W + t.x;
-      (byTile.get(i) ?? byTile.set(i, []).get(i)!).push(t);
-    }
+  }
+  if (!sources.length) return;
+  const hot = new Set<number>();
+  for (const s of sources) for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) hot.add((s.t.y + dy) * W + s.t.x + dx);
+  for (const t of w.things) {
+    const i = t.y * W + t.x;
+    if (!hot.has(i) || t.burning || t.kind === "fire" || flammability(w, t) <= 0) continue;
+    (byTile.get(i) ?? byTile.set(i, []).get(i)!).push(t);
   }
   const { dx: wdx, dy: wdy } = w.weather.wind;
   for (const s of sources) {

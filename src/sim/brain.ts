@@ -4,7 +4,7 @@ import {
   type Agent, type BondKind, type Label, type Relationship, type Response, type World,
 } from "./world";
 import { TRAITS } from "./traits";
-import { PROPS, type Kind, type Props } from "./materials";
+import { PROPS, THING_MATERIAL, type Kind, type Props } from "./materials";
 import { beliefText } from "./beliefs";
 import { campTag, campView } from "./groups";
 import { jevLog } from "./trace";
@@ -122,6 +122,7 @@ export function view(w: World, a: Agent) {
   }
   const nearby = Object.fromEntries(Object.entries(near).map(([k, e]) => [k, `${e.count} (nearest ${e.nearest} steps)`]));
   const animals = w.animals.filter((x) => dist(a, x) <= 12).map((x) => `${x.species} ${dist(a, x)} steps away (${x.state})`);
+  const home = a.home ? w.things.find((t) => t.id === a.home) : null;
   const people = w.agents
     .filter((b) => b.id !== a.id && (a.rel[b.id] || dist(a, b) <= 8))
     .map((b) => ({
@@ -130,9 +131,9 @@ export function view(w: World, a: Agent) {
       doing: dist(a, b) <= 12 ? b.status : "out of sight",
       carrying: dist(a, b) <= 6 ? inventoryText(w, b) : undefined,
       camp: campTag(w, a, b),
+      home: (() => { const h = b.home && w.things.find((t) => t.id === b.home); return h ? `${dist(a, h)} steps from you${home ? `, ${dist(home, h)} steps from your home` : ""}` : undefined; })(),
       ...describeRel(w, a, b),
     }));
-  const home = a.home ? w.things.find((t) => t.id === a.home) : null;
   const wx = w.weather;
   const stored: Record<string, number> = {};
   for (const s of home?.store ?? []) stored[w.kinds[s.k]?.name ?? s.k] = (stored[w.kinds[s.k]?.name ?? s.k] ?? 0) + 1;
@@ -314,7 +315,7 @@ export async function nameIt(w: World, a: Agent, k: Kind, uses: string[]): Promi
   };
   return pickWord(w, a, "name", LEX, state,
     { instructions: "People keep making and using this thing. What kind of thing would they think of it as?", none: "Not really a kind of thing anyone would have a word for" },
-    "People name tools after what they do with them. Given mainly what_people_have_done_with_it, which of these words would they most naturally come to call it?");
+    "People name tools after what they do with them. Given mainly what_people_have_done_with_it, which of these words would they most naturally come to call it?", RESERVED);
 }
 // A camp's lasting name comes from the land around it and what happened there.
 export async function nameCamp(w: World, a: Agent, state: object): Promise<string | null> {
@@ -322,14 +323,16 @@ export async function nameCamp(w: World, a: Agent, state: object): Promise<strin
     { instructions: "People have lived together here for a season. What sort of place would they name it after?", none: "Nothing about the place stands out enough to name it for" },
     "Given the land around it and what happened there, which of these words would the people who live here most naturally come to call their place?");
 }
-async function pickWord(w: World, a: Agent, purpose: string, lex: Lexicon, state: object, cat: { instructions: string; none: string }, instructions: string): Promise<string | null> {
+// Words that already mean something in the world: a carried thing called "shelter" would be read as a building.
+const RESERVED = new Set(["shelter", "pile", "lean-to", "hut", "cabin", "home", "fire", "campfire", "hearth", "kiln", "forge", "pit", "trap", "well", "camp", "grave", ...Object.keys(THING_MATERIAL).map((k) => k.replaceAll("_", " "))]);
+async function pickWord(w: World, a: Agent, purpose: string, lex: Lexicon, state: object, cat: { instructions: string; none: string }, instructions: string, skip = new Set<string>()): Promise<string | null> {
   const kinds = Object.fromEntries(Object.entries(lex).map(([id, c]) => [id, c.description]));
   const first = await ask(w, purpose, a.id, state, { category: { type: "choice", instructions: cat.instructions, criteria: { ...kinds, none: cat.none } } });
   // Keep every kind Jev thinks is plausible, not just the top one, and let the words compete.
   const cats = Object.entries(first.category.probabilities!).filter(([c, pr]) => c !== "none" && lex[c] && pr >= 0.15).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([c]) => c);
   if (!cats.length) return null;
   // Every word in those kinds gets a look: split into Jev-sized lists, take each list's favorites, then pick among them.
-  const all = cats.flatMap((c) => lex[c].words);
+  const all = cats.flatMap((c) => lex[c].words).filter((x) => !skip.has(x.w));
   const chunks: typeof all[] = [];
   for (let i = 0; i < all.length; i += 240) chunks.push(all.slice(i, i + 240));
   const ctx = { ...state, kind_of_thing: cats.map((c) => lex[c].description) };
