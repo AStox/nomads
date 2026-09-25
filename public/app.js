@@ -1,19 +1,19 @@
 import {
   T, buildBase, drawThing, drawFire, drawFlames, drawSmoke, drawToken, drawLabel, drawThinking, drawSleep,
-  drawAnimal, drawTrapped, drawIce, drawPaths, drawRain, drawSnow, drawBolt, thingSpot, hash,
+  drawAnimal, drawTrapped, drawIce, drawPaths, drawRain, drawSnow, drawBolt, thingSpot, hash, flameColors,
 } from "./art.js";
 
 const $ = (s) => document.querySelector(s);
 const DAY = 288;
 const NEEDS = ["food", "energy", "warmth", "social", "health"];
-const GOLD = new Set(["invent", "law", "burned", "first", "born", "died"]);
-const NOTABLE = new Set(["discover", "learn", "teach", "attack", "hunt", "sick", "collapse", "build", "bond", "steal", "lie", "take", "insult", "break", "lightning", "death", "mistaken", "pregnant", "trap", "claim", "throw", "grief", "dig"]);
+const GOLD = new Set(["invent", "law", "burned", "first", "born", "died", "camp", "custom", "leader", "driven_out"]);
+const NOTABLE = new Set(["discover", "learn", "teach", "attack", "hunt", "sick", "collapse", "build", "bond", "steal", "lie", "take", "insult", "break", "lightning", "death", "mistaken", "pregnant", "trap", "claim", "throw", "grief", "dig", "judged", "camp_change", "camp_named", "custom_faded", "shared_store", "beg"]);
 const ROUTINE = new Set(["gather", "eat", "goal", "stuck", "fail", "tinker", "craft", "fire_out", "fire_spread", "wake", "level", "spoil", "grow", "birth", "weather", "season", "recover", "notice", "store"]);
 
 const S = {
   W: 0, H: 0, tiles: "", things: new Map(), byTile: new Map(), hot: new Set(), graves: new Set(), caught: new Set(),
   agents: new Map(), animals: new Map(), people: new Map(),
-  kinds: {}, weather: null, paths: null, ice: null, t: 0, jev: null, control: { paused: false, speed: 1 },
+  kinds: {}, weather: null, paths: null, ice: null, t: 0, jev: null, control: { paused: false, speed: 1 }, groups: [],
 };
 const cam = { x: 32, y: 32, s: 10 };
 // picked: a non-person the focus card is showing, { type: "animal" | "grave", id }.
@@ -187,6 +187,7 @@ function frame(now) {
     ctx.strokeRect(ox - 1, oy - 1, mw + 2, mh + 2);
     const night = nightAmount(S.t);
     tint(ox, oy, mw, mh, night);
+    drawCamps();
     drawHot(now, night);
     drawAnimals(now);
     drawAgents(now);
@@ -207,6 +208,74 @@ function tint(ox, oy, w, h, night) {
   if (sky) wash("multiply", sky);
   if (night > 0) wash("multiply", `rgba(70, 82, 140, ${0.75 * night})`);
   ctx.globalCompositeOperation = "source-over";
+}
+
+// ---------- camps on the map ----------
+// A faint inked boundary around each camp's homes: the edge of a smooth blob around them, traced once per layout.
+const campShapes = new Map();
+function campShape(camp) {
+  const key = camp.homes.map((h) => h.join(",")).join(";");
+  const hit = campShapes.get(camp.id);
+  if (hit?.key === key) return hit;
+  const R = 3.4, G = 0.5, xs = camp.homes.map((h) => h[0] + 0.5), ys = camp.homes.map((h) => h[1] + 0.5);
+  const x0 = Math.min(...xs) - R - 1, y0 = Math.min(...ys) - R - 1;
+  const nx = Math.ceil((Math.max(...xs) + R + 1 - x0) / G), ny = Math.ceil((Math.max(...ys) + R + 1 - y0) / G);
+  const v = new Float32Array((nx + 1) * (ny + 1));
+  for (let j = 0; j <= ny; j++)
+    for (let i = 0; i <= nx; i++) {
+      let f = 0;
+      for (let k = 0; k < xs.length; k++) f += (R * R) / ((x0 + i * G - xs[k]) ** 2 + (y0 + j * G - ys[k]) ** 2 + 0.01);
+      v[j * (nx + 1) + i] = f - 1;
+    }
+  // Marching squares, then chain the little segments into lines so the dashes run on.
+  const at = (i, j) => v[j * (nx + 1) + i], cut = (a, b) => a / (a - b), segs = [];
+  for (let j = 0; j < ny; j++)
+    for (let i = 0; i < nx; i++) {
+      const a = at(i, j), b = at(i + 1, j), c = at(i + 1, j + 1), d = at(i, j + 1), p = [];
+      if (a > 0 !== b > 0) p.push([i + cut(a, b), j]);
+      if (b > 0 !== c > 0) p.push([i + 1, j + cut(b, c)]);
+      if (c > 0 !== d > 0) p.push([i + 1 - cut(c, d), j + 1]);
+      if (d > 0 !== a > 0) p.push([i, j + 1 - cut(d, a)]);
+      for (let k = 0; k + 1 < p.length; k += 2) segs.push([p[k], p[k + 1]]);
+    }
+  const id = (q) => `${q[0].toFixed(2)},${q[1].toFixed(2)}`, ends = new Map();
+  segs.forEach((s, n) => { for (const q of s) { const k = id(q); if (!ends.has(k)) ends.set(k, []); ends.get(k).push(n); } });
+  const used = new Uint8Array(segs.length), lines = [];
+  for (let n = 0; n < segs.length; n++) {
+    if (used[n]) continue;
+    used[n] = 1;
+    const line = [...segs[n]];
+    for (let next; (next = (ends.get(id(line.at(-1))) ?? []).find((m) => !used[m])) !== undefined; ) {
+      used[next] = 1;
+      const [p, q] = segs[next];
+      line.push(id(p) === id(line.at(-1)) ? q : p);
+    }
+    lines.push(line.map(([i, j]) => [x0 + i * G, y0 + j * G]));
+  }
+  const top = Math.min(...ys) - R + 0.4, shape = { key, lines, cx: xs.reduce((t, x) => t + x, 0) / xs.length, top };
+  campShapes.set(camp.id, shape);
+  return shape;
+}
+function drawCamps() {
+  for (const camp of S.groups) {
+    if (!camp.homes?.length) continue;
+    const shape = campShape(camp);
+    ctx.beginPath();
+    for (const line of shape.lines) line.forEach(([x, y], i) => { const [sx, sy] = toScreen(x, y); if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy); });
+    ctx.fillStyle = "rgba(122, 64, 30, .07)";
+    ctx.fill("evenodd");
+    ctx.setLineDash([Math.max(3, cam.s * 0.32), Math.max(2, cam.s * 0.2)]);
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "rgba(96, 48, 26, .6)"; ctx.lineWidth = Math.max(1, cam.s * 0.07);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (cam.s < 7) continue;
+    const [lx, ly] = toScreen(shape.cx, shape.top);
+    ctx.font = `italic ${Math.round(Math.max(12, Math.min(20, cam.s * 0.7)))}px "IM Fell English", serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.lineWidth = 3.5; ctx.strokeStyle = "rgba(241, 230, 204, .85)"; ctx.strokeText(camp.name, lx, ly);
+    ctx.fillStyle = "rgba(92, 44, 22, .9)"; ctx.fillText(camp.name, lx, ly);
+  }
 }
 
 // [width, height, base offset] in tiles for flames on things that catch fire.
@@ -230,16 +299,19 @@ function drawHot(now, night) {
     const [fx, fy] = toScreen(...(fire ? [th.x + 0.5, th.y + 0.5] : thingSpot(th)));
     if (fx < -200 || fy < -200 || fx > cw + 200 || fy > ch + 200) continue;
     const k = fire ? firePower(th) : Math.min(1, th.burning), seed = hash(th.x, th.y);
-    const glow = ctx.createRadialGradient(fx, fy, 0, fx, fy, cam.s * (2 + k * (fire ? 1 : 2) + night * 2));
+    const heat = fire ? th.heat ?? 1 : 1, coal = fire && th.contained && th.charcoal > 0;
+    const glow = ctx.createRadialGradient(fx, fy, 0, fx, fy, cam.s * (2 + k * (fire ? 1 : 2) + night * 2 + (heat - 1) * 1.2));
     const flick = 0.85 + Math.sin(now / 90 + th.x) * 0.08;
-    glow.addColorStop(0, `rgba(255, 176, 90, ${Math.min(1, (0.25 + night * 0.4) * flick * (fire ? 0.6 + 0.4 * k : 0.5 + 0.7 * k))})`);
-    glow.addColorStop(1, "rgba(255, 176, 90, 0)");
+    const [gr, gg, gb] = flameColors(heat)[1].match(/\d+/g).map(Number);
+    glow.addColorStop(0, `rgba(${gr}, ${gg}, ${gb}, ${Math.min(1, (0.25 + night * 0.4) * flick * (fire ? 0.6 + 0.4 * k : 0.5 + 0.7 * k) * (coal ? 1.4 : 1))})`);
+    glow.addColorStop(1, `rgba(${gr}, ${gg}, ${gb}, 0)`);
     ctx.globalCompositeOperation = "screen";
     ctx.fillStyle = glow;
     ctx.fillRect(fx - cam.s * 7, fy - cam.s * 7, cam.s * 14, cam.s * 14);
     ctx.globalCompositeOperation = "source-over";
     if (fire) {
-      drawFire(ctx, fx, fy + cam.s * 0.1, cam.s * 0.9, now, seed, ringFor(th), 0.35 + 0.8 * k);
+      drawFire(ctx, fx, fy + cam.s * 0.1, cam.s * 0.9, now, seed, ringFor(th), 0.35 + 0.8 * k, { heat, coal, covered: th.covered });
+      if (th.covered) drawSmoke(ctx, fx, fy - cam.s * 0.3, cam.s, now, seed, 0.8, S.weather?.wind);
     } else {
       const [w, h, dy] = FLAME[th.kind] ?? [0.5, 0.6, 0.15];
       const wide = th.kind === "structure" ? 0.6 + (th.shelter?.tier ?? 0) * 0.3 : w;
@@ -438,8 +510,9 @@ function openSheet(tab) {
 function closeSheet() { panel.dataset.open = "false"; clampCam(); }
 function showTab(tab) {
   for (const b of $("#tabs").querySelectorAll("button[data-tab]")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const id of ["chronicle", "inspect", "book"]) $(`#${id}`).hidden = id !== tab;
+  for (const id of ["chronicle", "inspect", "book", "groups"]) $(`#${id}`).hidden = id !== tab;
   if (tab === "book") loadBook();
+  if (tab === "groups") loadGroups();
 }
 $("#tabs").addEventListener("click", (e) => { const t = e.target.closest("button[data-tab]")?.dataset.tab; if (t) openSheet(t); });
 $("#close").onclick = closeSheet;
@@ -691,6 +764,7 @@ function renderInspector() {
       <ul class="tags">${Object.entries(a.traits ?? {}).sort((x, y) => y[1] - x[1]).map(([t, s]) => `<li style="--s:${s}">${esc(t)}</li>`).join("")}</ul>
       ${a.desires?.length ? `<p class="muted gap">Wants to ${a.desires.map(esc).join(", and to ")}.</p>` : ""}</section>
     ${familyHtml(a)}
+    ${campLedger(a)}
     <section class="sec two">
       <div><h3>Carrying</h3>${carrying(a)}${home ? `<p class="muted small gap store">Kept at home: ${esc(storeText(home.store))}</p>` : ""}</div>
       <div><h3>Skills</h3>${trained.length ? `<dl class="kv">${trained.map(([s, xp]) => `<dt>${esc(human(s))}</dt><dd>Level ${lvl(xp)} <small>${Math.round(xp)} xp</small></dd>`).join("")}</dl>` : `<p class="muted">None yet</p>`}</div>
@@ -715,6 +789,18 @@ const diedText = (id) => { const p = S.people.get(id); return p?.died != null ? 
 function storeText(store) {
   const rows = Object.entries(store ?? {}).filter(([, n]) => n > 0).map(([k, n]) => [kindName(k), n]).sort((p, q) => q[1] - p[1]);
   return rows.length ? rows.map(([name, n]) => `${n} ${name}`).join(", ") : "nothing yet";
+}
+function campLedger(a) {
+  const c = a.camp, s = c?.standing, n = s ? s.followed + s.defied : 0;
+  const out = (a.outcast ?? []).map((o) => `<p class="camp-bans">${o.how === "shunned" ? "Shunned by" : "Driven out of"} ${esc(o.camp)} until Day ${dayOf(o.until)}</p>`).join("");
+  const known = a.customsKnown ?? [];
+  if (!c && !out && !known.length) return `<section class="sec"><h3>Camp</h3><p class="muted">Not part of any camp.</p></section>`;
+  return `<section class="sec"><h3>Camp</h3>
+    ${c ? `<p class="camp-line">Lives in <b>${esc(c.name)}</b>${c.leader === a.id ? ", and people bring their grievances to them" : c.leader ? `, where ${esc(nameOf(c.leader))} leads` : ""}.</p>
+      <p class="muted">${n ? `Their rulings: ${s.followed} of ${n} followed${s.defied ? `, ${s.defied} defied` : ""}.` : s?.decided ? "Nobody has reacted to their rulings yet." : "Hasn't had to rule on anything yet."}</p>` : `<p class="muted">Not part of any camp.</p>`}
+    ${out}
+    ${known.length ? `<p class="muted gap">Customs they know:</p><ul class="customs">${known.map((k) => `<li><q>${esc(k)}</q></li>`).join("")}</ul>` : ""}
+  </section>`;
 }
 function familyHtml(a) {
   const kin = (ids) => `<ul class="kin">${ids.map((id) => `<li>${sealOf(id, "xs")}<span>${esc(nameOf(id))}</span>${isDead(id) ? `<small>${esc(diedText(id))}${S.people.get(id)?.cause ? `, ${esc(S.people.get(id).cause)}` : ""}</small>` : ""}</li>`).join("")}</ul>`;
@@ -787,6 +873,67 @@ async function loadBook() {
   };
   await draw();
   bookTimer = setInterval(draw, 3000);
+}
+
+// ---------- groups ----------
+let groupsTimer = null;
+const VERDICT = { let_go: "Let go", scold: "Scolded", repay: "Made to repay", shun: "Shunned", drive_out: "Driven out" };
+const sealRow = (ids, cls = "") => ids.map((id) => `<span class="held ${cls}" role="img" aria-label="${esc(nameOf(id))}" title="${esc(nameOf(id))}">${sealOf(id, "xs")}</span>`).join("");
+function standingText(s) {
+  const n = s.followed + s.defied;
+  return n ? `${s.followed} of ${n} followed` : s.decided ? "no one has reacted yet" : "";
+}
+function campHtml(c) {
+  const members = [...c.members].sort((a, b) => (c.standing[b]?.score ?? 0) - (c.standing[a]?.score ?? 0));
+  const lead = c.leader && c.standing[c.leader];
+  const live = (m) => Object.entries(m ?? {}).filter(([, b]) => b.until > S.t);
+  const bans = [...live(c.shunned).map(([id, b]) => [id, b, "Shunned"]), ...live(c.exiled).map(([id, b]) => [id, b, "Driven out"])];
+  const customs = [...c.customs].sort((a, b) => !!a.faded - !!b.faded || b.t - a.t);
+  const store = c.store && Object.entries(c.store.items).map(([k, n]) => `${n} ${kindName(k)}`).join(", ");
+  return `<section class="sec camp">
+    <h3>${esc(c.name)}</h3>
+    <p class="camp-meta">Settled Day ${dayOf(c.founded)}${c.from ? ", after a split" : ""}. ${c.members.length} people live here.</p>
+    <ul class="camp-members">${members.map((id) => {
+      const s = c.standing[id], share = s && s.followed + s.defied ? s.followed / (s.followed + s.defied) : null;
+      return `<li>${sealOf(id, "sm")}<span class="cm-name">${esc(nameOf(id))}${id === c.leader ? ` <em class="cm-lead">leads</em>` : ""}</span>
+        <span class="cm-stand">${share == null ? "" : `<i class="standing" title="${esc(standingText(s))}"><b style="width:${Math.round(share * 100)}%"></b></i>`}<small>${esc(standingText(s ?? { followed: 0, defied: 0, decided: 0 }))}</small></span></li>`;
+    }).join("")}</ul>
+    <p class="camp-lead">${lead ? `People bring their grievances to <b>${esc(nameOf(c.leader))}</b>, whose word has been followed ${lead.followed} times out of ${lead.followed + lead.defied}.` : "No one leads. Whoever was wronged answers for it, and the camp goes along or doesn't."}</p>
+    ${bans.length ? `<ul class="camp-bans">${bans.map(([id, b, how]) => `<li>${sealOf(id, "xs")}${esc(nameOf(id))}: ${how.toLowerCase()} until Day ${dayOf(b.until)}</li>`).join("")}</ul>` : ""}
+    <h4>Spoken customs</h4>
+    ${customs.length ? `<ul class="customs">${customs.map((k) => `<li class="${k.faded ? "faded" : ""}"><q>${esc(k.text)}</q>
+      <small>${sealOf(k.spokenBy, "xs")}Said by ${esc(nameOf(k.spokenBy))}, Day ${dayOf(k.t)}. Held ${k.held} time${k.held === 1 ? "" : "s"}${k.broken ? `, broken ${k.broken}` : ""}${k.faded ? `. Faded Day ${dayOf(k.faded)}` : ""}.</small></li>`).join("")}</ul>`
+      : `<p class="muted">None spoken yet. A custom is put into words once the camp has answered the same kind of thing the same way three times running.</p>`}
+    <h4>What happens here</h4>
+    ${c.patterns.length ? `<ul class="patterns">${c.patterns.slice(0, 8).map((x) => `<li>${esc(x.text)}</li>`).join("")}</ul>` : `<p class="muted">Nothing has been judged yet.</p>`}
+    ${store ? `<h4>Shared store</h4><p class="muted">At ${esc(nameOf(c.store.owner))}'s home: ${esc(store)}.</p>` : ""}
+    <h4>Precedents</h4>
+    ${c.precedents.length ? `<ol class="precedents">${[...c.precedents].reverse().slice(0, 30).map((p) => `<li>
+      <time>Day ${dayOf(p.t)}</time><p>${esc(p.incident.text)}</p>
+      <p class="verdict"><span class="resp ${p.response}">${VERDICT[p.response]}</span><span>by ${sealOf(p.decidedBy, "xs")}${esc(nameOf(p.decidedBy))}</span>
+        ${p.followed.length ? `<span class="went">${sealRow(p.followed)} went along</span>` : ""}${p.defied.length ? `<span class="went">${sealRow(p.defied, "wrong")} didn't</span>` : ""}${p.open > S.t ? `<span class="watch">still watching</span>` : ""}</p>
+    </li>`).join("")}</ol>` : `<p class="muted">No precedents yet.</p>`}
+  </section>`;
+}
+function groupsHtml(g) {
+  const live = g.camps.filter((c) => !c.gone), gone = g.camps.filter((c) => c.gone);
+  const byId = new Map(g.camps.map((c) => [c.id, c]));
+  return `${live.length ? live.map(campHtml).join("") : `<section class="sec"><h3>Camps</h3><p class="muted">No camps yet. When three or more people who get along keep homes within a short walk of each other, they become a camp.</p></section>`}
+    ${gone.length ? `<section class="sec"><h3>Former camps</h3><ul class="gone-camps">${gone.map((c) => `<li><span>${esc(c.name)}</span><small>Day ${dayOf(c.founded)} to Day ${dayOf(c.gone)}${c.mergedInto ? `, grew into ${esc(byId.get(c.mergedInto)?.name ?? "another camp")}` : ", broke up"}. ${c.precedents.length} precedents.</small></li>`).join("")}</ul></section>` : ""}
+    <p class="book-foot"><a href="api/groups">Raw group data</a></p>`;
+}
+async function loadGroups() {
+  clearInterval(groupsTimer);
+  const draw = async () => {
+    if ($("#groups").hidden || !sheetOpen()) return clearInterval(groupsTimer);
+    const g = await fetch("api/groups").then((r) => r.json()).catch(() => null);
+    if (!g || $("#groups").hidden) return;
+    const scroll = $("#groups").scrollTop;
+    $("#groups").innerHTML = groupsHtml(g);
+    $("#groups").scrollTop = scroll;
+  };
+  await draw();
+  groupsTimer = setInterval(draw, 3000);
 }
 
 // ---------- controls ----------
@@ -890,7 +1037,7 @@ function connect() {
     const msg = JSON.parse(m.data);
     if (msg.type === "init") {
       S.W = 64; S.H = msg.tiles.length / 64; S.tiles = msg.tiles; S.t = msg.t; S.jev = msg.jev;
-      S.kinds = { ...(msg.kinds ?? {}) }; S.weather = msg.weather ?? null;
+      S.kinds = { ...(msg.kinds ?? {}) }; S.weather = msg.weather ?? null; S.groups = msg.groups ?? [];
       S.paths = parsePaths(msg.paths, S.W * S.H);
       S.ice = parseIce(msg.ice, S.W * S.H);
       S.things.clear(); S.byTile.clear(); S.hot.clear(); S.graves.clear(); S.caught.clear();
@@ -912,6 +1059,7 @@ function connect() {
     S.t = msg.t; S.jev = msg.jev;
     if (msg.weather) S.weather = msg.weather;
     if (msg.kinds) Object.assign(S.kinds, msg.kinds);
+    if (msg.groups) S.groups = msg.groups;
     if (setAgents(msg.agents)) { renderFilters(); loadPeople(); }
     if (msg.animals) setAnimals(msg.animals);
     const touched = [];

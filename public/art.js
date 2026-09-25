@@ -215,6 +215,19 @@ function inked(c, fill, lw = 1.2) {
   c.fillStyle = fill; c.fill();
   c.strokeStyle = INK; c.lineWidth = lw; c.stroke();
 }
+// A tree someone cut into: a pale peeled patch where bark came off, amber beads where resin has wept out.
+function scars(c, th, x, y, s) {
+  if (th.bark) {
+    c.beginPath(); c.ellipse(x + s * 0.02, y, s * 0.07, s * 0.16, 0.1, 0, Math.PI * 2);
+    c.fillStyle = "#e6cf9f"; c.fill(); c.strokeStyle = "rgba(90, 60, 30, .7)"; c.lineWidth = 0.8; c.stroke();
+  }
+  for (let i = 0; i < (th.resin ?? 0) * 2; i++) {
+    const bx = x + (i % 2 ? 1 : -1) * s * (0.1 + hash(th.x, th.y, 260 + i) * 0.08), by = y + (hash(th.x, th.y, 270 + i) - 0.5) * s * 0.3;
+    c.beginPath(); c.moveTo(bx, by - s * 0.07); c.quadraticCurveTo(bx + s * 0.05, by + s * 0.02, bx, by + s * 0.04); c.quadraticCurveTo(bx - s * 0.05, by + s * 0.02, bx, by - s * 0.07);
+    c.fillStyle = "#d9901f"; c.fill(); c.strokeStyle = "rgba(90, 45, 10, .8)"; c.lineWidth = 0.7; c.stroke();
+    c.fillStyle = "rgba(255, 240, 190, .8)"; c.beginPath(); c.arc(bx - s * 0.012, by - s * 0.01, s * 0.013, 0, Math.PI * 2); c.fill();
+  }
+}
 const PINES = ["#4c6b3c", "#557545", "#46633a", "#5c7a45"];
 const LEAVES = ["#6b8a44", "#77924a", "#5f7f3d"];
 
@@ -258,6 +271,7 @@ export function drawThing(c, th, ownerColor, kinds) {
         c.fillStyle = col;
         c.beginPath(); c.arc(x, y - s * 0.12, s * 0.2, 0, Math.PI * 2); c.fill();
       }
+      scars(c, th, x, y + s * 0.26, s * 0.5);
       break;
     }
     case "stump": {
@@ -267,6 +281,7 @@ export function drawThing(c, th, ownerColor, kinds) {
       c.beginPath(); c.ellipse(x, y - s * 0.05, s * 0.32, s * 0.13, 0, 0, Math.PI * 2); inked(c, "#c9a06a");
       c.strokeStyle = "rgba(90, 60, 30, .6)"; c.lineWidth = 0.8;
       c.beginPath(); c.ellipse(x, y - s * 0.05, s * 0.16, s * 0.06, 0, 0, Math.PI * 2); c.stroke();
+      scars(c, th, x, y + s * 0.16, s);
       break;
     }
     case "bush": {
@@ -431,6 +446,16 @@ export function drawThing(c, th, ownerColor, kinds) {
       c.save(); c.clip();
       c.fillStyle = "rgba(60, 45, 30, .2)"; c.beginPath(); c.ellipse(x + s * 0.18, y + s * 0.14, s * 0.4, s * 0.22, 0, 0, Math.PI * 2); c.fill();
       if (r2 > 0.5) { c.fillStyle = "rgba(105, 135, 70, .6)"; c.beginPath(); c.ellipse(x - s * 0.18, y - s * 0.24, s * 0.2, s * 0.08, -0.3, 0, Math.PI * 2); c.fill(); }
+      // Rust bleeding out of a seam where ore sits inside.
+      if (th.inside?.ore) { c.fillStyle = "rgba(160, 70, 40, .35)"; c.beginPath(); c.ellipse(x + s * 0.05, y + s * 0.05, s * 0.22, s * 0.07, 0.4, 0, Math.PI * 2); c.fill(); }
+      // Flint nodules: dark glassy knobs with a pale chalky rind.
+      if (th.inside?.flint)
+        for (let i = 0; i < 2 + th.inside.flint; i++) {
+          const nx = x + (hash(th.x, th.y, 230 + i) - 0.5) * s * 0.55, ny = y - s * 0.06 + (hash(th.x, th.y, 240 + i) - 0.5) * s * 0.3, nr = s * (0.05 + hash(th.x, th.y, 250 + i) * 0.03);
+          c.beginPath(); c.ellipse(nx, ny, nr * 1.3, nr, 0, 0, Math.PI * 2);
+          c.fillStyle = "#3b3d44"; c.fill(); c.strokeStyle = "rgba(235, 228, 210, .75)"; c.lineWidth = 1; c.stroke();
+          c.fillStyle = "rgba(220, 230, 240, .5)"; c.beginPath(); c.arc(nx - nr * 0.4, ny - nr * 0.3, nr * 0.3, 0, Math.PI * 2); c.fill();
+        }
       c.restore();
       c.strokeStyle = "rgba(255, 250, 235, .5)"; c.lineWidth = 1.4;
       c.beginPath(); c.moveTo(x - s * 0.24, y - s * 0.12); c.lineTo(x - s * 0.04, y - s * 0.3); c.stroke();
@@ -715,7 +740,10 @@ function pile(c, style, x, y, seed) {
 }
 
 // ---------- ground items: a glyph picked from the kind's makeup ----------
-const NATURAL = { meat: "meat", fish: "fish", hide: "hide", bone: "bone", plank: "plank", log: "log", stick: "stick", stone: "stone", clay: "clay", fiber: "cord", berry: "food", mushroom: "food", herb: "food" };
+const NATURAL = {
+  meat: "meat", fish: "fish", hide: "hide", bone: "bone", plank: "plank", log: "log", stick: "stick", stone: "stone", clay: "clay", fiber: "cord", berry: "food", mushroom: "food", herb: "food",
+  bark: "bark", resin: "resin", flint: "flint", flint_blade: "flintblade", fat: "fat", charcoal: "charcoal", ore: "ore",
+};
 function bases(kinds, k, out = new Set(), d = 0) {
   if (!k) return out;
   if (k.base) out.add(k.base);
@@ -726,6 +754,11 @@ export function itemGlyph(k, kinds) {
   if (!k) return "bundle";
   if (k.base) return NATURAL[k.base] ?? "bundle";
   const v = (n) => k.props?.[n] ?? 0, b = bases(kinds, k);
+  if (v("container") >= 0.5 && v("hard") >= 0.4 && v("flammable") >= 0.6) return "lamp";
+  if (v("metal") >= 0.8) return v("plastic") >= 0.5 ? "hotmetal" : v("long") >= 0.3 ? "tool" : v("sharp") >= 0.3 ? "metalblade" : "metal";
+  if (k.id?.startsWith("leather:")) return "leather";
+  if (k.id?.startsWith("melt:")) return "resin";
+  if (v("container") >= 0.3 && v("flexible") >= 0.5 && v("hard") < 0.3 && !b.has("fiber") && !b.has("bark")) return "bag";
   if (v("container") >= 0.3) return "pot";
   if (v("long") >= 0.3 && (v("sharp") >= 0.3 || v("hard") >= 0.4 || v("heavy") >= 0.4)) return "tool";
   if (v("edible") >= 0.3) return b.has("fish") ? "fish" : b.has("meat") ? "meat" : "food";
@@ -782,7 +815,7 @@ function drawItem(c, th, x, y, kinds) {
       c.beginPath();
       if ((k?.props?.sharp ?? 0) >= 0.3) { c.moveTo(-s * 0.06, -s * 0.15); c.lineTo(s * 0.24, 0); c.lineTo(-s * 0.06, s * 0.15); c.closePath(); }
       else c.ellipse(s * 0.04, 0, s * 0.15, s * 0.12, 0, 0, Math.PI * 2);
-      inked(c, "#a59c8c", 1);
+      inked(c, (k?.props?.metal ?? 0) >= 0.8 ? "#b9c1c7" : bases(kinds, k).has("flint_blade") ? "#4a4c53" : "#a59c8c", 1);
       c.strokeStyle = "#c2a468"; c.lineWidth = 2;
       c.beginPath(); c.moveTo(-s * 0.12, -s * 0.06); c.lineTo(-s * 0.12, s * 0.06); c.stroke();
       c.restore();
@@ -831,6 +864,81 @@ function drawItem(c, th, x, y, kinds) {
         c.beginPath(); c.arc(x + dx * s, y + dy * s, s * 0.11, 0, Math.PI * 2); inked(c, "#c2313a", 0.8);
       }
       break;
+    case "bark":
+      c.beginPath(); c.moveTo(x - s * 0.4, y + s * 0.12); c.quadraticCurveTo(x - s * 0.1, y - s * 0.22, x + s * 0.38, y - s * 0.1);
+      c.quadraticCurveTo(x + s * 0.44, y + s * 0.02, x + s * 0.34, y + s * 0.06); c.quadraticCurveTo(x - s * 0.06, y - s * 0.06, x - s * 0.32, y + s * 0.22); c.closePath();
+      inked(c, "#7b5a3a", 1);
+      c.strokeStyle = "rgba(220, 190, 140, .8)"; c.lineWidth = 0.8;
+      c.beginPath(); c.moveTo(x - s * 0.28, y + s * 0.12); c.quadraticCurveTo(x, y - s * 0.12, x + s * 0.3, y - s * 0.04); c.stroke();
+      break;
+    case "resin":
+      c.beginPath(); c.moveTo(x - s * 0.26, y + s * 0.16); c.bezierCurveTo(x - s * 0.34, y - s * 0.14, x + s * 0.02, y - s * 0.3, x + s * 0.12, y - s * 0.08);
+      c.bezierCurveTo(x + s * 0.34, y - s * 0.1, x + s * 0.34, y + s * 0.2, x + s * 0.06, y + s * 0.2); c.closePath();
+      inked(c, k?.id?.startsWith("melt:") ? "#b8611a" : "#d9901f", 1);
+      c.fillStyle = "rgba(255, 240, 190, .75)"; c.beginPath(); c.ellipse(x - s * 0.1, y - s * 0.04, s * 0.07, s * 0.04, -0.5, 0, Math.PI * 2); c.fill();
+      break;
+    case "flint":
+      c.beginPath();
+      for (let i = 0; i < 8; i++) { const a = (i / 8) * Math.PI * 2, rr = s * (0.24 + h(i) * 0.1); i ? c.lineTo(x + Math.cos(a) * rr * 1.15, y + Math.sin(a) * rr * 0.8) : c.moveTo(x + Math.cos(a) * rr * 1.15, y + Math.sin(a) * rr * 0.8); }
+      c.closePath(); inked(c, "#e4dccb", 1);
+      c.beginPath(); c.ellipse(x + s * 0.04, y + s * 0.02, s * 0.2, s * 0.13, 0.3, 0, Math.PI * 2); c.fillStyle = "#3b3d44"; c.fill();
+      c.fillStyle = "rgba(220, 230, 240, .6)"; c.beginPath(); c.ellipse(x - s * 0.02, y - s * 0.03, s * 0.06, s * 0.03, 0.3, 0, Math.PI * 2); c.fill();
+      break;
+    case "flintblade": case "metalblade": {
+      const steel = g === "metalblade";
+      c.beginPath(); c.moveTo(x - s * 0.38, y + s * 0.16); c.lineTo(x + s * 0.4, y - s * 0.2); c.lineTo(x + s * 0.12, y + s * 0.14); c.closePath();
+      inked(c, steel ? "#c3cad0" : "#44464d", 1);
+      c.strokeStyle = steel ? "rgba(255, 255, 255, .9)" : "rgba(200, 210, 225, .7)"; c.lineWidth = 1;
+      c.beginPath(); c.moveTo(x - s * 0.3, y + s * 0.12); c.lineTo(x + s * 0.34, y - s * 0.17); c.stroke();
+      break;
+    }
+    case "fat":
+      c.beginPath(); c.ellipse(x, y + s * 0.04, s * 0.3, s * 0.18, 0.2, 0, Math.PI * 2); inked(c, "#efe3c2", 1);
+      c.fillStyle = "rgba(200, 150, 110, .5)"; c.beginPath(); c.ellipse(x + s * 0.08, y + s * 0.08, s * 0.12, s * 0.05, 0.2, 0, Math.PI * 2); c.fill();
+      break;
+    case "charcoal":
+      for (const [dx, dy, rr] of [[-0.14, 0.06, 0.15], [0.14, 0.08, 0.13], [0, -0.08, 0.14]]) {
+        c.beginPath(); c.moveTo(x + (dx - rr) * s, y + (dy + rr * 0.6) * s); c.lineTo(x + (dx - rr * 0.6) * s, y + (dy - rr * 0.7) * s); c.lineTo(x + (dx + rr) * s, y + (dy - rr * 0.4) * s); c.lineTo(x + (dx + rr * 0.8) * s, y + (dy + rr * 0.7) * s); c.closePath();
+        inked(c, "#26221f", 0.9);
+      }
+      c.strokeStyle = "rgba(170, 170, 180, .55)"; c.lineWidth = 0.8;
+      c.beginPath(); c.moveTo(x - s * 0.1, y - s * 0.1); c.lineTo(x + s * 0.06, y - s * 0.14); c.stroke();
+      break;
+    case "ore":
+      c.beginPath(); c.ellipse(x, y, s * 0.3, s * 0.21, 0.1, 0, Math.PI * 2); inked(c, "#9c5236", 1);
+      c.fillStyle = "rgba(210, 120, 70, .7)";
+      for (let i = 0; i < 4; i++) { c.beginPath(); c.arc(x + (h(i) - 0.5) * s * 0.36, y + (h(i + 4) - 0.5) * s * 0.22, s * 0.035, 0, Math.PI * 2); c.fill(); }
+      break;
+    case "metal": case "hotmetal": {
+      const hot = g === "hotmetal";
+      if (hot) { const gl = c.createRadialGradient(x, y, 0, x, y, s * 0.55); gl.addColorStop(0, "rgba(255, 150, 60, .55)"); gl.addColorStop(1, "rgba(255, 150, 60, 0)"); c.fillStyle = gl; c.fillRect(x - s * 0.6, y - s * 0.6, s * 1.2, s * 1.2); }
+      c.beginPath(); c.roundRect(x - s * 0.3, y - s * 0.14, s * 0.6, s * 0.28, s * 0.1); inked(c, hot ? "#f08a3a" : "#8e969c", 1);
+      c.strokeStyle = hot ? "rgba(255, 230, 160, .9)" : "rgba(255, 255, 255, .7)"; c.lineWidth = 1.2;
+      c.beginPath(); c.moveTo(x - s * 0.22, y - s * 0.06); c.lineTo(x + s * 0.18, y - s * 0.08); c.stroke();
+      break;
+    }
+    case "leather":
+      c.beginPath(); c.moveTo(x - s * 0.42, y - s * 0.1); c.quadraticCurveTo(x, y - s * 0.26, x + s * 0.4, y - s * 0.12); c.lineTo(x + s * 0.34, y + s * 0.22); c.quadraticCurveTo(x, y + s * 0.3, x - s * 0.38, y + s * 0.2); c.closePath();
+      inked(c, "#6e4526", 1);
+      c.setLineDash([2, 2]); c.strokeStyle = "rgba(230, 200, 150, .8)"; c.lineWidth = 0.8;
+      c.beginPath(); c.moveTo(x - s * 0.32, y + s * 0.12); c.quadraticCurveTo(x, y + s * 0.2, x + s * 0.28, y + s * 0.14); c.stroke(); c.setLineDash([]);
+      break;
+    case "bag":
+      c.beginPath(); c.moveTo(x - s * 0.1, y - s * 0.2); c.bezierCurveTo(x - s * 0.46, y - s * 0.1, x - s * 0.38, y + s * 0.3, x, y + s * 0.28); c.bezierCurveTo(x + s * 0.38, y + s * 0.3, x + s * 0.46, y - s * 0.1, x + s * 0.1, y - s * 0.2); c.closePath();
+      inked(c, k?.parts?.some((p) => p.startsWith("leather:")) ? "#6e4526" : "#9a6b43", 1);
+      c.strokeStyle = "#c2a468"; c.lineWidth = 1.6; c.beginPath(); c.moveTo(x - s * 0.14, y - s * 0.2); c.lineTo(x + s * 0.14, y - s * 0.2); c.stroke();
+      break;
+    case "lamp": {
+      c.beginPath(); c.moveTo(x - s * 0.32, y - s * 0.04); c.bezierCurveTo(x - s * 0.34, y + s * 0.26, x + s * 0.34, y + s * 0.26, x + s * 0.32, y - s * 0.04); c.closePath();
+      inked(c, "#9a5a32", 1);
+      c.beginPath(); c.ellipse(x, y - s * 0.04, s * 0.32, s * 0.08, 0, 0, Math.PI * 2); inked(c, "#efe3c2", 0.9);
+      if (k?.id?.startsWith("burning:")) {
+        c.beginPath(); c.moveTo(x - s * 0.06, y - s * 0.06); c.quadraticCurveTo(x - s * 0.07, y - s * 0.24, x, y - s * 0.34); c.quadraticCurveTo(x + s * 0.07, y - s * 0.24, x + s * 0.06, y - s * 0.06); c.closePath();
+        c.fillStyle = "#f2a33a"; c.fill();
+        c.beginPath(); c.ellipse(x, y - s * 0.12, s * 0.025, s * 0.06, 0, 0, Math.PI * 2); c.fillStyle = "#fff0c0"; c.fill();
+      } else { c.strokeStyle = INK; c.lineWidth = 1.2; c.beginPath(); c.moveTo(x, y - s * 0.06); c.lineTo(x + s * 0.03, y - s * 0.16); c.stroke(); }
+      break;
+    }
     default:
       c.beginPath(); c.moveTo(x - s * 0.3, y + s * 0.26); c.quadraticCurveTo(x - s * 0.44, y - s * 0.1, x - s * 0.1, y - s * 0.18); c.lineTo(x + s * 0.1, y - s * 0.18);
       c.quadraticCurveTo(x + s * 0.44, y - s * 0.1, x + s * 0.3, y + s * 0.26); c.closePath();
@@ -869,8 +977,17 @@ function flag(c, x, y, s, color) {
   inked(c, color, 1);
 }
 
+// Flame colors by how hot the fire burns: orange for wood, yellow in a ring, near white on charcoal with air in it.
+const FLAMES = [[1, ["#c4541d", "#e8952e", "#f6d68a"]], [1.3, ["#d8701f", "#f2b340", "#fbe8a8"]], [2, ["#eba83a", "#fadf7c", "#fffbe8"]], [2.5, ["#f4d27e", "#fff4cc", "#f4f9ff"]]];
+const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+export function flameColors(heat = 1) {
+  const j = FLAMES.findIndex(([h]) => h >= heat), i = j < 0 ? FLAMES.length - 2 : Math.max(0, j - 1), [h0, a] = FLAMES[i], [h1, b] = FLAMES[i + 1];
+  const k = h1 > h0 ? Math.max(0, Math.min(1, (heat - h0) / (h1 - h0))) : 0;
+  return a.map((ca, j) => { const x = rgb(ca), y = rgb(b[j]); return `rgb(${x.map((v, n) => Math.round(v + (y[n] - v) * k)).join(",")})`; });
+}
 // Fires are drawn live so they flicker. ring: loose stones, or a built "stone" / "brick" hearth.
-export function drawFire(c, x, y, s, now, seed, ring = "loose", power = 1) {
+// heat tints the flames, coal lays a glowing bed of charcoal under them, covered heaps a smoldering dome over the fire.
+export function drawFire(c, x, y, s, now, seed, ring = "loose", power = 1, { heat = 1, coal = false, covered = false } = {}) {
   c.save();
   c.translate(x, y);
   c.lineJoin = "round";
@@ -889,6 +1006,14 @@ export function drawFire(c, x, y, s, now, seed, ring = "loose", power = 1) {
   const ids = [...Array(n).keys()], behind = (i) => Math.sin((i / n) * Math.PI * 2) < 0;
   ids.filter(behind).forEach(stone);
   const t = now / 140 + seed * 10, hk = power, wk = 0.75 + 0.25 * power;
+  if (coal) {
+    const pulse = 0.8 + Math.sin(t * 0.7) * 0.15;
+    const bed = c.createRadialGradient(0, s * 0.12, 0, 0, s * 0.12, s * 0.34);
+    bed.addColorStop(0, `rgba(255, 236, 170, ${pulse})`); bed.addColorStop(0.5, `rgba(240, 110, 40, ${pulse * 0.9})`); bed.addColorStop(1, "rgba(120, 30, 10, 0)");
+    c.fillStyle = bed; c.beginPath(); c.ellipse(0, s * 0.12, s * 0.34, s * 0.15, 0, 0, Math.PI * 2); c.fill();
+    c.fillStyle = "#2a201b";
+    for (let i = 0; i < 5; i++) { c.beginPath(); c.ellipse((hash(seed * 100, i, 3) - 0.5) * s * 0.4, s * (0.1 + hash(seed * 100, i, 4) * 0.06), s * 0.04, s * 0.025, 0, 0, Math.PI * 2); c.fill(); }
+  }
   const flame = (h, w, col) => {
     const f1 = Math.sin(t) * 0.08, f2 = Math.cos(t * 1.3) * 0.08;
     h *= hk; w *= wk;
@@ -899,10 +1024,24 @@ export function drawFire(c, x, y, s, now, seed, ring = "loose", power = 1) {
     c.closePath();
     c.fillStyle = col; c.fill();
   };
-  flame(0.62 + Math.sin(t * 1.7) * 0.06, 0.2, "#c4541d");
-  flame(0.44 + Math.cos(t * 2.1) * 0.05, 0.13, "#e8952e");
-  flame(0.24, 0.07, "#f6d68a");
+  const [outer, mid, core] = flameColors(heat);
+  const low = covered ? 0.45 : 1;
+  flame((0.62 + Math.sin(t * 1.7) * 0.06) * low, 0.2, outer);
+  flame((0.44 + Math.cos(t * 2.1) * 0.05) * low, 0.13, mid);
+  flame(0.24 * low, 0.07, core);
   ids.filter((i) => !behind(i)).forEach(stone);
+  if (covered) {
+    // A dome of stone heaped over the fire, glowing through a gap at the front.
+    c.beginPath(); c.ellipse(0, s * 0.1, s * 0.4, s * 0.36, 0, Math.PI, 0); c.lineTo(s * 0.4, s * 0.16); c.lineTo(-s * 0.4, s * 0.16); c.closePath();
+    inked(c, ring === "brick" ? "#9a5a3e" : "#958b7b", 1);
+    c.save(); c.clip();
+    c.strokeStyle = "rgba(58, 42, 26, .45)"; c.lineWidth = 0.8;
+    for (let i = 0; i < 7; i++) { c.beginPath(); c.ellipse((hash(seed * 100, i, 7) - 0.5) * s * 0.6, -s * (0.02 + hash(seed * 100, i, 8) * 0.2), s * 0.09, s * 0.06, 0, 0, Math.PI * 2); c.stroke(); }
+    c.restore();
+    const gap = c.createRadialGradient(0, s * 0.1, 0, 0, s * 0.1, s * 0.12);
+    gap.addColorStop(0, core); gap.addColorStop(1, outer);
+    c.fillStyle = gap; c.beginPath(); c.ellipse(0, s * 0.09, s * 0.1, s * 0.06, 0, Math.PI, 0); c.closePath(); c.fill();
+  }
   c.restore();
 }
 // Flames licking along something that's on fire; k is intensity 0..1.

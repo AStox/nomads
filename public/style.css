@@ -10,7 +10,7 @@
   --gilt: #d9b56c;
   --good: #5a7a3a;
   --bad: #a8321f;
-  --panel-w: 410px;
+  --panel-w: 440px;
   --bar-h: 56px;
   --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .32 0 0 0 0 .22 0 0 0 0 .1 0 0 0 .09 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   font-family: "Alegreya Sans", system-ui, sans-serif;
@@ -77,10 +77,10 @@ main::after { content: ""; position: absolute; inset: 0; pointer-events: none; b
   background: var(--grain), linear-gradient(var(--paper), var(--paper-2));
   transition: transform .32s cubic-bezier(.2, .8, .2, 1);
 }
-.tabs { display: flex; align-items: flex-end; gap: 18px; padding: 10px 12px 0 18px; border-bottom: 1px solid var(--rule); }
+.tabs { display: flex; align-items: flex-end; gap: 14px; padding: 10px 10px 0 18px; border-bottom: 1px solid var(--rule); }
 .tabs button[data-tab] {
   border: 0; background: none; padding: 6px 0 10px; margin-bottom: -1px;
-  font: 400 19px/1 "IM Fell English SC", serif; letter-spacing: .03em; color: var(--ink-faint);
+  font: 400 18px/1 "IM Fell English SC", serif; letter-spacing: .02em; color: var(--ink-faint);
   border-bottom: 2px solid transparent; transition-property: color, border-color; transition-duration: .15s;
 }
 .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--seal); }
@@ -334,11 +334,53 @@ main::after { content: ""; position: absolute; inset: 0; pointer-events: none; b
 .book-foot a { font: italic 400 15px/1 "IM Fell English", serif; color: var(--ink-soft); text-underline-offset: 3px; }
 .book-foot a:hover { color: var(--seal); }
 @media (max-width: 480px) {
-  .tabs { gap: 14px; }
-  .tabs button[data-tab] { font-size: 17px; }
+  .tabs { gap: 11px; padding-left: 14px; }
+  .tabs button[data-tab] { font-size: 16px; }
   .tabs .jev { display: none; }
   .tabs .icon-btn { margin-left: auto; }
 }
+
+/* ---------- groups ---------- */
+.camp h4 { margin: 16px 0 8px; font: 700 11px/1 "Alegreya Sans", sans-serif; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint); }
+.camp-meta { margin: -2px 0 10px; font: italic 400 15px/1.3 "IM Fell English", serif; color: var(--ink-soft); }
+.camp-members { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.camp-members li { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.cm-name { font: 400 17px/1.2 "IM Fell English", serif; min-width: 0; }
+.cm-lead { font: 700 10px/1 "Alegreya Sans", sans-serif; font-style: normal; text-transform: uppercase; letter-spacing: .08em; color: #7a4b08; margin-left: 4px; }
+.cm-stand { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.cm-stand small { font-size: 12px; color: var(--ink-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.standing { display: block; width: 46px; height: 5px; border-radius: 3px; background: rgb(113 92 69 / .16); overflow: hidden; }
+.standing b { display: block; height: 100%; border-radius: 3px; background: var(--gilt); }
+.camp-lead, .camp-line { margin: 12px 0 0; font: 400 16px/1.4 "IM Fell English", serif; }
+.camp-line { margin: 0 0 4px; }
+.camp-lead b, .camp-line b { font-weight: 400; color: #7a4b08; }
+.camp-bans { list-style: none; display: grid; gap: 4px; margin: 8px 0 0; padding: 6px 10px; border-radius: 8px; background: rgb(168 50 31 / .08); font: italic 400 15px/1.4 "IM Fell English", serif; color: #6e1f12; }
+.camp-bans li { display: flex; align-items: center; }
+.customs { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.customs li { padding: 8px 12px; border-radius: 8px; background: linear-gradient(90deg, rgb(217 181 108 / .3), rgb(217 181 108 / .08)); box-shadow: inset 3px 0 0 var(--gilt); }
+.customs q { display: block; font: italic 400 17px/1.35 "IM Fell English", serif; color: #5c3a06; quotes: "\201C" "\201D"; }
+.customs small { display: flex; align-items: center; margin-top: 4px; font-size: 12px; color: var(--ink-faint); }
+.customs li.faded { background: rgb(113 92 69 / .07); box-shadow: inset 3px 0 0 var(--rule); }
+.customs li.faded q { color: var(--ink-faint); text-decoration: line-through; text-decoration-color: rgb(113 92 69 / .45); }
+.patterns { margin: 0; padding-left: 18px; display: grid; gap: 5px; font: 400 15px/1.35 "IM Fell English", serif; }
+.patterns li::marker { color: var(--seal); }
+.precedents { list-style: none; margin: 0; padding: 0; }
+.precedents li { padding: 9px 0; display: grid; grid-template-columns: 50px 1fr; column-gap: 10px; }
+.precedents li + li { border-top: 1px dashed var(--rule); }
+.precedents time { grid-row: span 2; font-size: 12px; line-height: 20px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.precedents p { margin: 0; font: 400 15px/1.35 "IM Fell English", serif; }
+.verdict { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 5px !important; font: 400 13px/1.2 "Alegreya Sans", sans-serif !important; color: var(--ink-soft); }
+.verdict > span { display: inline-flex; align-items: center; gap: 2px; }
+.resp { padding: 2px 8px; border-radius: 999px; font: 700 10px/1.4 "Alegreya Sans", sans-serif; text-transform: uppercase; letter-spacing: .07em; background: rgb(113 92 69 / .14); color: var(--ink-soft); }
+.resp.scold { background: rgb(176 125 22 / .2); color: #6b4408; }
+.resp.repay { background: rgb(47 74 109 / .15); color: #2f4a6d; }
+.resp.shun { background: rgb(168 50 31 / .14); color: #7a2412; }
+.resp.drive_out { background: var(--seal); color: #fbf1dc; }
+.went .seal.xs { margin-right: 0; }
+.watch { font-style: italic; color: var(--ink-faint); }
+.gone-camps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.gone-camps li { display: flex; flex-direction: column; gap: 2px; font: 400 16px/1.3 "IM Fell English", serif; color: var(--ink-soft); }
+.gone-camps small { font: 400 12px/1.3 "Alegreya Sans", sans-serif; color: var(--ink-faint); }
 
 /* The cost counter lives on the debug page; the tab row has no room for it. */
 .tabs .jev { display: none; }
