@@ -217,6 +217,94 @@ An agent learns laws by seeing them happen, not only by doing them. Watching lig
 - **Aimed experiments:** besides open tinkering, people can set out to find a way to make shelter, fire, a better tool, or food. They still don't know how; the aim only narrows what they think to try.
 - **Grudges cool:** once a day, dislike fades (slower for the vengeful, faster for the forgiving), and time spent near someone slowly breeds familiarity.
 
+### Groups and norms
+
+The step from a handful of people to a village. Nobody is assigned to a group; groups are noticed. Rules aren't written by us; they come out of what keeps going wrong, and only hold if people agree to them.
+
+**Camps form on their own.** Once a day, code looks at who lives near whom. People whose homes are within 8 tiles of each other and who don't dislike each other (mutual affinity above 0.1) are linked, and each connected cluster of three or more is a camp. A camp keeps its identity from day to day by matching members, so it can grow, lose people, split when a feud cuts it in two, or merge with a neighbor. A new camp is a gold chronicle event. It starts with a place name from its founder and the nearest landmark ("Mara's camp by the lake"); after a season Jev picks a lasting name from the lexicon's place and landmark words the same way things get named.
+
+```ts
+type Group = {
+  id: string; name: string; founded: number;
+  members: string[]; center: { x: number; y: number }; radius: number;
+  rules: Norm[];
+  leader: string | null;
+  standing: Record<string, number>; // how much the others defer to each member, 0..1
+  incidents: { t: number; kind: string; by: string; against?: string; text: string }[]; // last 40, the raw material for rules
+  store?: string; // a structure the group treats as shared
+};
+type Norm = {
+  id: string; rule: RuleKey; text: string; // "Members don't steal from each other."
+  proposedBy: string; t: number; because: string; // the incident that prompted it
+  status: "proposed" | "agreed" | "rejected" | "lapsed";
+  votes: Record<string, "for" | "against" | "abstain">;
+  breaches: { t: number; by: string; seenBy: string[]; punished?: Punishment }[];
+};
+```
+
+**Rules come from a closed set of shapes, chosen by incidents.** A rule is an action plus who it protects, forbidden or required. Actions: steal, take, raid a home, attack, insult, lie, start a fire near homes, take from the shared store, refuse food to someone starving, refuse to help someone collapsed, hunt alone in winter, teach outsiders. Scopes: members, children, the shared store, everyone. Required duties: share food with starving members, tend the collapsed, put a share of meat in the store, help rebuild a burned home. That's roughly 40 possible rules, and none of them is on until someone proposes it.
+
+- **Proposing:** when a member suffers or sees something from a fellow member that a rule could address (a theft, a raid, a burned home, being refused food while starving), Jev is asked whether they'd bring it to the group, and which rule shape they'd ask for, with "none" as an option. Lawful, just, or vengeful people propose more; rebels and opportunists less. Repeated incidents of the same kind raise the odds.
+- **Deciding:** a pending proposal is settled at the next council: an evening when at least half the members are within 4 tiles of a fire or the camp center. Each member present answers one Jev choice (for, against, abstain) with their traits, their relationship with the proposer, the incident, and whether the rule would stop something they themselves do. A thief tends to vote against a theft rule. It passes if "for" beats "against" and at least a third of all members voted for it. Passing is a gold event; failing is recorded too.
+- **Living under rules:** agreed rules appear in each member's Jev state as the group's rules, and any option that would break one is labeled as breaking it ("Steal from Tamsin, which breaks the camp's rule against stealing"). Nothing forbids it in code; people weigh it.
+- **Breaches:** a breach seen by a member within 6 tiles is recorded. The victim, or the leader if there is one, picks the response with a Jev choice: let it go, scold, demand it back (return the item or double), shun (members won't trade, share, or talk with them for a few days), or exile (dropped from the group; members treat them as hostile and they can't keep a home within the camp radius). Responses run through existing mechanics, and each one feeds everyone's reflections and reputations. Unseen breaches are still remembered by the one who did it.
+- **Lapsing:** a rule nobody has enforced in a year, or that was broken in front of the group and let go several times, lapses.
+
+**Leaders emerge from standing.** Standing is how much the others like and trust someone, weighted by age and skill. When one member's standing clearly leads, the members are asked (a Jev noul each, at a council) whether they'd accept that person settling disputes. If most would, they're the leader: they break tied votes, choose punishments, and later can ask members to do tasks (the start of professions). Standing that drops below someone else's, or a leader who breaks their own camp's rules in view, brings a challenge at the next council.
+
+**Shared store:** a member can set food or goods into a structure and call it the camp's (a new "share" action on place). Taking from it is fine; taking a lot while others go hungry is what the store rules are for.
+
+**Outsiders:** rules are about members. How a camp treats strangers is left to relationships and, later, territory.
+
+**UI:** a Groups tab (members with seals, leader, standing bars, rules with their vote tallies and breach counts, recent incidents); a faint ink outline of each camp's area on the map; memberships and standing in each person's ledger. Gold events for founding, rules agreed, exiles, and new leaders. Debug: `api/groups`, trace system "group" for every clustering, proposal, vote, breach, and punishment.
+
+**Cost:** proposals are rare, and a council costs one Jev call per member present, at most once per camp per evening.
+
+### More materials
+
+New raw materials, found in specific places so that where you live shapes what you can make, plus two physics rules (fire heat and hot working) that open a long path from stone to metal. Still no recipes: every step is a property meeting a rule.
+
+| Material | Where | Properties | Why it matters |
+| --- | --- | --- | --- |
+| bark | strips off when a tree is struck with something sharp but not felled | fibrous, flexible, flammable, a little insulating and binding | cord without reeds, containers, roofing |
+| resin | beads on stumps and damaged trees over a few days | flammable, sticky; melts into a strong binder when heated | glue for hafting; waterproofing baskets |
+| flint | nodules inside boulders on rocky ground; comes out when a boulder is broken | very hard, shatters | knaps into a much sharper blade; sparks far better than plain stone |
+| fat | part of every carcass | edible, very flammable, softens hide | lamps, leather, better fuel |
+| charcoal | what wood becomes when it burns in a fire that's closed in and starved of air | light, very hot fuel | the only fuel hot enough for metal |
+| ore | rare reddish stones on rocky ground, some inside boulders | heavy, hard, hidden metal content | metal |
+
+**Fire has a heat level.** An open fire is 1.0. A fire ringed with stone is 1.3. A ringed fire burning charcoal is 2.0, and 2.5 with air blown in (a hide bag squeezed at it, which is its own thing to discover: something flexible and hollow). Heat changes happen only above a threshold:
+
+- cook food: 0.8
+- melt resin: 0.8
+- fire clay: 1.2, so pots need at least a ringed hearth, not a campfire
+- wood to charcoal: a log heated in a ringed fire that's also covered (placing more stones or clay over it) turns to charcoal instead of burning up
+- smelt ore into a metal lump: 2.2
+- soften metal for working: 1.5
+
+**Hot working.** Anything hot and plastic can be shaped by striking it with something heavy and hard. Each blow at the fire raises the result's sharpness toward 1 and its toughness, by how heavy and hard the striker is. A metal lump hammered at a charcoal fire becomes a metal blade: sharper than flint and far tougher, so tools last much longer. Hammering cold metal only dents it.
+
+**Other new rules:**
+- melted resin counts as a binder of 0.95, better than cord, so glued tools wear more slowly
+- a basket or bark container coated with melted resin becomes watertight (a container that holds water)
+- rubbing fat into a hide, or holding a hide over a smoking fire, makes leather: tougher, more flexible, better clothing and bags
+- fat in a hollow container with fiber in it burns slowly as a lamp: steady light and a little warmth, and a way to carry fire
+- flint struck against a hard stone sparks three times as often as plain stone
+
+**Why this adds emergence:** flint and ore only exist on rocky ground, and resin only near trees, so camps near different land end up with different tools, which gives trade and territory something to be about. The metal chain is five or six discoveries deep (ring a fire, cover it for charcoal, find ore, smelt, hot-hammer), so it only happens where knowledge is passed down across people and generations.
+
+**UI:** glyphs for flint nodules, ore stones, resin on stumps, and the new items; fires tinted by heat (orange, yellow, white); a glowing hearth when charcoal is burning.
+
+### Build order for these
+
+1. Camps: clustering, identity across days, names, the Groups tab and map outline.
+2. Incidents, proposals, councils, votes.
+3. Rules in Jev's state, breach detection, punishments, lapsing.
+4. Standing and leaders.
+5. New materials and where they spawn: bark, resin, flint, fat, ore.
+6. Fire heat levels and thresholds, charcoal.
+7. Hot working and metal; resin glue, waterproofing, leather, lamps.
+
 ### Seeing inside the world
 
 Everything the simulation decides is recorded, so any surprise can be traced back to its cause.
