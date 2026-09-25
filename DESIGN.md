@@ -313,6 +313,17 @@ New raw materials, found in specific places so that where you live shapes what y
 6. Fire heat levels and thresholds, charcoal.
 7. Hot working and metal; resin glue, waterproofing, leather, lamps.
 
+### Where the build differs from the plan above
+
+- **Refusing food** needed a request to refuse, so there is a new social action: a hungry person can ask someone carrying food to share. Giving is a "give" incident, refusing is "refused_food". There is still no way to ask for help, so refusing help is not an incident yet.
+- **Who decides:** when a camp has a leader, the leader answers every incident they didn't commit. Without one it's the person hurt (a parent for a child), and otherwise the witness whose rulings have been followed most. Kindnesses are judged too, but a kindness that's let go stays out of the chronicle.
+- **Following and defying are watched, not asked**, for three days after a ruling: under a shun or a driving out, anyone in the camp who is friendly with that person defies it and anyone who turns them away follows it, and at the end everyone who was around them and kept away counts as following. A scolded person who does the same thing again defies; after "let it go", a victim who takes revenge defies. For "make it right", the same Jev call that picks the response also answers whether the doer would comply. Standing counts each person's last 12 rulings; a leader needs at least 2 "followed squared over reactions" and 60% followed, keeps the role until they fall under 50% or someone clearly outdoes them.
+- **Speaking a custom** needs an evening fire with another member nearby, or three members gathered together, so a camp without a fire can still put its ways into words. A spoken custom fades once it has been broken at least twice and more often than it has held.
+- **Air** only adds heat through a ringed fire, and it comes from heating something while holding anything soft and hollow as a fan or bellows (a hide bag, but also a woven mat). A covered fire keeps a ringed fire's heat of 1.3; it only changes what wood does in it, and its smoke is what cures a hide into leather.
+- **Hot working** runs up to 30 blows or until the edge reaches 0.95 sharpness; each blow closes the gap to 1 by 0.2 times the striker's weight times its hardness.
+- **Tying depth** now counts only layers of binding, so a fired pot, smelted metal, or leather counts as a plain material and can be hafted or tied.
+- **Deferred:** a resin-sealed basket is watertight (container 0.9) but nothing carries water yet, and a lit lamp gives a little warmth and a flame to carry but there is no light mechanic for it to improve.
+
 ### Seeing inside the world
 
 Everything the simulation decides is recorded, so any surprise can be traced back to its cause.
