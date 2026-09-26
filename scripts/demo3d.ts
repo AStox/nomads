@@ -8,5 +8,5 @@ const out = process.argv[at + 1], src = `${import.meta.dir}/../demo/3d`;
 mkdirSync(out, { recursive: true });
 const built = await Bun.build({ entrypoints: [`${src}/island.ts`], outdir: out, target: "browser", minify: true });
 if (!built.success) throw new AggregateError(built.logs, "bundling the generator failed");
-for (const file of ["index.html", "main.js", "ps1.js", "world.js"]) copyFileSync(`${src}/${file}`, `${out}/${file}`);
+for (const file of ["index.html", "main.js", "look.js", "world.js"]) copyFileSync(`${src}/${file}`, `${out}/${file}`);
 console.log(`demo in ${out}`);

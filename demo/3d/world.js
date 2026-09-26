@@ -1,10 +1,11 @@
-// The island as a PS1 scene at true scale: 75 m ground cells, trees ten to twenty meters tall, people under two.
+// The island as a tabletop model at true scale: 75 m ground cells, trees ten to twenty meters tall, people under two.
 import * as THREE from "three";
-import { groundTiles, propMaterial, speckle, terrainMaterial, waterMaterial, waves } from "./ps1.js";
+import { groundTiles, propMaterial, speckle, terrainMaterial, waterMaterial, waves } from "./look.js";
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const DX = [1, 1, 0, -1, -1, -1, 0, 1], DY = [0, 1, 1, 1, 0, -1, -1, -1];
 
-export function buildWorld(isle, { N, CELL, rand, people }) {
+export function buildWorld(isle, { N, CELL, rand, people, anisotropy }) {
   const S = N * CELL, half = S / 2, LEN = N * N, H = isle.height, Wd = isle.water;
   const center = (c) => (c + 0.5) * CELL - half;
   const cellAt = (x, z) => clamp(Math.floor((z + half) / CELL), 0, N - 1) * N + clamp(Math.floor((x + half) / CELL), 0, N - 1);
@@ -25,7 +26,7 @@ export function buildWorld(isle, { N, CELL, rand, people }) {
   }
 
   // ---------- ground ----------
-  const pos = new Float32Array(LEN * 3), uv = new Float32Array(LEN * 2), index = [];
+  const pos = new Float32Array(LEN * 3), uv = new Float32Array(LEN * 2), shade = new Float32Array(LEN * 3), index = [];
   const coverA = new Uint8Array(LEN * 4), coverB = new Uint8Array(LEN * 4), heights = new Uint16Array(LEN);
   const byte = (v) => Math.round(clamp(v, 0, 1) * 255);
   for (let i = 0; i < LEN; i++) {
@@ -33,8 +34,22 @@ export function buildWorld(isle, { N, CELL, rand, people }) {
     pos.set([center(x), H[i], center(y)], i * 3);
     uv.set([(x + 0.5) / N, (y + 0.5) / N], i * 2);
     coverA.set([isle.tree[i], isle.shrub[i], isle.grass[i], isle.marsh[i]].map(byte), i * 4);
-    coverB.set([isle.bare[i], isle.sand[i], isle.moist[i], 0].map(byte), i * 4);
+    coverB.set([isle.bare[i], isle.sand[i], isle.moist[i], Wd[i] > 0 ? 1 : 0].map(byte), i * 4);
     heights[i] = THREE.DataUtils.toHalfFloat(H[i]);
+    // How much sky each corner sees: the highest horizon along eight bearings, out to 600 m. Hollows and valley
+    // floors see less and sit darker, the way shadow gathers in the folds of a model.
+    let open = 0;
+    for (let d = 0; d < 8; d++) {
+      let rise = 0;
+      for (let s = 1; s <= 8; s++) {
+        const nx = x + DX[d] * s, ny = y + DY[d] * s;
+        if (nx < 0 || ny < 0 || nx >= N || ny >= N) break;
+        rise = Math.max(rise, (H[ny * N + nx] - H[i]) / (s * CELL * Math.hypot(DX[d], DY[d])));
+      }
+      open += 1 - Math.sin(Math.atan(rise));
+    }
+    const sky = 0.5 + 0.5 * (open / 8) ** 2;
+    shade.set([sky, sky, sky], i * 3);
   }
   for (let y = 0; y < N - 1; y++)
     for (let x = 0; x < N - 1; x++) {
@@ -44,6 +59,7 @@ export function buildWorld(isle, { N, CELL, rand, people }) {
   const terrain = new THREE.BufferGeometry();
   terrain.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   terrain.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+  terrain.setAttribute("color", new THREE.BufferAttribute(shade, 3));
   terrain.setIndex(index);
   terrain.computeVertexNormals();
   const data = (array, format, type) => {
@@ -80,7 +96,11 @@ export function buildWorld(isle, { N, CELL, rand, people }) {
   riverTex.minFilter = THREE.LinearMipmapLinearFilter;
   const dry = (x, z) => Wd[cellAt(x, z)] <= 0 && ground(x, z) > 0.5 && river(x, z) < 0.5;
 
-  group.add(new THREE.Mesh(terrain, terrainMaterial({ coverA: data(coverA), coverB: data(coverB), river: riverTex, ground: groundTiles() })));
+  const tiles = groundTiles();
+  tiles.anisotropy = anisotropy;
+  const land = new THREE.Mesh(terrain, terrainMaterial({ coverA: data(coverA), coverB: data(coverB), river: riverTex, tiles }));
+  land.castShadow = land.receiveShadow = true;
+  group.add(land);
 
   // ---------- water ----------
   // The sea runs out to the horizon. Each lake is a sheet at its own level over its cells and their rim; the ground
@@ -105,8 +125,8 @@ export function buildWorld(isle, { N, CELL, rand, people }) {
 
   // ---------- what grows and lies about ----------
   // Kept in patches of 16 by 16 cells. A patch out of view, or too far off for anything in it to cover a pixel, costs
-  // nothing; one farther off than thirty times the height of its tallest thing draws only a shuffled share of them, so
-  // woods stay thick around the camera and cheap across the island.
+  // nothing, shadows included; one farther off than twenty times the height of its tallest thing draws only a
+  // shuffled share of them, so woods stay thick around the camera and cheap across the island.
   const PATCH = 16, patches = new Map();
   const put = (kind, x, z, size, [r, gr, b], squash = 1) => {
     const key = `${kind} ${Math.floor((x + half) / CELL / PATCH)} ${Math.floor((z + half) / CELL / PATCH)}`;
@@ -149,6 +169,7 @@ export function buildWorld(isle, { N, CELL, rand, people }) {
   }
   const models = { conifer: conifer(), broadleaf: broadleaf(), shrub: shrub(), reeds: reeds(), rock: rock() };
   const grey = speckle(), props = propMaterial(grey);
+  grey.anisotropy = anisotropy;
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0), c = new THREE.Color();
   const counts = {}, meshes = [];
   for (const { kind, list } of patches.values()) {
@@ -163,6 +184,7 @@ export function buildWorld(isle, { N, CELL, rand, people }) {
     });
     mesh.computeBoundingSphere();
     mesh.userData = { tall: list.reduce((t, o) => Math.max(t, o.size), 0), total: list.length };
+    mesh.castShadow = mesh.receiveShadow = true;
     group.add(mesh);
     meshes.push(mesh);
     counts[kind] = (counts[kind] ?? 0) + list.length;
@@ -171,13 +193,11 @@ export function buildWorld(isle, { N, CELL, rand, people }) {
     for (const m of meshes) {
       const { tall, total } = m.userData, d = Math.max(1, m.boundingSphere.center.distanceTo(eye) - m.boundingSphere.radius);
       m.visible = d < far && (tall / d) * pxPerM > 0.6;
-      m.count = Math.ceil(total * Math.min(1, ((tall * 30) / d) ** 2));
+      m.count = Math.ceil(total * Math.min(1, ((tall * 20) / d) ** 2));
     }
   }
 
   // ---------- people and animals ----------
-  const figure = propMaterial(grey, { shrink: false });
-  const shadow = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35, depthWrite: false });
   const taken = [];
   const place = (test, far) => {
     for (let t = 0; t < 4000; t++) {
@@ -189,24 +209,22 @@ export function buildWorld(isle, { N, CELL, rand, people }) {
   const open = (need) => (i) => Wd[i] <= 0 && H[i] > 2 && isle.grass[i] > need;
   const walkers = [];
   const spawn = (rig, [x, z], o) => {
-    const disc = new THREE.Mesh(new THREE.CircleGeometry(o.shadow, 8).rotateX(-Math.PI / 2), shadow);
-    disc.position.y = 0.05;
-    rig.root.add(disc);
+    rig.root.traverse((m) => { m.castShadow = m.receiveShadow = true; });
     group.add(rig.root);
     const w = new Walker(rig, x, z, o, { ground, dry, rand });
     walkers.push(w);
     return w;
   };
   const folk = people.map(({ name, color }) =>
-    Object.assign(spawn(person(figure, color), place(open(0.35), 700), { speed: 1.3, fast: 1.3, range: 260, idle: 9, stride: 2.4, shadow: 0.4 }), { name, color }),
+    Object.assign(spawn(person(props, color), place(open(0.35), 700), { speed: 1.3, fast: 1.3, range: 260, idle: 9, stride: 2.4 }), { name, color }),
   );
   const deer = [];
   for (let herd = 0; herd < 2; herd++) {
     const [hx, hz] = place(open(0.3), 300);
-    for (let k = 0; k < 4; k++) deer.push(spawn(beast(figure, DEER), [hx + (rand() - 0.5) * 12, hz + (rand() - 0.5) * 12], { speed: 0.7, fast: 9, range: 90, idle: 12, stride: 2, shadow: 0.7 }));
+    for (let k = 0; k < 4; k++) deer.push(spawn(beast(props, DEER), [hx + (rand() - 0.5) * 12, hz + (rand() - 0.5) * 12], { speed: 0.7, fast: 9, range: 90, idle: 12, stride: 2 }));
   }
   const [wx, wz] = place(open(0.2), 300);
-  for (let k = 0; k < 3; k++) spawn(beast(figure, WOLF), [wx + k * 3, wz], { speed: 1.8, fast: 8, range: 500, idle: 6, stride: 2.6, shadow: 0.55 });
+  for (let k = 0; k < 3; k++) spawn(beast(props, WOLF), [wx + k * 3, wz], { speed: 1.8, fast: 8, range: 500, idle: 6, stride: 2.6 });
 
   function update(dt) {
     // Deer bolt from anyone who comes too close.
@@ -216,7 +234,7 @@ export function buildWorld(isle, { N, CELL, rand, people }) {
     for (const w of walkers) w.update(dt);
   }
 
-  return { group, ground, floor, size: S, people: folk, update, cull, counts };
+  return { group, ground, floor, size: S, people: folk, update, cull, counts, water };
 }
 
 // Something that wanders about a home: walks to a spot, lingers, picks another. Water turns it back.
@@ -294,20 +312,29 @@ function merge(parts) {
   }
   return out;
 }
-const conifer = () => merge([
+// Light reaches the tops of things more than their feet: each vertex darkens toward the ground it stands on.
+function grounded(g) {
+  const p = g.attributes.position, c = g.attributes.color;
+  for (let i = 0; i < p.count; i++) {
+    const t = clamp(p.getY(i) / 0.9, 0, 1), k = 0.55 + 0.45 * t * t * (3 - 2 * t);
+    c.setXYZ(i, c.getX(i) * k, c.getY(i) * k, c.getZ(i) * k);
+  }
+  return g;
+}
+const conifer = () => grounded(merge([
   part(new THREE.CylinderGeometry(0.035, 0.05, 0.3, 4, 1, true).translate(0, 0.15, 0), 0x5a3e26, 2),
   part(new THREE.ConeGeometry(0.3, 0.55, 5).translate(0, 0.42, 0), 0x2c5a2e, 3),
   part(new THREE.ConeGeometry(0.21, 0.45, 5, 1, true).translate(0, 0.775, 0), 0x336634, 3),
-]);
-const broadleaf = () => merge([
+]));
+const broadleaf = () => grounded(merge([
   part(new THREE.CylinderGeometry(0.04, 0.06, 0.45, 4, 1, true).translate(0, 0.225, 0), 0x5e4228, 2),
   part(new THREE.IcosahedronGeometry(0.36, 0).scale(1, 0.85, 1).translate(0, 0.66, 0), 0x4a7a34, 3),
-]);
-const shrub = () => merge([part(new THREE.IcosahedronGeometry(0.5, 0).scale(1.1, 0.75, 1).translate(0, 0.37, 0), 0xffffff, 2)]);
-const reeds = () => merge([0, 1, 2, 3, 4].map((k) => {
+]));
+const shrub = () => grounded(merge([part(new THREE.IcosahedronGeometry(0.5, 0).scale(1.1, 0.75, 1).translate(0, 0.37, 0), 0xffffff, 2)]));
+const reeds = () => grounded(merge([0, 1, 2, 3, 4].map((k) => {
   const a = k * 2.4, r = 0.08 + (k % 3) * 0.09, h = 0.65 + ((k * 37) % 10) / 28;
   return part(new THREE.ConeGeometry(0.035, h, 3, 1, true).translate(Math.cos(a) * r, h / 2, Math.sin(a) * r), 0xffffff, 1);
-}));
+})));
 function rock() {
   const g = new THREE.IcosahedronGeometry(0.5, 0);
   const p = g.attributes.position;
@@ -316,7 +343,7 @@ function rock() {
     const k = 0.75 + (Math.abs(Math.sin(p.getX(i) * 12.9 + p.getY(i) * 78.2 + p.getZ(i) * 37.7) * 43758.5) % 1) * 0.5;
     p.setXYZ(i, p.getX(i) * k, p.getY(i) * k * 0.7 + 0.12, p.getZ(i) * k);
   }
-  return merge([part(g, 0xffffff, 1)]);
+  return grounded(merge([part(g, 0xffffff, 1)]));
 }
 
 // People and beasts are jointed boxes: limbs hang from hips and shoulders so a stride is a swing about the joint.

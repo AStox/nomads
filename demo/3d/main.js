@@ -1,11 +1,10 @@
-// Fly around a generated island in PS1 style, at true scale. Orbit it, follow someone, or walk it yourself.
+// Fly around a generated island at true scale, lit like a tabletop miniature. Orbit it, follow someone, or walk it.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { CELL, COLORS, N, NAMES, generateIsland, rng } from "./island.js";
-import { post, setTime, skyMaterial, uniforms } from "./ps1.js";
+import { daylight, lens, skyMaterial, time } from "./look.js";
 import { buildWorld } from "./world.js";
 
-THREE.ColorManagement.enabled = false;
 const $ = (s) => document.querySelector(s);
 const seed = Math.max(1, Math.floor(Number(new URLSearchParams(location.search).get("seed")) || 1));
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -14,45 +13,97 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 30)));
 const isle = generateIsland(rng(seed));
 const renderer = new THREE.WebGLRenderer({ canvas: $("#view"), antialias: false, powerPreference: "high-performance" });
-renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
-renderer.setPixelRatio(1);
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.toneMappingExposure = 1.15;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 const scene = new THREE.Scene();
-const world = buildWorld(isle, { N, CELL, rand: rng(seed ^ 0x2545f491), people: NAMES.slice(0, 5).map((name, i) => ({ name, color: COLORS[i] })) });
+const people = NAMES.slice(0, 5).map((name, i) => ({ name, color: COLORS[i] }));
+const world = buildWorld(isle, { N, CELL, rand: rng(seed ^ 0x2545f491), people, anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()) });
 scene.add(world.group);
-const sky = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 10), skyMaterial());
-sky.renderOrder = -1;
-scene.add(sky);
-const camera = new THREE.PerspectiveCamera(55, 1, 1, 60000);
+const camera = new THREE.PerspectiveCamera(50, 1, 1, 60000);
 camera.rotation.order = "YXZ";
-const frame = new THREE.WebGLRenderTarget(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
-const pass = post(frame);
+const frame = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
+const post = lens(frame);
+const tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3(), tmp3 = new THREE.Vector3();
 
-// ---------- the small frame ----------
-const LINES = [240, 360, 480];
-let lines = 240, retro = true;
+let pxPerM = 1;
 function resize() {
-  const aspect = innerWidth / innerHeight, h = retro ? lines : Math.round(innerHeight * Math.min(2, devicePixelRatio)), w = Math.round(h * aspect);
-  renderer.setSize(w, h, false);
+  const pr = Math.min(1.5, devicePixelRatio), w = Math.round(innerWidth * pr), h = Math.round(innerHeight * pr);
+  renderer.setPixelRatio(pr);
+  renderer.setSize(innerWidth, innerHeight, false);
   frame.setSize(w, h);
-  uniforms.uRes.value.set(w, h);
-  uniforms.uPxPerM.value = h / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
-  camera.aspect = aspect;
+  post.material.uniforms.uTexel.value.set(1 / w, 1 / h);
+  camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
+  pxPerM = h / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
 }
 addEventListener("resize", resize);
 resize();
-function setRetro(on) {
-  retro = on;
-  uniforms.uSnap.value = uniforms.uAffine.value = pass.material.uniforms.uDither.value = on ? 1 : 0;
-  $("#view").classList.toggle("smooth", !on);
-  resize();
-  hud();
+
+// ---------- light ----------
+const sun = new THREE.DirectionalLight();
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.bias = -0.0003;
+const fill = new THREE.HemisphereLight();
+scene.add(sun, sun.target, fill);
+scene.fog = new THREE.Fog(0xbcd6ee, 3000, 20000);
+const sky = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 16), skyMaterial());
+sky.renderOrder = -1;
+sky.frustumCulled = false;
+scene.add(sky);
+let light = null;
+function lightAt(hours) {
+  light = daylight(hours);
+  sun.color.copy(light.sun);
+  sun.intensity = light.strength;
+  fill.color.copy(light.sky);
+  fill.groundColor.copy(light.ground);
+  fill.intensity = light.fill;
+  scene.fog.color.copy(light.horizon);
+  const s = sky.material.uniforms;
+  s.uZenith.value.copy(light.zenith);
+  s.uHorizon.value.copy(light.horizon);
+  s.uSun.value.copy(light.dir);
+  s.uSunColor.value.copy(light.sun);
+  s.uStars.value = light.stars;
+  const u = world.water.uniforms;
+  u.uSun.value.copy(light.dir);
+  u.uSunColor.value.copy(light.sun).multiplyScalar(light.strength);
+  u.uSky.value.copy(light.sky).multiplyScalar(light.fill);
+}
+// The sun's shadow covers what's in view: a box around the focus as wide as the view is far, snapped to whole texels
+// so the shadows hold still while the camera moves.
+function shadowsAround(focus, span) {
+  const cam = sun.shadow.camera, texel = (2 * span) / sun.shadow.mapSize.x;
+  sun.target.position.set(Math.round(focus.x / texel) * texel, focus.y, Math.round(focus.z / texel) * texel);
+  sun.position.copy(sun.target.position).addScaledVector(light.dir, span * 2 + 2000);
+  cam.left = cam.bottom = -span;
+  cam.right = cam.top = span;
+  cam.near = 10;
+  cam.far = span * 4 + 4000;
+  cam.updateProjectionMatrix();
+  sun.shadow.normalBias = texel * 0.6;
 }
 
 // ---------- time of day ----------
-const TIMES = [[6.8, "Dawn"], [9.5, "Morning"], [13, "Midday"], [18.2, "Dusk"], [22.5, "Night"]];
-let when = 1;
-setTime(TIMES[when][0], sky.material);
+const TIMES = [[6.6, "Dawn"], [10, "Morning"], [13.5, "Midday"], [18.2, "Evening"], [22, "Night"]];
+let when = 1, hours = TIMES[when][0], goal = hours;
+lightAt(hours);
+function nextTime() {
+  when = (when + 1) % TIMES.length;
+  goal = TIMES[when][0];
+  while (goal < hours) goal += 24;
+  hud();
+}
+// The sun moves to the chosen hour rather than jumping there.
+function passTime(dt) {
+  if (goal - hours < 1e-3) return;
+  hours = Math.min(goal, hours + Math.max(0.03, (goal - hours) * dt * 2.2));
+  if (hours >= 24 && goal >= 24) { hours -= 24; goal -= 24; }
+  lightAt(hours);
+}
 
 // ---------- camera ----------
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -62,10 +113,9 @@ camera.position.set(-6400, 5600, 7400);
 const settle = () => { controls.autoRotate = false; };
 controls.addEventListener("start", settle);
 
-let follow = null, fly = null;
+let follow = null, fly = null, sharp = false;
 const walk = { on: false, x: 0, z: 0, yaw: 0, pitch: 0, step: 0 };
 const keys = new Set();
-const tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3();
 
 function followPerson(k) {
   if (walk.on) toggleWalk();
@@ -102,13 +152,15 @@ function toggleWalk() {
   }
   hud();
 }
+const steer = () => [
+  (keys.has("d") || keys.has("arrowright")) - (keys.has("a") || keys.has("arrowleft")),
+  (keys.has("w") || keys.has("arrowup")) - (keys.has("s") || keys.has("arrowdown")),
+];
 
 // Keeps the orbit's focus on the ground and the camera out of it; pans with the keys; eases onto whoever is followed.
 function orbit(dt) {
   const dist = camera.position.distanceTo(controls.target);
-  const f = tmp.subVectors(controls.target, camera.position).setY(0).normalize(), r = tmp2.set(-f.z, 0, f.x);
-  const ax = (keys.has("d") || keys.has("arrowright")) - (keys.has("a") || keys.has("arrowleft"));
-  const az = (keys.has("w") || keys.has("arrowup")) - (keys.has("s") || keys.has("arrowdown"));
+  const f = tmp.subVectors(controls.target, camera.position).setY(0).normalize(), r = tmp2.set(-f.z, 0, f.x), [ax, az] = steer();
   if (ax || az) {
     settle();
     follow = fly = null;
@@ -117,7 +169,7 @@ function orbit(dt) {
     camera.position.add(move);
   }
   if (follow) {
-    const at = follow.focus(new THREE.Vector3());
+    const at = follow.focus(tmp3);
     if (fly) {
       fly.t = Math.min(1, fly.t + dt / 2);
       const e = fly.t * fly.t * (3 - 2 * fly.t), dir = tmp.lerpVectors(fly.from, fly.to, e).normalize();
@@ -133,14 +185,14 @@ function orbit(dt) {
   controls.update(dt);
   const floor = world.floor(camera.position.x, camera.position.z) + 2;
   if (camera.position.y < floor) camera.position.y = floor;
-  const far = clamp(dist * 3.2, 2500, 42000);
-  fog(far * 0.3, far, clamp(dist * 0.004, 0.25, 30));
+  const far = clamp(dist * 4, 3000, 45000);
+  haze(far * 0.25, far, clamp(dist * 0.002, 0.2, 20));
+  shadowsAround(controls.target, clamp(dist * 0.9, 50, 9000));
+  focusOn(controls.target, dist);
 }
 
 function stroll(dt) {
-  const f = tmp.set(-Math.sin(walk.yaw), 0, -Math.cos(walk.yaw)), r = tmp2.set(-f.z, 0, f.x);
-  const ax = (keys.has("d") || keys.has("arrowright")) - (keys.has("a") || keys.has("arrowleft"));
-  const az = (keys.has("w") || keys.has("arrowup")) - (keys.has("s") || keys.has("arrowdown"));
+  const f = tmp.set(-Math.sin(walk.yaw), 0, -Math.cos(walk.yaw)), r = tmp2.set(-f.z, 0, f.x), [ax, az] = steer();
   const speed = keys.has("shift") ? 14 : 4.5;
   if (ax || az) {
     const move = f.multiplyScalar(az).addScaledVector(r, ax).normalize().multiplyScalar(speed * dt);
@@ -150,19 +202,30 @@ function stroll(dt) {
   }
   camera.position.set(walk.x, world.floor(walk.x, walk.z) + 1.65 + Math.sin(walk.step * 1.7) * 0.05, walk.z);
   camera.rotation.set(walk.pitch, walk.yaw, 0);
-  fog(300, 3200, 0.2);
+  haze(400, 3500, 0.15);
+  shadowsAround(camera.position, 250);
+  focusOn(camera.position, 0);
 }
 
-function fog(near, far, clip) {
-  uniforms.uFogNear.value = near;
-  uniforms.uFogFar.value = far;
+function haze(near, far, clip) {
+  scene.fog.near = near;
+  scene.fog.far = far;
   const depth = far * 1.3 + 2000;
   if (Math.abs(camera.near - clip) > clip * 0.1 || Math.abs(camera.far - depth) > far * 0.1) {
     camera.near = clip;
     camera.far = depth;
     camera.updateProjectionMatrix();
   }
-  world.cull(camera.position, uniforms.uPxPerM.value, far);
+  world.cull(camera.position, pxPerM, far);
+}
+
+// The lens keeps a band sharp across the focus, and blurs harder the farther out the camera pulls, when the island
+// looks most like a model. Walking, you're at human scale, so it stays off.
+function focusOn(point, dist) {
+  const u = post.material.uniforms, strength = walk.on || sharp ? 0 : clamp((Math.log(dist) - Math.log(25)) / (Math.log(4000) - Math.log(25)), 0, 1);
+  u.uFocus.value = clamp(tmp.copy(point).project(camera).y * 0.5 + 0.5, 0.15, 0.85);
+  u.uBlur.value = strength * frame.height * 0.012;
+  u.uBand.value = 0.1 + 0.08 * (1 - strength);
 }
 
 // ---------- input ----------
@@ -173,8 +236,7 @@ addEventListener("keydown", (e) => {
   if (e.repeat) return;
   if (k === "e") toggleWalk();
   else if (k === "t") nextTime();
-  else if (k === "p") setRetro(!retro);
-  else if (k === "r") { lines = LINES[(LINES.indexOf(lines) + 1) % LINES.length]; resize(); hud(); }
+  else if (k === "l") toggleLens();
   else if (k === "n") newIsland();
   else if (k >= "1" && k <= "5") followPerson(Number(k) - 1);
   else if (k === "0" || k === "escape") stopFollow();
@@ -196,6 +258,13 @@ addEventListener("pointermove", (e) => {
   walk.pitch = clamp(walk.pitch - e.movementY * 0.0025, -1.3, 1.3);
 });
 view.addEventListener("wheel", settle, { passive: true });
+function toggleLens() {
+  sharp = !sharp;
+  hud();
+}
+function newIsland() {
+  location.search = `?seed=${1 + Math.floor(Math.random() * 9999)}`;
+}
 
 // ---------- heads-up display ----------
 const tags = world.people.map((p, i) => {
@@ -213,22 +282,14 @@ const tags = world.people.map((p, i) => {
   return tag;
 });
 $("#walk").addEventListener("click", toggleWalk);
-$("#retro").addEventListener("click", () => setRetro(!retro));
-$("#time").addEventListener("click", () => nextTime());
-$("#next").addEventListener("click", () => newIsland());
-function nextTime() {
-  when = (when + 1) % TIMES.length;
-  setTime(TIMES[when][0], sky.material);
-  hud();
-}
-function newIsland() {
-  location.search = `?seed=${1 + Math.floor(Math.random() * 9999)}`;
-}
+$("#lens").addEventListener("click", toggleLens);
+$("#time").addEventListener("click", nextTime);
+$("#next").addEventListener("click", newIsland);
 function hud() {
   $("#where").textContent = `Island ${seed} · ${TIMES[when][1]}`;
   $("#mode").textContent = walk.on ? "Walking. Drag to look, WASD to move, E to fly." : follow ? `Following ${follow.name}. 0 to stop.` : "Drag to turn, right drag to pan, scroll to zoom.";
   $("#walk").textContent = walk.on ? "Fly" : "Walk";
-  $("#retro").textContent = retro ? `PS1 ${lines}p` : "PS1 off";
+  $("#lens").textContent = sharp ? "Lens off" : "Lens on";
   document.querySelectorAll("#list button").forEach((b, i) => b.classList.toggle("on", follow === world.people[i]));
 }
 hud();
@@ -243,7 +304,7 @@ function inSight(from, to) {
 function place() {
   const w = innerWidth, h = innerHeight;
   world.people.forEach((p, i) => {
-    const v = p.focus(tmp).add(tmp2.set(0, 1, 0)), d = v.distanceTo(camera.position), seen = d < uniforms.uFogFar.value && inSight(camera.position, v);
+    const v = p.focus(tmp).add(tmp2.set(0, 1, 0)), seen = v.distanceTo(camera.position) < scene.fog.far && inSight(camera.position, v);
     v.project(camera);
     const show = seen && v.z < 1 && Math.abs(v.x) < 1.1 && Math.abs(v.y) < 1.1;
     tags[i].hidden = !show;
@@ -256,7 +317,8 @@ let last = performance.now();
 renderer.setAnimationLoop((now) => {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
-  uniforms.uClock.value += dt;
+  time.value += dt;
+  passTime(dt);
   world.update(dt);
   if (walk.on) stroll(dt);
   else orbit(dt);
@@ -265,9 +327,9 @@ renderer.setAnimationLoop((now) => {
   renderer.setRenderTarget(frame);
   renderer.render(scene, camera);
   renderer.setRenderTarget(null);
-  renderer.render(pass.scene, pass.camera);
+  renderer.render(post.scene, post.camera);
   place();
 });
 $("#loading").hidden = true;
 document.body.classList.add("ready");
-Object.assign(window, { nomads: { world, camera, controls, followPerson, toggleWalk, walk, setRetro } });
+Object.assign(window, { nomads: { world, camera, controls, followPerson, toggleWalk, walk } });

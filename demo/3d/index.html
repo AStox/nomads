@@ -11,40 +11,42 @@
 { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.min.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/" } }
 </script>
 <style>
-  :root { --edge: #e8e8f0; --ink: #fff; --dim: #b8c4ec; --accent: #ffd84a; }
+  :root { --ink: #f6f3ea; --dim: #c9d0ea; --accent: #ffd66b; --edge: rgba(255, 255, 255, 0.28); }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
-  body { color: var(--ink); font: 15px/1.3 "Pixelify Sans", ui-monospace, monospace; }
-  #view { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; image-rendering: pixelated; touch-action: none; }
-  #view.smooth { image-rendering: auto; }
-  .win { background: linear-gradient(#3a5cc4, #0c1654); border: 2px solid var(--edge); border-radius: 7px; box-shadow: 0 0 0 2px #0a0e30, inset 0 0 0 1px #7890e0; padding: 10px 14px; text-shadow: 2px 2px 0 #0008; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1030; }
+  body { color: var(--ink); font: 15px/1.35 "Pixelify Sans", ui-monospace, monospace; }
+  #view { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; }
+  .win { background: linear-gradient(160deg, rgba(66, 98, 204, 0.55), rgba(14, 22, 72, 0.64)); backdrop-filter: blur(10px) saturate(1.2); -webkit-backdrop-filter: blur(10px) saturate(1.2); border: 1px solid var(--edge); border-radius: 12px; box-shadow: 0 10px 30px rgba(0, 0, 20, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.22); padding: 12px 16px; text-shadow: 0 1px 2px rgba(0, 0, 20, 0.5); }
   .win h1, .win h2 { margin: 0 0 4px; font-weight: 600; letter-spacing: 1px; }
   .win h1 { font-size: 22px; }
   .win h2 { font-size: 15px; color: var(--dim); }
   .win p { margin: 0; }
-  #hud { position: fixed; inset: 14px; pointer-events: none; }
-  #hud .win { position: absolute; pointer-events: auto; }
-  #card { top: 0; left: 0; width: min(340px, calc(100vw - 28px)); }
-  #people { top: 0; right: 0; }
-  #keys { bottom: 0; left: 0; }
+  #hud { position: fixed; inset: 16px; pointer-events: none; }
+  #hud .win { position: absolute; pointer-events: auto; animation: arrive 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+  #card { top: 0; left: 0; width: min(360px, calc(100vw - 32px)); }
+  #people { top: 0; right: 0; animation-delay: 0.08s !important; }
+  #keys { bottom: 0; left: 0; animation-delay: 0.16s !important; }
+  @keyframes arrive { from { opacity: 0; transform: translateY(-8px); } }
   #mode { color: var(--dim); margin-top: 2px; }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-  button { font: inherit; color: inherit; text-shadow: inherit; white-space: nowrap; background: #0a1450; border: 1px solid #aab4e0; border-radius: 4px; padding: 3px 10px; cursor: pointer; }
-  button:hover { background: #1c2a78; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  button { font: inherit; color: inherit; text-shadow: inherit; white-space: nowrap; background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 8px; padding: 4px 12px; cursor: pointer; transition: background 0.15s, border-color 0.15s, transform 0.15s; }
+  button:hover { background: rgba(255, 255, 255, 0.18); }
+  button:active { transform: translateY(1px); }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   #list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
   #list button { width: 100%; display: flex; align-items: center; gap: 8px; text-align: left; background: none; border-color: transparent; }
-  #list button:hover, #list button.on { border-color: var(--accent); }
-  #list i { width: 10px; height: 10px; background: var(--c); border: 1px solid #fff; }
+  #list button:hover, #list button.on { border-color: var(--accent); background: rgba(255, 255, 255, 0.08); }
+  #list i { width: 10px; height: 10px; border-radius: 3px; background: var(--c); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8); }
   #keys dl { display: grid; grid-template-columns: auto auto; gap: 1px 14px; margin: 0; }
   #keys dt { color: var(--accent); }
   #keys dd { margin: 0; }
-  .tag { position: fixed; left: 0; top: 0; font-size: 13px; padding: 0 6px; background: #0a1450d0; border: 1px solid var(--c); border-left-width: 5px; border-radius: 3px; white-space: nowrap; }
+  .tag { position: fixed; left: 0; top: 0; font-size: 13px; padding: 1px 8px; background: rgba(14, 22, 72, 0.7); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); border: 1px solid rgba(255, 255, 255, 0.25); border-left: 4px solid var(--c); border-radius: 6px; white-space: nowrap; }
   #loading { position: fixed; right: 24px; bottom: 24px; font-size: 20px; letter-spacing: 2px; }
   #loading span { animation: blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
   @media (max-width: 720px) { #keys { display: none; } }
+  @media (prefers-reduced-motion: reduce) { #hud .win, #loading span { animation: none; } }
 </style>
 </head>
 <body>
@@ -55,7 +57,7 @@
     <h1>Nomads</h1>
     <p id="where"></p>
     <p id="mode"></p>
-    <div class="row"><button id="walk" type="button">Walk</button><button id="retro" type="button">PS1</button><button id="time" type="button">Time</button><button id="next" type="button">New island</button></div>
+    <div class="row"><button id="walk" type="button">Walk</button><button id="lens" type="button">Lens on</button><button id="time" type="button">Time</button><button id="next" type="button">New island</button></div>
   </section>
   <section class="win" id="people" aria-labelledby="people-title">
     <h2 id="people-title">People</h2>
@@ -72,8 +74,7 @@
       <dt>0</dt><dd>Stop following</dd>
       <dt>E</dt><dd>Walk or fly</dd>
       <dt>T</dt><dd>Time of day</dd>
-      <dt>P</dt><dd>PS1 look on or off</dd>
-      <dt>R</dt><dd>Resolution</dd>
+      <dt>L</dt><dd>Tilt-shift lens</dd>
       <dt>N</dt><dd>New island</dd>
       <dt>H</dt><dd>Hide this</dd>
     </dl>

@@ -24,9 +24,9 @@
 6. **[2026-09-26] Headless page loads here take 5 to 50 seconds**
    Google Fonts crawls from headless Chromium on this box. The 2D map awaits its font before building, a render-blocking font stylesheet holds back module scripts, and screenshots wait on fonts.
    Do instead: `goto` with `waitUntil: "commit"`, wait up to 90 s for `body.ready`, and in throwaway tests `page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort())`. Profile with CDP before blaming the renderer.
-7. **[2026-09-26] Headless WebGL needs SwiftShader flags and runs near 1 fps**
-   The 3D demo (demo/3d, built by `bun scripts/demo3d.ts --out /root/goldclaw/www/nomads-3d`) is black or throws without them, and Playwright clicks can time out waiting for a stable frame.
-   Do instead: launch with `--use-angle=swiftshader --enable-unsafe-swiftshader --ignore-gpu-blocklist`, wait tens of seconds for camera moves, and click through `page.evaluate` when a click stalls.
+7. **[2026-09-26] Headless WebGL needs SwiftShader flags and is very slow**
+   The 3D demo (demo/3d, built by `bun scripts/demo3d.ts --out /root/goldclaw/www/nomads-3d`) is black or throws without them. With shadows on, one mid-range frame over woods can take minutes, and Playwright clicks can time out waiting for a stable frame.
+   Do instead: launch with `--use-angle=swiftshader --enable-unsafe-swiftshader --ignore-gpu-blocklist`, shoot at about 1100x620 with a 240 s screenshot timeout, and click through `page.evaluate` when a click stalls.
 
 ## Domain Behavior Guardrails
 1. **[2026-09-26] No slope may face away from the isometric camera**
@@ -44,6 +44,6 @@
 5. **[2026-09-26] math/noise seeds keep only 16 bits**
    `simplex2d.create(seed)` uses `seed & 0xffff`.
    Do instead: derive sub-seeds with `Math.floor(rand() * 65536)` from the world rng.
-6. **[2026-09-26] The 3D demo's ground triangles are 75 m across**
-   Affine (PS1) texture mapping on them smears the ground into long diagonal streaks.
-   Do instead: keep terrain and water textures perspective-correct in demo/3d/ps1.js; only small props and figures warp.
+6. **[2026-09-26] The 3D demo renders into a half-float frame**
+   Blending there doesn't clamp, so a shader alpha over 1 subtracts whatever is behind (it showed the map's square through the sea). And three caches the cube it builds from an equirectangular `scene.background`, so repainting that canvas never shows.
+   Do instead: clamp alpha in any shader drawn into the frame, and draw a sky that changes as a dome mesh, as demo/3d/look.js does.
