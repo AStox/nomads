@@ -53,7 +53,7 @@ export function climate(h: Float32Array, open: Uint8Array, rand: () => number): 
   const exposure = new Float32Array(LEN), salt = new Float32Array(LEN);
   // The air arriving at each cell: vapor and cloud water for each season, how sheltered, how far from open water.
   const q = new Float32Array(LEN * S), cloud = new Float32Array(LEN * S), shelter = new Float32Array(LEN), shore = new Float32Array(LEN);
-  const moist = SEASONS.map(({ t }) => 0.95 * qsat(t));
+  const moist = SEASONS.map(({ t }) => 0.99 * qsat(t));
   // What air can hold over each cell, and whether what falls there is snow, don't depend on the wind's direction.
   const cap = new Float32Array(LEN * S), frozen = new Uint8Array(LEN * S);
   for (let i = 0; i < LEN; i++)

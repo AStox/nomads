@@ -7,13 +7,15 @@ import { climate, type Climate } from "./climate";
 import { ground, type Ground } from "./ground";
 
 // Where the island rises: a warped oval, lifted hardest along a few ridged ranges and least in its lowland basins.
+// Its bedrock comes in bands of harder and softer rock.
 function uplift(rand: () => number) {
   const gen = () => simplex2d.create(Math.floor(rand() * 65536));
   const warp = gen(), coast = gen(), ranges = gen(), basins = gen();
   const tilt = rand() * Math.PI, stretch = 0.8 + rand() * 0.35;
+  const rock = gen();
   const p: [number, number] = [0, 0];
   const warped = (a: number, b: number) => simplex2d.sample(warp, a, b);
-  const mask = new Float32Array(LEN), lift = new Float32Array(LEN);
+  const mask = new Float32Array(LEN), lift = new Float32Array(LEN), hard = new Float32Array(LEN);
   for (let i = 0; i < LEN; i++) {
     const x = i % N, y = (i - x) / N;
     let u = ((x + 0.5) / N) * 2 - 1, v = ((y + 0.5) / N) * 2 - 1;
@@ -26,15 +28,17 @@ function uplift(rand: () => number) {
     const range = ridged((f) => simplex2d.sample(ranges, u * 1.8 * f, v * 1.8 * f), 3, 2, 0.45);
     const lowland = clamp(0.55 + simplex2d.sample(basins, u * 1.4, v * 1.4) * 0.9, 0.15, 1);
     lift[i] = mask[i] ** 2 * (0.3 + 0.7 * range * range) * lowland;
+    hard[i] = clamp(0.5 + fbm((f) => simplex2d.sample(rock, u * 2.4 * f, v * 2.4 * f), 3, 2, 0.5) * 0.9, 0, 1);
   }
-  return { mask, lift };
+  return { mask, lift, hard };
 }
 
 // Uplift against the stream power law (Braun and Willett 2013, implicit, n = 1): each step the land rises, rivers cut
-// down in proportion to the square root of the area they drain, and slopes creep smooth. Depressions keep their
-// floors, so the landscape can still hold lakes. Heights come out in arbitrary units for the caller to scale.
+// down in proportion to the square root of the area they drain, and slopes creep smooth, both slower through hard
+// rock, which is left standing proud. Depressions keep their floors, so the landscape can still hold lakes. Heights
+// come out in arbitrary units for the caller to scale.
 function erode(rand: () => number, steps: number) {
-  const { mask, lift } = uplift(rand);
+  const { mask, lift, hard } = uplift(rand);
   const h = new Float32Array(LEN), next = new Float32Array(LEN);
   for (let i = 0; i < LEN; i++) h[i] = mask[i] > 0 ? mask[i] * 0.02 : -0.05;
   // The implicit scheme stays stable at any step, and 50 long steps land where 120 short ones do.
@@ -47,7 +51,7 @@ function erode(rand: () => number, steps: number) {
     for (let k = 0; k < LEN; k++) {
       const i = order[k], j = to[i];
       if (j === i) continue;
-      const f = (K * Math.sqrt(area[i])) / far[i], lower = (h[i] + f * h[j]) / (1 + f);
+      const f = (K * (1.3 - hard[i]) * Math.sqrt(area[i])) / far[i], lower = (h[i] + f * h[j]) / (1 + f);
       if (lower < h[i]) h[i] = lower;
     }
     next.set(h);
@@ -55,11 +59,11 @@ function erode(rand: () => number, steps: number) {
       for (let x = 1; x < N - 1; x++) {
         const i = y * N + x;
         if (h[i] <= 0) continue;
-        next[i] = h[i] + CREEP * (h[i - 1] + h[i + 1] + h[i - N] + h[i + N] - 4 * h[i]);
+        next[i] = h[i] + CREEP * (1.3 - hard[i]) * (h[i - 1] + h[i + 1] + h[i - N] + h[i + N] - 4 * h[i]);
       }
     h.set(next);
   }
-  return h;
+  return { h, hard };
 }
 
 // Steady groundwater under recharge (Dupuit): the water table bulges under hills between the rivers, lakes and sea that
@@ -98,8 +102,8 @@ export type Island = Climate & Ground & {
 const QMIN = 0.02; // m³/s: enough water to cut a lasting channel
 
 export function generateIsland(rand: () => number): Island {
-  const peak = 550 + rand() * 450;
-  const raw = erode(rand, 50);
+  const peak = 250 + rand() * 200;
+  const { h: raw, hard } = erode(rand, 50);
   let top = 0;
   for (let i = 0; i < LEN; i++) top = Math.max(top, raw[i]);
   const height = new Float32Array(LEN);
@@ -185,6 +189,6 @@ export function generateIsland(rand: () => number): Island {
   }
   const table = waterTable(height, fixed, recharge);
   const shore = distance(open);
-  const cover = ground({ ...air, height, open, area: accumulate(order, to), table, shore });
+  const cover = ground({ ...air, height, open, area: accumulate(order, to), table, shore, hard });
   return { ...air, ...cover, height, water, flow, table, rivers, lakes };
 }

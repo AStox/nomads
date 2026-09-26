@@ -14,7 +14,7 @@ export type Ground = {
 };
 
 export type Site = {
-  height: Float32Array; open: Uint8Array; area: Float32Array; table: Float32Array; shore: Float32Array;
+  height: Float32Array; open: Uint8Array; area: Float32Array; table: Float32Array; shore: Float32Array; hard: Float32Array;
   precip: Float32Array; pet: Float32Array; exposure: Float32Array; salt: Float32Array;
   seasons: { precip: Float32Array; pet: Float32Array }[];
 };
@@ -46,9 +46,10 @@ export function ground(s: Site): Ground {
     // Soil thins on steep ground and ridges and gathers in hollows; rivers spread silt over their flat floors.
     const valley = ramp(Math.log10(s.area[i]), 1.6, 3) * (1 - ramp(slope, 0.03, 0.1));
     silt[i] = valley;
-    // Past the angle of repose (about 35°, measured on the unsmoothed ground) soil slides off and crags show.
+    // Past the angle of repose (about 35°, measured on the unsmoothed ground) soil slides off and crags show. Hard
+    // bedrock weathers so slowly that it holds only a skin of soil at best.
     const steep = Math.hypot(rough(x + 1, y) - rough(x - 1, y), rough(x, y + 1) - rough(x, y - 1)) / (2 * CELL);
-    soil[i] = (1.4 * Math.exp(-slope / 0.5) * clamp(1 + curve * 1500, 0.5, 2) + 2.5 * valley) * (1 - ramp(steep, 0.7, 1.1));
+    soil[i] = (1.4 * Math.exp(-slope / 0.5) * clamp(1 + curve * 1500, 0.5, 2) + 2.5 * valley) * (1 - ramp(steep, 0.7, 1.1)) * (1 - ramp(s.hard[i], 0.62, 0.9));
     // Waves pile sand on low, gentle shores, most where the gales come ashore.
     sand[i] = (1 - ramp(s.shore[i], 1.5 * CELL, 3.5 * CELL)) * (1 - ramp(z, 4, 12)) * (1 - ramp(slope, 0.08, 0.2)) * ramp(s.salt[i], 0.12, 0.45);
     // Ground that never drains, or so rainy that it never dries, grows peat.

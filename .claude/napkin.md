@@ -29,9 +29,9 @@
 1. **[2026-09-26] No slope may face away from the isometric camera**
    The map draws all terrain first and glyphs on top. That is only correct because ground never rises toward the camera (+x, +y) faster than it drops on screen.
    Do instead: keep the lift limiter in isoView (public/art.js) when changing heights: it scales the island so 99.5% of tiles pass and clamps the rest.
-2. **[2026-09-26] The island is 46% sea, and its land is 38% grass, 48% forest, 14% rock**
-   Measured over 40 seeds. stock() sets thing densities per land tile, so they don't depend on how much of the map is sea.
-   Do instead: re-measure over ~40 seeds after touching the generator, and keep stock() odds per land tile.
+2. **[2026-09-26] The island is 47% sea, and its land is 37% grass, 52% forest, 11% rock**
+   Measured over 24 seeds after the relief came down to 250-450 m peaks (median slope 6.5°). Crags now come mostly from hard bedrock bands rather than steepness. stock() sets thing densities per land tile, so they don't depend on how much of the map is sea.
+   Do instead: re-measure over ~24 seeds after touching the generator (rock share drives ore and flint), and keep stock() odds per land tile.
 3. **[2026-09-26] Water tiles are both sea and lakes**
    Only lakes freeze, and islets offshore or in lakes are cut off from the rest of the land.
    Do instead: use `sea(w)` to tell salt water from lakes, and `mainland(w)` or `landing(w)` to place anyone new.
