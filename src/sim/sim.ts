@@ -599,7 +599,7 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
         const name = taken && head ? `${head} ${word}` : word;
         if (name && name !== kind.name) {
           kind.plain = kind.name;
-          log(w, "first", [a.id], a, `People have started calling the ${kind.name} ${an(name)}.`);
+          log(w, "named", [a.id], a, `People have started calling the ${kind.name} ${an(name)}.`, name);
           kind.name = name;
           changedKinds.add(k);
         }
@@ -975,7 +975,7 @@ function defended(w: World, defender: Agent, victimId: string) {
   const v = agentById(w, victimId);
   if (!v || v === defender) return;
   const text = `${defender.name} fought off a wolf that was attacking ${v.name}.`;
-  log(w, "attack", [defender.id, v.id], v, text);
+  log(w, "defend", [defender.id, v.id], v, text);
   reflect(w, v, defender, text).then((r) => {
     if (r.bond !== "none") log(w, "bond", [v.id], v, `${v.name} will remember this about ${defender.name}: ${r.bond.replaceAll("_", " ")}.`);
   }).catch(() => {});
@@ -1215,7 +1215,7 @@ onGrew((w, owner, from, at) => {
   const fields = { verb: "plant", inputs: [from], gives: [], builds: "bush" };
   const knew = !!a.beliefs[beliefKey(fields)];
   record(w, a, { ok: true, text: "", uses: { [from]: 1 }, gives: {}, builds: "bush", fields, newKinds: [] }, DAY * 3, "seen");
-  if (!knew) log(w, "first", [a.id], at, `${a.name} realized the ${nm(w, from)} they pushed into the ground grew into a bush.`);
+  if (!knew) log(w, "discover", [a.id], at, `${a.name} realized the ${nm(w, from)} they pushed into the ground grew into a bush.`);
 });
 
 function burned(w: World) {
@@ -1282,7 +1282,7 @@ function perceive(w: World, a: Agent) {
       if (Math.random() < care * 0.6) {
         b.goal = { type: "defend", target: a.id, since: w.t, odds: {}, fails: 0 };
         b.plan = [{ op: "goto", arg: "agent", progress: 0 }, { op: "fight", arg: a.id, progress: 0 }];
-        log(w, "attack", [b.id, a.id], b, `${b.name} rushed to help ${a.name} against the wolf.`);
+        log(w, "defend", [b.id, a.id], b, `${b.name} rushed to help ${a.name} against the wolf.`);
       }
     }
     return;

@@ -84,6 +84,10 @@ export const beliefText = (w: World, b: Belief) =>
 // Useful enough to remember: it made something, built something, or had a clear effect.
 const useful = (o: Outcome) => o.ok || !!o.effect || !!o.fields.gives.length || (!!o.fields.builds && o.fields.builds !== "pile" && o.fields.builds !== "ring");
 
+const BUILT: Record<string, string> = { bush: "planting", worn: "clothing", cured: "a cure", pile: "", ring: "", stored: "", fed_fire: "" };
+// What a new law was about, in a word or two: what it built, else what it gave.
+const lawTag = (w: World, f: Fields) => (f.builds ? BUILT[f.builds] ?? f.builds.replaceAll("_", " ") : "") || (f.gives[0] ? nm(w, f.gives[0]) : undefined);
+
 export function record(w: World, a: Agent, out: Outcome, ticks: number, how: Belief["how"] = "discovered", from?: Agent) {
   const f = out.fields;
   const key = beliefKey(f);
@@ -92,11 +96,14 @@ export function record(w: World, a: Agent, out: Outcome, ticks: number, how: Bel
     trace("belief", "nothing", { key, text: out.text }, a.id);
     return null;
   }
-  for (const k of out.newKinds) log(w, "invent", [a.id], a, `${a.name} made the first ${nm(w, k)} anyone has ever made.`);
+  // Watchers learn from the same outcome, but only the maker made it first.
+  if (how === "discovered") for (const k of out.newKinds) log(w, "invent", [a.id], a, `${a.name} made the first ${nm(w, k)} anyone has ever made.`, nm(w, k));
   let law = w.laws[key];
   if (!law && out.ok) {
     law = w.laws[key] = { id: `L${Object.keys(w.laws).length + 1}`, key, text: sentence(w, f, ticks), verb: f.verb, source: out.ruled ? "jev" : "physics", by: a.id, t: w.t };
-    log(w, "law", [a.id], a, `${a.name} found out something new about the world: ${law.text}`);
+    // An invention already has its own milestone, and a second way to make the same thing isn't a new one.
+    const tag = out.newKinds.length ? undefined : lawTag(w, f);
+    log(w, "law", [a.id], a, `${a.name} found out something new about the world: ${law.text}`, tag && !w.events.some((e) => e.kind === "law" && e.tag === tag) ? tag : undefined);
   }
   let b = a.beliefs[key];
   const isNew = !b;

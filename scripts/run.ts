@@ -36,7 +36,7 @@ for (const l of Object.values(w.laws)) console.log(`  ${l.id} [${l.source}] ${cl
 console.log("\nMADE");
 for (const k of Object.values(w.kinds).filter((k) => k.made)) console.log(`  ${k.name}${k.plain ? ` (${k.plain})` : ""} x${k.count ?? 1}, first by ${k.made!.by} ${clock(k.made!.t)}: ${JSON.stringify(k.props)}`);
 console.log("\nNOTABLE");
-for (const e of w.events.filter((e) => ["invent", "law", "first", "burned", "mistaken", "learn", "teach", "attack", "hunt", "lightning", "collapse", "sick", "build", "fire", "camp", "custom", "leader", "driven_out", "judged", "camp_named"].includes(e.kind)).slice(-80)) console.log(`  ${clock(e.t)} ${e.kind}: ${e.text}`);
+for (const e of w.events.filter((e) => ["invent", "law", "named", "arrive", "burned", "mistaken", "learn", "teach", "attack", "wolf", "defend", "hazard", "ruin", "hunt", "lightning", "collapse", "sick", "build", "fire", "camp", "custom", "leader", "driven_out", "judged", "camp_named"].includes(e.kind)).slice(-80)) console.log(`  ${clock(e.t)} ${e.kind}: ${e.text}`);
 console.log("\nCAMPS");
 for (const c of w.camps) {
   console.log(`  ${c.id} ${c.name}${c.gone ? ` (gone ${clock(c.gone)}${c.mergedInto ? `, into ${c.mergedInto}` : ""})` : ""}: ${c.members.join(", ")}; leader ${c.leader ?? "none"}; ${c.precedents.length} precedents`);
@@ -48,7 +48,7 @@ console.log(`incidents ${w.incidents.length}: ${JSON.stringify(w.incidents.reduc
 console.log("\nPEOPLE");
 for (const p of Object.values(w.people)) console.log(`  ${p.name}: ${p.alive ? "alive" : `died ${clock(p.died!)} of ${p.cause}`}`);
 console.log("\nGOLD");
-for (const e of w.events.filter((e) => ["born", "died", "camp", "custom", "leader", "driven_out", "camp_named", "first", "law", "invent"].includes(e.kind))) console.log(`  ${clock(e.t)} ${e.kind}: ${e.text}`);
+for (const e of w.events.filter((e) => ["born", "died", "arrive", "camp", "custom", "leader", "driven_out", "camp_named", "named", "law", "invent"].includes(e.kind))) console.log(`  ${clock(e.t)} ${e.kind}: ${e.text}`);
 console.log("\nAGENTS");
 for (const a of w.agents) {
   console.log(`  ${a.name}: ${a.status} | needs ${Object.entries(a.needs).map(([k, v]) => `${k} ${Math.round(v)}`).join(" ")} | carrying ${a.inv.map((s) => w.kinds[s.k]?.name).join(", ")}`);

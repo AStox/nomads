@@ -72,7 +72,7 @@ export function cluster(w: World) {
       const a = agentOf(w, id), h = a && homeOf(w, a);
       if (!a || !h || !camp.members.some((m) => homes.get(m) && dist(homes.get(m)!, h) <= LINK)) continue;
       delete h.owner; a.home = null; changed.add(h.id);
-      log(w, "driven_out", [a.id], h, `${a.name} tried to keep a home too close to ${camp.name}, and it was taken from them.`);
+      log(w, "driven_out", [a.id], h, `${a.name} tried to keep a home too close to ${camp.name}, and it was taken from them.`, `${a.name} lost their home`);
       const p = camp.precedents.find((x) => x.id === ex.precedent);
       if (p && !p.defied.includes(a.id)) { p.defied.push(a.id); trace("group", "defy", { precedent: p.id, who: a.id, how: "kept a home inside" }, a.id); }
     }
@@ -106,7 +106,7 @@ function found(w: World, members: string[], homes: Map<string, Thing>, parent?: 
   const who = listed(names(w, members));
   log(w, "camp", members, at, parent
     ? `${who} split off from ${parent.name} and settled apart. People call it ${camp.name}.`
-    : `${who} have settled close together. People have started calling it ${camp.name}.`);
+    : `${who} have settled close together. People have started calling it ${camp.name}.`, parent ? "a camp split off" : "a camp formed");
   trace("group", "found", { camp: camp.id, name: camp.name, members, founder, from: parent?.id });
 }
 function landmark(w: World, x: number, y: number) {
@@ -138,7 +138,7 @@ async function christen(w: World, camp: Camp) {
     if (!word) return;
     const title = word.split(" ").map((x) => x[0].toUpperCase() + x.slice(1)).join(" ");
     const name = w.camps.some((c) => c !== camp && c.name.endsWith(title)) ? `${nameOf(w, camp.founder)}'s ${title}` : `the ${title}`;
-    log(w, "camp_named", camp.members, camp, `The people of ${camp.name} have taken to calling the place ${name}.`);
+    log(w, "camp_named", camp.members, camp, `The people of ${camp.name} have taken to calling the place ${name}.`, name);
     trace("group", "named", { camp: camp.id, from: camp.name, to: name });
     camp.name = name;
     groupsChanged.now = true;
@@ -272,7 +272,7 @@ function ruled(w: World, campAtAsk: Camp, inc: Incident, who: Agent, r: { respon
   const verdict = `${who.name} ${what}.`;
   // Kindness that nobody objects to isn't news.
   if (r.response !== "let_go" || HARM[inc.act])
-    log(w, r.response === "drive_out" ? "driven_out" : "judged", [...new Set([who.id, inc.by, ...(inc.against ? [inc.against] : [])])], inc, `${inc.text} ${verdict}`);
+    log(w, r.response === "drive_out" ? "driven_out" : "judged", [...new Set([who.id, inc.by, ...(inc.against ? [inc.against] : [])])], inc, `${inc.text} ${verdict}`, r.response === "drive_out" ? `${dn} driven out` : undefined);
   trace("group", "judged", { precedent: p.id, incident: inc.id, act: inc.act, response: r.response, odds: r.odds, comply: r.comply, decidedBy: who.id, camp: camp.id }, who.id);
   customsAfter(w, camp, p);
   leaders(w, camp);
@@ -376,7 +376,7 @@ function leaders(w: World, camp: Camp) {
   const text = next
     ? `People in ${camp.name} now bring their grievances to ${nameOf(w, next)}, whose word has been followed ${s!.followed} times out of ${s!.followed + s!.defied}.${cur ? ` ${nameOf(w, cur)}'s word no longer carries the camp.` : ""}`
     : `${nameOf(w, cur!)}'s word no longer carries ${camp.name}. Too many went against it.`;
-  log(w, "leader", [next, cur].filter((x): x is string => !!x && !!agentOf(w, x)), camp, text);
+  log(w, "leader", [next, cur].filter((x): x is string => !!x && !!agentOf(w, x)), camp, text, next ? `${nameOf(w, next)} leads` : "no one leads");
   trace("group", "leader", { camp: camp.id, from: cur, to: next, standing: s });
   groupsChanged.now = true;
 }
@@ -465,7 +465,7 @@ function speak(w: World) {
     const c: Custom = { id: `K${w.nextId++}`, key: pat.key, text: `Here, anyone who ${doing(pat, 1)} ${DONE[response][1]}.`, response, spokenBy: s.id, t: w.t, held: pat.n, broken: 0 };
     camp.customs.push(c);
     for (const b of w.agents) if (dist(b, s) <= 5) b.customs[c.id] = w.t;
-    log(w, "custom", [s.id, ...camp.members.filter((id) => id !== s.id)], s, `${s.name} said${nearFire(w, s, 3) ? " by the fire" : ""}: "${c.text}" It has become a custom of ${camp.name}.`);
+    log(w, "custom", [s.id, ...camp.members.filter((id) => id !== s.id)], s, `${s.name} said${nearFire(w, s, 3) ? " by the fire" : ""}: "${c.text}" It has become a custom of ${camp.name}.`, `${doing(pat, 0)}: ${DONE[response][0]}`);
     trace("group", "custom", { camp: camp.id, custom: c, by: s.id }, s.id);
     groupsChanged.now = true;
   }

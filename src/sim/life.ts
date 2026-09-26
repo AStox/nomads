@@ -16,7 +16,7 @@ export function die(w: World, a: Agent, cause: string) {
   for (const s of [...a.inv, ...(a.wearing ? [a.wearing] : [])]) c[s.k] = (c[s.k] ?? 0) + 1;
   for (const [k, n] of Object.entries(c)) dropPile(w, a.x, a.y, k, n);
   for (const t of w.things) if (t.owner === a.id && t.kind === "structure") { delete t.owner; changed.add(t.id); }
-  log(w, "died", [a.id], a, `${a.name} died of ${cause}, aged ${Math.floor(ageOf(w, a))}.${Object.keys(a.beliefs).length ? ` What they knew went with them, unless they taught it.` : ""}`);
+  log(w, "died", [a.id], a, `${a.name} died of ${cause}, aged ${Math.floor(ageOf(w, a))}.${Object.keys(a.beliefs).length ? ` What they knew went with them, unless they taught it.` : ""}`, `${a.name} died`);
   trace("world", "died", { id: a.id, cause, age: ageOf(w, a), beliefs: Object.keys(a.beliefs).length });
   see(w, a, "death", "People can die, and what they know dies with them unless they pass it on.", 10);
   for (const b of w.agents) {
@@ -95,7 +95,7 @@ function newcomer(w: World) {
   a.status = "Arriving";
   w.agents.push(a);
   w.people[a.id] = { id: a.id, name: a.name, color: a.color, alive: true };
-  log(w, "first", [a.id], a, `A stranger named ${a.name} wandered in from beyond the hills.`);
+  log(w, "arrive", [a.id], a, `A stranger named ${a.name} wandered in from beyond the hills.`, `${a.name} arrived`);
 }
 
 export function life(w: World) {
@@ -107,7 +107,7 @@ export function life(w: World) {
       const kid = childOf(w, a, father);
       w.agents.push(kid);
       w.people[kid.id] = { id: kid.id, name: kid.name, color: kid.color, alive: true };
-      log(w, "born", [kid.id, a.id, ...(father ? [father.id] : [])], a, `${a.name}${father ? ` and ${father.name}` : ""} had a child: ${kid.name}.`);
+      log(w, "born", [kid.id, a.id, ...(father ? [father.id] : [])], a, `${a.name}${father ? ` and ${father.name}` : ""} had a child: ${kid.name}.`, `${kid.name} born`);
       see(w, a, "birth", "Couples who live together and eat well have children.", 10);
       trace("world", "born", { id: kid.id, parents: kid.parents, traits: kid.traits });
     }

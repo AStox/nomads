@@ -82,7 +82,7 @@ function ice(w: World) {
       if (tileAt(w, a.x, a.y) !== Tile.Water) continue;
       a.needs.health = Math.max(0, a.needs.health - 25);
       a.needs.warmth = Math.max(0, a.needs.warmth - 50);
-      log(w, "attack", [a.id], a, `The ice gave way under ${a.name}. They crawled out soaked and freezing.`);
+      log(w, "hazard", [a.id], a, `The ice gave way under ${a.name}. They crawled out soaked and freezing.`);
       see(w, a, "thin_ice", "Ice melts when it warms up. Don't be standing on it.", 8);
       for (let r = 1; r < 10; r++) {
         const spot = [[r, 0], [-r, 0], [0, r], [0, -r]].find(([dx, dy]) => tileAt(w, a.x + dx, a.y + dy) !== Tile.Water);
@@ -165,7 +165,7 @@ function burnOut(w: World, t: Thing, by?: string) {
   if (t.kind === "structure") {
     const owner = w.agents.find((a) => a.id === t.owner);
     const text = `Fire burned down ${owner ? `${owner.name}'s` : "a"} ${["pile", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0]}.`;
-    log(w, "burned", [owner?.id, by].filter(Boolean) as string[], t, text);
+    log(w, "burned", [owner?.id, by].filter(Boolean) as string[], t, text, owner ? `${owner.name}'s home burned` : "a home burned");
     if (owner) { burnedHomes.push({ owner: owner.id, by, text }); if (owner.home === t.id) owner.home = null; }
   }
   removeThing(w, t);
@@ -375,7 +375,7 @@ function animals(w: World) {
     } else {
       const victim = target as Agent;
       victim.needs.health = Math.max(0, victim.needs.health - 5);
-      if (wf.target !== victim.id) log(w, "attack", [victim.id], victim, `A wolf attacked ${victim.name}!`);
+      if (wf.target !== victim.id) log(w, "wolf", [victim.id], victim, `A wolf attacked ${victim.name}!`);
       wf.target = victim.id;
       attacked.set(victim.id, wf.id);
       trace("animal", "attack", { wolf: wf.id, victim: victim.id, health: victim.needs.health }, victim.id);
@@ -445,7 +445,7 @@ function decay(w: World) {
       t.hp = (t.hp ?? 100) - (0.03 + (pile ? 0.5 : 0) + (sky === "rain" ? 0.1 : sky === "storm" ? 0.5 : 0)) * (1.2 - t.shelter.sturdy);
       if (t.hp <= 0) {
         const owner = w.agents.find((a) => a.id === t.owner);
-        log(w, "collapse", owner ? [owner.id] : [], t, `${owner ? `${owner.name}'s` : "A"} shelter fell apart in the weather.`);
+        log(w, "ruin", owner ? [owner.id] : [], t, `${owner ? `${owner.name}'s` : "A"} shelter fell apart in the weather.`);
         for (const [k, n] of Object.entries(t.parts ?? {})) if (Math.random() < 0.5) dropPile(w, t.x, t.y, k, Math.ceil(n / 2));
         if (owner?.home === t.id) owner.home = null;
         removeThing(w, t);
@@ -490,9 +490,10 @@ export function ecology(w: World) {
   timed("weather", () => weather(w));
   timed("fire", () => fire(w));
   timed("plants", () => plants(w));
+  // An animal standing on a hidden pit falls in before it gets a chance to walk off it.
+  timed("holes", () => holes(w));
   timed("animals", () => animals(w));
   timed("decay", () => decay(w));
   timed("disease", () => { disease(w); crowding(w); });
-  timed("holes", () => holes(w));
   paths(w);
 }

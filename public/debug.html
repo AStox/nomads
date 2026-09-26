@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="sub">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -10,17 +10,6 @@
   <link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=IM+Fell+English+SC&family=Alegreya+Sans:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
   <style>
-    html, body { height: auto; min-height: 100%; overflow: auto; }
-    body { background: var(--leather); }
-    .topbar .home {
-      display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 12px; border-radius: 10px; flex: none;
-      color: #e8d9b8; text-decoration: none; font: 400 16px/1 "IM Fell English", serif;
-      background: rgb(255 240 210 / .06); box-shadow: 0 0 0 1px rgb(217 181 108 / .18) inset;
-    }
-    .topbar .home:hover { background: rgb(255 240 210 / .12); }
-    .topbar .home:focus-visible { outline: 2px solid var(--gilt); outline-offset: 2px; }
-    .stamp { flex: 1; min-width: 0; margin: 0; text-align: right; color: #b9a680; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .stamp b { color: var(--gilt); font-weight: 700; letter-spacing: .04em; }
     .controls button.wide { width: auto; padding: 0 12px; }
     #auto[aria-pressed="true"] { background: rgb(217 181 108 / .85); color: var(--leather); }
     #pause[aria-pressed="true"] { background: var(--seal); color: #fbf1dc; }
@@ -134,8 +123,7 @@
     .who.dead i { filter: grayscale(.8); opacity: .6; }
 
     @media (max-width: 560px) {
-      .topbar { gap: 8px; }
-      .topbar .home span, .stamp .lbl { display: none; }
+      .stamp .lbl { display: none; }
       .controls button.wide { padding: 0 10px; }
       .res, .fbar { padding-left: 12px; padding-right: 12px; }
       .res-tail { padding-left: 12px; padding-right: 12px; }

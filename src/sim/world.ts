@@ -180,7 +180,8 @@ export type Camp = {
   store?: string; gone?: number; mergedInto?: string; from?: string;
 };
 
-export type Event = { id: number; t: number; kind: string; who: string[]; x: number; y: number; text: string };
+// tag: a few words naming a milestone, for timelines.
+export type Event = { id: number; t: number; kind: string; who: string[]; x: number; y: number; text: string; tag?: string };
 
 export type World = {
   version: number;
@@ -381,10 +382,10 @@ export const dayOfYear = (t: number) => Math.floor(t / DAY) % YEAR_DAYS;
 export const seasonOf = (t: number): Weather["season"] => (["spring", "summer", "autumn", "winter"] as const)[Math.floor(dayOfYear(t) / 10)];
 
 // Routine events stay in the chronicle but not in an agent's memory, so Jev and stories see what mattered.
-const QUIET: Record<string, true> = { goal: true, gather: true, eat: true, stuck: true, tinker: true, craft: true, spoil: true, grow: true, birth: true, weather: true, fire_spread: true, fire_out: true, level: true };
+export const QUIET: Record<string, true> = { goal: true, gather: true, eat: true, stuck: true, tinker: true, craft: true, spoil: true, grow: true, birth: true, weather: true, fire_spread: true, fire_out: true, level: true };
 
-export function log(w: World, kind: string, who: string[], at: { x: number; y: number }, text: string): Event {
-  const e = { id: w.nextId++, t: w.t, kind, who, x: at.x, y: at.y, text };
+export function log(w: World, kind: string, who: string[], at: { x: number; y: number }, text: string, tag?: string): Event {
+  const e: Event = { id: w.nextId++, t: w.t, kind, who, x: at.x, y: at.y, text, ...(tag ? { tag } : {}) };
   w.events.push(e);
   if (QUIET[kind]) return e;
   for (const id of who) {

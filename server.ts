@@ -1,5 +1,5 @@
 import { mkdirSync, renameSync } from "node:fs";
-import { DAY, VERSION, clock, newWorld, type World } from "./src/sim/world";
+import { DAY, QUIET, VERSION, YEAR_DAYS, clock, newWorld, type World } from "./src/sim/world";
 import { agentDetail, changedKinds, summary, tick } from "./src/sim/sim";
 import { changed, newKinds, removed } from "./src/sim/physics";
 import { iceChanged, pathChanges } from "./src/sim/ecology";
@@ -140,6 +140,18 @@ Bun.serve({
       });
     }
     if (p === "/api/people") return json(Object.values(w.people));
+    // Everything that happened, per day: counts of every kind, and the full text of all but routine events.
+    // ponytail: rebuilt from the event log on each call and capped by what save() keeps; keep daily tallies in the world if histories outgrow that.
+    if (p === "/api/history") {
+      const days = Math.floor(w.t / DAY) + 1;
+      const counts: Record<string, number[]> = {};
+      const events = [];
+      for (const e of w.events) {
+        (counts[e.kind] ??= new Array(days).fill(0))[Math.floor(e.t / DAY)]++;
+        if (!QUIET[e.kind]) events.push({ t: e.t, kind: e.kind, who: e.who, text: e.text, ...(e.tag ? { tag: e.tag } : {}) });
+      }
+      return json({ t: w.t, days, yearDays: YEAR_DAYS, since: w.events[0]?.t ?? 0, counts, events, people: Object.values(w.people) });
+    }
     if (p === "/api/groups") return json(groupsDetail(w));
     if (p === "/api/events") {
       const who = q.get("agent"), before = num(q.get("before"), Infinity);

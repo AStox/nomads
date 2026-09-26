@@ -6,8 +6,8 @@ import {
 const $ = (s) => document.querySelector(s);
 const DAY = 288;
 const NEEDS = ["food", "energy", "warmth", "social", "health"];
-const GOLD = new Set(["invent", "law", "burned", "first", "born", "died", "camp", "custom", "leader", "driven_out"]);
-const NOTABLE = new Set(["discover", "learn", "teach", "attack", "hunt", "sick", "collapse", "build", "bond", "steal", "lie", "take", "insult", "break", "lightning", "death", "mistaken", "pregnant", "trap", "claim", "throw", "grief", "dig", "judged", "camp_change", "camp_named", "custom_faded", "shared_store", "beg"]);
+const GOLD = new Set(["invent", "law", "burned", "named", "arrive", "born", "died", "camp", "custom", "leader", "driven_out"]);
+const NOTABLE = new Set(["discover", "learn", "teach", "attack", "wolf", "defend", "hazard", "ruin", "hunt", "sick", "collapse", "build", "bond", "steal", "lie", "take", "insult", "break", "lightning", "death", "mistaken", "pregnant", "trap", "claim", "throw", "grief", "dig", "judged", "camp_change", "camp_named", "custom_faded", "shared_store", "beg"]);
 const ROUTINE = new Set(["gather", "eat", "goal", "stuck", "fail", "tinker", "craft", "fire_out", "fire_spread", "wake", "level", "spoil", "grow", "birth", "weather", "season", "recover", "notice", "store"]);
 
 const S = {
@@ -629,11 +629,12 @@ function prependEvents(list, events) {
   }
 }
 const feed = [];
+const TIMELINE = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 19h16M6.5 16v-5M10.5 16V7M14.5 16v-3M18.5 16V9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
 function renderFilters() {
   const inFeed = new Set(feed.flatMap((e) => e.who));
   const gone = [...S.people.values()].filter((p) => !S.agents.has(p.id) && (inFeed.has(p.id) || p.id === filter));
   const chip = (p) => `<button type="button" aria-pressed="${filter === p.id}" data-f="${p.id}"${S.agents.has(p.id) ? "" : ` class="gone"`}>${seal(p, "xs")}${esc(p.name)}</button>`;
-  $("#filters").innerHTML = `<button type="button" aria-pressed="${!filter}" data-f="">Everyone</button>` +
+  $("#filters").innerHTML = `<a class="to-history" href="history.html">${TIMELINE}Timeline</a><button type="button" aria-pressed="${!filter}" data-f="">Everyone</button>` +
     [...S.agents.values()].map(chip).join("") + gone.map(chip).join("");
 }
 function renderFeed() {
