@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nomads: the island in 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600&display=swap" media="print" onload="this.media = 'all'">
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.min.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/" } }
+</script>
+<style>
+  :root { --edge: #e8e8f0; --ink: #fff; --dim: #b8c4ec; --accent: #ffd84a; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  body { color: var(--ink); font: 15px/1.3 "Pixelify Sans", ui-monospace, monospace; }
+  #view { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; image-rendering: pixelated; touch-action: none; }
+  #view.smooth { image-rendering: auto; }
+  .win { background: linear-gradient(#3a5cc4, #0c1654); border: 2px solid var(--edge); border-radius: 7px; box-shadow: 0 0 0 2px #0a0e30, inset 0 0 0 1px #7890e0; padding: 10px 14px; text-shadow: 2px 2px 0 #0008; }
+  .win h1, .win h2 { margin: 0 0 4px; font-weight: 600; letter-spacing: 1px; }
+  .win h1 { font-size: 22px; }
+  .win h2 { font-size: 15px; color: var(--dim); }
+  .win p { margin: 0; }
+  #hud { position: fixed; inset: 14px; pointer-events: none; }
+  #hud .win { position: absolute; pointer-events: auto; }
+  #card { top: 0; left: 0; width: min(340px, calc(100vw - 28px)); }
+  #people { top: 0; right: 0; }
+  #keys { bottom: 0; left: 0; }
+  #mode { color: var(--dim); margin-top: 2px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  button { font: inherit; color: inherit; text-shadow: inherit; white-space: nowrap; background: #0a1450; border: 1px solid #aab4e0; border-radius: 4px; padding: 3px 10px; cursor: pointer; }
+  button:hover { background: #1c2a78; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  #list button { width: 100%; display: flex; align-items: center; gap: 8px; text-align: left; background: none; border-color: transparent; }
+  #list button:hover, #list button.on { border-color: var(--accent); }
+  #list i { width: 10px; height: 10px; background: var(--c); border: 1px solid #fff; }
+  #keys dl { display: grid; grid-template-columns: auto auto; gap: 1px 14px; margin: 0; }
+  #keys dt { color: var(--accent); }
+  #keys dd { margin: 0; }
+  .tag { position: fixed; left: 0; top: 0; font-size: 13px; padding: 0 6px; background: #0a1450d0; border: 1px solid var(--c); border-left-width: 5px; border-radius: 3px; white-space: nowrap; }
+  #loading { position: fixed; right: 24px; bottom: 24px; font-size: 20px; letter-spacing: 2px; }
+  #loading span { animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (max-width: 720px) { #keys { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="view" aria-label="The island in 3D"></canvas>
+<div id="tags"></div>
+<main id="hud">
+  <section class="win" id="card">
+    <h1>Nomads</h1>
+    <p id="where"></p>
+    <p id="mode"></p>
+    <div class="row"><button id="walk" type="button">Walk</button><button id="retro" type="button">PS1</button><button id="time" type="button">Time</button><button id="next" type="button">New island</button></div>
+  </section>
+  <section class="win" id="people" aria-labelledby="people-title">
+    <h2 id="people-title">People</h2>
+    <ul id="list"></ul>
+  </section>
+  <section class="win" id="keys" aria-labelledby="keys-title">
+    <h2 id="keys-title">Controls</h2>
+    <dl>
+      <dt>Drag</dt><dd>Turn</dd>
+      <dt>Right drag</dt><dd>Pan</dd>
+      <dt>Scroll</dt><dd>Zoom</dd>
+      <dt>WASD</dt><dd>Move</dd>
+      <dt>1 to 5</dt><dd>Follow someone</dd>
+      <dt>0</dt><dd>Stop following</dd>
+      <dt>E</dt><dd>Walk or fly</dd>
+      <dt>T</dt><dd>Time of day</dd>
+      <dt>P</dt><dd>PS1 look on or off</dd>
+      <dt>R</dt><dd>Resolution</dd>
+      <dt>N</dt><dd>New island</dd>
+      <dt>H</dt><dd>Hide this</dd>
+    </dl>
+  </section>
+</main>
+<div id="loading" class="win" role="status">Now loading<span>...</span></div>
+<script>
+  addEventListener("error", (e) => { document.getElementById("loading").textContent = `Couldn't start: ${e.message}`; });
+</script>
+<script type="module" src="main.js"></script>
+</body>
+</html>

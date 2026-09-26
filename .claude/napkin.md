@@ -22,8 +22,11 @@
 5. **[2026-09-26] The harness browser can fail to launch here**
    Do instead: drive checks with a /root/tools/pw Playwright script that closes in `finally`, then confirm `pgrep -f headless_shell | wc -l` is 0. Other sessions' chrome under ~/.omp is not yours to kill.
 6. **[2026-09-26] Headless page loads here take 5 to 50 seconds**
-   The init handler awaits the Google web font before it builds the map, and that fetch is slow from headless Chromium on this box.
-   Do instead: `goto` with `waitUntil: "commit"` and wait up to 90 s for `body.ready`. Profile with CDP before blaming the renderer.
+   Google Fonts crawls from headless Chromium on this box. The 2D map awaits its font before building, a render-blocking font stylesheet holds back module scripts, and screenshots wait on fonts.
+   Do instead: `goto` with `waitUntil: "commit"`, wait up to 90 s for `body.ready`, and in throwaway tests `page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort())`. Profile with CDP before blaming the renderer.
+7. **[2026-09-26] Headless WebGL needs SwiftShader flags and runs near 1 fps**
+   The 3D demo (demo/3d, built by `bun scripts/demo3d.ts --out /root/goldclaw/www/nomads-3d`) is black or throws without them, and Playwright clicks can time out waiting for a stable frame.
+   Do instead: launch with `--use-angle=swiftshader --enable-unsafe-swiftshader --ignore-gpu-blocklist`, wait tens of seconds for camera moves, and click through `page.evaluate` when a click stalls.
 
 ## Domain Behavior Guardrails
 1. **[2026-09-26] No slope may face away from the isometric camera**
@@ -41,3 +44,6 @@
 5. **[2026-09-26] math/noise seeds keep only 16 bits**
    `simplex2d.create(seed)` uses `seed & 0xffff`.
    Do instead: derive sub-seeds with `Math.floor(rand() * 65536)` from the world rng.
+6. **[2026-09-26] The 3D demo's ground triangles are 75 m across**
+   Affine (PS1) texture mapping on them smears the ground into long diagonal streaks.
+   Do instead: keep terrain and water textures perspective-correct in demo/3d/ps1.js; only small props and figures warp.
