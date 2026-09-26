@@ -1,6 +1,6 @@
 import {
-  T, buildBase, drawThing, drawFire, drawFlames, drawSmoke, drawToken, drawLabel, drawThinking, drawSleep,
-  drawAnimal, drawTrapped, drawIce, drawPaths, drawRain, drawSnow, drawBolt, thingSpot, hash, flameColors,
+  T, buildBase, isoView, eachTile, drawTile, drawSlab, drawMarks, drawThing, drawFire, drawFlames, drawSmoke, drawToken, drawLabel,
+  drawThinking, drawSleep, drawAnimal, drawTrapped, drawIce, drawPaths, drawRain, drawSnow, drawBolt, thingSpot, hash, flameColors,
 } from "./art.js";
 
 const $ = (s) => document.querySelector(s);
@@ -11,7 +11,7 @@ const NOTABLE = new Set(["discover", "learn", "teach", "attack", "wolf", "defend
 const ROUTINE = new Set(["gather", "eat", "goal", "stuck", "fail", "tinker", "craft", "fire_out", "fire_spread", "wake", "level", "spoil", "grow", "birth", "weather", "season", "recover", "notice", "store"]);
 
 const S = {
-  W: 0, H: 0, tiles: "", things: new Map(), byTile: new Map(), hot: new Set(), graves: new Set(), caught: new Set(),
+  W: 0, H: 0, tiles: "", heights: null, things: new Map(), byTile: new Map(), hot: new Set(), graves: new Set(), caught: new Set(),
   agents: new Map(), animals: new Map(), people: new Map(),
   kinds: {}, weather: null, paths: null, ice: null, t: 0, jev: null, control: { paused: false, speed: 1 }, groups: [],
 };
@@ -81,9 +81,11 @@ function category(k) {
 }
 
 // ---------- map layer ----------
-let base = null, iceLow = null;
-const layer = document.createElement("canvas");
-const lctx = layer.getContext("2d");
+// base: the painted top-down ground. ground: base with ice and trampled paths on it. layer: ground laid over the
+// isometric terrain, then every glyph standing on it, back to front.
+let base = null, iceLow = null, marks = [], view = null;
+const ground = document.createElement("canvas"), gctx = ground.getContext("2d");
+const layer = document.createElement("canvas"), lctx = layer.getContext("2d");
 function indexThing(th, add) {
   const k = `${th.x},${th.y}`;
   if (!S.byTile.has(k)) S.byTile.set(k, new Set());
@@ -103,30 +105,64 @@ function dropThing(id) {
   indexThing(th, false); S.things.delete(id); S.hot.delete(id); S.graves.delete(id); S.caught.delete(id);
   return th;
 }
-// Glyphs spill over their tile, so repaint a small block and every thing that can reach into it.
-function paint(x0, y0, x1, y1) {
+function paintGround(x0, y0, x1, y1) {
+  x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(S.W - 1, x1); y1 = Math.min(S.H - 1, y1);
   const px = x0 * T, py = y0 * T, w = (x1 - x0 + 1) * T, h = (y1 - y0 + 1) * T;
+  gctx.save();
+  gctx.beginPath(); gctx.rect(px, py, w, h); gctx.clip();
+  gctx.drawImage(base, px, py, w, h, px, py, w, h);
+  drawIce(gctx, iceLow, S.ice, S.tiles, S.W, S.H, x0, y0, x1, y1);
+  drawPaths(gctx, S.paths, S.W, S.H, x0, y0, x1, y1);
+  gctx.restore();
+}
+// Layer pixels the ground of a block of tiles covers.
+function tileRect(x0, y0, x1, y1) {
+  const r = [Infinity, Infinity, -Infinity, -Infinity];
+  for (let y = Math.max(0, y0); y <= Math.min(S.H, y1 + 1); y++)
+    for (let x = Math.max(0, x0); x <= Math.min(S.W, x1 + 1); x++) {
+      const [px, py] = view.at(x, y);
+      r[0] = Math.min(r[0], px); r[1] = Math.min(r[1], py); r[2] = Math.max(r[2], px); r[3] = Math.max(r[3], py);
+    }
+  return r;
+}
+// Glyphs spill over their tile, so repaint everywhere a glyph on tile (x, y) can reach.
+function glyphRect(x, y) {
+  const [px, py] = view.at(x + 0.5, y + 0.5);
+  return [px - T * 1.2, py - T * 1.8, px + T * 1.2, py + T];
+}
+// Repaint a rect of the layer: terrain, the cut edge, grass and rock marks, then every glyph reaching into it.
+function paint(r) {
+  const x0 = Math.floor(r[0]), y0 = Math.floor(r[1]), w = Math.ceil(r[2]) - x0, h = Math.ceil(r[3]) - y0;
   lctx.save();
-  lctx.beginPath(); lctx.rect(px, py, w, h); lctx.clip();
-  lctx.drawImage(base, px, py, w, h, px, py, w, h);
-  drawIce(lctx, iceLow, S.ice, S.tiles, S.W, S.H, x0, y0, x1, y1);
-  drawPaths(lctx, S.paths, S.W, S.H, x0, y0, x1, y1);
+  lctx.beginPath(); lctx.rect(x0, y0, w, h); lctx.clip();
+  lctx.clearRect(x0, y0, w, h);
+  eachTile(view, r, 2, (x, y) => drawTile(lctx, ground, view, x, y));
+  drawSlab(lctx, view, S.tiles);
+  drawMarks(lctx, marks, view, r, S.paths);
   const list = [];
-  for (let y = y0 - 2; y <= y1 + 2; y++)
-    for (let x = x0 - 2; x <= x1 + 2; x++)
-      for (const id of S.byTile.get(`${x},${y}`) ?? []) {
-        const th = S.things.get(id);
-        if (th && th.kind !== "fire") list.push(th);
-      }
-  list.sort((a, b) => a.y - b.y || a.x - b.x);
-  for (const th of list) drawThing(lctx, th, isHome(th) || th.kind === "trap" ? personOf(th.owner)?.color : null, S.kinds);
+  eachTile(view, r, T * 2, (x, y) => {
+    for (const id of S.byTile.get(`${x},${y}`) ?? []) {
+      const th = S.things.get(id);
+      if (th && th.kind !== "fire") list.push([...thingSpot(th), th]);
+    }
+  });
+  list.sort((a, b) => a[0] + a[1] - b[0] - b[1] || a[0] - b[0]);
+  for (const [u, v, th] of list) {
+    const [px, py] = view.at(u, v);
+    lctx.save();
+    lctx.translate(px - u * T, py - v * T);
+    drawThing(lctx, th, isHome(th) || th.kind === "trap" ? personOf(th.owner)?.color : null, S.kinds);
+    lctx.restore();
+  }
   lctx.restore();
 }
-const paintAround = (x, y, up = 2) => paint(Math.max(0, x - 1), Math.max(0, y - up), Math.min(S.W - 1, x + 1), Math.min(S.H - 1, y + 1));
 function buildLayer() {
-  ({ base, ice: iceLow } = buildBase(S.tiles, S.W, S.H));
-  layer.width = S.W * T; layer.height = S.H * T;
-  paint(0, 0, S.W - 1, S.H - 1);
+  view = isoView(S.heights, S.W, S.H);
+  ({ base, ice: iceLow, marks } = buildBase(S.tiles, view));
+  ground.width = S.W * T; ground.height = S.H * T;
+  paintGround(0, 0, S.W - 1, S.H - 1);
+  layer.width = view.width; layer.height = view.height;
+  paint([0, 0, layer.width, layer.height]);
 }
 function parsePaths(str, n) {
   const a = new Uint8Array(n);
@@ -145,8 +181,11 @@ function setIce(list) {
   const changed = [];
   for (let i = 0; i < next.length; i++) if (next[i] !== S.ice?.[i]) changed.push(i);
   S.ice = next;
-  if (changed.length > 300) return paint(0, 0, S.W - 1, S.H - 1);
-  for (const i of changed) paint(i % S.W, Math.floor(i / S.W), i % S.W, Math.floor(i / S.W));
+  if (changed.length > 300) { paintGround(0, 0, S.W - 1, S.H - 1); return paint([0, 0, layer.width, layer.height]); }
+  for (const i of changed) {
+    const x = i % S.W, y = Math.floor(i / S.W);
+    paintGround(x, y, x, y); paint(tileRect(x, y, x, y));
+  }
 }
 
 // ---------- rendering ----------
@@ -158,8 +197,11 @@ function resize() {
   cw = canvas.clientWidth; ch = canvas.clientHeight;
   canvas.width = cw * dpr; canvas.height = ch * dpr;
 }
-const toScreen = (x, y) => [(x - cam.x) * cam.s + cw / 2, (y - cam.y) * cam.s + ch / 2];
-const toWorld = (px, py) => [(px - cw / 2) / cam.s + cam.x, (py - ch / 2) / cam.s + cam.y];
+// The camera looks at a point of the layer measured in T pixels, and cam.s is screen pixels per T.
+const toPlane = (u, v, z) => { const [lx, ly] = view.at(u, v, z); return [lx / T, ly / T]; };
+// Screen position of a ground point given in tiles, standing on the terrain unless a height is given.
+const toScreen = (u, v, z) => { const [x, y] = toPlane(u, v, z); return [(x - cam.x) * cam.s + cw / 2, (y - cam.y) * cam.s + ch / 2]; };
+const screenToPlane = (px, py) => [(px - cw / 2) / cam.s + cam.x, (py - ch / 2) / cam.s + cam.y];
 function lerpPos(a) {
   const k = Math.min(1, (performance.now() - lastTickAt) / tickMs);
   return [a.px + (a.x - a.px) * k + 0.5, a.py + (a.y - a.py) * k + 0.5];
@@ -169,7 +211,7 @@ function frame(now) {
   if (selected && follow) {
     const a = S.agents.get(selected);
     if (a) {
-      const [x, y] = lerpPos(a);
+      const [x, y] = toPlane(...lerpPos(a));
       cam.x += (x + rightCover() / 2 / cam.s - cam.x) * 0.2;
       cam.y += (y + bottomCover() / 2 / cam.s - cam.y) * 0.2;
       clampCam();
@@ -179,14 +221,12 @@ function frame(now) {
   ctx.fillStyle = "#1d1610";
   ctx.fillRect(0, 0, cw, ch);
   if (base) {
-    const [ox, oy] = toScreen(0, 0), mw = S.W * cam.s, mh = S.H * cam.s;
+    const k = cam.s / T, ox = cw / 2 - cam.x * cam.s, oy = ch / 2 - cam.y * cam.s;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(layer, ox, oy, mw, mh);
-    ctx.strokeStyle = "rgba(58, 42, 26, .9)"; ctx.lineWidth = 2;
-    ctx.strokeRect(ox - 1, oy - 1, mw + 2, mh + 2);
+    ctx.drawImage(layer, ox, oy, layer.width * k, layer.height * k);
     const night = nightAmount(S.t);
-    tint(ox, oy, mw, mh, night);
+    tint(ox, oy, k, night);
     drawCamps();
     drawHot(now, night);
     drawAnimals(now);
@@ -197,17 +237,23 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
-// Season, sky and night washes over the land, in that order.
-function tint(ox, oy, w, h, night) {
+// Season, sky and night washes over the land, in that order, then an ink line around the map.
+function tint(ox, oy, k, night) {
   const wx = S.weather;
-  const wash = (op, col) => { ctx.globalCompositeOperation = op; ctx.fillStyle = col; ctx.fillRect(ox, oy, w, h); };
+  ctx.save();
+  ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * ox, dpr * oy);
+  ctx.save();
+  ctx.clip(view.outline);
+  const wash = (op, col) => { ctx.globalCompositeOperation = op; ctx.fillStyle = col; ctx.fillRect(0, 0, layer.width, layer.height); };
   if (wx?.season === "winter") wash("source-over", "rgba(238, 243, 251, .26)");
   else if (wx?.season === "autumn") wash("multiply", "rgba(255, 206, 150, .32)");
   if (wx?.drought) wash("multiply", "rgba(255, 232, 170, .25)");
   const sky = { cloudy: "rgba(190, 192, 202, .28)", rain: "rgba(150, 160, 178, .42)", storm: "rgba(100, 108, 132, .62)" }[wx?.sky];
   if (sky) wash("multiply", sky);
   if (night > 0) wash("multiply", `rgba(70, 82, 140, ${0.75 * night})`);
-  ctx.globalCompositeOperation = "source-over";
+  ctx.restore();
+  ctx.strokeStyle = "rgba(58, 42, 26, .9)"; ctx.lineWidth = 2 / k; ctx.stroke(view.outline);
+  ctx.restore();
 }
 
 // ---------- camps on the map ----------
@@ -252,7 +298,7 @@ function campShape(camp) {
     }
     lines.push(line.map(([i, j]) => [x0 + i * G, y0 + j * G]));
   }
-  const top = Math.min(...ys) - R + 0.4, shape = { key, lines, cx: xs.reduce((t, x) => t + x, 0) / xs.length, top };
+  const shape = { key, lines };
   campShapes.set(camp.id, shape);
   return shape;
 }
@@ -260,8 +306,15 @@ function drawCamps() {
   for (const camp of S.groups) {
     if (!camp.homes?.length) continue;
     const shape = campShape(camp);
+    // The name sits just inside the outline's highest point on screen.
+    let lx = 0, ly = Infinity;
     ctx.beginPath();
-    for (const line of shape.lines) line.forEach(([x, y], i) => { const [sx, sy] = toScreen(x, y); if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy); });
+    for (const line of shape.lines)
+      line.forEach(([x, y], i) => {
+        const [sx, sy] = toScreen(x, y);
+        if (sy < ly) { lx = sx; ly = sy; }
+        if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy);
+      });
     ctx.fillStyle = "rgba(122, 64, 30, .07)";
     ctx.fill("evenodd");
     ctx.setLineDash([Math.max(3, cam.s * 0.32), Math.max(2, cam.s * 0.2)]);
@@ -270,7 +323,7 @@ function drawCamps() {
     ctx.stroke();
     ctx.setLineDash([]);
     if (cam.s < 7) continue;
-    const [lx, ly] = toScreen(shape.cx, shape.top);
+    ly += Math.max(10, cam.s * 0.4);
     ctx.font = `italic ${Math.round(Math.max(12, Math.min(20, cam.s * 0.7)))}px "IM Fell English", serif`;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.lineWidth = 3.5; ctx.strokeStyle = "rgba(241, 230, 204, .85)"; ctx.strokeText(camp.name, lx, ly);
@@ -327,7 +380,7 @@ function trapAt(x, y) {
 }
 function drawAnimals(now) {
   const shake = !calm.matches, used = new Set();
-  const list = [...S.animals.values()].map((an) => [an, lerpPos(an)]).sort((p, q) => p[1][1] - q[1][1]);
+  const list = [...S.animals.values()].map((an) => [an, lerpPos(an)]).sort((p, q) => p[1][0] + p[1][1] - q[1][0] - q[1][1]);
   for (const [an, pos] of list) {
     const trap = an.state === "trapped" && trapAt(an.x, an.y);
     const [x, y] = toScreen(...(trap ? thingSpot(trap) : pos));
@@ -361,7 +414,7 @@ function drawAgents(now) {
     ctx.setLineDash([2, 6]); ctx.lineCap = "round"; ctx.strokeStyle = "rgba(168, 50, 31, .85)"; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); ctx.setLineDash([]);
   }
-  const list = [...S.agents.values()].sort((a, b) => lerpPos(a)[1] - lerpPos(b)[1]);
+  const list = [...S.agents.values()].map((a) => [a, lerpPos(a)]).sort((p, q) => p[1][0] + p[1][1] - q[1][0] - q[1][1]).map(([a]) => a);
   const labels = [];
   for (const a of list) {
     let [x, y] = toScreen(...lerpPos(a));
@@ -401,21 +454,22 @@ function drawWeather(now) {
 }
 
 // ---------- camera input ----------
-// Keep the visible area inside the map; the HUD and sheet count as margin you can scroll under.
+// Keep the visible area inside the layer; the HUD and sheet count as margin you can scroll under.
 const clampCam = () => {
-  const min = Math.min(cw / S.W, ch / S.H) * 0.7;
+  const lw = layer.width / T, lh = layer.height / T;
+  const min = Math.min(cw / lw, ch / lh) * 0.7;
   cam.s = Math.max(min, Math.min(90, cam.s));
-  const axis = (c, size, view, extra) => {
-    const half = view / 2 / cam.s, pad = extra / cam.s;
+  const axis = (c, size, span, extra) => {
+    const half = span / 2 / cam.s, pad = extra / cam.s;
     return size + pad > 2 * half ? Math.max(half, Math.min(size - half + pad, c)) : size / 2 + pad / 2;
   };
-  cam.x = axis(cam.x, S.W, cw, rightCover());
-  cam.y = axis(cam.y, S.H, ch, bottomCover());
+  cam.x = axis(cam.x, lw, cw, rightCover());
+  cam.y = axis(cam.y, lh, ch, bottomCover());
 };
 function zoomAt(px, py, f) {
-  const [wx, wy] = toWorld(px, py);
+  const [wx, wy] = screenToPlane(px, py);
   cam.s *= f; clampCam();
-  const [nx, ny] = toWorld(px, py);
+  const [nx, ny] = screenToPlane(px, py);
   cam.x += wx - nx; cam.y += wy - ny; clampCam();
 }
 const panel = $("#panel");
@@ -425,9 +479,9 @@ const sheetOpen = () => panel.dataset.open === "true";
 const bottomCover = () => (phone() && sheetOpen() ? panel.offsetHeight : $("#hud").offsetHeight);
 const rightCover = () => (!phone() && sheetOpen() ? panel.offsetWidth : 0);
 function fit() {
-  const b = bottomCover(), r = rightCover();
-  cam.s = Math.min((cw - r) / S.W, (ch - b) / S.H) * 0.96;
-  cam.x = S.W / 2 + r / 2 / cam.s; cam.y = S.H / 2 + b / 2 / cam.s;
+  const b = bottomCover(), r = rightCover(), lw = layer.width / T, lh = layer.height / T;
+  cam.s = Math.min((cw - r) / lw, (ch - b) / lh) * 0.96;
+  cam.x = lw / 2 + r / 2 / cam.s; cam.y = lh / 2 + b / 2 / cam.s;
   setFollow(false);
 }
 const pointers = new Map();
@@ -645,7 +699,8 @@ function jumpTo(e) {
   const b = e.target.closest("li.ev button");
   if (!b) return;
   cam.s = Math.max(cam.s, 28);
-  cam.x = +b.dataset.x + 0.5 + rightCover() / 2 / cam.s; cam.y = +b.dataset.y + 0.5 + bottomCover() / 2 / cam.s;
+  const [x, y] = toPlane(+b.dataset.x + 0.5, +b.dataset.y + 0.5);
+  cam.x = x + rightCover() / 2 / cam.s; cam.y = y + bottomCover() / 2 / cam.s;
   setFollow(false);
 }
 $("#feed").addEventListener("click", jumpTo);
@@ -1037,7 +1092,7 @@ function connect() {
   src.onmessage = async (m) => {
     const msg = JSON.parse(m.data);
     if (msg.type === "init") {
-      S.W = 64; S.H = msg.tiles.length / 64; S.tiles = msg.tiles; S.t = msg.t; S.jev = msg.jev;
+      S.W = 64; S.H = msg.tiles.length / 64; S.tiles = msg.tiles; S.heights = msg.heights; S.t = msg.t; S.jev = msg.jev;
       S.kinds = { ...(msg.kinds ?? {}) }; S.weather = msg.weather ?? null; S.groups = msg.groups ?? [];
       S.paths = parsePaths(msg.paths, S.W * S.H);
       S.ice = parseIce(msg.ice, S.W * S.H);
@@ -1073,11 +1128,12 @@ function connect() {
       if (old && (old.x !== th.x || old.y !== th.y)) touched.push(old);
       putThing(th); touched.push(th);
     }
-    for (const th of touched) paintAround(th.x, th.y);
+    for (const th of touched) paint(glyphRect(th.x, th.y));
     for (const p of msg.paths ?? []) {
       if (!S.paths || S.paths[p.i] === p.v) continue;
       S.paths[p.i] = p.v;
-      paintAround(p.i % S.W, Math.floor(p.i / S.W), 1);
+      const x = p.i % S.W, y = Math.floor(p.i / S.W);
+      paintGround(x - 1, y - 1, x + 1, y + 1); paint(tileRect(x - 1, y - 1, x + 1, y + 1));
     }
     if (msg.ice) setIce(msg.ice);
     const events = msg.events ?? [];

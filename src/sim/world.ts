@@ -1,3 +1,4 @@
+import { domainWarp2, fbm, ridged, simplex2d } from "math/noise";
 import { TRAITS } from "./traits";
 import { baseRegistry, type Registry } from "./materials";
 import type { Belief } from "./beliefs";
@@ -6,7 +7,7 @@ export const W = 64;
 export const H = 64;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export const YEAR_DAYS = 40;
-export const VERSION = 5;
+export const VERSION = 6;
 export const YEAR = DAY * YEAR_DAYS;
 
 export enum Tile {
@@ -188,6 +189,7 @@ export type World = {
   seed: number;
   t: number;
   tiles: Tile[];
+  heights: number[]; // ground height at tile corners, (W + 1) * (H + 1), in tile widths above the waterline
   paths: number[]; // walking wear per tile, 0..9
   things: Thing[];
   agents: Agent[];
@@ -215,19 +217,40 @@ export function rng(seed: number) {
   };
 }
 
-function noise(rand: () => number, cell: number) {
-  const gw = Math.ceil(W / cell) + 2;
-  const g = Array.from({ length: gw * gw }, rand);
-  const smooth = (t: number) => t * t * (3 - 2 * t);
-  return (x: number, y: number) => {
-    const gx = x / cell, gy = y / cell;
-    const x0 = Math.floor(gx), y0 = Math.floor(gy);
-    const fx = smooth(gx - x0), fy = smooth(gy - y0);
-    const v = (a: number, b: number) => g[b * gw + a];
-    const top = v(x0, y0) * (1 - fx) + v(x0 + 1, y0) * fx;
-    const bot = v(x0, y0 + 1) * (1 - fx) + v(x0 + 1, y0 + 1) * fx;
-    return top * (1 - fy) + bot * fy;
+// Warped simplex hills plus ridged crests, sinking toward the map edge so the sea makes a coast.
+function terrain(rand: () => number) {
+  const gen = () => simplex2d.create(Math.floor(rand() * 65536));
+  const hills = gen(), crests = gen(), warp = gen(), woods = gen();
+  const p: [number, number] = [0, 0];
+  const warped = (a: number, b: number) => simplex2d.sample(warp, a, b);
+  return {
+    elevation(x: number, y: number) {
+      const [u, v] = domainWarp2(p, warped, x / 28, y / 28, 0.4);
+      const lift = fbm((f) => simplex2d.sample(hills, u * f, v * f), 5, 2, 0.5);
+      const crest = ridged((f) => simplex2d.sample(crests, u * 1.7 * f, v * 1.7 * f), 4, 2, 0.5);
+      const coast = Math.min(1, Math.min(x, y, W - x, H - y) / 9);
+      return lift * 0.9 + crest ** 3 * 0.5 + 0.38 - (1 - coast) ** 2 * 0.55;
+    },
+    woods: (x: number, y: number) => fbm((f) => simplex2d.sample(woods, (x / 9) * f, (y / 9) * f), 3, 2, 0.5),
   };
+}
+// Tuned to the old tile mix: about 8% water, 15% rock, 33% forest.
+const ROCK = 0.73, WOODS = 0.06, LIFT = 5;
+// Ground rises toward the isometric camera (+x, +y) by at most this much a tile, so no slope turns away from it and
+// hides the ground behind. Toward the camera it may fall as steeply as it likes.
+const MAX_RISE = 0.45;
+function cornerHeights(tiles: Tile[], elevation: (x: number, y: number) => number) {
+  const C = W + 1, z = new Array<number>(C * (H + 1));
+  const wet = (x: number, y: number) => x >= 0 && y >= 0 && x < W && y < H && tiles[y * W + x] === Tile.Water;
+  for (let y = 0; y <= H; y++)
+    for (let x = 0; x <= W; x++)
+      z[y * C + x] = wet(x - 1, y - 1) || wet(x, y - 1) || wet(x - 1, y) || wet(x, y) ? 0 : Math.max(0.05, elevation(x, y) * LIFT);
+  // One pass in reading order settles it: a corner's back neighbors are final before it is.
+  for (let i = 0; i < z.length; i++) {
+    if (i % C) z[i] = Math.min(z[i], z[i - 1] + MAX_RISE);
+    if (i >= C) z[i] = Math.min(z[i], z[i - C] + MAX_RISE);
+  }
+  return z.map((v) => Math.round(v * 100) / 100);
 }
 
 export function nearWater(w: World, x: number, y: number, r: number) {
@@ -282,16 +305,15 @@ export const clash = (a: string, b: string) => OPPOSITES.some(([x, y]) => (x ===
 
 export function newWorld(seed: number, agentCount = 5): World {
   const rand = rng(seed);
-  const hills = noise(rand, 12), woods = noise(rand, 7), wet = noise(rand, 16);
+  const { elevation, woods } = terrain(rand);
   const tiles: Tile[] = [];
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++) {
-      const edge = Math.min(x, y, W - 1 - x, H - 1 - y) / 8;
-      const water = wet(x, y) - Math.min(edge, 1) * 0.35;
-      tiles.push(water > 0.62 ? Tile.Water : hills(x, y) > 0.72 ? Tile.Rock : woods(x, y) > 0.55 ? Tile.Forest : Tile.Grass);
+      const e = elevation(x + 0.5, y + 0.5);
+      tiles.push(e < 0 ? Tile.Water : e > ROCK ? Tile.Rock : woods(x + 0.5, y + 0.5) > WOODS ? Tile.Forest : Tile.Grass);
     }
   const w: World = {
-    version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, paths: new Array(W * H).fill(0), things: [], agents: [], animals: [], events: [],
+    version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, heights: cornerHeights(tiles, elevation), paths: new Array(W * H).fill(0), things: [], agents: [], animals: [], events: [],
     nextId: 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {}, ice: [], people: {},
     weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 14, wind: { dx: 0.3, dy: 0.1 }, drought: false, dryTicks: 0 },
     camps: [], incidents: [],
