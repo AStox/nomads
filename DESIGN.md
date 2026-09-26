@@ -332,6 +332,7 @@ Everything the simulation decides is recorded, so any surprise can be traced bac
 - **Jev log:** every Jev call, with its full state, questions, answers, latency, and token count, goes into a ring buffer and `data/logs/jev.jsonl`.
 - **Debug API:** `api/debug/stats` (populations, weather, per-system tick cost, counters, Jev cost), `api/debug/jev`, `api/debug/trace` (filter by system, agent, kind), `api/debug/laws` (each law and who believes it, including mistaken versions), `api/debug/kinds`, `api/debug/rulings`, `api/debug/state` (the whole world).
 - **Debug page:** `debug.html` shows all of the above in the browser.
+- **History page:** `history.html` (linked from the Chronicle) charts every day of the world in rows: technology, survival, social, conflict, camps, life, and the wild. Bars show how much happened, seals mark milestones (events logged with a short `tag`), and tapping a day lists everything from it. Data comes from `api/history`.
 - **CLI:** `bun scripts/inspect.ts stats|agent ID|jev|trace SYS AGENT|laws|kinds|events` reads the live server; `NOMADS_BRAIN=random bun scripts/run.ts --ticks N --seed S` runs a whole world offline without Jev and prints every law, invention, and belief.
 
 ### Build order
