@@ -20,15 +20,24 @@
    load() renames an old-version save to `world.json.v<N>.bak` and generates a fresh world.
    Do instead: bump VERSION in src/sim/world.ts for any World shape or generator change, and check the live world's age with `curl -s 127.0.0.1:8095/api/debug/stats | jq .t` before restarting.
 5. **[2026-09-26] The harness browser can fail to launch here**
-   Do instead: drive checks with a /root/tools/pw Playwright script that closes in `finally`, then confirm `pgrep -x chrome | wc -l` is 0.
+   Do instead: drive checks with a /root/tools/pw Playwright script that closes in `finally`, then confirm `pgrep -f headless_shell | wc -l` is 0. Other sessions' chrome under ~/.omp is not yours to kill.
+6. **[2026-09-26] Headless page loads here take 5 to 50 seconds**
+   The init handler awaits the Google web font before it builds the map, and that fetch is slow from headless Chromium on this box.
+   Do instead: `goto` with `waitUntil: "commit"` and wait up to 90 s for `body.ready`. Profile with CDP before blaming the renderer.
 
 ## Domain Behavior Guardrails
 1. **[2026-09-26] No slope may face away from the isometric camera**
    The map draws all terrain first and glyphs on top. That is only correct because ground never rises toward the camera (+x, +y) faster than it drops on screen.
-   Do instead: keep the MAX_RISE limiter in cornerHeights when changing LIFT or the noise.
-2. **[2026-09-26] The tile mix is tuned for sim balance**
-   The generator reproduces the old mix: about 44% grass, 33% forest, 8% water, 15% rock.
-   Do instead: re-measure the mix over ~40 seeds after touching elevation, ROCK, or WOODS.
-3. **[2026-09-26] math/noise seeds keep only 16 bits**
+   Do instead: keep the lift limiter in isoView (public/art.js) when changing heights: it scales the island so 99.5% of tiles pass and clamps the rest.
+2. **[2026-09-26] The island is 46% sea, and its land is 38% grass, 48% forest, 14% rock**
+   Measured over 40 seeds. stock() sets thing densities per land tile, so they don't depend on how much of the map is sea.
+   Do instead: re-measure over ~40 seeds after touching the generator, and keep stock() odds per land tile.
+3. **[2026-09-26] Water tiles are both sea and lakes**
+   Only lakes freeze, and islets offshore or in lakes are cut off from the rest of the land.
+   Do instead: use `sea(w)` to tell salt water from lakes, and `mainland(w)` or `landing(w)` to place anyone new.
+4. **[2026-09-26] src/terrain and src/sim/world.ts import each other**
+   Reading W or H at module top level in src/terrain throws "Cannot access 'W' before initialization".
+   Do instead: read W and H only inside functions there.
+5. **[2026-09-26] math/noise seeds keep only 16 bits**
    `simplex2d.create(seed)` uses `seed & 0xffff`.
    Do instead: derive sub-seeds with `Math.floor(rand() * 65536)` from the world rng.

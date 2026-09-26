@@ -2,8 +2,12 @@
 export const T = 36; // pixels per tile in the prerendered layer
 const INK = "#3a2a1a";
 const PAPER = [239, 226, 194];
-// grass, forest, water, rock
-const WASH = [[186, 190, 122], [112, 138, 78], [120, 160, 172], [176, 160, 132]];
+// Watercolor for each kind of ground cover, muted to sit on parchment. Grass runs from dry straw to lush green with
+// the water its roots can find; open water deepens from the shallows.
+const PAINT = { tree: [100, 128, 72], shrub: [150, 122, 116], marsh: [114, 140, 106], bare: [174, 162, 140], sand: [228, 212, 164] };
+const STRAW = [206, 192, 126], LUSH = [166, 188, 106], SHALLOW = [128, 170, 176], DEEP = [72, 112, 140];
+const COVER = ["tree", "shrub", "grass", "marsh", "bare", "sand", "moist"];
+const mix = (a, b, t) => a.map((v, k) => v + (b[k] - v) * Math.max(0, Math.min(1, t)));
 // Isometric view: a tile is a 2*HW by 2*HH diamond, one unit of ground height lifts ZH pixels,
 // and the map's cut edge drops SLAB units below the waterline.
 export const HW = 26, HH = 13, ZH = 26;
@@ -25,22 +29,23 @@ function vnoise(x, y, s) {
 }
 const fbm = (x, y, s) => vnoise(x, y, s) * 0.6 + vnoise(x * 2.1, y * 2.1, s + 7) * 0.3 + vnoise(x * 4.3, y * 4.3, s + 13) * 0.1;
 
-// Smooth per-terrain fields on a grid of R samples per tile, with a domain warp so borders wander.
+// Per-tile ground cover on a grid of R samples per tile, with a domain warp so borders wander the way washes do.
 const R = 4;
-function fields(tiles, W, H) {
+function fields(cover, W, H) {
   const GW = W * R + 1, GH = H * R + 1;
-  const f = [0, 1, 2, 3].map(() => new Float32Array(GW * GH));
-  const tile = (x, y) => +tiles[Math.min(H - 1, Math.max(0, y)) * W + Math.min(W - 1, Math.max(0, x))];
+  const src = COVER.map((k) => cover[k]), f = src.map(() => new Float32Array(GW * GH));
+  const at = (a, x, y) => a[Math.min(H - 1, Math.max(0, y)) * W + Math.min(W - 1, Math.max(0, x))];
   for (let gy = 0; gy < GH; gy++)
     for (let gx = 0; gx < GW; gx++) {
       let u = gx / R - 0.5, v = gy / R - 0.5;
-      const wu = (fbm(u * 0.3, v * 0.3, 1) - 0.5) * 1.6 + (fbm(u * 1.1, v * 1.1, 3) - 0.5) * 0.7;
-      const wv = (fbm(u * 0.3, v * 0.3, 2) - 0.5) * 1.6 + (fbm(u * 1.1, v * 1.1, 4) - 0.5) * 0.7;
+      const wu = (fbm(u * 0.3, v * 0.3, 1) - 0.5) * 1.2 + (fbm(u * 1.1, v * 1.1, 3) - 0.5) * 0.6;
+      const wv = (fbm(u * 0.3, v * 0.3, 2) - 0.5) * 1.2 + (fbm(u * 1.1, v * 1.1, 4) - 0.5) * 0.6;
       u += wu; v += wv;
       const x0 = Math.floor(u), y0 = Math.floor(v), fx = u - x0, fy = v - y0;
-      const w = [(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy];
-      const t = [tile(x0, y0), tile(x0 + 1, y0), tile(x0, y0 + 1), tile(x0 + 1, y0 + 1)];
-      for (let i = 0; i < 4; i++) f[t[i]][gy * GW + gx] += w[i];
+      for (let k = 0; k < src.length; k++) {
+        const a = src[k];
+        f[k][gy * GW + gx] = (at(a, x0, y0) * (1 - fx) + at(a, x0 + 1, y0) * fx) * (1 - fy) + (at(a, x0, y0 + 1) * (1 - fx) + at(a, x0 + 1, y0 + 1) * fx) * fy;
+      }
     }
   return { f, GW, GH };
 }
@@ -50,6 +55,33 @@ function sampler({ f, GW, GH }) {
     const x0 = u | 0, y0 = v | 0, fx = u - x0, fy = v - y0, a = f[k], i = y0 * GW + x0;
     return (a[i] * (1 - fx) + a[i + 1] * fx) * (1 - fy) + (a[i + GW] * (1 - fx) + a[i + GW + 1] * fx) * fy;
   };
+}
+// Bilinear read of the island's cells at tile coordinates; cell centers sit half a cell in from their corner.
+function cells(g, n, W) {
+  const k = n / W;
+  return (u, v) => {
+    const x = Math.max(0, Math.min(n - 1.001, u * k - 0.5)), y = Math.max(0, Math.min(n - 1.001, v * k - 0.5));
+    const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, i = y0 * n + x0;
+    return (g[i] * (1 - fx) + g[i + 1] * fx) * (1 - fy) + (g[i + n] * (1 - fx) + g[i + n + 1] * fx) * fy;
+  };
+}
+// The server's packed island: elevation and standing water per cell, cover per tile, streams as lines.
+export function readTerrain(t) {
+  const bytes = (s) => Uint8Array.from(atob(s), (ch) => ch.charCodeAt(0));
+  const height = Float32Array.from(new Uint16Array(bytes(t.ground).buffer), (v) => v / 10 - 100);
+  const water = Float32Array.from(bytes(t.water), (v) => v / 4);
+  const cover = Object.fromEntries(Object.entries(t.cover).map(([k, s]) => [k, Float32Array.from(bytes(s), (v) => v / 255)]));
+  return { ...t, height, water, cover };
+}
+// Corner-cutting smooths the cell-to-cell path a stream took into a curve; each point carries its discharge.
+function chaikin(pts) {
+  const out = [pts[0]];
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const a = pts[i], b = pts[i + 1];
+    out.push(a.map((v, k) => v * 0.75 + b[k] * 0.25), a.map((v, k) => v * 0.25 + b[k] * 0.75));
+  }
+  out.push(pts.at(-1));
+  return out;
 }
 
 // Marching squares: one stroked path of contour segments at `level`.
@@ -72,23 +104,40 @@ function contour(ctx, { f, GW, GH }, k, level) {
     }
   ctx.stroke();
 }
-
-export function buildBase(tiles, view) {
-  const { W, H, z, hs } = view;
-  const F = fields(tiles, W, H), field = sampler(F);
-  // Slopes for the shading: a central difference at each corner, blended across the tiles around it, so light
-  // rolls smoothly over the ground instead of showing the triangles it's drawn with.
-  const C = W + 1, su = new Float32Array(C * (H + 1)), sv = new Float32Array(C * (H + 1));
-  for (let y = 0; y <= H; y++)
-    for (let x = 0; x <= W; x++) {
-      const x0 = Math.max(0, x - 1), x1 = Math.min(W, x + 1), y0 = Math.max(0, y - 1), y1 = Math.min(H, y + 1);
-      su[y * C + x] = ((hs[y * C + x1] - hs[y * C + x0]) / (x1 - x0)) * RELIEF;
-      sv[y * C + x] = ((hs[y1 * C + x] - hs[y0 * C + x]) / (y1 - y0)) * RELIEF;
+// Depth of standing water, run negative over the land next to it: each dry cell measures itself against the highest
+// water surface beside it. The shore then falls where the ground rises through the surface, not along cell edges.
+function signedDepth({ n, height, water }) {
+  const out = Float32Array.from(water);
+  for (let y = 0; y < n; y++)
+    for (let x = 0; x < n; x++) {
+      const i = y * n + x;
+      if (water[i] > 0) continue;
+      let level = -Infinity;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const j = (y + dy) * n + x + dx;
+          if (x + dx >= 0 && y + dy >= 0 && x + dx < n && y + dy < n && water[j] > 0) level = Math.max(level, height[j] + water[j]);
+        }
+      out[i] = Math.max(-2, Math.min(-0.05, level - height[i]));
     }
-  const slopeAt = (s, u, v) => {
-    const x = Math.min(W - 1, Math.floor(u)), y = Math.min(H - 1, Math.floor(v)), fx = u - x, fy = v - y, i = y * C + x;
-    return (s[i] * (1 - fx) + s[i + 1] * fx) * (1 - fy) + (s[i + C] * (1 - fx) + s[i + C + 1] * fx) * fy;
-  };
+  return out;
+}
+
+export function buildBase(view, ground) {
+  const { W, H } = view, n = ground.n, meters = ground.tile / (n / W);
+  const F = fields(ground.cover, W, H), field = sampler(F);
+  const depth = cells(signedDepth(ground), n, W);
+  // Slopes for the shading, from the water surface or ground of each cell: central differences, blended between cells,
+  // so the light picks out every spur and gully the rivers carved, not just the tiles the map is drawn with.
+  const surface = Float32Array.from(ground.height, (h, i) => Math.max(0, h + ground.water[i]));
+  const su = new Float32Array(n * n), sv = new Float32Array(n * n);
+  for (let y = 0; y < n; y++)
+    for (let x = 0; x < n; x++) {
+      const x0 = Math.max(0, x - 1), x1 = Math.min(n - 1, x + 1), y0 = Math.max(0, y - 1), y1 = Math.min(n - 1, y + 1);
+      su[y * n + x] = ((surface[y * n + x1] - surface[y * n + x0]) / ((x1 - x0) * meters)) * RELIEF;
+      sv[y * n + x] = ((surface[y1 * n + x] - surface[y0 * n + x]) / ((y1 - y0) * meters)) * RELIEF;
+    }
+  const slopeU = cells(su, n, W), slopeV = cells(sv, n, W), elevation = cells(surface, n, W);
   // Paint the washes at 8px per tile; the upscale gives the soft watercolor bleed for free.
   const P = 8, lw = W * P, lh = H * P;
   const low = new OffscreenCanvas(lw, lh), lc = low.getContext("2d");
@@ -96,30 +145,30 @@ export function buildBase(tiles, view) {
   const iceLow = new OffscreenCanvas(lw, lh), ic = iceLow.getContext("2d"), iceImg = ic.createImageData(lw, lh), id = iceImg.data;
   for (let py = 0; py < lh; py++)
     for (let px = 0; px < lw; px++) {
-      const u = (px + 0.5) / P, v = (py + 0.5) / P;
-      let best = 0, bv = -1, second = -1;
-      const vals = [0, 1, 2, 3].map((k) => field(k, u, v));
-      vals.forEach((val, k) => { if (val > bv) { second = bv; bv = val; best = k; } else if (val > second) second = val; });
-      const margin = bv - second;
-      const pool = Math.max(0, 1 - margin * 4) * 0.16; // pigment pools at the edge of a wash
+      const u = (px + 0.5) / P, v = (py + 0.5) / P, wet = depth(u, v);
       const mottle = (fbm(u * 0.6, v * 0.6, 5) - 0.5) * 0.16 + (fbm(u * 3, v * 3, 9) - 0.5) * 0.06;
-      // Hillshade: slopes turned to the light brighten, the far sides darken; open water lies flat.
-      const gu = slopeAt(su, u, v), gv = slopeAt(sv, u, v);
-      const lit = best === 2 ? 0 : (LIGHT[2] - gu * LIGHT[0] - gv * LIGHT[1]) / Math.hypot(gu, gv, 1) - LIGHT[2];
-      let [r, g, b] = WASH[best];
-      if (best === 2) {
-        const deep = Math.min(1, Math.max(0, (vals[2] - 0.55) * 2.2));
-        r -= deep * 38; g -= deep * 34; b -= deep * 22;
+      let rgb, cover = 0.92, k = 1 + mottle;
+      if (wet > 0) rgb = mix(SHALLOW, DEEP, (wet - 0.3) / 14);
+      else {
+        const tree = field(0, u, v), shrub = field(1, u, v), grass = field(2, u, v), marsh = field(3, u, v), bare = field(4, u, v);
+        const sand = field(5, u, v), moist = field(6, u, v), sum = tree + shrub + grass + marsh + bare || 1, lush = mix(STRAW, LUSH, moist);
+        rgb = [0, 1, 2].map((c) => (tree * PAINT.tree[c] + shrub * PAINT.shrub[c] + grass * lush[c] + marsh * PAINT.marsh[c] + bare * PAINT.bare[c]) / sum);
+        rgb = mix(rgb, PAINT.sand, sand * 1.4);
+        // Pigment pools where one kind of ground gives way to another.
+        const shares = [tree, shrub, grass, marsh, bare].sort((a, b) => b - a);
+        const pool = Math.max(0, 1 - ((shares[0] - shares[1]) / sum) * 3) * 0.12;
+        // Hillshade: slopes turned to the light brighten, the far sides darken.
+        const gu = slopeU(u, v), gv = slopeV(u, v);
+        const lit = (LIGHT[2] - gu * LIGHT[0] - gv * LIGHT[1]) / Math.hypot(gu, gv, 1) - LIGHT[2];
+        cover = 0.8; k = (1 + mottle - pool) * (1 + lit * 0.45);
       }
-      const cover = best === 2 ? 0.92 : 0.8;
-      const k = (1 + mottle - pool) * (1 + lit * 0.45);
       const i = (py * lw + px) * 4;
-      d[i] = (PAPER[0] * (1 - cover) + r * cover) * k;
-      d[i + 1] = (PAPER[1] * (1 - cover) + g * cover) * k;
-      d[i + 2] = (PAPER[2] * (1 - cover) + b * cover) * k;
+      d[i] = (PAPER[0] * (1 - cover) + rgb[0] * cover) * k;
+      d[i + 1] = (PAPER[1] * (1 - cover) + rgb[1] * cover) * k;
+      d[i + 2] = (PAPER[2] * (1 - cover) + rgb[2] * cover) * k;
       d[i + 3] = 255;
       // Ice fades out just inside the shore so the inked coastline stays visible.
-      const ia = Math.max(0, Math.min(1, (vals[2] - 0.53) * 7)), deep = Math.min(1, Math.max(0, (vals[2] - 0.6) * 2));
+      const ia = Math.max(0, Math.min(1, (wet - 0.3) * 3)), deep = Math.min(1, Math.max(0, (wet - 2) / 10));
       const ik = 1 + mottle * 0.6;
       id[i] = (228 - deep * 22) * ik; id[i + 1] = (238 - deep * 14) * ik; id[i + 2] = (242 - deep * 6) * ik; id[i + 3] = ia * 245;
     }
@@ -133,34 +182,60 @@ export function buildBase(tiles, view) {
   // Paper grain
   const grain = new OffscreenCanvas(160, 160), gc = grain.getContext("2d"), gi = gc.createImageData(160, 160);
   for (let i = 0; i < gi.data.length; i += 4) {
-    const n = Math.random() * 255;
-    gi.data[i] = gi.data[i + 1] = gi.data[i + 2] = n; gi.data[i + 3] = 255;
+    const g = Math.random() * 255;
+    gi.data[i] = gi.data[i + 1] = gi.data[i + 2] = g; gi.data[i + 3] = 255;
   }
   gc.putImageData(gi, 0, 0);
   c.globalCompositeOperation = "multiply"; c.globalAlpha = 0.07;
   c.fillStyle = c.createPattern(grain, "repeat"); c.fillRect(0, 0, W * T, H * T);
   c.globalCompositeOperation = "source-over"; c.globalAlpha = 1;
 
-  // Rock hatching and grass tufts stand upright, so they're kept as marks and drawn over the projected terrain.
+  // Grass tufts, rock hatching, heather and reeds stand upright, so they're kept as marks and drawn over the terrain.
   const marks = [];
   for (let y = 0; y < H * 2; y++)
     for (let x = 0; x < W * 2; x++) {
       const u = (x + hash(x, y, 3)) / 2, v = (y + hash(x, y, 4)) / 2, h = hash(x, y, 6);
-      if (field(3, u, v) > 0.6 && h < 0.55) marks.push([u, v, 1]);
-      else if (field(0, u, v) > 0.7 && h < 0.16) marks.push([u, v, 0]);
+      if (depth(u, v) > 0) continue;
+      if (field(4, u, v) > 0.5 && h < 0.5) marks.push([u, v, 1]);
+      else if (field(3, u, v) > 0.4 && h < 0.35) marks.push([u, v, 3]);
+      else if (field(1, u, v) > 0.45 && h < 0.3) marks.push([u, v, 2]);
+      else if (field(2, u, v) > 0.55 && h < 0.18) marks.push([u, v, 0]);
     }
 
-  // Ink: forest edges, shore ripples, coastline
+  // Streams, smoothed from the cell-by-cell path the water took, widening downstream: ink under, water over.
+  const widths = [1.3, 1.9, 2.6, 3.4, 4.4];
+  const beds = widths.map(() => new Path2D());
+  for (const line of ground.rivers) {
+    const pts = chaikin(chaikin(line.map(([x, y, q]) => [x * T, y * T, q])));
+    for (let i = 1; i < pts.length; i++) {
+      const q = (pts[i - 1][2] + pts[i][2]) / 2, k = Math.max(0, Math.min(widths.length - 1, Math.floor(Math.sqrt(q / 0.02) - 1)));
+      beds[k].moveTo(pts[i - 1][0], pts[i - 1][1]);
+      beds[k].lineTo(pts[i][0], pts[i][1]);
+    }
+  }
   c.lineJoin = "round"; c.lineCap = "round";
-  c.strokeStyle = "rgba(48, 66, 32, .32)"; c.lineWidth = 1.1; contour(c, F, 1, 0.5);
-  c.strokeStyle = "rgba(58, 42, 26, .18)"; c.lineWidth = 1; contour(c, F, 2, 0.78);
-  c.strokeStyle = "rgba(58, 42, 26, .28)"; c.lineWidth = 1; contour(c, F, 2, 0.64);
-  c.strokeStyle = "rgba(58, 42, 26, .85)"; c.lineWidth = 1.8; contour(c, F, 2, 0.5);
-  // Faint height contours, like an atlas, so the relief reads even where the shading is flat.
-  const hf = { f: [new Float32Array(F.GW * F.GH)], GW: F.GW, GH: F.GH };
-  for (let gy = 0; gy < F.GH; gy++) for (let gx = 0; gx < F.GW; gx++) hf.f[0][gy * F.GW + gx] = z(gx / R, gy / R);
-  c.strokeStyle = "rgba(92, 64, 36, .2)"; c.lineWidth = 0.9;
-  for (let level = 0.75; level < view.top; level += 0.75) contour(c, hf, 0, level);
+  beds.forEach((p, k) => { c.strokeStyle = "rgba(58, 42, 26, .35)"; c.lineWidth = widths[k] + 1.4; c.stroke(p); });
+  beds.forEach((p, k) => { c.strokeStyle = "rgba(96, 140, 160, .95)"; c.lineWidth = widths[k]; c.stroke(p); });
+
+  // Ink: forest edges, shore ripples, coastline.
+  const grid = (read) => {
+    const g = { f: [new Float32Array(F.GW * F.GH)], GW: F.GW, GH: F.GH };
+    for (let gy = 0; gy < F.GH; gy++) for (let gx = 0; gx < F.GW; gx++) g.f[0][gy * F.GW + gx] = read(gx / R, gy / R);
+    return g;
+  };
+  const shore = grid(depth);
+  c.strokeStyle = "rgba(48, 66, 32, .32)"; c.lineWidth = 1.1; contour(c, F, 0, 0.5);
+  c.strokeStyle = "rgba(58, 42, 26, .18)"; c.lineWidth = 1; contour(c, shore, 0, 4);
+  c.strokeStyle = "rgba(58, 42, 26, .28)"; c.lineWidth = 1; contour(c, shore, 0, 1.5);
+  c.strokeStyle = "rgba(58, 42, 26, .85)"; c.lineWidth = 1.8; contour(c, shore, 0, 0);
+  // Faint height contours every 50 m and a firmer one every 250 m, like an atlas.
+  const rise = grid(elevation);
+  let top = 0;
+  for (const h of surface) top = Math.max(top, h);
+  for (let level = 50; level < top; level += 50) {
+    c.strokeStyle = level % 250 ? "rgba(92, 64, 36, .16)" : "rgba(92, 64, 36, .3)"; c.lineWidth = level % 250 ? 0.8 : 1.1;
+    contour(c, rise, 0, level);
+  }
 
   // Frame vignette baked into the paper edge
   const g = c.createRadialGradient(W * T / 2, H * T / 2, W * T * 0.35, W * T / 2, H * T / 2, W * T * 0.75);
@@ -170,9 +245,27 @@ export function buildBase(tiles, view) {
 }
 
 // ---------- isometric terrain ----------
-// Layer positions for a W x H map with corner heights hs, the ground height anywhere, and the map's silhouette.
-export function isoView(hs, W, H) {
-  const C = W + 1, top = Math.max(...hs);
+// Layer positions for a W x H map with corner heights `real` (in tile widths), the ground height anywhere as drawn,
+// and the map's silhouette.
+export function isoView(real, W, H) {
+  const C = W + 1;
+  // Ground that rises toward the camera faster than it drops on screen would hide what's behind it, and glyphs are
+  // drawn over the terrain on the promise that it never does. So the whole island is drawn at whatever height keeps
+  // all but its very steepest faces inside that, and those few are trimmed.
+  const rise = [];
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      const i = y * C + x, back = real[i + 1] + real[i + C] - 2 * real[i], front = 2 * real[i + C + 1] - real[i + 1] - real[i + C];
+      rise.push(Math.max(back, front));
+    }
+  rise.sort((a, b) => a - b);
+  const lift = Math.min(1, 0.95 / Math.max(1e-6, rise[Math.floor(rise.length * 0.995)]));
+  const hs = real.map((v) => v * lift);
+  for (let i = 0; i < hs.length; i++) {
+    if (i % C) hs[i] = Math.min(hs[i], hs[i - 1] + 0.475);
+    if (i >= C) hs[i] = Math.min(hs[i], hs[i - C] + 0.475);
+  }
+  const top = Math.max(...hs);
   const OX = T + H * HW, OY = top * ZH + T * 1.8;
   // Each tile is two flat triangles split between its (x+1, y) and (x, y+1) corners; heights follow them exactly.
   const z = (u, v) => {
@@ -189,7 +282,7 @@ export function isoView(hs, W, H) {
   for (let u = 1; u <= W; u++) outline.lineTo(...at(u, 0));
   for (const [u, v] of [[W, 0], [W, H], [0, H]]) outline.lineTo(...at(u, v, -SLAB));
   outline.closePath();
-  return { W, H, OX, OY, top, hs, z, at, outline, width: Math.ceil(2 * T + (W + H) * HW), height: Math.ceil(OY + (W + H) * HH + SLAB * ZH + T) };
+  return { W, H, OX, OY, top, lift, hs, z, at, outline, width: Math.ceil(2 * T + (W + H) * HW), height: Math.ceil(OY + (W + H) * HH + SLAB * ZH + T) };
 }
 
 // Calls fn(x, y) for every tile whose ground can show inside layer rect r grown by pad, back to front.
@@ -258,14 +351,19 @@ export function drawSlab(c, view, tiles) {
   c.restore();
 }
 
-// Grass tufts and rock hatching, upright wherever they stand. Trampled tiles lose their tufts.
+// Grass tufts, rock hatching, heather sprigs and reeds, upright wherever they stand. Trampled tiles lose their tufts.
 export function drawMarks(c, marks, view, r, paths) {
-  const hatch = new Path2D(), tufts = new Path2D();
-  for (const [u, v, rock] of marks) {
+  const hatch = new Path2D(), tufts = new Path2D(), heather = new Path2D(), reeds = new Path2D();
+  for (const [u, v, kind] of marks) {
     const [px, py] = view.at(u, v);
     if (px < r[0] - 8 || px > r[2] + 8 || py < r[1] - 8 || py > r[3] + 8) continue;
-    if (rock) {
+    if (kind === 1) {
       for (let j = 0; j < 3; j++) { hatch.moveTo(px + j * 3.5 - 5, py + 4); hatch.lineTo(px + j * 3.5 - 1, py - 3); }
+    } else if (kind === 2) {
+      for (const dx of [-3, 0, 3]) { heather.moveTo(px + dx, py + 1); heather.lineTo(px + dx * 1.4, py - 3); }
+    } else if (kind === 3) {
+      reeds.moveTo(px - 2, py + 2); reeds.lineTo(px - 2.5, py - 5);
+      reeds.moveTo(px + 1, py + 2); reeds.lineTo(px + 1.5, py - 6);
     } else if (!paths?.[Math.floor(v) * view.W + Math.floor(u)]) {
       tufts.moveTo(px - 3, py - 3); tufts.quadraticCurveTo(px - 1, py, px, py + 2);
       tufts.moveTo(px + 3, py - 4); tufts.quadraticCurveTo(px + 1, py, px, py + 2);
@@ -276,6 +374,8 @@ export function drawMarks(c, marks, view, r, paths) {
   c.lineCap = "round";
   c.strokeStyle = "rgba(70, 55, 38, .38)"; c.lineWidth = 1.1; c.stroke(hatch);
   c.strokeStyle = "rgba(80, 90, 40, .45)"; c.lineWidth = 1; c.stroke(tufts);
+  c.strokeStyle = "rgba(104, 62, 86, .45)"; c.lineWidth = 1.2; c.stroke(heather);
+  c.strokeStyle = "rgba(64, 88, 58, .55)"; c.lineWidth = 1.1; c.stroke(reeds);
   c.restore();
 }
 

@@ -1,4 +1,5 @@
-import { domainWarp2, fbm, ridged, simplex2d } from "math/noise";
+import { generateIsland } from "../terrain/island";
+import { lay, stock, type Lay, type Terrain } from "../terrain/land";
 import { TRAITS } from "./traits";
 import { baseRegistry, type Registry } from "./materials";
 import type { Belief } from "./beliefs";
@@ -7,7 +8,7 @@ export const W = 64;
 export const H = 64;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export const YEAR_DAYS = 40;
-export const VERSION = 6;
+export const VERSION = 7;
 export const YEAR = DAY * YEAR_DAYS;
 
 export enum Tile {
@@ -189,7 +190,8 @@ export type World = {
   seed: number;
   t: number;
   tiles: Tile[];
-  heights: number[]; // ground height at tile corners, (W + 1) * (H + 1), in tile widths above the waterline
+  heights: number[]; // ground height at tile corners, (W + 1) * (H + 1), in tile widths (150 m) above the waterline
+  terrain: Terrain; // the simulated ground the tiles were read from, for the map and anything that wants more detail
   paths: number[]; // walking wear per tile, 0..9
   things: Thing[];
   agents: Agent[];
@@ -217,42 +219,6 @@ export function rng(seed: number) {
   };
 }
 
-// Warped simplex hills plus ridged crests, sinking toward the map edge so the sea makes a coast.
-function terrain(rand: () => number) {
-  const gen = () => simplex2d.create(Math.floor(rand() * 65536));
-  const hills = gen(), crests = gen(), warp = gen(), woods = gen();
-  const p: [number, number] = [0, 0];
-  const warped = (a: number, b: number) => simplex2d.sample(warp, a, b);
-  return {
-    elevation(x: number, y: number) {
-      const [u, v] = domainWarp2(p, warped, x / 28, y / 28, 0.4);
-      const lift = fbm((f) => simplex2d.sample(hills, u * f, v * f), 5, 2, 0.5);
-      const crest = ridged((f) => simplex2d.sample(crests, u * 1.7 * f, v * 1.7 * f), 4, 2, 0.5);
-      const coast = Math.min(1, Math.min(x, y, W - x, H - y) / 9);
-      return lift * 0.9 + crest ** 3 * 0.5 + 0.38 - (1 - coast) ** 2 * 0.55;
-    },
-    woods: (x: number, y: number) => fbm((f) => simplex2d.sample(woods, (x / 9) * f, (y / 9) * f), 3, 2, 0.5),
-  };
-}
-// Tuned to the old tile mix: about 8% water, 15% rock, 33% forest.
-const ROCK = 0.73, WOODS = 0.06, LIFT = 5;
-// Ground rises toward the isometric camera (+x, +y) by at most this much a tile, so no slope turns away from it and
-// hides the ground behind. Toward the camera it may fall as steeply as it likes.
-const MAX_RISE = 0.45;
-function cornerHeights(tiles: Tile[], elevation: (x: number, y: number) => number) {
-  const C = W + 1, z = new Array<number>(C * (H + 1));
-  const wet = (x: number, y: number) => x >= 0 && y >= 0 && x < W && y < H && tiles[y * W + x] === Tile.Water;
-  for (let y = 0; y <= H; y++)
-    for (let x = 0; x <= W; x++)
-      z[y * C + x] = wet(x - 1, y - 1) || wet(x, y - 1) || wet(x - 1, y) || wet(x, y) ? 0 : Math.max(0.05, elevation(x, y) * LIFT);
-  // One pass in reading order settles it: a corner's back neighbors are final before it is.
-  for (let i = 0; i < z.length; i++) {
-    if (i % C) z[i] = Math.min(z[i], z[i - 1] + MAX_RISE);
-    if (i >= C) z[i] = Math.min(z[i], z[i - C] + MAX_RISE);
-  }
-  return z.map((v) => Math.round(v * 100) / 100);
-}
-
 export function nearWater(w: World, x: number, y: number, r: number) {
   for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) if (tileAt(w, x + dx, y + dy) === Tile.Water) return true;
   return false;
@@ -263,6 +229,53 @@ export const walkable = (w: World, x: number, y: number) => {
   const t = tileAt(w, x, y);
   return t === Tile.Grass || t === Tile.Forest || t === Tile.Rock || (t === Tile.Water && iceAt(w, x, y));
 };
+// The largest stretch of ground one can walk across. Rocks and islets offshore, or in a lake, are cut off from it.
+export function mainland(w: World) {
+  const seen = new Uint8Array(W * H);
+  let best: number[] = [];
+  for (let s = 0; s < W * H; s++) {
+    if (seen[s] || !walkable(w, s % W, Math.floor(s / W))) continue;
+    const part = [s];
+    seen[s] = 1;
+    for (let i = 0; i < part.length; i++) {
+      const x = part[i] % W, y = Math.floor(part[i] / W);
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx, ny = y + dy, n = ny * W + nx;
+          if (nx >= 0 && ny >= 0 && nx < W && ny < H && !seen[n] && walkable(w, nx, ny)) { seen[n] = 1; part.push(n); }
+        }
+    }
+    if (part.length > best.length) best = part;
+  }
+  const main = new Uint8Array(W * H);
+  for (const t of best) main[t] = 1;
+  return main;
+}
+// Water joined to the open sea past the map's edge, as against lakes.
+export function sea(w: World) {
+  const salt = new Uint8Array(W * H), open: number[] = [];
+  for (let t = 0; t < W * H; t++) {
+    const x = t % W, y = Math.floor(t / W);
+    if ((x === 0 || y === 0 || x === W - 1 || y === H - 1) && w.tiles[t] === Tile.Water) { salt[t] = 1; open.push(t); }
+  }
+  for (let i = 0; i < open.length; i++) {
+    const x = open[i] % W, y = Math.floor(open[i] / W);
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, ny = y + dy, n = ny * W + nx;
+      if (nx >= 0 && ny >= 0 && nx < W && ny < H && !salt[n] && w.tiles[n] === Tile.Water) { salt[n] = 1; open.push(n); }
+    }
+  }
+  return salt;
+}
+// Where anyone arriving by sea comes ashore: in from a random point off the coast, the first ground of the mainland.
+export function landing(w: World) {
+  const main = mainland(w), a = Math.random() * Math.PI * 2;
+  for (let d = Math.hypot(W, H) / 2; d > 0; d -= 0.5) {
+    const x = Math.round(W / 2 + Math.cos(a) * d), y = Math.round(H / 2 + Math.sin(a) * d);
+    if (x >= 0 && y >= 0 && x < W && y < H && main[y * W + x]) return { x, y };
+  }
+  return null;
+}
 // ponytail: linear scan of the ice list; index it if winters ever freeze more than a few hundred tiles.
 export const iceAt = (w: World, x: number, y: number) => w.ice.length > 0 && w.ice.includes(y * W + x);
 export const ageOf = (w: World, a: { born: number }) => (w.t - a.born) / YEAR;
@@ -303,51 +316,39 @@ const OPPOSITES = [
 ];
 export const clash = (a: string, b: string) => OPPOSITES.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
 
+// Growing an island takes a good fraction of a second and depends only on the seed, so tests that rebuild the same
+// world reuse it. Callers get their own copies of anything the game might change.
+const islands = new Map<number, Lay>();
 export function newWorld(seed: number, agentCount = 5): World {
-  const rand = rng(seed);
-  const { elevation, woods } = terrain(rand);
-  const tiles: Tile[] = [];
-  for (let y = 0; y < H; y++)
-    for (let x = 0; x < W; x++) {
-      const e = elevation(x + 0.5, y + 0.5);
-      tiles.push(e < 0 ? Tile.Water : e > ROCK ? Tile.Rock : woods(x + 0.5, y + 0.5) > WOODS ? Tile.Forest : Tile.Grass);
-    }
+  const land = islands.get(seed) ?? lay(generateIsland(rng(seed)));
+  islands.set(seed, land);
+  // People, animals and loose things draw from their own stream, so a seed's island stays the same whatever they do.
+  const rand = rng(seed ^ 0x5f3759df);
+  const tiles = [...land.tiles];
   const w: World = {
-    version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, heights: cornerHeights(tiles, elevation), paths: new Array(W * H).fill(0), things: [], agents: [], animals: [], events: [],
+    version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, heights: [...land.heights], terrain: land.terrain, paths: new Array(W * H).fill(0), things: [], agents: [], animals: [], events: [],
     nextId: 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {}, ice: [], people: {},
-    weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 14, wind: { dx: 0.3, dy: 0.1 }, drought: false, dryTicks: 0 },
+    weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 14, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, drought: false, dryTicks: 0 },
     camps: [], incidents: [],
   };
-  for (let y = 0; y < H; y++)
-    for (let x = 0; x < W; x++) {
-      const t = tiles[y * W + x], r = rand();
-      if (t === Tile.Forest) {
-        if (r < 0.3) addThing(w, "tree", x, y, { hp: 100, maxHp: 100 });
-        else if (r < 0.34) addThing(w, "stick", x, y);
-        else if (r < 0.37) addThing(w, "mushroom", x, y);
-        else if (r < 0.39) addThing(w, "herb", x, y);
-      } else if (t === Tile.Grass && nearWater(w, x, y, 1) && r < 0.12) {
-        addThing(w, r < 0.05 ? "clay" : "reeds", x, y, r < 0.05 ? {} : { hp: 6, maxHp: 6 });
-      } else if (t === Tile.Grass) {
-        if (r < 0.025) addThing(w, "bush", x, y, { n: 3, hp: 20, maxHp: 20 });
-        else if (r < 0.03 && nearWater(w, x, y, 3)) addThing(w, "reeds", x, y, { hp: 6, maxHp: 6 });
-        else if (r < 0.03) addThing(w, "stick", x, y);
-        else if (r < 0.034) addThing(w, "stone", x, y);
-      } else if (t === Tile.Rock) {
-        // Flint forms as nodules inside the rock; ore shows as reddish stones, and sometimes inside boulders too.
-        const q = (r - 0.12) / 0.04;
-        if (r < 0.12) addThing(w, "stone", x, y);
-        else if (r < 0.16) addThing(w, "boulder", x, y, { hp: 120, maxHp: 120, ...(q < 0.45 ? { inside: { flint: q < 0.15 ? 2 : 1 } } : q > 0.85 ? { inside: { ore: 1 } } : {}) });
-        else if (r < 0.172) addThing(w, "item", x, y, { item: "ore", n: 1, born: 0 });
-      }
-    }
-  const traitNames = Object.keys(TRAITS);
+  for (const { kind, x, y } of stock(land, rand)) {
+    if (kind === "tree") addThing(w, "tree", x, y, { hp: 100, maxHp: 100 });
+    else if (kind === "bush") addThing(w, "bush", x, y, { n: 3, hp: 20, maxHp: 20 });
+    else if (kind === "reeds") addThing(w, "reeds", x, y, { hp: 6, maxHp: 6 });
+    else if (kind === "ore") addThing(w, "item", x, y, { item: "ore", n: 1, born: 0 });
+    else if (kind === "boulder") {
+      // Flint forms as nodules inside the rock; ore shows as reddish stones, and sometimes inside boulders too.
+      const q = rand();
+      addThing(w, "boulder", x, y, { hp: 120, maxHp: 120, ...(q < 0.45 ? { inside: { flint: q < 0.15 ? 2 : 1 } } : q > 0.85 ? { inside: { ore: 1 } } : {}) });
+    } else addThing(w, kind, x, y);
+  }
+  const traitNames = Object.keys(TRAITS), main = mainland(w);
   for (let i = 0; i < agentCount; i++) {
     let x = 0, y = 0;
     do {
       x = 12 + Math.floor(rand() * (W - 24));
       y = 12 + Math.floor(rand() * (H - 24));
-    } while (tileAt(w, x, y) !== Tile.Grass || w.agents.some((a) => dist(a, { x, y }) < 10));
+    } while (tileAt(w, x, y) !== Tile.Grass || !main[y * W + x] || w.agents.some((a) => dist(a, { x, y }) < 10));
     const traits: Record<string, number> = {};
     const count = 5 + Math.floor(rand() * 4);
     while (Object.keys(traits).length < count) {
@@ -368,13 +369,13 @@ export function newWorld(seed: number, agentCount = 5): World {
       thinking: false, engaged: null, down: 0, nextDecide: 0, cooldowns: {}, seen: {}, near: {}, customs: {},
     });
   }
-  const openGrass = () => {
-    for (let i = 0; i < 500; i++) {
-      const x = Math.floor(rand() * W), y = Math.floor(rand() * H);
-      if (tileAt(w, x, y) === Tile.Grass && w.agents.every((a) => dist(a, { x, y }) > 8)) return { x, y };
-    }
-    return { x: W / 2, y: H / 2 };
-  };
+  // Room for a herd or a pack: open grass three tiles by two, on ground they can leave, away from people.
+  const room: { x: number; y: number }[] = [];
+  for (let y = 0; y < H - 1; y++)
+    for (let x = 0; x < W - 2; x++)
+      if (main[y * W + x] && [0, 1, 2].every((dx) => tileAt(w, x + dx, y) === Tile.Grass && tileAt(w, x + dx, y + 1) === Tile.Grass) && w.agents.every((a) => dist(a, { x, y }) > 8))
+        room.push({ x, y });
+  const openGrass = () => room[Math.floor(rand() * room.length)] ?? { x: W / 2, y: H / 2 };
   for (let herd = 0; herd < 2; herd++) {
     const c = openGrass();
     for (let i = 0; i < 4; i++) addAnimal(w, "deer", c.x + (i % 2), c.y + (i >> 1));

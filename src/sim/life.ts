@@ -1,6 +1,6 @@
 // Generations: people grow up, pair off, have children, grow old, and die. What they knew lives on only if they passed it on.
 import { TRAITS } from "./traits";
-import { COLORS, DAY, DESIRES, H, NAMES, W, YEAR, addThing, ageOf, clash, dist, log, stageOf, walkable, type Agent, type World } from "./world";
+import { COLORS, DAY, DESIRES, NAMES, YEAR, addThing, ageOf, clash, dist, landing, log, stageOf, type Agent, type World } from "./world";
 import { changed, dropPile } from "./physics";
 import { newRel } from "./brain";
 import { see } from "./beliefs";
@@ -79,13 +79,11 @@ const paired = (a: Agent, b: Agent) => {
   return !!r && !!s && r.affinity > 0.45 && s.affinity > 0.45 && (sweet(r) || sweet(s) || (r.affinity > 0.7 && s.affinity > 0.7));
 };
 
-// When the land is nearly empty, strangers drift in. They know nothing of what came before, except what they find.
+// When the land is nearly empty, strangers come ashore. They know nothing of what came before, except what they find.
 function newcomer(w: World) {
-  let x = 0, y = 0;
-  for (let i = 0; i < 100; i++) {
-    x = Math.random() < 0.5 ? 1 : W - 2; y = 2 + Math.floor(Math.random() * (H - 4));
-    if (walkable(w, x, y)) break;
-  }
+  const spot = landing(w);
+  if (!spot) return;
+  const { x, y } = spot;
   // A pretend parent with nothing to pass on, so the stranger gets fresh traits.
   const stub = { id: "stranger", name: "a stranger", traits: {}, desires: [DESIRES[Math.floor(Math.random() * DESIRES.length)]], x, y, home: null, children: [], rel: {} } as unknown as Agent;
   const a = childOf(w, stub, undefined);
@@ -95,7 +93,7 @@ function newcomer(w: World) {
   a.status = "Arriving";
   w.agents.push(a);
   w.people[a.id] = { id: a.id, name: a.name, color: a.color, alive: true };
-  log(w, "arrive", [a.id], a, `A stranger named ${a.name} wandered in from beyond the hills.`, `${a.name} arrived`);
+  log(w, "arrive", [a.id], a, `A stranger named ${a.name} came ashore from the sea.`, `${a.name} arrived`);
 }
 
 export function life(w: World) {

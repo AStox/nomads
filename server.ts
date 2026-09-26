@@ -118,7 +118,7 @@ Bun.serve({
           ctl = c;
           clients.add(c);
           send(c, {
-            type: "init", t: w.t, jev: w.jev, control, tiles: w.tiles.join(""), heights: w.heights, things: w.things,
+            type: "init", t: w.t, jev: w.jev, control, tiles: w.tiles.join(""), heights: w.heights, terrain: w.terrain, things: w.things,
             agents: w.agents.map((a) => summary(w, a)), animals: animalView(), events: w.events.slice(-300),
             kinds: w.kinds, weather: w.weather, paths: w.paths.join(""),
             ice: w.tiles.map((_, i) => (w.ice.includes(i) ? "1" : "0")).join(""),

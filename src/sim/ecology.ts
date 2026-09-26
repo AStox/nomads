@@ -3,7 +3,7 @@ import { THING_MATERIAL, clamp01, ensure, p } from "./materials";
 import { changed, dropPile, fireHeat, nearFire, newKinds, removeThing } from "./physics";
 import { see } from "./beliefs";
 import {
-  DAY, H, W, Tile, addAnimal, addThing, dayOfYear, dist, isNight, log, nearWater, seasonOf, tileAt, walkable,
+  DAY, H, W, Tile, addAnimal, addThing, dayOfYear, dist, isNight, landing, log, nearWater, sea, seasonOf, tileAt, walkable,
   type Agent, type Animal, type Thing, type World,
 } from "./world";
 import { count, timed, trace } from "./trace";
@@ -34,7 +34,9 @@ function weather(w: World) {
     else if (wx.sky === "cloudy") wx.sky = r < RAIN_START[season] * 2 ? "rain" : r < 0.4 ? "clear" : "cloudy";
     else if (wx.sky === "rain") wx.sky = r < 0.25 ? "cloudy" : r < (season === "summer" || season === "autumn" ? 0.33 : 0.28) ? "storm" : "rain";
     else wx.sky = r < 0.35 ? "rain" : "storm";
-    wx.wind = { dx: clamp(wx.wind.dx + (Math.random() - 0.5) * 0.3, -1, 1), dy: clamp(wx.wind.dy + (Math.random() - 0.5) * 0.3, -1, 1) };
+    // The wind wanders, but keeps coming back to blow the way it prevails, the way that laid the island's rain.
+    const [px, py] = w.terrain.wind, pull = (v: number, p: number) => clamp(v + (p * 0.5 - v) * 0.02 + (Math.random() - 0.5) * 0.3, -1, 1);
+    wx.wind = { dx: pull(wx.wind.dx, px), dy: pull(wx.wind.dy, py) };
     if (wx.sky !== before) {
       const words = { clear: "The sky cleared.", cloudy: "Clouds rolled in.", rain: "It started to rain.", storm: "A storm broke." };
       log(w, "weather", [], { x: W / 2, y: H / 2 }, words[wx.sky]);
@@ -62,16 +64,17 @@ function weather(w: World) {
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 // ---------- ice ----------
-// Hard frost freezes the shallows, then further out; a thaw drops everyone standing on it into the water.
+// Hard frost freezes the shallows of the lakes, then further out; salt water holds out. A thaw drops everyone
+// standing on the ice into the water.
 function ice(w: World) {
   const t = w.weather.temp;
   if (t < -2 && w.weather.season === "winter") {
-    const frozen = new Set(w.ice);
+    const frozen = new Set(w.ice), salt = sea(w);
     let grew = false;
     for (let y = 0; y < H; y++)
       for (let x = 0; x < W; x++) {
         const i = y * W + x;
-        if (frozen.has(i) || tileAt(w, x, y) !== Tile.Water) continue;
+        if (frozen.has(i) || salt[i] || tileAt(w, x, y) !== Tile.Water) continue;
         const edge = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => { const nx = x + dx, ny = y + dy; return (tileAt(w, nx, ny) !== Tile.Water && nx >= 0 && ny >= 0 && nx < W && ny < H) || frozen.has(ny * W + nx); });
         if (edge && Math.random() < 0.25) { w.ice.push(i); grew = true; }
       }
@@ -381,11 +384,10 @@ function animals(w: World) {
       trace("animal", "attack", { wolf: wf.id, victim: victim.id, health: victim.needs.health }, victim.id);
     }
   }
-  // Animals drift in from beyond the map when the land empties out.
+  // Animals swim across to the island when it empties out.
   const deerNow = w.animals.filter((a) => a.species === "deer").length;
-  const edge = () => { for (let i = 0; i < 50; i++) { const x = Math.random() < 0.5 ? 1 : W - 2, y = 2 + Math.floor(Math.random() * (H - 4)); if (walkable(w, x, y)) return { x, y }; } return null; };
-  if (deerNow < 4 && Math.random() < 1 / 1500) { const e = edge(); if (e) { addAnimal(w, "deer", e.x, e.y); addAnimal(w, "deer", e.x, e.y); log(w, "birth", [], e, "A pair of deer wandered in from beyond the hills."); } }
-  if (deerNow >= 8 && !wolves.some((x) => w.animals.includes(x)) && Math.random() < 1 / 4000) { const e = edge(); if (e) { addAnimal(w, "wolf", e.x, e.y); addAnimal(w, "wolf", e.x, e.y); log(w, "birth", [], e, "Wolves came down from the hills, following the deer."); } }
+  if (deerNow < 4 && Math.random() < 1 / 1500) { const e = landing(w); if (e) { addAnimal(w, "deer", e.x, e.y); addAnimal(w, "deer", e.x, e.y); log(w, "birth", [], e, "A pair of deer swam ashore."); } }
+  if (deerNow >= 8 && !wolves.some((x) => w.animals.includes(x)) && Math.random() < 1 / 4000) { const e = landing(w); if (e) { addAnimal(w, "wolf", e.x, e.y); addAnimal(w, "wolf", e.x, e.y); log(w, "birth", [], e, "Wolves came across the water, following the deer."); } }
   const wolfCount = wolves.filter((x) => w.animals.includes(x)).length;
   if (spring && wolfCount >= 2 && wolfCount < 6 && Math.random() < 1 / 4000) {
     const mom = wolves.find((x) => w.animals.includes(x))!;

@@ -1,5 +1,5 @@
 import {
-  T, buildBase, isoView, eachTile, drawTile, drawSlab, drawMarks, drawThing, drawFire, drawFlames, drawSmoke, drawToken, drawLabel,
+  T, buildBase, readTerrain, isoView, eachTile, drawTile, drawSlab, drawMarks, drawThing, drawFire, drawFlames, drawSmoke, drawToken, drawLabel,
   drawThinking, drawSleep, drawAnimal, drawTrapped, drawIce, drawPaths, drawRain, drawSnow, drawBolt, thingSpot, hash, flameColors,
 } from "./art.js";
 
@@ -11,7 +11,7 @@ const NOTABLE = new Set(["discover", "learn", "teach", "attack", "wolf", "defend
 const ROUTINE = new Set(["gather", "eat", "goal", "stuck", "fail", "tinker", "craft", "fire_out", "fire_spread", "wake", "level", "spoil", "grow", "birth", "weather", "season", "recover", "notice", "store"]);
 
 const S = {
-  W: 0, H: 0, tiles: "", heights: null, things: new Map(), byTile: new Map(), hot: new Set(), graves: new Set(), caught: new Set(),
+  W: 0, H: 0, tiles: "", heights: null, land: null, things: new Map(), byTile: new Map(), hot: new Set(), graves: new Set(), caught: new Set(),
   agents: new Map(), animals: new Map(), people: new Map(),
   kinds: {}, weather: null, paths: null, ice: null, t: 0, jev: null, control: { paused: false, speed: 1 }, groups: [],
 };
@@ -158,7 +158,7 @@ function paint(r) {
 }
 function buildLayer() {
   view = isoView(S.heights, S.W, S.H);
-  ({ base, ice: iceLow, marks } = buildBase(S.tiles, view));
+  ({ base, ice: iceLow, marks } = buildBase(view, S.land));
   ground.width = S.W * T; ground.height = S.H * T;
   paintGround(0, 0, S.W - 1, S.H - 1);
   layer.width = view.width; layer.height = view.height;
@@ -1092,7 +1092,7 @@ function connect() {
   src.onmessage = async (m) => {
     const msg = JSON.parse(m.data);
     if (msg.type === "init") {
-      S.W = 64; S.H = msg.tiles.length / 64; S.tiles = msg.tiles; S.heights = msg.heights; S.t = msg.t; S.jev = msg.jev;
+      S.W = 64; S.H = msg.tiles.length / 64; S.tiles = msg.tiles; S.heights = msg.heights; S.land = readTerrain(msg.terrain); S.t = msg.t; S.jev = msg.jev;
       S.kinds = { ...(msg.kinds ?? {}) }; S.weather = msg.weather ?? null; S.groups = msg.groups ?? [];
       S.paths = parsePaths(msg.paths, S.W * S.H);
       S.ice = parseIce(msg.ice, S.W * S.H);
