@@ -11,10 +11,12 @@ const VIEW = ["island", "valley", "camp"].includes(Q.get("view")) ? Q.get("view"
 const SEED = Number(Q.get("seed") || 1);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
+// cliff: ground steeper than this (rise over run, sampled a tile apart) keeps its drops as rock faces; everything
+// gentler is laid out in slope tiles
 const CFG = {
-  island: { S: 2, W: 12, lp: 2, exag: 3.8, detail: 0, foam: 1.2, deep: 45, sparkle: 0.0005, grid: 0, gain: 1.5, tsun: 0.5, cell: [4, 3] },
-  valley: { S: 2, W: 32, lp: 4, tileM: 18, exag: 5.5, relief: 80, detail: 1, foam: 2.4, deep: 9, sparkle: 0.002, focus: [0.5, 0.64], treeK: 1.15, campK: 7, campOff: 4.4, grid: 0.45, gain: 1.2, tsun: 0.5, cell: [5, 3] },
-  camp: { S: 2, W: 58, lp: 7, tileM: 4, exag: 1.0, detail: 2, foam: 4, deep: 3, sparkle: 0.002, focus: [0.5, 0.6], treeK: 0.8, campK: 1.25, campOff: 1, grid: 1, gain: 0.55, tsun: 0, cell: [8, 5] },
+  island: { S: 2, W: 12, lp: 2, exag: 1.8, cliff: 0.3, detail: 0, foam: 1.2, deep: 45, sparkle: 0.0005, grid: 0, gain: 1.5, tsun: 0.5, cell: [4, 3] },
+  valley: { S: 2, W: 32, lp: 4, tileM: 18, exag: 1.6, cliff: 0.45, relief: 80, detail: 1, foam: 2.4, deep: 9, sparkle: 0.002, focus: [0.5, 0.64], treeK: 1.15, campK: 7, campOff: 4.4, grid: 0.45, gain: 1.2, tsun: 0.5, cell: [5, 3] },
+  camp: { S: 2, W: 58, lp: 7, tileM: 4, exag: 1.0, cliff: 0.6, detail: 2, foam: 4, deep: 3, sparkle: 0.002, focus: [0.5, 0.6], treeK: 0.8, campK: 1.25, campOff: 1, grid: 1, gain: 0.55, tsun: 0, cell: [8, 5] },
 };
 const SEA = 1, LAKE = 2, RIVER = 3;
 const MEADOW = 0, FOREST = 1, SCRUB = 2, MARSH = 3, ROCK = 4, SAND = 5, HILL = 6;
@@ -126,6 +128,16 @@ function fitLocal(w, V) {
   for (let a = -R; a <= R; a += R / 12) for (let b = -R; b <= R; b += R / 12) { const hh = Math.max(0, w.heightAt(c.x + a, c.z + b)); hmin = Math.min(hmin, hh); hmax = Math.max(hmax, hh); }
   // flat shores get lifted so their few meters read as steps; hill country is left near true scale
   if (V.relief) { V.exag = clamp((V.relief * (V.lp / (V.k * 0.866))) / Math.max(1, hmax - hmin), 1, V.exag); V.scale(V.tileM); }
+  // and squashed until most of its slopes rise less than a level a tile, so it climbs in slope tiles, not cliffs
+  const slopes = [], d = V.tileM;
+  for (let a = -R; a <= R; a += R / 16)
+    for (let b = -R; b <= R; b += R / 16) {
+      const x = c.x + a, z = c.z + b;
+      if (w.heightAt(x, z) > 0.5) slopes.push(Math.hypot(w.heightAt(x + d, z) - w.heightAt(x - d, z), w.heightAt(x, z + d) - w.heightAt(x, z - d)) / (2 * d));
+    }
+  slopes.sort((p, q) => p - q);
+  const steep = slopes[Math.floor(slopes.length * 0.85)] ?? 0;
+  if (steep > 0) { V.exag = clamp(V.lp / (V.k * 0.866 * steep * V.tileM), 0.5, V.exag); V.scale(V.tileM); }
   V.X0 = Math.round(V.AW * V.focus[0]);
   V.Y0 = Math.round(V.AH * V.focus[1] - V.H * 0.5 + Math.round(c.y / V.levelM) * V.lp);
   if (VIEW === "camp") frameCamp(w, V);
@@ -210,14 +222,39 @@ function buildMap(w, V) {
       }
     }
   // land touching standing water never dips under its surface
-  const vi = (i, j) => j * VI + i;
+  const vi = (i, j) => j * VI + i, floor = new Int16Array(VL.length);
   for (let j = 0; j < NJ; j++)
     for (let i = 0; i < NI; i++) {
       const t = j * NI + i;
       if (!M.kind[t]) continue;
-      for (const [a, b] of [[0, 0], [1, 0], [1, 1], [0, 1]]) VL[vi(i + a, j + b)] = Math.max(VL[vi(i + a, j + b)], M.wlev[t]);
+      for (const [a, b] of [[0, 0], [1, 0], [1, 1], [0, 1]]) { const k = vi(i + a, j + b); VL[k] = Math.max(VL[k], M.wlev[t]); floor[k] = Math.max(floor[k], M.wlev[t]); }
     }
   for (let k = 0; k < VL.length; k++) VL[k] = Math.max(0, VL[k]);
+  // Slopes, not cliffs: no corner stands more than one level above any of its eight neighbours, so nearly every tile
+  // takes a slope shape. Heights give way from the top rather than valleys filling, which would lift land over the
+  // shores. Only truly steep ground keeps its drops, and those are the few rock faces left.
+  const keep = new Uint8Array(VL.length);
+  for (let j = 0; j <= NJ; j++)
+    for (let i = 0; i <= NI; i++) {
+      const [x, z] = V.toW(i0 + i, j0 + j), d = V.tileM;
+      const gx = V.hsample(x + d, z) - V.hsample(x - d, z), gz = V.hsample(x, z + d) - V.hsample(x, z - d);
+      keep[vi(i, j)] = Math.hypot(gx, gz) / (2 * d) > V.cliff ? 1 : 0;
+    }
+  const settle = (fwd) => {
+    let moved = false;
+    const near = fwd ? [[-1, 0], [-1, -1], [0, -1], [1, -1]] : [[1, 0], [1, 1], [0, 1], [-1, 1]];
+    for (let jj = 0; jj <= NJ; jj++)
+      for (let ii = 0; ii <= NI; ii++) {
+        const i = fwd ? ii : NI - ii, j = fwd ? jj : NJ - jj, k = vi(i, j);
+        if (keep[k]) continue;
+        let lim = VL[k];
+        for (const [a, b] of near) if (i + a >= 0 && j + b >= 0 && i + a <= NI && j + b <= NJ) lim = Math.min(lim, VL[vi(i + a, j + b)] + 1);
+        lim = Math.max(lim, floor[k]);
+        if (lim < VL[k]) { VL[k] = lim; moved = true; }
+      }
+    return moved;
+  };
+  for (let n = 0; n < 6 && (settle(true) | settle(false)); n++);
   const minCorner = (i, j) => Math.min(VL[vi(i, j)], VL[vi(i + 1, j)], VL[vi(i + 1, j + 1)], VL[vi(i, j + 1)]);
   // Streams become one-tile channels, walked from source to mouth so the water only ever steps down.
   for (const line of w.rivers) {
