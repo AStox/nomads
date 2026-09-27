@@ -25,8 +25,11 @@
    Google Fonts crawls from headless Chromium on this box. The 2D map awaits its font before building, a render-blocking font stylesheet holds back module scripts, and screenshots wait on fonts.
    Do instead: `goto` with `waitUntil: "commit"`, wait up to 90 s for `body.ready`, and in throwaway tests `page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort())`. Profile with CDP before blaming the renderer.
 7. **[2026-09-26] Headless WebGL needs SwiftShader flags and is very slow**
-   The 3D demo (demo/3d, built by `bun scripts/demo3d.ts --out /root/goldclaw/www/nomads-3d`) is black or throws without them. With shadows on, one mid-range frame over woods can take minutes, and Playwright clicks can time out waiting for a stable frame.
-   Do instead: launch with `--use-angle=swiftshader --enable-unsafe-swiftshader --ignore-gpu-blocklist`, shoot at about 1100x620 with a 240 s screenshot timeout, and click through `page.evaluate` when a click stalls.
+   The 3D demos (demo/3d and the demo/looks mocks, built by `bun scripts/demo.ts <3d|looks> --out /root/goldclaw/www/nomads-<3d|looks>`) are black or throw without them. With shadows on, one mid-range frame over woods can take minutes, and Playwright clicks can time out waiting for a stable frame.
+   Do instead: launch with `--use-angle=swiftshader --enable-unsafe-swiftshader --ignore-gpu-blocklist` and click through `page.evaluate` when a click stalls. For stills, read `canvas.toDataURL()` in the page (the looks renderer keeps its drawing buffer); `page.screenshot` can sit past 600 s behind queued GPU work.
+8. **[2026-09-26] An instanced mesh over the whole island can't be culled**
+   The island grows about 180k trees and 90k shrubs, and EZ-Tree presets run 5k to 24k triangles. One InstancedMesh per shape made every view, and the shadow pass, draw all of them; the first looks still never finished.
+   Do instead: scatter through demo/looks/stage.js `scatter` (tiles the renderer can cull) and split by `stage.levels` so costly shapes go only to the nearest few hundred things in view.
 
 ## Domain Behavior Guardrails
 1. **[2026-09-26] No slope may face away from the isometric camera**
