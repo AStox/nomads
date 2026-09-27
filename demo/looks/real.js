@@ -80,11 +80,19 @@ export async function dress(stage, { evening = false, view }) {
   // tree is a pixel or two, a single lump.
   const [close, mid, far] = stage.levels(stage.trees, { island: [0, 0], valley: [460, 2800], camp: [340, 2000] }[view], 380);
   const grown = close.length ? Object.fromEntries(Object.entries(PRESETS).map(([kind, names]) => [kind, names.map((name) => growTree(name, sunDir))])) : null;
-  // Leaves vary a little from tree to tree, and aspens wear summer green rather than their preset's autumn gold.
-  const leafy = (t, c) => (t.kind === "aspen" ? c.setRGB(0.62, 0.95, 0.5) : c.setRGB(1, 1, 1)).multiplyScalar(0.8 + t.tint * 0.35);
+  // Leaves vary a little from tree to tree, and aspens are pulled from their preset's autumn gold toward a yellow
+  // green. Grown trees get a lift to sit with the plainer crowns beyond.
+  const leafy = (t, c) => (t.kind === "aspen" ? c.setRGB(0.7, 1.05, 0.55) : c.setRGB(1, 1, 1)).multiplyScalar(0.8 + t.tint * 0.35);
+  const lifted = (t, c) => leafy(t, c).multiplyScalar(1.3);
   const barky = (t, c) => c.setScalar(0.85 + t.tint * 0.3);
+  // Leaf cards cast shadows on the ground but don't take them: hundreds of cards shading one another turn a crown to
+  // soot, so crowns shade by their rounded normals instead, as the plainer crowns beyond do.
   const plant = (model, list) => {
-    for (const part of model.parts) scene.add(scatter(part.geometry, part.material, list, (t) => { const s = t.tall / model.tall; return [s, s * (0.9 + t.tint * 0.2), s]; }, part.leaf ? leafy : barky));
+    for (const part of model.parts) {
+      const group = scatter(part.geometry, part.material, list, (t) => { const s = t.tall / model.tall; return [s, s * (0.9 + t.tint * 0.2), s]; }, part.cards ? lifted : part.leaf ? leafy : barky);
+      if (part.cards) group.children.forEach((mesh) => (mesh.receiveShadow = false));
+      scene.add(group);
+    }
   };
   const crowns = { oak: 0x3f5a26, ash: 0x4a6a2c, aspen: 0x5f7a34 };
   for (const kind of Object.keys(PRESETS)) {
@@ -160,9 +168,10 @@ function groundMaterial({ coverA, coverB, river, albedo, normals }) {
           total += wk;
         }
         ground /= max(total, 1e-5);
-        // Meadows green where the soil holds water and paler where it doesn't; broad patches of lighter and darker
-        // ground; the beds of lakes and the sea darker.
-        ground *= mix(vec3(1.0), mix(vec3(0.95, 1.0, 0.72), vec3(0.78, 1.04, 0.64), cb.b), w6[2] / max(total, 1e-5));
+        // Meadows green where the soil holds water and paler where it doesn't; the floor of the woods mossy and shaded;
+        // broad patches of lighter and darker ground; the beds of lakes and the sea darker.
+        ground *= mix(vec3(1.0), mix(vec3(0.85, 0.98, 0.6), vec3(0.62, 0.98, 0.46), cb.b), w6[2] / max(total, 1e-5));
+        ground *= mix(vec3(1.0), vec3(0.5, 0.58, 0.4), w6[0] / max(total, 1e-5));
         ground *= 0.82 + 0.36 * bump(vWorld.xz / 170.0);
         ground *= 1.0 - 0.45 * cb.a;
         diffuseColor.rgb *= ground * mix(0.45, 1.0, vSky);`)
@@ -195,7 +204,7 @@ function waterMaterial({ height, size, waves, evening }) {
         float depth = max(vWorld.y - texture2D(uHeight, clamp(wuv, 0.0, 1.0)).r, rim * 60.0);
         vec3 shallow = ${evening ? "vec3(0.03, 0.08, 0.08)" : "vec3(0.03, 0.12, 0.10)"}, deep = vec3(0.004, 0.03, 0.05);
         diffuseColor.rgb = mix(shallow, deep, smoothstep(0.0, 5.0, depth));
-        foam = smoothstep(0.25, 0.0, depth) * step(0.02, depth);
+        foam = smoothstep(0.25, 0.0, depth) * step(0.02, depth) * smoothstep(0.35, 0.65, texture2D(uWaves, vWorld.xz / 23.0).g);
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.8), foam * 0.7);
         diffuseColor.a = clamp(max(mix(0.55, 0.97, smoothstep(0.0, 3.0, depth)), foam * 0.9), 0.0, 1.0);`)
       .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\nroughnessFactor = mix(0.12, 0.5, foam);")
@@ -232,6 +241,13 @@ function growTree(name, sunDir) {
     s.uniforms.uSun = { value: sunDir };
     s.fragmentShader = s.fragmentShader
       .replace("#include <common>", "#include <common>\nuniform vec3 uSun;")
+      // Smaller mipmaps average leaf edges into faint alpha that the alpha test throws away, so distant crowns go
+      // bare; and the clear texels are black, so the same averaging darkens the leaves. Raise alpha with the mip
+      // level, and divide the black back out of the color.
+      .replace("#include <map_fragment>", /* glsl */ `#include <map_fragment>
+        diffuseColor.rgb /= clamp(sampledDiffuseColor.a, 0.35, 1.0);
+        vec2 texels = fwidth(vMapUv * vec2(textureSize(map, 0)));
+        diffuseColor.a *= 1.0 + max(0.0, log2(max(texels.x, texels.y))) * 0.3;`)
       .replace("#include <lights_fragment_end>", /* glsl */ `#include <lights_fragment_end>
         float through = pow(max(dot(normalize(vViewPosition), -normalize((viewMatrix * vec4(uSun, 0.0)).xyz)), 0.0), 5.0);
         reflectedLight.directDiffuse += diffuseColor.rgb * vec3(1.0, 0.95, 0.7) * through * 1.2;`);
@@ -247,7 +263,7 @@ function growTree(name, sunDir) {
   }
   // Stood on the ground and sunk a touch, so trunks don't float where the ground slopes.
   for (const g of [tree.branchesMesh.geometry, leafGeo]) g.translate(0, -box.min.y - tall * 0.015, 0);
-  return { tall, parts: [{ geometry: tree.branchesMesh.geometry, material: barkMat }, { geometry: leafGeo, material: leafMat, leaf: true }] };
+  return { tall, parts: [{ geometry: tree.branchesMesh.geometry, material: barkMat }, { geometry: leafGeo, material: leafMat, leaf: true, cards: true }] };
 }
 // Farther off, a crown of soft lumps, or a spire for a conifer, in the canopy's own green; at detail 0, where a tree
 // is a few pixels, one lump reaching to the ground.
