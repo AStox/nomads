@@ -12,12 +12,12 @@ const SEED = Number(Q.get("seed") || 1);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 const CFG = {
-  island: { S: 2, W: 12, lp: 2, exag: 5, detail: 0, foam: 1.2, deep: 45, sparkle: 0.0005, grid: 0, gain: 1.5, tsun: 0.5, cell: [4, 3] },
-  valley: { S: 2, W: 32, lp: 4, tileM: 18, exag: 5.5, relief: 80, detail: 1, foam: 2.4, deep: 9, sparkle: 0.002, focus: [0.5, 0.64], treeK: 1.15, campK: 4.5, campOff: 3.0, grid: 0.45, gain: 1.2, tsun: 0.5, cell: [5, 3] },
-  camp: { S: 2, W: 72, lp: 9, tileM: 3, exag: 1.0, detail: 2, foam: 4, deep: 3, sparkle: 0.002, focus: [0.5, 0.66], treeK: 0.5, campK: 1.2, campOff: 1, grid: 0.5, gain: 0.55, tsun: 0, cell: [8, 5] },
+  island: { S: 2, W: 12, lp: 2, exag: 3.8, detail: 0, foam: 1.2, deep: 45, sparkle: 0.0005, grid: 0, gain: 1.5, tsun: 0.5, cell: [4, 3] },
+  valley: { S: 2, W: 32, lp: 4, tileM: 18, exag: 5.5, relief: 80, detail: 1, foam: 2.4, deep: 9, sparkle: 0.002, focus: [0.5, 0.64], treeK: 1.15, campK: 7, campOff: 4.4, grid: 0.45, gain: 1.2, tsun: 0.5, cell: [5, 3] },
+  camp: { S: 2, W: 58, lp: 7, tileM: 4, exag: 1.0, detail: 2, foam: 4, deep: 3, sparkle: 0.002, focus: [0.5, 0.6], treeK: 0.8, campK: 1.25, campOff: 1, grid: 1, gain: 0.55, tsun: 0, cell: [8, 5] },
 };
 const SEA = 1, LAKE = 2, RIVER = 3;
-const MEADOW = 0, FOREST = 1, SCRUB = 2, MARSH = 3, ROCK = 4, SAND = 5;
+const MEADOW = 0, FOREST = 1, SCRUB = 2, MARSH = 3, ROCK = 4, SAND = 5, HILL = 6;
 const COV = ["grass", "tree", "shrub", "marsh", "bare", "sand"];
 const WEIGHT = [1.0, 1.05, 1.2, 1.5, 1.3, 1.6];
 
@@ -72,40 +72,49 @@ function makeView(w, cfg, AW, AH) {
 function fitIsland(w, V) {
   V.ox = 0; V.oz = 0;
   const I = w.isle, N = w.N;
-  let umin = Infinity, umax = -Infinity, vmin = Infinity, vmax = -Infinity;
-  for (let cy = 0; cy < N; cy++)
-    for (let cx = 0; cx < N; cx++) {
-      if (I.height[cy * N + cx] <= 0) continue;
-      for (const [a, b] of [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]]) {
-        const x = w.START + (cx + a) * w.CELL, z = w.START + (cy + b) * w.CELL;
-        const u = x * V.eu[0] + z * V.eu[1], v = x * V.ev[0] + z * V.ev[1];
-        umin = Math.min(umin, u); umax = Math.max(umax, u); vmin = Math.min(vmin, v); vmax = Math.max(vmax, v);
-      }
-    }
   const lim = w.SIZE / 2 - 60;
   const smoothH = (x, z) => Math.abs(x) > lim || Math.abs(z) > lim ? -60 : (w.heightAt(x, z) * 2 + w.heightAt(x + 45, z) + w.heightAt(x - 45, z) + w.heightAt(x, z + 45) + w.heightAt(x, z - 45)) / 6;
   V.hsample = smoothH;
-  for (let tm = 110; tm < 400; tm += 4) {
+  const land = [];
+  for (let cy = 0; cy < N; cy++)
+    for (let cx = 0; cx < N; cx++) {
+      if (I.height[cy * N + cx] <= 0) continue;
+      const x = w.START + cx * w.CELL, z = w.START + cy * w.CELL;
+      land.push([x * V.eu[0] + z * V.eu[1], x * V.ev[0] + z * V.ev[1], Math.max(0, smoothH(x, z))]);
+    }
+  // zoom in until the island spans most of the frame width, as long as it still fits between the menu bars
+  const top = 16, bot = V.AH - 18;
+  let ext;
+  for (let tm = 400; tm > 60; tm -= 2) {
     V.scale(tm);
-    V.i0 = Math.floor(umin / tm) - 2; V.i1 = Math.ceil(umax / tm) + 2; V.j0 = Math.floor(vmin / tm) - 2; V.j1 = Math.ceil(vmax / tm) + 2;
-    const NI = V.i1 - V.i0, NJ = V.j1 - V.j0;
-    if ((NI + NJ) * V.H > V.AW - 12) continue;
-    let top = Infinity, floor = 0;
-    for (let j = 0; j <= NJ; j++)
-      for (let i = 0; i <= NI; i++) {
-        const [x, z] = [(V.i0 + i) * tm * V.eu[0] + (V.j0 + j) * tm * V.ev[0], (V.i0 + i) * tm * V.eu[1] + (V.j0 + j) * tm * V.ev[1]];
-        const hh = smoothH(x, z), lev = Math.max(0, Math.round(hh / V.levelM));
-        top = Math.min(top, (i + j) * V.H * 0.5 - lev * V.lp);
-        if (i === NI || j === NJ) floor = Math.min(floor, Math.round(hh / V.levelM));
-      }
-    V.base = Math.max(floor, -14) - 3;
-    const bottom = (NI + NJ) * V.H * 0.5 - V.base * V.lp;
-    if (bottom - top > V.AH - 14) continue;
-    V.X0 = Math.round((V.AW - (NI + NJ) * V.H) / 2 - (V.i0 - V.j1) * V.H);
-    V.Y0 = Math.round((V.AH - (bottom - top)) / 2 - top - (V.i0 + V.j0) * V.H * 0.5);
-    break;
+    let a0 = Infinity, a1 = -Infinity, b0 = Infinity, b1 = -Infinity;
+    for (const [u, v, hh] of land) {
+      const a = ((u - v) / tm) * V.H, b = ((u + v) / tm) * V.H * 0.5;
+      a0 = Math.min(a0, a); a1 = Math.max(a1, a);
+      b0 = Math.min(b0, b - Math.round(hh / V.levelM) * V.lp); b1 = Math.max(b1, b);
+    }
+    const fits = a1 - a0 + V.H * 2 <= V.AW * 0.86 && b1 - b0 + V.H <= bot - top;
+    if (!fits && ext) break;
+    ext = [tm, a0, a1, b0, b1];
   }
-  V.visible = () => true;
+  const [tm, a0, a1, b0, b1] = ext;
+  V.scale(tm);
+  V.X0 = Math.round(V.AW / 2 - (a0 + a1) / 2);
+  V.Y0 = Math.round((top + bot) / 2 - (b0 + b1) / 2);
+  let maxLev = 0;
+  for (const l of land) maxLev = Math.max(maxLev, Math.round(l[2] / V.levelM));
+  frameTiles(V, 0, maxLev, 4);
+}
+
+// The tile range whose ground can show in the frame, given the level range; `below` extra rows for tall sprites.
+function frameTiles(V, lo, hi, below) {
+  const hb = V.H * 0.5;
+  const amin = -V.X0 / V.H - 2, amax = (V.AW - V.X0) / V.H + 2;
+  const bmin = (lo * V.lp - V.Y0) / hb - 3, bmax = (V.AH - V.Y0 + hi * V.lp) / hb + 3, bobj = bmax + below / hb;
+  V.i0 = Math.floor((amin + bmin) / 2); V.i1 = Math.ceil((amax + bobj) / 2);
+  V.j0 = Math.floor((bmin - amax) / 2); V.j1 = Math.ceil((bobj - amin) / 2);
+  V.visible = (u, v) => { const a = u - v, b = u + v; return a >= amin - 1 && a <= amax + 1 && b >= bmin && b <= bmax; };
+  V.objVisible = (u, v) => { const a = u - v, b = u + v; return a >= amin - 1 && a <= amax + 1 && b >= bmin && b <= bobj; };
 }
 
 function fitLocal(w, V) {
@@ -119,14 +128,36 @@ function fitLocal(w, V) {
   if (V.relief) { V.exag = clamp((V.relief * (V.lp / (V.k * 0.866))) / Math.max(1, hmax - hmin), 1, V.exag); V.scale(V.tileM); }
   V.X0 = Math.round(V.AW * V.focus[0]);
   V.Y0 = Math.round(V.AH * V.focus[1] - V.H * 0.5 + Math.round(c.y / V.levelM) * V.lp);
-  const lo = hmin / V.levelM, hi = hmax / V.levelM, hb = V.H * 0.5;
-  const amin = -V.X0 / V.H - 2, amax = (V.AW - V.X0) / V.H + 2;
-  const bmin = (lo * V.lp - V.Y0) / hb - 3, bmax = (V.AH - V.Y0 + hi * V.lp) / hb + 3;
-  const bobj = bmax + (VIEW === "camp" ? 110 : 40) / hb; // tall sprites standing below the frame still reach into it
-  V.i0 = Math.floor((amin + bmin) / 2); V.i1 = Math.ceil((amax + bobj) / 2);
-  V.j0 = Math.floor((bmin - amax) / 2); V.j1 = Math.ceil((bobj - amin) / 2);
-  V.visible = (u, v) => { const a = u - v, b = u + v; return a >= amin - 1 && a <= amax + 1 && b >= bmin && b <= bmax; };
-  V.objVisible = (u, v) => { const a = u - v, b = u + v; return a >= amin - 1 && a <= amax + 1 && b >= bmin && b <= bobj; };
+  if (VIEW === "camp") frameCamp(w, V);
+  frameTiles(V, hmin / V.levelM, hmax / V.levelM, VIEW === "camp" ? 110 : 40);
+}
+
+// Slide the close view so the nearest woods edge comes into frame while the whole camp stays in it.
+function frameCamp(w, V) {
+  const c = w.camp.at, pv = V.k * 0.866;
+  const scr = (x, z) => { const [u, v] = V.toUV(x, z), [u0, v0] = V.toUV(c.x, c.z); return [(u - u0 - (v - v0)) * V.H, (u - u0 + v - v0) * V.H * 0.5]; };
+  const pts = [...w.camp.tents.map((t) => [t.at, t.size * V.campK * 1.1]), ...w.camp.people.map((p) => [p.at, 2]), [w.camp.woodpile, 2]];
+  const box = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const [p, r] of pts) {
+    const [a, b] = scr(p.x, p.z), rp = r * V.k;
+    box[0] = Math.min(box[0], a - rp); box[2] = Math.max(box[2], a + rp); box[1] = Math.min(box[1], b - rp * 1.3); box[3] = Math.max(box[3], b + rp * 0.3);
+  }
+  const trees = w.trees.filter((t) => Math.hypot(t.x - c.x, t.z - c.z) < 110).map((t) => { const [a, b] = scr(t.x, t.z), h = t.tall * pv * V.treeK; return [a, b, h]; });
+  const cx = V.X0, cy = V.Y0;
+  let best = -Infinity;
+  for (let dy = -90; dy <= 60; dy += 6)
+    for (let dx = -140; dx <= 140; dx += 8) {
+      const X = cx + dx, Y = cy + dy, m = 18;
+      if (X + box[0] < m || X + box[2] > V.AW - m || Y + box[1] < 30 || Y + box[3] > V.AH - 30) continue;
+      let seen = 0;
+      for (const [a, b, h] of trees) {
+        const x0 = X + a - h * 0.35, x1 = X + a + h * 0.35, y0 = Y + b - h, y1 = Y + b;
+        const ox = Math.max(0, Math.min(x1, V.AW) - Math.max(x0, 0)), oy = Math.max(0, Math.min(y1, V.AH - 16) - Math.max(y0, 14));
+        seen += (ox * oy) / (h * h * 0.7);
+      }
+      const score = Math.min(seen, 30) - (Math.abs(dx) + Math.abs(dy)) * 0.015;
+      if (score > best) { best = score; V.X0 = X; V.Y0 = Y; }
+    }
 }
 
 // ---------- the tile map ----------
@@ -145,7 +176,11 @@ function buildMap(w, V) {
       }
     return best;
   };
-  const M = { kind: new Uint8Array(n), wlev: new Int16Array(n), surf: new Float32Array(n), cls: new Uint8Array(n), C: new Int16Array(n * 4), diag: new Uint8Array(n), hc: new Float32Array(n), moist: new Float32Array(n), heath: new Float32Array(n), cov: COV.map(() => new Float32Array(n)) };
+  const M = { kind: new Uint8Array(n), wlev: new Int16Array(n), surf: new Float32Array(n), cls: new Uint8Array(n), C: new Int16Array(n * 4), diag: new Uint8Array(n), hc: new Float32Array(n), moist: new Float32Array(n), heath: new Float32Array(n), snow: new Float32Array(n), cov: COV.map(() => new Float32Array(n)) };
+  let peak = 0;
+  for (const v of I.height) peak = Math.max(peak, v);
+  // on the island map, bare ground reads as rock only on the summits; below them it is grass with outcrops and scree
+  const capH = peak * 0.68;
   const offs = VIEW === "island" ? [1 / 6, 0.5, 5 / 6].flatMap((a) => [1 / 6, 0.5, 5 / 6].map((b) => [a, b])) : [[0.5, 0.5], [0.22, 0.5], [0.78, 0.5], [0.5, 0.22], [0.5, 0.78]];
   for (let j = 0; j < NJ; j++)
     for (let i = 0; i < NI; i++) {
@@ -170,7 +205,8 @@ function buildMap(w, V) {
       } else {
         let best = 0, bs = -1;
         COV.forEach((k, q) => { const s = M.cov[q][t] * WEIGHT[q]; if (s > bs) { bs = s; best = q; } });
-        M.cls[t] = best;
+        M.cls[t] = VIEW === "island" && best === ROCK && hh < capH ? HILL : best;
+        if (VIEW === "island" && M.cls[t] === ROCK) M.snow[t] = smooth(0.8 * peak, peak, hh) * 0.2 + w.bilinear(I.snow, (x - w.START) / w.CELL, (z - w.START) / w.CELL);
       }
     }
   // land touching standing water never dips under its surface
@@ -263,6 +299,18 @@ function shadowTest(V, M) {
 }
 
 // ---------- terrain textures ----------
+// Stones: cells of a jittered grid, each lit on its upper left, with dark cracks between. -> [crack, ox, oy, id]
+function stone(V, x, y) {
+  const gx = x / V.cell[0], gy = y / V.cell[1], ix = Math.floor(gx), iy = Math.floor(gy);
+  let f1 = 9, f2 = 9, ox = 0, oy = 0, id = 0;
+  for (let j = -1; j <= 1; j++)
+    for (let i = -1; i <= 1; i++) {
+      const cx = ix + i + 0.15 + 0.7 * h2(ix + i, iy + j, 23), cy = iy + j + 0.15 + 0.7 * h2(ix + i, iy + j, 24);
+      const d = (gx - cx) ** 2 + (gy - cy) ** 2;
+      if (d < f1) { f2 = f1; f1 = d; ox = gx - cx; oy = gy - cy; id = h2(ix + i, iy + j, 25); } else if (d < f2) f2 = d;
+    }
+  return [Math.sqrt(f2) - Math.sqrt(f1) < 0.16, ox, oy, id];
+}
 function flowerCol(wx, wz) {
   return FLOWER[Math.floor((fbm(wx / 70, wz / 70, 51, 2) + 0.6) * 3.3 + 10) % FLOWER.length];
 }
@@ -298,7 +346,9 @@ function texWater(w, V, K, x, y, wx, wz, fu, fv) {
 function texTop(w, V, K, x0, y0, wx, wz, lev, s, fu, fv) {
   if (K.kind) return texWater(w, V, K, x0, y0, wx, wz, fu, fv);
   const c = texLand(w, V, K, x0, y0, wx, wz, lev, s, fu, fv);
-  return V.grid && (fu * V.H < 1 || fv * V.H < 1) && h2(x0, y0, 96) < V.grid ? DARKER[DARKER[c]] : c;
+  if (!V.grid || (fu * V.H >= 1 && fv * V.H >= 1)) return c;
+  if (V.grid >= 1) return DARKER[DARKER[c]];
+  return h2(x0, y0, 96) < V.grid ? DARKER[DARKER[c]] : c;
 }
 function texLand(w, V, K, x0, y0, wx, wz, lev, s, fu, fv) {
   const H = V.H;
@@ -314,7 +364,7 @@ function texLand(w, V, K, x0, y0, wx, wz, lev, s, fu, fv) {
     if (t < 0 || (t < V.fringe && h2(x, y, 90) < (1 - t / V.fringe) * 0.55)) {
       if (h2(x, y, 91) < 0.03) return P.r3;
       if (h2(x, y - 1, 91) < 0.03) return P.r1;
-      return dith(DI, (VIEW === "valley" ? 3.5 : 2.9) + s + fbm(wx / 3, wz / 3, 92, 2) * 0.9 + edge + (h2(x, y, 93) - 0.5) * 0.7, x0, y0);
+      return dith(DI, (VIEW === "valley" ? 3.9 : 2.9) + s + fbm(wx / 3, wz / 3, 92, 2) * 0.9 + edge + (h2(x, y, 93) - 0.5) * 0.7, x0, y0);
     }
   }
   const mot = fbm(wx / V.ms, wz / V.ms, 11, 2) + K.var;
@@ -339,18 +389,24 @@ function texLand(w, V, K, x0, y0, wx, wz, lev, s, fu, fv) {
       return dith(SA, v, x0, y0);
     }
     case ROCK: {
-      // stones: cells of a jittered grid, each lit on its upper left, with dark cracks between
-      const gx = x / V.cell[0], gy = y / V.cell[1], ix = Math.floor(gx), iy = Math.floor(gy);
-      let f1 = 9, f2 = 9, ox = 0, oy = 0, id = 0;
-      for (let j = -1; j <= 1; j++)
-        for (let i = -1; i <= 1; i++) {
-          const cx = ix + i + 0.15 + 0.7 * h2(ix + i, iy + j, 23), cy = iy + j + 0.15 + 0.7 * h2(ix + i, iy + j, 24);
-          const d = (gx - cx) ** 2 + (gy - cy) ** 2;
-          if (d < f1) { f2 = f1; f1 = d; ox = gx - cx; oy = gy - cy; id = h2(ix + i, iy + j, 25); } else if (d < f2) f2 = d;
-        }
-      if (Math.sqrt(f2) - Math.sqrt(f1) < 0.16) return K.grass > 0.25 && id < 0.4 ? P.g1 : P.r0;
+      const [crack, ox, oy, id] = stone(V, x, y);
+      if (crack) return K.grass > 0.25 && id < 0.4 ? P.g1 : P.r0;
+      if (K.snow > 0.02 && (ox + oy < -0.1 || id < K.snow * 4)) return ox + oy < -0.35 ? P.snow : P.r5;
       if (K.grass > 0.3 && id < 0.18) return dith(GR, 2.6 + s - (ox + oy) * 1.2, x0, y0);
-      return dith(RK, 2.7 + s * 0.9 + mot * 0.4 - (ox * 0.8 + oy * 1.0) * 1.9 + (id - 0.5) * 1.1 + edge, x0, y0);
+      return dith(RK, (VIEW === "island" ? 3.2 : 2.7) + s * 0.9 + mot * 0.4 - (ox * 0.8 + oy * 1.0) * 1.9 + (id - 0.5) * 1.1 + edge, x0, y0);
+    }
+    case HILL: {
+      // grass slope; outcrops break through where the ground is barest, with scree strewn below them
+      const o = fbm(wx / (V.tileM * 0.8), wz / (V.tileM * 0.8), 26, 2) + K.bare * 0.6 - 0.72;
+      if (o > 0) {
+        const [crack, ox, oy, id] = stone(V, x, y);
+        if (crack) return P.r0;
+        return dith(RK, 2.9 + s * 0.9 - (ox * 0.8 + oy) * 1.9 + (id - 0.5) + (o < 0.08 ? -0.8 : 0), x0, y0);
+      }
+      const q = h2(x0, y0, 27);
+      if (o > -0.15 && q < 0.1 + o * 0.4) return q < 0.04 ? P.r4 : P.r2;
+      const dryness = clamp(K.heath, 0, 1);
+      return dith(dryness > 0.55 ? SC : GR, 2.9 + s * 1.1 + mot + edge + (h2(x0 >> 1, y0, 28) - 0.5) * 0.9 + (dryness > 0.55 ? 0.3 : 0), x0, y0);
     }
     case MARSH: {
       const pool = (a, b) => noise(a / V.pm, b / V.pm, 31) + 0.3 * noise(a / (V.pm * 0.4), b / (V.pm * 0.4), 32);
@@ -369,6 +425,11 @@ function texLand(w, V, K, x0, y0, wx, wz, lev, s, fu, fv) {
         if (h2(x, y, 3) < K.flowers * Math.max(0, fbm(wx / (V.tileM * 1.6), wz / (V.tileM * 1.6), 52, 2) + 0.12) * 5) return flowerCol(wx, wz);
       }
       if (K.wet && lev < 0.5) v -= 0.6;
+      // under the woods edge the grass goes darker and strewn with leaf litter
+      if (V.detail === 2 && K.tree > 0.2) {
+        v -= (K.tree - 0.2) * 3.5;
+        if (h2(x0, y0, 29) < (K.tree - 0.2) * 0.35) return h2(x0, y0, 30) < 0.5 ? P.d2 : P.d3;
+      }
       return dith(GR, v, x0, y0);
     }
   }
@@ -417,7 +478,7 @@ function drawTerrain(B, w, V, M) {
       const P4 = [[uT, vT, c[0]], [uT + 1, vT, c[1]], [uT + 1, vT + 1, c[2]], [uT, vT + 1, c[3]]];
       const tu = M.at(i + 1, j), tv = M.at(i, j + 1), bu = M.at(i - 1, j), bv = M.at(i, j - 1);
       const K = {
-        kind: M.kind[t], cls: M.cls[t], surf: M.surf[t], moist: M.moist[t], heath: M.heath[t], grass: M.cov[0][t],
+        kind: M.kind[t], cls: M.cls[t], surf: M.surf[t], moist: M.moist[t], heath: M.heath[t], grass: M.cov[0][t], bare: M.cov[4][t], snow: M.snow[t], tree: M.cov[1][t],
         var: (h2(i, j, 99) - 0.5) * (VIEW === "island" ? 0.5 : 0.25),
         flowers: 0.012 * smooth(0.3, 0.8, M.cov[0][t]),
         rimU: tu >= 0 && (corner(tu, 0) < c[1] || corner(tu, 3) < c[2]),
@@ -440,7 +501,7 @@ function drawTerrain(B, w, V, M) {
           botA = corner(nb, nA); botB = corner(nb, nB);
           if (botA >= c[A] && botB >= c[Bk]) continue;
           const drop = Math.max(c[A] - botA, c[Bk] - botB);
-          mat = M.kind[t] && M.kind[nb] ? FALL : K.cls === ROCK || drop >= 6 || (M.kind[t] === 0 && M.hc[t] > 200) ? ROCKW : DIRTW;
+          mat = M.kind[t] && M.kind[nb] ? FALL : K.cls === ROCK || drop >= 6 || (K.cls === HILL && drop >= 5) ? ROCKW : DIRTW;
         } else if (VIEW === "island") {
           botA = botB = V.base; mat = SECT;
           const fl = (u, v) => { const [x, z] = V.toW(u, v); return clamp(Math.round(V.hsample(x, z) / V.levelM), V.base + 2, 0); };
@@ -506,7 +567,16 @@ function collectObjects(w, V, M) {
     for (let j = 0; j < V.NJ; j++)
       for (let i = 0; i < V.NI; i++) {
         const t = j * V.NI + i;
-        if (M.kind[t] || count[t] < 3 || (i === ci && j === cj)) continue;
+        if (M.kind[t] || (i === ci && j === cj) || !V.objVisible(V.i0 + i + 0.5, V.j0 + j + 0.5)) continue;
+        if (M.cls[t] === HILL) {
+          const nr = Math.round(M.cov[4][t] * 1.8 + h2(t, 7, 7) - 0.5);
+          for (let q = 0; q < nr; q++) {
+            const u = V.i0 + i + 0.15 + 0.7 * h2(t, q, 21), v = V.j0 + j + 0.15 + 0.7 * h2(t, q, 22), g = M.ground(u, v);
+            const big = h2(t, q, 23) < 0.35 ? 1 : 0, snow = M.cls[t] === ROCK && M.snow[t] > 0.02 ? 1 : 0;
+            add({ z: V.cz(u, v, g.lev), sx: Math.round(V.sx(u, v)), sy: Math.round(V.sy(u, v, g.lev)) }, cached(`mr${big}${snow}`, () => SP.miniRock(big, snow)), { bias: 1 });
+          }
+        }
+        if (count[t] < 3) continue;
         const m = clamp(Math.round(M.cov[1][t] * 6.5 - 0.9 + h2(t, 9, 9) * 0.8), 0, 5);
         for (let q = 0; q < m; q++) {
           const fu = 0.12 + 0.76 * h2(t, q, 1), fv = 0.12 + 0.76 * h2(t, q, 2), r = h2(t, q, 3);
@@ -557,6 +627,53 @@ function collectObjects(w, V, M) {
     const sz = Math.max(1.5, r.size * pv * (VIEW === "camp" ? 0.9 : 1.4)), vr = Math.floor(r.tint * 4), moss = w.fine(w.cover.tree, r.x, r.z);
     add(at, cached(`r${Math.round(sz * 2)}|${vr}|${moss > 0.4 ? 1 : 0}`, () => SP.rock(sz, vr * 7 + 3, moss)), { mirror: r.yaw > Math.PI });
   }
+  if (VIEW === "camp") {
+    // up close the canopy trees stand ~13 m apart, so the woods get their understory: saplings and ferns in
+    // proportion to the tree cover, cleared round the camp the same way world.js cleared the trees
+    for (let j = 0; j < V.NJ; j++)
+      for (let i = 0; i < V.NI; i++) {
+        const t = j * V.NI + i, tc = M.cov[1][t];
+        if (M.kind[t] || tc < 0.2 || !V.objVisible(V.i0 + i + 0.5, V.j0 + j + 0.5)) continue;
+        const n = Math.floor(tc * 5 + h2(i, j, 71));
+        for (let q = 0; q < n; q++) {
+          const u = V.i0 + i + h2(t, q, 72), v = V.j0 + j + h2(t, q, 73), [x, z] = V.toW(u, v), d = Math.hypot(x - fire.x, z - fire.z);
+          if (d < 22 || (d < 40 && h2(t, q, 74) > (d - 22) / 18) || !w.dry(x, z)) continue;
+          const g = M.ground(u, v);
+          if (!g || g.water) continue;
+          const at = { u, v, g, sx: Math.round(V.sx(u, v)), sy: Math.round(V.sy(u, v, g.lev)), z: V.cz(u, v, g.lev) }, r = h2(t, q, 75);
+          if (r < 0.35) {
+            const hp = Math.round((2.2 + r * 12) * pv * V.treeK), k = h2(t, q, 76), kind = k < 0.25 ? "pine" : k < 0.5 ? "oak" : k < 0.75 ? "aspen" : "ash";
+            add(at, kind === "pine" ? cached(`p${hp}|9`, () => SP.pine(hp, 9 + hp)) : cached(`${kind}${hp}|8|0`, () => SP.broad(hp, kind, 8 + hp, 0.5)), { mirror: r < 0.17 });
+          } else if (r < 0.6) {
+            const sz = Math.round((0.5 + r * 0.7) * pv);
+            add(at, cached(`b${sz}|1|0`, () => SP.bush(sz, 13 + sz, 0, 0)), { mirror: r > 0.5 });
+          } else {
+            const sz = Math.round((0.5 + (r - 0.6) * 1.2) * pv);
+            add(at, cached(`fern${sz}|${Math.floor(r * 10)}`, () => SP.fern(sz, Math.floor(r * 10))), { shadow: false, mirror: r > 0.8 });
+          }
+        }
+      }
+  }
+  if (VIEW === "camp") {
+    // the clearing world.js made round the camp was woodland once: stumps where the tree cover says trees stood,
+    // now and then the felled trunk beside one
+    const step = 2.2;
+    for (let gz = -48; gz <= 48; gz += step)
+      for (let gx = -48; gx <= 48; gx += step) {
+        const x = fire.x + gx + (h2(gx * 10, gz * 10, 61) - 0.5) * step, z = fire.z + gz + (h2(gx * 10, gz * 10, 62) - 0.5) * step, d = Math.hypot(x - fire.x, z - fire.z);
+        if (d < 7 || d > 46 || !w.dry(x, z) || V.trodden(x, z) < 0.6 || !inView(x, z)) continue;
+        const cover = w.fine(w.cover.tree, x, z) + 0.08;
+        if (h2(gx * 10, gz * 10, 63) > cover * 3.6 * (step * step) / (w.STEP * w.STEP) * 0.9) continue;
+        const at = place(V, M, x, z);
+        if (!at || at.g.water) continue;
+        const q = h2(gx * 10, gz * 10, 64), r = Math.round((0.22 + q * 0.18) * pv * 1.25);
+        add(at, cached(`stump${r}`, () => SP.stump(r, r * 0.9, r)), { bias: 1 });
+        if (q < 0.4) {
+          const dir = q < 0.2 ? 1 : -1, len = Math.round((3 + q * 12) * pv * 0.55), lat = place(V, M, x + V.eu[0] * 1.5, z + V.eu[1] * 1.5);
+          if (lat && !lat.g.water) add(lat, cached(`log${len}|${dir}|${r}`, () => SP.log(len, r * 0.8, dir, len)), { bias: 1 });
+        }
+      }
+  }
   // reeds along marsh tiles and wet margins
   for (let j = 0; j < V.NJ; j++)
     for (let i = 0; i < V.NI; i++) {
@@ -597,22 +714,43 @@ function collectObjects(w, V, M) {
   return O;
 }
 
-// Where people have worn the grass away: round the fire, under the tents, by the woodpile, and the paths between.
+// Where people have worn the grass away: round the fire, under the tents, by the woodpile, and the paths that link
+// the fire to each tent, the woodpile, the nearest water and the nearest woods.
 function trodden(w, V) {
   const cp = w.camp, fire = cp.fire, off = V.campOff, K = V.campK;
   const moved = (p) => ({ x: fire.x + (p.x - fire.x) * off, z: fire.z + (p.z - fire.z) * off });
   const tents = cp.tents.map((t) => ({ ...moved(t.at), size: t.size * K })), wp = moved(cp.woodpile);
-  const seg = (x, z, b) => { const dx = b.x - fire.x, dz = b.z - fire.z, t = clamp(((x - fire.x) * dx + (z - fire.z) * dz) / (dx * dx + dz * dz), 0, 1); return Math.hypot(x - fire.x - dx * t, z - fire.z - dz * t); };
+  const nearest = (hit) => { for (let r = 6; r < 260; r += 2) for (let a = 0; a < 6.283; a += 0.04) { const x = fire.x + Math.cos(a) * r, z = fire.z + Math.sin(a) * r; if (hit(x, z)) return { x, z }; } return null; };
+  const water = nearest((x, z) => w.fine(w.wet, x, z) > 0.5 || w.riverAt(x, z) > 0.4);
+  let wood = null, wd = Infinity;
+  for (const t of w.trees) { const d = Math.hypot(t.x - fire.x, t.z - fire.z); if (d < wd) { wd = d; wood = t; } }
+  // each path is a meandering polyline of segments [x0, z0, x1, z1, half width]
+  const segs = [];
+  const path = (b, half, wander, seed) => {
+    const len = Math.hypot(b.x - fire.x, b.z - fire.z), n = Math.max(2, Math.ceil(len / 2.5)), nx = -(b.z - fire.z) / len, nz = (b.x - fire.x) / len;
+    let px = fire.x, pz = fire.z;
+    for (let k = 1; k <= n; k++) {
+      const t = k / n, o = k === n ? 0 : noise((t * len) / 14, 0.5, seed) * Math.min(wander, len * 0.2) * Math.min(1, t * 4, (1 - t) * 4);
+      const x = fire.x + (b.x - fire.x) * t + nx * o, z = fire.z + (b.z - fire.z) * t + nz * o;
+      segs.push([px, pz, x, z, half]);
+      px = x; pz = z;
+    }
+  };
+  path(wp, 0.45 * K, 0.5 * K, 95);
+  tents.forEach((t, k) => path(t, 0.55 * K, 0.6 * K, 96 + k));
+  if (water) path(water, 0.6 * K, 6 * K, 99);
+  if (wood && wd < 200) path(wood, 0.5 * K, 5 * K, 100);
+  const seg = (x, z, [ax, az, bx, bz]) => { const dx = bx - ax, dz = bz - az, t = clamp(((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1), 0, 1); return Math.hypot(x - ax - dx * t, z - az - dz * t); };
   V.trodden = (x, z) => {
     let d = Math.hypot(x - fire.x, z - fire.z) - 3.4 * K;
     d = Math.min(d, Math.hypot(x - wp.x, z - wp.z) - 1.4 * K);
-    // worn paths from the fire to each tent door and to the woodpile
-    const wob = fbm(x / (1.5 * K), z / (1.5 * K), 94, 2) * 0.35 * K;
-    d = Math.min(d, seg(x, z, wp) - 0.45 * K + wob);
-    for (const t of tents) d = Math.min(d, Math.hypot(x - t.x, z - t.z) - t.size * 0.7, seg(x, z, t) - 0.6 * K + wob);
+    for (const t of tents) d = Math.min(d, Math.hypot(x - t.x, z - t.z) - t.size * 0.7);
+    const wob = fbm(x / (1.5 * K), z / (1.5 * K), 94, 2) * 0.3 * K;
+    for (const s of segs) d = Math.min(d, seg(x, z, s) - s[4] + wob);
     return d;
   };
   V.fringe = 1.6 * K;
+  V.woodsAt = wood;
 }
 
 // The camp: tents as little 3D meshes, people and woodpile as sprites, the fire with stones, flames, glow and smoke.
@@ -622,7 +760,7 @@ function campObjects(w, V, M, O, add, pv) {
   const tents = cp.tents.map((t, k) => ({ ...moved(t.at), size: t.size * K, k }));
   const wp = moved(cp.woodpile);
   tents.forEach((t) => O.push(tentMesh(w, V, M, t, fire)));
-  const around = VIEW === "valley" ? 4.5 : 1;
+  const around = VIEW === "valley" ? 6.5 : 1;
   cp.people.forEach((p, k) => {
     const q = { x: fire.x + (p.at.x - fire.x) * around, z: fire.z + (p.at.z - fire.z) * around }, at = place(V, M, q.x, q.z);
     if (!at) return;
@@ -630,7 +768,7 @@ function campObjects(w, V, M, O, add, pv) {
     const toCam = du + dv, across = du - dv;
     const facing = Math.abs(across) > Math.abs(toCam) * 1.3 ? "side" : toCam > 0 ? "front" : "back";
     const pose = k === 1 || k === 3 ? "sit" : "stand";
-    const hp = 1.75 * pv * K * (VIEW === "valley" ? 1.45 : 1);
+    const hp = 1.75 * pv * K * (VIEW === "valley" ? 1.25 : 1);
     const spr = cached(`man${k}|${facing}|${hp > 12}`, () => SP.person(hp, P["c" + k], facing, pose, k * 7 + 1, across > 0 ? 1 : 0));
     add(at, spr, { mirror: facing !== "side" && across < 0, bias: 3 });
   });
@@ -647,7 +785,7 @@ function campObjects(w, V, M, O, add, pv) {
   const fl = Math.max(4, Math.round(1.25 * pv * K * (VIEW === "valley" ? 1.1 : 1)));
   add({ ...f, z: f.z + 1 }, cached("embers", () => embers(fl)), { shadow: false, bias: 2 });
   add({ ...f, z: f.z + 2, sy: f.sy + 1 }, cached("flames", () => SP.flames(fl, 5)), { shadow: false, bias: 3 });
-  V.fireAt = { x: f.sx, y: f.sy, r: Math.round(3.6 * pv * K * (VIEW === "valley" ? 1.3 : 1)) };
+  V.fireAt = { x: f.sx, y: f.sy, r: Math.round(3.6 * pv * K * (VIEW === "valley" ? 0.75 : 1)) };
   const wind = w.isle.wind || [1, 0], wu = wind[0] * V.eu[0] + wind[1] * V.eu[1], wv = wind[0] * V.ev[0] + wind[1] * V.ev[1];
   V.smokes = [{ x: f.sx, y: f.sy - fl, h: VIEW === "camp" ? 250 : 110, r: VIEW === "camp" ? 6 : 3, drift: clamp((wu - wv) * 0.3, -0.45, 0.45) }];
 }

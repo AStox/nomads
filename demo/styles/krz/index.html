@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Nomads, theatrical low poly</title>
+<style>
+html, body { margin: 0; height: 100%; background: #05070b; overflow: hidden; }
+canvas#view { display: block; width: 100vw; height: 100vh; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.min.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<canvas id="view"></canvas>
+<script type="module">
+const fail = (e) => { document.body.dataset.error = String((e && (e.stack || e.reason?.stack || e.reason || e.message)) || e); document.body.classList.add("failed"); };
+addEventListener("error", (e) => fail(e.error || e.message));
+addEventListener("unhandledrejection", (e) => fail(e.reason));
+import("./main.js").then((m) => m.run()).catch(fail);
+</script>
+</body>
+</html>

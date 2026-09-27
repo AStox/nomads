@@ -66,25 +66,52 @@ function tileNoise(S, cells, rand) {
 export const shared = {
   tGrain: { value: null }, uGrainScale: { value: 1 }, tBake: { value: null }, uRegion: { value: new THREE.Vector4() },
   tCls1: { value: null }, tCls2: { value: null }, uWobble: { value: new THREE.Vector2(1, 0.1) }, uEdge: { value: 1 },
-  tSheets: { value: null }, uSheetPx: { value: 1 },
+  tSheets: { value: null }, uSheetPx: { value: 1 }, uCont: { value: 2.6 }, uGuide: { value: 5 }, uPatch: { value: 0.01 },
 };
 
 const PRELUDE = /* glsl */ `
 uniform sampler2D tGrain; uniform float uGrainScale; uniform sampler2D tBake; uniform vec4 uRegion;
 uniform float uWrap; uniform float uTrans; uniform float uGrainAmt; uniform float uObjAO; uniform float uEdge;
-uniform sampler2D tSheets; uniform float uSheetPx;
+uniform sampler2D tSheets; uniform float uSheetPx; uniform float uCont; uniform float uGuide; uniform float uPatch;
 float gCont = 0.0;
 float sheetAt( vec2 uv ) { return texture2D( tSheets, uv ).r * 255.0; }
-// Cut edges seen from above: a pale rim where a sheet ends (rim) and the dark foot of the sheet above (contact).
+// Cut edges seen from above: a pale rim where a sheet ends (rim) and the dark foot of the sheet above (contact),
+// the contact taken at three reaches so it fades out softly.
 vec2 sheetEdges( vec2 uv ) {
-  float s0 = sheetAt( uv ), lo = s0, hi = s0;
+  float s0 = sheetAt( uv ), lo = s0, hi = 0.0;
   for ( int k = 0; k < 6; k ++ ) {
     float a = float( k ) * 1.0472;
     vec2 d = vec2( cos( a ), sin( a ) ) * uSheetPx;
     lo = min( lo, sheetAt( uv + d * 1.4 ) );
-    hi = max( hi, sheetAt( uv + d * 2.6 ) );
+    for ( int r = 1; r <= 3; r ++ ) hi = max( hi, clamp( sheetAt( uv + d * uCont * float( r ) / 3.0 ) - s0, 0.0, 1.0 ) * ( 1.0 - float( r - 1 ) * 0.33 ) );
   }
-  return vec2( clamp( s0 - lo, 0.0, 1.0 ), clamp( hi - s0, 0.0, 1.0 ) );
+  return vec2( clamp( s0 - lo, 0.0, 1.0 ), hi );
+}
+// The pencil line the maker traced before cutting: a faint wandering, broken band just outside the next sheet up.
+float pencilGuide( vec2 uv, vec2 xz ) {
+  float s0 = sheetAt( uv ), r = uGuide * uSheetPx * ( 1.0 + 0.6 * ( texture2D( tGrain, xz * uGrainScale * 0.02 ).b - 0.5 ) );
+  float outer = 0.0, inner = 0.0;
+  for ( int k = 0; k < 8; k ++ ) {
+    vec2 d = vec2( cos( float( k ) * 0.7854 ), sin( float( k ) * 0.7854 ) );
+    outer = max( outer, step( s0 + 0.5, sheetAt( uv + d * r ) ) );
+    inner = max( inner, step( s0 + 0.5, sheetAt( uv + d * r * 0.7 ) ) );
+  }
+  return outer * ( 1.0 - inner ) * step( 0.42, texture2D( tGrain, xz * uGrainScale * 0.05 ).a );
+}
+// Collage: the sheet is pieced from torn patches of slightly different paper. Returns (tone 0..1, border 0..1).
+vec2 collage( vec2 xz ) {
+  vec2 p = xz * uPatch;
+  p += ( texture2D( tGrain, p * 0.21 ).gb - 0.5 ) * 0.7;
+  vec2 c = floor( p );
+  float d1 = 9.0, d2 = 9.0, id = 0.0;
+  for ( int j = -1; j <= 1; j ++ ) for ( int i = -1; i <= 1; i ++ ) {
+    vec2 g = c + vec2( float( i ), float( j ) );
+    vec2 h = fract( sin( vec2( dot( g, vec2( 127.1, 311.7 ) ), dot( g, vec2( 269.5, 183.3 ) ) ) ) * 43758.5453 );
+    float d = length( g + h - p );
+    if ( d < d1 ) { d2 = d1; d1 = d; id = h.x; } else if ( d < d2 ) d2 = d;
+  }
+  float e = d2 - d1;
+  return vec2( id, 1.0 - smoothstep( 0.0, 1.8, e / max( fwidth( e ), 1e-5 ) ) );
 }
 varying vec3 vW; varying float vLocalY;
 float gSun = 1.0;

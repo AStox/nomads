@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Nomads, claymation</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #2a211b; overflow: hidden; }
+  canvas#view { display: block; width: 100vw; height: 100vh; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.min.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<canvas id="view"></canvas>
+<script>
+  // Flag failure even when a module fails to load or parse, so the capture never waits on a dead page.
+  const fail = (e) => { document.body.dataset.error = String((e && e.stack) || e); document.body.classList.add("failed"); };
+  addEventListener("error", (e) => fail(e.error || e.message), true);
+  addEventListener("unhandledrejection", (e) => fail(e.reason));
+</script>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

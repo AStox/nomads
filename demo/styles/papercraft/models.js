@@ -83,7 +83,7 @@ export function treeCard(kind, rand) {
 }
 
 // Two creased cards slotted crosswise: four panels folded a little off flat at the centre line.
-export function slottedCards(aspect) {
+export function slottedCards(aspect, tabs = false) {
   const w = aspect / 2, fold = 0.32, parts = [];
   for (const turn of [0, Math.PI / 2]) {
     for (const side of [-1, 1]) {
@@ -93,9 +93,48 @@ export function slottedCards(aspect) {
       for (let i = 0; i < uv.count; i++) uv.setX(i, side < 0 ? uv.getX(i) * 0.5 : 0.5 + uv.getX(i) * 0.5);
       g.rotateY(turn + side * fold);
       parts.push(g);
+      // Glue tabs folded flat at the foot of the trunk, sampling the trunk's brown from the card.
+      if (tabs) {
+        const tw = aspect * 0.075, t = new THREE.PlaneGeometry(tw * 2, 0.07).rotateX(-Math.PI / 2).translate(0, 0.004, side * 0.035);
+        const p = t.attributes.position, tu = t.attributes.uv;
+        for (let i = 0; i < p.count; i++) { if (Math.abs(p.getZ(i)) > 0.05) p.setX(i, p.getX(i) * 0.6); tu.setXY(i, 0.5, 0.02); }
+        t.rotateY(turn);
+        parts.push(t);
+      }
     }
   }
   return mergeGeometries(parts);
+}
+
+// Flat trapezoid glue tabs along base edges [ax, az, bx, bz], folded outward (to the right of a to b).
+export function glueTabs(edges, depth, count = 3) {
+  const v = [];
+  for (const [ax, az, bx, bz] of edges) {
+    const L = Math.hypot(bx - ax, bz - az), tx = (bx - ax) / L, tz = (bz - az) / L, nx = tz, nz = -tx;
+    for (let k = 0; k < count; k++) {
+      const s0 = (k + 0.08) / count, s1 = (k + 0.92) / count, inset = depth * 0.6 / L;
+      const p = (s, d) => [ax + tx * L * s + nx * d, 0.006, az + tz * L * s + nz * d];
+      const a = p(s0, 0), b = p(s1, 0), c = p(s1 - inset, depth), d = p(s0 + inset, depth);
+      v.push(...a, ...c, ...b, ...a, ...d, ...c);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(v, 3));
+  const n = new Float32Array(v.length);
+  for (let i = 1; i < n.length; i += 3) n[i] = 1;
+  g.setAttribute("normal", new THREE.BufferAttribute(n, 3));
+  return g;
+}
+
+// A paper pennant on a rolled stick: a card triangle creased along its middle, wrapped round the stick top.
+export function pennant(h, len) {
+  const stick = new THREE.CylinderGeometry(len * 0.03, len * 0.035, h, 6).translate(0, h / 2, 0);
+  const fw = len * 0.55, P0 = [0, h, 0], P1 = [0, h - fw, 0], Pm = [0, h - fw / 2, -len * 0.06], T = [len, h - fw * 0.62, len * 0.16];
+  const flag = new THREE.BufferGeometry();
+  flag.setAttribute("position", new THREE.Float32BufferAttribute([...P0, ...Pm, ...T, ...Pm, ...P1, ...T], 3));
+  flag.setAttribute("aFlag", new THREE.Float32BufferAttribute([0, 1, 0, 0.5, 1, 0.4, 0, 0.5, 0, 0, 1, 0.4], 2));
+  flag.computeVertexNormals();
+  return { stick, flag };
 }
 
 // A pine of three stacked paper cones on a rolled trunk.
@@ -138,40 +177,42 @@ export function foldedRock(rand) {
   return g.index ? g.toNonIndexed() : g;
 }
 
-// A fringed strip: a paper band snipped into blades, curled into an arc.
+// Paper grass: a card strip folded accordion-wise into four panels, standing on its lower edge, faceted so
+// each fold catches the lamp differently.
 export function grassStrip() {
-  const seg = 5, arc = 1.2, r = 0.5, pos = [], uv = [], idx = [];
-  for (let i = 0; i <= seg; i++) {
-    const a = -arc / 2 + (arc * i) / seg, x = Math.sin(a) * r, z = Math.cos(a) * r - r;
-    pos.push(x, 0, z, x * 1.3, 1, z * 1.3 - 0.12);
-    uv.push(i / seg, 0, i / seg, 1);
-    if (i < seg) idx.push(i * 2, i * 2 + 2, i * 2 + 1, i * 2 + 1, i * 2 + 2, i * 2 + 3);
+  const panels = 4, depth = 0.16, pos = [], uv = [];
+  const at = (i) => [i / panels - 0.5, (i % 2 ? 1 : -1) * depth * 0.5];
+  for (let i = 0; i < panels; i++) {
+    const [x0, z0] = at(i), [x1, z1] = at(i + 1), u0 = i / panels, u1 = (i + 1) / panels, lean = 0.1;
+    const q = [[x0, 0, z0, u0, 0], [x1, 0, z1, u1, 0], [x1, 1, z1 - lean, u1, 1], [x0, 1, z0 - lean, u0, 1]];
+    for (const k of [0, 1, 2, 0, 2, 3]) { pos.push(q[k][0], q[k][1], q[k][2]); uv.push(q[k][3], q[k][4]); }
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
-  g.setIndex(idx);
   g.computeVertexNormals();
   return g;
 }
+// The fringe: a solid band along the bottom with a scored line, the rest snipped into broad straight-sided teeth,
+// each tip cut off at a slant the way one scissor stroke leaves it.
 export function fringeTexture(rand) {
-  const W = 512, H = 128, c = canvas(W, H), g = c.getContext("2d");
-  g.fillStyle = "rgb(210,0,0)";
-  g.fillRect(0, H * 0.86, W, H * 0.14);
-  let x = 0;
-  while (x < W) {
-    const bw = 26 + rand() * 18, top = H * (0.02 + rand() * 0.3), lean = (rand() - 0.5) * 22;
-    const grd = g.createLinearGradient(0, H, 0, top);
-    grd.addColorStop(0, "rgb(222,0,0)");
-    grd.addColorStop(1, "rgb(248,0,0)");
-    g.fillStyle = grd;
+  const W = 512, H = 256, c = canvas(W, H), g = c.getContext("2d");
+  g.fillStyle = "rgb(236,0,0)";
+  g.fillRect(0, H * 0.72, W, H * 0.28);
+  let x = 3;
+  while (x < W - 20) {
+    const bw = Math.min(W - 3 - x, 30 + rand() * 22), top = H * (0.04 + rand() * 0.34), slant = (rand() - 0.5) * H * 0.22;
     g.beginPath();
-    g.moveTo(x + 2, H * 0.88);
-    g.lineTo(x + bw * 0.5 + lean, top);
-    g.lineTo(x + bw - 2, H * 0.88);
+    g.moveTo(x, H * 0.74);
+    g.lineTo(x, top + slant);
+    g.lineTo(x + bw * (0.55 + rand() * 0.35), top - Math.abs(slant) * 0.3);
+    g.lineTo(x + bw, top - slant);
+    g.lineTo(x + bw, H * 0.74);
     g.fill();
-    x += bw;
+    x += bw + 5;
   }
+  g.fillStyle = "rgb(190,0,0)";
+  g.fillRect(0, H * 0.78, W, 3);
   return tex(c);
 }
 

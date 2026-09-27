@@ -61,7 +61,7 @@ export const BROAD = "\uE000", PINE = "\uE001";
 export function defineGlyphs(face) {
   for (const [ch, from] of [[BROAD, "♣"], [PINE, "♠"]]) { const m = face.get(from).slice(); m.fill(0, 56, 64); face.define(ch, m); }
 }
-export const TREE = { pine: [PINE, "p", 1.3], oak: [BROAD, "g", 1], ash: [BROAD, "G", 0.9], aspen: [BROAD, "l", 0.85] };
+export const TREE = { pine: [PINE, "p", 1.3], oak: [BROAD, "g", 1], ash: [BROAD, "G", 0.68], aspen: [BROAD, "G", 0.86] };
 
 // Background blended from the cover shares, lit by the hillshade, darkened where the sky is hidden.
 function groundBg(w, x, z, sh, heath) {
@@ -106,7 +106,7 @@ function shoreDistance(g, isWater) {
   return d;
 }
 
-function drawWater(g, k, x, z, depth, dist, lake, fine) {
+function drawWater(g, k, x, z, depth, dist, lake, fine, chop = 0.34) {
   const i = k % g.cols, j = (k / g.cols) | 0, r = hash(i, j, 71), r2 = hash(i, j, 72);
   const bg = waterDepthBg(depth, dist);
   if (dist === 1) {
@@ -120,8 +120,8 @@ function drawWater(g, k, x, z, depth, dist, lake, fine) {
   const onBand = band - Math.floor(band) < 0.26 && hash(i >> 1, j, 73) < 0.85;
   if (onBand && dist < 7) g.put(k, "≈", sc(P.C, 0.72), bg);
   else if (onBand) g.put(k, "~", sc(P.B, 0.8), bg);
-  else if (r < 0.34) g.put(k, "~", sc(P.b, 1.25 + r2 * 0.3), bg);
-  else if (r < 0.39) g.put(k, r2 < 0.5 ? "∙" : "·", sc(P.B, 0.65), bg);
+  else if (r < chop) g.put(k, "~", sc(P.b, 1.25 + r2 * 0.3), bg);
+  else if (r < chop + 0.05) g.put(k, r2 < 0.5 ? "∙" : "·", sc(P.B, 0.65), bg);
   else g.put(k, " ", null, bg);
 }
 
@@ -180,50 +180,64 @@ export function islandGrid(w, cols, rows, pad = 1.5) {
   const SINGLE = { 1: "│", 4: "│", 5: "│", 2: "─", 8: "─", 10: "─", 3: "└", 9: "┘", 6: "┌", 12: "┐", 7: "├", 13: "┤", 14: "┬", 11: "┴", 15: "┼" };
   const DOUBLE = { 1: "║", 4: "║", 5: "║", 2: "═", 8: "═", 10: "═", 3: "╚", 9: "╝", 6: "╔", 12: "╗", 7: "╠", 13: "╣", 14: "╦", 11: "╩", 15: "╬" };
 
+  // Each cell takes its dominant cover, then a majority vote of its neighbours, so biomes read as masses. Shore
+  // cells skip the vote so one-cell beaches survive.
+  const bias = [1, 1, 1.22, 1, 1, 1.3], coast = (i, j) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([a, b]) => water[clamp(j + b, 0, rows - 1) * cols + clamp(i + a, 0, cols - 1)]);
+  const dom = new Int8Array(n).fill(-1);
+  for (let k = 0; k < n; k++) if (!water[k]) { let b = 0; for (let m = 1; m < 6; m++) if (cov[m][k] * bias[m] > cov[b][k] * bias[b]) b = m; dom[k] = b; }
+  const region = Int8Array.from(dom);
+  for (let j = 1; j < rows - 1; j++) for (let i = 1; i < cols - 1; i++) {
+    const k = j * cols + i;
+    if (dom[k] < 0 || coast(i, j)) continue;
+    const votes = [0, 0, 0, 0, 0, 0];
+    for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) { const m = dom[k + b * cols + a]; if (m >= 0) votes[m] += a || b ? 1 : 2.5; }
+    region[k] = votes.indexOf(Math.max(...votes));
+  }
+  // Tree kind from a 5x5 neighbourhood, so kinds form stands rather than speckle.
+  const KINDS = ["pine", "oak", "ash", "aspen"];
+  const kindAt = (i, j) => {
+    const sum = [0, 0, 0, 0];
+    for (let b = -2; b <= 2; b++) for (let a = -2; a <= 2; a++) {
+      const ii = i + a, jj = j + b;
+      if (ii < 0 || jj < 0 || ii >= cols || jj >= rows) continue;
+      const wgt = 3 - Math.max(Math.abs(a), Math.abs(b));
+      KINDS.forEach((kk, q) => { sum[q] += kinds[kk][jj * cols + ii] * wgt * (kk === "pine" ? 1.6 : 1); });
+    }
+    const best = Math.max(...sum);
+    return best > 0 ? KINDS[sum.indexOf(best)] : "ash";
+  };
+
   for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
-    const k = j * cols + i, x = g.cx(i), z = g.cz(j), r = hash(i, j, 11), r2 = hash(i, j, 12), r3 = hash(i, j, 13);
+    const k = j * cols + i, x = g.cx(i), z = g.cz(j), r2 = hash(i, j, 12), r3 = hash(i, j, 13);
     if (water[k]) {
       const lake = H[k] > 0.5;
-      drawWater(g, k, x, z, lake ? w.bilinear(w.isle.water, (x - START) / CELL, (z - START) / CELL) : -H[k], dist[k], lake, false);
+      drawWater(g, k, x, z, lake ? w.bilinear(w.isle.water, (x - START) / CELL, (z - START) / CELL) : -H[k], dist[k], lake, false, 0.16);
       continue;
     }
-    const sh = shade(w, x, z, s * 0.6, 2.2), lit = clamp(0.78 + (sh - 1) * 0.9, 0.5, 1.3);
-    const hk = heathN[k] ? heath[k] / heathN[k] : 0;
+    const sh = shade(w, x, z, s * 0.6, 2.4), lit = clamp(0.8 + (sh - 1) * 0.9, 0.5, 1.3);
+    const hk = heathN[k] ? heath[k] / heathN[k] : 0, cls = COVER[region[k]];
     let bg = [0, 0, 0];
     COVER.forEach((c, m) => { const b = c === "shrub" && hk > 0.5 ? BG.heath : BG[c]; bg = [bg[0] + b[0] * cov[m][k], bg[1] + b[1] * cov[m][k], bg[2] + b[2] * cov[m][k]]; });
-    const alt = smooth(40, 330, H[k]);
-    bg = sc(mix(bg, sc(P.y, 0.3), alt * 0.45), clamp(sh, 0.55, 1.45));
+    const own = cls === "shrub" && hk > 0.5 ? BG.heath : BG[cls], alt = smooth(40, 330, H[k]);
+    bg = sc(mix(mix(bg, own, 0.55), sc(P.y, 0.3), alt * 0.45), clamp(sh, 0.55, 1.45));
     const f = (code, mul = 1) => sc(P[code], lit * mul);
     let ch = " ", fg = P.y;
-
-    const wts = cov.map((a, m) => Math.pow(a[k], 2.2) * [1.5, 1, 1, 1.1, 1, 1.4][m]);
-    let t = r * wts.reduce((a, b) => a + b, 0), cls = "grass";
-    for (let m = 0; m < 6; m++) if ((t -= wts[m]) < 0) { cls = COVER[m]; break; }
-    const nt = kinds.pine[k] + kinds.oak[k] + kinds.ash[k] + kinds.aspen[k];
     const peak = Hmax[k] > 140 && [...Array(49).keys()].every((q) => { const a = i + (q % 7) - 3, b = j + ((q / 7) | 0) - 3; return a < 0 || b < 0 || a >= cols || b >= rows || Hmax[b * cols + a] <= Hmax[k]; });
 
     if (peak) { ch = "▲"; fg = P.Y; g.glow[k] = 0.4; }
-    else if (cls === "tree" && nt > 0 && hash(i, j, 14) > (1 - cov[0][k]) * 0.75) {
-      // Kinds drawn in proportion to what grows in the cell, so mixed woods read as mixed.
-      let u = r2 * nt, kind = "pine";
-      for (const kk of ["pine", "oak", "ash", "aspen"]) if ((u -= kinds[kk][k]) < 0) { kind = kk; break; }
-      const [gl, code, mul] = TREE[kind];
-      ch = nt < 4 ? "τ" : gl;
-      fg = f(code, mul * (0.72 + r3 * 0.3));
-    } else if (slope[k] > 0.42 && cls !== "sand") { ch = slope[k] > 0.6 ? "▓" : "▒"; fg = f(alt > 0.3 ? "y" : "s"); }
-    else if (H[k] > 170 && (cls === "bare" || cls === "grass" || cls === "shrub")) { ch = r2 < 0.55 ? "▲" : "^"; fg = f(r3 < 0.5 ? "y" : "s"); }
-    else if (H[k] > 70 && (cls === "bare" || cls === "grass")) { ch = r2 < 0.7 ? "∩" : "n"; fg = f(cls === "grass" ? "v" : "s", 1.1); }
-    else if (slope[k] > 0.26 && cls !== "sand") { ch = "░"; fg = f("s", 1.1); }
-    else {
-      const set = cls === "tree" ? SETS.floor : cls === "shrub" ? (hk > 0.5 ? SETS.heath : SETS.shrub) : SETS[cls];
-      const e = pick(set, r2);
-      ch = e[0]; fg = f(e[1]);
-      if (cls === "grass" && r3 < 0.035) { ch = "*"; fg = P[["P", "M", "W", "Y"][(r3 * 1000) % 4 | 0]]; }
-    }
-    // Rocky or sandy shore where the land meets the sea.
-    if (dist[k] === 0 && [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([a, b]) => water[(j + b) * cols + i + a]) && cov[5][k] > 0.25 && !peak) {
-      ch = r2 < 0.5 ? "░" : "∙"; fg = f("t", 1.1);
-    }
+    else if (slope[k] > 0.45 && cls !== "tree" && cls !== "sand") { ch = slope[k] > 0.65 ? "▓" : "▒"; fg = f(alt > 0.3 ? "y" : "s", 0.9); }
+    else if (cls === "tree") { const [gl, code, mul] = TREE[kindAt(i, j)]; ch = gl; fg = f(code, mul * (0.9 + r3 * 0.1)); }
+    else if (cls === "shrub") { ch = hk > 0.5 ? '"' : "τ"; fg = f(hk > 0.5 ? "m" : "v"); }
+    else if (cls === "grass" && H[k] > 110) { ch = "∩"; fg = f("v", 1.05); }
+    else if (cls === "grass") {
+      ch = r2 < 0.55 ? '"' : r2 < 0.85 ? "," : "."; fg = f("l", r2 < 0.55 ? 0.95 : 0.8);
+      if (r3 < 0.012) { ch = "*"; fg = P[["P", "M", "W"][(r3 * 1000) % 3 | 0]]; }
+    } else if (cls === "marsh") { ch = r2 < 0.8 ? '"' : "√"; fg = f("c", 0.85); }
+    else if (cls === "bare") {
+      if (H[k] > 170) { ch = r2 < 0.7 ? "▲" : "^"; fg = f("y", 0.95); }
+      else if (H[k] > 60) { ch = "^"; fg = f("s", 1.15); }
+      else { ch = r2 < 0.75 ? ":" : "∙"; fg = f("s", 1.05); }
+    } else { ch = r2 < 0.7 ? "░" : "∙"; fg = f("t", 0.95); }
     if (link[k]) {
       const big = flow[k] > 0.8;
       ch = (big ? DOUBLE : SINGLE)[link[k]] || "~";
@@ -247,7 +261,7 @@ export function localGrid(w, cols, rows, s, cx, cz) {
     river[k] = w.riverAt(x, z);
   }
   const dist = shoreDistance(g, water);
-  const ex = fineScale ? 3 : 4;
+  const ex = fineScale ? 3 : 6, hgt = new Float32Array(n).fill(NaN);
   const heathAt = (x, z) => clamp(w.bilinear(w.isle.exposure, (x - w.START) / w.CELL, (z - w.START) / w.CELL) * 1.4 + w.fine(w.cover.shrub, x, z) - w.fine(w.moist, x, z) * 0.3, 0, 1);
   const lit = new Float32Array(n);
   for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
@@ -258,7 +272,8 @@ export function localGrid(w, cols, rows, s, cx, cz) {
       continue;
     }
     const sh = shade(w, x, z, Math.max(2, s * 0.6), ex), heath = heathAt(x, z);
-    lit[k] = clamp(0.8 + (sh - 1) * 1.2, 0.55, 1.3);
+    hgt[k] = w.heightAt(x, z);
+    lit[k] = clamp(0.85 + (sh - 1) * 1.2, 0.5, 1.4);
     // Mottling at a few cells' scale, so open ground is not one flat tint.
     let bg = sc(groundBg(w, x, z, sh, heath), 0.82 + 0.36 * (0.5 + 0.5 * fbm(x / (s * 5), z / (s * 5), 33, 2)));
     const cls = coverPick(w, x, z, r, 2.2), sl = w.slopeAt(x, z);
@@ -272,9 +287,10 @@ export function localGrid(w, cols, rows, s, cx, cz) {
       if (cls === "marsh" && r3 < 0.5) { ch = pick(SETS.marsh, r2)[0]; fg = sc(P.c, lit[k] * 0.9); }
     } else if (cls === "grass" && r3 < 0.03) { ch = "*"; fg = sc(P[["P", "M", "W", "Y"][(r3 * 1000) % 4 | 0]], 0.85); }
     // Steep open ground as shade blocks, greyer and lighter the higher it stands.
-    if (sl > 0.34 && cls !== "tree") {
-      ch = sl > 0.75 ? "▓" : sl > 0.5 ? "▒" : "░";
-      fg = sc(mix(P.s, P.y, smooth(20, 250, w.heightAt(x, z))), lit[k] * (0.55 + r3 * 0.2));
+    const [s1, s2, s3] = fineScale ? [0.34, 0.5, 0.75] : [0.1, 0.18, 0.32];
+    if (sl > s1 && (cls !== "tree" || !fineScale)) {
+      ch = sl > s3 ? "▓" : sl > s2 ? "▒" : "░";
+      fg = sc(mix(P.s, P.y, smooth(20, 250, hgt[k])), lit[k] * (0.55 + r3 * 0.2));
     }
     if (river[k] > 0.3) {
       ch = r2 < 0.55 ? "≈" : "~"; fg = river[k] > 0.7 ? P.C : P.c; bg = sc(mix(P.b, P.c, 0.4), 0.5); g.glow[k] = 0.2;
@@ -282,12 +298,37 @@ export function localGrid(w, cols, rows, s, cx, cz) {
     g.put(k, ch, fg, bg);
   }
   g.water = water; g.river = river; g.lit = lit; g.dist = dist;
+  if (!fineScale) g.relief = relief(g, hgt);
   return g;
+}
+
+// Height bands like contours: each band takes a step along a ramp from dark lowland green to pale upland tan, and a
+// dark line runs along each band's lower edge, every fifth one heavier. The interval adapts to the view's relief.
+const RAMP = [sc(P.p, 0.3), sc(mix(P.p, P.g, 0.5), 0.36), sc(mix(P.g, P.v, 0.4), 0.42), sc(P.v, 0.48), sc(mix(P.v, P.w, 0.5), 0.55), sc(mix(P.w, P.t, 0.5), 0.62)];
+const ramp = (t) => { const x = clamp(t, 0, 1) * (RAMP.length - 1), a = Math.floor(x), b = Math.min(RAMP.length - 1, a + 1); return mix(RAMP[a], RAMP[b], x - a); };
+function relief(g, hgt) {
+  const n = g.cols * g.rows, frac = new Float32Array(n), line = new Uint8Array(n);
+  let lo = Infinity, hi = -Infinity;
+  for (const h of hgt) if (h === h) { lo = Math.min(lo, h); hi = Math.max(hi, h); }
+  const step = [0.5, 1, 2, 5, 10, 20, 50].find((v) => (hi - lo) / v <= 10) ?? 50, band = (h) => Math.floor(h / step);
+  for (let k = 0; k < n; k++) {
+    const h = hgt[k];
+    if (h !== h) continue;
+    const i = k % g.cols, j = (k / g.cols) | 0, b = band(h);
+    frac[k] = (b - band(lo)) / Math.max(1, band(hi) - band(lo));
+    for (const [a, c] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const ii = i + a, jj = j + c;
+      if (ii < 0 || jj < 0 || ii >= g.cols || jj >= g.rows) continue;
+      const o = hgt[jj * g.cols + ii];
+      if (o === o && band(o) < b) { line[k] = b % 5 === 0 ? 2 : 1; break; }
+    }
+  }
+  return { frac, line, step };
 }
 
 // Trees, shrubs and rocks as single glyphs (valley scale), with canopy filling the gaps inside woods.
 export function plantValley(w, g) {
-  const n = g.cols * g.rows, trunk = new Array(n).fill(null);
+  const n = g.cols * g.rows, trunk = new Array(n).fill(null), obj = new Uint8Array(n), floor = sc(P.p, 0.36);
   const x0 = g.ox, z0 = g.oz, x1 = g.ox + g.cols * g.s, z1 = g.oz + g.rows * g.s;
   const inView = (o) => o.x >= x0 && o.x < x1 && o.z >= z0 && o.z < z1;
   for (const t of w.trees) if (inView(t)) { const k = g.at(t.x, t.z); if (!trunk[k] || trunk[k].tall < t.tall) trunk[k] = t; }
@@ -300,17 +341,20 @@ export function plantValley(w, g) {
     if (t) {
       trees++;
       const [gl, code, mul] = TREE[t.kind];
-      g.put(k, t.tall < 9 ? "τ" : gl, sc(P[code], lit * mul * (0.82 + t.tint * 0.32)), sc(BG.tree, clamp(lit, 0.6, 1.3)));
+      g.put(k, t.tall < 9 ? "τ" : gl, sc(P[code], lit * mul * (0.9 + t.tint * 0.14)), sc(floor, clamp(lit, 0.45, 1.4)));
+      obj[k] = 1;
       continue;
     }
-    if (cover > 0.35 && hash(i, j, 31) < (cover - 0.3) * 0.85) {
+    // Canopy fill stops on steep ground, so the shade blocks of the slope show between the trunks.
+    if (cover > 0.35 && hash(i, j, 31) < (cover - 0.3) * 0.85 && w.slopeAt(x, z) < 0.1) {
       let near = null, best = 1e9;
       for (let b = -2; b <= 2; b++) for (let a = -2; a <= 2; a++) {
         const m = (j + b) * g.cols + i + a, o = i + a >= 0 && i + a < g.cols && j + b >= 0 && j + b < g.rows ? trunk[m] : null;
         if (o && a * a + b * b < best) { best = a * a + b * b; near = o; }
       }
       const kind = near ? near.kind : "ash", [gl, code, mul] = TREE[kind];
-      g.put(k, gl, sc(P[code], lit * mul * 0.5), sc(BG.tree, clamp(lit * 0.85, 0.5, 1.2)));
+      g.put(k, gl, sc(P[code], lit * mul * 0.55), sc(floor, clamp(lit * 0.9, 0.4, 1.3)));
+      obj[k] = 1;
     }
   }
   for (const sh of w.shrubs) if (inView(sh)) {
@@ -318,11 +362,25 @@ export function plantValley(w, g) {
     if (trunk[k] || g.water[k]) continue;
     const lit = g.lit[k] || 1;
     g.put(k, sh.heath > 0.5 ? (sh.tint < 0.5 ? '"' : "τ") : "τ", sc(sh.heath > 0.5 ? P.m : sh.tint < 0.5 ? P.g : P.v, lit), null);
+    obj[k] = 1;
   }
   for (const r of w.rocks) if (inView(r)) {
     const k = g.at(r.x, r.z);
     if (trunk[k] || g.water[k]) continue;
     g.put(k, r.size > 2.6 ? "O" : r.size > 1.2 ? "o" : "∙", sc(r.tint < 0.35 ? P.y : P.s, (g.lit[k] || 1) * 0.85), null);
+    obj[k] = 1;
   }
-  return { trees };
+  // The band colour replaces most of the ground tint and keeps the hillshade; each band's edge is a dark, dotted line,
+  // like a contour on a survey map, drawn through the woods too so the relief reads under the trees.
+  if (g.relief) {
+    const { frac, line } = g.relief;
+    for (let k = 0; k < n; k++) {
+      if (g.water[k] || g.river[k] > 0.3) continue;
+      const lit = clamp(g.lit[k] || 1, 0.4, 1.5), edge = line[k] === 2 ? 0.3 : line[k] ? 0.45 : 1;
+      g.bg[k] = sc(mix(g.bg[k], sc(ramp(frac[k]), lit), 0.85), edge);
+      g.fg[k] = sc(g.fg[k], 0.8 + 0.3 * frac[k]);
+      if (line[k]) { g.ch[k] = line[k] === 2 ? "∙" : "·"; g.fg[k] = sc(line[k] === 2 ? P.W : P.t, (line[k] === 2 ? 0.8 : 0.7) * lit); }
+    }
+  }
+  return { trees, contour: g.relief?.step };
 }

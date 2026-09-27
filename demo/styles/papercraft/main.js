@@ -19,29 +19,31 @@ addEventListener("unhandledrejection", (e) => fail(e.reason));
 // the standing things are thinned and scaled at that zoom.
 const VIEWS = {
   island: {
-    bands: [[1e9, 16]], step: 48, card: 0.4, inset: 0.75, shallow: -16, mm: 12, grid: 640, detail: 0,
-    fov: 26, elev: 46, turn: 0.25, dist: 17000, light: { turn: 2.2, elev: 42 }, sun: 3.4, hemi: 0.8,
-    trees: { keep: 0.09, scale: 4.5 }, shrubs: { keep: 0.05, scale: 5 }, rocks: { keep: 0.1, scale: 4, min: 1.5 },
-    dof: { k: 20, max: 10 }, shadow: { radius: 2 },
+    bands: [[1e9, 16]], step: 60, card: 0.3, inset: 1.8, shallow: -16, mm: 12, grid: 640, detail: 0,
+    fov: 26, elev: 46, turn: 0.25, dist: 17000, light: { turn: 2.2, elev: 36 }, sun: 3.4, hemi: 0.8, soft: 0.35,
+    trees: { keep: 0.01, scale: 13 }, shrubs: { keep: 0.004, scale: 14 }, rocks: { keep: 0.02, scale: 10, min: 3 },
+    dof: { k: 14, max: 10 }, shadow: { radius: 5 }, cont: 8, guide: 7, patch: 350,
   },
   valley: {
     bands: [[16, 2.5], [60, 5], [1e9, 10]], step: 7, card: 0.5, inset: 0.8, shallow: -4, mm: 1.6, grid: 640, detail: 0.5,
     fov: 30, elev: 24, turn: 0.1, frame: 360, ahead: 120, light: { turn: 2.2, elev: 40 }, sun: 3.4, hemi: 0.8,
     trees: { keep: 0.7, scale: 1.7 }, shrubs: { keep: 0.8, scale: 2 }, rocks: { keep: 1, scale: 1.6, min: 0 }, camp: 1.8,
     grass: { scale: 3, per: 2.2, reach: 330, hole: 0 },
-    dof: { k: 10, max: 11 }, shadow: { radius: 3 },
+    dof: { k: 10, max: 11 }, shadow: { radius: 3 }, cont: 5, guide: 6, patch: 45,
   },
   camp: {
-    bands: [[1e9, 1.25]], step: 1.5, card: 0.6, inset: 0.35, shallow: -1.5, mm: 0.12, grid: 560, detail: 0.18,
-    fov: 30, elev: 17, turn: 0.1, frame: 28, ahead: 5, light: { turn: 2.2, elev: 40 }, sun: 3.4, hemi: 0.8,
+    bands: [[14, 0.5], [40, 1.5], [1e9, 4]], step: 0.7, card: 0.55, inset: 0.4, shallow: -1.5, mm: 0.12, grid: 560, detail: 0.12,
+    fov: 30, elev: 21, turn: 0.1, frame: 28, ahead: 5, light: { turn: 2.2, elev: 40 }, sun: 3.4, hemi: 0.8,
     trees: { keep: 1, scale: 1 }, shrubs: { keep: 1, scale: 1 }, rocks: { keep: 1, scale: 1, min: 0 }, nearby: 40, camp: 1,
-    grass: { scale: 1.4, per: 40, reach: 140, hole: 38 },
-    dof: { k: 16, max: 14 }, shadow: { radius: 4 },
+    grass: { scale: 1.4, per: 10, reach: 140, hole: 38 },
+    dof: { k: 10, max: 14 }, shadow: { radius: 4 }, cont: 5, guide: 5, patch: 6,
   },
 };
 
 const glsl = (hex) => { const c = new THREE.Color(hex); return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`; };
 const rad = (d) => (d * Math.PI) / 180;
+// Grass is cut from three sheets of green paper, never a continuous range.
+const grassPaper = (t) => ["#5e9a43", "#86b54c", "#b3cb5a"][Math.min(2, Math.floor(t * 3))];
 
 main().catch(fail);
 
@@ -56,10 +58,9 @@ async function main() {
   const topY = (v) => (v <= 1 ? yDeep + v * (yShallow - yDeep) : yShallow + (v - 1) * step);
 
   // Levels: the coast, then every interval of its band, shifted so the camp ground sits in the middle of one sheet.
-  const surface = makeSurface(w, V.detail, VIEW === "camp" ? 7 : 45);
   const campPts = [C, camp.woodpile, ...camp.tents.map((t) => t.at), ...camp.people.map((p) => p.at)];
   for (let a = 0; a < 12; a++) campPts.push({ x: C.x + Math.cos(a * 0.52) * 4, z: C.z + Math.sin(a * 0.52) * 4 });
-  const campYs = campPts.map((p) => surface(p.x, p.z));
+  const campYs = campPts.map((p) => w.heightAt(p.x, p.z));
   const mid = (Math.min(...campYs) + Math.max(...campYs)) / 2, first = V.bands[0][1];
   let maxH = 0;
   for (const v of w.h) maxH = Math.max(maxH, v);
@@ -68,6 +69,12 @@ async function main() {
     if (L > 0.6 + first * 0.5) levels.push(L);
     while (L >= V.bands[b][0]) b++;
   }
+  // Close in, the fire, each tent and the woodpile get a level pad in the middle of their own sheet, so the
+  // sheets step around and between them instead of cutting under a tent.
+  const sheetMid = (h) => { let k = 0; while (k + 1 < levels.length - 1 && levels[k + 1] <= h) k++; return (levels[k] + levels[k + 1]) / 2; };
+  const pads = VIEW !== "camp" ? [] : [[C.x, C.z, 4.4], ...camp.tents.map((t) => [t.at.x, t.at.z, t.size * 0.8]), [camp.woodpile.x, camp.woodpile.z, 1.8]]
+    .map(([x, z, r]) => [x, z, r, sheetMid(w.heightAt(x, z))]);
+  const surface = makeSurface(w, V.detail, VIEW === "camp" ? 7 : 45, pads);
   const modelY = (x, z) => { const h = surface(x, z); let k = -1; for (let i = 0; i < levels.length; i++) if (h >= levels[i]) k = i; return k < 0 ? yShallow : topY(k + 2); };
 
   // ---------- camera ----------
@@ -133,7 +140,7 @@ async function main() {
     Y[j * B + i] = topY((S[a] + S[a + 1] + S[a + R] + S[a + R + 1]) / 4);
   }
   const lAz = az + V.light.turn, lEl = rad(V.light.elev), L = { x: Math.cos(lAz), z: Math.sin(lAz), tan: Math.tan(lEl) };
-  const sun = sunVisibility(Y, B, cellB, L, 0.2);
+  const sun = sunVisibility(Y, B, cellB, L, V.soft ?? 0.2);
   const ao = terrainAO(Y, B, cellB, step);
 
   // ---------- what stands on the sheets ----------
@@ -163,6 +170,10 @@ async function main() {
   sheets.needsUpdate = true;
   shared.tSheets.value = sheets;
   shared.uSheetPx.value = 1 / R;
+  // Contact shadow reach and the pencil guide offset in sheet texels; collage patch size in meters.
+  shared.uCont.value = V.cont;
+  shared.uGuide.value = V.guide;
+  shared.uPatch.value = 1 / V.patch;
 
   // ---------- the sheets as geometry ----------
   const topBuf = { pos: [], layer: [] }, wallBuf = { pos: [], nrm: [], uv: [], layer: [] }, spacerBuf = { pos: [], nrm: [], uv: [], layer: [] };
@@ -203,7 +214,14 @@ async function main() {
       float m = bw - sw, px = m / max( fwidth( m ), 1e-5 );
       // A patch glued over its neighbour throws a hairline shadow onto it and catches a little light on its cut.
       edge = prio[bi] < prio[si] ? - ( 1.0 - smoothstep( 0.0, 3.0, px ) ) : 0.6 * ( 1.0 - smoothstep( 0.0, 1.2, px ) );
-      return pal[bi];
+      vec3 col = pal[bi];
+      // Lakes are two cut sheets as well: a pale shallow ring glued over the deeper blue.
+      if ( bi == 6 ) {
+        float e2 = b.b - 0.8 - n1.g * 0.12 * wb, p2 = e2 / max( fwidth( e2 ), 1e-5 );
+        if ( e2 < 0.0 ) col = ${glsl(PAPER.shallow)};
+        else edge = min( edge, - ( 1.0 - smoothstep( 0.0, 3.0, p2 ) ) );
+      }
+      return col;
     }`;
   const layerV = { vdecl: "attribute float aLayer; varying float vLayer; attribute vec2 aWall; varying vec2 vWall; varying vec3 vNw;", vcode: "vLayer = aLayer; vNw = normal;" };
   const topMat = paperMaterial({
@@ -213,7 +231,10 @@ async function main() {
       col *= ( 0.94 + 0.1 * lh ) * ( 1.0 + 0.2 * edge );
       // Sheets never lie quite flat: a slow swell in how they take the light.
       col *= 1.0 + 0.16 * ( texture2D( tGrain, vW.xz * uGrainScale * 0.09 ).g - 0.5 );
+      vec2 cl = collage( vW.xz + vLayer * 0.37 / uPatch );
+      col *= ( 0.86 + 0.28 * cl.x ) * mix( vec3( 1.03, 1.0, 0.95 ), vec3( 0.97, 1.0, 1.04 ), fract( cl.x * 7.3 ) ) * ( 1.0 - 0.24 * cl.y );
       vec2 uv = planUv( vW.xz ), se = sheetEdges( uv );
+      col = mix( col, col * 0.5 + 0.08, 0.65 * pencilGuide( uv, vW.xz ) );
       col *= ( 1.0 + 0.28 * se.x ) * ( 1.0 - 0.75 * step( vLayer + 2.5, sheetAt( uv ) ) );
       gCont = se.y;
       diffuseColor.rgb = col;`,
@@ -230,8 +251,10 @@ async function main() {
   const spacerMat = paperMaterial({ ...layerV, decl: "varying float vLayer;", color: `diffuseColor.rgb = ${glsl(PAPER.spacer)};`, light: "gSun = 0.12; ao = 0.4;" });
   const seaTopMat = paperMaterial({
     ...layerV, decl: "varying float vLayer;", grain: 0.3,
-    color: `vec2 uv = planUv( vW.xz ), se = sheetEdges( uv );
-      diffuseColor.rgb = ( vLayer < -1.5 ? ${glsl(PAPER.deep)} : ${glsl(PAPER.shallow)} ) * ( 1.0 + 0.25 * se.x );
+    color: `vec2 uv = planUv( vW.xz ), se = sheetEdges( uv ), cl = collage( vW.xz * 0.6 + vLayer * 0.5 / uPatch );
+      vec3 col = ( vLayer < -1.5 ? ${glsl(PAPER.deep)} : ${glsl(PAPER.shallow)} ) * ( 1.0 + 0.25 * se.x );
+      col *= ( 0.94 + 0.12 * cl.x ) * ( 1.0 - 0.1 * cl.y );
+      diffuseColor.rgb = mix( col, col * 0.55 + 0.08, 0.45 * pencilGuide( uv, vW.xz ) );
       gCont = se.y;`,
     light: `vec4 bk = texture2D( tBake, planUv( vW.xz ) ); gSun = bk.r * ( 1.0 - 0.3 * gCont ); ao = bk.g * bk.b * ( 1.0 - 0.45 * gCont );`,
   });
@@ -246,8 +269,8 @@ async function main() {
   mesh(geometry(spacerBuf, true), spacerMat);
   mesh(geometry(seaTop, false), seaTopMat);
   mesh(geometry(seaWall, true), seaWallMat);
-  addWaves(scene, { shallow, dx, yDeep, step });
-  addDesk(scene, VIEW, region, V, deepPad, dcx, dcz);
+  addWaves(scene, { shallow, dx, yDeep, step, lakes: { n: 1024, data: cls2 }, region, standY });
+  addDesk(scene, VIEW, region, V, deepPad, dcx, dcz, tilt, w.rand);
   if (VIEW === "island") addProps(scene, camera, V, deepPad, tilt, dcx, dcz, w.rand);
 
   // ---------- light ----------
@@ -287,7 +310,7 @@ async function main() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-function makeSurface(w, detail, scale) {
+function makeSurface(w, detail, scale, pads) {
   const c = w.camp.at;
   const { M, STEP, START, h, N, CELL, isle } = w;
   const lake = new Float32Array(N * N), lakeLv = new Float32Array(N * N);
@@ -301,8 +324,9 @@ function makeSurface(w, detail, scale) {
     const cx = (x - START) / CELL, cy = (z - START) / CELL, lk = w.bilinear(lake, cx, cy);
     // Lakes are one flat sheet at their surface, not a pit of steps.
     if (lk > 0.05) y += smooth(0.3, 0.6, lk) * Math.max(0, w.bilinear(lakeLv, cx, cy) / lk - y);
-    // The trodden ground of the camp stays level, so no sheet edge cuts through it.
-    if (detail) y += detail * fbm(x / scale, z / scale, 91, 2) * smooth(0, 2, y) * smooth(8, 24, Math.hypot(x - c.x, z - c.z));
+    // The trodden ground of the camp stays level, so no sheet edge cuts through it; with pads, each pad does.
+    if (detail) y += detail * fbm(x / scale, z / scale, 91, 2) * smooth(0, 2, y) * (pads.length ? 1 : smooth(8, 24, Math.hypot(x - c.x, z - c.z)));
+    for (const [px, pz, r, ph] of pads) y += (1 - smooth(r, r * 1.6, Math.hypot(x - px, z - pz))) * (ph - y);
     return y;
   };
 }
@@ -470,7 +494,7 @@ function placeThings(w, V, { inRegion, standY, target, camera, blobs, scene }) {
   for (const kind of ["oak", "ash", "aspen"]) {
     const { map, aspect } = P.treeCard(kind, rand);
     const mat = paperMaterial({ map, alphaTest: 0.5, side: THREE.DoubleSide, shadowSide: THREE.DoubleSide, trans: 0.4, wrap: 0.45, color: cardShader, light: OBJECT_LIGHT, grain: 0.1 });
-    build(P.slottedCards(kind === "aspen" ? aspect * 0.85 : aspect), mat, cards[kind]);
+    build(P.slottedCards(kind === "aspen" ? aspect * 0.85 : aspect, true), mat, cards[kind]);
   }
   build(P.pineCones(), paperMaterial({ flatShading: true, trans: 0.2, wrap: 0.3, light: OBJECT_LIGHT }), pines);
   build(P.trunk(), paperMaterial({ color: `diffuseColor.rgb = ${glsl(PAPER.trunk)};`, light: OBJECT_LIGHT, objH: 0.3 }), pines.map((t) => ({ ...t, color: "#ffffff" })));
@@ -516,20 +540,20 @@ function placeThings(w, V, { inRegion, standY, target, camera, blobs, scene }) {
         const y = standY(x, z);
         if (y === null) continue;
         const tt = hash(u, v, 300 + n);
-        grass.push({ x, y, z, s: (0.5 + tt * 0.5) * G.scale, yaw: hash(u, v, 400 + n) * 6.283, color: shade(tt > 0.7 ? "#c6d360" : tt > 0.35 ? "#a9c353" : "#8cb84e", tt, 0.1) });
+        grass.push({ x, y, z, sx: G.scale * (0.8 + tt * 0.5), sy: G.scale * (0.45 + tt * 0.25), sz: G.scale, yaw: hash(u, v, 400 + n) * 6.283, color: grassPaper(tt) });
       }
     }
   }
   if (V.nearby) {
     const nb = w.nearby(w.camp.at, V.nearby, 3);
-    nb.grass.forEach((g, i) => { const y = standY(g.x, g.z); if (y !== null && hash(i, 3, 9) < 0.32) grass.push({ x: g.x, y, z: g.z, s: g.tall * 1.7, yaw: g.yaw, color: shade(g.tint > 0.7 ? "#c6d360" : g.tint > 0.35 ? "#a9c353" : "#8cb84e", g.tint, 0.1) }); });
+    nb.grass.forEach((g, i) => { const y = standY(g.x, g.z); if (y !== null && hash(i, 3, 9) < 0.13) grass.push({ x: g.x, y, z: g.z, sx: 0.9 + g.tall * 1.2, sy: 0.3 + g.tall * 0.6, sz: 1.2, yaw: g.yaw, color: grassPaper(g.tint) }); });
     const hues = ["#e0463c", "#f2c230", "#f4efe4", "#e889b5", "#6c8fd6", "#f08a3a"];
     for (const fl of nb.flowers) { const y = standY(fl.x, fl.z); if (y !== null) flowers.push({ x: fl.x, y, z: fl.z, tall: fl.tall, yaw: fl.hue * 40, color: hues[Math.floor(fl.hue * hues.length)] }); }
     for (const pb of nb.pebbles) { const y = standY(pb.x, pb.z); if (y !== null) pebbles.push({ x: pb.x, y: y - pb.size * 0.1, z: pb.z, s: pb.size * 0.5, yaw: pb.yaw, color: shade("#a39f97", pb.tint, 0.16) }); }
     for (const lg of nb.logs) { const y = standY(lg.x, lg.z); if (y !== null) logs.push({ ...lg, y }); }
   }
   if (grass.length) {
-    const mat = paperMaterial({ map: P.fringeTexture(rand), alphaTest: 0.5, side: THREE.DoubleSide, shadowSide: THREE.DoubleSide, trans: 0.18, wrap: 0.45, color: "diffuseColor.rgb = vec3( texture2D( map, vMapUv ).r );", light: OBJECT_LIGHT });
+    const mat = paperMaterial({ map: P.fringeTexture(rand), alphaTest: 0.5, side: THREE.DoubleSide, shadowSide: THREE.DoubleSide, flatShading: true, trans: 0.15, wrap: 0.25, color: "diffuseColor.rgb = vec3( texture2D( map, vMapUv ).r );", light: OBJECT_LIGHT });
     build(P.grassStrip(), mat, grass);
   }
   if (flowers.length) {
@@ -569,6 +593,8 @@ function addCamp(w, V, { standY, camera, blobs, scene, build, rand, logs }) {
         diffuseColor.rgb = col;` });
       add(P.aFrame(len, wid, hgt), mat, t.at.x, y, t.at.z, t.yaw);
       add(P.doorway(wid, hgt, len), plain("#2a2019", { side: THREE.DoubleSide }), t.at.x, y + 0.01, t.at.z, t.yaw, 1, false);
+      const hw = wid / 2, hl = len / 2;
+      add(P.glueTabs([[-hw, hl, -hw, -hl], [hw, -hl, hw, hl]], len * 0.07, 4), plain(new THREE.Color(tentPaper[i]).lerp(new THREE.Color("#fff4e0"), 0.3).getStyle(), { side: THREE.DoubleSide }), t.at.x, y, t.at.z, t.yaw, 1, false);
     } else {
       const h = sz * 0.95, tp = P.tipi(sz * 0.48, h);
       const mat = paperMaterial({ ...local, color: `vec3 col = ${glsl(tentPaper[i])};
@@ -581,9 +607,25 @@ function addCamp(w, V, { standY, camera, blobs, scene, build, rand, logs }) {
         diffuseColor.rgb = col;` });
       add(tp.cone, mat, t.at.x, y, t.at.z, t.yaw);
       add(tp.poles, plain(PAPER.kraft), t.at.x, y, t.at.z, t.yaw);
+      const r = sz * 0.48, ring = [];
+      for (let n = 0; n < 12; n++) { const a0 = (n / 12) * Math.PI * 2, a1 = ((n + 1) / 12) * Math.PI * 2; ring.push([Math.cos(a0) * r, Math.sin(a0) * r, Math.cos(a1) * r, Math.sin(a1) * r]); }
+      add(P.glueTabs(ring, r * 0.14, 1), plain("#e3d3b0", { side: THREE.DoubleSide }), t.at.x, y, t.at.z, t.yaw, 1, false);
     }
     blobs.push([t.at.x, t.at.z, sz * 0.62, 0.55]);
   });
+
+  // A paper pennant on a stick in front of the tipi, its flag streaming away from the fire.
+  {
+    const tp = camp.tents[2], ax = tp.at.x - fire.x, az = tp.at.z - fire.z, al = Math.hypot(ax, az) || 1, s = tp.size * k;
+    const px = tp.at.x - (ax / al) * s * 0.85 - (az / al) * s * 0.45, pz = tp.at.z - (az / al) * s * 0.85 + (ax / al) * s * 0.45, py = standY(px, pz) ?? fy;
+    const pn = P.pennant(3.1 * k, 1.2 * k), cloth = COLORS[7 % COLORS.length];
+    add(pn.stick, plain(PAPER.kraft), px, py, pz, 0);
+    const flagMat = paperMaterial({ vdecl: "attribute vec2 aFlag; varying vec2 vFlag;", vcode: "vFlag = aFlag;", decl: "varying vec2 vFlag;", side: THREE.DoubleSide, flatShading: true, trans: 0.5, wrap: 0.4, light: OBJECT_LIGHT,
+      color: `diffuseColor.rgb = mix( ${glsl(cloth)}, vec3( 0.96, 0.93, 0.86 ), step( 0.55, vFlag.x ) * step( vFlag.x, 0.7 ) );` });
+    add(pn.flag, flagMat, px, py, pz, Math.atan2(ax, az) - Math.PI / 2);
+    add(P.glueTabs([[-0.2 * k, 0.2 * k, 0.2 * k, 0.2 * k]], 0.12 * k, 1), plain("#d9c7a0", { side: THREE.DoubleSide }), px, py, pz, 0, 1, false);
+    blobs.push([px, pz, 0.3 * k, 0.4]);
+  }
 
   // People: printed cut-outs on little card stands, turned halfway from the fire toward the lens.
   camp.people.forEach((pp, i) => {
@@ -629,8 +671,21 @@ function addCamp(w, V, { standY, camera, blobs, scene, build, rand, logs }) {
   return { x: fire.x, y: fy, z: fire.z };
 }
 
-// White paper wave crests glued on the sea just off the shallows, following the cut edge.
-function addWaves(scene, { shallow, dx, yDeep, step }) {
+// A cut-paper wave: a crescent, thick in the middle and pointed at both ends, lying flat at height y.
+function crescent(pos, cx, cz, tx, tz, len, wid, y) {
+  const nx = tz, nz = -tx, seg = 8, pts = [];
+  for (let k = 0; k <= seg; k++) { const t = k / seg - 0.5; pts.push([t * len, (1 - 4 * t * t) * wid]); }
+  for (let k = seg; k >= 0; k--) { const t = k / seg - 0.5; pts.push([t * len, (1 - 4 * t * t) * wid * 0.35]); }
+  const wp = pts.map(([u, v]) => [cx + tx * u + nx * v, cz + tz * u + nz * v]);
+  for (let k = 0; k < seg; k++) {
+    const o0 = wp[k], o1 = wp[k + 1], i0 = wp[2 * seg + 1 - k], i1 = wp[2 * seg - k];
+    pos.push(o0[0], y, o0[1], i0[0], y, i0[1], o1[0], y, o1[1], o1[0], y, o1[1], i0[0], y, i0[1], i1[0], y, i1[1]);
+  }
+}
+
+// White paper wave crests glued on the sea just off the shallows, following the cut edge, and on every lake,
+// running along its shore.
+function addWaves(scene, { shallow, dx, yDeep, step, lakes, region, standY }) {
   const pos = [];
   const thick = step * 0.06, len = dx * (VIEW === "camp" ? 6 : 9), wid = len * 0.16;
   let n = 0;
@@ -639,20 +694,24 @@ function addWaves(scene, { shallow, dx, yDeep, step }) {
     for (let i = 0; i < loop.length; i += 5) {
       if (hash(i, n, 4) > 0.5) continue;
       const a = loop[i], b = loop[(i + 2) % loop.length];
-      const tx = b[0] - a[0], tz = b[1] - a[1], tl = Math.hypot(tx, tz) || 1, nx = tz / tl, nz = -tx / tl;
-      const o = dx * (2 + hash(i, n, 5) * 9), cx = a[0] + nx * o, cz = a[1] + nz * o;
-      // A crescent: two arcs, thick in the middle, pointed at both ends.
-      const seg = 8, pts = [];
-      for (let k = 0; k <= seg; k++) { const t = k / seg - 0.5, bend = (1 - 4 * t * t) * wid; pts.push([t * len, bend]); }
-      for (let k = seg; k >= 0; k--) { const t = k / seg - 0.5, bend = (1 - 4 * t * t) * wid * 0.35; pts.push([t * len, bend]); }
-      const world = pts.map(([u, v]) => [cx + (tx / tl) * u + nx * v, cz + (tz / tl) * u + nz * v]);
-      const y = yDeep + thick;
-      for (let k = 0; k < seg; k++) {
-        const o0 = world[k], o1 = world[k + 1], i0 = world[2 * seg + 1 - k], i1 = world[2 * seg - k];
-        pos.push(o0[0], y, o0[1], i0[0], y, i0[1], o1[0], y, o1[1], o1[0], y, o1[1], i0[0], y, i0[1], i1[0], y, i1[1]);
-      }
+      const tx = b[0] - a[0], tz = b[1] - a[1], tl = Math.hypot(tx, tz) || 1;
+      const o = dx * (2 + hash(i, n, 5) * 9);
+      crescent(pos, a[0] + (tz / tl) * o, a[1] - (tx / tl) * o, tx / tl, tz / tl, len, wid, yDeep + thick);
       n++;
     }
+  }
+  // Lakes: the lake raster tells inside from shore; its gradient points at the nearest shore.
+  const C = lakes.n, v = (i, j) => lakes.data[(Math.min(C - 1, Math.max(0, j)) * C + Math.min(C - 1, Math.max(0, i))) * 4 + 2] / 255;
+  const cell = region.size / C, llen = len * 0.8, lwid = llen * 0.16, gap = Math.max(1, Math.round((llen * 1.5) / cell)), reach = Math.max(1, Math.round(llen / cell));
+  for (let j = 0; j < C; j += gap) for (let i = 0; i < C; i += gap) {
+    if (hash(i, j, 21) > 0.55) continue;
+    const ii = i + Math.floor((hash(i, j, 22) - 0.5) * gap), jj = j + Math.floor((hash(i, j, 23) - 0.5) * gap);
+    if (v(ii, jj) < 0.9 || v(ii + reach, jj) < 0.8 || v(ii - reach, jj) < 0.8 || v(ii, jj + reach) < 0.8 || v(ii, jj - reach) < 0.8) continue;
+    const x = region.x0 + (ii + 0.5) * cell, z = region.z0 + (jj + 0.5) * cell, y = standY(x, z);
+    if (y === null) continue;
+    const d = reach * 3, gx = v(ii + d, jj) - v(ii - d, jj), gz = v(ii, jj + d) - v(ii, jj - d), gl = Math.hypot(gx, gz);
+    const a = gl > 0.02 ? Math.atan2(gz, gx) + Math.PI / 2 : 0.6 + (hash(i, j, 24) - 0.5) * 0.5;
+    crescent(pos, x, z, Math.cos(a), Math.sin(a), llen * (0.7 + hash(i, j, 25) * 0.6), lwid, y + thick * 0.5);
   }
   if (!pos.length) return;
   const g = new THREE.BufferGeometry();
@@ -713,7 +772,7 @@ function addProps(scene, camera, V, pad, tilt, cx, cz, rand) {
 }
 
 // The cutting mat and the desk under it.
-function addDesk(scene, view, region, V, pad, cx, cz) {
+function addDesk(scene, view, region, V, pad, cx, cz, tilt, rand) {
   const cm = V.mm * 10, size = view === "island" ? pad * 2.9 : region.size * 4;
   const T = 4096, c = canvas(T), g = c.getContext("2d"), px = T / size;
   g.fillStyle = PAPER.mat;
@@ -733,11 +792,41 @@ function addDesk(scene, view, region, V, pad, cx, cz) {
     g.fillText(String(k), k * cm * px, cm * px * 0.75);
     g.save(); g.translate(cm * px * 0.6, k * cm * px); g.rotate(-Math.PI / 2); g.fillText(String(k), 0, 0); g.restore();
   }
+  const off = view === "island" ? [cx - size * 0.1, cz - size * 0.08] : [cx, cz];
+  // Pencil work around the sea sheet: the maker's registration corners, guide lines run past the corners,
+  // a dimension line and a few notes, drawn in sheet coordinates (u, v) on the tilted sheet.
+  const mm = V.mm, P2 = (u, v) => [(cx + u * Math.cos(tilt) - v * Math.sin(tilt) - (off[0] - size / 2)) * px, (cz + u * Math.sin(tilt) + v * Math.cos(tilt) - (off[1] - size / 2)) * px];
+  const sketch = (pts, width = 2.2, alpha = 0.5) => {
+    for (let pass = 0; pass < 2; pass++) {
+      g.strokeStyle = `rgba(214,214,206,${alpha * (pass ? 0.55 : 1)})`;
+      g.lineWidth = width * (pass ? 0.7 : 1);
+      g.beginPath();
+      pts.forEach(([u, v], i) => { const [x, y] = P2(u + (rand() - 0.5) * mm * 1.2 * pass, v + (rand() - 0.5) * mm * 1.2 * pass); i ? g.lineTo(x, y) : g.moveTo(x, y); });
+      g.stroke();
+    }
+  };
+  const e = pad + 14 * mm, far = pad + 70 * mm;
+  for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    sketch([[su * (pad - 30 * mm), sv * e], [su * e, sv * e], [su * e, sv * (pad - 30 * mm)]], 3);
+    sketch([[su * pad, sv * (pad + 6 * mm)], [su * pad, sv * far]], 1.6, 0.35);
+    sketch([[su * (pad + 6 * mm), sv * pad], [su * far, sv * pad]], 1.6, 0.35);
+  }
+  const dv = pad + 40 * mm;
+  sketch([[-pad, dv], [pad, dv]], 2);
+  for (const s of [-1, 1]) sketch([[s * pad + s * -12 * mm, dv - 5 * mm], [s * pad, dv], [s * pad + s * -12 * mm, dv + 5 * mm]], 2);
+  g.fillStyle = "rgba(214,214,206,0.6)";
+  g.font = `italic ${Math.round(24 * mm * px)}px serif`;
+  const label = (u, v, text, rot = 0) => { const [x, y] = P2(u, v); g.save(); g.translate(x, y); g.rotate(tilt + rot + Math.PI); g.fillText(text, 0, 0); g.restore(); };
+  label(0, dv + 26 * mm, `${Math.round((pad * 2) / mm / 10)} cm`);
+  label(-pad - 44 * mm, 0, "contours every 16 m", -Math.PI / 2);
+  label(pad * 0.55, -pad - 30 * mm, "sheet 24: cut twice!");
+  sketch([[pad * 0.52, -pad - 58 * mm], [pad * 0.92, -pad - 56 * mm]], 1.8, 0.4);
+  for (let k = 0; k < 5; k++) sketch([[-pad * 0.6 + k * 9 * mm, pad + 70 * mm], [-pad * 0.6 + k * 9 * mm + 3 * mm, pad + 95 * mm]], 2);
+  sketch([[-pad * 0.62, pad + 88 * mm], [-pad * 0.6 + 44 * mm, pad + 76 * mm]], 2);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
   const mat = paperMaterial({ map: tex, grain: 0.05, wrap: 0.1, trans: 0, light: "ao = 1.0;" });
-  const off = view === "island" ? [cx - size * 0.1, cz - size * 0.08] : [cx, cz];
   const matMesh = new THREE.Mesh(new THREE.BoxGeometry(size, cm * 0.3, size).translate(0, -cm * 0.15, 0), mat);
   matMesh.position.set(off[0], 0, off[1]);
   matMesh.receiveShadow = true;

@@ -4,7 +4,7 @@ import * as THREE from "three";
 import { grow, hash } from "../world.js";
 import { COLORS } from "../island.js";
 import * as PX from "./pixels.js";
-import { tiers, paintGround, buildTerrain, pixelTex, ripple, PALETTE, landTop, SKY } from "./terrain.js";
+import { ground, outcrops, paintGround, buildTerrain, pixelTex, ripple, PALETTE, SKY } from "./terrain.js";
 import { Cards, mirror, spriteTex } from "./sprites.js";
 import { makePost } from "./post.js";
 
@@ -13,17 +13,17 @@ const DEG = Math.PI / 180;
 
 const VIEWS = {
   island: {
-    fov: 32, pitch: 40, T: 60, ppt: 5, base: 8, step: 56, drop: 5, levels: [0, 4, 10, 20, 34, 52, 75, 105, 145, 195, 260, 340],
-    rockLevel: 7, rivers: true, flowers: 0, sparkle: 2, waterTone: 0.6, trodden: false, mini: true, tree: 16, small: 13, treeScale: 1,
+    fov: 32, pitch: 40, T: 60, ppt: 5, mesh: 30, vex: 2, rock: { cell: 110, slope: 0.5, strata: 30, lift: 0.5 },
+    rivers: true, flowers: 0, sparkle: 2, waterTone: 0.6, trodden: false, mini: true, tree: 16, small: 13, treeScale: 1,
     sun: [0.8, 0.3, 0.5], lens: { k: 26, band: 1.0, max: 26, tilt: 14 }, fog: [0.9, 2.3], shadow: 4096,
   },
   valley: {
-    fov: 32, pitch: 31, dist: 270, lift: 0, ahead: 0, vex: 3.6, T: 6, ppt: 16, base: 1, step: 4.5, drop: 0.6, rockLevel: 30, rivers: true, flowers: 0.012,
+    fov: 32, pitch: 31, dist: 270, lift: 0, ahead: 0, vex: 2.5, T: 6, ppt: 16, mesh: 3, rock: { cell: 8, slope: 0.2, strata: 0.9, lift: 1.4 }, rivers: true, flowers: 0.012,
     sparkle: 2.2, waterTone: 0.5, trodden: true, tree: 0.45, small: 0.28, treeScale: 1.0, sun: [0.82, 0.3, 0.52],
     lens: { k: 32, band: 2.2, max: 28, tilt: 10 }, fog: [1.2, 4.5], shadow: 4096,
   },
   camp: {
-    fov: 30, pitch: 28, dist: 22, lift: 0.8, frame: true, yaw: -0.4, vex: 3.6, T: 6, ppt: 60, base: 1, step: 2.4, drop: 0.6, rockLevel: 30, rivers: true, flowers: 0.003,
+    fov: 30, pitch: 28, dist: 22, lift: 0.8, frame: true, yaw: -0.4, vex: 2.5, T: 6, ppt: 60, mesh: 1, rock: { cell: 8, slope: 0.2, strata: 0.9, lift: 1.4 }, rivers: true, flowers: 0.003,
     sparkle: 2.2, waterTone: 0.5, trodden: true, tree: 0.17, small: 0.1, treeScale: 0.9, sun: [0.82, 0.34, 0.4], person: 1.6, tent: 1.1,
     lens: { k: 70, max: 30, tilt: 0 }, fog: [3, 12], shadow: 2048,
   },
@@ -59,7 +59,7 @@ export async function run() {
   const t0 = performance.now(), w = grow(seed), log = (s) => console.log(`[hd2d] ${s} ${Math.round(performance.now() - t0)} ms`);
   log("grow");
   const camp = w.camp, fire = camp.fire, rnd = mulberry(seed * 7919 + name.length);
-  fire.y = landTop(w, V, fire.x, fire.z);
+  fire.y = w.heightAt(fire.x, fire.z) * V.vex;
 
   // ---------- camera ----------
   const up = new THREE.Vector3(0, 1, 0);
@@ -102,12 +102,10 @@ export async function run() {
 
   // ---------- ground ----------
   V.region = V.mini ? regionFor(camera, w, V.T, 600) : regionFor(camera, w, V.T, V.T * 4);
-  const t = tiers(w, V);
-  const paint = paintGround(w, V, t);
-  log(`ground ${V.region.nx}x${V.region.nz} tiles`);
+  const t = ground(w, V), rock = outcrops(w, V, t), paint = paintGround(w, V, t);
+  log(`ground ${V.region.nx}x${V.region.nz} tiles, ${rock.n} outcrops`);
   const scene = new THREE.Scene();
-  const terrain = buildTerrain(w, V, t, paint);
-  scene.add(terrain.tops, ...terrain.walls);
+  scene.add(...buildTerrain(w, V, t, paint, rock));
   // Open sea past the diorama's edge, well under the water tiles so depth precision never lets it through.
   {
     const sp = new PX.Px(32, 32), deep = PALETTE.water[6];
@@ -203,12 +201,13 @@ export async function run() {
     const fH = name === "camp" ? 7 : Math.max(3, Math.round(0.45 / V.small)), flowers = PX.FLOWER.map((_, k) => cards.type(PX.flower(fH, 600 + k, k / PX.FLOWER.length + 0.01), V.small, { cast: false }));
     const gscale = name === "camp" ? 1.1 : 1.6;
     for (const g of near.grass) {
-      if (name === "camp" && g.tint > 0.55) continue;
+      if ((name === "camp" && g.tint > 0.55) || t.worn(g.x, g.z)) continue;
       const y = t.groundAt(g.x, g.z);
       if (y === null || !inView(g.x, y, g.z, 1)) continue;
       cards.add(pick(grasses, g.tint), g.x, y, g.z, (g.tall * gscale) / (gH * V.small));
     }
     for (const f of near.flowers) {
+      if (t.worn(f.x, f.z)) continue;
       const y = t.groundAt(f.x, f.z);
       if (y === null || !inView(f.x, y, f.z, 1)) continue;
       cards.add(flowers[Math.floor(f.hue * flowers.length) % flowers.length], f.x, y, f.z, name === "camp" ? (f.tall + 0.15) / (fH * V.small) : 2.2);
@@ -295,8 +294,7 @@ export async function run() {
     const lc = sun.shadow.camera;
     lc.position.copy(sun.position); lc.lookAt(target); lc.updateMatrixWorld();
     const inv = lc.matrixWorldInverse, b = new THREE.Box3();
-    let ymax = 0;
-    for (let k = 0; k < t.top.length; k++) ymax = Math.max(ymax, t.top[k]);
+    const ymax = t.ymax;
     for (const x of [R.x0, rx1]) for (const z of [R.z0, rz1]) for (const y of [-2, ymax + 30]) b.expandByPoint(new THREE.Vector3(x, y, z).applyMatrix4(inv));
     lc.left = b.min.x; lc.right = b.max.x; lc.bottom = b.min.y; lc.top = b.max.y; lc.near = Math.max(1, -b.max.z - 10); lc.far = -b.min.z + 10;
     lc.updateProjectionMatrix();

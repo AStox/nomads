@@ -1,6 +1,6 @@
 // The camp drawn over a local grid: at valley scale a cluster of glyphs, at a metre a cell tents that span cells,
 // a fire with its light, people, the woodpile, and every tuft, flower and pebble around them.
-import { clamp, hash, noise } from "../world.js";
+import { clamp, smooth, hash, noise, fbm } from "../world.js";
 import { P, sc, mix, hexRGB } from "./term.js";
 import { TREE } from "./map.js";
 
@@ -57,31 +57,42 @@ function freeCell(g, x, z) {
 }
 
 // ---------------------------------------------------------------- valley scale: the camp as a knot of glyphs
-// Offsets from the fire are stretched so tents, people and woodpile each get a cell of their own at this scale.
+// Laid out in cells, not metres: each thing keeps its bearing from the fire but gets room to read at this scale.
 export function campValley(w, g, colors) {
-  const c = w.camp, f = c.fire, out = (p, m) => [f.x + (p.x - f.x) * m, f.z + (p.z - f.z) * m];
-  const fk = g.at(f.x, f.z), fi = fk % g.cols, fj = (fk / g.cols) | 0;
-  // Trodden ground: the clearing reads as a camp before the glyphs do.
-  for (let b = -3; b <= 3; b++) for (let a = -3; a <= 3; a++) {
-    const d = Math.hypot(a, b), i = fi + a, j = fj + b, k = j * g.cols + i;
-    if (d > 2.9 || i < 0 || j < 0 || i >= g.cols || j >= g.rows || g.water[k]) continue;
-    const worn = 1 - d / 3;
-    g.bg[k] = mix(g.bg[k], sc(mix(P.w, P.s, 0.3), 0.36), worn);
-    if (d > 0.5) { g.ch[k] = hash(i, j, 55) < 0.5 ? "." : ","; g.fg[k] = sc(P.w, 0.75); }
+  const c = w.camp, f = c.fire, fk = g.at(f.x, f.z), fi = fk % g.cols, fj = (fk / g.cols) | 0;
+  const toward = (p, cells) => { const a = Math.atan2(p.z - f.z, p.x - f.x); return freeCell(g, g.cx(fi) + Math.cos(a) * cells * g.s, g.cz(fj) + Math.sin(a) * cells * g.s); };
+  const inside = (i, j) => i >= 0 && j >= 0 && i < g.cols && j < g.rows;
+  // A trodden clearing with a ragged edge.
+  for (let b = -5; b <= 5; b++) for (let a = -5; a <= 5; a++) {
+    const i = fi + a, j = fj + b, k = j * g.cols + i;
+    if (!inside(i, j) || g.water[k]) continue;
+    const d = Math.hypot(a, b) + (hash(i, j, 56) - 0.5) * 1.4, worn = 1 - d / 4.6;
+    if (worn <= 0) continue;
+    g.bg[k] = mix(g.bg[k], sc(mix(P.w, P.s, 0.3), 0.4), Math.min(1, worn * 1.6));
+    g.ch[k] = hash(i, j, 55) < 0.35 ? "." : hash(i, j, 57) < 0.3 ? "," : " "; g.fg[k] = sc(P.w, 0.8);
   }
-  glowAround(g, f.x, f.z, g.s * 3.4, 1);
-  g.put(fk, "☼", P.Y, sc(P.o, 0.8)); g.glow[fk] = 1; g.bgGlow[fk] = 0.7; g.used[fk] = 1;
+  glowAround(g, f.x, f.z, g.s * 5, 1);
+  // The fire in its ring of stones.
+  for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) {
+    const i = fi + a, j = fj + b, k = j * g.cols + i;
+    if (!inside(i, j) || (!a && !b)) continue;
+    g.put(k, a && b ? "∙" : "o", mix(P.s, P.O, 0.4), sc(P.o, 0.42)); g.glow[k] = 0.3; g.bgGlow[k] = 0.4; g.used[k] = 1;
+  }
+  g.put(fk, "☼", P.Y, sc(P.O, 0.9)); g.glow[fk] = 1; g.bgGlow[fk] = 0.9; g.used[fk] = 1;
+  // Tents as a roof two cells wide, "/\" on a block of the tent's colour.
   c.tents.forEach((t, n) => {
-    const k = freeCell(g, ...out(t.at, 1.7)), col = P[TENT_COLORS[n][0]];
-    g.put(k, "▲", col, sc(col, 0.32)); g.glow[k] = 0.45; g.used[k] = 1;
+    const k = toward(t.at, 3.4), col = P[TENT_COLORS[n][0]], i = k % g.cols;
+    const k2 = i + 1 < g.cols && g.used[k + 1] !== 1 ? k + 1 : k - 1, [l, r] = k2 > k ? [k, k2] : [k2, k];
+    g.put(l, "/", mix(col, P.Y, 0.35), sc(col, 0.6)); g.put(r, "\\", mix(col, P.Y, 0.2), sc(col, 0.42));
+    g.glow[l] = g.glow[r] = 0.45; g.used[l] = g.used[r] = 1;
   });
-  const wk = freeCell(g, ...out(c.woodpile, 1.6));
-  g.put(wk, "≡", sc(P.w, 1.35), sc(P.w, 0.3)); g.used[wk] = 1;
+  const wk = toward(c.woodpile, 2.5), wi = wk % g.cols, wk2 = wi + 1 < g.cols && g.used[wk + 1] !== 1 ? wk + 1 : wk - 1;
+  for (const k of [wk, wk2]) { g.put(k, "≡", sc(P.w, 1.35), sc(P.w, 0.34)); g.used[k] = 1; }
   c.people.forEach((p, n) => {
-    const k = freeCell(g, ...out(p.at, 3.2));
-    g.put(k, "@", personColor(colors[n]), mix(g.bg[k], P[0], 0.4)); g.glow[k] = 0.5; g.used[k] = 1;
+    const k = toward(p.at, 2);
+    g.put(k, "@", personColor(colors[n]), mix(g.bg[k], P[0], 0.45)); g.glow[k] = 0.55; g.used[k] = 1;
   });
-  smoke(w, g, f.x, f.z, g.s * 9, g.s);
+  smoke(w, g, f.x, f.z, g.s * 11, g.s);
   return { fire: fk };
 }
 
@@ -89,42 +100,61 @@ export function campValley(w, g, colors) {
 export function plantClose(w, g) {
   const c = w.camp.at, half = Math.hypot(g.cols, g.rows) * g.s * 0.5;
   const near = w.nearby(c, half * 1.9, 2.1);
-  // A few more scatter passes close in, for pebbles: the world scatters them thinly, one per metre of radius.
-  for (let n = 0; n < 4; n++) near.pebbles.push(...w.nearby(c, half * 0.95, 0.01).pebbles);
+  // More scatter passes close in, for stones: the world scatters pebbles thinly, one per metre of radius.
+  for (let n = 0; n < 14; n++) near.pebbles.push(...w.nearby(c, half * 0.95, 0.01).pebbles);
   const x0 = g.ox, z0 = g.oz, x1 = g.ox + g.cols * g.s, z1 = g.oz + g.rows * g.s;
   const inView = (o, m = 0) => o.x >= x0 - m && o.x < x1 + m && o.z >= z0 - m && o.z < z1 + m;
   const stats = { grass: 0, flowers: 0, pebbles: 0, trees: 0, shrubs: 0, rocks: 0, logs: 0 };
-  // Each cell shows its tallest tuft; several tufts in one metre make a clump, the shortest leave bare ground.
-  const top = new Array(g.cols * g.rows).fill(null), count = new Uint8Array(g.cols * g.rows);
+  // Grass grows in clumps: a noise field, nudged by the meadow share, splits the ground into dense tussock, thin
+  // sward and open earth, and decides which of the world's tufts survive.
+  const n = g.cols * g.rows, clump = new Float32Array(n);
+  for (let k = 0; k < n; k++) {
+    const x = g.cx(k % g.cols), z = g.cz((k / g.cols) | 0);
+    const meadow = w.fine(w.cover.grass, x, z) + w.fine(w.cover.shrub, x, z) * 0.5 + w.fine(w.cover.marsh, x, z) * 0.8;
+    clump[k] = smooth(0.36, 0.64, 0.5 + 0.95 * fbm(x / 6, z / 6, 77, 3) + 0.22 * noise(x / 1.8, z / 1.8, 78) + (meadow - 0.6) * 0.4);
+    if (g.water[k]) continue;
+    const dense = smooth(0.3, 0.72, clump[k]), lit = g.lit[k] || 1;
+    g.bg[k] = mix(sc(mix(P.w, P.t, 0.2), 0.27 * lit), sc(mix(P.p, P.g, 0.5), 0.3 * lit), dense);
+    const r = hash(k, 3, 81);
+    if (dense < 0.25 && r < 0.3) g.put(k, r < 0.12 ? "." : r < 0.22 ? "," : "∙", sc(P.w, 0.62 * lit), null);
+    else if (dense > 0.55) g.put(k, ["'", '"', ";", ",", "`", '"'][(r * 6) | 0], sc([P.p, P.g, P.G, P.g, P.l][(hash(k, 4, 81) * 5) | 0], (0.7 + r * 0.35) * lit), null);
+    else g.put(k, " ", null, null);
+  }
+  g.clump = clump;
+  const top = new Array(n).fill(null), count = new Uint8Array(n);
   for (const t of near.grass) {
     const k = g.at(t.x, t.z);
     if (k < 0 || g.water[k]) continue;
+    if (hash(Math.floor(t.x * 7), Math.floor(t.z * 7), 79) > 0.06 + 0.94 * smooth(0.3, 0.66, clump[k])) continue;
     count[k]++;
     stats.grass++;
     if (!top[k] || top[k].tall < t.tall) top[k] = t;
   }
-  for (let k = 0; k < top.length; k++) {
+  for (let k = 0; k < n; k++) {
     const t = top[k];
-    if (!t || (t.tall < 0.55 && count[k] < 2)) continue;
-    const lit = g.lit[k] || 1, u = t.tint, h = t.tall + (count[k] - 1) * 0.06;
+    if (!t) continue;
+    const lit = g.lit[k] || 1, u = t.tint, dense = smooth(0.3, 0.72, clump[k]), h = t.tall + (count[k] - 1) * 0.07 + dense * 0.2;
     // Height picks the kind of mark, the tuft's own heading picks among marks of that height.
     const q = Math.floor((t.yaw / (Math.PI * 2)) * 4) & 3;
-    const ch = h > 0.84 ? '"' : h > 0.7 ? ['"', "'", ";", '"'][q] : h > 0.56 ? [",", "'", "`", ";"][q] : [".", "`", ",", "."][q];
-    const code = u < 0.3 ? "l" : u < 0.6 ? "G" : u < 0.75 ? "g" : u < 0.93 ? "v" : "W";
-    g.put(k, ch, sc(P[code], lit * (0.5 + Math.min(1, h) * 0.5)), null);
+    const ch = h > 1.08 ? ['"', "√", '"', '"'][q] : h > 0.8 ? ['"', "'", '"', ";"][q] : h > 0.6 ? [",", "'", "`", ";"][q] : [".", "`", ",", "."][q];
+    const code = dense > 0.6 ? (u < 0.4 ? "G" : u < 0.75 ? "g" : "l") : u < 0.35 ? "l" : u < 0.6 ? "v" : u < 0.85 ? "G" : "W";
+    g.put(k, ch, sc(P[code], lit * (0.55 + Math.min(1.1, h) * 0.45)), null);
   }
   for (const fl of near.flowers) {
     const k = g.at(fl.x, fl.z);
-    if (k < 0 || g.water[k]) continue;
+    if (k < 0 || g.water[k] || clump[k] < 0.28) continue;
     const code = fl.hue < 0.3 ? "P" : fl.hue < 0.5 ? "M" : fl.hue < 0.68 ? "W" : fl.hue < 0.86 ? "Y" : "m";
     g.put(k, code === "P" && fl.hue < 0.08 ? "♥" : "*", sc(P[code], 0.9), null);
     g.glow[k] = 0.15;
     stats.flowers++;
   }
+  // Stones lie mostly on the open ground; the tussock hides most of them.
   for (const pb of near.pebbles) {
     const k = g.at(pb.x, pb.z);
-    if (k < 0 || g.water[k]) continue;
-    g.put(k, pb.size > 0.48 ? "o" : pb.size > 0.3 ? "∙" : "·", sc(pb.tint < 0.4 ? P.y : pb.tint < 0.85 ? P.s : P.Y, 0.85), null);
+    if (k < 0 || g.water[k] || hash(Math.floor(pb.x * 5), Math.floor(pb.z * 5), 82) < smooth(0.4, 0.8, clump[k]) * 0.85) continue;
+    const col = sc(pb.tint < 0.4 ? P.y : pb.tint < 0.85 ? P.s : P.Y, 0.85);
+    if (pb.size > 0.5) g.put(k, "•", col, sc(P.s, 0.3));
+    else g.put(k, pb.size > 0.34 ? "o" : pb.size > 0.22 ? "∙" : "·", col, null);
     stats.pebbles++;
   }
   for (const lg of near.logs) {
@@ -195,18 +225,31 @@ export function campClose(w, g, colors) {
     const r = hash(i, j, 51);
     g.put(k, r < 0.35 ? "." : r < 0.5 ? "," : r < 0.62 ? "∙" : " ", sc(P.w, 0.9), sc(mix(P.w, P.s, 0.3), 0.3 + worn * 0.12));
   }
-  // Worn paths from each tent door and the woodpile to the fire.
-  const path = (x0, z0) => {
-    const n = Math.ceil(Math.hypot(f.x - x0, f.z - z0) / (g.s * 0.5));
-    for (let q = 0; q <= n; q++) {
-      const x = x0 + ((f.x - x0) * q) / n, z = z0 + ((f.z - z0) * q) / n, k = g.at(x, z);
-      if (Math.hypot(x - f.x, z - f.z) < 1.6) break;
-      if (k < 0 || g.used[k]) continue;
-      const i = k % g.cols, j = (k / g.cols) | 0, r = hash(i, j, 54);
-      g.put(k, r < 0.4 ? "." : r < 0.6 ? "," : r < 0.7 ? "∙" : " ", sc(P.w, 0.8), sc(mix(P.w, P.s, 0.3), 0.34));
+  // Worn paths, a metre or so wide and wandering a little, from each tent door, the woodpile and the water to the fire.
+  const worn = new Float32Array(g.cols * g.rows), paths = [];
+  const path = (x0, z0, x1 = f.x, z1 = f.z, half = 0.95) => {
+    const L = Math.hypot(x1 - x0, z1 - z0);
+    if (L < 0.5) return;
+    const nx = -(z1 - z0) / L, nz = (x1 - x0) / L, steps = Math.ceil(L / 0.3), seed = Math.abs(Math.floor(x0 * 3 + z0 * 7)) % 997;
+    for (let q = 0; q <= steps; q++) {
+      const t = q / steps, wob = noise((t * L) / 6, 0.5, seed) * Math.min(1.6, L * 0.1) * Math.sin(Math.PI * Math.min(1, t * 1.5));
+      const px = x0 + (x1 - x0) * t + nx * wob, pz = z0 + (z1 - z0) * t + nz * wob;
+      for (let b = -2; b <= 2; b++) for (let a = -2; a <= 2; a++) {
+        const k = g.at(px + a * g.s, pz + b * g.s);
+        if (k < 0) continue;
+        const d = Math.hypot(g.cx(k % g.cols) - px, g.cz((k / g.cols) | 0) - pz) / half;
+        if (d < 1) worn[k] = Math.max(worn[k], 1 - d * 0.6);
+      }
     }
   };
-  path(c.woodpile.x, c.woodpile.z);
+  paths.push([c.woodpile.x, c.woodpile.z]);
+  // The nearest water along 48 bearings; each bearing only searches closer than the best found so far.
+  let water = null;
+  for (let a = 0; a < 48; a++) for (let d = 4; d < (water ? water.d : 220); d += 2) {
+    const x = f.x + Math.cos((a / 48) * Math.PI * 2) * d, z = f.z + Math.sin((a / 48) * Math.PI * 2) * d;
+    if (w.fine(w.wet, x, z) > 0.5 || w.riverAt(x, z) > 0.3) { water = { x, z, d }; break; }
+  }
+  if (water) paths.push([water.x, water.z]);
   // Tents squared to the grid: a ridge pointing at the fire, a lit and a shaded roof panel, a dark doorway on the fire
   // side, a cast shadow to the southeast, and stakes.
   c.tents.forEach((t, n) => {
@@ -218,7 +261,7 @@ export function campClose(w, g, colors) {
     const cell = (du, dv) => { const i = ti + du * ux + dv * vx, j = tj + du * uz + dv * vz; return i >= 0 && j >= 0 && i < g.cols && j < g.rows ? j * g.cols + i : -1; };
     const cells = [];
     for (let du = back; du <= front; du++) for (let dv = -1; dv <= 1; dv++) { const k = cell(du, dv); if (k >= 0) cells.push([k, du, dv]); }
-    { const k = cell(front + 1, 0); if (k >= 0) path(g.cx(k % g.cols), g.cz((k / g.cols) | 0)); }
+    { const k = cell(front + 1, 0); if (k >= 0) paths.push([g.cx(k % g.cols), g.cz((k / g.cols) | 0)]); }
     for (const [k] of cells) {
       const i = k % g.cols, j = (k / g.cols) | 0, s = (j + 1) * g.cols + i + 1;
       if (i + 1 < g.cols && j + 1 < g.rows && !g.used[s]) { g.bg[s] = sc(g.bg[s], 0.4); g.fg[s] = sc(g.fg[s], 0.45); }
@@ -232,14 +275,25 @@ export function campClose(w, g, colors) {
     }
     for (const [du, dv] of [[back - 1, 0], [front + 1, 0]]) {
       const k = cell(du, dv);
-      if (k >= 0 && !g.used[k]) g.put(k, "·", sc(P.y, 0.9), null);
+      if (k >= 0 && !g.used[k]) { g.put(k, "·", sc(P.y, 0.9), null); g.used[k] = 3; }
     }
     // Guy lines run out from the corners on the diagonal.
     for (const [su, sv] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
       const k = cell(su > 0 ? front + 1 : back - 1, sv * 2), dx = su * ux + sv * vx, dz = su * uz + sv * vz;
-      if (k >= 0 && !g.used[k]) g.put(k, dx * dz > 0 ? "\\" : "/", sc(P.y, 0.7), null);
+      if (k >= 0 && !g.used[k]) { g.put(k, dx * dz > 0 ? "\\" : "/", sc(P.y, 0.7), null); g.used[k] = 3; }
     }
   });
+  for (const [x, z] of paths) path(x, z);
+  const earth = sc(mix(P.w, P.t, 0.35), 0.36);
+  for (let k = 0; k < worn.length; k++) {
+    if (!worn[k] || g.used[k] || g.water[k]) continue;
+    const r = hash(k, 5, 83), t = worn[k];
+    g.bg[k] = mix(g.bg[k], earth, Math.min(1, 0.35 + t * 0.75));
+    if (t > 0.62) {
+      g.ch[k] = r < 0.22 ? "." : r < 0.32 ? "," : r < 0.36 ? "∙" : " ";
+      g.fg[k] = sc(P.w, 0.6);
+    } else g.fg[k] = sc(g.fg[k], 0.7);
+  }
   // The woodpile: split logs stacked across the line to the fire.
   {
     const p = c.woodpile, ux = (f.x - p.x) / Math.hypot(f.x - p.x, f.z - p.z), uz = (f.z - p.z) / Math.hypot(f.x - p.x, f.z - p.z);

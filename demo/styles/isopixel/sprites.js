@@ -197,6 +197,13 @@ export function mini(kind, rp) {
   return S;
 }
 
+export function miniRock(big, snow) {
+  const rows = big ? [" ab ", "abbc", "bccc"] : ["ab", "bc"], S = new Spr(rows[0].length + 1, rows.length + 1, rows[0].length >> 1, rows.length - 1);
+  rows.forEach((row, y) => [...row].forEach((ch, x) => { if (ch !== " ") S.set(x, y, ch === "a" ? (snow ? P.snow : P.r5) : ch === "b" ? P.r3 : P.r1); }));
+  S.outline(P.r0, true);
+  return S;
+}
+
 export function miniTent() {
   const S = new Spr(6, 4, 2, 2);
   ["  a  ", " abc ", "abbcc"].forEach((row, y) => [...row].forEach((ch, x) => { if (ch !== " ") S.set(x, y, ch === "a" ? P.s3 : ch === "b" ? P.s2 : P.s0); }));
@@ -315,6 +322,61 @@ export function person(hpx, cloth, facing, pose, seed, side = 0) {
     }
   }
   S.outline(P.ink);
+  return S;
+}
+
+// A fern: fronds arching out and down from the crown, lit at their tops.
+export function fern(size, seed) {
+  const R = Math.max(3, Math.round(size)), S = new Spr(R * 2 + 3, R + 3, R + 1, R + 1), cx = R + 1, base = R + 1;
+  const n = 5 + Math.floor(h2(seed, 1) * 3);
+  for (let f = 0; f < n; f++) {
+    const a = Math.PI * (0.08 + (0.84 * (f + h2(f, seed, 2) * 0.6)) / n), L = R * (0.7 + h2(f, seed, 3) * 0.3);
+    for (let k = 0; k <= L * 2; k++) {
+      const t = k / (L * 2), x = cx - Math.cos(a) * L * t, y = base - Math.sin(a) * L * t * 1.1 + t * t * L * 0.6;
+      S.set(x, y, t < 0.5 ? P.g2 : (k & 1) ? P.g4 : P.g3);
+      if (k % 2 === 0 && t > 0.25) S.set(x, y - 1, t > 0.6 ? P.g5 : P.g4);
+    }
+  }
+  S.outline(P.t1, true);
+  return S;
+}
+
+// A felled-tree stump: a ringed cut face on a short bark drum, lit from the left.
+export function stump(r, hpx, seed) {
+  r = Math.max(2, Math.round(r)); hpx = Math.max(2, Math.round(hpx));
+  const W = r * 2 + 4, H = r + hpx + 3, S = new Spr(W, H, r + 2, H - 2), cx = r + 2, top = Math.ceil(r / 2) + 0.5;
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      const dx = (x + 0.5 - cx) / r;
+      if (Math.abs(dx) > 1) continue;
+      const ey = Math.sqrt(1 - dx * dx) * (r / 2), yTop = top - ey, yBot = top + ey + hpx;
+      if (y + 0.5 < yTop || y + 0.5 > yBot) continue;
+      if (y + 0.5 < top + ey) {
+        const d = Math.hypot(dx, (y + 0.5 - top) / (r / 2));
+        S.set(x, y, d > 0.82 ? P.d3 : Math.floor(d * r * 0.9 + h2(x, y, seed) * 0.4) & 1 ? P.d4 : P.d5);
+      } else S.set(x, y, dx < -0.4 ? P.d3 : dx < 0.35 ? (h2(x, y >> 1, seed) < 0.2 ? P.d1 : P.d2) : P.d1);
+    }
+  S.set(cx - r - 1, H - 2, P.d2); S.set(cx + r, H - 2, P.d1);
+  S.outline(P.ink, true);
+  return S;
+}
+
+// A fallen trunk lying along one tile axis (dir +1 or -1), with its cut end toward the viewer.
+export function log(len, r, dir, seed) {
+  len = Math.max(4, Math.round(len)); r = Math.max(1.5, r);
+  const W = Math.ceil(len + r * 2 + 3), H = Math.ceil(len * 0.5 + r * 2 + 3), S = new Spr(W, H, W >> 1, H - 2);
+  const x0 = r + 1, y0 = dir > 0 ? r + 1 : H - r - 2;
+  for (let t = 0; t <= len; t += 0.5) {
+    const cx = x0 + t, cy = y0 + dir * t * 0.5;
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (dx * dx + dy * dy > r * r) continue;
+      const f = dy / r;
+      S.set(cx + dx, cy + dy, f < -0.45 ? P.d3 : f < 0.3 ? (h2(Math.round(cx + dx), Math.round(cy + dy), seed) < 0.25 ? P.d1 : P.d2) : P.d1);
+    }
+  }
+  const ex = dir > 0 ? x0 + len : x0, ey = dir > 0 ? y0 + len * 0.5 : y0;
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) { const d = Math.hypot(dx, dy) / r; if (d <= 1) S.set(ex + dx * 0.7, ey + dy, d > 0.75 ? P.d3 : d < 0.3 ? P.d4 : P.d5); }
+  S.outline(P.ink, true);
   return S;
 }
 

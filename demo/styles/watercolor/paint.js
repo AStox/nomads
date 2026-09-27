@@ -36,7 +36,7 @@ uniform vec2 res, origin, ax, ay;
 uniform float gStart, gStep, gM;
 uniform sampler2D fA, fB, fC, dist;
 uniform vec4 frame, vig, hole;
-uniform float seaReach, coastBand, highT, shadeT1, shadeT2, warp, gscale;
+uniform float seaReach, coastBand, highT, shadeT1, shadeT2, warp, gscale, margin, gaps;
 layout(location = 0) out vec4 o0;
 layout(location = 1) out vec4 o1;
 layout(location = 2) out vec4 o2;
@@ -87,11 +87,15 @@ void main() {
   for (int i = 0; i < 6; i++) s[i] += 0.05 * gnoise(p / 37.0 + float(i) * 11.3);
   float t1 = -1.0, t2 = -1.0;
   for (int i = 0; i < 6; i++) { if (s[i] > t1) { t2 = t1; t1 = s[i]; } else if (s[i] > t2) t2 = s[i]; }
+  // Paper left unpainted: irregular gaps that favour the sunlit slopes, where a painter would keep the white.
+  float gapF = 0.8 * fbm(p / 55.0 + 71.0) + 0.12 * gnoise(p / 9.0) + 1.1 * (0.22 - CS.x) - gaps;
+  float paper = 1.0 - cut(gapF, 0.0);
   float c[6];
   for (int i = 0; i < 6; i++) {
     float other = s[i] >= t1 ? t2 : t1;
-    c[i] = land * cut(s[i] - other, 1.6 * gnoise(p / 45.0 + float(i) * 5.1) + 0.6);
+    c[i] = land * paper * cut(s[i] - other, 1.6 * gnoise(p / 45.0 + float(i) * 5.1) + margin);
   }
+  land *= mix(1.0, paper, 0.8);
   float sh1 = land * cut(CS.x - shadeT1, 1.5 * gnoise(p / 15.0 + 2.0));
   float sh2 = land * cut(CS.x - shadeT2, 1.5 * gnoise(p / 15.0 + 9.0));
   o0 = vec4(sea, glaze, hi, land);
@@ -135,9 +139,9 @@ export const PIGMENT = {
 const COMPOSITE = `#version 300 es
 precision highp float;
 uniform vec2 res, origin, ax, ay;
-uniform float gStart, gStep, gM, seaReach, symEdge;
+uniform float gStart, gStep, gM, seaReach, symEdge, bloomS, landK, card;
 uniform sampler2D m0, m1, m2, m3, b0, b1, b2, b3, sym, symB, ink, dist, fC;
-uniform vec4 sheet, tone;
+uniform vec4 sheet, tone, glz, vig;
 out vec4 outColor;
 ${NOISE}
 ${Object.entries(PIGMENT).map(([k, v]) => `const vec3 K_${k.toUpperCase()} = ${K(v)};`).join("\n")}
@@ -171,7 +175,7 @@ void main() {
   turbB = fbm(p / 60.0 + 9.0);
   nHi = gnoise(p / 4.5);
   bleedF = smoothstep(-0.05, 0.4, fbm(p / 160.0 + 4.0));
-  float bl = fbm(p / 120.0 + 13.0) + 0.11 * gnoise(p / 3.6) + 0.05 * gnoise(p / 1.8);
+  float bl = fbm(p / (120.0 * bloomS) + 13.0) + 0.11 * gnoise(p / 3.6) + 0.05 * gnoise(p / 1.8);
   float bIn = smoothstep(0.36, 0.39, bl), bRim = smoothstep(0.29, 0.36, bl) * (1.0 - bIn);
   float bloom = 1.0 - 0.5 * bIn + 0.75 * bRim;
   gran = clamp(0.3 + 1.4 * (1.0 - h0) + 0.4 * gnoise(p / 1.5), 0.05, 2.4);
@@ -190,8 +194,8 @@ void main() {
   A += mix(mix(K_SEA, K_SEA2, v1), K_LAKE, lake) * dens(M0.x, B0.x, 0.72 * tone.z * mix(seaGrad, 1.0, lake), 0.55, 1.0, 0.7, 1.0) * bloom;
   A += K_GLAZE * dens(M0.y, B0.y, 0.42, 0.3, 1.1, 0.5, 2.0);
   A += K_HI * dens(M0.z, B0.z, 0.3, 0.6, 1.0, 0.4, 3.0);
-  A += K_LAND * dens(M0.w, B0.w, 0.5, 0.25, 0.8, 0.3, 4.0);
-  A += mix(K_MEADOW, K_MEADOW2, v1) * dens(M1.x, B1.x, 0.62, 0.15, 1.0, 0.9, 5.0) * bloom;
+  A += K_LAND * dens(M0.w, B0.w, 0.5 * landK, 0.25, 0.8, 0.3, 4.0);
+  A += mix(K_MEADOW, K_MEADOW2, v1) * dens(M1.x, B1.x, 0.62 * tone.w, 0.15, 1.0, 0.9, 5.0) * bloom;
   A += mix(K_FOREST, K_FOREST2, v2) * dens(M1.y, B1.y, 0.6 * tone.x, 0.3, 1.0, 0.7, 6.0) * bloom;
   A += K_HEATH * dens(M1.z, B1.z, 0.55, 0.5, 1.0, 0.6, 7.0);
   A += mix(K_MARSH, K_MARSH2, v2) * dens(M1.w, B1.w, 0.62, 0.45, 1.0, 0.9, 8.0) * bloom;
@@ -199,10 +203,12 @@ void main() {
   A += K_SAND * dens(M2.y, B2.y, 0.4, 0.6, 0.9, 0.4, 10.0);
   A += K_SHADE * dens(M2.z, B2.z, 0.36 * tone.y, 0.75, 1.1, 0.3, 11.0);
   A += K_SHADE2 * dens(M2.w, B2.w, 0.3 * tone.y, 0.75, 1.1, 0.3, 12.0);
-  A += K_GMEADOW * dens(M3.x, B3.x, 0.32 * tone.w, 0.25, 1.4, 0.2, 13.0);
-  A += K_GFOREST * dens(M3.y, B3.y, 0.3 * tone.x, 0.35, 1.4, 0.2, 14.0);
-  A += K_GWATER * dens(M3.z, B3.z, 0.22 * tone.z, 0.5, 1.4, 0.2, 15.0);
-  A += K_GMARSH * dens(M3.w, B3.w, 0.28, 0.4, 1.4, 0.2, 16.0);
+  A += K_GMEADOW * dens(M3.x, B3.x, 0.32 * glz.x, 0.25, 1.4, 0.2, 13.0);
+  A += K_GFOREST * dens(M3.y, B3.y, 0.3 * glz.y, 0.35, 1.4, 0.2, 14.0);
+  A += K_GWATER * dens(M3.z, B3.z, 0.22 * glz.z, 0.5, 1.4, 0.2, 15.0);
+  A += K_GMARSH * dens(M3.w, B3.w, 0.28 * glz.w, 0.4, 1.4, 0.2, 16.0);
+  // in a vignette the ground wash thins out toward its rim before the brush runs dry
+  if (vig.z > 0.0) A *= 0.12 + 0.88 * (1.0 - smoothstep(0.45, 1.0, length((p - vig.xy) / vig.zw) + 0.1 * fbm(p / 90.0 + 5.0)));
 
   // Dabs painted in 2D (trees, tents, rivers...): the same wet edge from a difference of blurs, lighter granulation.
   vec3 s = texture(sym, uvC).rgb, sb = texture(symB, uvC).rgb;
@@ -219,6 +225,12 @@ void main() {
   float dS = sheetD(p);
   col *= mix(vec3(0.94, 0.91, 0.85), vec3(1.0), smoothstep(0.0, 70.0, dS));
   col *= mix(0.9, 1.0, smoothstep(0.0, 4.0, dS));
+  if (card > 0.5) {
+    // a card tipped onto the page: transparent outside its deckled edge but for a soft shadow
+    float inside = smoothstep(-0.6, 0.6, dS), sh = 0.4 * smoothstep(-12.0, 3.0, sheetD(p - vec2(4.0, 6.0)));
+    outColor = vec4(col * inside, inside + sh * (1.0 - inside));
+    return;
+  }
   vec3 bg = wood(p) * (1.0 - 0.6 * smoothstep(-18.0, 4.0, sheetD(p - vec2(5.0, 8.0))));
   col = mix(bg, col, smoothstep(-0.6, 0.6, dS));
   col *= 1.04 - 0.12 * length((p - res * vec2(0.42, 0.38)) / res);
@@ -226,7 +238,7 @@ void main() {
 }`;
 
 export function paint(canvas, o) {
-  const gl = canvas.getContext("webgl2", { preserveDrawingBuffer: true, antialias: false, alpha: false });
+  const gl = canvas.getContext("webgl2", { preserveDrawingBuffer: true, antialias: false, alpha: !!o.card });
   if (!gl) throw new Error("WebGL2 unavailable");
   const W = canvas.width, H = canvas.height;
   gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
@@ -303,7 +315,7 @@ export function paint(canvas, o) {
   blur(sym, symB, o.symSigma);
   run(program(COMPOSITE), null, {
     ...view, m0: m[0], m1: m[1], m2: m[2], m3: m[3], b0: mb[0], b1: mb[1], b2: mb[2], b3: mb[3], sym, symB, ink, dist, fC,
-    sheet: o.sheet, seaReach: o.mask.seaReach, symEdge: o.symEdge, tone: o.tone,
+    sheet: o.sheet, seaReach: o.mask.seaReach, symEdge: o.symEdge, tone: o.tone, glz: o.glz, vig: o.mask.vig, bloomS: o.bloomS, landK: o.landK, card: o.card ? 1 : 0,
   });
   gl.finish();
   const px = new Uint8Array(4);

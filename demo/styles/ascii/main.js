@@ -110,8 +110,23 @@ async function main() {
     g.put(k, "☼", P.W, sc(P.o, 0.7)); g.glow[k] = 1; g.bgGlow[k] = 0.6;
     look = k;
   } else if (VIEW === "valley") {
-    const s = 9, up = camp.uphill;
-    g = localGrid(w, cols, rows, s, fire.x + Math.cos(up) * 15, fire.z + Math.sin(up) * 50);
+    // Framed where the land around the camp has the most relief, with the camp kept well inside the window.
+    const s = 10, aim = { score: -Infinity, x: fire.x, z: fire.z };
+    for (let a = 0; a < 16; a++) for (const off of [0, 100, 150, 200]) {
+      const x0 = fire.x + Math.cos((a / 16) * Math.PI * 2) * off, z0 = fire.z + Math.sin((a / 16) * Math.PI * 2) * off;
+      if (Math.abs(fire.x - x0) > (cols / 2 - 6) * s || Math.abs(fire.z - z0) > (rows / 2 - 6) * s) continue;
+      let lo = Infinity, hi = -Infinity, steep = 0, wet = 0;
+      for (let j = 0; j < rows; j += 2) for (let i = 0; i < cols; i += 2) {
+        const x = x0 + (i - cols / 2) * s, z = z0 + (j - rows / 2) * s;
+        if (w.fine(w.wet, x, z) > 0.5) { wet++; continue; }
+        const h = w.heightAt(x, z);
+        lo = Math.min(lo, h); hi = Math.max(hi, h);
+        if (w.slopeAt(x, z) > 0.15) steep++;
+      }
+      const cells = Math.ceil(cols / 2) * Math.ceil(rows / 2), score = hi - lo + (steep / cells) * 40 - Math.max(0, wet / cells - 0.2) * 60;
+      if (score > aim.score) Object.assign(aim, { score, x: x0, z: z0 });
+    }
+    g = localGrid(w, cols, rows, s, aim.x, aim.z);
     extra = plantValley(w, g);
     look = campValley(w, g, colors).fire;
   } else {
@@ -167,8 +182,8 @@ async function main() {
   if (VIEW === "island") {
     rule(scr, vga, R1, "Legend", frame);
     const leg = [
-      [PINE, "p", "pine forest"], [BROAD, "g", "oak wood"], [BROAD, "G", "ash wood"], [BROAD, "l", "aspen grove"],
-      ["τ", "g", "scrub"], ['"', "m", "heather"], ['"', "l", "meadow"], ["√", "c", "marsh"],
+      [PINE, "p", "pine forest"], [BROAD, "g", "oak wood"], [BROAD, "G", "ash, aspen"], ["*", "P", "wildflowers"],
+      ["τ", "g", "scrub"], ['"', "m", "heather"], ['"', "l", "meadow"], ['"', "c", "marsh"],
       ["∙", "t", "beach"], ["∩", "v", "hills"], ["▲", "y", "mountain"], ["▒", "y", "cliff"],
       ["║", "C", "river"], ["≈", "C", "surf"], ["~", "B", "sea"], ["☼", "W", "your camp"],
     ];
@@ -185,7 +200,7 @@ async function main() {
     ];
     let r = R1 + 11;
     for (const f of facts) for (const line of wrap(f, 44)) text(scr, vga, PANEL.c0 + 2, r++, line, P.y, null);
-    const covers = [["tree", BROAD, "g", "woodland"], ["grass", '"', "l", "meadow"], ["marsh", "√", "c", "marsh"], ["bare", "▲", "y", "rock, scree"], ["shrub", "τ", "v", "scrub, heath"]];
+    const covers = [["tree", BROAD, "g", "woodland"], ["grass", '"', "l", "meadow"], ["marsh", '"', "c", "marsh"], ["bare", "▲", "y", "rock, scree"], ["shrub", "τ", "v", "scrub, heath"]];
     for (const [key, gl, code, name] of covers) {
       const n = Math.round(share[key] * 20);
       scr.glyph(bios, gl, (PANEL.c0 + 2) * 8, r * 16 + 4, 1, P[code], P[0], 0.3);
@@ -201,7 +216,7 @@ async function main() {
     const ax = mx + ((g.ox - mg.ox) / mg.s) * 8, ay = my + ((g.oz - mg.oz) / mg.s) * 8, aw = ((g.cols * g.s) / mg.s) * 8, ah = ((g.rows * g.s) / mg.s) * 8;
     for (let t = 0; t < aw; t++) { scr.rect(Math.round(ax + t), Math.round(ay), 1, 1, P.W, 0.8); scr.rect(Math.round(ax + t), Math.round(ay + ah), 1, 1, P.W, 0.8); }
     for (let t = 0; t < ah; t++) { scr.rect(Math.round(ax), Math.round(ay + t), 1, 1, P.W, 0.8); scr.rect(Math.round(ax + aw), Math.round(ay + t), 1, 1, P.W, 0.8); }
-    text(scr, vga, PANEL.c0 + 2, R2 - 1, `&s${fmt(extra.trees)} trees in view  ·  ${Math.round(g.cols * g.s)} x ${Math.round(g.rows * g.s)} m`, P.s, null);
+    text(scr, vga, PANEL.c0 + 2, R2 - 1, `&s${fmt(extra.trees)} trees  ·  ${Math.round(g.cols * g.s)} x ${Math.round(g.rows * g.s)} m  ·  &y${extra.contour} m&s contours`, P.s, null);
   } else {
     rule(scr, vga, R1, "Look", frame);
     let r = R1 + 1;
