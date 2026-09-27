@@ -1,10 +1,11 @@
 // The style guide's sprite sheet: every sprite at its in-game size, shown 3x on the meadow, with each animation's
 // frames and the whole palette grouped by ramp. `?pal=` re-themes it like the game.
 import { P, RGB, THEME, ramp } from "./pal.js";
-import { Buf, blit, castShadow, dith, h2 } from "./px.js";
+import { Buf, Spr, blit, castShadow, dith, h2 } from "./px.js";
 import * as SP from "./sprites.js";
 import * as LF from "./life.js";
 import { text } from "./ui.js";
+import * as TH from "./things.js";
 
 const K = 3, FW = 440, M = 6, GAP = 3;
 // the game's sun, so shadows fall the same way
@@ -77,6 +78,7 @@ function sections() {
       cell("FERN", "4 7", [SP.fern(4, 1), SP.fern(7, 2)], { shadow: false }),
     ]],
     ["PEOPLE", people],
+    ...simSections(),
     ["ANIMATION FRAMES 0 1 2 3", [
       cell("GULL", "7", range(4, (f) => LF.bird(7, f, "gull")), { shadow: false }),
       cell("CROW", "6", range(4, (f) => LF.bird(6, f, "crow")), { shadow: false }),
@@ -86,6 +88,48 @@ function sections() {
       cell("FLAMES", "SEED 1-4", range(4, (f) => SP.flames(10, f + 1)), { shadow: false }),
     ]],
   ];
+}
+
+// The live game's things at the valley zoom (a person 8 px, a hut 16) and the close zoom (2.5 times that).
+const STYLES = ["sticks", "reeds", "logs", "planks", "stone", "brick", "hide", "clay"];
+const POSES = ["stand", "walk", "run", "eat", "rest"];
+const CARRY = ["none", "wood", "stone", "food"];
+function simSections() {
+  const out = [];
+  for (const [zoom, k] of [["VALLEY", 1], ["CLOSE", 2.5]]) {
+    const hut = 16 * k, man = 8 * k, wolf = zoom === "VALLEY" ? 4 : 10, g = (v) => Math.round(v * k);
+    out.push([`SIM SHELTERS  ${zoom}  TIER 0 1 2 3`, STYLES.map((s, i) => cell(s.toUpperCase(), `HUT ${hut}`, range(4, (t) => TH.shelter(t, s, hut, i + 1, t === 2 ? P["c" + (i % 5)] : -1))))]);
+    out.push([`SIM WOLVES AND PEOPLE  ${zoom}`, [
+      ...POSES.map((p) => cell(`WOLF ${p.toUpperCase()}`, `${wolf}  FRAMES 0-3`, range(4, (f) => TH.wolf(wolf, p, f, 1)))),
+      cell("WOLF COATS", "BY DEER", [...range(4, (s) => TH.wolf(wolf, "stand", 0, s)), LF.deer(zoom === "VALLEY" ? 4 : 12, "stand", 1, 1)]),
+      ...["front", "side", "back"].map((f) => cell(`WALK ${f.toUpperCase()}`, `${man}  FRAMES 0-3`, [...range(4, (fr) => TH.walker(man, P.c0, f, fr, "none", "adult", 7)), SP.person(man, P.c0, f, "stand", 7, 1)])),
+      ...["child", "adult", "elder"].map((st, i) => cell(`${st.toUpperCase()} CARRY`, "NONE WOOD STONE FOOD", CARRY.map((c, j) => TH.walker(man, P["c" + ((i + j) % 5)], j & 1 ? "side" : "front", j, c, st, i * 11 + j * 3 + 2)))),
+      cell("CHILD ELDER WALK", "SIDE 0-3", [...range(4, (fr) => TH.walker(man, P.c3, "side", fr, "none", "child", 4)), ...range(4, (fr) => TH.walker(man, P.c4, "side", fr, "none", "elder", 9))]),
+      cell("LYING", "ASLEEP OR DOWN", [TH.lying(man, P.c1, 3), TH.lying(man, P.c2, 8)]),
+      cell("ICONS", "THINK SLEEP SICK FIGHT", ["think", "sleep", "sick", "fight"].map((n) => TH.icon(n)), { shadow: false }),
+    ]]);
+    out.push([`SIM GROUND THINGS  ${zoom}`, [
+      cell("FIRE RING", "UNLIT LIT", [TH.firering(g(3), 1), TH.firering(g(3), 2)].map((s, i) => (i ? withFlames(s, g(5)) : s)), { shadow: false }),
+      cell("ASH BURNT", "", [TH.ash(g(3), 1), TH.burnt(g(5), 1), TH.burnt(g(6), 2)], { shadow: false }),
+      cell("PIT", "DIGGING DUG", [TH.pit(g(3), 0.3, 1), TH.pit(g(3), 1, 2)], { shadow: false }),
+      cell("TRAP", "SET SPRUNG OWNED", [TH.trap(g(6), false, 1), TH.trap(g(6), true, 2), TH.trap(g(6), false, 3, P.c2)], { shadow: false }),
+      cell("WELL GRAVE", "", [TH.well(g(7), 1), TH.grave(g(6), 1), TH.grave(g(6), 2)]),
+      cell("PILE", "WOOD STONE FOOD HIDE MISC", ["wood", "stone", "food", "hide", "misc"].map((w, i) => TH.pile(g(5), w, i))),
+      cell("SAPLING HERB", "", [TH.sapling(g(4), 1), TH.sapling(g(7), 2), TH.herb(g(3), 1), TH.herb(g(3), 3)], { shadow: false }),
+      cell("CLAY DEADBUSH STICK", "", [TH.clay(g(3), 1), TH.deadbush(g(4), 1), TH.deadbush(g(5), 2), TH.stick(g(4), 1), TH.stick(g(4), 3)], { shadow: false }),
+      cell("REUSED", "TREE STUMP BUSH ROCK REEDS MUSHROOM", [SP.pine(g(12), 3), SP.broad(g(10), "oak", 2, 0.5), SP.stump(g(2), g(2), 1), SP.bush(g(3), 2), SP.rock(g(2.4), 1), SP.rock(g(5), 2), SP.reeds(g(4), 1), LF.mushrooms(g(2), 2)]),
+    ]]);
+  }
+  return out;
+}
+// A lit fire ring: the unlit ring with flames stood in its middle.
+function withFlames(ring, h) {
+  const F = SP.flames(h, 5), S = new Spr(Math.max(ring.w, F.w), ring.h + F.h, 0, 0);
+  S.ax = S.w >> 1; S.ay = ring.ay + F.h;
+  const put = (T, x, y) => { for (let j = 0; j < T.h; j++) for (let i = 0; i < T.w; i++) { const c = T.p[j * T.w + i]; if (c !== 255) S.set(x - T.ax + i, y - T.ay + j, c); } };
+  put(ring, S.ax, S.ay);
+  put(F, S.ax, S.ay - ring.foot);
+  return S;
 }
 
 // Flow each section's cells into rows; every row shares a ground line, labels sit under it.

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Nomads: live</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0b14; }
+  canvas#view { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; touch-action: none; cursor: grab; }
+  canvas#view.dragging { cursor: grabbing; }
+  #hint, #stats { position: fixed; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; color: #eef2f6; pointer-events: none; }
+  #hint { left: 12px; bottom: 10px; padding: 5px 9px; background: rgba(13, 11, 20, 0.66); border-radius: 3px; transition: opacity 1.2s; }
+  #hint.gone { opacity: 0; }
+  #stats { right: 10px; top: 8px; padding: 5px 9px; background: rgba(13, 11, 20, 0.72); white-space: pre; border-radius: 3px; }
+</style>
+</head>
+<body>
+<canvas id="view" aria-label="Drag to pan, scroll or pinch to zoom, click a person or animal to follow them"></canvas>
+<div id="hint">drag to pan &middot; scroll to zoom &middot; click someone to follow &middot; Tab for the next person &middot; Esc to let go &middot; space pauses &middot; [ ] speed</div>
+<div id="stats" hidden></div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

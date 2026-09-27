@@ -6,10 +6,10 @@ import { Buf, Spr, tri, strip, blit, castShadow, shadowPx, bayer, dith, h2 } fro
 import * as SP from "./sprites.js";
 import { drawUI } from "./ui.js";
 
-const Q = new URLSearchParams(location.search);
-const VIEW = ["island", "valley", "camp", "peak", "lake", "coast"].includes(Q.get("view")) ? Q.get("view") : "valley";
+const Q = new URLSearchParams(globalThis.location?.search ?? "");
+let VIEW = ["island", "valley", "camp", "peak", "lake", "coast"].includes(Q.get("view")) ? Q.get("view") : "valley";
 // peak, lake and coast are discovery views found in the data and framed like the valley
-const LOCAL = VIEW !== "island", FAR = VIEW !== "camp";
+let LOCAL = VIEW !== "island", FAR = VIEW !== "camp";
 const SEED = Number(Q.get("seed") || 1);
 const pick = (key, opts, def) => (opts.includes(Number(Q.get(key) ?? def)) ? Number(Q.get(key) ?? def) : def);
 // px: screen pixels per art pixel; Z rescales anything sized in art pixels so the framing holds at every px
@@ -18,7 +18,13 @@ const PX = pick("px", [1, 2, 3], 2), Z = 2 / PX;
 const DENSE = pick("dense", [0, 1, 2], 2);
 const UI = Q.get("ui") === "1";
 // frame 0..7 of a seamless loop: only water, foam, fire, smoke, birds, fish and butterflies change
-const FRAME = pick("frame", [0, 1, 2, 3, 4, 5, 6, 7], 0), TAU = Math.PI * 2, PH = (FRAME / 8) * TAU;
+let FRAME = pick("frame", [0, 1, 2, 3, 4, 5, 6, 7], 0), PH = (FRAME / 8) * Math.PI * 2;
+const TAU = Math.PI * 2;
+// the live renderer bakes several zoom levels in one worker, so the view and frame are switchable
+export function setMode(view, frame = FRAME) {
+  VIEW = view; LOCAL = VIEW !== "island"; FAR = VIEW !== "camp";
+  FRAME = frame; PH = (FRAME / 8) * TAU;
+}
 const LOWSUN = THEME === "dawn" || THEME === "dusk" || THEME === "adventure";
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -297,6 +303,7 @@ function buildMap(w, V) {
   };
   const M = { kind: new Uint8Array(n), wlev: new Int16Array(n), surf: new Float32Array(n), cls: new Uint8Array(n), C: new Int16Array(n * 4), diag: new Uint8Array(n), hc: new Float32Array(n), moist: new Float32Array(n), heath: new Float32Array(n), snow: new Float32Array(n), cov: COV.map(() => new Float32Array(n)) };
   M.at = (i, j) => (i >= 0 && j >= 0 && i < NI && j < NJ ? j * NI + i : -1);
+  M.i0 = i0; M.j0 = j0; M.NI = NI; M.NJ = NJ;
   let peak = 0;
   for (const v of I.height) peak = Math.max(peak, v);
   // on the island map, bare ground reads as rock only on the summits; below them it is grass with outcrops and scree
@@ -381,9 +388,11 @@ function buildMap(w, V) {
       let cliff = V.cliff;
       if (tileAt(i, j, (t) => M.head[t] === 2)) cliff *= 0.3;
       else if (tileAt(i, j, (t) => M.head[t])) { cliff *= 3.4; step[k] = 3; }
-      else if (LOCAL && THEME === "adventure" && tileAt(i, j, (t) => !M.kind[t] && (M.cls[t] === ROCK || M.cls[t] === HILL))) { cliff *= 3.4; step[k] = VIEW === "peak" ? 4 : 3; }
-      // the peak view is one continuous mountain: every drop becomes slope tiles
-      keep[k] = VIEW !== "peak" && sl > cliff ? 1 : 0;
+      else if (LOCAL && THEME === "adventure" && tileAt(i, j, (t) => !M.kind[t] && (M.cls[t] === ROCK || M.cls[t] === HILL))) { cliff *= 3.4; step[k] = VIEW === "peak" || V.live ? 4 : 3; }
+      // the live levels span the whole island, so steep grass climbs two levels a tile rather than stepping in blocks
+      else if (V.live && LOCAL) step[k] = 2;
+      // the peak view is one continuous mountain: every drop becomes slope tiles, and so is the live map
+      keep[k] = VIEW !== "peak" && !V.live && sl > cliff ? 1 : 0;
     }
   const settle = (fwd) => {
     let moved = false;
@@ -438,7 +447,7 @@ function buildMap(w, V) {
       if (M.kind[t]) c = [M.wlev[t], M.wlev[t], M.wlev[t], M.wlev[t]];
       else {
         const lo = Math.min(...c), hi = Math.max(...c), span = LOCAL && THEME === "adventure" && M.head[t] !== 2 && (M.cls[t] === ROCK || M.cls[t] === HILL) ? (VIEW === "peak" ? 4 : 3) : 1;
-        if (VIEW !== "peak" && hi - lo > span) {
+        if (VIEW !== "peak" && !V.live && hi - lo > span) {
           // too steep for a slope tile: keep a slope shape and let cliff strips take the rest
           const b = clamp(Math.floor(M.hc[t] / V.levelM), lo, hi - span);
           c = c.map((q) => clamp(q, b, b + span));
@@ -448,7 +457,8 @@ function buildMap(w, V) {
       const dTB = Math.abs(c[0] - c[2]), dLR = Math.abs(c[3] - c[1]);
       M.diag[t] = dTB < dLR ? 0 : dLR < dTB ? 1 : c[0] + c[2] > c[1] + c[3] ? 0 : 1;
     }
-  M.maxLev = Math.max(...M.C);
+  M.maxLev = 0;
+  for (const c of M.C) if (c > M.maxLev) M.maxLev = c;
   // tiles of water between each water tile and the nearest land, so shallows hug the shore and open water reads dark
   M.shore = new Float32Array(n).fill(9);
   const queue = [];
@@ -509,7 +519,13 @@ function stone(V, x, y) {
 function flowerCol(wx, wz) {
   return FLOWER[Math.floor((fbm(wx / 70, wz / 70, 51, 2) + 0.6) * 3.3 + 10) % FLOWER.length];
 }
+function iceTex(x, y, wx, wz) {
+  if (Math.abs(noise(wx / 9, wz / 9, 131)) < 0.025 || Math.abs(noise(wx / 23, wz / 17, 132)) < 0.015) return P.w5;
+  const v = 1.4 + fbm(wx / 30, wz / 30, 133, 2) * 1.2 + (h2(x >> 1, y, 134) < 0.05 ? 1 : 0);
+  return dith([P.w6, P.haze, P.snow], v, x, y);
+}
 function texWater(w, V, K, x, y, wx, wz, fu, fv) {
+  if (V.iceAt && K.kind !== SEA && V.iceAt(wx, wz)) return iceTex(x, y, wx, wz);
   const H = V.H, dU0 = fu * H, dU1 = (1 - fu) * H, dV0 = fv * H, dV1 = (1 - fv) * H, ln = K.ln;
   let d = 99;
   if (ln & 1) d = Math.min(d, dU0);
@@ -539,7 +555,7 @@ function texWater(w, V, K, x, y, wx, wz, fu, fv) {
   if (V.band) {
     // ripple dashes, 2 or 3 px, on every other row; denser near the shallows and toward the sun (upper left)
     if ((y & 1) === 0) {
-      const sx = x + (y >> 1) * 3, cell = Math.floor(sx / 6), r = h2(cell, y, 47), toSun = 1 - smooth(0.2, 1.3, x / V.AW + y / V.AH);
+      const sx = x + (y >> 1) * 3, cell = Math.floor(sx / 6), r = h2(cell, y, 47), toSun = V.live ? 0.5 : 1 - smooth(0.2, 1.3, x / V.AW + y / V.AH);
       const rate = (VIEW === "island" ? 0.25 : 1) * (0.012 + 0.1 * near + 0.06 * toSun), life = ((FRAME + Math.floor(h2(cell, y, 48) * 8)) & 7) < 5;
       if (r < rate && life && sx - cell * 6 < 2 + (r * 97 & 1)) return r < rate * 0.3 ? P.w7 : WA[Math.min(WA.length - 2, Math.floor(v) + 2)];
     }
@@ -760,67 +776,48 @@ function texWall(V, mat, face, x, y, depth, hpx, lev, veg, floorLev) {
 }
 
 function drawTerrain(B, w, V, M) {
-  const { NI, NJ, i0, j0 } = V, C = M.C;
+  // M may cover far more than this buffer (the live bake builds one map per zoom); only V's tile window is drawn
+  const { NI, NJ, i0, j0 } = M, C = M.C, GX = V.gx || 0, GY = V.gy || 0;
   const corner = (t, k) => C[t * 4 + k];
   const land = (i, j) => { const t = M.at(i, j); return t >= 0 && !M.kind[t]; };
   const water = (i, j) => { const t = M.at(i, j); return t >= 0 && M.kind[t] === SEA; };
   // Light per vertex: each tile's slope from its four corners, averaged over the tiles meeting at a vertex and then
   // blended across the tile, so gentle ground rolls smoothly instead of striping triangle by triangle.
-  const VI = NI + 1, lightV = new Float32Array(VI * (NJ + 1)), nV = new Uint8Array(VI * (NJ + 1));
-  for (let t = 0; t < NI * NJ; t++) {
-    if (M.kind[t]) continue;
-    const i = t % NI, j = (t / NI) | 0, c = C.subarray(t * 4, t * 4 + 4);
-    const gu = (c[1] - c[0] + c[2] - c[3]) / 2, gv = (c[3] - c[0] + c[2] - c[1]) / 2, l = V.gain * (-LU * gu - LV * gv);
-    for (const k of [j * VI + i, j * VI + i + 1, (j + 1) * VI + i, (j + 1) * VI + i + 1]) { lightV[k] += l; nV[k]++; }
-  }
-  const shadeFloor = VIEW === "coast" ? -0.7 : VIEW === "peak" ? -2 : -1.2;
-  for (let k = 0; k < lightV.length; k++) { const l = nV[k] ? lightV[k] / nV[k] : 0; lightV[k] = clamp(l < 0 ? l * 0.6 : l, shadeFloor, 2); }
-  // On the peak, facing comes from the true ground blurred over about three tiles, so lit and shaded planes follow
-  // the ridges and gullies rather than tile columns; curvature marks where ridge and gully cracks may run.
-  let curvV = null;
-  if (VIEW === "peak") {
-    const NV = NJ + 1, hv = new Float32Array(VI * NV), tmp = new Float32Array(VI * NV);
-    for (let j = 0; j < NV; j++) for (let i = 0; i < VI; i++) hv[j * VI + i] = V.hsample(...V.toW(i0 + i, j0 + j)) / V.levelM;
-    const blur = (src, dst, di, dj) => {
-      for (let j = 0; j < NV; j++) for (let i = 0; i < VI; i++) {
-        let a = 0, n = 0;
-        for (let r = -1; r <= 1; r++) { const ii = i + r * di, jj = j + r * dj; if (ii >= 0 && jj >= 0 && ii < VI && jj < NV) { a += src[jj * VI + ii]; n++; } }
-        dst[j * VI + i] = a / n;
-      }
-    };
-    for (let pass = 0; pass < 2; pass++) { blur(hv, tmp, 1, 0); blur(tmp, hv, 0, 1); }
-    const H = (i, j) => hv[clamp(j, 0, NV - 1) * VI + clamp(i, 0, VI - 1)];
-    curvV = new Float32Array(VI * NV);
-    for (let j = 0; j < NV; j++) for (let i = 0; i < VI; i++) {
-      const gu = (H(i + 1, j) - H(i - 1, j)) / 2, gv = (H(i, j + 1) - H(i, j - 1)) / 2, l = V.gain * (-LU * gu - LV * gv);
-      lightV[j * VI + i] = clamp(l < 0 ? l * 0.6 : l, shadeFloor, 2);
-      curvV[j * VI + i] = (H(i + 1, j) + H(i - 1, j) + H(i, j + 1) + H(i, j - 1)) / 4 - H(i, j);
-    }
-    // only the sharpest tenth of creases count, whatever the seed's relief
-    const mag = Float32Array.from(curvV, Math.abs).sort();
-    V.crease = Math.max(0.05, mag[Math.floor(mag.length * 0.9)]);
-  }
+  const VI = NI + 1;
+  if (!M.light) M.light = vertexLight(V, M);
+  const { lightV, curvV } = M.light;
+  if (M.light.crease) V.crease = M.light.crease;
   // Biomes meet over two or three tiles: each pixel takes its cover from a tile a wandering, dithered step away, so a
   // meadow runs into marsh along a ragged edge instead of a seam down a tile row.
   const blend = LOCAL && THEME === "adventure", reachT = VIEW === "camp" ? 1.2 : 0.8;
   const coverOf = (K, t) => ({ ...K, cls: M.cls[t], moist: M.moist[t], heath: M.heath[t], grass: M.cov[0][t], bare: M.cov[4][t], snow: M.snow[t], tree: M.cov[1][t], toRock: M.toRock[t], flowers: 0.012 * smooth(0.3, 0.8, M.cov[0][t]) });
-  for (let s = 0; s < NI + NJ - 1; s++)
-    for (let i = Math.max(0, s - NJ + 1); i <= Math.min(NI - 1, s); i++) {
-      const j = s - i, t = j * NI + i, uT = i0 + i, vT = j0 + j;
+  const shade = (col, X, Y) => (THEME === "adventure" && DARKER[col] !== col ? (bayer(X, Y) < 0.6 ? DARKER[col] : col) : SHADOW[col]);
+  // live bake: every animated water or falls pixel records its colour in all eight frames of the loop
+  const anim = V.anim, frames = (p, f0, paint) => {
+    const cols = [f0];
+    let moving = false;
+    for (let f = 1; f < 8; f++) { setMode(VIEW, f); const c = paint(); cols.push(c); if (c !== f0) moving = true; }
+    setMode(VIEW, 0);
+    if (moving) anim.set(p, cols);
+  };
+  const a0 = clamp((V.i0 ?? i0) - i0, 0, NI), a1 = clamp((V.i1 ?? i0 + NI) - i0, 0, NI), b0 = clamp((V.j0 ?? j0) - j0, 0, NJ), b1 = clamp((V.j1 ?? j0 + NJ) - j0, 0, NJ);
+  for (let s = a0 + b0; s <= a1 + b1 - 2; s++)
+    for (let i = Math.max(a0, s - b1 + 1); i <= Math.min(a1 - 1, s - b0); i++) {
+      const j = s - i, t = j * NI + i, uT = i0 + i, vT = j0 + j, hi = V.live ? uT : i, hj = V.live ? vT : j;
       if (!V.visible(uT + 0.5, vT + 0.5)) continue;
       const c = [corner(t, 0), corner(t, 1), corner(t, 2), corner(t, 3)];
       const P4 = [[uT, vT, c[0]], [uT + 1, vT, c[1]], [uT + 1, vT + 1, c[2]], [uT, vT + 1, c[3]]];
       const tu = M.at(i + 1, j), tv = M.at(i, j + 1), bu = M.at(i - 1, j), bv = M.at(i, j - 1);
       const K = {
         kind: M.kind[t], cls: M.cls[t], surf: M.surf[t], moist: M.moist[t], heath: M.heath[t], grass: M.cov[0][t], bare: M.cov[4][t], snow: M.snow[t], tree: M.cov[1][t],
-        var: (h2(i, j, 99) - 0.5) * (VIEW === "island" ? 0.5 : 0.25),
+        var: (h2(hi, hj, 99) - 0.5) * (VIEW === "island" ? 0.5 : 0.25),
         flowers: 0.012 * smooth(0.3, 0.8, M.cov[0][t]),
         rimU: tu >= 0 && (corner(tu, 0) < c[1] || corner(tu, 3) < c[2]),
         rimV: tv >= 0 && (corner(tv, 0) < c[3] || corner(tv, 1) < c[2]),
         aoU: bu >= 0 && (corner(bu, 1) > c[0] || corner(bu, 2) > c[3]),
         aoV: bv >= 0 && (corner(bv, 3) > c[0] || corner(bv, 2) > c[1]),
         wet: water(i - 1, j) || water(i + 1, j) || water(i, j - 1) || water(i, j + 1),
-        ln: 0, ox: V.sx(uT, vT) - Math.floor(h2(i, j, 7) * 3) * 37, oy: V.sy(uT, vT, 0), sc: null,
+        ln: 0, ox: V.sx(uT, vT) + GX - Math.floor(h2(hi, hj, 7) * 3) * 37, oy: V.sy(uT, vT, 0) + GY, sc: null,
         toSea: M.toSea[t], toRock: M.toRock[t], head: M.head[t], flat: c[0] === c[1] && c[1] === c[2] && c[2] === c[3],
         L: [lightV[j * VI + i], lightV[j * VI + i + 1], lightV[(j + 1) * VI + i + 1], lightV[(j + 1) * VI + i]],
         Q: curvV && [curvV[j * VI + i], curvV[j * VI + i + 1], curvV[(j + 1) * VI + i + 1], curvV[(j + 1) * VI + i]],
@@ -844,7 +841,7 @@ function drawTerrain(B, w, V, M) {
           const drop = Math.max(c[A] - botA, c[Bk] - botB);
           mat = M.kind[t] && M.kind[nb] ? FALL : K.cls === ROCK || K.head === 2 || drop >= 6 || (K.cls === HILL && drop >= 5) ? ROCKW : DIRTW;
           if (mat === FALL && V.falls) { const pa = P4[A], pb = P4[Bk]; V.falls.push({ x0: V.sx(pa[0], pa[1]), x1: V.sx(pb[0], pb[1]), y: (V.sy(pa[0], pa[1], botA) + V.sy(pb[0], pb[1], botB)) / 2, drop: drop * V.lp }); }
-        } else if (VIEW === "island") {
+        } else if (VIEW === "island" && !V.live) {
           botA = botB = V.base; mat = SECT;
           const fl = (u, v) => { const [x, z] = V.toW(u, v); return clamp(Math.round(V.hsample(x, z) / V.levelM), V.base + 2, 0); };
           floorA = M.kind[t] ? fl(P4[A][0], P4[A][1]) : c[A]; floorB = M.kind[t] ? fl(P4[Bk][0], P4[Bk][1]) : c[Bk];
@@ -854,7 +851,9 @@ function drawTerrain(B, w, V, M) {
         strip(B, V.sx(pa[0], pa[1]), V.sx(pb[0], pb[1]), V.sy(pa[0], pa[1], pa[2]), V.sy(pb[0], pb[1], pb[2]), V.sy(pa[0], pa[1], botA), V.sy(pb[0], pb[1], botB), (p, x, y, tt, depth, hpx) => {
           const u = pa[0] + (pb[0] - pa[0]) * tt, v = pa[1] + (pb[1] - pa[1]) * tt;
           const lev = (V.Y0 + (u + v) * V.H * 0.5 - (y + 0.5)) / V.lp;
-          B.c[p] = texWall(V, mat, face ? 1 : 0, x, y, depth, hpx, lev, veg, floorA + (floorB - floorA) * tt);
+          const paint = () => texWall(V, mat, face ? 1 : 0, x + GX, y + GY, depth, hpx, lev, veg, floorA + (floorB - floorA) * tt);
+          B.c[p] = paint();
+          if (anim && mat === FALL) frames(p, B.c[p], paint);
           B.z[p] = V.cz(u, v, lev); B.id[p] = 0;
         });
       }
@@ -866,26 +865,450 @@ function drawTerrain(B, w, V, M) {
         const du = (e1[2] * e2[1] - e1[1] * e2[2]) / det, dv = (e1[0] * e2[2] - e1[2] * e2[0]) / det;
         const sTri = K.kind ? 0 : Math.round(clamp(V.gain * (-LU * du - LV * dv), -2, 2) * 2) / 2, smoothL = THEME === "adventure" && !K.kind;
         tri(B, V.sx(A[0], A[1]), V.sy(A[0], A[1], A[2]), V.sx(Bv[0], Bv[1]), V.sy(Bv[0], Bv[1], Bv[2]), V.sx(Cv[0], Cv[1]), V.sy(Cv[0], Cv[1], Cv[2]), (p, x, y, la, lb, lc) => {
+          const X = x + GX, Y = y + GY;
           const u = la * A[0] + lb * Bv[0] + lc * Cv[0], v = la * A[1] + lb * Bv[1] + lc * Cv[1], lev = la * A[2] + lb * Bv[2] + lc * Cv[2];
-          const [wx, wz] = V.toW(u, v);
+          const wx = V.ox + (u * V.eu[0] + v * V.ev[0]) * V.tileM, wz = V.oz + (u * V.eu[1] + v * V.ev[1]) * V.tileM;
           const fu = u - uT, fv = v - vT, L = K.L;
           let Kp = K;
           if (blend && !K.kind && K.head !== 2) {
-            const ms = V.tileM * 1.3, du = fbm(wx / ms, wz / ms, 64, 2) * reachT + (h2(x, y, 65) - 0.5) * 0.45, dv = fbm(wx / ms, wz / ms, 66, 2) * reachT + (h2(x, y, 67) - 0.5) * 0.45;
+            const ms = V.tileM * 1.3, du = fbm(wx / ms, wz / ms, 64, 2) * reachT + (h2(X, Y, 65) - 0.5) * 0.45, dv = fbm(wx / ms, wz / ms, 66, 2) * reachT + (h2(X, Y, 67) - 0.5) * 0.45;
             const t2 = M.at(Math.floor(u + du) - i0, Math.floor(v + dv) - j0);
             if (t2 >= 0 && t2 !== t && !M.kind[t2] && M.cls[t2] !== K.cls && M.head[t2] !== 2) Kp = (K.alt ??= new Map()).get(t2) ?? K.alt.set(t2, coverOf(K, t2)).get(t2);
           }
           const s = smoothL ? (L[0] * (1 - fu) + L[1] * fu) * (1 - fv) + (L[3] * (1 - fu) + L[2] * fu) * fv : sTri;
-          let col = texTop(w, V, Kp, x, y, wx, wz, lev, s, fu, fv);
+          let col = texTop(w, V, Kp, X, Y, wx, wz, lev, s, fu, fv);
           if (V.mist) { const m = V.mist(wx, wz, K.kind, Kp, fu, fv, y); if (m < 0) B.mistW[p] = -m; else B.mist[p] = m; }
           // cast shadows are sampled per tile, which on smooth rock would print tile squares
           // the sample point jitters a little per pixel so a shadow's edge dithers instead of following tile steps
-          const ju = (h2(x, y, 98) - 0.5) * 0.7, jv = (h2(x, y, 99) - 0.5) * 0.7;
-          if (V.shaded && !(VIEW === "peak" && Kp.cls === ROCK) && V.shaded(u + ju, v + jv, lev)) { col = THEME === "adventure" && DARKER[col] !== col ? (bayer(x, y) < 0.6 ? DARKER[col] : col) : SHADOW[col]; B.sh[p] = 1; }
+          const ju = (h2(X, Y, 98) - 0.5) * 0.7, jv = (h2(X, Y, 99) - 0.5) * 0.7;
+          const dark = V.shaded && !(VIEW === "peak" && Kp.cls === ROCK) && V.shaded(u + ju, v + jv, lev);
+          if (dark) { col = shade(col, X, Y); B.sh[p] = 1; }
           B.c[p] = col; B.z[p] = V.cz(u, v, lev); B.id[p] = 0;
+          if (anim && K.kind) frames(p, col, () => { const c2 = texTop(w, V, Kp, X, Y, wx, wz, lev, s, fu, fv); return dark ? shade(c2, X, Y) : c2; });
         });
       }
     }
+}
+
+// Light per vertex: each tile's slope from its four corners, averaged over the tiles meeting at a vertex and then
+// blended across the tile, so gentle ground rolls smoothly instead of striping triangle by triangle.
+function vertexLight(V, M) {
+  const { NI, NJ, i0, j0 } = M, C = M.C, VI = NI + 1, lightV = new Float32Array(VI * (NJ + 1)), nV = new Uint8Array(VI * (NJ + 1));
+  for (let t = 0; t < NI * NJ; t++) {
+    if (M.kind[t]) continue;
+    const i = t % NI, j = (t / NI) | 0, c = C.subarray(t * 4, t * 4 + 4);
+    const gu = (c[1] - c[0] + c[2] - c[3]) / 2, gv = (c[3] - c[0] + c[2] - c[1]) / 2, l = V.gain * (-LU * gu - LV * gv);
+    for (const k of [j * VI + i, j * VI + i + 1, (j + 1) * VI + i, (j + 1) * VI + i + 1]) { lightV[k] += l; nV[k]++; }
+  }
+  const shadeFloor = VIEW === "coast" ? -0.7 : VIEW === "peak" ? -2 : -1.2;
+  for (let k = 0; k < lightV.length; k++) { const l = nV[k] ? lightV[k] / nV[k] : 0; lightV[k] = clamp(l < 0 ? l * 0.6 : l, shadeFloor, 2); }
+  // On the peak, facing comes from the true ground blurred over about three tiles, so lit and shaded planes follow
+  // the ridges and gullies rather than tile columns; curvature marks where ridge and gully cracks may run.
+  let curvV = null, crease = 0;
+  if (VIEW === "peak" || (V.live && LOCAL)) {
+    const NV = NJ + 1, hv = new Float32Array(VI * NV), tmp = new Float32Array(VI * NV);
+    for (let j = 0; j < NV; j++) for (let i = 0; i < VI; i++) hv[j * VI + i] = V.hsample(...V.toW(i0 + i, j0 + j)) / V.levelM;
+    const blur = (src, dst, di, dj) => {
+      for (let j = 0; j < NV; j++) for (let i = 0; i < VI; i++) {
+        let a = 0, n = 0;
+        for (let r = -1; r <= 1; r++) { const ii = i + r * di, jj = j + r * dj; if (ii >= 0 && jj >= 0 && ii < VI && jj < NV) { a += src[jj * VI + ii]; n++; } }
+        dst[j * VI + i] = a / n;
+      }
+    };
+    for (let pass = 0; pass < 2; pass++) { blur(hv, tmp, 1, 0); blur(tmp, hv, 0, 1); }
+    const H = (i, j) => hv[clamp(j, 0, NV - 1) * VI + clamp(i, 0, VI - 1)];
+    curvV = new Float32Array(VI * NV);
+    for (let j = 0; j < NV; j++) for (let i = 0; i < VI; i++) {
+      const gu = (H(i + 1, j) - H(i - 1, j)) / 2, gv = (H(i, j + 1) - H(i, j - 1)) / 2, l = V.gain * (-LU * gu - LV * gv);
+      lightV[j * VI + i] = clamp(l < 0 ? l * 0.6 : l, shadeFloor, 2);
+      curvV[j * VI + i] = (H(i + 1, j) + H(i - 1, j) + H(i, j + 1) + H(i, j - 1)) / 4 - H(i, j);
+    }
+    // only the sharpest tenth of creases count, whatever the seed's relief
+    const mag = Float32Array.from(curvV, Math.abs).sort();
+    crease = Math.max(0.05, mag[Math.floor(mag.length * 0.9)]);
+  }
+  return { lightV, curvV, crease };
+}
+
+// ---------- live: a fixed camera over the whole island, baked in chunks ----------
+// The zoom ladder. Every level has a fixed bearing, scale and exaggeration, so nothing re-fits while panning.
+export const LADDER = [
+  { name: "island", view: "island", W: 12, lp: 2, tileM: 200 },
+  { name: "region", view: "valley", W: 16, lp: 2, tileM: 37.5, foam: 1.2, cell: [4, 3], grid: 0, treeK: 2.2 },
+  { name: "valley", view: "valley", W: 32, lp: 4, tileM: 18.75 },
+  // too many tiles for one island-wide map: each close chunk builds its own map with a margin
+  { name: "close", view: "camp", W: 58, lp: 7, tileM: 6.25, paged: true },
+];
+export const ORIGIN = -4800;
+
+// World (x, z) maps to tile (u, v) = ((x, z) - ORIGIN) / tileM, so +x runs down-right and +z down-left like the sim.
+export function makeLiveView(w, level) {
+  const Zl = LADDER[level];
+  setMode(Zl.view, 0);
+  const V = { ...CFG[Zl.view], ...Zl, level, live: true, name: VIEW, AW: 0, AH: 0, gx: 0, gy: 0, X0: 0, Y0: 0 };
+  V.H = V.W / 2;
+  if (LOWSUN) V.tsun = SUN * 0.75;
+  if (THEME === "adventure") V.band = VIEW === "island" ? 1.3 : 1.9;
+  V.marks = []; V.falls = null; V.rings = []; V.drifts = []; V.campOff = 1;
+  V.eu = [1, 0]; V.ev = [0, 1]; V.ox = ORIGIN; V.oz = ORIGIN;
+  V.scale = (tileM) => { V.tileM = tileM; V.k = V.W / (tileM * Math.SQRT2); V.levelM = V.lp / (V.k * 0.866 * V.exag); };
+  V.toUV = (x, z) => [(x - V.ox) / V.tileM, (z - V.oz) / V.tileM];
+  V.toW = (u, v) => [V.ox + u * V.tileM, V.oz + v * V.tileM];
+  V.sx = (u, v) => V.X0 + (u - v) * V.H;
+  V.sy = (u, v, hz) => V.Y0 + (u + v) * V.H * 0.5 - hz * V.lp;
+  V.cz = (u, v, hz) => 1.5 * V.H * (u + v) + hz * V.lp;
+  V.hsample = (x, z) => w.heightAt(x, z);
+  if (VIEW === "island") {
+    const lim = w.SIZE / 2 - 60;
+    V.hsample = (x, z) => Math.abs(x) > lim || Math.abs(z) > lim ? -60 : (w.heightAt(x, z) * 2 + w.heightAt(x + 45, z) + w.heightAt(x - 45, z) + w.heightAt(x, z + 45) + w.heightAt(x, z - 45)) / 6;
+  }
+  V.scale(V.tileM);
+  // exaggeration from island-wide slopes, the valley view's rule, so most ground climbs in slope tiles
+  if (VIEW !== "island") {
+    const slopes = [], d = V.tileM;
+    for (let z = -4700; z <= 4700; z += 100)
+      for (let x = -4700; x <= 4700; x += 100)
+        if (w.heightAt(x, z) > 0.5) slopes.push(Math.hypot(w.heightAt(x + d, z) - w.heightAt(x - d, z), w.heightAt(x, z + d) - w.heightAt(x, z - d)) / (2 * d));
+    slopes.sort((p, q) => p - q);
+    const steep = slopes[Math.floor(slopes.length * 0.85)] ?? 0;
+    if (steep > 0) { V.exag = clamp(V.lp / (V.k * 0.866 * steep * V.tileM), 1, V.exag); V.scale(V.tileM); }
+  }
+  const NT = Math.ceil(w.SIZE / V.tileM);
+  let peak = 0;
+  for (const h of w.isle.height) peak = Math.max(peak, h);
+  V.peakLev = Math.ceil((peak + 10) / V.levelM);
+  V.i0 = 0; V.j0 = 0; V.i1 = NT; V.j1 = NT; V.NI = NT; V.NJ = NT;
+  V.visible = () => true; V.objVisible = () => true;
+  V.ms = V.tileM * (VIEW === "island" ? 3 : 2.6);
+  V.pm = V.tileM * 0.9;
+  V.rip = 3;
+  const dd = -1 / V.H;
+  V.upW = [(dd * V.eu[0] + dd * V.ev[0]) * V.tileM, (dd * V.eu[1] + dd * V.ev[1]) * V.tileM];
+  const cot = 1 / Math.tan(SUN), sd = [-LU / Math.hypot(LU, LV), -LV / Math.hypot(LU, LV)];
+  V.shx = (sd[0] - sd[1]) * 0.8165 * cot;
+  V.shy = (sd[0] + sd[1]) * 0.5 * 0.8165 * cot;
+  V.sd = sd; V.cot = cot;
+  return V;
+}
+
+// Point V at one chunk of global art pixels [gx0, gx0 + CS) x [gy0, gy0 + CS). Objects are gathered from a wider
+// window: tall sprites standing below the chunk, and sprites to its left whose shadows fall into it.
+export function chunkWindow(V, maxLev, gx0, gy0, CS, tall, shadowL) {
+  V.X0 = -gx0; V.Y0 = -gy0; V.gx = gx0; V.gy = gy0; V.AW = CS; V.AH = CS;
+  const hb = V.H * 0.5;
+  const amin = -V.X0 / V.H - 2, amax = (CS - V.X0) / V.H + 2;
+  const bmin = -V.Y0 / hb - 3, bmax = (CS - V.Y0 + maxLev * V.lp) / hb + 3;
+  const oa0 = amin - shadowL / V.H, ob0 = bmin - (shadowL * 0.4) / hb, ob1 = bmax + tall / hb;
+  V.i0 = Math.floor((amin + bmin) / 2); V.i1 = Math.ceil((amax + bmax) / 2);
+  V.j0 = Math.floor((bmin - amax) / 2); V.j1 = Math.ceil((bmax - amin) / 2);
+  V.visible = (u, v) => { const a = u - v, b = u + v; return a >= amin - 1 && a <= amax + 1 && b >= bmin && b <= bmax; };
+  V.objVisible = (u, v) => { const a = u - v, b = u + v; return a >= oa0 && a <= amax + 1 && b >= ob0 && b <= ob1; };
+  V.obox = [Math.floor((oa0 + ob0) / 2), Math.ceil((amax + 1 + ob1) / 2), Math.floor((ob0 - amax - 1) / 2), Math.ceil((ob1 - oa0) / 2)];
+}
+
+// How high the ground below a chunk climbs into it, in levels: tiles further down the screen whose hills rise into
+// view. Scanned from the true heights, so a paged level can size its map before building it.
+export function liftInto(w, V, gy0, gx0, CS) {
+  const hb = V.H * 0.5, b0 = (CS + gy0) / hb + 3, amin = gx0 / V.H - 2, amax = (gx0 + CS) / V.H + 2;
+  let need = 0;
+  for (let b = Math.floor(b0); (b - b0) * hb <= V.peakLev * V.lp; b++)
+    for (let a = Math.floor(amin); a <= amax; a += 2) {
+      const u = (a + b) / 2, v = (b - a) / 2, lev = w.heightAt(V.ox + u * V.tileM, V.oz + v * V.tileM) / V.levelM;
+      if (lev * V.lp + 2 * V.lp >= (b - b0) * hb) need = Math.max(need, lev + 2);
+    }
+  return Math.ceil(need);
+}
+
+// Terrain shadow as a horizon per vertex: the lowest level a point there must stand at to see the sun. One march per
+// vertex when the map is built, instead of one per pixel.
+export function shadowHorizon(V, M) {
+  const rise = (Math.tan(V.tsun) * V.tileM) / (V.lp / (V.k * 0.866)), step = 0.3, su = -V.sd[0] * step, sv = -V.sd[1] * step;
+  const { NI, NJ, C, diag } = M, VI = NI + 1, hz = new Float32Array(VI * (NJ + 1)), top = M.maxLev;
+  const lev = (u, v) => {
+    const i = Math.floor(u), j = Math.floor(v);
+    if (i < 0 || j < 0 || i >= NI || j >= NJ) return -1e9;
+    const t = j * NI + i, fu = u - i, fv = v - j, T = C[t * 4], R = C[t * 4 + 1], B = C[t * 4 + 2], L = C[t * 4 + 3];
+    if (diag[t] === 0) return fu >= fv ? T + (R - T) * fu + (B - R) * fv : T + (B - L) * fu + (L - T) * fv;
+    return fu + fv <= 1 ? T + (R - T) * fu + (L - T) * fv : R + L - B + (B - L) * fu + (B - R) * fv;
+  };
+  for (let j = 0; j <= NJ; j++)
+    for (let i = 0; i <= NI; i++) {
+      let best = -1e9, cu = i, cv = j;
+      for (let k = 1; k < 80; k++) {
+        cu += su; cv += sv;
+        const drop = rise * step * k;
+        if (top - drop <= best) break;
+        const g = lev(cu, cv);
+        if (g === -1e9) break;
+        if (g - drop > best) best = g - drop;
+      }
+      hz[j * VI + i] = best;
+    }
+  return (u, v, l) => {
+    const x = clamp(u - M.i0, 0, NI - 0.001), y = clamp(v - M.j0, 0, NJ - 0.001), i = Math.floor(x), j = Math.floor(y), fx = x - i, fy = y - j, k = j * VI + i;
+    const h = (hz[k] * (1 - fx) + hz[k + 1] * fx) * (1 - fy) + (hz[k + VI] * (1 - fx) + hz[k + VI + 1] * fx) * fy;
+    return l < h - 0.05;
+  };
+}
+
+// World scatter binned by 150 m cells once, so a chunk only looks at the trees, shrubs and rocks near it.
+function scatterBins(w) {
+  if (w.bins) return w.bins;
+  const n = Math.ceil(w.SIZE / 150), cell = (x, z) => clamp(Math.floor((z - ORIGIN) / 150), 0, n - 1) * n + clamp(Math.floor((x - ORIGIN) / 150), 0, n - 1);
+  const bin = (list) => { const b = Array.from({ length: n * n }, () => []); for (const o of list) b[cell(o.x, o.z)].push(o); return b; };
+  w.bins = { n, trees: bin(w.trees), shrubs: bin(w.shrubs), rocks: bin(w.rocks) };
+  return w.bins;
+}
+function* near(V, list) {
+  const b = V.binsOf, [u0, u1, v0, v1] = V.obox, n = b.n;
+  const cx0 = clamp(Math.floor((u0 * V.tileM) / 150), 0, n - 1), cx1 = clamp(Math.floor((u1 * V.tileM) / 150), 0, n - 1);
+  const cz0 = clamp(Math.floor((v0 * V.tileM) / 150), 0, n - 1), cz1 = clamp(Math.floor((v1 * V.tileM) / 150), 0, n - 1);
+  for (let cz = cz0; cz <= cz1; cz++) for (let cx = cx0; cx <= cx1; cx++) yield* list[cz * n + cx];
+}
+
+// Objects for one live chunk. D carries the live world's landscape: cleared(x, z) where the sim has felled trees or
+// built, and the worn paths (V.trodden).
+export function collectLive(w, V, M, D) {
+  const O = [];
+  const add = (at, spr, opt = {}) => O.push({ z: at.z, sx: at.sx, sy: at.sy, spr, shadow: opt.shadow !== false, mirror: !!opt.mirror, bias: opt.bias ?? V.H * 0.5 + 2 });
+  V.binsOf = scatterBins(w);
+  const [u0, u1, v0, v1] = V.obox, cleared = D.cleared || (() => false);
+  const at3 = (u, v, g) => ({ z: V.cz(u, v, g.lev), sx: Math.round(V.sx(u, v)), sy: Math.round(V.sy(u, v, g.lev)) });
+  const tiles = function* () {
+    for (let j = Math.max(0, v0 - M.j0); j <= Math.min(M.NJ - 1, v1 - M.j0); j++)
+      for (let i = Math.max(0, u0 - M.i0); i <= Math.min(M.NI - 1, u1 - M.i0); i++)
+        if (V.objVisible(M.i0 + i + 0.5, M.j0 + j + 0.5)) yield [i, j, j * M.NI + i];
+  };
+  if (VIEW === "island") {
+    if (!M.treeCount) {
+      const n = M.NI * M.NJ, count = new Float32Array(n), pines = new Float32Array(n), gold = new Float32Array(n);
+      for (const t of w.trees) {
+        const k = M.at(Math.floor((t.x - ORIGIN) / V.tileM) - M.i0, Math.floor((t.z - ORIGIN) / V.tileM) - M.j0);
+        if (k < 0) continue;
+        count[k]++;
+        if (t.kind === "pine") pines[k]++;
+        else if (t.kind === "aspen" && t.tint > 0.8) gold[k]++;
+      }
+      M.treeCount = { count, pines, gold };
+    }
+    const { count, pines, gold } = M.treeCount;
+    const RP = {
+      pine: [[P.p0, P.p1, P.p2], [P.p1, P.p2, P.p3], [P.p1, P.p3, P.p4], [P.p2, P.p4, P.g4]],
+      oak: [[P.p0, P.t1, P.t2], [P.t1, P.t3, P.g3], [P.t2, P.g3, P.g4], [P.t3, P.g4, P.g5]],
+      ash: [[P.t1, P.t2, P.g2], [P.t2, P.g3, P.g4], [P.g2, P.g4, P.g5], [P.g3, P.g5, P.g6]],
+      gold: [[P.d0, P.a0, P.a1], [P.d1, P.a1, P.a2], [P.a0, P.a2, P.a3], [P.a1, P.a3, P.s3]],
+    };
+    for (const [i, j, t] of tiles()) {
+      if (M.kind[t]) continue;
+      const ui = M.i0 + i, vj = M.j0 + j;
+      if (M.cls[t] === HILL) {
+        const nr = Math.round((M.cov[4][t] * 1.8 + h2(t, 7, 7) - 0.5) * (DENSE === 2 ? 1.8 : 1));
+        for (let q = 0; q < nr; q++) {
+          const u = ui + 0.15 + 0.7 * h2(t, q, 21), v = vj + 0.15 + 0.7 * h2(t, q, 22), g = M.ground(u, v);
+          const big = h2(t, q, 23) < 0.35 ? 1 : 0;
+          add(at3(u, v, g), cached(`mr${big}0`, () => SP.miniRock(big, 0)), { bias: 1 });
+        }
+      }
+      if (DENSE === 2 && M.cov[1][t] > 0.2 && M.cov[1][t] < 0.75) {
+        const nb = Math.floor(M.cov[1][t] * (1 - M.cov[1][t]) * 8 + h2(t, 8, 8));
+        for (let q = 0; q < nb; q++) {
+          const u = ui + 0.1 + 0.8 * h2(t, q, 25), v = vj + 0.1 + 0.8 * h2(t, q, 26), g = M.ground(u, v);
+          add(at3(u, v, g), cached("mbushfalse", () => SP.mini("broad2", [P.g1, P.g3, P.g5])), { bias: 1 });
+        }
+      }
+      if (count[t] < 3) continue;
+      const m = clamp(Math.round(M.cov[1][t] * 6.5 - 0.9 + h2(t, 9, 9) * 0.8), 0, 5);
+      for (let q = 0; q < m; q++) {
+        const fu = 0.12 + 0.76 * h2(t, q, 1), fv = 0.12 + 0.76 * h2(t, q, 2), r = h2(t, q, 3);
+        const u = ui + fu, v = vj + fv;
+        if (cleared(...V.toW(u, v), V.tileM * 0.3)) continue;
+        const pine = r < pines[t] / count[t], isGold = !pine && h2(t, q, 4) < gold[t] / count[t];
+        const kind = pine ? (h2(t, q, 5) < 0.5 ? "pine" : "pine2") : h2(t, q, 5) < 0.6 ? "broad" : "broad2";
+        const rp = pine ? "pine" : isGold ? "gold" : M.moist[t] > 0.6 ? "ash" : "oak";
+        const g = M.ground(u, v), c = M.C.subarray(t * 4, t * 4 + 4), du = (c[1] + c[2] - c[0] - c[3]) / 2, dv = (c[2] + c[3] - c[0] - c[1]) / 2;
+        const around = [M.at(i - 1, j), M.at(i, j - 1), M.at(i + 1, j), M.at(i, j + 1)].map((k) => (k >= 0 && !M.kind[k] ? M.cov[1][k] : 0));
+        const deep = M.cov[1][t] > 0.6 && Math.min(...around) > 0.55, edgeLit = around[0] < 0.3 || around[1] < 0.3;
+        const lit = deep ? 0 : V.shaded && V.shaded(u, v, g.lev) ? 1 : clamp(Math.round(-LU * du - LV * dv) + 2 + (edgeLit ? 1 : 0), 1, 3);
+        add(at3(u, v, g), cached(kind + rp + lit + false, () => SP.mini(kind, RP[rp][lit])), { bias: 2 });
+      }
+    }
+    return O;
+  }
+  const pv = V.k * 0.866, visW = (x, z) => V.objVisible((x - ORIGIN) / V.tileM, (z - ORIGIN) / V.tileM), camp = VIEW === "camp";
+  const free = (x, z) => !V.trodden || V.trodden(x, z) > 1;
+  const qs = 70, quiet = (x, z) => DENSE === 2 && fbm(x / qs, z / qs, 206, 2) < -0.12;
+  const sunW = [-V.sd[0], -V.sd[1]], reachW = 30;
+  const cov = (x, z) => w.fine(w.cover.tree, x, z);
+  const dimAt = (x, z) => {
+    const c0 = cov(x, z), sun = cov(x + sunW[0] * reachW, z + sunW[1] * reachW);
+    if (sun < 0.28) return -0.75;
+    if (c0 < 0.3) return -0.25;
+    let ring = 0;
+    for (let k = 0; k < 4; k++) ring += cov(x + Math.cos(k * 1.571) * reachW * 1.4, z + Math.sin(k * 1.571) * reachW * 1.4) / 4;
+    return Math.round(smooth(0.35, 0.8, Math.min(c0, sun, ring)) * 4) / 4;
+  };
+  for (const t of near(V, V.binsOf.trees)) {
+    if (!visW(t.x, t.z) || cleared(t.x, t.z, 4)) continue;
+    const at = place(V, M, t.x, t.z);
+    if (!at || at.g.water) continue;
+    const hp = Math.round(t.tall * pv * V.treeK), vr = Math.floor(t.tint * 5), dim = dimAt(t.x, t.z);
+    const spr = t.kind === "pine" ? cached(`p${hp}|${vr}|${dim}`, () => SP.pine(hp, vr * 17 + hp, false, dim)) : cached(`${t.kind}${hp}|${vr}|${t.tint > 0.8 ? 1 : 0}|${dim}`, () => SP.broad(hp, t.kind, vr * 31 + hp, t.tint, dim));
+    add(at, spr, { mirror: t.yaw > Math.PI });
+  }
+  for (const s of near(V, V.binsOf.shrubs)) {
+    if (!visW(s.x, s.z) || cleared(s.x, s.z, 2) || quiet(s.x, s.z) || !free(s.x, s.z)) continue;
+    const at = place(V, M, s.x, s.z);
+    if (!at || at.g.water) continue;
+    const sz = Math.max(2, Math.round(s.tall * pv * (camp ? 0.9 : 1.7))), vr = Math.floor(s.tint * 4);
+    add(at, cached(`b${sz}|${vr}|${s.heath > 0.5 ? 1 : 0}`, () => SP.bush(sz, vr * 13 + sz, s.heath, s.tint)), { mirror: s.yaw > Math.PI });
+  }
+  if (camp)
+    for (const r of near(V, V.binsOf.rocks)) {
+      if (!visW(r.x, r.z) || cleared(r.x, r.z, 0.5)) continue;
+      const at = place(V, M, r.x, r.z);
+      if (!at || at.g.water) continue;
+      const sz = Math.max(1.5, r.size * pv * 0.9), vr = Math.floor(r.tint * 4), moss = w.fine(w.cover.tree, r.x, r.z);
+      add(at, cached(`r${Math.round(sz * 2)}|${vr}|${moss > 0.4 ? 1 : 0}`, () => SP.rock(sz, vr * 7 + 3, moss)), { mirror: r.yaw > Math.PI });
+    }
+  // rocks gather into one outcrop per cell; the cells are island-wide so every chunk agrees on them
+  if (!camp && !M.rockBins) {
+    const cellM = V.tileM * 2.6, bins = new Map();
+    for (const r of w.rocks) {
+      const key = `${Math.floor(r.x / cellM)},${Math.floor(r.z / cellM)}`, b = bins.get(key) ?? { n: 0, s: 0, x: 0, z: 0, big: r };
+      b.n++; b.s += r.size; b.x += r.x * r.size; b.z += r.z * r.size;
+      if (r.size > b.big.size) b.big = r;
+      bins.set(key, b);
+    }
+    M.rockBins = [...bins.values()].filter((b) => !((b.n < 6 && b.s < 10) || fbm(b.x / b.s / (cellM * 4), b.z / b.s / (cellM * 4), 209, 2) < 0.08));
+    M.rockCell = cellM;
+  }
+  for (const b of camp ? [] : M.rockBins) {
+    const x = b.x / b.s, z = b.z / b.s;
+    if (!visW(x, z) || cleared(x, z, 1)) continue;
+    const at = place(V, M, x, z);
+    if (!at || at.g.water || !w.dry(x, z)) continue;
+    const t = at.g.t;
+    if (M.cls[t] === ROCK && !M.head[t]) continue;
+    const sz = clamp(Math.sqrt(b.s) * 2.2 * pv, 3 * Z, 14 * Z), vr = Math.floor(b.big.tint * 4), moss = w.fine(w.cover.tree, x, z);
+    add(at, cached(`rc${Math.round(sz)}|${vr}|${moss > 0.4 ? 1 : 0}`, () => SP.rock(sz, vr * 7 + 3, moss)), { mirror: b.big.yaw > Math.PI });
+    for (let k = 0; k < Math.min(2, b.n >> 2); k++) {
+      const a = h2(b.n, k, 208) * TAU, d = (sz * 0.8) / V.k, q = place(V, M, x + Math.cos(a) * d, z + Math.sin(a) * d);
+      if (q && !q.g.water) add(q, cached(`rc${Math.round(sz * 0.45)}|${(vr + k) & 3}|0`, () => SP.rock(sz * 0.45, ((vr + k) & 3) * 7 + 3, 0)), { mirror: k === 1 });
+    }
+  }
+  const A = (V.tileM * V.tileM) / 10000, more = camp ? 2.5 : 1, grow = camp ? 1 : 1.6, reach = camp ? 1 : 2;
+  const nextTo = (i, j, kinds) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([a, b]) => { const t = M.at(i + a, j + b); return t >= 0 && kinds.includes(M.kind[t]); });
+  const spawn = (i, j, t, q, n, R, wet, fn) => {
+    const cx = ORIGIN + (M.i0 + i + h2(t, q, 301)) * V.tileM, cz = ORIGIN + (M.j0 + j + h2(t, q, 302)) * V.tileM;
+    for (let k = 0; k < n; k++) {
+      const key = q * 37 + k, a = h2(t, key, 303) * 6.283, d = R * Math.sqrt(h2(t, key, 304)), x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d;
+      if (!(wet || w.dry(x, z)) || !free(x, z) || cleared(x, z, 1)) continue;
+      const at = place(V, M, x, z);
+      if (at && !at.g.water && V.objVisible(at.u, at.v)) fn(at, x, z, h2(t, key, 305));
+    }
+  };
+  for (const [i, j, t] of tiles()) {
+    if (M.kind[t]) continue;
+    // reeds along marsh tiles and wet margins
+    // tile hashes use global tile coordinates, since a close chunk's map is its own small window
+    const ui = M.i0 + i, vj = M.j0 + j, th = camp ? vj * 4096 + ui : t;
+    if (M.cov[3][t] >= 0.25) {
+      const n = Math.round(M.cov[3][t] * (camp ? 3 : 5));
+      for (let q = 0; q < n; q++) {
+        const u = ui + h2(th, q, 11), v = vj + h2(th, q, 12), g = M.ground(u, v);
+        if (!g || g.water) continue;
+        const hp = Math.round((1.2 + h2(th, q, 13)) * pv * (camp ? 1 : 2.4));
+        add(at3(u, v, g), cached(`reed${hp}|${q % 4}`, () => SP.reeds(hp, q * 5 + hp)), { shadow: false });
+      }
+    }
+    if (camp) closeTile(ui, vj, th, t);
+    if (DENSE !== 2) continue;
+    const tc = M.cov[1][t], marsh = M.cov[3][t], edge = tc * (1 - tc) * 4;
+    const roll = (q, rate) => h2(th, q, 300) < rate * A * more;
+    if (edge > 0.5 && roll(1, 12 * edge))
+      spawn(i, j, th, 1, 7 + Math.floor(h2(th, 1, 306) * 8), 3.5 * reach, false, (at, x, z, r) => {
+        const sz = Math.max(2, Math.round((0.6 + r * 1.1) * pv * 0.9 * grow));
+        add(at, cached(`b${sz}|${Math.floor(r * 4)}|${M.heath[t] > 0.5 ? 1 : 0}`, () => SP.bush(sz, Math.floor(r * 4) * 13 + sz, M.heath[t], r)), { mirror: r > 0.5 });
+      });
+    if (camp && roll(2, 4 * (tc * 0.6 + M.cov[4][t] * 1.5) + (M.cls[t] !== ROCK && M.toRock[t] <= 1 ? 10 : 0)))
+      spawn(i, j, th, 2, 2 + Math.floor(h2(th, 2, 306) * 4), 2.5, false, (at, x, z, r) => {
+        const sz = Math.max(1.5, (0.6 + r * r * 2.4) * pv * 0.9), moss = tc > 0.3 ? 0.75 + r * 0.25 : 0.2;
+        add(at, cached(`r${Math.round(sz * 2)}|${Math.floor(r * 4)}|${moss > 0.4 ? 1 : 0}`, () => SP.rock(sz, Math.floor(r * 4) * 7 + 3, moss)), { mirror: r > 0.5 });
+      });
+    if (tc > 0.4 && roll(3, 5 * tc))
+      spawn(i, j, th, 3, 1 + Math.floor(h2(th, 3, 306) * 2.5), 3 * reach, false, (at, x, z, r) => {
+        const len = Math.round((3 + r * 6) * pv * (camp ? 0.55 : 1)), rad = Math.max(1.5, 0.2 * pv * (camp ? 1.25 : 2));
+        add(at, cached(`log${len}|${r < 0.5 ? 1 : -1}|${Math.round(rad)}`, () => SP.log(len, rad, r < 0.5 ? 1 : -1, len)), { bias: 1 });
+      });
+    if (M.cov[5][t] > 0.25 && nextTo(i, j, [SEA, LAKE]) && roll(4, 40))
+      spawn(i, j, th, 4, 1 + Math.floor(h2(th, 4, 306) * 2.5), 2 * reach, false, (at, x, z, r) => {
+        const len = Math.round((2 + r * 4) * pv * (camp ? 0.55 : 1)), rad = Math.max(1.2, 0.15 * pv * (camp ? 1.25 : 2));
+        add(at, cached(`drift${len}|${r < 0.5 ? 1 : -1}|${Math.round(rad)}`, () => SP.log(len, rad, r < 0.5 ? 1 : -1, len, true)), { bias: 1 });
+      });
+    const shore = nextTo(i, j, [LAKE, RIVER]) || (nextTo(i, j, [SEA]) && M.moist[t] > 0.5);
+    if ((marsh > 0.15 || shore) && roll(5, 40 * (marsh + (shore ? 0.5 : 0))))
+      spawn(i, j, th, 5, 8 + Math.floor(h2(th, 5, 306) * 12), 1.8 * reach * (camp ? 1 : 1.4), true, (at, x, z, r) => {
+        const hp = Math.round((1.2 + r) * pv * (camp ? 1 : 3));
+        add(at, cached(`reed${hp}|${Math.floor(r * 4)}`, () => SP.reeds(hp, Math.floor(r * 4) * 5 + hp)), { shadow: false });
+      });
+    if (camp && tc > 0.3 && roll(7, 14 * tc))
+      spawn(i, j, th, 7, 2 + Math.floor(h2(th, 7, 306) * 3), 1.2, false, (at, x, z, r) => {
+        const ms = life("mushrooms", `${2 + Math.floor(r * 3)}|${Math.floor(h2(th, 7, 309) * 4)}`, 2 + Math.floor(r * 3), Math.floor(h2(th, 7, 309) * 4));
+        if (ms) add(at, ms, { shadow: false, bias: 1 });
+      });
+    if (camp && M.cov[0][t] > 0.3 && roll(6, 12 * M.cov[0][t])) {
+      const hue = h2(th, 6, 307);
+      spawn(i, j, th, 6, 20 + Math.floor(h2(th, 6, 306) * 30), 1.5 + h2(th, 6, 308) * 2.5, false, (at, x, z, r) => {
+        const hp = Math.round((0.25 + r * 0.3) * pv * 1.4), hh = (hue + (r - 0.5) * 0.08 + 1) % 1;
+        add(at, cached(`f${hp}|${Math.floor(hh * 6)}`, () => SP.flower(hp, hh, hp)), { shadow: false, bias: 1 });
+      });
+    }
+  }
+  return O;
+
+  // Close up: the woods get their understory, and open ground its tufts and pebbles, hashed per global tile.
+  function closeTile(ui, vj, th, t) {
+    const tc = M.cov[1][t], meadow = M.cov[0][t] + M.cov[2][t] * 0.5 + M.cov[3][t] * 0.8;
+    const n = Math.floor(tc * 5 + h2(ui, vj, 71));
+    for (let q = 0; q < n; q++) {
+      const u = ui + h2(th, q, 72), v = vj + h2(th, q, 73), [x, z] = V.toW(u, v);
+      if (!w.dry(x, z) || cleared(x, z, 2) || !free(x, z)) continue;
+      const g = M.ground(u, v);
+      if (!g || g.water) continue;
+      const at = { u, v, g, sx: Math.round(V.sx(u, v)), sy: Math.round(V.sy(u, v, g.lev)), z: V.cz(u, v, g.lev) }, r = h2(th, q, 75);
+      if (r < 0.35) {
+        const hp = Math.round((2.2 + r * 12) * pv * V.treeK), k = h2(th, q, 76), kind = k < 0.25 ? "pine" : k < 0.5 ? "oak" : k < 0.75 ? "aspen" : "ash";
+        add(at, kind === "pine" ? cached(`p${hp}|9`, () => SP.pine(hp, 9 + hp)) : cached(`${kind}${hp}|8|0`, () => SP.broad(hp, kind, 8 + hp, 0.5)), { mirror: r < 0.17 });
+      } else if (r < 0.6) {
+        const sz = Math.round((0.5 + r * 0.7) * pv);
+        add(at, cached(`b${sz}|1|0`, () => SP.bush(sz, 13 + sz, 0, 0)), { mirror: r > 0.5 });
+      } else {
+        const sz = Math.round((0.5 + (r - 0.6) * 1.2) * pv);
+        add(at, cached(`fern${sz}|${Math.floor(r * 10)}`, () => SP.fern(sz, Math.floor(r * 10))), { shadow: false, mirror: r > 0.8 });
+      }
+    }
+    // tufts gather in clumps, leaving quiet lawn between
+    const ng = Math.round(meadow * V.tileM * V.tileM * 0.55);
+    for (let q = 0; q < ng; q++) {
+      const u = ui + h2(th, q, 81), v = vj + h2(th, q, 82), [x, z] = V.toW(u, v);
+      if (fbm(x / 4, z / 4, 59, 2) < -0.05 || !w.dry(x, z) || cleared(x, z, -1) || !free(x, z)) continue;
+      const g = M.ground(u, v);
+      if (!g || g.water) continue;
+      const at = { sx: Math.round(V.sx(u, v)), sy: Math.round(V.sy(u, v, g.lev)), z: V.cz(u, v, g.lev) }, r = h2(th, q, 83);
+      if (r < 0.03) { const hp = Math.round((0.25 + r * 10) * pv * 1.4); add(at, cached(`f${hp}|${Math.floor(h2(th, q, 84) * 6)}`, () => SP.flower(hp, h2(th, q, 84), hp)), { shadow: false, bias: 1 }); continue; }
+      const hp = Math.round((0.35 + r * 0.5) * pv * 0.95), vr = Math.floor(h2(th, q, 85) * 6);
+      add(at, cached(`t${hp}|${vr}`, () => SP.tuft(hp, vr * 3 + hp, M.cov[2][t])), { shadow: false, bias: 1, mirror: r > 0.5 });
+    }
+    const np = Math.round((0.5 + M.cov[4][t]) * V.tileM * 0.25);
+    for (let q = 0; q < np; q++) {
+      const u = ui + h2(th, q, 86), v = vj + h2(th, q, 87), [x, z] = V.toW(u, v);
+      if (!w.dry(x, z) || h2(th, q, 88) > 0.5 + M.cov[4][t]) continue;
+      const g = M.ground(u, v);
+      if (!g || g.water) continue;
+      const at = { sx: Math.round(V.sx(u, v)), sy: Math.round(V.sy(u, v, g.lev)), z: V.cz(u, v, g.lev) }, sz = (0.15 + h2(th, q, 89) * 0.5) * pv * 0.7;
+      add(at, cached(`pb${Math.round(sz)}`, () => (sz < 3 ? SP.pebble(sz, Math.round(sz * 10)) : SP.rock(sz, Math.round(sz * 10), 0))), { shadow: sz >= 3, bias: 1 });
+    }
+  }
 }
 
 // ---------- objects ----------
@@ -893,6 +1316,7 @@ const cache = new Map();
 const cached = (key, make) => { let s = cache.get(key); if (!s) { s = make(); cache.set(key, s); } return s; };
 // Creature and landmark sprites from life.js; anything it does not (yet) export is simply left out.
 let LIFE = {};
+export const setLife = (mod) => { LIFE = mod; };
 const life = (name, key, ...args) => (typeof LIFE[name] === "function" ? cached(`L:${name}:${key}`, () => LIFE[name](...args)) : null);
 
 function place(V, M, x, z) {
@@ -1919,7 +2343,12 @@ async function main() {
   document.body.classList.add("ready");
 }
 
-const fail = (e) => { document.body.dataset.error = String((e && e.stack) || e); document.body.classList.add("failed"); };
-window.addEventListener("error", (e) => fail(e.error || e.message));
-window.addEventListener("unhandledrejection", (e) => fail(e.reason));
-main().catch(fail);
+// the still page runs itself; the live bake worker imports this file as a library
+if (typeof window !== "undefined" && document.getElementById("view") && !globalThis.ISO_LIB) {
+  const fail = (e) => { document.body.dataset.error = String((e && e.stack) || e); document.body.classList.add("failed"); };
+  window.addEventListener("error", (e) => fail(e.error || e.message));
+  window.addEventListener("unhandledrejection", (e) => fail(e.reason));
+  main().catch(fail);
+}
+
+export { CFG, buildMap, drawTerrain, drawObjects, place, cached, SEA, LAKE, RIVER };

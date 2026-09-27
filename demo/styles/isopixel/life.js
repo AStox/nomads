@@ -6,17 +6,17 @@ import { R } from "./sprites.js";
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const LX = -0.55, LY = -0.62, LZ = 0.56;
-const lit = (nx, ny, nz) => nx * LX + ny * LY + nz * LZ;
+export const lit = (nx, ny, nz) => nx * LX + ny * LY + nz * LZ;
 const pick = (a, u) => a[Math.min(a.length - 1, Math.floor(u * a.length))];
 const tone = (r, v0, span = 1.6) => (x, y, l) => dith(r, v0 + l * span, x, y);
 // Smooth 1D value noise in [0, 1).
-const vnoise = (t, s) => { const i = Math.floor(t), f = t - i, u = f * f * (3 - 2 * f); return h2(i, 17, s) * (1 - u) + h2(i + 1, 17, s) * u; };
+export const vnoise = (t, s) => { const i = Math.floor(t), f = t - i, u = f * f * (3 - 2 * f); return h2(i, 17, s) * (1 - u) + h2(i + 1, 17, s) * u; };
 // a well-mixed pick per seed: h2 alone correlates across small consecutive seeds
-const rv = (seed, k) => h2(Math.floor(h2(seed, k, 77) * 1e9), k, 5);
-const solid = (c) => () => c;
+export const rv = (seed, k) => h2(Math.floor(h2(seed, k, 77) * 1e9), k, 5);
+export const solid = (c) => () => c;
 
 // paint(x, y, light, nx, ny) returns a palette index, or -1 to leave the pixel alone.
-function blob(S, cx, cy, rx, ry, paint) {
+export function blob(S, cx, cy, rx, ry, paint) {
   rx = Math.max(0.55, rx); ry = Math.max(0.55, ry);
   const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
   let any = false;
@@ -33,7 +33,7 @@ function blob(S, cx, cy, rx, ry, paint) {
 }
 
 // A tapered rod shaded as a lit cylinder. Rods thinner than a pixel become a stepped one-pixel line.
-function seg(S, ax, ay, bx, by, ra, rb, paint) {
+export function seg(S, ax, ay, bx, by, ra, rb, paint) {
   const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1e-6;
   if (Math.max(ra, rb) < 0.72) {
     const n = Math.ceil(Math.sqrt(L2) * 3) + 1;
@@ -55,7 +55,7 @@ function seg(S, ax, ay, bx, by, ra, rb, paint) {
     }
 }
 // A polyline of rods, radius running from r0 to r1 over its length.
-function rod(S, pts, r0, r1, paint) {
+export function rod(S, pts, r0, r1, paint) {
   let total = 0;
   for (let k = 1; k < pts.length; k++) total += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
   let at = 0;
@@ -69,7 +69,7 @@ function rod(S, pts, r0, r1, paint) {
 
 // Hand-placed pixel rows for sizes too small to paint procedurally; `key` maps characters to palette indices.
 // Characters in `late` (legs, bills) go on after the outline, so a one-pixel leg stays one pixel wide.
-function rows(list, key, dir, { lift = 0, outline = -1, late = "" } = {}) {
+export function rows(list, key, dir, { lift = 0, outline = -1, late = "" } = {}) {
   const w = list[0].length, n = list.length, S = new Spr(w + 1, n + 1 + lift, dir > 0 ? (w - 1) >> 1 : w - 1 - ((w - 1) >> 1), n - 1 + lift);
   const paint = (pass) => list.forEach((row, y) => [...row].forEach((ch, x) => {
     const c = key[ch];
@@ -81,7 +81,7 @@ function rows(list, key, dir, { lift = 0, outline = -1, late = "" } = {}) {
   return S;
 }
 // Fill only the empty pixels of S from T: parts that sit behind what is already drawn.
-function under(S, T) { for (let i = 0; i < S.p.length; i++) if (S.p[i] === 255) S.p[i] = T.p[i]; }
+export function under(S, T) { for (let i = 0; i < S.p.length; i++) if (S.p[i] === 255) S.p[i] = T.p[i]; }
 
 // ---------------------------------------------------------------------------------------------------------------- deer
 

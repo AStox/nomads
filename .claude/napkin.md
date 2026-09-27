@@ -30,6 +30,9 @@
 8. **[2026-09-27] The island is 211k trees, 49k shrubs and 59k rocks**
    Drawing them all with real geometry, or in one instanced mesh the renderer can't cull, never finishes a frame, and the shadow pass pays twice.
    Do instead: cull to the view and use levels of detail (tiles of instances, cheap far shapes, costly models only for the nearest few hundred things in view).
+9. **[2026-09-27] Renderer prototypes run the real sim in the browser, not the server**
+   demo/sim.ts is bundled to sim.js (node:fs stubbed, brain forced to random) and demo/styles/play/sim.js runs it, so there is no server, no Jev bill, and the island matches the renderer's grow(seed) because both run in one engine. Warm ticks must each get their own task, or every agent stays `thinking` and nothing gets built.
+   Do instead: prototype at /nomads-styles/play/ (window.play = { sim, live, view }). The same seed gives different people in Chromium and Bun (world.ts shuffles with a comparator sort), so never compare people across engines.
 
 ## Domain Behavior Guardrails
 1. **[2026-09-26] No slope may face away from the isometric camera**
@@ -53,3 +56,9 @@
 7. **[2026-09-27] Art-style mocks that only recolor get rejected**
    Two rounds of looks dressed on one shared heightfield with blob trees read to the operator as the same picture recolored.
    Do instead: vary the representation itself per mock (terrain as tiers, voxels, hexes, paper, glyphs or paint; models as sprites, cubes or toy pieces; 2D vs 3D; camera and renderer). Share only demo/styles/world.js, the island as plain data.
+8. **[2026-09-27] Stepped, blocky terrain is the look the operator rejects**
+   In the isopixel style, terraced cliffs, per-tile rock cubes and tile-column shading all read as "too cliffy" or blocks, and raw data rocks drawn one by one read as confetti.
+   Do instead: slope tiles lit per vertex, real cliffs only on sea headlands, rock shaded in a few tones from a normal smoothed over about 3 tiles plus sparse hand texture, and nearby data rocks merged into outcrops at far zooms. Check each pass in grayscale and a heavy blur.
+9. **[2026-09-27] One sim step is 150 m and 5 in-game minutes**
+   At 1x that is 600x time compression, so at the play page's close zoom (6.25 m tiles) a walker covers two screens per tick, and things placed anywhere in their 150 m tile scatter one camp across screens. Bake workers cost about 220 MB each.
+   Do instead: treat the close zoom as a hop-and-settle view until the sim moves in sub-tile steps, and budget browser memory by worker count (3 workers is about 1.3 GB).

@@ -1,0 +1,175 @@
+// Bake worker for the live renderer: grows the island once, builds one tile map per zoom level on demand, and paints
+// chunks of the static landscape (terrain, flora, the sim's clearings and paths) into indexed colour plus depth.
+globalThis.document ??= { createElement: () => new OffscreenCanvas(1, 1) };
+globalThis.ISO_LIB = true;
+// messages that arrive while the modules below load would be dropped, so hold them until the handler exists
+const early = [];
+onmessage = (e) => early.push(e);
+
+const { grow, fbm } = await import("../world.js");
+const L = await import("./main.js");
+const { P, SHADOW } = await import("./pal.js");
+const { Buf, dith, h2 } = await import("./px.js");
+
+let w = null;
+const levels = [];
+// the live world's landscape, sent by the page whenever the sim changes it
+const D = { version: 0, clear: new Map(), paths: new Uint8Array(64 * 64), ice: new Uint8Array(64 * 64), seg: null };
+
+const SIM = 150, SIM0 = -4800;
+const simTile = (x, z) => [Math.floor((x - SIM0) / SIM), Math.floor((z - SIM0) / SIM)];
+
+function level(k) {
+  if (levels[k]) return levels[k];
+  const t0 = performance.now();
+  const V = L.makeLiveView(w, k);
+  const M = V.paged ? null : L.buildMap(w, V);
+  if (M && V.tsun) V.shaded = L.shadowHorizon(V, M);
+  levels[k] = { V, M, ms: performance.now() - t0 };
+  return levels[k];
+}
+
+D.cleared = (x, z, pad) => {
+  const [tx, ty] = simTile(x, z);
+  for (let b = ty - 1; b <= ty + 1; b++)
+    for (let a = tx - 1; a <= tx + 1; a++) {
+      const list = D.clear.get(b * 64 + a);
+      if (list) for (const c of list) if ((x - c.x) ** 2 + (z - c.z) ** 2 < (c.r + pad) ** 2) return true;
+    }
+  return false;
+};
+
+// Worn paths: every tile the sim has worn joins its worn neighbours by a wobbling track, wider the more it is used.
+const node = (tx, ty) => [SIM0 + SIM * (tx + 0.5) + (h2(tx, ty, 501) - 0.5) * 60, SIM0 + SIM * (ty + 0.5) + (h2(tx, ty, 502) - 0.5) * 60];
+function buildPaths() {
+  const seg = new Map(), push = (k, s) => { if (k >= 0 && k < 4096) (seg.get(k) ?? seg.set(k, []).get(k)).push(s); };
+  const worn = (tx, ty) => tx >= 0 && ty >= 0 && tx < 64 && ty < 64 && D.paths[ty * 64 + tx] >= 2;
+  for (let ty = 0; ty < 64; ty++)
+    for (let tx = 0; tx < 64; tx++) {
+      if (!worn(tx, ty)) continue;
+      const wear = D.paths[ty * 64 + tx], [ax, az] = node(tx, ty);
+      let links = 0;
+      for (const [dx, dy] of [[1, 0], [0, 1], [1, 1], [1, -1]]) {
+        if (!worn(tx + dx, ty + dy)) continue;
+        links++;
+        const [bx, bz] = node(tx + dx, ty + dy), s = { ax, az, bx, bz, wear: (wear + D.paths[(ty + dy) * 64 + tx + dx]) / 2 };
+        for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) { push((ty + b) * 64 + tx + a, s); if (dx || dy) push((ty + dy + b) * 64 + tx + dx + a, s); }
+      }
+      const self = { ax, az, bx: ax + 1, bz: az, wear, lone: !links };
+      for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) push((ty + b) * 64 + tx + a, self);
+    }
+  D.seg = seg;
+}
+function troddenFor(V) {
+  if (V.name === "island" || !D.seg || !D.seg.size) return null;
+  const k = (V.tileM / 18.75) ** 0.7;
+  return (x, z) => {
+    const [tx, ty] = simTile(x, z), list = D.seg.get(ty * 64 + tx);
+    if (!list) return Infinity;
+    let best = Infinity;
+    for (const s of list) {
+      const dx = s.bx - s.ax, dz = s.bz - s.az, t = Math.max(0, Math.min(1, ((x - s.ax) * dx + (z - s.az) * dz) / (dx * dx + dz * dz)));
+      // the track meanders, so it is not a ruled line between tile centres
+      const wob = fbm(x / 40, z / 40, 503, 2) * 9 * k;
+      const d = Math.hypot(x - s.ax - dx * t, z - s.az - dz * t) + wob - (1.4 + s.wear * 0.35) * k * (s.lone ? 2.5 : 1);
+      if (d < best) best = d;
+    }
+    return best;
+  };
+}
+
+function bake(msg) {
+  const lv = level(msg.level), V = lv.V, CS = msg.CS, t0 = performance.now(), gx0 = msg.cx * CS, gy0 = msg.cy * CS;
+  let M = lv.M, ground = null;
+  L.setMode(V.view, 0);
+  const tall = V.view === "island" ? 12 : Math.round(34 * V.k * 0.866 * V.treeK) + 8;
+  if (!V.paged) L.chunkWindow(V, M.maxLev, gx0, gy0, CS, tall, tall * V.shx + 4);
+  else {
+    // a map of its own over the drawn tiles and every object that can reach in, with a margin wide enough that the
+    // slope limiter and the shore and rock distances agree with the neighbouring chunks
+    L.chunkWindow(V, L.liftInto(w, V, gy0, gx0, CS), gx0, gy0, CS, tall, tall * V.shx + 4);
+    const draw = [V.i0, V.i1, V.j0, V.j1], [ou0, ou1, ov0, ov1] = V.obox, m = 14;
+    V.i0 = Math.min(ou0, draw[0]) - m; V.i1 = Math.max(ou1, draw[1]) + m; V.j0 = Math.min(ov0, draw[2]) - m; V.j1 = Math.max(ov1, draw[3]) + m;
+    V.NI = V.i1 - V.i0; V.NJ = V.j1 - V.j0;
+    M = L.buildMap(w, V);
+    if (V.tsun) V.shaded = L.shadowHorizon(V, M);
+    [V.i0, V.i1, V.j0, V.j1] = draw;
+    // the drawn tiles' corner levels, so the page can stand live sprites on the ground as drawn
+    const gi0 = V.i0 - M.i0, gj0 = V.j0 - M.j0, gw = V.i1 - V.i0, gh = V.j1 - V.j0, C = new Int16Array(gw * gh * 4), diag = new Uint8Array(gw * gh), kind = new Uint8Array(gw * gh);
+    for (let j = 0; j < gh; j++)
+      for (let i = 0; i < gw; i++) {
+        const t = (gj0 + j) * M.NI + gi0 + i, q = j * gw + i;
+        C.set(M.C.subarray(t * 4, t * 4 + 4), q * 4); diag[q] = M.diag[t]; kind[q] = M.kind[t];
+      }
+    ground = { i0: V.i0, j0: V.j0, w: gw, h: gh, C, diag, kind };
+  }
+  V.trodden = troddenFor(V);
+  V.fringe = 2.5 * (V.tileM / 18.75) ** 0.7;
+  V.iceAt = (x, z) => { const [tx, ty] = simTile(x, z); return tx >= 0 && ty >= 0 && tx < 64 && ty < 64 && D.ice[ty * 64 + tx] === 1; };
+  V.anim = new Map();
+  const B = new Buf(CS, CS);
+  // beyond the map the sea runs on, deep and plain
+  for (let y = 0; y < CS; y++) for (let x = 0; x < CS; x++) B.c[y * CS + x] = dith([P.w0, P.w1, P.w2, P.w3], 1.35, x + V.gx, y + V.gy);
+  const O = L.collectLive(w, V, M, D);
+  const t1 = performance.now();
+  L.drawTerrain(B, w, V, M);
+  const t2 = performance.now();
+  L.drawObjects(B, V, O);
+  const obj = new Uint8Array(CS * CS);
+  // 1: an object drew here, 2: ground already in shadow (so live sprite shadows do not darken it twice)
+  for (let p = 0; p < obj.length; p++) obj[p] = (B.id[p] ? 1 : 0) | (B.sh[p] ? 2 : 0);
+  // animated water and falls: only pixels still showing the ground; a sprite shadow cast later darkens every frame
+  const aP = [], aC = [];
+  for (const [p, cols] of V.anim) {
+    if (B.id[p]) continue;
+    const dark = B.c[p] !== cols[0] && B.sh[p];
+    aP.push(p);
+    for (const c of cols) aC.push(dark ? SHADOW[c] : c);
+  }
+  V.anim = null;
+  const animP = Uint32Array.from(aP), animC = Uint8Array.from(aC);
+  const moved = [B.c.buffer, B.z.buffer, obj.buffer, animP.buffer, animC.buffer];
+  if (ground) moved.push(ground.C.buffer, ground.diag.buffer, ground.kind.buffer);
+  postMessage({ type: "chunk", key: msg.key, ver: D.version, c: B.c, z: B.z, obj, animP, animC, ground, ms: performance.now() - t0, parts: [t1 - t0, t2 - t1, performance.now() - t2], objects: O.length }, moved);
+}
+
+function mapData(k) {
+  const { V, M, ms } = level(k);
+  if (!M) { postMessage({ type: "map", level: k, ms, paged: true, NI: V.NI, NJ: V.NJ, tileM: V.tileM, H: V.H, W: V.W, lp: V.lp, levelM: V.levelM, exag: V.exag, maxLev: V.peakLev, k: V.k, shx: V.shx, shy: V.shy }); return; }
+  const out = { type: "map", level: k, ms, NI: M.NI, NJ: M.NJ, tileM: V.tileM, H: V.H, W: V.W, lp: V.lp, levelM: V.levelM, exag: V.exag, maxLev: M.maxLev, k: V.k, shx: V.shx, shy: V.shy, C: M.C.slice(), diag: M.diag.slice(), kind: M.kind.slice() };
+  postMessage(out, [out.C.buffer, out.diag.buffer, out.kind.buffer]);
+}
+
+// the page keeps the real queue, nearest chunk first, and hands each worker one job at a time
+function run(m) {
+  try {
+    if (m.type === "bake") bake(m);
+    else if (m.type === "map") mapData(m.level);
+  } catch (e) {
+    postMessage({ type: "error", key: m.key, error: String((e && e.stack) || e) });
+  }
+}
+
+const handle = async (e) => {
+  const m = e.data;
+  if (m.type === "init") {
+    const t0 = performance.now();
+    w = grow(m.seed);
+    L.setLife(await import("./life.js").catch(() => ({})));
+    postMessage({ type: "ready", ms: performance.now() - t0 });
+    return;
+  }
+  if (m.type === "state") {
+    D.version = m.version;
+    if (m.clear) {
+      D.clear = new Map();
+      for (const c of m.clear) { const [tx, ty] = simTile(c.x, c.z), k = ty * 64 + tx; (D.clear.get(k) ?? D.clear.set(k, []).get(k)).push(c); }
+    }
+    if (m.paths) { D.paths = Uint8Array.from(m.paths); buildPaths(); }
+    if (m.ice) D.ice = Uint8Array.from(m.ice);
+    return;
+  }
+  run(m);
+};
+onmessage = handle;
+for (const e of early.splice(0)) await handle(e);
