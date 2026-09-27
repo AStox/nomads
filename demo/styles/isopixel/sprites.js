@@ -31,7 +31,8 @@ function clumps(x, y, c, seed) {
   return -(ox * 0.7 + oy * 0.8) * 0.9 - bd * 0.6 + 0.15;
 }
 
-export function pine(hpx, seed, snow = false) {
+// dim: -1 a sunlit edge tree, 0 plain, 1 deep in a forest (darker, highlights capped so the canopy reads as a mass)
+export function pine(hpx, seed, snow = false, dim = 0) {
   const h = Math.max(6, Math.round(hpx)), trunk = Math.max(1, Math.round(h * 0.11)), crown = h - trunk;
   let w = Math.max(3, Math.round(h * 0.42));
   if (w % 2 === 0) w++;
@@ -47,6 +48,9 @@ export function pine(hpx, seed, snow = false) {
       if (dx === hr) v -= 1.1;
       if (tp > 0.78) v -= 0.9;
       if (dx === -hl && tp < 0.6) v += 0.8;
+      v -= dim * 1.8;
+      if (dim > 0) v = Math.min(v, r.length - 1.5 - dim * 2.6);
+      else if (dim < 0 && dx <= 0) v -= dim * 1.1;
       S.set(x, y, dith(r, v, x, y));
       if (snow && tp < 0.3 && dx < 0 && h2(x, y, seed + 9) < 0.6) S.set(x, y, P.snow);
     }
@@ -58,7 +62,7 @@ export function pine(hpx, seed, snow = false) {
 }
 
 // A round crown built from overlapping leaf clumps, each shaded as a little sphere.
-export function broad(hpx, kind, seed, tint) {
+export function broad(hpx, kind, seed, tint, dim = 0) {
   const h = Math.max(6, Math.round(hpx));
   const r = kind === "aspen" && tint > 0.8 ? R.gold : R[kind] || R.ash;
   const cw = Math.max(4, Math.round(h * (kind === "oak" ? 0.8 : kind === "ash" ? 0.68 : 0.5)));
@@ -85,6 +89,9 @@ export function broad(hpx, kind, seed, tint) {
       l += h >= 18 ? clumps(x, y, Math.max(2.4, h / 13), seed) : (h2((x + seed) >> 1, y >> 1, 5) - 0.5) * 0.5;
       let v = 1.1 + (l * 0.55 + 0.45) * (r.length - 1.4) + lift;
       if (rim > 0.72 && nx + ny > 0.45) v -= 1.2;
+      v -= dim * 2;
+      if (dim > 0) v = Math.min(v, r.length - 1.6 - dim * 3);
+      else if (dim < 0 && nx + ny < -0.2) v -= dim * 1.2;
       S.set(x, y, dith(r, v, x, y));
     }
   const tw = h >= 14 ? Math.max(2, Math.round(h / 15)) : 1, t0 = Math.round(ch * 0.78), tx = Math.floor(cx) - (tw >> 1);
@@ -189,6 +196,8 @@ const MINI = {
   pine2: [" a ", "abc", " b ", "abc", "abc", " t "],
   broad: [" ab ", "abbc", "bbcc", " cc ", "  t "],
   broad2: [" ab", "abc", " t "],
+  pineS: [" a ", "abc"],
+  broadS: ["ab", "bc"],
 };
 export function mini(kind, rp) {
   const rows = MINI[kind], S = new Spr(rows[0].length + 1, rows.length + 1, rows[0].length >> 1, rows.length - 1);
@@ -204,7 +213,14 @@ export function miniRock(big, snow) {
   return S;
 }
 
-export function miniTent() {
+export function miniTent(scale = 1) {
+  if (scale > 1) {
+    const S = new Spr(12, 7, 5, 5);
+    for (let y = 0; y < 6; y++) for (let x = 5 - y; x <= 5 + y; x++) S.set(x, y, x < 5 ? P.s3 : x === 5 ? P.s2 : P.s0);
+    S.set(5, 4, P.d0); S.set(5, 5, P.d0); S.set(6, 5, P.d1);
+    S.outline(P.ink, true);
+    return S;
+  }
   const S = new Spr(6, 4, 2, 2);
   ["  a  ", " abc ", "abbcc"].forEach((row, y) => [...row].forEach((ch, x) => { if (ch !== " ") S.set(x, y, ch === "a" ? P.s3 : ch === "b" ? P.s2 : P.s0); }));
   S.outline(P.ink, true);
@@ -341,6 +357,16 @@ export function fern(size, seed) {
   return S;
 }
 
+// A fishing rod held out over the water (side -1 left, +1 right) with its line dropping from the tip.
+export function rod(len, side) {
+  len = Math.max(5, len);
+  const drop = Math.round(len * 0.9), S = new Spr(len + 2, Math.round(len * 0.5) + drop + 2, side > 0 ? 0 : len + 1, Math.round(len * 0.5));
+  const tipY = 0, baseY = Math.round(len * 0.5);
+  for (let k = 0; k <= len; k++) S.set(side > 0 ? k : len + 1 - k, Math.round(baseY - (baseY - tipY) * (k / len) - Math.sin((k / len) * Math.PI) * len * 0.08), k < len * 0.3 ? P.d2 : P.d3);
+  for (let k = 1; k <= drop; k++) if (k & 1 || k < 3) S.set(side > 0 ? len : 1, tipY + k, P.r5);
+  return S;
+}
+
 // A felled-tree stump: a ringed cut face on a short bark drum, lit from the left.
 export function stump(r, hpx, seed) {
   r = Math.max(2, Math.round(r)); hpx = Math.max(2, Math.round(hpx));
@@ -362,7 +388,9 @@ export function stump(r, hpx, seed) {
 }
 
 // A fallen trunk lying along one tile axis (dir +1 or -1), with its cut end toward the viewer.
-export function log(len, r, dir, seed) {
+// `pale`: bleached driftwood instead of bark.
+export function log(len, r, dir, seed, pale = false) {
+  const [lit, mid, dark, cut, rim, core] = pale ? [P.s3, P.s2, P.s0, P.s3, P.s1, P.s2] : [P.d3, P.d2, P.d1, P.d5, P.d3, P.d4];
   len = Math.max(4, Math.round(len)); r = Math.max(1.5, r);
   const W = Math.ceil(len + r * 2 + 3), H = Math.ceil(len * 0.5 + r * 2 + 3), S = new Spr(W, H, W >> 1, H - 2);
   const x0 = r + 1, y0 = dir > 0 ? r + 1 : H - r - 2;
@@ -371,11 +399,11 @@ export function log(len, r, dir, seed) {
     for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
       if (dx * dx + dy * dy > r * r) continue;
       const f = dy / r;
-      S.set(cx + dx, cy + dy, f < -0.45 ? P.d3 : f < 0.3 ? (h2(Math.round(cx + dx), Math.round(cy + dy), seed) < 0.25 ? P.d1 : P.d2) : P.d1);
+      S.set(cx + dx, cy + dy, f < -0.45 ? lit : f < 0.3 ? (h2(Math.round(cx + dx), Math.round(cy + dy), seed) < 0.25 ? dark : mid) : dark);
     }
   }
   const ex = dir > 0 ? x0 + len : x0, ey = dir > 0 ? y0 + len * 0.5 : y0;
-  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) { const d = Math.hypot(dx, dy) / r; if (d <= 1) S.set(ex + dx * 0.7, ey + dy, d > 0.75 ? P.d3 : d < 0.3 ? P.d4 : P.d5); }
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) { const d = Math.hypot(dx, dy) / r; if (d <= 1) S.set(ex + dx * 0.7, ey + dy, d > 0.75 ? rim : d < 0.3 ? core : cut); }
   S.outline(P.ink, true);
   return S;
 }

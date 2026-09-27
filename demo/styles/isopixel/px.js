@@ -19,9 +19,14 @@ export class Buf {
     this.id = new Uint16Array(w * h); // 0 terrain, else the object that drew the pixel
     this.sh = new Uint8Array(w * h); // already shadowed
   }
-  toImage(g) {
+  // `clear`: an index left fully transparent, for overlays
+  toImage(g, clear = -1) {
     const img = g.createImageData(this.w, this.h), d = img.data;
-    for (let p = 0; p < this.w * this.h; p++) { const c = RGB[this.c[p]]; d[p * 4] = c[0]; d[p * 4 + 1] = c[1]; d[p * 4 + 2] = c[2]; d[p * 4 + 3] = 255; }
+    for (let p = 0; p < this.w * this.h; p++) {
+      if (this.c[p] === clear) continue;
+      const c = RGB[this.c[p]];
+      d[p * 4] = c[0]; d[p * 4 + 1] = c[1]; d[p * 4 + 2] = c[2]; d[p * 4 + 3] = 255;
+    }
     g.putImageData(img, 0, 0);
   }
 }

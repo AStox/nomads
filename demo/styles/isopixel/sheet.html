@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Nomads: isopixel sprite sheet</title>
+<style>
+  html, body { margin: 0; background: #0d0b14; }
+  canvas#view { display: block; margin: 0 auto; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<canvas id="view" width="1320" height="720"></canvas>
+<script>
+  const fail = (m) => { document.body.classList.add("failed"); document.body.dataset.error = String(m); };
+  addEventListener("error", (e) => fail(e.message));
+  addEventListener("unhandledrejection", (e) => fail(e.reason && e.reason.stack || e.reason));
+</script>
+<script type="module" src="./sheet.js"></script>
+</body>
+</html>
