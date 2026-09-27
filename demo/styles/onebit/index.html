@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Nomads: one bit</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #333319; overflow: hidden; }
+  canvas#view { display: block; width: 100vw; height: 100vh; object-fit: contain; image-rendering: pixelated; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.min.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<canvas id="view" width="1280" height="720"></canvas>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
