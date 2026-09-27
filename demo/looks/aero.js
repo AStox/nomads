@@ -1,12 +1,13 @@
-// Field guide: the island as it would really look, shot from a hilltop through a tilt-shift lens. Photographed ground,
-// grown trees with real bark and leaves, the sky lighting everything, water that mirrors it.
+// Aerochrome: the island shot on false-color infrared film. A real scene underneath, with photographed ground, grown
+// trees, and a sky lighting everything, but everything living glows hot magenta and pink, bare earth goes cream, water
+// goes black and the sky a deep cyan; then film grain and a red halation round the highlights.
 import * as THREE from "three";
 import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
 import { Tree } from "@dgreenheck/ez-tree";
-import { merged, rockGeometry, scatter, tuft } from "./stage.js";
+import { NOISE, QUAD, merged, rockGeometry, scatter, tuft } from "./stage.js";
 
 const PH = "https://dl.polyhaven.org/file/ph-assets";
-const SKIES = { day: `${PH}/HDRIs/hdr/2k/kloofendal_48d_partly_cloudy_puresky_2k.hdr`, evening: `${PH}/HDRIs/hdr/2k/evening_road_01_puresky_2k.hdr` };
+const SKY = `${PH}/HDRIs/hdr/2k/kloofendal_48d_partly_cloudy_puresky_2k.hdr`;
 // One photographed ground per cover, in the order the ground shader weighs them: forest floor, heath, meadow, mud,
 // rock, sand.
 const GROUND = [
@@ -45,24 +46,23 @@ function sunIn(hdr) {
   return { dir: new THREE.Vector3(Math.cos(az) * Math.cos(el), Math.sin(el), Math.sin(az) * Math.cos(el)).normalize(), haze };
 }
 
-export async function dress(stage, { evening = false, view }) {
+export async function dress(stage, { view }) {
   const { scene, renderer, sun } = stage, anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-  const [hdr, waves, ...ground] = await Promise.all([new HDRLoader().loadAsync(evening ? SKIES.evening : SKIES.day), new THREE.TextureLoader().loadAsync(WAVES), ...GROUND.flat().map(image)]);
+  const [hdr, waves, ...ground] = await Promise.all([new HDRLoader().loadAsync(SKY), new THREE.TextureLoader().loadAsync(WAVES), ...GROUND.flat().map(image)]);
   const { dir, haze } = sunIn(hdr);
   hdr.mapping = THREE.EquirectangularReflectionMapping;
   scene.background = hdr;
   scene.environment = new THREE.PMREMGenerator(renderer).fromEquirectangular(hdr).texture;
-  scene.environmentIntensity = evening ? 0.5 : 0.55;
-  scene.fog = new THREE.FogExp2(haze.clone().multiplyScalar(evening ? 0.8 : 1), { island: 0.000055, valley: 0.00016, camp: 0.00022 }[view]);
-  sun.color.set(evening ? 0xffb070 : 0xfff1dd);
-  sun.intensity = evening ? 3.4 : 4.5;
+  scene.environmentIntensity = 0.55;
+  scene.fog = new THREE.FogExp2(haze, { island: 0.000055, valley: 0.00016, camp: 0.00022 }[view]);
+  sun.color.set(0xfff1dd);
+  sun.intensity = 4.5;
   const sunDir = dir.y < 0.06 ? dir.setY(0.06).normalize() : dir;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = evening ? 1.05 : 0.95;
-  Object.assign(stage.grade.uniforms, { uSaturation: { value: 1.12 }, uContrast: { value: 1.06 }, uVignette: { value: 0.32 } });
-  stage.grade.uniforms.uShadows.value.set(-0.01, 0.0, 0.02);
-  stage.grade.uniforms.uHighlights.value.set(0.02, 0.01, -0.01);
-  stage.bloom.strength = evening ? 0.35 : 0.18;
+  renderer.toneMappingExposure = 0.95;
+  Object.assign(stage.grade.uniforms, { uSaturation: { value: 1.0 }, uContrast: { value: 1.0 }, uVignette: { value: 0.32 } });
+  stage.bloom.strength = 0.3;
+  stage.print(INFRARED);
 
   const albedo = layers(ground.filter((_, k) => k % 2 === 0), true, anisotropy), normals = layers(ground.filter((_, k) => k % 2 === 1), false, anisotropy);
   const [coverA, coverB] = stage.coverTextures(), height = stage.heightTexture(), river = stage.riverTexture();
@@ -71,7 +71,7 @@ export async function dress(stage, { evening = false, view }) {
   scene.add(land);
 
   waves.wrapS = waves.wrapT = THREE.RepeatWrapping;
-  const water = waterMaterial({ height, size: stage.SIZE, waves, evening });
+  const water = waterMaterial({ height, size: stage.SIZE, waves });
   const sea = new THREE.Mesh(new THREE.PlaneGeometry(stage.SIZE * 12, stage.SIZE * 12, 64, 64).rotateX(-Math.PI / 2), water);
   for (const mesh of [sea, new THREE.Mesh(stage.lakeGeometry(), water), new THREE.Mesh(stage.riverGeometry(), water)]) { mesh.receiveShadow = true; scene.add(mesh); }
 
@@ -170,7 +170,7 @@ function groundMaterial({ coverA, coverB, river, albedo, normals }) {
         ground /= max(total, 1e-5);
         // Meadows green where the soil holds water and paler where it doesn't; the floor of the woods mossy and shaded;
         // broad patches of lighter and darker ground; the beds of lakes and the sea darker.
-        ground *= mix(vec3(1.0), mix(vec3(0.85, 0.98, 0.6), vec3(0.62, 0.98, 0.46), cb.b), w6[2] / max(total, 1e-5));
+        ground *= mix(vec3(1.0), mix(vec3(0.6, 1.0, 0.42), vec3(0.42, 1.0, 0.3), cb.b), w6[2] / max(total, 1e-5));
         ground *= mix(vec3(1.0), vec3(0.5, 0.58, 0.4), w6[0] / max(total, 1e-5));
         ground *= 0.82 + 0.36 * bump(vWorld.xz / 170.0);
         ground *= 1.0 - 0.45 * cb.a;
@@ -189,7 +189,7 @@ function groundMaterial({ coverA, coverB, river, albedo, normals }) {
   return material;
 }
 
-function waterMaterial({ height, size, waves, evening }) {
+function waterMaterial({ height, size, waves }) {
   const material = new THREE.MeshStandardMaterial({ color: 0x0b3440, roughness: 0.12, metalness: 0, envMapIntensity: 0.7, transparent: true });
   material.onBeforeCompile = (s) => {
     Object.assign(s.uniforms, { uHeight: { value: height }, uSize: { value: size }, uWaves: { value: waves } });
@@ -202,7 +202,7 @@ function waterMaterial({ height, size, waves, evening }) {
         vec2 wuv = vWorld.xz / uSize + 0.5;
         float rim = 1.0 - smoothstep(0.0, 0.12, min(min(wuv.x, wuv.y), min(1.0 - wuv.x, 1.0 - wuv.y)));
         float depth = max(vWorld.y - texture2D(uHeight, clamp(wuv, 0.0, 1.0)).r, rim * 60.0);
-        vec3 shallow = ${evening ? "vec3(0.03, 0.08, 0.08)" : "vec3(0.03, 0.12, 0.10)"}, deep = vec3(0.004, 0.03, 0.05);
+        vec3 shallow = vec3(0.02, 0.06, 0.12), deep = vec3(0.004, 0.02, 0.05);
         diffuseColor.rgb = mix(shallow, deep, smoothstep(0.0, 5.0, depth));
         foam = smoothstep(0.25, 0.0, depth) * step(0.02, depth) * smoothstep(0.35, 0.65, texture2D(uWaves, vWorld.xz / 23.0).g);
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.8), foam * 0.7);
@@ -318,3 +318,33 @@ function camp(stage, scene, bark) {
     add(new THREE.SphereGeometry(0.13, 12, 10), skin, at.clone().add(new THREE.Vector3(0, 1.5, 0)), yaw);
   });
 }
+
+// Infrared film: living leaves throw back near infrared strongly, and the film records infrared as red, red as green
+// and green as blue. Guess the infrared from how green and how blue each pixel is, shift the channels, then add the
+// film's red halation round bright things and its grain.
+const INFRARED = {
+  uniforms: { tDiffuse: { value: null }, uTexel: { value: null } },
+  vertexShader: QUAD,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform vec2 uTexel;
+    varying vec2 vUv;
+    ${NOISE}
+    vec3 infrared(vec3 c) {
+      float living = clamp((c.g - max(c.r, c.b)) / max(c.g, 0.04) * 3.0, 0.0, 1.0);
+      float ir = mix(c.r * 1.05, 0.18 + c.g * 1.9, living) * (1.0 - clamp((c.b - c.r) * 2.2, 0.0, 0.85));
+      return vec3(ir, c.r, c.g);
+    }
+    void main() {
+      vec3 c = infrared(texture2D(tDiffuse, vUv).rgb);
+      float glow = 0.0;
+      for (int i = 0; i < 12; i++) {
+        float a = float(i) * 0.5236;
+        glow += max(dot(infrared(texture2D(tDiffuse, vUv + vec2(cos(a), sin(a)) * 7.0 * uTexel).rgb), vec3(0.4, 0.4, 0.2)) - 0.7, 0.0);
+      }
+      c += vec3(1.0, 0.22, 0.12) * glow * 0.12;
+      c = mix(c, c * c * (3.0 - 2.0 * c), 0.5);
+      c += (hash21(floor(vUv / uTexel)) - 0.5) * 0.07;
+      gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+    }`,
+};

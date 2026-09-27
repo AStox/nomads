@@ -1,11 +1,13 @@
 // The stage every look is dressed on: one generated island, with the same trees, rocks, grass and camp in the same
-// places, under the same cameras and lens. A look only chooses materials, light and color, so looks compare fairly.
+// places, under the same cameras and lens. A look chooses shapes, materials, light, and passes of its own over the
+// picture, so looks compare fairly however far apart they go.
 import * as THREE from "three";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import { Pass } from "three/addons/postprocessing/Pass.js";
 import { CELL, N, generateIsland, rng } from "./island.js";
 
 export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -204,6 +206,67 @@ export function makeStage(seed, { shadow = 4096, samples = 4 } = {}) {
     return geo;
   }
 
+  // The ground in a look's own material. The look's `paint` (GLSL) sets `diffuseColor.rgb` from the covers at each
+  // point (tree, shrub, grass and marsh in `ca`; bare, sand, moisture and standing water in `cb`), the stream in `rv`,
+  // how much sky it sees in `vSky` and where it is in `vWorld`; `glow`, if given, adds to `totalEmissiveRadiance`.
+  let covers = null;
+  function ground(material, { paint, glow = "", decls = "", uniforms = {} }) {
+    covers ??= [...coverTextures(), riverTexture()];
+    material.onBeforeCompile = (s) => {
+      Object.assign(s.uniforms, { uCoverA: { value: covers[0] }, uCoverB: { value: covers[1] }, uRiver: { value: covers[2] } }, uniforms);
+      s.vertexShader = s.vertexShader
+        .replace("#include <common>", "#include <common>\nattribute float sky;\nvarying float vSky;\nvarying vec2 vCover;\nvarying vec3 vWorld;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvSky = sky;\nvCover = uv;\nvWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+      s.fragmentShader = s.fragmentShader
+        .replace("#include <common>", `#include <common>\n${NOISE}\nuniform sampler2D uCoverA, uCoverB, uRiver;\nvarying float vSky;\nvarying vec2 vCover;\nvarying vec3 vWorld;\nvec4 ca, cb;\nfloat rv;\n${decls}`)
+        .replace("#include <map_fragment>", `#include <map_fragment>\nca = texture2D(uCoverA, vCover);\ncb = texture2D(uCoverB, vCover);\nrv = texture2D(uRiver, vCover).r;\n${paint}`)
+        .replace("#include <emissivemap_fragment>", `#include <emissivemap_fragment>\n${glow}`);
+    };
+    const mesh = new THREE.Mesh(terrainGeometry(), material);
+    mesh.receiveShadow = mesh.castShadow = true;
+    return mesh;
+  }
+  // The sea, lakes and streams in a look's own unlit colors. The look's `paint` (GLSL) sets `gl_FragColor` from
+  // `depth`, the water over the ground there, and `vWorld`. Past the island's edge the sea floor falls away.
+  let heights = null;
+  function water(paint, { decls = "", uniforms = {}, transparent = true } = {}) {
+    heights ??= heightTexture();
+    const material = new THREE.ShaderMaterial({
+      uniforms: { uHeight: { value: heights }, uSize: { value: SIZE }, ...THREE.UniformsUtils.clone(THREE.UniformsLib.fog), ...uniforms },
+      vertexShader: /* glsl */ `
+        #include <common>
+        #include <fog_pars_vertex>
+        varying vec3 vWorld;
+        void main() {
+          vec4 world = modelMatrix * vec4(position, 1.0);
+          vWorld = world.xyz;
+          vec4 mvPosition = viewMatrix * world;
+          gl_Position = projectionMatrix * mvPosition;
+          #include <fog_vertex>
+        }`,
+      fragmentShader: /* glsl */ `
+        #include <common>
+        #include <fog_pars_fragment>
+        ${NOISE}
+        uniform sampler2D uHeight;
+        uniform float uSize;
+        varying vec3 vWorld;
+        ${decls}
+        void main() {
+          vec2 uv = vWorld.xz / uSize + 0.5;
+          float rim = 1.0 - smoothstep(0.0, 0.12, min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y)));
+          float depth = max(vWorld.y - texture2D(uHeight, clamp(uv, 0.0, 1.0)).r, rim * 60.0);
+          ${paint}
+          gl_FragColor.a = clamp(gl_FragColor.a, 0.0, 1.0);
+          #include <fog_fragment>
+        }`,
+      fog: true,
+      transparent,
+    });
+    const sea = new THREE.PlaneGeometry(SIZE * 12, SIZE * 12, 64, 64).rotateX(-Math.PI / 2);
+    return [sea, lakeGeometry(), riverGeometry()].map((g) => { const mesh = new THREE.Mesh(g, material); mesh.receiveShadow = true; return mesh; });
+  }
+
   // ---------- the camp, and the views ----------
   // A camp on a meadow near water, with woods close by and hills behind: the kind of spot people would pick.
   let best = null;
@@ -383,7 +446,47 @@ export function makeStage(seed, { shadow = 4096, samples = 4 } = {}) {
   }
   const render = () => composer.render();
 
-  return { isle, M, STEP, START, SIZE, h, cover, wet, river, moist, heightAt, slopeAt, fine, dry, riverAt, rivers, riverWidth, trees, shrubs, rocks, camp: camping, views, nearby, terrainGeometry, coverTextures, heightTexture, riverTexture, lakeGeometry, riverGeometry, renderer, scene, camera, sun, composer, tilt, bloom, grade, resize, aim, sees, levels, frame, render, rand };
+  // ---------- passes a look can add over the picture ----------
+  // `paint` goes before the lens, so the lens blurs the look's marks with everything else; `print` goes last, on the
+  // finished and graded picture. Either shares the lens's `uTexel`, the size of a pixel.
+  const place = (shader, at) => {
+    const pass = new ShaderPass(shader);
+    pass.uniforms.uTexel = tilt.uniforms.uTexel;
+    composer.insertPass(pass, at);
+    return pass;
+  };
+  const paint = (shader) => place(shader, composer.passes.indexOf(tilt));
+  const print = (shader) => place(shader, composer.passes.length);
+  // Normals (rgb) and distance from the camera (a, 0 where there's only sky) for every pixel, drawn before the frame,
+  // for looks that ink their edges. ShaderPass clones textures out of its uniforms, so hand this over after placing.
+  let edges = null;
+  function gbuffer() {
+    if (edges) return edges.texture;
+    edges = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
+    const material = new THREE.ShaderMaterial({ ...GBUFFER, side: THREE.DoubleSide }), clear = new THREE.Color();
+    const pass = new Pass();
+    pass.needsSwap = false;
+    pass.setSize = (w, hgt) => edges.setSize(w, hgt);
+    pass.render = (r) => {
+      const background = scene.background, auto = r.shadowMap.autoUpdate, alpha = r.getClearAlpha();
+      r.getClearColor(clear);
+      scene.background = null;
+      scene.overrideMaterial = material;
+      r.shadowMap.autoUpdate = false;
+      r.setClearColor(0x8080ff, 0);
+      r.setRenderTarget(edges);
+      r.clear();
+      r.render(scene, camera);
+      scene.background = background;
+      scene.overrideMaterial = null;
+      r.shadowMap.autoUpdate = auto;
+      r.setClearColor(clear, alpha);
+    };
+    composer.insertPass(pass, 0);
+    return edges.texture;
+  }
+
+  return { isle, M, STEP, START, SIZE, h, cover, wet, river, moist, heightAt, slopeAt, fine, dry, riverAt, rivers, riverWidth, trees, shrubs, rocks, camp: camping, views, nearby, terrainGeometry, coverTextures, heightTexture, riverTexture, lakeGeometry, riverGeometry, ground, water, renderer, scene, camera, sun, composer, tilt, bloom, grade, paint, print, gbuffer, resize, aim, sees, levels, frame, render, rand };
 }
 
 // ---------- shapes every look can use ----------
@@ -429,6 +532,38 @@ export function tuft() {
   g.computeVertexNormals();
   return g;
 }
+// A round crown of overlapping balls about a unit tall, shaded as one soft mass: normals lean out from its middle,
+// and vertex colors run from dark underneath to 1 on top, for a look's material to multiply. Detail 0 is a lump or two.
+export function puffCrown({ shrub = false, detail = 2 } = {}) {
+  const balls = [];
+  if (detail === 0) balls.push(...(shrub ? [[0, 0.3, 0, 0.3]] : [[0, 0.45, 0, 0.3], [0.1, 0.72, 0.05, 0.26]]).map(([x, y, z, r]) => new THREE.IcosahedronGeometry(r, 0).translate(x, y, z)));
+  else
+    for (let k = 0, n = shrub ? 4 : 7; k < n; k++) {
+      const a = k * 2.4, r = shrub ? 0.22 : 0.18 + (k % 3) * 0.05, y = shrub ? 0.28 + (k % 2) * 0.12 : 0.55 + (k % 4) * 0.09;
+      balls.push(new THREE.IcosahedronGeometry(shrub ? 0.22 : 0.2 + (k % 2) * 0.05, detail).translate(Math.cos(a) * r * (k ? 1 : 0), y, Math.sin(a) * r * (k ? 1 : 0)));
+    }
+  return massed(merged(balls), new THREE.Vector3(0, shrub ? 0.3 : 0.66, 0), 0.3);
+}
+// A conifer's crown as stacked tiers, dark at the foot and lighter toward the tip.
+export function spireCrown(detail = 2) {
+  const n = detail + 2;
+  const tiers = detail === 0 ? [new THREE.ConeGeometry(0.26, 0.95, 6).translate(0, 0.52, 0)] : Array.from({ length: n }, (_, k) => new THREE.ConeGeometry(0.26 - (k * 0.2) / n, 1.44 / n, detail * 3 + 4).translate(0, 0.3 + (k * 0.76) / n, 0));
+  return massed(merged(tiers), new THREE.Vector3(0, 0.6, 0), 0.4);
+}
+export const trunk = (detail = 2, tall = 0.5, width = 0.055) => new THREE.CylinderGeometry(width * 0.55, width, tall, detail * 3 + 3).translate(0, tall / 2, 0);
+function massed(geo, center, low) {
+  const p = geo.attributes.position, n = geo.attributes.normal, col = new Float32Array(p.count * 3), v = new THREE.Vector3(), out = new THREE.Vector3(), top = new THREE.Box3().setFromBufferAttribute(p);
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    out.copy(v).sub(center).normalize();
+    v.fromBufferAttribute(n, i).multiplyScalar(0.3).addScaledVector(out, 0.7).normalize();
+    n.setXYZ(i, v.x, v.y, v.z);
+    const k = low + (1 - low) * clamp((p.getY(i) - top.min.y) / (top.max.y - top.min.y), 0, 1) ** 0.7;
+    col.set([k, k, k], i * 3);
+  }
+  geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  return geo;
+}
 // Copies of a shape at each thing, grouped in square tiles so the renderer skips the tiles a camera, or the sun's
 // shadow camera, can't see.
 export function scatter(geometry, material, list, size, tint, { cast = true, tile = 500 } = {}) {
@@ -452,6 +587,80 @@ export function scatter(geometry, material, list, size, tint, { cast = true, til
   }
   return group;
 }
+// The camp's pieces in a look's materials: tents (one material, or one per tent), a ring of stones and a flame for the
+// fire, a woodpile, and five people with their heads. `glow` lights the camp from the fire.
+export function pitchCamp(stage, { tent, stone, wood, flame, clothes, skin, glow = 0 }) {
+  const group = new THREE.Group(), up = (p, y) => p.clone().add(new THREE.Vector3(0, y, 0));
+  const add = (geo, mat, p, yaw = 0) => {
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(p);
+    mesh.rotation.y = yaw;
+    mesh.castShadow = mesh.receiveShadow = true;
+    group.add(mesh);
+    return mesh;
+  };
+  const { tents, fire, woodpile, people } = stage.camp;
+  tents.forEach(({ at, yaw, size }, k) => add(new THREE.ConeGeometry(size * 0.55, size, 14, 1, true), Array.isArray(tent) ? tent[k] : tent, up(at, size / 2 - 0.05), yaw));
+  for (let k = 0; k < 10; k++) {
+    const a = (k / 10) * Math.PI * 2;
+    add(new THREE.IcosahedronGeometry(0.22, 1), stone, fire.clone().add(new THREE.Vector3(Math.cos(a) * 0.95, 0.1, Math.sin(a) * 0.95)));
+  }
+  add(new THREE.ConeGeometry(0.38, 1.1, 9), flame, up(fire, 0.55)).castShadow = false;
+  for (let k = 0; k < 12; k++) add(new THREE.CylinderGeometry(0.12, 0.12, 1.6, 8).rotateX(Math.PI / 2), wood, woodpile.clone().add(new THREE.Vector3((k % 4) * 0.26 - 0.4, 0.13 + Math.floor(k / 4) * 0.23, 0)));
+  people.forEach(({ at, yaw }, k) => {
+    add(new THREE.CapsuleGeometry(0.21, 0.85, 4, 12), clothes[k % clothes.length], up(at, 0.68), yaw);
+    add(new THREE.SphereGeometry(0.15, 14, 10), skin, up(at, 1.46), yaw);
+  });
+  if (glow) {
+    const light = new THREE.PointLight(0xff9a4a, glow, 40, 2);
+    light.position.copy(up(fire, 1.2));
+    group.add(light);
+  }
+  return group;
+}
+
+// Value noise and a few octaves of it, for any shader that wants some.
+export const NOISE = /* glsl */ `
+  float hash21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash21(i), hash21(i + vec2(1, 0)), u.x), mix(hash21(i + vec2(0, 1)), hash21(i + vec2(1, 1)), u.x), u.y);
+  }
+  float fbm2(vec2 p) { return vnoise(p) * 0.55 + vnoise(p * 2.03 + 7.1) * 0.3 + vnoise(p * 4.1 + 3.7) * 0.15; }`;
+export const QUAD = "varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }";
+// Ink lines from the stage's gbuffer: where distance jumps (silhouettes) or surfaces turn sharply (creases, weighted by
+// `crease`), looking `w` pixels out. Distance jumps are judged on its inverse, which runs flat across a plane.
+export const EDGES = /* glsl */ `
+  float inv(float z) { return z > 0.0 ? 1.0 / z : 0.0; }
+  float edges(sampler2D tG, vec2 uv, vec2 texel, float w, float crease) {
+    vec4 g = texture2D(tG, uv);
+    vec2 dx = vec2(w, 0.0) * texel, dy = vec2(0.0, w) * texel;
+    vec4 l = texture2D(tG, uv - dx), r = texture2D(tG, uv + dx), d = texture2D(tG, uv - dy), u = texture2D(tG, uv + dy);
+    float lap = (abs(inv(l.a) + inv(r.a) - 2.0 * inv(g.a)) + abs(inv(d.a) + inv(u.a) - 2.0 * inv(g.a))) * g.a;
+    vec3 n = g.xyz * 2.0 - 1.0;
+    float turn = 1.0 - min(min(dot(n, l.xyz * 2.0 - 1.0), dot(n, r.xyz * 2.0 - 1.0)), min(dot(n, d.xyz * 2.0 - 1.0), dot(n, u.xyz * 2.0 - 1.0)));
+    return max(smoothstep(0.06, 0.2, lap), smoothstep(0.3, 0.7, turn) * crease) * step(0.001, g.a);
+  }`;
+
+// View-space normals and distance, instanced or not.
+const GBUFFER = {
+  vertexShader: /* glsl */ `
+    #include <common>
+    varying vec3 vNormal;
+    varying float vDepth;
+    void main() {
+      #include <beginnormal_vertex>
+      #include <defaultnormal_vertex>
+      #include <begin_vertex>
+      #include <project_vertex>
+      vNormal = normalize(transformedNormal);
+      vDepth = -mvPosition.z;
+    }`,
+  fragmentShader: /* glsl */ `
+    varying vec3 vNormal;
+    varying float vDepth;
+    void main() { gl_FragColor = vec4((gl_FrontFacing ? vNormal : -vNormal) * 0.5 + 0.5, vDepth); }`,
+};
 
 // A tilt-shift: a band held sharp across the focus, and a round bokeh blur growing toward the top and bottom of the
 // frame, the way a macro lens renders a model. Bright taps count for more, so highlights bloom into discs.
