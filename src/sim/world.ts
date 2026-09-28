@@ -243,10 +243,27 @@ export function nearWater(w: World, x: number, y: number, r: number) {
 }
 export const tileAt = (w: World, x: number, y: number) =>
   x < 0 || y < 0 || x >= W || y >= H ? Tile.Water : w.tiles[y * W + x];
-export const walkable = (w: World, x: number, y: number) => {
-  const t = tileAt(w, x, y);
-  return t === Tile.Grass || t === Tile.Forest || t === Tile.Rock || (t === Tile.Water && iceAt(w, x, y));
+// Tiles someone could stand somewhere on: any dry ground in them, or ice. A coarse filter; dryAt says for a point.
+export const walkable = (w: World, x: number, y: number) =>
+  x >= 0 && y >= 0 && x < W && y < H && (groundOf(w.seed).dry[y * W + x] === 1 || (w.tiles[y * W + x] === Tile.Water && iceAt(w, x, y)));
+// Standing water at a point (in tiles): the fine wet field the map draws lakes and the sea from.
+export const wetAt = (w: World, px: number, py: number) => {
+  const f = groundOf(w.seed).fine;
+  return f.fine(f.wet, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2) > 0.5;
 };
+// Ground at a point: on the map and not under water, unless the water there is frozen.
+export const dryAt = (w: World, px: number, py: number) =>
+  px >= 0 && py >= 0 && px < W && py < H && (!wetAt(w, px, py) || iceAt(w, Math.floor(px), Math.floor(py)));
+// The nearest dry point, searching outward a meter at a time close in and coarser further out.
+export function dryNear(w: World, px: number, py: number, max = 3000): [number, number] | null {
+  if (dryAt(w, px, py)) return [px, py];
+  for (let r = 1; r <= max; r += r < 20 ? 1 : r < 200 ? 5 : 25)
+    for (let k = 0; k < 24; k++) {
+      const a = (k / 24) * Math.PI * 2, x = px + (Math.cos(a) * r) / TILE_M, y = py + (Math.sin(a) * r) / TILE_M;
+      if (dryAt(w, x, y)) return [x, y];
+    }
+  return null;
+}
 // The largest stretch of ground one can walk across. Rocks and islets offshore, or in a lake, are cut off from it.
 export function mainland(w: World) {
   const seen = new Uint8Array(W * H);
@@ -285,12 +302,12 @@ export function sea(w: World) {
   }
   return salt;
 }
-// Where anyone arriving by sea comes ashore: in from a random point off the coast, the first ground of the mainland.
+// Where anyone arriving by sea comes ashore: in from a random point off the coast, the first dry ground of the mainland.
 export function landing(w: World) {
   const main = mainland(w), a = Math.random() * Math.PI * 2;
-  for (let d = Math.hypot(W, H) / 2; d > 0; d -= 0.5) {
-    const x = Math.round(W / 2 + Math.cos(a) * d), y = Math.round(H / 2 + Math.sin(a) * d);
-    if (x >= 0 && y >= 0 && x < W && y < H && main[y * W + x]) return { x, y };
+  for (let d = Math.hypot(W, H) / 2; d > 0; d -= 0.1) {
+    const px = W / 2 + Math.cos(a) * d, py = H / 2 + Math.sin(a) * d, x = Math.floor(px), y = Math.floor(py);
+    if (x >= 0 && y >= 0 && x < W && y < H && main[y * W + x] && dryAt(w, px, py)) return { x, y, px, py };
   }
   return null;
 }
@@ -340,17 +357,54 @@ export const clash = (a: string, b: string) => OPPOSITES.some(([x, y]) => (x ===
 
 // Growing an island and everything on it takes a good fraction of a second and depends only on the seed, so tests that
 // rebuild the same world reuse it. Callers get their own copies of anything the game might change.
-export type Ground = { land: Lay; isle: Island; fine: Fine; flora: Scatter };
+export type Ground = { land: Lay; isle: Island; fine: Fine; flora: Scatter; dry: Uint8Array; shore?: { px: number; py: number }[] }; // dry: 1 per tile with dry ground in it
 const grounds = new Map<number, Ground>();
+let lastSeed = NaN, last: Ground | null = null;
 export function groundOf(seed: number): Ground {
+  if (seed === lastSeed && last) return last;
   let g = grounds.get(seed);
   if (!g) {
-    const isle = generateIsland(rng(seed)), fine = fineGround(isle);
-    g = { land: lay(isle), isle, fine, flora: scatter(isle, fine, seed) };
+    const isle = generateIsland(rng(seed)), fine = fineGround(isle), dry = new Uint8Array(W * H);
+    for (let t = 0; t < W * H; t++)
+      for (let k = 0; k < 36 && !dry[t]; k++) {
+        const x = (t % W) + ((k % 6) + 0.5) / 6, y = Math.floor(t / W) + (Math.floor(k / 6) + 0.5) / 6;
+        if (fine.fine(fine.wet, x * TILE_M - SIZE / 2, y * TILE_M - SIZE / 2) <= 0.5) dry[t] = 1;
+      }
+    g = { land: lay(isle), isle, fine, flora: scatter(isle, fine, seed), dry };
     grounds.set(seed, g);
   }
+  lastSeed = seed; last = g;
   return g;
 }
+// The one number every sprite of a thing, animal or person is varied by, in the map and in the inspector alike: a
+// thing's own seed, or a hash of an animal's or person's id.
+export function spriteSeed(e: { id: string; seed?: number }) {
+  if (e.seed !== undefined) return e.seed >>> 0;
+  let h = 2166136261;
+  for (let i = 0; i < e.id.length; i++) h = Math.imul(h ^ e.id.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+// Where to stand to dip into water: a meter back from the water's edge, found along a grid of about 19 m. It depends
+// only on the island, so newWorld works it out once per seed, before the first tick.
+export function shoreOf(w: World) {
+  const g = groundOf(w.seed);
+  if (g.shore) return g.shore;
+  const s: { px: number; py: number }[] = [], step = 1 / 8, back = 1 / TILE_M;
+  for (let y = step / 2; y < H; y += step)
+    for (let x = step / 2; x < W; x += step) {
+      if (wetAt(w, x, y)) continue;
+      for (const [dx, dy] of [[step, 0], [-step, 0], [0, step], [0, -step]]) {
+        if (!wetAt(w, x + dx, y + dy)) continue;
+        let lo = 0, hi = 1;
+        for (let k = 0; k < 7; k++) { const m = (lo + hi) / 2; if (wetAt(w, x + dx * m, y + dy * m)) hi = m; else lo = m; }
+        const px = x + dx * lo - Math.sign(dx) * back, py = y + dy * lo - Math.sign(dy) * back;
+        if (!wetAt(w, px, py)) s.push({ px, py });
+      }
+    }
+  return (g.shore = s);
+}
+// Which of the heraldic colors a person wears, as an index into COLORS.
+export const colorIndex = (a: { color: string }) => Math.max(0, COLORS.indexOf(a.color));
 // World meters (the island's center at 0) to tiles, to a tenth of a millimeter's worth of tile.
 export const tileOf = (m: number) => Math.round(((m + SIZE / 2) / TILE_M) * 1e4) / 1e4;
 
@@ -373,7 +427,8 @@ export function newWorld(seed: number, agentCount = 5): World {
   };
   for (let i = 0; i < f.n; i++) {
     const kind = FLORA[f.kind[i]], px = tileOf(f.x[i]), py = tileOf(f.z[i]), size = Math.round(f.size[i] * 100) / 100, seed = f.seed[i];
-    if (kind === "ore") { addThing(w, "item", px, py, { item: "ore", n: 1, born: 0, size, seed }); continue; }
+    if (wetAt(w, px, py)) continue;
+    if (kind === "ore") { addThing(w, "item", px, py, { item: "ore", n: 1, size, seed }); continue; }
     const hp = HP[kind](size);
     const t: Thing = { id: `t${w.nextId++}`, kind, x: Math.floor(px), y: Math.floor(py), px, py, size, seed, species: SPECIES[f.species[i]] || undefined, hp, maxHp: hp };
     if (kind === "bush" && t.species === "berry") t.n = 4;
@@ -383,7 +438,7 @@ export function newWorld(seed: number, agentCount = 5): World {
     enter(w, t, false);
   }
   const traitNames = Object.keys(TRAITS), main = mainland(w);
-  const open = (px: number, py: number) => tileAt(w, Math.floor(px), Math.floor(py)) === Tile.Grass && !!main[Math.floor(py) * W + Math.floor(px)];
+  const open = (px: number, py: number) => tileAt(w, Math.floor(px), Math.floor(py)) === Tile.Grass && !!main[Math.floor(py) * W + Math.floor(px)] && dryAt(w, px, py);
   // They wake within a few minutes' walk of each other, each alone.
   let cx = 0, cy = 0;
   do { cx = 12 + rand() * (W - 24); cy = 12 + rand() * (H - 24); } while (!open(cx, cy));
@@ -416,6 +471,7 @@ export function newWorld(seed: number, agentCount = 5): World {
     });
   }
   populate(w, rand, main);
+  shoreOf(w);
   for (const a of w.agents) {
     w.people[a.id] = { id: a.id, name: a.name, color: a.color, alive: true };
     log(w, "wake", [a.id], a, `${a.name} woke up alone in the wilderness.`);

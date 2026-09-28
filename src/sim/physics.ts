@@ -1,6 +1,6 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
 import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, type Kind, type Props } from "./materials";
-import { DAY, REACH, TILE_M, Tile, YEAR, addThing, iceAt, level, log, meters, nearWater, reachOf, tileAt, walkable, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
+import { DAY, REACH, TILE_M, Tile, YEAR, addThing, dryAt, dryNear, iceAt, level, log, meters, nearWater, reachOf, tileAt, wetAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
 import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } from "./space";
 import { clock, trace } from "./trace";
 import { see } from "./beliefs";
@@ -35,11 +35,11 @@ export function nearFire(w: World, a: { px: number; py: number }, r = 3) {
 // stand on; where they set things down, light fires and build.
 export function beside(w: World, e: { px: number; py: number; heading?: number }, m: number): [number, number] {
   const a = e.heading ?? Math.random() * Math.PI * 2;
-  for (const turn of [0, 0.8, -0.8, 1.6, -1.6, Math.PI]) {
+  for (const turn of [0, 0.8, -0.8, 1.6, -1.6, 2.4, -2.4, Math.PI]) {
     const px = e.px + (Math.cos(a + turn) * m) / TILE_M, py = e.py + (Math.sin(a + turn) * m) / TILE_M;
-    if (walkable(w, Math.floor(px), Math.floor(py))) return [px, py];
+    if (dryAt(w, px, py)) return [px, py];
   }
-  return [e.px, e.py];
+  return dryNear(w, e.px, e.py) ?? [e.px, e.py];
 }
 
 export const CARRY = 16;
@@ -557,8 +557,8 @@ export function wet(w: World, a: Agent, act: Act): Outcome {
 // Water they could dip something in from where they stand: open water within a couple of paces, or a well.
 export function openWater(w: World, a: { px: number; py: number }) {
   for (let k = -1; k < 8; k++) {
-    const r = k < 0 ? 0 : 3 / TILE_M, x = Math.floor(a.px + Math.cos((k * Math.PI) / 4) * r), y = Math.floor(a.py + Math.sin((k * Math.PI) / 4) * r);
-    if (tileAt(w, x, y) === Tile.Water && !iceAt(w, x, y)) return true;
+    const r = k < 0 ? 0 : 3 / TILE_M, x = a.px + Math.cos((k * Math.PI) / 4) * r, y = a.py + Math.sin((k * Math.PI) / 4) * r;
+    if (wetAt(w, x, y) && !iceAt(w, Math.floor(x), Math.floor(y))) return true;
   }
   return !!anyAround(w, a.px, a.py, 3, ["well"]);
 }
@@ -604,7 +604,7 @@ const an = (s: string) => (/^[aeiou]/.test(s) ? `an ${s}` : `a ${s}`);
 // Soft ground with nothing standing on it within a pace or two.
 export function diggable(w: World, px: number, py: number) {
   const tile = tileAt(w, Math.floor(px), Math.floor(py));
-  return (tile === Tile.Grass || tile === Tile.Forest) && !anyAround(w, px, py, 1.5, SOLID);
+  return (tile === Tile.Grass || tile === Tile.Forest) && dryAt(w, px, py) && !anyAround(w, px, py, 1.5, SOLID);
 }
 // What takes up the ground it stands on, so no one can dig or plant right there.
 const SOLID = ["tree", "stump", "burnt_stump", "bush", "dead_bush", "sapling", "boulder", "fallen_log", "structure", "fire", "pit", "trap", "well", "grave"];
@@ -679,6 +679,9 @@ const WIDTH = [1.2, 2.2, 3, 4.5]; // meters across, by tier
 export const reaches = (a: { px: number; py: number }, t: Thing) => meters(a, t) <= reachOf(t) + 1;
 // A stone ring is the structure around a fire, where the fire stands.
 const ringOf = (w: World, fire: Thing) => nearestThing(w, fire.px, fire.py, ["structure"], () => true, 1);
+// What people call a structure: a stones-round-a-fire ring, a pile, a lean-to, a hut or a cabin.
+export const shelterName = (w: World, t: Thing) =>
+  (t.shelter?.tier ?? 0) === 0 && nearestThing(w, t.px, t.py, ["fire"], () => true, 1) ? "fire ring" : ["pile", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0];
 
 export function place(w: World, a: Agent, act: Act): Outcome {
   const parts = act.items.map((id) => kind(w, id)!).filter(Boolean);

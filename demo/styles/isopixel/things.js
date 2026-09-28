@@ -1205,6 +1205,12 @@ function flip(S) {
   T.foot = S.foot;
   return T;
 }
+// A heron under 5 px: long neck, dagger bill and legs, grey or (for egret seeds, as life.js picks) white.
+const HERON_MINI = { 2: ["NY", "B."], 3: [".NY", "BB.", ".L."], 4: ["..NY", "..N.", "BBB.", "..L."] };
+function heronMini(hpx, seed) {
+  const egret = rv(seed, 4) < 0.3, h = clamp(Math.round(hpx), 2, 4);
+  return rows(HERON_MINI[h], { N: egret ? P.snow : P.r4, B: egret ? P.r5 : P.r2, Y: P.a2, L: egret ? P.r0 : P.d2 }, 1, { late: "YL" });
+}
 const BIRD_C = { gull: [P.snow, P.r3, P.a2], crow: [P.r0, P.ink, P.r1], eagle: [P.d2, P.d0, P.a2] };
 // A bird sitting on the ground or a branch, facing right. hpx: its height, 2 to 8.
 export function perched(kind = "gull", hpx = 4, seed = 0) {
@@ -1254,7 +1260,7 @@ export function animal(species, state = "wander", hpx = 6, frame = 0, seed = 0, 
     }
     case "heron": case "egret": {
       if (/fly|soar|land|flutter|dive/.test(st)) return birdAt("gull", hpx * 1.4, frame, seed, dir);
-      if (hpx < 5) return hpx < 2 ? dot(P.r4, P.r2) : face(perched("gull", hpx, seed), true);
+      if (hpx < 5) return hpx < 2 ? dot(P.r4, P.r2) : face(heronMini(hpx, seed), rv(seed, 3) < 0.5);
       return face(LF.heron(hpx, /feed|fish|hunt|eat/.test(st) ? "fish" : "stand", seed), rv(seed, 3) < 0.5);
     }
     case "gull": case "crow": case "eagle": {

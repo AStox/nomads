@@ -1,9 +1,9 @@
 // The world keeps moving on its own: weather, fire, plants, animals, rot, and sickness.
 import { THING_MATERIAL, clamp01, ensure, p } from "./materials";
-import { dropPile, fireHeat, mark, nearFire, newKinds, removeThing } from "./physics";
+import { dropPile, fireHeat, mark, nearFire, newKinds, removeThing, shelterName } from "./physics";
 import { see } from "./beliefs";
 import {
-  DAY, H, TILE_M, W, Tile, addThing, dayOfYear, log, meters, nearWater, sea, seasonOf, tileAt, walkable,
+  DAY, H, TILE_M, W, Tile, addThing, dayOfYear, log, meters, nearWater, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
 import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind } from "./space";
@@ -84,17 +84,16 @@ function ice(w: World) {
     if (grew && w.ice.length < 40) log(w, "weather", [], { x: W / 2, y: H / 2 }, "The water's edge froze over.");
   } else if (t > 1 && w.ice.length) {
     for (const a of w.agents) {
-      if (tileAt(w, a.x, a.y) !== Tile.Water) continue;
+      if (!wetAt(w, a.px, a.py)) continue;
       a.needs.health = Math.max(0, a.needs.health - 25);
       a.needs.warmth = Math.max(0, a.needs.warmth - 50);
       log(w, "hazard", [a.id], a, `The ice gave way under ${a.name}. They crawled out soaked and freezing.`);
       see(w, a, "thin_ice", "Ice melts when it warms up. Don't be standing on it.", 80);
-      for (let r = 1; r < 10; r++) {
-        const spot = [[r, 0], [-r, 0], [0, r], [0, -r]].find(([dx, dy]) => tileAt(w, a.x + dx, a.y + dy) !== Tile.Water);
-        if (spot) { put(w, a, a.x + spot[0] + 0.5, a.y + spot[1] + 0.5); break; }
-      }
+      // They crawl out to the nearest dry ground once the ice is gone.
+      const out = dryNear({ ...w, ice: [] }, a.px, a.py);
+      if (out) put(w, a, ...out);
     }
-    for (const an of w.animals) if (FAUNA[an.species].ground && tileAt(w, an.x, an.y) === Tile.Water) an.hp = 0;
+    for (const an of w.animals) if (FAUNA[an.species].ground && wetAt(w, an.px, an.py)) an.hp = 0;
     w.ice = [];
     iceChanged.now = true;
     log(w, "weather", [], { x: W / 2, y: H / 2 }, "The ice broke up and melted.");
@@ -163,7 +162,7 @@ function burnOut(w: World, t: Thing, by?: string) {
   if (t.kind === "tree") { setKind(w, t, "burnt_stump"); t.burning = 0; t.hp = 30; t.maxHp = 30; t.size = 0.6; t.until = w.t + DAY * 10; mark(w, t); return; }
   if (t.kind === "structure") {
     const owner = w.agents.find((a) => a.id === t.owner);
-    const text = `Fire burned down ${owner ? `${owner.name}'s` : "a"} ${["pile", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0]}.`;
+    const text = `Fire burned down ${owner ? `${owner.name}'s` : "a"} ${shelterName(w, t)}.`;
     log(w, "burned", [owner?.id, by].filter(Boolean) as string[], t, text, owner ? `${owner.name}'s home burned` : "a home burned");
     if (owner) { burnedHomes.push({ owner: owner.id, by, text }); if (owner.home === t.id) owner.home = null; }
   }
@@ -258,7 +257,7 @@ function plants(w: World, live: Thing[]) {
   }
   if (Math.random() < (growing ? 1 / 18 : 1 / 60)) {
     const x = Math.floor(Math.random() * W), y = Math.floor(Math.random() * H), px = x + Math.random(), py = y + Math.random();
-    if (!walkable(w, x, y)) return;
+    if (!dryAt(w, px, py)) return;
     const forest = tileAt(w, x, y) === Tile.Forest, shore = nearWater(w, x, y, 1);
     const r = Math.random();
     // Weather wears reddish stones out of rocky ground now and then.
@@ -271,7 +270,7 @@ function plants(w: World, live: Thing[]) {
 }
 function seedNear(w: World, t: Thing) {
   const a = Math.random() * Math.PI * 2, d = (5 + Math.random() * 40) / TILE_M, px = t.px + Math.cos(a) * d, py = t.py + Math.sin(a) * d;
-  if (tileAt(w, Math.floor(px), Math.floor(py)) !== Tile.Grass || anyAround(w, px, py, 2, ["tree", "bush", "sapling", "boulder", "structure", "dead_bush"])) return;
+  if (tileAt(w, Math.floor(px), Math.floor(py)) !== Tile.Grass || !dryAt(w, px, py) || anyAround(w, px, py, 2, ["tree", "bush", "sapling", "boulder", "structure", "dead_bush"])) return;
   mark(w, addThing(w, "sapling", px, py, { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5 }));
 }
 function matured(w: World, t: Thing) {

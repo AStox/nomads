@@ -449,3 +449,22 @@ export function flames(hpx, seed) {
   for (let k = 0; k < 5; k++) S.set(cx + (h2(k, seed, 8) - 0.5) * w * 1.4, S.ay - h - 1 - h2(k, seed, 9) * 4, h2(k, seed, 10) < 0.5 ? P.f3 : P.f4);
   return S;
 }
+
+// Sprites too small for the drawn ones, down to a single pixel. A forest's interior is dark and its sunward edge lit,
+// as the full crowns are, so a wood reads the same from far out as up close.
+export const TINY = { pine: ["p0", "p1", "p2", "p3", "p4"], broad: ["t1", "t2", "t3", "g3", "g4"], gold: ["d0", "a0", "a1", "a2", "a3"], shrub: ["t1", "g1", "g2", "g3", "g4"], rock: ["r1", "r2", "r3", "r4", "r5"] };
+export function tinyTree(h, kind, dim) {
+  const cols = TINY[kind].map((n) => P[n]), base = kind === "rock" ? 2.5 : 2 - dim * 1.4, trunk = kind !== "rock" && kind !== "shrub" && h >= 4 ? 1 : 0;
+  const ch = h - trunk, wd = kind === "pine" ? Math.max(1, Math.round(h * 0.45)) : Math.max(1, Math.round(h * 0.7)), S = new Spr(wd + 2, h + 1, (wd + 2) >> 1, h);
+  for (let y = 0; y < ch; y++) {
+    const t = ch === 1 ? 0.5 : y / (ch - 1), half = kind === "pine" ? (wd / 2) * (0.35 + 0.65 * t) : (wd / 2) * (t < 0.5 ? 0.75 + t * 0.5 : 1);
+    for (let x = 0; x < wd; x++) {
+      const dx = x + 0.5 - wd / 2;
+      if (Math.abs(dx) > Math.max(0.5, half)) continue;
+      const light = h === 1 ? 0 : (-dx / Math.max(1, wd) - t + 0.5) * 1.6;
+      S.set(x + 1, y, cols[clamp(Math.round(base + light), 0, 4)]);
+    }
+  }
+  if (trunk) S.set(S.ax, h - 1, P.d1);
+  return S;
+}

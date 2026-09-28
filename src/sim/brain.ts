@@ -4,6 +4,7 @@ import {
   type Agent, type BondKind, type Label, type Relationship, type Response, type World,
 } from "./world";
 import { around, thingById } from "./space";
+import { shelterName } from "./physics";
 import { TRAITS } from "./traits";
 import { PROPS, THING_MATERIAL, type Kind, type Props } from "./materials";
 import { beliefText } from "./beliefs";
@@ -110,7 +111,7 @@ export function view(w: World, a: Agent) {
   const m = (b: { px: number; py: number }) => Math.round(meters(a, b));
   around(w, a.px, a.py, 60, null, (t, d) => {
     if (t.kind === "pebble" || t.kind === "grass" || (t.kind === "bush" && t.species === "berry" && !t.n)) return;
-    let kind = t.kind === "item" ? `${w.kinds[t.item ?? ""]?.name ?? "something"} on the ground` : t.kind === "structure" ? ["pile of stuff", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0] : t.kind === "bush" ? `${t.species ?? "berry"} bush` : t.kind.replaceAll("_", " ");
+    let kind = t.kind === "item" ? `${w.kinds[t.item ?? ""]?.name ?? "something"} on the ground` : t.kind === "structure" ? (shelterName(w, t) === "fire ring" ? "ring of stones round a fire" : ["pile of stuff", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0]) : t.kind === "bush" ? `${t.species ?? "berry"} bush` : t.kind.replaceAll("_", " ");
     if (t.burning) kind = `burning ${kind}`;
     if (t.kind === "fire") kind = t.covered ? "fire heaped over with stone" : t.contained && (t.charcoal ?? 0) > 0 ? "ringed fire glowing white-hot with charcoal" : t.contained ? "ringed fire" : "fire";
     if ((t.resin ?? 0) > 0) kind = `${kind} beaded with resin`;

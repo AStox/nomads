@@ -1,8 +1,9 @@
 // What anyone pointing at the world gets told: the real fields of a thing, an animal or a person, or the facts of the
 // ground at a point. Rows are [label, value]; bars are [label, value, max].
 import { THING_MATERIAL, MADE_OF, PROPS, p } from "./materials";
-import { DAY, TILE_M, Tile, W, ageOf, clock, groundOf, iceAt, stageOf, tileAt, type Agent, type Animal, type Thing, type World } from "./world";
+import { DAY, H, TILE_M, Tile, W, ageOf, clock, colorIndex, groundOf, iceAt, level, spriteSeed, stageOf, tileAt, type Agent, type Animal, type Thing, type World } from "./world";
 import { thingById } from "./space";
+import { shelterName } from "./physics";
 import { agentDetail, goalText } from "./sim";
 import { campOf } from "./groups";
 import { SIZE } from "../terrain/flora";
@@ -11,7 +12,9 @@ export type Inspected = {
   id: string; kind: string; name: string; species?: string; px: number; py: number;
   rows: [string, string | number][]; bars: [string, number, number][];
   // For drawing the icon: the same fields the sprite is chosen and varied by.
-  seed?: number; size?: number; state?: string; alt?: number; color?: string;
+  seed?: number; size?: number; state?: string; alt?: number; color?: string; colorIndex?: number;
+  // Things: what picks the sprite on the map.
+  tier?: number; style?: string; item?: string; contained?: boolean; covered?: boolean; caught?: string; n?: number; burning?: number; stage?: number;
 };
 
 const r = (v: number, dp = 1) => Math.round(v * 10 ** dp) / 10 ** dp;
@@ -35,7 +38,7 @@ function material(w: World, id: string | undefined, rows: Inspected["rows"]) {
 function thing(w: World, t: Thing): Inspected {
   const rows: Inspected["rows"] = [], bars: Inspected["bars"] = [];
   const kind = t.kind === "item" ? w.kinds[t.item ?? ""]?.name ?? t.item ?? "item" : t.species ? `${words(t.species)} ${t.kind === "tree" || t.kind === "bush" || t.kind === "fallen_log" ? words(t.kind) : ""}`.trim() : words(t.kind);
-  const name = t.kind === "structure" ? ["pile", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0] : t.kind === "grave" ? `grave of ${t.name}` : kind;
+  const name = t.kind === "structure" ? shelterName(w, t) : t.kind === "grave" ? `grave of ${t.name}` : kind;
   rows.push(["kind", words(t.kind)]);
   if (t.species) rows.push(["species", words(t.species)]);
   rows.push([t.kind === "tree" || t.kind === "bush" || t.kind === "reeds" || t.kind === "sapling" ? "height" : t.kind === "stick" || t.kind === "fallen_log" ? "length" : "width", `${r(t.size, 2)} m`]);
@@ -75,7 +78,10 @@ function thing(w: World, t: Thing): Inspected {
   if (mat) rows.push(["breaks into", Object.entries(mat.breaks).map(([k, n]) => `${n} ${w.kinds[k]?.name ?? k}`).join(", ")]);
   material(w, t.kind === "item" ? t.item : MADE_OF[t.kind], rows);
   rows.push(["tile", `${t.x}, ${t.y}`]);
-  return { id: t.id, kind: t.kind, name, species: t.species, px: t.px, py: t.py, rows, bars, seed: t.seed, size: t.size };
+  return {
+    id: t.id, kind: t.kind, name, species: t.species, px: t.px, py: t.py, rows, bars, seed: spriteSeed(t), size: t.size,
+    tier: t.shelter?.tier, style: t.shelter?.style, item: t.item, contained: t.contained, covered: t.covered, caught: t.caught, n: t.n, burning: t.burning, stage: t.stage,
+  };
 }
 
 function animal(w: World, a: Animal): Inspected {
@@ -89,7 +95,7 @@ function animal(w: World, a: Animal): Inspected {
   const mat = THING_MATERIAL[a.species];
   if (mat) rows.push(["toughness", mat.toughness], ["butchers into", Object.entries(mat.breaks).map(([k, n]) => `${n} ${w.kinds[k]?.name ?? k}`).join(", ")]);
   const bars: Inspected["bars"] = [["hp", r(Math.max(0, a.hp)), a.maxHp], ["fed", r(Math.max(0, a.hunger)), 100]];
-  return { id: a.id, kind: "animal", name: a.species, species: a.species, px: a.px, py: a.py, rows, bars, seed: Math.imul(Number(a.id.slice(1)) || 0, 2654435761) >>> 0, state: a.state, alt: a.alt };
+  return { id: a.id, kind: "animal", name: a.species, species: a.species, px: a.px, py: a.py, rows, bars, seed: spriteSeed(a), state: a.state, alt: a.alt };
 }
 
 function person(w: World, a: Agent): Inspected {
@@ -100,13 +106,14 @@ function person(w: World, a: Agent): Inspected {
     ["traits", Object.entries(a.traits).map(([t, s]) => `${t} ${Math.round(s * 100)}`).join(", ")],
     ["wants", a.desires.join("; ")],
   ];
+  // A skill shows its level once it has one; before that, how much practice has gone into it.
   const skills = Object.entries(a.skills).filter(([, xp]) => xp > 0);
-  if (skills.length) rows.push(["skills", skills.map(([s, xp]) => `${s} ${Math.min(10, Math.floor(Math.sqrt(xp / 10)))}`).join(", ")]);
+  if (skills.length) rows.push(["skills", skills.map(([s, xp]) => (level(xp) >= 1 ? `${s} ${level(xp)}` : `${s} (${Math.round(xp)} xp)`)).join(", ")]);
   rows.push(["carrying", d.inventoryText.join(", ") || "nothing"]);
   if (d.wearing) rows.push(["wearing", d.wearing]);
   if (d.holding) rows.push(["best weapon", d.holding]);
   const home = thingById(w, a.home);
-  if (home) rows.push(["home", `${["pile", "lean-to", "hut", "cabin"][home.shelter?.tier ?? 0]} (${home.id})`]);
+  if (home) rows.push(["home", `${shelterName(w, home)} (${home.id})`]);
   const camp = campOf(w, a.id);
   if (camp) rows.push(["camp", camp.name]);
   const bonds = Object.entries(a.rel).filter(([, rl]) => rl.label !== "stranger").map(([id, rl]) => `${nameOf(w, id)}: ${rl.label}`);
@@ -118,7 +125,7 @@ function person(w: World, a: Agent): Inspected {
   rows.push(["knows how", `${Object.keys(a.beliefs).length} things`]);
   if (a.down > w.t) rows.push(["unconscious", `for ${a.down - w.t} ticks`]);
   const bars: Inspected["bars"] = (["food", "energy", "warmth", "health", "social"] as const).map((k) => [k, r(a.needs[k]), 100]);
-  return { id: a.id, kind: "agent", name: a.name, px: a.px, py: a.py, rows, bars, state: stageOf(w, a), color: a.color, seed: Math.imul(a.id.length * 7919 + a.born, 2654435761) >>> 0 };
+  return { id: a.id, kind: "agent", name: a.name, px: a.px, py: a.py, rows, bars, state: stageOf(w, a), color: a.color, colorIndex: colorIndex(a), seed: spriteSeed(a) };
 }
 
 export function inspect(w: World, id: string): Inspected | null {
@@ -135,19 +142,19 @@ const TILES: Record<number, string> = { [Tile.Grass]: "grass", [Tile.Forest]: "f
 export function inspectGround(w: World, px: number, py: number): Inspected {
   const { isle, fine } = groundOf(w.seed);
   const x = px * TILE_M - SIZE / 2, z = py * TILE_M - SIZE / 2, cx = (px * TILE_M) / 75 - 0.5, cy = (py * TILE_M) / 75 - 0.5;
-  const tx = Math.floor(px), ty = Math.floor(py), tile = tileAt(w, tx, ty);
+  const tx = Math.floor(px), ty = Math.floor(py), tile = tileAt(w, tx, ty), onMap = tx >= 0 && ty >= 0 && tx < W && ty < H;
   const height = fine.heightAt(x, z), slope = (Math.atan(fine.slopeAt(x, z)) * 180) / Math.PI;
   const water = fine.bilinear(isle.water, cx, cy), wet = fine.fine(fine.wet, x, z), river = fine.riverAt(x, z);
   const cover = (["tree", "shrub", "grass", "marsh", "bare", "sand"] as const).map((k) => [k, fine.fine(fine.cover[k], x, z)] as const);
   const top = [...cover].sort((a, b) => b[1] - a[1])[0][0];
-  const name = tile === Tile.Water || wet > 0.5 ? (water > 2 ? "deep water" : "shallow water") : river > 0.3 ? "stream bed" : { tree: "forest floor", shrub: "scrub", grass: "grassland", marsh: "marsh", bare: "bare rock", sand: "sand" }[top];
+  const name = wet > 0.5 ? (water > 2 ? "deep water" : "shallow water") : river > 0.3 ? "stream bed" : { tree: "forest floor", shrub: "scrub", grass: "grassland", marsh: "marsh", bare: "bare rock", sand: "sand" }[top];
   const rows: Inspected["rows"] = [
-    ["height", `${r(height)} m`], ["slope", `${r(slope)} deg`], ["tile", `${TILES[tile]} (${tx}, ${ty})`],
+    ["height", `${r(height)} m`], ["slope", `${r(slope)} deg`], ["tile", onMap ? `${TILES[tile]} (${tx}, ${ty})` : "off the map"],
     ["soil", `${r(fine.bilinear(isle.soil, cx, cy), 2)} m deep`], ["peat", r(fine.bilinear(isle.peat, cx, cy), 2)], ["silt", r(fine.bilinear(isle.silt, cx, cy), 2)],
     ["air now", `${r(w.weather.temp - 0.0065 * Math.max(0, height))} C`], ["yearly mean", `${r(fine.bilinear(isle.temp, cx, cy))} C`],
     ["snow share", r(fine.bilinear(isle.snow, cx, cy), 2)], ["exposure", r(fine.bilinear(isle.exposure, cx, cy), 2)],
-    ["path wear", `${w.paths[ty * W + tx] ?? 0} / 9`], ["ice", iceAt(w, tx, ty) ? "frozen" : "no"],
-    ["water depth", `${r(Math.max(0, water), 2)} m`],
+    ["path wear", `${onMap ? w.paths[ty * W + tx] : 0} / 9`], ["ice", onMap && wet > 0.5 && iceAt(w, tx, ty) ? "frozen" : "no"],
+    ["water depth", `${wet > 0.5 ? r(Math.max(0.05, water), 2) : 0} m`],
   ];
   if (river > 0) rows.push(["stream", r(river, 2)]);
   const bars: Inspected["bars"] = [["moisture", r(fine.fine(fine.moist, x, z), 2), 1], ...cover.map(([k, v]) => [k, r(v, 2), 1] as [string, number, number])];

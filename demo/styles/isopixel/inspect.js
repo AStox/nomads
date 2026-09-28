@@ -4,9 +4,7 @@ import { P, ramp } from "./pal.js";
 import { Buf, dith, h2 } from "./px.js";
 import { text } from "./ui.js";
 import * as SP from "./sprites.js";
-import * as LF from "./life.js";
 import * as TH from "./things.js";
-import { COLORS } from "../island.js";
 
 // Glyphs the ui.js font lacks, in the same 5x7 rows; everything else goes through ui.js text().
 const EXTRA = Object.fromEntries(Object.entries({
@@ -68,62 +66,82 @@ const BIRDS = new Set(["gull", "crow", "eagle"]);
 const field = (d, ...names) => {
   for (const n of names) {
     if (d[n] != null) return d[n];
-    const r = d.rows?.find(([l]) => String(l).toLowerCase() === n);
+    const r = d.rows?.find(([l]) => String(l).toLowerCase() === n) ?? d.bars?.find(([l]) => String(l).toLowerCase() === n);
     if (r) return r[1];
   }
   return undefined;
 };
+// The portrait draws what the map draws, so its sprite choice and variation copy live.js and main.js exactly:
+// agents and animals vary by a hash of their id, things by their sim seed.
+const strHash = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
+const AGENT_CLOTH = ["#9e3b2f", "#2f4a6d", "#a8812a", "#4e6b3a", "#6b3f5e"];
+const clothOf = (color) => { const k = AGENT_CLOTH.indexOf(String(color).toLowerCase()); return P["c" + (k >= 0 ? k : strHash(String(color)) % 5)]; };
+const TIERS = ["pile", "lean-to", "hut", "cabin"];
+const yes = (v) => v != null && v !== false && v !== 0 && v !== "no" && v !== "";
+const mirrored = (S) => {
+  const T = { ...S, p: new Uint8Array(S.p.length), ax: S.w - 1 - S.ax };
+  for (let y = 0; y < S.h; y++) for (let x = 0; x < S.w; x++) T.p[y * S.w + S.w - 1 - x] = S.p[y * S.w + x];
+  return T;
+};
 // A sprite standing for the selection, drawn at about close zoom so it fills the icon slot.
 export function iconSprite(d) {
-  const kind = String(d.kind ?? "").toLowerCase(), sp = String(d.species ?? "").toLowerCase(), seed = (d.seed ?? h2(String(d.id).length, 3) * 1e6) | 0;
-  // an agent's color is one of the sim's COLORS, which pal.js holds as c0..c4
-  const ci = COLORS.findIndex((c) => String(c).toLowerCase() === String(d.color ?? "").toLowerCase());
-  const cloth = P["c" + ((ci >= 0 && ci < 5 ? ci : d.cloth ?? [...String(d.id ?? "")].reduce((a, ch) => a + ch.charCodeAt(0), 0)) % 5)];
-  switch (kind) {
-    case "agent": case "person": {
-      const st = String(field(d, "stage") ?? d.state ?? "adult").toLowerCase();
-      return st === "adult" ? SP.person(28, cloth, "front", "stand", seed, 1) : TH.walker(28, cloth, "front", 1, "none", st, seed);
-    }
-    case "animal":
-      if (d.state != null && sp !== "deer" && sp !== "rabbit") return TH.animal(sp, String(d.state), sp === "wolf" ? 12 : sp === "fish" ? 10 : BIRDS.has(sp) ? 16 : 18, 1, seed, 1);
-      if (/perch|rest|sit/.test(String(field(d, "state") ?? "")) && BIRDS.has(sp)) return TH.perched(sp, 8, seed);
-      if (sp === "deer") return LF.deer(18, "stand", 1, seed);
-      if (sp === "wolf") return TH.wolf(12, "stand", 0, seed);
-      if (sp === "rabbit" || sp === "hare") return LF.rabbit(12, "sit", seed);
-      if (sp === "heron" || sp === "egret") return LF.heron(18, "stand", seed);
-      if (sp === "fish") return LF.fish(1, seed, 10);
-      if (sp === "butterfly") return LF.butterfly(0, seed);
-      return LF.bird(16, 1, BIRDS.has(sp) ? sp : "gull", seed);
-    case "tree": return sp === "pine" ? SP.pine(34, seed) : SP.broad(32, ["oak", "ash", "aspen"].includes(sp) ? sp : "oak", seed, 0.5);
-    case "stump": return SP.stump(6, 5, seed);
-    case "burnt_stump": return TH.burnt(14, seed);
-    case "bush": { const b = field(d, "berries", "fruit", "n"); return TH.object("bush", 12, seed, { species: sp, berries: b == null ? undefined : Number(b) > 0 }); }
-    case "dead_bush": return TH.deadbush(12, seed);
-    case "sapling": return TH.sapling(16, seed);
-    case "stick": return TH.stick(14, seed);
-    case "stone": return SP.rock(6, seed);
-    case "pebble": return SP.pebble(4, seed);
-    case "boulder": return SP.rock(16, seed, 0.4);
-    case "reeds": return SP.reeds(14, seed);
-    case "log": case "fallen_log": return TH.object("fallen_log", 30, seed, { species: sp, dir: 1 });
-    case "clay": return TH.clay(7, seed);
-    case "ash": return TH.ash(8, seed);
-    case "pit": return TH.pit(8, 1, seed);
-    case "trap": return TH.trap(16, false, seed);
-    case "well": return TH.well(18, seed);
-    case "grave": return TH.grave(14, seed);
-    case "mushroom": return TH.object("mushroom", 5, seed, { species: sp });
-    case "herb": return TH.object("herb", 8, seed, { species: sp });
-    case "fern": return TH.object("fern", 9, seed, { species: sp });
-    case "flower": case "flowers": return TH.object("flowers", 9, seed, { species: sp });
-    case "fire": return TH.object("fire", 16, seed, { contained: !!field(d, "contained"), covered: !!field(d, "covered"), charcoal: !!field(d, "charcoal"), burning: Number(field(d, "burning") ?? 1) });
-    case "item": return TH.object("item", 9, seed, { species: sp });
-    case "structure": case "shelter": {
-      const tier = Number(field(d, "tier") ?? 2), style = String(field(d, "style") ?? (sp || "sticks")).toLowerCase();
-      return TH.shelter(tier, style, tier >= 3 ? 26 : 30, seed);
-    }
+  const kind = String(d.kind ?? "").toLowerCase(), sp = String(d.species ?? "").toLowerCase(), id = String(d.id ?? "");
+  const seed = (d.seed ?? strHash(id)) >>> 0, vr = seed % 8, obj = vr * 131 + 7, flip = ((seed >>> 3) & 1) === 1;
+  if (kind === "agent" || kind === "person") {
+    const st = String(d.state ?? field(d, "stage") ?? "adult").toLowerCase(), stage = /child|elder/.test(st) ? st.match(/child|elder/)[0] : "adult";
+    const cloth = d.color != null ? clothOf(d.color) : P["c" + ((d.colorIndex ?? 0) % 5)];
+    return TH.walker(28, cloth, "front", 0, "none", stage, strHash(id) % 997);
   }
-  return null;
+  if (kind === "animal") {
+    const state = String(d.state ?? field(d, "doing") ?? "wander").replaceAll(" ", "_"), fly = BIRDS.has(sp) || sp === "butterfly";
+    const px = sp === "wolf" ? 12 : sp === "fish" ? 10 : sp === "butterfly" ? 5 : BIRDS.has(sp) ? 16 : sp === "rabbit" ? 12 : 18;
+    return TH.animal(sp, state, px, fly ? 1 : 0, strHash(id) % 8, 1);
+  }
+  if (kind === "tree") {
+    const tint = ((seed >>> 8) & 255) / 255, S = sp === "pine" ? SP.pine(34, vr * 17 + 34) : SP.broad(32, sp || "oak", vr * 31 + 32, tint);
+    return flip ? mirrored(S) : S;
+  }
+  // everything else goes through object() with the map's seed and the same look-changing fields
+  const o = { species: sp || undefined, dir: (seed >>> 5) & 7 };
+  const n = field(d, "n", "berries", "count"), grown = field(d, "stage", "grown");
+  if (n != null) o.n = Number(n);
+  if (grown != null) o.stage = Number(grown);
+  let px = 12;
+  switch (kind) {
+    case "structure": case "shelter": {
+      const t = d.tier ?? field(d, "tier") ?? TIERS.indexOf(String(d.name ?? "").toLowerCase());
+      o.tier = Number(t) >= 0 ? Number(t) : 1;
+      o.species = String(d.style ?? field(d, "style") ?? (sp || "sticks")).toLowerCase();
+      px = [10, 18, 24, 34][o.tier] ?? 24;
+      break;
+    }
+    case "item": o.species = String(d.item ?? d.species ?? d.name ?? "").toLowerCase().replaceAll(" ", "_"); px = 9; break;
+    case "fire": {
+      o.contained = yes(field(d, "contained", "ringed")); o.covered = yes(field(d, "covered")); o.charcoal = yes(field(d, "charcoal"));
+      // a fire thing only exists while it burns; its own burning field is for things caught alight
+      o.burning = 1; px = 16; break;
+    }
+    case "trap": o.caught = yes(field(d, "caught")); px = 16; break;
+    case "pit": px = 12; break;
+    case "well": px = 18; break;
+    case "grave": px = 14; break;
+    case "grass": px = 22; break;
+    case "stick": px = 22; break;
+    case "log": case "fallen_log": px = 40; o.dir = 1; break;
+    case "boulder": px = 16; break;
+    case "stone": px = 7; break;
+    case "pebble": px = 5; break;
+    case "mushroom": px = 5; break;
+    case "herb": case "flower": case "flowers": case "fern": px = 9; break;
+    case "reeds": case "sapling": px = 16; break;
+    case "bush": case "dead_bush": px = 12; break;
+    case "stump": case "burnt_stump": px = 12; break;
+    case "clay": case "ash": px = 9; break;
+  }
+  if (kind !== "fire") o.burning = Number(d.burning ?? 0);
+  let S;
+  try { S = TH.object(kind, px, obj, o); } catch { return null; }
+  return S && !["structure", "shelter", "trap", "well", "grave", "item", "fire", "log", "fallen_log"].includes(kind) && flip ? mirrored(S) : S;
 }
 // A square of ground in its cover's colours, standing for a picked point of bare terrain.
 function groundTile(B, x0, y0, w, h, d) {

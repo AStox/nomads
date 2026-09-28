@@ -1,8 +1,7 @@
 // How anyone gets about: a route across tiles where water is in the way, a straight line within them, and so many
 // meters a tick. Tiles are 150 m, so most walks never leave the tile they start on.
-import { H, TILE_M, W, groundOf, iceAt, walkable, type World } from "./world";
-import { SIZE } from "../terrain/flora";
-import { put } from "./space";
+import { H, TILE_M, W, dryAt, walkable, type Thing, type World } from "./world";
+import { around, put } from "./space";
 
 export type Mover = { px: number; py: number; x: number; y: number; heading?: number };
 type Pass = (w: World, x: number, y: number) => boolean;
@@ -77,7 +76,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 export function walk(w: World, e: Mover, tx: number, ty: number, speed: number, reach: number, pass: Pass = walkable): "arrived" | "moved" | "stuck" {
   const within = () => Math.hypot(tx - e.px, ty - e.py) * TILE_M <= reach;
   if (within()) return "arrived";
-  let budget = speed / TILE_M;
+  let budget = speed / TILE_M, moved = false;
   const gx = Math.floor(clamp(tx, 0, W - 1e-6)), gy = Math.floor(clamp(ty, 0, H - 1e-6)), goal = gy * W + gx;
   for (let hop = 0; hop < 4 && budget > 1e-9; hop++) {
     let wx = tx, wy = ty;
@@ -96,40 +95,56 @@ export function walk(w: World, e: Mover, tx: number, ty: number, speed: number, 
     // Don't walk into what you're going to: stop a little short of it.
     if (final || (wx === tx && wy === ty)) d = Math.max(0, d - (reach * 0.7) / TILE_M);
     if (d < 1e-7) break;
-    const step = Math.min(budget, d), a0 = Math.atan2(wy - e.py, wx - e.px);
-    // Lakes and the sea edge run through tiles, so check the ground at the point itself, sidestepping along the shore.
-    const a = [0, 0.6, -0.6, 1.2, -1.2].map((turn) => a0 + turn).find((a) => {
-      const nx = e.px + Math.cos(a) * step, ny = e.py + Math.sin(a) * step;
-      return pass(w, Math.floor(nx), Math.floor(ny)) && onFoot(w, nx, ny);
-    });
-    if (a === undefined) break;
+    const step = Math.min(budget, d), a = clear(w, e, Math.atan2(wy - e.py, wx - e.px), step, WALK_TURNS, pass, dryAt, true);
+    if (a === null) break;
     put(w, e, e.px + Math.cos(a) * step, e.py + Math.sin(a) * step);
     e.heading = a;
     budget -= step;
+    moved = true;
     if (within()) return "arrived";
   }
-  return within() ? "arrived" : "moved";
+  return within() ? "arrived" : moved ? "moved" : "stuck";
 }
+const WALK_TURNS = [0, 0.5, -0.5, 1, -1, 1.5, -1.5, 2.1, -2.1];
 
-// Dry enough underfoot at a point: the fine ground's standing water, the same field the map draws lakes from, or ice.
-export function onFoot(w: World, px: number, py: number) {
-  const x = Math.floor(px), y = Math.floor(py);
-  if (iceAt(w, x, y)) return true;
-  const f = groundOf(w.seed).fine;
-  return f.fine(f.wet, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2) <= 0.5;
+// What no one walks through, and how far out from its middle it stands, in meters.
+const SOLID: Record<string, (t: Thing) => number> = {
+  tree: () => 0.35, stump: () => 0.3, burnt_stump: () => 0.3, boulder: (t) => t.size / 2, structure: (t) => t.size / 2, well: () => 0.75, fire: () => 0.45,
+};
+const SOLID_KINDS = Object.keys(SOLID);
+// Whether a stride from one point to another (in tiles) runs into something solid. Leaving something one is already
+// inside, say a hut just built around its builder, is always allowed.
+function bumps(w: World, x0: number, y0: number, x1: number, y1: number) {
+  const dx = x1 - x0, dy = y1 - y0, l2 = dx * dx + dy * dy || 1e-12, len = Math.sqrt(l2) * TILE_M;
+  let hit = false;
+  around(w, (x0 + x1) / 2, (y0 + y1) / 2, len / 2 + 3, SOLID_KINDS, (t) => {
+    const r = SOLID[t.kind](t) / TILE_M, k = Math.max(0, Math.min(1, ((t.px - x0) * dx + (t.py - y0) * dy) / l2));
+    if (Math.hypot(t.px - x0 - k * dx, t.py - y0 - k * dy) >= r) return;
+    if (Math.hypot(t.px - x0, t.py - y0) < r && Math.hypot(t.px - x1, t.py - y1) > Math.hypot(t.px - x0, t.py - y0)) return;
+    hit = true;
+    return true;
+  });
+  return hit;
+}
+// The first heading, turning further and further from the one wanted, that a stride can take: onto a tile it can pass,
+// a point it can stand on, and, for anyone who walks, not through anything solid.
+function clear(w: World, e: Mover, a0: number, step: number, turns: number[], pass: Pass, point: Pass, solid: boolean): number | null {
+  for (const turn of turns) {
+    const a = a0 + turn, nx = e.px + Math.cos(a) * step, ny = e.py + Math.sin(a) * step;
+    if (nx < 0 || ny < 0 || nx >= W || ny >= H || !pass(w, Math.floor(nx), Math.floor(ny)) || !point(w, nx, ny)) continue;
+    if (solid && bumps(w, e.px, e.py, nx, ny)) continue;
+    return a;
+  }
+  return null;
 }
 
 // Head straight for a point, sidestepping when the way ahead can't be crossed. For animals and birds, which don't plan.
-export function steer(w: World, e: Mover, tx: number, ty: number, speed: number, pass: Pass, point: (w: World, px: number, py: number) => boolean = () => true): boolean {
+export function steer(w: World, e: Mover, tx: number, ty: number, speed: number, pass: Pass, point: Pass = () => true, solid = false): boolean {
   const d = Math.hypot(tx - e.px, ty - e.py), step = Math.min(speed / TILE_M, d);
   if (step < 1e-7) return false;
-  const a0 = Math.atan2(ty - e.py, tx - e.px);
-  for (const turn of [0, 0.7, -0.7, 1.4, -1.4, 2.1, -2.1]) {
-    const a = a0 + turn, nx = e.px + Math.cos(a) * step, ny = e.py + Math.sin(a) * step;
-    if (nx < 0 || ny < 0 || nx >= W || ny >= H || !pass(w, Math.floor(nx), Math.floor(ny)) || !point(w, nx, ny)) continue;
-    put(w, e, nx, ny);
-    e.heading = a;
-    return true;
-  }
-  return false;
+  const a = clear(w, e, Math.atan2(ty - e.py, tx - e.px), step, [0, 0.7, -0.7, 1.4, -1.4, 2.1, -2.1], pass, point, solid);
+  if (a === null) return false;
+  put(w, e, e.px + Math.cos(a) * step, e.py + Math.sin(a) * step);
+  e.heading = a;
+  return true;
 }

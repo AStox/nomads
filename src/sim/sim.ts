@@ -1,5 +1,5 @@
 import {
-  DAY, H, REACH, TILE_M, W, clock, isNight, level, log, meters, reachOf, stageOf, Tile, tileAt,
+  DAY, H, REACH, TILE_M, W, clock, isNight, shoreOf, level, log, meters, reachOf, stageOf,
   type Act, type Agent, type Animal, type Step, type Thing, type World,
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, type Kind } from "./materials";
@@ -111,22 +111,6 @@ const THING_PLACES: Record<string, Place> = {
   resin: { kinds: ["tree", "stump"], ok: (t) => (t.resin ?? 0) > 0 },
 };
 const STRIKEABLE = Object.keys(THING_MATERIAL).filter((k) => !(k in FAUNA));
-// Where to stand to dip into water: half a meter back from every stretch of open shore, and every well.
-const shores = new WeakMap<World, { px: number; py: number }[]>();
-function shore(w: World) {
-  let s = shores.get(w);
-  if (!s) {
-    s = [];
-    for (let y = 0; y < H; y++)
-      for (let x = 0; x < W; x++) {
-        if (tileAt(w, x, y) === Tile.Water) continue;
-        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]])
-          if (tileAt(w, x + dx, y + dy) === Tile.Water) s.push({ px: x + 0.5 + dx * (0.5 - 0.5 / TILE_M), py: y + 0.5 + dy * (0.5 - 0.5 / TILE_M) });
-      }
-    shores.set(w, s);
-  }
-  return s;
-}
 // A place to go and how near to get: a thing, an animal, a person, or a point.
 type Spot = { px: number; py: number; reach: number; thing?: Thing; animal?: Animal; agent?: Agent };
 function nearest<T extends { px: number; py: number }>(a: { px: number; py: number }, list: Iterable<T>, ok: (t: T) => boolean = () => true): T | null {
@@ -161,7 +145,7 @@ function spot(w: World, a: Agent, kind: string): Spot | null {
   if (kind === "store") return thingSpot(sharedStore(w, a));
   if (kind === "agent") { const b = agentById(w, a.goal?.target); return b ? { px: b.px, py: b.py, reach: 2, agent: b } : null; }
   if (kind === "water") {
-    const s = nearest(a, shore(w), (p) => reachable(w, a, Math.floor(p.px), Math.floor(p.py)));
+    const s = nearest(a, shoreOf(w), (p) => reachable(w, a, Math.floor(p.px), Math.floor(p.py)));
     const well = nearestThing(w, a.px, a.py, ["well"], (t) => reachable(w, a, t.x, t.y), s ? meters(a, s) : SEARCH);
     return well ? thingSpot(well) : s && { ...s, reach: 1 };
   }

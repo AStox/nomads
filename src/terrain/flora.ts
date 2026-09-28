@@ -159,12 +159,14 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
     q = (q + Math.imul(q ^ (q >>> 7), 61 | q)) ^ q;
     return ((q ^ (q >>> 14)) >>> 0) / 4294967296;
   };
+  // Nothing lies under standing water or in a stream bed, where no one could reach it and nothing would draw it.
   const put = (k: number, sp: number, x: number, z: number, sz: number) => {
+    if (fine(wet, x, z) > 0.5 || riverAt(x, z) > 0.5) return;
     if (n === cap) grow();
     kind[n] = k; species[n] = sp; xs[n] = x; zs[n] = z; size[n] = sz; seeds[n] = (r() * 4294967296) >>> 0;
     n++;
   };
-  const { h, wet, moist, river, cover, fine, heightAt, slopeAt, dry, bilinear } = g;
+  const { h, wet, moist, river, cover, fine, heightAt, slopeAt, dry, bilinear, riverAt } = g;
   const cellOf = (v: number) => (v - START) / CELL;
   for (let v = 0; v < M - 1; v++)
     for (let u = 0; u < M - 1; u++) {

@@ -1,15 +1,23 @@
 // The live page: the game's sim running in this tab, drawn by the isopixel renderer with a pan, zoom and orbit camera.
 import { createLive, loadingScreen } from "../isopixel/live.js";
 import { drawInspector } from "../isopixel/inspect.js";
-import { RGB } from "../isopixel/pal.js";
+import { RGB, P } from "../isopixel/pal.js";
+import { Buf } from "../isopixel/px.js";
+import { text } from "../isopixel/ui.js";
+import { createCamera, norm8 } from "./camera.js";
 
 const Q = new URLSearchParams(location.search);
-const seed = Number(Q.get("seed") || 1), warm = Math.max(0, Number(Q.get("warm") ?? 2016) | 0), withSim = Q.get("sim") !== "0";
-const canvas = document.getElementById("view"), hint = document.getElementById("hint"), statsEl = document.getElementById("stats");
-const SPEEDS = [0.25, 0.5, 1, 2, 4, 8], TURN_MS = 380;
+// every URL parameter is checked, so a bad one falls back to its default instead of stopping the page
+const num = (k, def, lo = -Infinity, hi = Infinity) => {
+  const s = Q.get(k), v = s == null || s.trim() === "" ? NaN : Number(s);
+  return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : def;
+};
+const seed = Math.trunc(num("seed", 1)), warm = Math.trunc(num("warm", 2016, 0, 40000)), withSim = Q.get("sim") !== "0";
+const benchKind = ["zoom", "orbit", "turn", "pan"].includes(Q.get("bench")) ? Q.get("bench") : null;
+const canvas = document.getElementById("view"), hint = document.getElementById("hint"), statsEl = document.getElementById("stats"), pace = document.getElementById("pace");
+const SPEEDS = [0.25, 0.5, 1, 2, 4, 8], DBL_MS = 300;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const toM = (t) => t * 150 - 4800;
-const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t));
 
 const fail = (e) => { document.body.dataset.error = String((e && e.stack) || e); document.body.classList.add("failed"); loadingScreen(canvas, `failed: ${e?.message ?? e}`.slice(0, 90), 0); };
 window.addEventListener("error", (e) => fail(e.error || e.message));
@@ -19,6 +27,14 @@ function fit() { canvas.width = window.innerWidth; canvas.height = window.innerH
 fit();
 window.addEventListener("resize", fit);
 
+// an indexed art buffer onto a small canvas, shown at twice its size like the rest of the art
+function paintBuf(cv, B) {
+  if (cv.width !== B.w || cv.height !== B.h) { cv.width = B.w; cv.height = B.h; cv.style.width = `${B.w * 2}px`; cv.style.height = `${B.h * 2}px`; }
+  const img = new ImageData(B.w, B.h), o = new Uint32Array(img.data.buffer);
+  for (let p = 0; p < B.c.length; p++) { const c = RGB[B.c[p]]; o[p] = 0xff000000 | (c[2] << 16) | (c[1] << 8) | c[0]; }
+  cv.getContext("2d").putImageData(img, 0, 0);
+}
+
 async function main() {
   const t0 = performance.now();
   // one line of progress in the game's own font until the opening view is complete
@@ -27,13 +43,15 @@ async function main() {
   say();
   // the sim and the renderer's workers grow the same island at the same time
   const simP = withSim ? import("./sim.js").then(({ createSim }) => createSim({ seed, warm, onProgress: (d, n) => { steps.sim = ["warming the world", d / n]; say(); } })) : Promise.resolve(null);
-  const live = await createLive({ seed, canvas, workers: Number(Q.get("workers")) || undefined, adjacent: Q.get("adj") !== "0", check: Q.get("check") === "1", onProgress: (d, n, what) => { steps.renderer = [what, 0.5 * (what === "baking the island" ? 1 : 0) + (0.5 * d) / n]; say(); } });
+  const live = await createLive({ seed, canvas, workers: Math.trunc(num("workers", 0, 0, 8)) || undefined, adjacent: Q.get("adj") !== "0", check: Q.get("check") === "1", onProgress: (d, n, what) => { steps.renderer = [what, 0.5 * (what === "baking the island" ? 1 : 0) + (0.5 * d) / n]; say(); } });
   const sim = await simP;
   const ready = performance.now() - t0;
-  // ?zoom= takes a name, the old 0..3 index, or a number of zoom steps; ?bearing= 0..7
+  // ?zoom= takes a name, the old 0..3 index, or a number of zoom steps; ?bearing= one of the 8 whole bearings
   const zq = Q.get("zoom"), names = ["island", "region", "valley", "close"];
-  const zoom0 = zq == null ? live.named.close : zq in live.named ? live.named[zq] : /^[0-3]$/.test(zq) ? live.named[names[+zq]] : clamp(Number(zq) || 0, 0, live.zmax);
-  const view = { x: -2738, z: -1838, zoom: zoom0, bearing: Number(Q.get("bearing") || 0) % 8, selected: null, turnTo: null };
+  const zoom0 = zq == null ? live.named.close : Object.hasOwn(live.named, zq) ? live.named[zq] : /^[0-3]$/.test(zq) ? live.named[names[+zq]] : num("zoom", live.named.close, 0, live.zmax);
+  const view = { x: -2738, z: -1838, zoom: zoom0, bearing: norm8(Math.round(num("bearing", 0))), up: 0, selected: null, turnTo: null };
+  const metrics = { readyMs: Math.round(ready), revealMs: 0, tabs: [], turns: [] };
+  const camera = createCamera({ live, view, canvas, onTurn: (ms) => metrics.turns.push(Math.round(ms)) });
   let follow = null, openingPerson = null, opening = null, farSince = 0, farDest = null;
   // Open on the person nearest the densest cluster of shelters, fires and stumps, and follow them; with nothing built
   // yet, on whoever has the most going on around them.
@@ -47,12 +65,10 @@ async function main() {
     }
     const busy = (a) => W.things.filter((t) => !t.contained && t.kind !== "tree" && Math.abs(t.x - a.x) <= 2 && Math.abs(t.y - a.y) <= 2).length + W.agents.filter((b) => Math.abs(b.x - a.x) <= 2 && Math.abs(b.y - a.y) <= 2).length * 4;
     const person = best ? [...W.agents].sort((p, q) => Math.hypot(p.x - best.x, p.y - best.y) - Math.hypot(q.x - best.x, q.y - best.y))[0] : [...W.agents].sort((p, q) => busy(q) - busy(p))[0];
-    opening = view.zoom < 1 ? [0, 0] : [toM(person.px), toM(person.py)];
-    Object.assign(view, live.centreOn(...opening, view));
+    opening = view.zoom < 1 ? { kind: "ground", px: 32, py: 32 } : { kind: "ground", px: person.px, py: person.py };
+    camera.lookAt(live.where(opening, sim, view));
     openingPerson = person.id;
   }
-  let dragged = false;
-  const metrics = { readyMs: Math.round(ready), revealMs: 0, tabs: [], turns: [] };
   let tabWatch = null;
   // anything can be selected: a person, animal or thing by id, or a point of ground; people and animals are followed
   const movers = (id) => !!sim && (sim.w.agents.some((a) => a.id === id) || sim.w.animals.some((a) => a.id === id));
@@ -62,9 +78,8 @@ async function main() {
     inspScroll = 0; inspect();
   };
 
-  // ---------- inspector: the selection's real data, redrawn every tick ----------
-  const insp = document.getElementById("inspector"), IW = 184, IH = 232;
-  insp.width = IW; insp.height = IH;
+  // ---------- inspector: the selection's real data, redrawn every tick, with a box to close it ----------
+  const insp = document.getElementById("inspector"), IW = 184, IH = 232, CB = { x: IW - 15, y: 4, s: 9 };
   let inspScroll = 0, inspMax = 0, inspData = null;
   function inspect() {
     const sel = view.selected;
@@ -76,97 +91,109 @@ async function main() {
   function paintInspector() {
     const B = drawInspector(inspData, { w: IW, h: IH, scroll: inspScroll });
     inspScroll = B.scroll; inspMax = B.scrollMax;
-    const img = new ImageData(IW, IH), o = new Uint32Array(img.data.buffer);
-    for (let p = 0; p < B.c.length; p++) { const c = RGB[B.c[p]]; o[p] = 0xff000000 | (c[2] << 16) | (c[1] << 8) | c[0]; }
-    insp.getContext("2d").putImageData(img, 0, 0);
+    // a raised button at the end of the title bar, over the end of a long title
+    const { x, y, s } = CB, put = (i, j, c) => { B.c[j * B.w + i] = c; };
+    for (let j = y; j < y + s; j++) for (let i = x - 2; i < x + s; i++) put(i, j, P.w2);
+    for (let k = 0; k < s; k++) { put(x + k, y, P.w4); put(x, y + k, P.w4); put(x + k, y + s - 1, P.ink); put(x + s - 1, y + k, P.ink); }
+    for (let k = 0; k < 5; k++) { put(x + 2 + k, y + 2 + k, P.snow); put(x + 6 - k, y + 2 + k, P.snow); }
+    paintBuf(insp, B);
     insp.hidden = false;
   }
-  insp.addEventListener("wheel", (e) => { e.preventDefault(); inspScroll = clamp(inspScroll + e.deltaY / 2, 0, inspMax); if (inspData) paintInspector(); }, { passive: false });
-
-  // ---------- zoom: eased toward a goal, about the cursor ----------
-  let zoomGoal = view.zoom, zoomAnchor = null;
-  const zoomTo = (goal, sx, sy) => { zoomGoal = clamp(goal, 0, live.zmax); zoomAnchor = follow || sx == null ? null : [sx, sy]; };
-  function zoomStep(dt) {
-    if (Math.abs(zoomGoal - view.zoom) < 1e-3) { view.zoom = zoomGoal; return; }
-    const [ax, ay] = zoomAnchor ?? [canvas.width / 2, canvas.height / 2], before = live.toWorld(ax, ay, view);
-    view.zoom += (zoomGoal - view.zoom) * Math.min(1, dt / 90);
-    const after = live.toWorld(ax, ay, view);
-    if (!follow) { view.x += before.x - after.x; view.z += before.z - after.z; }
-  }
-  // ---------- orbit: Q and E bake the next bearing first, then turn; right-drag turns freely ----------
-  let turn = null;
-  const turnBy = (d) => {
-    const base = turn ? turn.to : Math.round(view.bearing);
-    view.turnTo = base + d;
-    turn = { from: view.bearing, to: base + d, asked: performance.now(), t0: 0 };
+  const onClose = (e) => {
+    const r = insp.getBoundingClientRect(), x = ((e.clientX - r.left) / r.width) * IW, y = ((e.clientY - r.top) / r.height) * IH;
+    return x >= CB.x - 1 && x <= CB.x + CB.s && y >= CB.y - 1 && y <= CB.y + CB.s;
   };
-  function turnStep(now) {
-    if (!turn) return;
-    if (!turn.t0) {
-      if (!turn.drag && !live.bearingReady(view, turn.to) && now - turn.asked < 5000) return;
-      turn.t0 = now; turn.from = view.bearing;
-      if (!turn.drag) metrics.turns.push(Math.round(now - turn.asked));
-    }
-    const p = Math.min(1, (now - turn.t0) / (turn.drag ? 220 : TURN_MS));
-    view.bearing = turn.from + (turn.to - turn.from) * ease(p);
-    if (p >= 1) { view.bearing = ((turn.to % 8) + 8) % 8; view.turnTo = null; turn = null; }
+  insp.addEventListener("wheel", (e) => { e.preventDefault(); inspScroll = clamp(inspScroll + e.deltaY / 2, 0, inspMax); if (inspData) paintInspector(); }, { passive: false });
+  insp.addEventListener("pointerdown", (e) => { if (onClose(e)) { e.preventDefault(); select(null); } });
+  insp.addEventListener("pointermove", (e) => { insp.style.cursor = onClose(e) ? "pointer" : ""; });
+
+  // ---------- pause and speed: a small marker in the corner while either is off the usual ----------
+  let paceKey = "";
+  function paintPace() {
+    const key = !sim ? "" : sim.paused ? "PAUSED" : sim.speed !== 1 ? `X${sim.speed}` : "";
+    if (key === paceKey) return;
+    paceKey = key;
+    pace.hidden = !key;
+    if (!key) return;
+    const B = new Buf(key.length * 6 + 7, 13);
+    B.c.fill(P.w2);
+    for (let i = 0; i < B.w; i++) { B.c[i] = P.w4; B.c[(B.h - 1) * B.w + i] = P.w1; }
+    text(B, key, 4, 3, P.snow);
+    paintBuf(pace, B);
   }
-  globalThis.play = globalThis.nomads = { live, sim, view, select, metrics, zoomTo, turnBy, inspected: () => inspData };
 
   // ---------- input ----------
   const pointers = new Map();
-  let drag = null, pinch = null, orbit = null;
-  const panBy = (dx, dy) => {
-    const a = live.toWorld(canvas.width / 2, canvas.height / 2, view), b = live.toWorld(canvas.width / 2 - dx, canvas.height / 2 - dy, view);
-    view.x = clamp(view.x + b.x - a.x, -4700, 4700); view.z = clamp(view.z + b.z - a.z, -4700, 4700);
-  };
-  const settle = () => { turn = { from: view.bearing, to: Math.round(view.bearing), t0: 0, drag: true, asked: performance.now() }; view.turnTo = null; };
+  let drag = null, orbit = null, pinching = false, lastClick = null;
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
   canvas.addEventListener("pointerdown", (e) => {
     canvas.setPointerCapture(e.pointerId);
-    if (e.button === 2) { orbit = { x: e.clientX }; turn = null; view.turnTo = null; return; }
+    if (e.button === 2) { orbit = { x: e.clientX }; camera.stopTurn(); return; }
+    if (e.button !== 0) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointers.size === 1) drag = { x: e.clientX, y: e.clientY, moved: 0 };
-    if (pointers.size === 2) { const [a, b] = [...pointers.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), a: Math.atan2(b.y - a.y, b.x - a.x) }; drag = null; turn = null; }
+    if (pointers.size === 1) drag = { x0: e.clientX, y0: e.clientY, moved: 0, on: false };
+    if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      camera.pinchStart((a.x + b.x) / 2, (a.y + b.y) / 2, Math.hypot(a.x - b.x, a.y - b.y), Math.atan2(b.y - a.y, b.x - a.x));
+      pinching = true; drag = null; follow = null;
+    }
   });
   canvas.addEventListener("pointermove", (e) => {
-    if (orbit) { view.bearing += (orbit.x - e.clientX) / 180; orbit.x = e.clientX; return; }
+    if (orbit) { camera.orbitBy((orbit.x - e.clientX) / 180); orbit.x = e.clientX; return; }
     const p = pointers.get(e.pointerId);
     if (!p) return;
     const dx = e.clientX - p.x, dy = e.clientY - p.y;
     p.x = e.clientX; p.y = e.clientY;
-    if (pinch && pointers.size === 2) {
-      const [a, b] = [...pointers.values()], d = Math.hypot(a.x - b.x, a.y - b.y), ang = Math.atan2(b.y - a.y, b.x - a.x);
-      zoomTo(zoomGoal + Math.log2(d / pinch.d), (a.x + b.x) / 2, (a.y + b.y) / 2);
-      let da = ang - pinch.a;
-      if (da > Math.PI) da -= 2 * Math.PI; else if (da < -Math.PI) da += 2 * Math.PI;
-      view.bearing -= da / (Math.PI / 4);
-      pinch.d = d; pinch.a = ang;
-      panBy(dx / 2, dy / 2);
+    if (pinching && pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      camera.pinchMove((a.x + b.x) / 2, (a.y + b.y) / 2, Math.hypot(a.x - b.x, a.y - b.y), Math.atan2(b.y - a.y, b.x - a.x));
       return;
     }
     if (!drag) return;
     drag.moved += Math.abs(dx) + Math.abs(dy);
-    if (drag.moved > 5) { canvas.classList.add("dragging"); follow = null; dragged = true; panBy(dx, dy); }
+    // past the click threshold the world jumps to the cursor, then moves with it exactly
+    if (!drag.on && drag.moved > 5) { drag.on = true; canvas.classList.add("dragging"); follow = null; camera.panBy(e.clientX - drag.x0, e.clientY - drag.y0); }
+    else if (drag.on) camera.panBy(dx, dy);
   });
   const up = (e) => {
-    if (orbit) { orbit = null; settle(); return; }
+    if (orbit) { orbit = null; camera.settle(); return; }
     pointers.delete(e.pointerId);
     canvas.classList.remove("dragging");
-    if (pinch && pointers.size < 2) { pinch = null; settle(); }
-    if (drag && drag.moved <= 5 && e.type === "pointerup") {
-      const hit = live.pick(e.clientX, e.clientY, view);
-      select(!hit ? null : hit.kind === "ground" ? hit : hit.id);
-    }
+    if (pinching) { if (pointers.size < 2) { pinching = false; camera.pinchEnd(); } drag = null; return; }
+    if (drag && !drag.on && e.type === "pointerup") click(e.clientX, e.clientY);
     drag = null;
   };
   canvas.addEventListener("pointerup", up);
   canvas.addEventListener("pointercancel", up);
+  // a click waits out the double-click window; a double-click only zooms, undoing a first click that landed
+  function click(sx, sy) {
+    const now = performance.now(), prev = lastClick;
+    if (prev && now - prev.t < DBL_MS + 200 && Math.hypot(sx - prev.x, sy - prev.y) < 10) {
+      clearTimeout(prev.timer);
+      if (prev.done) select(prev.before, false);
+      lastClick = null;
+      camera.zoomTo(camera.goal + 1, follow ? null : sx, follow ? null : sy);
+      return;
+    }
+    const hit = live.pick(sx, sy, view), c = { t: now, x: sx, y: sy, before: view.selected, done: false };
+    c.timer = setTimeout(() => { c.done = true; choose(hit, sx, sy); }, DBL_MS);
+    lastClick = c;
+  }
+  // a second click on what is already selected lets it go
+  function choose(hit, sx, sy) {
+    if (!hit) { select(null); return; }
+    const sel = hit.kind === "ground" ? hit : hit.id, cur = view.selected;
+    let again = sel === cur;
+    if (!again && typeof sel === "object" && cur && typeof cur === "object") {
+      const g = live.where(cur, sim, view), s = g && live.screenOf(view, g.x, g.z, g.y);
+      again = !!s && Math.hypot(s[0] - sx, s[1] - sy) < 8;
+    }
+    select(again ? null : sel);
+  }
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
-    zoomTo(zoomGoal - clamp(e.deltaY, -200, 200) * 0.004, e.clientX, e.clientY);
+    camera.zoomTo(camera.goal - clamp(e.deltaY, -200, 200) * 0.004, follow ? null : e.clientX, follow ? null : e.clientY);
   }, { passive: false });
-  canvas.addEventListener("dblclick", (e) => zoomTo(zoomGoal + 1, e.clientX, e.clientY));
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") select(null);
     else if (e.key === "Tab" && sim?.w.agents.length) {
@@ -176,34 +203,34 @@ async function main() {
     }
     else if (e.key === " " && sim) { sim.paused = !sim.paused; e.preventDefault(); }
     else if ((e.key === "[" || e.key === "]") && sim) { const k = SPEEDS.indexOf(sim.speed); sim.speed = SPEEDS[clamp((k < 0 ? 2 : k) + (e.key === "]" ? 1 : -1), 0, SPEEDS.length - 1)]; }
-    else if (e.key === "+" || e.key === "=") zoomTo(Math.round(zoomGoal) + 1);
-    else if (e.key === "-") zoomTo(Math.round(zoomGoal) - 1);
-    else if (e.key === "q" || e.key === "Q") turnBy(-1);
-    else if (e.key === "e" || e.key === "E") turnBy(1);
+    else if (e.key === "+" || e.key === "=" || e.key === "-") {
+      const mid = follow ? [null, null] : [canvas.width / 2, canvas.height / 2];
+      camera.zoomTo(Math.round(camera.goal) + (e.key === "-" ? -1 : 1), ...mid);
+    }
+    else if (e.key === "q" || e.key === "Q") camera.turnBy(-1);
+    else if (e.key === "e" || e.key === "E") camera.turnBy(1);
   });
   setTimeout(() => hint.classList.add("gone"), 8000);
+  globalThis.play = globalThis.nomads = { live, sim, view, camera, select, metrics, zoomTo: (g, sx, sy) => camera.zoomTo(g, sx, sy), turnBy: (d) => camera.turnBy(d), inspected: () => inspData };
 
-  // Near targets are eased toward. A far one (a Tab to someone across the island, or a close-up follow hopping a
-  // whole sim tile) is baked first while the camera holds, then cut to, so the close level never sits on a fallback.
-  function followStep(now) {
+  // Near targets are eased toward. A far one (a Tab to someone across the island) is baked first while the camera
+  // holds, then cut to, so the close level never sits on a fallback.
+  function followStep(now, dt) {
     const p = live.where(follow, sim, view);
     if (!p) { select(null); live.prefetch(null); return; }
-    upGoal = p.up ?? 0;
-    const c = live.centreOn(p.x, p.z, view), pxm = live.ppm(view.zoom), far = Math.hypot(c.x - view.x, c.z - view.z) * pxm > canvas.width * 0.35;
-    const next = p.dx || p.dz ? live.centreOn(p.x + p.dx, p.z + p.dz, view) : null, ahead = next ? [{ ...view, ...next, later: true }] : [];
-    if (!far) {
-      const k = live.isClose(view) ? 0.3 : 0.2;
-      view.x += (c.x - view.x) * k; view.z += (c.z - view.z) * k;
+    const upOf = (q) => q.y - live.camH(q.x, q.z), ahead = p.dx || p.dz ? [{ ...view, x: p.x + p.dx, z: p.z + p.dz, up: upOf(p), later: true }] : [];
+    if (camera.offCentre(p) <= canvas.width * 0.35) {
+      camera.follow(p, dt);
       farSince = 0;
       live.prefetch(ahead);
       return;
     }
-    // lock the destination when the jump starts: a walker hops on every tick, and chasing each hop would never finish
-    if (!farSince) { farSince = now; farDest = { ...view, x: c.x, z: c.z }; }
-    const dest = farDest;
-    live.prefetch([dest, ...ahead]);
-    if (live.readiness(dest).ready || now - farSince > 3000) {
-      view.x = dest.x; view.z = dest.z; farSince = 0;
+    // lock the destination when the jump starts: a walker keeps moving, and chasing each step would never finish
+    if (!farSince) { farSince = now; farDest = { ...view, x: p.x, z: p.z, up: upOf(p) }; }
+    live.prefetch([farDest, ...ahead]);
+    if (live.readiness(farDest).ready || now - farSince > 3000) {
+      camera.lookAt({ x: farDest.x, z: farDest.z, y: farDest.up + live.camH(farDest.x, farDest.z) });
+      farSince = 0;
       if (tabWatch && !tabWatch.cutAt) tabWatch.cutAt = now - tabWatch.t0;
     }
   }
@@ -212,8 +239,8 @@ async function main() {
   const showStats = Q.get("stats") === "1";
   statsEl.hidden = !showStats;
   let lastStats = 0, readyMarked = false, lastNow = performance.now();
-  const bench = Q.get("bench") ? benchRunner(Q.get("bench"), live, view, sim) : null;
-  let revealed = false, upGoal = 0;
+  const bench = benchKind ? benchRunner(benchKind, live, view) : null;
+  let revealed = false;
   function loop(now) {
     const dt = Math.min(100, now - lastNow);
     lastNow = now;
@@ -223,16 +250,14 @@ async function main() {
       if (ch) { live.changed(ch); if (view.selected) inspect(); }
     }
     if (revealed && bench) bench.step(now);
-    zoomStep(dt);
-    turnStep(now);
-    if (follow && sim) followStep(now);
-    else { live.prefetch(null); upGoal = 0; }
-    // the camera rises with a followed bird, so it stays mid-screen as drawn
-    view.up = (view.up ?? 0) + (upGoal - (view.up ?? 0)) * Math.min(1, dt / 120);
+    camera.step(dt, now);
+    if (follow && sim) followStep(now, dt);
+    else live.prefetch(null);
+    // the ground under the opening shot is only exact once its chunks are in, so keep it centred until then
+    if (!revealed && opening) camera.lookAt(live.where(opening, sim, view));
+    camera.guard();
     const r = live.frame(view, sim);
     if (!revealed) {
-      // the ground under the opening shot is only exact once its chunks are in, so keep it centred until then
-      if (opening) Object.assign(view, live.centreOn(...opening, view));
       const rd = live.readiness(view);
       if (rd.ready && !r.holes) {
         revealed = true;
@@ -247,6 +272,7 @@ async function main() {
       if (r.holes) tabWatch.hole += dt2;
       if (now - tabWatch.t0 > 6000) { metrics.tabs.push({ holeMs: Math.round(tabWatch.hole), cutMs: Math.round(tabWatch.cutAt) }); tabWatch = null; }
     }
+    if (revealed) paintPace();
     if (!readyMarked && revealed && !bench) { readyMarked = true; document.body.dataset.firstFrame = String(Math.round(performance.now() - t0)); document.body.classList.add("ready"); }
     if (showStats && now - lastStats > 250) {
       lastStats = now;
@@ -264,8 +290,8 @@ async function main() {
   requestAnimationFrame(loop);
 
   // ?bench=zoom | orbit | turn | pan: drive the camera and record frame rate and frame cost, for the report.
-  function benchRunner(kind, live, view, sim) {
-    const secs = Number(Q.get("benchs") || 12), out = { kind, samples: [] };
+  function benchRunner(kind, live, view) {
+    const secs = num("benchs", 12, 1, 600), out = { kind, samples: [] };
     let start = 0, done = false, base = null, lastT = 0, k = 0;
     const finish = () => {
       const ms = out.samples.map((s) => s.ms).sort((a, b) => a - b), dts = out.samples.map((s) => s.dt).filter((d) => d > 0);
@@ -291,16 +317,16 @@ async function main() {
         const t = (now - start) / 1000, f = Math.min(1, t / secs);
         if (lastT !== now) out.samples.push({ dt: now - lastT, ms: live.lastMs, holes: live.lastHoles, slots: live.stats.slots, z: +view.zoom.toFixed(2), parts: live.lastParts });
         lastT = now;
-        if (kind === "zoom") { view.zoom = zoomGoal = live.zmax * (f < 0.5 ? f * 2 : 2 - f * 2); }
-        else if (kind === "orbit") view.bearing = base.bearing + 8 * f;
+        if (kind === "zoom") camera.setZoom(live.zmax * (f < 0.5 ? f * 2 : 2 - f * 2));
+        else if (kind === "orbit") view.bearing = norm8(base.bearing + 8 * f);
         else if (kind === "turn") {
           // three turns, each to a bearing nothing has prefetched, a few seconds apart
-          if (!turn && k < 3 && t > k * 4) { turnBy(1); k++; }
-          if (k === 3 && !turn && t > 12) { finish(); return; }
+          if (!camera.turning && k < 3 && t > k * 4) { camera.turnBy(1); k++; }
+          if (k === 3 && !camera.turning && t > 12) { finish(); return; }
           return;
         } else if (kind === "pan") {
           const zi = Math.min(3, Math.floor(f * 4)), pxm = live.ppm(view.zoom), tri = Math.abs(((t / 3) % 1) * 2 - 1) * 2 - 1;
-          view.zoom = zoomGoal = live.named[names[zi]];
+          camera.setZoom(live.named[names[zi]]);
           view.x = base.x + (tri * Math.min(600 / pxm, 2500)); view.z = base.z + tri * Math.min(240 / pxm, 1000);
         }
         if (f >= 1) finish();

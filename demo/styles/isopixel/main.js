@@ -315,7 +315,7 @@ function buildMap(w, V) {
       let wet = 0, m = 0, ex = 0;
       for (const [a, b] of offs) {
         const [x, z] = V.toW(i0 + i + a, j0 + j + b);
-        wet += w.fine(w.wet, x, z);
+        wet += V.live ? wetAt(w, x, z) : w.fine(w.wet, x, z);
         COV.forEach((k, q) => (cv[q] += w.fine(w.cover[k], x, z)));
         m += w.fine(w.moist, x, z);
         ex += w.bilinear(I.exposure, (x - w.START) / w.CELL, (z - w.START) / w.CELL);
@@ -953,9 +953,12 @@ export const LADDER = [
   { name: "yard", W: 48, lp: 6, tileM: 8, paged: true },
   { name: "close", W: 58, lp: 7, tileM: 6.25, paged: true },
 ];
-// one vertical exaggeration for every zoom and bearing, so a mountain has the same shape at each
-export const EXAG = 3.2;
-const LIGHT = 2.2;
+// One vertical exaggeration for every zoom and bearing, so a mountain has the same shape at each. 1.2 keeps the drawn
+// 99th percentile slope under 40 degrees at the generator's 75 m cells (true p99 34.4 degrees, seed 1); 1.5 trades a
+// little of that for more mountain. ?exag= overrides it once at load, in the page and in the bake workers alike.
+export const EXAG = (() => { const q = Number(new URLSearchParams(globalThis.location?.search ?? "").get("exag")); return q ? clamp(q, 1, 3) : 1.5; })();
+// hillshade gain on the true slope, strong enough that eroded ridges and valleys read at the low exaggeration
+const LIGHT = 4.4;
 export const BEARINGS = 8;
 export const ORIGIN = -4800;
 
@@ -1101,14 +1104,14 @@ export function collectLive(w, V, M, D) {
     if (hpx < 1) return;
     const x = px * 150 + ORIGIN, z = py * 150 + ORIGIN;
     if (!visW(x, z)) return;
+    // drawn wherever the sim holds it, so what is drawn and what can be picked always agree
     const sp = spn[si], at = place(V, M, x, z);
-    // water from the world at the object's own point, not the level's tile, so a level never drops a shore object
-    if (!at || (K !== "reeds" && (w.fine(w.wet, x, z) > 0.5 || riverSmooth(w, x, z) > 0.5))) return;
+    if (!at) return;
     const mirror = ((seed >>> 3) & 1) === 1, vr = seed % 8, tint = ((seed >>> 8) & 255) / 255;
     let spr;
     if (K === "tree") {
       const hp = Math.round(hpx), dim = dimAt(x, z), gold = sp === "aspen" && tint > 0.8;
-      spr = hp < 6 ? cached(`tt${hp}|${sp === "pine" ? "p" : gold ? "g" : "b"}|${dim}`, () => tinyTree(hp, sp === "pine" ? "pine" : gold ? "gold" : "broad", dim))
+      spr = hp < 6 ? cached(`tt${hp}|${sp === "pine" ? "p" : gold ? "g" : "b"}|${dim}`, () => SP.tinyTree(hp, sp === "pine" ? "pine" : gold ? "gold" : "broad", dim))
         : sp === "pine" ? cached(`p${hp}|${vr}|${dim}`, () => SP.pine(hp, vr * 17 + hp, false, dim)) : cached(`${sp}${hp}|${vr}|${tint > 0.8 ? 1 : 0}|${dim}`, () => SP.broad(hp, sp || "oak", vr * 31 + hp, tint, dim));
     } else if (!TH.object) return;
     else {
@@ -1123,37 +1126,34 @@ export function collectLive(w, V, M, D) {
 }
 const FLAT = new Set(["clay", "stick", "pebble", "flowers", "herb", "mushroom"]);
 
-// Sprites too small for the drawn ones, down to a single pixel: a crown lit from the upper left on a one-pixel trunk.
-// Sprites too small for the drawn ones, down to a single pixel. A forest's interior is dark and its sunward edge lit,
-// as the full crowns are, so a wood reads the same from far out as up close.
-const TINY = { pine: ["p0", "p1", "p2", "p3", "p4"], broad: ["t1", "t2", "t3", "g3", "g4"], gold: ["d0", "a0", "a1", "a2", "a3"], shrub: ["t1", "g1", "g2", "g3", "g4"], rock: ["r1", "r2", "r3", "r4", "r5"] };
-function tinyTree(h, kind, dim) {
-  const cols = TINY[kind].map((n) => P[n]), base = kind === "rock" ? 2.5 : 2 - dim * 1.4, trunk = kind !== "rock" && kind !== "shrub" && h >= 4 ? 1 : 0;
-  const ch = h - trunk, wd = kind === "pine" ? Math.max(1, Math.round(h * 0.45)) : Math.max(1, Math.round(h * 0.7)), S = new Spr(wd + 2, h + 1, (wd + 2) >> 1, h);
-  for (let y = 0; y < ch; y++) {
-    const t = ch === 1 ? 0.5 : y / (ch - 1), half = kind === "pine" ? (wd / 2) * (0.35 + 0.65 * t) : (wd / 2) * (t < 0.5 ? 0.75 + t * 0.5 : 1);
-    for (let x = 0; x < wd; x++) {
-      const dx = x + 0.5 - wd / 2;
-      if (Math.abs(dx) > Math.max(0.5, half)) continue;
-      const light = h === 1 ? 0 : (-dx / Math.max(1, wd) - t + 0.5) * 1.6;
-      S.set(x + 1, y, cols[clamp(Math.round(base + light), 0, 4)]);
-    }
-  }
-  if (trunk) S.set(S.ax, h - 1, P.d1);
-  return S;
-}
 
 // ---------- live terrain: every feature from world-space fields in meters ----------
 // Only the dither pattern belongs to a level: biome edges, pools, bare patches, shores and rivers are sampled from
 // the world at each pixel, so they line up exactly at every zoom and bearing.
 const G = {};
+// Water where the generator's ground lies below the surface of the lake or sea beside it, so a shore follows the
+// terrain's own contour instead of the 75 m water cells (a one-cell pond drawn from the cells is a diamond). Past a
+// lake's outlet the ground can drop below its level, so the cells still bound it there.
+function wetAt(w, x, z) {
+  const I = w.isle, N = w.N, cx = (x - w.START) / w.CELL, cy = (z - w.START) / w.CELL, i = Math.round(cx), j = Math.round(cy);
+  if (i < 0 || j < 0 || i >= N || j >= N) return 1;
+  let lvl = -Infinity;
+  for (let b = Math.max(0, j - 1); b <= Math.min(N - 1, j + 1); b++)
+    for (let a = Math.max(0, i - 1); a <= Math.min(N - 1, i + 1); a++) { const k = b * N + a; if (I.water[k] > 0) lvl = Math.max(lvl, I.height[k] + I.water[k]); }
+  if (lvl === -Infinity) return 0;
+  const x0 = clamp(Math.floor(cx), 0, N - 2), y0 = clamp(Math.floor(cy), 0, N - 2), tx = clamp(cx - x0, 0, 1), ty = clamp(cy - y0, 0, 1), k = y0 * N + x0, c = (q) => (I.water[q] > 0 ? 1 : 0);
+  const bl = (f) => (f(k) * (1 - tx) + f(k + 1) * tx) * (1 - ty) + (f(k + N) * (1 - tx) + f(k + N + 1) * tx) * ty;
+  const v = Math.min(0.5 + (lvl - w.heightAt(x, z)) / 2, 0.5 + (bl(c) - 0.2) * 2);
+  // the cubic through the cells rises above sea level here and there offshore; the sea cells keep that underwater
+  return clamp(Math.max(v, bl((q) => (I.water[q] > 0 && I.height[q] < 0 ? 1 : 0)) - 0.1), 0, 1);
+}
 function groundAt(w, V, x, z) {
-  const wet = w.fine(w.wet, x, z), riv = riverSmooth(w, x, z);
+  const wet = wetAt(w, x, z), riv = riverSmooth(w, x, z);
   G.water = wet > 0.5 ? (w.heightAt(x, z) < 0.5 ? SEA : LAKE) : riv > 0.5 ? RIVER : 0;
   G.x = x; G.z = z;
   if (G.water) {
     // distance to the shore in meters, from the field's value and slope near its 0.5 contour
-    const f = G.water === RIVER ? (a, b) => riverSmooth(w, a, b) : (a, b) => w.fine(w.wet, a, b), v = G.water === RIVER ? riv : wet;
+    const f = G.water === RIVER ? (a, b) => riverSmooth(w, a, b) : (a, b) => wetAt(w, a, b), v = G.water === RIVER ? riv : wet;
     const gx = (f(x + 3, z) - f(x - 3, z)) / 6, gz = (f(x, z + 3) - f(x, z - 3)) / 6, gl = Math.hypot(gx, gz);
     G.shore = gl > 1e-4 ? (v - 0.5) / gl : 60;
     G.depth = G.water === SEA ? Math.max(0, -w.heightAt(x, z)) : G.water === LAKE ? w.bilinear(w.isle.water, (x - w.START) / w.CELL, (z - w.START) / w.CELL) : 1.5;
@@ -1165,9 +1165,11 @@ function groundAt(w, V, x, z) {
   for (let q = 0; q < 6; q++) { const c = w.fine(w.cover[COV[q]], wx, wz); G["c" + q] = c; if (c * WEIGHT[q] > bs) { bs = c * WEIGHT[q]; best = q; } }
   const h = w.heightAt(x, z);
   G.h = h; G.moist = w.fine(w.moist, x, z);
-  G.cls = best === ROCK && h < V.capH ? HILL : best;
-  G.snow = G.cls === ROCK || h > 0.8 * V.peakM ? smooth(0.9 * V.peakM, V.peakM, h) * 0.3 + w.bilinear(w.isle.snow, (x - w.START) / w.CELL, (z - w.START) / w.CELL) * 0.5 : 0;
-  if (h > 0.9 * V.peakM) G.cls = ROCK;
+  // rock where the generator left the ground bare; thin bare ground is grass with outcrops
+  G.cls = best === ROCK && G.c4 < 0.6 ? HILL : best;
+  G.ex = w.bilinear(w.isle.exposure, (x - w.START) / w.CELL, (z - w.START) / w.CELL);
+  // the generator's share of the year's precipitation falling as snow: only its highest reaches keep patches of it
+  G.snow = smooth(0.132, 0.142, w.bilinear(w.isle.snow, (x - w.START) / w.CELL, (z - w.START) / w.CELL)) * 0.3;
   G.nearWet = wet > 0.2 || riv > 0.2;
   return G;
 }
@@ -1214,8 +1216,11 @@ function paintWater(w, V, g, X, Y) {
 // rock slope whatever grows around it.
 const ROCKY = 30;
 function landClass(g, slope) {
-  const cls = slope > 0.62 && g.cls !== SAND ? ROCK : slope > 0.42 && (g.cls === MEADOW || g.cls === SCRUB) ? HILL : g.cls;
-  if (cls === ROCK || (cls === HILL && fbm(g.x / 45, g.z / 45, 26, 2) + g.c4 * 0.6 + (slope - 0.42) * 2 - 0.8 > 0)) return ROCKY;
+  // true slope is the second cue: a face past 35 degrees is bare, past 27 degrees open ground breaks into outcrops
+  // bare ground that is gentle and sheltered weathers to grass with outcrops rather than open rock
+  const bare = g.cls === ROCK && slope < 0.32 && g.ex < 0.36 ? HILL : g.cls;
+  const cls = slope > 0.7 && bare !== SAND ? ROCK : slope > 0.5 && (bare === MEADOW || bare === SCRUB) ? HILL : bare;
+  if (cls === ROCK || (cls === HILL && fbm(g.x / 45, g.z / 45, 26, 2) + g.c4 * 0.8 + (slope - 0.5) * 2 - 0.8 > 0)) return ROCKY;
   return cls;
 }
 // ground slope in the world, on a fixed 12.5 m grid shared by every level

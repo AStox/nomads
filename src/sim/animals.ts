@@ -1,9 +1,9 @@
 // What the animals do each tick: graze, wander, flee, hunt, swim, fly, perch and feed. Speeds are meters a tick of
 // five minutes' game time, the way a person's are; what each kind is like is in fauna.ts.
 import { THING_MATERIAL } from "./materials";
-import { TILE_M, Tile, W, isNight, landing, log, meters, tileAt, walkable, type Agent, type Animal, type AnimalSpecies, type Thing, type World } from "./world";
+import { TILE_M, Tile, W, dryAt, isNight, landing, log, meters, tileAt, walkable, wetAt, type Agent, type Animal, type AnimalSpecies, type Thing, type World } from "./world";
 import { anyOf, liveThings, nearestThing, onPath, put, thingById } from "./space";
-import { onFoot, steer } from "./walk";
+import { steer } from "./walk";
 import { dropPile, mark, removeThing } from "./physics";
 import { see } from "./beliefs";
 import { trace } from "./trace";
@@ -19,15 +19,16 @@ function closest<T extends { px: number; py: number }>(from: { px: number; py: n
   return best;
 }
 const ground = (w: World, x: number, y: number) => walkable(w, x, y);
-const water = (w: World, x: number, y: number) => tileAt(w, x, y) === Tile.Water;
 const air = () => true;
-const passOf = (sp: AnimalSpecies) => (sp === "fish" ? water : FAUNA[sp].ground ? ground : air);
+const passOf = (sp: AnimalSpecies) => (FAUNA[sp].ground ? ground : air);
+// Where each kind can be at a point: fish in standing water, anything that walks on dry ground or ice, birds anywhere.
+const pointOf = (sp: AnimalSpecies) => (sp === "fish" ? wetAt : FAUNA[sp].ground ? dryAt : air);
 function face(an: Animal) { an.dx = Math.round(Math.cos(an.heading)); an.dy = Math.round(Math.sin(an.heading)); }
 function setState(w: World, an: Animal, s: string) { if (an.state !== s) { an.state = s; an.since = w.t; } }
 const inState = (w: World, an: Animal) => w.t - (an.since ?? w.t);
 // A fixed per-animal number below n, so a flock doesn't fly at one height or wake all at once.
 const quirk = (an: Animal, n: number) => (Math.imul(Number(an.id.slice(1)) || 1, 2654435761) >>> 0) % n;
-function goTo(w: World, an: Animal, tx: number, ty: number, speed: number) { steer(w, an, tx, ty, speed, passOf(an.species), an.species === "fish" ? (v, x, y) => !onFoot(v, x, y) : FAUNA[an.species].ground ? onFoot : undefined); face(an); }
+function goTo(w: World, an: Animal, tx: number, ty: number, speed: number) { steer(w, an, tx, ty, speed, passOf(an.species), pointOf(an.species), an.species === "deer" || an.species === "wolf"); face(an); }
 function away(w: World, an: Animal, from: { px: number; py: number }, speed: number) {
   const d = Math.hypot(an.px - from.px, an.py - from.py) || 1e-6;
   goTo(w, an, an.px + ((an.px - from.px) / d) * 0.2, an.py + ((an.py - from.py) / d) * 0.2, speed);
@@ -152,7 +153,7 @@ function shoreNear(w: World, from: [number, number], r: number): [number, number
     const t = p.shore[Math.floor(Math.random() * p.shore.length)];
     if (t === undefined) return null;
     const c: [number, number] = [(t % W) + 0.2 + Math.random() * 0.6, ((t / W) | 0) + 0.2 + Math.random() * 0.6];
-    if (Math.hypot(c[0] - from[0], c[1] - from[1]) * TILE_M <= r) return c;
+    if (Math.hypot(c[0] - from[0], c[1] - from[1]) * TILE_M <= r && dryAt(w, c[0], c[1])) return c;
   }
   return null;
 }
@@ -195,7 +196,7 @@ function gull(w: World, g: Animal) {
     return;
   }
   if (isNight(w.t) || Math.random() < 0.003) { g.aim = shoreNear(w, home, 400) ?? g.aim; setState(w, g, "land"); return; }
-  if (Math.random() < 0.01 && tileAt(w, g.x, g.y) === Tile.Water) { setState(w, g, "feed"); return; }
+  if (Math.random() < 0.01 && wetAt(w, g.px, g.py)) { setState(w, g, "feed"); return; }
   setState(w, g, "fly");
   lift(g, 10 + quirk(g, 20), 2);
   roam(w, g, 400, FAUNA.gull.fly!, 1);
@@ -342,7 +343,7 @@ export function animals(w: World) {
   const ashore = (sp: AnimalSpecies, k: number, text: string) => {
     const e = landing(w);
     if (!e) return;
-    for (let i = 0; i < k; i++) addAnimal(w, sp, e.x + 0.5, e.y + 0.5, { home: [e.x + 0.5, e.y + 0.5] });
+    for (let i = 0; i < k; i++) addAnimal(w, sp, e.px, e.py, { home: [e.px, e.py] });
     log(w, "birth", [], e, text);
   };
   if (deerNow < 4 && Math.random() < 1 / 1500) ashore("deer", 2, "A pair of deer swam ashore.");

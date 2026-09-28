@@ -84,9 +84,9 @@ const paired = (a: Agent, b: Agent) => {
 function newcomer(w: World) {
   const spot = landing(w);
   if (!spot) return;
-  const { x, y } = spot;
+  const { x, y, px, py } = spot;
   // A pretend parent with nothing to pass on, so the stranger gets fresh traits.
-  const stub = { id: "stranger", name: "a stranger", traits: {}, desires: [DESIRES[Math.floor(Math.random() * DESIRES.length)]], x, y, px: x + 0.5, py: y + 0.5, heading: 0, home: null, children: [], rel: {} } as unknown as Agent;
+  const stub = { id: "stranger", name: "a stranger", traits: {}, desires: [DESIRES[Math.floor(Math.random() * DESIRES.length)]], x, y, px, py, heading: 0, home: null, children: [], rel: {} } as unknown as Agent;
   const a = childOf(w, stub, undefined);
   a.parents = []; a.rel = {}; a.home = null;
   a.born = w.t - Math.round(YEAR * (1.5 + Math.random()));
