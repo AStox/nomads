@@ -925,35 +925,50 @@ function vertexLight(V, M) {
     }
     // only the sharpest tenth of creases count, whatever the seed's relief
     const mag = Float32Array.from(curvV, Math.abs).sort();
-    crease = Math.max(0.05, mag[Math.floor(mag.length * 0.9)]);
+    crease = V.live ? 0.12 : Math.max(0.05, mag[Math.floor(mag.length * 0.9)]);
   }
   return { lightV, curvV, crease };
 }
 
 // ---------- live: a fixed camera over the whole island, baked in chunks ----------
 // The zoom ladder. Every level has a fixed bearing, scale and exaggeration, so nothing re-fits while panning.
+// Neighbours are at most 2x apart in art pixels per meter, so a continuous zoom can always show one at 2 to 4 screen
+// px per art px. The four tuned levels are island, region, valley and close; the rest sit between them. Everything
+// finer than the island maps is paged: each chunk builds its own map, so no bearing needs an island-wide one.
 export const LADDER = [
-  { name: "island", view: "island", W: 12, lp: 2, tileM: 200 },
-  { name: "region", view: "valley", W: 16, lp: 2, tileM: 37.5, foam: 1.2, cell: [4, 3], grid: 0, treeK: 2.2 },
-  { name: "valley", view: "valley", W: 32, lp: 4, tileM: 18.75 },
-  // too many tiles for one island-wide map: each close chunk builds its own map with a margin
-  { name: "close", view: "camp", W: 58, lp: 7, tileM: 6.25, paged: true },
+  { name: "island", view: "island", W: 12, lp: 2, tileM: 200, exag: 1.8 },
+  { name: "isle100", view: "island", W: 12, lp: 2, tileM: 100, exag: 1.5 },
+  { name: "isle50", view: "island", W: 12, lp: 2, tileM: 50, exag: 1.25 },
+  { name: "region", view: "valley", W: 16, lp: 2, tileM: 37.5, exag: 1, foam: 1.2, cell: [4, 3], grid: 0, treeK: 2.2, paged: true },
+  { name: "vale", view: "valley", W: 24, lp: 3, tileM: 28.125, exag: 1, foam: 1.8, cell: [4, 3], grid: 0.2, treeK: 1.6, paged: true },
+  { name: "valley", view: "valley", W: 32, lp: 4, tileM: 18.75, exag: 1, paged: true },
+  { name: "near", view: "valley", W: 40, lp: 5, tileM: 11.71875, exag: 1, foam: 3, cell: [6, 4], grid: 0.6, treeK: 1.0, paged: true },
+  { name: "yard", view: "camp", W: 48, lp: 6, tileM: 8, exag: 1, foam: 3.5, cell: [7, 4], treeK: 0.85, paged: true },
+  { name: "close", view: "camp", W: 58, lp: 7, tileM: 6.25, exag: 1, paged: true },
 ];
+export const BEARINGS = 8;
 export const ORIGIN = -4800;
 
-// World (x, z) maps to tile (u, v) = ((x, z) - ORIGIN) / tileM, so +x runs down-right and +z down-left like the sim.
-export function makeLiveView(w, level) {
+// Bearing b turns the camera b * 45 degrees clockwise: tile axes eu, ev are the world axes turned by -b * 45 degrees,
+// from an origin that keeps the whole island at u, v >= 0. At b = 0, +x runs down-right and +z down-left like the sim.
+export function bearingFrame(b) {
+  const a = (b * Math.PI) / 4, c = Math.cos(a), sn = Math.sin(a), R = 4800 * (Math.abs(c) + Math.abs(sn));
+  const eu = [c, sn], ev = [-sn, c];
+  return { eu, ev, ox: -R * (eu[0] + ev[0]), oz: -R * (eu[1] + ev[1]), span: 2 * R };
+}
+export function makeLiveView(w, level, bearing = 0) {
   const Zl = LADDER[level];
   setMode(Zl.view, 0);
-  const V = { ...CFG[Zl.view], ...Zl, level, live: true, name: VIEW, AW: 0, AH: 0, gx: 0, gy: 0, X0: 0, Y0: 0 };
+  const V = { ...CFG[Zl.view], ...Zl, level, bearing, live: true, name: VIEW, AW: 0, AH: 0, gx: 0, gy: 0, X0: 0, Y0: 0 };
   V.H = V.W / 2;
   if (LOWSUN) V.tsun = SUN * 0.75;
   if (THEME === "adventure") V.band = VIEW === "island" ? 1.3 : 1.9;
   V.marks = []; V.falls = null; V.rings = []; V.drifts = []; V.campOff = 1;
-  V.eu = [1, 0]; V.ev = [0, 1]; V.ox = ORIGIN; V.oz = ORIGIN;
+  const F = bearingFrame(bearing);
+  V.eu = F.eu; V.ev = F.ev; V.ox = F.ox; V.oz = F.oz;
   V.scale = (tileM) => { V.tileM = tileM; V.k = V.W / (tileM * Math.SQRT2); V.levelM = V.lp / (V.k * 0.866 * V.exag); };
-  V.toUV = (x, z) => [(x - V.ox) / V.tileM, (z - V.oz) / V.tileM];
-  V.toW = (u, v) => [V.ox + u * V.tileM, V.oz + v * V.tileM];
+  V.toUV = (x, z) => { const dx = x - V.ox, dz = z - V.oz; return [(dx * V.eu[0] + dz * V.eu[1]) / V.tileM, (dx * V.ev[0] + dz * V.ev[1]) / V.tileM]; };
+  V.toW = (u, v) => [V.ox + (u * V.eu[0] + v * V.ev[0]) * V.tileM, V.oz + (u * V.eu[1] + v * V.ev[1]) * V.tileM];
   V.sx = (u, v) => V.X0 + (u - v) * V.H;
   V.sy = (u, v, hz) => V.Y0 + (u + v) * V.H * 0.5 - hz * V.lp;
   V.cz = (u, v, hz) => 1.5 * V.H * (u + v) + hz * V.lp;
@@ -962,18 +977,10 @@ export function makeLiveView(w, level) {
     const lim = w.SIZE / 2 - 60;
     V.hsample = (x, z) => Math.abs(x) > lim || Math.abs(z) > lim ? -60 : (w.heightAt(x, z) * 2 + w.heightAt(x + 45, z) + w.heightAt(x - 45, z) + w.heightAt(x, z + 45) + w.heightAt(x, z - 45)) / 6;
   }
+  // exaggeration is fixed per level (island-wide slopes gave 1 for every local level), stepping down from the
+  // island map's so neighbouring levels agree when they cross-fade
   V.scale(V.tileM);
-  // exaggeration from island-wide slopes, the valley view's rule, so most ground climbs in slope tiles
-  if (VIEW !== "island") {
-    const slopes = [], d = V.tileM;
-    for (let z = -4700; z <= 4700; z += 100)
-      for (let x = -4700; x <= 4700; x += 100)
-        if (w.heightAt(x, z) > 0.5) slopes.push(Math.hypot(w.heightAt(x + d, z) - w.heightAt(x - d, z), w.heightAt(x, z + d) - w.heightAt(x, z - d)) / (2 * d));
-    slopes.sort((p, q) => p - q);
-    const steep = slopes[Math.floor(slopes.length * 0.85)] ?? 0;
-    if (steep > 0) { V.exag = clamp(V.lp / (V.k * 0.866 * steep * V.tileM), 1, V.exag); V.scale(V.tileM); }
-  }
-  const NT = Math.ceil(w.SIZE / V.tileM);
+  const NT = Math.ceil(F.span / V.tileM);
   let peak = 0;
   for (const h of w.isle.height) peak = Math.max(peak, h);
   V.peakLev = Math.ceil((peak + 10) / V.levelM);
@@ -1013,7 +1020,7 @@ export function liftInto(w, V, gy0, gx0, CS) {
   let need = 0;
   for (let b = Math.floor(b0); (b - b0) * hb <= V.peakLev * V.lp; b++)
     for (let a = Math.floor(amin); a <= amax; a += 2) {
-      const u = (a + b) / 2, v = (b - a) / 2, lev = w.heightAt(V.ox + u * V.tileM, V.oz + v * V.tileM) / V.levelM;
+      const u = (a + b) / 2, v = (b - a) / 2, lev = w.heightAt(...V.toW(u, v)) / V.levelM;
       if (lev * V.lp + 2 * V.lp >= (b - b0) * hb) need = Math.max(need, lev + 2);
     }
   return Math.ceil(need);
@@ -1060,9 +1067,9 @@ function scatterBins(w) {
   return w.bins;
 }
 function* near(V, list) {
-  const b = V.binsOf, [u0, u1, v0, v1] = V.obox, n = b.n;
-  const cx0 = clamp(Math.floor((u0 * V.tileM) / 150), 0, n - 1), cx1 = clamp(Math.floor((u1 * V.tileM) / 150), 0, n - 1);
-  const cz0 = clamp(Math.floor((v0 * V.tileM) / 150), 0, n - 1), cz1 = clamp(Math.floor((v1 * V.tileM) / 150), 0, n - 1);
+  const b = V.binsOf, [u0, u1, v0, v1] = V.obox, n = b.n, cs = [V.toW(u0, v0), V.toW(u1, v0), V.toW(u0, v1), V.toW(u1, v1)];
+  const xs = cs.map((c) => c[0]), zs = cs.map((c) => c[1]), cell = (m) => clamp(Math.floor((m - ORIGIN) / 150), 0, n - 1);
+  const cx0 = cell(Math.min(...xs)), cx1 = cell(Math.max(...xs)), cz0 = cell(Math.min(...zs)), cz1 = cell(Math.max(...zs));
   for (let cz = cz0; cz <= cz1; cz++) for (let cx = cx0; cx <= cx1; cx++) yield* list[cz * n + cx];
 }
 
@@ -1083,7 +1090,7 @@ export function collectLive(w, V, M, D) {
     if (!M.treeCount) {
       const n = M.NI * M.NJ, count = new Float32Array(n), pines = new Float32Array(n), gold = new Float32Array(n);
       for (const t of w.trees) {
-        const k = M.at(Math.floor((t.x - ORIGIN) / V.tileM) - M.i0, Math.floor((t.z - ORIGIN) / V.tileM) - M.j0);
+        const [tu, tv] = V.toUV(t.x, t.z), k = M.at(Math.floor(tu) - M.i0, Math.floor(tv) - M.j0);
         if (k < 0) continue;
         count[k]++;
         if (t.kind === "pine") pines[k]++;
@@ -1134,7 +1141,7 @@ export function collectLive(w, V, M, D) {
     }
     return O;
   }
-  const pv = V.k * 0.866, visW = (x, z) => V.objVisible((x - ORIGIN) / V.tileM, (z - ORIGIN) / V.tileM), camp = VIEW === "camp";
+  const pv = V.k * 0.866, visW = (x, z) => V.objVisible(...V.toUV(x, z)), camp = VIEW === "camp";
   const free = (x, z) => !V.trodden || V.trodden(x, z) > 1;
   const qs = 70, quiet = (x, z) => DENSE === 2 && fbm(x / qs, z / qs, 206, 2) < -0.12;
   const sunW = [-V.sd[0], -V.sd[1]], reachW = 30;
@@ -1171,7 +1178,8 @@ export function collectLive(w, V, M, D) {
       add(at, cached(`r${Math.round(sz * 2)}|${vr}|${moss > 0.4 ? 1 : 0}`, () => SP.rock(sz, vr * 7 + 3, moss)), { mirror: r.yaw > Math.PI });
     }
   // rocks gather into one outcrop per cell; the cells are island-wide so every chunk agrees on them
-  if (!camp && !M.rockBins) {
+  const rockKey = V.tileM * 2.6;
+  if (!camp && !(w.rockBins ??= new Map()).has(rockKey)) {
     const cellM = V.tileM * 2.6, bins = new Map();
     for (const r of w.rocks) {
       const key = `${Math.floor(r.x / cellM)},${Math.floor(r.z / cellM)}`, b = bins.get(key) ?? { n: 0, s: 0, x: 0, z: 0, big: r };
@@ -1179,10 +1187,9 @@ export function collectLive(w, V, M, D) {
       if (r.size > b.big.size) b.big = r;
       bins.set(key, b);
     }
-    M.rockBins = [...bins.values()].filter((b) => !((b.n < 6 && b.s < 10) || fbm(b.x / b.s / (cellM * 4), b.z / b.s / (cellM * 4), 209, 2) < 0.08));
-    M.rockCell = cellM;
+    w.rockBins.set(rockKey, [...bins.values()].filter((b) => !((b.n < 6 && b.s < 10) || fbm(b.x / b.s / (cellM * 4), b.z / b.s / (cellM * 4), 209, 2) < 0.08)));
   }
-  for (const b of camp ? [] : M.rockBins) {
+  for (const b of camp ? [] : w.rockBins.get(rockKey)) {
     const x = b.x / b.s, z = b.z / b.s;
     if (!visW(x, z) || cleared(x, z, 1)) continue;
     const at = place(V, M, x, z);
@@ -1199,7 +1206,7 @@ export function collectLive(w, V, M, D) {
   const A = (V.tileM * V.tileM) / 10000, more = camp ? 2.5 : 1, grow = camp ? 1 : 1.6, reach = camp ? 1 : 2;
   const nextTo = (i, j, kinds) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([a, b]) => { const t = M.at(i + a, j + b); return t >= 0 && kinds.includes(M.kind[t]); });
   const spawn = (i, j, t, q, n, R, wet, fn) => {
-    const cx = ORIGIN + (M.i0 + i + h2(t, q, 301)) * V.tileM, cz = ORIGIN + (M.j0 + j + h2(t, q, 302)) * V.tileM;
+    const [cx, cz] = V.toW(M.i0 + i + h2(t, q, 301), M.j0 + j + h2(t, q, 302));
     for (let k = 0; k < n; k++) {
       const key = q * 37 + k, a = h2(t, key, 303) * 6.283, d = R * Math.sqrt(h2(t, key, 304)), x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d;
       if (!(wet || w.dry(x, z)) || !free(x, z) || cleared(x, z, 1)) continue;
@@ -1211,7 +1218,7 @@ export function collectLive(w, V, M, D) {
     if (M.kind[t]) continue;
     // reeds along marsh tiles and wet margins
     // tile hashes use global tile coordinates, since a close chunk's map is its own small window
-    const ui = M.i0 + i, vj = M.j0 + j, th = camp ? vj * 4096 + ui : t;
+    const ui = M.i0 + i, vj = M.j0 + j, th = vj * 8192 + ui;
     if (M.cov[3][t] >= 0.25) {
       const n = Math.round(M.cov[3][t] * (camp ? 3 : 5));
       for (let q = 0; q < n; q++) {

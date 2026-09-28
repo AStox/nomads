@@ -14,20 +14,33 @@ const pick = (a, u) => a[Math.min(a.length - 1, Math.floor(u * a.length))];
 
 // The morning key light in tile axes (u screen down-right, v down-left, z up), as main.js lights the terrain.
 const L3 = [-0.958 * Math.cos(0.9), 0.287 * Math.cos(0.9), Math.sin(0.9)];
-const shadeOf = (n) => (n[0] * L3[0] + n[1] * L3[1] + n[2] * L3[2]) / (Math.hypot(n[0], n[1], n[2]) || 1);
+// Sprites with a front can be turned in 45 degree steps. The model turns, not the light, so the light stays upper
+// left relative to the camera. ROT is set only while one exported sprite is being built.
+let ROT = { c: 1, s: 0, k: 0 };
+const turn = (u, v) => [u * ROT.c - v * ROT.s, u * ROT.s + v * ROT.c];
+function turned(dir, build) {
+  const k = ((Math.round(dir) % 8) + 8) % 8, a = (k * Math.PI) / 4, was = ROT;
+  ROT = { c: Math.cos(a), s: Math.sin(a), k };
+  try { return build(); } finally { ROT = was; }
+}
+// The screen depth of a box footprint's front corner below its centre, once turned.
+const boxFoot = (hu, hv) => Math.max(...[[1, 1], [1, -1], [-1, 1], [-1, -1]].map(([a, b]) => { const [u, v] = turn(a * hu, b * hv); return (u + v) / 2; }));
+const shadeOf = (n) => { const [u, v] = turn(n[0], n[1]); return (u * L3[0] + v * L3[1] + n[2] * L3[2]) / (Math.hypot(u, v, n[2]) || 1); };
 
 // Things with volume are splatted point by point in u, v, z (art px) into a depth buffer; nearness grows with u+v
 // and with height the way a 2:1 view from 30 degrees up sees it.
 function iso(uM, vM, zM) {
+  if (ROT.k) uM = vM = Math.hypot(uM, vM);
   const W = Math.ceil(2 * (uM + vM)) + 10, up = Math.ceil(zM + (uM + vM) / 2) + 5, dn = Math.ceil((uM + vM) / 2) + 5;
   const S = new Spr(W, up + dn, W >> 1, up);
   S.Z = new Float32Array(S.w * S.h).fill(-1e9);
   return S;
 }
-const sx = (S, u, v) => Math.floor(S.ax + 0.5 + u - v), sy = (S, u, v, z) => Math.floor(S.ay + 0.5 + (u + v) * 0.5 - z);
+const sx = (S, u, v) => { const [a, b] = turn(u, v); return Math.floor(S.ax + 0.5 + a - b); };
+const sy = (S, u, v, z) => { const [a, b] = turn(u, v); return Math.floor(S.ay + 0.5 + (a + b) * 0.5 - z); };
 function dot(S, u, v, z, c, x = sx(S, u, v), y = sy(S, u, v, z)) {
   if (c < 0 || x < 0 || y < 0 || x >= S.w || y >= S.h) return;
-  const i = y * S.w + x, n = u + v + 0.667 * z;
+  const [a, b] = turn(u, v), i = y * S.w + x, n = a + b + 0.667 * z;
   if (n < S.Z[i]) return;
   S.Z[i] = n; S.p[i] = c;
 }
@@ -67,8 +80,8 @@ function ball(S, cu, cv, cz, ru, rq, rz, paint) {
     }
   }
 }
-// A cylinder lying along "u" or "v" from a0 to a1, its +end cap toward the camera. paint(along, angle, x, y, shade),
-// cap(radial 0..1, x, y).
+// A cylinder lying along "u" or "v" from a0 to a1, capped at both ends (the depth buffer hides the far one).
+// paint(along, angle, x, y, shade), cap(radial 0..1, x, y).
 function cyl(S, axis, a0, a1, c, cz, r, paint, cap) {
   const nL = Math.ceil((a1 - a0) * 2.8) + 1, na = Math.ceil(r * 2 * Math.PI * 1.5) + 6;
   const at = (al, q, z) => (axis === "u" ? [al, q, z] : [q, al, z]);
@@ -79,12 +92,22 @@ function cyl(S, axis, a0, a1, c, cz, r, paint, cap) {
       dot(S, u, v, z, paint(al - a0, g, x, y, shadeOf(axis === "u" ? [0, Math.cos(g), Math.sin(g)] : [Math.cos(g), 0, Math.sin(g)])), x, y);
     }
   if (cap)
-    for (let rr = 0; rr <= r; rr += 0.3)
-      for (let i = 0; i < na; i++) {
-        const g = (i / na) * 2 * Math.PI, [u, v, z] = at(a1 + 0.05, c + rr * Math.cos(g), cz + rr * Math.sin(g));
-        const x = sx(S, u, v), y = sy(S, u, v, z);
-        dot(S, u, v, z, cap(rr / Math.max(0.5, r), x, y), x, y);
-      }
+    for (const end of [a0 - 0.05, a1 + 0.05])
+      for (let rr = 0; rr <= r; rr += 0.3)
+        for (let i = 0; i < na; i++) {
+          const g = (i / na) * 2 * Math.PI, [u, v, z] = at(end, c + rr * Math.cos(g), cz + rr * Math.sin(g));
+          const x = sx(S, u, v), y = sy(S, u, v, z);
+          dot(S, u, v, z, cap(rr / Math.max(0.5, r), x, y), x, y);
+        }
+}
+// An upright box, every face drawn so it holds up from any side. top(s, t, x, y, shade), side(a, z, x, y, shade).
+function box(S, u0, u1, v0, v1, z0, z1, top, side) {
+  const du = u1 - u0, dv = v1 - v0, dz = z1 - z0;
+  quad(S, [u0, v0, z1], [du, 0, 0], [0, dv, 0], [0, 0, 1], top);
+  quad(S, [u0, v1, z0], [du, 0, 0], [0, 0, dz], [0, 1, 0], side);
+  quad(S, [u0, v0, z0], [du, 0, 0], [0, 0, dz], [0, -1, 0], side);
+  quad(S, [u1, v0, z0], [0, dv, 0], [0, 0, dz], [1, 0, 0], side);
+  quad(S, [u0, v0, z0], [0, dv, 0], [0, 0, dz], [-1, 0, 0], side);
 }
 // A height field z = f(u, v) over a box (NaN where there is none): roofs, patches on the ground.
 function field(S, u0, u1, v0, v1, f, paint) {
@@ -188,19 +211,24 @@ function opening(S, u, v, z, w, h, facing) {
   for (let s = -w; s <= w; s += 0.3)
     for (let t = 0; t <= h; t += 0.3) {
       const uu = facing === "v" ? u + s : u + 0.15, vv = facing === "v" ? v + 0.15 : v + s;
-      dot(S, uu, vv, z + t, Math.abs(s) > w - 0.35 || t > h - 0.35 ? P.d1 : P.ink);
+      dot(S, uu, vv, z + t, Math.abs(s) > w - 0.35 || t > h - 0.35 ? P.d3 : P.d0);
     }
 }
 function roundOpening(S, R, ang, w, h) {
   for (let a = ang - w / R; a <= ang + w / R; a += 0.3 / R)
-    for (let z = 0; z <= h; z += 0.3) dot(S, (R + 0.2) * Math.cos(a), (R + 0.2) * Math.sin(a), z, Math.abs(a - ang) > (w - 0.35) / R || z > h - 0.35 ? P.d1 : P.ink);
+    for (let z = 0; z <= h; z += 0.3) dot(S, (R + 0.2) * Math.cos(a), (R + 0.2) * Math.sin(a), z, Math.abs(a - ang) > (w - 0.35) / R || z > h - 0.35 ? P.d3 : P.d0);
 }
 
 // ----------------------------------------------------------------------------------------------------- shelters
 
 // tier 0 a heap of the material, 1 a lean-to, 2 a hut (a tent for hide), 3 a cabin or lodge. hpx: the height of a
 // tier 2 hut at this zoom; the other tiers scale from it. flag: an optional palette index for the owner's pennant.
-export function shelter(tier = 2, style = "sticks", hpx = 16, seed = 0, flag = -1) {
+// dir 0..7 turns it in 45 degree steps clockwise on screen: the door faces down-left at 0, left at 1, up-left at 2,
+// up at 3, up-right at 4, right at 5, down-right at 6 and down (toward the camera) at 7.
+export function shelter(tier = 2, style = "sticks", hpx = 16, seed = 0, flag = -1, dir = 0) {
+  return turned(dir, () => building(tier, style, hpx, seed, flag));
+}
+function building(tier, style, hpx, seed, flag) {
   tier = clamp(tier | 0, 0, 3);
   const st = MAT[style] ? style : "sticks", k = Math.max(0.45, hpx / 16);
   let S;
@@ -212,14 +240,18 @@ export function shelter(tier = 2, style = "sticks", hpx = 16, seed = 0, flag = -
   return pennantOn(S, flag, k);
 }
 
-// Walls on the lit +v face and the shaded +u gable end, a gabled roof with eaves, a door; big ones get windows
-// and a chimney.
+// Four walls, gable ends on the u sides, a gabled roof with eaves, a door on +v; big ones get windows and a chimney.
 function house(st, k, hu, hv, hw, rise, seed, big) {
   const M = MAT[st], o = Math.max(0.8, k), S = iso(hu + o + 2, hv + o + 2, hw + rise + 6 * k);
   const wall = surfer(M.wall, M.wt, seed, k), roof = surfer(M.roof, M.rt, seed + 1, k, 0.3);
-  quad(S, [-hu, hv, 0], [2 * hu, 0, 0], [0, 0, hw], [0, 1, 0], wall);
-  quad(S, [hu, -hv, 0], [0, 2 * hv, 0], [0, 0, hw + rise], [1, 0, 0], (a, z, x, y, sh) => (z > hw + rise * (1 - Math.abs(a - hv) / hv) ? -1 : wall(a, z, x, y, sh)));
-  if (st === "logs") for (let z = 1; z < hw; z += Math.max(2, 2.3 * k)) ball(S, hu + 0.5, hv + 0.5, z, 0.7 * k, 0.7 * k, 0.6 * k, (x, y, sh) => (sh > 0.2 ? P.d5 : P.d4));
+  const gable = (a, z, x, y, sh) => (z > hw + rise * (1 - Math.abs(a - hv) / hv) ? -1 : wall(a, z, x, y, sh));
+  for (const s of [1, -1]) {
+    quad(S, [-hu, s * hv, 0], [2 * hu, 0, 0], [0, 0, hw], [0, s, 0], wall);
+    quad(S, [s * hu, -hv, 0], [0, 2 * hv, 0], [0, 0, hw + rise], [s, 0, 0], gable);
+  }
+  if (st === "logs")
+    for (const [cu, cv] of [[1, 1], [1, -1], [-1, 1], [-1, -1]])
+      for (let z = 1; z < hw; z += Math.max(2, 2.3 * k)) ball(S, cu * (hu + 0.5), cv * (hv + 0.5), z, 0.7 * k, 0.7 * k, 0.6 * k, (x, y, sh) => (sh > 0.2 ? P.d5 : P.d4));
   const ridge = hw + rise, fall = rise / hv;
   field(S, -hu - o, hu + o, -hv - o, hv + o, (u, v) => ridge - Math.abs(v) * fall, (u, v, z, x, y, sh) =>
     Math.abs(v) > hv + o - 0.5 || Math.abs(u) > hu + o - 0.5 ? dith(M.roof, 0.6 + sh, x, y) : roof(u, (Math.abs(v) / hv) * Math.hypot(rise, hv), x, y, sh));
@@ -229,11 +261,13 @@ function house(st, k, hu, hv, hw, rise, seed, big) {
     opening(S, hu, hv * 0.1, hw * 0.4, Math.max(0.5, 0.8 * k), Math.max(1, 1.6 * k), "u");
     const cu = hu * 0.45, cw = Math.max(0.8, 1.1 * k), top = ridge + 2.5 * k, cm = st === "brick" ? "brick" : "stone";
     const chim = surfer(MAT[cm].wall, MAT[cm].wt, seed + 2, k * 0.6);
-    quad(S, [cu - cw, cw, ridge - cw * fall - 1], [2 * cw, 0, 0], [0, 0, top - ridge + cw * fall + 1], [0, 1, 0], chim);
-    quad(S, [cu + cw, -cw, ridge - 1], [0, 2 * cw, 0], [0, 0, top - ridge + 1], [1, 0, 0], chim);
-    quad(S, [cu - cw, -cw, top], [2 * cw, 0, 0], [0, 2 * cw, 0], [0, 0, 1], () => P.ink);
+    for (const s of [1, -1]) {
+      quad(S, [cu - cw, s * cw, ridge - cw * fall - 1], [2 * cw, 0, 0], [0, 0, top - ridge + cw * fall + 1], [0, s, 0], chim);
+      quad(S, [cu + s * cw, -cw, ridge - cw * fall - 1], [0, 2 * cw, 0], [0, 0, top - ridge + cw * fall + 1], [s, 0, 0], chim);
+    }
+    quad(S, [cu - cw, -cw, top], [2 * cw, 0, 0], [0, 2 * cw, 0], [0, 0, 1], () => P.r1);
   }
-  return done(S, (hu + hv) / 2);
+  return done(S, boxFoot(hu, hv));
 }
 
 function roundhut(st, k, seed) {
@@ -271,7 +305,7 @@ function tent(k, tier, seed) {
   });
   // the door flap pinned open on the lit side
   for (let a = 1.3; a <= 1.9; a += 0.02)
-    for (let z = 0; z < H * 0.34 * (1 - Math.abs(a - 1.6) / 0.3); z += 0.3) { const r = R * (1 - z / H) + 0.2; dot(S, r * Math.cos(a), r * Math.sin(a), z, P.ink); }
+    for (let z = 0; z < H * 0.34 * (1 - Math.abs(a - 1.6) / 0.3); z += 0.3) { const r = R * (1 - z / H) + 0.2; dot(S, r * Math.cos(a), r * Math.sin(a), z, Math.abs(a - 1.6) > 0.26 ? P.d3 : P.d1); }
   // poles crossing above the smoke hole
   const poles = tier >= 3 ? 6 : 4;
   for (let i = 0; i < poles; i++) {
@@ -281,40 +315,58 @@ function tent(k, tier, seed) {
   return done(S, R);
 }
 
-// A roof leaning from a high back edge down to the ground in front, on two posts; the open end shows a dark inside.
+// A roof leaning from a high back edge down to the ground in front, on two posts. Its inside (the open ends, and the
+// underside when turned away) stays in the material's own shade tones with a lit rim, never a black hole.
 function leanto(st, k, seed) {
   const M = MAT[st], hu = 4.6 * k, hv = 3.4 * k, hl = 7 * k, S = iso(hu + 2, hv + 2, hl + 4 * k);
   const kind = { sticks: "twigs", reeds: "thatch", logs: "logs", planks: "boards", stone: "shingle", brick: "shingle", hide: "stitch", clay: "smooth" }[st];
-  const roof = surfer(st === "reeds" || st === "hide" ? M.roof : M.wall, kind, seed, k, 0.25), downSlope = st === "logs" || st === "planks";
+  const R0 = st === "reeds" || st === "hide" ? M.roof : M.wall, roof = surfer(R0, kind, seed, k, 0.25), downSlope = st === "logs" || st === "planks";
+  const top = R0.length - 2, slope = Math.hypot(hl, 2 * hv);
+  // shade in steps 1..2 of the ramp: index 0 of the darker ramps is near black
+  const shade = (a, z, x, y, lift = 0) => dith(R0, 1.1 + lift + grain(kind, a, z, seed, k) * 0.45, x, y);
+  const [nu, nv] = turn(0, hl / (2 * hv)), under = nu + nv + 0.667 < 0, rafter = Math.max(2, 2.6 * k);
   field(S, -hu, hu, -hv, hv, (u, v) => (hl * (hv - v)) / (2 * hv), (u, v, z, x, y, sh) => {
-    const d = ((v + hv) / (2 * hv)) * Math.hypot(hl, 2 * hv);
+    const d = ((v + hv) / (2 * hv)) * slope;
+    if (under) {
+      if (Math.abs(u) > hu - 0.7 || Math.abs(v) > hv - 0.7) return R0[top];
+      if (mod(u + hu, rafter) < 0.6) return R0[2];
+      return shade(u, d, x, y, (d / slope) * 0.8);
+    }
     if (st === "sticks" && h2(Math.floor(u), Math.floor(d), seed + 5) < 0.3) return dith(MAT.sticks.roof, 2 + sh * 2, x, y);
     return downSlope ? roof(d, u, x, y, sh) : roof(u, d, x, y, sh);
   });
   const masonry = st === "stone" || st === "brick" || st === "clay", wall = surfer(M.wall, M.wt, seed, k);
-  quad(S, [hu - 0.4, -hv, 0], [0, 2 * hv, 0], [0, 0, hl], [1, 0, 0], (a, z, x, y, sh) =>
-    z > hl * (1 - a / (2 * hv)) - 0.3 ? -1 : masonry && z < hl * 0.4 ? wall(a, z, x, y, sh) : z < 0.6 ? P.d0 : P.ink);
-  const top = hl + (st === "hide" ? 2.5 * k : 0.6);
-  line(S, [-hu + 0.3, -hv + 0.3, 0], [-hu + 0.3, -hv + 0.3, top], P.d2);
-  line(S, [hu - 0.3, -hv + 0.3, 0], [hu - 0.3, -hv + 0.3, top], P.d1);
-  if (st === "hide") line(S, [-hu, -hv - 0.4, hl + 0.3], [hu, -hv - 0.4, hl + 0.3], P.d1);
-  return done(S, (hu + hv) / 2);
+  const end = (a, z, x, y, sh) => {
+    const edge = hl * (1 - a / (2 * hv));
+    if (z > edge - 0.3) return -1;
+    if (z > edge - 1) return R0[top];
+    if (masonry && z < hl * 0.4) return wall(a, z, x, y, sh);
+    return z < 0.6 ? P.d2 : shade(a, z, x, y, (z / hl) * 0.6);
+  };
+  for (const s of [1, -1]) quad(S, [s * (hu - 0.4), -hv, 0], [0, 2 * hv, 0], [0, 0, hl], [s, 0, 0], end);
+  const pole = hl + (st === "hide" ? 2.5 * k : 0.6);
+  line(S, [-hu + 0.3, -hv + 0.3, 0], [-hu + 0.3, -hv + 0.3, pole], P.d4);
+  line(S, [hu - 0.3, -hv + 0.3, 0], [hu - 0.3, -hv + 0.3, pole], P.d3);
+  if (st === "hide") line(S, [-hu, -hv - 0.4, hl + 0.3], [hu, -hv - 0.4, hl + 0.3], P.d3);
+  return done(S, boxFoot(hu, hv));
 }
 
 // A flat-roofed adobe block: parapet, roof-beam ends through the wall, a ladder up the lit side.
 function adobe(k, seed) {
   const hu = 7 * k, hv = 5 * k, hw = 8 * k, M = MAT.clay, S = iso(hu + 2, hv + 3, hw + 3), wall = surfer(M.wall, "smooth", seed, k, 0.35);
-  quad(S, [-hu, hv, 0], [2 * hu, 0, 0], [0, 0, hw], [0, 1, 0], wall);
-  quad(S, [hu, -hv, 0], [0, 2 * hv, 0], [0, 0, hw], [1, 0, 0], wall);
+  for (const s of [1, -1]) {
+    quad(S, [-hu, s * hv, 0], [2 * hu, 0, 0], [0, 0, hw], [0, s, 0], wall);
+    quad(S, [s * hu, -hv, 0], [0, 2 * hv, 0], [0, 0, hw], [s, 0, 0], wall);
+  }
   quad(S, [-hu, -hv, hw], [2 * hu, 0, 0], [0, 2 * hv, 0], [0, 0, 1], (a, b, x, y) => (a < 1 || b < 1 || a > 2 * hu - 1 || b > 2 * hv - 1 ? M.wall[5] : a < 2 || b < 2 ? M.wall[1] : dith(M.wall, 3.4, x, y)));
-  for (let u = -hu + 1.5 * k; u < hu - 1; u += 2.4 * k) line(S, [u, hv, hw - 1.4 * k], [u, hv + 1.2 * k, hw - 1.4 * k], P.d1);
+  for (const s of [1, -1]) for (let u = -hu + 1.5 * k; u < hu - 1; u += 2.4 * k) line(S, [u, s * hv, hw - 1.4 * k], [u, s * (hv + 1.2 * k), hw - 1.4 * k], P.d1);
   opening(S, -hu * 0.35, hv, 0, Math.max(0.8, 1.1 * k), 3.8 * k, "v");
   opening(S, hu * 0.45, hv, hw * 0.45, Math.max(0.5, 0.8 * k), 1.6 * k, "v");
   opening(S, hu, 0, hw * 0.45, Math.max(0.5, 0.8 * k), 1.6 * k, "u");
   const lu = hu * 0.1, rail = (s, t) => [lu + s, hv + 2.2 * k - t * 0.22, t];
   for (const s of [0, 1.6 * k]) line(S, rail(s, 0), rail(s, hw + 2 * k), P.d3);
   for (let t = 1.5 * k; t <= hw + 1.5 * k; t += 2 * k) line(S, rail(0, t), rail(1.6 * k, t), P.d2);
-  return done(S, (hu + hv) / 2);
+  return done(S, boxFoot(hu, hv));
 }
 
 // A long low house under a big hipped roof of thatch or leaves reaching nearly to the ground.
@@ -322,13 +374,15 @@ function longhouse(st, k, seed) {
   const M = MAT[st], hu = 8 * k, hv = 4.4 * k, hw = (st === "sticks" ? 3.6 : 2.6) * k, rise = 8.5 * k, o = 1.2 * k, S = iso(hu + o + 2, hv + o + 2, hw + rise + 2);
   const wall = surfer(st === "sticks" ? MAT.sticks.wall : MAT.reeds.wall, st === "sticks" ? "twigs" : "thatch", seed, k);
   const roof = surfer(M.roof, M.rt, seed + 1, k, 0.25);
-  quad(S, [-hu, hv, 0], [2 * hu, 0, 0], [0, 0, hw], [0, 1, 0], wall);
-  quad(S, [hu, -hv, 0], [0, 2 * hv, 0], [0, 0, hw], [1, 0, 0], wall);
+  for (const s of [1, -1]) {
+    quad(S, [-hu, s * hv, 0], [2 * hu, 0, 0], [0, 0, hw], [0, s, 0], wall);
+    quad(S, [s * hu, -hv, 0], [0, 2 * hv, 0], [0, 0, hw], [s, 0, 0], wall);
+  }
   field(S, -hu - o, hu + o, -hv - o, hv + o, (u, v) => Math.min(hw + rise, hw + rise * Math.min(1 - Math.abs(v) / hv, (hu - Math.abs(u)) / hv + 0.25)), (u, v, z, x, y, sh) =>
     Math.abs(v) > hv + o - 0.6 || Math.abs(u) > hu + o - 0.6 ? dith(M.roof, 0.5 + sh, x, y) : roof(u + v * 0.3, (hw + rise - z) * 1.1, x, y, sh));
   opening(S, -hu * 0.1, hv, 0, Math.max(0.8, 1.1 * k), Math.max(1.5, hw - 0.4), "v");
   opening(S, hu, 0, 0, Math.max(0.8, k), Math.max(1.5, hw - 0.4), "u");
-  return done(S, (hu + hv) / 2);
+  return done(S, boxFoot(hu, hv));
 }
 
 // -------------------------------------------------------------------------------------------------------- heaps
@@ -348,9 +402,7 @@ function heap(what, size, seed) {
       const pr = ramp("d2", "d3", "d4", "d5");
       for (let i = 0; i < 4; i++) {
         const z0 = i * 0.9 * k, du = (h2(i, seed, 1) - 0.5) * k, dv = (h2(i, seed, 2) - 0.5) * k, L = 3.8 * k, w = 1.6 * k, t = 0.8 * k;
-        quad(S, [-L + du, -w + dv, z0 + t], [2 * L, 0, 0], [0, 2 * w, 0], [0, 0, 1], (a, b, x, y) => dith(pr, 2.4 + (mod(a, 3) < 0.5 ? -0.6 : 0), x, y));
-        quad(S, [-L + du, w + dv, z0], [2 * L, 0, 0], [0, 0, t], [0, 1, 0], (a, b, x, y) => dith(pr, 1.2, x, y));
-        quad(S, [L + du, -w + dv, z0], [0, 2 * w, 0], [0, 0, t], [1, 0, 0], () => P.d2);
+        box(S, -L + du, L + du, -w + dv, w + dv, z0, z0 + t, (a, b, x, y) => dith(pr, 2.4 + (mod(a, 3) < 0.5 ? -0.6 : 0), x, y), (a, b, x, y, sh) => dith(pr, 1.6 + sh * 1.6, x, y));
       }
       break;
     }
@@ -378,9 +430,7 @@ function heap(what, size, seed) {
           const a = (i / cnt) * 6.283 + row, d = row === 2 ? 0 : (2.2 - row) * k, u = Math.cos(a) * d, v = Math.sin(a) * d * 0.9, z = row * rr * 1.2;
           if (what === "brick") {
             const br = MAT.brick.wall, bw = 1.3 * k, bd = 0.7 * k, bh = 0.7 * k;
-            quad(S, [u - bw, v - bd, z + bh], [2 * bw, 0, 0], [0, 2 * bd, 0], [0, 0, 1], (s, t, x, y) => dith(br, 2.8, x, y));
-            quad(S, [u - bw, v + bd, z], [2 * bw, 0, 0], [0, 0, bh], [0, 1, 0], (s, t, x, y) => dith(br, 2, x, y));
-            quad(S, [u + bw, v - bd, z], [0, 2 * bd, 0], [0, 0, bh], [1, 0, 0], () => br[1]);
+            box(S, u - bw, u + bw, v - bd, v + bd, z, z + bh, (s, t, x, y) => dith(br, 2.8, x, y), (s, t, x, y, sh) => dith(br, 1.4 + sh * 1.6, x, y));
           } else ball(S, u, v, z + rr * 0.5, rr * (0.9 + 0.3 * h2(n, seed)), rr * 0.9, rr * 0.8, (x, y, sh) => dith(ROCK, 2.6 + sh * 2.6 + (h2(n, seed, 2) - 0.5), x, y));
         }
       }
@@ -426,10 +476,10 @@ function heap(what, size, seed) {
   return done(S, R * 0.6);
 }
 
-// Stores in a heap. Wood is the split woodpile from sprites.js; the others are heaps of their own.
-export function pile(hpx = 6, what = "misc", seed = 0) {
+// Stores in a heap. Wood is the split woodpile from sprites.js (it ignores dir); the others are heaps of their own.
+export function pile(hpx = 6, what = "misc", seed = 0, dir = 0) {
   if (what === "wood") { const S = SP.woodpile(Math.max(1, Math.round(hpx / 5)), seed); S.foot = 0; return S; }
-  return heap(what, Math.max(2.5, hpx), seed);
+  return turned(dir, () => heap(what, Math.max(2.5, hpx), seed));
 }
 
 // ------------------------------------------------------------------------------------------------ ground things
@@ -490,7 +540,10 @@ export function pit(r = 4, stage = 1, seed = 0) {
 }
 
 // A hidden pit under a lattice of sticks and leaves; sprung, it lies open with the broken sticks fallen in.
-export function trap(hpx = 8, sprung = false, seed = 0, flag = -1) {
+export function trap(hpx = 8, sprung = false, seed = 0, flag = -1, dir = 0) {
+  return turned(dir, () => trapped(hpx, sprung, seed, flag));
+}
+function trapped(hpx, sprung, seed, flag) {
   const r = Math.max(2, hpx * 0.45);
   let S;
   if (sprung) {
@@ -521,7 +574,10 @@ export function trap(hpx = 8, sprung = false, seed = 0, flag = -1) {
 }
 
 // A stone-lined well brimming with water; bigger ones get two posts, a bar and a bucket.
-export function well(hpx = 10, seed = 0) {
+export function well(hpx = 10, seed = 0, dir = 0) {
+  return turned(dir, () => wellAt(hpx, seed));
+}
+function wellAt(hpx, seed) {
   const R = Math.max(2.5, hpx * 0.38), wh = Math.max(1.5, hpx * 0.22), frame = hpx >= 12, S = iso(R + 3, R + 3, wh + (frame ? hpx * 0.8 : 1) + 2);
   const stone = surfer(MAT.stone.wall, "blocks", seed, Math.max(0.6, hpx / 16)), rim = Math.max(1, R * 0.28);
   rev(S, 0, 0, (t) => [R, t * wh], wh, (a, z, x, y, sh, arc) => stone(arc, z, x, y, sh));
@@ -541,7 +597,10 @@ export function well(hpx = 10, seed = 0) {
 }
 
 // A grave: a long mound of earth under a marker, a small cairn or a carved board; some have flowers laid on it.
-export function grave(hpx = 8, seed = 0) {
+export function grave(hpx = 8, seed = 0, dir = 0) {
+  return turned(dir, () => graveAt(hpx, seed));
+}
+function graveAt(hpx, seed) {
   const h = Math.max(4, hpx), L = h * 0.55, W = h * 0.3, along = rv(seed, 1) < 0.5, S = iso(L + 3, L + 3, h + 3);
   const earth = ramp("d1", "d2", "d3", "d4"), grass = ramp("g2", "g3", "g4");
   ball(S, 0, 0, 0, along ? L : W, along ? W : L, h * 0.16, (x, y, sh, nz) => (h2(x, y, seed) < 0.3 * nz ? dith(grass, 1 + sh * 2, x, y) : dith(earth, 1.8 + sh * 2, x, y)));

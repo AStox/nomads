@@ -12,21 +12,27 @@ const { P, SHADOW } = await import("./pal.js");
 const { Buf, dith, h2 } = await import("./px.js");
 
 let w = null;
-const levels = [];
+// one view per level and bearing; island-wide maps (the island levels only) are kept for the few most recent
+const levels = new Map(), MAPS_KEPT = 6;
 // the live world's landscape, sent by the page whenever the sim changes it
 const D = { version: 0, clear: new Map(), paths: new Uint8Array(64 * 64), ice: new Uint8Array(64 * 64), seg: null };
 
 const SIM = 150, SIM0 = -4800;
 const simTile = (x, z) => [Math.floor((x - SIM0) / SIM), Math.floor((z - SIM0) / SIM)];
 
-function level(k) {
-  if (levels[k]) return levels[k];
+function level(k, b) {
+  const key = `${k}:${b}`;
+  let lv = levels.get(key);
+  if (lv) { levels.delete(key); levels.set(key, lv); return lv; }
   const t0 = performance.now();
-  const V = L.makeLiveView(w, k);
+  const V = L.makeLiveView(w, k, b);
   const M = V.paged ? null : L.buildMap(w, V);
   if (M && V.tsun) V.shaded = L.shadowHorizon(V, M);
-  levels[k] = { V, M, ms: performance.now() - t0 };
-  return levels[k];
+  lv = { V, M, ms: performance.now() - t0 };
+  levels.set(key, lv);
+  const big = [...levels].filter(([, l]) => l.M);
+  for (const [k2] of big.slice(0, Math.max(0, big.length - MAPS_KEPT))) levels.delete(k2);
+  return lv;
 }
 
 D.cleared = (x, z, pad) => {
@@ -79,7 +85,7 @@ function troddenFor(V) {
 }
 
 function bake(msg) {
-  const lv = level(msg.level), V = lv.V, CS = msg.CS, t0 = performance.now(), gx0 = msg.cx * CS, gy0 = msg.cy * CS;
+  const lv = level(msg.level, msg.bearing ?? 0), V = lv.V, CS = msg.CS, t0 = performance.now(), gx0 = msg.cx * CS, gy0 = msg.cy * CS;
   let M = lv.M, ground = null;
   L.setMode(V.view, 0);
   const tall = V.view === "island" ? 12 : Math.round(34 * V.k * 0.866 * V.treeK) + 8;
@@ -88,8 +94,9 @@ function bake(msg) {
     // a map of its own over the drawn tiles and every object that can reach in, with a margin wide enough that the
     // slope limiter and the shore and rock distances agree with the neighbouring chunks
     L.chunkWindow(V, L.liftInto(w, V, gy0, gx0, CS), gx0, gy0, CS, tall, tall * V.shx + 4);
+    // wider toward the sun (low u, high v), so hills beyond the chunk still cast their shadows into it
     const draw = [V.i0, V.i1, V.j0, V.j1], [ou0, ou1, ov0, ov1] = V.obox, m = 14;
-    V.i0 = Math.min(ou0, draw[0]) - m; V.i1 = Math.max(ou1, draw[1]) + m; V.j0 = Math.min(ov0, draw[2]) - m; V.j1 = Math.max(ov1, draw[3]) + m;
+    V.i0 = Math.min(ou0, draw[0]) - m - 10; V.i1 = Math.max(ou1, draw[1]) + m; V.j0 = Math.min(ov0, draw[2]) - m; V.j1 = Math.max(ov1, draw[3]) + m + 4;
     V.NI = V.i1 - V.i0; V.NJ = V.j1 - V.j0;
     M = L.buildMap(w, V);
     if (V.tsun) V.shaded = L.shadowHorizon(V, M);
@@ -133,10 +140,11 @@ function bake(msg) {
   postMessage({ type: "chunk", key: msg.key, ver: D.version, c: B.c, z: B.z, obj, animP, animC, ground, ms: performance.now() - t0, parts: [t1 - t0, t2 - t1, performance.now() - t2], objects: O.length }, moved);
 }
 
-function mapData(k) {
-  const { V, M, ms } = level(k);
-  if (!M) { postMessage({ type: "map", level: k, ms, paged: true, NI: V.NI, NJ: V.NJ, tileM: V.tileM, H: V.H, W: V.W, lp: V.lp, levelM: V.levelM, exag: V.exag, maxLev: V.peakLev, k: V.k, shx: V.shx, shy: V.shy }); return; }
-  const out = { type: "map", level: k, ms, NI: M.NI, NJ: M.NJ, tileM: V.tileM, H: V.H, W: V.W, lp: V.lp, levelM: V.levelM, exag: V.exag, maxLev: M.maxLev, k: V.k, shx: V.shx, shy: V.shy, C: M.C.slice(), diag: M.diag.slice(), kind: M.kind.slice() };
+function mapData(k, b) {
+  const { V, M, ms } = level(k, b);
+  const head = { type: "map", level: k, bearing: b, ms, name: L.LADDER[k].name, view: V.view, NI: V.NI, NJ: V.NJ, tileM: V.tileM, H: V.H, W: V.W, lp: V.lp, levelM: V.levelM, exag: V.exag, k: V.k, shx: V.shx, shy: V.shy, treeK: V.treeK ?? 1, eu: V.eu, ev: V.ev, ox: V.ox, oz: V.oz };
+  if (!M) { postMessage({ ...head, paged: true, maxLev: V.peakLev }); return; }
+  const out = { ...head, maxLev: M.maxLev, C: M.C.slice(), diag: M.diag.slice(), kind: M.kind.slice() };
   postMessage(out, [out.C.buffer, out.diag.buffer, out.kind.buffer]);
 }
 
@@ -144,7 +152,13 @@ function mapData(k) {
 function run(m) {
   try {
     if (m.type === "bake") bake(m);
-    else if (m.type === "map") mapData(m.level);
+    else if (m.type === "map") mapData(m.level, m.bearing ?? 0);
+    else if (m.type === "heights") {
+      // the true ground on a coarse grid, where the page stands sprites before their chunk is baked
+      const n = Math.ceil(9600 / m.step) + 1, h = new Float32Array(n * n);
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) h[j * n + i] = Math.max(0, w.heightAt(-4800 + i * m.step, -4800 + j * m.step));
+      postMessage({ type: "heights", n, step: m.step, h }, [h.buffer]);
+    }
   } catch (e) {
     postMessage({ type: "error", key: m.key, error: String((e && e.stack) || e) });
   }

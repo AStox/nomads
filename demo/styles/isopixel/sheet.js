@@ -99,6 +99,10 @@ function simSections() {
   for (const [zoom, k] of [["VALLEY", 1], ["CLOSE", 2.5]]) {
     const hut = 16 * k, man = 8 * k, wolf = zoom === "VALLEY" ? 4 : 10, g = (v) => Math.round(v * k);
     out.push([`SIM SHELTERS  ${zoom}  TIER 0 1 2 3`, STYLES.map((s, i) => cell(s.toUpperCase(), `HUT ${hut}`, range(4, (t) => TH.shelter(t, s, hut, i + 1, t === 2 ? P["c" + (i % 5)] : -1))))]);
+    out.push([`SIM SHELTERS  ${zoom}  DIR 0-7`, [
+      ...[0, 4].map((d0) => cell("LOGS TIER 2", `DIR ${d0} TO ${d0 + 3}`, range(4, (d) => TH.shelter(2, "logs", hut, 3, P.c1, d0 + d)))),
+      ...[0, 4].map((d0) => cell("PLANKS TIER 3", `DIR ${d0} TO ${d0 + 3}`, range(4, (d) => TH.shelter(3, "planks", hut, 4, -1, d0 + d)))),
+    ]]);
     out.push([`SIM WOLVES AND PEOPLE  ${zoom}`, [
       ...POSES.map((p) => cell(`WOLF ${p.toUpperCase()}`, `${wolf}  FRAMES 0-3`, range(4, (f) => TH.wolf(wolf, p, f, 1)))),
       cell("WOLF COATS", "BY DEER", [...range(4, (s) => TH.wolf(wolf, "stand", 0, s)), LF.deer(zoom === "VALLEY" ? 4 : 12, "stand", 1, 1)]),
