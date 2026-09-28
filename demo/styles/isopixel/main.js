@@ -2,7 +2,7 @@
 // pixel by pixel into a small indexed buffer with one fixed palette, then blown up with nearest neighbour.
 import { grow, fbm, noise, smooth } from "../world.js";
 import { P, ramp, SHADOW, GLOW, HAZE, MIST, NCOL, THEME } from "./pal.js";
-import { Buf, Spr, tri, strip, blit, castShadow, shadowPx, bayer, dith, h2 } from "./px.js";
+import { Buf, Spr, ObjBins, tri, strip, blit, castShadow, shadowPx, bayer, dith, h2 } from "./px.js";
 import * as SP from "./sprites.js";
 import { drawUI } from "./ui.js";
 
@@ -365,13 +365,18 @@ function buildMap(w, V) {
     }
   // scree: tiles of ground below rock, for stone fans and boulder clusters
   M.toRock = bfs((t) => !M.kind[t] && M.cls[t] === ROCK, (t) => !M.kind[t], 3);
-  // land touching standing water never dips under its surface
-  const vi = (i, j) => j * VI + i, floor = new Int16Array(VL.length);
+  // land touching standing water never dips under its surface; on the live map it meets it exactly, so a steep shore
+  // is a slope up from the water rather than a wall standing at the tile edge
+  const vi = (i, j) => j * VI + i, floor = new Int16Array(VL.length), wetV = new Uint8Array(VL.length);
   for (let j = 0; j < NJ; j++)
     for (let i = 0; i < NI; i++) {
       const t = j * NI + i;
       if (!M.kind[t]) continue;
-      for (const [a, b] of [[0, 0], [1, 0], [1, 1], [0, 1]]) { const k = vi(i + a, j + b); VL[k] = Math.max(VL[k], M.wlev[t]); floor[k] = Math.max(floor[k], M.wlev[t]); }
+      for (const [a, b] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+        const k = vi(i + a, j + b);
+        floor[k] = wetV[k] ? Math.max(floor[k], M.wlev[t]) : M.wlev[t]; wetV[k] = 1;
+        VL[k] = V.live ? floor[k] : Math.max(VL[k], M.wlev[t]);
+      }
     }
   for (let k = 0; k < VL.length; k++) VL[k] = Math.max(0, VL[k]);
   // Slopes, not cliffs: no corner stands more than one level above any of its eight neighbours, so nearly every tile
@@ -408,10 +413,11 @@ function buildMap(w, V) {
       }
     return moved;
   };
-  for (let n = 0; n < 6 && (settle(true) | settle(false)); n++);
+  // the live map keeps every height: the z-tested terrain hides steep far sides instead of flattening them
+  if (!V.live) for (let n = 0; n < 6 && (settle(true) | settle(false)); n++);
   const minCorner = (i, j) => Math.min(VL[vi(i, j)], VL[vi(i + 1, j)], VL[vi(i + 1, j + 1)], VL[vi(i, j + 1)]);
   // Streams become one-tile channels, walked from source to mouth so the water only ever steps down.
-  for (const line of w.rivers) {
+  for (const line of V.live ? [] : w.rivers) {
     let pts = line;
     if (w.heightAt(pts[0][0], pts[0][1]) < w.heightAt(pts.at(-1)[0], pts.at(-1)[1])) pts = [...pts].reverse();
     const path = [];
@@ -935,17 +941,21 @@ function vertexLight(V, M) {
 // Neighbours are at most 2x apart in art pixels per meter, so a continuous zoom can always show one at 2 to 4 screen
 // px per art px. The four tuned levels are island, region, valley and close; the rest sit between them. Everything
 // finer than the island maps is paged: each chunk builds its own map, so no bearing needs an island-wide one.
+// One look at every level: the same textures from the same world fields, only the tile size and pixel scale differ.
 export const LADDER = [
-  { name: "island", view: "island", W: 12, lp: 2, tileM: 200, exag: 1.8 },
-  { name: "isle100", view: "island", W: 12, lp: 2, tileM: 100, exag: 1.5 },
-  { name: "isle50", view: "island", W: 12, lp: 2, tileM: 50, exag: 1.25 },
-  { name: "region", view: "valley", W: 16, lp: 2, tileM: 37.5, exag: 1, foam: 1.2, cell: [4, 3], grid: 0, treeK: 2.2, paged: true },
-  { name: "vale", view: "valley", W: 24, lp: 3, tileM: 28.125, exag: 1, foam: 1.8, cell: [4, 3], grid: 0.2, treeK: 1.6, paged: true },
-  { name: "valley", view: "valley", W: 32, lp: 4, tileM: 18.75, exag: 1, paged: true },
-  { name: "near", view: "valley", W: 40, lp: 5, tileM: 11.71875, exag: 1, foam: 3, cell: [6, 4], grid: 0.6, treeK: 1.0, paged: true },
-  { name: "yard", view: "camp", W: 48, lp: 6, tileM: 8, exag: 1, foam: 3.5, cell: [7, 4], treeK: 0.85, paged: true },
-  { name: "close", view: "camp", W: 58, lp: 7, tileM: 6.25, exag: 1, paged: true },
+  { name: "island", W: 12, lp: 2, tileM: 200 },
+  { name: "isle100", W: 12, lp: 2, tileM: 100 },
+  { name: "isle50", W: 12, lp: 2, tileM: 50 },
+  { name: "region", W: 16, lp: 2, tileM: 37.5, paged: true },
+  { name: "vale", W: 24, lp: 3, tileM: 28.125, paged: true },
+  { name: "valley", W: 32, lp: 4, tileM: 18.75, paged: true },
+  { name: "near", W: 40, lp: 5, tileM: 11.71875, paged: true },
+  { name: "yard", W: 48, lp: 6, tileM: 8, paged: true },
+  { name: "close", W: 58, lp: 7, tileM: 6.25, paged: true },
 ];
+// one vertical exaggeration for every zoom and bearing, so a mountain has the same shape at each
+export const EXAG = 3.2;
+const LIGHT = 2.2;
 export const BEARINGS = 8;
 export const ORIGIN = -4800;
 
@@ -958,8 +968,10 @@ export function bearingFrame(b) {
 }
 export function makeLiveView(w, level, bearing = 0) {
   const Zl = LADDER[level];
-  setMode(Zl.view, 0);
-  const V = { ...CFG[Zl.view], ...Zl, level, bearing, live: true, name: VIEW, AW: 0, AH: 0, gx: 0, gy: 0, X0: 0, Y0: 0 };
+  setMode("valley", 0);
+  const V = { ...CFG.valley, ...Zl, view: "valley", level, bearing, live: true, name: VIEW, AW: 0, AH: 0, gx: 0, gy: 0, X0: 0, Y0: 0, exag: EXAG, grid: 0 };
+  // sprites grow a little slower than the world as you zoom in, the same curve at every level so sizes run smoothly
+  V.treeK = 1.15 * (Zl.W / 2 / Zl.tileM / 0.8533) ** -0.15;
   V.H = V.W / 2;
   if (LOWSUN) V.tsun = SUN * 0.75;
   if (THEME === "adventure") V.band = VIEW === "island" ? 1.3 : 1.9;
@@ -984,6 +996,8 @@ export function makeLiveView(w, level, bearing = 0) {
   let peak = 0;
   for (const h of w.isle.height) peak = Math.max(peak, h);
   V.peakLev = Math.ceil((peak + 10) / V.levelM);
+  V.peakM = peak; V.capH = peak * 0.68;
+  V.mpp = 1 / V.k;
   V.i0 = 0; V.j0 = 0; V.i1 = NT; V.j1 = NT; V.NI = NT; V.NJ = NT;
   V.visible = () => true; V.objVisible = () => true;
   V.ms = V.tileM * (VIEW === "island" ? 3 : 2.6);
@@ -1058,93 +1072,18 @@ export function shadowHorizon(V, M) {
   };
 }
 
-// World scatter binned by 150 m cells once, so a chunk only looks at the trees, shrubs and rocks near it.
-function scatterBins(w) {
-  if (w.bins) return w.bins;
-  const n = Math.ceil(w.SIZE / 150), cell = (x, z) => clamp(Math.floor((z - ORIGIN) / 150), 0, n - 1) * n + clamp(Math.floor((x - ORIGIN) / 150), 0, n - 1);
-  const bin = (list) => { const b = Array.from({ length: n * n }, () => []); for (const o of list) b[cell(o.x, o.z)].push(o); return b; };
-  w.bins = { n, trees: bin(w.trees), shrubs: bin(w.shrubs), rocks: bin(w.rocks) };
-  return w.bins;
-}
-function* near(V, list) {
-  const b = V.binsOf, [u0, u1, v0, v1] = V.obox, n = b.n, cs = [V.toW(u0, v0), V.toW(u1, v0), V.toW(u0, v1), V.toW(u1, v1)];
-  const xs = cs.map((c) => c[0]), zs = cs.map((c) => c[1]), cell = (m) => clamp(Math.floor((m - ORIGIN) / 150), 0, n - 1);
-  const cx0 = cell(Math.min(...xs)), cx1 = cell(Math.max(...xs)), cz0 = cell(Math.min(...zs)), cz1 = cell(Math.max(...zs));
-  for (let cz = cz0; cz <= cz1; cz++) for (let cx = cx0; cx <= cx1; cx++) yield* list[cz * n + cx];
-}
-
-// Objects for one live chunk. D carries the live world's landscape: cleared(x, z) where the sim has felled trees or
-// built, and the worn paths (V.trodden).
+// The sim's objects for one live chunk, from D.objs (an ObjBins of sim.objects() and its changes since). Each is drawn
+// wherever it is at least one art pixel, at its size in meters times the level's art px per meter, so it keeps its
+// world position at every zoom and grows smoothly from a dot to its full sprite. D.trodden gives the worn paths.
 export function collectLive(w, V, M, D) {
-  const O = [];
-  const add = (at, spr, opt = {}) => O.push({ z: at.z, sx: at.sx, sy: at.sy, spr, shadow: opt.shadow !== false, mirror: !!opt.mirror, bias: opt.bias ?? V.H * 0.5 + 2 });
-  V.binsOf = scatterBins(w);
-  const [u0, u1, v0, v1] = V.obox, cleared = D.cleared || (() => false);
-  const at3 = (u, v, g) => ({ z: V.cz(u, v, g.lev), sx: Math.round(V.sx(u, v)), sy: Math.round(V.sy(u, v, g.lev)) });
-  const tiles = function* () {
-    for (let j = Math.max(0, v0 - M.j0); j <= Math.min(M.NJ - 1, v1 - M.j0); j++)
-      for (let i = Math.max(0, u0 - M.i0); i <= Math.min(M.NI - 1, u1 - M.i0); i++)
-        if (V.objVisible(M.i0 + i + 0.5, M.j0 + j + 0.5)) yield [i, j, j * M.NI + i];
-  };
-  if (VIEW === "island") {
-    if (!M.treeCount) {
-      const n = M.NI * M.NJ, count = new Float32Array(n), pines = new Float32Array(n), gold = new Float32Array(n);
-      for (const t of w.trees) {
-        const [tu, tv] = V.toUV(t.x, t.z), k = M.at(Math.floor(tu) - M.i0, Math.floor(tv) - M.j0);
-        if (k < 0) continue;
-        count[k]++;
-        if (t.kind === "pine") pines[k]++;
-        else if (t.kind === "aspen" && t.tint > 0.8) gold[k]++;
-      }
-      M.treeCount = { count, pines, gold };
-    }
-    const { count, pines, gold } = M.treeCount;
-    const RP = {
-      pine: [[P.p0, P.p1, P.p2], [P.p1, P.p2, P.p3], [P.p1, P.p3, P.p4], [P.p2, P.p4, P.g4]],
-      oak: [[P.p0, P.t1, P.t2], [P.t1, P.t3, P.g3], [P.t2, P.g3, P.g4], [P.t3, P.g4, P.g5]],
-      ash: [[P.t1, P.t2, P.g2], [P.t2, P.g3, P.g4], [P.g2, P.g4, P.g5], [P.g3, P.g5, P.g6]],
-      gold: [[P.d0, P.a0, P.a1], [P.d1, P.a1, P.a2], [P.a0, P.a2, P.a3], [P.a1, P.a3, P.s3]],
-    };
-    for (const [i, j, t] of tiles()) {
-      if (M.kind[t]) continue;
-      const ui = M.i0 + i, vj = M.j0 + j;
-      if (M.cls[t] === HILL) {
-        const nr = Math.round((M.cov[4][t] * 1.8 + h2(t, 7, 7) - 0.5) * (DENSE === 2 ? 1.8 : 1));
-        for (let q = 0; q < nr; q++) {
-          const u = ui + 0.15 + 0.7 * h2(t, q, 21), v = vj + 0.15 + 0.7 * h2(t, q, 22), g = M.ground(u, v);
-          const big = h2(t, q, 23) < 0.35 ? 1 : 0;
-          add(at3(u, v, g), cached(`mr${big}0`, () => SP.miniRock(big, 0)), { bias: 1 });
-        }
-      }
-      if (DENSE === 2 && M.cov[1][t] > 0.2 && M.cov[1][t] < 0.75) {
-        const nb = Math.floor(M.cov[1][t] * (1 - M.cov[1][t]) * 8 + h2(t, 8, 8));
-        for (let q = 0; q < nb; q++) {
-          const u = ui + 0.1 + 0.8 * h2(t, q, 25), v = vj + 0.1 + 0.8 * h2(t, q, 26), g = M.ground(u, v);
-          add(at3(u, v, g), cached("mbushfalse", () => SP.mini("broad2", [P.g1, P.g3, P.g5])), { bias: 1 });
-        }
-      }
-      if (count[t] < 3) continue;
-      const m = clamp(Math.round(M.cov[1][t] * 6.5 - 0.9 + h2(t, 9, 9) * 0.8), 0, 5);
-      for (let q = 0; q < m; q++) {
-        const fu = 0.12 + 0.76 * h2(t, q, 1), fv = 0.12 + 0.76 * h2(t, q, 2), r = h2(t, q, 3);
-        const u = ui + fu, v = vj + fv;
-        if (cleared(...V.toW(u, v), V.tileM * 0.3)) continue;
-        const pine = r < pines[t] / count[t], isGold = !pine && h2(t, q, 4) < gold[t] / count[t];
-        const kind = pine ? (h2(t, q, 5) < 0.5 ? "pine" : "pine2") : h2(t, q, 5) < 0.6 ? "broad" : "broad2";
-        const rp = pine ? "pine" : isGold ? "gold" : M.moist[t] > 0.6 ? "ash" : "oak";
-        const g = M.ground(u, v), c = M.C.subarray(t * 4, t * 4 + 4), du = (c[1] + c[2] - c[0] - c[3]) / 2, dv = (c[2] + c[3] - c[0] - c[1]) / 2;
-        const around = [M.at(i - 1, j), M.at(i, j - 1), M.at(i + 1, j), M.at(i, j + 1)].map((k) => (k >= 0 && !M.kind[k] ? M.cov[1][k] : 0));
-        const deep = M.cov[1][t] > 0.6 && Math.min(...around) > 0.55, edgeLit = around[0] < 0.3 || around[1] < 0.3;
-        const lit = deep ? 0 : V.shaded && V.shaded(u, v, g.lev) ? 1 : clamp(Math.round(-LU * du - LV * dv) + 2 + (edgeLit ? 1 : 0), 1, 3);
-        add(at3(u, v, g), cached(kind + rp + lit + false, () => SP.mini(kind, RP[rp][lit])), { bias: 2 });
-      }
-    }
-    return O;
-  }
-  const pv = V.k * 0.866, visW = (x, z) => V.objVisible(...V.toUV(x, z)), camp = VIEW === "camp";
-  const free = (x, z) => !V.trodden || V.trodden(x, z) > 1;
-  const qs = 70, quiet = (x, z) => DENSE === 2 && fbm(x / qs, z / qs, 206, 2) < -0.12;
-  const sunW = [-V.sd[0], -V.sd[1]], reachW = 30;
+  const O = [], ob = D.objs;
+  if (!ob) return O;
+  // footprint sprites anchor below their footprint centre
+  const add = (at, spr, opt = {}) => O.push({ z: at.z, sx: at.sx, sy: at.sy + (spr.foot || 0), spr, shadow: opt.shadow !== false, mirror: !!opt.mirror, bias: opt.bias ?? V.H * 0.5 + 2, oid: opt.oid, ax: at.sx, ay: at.sy });
+  // art px per meter up (heights) and across (a tussock's width)
+  const pv = V.k * 0.866 * V.treeK, pw = V.k * V.treeK, visW = (x, z) => V.objVisible(...V.toUV(x, z));
+  // crowns darken toward a forest's interior; trees on the sunward edge or out in the open keep their bright rims
+  const sunW = [-(V.sd[0] * V.eu[0] + V.sd[1] * V.ev[0]), -(V.sd[0] * V.eu[1] + V.sd[1] * V.ev[1])], reachW = 30;
   const cov = (x, z) => w.fine(w.cover.tree, x, z);
   const dimAt = (x, z) => {
     const c0 = cov(x, z), sun = cov(x + sunW[0] * reachW, z + sunW[1] * reachW);
@@ -1154,168 +1093,337 @@ export function collectLive(w, V, M, D) {
     for (let k = 0; k < 4; k++) ring += cov(x + Math.cos(k * 1.571) * reachW * 1.4, z + Math.sin(k * 1.571) * reachW * 1.4) / 4;
     return Math.round(smooth(0.35, 0.8, Math.min(c0, sun, ring)) * 4) / 4;
   };
-  for (const t of near(V, V.binsOf.trees)) {
-    if (!visW(t.x, t.z) || cleared(t.x, t.z, 4)) continue;
-    const at = place(V, M, t.x, t.z);
-    if (!at || at.g.water) continue;
-    const hp = Math.round(t.tall * pv * V.treeK), vr = Math.floor(t.tint * 5), dim = dimAt(t.x, t.z);
-    const spr = t.kind === "pine" ? cached(`p${hp}|${vr}|${dim}`, () => SP.pine(hp, vr * 17 + hp, false, dim)) : cached(`${t.kind}${hp}|${vr}|${t.tint > 0.8 ? 1 : 0}|${dim}`, () => SP.broad(hp, t.kind, vr * 31 + hp, t.tint, dim));
-    add(at, spr, { mirror: t.yaw > Math.PI });
-  }
-  for (const s of near(V, V.binsOf.shrubs)) {
-    if (!visW(s.x, s.z) || cleared(s.x, s.z, 2) || quiet(s.x, s.z) || !free(s.x, s.z)) continue;
-    const at = place(V, M, s.x, s.z);
-    if (!at || at.g.water) continue;
-    const sz = Math.max(2, Math.round(s.tall * pv * (camp ? 0.9 : 1.7))), vr = Math.floor(s.tint * 4);
-    add(at, cached(`b${sz}|${vr}|${s.heath > 0.5 ? 1 : 0}`, () => SP.bush(sz, vr * 13 + sz, s.heath, s.tint)), { mirror: s.yaw > Math.PI });
-  }
-  if (camp)
-    for (const r of near(V, V.binsOf.rocks)) {
-      if (!visW(r.x, r.z) || cleared(r.x, r.z, 0.5)) continue;
-      const at = place(V, M, r.x, r.z);
-      if (!at || at.g.water) continue;
-      const sz = Math.max(1.5, r.size * pv * 0.9), vr = Math.floor(r.tint * 4), moss = w.fine(w.cover.tree, r.x, r.z);
-      add(at, cached(`r${Math.round(sz * 2)}|${vr}|${moss > 0.4 ? 1 : 0}`, () => SP.rock(sz, vr * 7 + 3, moss)), { mirror: r.yaw > Math.PI });
+  const [u0, u1, v0, v1] = V.obox, cs = [V.toW(u0, v0), V.toW(u1, v0), V.toW(u0, v1), V.toW(u1, v1)], xs = cs.map((c) => c[0]), zs = cs.map((c) => c[1]);
+  const tile = (m) => Math.floor((m - ORIGIN) / 150), kinds = ob.kinds, spn = ob.species, skip = kinds.map((k) => ObjBins.LIVE.has(k));
+  ob.each(tile(Math.min(...xs)), tile(Math.min(...zs)), tile(Math.max(...xs)), tile(Math.max(...zs)), (ki, si, px, py, size, seed, id, n) => {
+    if (skip[ki]) return;
+    const K = kinds[ki], hpx = K === "grass" ? size * pw : ObjBins.shown(size) * pv;
+    if (hpx < 1) return;
+    const x = px * 150 + ORIGIN, z = py * 150 + ORIGIN;
+    if (!visW(x, z)) return;
+    const sp = spn[si], at = place(V, M, x, z);
+    // water from the world at the object's own point, not the level's tile, so a level never drops a shore object
+    if (!at || (K !== "reeds" && (w.fine(w.wet, x, z) > 0.5 || riverSmooth(w, x, z) > 0.5))) return;
+    const mirror = ((seed >>> 3) & 1) === 1, vr = seed % 8, tint = ((seed >>> 8) & 255) / 255;
+    let spr;
+    if (K === "tree") {
+      const hp = Math.round(hpx), dim = dimAt(x, z), gold = sp === "aspen" && tint > 0.8;
+      spr = hp < 6 ? cached(`tt${hp}|${sp === "pine" ? "p" : gold ? "g" : "b"}|${dim}`, () => tinyTree(hp, sp === "pine" ? "pine" : gold ? "gold" : "broad", dim))
+        : sp === "pine" ? cached(`p${hp}|${vr}|${dim}`, () => SP.pine(hp, vr * 17 + hp, false, dim)) : cached(`${sp}${hp}|${vr}|${tint > 0.8 ? 1 : 0}|${dim}`, () => SP.broad(hp, sp || "oak", vr * 31 + hp, tint, dim));
+    } else if (!TH.object) return;
+    else {
+      const hq = hpx < 8 ? Math.round(hpx * 2) / 2 : Math.round(hpx), moss = K === "boulder" || K === "stone" ? (cov(x, z) > 0.4 ? 0.6 : 0.1) : 0;
+      const o = n === undefined ? { species: sp, moss } : { species: sp, moss, n };
+      spr = cached(`o${K}|${sp}|${hq}|${vr}|${moss}|${n === undefined ? "" : n > 0}`, () => TH.object(K, hq, vr * 131 + 7, o));
     }
-  // rocks gather into one outcrop per cell; the cells are island-wide so every chunk agrees on them
-  const rockKey = V.tileM * 2.6;
-  if (!camp && !(w.rockBins ??= new Map()).has(rockKey)) {
-    const cellM = V.tileM * 2.6, bins = new Map();
-    for (const r of w.rocks) {
-      const key = `${Math.floor(r.x / cellM)},${Math.floor(r.z / cellM)}`, b = bins.get(key) ?? { n: 0, s: 0, x: 0, z: 0, big: r };
-      b.n++; b.s += r.size; b.x += r.x * r.size; b.z += r.z * r.size;
-      if (r.size > b.big.size) b.big = r;
-      bins.set(key, b);
-    }
-    w.rockBins.set(rockKey, [...bins.values()].filter((b) => !((b.n < 6 && b.s < 10) || fbm(b.x / b.s / (cellM * 4), b.z / b.s / (cellM * 4), 209, 2) < 0.08)));
-  }
-  for (const b of camp ? [] : w.rockBins.get(rockKey)) {
-    const x = b.x / b.s, z = b.z / b.s;
-    if (!visW(x, z) || cleared(x, z, 1)) continue;
-    const at = place(V, M, x, z);
-    if (!at || at.g.water || !w.dry(x, z)) continue;
-    const t = at.g.t;
-    if (M.cls[t] === ROCK && !M.head[t]) continue;
-    const sz = clamp(Math.sqrt(b.s) * 2.2 * pv, 3 * Z, 14 * Z), vr = Math.floor(b.big.tint * 4), moss = w.fine(w.cover.tree, x, z);
-    add(at, cached(`rc${Math.round(sz)}|${vr}|${moss > 0.4 ? 1 : 0}`, () => SP.rock(sz, vr * 7 + 3, moss)), { mirror: b.big.yaw > Math.PI });
-    for (let k = 0; k < Math.min(2, b.n >> 2); k++) {
-      const a = h2(b.n, k, 208) * TAU, d = (sz * 0.8) / V.k, q = place(V, M, x + Math.cos(a) * d, z + Math.sin(a) * d);
-      if (q && !q.g.water) add(q, cached(`rc${Math.round(sz * 0.45)}|${(vr + k) & 3}|0`, () => SP.rock(sz * 0.45, ((vr + k) & 3) * 7 + 3, 0)), { mirror: k === 1 });
-    }
-  }
-  const A = (V.tileM * V.tileM) / 10000, more = camp ? 2.5 : 1, grow = camp ? 1 : 1.6, reach = camp ? 1 : 2;
-  const nextTo = (i, j, kinds) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([a, b]) => { const t = M.at(i + a, j + b); return t >= 0 && kinds.includes(M.kind[t]); });
-  const spawn = (i, j, t, q, n, R, wet, fn) => {
-    const [cx, cz] = V.toW(M.i0 + i + h2(t, q, 301), M.j0 + j + h2(t, q, 302));
-    for (let k = 0; k < n; k++) {
-      const key = q * 37 + k, a = h2(t, key, 303) * 6.283, d = R * Math.sqrt(h2(t, key, 304)), x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d;
-      if (!(wet || w.dry(x, z)) || !free(x, z) || cleared(x, z, 1)) continue;
-      const at = place(V, M, x, z);
-      if (at && !at.g.water && V.objVisible(at.u, at.v)) fn(at, x, z, h2(t, key, 305));
-    }
-  };
-  for (const [i, j, t] of tiles()) {
-    if (M.kind[t]) continue;
-    // reeds along marsh tiles and wet margins
-    // tile hashes use global tile coordinates, since a close chunk's map is its own small window
-    const ui = M.i0 + i, vj = M.j0 + j, th = vj * 8192 + ui;
-    if (M.cov[3][t] >= 0.25) {
-      const n = Math.round(M.cov[3][t] * (camp ? 3 : 5));
-      for (let q = 0; q < n; q++) {
-        const u = ui + h2(th, q, 11), v = vj + h2(th, q, 12), g = M.ground(u, v);
-        if (!g || g.water) continue;
-        const hp = Math.round((1.2 + h2(th, q, 13)) * pv * (camp ? 1 : 2.4));
-        add(at3(u, v, g), cached(`reed${hp}|${q % 4}`, () => SP.reeds(hp, q * 5 + hp)), { shadow: false });
-      }
-    }
-    if (camp) closeTile(ui, vj, th, t);
-    if (DENSE !== 2) continue;
-    const tc = M.cov[1][t], marsh = M.cov[3][t], edge = tc * (1 - tc) * 4;
-    const roll = (q, rate) => h2(th, q, 300) < rate * A * more;
-    if (edge > 0.5 && roll(1, 12 * edge))
-      spawn(i, j, th, 1, 7 + Math.floor(h2(th, 1, 306) * 8), 3.5 * reach, false, (at, x, z, r) => {
-        const sz = Math.max(2, Math.round((0.6 + r * 1.1) * pv * 0.9 * grow));
-        add(at, cached(`b${sz}|${Math.floor(r * 4)}|${M.heath[t] > 0.5 ? 1 : 0}`, () => SP.bush(sz, Math.floor(r * 4) * 13 + sz, M.heath[t], r)), { mirror: r > 0.5 });
-      });
-    if (camp && roll(2, 4 * (tc * 0.6 + M.cov[4][t] * 1.5) + (M.cls[t] !== ROCK && M.toRock[t] <= 1 ? 10 : 0)))
-      spawn(i, j, th, 2, 2 + Math.floor(h2(th, 2, 306) * 4), 2.5, false, (at, x, z, r) => {
-        const sz = Math.max(1.5, (0.6 + r * r * 2.4) * pv * 0.9), moss = tc > 0.3 ? 0.75 + r * 0.25 : 0.2;
-        add(at, cached(`r${Math.round(sz * 2)}|${Math.floor(r * 4)}|${moss > 0.4 ? 1 : 0}`, () => SP.rock(sz, Math.floor(r * 4) * 7 + 3, moss)), { mirror: r > 0.5 });
-      });
-    if (tc > 0.4 && roll(3, 5 * tc))
-      spawn(i, j, th, 3, 1 + Math.floor(h2(th, 3, 306) * 2.5), 3 * reach, false, (at, x, z, r) => {
-        const len = Math.round((3 + r * 6) * pv * (camp ? 0.55 : 1)), rad = Math.max(1.5, 0.2 * pv * (camp ? 1.25 : 2));
-        add(at, cached(`log${len}|${r < 0.5 ? 1 : -1}|${Math.round(rad)}`, () => SP.log(len, rad, r < 0.5 ? 1 : -1, len)), { bias: 1 });
-      });
-    if (M.cov[5][t] > 0.25 && nextTo(i, j, [SEA, LAKE]) && roll(4, 40))
-      spawn(i, j, th, 4, 1 + Math.floor(h2(th, 4, 306) * 2.5), 2 * reach, false, (at, x, z, r) => {
-        const len = Math.round((2 + r * 4) * pv * (camp ? 0.55 : 1)), rad = Math.max(1.2, 0.15 * pv * (camp ? 1.25 : 2));
-        add(at, cached(`drift${len}|${r < 0.5 ? 1 : -1}|${Math.round(rad)}`, () => SP.log(len, rad, r < 0.5 ? 1 : -1, len, true)), { bias: 1 });
-      });
-    const shore = nextTo(i, j, [LAKE, RIVER]) || (nextTo(i, j, [SEA]) && M.moist[t] > 0.5);
-    if ((marsh > 0.15 || shore) && roll(5, 40 * (marsh + (shore ? 0.5 : 0))))
-      spawn(i, j, th, 5, 8 + Math.floor(h2(th, 5, 306) * 12), 1.8 * reach * (camp ? 1 : 1.4), true, (at, x, z, r) => {
-        const hp = Math.round((1.2 + r) * pv * (camp ? 1 : 3));
-        add(at, cached(`reed${hp}|${Math.floor(r * 4)}`, () => SP.reeds(hp, Math.floor(r * 4) * 5 + hp)), { shadow: false });
-      });
-    if (camp && tc > 0.3 && roll(7, 14 * tc))
-      spawn(i, j, th, 7, 2 + Math.floor(h2(th, 7, 306) * 3), 1.2, false, (at, x, z, r) => {
-        const ms = life("mushrooms", `${2 + Math.floor(r * 3)}|${Math.floor(h2(th, 7, 309) * 4)}`, 2 + Math.floor(r * 3), Math.floor(h2(th, 7, 309) * 4));
-        if (ms) add(at, ms, { shadow: false, bias: 1 });
-      });
-    if (camp && M.cov[0][t] > 0.3 && roll(6, 12 * M.cov[0][t])) {
-      const hue = h2(th, 6, 307);
-      spawn(i, j, th, 6, 20 + Math.floor(h2(th, 6, 306) * 30), 1.5 + h2(th, 6, 308) * 2.5, false, (at, x, z, r) => {
-        const hp = Math.round((0.25 + r * 0.3) * pv * 1.4), hh = (hue + (r - 0.5) * 0.08 + 1) % 1;
-        add(at, cached(`f${hp}|${Math.floor(hh * 6)}`, () => SP.flower(hp, hh, hp)), { shadow: false, bias: 1 });
-      });
-    }
-  }
+    if (spr) add(at, spr, { mirror, shadow: hpx >= 3 && !FLAT.has(K), oid: id });
+  });
+  if (cache.size > 30000) cache.clear();
   return O;
+}
+const FLAT = new Set(["clay", "stick", "pebble", "flowers", "herb", "mushroom"]);
 
-  // Close up: the woods get their understory, and open ground its tufts and pebbles, hashed per global tile.
-  function closeTile(ui, vj, th, t) {
-    const tc = M.cov[1][t], meadow = M.cov[0][t] + M.cov[2][t] * 0.5 + M.cov[3][t] * 0.8;
-    const n = Math.floor(tc * 5 + h2(ui, vj, 71));
-    for (let q = 0; q < n; q++) {
-      const u = ui + h2(th, q, 72), v = vj + h2(th, q, 73), [x, z] = V.toW(u, v);
-      if (!w.dry(x, z) || cleared(x, z, 2) || !free(x, z)) continue;
-      const g = M.ground(u, v);
-      if (!g || g.water) continue;
-      const at = { u, v, g, sx: Math.round(V.sx(u, v)), sy: Math.round(V.sy(u, v, g.lev)), z: V.cz(u, v, g.lev) }, r = h2(th, q, 75);
-      if (r < 0.35) {
-        const hp = Math.round((2.2 + r * 12) * pv * V.treeK), k = h2(th, q, 76), kind = k < 0.25 ? "pine" : k < 0.5 ? "oak" : k < 0.75 ? "aspen" : "ash";
-        add(at, kind === "pine" ? cached(`p${hp}|9`, () => SP.pine(hp, 9 + hp)) : cached(`${kind}${hp}|8|0`, () => SP.broad(hp, kind, 8 + hp, 0.5)), { mirror: r < 0.17 });
-      } else if (r < 0.6) {
-        const sz = Math.round((0.5 + r * 0.7) * pv);
-        add(at, cached(`b${sz}|1|0`, () => SP.bush(sz, 13 + sz, 0, 0)), { mirror: r > 0.5 });
-      } else {
-        const sz = Math.round((0.5 + (r - 0.6) * 1.2) * pv);
-        add(at, cached(`fern${sz}|${Math.floor(r * 10)}`, () => SP.fern(sz, Math.floor(r * 10))), { shadow: false, mirror: r > 0.8 });
-      }
-    }
-    // tufts gather in clumps, leaving quiet lawn between
-    const ng = Math.round(meadow * V.tileM * V.tileM * 0.55);
-    for (let q = 0; q < ng; q++) {
-      const u = ui + h2(th, q, 81), v = vj + h2(th, q, 82), [x, z] = V.toW(u, v);
-      if (fbm(x / 4, z / 4, 59, 2) < -0.05 || !w.dry(x, z) || cleared(x, z, -1) || !free(x, z)) continue;
-      const g = M.ground(u, v);
-      if (!g || g.water) continue;
-      const at = { sx: Math.round(V.sx(u, v)), sy: Math.round(V.sy(u, v, g.lev)), z: V.cz(u, v, g.lev) }, r = h2(th, q, 83);
-      if (r < 0.03) { const hp = Math.round((0.25 + r * 10) * pv * 1.4); add(at, cached(`f${hp}|${Math.floor(h2(th, q, 84) * 6)}`, () => SP.flower(hp, h2(th, q, 84), hp)), { shadow: false, bias: 1 }); continue; }
-      const hp = Math.round((0.35 + r * 0.5) * pv * 0.95), vr = Math.floor(h2(th, q, 85) * 6);
-      add(at, cached(`t${hp}|${vr}`, () => SP.tuft(hp, vr * 3 + hp, M.cov[2][t])), { shadow: false, bias: 1, mirror: r > 0.5 });
-    }
-    const np = Math.round((0.5 + M.cov[4][t]) * V.tileM * 0.25);
-    for (let q = 0; q < np; q++) {
-      const u = ui + h2(th, q, 86), v = vj + h2(th, q, 87), [x, z] = V.toW(u, v);
-      if (!w.dry(x, z) || h2(th, q, 88) > 0.5 + M.cov[4][t]) continue;
-      const g = M.ground(u, v);
-      if (!g || g.water) continue;
-      const at = { sx: Math.round(V.sx(u, v)), sy: Math.round(V.sy(u, v, g.lev)), z: V.cz(u, v, g.lev) }, sz = (0.15 + h2(th, q, 89) * 0.5) * pv * 0.7;
-      add(at, cached(`pb${Math.round(sz)}`, () => (sz < 3 ? SP.pebble(sz, Math.round(sz * 10)) : SP.rock(sz, Math.round(sz * 10), 0))), { shadow: sz >= 3, bias: 1 });
+// Sprites too small for the drawn ones, down to a single pixel: a crown lit from the upper left on a one-pixel trunk.
+// Sprites too small for the drawn ones, down to a single pixel. A forest's interior is dark and its sunward edge lit,
+// as the full crowns are, so a wood reads the same from far out as up close.
+const TINY = { pine: ["p0", "p1", "p2", "p3", "p4"], broad: ["t1", "t2", "t3", "g3", "g4"], gold: ["d0", "a0", "a1", "a2", "a3"], shrub: ["t1", "g1", "g2", "g3", "g4"], rock: ["r1", "r2", "r3", "r4", "r5"] };
+function tinyTree(h, kind, dim) {
+  const cols = TINY[kind].map((n) => P[n]), base = kind === "rock" ? 2.5 : 2 - dim * 1.4, trunk = kind !== "rock" && kind !== "shrub" && h >= 4 ? 1 : 0;
+  const ch = h - trunk, wd = kind === "pine" ? Math.max(1, Math.round(h * 0.45)) : Math.max(1, Math.round(h * 0.7)), S = new Spr(wd + 2, h + 1, (wd + 2) >> 1, h);
+  for (let y = 0; y < ch; y++) {
+    const t = ch === 1 ? 0.5 : y / (ch - 1), half = kind === "pine" ? (wd / 2) * (0.35 + 0.65 * t) : (wd / 2) * (t < 0.5 ? 0.75 + t * 0.5 : 1);
+    for (let x = 0; x < wd; x++) {
+      const dx = x + 0.5 - wd / 2;
+      if (Math.abs(dx) > Math.max(0.5, half)) continue;
+      const light = h === 1 ? 0 : (-dx / Math.max(1, wd) - t + 0.5) * 1.6;
+      S.set(x + 1, y, cols[clamp(Math.round(base + light), 0, 4)]);
     }
   }
+  if (trunk) S.set(S.ax, h - 1, P.d1);
+  return S;
+}
+
+// ---------- live terrain: every feature from world-space fields in meters ----------
+// Only the dither pattern belongs to a level: biome edges, pools, bare patches, shores and rivers are sampled from
+// the world at each pixel, so they line up exactly at every zoom and bearing.
+const G = {};
+function groundAt(w, V, x, z) {
+  const wet = w.fine(w.wet, x, z), riv = riverSmooth(w, x, z);
+  G.water = wet > 0.5 ? (w.heightAt(x, z) < 0.5 ? SEA : LAKE) : riv > 0.5 ? RIVER : 0;
+  G.x = x; G.z = z;
+  if (G.water) {
+    // distance to the shore in meters, from the field's value and slope near its 0.5 contour
+    const f = G.water === RIVER ? (a, b) => riverSmooth(w, a, b) : (a, b) => w.fine(w.wet, a, b), v = G.water === RIVER ? riv : wet;
+    const gx = (f(x + 3, z) - f(x - 3, z)) / 6, gz = (f(x, z + 3) - f(x, z - 3)) / 6, gl = Math.hypot(gx, gz);
+    G.shore = gl > 1e-4 ? (v - 0.5) / gl : 60;
+    G.depth = G.water === SEA ? Math.max(0, -w.heightAt(x, z)) : G.water === LAKE ? w.bilinear(w.isle.water, (x - w.START) / w.CELL, (z - w.START) / w.CELL) : 1.5;
+    return G;
+  }
+  // biome edges wander in world meters
+  const wx = x + fbm(x / 40, z / 40, 64, 2) * 14, wz = z + fbm(x / 40, z / 40, 66, 2) * 14;
+  let best = 0, bs = -1;
+  for (let q = 0; q < 6; q++) { const c = w.fine(w.cover[COV[q]], wx, wz); G["c" + q] = c; if (c * WEIGHT[q] > bs) { bs = c * WEIGHT[q]; best = q; } }
+  const h = w.heightAt(x, z);
+  G.h = h; G.moist = w.fine(w.moist, x, z);
+  G.cls = best === ROCK && h < V.capH ? HILL : best;
+  G.snow = G.cls === ROCK || h > 0.8 * V.peakM ? smooth(0.9 * V.peakM, V.peakM, h) * 0.3 + w.bilinear(w.isle.snow, (x - w.START) / w.CELL, (z - w.START) / w.CELL) * 0.5 : 0;
+  if (h > 0.9 * V.peakM) G.cls = ROCK;
+  G.nearWet = wet > 0.2 || riv > 0.2;
+  return G;
+}
+// the river mask sampled between its texels, so a bank is a line rather than a staircase at close zoom
+function riverSmooth(w, x, z) {
+  const t = 9600 / 2048, fx = (x + 4800) / t - 0.5, fz = (z + 4800) / t - 0.5, i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j;
+  const at = (ii, jj) => w.riverAt(-4800 + (ii + 0.5) * t, -4800 + (jj + 0.5) * t);
+  return (at(i, j) * (1 - a) + at(i + 1, j) * a) * (1 - b) + (at(i, j + 1) * (1 - a) + at(i + 1, j + 1) * a) * b;
+}
+// Pixel-art ground at every zoom, the mipmap way: detail lives in world meters at a few scales, each scale fades out
+// once a pixel is wider than it, so the far colour is the mean of the close texture. Tones are picked with a narrow
+// ordered-dither band, so light and mottling step through the palette instead of ramping smoothly.
+const fade = (S, mpp) => 1 - smooth(S * 0.45, S * 1.4, mpp);
+function tone(r, v, X, Y) { return r[clamp(Math.floor(v + 0.5 + (bayer(X, Y) - 0.5) * 0.55), 0, r.length - 1)]; }
+// a cluster pattern of size S meters: +1, 0 or -1 with even odds of the two, so it adds texture without shifting the mean
+function clusters(x, z, S, seed, mpp, cut = 0.42) {
+  const a = fade(S, mpp);
+  if (a <= 0) return 0;
+  const n = noise(x / S, z / S, seed) * a;
+  return n > cut ? 1 : n < -cut ? -1 : 0;
+}
+function paintWater(w, V, g, X, Y) {
+  if (V.iceAt && g.water !== SEA && V.iceAt(g.x, g.z)) return iceTex(X, Y, g.x, g.z);
+  const px = g.shore * V.k, lap = 0.5 + 0.18 * Math.sin(PH + (g.x + g.z) / 25);
+  if (px < 1.2 * lap + 0.3) return P.w7;
+  if (px < 2.2 * lap + 0.3 && h2(X, Y, 45) < 0.45) return P.w6;
+  let v;
+  if (g.water === RIVER) v = 4.2 + clusters(g.x, g.z, 1.5, 46, V.mpp) * 0.6 + (g.shore < 1.5 ? 0.5 : 0);
+  else {
+    // a narrow band of shallows along the shore in meters, then open water by depth
+    const shallow = Math.max((1 - smooth(0, 2.5, g.depth)) * 0.8, 1 - smooth(0, 12, g.shore)) * (0.6 + 0.4 * (1 - smooth(0, 9, g.depth)));
+    v = 1.4 + 3.9 * shallow + Math.round(fbm(g.x / 90, g.z / 90, 41, 2) * 1.5) * 0.4 + clusters(g.x, g.z, 3, 42, V.mpp, 0.5) * 0.5;
+  }
+  // ripple dashes, 2 or 3 px on every other row, and sparkles: the level's own dither
+  if ((Y & 1) === 0) {
+    const sx = X + (Y >> 1) * 3, cell = Math.floor(sx / 6), r = h2(cell, Y, 47), near = 1 - smooth(0, 40, g.shore);
+    const rate = 0.012 + 0.1 * near + 0.03, life = ((FRAME + Math.floor(h2(cell, Y, 48) * 8)) & 7) < 5;
+    if (r < rate && life && sx - cell * 6 < 2 + ((r * 97) & 1)) return r < rate * 0.3 ? P.w7 : WA[Math.min(WA.length - 2, Math.floor(v) + 2)];
+  }
+  if (h2(X, Y, 43) < 0.0006 && ((FRAME + (h2(X, Y, 49) * 8)) | 0) & 7) return P.w7;
+  return tone(WA, v, X, Y);
+}
+// The class a land point is drawn as, from world data only, so it is the same at every level: steep ground is bare
+// rock slope whatever grows around it.
+const ROCKY = 30;
+function landClass(g, slope) {
+  const cls = slope > 0.62 && g.cls !== SAND ? ROCK : slope > 0.42 && (g.cls === MEADOW || g.cls === SCRUB) ? HILL : g.cls;
+  if (cls === ROCK || (cls === HILL && fbm(g.x / 45, g.z / 45, 26, 2) + g.c4 * 0.6 + (slope - 0.42) * 2 - 0.8 > 0)) return ROCKY;
+  return cls;
+}
+// ground slope in the world, on a fixed 12.5 m grid shared by every level
+function worldSlope(w, x, z) {
+  const S = 12.5, n = Math.ceil(9600 / S) + 1;
+  if (!w.slopeGrid) {
+    const g = new Float32Array(n * n), d = 18.75;
+    for (let j = 0; j < n; j++)
+      for (let i = 0; i < n; i++) {
+        const X = -4800 + i * S, Z = -4800 + j * S;
+        g[j * n + i] = Math.hypot(w.heightAt(X + d, Z) - w.heightAt(X - d, Z), w.heightAt(X, Z + d) - w.heightAt(X, Z - d)) / (2 * d);
+      }
+    w.slopeGrid = g;
+  }
+  const g = w.slopeGrid, fx = clamp((x + 4800) / S, 0, n - 1.001), fz = clamp((z + 4800) / S, 0, n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = j * n + i;
+  return (g[k] * (1 - a) + g[k + 1] * a) * (1 - b) + (g[k + n] * (1 - a) + g[k + n + 1] * a) * b;
+}
+// What a ground point is, for the consistency check: a water kind (40 + SEA, LAKE, RIVER) or its land class.
+export function surfaceAt(w, V, x, z) {
+  const g = groundAt(w, V, x, z);
+  return g.water ? 40 + g.water : landClass(g, worldSlope(w, x, z));
+}
+const TRACE = { cls: 0 };
+// Worn footpaths from the sim's 3 m wear grid, stepped into five widths (T holds 0..4 per cell). Each worn cell's centre
+// is jittered inside it and joined to its worn neighbours, so a path wiggles through the grass and widens with use.
+const TC = 3, TN = 3200, HALF = [0, 0.45, 0.6, 0.78, 1];
+const tcx = (i, j) => (i + 0.5 + (h2(i, j, 521) - 0.5) * 0.7) * TC - 4800, tcz = (i, j) => (j + 0.5 + (h2(i, j, 522) - 0.5) * 0.7) * TC - 4800;
+function trailDist(T, x, z) {
+  const i = Math.floor((x + 4800) / TC), j = Math.floor((z + 4800) / TC);
+  // where three or four of the cells round a point are worn it is trodden ground, not a braid of paths with grass between
+  const ci = Math.floor((x + 4800) / TC - 0.5), cj = Math.floor((z + 4800) / TC - 0.5);
+  if (ci >= 0 && cj >= 0 && ci < TN - 1 && cj < TN - 1) { const k = cj * TN + ci; if ((T[k] > 0) + (T[k + 1] > 0) + (T[k + TN] > 0) + (T[k + TN + 1] > 0) >= 3) return -0.3; }
+  let best = Infinity;
+  for (let b = j - 1; b <= j + 1; b++)
+    for (let a = i - 1; a <= i + 1; a++) {
+      if (a < 1 || b < 1 || a >= TN - 1 || b >= TN - 1) continue;
+      const q = T[b * TN + a];
+      if (!q) continue;
+      const ax = tcx(a, b), az = tcz(a, b);
+      best = Math.min(best, Math.hypot(x - ax, z - az) - HALF[q]);
+      for (let db = -1; db <= 1; db++)
+        for (let da = -1; da <= 1; da++) {
+          const q2 = (da || db) && T[(b + db) * TN + a + da];
+          if (!q2) continue;
+          const bx = tcx(a + da, b + db), bz = tcz(a + da, b + db), dx = bx - ax, dz = bz - az;
+          const t = clamp(((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz), 0, 1);
+          best = Math.min(best, Math.hypot(x - ax - dx * t, z - az - dz * t) - (HALF[q] + (HALF[q2] - HALF[q]) * t));
+        }
+    }
+  return best;
+}
+// on a path at this point: a rough edge up close; far out, where a pixel is wider than the path, a dither in
+// proportion to the share of the pixel the path covers, so the far colour is the close one's mean
+function onTrail(T, x, z, mpp, X, Y) {
+  const wx = x + fbm(x / 9, z / 9, 523, 2) * 0.8, wz = z + fbm(x / 9, z / 9, 524, 2) * 0.8, d = trailDist(T, wx, wz);
+  if (mpp < 1) return d + noise(x / 0.45, z / 0.45, 525) * 0.18 * fade(0.45, mpp) < 0;
+  const r = mpp * 0.5;
+  return d < r && bayer(X, Y) < Math.min(1, 1.6 / mpp) * (1 - Math.max(0, d) / r) * 1.5;
+}
+function paintLand(w, V, g, X, Y, s, slope) {
+  const x = g.x, z = g.z, m = V.mpp;
+  if (V.trail && onTrail(V.trail, x, z, m, X, Y)) { TRACE.cls = 255; return soil(x, z, s + 0.4, X, Y, m); }
+  const mot = fbm(x / 60, z / 60, 11, 2), cls = landClass(g, slope);
+  TRACE.cls = cls;
+  if (cls === ROCKY) return rock(x, z, s, g.snow, X, Y, m);
+  switch (cls) {
+    case FOREST: {
+      // leaf litter in small drifts, a few twigs of dark soil, lit patches where the canopy opens
+      const lit = clusters(x, z, 4, 3, m, 0.5), litter = clusters(x, z, 0.7, 4, m, 0.5);
+      if (litter > 0 && noise(x / 0.35, z / 0.35, 5) * fade(0.35, m) > 0.3) return P.d2;
+      return tone(FF, 2 + s * 0.8 + Math.round(mot * 2) * 0.4 + lit * 0.7 + litter * 0.8, X, Y);
+    }
+    case SCRUB: return tone(SC, 3 + s + Math.round(mot * 2) * 0.4 + clusters(x, z, 2.5, 6, m) + clusters(x, z, 0.6, 7, m, 0.5) * 0.8, X, Y);
+    case SAND: {
+      let v = 2.5 + s * 0.7 + Math.round(mot * 2) * 0.3 + clusters(x, z, 0.4, 8, m, 0.55) * 0.8;
+      // ripples 3 m apart, fading out once they are narrower than a pixel
+      const rf = fade(1.2, m);
+      if (rf > 0) { const r = (x * 0.6 + z * 0.8) / 3 + fbm(x / 24, z / 24, 61, 2) * 2, f = r - Math.floor(r); if (f < 0.13 * rf) v -= 1; else if (f < 0.22 * rf) v += 0.6; }
+      if (g.nearWet) v -= 0.8;
+      return tone(SA, v, X, Y);
+    }
+    case MARSH: {
+      // pools gather where a broad wetness field is high, so they come in clusters with open ground between
+      const pool = (a, b) => noise(a / 37, b / 37, 31) + 0.3 * noise(a / 15, b / 15, 32) + noise(a / 110, b / 110, 33) * 0.5, pn = pool(x, z);
+      if (pn > 0.42) {
+        if (pool(x + V.upW[0], z + V.upW[1]) <= 0.42) return P.m0;
+        if (pn < 0.445) return P.w6;
+        return tone(WA, 4.4 - Math.min(1, (pn - 0.42) * 5) * 2.2 + clusters(x, z, 1.2, 9, m, 0.5) * 0.6, X, Y);
+      }
+      // reed rims round the pools: short upright strokes, a meter long
+      if (pn > 0.35) return noise(x / 0.5, z / 2.2, 34) * fade(0.5, m) > 0.1 ? P.m3 : clusters(x, z, 1.5, 35, m) > 0 ? P.a1 : P.m1;
+      return tone(MA, 2.6 + s + Math.round(mot * 2) * 0.3 + clusters(x, z, 1.8, 10, m) * 0.8 + clusters(x, z, 0.5, 11, m, 0.5) * 0.6, X, Y);
+    }
+    default: {
+      // meadow: broad swathes, then tone clusters at a few meters, then blade speckle at half a meter
+      const bare = fbm(x / 14, z / 14, 55, 2);
+      if (bare > 0.3 + g.c0 * 0.15) return soil(x, z, s + (bare - 0.5) * 1.5, X, Y, m);
+      let v = 3.3 + s + Math.round((mot * 1.2 + (g.moist - 0.5) * 0.8 + fbm(x / 35, z / 35, 54, 2) * 1.2) * 2) * 0.5;
+      v += clusters(x, z, 6, 12, m, 0.4) * 0.8 + clusters(x, z, 1.8, 13, m) * 0.9 + clusters(x, z, 0.5, 14, m, 0.5) * 0.9;
+      if (g.nearWet) v -= 0.6;
+      // under the woods edge the grass goes darker and strewn with leaf litter
+      if (g.c1 > 0.2) {
+        v -= (g.c1 - 0.2) * 3.5;
+        if (clusters(x, z, 0.6, 15, m, 0.55 - (g.c1 - 0.2) * 0.4) > 0) return P.d2;
+      }
+      return tone(GR, v, X, Y);
+    }
+  }
+}
+// bare earth: soil tones with grit and the odd pale stone, all in meters
+function soil(x, z, s, X, Y, m) {
+  if (noise(x / 0.3, z / 0.3, 91) * fade(0.3, m) > 0.62) return P.d5;
+  return tone(DI, 3.1 + s + clusters(x, z, 1.4, 92, m) * 0.8 + clusters(x, z, 0.4, 93, m, 0.5) * 0.8, X, Y);
+}
+// rock: broad planes picked by facing, fissures a meter wide, cracks and grain below that, and snow in solid shapes
+function rock(x, z, s, snow, X, Y, m) {
+  const plane = Math.round(fbm(x / 30, z / 30, 27, 2) * 1.4) * 0.5, face = s * 1.1 + plane + 0.9;
+  const snowV = snow > 0.03 ? fbm(x / 20, z / 40, 29, 2) + snow * 3 - 0.6 + clusters(x, z, 2, 30, m) * 0.05 : -1;
+  if (snowV > 0.04) return face < -0.2 ? P.haze : P.snow;
+  if (snowV > -0.02) return bayer(X, Y) < (snowV + 0.02) / 0.06 ? (face < -0.2 ? P.haze : P.snow) : face < -0.2 ? P.r2 : P.r4;
+  // fissures and cracks only in some stretches of the face, so most of it reads as sound stone
+  if (noise(x / 45, z / 45, 214) > 0.3) {
+    const fis = Math.abs(noise(x / 12, z / 26, 211));
+    if (fis < 0.035 * fade(3, m)) return fis < 0.015 ? P.r0 : P.r1;
+  }
+  if (noise(x / 9, z / 9, 215) > 0.35 && Math.abs(noise(x / 2.5, z / 5.5, 210)) < 0.04 * fade(0.9, m)) return P.r1;
+  return tone(RK, 2.6 + face * 1.3 + clusters(x, z, 2.2, 212, m) * 0.7 + clusters(x, z, 0.5, 213, m, 0.5) * 0.8, X, Y);
+}
+// Light and slope per vertex from the true ground at a fixed scale in meters, not from the level's quantized steps.
+function liveLight(w, V, M) {
+  const { NI, NJ, i0, j0 } = M, VI = NI + 1, n = VI * (NJ + 1), light = new Float32Array(n), d = Math.max(18.75, V.tileM * 0.5);
+  for (let j = 0; j <= NJ; j++)
+    for (let i = 0; i <= NI; i++) {
+      const [x, z] = V.toW(i0 + i, j0 + j);
+      const gu = (w.heightAt(x + V.eu[0] * d, z + V.eu[1] * d) - w.heightAt(x - V.eu[0] * d, z - V.eu[1] * d)) / (2 * d);
+      const gv = (w.heightAt(x + V.ev[0] * d, z + V.ev[1] * d) - w.heightAt(x - V.ev[0] * d, z - V.ev[1] * d)) / (2 * d);
+      const l = LIGHT * EXAG * (-LU * gu - LV * gv), k = j * VI + i;
+      light[k] = clamp(l < 0 ? l * 0.6 : l, -1.3, 2);
+    }
+  return { light };
+}
+// The live ground: z-tested so steep slopes hide what is behind them, back faces culled, every pixel textured from
+// the world at its own position. Land meets standing water with a short bank strip.
+export function drawTerrainLive(B, w, V, M) {
+  const { NI, NJ, i0, j0 } = M, C = M.C, GX = V.gx, GY = V.gy, VI = NI + 1;
+  if (!M.live) M.live = liveLight(w, V, M);
+  const { light } = M.live, dbg = V.debug;
+  const anim = V.anim, frames = (p, f0, paint) => {
+    const cols = [f0];
+    let moving = false;
+    for (let f = 1; f < 8; f++) { setMode(VIEW, f); const c = paint(); cols.push(c); if (c !== f0) moving = true; }
+    setMode(VIEW, 0);
+    if (moving) anim.set(p, cols);
+  };
+  const shade = (col, X, Y) => (DARKER[col] !== col ? (bayer(X, Y) < 0.6 ? DARKER[col] : col) : SHADOW[col]);
+  const a0 = clamp(V.i0 - i0, 0, NI), a1 = clamp(V.i1 - i0, 0, NI), b0 = clamp(V.j0 - j0, 0, NJ), b1 = clamp(V.j1 - j0, 0, NJ);
+  for (let j = b0; j < b1; j++)
+    for (let i = a0; i < a1; i++) {
+      const t = j * NI + i, uT = i0 + i, vT = j0 + j;
+      if (!V.visible(uT + 0.5, vT + 0.5)) continue;
+      const c = [C[t * 4], C[t * 4 + 1], C[t * 4 + 2], C[t * 4 + 3]], P4 = [[uT, vT, c[0]], [uT + 1, vT, c[1]], [uT + 1, vT + 1, c[2]], [uT, vT + 1, c[3]]];
+      const L = [light[j * VI + i], light[j * VI + i + 1], light[(j + 1) * VI + i + 1], light[(j + 1) * VI + i]];
+      // a bank where this tile stands above the flat water tile in front of it
+      for (const face of [0, 1]) {
+        const nb = M.at(face ? i + 1 : i, face ? j : j + 1);
+        if (nb < 0 || !M.kind[nb] || M.kind[t]) continue;
+        const [A, Bk] = face ? [2, 1] : [3, 2], botA = C[nb * 4 + (face ? 3 : 0)], botB = C[nb * 4 + (face ? 0 : 1)];
+        if (botA >= c[A] && botB >= c[Bk]) continue;
+        const pa = P4[A], pb = P4[Bk];
+        strip(B, V.sx(pa[0], pa[1]), V.sx(pb[0], pb[1]), V.sy(pa[0], pa[1], pa[2]), V.sy(pb[0], pb[1], pb[2]), V.sy(pa[0], pa[1], botA), V.sy(pb[0], pb[1], botB), (p, x, y, tt, depth, hpx) => {
+          const u = pa[0] + (pb[0] - pa[0]) * tt, v = pa[1] + (pb[1] - pa[1]) * tt, lev = (V.Y0 + (u + v) * V.H * 0.5 - (y + 0.5)) / V.lp, z = V.cz(u, v, lev);
+          if (z < B.z[p]) return;
+          B.c[p] = texWall(V, DIRTW, face, x + GX, y + GY, depth, hpx, lev, true, 0); B.z[p] = z; B.id[p] = 0;
+          if (dbg) dbg.cls[p] = 254;
+        });
+      }
+      const tris = M.diag[t] === 0 ? [[0, 1, 2], [0, 2, 3]] : [[0, 1, 3], [3, 1, 2]];
+      for (const [a, b, cc] of tris) {
+        const A = P4[a], Bv = P4[b], Cv = P4[cc];
+        const ax = V.sx(A[0], A[1]), ay = V.sy(A[0], A[1], A[2]), bx = V.sx(Bv[0], Bv[1]), by = V.sy(Bv[0], Bv[1], Bv[2]), cx = V.sx(Cv[0], Cv[1]), cy = V.sy(Cv[0], Cv[1], Cv[2]);
+        // a triangle turned away from the camera is the far side of a slope; the near side hides it
+        const uvA = (Bv[0] - A[0]) * (Cv[1] - A[1]) - (Bv[1] - A[1]) * (Cv[0] - A[0]), scA = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        if (uvA * scA <= 0) continue;
+        tri(B, ax, ay, bx, by, cx, cy, (p, x, y, la, lb, lc) => {
+          const u = la * A[0] + lb * Bv[0] + lc * Cv[0], v = la * A[1] + lb * Bv[1] + lc * Cv[1], lev = la * A[2] + lb * Bv[2] + lc * Cv[2], z = V.cz(u, v, lev);
+          if (z < B.z[p]) return;
+          const X = x + GX, Y = y + GY, fu = u - uT, fv = v - vT;
+          const wx = V.ox + (u * V.eu[0] + v * V.ev[0]) * V.tileM, wz = V.oz + (u * V.eu[1] + v * V.ev[1]) * V.tileM;
+          const s = (L[0] * (1 - fu) + L[1] * fu) * (1 - fv) + (L[3] * (1 - fu) + L[2] * fu) * fv;
+          const g = groundAt(w, V, wx, wz);
+          let col;
+          const ju = (h2(X, Y, 98) - 0.5) * 0.7, jv = (h2(X, Y, 99) - 0.5) * 0.7, dark = V.shaded && V.shaded(u + ju, v + jv, lev);
+          if (g.water) {
+            const wg = { ...g };
+            col = paintWater(w, V, wg, X, Y);
+            if (dark) col = shade(col, X, Y);
+            if (anim) frames(p, col, () => { const c2 = paintWater(w, V, wg, X, Y); return dark ? shade(c2, X, Y) : c2; });
+            if (dbg) dbg.cls[p] = 40 + g.water;
+          } else {
+            col = paintLand(w, V, g, X, Y, s, worldSlope(w, wx, wz));
+            if (dark) { col = shade(col, X, Y); B.sh[p] = 1; }
+            if (dbg) dbg.cls[p] = TRACE.cls;
+          }
+          if (dbg) { dbg.wx[p] = wx; dbg.wz[p] = wz; }
+          B.c[p] = col; B.z[p] = z; B.id[p] = 0;
+        });
+      }
+    }
 }
 
 // ---------- objects ----------
@@ -1324,6 +1432,9 @@ const cached = (key, make) => { let s = cache.get(key); if (!s) { s = make(); ca
 // Creature and landmark sprites from life.js; anything it does not (yet) export is simply left out.
 let LIFE = {};
 export const setLife = (mod) => { LIFE = mod; };
+// Isolife's sprites for every sim kind; the stills never need them
+let TH = {};
+export const setThings = (mod) => { TH = mod; };
 const life = (name, key, ...args) => (typeof LIFE[name] === "function" ? cached(`L:${name}:${key}`, () => LIFE[name](...args)) : null);
 
 function place(V, M, x, z) {
@@ -2101,6 +2212,7 @@ function drawObjects(B, V, O) {
     id = (id % 65000) + 1;
     if (o.mesh) { drawMesh(B, V, o, id); meshes.push(id); }
     else blit(B, o.spr, o.sx, o.sy, o.z, id, o.mirror, o.bias);
+    o.lid = id;
   }
   // dark outline where a tent meets anything behind it
   const ids = new Set(meshes), mark = [];

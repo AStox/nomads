@@ -1,6 +1,7 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
 import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, type Kind, type Props } from "./materials";
-import { DAY, Tile, YEAR, addThing, dist, iceAt, level, log, nearWater, tileAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
+import { DAY, REACH, TILE_M, Tile, YEAR, addThing, iceAt, level, log, meters, nearWater, reachOf, tileAt, walkable, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
+import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } from "./space";
 import { clock, trace } from "./trace";
 import { see } from "./beliefs";
 
@@ -20,14 +21,25 @@ export function fireHeat(w: World, f: Thing) {
 // What people would call the fire they're standing at, most specific first.
 export const fireKind = (f: Thing) =>
   f.kind !== "fire" || !f.contained ? "fire" : (f.charcoal ?? 0) > 0 ? "forge" : f.covered ? "kiln" : "hearth";
-export function nearFire(w: World, a: { x: number; y: number }, r = 2) {
+// The hottest fire within r meters: a campfire, or anything burning well enough to cook over.
+export function nearFire(w: World, a: { px: number; py: number }, r = 3) {
   let best: Thing | null = null, bh = 0;
-  for (const t of w.things) {
-    if ((t.kind !== "fire" && (t.burning ?? 0) <= 0.3) || dist(a, t) > r) continue;
+  for (const t of liveThings(w)) {
+    if ((t.kind !== "fire" && (t.burning ?? 0) <= 0.3) || meters(a, t) > r) continue;
     const h = fireHeat(w, t);
     if (h > bh) { bh = h; best = t; }
   }
   return best;
+}
+// A point m meters in front of someone (or off to a random side of anything without a heading), on ground they could
+// stand on; where they set things down, light fires and build.
+export function beside(w: World, e: { px: number; py: number; heading?: number }, m: number): [number, number] {
+  const a = e.heading ?? Math.random() * Math.PI * 2;
+  for (const turn of [0, 0.8, -0.8, 1.6, -1.6, Math.PI]) {
+    const px = e.px + (Math.cos(a + turn) * m) / TILE_M, py = e.py + (Math.sin(a + turn) * m) / TILE_M;
+    if (walkable(w, Math.floor(px), Math.floor(py))) return [px, py];
+  }
+  return [e.px, e.py];
 }
 
 export const CARRY = 16;
@@ -57,7 +69,7 @@ const young = (a: Agent) => clock.t - a.born < YEAR;
 export const carryOf = (a: Agent) => (young(a) ? 8 : CARRY);
 export function giveItems(w: World, a: Agent, k: string, n = 1) {
   for (let i = 0; i < n; i++) {
-    if (a.inv.length >= carryOf(a) && !makeRoom(w, a, k)) { dropPile(w, a.x, a.y, k, n - i); return i; }
+    if (a.inv.length >= carryOf(a) && !makeRoom(w, a, k)) { dropPile(w, a.px, a.py, k, n - i); return i; }
     a.inv.push({ k, hp: 1, born: w.t });
   }
   return n;
@@ -73,20 +85,23 @@ function makeRoom(w: World, a: Agent, incoming: string) {
     ?? (food(incoming) ? Object.keys(c).filter((x) => !food(x)).sort((x, y) => Number(isToolish(w.kinds[x])) - Number(isToolish(w.kinds[y])))[0] : undefined);
   if (!spare) return false;
   takeItems(a, spare);
-  dropPile(w, a.x, a.y, spare, 1);
+  dropPile(w, a.px, a.py, spare, 1);
   return true;
 }
-export function dropPile(w: World, x: number, y: number, k: string, n: number): Thing {
-  const pile = w.things.find((t) => t.kind === "item" && t.item === k && t.x === x && t.y === y);
-  if (pile) { pile.n = (pile.n ?? 1) + n; changed.add(pile.id); return pile; }
-  const t = addThing(w, "item", x, y, { item: k, n, born: w.t });
-  changed.add(t.id);
+// Set things down at a point: on a pile of the same within a meter, or as a new pile close by.
+export function dropPile(w: World, px: number, py: number, k: string, n: number): Thing {
+  const pile = nearestThing(w, px, py, ["item"], (t) => t.item === k, 1);
+  if (pile) { pile.n = (pile.n ?? 1) + n; mark(w, pile); return pile; }
+  const t = addThing(w, "item", ...beside(w, { px, py }, 0.2 + Math.random() * 0.5), { item: k, n, born: w.t });
+  mark(w, t);
   return t;
 }
 // Things touched this tick, so the server can send deltas.
 export const changed = new Set<string>(), removed = new Set<string>(), newKinds = new Set<string>();
+// Something about this thing changed: tell the watchers, and keep the world looking at it.
+export function mark(w: World, t: Thing) { changed.add(t.id); wake(w, t); }
 export function removeThing(w: World, t: Thing) {
-  w.things = w.things.filter((x) => x !== t);
+  leave(w, t);
   removed.add(t.id);
 }
 const kind = (w: World, id?: string | null) => (id ? w.kinds[id] : undefined);
@@ -174,7 +189,7 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
       const spark = 0.12 * (1 + Math.max(0, Math.max(p(tool, "hard"), p(tk, "hard")) - 0.9) * 40);
       if (tinder && p(tool, "hard") >= 0.8 && p(tk, "hard") >= 0.8 && !(raining(w) && !sheltered(w, a)) && Math.random() < spark) {
         takeItems(a, tinder.id);
-        changed.add(addThing(w, "fire", a.x, a.y, { owner: a.id, hp: 50, maxHp: 400, born: w.t }).id);
+        mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: 50, maxHp: 400, born: w.t }));
         fields.inputs = [tk.id, tinder.id].sort(); fields.builds = "fire";
         return { done: true, broke: broke ?? undefined, damage: 0, out: outcome({ ok: true, text: `Striking the ${tk.name} with the ${tool.name} threw a spark into the ${tinder.name}, and it caught. A fire!`, uses: { [tinder.id]: 1 }, builds: "fire", fields }) };
       }
@@ -205,23 +220,24 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
     return { done: true, broke: broke ?? undefined, damage: dmg, out: outcome({ ok: true, text: `Striking along its grain split the ${tk.name} into ${list(w, tk.breaks)}.`, uses: { [tk.id]: 1 }, gives: { ...tk.breaks }, fields, numbers: { eff } }) };
   }
   // Striking something in the world: a tree, a boulder, an animal.
-  const target = act.target.thing ? w.things.find((t) => t.id === act.target!.thing) : w.animals.find((x) => x.id === act.target!.animal);
+  const target = act.target.thing ? thingById(w, act.target.thing) : w.animals.find((x) => x.id === act.target!.animal);
   const mat = THING_MATERIAL[act.target.kind ?? ""];
   if (!target || !mat) return { done: true, damage: 0, out: outcome({ text: "The target was gone.", fields }) };
-  const reach = p(tool, "long") >= 0.6 ? 2 : 1;
-  if (dist(a, target) > reach) return { done: false, damage: 0 };
+  const long = p(tool, "long") >= 0.6 ? 1 : 0;
+  const far = "alt" in target ? target.alt > 2 || meters(a, target) > REACH + 0.5 + long : meters(a, target) > reachOf(target) + long;
+  if (far) return { done: false, damage: 0 };
   const dmg = strikeDamage(tool, mat.toughness, a);
   const broke = wear(w, a, act, mat.toughness);
   target.hp = (target.hp ?? mat.hp) - dmg;
   if ("maxHp" in target && target.maxHp === undefined) target.maxHp = mat.hp;
-  if ("kind" in target) changed.add(target.id);
+  if ("kind" in target) mark(w, target);
   // A sharp edge driven into a standing tree peels strips of bark, and the wound beads resin over the next days.
   if ("kind" in target && (target.kind === "tree" || target.kind === "stump") && dmg > 0) {
     target.scarred = w.t;
     if (p(tool, "sharp") >= 0.4 && (target.bark ?? 0) < 3 && Math.random() < 0.08 * p(tool, "sharp")) {
       target.bark = (target.bark ?? 0) + 1;
-      dropPile(w, target.x, target.y, "bark", 1);
-      see(w, target, "bark", "A sharp edge struck into a tree peels off strips of bark.", 6);
+      dropPile(w, target.px, target.py, "bark", 1);
+      see(w, target, "bark", "A sharp edge struck into a tree peels off strips of bark.", 60);
     }
   }
   st.progress++;
@@ -235,14 +251,13 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
   const gives = { ...mat.breaks };
   for (const [k, n] of Object.entries(("inside" in target && target.inside) || {})) gives[k] = (gives[k] ?? 0) + n;
   fields.gives = Object.keys(gives);
-  const where = { x: target.x, y: target.y };
-  if ("species" in target) {
+  if ("alt" in target) {
     w.animals = w.animals.filter((x) => x !== target);
     for (const [k, n] of Object.entries(gives)) giveItems(w, a, k, n);
     return { done: true, damage: dmg, broke: broke ?? undefined, out: outcome({ ok: true, text: `They killed the ${target.species} and butchered it into ${list(w, gives)}.`, gives, fields, numbers: { rate, ticksNeeded } }) };
   }
   const t = target as Thing;
-  if (t.kind === "tree") { t.kind = "stump"; t.hp = 40; t.maxHp = 40; t.until = w.t + DAY * 6; changed.add(t.id); }
+  if (t.kind === "tree") { setKind(w, t, "stump"); t.hp = 40; t.maxHp = 40; t.size = 0.6; t.until = w.t + DAY * 6; mark(w, t); }
   else removeThing(w, t);
   for (const [k, n] of Object.entries(gives)) giveItems(w, a, k, n);
   const verb = act.target.kind === "tree" ? "brought the tree down" : `broke up the ${act.target.kind}`;
@@ -253,7 +268,7 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
 const tinderOf = (w: World, a: Agent) => a.inv.map((s) => kind(w, s.k)!).find((k) => p(k, "fibrous") >= 0.8 && p(k, "flammable") >= 0.8);
 export const isBow = (k?: Kind) => !!k && p(k, "flexible") >= 0.8 && p(k, "long") >= 0.5 && p(k, "binding") >= 0.5;
 export function sheltered(w: World, a: Agent) {
-  return w.things.some((t) => t.kind === "structure" && (t.shelter?.tier ?? 0) >= 1 && dist(a, t) <= 1);
+  return !!anyAround(w, a.px, a.py, 4, ["structure"], (t) => (t.shelter?.tier ?? 0) >= 1);
 }
 const raining = (w: World) => w.weather.sky === "rain" || w.weather.sky === "storm";
 
@@ -301,8 +316,7 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
       takeItems(a, tinder.id);
       const fuel = [ia, ib].map((id) => kind(w, id)!).find((k) => !isBow(k) && p(k, "flammable") >= 0.5);
       if (fuel) takeItems(a, fuel.id);
-      addThing(w, "fire", a.x, a.y, { owner: a.id, hp: 60 + (fuel?.fuel ?? 0), maxHp: 200, born: w.t });
-      changed.add(w.things.at(-1)!.id);
+      mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: 60 + (fuel?.fuel ?? 0), maxHp: 200, born: w.t }));
       fields.builds = "fire";
       fields.inputs = [...fields.inputs, tinder.id].sort();
       return { done: true, out: outcome({ ok: true, text: `Rubbing the ${A.name} against the ${B.name} got hot enough to catch the ${tinder.name}. A fire!`, uses: { [tinder.id]: 1, ...(fuel ? { [fuel.id]: 1 } : {}) }, builds: "fire", fields, numbers: { heat: st.heat } }) };
@@ -405,7 +419,7 @@ export function heat(w: World, a: Agent, act: Act): Outcome | "ask" {
   const fan = kind(w, act.tool);
   if (fan && airy(fan) && count(a, fan.id)) {
     fields.tool = fan.id;
-    if (fire.kind === "fire") { fire.air = w.t + 12; fire.heat = fireHeat(w, fire); changed.add(fire.id); }
+    if (fire.kind === "fire") { fire.air = w.t + 12; fire.heat = fireHeat(w, fire); mark(w, fire); }
   }
   const level = fireHeat(w, fire);
   trace("physics", "heat", { items: act.items, fire: fireKind(fire), heat: level, fan: fields.tool }, a.id);
@@ -523,10 +537,13 @@ export function wet(w: World, a: Agent, act: Act): Outcome {
     return outcome({ ok: true, text: `The water put out the ${x.name}.`, uses: { [x.id]: 1 }, gives: { [x.parts![0]]: 1 }, fields: { ...fields, gives: [x.parts![0]] } });
   }
   if (p(x, "long") >= 0.5 && p(x, "flexible") >= 0.8 && p(x, "binding") >= 0.5) {
-    const chance = 0.3 + level(a.skills.fishing ?? 0) * 0.05;
+    // Fish bite where fish are: something swimming within a stone's throw of the line.
+    const fish = w.animals.find((m) => m.species === "fish" && meters(m, a) <= 40);
+    const chance = (fish ? 0.3 : 0.06) + level(a.skills.fishing ?? 0) * 0.05;
     const s = a.inv.find((q) => q.k === x.id)!;
     s.hp -= 0.03;
     if (Math.random() < chance) {
+      if (fish) w.animals = w.animals.filter((m) => m !== fish);
       giveItems(w, a, "fish");
       fields.gives = ["fish"];
       return outcome({ ok: true, text: `They dangled the ${x.name} in the water and something bit. A fish!`, gives: { fish: 1 }, fields, numbers: { chance } });
@@ -537,9 +554,13 @@ export function wet(w: World, a: Agent, act: Act): Outcome {
   return outcome({ text: `The ${x.name} got wet. Nothing else happened.`, fields });
 }
 
-export function openWater(w: World, a: { x: number; y: number }) {
-  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (tileAt(w, a.x + dx, a.y + dy) === Tile.Water && !iceAt(w, a.x + dx, a.y + dy)) return true;
-  return w.things.some((t) => t.kind === "well" && dist(t, a) <= 1);
+// Water they could dip something in from where they stand: open water within a couple of paces, or a well.
+export function openWater(w: World, a: { px: number; py: number }) {
+  for (let k = -1; k < 8; k++) {
+    const r = k < 0 ? 0 : 3 / TILE_M, x = Math.floor(a.px + Math.cos((k * Math.PI) / 4) * r), y = Math.floor(a.py + Math.sin((k * Math.PI) / 4) * r);
+    if (tileAt(w, x, y) === Tile.Water && !iceAt(w, x, y)) return true;
+  }
+  return !!anyAround(w, a.px, a.py, 3, ["well"]);
 }
 
 // ---------- throw ----------
@@ -551,13 +572,14 @@ export function throwTick(w: World, a: Agent, act: Act, st: { progress: number; 
   if (!k || !count(a, k.id)) return { done: true, out: outcome({ text: "They had nothing left to throw.", fields }) };
   if (!prey) return { done: true, out: outcome({ text: "The animal was gone.", fields }) };
   if (++st.progress % 3) return { done: false };
-  const d = dist(a, prey);
-  const chance = Math.max(0.05, Math.min(0.9, 0.35 + level(a.skills.throwing ?? 0) * 0.05 + p(k, "heavy") * 0.15 + p(k, "sharp") * 0.2 - d * 0.05));
+  const d = meters(a, prey);
+  const chance = Math.max(0.05, Math.min(0.9, 0.35 + level(a.skills.throwing ?? 0) * 0.05 + p(k, "heavy") * 0.15 + p(k, "sharp") * 0.2 - d * 0.01));
   const mat = THING_MATERIAL[prey.species];
   takeItems(a, k.id);
   const hit = Math.random() < chance;
-  dropPile(w, prey.x + (hit ? 0 : Math.sign(prey.x - a.x)), prey.y, k.id, 1);
-  const dmg = hit ? 5 * Math.max(0, (0.25 + p(k, "heavy") * 0.8) * (0.3 + p(k, "sharp") * 1.2) * 1.2 - mat.toughness * 0.3) : 0;
+  const past = hit ? 0 : (1 + Math.random() * 3) / TILE_M, dir = Math.atan2(prey.py - a.py, prey.px - a.px);
+  dropPile(w, prey.px + Math.cos(dir) * past, prey.py + Math.sin(dir) * past, k.id, 1);
+  const dmg = hit ? 5 * Math.max(0, (0.25 + p(k, "heavy") * 0.8) * (0.3 + p(k, "sharp") * 1.2) * 2.2 - mat.toughness * 0.3) : 0;
   prey.hp -= dmg;
   if (prey.species === "deer") prey.state = "flee";
   else prey.target = a.id;
@@ -579,18 +601,24 @@ export function throwTick(w: World, a: Agent, act: Act, st: { progress: number; 
 const an = (s: string) => (/^[aeiou]/.test(s) ? `an ${s}` : `a ${s}`);
 
 // ---------- dig ----------
+// Soft ground with nothing standing on it within a pace or two.
+export function diggable(w: World, px: number, py: number) {
+  const tile = tileAt(w, Math.floor(px), Math.floor(py));
+  return (tile === Tile.Grass || tile === Tile.Forest) && !anyAround(w, px, py, 1.5, SOLID);
+}
+// What takes up the ground it stands on, so no one can dig or plant right there.
+const SOLID = ["tree", "stump", "burnt_stump", "bush", "dead_bush", "sapling", "boulder", "fallen_log", "structure", "fire", "pit", "trap", "well", "grave"];
 export function digTick(w: World, a: Agent, act: Act, st: { progress: number }): { done: boolean; out?: Outcome } {
   const tool = toolOf(w, act);
   const fields: Fields = { verb: "dig", inputs: [], tool: act.tool ?? null, gives: [] };
-  const tile = tileAt(w, a.x, a.y);
-  if ((tile !== Tile.Grass && tile !== Tile.Forest) || w.things.some((t) => t.x === a.x && t.y === a.y && t.kind !== "item"))
-    return { done: true, out: outcome({ text: "The ground here couldn't be dug.", fields }) };
+  const [px, py] = beside(w, a, 1);
+  if (!diggable(w, px, py)) return { done: true, out: outcome({ text: "The ground here couldn't be dug.", fields }) };
   const power = 0.15 + p(tool, "hard") * 0.4 + p(tool, "sharp") * 0.3 + p(tool, "long") * 0.3;
   st.progress += power * (1 + level(a.skills.digging ?? 0) * 0.1);
   if (!act.tool) a.needs.health = Math.max(0, a.needs.health - 0.05);
   trace("physics", "dig", { tool: tool.id, power, progress: st.progress }, a.id);
   if (st.progress < 12) return { done: false };
-  changed.add(addThing(w, "pit", a.x, a.y, { owner: a.id, born: w.t }).id);
+  mark(w, addThing(w, "pit", px, py, { owner: a.id, born: w.t }));
   fields.builds = "pit";
   return { done: true, out: outcome({ ok: true, text: `Digging with ${act.tool ? `the ${tool.name}` : "bare hands"} made a deep pit.`, builds: "pit", fields }) };
 }
@@ -644,8 +672,13 @@ export function shelterOf(w: World, parts: Record<string, number>): Shelter {
   const style = Object.entries(byStyle).sort((x, y) => y[1] - x[1])[0]?.[0] ?? "mixed";
   return { tier: tier as Shelter["tier"], style, cover: coverS, insul: insulS, sturdy: sturdyS, flam: n ? flam / n : 0 };
 }
-export const homeOf = (w: World, a: Agent) => (a.home ? w.things.find((t) => t.id === a.home && t.kind === "structure") ?? null : null);
+export const homeOf = (w: World, a: Agent) => { const h = thingById(w, a.home); return h?.kind === "structure" ? h : null; };
 const TIER = ["a pile", "a lean-to", "a hut", "a cabin"];
+const WIDTH = [1.2, 2.2, 3, 4.5]; // meters across, by tier
+// Close enough to set something into it or take something out: within reach of its walls.
+export const reaches = (a: { px: number; py: number }, t: Thing) => meters(a, t) <= reachOf(t) + 1;
+// A stone ring is the structure around a fire, where the fire stands.
+const ringOf = (w: World, fire: Thing) => nearestThing(w, fire.px, fire.py, ["structure"], () => true, 1);
 
 export function place(w: World, a: Agent, act: Act): Outcome {
   const parts = act.items.map((id) => kind(w, id)!).filter(Boolean);
@@ -653,15 +686,15 @@ export function place(w: World, a: Agent, act: Act): Outcome {
   const fields: Fields = { verb: "place", inputs: [...act.items].sort(), gives: [] };
   if (!parts.length || Object.entries(need).some(([k, n]) => count(a, k) < n)) return outcome({ text: "They didn't have those things to hand.", fields });
   const take = () => { for (const [k, n] of Object.entries(need)) takeItems(a, k, n); };
-  const fire = w.things.find((t) => t.kind === "fire" && dist(a, t) <= 1);
+  const fire = nearestThing(w, a.px, a.py, ["fire"], (t) => reaches(a, t), 4);
   const flame = parts.find((k) => k.id.startsWith("burning:"));
   const fuels = parts.filter((k) => p(k, "flammable") >= 0.5 && k !== flame);
   if (flame && (fuels.length || fire)) {
     // A lamp lends its flame and keeps burning; a torch is used up.
     for (const [k, n] of Object.entries(need)) takeItems(a, k, k === flame.id && p(flame, "container") >= 0.5 ? n - 1 : n);
     const fuel = fuels.reduce((t, k) => t + (k.fuel ?? 20), 20);
-    if (fire) { fire.hp = Math.min(400, (fire.hp ?? 0) + fuel); changed.add(fire.id); }
-    else changed.add(addThing(w, "fire", a.x, a.y, { owner: a.id, hp: fuel, maxHp: 400, born: w.t, heat: 1 }).id);
+    if (fire) { fire.hp = Math.min(400, (fire.hp ?? 0) + fuel); mark(w, fire); }
+    else mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: fuel, maxHp: 400, born: w.t, heat: 1 }));
     fields.builds = "fire";
     return outcome({ ok: true, text: `Setting the ${flame.name} into ${fuels.length ? fuels.map((k) => `the ${k.name}`).join(" and ") : "the fire"} started a campfire.`, uses: need, builds: "fire", fields });
   }
@@ -671,7 +704,7 @@ export function place(w: World, a: Agent, act: Act): Outcome {
     const coal = fuels.filter((k) => (k.burns ?? 1) > 1.2).reduce((t, k) => t + (k.fuel ?? 20), 0);
     fire.charcoal = (fire.charcoal ?? 0) + coal;
     fire.heat = fireHeat(w, fire);
-    changed.add(fire.id);
+    mark(w, fire);
     const forge = coal > 0 && !!fire.contained;
     fields.at = forge ? "hearth" : "fire"; fields.builds = forge ? "forge" : "fed_fire";
     return outcome({ ok: true, text: forge ? `The ${list(w, need)} caught inside the ring and glowed white-hot.` : `Feeding ${list(w, need)} to the fire built it up.`, uses: need, builds: fields.builds, fields, numbers: { heat: fire.heat } });
@@ -679,8 +712,8 @@ export function place(w: World, a: Agent, act: Act): Outcome {
   // Stone or clay set around a fire rings it in; heaped over a fire that's already ringed, it closes it off to smolder.
   if (fire && parts.every((k) => (p(k, "hard") >= 0.5 && p(k, "flammable") < 0.2) || p(k, "plastic") >= 0.6)) {
     take();
-    let ring = w.things.find((t) => t.kind === "structure" && t.x === fire.x && t.y === fire.y);
-    if (!ring) ring = addThing(w, "structure", fire.x, fire.y, { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t });
+    let ring = ringOf(w, fire);
+    if (!ring) ring = addThing(w, "structure", fire.px, fire.py, { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t, size: 1.6 });
     for (const [k, n] of Object.entries(need)) ring.parts![k] = (ring.parts![k] ?? 0) + n;
     ring.shelter = { ...shelterOf(w, ring.parts!), tier: 0 };
     const walls = Object.values(ring.parts!).reduce((t, n) => t + n, 0);
@@ -688,49 +721,50 @@ export function place(w: World, a: Agent, act: Act): Outcome {
     fire.contained = walls >= 3;
     fire.covered = was.covered || (was.contained && (walls >= 6 || parts.some((k) => p(k, "plastic") >= 0.6)));
     fire.heat = fireHeat(w, fire);
-    changed.add(ring.id); changed.add(fire.id);
+    mark(w, ring); mark(w, fire);
     fields.at = was.contained ? "hearth" : "fire";
     fields.builds = fire.covered ? "kiln" : fire.contained ? "hearth" : "ring";
     const text = fire.covered && !was.covered ? `Heaping ${list(w, need)} over the ringed fire closed it in. It smoldered low and smoky under the cover.`
       : fire.contained && !was.contained ? `Ringing the fire with ${list(w, need)} closed it in. The flames stayed put and burned steady.` : `They set ${list(w, need)} beside the fire.`;
     return outcome({ ok: (fire.contained && !was.contained) || (fire.covered && !was.covered), text, uses: need, builds: fields.builds, fields, numbers: { heat: fire.heat } });
   }
-  const pit = w.things.find((t) => t.kind === "pit" && dist(a, t) <= 1);
+  const pit = nearestThing(w, a.px, a.py, ["pit"], (t) => reaches(a, t), 4);
   const cover = parts.filter((k) => p(k, "long") >= 0.5 || p(k, "fibrous") >= 0.6);
   if (pit && cover.length >= 2 && cover.length === parts.length) {
     take();
-    pit.kind = "trap"; pit.owner = a.id;
-    changed.add(pit.id);
+    setKind(w, pit, "trap"); pit.owner = a.id;
+    mark(w, pit);
     fields.at = "pit"; fields.builds = "trap";
     return outcome({ ok: true, text: `Laying ${list(w, need)} over the pit hid it from view.`, uses: need, builds: "trap", fields });
   }
-  const abandoned = w.things.find((t) => t.kind === "structure" && !t.owner && (t.shelter?.tier ?? 0) >= 1 && dist(a, t) <= 1);
+  const abandoned = nearestThing(w, a.px, a.py, ["structure"], (t) => !t.owner && (t.shelter?.tier ?? 0) >= 1 && reaches(a, t), 6);
   if (abandoned && !homeOf(w, a)) {
     abandoned.owner = a.id;
     log(w, "claim", [a.id], abandoned, `${a.name} moved into an empty ${TIER[abandoned.shelter!.tier].replace(/^an? /, "")} and made it theirs.`);
   }
-  const own = w.things.find((t) => t.kind === "structure" && t.owner === a.id && dist(a, t) <= 1 && !w.things.some((f) => f.kind === "fire" && f.x === t.x && f.y === t.y));
+  const own = nearestThing(w, a.px, a.py, ["structure"], (t) => t.owner === a.id && reaches(a, t) && !nearestThing(w, t.px, t.py, ["fire"], () => true, 1), 6);
   // Food set down inside a home is kept, not built into the walls.
   if (own && (own.shelter?.tier ?? 0) >= 1 && parts.every((k) => p(k, "edible") >= 0.1)) {
     take();
     own.store ??= [];
     for (const [k, n] of Object.entries(need)) for (let i = 0; i < n; i++) own.store.push({ k, hp: 1, born: w.t });
-    changed.add(own.id);
+    mark(w, own);
     fields.at = "home"; fields.builds = "stored";
     return outcome({ text: `They tucked ${list(w, need)} away inside their shelter.`, uses: need, builds: "stored", fields });
   }
   if (parts.some((k) => p(k, "edible") >= 0.1)) return outcome({ text: `Food makes a poor thing to build with. The ${parts.find((k) => p(k, "edible") >= 0.1)!.name} just rolled away.`, fields });
   take();
-  const s = own ?? addThing(w, "structure", a.x, a.y, { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t });
+  const s = own ?? addThing(w, "structure", ...beside(w, a, 1.5), { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t });
   for (const [k, n] of Object.entries(need)) s.parts![k] = (s.parts![k] ?? 0) + n;
   const before = own?.shelter?.tier ?? 0;
   s.shelter = shelterOf(w, s.parts!);
+  s.size = WIDTH[s.shelter.tier];
   s.hp = Math.min(s.maxHp!, (s.hp ?? 100) + 20);
-  changed.add(s.id);
+  mark(w, s);
   const home = homeOf(w, a);
-  if (s.shelter.tier >= 1 && (!home || home === s || (home.shelter?.tier ?? 0) < s.shelter.tier || ((home.shelter?.tier ?? 0) <= 1 && dist(home, s) > 8))) {
+  if (s.shelter.tier >= 1 && (!home || home === s || (home.shelter?.tier ?? 0) < s.shelter.tier || ((home.shelter?.tier ?? 0) <= 1 && meters(home, s) > 60))) {
     // Moving into a better place leaves the old one empty for anyone to take.
-    if (home && home !== s) { delete home.owner; changed.add(home.id); }
+    if (home && home !== s) { delete home.owner; mark(w, home); }
     a.home = s.id;
   }
   const grew = s.shelter.tier > before;
@@ -744,7 +778,7 @@ export function place(w: World, a: Agent, act: Act): Outcome {
 
 // Putting things away inside a home keeps them out of your hands and out of the weather.
 export function stash(w: World, a: Agent, keepFood = 3, home = homeOf(w, a)) {
-  if (!home || dist(a, home) > 1) return 0;
+  if (!home || !reaches(a, home)) return 0;
   home.store ??= [];
   let food = 0, moved = 0;
   for (const s of [...a.inv]) {
@@ -755,7 +789,7 @@ export function stash(w: World, a: Agent, keepFood = 3, home = homeOf(w, a)) {
     home.store.push(s);
     moved++;
   }
-  if (moved) changed.add(home.id);
+  if (moved) mark(w, home);
   return moved;
 }
 export function unstash(w: World, a: Agent, home: Thing, k: string, n: number) {
@@ -766,7 +800,7 @@ export function unstash(w: World, a: Agent, home: Thing, k: string, n: number) {
     a.inv.push(s);
     got++;
   }
-  if (got) changed.add(home.id);
+  if (got) mark(w, home);
   return got;
 }
 const isToolish = (k?: Kind) => !!k && (k.verb === "join" || k.verb === "rub" || p(k, "sharp") >= 0.5 || p(k, "container") >= 0.6);
@@ -776,16 +810,17 @@ export function plant(w: World, a: Agent, act: Act): Outcome {
   const x = kind(w, act.items[0]);
   const fields: Fields = { verb: "plant", inputs: act.items.slice(0, 1), gives: [] };
   if (!x || !count(a, x.id)) return outcome({ text: "They had nothing to plant.", fields });
-  const tile = tileAt(w, a.x, a.y);
+  const [px, py] = beside(w, a, 0.8);
+  const tile = tileAt(w, Math.floor(px), Math.floor(py));
   if (tile !== Tile.Grass && tile !== Tile.Forest) return outcome({ text: "The ground was too hard here.", fields });
   takeItems(a, x.id);
-  if (p(x, "seed") < 0.4 || w.things.some((t) => t.x === a.x && t.y === a.y && t.kind !== "item")) {
+  if (p(x, "seed") < 0.4 || !diggable(w, px, py)) {
     fields.effect = "buried";
     return outcome({ text: `They pushed the ${x.name} into the dirt.`, uses: { [x.id]: 1 }, effect: "buried", fields });
   }
-  changed.add(addThing(w, "sapling", a.x, a.y, { owner: a.id, stage: 0, item: x.id, born: w.t, hp: 5, maxHp: 5 }).id);
+  mark(w, addThing(w, "sapling", px, py, { owner: a.id, stage: 0, item: x.id, born: w.t, hp: 5, maxHp: 5 }));
   fields.effect = "buried";
-  return outcome({ text: `They pushed the ${x.name} into the soft ground${nearWater(w, a.x, a.y, 3) ? " near the water" : ""}.`, uses: { [x.id]: 1 }, effect: "buried", fields });
+  return outcome({ text: `They pushed the ${x.name} into the soft ground${nearWater(w, a.x, a.y, 1) ? " near the water" : ""}.`, uses: { [x.id]: 1 }, effect: "buried", fields });
 }
 
 export function eat(w: World, a: Agent, k: string): Outcome {

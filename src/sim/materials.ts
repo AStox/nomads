@@ -52,6 +52,9 @@ export const BASE: Record<string, Omit<Kind, "id">> = {
   fat: { name: "fat", props: { edible: 0.25, flammable: 0.9, binding: 0.15, toughness: 0.02 }, shelf: 4, fuel: 60 },
   charcoal: { name: "charcoal", props: { flammable: 0.95, hard: 0.2, heavy: 0.1, toughness: 0.05 }, fuel: 150, burns: 1.54 },
   ore: { name: "reddish stone", props: { hard: 0.8, heavy: 0.9, toughness: 0.7, metal: 0.6 } },
+  pebble: { name: "pebble", props: { hard: 0.9, heavy: 0.05, toughness: 0.7 } },
+  fern: { name: "fern fronds", props: { fibrous: 0.5, flexible: 0.6, flammable: 0.6, insulating: 0.4, toxic: 0.3, toughness: 0.05 } },
+  flower: { name: "flower", props: { edible: 0.02, medicinal: 0.15, seed: 0.3, flammable: 0.3, toughness: 0.01 } },
 };
 
 // World things are made of materials too.
@@ -62,8 +65,21 @@ export const THING_MATERIAL: Record<string, { toughness: number; hp: number; fla
   reeds: { toughness: 0.05, hp: 6, flammable: 0.8, breaks: { fiber: 2 } },
   boulder: { toughness: 0.85, hp: 120, flammable: 0, breaks: { stone: 3 } },
   stump: { toughness: 0.5, hp: 40, flammable: 0.4, breaks: { stick: 1 } },
+  fallen_log: { toughness: 0.35, hp: 60, flammable: 0.6, breaks: { log: 1, stick: 2 } },
   deer: { toughness: 0.1, hp: 30, flammable: 0, breaks: { meat: 3, hide: 1, bone: 2, fat: 1 } },
   wolf: { toughness: 0.15, hp: 35, flammable: 0, breaks: { meat: 2, hide: 1, bone: 1, fat: 1 } },
+  rabbit: { toughness: 0.05, hp: 6, flammable: 0, breaks: { meat: 1, hide: 1 } },
+  heron: { toughness: 0.05, hp: 8, flammable: 0, breaks: { meat: 1, bone: 1 } },
+  gull: { toughness: 0.05, hp: 5, flammable: 0, breaks: { meat: 1, bone: 1 } },
+  crow: { toughness: 0.05, hp: 4, flammable: 0, breaks: { meat: 1 } },
+  eagle: { toughness: 0.08, hp: 12, flammable: 0, breaks: { meat: 1, bone: 1 } },
+  fish: { toughness: 0.02, hp: 3, flammable: 0, breaks: { fish: 1 } },
+};
+// What each kind of thing in the world is made of, as a kind in the registry, for anyone asking what it's like.
+export const MADE_OF: Record<string, string> = {
+  tree: "log", stump: "log", burnt_stump: "charcoal", bush: "stick", dead_bush: "stick", sapling: "stick", fallen_log: "log",
+  stick: "stick", stone: "stone", pebble: "pebble", boulder: "stone", mushroom: "mushroom", herb: "herb", reeds: "fiber",
+  fern: "fern", flowers: "flower", grass: "fiber", clay: "clay",
 };
 
 export type Registry = Record<string, Kind>;

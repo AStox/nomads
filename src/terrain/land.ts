@@ -1,6 +1,6 @@
-// The simulated island as the game sees it: tiles of water, rock, forest or grass, corner heights for the map, the
-// things lying about on each tile, and a compact copy of the ground for the renderer. All of it is read off the
-// physics; nothing is rolled per tile type.
+// The simulated island as the game sees it: tiles of water, rock, forest or grass, corner heights for the map, and a
+// compact copy of the ground for the renderer. All of it is read off the physics; nothing is rolled per tile type.
+// What grows and lies on the ground is in flora.ts.
 import { H, Tile, W } from "../sim/world";
 import { CELL, LEN, N } from "./grid";
 import type { Island } from "./island";
@@ -89,36 +89,4 @@ export function lay(isle: Island): Lay {
     rain: Math.round(rain / Math.max(1, land)),
   };
   return { tiles, heights, tile, stream, shore, terrain };
-}
-
-export type Placed = { kind: "tree" | "stick" | "mushroom" | "herb" | "bush" | "reeds" | "clay" | "stone" | "boulder" | "ore"; x: number; y: number };
-
-// What each tile starts with, at most one thing, in proportion to what its ground grows or sheds: trees and fallen
-// wood under canopy, mushrooms where it's shaded and damp, berries in the open, reeds and clay by still or running
-// water, stones and boulders where rock breaks through.
-export function stock(land: Lay, rand: () => number): Placed[] {
-  const out: Placed[] = [];
-  const { tile: c } = land;
-  for (let t = 0; t < W * H; t++) {
-    if (land.tiles[t] === Tile.Water) continue;
-    const wetEdge = land.stream[t] || land.shore[t] ? 1 : 0;
-    const odds: [Placed["kind"], number][] = [
-      ["tree", 0.3 * c.tree[t] ** 1.4],
-      ["stick", 0.03 * c.tree[t] + 0.006],
-      ["mushroom", 0.025 * c.tree[t] * c.moist[t]],
-      ["herb", 0.02 * c.grass[t] * c.moist[t] + 0.008 * c.shrub[t]],
-      ["bush", 0.04 * (c.grass[t] + c.shrub[t]) * (1 - c.tree[t]) * c.moist[t]],
-      ["reeds", 0.06 * c.marsh[t] + 0.02 * wetEdge * (1 - c.sand[t])],
-      ["clay", 0.4 * c.silt[t] * (0.3 + 0.7 * wetEdge)],
-      ["stone", 0.1 * c.bare[t] + 0.012 * land.stream[t] + 0.03 * c.sand[t]],
-      ["boulder", 0.05 * c.bare[t]],
-      ["ore", 0.014 * c.bare[t]],
-    ];
-    let r = rand();
-    for (const [kind, p] of odds) {
-      if (r < p) { out.push({ kind, x: t % W, y: Math.floor(t / W) }); break; }
-      r -= p;
-    }
-  }
-  return out;
 }

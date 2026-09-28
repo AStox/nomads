@@ -1,5 +1,5 @@
 // Runs the game's simulation in the page the way server.ts loop() does: one tick per task, the same change sets, cleared the same way.
-import { DAY, changed, changedKinds, groupsChanged, iceChanged, newKinds, newWorld, pathChanges, removed, tick } from "../sim.js";
+import { DAY, changed, changedKinds, groupsChanged, iceChanged, inspect, inspectGround, newKinds, newWorld, objects, pathChanges, removed, thingById, tick, trailChanges, trails } from "../sim.js";
 
 const BASE_MS = 500;
 
@@ -15,7 +15,7 @@ const nextTask = () => {
 
 function clearChanges() {
   iceChanged.now = false; groupsChanged.now = false;
-  changed.clear(); removed.clear(); newKinds.clear(); changedKinds.clear(); pathChanges.clear();
+  changed.clear(); removed.clear(); newKinds.clear(); changedKinds.clear(); pathChanges.clear(); trailChanges.clear();
 }
 
 // app.js nightAmount: dark 21:00 to 04:00, ramps over 19-21 and 04-06.
@@ -24,7 +24,8 @@ const nightAt = (h) => (h >= 21 || h < 4 ? 1 : h >= 19 ? (h - 19) / 2 : h < 6 ? 
 // One live sim per page: the change sets are module globals inside the bundle.
 export async function createSim({ seed = 1, warm = 0, onProgress } = {}) {
   const w = newWorld(seed);
-  const pos = new Map();
+  // Where each agent and animal stood before the last tick, so a frame can draw them partway between, and who's alive now.
+  const prev = new Map(), ents = new Map();
   let alpha = 0, tickMs = 0, last = null, pausedAt = null, lastIv = 0, lastEvent = 0;
 
   const step = () => {
@@ -38,19 +39,15 @@ export async function createSim({ seed = 1, warm = 0, onProgress } = {}) {
     const ms = performance.now() - t0;
     tickMs = tickMs ? tickMs * 0.95 + ms * 0.05 : ms;
   };
-  const track = (list) => {
-    for (const a of list) {
-      const p = pos.get(a.id);
-      if (!p) pos.set(a.id, { x: a.x, y: a.y, px: a.x, py: a.y });
-      else { p.px = p.x; p.py = p.y; p.x = a.x; p.y = a.y; }
-    }
+  const remember = () => {
+    prev.clear();
+    for (const a of w.agents) prev.set(a.id, [a.px, a.py]);
+    for (const a of w.animals) prev.set(a.id, [a.px, a.py]);
   };
-  const trackAll = () => {
-    track(w.agents); track(w.animals);
-    if (pos.size > w.agents.length + w.animals.length) {
-      const live = new Set([...w.agents, ...w.animals].map((a) => a.id));
-      for (const id of pos.keys()) if (!live.has(id)) pos.delete(id);
-    }
+  const roll = () => {
+    ents.clear();
+    for (const a of w.agents) ents.set(a.id, a);
+    for (const a of w.animals) ents.set(a.id, a);
   };
   const newEvents = () => {
     let i = w.events.length;
@@ -68,7 +65,8 @@ export async function createSim({ seed = 1, warm = 0, onProgress } = {}) {
   }
   clearChanges();
   lastEvent = w.events.at(-1)?.id ?? 0;
-  trackAll();
+  remember();
+  roll();
 
   const sim = {
     get w() { return w; },
@@ -76,7 +74,18 @@ export async function createSim({ seed = 1, warm = 0, onProgress } = {}) {
     get tickMs() { return tickMs; },
     speed: 1,
     paused: false,
-    pos: (id) => pos.get(id) ?? null,
+    // Current and previous float positions in tiles; things don't move, so theirs match.
+    pos(id) {
+      const e = ents.get(id) ?? thingById(w, id);
+      if (!e) return null;
+      const p = prev.get(id);
+      return { px: e.px, py: e.py, ppx: p ? p[0] : e.px, ppy: p ? p[1] : e.py };
+    },
+    objects: () => objects(w),
+    // Fine wear where people have walked: cell meters, n cells a side, wear 0..255 row-major from the island's north-west corner.
+    trails: () => { const t = trails(w); return { cell: t.cell, n: t.n, wear: t.wear }; },
+    inspect: (id) => inspect(w, id),
+    inspectGround: (px, py) => inspectGround(w, px, py),
     clock() {
       const ft = w.t + alpha, h = ((ft % DAY) / DAY) * 24;
       return { hour: h, day: Math.floor(ft / DAY) + 1, season: w.weather.season, night: nightAt(h) };
@@ -90,13 +99,15 @@ export async function createSim({ seed = 1, warm = 0, onProgress } = {}) {
       if (iv !== lastIv) { last = now - alpha * iv; lastIv = iv; }
       if (now - last < iv) { alpha = Math.max(0, (now - last) / iv); return null; }
       last = now - last < 2 * iv ? last + iv : now;
+      remember();
       const t0 = step();
-      trackAll();
-      const things = changed.size ? w.things.filter((t) => changed.has(t.id)) : [];
+      roll();
+      const things = [...changed].map((id) => thingById(w, id)).filter(Boolean);
       const out = {
         things,
-        removed: [...removed].filter((id) => !changed.has(id) || !things.some((t) => t.id === id)),
+        removed: [...removed].filter((id) => !thingById(w, id)),
         paths: [...pathChanges],
+        trails: [...trailChanges],
         ice: iceChanged.now,
         groups: groupsChanged.now,
         events: newEvents(),

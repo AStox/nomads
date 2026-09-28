@@ -6,6 +6,7 @@ import * as SP from "./sprites.js";
 import * as LF from "./life.js";
 import { text } from "./ui.js";
 import * as TH from "./things.js";
+import { drawInspector } from "./inspect.js";
 
 const K = 3, FW = 440, M = 6, GAP = 3;
 // the game's sun, so shadows fall the same way
@@ -79,6 +80,8 @@ function sections() {
     ]],
     ["PEOPLE", people],
     ...simSections(),
+    ...ladderSections(),
+    ["INSPECTOR  SHOWN 3X HERE  2X IN GAME", inspectorCells()],
     ["ANIMATION FRAMES 0 1 2 3", [
       cell("GULL", "7", range(4, (f) => LF.bird(7, f, "gull")), { shadow: false }),
       cell("CROW", "6", range(4, (f) => LF.bird(6, f, "crow")), { shadow: false }),
@@ -88,6 +91,72 @@ function sections() {
       cell("FLAMES", "SEED 1-4", range(4, (f) => SP.flames(10, f + 1)), { shadow: false }),
     ]],
   ];
+}
+
+// Every sim object and animal through things.js object() and animal(), from a 1 px dot to close zoom.
+const LADDER = [1, 2, 3, 4, 6, 9, 13, 18];
+const OBJECTS = [["tree", "oak", 1.6], ["tree", "pine", 1.6], ["tree", "ash", 1.6], ["tree", "aspen", 1.6], ["bush", "berry", 0.6], ["bush", "hazel", 0.6], ["bush", "heather", 0.6], ["bush", "gorse", 0.6],
+  ["boulder", "", 1], ["stone", "", 0.4], ["pebble", "", 0.3], ["stick", "", 1.2], ["fallen_log", "oak", 2.4], ["fallen_log", "pine", 2.4], ["fallen_log", "ash", 2.4],
+  ["mushroom", "bolete", 0.4], ["mushroom", "chanterelle", 0.4], ["mushroom", "puffball", 0.4], ["herb", "yarrow", 0.45], ["herb", "sorrel", 0.45], ["herb", "mint", 0.45],
+  ["reeds", "", 0.6], ["grass", "", 1.8], ["fern", "bracken", 0.5], ["fern", "lady_fern", 0.5], ["flowers", "buttercup", 0.45], ["flowers", "daisy", 0.45], ["flowers", "clover", 0.45],
+  ["flowers", "harebell", 0.45], ["flowers", "poppy", 0.45], ["sapling", "", 0.6], ["stump", "", 0.4], ["dead_bush", "", 0.5], ["clay", "", 0.5],
+  ["item", "stone", 0.4], ["item", "meat", 0.4], ["item", "stick", 0.4], ["item", "hide", 0.4], ["structure", "reeds", 1.6]];
+const FIRES = [["OPEN", {}], ["RING", { contained: true }], ["RING COLD", { contained: true, burning: 0 }], ["KILN", { covered: true }], ["FORGE", { charcoal: true }]];
+const ANIMALS = [["deer", "graze"], ["deer", "flee"], ["wolf", "wander"], ["wolf", "hunt"], ["rabbit", "wander"], ["heron", "feed"], ["heron", "wade"], ["heron", "fly"],
+  ["gull", "fly"], ["gull", "soar"], ["gull", "perch"], ["crow", "fly"], ["crow", "land"], ["eagle", "soar"], ["eagle", "dive"], ["fish", "swim"], ["fish", "jump"],
+  ["butterfly", "flutter"], ["butterfly", "rest"]];
+function ladderSections() {
+  const sub = LADDER.join(" ");
+  return [
+    ["SIM OBJECTS  EVERY SIZE  THINGS OBJECT()", OBJECTS.map(([k, sp, f], i) => cell(`${k.replace("_", " ").toUpperCase()}${sp ? " " + sp.toUpperCase() : ""}`, "", LADDER.map((h) => TH.object(k, h * f, i + 3, { species: sp })), { ground: k === "reeds" ? "sand" : "grass" }))],
+    ["SIM FIRES AND BURNING", [
+      ...FIRES.map(([n, o], i) => cell(`FIRE ${n}`, "", [6, 10, 16].map((h, j) => TH.object("fire", h, i + j, o)), { shadow: false })),
+      cell("BURNING", "TREE BUSH STRUCTURE", [TH.object("tree", 26, 2, { species: "oak", burning: 0.8 }), TH.object("bush", 8, 3, { burning: 1 }), TH.object("structure", 22, 4, { tier: 2, species: "logs", burning: 0.6 })], { shadow: false }),
+    ]],
+    ["SIM ANIMALS  EVERY SIZE  THINGS ANIMAL()", ANIMALS.map(([sp, st], i) => cell(`${sp.toUpperCase()} ${st.toUpperCase()}`, `PX ${sub}`, LADDER.map((h, j) => TH.animal(sp, st, h, j, i + 2, 1)), { shadow: !/fly|swim|jump|soar|dive|flutter/.test(st), ground: sp === "fish" || (sp === "heron" && st !== "fly") ? "water" : "grass" }))],
+  ];
+}
+
+// Inspector panels for sample selections shaped like sim.inspect and sim.inspectGround return them.
+const SAMPLES = [
+  { id: "t48211", kind: "tree", name: "Oak", species: "oak", seed: 3, px: 31.42, py: 18.07,
+    bars: [["HP", 184, 220]],
+    rows: [["Height", "14.2 m"], ["Trunk", "0.62 m"], ["Age", "86 years"], ["Material", ""], ["Hardness", 0.62], ["Flammability", 0.45], ["Weight", "2.1 t"], ["Yields", "logs 6, sticks 14, bark 3"], ["Burning", "no"]] },
+  { id: "t51077", kind: "boulder", name: "Boulder", species: "granite", seed: 2, px: 40.9, py: 12.33,
+    bars: [["HP", 900, 900]],
+    rows: [["Size", "2.4 m"], ["Weight", "19 t"], ["Material", ""], ["Hardness", 0.92], ["Sharpness", 0.1], ["Heavy", 1], ["Moss", "north side"]] },
+  { id: "t60312", kind: "stone", name: "Stone", species: "flint", seed: 5, px: 29.71, py: 20.55,
+    bars: [["HP", 40, 40]],
+    rows: [["Size", "0.18 m"], ["Weight", "2.3 kg"], ["Hardness", 0.85], ["Sharpness", 0.35], ["Knaps to", "flint blade"], ["Owner", "none"]] },
+  { id: "t33920", kind: "bush", name: "Blackberry bush", species: "berry", seed: 6, berries: 12, px: 30.12, py: 19.9,
+    bars: [["HP", 30, 45], ["Berries", 12, 20]],
+    rows: [["Size", "1.1 m"], ["Stage", "fruiting"], ["Nutrition", 0.35], ["Regrows", "in 3 days"], ["Flammability", 0.6], ["Thorny", "yes"]] },
+  { id: "a912", kind: "animal", name: "Gull", species: "gull", seed: 4, px: 12.5, py: 44.1,
+    bars: [["HP", 6, 8]],
+    rows: [["State", "fly"], ["Altitude", "22 m"], ["Heading", "north east"], ["Speed", "14 m per tick"], ["Flock", "gulls of the west cove, 7"], ["Feeds on", "fish, scraps"]] },
+  { id: "a14", kind: "animal", name: "Deer", species: "deer", seed: 5, px: 33.02, py: 21.77,
+    bars: [["HP", 38, 60]],
+    rows: [["State", "graze"], ["Herd", "herd 2, 4 deer"], ["Age", "3 years"], ["Sex", "stag"], ["Heading", "west"], ["Wary of", "wolves, people"], ["Last fled", "at 06:40"]] },
+  { id: "mara", kind: "agent", name: "Mara", seed: 8, cloth: 1, px: 31.1, py: 18.6,
+    bars: [["Health", 82, 100], ["Food", 41, 100], ["Energy", 67, 100], ["Warmth", 88, 100], ["Social", 23, 100]],
+    rows: [["Status", "gathering sticks"], ["Goal", "build a lean-to before night"], ["Stage", "adult"], ["Age", "27.4 years"], ["Home", "lean-to t70411"],
+      ["Traits", ""], ["Curious", 0.8], ["Patient", 0.35], ["Brave", 0.6], ["Kind", 0.72],
+      ["Skills", ""], ["Foraging", 0.44], ["Building", 0.21], ["Fire making", 0.52], ["Knapping", 0.1], ["Hunting", 0.05],
+      ["Inventory", ""], ["Sticks", 4], ["Berries", 7], ["Flint blade", 1], ["Hide", 1],
+      ["Bonds", ""], ["Tomas", "friend +0.62"], ["Ilse", "wary -0.18"], ["Oren", "kin, brother +0.8"],
+      ["Wearing", "hide wrap"], ["Holding", "flint blade"], ["Knows", "fire, knapping, lean-to"]] },
+  { id: "t70411", kind: "structure", name: "Lean-to", seed: 3, tier: 1, style: "logs", px: 31.3, py: 18.9,
+    bars: [["HP", 55, 80], ["Cover", 60, 100]],
+    rows: [["Tier", "1, lean-to"], ["Style", "logs"], ["Owner", "Mara"], ["Insulation", 0.3], ["Sturdiness", 0.55], ["Flammability", 0.5], ["Store", "sticks 6, berries 12"], ["Built", "day 3, 09:15"]] },
+  { id: "ground", kind: "ground", name: "Meadow", px: 31.64, py: 18.25,
+    rows: [["Height", "142 m"], ["Slope", "6 degrees"], ["Tile", "grass"], ["Soil", "loam, deep"], ["Moisture", 0.46], ["Cover", ""], ["Grass", "72%"], ["Shrub", "11%"], ["Trees", "4%"], ["Bare", "13%"], ["Temperature", "14 °C"], ["Snow", "none"], ["Path wear", "3 of 9"], ["Ice", "no"], ["Water depth", "0 m"]] },
+];
+function inspectorCells() {
+  const toSpr = (B) => { const S = new Spr(B.w, B.h, B.w >> 1, B.h - 1); S.p.set(B.c); return S; };
+  const cells = SAMPLES.map((d) => cell(String(d.kind).toUpperCase(), d.name.toUpperCase(), toSpr(drawInspector(d, { w: 168, h: 220 })), { shadow: false }));
+  const person = SAMPLES.find((d) => d.kind === "agent"), mid = drawInspector(person, { w: 168, h: 220, scroll: 1e9 });
+  cells.splice(7, 0, cell("AGENT", "SCROLLED TO THE END", toSpr(mid), { shadow: false }));
+  return cells;
 }
 
 // The live game's things at the valley zoom (a person 8 px, a hut 16) and the close zoom (2.5 times that).

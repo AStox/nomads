@@ -678,10 +678,13 @@ const CAPS = [
   { cap: ramp("d1", "d2", "d3", "d4"), stem: ramp("s0", "s2", "s3"), spots: false, sq: 0.7 },
   { cap: ramp("a0", "a1", "a2", "a3"), stem: ramp("a1", "a2", "a3"), spots: false, sq: 0.45 },
   { cap: ramp("s0", "s2", "s3", "snow"), stem: ramp("s1", "s3", "snow"), spots: false, sq: 0.9 },
+  { cap: ramp("s0", "s2", "s3", "snow"), stem: ramp("s0", "s1", "s2"), spots: false, sq: 1, ball: true },
 ];
-// A little cluster of one kind: fly agaric, penny bun, chanterelle or shaggy inkcap. size: the largest cap's width.
-export function mushrooms(size = 3, seed = 0) {
-  const s = Math.max(2, Math.round(size)), kind = pick(CAPS, rv(seed, 1)), n = 1 + Math.floor(rv(seed, 2) * 3.2);
+const CAP_NAMES = { agaric: 0, fly_agaric: 0, bolete: 1, penny_bun: 1, chanterelle: 2, inkcap: 3, puffball: 4 };
+// A little cluster of one kind: fly agaric, bolete, chanterelle, shaggy inkcap or puffball. size: the largest cap's
+// width. species: one of those names; omitted, the seed picks among the first four.
+export function mushrooms(size = 3, seed = 0, species) {
+  const s = Math.max(2, Math.round(size)), kind = CAPS[CAP_NAMES[species]] ?? pick(CAPS.slice(0, 4), rv(seed, 1)), n = 1 + Math.floor(rv(seed, 2) * 3.2);
   const W = s * 4 + 4, H = s * 2 + 5, S = new Spr(W, H, W >> 1, H - 2), gy = S.ay + 0.95;
   const list = [];
   for (let k = 0; k < n; k++) {
@@ -690,7 +693,13 @@ export function mushrooms(size = 3, seed = 0) {
   }
   list.sort((a, b) => a[1] - b[1]);
   for (const [ox, oy, sc] of list) {
-    const cw = Math.max(1, s * sc), x = S.ax + 0.5 + ox, base = gy + oy, sh = Math.max(1, Math.round(cw * (kind.sq > 0.8 ? 0.9 : 0.6)));
+    const cw = Math.max(1, s * sc), x = S.ax + 0.5 + ox, base = gy + oy;
+    if (kind.ball) {
+      // a puffball has no stem: a pale ball sitting on the ground with a flat dark foot
+      blob(S, x, base - cw * 0.4, cw / 2 + 0.3, cw * 0.42 + 0.2, (px, py, l) => dith(kind.cap, 1.8 + l * 1.6 + (h2(px, py, seed) < 0.12 ? -0.8 : 0), px, py));
+      continue;
+    }
+    const sh = Math.max(1, Math.round(cw * (kind.sq > 0.8 ? 0.9 : 0.6)));
     const sw = cw >= 4 ? 2 : 1, sx = Math.floor(x - sw / 2 + 0.5);
     for (let j = 0; j < sh; j++) for (let i = 0; i < sw; i++) S.set(sx + i, Math.floor(base) - j, kind.stem[sw === 1 ? 1 : i === 0 ? 2 : 0]);
     const cy = Math.floor(base) - sh + 0.5, rx = cw / 2 + 0.3, ry = Math.max(0.6, cw * kind.sq * 0.5);

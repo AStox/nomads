@@ -1,14 +1,15 @@
 // Camps notice themselves from who lives near whom. Their customs are only what they actually did the last time.
 import {
-  DAY, H, RESPONSES, Tile, W, clock, dist, log, stageOf, tileAt,
+  DAY, H, RESPONSES, Tile, W, clock, dist, log, meters, stageOf, tileAt,
   type Agent, type Camp, type Custom, type Incident, type Precedent, type Response, type Thing, type World,
 } from "./world";
 import { p } from "./materials";
-import { changed, count, giveItems, homeOf, nearFire, stash, takeItems, unstash } from "./physics";
+import { count, giveItems, homeOf, mark as touch, nearFire, reaches, stash, takeItems, unstash } from "./physics";
+import { thingById } from "./space";
 import { describeRel, judge, nameCamp } from "./brain";
 import { trace } from "./trace";
 
-const LINK = 8; // homes this close, between people who don't dislike each other, make neighbors
+const LINK = 200; // meters: homes this close, between people who don't dislike each other, make neighbors
 const WATCH = DAY * 3; // how long people are watched to see whether they go along with a ruling
 const EXILE = DAY * 10;
 const HARM: Record<string, true> = { take: true, steal: true, raid: true, attack: true, insult: true, lie: true, refused_food: true, burned_home: true, trapped: true, last_deer: true, took_from_store: true };
@@ -34,7 +35,7 @@ export function cluster(w: World) {
   for (let i = 0; i < ids.length; i++)
     for (let j = i + 1; j < ids.length; j++) {
       const a = agentOf(w, ids[i])!, b = agentOf(w, ids[j])!;
-      if (dist(homes.get(a.id)!, homes.get(b.id)!) > LINK) continue;
+      if (meters(homes.get(a.id)!, homes.get(b.id)!) > LINK) continue;
       if ((a.rel[b.id]?.affinity ?? 0) <= 0.1 || (b.rel[a.id]?.affinity ?? 0) <= 0.1 || barred(a.id, b.id)) continue;
       root.set(find(a.id), find(b.id));
     }
@@ -70,8 +71,8 @@ export function cluster(w: World) {
       if (ex.until <= w.t) { delete camp.exiled[id]; continue; }
       // Someone driven out can't keep a home inside the camp.
       const a = agentOf(w, id), h = a && homeOf(w, a);
-      if (!a || !h || !camp.members.some((m) => homes.get(m) && dist(homes.get(m)!, h) <= LINK)) continue;
-      delete h.owner; a.home = null; changed.add(h.id);
+      if (!a || !h || !camp.members.some((m) => homes.get(m) && meters(homes.get(m)!, h) <= LINK)) continue;
+      delete h.owner; a.home = null; touch(w, h);
       log(w, "driven_out", [a.id], h, `${a.name} tried to keep a home too close to ${camp.name}, and it was taken from them.`, `${a.name} lost their home`);
       const p = camp.precedents.find((x) => x.id === ex.precedent);
       if (p && !p.defied.includes(a.id)) { p.defied.push(a.id); trace("group", "defy", { precedent: p.id, who: a.id, how: "kept a home inside" }, a.id); }
@@ -84,7 +85,8 @@ export function cluster(w: World) {
 
 function centerOf(members: string[], homes: Map<string, Thing>) {
   const hs = members.map((id) => homes.get(id)!).filter(Boolean);
-  return { x: Math.round(hs.reduce((t, h) => t + h.x, 0) / hs.length), y: Math.round(hs.reduce((t, h) => t + h.y, 0) / hs.length) };
+  const px = hs.reduce((t, h) => t + h.px, 0) / hs.length, py = hs.reduce((t, h) => t + h.py, 0) / hs.length;
+  return { x: Math.floor(px), y: Math.floor(py), px: Math.round(px * 1e4) / 1e4, py: Math.round(py * 1e4) / 1e4 };
 }
 function regroup(w: World, camp: Camp, members: string[], homes: Map<string, Thing>) {
   const joined = members.filter((id) => !camp.members.includes(id)), left = camp.members.filter((id) => !members.includes(id));
@@ -295,7 +297,7 @@ function exile(w: World, camp: Camp, doer: Agent, p: Precedent) {
   delete camp.shunned[doer.id];
   if (camp.leader === doer.id) camp.leader = null;
   const home = homeOf(w, doer);
-  if (home && dist(home, camp) <= LINK + 2) { delete home.owner; doer.home = null; changed.add(home.id); }
+  if (home && meters(home, camp) <= LINK + 30) { delete home.owner; doer.home = null; touch(w, home); }
   doer.needs.social = Math.max(0, doer.needs.social - 25);
   doer.goal = null; doer.plan = [];
   p.open = w.t + WATCH;
@@ -457,15 +459,15 @@ function speak(w: World) {
     const pat = patterns(camp).find((x) => x.n >= 3 && Object.keys(x.counts).length === 1 && (HARM[x.act] || !x.counts.let_go) && !camp.customs.some((c) => !c.faded && c.key === x.key));
     if (!pat || Math.random() > 0.5) continue;
     const members = camp.members.map((id) => agentOf(w, id)).filter((a): a is Agent => !!a && a.down <= w.t && stageOf(w, a) !== "child");
-    const company = (a: Agent, r: number) => members.filter((b) => b !== a && dist(a, b) <= r).length;
-    const speakers = members.filter((a) => (nearFire(w, a, 3) && company(a, 4) >= 1) || company(a, 3) >= 2);
+    const company = (a: Agent, r: number) => members.filter((b) => b !== a && meters(a, b) <= r).length;
+    const speakers = members.filter((a) => (nearFire(w, a, 4) && company(a, 30) >= 1) || company(a, 25) >= 2);
     const s = speakers.sort((x, y) => standing(camp, y.id).score - standing(camp, x.id).score)[0];
     if (!s) continue;
     const response = Object.keys(pat.counts)[0] as Response;
     const c: Custom = { id: `K${w.nextId++}`, key: pat.key, text: `Here, anyone who ${doing(pat, 1)} ${DONE[response][1]}.`, response, spokenBy: s.id, t: w.t, held: pat.n, broken: 0 };
     camp.customs.push(c);
-    for (const b of w.agents) if (dist(b, s) <= 5) b.customs[c.id] = w.t;
-    log(w, "custom", [s.id, ...camp.members.filter((id) => id !== s.id)], s, `${s.name} said${nearFire(w, s, 3) ? " by the fire" : ""}: "${c.text}" It has become a custom of ${camp.name}.`, `${doing(pat, 0)}: ${DONE[response][0]}`);
+    for (const b of w.agents) if (meters(b, s) <= 40) b.customs[c.id] = w.t;
+    log(w, "custom", [s.id, ...camp.members.filter((id) => id !== s.id)], s, `${s.name} said${nearFire(w, s, 4) ? " by the fire" : ""}: "${c.text}" It has become a custom of ${camp.name}.`, `${doing(pat, 0)}: ${DONE[response][0]}`);
     trace("group", "custom", { camp: camp.id, custom: c, by: s.id }, s.id);
     groupsChanged.now = true;
   }
@@ -483,13 +485,14 @@ export const knownCustoms = (w: World, a: Agent) =>
 // ---------- the shared store ----------
 export function sharedStore(w: World, a: Agent) {
   const c = campOf(w, a.id);
-  return (c?.store && w.things.find((t) => t.id === c.store && t.kind === "structure" && t.shared === c.id)) || null;
+  const t = thingById(w, c?.store);
+  return (c && t?.kind === "structure" && t.shared === c.id && t) || null;
 }
 // Setting food or goods into a shelter as the camp's makes it the camp's store.
 export function share(w: World, a: Agent) {
   const camp = campOf(w, a.id);
   const store = sharedStore(w, a), home = homeOf(w, a);
-  const at = store && dist(a, store) <= 1 ? store : home && dist(a, home) <= 1 ? home : null;
+  const at = store && reaches(a, store) ? store : home && reaches(a, home) ? home : null;
   if (!camp || !at) return 0;
   const n = stash(w, a, 2, at);
   if (!n) return 0;
@@ -499,12 +502,12 @@ export function share(w: World, a: Agent) {
   groupsChanged.now = true;
   const text = `${a.name} set ${n} things into ${at.owner === a.id ? "their home" : `${nameOf(w, at.owner)}'s home`} for all of ${camp.name} to share.`;
   log(w, "shared_store", [a.id], at, text);
-  incident(w, { act: "share", by: a, at, text, value: Math.min(1, n / 8), seenBy: w.agents.filter((b) => dist(b, a) <= 6) });
+  incident(w, { act: "share", by: a, at, text, value: Math.min(1, n / 8), seenBy: w.agents.filter((b) => meters(b, a) <= 30) });
   return n;
 }
 export function takeShared(w: World, a: Agent, k: string) {
   const store = sharedStore(w, a);
-  if (!store || dist(a, store) > 1) return 0;
+  if (!store || !reaches(a, store)) return 0;
   const before = store.store?.length ?? 0;
   const got = unstash(w, a, store, k, 3);
   if (!got) return 0;
@@ -512,7 +515,7 @@ export function takeShared(w: World, a: Agent, k: string) {
   const net = (store.given[a.id] ?? 0) - got;
   store.given[a.id] = net;
   const text = `${a.name} took ${got} ${w.kinds[k]?.name ?? k} from the camp's store${net < 0 ? `, having put in less than they took` : ""}.`;
-  incident(w, { act: "took_from_store", by: a, against: agentOf(w, store.owner) ?? null, at: store, text, value: got / Math.max(1, before), seenBy: w.agents.filter((b) => b !== a && dist(b, a) <= 6), items: Array(got).fill(k) });
+  incident(w, { act: "took_from_store", by: a, against: agentOf(w, store.owner) ?? null, at: store, text, value: got / Math.max(1, before), seenBy: w.agents.filter((b) => b !== a && meters(b, a) <= 30), items: Array(got).fill(k) });
   return got;
 }
 
@@ -548,13 +551,13 @@ export function campTag(w: World, a: Agent, b: Agent) {
 }
 export function campSummary(w: World) {
   return liveCamps(w).map((c) => ({
-    id: c.id, name: c.name, members: c.members, leader: c.leader, x: c.x, y: c.y, store: c.store,
-    homes: c.members.map((id) => { const a = agentOf(w, id), h = a && homeOf(w, a); return h ? [h.x, h.y] : null; }).filter(Boolean),
+    id: c.id, name: c.name, members: c.members, leader: c.leader, x: c.x, y: c.y, px: c.px, py: c.py, store: c.store,
+    homes: c.members.map((id) => { const a = agentOf(w, id), h = a && homeOf(w, a); return h ? [h.px, h.py] : null; }).filter(Boolean),
   }));
 }
 export function groupsDetail(w: World) {
   const view = (c: Camp) => {
-    const store = c.store ? w.things.find((t) => t.id === c.store) : undefined;
+    const store = thingById(w, c.store);
     const items: Record<string, number> = {};
     for (const s of store?.store ?? []) items[s.k] = (items[s.k] ?? 0) + 1;
     return {
@@ -562,7 +565,7 @@ export function groupsDetail(w: World) {
       standing: Object.fromEntries([...new Set([...c.members, ...c.precedents.map((p) => p.decidedBy)])].map((id) => [id, standing(c, id)])),
       patterns: patterns(c).map((x) => ({ ...x, text: patternText(x) })),
       precedents: c.precedents.map((q) => ({ ...q, victim: victimOf(q.incident) })),
-      store: store ? { id: store.id, x: store.x, y: store.y, owner: store.owner, items, given: store.given ?? {} } : null,
+      store: store ? { id: store.id, x: store.x, y: store.y, px: store.px, py: store.py, owner: store.owner, items, given: store.given ?? {} } : null,
     };
   };
   return { camps: w.camps.map(view), incidents: w.incidents.slice(-80) };

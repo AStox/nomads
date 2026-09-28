@@ -6,6 +6,7 @@ import { DAY, newWorld, clock } from "../src/sim/world";
 import { tick } from "../src/sim/sim";
 import { changed, newKinds, removed } from "../src/sim/physics";
 import { beliefText } from "../src/sim/beliefs";
+import { trailChanges } from "../src/sim/ecology";
 import { counters, logTo, flush, tickMs } from "../src/sim/trace";
 import { patterns, patternText, standing } from "../src/sim/groups";
 
@@ -23,7 +24,7 @@ for (let i = 0; i < ticks; i++, ran++) {
     const alive = w.agents.length, dead = Object.values(w.people).filter((p) => !p.alive).length;
     console.log(`[${Math.round((performance.now() - t0) / 1000)}s] ${clock(w.t)} ${w.weather.season}: ${alive} alive, ${dead} dead, ${w.agents.filter((a) => a.pregnant).length} expecting, camps ${w.camps.filter((c) => !c.gone).length}, laws ${Object.keys(w.laws).length}, made ${Object.values(w.kinds).filter((k) => k.made).length}, structures ${w.things.filter((t) => t.kind === "structure").length}, fires ${w.things.filter((t) => t.kind === "fire").length}, deer ${w.animals.filter((a) => a.species === "deer").length}, wolves ${w.animals.filter((a) => a.species === "wolf").length}, things ${w.things.length}, agentsMs ${(tickMs.agents ?? 0).toFixed(1)}`);
   }
-  changed.clear(); removed.clear(); newKinds.clear();
+  changed.clear(); removed.clear(); newKinds.clear(); trailChanges.clear();
   if (logs) flush();
   await Bun.sleep(process.env.NOMADS_BRAIN === "random" ? 0 : 20);
 }

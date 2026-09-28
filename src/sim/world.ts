@@ -1,14 +1,19 @@
-import { generateIsland } from "../terrain/island";
-import { lay, stock, type Lay, type Terrain } from "../terrain/land";
+import { generateIsland, type Island } from "../terrain/island";
+import { lay, type Lay, type Terrain } from "../terrain/land";
+import { FLORA, SIZE, SPECIES, fineGround, scatter, type Fine, type Scatter } from "../terrain/flora";
 import { TRAITS } from "./traits";
 import { baseRegistry, type Registry } from "./materials";
 import type { Belief } from "./beliefs";
+import { enter, put } from "./space";
+import { populate } from "./fauna";
 
 export const W = 64;
 export const H = 64;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export const YEAR_DAYS = 40;
-export const VERSION = 7;
+export const VERSION = 8;
+export const TILE_M = 150; // meters per tile
+export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
 
 export enum Tile {
@@ -20,11 +25,15 @@ export enum Tile {
 
 export type ThingKind =
   | "tree" | "stump" | "burnt_stump" | "bush" | "dead_bush" | "sapling" | "mushroom" | "herb"
-  | "stick" | "stone" | "boulder" | "reeds" | "clay" | "fire" | "structure" | "item" | "ash"
+  | "stick" | "stone" | "pebble" | "boulder" | "fallen_log" | "reeds" | "fern" | "flowers" | "grass" | "clay" | "fire" | "structure" | "item" | "ash"
   | "pit" | "trap" | "well" | "grave";
 export type Shelter = { tier: 0 | 1 | 2 | 3; style: string; cover: number; insul: number; sturdy: number; flam: number };
+// px, py: where it stands, in tiles (150 m each); x, y are always their floor, the tile it's on.
 export type Thing = {
-  id: string; kind: ThingKind; x: number; y: number;
+  id: string; kind: ThingKind; x: number; y: number; px: number; py: number;
+  size: number; // meters: a tree's height, a rock's width, a stick's length, a patch's or a building's width
+  seed: number; // for variation in how it looks
+  species?: string;
   n?: number; owner?: string; hp?: number; maxHp?: number; burning?: number; contained?: boolean; stage?: number;
   item?: string; parts?: Record<string, number>; shelter?: Shelter; until?: number; born?: number; burnedBy?: string;
   store?: Stack[]; name?: string; died?: number; cause?: string; caught?: string; progress?: number;
@@ -34,9 +43,15 @@ export type Thing = {
   shared?: string; given?: Record<string, number>; // a store a camp treats as its own, and who put how much in
 };
 export type Stack = { k: string; hp: number; born: number };
+export type AnimalSpecies = "deer" | "wolf" | "rabbit" | "heron" | "gull" | "crow" | "eagle" | "fish" | "butterfly";
 export type Animal = {
-  id: string; species: "deer" | "wolf"; x: number; y: number; hp: number; maxHp: number;
-  hunger: number; state: string; target?: string; born: number; dx: number; dy: number;
+  id: string; species: AnimalSpecies; x: number; y: number; px: number; py: number;
+  alt: number; // meters above the ground: birds in flight or on a perch, butterflies
+  heading: number; // radians, 0 toward +x, turning toward +y
+  hp: number; maxHp: number; hunger: number; state: string; target?: string; born: number; dx: number; dy: number;
+  home?: [number, number]; // the warren, roost, stretch of shore or water it keeps to, in tiles
+  aim?: [number, number]; // where it's headed, in tiles
+  since?: number; // tick it took up its current state
 };
 export type Weather = {
   season: "spring" | "summer" | "autumn" | "winter"; dayOfYear: number; year: number;
@@ -117,6 +132,9 @@ export type Agent = {
   color: string;
   x: number;
   y: number;
+  px: number; // where they stand, in tiles; x and y are its floor
+  py: number;
+  heading: number; // radians they last faced
   bio: string;
   traits: Record<string, number>;
   desires: string[];
@@ -175,7 +193,7 @@ export type Precedent = {
 };
 export type Custom = { id: string; key: string; text: string; response: Response; spokenBy: string; t: number; held: number; broken: number; faded?: number };
 export type Camp = {
-  id: string; name: string; named: boolean; founder: string; founded: number; members: string[]; x: number; y: number;
+  id: string; name: string; named: boolean; founder: string; founded: number; members: string[]; x: number; y: number; px: number; py: number;
   leader: string | null; leaderSince?: number; precedents: Precedent[]; customs: Custom[];
   shunned: Record<string, { until: number; precedent: string }>;
   exiled: Record<string, { until: number; precedent: string }>;
@@ -282,6 +300,10 @@ export const ageOf = (w: World, a: { born: number }) => (w.t - a.born) / YEAR;
 export const stageOf = (w: World, a: { born: number }) => { const y = ageOf(w, a); return y < 1 ? "child" : y < 5 ? "adult" : "elder"; };
 export const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
   Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+// Straight-line meters between two things that stand somewhere.
+export const meters = (a: { px: number; py: number }, b: { px: number; py: number }) => Math.hypot(a.px - b.px, a.py - b.py) * TILE_M;
+// How near someone has to stand to work on a thing: arm's length from its edge, or from a tree's trunk.
+export const reachOf = (t: { kind: string; size: number }) => REACH + (t.kind === "tree" || t.kind === "stump" || t.kind === "burnt_stump" || t.kind === "sapling" ? 0.3 : Math.min(3, t.size / 2));
 
 export const level = (xp: number) => Math.min(10, Math.floor(Math.sqrt(xp / 10)));
 
@@ -316,12 +338,30 @@ const OPPOSITES = [
 ];
 export const clash = (a: string, b: string) => OPPOSITES.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
 
-// Growing an island takes a good fraction of a second and depends only on the seed, so tests that rebuild the same
-// world reuse it. Callers get their own copies of anything the game might change.
-const islands = new Map<number, Lay>();
+// Growing an island and everything on it takes a good fraction of a second and depends only on the seed, so tests that
+// rebuild the same world reuse it. Callers get their own copies of anything the game might change.
+export type Ground = { land: Lay; isle: Island; fine: Fine; flora: Scatter };
+const grounds = new Map<number, Ground>();
+export function groundOf(seed: number): Ground {
+  let g = grounds.get(seed);
+  if (!g) {
+    const isle = generateIsland(rng(seed)), fine = fineGround(isle);
+    g = { land: lay(isle), isle, fine, flora: scatter(isle, fine, seed) };
+    grounds.set(seed, g);
+  }
+  return g;
+}
+// World meters (the island's center at 0) to tiles, to a tenth of a millimeter's worth of tile.
+export const tileOf = (m: number) => Math.round(((m + SIZE / 2) / TILE_M) * 1e4) / 1e4;
+
+// What each kind of growing or lying thing can take before it's gone, by its size in meters.
+const HP: Record<string, (size: number) => number> = {
+  tree: (s) => Math.round(30 + s * 4.5), bush: () => 20, boulder: (s) => Math.round(60 + s * 40), stone: () => 40, pebble: () => 10,
+  stick: () => 8, fallen_log: (s) => Math.round(20 + s * 6), mushroom: () => 2, herb: () => 3, reeds: () => 6, fern: () => 4, flowers: () => 2, clay: () => 10, grass: () => 3,
+};
+
 export function newWorld(seed: number, agentCount = 5): World {
-  const land = islands.get(seed) ?? lay(generateIsland(rng(seed)));
-  islands.set(seed, land);
+  const { land, flora: f } = groundOf(seed);
   // People, animals and loose things draw from their own stream, so a seed's island stays the same whatever they do.
   const rand = rng(seed ^ 0x5f3759df);
   const tiles = [...land.tiles];
@@ -331,24 +371,30 @@ export function newWorld(seed: number, agentCount = 5): World {
     weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 14, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, drought: false, dryTicks: 0 },
     camps: [], incidents: [],
   };
-  for (const { kind, x, y } of stock(land, rand)) {
-    if (kind === "tree") addThing(w, "tree", x, y, { hp: 100, maxHp: 100 });
-    else if (kind === "bush") addThing(w, "bush", x, y, { n: 3, hp: 20, maxHp: 20 });
-    else if (kind === "reeds") addThing(w, "reeds", x, y, { hp: 6, maxHp: 6 });
-    else if (kind === "ore") addThing(w, "item", x, y, { item: "ore", n: 1, born: 0 });
-    else if (kind === "boulder") {
-      // Flint forms as nodules inside the rock; ore shows as reddish stones, and sometimes inside boulders too.
-      const q = rand();
-      addThing(w, "boulder", x, y, { hp: 120, maxHp: 120, ...(q < 0.45 ? { inside: { flint: q < 0.15 ? 2 : 1 } } : q > 0.85 ? { inside: { ore: 1 } } : {}) });
-    } else addThing(w, kind, x, y);
+  for (let i = 0; i < f.n; i++) {
+    const kind = FLORA[f.kind[i]], px = tileOf(f.x[i]), py = tileOf(f.z[i]), size = Math.round(f.size[i] * 100) / 100, seed = f.seed[i];
+    if (kind === "ore") { addThing(w, "item", px, py, { item: "ore", n: 1, born: 0, size, seed }); continue; }
+    const hp = HP[kind](size);
+    const t: Thing = { id: `t${w.nextId++}`, kind, x: Math.floor(px), y: Math.floor(py), px, py, size, seed, species: SPECIES[f.species[i]] || undefined, hp, maxHp: hp };
+    if (kind === "bush" && t.species === "berry") t.n = 4;
+    // Flint forms as nodules inside the rock; ore shows as reddish stones, and sometimes inside boulders too.
+    const q = ((seed >>> 8) & 0xffff) / 65536;
+    if (kind === "boulder" && (q < 0.45 || q > 0.85)) t.inside = q < 0.45 ? { flint: q < 0.15 ? 2 : 1 } : { ore: 1 };
+    enter(w, t, false);
   }
   const traitNames = Object.keys(TRAITS), main = mainland(w);
+  const open = (px: number, py: number) => tileAt(w, Math.floor(px), Math.floor(py)) === Tile.Grass && !!main[Math.floor(py) * W + Math.floor(px)];
+  // They wake within a few minutes' walk of each other, each alone.
+  let cx = 0, cy = 0;
+  do { cx = 12 + rand() * (W - 24); cy = 12 + rand() * (H - 24); } while (!open(cx, cy));
   for (let i = 0; i < agentCount; i++) {
-    let x = 0, y = 0;
-    do {
-      x = 12 + Math.floor(rand() * (W - 24));
-      y = 12 + Math.floor(rand() * (H - 24));
-    } while (tileAt(w, x, y) !== Tile.Grass || !main[y * W + x] || w.agents.some((a) => dist(a, { x, y }) < 10));
+    let px = cx, py = cy;
+    for (let tries = 0; i > 0; tries++) {
+      const a = rand() * Math.PI * 2, d = (60 + rand() * 120) / TILE_M;
+      [px, py] = tries < 400 ? [cx + Math.cos(a) * d, cy + Math.sin(a) * d] : [12 + rand() * (W - 24), 12 + rand() * (H - 24)];
+      if (open(px, py) && w.agents.every((b) => meters(b, { px, py }) >= 50)) break;
+    }
+    px = Math.round(px * 1e4) / 1e4; py = Math.round(py * 1e4) / 1e4;
     const traits: Record<string, number> = {};
     const count = 5 + Math.floor(rand() * 4);
     while (Object.keys(traits).length < count) {
@@ -359,7 +405,7 @@ export function newWorld(seed: number, agentCount = 5): World {
     const name = NAMES[i % NAMES.length];
     const top = Object.entries(traits).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t]) => t);
     w.agents.push({
-      id: name.toLowerCase(), name, color: COLORS[i % COLORS.length], x, y,
+      id: name.toLowerCase(), name, color: COLORS[i % COLORS.length], x: Math.floor(px), y: Math.floor(py), px, py, heading: rand() * Math.PI * 2,
       bio: `${name} is ${top.slice(0, -1).join(", ")} and ${top.at(-1)}. ${name} wants to ${desires[0]} and to ${desires[1]}.`,
       traits, desires,
       needs: { food: 55 + rand() * 30, energy: 60 + rand() * 30, warmth: 70 + rand() * 20, health: 100, social: 40 + rand() * 40 },
@@ -369,19 +415,7 @@ export function newWorld(seed: number, agentCount = 5): World {
       thinking: false, engaged: null, down: 0, nextDecide: 0, cooldowns: {}, seen: {}, near: {}, customs: {},
     });
   }
-  // Room for a herd or a pack: open grass three tiles by two, on ground they can leave, away from people.
-  const room: { x: number; y: number }[] = [];
-  for (let y = 0; y < H - 1; y++)
-    for (let x = 0; x < W - 2; x++)
-      if (main[y * W + x] && [0, 1, 2].every((dx) => tileAt(w, x + dx, y) === Tile.Grass && tileAt(w, x + dx, y + 1) === Tile.Grass) && w.agents.every((a) => dist(a, { x, y }) > 8))
-        room.push({ x, y });
-  const openGrass = () => room[Math.floor(rand() * room.length)] ?? { x: W / 2, y: H / 2 };
-  for (let herd = 0; herd < 2; herd++) {
-    const c = openGrass();
-    for (let i = 0; i < 4; i++) addAnimal(w, "deer", c.x + (i % 2), c.y + (i >> 1));
-  }
-  const den = openGrass();
-  for (let i = 0; i < 3; i++) addAnimal(w, "wolf", den.x + i, den.y);
+  populate(w, rand, main);
   for (const a of w.agents) {
     w.people[a.id] = { id: a.id, name: a.name, color: a.color, alive: true };
     log(w, "wake", [a.id], a, `${a.name} woke up alone in the wilderness.`);
@@ -389,16 +423,18 @@ export function newWorld(seed: number, agentCount = 5): World {
   return w;
 }
 
-export function addThing(w: World, kind: ThingKind, x: number, y: number, extra: Partial<Thing> = {}): Thing {
-  const t = { id: `t${w.nextId++}`, kind, x, y, ...extra };
-  w.things.push(t);
+// How big a thing made or dropped in the world starts out, in meters, when whoever makes it doesn't say.
+const MADE_SIZE: Partial<Record<ThingKind, number>> = {
+  fire: 1, structure: 2, item: 0.3, ash: 1.2, pit: 1.5, trap: 1.5, well: 1.5, grave: 2, sapling: 0.3, stump: 0.6, burnt_stump: 0.6,
+  dead_bush: 1, stick: 1, stone: 0.2, mushroom: 0.1, herb: 0.3, reeds: 1.5, clay: 1,
+};
+// Anything that comes into the world after the ground was laid out, at a point in tiles.
+export function addThing(w: World, kind: ThingKind, px: number, py: number, extra: Partial<Thing> = {}): Thing {
+  const n = w.nextId++;
+  const t: Thing = { id: `t${n}`, kind, x: 0, y: 0, px: 0, py: 0, size: MADE_SIZE[kind] ?? 0.5, seed: Math.imul(n, 2654435761) >>> 0, ...extra };
+  put(w, t, px, py);
+  enter(w, t, true);
   return t;
-}
-export function addAnimal(w: World, species: "deer" | "wolf", x: number, y: number): Animal {
-  const hp = species === "deer" ? 30 : 35;
-  const a: Animal = { id: `a${w.nextId++}`, species, x, y, hp, maxHp: hp, hunger: 80, state: "wander", born: w.t, dx: 0, dy: 0 };
-  w.animals.push(a);
-  return a;
 }
 
 export const dayOfYear = (t: number) => Math.floor(t / DAY) % YEAR_DAYS;

@@ -1,7 +1,8 @@
 // Generations: people grow up, pair off, have children, grow old, and die. What they knew lives on only if they passed it on.
 import { TRAITS } from "./traits";
-import { COLORS, DAY, DESIRES, NAMES, YEAR, addThing, ageOf, clash, dist, landing, log, stageOf, type Agent, type World } from "./world";
-import { changed, dropPile } from "./physics";
+import { COLORS, DAY, DESIRES, NAMES, YEAR, addThing, ageOf, clash, landing, log, meters, stageOf, type Agent, type World } from "./world";
+import { dropPile, mark } from "./physics";
+import { liveThings } from "./space";
 import { newRel } from "./brain";
 import { see } from "./beliefs";
 import { trace } from "./trace";
@@ -11,14 +12,14 @@ const MAX_PEOPLE = 12;
 export function die(w: World, a: Agent, cause: string) {
   w.agents = w.agents.filter((x) => x !== a);
   w.people[a.id] = { ...(w.people[a.id] ?? { id: a.id, name: a.name, color: a.color }), alive: false, died: w.t, cause };
-  changed.add(addThing(w, "grave", a.x, a.y, { name: a.name, died: w.t, cause, born: w.t }).id);
+  mark(w, addThing(w, "grave", a.px, a.py, { name: a.name, died: w.t, cause, born: w.t }));
   const c: Record<string, number> = {};
   for (const s of [...a.inv, ...(a.wearing ? [a.wearing] : [])]) c[s.k] = (c[s.k] ?? 0) + 1;
-  for (const [k, n] of Object.entries(c)) dropPile(w, a.x, a.y, k, n);
-  for (const t of w.things) if (t.owner === a.id && t.kind === "structure") { delete t.owner; changed.add(t.id); }
+  for (const [k, n] of Object.entries(c)) dropPile(w, a.px, a.py, k, n);
+  for (const t of liveThings(w)) if (t.owner === a.id && t.kind === "structure") { delete t.owner; mark(w, t); }
   log(w, "died", [a.id], a, `${a.name} died of ${cause}, aged ${Math.floor(ageOf(w, a))}.${Object.keys(a.beliefs).length ? ` What they knew went with them, unless they taught it.` : ""}`, `${a.name} died`);
   trace("world", "died", { id: a.id, cause, age: ageOf(w, a), beliefs: Object.keys(a.beliefs).length });
-  see(w, a, "death", "People can die, and what they know dies with them unless they pass it on.", 10);
+  see(w, a, "death", "People can die, and what they know dies with them unless they pass it on.", 300);
   for (const b of w.agents) {
     if (b.engaged === a.id) b.engaged = null;
     if (b.goal?.target === a.id) { b.goal = null; b.plan = []; }
@@ -57,7 +58,7 @@ function childOf(w: World, mother: Agent, father: Agent | undefined): Agent {
   const desires = [mother.desires[Math.floor(Math.random() * mother.desires.length)], DESIRES[Math.floor(Math.random() * DESIRES.length)]].filter((d, i, arr) => arr.indexOf(d) === i);
   const top = Object.entries(traits).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([t]) => t);
   const kid: Agent = {
-    id, name, color: colors[0] ?? COLORS[w.agents.length % COLORS.length], x: mother.x, y: mother.y,
+    id, name, color: colors[0] ?? COLORS[w.agents.length % COLORS.length], x: mother.x, y: mother.y, px: mother.px, py: mother.py, heading: mother.heading,
     bio: `${name} is ${top.slice(0, -1).join(", ")} and ${top.at(-1)}, the child of ${mother.name}${father ? ` and ${father.name}` : ""}. ${name} wants to ${desires.join(" and to ")}.`,
     traits, desires, needs: { food: 90, energy: 90, warmth: 90, health: 100, social: 90 },
     skills: {}, inv: [], wearing: null, beliefs: {}, facts: {}, tried: {}, watching: {}, sickness: null, home: mother.home,
@@ -85,9 +86,9 @@ function newcomer(w: World) {
   if (!spot) return;
   const { x, y } = spot;
   // A pretend parent with nothing to pass on, so the stranger gets fresh traits.
-  const stub = { id: "stranger", name: "a stranger", traits: {}, desires: [DESIRES[Math.floor(Math.random() * DESIRES.length)]], x, y, home: null, children: [], rel: {} } as unknown as Agent;
+  const stub = { id: "stranger", name: "a stranger", traits: {}, desires: [DESIRES[Math.floor(Math.random() * DESIRES.length)]], x, y, px: x + 0.5, py: y + 0.5, heading: 0, home: null, children: [], rel: {} } as unknown as Agent;
   const a = childOf(w, stub, undefined);
-  a.parents = []; a.rel = {}; a.x = x; a.y = y; a.home = null;
+  a.parents = []; a.rel = {}; a.home = null;
   a.born = w.t - Math.round(YEAR * (1.5 + Math.random()));
   a.bio = a.bio.replace(/, the child of [^.]*\./, ".");
   a.status = "Arriving";
@@ -106,7 +107,7 @@ export function life(w: World) {
       w.agents.push(kid);
       w.people[kid.id] = { id: kid.id, name: kid.name, color: kid.color, alive: true };
       log(w, "born", [kid.id, a.id, ...(father ? [father.id] : [])], a, `${a.name}${father ? ` and ${father.name}` : ""} had a child: ${kid.name}.`, `${kid.name} born`);
-      see(w, a, "birth", "Couples who live together and eat well have children.", 10);
+      see(w, a, "birth", "Couples who live together and eat well have children.", 300);
       trace("world", "born", { id: kid.id, parents: kid.parents, traits: kid.traits });
     }
   }
@@ -116,8 +117,8 @@ export function life(w: World) {
     for (let i = 0; i < adults.length; i++)
       for (let j = i + 1; j < adults.length; j++) {
         const [a, b] = [adults[i], adults[j]];
-        if (dist(a, b) > 3 || !paired(a, b) || a.pregnant || b.pregnant) continue;
-        const home = w.things.some((t) => t.kind === "structure" && (t.owner === a.id || t.owner === b.id) && (t.shelter?.tier ?? 0) >= 1 && dist(t, a) <= 4);
+        if (meters(a, b) > 30 || !paired(a, b) || a.pregnant || b.pregnant) continue;
+        const home = [...liveThings(w)].some((t) => t.kind === "structure" && (t.owner === a.id || t.owner === b.id) && (t.shelter?.tier ?? 0) >= 1 && meters(t, a) <= 40);
         if (!home || Math.random() > 0.3) continue;
         const mother = Math.random() < 0.5 ? a : b, father = mother === a ? b : a;
         mother.pregnant = { father: father.id, due: w.t + DAY * 10 };

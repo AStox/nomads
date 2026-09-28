@@ -2,11 +2,12 @@ import { mkdirSync, renameSync } from "node:fs";
 import { DAY, QUIET, VERSION, YEAR_DAYS, clock, newWorld, type World } from "./src/sim/world";
 import { agentDetail, changedKinds, summary, tick } from "./src/sim/sim";
 import { changed, newKinds, removed } from "./src/sim/physics";
-import { iceChanged, pathChanges } from "./src/sim/ecology";
+import { iceChanged, pathChanges, trailChanges } from "./src/sim/ecology";
 import { stageOf } from "./src/sim/world";
 import { beliefText } from "./src/sim/beliefs";
 import { counters, flush, jevCalls, logTo, tickMs, traces } from "./src/sim/trace";
 import { campSummary, groupsChanged, groupsDetail, liveCamps, standing } from "./src/sim/groups";
+import { thingById } from "./src/sim/space";
 
 const PORT = Number(process.env.PORT ?? 8095);
 // NOMADS_DATA lets a second, offline copy run beside the live world without touching its save.
@@ -42,7 +43,7 @@ function save() {
 }
 
 const kindsById = (ids: Iterable<string>) => Object.fromEntries([...ids].filter((id) => w.kinds[id]).map((id) => [id, w.kinds[id]]));
-const animalView = () => w.animals.map((a) => ({ id: a.id, species: a.species, x: a.x, y: a.y, hp: a.hp, maxHp: a.maxHp, state: a.state }));
+const animalView = () => w.animals.map((a) => ({ id: a.id, species: a.species, x: a.x, y: a.y, px: a.px, py: a.py, alt: a.alt, heading: a.heading, hp: a.hp, maxHp: a.maxHp, state: a.state }));
 
 const clients = new Set<ReadableStreamDefaultController>();
 const enc = new TextEncoder();
@@ -58,14 +59,14 @@ function loop() {
     lastEvent = w.events.at(-1)?.id ?? lastEvent;
     const msg = {
       type: "tick", t: w.t, jev: w.jev, weather: w.weather, agents: w.agents.map((a) => summary(w, a)), animals: animalView(), events,
-      things: w.things.filter((t) => changed.has(t.id)), removed: [...removed].filter((id) => !changed.has(id) || !w.things.some((t) => t.id === id)),
+      things: [...changed].map((id) => thingById(w, id)).filter(Boolean), removed: [...removed].filter((id) => !thingById(w, id)),
       kinds: kindsById([...newKinds, ...changedKinds]),
       paths: [...pathChanges].map((i) => ({ i, v: w.paths[i] })),
       ...(iceChanged.now ? { ice: w.ice } : {}),
       ...(groupsChanged.now ? { groups: campSummary(w) } : {}),
     };
     iceChanged.now = false; groupsChanged.now = false;
-    changed.clear(); removed.clear(); newKinds.clear(); changedKinds.clear(); pathChanges.clear();
+    changed.clear(); removed.clear(); newKinds.clear(); changedKinds.clear(); pathChanges.clear(); trailChanges.clear();
     for (const c of clients) send(c, msg);
     flush();
     if (w.t % 50 === 0) save();

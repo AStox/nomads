@@ -6,7 +6,7 @@ const setup = (): [World, Agent, Thing] => {
   const w = newWorld(42);
   const a = w.agents[0];
   a.inv = [];
-  return [w, a, addThing(w, "fire", a.x, a.y, { hp: 400, maxHp: 400 })];
+  return [w, a, addThing(w, "fire", a.px, a.py, { hp: 400, maxHp: 400 })];
 };
 const heated = (w: World, a: Agent, act: Omit<Act, "verb">): Outcome => {
   const r = heat(w, a, { verb: "heat", ...act });

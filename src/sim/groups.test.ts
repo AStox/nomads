@@ -1,20 +1,21 @@
 import { expect, test } from "bun:test";
-import { DAY, addThing, newWorld, type Agent, type Incident, type Precedent, type World } from "./world";
+import { DAY, TILE_M, addThing, newWorld, type Agent, type Incident, type Precedent, type World } from "./world";
 import { homeOf } from "./physics";
+import { put } from "./space";
 import { newRel } from "./brain";
 import { cluster, friendly, groups, incident, patterns, patternText, snubbed, standing } from "./groups";
 import { jevCalls } from "./trace";
 
 process.env.NOMADS_BRAIN = "random";
 
-// Four neighbors who like each other, homes two steps apart in a row, the first built earliest.
+// Four neighbors who like each other, homes twenty meters apart in a row, the first built earliest.
 function village(seed = 11): [World, Agent[]] {
   const w = newWorld(seed);
   w.agents = w.agents.slice(0, 4);
-  const [x, y] = [30, 30];
+  const [x, y] = [30.5, 30.5];
   w.agents.forEach((a, i) => {
-    Object.assign(a, { x: x + i * 2, y });
-    a.home = addThing(w, "structure", a.x, a.y, { owner: a.id, parts: { stick: 6 }, shelter: { tier: 1, style: "sticks", cover: 0.5, insul: 0.3, sturdy: 0.3, flam: 0.5 }, hp: 100, maxHp: 100, born: i }).id;
+    put(w, a, x + (i * 20) / TILE_M, y);
+    a.home = addThing(w, "structure", a.px, a.py, { owner: a.id, parts: { stick: 6 }, shelter: { tier: 1, style: "sticks", cover: 0.5, insul: 0.3, sturdy: 0.3, flam: 0.5 }, hp: 100, maxHp: 100, born: i }).id;
   });
   for (const a of w.agents) for (const b of w.agents) if (a !== b) a.rel[b.id] = { ...newRel(0), affinity: 0.5 };
   return [w, w.agents];
@@ -38,7 +39,8 @@ test("people living close who like each other become a camp, which keeps its ide
   expect(camp.gone).toBeUndefined();
   expect([...camp.members].sort()).toEqual([a, b, c].map((x) => x.id).sort());
   // Two households aren't a camp.
-  homeOf(w, c)!.x += 30;
+  const far = homeOf(w, c)!;
+  put(w, far, far.px + 5, far.py);
   cluster(w);
   expect(camp.gone).toBe(w.t);
 });

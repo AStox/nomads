@@ -5,7 +5,8 @@
 import { P, ramp, SHADOW } from "./pal.js";
 import { Spr, dith, h2 } from "./px.js";
 import * as SP from "./sprites.js";
-import { cairn, rv, solid, blob, seg, rod, rows, under, vnoise } from "./life.js";
+import * as LF from "./life.js";
+import { cairn, mushrooms as LFmushrooms, rv, solid, blob, seg, rod, rows, under, vnoise } from "./life.js";
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const pick = (a, u) => a[Math.min(a.length - 1, Math.floor(u * a.length))];
@@ -642,9 +643,11 @@ export function sapling(hpx = 6, seed = 0) {
 }
 
 // A medicinal herb: a low rosette of bright leaves with a stalk or two of tiny white, violet or yellow flowers.
-export function herb(hpx = 4, seed = 0) {
+// species: yarrow (flat white heads), sorrel (rust red spikes) or mint (violet whorls); omitted, the seed picks.
+export function herb(hpx = 4, seed = 0, species) {
   const h = Math.max(2, Math.round(hpx)), W = h * 2 + 4, S = new Spr(W, h + 4, W >> 1, h + 2), cx = S.ax + 0.5, gy = S.ay + 0.95;
-  const leaf = ramp("g3", "g4", "g5", "g6"), bloom = pick([P.snow, P.snow, P.violet, P.a3], rv(seed, 1)), n = 5 + Math.floor(rv(seed, 2) * 3);
+  const bloom = { yarrow: P.snow, sorrel: P.f1, mint: P.violet }[species] ?? pick([P.snow, P.snow, P.violet, P.a3], rv(seed, 1));
+  const leaf = species === "mint" ? ramp("g2", "g3", "g4", "g5") : ramp("g3", "g4", "g5", "g6"), n = 5 + Math.floor(rv(seed, 2) * 3);
   for (let i = 0; i < n; i++) {
     const a = Math.PI * (0.1 + (0.8 * (i + 0.5)) / n), Lf = h * (0.5 + 0.3 * h2(i, seed, 3));
     blob(S, cx - Math.cos(a) * Lf * 0.8, gy - Math.sin(a) * Lf * 0.55 - 0.4, Math.max(0.7, h * 0.22), Math.max(0.55, h * 0.13), (x, y, l) => dith(leaf, 1.4 + l * 2 + (i & 1) * 0.4, x, y));
@@ -654,7 +657,9 @@ export function herb(hpx = 4, seed = 0) {
     const x = Math.floor(cx) + (h >= 4 ? (s ? 1 : -1) : 0), top = Math.round(gy - h - 0.5 - s);
     for (let y = top + 1; y < gy - h * 0.4; y++) S.set(x, y, P.g2);
     S.set(x, top, bloom);
-    if (h >= 5) { S.set(x - 1, top + 1, bloom); S.set(x + 1, top + 1, bloom); }
+    if (species === "sorrel") { for (let y = top + 2; y < gy - h * 0.4; y += 2) S.set(x + ((y >> 1) & 1 ? 1 : -1), y, P.f0); }
+    else if (species === "mint") { if (h >= 4) S.set(x, top + 2, bloom); }
+    else if (h >= 5 || (species === "yarrow" && h >= 3)) { S.set(x - 1, top + (species === "yarrow" ? 0 : 1), bloom); S.set(x + 1, top + (species === "yarrow" ? 0 : 1), bloom); }
   }
   return S;
 }
@@ -689,7 +694,8 @@ export function deadbush(size = 5, seed = 0) {
 
 // A stick on the ground, lying along a tile axis or across one. len: its length in ground px.
 export function stick(len = 5, seed = 0) {
-  const L = Math.max(2, len), a = [0, Math.PI / 2, Math.PI / 4, -Math.PI / 4][Math.floor(rv(seed, 1) * 4)], S = iso(L, L, 2);
+  // never along PI/4, which would stand the stick upright on screen
+  const L = Math.max(2, len), a = [0, Math.PI / 2, -Math.PI / 4, 0.35, 1.2][Math.floor(rv(seed, 1) * 5)], S = iso(L, L, 2);
   for (let t = -L / 2; t <= L / 2; t += 0.25) {
     const u = Math.cos(a) * t, v = Math.sin(a) * t, x = sx(S, u, v), y = sy(S, u, v, 0.6);
     dot(S, u, v, 0.6, P.d3, x, y); dot(S, u, v, 0.1, P.d1, x, y + 1);
@@ -1005,4 +1011,267 @@ export function lying(hpx = 8, cloth = P.c0, seed = 0) {
   rect(l1 - 1, gy - tt + 1, l1, gy, P.d0);
   S.outline(P.ink);
   return S;
+}
+
+// ------------------------------------------------------------------------------------------------ flower clumps
+
+const HUES = [P.red, P.f3, P.snow, P.violet, P.a3, P.k0, P.w6];
+// A drift of one kind of wildflower: stems of a few heights with heads of one colour and a darker centre.
+// species buttercup, daisy, clover, harebell or poppy sets the colour; otherwise hue 0..1, otherwise the seed.
+const BLOOM = { buttercup: [P.a3, P.f3], daisy: [P.snow, P.a3], clover: [P.k0, P.red], harebell: [P.violet, P.w6], poppy: [P.red, P.ink] };
+export function flowers(hpx = 5, seed = 0, hue, species) {
+  const h = Math.max(2, Math.round(hpx)), n = 3 + Math.floor(rv(seed, 1) * 5), W = Math.ceil(h * 1.6) + 5, S = new Spr(W, h + 4, W >> 1, h + 2);
+  const c = BLOOM[species]?.[0] ?? pick(HUES, hue ?? rv(seed, 2)), eye = BLOOM[species]?.[1] ?? (c === P.f3 || c === P.a3 ? P.d2 : P.f3), gy = S.ay;
+  const heads = [];
+  for (let i = 0; i < n; i++) {
+    const x = Math.round(S.ax + (h2(i, seed, 3) - 0.5) * h * 1.4), top = gy - Math.max(1, Math.round(h * (0.55 + 0.45 * h2(i, seed, 4))));
+    for (let y = top + 1; y <= gy; y++) S.set(x, y, y > gy - 2 ? P.g2 : P.g3);
+    if (h >= 5 && h2(i, seed, 5) < 0.5) S.set(x + (i & 1 ? 1 : -1), Math.round((top + gy) / 2), P.g4);
+    heads.push([x, top]);
+  }
+  heads.sort((a, b) => a[1] - b[1]);
+  for (const [x, y] of heads) {
+    if (h >= 6) { S.set(x - 1, y, c); S.set(x + 1, y, c); S.set(x, y - 1, c); S.set(x, y + 1, SHADOW[c]); S.set(x, y, eye); }
+    else S.set(x, y, c);
+  }
+  S.outline(P.g1, true);
+  return S;
+}
+
+// ---------------------------------------------------------------------------------------------- one entry point
+
+const TIER_M = [1.2, 2.2, 3, 4.5];
+const ITEM_HEAP = { stone: "stone", flint: "stone", ore: "stone", flint_blade: "stone", stick: "sticks", log: "logs", plank: "planks", bark: "sticks",
+  meat: "food", fish: "food", berry: "food", mushroom: "food", herb: "food", fat: "food", hide: "hide", leather: "hide", clay: "clay", brick: "brick", reeds: "reeds", fiber: "reeds" };
+const BRACKEN = { [P.g2]: P.m2, [P.g3]: P.m3, [P.g4]: P.a1, [P.g5]: P.a2, [P.t1]: P.m0 };
+const BARKS = { ash: { [P.d1]: P.r1, [P.d2]: P.r2, [P.d3]: P.r3 }, pine: { [P.d2]: P.k2, [P.d3]: P.k1 } };
+function recolor(S, map) {
+  if (!map) return S;
+  for (let i = 0; i < S.p.length; i++) { const c = map[S.p[i]]; if (c !== undefined) S.p[i] = c; }
+  return S;
+}
+// Copy B over A with B's anchor placed (dx, dy) from A's, growing the canvas as needed; keeps A's anchor and foot.
+function layer(A, B, dx, dy) {
+  const bx = A.ax + dx - B.ax, by = A.ay + dy - B.ay, x0 = Math.min(0, bx), y0 = Math.min(0, by);
+  const T = new Spr(Math.max(A.w, bx + B.w) - x0, Math.max(A.h, by + B.h) - y0, A.ax - x0, A.ay - y0);
+  for (let y = 0; y < A.h; y++) for (let x = 0; x < A.w; x++) T.p[(y - y0) * T.w + x - x0] = A.p[y * A.w + x];
+  for (let y = 0; y < B.h; y++) for (let x = 0; x < B.w; x++) { const c = B.p[y * B.w + x]; if (c !== 255) T.p[(y + by - y0) * T.w + x + bx - x0] = c; }
+  T.foot = A.foot;
+  return T;
+}
+
+// A fire: open on the ground, or in a stone ring (contained), under a clay kiln dome (covered), or a forge bed of
+// charcoal. burning 0..1 sizes the flames, 0 leaves it cold; frame 0..3 flickers them. hpx: the fire's size.
+export function fire(hpx = 8, seed = 0, { contained, covered, charcoal, burning = 1, frame = 0 } = {}) {
+  const r = Math.max(2, hpx * 0.45), lit = burning > 0.05, hot = ramp("f0", "f1", "f2", "f3");
+  let S = contained || covered || charcoal ? firering(r, seed) : ash(r * 0.8, seed);
+  if (charcoal) {
+    const C = iso(r, r, r);
+    ball(C, 0, 0, 0, r * 0.6, r * 0.6, r * 0.35, (x, y, sh) => (lit && h2(x, y, seed + frame) < 0.3 ? dith(hot, 1.5 + sh * 1.5, x, y) : sh > 0.3 ? P.r1 : P.r0));
+    S = layer(S, done(C, 0, P.ink), 0, -S.foot);
+  }
+  if (covered) {
+    const K = iso(r + 2, r + 2, r * 1.5), cl = MAT.clay.wall;
+    ball(K, 0, 0, 0, r * 0.9, r * 0.9, r * 1.2, (x, y, sh) => dith(cl, 2.2 + sh * 2, x, y));
+    // the stoke hole faces the camera and glows when the kiln is lit
+    for (let a = Math.PI / 4 - 0.35; a <= Math.PI / 4 + 0.35; a += 0.05)
+      for (let z = 0; z < r * 0.5; z += 0.3) { const q = r * 0.9 * Math.sqrt(Math.max(0, 1 - (z / (r * 1.2)) ** 2)) + 0.2; dot(K, q * Math.cos(a), q * Math.sin(a), z, lit ? (z < r * 0.25 ? P.f3 : P.f1) : P.d0); }
+    if (lit) ball(K, 0, 0, r * 1.15, 0.5, 0.5, 0.3, () => P.f2);
+    return layer(S, done(K, 0), 0, -S.foot);
+  }
+  if (!lit) return S;
+  const fh = Math.max(4, Math.round(hpx * (charcoal ? 0.6 : 1.1) * Math.min(1, burning + 0.2)));
+  return layer(S, SP.flames(fh, seed * 4 + (frame & 3)), 0, -S.foot);
+}
+
+// A tussock of tall grass, sized by its width on the ground (wpx): a dark mounded base under a mass of splaying
+// blades in three greens, lit on the left. Some clumps are seeding and carry pale heads on their tallest blades
+// (seeding forces it on or off); dry 0..1 turns it to straw. Anchored at the front of its footprint; S.foot as usual.
+export function tallgrass(wpx = 8, seed = 0, dry = 0, seeding) {
+  const w = Math.max(3, wpx), rx = w / 2, ry = w / 4, h = Math.max(2, w * 0.55), seedy = seeding ?? rv(seed, 5) < 0.35;
+  const S = new Spr(Math.ceil(w * 1.5) + 8, Math.ceil(h + ry * 2) + 6, (Math.ceil(w * 1.5) + 8) >> 1, Math.ceil(h + ry * 2) + 3);
+  const cx = S.ax + 0.5, cy = S.ay + 0.5 - ry;
+  // skip the meadow's own mid green so the clump never melts into the ground under it
+  const G = dry > 0.6 ? ramp("m0", "m1", "a0", "a1", "a2", "s2") : ramp("t1", "g1", "g2", "g4", "g5", "g6");
+  const head = dry > 0.6 ? P.s3 : pick([P.s2, P.a3, P.s1], rv(seed, 6));
+  blob(S, cx, cy, rx * 0.9, ry, (x, y, l) => dith(G, 0.4 + l * 0.9, x, y));
+  S.outline(G[0], true);
+  const blades = [], n = Math.min(400, Math.round(w * 3.2) + 6);
+  for (let i = 0; i < n; i++) {
+    const a = h2(i, seed, 1) * 6.283, r = Math.sqrt(h2(i, seed, 2)), ox = Math.cos(a) * r, bx = cx + ox * rx * 0.8, by = cy + Math.sin(a) * r * ry * 0.8;
+    // outer blades are shorter and arch outward; the middle ones stand up
+    const L = Math.max(1, h * (0.45 + 0.55 * h2(i, seed, 3)) * (1 - r * 0.45)), lean = ox * (0.5 + 0.6 * r) + (h2(i, seed, 4) - 0.5) * 0.4;
+    blades.push([by, bx, L, lean, i]);
+  }
+  blades.sort((p, q) => p[0] - q[0]);
+  for (const [by, bx, L, lean, i] of blades)
+    for (let k = 0; k <= L; k++) {
+      const f = k / L, x = Math.round(bx + lean * k * f * 0.9), y = Math.round(by - k + Math.abs(lean) * f * f * L * 0.25);
+      let c = G[clamp(Math.floor(1 + f * 3.8 + (lean < 0 ? 0.7 : -0.3) + (h2(i, k, seed) - 0.5) * 0.6), 1, G.length - 1)];
+      if (seedy && i % 3 === 0 && L > h * 0.6 && k >= L - 2.2) c = k >= L - 0.5 ? P.s3 : head;
+      S.set(x, y, c);
+    }
+  S.foot = Math.round(ry);
+  return S;
+}
+
+// A key colour pair (lit, shade) per kind, for the smallest sizes where only a dot or two reads.
+const KEY = {
+  tree: [P.g4, P.t2], pine: [P.p4, P.p2], bush: [P.g4, P.g2], dead_bush: [P.d3, P.d1], sapling: [P.g5, P.g3], fern: [P.g4, P.g2],
+  flowers: [P.red, P.g3], herb: [P.g5, P.g3], reeds: [P.a2, P.m2], mushroom: [P.red, P.s2], stone: [P.r4, P.r2], pebble: [P.r4, P.r2],
+  boulder: [P.r4, P.r1], stick: [P.d4, P.d2], log: [P.d3, P.d1], fallen_log: [P.d3, P.d1], stump: [P.d4, P.d2], burnt_stump: [P.r1, P.ink], clay: [P.k1, P.d2],
+  ash: [P.r3, P.r1], pit: [P.d2, P.d0], trap: [P.d3, P.d1], well: [P.r4, P.w3], grave: [P.d3, P.r3], item: [P.s2, P.d2], structure: [P.d4, P.d2], fire: [P.f3, P.f1], grass: [P.g5, P.g3],
+};
+// Minis: hand-placed rows, a = lit, b = shade, for 2 to 4 px.
+const MINIS = {
+  tree: [[" a ", "ab"], ["ab", "bb", " t"], [" ab ", "aabb", " bb ", "  t "]],
+  pine: [["a", "b"], [" a ", "ab ", " t "], [" a ", "aab", "abb", " t "]],
+  bush: [["ab"], ["ab", "bb"], [" ab", "abb"]],
+  rock: [["ab"], ["ab", "bb"], [" ab ", "abbb"]],
+  stem: [["a", "b"], ["a", "b", "b"], ["a", "b", "b", "b"]],
+  flat: [["ab"], ["abb"], ["aabb"]],
+};
+const SHAPE = { tree: "tree", pine: "pine", bush: "bush", dead_bush: "bush", fern: "bush", herb: "bush", mushroom: "rock", stone: "rock", pebble: "flat", boulder: "rock",
+  stick: "flat", log: "flat", fallen_log: "flat", stump: "rock", burnt_stump: "rock", clay: "flat", ash: "flat", pit: "flat", trap: "flat", well: "rock", grave: "flat",
+  item: "rock", structure: "rock", fire: "stem", grass: "bush", sapling: "stem", reeds: "stem", flowers: "stem" };
+function mini(kind, hpx, species) {
+  const k = species === "pine" && kind === "tree" ? "pine" : kind, [a, b] = KEY[k] ?? KEY[kind] ?? [P.r4, P.r2];
+  if (hpx < 1.6) { const S = new Spr(1, 1, 0, 0); S.p[0] = a; return S; }
+  const list = MINIS[SHAPE[k] ?? SHAPE[kind] ?? "rock"][hpx < 2.6 ? 0 : hpx < 3.6 ? 1 : 2];
+  return rows(list, { a, b, t: P.d1 }, 1, { outline: -1 });
+}
+
+// Draw any sim object by kind at any size: hpx is its size in art px (its size in meters times the zoom's px per
+// meter): height for most kinds, length for stick and fallen_log, width for grass. It grows smoothly from a 1 px dot to the close
+// zoom sprite. o: species, stage, berries, tier, style, dir, flag, burning. Anchored at the ground point.
+export function object(kind, hpx, seed = 0, o = {}) {
+  const S = drawObject(kind, hpx, seed, o), b = o.burning ?? 0;
+  if (kind === "fire" || b <= 0.05 || hpx < 4) return S;
+  // a thing on fire: flames stood on it, reaching up its height; trees burn in the crown
+  const F = SP.flames(Math.max(4, Math.round(hpx * (kind === "tree" ? 0.55 : 0.8) * Math.min(1, b + 0.3))), seed * 4 + (o.frame ?? 0));
+  return layer(S, F, 0, kind === "tree" ? -Math.round(hpx * 0.45) : -(S.foot ?? 0));
+}
+function drawObject(kind, hpx, seed, o) {
+  const sp = o.species, h = Math.max(0, hpx), minis = kind === "structure" ? 5 : kind === "boulder" || kind === "tree" ? 4.5 : 4;
+  if (h < minis) return mini(kind, h, sp);
+  const r = Math.round;
+  switch (kind) {
+    case "tree": return sp === "pine" ? SP.pine(r(h), seed) : SP.broad(r(h), ["oak", "ash", "aspen"].includes(sp) ? sp : "oak", seed, o.tint ?? 0.5);
+    case "sapling": return sapling(h, seed);
+    case "bush": {
+      const berries = o.berries ?? (o.n != null ? o.n > 0 : sp === "berry");
+      const S = SP.bush(h * 0.9, seed, sp === "heath" || sp === "heather" ? 1 : 0, berries ? 0.95 : 0);
+      if (sp === "gorse") for (let i = 0; i < S.p.length; i++) if (S.p[i] !== 255 && S.p[i] !== P.ink && h2(i, seed, 7) < 0.14) S.p[i] = h2(i, seed, 8) < 0.5 ? P.a3 : P.f3;
+      return S;
+    }
+    case "dead_bush": return deadbush(h, seed);
+    case "fern": return recolor(SP.fern(h * 0.9, seed), sp === "bracken" ? BRACKEN : null);
+    case "flowers": case "flower": return flowers(h, seed, o.hue, sp);
+    case "herb": return herb(h, seed, sp);
+    case "reeds": return SP.reeds(h, seed);
+    // hpx is the tussock's width; grazing shrinks it through size
+    case "grass": return tallgrass(h, seed, o.dry ?? 0, o.seeding);
+    case "mushroom": return LFmushrooms(h, seed, sp);
+    case "stone": return SP.rock(h * 1.2, seed, o.moss ?? 0);
+    case "pebble": return h < 6 ? SP.pebble(Math.max(1, h * 0.5), seed) : SP.rock(h * 0.7, seed);
+    case "boulder": return SP.rock(h * 1.25, seed, o.moss ?? 0.3);
+    case "stick": return stick(h, seed);
+    case "log": case "fallen_log": return recolor(SP.log(h, Math.max(1.5, h * 0.06), o.dir ?? (rv(seed, 9) < 0.5 ? 1 : -1), seed, sp === "drift" || sp === "driftwood"), BARKS[sp]);
+    case "stump": return SP.stump(Math.max(2, h * 0.6), Math.max(2, h * 0.5), seed);
+    case "burnt_stump": return burnt(h, seed);
+    case "clay": return clay(h * 0.8, seed);
+    case "ash": return ash(h, seed);
+    case "pit": return pit(h * 0.7, o.stage ?? 1, seed);
+    case "trap": return trap(h, !!(o.sprung || o.caught), seed, o.flag ?? -1, o.dir ?? 0);
+    case "well": return well(h, seed, o.dir ?? 0);
+    case "grave": return grave(h, seed, o.dir ?? 0);
+    case "item": return turned(o.dir ?? 0, () => heap(o.what ?? ITEM_HEAP[String(sp ?? "").split(":")[0]] ?? "misc", Math.max(2.5, h), seed));
+    case "structure": {
+      // size is the building's height by tier; shelter() wants the height a tier 2 hut would have at this zoom
+      const tier = o.tier ?? 1;
+      return shelter(tier, o.style ?? sp ?? "sticks", (h * 3) / TIER_M[clamp(tier | 0, 0, 3)], seed, o.flag ?? -1, o.dir ?? 0);
+    }
+    case "fire": return fire(h, seed, o);
+  }
+  return mini(kind, Math.min(h, 3), sp);
+}
+
+// ------------------------------------------------------------------------------------------------ animals
+
+// Mirror a sprite left to right about its anchor.
+function flip(S) {
+  const T = new Spr(S.w, S.h, S.w - 1 - S.ax, S.ay);
+  for (let y = 0; y < S.h; y++) for (let x = 0; x < S.w; x++) T.p[y * S.w + S.w - 1 - x] = S.p[y * S.w + x];
+  T.foot = S.foot;
+  return T;
+}
+const BIRD_C = { gull: [P.snow, P.r3, P.a2], crow: [P.r0, P.ink, P.r1], eagle: [P.d2, P.d0, P.a2] };
+// A bird sitting on the ground or a branch, facing right. hpx: its height, 2 to 8.
+export function perched(kind = "gull", hpx = 4, seed = 0) {
+  const [a, b, beak] = BIRD_C[kind] ?? BIRD_C.gull, head = kind === "eagle" && rv(seed, 1) < 0.6 ? P.snow : a, h = Math.max(2, Math.round(hpx));
+  const list = h <= 2 ? ["hA", "BB"] : h <= 3 ? [".hk", "aB.", "B.."] : h <= 5 ? ["..hk", ".aB.", "aBB.", "BB..", ".l.."] : ["...hk", "...h.", ".aaB.", "aaBB.", "BBB..", "B.l..", "..l.."];
+  const S = rows(list, { h: head, k: beak, a, A: a, B: b, l: P.d1 }, 1, { outline: kind === "gull" ? P.r2 : -1, late: "kl" });
+  if (kind === "gull" && h > 3) S.set(S.w - 5, 2, P.ink);
+  return S;
+}
+// A fish swimming just under the surface: a dim shape with a tail beat and a faint wake. frame 0..3, facing right.
+export function swimmer(len = 5, frame = 0, seed = 0) {
+  const L = Math.max(2, Math.round(len)), S = new Spr(L + 5, 5, (L + 5) >> 1, 2), x0 = 2, beat = [0, 1, 0, -1][frame & 3];
+  for (let x = 0; x < L; x++) {
+    const t = x / Math.max(1, L - 1), w = t > 0.25 && t < 0.85 && L >= 5 ? 1 : 0;
+    S.set(x0 + x, 2, t > 0.8 ? P.w2 : P.w1);
+    if (w) S.set(x0 + x, 1, P.w2);
+  }
+  S.set(x0 - 1, 2 + beat, P.w2);
+  if (L >= 4) S.set(x0 - 1, 2 - beat, P.w1);
+  for (let x = -1; x < L + 1; x += 2) if (h2(x, frame, seed) < 0.4) S.set(x0 + x, 0, P.w6);
+  return S;
+}
+
+// Draw any sim animal at any size by species and state. hpx: standing height for walkers, wingspan for birds, length
+// for fish, span for butterflies; below each sprite's smallest size it becomes a one or two pixel dot. facing: 1
+// right, 0 left (mirrors anything that faces by seed). frame 0..3 animates gaits and wingbeats. Anchors as the
+// underlying sprites: ground point, except fliers (body centre) and fish (water surface).
+export function animal(species, state = "wander", hpx = 6, frame = 0, seed = 0, facing = 1) {
+  frame &= 3;
+  const st = String(state), dir = facing ? 1 : -1;
+  const dot = (a, b) => { const S = new Spr(hpx >= 1.6 ? 2 : 1, 1, 0, 0); S.p[0] = a; if (S.w > 1) S.p[1] = b; return dir > 0 ? S : flip(S); };
+  const face = (S, right) => (right === (dir > 0) ? S : flip(S));
+  switch (species) {
+    case "deer": {
+      if (hpx < 3) return dot(P.d3, P.d2);
+      const pose = /flee|run/.test(st) ? "run" : /graze|eat|feed/.test(st) ? "graze" : /fawn/.test(st) ? "fawn" : "stand";
+      return LF.deer(hpx, pose, facing, seed);
+    }
+    case "wolf": {
+      if (hpx < 3) return dot(P.r3, P.r1);
+      const pose = /hunt|attack|flee|run/.test(st) ? "run" : /wander|walk|move/.test(st) ? "walk" : /eat|feed/.test(st) ? "eat" : /rest|sleep/.test(st) ? "rest" : "stand";
+      return face(wolf(hpx, pose, frame, seed), true);
+    }
+    case "rabbit": case "hare": {
+      if (hpx < 2) return dot(P.d3, P.d2);
+      return face(LF.rabbit(hpx, /flee|run|hop|wander/.test(st) && frame & 1 ? "hop" : "sit", seed), rv(seed, 7) < 0.5);
+    }
+    case "heron": case "egret": {
+      if (/fly|soar|land|flutter|dive/.test(st)) return birdAt("gull", hpx * 1.4, frame, seed, dir);
+      if (hpx < 5) return hpx < 2 ? dot(P.r4, P.r2) : face(perched("gull", hpx, seed), true);
+      return face(LF.heron(hpx, /feed|fish|hunt|eat/.test(st) ? "fish" : "stand", seed), rv(seed, 3) < 0.5);
+    }
+    case "gull": case "crow": case "eagle": {
+      if (/perch|rest|sit|feed|eat|land|wade|trapped/.test(st)) return hpx < 2 ? dot(...BIRD_C[species].slice(0, 2)) : face(perched(species, hpx * 0.45, seed), true);
+      // soaring holds the wings flat, a dive folds them up
+      return birdAt(species, hpx, /soar/.test(st) ? 1 : /dive/.test(st) ? 0 : frame, seed, dir);
+    }
+    case "fish": {
+      if (/jump|leap/.test(st)) return LF.fish(frame, seed, Math.max(3, hpx));
+      return hpx < 2 ? dot(P.w2, P.w1) : face(swimmer(hpx, frame, seed), true);
+    }
+    case "butterfly": return hpx < 3 ? dot(pick([P.a3, P.f2, P.snow, P.w6, P.red], rv(seed, 1)), P.ink) : LF.butterfly(/rest|perch|land|feed/.test(st) ? 2 : frame, seed);
+  }
+  return dot(P.d3, P.d2);
+}
+function birdAt(kind, span, frame, seed, dir) {
+  if (span < 3) { const S = new Spr(span >= 2 ? 2 : 1, 1, 0, 0); S.p.fill(BIRD_C[kind]?.[kind === "gull" ? 0 : 1] ?? P.snow); return S; }
+  const S = LF.bird(span, frame, kind, seed);
+  return dir > 0 ? S : flip(S);
 }

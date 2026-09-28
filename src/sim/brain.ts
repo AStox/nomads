@@ -1,8 +1,9 @@
 // Every Jev call lives here: pick a goal, choose what to try, answer another agent, judge an unknown result, name a thing, answer for a camp.
 import {
-  BONDS, BOND_FADE, DAY, LABELS, OPINIONS, RESPONSES, YEAR_DAYS, ageOf, clock, dayOfYear, dist, level, stageOf,
+  BONDS, BOND_FADE, DAY, LABELS, OPINIONS, RESPONSES, YEAR_DAYS, ageOf, clock, dayOfYear, level, meters, stageOf,
   type Agent, type BondKind, type Label, type Relationship, type Response, type World,
 } from "./world";
+import { around, thingById } from "./space";
 import { TRAITS } from "./traits";
 import { PROPS, THING_MATERIAL, type Kind, type Props } from "./materials";
 import { beliefText } from "./beliefs";
@@ -106,32 +107,32 @@ export function inventoryText(w: World, a: Agent) {
 
 export function view(w: World, a: Agent) {
   const near: Record<string, { count: number; nearest: number }> = {};
-  for (const t of w.things) {
-    const d = dist(a, t);
-    if (d > 10 || (t.kind === "bush" && !t.n)) continue;
-    let kind = t.kind === "item" ? `${w.kinds[t.item ?? ""]?.name ?? "something"} on the ground` : t.kind === "structure" ? ["pile of stuff", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0] : t.kind.replaceAll("_", " ");
+  const m = (b: { px: number; py: number }) => Math.round(meters(a, b));
+  around(w, a.px, a.py, 60, null, (t, d) => {
+    if (t.kind === "pebble" || t.kind === "grass" || (t.kind === "bush" && t.species === "berry" && !t.n)) return;
+    let kind = t.kind === "item" ? `${w.kinds[t.item ?? ""]?.name ?? "something"} on the ground` : t.kind === "structure" ? ["pile of stuff", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0] : t.kind === "bush" ? `${t.species ?? "berry"} bush` : t.kind.replaceAll("_", " ");
     if (t.burning) kind = `burning ${kind}`;
     if (t.kind === "fire") kind = t.covered ? "fire heaped over with stone" : t.contained && (t.charcoal ?? 0) > 0 ? "ringed fire glowing white-hot with charcoal" : t.contained ? "ringed fire" : "fire";
     if ((t.resin ?? 0) > 0) kind = `${kind} beaded with resin`;
     if (t.kind === "boulder" && t.inside?.flint) kind = "boulder studded with dark nodules";
     if (t.shared) kind = `${kind} kept as the camp's store`;
     const label = t.owner && t.kind !== "fire" && t.kind !== "sapling" ? (t.owner === a.id ? `your ${kind}` : `${w.agents.find((x) => x.id === t.owner)?.name}'s ${kind}`) : kind;
-    const e = (near[label] ??= { count: 0, nearest: d });
+    const e = (near[label] ??= { count: 0, nearest: Math.round(d) });
     e.count++;
-    e.nearest = Math.min(e.nearest, d);
-  }
-  const nearby = Object.fromEntries(Object.entries(near).map(([k, e]) => [k, `${e.count} (nearest ${e.nearest} steps)`]));
-  const animals = w.animals.filter((x) => dist(a, x) <= 12).map((x) => `${x.species} ${dist(a, x)} steps away (${x.state})`);
-  const home = a.home ? w.things.find((t) => t.id === a.home) : null;
+    e.nearest = Math.min(e.nearest, Math.round(d));
+  });
+  const nearby = Object.fromEntries(Object.entries(near).map(([k, e]) => [k, `${e.count} (nearest ${e.nearest} m)`]));
+  const animals = w.animals.filter((x) => meters(a, x) <= 300).map((x) => `${x.species} ${m(x)} m away (${x.state})`);
+  const home = thingById(w, a.home);
   const people = w.agents
-    .filter((b) => b.id !== a.id && (a.rel[b.id] || dist(a, b) <= 8))
+    .filter((b) => b.id !== a.id && (a.rel[b.id] || meters(a, b) <= 300))
     .map((b) => ({
       name: b.name,
-      distance: `${dist(a, b)} steps`,
-      doing: dist(a, b) <= 12 ? b.status : "out of sight",
-      carrying: dist(a, b) <= 6 ? inventoryText(w, b) : undefined,
+      distance: `${m(b)} m`,
+      doing: meters(a, b) <= 300 ? b.status : "out of sight",
+      carrying: meters(a, b) <= 30 ? inventoryText(w, b) : undefined,
       camp: campTag(w, a, b),
-      home: (() => { const h = b.home && w.things.find((t) => t.id === b.home); return h ? `${dist(a, h)} steps from you${home ? `, ${dist(home, h)} steps from your home` : ""}` : undefined; })(),
+      home: (() => { const h = thingById(w, b.home); return h ? `${m(h)} m from you${home ? `, ${Math.round(meters(home, h))} m from your home` : ""}` : undefined; })(),
       ...describeRel(w, a, b),
     }));
   const wx = w.weather;
@@ -161,7 +162,7 @@ export function view(w: World, a: Agent) {
     wearing: a.wearing ? w.kinds[a.wearing.k]?.name : undefined,
     what_they_know_works: Object.values(a.beliefs).sort((x, y) => y.t - x.t).slice(0, 12).map((b) => beliefText(w, b)),
     what_they_have_seen: Object.values(a.facts).slice(-6),
-    home: home ? `a ${["pile", "lean-to", "hut", "cabin"][home.shelter?.tier ?? 0]} ${dist(a, home)} steps away` : "no home yet",
+    home: home ? `a ${["pile", "lean-to", "hut", "cabin"][home.shelter?.tier ?? 0]} ${m(home)} m away` : "no home yet",
     current_goal: a.goal?.type ?? "none",
     ...campView(w, a),
     nearby,

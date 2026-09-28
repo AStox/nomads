@@ -6,7 +6,7 @@ import type { Outcome } from "./physics";
 test("a child who learns a new thing by watching isn't credited with inventing it", () => {
   const w = newWorld(3);
   const [maker, child] = w.agents;
-  Object.assign(child, { x: maker.x, y: maker.y, born: w.t });
+  Object.assign(child, { x: maker.x, y: maker.y, px: maker.px, py: maker.py, born: w.t });
   const out: Outcome = {
     ok: true, text: "", uses: { stick: 1, fiber: 1 }, gives: { odd: 1 }, newKinds: ["odd"],
     fields: { verb: "join", inputs: ["fiber", "stick"], gives: ["odd"] },

@@ -1,11 +1,14 @@
 // The live page: the game's sim running in this tab, drawn by the isopixel renderer with a pan, zoom and orbit camera.
 import { createLive, loadingScreen } from "../isopixel/live.js";
+import { drawInspector } from "../isopixel/inspect.js";
+import { RGB } from "../isopixel/pal.js";
 
 const Q = new URLSearchParams(location.search);
 const seed = Number(Q.get("seed") || 1), warm = Math.max(0, Number(Q.get("warm") ?? 2016) | 0), withSim = Q.get("sim") !== "0";
 const canvas = document.getElementById("view"), hint = document.getElementById("hint"), statsEl = document.getElementById("stats");
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8], TURN_MS = 380;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const toM = (t) => t * 150 - 4800;
 const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t));
 
 const fail = (e) => { document.body.dataset.error = String((e && e.stack) || e); document.body.classList.add("failed"); loadingScreen(canvas, `failed: ${e?.message ?? e}`.slice(0, 90), 0); };
@@ -24,7 +27,7 @@ async function main() {
   say();
   // the sim and the renderer's workers grow the same island at the same time
   const simP = withSim ? import("./sim.js").then(({ createSim }) => createSim({ seed, warm, onProgress: (d, n) => { steps.sim = ["warming the world", d / n]; say(); } })) : Promise.resolve(null);
-  const live = await createLive({ seed, canvas, workers: Number(Q.get("workers")) || undefined, adjacent: Q.get("adj") !== "0", onProgress: (d, n, what) => { steps.renderer = [what, 0.5 * (what === "baking the island" ? 1 : 0) + (0.5 * d) / n]; say(); } });
+  const live = await createLive({ seed, canvas, workers: Number(Q.get("workers")) || undefined, adjacent: Q.get("adj") !== "0", check: Q.get("check") === "1", onProgress: (d, n, what) => { steps.renderer = [what, 0.5 * (what === "baking the island" ? 1 : 0) + (0.5 * d) / n]; say(); } });
   const sim = await simP;
   const ready = performance.now() - t0;
   // ?zoom= takes a name, the old 0..3 index, or a number of zoom steps; ?bearing= 0..7
@@ -32,8 +35,8 @@ async function main() {
   const zoom0 = zq == null ? live.named.close : zq in live.named ? live.named[zq] : /^[0-3]$/.test(zq) ? live.named[names[+zq]] : clamp(Number(zq) || 0, 0, live.zmax);
   const view = { x: -2738, z: -1838, zoom: zoom0, bearing: Number(Q.get("bearing") || 0) % 8, selected: null, turnTo: null };
   let follow = null, openingPerson = null, opening = null, farSince = 0, farDest = null;
-  // Open on the densest cluster of shelters, fires and stumps, and follow the person nearest to it; with nothing
-  // built yet, on whoever has the most going on around them.
+  // Open on the person nearest the densest cluster of shelters, fires and stumps, and follow them; with nothing built
+  // yet, on whoever has the most going on around them.
   if (sim?.w.agents.length) {
     const W = sim.w, weight = (t) => (t.contained || t.inside ? 0 : t.kind === "structure" ? 2 + (t.shelter?.tier ?? 0) * 2 : t.kind === "fire" ? 4 : t.kind === "well" ? 2 : ["stump", "burnt_stump", "pit", "ash", "grave"].includes(t.kind) ? 1 : 0);
     const built = W.things.filter((t) => weight(t) > 0);
@@ -44,15 +47,41 @@ async function main() {
     }
     const busy = (a) => W.things.filter((t) => !t.contained && t.kind !== "tree" && Math.abs(t.x - a.x) <= 2 && Math.abs(t.y - a.y) <= 2).length + W.agents.filter((b) => Math.abs(b.x - a.x) <= 2 && Math.abs(b.y - a.y) <= 2).length * 4;
     const person = best ? [...W.agents].sort((p, q) => Math.hypot(p.x - best.x, p.y - best.y) - Math.hypot(q.x - best.x, q.y - best.y))[0] : [...W.agents].sort((p, q) => busy(q) - busy(p))[0];
-    const [ox, oz] = best && bs >= 4 ? live.spotOf(best) : [-4725 + 150 * person.x, -4725 + 150 * person.y];
-    opening = view.zoom < 1 ? [0, 0] : [ox, oz];
+    opening = view.zoom < 1 ? [0, 0] : [toM(person.px), toM(person.py)];
     Object.assign(view, live.centreOn(...opening, view));
     openingPerson = person.id;
   }
   let dragged = false;
   const metrics = { readyMs: Math.round(ready), revealMs: 0, tabs: [], turns: [] };
   let tabWatch = null;
-  const select = (id) => { view.selected = id; follow = id; farSince = 0; tabWatch = { t0: performance.now(), hole: 0, cutAt: 0, last: performance.now() }; };
+  // anything can be selected: a person, animal or thing by id, or a point of ground; people and animals are followed
+  const movers = (id) => !!sim && (sim.w.agents.some((a) => a.id === id) || sim.w.animals.some((a) => a.id === id));
+  const select = (sel, watch = true) => {
+    view.selected = sel; follow = typeof sel === "string" && movers(sel) ? sel : null; farSince = 0;
+    if (watch && follow) tabWatch = { t0: performance.now(), hole: 0, cutAt: 0, last: performance.now() };
+    inspScroll = 0; inspect();
+  };
+
+  // ---------- inspector: the selection's real data, redrawn every tick ----------
+  const insp = document.getElementById("inspector"), IW = 184, IH = 232;
+  insp.width = IW; insp.height = IH;
+  let inspScroll = 0, inspMax = 0, inspData = null;
+  function inspect() {
+    const sel = view.selected;
+    inspData = sel && sim ? (typeof sel === "object" ? sim.inspectGround(sel.px, sel.py) : sim.inspect(sel)) : null;
+    if (sel && !inspData) { view.selected = null; follow = null; }
+    if (!inspData) { insp.hidden = true; return; }
+    paintInspector();
+  }
+  function paintInspector() {
+    const B = drawInspector(inspData, { w: IW, h: IH, scroll: inspScroll });
+    inspScroll = B.scroll; inspMax = B.scrollMax;
+    const img = new ImageData(IW, IH), o = new Uint32Array(img.data.buffer);
+    for (let p = 0; p < B.c.length; p++) { const c = RGB[B.c[p]]; o[p] = 0xff000000 | (c[2] << 16) | (c[1] << 8) | c[0]; }
+    insp.getContext("2d").putImageData(img, 0, 0);
+    insp.hidden = false;
+  }
+  insp.addEventListener("wheel", (e) => { e.preventDefault(); inspScroll = clamp(inspScroll + e.deltaY / 2, 0, inspMax); if (inspData) paintInspector(); }, { passive: false });
 
   // ---------- zoom: eased toward a goal, about the cursor ----------
   let zoomGoal = view.zoom, zoomAnchor = null;
@@ -82,7 +111,7 @@ async function main() {
     view.bearing = turn.from + (turn.to - turn.from) * ease(p);
     if (p >= 1) { view.bearing = ((turn.to % 8) + 8) % 8; view.turnTo = null; turn = null; }
   }
-  globalThis.play = globalThis.nomads = { live, sim, view, select, metrics, zoomTo, turnBy };
+  globalThis.play = globalThis.nomads = { live, sim, view, select, metrics, zoomTo, turnBy, inspected: () => inspData };
 
   // ---------- input ----------
   const pointers = new Map();
@@ -127,8 +156,7 @@ async function main() {
     if (pinch && pointers.size < 2) { pinch = null; settle(); }
     if (drag && drag.moved <= 5 && e.type === "pointerup") {
       const hit = live.pick(e.clientX, e.clientY, view);
-      if (hit && hit.kind !== "thing") select(hit.id);
-      else { view.selected = null; follow = null; }
+      select(!hit ? null : hit.kind === "ground" ? hit : hit.id);
     }
     drag = null;
   };
@@ -140,7 +168,7 @@ async function main() {
   }, { passive: false });
   canvas.addEventListener("dblclick", (e) => zoomTo(zoomGoal + 1, e.clientX, e.clientY));
   window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { view.selected = null; follow = null; }
+    if (e.key === "Escape") select(null);
     else if (e.key === "Tab" && sim?.w.agents.length) {
       e.preventDefault();
       const list = sim.w.agents, k = list.findIndex((a) => a.id === view.selected), n = list.length;
@@ -159,7 +187,8 @@ async function main() {
   // whole sim tile) is baked first while the camera holds, then cut to, so the close level never sits on a fallback.
   function followStep(now) {
     const p = live.where(follow, sim, view);
-    if (!p) { follow = null; view.selected = null; live.prefetch(null); return; }
+    if (!p) { select(null); live.prefetch(null); return; }
+    upGoal = p.up ?? 0;
     const c = live.centreOn(p.x, p.z, view), pxm = live.ppm(view.zoom), far = Math.hypot(c.x - view.x, c.z - view.z) * pxm > canvas.width * 0.35;
     const next = p.dx || p.dz ? live.centreOn(p.x + p.dx, p.z + p.dz, view) : null, ahead = next ? [{ ...view, ...next, later: true }] : [];
     if (!far) {
@@ -184,20 +213,22 @@ async function main() {
   statsEl.hidden = !showStats;
   let lastStats = 0, readyMarked = false, lastNow = performance.now();
   const bench = Q.get("bench") ? benchRunner(Q.get("bench"), live, view, sim) : null;
-  let revealed = false;
+  let revealed = false, upGoal = 0;
   function loop(now) {
     const dt = Math.min(100, now - lastNow);
     lastNow = now;
     // the world waits behind the loading line until the opening view is baked, so nothing is missed
     if (sim && revealed) {
       const ch = sim.update(now);
-      if (ch) live.changed(ch);
+      if (ch) { live.changed(ch); if (view.selected) inspect(); }
     }
     if (revealed && bench) bench.step(now);
     zoomStep(dt);
     turnStep(now);
     if (follow && sim) followStep(now);
-    else live.prefetch(null);
+    else { live.prefetch(null); upGoal = 0; }
+    // the camera rises with a followed bird, so it stays mid-screen as drawn
+    view.up = (view.up ?? 0) + (upGoal - (view.up ?? 0)) * Math.min(1, dt / 120);
     const r = live.frame(view, sim);
     if (!revealed) {
       // the ground under the opening shot is only exact once its chunks are in, so keep it centred until then
@@ -207,7 +238,7 @@ async function main() {
         revealed = true;
         metrics.revealMs = Math.round(performance.now() - t0);
         // follow the settlement's person only if they are in this frame
-        if (openingPerson && !bench && live.picks().some((p) => p.id === openingPerson)) { view.selected = openingPerson; follow = openingPerson; }
+        if (openingPerson && !bench && live.picks().some((p) => p.id === openingPerson)) select(openingPerson, false);
       } else loadingScreen(canvas, `baking the view ${rd.done}/${rd.all}`, rd.done / rd.all);
     }
     if (tabWatch) {

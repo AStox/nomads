@@ -1,11 +1,14 @@
 // The world keeps moving on its own: weather, fire, plants, animals, rot, and sickness.
 import { THING_MATERIAL, clamp01, ensure, p } from "./materials";
-import { changed, dropPile, fireHeat, nearFire, newKinds, removeThing } from "./physics";
+import { dropPile, fireHeat, mark, nearFire, newKinds, removeThing } from "./physics";
 import { see } from "./beliefs";
 import {
-  DAY, H, W, Tile, addAnimal, addThing, dayOfYear, dist, isNight, landing, log, nearWater, sea, seasonOf, tileAt, walkable,
-  type Agent, type Animal, type Thing, type World,
+  DAY, H, TILE_M, W, Tile, addThing, dayOfYear, log, meters, nearWater, sea, seasonOf, tileAt, walkable,
+  type Agent, type Thing, type World,
 } from "./world";
+import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind } from "./space";
+import { FAUNA } from "./fauna";
+import { animals, attacked } from "./animals";
 import { count, timed, trace } from "./trace";
 
 export const pathChanges = new Set<number>();
@@ -51,13 +54,12 @@ function weather(w: World) {
   if (drought && !wx.drought) log(w, "weather", [], { x: W / 2, y: H / 2 }, "It hasn't rained in days. Everything is bone dry.");
   wx.drought = drought;
   if (wx.sky === "storm" && Math.random() < 1 / 150) {
-    const trees = w.things.filter((t) => t.kind === "tree");
-    const t = trees[Math.floor(Math.random() * trees.length)];
+    const t = anyOf(w, "tree");
     if (t) {
       t.burning = 0.6;
-      changed.add(t.id);
+      mark(w, t);
       log(w, "lightning", [], t, "Lightning struck a tree and set it burning.");
-      see(w, t, "lightning", "Lightning can set a tree on fire, and fire eats wood.", 10);
+      see(w, t, "lightning", "Lightning can set a tree on fire, and fire eats wood.", 1000);
     }
   }
 }
@@ -86,13 +88,13 @@ function ice(w: World) {
       a.needs.health = Math.max(0, a.needs.health - 25);
       a.needs.warmth = Math.max(0, a.needs.warmth - 50);
       log(w, "hazard", [a.id], a, `The ice gave way under ${a.name}. They crawled out soaked and freezing.`);
-      see(w, a, "thin_ice", "Ice melts when it warms up. Don't be standing on it.", 8);
+      see(w, a, "thin_ice", "Ice melts when it warms up. Don't be standing on it.", 80);
       for (let r = 1; r < 10; r++) {
         const spot = [[r, 0], [-r, 0], [0, r], [0, -r]].find(([dx, dy]) => tileAt(w, a.x + dx, a.y + dy) !== Tile.Water);
-        if (spot) { a.x += spot[0]; a.y += spot[1]; break; }
+        if (spot) { put(w, a, a.x + spot[0] + 0.5, a.y + spot[1] + 0.5); break; }
       }
     }
-    for (const an of w.animals) if (tileAt(w, an.x, an.y) === Tile.Water) { an.hp = 0; }
+    for (const an of w.animals) if (FAUNA[an.species].ground && tileAt(w, an.x, an.y) === Tile.Water) an.hp = 0;
     w.ice = [];
     iceChanged.now = true;
     log(w, "weather", [], { x: W / 2, y: H / 2 }, "The ice broke up and melted.");
@@ -100,35 +102,27 @@ function ice(w: World) {
 }
 
 // ---------- pits, traps, wells ----------
-function holes(w: World) {
-  for (const t of w.things) {
+function holes(w: World, live: Thing[]) {
+  for (const t of live) {
     if (t.kind === "pit" && nearWater(w, t.x, t.y, 2) && w.t - (t.born ?? w.t) > DAY) {
-      t.kind = "well"; changed.add(t.id);
+      setKind(w, t, "well"); mark(w, t);
       log(w, "dig", t.owner ? [t.owner] : [], t, "Water seeped into a pit near the shore and filled it. A well.");
-      see(w, t, "well", "A pit dug near water fills up with water.", 8);
+      see(w, t, "well", "A pit dug near water fills up with water.", 80);
     }
     if (t.kind === "trap" && t.caught && w.t - (t.until ?? w.t) > DAY / 2) {
-      const an = w.animals.find((m) => m.state === "trapped" && m.x === t.x && m.y === t.y);
+      const an = w.animals.find((m) => m.state === "trapped" && meters(m, t) <= 1);
       if (an) an.state = "wander";
-      delete t.caught; t.kind = "pit"; changed.add(t.id);
+      delete t.caught; setKind(w, t, "pit"); mark(w, t);
       log(w, "trap", t.owner ? [t.owner] : [], t, "Something broke out of a trap and got away.");
     }
   }
-  for (const an of w.animals) {
-    if (an.state === "trapped") continue;
-    const trap = w.things.find((t) => t.kind === "trap" && !t.caught && t.x === an.x && t.y === an.y);
-    if (!trap) continue;
-    an.state = "trapped"; trap.caught = an.species; trap.until = w.t; changed.add(trap.id);
-    const owner = w.agents.find((a) => a.id === trap.owner);
-    log(w, "trap", owner ? [owner.id] : [], trap, `A ${an.species} fell into ${owner ? `${owner.name}'s` : "a"} hidden pit and couldn't get out.`);
-    see(w, trap, "trap_works", "An animal that walks over a hidden pit falls in and is stuck.", 10);
-  }
 }
-// A hidden pit catches people too.
-export function trapped(w: World, a: Agent) {
-  const trap = w.things.find((t) => t.kind === "trap" && t.x === a.x && t.y === a.y && t.owner !== a.id && !t.caught);
+// A hidden pit catches people too, unless they know it's there.
+export function trapped(w: World, a: Agent, x0: number, y0: number) {
+  const trap = onPath(w, x0, y0, a.px, a.py, 0.8, ["trap"], (t) => t.owner !== a.id && !t.caught && !a.facts[`trap:${t.id}`]);
   if (!trap) return false;
-  trap.kind = "pit"; changed.add(trap.id);
+  setKind(w, trap, "pit"); mark(w, trap);
+  put(w, a, trap.px, trap.py);
   a.needs.health = Math.max(0, a.needs.health - 10);
   const owner = w.agents.find((x) => x.id === trap.owner);
   log(w, "trap", [a.id, ...(owner ? [owner.id] : [])], a, `${a.name} fell into ${owner ? `${owner.name}'s` : "a"} hidden pit and hurt themselves.`);
@@ -141,8 +135,8 @@ function crowding(w: World) {
   if (w.t % DAY !== Math.round(DAY / 2)) return;
   for (const a of w.agents) {
     if (a.sickness) continue;
-    const crowd = w.agents.filter((b) => b !== a && dist(a, b) <= 3).length;
-    if (crowd < 3 || w.things.some((t) => t.kind === "well" && dist(t, a) <= 8)) continue;
+    const crowd = w.agents.filter((b) => b !== a && meters(a, b) <= 30).length;
+    if (crowd < 3 || anyAround(w, a.px, a.py, 300, ["well"])) continue;
     if (Math.random() > 0.12) continue;
     a.sickness = { until: w.t + DAY, severity: 0.4 };
     log(w, "sick", [a.id], a, `${a.name} fell sick. Too many people, and no clean water.`);
@@ -159,12 +153,14 @@ function dryness(w: World) {
 export function flammability(w: World, t: Thing) {
   if (t.kind === "structure") return t.shelter?.flam ?? 0.5;
   if (t.kind === "item") return p(w.kinds[t.item ?? ""], "flammable");
-  if (t.kind === "sapling" || t.kind === "herb" || t.kind === "mushroom") return 0.3;
+  if (t.kind === "sapling" || t.kind === "herb" || t.kind === "mushroom" || t.kind === "flowers") return 0.3;
   if (t.kind === "stick") return 0.7;
+  if (t.kind === "fern") return 0.6;
+  if (t.kind === "grass") return 0.5;
   return THING_MATERIAL[t.kind]?.flammable ?? 0;
 }
 function burnOut(w: World, t: Thing, by?: string) {
-  if (t.kind === "tree") { t.kind = "burnt_stump"; t.burning = 0; t.hp = 30; t.maxHp = 30; t.until = w.t + DAY * 10; changed.add(t.id); return; }
+  if (t.kind === "tree") { setKind(w, t, "burnt_stump"); t.burning = 0; t.hp = 30; t.maxHp = 30; t.size = 0.6; t.until = w.t + DAY * 10; mark(w, t); return; }
   if (t.kind === "structure") {
     const owner = w.agents.find((a) => a.id === t.owner);
     const text = `Fire burned down ${owner ? `${owner.name}'s` : "a"} ${["pile", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0]}.`;
@@ -172,19 +168,20 @@ function burnOut(w: World, t: Thing, by?: string) {
     if (owner) { burnedHomes.push({ owner: owner.id, by, text }); if (owner.home === t.id) owner.home = null; }
   }
   removeThing(w, t);
-  if (t.kind !== "item" && t.kind !== "stick") changed.add(addThing(w, "ash", t.x, t.y, { born: w.t, until: w.t + DAY * 2 }).id);
+  if (t.kind !== "item" && t.kind !== "stick" && t.size >= 0.4) mark(w, addThing(w, "ash", t.px, t.py, { born: w.t, until: w.t + DAY * 2, size: Math.min(3, t.kind === "bush" ? t.size : 1.2) }));
 }
-function fire(w: World) {
+// Flames reach what's within a few meters, and twice as far downwind.
+const NEAR = 5, DOWNWIND = 10;
+function fire(w: World, live: Thing[]) {
   const dry = dryness(w);
-  const byTile = new Map<number, Thing[]>();
   const sources: { t: Thing; heat: number; by?: string }[] = [];
-  for (const t of w.things) {
+  for (const t of live) {
     if (t.kind === "fire") {
       const burn = t.covered ? 0.3 : t.contained ? 0.5 : 1;
       t.hp = (t.hp ?? 0) - burn - (rainy(w) && !t.contained ? 2 : 0);
       if (t.charcoal) t.charcoal = Math.max(0, t.charcoal - burn);
       const h = fireHeat(w, t);
-      if (h !== (t.heat ?? 1)) { t.heat = h; changed.add(t.id); }
+      if (h !== (t.heat ?? 1)) { t.heat = h; mark(w, t); }
       if (t.hp <= 0) {
         removeThing(w, t);
         log(w, "fire_out", t.owner ? [t.owner] : [], t, rainy(w) ? "The rain put out a campfire." : "A campfire burned out.");
@@ -194,214 +191,103 @@ function fire(w: World) {
     } else if (t.burning) {
       t.burning = clamp01(t.burning + (rainy(w) ? -0.08 : 0.05));
       t.hp = (t.hp ?? THING_MATERIAL[t.kind]?.hp ?? 10) - 2 * t.burning;
-      changed.add(t.id);
+      mark(w, t);
       if (t.burning <= 0) { t.burning = 0; continue; }
       if (t.hp <= 0) { burnOut(w, t, t.burnedBy); continue; }
       sources.push({ t, heat: t.burning, by: t.burnedBy });
     }
   }
-  if (!sources.length) return;
-  const hot = new Set<number>();
-  for (const s of sources) for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) hot.add((s.t.y + dy) * W + s.t.x + dx);
-  for (const t of w.things) {
-    const i = t.y * W + t.x;
-    if (!hot.has(i) || t.burning || t.kind === "fire" || flammability(w, t) <= 0) continue;
-    (byTile.get(i) ?? byTile.set(i, []).get(i)!).push(t);
-  }
   const { dx: wdx, dy: wdy } = w.weather.wind;
   for (const s of sources) {
-    for (let dy = -2; dy <= 2; dy++)
-      for (let dx = -2; dx <= 2; dx++) {
-        const far = Math.max(Math.abs(dx), Math.abs(dy)) === 2;
-        const downwind = dx * wdx + dy * wdy > 0.5;
-        if (far && !downwind) continue;
-        for (const t of byTile.get((s.t.y + dy) * W + s.t.x + dx) ?? []) {
-          if (t === s.t || t.burning) continue;
-          const chance = s.heat * flammability(w, t) * dry * 0.02 * (downwind ? 2 : 1) * (far ? 0.4 : 1);
-          if (Math.random() >= chance) continue;
-          t.burning = 0.3;
-          t.burnedBy = s.by;
-          changed.add(t.id);
-          count("fire.spread");
-          trace("fire", "spread", { from: s.t.id, to: t.id, kind: t.kind, chance });
-          if (t.kind === "structure") log(w, "fire_spread", [t.owner ?? ""].filter(Boolean), t, "Fire caught on a shelter!");
-          else if (Math.random() < 0.1) log(w, "fire_spread", [], t, `Fire spread to a ${t.kind.replace("_", " ")}.`);
-        }
-      }
+    around(w, s.t.px, s.t.py, DOWNWIND, null, (t, d) => {
+      if (t === s.t || t.burning || t.kind === "fire" || d < 1e-6) return;
+      const along = (((t.px - s.t.px) * wdx + (t.py - s.t.py) * wdy) * TILE_M) / d;
+      const far = d > NEAR, downwind = along > 0.3;
+      if (far && !downwind) return;
+      const flam = flammability(w, t);
+      if (flam <= 0) return;
+      const chance = s.heat * flam * dry * 0.02 * (downwind ? 2 : 1) * (far ? 0.4 : 1);
+      if (Math.random() >= chance) return;
+      t.burning = 0.3;
+      t.burnedBy = s.by;
+      mark(w, t);
+      count("fire.spread");
+      trace("fire", "spread", { from: s.t.id, to: t.id, kind: t.kind, chance });
+      if (t.kind === "structure") log(w, "fire_spread", [t.owner ?? ""].filter(Boolean), t, "Fire caught on a shelter!");
+      else if (Math.random() < 0.1) log(w, "fire_spread", [], t, `Fire spread to a ${t.kind.replace("_", " ")}.`);
+    });
   }
 }
 
 // ---------- plants ----------
-function plants(w: World) {
+const BERRY_HP = 20;
+function plants(w: World, live: Thing[]) {
   const season = w.weather.season;
   const growing = season !== "winter";
-  for (const t of [...w.things]) {
+  for (const t of live) {
     if (t.burning) continue;
     if (t.scarred && (t.kind === "tree" || t.kind === "stump") && (t.resin ?? 0) < 2 && w.t - t.scarred > DAY && Math.random() < 1 / (DAY * 1.5)) {
       t.resin = (t.resin ?? 0) + 1;
-      changed.add(t.id);
+      mark(w, t);
     }
     if (t.kind === "bush") {
       const regrow = season === "winter" ? 1 / 500 : season === "autumn" ? 1 / 140 : 1 / 70;
-      if ((t.n ?? 0) < 4 && Math.random() < regrow) { t.n = (t.n ?? 0) + 1; changed.add(t.id); }
-      if ((t.hp ?? 20) < (t.maxHp ?? 20)) t.hp = (t.hp ?? 20) + 0.02;
-      if ((t.hp ?? 20) <= 0) { t.kind = "dead_bush"; t.n = 0; changed.add(t.id); log(w, "grow", [], t, "A berry bush was picked to death."); }
-      if (growing && season !== "autumn" && Math.random() < 1 / 7000) seedNear(w, t);
+      if (t.species === "berry" && (t.n ?? 0) < 4 && Math.random() < regrow) { t.n = (t.n ?? 0) + 1; mark(w, t); }
+      if ((t.hp ?? BERRY_HP) < (t.maxHp ?? BERRY_HP)) t.hp = Math.min(t.maxHp ?? BERRY_HP, (t.hp ?? BERRY_HP) + 0.02);
+      if ((t.hp ?? BERRY_HP) <= 0) { setKind(w, t, "dead_bush"); t.n = 0; mark(w, t); log(w, "grow", [], t, "A berry bush was picked to death."); }
     } else if (t.kind === "dead_bush" && season === "spring" && Math.random() < 1 / 4000) {
-      t.kind = "bush"; t.n = 0; t.hp = 20; t.maxHp = 20; changed.add(t.id);
+      setKind(w, t, "bush"); t.species = "berry"; t.n = 0; t.hp = BERRY_HP; t.maxHp = BERRY_HP; mark(w, t);
     } else if (t.kind === "sapling" && growing) {
-      t.stage = (t.stage ?? 0) + (1 / (3 * DAY)) * (nearWater(w, t.x, t.y, 4) ? 1.5 : 1);
-      if (Math.round((t.stage ?? 0) * 20) !== Math.round(((t.stage ?? 0) - 1 / (3 * DAY)) * 20)) changed.add(t.id);
+      t.stage = (t.stage ?? 0) + (1 / (3 * DAY)) * (nearWater(w, t.x, t.y, 1) ? 1.5 : 1);
+      if (Math.round((t.stage ?? 0) * 20) !== Math.round(((t.stage ?? 0) - 1 / (3 * DAY)) * 20)) { t.size = Math.round((0.3 + t.stage * 0.5) * 100) / 100; mark(w, t); }
       if (t.stage >= 1) matured(w, t);
     } else if ((t.kind === "stump" || t.kind === "burnt_stump") && t.until! <= w.t && growing) {
-      t.kind = "tree"; t.hp = 100; t.maxHp = 100; delete t.until; delete t.scarred; delete t.resin; delete t.bark; changed.add(t.id);
+      // A new stem comes up from the old roots.
+      setKind(w, t, "tree"); t.size = 5; t.hp = 53; t.maxHp = 53; delete t.until; delete t.scarred; delete t.resin; delete t.bark; mark(w, t);
     } else if (t.kind === "ash" && t.until! <= w.t) removeThing(w, t);
-    // Trees drop nuts in autumn. They keep for weeks, if someone gathers and stores them.
-    else if (t.kind === "tree" && season === "autumn" && Math.random() < 1 / 2500) dropPile(w, t.x + (Math.random() < 0.5 ? 1 : -1), t.y, "nut", 1);
+  }
+  // Trees drop nuts in autumn, a few a day over the island. They keep for weeks, if someone gathers and stores them.
+  if (season === "autumn" && Math.random() < 0.3) {
+    const t = anyOf(w, "tree");
+    if (t && !t.burning) { const a = Math.random() * Math.PI * 2, d = (1 + Math.random() * 3) / TILE_M; dropPile(w, t.px + Math.cos(a) * d, t.py + Math.sin(a) * d, "nut", 1); }
+  }
+  // Birds carry berry seeds off and drop them in the open.
+  if (growing && season !== "autumn" && Math.random() < 1 / 100) {
+    const b = anyOf(w, "bush");
+    if (b?.species === "berry") seedNear(w, b);
   }
   if (Math.random() < (growing ? 1 / 18 : 1 / 60)) {
-    const x = Math.floor(Math.random() * W), y = Math.floor(Math.random() * H);
-    if (!walkable(w, x, y) || w.things.some((t) => t.x === x && t.y === y)) return;
+    const x = Math.floor(Math.random() * W), y = Math.floor(Math.random() * H), px = x + Math.random(), py = y + Math.random();
+    if (!walkable(w, x, y)) return;
     const forest = tileAt(w, x, y) === Tile.Forest, shore = nearWater(w, x, y, 1);
     const r = Math.random();
     // Weather wears reddish stones out of rocky ground now and then.
-    if (tileAt(w, x, y) === Tile.Rock && r > 0.94) { dropPile(w, x, y, "ore", 1); return; }
+    if (tileAt(w, x, y) === Tile.Rock && r > 0.94) { dropPile(w, px, py, "ore", 1); return; }
     const kind = shore && growing ? (r < 0.7 ? "reeds" : "clay") : forest ? (!growing ? (r < 0.2 ? "mushroom" : "stick") : r < 0.45 ? "mushroom" : r < 0.6 ? "herb" : "stick") : r < 0.5 ? "stick" : "stone";
-    changed.add(addThing(w, kind, x, y, kind === "reeds" ? { hp: 6, maxHp: 6 } : {}).id);
+    if (anyAround(w, px, py, 3, [kind])) return;
+    const extra: Partial<Thing> = kind === "reeds" ? { hp: 6, maxHp: 6, size: 1 + Math.random() * 1.5 } : kind === "mushroom" ? { species: "bolete", hp: 2, maxHp: 2 } : kind === "herb" ? { species: "yarrow", hp: 3, maxHp: 3 } : kind === "stick" ? { hp: 8, maxHp: 8, size: 0.4 + Math.random() * 1.2 } : kind === "stone" ? { hp: 40, maxHp: 40 } : { hp: 10, maxHp: 10 };
+    mark(w, addThing(w, kind, px, py, extra));
   }
 }
 function seedNear(w: World, t: Thing) {
-  const x = t.x + Math.floor(Math.random() * 5) - 2, y = t.y + Math.floor(Math.random() * 5) - 2;
-  if (tileAt(w, x, y) !== Tile.Grass || w.things.some((o) => o.x === x && o.y === y)) return;
-  changed.add(addThing(w, "sapling", x, y, { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5 }).id);
+  const a = Math.random() * Math.PI * 2, d = (5 + Math.random() * 40) / TILE_M, px = t.px + Math.cos(a) * d, py = t.py + Math.sin(a) * d;
+  if (tileAt(w, Math.floor(px), Math.floor(py)) !== Tile.Grass || anyAround(w, px, py, 2, ["tree", "bush", "sapling", "boulder", "structure", "dead_bush"])) return;
+  mark(w, addThing(w, "sapling", px, py, { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5 }));
 }
 function matured(w: World, t: Thing) {
   const from = t.item ?? "berry";
-  t.kind = "bush"; t.n = 1; t.hp = 20; t.maxHp = 20; delete t.stage;
-  changed.add(t.id);
+  setKind(w, t, "bush"); t.species = "berry"; t.n = 1; t.hp = BERRY_HP; t.maxHp = BERRY_HP; t.size = 0.9; delete t.stage;
+  mark(w, t);
   log(w, "grow", t.owner ? [t.owner] : [], t, t.owner ? `The ${w.kinds[from]?.name ?? from} ${w.agents.find((a) => a.id === t.owner)?.name} pushed into the ground grew into a berry bush.` : "A new berry bush sprang up.");
-  see(w, t, `grows:${from}`, `A ${w.kinds[from]?.name ?? from} in the ground can grow into a berry bush.`, 8);
+  see(w, t, `grows:${from}`, `A ${w.kinds[from]?.name ?? from} in the ground can grow into a berry bush.`, 80);
   if (t.owner) grewFor(w, t.owner, from, t);
 }
 // The planter connects planting to the bush, whenever they see it.
 export let grewFor: (w: World, owner: string, from: string, at: Thing) => void = () => {};
 export const onGrew = (fn: typeof grewFor) => (grewFor = fn);
 
-// ---------- animals ----------
-function step(w: World, an: Animal, tx: number, ty: number, away = false) {
-  let best: [number, number] | null = null, bd = away ? -Infinity : Infinity;
-  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-    const nx = an.x + dx, ny = an.y + dy;
-    if (!walkable(w, nx, ny)) continue;
-    const d = Math.hypot(nx - tx, ny - ty);
-    if (away ? d > bd : d < bd) { bd = d; best = [nx, ny]; }
-  }
-  if (best) { an.dx = best[0] - an.x; an.dy = best[1] - an.y; an.x = best[0]; an.y = best[1]; }
-}
-function wander(w: World, an: Animal) {
-  if (Math.random() > 0.35) return;
-  step(w, an, an.x + Math.floor(Math.random() * 7) - 3, an.y + Math.floor(Math.random() * 7) - 3);
-}
-function nearestOf<T extends { x: number; y: number }>(from: { x: number; y: number }, list: T[], r: number) {
-  let best: T | null = null, bd = r + 1;
-  for (const o of list) { const d = dist(from, o); if (d < bd) { bd = d; best = o; } }
-  return best;
-}
-function carcass(w: World, an: Animal) {
-  w.animals = w.animals.filter((x) => x !== an);
-  for (const [k, n] of Object.entries(THING_MATERIAL[an.species].breaks)) dropPile(w, an.x, an.y, k, n);
-}
-function animals(w: World) {
-  const winter = w.weather.season === "winter", spring = w.weather.season === "spring";
-  const deer = w.animals.filter((a) => a.species === "deer"), wolves = w.animals.filter((a) => a.species === "wolf");
-  const awake = w.agents.filter((a) => a.down <= w.t);
-  for (const d of deer) {
-    if (d.state === "trapped") continue;
-    d.hunger -= winter ? 0.1 : 0.05;
-    const wolf = nearestOf(d, wolves, 6), person = nearestOf(d, awake, 3);
-    const threat = wolf ?? person;
-    if (threat || d.hp < d.maxHp * 0.6) {
-      d.state = "flee";
-      if (threat) step(w, d, threat.x, threat.y, true);
-      else wander(w, d);
-    } else {
-      const tile = tileAt(w, d.x, d.y);
-      if (tile === Tile.Grass && d.hunger < 90) { d.state = "graze"; d.hunger = Math.min(100, d.hunger + (winter ? 0.12 : 0.35)); }
-      else d.state = "wander";
-      const mate = nearestOf(d, deer.filter((x) => x !== d), 20);
-      if (mate && dist(d, mate) > 4 && Math.random() < 0.3) step(w, d, mate.x, mate.y);
-      else if (d.state !== "graze" || Math.random() < 0.15) wander(w, d);
-      if ((spring || w.weather.season === "summer") && mate && dist(d, mate) <= 2 && d.hunger > 55 && deer.length < 18 && Math.random() < 1 / 400) {
-        addAnimal(w, "deer", d.x, d.y);
-        log(w, "birth", [], d, "A fawn was born.");
-      }
-    }
-    if (d.hunger <= 0) { carcass(w, d); log(w, "death", [], d, "A deer starved."); }
-  }
-  for (const wf of wolves) {
-    if (wf.state === "trapped") continue;
-    wf.hunger -= winter ? 0.12 : 0.08;
-    const fireNear = w.things.some((t) => t.kind === "fire" && dist(t, wf) <= 3);
-    const crowd = awake.filter((a) => dist(a, wf) <= 2).length >= 2;
-    if (fireNear || crowd || wf.hp < wf.maxHp * 0.4) {
-      wf.state = "flee";
-      const from = fireNear ? w.things.find((t) => t.kind === "fire" && dist(t, wf) <= 3)! : nearestOf(wf, awake, 3)!;
-      if (from) step(w, wf, from.x, from.y, true);
-      wf.target = undefined;
-      continue;
-    }
-    const meat = w.things.find((t) => t.kind === "item" && (t.item === "meat" || t.item?.startsWith("rotten:meat")) && dist(t, wf) <= 8);
-    if (wf.hunger < 70 && meat) {
-      wf.state = "eat";
-      if (dist(wf, meat) <= 0) {
-        meat.n = (meat.n ?? 1) - 1; wf.hunger = Math.min(100, wf.hunger + 30); changed.add(meat.id);
-        if (meat.n <= 0) removeThing(w, meat);
-      } else step(w, wf, meat.x, meat.y);
-      continue;
-    }
-    const prey = wf.hunger < 50 ? nearestOf(wf, deer, 20) : null;
-    const lone = (a: Agent) => awake.every((b) => b === a || dist(a, b) > 3) && !w.things.some((t) => t.kind === "fire" && dist(t, a) <= 4);
-    const desperate = wf.hunger < 12 || (wf.hunger < 30 && (isNight(w.t) || winter));
-    const person = !prey && desperate ? nearestOf(wf, awake.filter(lone), 15) : null;
-    const target = person ?? prey;
-    if (!target) { wf.state = "wander"; wf.target = undefined; wander(w, wf); continue; }
-    wf.state = "hunt";
-    if (dist(wf, target) > 1) { step(w, wf, target.x, target.y); continue; }
-    wf.state = "attack";
-    if ("species" in target) {
-      target.hp -= 6;
-      if (target.hp <= 0) {
-        carcass(w, target);
-        log(w, "death", [], target, "Wolves brought down a deer.");
-        see(w, target, "breaks:deer", "A deer can be killed. It's all meat, hide, and bone inside.", 9);
-      }
-    } else {
-      const victim = target as Agent;
-      victim.needs.health = Math.max(0, victim.needs.health - 5);
-      if (wf.target !== victim.id) log(w, "wolf", [victim.id], victim, `A wolf attacked ${victim.name}!`);
-      wf.target = victim.id;
-      attacked.set(victim.id, wf.id);
-      trace("animal", "attack", { wolf: wf.id, victim: victim.id, health: victim.needs.health }, victim.id);
-    }
-  }
-  // Animals swim across to the island when it empties out.
-  const deerNow = w.animals.filter((a) => a.species === "deer").length;
-  if (deerNow < 4 && Math.random() < 1 / 1500) { const e = landing(w); if (e) { addAnimal(w, "deer", e.x, e.y); addAnimal(w, "deer", e.x, e.y); log(w, "birth", [], e, "A pair of deer swam ashore."); } }
-  if (deerNow >= 8 && !wolves.some((x) => w.animals.includes(x)) && Math.random() < 1 / 4000) { const e = landing(w); if (e) { addAnimal(w, "wolf", e.x, e.y); addAnimal(w, "wolf", e.x, e.y); log(w, "birth", [], e, "Wolves came across the water, following the deer."); } }
-  const wolfCount = wolves.filter((x) => w.animals.includes(x)).length;
-  if (spring && wolfCount >= 2 && wolfCount < 6 && Math.random() < 1 / 4000) {
-    const mom = wolves.find((x) => w.animals.includes(x))!;
-    addAnimal(w, "wolf", mom.x, mom.y);
-    log(w, "birth", [], mom, "A wolf pup was born.");
-  }
-  for (const wf of w.animals.filter((a) => a.species === "wolf" && a.hunger <= 0)) { carcass(w, wf); log(w, "death", [], wf, "A wolf starved."); }
-  for (const an of w.animals.filter((a) => a.hp <= 0)) { w.animals = w.animals.filter((x) => x !== an); log(w, "death", [], an, `A ${an.species} went through the ice and drowned.`); }
-}
-// Agents being attacked this tick, agent id -> wolf id.
-export const attacked = new Map<string, string>();
-
 // ---------- rot, wear, weathering ----------
-function decay(w: World) {
+function decay(w: World, live: Thing[]) {
   if (w.t % 12) return;
   const rot = (k: string) => {
     const [kind, isNew] = ensure(w.kinds, `rotten:${k}`, () => ({
@@ -428,12 +314,12 @@ function decay(w: World) {
     }
     if (a.wearing && (a.wearing.hp -= 0.006 * (1.3 - p(w.kinds[a.wearing.k], "toughness"))) <= 0) { log(w, "break", [a.id], a, `${a.name}'s ${w.kinds[a.wearing.k]?.name} wore through.`); a.wearing = null; }
   }
-  for (const t of [...w.things]) {
+  for (const t of live) {
     const cools = t.kind === "item" && t.item ? w.kinds[t.item]?.cools : undefined;
-    if (cools && w.t - (t.born ?? w.t) > cools) { t.item = w.kinds[t.item!].parts![0]; t.born = w.t; changed.add(t.id); }
+    if (cools && w.t - (t.born ?? w.t) > cools) { t.item = w.kinds[t.item!].parts![0]; t.born = w.t; mark(w, t); }
     if (t.kind === "item" && t.item && spoiled(t.item, t.born ?? w.t)) {
       if (t.item.startsWith("rotten:")) { removeThing(w, t); continue; }
-      t.item = rot(t.item); t.born = w.t; changed.add(t.id);
+      t.item = rot(t.item); t.born = w.t; mark(w, t);
     }
     for (const s of t.store ?? []) {
       if (!spoiled(s.k, s.born)) continue;
@@ -443,12 +329,12 @@ function decay(w: World) {
     if (t.kind === "structure" && t.shelter) {
       const sky = w.weather.sky;
       // Loose piles that aren't ringing a fire scatter within a few days.
-      const pile = t.shelter.tier === 0 && !w.things.some((f) => f.kind === "fire" && f.x === t.x && f.y === t.y);
+      const pile = t.shelter.tier === 0 && !anyAround(w, t.px, t.py, 1, ["fire"]);
       t.hp = (t.hp ?? 100) - (0.03 + (pile ? 0.5 : 0) + (sky === "rain" ? 0.1 : sky === "storm" ? 0.5 : 0)) * (1.2 - t.shelter.sturdy);
       if (t.hp <= 0) {
         const owner = w.agents.find((a) => a.id === t.owner);
         log(w, "ruin", owner ? [owner.id] : [], t, `${owner ? `${owner.name}'s` : "A"} shelter fell apart in the weather.`);
-        for (const [k, n] of Object.entries(t.parts ?? {})) if (Math.random() < 0.5) dropPile(w, t.x, t.y, k, Math.ceil(n / 2));
+        for (const [k, n] of Object.entries(t.parts ?? {})) if (Math.random() < 0.5) dropPile(w, t.px, t.py, k, Math.ceil(n / 2));
         if (owner?.home === t.id) owner.home = null;
         removeThing(w, t);
       }
@@ -469,33 +355,69 @@ function disease(w: World) {
       continue;
     }
     for (const b of w.agents) {
-      if (b === a || b.sickness || dist(a, b) > 1 || Math.random() > 0.003 * s.severity) continue;
+      if (b === a || b.sickness || meters(a, b) > 10 || Math.random() > 0.003 * s.severity) continue;
       b.sickness = { until: w.t + Math.round(DAY * (0.5 + s.severity)), severity: s.severity * 0.8 };
       log(w, "sick", [b.id, a.id], b, `${b.name} caught ${a.name}'s sickness.`);
-      see(w, b, "contagion", "Sickness spreads between people who stay close.", 4);
+      see(w, b, "contagion", "Sickness spreads between people who stay close.", 40);
     }
   }
 }
 
 // ---------- paths ----------
-export function trample(w: World, x: number, y: number) {
-  const i = y * W + x;
-  if (w.paths[i] < 9 && Math.random() < 0.06) { w.paths[i]++; pathChanges.add(i); }
+// Feet wear a path where they pass often: a chance with every forty meters walked.
+export function trample(w: World, at: { x: number; y: number }, walked: number) {
+  const i = at.y * W + at.x;
+  if (w.paths[i] < 9 && Math.random() < 0.06 * (walked / 40)) { w.paths[i]++; pathChanges.add(i); }
 }
 function paths(w: World) {
   if (w.t % DAY) return;
   for (let i = 0; i < w.paths.length; i++) if (w.paths[i] && Math.random() < 0.3) { w.paths[i]--; pathChanges.add(i); }
 }
 
+// Wear where feet actually fall, on cells of about 3 m, for drawing trails that follow the way people really walk. The
+// 150 m tile wear above is what the game's rules read; this is kept beside the world, not saved with it.
+export const TRAIL_CELL = 3;
+export const trailChanges = new Set<number>();
+type Trails = { cell: number; n: number; wear: Uint8Array; worn: Set<number> };
+const trailsOf = new WeakMap<World, Trails>();
+export function trails(w: World): Trails {
+  let t = trailsOf.get(w);
+  if (!t) { const n = Math.round((W * TILE_M) / TRAIL_CELL); t = { cell: TRAIL_CELL, n, wear: new Uint8Array(n * n), worn: new Set() }; trailsOf.set(w, t); }
+  return t;
+}
+// Wear every cell crossed walking from one point to another (in tiles), once each.
+export function tread(w: World, x0: number, y0: number, x1: number, y1: number) {
+  const t = trails(w), k = TILE_M / TRAIL_CELL, steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) * k * 2));
+  let last = -1;
+  for (let s = 1; s <= steps; s++) {
+    const cx = Math.floor((x0 + ((x1 - x0) * s) / steps) * k), cy = Math.floor((y0 + ((y1 - y0) * s) / steps) * k), i = cy * t.n + cx;
+    if (i === last || cx < 0 || cy < 0 || cx >= t.n || cy >= t.n) continue;
+    last = i;
+    if (t.wear[i] < 255) { t.wear[i]++; t.worn.add(i); trailChanges.add(i); }
+  }
+}
+// Trails grow over: once a day each worn cell loses a tenth of its wear, and at least one.
+function overgrow(w: World) {
+  if (w.t % DAY) return;
+  const t = trails(w);
+  for (const i of t.worn) {
+    t.wear[i] = Math.max(0, t.wear[i] - Math.max(1, Math.floor(t.wear[i] / 10)));
+    trailChanges.add(i);
+    if (!t.wear[i]) t.worn.delete(i);
+  }
+}
+
 export function ecology(w: World) {
   attacked.clear();
   timed("weather", () => weather(w));
-  timed("fire", () => fire(w));
-  timed("plants", () => plants(w));
-  // An animal standing on a hidden pit falls in before it gets a chance to walk off it.
-  timed("holes", () => holes(w));
+  // The live set as it stands, less anything an earlier step burned, ate or took away.
+  const live = () => [...liveThings(w)].filter((t) => exists(w, t));
+  timed("fire", () => fire(w, live()));
+  timed("plants", () => plants(w, live()));
+  timed("holes", () => holes(w, live()));
   timed("animals", () => animals(w));
-  timed("decay", () => decay(w));
+  timed("decay", () => decay(w, live()));
   timed("disease", () => { disease(w); crowding(w); });
   paths(w);
+  overgrow(w);
 }

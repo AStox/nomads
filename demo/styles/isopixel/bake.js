@@ -1,21 +1,21 @@
 // Bake worker for the live renderer: grows the island once, builds one tile map per zoom level on demand, and paints
-// chunks of the static landscape (terrain, flora, the sim's clearings and paths) into indexed colour plus depth.
+// chunks of the static landscape (terrain, the sim's objects, footpaths and ice) into indexed colour plus depth.
 globalThis.document ??= { createElement: () => new OffscreenCanvas(1, 1) };
 globalThis.ISO_LIB = true;
 // messages that arrive while the modules below load would be dropped, so hold them until the handler exists
 const early = [];
 onmessage = (e) => early.push(e);
 
-const { grow, fbm } = await import("../world.js");
+const { grow } = await import("../world.js");
 const L = await import("./main.js");
 const { P, SHADOW } = await import("./pal.js");
-const { Buf, dith, h2 } = await import("./px.js");
+const { Buf, ObjBins, dith } = await import("./px.js");
 
 let w = null;
 // one view per level and bearing; island-wide maps (the island levels only) are kept for the few most recent
 const levels = new Map(), MAPS_KEPT = 6;
-// the live world's landscape, sent by the page whenever the sim changes it
-const D = { version: 0, clear: new Map(), paths: new Uint8Array(64 * 64), ice: new Uint8Array(64 * 64), seg: null };
+// the live world, sent by the page whenever the sim changes it: its objects, worn paths and ice
+const D = { version: 0, objs: null, trail: null, ice: new Uint8Array(64 * 64) };
 
 const SIM = 150, SIM0 = -4800;
 const simTile = (x, z) => [Math.floor((x - SIM0) / SIM), Math.floor((z - SIM0) / SIM)];
@@ -33,55 +33,6 @@ function level(k, b) {
   const big = [...levels].filter(([, l]) => l.M);
   for (const [k2] of big.slice(0, Math.max(0, big.length - MAPS_KEPT))) levels.delete(k2);
   return lv;
-}
-
-D.cleared = (x, z, pad) => {
-  const [tx, ty] = simTile(x, z);
-  for (let b = ty - 1; b <= ty + 1; b++)
-    for (let a = tx - 1; a <= tx + 1; a++) {
-      const list = D.clear.get(b * 64 + a);
-      if (list) for (const c of list) if ((x - c.x) ** 2 + (z - c.z) ** 2 < (c.r + pad) ** 2) return true;
-    }
-  return false;
-};
-
-// Worn paths: every tile the sim has worn joins its worn neighbours by a wobbling track, wider the more it is used.
-const node = (tx, ty) => [SIM0 + SIM * (tx + 0.5) + (h2(tx, ty, 501) - 0.5) * 60, SIM0 + SIM * (ty + 0.5) + (h2(tx, ty, 502) - 0.5) * 60];
-function buildPaths() {
-  const seg = new Map(), push = (k, s) => { if (k >= 0 && k < 4096) (seg.get(k) ?? seg.set(k, []).get(k)).push(s); };
-  const worn = (tx, ty) => tx >= 0 && ty >= 0 && tx < 64 && ty < 64 && D.paths[ty * 64 + tx] >= 2;
-  for (let ty = 0; ty < 64; ty++)
-    for (let tx = 0; tx < 64; tx++) {
-      if (!worn(tx, ty)) continue;
-      const wear = D.paths[ty * 64 + tx], [ax, az] = node(tx, ty);
-      let links = 0;
-      for (const [dx, dy] of [[1, 0], [0, 1], [1, 1], [1, -1]]) {
-        if (!worn(tx + dx, ty + dy)) continue;
-        links++;
-        const [bx, bz] = node(tx + dx, ty + dy), s = { ax, az, bx, bz, wear: (wear + D.paths[(ty + dy) * 64 + tx + dx]) / 2 };
-        for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) { push((ty + b) * 64 + tx + a, s); if (dx || dy) push((ty + dy + b) * 64 + tx + dx + a, s); }
-      }
-      const self = { ax, az, bx: ax + 1, bz: az, wear, lone: !links };
-      for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) push((ty + b) * 64 + tx + a, self);
-    }
-  D.seg = seg;
-}
-function troddenFor(V) {
-  if (V.name === "island" || !D.seg || !D.seg.size) return null;
-  const k = (V.tileM / 18.75) ** 0.7;
-  return (x, z) => {
-    const [tx, ty] = simTile(x, z), list = D.seg.get(ty * 64 + tx);
-    if (!list) return Infinity;
-    let best = Infinity;
-    for (const s of list) {
-      const dx = s.bx - s.ax, dz = s.bz - s.az, t = Math.max(0, Math.min(1, ((x - s.ax) * dx + (z - s.az) * dz) / (dx * dx + dz * dz)));
-      // the track meanders, so it is not a ruled line between tile centres
-      const wob = fbm(x / 40, z / 40, 503, 2) * 9 * k;
-      const d = Math.hypot(x - s.ax - dx * t, z - s.az - dz * t) + wob - (1.4 + s.wear * 0.35) * k * (s.lone ? 2.5 : 1);
-      if (d < best) best = d;
-    }
-    return best;
-  };
 }
 
 function bake(msg) {
@@ -110,16 +61,17 @@ function bake(msg) {
       }
     ground = { i0: V.i0, j0: V.j0, w: gw, h: gh, C, diag, kind };
   }
-  V.trodden = troddenFor(V);
-  V.fringe = 2.5 * (V.tileM / 18.75) ** 0.7;
+  V.trail = D.trail;
   V.iceAt = (x, z) => { const [tx, ty] = simTile(x, z); return tx >= 0 && ty >= 0 && tx < 64 && ty < 64 && D.ice[ty * 64 + tx] === 1; };
   V.anim = new Map();
+  // the consistency check reads what every pixel shows: its object's sim id, its ground class and world point
+  V.debug = D.debug ? { cls: new Uint8Array(CS * CS), wx: new Float32Array(CS * CS), wz: new Float32Array(CS * CS) } : null;
   const B = new Buf(CS, CS);
   // beyond the map the sea runs on, deep and plain
   for (let y = 0; y < CS; y++) for (let x = 0; x < CS; x++) B.c[y * CS + x] = dith([P.w0, P.w1, P.w2, P.w3], 1.35, x + V.gx, y + V.gy);
   const O = L.collectLive(w, V, M, D);
   const t1 = performance.now();
-  L.drawTerrain(B, w, V, M);
+  L.drawTerrainLive(B, w, V, M);
   const t2 = performance.now();
   L.drawObjects(B, V, O);
   const obj = new Uint8Array(CS * CS);
@@ -134,10 +86,18 @@ function bake(msg) {
     for (const c of cols) aC.push(dark ? SHADOW[c] : c);
   }
   V.anim = null;
+  let dbg = null;
+  if (V.debug) {
+    const byLid = new Map(), oid = new Uint32Array(CS * CS);
+    for (const o of O) if (o.oid != null) byLid.set(o.lid, o.oid);
+    for (let p = 0; p < oid.length; p++) oid[p] = byLid.get(B.id[p]) ?? 0;
+    dbg = { ...V.debug, oid, drawn: O.filter((o) => o.oid != null).map((o) => [o.oid, o.ax, o.ay]) };
+    V.debug = null;
+  }
   const animP = Uint32Array.from(aP), animC = Uint8Array.from(aC);
   const moved = [B.c.buffer, B.z.buffer, obj.buffer, animP.buffer, animC.buffer];
   if (ground) moved.push(ground.C.buffer, ground.diag.buffer, ground.kind.buffer);
-  postMessage({ type: "chunk", key: msg.key, ver: D.version, c: B.c, z: B.z, obj, animP, animC, ground, ms: performance.now() - t0, parts: [t1 - t0, t2 - t1, performance.now() - t2], objects: O.length }, moved);
+  postMessage({ type: "chunk", key: msg.key, ver: D.version, c: B.c, z: B.z, obj, animP, animC, ground, dbg, ms: performance.now() - t0, parts: [t1 - t0, t2 - t1, performance.now() - t2], objects: O.length }, moved);
 }
 
 function mapData(k, b) {
@@ -153,6 +113,11 @@ function run(m) {
   try {
     if (m.type === "bake") bake(m);
     else if (m.type === "map") mapData(m.level, m.bearing ?? 0);
+    else if (m.type === "classify") {
+      const V = level(5, 0).V, out = new Uint8Array(m.points.length / 2);
+      for (let k = 0; k < out.length; k++) out[k] = L.surfaceAt(w, V, m.points[2 * k], m.points[2 * k + 1]);
+      postMessage({ type: "classes", id: m.id, out });
+    }
     else if (m.type === "heights") {
       // the true ground on a coarse grid, where the page stands sprites before their chunk is baked
       const n = Math.ceil(9600 / m.step) + 1, h = new Float32Array(n * n);
@@ -169,17 +134,22 @@ const handle = async (e) => {
   if (m.type === "init") {
     const t0 = performance.now();
     w = grow(m.seed);
+    D.debug = !!m.debug;
     L.setLife(await import("./life.js").catch(() => ({})));
+    L.setThings(await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {})));
     postMessage({ type: "ready", ms: performance.now() - t0 });
     return;
   }
   if (m.type === "state") {
     D.version = m.version;
-    if (m.clear) {
-      D.clear = new Map();
-      for (const c of m.clear) { const [tx, ty] = simTile(c.x, c.z), k = ty * 64 + tx; (D.clear.get(k) ?? D.clear.set(k, []).get(k)).push(c); }
+    if (m.objs) D.objs = new ObjBins(m.objs);
+    if (D.objs && (m.up || m.rm)) {
+      D.objs.kinds = m.kinds; D.objs.species = m.species;
+      for (const id of m.rm || []) D.objs.drop(id);
+      for (const r of m.up || []) D.objs.upsert(r);
     }
-    if (m.paths) { D.paths = Uint8Array.from(m.paths); buildPaths(); }
+    if (m.trail) D.trail = m.trail;
+    if (m.trailUp && D.trail) for (let k = 0; k < m.trailUp.length; k += 2) D.trail[m.trailUp[k]] = m.trailUp[k + 1];
     if (m.ice) D.ice = Uint8Array.from(m.ice);
     return;
   }

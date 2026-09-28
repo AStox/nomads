@@ -4,40 +4,41 @@
 // fire and smoke on a real clock, relights the indexed palette for the time of day, and scales the art buffer to the
 // exact zoom without losing its crisp pixels.
 import { RGB, NCOL, P, GLOW, HAZE } from "./pal.js";
-import { Buf, blit, castShadow, bayer, h2 } from "./px.js";
+import { Buf, ObjBins, blit, castShadow, bayer, h2 } from "./px.js";
 import * as SP from "./sprites.js";
-import * as LF from "./life.js";
 import { text } from "./ui.js";
 
 const CS = 256, SIM = 150, ORIGIN = -4800, DAY = 288, YEAR = DAY * 40, TAU = Math.PI * 2, NL = 9, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const mod8 = (b) => ((Math.round(b) % NB) + NB) % NB;
-// What each tuned level draws at, in art px (SimCity exaggeration); levels in between interpolate by art px per meter.
-// island, region, valley, close
+// Fire, its glow and its smoke column drawn larger than life, as the old sims do, so a camp shows from far out: art px
+// at the tuned levels (island, region, valley, close); levels in between interpolate by art px per meter. Everything
+// else is sized by its own meters.
 const ANCHORS = [
-  [0, { person: 3, deer: 3, wolf: 2, hut: 4, fire: 2, thing: 0, gull: 0, span: 0, fish: 0, glow: 3, smoke: 3 }],
-  [3, { person: 5, deer: 4, wolf: 3, hut: 8, fire: 4, thing: 0.5, gull: 300, span: 5, fish: 3, glow: 6, smoke: 3 }],
-  [5, { person: 9, deer: 7, wolf: 4, hut: 16, fire: 6, thing: 1, gull: 140, span: 8, fish: 5, glow: 12, smoke: 5 }],
-  [8, { person: 24, deer: 18, wolf: 11, hut: 40, fire: 14, thing: 2.5, gull: 45, span: 14, fish: 9, glow: 30, smoke: 3 }],
+  [0, { person: 3, fire: 2, glow: 3, smoke: 3 }],
+  [3, { person: 5, fire: 4, glow: 6, smoke: 3 }],
+  [5, { person: 9, fire: 6, glow: 12, smoke: 5 }],
+  [8, { person: 24, fire: 14, glow: 30, smoke: 3 }],
 ];
+// animal body size in meters: standing height, a bird's wingspan, a fish's length
+const BODY = { deer: 1.5, wolf: 0.9, rabbit: 0.35, heron: 1, gull: 1.2, crow: 0.9, eagle: 2, fish: 0.5, butterfly: 0.1 };
+const FLIERS = new Set(["heron", "gull", "crow", "eagle", "butterfly"]);
 const strHash = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
 const idH = (id, k) => h2(strHash(String(id)), k, 611);
-// where a thing or creature stands inside its 150 m tile, spread by a hash of its id so a camp does not stack up
-const spot = (id, tx, ty, spread = 0.6) => [ORIGIN + SIM * (tx + 0.5 + (idH(id, 1) - 0.5) * spread), ORIGIN + SIM * (ty + 0.5 + (idH(id, 2) - 0.5) * spread)];
+const toM = (t) => t * SIM + ORIGIN;
 const NOSHADOW = new Set(["ash", "pit", "trap", "fire", "clay", "stick"]);
-const CLEARS = { stump: 7, burnt_stump: 9, fire: 5, ash: 5, pit: 4, well: 4, grave: 3, trap: 2 };
 
-export async function createLive({ seed = 1, canvas, onProgress, workers: nW, adjacent = true } = {}) {
+export async function createLive({ seed = 1, canvas, onProgress, workers: nW, adjacent = true, check = false } = {}) {
   const TH = await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {}));
   const n = nW ?? clamp((navigator.hardwareConcurrency || 4) - 2, 1, 3);
-  const tStart = performance.now();
+  const tStart = performance.now(), classWait = new Map();
   const pool = [], maps = new Map(), mapPending = new Map();
   const stats = { fps: 0, composeMs: 0, bakeQueue: 0, bakedChunks: 0, bakeMsAvg: 0, memMB: 0, firstFrameMs: 0, growMs: 0, mapMs: {}, workers: n, slots: 1 };
   let bakeN = 0, bakeSum = 0;
   const cache = new Map();
   let cacheBytes = 0, stateVer = 0, simRef = null, synced = false;
-  const clearings = new Map(), grounds = new Map();
+  const grounds = new Map();
 
   const onChunk = (wk, m) => {
     wk.busy = null;
@@ -47,7 +48,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     if (ch.c) cacheBytes -= ch.bytes;
     dropGround(ch);
     if (m.ground) { m.ground.chunk = ch.key; (grounds.get(ch.mk) ?? grounds.set(ch.mk, []).get(ch.mk)).push(m.ground); }
-    Object.assign(ch, { c: m.c, z: m.z, obj: m.obj, animP: m.animP, animC: m.animC, ground: m.ground, ver: m.ver, pending: false, bytes: m.c.length * 6 + m.animC.length + m.animP.length * 4 });
+    Object.assign(ch, { c: m.c, z: m.z, obj: m.obj, animP: m.animP, animC: m.animC, ground: m.ground, dbg: m.dbg, ver: m.ver, pending: false, bytes: m.c.length * 6 + m.animC.length + m.animP.length * 4 });
     cacheBytes += ch.bytes;
     bakeN++; bakeSum += m.ms;
     stats.bakedChunks++; stats.bakeMsAvg = bakeSum / bakeN;
@@ -69,9 +70,10 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
         if (m.type === "ready") { stats.growMs = Math.max(stats.growMs, m.ms); if (++ready === n) done(); onProgress?.(ready, n, "growing the island"); }
         else if (m.type === "map") onMap(m);
         else if (m.type === "heights") onHeights?.(m);
+        else if (m.type === "classes") classWait.get(m.id)?.(m.out);
         else onChunk(wk, m);
       };
-      wk.postMessage({ type: "init", seed });
+      wk.postMessage({ type: "init", seed, debug: check });
       pool.push(wk);
     }
   });
@@ -189,10 +191,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const [a0, v0] = A[k], [a1, v1] = A[k + 1], f = clamp((lp - a0) / (a1 - a0), 0, 1), out = {};
     for (const key of Object.keys(v0)) {
       const x = v0[key], y = v1[key];
-      out[key] = x > 0 && y > 0 ? x * (y / x) ** f : x + (y - x) * f;
-      if (key !== "thing") out[key] = Math.round(out[key]);
+      out[key] = Math.round(x * (y / x) ** f);
     }
-    if (p < PL[3]) { out.gull = 0; out.thing = 0; }
     return out;
   });
 
@@ -267,51 +267,72 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     }
   }
 
-  // ---------- landscape state from the sim ----------
-  function clearingOf(t) {
-    if (t.contained || t.inside) return null;
-    let r = CLEARS[t.kind];
-    if (t.kind === "structure") r = 6 + (t.shelter?.tier ?? 0) * 4;
-    if (!r) return null;
-    const [x, z] = spot(t.id, t.x, t.y);
-    return { x, z, r };
-  }
+  // ---------- the sim's objects ----------
+  // Most are baked into the chunks from a binned copy each worker keeps; the kinds that change often draw every frame.
+  let bins = null;
+  const liveThings = new Map();
+  const isLive = (t) => ObjBins.LIVE.has(t.kind) || t.burning > 0;
+  const numId = (id) => +String(id).slice(1);
   function postState(msg) {
     stateVer++;
     for (const wk of pool) wk.postMessage({ type: "state", version: stateVer, ...msg });
   }
-  const clearList = () => [...clearings.values()];
   function sync(sim) {
-    const W = sim.w;
-    clearings.clear();
-    for (const t of W.things) { const c = clearingOf(t); if (c) clearings.set(t.id, c); }
-    postState({ clear: clearList(), paths: Array.from(W.paths), ice: iceFlags(W.ice) });
+    const W = sim.w, o = sim.objects();
+    bins = new ObjBins(o);
+    liveThings.clear();
+    for (const t of W.things) if (!t.contained && isLive(t)) liveThings.set(t.id, t);
+    lastIce = iceFlags(W.ice);
+    trailSrc = sim.trails?.() ?? null;
+    trailQ = trailSrc ? Uint8Array.from(trailSrc.wear, wearStep) : null;
+    postState({ objs: o, trail: trailQ, ice: lastIce });
+    // everything baked so far was baked without the sim's objects
+    for (const ch of cache.values()) ch.need = stateVer;
     synced = true;
   }
   const iceFlags = (ice) => { const f = new Array(4096).fill(0); if (ice) for (const i of ice) f[i] = 1; return f; };
-  // mark every cached chunk that can show part of a world rectangle as stale; it keeps showing until the rebake lands
-  function dirty(x0, z0, x1, z1) {
+  // mark every cached chunk that can show part of a world rectangle as stale; it keeps showing until the rebake lands.
+  // With an object's size, only the levels that draw it at a pixel or more.
+  function dirty(x0, z0, x1, z1, size) {
     for (const ch of cache.values()) {
-      if (ch.L === 0) continue;
+      if (ch.L === 0 && size == null) continue;
       const [a, b, c, d] = ch.box;
-      if (a <= x1 && c >= x0 && b <= z1 && d >= z0) ch.need = stateVer;
+      if (a > x1 || c < x0 || b > z1 || d < z0) continue;
+      if (size != null) { const md = maps.get(ch.mk); if (md && ObjBins.shown(size) * md.k * 0.866 * md.treeK < 1) continue; }
+      ch.need = stateVer;
     }
   }
   function changed(ch) {
     if (!ch || !simRef) return;
     if (!synced) { sync(simRef); return; }
-    const W = simRef.w, touched = [];
-    const redo = (id, c) => {
-      const old = clearings.get(id);
-      if (old && c && old.x === c.x && old.z === c.z && old.r === c.r) return;
-      if (old) { clearings.delete(id); touched.push(old); }
-      if (c) { clearings.set(id, c); touched.push(c); }
-    };
-    for (const t of ch.things || []) redo(t.id, clearingOf(t));
-    for (const id of ch.removed || []) redo(id, null);
+    const W = simRef.w, up = [], rm = [], touched = [];
+    const gone = (id) => { const old = bins.get(id); if (old) { bins.drop(id); rm.push(id); touched.push(old); } };
+    for (const t of ch.things || []) {
+      const id = numId(t.id);
+      if (t.contained || isLive(t)) {
+        if (t.contained) liveThings.delete(t.id); else liveThings.set(t.id, t);
+        gone(id);
+        continue;
+      }
+      liveThings.delete(t.id);
+      const r = bins.recOf(t), old = bins.get(id);
+      if (old && old.kind === r.kind && old.sp === r.sp && old.px === r.px && old.py === r.py && old.size === r.size && old.seed === r.seed && (old.n > 0) === (r.n > 0)) continue;
+      if (old) touched.push(old);
+      bins.upsert(r); up.push(r); touched.push(r);
+    }
+    for (const sid of ch.removed || []) { liveThings.delete(sid); gone(numId(sid)); }
     const msg = {};
-    if (touched.length) msg.clear = clearList();
-    if (ch.paths?.length) msg.paths = Array.from(W.paths);
+    if (up.length || rm.length) Object.assign(msg, { up, rm, kinds: bins.kinds, species: bins.species });
+    if (trailQ && ch.trails) for (const i of ch.trails) trailPending.add(i);
+    // wear changes every tick; only a change of drawn width counts, and the rebakes for it go out every few seconds
+    const now = performance.now();
+    if (trailPending.size && now - trailFlush > 4000) {
+      trailFlush = now;
+      const up = [];
+      for (const i of trailPending) { const q = wearStep(trailSrc.wear[i]); if (q !== trailQ[i]) { trailQ[i] = q; up.push(i, q); } }
+      trailPending.clear();
+      if (up.length) { msg.trailUp = Int32Array.from(up); trailTouched = up; }
+    }
     const iceDiff = [];
     if (ch.ice) {
       const iceNow = iceFlags(W.ice);
@@ -321,13 +342,22 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     }
     if (!Object.keys(msg).length) return;
     postState(msg);
-    for (const c of touched) dirty(c.x - c.r - 4, c.z - c.r - 4, c.x + c.r + 4, c.z + c.r + 4);
-    for (const i of [...(msg.paths ? ch.paths : []), ...iceDiff]) {
+    // a tall thing reaches up the screen and casts a shadow, so its box is as wide as it is tall
+    for (const r of touched) { const x = toM(r.px), z = toM(r.py), R = Math.max(2, r.size) + 3; dirty(x - R, z - R, x + R, z + R, r.size); }
+    if (msg.trailUp) for (let k = 0; k < trailTouched.length; k += 2) {
+      const i = trailTouched[k], x = ((i % TRAIL_N) + 0.5) * TRAIL_C - 4800, z = (Math.floor(i / TRAIL_N) + 0.5) * TRAIL_C - 4800;
+      dirty(x - 5, z - 5, x + 5, z + 5);
+    }
+    for (const i of iceDiff) {
       const tx = i % 64, ty = (i / 64) | 0;
       dirty(ORIGIN + SIM * (tx - 1), ORIGIN + SIM * (ty - 1), ORIGIN + SIM * (tx + 2), ORIGIN + SIM * (ty + 2));
     }
   }
   let lastIce = new Array(4096).fill(0);
+  // the sim's footpath wear, stepped into the five widths the bake draws
+  const TRAIL_C = 3, TRAIL_N = 3200, wearStep = (v) => (v < 2 ? 0 : v < 5 ? 1 : v < 12 ? 2 : v < 30 ? 3 : 4);
+  let trailSrc = null, trailQ = null, trailFlush = 0, trailTouched = [];
+  const trailPending = new Set();
 
   // ---------- cameras and compose slots ----------
   const sprites = new Map();
@@ -345,7 +375,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   function camera(view, L, b, ex = 1, ey = 1) {
     const md = maps.get(mk(L, b));
     if (!md) return null;
-    const s = ppmOf(clamp(view.zoom, 0, ZMAX)) / md.p, [u, v] = md.uv(view.x, view.z), lev = camMeters(b, view.x, view.z) / md.levelM;
+    // view.up lifts the centre that many meters, at the scale trees and birds are drawn, so a bird sits mid-screen
+    const s = ppmOf(clamp(view.zoom, 0, ZMAX)) / md.p, [u, v] = md.uv(view.x, view.z), lev = camMeters(b, view.x, view.z) / md.levelM + ((view.up || 0) * md.k * 0.866 * md.treeK) / md.lp;
     const W = canvas.width, H = canvas.height, gcx = (u - v) * md.H, gcy = (u + v) * md.hb - lev * md.lp;
     const AW = Math.ceil((W * ex) / s) + 4, AH = Math.ceil((H * ey) / s) + 4, gx0 = Math.floor(gcx - AW / 2), gy0 = Math.floor(gcy - AH / 2);
     return { view, md, L, b, s, AW, AH, gcx, gcy, gx0, gy0, lev, dx: W / 2 + (gx0 - gcx) * s, dy: H / 2 + (gy0 - gcy) * s };
@@ -401,8 +432,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       for (const o of E.out) if (o.xray) xray(o);
       drawFires(cam, E.fires, now, night);
       picks = E.picks;
-      const sel = view.selected && picks.find((p) => p.id === view.selected);
-      if (sel) label(sel.name ?? String(sel.id), sel.sx, (sel.top ?? sel.sy - sel.h) - 3);
+      if (view.selected) markSelected(cam, view.selected, picks);
     }
     haze(cam, clock.hour ?? 8);
     // indexed colour to RGBA through the time-of-day table; the light buffer picks the fire-lit copy
@@ -481,66 +511,59 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     }
     return facingMem.get(id) ?? { facing: "front", across: 1 };
   }
-  // A sim step is a whole 150 m tile. Far out that reads as walking; close up it would streak across two screens, so
-  // there the figure cuts to the new tile and walks only the last few meters into its spot.
-  function motion(id, e, sim, p) {
-    const q = sim.pos?.(id) ?? { x: e.x, y: e.y, px: e.x, py: e.y }, al = clamp(sim.alpha ?? 1, 0, 1);
-    const [ax, az] = spot(id, q.px, q.py, 0.35), [bx, bz] = spot(id, q.x, q.y, 0.35), dx = bx - ax, dz = bz - az;
-    const moving = q.x !== q.px || q.y !== q.py;
-    if (p >= 2.5 && moving) {
-      const d = Math.hypot(dx, dz) || 1, walk = Math.min(d, 7) * (1 - al);
-      return { x: bx - (dx / d) * walk, z: bz - (dz / d) * walk, dx, dz, moving };
-    }
-    return { x: ax + dx * al, z: az + dz * al, dx, dz, moving };
+  // where a sim agent, animal or thing is right now in world meters, between its last two ticks, and its last step
+  function motion(id, sim) {
+    const q = sim.pos?.(id);
+    if (!q) return null;
+    const al = clamp(sim.alpha ?? 1, 0, 1), dx = (q.px - q.ppx) * SIM, dz = (q.py - q.ppy) * SIM;
+    return { x: toM(q.ppx) + dx * al, z: toM(q.ppy) + dz * al, dx, dz, moving: dx !== 0 || dz !== 0 };
   }
   function entities(cam, sim, now) {
-    const W = sim.w, md = cam.md, lv = md.L, sz = SIZES[lv], isle = md.isle, out = [], fires = [], picks = [];
+    const W = sim.w, md = cam.md, sz = SIZES[md.L], isle = md.isle, out = [], fires = [], picks = [];
+    const pv = md.k * 0.866 * md.treeK;
     const at = (x, z) => { const p = project(md, x, z); return { ...p, sx: Math.round(p.gx - cam.gx0), sy: Math.round(p.gy - cam.gy0) }; };
     const onScreen = (a, m = 40) => a.sx > -m && a.sy > -m && a.sx < cam.AW + m && a.sy < cam.AH + m * 2;
     // footprint sprites anchor below their footprint centre; small people stand two pixels high in their sprite
-    const add = (a, s, o = {}) => { if (s) out.push({ z: a.cz, sx: a.sx, sy: a.sy + (s.foot || 0) + (o.lift || 0), spr: s, mirror: !!o.mirror, bias: o.bias ?? md.hb + 2, shadow: o.shadow ?? !NOSHADOW.has(s.kind), xray: o.xray }); };
-    const tileOf = (x, y) => W.tiles?.[y * 64 + x];
-    const alpha = clamp(sim.alpha ?? 1, 0, 1);
-    const pos = (e) => motion(e.id, e, sim, md.p);
-    const selectedId = cam.view.selected ?? null;
-    for (const t of W.things) {
-      if (t.contained || t.inside) continue;
-      if (isle && t.kind !== "structure" && t.kind !== "fire") continue;
-      if (t.kind === "tree" && tileOf(t.x, t.y) === 1) continue;
-      const [x, z] = spot(t.id, t.x, t.y), a = at(x, z);
+    const add = (a, s, o = {}) => { if (s) out.push({ z: o.z ?? a.cz, sx: a.sx, sy: a.sy + (s.foot || 0) + (o.lift || 0), spr: s, mirror: !!o.mirror, bias: o.bias ?? md.hb + 2, shadow: o.shadow ?? !NOSHADOW.has(s.kind), xray: o.xray }); };
+    const alpha = clamp(sim.alpha ?? 1, 0, 1), selectedId = cam.view.selected ?? null;
+    for (const t of liveThings.values()) {
+      const a = at(toM(t.px), toM(t.py));
       if (!onScreen(a, 60) || (a.water && t.kind !== "fire")) continue;
-      const s = thingSprite(t, lv, sz, isle, md.b);
-      if (s) { s.kind ??= t.kind; add(a, s, { mirror: idH(t.id, 3) < 0.5 && !FACED.has(t.kind), bias: t.kind === "structure" ? md.hb + 4 : 2 }); }
+      const hpx = ObjBins.shown(t.size ?? 1) * pv;
       if (t.kind === "fire" || t.burning > 0) fires.push({ a, big: t.kind === "fire" ? 1 : 0.7 + (t.burning || 0), id: t.id });
-      if (t.kind === "grave" || t.kind === "structure") picks.push({ kind: "thing", id: t.id, sx: a.sx, sy: a.sy, h: 6 });
+      if (hpx < 1) continue;
+      const s = thingSprite(t, hpx, md.b);
+      if (s) { s.kind ??= t.kind; add(a, s, { mirror: ((t.seed >>> 3) & 1) === 1 && !FACED.has(t.kind), bias: t.kind === "structure" ? md.hb + 4 : 2 }); }
+      picks.push({ kind: "thing", id: t.id, sx: a.sx, sy: a.sy - hpx / 2, h: Math.max(3, hpx), name: t.name || t.kind.replaceAll("_", " "), top: a.sy - hpx - 2 });
     }
     for (const an of W.animals || []) {
-      if (an.hp !== undefined && an.hp <= 0) continue;
-      const p = pos(an), a = at(p.x, p.z);
-      if (!onScreen(a)) continue;
-      const [du, dv] = p.moving ? md.dir(p.dx, p.dz) : md.dir(an.dx, an.dy), face = du - dv >= 0 ? 1 : 0;
-      const step = p.moving ? Math.floor(alpha * 4) & 3 : 0, st = an.state;
-      let s;
-      if (an.species === "wolf") {
-        const pose = st === "hunt" || st === "attack" || st === "flee" ? "run" : p.moving ? "walk" : st === "eat" ? "eat" : st === "rest" ? "rest" : "stand";
-        s = TH.wolf ? spr(`wolf${sz.wolf}|${pose}|${step}|${strHash(an.id) % 97}`, () => TH.wolf(sz.wolf, pose, step, strHash(an.id) % 97)) : spr(`deerw${sz.deer}`, () => LF.deer(sz.deer, "stand", 1, 3));
-        add(a, s, { mirror: !face, bias: 3, xray: an.id === selectedId });
-      } else {
-        const pose = st === "flee" ? "run" : st === "graze" && !p.moving ? "graze" : "stand";
-        s = spr(`deer${sz.deer}|${pose}|${face}|${strHash(an.id) % 5}`, () => LF.deer(sz.deer, pose, face, strHash(an.id) % 5));
-        add(a, s, { bias: 3, xray: an.id === selectedId });
-      }
-      picks.push({ kind: "animal", id: an.id, sx: a.sx, sy: a.sy - (sz.deer >> 1), h: sz.deer + 3, name: an.species });
+      if (an.hp <= 0) continue;
+      const hpx = ObjBins.shown(BODY[an.species] ?? 0.5) * 1.5 * pv;
+      if (hpx < 1) continue;
+      const p = motion(an.id, sim);
+      if (!p) continue;
+      const a = at(p.x, p.z), fly = FLIERS.has(an.species), lift = Math.round((an.alt || 0) * pv), seedA = strHash(an.id) % 8;
+      if (!onScreen({ sx: a.sx, sy: a.sy - lift })) continue;
+      const [du, dv] = p.moving ? md.dir(p.dx, p.dz) : md.dir(Math.cos(an.heading ?? 0), Math.sin(an.heading ?? 0)), facing = du - dv >= 0 ? 1 : 0;
+      // wings beat on the clock, legs only while the animal covers ground
+      const frame = fly ? Math.floor(now / 120 + seedA) & 3 : p.moving ? Math.floor(alpha * 4) & 3 : 0, hq = hpx < 8 ? Math.round(hpx * 2) / 2 : Math.round(hpx);
+      const s = spr(`a${an.species}|${an.state}|${hq}|${frame}|${seedA}|${facing}`, () => TH.animal?.(an.species, an.state, hq, frame, seedA, facing));
+      const up = lift > 1;
+      add(a, s, { lift: -lift, z: up ? 1e9 : undefined, bias: 3, shadow: !up && !fly && hpx >= 3, xray: an.id === selectedId });
+      picks.push({ kind: "animal", id: an.id, sx: a.sx, sy: a.sy - lift - hpx / 2, h: Math.max(4, hpx) + 3, name: an.species, top: a.sy - lift - hpx - 2 });
     }
     for (const ag of W.agents || []) {
       if (ag.dead || ag.alive === false) continue;
-      const p = pos(ag), a = at(p.x, p.z);
+      const p = motion(ag.id, sim);
+      if (!p) continue;
+      const a = at(p.x, p.z);
       if (!onScreen(a)) continue;
       const stage = (W.t - ag.born) / YEAR < 1 ? "child" : (W.t - ag.born) / YEAR < 5 ? "adult" : "elder";
-      const hp = Math.max(3, Math.round(sz.person * (stage === "child" ? 0.7 : 1))), cloth = clothOf(ag.color), seedA = strHash(ag.id) % 997;
+      // by meters like everything else, a little larger than life, and never below three pixels so a nomad is findable
+      const hp = Math.max(3, Math.round(1.7 * 1.6 * pv * (stage === "child" ? 0.7 : 1))), cloth = clothOf(ag.color), seedA = strHash(ag.id) % 997;
       const down = ag.down > W.t;
       // facing comes from the motion as it looks on screen, so it turns with the camera
-      const f = facingOf(ag.id, ...md.dir(p.dx, p.dz));
+      const f = facingOf(ag.id, ...(p.moving ? md.dir(p.dx, p.dz) : [0, 0]));
       let s, mirror = false;
       if (down) s = TH.lying ? spr(`lie${hp}|${cloth}|${seedA}`, () => TH.lying(hp, cloth, seedA)) : spr(`sit${hp}|${cloth}|${seedA}`, () => SP.person(hp, cloth, "front", "sit", seedA));
       else if (TH.walker && !isle) {
@@ -557,81 +580,19 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       if (icon && !isle && TH.icon) { const ic = spr(`icon${icon}`, () => TH.icon(icon)); if (ic) out.push({ z: 1e9, sx: a.sx, sy: a.sy - hp - 2, spr: ic, bias: 0, shadow: false }); }
       picks.push({ kind: "agent", id: ag.id, sx: a.sx, sy: a.sy - (hp >> 1), h: hp + 3, name: ag.name, top: a.sy - hp - 2 });
     }
-    ambient(cam, out, now);
     return { out, fires, picks };
   }
-  // Gulls wheel over open water and fish leap near it: anchors on a world grid, so they stay put while the camera moves.
-  function ambient(cam, out, now) {
-    const md = cam.md, sz = SIZES[md.L], G = sz.gull, span = sz.span, fl = sz.fish;
-    if (!G) return;
-    const t = now / 1000, cs = [[0, 0], [cam.AW, 0], [0, cam.AH], [cam.AW, cam.AH]].map(([x, y]) => {
-      const a = (cam.gx0 + x) / md.H, b = (cam.gy0 + y + md.maxLev * 0) / md.hb;
-      return md.world((a + b) / 2, (b - a) / 2);
-    });
-    const X0 = Math.min(...cs.map((c) => c[0])), X1 = Math.max(...cs.map((c) => c[0])), Z0 = Math.min(...cs.map((c) => c[1])), Z1 = Math.max(...cs.map((c) => c[1]));
-    for (let gz = Math.floor(Z0 / G); gz <= Z1 / G; gz++)
-      for (let gx = Math.floor(X0 / G); gx <= X1 / G; gx++) {
-        const r = h2(gx, gz, 701);
-        if (r > 0.3 && r < 0.75) continue;
-        const x = (gx + h2(gx, gz, 702)) * G, z = (gz + h2(gx, gz, 703)) * G, p = project(md, x, z);
-        if (!p.water) continue;
-        const sx = Math.round(p.gx - cam.gx0), sy = Math.round(p.gy - cam.gy0);
-        if (sx < -40 || sy < -60 || sx > cam.AW + 40 || sy > cam.AH + 40) continue;
-        if (r <= 0.3) {
-          // a gull on its own slow loop, flapping four frames
-          const ph = h2(gx, gz, 704) * TAU, R = span * 3, a = t * 0.45 + ph, f = Math.floor(t * 7 + ph * 3) & 3, seedB = gx & 1;
-          const b = spr(`gull${span}|${f}|${seedB}`, () => LF.bird(span, f, "gull", seedB));
-          if (b) out.push({ z: 1e9, sx: Math.round(sx + Math.cos(a) * R), sy: Math.round(sy - span * 5 + Math.sin(a) * R * 0.5), spr: b, bias: 0, shadow: false });
-        } else if (r >= 0.9) {
-          // a fish breaks the surface now and then, four frames of splash out of every few seconds
-          const cyc = t * 1.6 + h2(gx, gz, 705) * 16, f = Math.floor(cyc * 2.5) % 10;
-          if (f > 3) continue;
-          const fsh = spr(`fish${f}|${gz & 1}|${fl}`, () => LF.fish(f, gz & 1, fl));
-          if (fsh) out.push({ z: p.cz + 1, sx, sy, spr: fsh, bias: 1, shadow: false });
-        }
-      }
-  }
-  // things that have a front turn with the camera: a world facing from the id, less the camera's clockwise turns
+  // things that have a front turn with the camera: a world facing from the seed, less the camera's clockwise turns
   const FACED = new Set(["structure", "trap", "well", "grave", "item"]);
-  function thingSprite(t, lv, sz, isle, bearing) {
-    const k = sz.thing, seedT = strHash(t.id) % 13, r = (v) => Math.max(1, Math.round(v)), dir = (Math.floor(idH(t.id, 4) * 8) - bearing + 16) % 8;
-    if (isle) {
-      if (t.kind === "structure" && (t.shelter?.tier ?? 0) >= 1) return spr("minitent", () => SP.miniTent(1));
-      return null;
-    }
-    const hut = sz.hut;
-    switch (t.kind) {
-      case "tree": return spr(`tree${lv}|${seedT}`, () => SP.broad(r(18 * k + 4), "oak", seedT * 31, 0.5));
-      case "stump": return spr(`stump${lv}`, () => SP.stump(r(2 * k + 1), r(1.6 * k + 1), 3));
-      case "burnt_stump": return TH.burnt ? spr(`burnt${lv}`, () => TH.burnt(r(5 * k + 1), 1)) : spr(`stumpb${lv}`, () => SP.stump(r(2 * k + 1), r(1.6 * k + 1), 5));
-      case "bush": return spr(`bush${lv}|${seedT}`, () => SP.bush(r(4 * k + 2), seedT, 0, 0.6));
-      case "dead_bush": return TH.deadbush ? spr(`dbush${lv}|${seedT & 1}`, () => TH.deadbush(r(4.5 * k), seedT)) : spr(`bushd${lv}`, () => SP.bush(r(4 * k + 2), seedT, 1, 0));
-      case "sapling": return TH.sapling ? spr(`sap${lv}|${seedT & 3}`, () => TH.sapling(r((4 + (seedT & 3)) * k), seedT)) : spr(`sapb${lv}`, () => SP.broad(r(6 * k + 3), "ash", seedT, 0.3));
-      case "mushroom": return spr(`mush${lv}`, () => LF.mushrooms(r(3 * k), seedT & 3));
-      case "herb": return TH.herb ? spr(`herb${lv}`, () => TH.herb(r(3 * k), seedT)) : spr(`herbf${lv}`, () => SP.flower(r(2 * k + 1), 0.3, seedT));
-      case "stick": return TH.stick ? spr(`stick${lv}|${seedT & 3}`, () => TH.stick(r(4 * k), seedT)) : spr(`stickl${lv}`, () => SP.log(r(5 * k + 2), 1, 1, seedT));
-      case "stone": return spr(`stone${lv}|${seedT & 3}`, () => SP.pebble(r(1.5 * k + 1), seedT));
-      case "boulder": return spr(`boulder${lv}|${seedT & 3}`, () => SP.rock(r(5 * k + 2), seedT, 0.2));
-      case "reeds": return spr(`reeds${lv}|${seedT & 3}`, () => SP.reeds(r(5 * k + 2), seedT));
-      case "clay": return TH.clay ? spr(`clay${lv}`, () => TH.clay(r(3 * k), seedT)) : null;
-      case "ash": return TH.ash ? spr(`ash${lv}`, () => TH.ash(r(3 * k), seedT)) : null;
-      case "pit": return TH.pit ? spr(`pit${lv}|${t.stage ?? 0}`, () => TH.pit(r(3 * k), clamp(t.stage ?? 0, 0, 1), seedT)) : null;
-      case "trap": return TH.trap ? spr(`trap${lv}|${!!t.caught}|${dir}`, () => TH.trap(r(6 * k), !!t.caught, seedT, -1, dir)) : null;
-      case "well": return TH.well ? spr(`well${lv}|${dir}`, () => TH.well(r(7 * k), seedT, dir)) : spr(`wellr${lv}`, () => SP.rock(r(3 * k + 2), 2, 0));
-      case "grave": return TH.grave ? spr(`grave${lv}|${seedT & 3}|${dir}`, () => TH.grave(r(6 * k), seedT, dir)) : spr(`graver${lv}`, () => SP.rock(r(2 * k + 1), 1, 0));
-      case "fire": return TH.firering ? spr(`ring${lv}`, () => TH.firering(r(3 * k), 1)) : null;
-      case "item": {
-        const it = String(t.item ?? ""), what = /wood|log|stick|plank/.test(it) ? "wood" : /stone|ore|flint/.test(it) ? "stone" : /hide|fur|leather/.test(it) ? "hide" : /meat|berr|fish|food|root|nut/.test(it) ? "food" : "misc";
-        return TH.pile ? spr(`pile${lv}|${what}|${seedT & 3}|${dir}`, () => TH.pile(r(5 * k), what, seedT, dir)) : what === "wood" ? spr(`wp${lv}`, () => SP.woodpile(r(k + 0.5), 3)) : spr(`pb${lv}`, () => SP.pebble(r(1.5 * k + 1), seedT));
-      }
-      case "structure": {
-        const tier = t.shelter?.tier ?? 0, style = t.shelter?.style ?? "sticks";
-        if (TH.shelter) return spr(`sh${lv}|${tier}|${style}|${seedT & 3}|${dir}`, () => TH.shelter(tier, style, hut, seedT, -1, dir));
-        return tier === 0 ? spr(`wpile${lv}`, () => SP.woodpile(r(k + 0.5), 3)) : spr(`mt${lv}|${tier}`, () => SP.miniTent(k >= 1 ? 2 : 1));
-      }
-    }
-    return null;
+  function thingSprite(t, hpx, bearing) {
+    if (!TH.object) return null;
+    const seedT = (t.seed >>> 0) % 8, dir = (((t.seed >>> 5) & 7) - bearing + 16) % 8, hq = hpx < 8 ? Math.round(hpx * 2) / 2 : Math.round(hpx);
+    // flames are drawn by drawFires on the clock, so the sprite is always the unlit thing
+    const species = t.kind === "structure" ? t.shelter?.style : t.kind === "item" ? t.item : t.species;
+    const o = { species, stage: clamp(t.stage ?? 1, 0, 1), tier: t.shelter?.tier ?? 0, caught: !!t.caught, n: t.n, covered: !!t.covered, charcoal: t.charcoal > 0, dir, burning: 0 };
+    return spr(`t${t.kind}|${species}|${hq}|${seedT}|${o.stage}|${o.tier}|${o.caught}|${o.n > 0}|${o.covered}|${o.charcoal}|${dir}`, () => TH.object(t.kind, hq, seedT * 131 + 7, o));
   }
+
 
   // ---------- fire, smoke, light ----------
   function drawFires(cam, fires, now, night) {
@@ -731,6 +692,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     }
     let A = camera(view, lf.L, b0);
     if (!A) {
+      mapsFor(b0);
       // this bearing's maps are still loading: show the nearest bearing that has them, turned into place
       for (const d of [1, -1, 2, -2, 3, -3, 4]) {
         const bb = (b0 + d + NB) % NB, g2 = grow(-d), c = mapsFor(bb) && camera(view, lf.L, bb, ...g2);
@@ -809,6 +771,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   }
   function label(s, cx, y) {
     const txt = s.toUpperCase(), w = txt.length * 6 - 1, x = Math.round(cx - w / 2);
+    y = Math.round(y);
     for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1], [1, 1]]) text(B, txt, x + dx, y - 7 + dy, P.ink);
     text(B, txt, x, y - 7, P.snow);
   }
@@ -826,14 +789,18 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
 
   // ---------- picking and coordinates ----------
   const mainCam = (view) => camera(view, levelFor(view.zoom).L, mod8(view.bearing ?? 0));
-  function toWorld(sx, sy, view) {
-    const cam = mainCam(view);
-    if (!cam) return { x: view.x, z: view.z };
-    const md = cam.md, gx = cam.gx0 + (sx - cam.dx) / cam.s, gy = cam.gy0 + (sy - cam.dy) / cam.s, a = gx / md.H;
+  // the world point under art pixel (gx, gy) of a camera's level, standing on its ground
+  function worldAt(cam, gx, gy) {
+    const md = cam.md, a = gx / md.H;
     let lev = cam.lev, u = 0, v = 0;
     for (let k = 0; k < 5; k++) { const b = (gy + lev * md.lp) / md.hb; u = (a + b) / 2; v = (b - a) / 2; lev = md.ground(u, v); }
     const [x, z] = md.world(u, v);
     return { x, z };
+  }
+  function toWorld(sx, sy, view) {
+    const cam = mainCam(view);
+    if (!cam) return { x: view.x, z: view.z };
+    return worldAt(cam, cam.gx0 + (sx - cam.dx) / cam.s, cam.gy0 + (sy - cam.dy) / cam.s);
   }
   // the view centre that puts world point (x, z), standing on its ground, in the middle of the screen
   function centreOn(x, z, view) {
@@ -848,23 +815,65 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const [cx, cz] = md.world(u, v);
     return { x: cx, z: cz };
   }
+  // Anything under the cursor: a person, animal or live thing first, then the nearest baked object whose sprite covers
+  // the point, front-most, and otherwise the ground itself.
+  const UPRIGHT = new Set(["tree", "bush", "fern", "reeds", "sapling", "dead_bush", "herb", "flowers"]);
   function pick(sx, sy, view) {
     const cam = pickCam ?? mainCam(view);
     if (!cam) return null;
     const x = (sx - cam.dx) / cam.s, y = (sy - cam.dy) / cam.s;
     let best = null, bd = Infinity;
     for (const p of lastPick) {
-      const d = Math.hypot(p.sx - x, p.sy - y), r = Math.max(7, p.h);
+      const d = Math.hypot(p.sx - x, p.sy - y), r = Math.max(5, p.h * 0.7);
       if (d < r && d + (p.kind === "agent" ? 0 : 3) < bd) { bd = d; best = { kind: p.kind, id: p.id }; }
     }
-    return best;
+    if (best) return best;
+    const md = cam.md, pv = md.k * 0.866 * md.treeK, g = worldAt(cam, cam.gx0 + x, cam.gy0 + y);
+    if (bins) {
+      // a tree can stand well below the point its crown covers, so look a tile around it
+      const tx = Math.floor((g.x - ORIGIN) / SIM), ty = Math.floor((g.z - ORIGIN) / SIM), r = pv < 0.5 ? 1 : 0;
+      let front = -Infinity, near = 5;
+      bins.each(tx - 1 - r, ty - 1 - r, tx + 1 + r, ty + 1 + r, (ki, si, px, py, size, seed, id) => {
+        const K = bins.kinds[ki];
+        if (ObjBins.LIVE.has(K)) return;
+        const hpx = ObjBins.shown(size) * pv;
+        if (hpx < 1) return;
+        const p = project(md, toM(px), toM(py)), ox = p.gx - cam.gx0, oy = p.gy - cam.gy0, dx = Math.abs(x - ox);
+        if (dx > hpx + 3 || oy < y - 3 || oy > y + hpx + 3) return;
+        const tall = UPRIGHT.has(K), hw = Math.max(1.5, tall ? hpx * 0.4 : hpx * 0.6), ht = Math.max(1.5, tall ? hpx : hpx * 0.6);
+        if (dx <= hw + 1 && y <= oy + 1.5 && y >= oy - ht - 1) { if (p.cz > front) { front = p.cz; best = { kind: "thing", id: "t" + id }; } }
+        else if (front === -Infinity) { const d = Math.hypot(dx, y - (oy - ht / 2)); if (d < near) { near = d; best = { kind: "thing", id: "t" + id }; } }
+      });
+    }
+    return best ?? { kind: "ground", px: (g.x - ORIGIN) / SIM, py: (g.z - ORIGIN) / SIM };
   }
-  // world position of a sim agent or animal right now, for the follow camera
-  function where(id, sim, view) {
-    const e = sim.w.agents.find((a) => a.id === id) || sim.w.animals.find((a) => a.id === id);
-    if (!e) return null;
-    return motion(id, e, sim, PL[levelFor(view?.zoom ?? named.valley).L]);
+  // world position of any sim agent, animal or thing right now, for the follow camera
+  function where(id, sim) {
+    if (id && typeof id === "object") return id.kind === "ground" ? { x: toM(id.px), z: toM(id.py), dx: 0, dz: 0, up: 0 } : null;
+    const m = motion(id, sim);
+    if (m) m.up = sim.w.animals.find((a) => a.id === id)?.alt ?? 0;
+    return m;
   }
+  // the selection's name above it, and brackets round a thing baked into the ground, which has no live sprite to show
+  function markSelected(cam, sel, picks) {
+    const live = picks.find((p) => p.id === sel);
+    if (live) { label(live.name || String(live.id), live.sx, live.top ?? live.sy - live.h); return; }
+    const md = cam.md, pv = md.k * 0.866 * md.treeK;
+    let x, z, hpx = 2, name = "ground", tall = true;
+    if (typeof sel === "object") { x = toM(sel.px); z = toM(sel.py); }
+    else {
+      const r = bins?.get(numId(sel));
+      if (!r) return;
+      const K = bins.kinds[r.kind];
+      x = toM(r.px); z = toM(r.py); hpx = Math.max(2, ObjBins.shown(r.size) * pv); name = bins.species[r.sp] || K; tall = UPRIGHT.has(K);
+    }
+    const p = project(md, x, z), ox = Math.round(p.gx - cam.gx0), oy = Math.round(p.gy - cam.gy0);
+    const hw = Math.ceil(Math.max(2, hpx * 0.5)) + 1, top = oy - Math.ceil(tall ? hpx : hpx * 0.7) - 2, bot = oy + 2;
+    for (const [bx, by, sx2, sy2] of [[ox - hw, top, 1, 1], [ox + hw, top, -1, 1], [ox - hw, bot, 1, -1], [ox + hw, bot, -1, -1]])
+      for (let k = 0; k < 3; k++) { dot(bx + k * sx2, by); dot(bx, by + k * sy2); }
+    label(name.replaceAll("_", " "), ox, top - 1);
+  }
+  const dot = (x, y) => { if (x >= 0 && y >= 0 && x < B.w && y < B.h) B.c[y * B.w + x] = P.snow; };
 
   // the island level is small; baked whole up front it is the last fallback under everything, so no view shows flat colour
   {
@@ -892,10 +901,18 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     zmax: ZMAX, named, levels, ppm: (z) => ppmOf(clamp(z, 0, ZMAX)), levelFor,
     isClose: (view) => PL[levelFor(view.zoom).L] >= 2.5,
     readiness, bearingReady: (view, b) => mapsFor(mod8(b)) && camReady(camera(view, levelFor(view.zoom).L, mod8(b), ...grow(0.5))),
-    prefetch: (views) => { prefetchViews = views || []; }, centreOn, spotOf: (t) => spot(t.id, t.x, t.y),
+    prefetch: (views) => { prefetchViews = views || []; }, centreOn,
     picks: () => lastPick.map((p) => ({ kind: p.kind, id: p.id, sx: p.sx, sy: p.sy })),
     frame, changed, pick, toWorld, where, stats, cache, pool, lastMs: 0, lastHoles: false, level: null,
   };
+  if (check) {
+    let cid = 0;
+    api.debug = {
+      CS, maps, keyOf, mk, project, camera, bins: () => bins,
+      pv: (md) => md.k * 0.866 * md.treeK, pw: (md) => md.k * md.treeK,
+      classify: (points) => new Promise((r) => { const id = ++cid; classWait.set(id, (out) => { classWait.delete(id); r(out); }); pool[0].postMessage({ type: "classify", id, points }); }),
+    };
+  }
   return api;
 }
 

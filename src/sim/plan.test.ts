@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
-import { newWorld, type Act, type Agent, type World } from "./world";
+import { addThing, meters, newWorld, type Act, type Agent, type World } from "./world";
 import { count, giveItems, heat, join, place, rubTick, strikeDamage, strikeTick } from "./physics";
+import { thingById } from "./space";
 import { record } from "./beliefs";
 import { plan } from "./plan";
 
@@ -49,7 +50,7 @@ test("rubbing sticks with a bow and tinder makes a fire; without tinder it only 
   giveItems(w, a, "fiber");
   w.weather.sky = "clear";
   expect(rub({ verb: "rub", items: [bowId, "stick"] }).builds).toBe("fire");
-  expect(w.things.some((t) => t.kind === "fire" && t.x === a.x && t.y === a.y)).toBe(true);
+  expect(w.things.some((t) => t.kind === "fire" && meters(t, a) <= 2)).toBe(true);
 });
 
 test("sticks leaned together shelter someone; enough logs make it a sturdier hut", () => {
@@ -57,7 +58,7 @@ test("sticks leaned together shelter someone; enough logs make it a sturdier hut
   giveItems(w, a, "stick", 6); giveItems(w, a, "fiber", 3);
   const lean = place(w, a, { verb: "place", items: ["stick", "stick", "stick", "stick", "stick", "fiber", "fiber", "fiber"] });
   expect(lean.builds).toBe("shelter");
-  const home = w.things.find((t) => t.id === a.home)!;
+  const home = thingById(w, a.home)!;
   const before = home.shelter!;
   giveItems(w, a, "log", 6);
   place(w, a, { verb: "place", items: Array(6).fill("log") });
@@ -67,8 +68,7 @@ test("sticks leaned together shelter someone; enough logs make it a sturdier hut
 
 test("cooking in a fired bowl makes a stew and keeps the bowl", () => {
   const [w, a] = fresh();
-  const fireAt = { x: a.x, y: a.y };
-  w.things.push({ id: "f1", kind: "fire", ...fireAt, hp: 100 });
+  addThing(w, "fire", a.px, a.py, { hp: 100 });
   w.kinds["pot"] = { id: "pot", name: "fired clay bowl", props: { container: 0.8, hard: 0.75 } };
   giveItems(w, a, "pot"); giveItems(w, a, "mushroom");
   const out = heat(w, a, { verb: "heat", items: ["pot", "mushroom"], at: "fire" });

@@ -1,6 +1,7 @@
 // GOAP over what each agent believes. Agents can only plan with things they've seen work.
 import type { Belief } from "./beliefs";
 import { THING_MATERIAL, p, type Registry } from "./materials";
+import { HUNTED } from "./fauna";
 
 export type PState = { inv: Record<string, number>; at: string | null; flags: string[] };
 export type Ctx = {
@@ -118,7 +119,7 @@ function ops(ctx: Ctx): Op[] {
     for (const [k, v] of Object.entries(ctx.shared ?? {}))
       if (v > 0) list.push({ op: "take_shared", arg: k, cost: 1.5, needs: ["place:store"], makes: [k], pre: (s) => s.at === "store", eff: (s) => add(s, k, Math.min(v, 3)) });
   // Anyone who has seen what an animal is inside can try to kill one with whatever they hold.
-  for (const sp of ["deer", "wolf"]) {
+  for (const sp of HUNTED) {
     if (!ctx.facts[`breaks:${sp}`] || !(sp in ctx.dist)) continue;
     const out = THING_MATERIAL[sp].breaks;
     list.push({
