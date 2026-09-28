@@ -145,10 +145,12 @@ export function iconSprite(d) {
 }
 // A square of ground in its cover's colours, standing for a picked point of bare terrain.
 function groundTile(B, x0, y0, w, h, d) {
-  const cls = String(field(d, "tile", "class", "tile class", "cover") ?? "grass").toLowerCase();
-  const R = /water|sea|lake|river/.test(cls) ? ramp("w2", "w3", "w4", "w5") : /rock|stone|cliff/.test(cls) ? ramp("r1", "r2", "r3", "r4")
-    : /sand|beach/.test(cls) ? ramp("s0", "s1", "s2", "s3") : /marsh|bog|wet/.test(cls) ? ramp("m0", "m1", "m2", "m3") : /snow|ice/.test(cls) ? ramp("r4", "r5", "snow")
-      : /forest|wood/.test(cls) ? ramp("t1", "t2", "g2", "g3") : ramp("g2", "g3", "g4", "g5");
+  // the point's own class (the shared groundClass, else the inspector's name for it), never the 150 m tile's
+  const cls = String(d.groundClass ?? d.name ?? field(d, "tile") ?? "grassland").toLowerCase();
+  const R = /deep/.test(cls) ? ramp("w1", "w2", "w3", "w4") : /water|sea|lake/.test(cls) ? ramp("w3", "w4", "w5", "w6") : /stream|river/.test(cls) ? ramp("r2", "w4", "w5", "r4")
+    : /rock|stone|cliff|scree/.test(cls) ? ramp("r1", "r2", "r3", "r4") : /sand|beach/.test(cls) ? ramp("s0", "s1", "s2", "s3")
+      : /marsh|bog|wet/.test(cls) ? ramp("m0", "m1", "m2", "m3") : /snow|ice/.test(cls) ? ramp("r4", "r5", "snow")
+        : /forest|wood/.test(cls) ? ramp("t1", "t2", "g2", "g3") : /scrub|heath/.test(cls) ? ramp("m1", "m2", "g3", "a1") : ramp("g2", "g3", "g4", "g5");
   const cx = x0 + w / 2, cy = y0 + h / 2 + 2, hw = w * 0.42, hh = hw / 2;
   for (let y = y0; y < y0 + h; y++)
     for (let x = x0; x < x0 + w; x++) {
@@ -162,9 +164,17 @@ function groundTile(B, x0, y0, w, h, d) {
 }
 // The slot's backdrop: open sky for things in flight, water for swimmers and waders, a patch of meadow otherwise,
 // so grey rock and pale birds keep their contrast.
+// Only an animal actually in the air hangs in the sky; a bird feeding, perching or landing stands on the ground.
+function airborne(d) {
+  const sp = String(d.species ?? "").toLowerCase(), st = String(d.state ?? field(d, "doing") ?? "").toLowerCase();
+  if (!(BIRDS.has(sp) || sp === "butterfly" || sp === "heron" || sp === "egret")) return false;
+  if (/fly|soar|dive|flutter/.test(st)) return true;
+  if (/perch|rest|sit|feed|eat|land|wade|graze|wander|trapped/.test(st)) return false;
+  return Number(d.alt ?? 0) > 0.5;
+}
 function backdrop(B, x0, y0, w, h, d) {
   const sp = String(d.species ?? "").toLowerCase();
-  const sky = BIRDS.has(sp) || sp === "butterfly", wet = sp === "fish" || sp === "heron" || sp === "egret";
+  const sky = airborne(d), wet = !sky && (sp === "fish" || sp === "heron" || sp === "egret");
   const hz = sky ? h : Math.round(h * 0.55);
   for (let y = y0; y < y0 + h; y++)
     for (let x = x0; x < x0 + w; x++) {
@@ -174,13 +184,13 @@ function backdrop(B, x0, y0, w, h, d) {
     }
 }
 // Paint a sprite into the slot, scaled up by a whole number so it fills it, standing on the slot's floor.
-function paintSprite(B, S, x0, y0, w, h, sp = "") {
+function paintSprite(B, S, x0, y0, w, h, inAir = false) {
   let x1 = S.w, x2 = -1, y1 = S.h, y2 = -1;
   for (let y = 0; y < S.h; y++) for (let x = 0; x < S.w; x++) if (S.p[y * S.w + x] !== 255) { x1 = Math.min(x1, x); x2 = Math.max(x2, x); y1 = Math.min(y1, y); y2 = Math.max(y2, y); }
   if (x2 < 0) return;
   const bw = x2 - x1 + 1, bh = y2 - y1 + 1, k = Math.max(1, Math.min(Math.floor((w - 2) / bw), Math.floor((h - 2) / bh), 4));
   // fliers hang in the sky, everything else stands a little way into the ground
-  const ox = x0 + Math.floor((w - bw * k) / 2), oy = BIRDS.has(sp) || sp === "butterfly" ? y0 + Math.floor((h * 0.5 - bh * k) / 2) + 2 : y0 + h - 4 - bh * k;
+  const ox = x0 + Math.floor((w - bw * k) / 2), oy = inAir ? y0 + Math.floor((h * 0.5 - bh * k) / 2) + 2 : y0 + h - 4 - bh * k;
   for (let y = y1; y <= y2; y++)
     for (let x = x1; x <= x2; x++) {
       const c = S.p[y * S.w + x];
@@ -228,7 +238,7 @@ export function drawInspector(data = {}, { w = 184, h = 232, scroll = 0, sprite 
   else {
     let S = sprite;
     try { S ??= iconSprite(d); } catch { S = null; }
-    if (S) { backdrop(B, ...inner, d); paintSprite(B, S, ...inner, String(d.species ?? "").toLowerCase()); }
+    if (S) { backdrop(B, ...inner, d); paintSprite(B, S, ...inner, airborne(d)); }
     else say(B, "?", PAD + SLOT / 2 - 2, sy + SLOT / 2 - 3, P.r2);
   }
   const tx = PAD + SLOT + 5, tw = w - tx - PAD - 1;

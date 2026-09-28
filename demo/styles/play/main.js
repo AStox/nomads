@@ -51,7 +51,7 @@ async function main() {
   const zoom0 = zq == null ? live.named.close : Object.hasOwn(live.named, zq) ? live.named[zq] : /^[0-3]$/.test(zq) ? live.named[names[+zq]] : num("zoom", live.named.close, 0, live.zmax);
   const view = { x: -2738, z: -1838, zoom: zoom0, bearing: norm8(Math.round(num("bearing", 0))), up: 0, selected: null, turnTo: null };
   const metrics = { readyMs: Math.round(ready), revealMs: 0, tabs: [], turns: [] };
-  const camera = createCamera({ live, view, canvas, onTurn: (ms) => metrics.turns.push(Math.round(ms)) });
+  const camera = createCamera({ live, view, canvas, onTurn: (t) => metrics.turns.push({ startMs: Math.round(t.start), totalMs: Math.round(t.total) }) });
   let follow = null, openingPerson = null, opening = null, farSince = 0, farDest = null;
   // Open on the person nearest the densest cluster of shelters, fires and stumps, and follow them; with nothing built
   // yet, on whoever has the most going on around them.
@@ -220,7 +220,8 @@ async function main() {
     if (!p) { select(null); live.prefetch(null); return; }
     const upOf = (q) => q.y - live.camH(q.x, q.z), ahead = p.dx || p.dz ? [{ ...view, x: p.x + p.dx, z: p.z + p.dz, up: upOf(p), later: true }] : [];
     if (camera.offCentre(p) <= canvas.width * 0.35) {
-      camera.follow(p, dt);
+      const iv = sim.paused || sim.alpha >= 1 ? Infinity : 500 / sim.speed;
+      camera.follow(p, dt, (p.dx || 0) / iv, (p.dz || 0) / iv);
       farSince = 0;
       live.prefetch(ahead);
       return;

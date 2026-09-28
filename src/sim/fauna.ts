@@ -1,6 +1,6 @@
 // Everything alive on the island that isn't a person: what each kind is like and where they start. What they do each
 // tick is in animals.ts. Speeds are meters a tick of five minutes' game time, the way a person's are.
-import { H, TILE_M, Tile, W, YEAR, dryAt, dryNear, sea, tileAt, wetAt, type Animal, type AnimalSpecies, type World } from "./world";
+import { H, TILE_M, Tile, W, YEAR, dryAt, dryNear, sea, shoreOf, tileAt, wetAt, type Animal, type AnimalSpecies, type World } from "./world";
 import { anyOf, put } from "./space";
 
 type Kind = { hp: number; walk: number; run: number; fly?: number; ground: boolean };
@@ -101,7 +101,8 @@ export function populate(w: World, rand: () => number, main: Uint8Array) {
     const t = i < 30 && near.length ? near[i % near.length] : pick(waters), c = inTile(t, banked) ?? inTile(t, wet);
     if (c) addAnimal(w, "fish", ...c, { home: c });
   }
-  for (let i = 0; i < 12 && p.shore.length; i++) { const c = inTile(pick(p.shore), (x, y) => dry(x, y) && ring(x, y, 8, wet)); if (c) addAnimal(w, "heron", ...c, { home: c, state: "wade" }); }
+  const edges = shoreOf(w);
+  for (let i = 0; i < 12 && edges.length; i++) { const e = edges[Math.floor(rand() * edges.length)], c: [number, number] = [e.px, e.py]; addAnimal(w, "heron", ...c, { home: c, state: "wade" }); }
   for (let k = 0; k < 6 && p.coast.length; k++) {
     const c = inTile(pick(p.coast), () => true)!;
     for (let i = 0; i < 6; i++) addAnimal(w, "gull", c[0] + (rand() - 0.5) * 0.2, c[1] + (rand() - 0.5) * 0.2, { home: c, alt: 8 + rand() * 20, state: "fly" });

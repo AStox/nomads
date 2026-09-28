@@ -1,5 +1,5 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
-import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, type Kind, type Props } from "./materials";
+import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props } from "./materials";
 import { DAY, REACH, TILE_M, Tile, YEAR, addThing, dryAt, dryNear, iceAt, level, log, meters, nearWater, reachOf, tileAt, wetAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
 import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } from "./space";
 import { clock, trace } from "./trace";
@@ -108,7 +108,7 @@ const kind = (w: World, id?: string | null) => (id ? w.kinds[id] : undefined);
 const HAND: Kind = { id: "hands", name: "bare hands", props: { hard: 0.2, heavy: 0.1 } };
 const nm = (w: World, id: string) => w.kinds[id]?.name ?? id.replaceAll("_", " ");
 const list = (w: World, m: Record<string, number>) =>
-  Object.entries(m).map(([k, n]) => (n > 1 ? `${n} ${nm(w, k)}s` : `a ${nm(w, k)}`)).join(" and ");
+  Object.entries(m).map(([k, n]) => (n > 1 ? `${n} ${plural(nm(w, k))}` : `a ${nm(w, k)}`)).join(" and ");
 function made(w: World, a: Agent, k: Kind, isNew: boolean, out: string[]) {
   if (isNew) { k.made = { by: a.id, t: w.t }; out.push(k.id); newKinds.add(k.id); }
 }

@@ -1,6 +1,6 @@
 import { generateIsland, type Island } from "../terrain/island";
 import { lay, type Lay, type Terrain } from "../terrain/land";
-import { FLORA, SIZE, SPECIES, fineGround, scatter, type Fine, type Scatter } from "../terrain/flora";
+import { FLORA, SIZE, SPECIES, fineGround, riverSmooth, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
 import { TRAITS } from "./traits";
 import { baseRegistry, type Registry } from "./materials";
 import type { Belief } from "./beliefs";
@@ -248,8 +248,8 @@ export const walkable = (w: World, x: number, y: number) =>
   x >= 0 && y >= 0 && x < W && y < H && (groundOf(w.seed).dry[y * W + x] === 1 || (w.tiles[y * W + x] === Tile.Water && iceAt(w, x, y)));
 // Standing water at a point (in tiles): the fine wet field the map draws lakes and the sea from.
 export const wetAt = (w: World, px: number, py: number) => {
-  const f = groundOf(w.seed).fine;
-  return f.fine(f.wet, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2) > 0.5;
+  const g = groundOf(w.seed);
+  return waterAt(g.isle, g.fine, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2) > 0.5;
 };
 // Ground at a point: on the map and not under water, unless the water there is frozen.
 export const dryAt = (w: World, px: number, py: number) =>
@@ -368,7 +368,7 @@ export function groundOf(seed: number): Ground {
     for (let t = 0; t < W * H; t++)
       for (let k = 0; k < 36 && !dry[t]; k++) {
         const x = (t % W) + ((k % 6) + 0.5) / 6, y = Math.floor(t / W) + (Math.floor(k / 6) + 0.5) / 6;
-        if (fine.fine(fine.wet, x * TILE_M - SIZE / 2, y * TILE_M - SIZE / 2) <= 0.5) dry[t] = 1;
+        if (waterAt(isle, fine, x * TILE_M - SIZE / 2, y * TILE_M - SIZE / 2) <= 0.5) dry[t] = 1;
       }
     g = { land: lay(isle), isle, fine, flora: scatter(isle, fine, seed), dry };
     grounds.set(seed, g);
@@ -415,7 +415,7 @@ const HP: Record<string, (size: number) => number> = {
 };
 
 export function newWorld(seed: number, agentCount = 5): World {
-  const { land, flora: f } = groundOf(seed);
+  const g = groundOf(seed), { land, flora: f } = g;
   // People, animals and loose things draw from their own stream, so a seed's island stays the same whatever they do.
   const rand = rng(seed ^ 0x5f3759df);
   const tiles = [...land.tiles];
@@ -427,7 +427,8 @@ export function newWorld(seed: number, agentCount = 5): World {
   };
   for (let i = 0; i < f.n; i++) {
     const kind = FLORA[f.kind[i]], px = tileOf(f.x[i]), py = tileOf(f.z[i]), size = Math.round(f.size[i] * 100) / 100, seed = f.seed[i];
-    if (wetAt(w, px, py)) continue;
+    // Rounding to tiles can nudge a point at the very edge of water or a stream over it; the map would not draw it there.
+    if (wetAt(w, px, py) || riverSmooth(g.fine, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2) > 0.5) continue;
     if (kind === "ore") { addThing(w, "item", px, py, { item: "ore", n: 1, size, seed }); continue; }
     const hp = HP[kind](size);
     const t: Thing = { id: `t${w.nextId++}`, kind, x: Math.floor(px), y: Math.floor(py), px, py, size, seed, species: SPECIES[f.species[i]] || undefined, hp, maxHp: hp };

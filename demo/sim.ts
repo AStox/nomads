@@ -6,6 +6,7 @@ export { iceChanged, pathChanges, trailChanges, trails } from "../src/sim/ecolog
 export { campSummary, groupsChanged } from "../src/sim/groups";
 export { inspect, inspectGround } from "../src/sim/inspect";
 export { objects, thingById } from "../src/sim/space";
+export { GROUND, groundClass, waterAt } from "../src/terrain/flora";
 
 // newWorld packs the terrain with Node's Buffer.from(buf, offset, length).toString("base64"), the only Buffer use in src.
 const g = globalThis as { Buffer?: unknown };

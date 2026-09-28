@@ -87,6 +87,8 @@ export function baseRegistry(): Registry {
   return Object.fromEntries(Object.entries(BASE).map(([id, k]) => [id, { id, base: id, ...k }]));
 }
 
+// The plural of a name, by its last word: berry, berries; bush, bushes; stone, stones.
+export const plural = (s: string) => (/[^aeiou]y$/.test(s) ? `${s.slice(0, -1)}ies` : /(s|x|z|ch|sh)$/.test(s) ? `${s}es` : `${s}s`);
 export const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 export const p = (k: Kind | undefined, prop: Prop) => k?.props[prop] ?? 0;
 const round = (props: Props): Props =>

@@ -12,8 +12,9 @@ const { P, SHADOW } = await import("./pal.js");
 const { Buf, ObjBins, dith } = await import("./px.js");
 
 let w = null;
-// one view per level and bearing; island-wide maps (the island levels only) are kept for the few most recent
-const levels = new Map(), MAPS_KEPT = 6;
+// one view per level and bearing, least recently used first out: at most MAPS_KEPT island-wide maps and LEVELS_KEPT
+// views in all, so touring every bearing and zoom cannot grow the worker
+const levels = new Map(), MAPS_KEPT = 3, LEVELS_KEPT = 8;
 // the live world, sent by the page whenever the sim changes it: its objects, worn paths and ice
 const D = { version: 0, objs: null, trail: null, ice: new Uint8Array(64 * 64) };
 
@@ -32,6 +33,7 @@ function level(k, b) {
   levels.set(key, lv);
   const big = [...levels].filter(([, l]) => l.M);
   for (const [k2] of big.slice(0, Math.max(0, big.length - MAPS_KEPT))) levels.delete(k2);
+  for (const k2 of [...levels.keys()].slice(0, Math.max(0, levels.size - LEVELS_KEPT))) levels.delete(k2);
   return lv;
 }
 
@@ -53,7 +55,7 @@ function bake(msg) {
     if (V.tsun) V.shaded = L.shadowHorizon(V, M);
     [V.i0, V.i1, V.j0, V.j1] = draw;
     // the drawn tiles' corner levels, so the page can stand live sprites on the ground as drawn
-    const gi0 = V.i0 - M.i0, gj0 = V.j0 - M.j0, gw = V.i1 - V.i0, gh = V.j1 - V.j0, C = new Int16Array(gw * gh * 4), diag = new Uint8Array(gw * gh), kind = new Uint8Array(gw * gh);
+    const gi0 = V.i0 - M.i0, gj0 = V.j0 - M.j0, gw = V.i1 - V.i0, gh = V.j1 - V.j0, C = new M.C.constructor(gw * gh * 4), diag = new Uint8Array(gw * gh), kind = new Uint8Array(gw * gh);
     for (let j = 0; j < gh; j++)
       for (let i = 0; i < gw; i++) {
         const t = (gj0 + j) * M.NI + gi0 + i, q = j * gw + i;
@@ -97,6 +99,9 @@ function bake(msg) {
   const animP = Uint32Array.from(aP), animC = Uint8Array.from(aC);
   const moved = [B.c.buffer, B.z.buffer, obj.buffer, animP.buffer, animC.buffer];
   if (ground) moved.push(ground.C.buffer, ground.diag.buffer, ground.kind.buffer);
+  // a paged level's view must not keep this chunk's map alive through its shadow closure until the next bake
+  if (V.paged) { V.shaded = null; }
+  V.trail = null; V.iceAt = null;
   postMessage({ type: "chunk", key: msg.key, ver: D.version, c: B.c, z: B.z, obj, animP, animC, ground, dbg, ms: performance.now() - t0, parts: [t1 - t0, t2 - t1, performance.now() - t2], objects: O.length }, moved);
 }
 

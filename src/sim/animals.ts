@@ -1,18 +1,18 @@
 // What the animals do each tick: graze, wander, flee, hunt, swim, fly, perch and feed. Speeds are meters a tick of
 // five minutes' game time, the way a person's are; what each kind is like is in fauna.ts.
 import { THING_MATERIAL } from "./materials";
-import { TILE_M, Tile, W, dryAt, isNight, landing, log, meters, tileAt, walkable, wetAt, type Agent, type Animal, type AnimalSpecies, type Thing, type World } from "./world";
+import { TILE_M, Tile, W, dryAt, shoreOf, isNight, landing, log, meters, tileAt, walkable, wetAt, type Agent, type Animal, type AnimalSpecies, type Thing, type World } from "./world";
 import { anyOf, liveThings, nearestThing, onPath, put, thingById } from "./space";
 import { steer } from "./walk";
 import { dropPile, mark, removeThing } from "./physics";
 import { see } from "./beliefs";
 import { trace } from "./trace";
-import { FAUNA, addAnimal, placesOf } from "./fauna";
+import { FAUNA, addAnimal } from "./fauna";
 
 // Agents being attacked this tick, agent id -> wolf id.
 export const attacked = new Map<string, string>();
 
-type Near = { awake: Agent[]; fires: Thing[]; wolves: Animal[]; deer: Animal[]; rabbits: Animal[]; eagles: Animal[] };
+type Near = { awake: Agent[]; fires: Thing[]; wolves: Animal[]; deer: Animal[]; rabbits: Animal[]; eagles: Animal[]; fish: Animal[] };
 function closest<T extends { px: number; py: number }>(from: { px: number; py: number }, list: readonly T[], r: number, ok: (t: T) => boolean = () => true) {
   let best: T | null = null, bd = r;
   for (const o of list) { const d = meters(from, o); if (d <= bd && o !== (from as unknown) && ok(o)) { bd = d; best = o; } }
@@ -33,12 +33,14 @@ function away(w: World, an: Animal, from: { px: number; py: number }, speed: num
   const d = Math.hypot(an.px - from.px, an.py - from.py) || 1e-6;
   goTo(w, an, an.px + ((an.px - from.px) / d) * 0.2, an.py + ((an.py - from.py) / d) * 0.2, speed);
 }
+// A point pulled back inside the map, so nothing heads for somewhere it can never reach.
+const onMap = (x: number, y: number): [number, number] => [Math.max(0.05, Math.min(W - 0.05, x)), Math.max(0.05, Math.min(W - 0.05, y))];
 // Amble about near home, keeping one heading for a while.
 function roam(w: World, an: Animal, r: number, speed: number, odds = 0.35) {
   const home = an.home ?? [an.px, an.py];
   if (!an.aim || Math.hypot(an.aim[0] - an.px, an.aim[1] - an.py) * TILE_M < 1 || Math.random() < 0.02) {
     const a = Math.random() * Math.PI * 2, d = (Math.random() * r) / TILE_M;
-    an.aim = [home[0] + Math.cos(a) * d, home[1] + Math.sin(a) * d];
+    an.aim = onMap(home[0] + Math.cos(a) * d, home[1] + Math.sin(a) * d);
   }
   if (Math.random() < odds) goTo(w, an, an.aim[0], an.aim[1], speed);
 }
@@ -147,15 +149,14 @@ function fish(w: World, f: Animal) {
   roam(w, f, 25, Math.random() < 0.05 ? FAUNA.fish.run : FAUNA.fish.walk, 0.6);
 }
 
+// A random point along the water's edge within r meters of a place.
 function shoreNear(w: World, from: [number, number], r: number): [number, number] | null {
-  const p = placesOf(w);
-  for (let tries = 0; tries < 30; tries++) {
-    const t = p.shore[Math.floor(Math.random() * p.shore.length)];
-    if (t === undefined) return null;
-    const c: [number, number] = [(t % W) + 0.2 + Math.random() * 0.6, ((t / W) | 0) + 0.2 + Math.random() * 0.6];
-    if (Math.hypot(c[0] - from[0], c[1] - from[1]) * TILE_M <= r && dryAt(w, c[0], c[1])) return c;
+  const s = shoreOf(w);
+  for (let tries = 0; tries < 60 && s.length; tries++) {
+    const c = s[Math.floor(Math.random() * s.length)];
+    if (Math.hypot(c.px - from[0], c.py - from[1]) * TILE_M <= r) return [c.px, c.py];
   }
-  return null;
+  return edgeNear(w, { px: from[0], py: from[1] }, r);
 }
 // Up and away to aim, landing on arrival; returns true while still in the air.
 function flight(w: World, an: Animal, cruise: number, land = 0) {
@@ -167,17 +168,42 @@ function flight(w: World, an: Animal, cruise: number, land = 0) {
   return d > 0.5 || Math.abs(an.alt - land) > 0.05;
 }
 
+// At the water's edge: standing water within a meter of the point, the shallows a heron wades.
+const atEdge = (w: World, x: number, y: number) =>
+  wetAt(w, x, y) || [0, 1, 2, 3, 4, 5, 6, 7].some((k) => wetAt(w, x + Math.cos((k * Math.PI) / 4) / TILE_M, y + Math.sin((k * Math.PI) / 4) / TILE_M));
+// The nearest point along the water's edge within r meters, from the island's shore points.
+function edgeNear(w: World, from: { px: number; py: number }, r: number): [number, number] | null {
+  let best: { px: number; py: number } | null = null, bd = r;
+  for (const s of shoreOf(w)) { const d = meters(from, s); if (d < bd) { bd = d; best = s; } }
+  return best && [best.px, best.py];
+}
 function heron(w: World, h: Animal, n: Near) {
-  if (h.state === "fly") { if (!flight(w, h, 15)) setState(w, h, "wade"); return; }
+  if (h.state === "fly") {
+    if (!flight(w, h, 15)) { h.alt = 0; setState(w, h, atEdge(w, h.px, h.py) ? "wade" : "wander"); }
+    return;
+  }
   if (closest(h, n.awake, 30)) {
     h.aim = shoreNear(w, h.home ?? [h.px, h.py], 500) ?? h.aim;
     setState(w, h, "fly");
     return;
   }
   if (isNight(w.t)) { setState(w, h, "rest"); return; }
+  // Off the edge: walk back to it if it's close, fly to the nearest stretch of shore if not.
+  if (!atEdge(w, h.px, h.py)) {
+    const edge = edgeNear(w, h, 600);
+    if (!edge) { setState(w, h, "wander"); return; }
+    if (meters(h, { px: edge[0], py: edge[1] }) > 15) { h.aim = edge; setState(w, h, "fly"); return; }
+    setState(w, h, "wander");
+    steer(w, h, edge[0], edge[1], FAUNA.heron.walk * 2, () => true, dryAt);
+    return;
+  }
   if (h.state === "feed" && inState(w, h) < 6) return;
   setState(w, h, Math.random() < 0.02 ? "feed" : "wade");
-  roam(w, h, 20, FAUNA.heron.walk, 0.2);
+  // Stalking along the shallows, one slow step at a time, never leaving the edge.
+  if (Math.random() < 0.2) {
+    const a = h.heading + (Math.random() - 0.5) * 1.5;
+    if (!steer(w, h, h.px + Math.cos(a) / TILE_M, h.py + Math.sin(a) / TILE_M, FAUNA.heron.walk, () => true, atEdge)) h.heading += Math.PI;
+  }
 }
 
 function gull(w: World, g: Animal) {
@@ -187,7 +213,8 @@ function gull(w: World, g: Animal) {
     return;
   }
   if (g.state === "land") {
-    if (!flight(w, g, 12)) setState(w, g, "rest");
+    // Settle wherever it is if the shore it wanted takes too long to reach: on the water or the beach alike.
+    if (!flight(w, g, 12) || inState(w, g) > 40) { g.alt = 0; setState(w, g, "rest"); }
     return;
   }
   if (g.state === "feed") {
@@ -195,7 +222,7 @@ function gull(w: World, g: Animal) {
     if (inState(w, g) > 5) setState(w, g, "fly");
     return;
   }
-  if (isNight(w.t) || Math.random() < 0.003) { g.aim = shoreNear(w, home, 400) ?? g.aim; setState(w, g, "land"); return; }
+  if (isNight(w.t) || Math.random() < 0.003) { g.aim = shoreNear(w, home, 400) ?? onMap(g.px, g.py); setState(w, g, "land"); return; }
   if (Math.random() < 0.01 && wetAt(w, g.px, g.py)) { setState(w, g, "feed"); return; }
   setState(w, g, "fly");
   lift(g, 10 + quirk(g, 20), 2);
@@ -256,7 +283,7 @@ function crow(w: World, c: Animal, n: Near) {
 
 function eagle(w: World, e: Animal, n: Near) {
   const home = e.home ?? [e.px, e.py];
-  e.hunger -= 0.04;
+  e.hunger = Math.max(0, e.hunger - 0.04);
   if (e.state === "feed") { lift(e, 0, 5); if (inState(w, e) > 20) setState(w, e, "soar"); return; }
   if (e.state === "perch") { if (holdPerch(w, e) && !isNight(w.t)) { e.target = undefined; setState(w, e, "soar"); } return; }
   if (isNight(w.t)) {
@@ -266,7 +293,7 @@ function eagle(w: World, e: Animal, n: Near) {
     return;
   }
   if (e.state === "dive") {
-    const prey = n.rabbits.find((r) => r.id === e.target);
+    const prey = w.animals.find((r) => r.id === e.target);
     if (!prey) { e.target = undefined; setState(w, e, "soar"); return; }
     const d = meters(e, prey);
     lift(e, 0, 15);
@@ -279,8 +306,11 @@ function eagle(w: World, e: Animal, n: Near) {
     return;
   }
   setState(w, e, "soar");
-  const prey = e.hunger < 50 ? closest(e, n.rabbits, 200, (r) => r.state !== "flee") : null;
+  // A hungry eagle stoops on a rabbit in the open or a fish near the surface; hungrier, it quarters the island for one.
+  const prey = e.hunger < 50 ? closest(e, n.rabbits, 400, (r) => r.state !== "flee") ?? closest(e, n.fish, 400) : null;
   if (prey) { e.target = prey.id; setState(w, e, "dive"); return; }
+  const far = e.hunger < 50 ? closest(e, [...n.rabbits, ...n.fish], Infinity) : null;
+  if (far) { lift(e, 60, 3); goTo(w, e, far.px, far.py, FAUNA.eagle.fly!); return; }
   // Soaring: wide circles over home, drifting higher and lower on the air.
   lift(e, 60 + quirk(e, 60), 3);
   e.heading += 0.12;
@@ -320,7 +350,7 @@ export function animals(w: World) {
   const awake = w.agents.filter((a) => a.down <= w.t);
   const of = (s: AnimalSpecies) => w.animals.filter((a) => a.species === s);
   const fires = [...liveThings(w)].filter((t) => t.kind === "fire");
-  const n: Near = { awake, fires, wolves: of("wolf"), deer: of("deer"), rabbits: of("rabbit"), eagles: of("eagle") };
+  const n: Near = { awake, fires, wolves: of("wolf"), deer: of("deer"), rabbits: of("rabbit"), eagles: of("eagle"), fish: of("fish") };
   const warm = (spring || season === "summer") && w.weather.temp > 8;
   for (const an of [...w.animals]) {
     if (an.state === "trapped" || !w.animals.includes(an)) continue;
@@ -369,5 +399,7 @@ export function animals(w: World) {
     if (f) addAnimal(w, "butterfly", f.px, f.py, { home: [f.px, f.py], alt: 0.5, state: "flutter" });
   }
   for (const wf of w.animals.filter((a) => a.species === "wolf" && a.hunger <= 0)) { carcass(w, wf); log(w, "death", [], wf, "A wolf starved."); }
-  for (const an of w.animals.filter((a) => a.hp <= 0)) { w.animals = w.animals.filter((x) => x !== an); log(w, "death", [], an, `A ${an.species} went through the ice and drowned.`); }
+  // Anything else left without food weakens and dies; deer and wolves drop as carcasses above.
+  for (const an of w.animals) if (an.hunger <= 0) an.hp -= 0.05;
+  for (const an of w.animals.filter((a) => a.hp <= 0)) { w.animals = w.animals.filter((x) => x !== an); log(w, "death", [], an, an.hunger <= 0 ? `A ${an.species} starved.` : `A ${an.species} went through the ice and drowned.`); }
 }

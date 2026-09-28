@@ -1,7 +1,8 @@
 // The play camera: { x, z, zoom, bearing, up } in world meters, moved only through the renderer's exact projection.
-const TURN_MS = 380, SETTLE_MS = 220, ZOOM_TAU = 90, FOLLOW_TAU = 60, BOUND = 4700, UP_MAX = 2000;
+const TURN_MS = 380, SETTLE_MS = 220, HOLD = 0.45, NUDGE = 0.15, WAIT_MS = 5000, ZOOM_TAU = 90, FOLLOW_TAU = 60, BOUND = 4700, UP_MAX = 2000;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t));
+const unease = (y) => (y < 0.5 ? Math.sqrt(Math.max(0, y) / 2) : 1 - Math.sqrt(Math.max(0, 1 - y) / 2));
 export const norm8 = (b) => { const r = ((b % 8) + 8) % 8; return r >= 8 ? 0 : r; };
 // the signed turn from a to b, the short way round, in [-4, 4)
 const wrap8 = (d) => ((((d % 8) + 12) % 8) - 4);
@@ -44,14 +45,14 @@ export function createCamera({ live, view, canvas, onTurn }) {
     },
     // a turn ends a zoom gesture: its anchor would drag the target round with it
     orbitBy(db) { if (Number.isFinite(db) && db) { view.bearing = norm8(view.bearing + db); anchor = null; } },
-    // Q and E: the next bearing is baked first, then the turn runs
+    // Q and E turn at once, the current bearing's frame warped toward the next while that one bakes
     turnBy(d) {
       const target = (turn && !turn.drag ? turn.target : Math.round(view.bearing)) + d;
-      turn = { target, asked: performance.now(), t0: 0, drag: false };
+      turn = begin(target, false);
       view.turnTo = norm8(target);
     },
     // after a free turn, ease to the nearest whole bearing
-    settle() { turn = { target: Math.round(view.bearing), asked: performance.now(), t0: 0, drag: true }; view.turnTo = null; },
+    settle() { turn = begin(Math.round(view.bearing), true); view.turnTo = null; },
     stopTurn() { turn = null; view.turnTo = null; },
     // Two fingers: the ground under their midpoint stays under it while they spread, pinch and twist.
     pinchStart(mx, my, d, ang) {
@@ -78,19 +79,19 @@ export function createCamera({ live, view, canvas, onTurn }) {
       if (!finite(p.x, p.z, p.y)) return;
       view.x = p.x; view.z = p.z; view.up = p.y - live.camH(p.x, p.z); anchor = null;
     },
-    // ease the target toward a followed point, frame-rate independent
-    follow(p, dt) {
-      if (!finite(p.x, p.z, p.y)) return;
+    // eased toward a followed point, led by its velocity (m per ms) times the time constant so a steady walk leaves no lag
+    follow(p, dt, vx = 0, vz = 0) {
+      if (!finite(p.x, p.z, p.y, vx, vz)) return;
       anchor = null;
-      const k = 1 - Math.exp(-dt / FOLLOW_TAU), up = p.y - live.camH(p.x, p.z);
-      view.x += (p.x - view.x) * k; view.z += (p.z - view.z) * k; view.up += (up - view.up) * k;
+      const k = 1 - Math.exp(-dt / FOLLOW_TAU), x = p.x + vx * FOLLOW_TAU, z = p.z + vz * FOLLOW_TAU, up = p.y - live.camH(p.x, p.z);
+      view.x += (x - view.x) * k; view.z += (z - view.z) * k; view.up += (up - view.up) * k;
     },
     // how far from mid-screen a world point is drawn now, in canvas px
     offCentre(p) { const s = live.screenOf(view, p.x, p.z, p.y), [cx, cy] = half(); return Math.hypot(s[0] - cx, s[1] - cy); },
     step(dt, now) {
       // a zoom set from outside (a script, the bench) is taken as the new goal
       if (view.zoom !== zoomSet) { goal = zoomSet = view.zoom; anchor = null; }
-      turnStep(now);
+      turnStep(dt, now);
       if (view.zoom === goal) { anchor = null; return; }
       let z = view.zoom + (goal - view.zoom) * (1 - Math.exp(-dt / ZOOM_TAU));
       if (Math.abs(goal - z) < 1e-4) z = goal;
@@ -115,17 +116,32 @@ export function createCamera({ live, view, canvas, onTurn }) {
       return true;
     },
   };
-  function turnStep(now) {
+  function begin(target, drag) {
+    const from = view.bearing;
+    return { target, drag, from, to: from + wrap8(target - from), cur: from, phase: 0, asked: performance.now(), startMs: null };
+  }
+  // the eased turn passes HOLD of a step only once the bearing ahead is baked, so it starts at once and never shows a hole
+  function turnStep(dt, now) {
     if (!turn) return;
-    if (!turn.t0) {
-      if (!turn.drag && !live.bearingReady(view, turn.target) && now - turn.asked < 5000) return;
-      turn.t0 = now; turn.from = view.bearing; turn.to = turn.from + wrap8(turn.target - turn.from);
-      if (!turn.drag) onTurn?.(now - turn.asked);
-    }
-    const p = Math.min(1, (now - turn.t0) / (turn.drag ? SETTLE_MS : TURN_MS));
     anchor = null;
-    view.bearing = norm8(p >= 1 ? Math.round(turn.to) : turn.from + (turn.to - turn.from) * ease(p));
-    if (p >= 1) { view.turnTo = null; turn = null; }
+    const T = turn, span = T.to - T.from, dir = Math.sign(span);
+    let phase = Math.min(1, T.phase + dt / (T.drag ? SETTLE_MS : TURN_MS)), b = T.from + span * ease(phase);
+    if (!T.drag && dir && now - T.asked < WAIT_MS) {
+      // a big warp needs the current bearing's grown rect, then the next bearing; each is baked first, in that order
+      const back = dir > 0 ? Math.floor(T.cur + 1e-9) : Math.ceil(T.cur - 1e-9), here = live.bearingReady(view, back), cap = back + dir * (here ? HOLD : NUDGE);
+      view.turnTo = norm8(here ? back + dir : back);
+      if (dir * (b - cap) > 0 && !(here && live.bearingReady(view, back + dir))) {
+        b = dir > 0 ? Math.max(cap, T.cur) : Math.min(cap, T.cur);
+        phase = Math.min(phase, unease((b - T.from) / span));
+      }
+    }
+    if (T.startMs == null && b !== T.from) T.startMs = now - T.asked;
+    T.phase = phase; T.cur = b;
+    view.bearing = norm8(phase >= 1 ? Math.round(T.to) : b);
+    if (phase >= 1) {
+      if (!T.drag) onTurn?.({ start: T.startMs ?? 0, total: now - T.asked });
+      view.turnTo = null; turn = null;
+    }
   }
   return cam;
 }

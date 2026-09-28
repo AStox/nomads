@@ -1,6 +1,7 @@
 // Nomads as a 90s isometric sim: a 2:1 tile map with integer height steps, slope shapes and cliff strips, painted
 // pixel by pixel into a small indexed buffer with one fixed palette, then blown up with nearest neighbour.
 import { grow, fbm, noise, smooth } from "../world.js";
+import { groundClass, waterAt, riverSmooth, SEA as G_SEA, LAKE as G_LAKE, RIVER as G_RIVER, ROCKY as G_ROCKY } from "../island.js";
 import { P, ramp, SHADOW, GLOW, HAZE, MIST, NCOL, THEME } from "./pal.js";
 import { Buf, Spr, ObjBins, tri, strip, blit, castShadow, shadowPx, bayer, dith, h2 } from "./px.js";
 import * as SP from "./sprites.js";
@@ -50,6 +51,7 @@ const SA = ramp("d3", "s0", "s1", "s2", "s3");
 const RK = ramp("r0", "r1", "r2", "r3", "r4", "r5");
 const MA = ramp("m0", "m1", "m2", "m3", "a1");
 const DI = ramp("d0", "d1", "d2", "d3", "d4", "d5");
+const MUD = ramp("d0", "m0", "m1", "m2");
 const WA = ramp("w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7");
 const FLOWER = [P.f3, P.snow, P.red, P.violet, P.a3];
 // one step down each terrain ramp, for the faint tile grid
@@ -288,8 +290,11 @@ function frameCamp(w, V) {
 // ---------- the tile map ----------
 function buildMap(w, V) {
   const { i0, j0, NI, NJ } = V, VI = NI + 1, n = NI * NJ, I = w.isle, N = w.N;
-  const VL = new Int16Array(VI * (NJ + 1));
-  for (let j = 0; j <= NJ; j++) for (let i = 0; i <= NI; i++) { const [x, z] = V.toW(i0 + i, j0 + j); VL[j * VI + i] = Math.round(V.hsample(x, z) / V.levelM); }
+  // the live map keeps every vertex at its exact height, a point sample of one continuous surface, so every level puts
+  // a place at the same height; the stills step heights into whole levels for their cliffs
+  const HA = V.live ? Float32Array : Int16Array, q = V.live ? (v) => v : Math.round;
+  const VL = new HA(VI * (NJ + 1));
+  for (let j = 0; j <= NJ; j++) for (let i = 0; i <= NI; i++) { const [x, z] = V.toW(i0 + i, j0 + j); VL[j * VI + i] = q(V.hsample(x, z) / V.levelM); }
   const surfAt = (x, z) => {
     const cx = Math.round((x - w.START) / w.CELL), cy = Math.round((z - w.START) / w.CELL);
     let best = 0, bd = Infinity;
@@ -301,7 +306,7 @@ function buildMap(w, V) {
       }
     return best;
   };
-  const M = { kind: new Uint8Array(n), wlev: new Int16Array(n), surf: new Float32Array(n), cls: new Uint8Array(n), C: new Int16Array(n * 4), diag: new Uint8Array(n), hc: new Float32Array(n), moist: new Float32Array(n), heath: new Float32Array(n), snow: new Float32Array(n), cov: COV.map(() => new Float32Array(n)) };
+  const M = { kind: new Uint8Array(n), wlev: new HA(n), surf: new Float32Array(n), cls: new Uint8Array(n), C: new HA(n * 4), diag: new Uint8Array(n), hc: new Float32Array(n), moist: new Float32Array(n), heath: new Float32Array(n), snow: new Float32Array(n), cov: COV.map(() => new Float32Array(n)) };
   M.at = (i, j) => (i >= 0 && j >= 0 && i < NI && j < NJ ? j * NI + i : -1);
   M.i0 = i0; M.j0 = j0; M.NI = NI; M.NJ = NJ;
   let peak = 0;
@@ -315,7 +320,7 @@ function buildMap(w, V) {
       let wet = 0, m = 0, ex = 0;
       for (const [a, b] of offs) {
         const [x, z] = V.toW(i0 + i + a, j0 + j + b);
-        wet += V.live ? wetAt(w, x, z) : w.fine(w.wet, x, z);
+        wet += V.live ? waterAt(w.isle, w, x, z) : w.fine(w.wet, x, z);
         COV.forEach((k, q) => (cv[q] += w.fine(w.cover[k], x, z)));
         m += w.fine(w.moist, x, z);
         ex += w.bilinear(I.exposure, (x - w.START) / w.CELL, (z - w.START) / w.CELL);
@@ -328,7 +333,7 @@ function buildMap(w, V) {
       M.heath[t] = clamp(ex * 1.4 + M.cov[2][t] - m * 0.3, 0, 1);
       if (wet > 0.45 || (wet > 0.1 && hh < -0.5)) {
         const s = surfAt(x, z);
-        M.kind[t] = s > 0.5 ? LAKE : SEA; M.surf[t] = s; M.wlev[t] = Math.round(s / V.levelM);
+        M.kind[t] = s > 0.5 ? LAKE : SEA; M.surf[t] = s; M.wlev[t] = q(s / V.levelM);
       } else {
         let best = 0, bs = -1;
         COV.forEach((k, q) => { const s = M.cov[q][t] * WEIGHT[q]; if (s > bs) { bs = s; best = q; } });
@@ -367,7 +372,7 @@ function buildMap(w, V) {
   M.toRock = bfs((t) => !M.kind[t] && M.cls[t] === ROCK, (t) => !M.kind[t], 3);
   // land touching standing water never dips under its surface; on the live map it meets it exactly, so a steep shore
   // is a slope up from the water rather than a wall standing at the tile edge
-  const vi = (i, j) => j * VI + i, floor = new Int16Array(VL.length), wetV = new Uint8Array(VL.length);
+  const vi = (i, j) => j * VI + i, floor = new HA(VL.length), wetV = new Uint8Array(VL.length);
   for (let j = 0; j < NJ; j++)
     for (let i = 0; i < NI; i++) {
       const t = j * NI + i;
@@ -697,7 +702,7 @@ function texLand(w, V, K, x0, y0, wx, wz, lev, s, fu, fv) {
       return dith(dryness > 0.55 ? SC : GR, 2.9 + s * 1.1 + mot + edge + (h2(x0 >> 1, y0, 28) - 0.5) * 0.9 + (dryness > 0.55 ? 0.3 : 0), x0, y0);
     }
     case MARSH: {
-      // pools gather where a broad wetness field is high, so they come in clusters with open ground between
+      // wet hollows gather where a broad wetness field is high, so they come in clusters with firmer ground between
       const pm = V.band ? V.pm * 2.2 : V.pm, thr = V.band ? 0.42 : 0.32;
       const pool = (a, b) => noise(a / pm, b / pm, 31) + 0.3 * noise(a / (pm * 0.4), b / (pm * 0.4), 32) + (V.band ? noise(a / (pm * 3), b / (pm * 3), 33) * 0.5 : 0);
       const pn = pool(wx, wz);
@@ -1121,7 +1126,7 @@ export function collectLive(w, V, M, D) {
     }
     if (spr) add(at, spr, { mirror, shadow: hpx >= 3 && !FLAT.has(K), oid: id });
   });
-  if (cache.size > 30000) cache.clear();
+  if (cache.size > 4000) cache.clear();
   return O;
 }
 const FLAT = new Set(["clay", "stick", "pebble", "flowers", "herb", "mushroom"]);
@@ -1131,53 +1136,27 @@ const FLAT = new Set(["clay", "stick", "pebble", "flowers", "herb", "mushroom"])
 // Only the dither pattern belongs to a level: biome edges, pools, bare patches, shores and rivers are sampled from
 // the world at each pixel, so they line up exactly at every zoom and bearing.
 const G = {};
-// Water where the generator's ground lies below the surface of the lake or sea beside it, so a shore follows the
-// terrain's own contour instead of the 75 m water cells (a one-cell pond drawn from the cells is a diamond). Past a
-// lake's outlet the ground can drop below its level, so the cells still bound it there.
-function wetAt(w, x, z) {
-  const I = w.isle, N = w.N, cx = (x - w.START) / w.CELL, cy = (z - w.START) / w.CELL, i = Math.round(cx), j = Math.round(cy);
-  if (i < 0 || j < 0 || i >= N || j >= N) return 1;
-  let lvl = -Infinity;
-  for (let b = Math.max(0, j - 1); b <= Math.min(N - 1, j + 1); b++)
-    for (let a = Math.max(0, i - 1); a <= Math.min(N - 1, i + 1); a++) { const k = b * N + a; if (I.water[k] > 0) lvl = Math.max(lvl, I.height[k] + I.water[k]); }
-  if (lvl === -Infinity) return 0;
-  const x0 = clamp(Math.floor(cx), 0, N - 2), y0 = clamp(Math.floor(cy), 0, N - 2), tx = clamp(cx - x0, 0, 1), ty = clamp(cy - y0, 0, 1), k = y0 * N + x0, c = (q) => (I.water[q] > 0 ? 1 : 0);
-  const bl = (f) => (f(k) * (1 - tx) + f(k + 1) * tx) * (1 - ty) + (f(k + N) * (1 - tx) + f(k + N + 1) * tx) * ty;
-  const v = Math.min(0.5 + (lvl - w.heightAt(x, z)) / 2, 0.5 + (bl(c) - 0.2) * 2);
-  // the cubic through the cells rises above sea level here and there offshore; the sea cells keep that underwater
-  return clamp(Math.max(v, bl((q) => (I.water[q] > 0 && I.height[q] < 0 ? 1 : 0)) - 0.1), 0, 1);
-}
+// Every ground fact at a world point comes from the generator's shared rule (flora.ts groundClass), the one the sim's
+// inspector uses too, so the drawn class and the inspected one never disagree; only shore distance and depth are added.
 function groundAt(w, V, x, z) {
-  const wet = wetAt(w, x, z), riv = riverSmooth(w, x, z);
-  G.water = wet > 0.5 ? (w.heightAt(x, z) < 0.5 ? SEA : LAKE) : riv > 0.5 ? RIVER : 0;
+  const r = groundClass(w.isle, w, x, z);
+  G.water = r.water === G_SEA ? SEA : r.water === G_LAKE ? LAKE : r.water === G_RIVER ? RIVER : 0;
   G.x = x; G.z = z;
   if (G.water) {
     // distance to the shore in meters, from the field's value and slope near its 0.5 contour
-    const f = G.water === RIVER ? (a, b) => riverSmooth(w, a, b) : (a, b) => wetAt(w, a, b), v = G.water === RIVER ? riv : wet;
+    const f = G.water === RIVER ? (a, b) => riverSmooth(w, a, b) : (a, b) => waterAt(w.isle, w, a, b), v = G.water === RIVER ? r.river : r.wet;
     const gx = (f(x + 3, z) - f(x - 3, z)) / 6, gz = (f(x, z + 3) - f(x, z - 3)) / 6, gl = Math.hypot(gx, gz);
     G.shore = gl > 1e-4 ? (v - 0.5) / gl : 60;
     G.depth = G.water === SEA ? Math.max(0, -w.heightAt(x, z)) : G.water === LAKE ? w.bilinear(w.isle.water, (x - w.START) / w.CELL, (z - w.START) / w.CELL) : 1.5;
     return G;
   }
-  // biome edges wander in world meters
-  const wx = x + fbm(x / 40, z / 40, 64, 2) * 14, wz = z + fbm(x / 40, z / 40, 66, 2) * 14;
-  let best = 0, bs = -1;
-  for (let q = 0; q < 6; q++) { const c = w.fine(w.cover[COV[q]], wx, wz); G["c" + q] = c; if (c * WEIGHT[q] > bs) { bs = c * WEIGHT[q]; best = q; } }
-  const h = w.heightAt(x, z);
-  G.h = h; G.moist = w.fine(w.moist, x, z);
-  // rock where the generator left the ground bare; thin bare ground is grass with outcrops
-  G.cls = best === ROCK && G.c4 < 0.6 ? HILL : best;
-  G.ex = w.bilinear(w.isle.exposure, (x - w.START) / w.CELL, (z - w.START) / w.CELL);
+  for (let q = 0; q < 6; q++) G["c" + q] = r.cover[q];
+  G.cls = r.cls === G_ROCKY ? ROCKY : r.cls;
+  G.h = w.heightAt(x, z); G.moist = w.fine(w.moist, x, z); G.ex = r.exposure;
   // the generator's share of the year's precipitation falling as snow: only its highest reaches keep patches of it
   G.snow = smooth(0.132, 0.142, w.bilinear(w.isle.snow, (x - w.START) / w.CELL, (z - w.START) / w.CELL)) * 0.3;
-  G.nearWet = wet > 0.2 || riv > 0.2;
+  G.nearWet = r.wet > 0.2 || r.river > 0.2;
   return G;
-}
-// the river mask sampled between its texels, so a bank is a line rather than a staircase at close zoom
-function riverSmooth(w, x, z) {
-  const t = 9600 / 2048, fx = (x + 4800) / t - 0.5, fz = (z + 4800) / t - 0.5, i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j;
-  const at = (ii, jj) => w.riverAt(-4800 + (ii + 0.5) * t, -4800 + (jj + 0.5) * t);
-  return (at(i, j) * (1 - a) + at(i + 1, j) * a) * (1 - b) + (at(i, j + 1) * (1 - a) + at(i + 1, j + 1) * a) * b;
 }
 // Pixel-art ground at every zoom, the mipmap way: detail lives in world meters at a few scales, each scale fades out
 // once a pixel is wider than it, so the far colour is the mean of the close texture. Tones are picked with a narrow
@@ -1212,36 +1191,12 @@ function paintWater(w, V, g, X, Y) {
   if (h2(X, Y, 43) < 0.0006 && ((FRAME + (h2(X, Y, 49) * 8)) | 0) & 7) return P.w7;
   return tone(WA, v, X, Y);
 }
-// The class a land point is drawn as, from world data only, so it is the same at every level: steep ground is bare
-// rock slope whatever grows around it.
-const ROCKY = 30;
-function landClass(g, slope) {
-  // true slope is the second cue: a face past 35 degrees is bare, past 27 degrees open ground breaks into outcrops
-  // bare ground that is gentle and sheltered weathers to grass with outcrops rather than open rock
-  const bare = g.cls === ROCK && slope < 0.32 && g.ex < 0.36 ? HILL : g.cls;
-  const cls = slope > 0.7 && bare !== SAND ? ROCK : slope > 0.5 && (bare === MEADOW || bare === SCRUB) ? HILL : bare;
-  if (cls === ROCK || (cls === HILL && fbm(g.x / 45, g.z / 45, 26, 2) + g.c4 * 0.8 + (slope - 0.5) * 2 - 0.8 > 0)) return ROCKY;
-  return cls;
-}
-// ground slope in the world, on a fixed 12.5 m grid shared by every level
-function worldSlope(w, x, z) {
-  const S = 12.5, n = Math.ceil(9600 / S) + 1;
-  if (!w.slopeGrid) {
-    const g = new Float32Array(n * n), d = 18.75;
-    for (let j = 0; j < n; j++)
-      for (let i = 0; i < n; i++) {
-        const X = -4800 + i * S, Z = -4800 + j * S;
-        g[j * n + i] = Math.hypot(w.heightAt(X + d, Z) - w.heightAt(X - d, Z), w.heightAt(X, Z + d) - w.heightAt(X, Z - d)) / (2 * d);
-      }
-    w.slopeGrid = g;
-  }
-  const g = w.slopeGrid, fx = clamp((x + 4800) / S, 0, n - 1.001), fz = clamp((z + 4800) / S, 0, n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = j * n + i;
-  return (g[k] * (1 - a) + g[k + 1] * a) * (1 - b) + (g[k + n] * (1 - a) + g[k + n + 1] * a) * b;
-}
+// bare rock, the shared rule's code for it
+const ROCKY = 7;
 // What a ground point is, for the consistency check: a water kind (40 + SEA, LAKE, RIVER) or its land class.
 export function surfaceAt(w, V, x, z) {
   const g = groundAt(w, V, x, z);
-  return g.water ? 40 + g.water : landClass(g, worldSlope(w, x, z));
+  return g.water ? 40 + g.water : g.cls;
 }
 const TRACE = { cls: 0 };
 // Worn footpaths from the sim's 3 m wear grid, stepped into five widths (T holds 0..4 per cell). Each worn cell's centre
@@ -1280,10 +1235,10 @@ function onTrail(T, x, z, mpp, X, Y) {
   const r = mpp * 0.5;
   return d < r && bayer(X, Y) < Math.min(1, 1.6 / mpp) * (1 - Math.max(0, d) / r) * 1.5;
 }
-function paintLand(w, V, g, X, Y, s, slope) {
+function paintLand(w, V, g, X, Y, s) {
   const x = g.x, z = g.z, m = V.mpp;
   if (V.trail && onTrail(V.trail, x, z, m, X, Y)) { TRACE.cls = 255; return soil(x, z, s + 0.4, X, Y, m); }
-  const mot = fbm(x / 60, z / 60, 11, 2), cls = landClass(g, slope);
+  const mot = fbm(x / 60, z / 60, 11, 2), cls = g.cls;
   TRACE.cls = cls;
   if (cls === ROCKY) return rock(x, z, s, g.snow, X, Y, m);
   switch (cls) {
@@ -1303,12 +1258,12 @@ function paintLand(w, V, g, X, Y, s, slope) {
       return tone(SA, v, X, Y);
     }
     case MARSH: {
-      // pools gather where a broad wetness field is high, so they come in clusters with open ground between
+      // wet hollows gather where a broad wetness field is high, so they come in clusters with firmer ground between
       const pool = (a, b) => noise(a / 37, b / 37, 31) + 0.3 * noise(a / 15, b / 15, 32) + noise(a / 110, b / 110, 33) * 0.5, pn = pool(x, z);
+      // the wettest hollows are dark mud with small still puddles, not open water: waterAt is the only open water drawn
       if (pn > 0.42) {
-        if (pool(x + V.upW[0], z + V.upW[1]) <= 0.42) return P.m0;
-        if (pn < 0.445) return P.w6;
-        return tone(WA, 4.4 - Math.min(1, (pn - 0.42) * 5) * 2.2 + clusters(x, z, 1.2, 9, m, 0.5) * 0.6, X, Y);
+        if (pn > 0.5 && noise(x / 1.6, z / 1.6, 36) * fade(1.6, m) > 0.35) return bayer(X, Y) < 0.3 ? P.w1 : P.w0;
+        return tone(MUD, 1.8 + s * 0.6 + clusters(x, z, 1.2, 9, m, 0.5) * 0.8 + clusters(x, z, 0.4, 37, m, 0.5) * 0.6 - Math.min(1, (pn - 0.42) * 6) * 0.8, X, Y);
       }
       // reed rims round the pools: short upright strokes, a meter long
       if (pn > 0.35) return noise(x / 0.5, z / 2.2, 34) * fade(0.5, m) > 0.1 ? P.m3 : clusters(x, z, 1.5, 35, m) > 0 ? P.a1 : P.m1;
@@ -1349,6 +1304,26 @@ function rock(x, z, s, snow, X, Y, m) {
   if (noise(x / 9, z / 9, 215) > 0.35 && Math.abs(noise(x / 2.5, z / 5.5, 210)) < 0.04 * fade(0.9, m)) return P.r1;
   return tone(RK, 2.6 + face * 1.3 + clusters(x, z, 2.2, 212, m) * 0.7 + clusters(x, z, 0.5, 213, m, 0.5) * 0.8, X, Y);
 }
+// The ground's gradient on a fixed 12.5 m world grid (over an 18.75 m baseline), shared by the fine levels, so yard and
+// close light each point alike and nothing pops between them.
+function worldGrad(w, x, z) {
+  const S = 12.5, n = Math.ceil(9600 / S) + 1;
+  if (!w.gradGrid) {
+    const g = new Float32Array(n * n * 2), d = 18.75;
+    for (let j = 0; j < n; j++)
+      for (let i = 0; i < n; i++) {
+        const X = -4800 + i * S, Z = -4800 + j * S, k = (j * n + i) * 2;
+        g[k] = (w.heightAt(X + d, Z) - w.heightAt(X - d, Z)) / (2 * d); g[k + 1] = (w.heightAt(X, Z + d) - w.heightAt(X, Z - d)) / (2 * d);
+      }
+    w.gradGrid = g;
+  }
+  const g = w.gradGrid, fx = clamp((x + 4800) / S, 0, n - 1.001), fz = clamp((z + 4800) / S, 0, n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = (j * n + i) * 2, m = n * 2;
+  WG[0] = (g[k] * (1 - a) + g[k + 2] * a) * (1 - b) + (g[k + m] * (1 - a) + g[k + m + 2] * a) * b;
+  WG[1] = (g[k + 1] * (1 - a) + g[k + 3] * a) * (1 - b) + (g[k + m + 1] * (1 - a) + g[k + m + 3] * a) * b;
+  return WG;
+}
+const WG = [0, 0];
+const lightOf = (gu, gv) => { const l = LIGHT * EXAG * (-LU * gu - LV * gv); return clamp(l < 0 ? l * 0.6 : l, -1.3, 2); };
 // Light and slope per vertex from the true ground at a fixed scale in meters, not from the level's quantized steps.
 function liveLight(w, V, M) {
   const { NI, NJ, i0, j0 } = M, VI = NI + 1, n = VI * (NJ + 1), light = new Float32Array(n), d = Math.max(18.75, V.tileM * 0.5);
@@ -1357,8 +1332,7 @@ function liveLight(w, V, M) {
       const [x, z] = V.toW(i0 + i, j0 + j);
       const gu = (w.heightAt(x + V.eu[0] * d, z + V.eu[1] * d) - w.heightAt(x - V.eu[0] * d, z - V.eu[1] * d)) / (2 * d);
       const gv = (w.heightAt(x + V.ev[0] * d, z + V.ev[1] * d) - w.heightAt(x - V.ev[0] * d, z - V.ev[1] * d)) / (2 * d);
-      const l = LIGHT * EXAG * (-LU * gu - LV * gv), k = j * VI + i;
-      light[k] = clamp(l < 0 ? l * 0.6 : l, -1.3, 2);
+      light[j * VI + i] = lightOf(gu, gv);
     }
   return { light };
 }
@@ -1367,7 +1341,7 @@ function liveLight(w, V, M) {
 export function drawTerrainLive(B, w, V, M) {
   const { NI, NJ, i0, j0 } = M, C = M.C, GX = V.gx, GY = V.gy, VI = NI + 1;
   if (!M.live) M.live = liveLight(w, V, M);
-  const { light } = M.live, dbg = V.debug;
+  const { light } = M.live, dbg = V.debug, fineLight = V.tileM <= 18.75;
   const anim = V.anim, frames = (p, f0, paint) => {
     const cols = [f0];
     let moving = false;
@@ -1409,7 +1383,9 @@ export function drawTerrainLive(B, w, V, M) {
           if (z < B.z[p]) return;
           const X = x + GX, Y = y + GY, fu = u - uT, fv = v - vT;
           const wx = V.ox + (u * V.eu[0] + v * V.ev[0]) * V.tileM, wz = V.oz + (u * V.eu[1] + v * V.ev[1]) * V.tileM;
-          const s = (L[0] * (1 - fu) + L[1] * fu) * (1 - fv) + (L[3] * (1 - fu) + L[2] * fu) * fv;
+          let s;
+          if (fineLight) { const gg = worldGrad(w, wx, wz); s = lightOf(gg[0] * V.eu[0] + gg[1] * V.eu[1], gg[0] * V.ev[0] + gg[1] * V.ev[1]); }
+          else s = (L[0] * (1 - fu) + L[1] * fu) * (1 - fv) + (L[3] * (1 - fu) + L[2] * fu) * fv;
           const g = groundAt(w, V, wx, wz);
           let col;
           const ju = (h2(X, Y, 98) - 0.5) * 0.7, jv = (h2(X, Y, 99) - 0.5) * 0.7, dark = V.shaded && V.shaded(u + ju, v + jv, lev);
@@ -1420,7 +1396,7 @@ export function drawTerrainLive(B, w, V, M) {
             if (anim) frames(p, col, () => { const c2 = paintWater(w, V, wg, X, Y); return dark ? shade(c2, X, Y) : c2; });
             if (dbg) dbg.cls[p] = 40 + g.water;
           } else {
-            col = paintLand(w, V, g, X, Y, s, worldSlope(w, wx, wz));
+            col = paintLand(w, V, g, X, Y, s);
             if (dark) { col = shade(col, X, Y); B.sh[p] = 1; }
             if (dbg) dbg.cls[p] = TRACE.cls;
           }

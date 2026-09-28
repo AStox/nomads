@@ -6,7 +6,7 @@ import { thingById } from "./space";
 import { shelterName } from "./physics";
 import { agentDetail, goalText } from "./sim";
 import { campOf } from "./groups";
-import { SIZE } from "../terrain/flora";
+import { GROUND, LAKE, RIVER, SEA, SIZE, groundClass } from "../terrain/flora";
 
 export type Inspected = {
   id: string; kind: string; name: string; species?: string; px: number; py: number;
@@ -22,7 +22,7 @@ const words = (s: string) => s.replaceAll("_", " ");
 const nameOf = (w: World, id?: string) => (id ? w.people[id]?.name ?? id : undefined);
 const days = (w: World, t: number) => `${r((w.t - t) / DAY)} days ago`;
 const PROP_WORDS: Record<string, string> = {
-  hard: "hardness", sharp: "sharpness", heavy: "weight", long: "length", flexible: "flexibility", fibrous: "fibre", binding: "binding",
+  hard: "hardness", sharp: "sharpness", heavy: "weight", long: "reach", flexible: "flexibility", fibrous: "fibre", binding: "binding",
   flammable: "flammability", edible: "nutrition", toxic: "toxicity", plastic: "plasticity", container: "holds things", insulating: "insulation",
   medicinal: "medicine", seed: "seeds", toughness: "toughness", metal: "metal",
 };
@@ -138,25 +138,30 @@ export function inspect(w: World, id: string): Inspected | null {
 }
 
 const TILES: Record<number, string> = { [Tile.Grass]: "grass", [Tile.Forest]: "forest", [Tile.Water]: "water", [Tile.Rock]: "rock" };
-// The ground at a point in tiles, read off the same fields the map is drawn from.
+// The ground at a point in tiles, classed by the same rule the map is drawn with.
 export function inspectGround(w: World, px: number, py: number): Inspected {
   const { isle, fine } = groundOf(w.seed);
   const x = px * TILE_M - SIZE / 2, z = py * TILE_M - SIZE / 2, cx = (px * TILE_M) / 75 - 0.5, cy = (py * TILE_M) / 75 - 0.5;
   const tx = Math.floor(px), ty = Math.floor(py), tile = tileAt(w, tx, ty), onMap = tx >= 0 && ty >= 0 && tx < W && ty < H;
-  const height = fine.heightAt(x, z), slope = (Math.atan(fine.slopeAt(x, z)) * 180) / Math.PI;
-  const water = fine.bilinear(isle.water, cx, cy), wet = fine.fine(fine.wet, x, z), river = fine.riverAt(x, z);
-  const cover = (["tree", "shrub", "grass", "marsh", "bare", "sand"] as const).map((k) => [k, fine.fine(fine.cover[k], x, z)] as const);
-  const top = [...cover].sort((a, b) => b[1] - a[1])[0][0];
-  const name = wet > 0.5 ? (water > 2 ? "deep water" : "shallow water") : river > 0.3 ? "stream bed" : { tree: "forest floor", shrub: "scrub", grass: "grassland", marsh: "marsh", bare: "bare rock", sand: "sand" }[top];
-  const rows: Inspected["rows"] = [
-    ["height", `${r(height)} m`], ["slope", `${r(slope)} deg`], ["tile", onMap ? `${TILES[tile]} (${tx}, ${ty})` : "off the map"],
-    ["soil", `${r(fine.bilinear(isle.soil, cx, cy), 2)} m deep`], ["peat", r(fine.bilinear(isle.peat, cx, cy), 2)], ["silt", r(fine.bilinear(isle.silt, cx, cy), 2)],
-    ["air now", `${r(w.weather.temp - 0.0065 * Math.max(0, height))} C`], ["yearly mean", `${r(fine.bilinear(isle.temp, cx, cy))} C`],
-    ["snow share", r(fine.bilinear(isle.snow, cx, cy), 2)], ["exposure", r(fine.bilinear(isle.exposure, cx, cy), 2)],
-    ["path wear", `${onMap ? w.paths[ty * W + tx] : 0} / 9`], ["ice", onMap && wet > 0.5 && iceAt(w, tx, ty) ? "frozen" : "no"],
-    ["water depth", `${wet > 0.5 ? r(Math.max(0.05, water), 2) : 0} m`],
-  ];
-  if (river > 0) rows.push(["stream", r(river, 2)]);
-  const bars: Inspected["bars"] = [["moisture", r(fine.fine(fine.moist, x, z), 2), 1], ...cover.map(([k, v]) => [k, r(v, 2), 1] as [string, number, number])];
+  const g = groundClass(isle, fine, x, z), height = fine.heightAt(x, z), slope = (Math.atan(g.slope) * 180) / Math.PI;
+  const frozen = onMap && g.water === LAKE && iceAt(w, tx, ty);
+  const name = frozen ? "frozen lake" : GROUND[g.cls];
+  const rows: Inspected["rows"] = [["tile", onMap ? `${TILES[tile]} (${tx}, ${ty})` : "off the map"]];
+  const bars: Inspected["bars"] = [];
+  if (g.water === SEA || g.water === LAKE) {
+    const depth = g.water === SEA ? Math.max(0, -height) : fine.bilinear(isle.water, cx, cy);
+    rows.push(["water depth", `${r(Math.max(0.1, depth), 1)} m`], ["surface", g.water === SEA ? "sea level" : `${r(height + depth)} m`], ["ice", frozen ? "frozen" : "no"], ["air now", `${r(w.weather.temp)} C`]);
+    if (g.water === SEA) rows.push(["salt spray", r(fine.bilinear(isle.salt, cx, cy), 2)]);
+  } else {
+    rows.push(
+      ["height", `${r(height)} m`], ["slope", `${r(slope)} deg`],
+      ["soil", `${r(fine.bilinear(isle.soil, cx, cy), 2)} m deep`], ["peat", r(fine.bilinear(isle.peat, cx, cy), 2)], ["silt", r(fine.bilinear(isle.silt, cx, cy), 2)],
+      ["air now", `${r(w.weather.temp - 0.0065 * Math.max(0, height))} C`], ["yearly mean", `${r(fine.bilinear(isle.temp, cx, cy))} C`],
+      ["snow share", r(fine.bilinear(isle.snow, cx, cy), 2)], ["exposure", r(g.exposure, 2)],
+      ["path wear", `${onMap ? w.paths[ty * W + tx] : 0} / 9`],
+    );
+    if (g.water === RIVER) rows.push(["stream", "running water, shallow enough to wade"]);
+    bars.push(["moisture", r(fine.fine(fine.moist, x, z), 2), 1], ...(["grass", "tree", "shrub", "marsh", "bare", "sand"] as const).map((k, q) => [k, r(g.cover[q], 2), 1] as [string, number, number]));
+  }
   return { id: `ground:${r(px, 4)},${r(py, 4)}`, kind: "ground", name, px, py, rows, bars };
 }

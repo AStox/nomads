@@ -49,7 +49,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     if (ch.c) cacheBytes -= ch.bytes;
     dropGround(ch);
     if (m.ground) { m.ground.chunk = ch.key; (grounds.get(ch.mk) ?? grounds.set(ch.mk, []).get(ch.mk)).push(m.ground); }
-    Object.assign(ch, { c: m.c, z: m.z, obj: m.obj, animP: m.animP, animC: m.animC, ground: m.ground, dbg: m.dbg, ver: m.ver, pending: false, bytes: m.c.length * 6 + m.animC.length + m.animP.length * 4 });
+    Object.assign(ch, { c: m.c, z: m.z, obj: m.obj, animP: m.animP, animC: m.animC, ground: m.ground, dbg: m.dbg, ver: m.ver, pending: false, bytes: m.c.length * 6 + m.animC.length + m.animP.length * 4 + (m.ground ? m.ground.C.byteLength + m.ground.diag.length * 2 : 0) });
     cacheBytes += ch.bytes;
     bakeN++; bakeSum += m.ms;
     stats.bakedChunks++; stats.bakeMsAvg = bakeSum / bakeN;
@@ -252,7 +252,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) { all++; if (cache.get(keyOf(cam.md.L, cam.md.b, cx, cy))?.c) done++; }
     return { done, all, ready: done === all };
   }
-  let prefetchViews = [];
+  let prefetchViews = [], settled = false;
   function dispatch(list) {
     list.sort((a, b) => a[0] - b[0]);
     stats.bakeQueue = list.length;
@@ -266,8 +266,11 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     }
   }
   const keep = new Set();
+  let pruned = 0;
   function evict(visible) {
-    const cap = 160e6;
+    const cap = 75e6, now = performance.now();
+    // entries wanted once and never baked would otherwise pile up over a long session
+    if (now - pruned > 5000) { pruned = now; for (const [k, c] of cache) if (!c.c && !c.pending && !visible.has(k) && now - c.used > 20000) cache.delete(k); }
     if (cacheBytes < cap) return;
     const list = [...cache.values()].filter((c) => c.c && !visible.has(c.key) && !keep.has(c.key)).sort((a, b) => a.used - b.used);
     for (const c of list) {
@@ -372,7 +375,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
 
   // ---------- cameras and compose slots ----------
   const sprites = new Map();
-  const spr = (key, make) => { let s = sprites.get(key); if (s === undefined) { s = make() || null; sprites.set(key, s); } return s; };
+  // sprite keys follow continuous sizes, so the cache is emptied now and then rather than left to grow for a session
+  const spr = (key, make) => { let s = sprites.get(key); if (s === undefined) { if (sprites.size > 3000) sprites.clear(); s = make() || null; sprites.set(key, s); } return s; };
   let frames = 0, fpsT = performance.now(), lastPick = [], pickCam = null, pickSlot = null, pickTurn = 0, firstFrame = true, lastLut = null, lastLutKey = "";
   const facingMem = new Map();
   // owners[id]: the pick ({ kind, id }) of whatever drew sprite id `id` into the id buffer of the slot being composed
@@ -731,7 +735,9 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     if (L > 0) wantView(camera(view, L - 1, b), 40, list, visible, false);
     if (L > 1) wantView(camera(view, 0, b), 45, list, visible, false);
     // a free orbit is crossing b and b + 1: the bearings either side of that pair come next, whichever way it turns
-    const around = pl.orbit ? [[2, 30], [NB - 1, 30]] : adjacent ? [[1, 70], [NB - 1, 70]] : [];
+    // once the view is whole, this bearing's turn margin and then every other bearing's view bake while the workers are
+    // idle, so a first turn is quick
+    const around = pl.orbit ? [[2, 30], [NB - 1, 30]] : adjacent ? [...(settled ? [[0, 60]] : []), [1, 70], [NB - 1, 70], ...(settled ? [2, 3, 4, 5, 6].map((d) => [d, 90]) : [])] : [];
     // with the rect a half-step turn needs, so a turn through them has no holes at the edges
     for (const [db, pr] of around) { const nb = (b + db) % NB; if (mapsFor(nb)) wantView(camera(view, L, nb, ...grow(0.5)), pr, list, visible, false); }
     dispatch(list);
@@ -768,6 +774,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     frames++;
     if (now - fpsT > 1000) { stats.fps = (frames * 1000) / (now - fpsT); frames = 0; fpsT = now; stats.memMB = Math.round((performance.memory?.usedJSHeapSize ?? 0) / 1e6); stats.cacheMB = Math.round(cacheBytes / 1e6); }
     if (firstFrame && !holes) { firstFrame = false; stats.firstFrameMs = Math.round(performance.now() - tStart); }
+    if (!settled && !holes && adjacent) { settled = true; for (let b = 0; b < NB; b++) requestMaps(b); }
     api.lastMs = ms; api.lastHoles = holes; api.level = pl.lf;
     return { holes };
   }
@@ -780,7 +787,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
         const col = s.p[y * s.w + (o.mirror ? s.w - 1 - x : x)], sx = o.sx - ax + x;
         if (col === 255 || sx < 0 || sx >= B.w) continue;
         const p = sy * B.w + sx;
-        if (B.id[p] !== o.id && B.id[p] !== 0 && ((sx + sy) & 1)) B.c[p] = col;
+        // the whole silhouette picks the person seen through the leaves; only the checker pixels are painted
+        if (B.id[p] !== o.id && B.id[p] !== 0) { if ((sx + sy) & 1) B.c[p] = col; B.id[p] = o.id; }
       }
     }
   }
@@ -860,15 +868,15 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const [cx, cy] = unturn(sx, sy, pickCam ? pickTurn : 0), x = (cx - cam.dx) / cam.s, y = (cy - cam.dy) / cam.s, ix = Math.floor(x), iy = Math.floor(y);
     const idv = pickCam && pickSlot && ix >= 0 && iy >= 0 && ix < cam.AW && iy < cam.AH ? pickSlot.id[iy * cam.AW + ix] : 0;
     if (idv >= 2 && pickSlot.owners?.[idv]) return { ...pickSlot.owners[idv] };
+    const g = rayGround(cam, cam.gx0 + x, cam.gy0 + y), ground = { kind: "ground", px: (g.x - ORIGIN) / SIM, py: (g.z - ORIGIN) / SIM };
+    // a baked sprite drawn under the cursor is in front of anything a near miss could find
+    if (idv === 1) return bakedAt(cam, g, cam.gx0 + ix, cam.gy0 + iy) ?? ground;
     let best = null, bd = Infinity;
     for (const p of lastPick) {
       const d = Math.hypot(p.sx - x, p.sy - y), score = d + (p.kind === "agent" ? 0 : 3);
       if (d < Math.max(4, p.h * 0.6) && score < bd) { bd = score; best = { kind: p.kind, id: p.id }; }
     }
-    if (best) return best;
-    const g = rayGround(cam, cam.gx0 + x, cam.gy0 + y);
-    const t = idv === 1 ? bakedAt(cam, g, cam.gx0 + ix, cam.gy0 + iy) : null;
-    return t ?? { kind: "ground", px: (g.x - ORIGIN) / SIM, py: (g.z - ORIGIN) / SIM };
+    return best ?? ground;
   }
   // the front-most baked object whose sprite, rebuilt the way the bake draws it, covers global art pixel (X, Y)
   function bakedAt(cam, g, X, Y) {
@@ -976,7 +984,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   if (check) {
     let cid = 0;
     api.debug = {
-      CS, maps, keyOf, mk, project, camera, bins: () => bins, pickCam: () => [pickCam, pickTurn],
+      CS, maps, keyOf, mk, project, camera, bins: () => bins, pickCam: () => [pickCam, pickTurn, pickSlot],
       pv: (md) => md.k * 0.866 * md.treeK, pw: (md) => md.k * md.treeK,
       classify: (points) => new Promise((r) => { const id = ++cid; classWait.set(id, (out) => { classWait.delete(id); r(out); }); pool[0].postMessage({ type: "classify", id, points }); }),
     };

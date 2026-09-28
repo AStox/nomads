@@ -161,12 +161,12 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
   };
   // Nothing lies under standing water or in a stream bed, where no one could reach it and nothing would draw it.
   const put = (k: number, sp: number, x: number, z: number, sz: number) => {
-    if (fine(wet, x, z) > 0.5 || riverAt(x, z) > 0.5) return;
+    if (waterAt(isle, g, x, z) > 0.5 || riverSmooth(g, x, z) > 0.5) return;
     if (n === cap) grow();
     kind[n] = k; species[n] = sp; xs[n] = x; zs[n] = z; size[n] = sz; seeds[n] = (r() * 4294967296) >>> 0;
     n++;
   };
-  const { h, wet, moist, river, cover, fine, heightAt, slopeAt, dry, bilinear, riverAt } = g;
+  const { h, wet, moist, river, cover, fine, heightAt, slopeAt, dry, bilinear } = g;
   const cellOf = (v: number) => (v - START) / CELL;
   for (let v = 0; v < M - 1; v++)
     for (let u = 0; u < M - 1; u++) {
@@ -262,4 +262,71 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
       }
     }
   return { n, kind: kind.slice(0, n), species: species.slice(0, n), x: xs.slice(0, n), z: zs.slice(0, n), size: size.slice(0, n), seed: seeds.slice(0, n) };
+}
+
+// ---------- what a ground point is ----------
+// One rule for the map and the inspector alike, from world data in meters only, so it is the same at every zoom.
+// Water is the generator's standing water, with the lake's level reaching up the fine ground, and streams wider than the
+// map's river mask shows them; land is the cover that wins, weighted, at a point whose edge wanders a little, with steep
+// or exposed bare ground as rock.
+export const GROUND = ["grassland", "forest floor", "scrub", "marsh", "bare ground", "sand", "grass with outcrops", "bare rock", "", "", "sea", "lake", "stream"] as const;
+export const SEA = 10, LAKE = 11, RIVER = 12, ROCKY = 7, MEADOW = 0, SCRUB = 2, ROCK = 4, SAND = 5, HILL = 6;
+const COV = ["grass", "tree", "shrub", "marsh", "bare", "sand"] as const, WEIGHT = [1.0, 1.05, 1.2, 1.5, 1.3, 1.6];
+// How much standing water covers a point, 0..1; over 0.5 is water.
+export function waterAt(isle: Island, g: Fine, x: number, z: number) {
+  const cx = (x - START) / CELL, cy = (z - START) / CELL, i = Math.round(cx), j = Math.round(cy);
+  if (i < 0 || j < 0 || i >= N || j >= N) return 1;
+  let lvl = -Infinity;
+  for (let b = Math.max(0, j - 1); b <= Math.min(N - 1, j + 1); b++)
+    for (let a = Math.max(0, i - 1); a <= Math.min(N - 1, i + 1); a++) { const k = b * N + a; if (isle.water[k] > 0) lvl = Math.max(lvl, isle.height[k] + isle.water[k]); }
+  if (lvl === -Infinity) return 0;
+  const x0 = clamp(Math.floor(cx), 0, N - 2), y0 = clamp(Math.floor(cy), 0, N - 2), tx = clamp(cx - x0, 0, 1), ty = clamp(cy - y0, 0, 1), k = y0 * N + x0;
+  const bl = (f: (q: number) => number) => (f(k) * (1 - tx) + f(k + 1) * tx) * (1 - ty) + (f(k + N) * (1 - tx) + f(k + N + 1) * tx) * ty;
+  const v = Math.min(0.5 + (lvl - g.heightAt(x, z)) / 2, 0.5 + (bl((q) => (isle.water[q] > 0 ? 1 : 0)) - 0.2) * 2);
+  // the cubic through the cells rises above sea level here and there offshore; the sea cells keep that underwater
+  return clamp(Math.max(v, bl((q) => (isle.water[q] > 0 && isle.height[q] < 0 ? 1 : 0)) - 0.1), 0, 1);
+}
+// The stream mask read between its texels, so a bank is a line rather than a staircase.
+export function riverSmooth(g: Fine, x: number, z: number) {
+  const t = SIZE / RM, fx = (x + SIZE / 2) / t - 0.5, fz = (z + SIZE / 2) / t - 0.5, i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j;
+  const at = (ii: number, jj: number) => g.riverAt(-SIZE / 2 + (ii + 0.5) * t, -SIZE / 2 + (jj + 0.5) * t);
+  return (at(i, j) * (1 - a) + at(i + 1, j) * a) * (1 - b) + (at(i, j + 1) * (1 - a) + at(i + 1, j + 1) * a) * b;
+}
+// Ground slope, rise over run, on a fixed 12.5 m grid built once per island.
+const slopeGrids = new WeakMap<Fine, Float32Array>();
+export function worldSlope(g: Fine, x: number, z: number) {
+  const S = 12.5, n = Math.ceil(SIZE / S) + 1;
+  let s = slopeGrids.get(g);
+  if (!s) {
+    s = new Float32Array(n * n);
+    const d = 18.75;
+    for (let j = 0; j < n; j++)
+      for (let i = 0; i < n; i++) {
+        const X = -SIZE / 2 + i * S, Z = -SIZE / 2 + j * S;
+        s[j * n + i] = Math.hypot(g.heightAt(X + d, Z) - g.heightAt(X - d, Z), g.heightAt(X, Z + d) - g.heightAt(X, Z - d)) / (2 * d);
+      }
+    slopeGrids.set(g, s);
+  }
+  const fx = clamp((x + SIZE / 2) / S, 0, n - 1.001), fz = clamp((z + SIZE / 2) / S, 0, n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = j * n + i;
+  return (s[k] * (1 - a) + s[k + 1] * a) * (1 - b) + (s[k + n] * (1 - a) + s[k + n + 1] * a) * b;
+}
+export type GroundPoint = { cls: number; water: number; wet: number; river: number; slope: number; cover: number[]; exposure: number };
+// The class of the ground at world meters x, z: an index into GROUND. Water classes are SEA, LAKE and RIVER.
+export function groundClass(isle: Island, g: Fine, x: number, z: number): GroundPoint {
+  const wet = waterAt(isle, g, x, z), river = riverSmooth(g, x, z), slope = worldSlope(g, x, z);
+  const exposure = g.bilinear(isle.exposure, (x - START) / CELL, (z - START) / CELL);
+  const water = wet > 0.5 ? (g.heightAt(x, z) < 0.5 ? SEA : LAKE) : river > 0.5 ? RIVER : 0;
+  // biome edges wander in world meters
+  const wx = x + fbm(x / 40, z / 40, 64, 2) * 14, wz = z + fbm(x / 40, z / 40, 66, 2) * 14;
+  const cover: number[] = [];
+  let best = 0, bs = -1;
+  for (let q = 0; q < 6; q++) { const c = g.fine(g.cover[COV[q]], wx, wz); cover.push(c); if (c * WEIGHT[q] > bs) { bs = c * WEIGHT[q]; best = q; } }
+  if (water) return { cls: water, water, wet, river, slope, cover, exposure };
+  // thin bare ground is grass with outcrops; so is bare ground that is gentle and sheltered
+  const base = best === ROCK && cover[4] < 0.6 ? HILL : best;
+  const bare = base === ROCK && slope < 0.32 && exposure < 0.36 ? HILL : base;
+  // a face past 35 degrees is bare whatever grows round it; past 27 degrees open ground breaks into outcrops
+  const cls = slope > 0.7 && bare !== SAND ? ROCK : slope > 0.5 && (bare === MEADOW || bare === SCRUB) ? HILL : bare;
+  const rocky = cls === ROCK || (cls === HILL && fbm(x / 45, z / 45, 26, 2) + cover[4] * 0.8 + (slope - 0.5) * 2 - 0.8 > 0);
+  return { cls: rocky ? ROCKY : cls, water, wet, river, slope, cover, exposure };
 }

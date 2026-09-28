@@ -2,7 +2,7 @@ import {
   DAY, H, REACH, TILE_M, W, clock, isNight, shoreOf, level, log, meters, reachOf, stageOf,
   type Act, type Agent, type Animal, type Step, type Thing, type World,
 } from "./world";
-import { THING_MATERIAL, depth, noun, p, type Kind } from "./materials";
+import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
 import {
   airy, applyRuling, beside, count, counts, digTick, diggable, eat, fireKind, force, giveItems, greasy, heat, homeOf, join, mark, nearFire, openWater, place as placeItems, plant,
   reaches, removeThing, rubTick, shape, stash, strikeDamage, strikeTick, takeItems, throwTick, unstash, wearIt, wet, type Outcome,
@@ -414,7 +414,7 @@ export function actText(w: World, act: Act): string {
     case "place": {
       const c: Record<string, number> = {};
       for (const k of items) c[k] = (c[k] ?? 0) + 1;
-      const what = Object.entries(c).map(([k, n]) => (n > 1 ? `${n} ${k}s` : `the ${k}`)).join(" and ");
+      const what = Object.entries(c).map(([k, n]) => (n > 1 ? `${n} ${plural(k)}` : `the ${k}`)).join(" and ");
       return items.length >= 3 ? `Lean and stack ${what} against each other here` : `Set down ${what} here`;
     }
     case "plant": return `Push the ${items[0]} into the ground`;
@@ -536,7 +536,7 @@ function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
       const soft = parts.find((k) => p(k, "plastic") >= 0.5 || p(k, "fibrous") >= 0.6);
       const rest = [...new Set(parts.filter((k) => k !== soft).map((k) => (k.parts ? noun(k) : k.name)))];
       const template = act.verb === "join"
-        ? soft && rest.length ? `${rest.join(" and ")} ${p(soft, "plastic") >= 0.5 ? "pressed into" : "wrapped in"} ${soft.parts ? noun(soft) : soft.name}` : uniq.length === 1 ? `bundle of ${uniq[0]}s` : `${uniq[0]} wedged into ${uniq.slice(1).join(" and ")}`
+        ? soft && rest.length ? `${rest.join(" and ")} ${p(soft, "plastic") >= 0.5 ? "pressed into" : "wrapped in"} ${soft.parts ? noun(soft) : soft.name}` : uniq.length === 1 ? `bundle of ${plural(uniq[0])}` : `${uniq[0]} wedged into ${uniq.slice(1).join(" and ")}`
         : `fire-hardened ${uniq.join(" and ")}`;
       rule(w, a, actText(w, act), parts, template)
         .then((r) => { w.rulings[key] = r; trace("physics", "ruling", { key, ruling: r }, a.id); })
@@ -710,7 +710,7 @@ function bestFood(w: World, a: Agent) {
   return [...new Set(a.inv.map((s) => s.k))].filter((k) => ok.has(k)).sort((x, y) => p(w.kinds[y], "edible") - p(w.kinds[x], "edible"))[0] ?? null;
 }
 const bestWeapon = (w: World, a: Agent) =>
-  [...new Set(a.inv.map((s) => s.k))].map((k) => w.kinds[k]).filter((k) => p(k, "sharp") > 0 || p(k, "heavy") > 0.4)
+  [...new Set(a.inv.map((s) => s.k))].map((k) => w.kinds[k]).filter((k) => p(k, "edible") < 0.1 && (p(k, "sharp") > 0 || p(k, "heavy") > 0.4))
     .sort((x, y) => strikeDamage(y, 0.15) - strikeDamage(x, 0.15))[0] ?? null;
 
 function run(w: World, a: Agent): boolean | string {
@@ -870,7 +870,7 @@ function run(w: World, a: Agent): boolean | string {
       const got = giveItems(w, a, t.item!, n);
       if (!got) return "their hands were full";
       const word = nm(w, t.item!);
-      log(w, "gather", [a.id], a, `${a.name} picked up ${got > 1 ? `${got} ${word.replace(/([^aeiou])y$/, "$1ie")}s` : an(word)}.`);
+      log(w, "gather", [a.id], a, `${a.name} picked up ${got > 1 ? `${got} ${plural(word)}` : an(word)}.`);
       return true;
     }
     case "assist": {
@@ -956,7 +956,7 @@ function run(w: World, a: Agent): boolean | string {
   } else removeThing(w, t);
   giveItems(w, a, g.item, n);
   if (t.kind === "bush" || t.kind === "mushroom" || t.kind === "herb") gain(w, a, "foraging", 2);
-  log(w, "gather", [a.id], a, `${a.name} gathered ${n > 1 ? `${n} ${g.item === "berry" ? "berries" : nm(w, g.item)}` : an(nm(w, g.item))}.`);
+  log(w, "gather", [a.id], a, `${a.name} gathered ${n > 1 ? `${n} ${plural(nm(w, g.item))}` : an(nm(w, g.item))}.`);
   return true;
 }
 
