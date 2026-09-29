@@ -908,9 +908,12 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   function bakedSprite(K, sp, hpx, seed, n) {
     const vr = seed % 8, tint = ((seed >>> 8) & 255) / 255;
     if (K === "tree") {
+      // palette indices only recolour a tree, so any two opaque ones give the drawn pixel mask
+      if (hpx < 24) {
+        const hp = Math.max(1, Math.round(hpx)), kind = sp === "pine" ? "pine" : sp === "aspen" && tint > 0.8 ? "gold" : "broad";
+        return spr(`pk|ft${hp}|${kind}|${vr & 3}`, () => SP.flatTree(hp, kind, P.snow, P.ink, vr & 3));
+      }
       const hp = Math.round(hpx);
-      // shade (dim) only recolours a tree, so 0 gives the drawn pixel mask
-      if (hp < 6) return spr(`pk|tt${hp}|${sp === "pine" ? "p" : "b"}`, () => SP.tinyTree(hp, sp === "pine" ? "pine" : "broad", 0));
       return sp === "pine" ? spr(`pk|p${hp}|${vr}`, () => SP.pine(hp, vr * 17 + hp, false, 0)) : spr(`pk|${sp}${hp}|${vr}|${tint > 0.8 ? 1 : 0}`, () => SP.broad(hp, sp || "oak", vr * 31 + hp, tint, 0));
     }
     if (!TH.object) return null;

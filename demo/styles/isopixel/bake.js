@@ -28,7 +28,6 @@ function level(k, b) {
   const t0 = performance.now();
   const V = L.makeLiveView(w, k, b);
   const M = V.paged ? null : L.buildMap(w, V);
-  if (M && V.tsun) V.shaded = L.shadowHorizon(V, M);
   lv = { V, M, ms: performance.now() - t0 };
   levels.set(key, lv);
   const big = [...levels].filter(([, l]) => l.M);
@@ -52,7 +51,6 @@ function bake(msg) {
     V.i0 = Math.min(ou0, draw[0]) - m - 10; V.i1 = Math.max(ou1, draw[1]) + m; V.j0 = Math.min(ov0, draw[2]) - m; V.j1 = Math.max(ov1, draw[3]) + m + 4;
     V.NI = V.i1 - V.i0; V.NJ = V.j1 - V.j0;
     M = L.buildMap(w, V);
-    if (V.tsun) V.shaded = L.shadowHorizon(V, M);
     [V.i0, V.i1, V.j0, V.j1] = draw;
     // the drawn tiles' corner levels, so the page can stand live sprites on the ground as drawn
     const gi0 = V.i0 - M.i0, gj0 = V.j0 - M.j0, gw = V.i1 - V.i0, gh = V.j1 - V.j0, C = new M.C.constructor(gw * gh * 4), diag = new Uint8Array(gw * gh), kind = new Uint8Array(gw * gh);
@@ -105,8 +103,6 @@ function bake(msg) {
   const animP = Uint32Array.from(aP), animC = Uint8Array.from(aC);
   const moved = [B.c.buffer, B.z.buffer, obj.buffer, animP.buffer, animC.buffer];
   if (ground) moved.push(ground.C.buffer, ground.diag.buffer, ground.kind.buffer);
-  // a paged level's view must not keep this chunk's map alive through its shadow closure until the next bake
-  if (V.paged) { V.shaded = null; }
   V.trail = null; V.iceAt = null;
   postMessage({ type: "chunk", key: msg.key, ver: D.version, c: B.c, z: B.z, obj, animP, animC, ground, dbg, ms: performance.now() - t0, parts: [t1 - t0, t2 - t1, performance.now() - t2], objects: O.length }, moved);
 }

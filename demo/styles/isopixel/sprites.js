@@ -454,17 +454,36 @@ export function flames(hpx, seed) {
 // as the full crowns are, so a wood reads the same from far out as up close.
 export const TINY = { pine: ["p0", "p1", "p2", "p3", "p4"], broad: ["t1", "t2", "t3", "g3", "g4"], gold: ["d0", "a0", "a1", "a2", "a3"], shrub: ["t1", "g1", "g2", "g3", "g4"], rock: ["r1", "r2", "r3", "r4", "r5"] };
 export function tinyTree(h, kind, dim) {
-  const cols = TINY[kind].map((n) => P[n]), base = kind === "rock" ? 2.5 : 2 - dim * 1.4, trunk = kind !== "rock" && kind !== "shrub" && h >= 4 ? 1 : 0;
+  const cols = TINY[kind].map((n) => P[n]), base = kind === "rock" ? 2.5 : 2.6 - dim * 1.6, trunk = kind !== "rock" && kind !== "shrub" && h >= 4 ? 1 : 0;
   const ch = h - trunk, wd = kind === "pine" ? Math.max(1, Math.round(h * 0.45)) : Math.max(1, Math.round(h * 0.7)), S = new Spr(wd + 2, h + 1, (wd + 2) >> 1, h);
   for (let y = 0; y < ch; y++) {
     const t = ch === 1 ? 0.5 : y / (ch - 1), half = kind === "pine" ? (wd / 2) * (0.35 + 0.65 * t) : (wd / 2) * (t < 0.5 ? 0.75 + t * 0.5 : 1);
     for (let x = 0; x < wd; x++) {
       const dx = x + 0.5 - wd / 2;
       if (Math.abs(dx) > Math.max(0.5, half)) continue;
-      const light = h === 1 ? 0 : (-dx / Math.max(1, wd) - t + 0.5) * 1.6;
+      const light = h === 1 ? 0 : (-dx / Math.max(1, wd) - t + 0.5) * (h < 4 ? 0.7 : 1.1);
       S.set(x + 1, y, cols[clamp(Math.round(base + light), 0, 4)]);
     }
   }
   if (trunk) S.set(S.ax, h - 1, P.d1);
+  return S;
+}
+
+// A crown in two tones and nothing else, for trees too small to carry their own light: hi on the side toward the sun,
+// lo on the rest, both chosen by the caller from the terrain's light, so a forest shades with the ground beneath it.
+export function flatTree(h, kind, hi, lo, seed = 0) {
+  const trunk = h >= 4 ? Math.max(1, Math.round(h * 0.18)) : 0, ch = h - trunk, big = h >= 9;
+  const wd = kind === "pine" ? Math.max(1, Math.round(h * 0.45)) : Math.max(1, Math.round(h * 0.72)), S = new Spr(wd + 2, h + 1, (wd + 2) >> 1, h);
+  // bigger crowns get a lumpy leaf edge and a wavering line between their two tones, so they read as foliage, not polygons
+  const lump = (a, b) => (big ? (h2(a, b, seed) - 0.5) * 0.9 : 0);
+  for (let y = 0; y < ch; y++) {
+    const t = ch === 1 ? 0.5 : y / (ch - 1), half = kind === "pine" ? (wd / 2) * (0.3 + 0.7 * t) : (wd / 2) * Math.sqrt(Math.max(0, 1 - (t * 2 - 1) ** 2 * 0.75));
+    for (let x = 0; x < wd; x++) {
+      const dx = x + 0.5 - wd / 2;
+      if (Math.abs(dx) > Math.max(0.5, half + lump(x >> 1, y >> 1))) continue;
+      S.set(x + 1, y, h > 2 && -dx / Math.max(1, wd) - t + 0.35 + lump(x >> 1, (y >> 1) + 9) * 0.35 > 0 ? hi : lo);
+    }
+  }
+  for (let y = ch; y < h; y++) S.set(S.ax, y, P.d1);
   return S;
 }

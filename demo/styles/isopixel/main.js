@@ -1090,17 +1090,10 @@ export function collectLive(w, V, M, D) {
   const add = (at, spr, opt = {}) => O.push({ z: at.z, sx: at.sx, sy: at.sy + (spr.foot || 0), spr, shadow: opt.shadow !== false, mirror: !!opt.mirror, bias: opt.bias ?? V.H * 0.5 + 2, oid: opt.oid, ax: at.sx, ay: at.sy });
   // art px per meter up (heights) and across (a tussock's width)
   const pv = V.k * 0.866 * V.treeK, pw = V.k * V.treeK, visW = (x, z) => V.objVisible(...V.toUV(x, z));
-  // crowns darken toward a forest's interior; trees on the sunward edge or out in the open keep their bright rims
-  const sunW = [-(V.sd[0] * V.eu[0] + V.sd[1] * V.ev[0]), -(V.sd[0] * V.eu[1] + V.sd[1] * V.ev[1])], reachW = 30;
+  // a canopy takes the value of the ground it stands on, so the forest reads as texture over the hillshade: lit slopes
+  // bright, shaded slopes and cast shadows dark
   const cov = (x, z) => w.fine(w.cover.tree, x, z);
-  const dimAt = (x, z) => {
-    const c0 = cov(x, z), sun = cov(x + sunW[0] * reachW, z + sunW[1] * reachW);
-    if (sun < 0.28) return -0.75;
-    if (c0 < 0.3) return -0.25;
-    let ring = 0;
-    for (let k = 0; k < 4; k++) ring += cov(x + Math.cos(k * 1.571) * reachW * 1.4, z + Math.sin(k * 1.571) * reachW * 1.4) / 4;
-    return Math.round(smooth(0.35, 0.8, Math.min(c0, sun, ring)) * 4) / 4;
-  };
+  const dimAt = (x, z) => Math.round(clamp(0.05 - terrainLight(w, V, x, z) * 0.75, -0.75, 1) * 4) / 4;
   const [u0, u1, v0, v1] = V.obox, cs = [V.toW(u0, v0), V.toW(u1, v0), V.toW(u0, v1), V.toW(u1, v1)], xs = cs.map((c) => c[0]), zs = cs.map((c) => c[1]);
   const tile = (m) => Math.floor((m - ORIGIN) / 150), kinds = ob.kinds, spn = ob.species, skip = kinds.map((k) => ObjBins.LIVE.has(k));
   ob.each(tile(Math.min(...xs)), tile(Math.min(...zs)), tile(Math.max(...xs)), tile(Math.max(...zs)), (ki, si, px, py, size, seed, id, n) => {
@@ -1114,7 +1107,12 @@ export function collectLive(w, V, M, D) {
     if (!at) return;
     const mirror = ((seed >>> 3) & 1) === 1, vr = seed % 8, tint = ((seed >>> 8) & 255) / 255;
     let spr;
-    if (K === "tree") {
+    if (K === "tree" && hpx < 24) {
+      // small trees: two tones set by the terrain light, the crown just below the ground's own value
+      const hp = Math.max(1, Math.round(hpx)), kind = sp === "pine" ? "pine" : sp === "aspen" && tint > 0.8 ? "gold" : "broad";
+      const lt = 112 * clamp(1 + terrainLight(w, V, x, z) * 0.3, 0.42, 1.6) * 0.9, r = CROWN[kind], k = crownAt(r, lt);
+      spr = cached(`ft${hp}|${kind}|${k}|${vr & 3}`, () => SP.flatTree(hp, kind, r[Math.min(r.length - 1, k + 1)], r[k], vr & 3));
+    } else if (K === "tree") {
       const hp = Math.round(hpx), dim = dimAt(x, z), gold = sp === "aspen" && tint > 0.8;
       spr = hp < 6 ? cached(`tt${hp}|${sp === "pine" ? "p" : gold ? "g" : "b"}|${dim}`, () => SP.tinyTree(hp, sp === "pine" ? "pine" : gold ? "gold" : "broad", dim))
         : sp === "pine" ? cached(`p${hp}|${vr}|${dim}`, () => SP.pine(hp, vr * 17 + hp, false, dim)) : cached(`${sp}${hp}|${vr}|${tint > 0.8 ? 1 : 0}|${dim}`, () => SP.broad(hp, sp || "oak", vr * 31 + hp, tint, dim));
@@ -1124,12 +1122,17 @@ export function collectLive(w, V, M, D) {
       const o = n === undefined ? { species: sp, moss } : { species: sp, moss, n };
       spr = cached(`o${K}|${sp}|${hq}|${vr}|${moss}|${n === undefined ? "" : n > 0}`, () => TH.object(K, hq, vr * 131 + 7, o));
     }
-    if (spr) add(at, spr, { mirror, shadow: hpx >= 3 && !FLAT.has(K), oid: id });
+    // a continuous canopy of minis casting shadows would darken the whole forest; trees cast theirs once they stand apart
+    if (spr) add(at, spr, { mirror, shadow: (K === "tree" ? hpx >= 8 : hpx >= 3) && !FLAT.has(K), oid: id });
   });
   if (cache.size > 4000) cache.clear();
   return O;
 }
 const FLAT = new Set(["clay", "stick", "pebble", "flowers", "herb", "mushroom"]);
+// crown ramps, darkest first, and the step whose value is nearest a wanted luminance
+const CROWN = { broad: ramp("g0", "t1", "t2", "t3", "g2", "g3", "g4", "g5"), pine: ramp("p0", "p1", "p2", "p3", "p4", "g3", "g4"), gold: ramp("d1", "a0", "a1", "a2", "a3") };
+const lumOf = (i) => RGB_[i][0] * 0.3 + RGB_[i][1] * 0.59 + RGB_[i][2] * 0.11;
+function crownAt(r, lt) { let k = 0; for (let i = 1; i < r.length; i++) if (Math.abs(lumOf(r[i]) - lt) < Math.abs(lumOf(r[k]) - lt)) k = i; return Math.max(0, Math.min(k, r.length - 2)); }
 
 
 // ---------- live terrain: every feature from world-space fields in meters ----------
@@ -1266,7 +1269,9 @@ function groundRGB(V, g, s, x, z) {
   // pigment gathers where one cover gives way to another
   const sh2 = [gr, tr, sh, ma, ba].sort((a, b) => b - a), pool = Math.max(0, 1 - ((sh2[0] - sh2[1]) / sum) * 3) * 0.07;
   const mot = fbm(x / 60, z / 60, 11, 2) * 0.05 + clusters(x, z, 6, 12, m, 0.4) * 0.05 + clusters(x, z, 1.8, 13, m) * 0.08 + clusters(x, z, 0.5, 14, m, 0.5) * 0.11;
-  const k = (1 + mot - pool) * (1 + clamp(s, -1.3, 1.4) * 0.15);
+  // colour keeps its hue and saturation in a narrow value band; the light sets value over a much wider range
+  const L0 = c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11 || 1, band = 112 * (1 + (L0 / 112 - 1) * 0.18);
+  const k = ((1 + mot - pool) * band * clamp(1 + s * 0.3, 0.42, 1.6)) / L0;
   return [c[0] * k, c[1] * k, c[2] * k];
 }
 // The nearest pair of natural ground colours for every RGB, and how far along the pair the colour lies, so a smooth
@@ -1363,6 +1368,54 @@ function rock(x, z, s, snow, X, Y, m) {
   if (noise(x / 9, z / 9, 215) > 0.35 && Math.abs(noise(x / 2.5, z / 5.5, 210)) < 0.04 * fade(0.9, m)) return P.r1;
   return tone(RK, 2.6 + face * 1.3 + clusters(x, z, 2.2, 212, m) * 0.7 + clusters(x, z, 0.5, 213, m, 0.5) * 0.8, X, Y);
 }
+// ---------- world-space light: one height surface, the same at every zoom ----------
+// Heights on a 12.5 m grid, a broad occlusion that darkens valley floors against the ground around them, and per bearing
+// the sun's horizon: whether the drawn (exaggerated) ground toward the sun rises above the ray, softened at its edge.
+const WS = 12.5, WN = Math.ceil(9600 / WS) + 1;
+function worldHeights(w) {
+  if (w.hGrid) return w.hGrid;
+  const g = new Float32Array(WN * WN);
+  for (let j = 0; j < WN; j++) for (let i = 0; i < WN; i++) g[j * WN + i] = Math.max(0, w.heightAt(-4800 + i * WS, -4800 + j * WS));
+  return (w.hGrid = g);
+}
+function worldAO(w) {
+  if (w.aoGrid) return w.aoGrid;
+  const h = worldHeights(w), r = 16, tmp = new Float32Array(WN * WN), m = new Float32Array(WN * WN);
+  // a box mean over about 400 m, in two passes
+  for (let j = 0; j < WN; j++) { let a = 0, c = 0; for (let i = -r; i < WN + r; i++) { if (i + r < WN) { a += h[j * WN + i + r]; c++; } if (i - r - 1 >= 0) { a -= h[j * WN + i - r - 1]; c--; } if (i >= 0 && i < WN) tmp[j * WN + i] = a / c; } }
+  for (let i = 0; i < WN; i++) { let a = 0, c = 0; for (let j = -r; j < WN + r; j++) { if (j + r < WN) { a += tmp[(j + r) * WN + i]; c++; } if (j - r - 1 >= 0) { a -= tmp[(j - r - 1) * WN + i]; c--; } if (j >= 0 && j < WN) m[j * WN + i] = a / c; } }
+  const ao = new Float32Array(WN * WN);
+  for (let k = 0; k < ao.length; k++) ao[k] = clamp((h[k] - m[k]) / 45, -1, 0.6);
+  return (w.aoGrid = ao);
+}
+function worldShadow(w, b) {
+  w.shGrid ??= new Map();
+  let g = w.shGrid.get(b);
+  if (g) return g;
+  const h = worldHeights(w), F = bearingFrame(b), n = Math.hypot(LU, LV), dx = (LU * F.eu[0] + LV * F.ev[0]) / n, dz = (LU * F.eu[1] + LV * F.ev[1]) / n;
+  const tanS = Math.tan(SUN * 0.75), E = EXAG, steps = [];
+  for (let d = WS; d < 2400; d *= 1.09) steps.push(d);
+  const at = (x, z) => { const fx = clamp((x + 4800) / WS, 0, WN - 1.001), fz = clamp((z + 4800) / WS, 0, WN - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, c = fz - j, k = j * WN + i; return (h[k] * (1 - a) + h[k + 1] * a) * (1 - c) + (h[k + WN] * (1 - a) + h[k + WN + 1] * a) * c; };
+  g = new Uint8Array(WN * WN);
+  for (let j = 0; j < WN; j++)
+    for (let i = 0; i < WN; i++) {
+      const x = -4800 + i * WS, z = -4800 + j * WS, h0 = h[j * WN + i] * E;
+      let ex = -1e9;
+      for (const d of steps) { const e = at(x + dx * d, z + dz * d) * E - (h0 + d * tanS); if (e > ex) ex = e; }
+      g[j * WN + i] = Math.round(smooth(-3, 10, ex) * 255);
+    }
+  w.shGrid.set(b, g);
+  return g;
+}
+const wsample = (g, x, z) => { const fx = clamp((x + 4800) / WS, 0, WN - 1.001), fz = clamp((z + 4800) / WS, 0, WN - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, c = fz - j, k = j * WN + i; return (g[k] * (1 - a) + g[k + 1] * a) * (1 - c) + (g[k + WN] * (1 - a) + g[k + WN + 1] * a) * c; };
+// the terrain's light at a world point for bearing b: slope light, less occlusion in hollows, less the cast shadow
+export function terrainLight(w, V, x, z) {
+  const gg = worldGrad(w, x, z), s = lightOf(gg[0] * V.eu[0] + gg[1] * V.eu[1], gg[0] * V.ev[0] + gg[1] * V.ev[1]);
+  const ao = wsample(worldAO(w), x, z), sh = wsample(worldShadow(w, V.bearing), x, z) / 255;
+  TL.sh = sh;
+  return s + Math.min(0, ao) * 1.1 + Math.max(0, ao) * 0.4 - sh * 1.5;
+}
+const TL = { sh: 0 };
 // The ground's gradient on a fixed 12.5 m world grid (over an 18.75 m baseline), shared by the fine levels, so yard and
 // close light each point alike and nothing pops between them.
 function worldGrad(w, x, z) {
@@ -1383,24 +1436,11 @@ function worldGrad(w, x, z) {
 }
 const WG = [0, 0];
 const lightOf = (gu, gv) => { const l = LIGHT * EXAG * (-LU * gu - LV * gv); return clamp(l < 0 ? l * 0.6 : l, -1.3, 2); };
-// Light and slope per vertex from the true ground at a fixed scale in meters, not from the level's quantized steps.
-function liveLight(w, V, M) {
-  const { NI, NJ, i0, j0 } = M, VI = NI + 1, n = VI * (NJ + 1), light = new Float32Array(n), d = Math.max(18.75, V.tileM * 0.5);
-  for (let j = 0; j <= NJ; j++)
-    for (let i = 0; i <= NI; i++) {
-      const [x, z] = V.toW(i0 + i, j0 + j);
-      const gu = (w.heightAt(x + V.eu[0] * d, z + V.eu[1] * d) - w.heightAt(x - V.eu[0] * d, z - V.eu[1] * d)) / (2 * d);
-      const gv = (w.heightAt(x + V.ev[0] * d, z + V.ev[1] * d) - w.heightAt(x - V.ev[0] * d, z - V.ev[1] * d)) / (2 * d);
-      light[j * VI + i] = lightOf(gu, gv);
-    }
-  return { light };
-}
 // The live ground: z-tested so steep slopes hide what is behind them, back faces culled, every pixel textured from
 // the world at its own position. Land meets standing water with a short bank strip.
 export function drawTerrainLive(B, w, V, M) {
   const { NI, NJ, i0, j0 } = M, C = M.C, GX = V.gx, GY = V.gy, VI = NI + 1;
-  if (!M.live) M.live = liveLight(w, V, M);
-  const { light } = M.live, dbg = V.debug, fineLight = V.tileM <= 18.75;
+  const dbg = V.debug;
   const anim = V.anim, frames = (p, f0, paint) => {
     const cols = [f0];
     let moving = false;
@@ -1415,7 +1455,6 @@ export function drawTerrainLive(B, w, V, M) {
       const t = j * NI + i, uT = i0 + i, vT = j0 + j;
       if (!V.visible(uT + 0.5, vT + 0.5)) continue;
       const c = [C[t * 4], C[t * 4 + 1], C[t * 4 + 2], C[t * 4 + 3]], P4 = [[uT, vT, c[0]], [uT + 1, vT, c[1]], [uT + 1, vT + 1, c[2]], [uT, vT + 1, c[3]]];
-      const L = [light[j * VI + i], light[j * VI + i + 1], light[(j + 1) * VI + i + 1], light[(j + 1) * VI + i]];
       // a bank where this tile stands above the flat water tile in front of it
       for (const face of [0, 1]) {
         const nb = M.at(face ? i + 1 : i, face ? j : j + 1);
@@ -1442,12 +1481,11 @@ export function drawTerrainLive(B, w, V, M) {
           if (z < B.z[p]) return;
           const X = x + GX, Y = y + GY, fu = u - uT, fv = v - vT;
           const wx = V.ox + (u * V.eu[0] + v * V.ev[0]) * V.tileM, wz = V.oz + (u * V.eu[1] + v * V.ev[1]) * V.tileM;
-          let s;
-          if (fineLight) { const gg = worldGrad(w, wx, wz); s = lightOf(gg[0] * V.eu[0] + gg[1] * V.eu[1], gg[0] * V.ev[0] + gg[1] * V.ev[1]); }
-          else s = (L[0] * (1 - fu) + L[1] * fu) * (1 - fv) + (L[3] * (1 - fu) + L[2] * fu) * fv;
+          // light owns value: slope, hollows and cast shadows from one world surface, at every level alike
+          const s = terrainLight(w, V, wx, wz), inShade = TL.sh > 0.5;
           const g = groundAt(w, V, wx, wz);
           let col;
-          const ju = (h2(X, Y, 98) - 0.5) * 0.7, jv = (h2(X, Y, 99) - 0.5) * 0.7, dark = V.shaded && V.shaded(u + ju, v + jv, lev);
+          const dark = inShade && bayer(X, Y) < smooth(0.5, 0.8, TL.sh) + 0.5;
           if (g.water) {
             const wg = { ...g };
             col = paintWater(w, V, wg, X, Y);
@@ -1456,7 +1494,8 @@ export function drawTerrainLive(B, w, V, M) {
             if (dbg) dbg.cls[p] = 40 + g.water;
           } else {
             col = paintLand(w, V, g, X, Y, s);
-            if (dark) { col = shade(col, X, Y); B.sh[p] = 1; }
+            // land takes its shadow in its value already; the flag keeps sprite shadows from darkening it twice
+            if (inShade) B.sh[p] = 1;
             if (dbg) dbg.cls[p] = TRACE.cls;
           }
           if (dbg) { dbg.wx[p] = wx; dbg.wz[p] = wz; }
