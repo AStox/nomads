@@ -299,7 +299,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     lastIce = iceFlags(W.ice);
     trailSrc = sim.trails?.() ?? null;
     trailQ = trailSrc ? Uint8Array.from(trailSrc.wear, wearStep) : null;
-    postState({ objs: o, trail: trailQ, ice: lastIce });
+    season = sim.clock?.().season ?? "spring";
+    postState({ objs: o, trail: trailQ, ice: lastIce, season });
     // everything baked so far was baked without the sim's objects
     for (const ch of cache.values()) ch.need = stateVer;
     synced = true;
@@ -354,8 +355,12 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       lastIce = iceNow;
       msg.ice = iceNow;
     }
+    // the ground's colour follows the season, so a new season rebakes whatever is cached as it is next shown
+    const sn = simRef.clock?.().season;
+    if (sn && sn !== season) { season = sn; msg.season = sn; }
     if (!Object.keys(msg).length) return;
     postState(msg);
+    if (msg.season) for (const c of cache.values()) c.need = stateVer;
     // a tall thing reaches up the screen and casts a shadow, so its box is as wide as it is tall
     for (const r of touched) { const x = toM(r.px), z = toM(r.py), R = Math.max(2, r.size) + 3; dirty(x - R, z - R, x + R, z + R, r.size); }
     if (msg.trailUp) for (let k = 0; k < trailTouched.length; k += 2) {
@@ -367,7 +372,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       dirty(ORIGIN + SIM * (tx - 1), ORIGIN + SIM * (ty - 1), ORIGIN + SIM * (tx + 2), ORIGIN + SIM * (ty + 2));
     }
   }
-  let lastIce = new Array(4096).fill(0);
+  let lastIce = new Array(4096).fill(0), season = "spring";
   // the sim's footpath wear, stepped into the five widths the bake draws
   const TRAIL_C = 3, TRAIL_N = 3200, wearStep = (v) => (v < 2 ? 0 : v < 5 ? 1 : v < 12 ? 2 : v < 30 ? 3 : 4);
   let trailSrc = null, trailQ = null, trailFlush = 0, trailTouched = [];

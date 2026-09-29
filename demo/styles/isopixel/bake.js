@@ -6,7 +6,7 @@ globalThis.ISO_LIB = true;
 const early = [];
 onmessage = (e) => early.push(e);
 
-const { grow } = await import("../world.js");
+const { grow, noise } = await import("../world.js");
 const L = await import("./main.js");
 const { P, SHADOW } = await import("./pal.js");
 const { Buf, ObjBins, dith } = await import("./px.js");
@@ -16,7 +16,7 @@ let w = null;
 // views in all, so touring every bearing and zoom cannot grow the worker
 const levels = new Map(), MAPS_KEPT = 3, LEVELS_KEPT = 8;
 // the live world, sent by the page whenever the sim changes it: its objects, worn paths and ice
-const D = { version: 0, objs: null, trail: null, ice: new Uint8Array(64 * 64) };
+const D = { version: 0, objs: null, trail: null, ice: new Uint8Array(64 * 64), season: "spring" };
 
 const SIM = 150, SIM0 = -4800;
 const simTile = (x, z) => [Math.floor((x - SIM0) / SIM), Math.floor((z - SIM0) / SIM)];
@@ -63,8 +63,14 @@ function bake(msg) {
       }
     ground = { i0: V.i0, j0: V.j0, w: gw, h: gh, C, diag, kind };
   }
-  V.trail = D.trail;
-  V.iceAt = (x, z) => { const [tx, ty] = simTile(x, z); return tx >= 0 && ty >= 0 && tx < 64 && ty < 64 && D.ice[ty * 64 + tx] === 1; };
+  V.trail = D.trail; V.season = D.season;
+  // the sim freezes whole 150 m tiles; between a frozen tile and an open one the ice edge wanders instead of ruling a line
+  const ice = (tx, ty) => (tx >= 0 && ty >= 0 && tx < 64 && ty < 64 && D.ice[ty * 64 + tx] === 1 ? 1 : 0);
+  V.iceAt = (x, z) => {
+    const fx = (x - SIM0) / SIM - 0.5, fz = (z - SIM0) / SIM - 0.5, i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j;
+    const v = (ice(i, j) * (1 - a) + ice(i + 1, j) * a) * (1 - b) + (ice(i, j + 1) * (1 - a) + ice(i + 1, j + 1) * a) * b;
+    return v > 0.5 + noise(x / 40, z / 40, 77) * 0.3;
+  };
   V.anim = new Map();
   // the consistency check reads what every pixel shows: its object's sim id, its ground class and world point
   V.debug = D.debug ? { cls: new Uint8Array(CS * CS), wx: new Float32Array(CS * CS), wz: new Float32Array(CS * CS) } : null;
@@ -154,6 +160,7 @@ const handle = async (e) => {
       for (const r of m.up || []) D.objs.upsert(r);
     }
     if (m.trail) D.trail = m.trail;
+    if (m.season) D.season = m.season;
     if (m.trailUp && D.trail) for (let k = 0; k < m.trailUp.length; k += 2) D.trail[m.trailUp[k]] = m.trailUp[k + 1];
     if (m.ice) D.ice = Uint8Array.from(m.ice);
     return;

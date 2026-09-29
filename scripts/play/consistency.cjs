@@ -27,7 +27,7 @@ const inPage = async () => {
     for (let L = 0; L < live.levels.length; L++)
       for (const b of [0, 2]) {
         view.zoom = live.levels[L].zoom + 0.01; view.bearing = b;
-        for (let i = 0; i < 300; i++) { Object.assign(view, live.centreOn(X, Z, view)); await wait(100); if (live.levelFor(view.zoom).L === L && live.readiness(view).ready) break; }
+        for (let i = 0; i < 300; i++) { Object.assign(view, live.centreOn(X, Z, view)); await wait(100); if (live.levelFor(view.zoom).L === L && live.readiness(view).ready && live.stats.bakeQueue === 0) break; }
         await wait(300);
         const md = D.maps.get(D.mk(L, b)), pv = D.pv(md), pw = D.pw(md), lv = (byLevel[live.levels[L].name] ??= { pass: 0, fail: 0 });
         const chunkAt = (gx, gy) => { const cx = Math.floor(gx / CS), cy = Math.floor(gy / CS); return [live.cache.get(D.keyOf(L, b, cx, cy)), cx, cy]; };

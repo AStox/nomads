@@ -2,7 +2,7 @@
 // pixel by pixel into a small indexed buffer with one fixed palette, then blown up with nearest neighbour.
 import { grow, fbm, noise, smooth } from "../world.js";
 import { groundClass, waterAt, riverSmooth, SEA as G_SEA, LAKE as G_LAKE, RIVER as G_RIVER, ROCKY as G_ROCKY } from "../island.js";
-import { P, ramp, SHADOW, GLOW, HAZE, MIST, NCOL, THEME } from "./pal.js";
+import { P, RGB as RGB_, ramp, SHADOW, GLOW, HAZE, MIST, NCOL, THEME } from "./pal.js";
 import { Buf, Spr, ObjBins, tri, strip, blit, castShadow, shadowPx, bayer, dith, h2 } from "./px.js";
 import * as SP from "./sprites.js";
 import { drawUI } from "./ui.js";
@@ -1154,8 +1154,15 @@ function groundAt(w, V, x, z) {
   G.cls = r.cls === G_ROCKY ? ROCKY : r.cls;
   G.h = w.heightAt(x, z); G.moist = w.fine(w.moist, x, z); G.ex = r.exposure;
   // the generator's share of the year's precipitation falling as snow: only its highest reaches keep patches of it
-  G.snow = smooth(0.132, 0.142, w.bilinear(w.isle.snow, (x - w.START) / w.CELL, (z - w.START) / w.CELL)) * 0.3;
+  G.snow0 = w.bilinear(w.isle.snow, (x - w.START) / w.CELL, (z - w.START) / w.CELL);
+  G.snow = smooth(0.132, 0.142, G.snow0) * 0.3;
   G.nearWet = r.wet > 0.2 || r.river > 0.2;
+  // the generator's climate and soil at this point, for the ground's colour: summer rain against evaporation and a
+  // water table near the surface make grass lush, peat darkens marsh, soil and silt tint bare ground
+  const I = w.isle, cx = (x - w.START) / w.CELL, cy = (z - w.START) / w.CELL, b = (f) => w.bilinear(f, cx, cy), S1 = I.seasons[1];
+  const bal = (b(S1.precip) - b(S1.pet)) / Math.max(1, b(S1.pet)), table = b(I.table);
+  G.lush = Math.max(smooth(-0.3, 0.3, bal), Math.exp(-table / 2.5));
+  G.peat = b(I.peat); G.soil = b(I.soil); G.silt = b(I.silt); G.fog = b(I.fog);
   return G;
 }
 // Pixel-art ground at every zoom, the mipmap way: detail lives in world meters at a few scales, each scale fades out
@@ -1235,6 +1242,62 @@ function onTrail(T, x, z, mpp, X, Y) {
   const r = mpp * 0.5;
   return d < r && bayer(X, Y) < Math.min(1, 1.6 / mpp) * (1 - Math.max(0, d) / r) * 1.5;
 }
+// ---------- ground colour from the generator's continuous fields ----------
+// Each cover share contributes its own paint, the way the generator's own map blends them, so woods fade into grass
+// and grass into heath without a hard class edge; then light, mottle and texture in world meters; then the palette.
+const C_LUSH = [56, 96, 48], C_MID = [98, 126, 60], C_STRAW = [160, 150, 90], C_TREE = [38, 68, 44], C_HEATH = [112, 86, 96];
+const C_MARSH = [74, 94, 56], C_PEAT = [48, 50, 38], C_BARE = [146, 136, 116], C_SOIL = [126, 98, 70], C_SILT = [186, 168, 128], C_SAND = [220, 202, 150];
+const C_BURN = [152, 128, 84], C_FOG = [140, 162, 152], C_AUTUMN = [178, 138, 64], C_WINTER = [150, 150, 142];
+const mixc = (a, b, t) => { t = clamp(t, 0, 1); return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; };
+function groundRGB(V, g, s, x, z) {
+  // ground the shared rule calls grass with outcrops shows as grass, its bare share mostly grassed over
+  const hill = g.cls === HILL, m = V.mpp, tr = g.c1, sh = g.c2, ma = g.c3, sa = g.c5, gr = g.c0 + (hill ? g.c4 * 0.8 : 0), ba = g.c4 * (hill ? 0.2 : 1), sum = gr + tr + sh + ma + ba || 1;
+  let grass = g.lush > 0.5 ? mixc(C_MID, C_LUSH, (g.lush - 0.5) * 2) : mixc(C_STRAW, C_MID, g.lush * 2);
+  const marsh = mixc(C_MARSH, C_PEAT, g.peat), bare = mixc(mixc(C_BARE, C_SOIL, smooth(0.3, 1.5, g.soil) * 0.6), C_SILT, g.silt * 8);
+  let heath = C_HEATH;
+  if (V.season === "autumn") { grass = mixc(grass, C_AUTUMN, 0.45); heath = mixc(heath, [140, 76, 60], 0.35); }
+  else if (V.season === "winter") { grass = mixc(grass, C_WINTER, 0.4); heath = mixc(heath, C_WINTER, 0.3); }
+  let c = [0, 1, 2].map((k) => (tr * C_TREE[k] + sh * heath[k] + gr * grass[k] + ma * marsh[k] + ba * bare[k]) / sum);
+  c = mixc(c, C_SAND, sa * 1.4);
+  // wind-scoured ground goes tawny, foggy hollows grey-green
+  c = mixc(c, C_BURN, smooth(0.3, 0.42, g.ex) * 0.35);
+  c = mixc(c, C_FOG, g.fog * 0.3);
+  if (V.season === "winter") c = mixc(c, [236, 240, 244], smooth(0.106, 0.12, g.snow0) * 0.5);
+  // pigment gathers where one cover gives way to another
+  const sh2 = [gr, tr, sh, ma, ba].sort((a, b) => b - a), pool = Math.max(0, 1 - ((sh2[0] - sh2[1]) / sum) * 3) * 0.07;
+  const mot = fbm(x / 60, z / 60, 11, 2) * 0.05 + clusters(x, z, 6, 12, m, 0.4) * 0.05 + clusters(x, z, 1.8, 13, m) * 0.08 + clusters(x, z, 0.5, 14, m, 0.5) * 0.11;
+  const k = (1 + mot - pool) * (1 + clamp(s, -1.3, 1.4) * 0.15);
+  return [c[0] * k, c[1] * k, c[2] * k];
+}
+// The nearest pair of natural ground colours for every RGB, and how far along the pair the colour lies, so a smooth
+// field comes out as two palette tones in ordered dither.
+const DQ_NAMES = ["g0", "g1", "g2", "g3", "g4", "g5", "g6", "t1", "t2", "t3", "a0", "a1", "a2", "a3", "d0", "d1", "d2", "d3", "d4", "d5", "r0", "r1", "r2", "r3", "r4", "r5", "s0", "s1", "s2", "s3", "m0", "m1", "m2", "m3", "h0", "h1", "h2", "h3", "o0", "o1", "o2", "o3"];
+let DQ = null;
+function dqBuild() {
+  const ids = DQ_NAMES.map((n) => P[n]), cols = ids.map((i) => RGB_[i]), W8 = [3, 4, 2], d2 = (a, b) => W8[0] * (a[0] - b[0]) ** 2 + W8[1] * (a[1] - b[1]) ** 2 + W8[2] * (a[2] - b[2]) ** 2;
+  DQ = new Uint8Array(32768 * 3);
+  for (let r = 0; r < 32; r++)
+    for (let gg = 0; gg < 32; gg++)
+      for (let b = 0; b < 32; b++) {
+        const t0 = [r * 8 + 4, gg * 8 + 4, b * 8 + 4], near = cols.map((c, k) => [d2(c, t0), k]).sort((a, b) => a[0] - b[0]).slice(0, 6);
+        let best = [near[0][0], near[0][1], near[0][1], 0];
+        for (const [, i] of near)
+          for (let j = 0; j < cols.length; j++) {
+            if (j === i) continue;
+            const A = cols[i], Bc = cols[j], e = [Bc[0] - A[0], Bc[1] - A[1], Bc[2] - A[2]];
+            const t = clamp(((t0[0] - A[0]) * e[0] * W8[0] + (t0[1] - A[1]) * e[1] * W8[1] + (t0[2] - A[2]) * e[2] * W8[2]) / (W8[0] * e[0] ** 2 + W8[1] * e[1] ** 2 + W8[2] * e[2] ** 2 || 1), 0, 1);
+            const q = d2([A[0] + e[0] * t, A[1] + e[1] * t, A[2] + e[2] * t], t0) + d2(A, Bc) * 0.2 * t * (1 - t);
+            if (q < best[0]) best = [q, i, j, t];
+          }
+        const o = ((r << 10) | (gg << 5) | b) * 3;
+        DQ[o] = ids[best[1]]; DQ[o + 1] = ids[best[2]]; DQ[o + 2] = Math.round(best[3] * 255);
+      }
+}
+function dq(c, X, Y) {
+  if (!DQ) dqBuild();
+  const o = ((clamp(c[0] >> 3, 0, 31) << 10) | (clamp(c[1] >> 3, 0, 31) << 5) | clamp(c[2] >> 3, 0, 31)) * 3;
+  return bayer(X, Y) * 255 < DQ[o + 2] ? DQ[o + 1] : DQ[o];
+}
 function paintLand(w, V, g, X, Y, s) {
   const x = g.x, z = g.z, m = V.mpp;
   if (V.trail && onTrail(V.trail, x, z, m, X, Y)) { TRACE.cls = 255; return soil(x, z, s + 0.4, X, Y, m); }
@@ -1246,9 +1309,10 @@ function paintLand(w, V, g, X, Y, s) {
       // leaf litter in small drifts, a few twigs of dark soil, lit patches where the canopy opens
       const lit = clusters(x, z, 4, 3, m, 0.5), litter = clusters(x, z, 0.7, 4, m, 0.5);
       if (litter > 0 && noise(x / 0.35, z / 0.35, 5) * fade(0.35, m) > 0.3) return P.d2;
-      return tone(FF, 2 + s * 0.8 + Math.round(mot * 2) * 0.4 + lit * 0.7 + litter * 0.8, X, Y);
+      const c = groundRGB(V, g, s, x, z), k = 1 + lit * 0.06;
+      return dq([c[0] * k, c[1] * k, c[2] * k], X, Y);
     }
-    case SCRUB: return tone(SC, 3 + s + Math.round(mot * 2) * 0.4 + clusters(x, z, 2.5, 6, m) + clusters(x, z, 0.6, 7, m, 0.5) * 0.8, X, Y);
+    case SCRUB: return dq(groundRGB(V, g, s, x, z), X, Y);
     case SAND: {
       let v = 2.5 + s * 0.7 + Math.round(mot * 2) * 0.3 + clusters(x, z, 0.4, 8, m, 0.55) * 0.8;
       // ripples 3 m apart, fading out once they are narrower than a pixel
@@ -1267,21 +1331,16 @@ function paintLand(w, V, g, X, Y, s) {
       }
       // reed rims round the pools: short upright strokes, a meter long
       if (pn > 0.35) return noise(x / 0.5, z / 2.2, 34) * fade(0.5, m) > 0.1 ? P.m3 : clusters(x, z, 1.5, 35, m) > 0 ? P.a1 : P.m1;
-      return tone(MA, 2.6 + s + Math.round(mot * 2) * 0.3 + clusters(x, z, 1.8, 10, m) * 0.8 + clusters(x, z, 0.5, 11, m, 0.5) * 0.6, X, Y);
+      return dq(groundRGB(V, g, s, x, z), X, Y);
     }
     default: {
       // meadow: broad swathes, then tone clusters at a few meters, then blade speckle at half a meter
+      // bare patches only where the generator's soil is thin
       const bare = fbm(x / 14, z / 14, 55, 2);
-      if (bare > 0.3 + g.c0 * 0.15) return soil(x, z, s + (bare - 0.5) * 1.5, X, Y, m);
-      let v = 3.3 + s + Math.round((mot * 1.2 + (g.moist - 0.5) * 0.8 + fbm(x / 35, z / 35, 54, 2) * 1.2) * 2) * 0.5;
-      v += clusters(x, z, 6, 12, m, 0.4) * 0.8 + clusters(x, z, 1.8, 13, m) * 0.9 + clusters(x, z, 0.5, 14, m, 0.5) * 0.9;
-      if (g.nearWet) v -= 0.6;
-      // under the woods edge the grass goes darker and strewn with leaf litter
-      if (g.c1 > 0.2) {
-        v -= (g.c1 - 0.2) * 3.5;
-        if (clusters(x, z, 0.6, 15, m, 0.55 - (g.c1 - 0.2) * 0.4) > 0) return P.d2;
-      }
-      return tone(GR, v, X, Y);
+      if (bare > 0.3 + g.c0 * 0.15 + smooth(0.3, 1.2, g.soil) * 0.4) return soil(x, z, s + (bare - 0.5) * 1.5, X, Y, m);
+      // under the woods edge the grass is strewn with leaf litter
+      if (g.c1 > 0.2 && clusters(x, z, 0.6, 15, m, 0.55 - (g.c1 - 0.2) * 0.4) > 0) return P.d2;
+      return dq(groundRGB(V, g, s, x, z), X, Y);
     }
   }
 }
