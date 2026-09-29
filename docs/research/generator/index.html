@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nomads: an island that makes itself</title>
+<style>
+  body { margin: 0; background: #1d1610; color: #efe2c2; font: 16px/1.5 Georgia, serif; }
+  main { max-width: 1400px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-weight: 400; margin: 0 0 4px; }
+  h2 { font-weight: 400; margin: 32px 0 8px; }
+  p, li { color: #cdbb95; }
+  p { margin: 0 0 20px; }
+  ol, ul { margin: 0 0 20px; padding-left: 22px; max-width: 900px; }
+  figure { margin: 0 0 28px; }
+  img { width: 100%; height: auto; display: block; border-radius: 6px; }
+  figcaption { margin-top: 6px; color: #cdbb95; font-style: italic; }
+  .layers { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .layers figure { margin: 0; }
+  .layers img { image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Nomads: an island that makes itself</h1>
+  <p>Branch island-gen, run as an offline copy with the random brain. Not merged or deployed.</p>
+
+  <h2>How the island is made</h2>
+  <ol>
+    <li><b>Uplift.</b> A warped oval rises out of the sea, with ridged ranges and low basins.</li>
+    <li><b>Erosion.</b> Rivers cut valleys by the stream power law and hillsides creep. The sea floods the lowest valleys into inlets.</li>
+    <li><b>Climate.</b> Four seasons of wind, each from its own spread of directions, carry vapor in off the sea. Air pushed up over the ranges rains out, and the far side sits in a rain shadow. It gets colder with height, and evaporation follows sun, wind, and fog.</li>
+    <li><b>Water.</b> Whatever rain isn't evaporated runs off or soaks in. Lakes fill only where inflow beats evaporation, rivers run from source to sea, and the water table rises to meet the valley floors.</li>
+    <li><b>Ground.</b> Soil is deep on gentle ground and gone on steep ground. Sand builds on salty shores and peat in waterlogged hollows. Soil moisture is tracked season by season.</li>
+    <li><b>Plants.</b> Trees, shrubs, marsh plants, and grass compete for moisture, soil, and shelter. Nothing is labeled forest or heath. Those are just the places where one of them wins.</li>
+  </ol>
+
+  <h2>In the game</h2>
+  <ul>
+    <li>Tiles, heights, and the things lying around at the start all come from those fields.</li>
+    <li>The ground is painted from the plant cover itself, with rivers, smooth shorelines, and contour lines.</li>
+    <li>Newcomers and animals come ashore on the main island, never on an islet.</li>
+    <li>Only lakes freeze in winter. The sea stays open.</li>
+    <li>The daily wind wanders around the same prevailing wind that shaped the rain.</li>
+  </ul>
+
+  <figure><img src="map.png" alt="A whole island in isometric view, with ridges, lakes, and a sea inlet"><figcaption>Seed 1 on day 1.</figcaption></figure>
+  <figure><img src="lakes.png" alt="Lakes in a valley between ridges, with streams running in"><figcaption>Lakes in the central valleys, fed by streams off the ridges.</figcaption></figure>
+  <figure><img src="ridges.png" alt="Bare brown ridges above wooded valleys"><figcaption>Bare rock and heath on the exposed ridges, trees in the sheltered valleys.</figcaption></figure>
+  <figure><img src="inlet.png" alt="A long sea inlet running inland between hills"><figcaption>A drowned valley, now a sea inlet.</figcaption></figure>
+  <figure><img src="winter.png" alt="The same island in winter with white frozen lakes"><figcaption>Winter: the lakes freeze and the sea doesn't.</figcaption></figure>
+  <figure><img src="winter-lakes.png" alt="Close view of frozen lakes"><figcaption>Frozen lakes up close.</figcaption></figure>
+  <figure><img src="map-2.png" alt="A second island, grassier, with rocky ranges"><figcaption>Seed 2: drier, with more open grass.</figcaption></figure>
+
+  <h2>The layers behind seed 1</h2>
+  <p>Top-down, north up. The game view above is the same island turned 45 degrees.</p>
+  <div class="layers">
+    <figure><img src="layer-relief.png" alt="Elevation map"><figcaption>Height, with streams.</figcaption></figure>
+    <figure><img src="layer-precip.png" alt="Rainfall map"><figcaption>Rain: wettest on the windward slopes of the ranges.</figcaption></figure>
+    <figure><img src="layer-wind.png" alt="Exposure map"><figcaption>Exposure to the prevailing wind in red, salt spray in green.</figcaption></figure>
+    <figure><img src="layer-table.png" alt="Water table map"><figcaption>Groundwater: blue at the surface, brown deep.</figcaption></figure>
+    <figure><img src="layer-soil.png" alt="Soil depth map"><figcaption>Soil depth: grey is bare rock.</figcaption></figure>
+    <figure><img src="layer-moist.png" alt="Soil moisture map"><figcaption>Soil moisture: orange dry, green wet.</figcaption></figure>
+    <figure><img src="layer-cover.png" alt="Plant cover map"><figcaption>Plant cover, blended.</figcaption></figure>
+    <figure><img src="layer-dominant.png" alt="Dominant plant map"><figcaption>Whichever plant wins: trees dark green, shrubs purple, grass yellow green, marsh teal, rock grey, sand tan.</figcaption></figure>
+  </div>
+</main>
+</body>
+</html>
