@@ -1,0 +1,2663 @@
+Project File Structure and Contents
+===================================
+File: .gitignore
+-----------------------------------
+node_modules/
+dist/
+logs/*
+===================================
+
+File: index.ts
+-----------------------------------
+import { World, Thing } from "./src/World";
+import { Player } from "./src/Player";
+import Renderer from "./src/Renderer";
+import { CombinedState } from "./src/goap/GOAPPlanner";
+import { WalkTo } from "./src/goap/Actions/WalkTo";
+import { ThingType, createThing } from "./src/Thing";
+import logger from "./src/utils/Logger";
+
+const width: number = 80;
+const world = World.newWorld(width, width);
+// world.populateThingsFromConfig("src/configs/objects.json");
+const things: Thing[] = [];
+// createThing(ThingType.TREE, { x: 10, y: 2 })];
+//   createThing(ThingType.TREE, { x: -10, y: -2 }),
+//   createThing(ThingType.TREE, { x: -4, y: 10 }),
+//   createThing(ThingType.TREE, { x: 3, y: -9 }),
+//   createThing(ThingType.BERRY, { x: 1, y: 1 }),
+//   createThing(ThingType.BERRY, { x: 1, y: -1 }),
+//   createThing(ThingType.BERRY, { x: -5, y: 1 }),
+//   createThing(ThingType.BERRY, { x: -5, y: 3 }),
+//   createThing(ThingType.BERRY, { x: -8, y: 2 }),
+//   createThing(ThingType.BERRY, { x: -2, y: 1 }),
+//   createThing(ThingType.MUSHROOM, { x: -5, y: 10 }),
+//   createThing(ThingType.POULTICE, { x: 3, y: 7 }),
+// ];
+
+// generate random things
+const numTrees = 10;
+const numBerries = 10;
+const numMushrooms = 10;
+
+for (let i = 0; i < numTrees; i++) {
+  const treeRNGx = Math.random();
+  const treeRNGy = Math.random();
+  logger.log(`TreeRng: ${treeRNGx}, ${treeRNGy}`);
+  things.push(
+    createThing(ThingType.TREE, {
+      x: treeRNGx * width - width / 2,
+      y: treeRNGy * width - width / 2,
+    })
+  );
+}
+for (let i = 0; i < numBerries; i++) {
+  const berryRNGx = Math.random();
+  const berryRNGy = Math.random();
+  logger.log(`BerryRng: ${berryRNGx}, ${berryRNGy}`);
+  things.push(
+    createThing(ThingType.BERRY, {
+      x: berryRNGx * width - width / 2,
+      y: berryRNGy * width - width / 2,
+    })
+  );
+}
+for (let i = 0; i < numMushrooms; i++) {
+  const mushroomRNGx = Math.random();
+  const mushroomRNGy = Math.random();
+  logger.log(`MushroomRng: ${mushroomRNGx}, ${mushroomRNGy}`);
+  things.push(
+    createThing(ThingType.MUSHROOM, {
+      x: mushroomRNGx * width - width / 2,
+      y: mushroomRNGy * width - width / 2,
+    })
+  );
+}
+
+for (const thing of things) {
+  world.state.quadtree.insert(thing);
+}
+
+let players = [new Player("1", "John Plant", 0, 0, "🧍", [WalkTo])];
+for (const player of players) {
+  world.state.quadtree.insert(player);
+}
+
+const renderer = new Renderer();
+
+let turn = 1; // Keep track of the current turn outside processTurn to maintain state
+
+function tick(): void {
+  logger.log(`-------------------- Turn ${turn} --------------------`);
+
+  for (const player of players) {
+    player.hunger -= 1;
+    const state: CombinedState = { ...world.state, player: player };
+    logger.log(
+      `Player ${player.name} at position (${
+        state.quadtree.queryAll().filter((t) => t.id === player.id)[0].x
+      }, ${state.quadtree.queryAll().filter((t) => t.id === player.id)[0].y})`
+    );
+    player.makeDecision(state); // Assuming makeDecision is synchronous
+    logger.log("---------------------------------------------------------------");
+    renderer.render(state); // Assuming render is synchronous
+  }
+
+  logger.log(`-------------------- End of Turn ${turn} --------------------\n\n`);
+  turn++;
+
+  // Schedule the next turn after a 1-second delay, ensuring the previous turn has fully completed
+  setTimeout(tick, 1000);
+}
+
+const state: CombinedState = { ...world.state, player: players[0] };
+renderer.render(state);
+tick();
+
+===================================
+
+File: jest.config.js
+-----------------------------------
+// jest.config.js
+module.exports = {
+  preset: "ts-jest",
+  testEnvironment: "node",
+  testMatch: ["**/?(*.)+(spec|test).ts?(x)"], // Only .ts and .tsx files
+};
+
+===================================
+
+File: package.json
+-----------------------------------
+{
+  "name": "nomads",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "tsc && ./src/server/start-client.sh && node --enable-source-maps dist/index.js",
+    "build": "tsc",
+    "test": "jest",
+    "serve": "tsc && ./src/server/start-client.sh"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.5",
+    "@types/uuid": "^9.0.6",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.1",
+    "typescript": "^5.2.2"
+  },
+  "dependencies": {
+    "uuid": "^9.0.1"
+  }
+}
+
+===================================
+
+File: src/CreateSkillTree.ts
+-----------------------------------
+import { SkillTree, SkillNode } from "./SkillTree";
+import { Skills } from "./configs/Skills";
+
+function createSkillTree(): SkillTree {
+  const skillTree = new SkillTree();
+
+  const fireMaking1 = new SkillNode(Skills.FIRE_MAKING_1, 1, []);
+  skillTree.addNode(fireMaking1);
+  fireMaking1
+    .addNext(new SkillNode(Skills.FIRE_MAKING_2, 2))
+    .addNext(new SkillNode(Skills.FIRE_MAKING_3, 3));
+  const fishing1 = new SkillNode(Skills.FISHING_1, 10, []);
+  skillTree.addNode(fishing1);
+  fishing1
+    .addNext(new SkillNode(Skills.FISHING_2, 20))
+    .addNext(new SkillNode(Skills.FISHING_3, 30));
+  const cooking1 = new SkillNode(Skills.COOKING_1, 100, [fireMaking1]);
+  skillTree.addNode(cooking1);
+  cooking1
+    .addNext(new SkillNode(Skills.COOKING_2, 200))
+    .addNext(new SkillNode(Skills.COOKING_3, 300));
+  return skillTree;
+}
+
+export { createSkillTree };
+
+===================================
+
+File: src/Player.ts
+-----------------------------------
+import { Goal } from "./goap/Goals";
+import { createBehaviorTree } from "./PlayerBehaviourTree";
+import { Thing } from "./World";
+import { CombinedState, GOAPPlanner } from "./goap/GOAPPlanner";
+import { WalkTo } from "./goap/Actions/WalkTo";
+import { Action } from "./goap/Action";
+import { ThingType, createThing } from "./Thing";
+import logger from "./utils/Logger";
+interface PartialWithMoveToPlayer extends Partial<Player> {
+  moveTo: (x: number, y: number) => boolean;
+}
+
+export type playerState = Omit<Player, "skillTree" | "behaviorTree">;
+
+export class Player implements Thing {
+  id: string;
+  name: string;
+  type: ThingType;
+  x: number;
+  y: number;
+  symbol: string;
+  actions: Function[];
+  speed: number;
+  inventory: Thing[];
+  hunger: number;
+  maxHunger: number;
+  hungerActionThreshold: number;
+  HP: number;
+  maxHP: number;
+  HPActionThreshold: number;
+  longGoals: Goal[];
+  currentGoal: Goal | null;
+  currentPlan: Action[] | null;
+  GOAPStatus: string;
+  // skillTree: SkillTree;
+
+  constructor(id: string, name: string, x: number, y: number, symbol: string, actions: Function[]) {
+    this.id = id;
+    this.name = name;
+    this.type = ThingType.PLAYER;
+    this.x = x;
+    this.y = y;
+    this.symbol = "🧍";
+    this.actions = actions;
+    this.speed = 2;
+    this.inventory = [createThing(ThingType.AXE), createThing(ThingType.SAW)];
+    this.hunger = 20;
+    this.maxHunger = 100;
+    this.hungerActionThreshold = 25;
+    this.HP = 90;
+    this.maxHP = 100;
+    this.HPActionThreshold = 50;
+    this.longGoals = [
+      {
+        requiredSkills: [],
+        requirements: (state: CombinedState) =>
+          state.player.inventory.some((item) => item.type === ThingType.BERRY),
+      },
+    ];
+    this.currentGoal = null;
+    this.currentPlan = null;
+    this.GOAPStatus = "idle";
+    // this.skillTree = createSkillTree();
+  }
+
+  makeDecision(state: CombinedState) {
+    const context = { rng: 0 };
+    const behaviorTree = createBehaviorTree(this);
+    behaviorTree.run(context);
+    let actionFactories = [WalkTo];
+
+    if (this.currentGoal) {
+      if (
+        !this.currentPlan ||
+        this.currentPlan.length === 0 ||
+        !this.currentPlan[0].preconditions(state)
+        //   // this.hasCompletedAction(state, this.currentPlan)
+      ) {
+        this.currentPlan = GOAPPlanner.plan(this, state, this.currentGoal, actionFactories);
+      }
+      logger.log("\n~~Plan~~");
+      for (let i = 0; i < this.currentPlan.length; i++) {
+        logger.log(
+          `${i + 1}. ${this.currentPlan[i].name}(${this.currentPlan[i].target.name})[${
+            this.currentPlan[i].target.id
+          }]}]`
+        );
+      }
+    }
+    logger.log("~~Execute Action~~");
+    if (this.currentPlan && this.currentPlan.length > 0) {
+      const action = this.currentPlan[0];
+      if (action.preconditions(state)) {
+        action.perform(state);
+      }
+      if (this.hasCompletedAction(state, this.currentPlan)) {
+        this.currentPlan.shift();
+      }
+      logger.log(`${action.name}(${action.target.name})`);
+    }
+  }
+
+  hasCompletedAction(state: CombinedState, plan: Action[]): boolean {
+    // console.log("!!!!!!!!!!!!!!!!!! has completed action");
+    // console.log("plan length", plan.length);
+    if (plan.length > 0) {
+      if (plan.length > 1) {
+        // console.log("plan[1].name", plan[1].name, plan[1].target.name);
+        // console.log("plan[1].preconditions(state);", plan[1].preconditions(state));
+        return plan[1].preconditions(state);
+      } else {
+        return this.currentGoal?.requirements(state) as boolean;
+      }
+    }
+    return true;
+  }
+}
+
+===================================
+
+File: src/PlayerBehaviourTree.ts
+-----------------------------------
+import { SelectorNode, SequenceNode, NegateNode, LogNode } from "./behaviorTree/BaseNodes";
+import { SetGoal } from "./behaviorTree/SetGoal";
+import { CheckLongGoals } from "./behaviorTree/CheckLongGoals";
+import { CheckHP } from "./behaviorTree/CheckHP";
+import { CheckHunger } from "./behaviorTree/CheckHunger";
+import { Player } from "./Player"; // Assuming Player is a class you've defined
+import { Goal } from "./goap/Goals";
+import { CombinedState } from "./goap/GOAPPlanner";
+import { ThingType } from "./Thing";
+
+function createBehaviorTree(player: Player) {
+  return new SelectorNode([
+    new SequenceNode([
+      new CheckHP(player),
+      new SetGoal(player, {
+        requiredSkills: [],
+        requirements: (state: CombinedState) => state.player.HP > 50,
+      } as Goal),
+    ]),
+    new SequenceNode([
+      new CheckHunger(player),
+      new SetGoal(player, {
+        requiredSkills: [],
+        requirements: (state: CombinedState) => state.player.hunger > 50,
+      } as Goal),
+    ]),
+    new SelectorNode([
+      new SequenceNode([
+        new CheckLongGoals(player),
+        new SelectorNode([new SequenceNode([new LogNode("GOAP SYSTEM TAKES OVER")])]),
+      ]),
+      new LogNode("Handle No Goals Flow"),
+    ]),
+  ]);
+}
+
+export { createBehaviorTree };
+
+===================================
+
+File: src/Recipe.ts
+-----------------------------------
+import { Thing, ThingType, createThing } from "./Thing";
+import { Rectangle, World } from "./World";
+import { Craft } from "./goap/Actions/Craft";
+import { CombinedState } from "./goap/GOAPPlanner";
+
+interface Recipe {
+  name: ThingType;
+  ingredients: (state: CombinedState) => boolean;
+  result: (state: CombinedState) => CombinedState;
+  actions: Function[];
+}
+
+const recipes: Recipe[] = [
+  {
+    name: ThingType.AXE,
+    ingredients: (state: CombinedState) => {
+      if (
+        state.player.inventory.filter((item) => item.type === ThingType.STICK).length >= 1 ||
+        state.player.inventory.filter((item) => item.type === ThingType.STONE).length >= 1
+      ) {
+        return true;
+      }
+      return false;
+    },
+    result: (state: CombinedState) => {
+      const stick = state.player.inventory.find((item) => item.type === ThingType.STICK);
+      if (stick) {
+        state.player.inventory.splice(state.player.inventory.indexOf(stick), 1);
+      }
+      const stone = state.player.inventory.find((item) => item.type === ThingType.STONE);
+      if (stone) {
+        state.player.inventory.splice(state.player.inventory.indexOf(stone), 1);
+      }
+      const axe = createThing(ThingType.AXE);
+      state.player.inventory.push(axe);
+      return state;
+    },
+    actions: [Craft],
+  },
+  {
+    name: ThingType.ROASTED_MUSHROOM,
+    ingredients: (state: CombinedState) => {
+      if (!state.player.inventory.some((item) => item.type === ThingType.MUSHROOM)) {
+        return false;
+      }
+      const size = 2;
+      const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
+      const campfires = state.quadtree
+        .query(new Rectangle((player?.x || 0) - size / 2, (player?.y || 0) - size / 2, size, size))
+        .filter((thing) => thing.type === ThingType.CAMPFIRE);
+      if (campfires.length === 0) {
+        return false;
+      }
+      return true;
+    },
+    result: (state: CombinedState) => {
+      const mushroom = state.player.inventory.find((item) => item.type === ThingType.MUSHROOM);
+      if (mushroom) {
+        state.player.inventory.splice(state.player.inventory.indexOf(mushroom), 1);
+      }
+      const roastedMushroom = createThing(ThingType.ROASTED_MUSHROOM);
+      state.player.inventory.push(roastedMushroom);
+
+      return state;
+    },
+    actions: [Craft],
+  },
+];
+
+function getCraftableRecipes(state: CombinedState): Recipe[] {
+  const craftableRecipes = recipes.filter((recipe) => recipe.ingredients(state));
+  return craftableRecipes;
+}
+
+export { getCraftableRecipes, Recipe };
+
+===================================
+
+File: src/Renderer.ts
+-----------------------------------
+import { World } from "./World";
+import { Action } from "./goap/Action";
+import { CombinedState } from "./goap/GOAPPlanner";
+import { SocketServer } from "./server/SocketServer";
+
+class Renderer {
+  socketServer: SocketServer;
+
+  constructor() {
+    this.socketServer = new SocketServer();
+    this.socketServer.start(8080); // You can choose another port if 8080 is already in use
+  }
+
+  toGrid(state: CombinedState): string[][] {
+    const gridSize = state.quadtree.boundary.w * 2;
+    const grid = Array.from({ length: gridSize }, () => Array(gridSize).fill(". "));
+    const items = state.quadtree.queryAll();
+
+    for (const item of items) {
+      const x = Math.floor(item.x + gridSize / 2);
+      const y = Math.floor(item.y + gridSize / 2);
+      if (x >= 0 && x < gridSize && y >= 0 && y < gridSize) {
+        grid[y][x] = item.symbol;
+      }
+    }
+
+    return grid;
+  }
+
+  render(state: CombinedState): void {
+    const grid = this.toGrid(state);
+    const gridString = grid.map((row) => row.join("")).join("\n");
+    const statusString = `HP: ${state.player.HP}/${state.player.maxHP}\nHunger: ${
+      state.player.hunger
+    }/${state.player.maxHunger}\nInventory: ${
+      state.player.inventory.map((item) => `${item.name}${item.symbol}`).join(", ") || []
+    }\nPlan: ${
+      state.player.currentPlan && state.player.currentPlan.length > 0
+        ? state.player.currentPlan
+            ?.map(
+              (action: Action) => `${action.name}(${action.target.name}${action.target.symbol})`
+            )
+            .join(" -> ")
+        : state.player.GOAPStatus
+    }`;
+    this.socketServer.send(gridString + "\n" + statusString);
+  }
+}
+
+export default Renderer;
+
+===================================
+
+File: src/SkillTree.test.ts
+-----------------------------------
+import { SkillTree, SkillNode } from "./SkillTree";
+import { createSkillTree } from "./CreateSkillTree";
+
+describe("SkillTree", () => {
+  let skillTree: SkillTree;
+
+  beforeEach(() => {
+    skillTree = createSkillTree();
+  });
+
+  test("addNode should add a new skill", () => {
+    const newSkill = new SkillNode("new skill", 10);
+    skillTree.addNode(newSkill);
+    const node = skillTree.findNode("new skill");
+    expect(node).not.toBeNull();
+  });
+
+  test("spendExperience should work correctly", () => {
+    const node = skillTree.findNode("Fishing_1");
+    const result = node.spendExperience(5);
+    expect(result).toBe("Experience spent. 5 more needed.");
+  });
+
+  test("learn should work correctly", () => {
+    const node = skillTree.findNode("Firemaking_1");
+    const result = node.spendExperience(1);
+    expect(result).toBe("Skill Firemaking_1 learned.");
+    expect(node.achieved).toBe(true);
+  });
+});
+
+===================================
+
+File: src/SkillTree.ts
+-----------------------------------
+import { Node, MultiBranchLinkedList } from "./utils/MultiBranchLinkedList";
+
+class SkillNode extends Node {
+  experienceCost: number;
+  experienceSpent: number;
+
+  constructor(
+    name: string,
+    experienceCost: number,
+    prevNodes: Node[] = [],
+    nextNodes: Node[] = []
+  ) {
+    super(name, prevNodes, nextNodes);
+    this.experienceCost = experienceCost;
+    this.experienceSpent = 0;
+  }
+
+  learn(): void {
+    if (this.achieved) {
+      throw new Error(`Skill ${this.name} already learned.`);
+    }
+
+    const prerequisites = this.prevNodes.map((node) => node.name);
+    for (const prereqNode of this.prevNodes) {
+      if (!prereqNode.achieved) {
+        throw new Error(`Need to learn ${prerequisites.join(", ")} first.`);
+      }
+    }
+
+    if (this.experienceSpent < this.experienceCost) {
+      throw new Error(
+        `Not enough experience. ${this.experienceCost - this.experienceSpent} more needed.`
+      );
+    }
+
+    this.achieved = true;
+  }
+
+  spendExperience(amount: number): string {
+    if (this.achieved) {
+      throw new Error(`Skill ${this.name} already learned.`);
+    }
+
+    const prerequisites = this.prevNodes.filter((node) => !node.achieved).map((node) => node.name);
+    if (prerequisites.length) {
+      return `Need to learn ${prerequisites.join(", ")} first.`;
+    }
+
+    this.experienceSpent += amount;
+    if (this.experienceSpent >= this.experienceCost) {
+      this.learn();
+      return `Skill ${this.name} learned.`;
+    }
+    return `Experience spent. ${this.experienceCost - this.experienceSpent} more needed.`;
+  }
+}
+
+class SkillTree extends MultiBranchLinkedList {
+  constructor() {
+    super();
+  }
+
+  findNode(name: string): SkillNode {
+    return super.findNode(name) as SkillNode;
+  }
+}
+
+export { SkillTree, SkillNode };
+
+===================================
+
+File: src/Thing.ts
+-----------------------------------
+import { Chop } from "./goap/Actions/Chop";
+import { Drop } from "./goap/Actions/Drop";
+import { Heal } from "./goap/Actions/Heal";
+import { Eat } from "./goap/Actions/Eat";
+import { PickUp } from "./goap/Actions/PickUp";
+import { StartFire } from "./goap/Actions/StartFire";
+import { WalkTo } from "./goap/Actions/WalkTo";
+
+enum ThingType {
+  PLAYER = "PLAYER",
+  STONE = "STONE",
+  STICK = "STICK",
+  WOOD = "WOOD",
+  BOARD = "BOARD",
+  TREE = "TREE",
+  AXE = "AXE",
+  HAMMER = "HAMMER",
+  KNIFE = "KNIFE",
+  SAW = "SAW",
+  FISH = "FISH",
+  BERRY = "BERRY",
+  MUSHROOM = "MUSHROOM",
+  ROASTED_MUSHROOM = "ROASTED_MUSHROOM",
+  TENT = "TENT",
+  CAMPFIRE = "CAMPFIRE",
+  POULTICE = "POULTICE",
+}
+
+interface Thing {
+  id: string;
+  name: string;
+  type: ThingType;
+  x: number;
+  y: number;
+  symbol: string;
+  actions: Function[];
+}
+
+interface Food extends Thing {
+  satiation: number;
+}
+
+interface Healable extends Thing {
+  healing: number;
+}
+
+function createThing(type: ThingType, overrides: Partial<Thing> = {}): Thing {
+  const defaultThing = ThingTemplates[type];
+  if (!defaultThing) {
+    throw new Error(`No template found for type: ${type}`);
+  }
+
+  return {
+    id: generateRandomId(),
+    ...defaultThing,
+    ...overrides,
+    type,
+    name: defaultThing.name || type,
+  } as Thing;
+}
+
+function generateRandomId(): string {
+  return Math.random().toString(36).substring(2, 15);
+}
+
+const defaultThing: Omit<Thing, "name" | "type" | "id" | "symbol"> = {
+  x: 0,
+  y: 0,
+  actions: [WalkTo],
+};
+
+export const things: Record<ThingType, Partial<Thing | Food | Healable>> = {
+  [ThingType.PLAYER]: {
+    symbol: "🧍",
+    actions: [WalkTo],
+  },
+  [ThingType.WOOD]: {
+    symbol: "🪵",
+    actions: [...defaultThing.actions, PickUp, Drop, StartFire],
+  },
+  [ThingType.BOARD]: {
+    symbol: "🪵",
+    actions: [...defaultThing.actions, PickUp, Drop],
+  },
+  [ThingType.STONE]: {
+    symbol: "🪨",
+    actions: [...defaultThing.actions, PickUp, Drop],
+  },
+  [ThingType.STICK]: {
+    symbol: "🪵",
+    actions: [...defaultThing.actions, PickUp, Drop],
+  },
+  [ThingType.TREE]: {
+    symbol: "🌲",
+    actions: [...defaultThing.actions, Chop],
+  },
+  [ThingType.AXE]: {
+    symbol: "🪓",
+    actions: [...defaultThing.actions, PickUp, Drop],
+  },
+  [ThingType.HAMMER]: {
+    symbol: "🔨",
+    actions: [...defaultThing.actions, PickUp, Drop],
+  },
+  [ThingType.KNIFE]: {
+    symbol: "🔪",
+    actions: [...defaultThing.actions, PickUp, Drop],
+  },
+  [ThingType.FISH]: {
+    symbol: "🐟",
+    actions: [...defaultThing.actions, PickUp, Drop, Eat],
+    satiation: 10,
+  },
+  [ThingType.BERRY]: {
+    symbol: "🍓",
+    actions: [...defaultThing.actions, PickUp, Drop, Eat],
+    satiation: 15,
+  },
+  [ThingType.MUSHROOM]: {
+    symbol: "🍄",
+    actions: [...defaultThing.actions, PickUp, Drop, Eat],
+    satiation: 10,
+  },
+  [ThingType.ROASTED_MUSHROOM]: {
+    symbol: "🍄",
+    actions: [...defaultThing.actions, PickUp, Drop, Eat],
+    satiation: 40,
+  },
+  [ThingType.TENT]: {
+    symbol: "⛺",
+    actions: [...defaultThing.actions, PickUp, Drop],
+  },
+  [ThingType.CAMPFIRE]: {
+    symbol: "🔥",
+    actions: [...defaultThing.actions],
+  },
+  [ThingType.SAW]: {
+    symbol: "🪚",
+    actions: [...defaultThing.actions, PickUp, Drop],
+  },
+  [ThingType.POULTICE]: {
+    symbol: "🩹",
+    actions: [...defaultThing.actions, PickUp, Drop, Heal],
+    healing: 50,
+  },
+};
+
+const ThingTemplates = Object.fromEntries(
+  Object.entries(things).map(([key, value]) => [
+    key,
+    {
+      ...defaultThing,
+      name: key,
+      type: key,
+      ...value,
+    },
+  ])
+) as Record<ThingType, Partial<Thing>>;
+
+export { Thing, Food, Healable, ThingType, createThing };
+
+===================================
+
+File: src/World.test.ts
+-----------------------------------
+import { World, Rectangle, Thing } from "./World";
+
+describe("World", () => {
+  let world: World;
+
+  beforeEach(() => {
+    world = World.newWorld(1000, 1000);
+  });
+
+  // test("should populate things from config", () => {
+  //   // world.populateThingsFromConfig("src/configs/objects.json");
+
+  //   const thingsInVision = world.quadtree.query(new Rectangle(0, 0, 1000, 1000));
+
+  //   expect(thingsInVision.length).toBeGreaterThan(0);
+  // });
+});
+
+===================================
+
+File: src/World.ts
+-----------------------------------
+import { QuadTree, Rectangle } from "./utils/QuadTree";
+import { Player } from "./Player";
+import { Thing } from "./Thing";
+
+export interface WorldState {
+  quadtree: QuadTree;
+}
+
+class World {
+  private static instance: World;
+  state: WorldState;
+
+  private constructor(width: number, height: number) {
+    this.state = {
+      quadtree: new QuadTree(new Rectangle(0, 0, width / 2, height / 2), 4),
+    };
+  }
+
+  public static newWorld(width: number, height: number): World {
+    if (World.instance) {
+      return World.instance;
+    }
+    World.instance = new World(width, height);
+    return World.instance;
+  }
+
+  public static getInstance(): World {
+    if (!World.instance) {
+      World.instance = new World(100, 100);
+    }
+    return World.instance;
+  }
+}
+
+export { World, Rectangle, Thing };
+
+===================================
+
+File: src/behaviorTree/BaseNodes.ts
+-----------------------------------
+import logger from "../utils/Logger";
+
+abstract class BehaviorNode {
+  abstract run(context: any): boolean;
+}
+
+class SelectorNode extends BehaviorNode {
+  private children: BehaviorNode[];
+
+  constructor(children: BehaviorNode[]) {
+    super();
+    this.children = children;
+  }
+
+  run(context: any): boolean {
+    for (const child of this.children) {
+      if (child.run(context)) return true;
+    }
+    return false;
+  }
+}
+
+class SequenceNode extends BehaviorNode {
+  private children: BehaviorNode[];
+
+  constructor(children: BehaviorNode[]) {
+    super();
+    this.children = children;
+  }
+
+  run(context: any): boolean {
+    for (const child of this.children) {
+      if (!child.run(context)) return false;
+    }
+    return true;
+  }
+}
+
+class NegateNode extends BehaviorNode {
+  private childNode: BehaviorNode;
+
+  constructor(childNode: BehaviorNode) {
+    super();
+    this.childNode = childNode;
+  }
+
+  run(context: any): boolean {
+    return !this.childNode.run(context);
+  }
+}
+
+class LogNode extends BehaviorNode {
+  private message: string;
+
+  constructor(message: string) {
+    super();
+    this.message = message;
+  }
+
+  run(context: any): boolean {
+    logger.log(this.message);
+    return true;
+  }
+}
+
+export { BehaviorNode, SelectorNode, SequenceNode, NegateNode, LogNode };
+
+===================================
+
+File: src/behaviorTree/CheckHP.ts
+-----------------------------------
+import logger from "../utils/Logger";
+import { BehaviorNode } from "./BaseNodes";
+
+class CheckHP extends BehaviorNode {
+  player: any; // specify the player type if you have one
+
+  constructor(player: any) {
+    // specify the player type if you have one
+    super();
+    this.player = player;
+  }
+
+  run(context: any): boolean {
+    // specify the context type if you have one
+    if (this.player.HP < this.player.HPActionThreshold) {
+      logger.log("HP below threshold.");
+      return true;
+    }
+    logger.log("HP Okay.");
+    return false;
+  }
+}
+
+export { CheckHP };
+
+===================================
+
+File: src/behaviorTree/CheckHunger.ts
+-----------------------------------
+import logger from "../utils/Logger";
+import { BehaviorNode } from "./BaseNodes";
+
+class CheckHunger extends BehaviorNode {
+  player: any; // specify the player type if you have one
+
+  constructor(player: any) {
+    // specify the player type if you have one
+    super();
+    this.player = player;
+  }
+
+  run(context: any): boolean {
+    // specify the context type if you have one
+    if (this.player.hunger < this.player.hungerActionThreshold) {
+      logger.log("Hunger below threshold.");
+      return true;
+    }
+    logger.log("Hunger Okay.");
+    return false;
+  }
+}
+
+export { CheckHunger };
+
+===================================
+
+File: src/behaviorTree/CheckLongGoals.ts
+-----------------------------------
+import logger from "../utils/Logger";
+import { BehaviorNode } from "./BaseNodes";
+
+class CheckLongGoals extends BehaviorNode {
+  player: any; // specify the player type if you have one
+
+  constructor(player: any) {
+    // specify the player type if you have one
+    super();
+    this.player = player;
+  }
+
+  run(context: any): boolean {
+    // specify the context type if you have one
+    if (this.player.longGoals.length > 0) {
+      const index = Math.floor(context.rng * this.player.longGoals.length);
+      this.player.currentGoal = this.player.longGoals[index];
+      logger.log("Player has longterm goals. Goal: " + this.player.currentGoal.reward);
+      return true;
+    }
+    logger.log("Player has no longterm goals.");
+    return false;
+  }
+}
+
+export { CheckLongGoals };
+
+===================================
+
+File: src/behaviorTree/SetGoal.ts
+-----------------------------------
+import { Player } from "../Player";
+import { Goal } from "../goap/Goals";
+import logger from "../utils/Logger";
+import { BehaviorNode } from "./BaseNodes";
+
+class SetGoal extends BehaviorNode {
+  player: Player;
+  goal: Goal;
+
+  constructor(player: any, goal: Goal) {
+    super();
+    this.player = player;
+    this.goal = goal;
+  }
+
+  run(context: any): boolean {
+    logger.log("Setting goal.");
+    this.player.currentGoal = this.goal;
+    return true;
+  }
+}
+
+export { SetGoal };
+
+===================================
+
+File: src/configs/Skills.ts
+-----------------------------------
+export enum Skills {
+  FIRE_MAKING_1 = "Firemaking_1",
+  FIRE_MAKING_2 = "Firemaking_2",
+  FIRE_MAKING_3 = "Firemaking_3",
+  FISHING_1 = "Fishing_1",
+  FISHING_2 = "Fishing_2",
+  FISHING_3 = "Fishing_3",
+  COOKING_1 = "Cooking_1",
+  COOKING_2 = "Cooking_2",
+  COOKING_3 = "Cooking_3",
+  WOODCUTTING_1 = "Woodcutting_1",
+  WOODCUTTING_2 = "Woodcutting_2",
+  WOODCUTTING_3 = "Woodcutting_3",
+  BUILDING_1 = "Building_1",
+  BUILDING_2 = "Building_2",
+  BUILDING_3 = "Building_3",
+}
+
+===================================
+
+File: src/configs/objects.json
+-----------------------------------
+[
+  { "type": "tree", "symbol": "🌲", "passable": false },
+  { "type": "tree", "symbol": "🌳", "passable": false },
+  { "type": "palm tree", "symbol": "🌴", "passable": false },
+  { "type": "cactus", "symbol": "🌵", "passable": false },
+  { "type": "rice", "symbol": "🌾", "passable": true },
+  { "type": "herb", "symbol": "🌿", "passable": true },
+  { "type": "plant", "symbol": "🍀", "passable": true },
+  { "type": "maple leaf", "symbol": "🍁" },
+  { "type": "dead leaves", "symbol": "🍂" },
+  { "type": "rock", "symbol": "🪨" },
+  { "type": "mountain", "symbol": "⛰️" },
+  { "type": "volcano", "symbol": "🌋" },
+  { "type": "berry", "symbol": "🍓" },
+  { "type": "mushroom", "symbol": "🍄" },
+  { "type": "chestnut", "symbol": "🌰" },
+  { "type": "meat", "symbol": "🍖" },
+  { "type": "egg", "symbol": "🥚" },
+  { "type": "stick", "symbol": "🪵" },
+  { "type": "bone", "symbol": "🦴" },
+  { "type": "fruit", "symbol": "🍎" },
+  { "type": "fish", "symbol": "🐟" }
+]
+
+===================================
+
+File: src/goap/Action.ts
+-----------------------------------
+import { Thing } from "../Thing";
+import { CombinedState } from "./GOAPPlanner";
+
+/// @param preconditions - A function that returns true if the action can be performed
+/// @param actionFilter - A function that returns a filtered array of actions that can be performed following this action
+/// @param perform - A function that simulates performing the action and returns the new state
+interface Action {
+  name: string;
+  cost: number;
+  target: Thing;
+  preconditions: (state: CombinedState) => boolean;
+  actionFilter: (state: CombinedState) => Action[];
+  simulate?: (state: CombinedState) => CombinedState;
+  perform(state: CombinedState): CombinedState;
+}
+
+export type { Action };
+
+===================================
+
+File: src/goap/Actions/Chop.ts
+-----------------------------------
+import { CombinedState, GOAPPlanner } from "../GOAPPlanner";
+import { Thing } from "../../World";
+import { Action } from "../Action";
+import { ThingType, createThing } from "../../Thing";
+
+function Chop(state: CombinedState, thing: Thing): Action {
+  return {
+    name: "Chop",
+    target: thing,
+    cost: 1,
+    actionFilter: (state: CombinedState) => {
+      return GOAPPlanner.generateActions(state, []);
+    },
+    preconditions: (state: CombinedState) => {
+      const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
+      const target = state.quadtree
+        .queryAll()
+        .find((t) => t.type === thing.type && t.x === thing.x && t.y === thing.y);
+      if (
+        player &&
+        target &&
+        player.x === target.x &&
+        player.y === target.y &&
+        state.player.inventory.find((item) => item.type === ThingType.AXE)
+      ) {
+        return true;
+      }
+
+      return false;
+    },
+    perform(state: CombinedState) {
+      state.quadtree.insert(createThing(ThingType.WOOD, { x: thing.x, y: thing.y }));
+      const target = state.quadtree
+        .queryAll()
+        .find((t) => t.type === thing.type && t.x === thing.x && t.y === thing.y) as Thing;
+      state.quadtree.remove(target);
+      return state;
+    },
+  };
+}
+
+export { Chop };
+
+===================================
+
+File: src/goap/Actions/Craft.ts
+-----------------------------------
+import { CombinedState, GOAPPlanner } from "../GOAPPlanner";
+import { Action } from "../Action";
+import { Recipe } from "../../Recipe";
+import { createThing } from "../../Thing";
+
+function Craft(state: CombinedState, recipe: Recipe): Action {
+  return {
+    name: "Craft",
+    target: createThing(recipe.name), // TODO: This needs to not require a thing, but rather just a ThingType
+    cost: 1,
+    actionFilter: (state: CombinedState) => {
+      return GOAPPlanner.generateActions(state, []);
+    },
+    preconditions: (state: CombinedState) => {
+      return recipe.ingredients(state);
+    },
+
+    perform(state: CombinedState) {
+      return recipe.result(state);
+    },
+  };
+}
+
+export { Craft };
+
+===================================
+
+File: src/goap/Actions/Drop.ts
+-----------------------------------
+import { CombinedState, GOAPPlanner } from "../GOAPPlanner";
+import { Thing } from "../../World";
+import { Action } from "../Action";
+
+function Drop(state: CombinedState, thing: Thing): Action {
+  return {
+    name: "Drop",
+    target: thing,
+    cost: 2,
+    actionFilter: (state: CombinedState) => {
+      return GOAPPlanner.generateActions(state, []).filter(
+        (action) => !(action.name === "WalkTo" && action.target.id === thing.id)
+      );
+    },
+    preconditions: (state: CombinedState) => {
+      if (state.player.inventory.find((item) => item.type === thing.type)) {
+        return true;
+      }
+      return false;
+    },
+
+    perform(state: CombinedState) {
+      const player = state.quadtree.queryAll().find((t) => t.id === state.player.id) as Thing;
+      const target = state.player.inventory.find((item) => item.type === thing.type) as Thing;
+      state.quadtree.insert({ ...target, x: player.x, y: player.y });
+      state.player.inventory = state.player.inventory.filter((item) => item.id !== target.id);
+      return state;
+    },
+  };
+}
+
+export { Drop };
+
+===================================
+
+File: src/goap/Actions/Eat.ts
+-----------------------------------
+import { CombinedState, GOAPPlanner } from "../GOAPPlanner";
+import { Thing } from "../../World";
+import { Action } from "../Action";
+import { Food } from "../../Thing";
+import logger from "../../utils/Logger";
+
+function Eat(state: CombinedState, thing: Thing): Action {
+  return {
+    name: "Eat",
+    target: thing,
+    cost: 1 - (thing as Food).satiation / 50,
+    actionFilter: (state: CombinedState) => {
+      return GOAPPlanner.generateActions(state, []);
+    },
+    preconditions: (state: CombinedState) => {
+      if (state.player.inventory.find((item) => item.type === thing.type)) {
+        return true;
+      }
+      return false;
+    },
+
+    perform(state: CombinedState) {
+      state.player.hunger += (thing as Food).satiation;
+      const target = state.player.inventory.find((item) => item.type === thing.type) as Thing;
+      state.player.inventory = state.player.inventory.filter((item) => item.id !== target.id);
+      return state;
+    },
+  };
+}
+
+export { Eat };
+
+===================================
+
+File: src/goap/Actions/Heal.ts
+-----------------------------------
+import { CombinedState, GOAPPlanner } from "../GOAPPlanner";
+import { Thing } from "../../World";
+import { Action } from "../Action";
+import { Food, Healable } from "../../Thing";
+
+function Heal(state: CombinedState, thing: Thing): Action {
+  return {
+    name: "Heal",
+    target: thing,
+    cost: 1 - (thing as Healable).healing / 50,
+    actionFilter: (state: CombinedState) => {
+      return GOAPPlanner.generateActions(state, []);
+    },
+    preconditions: (state: CombinedState) => {
+      if (state.player.inventory.find((item) => item.type === thing.type)) {
+        return true;
+      }
+      return false;
+    },
+
+    perform(state: CombinedState) {
+      state.player.HP += (thing as Healable).healing;
+      const target = state.player.inventory.find((item) => item.type === thing.type) as Thing;
+      state.player.inventory = state.player.inventory.filter((item) => item.id !== target.id);
+      return state;
+    },
+  };
+}
+
+export { Heal };
+
+===================================
+
+File: src/goap/Actions/PickUp.ts
+-----------------------------------
+import { CombinedState, GOAPPlanner } from "../GOAPPlanner";
+import { Thing } from "../../World";
+import { Action } from "../Action";
+
+function PickUp(state: CombinedState, thing: Thing): Action {
+  return {
+    name: "PickUp",
+    target: thing,
+    cost: 1,
+    actionFilter: (state: CombinedState) => {
+      return GOAPPlanner.generateActions(state, []).filter(
+        (action) =>
+          !(
+            (action.name === "PickUp" && action.target.id === thing.id) ||
+            (action.name === "WalkTo" && action.target.id === thing.id)
+          )
+      );
+    },
+    preconditions: (state: CombinedState) => {
+      const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
+      const target = state.quadtree
+        .queryAll()
+        .find((t) => t.type === thing.type && t.x === thing.x && t.y === thing.y);
+      if (player && target && player.x === target.x && player.y === target.y) {
+        return true;
+      }
+      return false;
+    },
+
+    perform(state: CombinedState) {
+      const target = state.quadtree
+        .queryAll()
+        .find((t) => t.type === thing.type && t.x === thing.x && t.y === thing.y) as Thing;
+      state.quadtree.remove(target);
+      state.player.inventory.push(target);
+      return state;
+    },
+  };
+}
+
+export { PickUp };
+
+===================================
+
+File: src/goap/Actions/StartFire.test.ts
+-----------------------------------
+import { Player } from "../../Player";
+import { Thing, ThingType, createThing } from "../../Thing";
+import { QuadTree, Rectangle } from "../../utils/QuadTree";
+import { CombinedState } from "../GOAPPlanner";
+import { StartFire } from "./StartFire";
+
+let state: CombinedState;
+let wood: Thing;
+let player: Player;
+
+beforeAll(() => {
+  player = new Player("1", "John Plant", 0, 0, "🧍", []);
+  wood = createThing(ThingType.WOOD, { x: 0, y: 0 });
+  let berry = createThing(ThingType.BERRY, { x: 0, y: 1 });
+  state = createState([player, wood, berry]);
+});
+
+const createState = (things: Thing[]): CombinedState => {
+  return {
+    quadtree: new QuadTree(new Rectangle(0, 0, 10, 10), 4),
+    player: player,
+  };
+};
+
+describe("StartFire", () => {
+  it("should remove wood", () => {
+    const action = StartFire(state, wood);
+    const newState = action.perform(state);
+    // expect newState to no longer contain wood
+    const quadtreeThings = newState.quadtree.queryAll();
+    expect(quadtreeThings).not.toContain(wood);
+  });
+  it("should add a campfire", () => {
+    const action = StartFire(state, wood);
+    const newState = action.perform(state);
+    // expect newState to contain a campfire
+    const quadtreeThings = newState.quadtree.queryAll();
+    expect(quadtreeThings).toContainEqual(
+      expect.objectContaining({
+        type: ThingType.CAMPFIRE,
+      })
+    );
+  });
+  it("should not affect other objects", () => {
+    const berry = createThing(ThingType.BERRY, { x: 0, y: 1 });
+    state.quadtree.insert(berry);
+    const action = StartFire(state, wood);
+    const newState = action.perform(state);
+    const quadtreeThings = newState.quadtree.queryAll();
+    expect(quadtreeThings).toContainEqual(
+      expect.objectContaining({
+        type: ThingType.BERRY,
+      })
+    );
+  });
+});
+
+===================================
+
+File: src/goap/Actions/StartFire.ts
+-----------------------------------
+import { CombinedState, GOAPPlanner } from "../GOAPPlanner";
+import { Thing, World } from "../../World";
+import { Action } from "../Action";
+import { ThingType, createThing } from "../../Thing";
+
+function StartFire(state: CombinedState, thing: Thing): Action {
+  return {
+    name: "StartFire",
+    target: thing,
+    cost: 1,
+    actionFilter: (state: CombinedState) => {
+      return GOAPPlanner.generateActions(state, []);
+    },
+    preconditions: (state: CombinedState) => {
+      const player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
+      const wood = state.quadtree
+        .queryAll()
+        .find((t) => t.type === thing.type && t.x === thing.x && t.y === thing.y);
+      if (player && wood && player.x === wood.x && player.y === wood.y) {
+        return true;
+      }
+      return false;
+    },
+
+    perform(state: CombinedState) {
+      state.quadtree.insert(createThing(ThingType.CAMPFIRE, { x: thing.x, y: thing.y }));
+      const wood = state.quadtree
+        .queryAll()
+        .find((t) => t.type === thing.type && t.x === thing.x && t.y === thing.y);
+      state.quadtree.remove(wood as Thing);
+
+      return state;
+    },
+  };
+}
+
+export { StartFire };
+
+===================================
+
+File: src/goap/Actions/WalkTo.ts
+-----------------------------------
+import { Thing } from "../../Thing";
+import { Action } from "../Action";
+import { CombinedState, GOAPPlanner } from "../GOAPPlanner";
+
+function WalkTo(state: CombinedState, thing: Thing): Action {
+  return {
+    name: "WalkTo",
+    target: thing,
+    cost: 1,
+    actionFilter: (state: CombinedState) => {
+      return GOAPPlanner.generateActions(state, []).filter((action) => action.name !== "WalkTo");
+    },
+    preconditions: (state: CombinedState) => {
+      return true;
+    },
+
+    simulate(state: CombinedState) {
+      let player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
+      if (player) {
+        state.quadtree.remove(player as Thing);
+        state.quadtree.insert({ ...state.player, x: thing.x, y: thing.y });
+      }
+      return state;
+    },
+    perform(state: CombinedState) {
+      // return state.player.moveTo(newPlayerPosition.x, newPlayerPosition.y);
+      // state.player.x = destination.x;
+      // state.player.y = destination.y;
+      let player = state.quadtree.queryAll().find((t) => t.id === state.player.id);
+      if (player) {
+        const destination = { x: thing.x, y: thing.y };
+        let newPlayerPosition: { x: number; y: number } = { x: player.x, y: player.y };
+        if (destination.x !== undefined && destination.y !== undefined) {
+          const dx = destination.x - player.x;
+          const dy = destination.y - player.y;
+          const length = Math.sqrt(dx * dx + dy * dy);
+          const speed = state.player.speed;
+          if (length > speed) {
+            const normalizedVector = {
+              dx: dx / length,
+              dy: dy / length,
+            };
+            newPlayerPosition = {
+              x: player.x + normalizedVector.dx * speed,
+              y: player.y + normalizedVector.dy * speed,
+            };
+          } else {
+            newPlayerPosition = { x: thing.x, y: thing.y };
+          }
+        }
+        state.quadtree.remove(player as Thing);
+        state.quadtree.insert({ ...state.player, x: newPlayerPosition.x, y: newPlayerPosition.y });
+      }
+      return state;
+    },
+  };
+}
+
+export { WalkTo };
+
+===================================
+
+File: src/goap/GOAPPlanner.test.ts
+-----------------------------------
+// GOAPPlanner.test.ts
+
+import { GOAPPlanner, CombinedState } from "./GOAPPlanner";
+import { Player } from "../Player";
+import { WalkTo } from "./Actions/WalkTo";
+import { WorldState } from "../World";
+import { Goal } from "./Goals";
+import { Action } from "./Action";
+import { ThingType } from "../Thing";
+
+describe("GOAPPlanner", () => {
+  // it("should make the player walk to the target position", () => {
+  //   const player = new Player(ThingType.PLAYER, 0, 0, "🧍", [WalkTo]);
+  //   const worldState: WorldState = { items: [], things: [] };
+  //   const goal: Goal = { requirements: { x: 3, y: 3 }, requiredSkills: [], reward: "Go To" };
+  //   const combinedState: CombinedState = { ...player.playerState, ...worldState };
+  //   const availableActions: Action[] = [];
+  //   const actionFactories = [WalkTo];
+  //   let plan = GOAPPlanner.plan(
+  //     player.playerState,
+  //     worldState,
+  //     goal,
+  //     availableActions,
+  //     actionFactories
+  //   );
+  //   expect(plan).not.toBeNull();
+  //   // Loop to simulate turns
+  //   for (let i = 0; i < 10; i++) {
+  //     if (plan.length > 0) {
+  //       const firstAction = plan[0];
+  //       const success = firstAction.perform(); // Replace with appropriate agent
+  //       if (success) {
+  //         plan.shift();
+  //         // Update the playerState to reflect the new position
+  //       }
+  //     }
+  //   }
+  //   // Validate the final state
+  //   expect(player.x).toBe(3);
+  //   expect(player.y).toBe(3);
+  // });
+});
+
+===================================
+
+File: src/goap/GOAPPlanner.ts
+-----------------------------------
+import { Player, playerState } from "../Player";
+import { Thing, ThingType } from "../Thing";
+import { WorldState } from "../World";
+import { Action } from "./Action";
+import { Goal } from "./Goals";
+import { omitFields } from "../utils/omitFields";
+import { deepCloneWithActionReference } from "../utils/DeepClone";
+import { deepEqual } from "../utils/DeepEqual";
+import { getCraftableRecipes } from "../Recipe";
+import { Craft } from "./Actions/Craft";
+import logger from "../utils/Logger";
+import { compareByProximity, removeDuplicatesByType } from "../utils/removeDuplicates";
+
+interface Node {
+  parent: Node | null;
+  action: Action | null;
+  state: CombinedState;
+  cost: number;
+}
+
+export interface CombinedState extends WorldState {
+  player: playerState;
+}
+
+class GOAPPlanner {
+  static plan(
+    player: Player,
+    worldState: WorldState,
+    goal: Goal,
+    globalActions: Function[]
+  ): Action[] {
+    let plan: Action[] = [];
+    const combinedState: CombinedState = {
+      ...worldState,
+      player: omitFields(player, ["skillTree", "behaviorTree"]) as unknown as playerState,
+    };
+
+    // Initialize the starting node
+    const startNode: Node = { parent: null, action: null, state: combinedState, cost: 0 };
+
+    // Early return if goal is already met
+    if (this.goalMet(goal, combinedState)) {
+      logger.log("Goal already met. No actions needed.");
+      return plan;
+    }
+
+    let nodes: Node[] = [startNode];
+    logger.log("Starting plan generation...");
+
+    let sequenceCount = 0;
+    let plans: Action[][] = [];
+
+    let nodesSinceLastPlan = 0;
+
+    while (nodes.length > 0 && nodesSinceLastPlan < 1000) {
+      if (plans.length > 0) {
+        nodesSinceLastPlan += 1;
+      }
+      //   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+
+      sequenceCount++;
+      nodes.sort((a, b) => a.cost - b.cost);
+      const currentNode = nodes.shift()!;
+
+      // ----------------- DEBUG -----------------
+      if (sequenceCount % 10 === 0) {
+        const status = `thinking... (${sequenceCount} sequences${
+          plans.length > 0 ? `, elapsed: ${nodesSinceLastPlan}` : ""
+        })`;
+        currentNode.state.player.GOAPStatus = status;
+        process.stdout.write(`\r${status}`);
+      }
+      logger.log(
+        `\n=================== Considered Sequence ${sequenceCount} ======================\n`,
+        false
+      );
+      logger.log(`GOAL: ${goal.requirements.toString()}`, false);
+      logger.log(this.printActionSequence(currentNode), false);
+      logger.log(
+        `\nPLAYER: ${currentNode.state.quadtree.queryAll().find((t) => t.type === "PLAYER")?.x} ${
+          currentNode.state.quadtree.queryAll().find((t) => t.type === "PLAYER")?.y
+        }`,
+        false
+      );
+      logger.log(`THINGS: ${this.describeThings(currentNode.state.quadtree.queryAll())}`, false);
+      logger.log(
+        `INVENTORY: [${this.describeThings(currentNode.state.player.inventory as Thing[])}]`,
+        false
+      );
+      // ----------------- DEBUG -----------------
+
+      let availableActions =
+        currentNode.action?.actionFilter(currentNode.state) ||
+        this.generateActions(currentNode.state, globalActions);
+      availableActions.sort((a, b) => a.cost - b.cost);
+      logger.log(`AVAILABLE ACTIONS: ${this.describeActions(availableActions)}\n`, false);
+
+      for (const action of availableActions) {
+        if (this.isActionExecutable(action, currentNode.state)) {
+          const newState = this.executeAction(action, currentNode.state);
+          const newCost = currentNode.cost + action.cost;
+          const newNode: Node = {
+            parent: currentNode,
+            action: action,
+            state: newState,
+            cost: newCost,
+          };
+          // if (this.isStateInAncestry(newNode)) {
+          //   // TODO: I dont think this was working
+          //     logger.log(
+          //       `Action not executed: ${action.name}(${action.target.name}) Duplicate state.`, false
+          //     );
+          //   continue;
+          // }
+          logger.log(`Action executed: ${action.name}(${action.target?.name})`, false);
+          if (this.goalMet(goal, newNode.state)) {
+            let node = newNode;
+            while (node.parent) {
+              if (node.action) {
+                plan.unshift(node.action);
+              }
+              node = node.parent;
+            }
+            logger.log("\x1b[32m");
+            logger.log("\nPlan found!");
+            logger.log(`Plan: ${this.describeActions(plan)}\n`);
+            logger.log("\x1b[0m");
+            plans.push([...plan]);
+            plan = [];
+          }
+
+          if (plans.length < 1) nodes.push(newNode);
+        } else {
+          logger.log(`Action not executed: ${action.name}(${action.target.name})`, false);
+        }
+      }
+    }
+    logger.log("\n================== FINISHED PLAN GENERATION =====================\n", false);
+    if (plans.length > 0) {
+      // choose the plan with the lowest cost
+      let lowestCost = Number.MAX_SAFE_INTEGER;
+      let lowestCostPlan: Action[] = [];
+      for (const plan of plans) {
+        let cost = 0;
+        for (const action of plan) {
+          cost += action.cost;
+        }
+        if (cost < lowestCost) {
+          lowestCost = cost;
+          lowestCostPlan = plan;
+        }
+      }
+      logger.log(`Total plans: ${plans.length}`);
+      logger.log(`Total sequences: ${sequenceCount}`);
+      logger.log(
+        `Plans: ${plans
+          .map((p) => p.map((a) => `${a.name}(${a.target.name})`).join(" -> "))
+          .join("\n")}`
+      );
+      return lowestCostPlan;
+    }
+    logger.log("No valid plan found.");
+    return [];
+  }
+
+  static generateActions(state: CombinedState, globalActions: Function[]): Action[] {
+    let actions: Action[] = [];
+    // Add crafting actions
+    const craftableRecipes = getCraftableRecipes(state);
+    logger.log(`CRAFTABLE RECIPES: ${craftableRecipes.map((r) => r.name)}`, false);
+    const craftActions: Action[] = craftableRecipes.map((recipe) => {
+      // Return a new Craft action initialized with the recipe.
+      // Replace `Craft` with the actual Craft action class you have.
+      return Craft(state, recipe);
+    });
+
+    actions = [...actions, ...craftActions];
+
+    const things = state.quadtree.queryAll();
+    const player = things.find((t) => t.id === state.player.id) as Thing;
+    const deduplicatedThings = removeDuplicatesByType(
+      things,
+      compareByProximity.bind(null, player)
+    );
+    for (const thing of deduplicatedThings) {
+      if (thing.id !== state.player.id) {
+        // Skip player
+        for (const createAction of thing.actions) {
+          // exclude walkto action if player is already at the thing
+          const player = state.quadtree.queryAll().find((t) => t.id === state.player.id) as Thing;
+          if (createAction.name === "WalkTo" && player.x === thing.x && player.y === thing.y) {
+            continue;
+          }
+          // exclude drop actions because player isn't holding the object
+          if (createAction.name === "Drop") {
+            continue;
+          }
+          actions.push(createAction(state, thing));
+        }
+      }
+    }
+    for (const thing of state.player.inventory) {
+      for (const createAction of thing.actions) {
+        // exclude walkTo and pickUp actions because player is already holding the object
+        if (createAction.name === "WalkTo" || createAction.name === "PickUp") {
+          continue;
+        }
+        actions.push(createAction(state, thing));
+      }
+    }
+    return actions;
+  }
+
+  private static isActionExecutable(action: Action, state: CombinedState): boolean {
+    // return this.matchesNestedKeys(action.preconditions, state);
+    return action.preconditions(state);
+  }
+
+  private static deepClone(obj: any, hash = new WeakMap()): any {
+    if (Object(obj) !== obj) return obj;
+    if (hash.has(obj)) return hash.get(obj);
+    const result = Array.isArray(obj)
+      ? []
+      : obj.constructor
+      ? new obj.constructor()
+      : Object.create(null);
+    hash.set(obj, result);
+    return Object.assign(
+      result,
+      ...Object.keys(obj).map((key) => ({ [key]: this.deepClone(obj[key], hash) }))
+    );
+  }
+
+  private static executeAction(action: Action, state: CombinedState): CombinedState {
+    let newState = deepCloneWithActionReference(state);
+    return action.simulate ? action.simulate(newState) : action.perform(newState);
+  }
+
+  private static goalMet(goal: Goal, state: CombinedState): boolean {
+    return goal.requirements(state);
+  }
+
+  // ----------------- HELPERS -----------------
+
+  private static isStateInAncestry(node: Node): boolean {
+    let currentNode = node;
+    const targetState = node.state;
+
+    while (currentNode.parent) {
+      currentNode = currentNode.parent;
+      if (deepEqual(currentNode.state, targetState)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private static printActionSequence(currentNode: Node): string {
+    let parentNode = currentNode;
+    const actionSequence: string[] = [];
+
+    while (parentNode.parent) {
+      if (parentNode.action) {
+        actionSequence.unshift(`${parentNode.action.name}(${parentNode.action.target?.name})`);
+      }
+      parentNode = parentNode.parent;
+    }
+
+    return `Action Sequence: ${actionSequence.join(" -> ")}`;
+  }
+  private static describeThings(state: Thing[]): string {
+    return [...state.map((t) => `${t.name}[${t.actions.map((a) => a.name).join(", ")}]`)].join(
+      ", "
+    );
+  }
+
+  private static describeActions(actions: Action[]): string {
+    return actions.map((a) => `${a.name}(${a.target.name})`).join(", ");
+  }
+}
+
+export { GOAPPlanner };
+
+===================================
+
+File: src/goap/Goals.ts
+-----------------------------------
+import { Player } from "../Player";
+import { Thing, ThingType } from "../Thing";
+import { WorldState } from "../World";
+import { Skills } from "../configs/Skills";
+import { CombinedState } from "./GOAPPlanner";
+
+interface GoalWorldState extends Partial<Omit<WorldState, "player" | "things">> {
+  player?: Partial<Omit<Player, "inventory">> & { inventory?: ThingType[] };
+  things?: ThingType[];
+}
+
+export interface Goal {
+  requirements: (state: CombinedState) => boolean;
+  requiredSkills: Skills[];
+  // requiredItems?: ItemType[];
+  // requiredThings?: Things[];
+
+  // reward: string;
+}
+
+export enum GoalType {
+  CHEF = "CHEF",
+  FIRE_STARTER = "FIRE_STARTER",
+  GO_TO = "GO_TO",
+}
+
+===================================
+
+File: src/goap/SimpleAction.ts
+-----------------------------------
+// import { Action } from "./Action";
+// import { WorldState } from "../World";
+
+// class GatherWood implements Action {
+//   name: string = "GatherWood";
+//   cost = 1;
+//   preconditions: WorldState = { hasAxe: true };
+//   effects: WorldState = { hasWood: true };
+
+//   perform(): boolean {
+//     // Perform action logic here
+//     return true;
+//   }
+// }
+
+// export { GatherWood };
+
+===================================
+
+File: src/goap/SimpleGoal.ts
+-----------------------------------
+import { Goal } from "./Goals";
+import { Skills } from "../configs/Skills";
+import { WorldState } from "../World";
+
+// function BuildHouse(): Goal {
+//   return {
+//     requiredSkills: [Skills.BUILDING_1],
+//     requirements: { player: {} },
+//     // reward: "Build House",
+//     // evaluate: (worldState: WorldState) => 10,
+//     // evaluate: (worldState: WorldState) => playerState.hasWood ? 10 : 0,
+//   };
+//   // evaluate(worldState: any): number {
+//   //   // Evaluate goal logic here, higher is better
+//   //   return worldState.hasWood ? 10 : 0;
+//   // }
+//   // reward: string = "Build House";
+// }
+
+// export { BuildHouse };
+
+===================================
+
+File: src/server/SocketServer.ts
+-----------------------------------
+// File: src/SocketServer.ts
+import * as net from "net";
+import logger from "../utils/Logger";
+
+export class SocketServer {
+  private server: net.Server;
+  private clients: net.Socket[] = [];
+
+  constructor() {
+    this.server = net.createServer((socket) => {
+      this.clients.push(socket);
+      socket.on("close", () => {
+        this.clients = this.clients.filter((client) => client !== socket);
+      });
+    });
+  }
+
+  start(port: number): void {
+    this.server.listen(port, () => {
+      logger.log(`Server listening on port ${port}`);
+    });
+  }
+
+  send(data: string): void {
+    for (const client of this.clients) {
+      client.write(data);
+    }
+  }
+
+  stop(): void {
+    for (const client of this.clients) {
+      client.destroy();
+    }
+    this.server.close();
+  }
+}
+
+===================================
+
+File: src/server/SocketServerClient.ts
+-----------------------------------
+// File: src/server/SocketServerClient.ts
+import * as net from "net";
+import logger from "../utils/Logger";
+
+class SocketServerClient {
+  private client!: net.Socket;
+  private readonly port: number = 8080;
+
+  constructor() {
+    this.connect();
+  }
+
+  private connect(): void {
+    this.client = net.createConnection({ port: this.port }, () => {
+      // logger.log("Connected to server");
+    });
+
+    this.client.on("data", (data: Buffer) => {
+      process.stdout.write("\x1Bc"); // Clear terminal
+      process.stdout.write(data.toString());
+    });
+
+    this.client.on("end", () => {
+      // logger.log("Disconnected from server");
+    });
+
+    this.client.on("error", (error: Error) => {
+      // logger.log(`Connection error: ${error.message}`);
+      setTimeout(() => this.connect(), 2000); // Retry connection every 2 seconds
+    });
+  }
+}
+
+new SocketServerClient();
+
+===================================
+
+File: src/server/start-client.sh
+-----------------------------------
+#!/bin/bash
+# File: src/server/start-client.sh
+
+# Get the absolute path to the directory containing this script
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+
+# Navigate to the project root directory (assuming this script is in src/server)
+PROJECT_DIR="$(dirname "$(dirname "$DIR")")"
+
+OS=$(uname)
+
+if [[ "$OS" == "Darwin" ]]; then  # macOS
+    osascript -e 'tell application "Terminal"' \
+          -e 'activate' \
+          -e 'do script "cd '"$PROJECT_DIR"' && node dist/src/server/SocketServerClient.js"' \
+          -e 'set number of rows of front window to 80' \
+          -e 'set number of columns of front window to 160' \
+          -e 'end tell'
+
+elif [[ "$OS" == "Linux" ]]; then  # Linux
+    gnome-terminal -- bash -c "cd $PROJECT_DIR && node dist/src/server/SocketServerClient.js; exec bash"
+elif [[ "$OS" == "MINGW64_NT-10.0" || "$OS" == "MSYS_NT-10.0" ]]; then  # Windows
+    start cmd.exe /K "cd /D $PROJECT_DIR && node dist/src/server/SocketServerClient.js"
+else
+    echo "Unsupported OS: $OS"
+fi
+
+===================================
+
+File: src/utils/DeepClone.ts
+-----------------------------------
+import { QuadTree } from "./QuadTree";
+
+// deepCloneWithActionReference.ts
+export function deepCloneWithActionReference<T>(obj: T): T {
+  if (obj === null || typeof obj !== "object" || typeof obj === "function") {
+    return obj;
+  }
+  if (obj instanceof QuadTree) {
+    return obj.clone() as any as T;
+  }
+  if (Array.isArray(obj)) {
+    const arrCopy = [] as any;
+    for (const [index, value] of obj.entries()) {
+      arrCopy[index] = deepCloneWithActionReference(value);
+    }
+    return arrCopy as T;
+  } else {
+    const objCopy = {} as any;
+    for (const [key, value] of Object.entries(obj)) {
+      objCopy[key] = deepCloneWithActionReference(value);
+    }
+    return objCopy as T;
+  }
+}
+
+export default deepCloneWithActionReference;
+
+===================================
+
+File: src/utils/DeepEqual.ts
+-----------------------------------
+export const deepEqual = (a: any, b: any): boolean => {
+  if (a === b) return true;
+
+  if (a && b && typeof a === "object" && typeof b === "object") {
+    if (Array.isArray(a)) {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) {
+        if (!deepEqual(a[i], b[i])) return false;
+      }
+      return true;
+    }
+
+    const keys = Object.keys(a);
+    if (keys.length !== Object.keys(b).length) return false;
+
+    for (const key of keys) {
+      if (!b.hasOwnProperty(key)) return false;
+      if (!deepEqual(a[key], b[key])) return false;
+    }
+
+    return true;
+  }
+
+  return false;
+};
+
+===================================
+
+File: src/utils/DeepPartial.ts
+-----------------------------------
+import { Thing } from "../Thing";
+
+export type DeepPartial<T> = T extends Function
+  ? T
+  : T extends Thing[]
+  ? T
+  : {
+      [P in keyof T]?: DeepPartial<T[P]>;
+    };
+
+===================================
+
+File: src/utils/Logger.ts
+-----------------------------------
+import * as fs from "fs";
+import * as path from "path";
+
+class Logger {
+  private logFile: string;
+
+  constructor() {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-"); // Replace characters not allowed in file names
+    this.logFile = path.join(path.resolve("logs"), `log-${timestamp}.log`); // Create a new log file with timestamp
+  }
+
+  log(message: string, logToConsole = true, logToFile = true): void {
+    const timestamp = new Date().toISOString();
+    const logMessage = `${timestamp}: ${message}\n`;
+    if (logToFile) {
+      try {
+        fs.appendFileSync(this.logFile, logMessage);
+      } catch (err) {
+        console.error("Failed to write to log file:", err);
+      }
+    }
+    if (logToConsole) console.log(message); // Optionally, also log to console
+  }
+}
+
+const logger = new Logger();
+export default logger;
+
+===================================
+
+File: src/utils/MultiBranchLinkedList.ts
+-----------------------------------
+class Node {
+  name: string;
+  prevNodes: Node[];
+  nextNodes: Node[];
+  achieved: boolean;
+  // manager: MultiBranchLinkedList | null = null;
+
+  constructor(name: string, prevNodes: Node[] = [], nextNodes: Node[] = []) {
+    this.name = name;
+    this.prevNodes = prevNodes;
+    this.nextNodes = nextNodes;
+    this.achieved = false;
+  }
+
+  addPrev(node: Node): Node {
+    // if (!this.manager) {
+    //   throw new Error("Node not added to manager.");
+    // }
+    if (this.prevNodes.includes(node)) {
+      return node;
+    }
+    if (node.nextNodes.includes(this)) {
+      return node;
+    }
+    // this.manager.nodes.push(node);
+    node.nextNodes.push(this);
+    this.prevNodes.push(node);
+    // node.manager = this.manager;
+    return node;
+  }
+
+  addNext(node: Node): Node {
+    // if (!this.manager) {
+    //   throw new Error("Node not added to manager.");
+    // }
+    if (this.nextNodes.includes(node)) {
+      return node;
+    }
+    if (node.prevNodes.includes(this)) {
+      return node;
+    }
+    // this.manager.nodes.push(node);
+    node.prevNodes.push(this);
+    this.nextNodes.push(node);
+    // node.manager = this.manager;
+    return node;
+  }
+}
+
+class MultiBranchLinkedList {
+  nodes: Node[];
+
+  constructor() {
+    this.nodes = [];
+  }
+
+  addNode(node: Node): Node {
+    if (this.nodes.includes(node)) {
+      return node;
+    }
+    // node.manager = this;
+    this.nodes.push(node);
+    return node;
+  }
+
+  findNode(name: string): Node {
+    const foundNode = this.nodes.find((node) => node.name === name);
+    if (!foundNode) {
+      throw new Error(`Node with name ${name} not found.`);
+    }
+    return foundNode;
+  }
+
+  getFurthestPrev(startNode: Node): Node[] {
+    return this.getFurthest(startNode, "prevNodes");
+  }
+
+  getFurthestNext(startNode: Node): Node[] {
+    return this.getFurthest(startNode, "nextNodes");
+  }
+
+  private getFurthest(startNode: Node, direction: "prevNodes" | "nextNodes"): Node[] {
+    const visited = new Set<Node>();
+    const toVisit = [startNode];
+    const furthest: Node[] = [];
+
+    while (toVisit.length) {
+      const current = toVisit.pop()!;
+      if (!current[direction].length) {
+        furthest.push(current);
+      } else {
+        current[direction].forEach((node) => {
+          if (!visited.has(node)) {
+            toVisit.push(node);
+          }
+        });
+      }
+      visited.add(current);
+    }
+
+    return furthest;
+  }
+}
+
+export { Node, MultiBranchLinkedList };
+
+===================================
+
+File: src/utils/QuadTree.test.ts
+-----------------------------------
+import { Thing, ThingType } from "../Thing";
+import { Rectangle, QuadTree } from "./QuadTree";
+
+describe("QuadTree", () => {
+  let boundary: Rectangle;
+  let qt: QuadTree;
+
+  beforeEach(() => {
+    boundary = new Rectangle(0, 0, 100, 100);
+    qt = new QuadTree(boundary, 4);
+  });
+
+  test("Inserts points correctly", () => {
+    const point = {
+      id: "fish1",
+      name: ThingType.FISH,
+      type: ThingType.FISH,
+      x: 10,
+      y: 10,
+      symbol: "*",
+      actions: [],
+    };
+    qt.insert(point);
+    expect(qt.things).toContain(point);
+  });
+
+  test("Splits when reaching capacity", () => {
+    for (let i = 0; i < 5; i++) {
+      const point = {
+        id: "fish1",
+        name: ThingType.FISH,
+        type: ThingType.FISH,
+        x: 10 * i,
+        y: 10 * i,
+        symbol: "*",
+        actions: [],
+      };
+      qt.insert(point);
+    }
+    expect(qt.divided).toBe(true);
+  });
+
+  test("Query returns correct points", () => {
+    const points = [
+      {
+        id: "fish1",
+        name: ThingType.FISH,
+        type: ThingType.FISH,
+        x: 10,
+        y: 10,
+        symbol: "a",
+        actions: [],
+      },
+      {
+        id: "fish2",
+        name: ThingType.FISH,
+        type: ThingType.FISH,
+        x: 20,
+        y: 20,
+        symbol: "b",
+        actions: [],
+      },
+      {
+        id: "fish3",
+        name: ThingType.FISH,
+        type: ThingType.FISH,
+        x: 90,
+        y: 90,
+        symbol: "c",
+        actions: [],
+      },
+    ];
+
+    points.forEach((p) => qt.insert(p));
+
+    const range = new Rectangle(15, 15, 30, 30);
+    const found: Thing[] = [];
+    qt.query(range, found);
+
+    expect(found).toContain(points[0]);
+    expect(found).toContain(points[1]);
+    expect(found).not.toContain(points[2]);
+  });
+});
+
+===================================
+
+File: src/utils/QuadTree.ts
+-----------------------------------
+import { Thing } from "../World";
+
+class Rectangle {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+
+  constructor(x: number, y: number, w: number, h: number) {
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+  }
+
+  contains(thing: Thing): boolean {
+    return (
+      thing.x >= this.x - this.w &&
+      thing.x < this.x + this.w &&
+      thing.y >= this.y - this.h &&
+      thing.y < this.y + this.h
+    );
+  }
+
+  intersects(range: Rectangle): boolean {
+    return !(
+      range.x - range.w > this.x + this.w ||
+      range.x + range.w < this.x - this.w ||
+      range.y - range.h > this.y + this.h ||
+      range.y + range.h < this.y - this.h
+    );
+  }
+}
+
+class QuadTree {
+  boundary: Rectangle;
+  capacity: number;
+  things: Thing[];
+  divided: boolean;
+  northeast?: QuadTree;
+  northwest?: QuadTree;
+  southeast?: QuadTree;
+  southwest?: QuadTree;
+
+  constructor(boundary: Rectangle, capacity: number) {
+    this.boundary = boundary;
+    this.capacity = capacity;
+    this.things = [];
+    this.divided = false;
+  }
+
+  subdivide() {
+    let x = this.boundary.x;
+    let y = this.boundary.y;
+    let w = this.boundary.w / 2;
+    let h = this.boundary.h / 2;
+
+    let ne = new Rectangle(x + w, y - h, w, h);
+    this.northeast = new QuadTree(ne, this.capacity);
+    let nw = new Rectangle(x - w, y - h, w, h);
+    this.northwest = new QuadTree(nw, this.capacity);
+    let se = new Rectangle(x + w, y + h, w, h);
+    this.southeast = new QuadTree(se, this.capacity);
+    let sw = new Rectangle(x - w, y + h, w, h);
+    this.southwest = new QuadTree(sw, this.capacity);
+
+    this.divided = true;
+  }
+
+  insert(thing: Thing): boolean {
+    if (!this.boundary.contains(thing)) {
+      return false;
+    }
+
+    if (this.things.length < this.capacity) {
+      this.things.push(thing);
+      return true;
+    }
+
+    if (!this.divided) {
+      this.subdivide();
+    }
+
+    return (
+      this.northeast!.insert(thing) ||
+      this.northwest!.insert(thing) ||
+      this.southeast!.insert(thing) ||
+      this.southwest!.insert(thing)
+    );
+  }
+
+  remove(thing: Thing): boolean {
+    if (!this.boundary.contains(thing)) {
+      return false;
+    }
+
+    const index = this.things.findIndex((t) => t.id === thing.id);
+    if (index !== -1) {
+      this.things.splice(index, 1);
+      return true;
+    }
+
+    if (this.divided) {
+      return (
+        this.northeast!.remove(thing) ||
+        this.northwest!.remove(thing) ||
+        this.southeast!.remove(thing) ||
+        this.southwest!.remove(thing)
+      );
+    }
+
+    return false;
+  }
+
+  queryAll(): Thing[] {
+    return this.query(this.boundary);
+  }
+
+  query(range: Rectangle | any, found?: Thing[]): Thing[] {
+    if (!(range instanceof Rectangle)) {
+      if (
+        range.x === undefined ||
+        range.y === undefined ||
+        range.w === undefined ||
+        range.h === undefined
+      ) {
+        throw new Error("range must be of type Rectangle or have properties x, y, w, h");
+      }
+      range = new Rectangle(range.x, range.y, range.w, range.h);
+    }
+    if (!found) found = [];
+
+    if (!this.boundary.intersects(range)) {
+      return found;
+    }
+
+    for (let p of this.things) {
+      if (range.contains(p)) {
+        found.push(p);
+      }
+    }
+
+    if (this.divided) {
+      this.northeast!.query(range, found);
+      this.northwest!.query(range, found);
+      this.southeast!.query(range, found);
+      this.southwest!.query(range, found);
+    }
+
+    return found;
+  }
+
+  clone(): QuadTree {
+    const boundaryClone = new Rectangle(
+      this.boundary.x,
+      this.boundary.y,
+      this.boundary.w,
+      this.boundary.h
+    );
+    const qtClone = new QuadTree(boundaryClone, this.capacity);
+
+    qtClone.things = [...this.things]; // Assuming Thing objects are safe to shallow-copy
+    qtClone.divided = this.divided;
+
+    if (this.divided) {
+      qtClone.northeast = this.northeast!.clone();
+      qtClone.northwest = this.northwest!.clone();
+      qtClone.southeast = this.southeast!.clone();
+      qtClone.southwest = this.southwest!.clone();
+    }
+
+    return qtClone;
+  }
+}
+
+export { Rectangle, QuadTree };
+
+===================================
+
+File: src/utils/omitFields.ts
+-----------------------------------
+export function omitFields<T extends object>(obj: T, fields: string[]): Partial<T> {
+  const newObj: Partial<T> = {};
+  for (const key of Object.keys(obj)) {
+    if (!fields.includes(key)) {
+      // @ts-ignore
+      newObj[key] = obj[key];
+    }
+  }
+  for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(obj))) {
+    if (key !== "constructor" && !fields.includes(key)) {
+      // @ts-ignore
+      newObj[key] = obj[key].bind(obj);
+    }
+  }
+  return newObj;
+}
+
+===================================
+
+File: src/utils/removeDuplicates.ts
+-----------------------------------
+// File: src/utils/removeDuplicates.ts
+import { Thing, ThingType } from "../Thing";
+
+type SortComparator<T> = (a: T, b: T) => number;
+
+function removeDuplicatesByType(things: Thing[], compare: SortComparator<Thing>): Thing[] {
+  const typeMap = new Map<ThingType, Thing[]>();
+
+  // Group things by type
+  things.forEach((thing) => {
+    const group = typeMap.get(thing.type);
+    if (group) {
+      group.push(thing);
+    } else {
+      typeMap.set(thing.type, [thing]);
+    }
+  });
+
+  // For each type, sort the group and keep the first one
+  const uniqueThings: Thing[] = [];
+  typeMap.forEach((group, type) => {
+    if (group.length > 1) {
+      group.sort(compare); // Sort based on the comparator
+    }
+    uniqueThings.push(group[0]); // Only take the first item after sorting
+  });
+
+  return uniqueThings;
+}
+
+function compareByProximity(player: Thing, a: Thing, b: Thing): number {
+  const distanceA = Math.hypot(player.x - a.x, player.y - a.y);
+  const distanceB = Math.hypot(player.x - b.x, player.y - b.y);
+  return distanceA - distanceB; // Smaller distance will sort the element to the front
+}
+
+export { removeDuplicatesByType, compareByProximity };
+
+===================================
+
+File: tsconfig.json
+-----------------------------------
+{
+  "compilerOptions": {
+    /* Visit https://aka.ms/tsconfig to read more about this file */
+
+    /* Projects */
+    // "incremental": true,                              /* Save .tsbuildinfo files to allow for incremental compilation of projects. */
+    // "composite": true,                                /* Enable constraints that allow a TypeScript project to be used with project references. */
+    // "tsBuildInfoFile": "./.tsbuildinfo",              /* Specify the path to .tsbuildinfo incremental compilation file. */
+    // "disableSourceOfProjectReferenceRedirect": true,  /* Disable preferring source files instead of declaration files when referencing composite projects. */
+    // "disableSolutionSearching": true,                 /* Opt a project out of multi-project reference checking when editing. */
+    // "disableReferencedProjectLoad": true,             /* Reduce the number of projects loaded automatically by TypeScript. */
+
+    /* Language and Environment */
+    "target": "es2016" /* Set the JavaScript language version for emitted JavaScript and include compatible library declarations. */,
+    // "lib": [],                                        /* Specify a set of bundled library declaration files that describe the target runtime environment. */
+    // "jsx": "preserve",                                /* Specify what JSX code is generated. */
+    // "experimentalDecorators": true,                   /* Enable experimental support for legacy experimental decorators. */
+    // "emitDecoratorMetadata": true,                    /* Emit design-type metadata for decorated declarations in source files. */
+    // "jsxFactory": "",                                 /* Specify the JSX factory function used when targeting React JSX emit, e.g. 'React.createElement' or 'h'. */
+    // "jsxFragmentFactory": "",                         /* Specify the JSX Fragment reference used for fragments when targeting React JSX emit e.g. 'React.Fragment' or 'Fragment'. */
+    // "jsxImportSource": "",                            /* Specify module specifier used to import the JSX factory functions when using 'jsx: react-jsx*'. */
+    // "reactNamespace": "",                             /* Specify the object invoked for 'createElement'. This only applies when targeting 'react' JSX emit. */
+    // "noLib": true,                                    /* Disable including any library files, including the default lib.d.ts. */
+    // "useDefineForClassFields": true,                  /* Emit ECMAScript-standard-compliant class fields. */
+    // "moduleDetection": "auto",                        /* Control what method is used to detect module-format JS files. */
+
+    /* Modules */
+    "module": "commonjs" /* Specify what module code is generated. */,
+    // "rootDir": "./",                                  /* Specify the root folder within your source files. */
+    // "moduleResolution": "node10",                     /* Specify how TypeScript looks up a file from a given module specifier. */
+    // "baseUrl": "./",                                  /* Specify the base directory to resolve non-relative module names. */
+    // "paths": {},                                      /* Specify a set of entries that re-map imports to additional lookup locations. */
+    // "rootDirs": [],                                   /* Allow multiple folders to be treated as one when resolving modules. */
+    // "typeRoots": [],                                  /* Specify multiple folders that act like './node_modules/@types'. */
+    // "types": [],                                      /* Specify type package names to be included without being referenced in a source file. */
+    // "allowUmdGlobalAccess": true,                     /* Allow accessing UMD globals from modules. */
+    // "moduleSuffixes": [],                             /* List of file name suffixes to search when resolving a module. */
+    // "allowImportingTsExtensions": true,               /* Allow imports to include TypeScript file extensions. Requires '--moduleResolution bundler' and either '--noEmit' or '--emitDeclarationOnly' to be set. */
+    // "resolvePackageJsonExports": true,                /* Use the package.json 'exports' field when resolving package imports. */
+    // "resolvePackageJsonImports": true,                /* Use the package.json 'imports' field when resolving imports. */
+    // "customConditions": [],                           /* Conditions to set in addition to the resolver-specific defaults when resolving imports. */
+    // "resolveJsonModule": true,                        /* Enable importing .json files. */
+    // "allowArbitraryExtensions": true,                 /* Enable importing files with any extension, provided a declaration file is present. */
+    // "noResolve": true,                                /* Disallow 'import's, 'require's or '<reference>'s from expanding the number of files TypeScript should add to a project. */
+
+    /* JavaScript Support */
+    // "allowJs": true,                                  /* Allow JavaScript files to be a part of your program. Use the 'checkJS' option to get errors from these files. */
+    // "checkJs": true,                                  /* Enable error reporting in type-checked JavaScript files. */
+    // "maxNodeModuleJsDepth": 1,                        /* Specify the maximum folder depth used for checking JavaScript files from 'node_modules'. Only applicable with 'allowJs'. */
+
+    /* Emit */
+    // "declaration": true,                              /* Generate .d.ts files from TypeScript and JavaScript files in your project. */
+    // "declarationMap": true,                           /* Create sourcemaps for d.ts files. */
+    // "emitDeclarationOnly": true,                      /* Only output d.ts files and not JavaScript files. */
+    "sourceMap": true /* Create source map files for emitted JavaScript files. */,
+    // "inlineSourceMap": true,                          /* Include sourcemap files inside the emitted JavaScript. */
+    // "outFile": "./",                                  /* Specify a file that bundles all outputs into one JavaScript file. If 'declaration' is true, also designates a file that bundles all .d.ts output. */
+    "outDir": "./dist" /* Specify an output folder for all emitted files. */,
+    // "removeComments": true,                           /* Disable emitting comments. */
+    // "noEmit": true,                                   /* Disable emitting files from a compilation. */
+    // "importHelpers": true,                            /* Allow importing helper functions from tslib once per project, instead of including them per-file. */
+    // "importsNotUsedAsValues": "remove",               /* Specify emit/checking behavior for imports that are only used for types. */
+    // "downlevelIteration": true,                       /* Emit more compliant, but verbose and less performant JavaScript for iteration. */
+    // "sourceRoot": "",                                 /* Specify the root path for debuggers to find the reference source code. */
+    // "mapRoot": "",                                    /* Specify the location where debugger should locate map files instead of generated locations. */
+    // "inlineSources": true,                            /* Include source code in the sourcemaps inside the emitted JavaScript. */
+    // "emitBOM": true,                                  /* Emit a UTF-8 Byte Order Mark (BOM) in the beginning of output files. */
+    // "newLine": "crlf",                                /* Set the newline character for emitting files. */
+    // "stripInternal": true,                            /* Disable emitting declarations that have '@internal' in their JSDoc comments. */
+    // "noEmitHelpers": true,                            /* Disable generating custom helper functions like '__extends' in compiled output. */
+    // "noEmitOnError": true,                            /* Disable emitting files if any type checking errors are reported. */
+    // "preserveConstEnums": true,                       /* Disable erasing 'const enum' declarations in generated code. */
+    // "declarationDir": "./",                           /* Specify the output directory for generated declaration files. */
+    // "preserveValueImports": true,                     /* Preserve unused imported values in the JavaScript output that would otherwise be removed. */
+
+    /* Interop Constraints */
+    // "isolatedModules": true,                          /* Ensure that each file can be safely transpiled without relying on other imports. */
+    // "verbatimModuleSyntax": true,                     /* Do not transform or elide any imports or exports not marked as type-only, ensuring they are written in the output file's format based on the 'module' setting. */
+    // "allowSyntheticDefaultImports": true,             /* Allow 'import x from y' when a module doesn't have a default export. */
+    "esModuleInterop": true /* Emit additional JavaScript to ease support for importing CommonJS modules. This enables 'allowSyntheticDefaultImports' for type compatibility. */,
+    // "preserveSymlinks": true,                         /* Disable resolving symlinks to their realpath. This correlates to the same flag in node. */
+    "forceConsistentCasingInFileNames": true /* Ensure that casing is correct in imports. */,
+
+    /* Type Checking */
+    "strict": true /* Enable all strict type-checking options. */,
+    // "noImplicitAny": true,                            /* Enable error reporting for expressions and declarations with an implied 'any' type. */
+    // "strictNullChecks": true,                         /* When type checking, take into account 'null' and 'undefined'. */
+    // "strictFunctionTypes": true,                      /* When assigning functions, check to ensure parameters and the return values are subtype-compatible. */
+    // "strictBindCallApply": true,                      /* Check that the arguments for 'bind', 'call', and 'apply' methods match the original function. */
+    // "strictPropertyInitialization": true,             /* Check for class properties that are declared but not set in the constructor. */
+    // "noImplicitThis": true,                           /* Enable error reporting when 'this' is given the type 'any'. */
+    // "useUnknownInCatchVariables": true,               /* Default catch clause variables as 'unknown' instead of 'any'. */
+    // "alwaysStrict": true,                             /* Ensure 'use strict' is always emitted. */
+    // "noUnusedLocals": true,                           /* Enable error reporting when local variables aren't read. */
+    // "noUnusedParameters": true,                       /* Raise an error when a function parameter isn't read. */
+    // "exactOptionalPropertyTypes": true,               /* Interpret optional property types as written, rather than adding 'undefined'. */
+    // "noImplicitReturns": true,                        /* Enable error reporting for codepaths that do not explicitly return in a function. */
+    // "noFallthroughCasesInSwitch": true,               /* Enable error reporting for fallthrough cases in switch statements. */
+    // "noUncheckedIndexedAccess": true,                 /* Add 'undefined' to a type when accessed using an index. */
+    // "noImplicitOverride": true,                       /* Ensure overriding members in derived classes are marked with an override modifier. */
+    // "noPropertyAccessFromIndexSignature": true,       /* Enforces using indexed accessors for keys declared using an indexed type. */
+    // "allowUnusedLabels": true,                        /* Disable error reporting for unused labels. */
+    // "allowUnreachableCode": true,                     /* Disable error reporting for unreachable code. */
+
+    /* Completeness */
+    // "skipDefaultLibCheck": true,                      /* Skip type checking .d.ts files that are included with TypeScript. */
+    "skipLibCheck": true /* Skip type checking all .d.ts files. */
+  }
+}
+
+===================================
+
