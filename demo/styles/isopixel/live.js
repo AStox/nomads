@@ -41,7 +41,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   // The GPU draws every frame it can (null without WebGL2: the CPU composes, and a turn shows the main bearing until it
   // lands). Made first: while it casts the sun's shadows for the hour, the workers bake none (bakedSun false).
   let gpu = null, gpuOff = null;
-  try { gpu = createGPU({ NCOL, HAZE, SHADOW }); } catch (e) { gpuOff = { cause: e.cause ?? "build", why: e.message }; console.warn(`the GPU renderer is off: ${e.message}`); }
+  try { gpu = createGPU({ NCOL, HAZE, SHADOW, WATER: ["w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"].map((k) => P[k]) }); } catch (e) { gpuOff = { cause: e.cause ?? "build", why: e.message }; console.warn(`the GPU renderer is off: ${e.message}`); }
   let bakedSun = !gpu;
   const tStart = performance.now(), classWait = new Map();
   const pool = [], maps = new Map(), mapPending = new Map();
@@ -511,7 +511,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
           if (x >= 0 && y >= 0 && x < AW && y < AH) B.c[y * AW + x] = aC[i * 8 + fr];
         }
       }
-    for (let p = 0; p < B.id.length; p++) if (B.id[p] === 2) { B.id[p] = 0; B.sh[p] = 1; } else if (B.id[p] === 3) { B.id[p] = 1; }
+    // the chunks' object flags (bake.js) into ids and the shadow mark; still water (4) is ground like any other here
+    for (let p = 0; p < B.id.length; p++) { const o = B.id[p]; B.id[p] = o & 1; B.sh[p] = (o & 3) === 2 ? 1 : 0; }
     return holes;
   }
   // The frame's tiles for slot sl under cam: B.need(x0, y0, x1, y1), called by everything that draws before it touches
@@ -550,9 +551,10 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
           const aP = ch.animP, aC = ch.animC;
           for (let y = sy0; y < sy1; y++) {
             const src = (y - oy) * CS + sx0 - ox, dst = y * AW + sx0;
+            // sh: 1 ground already in shadow; 2 still open water, which a turn paints again from its tone (in ax)
             for (let i = 0; i < n; i++) {
               const o = ch.obj[src + i];
-              c[dst + i] = ch.c[src + i]; z[dst + i] = ch.z[src + i]; id[dst + i] = o & 1; sh[dst + i] = o === 2 ? 1 : 0; lt[dst + i] = 0;
+              c[dst + i] = ch.c[src + i]; z[dst + i] = ch.z[src + i]; id[dst + i] = o & 1; sh[dst + i] = o & 4 ? 2 : (o & 3) === 2 ? 1 : 0; lt[dst + i] = 0;
             }
             if (warp) for (let i = 0; i < n; i++) ax[dst + i] = ch.ax[src + i];
             // the water's frame: the bake sends a chunk's animated pixels in pixel order
@@ -565,8 +567,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   const lowerBound = (arr, v) => { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < v) lo = m + 1; else hi = m; } return lo; };
   // The frame's tiles packed for gpu.js: an atlas of TPR tiles to a row, each composed tile's atlas number + 1 at its
   // place in the view (index) and each atlas tile's place in the view (list). mode "over": colour only; "still" adds the
-  // light, with bit 4 on a flame and bit 8 on another live sprite (gpu.js FS_FLAT); "turn" adds each pixel's kind,
-  // anchor column and depth.
+  // light, with bit 4 on a flame, 8 on another live sprite (gpu.js FS_FLAT) and 16 on still open water (VS_DYN); "turn"
+  // adds each pixel's kind, anchor column (a water pixel's tone) and depth.
   function packTiles(sl, cam, mode) {
     const { AW, AH } = cam, pk = sl.pack, n = pk.n, rows = Math.ceil(n / TPR), RW = TS * TPR, size = RW * TS * rows, nt = pk.tw * pk.th, lit = sl.lit;
     pk.index.fill(0, 0, nt);
@@ -576,7 +578,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       for (let y = 0; y < h; y++) {
         const s = (y0 + y) * AW + x0, d = base + y * RW;
         if (mode === "over") { for (let i = 0; i < w; i++) pk.c[d + i] = sl.c[s + i]; continue; }
-        for (let i = 0; i < w; i++) { const id = sl.id[s + i]; pk.c[d + i] = sl.c[s + i]; pk.l[d + i] = sl.light[s + i] | (id > 1 ? (lit[id] ? 4 : 8) : 0); }
+        for (let i = 0; i < w; i++) { const id = sl.id[s + i]; pk.c[d + i] = sl.c[s + i]; pk.l[d + i] = sl.light[s + i] | (id > 1 ? (lit[id] ? 4 : 8) : sl.sh[s + i] & 2 ? 16 : 0); }
         if (mode === "turn") for (let i = 0; i < w; i++) { pk.id[d + i] = sl.id[s + i]; pk.ax[d + i] = sl.ax[s + i]; pk.z[d + i] = sl.z[s + i]; }
       }
     }
@@ -814,7 +816,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
           const p = y * B.w + x, X = x + cam.gx0, Y = y + cam.gy0;
           const lvl = Math.min(3, Math.floor((1 - d) * 3.4 + bayer(X, Y)));
           if (lvl > light[p]) light[p] = lvl;
-          if (!B.id[p] && bayer(X, Y) < (1 - d) * (1.4 - night * 0.6)) B.c[p] = GLOW[B.c[p]];
+          // the glow tints the ground, so water it tints is no longer the plain water a turn paints again
+          if (!B.id[p] && bayer(X, Y) < (1 - d) * (1.4 - night * 0.6)) { B.c[p] = GLOW[B.c[p]]; B.sh[p] &= 1; }
         }
       if (!md.isle) {
         const s = spr(`flame${fl}|${Math.floor(ph) & 7}`, () => SP.flames(fl, 5 + (Math.floor(ph) & 7))), id = owners.push({ kind: "thing", id: f.id }) - 1;
@@ -973,6 +976,9 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   function schedule(view, pl) {
     const list = [], visible = new Set(), L = pl.lf.L, b = pl.b0;
     for (const [c] of pl.parts) wantView(c, c === pl.parts[0][0] ? 0 : 8, list, visible, c === pl.parts[0][0]);
+    // a zoom's destination on another level comes first: the levels a quick zoom passes through only stand in for a moment
+    const goal = api.goal, gl = goal && levelFor(goal.zoom).L;
+    if (goal && gl !== L) wantView(camera(goal, gl, b), -10, list, visible, false);
     if (view.turnTo != null) { const tb = mod8(view.turnTo); if (mapsFor(tb)) wantView(camera(view, L, tb, ...grow(0.5)), 4, list, visible, false); }
     // the next level each way, for a zoom; the coarser is cheap and stands in under a zoom out
     if (L > 0) wantView(camera(view, L - 1, b), 12, list, visible, false);
@@ -1392,6 +1398,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     renderer: () => (gpu && !gpu.lost ? { gpu: true, name: gpu.name } : { gpu: false, ...(gpuOff ?? { cause: "lost", why: gpu?.why || "the GPU renderer stopped" }) }),
     picks: () => lastPick.map((p) => ({ kind: p.kind, id: p.id, sx: p.sx, sy: p.sy })),
     frame, changed, pick, where, stats, cache, pool, lastMs: 0, lastHoles: false, level: null,
+    // the page's view where a zoom under way will stand (null at rest), whose chunks bake first
+    goal: null,
   };
   if (check) {
     let cid = 0;

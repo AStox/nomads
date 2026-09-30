@@ -33,6 +33,16 @@ export function createCamera({ live, view, canvas, onTurn }) {
         anchor = A && finite(A.x, A.z, A.y) ? { A, at: [sx, sy] } : null;
       }
     },
+    // where a zoom under way will stand: its goal, with the ground under the cursor still where it is now; null at rest
+    goalView() {
+      if (view.zoom === goal) return null;
+      const st = { ...view, zoom: goal };
+      if (anchor) {
+        const s = live.screenOf(view, anchor.A.x, anchor.A.z, anchor.A.y), [cx, cy] = half(), T = live.solveTarget(st, anchor.A.x, anchor.A.z, anchor.A.y, s[0] - cx, s[1] - cy);
+        if (T && finite(T.x, T.z)) { st.x = T.x; st.z = T.z; }
+      }
+      return st;
+    },
     setZoom(z) { if (Number.isFinite(z)) { goal = zoomSet = view.zoom = clamp(z, 0, live.zmax); anchor = null; } },
     // the mid-screen target point is held at centre + (dx, dy), so the image moves exactly with the cursor
     panBy(dx, dy) {

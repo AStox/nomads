@@ -27,41 +27,44 @@ const SUN_MOVE = 0.004, SUN_STRIPES = 6;
 const BAY_GLSL = `
 const float BAY[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 float bay(ivec2 g) { return (BAY[((g.y & 3) << 2) | (g.x & 3)] + 0.5) / 16.0; }`;
-// Colour c as the sun leaves it at art px q of a camera: in the shadow the island's ground casts toward the sun (a
-// sprite by its anchor's ground), or, for ground, of a sprite's silhouette laid along the sun (uMask), through the
-// palette's shadow remap in the ordered dither at the camera's global art px (uSunG its origin). World meters of an art
-// px of the camera: uWO + x uWA + (y + depth) uWB. uSunK: how strongly the sun casts, 0 while it is down.
+// Whether the sun leaves art px q of a camera in shadow: the shadow the island's ground casts toward the sun (a sprite
+// by its anchor's ground), or, for ground, a sprite's silhouette laid along the sun (uMask), in the ordered dither at the
+// camera's global art px (uSunG its origin). World meters of an art px of the camera: uWO + x uWA + (y + depth) uWB.
+// uSunK: how strongly the sun casts, 0 while it is down. In shadow a colour takes the palette's own shadow remap.
 const SUN_GLSL = `
 uniform sampler2D uSun, uMask;
 uniform usampler2D uShadow;
 uniform vec2 uWO, uWA, uWB;
 uniform float uSunK, uSunN, uSunStep;
 uniform ivec2 uSunG;
-uint sunlit(uint c, ivec2 q, float z, uint kind, int ax, float e) {
-  if (uSunK <= 0.0 || kind > 2u || z < -1e29) return c;
+bool inShadow(ivec2 q, float z, uint kind, int ax, float e) {
+  if (uSunK <= 0.0 || kind > 2u || z < -1e29) return false;
   vec2 wp = uWO + float(q.x - (kind == 0u ? 0 : ax)) * uWA + (float(q.y) + z - e) * uWB;
   float sh = smoothstep(0.3, 0.7, texture(uSun, ((wp + 4800.0) / uSunStep + 0.5) / uSunN).r);
   ivec2 ms = textureSize(uMask, 0);
   if (kind == 0u && q.x >= 0 && q.y >= 0 && q.x < ms.x && q.y < ms.y) sh = max(sh, texelFetch(uMask, q, 0).r);
-  return bay(q + uSunG) < sh * uSunK ? texelFetch(uShadow, ivec2(int(c), 0), 0).r : c;
-}`;
+  return bay(q + uSunG) < sh * uSunK;
+}
+uint shaded(uint c) { return texelFetch(uShadow, ivec2(int(c), 0), 0).r; }
+uint sunlit(uint c, ivec2 q, float z, uint kind, int ax, float e) { return inShadow(q, z, kind, ax, e) ? shaded(c) : c; }`;
 
-// A source pixel into the view: (X, Y) its target pixel, Z its depth (larger is nearer), as warpOf's formulas.
-// State: r colour, g ax + 128, b kind (0 ground, 1 baked sprite, 2 live sprite), a light | 128 (0 is empty).
+// A source pixel into the view: (X, Y) its target pixel, Z its depth (larger is nearer), as warpOf's formulas; ax its
+// column from its anchor. State: r colour, g (ax + 128, or still water's tone), b kind (0 ground, 1 baked sprite, 2 live
+// sprite; | 4 still open water, painted again from its tone), a light | 4 water in the sun's shadow | 128 (0 is empty).
 const EMIT = `
 uniform float uC1, uHs, uQ1, uZ1, uZs, uE1, uW0, uWf, uCx, uCy, uCz;
 uniform vec2 uT;
 flat out uvec4 vS;
 flat out uint vZ;
-void emit(float x, float y, float zz, float e, int ax, uint kind, uint c, uint light) {
+void emit(float x, float y, float zz, float e, int ax, uint kind, uint c, uint light, uint g) {
   float u = x - float(ax), w, Z;
   if (zz > -1e29) { w = y + zz - e + uW0; Z = zz + uCz + uZ1 * w + uZs * u; }
-  // no depth (a coarser level standing in, or open sea): taken as lying at the target's height, behind everything
-  else { u = x; ax = 0; kind = 0u; w = uWf + 4.0 * y; Z = -1e29; }
+  // no depth (a coarser level standing in): taken as lying at the target's height, behind everything
+  else { u = x; kind = 0u; g = 128u; w = uWf + 4.0 * y; Z = -1e29; }
   float X = x + floor(uCx + uC1 * u - uHs * w + 0.5), Y = y + floor(uCy + uHs * u + uQ1 * w + 0.5);
   gl_Position = vec4((X + 0.5) / uT.x * 2.0 - 1.0, (Y + 0.5) / uT.y * 2.0 - 1.0, clamp(Z / 2097152.0, -1.0, 1.0), 1.0);
   gl_PointSize = 1.0;
-  vS = uvec4(c, uint(clamp(ax, -128, 127) + 128), kind, light | 128u);
+  vS = uvec4(c, g, kind, light | 128u);
   vZ = floatBitsToUint(Z);
 }`;
 // a chunk's pixels, in the sun as their own camera sees it, then turned
@@ -75,14 +78,16 @@ ${BAY_GLSL}
 ${SUN_GLSL}
 void main() {
   ivec2 p = ivec2(gl_VertexID & 255, gl_VertexID >> 8), q = uOff + p;
-  bool obj = (texelFetch(uKo, p, 0).r & 1u) != 0u;
-  float z = texelFetch(uKz, p, 0).r;
-  int ax = obj ? texelFetch(uKa, p, 0).r : 0;
-  uint c = sunlit(texelFetch(uKc, p, 0).r, q, z, obj ? 1u : 0u, ax, obj ? uE1 : 0.0);
-  emit(float(q.x), float(q.y), z, obj ? uE1 : 0.0, ax, obj ? 1u : 0u, c, 0u);
+  uint o = texelFetch(uKo, p, 0).r, c = texelFetch(uKc, p, 0).r;
+  bool obj = (o & 1u) != 0u;
+  float z = texelFetch(uKz, p, 0).r, e = obj ? uE1 : 0.0;
+  int a = texelFetch(uKa, p, 0).r, ax = obj ? a : 0;
+  bool dark = inShadow(q, z, obj ? 1u : 0u, ax, e);
+  if ((o & 4u) != 0u) emit(float(q.x), float(q.y), z, 0.0, 0, 4u, c, dark ? 4u : 0u, uint(a + 128));
+  else emit(float(q.x), float(q.y), z, e, ax, obj ? 1u : 0u, dark ? shaded(c) : c, 0u, uint(ax + 128));
 }`;
 // the tiles the CPU drew into, pixel by pixel from the atlas: uList holds each atlas tile's place in the view. Light
-// bit 4: where the sun leaves the pixel alone (live.js packTiles).
+// bit 4: a flame, which the sun leaves alone; 16: still open water (live.js packTiles).
 const VS_DYN = `${HEAD}
 uniform sampler2D uZ, uE;
 uniform usampler2D uC, uL, uId, uList;
@@ -99,10 +104,12 @@ void main() {
   float zz = texelFetch(uZ, a, 0).r;
   // off the view, or a chunk still baking that the tile only stood in for: nothing, so a lending bearing shows there
   if (v.x >= uView.x || v.y >= uView.y || zz < -2e30) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 1.0; vS = uvec4(0u); vZ = 0u; return; }
-  uint id = texelFetch(uId, a, 0).r, kind = min(id, 2u), l = texelFetch(uL, a, 0).r;
-  int ax = id == 0u ? 0 : texelFetch(uAx, a, 0).r;
+  uint id = texelFetch(uId, a, 0).r, kind = min(id, 2u), l = texelFetch(uL, a, 0).r, c = texelFetch(uC, a, 0).r;
+  int ra = texelFetch(uAx, a, 0).r, ax = id == 0u ? 0 : ra;
   float e = id == 0u ? 0.0 : id == 1u ? uE1 : texelFetch(uE, ivec2(int(id & 255u), int(id >> 8u)), 0).r;
-  emit(float(v.x), float(v.y), zz, e, ax, kind, sunlit(texelFetch(uC, a, 0).r, v, zz, (l & 4u) != 0u ? 3u : kind, ax, e), l & 3u);
+  bool dark = (l & 4u) == 0u && inShadow(v, zz, kind, ax, e);
+  if ((l & 16u) != 0u) emit(float(v.x), float(v.y), zz, 0.0, 0, 4u, c, (l & 3u) | (dark ? 4u : 0u), uint(ra + 128));
+  else emit(float(v.x), float(v.y), zz, e, ax, kind, dark ? shaded(c) : c, l & 3u, uint(clamp(ax, -128, 127) + 128));
 }`;
 const FS_SPLAT = `${HEAD}
 flat in uvec4 vS;
@@ -112,18 +119,18 @@ layout(location = 1) out uvec4 oZ;
 void main() { oS = vS; oZ = uvec4(vZ, 0u, 0u, 0u); }`;
 const VS_FULL = `${HEAD}
 void main() { gl_Position = vec4(float((gl_VertexID << 1) & 2) * 2.0 - 1.0, float(gl_VertexID & 2) * 2.0 - 1.0, 0.0, 1.0); }`;
-// uMode 0: a crack, filled pixels either side in a row or a column; 1: any gap, from ground only; 2: from anything.
-// Neighbours uStep pixels away.
+// uMode 0: a crack, filled pixels either side in a row or a column; 1: any gap, from ground only (water is ground);
+// 2: from anything. Neighbours uStep pixels away.
 const FS_FILL = `${HEAD}
 uniform usampler2D uS, uZ;
 uniform ivec2 uSize;
 uniform int uMode, uStep;
 layout(location = 0) out uvec4 oS;
 layout(location = 1) out uvec4 oZ;
-bool filled(ivec2 q) { return q.x >= 0 && q.y >= 0 && q.x < uSize.x && q.y < uSize.y && texelFetch(uS, q, 0).a != 0u && (uMode != 1 || texelFetch(uS, q, 0).b == 0u); }
+bool filled(ivec2 q) { return q.x >= 0 && q.y >= 0 && q.x < uSize.x && q.y < uSize.y && texelFetch(uS, q, 0).a != 0u && (uMode != 1 || (texelFetch(uS, q, 0).b & 3u) == 0u); }
 // ground before sprite, then the farther
 bool better(ivec2 a, ivec2 b) {
-  uint ka = texelFetch(uS, a, 0).b, kb = texelFetch(uS, b, 0).b;
+  uint ka = texelFetch(uS, a, 0).b & 3u, kb = texelFetch(uS, b, 0).b & 3u;
   return ka < kb || (ka == kb && uintBitsToFloat(texelFetch(uZ, a, 0).r) < uintBitsToFloat(texelFetch(uZ, b, 0).r));
 }
 void main() {
@@ -141,9 +148,10 @@ void main() {
   oS = texelFetch(uS, n[best], 0); oZ = texelFetch(uZ, n[best], 0);
 }`;
 // The main bearing's pixel stands, the other's colour showing through the dither mask where both show the same
-// surface (same kind, a sprite's same column, depth within 4). Where main has only a stand-in without depth, or
-// nothing, the other's pixel: its ground, or anything of it when main is at its own bearing (uAny), since main's gaps
-// are then chunks still baking rather than ground a turn uncovered behind a sprite.
+// surface (same kind, water with water only, a sprite's same column, depth within 4): at a low shore, land in one and
+// the sea behind it in the other can lie within 4. Where main has only a stand-in without depth, or nothing, the
+// other's pixel: its ground, or anything of it when main is at its own bearing (uAny), since main's gaps are then chunks
+// still baking rather than ground a turn uncovered behind a sprite.
 const FS_COMBINE = `${HEAD}
 uniform usampler2D uMS, uMZ, uOS, uOZ;
 uniform uint uMask;
@@ -157,14 +165,15 @@ void main() {
   uvec4 o = texelFetch(uOS, q, 0), oz = texelFetch(uOZ, q, 0);
   float Mz = uintBitsToFloat(mz.r), Oz = uintBitsToFloat(oz.r);
   bool oReal = o.a != 0u && Oz > -1e28;
+  uint mk = m.b & 3u;
   if (m.a != 0u && (Mz > -1e28 || !oReal)) {
     bool other = ((uMask >> uint(((q.y & 3) << 2) | (q.x & 3))) & 1u) != 0u;
-    if (other && oReal && m.b <= 1u && o.b == m.b && (m.b == 0u || o.g == m.g) && Mz > -1e28 && abs(Oz - Mz) <= 4.0) oS = uvec4(o.r, m.g, m.b, m.a);
+    if (other && oReal && mk <= 1u && o.b == m.b && (mk == 0u || o.g == m.g) && Mz > -1e28 && abs(Oz - Mz) <= 4.0) oS = uvec4(o.r, m.g, m.b, m.a);
     else oS = m;
     oZ = mz;
     return;
   }
-  if (oReal && (o.b == 0u || uAny == 1 || m.a != 0u)) { oS = o; oZ = oz; return; }
+  if (oReal && ((o.b & 3u) == 0u || uAny == 1 || m.a != 0u)) { oS = o; oZ = oz; return; }
   if (m.a != 0u) { oS = m; oZ = mz; return; }
   oS = uvec4(0u); oZ = uvec4(0u);
 }`;
@@ -176,11 +185,13 @@ uint hazed(uint c, ivec2 q) {
   float a = uMost * pow(max(0.0, 1.0 - (float(q.y) - uTop) / uReach), 1.5);
   return a >= 0.001 && bay(q + uG0) < min(a, uMost) ? texelFetch(uHaze, ivec2(int(c), 0), 0).r : c;
 }`;
-// A turned view: overlays over the world, the haze toward the top of the canvas, then the palette re-lit for the hour.
+// A turned view: still water painted again from its tone on this grid, as the bake's tone() paints it at a view's own
+// bearing, so its dither holds still while the island turns under it; overlays over the world, the haze toward the top
+// of the canvas, then the palette re-lit for the hour.
 const FS_COMPOSITE = `${HEAD}
-uniform usampler2D uS, uOvT, uOvC;
+uniform usampler2D uS, uOvT, uOvC, uShadow;
 uniform sampler2D uLut;
-uniform uint uSea;
+uniform uint uSea, uWater[8];
 out vec4 o;
 ${BAY_GLSL}
 ${HAZE_GLSL}
@@ -188,6 +199,11 @@ void main() {
   ivec2 q = ivec2(gl_FragCoord.xy);
   uvec4 s = texelFetch(uS, q, 0);
   uint c = s.a != 0u ? s.r : uSea, light = s.a != 0u ? (s.a & 3u) : 0u, t = texelFetch(uOvT, q >> 5, 0).r;
+  if (s.a != 0u && (s.b & 4u) != 0u) {
+    float v = float(int(s.g) - 128) / 16.0;
+    c = uWater[clamp(int(floor(v + 0.5 + (bay(q + uG0) - 0.5) * 0.55)), 0, 7)];
+    if ((s.a & 4u) != 0u) c = texelFetch(uShadow, ivec2(int(c), 0), 0).r;
+  }
   // the overlays' tile where one was drawn, 255 where it is clear
   if (t != 0u) { int k = int(t) - 1; uint ov = texelFetch(uOvC, ivec2((k & 63) << 5, (k >> 6) << 5) + (q & 31), 0).r; if (ov != 255u) c = ov; }
   o = texelFetch(uLut, ivec2(int(hazed(c, q)), int(light)), 0);
@@ -324,8 +340,9 @@ void main() {
 }`;
 
 // Throws where WebGL2 is missing (cause "none") or will not build these programs ("build"); live.js then draws on the
-// CPU. `why` says what turned it off later, `name` which GPU it runs on.
-export function createGPU({ NCOL, HAZE, SHADOW }) {
+// CPU. `why` says what turned it off later, `name` which GPU it runs on. WATER: the water ramp's palette indices.
+export function createGPU({ NCOL, HAZE, SHADOW, WATER }) {
+  const water = Uint32Array.from(WATER);
   const canvas = document.createElement("canvas");
   const gl = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: true, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false, powerPreference: "high-performance" });
   if (!gl) throw new Error("this browser gives no WebGL2 context", { cause: "none" });
@@ -689,8 +706,9 @@ export function createGPU({ NCOL, HAZE, SHADOW }) {
 
     gl.useProgram(P.composite); gl.bindFramebuffer(gl.FRAMEBUFFER, cap.artFb); gl.viewport(0, 0, TW, TH);
     bind(P.composite, "uS", 0, cur.s); bind(P.composite, "uOvT", 1, cap.ov[0].index); bind(P.composite, "uOvC", 2, cap.ov[0].c); bind(P.composite, "uLut", 3, lutTex);
+    bind(P.composite, "uShadow", 4, shadowTex);
     setHaze(P.composite, haze, [target.gx0, target.gy0]);
-    gl.uniform1ui(P.composite.u("uSea"), sea);
+    gl.uniform1ui(P.composite.u("uSea"), sea); gl.uniform1uiv(P.composite.u("uWater"), water);
     full();
     present(out, TW, TH, pres.s, pres.dx, pres.dy, 1, lut[sea]);
     evictChunks();

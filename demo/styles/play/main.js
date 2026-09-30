@@ -281,6 +281,8 @@ async function main() {
     // the ground under the opening shot is only exact once its chunks are in, so keep it centred until then
     if (!revealed && opening) camera.lookAt(live.where(opening, sim, view));
     camera.guard();
+    // a zoom's destination bakes first, so a quick zoom across several levels lands on baked ground
+    live.goal = camera.goalView();
     const r = live.frame(view, sim, { show: revealed });
     if (!revealed) {
       // every bearing of the opening view, so the first turns land on baked ground; the load can take its time. With

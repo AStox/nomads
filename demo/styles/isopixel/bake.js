@@ -73,32 +73,40 @@ function bake(msg) {
   V.anim = new Map();
   // the consistency check reads what every pixel shows: its object's sim id, its ground class and world point
   V.debug = D.debug ? { cls: new Uint8Array(CS * CS), wx: new Float32Array(CS * CS), wz: new Float32Array(CS * CS) } : null;
-  const B = new Buf(CS, CS);
-  // beyond the map the sea runs on, deep and plain
-  for (let y = 0; y < CS; y++) for (let x = 0; x < CS; x++) B.c[y * CS + x] = dith([P.w0, P.w1, P.w2, P.w3], 1.35, x + V.gx, y + V.gy);
+  const B = new Buf(CS, CS), waterV = (V.waterV = new Uint8Array(CS * CS));
+  // Beyond the map the sea runs on, deep and plain: at sea level (gy + z = 2H(u + v) with no height, so z = 3 gy), a tone
+  // of 23/16 on the water ramp, which paints the same pixels as this dither.
+  const DEEP = [P.w0, P.w1, P.w2, P.w3];
+  for (let y = 0; y < CS; y++)
+    for (let x = 0; x < CS; x++) { const p = y * CS + x; B.c[p] = dith(DEEP, 1.35, x + V.gx, y + V.gy); B.z[p] = 3 * (y + V.gy); waterV[p] = 24; }
   const O = L.collectLive(w, V, M, D);
   const t1 = performance.now();
   L.drawTerrainLive(B, w, V, M);
   const t2 = performance.now();
+  // blit records each sprite pixel's column from its own anchor, a tent's pixels main.js MESH_PX: ids wrap past 65000
+  // objects in a chunk, and the island levels' chunks hold more, so an anchor looked up by id could be another's
+  B.ax = new Int16Array(CS * CS);
   L.drawObjects(B, V, O);
-  const obj = new Uint8Array(CS * CS), ax = new Int8Array(CS * CS), anchor = new Int16Array(65536), tent = new Float32Array(65536).fill(NaN);
+  const obj = new Uint8Array(CS * CS), ax = new Int8Array(CS * CS), tent = new Float32Array(65536).fill(NaN);
   // cast, when the GPU casts the sun: the rows of every shadow-casting sprite anchored in this chunk, whole, as px.js
   // shadowRows lists them; a tent pixel by pixel as drawn, at the height over its ground that its depth gives
   // (gy + z = 2H(u + v), and the depth carries the height)
   const rows = [];
-  for (const o of O) {
-    anchor[o.lid] = o.sx;
-    if (!D.realtime) continue;
-    if (o.mesh) tent[o.lid] = o.base * V.lp;
-    else if (o.shadow && o.sx >= 0 && o.sy >= 0 && o.sx < CS && o.sy < CS) shadowRows(o.spr, o.sx, o.sy, o.mirror, rows);
-  }
-  // 1: an object drew here, 2: ground already in shadow (so live sprite shadows do not darken it twice). ax: the
-  // pixel's column from its sprite's anchor, so a turn can move every sprite pixel with its anchor and keep it upright.
+  if (D.realtime)
+    for (const o of O) {
+      if (o.mesh) tent[o.lid] = o.base * V.lp;
+      else if (o.shadow && o.sx >= 0 && o.sy >= 0 && o.sx < CS && o.sy < CS) shadowRows(o.spr, o.sx, o.sy, o.mirror, rows);
+    }
+  // 1: an object drew here, 2: ground already in shadow (so live sprite shadows do not darken it twice), 4: still open
+  // water, its tone on the water ramp times 16 in ax. ax otherwise: a sprite pixel's column from its anchor, so a turn
+  // can move it with its anchor and keep it upright; 0 on a tent, whose depth places each pixel where it stands.
   for (let p = 0; p < obj.length; p++) {
-    obj[p] = (B.id[p] ? 1 : 0) | (B.sh[p] ? 2 : 0);
-    const id = B.id[p];
+    const id = B.id[p], still = !id && !B.sh[p] && waterV[p] > 0;
+    obj[p] = (id ? 1 : 0) | (B.sh[p] ? 2 : 0) | (still ? 4 : 0);
+    if (still) ax[p] = waterV[p] - 1;
     if (!id) continue;
-    ax[p] = Math.max(-127, Math.min(127, (p % CS) - anchor[id]));
+    const a = B.ax[p];
+    if (a !== L.MESH_PX) { ax[p] = Math.max(-127, Math.min(127, a)); continue; }
     if (!Number.isNaN(tent[id])) {
       const x = p % CS, y = (p / CS) | 0, k = Math.round(0.25 * B.z[p] - 0.75 * (y + V.gy) - tent[id]);
       if (k >= 0) rows.push(2 * x + 1, y + k, 1, k);
@@ -114,7 +122,7 @@ function bake(msg) {
     aP.push(p);
     for (const c of cols) aC.push(dark ? SHADOW[c] : c);
   }
-  V.anim = null;
+  V.anim = null; V.waterV = null;
   let dbg = null;
   if (V.debug) {
     const byLid = new Map(), oid = new Uint32Array(CS * CS);

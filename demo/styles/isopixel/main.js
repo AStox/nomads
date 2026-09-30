@@ -1179,9 +1179,15 @@ function clusters(x, z, S, seed, mpp, cut = 0.42) {
   const n = noise(x / S, z / S, seed) * a;
   return n > cut ? 1 : n < -cut ? -1 : 0;
 }
+// What paintWater last painted, for the bake: its tone on the water ramp (-1 for foam, a ripple dash, a sparkle or ice),
+// and whether any frame of the loop could paint it otherwise, so still water is painted once rather than eight times.
+export const WV = { v: -1, moves: false };
 function paintWater(w, V, g, X, Y) {
+  WV.v = -1; WV.moves = false;
   if (V.iceAt && g.water !== SEA && V.iceAt(g.x, g.z)) return iceTex(X, Y, g.x, g.z);
   const px = g.shore * V.k, lap = 0.5 + 0.18 * Math.sin(PH + (g.x + g.z) / 25);
+  // the foam's edge laps in and out, lap between 0.32 and 0.68
+  WV.moves = px < 2.2 * 0.68 + 0.3;
   if (px < 1.2 * lap + 0.3) return P.w7;
   if (px < 2.2 * lap + 0.3 && h2(X, Y, 45) < 0.45) return P.w6;
   let v;
@@ -1191,13 +1197,14 @@ function paintWater(w, V, g, X, Y) {
     const shallow = Math.max((1 - smooth(0, 2.5, g.depth)) * 0.8, 1 - smooth(0, 12, g.shore)) * (0.6 + 0.4 * (1 - smooth(0, 9, g.depth)));
     v = 1.4 + 3.9 * shallow + Math.round(fbm(g.x / 90, g.z / 90, 41, 2) * 1.5) * 0.4 + clusters(g.x, g.z, 3, 42, V.mpp, 0.5) * 0.5;
   }
-  // ripple dashes, 2 or 3 px on every other row, and sparkles: the level's own dither
+  // ripple dashes, 2 or 3 px on every other row, and sparkles: the level's own dither, each shown in some frames only
   if ((Y & 1) === 0) {
     const sx = X + (Y >> 1) * 3, cell = Math.floor(sx / 6), r = h2(cell, Y, 47), near = 1 - smooth(0, 40, g.shore);
     const rate = 0.012 + 0.1 * near + 0.03, life = ((FRAME + Math.floor(h2(cell, Y, 48) * 8)) & 7) < 5;
-    if (r < rate && life && sx - cell * 6 < 2 + ((r * 97) & 1)) return r < rate * 0.3 ? P.w7 : WA[Math.min(WA.length - 2, Math.floor(v) + 2)];
+    if (r < rate && sx - cell * 6 < 2 + ((r * 97) & 1)) { WV.moves = true; if (life) return r < rate * 0.3 ? P.w7 : WA[Math.min(WA.length - 2, Math.floor(v) + 2)]; }
   }
-  if (h2(X, Y, 43) < 0.0006 && ((FRAME + (h2(X, Y, 49) * 8)) | 0) & 7) return P.w7;
+  if (h2(X, Y, 43) < 0.0006) { WV.moves = true; if (((FRAME + (h2(X, Y, 49) * 8)) | 0) & 7) return P.w7; }
+  WV.v = v;
   return tone(WA, v, X, Y);
 }
 // bare rock, the shared rule's code for it
@@ -1450,12 +1457,13 @@ function worldGrad(w, x, z) {
 const WG = [0, 0];
 const lightOf = (gu, gv) => { const l = LIGHT * EXAG * (-LU * gu - LV * gv); return clamp(l < 0 ? l * 0.6 : l, -1.3, 2); };
 // The live ground: z-tested so steep slopes hide what is behind them, back faces culled, every pixel textured from
-// the world at its own position. Land meets standing water with a short bank strip.
+// the world at its own position. Land meets standing water with a short bank strip. V.waterV, when the bake gives
+// one, gets 1 + 16 x the tone of each pixel of still open water, 0 elsewhere.
 export function drawTerrainLive(B, w, V, M) {
   const { NI, NJ, i0, j0 } = M, C = M.C, GX = V.gx, GY = V.gy, VI = NI + 1;
   const dbg = V.debug;
   nearI = NaN;
-  const anim = V.anim, frames = (p, f0, paint) => {
+  const anim = V.anim, wv = V.waterV, frames = (p, f0, paint) => {
     const cols = [f0];
     let moving = false;
     for (let f = 1; f < 8; f++) { setMode(VIEW, f); const c = paint(); cols.push(c); if (c !== f0) moving = true; }
@@ -1480,6 +1488,7 @@ export function drawTerrainLive(B, w, V, M) {
           const u = pa[0] + (pb[0] - pa[0]) * tt, v = pa[1] + (pb[1] - pa[1]) * tt, lev = (V.Y0 + (u + v) * V.H * 0.5 - (y + 0.5)) / V.lp, z = V.cz(u, v, lev);
           if (z < B.z[p]) return;
           B.c[p] = texWall(V, DIRTW, face, x + GX, y + GY, depth, hpx, lev, true, 0); B.z[p] = z; B.id[p] = 0;
+          anim?.delete(p); if (wv) wv[p] = 0;
           if (dbg) dbg.cls[p] = 254;
         });
       }
@@ -1493,6 +1502,8 @@ export function drawTerrainLive(B, w, V, M) {
         tri(B, ax, ay, bx, by, cx, cy, (p, x, y, la, lb, lc) => {
           const u = la * A[0] + lb * Bv[0] + lc * Cv[0], v = la * A[1] + lb * Bv[1] + lc * Cv[1], lev = la * A[2] + lb * Bv[2] + lc * Cv[2], z = V.cz(u, v, lev);
           if (z < B.z[p]) return;
+          // what lay here before is painted over, its loop with it
+          anim?.delete(p);
           const X = x + GX, Y = y + GY, fu = u - uT, fv = v - vT;
           const wx = V.ox + (u * V.eu[0] + v * V.ev[0]) * V.tileM, wz = V.oz + (u * V.eu[1] + v * V.ev[1]) * V.tileM;
           // light owns value: slope, hollows and cast shadows from one world surface, at every level alike
@@ -1501,15 +1512,19 @@ export function drawTerrainLive(B, w, V, M) {
           let col;
           const dark = inShade && bayer(X, Y) < smooth(0.5, 0.8, TL.sh) + 0.5;
           if (g.water) {
-            const wg = { ...g };
-            col = paintWater(w, V, wg, X, Y);
+            // g is groundAt's one shared record; nothing samples the ground again before this pixel is done
+            col = paintWater(w, V, g, X, Y);
+            const still = !WV.moves, tv = WV.v;
             if (dark) col = shade(col, X, Y);
-            if (anim) frames(p, col, () => { const c2 = paintWater(w, V, wg, X, Y); return dark ? shade(c2, X, Y) : c2; });
+            if (anim && !still) frames(p, col, () => { const c2 = paintWater(w, V, g, X, Y); return dark ? shade(c2, X, Y) : c2; });
+            // open water, which the GPU paints again from its tone on a turned grid so its dither does not swim
+            if (wv) wv[p] = tv >= 0 && still && !dark ? 1 + Math.min(126, Math.round(tv * 16)) : 0;
             if (dbg) dbg.cls[p] = 40 + g.water;
           } else {
             col = paintLand(w, V, g, X, Y, s);
             // land takes its shadow in its value already; the flag keeps sprite shadows from darkening it twice
             if (inShade) B.sh[p] = 1;
+            if (wv) wv[p] = 0;
             if (dbg) dbg.cls[p] = TRACE.cls;
           }
           if (dbg) { dbg.wx[p] = wx; dbg.wz[p] = wz; }
@@ -2237,6 +2252,9 @@ function tentMesh(w, V, M, t, fire) {
   return { z: at ? at.z : -1e9, mesh: faces, id: 0, base, tent: t };
 }
 
+// A tent's pixels, in a buffer that records each sprite pixel's column from its anchor (B.ax), carry this instead: a
+// mesh pixel's depth already places it where it stands.
+export const MESH_PX = -32768;
 function drawMesh(B, V, o, id) {
   const disp = V.levelM * V.exag;
   for (const f of o.mesh) {
@@ -2277,6 +2295,7 @@ function drawMesh(B, V, o, id) {
         if (col === undefined) col = dith(f.mat.r, val, x, y);
       }
       B.c[p] = col; B.z[p] = z; B.id[p] = id;
+      if (B.ax) B.ax[p] = MESH_PX;
     });
   }
 }
@@ -2291,6 +2310,7 @@ function line3(B, V, a, b, col, id, thin) {
     const p = y * B.w + x, z = V.cz(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t) + 1;
     if (z < B.z[p]) continue;
     B.c[p] = col; B.z[p] = z; B.id[p] = id;
+    if (B.ax) B.ax[p] = MESH_PX;
   }
 }
 
