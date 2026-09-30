@@ -403,6 +403,19 @@ export function shoreOf(w: World) {
     }
   return (g.shore = s);
 }
+// The shore points standing in each tile, as indexes into shoreOf in its order, so a search near a point looks only at
+// the tiles within its reach instead of the whole coast.
+const shoreTiles = new WeakMap<object, number[][]>();
+export function shoreByTile(w: World) {
+  const s = shoreOf(w);
+  let g = shoreTiles.get(s);
+  if (!g) {
+    g = Array.from({ length: W * H }, () => []);
+    for (let i = 0; i < s.length; i++) g[Math.floor(s[i].py) * W + Math.floor(s[i].px)].push(i);
+    shoreTiles.set(s, g);
+  }
+  return g;
+}
 // Which of the heraldic colors a person wears, as an index into COLORS.
 export const colorIndex = (a: { color: string }) => Math.max(0, COLORS.indexOf(a.color));
 // World meters (the island's center at 0) to tiles, to a tenth of a millimeter's worth of tile.

@@ -45,7 +45,7 @@ export function createCamera({ live, view, canvas, onTurn }) {
     },
     // a turn ends a zoom gesture: its anchor would drag the target round with it
     orbitBy(db) { if (Number.isFinite(db) && db) { view.bearing = norm8(view.bearing + db); anchor = null; } },
-    // Q and E turn at once, the current bearing's frame warped toward the next while that one bakes
+    // Q and E turn at once, the current bearing's pixels reprojected toward the next while that one bakes
     turnBy(d) {
       const target = (turn && !turn.drag ? turn.target : Math.round(view.bearing)) + d;
       turn = begin(target, false);

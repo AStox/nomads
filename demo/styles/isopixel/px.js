@@ -87,9 +87,10 @@ export class Spr {
   }
 }
 
-// Sprites are camera-facing: a pixel k rows above the anchor is k units nearer the eye than the base.
+// Sprites are camera-facing: a pixel k rows above the anchor is k units nearer the eye than the base. A buffer with an
+// `ax` array also gets each drawn pixel's column from the anchor, which a turned view needs to keep the sprite whole.
 export function blit(B, s, bx, by, cz, id, mirror = false, bias = 0) {
-  const ax = mirror ? s.w - 1 - s.ax : s.ax;
+  const ax = mirror ? s.w - 1 - s.ax : s.ax, A = B.ax;
   for (let y = 0; y < s.h; y++) {
     const sy = by - s.ay + y;
     if (sy < 0 || sy >= B.h) continue;
@@ -102,6 +103,7 @@ export function blit(B, s, bx, by, cz, id, mirror = false, bias = 0) {
       const p = sy * B.w + sx;
       if (z < B.z[p]) continue;
       B.c[p] = col; B.z[p] = z; B.id[p] = id;
+      if (A) A[p] = sx - bx;
     }
   }
 }

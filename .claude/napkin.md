@@ -53,9 +53,9 @@
 5. **[2026-09-26] math/noise seeds keep only 16 bits**
    `simplex2d.create(seed)` uses `seed & 0xffff`.
    Do instead: derive sub-seeds with `Math.floor(rand() * 65536)` from the world rng.
-6. **[2026-09-26] The 3D demo renders into a half-float frame**
-   Blending there doesn't clamp, so a shader alpha over 1 subtracts whatever is behind (it showed the map's square through the sea). And three caches the cube it builds from an equirectangular `scene.background`, so repainting that canvas never shows.
-   Do instead: clamp alpha in any shader drawn into the frame, and draw a sky that changes as a dome mesh, as demo/3d/look.js does.
+6. **[2026-09-29] Turns reproject baked pixels by their depth, on the GPU**
+   Between two bearings turngl.js lifts every art pixel back into the world and projects it at the in-between bearing, with the maths of live.js warpOf. That only works while baked ground keeps z = 1.5H(u + v) + lev lp, sprites keep blit's z (anchor cz + rows up + bias, e = bias + foot + lift), and every object pixel's column from its anchor is recorded (the bake's `ax`, blit's B.ax). The WebGL canvas is shown over the page's canvas while turning; drawImage-copying it into the page canvas halved the 1080p frame rate on an integrated GPU.
+   Do instead: route any new depth writer, sprite bias or lift through those formulas (and `add`'s `e` for live sprites), and check turns with page screenshots at bearing 0.25, 0.5 and 0.75: the page canvas (toDataURL) does not hold turn frames.
 7. **[2026-09-27] Art-style mocks that only recolor get rejected**
    Two rounds of looks dressed on one shared heightfield with blob trees read to the operator as the same picture recolored.
    Do instead: vary the representation itself per mock (terrain as tiers, voxels, hexes, paper, glyphs or paint; models as sprites, cubes or toy pieces; 2D vs 3D; camera and renderer). Share only demo/styles/world.js, the island as plain data.

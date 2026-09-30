@@ -1,12 +1,15 @@
 // The live isopixel renderer: an orbiting camera with a continuous zoom over the whole island. Workers bake the static
 // landscape in chunks of global art pixels, one chunk set per zoom level and 45 degree bearing. Every frame composes
-// the visible chunks (colour and depth) of one or two levels or bearings, z-tests the live sim on top, animates water,
-// fire and smoke on a real clock, relights the indexed palette for the time of day, and scales the art buffer to the
-// exact zoom without losing its crisp pixels.
+// the visible chunks (colour and depth) of one or two levels, z-tests the live sim on top, animates water, fire and
+// smoke on a real clock, relights the indexed palette for the time of day, and scales the art buffer to the exact zoom
+// without losing its crisp pixels. Between two bearings every pixel goes back to its place in the world by its depth
+// and is projected again at the bearing in between, on the GPU (turngl.js), so the island turns as a solid thing with
+// its trees upright.
 import { RGB, NCOL, P, GLOW, HAZE } from "./pal.js";
 import { Buf, ObjBins, blit, castShadow, bayer, h2 } from "./px.js";
 import * as SP from "./sprites.js";
 import { text } from "./ui.js";
+import { createTurnGL } from "./turngl.js";
 
 const CS = 256, SIM = 150, ORIGIN = -4800, DAY = 288, YEAR = DAY * 40, TAU = Math.PI * 2, NL = 9, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -49,7 +52,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     if (ch.c) cacheBytes -= ch.bytes;
     dropGround(ch);
     if (m.ground) { m.ground.chunk = ch.key; (grounds.get(ch.mk) ?? grounds.set(ch.mk, []).get(ch.mk)).push(m.ground); }
-    Object.assign(ch, { c: m.c, z: m.z, obj: m.obj, animP: m.animP, animC: m.animC, ground: m.ground, dbg: m.dbg, ver: m.ver, pending: false, bytes: m.c.length * 6 + m.animC.length + m.animP.length * 4 + (m.ground ? m.ground.C.byteLength + m.ground.diag.length * 2 : 0) });
+    Object.assign(ch, { c: m.c, z: m.z, obj: m.obj, ax: m.ax, animP: m.animP, animC: m.animC, ground: m.ground, dbg: m.dbg, ver: m.ver, pending: false, bytes: m.c.length * 7 + m.animC.length + m.animP.length * 4 + (m.ground ? m.ground.C.byteLength + m.ground.diag.length * 2 : 0) });
     cacheBytes += ch.bytes;
     bakeN++; bakeSum += m.ms;
     stats.bakedChunks++; stats.bakeMsAvg = bakeSum / bakeN;
@@ -379,6 +382,21 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   const trailPending = new Set();
 
   // ---------- cameras and compose slots ----------
+  // null without WebGL2: a turn then shows the nearer bearing until it lands. Its canvas lies over the page's and shows
+  // only while turning, so the browser composites it rather than the page copying it into its own canvas every frame.
+  const turnGL = createTurnGL({ NCOL, HAZE }), glOver = !!(turnGL && canvas.parentNode);
+  if (glOver) { Object.assign(turnGL.canvas.style, { position: "fixed", pointerEvents: "none", imageRendering: "pixelated", visibility: "hidden" }); canvas.after(turnGL.canvas); }
+  let glShown = false, glW = 0, glH = 0;
+  function showGL(on) {
+    if (!glOver || (on === glShown && (!on || (glW === canvas.width && glH === canvas.height)))) return;
+    if (on) {
+      const r = canvas.getBoundingClientRect();
+      Object.assign(turnGL.canvas.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+      glW = canvas.width; glH = canvas.height;
+    }
+    turnGL.canvas.style.visibility = on ? "visible" : "hidden";
+    glShown = on;
+  }
   const sprites = new Map();
   // sprite keys follow continuous sizes, so the cache is emptied now and then rather than left to grow for a session
   const spr = (key, make) => { let s = sprites.get(key); if (s === undefined) { if (sprites.size > 3000) sprites.clear(); s = make() || null; sprites.set(key, s); } return s; };
@@ -408,19 +426,25 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     if (cw === capW && chh === capH) return;
     capW = cw; capH = chh;
     const cap = cw * chh;
-    // each slot has its own upscale canvas: reusing one within a frame makes the browser copy it before the redraw
+    // each slot has its own upscale canvas: reusing one within a frame makes the browser copy it before the redraw.
+    // Two for a zoom's cross-fade, the first also a turn's nearer bearing; the third holds a turn's overlays.
+    const bufs = () => ({ c: new Uint8Array(cap), z: new Float32Array(cap), id: new Uint16Array(cap), sh: new Uint8Array(cap), light: new Uint8Array(cap), ax: new Int16Array(cap), e: new Float32Array(65536) });
     slots = [0, 1].map(() => {
       const mid = new OffscreenCanvas(Math.ceil(W * 2.2) + 24, Math.ceil(H * 2.2) + 24);
-      return { c: new Uint8Array(cap), z: new Float32Array(cap), id: new Uint16Array(cap), sh: new Uint8Array(cap), light: new Uint8Array(cap), rgba: new ArrayBuffer(cap * 4), off: new OffscreenCanvas(cw, chh), mid, midG: mid.getContext("2d") };
+      return { ...bufs(), rgba: new ArrayBuffer(cap * 4), off: new OffscreenCanvas(cw, chh), mid, midG: mid.getContext("2d") };
     });
+    slots.push(bufs());
   }
-  const viewOf = (sl, w, h) => ({ w, h, c: sl.c.subarray(0, w * h), z: sl.z.subarray(0, w * h), id: sl.id.subarray(0, w * h), sh: sl.sh.subarray(0, w * h), light: sl.light.subarray(0, w * h) });
+  const viewOf = (sl, w, h) => ({ w, h, c: sl.c.subarray(0, w * h), z: sl.z.subarray(0, w * h), id: sl.id.subarray(0, w * h), sh: sl.sh.subarray(0, w * h), light: sl.light.subarray(0, w * h), ax: sl.ax.subarray(0, w * h) });
 
-  function compose(sl, cam, now, sim, clock, view) {
+  // warp: compose only what stands in the world, with each sprite pixel's anchor, for the GPU to turn; the overlays
+  // that belong to the screen (smoke, icons, labels, haze) are drawn afterwards in the turned view
+  function compose(sl, cam, now, sim, clock, view, warp = false) {
     const { md, AW, AH, gx0, gy0 } = cam;
     B = viewOf(sl, AW, AH); light = B.light; owners = sl.owners = [null, null];
     const fr = Math.floor(now / 160) & 7;
     B.c.fill(P.w1); B.z.fill(-1e30); B.id.fill(0); B.sh.fill(0); light.fill(0);
+    if (warp) B.ax.fill(0);
     let holes = false;
     const [cx0, cx1, cy0, cy1] = rectOf(cam);
     for (let cy = cy0; cy <= cy1; cy++)
@@ -433,6 +457,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
           B.c.set(ch.c.subarray(src, src + len), dst);
           B.z.set(ch.z.subarray(src, src + len), dst);
           B.id.set(ch.obj.subarray(src, src + len), dst);
+          if (warp && ch.ax) B.ax.set(ch.ax.subarray(src, src + len), dst);
         }
         const aP = ch.animP, aC = ch.animC;
         for (let i = 0; i < aP.length; i++) {
@@ -442,26 +467,64 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       }
     for (let p = 0; p < B.id.length; p++) if (B.id[p] === 2) { B.id[p] = 0; B.sh[p] = 1; } else if (B.id[p] === 3) { B.id[p] = 1; }
     const night = clamp(clock.night ?? 0, 0, 1);
-    let picks = [];
+    let picks = [], fires = [], over = [];
     if (sim) {
       const E = entities(cam, sim, now);
       E.out.sort((a, b) => a.z - b.z);
       for (const o of E.out) if (o.shadow && night < 0.6) castShadow(B, o.spr, o.sx, o.sy, md.shx, md.shy, o.mirror);
       let id = 2;
-      for (const o of E.out) { o.id = id++; owners[o.id] = o.pick ?? null; blit(B, o.spr, o.sx, o.sy, o.z, o.id, o.mirror, o.bias); }
+      for (const o of E.out) {
+        if (warp && o.over) { over.push(o); continue; }
+        o.id = id++; owners[o.id] = o.pick ?? null; sl.e[o.id] = o.e ?? 0;
+        blit(B, o.spr, o.sx, o.sy, o.z, o.id, o.mirror, o.bias);
+      }
       // people behind trees still show, as a checkered silhouette through the leaves
-      for (const o of E.out) if (o.xray) xray(o);
-      drawFires(cam, E.fires, now, night);
-      picks = E.picks;
-      if (view.selected) markSelected(cam, view.selected, picks);
+      for (const o of E.out) if (o.xray && o.id) xray(o, warp);
+      drawFires(cam, E.fires, now, night, sl);
+      fires = E.fires; picks = E.picks;
     }
+    if (!warp) finish(sl, cam, now, clock, view, fires, over, picks);
+    return { holes, picks, fires, over };
+  }
+  // What sits on top of the world, drawn into B in the view it is shown in: `map` takes a point of the source camera
+  // (art px and depth) into that view, or is null when the two are the same camera.
+  function overlays(cam, tcam, now, view, fires, over, picks, map) {
+    drawSmoke(cam, tcam, fires, now, map);
+    for (const o of over) { const [x, y] = map(o.ax, o.ay, o.az); blit(B, o.spr, x, y + o.sy - o.ay, o.z, 0, o.mirror, o.bias); }
+    if (view.selected) {
+      const shown = map ? picks.map((p) => { const [x, y] = map(p.ax, p.ay, p.az), dx = x - p.ax, dy = y - p.ay; return { ...p, sx: p.sx + dx, sy: p.sy + dy, top: p.top + dy }; }) : picks;
+      markSelected(cam, view.selected, shown, map);
+    }
+  }
+  function finish(sl, cam, now, clock, view, fires, over, picks) {
+    B = viewOf(sl, cam.AW, cam.AH); light = B.light;
+    overlays(cam, cam, now, view, fires, over, picks, null);
     haze(cam, clock.hour ?? 8);
     // indexed colour to RGBA through the time-of-day table; the light buffer picks the fire-lit copy
-    const lut = lutFor(clock.hour ?? 8), c = B.c, out = new Uint32Array(sl.rgba, 0, AW * AH);
+    const { AW, AH } = cam, lut = lutFor(clock.hour ?? 8), c = B.c, out = new Uint32Array(sl.rgba, 0, AW * AH);
     for (let p = 0; p < c.length; p++) out[p] = lut[light[p] * NCOL + c[p]];
     sl.off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(sl.rgba, 0, AW * AH * 4), AW, AH), 0, 0);
-    return { holes, picks };
   }
+
+  // ---------- turning: every art pixel back into the world and out again ----------
+  // A pixel with depth lies on its anchor's ground column: for ground the anchor is itself, for a sprite pixel it is
+  // the sprite's foot, ax columns across and e depth units behind (the blit's bias and lift). Since gy + z = 2H(u + v)
+  // on the ground, the anchor's tile position comes back exactly, turns about the camera target, and the pixel keeps
+  // its screen offset from it. Heights stay vertical and sprites move whole, as a real turn of the island would show.
+  // Linear in u = x - ax and w = y + z - e + w0 (w0 puts w at the target's u + v); turngl.js splats every pixel with it.
+  function warpOf(cam, tcam, turn) {
+    const md = cam.md, a = (-turn * Math.PI) / 4, c1 = Math.cos(a) - 1, s = Math.sin(a), hs = s / 2, kx = cam.gx0 - cam.gcx;
+    const Sc = (cam.gcy + cam.lev * md.lp) / md.hb, zc = 1.5 * md.H * Sc + cam.lev * md.lp;
+    return {
+      cam, c1, hs, q1: c1 / 4, z1: 0.75 * c1, zs: 1.5 * s, e1: md.hb + 2, w0: cam.gy0 - 2 * md.H * Sc, wf: 4 * (cam.gy0 - cam.gcy),
+      cx: cam.gx0 - cam.gcx + tcam.gcx - tcam.gx0 + c1 * kx, cy: cam.gy0 - cam.gcy + tcam.gcy - tcam.gy0 + hs * kx, cz: 1.5 * s * kx - zc,
+    };
+  }
+  // a point of the source camera (local art px, depth, anchor depth offset) in the target's local art px
+  const warpPoint = (W, x, y, z, e = 0) => {
+    const w = y + z - e + W.w0;
+    return [x + Math.round(W.cx + W.c1 * x - W.hs * w), y + Math.round(W.cy + W.hs * x + W.q1 * w)];
+  };
   // a missing chunk shows the coarser levels of the same bearing blown up around the camera centre
   function fallback(cam, x0, x1, y0, y1) {
     for (let k = cam.L - 1; k >= 0; k--) {
@@ -493,17 +556,12 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const p = y * cam.AW + x; if (B.z[p] === -2e30) B.z[p] = -1e30; }
   }
   // The composed art buffer onto the canvas at the exact zoom: nearest neighbour up to the next whole factor, then one
-  // smoothed step down, so pixels stay crisp and never shimmer. T turns the ground plane about the canvas centre.
-  function present(g, sl, cam, alpha, turn) {
-    const w = cam.AW, h = cam.AH, s = cam.s, n = Math.max(1, Math.ceil(s - 1e-3)), W = canvas.width, H = canvas.height;
+  // smoothed step down, so pixels stay crisp and never shimmer.
+  function present(g, sl, cam, alpha) {
+    const w = cam.AW, h = cam.AH, s = cam.s, n = Math.max(1, Math.ceil(s - 1e-3));
     g.globalAlpha = alpha;
-    if (turn) {
-      // the ground plane turned by `turn` steps in tile space, seen through the 2:1 projection
-      const a = (-turn * Math.PI) / 4, c = Math.cos(a), sn = Math.sin(a), A = c, Bt = sn / 2, Ct = -2 * sn, Dt = c;
-      g.setTransform(A, Bt, Ct, Dt, W / 2 - (A * W) / 2 - (Ct * H) / 2, H / 2 - (Bt * W) / 2 - (Dt * H) / 2);
-    } else g.setTransform(1, 0, 0, 1, 0, 0);
-    // turned, the frame is already moving and sheared: one nearest-neighbour draw keeps the pixels hard and costs a third
-    if (turn || Math.abs(s - n) < 1e-3) {
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    if (Math.abs(s - n) < 1e-3) {
       g.imageSmoothingEnabled = false;
       g.drawImage(sl.off, 0, 0, w, h, cam.dx, cam.dy, w * s, h * s);
     } else {
@@ -513,10 +571,9 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       g.imageSmoothingQuality = "low";
       g.drawImage(sl.mid, 0, 0, w * n, h * n, cam.dx, cam.dy, w * s, h * s);
     }
-    g.setTransform(1, 0, 0, 1, 0, 0);
     g.globalAlpha = 1;
   }
-  // how much bigger the buffer must be so a turn of `turn` steps still covers the canvas
+  // how much bigger a source buffer must be so a turn of `turn` steps still covers the canvas
   const grow = (turn) => {
     if (!turn) return [1, 1];
     const a = (turn * Math.PI) / 4, c = Math.abs(Math.cos(a)), sn = Math.abs(Math.sin(a)), W = canvas.width, H = canvas.height;
@@ -544,8 +601,11 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const pv = md.k * 0.866 * md.treeK;
     const at = (x, z) => { const p = project(md, x, z); return { ...p, sx: Math.round(p.gx - cam.gx0), sy: Math.round(p.gy - cam.gy0) }; };
     const onScreen = (a, m = 40) => a.sx > -m && a.sy > -m && a.sx < cam.AW + m && a.sy < cam.AH + m * 2;
-    // footprint sprites anchor below their footprint centre; small people stand two pixels high in their sprite
-    const add = (a, s, o = {}) => { if (s) out.push({ z: o.z ?? a.cz, sx: a.sx, sy: a.sy + (s.foot || 0) + (o.lift || 0), spr: s, mirror: !!o.mirror, bias: o.bias ?? md.hb + 2, shadow: o.shadow ?? !NOSHADOW.has(s.kind), xray: o.xray, pick: o.pick }); };
+    // footprint sprites anchor below their footprint centre; small people stand two pixels high in their sprite. e: how
+    // far a sprite pixel's gy + z sits past its foot's, the blit's bias and lift, for a turn to find the foot
+    const add = (a, s, o = {}) => { if (s) out.push({ z: o.z ?? a.cz, sx: a.sx, sy: a.sy + (s.foot || 0) + (o.lift || 0), spr: s, mirror: !!o.mirror, bias: o.bias ?? md.hb + 2, e: (s.foot || 0) + (o.lift || 0) + (o.z ?? a.cz) - a.cz + (o.bias ?? md.hb + 2), shadow: o.shadow ?? !NOSHADOW.has(s.kind), xray: o.xray, pick: o.pick }); };
+    // each pick keeps the ground point it stands on, so labels can follow it into a turned view
+    const pk = (a, p) => picks.push({ ...p, ax: a.sx, ay: a.sy, az: a.cz });
     const alpha = clamp(sim.alpha ?? 1, 0, 1), selectedId = cam.view.selected ?? null;
     for (const t of liveThings.values()) {
       const a = at(toM(t.px), toM(t.py));
@@ -556,7 +616,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       if (hpx < 1) continue;
       const s = thingSprite(t, hpx, md.b);
       if (s) { s.kind ??= t.kind; add(a, s, { mirror: ((t.seed >>> 3) & 1) === 1 && !FACED.has(t.kind), bias: t.kind === "structure" ? md.hb + 4 : 2, pick: { kind: "thing", id: t.id } }); }
-      picks.push({ kind: "thing", id: t.id, sx: a.sx, sy: a.sy - hpx / 2, h: Math.max(3, hpx), name: t.name || t.kind.replaceAll("_", " "), top: a.sy - hpx - 2 });
+      pk(a, { kind: "thing", id: t.id, sx: a.sx, sy: a.sy - hpx / 2, h: Math.max(3, hpx), name: t.name || t.kind.replaceAll("_", " "), top: a.sy - hpx - 2 });
     }
     for (const an of W.animals || []) {
       if (an.hp <= 0) continue;
@@ -573,7 +633,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       const up = lift > 1;
       // depth of the drawn point, the ground's plus the lift, so trees and ridges in front still hide a bird
       add(a, s, { lift: -lift, z: a.cz + lift, bias: 3, shadow: !up && !fly && hpx >= 3, xray: an.id === selectedId, pick: { kind: "animal", id: an.id } });
-      picks.push({ kind: "animal", id: an.id, sx: a.sx, sy: a.sy - lift - hpx / 2, h: Math.max(4, hpx) + 3, name: an.species, top: a.sy - lift - hpx - 2 });
+      pk(a, { kind: "animal", id: an.id, sx: a.sx, sy: a.sy - lift - hpx / 2, h: Math.max(4, hpx) + 3, name: an.species, top: a.sy - lift - hpx - 2 });
     }
     for (const ag of W.agents || []) {
       if (ag.dead || ag.alive === false) continue;
@@ -601,8 +661,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       const own = { kind: "agent", id: ag.id };
       add(a, s, { mirror, bias: 4, lift: hp < 16 && !down ? 2 : 0, xray: true, pick: own });
       const icon = down ? "sleep" : ag.sickness ? "sick" : ag.thinking ? "think" : ag.engaged ? "fight" : null;
-      if (icon && !isle && TH.icon) { const ic = spr(`icon${icon}`, () => TH.icon(icon)); if (ic) out.push({ z: 1e9, sx: a.sx, sy: a.sy - hp - 2, spr: ic, bias: 0, shadow: false, pick: own }); }
-      picks.push({ kind: "agent", id: ag.id, sx: a.sx, sy: a.sy - (hp >> 1), h: hp + 3, name: ag.name, top: a.sy - hp - 2 });
+      if (icon && !isle && TH.icon) { const ic = spr(`icon${icon}`, () => TH.icon(icon)); if (ic) out.push({ z: 1e9, sx: a.sx, sy: a.sy - hp - 2, spr: ic, bias: 0, shadow: false, pick: own, over: true, ax: a.sx, ay: a.sy, az: a.cz }); }
+      pk(a, { kind: "agent", id: ag.id, sx: a.sx, sy: a.sy - (hp >> 1), h: hp + 3, name: ag.name, top: a.sy - hp - 2 });
     }
     return { out, fires, picks };
   }
@@ -619,9 +679,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
 
 
   // ---------- fire, smoke, light ----------
-  function drawFires(cam, fires, now, night) {
+  function drawFires(cam, fires, now, night, sl) {
     const md = cam.md, sz = SIZES[md.L];
-    const wind = simRef?.w?.weather?.wind ?? { dx: 1, dy: 0 }, [du, dv] = md.dir(wind.dx ?? 1, wind.dy ?? 0), drift = clamp((du - dv) * 0.3, -0.45, 0.45);
     for (const f of fires) {
       const { a } = f, fl = Math.max(2, Math.round(sz.fire * f.big)), ph = (now / 1000) * 5 + idH(f.id, 5) * 8;
       // glow on the ground by day; warm light pools by night
@@ -637,10 +696,19 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
           if (!B.id[p] && bayer(X, Y) < (1 - d) * (1.4 - night * 0.6)) B.c[p] = GLOW[B.c[p]];
         }
       if (!md.isle) {
-        const s = spr(`flame${fl}|${Math.floor(ph) & 7}`, () => SP.flames(fl, 5 + (Math.floor(ph) & 7)));
-        blit(B, s, a.sx, a.sy + 1, a.cz + 2, owners.push({ kind: "thing", id: f.id }) - 1, false, md.hb + 3);
+        const s = spr(`flame${fl}|${Math.floor(ph) & 7}`, () => SP.flames(fl, 5 + (Math.floor(ph) & 7))), id = owners.push({ kind: "thing", id: f.id }) - 1;
+        sl.e[id] = md.hb + 6;
+        blit(B, s, a.sx, a.sy + 1, a.cz + 2, id, false, md.hb + 3);
       } else if (a.sx >= 0 && a.sy >= 1 && a.sx < B.w && a.sy < B.h) B.c[(a.sy - 1) * B.w + a.sx] = (Math.floor(ph) & 1) ? P.f3 : P.f2;
-      smoke(cam, a.sx, a.sy - fl, sz.person * sz.smoke * f.big, Math.max(0.8, sz.person * 0.18), drift, now / 1000 + idH(f.id, 6) * 9);
+    }
+  }
+  // the columns stand over their fires as the view shows them, so they rise straight up through a turn
+  function drawSmoke(cam, dcam, fires, now, map) {
+    const md = cam.md, sz = SIZES[md.L];
+    const wind = simRef?.w?.weather?.wind ?? { dx: 1, dy: 0 }, [du, dv] = md.dir(wind.dx ?? 1, wind.dy ?? 0), drift = clamp((du - dv) * 0.3, -0.45, 0.45);
+    for (const f of fires) {
+      const { a } = f, fl = Math.max(2, Math.round(sz.fire * f.big)), [x, y] = map ? map(a.sx, a.sy, a.cz) : [a.sx, a.sy];
+      smoke(dcam, x, y - fl, sz.person * sz.smoke * f.big, Math.max(0.8, sz.person * 0.18), drift, now / 1000 + idH(f.id, 6) * 9);
     }
   }
   // the still's smoke column on a continuous clock: puffs rise, swell, lean downwind and fade
@@ -699,8 +767,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   }
 
   // ---------- the frame ----------
-  // What to draw: one camera, or two cross-fading ones, either the next finer level near the end of a level's zoom
-  // range or the next bearing while the camera is between two.
+  // What to draw: one camera, or two cross-fading ones near the end of a level's zoom range. Between two bearings the
+  // nearer one is composed, the other lends its baked chunks, and the GPU turns both; wB is how far the other's shading shows.
   function plan(view) {
     const lf = levelFor(view.zoom), beta = ((view.bearing ?? 0) % NB + NB) % NB, b0 = Math.floor(beta + 1e-6) % NB, f = beta - Math.floor(beta + 1e-6);
     if (f > 1e-4) {
@@ -712,7 +780,9 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       const rA = camReady(A), rB = camReady(Bc);
       if (!Bc || (!rB && rA)) wB = 0;
       else if (!A || (!rA && rB)) wB = 1;
-      return { lf, parts: [[A, 1 - (wB >= 1 ? 1 : 0), f], [Bc, wB, f - 1]].filter(([c, w]) => c && w > 0), orbit: true, b0 };
+      // the other stays wanted, so it bakes and is there to read from
+      const mainB = !A || (!!Bc && wB > 0.5), pa = [A, 1 - wB, f], pb = [Bc, wB, f - 1];
+      return { lf, parts: (mainB ? [pb, pa] : [pa, pb]).filter(([c]) => c), orbit: true, b0, wB, mainB };
     }
     let A = camera(view, lf.L, b0);
     if (!A) {
@@ -756,22 +826,62 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const pl = plan(view);
     schedule(view, pl);
     const clock = sim?.clock?.() ?? { hour: 8, night: 0 };
+    const useGL = pl.orbit && pl.parts.length > 0 && !!turnGL && !turnGL.lost;
     const g = canvas.getContext("2d"), lut = lutFor(clock.hour ?? 8), sea = lut[P.w1];
-    g.setTransform(1, 0, 0, 1, 0, 0);
-    g.fillStyle = `rgb(${sea & 255},${(sea >> 8) & 255},${(sea >> 16) & 255})`;
-    g.fillRect(0, 0, canvas.width, canvas.height);
+    if (!useGL || !glOver) {
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.fillStyle = `rgb(${sea & 255},${(sea >> 8) & 255},${(sea >> 16) & 255})`;
+      g.fillRect(0, 0, canvas.width, canvas.height);
+    }
     let holes = false, best = -1;
     const T = (stats.parts ??= { schedule: 0, compose: 0, present: 0 }), tS = performance.now(), fp = (api.lastParts = [Math.round((tS - t0) * 10) / 10]);
     T.schedule = T.schedule * 0.95 + (tS - t0) * 0.05;
-    pl.parts.forEach(([cam, w, turn], k) => {
+    if (!useGL) showGL(false);
+    if (useGL) {
+      const t1 = performance.now(), [cam, , turn] = pl.parts[0], sl = slots[0], r = compose(sl, cam, now, sim, clock, view, true);
+      const tcam = camera(view, pl.lf.L, cam.b), W = warpOf(cam, tcam, turn), op = pl.parts[1], n = cam.AW * cam.AH;
+      // the other bearing's baked chunks under its view, each placed in that camera's art pixels
+      let other = null;
+      if (op) {
+        const oc = op[0], [kx0, kx1, ky0, ky1] = rectOf(oc), list = [];
+        for (let ky = ky0; ky <= ky1; ky++) for (let kx = kx0; kx <= kx1; kx++) { const ch = cache.get(keyOf(oc.md.L, oc.md.b, kx, ky)); if (ch?.c && ch.ax) list.push({ ch, ox: kx * CS - oc.gx0, oy: ky * CS - oc.gy0 }); }
+        other = { W: warpOf(oc, tcam, op[2]), list };
+      }
+      // the next bearing's shading shows where the dither is under wB, whichever of the two is drawn
+      const wB = pl.wB ?? 0;
+      let mask = 0;
+      if (other && wB > 0 && wB < 1) for (let q = 0; q < 16; q++) if ((bayer(q & 3, q >> 2) < wB) !== !!pl.mainB) mask |= 1 << q;
+      // the overlays in the turned view go to the GPU on a clear layer of their own
+      B = viewOf(slots[2], tcam.AW, tcam.AH); light = B.light; B.c.fill(255); B.z.fill(-1e30);
+      overlays(cam, tcam, now, view, r.fires, r.over, r.picks, (x, y, z) => warpPoint(W, x, y, z));
+      const t2 = performance.now(), hour = clock.hour ?? 8;
+      const drawn = turnGL.render({
+        cap: [capW, capH], other, mask, sea: P.w1, lut: lutFor(hour), lutKey: lastLutKey, haze: hazeOf(tcam, hour), overlay: B.c,
+        main: { AW: cam.AW, AH: cam.AH, c: sl.c.subarray(0, n), light: sl.light.subarray(0, n), lit: r.fires.length > 0, id: sl.id.subarray(0, n), ax: sl.ax.subarray(0, n), z: sl.z.subarray(0, n), e: sl.e, ids: sl.owners.length, W },
+        target: { TW: tcam.AW, TH: tcam.AH, gx0: tcam.gx0, gy0: tcam.gy0 }, out: { W: canvas.width, H: canvas.height, s: tcam.s, dx: tcam.dx, dy: tcam.dy },
+      });
+      if (!drawn) showGL(false);
+      else if (glOver) showGL(true);
+      else g.drawImage(turnGL.canvas, 0, 0);
+      const t3 = performance.now();
+      holes = r.holes;
+      T.compose = T.compose * 0.95 + (t2 - t1) * 0.05; T.present = T.present * 0.95 + (t3 - t2) * 0.05;
+      fp.push(Math.round((t2 - t1) * 10) / 10, Math.round((t3 - t2) * 10) / 10, 0);
+      lastPick = r.picks; pickCam = cam; pickSlot = sl; pickTurn = turn;
+    } else if (pl.orbit && pl.parts.length) {
+      // no GPU to turn with: the nearer bearing, unturned, until the turn lands
+      const cam = camera(view, pl.lf.L, pl.parts[0][0].b), r = compose(slots[0], cam, now, sim, clock, view);
+      present(g, slots[0], cam, 1);
+      holes = r.holes; lastPick = r.picks; pickCam = cam; pickSlot = slots[0]; pickTurn = 0;
+    } else pl.parts.forEach(([cam, w], k) => {
       const t1 = performance.now();
       const r = compose(slots[k], cam, now, sim, clock, view);
       const t2 = performance.now();
       if (k === 0) holes = r.holes;
-      present(g, slots[k], cam, k === 0 ? 1 : w, turn);
+      present(g, slots[k], cam, k === 0 ? 1 : w);
       T.compose = T.compose * 0.95 + (t2 - t1) * 0.05; T.present = T.present * 0.95 + (performance.now() - t2) * 0.05;
       fp.push(Math.round((t2 - t1) * 10) / 10, Math.round((performance.now() - t2) * 10) / 10, cam.AW * cam.AH);
-      if (w > best) { best = w; lastPick = r.picks; pickCam = cam; pickSlot = slots[k]; pickTurn = turn; }
+      if (w > best) { best = w; lastPick = r.picks; pickCam = cam; pickSlot = slots[k]; pickTurn = 0; }
     });
     stats.slots = pl.parts.length;
     const ms = performance.now() - t0;
@@ -783,17 +893,18 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     api.lastMs = ms; api.lastHoles = holes; api.level = pl.lf;
     return { holes };
   }
-  function xray(o) {
+  // warp: the silhouette takes the person's own depth, so a turn carries it with the person rather than the leaves
+  function xray(o, warp) {
     const s = o.spr, ax = o.mirror ? s.w - 1 - s.ax : s.ax;
     for (let y = 0; y < s.h; y++) {
-      const sy = o.sy - s.ay + y;
+      const sy = o.sy - s.ay + y, z = o.z + (s.ay - y) + o.bias;
       if (sy < 0 || sy >= B.h) continue;
       for (let x = 0; x < s.w; x++) {
         const col = s.p[y * s.w + (o.mirror ? s.w - 1 - x : x)], sx = o.sx - ax + x;
         if (col === 255 || sx < 0 || sx >= B.w) continue;
         const p = sy * B.w + sx;
         // the whole silhouette picks the person seen through the leaves; only the checker pixels are painted
-        if (B.id[p] !== o.id && B.id[p] !== 0) { if ((sx + sy) & 1) B.c[p] = col; B.id[p] = o.id; }
+        if (B.id[p] !== o.id && B.id[p] !== 0) { if ((sx + sy) & 1) B.c[p] = col; B.id[p] = o.id; if (warp) { B.z[p] = z; B.ax[p] = sx - o.sx; } }
       }
     }
   }
@@ -803,12 +914,12 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1], [1, 1]]) text(B, txt, x + dx, y - 7 + dy, P.ink);
     text(B, txt, x, y - 7, P.snow);
   }
+  // tied to the canvas, not the buffer, so a grown buffer or a zoom does not move the horizon band
+  const hazeOf = (cam, hour) => ({ most: 0.32 * (clamp(1 - Math.abs(hour - 7.5) / 3.5, 0, 1) * 0.8 + 0.2), top: -cam.dy / cam.s, reach: (canvas.height / cam.s) * 0.42 });
   function haze(cam, hour) {
-    const morning = clamp(1 - Math.abs(hour - 7.5) / 3.5, 0, 1) * 0.8 + 0.2, most = 0.32 * morning, reach = 0.42;
-    // tied to the canvas, not the buffer, so a grown buffer or a zoom does not move the horizon band
-    const top = -cam.dy / cam.s, span = canvas.height / cam.s;
+    const { most, top, reach } = hazeOf(cam, hour);
     for (let y = 0; y < B.h; y++) {
-      const a = most * Math.max(0, 1 - (y - top) / (span * reach)) ** 1.5;
+      const a = most * Math.max(0, 1 - (y - top) / reach) ** 1.5;
       if (a <= 0) break;
       if (a < 0.001) continue;
       for (let x = 0; x < B.w; x++) if (bayer(x + cam.gx0, y + cam.gy0) < Math.min(a, most)) { const p = y * B.w + x; B.c[p] = HAZE[B.c[p]]; }
@@ -817,13 +928,13 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
 
   // ---------- picking and coordinates ----------
   const mainCam = (view) => camera(view, levelFor(view.zoom).L, mod8(view.bearing ?? 0));
-  // the main level's camera at the whole bearing nearest the view's, and the turn present() draws it with
+  // the main level's camera at the whole bearing nearest the view's, and how far the view is turned from it
   function turnedCam(view) {
     const beta = norm8(view.bearing ?? 0), b0 = Math.floor(beta), f = beta - b0, L = levelFor(view.zoom).L;
     for (const d of f > 0.5 ? [1, 0] : [0, 1]) { const c = camera(view, L, (b0 + d) % NB); if (c) return [c, f - d]; }
     return [null, 0];
   }
-  // a canvas point taken back through present()'s turn about the canvas centre
+  // a canvas point taken back through a turn of the ground plane about the canvas centre, flat at the target's height
   function unturn(sx, sy, turn) {
     if (!turn) return [sx, sy];
     const a = (-turn * Math.PI) / 4, c = Math.cos(a), sn = Math.sin(a), W = canvas.width / 2, H = canvas.height / 2, X = sx - W, Y = sy - H;
@@ -940,7 +1051,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     }
     return titleOf.name;
   };
-  function markSelected(cam, sel, picks) {
+  function markSelected(cam, sel, picks, map) {
     const live = picks.find((p) => p.id === sel);
     if (live) { label(title(sel) || live.name || String(live.id), live.sx, live.top ?? live.sy - live.h); return; }
     const md = cam.md, pv = md.k * 0.866 * md.treeK;
@@ -952,7 +1063,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       const K = bins.kinds[r.kind];
       x = toM(r.px); z = toM(r.py); hpx = Math.max(2, ObjBins.shown(r.size) * pv); name = bins.species[r.sp] || K; tall = UPRIGHT.has(K);
     }
-    const p = project(md, x, z), ox = Math.round(p.gx - cam.gx0), oy = Math.round(p.gy - cam.gy0);
+    const p = project(md, x, z), [ox, oy] = (map ?? ((a, b) => [a, b]))(Math.round(p.gx - cam.gx0), Math.round(p.gy - cam.gy0), p.cz);
     const hw = Math.ceil(Math.max(2, hpx * 0.5)) + 1, top = oy - Math.ceil(tall ? hpx : hpx * 0.7) - 2, bot = oy + 2;
     for (const [bx, by, sx2, sy2] of [[ox - hw, top, 1, 1], [ox + hw, top, -1, 1], [ox - hw, bot, 1, -1], [ox + hw, bot, -1, -1]])
       for (let k = 0; k < 3; k++) { dot(bx + k * sx2, by); dot(bx, by + k * sy2); }

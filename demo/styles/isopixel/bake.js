@@ -80,9 +80,14 @@ function bake(msg) {
   L.drawTerrainLive(B, w, V, M);
   const t2 = performance.now();
   L.drawObjects(B, V, O);
-  const obj = new Uint8Array(CS * CS);
-  // 1: an object drew here, 2: ground already in shadow (so live sprite shadows do not darken it twice)
-  for (let p = 0; p < obj.length; p++) obj[p] = (B.id[p] ? 1 : 0) | (B.sh[p] ? 2 : 0);
+  const obj = new Uint8Array(CS * CS), ax = new Int8Array(CS * CS), anchor = new Int16Array(65536);
+  for (const o of O) anchor[o.lid] = o.sx;
+  // 1: an object drew here, 2: ground already in shadow (so live sprite shadows do not darken it twice). ax: the
+  // pixel's column from its sprite's anchor, so a turn can move every sprite pixel with its anchor and keep it upright
+  for (let p = 0; p < obj.length; p++) {
+    obj[p] = (B.id[p] ? 1 : 0) | (B.sh[p] ? 2 : 0);
+    if (B.id[p]) ax[p] = Math.max(-127, Math.min(127, (p % CS) - anchor[B.id[p]]));
+  }
   // animated water and falls: only pixels still showing the ground; a sprite shadow cast later darkens every frame
   const aP = [], aC = [];
   for (const [p, cols] of V.anim) {
@@ -101,10 +106,10 @@ function bake(msg) {
     V.debug = null;
   }
   const animP = Uint32Array.from(aP), animC = Uint8Array.from(aC);
-  const moved = [B.c.buffer, B.z.buffer, obj.buffer, animP.buffer, animC.buffer];
+  const moved = [B.c.buffer, B.z.buffer, obj.buffer, ax.buffer, animP.buffer, animC.buffer];
   if (ground) moved.push(ground.C.buffer, ground.diag.buffer, ground.kind.buffer);
   V.trail = null; V.iceAt = null;
-  postMessage({ type: "chunk", key: msg.key, ver: D.version, c: B.c, z: B.z, obj, animP, animC, ground, dbg, ms: performance.now() - t0, parts: [t1 - t0, t2 - t1, performance.now() - t2], objects: O.length }, moved);
+  postMessage({ type: "chunk", key: msg.key, ver: D.version, c: B.c, z: B.z, obj, ax, animP, animC, ground, dbg, ms: performance.now() - t0, parts: [t1 - t0, t2 - t1, performance.now() - t2], objects: O.length }, moved);
 }
 
 function mapData(k, b) {

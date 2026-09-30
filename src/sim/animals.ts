@@ -1,7 +1,7 @@
 // What the animals do each tick: graze, wander, flee, hunt, swim, fly, perch and feed. Speeds are meters a tick of
 // five minutes' game time, the way a person's are; what each kind is like is in fauna.ts.
 import { THING_MATERIAL } from "./materials";
-import { TILE_M, Tile, W, dryAt, shoreOf, isNight, landing, log, meters, tileAt, walkable, wetAt, type Agent, type Animal, type AnimalSpecies, type Thing, type World } from "./world";
+import { TILE_M, Tile, H, W, dryAt, shoreByTile, shoreOf, isNight, landing, log, meters, tileAt, walkable, wetAt, type Agent, type Animal, type AnimalSpecies, type Thing, type World } from "./world";
 import { anyOf, liveThings, nearestThing, onPath, put, thingById } from "./space";
 import { steer } from "./walk";
 import { dropPile, mark, removeThing } from "./physics";
@@ -171,11 +171,15 @@ function flight(w: World, an: Animal, cruise: number, land = 0) {
 // At the water's edge: standing water within a meter of the point, the shallows a heron wades.
 const atEdge = (w: World, x: number, y: number) =>
   wetAt(w, x, y) || [0, 1, 2, 3, 4, 5, 6, 7].some((k) => wetAt(w, x + Math.cos((k * Math.PI) / 4) / TILE_M, y + Math.sin((k * Math.PI) / 4) / TILE_M));
-// The nearest point along the water's edge within r meters, from the island's shore points.
+// The nearest point along the water's edge within r meters, from the island's shore points: only the tiles within r
+// are looked at, and among equally near points the first in shoreOf's order wins, as a scan of the whole coast would.
 function edgeNear(w: World, from: { px: number; py: number }, r: number): [number, number] | null {
-  let best: { px: number; py: number } | null = null, bd = r;
-  for (const s of shoreOf(w)) { const d = meters(from, s); if (d < bd) { bd = d; best = s; } }
-  return best && [best.px, best.py];
+  const s = shoreOf(w), g = shoreByTile(w), reach = Math.ceil(r / TILE_M), x0 = Math.floor(from.px), y0 = Math.floor(from.py);
+  let best = -1, bd = r;
+  for (let y = Math.max(0, y0 - reach); y <= Math.min(H - 1, y0 + reach); y++)
+    for (let x = Math.max(0, x0 - reach); x <= Math.min(W - 1, x0 + reach); x++)
+      for (const i of g[y * W + x]) { const d = meters(from, s[i]); if (d < bd || (d === bd && i < best)) { bd = d; best = i; } }
+  return best >= 0 ? [s[best].px, s[best].py] : null;
 }
 function heron(w: World, h: Animal, n: Near) {
   if (h.state === "fly") {
