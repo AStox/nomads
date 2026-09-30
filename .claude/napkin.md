@@ -53,9 +53,9 @@
 5. **[2026-09-26] math/noise seeds keep only 16 bits**
    `simplex2d.create(seed)` uses `seed & 0xffff`.
    Do instead: derive sub-seeds with `Math.floor(rand() * 65536)` from the world rng.
-6. **[2026-09-29] Turns reproject baked pixels by their depth, on the GPU**
-   Between two bearings turngl.js lifts every art pixel back into the world and projects it at the in-between bearing, with the maths of live.js warpOf. That only works while baked ground keeps z = 1.5H(u + v) + lev lp, sprites keep blit's z (anchor cz + rows up + bias, e = bias + foot + lift), and every object pixel's column from its anchor is recorded (the bake's `ax`, blit's B.ax). The WebGL canvas is shown over the page's canvas while turning; drawImage-copying it into the page canvas halved the 1080p frame rate on an integrated GPU.
-   Do instead: route any new depth writer, sprite bias or lift through those formulas (and `add`'s `e` for live sprites), and check turns with page screenshots at bearing 0.25, 0.5 and 0.75: the page canvas (toDataURL) does not hold turn frames.
+6. **[2026-09-30] Every frame is drawn on the GPU from resident chunks; the CPU only draws live tiles**
+   gpu.js keeps baked chunks as textures and turns them by depth with the maths of live.js warpOf. That only works while baked ground keeps z = 1.5H(u + v) + lev lp, sprites keep blit's z (anchor cz + rows up + bias, e = bias + foot + lift), and every object pixel's column from its anchor is recorded (the bake's `ax`, blit's B.ax). On the GPU path B is composed lazily in 32 px tiles: a pixel written without `B.need(x0, y0, x1, y1)` for its box first never reaches the screen. Headless fps read 60 while turns stalled for seconds on bakes.
+   Do instead: route any new depth writer, sprite bias or lift through those formulas (and `add`'s `e` for live sprites), call B.need before any new CPU drawing, and judge changes by `play.metrics.turns`, `live.lastMs` and frames with the CPU throttled 4x, with page screenshots at bearing 0.25, 0.5 and 0.75 (the page canvas does not hold GPU frames).
 7. **[2026-09-27] Art-style mocks that only recolor get rejected**
    Two rounds of looks dressed on one shared heightfield with blob trees read to the operator as the same picture recolored.
    Do instead: vary the representation itself per mock (terrain as tiers, voxels, hexes, paper, glyphs or paint; models as sprites, cubes or toy pieces; 2D vs 3D; camera and renderer). Share only demo/styles/world.js, the island as plain data.
@@ -63,7 +63,7 @@
    In the isopixel style, terraced cliffs, per-tile rock cubes and tile-column shading all read as "too cliffy" or blocks, and raw data rocks drawn one by one read as confetti.
    Do instead: slope tiles lit per vertex, real cliffs only on sea headlands, rock shaded in a few tones from a normal smoothed over about 3 tiles plus sparse hand texture, and nearby data rocks merged into outcrops at far zooms. Check each pass in grayscale and a heavy blur.
 9. **[2026-09-28] Every visible object is a sim object, and positions are continuous**
-   About 850k things and 500 animals live in the sim with float px, py (x, y stay their floors) and a spatial index; people walk about 2 m per 5-minute tick. The fine water field (waterAt) and groundClass() in src/terrain are the one truth for water and ground, shared by sim, renderer and inspector. The browser holds about 1.3 GB with 3 bake workers.
+   About 850k things and 500 animals live in the sim with float px, py (x, y stay their floors) and a spatial index; people walk about 2 m per 5-minute tick. The fine water field (waterAt) and groundClass() in src/terrain are the one truth for water and ground, shared by sim, renderer and inspector. The browser held about 1.3 GB with 3 bake workers; it now runs hardwareConcurrency - 2 of them, up to 6, each with its own grown island (about 75 MB).
    Do instead: never add decoration the sim does not hold, and route any new water or ground rule through waterAt or groundClass so drawing, walking and inspecting cannot disagree.
 10. **[2026-09-28] Draw the generator's heights at 1.5x, and keep the camera off the baked maps**
    True slopes are p50 7, p99 34 degrees; 3.2x turned the eroded hills into needles, and 1x read flat. Camera state that went through each level's baked ground drifted and jumped on level switches.

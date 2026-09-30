@@ -257,7 +257,7 @@ async function main() {
     // the ground under the opening shot is only exact once its chunks are in, so keep it centred until then
     if (!revealed && opening) camera.lookAt(live.where(opening, sim, view));
     camera.guard();
-    const r = live.frame(view, sim);
+    const r = live.frame(view, sim, { show: revealed });
     if (!revealed) {
       const rd = live.readiness(view);
       if (rd.ready && !r.holes) {

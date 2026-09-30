@@ -1125,7 +1125,6 @@ export function collectLive(w, V, M, D) {
     // a continuous canopy of minis casting shadows would darken the whole forest; trees cast theirs once they stand apart
     if (spr) add(at, spr, { mirror, shadow: (K === "tree" ? hpx >= 8 : hpx >= 3) && !FLAT.has(K), oid: id });
   });
-  if (cache.size > 4000) cache.clear();
   return O;
 }
 const FLAT = new Set(["clay", "stick", "pebble", "flowers", "herb", "mushroom"]);
@@ -1237,6 +1236,18 @@ function trailDist(T, x, z) {
     }
   return best;
 }
+// whether a worn cell lies within the reach of trailDist from a point's wobbled position (the wobble stays under a cell,
+// and trailDist reads cells up to 2 beyond it), so the wobble's noise is paid only near a path; kept for the last 3 m
+// cell, as neighbouring pixels share one, and dropped at every bake since the wear changes between bakes
+let nearI = NaN, nearJ = NaN, nearAny = false;
+function trailNear(T, x, z) {
+  const i = Math.floor((x + 4800) / TC), j = Math.floor((z + 4800) / TC);
+  if (i === nearI && j === nearJ) return nearAny;
+  nearI = i; nearJ = j; nearAny = false;
+  for (let b = Math.max(0, j - 3); b <= Math.min(TN - 1, j + 3) && !nearAny; b++)
+    for (let a = Math.max(0, i - 3); a <= Math.min(TN - 1, i + 3); a++) if (T[b * TN + a]) { nearAny = true; break; }
+  return nearAny;
+}
 // on a path at this point: a rough edge up close; far out, where a pixel is wider than the path, a dither in
 // proportion to the share of the pixel the path covers, so the far colour is the close one's mean
 function onTrail(T, x, z, mpp, X, Y) {
@@ -1252,7 +1263,8 @@ const C_LUSH = [56, 96, 48], C_MID = [98, 126, 60], C_STRAW = [160, 150, 90], C_
 const C_MARSH = [74, 94, 56], C_PEAT = [48, 50, 38], C_BARE = [146, 136, 116], C_SOIL = [126, 98, 70], C_SILT = [186, 168, 128], C_SAND = [220, 202, 150];
 const C_BURN = [152, 128, 84], C_FOG = [140, 162, 152], C_AUTUMN = [178, 138, 64], C_WINTER = [150, 150, 142];
 const mixc = (a, b, t) => { t = clamp(t, 0, 1); return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; };
-function groundRGB(V, g, s, x, z) {
+// m60: the broad mottle at (x, z), which paintLand has already worked out
+function groundRGB(V, g, s, x, z, m60 = fbm(x / 60, z / 60, 11, 2)) {
   // ground the shared rule calls grass with outcrops shows as grass, its bare share mostly grassed over
   const hill = g.cls === HILL, m = V.mpp, tr = g.c1, sh = g.c2, ma = g.c3, sa = g.c5, gr = g.c0 + (hill ? g.c4 * 0.8 : 0), ba = g.c4 * (hill ? 0.2 : 1), sum = gr + tr + sh + ma + ba || 1;
   let grass = g.lush > 0.5 ? mixc(C_MID, C_LUSH, (g.lush - 0.5) * 2) : mixc(C_STRAW, C_MID, g.lush * 2);
@@ -1268,7 +1280,7 @@ function groundRGB(V, g, s, x, z) {
   if (V.season === "winter") c = mixc(c, [236, 240, 244], smooth(0.106, 0.12, g.snow0) * 0.5);
   // pigment gathers where one cover gives way to another
   const sh2 = [gr, tr, sh, ma, ba].sort((a, b) => b - a), pool = Math.max(0, 1 - ((sh2[0] - sh2[1]) / sum) * 3) * 0.07;
-  const mot = fbm(x / 60, z / 60, 11, 2) * 0.05 + clusters(x, z, 6, 12, m, 0.4) * 0.05 + clusters(x, z, 1.8, 13, m) * 0.08 + clusters(x, z, 0.5, 14, m, 0.5) * 0.11;
+  const mot = m60 * 0.05 + clusters(x, z, 6, 12, m, 0.4) * 0.05 + clusters(x, z, 1.8, 13, m) * 0.08 + clusters(x, z, 0.5, 14, m, 0.5) * 0.11;
   // colour keeps its hue and saturation in a narrow value band; the light sets value over a much wider range
   const L0 = c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11 || 1, band = 112 * (1 + (L0 / 112 - 1) * 0.18);
   const k = ((1 + mot - pool) * band * clamp(1 + s * 0.3, 0.42, 1.6)) / L0;
@@ -1305,7 +1317,7 @@ function dq(c, X, Y) {
 }
 function paintLand(w, V, g, X, Y, s) {
   const x = g.x, z = g.z, m = V.mpp;
-  if (V.trail && onTrail(V.trail, x, z, m, X, Y)) { TRACE.cls = 255; return soil(x, z, s + 0.4, X, Y, m); }
+  if (V.trail && trailNear(V.trail, x, z) && onTrail(V.trail, x, z, m, X, Y)) { TRACE.cls = 255; return soil(x, z, s + 0.4, X, Y, m); }
   const mot = fbm(x / 60, z / 60, 11, 2), cls = g.cls;
   TRACE.cls = cls;
   if (cls === ROCKY) return rock(x, z, s, g.snow, X, Y, m);
@@ -1314,10 +1326,10 @@ function paintLand(w, V, g, X, Y, s) {
       // leaf litter in small drifts, a few twigs of dark soil, lit patches where the canopy opens
       const lit = clusters(x, z, 4, 3, m, 0.5), litter = clusters(x, z, 0.7, 4, m, 0.5);
       if (litter > 0 && noise(x / 0.35, z / 0.35, 5) * fade(0.35, m) > 0.3) return P.d2;
-      const c = groundRGB(V, g, s, x, z), k = 1 + lit * 0.06;
+      const c = groundRGB(V, g, s, x, z, mot), k = 1 + lit * 0.06;
       return dq([c[0] * k, c[1] * k, c[2] * k], X, Y);
     }
-    case SCRUB: return dq(groundRGB(V, g, s, x, z), X, Y);
+    case SCRUB: return dq(groundRGB(V, g, s, x, z, mot), X, Y);
     case SAND: {
       let v = 2.5 + s * 0.7 + Math.round(mot * 2) * 0.3 + clusters(x, z, 0.4, 8, m, 0.55) * 0.8;
       // ripples 3 m apart, fading out once they are narrower than a pixel
@@ -1336,7 +1348,7 @@ function paintLand(w, V, g, X, Y, s) {
       }
       // reed rims round the pools: short upright strokes, a meter long
       if (pn > 0.35) return noise(x / 0.5, z / 2.2, 34) * fade(0.5, m) > 0.1 ? P.m3 : clusters(x, z, 1.5, 35, m) > 0 ? P.a1 : P.m1;
-      return dq(groundRGB(V, g, s, x, z), X, Y);
+      return dq(groundRGB(V, g, s, x, z, mot), X, Y);
     }
     default: {
       // meadow: broad swathes, then tone clusters at a few meters, then blade speckle at half a meter
@@ -1345,7 +1357,7 @@ function paintLand(w, V, g, X, Y, s) {
       if (bare > 0.3 + g.c0 * 0.15 + smooth(0.3, 1.2, g.soil) * 0.4) return soil(x, z, s + (bare - 0.5) * 1.5, X, Y, m);
       // under the woods edge the grass is strewn with leaf litter
       if (g.c1 > 0.2 && clusters(x, z, 0.6, 15, m, 0.55 - (g.c1 - 0.2) * 0.4) > 0) return P.d2;
-      return dq(groundRGB(V, g, s, x, z), X, Y);
+      return dq(groundRGB(V, g, s, x, z, mot), X, Y);
     }
   }
 }
@@ -1441,6 +1453,7 @@ const lightOf = (gu, gv) => { const l = LIGHT * EXAG * (-LU * gu - LV * gv); ret
 export function drawTerrainLive(B, w, V, M) {
   const { NI, NJ, i0, j0 } = M, C = M.C, GX = V.gx, GY = V.gy, VI = NI + 1;
   const dbg = V.debug;
+  nearI = NaN;
   const anim = V.anim, frames = (p, f0, paint) => {
     const cols = [f0];
     let moving = false;
@@ -1506,8 +1519,19 @@ export function drawTerrainLive(B, w, V, M) {
 }
 
 // ---------- objects ----------
-const cache = new Map();
-const cached = (key, make) => { let s = cache.get(key); if (!s) { s = make(); cache.set(key, s); } return s; };
+// Sprites by key, the least recently used dropped past SPRITE_BYTES. A forest chunk wants thousands of tree variants;
+// emptying the whole cache at a count, as it once did, had most of them drawn again for every chunk.
+const cache = new Map(), SPRITE_BYTES = 12e6;
+let spriteBytes = 0;
+const cached = (key, make) => {
+  let s = cache.get(key);
+  if (s) { cache.delete(key); cache.set(key, s); return s; }
+  s = make();
+  cache.set(key, s);
+  spriteBytes += (s?.p?.length ?? 0) + 64;
+  if (spriteBytes > SPRITE_BYTES) for (const [k, v] of cache) { if (spriteBytes <= SPRITE_BYTES * 0.8) break; cache.delete(k); spriteBytes -= (v?.p?.length ?? 0) + 64; }
+  return s;
+};
 // Creature and landmark sprites from life.js; anything it does not (yet) export is simply left out.
 let LIFE = {};
 export const setLife = (mod) => { LIFE = mod; };

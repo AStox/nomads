@@ -1,21 +1,23 @@
 // The live isopixel renderer: an orbiting camera with a continuous zoom over the whole island. Workers bake the static
-// landscape in chunks of global art pixels, one chunk set per zoom level and 45 degree bearing. Every frame composes
-// the visible chunks (colour and depth) of one or two levels, z-tests the live sim on top, animates water, fire and
-// smoke on a real clock, relights the indexed palette for the time of day, and scales the art buffer to the exact zoom
-// without losing its crisp pixels. Between two bearings every pixel goes back to its place in the world by its depth
-// and is projected again at the bearing in between, on the GPU (turngl.js), so the island turns as a solid thing with
-// its trees upright.
+// landscape in chunks of global art pixels, one chunk set per zoom level and 45 degree bearing. The GPU keeps the baked
+// chunks and draws them (gpu.js); each frame the CPU only z-tests the live sim into the tiles it touches and animates
+// water, fire and smoke on a real clock, and the GPU lays those tiles over the chunks, relights the indexed palette for
+// the time of day, and scales the art buffer to the exact zoom without losing its crisp pixels. Between two bearings,
+// or at one still baking, every pixel goes back to its place in the world by its depth and is projected again at the
+// bearing shown, so the island turns as a solid thing with its trees upright. Without WebGL2 the CPU composes it all.
 import { RGB, NCOL, P, GLOW, HAZE } from "./pal.js";
 import { Buf, ObjBins, blit, castShadow, bayer, h2 } from "./px.js";
 import * as SP from "./sprites.js";
 import { text } from "./ui.js";
-import { createTurnGL } from "./turngl.js";
+import { createGPU, TS, TPR } from "./gpu.js";
 
 const CS = 256, SIM = 150, ORIGIN = -4800, DAY = 288, YEAR = DAY * 40, TAU = Math.PI * 2, NL = 9, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const mod8 = (b) => ((Math.round(b) % NB) + NB) % NB;
 const norm8 = (b) => { const r = ((b % NB) + NB) % NB; return r >= NB ? 0 : r; };
+// the signed turn from a to b, the short way round, in [-4, 4)
+const wrap8 = (d) => ((((d % NB) + 12) % NB) - 4);
 // Fire, its glow and its smoke column drawn larger than life, as the old sims do, so a camp shows from far out: art px
 // at the tuned levels (island, region, valley, close); levels in between interpolate by art px per meter. Everything
 // else is sized by its own meters.
@@ -35,7 +37,7 @@ const NOSHADOW = new Set(["ash", "pit", "trap", "fire", "clay", "stick"]);
 
 export async function createLive({ seed = 1, canvas, onProgress, workers: nW, adjacent = true, check = false } = {}) {
   const TH = await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {}));
-  const n = nW ?? clamp((navigator.hardwareConcurrency || 4) - 2, 1, 3);
+  const n = nW ?? clamp((navigator.hardwareConcurrency || 4) - 2, 1, 6);
   const tStart = performance.now(), classWait = new Map();
   const pool = [], maps = new Map(), mapPending = new Map();
   const stats = { fps: 0, composeMs: 0, bakeQueue: 0, bakedChunks: 0, bakeMsAvg: 0, memMB: 0, firstFrameMs: 0, growMs: 0, mapMs: {}, workers: n, slots: 1 };
@@ -45,7 +47,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   const grounds = new Map();
 
   const onChunk = (wk, m) => {
-    wk.busy = null;
+    wk.busy = null; workerFree = true;
     if (m.type === "error") { console.warn("bake error", m.error); const ch = cache.get(m.key); if (ch) { ch.failed = true; ch.pending = false; } return; }
     const ch = cache.get(m.key);
     if (!ch) return;
@@ -255,7 +257,9 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) { all++; if (cache.get(keyOf(cam.md.L, cam.md.b, cx, cy))?.c) done++; }
     return { done, all, ready: done === all };
   }
-  let prefetchViews = [], settled = false;
+  // the wish list is rebuilt every SCHEDULE_MS, or at once when a worker comes free: a bake takes hundreds of ms
+  let prefetchViews = [], settled = false, scheduled = -1e9, workerFree = true;
+  const SCHEDULE_MS = 100;
   function dispatch(list) {
     list.sort((a, b) => a[0] - b[0]);
     stats.bakeQueue = list.length;
@@ -271,7 +275,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   const keep = new Set();
   let pruned = 0;
   function evict(visible) {
-    const cap = 75e6, now = performance.now();
+    const cap = 160e6, now = performance.now();
     // entries wanted once and never baked would otherwise pile up over a long session
     if (now - pruned > 5000) { pruned = now; for (const [k, c] of cache) if (!c.c && !c.pending && !visible.has(k) && now - c.used > 20000) cache.delete(k); }
     if (cacheBytes < cap) return;
@@ -382,19 +386,19 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   const trailPending = new Set();
 
   // ---------- cameras and compose slots ----------
-  // null without WebGL2: a turn then shows the nearer bearing until it lands. Its canvas lies over the page's and shows
-  // only while turning, so the browser composites it rather than the page copying it into its own canvas every frame.
-  const turnGL = createTurnGL({ NCOL, HAZE }), glOver = !!(turnGL && canvas.parentNode);
-  if (glOver) { Object.assign(turnGL.canvas.style, { position: "fixed", pointerEvents: "none", imageRendering: "pixelated", visibility: "hidden" }); canvas.after(turnGL.canvas); }
+  // The GPU draws every frame it can (null without WebGL2: the CPU composes, and a turn shows the main bearing until it
+  // lands). Its canvas lies over the page's, so the browser composites it rather than the page copying it every frame.
+  const gpu = createGPU({ NCOL, HAZE }), glOver = !!(gpu && canvas.parentNode);
+  if (glOver) { Object.assign(gpu.canvas.style, { position: "fixed", pointerEvents: "none", imageRendering: "pixelated", visibility: "hidden" }); canvas.after(gpu.canvas); }
   let glShown = false, glW = 0, glH = 0;
   function showGL(on) {
     if (!glOver || (on === glShown && (!on || (glW === canvas.width && glH === canvas.height)))) return;
     if (on) {
       const r = canvas.getBoundingClientRect();
-      Object.assign(turnGL.canvas.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+      Object.assign(gpu.canvas.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
       glW = canvas.width; glH = canvas.height;
     }
-    turnGL.canvas.style.visibility = on ? "visible" : "hidden";
+    gpu.canvas.style.visibility = on ? "visible" : "hidden";
     glShown = on;
   }
   const sprites = new Map();
@@ -422,50 +426,35 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   }
   let slots = [], capW = 0, capH = 0;
   function ensureSlots() {
-    const W = canvas.width, H = canvas.height, cw = Math.ceil(W / 1.25) + 8, chh = Math.ceil(H / 1.25) + 8;
+    const W = canvas.width, H = canvas.height;
+    // room for a view grown for a turn at its worst angle (grow()), at 2 screen px or more per art px
+    const ex = Math.max(1.6, Math.hypot(1, (2 * H) / W) + 0.04), ey = Math.max(1.6, Math.hypot(1, W / (2 * H)) + 0.04);
+    const cw = Math.ceil((W * ex) / 2) + 8, chh = Math.ceil((H * ey) / 2) + 8;
     if (cw === capW && chh === capH) return;
     capW = cw; capH = chh;
-    const cap = cw * chh;
+    const cap = cw * chh, tiles = Math.ceil(cw / TS) * Math.ceil(chh / TS), rows = Math.ceil(tiles / TPR), pn = TS * TPR * TS * rows;
     // each slot has its own upscale canvas: reusing one within a frame makes the browser copy it before the redraw.
-    // Two for a zoom's cross-fade, the first also a turn's nearer bearing; the third holds a turn's overlays.
+    // Two for a zoom's cross-fade, the first also a turn's main bearing; the third holds a turn's overlays.
     const bufs = () => ({ c: new Uint8Array(cap), z: new Float32Array(cap), id: new Uint16Array(cap), sh: new Uint8Array(cap), light: new Uint8Array(cap), ax: new Int16Array(cap), e: new Float32Array(65536) });
-    slots = [0, 1].map(() => {
+    // the GPU's tiles: which are composed this frame (mark, list) and their packed copy for the atlas (packTiles)
+    const pack = (turns) => ({ mark: new Int32Array(tiles), list: new Uint16Array(rows * TPR), index: new Uint16Array(tiles), n: 0, tw: 0, th: 0, c: new Uint8Array(pn), l: new Uint8Array(pn), ...(turns && { id: new Uint16Array(pn), ax: new Int16Array(pn), z: new Float32Array(pn) }) });
+    slots = [0, 1].map((k) => {
       const mid = new OffscreenCanvas(Math.ceil(W * 2.2) + 24, Math.ceil(H * 2.2) + 24);
-      return { ...bufs(), rgba: new ArrayBuffer(cap * 4), off: new OffscreenCanvas(cw, chh), mid, midG: mid.getContext("2d") };
+      return { ...bufs(), rgba: new ArrayBuffer(cap * 4), off: new OffscreenCanvas(cw, chh), mid, midG: mid.getContext("2d"), pack: pack(k === 0) };
     });
-    slots.push(bufs());
+    slots.push({ ...bufs(), pack: pack(false) });
   }
   const viewOf = (sl, w, h) => ({ w, h, c: sl.c.subarray(0, w * h), z: sl.z.subarray(0, w * h), id: sl.id.subarray(0, w * h), sh: sl.sh.subarray(0, w * h), light: sl.light.subarray(0, w * h), ax: sl.ax.subarray(0, w * h) });
 
-  // warp: compose only what stands in the world, with each sprite pixel's anchor, for the GPU to turn; the overlays
-  // that belong to the screen (smoke, icons, labels, haze) are drawn afterwards in the turned view
-  function compose(sl, cam, now, sim, clock, view, warp = false) {
-    const { md, AW, AH, gx0, gy0 } = cam;
+  // The CPU path composes the whole view every frame. On the GPU (tiled) only the TS px tiles the live sim touches are
+  // composed, as it draws into them, the rest staying on the GPU as baked. warp: each sprite pixel keeps its anchor for
+  // the GPU to turn, and the overlays that belong to the screen (smoke, icons, labels) are drawn after, in the turned view.
+  function compose(sl, cam, now, sim, clock, view, { tiled = false, warp = false } = {}) {
+    const { md, AW, AH } = cam;
     B = viewOf(sl, AW, AH); light = B.light; owners = sl.owners = [null, null];
     const fr = Math.floor(now / 160) & 7;
-    B.c.fill(P.w1); B.z.fill(-1e30); B.id.fill(0); B.sh.fill(0); light.fill(0);
-    if (warp) B.ax.fill(0);
-    let holes = false;
-    const [cx0, cx1, cy0, cy1] = rectOf(cam);
-    for (let cy = cy0; cy <= cy1; cy++)
-      for (let cx = cx0; cx <= cx1; cx++) {
-        const ch = cache.get(keyOf(md.L, md.b, cx, cy)), ox = cx * CS - gx0, oy = cy * CS - gy0;
-        const x0 = Math.max(0, ox), x1 = Math.min(AW, ox + CS), y0 = Math.max(0, oy), y1 = Math.min(AH, oy + CS);
-        if (!ch?.c) { holes = true; fallback(cam, x0, x1, y0, y1); continue; }
-        for (let y = y0; y < y1; y++) {
-          const src = (y - oy) * CS + (x0 - ox), dst = y * AW + x0, len = x1 - x0;
-          B.c.set(ch.c.subarray(src, src + len), dst);
-          B.z.set(ch.z.subarray(src, src + len), dst);
-          B.id.set(ch.obj.subarray(src, src + len), dst);
-          if (warp && ch.ax) B.ax.set(ch.ax.subarray(src, src + len), dst);
-        }
-        const aP = ch.animP, aC = ch.animC;
-        for (let i = 0; i < aP.length; i++) {
-          const p = aP[i], x = (p % CS) + ox, y = ((p / CS) | 0) + oy;
-          if (x >= 0 && y >= 0 && x < AW && y < AH) B.c[y * AW + x] = aC[i * 8 + fr];
-        }
-      }
-    for (let p = 0; p < B.id.length; p++) if (B.id[p] === 2) { B.id[p] = 0; B.sh[p] = 1; } else if (B.id[p] === 3) { B.id[p] = 1; }
+    sl.tiled = tiled;
+    const holes = tiled ? tileStart(sl, cam, fr, warp) : composeAll(cam, fr);
     const night = clamp(clock.night ?? 0, 0, 1);
     let picks = [], fires = [], over = [];
     if (sim) {
@@ -483,8 +472,107 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       drawFires(cam, E.fires, now, night, sl);
       fires = E.fires; picks = E.picks;
     }
-    if (!warp) finish(sl, cam, now, clock, view, fires, over, picks);
+    if (warp) return { holes, picks, fires, over };
+    if (tiled) overlays(cam, cam, now, view, fires, over, picks, null);
+    else finish(sl, cam, now, clock, view, fires, over, picks);
     return { holes, picks, fires, over };
+  }
+  function composeAll(cam, fr) {
+    const { md, AW, AH, gx0, gy0 } = cam;
+    B.c.fill(P.w1); B.z.fill(-1e30); B.id.fill(0); B.sh.fill(0); light.fill(0);
+    let holes = false;
+    const [cx0, cx1, cy0, cy1] = rectOf(cam);
+    for (let cy = cy0; cy <= cy1; cy++)
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const ch = cache.get(keyOf(md.L, md.b, cx, cy)), ox = cx * CS - gx0, oy = cy * CS - gy0;
+        const x0 = Math.max(0, ox), x1 = Math.min(AW, ox + CS), y0 = Math.max(0, oy), y1 = Math.min(AH, oy + CS);
+        if (!ch?.c) { holes = true; fallback(cam, x0, x1, y0, y1); continue; }
+        for (let y = y0; y < y1; y++) {
+          const src = (y - oy) * CS + (x0 - ox), dst = y * AW + x0, len = x1 - x0;
+          B.c.set(ch.c.subarray(src, src + len), dst);
+          B.z.set(ch.z.subarray(src, src + len), dst);
+          B.id.set(ch.obj.subarray(src, src + len), dst);
+        }
+        const aP = ch.animP, aC = ch.animC;
+        for (let i = 0; i < aP.length; i++) {
+          const p = aP[i], x = (p % CS) + ox, y = ((p / CS) | 0) + oy;
+          if (x >= 0 && y >= 0 && x < AW && y < AH) B.c[y * AW + x] = aC[i * 8 + fr];
+        }
+      }
+    for (let p = 0; p < B.id.length; p++) if (B.id[p] === 2) { B.id[p] = 0; B.sh[p] = 1; } else if (B.id[p] === 3) { B.id[p] = 1; }
+    return holes;
+  }
+  // The frame's tiles for slot sl under cam: B.need(x0, y0, x1, y1), called by everything that draws before it touches
+  // that box, fills each tile the box covers the first time with fill(x0, y0, x1, y1), so whatever is drawn reads what
+  // lies beneath it.
+  function tilesFor(sl, cam, fill) {
+    const pk = sl.pack, tw = (pk.tw = Math.ceil(cam.AW / TS)), th = (pk.th = Math.ceil(cam.AH / TS)), mark = pk.mark;
+    mark.fill(-1, 0, tw * th);
+    pk.n = 0;
+    B.need = (x0, y0, x1, y1) => {
+      const a0 = Math.max(0, Math.floor(x0 / TS)), a1 = Math.min(tw - 1, Math.floor(x1 / TS)), b0 = Math.max(0, Math.floor(y0 / TS)), b1 = Math.min(th - 1, Math.floor(y1 / TS));
+      for (let b = b0; b <= b1; b++)
+        for (let a = a0; a <= a1; a++) {
+          const t = b * tw + a;
+          if (mark[t] < 0) { mark[t] = pk.n; pk.list[pk.n++] = t; fill(a * TS, b * TS, Math.min(cam.AW, a * TS + TS), Math.min(cam.AH, b * TS + TS)); }
+        }
+    };
+  }
+  // tiles of the ground as baked, or of the stand-in levels under a chunk still baking; whether any chunk is
+  function tileStart(sl, cam, fr, warp) {
+    const { md, AW, gx0, gy0 } = cam, [cx0, cx1, cy0, cy1] = rectOf(cam), gw = cx1 - cx0 + 1, grid = [];
+    let holes = false;
+    for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) { const ch = cache.get(keyOf(md.L, md.b, cx, cy)); grid.push(ch?.c ? ch : null); if (!ch?.c) holes = true; }
+    const { c, z, id, sh, ax } = B, lt = light;
+    tilesFor(sl, cam, (x0, y0, x1, y1) => {
+      for (let cy = Math.floor((gy0 + y0) / CS); cy * CS < gy0 + y1; cy++)
+        for (let cx = Math.floor((gx0 + x0) / CS); cx * CS < gx0 + x1; cx++) {
+          const ch = grid[(cy - cy0) * gw + cx - cx0], ox = cx * CS - gx0, oy = cy * CS - gy0;
+          const sx0 = Math.max(x0, ox), sx1 = Math.min(x1, ox + CS), sy0 = Math.max(y0, oy), sy1 = Math.min(y1, oy + CS), n = sx1 - sx0;
+          if (!ch) {
+            for (let y = sy0; y < sy1; y++) { const p = y * AW + sx0; c.fill(P.w1, p, p + n); z.fill(warp ? -3e30 : -1e30, p, p + n); id.fill(0, p, p + n); sh.fill(0, p, p + n); lt.fill(0, p, p + n); ax.fill(0, p, p + n); }
+            // a turned view leaves a chunk still baking empty (gpu.js skips depth -3e30), for a lending bearing to fill
+            if (!warp) fallback(cam, sx0, sx1, sy0, sy1);
+            continue;
+          }
+          const aP = ch.animP, aC = ch.animC;
+          for (let y = sy0; y < sy1; y++) {
+            const src = (y - oy) * CS + sx0 - ox, dst = y * AW + sx0;
+            for (let i = 0; i < n; i++) {
+              const o = ch.obj[src + i];
+              c[dst + i] = ch.c[src + i]; z[dst + i] = ch.z[src + i]; id[dst + i] = o & 1; sh[dst + i] = o === 2 ? 1 : 0; lt[dst + i] = 0;
+            }
+            if (warp) for (let i = 0; i < n; i++) ax[dst + i] = ch.ax[src + i];
+            // the water's frame: the bake sends a chunk's animated pixels in pixel order
+            for (let i = lowerBound(aP, src), end = src + n; i < aP.length && aP[i] < end; i++) c[dst + aP[i] - src] = aC[i * 8 + fr];
+          }
+        }
+    });
+    return holes;
+  }
+  const lowerBound = (arr, v) => { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < v) lo = m + 1; else hi = m; } return lo; };
+  // the frame's tiles packed for gpu.js: an atlas of TPR tiles to a row, each composed tile's atlas number + 1 at its
+  // place in the view (index) and each atlas tile's place in the view (list); warp adds what a turn splats
+  function packTiles(sl, cam, warp) {
+    const { AW, AH } = cam, pk = sl.pack, n = pk.n, rows = Math.ceil(n / TPR), RW = TS * TPR, size = RW * TS * rows, nt = pk.tw * pk.th;
+    pk.index.fill(0, 0, nt);
+    for (let k = 0; k < n; k++) {
+      const t = pk.list[k], x0 = (t % pk.tw) * TS, y0 = Math.floor(t / pk.tw) * TS, w = Math.min(TS, AW - x0), h = Math.min(TS, AH - y0), base = Math.floor(k / TPR) * TS * RW + (k % TPR) * TS;
+      pk.index[t] = k + 1;
+      for (let y = 0; y < h; y++) {
+        const s = (y0 + y) * AW + x0, d = base + y * RW;
+        for (let i = 0; i < w; i++) { pk.c[d + i] = sl.c[s + i]; pk.l[d + i] = sl.light[s + i]; }
+        if (warp) for (let i = 0; i < w; i++) { pk.id[d + i] = sl.id[s + i]; pk.ax[d + i] = sl.ax[s + i]; pk.z[d + i] = sl.z[s + i]; }
+      }
+    }
+    const cut = (a) => a.subarray(0, size);
+    return { n, rows, tw: pk.tw, th: pk.th, index: pk.index.subarray(0, nt), list: pk.list.subarray(0, rows * TPR), c: cut(pk.c), light: cut(pk.l), ...(warp && { id: cut(pk.id), ax: cut(pk.ax), z: cut(pk.z) }) };
+  }
+  // what drew art pixel (x, y) of a slot's view: its id buffer where composed, else the baked chunk's object flag
+  function idAt(sl, cam, x, y) {
+    if (!sl.tiled || sl.pack.mark[Math.floor(y / TS) * sl.pack.tw + Math.floor(x / TS)] >= 0) return sl.id[y * cam.AW + x];
+    const gx = cam.gx0 + x, gy = cam.gy0 + y, cx = Math.floor(gx / CS), cy = Math.floor(gy / CS), ch = cache.get(keyOf(cam.md.L, cam.md.b, cx, cy));
+    return ch?.c ? ch.obj[(gy - cy * CS) * CS + gx - cx * CS] & 1 : 0;
   }
   // What sits on top of the world, drawn into B in the view it is shown in: `map` takes a point of the source camera
   // (art px and depth) into that view, or is null when the two are the same camera.
@@ -525,32 +613,41 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const w = y + z - e + W.w0;
     return [x + Math.round(W.cx + W.c1 * x - W.hs * w), y + Math.round(W.cy + W.hs * x + W.q1 * w)];
   };
-  // a missing chunk shows the coarser levels of the same bearing blown up around the camera centre
+  // A missing chunk shows other levels of the same bearing: the next finer first (a zoom out comes from it), then the
+  // coarser ones blown up around the camera centre. The GPU paints its stand-ins in the reverse order, so both agree.
+  const STANDIN = Array.from({ length: NL }, (_, L) => [...(L < NL - 1 ? [L + 1] : []), ...Array.from({ length: L }, (_, i) => L - 1 - i)]);
+  // A stand-in blown up to under SOFT source texels a pixel picks between its four nearest texels by the ordered
+  // dither at the view's art px, as gpu.js does, so a coarse level reads as a soft picture rather than big blocks.
+  const SOFT = 0.75;
+  function standTexel(ax, ay, s, x, y, cam, out) {
+    if (s >= SOFT) { out[0] = Math.floor(ax + x * s); out[1] = Math.floor(ay + y * s); return; }
+    const fx = ax + (x + 0.5) * s - 0.5, fy = ay + (y + 0.5) * s - 0.5, X = cam.gx0 + x, Y = cam.gy0 + y, gx = Math.floor(fx), gy = Math.floor(fy);
+    out[0] = fx - gx > bayer(X, Y) ? gx + 1 : gx; out[1] = fy - gy > bayer(X + 1, Y + 2) ? gy + 1 : gy;
+  }
+  const st = [0, 0];
   function fallback(cam, x0, x1, y0, y1) {
-    for (let k = cam.L - 1; k >= 0; k--) {
+    for (const k of STANDIN[cam.L]) {
       const cc = camera(cam.view, k, cam.b);
       if (!cc) continue;
-      const s = cc.md.p / cam.md.p;
+      const s = cc.md.p / cam.md.p, ax = cc.gcx + (cam.gx0 - cam.gcx) * s, ay = cc.gcy + (cam.gy0 - cam.gcy) * s;
       // skip a level with nothing baked under this hole, rather than walking every pixel to find that out
-      const gx0 = Math.floor(cc.gcx + (cam.gx0 + x0 - cam.gcx) * s), gx1 = Math.floor(cc.gcx + (cam.gx0 + x1 - cam.gcx) * s);
-      const gy0 = Math.floor(cc.gcy + (cam.gy0 + y0 - cam.gcy) * s), gy1 = Math.floor(cc.gcy + (cam.gy0 + y1 - cam.gcy) * s);
+      const gx0 = Math.floor(ax + x0 * s) - 1, gx1 = Math.floor(ax + x1 * s) + 1, gy0 = Math.floor(ay + y0 * s) - 1, gy1 = Math.floor(ay + y1 * s) + 1;
       let any = false;
       for (let cy = Math.floor(gy0 / CS); cy <= Math.floor(gy1 / CS) && !any; cy++)
         for (let cx = Math.floor(gx0 / CS); cx <= Math.floor(gx1 / CS); cx++) if (cache.get(keyOf(k, cam.b, cx, cy))?.c) { any = true; break; }
       if (!any) continue;
       let missing = false, lcx = NaN, lcy = NaN, ch = null;
-      for (let y = y0; y < y1; y++) {
-        const gy = Math.floor(cc.gcy + (cam.gy0 + y - cam.gcy) * s), cy = Math.floor(gy / CS), ry = (gy - cy * CS) * CS;
+      for (let y = y0; y < y1; y++)
         for (let x = x0; x < x1; x++) {
           const p = y * cam.AW + x;
           if (B.z[p] === -2e30) continue;
-          const gx = Math.floor(cc.gcx + (cam.gx0 + x - cam.gcx) * s), cx = Math.floor(gx / CS);
+          standTexel(ax, ay, s, x, y, cam, st);
+          const gx = st[0], gy = st[1], cx = Math.floor(gx / CS), cy = Math.floor(gy / CS);
           if (cx !== lcx || cy !== lcy) { lcx = cx; lcy = cy; ch = cache.get(keyOf(k, cam.b, cx, cy)); }
           if (!ch?.c) { missing = true; continue; }
-          B.c[p] = ch.c[ry + gx - cx * CS];
+          B.c[p] = ch.c[(gy - cy * CS) * CS + gx - cx * CS];
           B.z[p] = -2e30;
         }
-      }
       if (!missing) break;
     }
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const p = y * cam.AW + x; if (B.z[p] === -2e30) B.z[p] = -1e30; }
@@ -601,6 +698,13 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const pv = md.k * 0.866 * md.treeK;
     const at = (x, z) => { const p = project(md, x, z); return { ...p, sx: Math.round(p.gx - cam.gx0), sy: Math.round(p.gy - cam.gy0) }; };
     const onScreen = (a, m = 40) => a.sx > -m && a.sy > -m && a.sx < cam.AW + m && a.sy < cam.AH + m * 2;
+    // onScreen's bound whatever the ground's height there, checked before the ground lookup: most of the island's
+    // people, animals and things are off the view, and the paged levels' ground is the dear part of placing one
+    const levHi = ((md.maxLev ?? 0) + 2) * md.lp, levLo = -2 * md.lp;
+    const inView = (x, z, m, lift = 0) => {
+      const [u, v] = md.uv(x, z), sx = (u - v) * md.H - cam.gx0, base = (u + v) * md.hb - cam.gy0 - lift;
+      return sx > -m - 1 && sx < cam.AW + m + 1 && base - levLo > -m - 1 && base - levHi < cam.AH + m * 2 + 1;
+    };
     // footprint sprites anchor below their footprint centre; small people stand two pixels high in their sprite. e: how
     // far a sprite pixel's gy + z sits past its foot's, the blit's bias and lift, for a turn to find the foot
     const add = (a, s, o = {}) => { if (s) out.push({ z: o.z ?? a.cz, sx: a.sx, sy: a.sy + (s.foot || 0) + (o.lift || 0), spr: s, mirror: !!o.mirror, bias: o.bias ?? md.hb + 2, e: (s.foot || 0) + (o.lift || 0) + (o.z ?? a.cz) - a.cz + (o.bias ?? md.hb + 2), shadow: o.shadow ?? !NOSHADOW.has(s.kind), xray: o.xray, pick: o.pick }); };
@@ -608,6 +712,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const pk = (a, p) => picks.push({ ...p, ax: a.sx, ay: a.sy, az: a.cz });
     const alpha = clamp(sim.alpha ?? 1, 0, 1), selectedId = cam.view.selected ?? null;
     for (const t of liveThings.values()) {
+      if (!inView(toM(t.px), toM(t.py), 60)) continue;
       const a = at(toM(t.px), toM(t.py));
       // drawn wherever the sim holds it: the sim keeps things off the fine wet field, and a level's coarse map would lose it
       if (!onScreen(a, 60)) continue;
@@ -623,7 +728,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       const hpx = ObjBins.shown(BODY[an.species] ?? 0.5) * 1.5 * pv;
       if (hpx < 1) continue;
       const p = motion(an.id, sim);
-      if (!p) continue;
+      if (!p || !inView(p.x, p.z, 40, Math.round((an.alt || 0) * pv))) continue;
       const a = at(p.x, p.z), fly = FLIERS.has(an.species), lift = Math.round((an.alt || 0) * pv), seedA = strHash(an.id) % 8;
       if (!onScreen({ sx: a.sx, sy: a.sy - lift })) continue;
       const [du, dv] = p.moving ? md.dir(p.dx, p.dz) : md.dir(Math.cos(an.heading ?? 0), Math.sin(an.heading ?? 0)), facing = du - dv >= 0 ? 1 : 0;
@@ -638,7 +743,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     for (const ag of W.agents || []) {
       if (ag.dead || ag.alive === false) continue;
       const p = motion(ag.id, sim);
-      if (!p) continue;
+      if (!p || !inView(p.x, p.z, 40)) continue;
       const a = at(p.x, p.z);
       if (!onScreen(a)) continue;
       const stage = (W.t - ag.born) / YEAR < 1 ? "child" : (W.t - ag.born) / YEAR < 5 ? "adult" : "elder";
@@ -685,6 +790,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       const { a } = f, fl = Math.max(2, Math.round(sz.fire * f.big)), ph = (now / 1000) * 5 + idH(f.id, 5) * 8;
       // glow on the ground by day; warm light pools by night
       const R = sz.glow * (1 + night * 1.6) * f.big * (0.95 + 0.05 * Math.sin(ph * 2.3));
+      B.need?.(Math.floor(a.sx - R), Math.floor(a.sy - R * 0.6), Math.ceil(a.sx + R), Math.ceil(a.sy + R * 0.6));
       for (let y = Math.floor(a.sy - R * 0.6); y <= a.sy + R * 0.6; y++)
         for (let x = Math.floor(a.sx - R); x <= a.sx + R; x++) {
           if (x < 0 || y < 0 || x >= B.w || y >= B.h) continue;
@@ -699,7 +805,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
         const s = spr(`flame${fl}|${Math.floor(ph) & 7}`, () => SP.flames(fl, 5 + (Math.floor(ph) & 7))), id = owners.push({ kind: "thing", id: f.id }) - 1;
         sl.e[id] = md.hb + 6;
         blit(B, s, a.sx, a.sy + 1, a.cz + 2, id, false, md.hb + 3);
-      } else if (a.sx >= 0 && a.sy >= 1 && a.sx < B.w && a.sy < B.h) B.c[(a.sy - 1) * B.w + a.sx] = (Math.floor(ph) & 1) ? P.f3 : P.f2;
+      } else if (a.sx >= 0 && a.sy >= 1 && a.sx < B.w && a.sy < B.h) { B.need?.(a.sx, a.sy - 1, a.sx, a.sy - 1); B.c[(a.sy - 1) * B.w + a.sx] = (Math.floor(ph) & 1) ? P.f3 : P.f2; }
     }
   }
   // the columns stand over their fires as the view shows them, so they rise straight up through a turn
@@ -719,6 +825,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       const r = r0 * (0.6 + tt * 1.8) * (0.8 + 0.4 * (Math.sin(tt * 9 + 1.3) * 0.5 + 0.5));
       const cx = x0 + drift * h * tt ** 1.6 + Math.sin(tt * 5 + 1) * r0 * 0.6 * tt, cy = y0 - rise, alpha = Math.min(1, q * 14) * (1.2 - tt * 1.25);
       if (alpha <= 0) continue;
+      B.need?.(Math.floor(cx - r), Math.floor(cy - r), Math.ceil(cx + r), Math.ceil(cy + r));
       for (let y = Math.floor(cy - r); y <= cy + r; y++)
         for (let x = Math.floor(cx - r); x <= cx + r; x++) {
           if (x < 0 || y < 0 || x >= B.w || y >= B.h) continue;
@@ -767,36 +874,83 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   }
 
   // ---------- the frame ----------
-  // What to draw: one camera, or two cross-fading ones near the end of a level's zoom range. Between two bearings the
-  // nearer one is composed, the other lends its baked chunks, and the GPU turns both; wB is how far the other's shading shows.
+  // share of a camera's chunks baked
+  function cover(cam) {
+    if (!cam) return 0;
+    const [cx0, cx1, cy0, cy1] = rectOf(cam);
+    let n = 0;
+    for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) if (cache.get(keyOf(cam.md.L, cam.md.b, cx, cy))?.c) n++;
+    return n / ((cx1 - cx0 + 1) * (cy1 - cy0 + 1));
+  }
+  // What to draw, each part [camera, weight, turn]. Still: one camera, or two cross-fading near the end of a level's
+  // zoom range. Between two bearings (orbit), or at a bearing still baking (lend), the GPU turns: the first part is the
+  // main bearing, whose pixels stand, and the rest lend theirs; wB is how far the other's shading shows.
+  // shade: the bearing whose shading showed last frame; lent: the neighbour lending to a bearing still baking, kept
+  // while it has more to give so the light does not jump between neighbours; fade: a bearing's own shading coming in
+  // through the dither over FADE_MS once it is whole, in place of the one shown before.
+  let shade = -1, lent = null, fade = null, prevBeta = 0;
+  const FADE_MS = 300, NEAR = [1, -1, 2, -2, 3, -3, 4], BACK = [-1, 1, -2, 2, -3, 3, 4];
   function plan(view) {
-    const lf = levelFor(view.zoom), beta = ((view.bearing ?? 0) % NB + NB) % NB, b0 = Math.floor(beta + 1e-6) % NB, f = beta - Math.floor(beta + 1e-6);
+    const lf = levelFor(view.zoom), L = lf.L, beta = norm8(view.bearing ?? 0), b0 = Math.floor(beta + 1e-6) % NB, f = beta - Math.floor(beta + 1e-6), came = wrap8(prevBeta - beta);
+    prevBeta = beta;
+    const at = (b, turn) => (mapsFor(b) ? camera(view, L, b, ...grow(turn)) : null);
+    // the nearest bearing not in `skip` with clearly more of the view baked than `have`, turned into place; a farther
+    // one has to cover a good deal more to be worth its larger turn
+    const lender = (turn, have, skip, order) => {
+      let best = null, bar = have + 0.05;
+      for (const d of order) {
+        const nb = (b0 + d + NB) % NB;
+        if (skip.includes(nb)) continue;
+        const c = at(nb, turn - d), cv = cover(c);
+        if (cv > bar) { best = [c, 0, turn - d]; bar = cv + 0.2; }
+      }
+      return best;
+    };
     if (f > 1e-4) {
-      const b1 = (b0 + 1) % NB;
-      mapsFor(b0); mapsFor(b1);
-      const g0 = grow(f), g1 = grow(f - 1);
-      const A = camera(view, lf.L, b0, ...g0), Bc = camera(view, lf.L, b1, ...g1);
+      const b1 = (b0 + 1) % NB, A = at(b0, f), Bc = at(b1, f - 1), cA = cover(A), cB = cover(Bc);
       let wB = smooth(0.35, 0.65, f);
-      const rA = camReady(A), rB = camReady(Bc);
-      if (!Bc || (!rB && rA)) wB = 0;
-      else if (!A || (!rA && rB)) wB = 1;
-      // the other stays wanted, so it bakes and is there to read from
-      const mainB = !A || (!!Bc && wB > 0.5), pa = [A, 1 - wB, f], pb = [Bc, wB, f - 1];
-      return { lf, parts: (mainB ? [pb, pa] : [pa, pb]).filter(([c]) => c), orbit: true, b0, wB, mainB };
+      if (cA >= 1 && cB < 1) wB = 0;
+      else if (cB >= 1 && cA < 1) wB = 1;
+      // the bearing whose shading shows most leads, unless the other has clearly more of the view baked
+      const mainB = !A || (!!Bc && (cB - cA > 0.25 || (cA - cB <= 0.25 && wB > 0.5)));
+      const pa = [A, 1 - wB, f], pb = [Bc, wB, f - 1], parts = (mainB ? [pb, pa] : [pa, pb]).filter(([c]) => c);
+      if (Math.max(cA, cB) < 1) { const l = lender(f, Math.max(cA, cB), [b0, b1], NEAR); if (l) parts.push(l); }
+      lent = fade = null; shade = wB > 0.5 ? b1 : b0;
+      return { lf, parts, orbit: true, gl: true, b0, wB, mainB };
     }
-    let A = camera(view, lf.L, b0);
+    const A = at(b0, 0);
     if (!A) {
-      mapsFor(b0);
+      lent = fade = null; shade = -1;
       // this bearing's maps are still loading: show the nearest bearing that has them, turned into place
-      for (const d of [1, -1, 2, -2, 3, -3, 4]) {
-        const bb = (b0 + d + NB) % NB, g2 = grow(-d), c = mapsFor(bb) && camera(view, lf.L, bb, ...g2);
-        if (c) return { lf, parts: [[c, 1, -d]], orbit: true, b0: bb };
+      for (const d of NEAR) {
+        const bb = (b0 + d + NB) % NB, c = mapsFor(bb) && camera(view, L, bb, ...grow(-d));
+        if (c) return { lf, parts: [[c, 1, -d]], orbit: true, gl: true, b0: bb };
       }
       return { lf, parts: [], orbit: false, b0 };
     }
+    const cA = cover(A), ours = (x) => x && x.b0 === b0 && x.L === L;
+    if (cA < 1) {
+      fade = null;
+      // A bearing still baking: its own chunks where baked, the rest lent by a baked neighbour turned into place, all
+      // in the neighbour's shading so the light does not change chunk by chunk. First choice: the side a turn came from.
+      const kept = ours(lent) && at(lent.b, -lent.d);
+      const l = kept && cover(kept) > cA + 0.05 ? [kept, 0, -lent.d] : lender(0, cA, [b0], came < 0 ? BACK : NEAR);
+      if (l) {
+        const d = -l[2];
+        lent = { b0, L, d, b: (b0 + d + NB) % NB }; shade = lent.b;
+        return { lf, parts: [[A, 1, 0], l], lend: true, gl: true, b0, wB: 1, mainB: false };
+      }
+      lent = null;
+    }
+    if (!ours(fade) && shade >= 0 && shade !== b0) fade = { b0, L, d: wrap8(shade - b0), t0: performance.now() };
+    shade = b0;
+    if (ours(fade)) {
+      const w = 1 - (performance.now() - fade.t0) / FADE_MS, c = w > 0 && at((b0 + fade.d + NB) % NB, -fade.d);
+      if (c) return { lf, parts: [[A, 1, 0], [c, 0, -fade.d]], lend: true, gl: true, b0, wB: w, mainB: false };
+    }
     const parts = [[A, 1, 0]];
-    if (lf.L < NL - 1 && lf.t > 0.6) {
-      const Bc = camera(view, lf.L + 1, b0), w = smooth(0.6, 1, lf.t);
+    if (L < NL - 1 && lf.t > 0.6) {
+      const Bc = camera(view, L + 1, b0), w = smooth(0.6, 1, lf.t);
       if (Bc && camReady(Bc)) parts.push([Bc, w, 0]);
     }
     return { lf, parts, orbit: false, b0 };
@@ -804,86 +958,154 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   function schedule(view, pl) {
     const list = [], visible = new Set(), L = pl.lf.L, b = pl.b0;
     for (const [c] of pl.parts) wantView(c, c === pl.parts[0][0] ? 0 : 8, list, visible, c === pl.parts[0][0]);
-    if (!pl.orbit && pl.lf.t > 0.3 && L < NL - 1) wantView(camera(view, L + 1, b), 12, list, visible, false);
     if (view.turnTo != null) { const tb = mod8(view.turnTo); if (mapsFor(tb)) wantView(camera(view, L, tb, ...grow(0.5)), 4, list, visible, false); }
+    // the next level each way, for a zoom; the coarser is cheap and stands in under a zoom out
+    if (L > 0) wantView(camera(view, L - 1, b), 12, list, visible, false);
+    if (!pl.orbit && pl.lf.t > 0.3 && L < NL - 1) wantView(camera(view, L + 1, b), 16, list, visible, false);
     for (const pv of prefetchViews) { const pb = mod8(pv.bearing ?? b); if (mapsFor(pb)) wantView(camera(pv, levelFor(pv.zoom ?? view.zoom).L, pb), pv.later ? 50 : 20, list, visible, false); }
-    if (L > 0) wantView(camera(view, L - 1, b), 40, list, visible, false);
-    if (L > 1) wantView(camera(view, 0, b), 45, list, visible, false);
-    // a free orbit is crossing b and b + 1: the bearings either side of that pair come next, whichever way it turns
-    // once the view is whole, this bearing's turn margin and then every other bearing's view bake while the workers are
-    // idle, so a first turn is quick
-    const around = pl.orbit ? [[2, 30], [NB - 1, 30]] : adjacent ? [...(settled ? [[0, 60]] : []), [1, 70], [NB - 1, 70], ...(settled ? [2, 3, 4, 5, 6].map((d) => [d, 90]) : [])] : [];
-    // with the rect a half-step turn needs, so a turn through them has no holes at the edges
+    // A free orbit is crossing b and b + 1: the bearings either side of that pair come next. Otherwise the neighbours
+    // right after the view, with the rect a half-step turn needs, so a turn lands on baked ground; once the view is
+    // whole, this bearing's own turn margin, and every other bearing while the workers are idle.
+    const around = pl.orbit ? [[2, 30], [NB - 1, 30]] : adjacent ? [[1, 10], [NB - 1, 10], ...(settled ? [[0, 45], ...[2, 3, 4, 5, 6].map((d) => [d, 90])] : [])] : [];
     for (const [db, pr] of around) { const nb = (b + db) % NB; if (mapsFor(nb)) wantView(camera(view, L, nb, ...grow(0.5)), pr, list, visible, false); }
+    if (L > 1) wantView(camera(view, 0, b), 45, list, visible, false);
+    // the views one, two and three zoom steps out, whole, so a quick zoom out lands on baked levels
+    if (!pl.orbit) for (let d = 1; d <= 3 && L - d >= 0; d++) wantView(camera({ ...view, zoom: view.zoom - d }, L - d, b), 36 + d * 8, list, visible, false);
     dispatch(list);
     evict(visible);
   }
+  const timing = (fp, t1, t2, px) => {
+    const t3 = performance.now(), T = stats.parts;
+    T.compose = T.compose * 0.95 + (t2 - t1) * 0.05; T.present = T.present * 0.95 + (t3 - t2) * 0.05;
+    fp.push(Math.round((t2 - t1) * 10) / 10, Math.round((t3 - t2) * 10) / 10, px);
+  };
+  // A still view for the GPU, in draw order: the stand-in levels under the chunks it lacks, least wanted first as
+  // fallback() prefers them, then the view's own chunks. A quad: chunk key, rect in the view's art px, and art px q
+  // reading texel floor(A + q s).
+  function stillQuads(cam, fr) {
+    const { md, AW, AH, gx0, gy0 } = cam, [cx0, cx1, cy0, cy1] = rectOf(cam), own = [], holes = [];
+    for (let cy = cy0; cy <= cy1; cy++)
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const ch = cache.get(keyOf(md.L, md.b, cx, cy)), ox = cx * CS - gx0, oy = cy * CS - gy0, rect = [Math.max(0, ox), Math.max(0, oy), Math.min(AW, ox + CS), Math.min(AH, oy + CS)];
+        if (ch?.c && gpu.chunk(ch, fr)) own.push({ key: ch.key, A: [-ox, -oy], s: 1, rect });
+        else holes.push(rect);
+      }
+    if (!holes.length) return own;
+    const out = [], seen = new Set(), order = STANDIN[cam.L];
+    for (let i = order.length - 1; i >= 0; i--) {
+      const k = order[i], cc = camera(cam.view, k, cam.b);
+      if (!cc) continue;
+      const s = cc.md.p / md.p, ax = cc.gcx + (gx0 - cam.gcx) * s, ay = cc.gcy + (gy0 - cam.gcy) * s;
+      for (const [hx0, hy0, hx1, hy1] of holes) {
+        // a soft stand-in may read one texel past the nearest
+        const kx0 = Math.floor((Math.floor(ax + hx0 * s) - 1) / CS), kx1 = Math.floor((Math.floor(ax + (hx1 - 1) * s) + 1) / CS);
+        const ky0 = Math.floor((Math.floor(ay + hy0 * s) - 1) / CS), ky1 = Math.floor((Math.floor(ay + (hy1 - 1) * s) + 1) / CS);
+        for (let ky = ky0; ky <= ky1; ky++)
+          for (let kx = kx0; kx <= kx1; kx++) {
+            const key = keyOf(k, cam.b, kx, ky);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const ch = cache.get(key);
+            if (!ch?.c || !gpu.chunk(ch, fr)) continue;
+            const m = Math.ceil(1 / s) + 1, rect = [Math.max(0, Math.floor((kx * CS - ax) / s) - m), Math.max(0, Math.floor((ky * CS - ay) / s) - m), Math.min(AW, Math.ceil(((kx + 1) * CS - ax) / s) + m), Math.min(AH, Math.ceil(((ky + 1) * CS - ay) / s) + m)];
+            if (rect[0] < rect[2] && rect[1] < rect[3]) out.push({ key, A: [ax - kx * CS, ay - ky * CS], s, rect });
+          }
+      }
+    }
+    return out.concat(own);
+  }
+  // a camera's baked chunks on the GPU, placed in its art px, for splatting
+  function splats(cam, fr) {
+    const [cx0, cx1, cy0, cy1] = rectOf(cam), out = [];
+    for (let cy = cy0; cy <= cy1; cy++)
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const ch = cache.get(keyOf(cam.md.L, cam.md.b, cx, cy));
+        if (ch?.c && gpu.chunk(ch, fr)) out.push({ key: ch.key, ox: cx * CS - cam.gx0, oy: cy * CS - cam.gy0 });
+      }
+    return out;
+  }
+  function drawStill(pl, view, sim, clock, now, fp) {
+    const hour = clock.hour ?? 8, fr = Math.floor(now / 160) & 7, t1 = performance.now();
+    gpu.begin();
+    let holes = false, best = -1;
+    const views = pl.parts.map(([cam, w], k) => {
+      const sl = slots[k], r = compose(sl, cam, now, sim, clock, view, { tiled: true });
+      if (k === 0) holes = r.holes;
+      if (w > best) { best = w; lastPick = r.picks; pickCam = cam; pickSlot = sl; pickTurn = 0; }
+      return { cam, alpha: k === 0 ? 1 : w, haze: hazeOf(cam, hour), quads: stillQuads(cam, fr), dyn: packTiles(sl, cam, false) };
+    });
+    const t2 = performance.now(), lut = lutFor(hour);
+    if (!gpu.flat({ cap: [capW, capH], out: { W: canvas.width, H: canvas.height }, sea: P.w1, lut, lutKey: lastLutKey, views })) return null;
+    timing(fp, t1, t2, views[0].cam.AW * views[0].cam.AH);
+    return { holes };
+  }
+  function drawTurned(pl, view, sim, clock, now, fp) {
+    const hour = clock.hour ?? 8, fr = Math.floor(now / 160) & 7, t1 = performance.now(), [cam, , turn] = pl.parts[0], sl = slots[0];
+    gpu.begin();
+    const r = compose(sl, cam, now, sim, clock, view, { tiled: true, warp: true });
+    const tcam = camera(view, pl.lf.L, cam.b), W = warpOf(cam, tcam, turn), main = splats(cam, fr);
+    const others = pl.parts.slice(1).map(([oc, , ot]) => ({ W: warpOf(oc, tcam, ot), chunks: splats(oc, fr) }));
+    // the next bearing's shading shows where the dither is under wB, whichever of the two is main
+    const wB = pl.wB ?? 0;
+    let mask = 0;
+    if (others.length) for (let q = 0; q < 16; q++) if ((bayer(q & 3, q >> 2) < wB) !== !!pl.mainB) mask |= 1 << q;
+    // the overlays in the turned view go up in tiles of their own, clear (255) where nothing is drawn
+    B = viewOf(slots[2], tcam.AW, tcam.AH); light = B.light;
+    tilesFor(slots[2], tcam, (x0, y0, x1, y1) => { for (let y = y0; y < y1; y++) { const p = y * tcam.AW; B.c.fill(255, p + x0, p + x1); B.z.fill(-1e30, p + x0, p + x1); } });
+    overlays(cam, tcam, now, view, r.fires, r.over, r.picks, (x, y, z) => warpPoint(W, x, y, z));
+    const dyn = packTiles(sl, cam, true), over = packTiles(slots[2], tcam, false), t2 = performance.now(), lut = lutFor(hour);
+    const ok = gpu.turn({
+      cap: [capW, capH], out: { W: canvas.width, H: canvas.height }, sea: P.w1, lut, lutKey: lastLutKey, haze: hazeOf(tcam, hour), over, mask, any: !!pl.lend,
+      main: { AW: cam.AW, AH: cam.AH, W, chunks: main, dyn, e: sl.e, ids: sl.owners.length }, others,
+      target: { TW: tcam.AW, TH: tcam.AH, gx0: tcam.gx0, gy0: tcam.gy0 }, pres: { s: tcam.s, dx: tcam.dx, dy: tcam.dy },
+    });
+    if (!ok) return null;
+    timing(fp, t1, t2, cam.AW * cam.AH);
+    lastPick = r.picks; pickCam = cam; pickSlot = sl; pickTurn = turn;
+    return { holes: r.holes };
+  }
+  function drawCPU(pl, view, sim, clock, now, fp) {
+    const g = canvas.getContext("2d"), sea = lutFor(clock.hour ?? 8)[P.w1];
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.fillStyle = `rgb(${sea & 255},${(sea >> 8) & 255},${(sea >> 16) & 255})`;
+    g.fillRect(0, 0, canvas.width, canvas.height);
+    if (!pl.parts.length) return { holes: true };
+    if (pl.orbit) {
+      // no GPU to turn with: the main bearing, unturned, until the turn lands
+      const cam = camera(view, pl.lf.L, pl.parts[0][0].b), r = compose(slots[0], cam, now, sim, clock, view);
+      present(g, slots[0], cam, 1);
+      lastPick = r.picks; pickCam = cam; pickSlot = slots[0]; pickTurn = 0;
+      return { holes: r.holes };
+    }
+    let holes = false, best = -1;
+    // without the GPU a bearing still baking has only its own chunks and levels to show
+    (pl.lend ? pl.parts.slice(0, 1) : pl.parts).forEach(([cam, w], k) => {
+      const t1 = performance.now(), r = compose(slots[k], cam, now, sim, clock, view), t2 = performance.now();
+      if (k === 0) holes = r.holes;
+      present(g, slots[k], cam, k === 0 ? 1 : w);
+      timing(fp, t1, t2, cam.AW * cam.AH);
+      if (w > best) { best = w; lastPick = r.picks; pickCam = cam; pickSlot = slots[k]; pickTurn = 0; }
+    });
+    return { holes };
+  }
 
-  function frame(view, sim) {
+  // show: false keeps the GPU's canvas hidden, as while the page draws its loading screen
+  function frame(view, sim, { show = true } = {}) {
     const now = performance.now(), t0 = now;
     if (sim) { simRef = sim; if (!synced) sync(sim); }
     ensureSlots();
     const pl = plan(view);
-    schedule(view, pl);
+    if (now - scheduled > SCHEDULE_MS || workerFree) { scheduled = now; workerFree = false; schedule(view, pl); }
     const clock = sim?.clock?.() ?? { hour: 8, night: 0 };
-    const useGL = pl.orbit && pl.parts.length > 0 && !!turnGL && !turnGL.lost;
-    const g = canvas.getContext("2d"), lut = lutFor(clock.hour ?? 8), sea = lut[P.w1];
-    if (!useGL || !glOver) {
-      g.setTransform(1, 0, 0, 1, 0, 0);
-      g.fillStyle = `rgb(${sea & 255},${(sea >> 8) & 255},${(sea >> 16) & 255})`;
-      g.fillRect(0, 0, canvas.width, canvas.height);
-    }
-    let holes = false, best = -1;
     const T = (stats.parts ??= { schedule: 0, compose: 0, present: 0 }), tS = performance.now(), fp = (api.lastParts = [Math.round((tS - t0) * 10) / 10]);
     T.schedule = T.schedule * 0.95 + (tS - t0) * 0.05;
-    if (!useGL) showGL(false);
-    if (useGL) {
-      const t1 = performance.now(), [cam, , turn] = pl.parts[0], sl = slots[0], r = compose(sl, cam, now, sim, clock, view, true);
-      const tcam = camera(view, pl.lf.L, cam.b), W = warpOf(cam, tcam, turn), op = pl.parts[1], n = cam.AW * cam.AH;
-      // the other bearing's baked chunks under its view, each placed in that camera's art pixels
-      let other = null;
-      if (op) {
-        const oc = op[0], [kx0, kx1, ky0, ky1] = rectOf(oc), list = [];
-        for (let ky = ky0; ky <= ky1; ky++) for (let kx = kx0; kx <= kx1; kx++) { const ch = cache.get(keyOf(oc.md.L, oc.md.b, kx, ky)); if (ch?.c && ch.ax) list.push({ ch, ox: kx * CS - oc.gx0, oy: ky * CS - oc.gy0 }); }
-        other = { W: warpOf(oc, tcam, op[2]), list };
-      }
-      // the next bearing's shading shows where the dither is under wB, whichever of the two is drawn
-      const wB = pl.wB ?? 0;
-      let mask = 0;
-      if (other && wB > 0 && wB < 1) for (let q = 0; q < 16; q++) if ((bayer(q & 3, q >> 2) < wB) !== !!pl.mainB) mask |= 1 << q;
-      // the overlays in the turned view go to the GPU on a clear layer of their own
-      B = viewOf(slots[2], tcam.AW, tcam.AH); light = B.light; B.c.fill(255); B.z.fill(-1e30);
-      overlays(cam, tcam, now, view, r.fires, r.over, r.picks, (x, y, z) => warpPoint(W, x, y, z));
-      const t2 = performance.now(), hour = clock.hour ?? 8;
-      const drawn = turnGL.render({
-        cap: [capW, capH], other, mask, sea: P.w1, lut: lutFor(hour), lutKey: lastLutKey, haze: hazeOf(tcam, hour), overlay: B.c,
-        main: { AW: cam.AW, AH: cam.AH, c: sl.c.subarray(0, n), light: sl.light.subarray(0, n), lit: r.fires.length > 0, id: sl.id.subarray(0, n), ax: sl.ax.subarray(0, n), z: sl.z.subarray(0, n), e: sl.e, ids: sl.owners.length, W },
-        target: { TW: tcam.AW, TH: tcam.AH, gx0: tcam.gx0, gy0: tcam.gy0 }, out: { W: canvas.width, H: canvas.height, s: tcam.s, dx: tcam.dx, dy: tcam.dy },
-      });
-      if (!drawn) showGL(false);
-      else if (glOver) showGL(true);
-      else g.drawImage(turnGL.canvas, 0, 0);
-      const t3 = performance.now();
-      holes = r.holes;
-      T.compose = T.compose * 0.95 + (t2 - t1) * 0.05; T.present = T.present * 0.95 + (t3 - t2) * 0.05;
-      fp.push(Math.round((t2 - t1) * 10) / 10, Math.round((t3 - t2) * 10) / 10, 0);
-      lastPick = r.picks; pickCam = cam; pickSlot = sl; pickTurn = turn;
-    } else if (pl.orbit && pl.parts.length) {
-      // no GPU to turn with: the nearer bearing, unturned, until the turn lands
-      const cam = camera(view, pl.lf.L, pl.parts[0][0].b), r = compose(slots[0], cam, now, sim, clock, view);
-      present(g, slots[0], cam, 1);
-      holes = r.holes; lastPick = r.picks; pickCam = cam; pickSlot = slots[0]; pickTurn = 0;
-    } else pl.parts.forEach(([cam, w], k) => {
-      const t1 = performance.now();
-      const r = compose(slots[k], cam, now, sim, clock, view);
-      const t2 = performance.now();
-      if (k === 0) holes = r.holes;
-      present(g, slots[k], cam, k === 0 ? 1 : w);
-      T.compose = T.compose * 0.95 + (t2 - t1) * 0.05; T.present = T.present * 0.95 + (performance.now() - t2) * 0.05;
-      fp.push(Math.round((t2 - t1) * 10) / 10, Math.round((performance.now() - t2) * 10) / 10, cam.AW * cam.AH);
-      if (w > best) { best = w; lastPick = r.picks; pickCam = cam; pickSlot = slots[k]; pickTurn = 0; }
-    });
-    stats.slots = pl.parts.length;
+    let r = gpu && !gpu.lost && pl.parts.length ? (pl.gl ? drawTurned : drawStill)(pl, view, sim, clock, now, fp) : null;
+    const onGPU = !!r;
+    if (!r) r = drawCPU(pl, view, sim, clock, now, fp);
+    else if (!glOver) canvas.getContext("2d").drawImage(gpu.canvas, 0, 0);
+    showGL(onGPU && glOver && show);
+    const holes = r.holes;
+    stats.slots = pl.parts.length; stats.gpu = onGPU;
     const ms = performance.now() - t0;
     stats.composeMs = stats.composeMs ? stats.composeMs * 0.9 + ms * 0.1 : ms;
     frames++;
@@ -896,6 +1118,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   // warp: the silhouette takes the person's own depth, so a turn carries it with the person rather than the leaves
   function xray(o, warp) {
     const s = o.spr, ax = o.mirror ? s.w - 1 - s.ax : s.ax;
+    B.need?.(o.sx - ax, o.sy - s.ay, o.sx - ax + s.w - 1, o.sy - s.ay + s.h - 1);
     for (let y = 0; y < s.h; y++) {
       const sy = o.sy - s.ay + y, z = o.z + (s.ay - y) + o.bias;
       if (sy < 0 || sy >= B.h) continue;
@@ -911,6 +1134,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   function label(s, cx, y) {
     const txt = s.toUpperCase(), w = txt.length * 6 - 1, x = Math.round(cx - w / 2);
     y = Math.round(y);
+    B.need?.(x - 1, y - 8, x + w + 1, y);
     for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1], [1, 1]]) text(B, txt, x + dx, y - 7 + dy, P.ink);
     text(B, txt, x, y - 7, P.snow);
   }
@@ -982,7 +1206,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const cam = pickCam ?? mainCam(view);
     if (!cam) return null;
     const [cx, cy] = unturn(sx, sy, pickCam ? pickTurn : 0), x = (cx - cam.dx) / cam.s, y = (cy - cam.dy) / cam.s, ix = Math.floor(x), iy = Math.floor(y);
-    const idv = pickCam && pickSlot && ix >= 0 && iy >= 0 && ix < cam.AW && iy < cam.AH ? pickSlot.id[iy * cam.AW + ix] : 0;
+    const idv = pickCam && pickSlot && ix >= 0 && iy >= 0 && ix < cam.AW && iy < cam.AH ? idAt(pickSlot, cam, ix, iy) : 0;
     if (idv >= 2 && pickSlot.owners?.[idv]) return { ...pickSlot.owners[idv] };
     const g = rayGround(cam, cam.gx0 + x, cam.gy0 + y), ground = { kind: "ground", px: (g.x - ORIGIN) / SIM, py: (g.z - ORIGIN) / SIM };
     // a baked sprite drawn under the cursor is in front of anything a near miss could find
@@ -1069,7 +1293,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       for (let k = 0; k < 3; k++) { dot(bx + k * sx2, by); dot(bx, by + k * sy2); }
     label(title(sel) || name.replaceAll("_", " "), ox, top - 1);
   }
-  const dot = (x, y) => { if (x >= 0 && y >= 0 && x < B.w && y < B.h) B.c[y * B.w + x] = P.snow; };
+  const dot = (x, y) => { if (x >= 0 && y >= 0 && x < B.w && y < B.h) { B.need?.(x, y, x, y); B.c[y * B.w + x] = P.snow; } };
 
   // the island level is small; baked whole up front it is the last fallback under everything, so no view shows flat colour
   {
@@ -1095,8 +1319,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   const levels = PL.map((p, L) => ({ name: maps.get(mk(L, 0)).name, tileM: maps.get(mk(L, 0)).tileM, p, zoom: Math.log2((2 * p) / PPM0) }));
   const api = {
     zmax: ZMAX, named, levels, ppm: (z) => ppmOf(clamp(z, 0, ZMAX)), levelFor,
-    readiness, bearingReady: (view, b) => mapsFor(mod8(b)) && camReady(camera(view, levelFor(view.zoom).L, mod8(b), ...grow(0.5))),
-    prefetch: (views) => { prefetchViews = views || []; }, centreOn, camH, screenOf, solveTarget, groundUnder,
+    readiness, prefetch: (views) => { prefetchViews = views || []; }, centreOn, camH, screenOf, solveTarget, groundUnder,
     picks: () => lastPick.map((p) => ({ kind: p.kind, id: p.id, sx: p.sx, sy: p.sy })),
     frame, changed, pick, where, stats, cache, pool, lastMs: 0, lastHoles: false, level: null,
   };

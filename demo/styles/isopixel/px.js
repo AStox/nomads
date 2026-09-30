@@ -89,8 +89,10 @@ export class Spr {
 
 // Sprites are camera-facing: a pixel k rows above the anchor is k units nearer the eye than the base. A buffer with an
 // `ax` array also gets each drawn pixel's column from the anchor, which a turned view needs to keep the sprite whole.
+// A buffer with `need` is composed lazily: every primitive names the box it is about to touch first.
 export function blit(B, s, bx, by, cz, id, mirror = false, bias = 0) {
   const ax = mirror ? s.w - 1 - s.ax : s.ax, A = B.ax;
+  B.need?.(bx - ax, by - s.ay, bx - ax + s.w - 1, by - s.ay + s.h - 1);
   for (let y = 0; y < s.h; y++) {
     const sy = by - s.ay + y;
     if (sy < 0 || sy >= B.h) continue;
@@ -112,6 +114,7 @@ export function blit(B, s, bx, by, cz, id, mirror = false, bias = 0) {
 // k*ax right and k*ay down of the base.
 export function castShadow(B, s, bx, by, ax, ay, mirror = false) {
   const x0 = mirror ? s.w - 1 - s.ax : s.ax;
+  if (B.need) { const k = Math.max(0, s.ay), dx = k * ax, dy = k * ay; B.need(Math.floor(bx - x0 + Math.min(0, dx)) - 1, Math.floor(by + Math.min(0, dy)) - 1, Math.ceil(bx - x0 + s.w + Math.max(0, dx)) + 1, Math.ceil(by + Math.max(0, dy)) + 1); }
   for (let y = 0; y < s.h; y++) {
     const k = s.ay - y;
     if (k < 0) continue;

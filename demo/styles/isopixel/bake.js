@@ -88,9 +88,10 @@ function bake(msg) {
     obj[p] = (B.id[p] ? 1 : 0) | (B.sh[p] ? 2 : 0);
     if (B.id[p]) ax[p] = Math.max(-127, Math.min(127, (p % CS) - anchor[B.id[p]]));
   }
-  // animated water and falls: only pixels still showing the ground; a sprite shadow cast later darkens every frame
+  // animated water and falls: only pixels still showing the ground; a sprite shadow cast later darkens every frame.
+  // In pixel order, so the page can find a row's run of them by binary search.
   const aP = [], aC = [];
-  for (const [p, cols] of V.anim) {
+  for (const [p, cols] of [...V.anim].sort((a, b) => a[0] - b[0])) {
     if (B.id[p]) continue;
     const dark = B.c[p] !== cols[0] && B.sh[p];
     aP.push(p);
