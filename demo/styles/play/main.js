@@ -14,7 +14,7 @@ const num = (k, def, lo = -Infinity, hi = Infinity) => {
 };
 const seed = Math.trunc(num("seed", 1)), warm = Math.trunc(num("warm", 2016, 0, 40000)), withSim = Q.get("sim") !== "0";
 const benchKind = ["zoom", "orbit", "turn", "pan"].includes(Q.get("bench")) ? Q.get("bench") : null;
-const canvas = document.getElementById("view"), hint = document.getElementById("hint"), statsEl = document.getElementById("stats"), pace = document.getElementById("pace");
+const canvas = document.getElementById("view"), hint = document.getElementById("hint"), statsEl = document.getElementById("stats"), pace = document.getElementById("pace"), renderEl = document.getElementById("render");
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8], DBL_MS = 300;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const toM = (t) => t * 150 - 4800;
@@ -120,6 +120,28 @@ async function main() {
     for (let i = 0; i < B.w; i++) { B.c[i] = P.w4; B.c[(B.h - 1) * B.w + i] = P.w1; }
     text(B, key, 4, 3, P.snow);
     paintBuf(pace, B);
+  }
+
+  // ---------- what draws the frames: WebGL2 on the GPU, and which, or the CPU and why, always in the corner ----------
+  // a renderer's name in the 5x7 font: the device out of ANGLE's "(vendor, device, driver)", no trademarks
+  const gpuName = (s) => {
+    if (/swiftshader|llvmpipe|softpipe|software|basic render/i.test(s)) return "SOFTWARE, NO GPU: SLOW";
+    const m = /^ANGLE \((.*)\)$/.exec(s), t = m ? (m[1].split(", ")[1] ?? m[1]) : s;
+    return t.replace(/ANGLE \w+ Renderer: /i, "").replace(/\((R|TM)\)/gi, "").replace(/\s+/g, " ").trim().toUpperCase().replace(/[^A-Z0-9 .,:/-]/g, "").slice(0, 30);
+  };
+  let renderKey = "";
+  function paintRender() {
+    const r = live.renderer();
+    const key = r.gpu ? `WEBGL2 ON - ${gpuName(r.name) || "GPU"}` : r.cause === "none" ? "NO WEBGL2 - CPU DRAWS, NO TURNING" : r.cause === "lost" ? "WEBGL2 LOST - CPU DRAWS" : "WEBGL2 FAILED - CPU DRAWS";
+    if (key === renderKey) return;
+    renderKey = key;
+    const B = new Buf(key.length * 6 + 7, 13), [bg, lit] = r.gpu ? [P.g1, P.g3] : [P.f0, P.f1];
+    B.c.fill(bg);
+    for (let i = 0; i < B.w; i++) { B.c[i] = lit; B.c[(B.h - 1) * B.w + i] = P.ink; }
+    text(B, key, 4, 3, P.snow);
+    paintBuf(renderEl, B);
+    renderEl.title = r.gpu ? `Drawn on the GPU through WebGL2: ${r.name}` : `Drawn on the CPU: ${r.why}`;
+    renderEl.hidden = false;
   }
 
   // ---------- input ----------
@@ -259,13 +281,17 @@ async function main() {
     camera.guard();
     const r = live.frame(view, sim, { show: revealed });
     if (!revealed) {
-      const rd = live.readiness(view);
+      // every bearing of the opening view, so the first turns land on baked ground; the load can take its time. With
+      // ?adj=0 nothing bakes the other bearings, so only this one.
+      const rd = { done: 0, all: 0 };
+      for (const b of Q.get("adj") === "0" ? [view.bearing] : [0, 1, 2, 3, 4, 5, 6, 7]) { const q = live.readiness(view, b); rd.done += q.done; rd.all += q.all; }
+      rd.ready = rd.done === rd.all;
       if (rd.ready && !r.holes) {
         revealed = true;
         metrics.revealMs = Math.round(performance.now() - t0);
         // follow the settlement's person only if they are in this frame
         if (openingPerson && !bench && live.picks().some((p) => p.id === openingPerson)) select(openingPerson, false);
-      } else loadingScreen(canvas, `baking the view ${rd.done}/${rd.all}`, rd.done / rd.all);
+      } else loadingScreen(canvas, `baking the view from every side ${rd.done}/${rd.all}`, rd.done / rd.all);
     }
     if (tabWatch) {
       const dt2 = now - tabWatch.last;
@@ -274,6 +300,7 @@ async function main() {
       if (now - tabWatch.t0 > 6000) { metrics.tabs.push({ holeMs: Math.round(tabWatch.hole), cutMs: Math.round(tabWatch.cutAt) }); tabWatch = null; }
     }
     if (revealed) paintPace();
+    paintRender();
     if (!readyMarked && revealed && !bench) { readyMarked = true; document.body.dataset.firstFrame = String(Math.round(performance.now() - t0)); document.body.classList.add("ready"); }
     if (showStats && now - lastStats > 250) {
       lastStats = now;

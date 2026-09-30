@@ -226,13 +226,17 @@ void main() {
   o = vec4(c.rgb * uAlpha, uAlpha);
 }`;
 
-// null where WebGL2 is missing or will not build these programs; live.js then draws on the CPU
+// Throws where WebGL2 is missing (cause "none") or will not build these programs ("build"); live.js then draws on the
+// CPU. `why` says what turned it off later, `name` which GPU it runs on.
 export function createGPU({ NCOL, HAZE }) {
   const canvas = document.createElement("canvas");
   const gl = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: true, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false, powerPreference: "high-performance" });
-  if (!gl) return null;
-  let lost = false;
-  canvas.addEventListener("webglcontextlost", (e) => { e.preventDefault(); lost = true; });
+  if (!gl) throw new Error("this browser gives no WebGL2 context", { cause: "none" });
+  let lost = false, why = "";
+  canvas.addEventListener("webglcontextlost", (e) => { e.preventDefault(); lost = true; why = "the browser took the WebGL2 context away"; });
+  // browsers that mask RENDERER give the real one through the debug extension; Firefox warns when that is asked for
+  let name = String(gl.getParameter(gl.RENDERER) || "");
+  if (/^webkit/i.test(name)) { const dbg = gl.getExtension("WEBGL_debug_renderer_info"); if (dbg) name = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || name); }
   const program = (vs, fs) => {
     const p = gl.createProgram();
     for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
@@ -265,8 +269,7 @@ export function createGPU({ NCOL, HAZE }) {
       composite: program(VS_FULL, FS_COMPOSITE), flat: program(VS_FULL, FS_FLAT), stat: program(VS_QUAD, FS_STATIC), present: program(VS_FULL, FS_PRESENT),
     };
   } catch (e) {
-    console.warn(`the GPU renderer is off: ${e.message}`);
-    return null;
+    throw new Error(`WebGL2 would not build the renderer's shaders: ${e.message}`, { cause: "build" });
   }
   gl.bindVertexArray(gl.createVertexArray());
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
@@ -374,6 +377,13 @@ export function createGPU({ NCOL, HAZE }) {
     gl.disable(gl.BLEND);
   }
   const W8 = TS * TPR;
+  // a tile plane into the atlas: only the columns its tiles fill when they fit in one row, read out of the packed rows
+  const atlas = (t, d, plane, fmt, type) => {
+    const w = d.rows > 1 ? W8 : d.n * TS;
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, W8);
+    upload(t, w, TS * d.rows, fmt, type, plane);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+  };
 
   // A still view, or two cross-fading levels: views [{ cam: { AW, AH, gx0, gy0, s, dx, dy }, alpha, haze, quads:
   // [{ key, A, s, rect }] in draw order, dyn: live.js packTiles }]; sea: the palette index under nothing at all
@@ -396,7 +406,7 @@ export function createGPU({ NCOL, HAZE }) {
       }
       const at = cap.atlas[i];
       upload(cap.tiles[i], dyn.tw, dyn.th, gl.RED_INTEGER, gl.UNSIGNED_SHORT, dyn.index);
-      if (dyn.rows) { upload(at.c, W8, TS * dyn.rows, gl.RED_INTEGER, gl.UNSIGNED_BYTE, dyn.c); upload(at.l, W8, TS * dyn.rows, gl.RED_INTEGER, gl.UNSIGNED_BYTE, dyn.light); }
+      if (dyn.rows) { atlas(at.c, dyn, dyn.c, gl.RED_INTEGER, gl.UNSIGNED_BYTE); atlas(at.l, dyn, dyn.light, gl.RED_INTEGER, gl.UNSIGNED_BYTE); }
       gl.useProgram(P.flat); gl.bindFramebuffer(gl.FRAMEBUFFER, cap.artFb); gl.viewport(0, 0, AW, AH);
       bind(P.flat, "uStat", 0, cap.stat); bind(P.flat, "uTiles", 1, cap.tiles[i]); bind(P.flat, "uAC", 2, at.c); bind(P.flat, "uAL", 3, at.l); bind(P.flat, "uLut", 4, lutTex);
       setHaze(P.flat, haze, [cam.gx0, cam.gy0]);
@@ -415,13 +425,13 @@ export function createGPU({ NCOL, HAZE }) {
     start(args);
     const { out, sea, lut, main, others, mask, any, target, over, haze, pres } = args, { TW, TH } = target, dyn = main.dyn, at = cap.atlas[0], t0 = performance.now();
     if (dyn.rows) {
-      for (const [t, plane, fmt, type] of [[at.c, dyn.c, gl.RED_INTEGER, gl.UNSIGNED_BYTE], [at.l, dyn.light, gl.RED_INTEGER, gl.UNSIGNED_BYTE], [at.id, dyn.id, gl.RED_INTEGER, gl.UNSIGNED_SHORT], [at.ax, dyn.ax, gl.RED_INTEGER, gl.SHORT], [at.z, dyn.z, gl.RED, gl.FLOAT]]) upload(t, W8, TS * dyn.rows, fmt, type, plane);
+      for (const [t, plane, fmt, type] of [[at.c, dyn.c, gl.RED_INTEGER, gl.UNSIGNED_BYTE], [at.l, dyn.light, gl.RED_INTEGER, gl.UNSIGNED_BYTE], [at.id, dyn.id, gl.RED_INTEGER, gl.UNSIGNED_SHORT], [at.ax, dyn.ax, gl.RED_INTEGER, gl.SHORT], [at.z, dyn.z, gl.RED, gl.FLOAT]]) atlas(t, dyn, plane, fmt, type);
       upload(cap.list, TPR, dyn.rows, gl.RED_INTEGER, gl.UNSIGNED_SHORT, dyn.list);
     }
     const rows = Math.min(256, Math.ceil(main.ids / 256));
     if (rows > 0) upload(eTex, 256, rows, gl.RED, gl.FLOAT, main.e.subarray(0, rows * 256));
     upload(cap.tiles[1], over.tw, over.th, gl.RED_INTEGER, gl.UNSIGNED_SHORT, over.index);
-    if (over.rows) upload(cap.atlas[1].c, W8, TS * over.rows, gl.RED_INTEGER, gl.UNSIGNED_BYTE, over.c);
+    if (over.rows) atlas(cap.atlas[1].c, over, over.c, gl.RED_INTEGER, gl.UNSIGNED_BYTE);
 
     // the main bearing's chunks and then its tiles into one layer, the others into another, each with its own depth test
     gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.GEQUAL);
@@ -482,10 +492,10 @@ export function createGPU({ NCOL, HAZE }) {
   // any failure turns the GPU off for the session, and live.js draws on the CPU
   const run = (fn) => (args) => {
     if (lost) return false;
-    try { fn(args); return true; } catch (e) { console.warn(`the GPU renderer is off: ${e.message}`); lost = true; return false; }
+    try { fn(args); return true; } catch (e) { console.warn(`the GPU renderer is off: ${e.message}`); lost = true; why = e.message; return false; }
   };
   return {
-    canvas, stats, get lost() { return lost; },
+    canvas, stats, name, get lost() { return lost; }, get why() { return why; },
     // a frame starts: the upload budget refills
     begin() { frameNo++; budget = { left: UPLOADS_PER_FRAME, anim: ANIM_PER_FRAME }; },
     chunk, flat: run(drawFlat), turn: run(drawTurn),

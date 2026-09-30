@@ -388,7 +388,9 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   // ---------- cameras and compose slots ----------
   // The GPU draws every frame it can (null without WebGL2: the CPU composes, and a turn shows the main bearing until it
   // lands). Its canvas lies over the page's, so the browser composites it rather than the page copying it every frame.
-  const gpu = createGPU({ NCOL, HAZE }), glOver = !!(gpu && canvas.parentNode);
+  let gpu = null, gpuOff = null;
+  try { gpu = createGPU({ NCOL, HAZE }); } catch (e) { gpuOff = { cause: e.cause ?? "build", why: e.message }; console.warn(`the GPU renderer is off: ${e.message}`); }
+  const glOver = !!(gpu && canvas.parentNode);
   if (glOver) { Object.assign(gpu.canvas.style, { position: "fixed", pointerEvents: "none", imageRendering: "pixelated", visibility: "hidden" }); canvas.after(gpu.canvas); }
   let glShown = false, glW = 0, glH = 0;
   function showGL(on) {
@@ -963,10 +965,11 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     if (L > 0) wantView(camera(view, L - 1, b), 12, list, visible, false);
     if (!pl.orbit && pl.lf.t > 0.3 && L < NL - 1) wantView(camera(view, L + 1, b), 16, list, visible, false);
     for (const pv of prefetchViews) { const pb = mod8(pv.bearing ?? b); if (mapsFor(pb)) wantView(camera(pv, levelFor(pv.zoom ?? view.zoom).L, pb), pv.later ? 50 : 20, list, visible, false); }
-    // A free orbit is crossing b and b + 1: the bearings either side of that pair come next. Otherwise the neighbours
-    // right after the view, with the rect a half-step turn needs, so a turn lands on baked ground; once the view is
-    // whole, this bearing's own turn margin, and every other bearing while the workers are idle.
-    const around = pl.orbit ? [[2, 30], [NB - 1, 30]] : adjacent ? [[1, 10], [NB - 1, 10], ...(settled ? [[0, 45], ...[2, 3, 4, 5, 6].map((d) => [d, 90])] : [])] : [];
+    // A free orbit is crossing b and b + 1: the bearings either side of that pair come next. Otherwise every bearing
+    // right after the view, nearest first, with the rect a half-step turn needs: a turn that lands on a bearing still
+    // baking shows the last one's pixels turned into place, which steep ground and dense woods tear apart. Then this
+    // bearing's own turn margin.
+    const around = pl.orbit ? [[2, 30], [NB - 1, 30]] : adjacent ? [[1, 10], [NB - 1, 10], ...(settled ? [[2, 14], [NB - 2, 14], [3, 18], [NB - 3, 18], [4, 22], [0, 45]] : [])] : [];
     for (const [db, pr] of around) { const nb = (b + db) % NB; if (mapsFor(nb)) wantView(camera(view, L, nb, ...grow(0.5)), pr, list, visible, false); }
     if (L > 1) wantView(camera(view, 0, b), 45, list, visible, false);
     // the views one, two and three zoom steps out, whole, so a quick zoom out lands on baked levels
@@ -1320,6 +1323,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   const api = {
     zmax: ZMAX, named, levels, ppm: (z) => ppmOf(clamp(z, 0, ZMAX)), levelFor,
     readiness, prefetch: (views) => { prefetchViews = views || []; }, centreOn, camH, screenOf, solveTarget, groundUnder,
+    // what draws the frames: the GPU, and which, or the CPU and why (cause "none": no WebGL2, "build", or "lost")
+    renderer: () => (gpu && !gpu.lost ? { gpu: true, name: gpu.name } : { gpu: false, ...(gpuOff ?? { cause: "lost", why: gpu?.why || "the GPU renderer stopped" }) }),
     picks: () => lastPick.map((p) => ({ kind: p.kind, id: p.id, sx: p.sx, sy: p.sy })),
     frame, changed, pick, where, stats, cache, pool, lastMs: 0, lastHoles: false, level: null,
   };

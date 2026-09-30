@@ -15,7 +15,9 @@
   canvas#inspector[hidden] { display: none; }
   canvas#pace { position: fixed; right: 12px; bottom: 10px; image-rendering: pixelated; pointer-events: none; }
   canvas#pace[hidden] { display: none; }
-  #stats { right: 10px; top: 8px; padding: 5px 9px; background: rgba(13, 11, 20, 0.72); white-space: pre; border-radius: 3px; }
+  canvas#render { position: fixed; right: 12px; top: 10px; image-rendering: pixelated; }
+  canvas#render[hidden] { display: none; }
+  #stats { right: 10px; top: 44px; padding: 5px 9px; background: rgba(13, 11, 20, 0.72); white-space: pre; border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -23,6 +25,7 @@
 <canvas id="inspector" hidden aria-label="What is selected, from the sim"></canvas>
 <div id="hint">drag to pan &middot; scroll or double-click to zoom &middot; Q/E or right-drag to turn &middot; click anything to inspect it, people and animals to follow &middot; Tab for the next person &middot; Esc or click it again to let go &middot; space pauses &middot; [ ] speed</div>
 <canvas id="pace" hidden aria-label="The sim is paused or running at another speed"></canvas>
+<canvas id="render" hidden aria-label="What draws the frames: the GPU through WebGL2, or the CPU and why"></canvas>
 <div id="stats" hidden></div>
 <script type="module" src="./main.js"></script>
 </body>
