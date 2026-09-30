@@ -86,8 +86,10 @@ export async function createSim({ seed = 1, warm = 0, onProgress } = {}) {
     trails: () => { const t = trails(w); return { cell: t.cell, n: t.n, wear: t.wear }; },
     inspect: (id) => inspect(w, id),
     inspectGround: (px, py) => inspectGround(w, px, py),
+    // the hour the page is drawn at: null follows the sim, a number pins it there (?hour=, or from the console)
+    hour: null,
     clock() {
-      const ft = w.t + alpha, h = ((ft % DAY) / DAY) * 24;
+      const ft = w.t + alpha, h = sim.hour ?? ((ft % DAY) / DAY) * 24;
       return { hour: h, day: Math.floor(ft / DAY) + 1, season: w.weather.season, night: nightAt(h) };
     },
     // At most one tick per call: each tick needs its own task, and the server never bursts to catch up either.

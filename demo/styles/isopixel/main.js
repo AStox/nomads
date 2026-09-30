@@ -1420,10 +1420,11 @@ function worldShadow(w, b) {
   return g;
 }
 const wsample = (g, x, z) => { const fx = clamp((x + 4800) / WS, 0, WN - 1.001), fz = clamp((z + 4800) / WS, 0, WN - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, c = fz - j, k = j * WN + i; return (g[k] * (1 - a) + g[k + 1] * a) * (1 - c) + (g[k + WN] * (1 - a) + g[k + WN + 1] * a) * c; };
-// the terrain's light at a world point for bearing b: slope light, less occlusion in hollows, less the cast shadow
+// the terrain's light at a world point for bearing b: slope light, less occlusion in hollows, less the cast shadow.
+// With V.realtime the GPU casts the shadows for the hour, so none is baked.
 export function terrainLight(w, V, x, z) {
   const gg = worldGrad(w, x, z), s = lightOf(gg[0] * V.eu[0] + gg[1] * V.eu[1], gg[0] * V.ev[0] + gg[1] * V.ev[1]);
-  const ao = wsample(worldAO(w), x, z), sh = wsample(worldShadow(w, V.bearing), x, z) / 255;
+  const ao = wsample(worldAO(w), x, z), sh = V.realtime ? 0 : wsample(worldShadow(w, V.bearing), x, z) / 255;
   TL.sh = sh;
   return s + Math.min(0, ao) * 1.1 + Math.max(0, ao) * 0.4 - sh * 1.5;
 }
@@ -2305,10 +2306,11 @@ function meshShadow(B, V, o) {
 
 function drawObjects(B, V, O) {
   O.sort((a, b) => a.z - b.z);
-  for (const o of O) {
-    if (o.mesh) meshShadow(B, V, o);
-    else if (o.shadow) castShadow(B, o.spr, o.sx, o.sy, V.shx, V.shy, o.mirror);
-  }
+  if (!V.realtime)
+    for (const o of O) {
+      if (o.mesh) meshShadow(B, V, o);
+      else if (o.shadow) castShadow(B, o.spr, o.sx, o.sy, V.shx, V.shy, o.mirror);
+    }
   let id = 1;
   const meshes = [];
   for (const o of O) {

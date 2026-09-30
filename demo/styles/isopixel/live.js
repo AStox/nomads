@@ -5,8 +5,8 @@
 // the time of day, and scales the art buffer to the exact zoom without losing its crisp pixels. Between two bearings,
 // or at one still baking, every pixel goes back to its place in the world by its depth and is projected again at the
 // bearing shown, so the island turns as a solid thing with its trees upright. Without WebGL2 the CPU composes it all.
-import { RGB, NCOL, P, GLOW, HAZE } from "./pal.js";
-import { Buf, ObjBins, blit, castShadow, bayer, h2 } from "./px.js";
+import { RGB, NCOL, P, GLOW, HAZE, SHADOW } from "./pal.js";
+import { Buf, ObjBins, blit, castShadow, shadowRows, bayer, h2 } from "./px.js";
 import * as SP from "./sprites.js";
 import { text } from "./ui.js";
 import { createGPU, TS, TPR } from "./gpu.js";
@@ -38,6 +38,11 @@ const NOSHADOW = new Set(["ash", "pit", "trap", "fire", "clay", "stick"]);
 export async function createLive({ seed = 1, canvas, onProgress, workers: nW, adjacent = true, check = false } = {}) {
   const TH = await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {}));
   const n = nW ?? clamp((navigator.hardwareConcurrency || 4) - 2, 1, 6);
+  // The GPU draws every frame it can (null without WebGL2: the CPU composes, and a turn shows the main bearing until it
+  // lands). Made first: while it casts the sun's shadows for the hour, the workers bake none (bakedSun false).
+  let gpu = null, gpuOff = null;
+  try { gpu = createGPU({ NCOL, HAZE, SHADOW }); } catch (e) { gpuOff = { cause: e.cause ?? "build", why: e.message }; console.warn(`the GPU renderer is off: ${e.message}`); }
+  let bakedSun = !gpu;
   const tStart = performance.now(), classWait = new Map();
   const pool = [], maps = new Map(), mapPending = new Map();
   const stats = { fps: 0, composeMs: 0, bakeQueue: 0, bakedChunks: 0, bakeMsAvg: 0, memMB: 0, firstFrameMs: 0, growMs: 0, mapMs: {}, workers: n, slots: 1 };
@@ -54,7 +59,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     if (ch.c) cacheBytes -= ch.bytes;
     dropGround(ch);
     if (m.ground) { m.ground.chunk = ch.key; (grounds.get(ch.mk) ?? grounds.set(ch.mk, []).get(ch.mk)).push(m.ground); }
-    Object.assign(ch, { c: m.c, z: m.z, obj: m.obj, ax: m.ax, animP: m.animP, animC: m.animC, ground: m.ground, dbg: m.dbg, ver: m.ver, pending: false, bytes: m.c.length * 7 + m.animC.length + m.animP.length * 4 + (m.ground ? m.ground.C.byteLength + m.ground.diag.length * 2 : 0) });
+    Object.assign(ch, { c: m.c, z: m.z, obj: m.obj, ax: m.ax, cast: m.cast, animP: m.animP, animC: m.animC, ground: m.ground, dbg: m.dbg, ver: m.ver, pending: false, bytes: m.c.length * 7 + m.cast.byteLength + m.animC.length + m.animP.length * 4 + (m.ground ? m.ground.C.byteLength + m.ground.diag.length * 2 : 0) });
     cacheBytes += ch.bytes;
     bakeN++; bakeSum += m.ms;
     stats.bakedChunks++; stats.bakeMsAvg = bakeSum / bakeN;
@@ -79,7 +84,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
         else if (m.type === "classes") classWait.get(m.id)?.(m.out);
         else onChunk(wk, m);
       };
-      wk.postMessage({ type: "init", seed, debug: check });
+      wk.postMessage({ type: "init", seed, debug: check, realtime: !bakedSun });
       pool.push(wk);
     }
   });
@@ -151,6 +156,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   }
   let onHeights = null;
   const HG = await new Promise((r) => { onHeights = r; pool[0].postMessage({ type: "heights", step: 25 }); });
+  // a finer grid for the GPU to trace the sun's shadows over, as the bake traced its own
+  if (gpu) { const S = await new Promise((r) => { onHeights = r; pool[0].postMessage({ type: "heights", step: 12.5 }); }); gpu.setHeights(S.n, S.step, S.h); }
   const heightM = (x, z) => {
     const fx = clamp((x + 4800) / HG.step, 0, HG.n - 1.001), fz = clamp((z + 4800) / HG.step, 0, HG.n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = j * HG.n + i, h = HG.h;
     return (h[k] * (1 - a) + h[k + 1] * a) * (1 - b) + (h[k + HG.n] * (1 - a) + h[k + HG.n + 1] * a) * b;
@@ -158,6 +165,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   await requestMaps(0);
   onProgress?.(1, 1, "building the map");
   const PL = Array.from({ length: NL }, (_, L) => maps.get(mk(L, 0)).p);
+  const EXG = maps.get(mk(0, 0)).exag;
   // screen px a meter of height rises, per screen px per meter across; the maps' levelM carries EXAG
   const VK = maps.get(mk(0, 0)).lp / (maps.get(mk(0, 0)).levelM * PL[0]);
   // one camera height for all levels: ground blurred 300 m or more, until VK * sqrt2 * |grad| <= 0.5 keeps solves well posed
@@ -386,10 +394,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   const trailPending = new Set();
 
   // ---------- cameras and compose slots ----------
-  // The GPU draws every frame it can (null without WebGL2: the CPU composes, and a turn shows the main bearing until it
-  // lands). Its canvas lies over the page's, so the browser composites it rather than the page copying it every frame.
-  let gpu = null, gpuOff = null;
-  try { gpu = createGPU({ NCOL, HAZE }); } catch (e) { gpuOff = { cause: e.cause ?? "build", why: e.message }; console.warn(`the GPU renderer is off: ${e.message}`); }
+  // The GPU's canvas lies over the page's, so the browser composites it rather than the page copying it every frame.
   const glOver = !!(gpu && canvas.parentNode);
   if (glOver) { Object.assign(gpu.canvas.style, { position: "fixed", pointerEvents: "none", imageRendering: "pixelated", visibility: "hidden" }); canvas.after(gpu.canvas); }
   let glShown = false, glW = 0, glH = 0;
@@ -436,21 +441,24 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     capW = cw; capH = chh;
     const cap = cw * chh, tiles = Math.ceil(cw / TS) * Math.ceil(chh / TS), rows = Math.ceil(tiles / TPR), pn = TS * TPR * TS * rows;
     // each slot has its own upscale canvas: reusing one within a frame makes the browser copy it before the redraw.
-    // Two for a zoom's cross-fade, the first also a turn's main bearing; the third holds a turn's overlays.
-    const bufs = () => ({ c: new Uint8Array(cap), z: new Float32Array(cap), id: new Uint16Array(cap), sh: new Uint8Array(cap), light: new Uint8Array(cap), ax: new Int16Array(cap), e: new Float32Array(65536) });
+    // Two for a zoom's cross-fade, the first also a turn's main bearing; the third and fourth hold their overlays.
+    // lit: the live sprite ids the sun leaves alone, the flames giving their own light; cast: on the GPU, the rows of
+    // the live sprites that cast shadows (px.js shadowRows)
+    const bufs = () => ({ c: new Uint8Array(cap), z: new Float32Array(cap), id: new Uint16Array(cap), sh: new Uint8Array(cap), light: new Uint8Array(cap), ax: new Int16Array(cap), e: new Float32Array(65536), lit: new Uint8Array(65536), cast: [] });
     // the GPU's tiles: which are composed this frame (mark, list) and their packed copy for the atlas (packTiles)
-    const pack = (turns) => ({ mark: new Int32Array(tiles), list: new Uint16Array(rows * TPR), index: new Uint16Array(tiles), n: 0, tw: 0, th: 0, c: new Uint8Array(pn), l: new Uint8Array(pn), ...(turns && { id: new Uint16Array(pn), ax: new Int16Array(pn), z: new Float32Array(pn) }) });
+    const pack = (deep) => ({ mark: new Int32Array(tiles), list: new Uint16Array(rows * TPR), index: new Uint16Array(tiles), n: 0, tw: 0, th: 0, c: new Uint8Array(pn), l: new Uint8Array(pn), ...(deep && { id: new Uint16Array(pn), ax: new Int16Array(pn), z: new Float32Array(pn) }) });
     slots = [0, 1].map((k) => {
       const mid = new OffscreenCanvas(Math.ceil(W * 2.2) + 24, Math.ceil(H * 2.2) + 24);
       return { ...bufs(), rgba: new ArrayBuffer(cap * 4), off: new OffscreenCanvas(cw, chh), mid, midG: mid.getContext("2d"), pack: pack(k === 0) };
     });
-    slots.push({ ...bufs(), pack: pack(false) });
+    slots.push({ ...bufs(), pack: pack(false) }, { ...bufs(), pack: pack(false) });
   }
   const viewOf = (sl, w, h) => ({ w, h, c: sl.c.subarray(0, w * h), z: sl.z.subarray(0, w * h), id: sl.id.subarray(0, w * h), sh: sl.sh.subarray(0, w * h), light: sl.light.subarray(0, w * h), ax: sl.ax.subarray(0, w * h) });
 
   // The CPU path composes the whole view every frame. On the GPU (tiled) only the TS px tiles the live sim touches are
-  // composed, as it draws into them, the rest staying on the GPU as baked. warp: each sprite pixel keeps its anchor for
-  // the GPU to turn, and the overlays that belong to the screen (smoke, icons, labels) are drawn after, in the turned view.
+  // composed, as it draws into them, the rest staying on the GPU as baked, and the overlays that belong to the screen
+  // (smoke, icons, labels) are left to overlayTiles, for their own tiles in the view shown, so neither a turn nor the
+  // sun moves or darkens them. warp: for a turn, each sprite pixel keeping its anchor for the GPU.
   function compose(sl, cam, now, sim, clock, view, { tiled = false, warp = false } = {}) {
     const { md, AW, AH } = cam;
     B = viewOf(sl, AW, AH); light = B.light; owners = sl.owners = [null, null];
@@ -459,14 +467,18 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const holes = tiled ? tileStart(sl, cam, fr, warp) : composeAll(cam, fr);
     const night = clamp(clock.night ?? 0, 0, 1);
     let picks = [], fires = [], over = [];
+    sl.cast.length = 0;
     if (sim) {
       const E = entities(cam, sim, now);
       E.out.sort((a, b) => a.z - b.z);
-      for (const o of E.out) if (o.shadow && night < 0.6) castShadow(B, o.spr, o.sx, o.sy, md.shx, md.shy, o.mirror);
+      // on the CPU cast here along the bake's light by day; on the GPU (cam.sun, null while it is down) listed for
+      // gpu.js to cast along the sun
+      if (cam.sun === undefined) { if (night < 0.6) for (const o of E.out) if (o.shadow) castShadow(B, o.spr, o.sx, o.sy, md.shx, md.shy, o.mirror); }
+      else if (cam.sun) for (const o of E.out) if (o.shadow) shadowRows(o.spr, o.sx, o.sy, o.mirror, sl.cast);
       let id = 2;
       for (const o of E.out) {
-        if (warp && o.over) { over.push(o); continue; }
-        o.id = id++; owners[o.id] = o.pick ?? null; sl.e[o.id] = o.e ?? 0;
+        if (tiled && o.over) { over.push(o); continue; }
+        o.id = id++; owners[o.id] = o.pick ?? null; sl.e[o.id] = o.e ?? 0; sl.lit[o.id] = 0;
         blit(B, o.spr, o.sx, o.sy, o.z, o.id, o.mirror, o.bias);
       }
       // people behind trees still show, as a checkered silhouette through the leaves
@@ -474,9 +486,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       drawFires(cam, E.fires, now, night, sl);
       fires = E.fires; picks = E.picks;
     }
-    if (warp) return { holes, picks, fires, over };
-    if (tiled) overlays(cam, cam, now, view, fires, over, picks, null);
-    else finish(sl, cam, now, clock, view, fires, over, picks);
+    if (!tiled) finish(sl, cam, now, clock, view, fires, over, picks);
     return { holes, picks, fires, over };
   }
   function composeAll(cam, fr) {
@@ -553,22 +563,25 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     return holes;
   }
   const lowerBound = (arr, v) => { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < v) lo = m + 1; else hi = m; } return lo; };
-  // the frame's tiles packed for gpu.js: an atlas of TPR tiles to a row, each composed tile's atlas number + 1 at its
-  // place in the view (index) and each atlas tile's place in the view (list); warp adds what a turn splats
-  function packTiles(sl, cam, warp) {
-    const { AW, AH } = cam, pk = sl.pack, n = pk.n, rows = Math.ceil(n / TPR), RW = TS * TPR, size = RW * TS * rows, nt = pk.tw * pk.th;
+  // The frame's tiles packed for gpu.js: an atlas of TPR tiles to a row, each composed tile's atlas number + 1 at its
+  // place in the view (index) and each atlas tile's place in the view (list). mode "over": colour only; "still" adds the
+  // light, with bit 4 on a flame and bit 8 on another live sprite (gpu.js FS_FLAT); "turn" adds each pixel's kind,
+  // anchor column and depth.
+  function packTiles(sl, cam, mode) {
+    const { AW, AH } = cam, pk = sl.pack, n = pk.n, rows = Math.ceil(n / TPR), RW = TS * TPR, size = RW * TS * rows, nt = pk.tw * pk.th, lit = sl.lit;
     pk.index.fill(0, 0, nt);
     for (let k = 0; k < n; k++) {
       const t = pk.list[k], x0 = (t % pk.tw) * TS, y0 = Math.floor(t / pk.tw) * TS, w = Math.min(TS, AW - x0), h = Math.min(TS, AH - y0), base = Math.floor(k / TPR) * TS * RW + (k % TPR) * TS;
       pk.index[t] = k + 1;
       for (let y = 0; y < h; y++) {
         const s = (y0 + y) * AW + x0, d = base + y * RW;
-        for (let i = 0; i < w; i++) { pk.c[d + i] = sl.c[s + i]; pk.l[d + i] = sl.light[s + i]; }
-        if (warp) for (let i = 0; i < w; i++) { pk.id[d + i] = sl.id[s + i]; pk.ax[d + i] = sl.ax[s + i]; pk.z[d + i] = sl.z[s + i]; }
+        if (mode === "over") { for (let i = 0; i < w; i++) pk.c[d + i] = sl.c[s + i]; continue; }
+        for (let i = 0; i < w; i++) { const id = sl.id[s + i]; pk.c[d + i] = sl.c[s + i]; pk.l[d + i] = sl.light[s + i] | (id > 1 ? (lit[id] ? 4 : 8) : 0); }
+        if (mode === "turn") for (let i = 0; i < w; i++) { pk.id[d + i] = sl.id[s + i]; pk.ax[d + i] = sl.ax[s + i]; pk.z[d + i] = sl.z[s + i]; }
       }
     }
-    const cut = (a) => a.subarray(0, size);
-    return { n, rows, tw: pk.tw, th: pk.th, index: pk.index.subarray(0, nt), list: pk.list.subarray(0, rows * TPR), c: cut(pk.c), light: cut(pk.l), ...(warp && { id: cut(pk.id), ax: cut(pk.ax), z: cut(pk.z) }) };
+    const cut = (a) => a.subarray(0, size), deep = mode === "turn";
+    return { n, rows, tw: pk.tw, th: pk.th, index: pk.index.subarray(0, nt), list: pk.list.subarray(0, rows * TPR), c: cut(pk.c), light: cut(pk.l), ...(deep && { id: cut(pk.id), ax: cut(pk.ax), z: cut(pk.z) }) };
   }
   // what drew art pixel (x, y) of a slot's view: its id buffer where composed, else the baked chunk's object flag
   function idAt(sl, cam, x, y) {
@@ -580,7 +593,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   // (art px and depth) into that view, or is null when the two are the same camera.
   function overlays(cam, tcam, now, view, fires, over, picks, map) {
     drawSmoke(cam, tcam, fires, now, map);
-    for (const o of over) { const [x, y] = map(o.ax, o.ay, o.az); blit(B, o.spr, x, y + o.sy - o.ay, o.z, 0, o.mirror, o.bias); }
+    for (const o of over) { const [x, y] = map ? map(o.ax, o.ay, o.az) : [o.ax, o.ay]; blit(B, o.spr, x, y + o.sy - o.ay, o.z, 0, o.mirror, o.bias); }
     if (view.selected) {
       const shown = map ? picks.map((p) => { const [x, y] = map(p.ax, p.ay, p.az), dx = x - p.ax, dy = y - p.ay; return { ...p, sx: p.sx + dx, sy: p.sy + dy, top: p.top + dy }; }) : picks;
       markSelected(cam, view.selected, shown, map);
@@ -805,7 +818,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
         }
       if (!md.isle) {
         const s = spr(`flame${fl}|${Math.floor(ph) & 7}`, () => SP.flames(fl, 5 + (Math.floor(ph) & 7))), id = owners.push({ kind: "thing", id: f.id }) - 1;
-        sl.e[id] = md.hb + 6;
+        sl.e[id] = md.hb + 6; sl.lit[id] = 1;
         blit(B, s, a.sx, a.sy + 1, a.cz + 2, id, false, md.hb + 3);
       } else if (a.sx >= 0 && a.sy >= 1 && a.sx < B.w && a.sy < B.h) { B.need?.(a.sx, a.sy - 1, a.sx, a.sy - 1); B.c[(a.sy - 1) * B.w + a.sx] = (Math.floor(ph) & 1) ? P.f3 : P.f2; }
     }
@@ -1027,39 +1040,89 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       }
     return out;
   }
+  // ---------- the sun, cast on the GPU ----------
+  // Up from SUNRISE to SUNSET by the sim's clock: out of the east (+x), through the south (+z) at noon, down in the west,
+  // at most SUN_HIGH radians above the horizon, casting less over the day's first and last hour as the palette dims.
+  // { dir: toward it, tan: of its elevation, k: how strongly it casts, exag }, or null while it is down.
+  const SUNRISE = 5.5, SUNSET = 20.5, SUN_HIGH = 0.96;
+  function sunAt(hour) {
+    const t = (hour - SUNRISE) / (SUNSET - SUNRISE);
+    if (!(t > 0 && t < 1)) return null;
+    const el = SUN_HIGH * Math.sin(Math.PI * t), az = Math.PI * t;
+    return { dir: [Math.cos(az), Math.sin(az)], tan: Math.tan(el), k: smooth(0, 0.07, t) * smooth(0, 0.07, 1 - t), exag: EXG };
+  }
+  // a sprite's shadow per art px of its height at a map's bearing, as the bake's V.shx, V.shy for this sun, no longer
+  // than a 5 degree sun's
+  const sunStep = (md, sun) => {
+    const du = -(sun.dir[0] * md.eu[0] + sun.dir[1] * md.eu[1]), dv = -(sun.dir[0] * md.ev[0] + sun.dir[1] * md.ev[1]), cot = 0.8165 / Math.max(Math.tan(0.09), sun.tan);
+    return [(du - dv) * cot, (du + dv) * 0.5 * cot];
+  };
+  // What gpu.js needs to cast the sun on a camera: world meters of its art px (wo: at its origin, per x, and per y or
+  // depth, as gy + z = 2H(u + v)), its sprites' shadow step (vec), the chunks whose rows can cast into it, its own and
+  // those whose shadows reach in, once they are on the GPU, and live: the rows slot sl's compose listed.
+  function shadeFor(cam, sun, fr, sl) {
+    const md = cam.md, k2 = md.tileM / (2 * md.H), k4 = md.tileM / (4 * md.H);
+    const a = [(md.eu[0] - md.ev[0]) * k2, (md.eu[1] - md.ev[1]) * k2], b = [(md.eu[0] + md.ev[0]) * k4, (md.eu[1] + md.ev[1]) * k4];
+    const shade = { wo: [md.ox + cam.gx0 * a[0] + cam.gy0 * b[0], md.oz + cam.gx0 * a[1] + cam.gy0 * b[1], a[0], a[1], b[0], b[1]], vec: [0, 0], list: [], live: sl?.cast.length ? Int16Array.from(sl.cast) : null };
+    if (!sun) return shade;
+    // a row k art px above its anchor falls k * vec from it, and is no wider than the tallest sprite
+    const [vx, vy] = (shade.vec = sunStep(md, sun)), t = md.tall + 8;
+    const x0 = cam.gx0 - Math.max(0, vx) * t - t, x1 = cam.gx0 + cam.AW + Math.max(0, -vx) * t + t, y0 = cam.gy0 - Math.max(0, vy) * t - t, y1 = cam.gy0 + cam.AH + Math.max(0, -vy) * t + t;
+    for (let cy = Math.floor(y0 / CS); cy <= Math.floor(y1 / CS); cy++)
+      for (let cx = Math.floor(x0 / CS); cx <= Math.floor(x1 / CS); cx++) {
+        const ch = cache.get(keyOf(md.L, md.b, cx, cy));
+        if (ch?.cast?.length && gpu.chunk(ch, fr)) shade.list.push({ key: ch.key, ox: cx * CS - cam.gx0, oy: cy * CS - cam.gy0 });
+      }
+    return shade;
+  }
+  // A frame's overlays into slot k's tiles, in the view tcam shows, clear (255) where nothing is drawn; map: a point of
+  // cam into tcam, null when they are the same.
+  function overlayTiles(k, cam, tcam, r, now, view, map) {
+    const sl = slots[k];
+    B = viewOf(sl, tcam.AW, tcam.AH); light = B.light;
+    tilesFor(sl, tcam, (x0, y0, x1, y1) => { for (let y = y0; y < y1; y++) { const p = y * tcam.AW; B.c.fill(255, p + x0, p + x1); B.z.fill(-1e30, p + x0, p + x1); } });
+    overlays(cam, tcam, now, view, r.fires, r.over, r.picks, map);
+    return packTiles(sl, tcam, "over");
+  }
   function drawStill(pl, view, sim, clock, now, fp) {
-    const hour = clock.hour ?? 8, fr = Math.floor(now / 160) & 7, t1 = performance.now();
+    const hour = clock.hour ?? 8, fr = Math.floor(now / 160) & 7, t1 = performance.now(), sun = sunAt(hour);
     gpu.begin();
     let holes = false, best = -1;
     const views = pl.parts.map(([cam, w], k) => {
-      const sl = slots[k], r = compose(sl, cam, now, sim, clock, view, { tiled: true });
+      const sl = slots[k], e1 = cam.md.hb + 2;
+      cam.sun = sun;
+      const r = compose(sl, cam, now, sim, clock, view, { tiled: true });
       if (k === 0) holes = r.holes;
       if (w > best) { best = w; lastPick = r.picks; pickCam = cam; pickSlot = sl; pickTurn = 0; }
-      return { cam, alpha: k === 0 ? 1 : w, haze: hazeOf(cam, hour), quads: stillQuads(cam, fr), dyn: packTiles(sl, cam, false) };
+      const dyn = packTiles(sl, cam, "still"), over = overlayTiles(2 + k, cam, cam, r, now, view, null);
+      // the view's own chunks go up before those that only cast into it
+      const quads = stillQuads(cam, fr);
+      return { cam, alpha: k === 0 ? 1 : w, haze: hazeOf(cam, hour), quads, dyn, over, shade: shadeFor(cam, sun, fr, sl), e1 };
     });
     const t2 = performance.now(), lut = lutFor(hour);
-    if (!gpu.flat({ cap: [capW, capH], out: { W: canvas.width, H: canvas.height }, sea: P.w1, lut, lutKey: lastLutKey, views })) return null;
+    if (!gpu.flat({ cap: [capW, capH], out: { W: canvas.width, H: canvas.height }, sea: P.w1, lut, lutKey: lastLutKey, views, sun })) return null;
     timing(fp, t1, t2, views[0].cam.AW * views[0].cam.AH);
     return { holes };
   }
   function drawTurned(pl, view, sim, clock, now, fp) {
-    const hour = clock.hour ?? 8, fr = Math.floor(now / 160) & 7, t1 = performance.now(), [cam, , turn] = pl.parts[0], sl = slots[0];
+    const hour = clock.hour ?? 8, fr = Math.floor(now / 160) & 7, t1 = performance.now(), [cam, , turn] = pl.parts[0], sl = slots[0], sun = sunAt(hour);
     gpu.begin();
+    cam.sun = sun;
     const r = compose(sl, cam, now, sim, clock, view, { tiled: true, warp: true });
     const tcam = camera(view, pl.lf.L, cam.b), W = warpOf(cam, tcam, turn), main = splats(cam, fr);
-    const others = pl.parts.slice(1).map(([oc, , ot]) => ({ W: warpOf(oc, tcam, ot), chunks: splats(oc, fr) }));
+    const others = pl.parts.slice(1).map(([oc, , ot]) => ({ AW: oc.AW, AH: oc.AH, W: warpOf(oc, tcam, ot), g0: [oc.gx0, oc.gy0], chunks: splats(oc, fr) }));
+    // each camera's sun, once every chunk it splats has had its turn at the uploads
+    const shade = shadeFor(cam, sun, fr, sl);
+    others.forEach((o, j) => { o.shade = shadeFor(pl.parts[1 + j][0], sun, fr); });
     // the next bearing's shading shows where the dither is under wB, whichever of the two is main
     const wB = pl.wB ?? 0;
     let mask = 0;
     if (others.length) for (let q = 0; q < 16; q++) if ((bayer(q & 3, q >> 2) < wB) !== !!pl.mainB) mask |= 1 << q;
-    // the overlays in the turned view go up in tiles of their own, clear (255) where nothing is drawn
-    B = viewOf(slots[2], tcam.AW, tcam.AH); light = B.light;
-    tilesFor(slots[2], tcam, (x0, y0, x1, y1) => { for (let y = y0; y < y1; y++) { const p = y * tcam.AW; B.c.fill(255, p + x0, p + x1); B.z.fill(-1e30, p + x0, p + x1); } });
-    overlays(cam, tcam, now, view, r.fires, r.over, r.picks, (x, y, z) => warpPoint(W, x, y, z));
-    const dyn = packTiles(sl, cam, true), over = packTiles(slots[2], tcam, false), t2 = performance.now(), lut = lutFor(hour);
+    const over = overlayTiles(2, cam, tcam, r, now, view, (x, y, z) => warpPoint(W, x, y, z));
+    const dyn = packTiles(sl, cam, "turn"), t2 = performance.now(), lut = lutFor(hour);
     const ok = gpu.turn({
-      cap: [capW, capH], out: { W: canvas.width, H: canvas.height }, sea: P.w1, lut, lutKey: lastLutKey, haze: hazeOf(tcam, hour), over, mask, any: !!pl.lend,
-      main: { AW: cam.AW, AH: cam.AH, W, chunks: main, dyn, e: sl.e, ids: sl.owners.length }, others,
+      cap: [capW, capH], out: { W: canvas.width, H: canvas.height }, sea: P.w1, lut, lutKey: lastLutKey, haze: hazeOf(tcam, hour), over, mask, any: !!pl.lend, sun,
+      main: { AW: cam.AW, AH: cam.AH, W, g0: [cam.gx0, cam.gy0], shade, chunks: main, dyn, e: sl.e, ids: sl.owners.length }, others,
       target: { TW: tcam.AW, TH: tcam.AH, gx0: tcam.gx0, gy0: tcam.gy0 }, pres: { s: tcam.s, dx: tcam.dx, dy: tcam.dy },
     });
     if (!ok) return null;
@@ -1106,6 +1169,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const onGPU = !!r;
     if (!r) r = drawCPU(pl, view, sim, clock, now, fp);
     else if (!glOver) canvas.getContext("2d").drawImage(gpu.canvas, 0, 0);
+    // the GPU gone, the bake casts the sun's shadows again, into each chunk as it is next shown
+    if (gpu?.lost && !bakedSun) { bakedSun = true; postState({ realtime: false }); for (const c of cache.values()) c.need = stateVer; }
     showGL(onGPU && glOver && show);
     const holes = r.holes;
     stats.slots = pl.parts.length; stats.gpu = onGPU;

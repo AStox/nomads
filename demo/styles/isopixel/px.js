@@ -133,6 +133,26 @@ export function shadowPx(B, x, y) {
   B.c[p] = SHADOW[B.c[p]];
 }
 
+// A sprite as the GPU casts it along the sun: each row the round slab it stands for (a crown or a trunk is as deep as it
+// is wide), pushed onto `out` as four numbers in art px: twice the row's centre column, its anchor's row, its width,
+// and its rows above the anchor. Its shadow falls from there as castShadow lays a pixel's.
+const SPANS = new WeakMap();
+export function shadowRows(s, bx, by, mirror, out) {
+  let r = SPANS.get(s);
+  if (!r) {
+    r = new Int16Array(s.h * 2).fill(-1);
+    for (let y = 0; y < s.h; y++) for (let x = 0; x < s.w; x++) if (s.p[y * s.w + x] !== 255) { if (r[2 * y] < 0) r[2 * y] = x; r[2 * y + 1] = x; }
+    SPANS.set(s, r);
+  }
+  const left = bx - (mirror ? s.w - 1 - s.ax : s.ax);
+  for (let y = Math.min(s.ay, s.h - 1); y >= 0; y--) {
+    let a = r[2 * y], b = r[2 * y + 1];
+    if (a < 0) continue;
+    if (mirror) { const t = a; a = s.w - 1 - b; b = s.w - 1 - t; }
+    out.push(2 * left + a + b + 1, by, b - a + 1, s.ay - y);
+  }
+}
+
 // The sim's objects binned by 150 m tile: its typed-array snapshot (sim.objects()), with later upserts and removals on
 // top by numeric id. Kinds and species are indices into the name tables, which grow as new names turn up.
 export class ObjBins {

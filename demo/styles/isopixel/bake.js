@@ -9,14 +9,15 @@ onmessage = (e) => early.push(e);
 const { grow, noise } = await import("../world.js");
 const L = await import("./main.js");
 const { P, SHADOW } = await import("./pal.js");
-const { Buf, ObjBins, dith } = await import("./px.js");
+const { Buf, ObjBins, dith, shadowRows } = await import("./px.js");
 
 let w = null;
 // one view per level and bearing, least recently used first out: at most MAPS_KEPT island-wide maps and LEVELS_KEPT
 // views in all, so touring every bearing and zoom cannot grow the worker
 const levels = new Map(), MAPS_KEPT = 3, LEVELS_KEPT = 8;
-// the live world, sent by the page whenever the sim changes it: its objects, worn paths and ice
-const D = { version: 0, objs: null, trail: null, ice: new Uint8Array(64 * 64), season: "spring" };
+// the live world, sent by the page whenever the sim changes it: its objects, worn paths and ice; realtime: the page
+// casts the sun's shadows on the GPU, so the bake casts none
+const D = { version: 0, objs: null, trail: null, ice: new Uint8Array(64 * 64), season: "spring", realtime: false };
 
 const SIM = 150, SIM0 = -4800;
 const simTile = (x, z) => [Math.floor((x - SIM0) / SIM), Math.floor((z - SIM0) / SIM)];
@@ -61,7 +62,7 @@ function bake(msg) {
       }
     ground = { i0: V.i0, j0: V.j0, w: gw, h: gh, C, diag, kind };
   }
-  V.trail = D.trail; V.season = D.season;
+  V.trail = D.trail; V.season = D.season; V.realtime = D.realtime;
   // the sim freezes whole 150 m tiles; between a frozen tile and an open one the ice edge wanders instead of ruling a line
   const ice = (tx, ty) => (tx >= 0 && ty >= 0 && tx < 64 && ty < 64 && D.ice[ty * 64 + tx] === 1 ? 1 : 0);
   V.iceAt = (x, z) => {
@@ -80,14 +81,30 @@ function bake(msg) {
   L.drawTerrainLive(B, w, V, M);
   const t2 = performance.now();
   L.drawObjects(B, V, O);
-  const obj = new Uint8Array(CS * CS), ax = new Int8Array(CS * CS), anchor = new Int16Array(65536);
-  for (const o of O) anchor[o.lid] = o.sx;
+  const obj = new Uint8Array(CS * CS), ax = new Int8Array(CS * CS), anchor = new Int16Array(65536), tent = new Float32Array(65536).fill(NaN);
+  // cast, when the GPU casts the sun: the rows of every shadow-casting sprite anchored in this chunk, whole, as px.js
+  // shadowRows lists them; a tent pixel by pixel as drawn, at the height over its ground that its depth gives
+  // (gy + z = 2H(u + v), and the depth carries the height)
+  const rows = [];
+  for (const o of O) {
+    anchor[o.lid] = o.sx;
+    if (!D.realtime) continue;
+    if (o.mesh) tent[o.lid] = o.base * V.lp;
+    else if (o.shadow && o.sx >= 0 && o.sy >= 0 && o.sx < CS && o.sy < CS) shadowRows(o.spr, o.sx, o.sy, o.mirror, rows);
+  }
   // 1: an object drew here, 2: ground already in shadow (so live sprite shadows do not darken it twice). ax: the
-  // pixel's column from its sprite's anchor, so a turn can move every sprite pixel with its anchor and keep it upright
+  // pixel's column from its sprite's anchor, so a turn can move every sprite pixel with its anchor and keep it upright.
   for (let p = 0; p < obj.length; p++) {
     obj[p] = (B.id[p] ? 1 : 0) | (B.sh[p] ? 2 : 0);
-    if (B.id[p]) ax[p] = Math.max(-127, Math.min(127, (p % CS) - anchor[B.id[p]]));
+    const id = B.id[p];
+    if (!id) continue;
+    ax[p] = Math.max(-127, Math.min(127, (p % CS) - anchor[id]));
+    if (!Number.isNaN(tent[id])) {
+      const x = p % CS, y = (p / CS) | 0, k = Math.round(0.25 * B.z[p] - 0.75 * (y + V.gy) - tent[id]);
+      if (k >= 0) rows.push(2 * x + 1, y + k, 1, k);
+    }
   }
+  const casters = Int16Array.from(rows);
   // animated water and falls: only pixels still showing the ground; a sprite shadow cast later darkens every frame.
   // In pixel order, so the page can find a row's run of them by binary search.
   const aP = [], aC = [];
@@ -107,10 +124,10 @@ function bake(msg) {
     V.debug = null;
   }
   const animP = Uint32Array.from(aP), animC = Uint8Array.from(aC);
-  const moved = [B.c.buffer, B.z.buffer, obj.buffer, ax.buffer, animP.buffer, animC.buffer];
+  const moved = [B.c.buffer, B.z.buffer, obj.buffer, ax.buffer, casters.buffer, animP.buffer, animC.buffer];
   if (ground) moved.push(ground.C.buffer, ground.diag.buffer, ground.kind.buffer);
   V.trail = null; V.iceAt = null;
-  postMessage({ type: "chunk", key: msg.key, ver: D.version, c: B.c, z: B.z, obj, ax, animP, animC, ground, dbg, ms: performance.now() - t0, parts: [t1 - t0, t2 - t1, performance.now() - t2], objects: O.length }, moved);
+  postMessage({ type: "chunk", key: msg.key, ver: D.version, c: B.c, z: B.z, obj, ax, cast: casters, animP, animC, ground, dbg, ms: performance.now() - t0, parts: [t1 - t0, t2 - t1, performance.now() - t2], objects: O.length }, moved);
 }
 
 function mapData(k, b) {
@@ -147,7 +164,7 @@ const handle = async (e) => {
   if (m.type === "init") {
     const t0 = performance.now();
     w = grow(m.seed);
-    D.debug = !!m.debug;
+    D.debug = !!m.debug; D.realtime = !!m.realtime;
     L.setLife(await import("./life.js").catch(() => ({})));
     L.setThings(await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {})));
     postMessage({ type: "ready", ms: performance.now() - t0 });
@@ -165,6 +182,7 @@ const handle = async (e) => {
     if (m.season) D.season = m.season;
     if (m.trailUp && D.trail) for (let k = 0; k < m.trailUp.length; k += 2) D.trail[m.trailUp[k]] = m.trailUp[k + 1];
     if (m.ice) D.ice = Uint8Array.from(m.ice);
+    if (m.realtime != null) D.realtime = m.realtime;
     return;
   }
   run(m);

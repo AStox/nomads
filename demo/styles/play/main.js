@@ -45,6 +45,8 @@ async function main() {
   const simP = withSim ? import("./sim.js").then(({ createSim }) => createSim({ seed, warm, onProgress: (d, n) => { steps.sim = ["warming the world", d / n]; say(); } })) : Promise.resolve(null);
   const live = await createLive({ seed, canvas, workers: Math.trunc(num("workers", 0, 0, 8)) || undefined, adjacent: Q.get("adj") !== "0", check: Q.get("check") === "1", onProgress: (d, n, what) => { steps.renderer = [what, 0.5 * (what === "baking the island" ? 1 : 0) + (0.5 * d) / n]; say(); } });
   const sim = await simP;
+  // ?hour= pins the hour the island is drawn at, its light and sun, while the sim runs on
+  if (sim) sim.hour = num("hour", null, 0, 24);
   const ready = performance.now() - t0;
   // ?zoom= takes a name, the old 0..3 index, or a number of zoom steps; ?bearing= one of the 8 whole bearings
   const zq = Q.get("zoom"), names = ["island", "region", "valley", "close"];
