@@ -39,18 +39,18 @@ const int LEVELS = ${LEVELS};
 const uint EMISSIVE = ${LEVELS * 4}u;
 uint level(float f, ivec2 g) { return uint(min(float(LEVELS - 1), floor(f * float(LEVELS - 1) + bay(g)))); }`;
 // How much of the key light art px q of a camera takes, as a level (uSunG: the camera's global origin). Ground by its
-// slope toward uKey, the gradient of the island's heights at its world point made uRelief times as steep (as drawn),
-// water lying flat (uWet: the water ramp's first and last index); a sprite by uSpr, its view's share for an upright
-// thing; what has no depth (a coarser level standing in) as flat ground, uFlat. Shadow takes uSunK of it away (0 while
-// nothing casts): the shadow the island's ground casts toward the light, a sprite by its anchor's ground, and on ground
-// the sprites' silhouettes laid along it (uMask). World meters of an art px of the camera: uWO + x uWA + (y + depth) uWB.
-// Ground and the baked sprites standing on it take their tones from their slope, as the bake's hillshade chose them:
-// the slope's light over flat ground's (uToneK times the difference, which live.js scales by how much of flat ground's
-// light the key light gives, and 0.6 of it where it turns away) picks the colour's tone in pal.js TONE (uTone, its
-// columns' light from uToneLo to uToneHi), so a forest's canopy follows its hillside. The tones ease toward 1.5 steps of
-// light up and 1.2 down, as a ramp has few: past that a face turned full to a low sun would lose its texture to the end
-// of its ramp, and the light table brightens it instead. In shadow a slope gains nothing from facing the light, and the
-// shadow lies over its tone as the dark of the light table.
+// slope toward uKey, the gradient of the island's heights at its world point made uRelief times as steep, water lying
+// flat (uWet: the water ramp's first and last index); a live sprite by uSpr, its view's share for an upright thing; a
+// baked one, a tree or a rock, half by uSpr and half by the slope it stands on, as a forest's canopy follows its hillside;
+// what has no depth (a coarser level standing in) as flat ground, uFlat. Shadow takes uSunK of it away (0 while nothing
+// casts): the shadow the island's ground casts toward the light, a sprite by its anchor's ground, and on ground the
+// sprites' silhouettes laid along it (uMask). World meters of an art px of the camera: uWO + x uWA + (y + depth) uWB.
+// A slope turned to the light takes brighter tones as well, as the bake's hillshade chose them: its light over flat
+// ground's (uToneK times the difference, which live.js scales by how much of flat ground's light the sun or the moon
+// gives) picks the colour's tone in pal.js TONE (uTone, its columns' light from uToneLo to uToneHi), easing toward 1.5
+// steps, as a ramp has few and a face turned full to a low sun would lose its texture to the end of its ramp. A slope
+// turned away is darker only by the light table, so it dims with the sky's light and never brightens as a light fades;
+// in shadow a slope gains nothing from facing the light.
 const LIGHT_GLSL = `
 uniform sampler2D uSun, uMask, uGrad;
 uniform usampler2D uTone;
@@ -73,11 +73,10 @@ uint lightAt(ivec2 q, float z, uint kind, int ax, float e, inout uint c) {
       sh *= uSunK;
     }
     if (kind <= 1u && !wet) {
-      float d = slope - uFlat, s = d > 0.0 ? 1.5 * tanh(uToneK * d * (1.0 - sh) / 1.5) : -1.2 * tanh(-0.6 * uToneK * d / 1.2);
-      float n = float(textureSize(uTone, 0).y - 1);
+      float s = 1.5 * tanh(uToneK * max(0.0, slope - uFlat) * (1.0 - sh) / 1.5), n = float(textureSize(uTone, 0).y - 1);
       c = texelFetch(uTone, ivec2(int(c), int(clamp(floor((s - uToneLo) / (uToneHi - uToneLo) * n + 0.5 + (bay(q + uSunG) - 0.5) * 0.55), 0.0, n))), 0).r;
     }
-    f = (kind != 0u ? uSpr : wet ? uFlat : slope) * (1.0 - sh);
+    f = (kind == 2u ? uSpr : kind == 1u ? 0.5 * (uSpr + slope) : wet ? uFlat : slope) * (1.0 - sh);
   }
   return level(f, q + uSunG);
 }`;

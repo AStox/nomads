@@ -882,20 +882,21 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   // the air it crosses: Kasten and Young's air mass at these optical DEPTHs (red, green, blue). The sky's light falls with
   // the sun, as a power of its height by day and then an e-fold each DUSK degrees down to starlight, and takes its colour
   // from the sun's height: the day's blue, the golden hour, the rose of sunset, the blue hour. Round sunset a glow low in
-  // the sun's quarter of the sky lights what faces it. Moonlight is MOON of the sun's, and its sky MOONSKY of that, more
-  // than the day's sky gives for its sun, so moon shadows stay soft.
+  // the sun's quarter of the sky, part of its light, lights what faces it. Moonlight is MOON of the sun's, and its sky
+  // MOONSKY of that, more than the day's sky gives for its sun, so moon shadows stay soft.
   const DEPTH = [0.07, 0.15, 0.32], AMB = 0.9, AMB_P = 0.65, AMB_0 = 0.021, DUSK = 2.2, STAR = 0.0012, GLOW_K = 0.25, MOON = 0.004, MOONSKY = 1.2;
-  // FIRE: a fire's light at its brightest pool as shown once the scene's light is FIRE_X of noon's or less. A fire gives
-  // the same light at any hour, so it shows as the eye opens to the dark, and not at all by day.
-  const FIRE = [1, 0.55, 0.22], FIRE_W = [0, 0.35, 0.65, 0.9], FIRE_X = 0.002;
+  // FIRE: a fire's light at its brightest pool as shown once the dusk has fallen (the exposure of a clear sky with the sun
+  // FIRE_E degrees down). A fire gives the same light at any hour, so it shows as the eye opens to the dark, not by day.
+  const FIRE = [1, 0.55, 0.22], FIRE_W = [0, 0.35, 0.65, 0.9], FIRE_E = -10;
   const SKY = [[-18, [0.3, 0.4, 0.95]], [-10, [0.36, 0.45, 1]], [-5, [0.55, 0.52, 0.95]], [-1.5, [0.85, 0.62, 0.78]], [2, [1, 0.78, 0.7]], [8, [0.95, 0.88, 0.88]], [25, [0.82, 0.9, 1]]];
   const GLOW_C = [[-9, [0.6, 0.3, 0.5]], [-4, [0.95, 0.45, 0.45]], [0, [1, 0.55, 0.35]], [6, [1, 0.7, 0.45]]];
   // Shading takes a sun or moon as no lower than LOW, so flat ground keeps some of its light while long shadows cross
-  // it, and the glow as GLOW_EL up. A slope picks its tones by its light over flat ground's, as a fraction of flat
-  // ground's, TONE_G of the bake's units per unit, which at noon gives the bake's old hillshade (main.js LIGHT): under a
-  // low sun the slopes turned to it glow while those turned away dim only as much as the flat does, and at dusk, under
-  // cloud and by a thin moon the relief fades with the key light.
-  const LOW = 12 * DEG, GLOW_EL = 25 * DEG, TONE_G = 20;
+  // it, and the glow as GLOW_EL up. Slopes shade RELIEF times as steep as drawn, as the bake's old hillshade exaggerated
+  // them, so the island's folds show which way they face. A slope turned to the sun or the moon also picks brighter
+  // tones by its light over flat ground's, as a fraction of flat ground's light, TONE_G of the bake's units per unit:
+  // under a low sun the slopes turned to it glow, and under cloud and by a thin moon the relief fades. The dusk's glow, a
+  // broad light, shades only through the light table.
+  const LOW = 12 * DEG, GLOW_EL = 25 * DEG, RELIEF = 2, TONE_G = 12;
   // cloud cover by the sim's weather
   const COVER = { clear: 0, cloudy: 0.7, rain: 0.88, storm: 0.95 };
   const lum = (c) => c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11;
@@ -903,45 +904,53 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   const transmit = (el) => { const m = 1 / (Math.sin(Math.max(el, -0.5 * DEG)) + 0.50572 * Math.max(0.5, el / DEG + 6.07995) ** -1.6364); return DEPTH.map((t) => Math.exp(-t * m)); };
   const NOON_T = transmit(SUN_HIGH), toward = (b, el) => [Math.cos(el) * b.dir[0], Math.sin(el), Math.cos(el) * b.dir[1]];
   // The light of an hour under cloud (0 clear to 1 overcast): A the sky's; K the key light's, which lights a face by how it
-  // turns to L (the sun, the dusk's glow, and the moon once the glow has gone); cast: what casts shadows, k its share of K.
-  function lightOf(hour, day, cloud) {
+  // turns to L (the sun, the dusk's glow and the moon, weighted by their light); cast: what casts shadows, k its share of K.
+  // moonless: the sky without the moon, which the eye's exposure is measured against.
+  function lightOf(hour, day, cloud, moonless = false) {
     const sun = bodyAt(hourAngle(hour, NOON), DEC), moon = moonAt(day, hour), e = sun.el / DEG, clear = 1 - cloud;
     const up = (b, lo, hi) => smooth(lo * DEG, hi * DEG, b.el);
-    const sunClear = transmit(sun.el).map((t, k) => (t / NOON_T[k]) * up(sun, -0.5, 0.5)), S = sunClear.map((s) => s * clear);
+    // the sun's last light goes over its last degrees, and the moon's first comes over its first
+    const sunClear = transmit(sun.el).map((t, k) => (t / NOON_T[k]) * up(sun, -1, 2)), S = sunClear.map((s) => s * clear);
     const a0 = (AMB_0 / (Math.sin(SUN_HIGH) + AMB_0)) ** AMB_P, a = e >= 0 ? ((Math.sin(sun.el) + AMB_0) / (Math.sin(SUN_HIGH) + AMB_0)) ** AMB_P : a0 * Math.exp(e / DUSK);
-    const G = keyed(GLOW_C, e).map((c) => c * GLOW_K * a0 * smooth(-9, -1, e) * (1 - smooth(1, 8, e)) * clear);
-    const M = transmit(moon.el).map((t, k) => (t / NOON_T[k]) * up(moon, -0.5, 1.5) * MOON * moon.lit * [0.8, 0.9, 1][k] * clear);
-    // the moon's light joins the key once the dusk's glow has gone, and lies in the sky's until then
-    const mShare = smooth(-7, -11, e), mFlat = Math.sin(Math.max(moon.el, LOW));
-    let A = keyed(SKY, e).map((c, k) => c * (AMB * a + STAR * [0.6, 0.8, 1][k]) + M[k] * (MOONSKY * [0.7, 0.85, 1][k] + (1 - mShare) * mFlat));
+    const G = keyed(GLOW_C, e).map((c) => c * GLOW_K * a * smooth(-10, -0.5, e) * (1 - smooth(2, 10, e)) * clear);
+    const M = moonless ? [0, 0, 0] : transmit(moon.el).map((t, k) => (t / NOON_T[k]) * up(moon, -1, 10) * MOON * moon.lit * [0.8, 0.9, 1][k] * clear);
+    let A = keyed(SKY, e).map((c, k) => c * (AMB * a + STAR * [0.6, 0.8, 1][k]) + M[k] * MOONSKY * [0.7, 0.85, 1][k]);
     // cloud greys the sky and spreads the sun through it; storm cloud darkens the day
     const spread = (lum(A) + lum(sunClear) * Math.max(0, Math.sin(sun.el)) * 0.5) * (1 - 0.5 * smooth(0.75, 1, cloud));
     A = A.map((v, k) => v + (spread * [0.95, 0.97, 1][k] - v) * cloud);
-    const K = S.map((s, k) => s + G[k] + M[k] * mShare), wS = lum(S), wM = lum(M) * mShare, kL = lum(K);
+    const K = S.map((s, k) => s + G[k] + M[k]), wS = lum(S), wM = lum(M), kL = lum(K);
     const parts = [[toward(sun, Math.max(sun.el, LOW)), wS], [toward(sun, GLOW_EL), lum(G)], [toward(moon, Math.max(moon.el, LOW)), wM]];
     const L = [0, 1, 2].map((k) => parts.reduce((s, [v, w]) => s + v[k] * w, 0)), n = Math.hypot(...L);
-    const body = wS >= wM ? (sun.el > -0.5 * DEG && wS > 0 ? sun : null) : moon.el > 0 ? moon : null;
-    return { sun, moon, e, A, K, L: n > 1e-9 ? L.map((v) => v / n) : [0, 1, 0], cast: body && kL > 0 ? { dir: body.dir, tan: Math.max(body.tan, 0.005), k: (body === sun ? wS : wM) / kL } : null };
+    const body = wS >= wM ? (sun.el > -DEG && wS > 0 ? sun : null) : moon.el > 0 ? moon : null;
+    return { sun, moon, e, A, K, L: n > 1e-9 ? L.map((v) => v / n) : [0, 1, 0], direct: wS + wM, cast: body && kL > 0 ? { dir: body.dir, tan: Math.max(body.tan, 0.005), k: (body === sun ? wS : wM) / kL } : null };
   }
-  // The eye takes its measure of a sky from flat ground and from faces turned to the key light alike (as one turned to
-  // it by at least REFN), and shows light x of noon's as x^ADAPT: the golden hour stays bright, twilight dims, and a night
-  // reads at a third of the day. WB: noon's light on flat ground, under which the palette shows as drawn.
-  const ADAPT = 0.16, REFN = 0.45;
+  // The eye's exposure. Under a clear sky without the moon, ground in shadow shows at shadowShows(e) of the palette: what
+  // shows at noon all day, falling only once the sun is low, to D_NIGHT at night, so nothing brightens as the sun goes:
+  // what the sun lights dims with its light. Cloud and moonlight are seen through an exposure that opens to them only in
+  // part (GAM), so an overcast day still reads bright and a moonlit night stays dark but for what the moon lights. The
+  // light measured: flat ground and faces turned to the key light alike (as one turned to it by at least REFN). WB: noon's
+  // light on flat ground, under which the palette shows as drawn.
+  const REFN = 0.45, GAM = 0.16, D_NIGHT = 0.15;
   const refOf = (l) => lum(l.A) + lum(l.K) * Math.max(l.L[1], REFN);
-  const NOON_L = lightOf(NOON, 1, 0), REF = refOf(NOON_L), WB = NOON_L.A.map((a, k) => a + NOON_L.K[k] * NOON_L.L[1]), WBL = lum(WB);
+  const NOON_L = lightOf(NOON, 1, 0, true), WB = NOON_L.A.map((a, k) => a + NOON_L.K[k] * NOON_L.L[1]), WBL = lum(WB);
+  const D_NOON = lum(NOON_L.A) / WBL, shadowShows = (e) => D_NIGHT + (D_NOON - D_NIGHT) * smooth(-14, 4, e);
+  const exposure = (hour, day, l, c = lightOf(hour, day, 0, true)) => (shadowShows(l.e) / lum(c.A)) * (refOf(l) / refOf(c)) ** (GAM - 1);
+  // the exposure at which a fire's light is all there: a clear sky with the sun FIRE_E degrees down on the first evening
+  const FIRE_AT = (() => { let lo = SUNSET, hi = SUNSET + 3; for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (lightOf(m, 1, 0, true).e > FIRE_E) lo = m; else hi = m; } const l = lightOf(lo, 1, 0, true); return exposure(lo, 1, l, l); })();
   let cloud = 0, cloudAt = 0, sky = null, tablesId = "";
   // The sky of a frame: its light; gain, display per unit of light by channel; dim, how far the dark has drained colour;
-  // night, how dark the evening has grown for the fires; cast for gpu.js, null while nothing casts; flat, relief and
-  // toneK for the GPU's shading; id, which light tables it needs.
+  // night, how dark the evening has grown for the fires; fire, how much of a fire's light shows; cast for gpu.js, null
+  // while nothing casts; flat, relief and toneK for the GPU's shading (the relief softer by night, as eyes see less of
+  // it); id, which light tables it needs.
   function skyFor(clock, now) {
     const hour = clock.hour ?? 8, day = clock.day ?? 1;
     // a change of weather drifts in over a few seconds
     cloud += ((COVER[simRef?.w?.weather?.sky] ?? 0) - cloud) * (cloudAt ? 1 - Math.exp(-Math.min(1000, now - cloudAt) / 2500) : 1);
     cloudAt = now;
-    const l = lightOf(hour, day, cloud), ref = refOf(l), x = ref / REF, E = x ** ADAPT / ref;
+    const l = lightOf(hour, day, cloud), E = exposure(hour, day, l), dim = smooth(-1, -11, l.e), flat = Math.max(0, l.L[1]);
     return {
-      ...l, gain: WB.map((w) => (E * WBL) / w), dim: 1 - smooth(-3.2, -1.8, Math.log10(x)), night: smooth(1, -8, l.e), fire: Math.min(1, (x / FIRE_X) ** (ADAPT - 1)),
-      cast: l.cast && { ...l.cast, exag: EXG }, flat: Math.max(0, l.L[1]), relief: EXG, toneK: (TONE_G * lum(l.K)) / (lum(l.A) + lum(l.K) * Math.max(0, l.L[1])),
+      ...l, gain: WB.map((w) => (E * WBL) / w), dim, night: smooth(1, -8, l.e), fire: Math.min(1, E / FIRE_AT),
+      cast: l.cast && { ...l.cast, exag: EXG }, flat, relief: EXG * RELIEF, toneK: ((TONE_G * l.direct) / (lum(l.A) + lum(l.K) * flat)) * (1 - 0.6 * dim),
       cloud, id: `${Math.round(hour * 60)}|${day}|${Math.round(cloud * 40)}`,
     };
   }
