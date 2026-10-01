@@ -1,20 +1,25 @@
 // The renderer's GPU half. Baked chunks go up once as textures and stay, so a frame costs the CPU only what moves:
 // live.js draws people, animals, fire, smoke and labels into the 32 px tiles they touch and sends those up as an atlas.
 // A still view draws each chunk 1:1 into the art-pixel buffer, with coarser or finer levels scaled in under chunks
-// still baking, lays the tiles over it, and applies the haze and the hour's palette. Between two bearings, or at a
-// bearing still baking, every baked pixel goes back into the world by its depth and is splatted as a one-pixel point
+// still baking, lays the tiles over it, and applies the light, the haze and the light table. Between two bearings, or
+// at a bearing still baking, every baked pixel goes back into the world by its depth and is splatted as a one-pixel point
 // into the view at the bearing shown (live.js warpOf has the maths, the shaders repeat it). Depth tests keep what is in
 // front; a pass closes the one-pixel cracks a turn stretches into the ground; the other bearing fills what the turn
 // uncovers and, mid-turn, lends its shading through an ordered dither; a few passes grow whatever neither saw from its
 // neighbours, ground first. Last the art buffer is scaled to the canvas as present() does it: nearest to the next
 // whole factor, then one smoothed step down. Every layer is palette indices, so the pixels stay the art's own.
-// The sun is cast here for the hour, as the bake cannot: a map of which ground sees it, traced over the island's heights
-// whenever it moves, and every shadow-casting sprite's silhouette laid along it, darken what lies in shadow through the
-// palette's own shadow colours in the ordered dither.
+// The light is laid on here for the hour, as the bake cannot: every pixel takes a row of the sky's light table (live.js
+// tablesFor) by how much of the key light (the sun, the dusk's glow or the moon) reaches it, ground by its slope toward
+// the light and sprites by how the view sees them lit, less what lies in shadow, in the ordered dither. The shadows: a
+// map of which ground sees the sun or the moon, traced over the island's heights whenever it moves, and every
+// shadow-casting sprite's silhouette laid along it.
 
 const HEAD = "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp usampler2D;\nprecision highp isampler2D;\n";
 // live.js packs its tiles this way: TS art px square, TPR to an atlas row
 export const TS = 32, TPR = 64;
+// steps of the key light in the light table, each at the fire's four levels, the palette as drawn in a last row; at most
+// 16, as a turned pixel's state keeps the step in four bits
+export const LEVELS = 16;
 // The passes that grow into what neither bearing saw, as [mode, step]: ground from its neighbours a pixel away, then
 // from ever farther, doubling, so a gap a tree uncovered in a 45 degree turn fills with nearby ground texture in a
 // few passes rather than one smeared pixel a pass; last, from anything, so a sprite's own edge can close.
@@ -27,30 +32,60 @@ const SUN_MOVE = 0.004, SUN_STRIPES = 6;
 const BAY_GLSL = `
 const float BAY[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 float bay(ivec2 g) { return (BAY[((g.y & 3) << 2) | (g.x & 3)] + 0.5) / 16.0; }`;
-// Whether the sun leaves art px q of a camera in shadow: the shadow the island's ground casts toward the sun (a sprite
-// by its anchor's ground), or, for ground, a sprite's silhouette laid along the sun (uMask), in the ordered dither at the
-// camera's global art px (uSunG its origin). World meters of an art px of the camera: uWO + x uWA + (y + depth) uWB.
-// uSunK: how strongly the sun casts, 0 while it is down. In shadow a colour takes the palette's own shadow remap.
-const SUN_GLSL = `
-uniform sampler2D uSun, uMask;
-uniform usampler2D uShadow;
+// f of the key light as one of the table's LEVELS steps, in the ordered dither at global art px g; EMISSIVE: the row of
+// what gives its own light
+const LEVEL_GLSL = `
+const int LEVELS = ${LEVELS};
+const uint EMISSIVE = ${LEVELS * 4}u;
+uint level(float f, ivec2 g) { return uint(min(float(LEVELS - 1), floor(f * float(LEVELS - 1) + bay(g)))); }`;
+// How much of the key light art px q of a camera takes, as a level (uSunG: the camera's global origin). Ground by its
+// slope toward uKey, the gradient of the island's heights at its world point made uRelief times as steep (as drawn),
+// water lying flat (uWet: the water ramp's first and last index); a sprite by uSpr, its view's share for an upright
+// thing; what has no depth (a coarser level standing in) as flat ground, uFlat. Shadow takes uSunK of it away (0 while
+// nothing casts): the shadow the island's ground casts toward the light, a sprite by its anchor's ground, and on ground
+// the sprites' silhouettes laid along it (uMask). World meters of an art px of the camera: uWO + x uWA + (y + depth) uWB.
+// Ground and the baked sprites standing on it take their tones from their slope, as the bake's hillshade chose them:
+// the slope's light over flat ground's (uToneK times the difference, which live.js scales by how much of flat ground's
+// light the key light gives, and 0.6 of it where it turns away) picks the colour's tone in pal.js TONE (uTone, its
+// columns' light from uToneLo to uToneHi), so a forest's canopy follows its hillside. The tones ease toward 1.5 steps of
+// light up and 1.2 down, as a ramp has few: past that a face turned full to a low sun would lose its texture to the end
+// of its ramp, and the light table brightens it instead. In shadow a slope gains nothing from facing the light, and the
+// shadow lies over its tone as the dark of the light table.
+const LIGHT_GLSL = `
+uniform sampler2D uSun, uMask, uGrad;
+uniform usampler2D uTone;
 uniform vec2 uWO, uWA, uWB;
-uniform float uSunK, uSunN, uSunStep;
+uniform vec3 uKey;
+uniform float uSunK, uSunN, uSunStep, uRelief, uSpr, uFlat, uToneK, uToneLo, uToneHi;
 uniform ivec2 uSunG;
-bool inShadow(ivec2 q, float z, uint kind, int ax, float e) {
-  if (uSunK <= 0.0 || kind > 2u || z < -1e29) return false;
-  vec2 wp = uWO + float(q.x - (kind == 0u ? 0 : ax)) * uWA + (float(q.y) + z - e) * uWB;
-  float sh = smoothstep(0.3, 0.7, texture(uSun, ((wp + 4800.0) / uSunStep + 0.5) / uSunN).r);
-  ivec2 ms = textureSize(uMask, 0);
-  if (kind == 0u && q.x >= 0 && q.y >= 0 && q.x < ms.x && q.y < ms.y) sh = max(sh, texelFetch(uMask, q, 0).r);
-  return bay(q + uSunG) < sh * uSunK;
-}
-uint shaded(uint c) { return texelFetch(uShadow, ivec2(int(c), 0), 0).r; }
-uint sunlit(uint c, ivec2 q, float z, uint kind, int ax, float e) { return inShadow(q, z, kind, ax, e) ? shaded(c) : c; }`;
+uniform uvec2 uWet;
+uint lightAt(ivec2 q, float z, uint kind, int ax, float e, inout uint c) {
+  float f = uFlat;
+  if (kind <= 2u && z > -1e29) {
+    vec2 wp = uWO + float(q.x - (kind == 0u ? 0 : ax)) * uWA + (float(q.y) + z - e) * uWB, t = ((wp + 4800.0) / uSunStep + 0.5) / uSunN;
+    vec2 g = texture(uGrad, t).rg * uRelief;
+    float slope = max(0.0, dot(uKey, normalize(vec3(-g.x, 1.0, -g.y)))), sh = 0.0;
+    bool wet = c >= uWet.x && c <= uWet.y;
+    if (uSunK > 0.0) {
+      sh = smoothstep(0.3, 0.7, texture(uSun, t).r);
+      ivec2 ms = textureSize(uMask, 0);
+      if (kind == 0u && q.x >= 0 && q.y >= 0 && q.x < ms.x && q.y < ms.y) sh = max(sh, texelFetch(uMask, q, 0).r);
+      sh *= uSunK;
+    }
+    if (kind <= 1u && !wet) {
+      float d = slope - uFlat, s = d > 0.0 ? 1.5 * tanh(uToneK * d * (1.0 - sh) / 1.5) : -1.2 * tanh(-0.6 * uToneK * d / 1.2);
+      float n = float(textureSize(uTone, 0).y - 1);
+      c = texelFetch(uTone, ivec2(int(c), int(clamp(floor((s - uToneLo) / (uToneHi - uToneLo) * n + 0.5 + (bay(q + uSunG) - 0.5) * 0.55), 0.0, n))), 0).r;
+    }
+    f = (kind != 0u ? uSpr : wet ? uFlat : slope) * (1.0 - sh);
+  }
+  return level(f, q + uSunG);
+}`;
 
 // A source pixel into the view: (X, Y) its target pixel, Z its depth (larger is nearer), as warpOf's formulas; ax its
 // column from its anchor. State: r colour, g (ax + 128, or still water's tone), b kind (0 ground, 1 baked sprite, 2 live
-// sprite; | 4 still open water, painted again from its tone), a light | 4 water in the sun's shadow | 128 (0 is empty).
+// sprite; | 4 still open water, painted again from its tone), a the fire's light | its light level << 2 | 64 for what
+// gives its own light | 128 (0 is empty).
 const EMIT = `
 uniform float uC1, uHs, uQ1, uZ1, uZs, uE1, uW0, uWf, uCx, uCy, uCz;
 uniform vec2 uT;
@@ -67,7 +102,7 @@ void emit(float x, float y, float zz, float e, int ax, uint kind, uint c, uint l
   vS = uvec4(c, g, kind, light | 128u);
   vZ = floatBitsToUint(Z);
 }`;
-// a chunk's pixels, in the sun as their own camera sees it, then turned
+// a chunk's pixels, lit as their own camera sees them, then turned
 const VS_CHUNK = `${HEAD}
 uniform sampler2D uKz;
 uniform usampler2D uKc, uKo;
@@ -75,19 +110,20 @@ uniform isampler2D uKa;
 uniform ivec2 uOff;
 ${EMIT}
 ${BAY_GLSL}
-${SUN_GLSL}
+${LEVEL_GLSL}
+${LIGHT_GLSL}
 void main() {
   ivec2 p = ivec2(gl_VertexID & 255, gl_VertexID >> 8), q = uOff + p;
   uint o = texelFetch(uKo, p, 0).r, c = texelFetch(uKc, p, 0).r;
   bool obj = (o & 1u) != 0u;
   float z = texelFetch(uKz, p, 0).r, e = obj ? uE1 : 0.0;
   int a = texelFetch(uKa, p, 0).r, ax = obj ? a : 0;
-  bool dark = inShadow(q, z, obj ? 1u : 0u, ax, e);
-  if ((o & 4u) != 0u) emit(float(q.x), float(q.y), z, 0.0, 0, 4u, c, dark ? 4u : 0u, uint(a + 128));
-  else emit(float(q.x), float(q.y), z, e, ax, obj ? 1u : 0u, dark ? shaded(c) : c, 0u, uint(ax + 128));
+  uint lv = lightAt(q, z, obj ? 1u : 0u, ax, e, c) << 2;
+  if ((o & 4u) != 0u) emit(float(q.x), float(q.y), z, 0.0, 0, 4u, c, lv, uint(a + 128));
+  else emit(float(q.x), float(q.y), z, e, ax, obj ? 1u : 0u, c, lv, uint(ax + 128));
 }`;
 // the tiles the CPU drew into, pixel by pixel from the atlas: uList holds each atlas tile's place in the view. Light
-// bit 4: a flame, which the sun leaves alone; 16: still open water (live.js packTiles).
+// bit 4: a flame, which gives its own light; 16: still open water (live.js packTiles).
 const VS_DYN = `${HEAD}
 uniform sampler2D uZ, uE;
 uniform usampler2D uC, uL, uId, uList;
@@ -96,7 +132,8 @@ uniform ivec2 uView;
 uniform int uTw;
 ${EMIT}
 ${BAY_GLSL}
-${SUN_GLSL}
+${LEVEL_GLSL}
+${LIGHT_GLSL}
 void main() {
   int k = gl_VertexID >> 10, px = gl_VertexID & 31, py = (gl_VertexID >> 5) & 31;
   int t = int(texelFetch(uList, ivec2(k & 63, k >> 6), 0).r);
@@ -107,9 +144,9 @@ void main() {
   uint id = texelFetch(uId, a, 0).r, kind = min(id, 2u), l = texelFetch(uL, a, 0).r, c = texelFetch(uC, a, 0).r;
   int ra = texelFetch(uAx, a, 0).r, ax = id == 0u ? 0 : ra;
   float e = id == 0u ? 0.0 : id == 1u ? uE1 : texelFetch(uE, ivec2(int(id & 255u), int(id >> 8u)), 0).r;
-  bool dark = (l & 4u) == 0u && inShadow(v, zz, kind, ax, e);
-  if ((l & 16u) != 0u) emit(float(v.x), float(v.y), zz, 0.0, 0, 4u, c, (l & 3u) | (dark ? 4u : 0u), uint(ra + 128));
-  else emit(float(v.x), float(v.y), zz, e, ax, kind, dark ? shaded(c) : c, l & 3u, uint(clamp(ax, -128, 127) + 128));
+  uint lit = (l & 4u) != 0u ? 64u | (l & 3u) : (l & 3u) | (lightAt(v, zz, kind, ax, e, c) << 2);
+  if ((l & 16u) != 0u) emit(float(v.x), float(v.y), zz, 0.0, 0, 4u, c, lit, uint(ra + 128));
+  else emit(float(v.x), float(v.y), zz, e, ax, kind, c, lit, uint(clamp(ax, -128, 127) + 128));
 }`;
 const FS_SPLAT = `${HEAD}
 flat in uvec4 vS;
@@ -186,58 +223,62 @@ uint hazed(uint c, ivec2 q) {
   return a >= 0.001 && bay(q + uG0) < min(a, uMost) ? texelFetch(uHaze, ivec2(int(c), 0), 0).r : c;
 }`;
 // A turned view: still water painted again from its tone on this grid, as the bake's tone() paints it at a view's own
-// bearing, so its dither holds still while the island turns under it; overlays over the world, the haze toward the top
-// of the canvas, then the palette re-lit for the hour.
+// bearing, so its dither holds still while the island turns under it; overlays over the world, lit as the open ground
+// under them; the haze toward the top of the canvas; then each pixel's row of the light table.
 const FS_COMPOSITE = `${HEAD}
-uniform usampler2D uS, uOvT, uOvC, uShadow;
+uniform usampler2D uS, uOvT, uOvC;
 uniform sampler2D uLut;
 uniform uint uSea, uWater[8];
+uniform float uFlat;
 out vec4 o;
 ${BAY_GLSL}
+${LEVEL_GLSL}
 ${HAZE_GLSL}
 void main() {
   ivec2 q = ivec2(gl_FragCoord.xy);
   uvec4 s = texelFetch(uS, q, 0);
-  uint c = s.a != 0u ? s.r : uSea, light = s.a != 0u ? (s.a & 3u) : 0u, t = texelFetch(uOvT, q >> 5, 0).r;
+  uint c = s.a != 0u ? s.r : uSea, t = texelFetch(uOvT, q >> 5, 0).r, fire = s.a & 3u, open = level(uFlat, q + uG0) * 4u + fire;
+  uint row = s.a == 0u ? open : (s.a & 64u) != 0u ? EMISSIVE : ((s.a >> 2) & 15u) * 4u + fire;
   if (s.a != 0u && (s.b & 4u) != 0u) {
     float v = float(int(s.g) - 128) / 16.0;
     c = uWater[clamp(int(floor(v + 0.5 + (bay(q + uG0) - 0.5) * 0.55)), 0, 7)];
-    if ((s.a & 4u) != 0u) c = texelFetch(uShadow, ivec2(int(c), 0), 0).r;
   }
   // the overlays' tile where one was drawn, 255 where it is clear
-  if (t != 0u) { int k = int(t) - 1; uint ov = texelFetch(uOvC, ivec2((k & 63) << 5, (k >> 6) << 5) + (q & 31), 0).r; if (ov != 255u) c = ov; }
-  o = texelFetch(uLut, ivec2(int(hazed(c, q)), int(light)), 0);
+  if (t != 0u) { int k = int(t) - 1; uint ov = texelFetch(uOvC, ivec2((k & 63) << 5, (k >> 6) << 5) + (q & 31), 0).r; if (ov != 255u) { c = ov; row = open; } }
+  o = texelFetch(uLut, ivec2(int(hazed(c, q)), int(row)), 0);
 }`;
-// A still view: the CPU's tile where it drew one, else the static layer; the sun; the overlays; then the haze and the
-// hour's palette. A tile copies the baked chunk under what it draws, so the static layer's kind, anchor and depth serve
-// for the sun there too. Light bit 4: a flame, which the sun leaves alone; bit 8: another live sprite, lit as what lies
-// behind it, but as a sprite (a foot on that ground), so the shadows cast on that ground, its own among them, pass it by.
+// A still view: the CPU's tile where it drew one, else the static layer; the light; the overlays, lit as the open ground
+// under them; then the haze and the light table. A tile copies the baked chunk under what it draws, so the static layer's
+// kind, anchor and depth serve for the light there too. Light bit 4: a flame, which gives its own light; bit 8: another
+// live sprite, lit as what lies behind it, but as a sprite (a foot on that ground), so the shadows cast on that ground,
+// its own among them, pass it by.
 const FS_FLAT = `${HEAD}
 uniform usampler2D uStat, uStatZ, uTiles, uAC, uAL, uOvT, uOvC;
 uniform sampler2D uLut;
 uniform float uE1;
 out vec4 o;
 ${BAY_GLSL}
+${LEVEL_GLSL}
 ${HAZE_GLSL}
-${SUN_GLSL}
+${LIGHT_GLSL}
 void main() {
   ivec2 q = ivec2(gl_FragCoord.xy);
   uvec4 s = texelFetch(uStat, q, 0);
-  uint t = texelFetch(uTiles, q >> 5, 0).r, c = s.r, light = 0u, kind = s.b;
+  uint t = texelFetch(uTiles, q >> 5, 0).r, c = s.r, fire = 0u, kind = s.b;
   float e = kind == 1u ? uE1 : 0.0;
+  bool emits = false;
   if (t != 0u) {
     int k = int(t) - 1;
     ivec2 a = ivec2((k & 63) << 5, (k >> 6) << 5) + (q & 31);
     uint l = texelFetch(uAL, a, 0).r;
-    c = texelFetch(uAC, a, 0).r; light = l & 3u;
-    if ((l & 4u) != 0u) kind = 3u;
-    else if ((l & 8u) != 0u && kind == 0u) kind = 1u;
+    c = texelFetch(uAC, a, 0).r; fire = l & 3u; emits = (l & 4u) != 0u;
+    if ((l & 8u) != 0u && kind == 0u) kind = 1u;
   }
-  c = sunlit(c, q, uintBitsToFloat(texelFetch(uStatZ, q, 0).r), kind, int(s.g) - 128, e);
+  uint row = emits ? EMISSIVE : lightAt(q, uintBitsToFloat(texelFetch(uStatZ, q, 0).r), kind, int(s.g) - 128, e, c) * 4u + fire;
   // the overlays' tile where one was drawn, 255 where it is clear
   uint ot = texelFetch(uOvT, q >> 5, 0).r;
-  if (ot != 0u) { int k = int(ot) - 1; uint ov = texelFetch(uOvC, ivec2((k & 63) << 5, (k >> 6) << 5) + (q & 31), 0).r; if (ov != 255u) c = ov; }
-  o = texelFetch(uLut, ivec2(int(hazed(c, q)), int(light)), 0);
+  if (ot != 0u) { int k = int(ot) - 1; uint ov = texelFetch(uOvC, ivec2((k & 63) << 5, (k >> 6) << 5) + (q & 31), 0).r; if (ov != 255u) { c = ov; row = level(uFlat, q + uSunG) * 4u + fire; } }
+  o = texelFetch(uLut, ivec2(int(hazed(c, q)), int(row)), 0);
 }`;
 // One chunk into the static layer: art px q reads texel floor(uA + q * uS), a chunk of this level at uS 1, a stand-in
 // level's scaled as live.js fallback() samples it.
@@ -340,9 +381,10 @@ void main() {
 }`;
 
 // Throws where WebGL2 is missing (cause "none") or will not build these programs ("build"); live.js then draws on the
-// CPU. `why` says what turned it off later, `name` which GPU it runs on. WATER: the water ramp's palette indices.
-export function createGPU({ NCOL, HAZE, SHADOW, WATER }) {
-  const water = Uint32Array.from(WATER);
+// CPU. `why` says what turned it off later, `name` which GPU it runs on. WATER: the water ramp's palette indices, which
+// run in order; TONE, TONE_S: pal.js's ground tones by light.
+export function createGPU({ NCOL, HAZE, WATER, TONE, TONE_S }) {
+  const water = Uint32Array.from(WATER), wet = [Math.min(...WATER), Math.max(...WATER)];
   const canvas = document.createElement("canvas");
   const gl = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: true, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false, powerPreference: "high-performance" });
   if (!gl) throw new Error("this browser gives no WebGL2 context", { cause: "none" });
@@ -402,12 +444,14 @@ export function createGPU({ NCOL, HAZE, SHADOW, WATER }) {
   gl.vertexAttribDivisor(0, 1);
   gl.bindVertexArray(mainVao);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  const hazeTex = tex(gl.R8UI, NCOL, 1), shadowTex = tex(gl.R8UI, NCOL, 1), lutTex = tex(gl.RGBA8, NCOL, 4), eTex = tex(gl.R32F, 256, 256);
+  const ROWS = LEVELS * 4 + 1;
+  const hazeTex = tex(gl.R8UI, NCOL, 1), lutTex = tex(gl.RGBA8, NCOL, ROWS), toneTex = tex(gl.R8UI, NCOL, TONE_S.length), eTex = tex(gl.R32F, 256, 256);
   upload(hazeTex, NCOL, 1, gl.RED_INTEGER, gl.UNSIGNED_BYTE, HAZE);
-  upload(shadowTex, NCOL, 1, gl.RED_INTEGER, gl.UNSIGNED_BYTE, SHADOW);
-  // the sun map, a lit placeholder until the island's heights arrive
-  const lit = tex(gl.R8, 1, 1, gl.LINEAR);
+  upload(toneTex, NCOL, TONE_S.length, gl.RED_INTEGER, gl.UNSIGNED_BYTE, TONE);
+  // the sun map and the slopes, lit and flat stand-ins until the island's heights arrive
+  const lit = tex(gl.R8, 1, 1, gl.LINEAR), flatGrad = tex(gl.RG16F, 1, 1, gl.LINEAR);
   upload(lit, 1, 1, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array(1));
+  upload(flatGrad, 1, 1, gl.RG, gl.FLOAT, new Float32Array(2));
   let heights = null, job = null, shown = null;
 
   // buffers sized to the compose slots' capacity; a view uses their top-left corner
@@ -484,17 +528,26 @@ export function createGPU({ NCOL, HAZE, SHADOW, WATER }) {
     }
   }
 
-  // The island's heights for the sun map: n x n, texel i at -4800 + i * step meters. Half floats, which filter.
+  // The island's heights for the sun map, n x n, texel i at -4800 + i * step meters, and their slope for the light,
+  // taken over two steps each way. Half floats, which filter.
   function setHeights(n, step, h) {
-    const ht = tex(gl.R16F, n, n, gl.LINEAR);
+    const ht = tex(gl.R16F, n, n, gl.LINEAR), grad = tex(gl.RG16F, n, n, gl.LINEAR), g = new Float32Array(n * n * 2);
+    const at = (i, j) => h[Math.min(n - 1, Math.max(0, j)) * n + Math.min(n - 1, Math.max(0, i))];
+    for (let j = 0; j < n; j++)
+      for (let i = 0; i < n; i++) {
+        g[(j * n + i) * 2] = (at(i + 2, j) + at(i + 1, j) - at(i - 1, j) - at(i - 2, j)) / (6 * step);
+        g[(j * n + i) * 2 + 1] = (at(i, j + 2) + at(i, j + 1) - at(i, j - 1) - at(i, j - 2)) / (6 * step);
+      }
     upload(ht, n, n, gl.RED, gl.FLOAT, h);
+    upload(grad, n, n, gl.RG, gl.FLOAT, g);
     const maps = [0, 1].map(() => { const t = tex(gl.R8, n, n, gl.LINEAR); return { t, fb: target([t]) }; });
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    heights = { n, step, ht, maps, front: 0 }; job = shown = null;
+    heights = { n, step, ht, grad, maps, front: 0 }; job = shown = null;
   }
-  // The map for the sun of a frame (sun: { dir: [x, z] toward it, tan of its elevation, k how strongly it casts, exag }):
-  // once it has moved, traced into the back map SUN_STRIPES frames a pass, a stripe of rows each, for the sun as it stood
-  // when the pass began, and then swapped to the front; the first is traced whole, so shadows show at once.
+  // The map for what casts shadows in a frame, the sun or the moon (sun: { dir: [x, z] toward it, tan of its elevation,
+  // k how strongly it casts, exag }): once it has moved, traced into the back map SUN_STRIPES frames a pass, a stripe of
+  // rows each, for it as it stood when the pass began, and then swapped to the front; the first is traced whole, so
+  // shadows show at once.
   function traceSun(sun) {
     if (!sun || !heights) return;
     const az = Math.atan2(sun.dir[1], sun.dir[0]), el = Math.atan(sun.tan);
@@ -537,14 +590,21 @@ export function createGPU({ NCOL, HAZE, SHADOW, WATER }) {
     }
     gl.bindVertexArray(mainVao);
   }
-  // the sun's uniforms for a program drawing camera `shade` (wo: world meters of its art px) with mask i
-  function setSun(p, sun, shade, i, g0, unit) {
-    bind(p, "uSun", unit, heights ? heights.maps[heights.front].t : lit); bind(p, "uMask", unit + 1, cap.masks[i]); bind(p, "uShadow", unit + 2, shadowTex);
+  // The light's uniforms for a program drawing camera `shade` (wo: world meters of its art px) with mask i. sun: what
+  // casts shadows, null where nothing does or for a turn's farther bearings, which have no mask; light: live.js's sky of
+  // the frame (L toward the key light, flat, relief, toneK); units: the texture units for the sun map, the mask, the
+  // slopes and the tones; spr: an upright thing's share of the key light as this view sees it.
+  function setLight(p, sun, light, shade, i, g0, units, spr) {
+    bind(p, "uSun", units[0], heights ? heights.maps[heights.front].t : lit); bind(p, "uMask", units[1], cap.masks[i]);
+    bind(p, "uGrad", units[2], heights ? heights.grad : flatGrad); bind(p, "uTone", units[3], toneTex);
     gl.uniform1f(p.u("uSunK"), sun && heights ? sun.k : 0);
     gl.uniform1f(p.u("uSunN"), heights?.n ?? 1); gl.uniform1f(p.u("uSunStep"), heights?.step ?? 1);
     const w = shade.wo;
     gl.uniform2f(p.u("uWO"), w[0], w[1]); gl.uniform2f(p.u("uWA"), w[2], w[3]); gl.uniform2f(p.u("uWB"), w[4], w[5]);
     gl.uniform2i(p.u("uSunG"), g0[0], g0[1]);
+    gl.uniform3f(p.u("uKey"), light.L[0], light.L[1], light.L[2]); gl.uniform1f(p.u("uRelief"), light.relief);
+    gl.uniform1f(p.u("uSpr"), spr); gl.uniform1f(p.u("uFlat"), light.flat); gl.uniform2ui(p.u("uWet"), wet[0], wet[1]);
+    gl.uniform1f(p.u("uToneK"), light.toneK); gl.uniform1f(p.u("uToneLo"), TONE_S[0]); gl.uniform1f(p.u("uToneHi"), TONE_S[TONE_S.length - 1]);
   }
 
   let lutKey = null;
@@ -560,7 +620,7 @@ export function createGPU({ NCOL, HAZE, SHADOW, WATER }) {
   function start({ cap: [cw, ch], out, lut, lutKey: lk, sun }) {
     ensure(cw, ch);
     if (canvas.width !== out.W || canvas.height !== out.H) { canvas.width = out.W; canvas.height = out.H; }
-    if (lk !== lutKey) { upload(lutTex, NCOL, 4, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(lut.buffer, lut.byteOffset, NCOL * 16)); lutKey = lk; }
+    if (lk !== lutKey) { upload(lutTex, NCOL, ROWS, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(lut.buffer, lut.byteOffset, NCOL * ROWS * 4)); lutKey = lk; }
     traceSun(sun);
   }
   const setHaze = (p, haze, g0) => {
@@ -601,13 +661,14 @@ export function createGPU({ NCOL, HAZE, SHADOW, WATER }) {
 
   // A still view, or two cross-fading levels: views [{ cam: { AW, AH, gx0, gy0, s, dx, dy }, alpha, haze, quads:
   // [{ key, A, s, rect }] in draw order, dyn and over: live.js packTiles of its tiles and overlays, shade: its sun (live.js
-  // shadeFor), e1: a baked sprite pixel's depth past its foot }]; sea: the palette index under nothing at all; sun: null
-  // while it is down
+  // shadeFor), e1: a baked sprite pixel's depth past its foot, spr: its sprites' share of the key light }]; sea: the
+  // palette index under nothing at all, seaRGB: that as shown; sun: what casts shadows, null while nothing does; light:
+  // the sky of the frame
   function drawFlat(args) {
     start(args);
-    const { out, sea, lut, views, sun } = args, t0 = performance.now();
+    const { out, sea, seaRGB, views, sun, light } = args, t0 = performance.now();
     gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
-    views.forEach(({ cam, alpha, haze, quads, dyn, over, shade, e1 }, i) => {
+    views.forEach(({ cam, alpha, haze, quads, dyn, over, shade, e1, spr }, i) => {
       const { AW, AH } = cam;
       castSprites(i, AW, AH, sun, shade);
       gl.bindFramebuffer(gl.FRAMEBUFFER, cap.statFb); gl.viewport(0, 0, AW, AH);
@@ -630,10 +691,10 @@ export function createGPU({ NCOL, HAZE, SHADOW, WATER }) {
       bind(P.flat, "uAL", 4, at.l); bind(P.flat, "uLut", 9, lutTex);
       bind(P.flat, "uOvT", 13, cap.ov[i].index); bind(P.flat, "uOvC", 14, cap.ov[i].c);
       setHaze(P.flat, haze, [cam.gx0, cam.gy0]);
-      setSun(P.flat, sun, shade, i, [cam.gx0, cam.gy0], 10);
+      setLight(P.flat, sun, light, shade, i, [cam.gx0, cam.gy0], [10, 11, 12, 15], spr);
       gl.uniform1f(P.flat.u("uE1"), e1);
       full();
-      present(out, AW, AH, cam.s, cam.dx, cam.dy, alpha, lut[sea]);
+      present(out, AW, AH, cam.s, cam.dx, cam.dy, alpha, seaRGB);
     });
     evictChunks();
     Object.assign(stats, { drawMs: performance.now() - t0, tiles: views[0].dyn.n, kept: chunks.size });
@@ -642,10 +703,11 @@ export function createGPU({ NCOL, HAZE, SHADOW, WATER }) {
   // A turned view. main: the bearing whose pixels stand { AW, AH, W, g0, shade, chunks: [{ key, ox, oy }], dyn:
   // live.js packTiles, e, ids }; others: [{ AW, AH, W, g0, shade, chunks }], splatted into their own layer in order;
   // mask: the 16 dither cells where the other's shading shows; any: main is at its own bearing; target: { TW, TH, gx0,
-  // gy0 }; over: the overlays' tiles in the turned view as live.js packTiles, 255 clear; out: { W, H }, pres: { s, dx, dy }
+  // gy0 }; over: the overlays' tiles in the turned view as live.js packTiles, 255 clear; out: { W, H }, pres: { s, dx, dy };
+  // spr: sprites' share of the key light at the bearing shown; sun, light, sea, seaRGB as drawFlat's
   function drawTurn(args) {
     start(args);
-    const { out, sea, lut, main, others, mask, any, target, over, haze, pres, sun } = args, { TW, TH } = target, dyn = main.dyn, at = cap.atlas[0], t0 = performance.now();
+    const { out, sea, seaRGB, main, others, mask, any, target, over, haze, pres, sun, light, spr } = args, { TW, TH } = target, dyn = main.dyn, at = cap.atlas[0], t0 = performance.now();
     if (dyn.rows) {
       tilePlanes(at, dyn);
       upload(cap.list, TPR, dyn.rows, gl.RED_INTEGER, gl.UNSIGNED_SHORT, dyn.list);
@@ -671,21 +733,21 @@ export function createGPU({ NCOL, HAZE, SHADOW, WATER }) {
     };
     clearLayer(cap.M, true);
     pass(P.chunk, cap.M, TW, TH);
-    gl.uniform2f(P.chunk.u("uT"), TW, TH); warp(P.chunk, main.W); setSun(P.chunk, sun, main.shade, 0, main.g0, 4);
+    gl.uniform2f(P.chunk.u("uT"), TW, TH); warp(P.chunk, main.W); setLight(P.chunk, sun, light, main.shade, 0, main.g0, [4, 5, 6, 7], spr);
     splat(main.chunks);
     if (dyn.n) {
       gl.useProgram(P.dyn);
       gl.uniform2f(P.dyn.u("uT"), TW, TH); warp(P.dyn, main.W);
       gl.uniform2i(P.dyn.u("uView"), main.AW, main.AH); gl.uniform1i(P.dyn.u("uTw"), dyn.tw);
       bind(P.dyn, "uZ", 0, at.z); bind(P.dyn, "uE", 1, eTex); bind(P.dyn, "uC", 2, at.c); bind(P.dyn, "uL", 3, at.l); bind(P.dyn, "uId", 4, at.id); bind(P.dyn, "uList", 5, cap.list); bind(P.dyn, "uAx", 6, at.ax);
-      setSun(P.dyn, sun, main.shade, 0, main.g0, 7);
+      setLight(P.dyn, sun, light, main.shade, 0, main.g0, [7, 8, 9, 10], spr);
       gl.drawArrays(gl.POINTS, 0, dyn.n * TS * TS);
     }
     if (others.length) {
       clearLayer(cap.O, true);
       pass(P.chunk, cap.O, TW, TH);
       gl.uniform2f(P.chunk.u("uT"), TW, TH);
-      others.forEach((o, j) => { warp(P.chunk, o.W); setSun(P.chunk, j < 2 ? sun : null, o.shade, Math.min(2, 1 + j), o.g0, 4); splat(o.chunks); });
+      others.forEach((o, j) => { warp(P.chunk, o.W); setLight(P.chunk, j < 2 ? sun : null, light, o.shade, Math.min(2, 1 + j), o.g0, [4, 5, 6, 7], spr); splat(o.chunks); });
     }
     gl.disable(gl.DEPTH_TEST);
     const fill = (src, dst, mode, step = 1) => {
@@ -706,11 +768,10 @@ export function createGPU({ NCOL, HAZE, SHADOW, WATER }) {
 
     gl.useProgram(P.composite); gl.bindFramebuffer(gl.FRAMEBUFFER, cap.artFb); gl.viewport(0, 0, TW, TH);
     bind(P.composite, "uS", 0, cur.s); bind(P.composite, "uOvT", 1, cap.ov[0].index); bind(P.composite, "uOvC", 2, cap.ov[0].c); bind(P.composite, "uLut", 3, lutTex);
-    bind(P.composite, "uShadow", 4, shadowTex);
     setHaze(P.composite, haze, [target.gx0, target.gy0]);
-    gl.uniform1ui(P.composite.u("uSea"), sea); gl.uniform1uiv(P.composite.u("uWater"), water);
+    gl.uniform1ui(P.composite.u("uSea"), sea); gl.uniform1uiv(P.composite.u("uWater"), water); gl.uniform1f(P.composite.u("uFlat"), light.flat);
     full();
-    present(out, TW, TH, pres.s, pres.dx, pres.dy, 1, lut[sea]);
+    present(out, TW, TH, pres.s, pres.dx, pres.dy, 1, seaRGB);
     evictChunks();
     Object.assign(stats, { drawMs: performance.now() - t0, tiles: dyn.n, kept: chunks.size });
   }

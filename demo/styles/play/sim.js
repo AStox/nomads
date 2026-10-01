@@ -18,9 +18,6 @@ function clearChanges() {
   changed.clear(); removed.clear(); newKinds.clear(); changedKinds.clear(); pathChanges.clear(); trailChanges.clear();
 }
 
-// app.js nightAmount: dark 21:00 to 04:00, ramps over 19-21 and 04-06.
-const nightAt = (h) => (h >= 21 || h < 4 ? 1 : h >= 19 ? (h - 19) / 2 : h < 6 ? 1 - (h - 4) / 2 : 0);
-
 // One live sim per page: the change sets are module globals inside the bundle.
 export async function createSim({ seed = 1, warm = 0, onProgress } = {}) {
   const w = newWorld(seed);
@@ -90,7 +87,7 @@ export async function createSim({ seed = 1, warm = 0, onProgress } = {}) {
     hour: null,
     clock() {
       const ft = w.t + alpha, h = sim.hour ?? ((ft % DAY) / DAY) * 24;
-      return { hour: h, day: Math.floor(ft / DAY) + 1, season: w.weather.season, night: nightAt(h) };
+      return { hour: h, day: Math.floor(ft / DAY) + 1, season: w.weather.season };
     },
     // At most one tick per call: each tick needs its own task, and the server never bursts to catch up either.
     update(now) {

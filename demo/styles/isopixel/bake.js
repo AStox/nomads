@@ -16,7 +16,7 @@ let w = null;
 // views in all, so touring every bearing and zoom cannot grow the worker
 const levels = new Map(), MAPS_KEPT = 3, LEVELS_KEPT = 8;
 // the live world, sent by the page whenever the sim changes it: its objects, worn paths and ice; realtime: the page
-// casts the sun's shadows on the GPU, so the bake casts none
+// lights the slopes and casts the shadows on the GPU for the hour, so the bake does neither
 const D = { version: 0, objs: null, trail: null, ice: new Uint8Array(64 * 64), season: "spring", realtime: false };
 
 const SIM = 150, SIM0 = -4800;

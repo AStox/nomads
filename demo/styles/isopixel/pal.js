@@ -108,3 +108,27 @@ export const HAZE = Uint8Array.from(RGB, (c, i) => {
   const k = THEME === "adventure" ? 0.32 : 0.5;
   return nearest(c[0] + (h[0] - c[0]) * k, c[1] + (h[1] - c[1]) * k, c[2] + (h[2] - c[2]) * k, (j) => j !== i && (natural(j) || j === P.haze || j === P.haze2));
 });
+// The ground's tones by light, so the GPU can shade slopes toward the sun as the bake once shaded them toward a fixed
+// light: TONE[j * NCOL + c] is colour c under slope light TONE_S[j], in the bake's units. Sand, soil and rock step along
+// their ramps as main.js paintLand does, 0.7, 1 and 1.43 steps per unit (soil's d3 is sand's darkest too); snow shades to
+// haze; the rest of the ground takes its value times 1 + 0.3 s as main.js groundRGB does, as the nearest ground colour.
+// Everything else keeps its colour.
+export const TONE_S = [-1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2];
+export const TONE = (() => {
+  const T = new Uint8Array(NCOL * TONE_S.length), step = new Map();
+  for (const [names, per] of [[["d3", "s0", "s1", "s2", "s3"], 0.7], [["d0", "d1", "d2", "d3", "d4", "d5"], 1], [["r0", "r1", "r2", "r3", "r4", "r5"], 1.43]])
+    names.forEach((n, k) => step.set(P[n], { r: names.map((m) => P[m]), k, per }));
+  const ground = (i) => natural(i) && i !== P.ink && i !== P.snow && !(i >= P.w0 && i <= P.w7);
+  TONE_S.forEach((s, j) =>
+    RGB.forEach((c, i) => {
+      const st = step.get(i), v = Math.max(0.42, Math.min(1.6, 1 + 0.3 * s));
+      let o = i;
+      if (st) o = st.r[Math.max(0, Math.min(st.r.length - 1, st.k + Math.round(s * st.per)))];
+      else if (i === P.snow) o = s <= -1 ? P.haze : i;
+      else if (i === P.haze) o = s >= 1 ? P.snow : i;
+      else if (ground(i)) o = nearest(c[0] * v, c[1] * v, c[2] * v, ground);
+      T[j * NCOL + i] = o;
+    }),
+  );
+  return T;
+})();

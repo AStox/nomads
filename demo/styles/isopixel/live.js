@@ -5,11 +5,11 @@
 // the time of day, and scales the art buffer to the exact zoom without losing its crisp pixels. Between two bearings,
 // or at one still baking, every pixel goes back to its place in the world by its depth and is projected again at the
 // bearing shown, so the island turns as a solid thing with its trees upright. Without WebGL2 the CPU composes it all.
-import { RGB, NCOL, P, GLOW, HAZE, SHADOW } from "./pal.js";
+import { RGB, NCOL, P, GLOW, HAZE, TONE, TONE_S } from "./pal.js";
 import { Buf, ObjBins, blit, castShadow, shadowRows, bayer, h2 } from "./px.js";
 import * as SP from "./sprites.js";
 import { text } from "./ui.js";
-import { createGPU, TS, TPR } from "./gpu.js";
+import { createGPU, TS, TPR, LEVELS } from "./gpu.js";
 
 const CS = 256, SIM = 150, ORIGIN = -4800, DAY = 288, YEAR = DAY * 40, TAU = Math.PI * 2, NL = 9, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -39,9 +39,10 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   const TH = await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {}));
   const n = nW ?? clamp((navigator.hardwareConcurrency || 4) - 2, 1, 6);
   // The GPU draws every frame it can (null without WebGL2: the CPU composes, and a turn shows the main bearing until it
-  // lands). Made first: while it casts the sun's shadows for the hour, the workers bake none (bakedSun false).
+  // lands). Made first: while it lights the slopes and casts the shadows for the hour, the workers bake neither
+  // (bakedSun false).
   let gpu = null, gpuOff = null;
-  try { gpu = createGPU({ NCOL, HAZE, SHADOW, WATER: ["w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"].map((k) => P[k]) }); } catch (e) { gpuOff = { cause: e.cause ?? "build", why: e.message }; console.warn(`the GPU renderer is off: ${e.message}`); }
+  try { gpu = createGPU({ NCOL, HAZE, TONE, TONE_S, WATER: ["w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"].map((k) => P[k]) }); } catch (e) { gpuOff = { cause: e.cause ?? "build", why: e.message }; console.warn(`the GPU renderer is off: ${e.message}`); }
   let bakedSun = !gpu;
   const tStart = performance.now(), classWait = new Map();
   const pool = [], maps = new Map(), mapPending = new Map();
@@ -411,7 +412,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   const sprites = new Map();
   // sprite keys follow continuous sizes, so the cache is emptied now and then rather than left to grow for a session
   const spr = (key, make) => { let s = sprites.get(key); if (s === undefined) { if (sprites.size > 3000) sprites.clear(); s = make() || null; sprites.set(key, s); } return s; };
-  let frames = 0, fpsT = performance.now(), lastPick = [], pickCam = null, pickSlot = null, pickTurn = 0, firstFrame = true, lastLut = null, lastLutKey = "";
+  let frames = 0, fpsT = performance.now(), lastPick = [], pickCam = null, pickSlot = null, pickTurn = 0, firstFrame = true;
   const facingMem = new Map();
   // owners[id]: the pick ({ kind, id }) of whatever drew sprite id `id` into the id buffer of the slot being composed
   let B = null, light = null, owners = [];
@@ -465,15 +466,15 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const fr = Math.floor(now / 160) & 7;
     sl.tiled = tiled;
     const holes = tiled ? tileStart(sl, cam, fr, warp) : composeAll(cam, fr);
-    const night = clamp(clock.night ?? 0, 0, 1);
+    const night = sky.night;
     let picks = [], fires = [], over = [];
     sl.cast.length = 0;
     if (sim) {
       const E = entities(cam, sim, now);
       E.out.sort((a, b) => a.z - b.z);
-      // on the CPU cast here along the bake's light by day; on the GPU (cam.sun, null while it is down) listed for
-      // gpu.js to cast along the sun
-      if (cam.sun === undefined) { if (night < 0.6) for (const o of E.out) if (o.shadow) castShadow(B, o.spr, o.sx, o.sy, md.shx, md.shy, o.mirror); }
+      // on the CPU cast here along the bake's light while the sun is up; on the GPU (cam.sun, null while nothing casts)
+      // listed for gpu.js to cast along the sun or the moon
+      if (cam.sun === undefined) { if (sky.e > 0) for (const o of E.out) if (o.shadow) castShadow(B, o.spr, o.sx, o.sy, md.shx, md.shy, o.mirror); }
       else if (cam.sun) for (const o of E.out) if (o.shadow) shadowRows(o.spr, o.sx, o.sy, o.mirror, sl.cast);
       let id = 2;
       for (const o of E.out) {
@@ -605,8 +606,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     B = viewOf(sl, cam.AW, cam.AH); light = B.light;
     overlays(cam, cam, now, view, fires, over, picks, null);
     haze(cam, clock.hour ?? 8);
-    // indexed colour to RGBA through the time-of-day table; the light buffer picks the fire-lit copy
-    const { AW, AH } = cam, lut = lutFor(clock.hour ?? 8), c = B.c, out = new Uint32Array(sl.rgba, 0, AW * AH);
+    // indexed colour to RGBA through the sky's light table; the light buffer picks the fire-lit copy
+    const { AW, AH } = cam, lut = tablesFor(sky).cpu, c = B.c, out = new Uint32Array(sl.rgba, 0, AW * AH);
     for (let p = 0; p < c.length; p++) out[p] = lut[light[p] * NCOL + c[p]];
     sl.off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(sl.rgba, 0, AW * AH * 4), AW, AH), 0, 0);
   }
@@ -855,41 +856,129 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     }
   }
 
-  // ---------- time of day: the palette itself is re-lit ----------
-  const KEYS = [
-    [0, { m: [0.32, 0.38, 0.62], s: 0.4, a: [6, 8, 20] }],
-    [4.6, { m: [0.32, 0.38, 0.62], s: 0.4, a: [6, 8, 20] }],
-    [6, { m: [0.85, 0.7, 0.72], s: 0.8, a: [18, 6, 10] }],
-    [7.5, { m: [1, 1, 1], s: 1, a: [0, 0, 0] }],
-    [12, { m: [1.04, 1.04, 1.02], s: 1.02, a: [4, 4, 4] }],
-    [16.5, { m: [1.03, 0.99, 0.92], s: 1, a: [6, 2, 0] }],
-    [19, { m: [1.08, 0.8, 0.66], s: 0.9, a: [14, 0, 0] }],
-    [20.6, { m: [0.5, 0.42, 0.6], s: 0.55, a: [10, 4, 22] }],
-    [22, { m: [0.32, 0.38, 0.62], s: 0.4, a: [6, 8, 20] }],
-    [24, { m: [0.32, 0.38, 0.62], s: 0.4, a: [6, 8, 20] }],
-  ];
-  function lutFor(hour) {
-    const key = (Math.round(hour * 12) / 12).toFixed(3);
-    if (key === lastLutKey) return lastLut;
-    let i = 0;
-    while (i < KEYS.length - 2 && KEYS[i + 1][0] <= hour) i++;
-    const [h0, A] = KEYS[i], [h1, Bk] = KEYS[i + 1], f = clamp((hour - h0) / (h1 - h0 || 1), 0, 1), mix = (a, b) => a + (b - a) * f;
-    const m = A.m.map((v, k) => mix(v, Bk.m[k])), s = mix(A.s, Bk.s), ad = A.a.map((v, k) => mix(v, Bk.a[k]));
-    const night = clamp(1 - (m[0] + m[1]) / 1.6, 0, 1) * 1.6;
-    const lut = new Uint32Array(NCOL * 4);
-    for (let c = 0; c < NCOL; c++) {
-      const [r, g, b] = RGB[c], L = r * 0.3 + g * 0.59 + b * 0.11;
-      const amb = [L + (r - L) * s, L + (g - L) * s, L + (b - L) * s].map((v, k) => v * m[k] + ad[k]);
-      const warm = [r * 1.18 + 26, g * 0.96 + 10, b * 0.66];
-      for (let l = 0; l < 4; l++) {
-        const w = Math.min(1, night) * [0, 0.35, 0.65, 0.9][l];
-        const o = amb.map((v, k) => clamp(Math.round(v + (warm[k] - v) * w), 0, 255));
-        lut[l * NCOL + c] = 0xff000000 | (o[2] << 16) | (o[1] << 8) | o[0];
-      }
-    }
-    lastLut = lut; lastLutKey = key;
-    return lut;
+  // ---------- the sky: the sun and the moon, and the light they give ----------
+  // SA + SB cos(H) is the sine of the sun's elevation at hour angle H, so that it rises at SUNRISE, stands SUN_HIGH up at
+  // noon and sets at SUNSET. That is the sky at latitude LAT with the sun DEC north of the equator (near 52 and 17
+  // degrees): the sun rises in the east-north-east, crosses the south at 13:00, sets in the west-north-west and sinks 21.5
+  // degrees below the northern horizon at midnight, so civil twilight ends 44 minutes after sunset. The moon crosses the
+  // same sky phase x 24 hours behind the sun as it waxes over LUNAR days, as far south of the equator when full as the
+  // sun is north, so a summer full moon rides low.
+  const SUNRISE = 5.5, SUNSET = 20.5, NOON = (SUNRISE + SUNSET) / 2, SUN_HIGH = 0.96, LUNAR = 29.53, DEG = Math.PI / 180;
+  const HALF = (Math.PI * (SUNSET - SUNRISE)) / 24, SB = Math.sin(SUN_HIGH) / (1 - Math.cos(HALF)), SA = -SB * Math.cos(HALF);
+  // SA = sin(LAT) sin(DEC), SB = cos(LAT) cos(DEC)
+  const LAT = (Math.PI / 2 - SUN_HIGH + Math.acos(SB - SA)) / 2, DEC = (Math.acos(SB - SA) - (Math.PI / 2 - SUN_HIGH)) / 2;
+  const hourAngle = (hour, transit) => ((hour - transit) * Math.PI) / 12;
+  // a body at hour angle H and declination dec: dir toward it across the ground (x east, z south), el its elevation
+  function bodyAt(H, dec) {
+    const e = -Math.cos(dec) * Math.sin(H), n = Math.cos(LAT) * Math.sin(dec) - Math.sin(LAT) * Math.cos(dec) * Math.cos(H);
+    const u = Math.sin(LAT) * Math.sin(dec) + Math.cos(LAT) * Math.cos(dec) * Math.cos(H), h = Math.hypot(e, n);
+    return { dir: [e / h, -n / h], el: Math.asin(clamp(u, -1, 1)), tan: u / h };
   }
+  const moonAt = (day, hour) => {
+    const phase = ((day - 1 + hour / 24) / LUNAR + 0.35) % 1, w = 2 * Math.PI * phase;
+    return { ...bodyAt(hourAngle(hour, NOON + phase * 24), DEC * Math.cos(w)), phase, lit: (1 - Math.cos(w)) / 2 };
+  };
+  // Light at the ground, RGB in units of the clear noon sun's on a face turned to it. The air reddens the sun's light by
+  // the air it crosses: Kasten and Young's air mass at these optical DEPTHs (red, green, blue). The sky's light falls with
+  // the sun, as a power of its height by day and then an e-fold each DUSK degrees down to starlight, and takes its colour
+  // from the sun's height: the day's blue, the golden hour, the rose of sunset, the blue hour. Round sunset a glow low in
+  // the sun's quarter of the sky lights what faces it. Moonlight is MOON of the sun's, and its sky MOONSKY of that, more
+  // than the day's sky gives for its sun, so moon shadows stay soft.
+  const DEPTH = [0.07, 0.15, 0.32], AMB = 0.9, AMB_P = 0.65, AMB_0 = 0.021, DUSK = 2.2, STAR = 0.0012, GLOW_K = 0.25, MOON = 0.004, MOONSKY = 1.2;
+  // FIRE: a fire's light at its brightest pool as shown once the scene's light is FIRE_X of noon's or less. A fire gives
+  // the same light at any hour, so it shows as the eye opens to the dark, and not at all by day.
+  const FIRE = [1, 0.55, 0.22], FIRE_W = [0, 0.35, 0.65, 0.9], FIRE_X = 0.002;
+  const SKY = [[-18, [0.3, 0.4, 0.95]], [-10, [0.36, 0.45, 1]], [-5, [0.55, 0.52, 0.95]], [-1.5, [0.85, 0.62, 0.78]], [2, [1, 0.78, 0.7]], [8, [0.95, 0.88, 0.88]], [25, [0.82, 0.9, 1]]];
+  const GLOW_C = [[-9, [0.6, 0.3, 0.5]], [-4, [0.95, 0.45, 0.45]], [0, [1, 0.55, 0.35]], [6, [1, 0.7, 0.45]]];
+  // Shading takes a sun or moon as no lower than LOW, so flat ground keeps some of its light while long shadows cross
+  // it, and the glow as GLOW_EL up. A slope picks its tones by its light over flat ground's, as a fraction of flat
+  // ground's, TONE_G of the bake's units per unit, which at noon gives the bake's old hillshade (main.js LIGHT): under a
+  // low sun the slopes turned to it glow while those turned away dim only as much as the flat does, and at dusk, under
+  // cloud and by a thin moon the relief fades with the key light.
+  const LOW = 12 * DEG, GLOW_EL = 25 * DEG, TONE_G = 20;
+  // cloud cover by the sim's weather
+  const COVER = { clear: 0, cloudy: 0.7, rain: 0.88, storm: 0.95 };
+  const lum = (c) => c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11;
+  const keyed = (keys, x) => { let i = 0; while (i < keys.length - 2 && keys[i + 1][0] <= x) i++; const [x0, a] = keys[i], [x1, b] = keys[i + 1], t = clamp((x - x0) / (x1 - x0), 0, 1); return a.map((v, k) => v + (b[k] - v) * t); };
+  const transmit = (el) => { const m = 1 / (Math.sin(Math.max(el, -0.5 * DEG)) + 0.50572 * Math.max(0.5, el / DEG + 6.07995) ** -1.6364); return DEPTH.map((t) => Math.exp(-t * m)); };
+  const NOON_T = transmit(SUN_HIGH), toward = (b, el) => [Math.cos(el) * b.dir[0], Math.sin(el), Math.cos(el) * b.dir[1]];
+  // The light of an hour under cloud (0 clear to 1 overcast): A the sky's; K the key light's, which lights a face by how it
+  // turns to L (the sun, the dusk's glow, and the moon once the glow has gone); cast: what casts shadows, k its share of K.
+  function lightOf(hour, day, cloud) {
+    const sun = bodyAt(hourAngle(hour, NOON), DEC), moon = moonAt(day, hour), e = sun.el / DEG, clear = 1 - cloud;
+    const up = (b, lo, hi) => smooth(lo * DEG, hi * DEG, b.el);
+    const sunClear = transmit(sun.el).map((t, k) => (t / NOON_T[k]) * up(sun, -0.5, 0.5)), S = sunClear.map((s) => s * clear);
+    const a0 = (AMB_0 / (Math.sin(SUN_HIGH) + AMB_0)) ** AMB_P, a = e >= 0 ? ((Math.sin(sun.el) + AMB_0) / (Math.sin(SUN_HIGH) + AMB_0)) ** AMB_P : a0 * Math.exp(e / DUSK);
+    const G = keyed(GLOW_C, e).map((c) => c * GLOW_K * a0 * smooth(-9, -1, e) * (1 - smooth(1, 8, e)) * clear);
+    const M = transmit(moon.el).map((t, k) => (t / NOON_T[k]) * up(moon, -0.5, 1.5) * MOON * moon.lit * [0.8, 0.9, 1][k] * clear);
+    // the moon's light joins the key once the dusk's glow has gone, and lies in the sky's until then
+    const mShare = smooth(-7, -11, e), mFlat = Math.sin(Math.max(moon.el, LOW));
+    let A = keyed(SKY, e).map((c, k) => c * (AMB * a + STAR * [0.6, 0.8, 1][k]) + M[k] * (MOONSKY * [0.7, 0.85, 1][k] + (1 - mShare) * mFlat));
+    // cloud greys the sky and spreads the sun through it; storm cloud darkens the day
+    const spread = (lum(A) + lum(sunClear) * Math.max(0, Math.sin(sun.el)) * 0.5) * (1 - 0.5 * smooth(0.75, 1, cloud));
+    A = A.map((v, k) => v + (spread * [0.95, 0.97, 1][k] - v) * cloud);
+    const K = S.map((s, k) => s + G[k] + M[k] * mShare), wS = lum(S), wM = lum(M) * mShare, kL = lum(K);
+    const parts = [[toward(sun, Math.max(sun.el, LOW)), wS], [toward(sun, GLOW_EL), lum(G)], [toward(moon, Math.max(moon.el, LOW)), wM]];
+    const L = [0, 1, 2].map((k) => parts.reduce((s, [v, w]) => s + v[k] * w, 0)), n = Math.hypot(...L);
+    const body = wS >= wM ? (sun.el > -0.5 * DEG && wS > 0 ? sun : null) : moon.el > 0 ? moon : null;
+    return { sun, moon, e, A, K, L: n > 1e-9 ? L.map((v) => v / n) : [0, 1, 0], cast: body && kL > 0 ? { dir: body.dir, tan: Math.max(body.tan, 0.005), k: (body === sun ? wS : wM) / kL } : null };
+  }
+  // The eye takes its measure of a sky from flat ground and from faces turned to the key light alike (as one turned to
+  // it by at least REFN), and shows light x of noon's as x^ADAPT: the golden hour stays bright, twilight dims, and a night
+  // reads at a third of the day. WB: noon's light on flat ground, under which the palette shows as drawn.
+  const ADAPT = 0.16, REFN = 0.45;
+  const refOf = (l) => lum(l.A) + lum(l.K) * Math.max(l.L[1], REFN);
+  const NOON_L = lightOf(NOON, 1, 0), REF = refOf(NOON_L), WB = NOON_L.A.map((a, k) => a + NOON_L.K[k] * NOON_L.L[1]), WBL = lum(WB);
+  let cloud = 0, cloudAt = 0, sky = null, tablesId = "";
+  // The sky of a frame: its light; gain, display per unit of light by channel; dim, how far the dark has drained colour;
+  // night, how dark the evening has grown for the fires; cast for gpu.js, null while nothing casts; flat, relief and
+  // toneK for the GPU's shading; id, which light tables it needs.
+  function skyFor(clock, now) {
+    const hour = clock.hour ?? 8, day = clock.day ?? 1;
+    // a change of weather drifts in over a few seconds
+    cloud += ((COVER[simRef?.w?.weather?.sky] ?? 0) - cloud) * (cloudAt ? 1 - Math.exp(-Math.min(1000, now - cloudAt) / 2500) : 1);
+    cloudAt = now;
+    const l = lightOf(hour, day, cloud), ref = refOf(l), x = ref / REF, E = x ** ADAPT / ref;
+    return {
+      ...l, gain: WB.map((w) => (E * WBL) / w), dim: 1 - smooth(-3.2, -1.8, Math.log10(x)), night: smooth(1, -8, l.e), fire: Math.min(1, (x / FIRE_X) ** (ADAPT - 1)),
+      cast: l.cast && { ...l.cast, exag: EXG }, flat: Math.max(0, l.L[1]), relief: EXG, toneK: (TONE_G * lum(l.K)) / (lum(l.A) + lum(l.K) * Math.max(0, l.L[1])),
+      id: `${Math.round(hour * 60)}|${day}|${Math.round(cloud * 40)}`,
+    };
+  }
+  // An upright thing's share of the key light seen from bearing b: the half of a round form facing the viewer, lit when
+  // the light is behind the viewer and dark against it, and its top.
+  function spriteLight(b) {
+    const a = (b * Math.PI) / 4, vx = (Math.cos(a) - Math.sin(a)) / Math.SQRT2, vz = (Math.sin(a) + Math.cos(a)) / Math.SQRT2;
+    const [lx, ly, lz] = sky.L, h = Math.hypot(lx, lz), psi = Math.acos(clamp(h > 1e-6 ? (lx * vx + lz * vz) / h : 0, -1, 1));
+    return clamp((h * 0.85 * ((Math.PI - psi) * Math.cos(psi) + Math.sin(psi))) / Math.PI + 0.4 * ly, 0, 1);
+  }
+  // The sky's light tables, rebuilt in place as it changes. For the GPU: gpu.js LEVELS steps of the key light, from none
+  // to all of it on a face turned to it, each at the fire's four levels, and last the palette as drawn, for what gives
+  // its own light. For the CPU, which bakes its shadows and its slopes' light: flat ground in the open at the fire's four
+  // levels.
+  const KNEE = 0.9, TOP = 1.45, M = [0, 0, 0];
+  const tables = { gpu: new Uint32Array(NCOL * (LEVELS * 4 + 1)), cpu: new Uint32Array(NCOL * 4) };
+  RGB.forEach((a, c) => { tables.gpu[LEVELS * 4 * NCOL + c] = 0xff000000 | (a[2] << 16) | (a[1] << 8) | a[0]; });
+  // One row: the palette under key light f and the fire's level l as the eye adapted to sky s sees it, brighter than the
+  // palette only up a soft shoulder, and as the light fails its colour drains and shifts toward blue, as eyes see at
+  // night, moonlight too, except in a fire's light, which the eye sees in colour.
+  function row(out, at, s, f, l) {
+    const fire = FIRE_W[l] * s.fire, dim = s.dim * (1 - Math.min(1, fire / 0.4)), sat = 1 - 0.45 * dim, pr = 1 - 0.2 * dim, pg = 1 - 0.04 * dim, pb = 1 + 0.15 * dim;
+    for (let k = 0; k < 3; k++) { const m = (s.A[k] + s.K[k] * f) * s.gain[k] + FIRE[k] * fire; M[k] = m <= KNEE ? m : KNEE + (TOP - KNEE) * (1 - Math.exp(-(m - KNEE) / (TOP - KNEE))); }
+    for (let c = 0; c < NCOL; c++) {
+      const a = RGB[c], r = a[0] * M[0], g = a[1] * M[1], b = a[2] * M[2], y = r * 0.3 + g * 0.59 + b * 0.11;
+      out[at + c] = 0xff000000 | (clamp(Math.round((y + (b - y) * sat) * pb + 7 * dim), 0, 255) << 16) | (clamp(Math.round((y + (g - y) * sat) * pg + 3 * dim), 0, 255) << 8) | clamp(Math.round((y + (r - y) * sat) * pr + 2 * dim), 0, 255);
+    }
+  }
+  function tablesFor(s) {
+    if (s.id === tablesId) return tables;
+    for (let lv = 0; lv < LEVELS; lv++) for (let l = 0; l < 4; l++) row(tables.gpu, (lv * 4 + l) * NCOL, s, lv / (LEVELS - 1), l);
+    for (let l = 0; l < 4; l++) row(tables.cpu, l * NCOL, s, s.flat, l);
+    tablesId = s.id;
+    return tables;
+  }
+  // the empty sea as a frame shows it: flat water in the open
+  const seaOf = (T) => T.gpu[Math.round(sky.flat * (LEVELS - 1)) * 4 * NCOL + P.w1];
 
   // ---------- the frame ----------
   // share of a camera's chunks baked
@@ -1046,17 +1135,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       }
     return out;
   }
-  // ---------- the sun, cast on the GPU ----------
-  // Up from SUNRISE to SUNSET by the sim's clock: out of the east (+x), through the south (+z) at noon, down in the west,
-  // at most SUN_HIGH radians above the horizon, casting less over the day's first and last hour as the palette dims.
-  // { dir: toward it, tan: of its elevation, k: how strongly it casts, exag }, or null while it is down.
-  const SUNRISE = 5.5, SUNSET = 20.5, SUN_HIGH = 0.96;
-  function sunAt(hour) {
-    const t = (hour - SUNRISE) / (SUNSET - SUNRISE);
-    if (!(t > 0 && t < 1)) return null;
-    const el = SUN_HIGH * Math.sin(Math.PI * t), az = Math.PI * t;
-    return { dir: [Math.cos(az), Math.sin(az)], tan: Math.tan(el), k: smooth(0, 0.07, t) * smooth(0, 0.07, 1 - t), exag: EXG };
-  }
+  // ---------- the sun and the moon, cast on the GPU ----------
   // a sprite's shadow per art px of its height at a map's bearing, as the bake's V.shx, V.shy for this sun, no longer
   // than a 5 degree sun's
   const sunStep = (md, sun) => {
@@ -1091,7 +1170,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     return packTiles(sl, tcam, "over");
   }
   function drawStill(pl, view, sim, clock, now, fp) {
-    const hour = clock.hour ?? 8, fr = Math.floor(now / 160) & 7, t1 = performance.now(), sun = sunAt(hour);
+    const hour = clock.hour ?? 8, fr = Math.floor(now / 160) & 7, t1 = performance.now(), sun = sky.cast, spr = spriteLight(view.bearing);
     gpu.begin();
     let holes = false, best = -1;
     const views = pl.parts.map(([cam, w], k) => {
@@ -1103,21 +1182,21 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       const dyn = packTiles(sl, cam, "still"), over = overlayTiles(2 + k, cam, cam, r, now, view, null);
       // the view's own chunks go up before those that only cast into it
       const quads = stillQuads(cam, fr);
-      return { cam, alpha: k === 0 ? 1 : w, haze: hazeOf(cam, hour), quads, dyn, over, shade: shadeFor(cam, sun, fr, sl), e1 };
+      return { cam, alpha: k === 0 ? 1 : w, haze: hazeOf(cam, hour), quads, dyn, over, shade: shadeFor(cam, sun, fr, sl), e1, spr };
     });
-    const t2 = performance.now(), lut = lutFor(hour);
-    if (!gpu.flat({ cap: [capW, capH], out: { W: canvas.width, H: canvas.height }, sea: P.w1, lut, lutKey: lastLutKey, views, sun })) return null;
+    const t2 = performance.now(), T = tablesFor(sky);
+    if (!gpu.flat({ cap: [capW, capH], out: { W: canvas.width, H: canvas.height }, sea: P.w1, seaRGB: seaOf(T), lut: T.gpu, lutKey: sky.id, views, sun, light: sky })) return null;
     timing(fp, t1, t2, views[0].cam.AW * views[0].cam.AH);
     return { holes };
   }
   function drawTurned(pl, view, sim, clock, now, fp) {
-    const hour = clock.hour ?? 8, fr = Math.floor(now / 160) & 7, t1 = performance.now(), [cam, , turn] = pl.parts[0], sl = slots[0], sun = sunAt(hour);
+    const hour = clock.hour ?? 8, fr = Math.floor(now / 160) & 7, t1 = performance.now(), [cam, , turn] = pl.parts[0], sl = slots[0], sun = sky.cast;
     gpu.begin();
     cam.sun = sun;
     const r = compose(sl, cam, now, sim, clock, view, { tiled: true, warp: true });
     const tcam = camera(view, pl.lf.L, cam.b), W = warpOf(cam, tcam, turn), main = splats(cam, fr);
     const others = pl.parts.slice(1).map(([oc, , ot]) => ({ AW: oc.AW, AH: oc.AH, W: warpOf(oc, tcam, ot), g0: [oc.gx0, oc.gy0], chunks: splats(oc, fr) }));
-    // each camera's sun, once every chunk it splats has had its turn at the uploads
+    // each camera's sun or moon, once every chunk it splats has had its turn at the uploads
     const shade = shadeFor(cam, sun, fr, sl);
     others.forEach((o, j) => { o.shade = shadeFor(pl.parts[1 + j][0], sun, fr); });
     // the next bearing's shading shows where the dither is under wB, whichever of the two is main
@@ -1125,9 +1204,9 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     let mask = 0;
     if (others.length) for (let q = 0; q < 16; q++) if ((bayer(q & 3, q >> 2) < wB) !== !!pl.mainB) mask |= 1 << q;
     const over = overlayTiles(2, cam, tcam, r, now, view, (x, y, z) => warpPoint(W, x, y, z));
-    const dyn = packTiles(sl, cam, "turn"), t2 = performance.now(), lut = lutFor(hour);
+    const dyn = packTiles(sl, cam, "turn"), t2 = performance.now(), T = tablesFor(sky);
     const ok = gpu.turn({
-      cap: [capW, capH], out: { W: canvas.width, H: canvas.height }, sea: P.w1, lut, lutKey: lastLutKey, haze: hazeOf(tcam, hour), over, mask, any: !!pl.lend, sun,
+      cap: [capW, capH], out: { W: canvas.width, H: canvas.height }, sea: P.w1, seaRGB: seaOf(T), lut: T.gpu, lutKey: sky.id, haze: hazeOf(tcam, hour), over, mask, any: !!pl.lend, sun, light: sky, spr: spriteLight(view.bearing),
       main: { AW: cam.AW, AH: cam.AH, W, g0: [cam.gx0, cam.gy0], shade, chunks: main, dyn, e: sl.e, ids: sl.owners.length }, others,
       target: { TW: tcam.AW, TH: tcam.AH, gx0: tcam.gx0, gy0: tcam.gy0 }, pres: { s: tcam.s, dx: tcam.dx, dy: tcam.dy },
     });
@@ -1137,7 +1216,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     return { holes: r.holes };
   }
   function drawCPU(pl, view, sim, clock, now, fp) {
-    const g = canvas.getContext("2d"), sea = lutFor(clock.hour ?? 8)[P.w1];
+    const g = canvas.getContext("2d"), sea = tablesFor(sky).cpu[P.w1];
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.fillStyle = `rgb(${sea & 255},${(sea >> 8) & 255},${(sea >> 16) & 255})`;
     g.fillRect(0, 0, canvas.width, canvas.height);
@@ -1168,14 +1247,15 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     ensureSlots();
     const pl = plan(view);
     if (now - scheduled > SCHEDULE_MS || workerFree) { scheduled = now; workerFree = false; schedule(view, pl); }
-    const clock = sim?.clock?.() ?? { hour: 8, night: 0 };
+    const clock = sim?.clock?.() ?? { hour: 8, day: 1 };
+    sky = skyFor(clock, now);
     const T = (stats.parts ??= { schedule: 0, compose: 0, present: 0 }), tS = performance.now(), fp = (api.lastParts = [Math.round((tS - t0) * 10) / 10]);
     T.schedule = T.schedule * 0.95 + (tS - t0) * 0.05;
     let r = gpu && !gpu.lost && pl.parts.length ? (pl.gl ? drawTurned : drawStill)(pl, view, sim, clock, now, fp) : null;
     const onGPU = !!r;
     if (!r) r = drawCPU(pl, view, sim, clock, now, fp);
     else if (!glOver) canvas.getContext("2d").drawImage(gpu.canvas, 0, 0);
-    // the GPU gone, the bake casts the sun's shadows again, into each chunk as it is next shown
+    // the GPU gone, the bake lights the slopes and casts the shadows again, into each chunk as it is next shown
     if (gpu?.lost && !bakedSun) { bakedSun = true; postState({ realtime: false }); for (const c of cache.values()) c.need = stateVer; }
     showGL(onGPU && glOver && show);
     const holes = r.holes;
