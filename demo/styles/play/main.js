@@ -14,7 +14,7 @@ const num = (k, def, lo = -Infinity, hi = Infinity) => {
 };
 const seed = Math.trunc(num("seed", 1)), warm = Math.trunc(num("warm", 2016, 0, 40000)), withSim = Q.get("sim") !== "0";
 const benchKind = ["zoom", "orbit", "turn", "pan"].includes(Q.get("bench")) ? Q.get("bench") : null;
-const canvas = document.getElementById("view"), hint = document.getElementById("hint"), statsEl = document.getElementById("stats"), pace = document.getElementById("pace"), renderEl = document.getElementById("render");
+const canvas = document.getElementById("view"), hint = document.getElementById("hint"), statsEl = document.getElementById("stats"), pace = document.getElementById("pace"), renderEl = document.getElementById("render"), clockEl = document.getElementById("clock");
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8], DBL_MS = 300;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const toM = (t) => t * 150 - 4800;
@@ -122,6 +122,71 @@ async function main() {
     for (let i = 0; i < B.w; i++) { B.c[i] = P.w4; B.c[(B.h - 1) * B.w + i] = P.w1; }
     text(B, key, 4, 3, P.snow);
     paintBuf(pace, B);
+  }
+
+  // ---------- the clock: the hour, the light the sky should be giving it, and where that light comes from ----------
+  // A sundial drawn as the view sees the ground (a 2:1 disc at its bearing, a stick at its centre) shows which way the
+  // light comes and the shadows fall, with the sun or moon at its height over that side of the disc.
+  const COMPASS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"], DEG = 180 / Math.PI;
+  // a direction across the ground (x east, z south) as a point of the compass
+  const compass = (d) => COMPASS[Math.round(((Math.atan2(d[0], -d[1]) * DEG + 360) % 360) / 22.5) % 16];
+  const MOONS = [[0.03, "NEW MOON"], [0.22, "WAXING CRESCENT"], [0.28, "FIRST QUARTER"], [0.47, "WAXING GIBBOUS"], [0.53, "FULL MOON"], [0.72, "WANING GIBBOUS"], [0.78, "LAST QUARTER"], [0.97, "WANING CRESCENT"], [1.01, "NEW MOON"]];
+  // the light an hour should show, by the sun's height in degrees, as live.js lightOf gives it: short shadows above 45,
+  // the golden hour below 12 (lightOf's LOW, where the sun's light has gone gold), the rose afterglow to 3 below, the
+  // blue hour to 8 below, dusk to 12 below, then the moon's light or the stars'
+  function effectOf(sky, morning) {
+    const e = sky.e;
+    if (e >= 12) return [e >= 45 ? "MIDDAY" : morning ? "MORNING" : "AFTERNOON", P.snow];
+    if (e >= 0.8) return ["GOLDEN HOUR", P.f3];
+    if (e >= -0.8) return [morning ? "SUNRISE" : "SUNSET", P.f2];
+    if (e >= -3) return [morning ? "DAWN GLOW" : "AFTERGLOW", P.k0];
+    if (e >= -8) return ["BLUE HOUR", P.w5];
+    if (e >= -12) return [morning ? "DAWN" : "DUSK", P.w5];
+    return sky.moon.el > 0 && sky.moon.lit > 0.3 ? ["MOONLIGHT", P.w6] : ["STARLIGHT", P.w5];
+  }
+  function sourceOf(sky) {
+    const sun = sky.sun, moon = sky.moon, phase = MOONS.find(([t]) => moon.phase < t)[1];
+    if (sky.e > -0.8) return `SUN ${Math.max(0, Math.round(sky.e))}° ${compass(sun.dir)}`;
+    if (sky.e > -12) return `SUN ${Math.round(-sky.e)}° BELOW ${compass(sun.dir)}`;
+    return moon.el > 0 ? `MOON ${Math.round(moon.el * DEG)}° ${compass(moon.dir)}, ${phase}` : `MOON DOWN, ${phase}`;
+  }
+  const line = (B, x0, y0, x1, y1, c) => { const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), 1); for (let k = 0; k <= n; k++) { const x = Math.round(x0 + ((x1 - x0) * k) / n), y = Math.round(y0 + ((y1 - y0) * k) / n); if (x >= 0 && y >= 0 && x < B.w && y < B.h) B.c[y * B.w + x] = c; } };
+  let clockKey = "";
+  function paintClock() {
+    const sky = live.sky();
+    if (!sim || !sky) { clockEl.hidden = true; return; }
+    const c = sim.clock(), mins = Math.floor(c.hour * 60) % 1440, morning = c.hour < 13, weather = sim.w.weather?.sky ?? "clear";
+    const [effect, tint] = effectOf(sky, morning), time = `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}  DAY ${c.day}`;
+    const say = weather === "clear" ? effect : `${effect}, ${weather.toUpperCase()}`, from = sourceOf(sky);
+    const key = `${time}|${say}|${from}|${Math.round(view.bearing * 32)}`;
+    if (key === clockKey) return;
+    clockKey = key;
+    const DX = 38, B = new Buf(DX + Math.max(time.length, say.length, from.length) * 6 + 3, 33);
+    B.c.fill(P.r0);
+    for (let i = 0; i < B.w; i++) { B.c[i] = P.r2; B.c[(B.h - 1) * B.w + i] = P.ink; }
+    // the dial: ground across the view's axes, so a direction d lands on the disc's rim at (u - v, (u + v) / 2)
+    const a = (view.bearing * Math.PI) / 4, cx = 18, cy = 21, rx = 14, ry = 7;
+    const rim = (d) => { const u = d[0] * Math.cos(a) + d[1] * Math.sin(a), v = -d[0] * Math.sin(a) + d[1] * Math.cos(a); return [(u - v) / Math.SQRT2, (u + v) / Math.SQRT2]; };
+    const night = sky.e < -6, [ground, edge] = night ? [P.p1, P.p0] : sky.e < 0 ? [P.t2, P.t1] : [P.g3, P.g2];
+    for (let y = cy - ry; y <= cy + ry; y++)
+      for (let x = cx - rx; x <= cx + rx; x++) { const q = ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2; if (q <= 1) B.c[y * B.w + x] = q > 0.72 ? edge : ground; }
+    // the stick's shadow, away from what casts, as long as its elevation makes it, to the rim at most
+    if (sky.cast) {
+      const [sx, sy] = rim(sky.cast.dir), k = Math.min(1, 0.55 / Math.max(sky.cast.tan, 1e-3));
+      line(B, cx, cy, cx - Math.round(sx * rx * k), cy - Math.round(sy * ry * k), P.ink);
+    }
+    line(B, cx, cy, cx, cy - 7, P.d3);
+    B.c[(cy - 8) * B.w + cx] = P.d5;
+    // the sun over its side of the disc at its height, a glow on the rim while it lights the sky from below, else the moon
+    const body = (d, el, c0, c1) => { const [px, py] = rim(d), x = Math.round(cx + px * rx), y = Math.round(cy + py * ry - Math.max(0, Math.sin(el)) * 14); for (const [i, j] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) if (x + i >= 0 && y + j >= 0 && x + i < B.w && y + j < B.h) B.c[(y + j) * B.w + x + i] = i || j ? c1 : c0; };
+    if (sky.e > -0.8) body(sky.sun.dir, sky.sun.el, P.f4, sky.e < 12 ? P.f2 : P.f3);
+    else if (sky.e > -12) body(sky.sun.dir, 0, P.k1, P.k2);
+    if (sky.e <= -0.8 && sky.moon.el > 0) body(sky.moon.dir, sky.moon.el, P.snow, P.haze);
+    text(B, time, DX, 4, P.snow);
+    text(B, say, DX, 13, tint);
+    text(B, from, DX, 22, P.haze);
+    paintBuf(clockEl, B);
+    clockEl.hidden = false;
   }
 
   // ---------- what draws the frames: WebGL2 on the GPU, and which, or the CPU and why, always in the corner ----------
@@ -303,7 +368,7 @@ async function main() {
       if (r.holes) tabWatch.hole += dt2;
       if (now - tabWatch.t0 > 6000) { metrics.tabs.push({ holeMs: Math.round(tabWatch.hole), cutMs: Math.round(tabWatch.cutAt) }); tabWatch = null; }
     }
-    if (revealed) paintPace();
+    if (revealed) { paintPace(); paintClock(); }
     paintRender();
     if (!readyMarked && revealed && !bench) { readyMarked = true; document.body.dataset.firstFrame = String(Math.round(performance.now() - t0)); document.body.classList.add("ready"); }
     if (showStats && now - lastStats > 250) {

@@ -942,7 +942,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     return {
       ...l, gain: WB.map((w) => (E * WBL) / w), dim: 1 - smooth(-3.2, -1.8, Math.log10(x)), night: smooth(1, -8, l.e), fire: Math.min(1, (x / FIRE_X) ** (ADAPT - 1)),
       cast: l.cast && { ...l.cast, exag: EXG }, flat: Math.max(0, l.L[1]), relief: EXG, toneK: (TONE_G * lum(l.K)) / (lum(l.A) + lum(l.K) * Math.max(0, l.L[1])),
-      id: `${Math.round(hour * 60)}|${day}|${Math.round(cloud * 40)}`,
+      cloud, id: `${Math.round(hour * 60)}|${day}|${Math.round(cloud * 40)}`,
     };
   }
   // An upright thing's share of the key light seen from bearing b: the half of a round form facing the viewer, lit when
@@ -1477,6 +1477,9 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     // what draws the frames: the GPU, and which, or the CPU and why (cause "none": no WebGL2, "build", or "lost")
     renderer: () => (gpu && !gpu.lost ? { gpu: true, name: gpu.name } : { gpu: false, ...(gpuOff ?? { cause: "lost", why: gpu?.why || "the GPU renderer stopped" }) }),
     picks: () => lastPick.map((p) => ({ kind: p.kind, id: p.id, sx: p.sx, sy: p.sy })),
+    // the last frame's sky (skyFor): sun and moon ({ dir, el in radians; the moon's phase and lit share }), e: the sun's
+    // elevation in degrees, cloud: the cover it is lit under, 0 to 1
+    sky: () => sky,
     frame, changed, pick, where, stats, cache, pool, lastMs: 0, lastHoles: false, level: null,
     // the page's view where a zoom under way will stand (null at rest), whose chunks bake first
     goal: null,
