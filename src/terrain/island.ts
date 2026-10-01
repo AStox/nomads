@@ -45,7 +45,7 @@ function uplift(rand: () => number) {
 // proud, and each kind of rock its own way (geology.ts ROCKS incise, creep), eased a little across the contacts so they
 // show as scarps rather than steps. Depressions keep their floors, so the landscape can still hold lakes. Heights come
 // out in arbitrary units for the caller to scale.
-function erode(rand: () => number, steps: number) {
+function erode(rand: () => number, steps: number, watch?: Watch) {
   const { mask, lift, hard, chem } = uplift(rand);
   const h = new Float32Array(LEN), next = new Float32Array(LEN);
   for (let i = 0; i < LEN; i++) h[i] = mask[i] > 0 ? mask[i] * 0.02 : -0.05;
@@ -57,6 +57,7 @@ function erode(rand: () => number, steps: number) {
     shed[i] = Math.max(0.1, 0.9 - 0.8 * r.perm);
   }
   const K0 = blur(cut, 1), C0 = blur(slide, 1), runoff = blur(shed, 1), water = new Float32Array(LEN);
+  if (watch) watch({ stage: "rock", rock: Uint8Array.from(hard, (v, i) => rockOf(v, chem[i])), lift });
   // The implicit scheme stays stable at any step, and 50 long steps land where 120 short ones do.
   const dt = 120 / steps, K = 0.25 * dt, CREEP = 0.04 * dt, RISE = 0.01 * dt;
   for (let s = 0; s < steps; s++) {
@@ -84,6 +85,7 @@ function erode(rand: () => number, steps: number) {
         next[i] = h[i] + CREEP * C0[i] * (h[i - 1] + h[i + 1] + h[i - N] + h[i + N] - 4 * h[i]);
       }
     h.set(next);
+    watch?.({ stage: "erode", step: s, steps, height: h, flow: carried });
   }
   return { h, hard, chem };
 }
@@ -93,10 +95,22 @@ export type Island = Climate & Ground & Hydro & {
   rock: Uint8Array; // the bedrock, an index into geology.ts ROCKS
 };
 
-export function generateIsland(rand: () => number): Island {
+// What the generator has made so far, for anyone who wants to watch it work: each stage's fields as they stand. They are
+// the generator's own arrays, valid during the call: copy what you keep. Erosion's heights are in its own units, rising.
+export type Stage =
+  | { stage: "rock"; rock: Uint8Array; lift: Float32Array }
+  | { stage: "erode"; step: number; steps: number; height: Float32Array; flow: Float32Array }
+  | { stage: "ice"; height: Float32Array; trough: Float32Array }
+  | { stage: "climate"; height: Float32Array; precip: Float32Array; temp: Float32Array; snow: Float32Array; wind: [number, number] }
+  | { stage: "water"; height: Float32Array; water: Float32Array; table: Float32Array; rivers: Hydro["rivers"]; springs: Hydro["springs"]; quick: number[] }
+  | { stage: "soil"; height: Float32Array; water: Float32Array; rock: Uint8Array; ph: Float32Array; fertility: Float32Array }
+  | { stage: "cover"; height: Float32Array; water: Float32Array; tree: Float32Array; shrub: Float32Array; grass: Float32Array; marsh: Float32Array; bare: Float32Array; sand: Float32Array };
+export type Watch = (s: Stage) => void;
+
+export function generateIsland(rand: () => number, watch?: Watch): Island {
   // Peaks rise with the island: 250 to 450 m on one 9.6 km across, higher on a bigger one, as its ranges are longer.
   const peak = (250 + rand() * 200) * Math.sqrt((N * CELL) / 9600);
-  const { h: raw, hard, chem } = erode(rand, 50);
+  const { h: raw, hard, chem } = erode(rand, 50, watch);
   const rock = new Uint8Array(LEN);
   for (let i = 0; i < LEN; i++) rock[i] = rockOf(hard[i], chem[i]);
   let top = 0;
@@ -116,6 +130,7 @@ export function generateIsland(rand: () => number): Island {
     const x = i % N, y = (i - x) / N, floor = ramp(Math.log10(drained[i]), 1.8, 3);
     height[i] = Math.max(1, height[i] - trough[i] + 3 * floor * fbm((f) => simplex2d.sample(hummocks, (x / 6) * f, (y / 6) * f), 2, 2, 0.5));
   }
+  watch?.({ stage: "ice", height, trough });
   const { filled, order } = flood(height, 1e-4);
   const { to } = receivers(filled, 0);
   const open = new Uint8Array(LEN), basin = new Uint8Array(LEN);
@@ -124,9 +139,16 @@ export function generateIsland(rand: () => number): Island {
     basin[i] = filled[i] >= 0 && filled[i] - height[i] > 0.3 ? 1 : 0;
   }
   const air = climate(height, open, rand);
+  watch?.({ stage: "climate", height, precip: air.precip, temp: air.temp, snow: air.snowCover, wind: air.wind });
   const hy = hydrology(height, filled, order, to, basin, air, rock);
+  watch?.({ stage: "water", height, water: hy.water, table: hy.table, rivers: hy.rivers, springs: hy.springs, quick: hy.quick });
   for (let i = 0; i < LEN; i++) open[i] = hy.water[i] > 0 ? 1 : 0;
   const shore = distance(open);
   const cover = ground({ ...air, height, open, area: accumulate(order, to), table: hy.table, valley: hy.valley, shore, hard, rock });
+  if (watch) {
+    watch({ stage: "soil", height, water: hy.water, rock, ph: cover.ph, fertility: cover.fertility });
+    // the generator's sand is part of the bare share; the map's sand is drawn over it
+    watch({ stage: "cover", height, water: hy.water, tree: cover.tree, shrub: cover.shrub, grass: cover.grass, marsh: cover.marsh, bare: cover.bare, sand: cover.sand });
+  }
   return { ...air, ...cover, ...hy, height, rock };
 }

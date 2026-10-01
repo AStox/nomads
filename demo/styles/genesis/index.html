@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Nomads: an island being made</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0b14; color: #eef2f6; font: 13px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+  #wrap { position: fixed; inset: 0 0 92px 0; display: flex; align-items: center; justify-content: center; }
+  canvas#map { image-rendering: pixelated; max-width: 100%; max-height: 100%; aspect-ratio: 1; }
+  #panel { position: fixed; left: 0; right: 0; bottom: 0; height: 92px; padding: 8px 14px; box-sizing: border-box; background: rgba(13, 11, 20, 0.92); border-top: 1px solid #2a2638; }
+  #title { font-weight: bold; color: #ffd98a; }
+  #caption { margin-top: 2px; max-width: 1100px; }
+  #stages { position: fixed; top: 10px; left: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+  #stages button, #controls button { font: inherit; color: #c9d1dc; background: #1b1828; border: 1px solid #333048; border-radius: 3px; padding: 3px 8px; cursor: pointer; }
+  #stages button.on { color: #0d0b14; background: #ffd98a; border-color: #ffd98a; }
+  #stages button:disabled { opacity: 0.35; cursor: default; }
+  #controls { position: fixed; top: 10px; right: 12px; display: flex; gap: 6px; align-items: center; }
+  #bar { position: absolute; left: 0; top: 0; height: 2px; background: #ffd98a; width: 0; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="map" width="768" height="768"></canvas></div>
+<div id="stages"></div>
+<div id="controls"><span id="seed"></span><button id="pause">pause</button><button id="replay">replay</button><button id="next">new island</button></div>
+<div id="panel"><div id="bar"></div><div id="title">growing the island…</div><div id="caption"></div></div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
