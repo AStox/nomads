@@ -21,7 +21,7 @@ const SHARE: Record<string, number> = { oak: 0.35, ash: 0.29, pine: 0.18 };
 const CORE = 0.55, EDGE = 1.2;
 const REACH = 12; // meters: no crown, of the tallest tree, reaches further from its trunk
 // How much of the sky the trees overhead hide, in crowns: 1 under one, more where they overlap.
-function canopyAt(w: World, px: number, py: number) {
+export function canopyAt(w: World, px: number, py: number) {
   let cover = 0;
   around(w, px, py, REACH, ["tree"], (t, d) => {
     const r = (SHARE[t.species ?? ""] ?? 0.22) * t.size;
@@ -43,7 +43,7 @@ const skies = new WeakMap<World, Sky>();
 function skyNow(w: World): Sky {
   const old = skies.get(w);
   if (old && old.t === w.t && old.sky === w.weather.sky) return old;
-  const hour = hourOf(w.t), sun = sunAt(hour), moon = moonAt(Math.floor(w.t / DAY) + 1, hour);
+  const hour = hourOf(w.t), day = Math.floor(w.t / DAY) + 1, sun = sunAt(day, hour), moon = moonAt(day, hour);
   const cover = COVER[w.weather.sky], open = through(cover);
   // day: the sun's beam and the sky's glow on open ground; night: the moon's and the stars'
   const s: Sky = { t: w.t, sky: w.weather.sky, el: sun.el, tan: sun.tan, dir: sun.dir, day: sunLux(sun.el) * open, beam: beam(sun.el, cover), night: (moonLux(moon) + STAR_LUX) * (0.3 + 0.7 * open) };

@@ -6,11 +6,16 @@ import { addAnimal } from "./fauna";
 import { ecology } from "./ecology";
 import { ctxFor, tick } from "./sim";
 import { DARK, canSee, lightAt } from "./light";
+import { YEAR_DAYS, sunAt } from "./sky";
 
 process.env.NOMADS_BRAIN = "random";
 
-// A tick on the first day at an hour.
-const at = (hour: number, day = 1) => (day - 1) * DAY + Math.round((hour / 24) * DAY);
+// Midsummer, unless a test says otherwise, and a tick on that day at an hour.
+const SUMMER = 1 + (YEAR_DAYS * 3) / 8, WINTER = 1 + (YEAR_DAYS * 7) / 8;
+const at = (hour: number, day = SUMMER) => (day - 1) * DAY + Math.round((hour / 24) * DAY);
+// the hour the sun sets on a day, to the minute
+const sunsetOn = (day: number) => { let h = 13; while (sunAt(day, h).el > 0) h += 1 / 60; return h; };
+const SUNSET = sunsetOn(SUMMER);
 
 // A world takes seconds to build, so these tests share one island with two people on it, and each works on a pad of its own:
 // nine spots 600 m apart round where the first person woke, far enough that a fire's glow (80 m) or a crown (12 m) at one is
@@ -36,23 +41,27 @@ function grove(w: World, px: number, py: number) {
   for (const [dx, dy] of [[0, 0], [3, 2], [-3, 2]]) addThing(w, "tree", px + dx / TILE_M, py + dy / TILE_M, { size: 14, species: "oak" });
 }
 
-test("night is the sun well under the horizon: it comes after sunset and goes before sunrise, once a day each way", () => {
-  const flips: number[] = [];
-  for (let h = 0.25; h <= 24; h += 0.25) if (isNight(at(h)) !== isNight(at(h - 0.25))) flips.push(h);
-  expect(flips).toHaveLength(2);
-  const [dawn, dusk] = flips;
-  expect(dawn).toBeGreaterThan(4);
-  expect(dawn).toBeLessThan(6);
-  expect(dusk).toBeGreaterThan(20.5); // the sun sets at half past eight and the sky keeps its glow a while
-  expect(dusk).toBeLessThan(22);
+test("night is the sun well under the horizon: it comes after sunset and goes before sunrise, once a day each way, and a winter night is far longer than a summer one", () => {
+  const nightOf = (day: number) => {
+    const flips: number[] = [];
+    for (let h = 0.25; h <= 24; h += 0.25) if (isNight(at(h, day)) !== isNight(at(h - 0.25, day))) flips.push(h);
+    expect(flips).toHaveLength(2);
+    const [dawn, dusk] = flips, sunset = sunsetOn(day);
+    // the sky keeps its glow a while after the sun has set
+    expect(dusk).toBeGreaterThan(sunset);
+    expect(dusk).toBeLessThan(sunset + 1.5);
+    expect(sunAt(day, dawn).el).toBeLessThan(0);
+    return 24 - (dusk - dawn);
+  };
+  expect(nightOf(WINTER)).toBeGreaterThan(nightOf(SUMMER) + 6);
 });
 
 test("open ground is lit by the sky: noon far outshines sunset, sunset far outshines midnight, and cloud dims noon", () => {
   const { w, px, py } = pad(0);
   const lux = (hour: number, sky: World["weather"]["sky"] = "clear") => { w.t = at(hour); w.weather.sky = sky; return lightAt(w, px, py).lux; };
   const noon = lux(12);
-  expect(noon).toBeGreaterThan(lux(20.5) * 50);
-  expect(lux(20.5)).toBeGreaterThan(lux(0) * 100);
+  expect(noon).toBeGreaterThan(lux(SUNSET) * 50);
+  expect(lux(SUNSET)).toBeGreaterThan(lux(0) * 100);
   let dimmer = noon;
   for (const sky of ["cloudy", "rain", "storm"] as const) {
     expect(lux(12, sky)).toBeLessThan(dimmer);
@@ -75,7 +84,7 @@ test("the forest floor goes dark in the evening while open ground is still lit",
   const { w, px, py } = pad(2);
   grove(w, px, py);
   const dusk = [];
-  for (let h = 20.5; h <= 22.5; h += 0.25) {
+  for (let h = SUNSET; h <= SUNSET + 2; h += 0.25) {
     w.t = at(h);
     dusk.push({ under: lightAt(w, px, py).bright, open: lightAt(w, px + 40 / TILE_M, py).bright });
   }
@@ -85,10 +94,10 @@ test("the forest floor goes dark in the evening while open ground is still lit",
 
 test("a fire lights the night around it and not far off", () => {
   const { w, px, py } = pad(3);
-  w.t = at(2);
+  w.t = at(1);
   expect(lightAt(w, px + 100 / TILE_M, py).bright).toBeLessThan(DARK);
   addThing(w, "fire", px, py);
-  w.t = at(2) + 1; // the light of fires is worked out once a tick
+  w.t = at(1) + 1; // the light of fires is worked out once a tick
   expect(lightAt(w, px + 3 / TILE_M, py).bright).toBeGreaterThanOrEqual(DARK);
   expect(lightAt(w, px + 100 / TILE_M, py).fire).toBe(0);
 });
@@ -100,15 +109,15 @@ test("sight shrinks with the light: at night a person across the clearing can't 
   put(w, b, px + 150 / TILE_M, py);
   w.t = at(12);
   expect(canSee(w, a, b, 300)).toBe(true);
-  w.t = at(2);
+  w.t = at(1);
   expect(canSee(w, a, b, 300)).toBe(false);
   addThing(w, "fire", b.px + 1 / TILE_M, b.py);
-  w.t = at(2) + 1;
+  w.t = at(1) + 1;
   expect(canSee(w, a, b, 300)).toBe(true);
 });
 
 test("whoever is out after something when the dark falls gives it up where they stand, but not in daylight, and work at camp goes on", () => {
-  const cases = [[12, "forage", "wander", "forage"], [2, "forage", "wander", "none"], [2, "rest", "rest", "rest"]] as const;
+  const cases = [[12, "forage", "wander", "forage"], [1, "forage", "wander", "none"], [1, "rest", "rest", "rest"]] as const;
   for (const [hour, goal, op, kept] of cases) {
     const { w, px, py } = pad(4);
     const a = w.agents[0];
@@ -132,12 +141,12 @@ test("in the dark they plan around what they can see: a bush 100 m off is no pla
   Object.assign(a.needs, { food: 60, warmth: 90 });
   w.t = at(12);
   expect(ctxFor(w, a).dist.bush).toBeDefined();
-  w.t = at(2);
+  w.t = at(1);
   const dark = ctxFor(w, a).dist;
   expect(dark.bush).toBeUndefined();
   expect(dark.stick).toBeDefined();
   a.needs.food = 10;
-  w.t = at(2) + 1;
+  w.t = at(1) + 1;
   expect(ctxFor(w, a).dist.bush).toBeDefined();
 });
 
@@ -161,13 +170,13 @@ test("a hungry person with a bush 100 m off goes out after food by day, but in t
     }
     return [...seen];
   };
-  expect(await goalsAt(2)).toEqual(["rest"]);
+  expect(await goalsAt(1)).toEqual(["rest"]);
   const day = await goalsAt(12);
   expect(day.includes("eat") || day.includes("forage")).toBe(true);
 }, 60_000);
 
 test("a hungry wolf takes a lone person who is out in the dark, and leaves one in the light alone", () => {
-  const cases = [[12, false, "wander"], [2, false, "hunt"], [21.25, false, "wander"], [21.25, true, "hunt"]] as const;
+  const cases = [[12, false, "wander"], [1, false, "hunt"], [SUNSET + 0.75, false, "wander"], [SUNSET + 0.75, true, "hunt"]] as const;
   for (const [i, [hour, trees, state]] of cases.entries()) {
     const { w, px, py } = pad(7);
     const a = w.agents[0];

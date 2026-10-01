@@ -1,18 +1,26 @@
-// The sky over the island: where the sun and the moon stand at an hour of the day, and how much light they leave on bare
-// ground. The numbers are the ones the renderer draws its sky with (demo/styles/isopixel/live.js: SUNRISE, SUNSET,
-// SUN_HIGH, LUNAR, bodyAt and moonAt), so the people live under the sky the screen shows. Change one place, change the other.
+// The sky over the island: where the sun and the moon stand at an hour of a day of the year, and how much light they leave
+// on bare ground. The numbers are the ones the renderer draws its sky with (demo/styles/isopixel/live.js: LAT, TILT, NOON,
+// YEAR_DAYS, LUNAR, declination, bodyAt and moonAt), so the people live under the sky the screen shows. Change one place,
+// change the other.
 //
 // Light is counted in lux, the way it is measured, because eyes meet it on a log scale: a day is a hundred thousand of them
 // and a clear night under a full moon a quarter of one, and people work comfortably across almost all of that range.
 const DEG = Math.PI / 180;
 
-// SA + SB cos(H) is the sine of the sun's elevation at hour angle H: it rises at SUNRISE, stands SUN_HIGH up at noon and sets
-// at SUNSET. That is the sky at latitude LAT with the sun DEC north of the equator. The moon crosses the same sky phase x 24
-// hours behind the sun as it waxes over LUNAR days, as far south of the equator when full as the sun is north.
-const SUNRISE = 5.5, SUNSET = 20.5, NOON = (SUNRISE + SUNSET) / 2, SUN_HIGH = 0.96, LUNAR = 29.53;
-const HALF = (Math.PI * (SUNSET - SUNRISE)) / 24, SB = Math.sin(SUN_HIGH) / (1 - Math.cos(HALF)), SA = -SB * Math.cos(HALF);
-const LAT = (Math.PI / 2 - SUN_HIGH + Math.acos(SB - SA)) / 2, DEC = (Math.acos(SB - SA) - (Math.PI / 2 - SUN_HIGH)) / 2;
+// The island lies at 52 degrees north; the sun crosses the south at 13:00. A year is YEAR_DAYS days, the first ten spring:
+// the sun's path climbs and sinks over it by the earth's tilt, crossing the equator in the middle of spring and of autumn,
+// highest in the middle of summer (61 degrees at noon, a 16.6 hour day) and lowest in the middle of winter (15 degrees, a
+// 7.7 hour day). The moon crosses the same sky phase x 24 hours behind the sun as it waxes over LUNAR days, as far south of
+// the equator when full as the sun is north, so a summer full moon rides low and a winter one high.
+export const YEAR_DAYS = 40;
+export const NOON = 13; // the sun crosses the south
+const LAT = 52 * DEG, TILT = 23.44 * DEG, LUNAR = 29.53;
 const hourAngle = (hour: number, transit: number) => ((hour - transit) * Math.PI) / 12;
+// How far north of the equator the sun stands on day `day` of the world (counting from 1, as the clock does) at an hour.
+export function declination(day: number, hour: number) {
+  const d = (((day - 1 + hour / 24) % YEAR_DAYS) + YEAR_DAYS) % YEAR_DAYS;
+  return TILT * Math.sin((2 * Math.PI * (d - YEAR_DAYS / 8)) / YEAR_DAYS);
+}
 
 // dir: toward it across the ground (x east, z south), el: its elevation in radians, tan: of the angle its beam makes
 type Body = { dir: [number, number]; el: number; tan: number };
@@ -21,11 +29,11 @@ function bodyAt(H: number, dec: number): Body {
   const u = Math.sin(LAT) * Math.sin(dec) + Math.cos(LAT) * Math.cos(dec) * Math.cos(H), h = Math.hypot(e, n);
   return { dir: [e / h, -n / h], el: Math.asin(Math.max(-1, Math.min(1, u))), tan: u / h };
 }
-export const sunAt = (hour: number): Body => bodyAt(hourAngle(hour, NOON), DEC);
 // day counts from 1, as the clock's does
+export const sunAt = (day: number, hour: number): Body => bodyAt(hourAngle(hour, NOON), declination(day, hour));
 export function moonAt(day: number, hour: number): Body & { phase: number; lit: number } {
   const phase = ((day - 1 + hour / 24) / LUNAR + 0.35) % 1, w = 2 * Math.PI * phase;
-  return { ...bodyAt(hourAngle(hour, NOON + phase * 24), DEC * Math.cos(w)), phase, lit: (1 - Math.cos(w)) / 2 };
+  return { ...bodyAt(hourAngle(hour, NOON + phase * 24), declination(day, hour) * Math.cos(w)), phase, lit: (1 - Math.cos(w)) / 2 };
 }
 
 // log10 of the lux on bare ground under a clear sky by the sun's height in degrees, its beam and the sky's glow together:

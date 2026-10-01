@@ -7,6 +7,7 @@ import { around, thingById } from "./space";
 import { shelterName } from "./physics";
 import { TRAITS } from "./traits";
 import { DARK, canSee, lightOn, lightWords } from "./light";
+import { airOn, airWords } from "./air";
 import { PROPS, THING_MATERIAL, type Kind, type Props } from "./materials";
 import { beliefText } from "./beliefs";
 import { campTag, campView } from "./groups";
@@ -155,7 +156,7 @@ export function view(w: World, a: Agent) {
     expecting_a_child: a.pregnant ? `yes, in ${Math.ceil((a.pregnant.due - w.t) / DAY)} days` : undefined,
     time: clock(w.t),
     light: lightWords(lightOn(w, a)),
-    weather: `${wx.season}, ${wx.sky}, ${Math.round(wx.temp)}C${wx.drought ? ", drought" : ""}${w.ice.length ? ", the water is frozen" : ""}`,
+    weather: `${wx.season}, ${wx.sky}, ${airWords(airOn(w, a))}${wx.drought ? ", drought" : ""}${w.ice.length ? ", the water is frozen" : ""}`,
     days_until_winter: wx.season === "winter" ? "it is winter now" : toWinter,
     kept_at_home: Object.keys(stored).length ? stored : undefined,
     needs: Object.fromEntries(Object.entries(a.needs).map(([k, v]) => [k, needWord(v)])),

@@ -10,6 +10,7 @@ import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind } fr
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
 import { growRate } from "./light";
+import { WIND, baseTemp, swing } from "./air";
 import { count, timed, trace } from "./trace";
 
 export const pathChanges = new Set<number>();
@@ -21,7 +22,6 @@ const rainy = (w: World) => w.weather.sky === "rain" || w.weather.sky === "storm
 
 // ---------- weather and seasons ----------
 const RAIN_START: Record<string, number> = { spring: 0.14, summer: 0.05, autumn: 0.2, winter: 0.12 };
-const BASE_TEMP: Record<string, number> = { spring: 12, summer: 24, autumn: 10, winter: -4 };
 function weather(w: World) {
   const wx = w.weather;
   const season = seasonOf(w.t);
@@ -41,14 +41,14 @@ function weather(w: World) {
     // The wind wanders, but keeps coming back to blow the way it prevails, the way that laid the island's rain.
     const [px, py] = w.terrain.wind, pull = (v: number, p: number) => clamp(v + (p * 0.5 - v) * 0.02 + (Math.random() - 0.5) * 0.3, -1, 1);
     wx.wind = { dx: pull(wx.wind.dx, px), dy: pull(wx.wind.dy, py) };
+    wx.speed = Math.max(0.5, wx.speed + (WIND[wx.sky] - wx.speed) * 0.25 + (Math.random() - 0.5) * 2);
     if (wx.sky !== before) {
       const words = { clear: "The sky cleared.", cloudy: "Clouds rolled in.", rain: "It started to rain.", storm: "A storm broke." };
       log(w, "weather", [], { x: W / 2, y: H / 2 }, words[wx.sky]);
       trace("weather", "sky", { from: before, to: wx.sky, season });
     }
   }
-  const hour = ((w.t % DAY) / DAY) * 24;
-  wx.temp = BASE_TEMP[season] + Math.sin(((hour - 9) / 24) * Math.PI * 2) * 5 - (wx.sky === "cloudy" ? 2 : rainy(w) ? 4 : 0);
+  wx.temp = baseTemp(w.t) + swing(w.t, wx.sky) - (rainy(w) ? 2 : 0);
   wx.dryTicks = rainy(w) ? 0 : wx.dryTicks + 1;
   if (w.t % 12 === 0) ice(w);
   const drought = season === "summer" && wx.dryTicks > DAY * 4;
@@ -71,7 +71,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 // standing on the ice into the water.
 function ice(w: World) {
   const t = w.weather.temp;
-  if (t < -2 && w.weather.season === "winter") {
+  if (t < -2) {
     const frozen = new Set(w.ice), salt = sea(w);
     let grew = false;
     for (let y = 0; y < H; y++)

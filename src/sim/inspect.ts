@@ -7,6 +7,8 @@ import { shelterName } from "./physics";
 import { agentDetail, goalText } from "./sim";
 import { campOf } from "./groups";
 import { lightAt, lightOn, lightWords, type Light } from "./light";
+import { airAt, airWords } from "./air";
+import { CELL } from "../terrain/grid";
 import { GROUND, LAKE, RIVER, SEA, SIZE, groundClass } from "../terrain/flora";
 
 export type Inspected = {
@@ -144,7 +146,7 @@ const TILES: Record<number, string> = { [Tile.Grass]: "grass", [Tile.Forest]: "f
 // The ground at a point in tiles, classed by the same rule the map is drawn with.
 export function inspectGround(w: World, px: number, py: number): Inspected {
   const { isle, fine } = groundOf(w.seed);
-  const x = px * TILE_M - SIZE / 2, z = py * TILE_M - SIZE / 2, cx = (px * TILE_M) / 75 - 0.5, cy = (py * TILE_M) / 75 - 0.5;
+  const x = px * TILE_M - SIZE / 2, z = py * TILE_M - SIZE / 2, cx = (px * TILE_M) / CELL - 0.5, cy = (py * TILE_M) / CELL - 0.5;
   const tx = Math.floor(px), ty = Math.floor(py), tile = tileAt(w, tx, ty), onMap = tx >= 0 && ty >= 0 && tx < W && ty < H;
   const g = groundClass(isle, fine, x, z), height = fine.heightAt(x, z), slope = (Math.atan(g.slope) * 180) / Math.PI;
   const frozen = onMap && g.water === LAKE && iceAt(w, tx, ty);
@@ -155,15 +157,18 @@ export function inspectGround(w: World, px: number, py: number): Inspected {
   const bars: Inspected["bars"] = [];
   if (g.water === SEA || g.water === LAKE) {
     const depth = g.water === SEA ? Math.max(0, -height) : fine.bilinear(isle.water, cx, cy);
-    rows.push(["water depth", `${r(Math.max(0.1, depth), 1)} m`], ["surface", g.water === SEA ? "sea level" : `${r(height + depth)} m`], ["ice", frozen ? "frozen" : "no"], ["air now", `${r(w.weather.temp)} C`]);
+    rows.push(["water depth", `${r(Math.max(0.1, depth), 1)} m`], ["surface", g.water === SEA ? "sea level" : `${r(height + depth)} m`], ["ice", frozen ? "frozen" : "no"], ["air now", airWords(airAt(w, px, py))]);
     if (g.water === SEA) rows.push(["salt spray", r(fine.bilinear(isle.salt, cx, cy), 2)]);
     bars.push(light);
   } else {
     rows.push(
       ["height", `${r(height)} m`], ["slope", `${r(slope)} deg`],
       ["soil", `${r(fine.bilinear(isle.soil, cx, cy), 2)} m deep`], ["peat", r(fine.bilinear(isle.peat, cx, cy), 2)], ["silt", r(fine.bilinear(isle.silt, cx, cy), 2)],
-      ["air now", `${r(w.weather.temp - 0.0065 * Math.max(0, height))} C`], ["yearly mean", `${r(fine.bilinear(isle.temp, cx, cy))} C`],
-      ["snow share", r(fine.bilinear(isle.snow, cx, cy), 2)], ["exposure", r(g.exposure, 2)],
+      ["air now", airWords(airAt(w, px, py))], ["yearly mean", `${r(fine.bilinear(isle.temp, cx, cy))} C, summer ${r(fine.bilinear(isle.seasons[1].temp, cx, cy))}, winter ${r(fine.bilinear(isle.seasons[3].temp, cx, cy))}`],
+      ["sunlight", `${Math.round(fine.bilinear(isle.sun, cx, cy) * 100)}% of open level ground's, ${Math.round(fine.bilinear(isle.sky, cx, cy) * 100)}% of the sky open`],
+      ["wind", `${r(fine.bilinear(isle.breeze, cx, cy), 1)} m/s on average, exposure ${r(g.exposure, 2)}`],
+      ["snow", `${Math.round(fine.bilinear(isle.snow, cx, cy) * 100)}% of the year's fall, lies ${Math.round(fine.bilinear(isle.snowCover, cx, cy) * 100)}% of the year`],
+      ["cold air pools", r(fine.bilinear(isle.pool, cx, cy), 2)],
       ["path wear", `${onMap ? w.paths[ty * W + tx] : 0} / 9`],
     );
     if (g.water === RIVER) rows.push(["stream", "running water, shallow enough to wade"]);

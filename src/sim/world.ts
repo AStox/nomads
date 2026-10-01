@@ -6,13 +6,13 @@ import { baseRegistry, type Registry } from "./materials";
 import type { Belief } from "./beliefs";
 import { enter, put } from "./space";
 import { populate } from "./fauna";
-import { NIGHT_EL, sunAt } from "./sky";
+import { NIGHT_EL, NOON, YEAR_DAYS, sunAt } from "./sky";
 
 export const W = TILES;
 export const H = TILES;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
-export const YEAR_DAYS = 40;
-export const VERSION = 9;
+export { YEAR_DAYS }; // the sky's: a year is the sun's round
+export const VERSION = 10;
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -56,7 +56,10 @@ export type Animal = {
 };
 export type Weather = {
   season: "spring" | "summer" | "autumn" | "winter"; dayOfYear: number; year: number;
-  sky: "clear" | "cloudy" | "rain" | "storm"; temp: number; wind: { dx: number; dy: number }; drought: boolean; dryTicks: number;
+  sky: "clear" | "cloudy" | "rain" | "storm"; drought: boolean; dryTicks: number;
+  temp: number; // °C, the air at sea level away from the coast: air.ts has it where anyone stands
+  wind: { dx: number; dy: number }; // the way it blows
+  speed: number; // m/s at head height over the open sea
 };
 export type Law = { id: string; key: string; text: string; verb: string; source: "physics" | "jev"; by: string; t: number; result?: unknown };
 
@@ -451,7 +454,7 @@ export function newWorld(seed: number, agentCount = 5): World {
   const w: World = {
     version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, heights: [...land.heights], terrain: land.terrain, paths: new Array(W * H).fill(0), things: [], stocked: [], agents: [], animals: [], events: [],
     nextId: g.flora.n + 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {}, ice: [], people: {},
-    weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 14, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, drought: false, dryTicks: 0 },
+    weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 8, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, speed: 4, drought: false, dryTicks: 0 },
     camps: [], incidents: [],
   };
   // Loose stones of ore lie about from the start, to be picked up like anything dropped.
@@ -530,16 +533,17 @@ export function log(w: World, kind: string, who: string[], at: { x: number; y: n
 }
 
 export const hourOf = (t: number) => ((t % DAY) / DAY) * 24;
-// The sky's own dark: the sun more than six degrees down, which at this latitude is some time after 21:00 and until before
-// 05:00. What the people feel is the same sun the renderer draws.
+// The sky's own dark: the sun more than six degrees down, which comes before 19:00 in midwinter and not until 22:30 in
+// midsummer. What the people feel is the same sun the renderer draws.
 let nightAt = -1, nightIs = false;
 export const isNight = (t: number) => {
-  if (t !== nightAt) { nightAt = t; nightIs = sunAt(hourOf(t)).el < NIGHT_EL; }
+  if (t !== nightAt) { nightAt = t; nightIs = sunAt(Math.floor(t / DAY) + 1, hourOf(t)).el < NIGHT_EL; }
   return nightIs;
 };
 export function clock(t: number) {
   const day = Math.floor(t / DAY) + 1;
-  const h = hourOf(t);
-  const part = isNight(t) ? "night" : h < 8 ? "dawn" : h < 12 ? "morning" : h < 17 ? "afternoon" : "evening";
+  // by the sun: dawn and evening while it is low, morning and afternoon either side of its crossing the south
+  const h = hourOf(t), low = sunAt(day, h).el < 0.15;
+  const part = isNight(t) ? "night" : h < NOON ? (low ? "dawn" : "morning") : low ? "evening" : "afternoon";
   return `Day ${day}, ${part}`;
 }

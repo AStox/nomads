@@ -339,7 +339,7 @@ function buildMap(w, V) {
         let best = 0, bs = -1;
         COV.forEach((k, q) => { const s = M.cov[q][t] * WEIGHT[q]; if (s > bs) { bs = s; best = q; } });
         M.cls[t] = best === ROCK && hh < capH && (VIEW === "island" || THEME === "adventure") ? HILL : best;
-        if (M.cls[t] === ROCK || (LOCAL && hh > 0.8 * peak)) M.snow[t] = smooth(0.9 * peak, peak, hh) * 0.3 + w.bilinear(I.snow, (x - w.START) / w.CELL, (z - w.START) / w.CELL) * 0.5;
+        if (M.cls[t] === ROCK || (LOCAL && hh > 0.8 * peak)) M.snow[t] = 0.6 * snowLying(w, V, x, z);
         // near the summit even grassy ground turns to bare rock with snow in its hollows
         if (LOCAL && hh > 0.9 * peak) M.cls[t] = ROCK;
       }
@@ -1133,8 +1133,8 @@ function groundAt(w, V, x, z) {
   G.cls = r.cls === G_ROCKY ? ROCKY : r.cls;
   G.h = w.heightAt(x, z); G.moist = w.fine(w.moist, x, z); G.ex = r.exposure;
   // the generator's share of the year's precipitation falling as snow: only its highest reaches keep patches of it
-  G.snow0 = w.bilinear(w.isle.snow, (x - w.START) / w.CELL, (z - w.START) / w.CELL);
-  G.snow = smooth(0.132, 0.142, G.snow0) * 0.3;
+  G.snowNow = snowLying(w, V, x, z);
+  G.snow = 0.6 * G.snowNow;
   G.nearWet = r.wet > 0.2 || r.river > 0.2;
   // the generator's climate and soil at this point, for the ground's colour: summer rain against evaporation and a
   // water table near the surface make grass lush, peat darkens marsh, soil and silt tint bare ground
@@ -1241,6 +1241,13 @@ function onTrail(T, x, z, mpp, X, Y) {
   const r = mpp * 0.5;
   return d < r && bayer(X, Y) < Math.min(1, 1.6 / mpp) * (1 - Math.max(0, d) / r) * 1.5;
 }
+// How much of the ground snow covers this season at a world point: the generator's mean snowpack for the season (mm of
+// water), a thin cover from a few millimetres and whole by thirty.
+const SEASON_I = { spring: 0, summer: 1, autumn: 2, winter: 3 };
+function snowLying(w, V, x, z) {
+  const pack = w.isle.seasons[SEASON_I[V.season] ?? 0].snowpack;
+  return smooth(3, 30, w.bilinear(pack, (x - w.START) / w.CELL, (z - w.START) / w.CELL));
+}
 // ---------- ground colour from the generator's continuous fields ----------
 // Each cover share contributes its own paint, the way the generator's own map blends them, so woods fade into grass
 // and grass into heath without a hard class edge; then light, mottle and texture in world meters; then the palette.
@@ -1262,7 +1269,7 @@ function groundRGB(V, g, s, x, z, m60 = fbm(x / 60, z / 60, 11, 2)) {
   // wind-scoured ground goes tawny, foggy hollows grey-green
   c = mixc(c, C_BURN, smooth(0.3, 0.42, g.ex) * 0.35);
   c = mixc(c, C_FOG, g.fog * 0.3);
-  if (V.season === "winter") c = mixc(c, [236, 240, 244], smooth(0.106, 0.12, g.snow0) * 0.5);
+  c = mixc(c, [236, 240, 244], g.snowNow * 0.75);
   // pigment gathers where one cover gives way to another
   const sh2 = [gr, tr, sh, ma, ba].sort((a, b) => b - a), pool = Math.max(0, 1 - ((sh2[0] - sh2[1]) / sum) * 3) * 0.07;
   const mot = m60 * 0.05 + clusters(x, z, 6, 12, m, 0.4) * 0.05 + clusters(x, z, 1.8, 13, m) * 0.08 + clusters(x, z, 0.5, 14, m, 0.5) * 0.11;

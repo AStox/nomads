@@ -30,6 +30,7 @@ function level(k, b) {
   if (lv) { levels.delete(key); levels.set(key, lv); return lv; }
   const t0 = performance.now();
   const V = L.makeLiveView(w, k, b);
+  V.season = D.season;
   const M = V.paged ? null : L.buildMap(w, V);
   lv = { V, M, ms: performance.now() - t0 };
   levels.set(key, lv);
@@ -42,6 +43,8 @@ function level(k, b) {
 function bake(msg) {
   const lv = level(msg.level, msg.bearing ?? 0), V = lv.V, CS = msg.CS, t0 = performance.now(), gx0 = msg.cx * CS, gy0 = msg.cy * CS;
   let M = lv.M, ground = null;
+  // the season's snow goes into the map itself, so the map is built under this season
+  V.season = D.season;
   L.setMode(V.view, 0);
   const tall = V.view === "island" ? 12 : Math.round(34 * V.k * 0.866 * V.treeK) + 8;
   if (!V.paged) L.chunkWindow(V, M.maxLev, gx0, gy0, CS, tall, tall * V.shx + 4);
@@ -189,7 +192,8 @@ const handle = async (e) => {
       for (const r of m.up || []) D.objs.upsert(r);
     }
     if (m.trail) D.trail = m.trail;
-    if (m.season) D.season = m.season;
+    // a new season lays or melts snow, which the levels' maps hold
+    if (m.season && m.season !== D.season) { D.season = m.season; levels.clear(); }
     if (m.trailUp && D.trail) for (let k = 0; k < m.trailUp.length; k += 2) { const i = m.trailUp[k], q = m.trailUp[k + 1]; if (q) D.trail.set(i, q); else D.trail.delete(i); }
     if (m.ice) D.ice = Uint8Array.from(m.ice);
     if (m.realtime != null) D.realtime = m.realtime;

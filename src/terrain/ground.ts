@@ -2,7 +2,7 @@
 // exposed. There are no biomes here, only plants that cope or don't; forest, heath, meadow and bog are where they win.
 import { clamp } from "math";
 import { CELL, LEN, N, ramp } from "./grid";
-import { SEASONS } from "./climate";
+import type { Season } from "./climate";
 
 export type Ground = {
   soil: Float32Array; // regolith depth, m
@@ -16,7 +16,7 @@ export type Ground = {
 export type Site = {
   height: Float32Array; open: Uint8Array; area: Float32Array; table: Float32Array; shore: Float32Array; hard: Float32Array;
   precip: Float32Array; pet: Float32Array; exposure: Float32Array; salt: Float32Array;
-  seasons: { precip: Float32Array; pet: Float32Array }[];
+  seasons: Season[];
 };
 
 export function ground(s: Site): Ground {
@@ -67,7 +67,7 @@ export function ground(s: Site): Ground {
         if (year) { short += pet[i] - used; want += pet[i]; }
       }
     moist[i] = Math.max(want > 0 ? 1 - short / want : 1, Math.exp(-s.table[i] / 2.5));
-    const summer = SEASONS[1].t - 0.0065 * z;
+    const summer = s.seasons[1].temp[i];
     const harsh = clamp(ramp(s.exposure[i], 0.45, 0.85) + ramp(s.salt[i], 0.3, 0.7), 0, 1);
     // Trees want deep, moist, sheltered ground. Heath takes thin soil where it's always wet or wind-scoured, the way
     // moorland does. Grass takes what's too dry or thin for either.

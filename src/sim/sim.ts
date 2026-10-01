@@ -19,6 +19,7 @@ import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sha
 import { anyAround, around, liveThings, nearestThing, shelve, thingById } from "./space";
 import { landOf, walk } from "./walk";
 import { DARK, canSee, lightOn, moveRate, restRate, workRate } from "./light";
+import { airOn } from "./air";
 
 const VISION = 300; // meters: how far off someone notices another person
 const WALK = 2, RUN = 6; // meters a tick for an adult
@@ -1273,14 +1274,14 @@ function needs(w: World, a: Agent) {
   n.energy = Math.max(0, n.energy - (night ? 0.16 : 0.1));
   n.social = Math.max(0, n.social - 0.05);
   const worn = a.wearing ? p(w.kinds[a.wearing.k], "insulating") : 0;
-  // Below 12C the body loses heat; above it, the air gives some back.
-  const cold = Math.max(0, (12 - wx.temp) / 110) * (night ? 1.2 : 1) * (wx.sky === "rain" || wx.sky === "storm" ? 1.3 : 1) * (1 - worn * 0.6);
-  const mild = Math.max(0, (wx.temp - 12) / 60);
+  const home = homeOf(w, a), inside = !!home && reaches(a, home), air = airOn(w, a, inside);
+  // Below 12C the body loses heat, the faster the harder the wind blows; above it, the air gives some back.
+  const cold = Math.max(0, (12 - air.feels) / 110) * (night ? 1.2 : 1) * (wx.sky === "rain" || wx.sky === "storm" ? 1.3 : 1) * (1 - worn * 0.6);
+  const mild = Math.max(0, (air.temp - 12) / 60);
   const fire = nearest(a, liveThings(w), (t) => t.kind === "fire" || (t.burning ?? 0) > 0.3);
-  const home = homeOf(w, a);
   let heat = 0;
   if (fire && meters(a, fire) <= (fire.contained ? 5 : 4)) heat += fire.contained ? 1.1 : 0.9;
-  if (home && reaches(a, home)) heat += 0.2 + (home.shelter?.insul ?? 0) * 0.8 + (home.shelter?.tier ?? 0) * 0.1;
+  if (inside) heat += 0.2 + (home.shelter?.insul ?? 0) * 0.8 + (home.shelter?.tier ?? 0) * 0.1;
   if (night) heat += Math.min(2, w.agents.filter((b) => b !== a && meters(a, b) <= 2).length) * 0.25;
   // A lit lamp in hand gives off a little warmth.
   if (a.inv.some((s) => s.k.startsWith("burning:") && p(w.kinds[s.k], "container") >= 0.5)) heat += 0.25;

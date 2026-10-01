@@ -893,17 +893,15 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   }
 
   // ---------- the sky: the sun and the moon, and the light they give ----------
-  // SA + SB cos(H) is the sine of the sun's elevation at hour angle H, so that it rises at SUNRISE, stands SUN_HIGH up at
-  // noon and sets at SUNSET. That is the sky at latitude LAT with the sun DEC north of the equator (near 52 and 17
-  // degrees): the sun rises in the east-north-east, crosses the south at 13:00, sets in the west-north-west and sinks 21.5
-  // degrees below the northern horizon at midnight, so civil twilight ends 44 minutes after sunset. The moon crosses the
-  // same sky phase x 24 hours behind the sun as it waxes over LUNAR days, as far south of the equator when full as the
-  // sun is north, so a summer full moon rides low.
-  const SUNRISE = 5.5, SUNSET = 20.5, NOON = (SUNRISE + SUNSET) / 2, SUN_HIGH = 0.96, LUNAR = 29.53, DEG = Math.PI / 180;
-  const HALF = (Math.PI * (SUNSET - SUNRISE)) / 24, SB = Math.sin(SUN_HIGH) / (1 - Math.cos(HALF)), SA = -SB * Math.cos(HALF);
-  // SA = sin(LAT) sin(DEC), SB = cos(LAT) cos(DEC)
-  const LAT = (Math.PI / 2 - SUN_HIGH + Math.acos(SB - SA)) / 2, DEC = (Math.acos(SB - SA) - (Math.PI / 2 - SUN_HIGH)) / 2;
+  // As the sim's (src/sim/sky.ts, change both together): the island at LAT north, the sun crossing the south at NOON, its
+  // path swinging with the year by the earth's TILT, equinoxes in the middle of spring and of autumn: 61 degrees at a
+  // midsummer noon and a 16.6 hour day, 15 degrees and 7.7 hours at midwinter. The moon crosses the same sky phase x 24
+  // hours behind the sun as it waxes over LUNAR days, as far south of the equator when full as the sun is north, so a
+  // summer full moon rides low. SUN_HIGH, the midsummer noon sun on REF_DAY, is what the light is measured against.
+  const DEG = Math.PI / 180, LAT = 52 * DEG, TILT = 23.44 * DEG, NOON = 13, YEAR_DAYS = 40, LUNAR = 29.53;
+  const SUN_HIGH = Math.PI / 2 - LAT + TILT, REF_DAY = 1 + (YEAR_DAYS * 3) / 8;
   const hourAngle = (hour, transit) => ((hour - transit) * Math.PI) / 12;
+  const declination = (day, hour) => { const d = (((day - 1 + hour / 24) % YEAR_DAYS) + YEAR_DAYS) % YEAR_DAYS; return TILT * Math.sin((2 * Math.PI * (d - YEAR_DAYS / 8)) / YEAR_DAYS); };
   // a body at hour angle H and declination dec: dir toward it across the ground (x east, z south), el its elevation
   function bodyAt(H, dec) {
     const e = -Math.cos(dec) * Math.sin(H), n = Math.cos(LAT) * Math.sin(dec) - Math.sin(LAT) * Math.cos(dec) * Math.cos(H);
@@ -912,7 +910,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   }
   const moonAt = (day, hour) => {
     const phase = ((day - 1 + hour / 24) / LUNAR + 0.35) % 1, w = 2 * Math.PI * phase;
-    return { ...bodyAt(hourAngle(hour, NOON + phase * 24), DEC * Math.cos(w)), phase, lit: (1 - Math.cos(w)) / 2 };
+    return { ...bodyAt(hourAngle(hour, NOON + phase * 24), declination(day, hour) * Math.cos(w)), phase, lit: (1 - Math.cos(w)) / 2 };
   };
   // Light at the ground, RGB in units of the clear noon sun's on a face turned to it. The air reddens the sun's light by
   // the air it crosses: Kasten and Young's air mass at these optical DEPTHs (red, green, blue). The sky's light falls with
@@ -943,7 +941,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   // turns to L (the sun, the dusk's glow and the moon, weighted by their light); cast: what casts shadows, k its share of K.
   // moonless: the sky without the moon, which the eye's exposure is measured against.
   function lightOf(hour, day, cloud, moonless = false) {
-    const sun = bodyAt(hourAngle(hour, NOON), DEC), moon = moonAt(day, hour), e = sun.el / DEG, clear = 1 - cloud;
+    const sun = bodyAt(hourAngle(hour, NOON), declination(day, hour)), moon = moonAt(day, hour), e = sun.el / DEG, clear = 1 - cloud;
     const up = (b, lo, hi) => smooth(lo * DEG, hi * DEG, b.el);
     // the sun's last light goes over its last degrees, and the moon's first comes over its first
     const sunClear = transmit(sun.el).map((t, k) => (t / NOON_T[k]) * up(sun, -1, 2)), S = sunClear.map((s) => s * clear);
@@ -968,11 +966,11 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   // light on flat ground, under which the palette shows as drawn.
   const REFN = 0.45, GAM = 0.16, D_NIGHT = 0.15;
   const refOf = (l) => lum(l.A) + lum(l.K) * Math.max(l.L[1], REFN);
-  const NOON_L = lightOf(NOON, 1, 0, true), WB = NOON_L.A.map((a, k) => a + NOON_L.K[k] * NOON_L.L[1]), WBL = lum(WB);
+  const NOON_L = lightOf(NOON, REF_DAY, 0, true), WB = NOON_L.A.map((a, k) => a + NOON_L.K[k] * NOON_L.L[1]), WBL = lum(WB);
   const D_NOON = lum(NOON_L.A) / WBL, shadowShows = (e) => D_NIGHT + (D_NOON - D_NIGHT) * smooth(-14, 4, e);
   const exposure = (hour, day, l, c = lightOf(hour, day, 0, true)) => (shadowShows(l.e) / lum(c.A)) * (refOf(l) / refOf(c)) ** (GAM - 1);
-  // the exposure at which a fire's light is all there: a clear sky with the sun FIRE_E degrees down on the first evening
-  const FIRE_AT = (() => { let lo = SUNSET, hi = SUNSET + 3; for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (lightOf(m, 1, 0, true).e > FIRE_E) lo = m; else hi = m; } const l = lightOf(lo, 1, 0, true); return exposure(lo, 1, l, l); })();
+  // the exposure at which a fire's light is all there: a clear sky with the sun FIRE_E degrees down on a midsummer evening
+  const FIRE_AT = (() => { let lo = NOON, hi = NOON + 12; for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (lightOf(m, REF_DAY, 0, true).e > FIRE_E) lo = m; else hi = m; } const l = lightOf(lo, REF_DAY, 0, true); return exposure(lo, REF_DAY, l, l); })();
   let cloud = 0, cloudAt = 0, sky = null, tablesId = "";
   // The sky of a frame: its light; gain, display per unit of light by channel; dim, how far the dark has drained colour;
   // night, how dark the evening has grown for the fires; fire, how much of a fire's light shows; cast for gpu.js, null
