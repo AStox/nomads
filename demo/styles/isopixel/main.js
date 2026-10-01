@@ -1088,8 +1088,8 @@ export function collectLive(w, V, M, D) {
   if (!ob) return O;
   // footprint sprites anchor below their footprint centre
   const add = (at, spr, opt = {}) => O.push({ z: at.z, sx: at.sx, sy: at.sy + (spr.foot || 0), spr, shadow: opt.shadow !== false, mirror: !!opt.mirror, bias: opt.bias ?? V.H * 0.5 + 2, oid: opt.oid, ax: at.sx, ay: at.sy });
-  // art px per meter up (heights) and across (a tussock's width)
-  const pv = V.k * 0.866 * V.treeK, pw = V.k * V.treeK, visW = (x, z) => V.objVisible(...V.toUV(x, z));
+  // art px per meter up (heights) and across (a tussock's width); a level coarser than DIRECT_PV draws its trees shrunk
+  const pv = V.k * 0.866 * V.treeK, pw = V.k * V.treeK, visW = (x, z) => V.objVisible(...V.toUV(x, z)), shrunk = pv < SP.DIRECT_PV;
   // a canopy takes the value of the ground it stands on, so the forest reads as texture over the hillshade: lit slopes
   // bright, shaded slopes and cast shadows dark
   const cov = (x, z) => w.fine(w.cover.tree, x, z);
@@ -1107,15 +1107,10 @@ export function collectLive(w, V, M, D) {
     if (!at) return;
     const mirror = ((seed >>> 3) & 1) === 1, vr = seed % 8, tint = ((seed >>> 8) & 255) / 255;
     let spr;
-    if (K === "tree" && hpx < 24) {
-      // small trees: two tones set by the terrain light, the crown just below the ground's own value
-      const hp = Math.max(1, Math.round(hpx)), kind = sp === "pine" ? "pine" : sp === "aspen" && tint > 0.8 ? "gold" : "broad";
-      const lt = 112 * clamp(1 + terrainLight(w, V, x, z) * 0.3, 0.42, 1.6) * 0.9, r = CROWN[kind], k = crownAt(r, lt);
-      spr = cached(`ft${hp}|${kind}|${k}|${vr & 3}`, () => SP.flatTree(hp, kind, r[Math.min(r.length - 1, k + 1)], r[k], vr & 3));
-    } else if (K === "tree") {
-      const hp = Math.round(hpx), dim = dimAt(x, z), gold = sp === "aspen" && tint > 0.8;
-      spr = hp < 6 ? cached(`tt${hp}|${sp === "pine" ? "p" : gold ? "g" : "b"}|${dim}`, () => SP.tinyTree(hp, sp === "pine" ? "pine" : gold ? "gold" : "broad", dim))
-        : sp === "pine" ? cached(`p${hp}|${vr}|${dim}`, () => SP.pine(hp, vr * 17 + hp, false, dim)) : cached(`${sp}${hp}|${vr}|${tint > 0.8 ? 1 : 0}|${dim}`, () => SP.broad(hp, sp || "oak", vr * 31 + hp, tint, dim));
+    if (K === "tree") {
+      // one drawing at every zoom (sprites.js tree); the terrain's light only sets how dark the wood is at its foot
+      const hp = Math.max(1, Math.round(hpx)), dim = dimAt(x, z), tq = SP.treeTint(tint, sp);
+      spr = cached(`tr${sp}|${hp}|${vr}|${tq}|${dim}|${shrunk ? 1 : 0}`, () => SP.tree(hp, sp, vr, tq, dim, shrunk));
     } else if (!TH.object) return;
     else {
       const hq = hpx < 8 ? Math.round(hpx * 2) / 2 : Math.round(hpx), moss = K === "boulder" || K === "stone" ? (cov(x, z) > 0.4 ? 0.6 : 0.1) : 0;
@@ -1128,10 +1123,6 @@ export function collectLive(w, V, M, D) {
   return O;
 }
 const FLAT = new Set(["clay", "stick", "pebble", "flowers", "herb", "mushroom"]);
-// crown ramps, darkest first, and the step whose value is nearest a wanted luminance
-const CROWN = { broad: ramp("g0", "t1", "t2", "t3", "g2", "g3", "g4", "g5"), pine: ramp("p0", "p1", "p2", "p3", "p4", "g3", "g4"), gold: ramp("d1", "a0", "a1", "a2", "a3") };
-const lumOf = (i) => RGB_[i][0] * 0.3 + RGB_[i][1] * 0.59 + RGB_[i][2] * 0.11;
-function crownAt(r, lt) { let k = 0; for (let i = 1; i < r.length; i++) if (Math.abs(lumOf(r[i]) - lt) < Math.abs(lumOf(r[k]) - lt)) k = i; return Math.max(0, Math.min(k, r.length - 2)); }
 
 
 // ---------- live terrain: every feature from world-space fields in meters ----------

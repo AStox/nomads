@@ -3,7 +3,7 @@
 // point (bottom centre). Sprites with a footprint also carry `foot`: how many px above the anchor the footprint's
 // centre sits, so drawing one centred on a spot means blitting it at (sx, sy + foot).
 import { P, ramp, SHADOW } from "./pal.js";
-import { Spr, dith, h2 } from "./px.js";
+import { Spr, dith, h2, shrink } from "./px.js";
 import * as SP from "./sprites.js";
 import * as LF from "./life.js";
 import { cairn, mushrooms as LFmushrooms, rv, solid, blob, seg, rod, rows, under, vnoise } from "./life.js";
@@ -1115,30 +1115,15 @@ export function tallgrass(wpx = 8, seed = 0, dry = 0, seeding) {
   return S;
 }
 
-// A key colour pair (lit, shade) per kind, for the smallest sizes where only a dot or two reads.
-const KEY = {
-  tree: [P.g4, P.t2], pine: [P.p4, P.p2], bush: [P.g4, P.g2], dead_bush: [P.d3, P.d1], sapling: [P.g5, P.g3], fern: [P.g4, P.g2],
-  flowers: [P.red, P.g3], herb: [P.g5, P.g3], reeds: [P.a2, P.m2], mushroom: [P.red, P.s2], stone: [P.r4, P.r2], pebble: [P.r4, P.r2],
-  boulder: [P.r4, P.r1], stick: [P.d4, P.d2], log: [P.d3, P.d1], fallen_log: [P.d3, P.d1], stump: [P.d4, P.d2], burnt_stump: [P.r1, P.ink], clay: [P.k1, P.d2],
-  ash: [P.r3, P.r1], pit: [P.d2, P.d0], trap: [P.d3, P.d1], well: [P.r4, P.w3], grave: [P.d3, P.r3], item: [P.s2, P.d2], structure: [P.d4, P.d2], fire: [P.f3, P.f1], grass: [P.g5, P.g3],
-};
-// Minis: hand-placed rows, a = lit, b = shade, for 2 to 4 px.
+// The smallest fire, and anything drawObject does not know, in a few hand-placed pixels: a = lit, b = shade.
 const MINIS = {
-  tree: [[" a ", "ab"], ["ab", "bb", " t"], [" ab ", "aabb", " bb ", "  t "]],
-  pine: [["a", "b"], [" a ", "ab ", " t "], [" a ", "aab", "abb", " t "]],
-  bush: [["ab"], ["ab", "bb"], [" ab", "abb"]],
-  rock: [["ab"], ["ab", "bb"], [" ab ", "abbb"]],
   stem: [["a", "b"], ["a", "b", "b"], ["a", "b", "b", "b"]],
-  flat: [["ab"], ["abb"], ["aabb"]],
+  rock: [["ab"], ["ab", "bb"], [" ab ", "abbb"]],
 };
-const SHAPE = { tree: "tree", pine: "pine", bush: "bush", dead_bush: "bush", fern: "bush", herb: "bush", mushroom: "rock", stone: "rock", pebble: "flat", boulder: "rock",
-  stick: "flat", log: "flat", fallen_log: "flat", stump: "rock", burnt_stump: "rock", clay: "flat", ash: "flat", pit: "flat", trap: "flat", well: "rock", grave: "flat",
-  item: "rock", structure: "rock", fire: "stem", grass: "bush", sapling: "stem", reeds: "stem", flowers: "stem" };
-function mini(kind, hpx, species) {
-  const k = species === "pine" && kind === "tree" ? "pine" : kind, [a, b] = KEY[k] ?? KEY[kind] ?? [P.r4, P.r2];
+function mini(kind, hpx) {
+  const fire = kind === "fire", [a, b] = fire ? [P.f3, P.f1] : [P.r4, P.r2];
   if (hpx < 1.6) { const S = new Spr(1, 1, 0, 0); S.p[0] = a; return S; }
-  const list = MINIS[SHAPE[k] ?? SHAPE[kind] ?? "rock"][hpx < 2.6 ? 0 : hpx < 3.6 ? 1 : 2];
-  return rows(list, { a, b, t: P.d1 }, 1, { outline: -1 });
+  return rows(MINIS[fire ? "stem" : "rock"][hpx < 2.6 ? 0 : hpx < 3.6 ? 1 : 2], { a, b, t: P.d1 }, 1, { outline: -1 });
 }
 
 // Draw any sim object by kind at any size: hpx is its size in art px (its size in meters times the zoom's px per
@@ -1151,12 +1136,35 @@ export function object(kind, hpx, seed = 0, o = {}) {
   const F = SP.flames(Math.max(4, Math.round(hpx * (kind === "tree" ? 0.55 : 0.8) * Math.min(1, b + 0.3))), seed * 4 + (o.frame ?? 0));
   return layer(S, F, 0, kind === "tree" ? -Math.round(hpx * 0.45) : -(S.foot ?? 0));
 }
+const TREES = ["oak", "ash", "aspen", "pine"];
+// From afar these are their bloom or cap and little else, so it stays the top pixel of the shrunk sprite.
+const BLOOMED = new Set(["flowers", "herb", "mushroom"]), LEAF = new Set(ramp("ink", "g0", "g1", "g2", "g3", "g4", "g5", "g6", "t1", "t2", "t3", "m0", "m1", "m2", "m3"));
+function bloomOver(T, S) {
+  let y0 = S.h, y1 = -1;
+  for (let y = 0; y < S.h; y++) for (let x = 0; x < S.w; x++) if (S.p[y * S.w + x] !== 255) { y0 = Math.min(y0, y); y1 = y; }
+  const n = new Map();
+  for (let y = y0; y <= y0 + (y1 - y0) * 0.6; y++) for (let x = 0; x < S.w; x++) { const c = S.p[y * S.w + x]; if (c !== 255 && !LEAF.has(c)) n.set(c, (n.get(c) ?? 0) + 1); }
+  let top = 0;
+  while (top < T.h && T.p.slice(top * T.w, (top + 1) * T.w).every((c) => c === 255)) top++;
+  if (!n.size || top >= T.h) return T;
+  let bx = -1;
+  for (let x = 0; x < T.w; x++) if (T.p[top * T.w + x] !== 255 && (bx < 0 || Math.abs(x - T.ax) < Math.abs(bx - T.ax))) bx = x;
+  T.p[top * T.w + bx] = [...n].sort((a, b) => b[1] - a[1])[0][0];
+  return T;
+}
+// Anything below the size it is first drawn properly at is that drawing at twice the size, shrunk (px.js), so a small one
+// has the footprint and the colour of the big one and nothing jumps when the zoom brings the real sprite in.
+function small(kind, h, seed, o, minis) {
+  const S = drawObject(kind, minis * 2, seed, o), T = shrink(S, (minis * 2) / Math.max(h, 1));
+  return BLOOMED.has(kind) ? bloomOver(T, S) : T;
+}
+// A tree is sprites.js tree() at any size. Fire keeps its few pixels below its smallest size: its flames are drawn on the clock.
 function drawObject(kind, hpx, seed, o) {
-  const sp = o.species, h = Math.max(0, hpx), minis = kind === "structure" ? 5 : kind === "boulder" || kind === "tree" ? 4.5 : 4;
-  if (h < minis) return mini(kind, h, sp);
+  const sp = o.species, h = Math.max(0, hpx), minis = kind === "structure" ? 5 : kind === "boulder" ? 4.5 : 4;
+  if (kind === "tree") return SP.tree(h, TREES.includes(sp) ? sp : "oak", Math.abs(seed | 0) % 8, SP.treeTint(o.tint ?? 0.5, sp), 0, h < 30);
+  if (h < minis) return kind === "fire" ? mini(kind, h) : small(kind, h, seed, o, minis);
   const r = Math.round;
   switch (kind) {
-    case "tree": return sp === "pine" ? SP.pine(r(h), seed) : SP.broad(r(h), ["oak", "ash", "aspen"].includes(sp) ? sp : "oak", seed, o.tint ?? 0.5);
     case "sapling": return sapling(h, seed);
     case "bush": {
       const berries = o.berries ?? (o.n != null ? o.n > 0 : sp === "berry");
@@ -1193,7 +1201,7 @@ function drawObject(kind, hpx, seed, o) {
     }
     case "fire": return fire(h, seed, o);
   }
-  return mini(kind, Math.min(h, 3), sp);
+  return mini(kind, Math.min(h, 3));
 }
 
 // ------------------------------------------------------------------------------------------------ animals

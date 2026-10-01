@@ -1,6 +1,6 @@
 // Procedural pixel sprites: every tree, bush, rock, tuft and person is painted pixel by pixel from a few ramps.
 import { P, ramp, SHADOW } from "./pal.js";
-import { Spr, dith, h2 } from "./px.js";
+import { Spr, dith, h2, shrink, meanColor } from "./px.js";
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const R = {
@@ -61,14 +61,14 @@ export function pine(hpx, seed, snow = false, dim = 0) {
   return S;
 }
 
-// A round crown built from overlapping leaf clumps, each shaded as a little sphere.
-export function broad(hpx, kind, seed, tint, dim = 0) {
+// A round crown built from overlapping leaf clumps, each shaded as a little sphere. nBlobs: how many clumps, else by size.
+export function broad(hpx, kind, seed, tint, dim = 0, nBlobs) {
   const h = Math.max(6, Math.round(hpx));
   const r = kind === "aspen" && tint > 0.8 ? R.gold : R[kind] || R.ash;
   const cw = Math.max(4, Math.round(h * (kind === "oak" ? 0.8 : kind === "ash" ? 0.68 : 0.5)));
   const ch = Math.max(4, Math.round(h * (kind === "aspen" ? 0.74 : 0.66)));
   const W = cw + 4, S = new Spr(W, h + 2, W >> 1, h), cx = W / 2, cy = ch / 2 + 0.5;
-  const n = clamp(Math.round(cw / 3.2), 3, 9), rad = Math.min(cw, ch) / 2;
+  const n = nBlobs ?? clamp(Math.round(cw / 3.2), 3, 9), rad = Math.min(cw, ch) / 2;
   const blobs = [[cx, cy, rad * 0.78]];
   for (let k = 1; k < n; k++) {
     const a = h2(k, seed, 1) * 6.283, d = rad * (0.35 + 0.35 * h2(k, seed, 2)), br = rad * (0.4 + 0.25 * h2(k, seed, 3));
@@ -450,40 +450,50 @@ export function flames(hpx, seed) {
   return S;
 }
 
-// Sprites too small for the drawn ones, down to a single pixel. A forest's interior is dark and its sunward edge lit,
-// as the full crowns are, so a wood reads the same from far out as up close.
-export const TINY = { pine: ["p0", "p1", "p2", "p3", "p4"], broad: ["t1", "t2", "t3", "g3", "g4"], gold: ["d0", "a0", "a1", "a2", "a3"], shrub: ["t1", "g1", "g2", "g3", "g4"], rock: ["r1", "r2", "r3", "r4", "r5"] };
-export function tinyTree(h, kind, dim) {
-  const cols = TINY[kind].map((n) => P[n]), base = kind === "rock" ? 2.5 : 2.6 - dim * 1.6, trunk = kind !== "rock" && kind !== "shrub" && h >= 4 ? 1 : 0;
-  const ch = h - trunk, wd = kind === "pine" ? Math.max(1, Math.round(h * 0.45)) : Math.max(1, Math.round(h * 0.7)), S = new Spr(wd + 2, h + 1, (wd + 2) >> 1, h);
-  for (let y = 0; y < ch; y++) {
-    const t = ch === 1 ? 0.5 : y / (ch - 1), half = kind === "pine" ? (wd / 2) * (0.35 + 0.65 * t) : (wd / 2) * (t < 0.5 ? 0.75 + t * 0.5 : 1);
-    for (let x = 0; x < wd; x++) {
-      const dx = x + 0.5 - wd / 2;
-      if (Math.abs(dx) > Math.max(0.5, half)) continue;
-      const light = h === 1 ? 0 : (-dx / Math.max(1, wd) - t + 0.5) * (h < 4 ? 0.7 : 1.1);
-      S.set(x + 1, y, cols[clamp(Math.round(base + light), 0, 4)]);
+// A tree is one drawing at every zoom: the crown's layout, its trunk and its tones come from the same seed whatever the
+// height, so it keeps its shape as the zoom takes it from a speck to a full sprite. A level that draws trees at their own
+// size (DIRECT_PV px per meter of height and up, the near level on) gets pine() or broad() at the height. A coarser level
+// gets the drawing at 64 px averaged down to it (px.js shrink), with less of its light and shade the smaller it is (under a
+// third at 4 px, all of it from 24): far woods are the mean of near ones, not a second and flatter style of tree.
+export const DIRECT_PV = 2;
+const contrastAt = (h) => clamp(0.3 + ((h - 4) / 20) * 0.7, 0.3, 1);
+// a tree's tint in the steps it is drawn at: aspens above .8 turn gold, the rest take one of three crown shades
+export const treeTint = (t, sp) => (sp === "pine" ? 0.5 : sp === "aspen" && t > 0.8 ? 0.9 : t < 0.33 ? 0.17 : t < 0.67 ? 0.5 : sp === "aspen" ? 0.75 : 0.83);
+const rampOf = (sp, tint) => (sp === "pine" ? R.pine : sp === "aspen" && tint > 0.8 ? R.gold : R[sp || "oak"] || R.ash);
+// least recently used last: a Map re-inserted on every hit
+function kept(map, key, keep, make) {
+  let v = map.get(key);
+  if (v) { map.delete(key); map.set(key, v); return v; }
+  v = make();
+  map.set(key, v);
+  if (map.size > keep) map.delete(map.keys().next().value);
+  return v;
+}
+let canopyTone = null;
+const masters = new Map(), shrinks = new Map();
+// A shrunk tree in a darker or lighter wood: the shift down the foliage ramp that pine() and broad() make per unit of dim,
+// and their cap on highlights. The outline (the ramp's first entry) and the bark keep their colours. Dithered where the
+// tree is big enough to carry it, else rounded to the nearest step, so a speck's tone stays calm.
+function dimmed(T, r, dim, pined, dithered) {
+  const at = new Map(r.map((c, i) => [c, i])), cap = r.length - (pined ? 1.5 + dim * 2.6 : 1.6 + dim * 3), S = new Spr(T.w, T.h, T.ax, T.ay), top = r.length - 1;
+  for (let y = 0; y < T.h; y++)
+    for (let x = 0; x < T.w; x++) {
+      const c = T.p[y * T.w + x], i = at.get(c);
+      if (i === undefined || i === 0) { S.p[y * T.w + x] = c; continue; }
+      const v = dim > 0 ? Math.min(i - dim * (pined ? 1.8 : 2), cap) : i - dim * (pined ? 1.8 : 2);
+      S.p[y * T.w + x] = dithered ? dith(r, v, x, y) : r[clamp(Math.round(v), 0, top)];
     }
-  }
-  if (trunk) S.set(S.ax, h - 1, P.d1);
   return S;
 }
-
-// A crown in two tones and nothing else, for trees too small to carry their own light: hi on the side toward the sun,
-// lo on the rest, both chosen by the caller from the terrain's light, so a forest shades with the ground beneath it.
-export function flatTree(h, kind, hi, lo, seed = 0) {
-  const trunk = h >= 4 ? Math.max(1, Math.round(h * 0.18)) : 0, ch = h - trunk, big = h >= 9;
-  const wd = kind === "pine" ? Math.max(1, Math.round(h * 0.45)) : Math.max(1, Math.round(h * 0.72)), S = new Spr(wd + 2, h + 1, (wd + 2) >> 1, h);
-  // bigger crowns get a lumpy leaf edge and a wavering line between their two tones, so they read as foliage, not polygons
-  const lump = (a, b) => (big ? (h2(a, b, seed) - 0.5) * 0.9 : 0);
-  for (let y = 0; y < ch; y++) {
-    const t = ch === 1 ? 0.5 : y / (ch - 1), half = kind === "pine" ? (wd / 2) * (0.3 + 0.7 * t) : (wd / 2) * Math.sqrt(Math.max(0, 1 - (t * 2 - 1) ** 2 * 0.75));
-    for (let x = 0; x < wd; x++) {
-      const dx = x + 0.5 - wd / 2;
-      if (Math.abs(dx) > Math.max(0.5, half + lump(x >> 1, y >> 1))) continue;
-      S.set(x + 1, y, h > 2 && -dx / Math.max(1, wd) - t + 0.35 + lump(x >> 1, (y >> 1) + 9) * 0.35 > 0 ? hi : lo);
-    }
-  }
-  for (let y = ch; y < h; y++) S.set(S.ax, y, P.d1);
-  return S;
+// vr: 0..7 picks the crown's layout; dim as pine() and broad() take it, the forest's darkness at the tree's foot
+export function tree(hpx, sp, vr, tint, dim = 0, shrunk = false) {
+  const h = Math.max(1, Math.round(hpx)), pined = sp === "pine";
+  const draw = (n, d) => (pined ? pine(n, vr * 17 + 5, false, d) : broad(n, sp || "oak", vr * 31 + 7, tint, d, 9));
+  if (h >= 32 || (!shrunk && h >= 6)) return draw(h, dim);
+  const key = `${sp}|${vr}|${tint}`;
+  const base = kept(shrinks, `${key}|${h}`, 4000, () => {
+    canopyTone ??= meanColor(broad(64, "oak", 7, 0.5, 0, 9));
+    return shrink(kept(masters, key, 300, () => draw(64, 0)), 64 / h, { contrast: contrastAt(h), toward: canopyTone });
+  });
+  return dim ? dimmed(base, rampOf(sp, tint), dim, pined, h >= 12) : base;
 }

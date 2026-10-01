@@ -1394,7 +1394,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       if (hpx < 1) return;
       const p = project(md, toM(px), toM(py)), bx = Math.round(p.gx), by = Math.round(p.gy);
       if (Math.abs(X - bx) > hpx * 2 + 6 || Y > by + 6 || Y < by - hpx * 2 - 8) return;
-      const s = bakedSprite(K, bins.species[si], hpx, seed, n), mirror = ((seed >>> 3) & 1) === 1;
+      const s = bakedSprite(K, bins.species[si], hpx, seed, n, pv < SP.DIRECT_PV), mirror = ((seed >>> 3) & 1) === 1;
       if (!s) return;
       const ax = mirror ? s.w - 1 - s.ax : s.ax, i = X - bx + ax, j = Y - by - (s.foot || 0) + s.ay;
       if (i < 0 || j < 0 || i >= s.w || j >= s.h || s.p[j * s.w + (mirror ? s.w - 1 - i : i)] === 255) return;
@@ -1403,16 +1403,12 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     });
     return best;
   }
-  function bakedSprite(K, sp, hpx, seed, n) {
+  function bakedSprite(K, sp, hpx, seed, n, shrunk) {
     const vr = seed % 8, tint = ((seed >>> 8) & 255) / 255;
     if (K === "tree") {
-      // palette indices only recolour a tree, so any two opaque ones give the drawn pixel mask
-      if (hpx < 24) {
-        const hp = Math.max(1, Math.round(hpx)), kind = sp === "pine" ? "pine" : sp === "aspen" && tint > 0.8 ? "gold" : "broad";
-        return spr(`pk|ft${hp}|${kind}|${vr & 3}`, () => SP.flatTree(hp, kind, P.snow, P.ink, vr & 3));
-      }
-      const hp = Math.round(hpx);
-      return sp === "pine" ? spr(`pk|p${hp}|${vr}`, () => SP.pine(hp, vr * 17 + hp, false, 0)) : spr(`pk|${sp}${hp}|${vr}|${tint > 0.8 ? 1 : 0}`, () => SP.broad(hp, sp || "oak", vr * 31 + hp, tint, 0));
+      // only the shape matters here, so no terrain light (dim 0): the same sprite the bake draws, bar its colours
+      const hp = Math.max(1, Math.round(hpx)), tq = SP.treeTint(tint, sp);
+      return spr(`pk|tr${sp}|${hp}|${vr}|${tq}|${shrunk ? 1 : 0}`, () => SP.tree(hp, sp, vr, tq, 0, shrunk));
     }
     if (!TH.object) return null;
     const hq = hpx < 8 ? Math.round(hpx * 2) / 2 : Math.round(hpx);

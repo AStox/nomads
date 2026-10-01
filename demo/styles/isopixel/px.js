@@ -87,6 +87,76 @@ export class Spr {
   }
 }
 
+// The mean colour of a sprite's opaque pixels.
+export function meanColor(S) {
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let i = 0; i < S.p.length; i++) if (S.p[i] !== 255) { const c = RGB[S.p[i]]; r += c[0]; g += c[1]; b += c[2]; n++; }
+  return n ? [r / n, g / n, b / n] : [0, 0, 0];
+}
+
+// A sprite averaged down by f (> 1), so a small one keeps the footprint and the colour of its big self. Each pixel of the
+// result is an f x f block of S: columns centred on the anchor's, rows ending on the bottom edge of the anchor's row (the
+// ground line). It is drawn if it is among the k most covered, k being the opaque area S has at this size, so the area
+// holds at every f and a sprite is never emptied, and it takes the entry S uses nearest the mean colour of its block.
+// contrast < 1 pulls each block's colour toward `toward` (S's own mean unless given) first, so a speck keeps the tone of
+// the big one but not all of its light and shade.
+export function shrink(S, f, { contrast = 1, toward } = {}) {
+  if (f <= 1.0001) return S;
+  const cx = S.ax + 0.5, by = S.ay + 1;
+  const Tax = Math.max(0, Math.ceil(cx / f - 0.5)), Tay = Math.max(0, Math.ceil(by / f) - 1);
+  const W = Tax + 1 + Math.max(0, Math.ceil((S.w - cx) / f - 0.5)), H = Tay + 1 + Math.max(0, Math.ceil((S.h - by) / f));
+  const T = new Spr(W, H, Tax, Tay), n = W * H, cov = new Float32Array(n), mean = new Float32Array(n * 3);
+  // each column's span of S and its share of every pixel in it, once for all the rows
+  const xa = new Int32Array(W), xb = new Int32Array(W), wx = new Array(W);
+  for (let i = 0; i < W; i++) {
+    const x0 = cx + (i - Tax - 0.5) * f, x1 = x0 + f, a = Math.max(0, Math.floor(x0)), b = Math.min(S.w, Math.ceil(x1)), w = new Float32Array(Math.max(0, b - a));
+    for (let x = a; x < b; x++) w[x - a] = Math.min(x + 1, x1) - Math.max(x, x0);
+    xa[i] = a; xb[i] = b; wx[i] = w;
+  }
+  let total = 0;
+  for (let j = 0; j < H; j++) {
+    const y0 = by + (j - Tay - 1) * f, y1 = y0 + f, ya = Math.max(0, Math.floor(y0)), yb = Math.min(S.h, Math.ceil(y1));
+    for (let i = 0; i < W; i++) {
+      const xs = xa[i], xe = xb[i], wi = wx[i];
+      let a = 0, r = 0, g = 0, b = 0;
+      for (let y = ya; y < yb; y++) {
+        const wy = Math.min(y + 1, y1) - Math.max(y, y0), row = y * S.w;
+        for (let x = xs; x < xe; x++) {
+          const c = S.p[row + x];
+          if (c === 255) continue;
+          const w = wy * wi[x - xs], q = RGB[c];
+          a += w; r += q[0] * w; g += q[1] * w; b += q[2] * w;
+        }
+      }
+      if (a <= 0) continue;
+      const q = j * W + i;
+      cov[q] = a / (f * f); total += cov[q];
+      mean[q * 3] = r / a; mean[q * 3 + 1] = g / a; mean[q * 3 + 2] = b / a;
+    }
+  }
+  // the coverage of the k-th most covered pixel, to 1/256: everything at or above it is drawn
+  const hist = new Int32Array(258), k = Math.max(1, Math.round(total));
+  for (let q = 0; q < n; q++) if (cov[q] > 0) hist[Math.min(256, Math.floor(cov[q] * 256))]++;
+  let bin = 256, got = hist[256];
+  while (got < k && bin > 0) got += hist[--bin];
+  const used = (S.used ??= [...new Set(S.p)].filter((c) => c !== 255)), cols = used.map((c) => RGB[c]);
+  const [gr, gg, gb] = contrast === 1 ? [0, 0, 0] : toward ?? meanColor(S);
+  for (let j = 0; j < H; j++)
+    for (let i = 0; i < W; i++) {
+      const q = j * W + i;
+      if (!(cov[q] > 0) || Math.min(256, Math.floor(cov[q] * 256)) < bin) continue;
+      const r = gr + (mean[q * 3] - gr) * contrast, g = gg + (mean[q * 3 + 1] - gg) * contrast, b = gb + (mean[q * 3 + 2] - gb) * contrast;
+      let best = 0, bd = Infinity;
+      for (let u = 0; u < cols.length; u++) {
+        const c = cols[u], e = 2 * (c[0] - r) ** 2 + 4 * (c[1] - g) ** 2 + 3 * (c[2] - b) ** 2;
+        if (e < bd) { bd = e; best = u; }
+      }
+      T.p[q] = used[best];
+    }
+  if (S.foot != null) T.foot = Math.round(S.foot / f);
+  return T;
+}
+
 // Sprites are camera-facing: a pixel k rows above the anchor is k units nearer the eye than the base. A buffer with an
 // `ax` array also gets each drawn pixel's column from the anchor, which a turned view needs to keep the sprite whole.
 // A buffer with `need` is composed lazily: every primitive names the box it is about to touch first.
