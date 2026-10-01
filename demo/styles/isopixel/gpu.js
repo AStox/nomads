@@ -12,7 +12,8 @@
 // tablesFor) by how much of the key light (the sun, the dusk's glow or the moon) reaches it, ground by its slope toward
 // the light and sprites by how the view sees them lit, less what lies in shadow, in the ordered dither. The shadows: a
 // map of which ground sees the sun or the moon, traced over the island's heights whenever it moves, and every
-// shadow-casting sprite's silhouette laid along it.
+// shadow-casting sprite's silhouette laid along it. Then the sky's light is taken from what stands round a pixel
+// (ambient occlusion): the folds of the ground, traced once, and the trees' cover (canopy.js), which follows the sim.
 
 const HEAD = "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp usampler2D;\nprecision highp isampler2D;\n";
 // live.js packs its tiles this way: TS art px square, TPR to an atlas row
@@ -28,6 +29,8 @@ const GROW = [...[1, 1, 1, 1, 2, 2, 4, 4, 8, 8, 16, 32, 64].map((k) => [1, k]), 
 const CHUNKS_KEPT = 224, UPLOADS_PER_FRAME = 8, ANIM_PER_FRAME = 8;
 // the sun map is traced again once the sun has moved this far (radians), over SUN_STRIPES frames
 const SUN_MOVE = 0.004, SUN_STRIPES = 6;
+// how far from each cell of the island's heights the ground's folds are looked over for the sky they hide (meters)
+const TER_REACH = 450;
 
 const BAY_GLSL = `
 const float BAY[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
@@ -51,26 +54,49 @@ uint level(float f, ivec2 g) { return uint(min(float(LEVELS - 1), floor(f * floa
 // steps, as a ramp has few and a face turned full to a low sun would lose its texture to the end of its ramp. A slope
 // turned away is darker only by the light table, so it dims with the sky's light and never brightens as a light fades;
 // in shadow a slope gains nothing from facing the light.
+// Ambient occlusion: the share of the sky's light a point loses to what stands around it, in 7 dithered steps (ao; 0 is
+// none). The ground's own part is uSun's green, how far the horizon stands above the tangent plane round the point
+// (setRelief traces it once). The trees' part is uCan, the crowns' cover of the ground in 3 m cells: under a crown the
+// narrow cell says how much canopy stands over the point, and a wider average of it (a mip, ~24 m) how deep in forest it
+// is. Ground takes both, and so does a live sprite, which a still view lights as the ground under it. A baked sprite takes
+// the wide one only, since its own crown is in the narrow cell, and less the higher up the canopy it stands: k art px
+// over its foot (its depth less the foot's drawn height, uGrad's alpha in m at uHpx px a meter) against the canopy's
+// mean height there (uGrad's blue in m at uPv px a meter), so a crown's top sees the sky and the trunks and the floor
+// under it do not. Water has none.
+// aoMul then takes ao off the light table's colour, from the sky's light only.
 const LIGHT_GLSL = `
-uniform sampler2D uSun, uMask, uGrad;
+uniform sampler2D uSun, uMask, uGrad, uCan;
 uniform usampler2D uTone;
 uniform vec2 uWO, uWA, uWB;
 uniform vec3 uKey;
 uniform float uSunK, uSunN, uSunStep, uRelief, uSpr, uFlat, uToneK, uToneLo, uToneHi;
+uniform float uAoK, uAoTer, uAoCan, uAoTree, uAoTop, uAoSelf, uCanN, uCanStep, uHpx, uPv;
 uniform ivec2 uSunG;
 uniform uvec2 uWet;
-uint lightAt(ivec2 q, float z, uint kind, int ax, float e, inout uint c) {
+uint lightAt(ivec2 q, float z, uint kind, bool stand, int ax, float e, inout uint c, out uint ao) {
   float f = uFlat;
+  ao = 0u;
   if (kind <= 2u && z > -1e29) {
     vec2 wp = uWO + float(q.x - (kind == 0u ? 0 : ax)) * uWA + (float(q.y) + z - e) * uWB, t = ((wp + 4800.0) / uSunStep + 0.5) / uSunN;
-    vec2 g = texture(uGrad, t).rg * uRelief;
+    vec4 gr = texture(uGrad, t);
+    vec2 g = gr.rg * uRelief, sv = texture(uSun, t).rg;
     float slope = max(0.0, dot(uKey, normalize(vec3(-g.x, 1.0, -g.y)))), sh = 0.0;
     bool wet = c >= uWet.x && c <= uWet.y;
     if (uSunK > 0.0) {
-      sh = smoothstep(0.3, 0.7, texture(uSun, t).r);
+      sh = smoothstep(0.3, 0.7, sv.r);
       ivec2 ms = textureSize(uMask, 0);
       if (kind == 0u && q.x >= 0 && q.y >= 0 && q.x < ms.x && q.y < ms.y) sh = max(sh, texelFetch(uMask, q, 0).r);
       sh *= uSunK;
+    }
+    if (uAoK > 0.0 && !wet) {
+      vec2 ct = ((wp + 4800.0) / uCanStep + 0.5) / uCanN;
+      float near = textureLod(uCan, ct, 0.0).r * 2.0, wide = textureLod(uCan, ct, 3.0).r * 2.0;
+      float k = !stand ? 0.0 : max(0.0, (z - e - 3.0 * float(q.y + uSunG.y)) * 0.25 - gr.a * uHpx);
+      float up = 1.0 - smoothstep(0.15, 1.0, k / max(gr.b * uPv, 1.0));
+      float cover = !stand ? 0.5 * (near + wide) : max(0.0, wide - uAoSelf) * (uAoTop + (1.0 - uAoTop) * up);
+      float treeOcc = 1.0 - exp(-(!stand ? uAoCan : uAoTree) * cover), fold = uAoTer * sv.g * (!stand ? 1.0 : 0.6);
+      float lost = clamp(1.0 - (1.0 - fold) * (1.0 - treeOcc), 0.0, 1.0);
+      ao = uint(min(7.0, floor(lost * uAoK * 7.0 + bay(q + uSunG)))) | (uint(floor(3.0 * treeOcc / max(treeOcc + fold, 1e-3) + 0.5)) << 3);
     }
     if (kind <= 1u && !wet) {
       float s = 1.5 * tanh(uToneK * max(0.0, slope - uFlat) * (1.0 - sh) / 1.5), n = float(textureSize(uTone, 0).y - 1);
@@ -80,11 +106,26 @@ uint lightAt(ivec2 q, float z, uint kind, int ax, float e, inout uint c) {
   }
   return level(f, q + uSunG);
 }`;
+// What ambient occlusion ao (its step in the low three bits, in the next two how much of it is the trees', 0 to 3) takes
+// off the colour the light table gave a pixel at table row `row`: all of the step's share of the sky's light (uAmbA)
+// against the light on the pixel there (the sky's, and the key light's uAmbK at the row's step, uAoKey of which the canopy
+// shades as well), less where a fire lights it. What the trees hide is the sky's red and blue more than its green, as
+// under leaves the light that is left is green; a hollow's is hidden evenly. uAoDbg shows the step alone.
+const AO_GLSL = `
+uniform vec3 uAmbA, uAmbK;
+uniform float uAoKey, uAoDbg;
+const vec3 AO_HUE = vec3(1.1, 0.85, 1.1);
+vec3 aoMul(uint ao, uint row) {
+  if (ao == 0u) return vec3(1.0);
+  float a = float(ao & 7u) / 7.0 * (1.0 - 0.27 * float(row & 3u)), f = float((row >> 2) & 15u) / float(LEVELS - 1);
+  vec3 key = uAmbK * f, hue = mix(vec3(1.0), AO_HUE, float(ao >> 3) / 3.0);
+  return max(vec3(0.0), 1.0 - a * hue * (uAmbA + uAoKey * key) / (uAmbA + key + 1e-4));
+}`;
 
 // A source pixel into the view: (X, Y) its target pixel, Z its depth (larger is nearer), as warpOf's formulas; ax its
 // column from its anchor. State: r colour, g (ax + 128, or still water's tone), b kind (0 ground, 1 baked sprite, 2 live
-// sprite; | 4 still open water, painted again from its tone), a the fire's light | its light level << 2 | 64 for what
-// gives its own light | 128 (0 is empty).
+// sprite; | 4 still open water, painted again from its tone; | the ambient occlusion << 3), a the fire's light | its
+// light level << 2 | 64 for what gives its own light | 128 (0 is empty).
 const EMIT = `
 uniform float uC1, uHs, uQ1, uZ1, uZs, uE1, uW0, uWf, uCx, uCy, uCz;
 uniform vec2 uT;
@@ -117,9 +158,9 @@ void main() {
   bool obj = (o & 1u) != 0u;
   float z = texelFetch(uKz, p, 0).r, e = obj ? uE1 : 0.0;
   int a = texelFetch(uKa, p, 0).r, ax = obj ? a : 0;
-  uint lv = lightAt(q, z, obj ? 1u : 0u, ax, e, c) << 2;
+  uint ao, lv = lightAt(q, z, obj ? 1u : 0u, obj, ax, e, c, ao) << 2;
   if ((o & 4u) != 0u) emit(float(q.x), float(q.y), z, 0.0, 0, 4u, c, lv, uint(a + 128));
-  else emit(float(q.x), float(q.y), z, e, ax, obj ? 1u : 0u, c, lv, uint(ax + 128));
+  else emit(float(q.x), float(q.y), z, e, ax, (obj ? 1u : 0u) | (ao << 3), c, lv, uint(ax + 128));
 }`;
 // the tiles the CPU drew into, pixel by pixel from the atlas: uList holds each atlas tile's place in the view. Light
 // bit 4: a flame, which gives its own light; 16: still open water (live.js packTiles).
@@ -143,9 +184,9 @@ void main() {
   uint id = texelFetch(uId, a, 0).r, kind = min(id, 2u), l = texelFetch(uL, a, 0).r, c = texelFetch(uC, a, 0).r;
   int ra = texelFetch(uAx, a, 0).r, ax = id == 0u ? 0 : ra;
   float e = id == 0u ? 0.0 : id == 1u ? uE1 : texelFetch(uE, ivec2(int(id & 255u), int(id >> 8u)), 0).r;
-  uint lit = (l & 4u) != 0u ? 64u | (l & 3u) : (l & 3u) | (lightAt(v, zz, kind, ax, e, c) << 2);
+  uint ao = 0u, lit = (l & 4u) != 0u ? 64u | (l & 3u) : (l & 3u) | (lightAt(v, zz, kind, id == 1u, ax, e, c, ao) << 2);
   if ((l & 16u) != 0u) emit(float(v.x), float(v.y), zz, 0.0, 0, 4u, c, lit, uint(ra + 128));
-  else emit(float(v.x), float(v.y), zz, e, ax, kind, c, lit, uint(clamp(ax, -128, 127) + 128));
+  else emit(float(v.x), float(v.y), zz, e, ax, kind | (ao << 3), c, lit, uint(clamp(ax, -128, 127) + 128));
 }`;
 const FS_SPLAT = `${HEAD}
 flat in uvec4 vS;
@@ -204,7 +245,7 @@ void main() {
   uint mk = m.b & 3u;
   if (m.a != 0u && (Mz > -1e28 || !oReal)) {
     bool other = ((uMask >> uint(((q.y & 3) << 2) | (q.x & 3))) & 1u) != 0u;
-    if (other && oReal && mk <= 1u && o.b == m.b && (mk == 0u || o.g == m.g) && Mz > -1e28 && abs(Oz - Mz) <= 4.0) oS = uvec4(o.r, m.g, m.b, m.a);
+    if (other && oReal && mk <= 1u && (o.b & 7u) == (m.b & 7u) && (mk == 0u || o.g == m.g) && Mz > -1e28 && abs(Oz - Mz) <= 4.0) oS = uvec4(o.r, m.g, m.b, m.a);
     else oS = m;
     oZ = mz;
     return;
@@ -223,7 +264,7 @@ uint hazed(uint c, ivec2 q) {
 }`;
 // A turned view: still water painted again from its tone on this grid, as the bake's tone() paints it at a view's own
 // bearing, so its dither holds still while the island turns under it; overlays over the world, lit as the open ground
-// under them; the haze toward the top of the canvas; then each pixel's row of the light table.
+// under them; the haze toward the top of the canvas; then each pixel's row of the light table, less its ambient occlusion.
 const FS_COMPOSITE = `${HEAD}
 uniform usampler2D uS, uOvT, uOvC;
 uniform sampler2D uLut;
@@ -233,24 +274,26 @@ out vec4 o;
 ${BAY_GLSL}
 ${LEVEL_GLSL}
 ${HAZE_GLSL}
+${AO_GLSL}
 void main() {
   ivec2 q = ivec2(gl_FragCoord.xy);
   uvec4 s = texelFetch(uS, q, 0);
   uint c = s.a != 0u ? s.r : uSea, t = texelFetch(uOvT, q >> 5, 0).r, fire = s.a & 3u, open = level(uFlat, q + uG0) * 4u + fire;
-  uint row = s.a == 0u ? open : (s.a & 64u) != 0u ? EMISSIVE : ((s.a >> 2) & 15u) * 4u + fire;
+  uint row = s.a == 0u ? open : (s.a & 64u) != 0u ? EMISSIVE : ((s.a >> 2) & 15u) * 4u + fire, ao = s.a != 0u && (s.a & 64u) == 0u ? (s.b >> 3u) & 31u : 0u;
   if (s.a != 0u && (s.b & 4u) != 0u) {
     float v = float(int(s.g) - 128) / 16.0;
     c = uWater[clamp(int(floor(v + 0.5 + (bay(q + uG0) - 0.5) * 0.55)), 0, 7)];
   }
   // the overlays' tile where one was drawn, 255 where it is clear
-  if (t != 0u) { int k = int(t) - 1; uint ov = texelFetch(uOvC, ivec2((k & 63) << 5, (k >> 6) << 5) + (q & 31), 0).r; if (ov != 255u) { c = ov; row = open; } }
-  o = texelFetch(uLut, ivec2(int(hazed(c, q)), int(row)), 0);
+  if (t != 0u) { int k = int(t) - 1; uint ov = texelFetch(uOvC, ivec2((k & 63) << 5, (k >> 6) << 5) + (q & 31), 0).r; if (ov != 255u) { c = ov; row = open; ao = 0u; } }
+  vec4 lit = texelFetch(uLut, ivec2(int(hazed(c, q)), int(row)), 0);
+  o = uAoDbg > 0.5 ? vec4(vec3(1.0 - float(ao & 7u) / 7.0), 1.0) : vec4(lit.rgb * aoMul(ao, row), lit.a);
 }`;
 // A still view: the CPU's tile where it drew one, else the static layer; the light; the overlays, lit as the open ground
-// under them; then the haze and the light table. A tile copies the baked chunk under what it draws, so the static layer's
-// kind, anchor and depth serve for the light there too. Light bit 4: a flame, which gives its own light; bit 8: another
-// live sprite, lit as what lies behind it, but as a sprite (a foot on that ground), so the shadows cast on that ground,
-// its own among them, pass it by.
+// under them; then the haze and the light table, less the ambient occlusion. A tile copies the baked chunk under what it
+// draws, so the static layer's kind, anchor and depth serve for the light there too. Light bit 4: a flame, which gives its
+// own light; bit 8: another live sprite, lit as what lies behind it, but as a sprite (a foot on that ground), so the
+// shadows cast on that ground, its own among them, pass it by.
 const FS_FLAT = `${HEAD}
 uniform usampler2D uStat, uStatZ, uTiles, uAC, uAL, uOvT, uOvC;
 uniform sampler2D uLut;
@@ -260,12 +303,13 @@ ${BAY_GLSL}
 ${LEVEL_GLSL}
 ${HAZE_GLSL}
 ${LIGHT_GLSL}
+${AO_GLSL}
 void main() {
   ivec2 q = ivec2(gl_FragCoord.xy);
   uvec4 s = texelFetch(uStat, q, 0);
   uint t = texelFetch(uTiles, q >> 5, 0).r, c = s.r, fire = 0u, kind = s.b;
   float e = kind == 1u ? uE1 : 0.0;
-  bool emits = false;
+  bool emits = false, stand = kind == 1u;
   if (t != 0u) {
     int k = int(t) - 1;
     ivec2 a = ivec2((k & 63) << 5, (k >> 6) << 5) + (q & 31);
@@ -273,11 +317,12 @@ void main() {
     c = texelFetch(uAC, a, 0).r; fire = l & 3u; emits = (l & 4u) != 0u;
     if ((l & 8u) != 0u && kind == 0u) kind = 1u;
   }
-  uint row = emits ? EMISSIVE : lightAt(q, uintBitsToFloat(texelFetch(uStatZ, q, 0).r), kind, int(s.g) - 128, e, c) * 4u + fire;
+  uint ao = 0u, row = emits ? EMISSIVE : lightAt(q, uintBitsToFloat(texelFetch(uStatZ, q, 0).r), kind, stand, int(s.g) - 128, e, c, ao) * 4u + fire;
   // the overlays' tile where one was drawn, 255 where it is clear
   uint ot = texelFetch(uOvT, q >> 5, 0).r;
-  if (ot != 0u) { int k = int(ot) - 1; uint ov = texelFetch(uOvC, ivec2((k & 63) << 5, (k >> 6) << 5) + (q & 31), 0).r; if (ov != 255u) { c = ov; row = level(uFlat, q + uSunG) * 4u + fire; } }
-  o = texelFetch(uLut, ivec2(int(hazed(c, q)), int(row)), 0);
+  if (ot != 0u) { int k = int(ot) - 1; uint ov = texelFetch(uOvC, ivec2((k & 63) << 5, (k >> 6) << 5) + (q & 31), 0).r; if (ov != 255u) { c = ov; row = level(uFlat, q + uSunG) * 4u + fire; ao = 0u; } }
+  vec4 lit = texelFetch(uLut, ivec2(int(hazed(c, q)), int(row)), 0);
+  o = uAoDbg > 0.5 ? vec4(vec3(1.0 - float(ao & 7u) / 7.0), 1.0) : vec4(lit.rgb * aoMul(ao, row), lit.a);
 }`;
 // One chunk into the static layer: art px q reads texel floor(uA + q * uS), a chunk of this level at uS 1, a stand-in
 // level's scaled as live.js fallback() samples it.
@@ -356,6 +401,28 @@ void main() {
   for (float d = uStep; d < 2400.0; d *= 1.09) ex = max(ex, texture(uH, (p + uDir * (d / uStep)) / uN).r * uExag - (h0 + d * uTan));
   o = vec4(smoothstep(-3.0, 10.0, ex), 0.0, 0.0, 1.0);
 }`;
+// How much sky the ground's own folds hide from each texel of the heights: round the point, in 12 directions, how far
+// the horizon stands above the tangent plane (the drawn, exaggerated heights; sine of the angle between them, averaged),
+// out to uReach meters. A hollow, a gully or the foot of a cliff has it; a slope, a ridge or flat ground does not.
+const FS_TERAO = `${HEAD}
+uniform sampler2D uH;
+uniform float uN, uStep, uExag, uReach;
+out vec4 o;
+float sinAt(float t) { return t * inversesqrt(1.0 + t * t); }
+void main() {
+  vec2 p = gl_FragCoord.xy;
+  float h0 = texture(uH, p / uN).r * uExag;
+  vec2 g = vec2(texture(uH, (p + vec2(2.0, 0.0)) / uN).r - texture(uH, (p - vec2(2.0, 0.0)) / uN).r, texture(uH, (p + vec2(0.0, 2.0)) / uN).r - texture(uH, (p - vec2(0.0, 2.0)) / uN).r) * uExag / (4.0 * uStep);
+  float occ = 0.0;
+  for (int i = 0; i < 12; i++) {
+    float a = 6.2831853 * (float(i) + 0.5) / 12.0;
+    vec2 dir = vec2(cos(a), sin(a));
+    float tan0 = dot(g, dir), tanH = tan0;
+    for (float d = uStep; d < uReach; d *= 1.12) tanH = max(tanH, (texture(uH, (p + dir * (d / uStep)) / uN).r * uExag - h0) / d);
+    occ += sinAt(tanH) - sinAt(tan0);
+  }
+  o = vec4(0.0, occ / 12.0, 0.0, 1.0);
+}`;
 // The art buffer onto the canvas at (uD, scale uSc): nearest at a whole scale, else bilinear between the texels of its
 // uN-times nearest upscale, as present() draws with two canvases. A cross-fading level goes over at uAlpha.
 const FS_PRESENT = `${HEAD}
@@ -430,7 +497,7 @@ export function createGPU({ NCOL, HAZE, WATER, TONE, TONE_S }) {
     P = {
       chunk: program(VS_CHUNK, FS_SPLAT), dyn: program(VS_DYN, FS_SPLAT), fill: program(VS_FULL, FS_FILL), combine: program(VS_FULL, FS_COMBINE),
       composite: program(VS_FULL, FS_COMPOSITE), flat: program(VS_FULL, FS_FLAT), stat: program(VS_QUAD, FS_STATIC), present: program(VS_FULL, FS_PRESENT),
-      shade: program(VS_SHADE, FS_SHADE), sunmap: program(VS_FULL, FS_SUNMAP),
+      shade: program(VS_SHADE, FS_SHADE), sunmap: program(VS_FULL, FS_SUNMAP), terao: program(VS_FULL, FS_TERAO),
     };
   } catch (e) {
     throw new Error(`WebGL2 would not build the renderer's shaders: ${e.message}`, { cause: "build" });
@@ -447,11 +514,12 @@ export function createGPU({ NCOL, HAZE, WATER, TONE, TONE_S }) {
   const hazeTex = tex(gl.R8UI, NCOL, 1), lutTex = tex(gl.RGBA8, NCOL, ROWS), toneTex = tex(gl.R8UI, NCOL, TONE_S.length), eTex = tex(gl.R32F, 256, 256);
   upload(hazeTex, NCOL, 1, gl.RED_INTEGER, gl.UNSIGNED_BYTE, HAZE);
   upload(toneTex, NCOL, TONE_S.length, gl.RED_INTEGER, gl.UNSIGNED_BYTE, TONE);
-  // the sun map and the slopes, lit and flat stand-ins until the island's heights arrive
-  const lit = tex(gl.R8, 1, 1, gl.LINEAR), flatGrad = tex(gl.RG16F, 1, 1, gl.LINEAR);
-  upload(lit, 1, 1, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array(1));
-  upload(flatGrad, 1, 1, gl.RG, gl.FLOAT, new Float32Array(2));
-  let heights = null, job = null, shown = null;
+  // the sun map, the slopes and the canopy's cover, lit, flat and bare stand-ins until the island's heights and trees arrive
+  const lit = tex(gl.RG8, 1, 1, gl.LINEAR), flatGrad = tex(gl.RGBA16F, 1, 1, gl.LINEAR), noCan = tex(gl.R8, 1, 1, gl.LINEAR);
+  upload(lit, 1, 1, gl.RG, gl.UNSIGNED_BYTE, new Uint8Array(2));
+  upload(flatGrad, 1, 1, gl.RGBA, gl.FLOAT, new Float32Array(4));
+  upload(noCan, 1, 1, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array(1));
+  let heights = null, job = null, shown = null, canopy = null;
 
   // buffers sized to the compose slots' capacity; a view uses their top-left corner
   let cap = null;
@@ -527,21 +595,63 @@ export function createGPU({ NCOL, HAZE, WATER, TONE, TONE_S }) {
     }
   }
 
-  // The island's heights for the sun map, n x n, texel i at -4800 + i * step meters, and their slope for the light,
-  // taken over two steps each way. Half floats, which filter.
+  // The island's heights for the sun map, n x n, texel i at -4800 + i * step meters, and what the light reads from them
+  // (RGBA, taken over two steps each way): the slope in r and g, the trees' mean height in b (setCanopy) and the
+  // ground's own height in a. Half floats, which filter. The sun maps hold the sun's shadow in r and the ground's fold
+  // of the sky in g (setRelief).
   function setHeights(n, step, h) {
-    const ht = tex(gl.R16F, n, n, gl.LINEAR), grad = tex(gl.RG16F, n, n, gl.LINEAR), g = new Float32Array(n * n * 2);
+    const ht = tex(gl.R16F, n, n, gl.LINEAR), grad = tex(gl.RGBA16F, n, n, gl.LINEAR), g = new Float32Array(n * n * 4);
     const at = (i, j) => h[Math.min(n - 1, Math.max(0, j)) * n + Math.min(n - 1, Math.max(0, i))];
     for (let j = 0; j < n; j++)
       for (let i = 0; i < n; i++) {
-        g[(j * n + i) * 2] = (at(i + 2, j) + at(i + 1, j) - at(i - 1, j) - at(i - 2, j)) / (6 * step);
-        g[(j * n + i) * 2 + 1] = (at(i, j + 2) + at(i, j + 1) - at(i, j - 1) - at(i, j - 2)) / (6 * step);
+        const o = (j * n + i) * 4;
+        g[o] = (at(i + 2, j) + at(i + 1, j) - at(i - 1, j) - at(i - 2, j)) / (6 * step);
+        g[o + 1] = (at(i, j + 2) + at(i, j + 1) - at(i, j - 1) - at(i, j - 2)) / (6 * step);
+        g[o + 3] = h[j * n + i];
       }
     upload(ht, n, n, gl.RED, gl.FLOAT, h);
-    upload(grad, n, n, gl.RG, gl.FLOAT, g);
-    const maps = [0, 1].map(() => { const t = tex(gl.R8, n, n, gl.LINEAR); return { t, fb: target([t]) }; });
+    upload(grad, n, n, gl.RGBA, gl.FLOAT, g);
+    const maps = [0, 1].map(() => { const t = tex(gl.RG8, n, n, gl.LINEAR); return { t, fb: target([t]) }; });
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    heights = { n, step, ht, grad, maps, front: 0 }; job = shown = null;
+    heights = { n, step, ht, grad, g, maps, front: 0, exag: null }; job = shown = null;
+  }
+  // How much sky the ground's folds hide, traced once over the heights at the drawn exaggeration into the green of
+  // both sun maps; the sun's trace leaves it be.
+  function setRelief(exag) {
+    if (!heights || heights.exag === exag) return;
+    const { n, step } = heights;
+    gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.SCISSOR_TEST);
+    gl.useProgram(P.terao); gl.viewport(0, 0, n, n);
+    bind(P.terao, "uH", 0, heights.ht);
+    gl.uniform1f(P.terao.u("uN"), n); gl.uniform1f(P.terao.u("uStep"), step); gl.uniform1f(P.terao.u("uExag"), exag); gl.uniform1f(P.terao.u("uReach"), TER_REACH);
+    gl.colorMask(false, true, false, false);
+    for (const m of heights.maps) { gl.bindFramebuffer(gl.FRAMEBUFFER, m.fb); full(); }
+    gl.colorMask(true, true, true, true);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    heights.exag = exag;
+  }
+  // The trees' cover of the ground, n x n cells of `step` meters from -4800: bytes, 0..255 for crowns 0 to 2 deep. With it
+  // the trees' mean height in m by the heights' own grid (tall, n x n of setHeights), for the slopes' blue.
+  function setCanopy(n, step, bytes, tall) {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texStorage2D(gl.TEXTURE_2D, Math.floor(Math.log2(n)) + 1, gl.R8, n, n);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, n, n, gl.RED, gl.UNSIGNED_BYTE, bytes);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    if (canopy) gl.deleteTexture(canopy.t);
+    canopy = { n, step, t };
+    if (heights && tall) {
+      for (let i = 0; i < tall.length; i++) heights.g[i * 4 + 2] = tall[i];
+      upload(heights.grad, heights.n, heights.n, gl.RGBA, gl.FLOAT, heights.g);
+    }
+  }
+  // cells of the cover that changed: the w x h block at (x, y), its bytes in rows
+  function updateCanopy(x, y, w, h, bytes) {
+    if (!canopy) return;
+    gl.bindTexture(gl.TEXTURE_2D, canopy.t);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RED, gl.UNSIGNED_BYTE, bytes);
+    gl.generateMipmap(gl.TEXTURE_2D);
   }
   // The map for what casts shadows in a frame, the sun or the moon (sun: { dir: [x, z] toward it, tan of its elevation,
   // k how strongly it casts, exag }): once it has moved, traced into the back map SUN_STRIPES frames a pass, a stripe of
@@ -561,7 +671,9 @@ export function createGPU({ NCOL, HAZE, WATER, TONE, TONE_S }) {
     bind(P.sunmap, "uH", 0, heights.ht);
     gl.uniform1f(P.sunmap.u("uN"), n); gl.uniform1f(P.sunmap.u("uStep"), heights.step); gl.uniform1f(P.sunmap.u("uExag"), job.exag);
     gl.uniform1f(P.sunmap.u("uTan"), job.tan); gl.uniform2f(P.sunmap.u("uDir"), job.dir[0], job.dir[1]);
+    gl.colorMask(true, false, false, false);
     full();
+    gl.colorMask(true, true, true, true);
     gl.disable(gl.SCISSOR_TEST);
     job.row += rows;
     if (job.row >= n) { heights.front = 1 - heights.front; shown = job; job = null; stats.traces++; }
@@ -589,13 +701,25 @@ export function createGPU({ NCOL, HAZE, WATER, TONE, TONE_S }) {
     }
     gl.bindVertexArray(mainVao);
   }
-  // The light's uniforms for a program drawing camera `shade` (wo: world meters of its art px) with mask i. sun: what
-  // casts shadows, null where nothing does or for a turn's farther bearings, which have no mask; light: live.js's sky of
-  // the frame (L toward the key light, flat, relief, toneK); units: the texture units for the sun map, the mask, the
-  // slopes and the tones; spr: an upright thing's share of the key light as this view sees it.
+  // The ambient occlusion's knobs. on: 0 turns it off. k: the most of the sky's light a point can lose, 0..1. ter: how
+  // strongly the ground's folds count. can, tree: how strongly the trees' cover counts for the ground and for a tree's
+  // or another sprite's pixels, top the share of it the canopy's top keeps. self: the cover a tree's own crown puts at
+  // its foot, which its sprite does not take. key: the share of the key light that the canopy shades along with the
+  // sky's. dbg: 1 shows the occlusion alone.
+  const ao = { on: 1, k: 0.8, ter: 0.9, can: 1.8, tree: 3.4, top: 0.45, self: 0.12, key: 0.5, dbg: 0 };
+  // The sky's light and the key light's, which ambient occlusion takes its share from (live.js sky of the frame)
+  function setAO(p, light) {
+    gl.uniform3f(p.u("uAmbA"), light.A[0], light.A[1], light.A[2]); gl.uniform3f(p.u("uAmbK"), light.K[0], light.K[1], light.K[2]);
+    gl.uniform1f(p.u("uAoKey"), ao.key); gl.uniform1f(p.u("uAoDbg"), ao.dbg);
+  }
+  // The light's uniforms for a program drawing camera `shade` (wo: world meters of its art px; hpx: art px a meter of the
+  // ground's height rises, pv: those of a tree's) with mask i. sun: what casts shadows, null where nothing does or for a
+  // turn's farther bearings, which have no mask; light: live.js's sky of the frame (L toward the key light, flat, relief,
+  // toneK); units: the texture units for the sun map, the mask, the slopes, the tones and the canopy; spr: an upright
+  // thing's share of the key light as this view sees it.
   function setLight(p, sun, light, shade, i, g0, units, spr) {
     bind(p, "uSun", units[0], heights ? heights.maps[heights.front].t : lit); bind(p, "uMask", units[1], cap.masks[i]);
-    bind(p, "uGrad", units[2], heights ? heights.grad : flatGrad); bind(p, "uTone", units[3], toneTex);
+    bind(p, "uGrad", units[2], heights ? heights.grad : flatGrad); bind(p, "uTone", units[3], toneTex); bind(p, "uCan", units[4], canopy ? canopy.t : noCan);
     gl.uniform1f(p.u("uSunK"), sun && heights ? sun.k : 0);
     gl.uniform1f(p.u("uSunN"), heights?.n ?? 1); gl.uniform1f(p.u("uSunStep"), heights?.step ?? 1);
     const w = shade.wo;
@@ -604,6 +728,11 @@ export function createGPU({ NCOL, HAZE, WATER, TONE, TONE_S }) {
     gl.uniform3f(p.u("uKey"), light.L[0], light.L[1], light.L[2]); gl.uniform1f(p.u("uRelief"), light.relief);
     gl.uniform1f(p.u("uSpr"), spr); gl.uniform1f(p.u("uFlat"), light.flat); gl.uniform2ui(p.u("uWet"), wet[0], wet[1]);
     gl.uniform1f(p.u("uToneK"), light.toneK); gl.uniform1f(p.u("uToneLo"), TONE_S[0]); gl.uniform1f(p.u("uToneHi"), TONE_S[TONE_S.length - 1]);
+    gl.uniform1f(p.u("uAoK"), ao.on && heights ? ao.k : 0); gl.uniform1f(p.u("uAoTer"), ao.ter); gl.uniform1f(p.u("uAoCan"), canopy ? ao.can : 0); gl.uniform1f(p.u("uAoTree"), canopy ? ao.tree : 0);
+    gl.uniform1f(p.u("uAoTop"), ao.top); gl.uniform1f(p.u("uAoSelf"), ao.self);
+    gl.uniform1f(p.u("uCanN"), canopy?.n ?? 1); gl.uniform1f(p.u("uCanStep"), canopy?.step ?? 1);
+    gl.uniform1f(p.u("uHpx"), shade.hpx ?? 0); gl.uniform1f(p.u("uPv"), shade.pv ?? 1);
+    setAO(p, light);
   }
 
   let lutKey = null;
@@ -690,7 +819,7 @@ export function createGPU({ NCOL, HAZE, WATER, TONE, TONE_S }) {
       bind(P.flat, "uAL", 4, at.l); bind(P.flat, "uLut", 9, lutTex);
       bind(P.flat, "uOvT", 13, cap.ov[i].index); bind(P.flat, "uOvC", 14, cap.ov[i].c);
       setHaze(P.flat, haze, [cam.gx0, cam.gy0]);
-      setLight(P.flat, sun, light, shade, i, [cam.gx0, cam.gy0], [10, 11, 12, 15], spr);
+      setLight(P.flat, sun, light, shade, i, [cam.gx0, cam.gy0], [10, 11, 12, 15, 8], spr);
       gl.uniform1f(P.flat.u("uE1"), e1);
       full();
       present(out, AW, AH, cam.s, cam.dx, cam.dy, alpha, seaRGB);
@@ -732,21 +861,21 @@ export function createGPU({ NCOL, HAZE, WATER, TONE, TONE_S }) {
     };
     clearLayer(cap.M, true);
     pass(P.chunk, cap.M, TW, TH);
-    gl.uniform2f(P.chunk.u("uT"), TW, TH); warp(P.chunk, main.W); setLight(P.chunk, sun, light, main.shade, 0, main.g0, [4, 5, 6, 7], spr);
+    gl.uniform2f(P.chunk.u("uT"), TW, TH); warp(P.chunk, main.W); setLight(P.chunk, sun, light, main.shade, 0, main.g0, [4, 5, 6, 7, 8], spr);
     splat(main.chunks);
     if (dyn.n) {
       gl.useProgram(P.dyn);
       gl.uniform2f(P.dyn.u("uT"), TW, TH); warp(P.dyn, main.W);
       gl.uniform2i(P.dyn.u("uView"), main.AW, main.AH); gl.uniform1i(P.dyn.u("uTw"), dyn.tw);
       bind(P.dyn, "uZ", 0, at.z); bind(P.dyn, "uE", 1, eTex); bind(P.dyn, "uC", 2, at.c); bind(P.dyn, "uL", 3, at.l); bind(P.dyn, "uId", 4, at.id); bind(P.dyn, "uList", 5, cap.list); bind(P.dyn, "uAx", 6, at.ax);
-      setLight(P.dyn, sun, light, main.shade, 0, main.g0, [7, 8, 9, 10], spr);
+      setLight(P.dyn, sun, light, main.shade, 0, main.g0, [7, 8, 9, 10, 11], spr);
       gl.drawArrays(gl.POINTS, 0, dyn.n * TS * TS);
     }
     if (others.length) {
       clearLayer(cap.O, true);
       pass(P.chunk, cap.O, TW, TH);
       gl.uniform2f(P.chunk.u("uT"), TW, TH);
-      others.forEach((o, j) => { warp(P.chunk, o.W); setLight(P.chunk, j < 2 ? sun : null, light, o.shade, Math.min(2, 1 + j), o.g0, [4, 5, 6, 7], spr); splat(o.chunks); });
+      others.forEach((o, j) => { warp(P.chunk, o.W); setLight(P.chunk, j < 2 ? sun : null, light, o.shade, Math.min(2, 1 + j), o.g0, [4, 5, 6, 7, 8], spr); splat(o.chunks); });
     }
     gl.disable(gl.DEPTH_TEST);
     const fill = (src, dst, mode, step = 1) => {
@@ -767,7 +896,7 @@ export function createGPU({ NCOL, HAZE, WATER, TONE, TONE_S }) {
 
     gl.useProgram(P.composite); gl.bindFramebuffer(gl.FRAMEBUFFER, cap.artFb); gl.viewport(0, 0, TW, TH);
     bind(P.composite, "uS", 0, cur.s); bind(P.composite, "uOvT", 1, cap.ov[0].index); bind(P.composite, "uOvC", 2, cap.ov[0].c); bind(P.composite, "uLut", 3, lutTex);
-    setHaze(P.composite, haze, [target.gx0, target.gy0]);
+    setHaze(P.composite, haze, [target.gx0, target.gy0]); setAO(P.composite, light);
     gl.uniform1ui(P.composite.u("uSea"), sea); gl.uniform1uiv(P.composite.u("uWater"), water); gl.uniform1f(P.composite.u("uFlat"), light.flat);
     full();
     present(out, TW, TH, pres.s, pres.dx, pres.dy, 1, seaRGB);
@@ -785,6 +914,6 @@ export function createGPU({ NCOL, HAZE, WATER, TONE, TONE_S }) {
     canvas, stats, name, get lost() { return lost; }, get why() { return why; },
     // a frame starts: the upload budget refills
     begin() { frameNo++; budget = { left: UPLOADS_PER_FRAME, anim: ANIM_PER_FRAME }; },
-    chunk, setHeights, flat: run(drawFlat), turn: run(drawTurn),
+    chunk, setHeights, setRelief, setCanopy, updateCanopy, ao, flat: run(drawFlat), turn: run(drawTurn),
   };
 }

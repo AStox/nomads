@@ -1419,11 +1419,12 @@ function worldShadow(w, b) {
 }
 const wsample = (g, x, z) => { const fx = clamp((x + 4800) / WS, 0, WN - 1.001), fz = clamp((z + 4800) / WS, 0, WN - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, c = fz - j, k = j * WN + i; return (g[k] * (1 - a) + g[k + 1] * a) * (1 - c) + (g[k + WN] * (1 - a) + g[k + WN + 1] * a) * c; };
 // the terrain's light at a world point for bearing b: slope light, less occlusion in hollows, less the cast shadow.
-// With V.realtime the GPU lights the slopes and casts the shadows for the hour, so only the occlusion is baked.
+// With V.realtime the GPU lights the slopes and casts the shadows for the hour, so only the occlusion is baked; and with
+// V.aoGpu it takes the hollows' share of the sky as well (gpu.js ambient occlusion), leaving only the ridges' light here.
 export function terrainLight(w, V, x, z) {
   const ao = wsample(worldAO(w), x, z), sh = V.realtime ? 0 : wsample(worldShadow(w, V.bearing), x, z) / 255;
   TL.sh = sh;
-  const s = Math.min(0, ao) * 1.1 + Math.max(0, ao) * 0.4 - sh * 1.5;
+  const s = (V.aoGpu ? 0 : Math.min(0, ao) * 1.1) + Math.max(0, ao) * 0.4 - sh * 1.5;
   if (V.realtime) return s;
   const gg = worldGrad(w, x, z);
   return s + lightOf(gg[0] * V.eu[0] + gg[1] * V.eu[1], gg[0] * V.ev[0] + gg[1] * V.ev[1]);

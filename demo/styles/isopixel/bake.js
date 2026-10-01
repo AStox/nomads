@@ -16,8 +16,9 @@ let w = null;
 // views in all, so touring every bearing and zoom cannot grow the worker
 const levels = new Map(), MAPS_KEPT = 3, LEVELS_KEPT = 8;
 // the live world, sent by the page whenever the sim changes it: its objects, worn paths and ice; realtime: the page
-// lights the slopes and casts the shadows on the GPU for the hour, so the bake does neither
-const D = { version: 0, objs: null, trail: null, ice: new Uint8Array(64 * 64), season: "spring", realtime: false };
+// lights the slopes and casts the shadows on the GPU for the hour, so the bake does neither; ao: and it takes the sky's
+// light from the hollows (ambient occlusion), so the bake leaves the hollows alone
+const D = { version: 0, objs: null, trail: null, ice: new Uint8Array(64 * 64), season: "spring", realtime: false, ao: false };
 
 const SIM = 150, SIM0 = -4800;
 const simTile = (x, z) => [Math.floor((x - SIM0) / SIM), Math.floor((z - SIM0) / SIM)];
@@ -62,7 +63,7 @@ function bake(msg) {
       }
     ground = { i0: V.i0, j0: V.j0, w: gw, h: gh, C, diag, kind };
   }
-  V.trail = D.trail; V.season = D.season; V.realtime = D.realtime;
+  V.trail = D.trail; V.season = D.season; V.realtime = D.realtime; V.aoGpu = D.realtime && D.ao;
   // the sim freezes whole 150 m tiles; between a frozen tile and an open one the ice edge wanders instead of ruling a line
   const ice = (tx, ty) => (tx >= 0 && ty >= 0 && tx < 64 && ty < 64 && D.ice[ty * 64 + tx] === 1 ? 1 : 0);
   V.iceAt = (x, z) => {
@@ -172,7 +173,7 @@ const handle = async (e) => {
   if (m.type === "init") {
     const t0 = performance.now();
     w = grow(m.seed);
-    D.debug = !!m.debug; D.realtime = !!m.realtime;
+    D.debug = !!m.debug; D.realtime = !!m.realtime; D.ao = !!m.ao;
     L.setLife(await import("./life.js").catch(() => ({})));
     L.setThings(await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {})));
     postMessage({ type: "ready", ms: performance.now() - t0 });

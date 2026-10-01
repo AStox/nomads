@@ -10,6 +10,7 @@ import { Buf, ObjBins, blit, castShadow, shadowRows, bayer, h2 } from "./px.js";
 import * as SP from "./sprites.js";
 import { text } from "./ui.js";
 import { createGPU, TS, TPR, LEVELS } from "./gpu.js";
+import { Canopy, STEP as CAN_STEP, N as CAN_N } from "./canopy.js";
 
 const CS = 256, SIM = 150, ORIGIN = -4800, DAY = 288, YEAR = DAY * 40, TAU = Math.PI * 2, NL = 9, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -44,12 +45,14 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   let gpu = null, gpuOff = null;
   try { gpu = createGPU({ NCOL, HAZE, TONE, TONE_S, WATER: ["w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"].map((k) => P[k]) }); } catch (e) { gpuOff = { cause: e.cause ?? "build", why: e.message }; console.warn(`the GPU renderer is off: ${e.message}`); }
   let bakedSun = !gpu;
+  // ?ao=0 draws without ambient occlusion, ?ao=dbg shows it alone (gpu.js ao has the rest of its knobs)
+  if (gpu) { const a = new URLSearchParams(location.search).get("ao"); if (a === "0") gpu.ao.on = 0; else if (a === "dbg") gpu.ao.dbg = 1; }
   const tStart = performance.now(), classWait = new Map();
   const pool = [], maps = new Map(), mapPending = new Map();
   const stats = { fps: 0, composeMs: 0, bakeQueue: 0, bakedChunks: 0, bakeMsAvg: 0, memMB: 0, firstFrameMs: 0, growMs: 0, mapMs: {}, workers: n, slots: 1 };
   let bakeN = 0, bakeSum = 0;
   const cache = new Map();
-  let cacheBytes = 0, stateVer = 0, simRef = null, synced = false;
+  let cacheBytes = 0, stateVer = 0, simRef = null, synced = false, hgrid = null;
   const grounds = new Map();
 
   const onChunk = (wk, m) => {
@@ -85,7 +88,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
         else if (m.type === "classes") classWait.get(m.id)?.(m.out);
         else onChunk(wk, m);
       };
-      wk.postMessage({ type: "init", seed, debug: check, realtime: !bakedSun });
+      wk.postMessage({ type: "init", seed, debug: check, realtime: !bakedSun, ao: !bakedSun && gpu.ao.on === 1 });
       pool.push(wk);
     }
   });
@@ -158,7 +161,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   let onHeights = null;
   const HG = await new Promise((r) => { onHeights = r; pool[0].postMessage({ type: "heights", step: 25 }); });
   // a finer grid for the GPU to trace the sun's shadows over, as the bake traced its own
-  if (gpu) { const S = await new Promise((r) => { onHeights = r; pool[0].postMessage({ type: "heights", step: 12.5 }); }); gpu.setHeights(S.n, S.step, S.h); }
+  if (gpu) { const S = await new Promise((r) => { onHeights = r; pool[0].postMessage({ type: "heights", step: 12.5 }); }); gpu.setHeights(S.n, S.step, S.h); hgrid = { n: S.n, step: S.step }; }
   const heightM = (x, z) => {
     const fx = clamp((x + 4800) / HG.step, 0, HG.n - 1.001), fz = clamp((z + 4800) / HG.step, 0, HG.n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = j * HG.n + i, h = HG.h;
     return (h[k] * (1 - a) + h[k + 1] * a) * (1 - b) + (h[k + HG.n] * (1 - a) + h[k + HG.n + 1] * a) * b;
@@ -167,6 +170,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   onProgress?.(1, 1, "building the map");
   const PL = Array.from({ length: NL }, (_, L) => maps.get(mk(L, 0)).p);
   const EXG = maps.get(mk(0, 0)).exag;
+  gpu?.setRelief(EXG);
   // screen px a meter of height rises, per screen px per meter across; the maps' levelM carries EXAG
   const VK = maps.get(mk(0, 0)).lp / (maps.get(mk(0, 0)).levelM * PL[0]);
   // one camera height for all levels: ground blurred 300 m or more, until VK * sqrt2 * |grad| <= 0.5 keeps solves well posed
@@ -310,6 +314,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   function sync(sim) {
     const W = sim.w, o = sim.objects();
     bins = new ObjBins(o);
+    buildCanopy(o);
     liveThings.clear();
     for (const t of W.things) if (!t.contained && isLive(t)) liveThings.set(t.id, t);
     lastIce = iceFlags(W.ice);
@@ -320,6 +325,32 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     // everything baked so far was baked without the sim's objects
     for (const ch of cache.values()) ch.need = stateVer;
     synced = true;
+  }
+  // The trees' cover for the GPU's ambient occlusion (canopy.js), built a few milliseconds at a time: the sim's changes
+  // meanwhile wait their turn. Later changes go straight in, and up to the GPU a few times a second.
+  let canopy = null, canopyJob = 0, canopyWait = [], canopyAt = 0;
+  function buildCanopy(o) {
+    if (!gpu || !hgrid) return;
+    const job = ++canopyJob, t0 = performance.now();
+    canopy = null; canopyWait = [];
+    Canopy.build(o, toM, hgrid).then((c) => {
+      if (job !== canopyJob) return;
+      for (const [old, now] of canopyWait) c.change(old, now, bins.kinds, bins.species);
+      canopyWait = [];
+      gpu.setCanopy(CAN_N, CAN_STEP, c.bytes(), c.tall);
+      c.box = null;
+      canopy = c;
+      stats.canopyMs = Math.round(performance.now() - t0);
+    });
+  }
+  const track = (old, now) => { if (canopy) canopy.change(old, now, bins.kinds, bins.species); else if (canopyJob) canopyWait.push([old, now]); };
+  // up to the GPU at most every 0.4 s, and every 2 s where the change spans more than 400k cells
+  function flushCanopy(now) {
+    const b = canopy?.box;
+    if (!b || b[2] < 0 || now - canopyAt < ((b[2] - b[0] + 1) * (b[3] - b[1] + 1) > 4e5 ? 2000 : 400)) return;
+    canopyAt = now;
+    const u = canopy.flush();
+    gpu.updateCanopy(u.x, u.y, u.w, u.h, u.bytes);
   }
   const iceFlags = (ice) => { const f = new Array(4096).fill(0); if (ice) for (const i of ice) f[i] = 1; return f; };
   // mark every cached chunk that can show part of a world rectangle as stale; it keeps showing until the rebake lands.
@@ -337,7 +368,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     if (!ch || !simRef) return;
     if (!synced) { sync(simRef); return; }
     const W = simRef.w, up = [], rm = [], touched = [];
-    const gone = (id) => { const old = bins.get(id); if (old) { bins.drop(id); rm.push(id); touched.push(old); } };
+    const gone = (id) => { const old = bins.get(id); if (old) { bins.drop(id); rm.push(id); touched.push(old); track(old, null); } };
     for (const t of ch.things || []) {
       const id = numId(t.id);
       if (t.contained || isLive(t)) {
@@ -349,7 +380,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       const r = bins.recOf(t), old = bins.get(id);
       if (old && old.kind === r.kind && old.sp === r.sp && old.px === r.px && old.py === r.py && old.size === r.size && old.seed === r.seed && (old.n > 0) === (r.n > 0)) continue;
       if (old) touched.push(old);
-      bins.upsert(r); up.push(r); touched.push(r);
+      bins.upsert(r); up.push(r); touched.push(r); track(old, r);
     }
     for (const sid of ch.removed || []) { liveThings.delete(sid); gone(numId(sid)); }
     const msg = {};
@@ -1157,7 +1188,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   function shadeFor(cam, sun, fr, sl) {
     const md = cam.md, k2 = md.tileM / (2 * md.H), k4 = md.tileM / (4 * md.H);
     const a = [(md.eu[0] - md.ev[0]) * k2, (md.eu[1] - md.ev[1]) * k2], b = [(md.eu[0] + md.ev[0]) * k4, (md.eu[1] + md.ev[1]) * k4];
-    const shade = { wo: [md.ox + cam.gx0 * a[0] + cam.gy0 * b[0], md.oz + cam.gx0 * a[1] + cam.gy0 * b[1], a[0], a[1], b[0], b[1]], vec: [0, 0], list: [], live: sl?.cast.length ? Int16Array.from(sl.cast) : null };
+    const shade = { wo: [md.ox + cam.gx0 * a[0] + cam.gy0 * b[0], md.oz + cam.gx0 * a[1] + cam.gy0 * b[1], a[0], a[1], b[0], b[1]], vec: [0, 0], list: [], live: sl?.cast.length ? Int16Array.from(sl.cast) : null, hpx: md.lp / md.levelM, pv: md.k * 0.866 * md.treeK };
     if (!sun) return shade;
     // a row k art px above its anchor falls k * vec from it, and is no wider than the tallest sprite
     const [vx, vy] = (shade.vec = sunStep(md, sun)), t = md.tall + 8;
@@ -1254,6 +1285,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const now = performance.now(), t0 = now;
     if (sim) { simRef = sim; if (!synced) sync(sim); }
     ensureSlots();
+    if (gpu) flushCanopy(now);
     const pl = plan(view);
     if (now - scheduled > SCHEDULE_MS || workerFree) { scheduled = now; workerFree = false; schedule(view, pl); }
     const clock = sim?.clock?.() ?? { hour: 8, day: 1 };
@@ -1480,7 +1512,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     zmax: ZMAX, named, levels, ppm: (z) => ppmOf(clamp(z, 0, ZMAX)), levelFor,
     readiness, prefetch: (views) => { prefetchViews = views || []; }, centreOn, camH, screenOf, solveTarget, groundUnder,
     // what draws the frames: the GPU, and which, or the CPU and why (cause "none": no WebGL2, "build", or "lost")
-    renderer: () => (gpu && !gpu.lost ? { gpu: true, name: gpu.name } : { gpu: false, ...(gpuOff ?? { cause: "lost", why: gpu?.why || "the GPU renderer stopped" }) }),
+    renderer: () => (gpu && !gpu.lost ? { gpu: true, name: gpu.name, ao: gpu.ao } : { gpu: false, ...(gpuOff ?? { cause: "lost", why: gpu?.why || "the GPU renderer stopped" }) }),
     picks: () => lastPick.map((p) => ({ kind: p.kind, id: p.id, sx: p.sx, sy: p.sy })),
     // the last frame's sky (skyFor): sun and moon ({ dir, el in radians; the moon's phase and lit share }), e: the sun's
     // elevation in degrees, cloud: the cover it is lit under, 0 to 1
