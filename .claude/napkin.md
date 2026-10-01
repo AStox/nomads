@@ -9,7 +9,7 @@
 ## Execution & Validation (Highest Priority)
 1. **[2026-09-26] Other agents work in this checkout too**
    A second Paseo agent may have uncommitted edits here and a paid Jev run going on the live world.
-   Do instead: before merging or restarting, check `git status` here and `list_agents` for a running nomads agent. If either is busy, leave your work on a branch and ask.
+   Do instead: before merging or restarting, check `git status` here and `list_agents` for a running nomads agent. If either is busy, ask before touching what it uses. Work on main and commit and push to main (the operator's rule since 2026-10-01); no feature branches.
 2. **[2026-09-26] The live service serves this checkout**
    nomads.service runs `bun server.ts` here (branch web-v1, port 8095). public/ is read from disk on every request, so client edits go live at once; server edits go live on restart.
    Do instead: work in a git worktree, test it as an offline copy on another port, then fast-forward web-v1, `bun install`, and `systemctl restart nomads`.
