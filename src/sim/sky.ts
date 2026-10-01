@@ -22,6 +22,12 @@ export function declination(day: number, hour: number) {
   return TILT * Math.sin((2 * Math.PI * (d - YEAR_DAYS / 8)) / YEAR_DAYS);
 }
 
+// Hours between sunrise and sunset on day `day`.
+export function daylight(day: number) {
+  const c = -Math.tan(LAT) * Math.tan(declination(day, NOON));
+  return (Math.acos(Math.max(-1, Math.min(1, c))) * 24) / Math.PI;
+}
+
 // dir: toward it across the ground (x east, z south), el: its elevation in radians, tan: of the angle its beam makes
 type Body = { dir: [number, number]; el: number; tan: number };
 function bodyAt(H: number, dec: number): Body {

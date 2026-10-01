@@ -1,7 +1,10 @@
 // What the animals do each tick: graze, wander, flee, hunt, swim, fly, perch and feed. Speeds are meters a tick of
 // five minutes' game time, the way a person's are; what each kind is like is in fauna.ts.
 import { THING_MATERIAL } from "./materials";
-import { TILE_M, Tile, H, W, dryAt, shoreByTile, shoreOf, isNight, landing, log, meters, tileAt, walkable, wetAt, type Agent, type Animal, type AnimalSpecies, type Thing, type World } from "./world";
+import { TILE_M, H, W, dryAt, groundOf, shoreByTile, shoreOf, isNight, landing, log, meters, walkable, wetAt, type Agent, type Animal, type AnimalSpecies, type Thing, type World } from "./world";
+import { SIZE } from "../terrain/flora";
+import { snowAt } from "./air";
+import { breeding, coldBite, warmRate } from "./cues";
 import { anyOf, liveThings, nearestThing, onPath, put, thingById } from "./space";
 import { steer } from "./walk";
 import { dropPile, mark, removeThing } from "./physics";
@@ -59,9 +62,16 @@ function nibble(w: World, an: Animal) {
   t.hp = (t.hp ?? 3) - 1; t.size = Math.round(t.size * 80) / 100; mark(w, t);
 }
 
-function deer(w: World, d: Animal, n: Near, season: string) {
-  const winter = season === "winter";
-  d.hunger -= winter ? 0.1 : 0.05;
+// How much grass grows at a point, and how much of it the snow leaves to get at, 0..1 (the generator's cover).
+function forage(w: World, an: Animal) {
+  const { fine } = groundOf(w.seed), x = an.px * TILE_M - SIZE / 2, z = an.py * TILE_M - SIZE / 2;
+  return fine.fine(fine.cover.grass, x, z) * (1 - 0.7 * snowAt(w, an.px, an.py));
+}
+
+function deer(w: World, d: Animal, n: Near) {
+  // the cold burns more of what a deer has eaten, and the grass grows little in it
+  const cold = coldBite(w.weather.temp);
+  d.hunger -= 0.05 + 0.05 * cold;
   const threat = closest(d, n.wolves, 60) ?? closest(d, n.awake, 30);
   if (threat || d.hp < d.maxHp * 0.6) {
     setState(w, d, "flee");
@@ -69,13 +79,13 @@ function deer(w: World, d: Animal, n: Near, season: string) {
     if (threat) away(w, d, threat, inState(w, d) > 4 ? 2 : FAUNA.deer.run);
     else roam(w, d, 40, FAUNA.deer.walk);
   } else {
-    const grass = tileAt(w, d.x, d.y) === Tile.Grass && d.hunger < 90;
+    const food = d.hunger < 90 ? forage(w, d) : 0, grass = food > 0.25;
     setState(w, d, grass ? "graze" : "wander");
-    if (grass) { d.hunger = Math.min(100, d.hunger + (winter ? 0.12 : 0.35)); nibble(w, d); }
+    if (grass) { d.hunger = Math.min(100, d.hunger + 0.35 * Math.min(1, food * 1.6) * (0.35 + 0.65 * warmRate(w.weather.temp))); nibble(w, d); }
     const mate = closest(d, n.deer, 200);
     if (mate && meters(d, mate) > 25 && Math.random() < 0.3) goTo(w, d, mate.px, mate.py, FAUNA.deer.walk);
     else if (!grass || Math.random() < 0.15) roam(w, d, 60, FAUNA.deer.walk);
-    if ((season === "spring" || season === "summer") && mate && meters(d, mate) <= 10 && d.hunger > 55 && n.deer.length < 18 && Math.random() < 1 / 400) {
+    if (breeding(w.t) && mate && meters(d, mate) <= 10 && d.hunger > 55 && n.deer.length < 18 && Math.random() < 1 / 400) {
       n.deer.push(addAnimal(w, "deer", d.px, d.py, { home: d.home }));
       log(w, "birth", [], d, "A fawn was born.");
     }
@@ -83,9 +93,9 @@ function deer(w: World, d: Animal, n: Near, season: string) {
   if (d.hunger <= 0) { carcass(w, d); log(w, "death", [], d, "A deer starved."); }
 }
 
-function wolf(w: World, wf: Animal, n: Near, season: string) {
-  const winter = season === "winter";
-  wf.hunger -= winter ? 0.12 : 0.08;
+function wolf(w: World, wf: Animal, n: Near) {
+  const cold = coldBite(w.weather.temp);
+  wf.hunger -= 0.08 + 0.04 * cold;
   const fire = closest(wf, n.fires, 40), crowd = n.awake.filter((a) => meters(a, wf) <= 15).length >= 2;
   if (fire || crowd || wf.hp < wf.maxHp * 0.4) {
     setState(w, wf, "flee");
@@ -105,8 +115,8 @@ function wolf(w: World, wf: Animal, n: Near, season: string) {
   }
   const prey = wf.hunger < 50 ? closest(wf, n.deer, 400) ?? closest(wf, n.rabbits, 100) : null;
   const lone = (a: Agent) => n.awake.every((b) => b === a || meters(a, b) > 30) && !closest(a, n.fires, 40);
-  // A starving wolf takes anyone alone; a hungry one waits for winter, or for a person to be out in the dark.
-  const stalks = (a: Agent) => wf.hunger < 12 || (wf.hunger < 30 && (winter || lightOn(w, a).bright < DARK));
+  // A starving wolf takes anyone alone; a hungry one waits for hard cold or snow, or for a person to be out in the dark.
+  const stalks = (a: Agent) => wf.hunger < 12 || (wf.hunger < 30 && (cold > 0.6 || snowAt(w, a.px, a.py) > 0.5 || lightOn(w, a).bright < DARK));
   const person = !prey && wf.hunger < 30 ? closest(wf, n.awake, 150, (a) => lone(a) && stalks(a)) : null;
   const target: Animal | Agent | null = person ?? prey;
   if (!target) {
@@ -140,7 +150,7 @@ function rabbit(w: World, r: Animal, n: Near) {
   const threat = closest(r, n.awake, 15) ?? closest(r, n.wolves, 40) ?? diving ?? null;
   // A rabbit bolts a few ticks, then freezes flat and hopes not to be seen.
   if (threat) { setState(w, r, "flee"); if (inState(w, r) <= 3) away(w, r, threat, FAUNA.rabbit.run); return; }
-  setState(w, r, tileAt(w, r.x, r.y) === Tile.Grass ? "graze" : "wander");
+  setState(w, r, forage(w, r) > 0.25 ? "graze" : "wander");
   if (r.state === "graze") nibble(w, r);
   // Grazing rabbits sit still, then hop a couple of meters.
   roam(w, r, 25, 2, 0.12);
@@ -352,18 +362,17 @@ function caught(w: World, an: Animal, x0: number, y0: number) {
 }
 
 export function animals(w: World) {
-  const season = w.weather.season, spring = season === "spring";
   const awake = w.agents.filter((a) => a.down <= w.t);
   const of = (s: AnimalSpecies) => w.animals.filter((a) => a.species === s);
   const fires = [...liveThings(w)].filter((t) => t.kind === "fire");
   const n: Near = { awake, fires, wolves: of("wolf"), deer: of("deer"), rabbits: of("rabbit"), eagles: of("eagle"), fish: of("fish") };
-  const warm = (spring || season === "summer") && w.weather.temp > 8;
+  const warm = warmRate(w.weather.temp) > 0.3;
   for (const an of [...w.animals]) {
     if (an.state === "trapped" || !w.animals.includes(an)) continue;
     const x0 = an.px, y0 = an.py;
     switch (an.species) {
-      case "deer": deer(w, an, n, season); break;
-      case "wolf": wolf(w, an, n, season); break;
+      case "deer": deer(w, an, n); break;
+      case "wolf": wolf(w, an, n); break;
       case "rabbit": rabbit(w, an, n); break;
       case "fish": fish(w, an); break;
       case "heron": heron(w, an, n); break;
@@ -384,12 +393,12 @@ export function animals(w: World) {
   };
   if (deerNow < 4 && Math.random() < 1 / 1500) ashore("deer", 2, "A pair of deer swam ashore.");
   if (deerNow >= 8 && !wolves.length && Math.random() < 1 / 4000) ashore("wolf", 2, "Wolves came across the water, following the deer.");
-  if (spring && wolves.length >= 2 && wolves.length < 6 && Math.random() < 1 / 4000) {
+  if (breeding(w.t) && wolves.length >= 2 && wolves.length < 6 && Math.random() < 1 / 4000) {
     addAnimal(w, "wolf", wolves[0].px, wolves[0].py, { home: wolves[0].home });
     log(w, "birth", [], wolves[0], "A wolf pup was born.");
   }
   const rabbits = n.rabbits.filter((r) => w.animals.includes(r));
-  if ((spring || season === "summer") && rabbits.length >= 2 && rabbits.length < 120 && Math.random() < rabbits.length / 2500) {
+  if (breeding(w.t) && rabbits.length >= 2 && rabbits.length < 120 && Math.random() < rabbits.length / 2500) {
     const mom = rabbits[Math.floor(Math.random() * rabbits.length)];
     addAnimal(w, "rabbit", mom.px, mom.py, { home: mom.home, state: "graze" });
   }
@@ -398,9 +407,9 @@ export function animals(w: World) {
     const mom = fishes[Math.floor(Math.random() * fishes.length)];
     addAnimal(w, "fish", mom.px, mom.py, { home: mom.home });
   }
-  // Butterflies live out the warm half of the year; new ones hatch among the flowers each spring.
-  if (season === "winter" && w.animals.some((a) => a.species === "butterfly")) w.animals = w.animals.filter((a) => a.species !== "butterfly");
-  if (spring && Math.random() < 0.05 && w.animals.filter((a) => a.species === "butterfly").length < 90) {
+  // Butterflies live while the air is warm, and frost kills them; new ones hatch among the flowers as the days draw out.
+  if (w.weather.temp < 2 && w.animals.some((a) => a.species === "butterfly")) w.animals = w.animals.filter((a) => a.species !== "butterfly");
+  if (breeding(w.t) && warm && Math.random() < 0.05 && w.animals.filter((a) => a.species === "butterfly").length < 90) {
     const f = anyOf(w, "flowers");
     if (f) addAnimal(w, "butterfly", f.px, f.py, { home: [f.px, f.py], alt: 0.5, state: "flutter" });
   }

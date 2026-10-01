@@ -71,6 +71,13 @@ export function airOn(w: World, e: { px: number; py: number }, sheltered = false
   memo.set(e, { t: w.t, px: e.px, py: e.py, sheltered, air });
   return air;
 }
+// How much of the ground snow covers at a point now: the generator's snowpack for the time of year, drawn between the
+// seasons' means, thin from a few millimetres of water and whole by thirty.
+export function snowAt(w: World, px: number, py: number) {
+  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), { s, f } = seasonAt(w.t);
+  const pack = field(isle.seasons[s].snowpack, px, py, n) * (1 - f) + field(isle.seasons[(s + 1) % 4].snowpack, px, py, n) * f, x = Math.max(0, Math.min(1, (pack - 3) / 27));
+  return x * x * (3 - 2 * x);
+}
 // Environment Canada's wind chill index, for air at or below 10 °C and a wind at head height (taken as three quarters of
 // the 10 m wind the index is reckoned in).
 export function chill(t: number, v: number) {

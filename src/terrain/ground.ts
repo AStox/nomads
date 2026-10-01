@@ -17,6 +17,7 @@ export type Ground = {
   ph: Float32Array; // soil pH
   fertility: Float32Array; // 0..1 the nourishment roots can take from it
   moist: Float32Array; // 0..1 water available to roots through the growing season
+  soilWater: Float32Array[]; // 0..1 how full the soil is at the end of each season
   tree: Float32Array; shrub: Float32Array; grass: Float32Array; marsh: Float32Array; bare: Float32Array; // cover shares, sum to 1
 };
 
@@ -29,6 +30,7 @@ export type Site = {
 export function ground(s: Site): Ground {
   const { height: h } = s;
   const soil = new Float32Array(LEN), silt = new Float32Array(LEN), sand = new Float32Array(LEN), peat = new Float32Array(LEN), moist = new Float32Array(LEN);
+  const soilWater = [0, 1, 2, 3].map(() => new Float32Array(LEN).fill(1));
   const sandy = new Float32Array(LEN), clayey = new Float32Array(LEN), humus = new Float32Array(LEN), ph = new Float32Array(LEN).fill(7), fertility = new Float32Array(LEN);
   const tree = new Float32Array(LEN), shrub = new Float32Array(LEN), grass = new Float32Array(LEN), marsh = new Float32Array(LEN), bare = new Float32Array(LEN);
   // Slope and curvature over a smoothed surface, so soil answers to hillsides and hollows rather than single cells.
@@ -85,7 +87,7 @@ export function ground(s: Site): Ground {
       for (let k = 0; k < 4; k++) {
         const { precip, pet } = s.seasons[k], have = store + precip[i], used = Math.min(pet[i], have);
         store = Math.min(cap, have - used);
-        if (year) { short += pet[i] - used; want += pet[i]; }
+        if (year) { short += pet[i] - used; want += pet[i]; soilWater[k][i] = Math.max(store / cap, Math.exp(-s.table[i] / 2.5)); }
       }
     moist[i] = Math.max(want > 0 ? 1 - short / want : 1, Math.exp(-s.table[i] / 2.5));
     const summer = s.seasons[1].temp[i];
@@ -105,5 +107,5 @@ export function ground(s: Site): Ground {
     grass[i] = pGrass * (1 - tree[i] - shrub[i] - marsh[i]);
     bare[i] = Math.max(0, 1 - tree[i] - shrub[i] - marsh[i] - grass[i]);
   }
-  return { soil, silt, sand, peat, sandy, clayey, humus, ph, fertility, moist, tree, shrub, grass, marsh, bare };
+  return { soil, silt, sand, peat, sandy, clayey, humus, ph, fertility, moist, soilWater, tree, shrub, grass, marsh, bare };
 }

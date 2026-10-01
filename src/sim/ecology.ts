@@ -9,11 +9,13 @@ import {
 import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
-import { growRate } from "./light";
-import { enrich, feedRate, settle } from "./soil";
-import { SIZE, rockAt } from "../terrain/flora";
-import { CELL } from "../terrain/grid";
-import { WIND, baseTemp, swing } from "./air";
+import { enrich, settle } from "./soil";
+import { SIZE, TREES, rockAt } from "../terrain/flora";
+import { fitHere, growth, pickHere } from "./plants";
+import { ripening, warmRate } from "./cues";
+import { streamNow } from "./streams";
+import { WIND, baseTemp, seasonAt, swing } from "./air";
+import { SEASONS } from "../terrain/climate";
 import { count, timed, trace } from "./trace";
 
 export const pathChanges = new Set<number>();
@@ -24,7 +26,8 @@ export const burnedHomes: { owner: string; by?: string; text: string }[] = [];
 const rainy = (w: World) => w.weather.sky === "rain" || w.weather.sky === "storm";
 
 // ---------- weather and seasons ----------
-const RAIN_START: Record<string, number> = { spring: 0.14, summer: 0.05, autumn: 0.2, winter: 0.12 };
+// The time of year's share of the year's storms, drawn between the seasons' as the air is.
+const stormShare = (t: number) => { const { s, f } = seasonAt(t); return SEASONS[s].wet * (1 - f) + SEASONS[(s + 1) % 4].wet * f; };
 function weather(w: World) {
   const wx = w.weather;
   const season = seasonOf(w.t);
@@ -38,8 +41,10 @@ function weather(w: World) {
     const before = wx.sky;
     const r = Math.random();
     if (wx.sky === "clear") wx.sky = r < 0.25 ? "cloudy" : "clear";
-    else if (wx.sky === "cloudy") wx.sky = r < RAIN_START[season] * 2 ? "rain" : r < 0.4 ? "clear" : "cloudy";
-    else if (wx.sky === "rain") wx.sky = r < 0.25 ? "cloudy" : r < (season === "summer" || season === "autumn" ? 0.33 : 0.28) ? "storm" : "rain";
+    // cloud turns to rain as often as the time of year brings its share of the year's storms (climate.ts SEASONS), and
+    // rain to storm the more often the warmer the air, which feeds the thunderheads
+    else if (wx.sky === "cloudy") wx.sky = r < stormShare(w.t) * 1.1 ? "rain" : r < 0.4 ? "clear" : "cloudy";
+    else if (wx.sky === "rain") wx.sky = r < 0.25 ? "cloudy" : r < 0.27 + 0.06 * warmRate(wx.temp) ? "storm" : "rain";
     else wx.sky = r < 0.35 ? "rain" : "storm";
     // The wind wanders, but keeps coming back to blow the way it prevails, the way that laid the island's rain.
     const [px, py] = w.terrain.wind, pull = (v: number, p: number) => clamp(v + (p * 0.5 - v) * 0.02 + (Math.random() - 0.5) * 0.3, -1, 1);
@@ -56,7 +61,8 @@ function weather(w: World) {
   wx.temp = baseTemp(w.t) + swing(w.t, wx.sky) - (rainy(w) ? 2 : 0);
   wx.dryTicks = rainy(w) ? 0 : wx.dryTicks + 1;
   if (w.t % 12 === 0) ice(w);
-  const drought = season === "summer" && wx.dryTicks > DAY * 4;
+  // days without rain in warm weather dry everything out
+  const drought = wx.dryTicks > DAY * 4 && baseTemp(w.t) > 14;
   if (drought && !wx.drought) log(w, "weather", [], { x: W / 2, y: H / 2 }, "It hasn't rained in days. Everything is bone dry.");
   wx.drought = drought;
   if (wx.sky === "storm" && Math.random() < 1 / 150) {
@@ -153,7 +159,8 @@ function dryness(w: World) {
   const wx = w.weather;
   if (wx.sky === "storm") return 0.03;
   if (wx.sky === "rain") return 0.05;
-  return wx.drought ? 1.6 : wx.season === "summer" ? 1.1 : wx.season === "winter" ? 0.4 : 0.8;
+  // dry fuel burns the better the warmer and the longer since rain
+  return wx.drought ? 1.6 : (0.4 + 0.75 * warmRate(wx.temp)) * (1 - 0.5 * wx.wet);
 }
 export function flammability(w: World, t: Thing) {
   if (t.kind === "structure") return t.shelter?.flam ?? 0.5;
@@ -230,10 +237,12 @@ function fire(w: World, live: Thing[]) {
 }
 
 // ---------- plants ----------
+// Nothing here asks the season or what a tile is called. Plants grow by the air's warmth, the soil's water, the light and
+// the soil's nourishment where they stand (plants.ts growth); seed falls where it fits (niche.ts) and takes root as it
+// fits; trees ripen their nuts as the days draw in (cues.ts).
 const BERRY_HP = 20;
 function plants(w: World, live: Thing[]) {
-  const season = w.weather.season;
-  const growing = season !== "winter";
+  const warm = warmRate(w.weather.temp);
   for (const t of live) {
     if (t.burning) continue;
     if (t.scarred && (t.kind === "tree" || t.kind === "stump") && (t.resin ?? 0) < 2 && w.t - t.scarred > DAY && Math.random() < 1 / (DAY * 1.5)) {
@@ -241,54 +250,74 @@ function plants(w: World, live: Thing[]) {
       mark(w, t);
     }
     if (t.kind === "bush") {
-      const regrow = season === "winter" ? 1 / 500 : season === "autumn" ? 1 / 140 : 1 / 70;
-      if (t.species === "berry" && (t.n ?? 0) < 4 && Math.random() < regrow && Math.random() < growRate(w, t.px, t.py) * feedRate(w, t.px, t.py)) { t.n = (t.n ?? 0) + 1; mark(w, t); }
+      if (t.species === "berry" && (t.n ?? 0) < 4 && Math.random() < 1 / 70 && Math.random() < growth(w, t.px, t.py)) { t.n = (t.n ?? 0) + 1; mark(w, t); }
       if ((t.hp ?? BERRY_HP) < (t.maxHp ?? BERRY_HP)) t.hp = Math.min(t.maxHp ?? BERRY_HP, (t.hp ?? BERRY_HP) + 0.02);
       if ((t.hp ?? BERRY_HP) <= 0) { setKind(w, t, "dead_bush"); t.n = 0; mark(w, t); log(w, "grow", [], t, "A berry bush was picked to death."); }
-    } else if (t.kind === "dead_bush" && season === "spring" && Math.random() < 1 / 4000) {
+    } else if (t.kind === "dead_bush" && Math.random() < 1 / 4000 && Math.random() < growth(w, t.px, t.py)) {
       setKind(w, t, "bush"); t.species = "berry"; t.n = 0; t.hp = BERRY_HP; t.maxHp = BERRY_HP; mark(w, t);
-    } else if (t.kind === "sapling" && growing) {
-      const grew = (1 / (3 * DAY)) * (nearWater(w, t.x, t.y, 1) ? 1.5 : 1) * growRate(w, t.px, t.py) * feedRate(w, t.px, t.py);
+    } else if (t.kind === "sapling") {
+      // a tree takes four times as long to grow as a bush
+      const grew = (1 / (3 * DAY)) * (treeOf(t) ? 0.25 : 1) * growth(w, t.px, t.py);
       t.stage = (t.stage ?? 0) + grew;
       if (Math.round((t.stage ?? 0) * 20) !== Math.round(((t.stage ?? 0) - grew) * 20)) { t.size = Math.round((0.3 + t.stage * 0.5) * 100) / 100; mark(w, t); }
       if (t.stage >= 1) matured(w, t);
-    } else if ((t.kind === "stump" || t.kind === "burnt_stump") && t.until! <= w.t && growing) {
+    } else if ((t.kind === "stump" || t.kind === "burnt_stump") && t.until! <= w.t && warm > 0.3) {
       // A new stem comes up from the old roots.
       setKind(w, t, "tree"); t.size = 5; t.hp = 53; t.maxHp = 53; delete t.until; delete t.scarred; delete t.resin; delete t.bark; mark(w, t);
     } else if (t.kind === "ash" && t.until! <= w.t) removeThing(w, t);
   }
-  // Trees drop nuts in autumn, a few a day over the island. They keep for weeks, if someone gathers and stores them.
-  if (season === "autumn" && Math.random() < 0.3) {
+  // Trees drop nuts as the days draw in, a few a day over the island. They keep for weeks, if someone gathers and stores them.
+  if (ripening(w.t) && Math.random() < 0.3) {
     const t = anyOf(w, "tree");
     if (t && !t.burning) { const a = Math.random() * Math.PI * 2, d = (1 + Math.random() * 3) / TILE_M; dropPile(w, t.px + Math.cos(a) * d, t.py + Math.sin(a) * d, "nut", 1); }
   }
-  // Birds carry berry seeds off and drop them in the open.
-  if (growing && season !== "autumn" && Math.random() < 1 / 100) {
+  // Birds carry berry seeds off, and trees shed theirs about them; what lands where it fits may take root.
+  if (Math.random() < warm / 100) {
     const b = anyOf(w, "bush");
-    if (b?.species === "berry") seedNear(w, b);
+    if (b?.species === "berry") seedNear(w, b, "berry", 5, 45);
   }
-  if (Math.random() < (growing ? 1 / 18 : 1 / 60)) {
+  if (Math.random() < warm / 60) {
+    const t = anyOf(w, "tree");
+    if (t?.species && !t.burning) seedNear(w, t, t.species, 4, 30);
+  }
+  if (Math.random() < 1 / 60 + (1 / 18 - 1 / 60) * warm) {
     const x = Math.floor(Math.random() * W), y = Math.floor(Math.random() * H), px = x + Math.random(), py = y + Math.random();
     if (!dryAt(w, px, py)) return;
-    const forest = tileAt(w, x, y) === Tile.Forest, shore = nearWater(w, x, y, 1);
-    const r = Math.random();
+    const { isle, fine } = groundOf(w.seed), mx = px * TILE_M - SIZE / 2, mz = py * TILE_M - SIZE / 2, r = Math.random();
     // Weather wears reddish stones out of bare ground over rock that carries iron, now and then.
-    if (r > 0.94) {
-      const { isle, fine } = groundOf(w.seed), cx = (px * TILE_M) / CELL - 0.5, cy = (py * TILE_M) / CELL - 0.5;
-      if (Math.random() < 2 * fine.bilinear(isle.bare, cx, cy) * rockAt(isle, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2).ore) { dropPile(w, px, py, "ore", 1); return; }
-    }
-    const kind = shore && growing ? (r < 0.7 ? "reeds" : "clay") : forest ? (!growing ? (r < 0.2 ? "mushroom" : "stick") : r < 0.45 ? "mushroom" : r < 0.6 ? "herb" : "stick") : r < 0.5 ? "stick" : "stone";
+    if (r > 0.94 && Math.random() < 2 * fine.fine(fine.cover.bare, mx, mz) * rockAt(isle, mx, mz).ore) { dropPile(w, px, py, "ore", 1); return; }
+    // Reeds and clay at the water's edge while it is warm; under trees fungi, herbs and fallen sticks; elsewhere sticks and stones.
+    const edge = [0, 1, 2, 3, 4, 5, 6, 7].some((k) => { const ex = px + (Math.cos((k * Math.PI) / 4) * 8) / TILE_M, ey = py + (Math.sin((k * Math.PI) / 4) * 8) / TILE_M; return wetAt(w, ex, ey) || !!streamNow(w, ex, ey)?.flowing; });
+    const wooded = fine.fine(fine.cover.tree, mx, mz) > 0.45;
+    const kind = edge && warm > 0.3 ? (r < 0.7 ? "reeds" : "clay") : wooded ? (warm < 0.3 ? (r < 0.2 ? "mushroom" : "stick") : r < 0.45 ? "mushroom" : r < 0.6 ? "herb" : "stick") : r < 0.5 ? "stick" : "stone";
     if (anyAround(w, px, py, 3, [kind])) return;
-    const extra: Partial<Thing> = kind === "reeds" ? { hp: 6, maxHp: 6, size: 1 + Math.random() * 1.5 } : kind === "mushroom" ? { species: "bolete", hp: 2, maxHp: 2 } : kind === "herb" ? { species: "yarrow", hp: 3, maxHp: 3 } : kind === "stick" ? { hp: 8, maxHp: 8, size: 0.4 + Math.random() * 1.2 } : kind === "stone" ? { hp: 40, maxHp: 40 } : { hp: 10, maxHp: 10 };
+    const extra: Partial<Thing> = kind === "reeds" ? { hp: 6, maxHp: 6, size: 1 + Math.random() * 1.5 } : kind === "mushroom" ? { species: pickHere(w, FUNGI, px, py, Math.random()), hp: 2, maxHp: 2 } : kind === "herb" ? { species: pickHere(w, HERBS, px, py, Math.random()), hp: 3, maxHp: 3 } : kind === "stick" ? { hp: 8, maxHp: 8, size: 0.4 + Math.random() * 1.2 } : kind === "stone" ? { hp: 40, maxHp: 40 } : { hp: 10, maxHp: 10 };
     mark(w, addThing(w, kind, px, py, extra));
   }
 }
-function seedNear(w: World, t: Thing) {
-  const a = Math.random() * Math.PI * 2, d = (5 + Math.random() * 40) / TILE_M, px = t.px + Math.cos(a) * d, py = t.py + Math.sin(a) * d;
-  if (tileAt(w, Math.floor(px), Math.floor(py)) !== Tile.Grass || !dryAt(w, px, py) || anyAround(w, px, py, 2, ["tree", "bush", "sapling", "boulder", "structure", "dead_bush"])) return;
-  mark(w, addThing(w, "sapling", px, py, { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5 }));
+const FUNGI = ["bolete", "chanterelle", "puffball"] as const, HERBS = ["yarrow", "sorrel", "mint"] as const;
+// A sapling or a planted seed that will grow into a tree: a tree's own seed, or a nut someone pushed into the ground.
+const treeOf = (t: Thing) => (TREES as readonly string[]).includes(t.species ?? "") || t.item === "nut";
+// Seed of a species falling between near and far meters from a plant, taking root if the spot is open ground it fits.
+function seedNear(w: World, t: Thing, species: string, near: number, far: number) {
+  const a = Math.random() * Math.PI * 2, d = (near + Math.random() * (far - near)) / TILE_M, px = t.px + Math.cos(a) * d, py = t.py + Math.sin(a) * d;
+  if (!dryAt(w, px, py) || anyAround(w, px, py, 2, ["tree", "bush", "sapling", "boulder", "structure", "dead_bush", "stump", "burnt_stump"])) return;
+  if (Math.random() > fitHere(w, species, px, py)) return;
+  mark(w, addThing(w, "sapling", px, py, species === "berry" ? { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5 } : { stage: 0, species, born: w.t, hp: 5, maxHp: 5 }));
 }
 function matured(w: World, t: Thing) {
+  if (treeOf(t)) {
+    // a nut grows into an oak; a tree's seedling into its own kind
+    const from = t.item;
+    setKind(w, t, "tree"); t.species = t.species && t.species !== "berry" ? t.species : "oak"; t.size = 4 + Math.random() * 2; t.hp = 48; t.maxHp = 48; delete t.stage; delete t.item;
+    mark(w, t);
+    if (from && t.owner) {
+      log(w, "grow", [t.owner], t, `The ${w.kinds[from]?.name ?? from} ${w.agents.find((a) => a.id === t.owner)?.name} pushed into the ground grew into a young tree.`);
+      see(w, t, `grows:${from}`, `A ${w.kinds[from]?.name ?? from} in the ground can grow into a tree.`, 80);
+      grewFor(w, t.owner, from, t);
+    }
+    return;
+  }
   const from = t.item ?? "berry";
   setKind(w, t, "bush"); t.species = "berry"; t.n = 1; t.hp = BERRY_HP; t.maxHp = BERRY_HP; t.size = 0.9; delete t.stage;
   mark(w, t);

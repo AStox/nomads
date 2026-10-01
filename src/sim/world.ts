@@ -12,7 +12,7 @@ export const W = TILES;
 export const H = TILES;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export { YEAR_DAYS }; // the sky's: a year is the sun's round
-export const VERSION = 12;
+export const VERSION = 13;
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;

@@ -5,6 +5,7 @@ import { CELL, N, TILE_CELLS } from "./grid";
 import type { Island } from "./island";
 import { ROCKS, type Rock } from "./geology";
 import { widthOf } from "./water";
+import { NICHE, draw, envAt, fit, lightFit } from "./niche";
 
 export const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 export const smooth = (a: number, b: number, v: number) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
@@ -147,6 +148,15 @@ export type Scatter = {
 const F = Object.fromEntries(FLORA.map((k, i) => [k, i])) as Record<Flora, number>;
 const S = Object.fromEntries(SPECIES.map((k, i) => [k, i])) as Record<Species, number>;
 const TALL = { pine: 17, oak: 15, ash: 16, aspen: 13 } as const;
+// the plants that compete for each place, by layer and kind
+export const TREES = ["pine", "oak", "ash", "aspen"] as const satisfies readonly Species[];
+export const SHRUBS = ["berry", "hazel", "heather", "gorse"] as const satisfies readonly Species[];
+const FUNGI = ["bolete", "chanterelle", "puffball"] as const satisfies readonly Species[];
+const HERBS = ["yarrow", "sorrel", "mint"] as const satisfies readonly Species[];
+const FERNS = ["bracken", "lady_fern"] as const satisfies readonly Species[];
+const FLOWERS = ["buttercup", "daisy", "clover", "harebell", "poppy"] as const satisfies readonly Species[];
+// all of them, each layer's in a run, as the scatter's table of fits holds them
+const PLANTS: readonly Species[] = [...TREES, ...SHRUBS, ...FUNGI, ...HERBS, ...FERNS, ...FLOWERS];
 
 // Conifers take cold, thin, windswept ground; oak the deep soils; ash the moist ones; aspen the wet edges. Shrubs
 // thicken at the woods' edge, heather and gorse on exposed ground. Rocks and stones break out where the ground is bare
@@ -183,6 +193,21 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
   };
   const { h, wet, moist, river, cover, fine, heightAt, slopeAt, dry, bilinear } = g;
   const cellOf = (v: number) => (v - START) / CELL;
+  // Every plant's fit at every cell but for the light it gets (niche.ts), worked out once and read between cells.
+  const NS = PLANTS.length, table = new Float32Array(N * N * NS), fits = new Float32Array(NS);
+  for (let i = 0; i < N * N; i++) {
+    if (isle.height[i] < -2) continue;
+    const e = envAt(isle, bilinear, START + (i % N) * CELL, START + Math.floor(i / N) * CELL, NaN, START);
+    for (let k = 0; k < NS; k++) table[i * NS + k] = fit(PLANTS[k], e);
+  }
+  const fitsAt = (x: number, z: number) => {
+    const cx = clamp(cellOf(x), 0, N - 1.001), cy = clamp(cellOf(z), 0, N - 1.001), x1 = cx | 0, y1 = cy | 0, tx = cx - x1, ty = cy - y1, i = (y1 * N + x1) * NS;
+    for (let k = 0; k < NS; k++)
+      fits[k] = (table[i + k] * (1 - tx) + table[i + NS + k] * tx) * (1 - ty) + (table[i + N * NS + k] * (1 - tx) + table[i + N * NS + NS + k] * tx) * ty;
+  };
+  // the fits of one layer's plants (PLANTS[at] onward) in the light they get
+  const layer = (at: number, names: readonly Species[], light: number, out: Float32Array) => { for (let k = 0; k < names.length; k++) out[k] = fits[at + k] * lightFit(names[k], light); return out; };
+  const treeF = new Float32Array(TREES.length), shrubF = new Float32Array(SHRUBS.length), lowF = new Float32Array(8);
   for (let v = 0; v < M - 1; v++)
     for (let u = 0; u < M - 1; u++) {
       const i = v * M + u, x0 = START + u * STEP, z0 = START + v * STEP;
@@ -204,25 +229,28 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
         }
       }
       if (wet[i] > 0.3 || h[i] < 0.8) continue;
-      const cx = cellOf(x0), cy = cellOf(z0), exposure = bilinear(isle.exposure, cx, cy), soil = Math.min(1.5, bilinear(isle.soil, cx, cy));
-      const vigor = clamp(0.6 + m * 0.35 + soil * 0.2 - exposure * 0.4, 0.4, 1.2), slope = slopeAt(x0, z0);
-      const pineAt = (x: number, z: number) => clamp(0.08 + (heightAt(x, z) - 80) / 320 + exposure * 0.8 - soil * 0.3 + (1 - m) * 0.3, 0.03, 0.97);
+      // What the quad's ground offers each plant, in the light that reaches its layer: trees stand in the open sky;
+      // shrubs in what the crowns leave; the low plants, which grow from spring into summer, in what reaches the floor
+      // over those months, more under bare spring branches than under a pine's all-year needles.
+      fitsAt(x0 + STEP / 2, z0 + STEP / 2);
+      const slope = slopeAt(x0, z0);
+      layer(0, TREES, 1, treeF);
+      let fitSum = 0, evergreen = 0;
+      for (const [k, t] of TREES.entries()) { fitSum += treeF[k]; if (NICHE[t].evergreen) evergreen += treeF[k]; }
+      const ev = fitSum > 0 ? evergreen / fitSum : 0, under = 1 - 0.85 * tree * (0.5 + 0.5 * (ev + (1 - ev) * 0.3));
+      layer(TREES.length, SHRUBS, 1 - 0.7 * tree, shrubF);
       for (let c = Math.floor(tree * 3.6 + r()); c > 0; c--) {
         const [x, z] = spot();
         if (!dry(x, z) || slopeAt(x, z) > 0.7) continue;
-        const pine = pineAt(x, z);
-        const sp = r() < pine ? "pine" : m > 0.9 && r() < 0.45 ? "aspen" : soil > 0.9 && r() < 0.6 ? "oak" : "ash";
-        put(F.tree, S[sp], x, z, TALL[sp] * vigor * (0.7 + r() * 0.55));
+        const sp = draw(TREES, treeF, r());
+        put(F.tree, S[sp], x, z, TALL[sp] * clamp(0.45 + 0.75 * treeF[TREES.indexOf(sp)], 0.45, 1.2) * (0.7 + r() * 0.55));
       }
       const edge = tree * (1 - tree) * 4;
-      const heath = clamp(exposure * 1.4 + shrub - m * 0.3, 0, 1);
       for (let c = Math.floor((shrub * 5 + edge * 1.2) * 0.6 + r()); c > 0; c--) {
         const [x, z] = spot();
         if (!dry(x, z)) continue;
-        const tall = 0.8 + r() * 1.8, q = r();
-        if (heath > 0.55) put(F.bush, q < 0.6 ? S.heather : S.gorse, x, z, q < 0.6 ? tall * 0.35 : tall * 0.8);
-        else if (m > 0.35 && q < 0.55) put(F.bush, S.berry, x, z, tall * 0.75);
-        else put(F.bush, S.hazel, x, z, tall * 1.5);
+        const sp = draw(SHRUBS, shrubF, r());
+        put(F.bush, S[sp], x, z, (NICHE[sp].tall ?? 1) * clamp(0.4 + 0.8 * shrubF[SHRUBS.indexOf(sp)], 0.4, 1.2) * (0.6 + r() * 0.8));
       }
       for (let c = Math.floor(bare * 1.6 + slope * 1.5 + r() * 0.8); c > 0; c--) {
         const [x, z] = spot();
@@ -246,26 +274,22 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
       }
       for (let c = Math.floor(tree * 0.12 + r()); c > 0; c--) {
         const [x, z] = spot();
-        if (dry(x, z) && slopeAt(x, z) < 0.6) put(F.fallen_log, r() < pineAt(x, z) ? S.pine : r() < 0.5 ? S.oak : S.ash, x, z, 2 + r() * 7);
+        if (dry(x, z) && slopeAt(x, z) < 0.6) put(F.fallen_log, S[draw(TREES, treeF, r())], x, z, 2 + r() * 7);
       }
-      for (let c = Math.floor(tree * m * 0.25 + r()); c > 0; c--) {
-        const [x, z] = spot();
-        if (dry(x, z)) put(F.mushroom, m > 0.7 ? (r() < 0.5 ? S.chanterelle : S.bolete) : r() < 0.3 ? S.puffball : S.bolete, x, z, 0.05 + r() * 0.15);
-      }
-      for (let c = Math.floor((grass * m * 0.25 + shrub * 0.06) * 3.5 * patch + r()); c > 0; c--) {
-        const [x, z] = spot();
-        if (dry(x, z)) put(F.herb, m > 0.92 && r() < 0.5 ? S.mint : r() < 0.5 ? S.yarrow : S.sorrel, x, z, 0.15 + r() * 0.4);
-      }
-      for (let c = Math.floor((tree * 0.5 + shrub * 0.15 + edge * 0.3) * m * vigor * (0.5 + patch) + r()); c > 0; c--) {
-        const [x, z] = spot();
-        if (dry(x, z)) put(F.fern, m > 0.9 && r() < 0.6 ? S.lady_fern : S.bracken, x, z, (0.4 + r() * 0.9) * vigor);
-      }
-      for (let c = Math.floor((grass * (0.3 + m * 0.2) * (1 - tree) + marsh * 0.15 + edge * 0.1) * 3.5 * patch + r()); c > 0; c--) {
-        const [x, z] = spot();
-        if (!dry(x, z)) continue;
-        const q = r();
-        put(F.flowers, marsh > 0.3 && q < 0.4 ? S.buttercup : q < 0.3 ? S.daisy : q < 0.5 ? S.clover : q < 0.7 ? S.buttercup : q < 0.88 ? S.harebell : S.poppy, x, z, 0.2 + r() * 0.6);
-      }
+      // The low plants: as many as the best fitted of their kind would hold, each of a kind drawn by its fit.
+      const low = <T extends Species>(names: readonly T[], base: number, make: (sp: T, f: number, x: number, z: number) => void) => {
+        const f = layer(PLANTS.indexOf(names[0]), names, under, lowF), best = Math.max(...f.subarray(0, names.length));
+        for (let c = Math.floor(base * (0.2 + best) + r()); c > 0; c--) {
+          const [x, z] = spot();
+          if (!dry(x, z)) continue;
+          const sp = draw(names, f, r());
+          make(sp, f[names.indexOf(sp)], x, z);
+        }
+      };
+      low(FUNGI, tree * m * 0.25 + grass * 0.03, (sp, _f, x, z) => put(F.mushroom, S[sp], x, z, 0.05 + r() * 0.15));
+      low(HERBS, (grass * m * 0.25 + shrub * 0.06) * 3.5 * patch, (sp, _f, x, z) => put(F.herb, S[sp], x, z, 0.15 + r() * 0.4));
+      low(FERNS, (tree * 0.5 + shrub * 0.15 + edge * 0.3) * m * (0.5 + patch), (sp, f, x, z) => put(F.fern, S[sp], x, z, (0.4 + r() * 0.9) * clamp(0.5 + f, 0.5, 1.2)));
+      low(FLOWERS, (grass * (0.3 + m * 0.2) * (1 - tree) + marsh * 0.15 + edge * 0.1) * 3.5 * patch, (sp, _f, x, z) => put(F.flowers, S[sp], x, z, 0.2 + r() * 0.6));
       // Tussocks of tall grass, sized by width, stand across open meadow and along the woods' edge, thick in some patches and thin in others.
       for (let c = Math.floor((grass * (1 - tree) * 20 + edge * 3.75) * patch + r()); c > 0; c--) {
         const [x, z] = spot();

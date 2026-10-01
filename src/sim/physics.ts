@@ -1,6 +1,7 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
 import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props } from "./materials";
-import { DAY, REACH, TILE_M, Tile, YEAR, addThing, dryAt, dryNear, iceAt, level, log, meters, nearWater, reachOf, tileAt, wetAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
+import { CELL } from "../terrain/grid";
+import { DAY, REACH, TILE_M, Tile, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, level, log, meters, nearWater, reachOf, tileAt, wetAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
 import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } from "./space";
 import { clock, trace } from "./trace";
 import { see } from "./beliefs";
@@ -604,10 +605,11 @@ export function throwTick(w: World, a: Agent, act: Act, st: { progress: number; 
 const an = (s: string) => (/^[aeiou]/.test(s) ? `an ${s}` : `a ${s}`);
 
 // ---------- dig ----------
-// Soft ground with nothing standing on it within a pace or two.
+// Meters of soil over the rock at a point (the generator's regolith).
+export const soilAt = (w: World, px: number, py: number) => { const { isle, fine } = groundOf(w.seed); return fine.bilinear(isle.soil, (px * TILE_M) / CELL - 0.5, (py * TILE_M) / CELL - 0.5); };
+// Soft ground, a spade's depth of soil or more, with nothing standing on it within a pace or two.
 export function diggable(w: World, px: number, py: number) {
-  const tile = tileAt(w, Math.floor(px), Math.floor(py));
-  return (tile === Tile.Grass || tile === Tile.Forest) && dryAt(w, px, py) && !anyAround(w, px, py, 1.5, SOLID);
+  return soilAt(w, px, py) >= 0.2 && dryAt(w, px, py) && !anyAround(w, px, py, 1.5, SOLID);
 }
 // What takes up the ground it stands on, so no one can dig or plant right there.
 const SOLID = ["tree", "stump", "burnt_stump", "bush", "dead_bush", "sapling", "boulder", "fallen_log", "structure", "fire", "pit", "trap", "well", "grave"];
@@ -817,8 +819,7 @@ export function plant(w: World, a: Agent, act: Act): Outcome {
   const fields: Fields = { verb: "plant", inputs: act.items.slice(0, 1), gives: [] };
   if (!x || !count(a, x.id)) return outcome({ text: "They had nothing to plant.", fields });
   const [px, py] = beside(w, a, 0.8);
-  const tile = tileAt(w, Math.floor(px), Math.floor(py));
-  if (tile !== Tile.Grass && tile !== Tile.Forest) return outcome({ text: "The ground was too hard here.", fields });
+  if (soilAt(w, px, py) < 0.05) return outcome({ text: "The ground was too hard here.", fields });
   takeItems(a, x.id);
   if (p(x, "seed") < 0.4 || !diggable(w, px, py)) {
     fields.effect = "buried";

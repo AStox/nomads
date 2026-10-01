@@ -11,6 +11,8 @@ import { airAt, airWords } from "./air";
 import { CELL } from "../terrain/grid";
 import { GROUND, LAKE, RIVER, SEA, SIZE, groundClass, rockAt } from "../terrain/flora";
 import { fertilityAt } from "./soil";
+import { fitHere } from "./plants";
+import { NICHE } from "../terrain/niche";
 import { streamNow } from "./streams";
 import { TRICKLE } from "../terrain/water";
 
@@ -175,6 +177,7 @@ export function inspectGround(w: World, px: number, py: number): Inspected {
       ["wind", `${r(fine.bilinear(isle.breeze, cx, cy), 1)} m/s on average, exposure ${r(g.exposure, 2)}`],
       ["snow", `${Math.round(fine.bilinear(isle.snow, cx, cy) * 100)}% of the year's fall, lies ${Math.round(fine.bilinear(isle.snowCover, cx, cy) * 100)}% of the year`],
       ["cold air pools", r(fine.bilinear(isle.pool, cx, cy), 2)],
+      ["would grow best", Object.keys(NICHE).map((n): [string, number] => [n, fitHere(w, n, px, py)]).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([n, f]) => `${n.replace("_", " ")} ${r(f, 2)}`).join(", ")],
       ["path wear", `${onMap ? w.paths[ty * W + tx] : 0} / 9`],
     );
     const st = streamNow(w, px, py);
