@@ -183,6 +183,7 @@ Each system is simple on its own. The interesting part is where they meet.
 - **Decay:** food spoils in days unless it's dried, smoked, or salted. Tools wear out with use. Buildings weaken in weather and need repair. Things left on the ground rot or get carried off. Decay is what makes storage, preservation, and upkeep worth inventing.
 - **Terrain change:** digging makes pits (traps, wells, clay), chopping makes clearings, paths form where agents walk often and make walking faster. Over time the map records where people live.
 - **Disease:** eating toxic or rotten food, or living crowded with no clean water, can make people sick. Sickness spreads to people nearby. This makes wells, cooking, and herbal remedies matter, and it gives settlements a reason to have a healer.
+- **Light:** every point of the island has a light level, as it has moisture: the sun's beam and the sky's glow, the moon and the stars (the same sky the play page draws), less cloud, less hills that hide the beam, less the crowns of the trees overhead, plus what fires and lit lamps throw (a campfire gives 60 lux at a meter; a lamp 12, about five for whoever holds it, enough to keep them out of the dark). Nothing is stored, so felling a wood or lighting a fire changes it at once. How bright a place looks (the log of its lux) sets what people do there. In the dark they see a fraction as far, walk and work slower and fumble at it, watch and witness only what they can see, and plan only around what they can see (their home, the water and any fire excepted), so nobody sets out to forage, explore, hunt or fetch materials; whoever is out after something when the dark falls gives it up where they stand, unless they are starving or freezing or a fire is near. They sleep deeper, wait out the night by the fire once rested, and a hungry wolf stalks a lone person who is out in the dark. A thick wood goes dark an hour before open ground does; seedlings and berry bushes in its shade do worse. Night is the sun more than six degrees under the horizon.
 
 ### 6. Consequences flow into the social layer
 
@@ -322,7 +323,7 @@ New raw materials, found in specific places so that where you live shapes what y
 - **Air** only adds heat through a ringed fire, and it comes from heating something while holding anything soft and hollow as a fan or bellows (a hide bag, but also a woven mat). A covered fire keeps a ringed fire's heat of 1.3; it only changes what wood does in it, and its smoke is what cures a hide into leather.
 - **Hot working** runs up to 30 blows or until the edge reaches 0.95 sharpness; each blow closes the gap to 1 by 0.2 times the striker's weight times its hardness.
 - **Tying depth** now counts only layers of binding, so a fired pot, smelted metal, or leather counts as a plain material and can be hafted or tied.
-- **Deferred:** a resin-sealed basket is watertight (container 0.9) but nothing carries water yet, and a lit lamp gives a little warmth and a flame to carry but there is no light mechanic for it to improve.
+- **Deferred:** a resin-sealed basket is watertight (container 0.9) but nothing carries water yet.
 
 ### Seeing inside the world
 

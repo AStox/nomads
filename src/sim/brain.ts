@@ -6,6 +6,7 @@ import {
 import { around, thingById } from "./space";
 import { shelterName } from "./physics";
 import { TRAITS } from "./traits";
+import { DARK, canSee, lightOn, lightWords } from "./light";
 import { PROPS, THING_MATERIAL, type Kind, type Props } from "./materials";
 import { beliefText } from "./beliefs";
 import { campTag, campView } from "./groups";
@@ -110,7 +111,7 @@ export function view(w: World, a: Agent) {
   const near: Record<string, { count: number; nearest: number }> = {};
   const m = (b: { px: number; py: number }) => Math.round(meters(a, b));
   around(w, a.px, a.py, 60, null, (t, d) => {
-    if (t.kind === "pebble" || t.kind === "grass" || (t.kind === "bush" && t.species === "berry" && !t.n)) return;
+    if (t.kind === "pebble" || t.kind === "grass" || (t.kind === "bush" && t.species === "berry" && !t.n) || !canSee(w, a, t, 60)) return;
     let kind = t.kind === "item" ? `${w.kinds[t.item ?? ""]?.name ?? "something"} on the ground` : t.kind === "structure" ? (shelterName(w, t) === "fire ring" ? "ring of stones round a fire" : ["pile of stuff", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0]) : t.kind === "bush" ? `${t.species ?? "berry"} bush` : t.kind.replaceAll("_", " ");
     if (t.burning) kind = `burning ${kind}`;
     if (t.kind === "fire") kind = t.covered ? "fire heaped over with stone" : t.contained && (t.charcoal ?? 0) > 0 ? "ringed fire glowing white-hot with charcoal" : t.contained ? "ringed fire" : "fire";
@@ -123,15 +124,15 @@ export function view(w: World, a: Agent) {
     e.nearest = Math.min(e.nearest, Math.round(d));
   });
   const nearby = Object.fromEntries(Object.entries(near).map(([k, e]) => [k, `${e.count} (nearest ${e.nearest} m)`]));
-  const animals = w.animals.filter((x) => meters(a, x) <= 300).map((x) => `${x.species} ${m(x)} m away (${x.state})`);
+  const animals = w.animals.filter((x) => canSee(w, a, x, 300)).map((x) => `${x.species} ${m(x)} m away (${x.state})`);
   const home = thingById(w, a.home);
   const people = w.agents
-    .filter((b) => b.id !== a.id && (a.rel[b.id] || meters(a, b) <= 300))
+    .filter((b) => b.id !== a.id && (a.rel[b.id] || canSee(w, a, b, 300)))
     .map((b) => ({
       name: b.name,
       distance: `${m(b)} m`,
-      doing: meters(a, b) <= 300 ? b.status : "out of sight",
-      carrying: meters(a, b) <= 30 ? inventoryText(w, b) : undefined,
+      doing: canSee(w, a, b, 300) ? b.status : "out of sight",
+      carrying: canSee(w, a, b, 30) ? inventoryText(w, b) : undefined,
       camp: campTag(w, a, b),
       home: (() => { const h = thingById(w, b.home); return h ? `${m(h)} m from you${home ? `, ${Math.round(meters(home, h))} m from your home` : ""}` : undefined; })(),
       ...describeRel(w, a, b),
@@ -153,6 +154,7 @@ export function view(w: World, a: Agent) {
     ],
     expecting_a_child: a.pregnant ? `yes, in ${Math.ceil((a.pregnant.due - w.t) / DAY)} days` : undefined,
     time: clock(w.t),
+    light: lightWords(lightOn(w, a)),
     weather: `${wx.season}, ${wx.sky}, ${Math.round(wx.temp)}C${wx.drought ? ", drought" : ""}${w.ice.length ? ", the water is frozen" : ""}`,
     days_until_winter: wx.season === "winter" ? "it is winter now" : toWinter,
     kept_at_home: Object.keys(stored).length ? stored : undefined,
@@ -174,11 +176,12 @@ export function view(w: World, a: Agent) {
 }
 
 // In random mode, lean toward whatever need is most urgent so offline runs don't starve instantly.
-function needBias(a: Agent, options: Record<string, string>) {
+function needBias(w: World, a: Agent, options: Record<string, string>) {
   const b: Record<string, number> = {};
   for (const k of Object.keys(options)) {
     if ((k === "eat" || k === "forage") && a.needs.food < 45) b[k] = 8;
     if (k === "rest" && a.needs.energy < 30) b[k] = 8;
+    if ((k === "rest" || k === "warm_up") && lightOn(w, a).bright < DARK) b[k] = Math.max(b[k] ?? 0, 4);
     if ((k === "warm_up" || k === "make_fire" || k === "build_shelter") && a.needs.warmth < 40) b[k] = 6;
     if (k === "tinker") b[k] = 3;
     if (k.startsWith("make:") || k === "build_shelter" || k.startsWith("hunt:")) b[k] = Math.max(b[k] ?? 0, 2);
@@ -195,7 +198,7 @@ export async function decide(w: World, a: Agent, options: Record<string, string>
   const names = (ids: string[]) => Object.fromEntries(ids.map((id) => [w.people[id]?.name ?? id, null]));
   if (towards.length) q.towards = { type: "choice", instructions: `If ${a.name} sought someone out to be friendly, ask for something, or work together, who would it be?`, criteria: names(towards) };
   if (against.length) q.against = { type: "choice", instructions: `If ${a.name} acted against someone or wanted to keep away from them, who would it be?`, criteria: names(against) };
-  const ans = await ask(w, "decide", a.id, view(w, a), q, needBias(a, options));
+  const ans = await ask(w, "decide", a.id, view(w, a), q, needBias(w, a, options));
   const byName = (p?: Record<string, number>) => p && Object.fromEntries(Object.entries(p).filter(([n]) => idOf.has(n)).map(([n, v]) => [idOf.get(n)!, v]));
   return { goal: ans.goal.probabilities!, towards: byName(ans.towards?.probabilities), against: byName(ans.against?.probabilities) };
 }

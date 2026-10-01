@@ -9,6 +9,7 @@ import {
 import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
+import { growRate } from "./light";
 import { count, timed, trace } from "./trace";
 
 export const pathChanges = new Set<number>();
@@ -231,14 +232,15 @@ function plants(w: World, live: Thing[]) {
     }
     if (t.kind === "bush") {
       const regrow = season === "winter" ? 1 / 500 : season === "autumn" ? 1 / 140 : 1 / 70;
-      if (t.species === "berry" && (t.n ?? 0) < 4 && Math.random() < regrow) { t.n = (t.n ?? 0) + 1; mark(w, t); }
+      if (t.species === "berry" && (t.n ?? 0) < 4 && Math.random() < regrow && Math.random() < growRate(w, t.px, t.py)) { t.n = (t.n ?? 0) + 1; mark(w, t); }
       if ((t.hp ?? BERRY_HP) < (t.maxHp ?? BERRY_HP)) t.hp = Math.min(t.maxHp ?? BERRY_HP, (t.hp ?? BERRY_HP) + 0.02);
       if ((t.hp ?? BERRY_HP) <= 0) { setKind(w, t, "dead_bush"); t.n = 0; mark(w, t); log(w, "grow", [], t, "A berry bush was picked to death."); }
     } else if (t.kind === "dead_bush" && season === "spring" && Math.random() < 1 / 4000) {
       setKind(w, t, "bush"); t.species = "berry"; t.n = 0; t.hp = BERRY_HP; t.maxHp = BERRY_HP; mark(w, t);
     } else if (t.kind === "sapling" && growing) {
-      t.stage = (t.stage ?? 0) + (1 / (3 * DAY)) * (nearWater(w, t.x, t.y, 1) ? 1.5 : 1);
-      if (Math.round((t.stage ?? 0) * 20) !== Math.round(((t.stage ?? 0) - 1 / (3 * DAY)) * 20)) { t.size = Math.round((0.3 + t.stage * 0.5) * 100) / 100; mark(w, t); }
+      const grew = (1 / (3 * DAY)) * (nearWater(w, t.x, t.y, 1) ? 1.5 : 1) * growRate(w, t.px, t.py);
+      t.stage = (t.stage ?? 0) + grew;
+      if (Math.round((t.stage ?? 0) * 20) !== Math.round(((t.stage ?? 0) - grew) * 20)) { t.size = Math.round((0.3 + t.stage * 0.5) * 100) / 100; mark(w, t); }
       if (t.stage >= 1) matured(w, t);
     } else if ((t.kind === "stump" || t.kind === "burnt_stump") && t.until! <= w.t && growing) {
       // A new stem comes up from the old roots.

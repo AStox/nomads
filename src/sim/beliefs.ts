@@ -1,6 +1,7 @@
 // What each agent thinks happens when they do something, and the laws of the world those beliefs come from.
 import type { Fields, Outcome } from "./physics";
 import { log, meters, stageOf, type Agent, type World } from "./world";
+import { canSee } from "./light";
 import { trace } from "./trace";
 
 export type Belief = {
@@ -138,7 +139,7 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number) {
   if (!useful(out)) return;
   const key = beliefKey(out.fields);
   for (const b of w.agents) {
-    if (b === doer || b.down > w.t || meters(doer, b) > 25) continue;
+    if (b === doer || b.down > w.t || !canSee(w, b, doer, 25)) continue;
     const mine = b.beliefs[key];
     if (mine) {
       // A skeptic who sees it work without the charm drops the charm.

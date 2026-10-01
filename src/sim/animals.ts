@@ -8,6 +8,7 @@ import { dropPile, mark, removeThing } from "./physics";
 import { see } from "./beliefs";
 import { trace } from "./trace";
 import { FAUNA, addAnimal } from "./fauna";
+import { DARK, lightOn } from "./light";
 
 // Agents being attacked this tick, agent id -> wolf id.
 export const attacked = new Map<string, string>();
@@ -104,8 +105,9 @@ function wolf(w: World, wf: Animal, n: Near, season: string) {
   }
   const prey = wf.hunger < 50 ? closest(wf, n.deer, 400) ?? closest(wf, n.rabbits, 100) : null;
   const lone = (a: Agent) => n.awake.every((b) => b === a || meters(a, b) > 30) && !closest(a, n.fires, 40);
-  const desperate = wf.hunger < 12 || (wf.hunger < 30 && (isNight(w.t) || winter));
-  const person = !prey && desperate ? closest(wf, n.awake, 150, lone) : null;
+  // A starving wolf takes anyone alone; a hungry one waits for winter, or for a person to be out in the dark.
+  const stalks = (a: Agent) => wf.hunger < 12 || (wf.hunger < 30 && (winter || lightOn(w, a).bright < DARK));
+  const person = !prey && wf.hunger < 30 ? closest(wf, n.awake, 150, (a) => lone(a) && stalks(a)) : null;
   const target: Animal | Agent | null = person ?? prey;
   if (!target) {
     setState(w, wf, "wander"); wf.target = undefined;

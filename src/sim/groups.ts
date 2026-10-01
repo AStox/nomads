@@ -7,6 +7,7 @@ import { p } from "./materials";
 import { count, giveItems, homeOf, mark as touch, nearFire, reaches, stash, takeItems, unstash } from "./physics";
 import { thingById } from "./space";
 import { describeRel, judge, nameCamp } from "./brain";
+import { canSee } from "./light";
 import { trace } from "./trace";
 
 const LINK = 200; // meters: homes this close, between people who don't dislike each other, make neighbors
@@ -502,7 +503,7 @@ export function share(w: World, a: Agent) {
   groupsChanged.now = true;
   const text = `${a.name} set ${n} things into ${at.owner === a.id ? "their home" : `${nameOf(w, at.owner)}'s home`} for all of ${camp.name} to share.`;
   log(w, "shared_store", [a.id], at, text);
-  incident(w, { act: "share", by: a, at, text, value: Math.min(1, n / 8), seenBy: w.agents.filter((b) => meters(b, a) <= 30) });
+  incident(w, { act: "share", by: a, at, text, value: Math.min(1, n / 8), seenBy: w.agents.filter((b) => canSee(w, b, a, 30)) });
   return n;
 }
 export function takeShared(w: World, a: Agent, k: string) {
@@ -515,7 +516,7 @@ export function takeShared(w: World, a: Agent, k: string) {
   const net = (store.given[a.id] ?? 0) - got;
   store.given[a.id] = net;
   const text = `${a.name} took ${got} ${w.kinds[k]?.name ?? k} from the camp's store${net < 0 ? `, having put in less than they took` : ""}.`;
-  incident(w, { act: "took_from_store", by: a, against: agentOf(w, store.owner) ?? null, at: store, text, value: got / Math.max(1, before), seenBy: w.agents.filter((b) => b !== a && meters(b, a) <= 30), items: Array(got).fill(k) });
+  incident(w, { act: "took_from_store", by: a, against: agentOf(w, store.owner) ?? null, at: store, text, value: got / Math.max(1, before), seenBy: w.agents.filter((b) => b !== a && canSee(w, b, a, 30)), items: Array(got).fill(k) });
   return got;
 }
 

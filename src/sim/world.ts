@@ -6,6 +6,7 @@ import { baseRegistry, type Registry } from "./materials";
 import type { Belief } from "./beliefs";
 import { enter, put } from "./space";
 import { populate } from "./fauna";
+import { NIGHT_EL, sunAt } from "./sky";
 
 export const W = 64;
 export const H = 64;
@@ -524,13 +525,17 @@ export function log(w: World, kind: string, who: string[], at: { x: number; y: n
   return e;
 }
 
+export const hourOf = (t: number) => ((t % DAY) / DAY) * 24;
+// The sky's own dark: the sun more than six degrees down, which at this latitude is some time after 21:00 and until before
+// 05:00. What the people feel is the same sun the renderer draws.
+let nightAt = -1, nightIs = false;
+export const isNight = (t: number) => {
+  if (t !== nightAt) { nightAt = t; nightIs = sunAt(hourOf(t)).el < NIGHT_EL; }
+  return nightIs;
+};
 export function clock(t: number) {
   const day = Math.floor(t / DAY) + 1;
-  const h = ((t % DAY) / DAY) * 24;
-  const part = h < 5 ? "night" : h < 8 ? "dawn" : h < 12 ? "morning" : h < 17 ? "afternoon" : h < 20 ? "evening" : "night";
+  const h = hourOf(t);
+  const part = isNight(t) ? "night" : h < 8 ? "dawn" : h < 12 ? "morning" : h < 17 ? "afternoon" : "evening";
   return `Day ${day}, ${part}`;
 }
-export const isNight = (t: number) => {
-  const h = ((t % DAY) / DAY) * 24;
-  return h < 5 || h >= 20;
-};

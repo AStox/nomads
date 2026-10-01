@@ -18,6 +18,7 @@ import { clock as traceClock, count as bump, timed, trace } from "./trace";
 import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sharedStore, snubbed, spread, standing, takeShared } from "./groups";
 import { anyAround, around, liveThings, nearestThing, thingById } from "./space";
 import { landOf, walk } from "./walk";
+import { DARK, canSee, lightOn, moveRate, restRate, workRate } from "./light";
 
 const VISION = 300; // meters: how far off someone notices another person
 const WALK = 2, RUN = 6; // meters a tick for an adult
@@ -110,6 +111,13 @@ const THING_PLACES: Record<string, Place> = {
   forge: { kinds: ["fire"], ok: (t) => !!t.contained && (t.charcoal ?? 0) > 0 },
   resin: { kinds: ["tree", "stump"], ok: (t) => (t.resin ?? 0) > 0 },
 };
+// What everyone knows the whereabouts of in the dark. The rest they find by sight, so a plant, a stone or an animal beyond it
+// is no place to go.
+const KNOWN: Record<string, true> = { home: true, homesite: true, store: true, water: true, pit: true, agent: true };
+const FIRES: Record<string, true> = { fire: true, hearth: true, kiln: true, forge: true };
+// A step that takes someone out after what they would have to see: exploring, gathering, or walking to a plant, a stone, an
+// animal or a thing lying about.
+const foray = (s: Step) => s.op === "wander" || s.op in GATHER || (s.op === "goto" && !!s.arg && !KNOWN[s.arg] && !FIRES[s.arg]);
 const STRIKEABLE = Object.keys(THING_MATERIAL).filter((k) => !(k in FAUNA));
 // A place to go and how near to get: a thing, an animal, a person, or a point.
 type Spot = { px: number; py: number; reach: number; thing?: Thing; animal?: Animal; agent?: Agent };
@@ -161,7 +169,7 @@ const within = (w: World, a: Agent, kind: string, slack = 0) => { const s = spot
 
 // ---------- movement ----------
 const speedOf = (w: World, a: Agent, run: boolean) =>
-  (run ? RUN : WALK) * (stageOf(w, a) === "child" ? 0.6 : 1) * (w.paths[a.y * W + a.x] >= 5 ? 1.4 : 1);
+  (run ? RUN : WALK) * (stageOf(w, a) === "child" ? 0.6 : 1) * (w.paths[a.y * W + a.x] >= 5 ? 1.4 : 1) * moveRate(lightOn(w, a).bright);
 // Walk (or run) toward a point in tiles until within reach meters of it.
 function stepToward(w: World, a: Agent, tx: number, ty: number, reach: number, run = false): "arrived" | "moved" | "stuck" {
   const x0 = a.px, y0 = a.py;
@@ -173,7 +181,7 @@ function stepToward(w: World, a: Agent, tx: number, ty: number, reach: number, r
   const fell = trapped(w, a, x0, y0);
   if (fell && typeof fell === "object") {
     const text = `${a.name} fell into a pit ${fell.name} had hidden.`;
-    incident(w, { act: "trapped", by: fell, against: a, at: a, text, value: 0.25, seenBy: [a, ...w.agents.filter((b) => b !== fell && meters(b, a) <= 30)] });
+    incident(w, { act: "trapped", by: fell, against: a, at: a, text, value: 0.25, seenBy: [a, ...w.agents.filter((b) => b !== fell && canSee(w, b, a, 30))] });
     reflect(w, a, fell, text).then((r) => { if (r.bond !== "none") log(w, "bond", [a.id], a, `${a.name} will remember this about ${fell.name}: ${r.bond.replaceAll("_", " ")}.`); }).catch(() => {});
   }
   return fell ? "stuck" : r;
@@ -186,10 +194,12 @@ function stepAway(w: World, a: Agent, from: { px: number; py: number }, run = tr
 // ---------- planning glue ----------
 // The planner weighs trips in steps of fifteen meters, about what one step used to be worth.
 const STEP_M = 15;
-function ctxFor(w: World, a: Agent): Ctx {
+export function ctxFor(w: World, a: Agent): Ctx {
   const d: Record<string, number> = {};
-  for (const k of [...Object.keys(THING_PLACES), "water", "home", "homesite", "store", ...HUNTED]) { const s = spot(w, a, k); if (s && (k !== "pit" || s.thing?.owner === a.id)) d[k] = meters(a, s) / STEP_M; }
-  around(w, a.px, a.py, 600, ["item"], (t, m) => { if (t.item && reachable(w, a, t.x, t.y)) d[`item:${t.item}`] = Math.min(d[`item:${t.item}`] ?? 99, m / STEP_M); });
+  // In the dark, unless they are freezing or starving, they plan around what they can see: a bush 300 m off is not a place to go.
+  const blind = lightOn(w, a).bright < DARK && a.needs.food >= 15 && a.needs.warmth >= 15;
+  for (const k of [...Object.keys(THING_PLACES), "water", "home", "homesite", "store", ...HUNTED]) { const s = spot(w, a, k); if (s && (k !== "pit" || s.thing?.owner === a.id) && (!blind || KNOWN[k] || canSee(w, a, s, SEARCH))) d[k] = meters(a, s) / STEP_M; }
+  around(w, a.px, a.py, 600, ["item"], (t, m) => { if (t.item && reachable(w, a, t.x, t.y) && (!blind || canSee(w, a, t, SEARCH))) d[`item:${t.item}`] = Math.min(d[`item:${t.item}`] ?? 99, m / STEP_M); });
   const target = agentById(w, a.goal?.target);
   if (target) d.agent = meters(a, target) / STEP_M;
   const toxic = Object.values(a.beliefs).filter((b) => b.fields.verb === "eat" && b.fields.effect === "sick").map((b) => b.fields.inputs[0]);
@@ -274,8 +284,10 @@ function feasible(w: World, a: Agent) {
   const opts: Record<string, string> = {};
   const ctx = ctxFor(w, a);
   const fire = spot(w, a, "fire");
-  const people = w.agents.filter((b) => b !== a && b.down <= w.t && meters(a, b) <= 600 && (a.rel[b.id] || meters(a, b) <= VISION));
-  const fallen = w.agents.filter((b) => b !== a && b.down > w.t && meters(a, b) <= VISION);
+  // In the dark nobody sets out to forage, explore or hunt; they rest, mend the fire and keep to it.
+  const dark = lightOn(w, a).bright < DARK;
+  const people = w.agents.filter((b) => b !== a && b.down <= w.t && meters(a, b) <= 600 && (a.rel[b.id] || canSee(w, a, b, VISION)));
+  const fallen = w.agents.filter((b) => b !== a && b.down > w.t && canSee(w, a, b, VISION));
   const holding = a.inv.length > 0;
   const home = homeOf(w, a);
   const can = (type: string) => {
@@ -287,11 +299,11 @@ function feasible(w: World, a: Agent) {
     return ok;
   };
   const add = (type: string, ok: boolean) => { if (ok && !(a.cooldowns[type] > w.t)) opts[type] = goalText(w, type); };
-  add("forage", true);
-  add("eat", foodIn(counts(a), ctx) > 0 || a.needs.food < 70);
-  add("rest", a.needs.energy < 75);
-  add("warm_up", a.needs.warmth < 75 && can("warm_up"));
-  add("explore", true);
+  add("forage", !dark);
+  add("eat", foodIn(counts(a), ctx) > 0 || (a.needs.food < 70 && !dark));
+  add("rest", a.needs.energy < 75 || (dark && a.needs.energy < 95));
+  add("warm_up", (a.needs.warmth < 75 || (dark && !!fire && meters(a, fire) > 15)) && can("warm_up"));
+  add("explore", !dark);
   add("tinker", holding || !!anyAround(w, a.px, a.py, 20, STRIKEABLE));
   // Aimed experiments: they don't know how, but they know what they're after.
   const knows = (b: string) => Object.values(a.beliefs).some((x) => x.fields.builds === b && x.wins > 0);
@@ -301,7 +313,7 @@ function feasible(w: World, a: Agent) {
     add("experiment:tool", true);
     add("experiment:food", a.needs.food < 70);
   }
-  for (const [type, k] of Object.entries(COLLECT)) add(type, count(a, k) < 6 && (k === "stone" || k === "stick" || (ctx.dist[k === "fiber" ? "reeds" : k] ?? ctx.dist[`item:${k}`]) !== undefined));
+  for (const [type, k] of Object.entries(COLLECT)) add(type, !dark && count(a, k) < 6 && (k === "stone" || k === "stick" || (ctx.dist[k === "fiber" ? "reeds" : k] ?? ctx.dist[`item:${k}`]) !== undefined));
   const believes = Object.values(a.beliefs);
   const builds = (b: string) => believes.some((x) => x.fields.builds === b && x.wins > 0);
   add("make_fire", builds("fire") && (!fire || meters(a, fire) > 60) && can("make_fire"));
@@ -331,7 +343,7 @@ function feasible(w: World, a: Agent) {
   for (const species of HUNTED) {
     const hunter = believes.some((b) => b.fields.target === species && (b.rate ?? 0) > 0) || !!a.facts[`breaks:${species}`];
     const prey = nearest(a, w.animals, (m) => m.species === species);
-    if (hunter && prey && meters(a, prey) <= 400) opts[`hunt:${species}`] = goalText(w, `hunt:${species}`);
+    if (hunter && prey && !dark && meters(a, prey) <= 400) opts[`hunt:${species}`] = goalText(w, `hunt:${species}`);
   }
   const targets: Record<string, string[]> = {};
   const child = stageOf(w, a) === "child";
@@ -362,6 +374,8 @@ function feasible(w: World, a: Agent) {
     opts[kind] = GOALS[kind];
     targets[kind] = valid.map((b) => b.id);
   }
+  // Dark, tired of nothing, and nothing to mend: sitting it out is always there to choose.
+  if (!Object.keys(opts).length) opts.rest = goalText(w, "rest");
   return { opts, targets, people: [...people, ...fallen].map((b) => b.id) };
 }
 
@@ -449,6 +463,15 @@ const pendingRulings = new Set<string>();
 const namingNow = new Set<string>();
 const rulingKey = (act: Act) => `rule|${actSig(act)}`;
 
+// In poor light a tick's work is sometimes lost to groping about, though not in a fight, which is quick and close.
+function fumbles(w: World, a: Agent) {
+  if (a.goal?.type === "fight" || a.goal?.type === "defend") return false;
+  const b = lightOn(w, a).bright;
+  if (Math.random() < workRate(b)) return false;
+  a.status = b < DARK ? "Fumbling in the dark" : "Working in poor light";
+  return true;
+}
+
 // Run one tick of an act. Returns the outcome when it resolves, "wait" while working, or a reason string if it can't happen.
 function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
   const act = s.act!;
@@ -486,17 +509,20 @@ function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
       if (prey.species === "deer") prey.state = "flee";
       if (prey.species === "wolf") prey.target = a.id;
     }
+    if (fumbles(w, a)) return "wait";
     a.status = actText(w, act);
     const r = strikeTick(w, a, act, s);
     if (r.broke) log(w, "break", [a.id], a, `${a.name}: ${r.broke}`);
     return r.done ? r.out! : "wait";
   }
   if (act.verb === "rub") {
+    if (fumbles(w, a)) return "wait";
     a.status = actText(w, act);
     const r = rubTick(w, a, act, s);
     return r.done ? r.out! : "wait";
   }
   if (act.verb === "dig") {
+    if (fumbles(w, a)) return "wait";
     a.status = actText(w, act);
     const r = digTick(w, a, act, s);
     return r.done ? r.out! : "wait";
@@ -511,11 +537,13 @@ function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
       stepToward(w, a, prey.px, prey.py, 16);
       return "wait";
     }
+    if (fumbles(w, a)) return "wait";
     a.status = actText(w, act);
     const r = throwTick(w, a, act, s);
     return r.done ? r.out! : "wait";
   }
   if (act.at && act.at !== "home" && !(act.at === "water" ? openWater(w, a) : within(w, a, act.at, 1))) return `not at the ${act.at}`;
+  if (act.verb !== "eat" && fumbles(w, a)) return "wait";
   a.status = actText(w, act);
   if ((s.progress += 1 + level(a.skills[SKILL[act.verb](act, w)] ?? 0) * 0.1) < (DURATION[act.verb] ?? 4)) return "wait";
   switch (act.verb) {
@@ -574,7 +602,7 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
   }
   // Bringing down the last deer anywhere near is something the neighbors notice.
   if (out.ok && act.target?.kind === "deer" && !w.animals.some((m) => m.species === "deer" && meters(m, a) <= 500))
-    incident(w, { act: "last_deer", by: a, at: a, text: `${a.name} killed the last deer anywhere near.`, value: 0.6, seenBy: w.agents.filter((b) => meters(b, a) <= VISION) });
+    incident(w, { act: "last_deer", by: a, at: a, text: `${a.name} killed the last deer anywhere near.`, value: 0.6, seenBy: w.agents.filter((b) => canSee(w, b, a, VISION)) });
   if (out.ok) for (const k of new Set([act.tool, ...act.items].filter(Boolean) as string[])) noteUse(w, k, act, out);
   for (const k of Object.keys(out.gives)) {
     const kind = w.kinds[k];
@@ -790,7 +818,7 @@ function run(w: World, a: Agent): boolean | string {
       const took: string[] = [];
       for (let i = 0; i < 3 && home.store.length && a.inv.length < 16; i++) { const st = home.store.pop()!; a.inv.push(st); took.push(st.k); }
       mark(w, home);
-      const seen = w.agents.filter((b) => b !== a && meters(a, b) <= 30);
+      const seen = w.agents.filter((b) => b !== a && canSee(w, b, a, 30));
       const text = `${a.name} took ${took.map((k) => nm(w, k)).join(", ")} from ${owner ? `${owner.name}'s` : "an empty"} home.`;
       if (!seen.length) { log(w, "steal", [a.id], a, `${text} No one saw.`); return true; }
       log(w, "steal", [a.id, ...seen.map((b) => b.id)], a, `${text} ${seen.map((b) => b.name).join(" and ")} saw it happen.`);
@@ -806,7 +834,7 @@ function run(w: World, a: Agent): boolean | string {
         if (s.progress > 5) {
           const text = `${a.name} stayed with ${b.name} while they lay collapsed, and kept them alive.`;
           log(w, "help", [a.id, b.id], a, text);
-          incident(w, { act: "tend", by: a, against: b, at: b, text, value: 0.5, seenBy: [b, ...w.agents.filter((c) => c !== a && meters(c, a) <= VISION)] });
+          incident(w, { act: "tend", by: a, against: b, at: b, text, value: 0.5, seenBy: [b, ...w.agents.filter((c) => c !== a && canSee(w, c, a, VISION))] });
           reflect(w, b, a, text).then((r) => { if (r.bond !== "none") log(w, "bond", [b.id], b, `${b.name} will remember this about ${a.name}: ${r.bond.replaceAll("_", " ")}.`); }).catch(() => {});
         }
         return true;
@@ -842,15 +870,25 @@ function run(w: World, a: Agent): boolean | string {
     case "rest": {
       const home = within(w, a, "home")?.thing;
       const kind = home ? ["pile", "lean-to", "hut", "cabin"][home.shelter?.tier ?? 0] : null;
+      const here = lightOn(w, a).bright, target = isNight(w.t) ? 98 : 85;
       a.status = isNight(w.t) ? (kind ? `Sleeping in the ${kind}` : "Sleeping on the ground") : kind ? `Resting in the ${kind}` : "Resting";
-      a.needs.energy = Math.min(100, a.needs.energy + 0.7 * (1 + (home?.shelter?.tier ?? 0) * 0.35));
-      return a.needs.energy >= (isNight(w.t) ? 98 : 85);
+      // Nothing left to sleep off: in the dark they sit it out, rather than start over every tick.
+      if (a.needs.energy >= target) {
+        if (here >= DARK) return true;
+        a.status = nearFire(w, a, 12) ? "Sitting by the fire" : "Waiting out the dark";
+        return s.progress++ >= 12;
+      }
+      a.needs.energy = Math.min(100, a.needs.energy + 0.7 * (1 + (home?.shelter?.tier ?? 0) * 0.35) * restRate(here));
+      return a.needs.energy >= target;
     }
     case "warm_up": {
       a.status = "Warming up";
       if (!within(w, a, "fire", 1) && !within(w, a, "home")) return "the warmth was gone";
       a.needs.warmth = Math.min(100, a.needs.warmth + 0.6);
-      return a.needs.warmth >= 95;
+      // Warm and by the fire at night, there is nowhere better to be: they stay a while.
+      if (a.needs.warmth < 95) return false;
+      if (isNight(w.t) && s.progress++ < 12) { a.status = "Sitting by the fire"; return false; }
+      return true;
     }
     case "eat": {
       const k = bestFood(w, a);
@@ -935,8 +973,9 @@ function run(w: World, a: Agent): boolean | string {
   }
   const g = GATHER[s.op];
   if (!g) return true;
-  a.status = GATHER_STATUS[s.op];
-  if ((s.progress += 1 + level(a.skills.foraging ?? 0) * 0.1) < 2.5) return false;
+  const b = lightOn(w, a).bright;
+  a.status = GATHER_STATUS[s.op] + (b < DARK ? " in the dark" : "");
+  if ((s.progress += (1 + level(a.skills.foraging ?? 0) * 0.1) * workRate(b)) < 2.5) return false;
   const t = within(w, a, g.place, 0.5)?.thing;
   if (!t) return `the ${g.place} was gone`;
   let n = g.n;
@@ -987,7 +1026,7 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
   let warm = false, turnedAway = false;
   const reply = (situation: string, opts: Record<string, string>) => respond(w, b, a, situation, opts);
   const trait = (x: Agent, t: string) => x.traits[t] ?? 0;
-  const bystanders = () => w.agents.filter((c) => c !== a && c !== b && c.down <= w.t && meters(c, a) <= 30);
+  const bystanders = () => w.agents.filter((c) => c !== a && c !== b && c.down <= w.t && canSee(w, c, a, 30));
   switch (kind) {
     case "talk": {
       const r = await reply(`${a.name} walks up to ${b.name} to talk.`, { welcome: "Chat warmly", brush_off: "Brush them off" });
@@ -1220,7 +1259,7 @@ function burned(w: World) {
     if (!owner || !lighter || owner === lighter) continue;
     const text = `${lighter.name}'s fire spread and burned down ${owner.name}'s home.`;
     log(w, "burned", [owner.id, lighter.id], owner, text);
-    incident(w, { act: "burned_home", by: lighter, against: owner, at: owner, text, value: 1, seenBy: [owner, ...w.agents.filter((b) => meters(b, owner) <= VISION)] });
+    incident(w, { act: "burned_home", by: lighter, against: owner, at: owner, text, value: 1, seenBy: [owner, ...w.agents.filter((b) => canSee(w, b, owner, VISION))] });
     reflect(w, owner, lighter, text).then((r) => {
       if (r.bond !== "none") log(w, "bond", [owner.id], owner, `${owner.name} will remember this about ${lighter.name}: ${r.bond.replaceAll("_", " ")}.`);
     }).catch(() => {});
@@ -1254,7 +1293,7 @@ function needs(w: World, a: Agent) {
 
 function perceive(w: World, a: Agent) {
   for (const b of w.agents) {
-    if (b === a || meters(a, b) > VISION) continue;
+    if (b === a || !canSee(w, a, b, VISION)) continue;
     if (meters(a, b) <= 30) a.near[b.id] = (a.near[b.id] ?? 0) + 1;
     if (!a.seen[b.id] || w.t - a.seen[b.id] > 150) {
       if (!a.rel[b.id]) log(w, "notice", [a.id], a, `${a.name} spotted a stranger: ${b.name}.`);
@@ -1334,7 +1373,7 @@ function agentTick(w: World, a: Agent) {
     a.down = w.t + 60;
     a.goal = null; a.plan = [];
     log(w, "collapse", [a.id], a, `${a.name} collapsed from ${cause}.`);
-    for (const b of w.agents) if (b !== a && meters(a, b) <= VISION && !b.engaged && !b.thinking) { b.nextDecide = w.t; if (b.goal && !["flee", "fight", "defend"].includes(b.goal.type)) { b.goal = null; b.plan = []; } }
+    for (const b of w.agents) if (b !== a && canSee(w, b, a, VISION) && !b.engaged && !b.thinking) { b.nextDecide = w.t; if (b.goal && !["flee", "fight", "defend"].includes(b.goal.type)) { b.goal = null; b.plan = []; } }
     return;
   }
   perceive(w, a);
@@ -1343,6 +1382,13 @@ function agentTick(w: World, a: Agent) {
   if (a.goal && critical && !NEED_FIX[critical](a.goal.type, w) && !["flee", "fight", "defend"].includes(a.goal.type) && !(a.cooldowns.interrupt > w.t)) {
     a.cooldowns.interrupt = w.t + 40;
     trace("plan", "interrupt", { reason: critical, was: a.goal.type }, a.id);
+    a.goal = null; a.plan = [];
+  }
+  // Dark falls on whoever is out, or about to go out, after something they would have to see (gathering, exploring, hunting):
+  // they give it up where they stand, unless a fire lights it or they are too cold or hungry to stop.
+  if (a.goal && !(a.cooldowns.interrupt > w.t) && a.plan.some(foray) && n.food >= 15 && n.warmth >= 15 && lightOn(w, a).bright < DARK && !nearFire(w, a, 12)) {
+    a.cooldowns.interrupt = w.t + 40;
+    trace("plan", "interrupt", { reason: "dark", was: a.goal.type }, a.id);
     a.goal = null; a.plan = [];
   }
   // Walking a few hundred meters takes a good part of a day, so goals get a day, and big projects three.

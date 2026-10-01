@@ -6,6 +6,7 @@ import { thingById } from "./space";
 import { shelterName } from "./physics";
 import { agentDetail, goalText } from "./sim";
 import { campOf } from "./groups";
+import { lightAt, lightOn, lightWords, type Light } from "./light";
 import { GROUND, LAKE, RIVER, SEA, SIZE, groundClass } from "../terrain/flora";
 
 export type Inspected = {
@@ -20,6 +21,7 @@ export type Inspected = {
 const r = (v: number, dp = 1) => Math.round(v * 10 ** dp) / 10 ** dp;
 const words = (s: string) => s.replaceAll("_", " ");
 const nameOf = (w: World, id?: string) => (id ? w.people[id]?.name ?? id : undefined);
+const lux = (l: Light) => `${l.lux >= 100 ? Math.round(l.lux).toLocaleString("en-US") : r(l.lux, l.lux < 1 ? 2 : 1)} lux`;
 const days = (w: World, t: number) => `${r((w.t - t) / DAY)} days ago`;
 const PROP_WORDS: Record<string, string> = {
   hard: "hardness", sharp: "sharpness", heavy: "weight", long: "reach", flexible: "flexibility", fibrous: "fibre", binding: "binding",
@@ -102,6 +104,7 @@ function person(w: World, a: Agent): Inspected {
   const d = agentDetail(w, a);
   const rows: Inspected["rows"] = [
     ["doing", a.status], ["goal", a.goal ? goalText(w, a.goal.type, a.goal.target) : "none"],
+    ["light", `${lightWords(lightOn(w, a))}, ${lux(lightOn(w, a))}`],
     ["age", `${r(ageOf(w, a))} years, ${stageOf(w, a)}`],
     ["traits", Object.entries(a.traits).map(([t, s]) => `${t} ${Math.round(s * 100)}`).join(", ")],
     ["wants", a.desires.join("; ")],
@@ -146,12 +149,15 @@ export function inspectGround(w: World, px: number, py: number): Inspected {
   const g = groundClass(isle, fine, x, z), height = fine.heightAt(x, z), slope = (Math.atan(g.slope) * 180) / Math.PI;
   const frozen = onMap && g.water === LAKE && iceAt(w, tx, ty);
   const name = frozen ? "frozen lake" : GROUND[g.cls];
-  const rows: Inspected["rows"] = [["tile", onMap ? `${TILES[tile]} (${tx}, ${ty})` : "off the map"]];
+  const lit = lightAt(w, px, py), light: Inspected["bars"][number] = ["light", r(lit.bright, 2), 1];
+  const rows: Inspected["rows"] = [["tile", onMap ? `${TILES[tile]} (${tx}, ${ty})` : "off the map"], ["light", `${lightWords(lit)}, ${lux(lit)}`]];
+  if (lit.canopy >= 0.01) rows.push(["under leaves", `${Math.round(lit.canopy * 100)}% of the sky hidden`]);
   const bars: Inspected["bars"] = [];
   if (g.water === SEA || g.water === LAKE) {
     const depth = g.water === SEA ? Math.max(0, -height) : fine.bilinear(isle.water, cx, cy);
     rows.push(["water depth", `${r(Math.max(0.1, depth), 1)} m`], ["surface", g.water === SEA ? "sea level" : `${r(height + depth)} m`], ["ice", frozen ? "frozen" : "no"], ["air now", `${r(w.weather.temp)} C`]);
     if (g.water === SEA) rows.push(["salt spray", r(fine.bilinear(isle.salt, cx, cy), 2)]);
+    bars.push(light);
   } else {
     rows.push(
       ["height", `${r(height)} m`], ["slope", `${r(slope)} deg`],
@@ -161,7 +167,7 @@ export function inspectGround(w: World, px: number, py: number): Inspected {
       ["path wear", `${onMap ? w.paths[ty * W + tx] : 0} / 9`],
     );
     if (g.water === RIVER) rows.push(["stream", "running water, shallow enough to wade"]);
-    bars.push(["moisture", r(fine.fine(fine.moist, x, z), 2), 1], ...(["grass", "tree", "shrub", "marsh", "bare", "sand"] as const).map((k, q) => [k, r(g.cover[q], 2), 1] as [string, number, number]));
+    bars.push(["moisture", r(fine.fine(fine.moist, x, z), 2), 1], light, ...(["grass", "tree", "shrub", "marsh", "bare", "sand"] as const).map((k, q) => [k, r(g.cover[q], 2), 1] as [string, number, number]));
   }
   return { id: `ground:${r(px, 4)},${r(py, 4)}`, kind: "ground", name, px, py, rows, bars };
 }
