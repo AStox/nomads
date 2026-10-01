@@ -13,6 +13,9 @@
 2. **[2026-09-26] The live service serves this checkout**
    nomads.service runs `bun server.ts` here (branch web-v1, port 8095). public/ is read from disk on every request, so client edits go live at once; server edits go live on restart.
    Do instead: work in a git worktree, test it as an offline copy on another port, then fast-forward web-v1, `bun install`, and `systemctl restart nomads`.
+3a. **[2026-10-01] The Jev key is the operator's personal one, in the gitignored .env**
+   The operator gave a personal TYPESAFE_API_KEY on 2026-10-01 to use from then on, as much as needed. It lives in .env at the repo root (gitignored, mode 600), which Bun loads for every `bun` command run here, so server.ts and scripts/run.ts reach Jev with no flags. `bun test` also loads .env.test (NOMADS_BRAIN=random), so tests stay offline. The browser bundles never inline it (checked).
+   Do instead: use only this key; never print it, paste it into commits, docs, logs or bundles, or set it anywhere else; run with NOMADS_BRAIN=random only when a run should be offline, not to save money.
 3. **[2026-09-26] Watching the live world costs money**
    The world only ticks while a client is connected, and the live brain bills Jev.
    Do instead: never open :8095 or goldclaw.duckdns.org/nomads to test. Run `PORT=8196 NOMADS_DATA=/tmp/<dir> NOMADS_BRAIN=random bun server.ts` and check the live server only through `/api/debug/*`.

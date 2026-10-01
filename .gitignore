@@ -1,2 +1,5 @@
 node_modules/
 data/
+
+# secrets: TYPESAFE_API_KEY for the Jev brain
+.env
