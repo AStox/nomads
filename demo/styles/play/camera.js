@@ -1,5 +1,7 @@
 // The play camera: { x, z, zoom, bearing, up } in world meters, moved only through the renderer's exact projection.
-const TURN_MS = 380, SETTLE_MS = 220, ZOOM_TAU = 90, FOLLOW_TAU = 60, BOUND = 4700, UP_MAX = 2000;
+import { SIZE } from "../island.js";
+
+const TURN_MS = 380, SETTLE_MS = 220, ZOOM_TAU = 90, FOLLOW_TAU = 60, BOUND = SIZE / 2 - 100, UP_MAX = 2000;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t));
 export const norm8 = (b) => { const r = ((b % 8) + 8) % 8; return r >= 8 ? 0 : r; };

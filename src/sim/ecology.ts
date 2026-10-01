@@ -376,14 +376,15 @@ function paths(w: World) {
 }
 
 // Wear where feet actually fall, on cells of about 3 m, for drawing trails that follow the way people really walk. The
-// 150 m tile wear above is what the game's rules read; this is kept beside the world, not saved with it.
+// 150 m tile wear above is what the game's rules read; this is kept beside the world, not saved with it. Only worn cells
+// are held, by their row-major index across the island's n x n cells.
 export const TRAIL_CELL = 3;
 export const trailChanges = new Set<number>();
-type Trails = { cell: number; n: number; wear: Uint8Array; worn: Set<number> };
+type Trails = { cell: number; n: number; wear: Map<number, number> };
 const trailsOf = new WeakMap<World, Trails>();
 export function trails(w: World): Trails {
   let t = trailsOf.get(w);
-  if (!t) { const n = Math.round((W * TILE_M) / TRAIL_CELL); t = { cell: TRAIL_CELL, n, wear: new Uint8Array(n * n), worn: new Set() }; trailsOf.set(w, t); }
+  if (!t) { t = { cell: TRAIL_CELL, n: Math.round((W * TILE_M) / TRAIL_CELL), wear: new Map() }; trailsOf.set(w, t); }
   return t;
 }
 // Wear every cell crossed walking from one point to another (in tiles), once each.
@@ -394,17 +395,18 @@ export function tread(w: World, x0: number, y0: number, x1: number, y1: number) 
     const cx = Math.floor((x0 + ((x1 - x0) * s) / steps) * k), cy = Math.floor((y0 + ((y1 - y0) * s) / steps) * k), i = cy * t.n + cx;
     if (i === last || cx < 0 || cy < 0 || cx >= t.n || cy >= t.n) continue;
     last = i;
-    if (t.wear[i] < 255) { t.wear[i]++; t.worn.add(i); trailChanges.add(i); }
+    const v = t.wear.get(i) ?? 0;
+    if (v < 255) { t.wear.set(i, v + 1); trailChanges.add(i); }
   }
 }
 // Trails grow over: once a day each worn cell loses a tenth of its wear, and at least one.
 function overgrow(w: World) {
   if (w.t % DAY) return;
   const t = trails(w);
-  for (const i of t.worn) {
-    t.wear[i] = Math.max(0, t.wear[i] - Math.max(1, Math.floor(t.wear[i] / 10)));
+  for (const [i, v] of t.wear) {
+    const left = Math.max(0, v - Math.max(1, Math.floor(v / 10)));
+    if (left) t.wear.set(i, left); else t.wear.delete(i);
     trailChanges.add(i);
-    if (!t.wear[i]) t.worn.delete(i);
   }
 }
 

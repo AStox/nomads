@@ -1,8 +1,9 @@
 // The island's simulation grid, and how water finds its way downhill across it.
 import { clamp } from "math";
 
-export const N = 128; // cells per side, two per game tile
+export const N = 256; // cells per side
 export const CELL = 75; // meters per cell
+export const TILE_CELLS = 2; // cells per side of a game tile
 export const LEN = N * N;
 // Eight neighbors, and how far each is in cells.
 export const DX = [1, 1, 0, -1, -1, -1, 0, 1], DY = [0, 1, 1, 1, 0, -1, -1, -1];

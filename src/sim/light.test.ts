@@ -1,7 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
-import { DAY, TILE_M, addThing, isNight, meters, newWorld, type World } from "./world";
+import { DAY, TILE_M, addThing, isNight, newWorld, type Thing, type World } from "./world";
 import { removeThing } from "./physics";
-import { put } from "./space";
+import { around, put } from "./space";
 import { addAnimal } from "./fauna";
 import { ecology } from "./ecology";
 import { ctxFor, tick } from "./sim";
@@ -24,7 +24,9 @@ beforeAll(() => {
 function pad(n: number, bare = 60) {
   const w = island;
   const spot = { px: origin.px + (((n % 3) - 1) * 600) / TILE_M, py: origin.py + ((Math.floor(n / 3) - 1) * 600) / TILE_M };
-  for (const t of w.things.filter((t) => meters(t, spot) < bare)) removeThing(w, t);
+  const here: Thing[] = [];
+  around(w, spot.px, spot.py, bare, null, (t) => void here.push(t));
+  for (const t of here) removeThing(w, t);
   w.animals = [];
   w.weather.sky = "clear";
   return { w, ...spot };

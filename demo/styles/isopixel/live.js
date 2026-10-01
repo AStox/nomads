@@ -11,8 +11,10 @@ import * as SP from "./sprites.js";
 import { text } from "./ui.js";
 import { createGPU, TS, TPR, LEVELS } from "./gpu.js";
 import { Canopy, STEP as CAN_STEP, N as CAN_N } from "./canopy.js";
+import { LADDER, FINEST_ISLE, levelOf } from "./ladder.js";
+import { SIZE, TILE_M, TILES } from "../island.js";
 
-const CS = 256, SIM = 150, ORIGIN = -4800, DAY = 288, YEAR = DAY * 40, TAU = Math.PI * 2, NL = 9, NB = 8;
+const CS = 256, SIM = TILE_M, ORIGIN = -SIZE / 2, DAY = 288, YEAR = DAY * 40, TAU = Math.PI * 2, NL = LADDER.length, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const mod8 = (b) => ((Math.round(b) % NB) + NB) % NB;
@@ -23,10 +25,10 @@ const wrap8 = (d) => ((((d % NB) + 12) % NB) - 4);
 // at the tuned levels (island, region, valley, close); levels in between interpolate by art px per meter. Everything
 // else is sized by its own meters.
 const ANCHORS = [
-  [0, { person: 3, fire: 2, glow: 3, smoke: 3 }],
-  [3, { person: 5, fire: 4, glow: 6, smoke: 3 }],
-  [5, { person: 9, fire: 6, glow: 12, smoke: 5 }],
-  [8, { person: 24, fire: 14, glow: 30, smoke: 3 }],
+  [levelOf("island"), { person: 3, fire: 2, glow: 3, smoke: 3 }],
+  [levelOf("region"), { person: 5, fire: 4, glow: 6, smoke: 3 }],
+  [levelOf("valley"), { person: 9, fire: 6, glow: 12, smoke: 5 }],
+  [levelOf("close"), { person: 24, fire: 14, glow: 30, smoke: 3 }],
 ];
 // animal body size in meters: standing height, a bird's wingspan, a fish's length
 const BODY = { deer: 1.5, wolf: 0.9, rabbit: 0.35, heron: 1, gull: 1.2, crow: 0.9, eagle: 2, fish: 0.5, butterfly: 0.1 };
@@ -38,7 +40,9 @@ const NOSHADOW = new Set(["ash", "pit", "trap", "fire", "clay", "stick"]);
 
 export async function createLive({ seed = 1, canvas, onProgress, workers: nW, adjacent = true, check = false } = {}) {
   const TH = await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {}));
-  const n = nW ?? clamp((navigator.hardwareConcurrency || 4) - 2, 1, 6);
+  // each worker grows its own copy of the island and holds the world's objects, about 270 MB on a 19 km island, so no
+  // more than three
+  const n = nW ?? clamp((navigator.hardwareConcurrency || 4) - 2, 1, 3);
   // The GPU draws every frame it can (null without WebGL2: the CPU composes, and a turn shows the main bearing until it
   // lands). Made first: while it lights the slopes and casts the shadows for the hour, the workers bake neither
   // (bakedSun false).
@@ -149,7 +153,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       if (!ok(hit)) hit = grounds.get(md.key)?.find(ok) ?? null;
       return hit ? [hit, (j - hit.j0) * hit.w + (i - hit.i0)] : null;
     };
-    const coarse = (u, v) => { const cm = maps.get(mk(2, m.bearing)); if (!cm) return null; const k = m.tileM / cm.tileM; return [cm, u * k, v * k]; };
+    const coarse = (u, v) => { const cm = maps.get(mk(FINEST_ISLE, m.bearing)); if (!cm) return null; const k = m.tileM / cm.tileM; return [cm, u * k, v * k]; };
     md.ground = (u, v) => {
       const tb = table(u, v);
       if (tb) return tri(tb[0].C, tb[1], u - Math.floor(u), v - Math.floor(v), tb[0].diag[tb[1]]);
@@ -163,7 +167,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   // a finer grid for the GPU to trace the sun's shadows over, as the bake traced its own
   if (gpu) { const S = await new Promise((r) => { onHeights = r; pool[0].postMessage({ type: "heights", step: 12.5 }); }); gpu.setHeights(S.n, S.step, S.h); hgrid = { n: S.n, step: S.step }; }
   const heightM = (x, z) => {
-    const fx = clamp((x + 4800) / HG.step, 0, HG.n - 1.001), fz = clamp((z + 4800) / HG.step, 0, HG.n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = j * HG.n + i, h = HG.h;
+    const fx = clamp((x - ORIGIN) / HG.step, 0, HG.n - 1.001), fz = clamp((z - ORIGIN) / HG.step, 0, HG.n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = j * HG.n + i, h = HG.h;
     return (h[k] * (1 - a) + h[k + 1] * a) * (1 - b) + (h[k + HG.n] * (1 - a) + h[k + HG.n + 1] * a) * b;
   };
   await requestMaps(0);
@@ -197,14 +201,14 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     stats.camHeight = { passes: pass, steep: +steep().toFixed(3) };
   }
   const camHg = (x, z) => {
-    const n = HG.n, fx = clamp((x + 4800) / HG.step, 0, n - 1.001), fz = clamp((z + 4800) / HG.step, 0, n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = j * n + i;
+    const n = HG.n, fx = clamp((x - ORIGIN) / HG.step, 0, n - 1.001), fz = clamp((z - ORIGIN) / HG.step, 0, n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = j * n + i;
     const h00 = CH[k], h10 = CH[k + 1], h01 = CH[k + n], h11 = CH[k + n + 1];
     return [(h00 * (1 - a) + h10 * a) * (1 - b) + (h01 * (1 - a) + h11 * a) * b, ((h10 - h00) * (1 - b) + (h11 - h01) * b) / HG.step, ((h01 - h00) * (1 - a) + (h11 - h10) * a) / HG.step];
   };
   const camH = (x, z) => camHg(x, z)[0];
   // zoom: log2 of screen px per meter over the island seen at 2 screen px per art px
   const PPM0 = 2 * PL[0], ppmOf = (z) => PPM0 * 2 ** z, ZMAX = Math.log2((4 * PL[NL - 1]) / PPM0);
-  const named = { island: 0, region: Math.log2((2 * PL[3]) / PPM0), valley: Math.log2((2 * PL[5]) / PPM0), close: Math.log2((2 * PL[8]) / PPM0) };
+  const named = Object.fromEntries(["island", "region", "valley", "close"].map((k) => [k, Math.log2((2 * PL[levelOf(k)]) / PPM0)]));
   // the level drawn at a zoom: the coarsest one still at 2 screen px or more per art px, and how far along its range
   function levelFor(zoom) {
     const ppm = ppmOf(clamp(zoom, 0, ZMAX));
@@ -314,12 +318,13 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   function sync(sim) {
     const W = sim.w, o = sim.objects();
     bins = new ObjBins(o);
-    buildCanopy(o);
+    buildCanopy(bins);
     liveThings.clear();
     for (const t of W.things) if (!t.contained && isLive(t)) liveThings.set(t.id, t);
     lastIce = iceFlags(W.ice);
     trailSrc = sim.trails?.() ?? null;
-    trailQ = trailSrc ? Uint8Array.from(trailSrc.wear, wearStep) : null;
+    trailQ = null;
+    if (trailSrc) { trailQ = new Map(); for (const [i, v] of trailSrc.wear) { const q = wearStep(v); if (q) trailQ.set(i, q); } }
     season = sim.clock?.().season ?? "spring";
     postState({ objs: o, trail: trailQ, ice: lastIce, season });
     // everything baked so far was baked without the sim's objects
@@ -329,11 +334,11 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   // The trees' cover for the GPU's ambient occlusion (canopy.js), built a few milliseconds at a time: the sim's changes
   // meanwhile wait their turn. Later changes go straight in, and up to the GPU a few times a second.
   let canopy = null, canopyJob = 0, canopyWait = [], canopyAt = 0;
-  function buildCanopy(o) {
+  function buildCanopy(bins) {
     if (!gpu || !hgrid) return;
     const job = ++canopyJob, t0 = performance.now();
     canopy = null; canopyWait = [];
-    Canopy.build(o, toM, hgrid).then((c) => {
+    Canopy.build(bins, toM, hgrid).then((c) => {
       if (job !== canopyJob) return;
       for (const [old, now] of canopyWait) c.change(old, now, bins.kinds, bins.species);
       canopyWait = [];
@@ -352,7 +357,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const u = canopy.flush();
     gpu.updateCanopy(u.x, u.y, u.w, u.h, u.bytes);
   }
-  const iceFlags = (ice) => { const f = new Array(4096).fill(0); if (ice) for (const i of ice) f[i] = 1; return f; };
+  const iceFlags = (ice) => { const f = new Array(TILES * TILES).fill(0); if (ice) for (const i of ice) f[i] = 1; return f; };
   // mark every cached chunk that can show part of a world rectangle as stale; it keeps showing until the rebake lands.
   // With an object's size, only the levels that draw it at a pixel or more.
   function dirty(x0, z0, x1, z1, size) {
@@ -391,14 +396,14 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     if (trailPending.size && now - trailFlush > 4000) {
       trailFlush = now;
       const up = [];
-      for (const i of trailPending) { const q = wearStep(trailSrc.wear[i]); if (q !== trailQ[i]) { trailQ[i] = q; up.push(i, q); } }
+      for (const i of trailPending) { const q = wearStep(trailSrc.wear.get(i) ?? 0); if (q !== (trailQ.get(i) ?? 0)) { if (q) trailQ.set(i, q); else trailQ.delete(i); up.push(i, q); } }
       trailPending.clear();
       if (up.length) { msg.trailUp = Int32Array.from(up); trailTouched = up; }
     }
     const iceDiff = [];
     if (ch.ice) {
       const iceNow = iceFlags(W.ice);
-      for (let i = 0; i < 4096; i++) if (iceNow[i] !== lastIce[i]) iceDiff.push(i);
+      for (let i = 0; i < iceNow.length; i++) if (iceNow[i] !== lastIce[i]) iceDiff.push(i);
       lastIce = iceNow;
       msg.ice = iceNow;
     }
@@ -411,17 +416,17 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     // a tall thing reaches up the screen and casts a shadow, so its box is as wide as it is tall
     for (const r of touched) { const x = toM(r.px), z = toM(r.py), R = Math.max(2, r.size) + 3; dirty(x - R, z - R, x + R, z + R, r.size); }
     if (msg.trailUp) for (let k = 0; k < trailTouched.length; k += 2) {
-      const i = trailTouched[k], x = ((i % TRAIL_N) + 0.5) * TRAIL_C - 4800, z = (Math.floor(i / TRAIL_N) + 0.5) * TRAIL_C - 4800;
+      const i = trailTouched[k], x = ((i % TRAIL_N) + 0.5) * TRAIL_C + ORIGIN, z = (Math.floor(i / TRAIL_N) + 0.5) * TRAIL_C + ORIGIN;
       dirty(x - 5, z - 5, x + 5, z + 5);
     }
     for (const i of iceDiff) {
-      const tx = i % 64, ty = (i / 64) | 0;
+      const tx = i % TILES, ty = (i / TILES) | 0;
       dirty(ORIGIN + SIM * (tx - 1), ORIGIN + SIM * (ty - 1), ORIGIN + SIM * (tx + 2), ORIGIN + SIM * (ty + 2));
     }
   }
-  let lastIce = new Array(4096).fill(0), season = "spring";
+  let lastIce = new Array(TILES * TILES).fill(0), season = "spring";
   // the sim's footpath wear, stepped into the five widths the bake draws
-  const TRAIL_C = 3, TRAIL_N = 3200, wearStep = (v) => (v < 2 ? 0 : v < 5 ? 1 : v < 12 ? 2 : v < 30 ? 3 : 4);
+  const TRAIL_C = 3, TRAIL_N = Math.round(SIZE / TRAIL_C), wearStep = (v) => (v < 2 ? 0 : v < 5 ? 1 : v < 12 ? 2 : v < 30 ? 3 : 4);
   let trailSrc = null, trailQ = null, trailFlush = 0, trailTouched = [];
   const trailPending = new Set();
 
@@ -1510,6 +1515,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   const levels = PL.map((p, L) => ({ name: maps.get(mk(L, 0)).name, tileM: maps.get(mk(L, 0)).tileM, p, zoom: Math.log2((2 * p) / PPM0) }));
   const api = {
     zmax: ZMAX, named, levels, ppm: (z) => ppmOf(clamp(z, 0, ZMAX)), levelFor,
+    // the island: its side in meters, centred on 0, and a game tile's side, for turning sim tiles into meters
+    size: SIZE, tileM: TILE_M,
     readiness, prefetch: (views) => { prefetchViews = views || []; }, centreOn, camH, screenOf, solveTarget, groundUnder,
     // what draws the frames: the GPU, and which, or the CPU and why (cause "none": no WebGL2, "build", or "lost")
     renderer: () => (gpu && !gpu.lost ? { gpu: true, name: gpu.name, ao: gpu.ao } : { gpu: false, ...(gpuOff ?? { cause: "lost", why: gpu?.why || "the GPU renderer stopped" }) }),

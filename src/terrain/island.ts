@@ -102,7 +102,8 @@ export type Island = Climate & Ground & {
 const QMIN = 0.02; // m³/s: enough water to cut a lasting channel
 
 export function generateIsland(rand: () => number): Island {
-  const peak = 250 + rand() * 200;
+  // Peaks rise with the island: 250 to 450 m on one 9.6 km across, higher on a bigger one, as its ranges are longer.
+  const peak = (250 + rand() * 200) * Math.sqrt((N * CELL) / 9600);
   const { h: raw, hard } = erode(rand, 50);
   let top = 0;
   for (let i = 0; i < LEN; i++) top = Math.max(top, raw[i]);

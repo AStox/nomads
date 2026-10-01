@@ -12,4 +12,4 @@ test("everyone on a new island starts on the mainland, and whoever comes by sea 
       expect(main[p.y * W + p.x]).toBe(1);
     }
   }
-}, 30_000);
+}, 120_000);

@@ -15,9 +15,9 @@ const inPage = async () => {
   const byLevel = {};
   let sampled = 0;
   for (const [spotName, X, Z] of spots) {
-    const tx = Math.floor((X + 4800) / 150), tz = Math.floor((Z + 4800) / 150), cand = [];
+    const half = live.size / 2, tm = live.tileM, tx = Math.floor((X + half) / tm), tz = Math.floor((Z + half) / tm), cand = [];
     B.each(tx - 1, tz - 1, tx + 1, tz + 1, (ki, si, px, py, size, sd, id) => {
-      const K = B.kinds[ki], x = px * 150 - 4800, z = py * 150 - 4800;
+      const K = B.kinds[ki], x = px * tm - half, z = py * tm - half;
       if (!LIVE.has(K) && Math.hypot(x - X, z - Z) < R) cand.push({ id, K, x, z, size });
     });
     for (let i = cand.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [cand[i], cand[j]] = [cand[j], cand[i]]; }

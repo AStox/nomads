@@ -16,7 +16,7 @@ import { attacked } from "./animals";
 import { chooseTinker, decide, describeKind, fadeBonds, nameIt, newRel, reflect, respond, rule, sample } from "./brain";
 import { clock as traceClock, count as bump, timed, trace } from "./trace";
 import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sharedStore, snubbed, spread, standing, takeShared } from "./groups";
-import { anyAround, around, liveThings, nearestThing, thingById } from "./space";
+import { anyAround, around, liveThings, nearestThing, shelve, thingById } from "./space";
 import { landOf, walk } from "./walk";
 import { DARK, canSee, lightOn, moveRate, restRate, workRate } from "./light";
 
@@ -1432,6 +1432,7 @@ export function tick(w: World) {
   burned(w);
   timed("groups", () => groups(w));
   if (w.t % DAY === 0) for (const a of w.agents) fadeBonds(a);
+  if (w.t % DAY === DAY / 2) timed("shelve", () => shelve(w));
   timed("agents", () => { for (const a of [...w.agents]) if (w.agents.includes(a)) agentTick(w, a); });
   bump("ticks");
 }

@@ -5,6 +5,7 @@ import { RGB, P } from "../isopixel/pal.js";
 import { Buf } from "../isopixel/px.js";
 import { text } from "../isopixel/ui.js";
 import { createCamera, norm8 } from "./camera.js";
+import { SIZE, TILE_M } from "../island.js";
 
 const Q = new URLSearchParams(location.search);
 // every URL parameter is checked, so a bad one falls back to its default instead of stopping the page
@@ -17,7 +18,7 @@ const benchKind = ["zoom", "orbit", "turn", "pan"].includes(Q.get("bench")) ? Q.
 const canvas = document.getElementById("view"), hint = document.getElementById("hint"), statsEl = document.getElementById("stats"), pace = document.getElementById("pace"), renderEl = document.getElementById("render"), clockEl = document.getElementById("clock");
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8], DBL_MS = 300;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const toM = (t) => t * 150 - 4800;
+const toM = (t) => t * TILE_M - SIZE / 2;
 
 const fail = (e) => { document.body.dataset.error = String((e && e.stack) || e); document.body.classList.add("failed"); loadingScreen(canvas, `failed: ${e?.message ?? e}`.slice(0, 90), 0); };
 window.addEventListener("error", (e) => fail(e.error || e.message));

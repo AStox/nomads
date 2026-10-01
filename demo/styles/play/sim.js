@@ -79,7 +79,8 @@ export async function createSim({ seed = 1, warm = 0, onProgress } = {}) {
       return { px: e.px, py: e.py, ppx: p ? p[0] : e.px, ppy: p ? p[1] : e.py };
     },
     objects: () => objects(w),
-    // Fine wear where people have walked: cell meters, n cells a side, wear 0..255 row-major from the island's north-west corner.
+    // Fine wear where people have walked: cell meters, n cells a side, and the wear 1..255 of each worn cell by its
+    // row-major index from the island's north-west corner.
     trails: () => { const t = trails(w); return { cell: t.cell, n: t.n, wear: t.wear }; },
     inspect: (id) => inspect(w, id),
     inspectGround: (px, py) => inspectGround(w, px, py),

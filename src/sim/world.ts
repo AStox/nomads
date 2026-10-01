@@ -1,6 +1,6 @@
 import { generateIsland, type Island } from "../terrain/island";
 import { lay, type Lay, type Terrain } from "../terrain/land";
-import { FLORA, SIZE, SPECIES, fineGround, riverSmooth, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
+import { FLORA, SIZE, SPECIES, TILES, TILE_M, fineGround, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
 import { TRAITS } from "./traits";
 import { baseRegistry, type Registry } from "./materials";
 import type { Belief } from "./beliefs";
@@ -8,12 +8,12 @@ import { enter, put } from "./space";
 import { populate } from "./fauna";
 import { NIGHT_EL, sunAt } from "./sky";
 
-export const W = 64;
-export const H = 64;
+export const W = TILES;
+export const H = TILES;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export const YEAR_DAYS = 40;
-export const VERSION = 8;
-export const TILE_M = 150; // meters per tile
+export const VERSION = 9;
+export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
 
@@ -212,7 +212,8 @@ export type World = {
   heights: number[]; // ground height at tile corners, (W + 1) * (H + 1), in tile widths (150 m) above the waterline
   terrain: Terrain; // the simulated ground the tiles were read from, for the map and anything that wants more detail
   paths: number[]; // walking wear per tile, 0..9
-  things: Thing[];
+  things: Thing[]; // everything the game holds as things: the ground's own on the tiles in `stocked`, and all it has made
+  stocked: number[]; // tiles whose ground has been taken over as things; elsewhere it is still as it grew (groundOf flora)
   agents: Agent[];
   animals: Animal[];
   events: Event[];
@@ -427,31 +428,34 @@ const HP: Record<string, (size: number) => number> = {
   tree: (s) => Math.round(30 + s * 4.5), bush: () => 20, boulder: (s) => Math.round(60 + s * 40), stone: () => 40, pebble: () => 10,
   stick: () => 8, fallen_log: (s) => Math.round(20 + s * 6), mushroom: () => 2, herb: () => 3, reeds: () => 6, fern: () => 4, flowers: () => 2, clay: () => 10, grass: () => 3,
 };
+// Entry k of what the ground grew (groundOf flora), as the thing it is before anyone touches it: thing t{k + 1}.
+export function grown(w: World, k: number): Thing {
+  const f = groundOf(w.seed).flora, kind = FLORA[f.kind[k]], px = f.px[k], py = f.py[k], size = f.size[k], seed = f.seed[k];
+  const hp = HP[kind](size), species = SPECIES[f.species[k]];
+  const t: Thing = { id: `t${k + 1}`, kind, x: Math.floor(px), y: Math.floor(py), px, py, size, seed, hp, maxHp: hp };
+  if (species) t.species = species;
+  if (kind === "bush" && species === "berry") t.n = 4;
+  // Flint forms as nodules inside the rock; ore shows as reddish stones, and sometimes inside boulders too.
+  const q = ((seed >>> 8) & 0xffff) / 65536;
+  if (kind === "boulder" && (q < 0.45 || q > 0.85)) t.inside = q < 0.45 ? { flint: q < 0.15 ? 2 : 1 } : { ore: 1 };
+  return t;
+}
 
 export function newWorld(seed: number, agentCount = 5): World {
-  const g = groundOf(seed), { land, flora: f } = g;
+  const g = groundOf(seed), { land } = g;
   // People, animals and loose things draw from their own stream, so a seed's island stays the same whatever they do.
   const rand = rng(seed ^ 0x5f3759df);
   const tiles = [...land.tiles];
+  // The ground's own things are taken over a tile at a time, when something first looks there (space.ts); ids past theirs
+  // are for what comes later.
   const w: World = {
-    version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, heights: [...land.heights], terrain: land.terrain, paths: new Array(W * H).fill(0), things: [], agents: [], animals: [], events: [],
-    nextId: 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {}, ice: [], people: {},
+    version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, heights: [...land.heights], terrain: land.terrain, paths: new Array(W * H).fill(0), things: [], stocked: [], agents: [], animals: [], events: [],
+    nextId: g.flora.n + 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {}, ice: [], people: {},
     weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 14, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, drought: false, dryTicks: 0 },
     camps: [], incidents: [],
   };
-  for (let i = 0; i < f.n; i++) {
-    const kind = FLORA[f.kind[i]], px = tileOf(f.x[i]), py = tileOf(f.z[i]), size = Math.round(f.size[i] * 100) / 100, seed = f.seed[i];
-    // Rounding to tiles can nudge a point at the very edge of water or a stream over it; the map would not draw it there.
-    if (wetAt(w, px, py) || riverSmooth(g.fine, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2) > 0.5) continue;
-    if (kind === "ore") { addThing(w, "item", px, py, { item: "ore", n: 1, size, seed }); continue; }
-    const hp = HP[kind](size);
-    const t: Thing = { id: `t${w.nextId++}`, kind, x: Math.floor(px), y: Math.floor(py), px, py, size, seed, species: SPECIES[f.species[i]] || undefined, hp, maxHp: hp };
-    if (kind === "bush" && t.species === "berry") t.n = 4;
-    // Flint forms as nodules inside the rock; ore shows as reddish stones, and sometimes inside boulders too.
-    const q = ((seed >>> 8) & 0xffff) / 65536;
-    if (kind === "boulder" && (q < 0.45 || q > 0.85)) t.inside = q < 0.45 ? { flint: q < 0.15 ? 2 : 1 } : { ore: 1 };
-    enter(w, t, false);
-  }
+  // Loose stones of ore lie about from the start, to be picked up like anything dropped.
+  for (const o of g.flora.ore) addThing(w, "item", o.px, o.py, { item: "ore", n: 1, size: o.size, seed: o.seed });
   const traitNames = Object.keys(TRAITS), main = mainland(w);
   const open = (px: number, py: number) => tileAt(w, Math.floor(px), Math.floor(py)) === Tile.Grass && !!main[Math.floor(py) * W + Math.floor(px)] && dryAt(w, px, py);
   // They wake within a few minutes' walk of each other, each alone.

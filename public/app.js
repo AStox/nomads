@@ -1092,7 +1092,7 @@ function connect() {
   src.onmessage = async (m) => {
     const msg = JSON.parse(m.data);
     if (msg.type === "init") {
-      S.W = 64; S.H = msg.tiles.length / 64; S.tiles = msg.tiles; S.heights = msg.heights; S.land = readTerrain(msg.terrain); S.t = msg.t; S.jev = msg.jev;
+      S.W = Math.round(Math.sqrt(msg.tiles.length)); S.H = msg.tiles.length / S.W; S.tiles = msg.tiles; S.heights = msg.heights; S.land = readTerrain(msg.terrain); S.t = msg.t; S.jev = msg.jev;
       S.kinds = { ...(msg.kinds ?? {}) }; S.weather = msg.weather ?? null; S.groups = msg.groups ?? [];
       S.paths = parsePaths(msg.paths, S.W * S.H);
       S.ice = parseIce(msg.ice, S.W * S.H);

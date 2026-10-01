@@ -15,6 +15,10 @@
 // shadow-casting sprite's silhouette laid along it. Then the sky's light is taken from what stands round a pixel
 // (ambient occlusion): the folds of the ground, traced once, and the trees' cover (canopy.js), which follows the sim.
 
+import { SIZE } from "../island.js";
+
+// the island's half side in meters as a GLSL float: grids over it run from its north-west corner, at -HALF
+const HALF = (SIZE / 2).toFixed(1);
 const HEAD = "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp usampler2D;\nprecision highp isampler2D;\n";
 // live.js packs its tiles this way: TS art px square, TPR to an atlas row
 export const TS = 32, TPR = 64;
@@ -77,7 +81,7 @@ uint lightAt(ivec2 q, float z, uint kind, bool stand, int ax, float e, inout uin
   float f = uFlat;
   ao = 0u;
   if (kind <= 2u && z > -1e29) {
-    vec2 wp = uWO + float(q.x - (kind == 0u ? 0 : ax)) * uWA + (float(q.y) + z - e) * uWB, t = ((wp + 4800.0) / uSunStep + 0.5) / uSunN;
+    vec2 wp = uWO + float(q.x - (kind == 0u ? 0 : ax)) * uWA + (float(q.y) + z - e) * uWB, t = ((wp + ${HALF}) / uSunStep + 0.5) / uSunN;
     vec4 gr = texture(uGrad, t);
     vec2 g = gr.rg * uRelief, sv = texture(uSun, t).rg;
     float slope = max(0.0, dot(uKey, normalize(vec3(-g.x, 1.0, -g.y)))), sh = 0.0;
@@ -89,7 +93,7 @@ uint lightAt(ivec2 q, float z, uint kind, bool stand, int ax, float e, inout uin
       sh *= uSunK;
     }
     if (uAoK > 0.0 && !wet) {
-      vec2 ct = ((wp + 4800.0) / uCanStep + 0.5) / uCanN;
+      vec2 ct = ((wp + ${HALF}) / uCanStep + 0.5) / uCanN;
       float near = textureLod(uCan, ct, 0.0).r * 2.0, wide = textureLod(uCan, ct, 3.0).r * 2.0;
       float k = !stand ? 0.0 : max(0.0, (z - e - 3.0 * float(q.y + uSunG.y)) * 0.25 - gr.a * uHpx);
       float up = 1.0 - smoothstep(0.15, 1.0, k / max(gr.b * uPv, 1.0));
@@ -595,7 +599,7 @@ export function createGPU({ NCOL, HAZE, WATER, TONE, TONE_S }) {
     }
   }
 
-  // The island's heights for the sun map, n x n, texel i at -4800 + i * step meters, and what the light reads from them
+  // The island's heights for the sun map, n x n, texel i at -SIZE / 2 + i * step meters, and what the light reads from them
   // (RGBA, taken over two steps each way): the slope in r and g, the trees' mean height in b (setCanopy) and the
   // ground's own height in a. Half floats, which filter. The sun maps hold the sun's shadow in r and the ground's fold
   // of the sky in g (setRelief).
@@ -630,7 +634,7 @@ export function createGPU({ NCOL, HAZE, WATER, TONE, TONE_S }) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     heights.exag = exag;
   }
-  // The trees' cover of the ground, n x n cells of `step` meters from -4800: bytes, 0..255 for crowns 0 to 2 deep. With it
+  // The trees' cover of the ground, n x n cells of `step` meters from -SIZE / 2: bytes, 0..255 for crowns 0 to 2 deep. With it
   // the trees' mean height in m by the heights' own grid (tall, n x n of setHeights), for the slopes' blue.
   function setCanopy(n, step, bytes, tall) {
     const t = gl.createTexture();

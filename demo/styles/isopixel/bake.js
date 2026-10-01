@@ -7,6 +7,7 @@ const early = [];
 onmessage = (e) => early.push(e);
 
 const { grow, noise } = await import("../world.js");
+const { SIZE, TILE_M, TILES } = await import("../island.js");
 const L = await import("./main.js");
 const { P, SHADOW } = await import("./pal.js");
 const { Buf, ObjBins, dith, shadowRows } = await import("./px.js");
@@ -18,9 +19,9 @@ const levels = new Map(), MAPS_KEPT = 3, LEVELS_KEPT = 8;
 // the live world, sent by the page whenever the sim changes it: its objects, worn paths and ice; realtime: the page
 // lights the slopes and casts the shadows on the GPU for the hour, so the bake does neither; ao: and it takes the sky's
 // light from the hollows (ambient occlusion), so the bake leaves the hollows alone
-const D = { version: 0, objs: null, trail: null, ice: new Uint8Array(64 * 64), season: "spring", realtime: false, ao: false };
+const D = { version: 0, objs: null, trail: null, ice: new Uint8Array(TILES * TILES), season: "spring", realtime: false, ao: false };
 
-const SIM = 150, SIM0 = -4800;
+const SIM = TILE_M, SIM0 = -SIZE / 2;
 const simTile = (x, z) => [Math.floor((x - SIM0) / SIM), Math.floor((z - SIM0) / SIM)];
 
 function level(k, b) {
@@ -65,7 +66,7 @@ function bake(msg) {
   }
   V.trail = D.trail; V.season = D.season; V.realtime = D.realtime; V.aoGpu = D.realtime && D.ao;
   // the sim freezes whole 150 m tiles; between a frozen tile and an open one the ice edge wanders instead of ruling a line
-  const ice = (tx, ty) => (tx >= 0 && ty >= 0 && tx < 64 && ty < 64 && D.ice[ty * 64 + tx] === 1 ? 1 : 0);
+  const ice = (tx, ty) => (tx >= 0 && ty >= 0 && tx < TILES && ty < TILES && D.ice[ty * TILES + tx] === 1 ? 1 : 0);
   V.iceAt = (x, z) => {
     const fx = (x - SIM0) / SIM - 0.5, fz = (z - SIM0) / SIM - 0.5, i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j;
     const v = (ice(i, j) * (1 - a) + ice(i + 1, j) * a) * (1 - b) + (ice(i, j + 1) * (1 - a) + ice(i + 1, j + 1) * a) * b;
@@ -159,8 +160,8 @@ function run(m) {
     }
     else if (m.type === "heights") {
       // the true ground on a coarse grid, where the page stands sprites before their chunk is baked
-      const n = Math.ceil(9600 / m.step) + 1, h = new Float32Array(n * n);
-      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) h[j * n + i] = Math.max(0, w.heightAt(-4800 + i * m.step, -4800 + j * m.step));
+      const n = Math.ceil(SIZE / m.step) + 1, h = new Float32Array(n * n);
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) h[j * n + i] = Math.max(0, w.heightAt(SIM0 + i * m.step, SIM0 + j * m.step));
       postMessage({ type: "heights", n, step: m.step, h }, [h.buffer]);
     }
   } catch (e) {
@@ -189,7 +190,7 @@ const handle = async (e) => {
     }
     if (m.trail) D.trail = m.trail;
     if (m.season) D.season = m.season;
-    if (m.trailUp && D.trail) for (let k = 0; k < m.trailUp.length; k += 2) D.trail[m.trailUp[k]] = m.trailUp[k + 1];
+    if (m.trailUp && D.trail) for (let k = 0; k < m.trailUp.length; k += 2) { const i = m.trailUp[k], q = m.trailUp[k + 1]; if (q) D.trail.set(i, q); else D.trail.delete(i); }
     if (m.ice) D.ice = Uint8Array.from(m.ice);
     if (m.realtime != null) D.realtime = m.realtime;
     return;

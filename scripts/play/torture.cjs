@@ -49,7 +49,7 @@ function probe() {
   P.entity = (cam, id) => {
     const sim = play.sim, q = sim.pos(id);
     if (!q) return null;
-    const al = Math.min(1, Math.max(0, sim.alpha ?? 1)), x = q.ppx * 150 - 4800 + (q.px - q.ppx) * 150 * al, z = q.ppy * 150 - 4800 + (q.py - q.ppy) * 150 * al;
+    const al = Math.min(1, Math.max(0, sim.alpha ?? 1)), tm = live.tileM, half = live.size / 2, x = q.ppx * tm - half + (q.px - q.ppx) * tm * al, z = q.ppy * tm - half + (q.py - q.ppy) * tm * al;
     const p = D.project(cam.md, x, z), an = sim.w.animals.find((a) => a.id === id), pv = cam.md.k * 0.866 * cam.md.treeK, lift = an ? Math.round((an.alt || 0) * pv) : 0;
     return [cam.dx + (p.gx - cam.gx0) * cam.s, cam.dy + (p.gy - lift - cam.gy0) * cam.s];
   };
@@ -117,12 +117,12 @@ function probe() {
     const bad = (k, why) => { I[k]++; if (!I.first) I.first = { k, why, state: P.state(), task: P.task?.kind }; };
     const fin = [v.x, v.z, v.zoom, v.bearing, v.up ?? 0].every(Number.isFinite);
     if (!fin) bad("nan", "non-finite");
-    if (Math.abs(v.x) > 4800 || Math.abs(v.z) > 4800) bad("bounds", "xz");
+    if (Math.abs(v.x) > live.size / 2 || Math.abs(v.z) > live.size / 2) bad("bounds", "xz");
     if (!(v.zoom >= -1e-9 && v.zoom <= live.zmax + 1e-9)) bad("zoom", "range");
     if (!(v.bearing >= 0 && v.bearing < 8)) bad("bearing", "not in [0,8)");
     const t = P.task;
     if (!t) return;
-    if (Math.abs(v.x) >= 4700 - 1e-6 || Math.abs(v.z) >= 4700 - 1e-6) t.clamped = true;
+    if (Math.abs(v.x) >= live.size / 2 - 100 - 1e-6 || Math.abs(v.z) >= live.size / 2 - 100 - 1e-6) t.clamped = true;
     const cam = P.cam(v);
     if (t.kind === "zoom" || t.kind === "pinch" || t.kind === "pan") {
       if (!cam) { t.skip++; return; }

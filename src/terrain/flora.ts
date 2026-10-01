@@ -1,7 +1,7 @@
 // The island at a finer grain than the generator's cells, and everything that grows or lies on it: trees, shrubs,
 // rocks, stones, fallen wood, mushrooms, herbs, reeds, ferns and flowers. The game makes a thing of every object
 // listed here and the renderer draws the same list, so both read this one function.
-import { CELL, N } from "./grid";
+import { CELL, N, TILE_CELLS } from "./grid";
 import type { Island } from "./island";
 
 export const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -31,8 +31,10 @@ export const COVERS = ["tree", "shrub", "grass", "marsh", "bare", "sand"] as con
 export type Cover = (typeof COVERS)[number];
 // The fine grid puts four quads across every 75 m cell, with a vertex on every cell center.
 export const K = 4, M = (N - 1) * K + 1, STEP = CELL / K, SIZE = N * CELL, START = CELL / 2 - SIZE / 2;
-// The stream mask: 2048 texels across the island, 9600 / 2048 m each.
-export const RM = 2048;
+// The stream mask: a texel every 4.6875 m across the island.
+export const RM = N * 16;
+// Game tiles: their side in meters, and how many cross the island.
+export const TILE_M = CELL * TILE_CELLS, TILES = N / TILE_CELLS;
 
 export type Fine = {
   h: Float32Array; wet: Float32Array; river: Float32Array; moist: Float32Array; cover: Record<Cover, Float32Array>;
@@ -121,19 +123,24 @@ export function fineGround(isle: Island): Fine {
 }
 
 // Every object the ground holds. Kinds and species are indices into the tables below; 0 in SPECIES means none.
-export const FLORA = ["tree", "bush", "boulder", "stone", "pebble", "stick", "fallen_log", "mushroom", "herb", "reeds", "fern", "flowers", "clay", "ore", "grass"] as const;
+export const FLORA = ["tree", "bush", "boulder", "stone", "pebble", "stick", "fallen_log", "mushroom", "herb", "reeds", "fern", "flowers", "clay", "grass"] as const;
 export type Flora = (typeof FLORA)[number];
 export const SPECIES = [
   "", "pine", "oak", "ash", "aspen", "berry", "hazel", "heather", "gorse", "bolete", "chanterelle", "puffball",
   "yarrow", "sorrel", "mint", "bracken", "lady_fern", "buttercup", "daisy", "clover", "harebell", "poppy",
 ] as const;
 export type Species = (typeof SPECIES)[number];
+// Everything that grows or lies on the ground, as the game takes it over: thing t{k + 1} is entry k. Entries run tile
+// by tile, so start[t] .. start[t + 1] are the entries standing on tile t (row-major, TILES across). Loose stones of ore
+// are listed apart: the game holds them as items from the start, the way it holds anything that can be picked up.
 export type Scatter = {
   n: number;
+  start: Int32Array; // TILES * TILES + 1
   kind: Uint8Array; species: Uint8Array;
-  x: Float32Array; z: Float32Array; // world meters, x east and z south, the island's center at 0
+  px: Float32Array; py: Float32Array; // where it stands, in game tiles from the island's north-west corner
   size: Float32Array; // meters: a tree's or shrub's height, a rock's width, a stick's or log's length, a patch's width
   seed: Uint32Array; // per-object variation, stable for the seed
+  ore: { px: number; py: number; size: number; seed: number }[];
 };
 
 const F = Object.fromEntries(FLORA.map((k, i) => [k, i])) as Record<Flora, number>;
@@ -146,11 +153,11 @@ const TALL = { pine: 17, oak: 15, ash: 16, aspen: 13 } as const;
 // reeds and clay the wet margins. Each quad draws from its own stream, so a quad's objects depend only on the seed.
 export function scatter(isle: Island, g: Fine, seed: number): Scatter {
   let cap = 1 << 19, n = 0;
-  let kind = new Uint8Array(cap), species = new Uint8Array(cap), xs = new Float32Array(cap), zs = new Float32Array(cap), size = new Float32Array(cap), seeds = new Uint32Array(cap);
+  let kind = new Uint8Array(cap), species = new Uint8Array(cap), pxs = new Float32Array(cap), pys = new Float32Array(cap), size = new Float32Array(cap), seeds = new Uint32Array(cap);
   const grow = () => {
     cap *= 2;
     const more = <T extends Uint8Array | Float32Array | Uint32Array>(a: T) => { const b = new (a.constructor as new (n: number) => T)(cap); b.set(a); return b; };
-    kind = more(kind); species = more(species); xs = more(xs); zs = more(zs); size = more(size); seeds = more(seeds);
+    kind = more(kind); species = more(species); pxs = more(pxs); pys = more(pys); size = more(size); seeds = more(seeds);
   };
   let s = 0;
   const r = () => {
@@ -159,11 +166,18 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
     q = (q + Math.imul(q ^ (q >>> 7), 61 | q)) ^ q;
     return ((q ^ (q >>> 14)) >>> 0) / 4294967296;
   };
-  // Nothing lies under standing water or in a stream bed, where no one could reach it and nothing would draw it.
+  // Nothing lies under standing water or in a stream bed, where no one could reach it and nothing would draw it. A thing
+  // stands where the game puts it, to a ten-thousandth of a tile, and it is checked there too.
+  const tileAt = (m: number) => Math.fround(Math.round(((m + SIZE / 2) / TILE_M) * 1e4) / 1e4), back = (t: number) => t * TILE_M - SIZE / 2;
+  const ore: Scatter["ore"] = [];
+  // k: an index into FLORA, or -1 for a loose stone of ore
   const put = (k: number, sp: number, x: number, z: number, sz: number) => {
     if (waterAt(isle, g, x, z) > 0.5 || riverSmooth(g, x, z) > 0.5) return;
+    const px = tileAt(x), py = tileAt(z);
+    if (waterAt(isle, g, back(px), back(py)) > 0.5 || riverSmooth(g, back(px), back(py)) > 0.5) return;
+    if (k < 0) { ore.push({ px, py, size: sz, seed: (r() * 4294967296) >>> 0 }); return; }
     if (n === cap) grow();
-    kind[n] = k; species[n] = sp; xs[n] = x; zs[n] = z; size[n] = sz; seeds[n] = (r() * 4294967296) >>> 0;
+    kind[n] = k; species[n] = sp; pxs[n] = px; pys[n] = py; size[n] = sz; seeds[n] = (r() * 4294967296) >>> 0;
     n++;
   };
   const { h, wet, moist, river, cover, fine, heightAt, slopeAt, dry, bilinear } = g;
@@ -258,10 +272,23 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
       // Weather wears reddish stones out of the bare rock.
       for (let c = Math.floor(bare * 0.012 + r()); c > 0; c--) {
         const [x, z] = spot();
-        if (fine(wet, x, z) < 0.3) put(F.ore, 0, x, z, 0.15 + r() * 0.2);
+        if (fine(wet, x, z) < 0.3) put(-1, 0, x, z, 0.15 + r() * 0.2);
       }
     }
-  return { n, kind: kind.slice(0, n), species: species.slice(0, n), x: xs.slice(0, n), z: zs.slice(0, n), size: size.slice(0, n), seed: seeds.slice(0, n) };
+  // Tile by tile, each tile's things in the order they were laid down.
+  const T = TILES * TILES, start = new Int32Array(T + 1), tileOf = new Int32Array(n);
+  for (let k = 0; k < n; k++) {
+    const t = Math.min(TILES - 1, Math.floor(pys[k])) * TILES + Math.min(TILES - 1, Math.floor(pxs[k]));
+    tileOf[k] = t; start[t + 1]++;
+  }
+  for (let t = 0; t < T; t++) start[t + 1] += start[t];
+  const out: Scatter = { n, start, kind: new Uint8Array(n), species: new Uint8Array(n), px: new Float32Array(n), py: new Float32Array(n), size: new Float32Array(n), seed: new Uint32Array(n), ore };
+  const fill = start.slice(0, T);
+  for (let k = 0; k < n; k++) {
+    const j = fill[tileOf[k]]++;
+    out.kind[j] = kind[k]; out.species[j] = species[k]; out.px[j] = pxs[k]; out.py[j] = pys[k]; out.size[j] = size[k]; out.seed[j] = seeds[k];
+  }
+  return out;
 }
 
 // ---------- what a ground point is ----------

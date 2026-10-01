@@ -1,7 +1,8 @@
 // Nomads as a 90s isometric sim: a 2:1 tile map with integer height steps, slope shapes and cliff strips, painted
 // pixel by pixel into a small indexed buffer with one fixed palette, then blown up with nearest neighbour.
 import { grow, fbm, noise, smooth } from "../world.js";
-import { groundClass, waterAt, riverSmooth, SEA as G_SEA, LAKE as G_LAKE, RIVER as G_RIVER, ROCKY as G_ROCKY } from "../island.js";
+import { groundClass, waterAt, riverSmooth, SEA as G_SEA, LAKE as G_LAKE, RIVER as G_RIVER, ROCKY as G_ROCKY, SIZE, TILE_M } from "../island.js";
+import { LADDER } from "./ladder.js";
 import { P, RGB as RGB_, ramp, SHADOW, GLOW, HAZE, MIST, NCOL, THEME } from "./pal.js";
 import { Buf, Spr, ObjBins, tri, strip, blit, castShadow, shadowPx, bayer, dith, h2 } from "./px.js";
 import * as SP from "./sprites.js";
@@ -942,22 +943,7 @@ function vertexLight(V, M) {
 }
 
 // ---------- live: a fixed camera over the whole island, baked in chunks ----------
-// The zoom ladder. Every level has a fixed bearing, scale and exaggeration, so nothing re-fits while panning.
-// Neighbours are at most 2x apart in art pixels per meter, so a continuous zoom can always show one at 2 to 4 screen
-// px per art px. The four tuned levels are island, region, valley and close; the rest sit between them. Everything
-// finer than the island maps is paged: each chunk builds its own map, so no bearing needs an island-wide one.
-// One look at every level: the same textures from the same world fields, only the tile size and pixel scale differ.
-export const LADDER = [
-  { name: "island", W: 12, lp: 2, tileM: 200 },
-  { name: "isle100", W: 12, lp: 2, tileM: 100 },
-  { name: "isle50", W: 12, lp: 2, tileM: 50 },
-  { name: "region", W: 16, lp: 2, tileM: 37.5, paged: true },
-  { name: "vale", W: 24, lp: 3, tileM: 28.125, paged: true },
-  { name: "valley", W: 32, lp: 4, tileM: 18.75, paged: true },
-  { name: "near", W: 40, lp: 5, tileM: 11.71875, paged: true },
-  { name: "yard", W: 48, lp: 6, tileM: 8, paged: true },
-  { name: "close", W: 58, lp: 7, tileM: 6.25, paged: true },
-];
+export { LADDER };
 // One vertical exaggeration for every zoom and bearing, so a mountain has the same shape at each. 1.2 keeps the drawn
 // 99th percentile slope under 40 degrees at the generator's 75 m cells (true p99 34.4 degrees, seed 1); 1.5 trades a
 // little of that for more mountain. ?exag= overrides it once at load, in the page and in the bake workers alike.
@@ -965,12 +951,12 @@ export const EXAG = (() => { const q = Number(new URLSearchParams(globalThis.loc
 // hillshade gain on the true slope, strong enough that eroded ridges and valleys read at the low exaggeration
 const LIGHT = 4.4;
 export const BEARINGS = 8;
-export const ORIGIN = -4800;
+export const ORIGIN = -SIZE / 2;
 
 // Bearing b turns the camera b * 45 degrees clockwise: tile axes eu, ev are the world axes turned by -b * 45 degrees,
 // from an origin that keeps the whole island at u, v >= 0. At b = 0, +x runs down-right and +z down-left like the sim.
 export function bearingFrame(b) {
-  const a = (b * Math.PI) / 4, c = Math.cos(a), sn = Math.sin(a), R = 4800 * (Math.abs(c) + Math.abs(sn));
+  const a = (b * Math.PI) / 4, c = Math.cos(a), sn = Math.sin(a), R = (SIZE / 2) * (Math.abs(c) + Math.abs(sn));
   const eu = [c, sn], ev = [-sn, c];
   return { eu, ev, ox: -R * (eu[0] + ev[0]), oz: -R * (eu[1] + ev[1]), span: 2 * R };
 }
@@ -1095,12 +1081,12 @@ export function collectLive(w, V, M, D) {
   const cov = (x, z) => w.fine(w.cover.tree, x, z);
   const dimAt = (x, z) => Math.round(clamp(0.05 - terrainLight(w, V, x, z) * 0.75, -0.75, 1) * 4) / 4;
   const [u0, u1, v0, v1] = V.obox, cs = [V.toW(u0, v0), V.toW(u1, v0), V.toW(u0, v1), V.toW(u1, v1)], xs = cs.map((c) => c[0]), zs = cs.map((c) => c[1]);
-  const tile = (m) => Math.floor((m - ORIGIN) / 150), kinds = ob.kinds, spn = ob.species, skip = kinds.map((k) => ObjBins.LIVE.has(k));
+  const tile = (m) => Math.floor((m - ORIGIN) / TILE_M), kinds = ob.kinds, spn = ob.species, skip = kinds.map((k) => ObjBins.LIVE.has(k));
   ob.each(tile(Math.min(...xs)), tile(Math.min(...zs)), tile(Math.max(...xs)), tile(Math.max(...zs)), (ki, si, px, py, size, seed, id, n) => {
     if (skip[ki]) return;
     const K = kinds[ki], hpx = K === "grass" ? size * pw : ObjBins.shown(size) * pv;
     if (hpx < 1) return;
-    const x = px * 150 + ORIGIN, z = py * 150 + ORIGIN;
+    const x = px * TILE_M + ORIGIN, z = py * TILE_M + ORIGIN;
     if (!visW(x, z)) return;
     // drawn wherever the sim holds it, so what is drawn and what can be picked always agree
     const sp = spn[si], at = place(V, M, x, z);
@@ -1206,26 +1192,27 @@ export function surfaceAt(w, V, x, z) {
   return g.water ? 40 + g.water : g.cls;
 }
 const TRACE = { cls: 0 };
-// Worn footpaths from the sim's 3 m wear grid, stepped into five widths (T holds 0..4 per cell). Each worn cell's centre
-// is jittered inside it and joined to its worn neighbours, so a path wiggles through the grass and widens with use.
-const TC = 3, TN = 3200, HALF = [0, 0.45, 0.6, 0.78, 1];
-const tcx = (i, j) => (i + 0.5 + (h2(i, j, 521) - 0.5) * 0.7) * TC - 4800, tcz = (i, j) => (j + 0.5 + (h2(i, j, 522) - 0.5) * 0.7) * TC - 4800;
+// Worn footpaths from the sim's 3 m wear cells, stepped into five widths (T maps a worn cell's row-major index to 1..4).
+// Each worn cell's centre is jittered inside it and joined to its worn neighbours, so a path wiggles through the grass
+// and widens with use.
+const TC = 3, TN = Math.round(SIZE / TC), HALF = [0, 0.45, 0.6, 0.78, 1];
+const tcx = (i, j) => (i + 0.5 + (h2(i, j, 521) - 0.5) * 0.7) * TC + ORIGIN, tcz = (i, j) => (j + 0.5 + (h2(i, j, 522) - 0.5) * 0.7) * TC + ORIGIN;
 function trailDist(T, x, z) {
-  const i = Math.floor((x + 4800) / TC), j = Math.floor((z + 4800) / TC);
+  const i = Math.floor((x - ORIGIN) / TC), j = Math.floor((z - ORIGIN) / TC);
   // where three or four of the cells round a point are worn it is trodden ground, not a braid of paths with grass between
-  const ci = Math.floor((x + 4800) / TC - 0.5), cj = Math.floor((z + 4800) / TC - 0.5);
-  if (ci >= 0 && cj >= 0 && ci < TN - 1 && cj < TN - 1) { const k = cj * TN + ci; if ((T[k] > 0) + (T[k + 1] > 0) + (T[k + TN] > 0) + (T[k + TN + 1] > 0) >= 3) return -0.3; }
+  const ci = Math.floor((x - ORIGIN) / TC - 0.5), cj = Math.floor((z - ORIGIN) / TC - 0.5);
+  if (ci >= 0 && cj >= 0 && ci < TN - 1 && cj < TN - 1) { const k = cj * TN + ci; if (T.has(k) + T.has(k + 1) + T.has(k + TN) + T.has(k + TN + 1) >= 3) return -0.3; }
   let best = Infinity;
   for (let b = j - 1; b <= j + 1; b++)
     for (let a = i - 1; a <= i + 1; a++) {
       if (a < 1 || b < 1 || a >= TN - 1 || b >= TN - 1) continue;
-      const q = T[b * TN + a];
+      const q = T.get(b * TN + a);
       if (!q) continue;
       const ax = tcx(a, b), az = tcz(a, b);
       best = Math.min(best, Math.hypot(x - ax, z - az) - HALF[q]);
       for (let db = -1; db <= 1; db++)
         for (let da = -1; da <= 1; da++) {
-          const q2 = (da || db) && T[(b + db) * TN + a + da];
+          const q2 = (da || db) && T.get((b + db) * TN + a + da);
           if (!q2) continue;
           const bx = tcx(a + da, b + db), bz = tcz(a + da, b + db), dx = bx - ax, dz = bz - az;
           const t = clamp(((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz), 0, 1);
@@ -1239,11 +1226,11 @@ function trailDist(T, x, z) {
 // cell, as neighbouring pixels share one, and dropped at every bake since the wear changes between bakes
 let nearI = NaN, nearJ = NaN, nearAny = false;
 function trailNear(T, x, z) {
-  const i = Math.floor((x + 4800) / TC), j = Math.floor((z + 4800) / TC);
+  const i = Math.floor((x - ORIGIN) / TC), j = Math.floor((z - ORIGIN) / TC);
   if (i === nearI && j === nearJ) return nearAny;
   nearI = i; nearJ = j; nearAny = false;
   for (let b = Math.max(0, j - 3); b <= Math.min(TN - 1, j + 3) && !nearAny; b++)
-    for (let a = Math.max(0, i - 3); a <= Math.min(TN - 1, i + 3); a++) if (T[b * TN + a]) { nearAny = true; break; }
+    for (let a = Math.max(0, i - 3); a <= Math.min(TN - 1, i + 3); a++) if (T.has(b * TN + a)) { nearAny = true; break; }
   return nearAny;
 }
 // on a path at this point: a rough edge up close; far out, where a pixel is wider than the path, a dither in
@@ -1381,11 +1368,11 @@ function rock(x, z, s, snow, X, Y, m) {
 // ---------- world-space light: one height surface, the same at every zoom ----------
 // Heights on a 12.5 m grid, a broad occlusion that darkens valley floors against the ground around them, and per bearing
 // the sun's horizon: whether the drawn (exaggerated) ground toward the sun rises above the ray, softened at its edge.
-const WS = 12.5, WN = Math.ceil(9600 / WS) + 1;
+const WS = 12.5, WN = Math.ceil(SIZE / WS) + 1;
 function worldHeights(w) {
   if (w.hGrid) return w.hGrid;
   const g = new Float32Array(WN * WN);
-  for (let j = 0; j < WN; j++) for (let i = 0; i < WN; i++) g[j * WN + i] = Math.max(0, w.heightAt(-4800 + i * WS, -4800 + j * WS));
+  for (let j = 0; j < WN; j++) for (let i = 0; i < WN; i++) g[j * WN + i] = Math.max(0, w.heightAt(ORIGIN + i * WS, ORIGIN + j * WS));
   return (w.hGrid = g);
 }
 function worldAO(w) {
@@ -1405,11 +1392,11 @@ function worldShadow(w, b) {
   const h = worldHeights(w), F = bearingFrame(b), n = Math.hypot(LU, LV), dx = (LU * F.eu[0] + LV * F.ev[0]) / n, dz = (LU * F.eu[1] + LV * F.ev[1]) / n;
   const tanS = Math.tan(SUN * 0.75), E = EXAG, steps = [];
   for (let d = WS; d < 2400; d *= 1.09) steps.push(d);
-  const at = (x, z) => { const fx = clamp((x + 4800) / WS, 0, WN - 1.001), fz = clamp((z + 4800) / WS, 0, WN - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, c = fz - j, k = j * WN + i; return (h[k] * (1 - a) + h[k + 1] * a) * (1 - c) + (h[k + WN] * (1 - a) + h[k + WN + 1] * a) * c; };
+  const at = (x, z) => { const fx = clamp((x - ORIGIN) / WS, 0, WN - 1.001), fz = clamp((z - ORIGIN) / WS, 0, WN - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, c = fz - j, k = j * WN + i; return (h[k] * (1 - a) + h[k + 1] * a) * (1 - c) + (h[k + WN] * (1 - a) + h[k + WN + 1] * a) * c; };
   g = new Uint8Array(WN * WN);
   for (let j = 0; j < WN; j++)
     for (let i = 0; i < WN; i++) {
-      const x = -4800 + i * WS, z = -4800 + j * WS, h0 = h[j * WN + i] * E;
+      const x = ORIGIN + i * WS, z = ORIGIN + j * WS, h0 = h[j * WN + i] * E;
       let ex = -1e9;
       for (const d of steps) { const e = at(x + dx * d, z + dz * d) * E - (h0 + d * tanS); if (e > ex) ex = e; }
       g[j * WN + i] = Math.round(smooth(-3, 10, ex) * 255);
@@ -1417,7 +1404,7 @@ function worldShadow(w, b) {
   w.shGrid.set(b, g);
   return g;
 }
-const wsample = (g, x, z) => { const fx = clamp((x + 4800) / WS, 0, WN - 1.001), fz = clamp((z + 4800) / WS, 0, WN - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, c = fz - j, k = j * WN + i; return (g[k] * (1 - a) + g[k + 1] * a) * (1 - c) + (g[k + WN] * (1 - a) + g[k + WN + 1] * a) * c; };
+const wsample = (g, x, z) => { const fx = clamp((x - ORIGIN) / WS, 0, WN - 1.001), fz = clamp((z - ORIGIN) / WS, 0, WN - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, c = fz - j, k = j * WN + i; return (g[k] * (1 - a) + g[k + 1] * a) * (1 - c) + (g[k + WN] * (1 - a) + g[k + WN + 1] * a) * c; };
 // the terrain's light at a world point for bearing b: slope light, less occlusion in hollows, less the cast shadow.
 // With V.realtime the GPU lights the slopes and casts the shadows for the hour, so only the occlusion is baked; and with
 // V.aoGpu it takes the hollows' share of the sky as well (gpu.js ambient occlusion), leaving only the ridges' light here.
@@ -1433,17 +1420,17 @@ const TL = { sh: 0 };
 // The ground's gradient on a fixed 12.5 m world grid (over an 18.75 m baseline), shared by the fine levels, so yard and
 // close light each point alike and nothing pops between them.
 function worldGrad(w, x, z) {
-  const S = 12.5, n = Math.ceil(9600 / S) + 1;
+  const S = 12.5, n = Math.ceil(SIZE / S) + 1;
   if (!w.gradGrid) {
     const g = new Float32Array(n * n * 2), d = 18.75;
     for (let j = 0; j < n; j++)
       for (let i = 0; i < n; i++) {
-        const X = -4800 + i * S, Z = -4800 + j * S, k = (j * n + i) * 2;
+        const X = ORIGIN + i * S, Z = ORIGIN + j * S, k = (j * n + i) * 2;
         g[k] = (w.heightAt(X + d, Z) - w.heightAt(X - d, Z)) / (2 * d); g[k + 1] = (w.heightAt(X, Z + d) - w.heightAt(X, Z - d)) / (2 * d);
       }
     w.gradGrid = g;
   }
-  const g = w.gradGrid, fx = clamp((x + 4800) / S, 0, n - 1.001), fz = clamp((z + 4800) / S, 0, n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = (j * n + i) * 2, m = n * 2;
+  const g = w.gradGrid, fx = clamp((x - ORIGIN) / S, 0, n - 1.001), fz = clamp((z - ORIGIN) / S, 0, n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = (j * n + i) * 2, m = n * 2;
   WG[0] = (g[k] * (1 - a) + g[k + 2] * a) * (1 - b) + (g[k + m] * (1 - a) + g[k + m + 2] * a) * b;
   WG[1] = (g[k + 1] * (1 - a) + g[k + 3] * a) * (1 - b) + (g[k + m + 1] * (1 - a) + g[k + m + 3] * a) * b;
   return WG;

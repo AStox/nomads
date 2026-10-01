@@ -1,8 +1,19 @@
 // Where every thing is: by id, by kind and tile, and which ones the world has to keep looking at. Every lookup that
 // asks what lies near a point goes through here, so dense ground never costs a scan of the whole island.
-import { H, TILE_M, W, type Thing, type World } from "./world";
+//
+// What the ground grew (trees, grass, rocks and the rest, a few million of them) stays in the generator's arrays
+// (groundOf flora) until something first looks at its tile. Then the tile is stocked: its grown things become Things like
+// any other, ids t1 upward by their place in the arrays. A stocked tile no one has looked at for a day, far from
+// everyone, whose grown things are all still exactly as they grew, is put back: its Things go, to be made the same way
+// the next time anything looks. What anyone made, dropped or changed stays.
+import { DAY, H, TILE_M, W, groundOf, grown, type Thing, type World } from "./world";
+import { FLORA, SPECIES, type Scatter } from "../terrain/flora";
 
-type Index = { at: Map<string, number>; tiles: Map<string, (Thing[] | undefined)[]>; live: Set<Thing> };
+type Index = {
+  at: Map<string, number>; tiles: Map<string, (Thing[] | undefined)[]>; live: Set<Thing>;
+  stocked: Uint8Array; // 1 where the tile's grown things are Things in w.things
+  seen: Int32Array; // the tick something last looked at each tile
+};
 const indexes = new WeakMap<World, Index>();
 
 // Plants and stones as the ground laid them out need nothing from the world until someone or something touches them.
@@ -23,11 +34,20 @@ function unbucket(ix: Index, t: Thing) {
   b![i] = b![b!.length - 1];
   b!.pop();
 }
+function add(w: World, ix: Index, t: Thing, live: boolean) {
+  ix.at.set(t.id, w.things.length);
+  w.things.push(t);
+  bucket(ix, t);
+  if (live) ix.live.add(t);
+}
 
 export function index(w: World): Index {
   let ix = indexes.get(w);
   if (ix) return ix;
-  ix = { at: new Map(), tiles: new Map(), live: new Set() };
+  ix = { at: new Map(), tiles: new Map(), live: new Set(), stocked: new Uint8Array(W * H), seen: new Int32Array(W * H) };
+  // every kind the ground grows has its bins from the start, so stocking a tile mid-search never adds a list to search
+  for (const k of FLORA) ix.tiles.set(k, new Array(W * H));
+  for (const t of w.stocked) ix.stocked[t] = 1;
   for (let i = 0; i < w.things.length; i++) {
     const t = w.things[i];
     ix.at.set(t.id, i);
@@ -38,13 +58,26 @@ export function index(w: World): Index {
   return ix;
 }
 
+// The tile entry k of the grown arrays stands on.
+const tileOfGrown = (f: Scatter, k: number) => Math.min(H - 1, Math.floor(f.py[k])) * W + Math.min(W - 1, Math.floor(f.px[k]));
+// Something looks at tile t: its grown things become Things, if they aren't yet.
+function stock(w: World, ix: Index, t: number) {
+  ix.seen[t] = w.t;
+  if (ix.stocked[t]) return;
+  ix.stocked[t] = 1;
+  w.stocked.push(t);
+  const f = groundOf(w.seed).flora;
+  for (let k = f.start[t]; k < f.start[t + 1]; k++) { const th = grown(w, k); add(w, ix, th, !settled(th)); }
+}
+// The index into the grown arrays a thing id names, or -1 if it names something made since.
+function grownIndex(w: World, id: string) {
+  const k = Number(id.slice(1)) - 1;
+  return id[0] === "t" && Number.isInteger(k) && k >= 0 && k < groundOf(w.seed).flora.n ? k : -1;
+}
+
 // A new thing enters the world. Things made after the ground was laid out are live from the start.
 export function enter(w: World, t: Thing, live: boolean) {
-  const ix = index(w);
-  ix.at.set(t.id, w.things.length);
-  w.things.push(t);
-  bucket(ix, t);
-  if (live) ix.live.add(t);
+  add(w, index(w), t, live);
 }
 export function leave(w: World, t: Thing) {
   const ix = index(w), i = ix.at.get(t.id);
@@ -57,8 +90,17 @@ export function leave(w: World, t: Thing) {
 }
 export const thingById = (w: World, id?: string | null) => {
   if (!id) return undefined;
-  const i = index(w).at.get(id);
-  return i === undefined ? undefined : w.things[i];
+  const ix = index(w);
+  let i = ix.at.get(id);
+  if (i === undefined) {
+    // a grown thing on a tile nothing has looked at yet is still there as it grew
+    const k = grownIndex(w, id), t = k < 0 ? -1 : tileOfGrown(groundOf(w.seed).flora, k);
+    if (t < 0 || ix.stocked[t]) return undefined;
+    stock(w, ix, t);
+    i = ix.at.get(id);
+    if (i === undefined) return undefined;
+  }
+  return w.things[i];
 };
 // Something happened to it: it changed kind, burned, got hurt, was picked. The world keeps an eye on it from now on.
 export const wake = (w: World, t: Thing) => { const ix = index(w); if (ix.at.has(t.id)) ix.live.add(t); };
@@ -98,6 +140,7 @@ export function around(w: World, px: number, py: number, r: number, kinds: reado
   const ix = index(w), rt = r / TILE_M;
   const x0 = Math.max(0, Math.floor(px - rt)), x1 = Math.min(W - 1, Math.floor(px + rt));
   const y0 = Math.max(0, Math.floor(py - rt)), y1 = Math.min(H - 1, Math.floor(py + rt));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) stock(w, ix, y * W + x);
   const lists = kinds ? kinds.map((k) => ix.tiles.get(k)).filter((l) => !!l) : [...ix.tiles.values()];
   for (let y = y0; y <= y1; y++)
     for (let x = x0; x <= x1; x++)
@@ -128,6 +171,7 @@ export function nearestThing(w: World, px: number, py: number, kinds: readonly s
       const edge = y === qy - R || y === qy + R;
       for (let x = qx - R; x <= qx + R; x += edge || R === 0 ? 1 : 2 * R) {
         if (x < 0 || x >= W) continue;
+        stock(w, ix, y * W + x);
         for (const tiles of lists) {
           const b = tiles![y * W + x];
           if (!b) continue;
@@ -141,16 +185,33 @@ export function nearestThing(w: World, px: number, py: number, kinds: readonly s
   }
   return best;
 }
-export const countOf = (w: World, kind: string) => {
-  let n = 0;
-  for (const b of index(w).tiles.get(kind) ?? []) n += b?.length ?? 0;
-  return n;
-};
-// A thing of this kind picked at random over the whole island, or null when there are none.
+// The grown things of each kind, as indexes into the grown arrays, gathered the first time a kind is asked for.
+const ofKind = new WeakMap<Scatter, Map<string, Uint32Array>>();
+function grownOfKind(f: Scatter, kind: string) {
+  let m = ofKind.get(f);
+  if (!m) ofKind.set(f, (m = new Map()));
+  let list = m.get(kind);
+  if (!list) {
+    const code = FLORA.indexOf(kind as (typeof FLORA)[number]);
+    let n = 0;
+    for (let k = 0; k < f.n; k++) if (f.kind[k] === code) n++;
+    list = new Uint32Array(n);
+    for (let k = 0, j = 0; k < f.n; k++) if (f.kind[k] === code) list[j++] = k;
+    m.set(kind, list);
+  }
+  return list;
+}
+// A thing of this kind picked at random over the island, or null when there are none.
 export function anyOf(w: World, kind: string, rand = Math.random): Thing | null {
+  const list = grownOfKind(groundOf(w.seed).flora, kind);
+  for (let tries = 0; tries < 16 && list.length; tries++) {
+    const t = thingById(w, `t${list[Math.floor(rand() * list.length)] + 1}`);
+    if (t?.kind === kind) return t;
+  }
+  // none grew, or the ones tried are gone: one of those made or changed since
   const tiles = index(w).tiles.get(kind);
   if (!tiles) return null;
-  for (let tries = 0; tries < 64; tries++) {
+  for (let tries = 0; tries < 64 && w.things.length; tries++) {
     const t = w.things[Math.floor(rand() * w.things.length)];
     if (t?.kind === kind) return t;
   }
@@ -158,23 +219,48 @@ export function anyOf(w: World, kind: string, rand = Math.random): Thing | null 
   return all[Math.floor(rand() * all.length)] ?? null;
 }
 
-// Every thing in the world as flat arrays, for drawing: kind and species are indices into the name tables. species
-// holds the item for loose items and the building style for structures.
-export type Objects = {
-  id: Uint32Array; kind: Uint8Array; species: Uint8Array; px: Float32Array; py: Float32Array; size: Float32Array; seed: Uint32Array;
-  kindNames: string[]; speciesNames: string[];
-};
-export function objects(w: World): Objects {
-  const n = w.things.length, kindNames: string[] = [], speciesNames = [""];
-  const kinds = new Map<string, number>(), species = new Map<string, number>([["", 0]]);
-  const of = (m: Map<string, number>, names: string[], k: string) => { let i = m.get(k); if (i === undefined) { i = names.length; names.push(k); m.set(k, i); } return i; };
-  const o: Objects = { id: new Uint32Array(n), kind: new Uint8Array(n), species: new Uint8Array(n), px: new Float32Array(n), py: new Float32Array(n), size: new Float32Array(n), seed: new Uint32Array(n), kindNames, speciesNames };
-  for (let i = 0; i < n; i++) {
-    const t = w.things[i];
-    o.id[i] = Number(t.id.slice(1));
-    o.kind[i] = of(kinds, kindNames, t.kind);
-    o.species[i] = of(species, speciesNames, t.kind === "item" ? t.item ?? "" : t.kind === "structure" ? t.shelter?.style ?? "" : t.species ?? "");
-    o.px[i] = t.px; o.py[i] = t.py; o.size[i] = t.size; o.seed[i] = t.seed;
+// Whether a thing is exactly as it was grown, field for field.
+function same(a: Thing, b: Thing) {
+  const x = a as Record<string, unknown>, y = b as Record<string, unknown>;
+  const kx = Object.keys(x).filter((k) => x[k] !== undefined), ky = Object.keys(y).filter((k) => y[k] !== undefined);
+  if (kx.length !== ky.length) return false;
+  for (const k of kx) {
+    const u = x[k], v = y[k];
+    if (u === v) continue;
+    if (!u || !v || typeof u !== "object" || typeof v !== "object" || JSON.stringify(u) !== JSON.stringify(v)) return false;
   }
-  return o;
+  return true;
+}
+// Once a day: put back every stocked tile nothing has looked at for a day, with no one within a kilometer, whose grown
+// things are all still exactly as they grew. Their Things go; the grown arrays hold them as they are.
+export function shelve(w: World) {
+  const ix = index(w), f = groundOf(w.seed).flora, near = 1000 / TILE_M, kept: number[] = [];
+  for (const t of w.stocked) {
+    const x = t % W + 0.5, y = Math.floor(t / W) + 0.5;
+    let asGrown = w.t - ix.seen[t] >= DAY && !w.agents.some((a) => Math.abs(a.px - x) < near && Math.abs(a.py - y) < near);
+    for (let k = f.start[t]; asGrown && k < f.start[t + 1]; k++) {
+      const i = ix.at.get(`t${k + 1}`);
+      asGrown = i !== undefined && same(w.things[i], grown(w, k));
+    }
+    if (!asGrown) { kept.push(t); continue; }
+    for (let k = f.start[t]; k < f.start[t + 1]; k++) leave(w, w.things[ix.at.get(`t${k + 1}`)!]);
+    ix.stocked[t] = 0;
+  }
+  w.stocked = kept;
+}
+
+// Everything in the world, for drawing. The grown arrays are shared as they are, not copied; `gone` lists the grown
+// things that are no longer there, and `things` every thing the world holds that the arrays don't show as it is: what
+// was made since, and grown things changed. Kind and species codes in the arrays index kindNames and speciesNames.
+export type Objects = { grown: Scatter; kindNames: string[]; speciesNames: string[]; gone: number[]; things: Thing[] };
+export function objects(w: World): Objects {
+  const ix = index(w), f = groundOf(w.seed).flora, gone: number[] = [], things: Thing[] = [];
+  for (const t of w.stocked)
+    for (let k = f.start[t]; k < f.start[t + 1]; k++) {
+      const i = ix.at.get(`t${k + 1}`);
+      if (i === undefined) gone.push(k + 1);
+      else if (!same(w.things[i], grown(w, k))) things.push(w.things[i]);
+    }
+  for (const t of w.things) if (grownIndex(w, t.id) < 0) things.push(t);
+  return { grown: f, kindNames: [...FLORA], speciesNames: [...SPECIES], gone, things };
 }

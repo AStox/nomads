@@ -1,7 +1,7 @@
 // The island every style mock draws, as plain data with no renderer: the generator's fields, the finer ground under
 // them, streams, every tree, shrub and rock, and a camp. Styles differ in everything they draw; the world is the same.
 // The fine ground and everything growing on it come from the game's own flora.ts, so the mocks and the game agree.
-import { CELL, COVERS, FLORA, N, SIZE, SPECIES, START, STEP, K, M, clamp, fbm, fineGround, generateIsland, hash, noise, rng, scatter, smooth } from "./island.js";
+import { CELL, COVERS, FLORA, N, SIZE, SPECIES, START, STEP, K, M, TILE_M, clamp, fbm, fineGround, generateIsland, hash, noise, rng, scatter, smooth } from "./island.js";
 
 export { COVERS, clamp, fbm, hash, noise, smooth };
 
@@ -74,7 +74,7 @@ export function grow(seed = 1) {
     if (flora) return flora;
     const s = scatter(isle, g, seed), trees = [], shrubs = [], rocks = [];
     for (let i = 0; i < s.n; i++) {
-      const kind = FLORA[s.kind[i]], x = s.x[i], z = s.z[i], seedI = s.seed[i];
+      const kind = FLORA[s.kind[i]], x = s.px[i] * TILE_M - SIZE / 2, z = s.py[i] * TILE_M - SIZE / 2, seedI = s.seed[i];
       const yaw = ((seedI & 0xffff) / 65536) * 6.283, tint = (seedI >>> 16) / 65536, sp = SPECIES[s.species[i]];
       if (kind === "tree" && !cleared(x, z, 22, 40)) trees.push({ x, y: heightAt(x, z), z, tall: s.size[i], kind: sp, yaw, tint });
       else if (kind === "bush" && !cleared(x, z, 14, 26)) shrubs.push({ x, y: heightAt(x, z), z, tall: s.size[i], heath: HEATH[sp] ?? 0.3, species: sp, yaw, tint });

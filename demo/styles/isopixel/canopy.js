@@ -3,7 +3,11 @@
 // the cells add them up, so a point under one crown reads about 1 and one deep in a forest more. A felled, grown or
 // planted tree takes its disc off and puts it back at its new size, so the cover follows the sim. Only the cells a change
 // touched go up to the GPU.
-export const STEP = 3, ORIGIN = -4800, N = (-2 * ORIGIN) / STEP + 1;
+import { SIZE, TILES } from "../island.js";
+
+// Cells of STEP meters from the island's north-west corner, ORIGIN: 3 m, or coarser on an island too big for 3 m cells
+// to stay under about 4800 a side.
+export const STEP = Math.max(3, SIZE / 4800), ORIGIN = -SIZE / 2, N = Math.ceil(SIZE / STEP) + 1;
 
 // A crown's radius as a share of its tree's height, by species: the width sprites.js draws it at (oak 0.8 of its height,
 // ash 0.68, the rest 0.5, a pine's cone 0.42) over its height's 0.866 of a meter across, halved.
@@ -25,19 +29,20 @@ export class Canopy {
     this.box = null;
     this.tall = null;
   }
-  // The cover of the sim's object snapshot o (sim.objects()) and, in `tall`, the trees' mean height over the cells of the
-  // GPU's heights, grid { n, step }. The trees go in a few milliseconds at a time, so a frame never waits on them.
-  static async build(o, toM, grid, sliceMs = 8) {
-    const c = new Canopy(toM), tree = o.kindNames.indexOf("tree"), crown = o.speciesNames.map(crownOf), { n, step } = grid;
-    const sumW = new Float32Array(n * n), sumH = new Float32Array(n * n), count = o.id.length;
-    for (let i = 0, t = performance.now(); i < count; i++) {
-      if (o.kind[i] === tree) {
-        const x = toM(o.px[i]), z = toM(o.py[i]), size = o.size[i];
-        c.splat(x, z, size, crown[o.species[i]], 1);
+  // The cover of every tree the bins hold (ObjBins: the sim's objects) and, in `tall`, the trees' mean height over the
+  // cells of the GPU's heights, grid { n, step }. The trees go in a few milliseconds at a time, so a frame never waits.
+  static async build(bins, toM, grid, sliceMs = 8) {
+    const c = new Canopy(toM), { n, step } = grid, tree = bins.kinds.indexOf("tree");
+    const sumW = new Float32Array(n * n), sumH = new Float32Array(n * n);
+    for (let ty = 0, t = performance.now(); ty < TILES; ty++) {
+      bins.each(0, ty, TILES - 1, ty, (ki, si, px, py, size) => {
+        if (ki !== tree) return;
+        const x = toM(px), z = toM(py);
+        c.splat(x, z, size, crownOf(bins.species[si]), 1);
         const gi = Math.min(n - 1, Math.max(0, Math.round((x - ORIGIN) / step))), gj = Math.min(n - 1, Math.max(0, Math.round((z - ORIGIN) / step)));
         sumW[gj * n + gi]++; sumH[gj * n + gi] += size;
-      }
-      if ((i & 1023) === 1023 && performance.now() - t > sliceMs) { await new Promise((r) => setTimeout(r, 0)); t = performance.now(); }
+      });
+      if (performance.now() - t > sliceMs) { await new Promise((r) => setTimeout(r, 0)); t = performance.now(); }
     }
     // a cell holds a tree or two or none, so the mean height is taken over a few cells round it
     const w = boxSum(sumW, n, 3), h = boxSum(sumH, n, 3);
