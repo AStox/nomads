@@ -1,6 +1,6 @@
 import { generateIsland, type Island } from "../terrain/island";
 import { lay, type Lay, type Terrain } from "../terrain/land";
-import { FLORA, SIZE, SPECIES, TILES, TILE_M, fineGround, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
+import { FLORA, SIZE, SPECIES, TILES, TILE_M, fineGround, rockAt, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
 import { TRAITS } from "./traits";
 import { baseRegistry, type Registry } from "./materials";
 import type { Belief } from "./beliefs";
@@ -12,7 +12,7 @@ export const W = TILES;
 export const H = TILES;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export { YEAR_DAYS }; // the sky's: a year is the sun's round
-export const VERSION = 10;
+export const VERSION = 11;
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -217,6 +217,7 @@ export type World = {
   paths: number[]; // walking wear per tile, 0..9
   things: Thing[]; // everything the game holds as things: the ground's own on the tiles in `stocked`, and all it has made
   stocked: number[]; // tiles whose ground has been taken over as things; elsewhere it is still as it grew (groundOf flora)
+  fert: Record<number, number>; // what has fed the soil or drawn it down since it grew, by soil.ts cell
   agents: Agent[];
   animals: Animal[];
   events: Event[];
@@ -438,9 +439,13 @@ export function grown(w: World, k: number): Thing {
   const t: Thing = { id: `t${k + 1}`, kind, x: Math.floor(px), y: Math.floor(py), px, py, size, seed, hp, maxHp: hp };
   if (species) t.species = species;
   if (kind === "bush" && species === "berry") t.n = 4;
-  // Flint forms as nodules inside the rock; ore shows as reddish stones, and sometimes inside boulders too.
-  const q = ((seed >>> 8) & 0xffff) / 65536;
-  if (kind === "boulder" && (q < 0.45 || q > 0.85)) t.inside = q < 0.45 ? { flint: q < 0.15 ? 2 : 1 } : { ore: 1 };
+  // Flint forms as nodules inside the rock that holds it, chalky limestone above all; ore shows as reddish stones, and
+  // sometimes inside boulders of the rock that carries iron.
+  const q = ((seed >>> 8) & 0xffff) / 65536, rock = rockAt(groundOf(w.seed).isle, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2);
+  if (kind === "boulder") {
+    if (q < 0.6 * rock.flint) t.inside = { flint: q < 0.2 * rock.flint ? 2 : 1 };
+    else if (q > 1 - 0.35 * rock.ore) t.inside = { ore: 1 };
+  }
   return t;
 }
 
@@ -452,7 +457,7 @@ export function newWorld(seed: number, agentCount = 5): World {
   // The ground's own things are taken over a tile at a time, when something first looks there (space.ts); ids past theirs
   // are for what comes later.
   const w: World = {
-    version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, heights: [...land.heights], terrain: land.terrain, paths: new Array(W * H).fill(0), things: [], stocked: [], agents: [], animals: [], events: [],
+    version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, heights: [...land.heights], terrain: land.terrain, paths: new Array(W * H).fill(0), things: [], stocked: [], fert: {}, agents: [], animals: [], events: [],
     nextId: g.flora.n + 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {}, ice: [], people: {},
     weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 8, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, speed: 4, drought: false, dryTicks: 0 },
     camps: [], incidents: [],

@@ -1142,6 +1142,7 @@ function groundAt(w, V, x, z) {
   const bal = (b(S1.precip) - b(S1.pet)) / Math.max(1, b(S1.pet)), table = b(I.table);
   G.lush = Math.max(smooth(-0.3, 0.3, bal), Math.exp(-table / 2.5));
   G.peat = b(I.peat); G.soil = b(I.soil); G.silt = b(I.silt); G.fog = b(I.fog);
+  G.rock = I.rock[clamp(Math.round(cy), 0, w.N - 1) * w.N + clamp(Math.round(cx), 0, w.N - 1)];
   return G;
 }
 // Pixel-art ground at every zoom, the mipmap way: detail lives in world meters at a few scales, each scale fades out
@@ -1254,13 +1255,16 @@ function snowLying(w, V, x, z) {
 const C_LUSH = [56, 96, 48], C_MID = [98, 126, 60], C_STRAW = [160, 150, 90], C_TREE = [38, 68, 44], C_HEATH = [112, 86, 96];
 const C_MARSH = [74, 94, 56], C_PEAT = [48, 50, 38], C_BARE = [146, 136, 116], C_SOIL = [126, 98, 70], C_SILT = [186, 168, 128], C_SAND = [220, 202, 150];
 const C_BURN = [152, 128, 84], C_FOG = [140, 162, 152], C_AUTUMN = [178, 138, 64], C_WINTER = [150, 150, 142];
+// bare ground takes the colour of the rock it weathered from (src/terrain/geology.ts ROCKS): grey-brown mudstone, ochre
+// sandstone, pale limestone, pinkish granite, dark basalt
+const BARE_ROCK = [[118, 104, 92], [176, 140, 96], [204, 196, 176], [164, 144, 138], [92, 88, 84]];
 const mixc = (a, b, t) => { t = clamp(t, 0, 1); return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; };
 // m60: the broad mottle at (x, z), which paintLand has already worked out
 function groundRGB(V, g, s, x, z, m60 = fbm(x / 60, z / 60, 11, 2)) {
   // ground the shared rule calls grass with outcrops shows as grass, its bare share mostly grassed over
   const hill = g.cls === HILL, m = V.mpp, tr = g.c1, sh = g.c2, ma = g.c3, sa = g.c5, gr = g.c0 + (hill ? g.c4 * 0.8 : 0), ba = g.c4 * (hill ? 0.2 : 1), sum = gr + tr + sh + ma + ba || 1;
   let grass = g.lush > 0.5 ? mixc(C_MID, C_LUSH, (g.lush - 0.5) * 2) : mixc(C_STRAW, C_MID, g.lush * 2);
-  const marsh = mixc(C_MARSH, C_PEAT, g.peat), bare = mixc(mixc(C_BARE, C_SOIL, smooth(0.3, 1.5, g.soil) * 0.6), C_SILT, g.silt * 8);
+  const marsh = mixc(C_MARSH, C_PEAT, g.peat), bare = mixc(mixc(mixc(C_BARE, BARE_ROCK[g.rock] ?? C_BARE, 0.45), C_SOIL, smooth(0.3, 1.5, g.soil) * 0.6), C_SILT, g.silt * 8);
   let heath = C_HEATH;
   if (V.season === "autumn") { grass = mixc(grass, C_AUTUMN, 0.45); heath = mixc(heath, [140, 76, 60], 0.35); }
   else if (V.season === "winter") { grass = mixc(grass, C_WINTER, 0.4); heath = mixc(heath, C_WINTER, 0.3); }

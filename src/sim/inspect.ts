@@ -9,7 +9,8 @@ import { campOf } from "./groups";
 import { lightAt, lightOn, lightWords, type Light } from "./light";
 import { airAt, airWords } from "./air";
 import { CELL } from "../terrain/grid";
-import { GROUND, LAKE, RIVER, SEA, SIZE, groundClass } from "../terrain/flora";
+import { GROUND, LAKE, RIVER, SEA, SIZE, groundClass, rockAt } from "../terrain/flora";
+import { fertilityAt } from "./soil";
 
 export type Inspected = {
   id: string; kind: string; name: string; species?: string; px: number; py: number;
@@ -142,6 +143,8 @@ export function inspect(w: World, id: string): Inspected | null {
   return t ? thing(w, t) : null;
 }
 
+// A soil's texture in the words a farmer would use, from its shares of sand and clay.
+const texture = (sand: number, clay: number) => (sand > 0.7 ? "sand" : clay > 0.4 ? "clay" : sand > 0.45 ? "sandy loam" : clay > 0.27 ? "clay loam" : "loam");
 const TILES: Record<number, string> = { [Tile.Grass]: "grass", [Tile.Forest]: "forest", [Tile.Water]: "water", [Tile.Rock]: "rock" };
 // The ground at a point in tiles, classed by the same rule the map is drawn with.
 export function inspectGround(w: World, px: number, py: number): Inspected {
@@ -163,7 +166,8 @@ export function inspectGround(w: World, px: number, py: number): Inspected {
   } else {
     rows.push(
       ["height", `${r(height)} m`], ["slope", `${r(slope)} deg`],
-      ["soil", `${r(fine.bilinear(isle.soil, cx, cy), 2)} m deep`], ["peat", r(fine.bilinear(isle.peat, cx, cy), 2)], ["silt", r(fine.bilinear(isle.silt, cx, cy), 2)],
+      ["bedrock", rockAt(isle, x, z).name], ["soil", `${r(fine.bilinear(isle.soil, cx, cy), 2)} m of ${texture(fine.bilinear(isle.sandy, cx, cy), fine.bilinear(isle.clayey, cx, cy))}, pH ${r(fine.bilinear(isle.ph, cx, cy), 1)}`],
+      ["humus", r(fine.bilinear(isle.humus, cx, cy), 2)], ["fertility", `${r(fertilityAt(w, px, py), 2)} (as it grew ${r(fine.bilinear(isle.fertility, cx, cy), 2)})`], ["peat", r(fine.bilinear(isle.peat, cx, cy), 2)], ["silt", r(fine.bilinear(isle.silt, cx, cy), 2)],
       ["air now", airWords(airAt(w, px, py))], ["yearly mean", `${r(fine.bilinear(isle.temp, cx, cy))} C, summer ${r(fine.bilinear(isle.seasons[1].temp, cx, cy))}, winter ${r(fine.bilinear(isle.seasons[3].temp, cx, cy))}`],
       ["sunlight", `${Math.round(fine.bilinear(isle.sun, cx, cy) * 100)}% of open level ground's, ${Math.round(fine.bilinear(isle.sky, cx, cy) * 100)}% of the sky open`],
       ["wind", `${r(fine.bilinear(isle.breeze, cx, cy), 1)} m/s on average, exposure ${r(g.exposure, 2)}`],

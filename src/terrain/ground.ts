@@ -1,7 +1,9 @@
 // What the ground is made of and what grows on it, from the physics of each spot: how steep, how wet, how warm, how
-// exposed. There are no biomes here, only plants that cope or don't; forest, heath, meadow and bog are where they win.
+// exposed, and what rock it weathered from. There are no biomes here, only plants that cope or don't; forest, heath,
+// meadow and bog are where they win.
 import { clamp } from "math";
 import { CELL, LEN, N, ramp } from "./grid";
+import { ROCKS } from "./geology";
 import type { Season } from "./climate";
 
 export type Ground = {
@@ -9,19 +11,25 @@ export type Ground = {
   silt: Float32Array; // 0..1 fine river and lake sediment
   sand: Float32Array; // 0..1 beach and dune sand
   peat: Float32Array; // 0..1 waterlogged organic soil
+  sandy: Float32Array; // share of sand in the soil
+  clayey: Float32Array; // share of clay in the soil
+  humus: Float32Array; // 0..1 organic matter in the topsoil
+  ph: Float32Array; // soil pH
+  fertility: Float32Array; // 0..1 the nourishment roots can take from it
   moist: Float32Array; // 0..1 water available to roots through the growing season
   tree: Float32Array; shrub: Float32Array; grass: Float32Array; marsh: Float32Array; bare: Float32Array; // cover shares, sum to 1
 };
 
 export type Site = {
-  height: Float32Array; open: Uint8Array; area: Float32Array; table: Float32Array; shore: Float32Array; hard: Float32Array;
-  precip: Float32Array; pet: Float32Array; exposure: Float32Array; salt: Float32Array;
+  height: Float32Array; open: Uint8Array; area: Float32Array; table: Float32Array; shore: Float32Array; hard: Float32Array; rock: Uint8Array;
+  precip: Float32Array; pet: Float32Array; temp: Float32Array; exposure: Float32Array; salt: Float32Array;
   seasons: Season[];
 };
 
 export function ground(s: Site): Ground {
   const { height: h } = s;
   const soil = new Float32Array(LEN), silt = new Float32Array(LEN), sand = new Float32Array(LEN), peat = new Float32Array(LEN), moist = new Float32Array(LEN);
+  const sandy = new Float32Array(LEN), clayey = new Float32Array(LEN), humus = new Float32Array(LEN), ph = new Float32Array(LEN).fill(7), fertility = new Float32Array(LEN);
   const tree = new Float32Array(LEN), shrub = new Float32Array(LEN), grass = new Float32Array(LEN), marsh = new Float32Array(LEN), bare = new Float32Array(LEN);
   // Slope and curvature over a smoothed surface, so soil answers to hillsides and hollows rather than single cells.
   let hb = new Float32Array(LEN);
@@ -56,9 +64,22 @@ export function ground(s: Site): Ground {
     const logged = Math.exp(-s.table[i] / 0.5);
     const sodden = ramp(s.precip[i] - s.pet[i], 500, 1300) * (1 - ramp(slope, 0.05, 0.14));
     peat[i] = Math.max(logged * (1 - ramp(slope, 0.06, 0.2)), sodden) * (1 - sand[i]);
+    // What the soil is: the rock's weathering, with river and lake silt over it on the valley floors and sand on the
+    // shore. Rain that the year doesn't evaporate washes through it, carrying off the bases (unless the rock keeps
+    // replacing them, as limestone does) and souring it; cool, wet ground keeps its fallen leaves as humus, and bog all
+    // of them. What roots can take from it is the rock's nourishment, or the silt's, as far as its acidity, its depth and
+    // waterlogging let them.
+    const R = ROCKS[s.rock[i]], al = silt[i], leach = s.precip[i] - s.pet[i];
+    sandy[i] = (R.sand * (1 - al) + 0.2 * al) * (1 - sand[i]) + sand[i];
+    clayey[i] = (R.clay * (1 - al) + 0.3 * al) * (1 - sand[i]);
+    humus[i] = Math.max(peat[i], clamp(0.12 + 0.3 * ramp(leach, -200, 800) + 0.2 * ramp(12 - s.temp[i], 0, 5) + 0.2 * clayey[i], 0, 1) * (1 - 0.7 * sand[i]) * ramp(soil[i], 0.02, 0.3));
+    ph[i] = clamp(4.5 + 3.5 * R.base - 1.6 * ramp(leach, 0, 900) * (1 - 0.7 * R.base) + (6.5 - (4.5 + 3.5 * R.base)) * 0.5 * al - 2 * peat[i] + 1.2 * sand[i], 3.8, 8.3);
+    const sour = 1 - 0.7 * ramp(Math.abs(ph[i] - 6.5), 0.5, 2.5);
+    fertility[i] = (R.feed * (1 - al) + 0.85 * al) * sour * (0.6 + 0.4 * humus[i]) * (1 - 0.6 * peat[i]) * (0.3 + 0.7 * ramp(soil[i], 0.05, 0.5)) * (1 - 0.8 * sand[i]);
     // A soil bucket through the seasons: spring rain tops it up and summer drinks it down. What plants go short of
-    // in the growing seasons is their drought. Roots that reach shallow groundwater never go short.
-    const cap = 10 + soil[i] * 150;
+    // in the growing seasons is their drought. Roots that reach shallow groundwater never go short. A meter of loam
+    // holds some 170 mm for roots, of sand under half of that, and humus holds more.
+    const cap = 10 + soil[i] * (170 - 110 * sandy[i] - 80 * Math.max(0, clayey[i] - 0.4) + 60 * humus[i]);
     let store = cap, short = 0, want = 0;
     for (let year = 0; year < 2; year++)
       for (let k = 0; k < 4; k++) {
@@ -69,13 +90,14 @@ export function ground(s: Site): Ground {
     moist[i] = Math.max(want > 0 ? 1 - short / want : 1, Math.exp(-s.table[i] / 2.5));
     const summer = s.seasons[1].temp[i];
     const harsh = clamp(ramp(s.exposure[i], 0.45, 0.85) + ramp(s.salt[i], 0.3, 0.7), 0, 1);
-    // Trees want deep, moist, sheltered ground. Heath takes thin soil where it's always wet or wind-scoured, the way
-    // moorland does. Grass takes what's too dry or thin for either.
-    const pTree = ramp(summer, 11, 15) * ramp(soil[i], 0.3, 0.9) * ramp(moist[i], 0.72, 0.92) * (1 - peat[i]) ** 2 * (1 - harsh) ** 2 * (1 - sand[i]);
-    const moor = Math.max(ramp(s.precip[i] - s.pet[i], 300, 900), ramp(s.exposure[i], 0.35, 0.7));
+    // Trees want deep, moist, sheltered ground, the better fed the better. Heath takes thin soil where it's always wet,
+    // wind-scoured or sour, the way moorland does. Grass takes what's too dry or thin for either, and thrives where the
+    // soil is rich.
+    const pTree = ramp(summer, 11, 15) * ramp(soil[i], 0.3, 0.9) * ramp(moist[i], 0.72, 0.92) * (1 - peat[i]) ** 2 * (1 - harsh) ** 2 * (1 - sand[i]) * (0.8 + 0.2 * ramp(fertility[i], 0.05, 0.3));
+    const moor = Math.max(ramp(s.precip[i] - s.pet[i], 300, 900), ramp(s.exposure[i], 0.35, 0.7), 0.6 * ramp(5.2 - ph[i], 0, 1));
     const pShrub = ramp(soil[i], 0.05, 0.25) * ramp(moist[i], 0.6, 0.85) * moor * (1 - 0.6 * ramp(soil[i], 0.8, 2)) * (1 - 0.3 * harsh) * (1 - 0.8 * sand[i]);
     const pMarsh = peat[i] * ramp(soil[i], 0.02, 0.15);
-    const pGrass = ramp(soil[i], 0.02, 0.12) * ramp(moist[i], 0.15, 0.4) * (1 - 0.6 * sand[i]) * (1 - 0.5 * peat[i]);
+    const pGrass = ramp(soil[i], 0.02, 0.12) * ramp(moist[i], 0.15, 0.4) * (1 - 0.6 * sand[i]) * (1 - 0.5 * peat[i]) * (0.7 + 0.3 * ramp(fertility[i], 0.05, 0.4));
     // Taller plants shade out shorter ones where both could grow.
     tree[i] = pTree;
     shrub[i] = pShrub * (1 - tree[i]);
@@ -83,5 +105,5 @@ export function ground(s: Site): Ground {
     grass[i] = pGrass * (1 - tree[i] - shrub[i] - marsh[i]);
     bare[i] = Math.max(0, 1 - tree[i] - shrub[i] - marsh[i] - grass[i]);
   }
-  return { soil, silt, sand, peat, moist, tree, shrub, grass, marsh, bare };
+  return { soil, silt, sand, peat, sandy, clayey, humus, ph, fertility, moist, tree, shrub, grass, marsh, bare };
 }

@@ -5,17 +5,19 @@ import { domainWarp2, fbm, ridged, simplex2d } from "math/noise";
 import { CELL, DX, DY, LEN, N, accumulate, distance, flood, ramp, receivers } from "./grid";
 import { climate, type Climate } from "./climate";
 import { ground, type Ground } from "./ground";
+import { rockOf } from "./geology";
 
 // Where the island rises: a warped oval, lifted hardest along a few ridged ranges and least in its lowland basins.
-// Its bedrock comes in bands of harder and softer rock.
+// Its bedrock comes in bands of harder and softer rock, and of rock rich in bases and rock poor in them.
 function uplift(rand: () => number) {
   const gen = () => simplex2d.create(Math.floor(rand() * 65536));
   const warp = gen(), coast = gen(), ranges = gen(), basins = gen();
   const tilt = rand() * Math.PI, stretch = 0.8 + rand() * 0.35;
-  const rock = gen();
+  // the chemistry's noise is seeded from the hardness's, so the random stream (and every island shape) stays as it was
+  const rockSeed = Math.floor(rand() * 65536), rock = simplex2d.create(rockSeed), bases = simplex2d.create((rockSeed * 7919 + 4099) & 0xffff);
   const p: [number, number] = [0, 0];
   const warped = (a: number, b: number) => simplex2d.sample(warp, a, b);
-  const mask = new Float32Array(LEN), lift = new Float32Array(LEN), hard = new Float32Array(LEN);
+  const mask = new Float32Array(LEN), lift = new Float32Array(LEN), hard = new Float32Array(LEN), chem = new Float32Array(LEN);
   for (let i = 0; i < LEN; i++) {
     const x = i % N, y = (i - x) / N;
     let u = ((x + 0.5) / N) * 2 - 1, v = ((y + 0.5) / N) * 2 - 1;
@@ -29,8 +31,9 @@ function uplift(rand: () => number) {
     const lowland = clamp(0.55 + simplex2d.sample(basins, u * 1.4, v * 1.4) * 0.9, 0.15, 1);
     lift[i] = mask[i] ** 2 * (0.3 + 0.7 * range * range) * lowland;
     hard[i] = clamp(0.5 + fbm((f) => simplex2d.sample(rock, u * 2.4 * f, v * 2.4 * f), 3, 2, 0.5) * 0.9, 0, 1);
+    chem[i] = clamp(0.5 + fbm((f) => simplex2d.sample(bases, u * 1.8 * f, v * 1.8 * f), 3, 2, 0.5) * 0.9, 0, 1);
   }
-  return { mask, lift, hard };
+  return { mask, lift, hard, chem };
 }
 
 // Uplift against the stream power law (Braun and Willett 2013, implicit, n = 1): each step the land rises, rivers cut
@@ -38,7 +41,7 @@ function uplift(rand: () => number) {
 // rock, which is left standing proud. Depressions keep their floors, so the landscape can still hold lakes. Heights
 // come out in arbitrary units for the caller to scale.
 function erode(rand: () => number, steps: number) {
-  const { mask, lift, hard } = uplift(rand);
+  const { mask, lift, hard, chem } = uplift(rand);
   const h = new Float32Array(LEN), next = new Float32Array(LEN);
   for (let i = 0; i < LEN; i++) h[i] = mask[i] > 0 ? mask[i] * 0.02 : -0.05;
   // The implicit scheme stays stable at any step, and 50 long steps land where 120 short ones do.
@@ -63,7 +66,7 @@ function erode(rand: () => number, steps: number) {
       }
     h.set(next);
   }
-  return { h, hard };
+  return { h, hard, chem };
 }
 
 // Steady groundwater under recharge (Dupuit): the water table bulges under hills between the rivers, lakes and sea that
@@ -96,6 +99,7 @@ export type Island = Climate & Ground & {
   flow: Float32Array; // mean discharge through each cell, m³ a second
   table: Float32Array; // depth to the water table, m
   rivers: [number, number, number][][]; // channels as [x, y, discharge] in cells, source to mouth
+  rock: Uint8Array; // the bedrock, an index into geology.ts ROCKS
   lakes: number; // how many lakes hold water
 };
 
@@ -104,7 +108,9 @@ const QMIN = 0.02; // m³/s: enough water to cut a lasting channel
 export function generateIsland(rand: () => number): Island {
   // Peaks rise with the island: 250 to 450 m on one 9.6 km across, higher on a bigger one, as its ranges are longer.
   const peak = (250 + rand() * 200) * Math.sqrt((N * CELL) / 9600);
-  const { h: raw, hard } = erode(rand, 50);
+  const { h: raw, hard, chem } = erode(rand, 50);
+  const rock = new Uint8Array(LEN);
+  for (let i = 0; i < LEN; i++) rock[i] = rockOf(hard[i], chem[i]);
   let top = 0;
   for (let i = 0; i < LEN; i++) top = Math.max(top, raw[i]);
   const height = new Float32Array(LEN);
@@ -190,6 +196,6 @@ export function generateIsland(rand: () => number): Island {
   }
   const table = waterTable(height, fixed, recharge);
   const shore = distance(open);
-  const cover = ground({ ...air, height, open, area: accumulate(order, to), table, shore, hard });
-  return { ...air, ...cover, height, water, flow, table, rivers, lakes };
+  const cover = ground({ ...air, height, open, area: accumulate(order, to), table, shore, hard, rock });
+  return { ...air, ...cover, height, water, flow, table, rivers, lakes, rock };
 }

@@ -4,6 +4,7 @@ import { DAY, REACH, TILE_M, Tile, YEAR, addThing, dryAt, dryNear, iceAt, level,
 import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } from "./space";
 import { clock, trace } from "./trace";
 import { see } from "./beliefs";
+import { enrich } from "./soil";
 
 // Kinds of stuff the rules below care about, by what they're like rather than what they're called.
 export const greasy = (k?: Kind) => !!k && p(k, "edible") >= 0.1 && p(k, "flammable") >= 0.7;
@@ -257,7 +258,8 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
     return { done: true, damage: dmg, broke: broke ?? undefined, out: outcome({ ok: true, text: `They killed the ${target.species} and butchered it into ${list(w, gives)}.`, gives, fields, numbers: { rate, ticksNeeded } }) };
   }
   const t = target as Thing;
-  if (t.kind === "tree") { setKind(w, t, "stump"); t.hp = 40; t.maxHp = 40; t.size = 0.6; t.until = w.t + DAY * 6; mark(w, t); }
+  // a felled tree's wood is carried off, and what it took from the soil with it
+  if (t.kind === "tree") { setKind(w, t, "stump"); t.hp = 40; t.maxHp = 40; t.size = 0.6; t.until = w.t + DAY * 6; mark(w, t); enrich(w, t.px, t.py, -0.02); }
   else removeThing(w, t);
   for (const [k, n] of Object.entries(gives)) giveItems(w, a, k, n);
   const verb = act.target.kind === "tree" ? "brought the tree down" : `broke up the ${act.target.kind}`;

@@ -3,6 +3,7 @@
 // listed here and the renderer draws the same list, so both read this one function.
 import { CELL, N, TILE_CELLS } from "./grid";
 import type { Island } from "./island";
+import { ROCKS, type Rock } from "./geology";
 
 export const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 export const smooth = (a: number, b: number, v: number) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
@@ -195,8 +196,9 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
           const [x, z] = spot();
           if (fine(wet, x, z) < 0.6 && heightAt(x, z) > 0.2) put(F.reeds, 0, x, z, 1 + r() * 1.5);
         }
-        const silt = bilinear(isle.silt, cellOf(x0), cellOf(z0));
-        for (let c = Math.floor(silt * (0.08 + 0.5 * edge) + r()); c > 0; c--) {
+        // clay where the ground is clayey: river and lake silt, and the soil of mudstone and basalt
+        const silt = bilinear(isle.silt, cellOf(x0), cellOf(z0)), clayey = bilinear(isle.clayey, cellOf(x0), cellOf(z0));
+        for (let c = Math.floor(Math.max(silt, 1.5 * ramp01(clayey - 0.2)) * (0.08 + 0.5 * edge) + r()); c > 0; c--) {
           const [x, z] = spot();
           if (fine(wet, x, z) < 0.4 && heightAt(x, z) > 0.4) put(F.clay, 0, x, z, 0.6 + r() * 1.4);
         }
@@ -269,8 +271,8 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
         const [x, z] = spot();
         if (dry(x, z)) put(F.grass, 0, x, z, 0.8 + r() * 1.7);
       }
-      // Weather wears reddish stones out of the bare rock.
-      for (let c = Math.floor(bare * 0.012 + r()); c > 0; c--) {
+      // Weather wears reddish stones out of the bare rock that carries iron.
+      for (let c = Math.floor(bare * 0.04 * rockAt(isle, x0, z0).ore + r()); c > 0; c--) {
         const [x, z] = spot();
         if (fine(wet, x, z) < 0.3) put(-1, 0, x, z, 0.15 + r() * 0.2);
       }
@@ -290,6 +292,10 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
   }
   return out;
 }
+
+const ramp01 = (v: number) => clamp(v / 0.3, 0, 1);
+// The bedrock under world meters x, z.
+export const rockAt = (isle: Island, x: number, z: number): Rock => ROCKS[isle.rock[clamp(Math.round((z - START) / CELL), 0, N - 1) * N + clamp(Math.round((x - START) / CELL), 0, N - 1)]];
 
 // ---------- what a ground point is ----------
 // One rule for the map and the inspector alike, from world data in meters only, so it is the same at every zoom.

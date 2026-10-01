@@ -3,13 +3,16 @@ import { THING_MATERIAL, clamp01, ensure, p } from "./materials";
 import { dropPile, fireHeat, mark, nearFire, newKinds, removeThing, shelterName } from "./physics";
 import { see } from "./beliefs";
 import {
-  DAY, H, TILE_M, W, Tile, addThing, dayOfYear, log, meters, nearWater, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
+  DAY, H, TILE_M, W, Tile, addThing, dayOfYear, groundOf, log, meters, nearWater, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
 import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
 import { growRate } from "./light";
+import { enrich, feedRate, settle } from "./soil";
+import { SIZE, rockAt } from "../terrain/flora";
+import { CELL } from "../terrain/grid";
 import { WIND, baseTemp, swing } from "./air";
 import { count, timed, trace } from "./trace";
 
@@ -160,7 +163,8 @@ export function flammability(w: World, t: Thing) {
   return THING_MATERIAL[t.kind]?.flammable ?? 0;
 }
 function burnOut(w: World, t: Thing, by?: string) {
-  if (t.kind === "tree") { setKind(w, t, "burnt_stump"); t.burning = 0; t.hp = 30; t.maxHp = 30; t.size = 0.6; t.until = w.t + DAY * 10; mark(w, t); return; }
+  // what the fire leaves feeds the soil, a tree's ash most
+  if (t.kind === "tree") { setKind(w, t, "burnt_stump"); t.burning = 0; t.hp = 30; t.maxHp = 30; t.size = 0.6; t.until = w.t + DAY * 10; mark(w, t); enrich(w, t.px, t.py, 0.25); return; }
   if (t.kind === "structure") {
     const owner = w.agents.find((a) => a.id === t.owner);
     const text = `Fire burned down ${owner ? `${owner.name}'s` : "a"} ${shelterName(w, t)}.`;
@@ -168,7 +172,10 @@ function burnOut(w: World, t: Thing, by?: string) {
     if (owner) { burnedHomes.push({ owner: owner.id, by, text }); if (owner.home === t.id) owner.home = null; }
   }
   removeThing(w, t);
-  if (t.kind !== "item" && t.kind !== "stick" && t.size >= 0.4) mark(w, addThing(w, "ash", t.px, t.py, { born: w.t, until: w.t + DAY * 2, size: Math.min(3, t.kind === "bush" ? t.size : 1.2) }));
+  if (t.kind !== "item" && t.kind !== "stick" && t.size >= 0.4) {
+    mark(w, addThing(w, "ash", t.px, t.py, { born: w.t, until: w.t + DAY * 2, size: Math.min(3, t.kind === "bush" ? t.size : 1.2) }));
+    enrich(w, t.px, t.py, 0.1);
+  }
 }
 // Flames reach what's within a few meters, and twice as far downwind.
 const NEAR = 5, DOWNWIND = 10;
@@ -184,6 +191,7 @@ function fire(w: World, live: Thing[]) {
       if (h !== (t.heat ?? 1)) { t.heat = h; mark(w, t); }
       if (t.hp <= 0) {
         removeThing(w, t);
+        enrich(w, t.px, t.py, 0.03);
         log(w, "fire_out", t.owner ? [t.owner] : [], t, rainy(w) ? "The rain put out a campfire." : "A campfire burned out.");
         continue;
       }
@@ -232,13 +240,13 @@ function plants(w: World, live: Thing[]) {
     }
     if (t.kind === "bush") {
       const regrow = season === "winter" ? 1 / 500 : season === "autumn" ? 1 / 140 : 1 / 70;
-      if (t.species === "berry" && (t.n ?? 0) < 4 && Math.random() < regrow && Math.random() < growRate(w, t.px, t.py)) { t.n = (t.n ?? 0) + 1; mark(w, t); }
+      if (t.species === "berry" && (t.n ?? 0) < 4 && Math.random() < regrow && Math.random() < growRate(w, t.px, t.py) * feedRate(w, t.px, t.py)) { t.n = (t.n ?? 0) + 1; mark(w, t); }
       if ((t.hp ?? BERRY_HP) < (t.maxHp ?? BERRY_HP)) t.hp = Math.min(t.maxHp ?? BERRY_HP, (t.hp ?? BERRY_HP) + 0.02);
       if ((t.hp ?? BERRY_HP) <= 0) { setKind(w, t, "dead_bush"); t.n = 0; mark(w, t); log(w, "grow", [], t, "A berry bush was picked to death."); }
     } else if (t.kind === "dead_bush" && season === "spring" && Math.random() < 1 / 4000) {
       setKind(w, t, "bush"); t.species = "berry"; t.n = 0; t.hp = BERRY_HP; t.maxHp = BERRY_HP; mark(w, t);
     } else if (t.kind === "sapling" && growing) {
-      const grew = (1 / (3 * DAY)) * (nearWater(w, t.x, t.y, 1) ? 1.5 : 1) * growRate(w, t.px, t.py);
+      const grew = (1 / (3 * DAY)) * (nearWater(w, t.x, t.y, 1) ? 1.5 : 1) * growRate(w, t.px, t.py) * feedRate(w, t.px, t.py);
       t.stage = (t.stage ?? 0) + grew;
       if (Math.round((t.stage ?? 0) * 20) !== Math.round(((t.stage ?? 0) - grew) * 20)) { t.size = Math.round((0.3 + t.stage * 0.5) * 100) / 100; mark(w, t); }
       if (t.stage >= 1) matured(w, t);
@@ -262,8 +270,11 @@ function plants(w: World, live: Thing[]) {
     if (!dryAt(w, px, py)) return;
     const forest = tileAt(w, x, y) === Tile.Forest, shore = nearWater(w, x, y, 1);
     const r = Math.random();
-    // Weather wears reddish stones out of rocky ground now and then.
-    if (tileAt(w, x, y) === Tile.Rock && r > 0.94) { dropPile(w, px, py, "ore", 1); return; }
+    // Weather wears reddish stones out of bare ground over rock that carries iron, now and then.
+    if (r > 0.94) {
+      const { isle, fine } = groundOf(w.seed), cx = (px * TILE_M) / CELL - 0.5, cy = (py * TILE_M) / CELL - 0.5;
+      if (Math.random() < 2 * fine.bilinear(isle.bare, cx, cy) * rockAt(isle, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2).ore) { dropPile(w, px, py, "ore", 1); return; }
+    }
     const kind = shore && growing ? (r < 0.7 ? "reeds" : "clay") : forest ? (!growing ? (r < 0.2 ? "mushroom" : "stick") : r < 0.45 ? "mushroom" : r < 0.6 ? "herb" : "stick") : r < 0.5 ? "stick" : "stone";
     if (anyAround(w, px, py, 3, [kind])) return;
     const extra: Partial<Thing> = kind === "reeds" ? { hp: 6, maxHp: 6, size: 1 + Math.random() * 1.5 } : kind === "mushroom" ? { species: "bolete", hp: 2, maxHp: 2 } : kind === "herb" ? { species: "yarrow", hp: 3, maxHp: 3 } : kind === "stick" ? { hp: 8, maxHp: 8, size: 0.4 + Math.random() * 1.2 } : kind === "stone" ? { hp: 40, maxHp: 40 } : { hp: 10, maxHp: 10 };
@@ -423,4 +434,5 @@ export function ecology(w: World) {
   timed("disease", () => { disease(w); crowding(w); });
   paths(w);
   overgrow(w);
+  settle(w);
 }

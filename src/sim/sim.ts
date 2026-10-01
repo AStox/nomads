@@ -20,6 +20,7 @@ import { anyAround, around, liveThings, nearestThing, shelve, thingById } from "
 import { landOf, walk } from "./walk";
 import { DARK, canSee, lightOn, moveRate, restRate, workRate } from "./light";
 import { airOn } from "./air";
+import { enrich } from "./soil";
 
 const VISION = 300; // meters: how far off someone notices another person
 const WALK = 2, RUN = 6; // meters a tick for an adult
@@ -995,6 +996,8 @@ function run(w: World, a: Agent): boolean | string {
     if (Math.random() < 0.25) removeThing(w, t);
   } else removeThing(w, t);
   giveItems(w, a, g.item, n);
+  // what is carried off a plant is taken from the soil it grew on
+  if (t.kind === "bush" || t.kind === "mushroom" || t.kind === "herb" || t.kind === "reeds") enrich(w, t.px, t.py, -0.004 * n);
   if (t.kind === "bush" || t.kind === "mushroom" || t.kind === "herb") gain(w, a, "foraging", 2);
   log(w, "gather", [a.id], a, `${a.name} gathered ${n > 1 ? `${n} ${plural(nm(w, g.item))}` : an(nm(w, g.item))}.`);
   return true;
