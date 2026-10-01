@@ -12,13 +12,15 @@ export type Rock = {
   feed: number; // 0..1 the mineral nourishment it releases to roots
   flint: number; // 0..1 how often a stone of it holds flint, or the chert, quartz or chalcedony that knaps and sparks like it
   ore: number; // 0..1 how often iron ore weathers out of it
+  incise: number; // how readily running water cuts it, beyond what its hardness says: crumbling, jointed or massive
+  creep: number; // how readily the soil it weathers to creeps downhill: clay most, thin grit and rubble least
 };
 export const ROCKS: Rock[] = [
-  { name: "mudstone", perm: 0.05, base: 0.5, sand: 0.15, clay: 0.55, feed: 0.65, flint: 0.15, ore: 0.35 },
-  { name: "sandstone", perm: 0.55, base: 0.15, sand: 0.75, clay: 0.08, feed: 0.25, flint: 0.25, ore: 0.15 },
-  { name: "limestone", perm: 0.85, base: 1, sand: 0.05, clay: 0.25, feed: 0.5, flint: 0.9, ore: 0.02 },
-  { name: "granite", perm: 0.08, base: 0.1, sand: 0.6, clay: 0.15, feed: 0.3, flint: 0.08, ore: 0.25 },
-  { name: "basalt", perm: 0.3, base: 0.75, sand: 0.15, clay: 0.45, feed: 0.95, flint: 0.12, ore: 0.5 },
+  { name: "mudstone", perm: 0.05, base: 0.5, sand: 0.15, clay: 0.55, feed: 0.65, flint: 0.15, ore: 0.35, incise: 1.25, creep: 1.3 },
+  { name: "sandstone", perm: 0.55, base: 0.15, sand: 0.75, clay: 0.08, feed: 0.25, flint: 0.25, ore: 0.15, incise: 0.9, creep: 0.8 },
+  { name: "limestone", perm: 0.85, base: 1, sand: 0.05, clay: 0.25, feed: 0.5, flint: 0.9, ore: 0.02, incise: 0.7, creep: 0.6 },
+  { name: "granite", perm: 0.08, base: 0.1, sand: 0.6, clay: 0.15, feed: 0.3, flint: 0.08, ore: 0.25, incise: 0.6, creep: 0.7 },
+  { name: "basalt", perm: 0.3, base: 0.75, sand: 0.15, clay: 0.45, feed: 0.95, flint: 0.12, ore: 0.5, incise: 0.75, creep: 0.9 },
 ];
 // Soft rock is mudstone; middling rock limestone where it is rich in bases and sandstone where it is not; hard rock basalt
 // or granite the same way.

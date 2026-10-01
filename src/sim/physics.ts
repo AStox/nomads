@@ -5,6 +5,7 @@ import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } 
 import { clock, trace } from "./trace";
 import { see } from "./beliefs";
 import { enrich } from "./soil";
+import { streamNow } from "./streams";
 
 // Kinds of stuff the rules below care about, by what they're like rather than what they're called.
 export const greasy = (k?: Kind) => !!k && p(k, "edible") >= 0.1 && p(k, "flammable") >= 0.7;
@@ -560,7 +561,7 @@ export function wet(w: World, a: Agent, act: Act): Outcome {
 export function openWater(w: World, a: { px: number; py: number }) {
   for (let k = -1; k < 8; k++) {
     const r = k < 0 ? 0 : 3 / TILE_M, x = a.px + Math.cos((k * Math.PI) / 4) * r, y = a.py + Math.sin((k * Math.PI) / 4) * r;
-    if (wetAt(w, x, y) && !iceAt(w, Math.floor(x), Math.floor(y))) return true;
+    if ((wetAt(w, x, y) && !iceAt(w, Math.floor(x), Math.floor(y))) || streamNow(w, x, y)?.flowing) return true;
   }
   return !!anyAround(w, a.px, a.py, 3, ["well"]);
 }

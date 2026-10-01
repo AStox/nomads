@@ -21,7 +21,7 @@ export type Ground = {
 };
 
 export type Site = {
-  height: Float32Array; open: Uint8Array; area: Float32Array; table: Float32Array; shore: Float32Array; hard: Float32Array; rock: Uint8Array;
+  height: Float32Array; open: Uint8Array; area: Float32Array; table: Float32Array; valley: Float32Array; shore: Float32Array; hard: Float32Array; rock: Uint8Array;
   precip: Float32Array; pet: Float32Array; temp: Float32Array; exposure: Float32Array; salt: Float32Array;
   seasons: Season[];
 };
@@ -52,7 +52,7 @@ export function ground(s: Site): Ground {
     const slope = Math.hypot(at(x + 1, y) - at(x - 1, y), at(x, y + 1) - at(x, y - 1)) / (2 * CELL);
     const curve = (at(x + 2, y) + at(x - 2, y) + at(x, y + 2) + at(x, y - 2) - 4 * at(x, y)) / (4 * CELL * CELL);
     // Soil thins on steep ground and ridges and gathers in hollows; rivers spread silt over their flat floors.
-    const valley = ramp(Math.log10(s.area[i]), 1.6, 3) * (1 - ramp(slope, 0.03, 0.1));
+    const valley = Math.max(ramp(Math.log10(s.area[i]), 1.6, 3) * (1 - ramp(slope, 0.03, 0.1)), s.valley[i]);
     silt[i] = valley;
     // Past the angle of repose (about 35°, measured on the unsmoothed ground) soil slides off and crags show. Hard
     // bedrock weathers so slowly that it holds only a skin of soil at best.

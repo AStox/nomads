@@ -84,11 +84,14 @@ export function climate(h: Float32Array, open: Uint8Array, rand: () => number): 
   // hollows and valley floors gather the cold air that slides off the slopes on still nights.
   const around = blur(z, 8);
   const a = airflow(z, open, around, rose.map((r) => r / roseSum));
-  let land = 0, sum = 0;
-  for (let i = 0; i < LEN; i++) if (!open[i]) { land++; for (const r of a.rainBy) sum += r[i]; }
-  const scale = wetness / (sum / Math.max(1, land));
+  // Each season brings its share of the year's storms over the land; where they rain is the air's doing.
   const precip = new Float32Array(LEN);
-  for (let i = 0; i < LEN; i++) for (const r of a.rainBy) { r[i] *= scale; precip[i] += r[i]; }
+  for (const [s, r] of a.rainBy.entries()) {
+    let land = 0, sum = 0;
+    for (let i = 0; i < LEN; i++) if (!open[i]) { land++; sum += r[i]; }
+    const scale = (wetness * SEASONS[s].wet) / Math.max(1e-9, sum / Math.max(1, land));
+    for (let i = 0; i < LEN; i++) { r[i] *= scale; precip[i] += r[i]; }
+  }
   const lit = new Uint8Array(LEN);
   for (let i = 0; i < LEN; i++) lit[i] = h[i] > -2 ? 1 : 0;
   const shape = horizons(z, lit);

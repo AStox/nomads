@@ -11,6 +11,8 @@ import { airAt, airWords } from "./air";
 import { CELL } from "../terrain/grid";
 import { GROUND, LAKE, RIVER, SEA, SIZE, groundClass, rockAt } from "../terrain/flora";
 import { fertilityAt } from "./soil";
+import { streamNow } from "./streams";
+import { TRICKLE } from "../terrain/water";
 
 export type Inspected = {
   id: string; kind: string; name: string; species?: string; px: number; py: number;
@@ -175,7 +177,8 @@ export function inspectGround(w: World, px: number, py: number): Inspected {
       ["cold air pools", r(fine.bilinear(isle.pool, cx, cy), 2)],
       ["path wear", `${onMap ? w.paths[ty * W + tx] : 0} / 9`],
     );
-    if (g.water === RIVER) rows.push(["stream", "running water, shallow enough to wade"]);
+    const st = streamNow(w, px, py);
+    if (st && (g.water === RIVER || st.d <= st.bed / 2)) rows.push(["stream", st.flowing ? `${r(st.width, 1)} m wide and ${r(st.depth, 2)} m deep, ${r(st.q, 3)} m3/s` : st.q < TRICKLE ? "a dry bed: it runs in the wetter seasons" : "the bank of a shrunken stream"]);
     bars.push(["moisture", r(fine.fine(fine.moist, x, z), 2), 1], light, ...(["grass", "tree", "shrub", "marsh", "bare", "sand"] as const).map((k, q) => [k, r(g.cover[q], 2), 1] as [string, number, number]));
   }
   return { id: `ground:${r(px, 4)},${r(py, 4)}`, kind: "ground", name, px, py, rows, bars };

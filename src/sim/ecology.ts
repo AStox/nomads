@@ -45,6 +45,8 @@ function weather(w: World) {
     const [px, py] = w.terrain.wind, pull = (v: number, p: number) => clamp(v + (p * 0.5 - v) * 0.02 + (Math.random() - 0.5) * 0.3, -1, 1);
     wx.wind = { dx: pull(wx.wind.dx, px), dy: pull(wx.wind.dy, py) };
     wx.speed = Math.max(0.5, wx.speed + (WIND[wx.sky] - wx.speed) * 0.25 + (Math.random() - 0.5) * 2);
+    // rain runs off into the streams and drains away over a day or so
+    wx.wet = rainy(w) ? wx.wet + (wx.sky === "storm" ? 0.15 : 0.06) * (1 - wx.wet) : wx.wet * 0.97;
     if (wx.sky !== before) {
       const words = { clear: "The sky cleared.", cloudy: "Clouds rolled in.", rain: "It started to rain.", storm: "A storm broke." };
       log(w, "weather", [], { x: W / 2, y: H / 2 }, words[wx.sky]);

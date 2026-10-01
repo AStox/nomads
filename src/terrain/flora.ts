@@ -4,6 +4,7 @@
 import { CELL, N, TILE_CELLS } from "./grid";
 import type { Island } from "./island";
 import { ROCKS, type Rock } from "./geology";
+import { widthOf } from "./water";
 
 export const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 export const smooth = (a: number, b: number, v: number) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
@@ -39,7 +40,7 @@ export const TILE_M = CELL * TILE_CELLS, TILES = N / TILE_CELLS;
 
 export type Fine = {
   h: Float32Array; wet: Float32Array; river: Float32Array; moist: Float32Array; cover: Record<Cover, Float32Array>;
-  rivers: [number, number, number][][]; // streams in world meters, smoothed, each point carrying its discharge
+  rivers: [number, number, number, number, number][][]; // streams in world meters as water.ts shapes them: [x, z, mean m³/s, share from groundwater, wettest season's m³/s]
   mask: Uint8Array; // RM x RM, 255 where a stream runs
   at: (f: Float32Array, i: number, j: number) => number;
   bilinear: (f: Float32Array, cx: number, cy: number) => number;
@@ -66,17 +67,16 @@ export function fineGround(isle: Island): Fine {
     return cr(row(y - 1), row(y), row(y + 1), row(y + 2), ty);
   };
 
-  // Streams, smoothed, in world meters, drawn into a mask for carving and shading. Round-capped strokes a pixel wider
-  // than the stream, coverage antialiased and stacked the way a canvas stacks one stroke over another.
-  type P = [number, number, number];
-  const chaikin = (p: P[]): P[] => [p[0], ...p.slice(0, -1).flatMap((a, i) => [a.map((v, k) => v * 0.75 + p[i + 1][k] * 0.25) as P, a.map((v, k) => v * 0.25 + p[i + 1][k] * 0.75) as P]), p.at(-1)!];
-  const rivers = isle.rivers.map((line) => chaikin(chaikin(chaikin(line.map(([x, y, q]): P => [START + x * CELL, START + y * CELL, q])))));
-  const riverWidth = (q: number) => clamp(2.5 + 2.8 * Math.sqrt(q), 2.5, 16);
+  // Streams in world meters, drawn into a mask for carving and shading at the width they run in the wettest season, the
+  // bed they keep cut. Round-capped strokes a pixel wider than the stream, coverage antialiased and stacked the way a
+  // canvas stacks one stroke over another.
+  const rivers = isle.rivers.map((line) => line.map(([x, y, q, b, hi]): [number, number, number, number, number] => [START + x * CELL, START + y * CELL, q, b, hi]));
+  const riverWidth = widthOf;
   const px = (x: number) => ((x + SIZE / 2) / SIZE) * RM;
   const mask = new Uint8Array(RM * RM), cov = new Float32Array(RM * RM);
   for (const line of rivers)
     for (let k = 1; k < line.length; k++) {
-      const half = ((riverWidth((line[k - 1][2] + line[k][2]) / 2) * RM) / SIZE + 1) / 2;
+      const half = ((riverWidth((line[k - 1][4] + line[k][4]) / 2) * RM) / SIZE + 1) / 2;
       const ax = px(line[k - 1][0]), ay = px(line[k - 1][1]), bx = px(line[k][0]), by = px(line[k][1]);
       const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1e-9;
       const i0 = Math.max(0, Math.floor(Math.min(ax, bx) - half - 1)), i1 = Math.min(RM - 1, Math.ceil(Math.max(ax, bx) + half + 1));
@@ -294,6 +294,34 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
 }
 
 const ramp01 = (v: number) => clamp(v / 0.3, 0, 1);
+// The stream nearest world meters x, z within REACH meters, read off its line: how far off its middle the point lies and
+// what flows there (mean m³/s, the share from groundwater, the wettest season's), or null. Lines are binned once per island.
+export type StreamPoint = { d: number; q: number; base: number; hi: number };
+const BIN = 50, REACH = 20, streamBins = new WeakMap<Fine, Map<number, [number, number][]>>();
+export function streamAt(g: Fine, x: number, z: number): StreamPoint | null {
+  let bins = streamBins.get(g);
+  const key = (i: number, j: number) => j * 4096 + i, cell = (v: number) => Math.floor((v + SIZE / 2) / BIN);
+  if (!bins) {
+    bins = new Map();
+    for (const [l, line] of g.rivers.entries())
+      for (let k = 1; k < line.length; k++) {
+        const [ax, az] = line[k - 1], [bx, bz] = line[k];
+        for (let j = cell(Math.min(az, bz) - REACH); j <= cell(Math.max(az, bz) + REACH); j++)
+          for (let i = cell(Math.min(ax, bx) - REACH); i <= cell(Math.max(ax, bx) + REACH); i++) {
+            const list = bins.get(key(i, j));
+            if (list) list.push([l, k]); else bins.set(key(i, j), [[l, k]]);
+          }
+      }
+    streamBins.set(g, bins);
+  }
+  let best: StreamPoint | null = null;
+  for (const [l, k] of bins.get(key(cell(x), cell(z))) ?? []) {
+    const a = g.rivers[l][k - 1], b = g.rivers[l][k], dx = b[0] - a[0], dz = b[1] - a[1];
+    const t = clamp(((x - a[0]) * dx + (z - a[1]) * dz) / (dx * dx + dz * dz || 1e-9), 0, 1), d = Math.hypot(x - a[0] - dx * t, z - a[1] - dz * t);
+    if (d <= REACH && (!best || d < best.d)) best = { d, q: a[2] + (b[2] - a[2]) * t, base: a[3] + (b[3] - a[3]) * t, hi: a[4] + (b[4] - a[4]) * t };
+  }
+  return best;
+}
 // The bedrock under world meters x, z.
 export const rockAt = (isle: Island, x: number, z: number): Rock => ROCKS[isle.rock[clamp(Math.round((z - START) / CELL), 0, N - 1) * N + clamp(Math.round((x - START) / CELL), 0, N - 1)]];
 

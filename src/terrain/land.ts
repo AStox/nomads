@@ -5,8 +5,9 @@ import { H, Tile, W } from "../sim/world";
 import { CELL, LEN, N } from "./grid";
 import type { Island } from "./island";
 
+import { QMIN } from "./water";
+
 // W and H come from the world module, which imports this one, so they're only read once it has loaded.
-const QMIN = 0.02; // m³/s, as in the generator: a lasting stream
 
 // What the renderer and anything else needs of the ground, packed small.
 export type Terrain = {
@@ -44,7 +45,7 @@ export function lay(isle: Island): Lay {
   for (let i = 0; i < LEN; i++) {
     const x = i % N, y = (i - x) / N, t = Math.floor(y / R) * W + Math.floor(x / R);
     if (isle.water[i] > 0) { wet[t]++; level[t] += Math.max(0, isle.height[i] + isle.water[i]); }
-    else if (isle.flow[i] >= QMIN) stream[t] = 1;
+    else if (isle.seasonFlow.some((f) => f[i] >= QMIN)) stream[t] = 1;
   }
   const tiles = new Array<Tile>(T);
   for (let t = 0; t < T; t++) {

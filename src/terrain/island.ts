@@ -2,10 +2,11 @@
 // then rained on by its own climate. Lakes, rivers, groundwater, soil and plants all follow from that.
 import { clamp } from "math";
 import { domainWarp2, fbm, ridged, simplex2d } from "math/noise";
-import { CELL, DX, DY, LEN, N, accumulate, distance, flood, ramp, receivers } from "./grid";
+import { CELL, LEN, N, accumulate, blur, distance, flood, ramp, receivers } from "./grid";
 import { climate, type Climate } from "./climate";
 import { ground, type Ground } from "./ground";
-import { rockOf } from "./geology";
+import { ROCKS, rockOf } from "./geology";
+import { hydrology, type Hydro } from "./water";
 
 // Where the island rises: a warped oval, lifted hardest along a few ridged ranges and least in its lowland basins.
 // Its bedrock comes in bands of harder and softer rock, and of rock rich in bases and rock poor in them.
@@ -37,24 +38,42 @@ function uplift(rand: () => number) {
 }
 
 // Uplift against the stream power law (Braun and Willett 2013, implicit, n = 1): each step the land rises, rivers cut
-// down in proportion to the square root of the area they drain, and slopes creep smooth, both slower through hard
-// rock, which is left standing proud. Depressions keep their floors, so the landscape can still hold lakes. Heights
-// come out in arbitrary units for the caller to scale.
+// down in proportion to the square root of the water they carry, and slopes creep smooth. The water is the rain that
+// runs off rather than soaking in: more of it on the heights, which wring more rain from the air, and less off rock
+// that lets it in, so limestone and sandstone keep broad, dry uplands while mudstone and granite gather it into streams.
+// How fast a stream cuts, and how fast a slope creeps, is the rock's: slower through hard rock, which is left standing
+// proud, and each kind of rock its own way (geology.ts ROCKS incise, creep), eased a little across the contacts so they
+// show as scarps rather than steps. Depressions keep their floors, so the landscape can still hold lakes. Heights come
+// out in arbitrary units for the caller to scale.
 function erode(rand: () => number, steps: number) {
   const { mask, lift, hard, chem } = uplift(rand);
   const h = new Float32Array(LEN), next = new Float32Array(LEN);
   for (let i = 0; i < LEN; i++) h[i] = mask[i] > 0 ? mask[i] * 0.02 : -0.05;
+  const cut = new Float32Array(LEN), slide = new Float32Array(LEN), shed = new Float32Array(LEN);
+  for (let i = 0; i < LEN; i++) {
+    const r = ROCKS[rockOf(hard[i], chem[i])];
+    cut[i] = (1.3 - hard[i]) * r.incise;
+    slide[i] = (1.3 - hard[i]) * r.creep;
+    shed[i] = Math.max(0.1, 0.9 - 0.8 * r.perm);
+  }
+  const K0 = blur(cut, 1), C0 = blur(slide, 1), runoff = blur(shed, 1), water = new Float32Array(LEN);
   // The implicit scheme stays stable at any step, and 50 long steps land where 120 short ones do.
   const dt = 120 / steps, K = 0.25 * dt, CREEP = 0.04 * dt, RISE = 0.01 * dt;
   for (let s = 0; s < steps; s++) {
     for (let i = 0; i < LEN; i++) h[i] += lift[i] * RISE;
     const { filled, order } = flood(h, 1e-6);
     const { to, far } = receivers(filled, 0);
-    const area = accumulate(order, to);
+    // each cell's runoff, the heights' rain up to half again the lowlands', scaled so a cell sheds one on average
+    let top = 1e-9, sum = 0, land = 0;
+    for (let i = 0; i < LEN; i++) top = Math.max(top, h[i]);
+    for (let i = 0; i < LEN; i++) { water[i] = runoff[i] * (1 + 0.5 * clamp(h[i] / top, 0, 1)); if (h[i] > 0) { sum += water[i]; land++; } }
+    const mean = land ? sum / land : 1;
+    for (let i = 0; i < LEN; i++) water[i] /= mean;
+    const carried = accumulate(order, to, water);
     for (let k = 0; k < LEN; k++) {
       const i = order[k], j = to[i];
       if (j === i) continue;
-      const f = (K * (1.3 - hard[i]) * Math.sqrt(area[i])) / far[i], lower = (h[i] + f * h[j]) / (1 + f);
+      const f = (K * K0[i] * Math.sqrt(Math.max(0, carried[i]))) / far[i], lower = (h[i] + f * h[j]) / (1 + f);
       if (lower < h[i]) h[i] = lower;
     }
     next.set(h);
@@ -62,48 +81,17 @@ function erode(rand: () => number, steps: number) {
       for (let x = 1; x < N - 1; x++) {
         const i = y * N + x;
         if (h[i] <= 0) continue;
-        next[i] = h[i] + CREEP * (1.3 - hard[i]) * (h[i - 1] + h[i + 1] + h[i - N] + h[i + N] - 4 * h[i]);
+        next[i] = h[i] + CREEP * C0[i] * (h[i - 1] + h[i + 1] + h[i - N] + h[i + N] - 4 * h[i]);
       }
     h.set(next);
   }
   return { h, hard, chem };
 }
 
-// Steady groundwater under recharge (Dupuit): the water table bulges under hills between the rivers, lakes and sea that
-// drain it, and can't rise above the ground, where it seeps out as springs and bog. Solved by over-relaxation.
-function waterTable(h: Float32Array, fixed: Float32Array, recharge: Float32Array) {
-  const TRANSMISSIVITY = 800; // m² a year
-  const wt = new Float32Array(LEN);
-  for (let i = 0; i < LEN; i++) wt[i] = Number.isNaN(fixed[i]) ? h[i] - 3 : fixed[i];
-  for (let it = 0; it < 600; it++) {
-    let change = 0;
-    for (let y = 1; y < N - 1; y++)
-      for (let x = 1; x < N - 1; x++) {
-        const i = y * N + x;
-        if (!Number.isNaN(fixed[i])) continue;
-        const want = (wt[i - 1] + wt[i + 1] + wt[i - N] + wt[i + N]) / 4 + (recharge[i] * CELL * CELL) / (4 * TRANSMISSIVITY);
-        const v = Math.min(h[i], wt[i] + 1.85 * (want - wt[i]));
-        change = Math.max(change, Math.abs(v - wt[i]));
-        wt[i] = v;
-      }
-    if (change < 0.005) break;
-  }
-  const depth = new Float32Array(LEN);
-  for (let i = 0; i < LEN; i++) depth[i] = Math.max(0, h[i] - wt[i]);
-  return depth;
-}
-
-export type Island = Climate & Ground & {
+export type Island = Climate & Ground & Hydro & {
   height: Float32Array; // ground elevation, m; the sea floor is below zero
-  water: Float32Array; // depth of standing water over the ground, m: the sea and lakes
-  flow: Float32Array; // mean discharge through each cell, m³ a second
-  table: Float32Array; // depth to the water table, m
-  rivers: [number, number, number][][]; // channels as [x, y, discharge] in cells, source to mouth
   rock: Uint8Array; // the bedrock, an index into geology.ts ROCKS
-  lakes: number; // how many lakes hold water
 };
-
-const QMIN = 0.02; // m³/s: enough water to cut a lasting channel
 
 export function generateIsland(rand: () => number): Island {
   // Peaks rise with the island: 250 to 450 m on one 9.6 km across, higher on a bigger one, as its ranges are longer.
@@ -115,87 +103,30 @@ export function generateIsland(rand: () => number): Island {
   for (let i = 0; i < LEN; i++) top = Math.max(top, raw[i]);
   const height = new Float32Array(LEN);
   for (let i = 0; i < LEN; i++) height[i] = raw[i] > 0 ? (raw[i] / top) * peak : Math.max(-60, raw[i] * 1200);
-  // Late reworking of the land (ice scouring the big valleys, landslips, moraines) leaves hollows that fill as lakes,
-  // deepest along the valleys that carried the most ice.
-  const hollows = simplex2d.create(Math.floor(rand() * 65536));
+  // The ice of the last cold age scoured the big valleys into troughs some 400 m wide, deepest where it ran thickest over
+  // soft rock and hardly at all over hard, which it left standing as sills across the valley floors; melting back, it
+  // dropped hummocks of moraine on them. Behind the sills and among the hummocks lie the island's lakes.
+  const hummocks = simplex2d.create(Math.floor(rand() * 65536));
   const before = flood(height, 1e-4), drained = accumulate(before.order, receivers(before.filled, 0).to);
+  const line = new Float32Array(LEN);
+  for (let i = 0; i < LEN; i++) if (height[i] > 2) line[i] = 5 * 40 * ramp(Math.log10(drained[i]), 2.3, 3.6) * clamp(1.15 - 1.4 * hard[i], 0, 1);
+  const trough = blur(line, 2);
   for (let i = 0; i < LEN; i++) {
     if (height[i] <= 2) continue;
-    const x = i % N, y = (i - x) / N, scour = 14 + 30 * ramp(Math.log10(drained[i]), 2.2, 3.5);
-    height[i] = Math.max(1, height[i] + fbm((f) => simplex2d.sample(hollows, (x / 18) * f, (y / 18) * f), 2, 2, 0.5) * scour);
+    const x = i % N, y = (i - x) / N, floor = ramp(Math.log10(drained[i]), 1.8, 3);
+    height[i] = Math.max(1, height[i] - trough[i] + 3 * floor * fbm((f) => simplex2d.sample(hummocks, (x / 6) * f, (y / 6) * f), 2, 2, 0.5));
   }
   const { filled, order } = flood(height, 1e-4);
   const { to } = receivers(filled, 0);
-  const open = new Uint8Array(LEN);
-  for (let i = 0; i < LEN; i++) open[i] = filled[i] < 0 || filled[i] - height[i] > 1 ? 1 : 0;
+  const open = new Uint8Array(LEN), basin = new Uint8Array(LEN);
+  for (let i = 0; i < LEN; i++) {
+    open[i] = filled[i] < 0 || filled[i] - height[i] > 1 ? 1 : 0;
+    basin[i] = filled[i] >= 0 && filled[i] - height[i] > 0.3 ? 1 : 0;
+  }
   const air = climate(height, open, rand);
-  // Rain the land keeps for a season, by Fu's form of the Budyko curve; the rest runs off.
-  const aet = new Float32Array(LEN), runoff = new Float32Array(LEN), recharge = new Float32Array(LEN);
-  for (let i = 0; i < LEN; i++) {
-    const p = air.precip[i], dry = air.pet[i] / Math.max(1, p);
-    aet[i] = p * (1 + dry - (1 + dry ** 2.6) ** (1 / 2.6));
-    runoff[i] = ((p - aet[i]) / 1000) * CELL * CELL; // m³ a year
-    recharge[i] = (0.35 * (p - aet[i])) / 1000; // m a year
-  }
-  const flow = accumulate(order, to, runoff);
-  for (let i = 0; i < LEN; i++) flow[i] /= 31_557_600;
-  // Each hollow holds water up to its spill point if its catchment brings more than the lake surface evaporates.
-  const water = new Float32Array(LEN), basin = new Int32Array(LEN).fill(-1);
-  let lakes = 0;
-  for (let s = 0; s < LEN; s++) {
-    if (basin[s] >= 0 || filled[s] < 0 || filled[s] - height[s] <= 0.3) continue;
-    const cells = [s];
-    basin[s] = s;
-    for (let k = 0; k < cells.length; k++) {
-      const i = cells[k], x = i % N, y = (i - x) / N;
-      for (let d = 0; d < 8; d++) {
-        const nx = x + DX[d], ny = y + DY[d], j = ny * N + nx;
-        if (nx < 0 || ny < 0 || nx >= N || ny >= N || basin[j] >= 0 || filled[j] < 0 || filled[j] - height[j] <= 0.3) continue;
-        basin[j] = s; cells.push(j);
-      }
-    }
-    let inflow = 0, spill = 0;
-    for (const i of cells) { inflow = Math.max(inflow, flow[i] * 31_557_600); spill = Math.max(spill, filled[i]); }
-    const byDepth = cells.map((i) => height[i]).sort((a, b) => a - b);
-    let level = spill;
-    for (let n = byDepth.length; n > 0; n--) {
-      const evaporation = (air.pet[cells[0]] / 1000) * n * CELL * CELL;
-      if (inflow >= evaporation) { level = n === byDepth.length ? spill : byDepth[n]; break; }
-      level = byDepth[0];
-    }
-    let wet = 0, deepest = 0;
-    for (const i of cells) if (level - height[i] > 0) { wet++; deepest = Math.max(deepest, level - height[i]); }
-    if (wet < 3 || deepest < 0.8) continue;
-    for (const i of cells) if (level - height[i] > 0) water[i] = level - height[i];
-    lakes++;
-  }
-  for (let i = 0; i < LEN; i++) {
-    if (filled[i] < 0) water[i] = -height[i];
-    open[i] = water[i] > 0 ? 1 : 0;
-  }
-  // Channels: water enough to keep a stream flowing, traced from each source to where it meets the sea or a lake.
-  const channel = new Uint8Array(LEN), fed = new Uint8Array(LEN);
-  for (let i = 0; i < LEN; i++) if (!open[i] && flow[i] >= QMIN) channel[i] = 1;
-  for (let i = 0; i < LEN; i++) if (channel[i] && to[i] !== i) fed[to[i]] = 1;
-  const rivers: [number, number, number][][] = [], traced = new Uint8Array(LEN);
-  for (let s = 0; s < LEN; s++) {
-    if (!channel[s] || fed[s]) continue;
-    const line: [number, number, number][] = [];
-    for (let i = s; ; i = to[i]) {
-      line.push([i % N, Math.floor(i / N), flow[i]]);
-      if (traced[i] || open[i] || to[i] === i) break;
-      traced[i] = 1;
-    }
-    if (line.length > 1) rivers.push(line);
-  }
-  // Groundwater drains to the sea, lakes and streams, which pin it at their surface.
-  const fixed = new Float32Array(LEN).fill(NaN);
-  for (let i = 0; i < LEN; i++) {
-    if (open[i]) fixed[i] = height[i] + water[i];
-    else if (channel[i]) fixed[i] = height[i] - 0.3;
-  }
-  const table = waterTable(height, fixed, recharge);
+  const hy = hydrology(height, filled, order, to, basin, air, rock);
+  for (let i = 0; i < LEN; i++) open[i] = hy.water[i] > 0 ? 1 : 0;
   const shore = distance(open);
-  const cover = ground({ ...air, height, open, area: accumulate(order, to), table, shore, hard, rock });
-  return { ...air, ...cover, height, water, flow, table, rivers, lakes, rock };
+  const cover = ground({ ...air, height, open, area: accumulate(order, to), table: hy.table, valley: hy.valley, shore, hard, rock });
+  return { ...air, ...cover, ...hy, height, rock };
 }

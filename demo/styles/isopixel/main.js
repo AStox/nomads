@@ -1,7 +1,7 @@
 // Nomads as a 90s isometric sim: a 2:1 tile map with integer height steps, slope shapes and cliff strips, painted
 // pixel by pixel into a small indexed buffer with one fixed palette, then blown up with nearest neighbour.
 import { grow, fbm, noise, smooth } from "../world.js";
-import { groundClass, waterAt, riverSmooth, SEA as G_SEA, LAKE as G_LAKE, RIVER as G_RIVER, ROCKY as G_ROCKY, SIZE, TILE_M } from "../island.js";
+import { groundClass, waterAt, riverSmooth, streamAt, flowNow, widthOf, depthOf, TRICKLE, SEA as G_SEA, LAKE as G_LAKE, RIVER as G_RIVER, ROCKY as G_ROCKY, SIZE, TILE_M } from "../island.js";
 import { LADDER } from "./ladder.js";
 import { P, RGB as RGB_, ramp, SHADOW, GLOW, HAZE, MIST, NCOL, THEME } from "./pal.js";
 import { Buf, Spr, ObjBins, tri, strip, blit, castShadow, shadowPx, bayer, dith, h2 } from "./px.js";
@@ -1127,6 +1127,14 @@ function groundAt(w, V, x, z) {
     const gx = (f(x + 3, z) - f(x - 3, z)) / 6, gz = (f(x, z + 3) - f(x, z - 3)) / 6, gl = Math.hypot(gx, gz);
     G.shore = gl > 1e-4 ? (v - 0.5) / gl : 60;
     G.depth = G.water === SEA ? Math.max(0, -w.heightAt(x, z)) : G.water === LAKE ? w.bilinear(w.isle.water, (x - w.START) / w.CELL, (z - w.START) / w.CELL) : 1.5;
+    G.bed = 0;
+    if (G.water === RIVER) {
+      // the channel is cut to the wettest season's width; this season's water runs down the middle of it, or not at all
+      // (the season's runoff, with the rain of an ordinary few days, src/sim/streams.ts)
+      const st = streamAt(w, x, z), q = st ? flowNow(st.q, st.base, w.isle.quick[SEASON_I[V.season] ?? 0] * 1.2) : 0;
+      G.depth = depthOf(q);
+      G.bed = !st || q < TRICKLE || st.d > widthOf(q) / 2 ? 1 : 0;
+    }
     return G;
   }
   for (let q = 0; q < 6; q++) G["c" + q] = r.cover[q];
@@ -1162,6 +1170,8 @@ function clusters(x, z, S, seed, mpp, cut = 0.42) {
 export const WV = { v: -1, moves: false };
 function paintWater(w, V, g, X, Y) {
   WV.v = -1; WV.moves = false;
+  // a stream's bed where no water runs this season: gravel and cobbles the floods left
+  if (g.bed) return h2(X, Y, 44) < 0.08 * fade(0.4, V.mpp) ? P.d5 : tone(DI, 3.6 + clusters(g.x, g.z, 0.8, 45, V.mpp, 0.45) * 0.8, X, Y);
   if (V.iceAt && g.water !== SEA && V.iceAt(g.x, g.z)) return iceTex(X, Y, g.x, g.z);
   const px = g.shore * V.k, lap = 0.5 + 0.18 * Math.sin(PH + (g.x + g.z) / 25);
   // the foam's edge laps in and out, lap between 0.32 and 0.68

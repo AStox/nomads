@@ -12,7 +12,7 @@ export const W = TILES;
 export const H = TILES;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export { YEAR_DAYS }; // the sky's: a year is the sun's round
-export const VERSION = 11;
+export const VERSION = 12;
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -60,6 +60,7 @@ export type Weather = {
   temp: number; // °C, the air at sea level away from the coast: air.ts has it where anyone stands
   wind: { dx: number; dy: number }; // the way it blows
   speed: number; // m/s at head height over the open sea
+  wet: number; // 0..1 how much of the last day or two's rain is still running off the land
 };
 export type Law = { id: string; key: string; text: string; verb: string; source: "physics" | "jev"; by: string; t: number; result?: unknown };
 
@@ -459,7 +460,7 @@ export function newWorld(seed: number, agentCount = 5): World {
   const w: World = {
     version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, heights: [...land.heights], terrain: land.terrain, paths: new Array(W * H).fill(0), things: [], stocked: [], fert: {}, agents: [], animals: [], events: [],
     nextId: g.flora.n + 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {}, ice: [], people: {},
-    weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 8, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, speed: 4, drought: false, dryTicks: 0 },
+    weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 8, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, speed: 4, wet: 0.2, drought: false, dryTicks: 0 },
     camps: [], incidents: [],
   };
   // Loose stones of ore lie about from the start, to be picked up like anything dropped.
