@@ -84,3 +84,12 @@ test("hands full of tools still make room for food", () => {
   expect(count(a, "berry")).toBe(3);
   expect(count(a, "sharp_stone")).toBe(8);
 });
+
+test("hands full of food still make room for a stick", () => {
+  const [w, a] = setup();
+  a.born = w.t - 1e6;
+  giveItems(w, a, "grain", 16);
+  expect(giveItems(w, a, "stick")).toBe(1);
+  expect(count(a, "stick")).toBe(1);
+  expect(count(a, "grain")).toBe(15);
+});

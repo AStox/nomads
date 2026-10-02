@@ -12,6 +12,7 @@ export type Ctx = {
   toxic: string[]; // kinds they believe make you sick
   store?: Record<string, number>; // what's kept in their home
   shared?: Record<string, number>; // what's in their camp's shared store
+  rain?: boolean; // out in the rain with no roof over them: no tinder will catch
 };
 export type PlanStep = { op: string; arg?: string; key?: string };
 type Op = PlanStep & { cost: number; needs: string[]; makes: string[]; pre: (s: PState) => boolean; eff: (s: PState) => PState };
@@ -41,6 +42,7 @@ export const GATHER: Record<string, { place: string; item: string; n: number; ke
   pull_reeds: { place: "reeds", item: "fiber", n: 2 },
   dig_clay: { place: "clay", item: "clay", n: 2, keep: true },
   scrape_resin: { place: "resin", item: "resin", n: 1 },
+  strip_grain: { place: "grain", item: "grain", n: 3 },
 };
 
 export const edibleKinds = (ctx: Ctx) => Object.keys(ctx.kinds).filter((k) => p(ctx.kinds[k], "edible") >= 0.1 && !ctx.toxic.includes(k));
@@ -63,18 +65,24 @@ function outputs(b: Belief, ctx: Ctx): Record<string, number> {
 }
 const PLACE_OF: Record<string, string> = { fire: "fire", hearth: "hearth", kiln: "kiln", forge: "forge", fed_fire: "fire", pit: "pit" };
 
+// How far off a home or a homesite can be for a shelter to go up there: half a day's walk (ctx.dist counts 15 m steps).
+const BUILD_NEAR = 10;
 function beliefOp(b: Belief, ctx: Ctx): Op | null {
   const req = required(b), out = outputs(b, ctx);
   const f = b.fields;
   const target = (f.verb === "strike" && f.target && !f.inputs.length) || f.verb === "throw" ? f.target ?? null : null;
-  const place = target ?? f.at ?? (f.builds !== "shelter" ? null : "home" in ctx.dist ? "home" : "homesite" in ctx.dist ? "homesite" : null);
+  // A shelter goes up at home, or next to someone they like, unless that's far off: then where they stand.
+  const near = (k: string) => (ctx.dist[k] ?? Infinity) <= BUILD_NEAR;
+  const place = target ?? f.at ?? (f.builds !== "shelter" ? null : near("home") ? "home" : near("homesite") ? "homesite" : null);
   const builds = f.builds ?? (f.effect === "cure" ? "cured" : null);
   if (!Object.keys(out).length && !builds) return null;
+  // Nobody out in the rain gets wet tinder to catch, by friction or by sparks.
+  if (builds === "fire" && ctx.rain && (f.verb === "rub" || f.verb === "strike")) return null;
   if ((f.verb === "strike" || f.verb === "throw") && target && (b.rate ?? 0) <= 0 && b.wins === 0) return null;
   if (f.verb !== "strike" && f.verb !== "throw" && b.wins === 0) return null;
   if (f.verb === "eat") return null;
   const wr = Math.max(0.2, (b.wins + 1) / (b.tries + 2));
-  const prey = target === "deer" || target === "wolf" ? `hunted:${target}` : null;
+  const prey = target && (HUNTED as readonly string[]).includes(target) ? `hunted:${target}` : null;
   const makes = [...Object.keys(out), ...(builds ? [builds] : []), ...(prey ? [prey] : []), ...(PLACE_OF[builds ?? ""] ? [`place:${PLACE_OF[builds!]}`] : [])];
   if (builds === "shelter") makes.push("place:home");
   return {
@@ -150,7 +158,8 @@ export const COLLECT: Record<string, string> = {
 function goal(type: string, start: PState, ctx: Ctx): { done: (s: PState) => boolean; needs: string[] } | null {
   const has = (flagName: string) => (s: PState) => s.flags.includes(flagName);
   if (type === "forage") {
-    const ed = edibleKinds(ctx), food = (s: PState) => ed.reduce((t, k) => t + n(s, k), 0), want = Math.max(3, food(start) + 2);
+    // enough put by to eat on, by how filling it is rather than how many: a handful of hard seed is worth a berry or two
+    const ed = edibleKinds(ctx), food = (s: PState) => ed.reduce((t, k) => t + n(s, k) * p(ctx.kinds[k], "edible"), 0), want = Math.max(0.6, food(start) + 0.4) - 1e-6;
     return { done: (s) => food(s) >= want, needs: ed };
   }
   if (type === "eat") return { done: has("ate"), needs: ["ate"] };

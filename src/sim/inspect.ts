@@ -61,8 +61,17 @@ const PROP_WORDS: Record<string, string> = {
 function lookOf(k?: Kind): string {
   if (!k) return "lump";
   if (BASE[k.id]) return k.id;
+  // foods by how they were made: smoked, ground to meal, mixed to dough, baked to bread
+  if (k.id.startsWith("smoked:")) return "smoked";
+  if (k.verb === "rub" && p(k, "edible") > 0) return "meal";
+  if (k.verb === "wet" && p(k, "plastic") >= 0.5) return "dough";
+  if (k.name === "bread") return "bread";
   const q = (x: Parameters<typeof p>[1]) => p(k, x);
   if (q("metal") >= 0.9) return "metal";
+  // a bow: a stiff, springy stave strung with something that binds (a loose cord is only a cord)
+  if (q("flexible") >= 0.8 && q("long") >= 0.5 && q("binding") >= 0.5 && q("hard") >= 0.2) return "bow";
+  // soft things that hold things: a basket if it's woven, a bag if not; anything stiff that holds is a pot
+  if (q("container") >= 0.4 && q("flexible") >= 0.4) return q("fibrous") >= 0.6 ? "basket" : "bag";
   if (q("container") >= 0.4) return "pot";
   if (q("sharp") >= 0.5 && q("long") >= 0.5) return q("heavy") >= 0.4 ? "axe" : "spear";
   if (q("sharp") >= 0.5) return "blade";

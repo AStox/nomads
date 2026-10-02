@@ -1066,7 +1066,7 @@ export function flowers(hpx = 5, seed = 0, hue, species) {
 
 const TIER_M = [1.2, 2.2, 3, 4.5];
 const ITEM_HEAP = { stone: "stone", flint: "stone", ore: "stone", flint_blade: "stone", stick: "sticks", log: "logs", plank: "planks", bark: "sticks",
-  meat: "food", fish: "food", berry: "food", mushroom: "food", herb: "food", fat: "food", hide: "hide", leather: "hide", clay: "clay", brick: "brick", reeds: "reeds", fiber: "reeds" };
+  meat: "food", fish: "food", berry: "food", mushroom: "food", herb: "food", fat: "food", grain: "food", hide: "hide", leather: "hide", clay: "clay", brick: "brick", reeds: "reeds", fiber: "reeds" };
 const BRACKEN = { [P.g2]: P.m2, [P.g3]: P.m3, [P.g4]: P.a1, [P.g5]: P.a2, [P.t1]: P.m0 };
 const BARKS = { ash: { [P.d1]: P.r1, [P.d2]: P.r2, [P.d3]: P.r3 }, pine: { [P.d2]: P.k2, [P.d3]: P.k1 } };
 function recolor(S, map) {

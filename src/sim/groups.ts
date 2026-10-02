@@ -195,7 +195,7 @@ function judgeLater(w: World, camp: Camp, inc: Incident) {
   for (const h of judgedIn.keys()) if (h < hour - 2) judgedIn.delete(h);
   pending.set(camp.id, (pending.get(camp.id) ?? 0) + 1);
   inc.group = camp.id;
-  judge(w, who, nameOf(w, inc.by), judgeState(w, camp, inc, who))
+  judge(w, who, nameOf(w, inc.by), judgeState(w, camp, inc, who), !!HARM[inc.act])
     .then((r) => ruled(w, camp, inc, who, r))
     .catch((e) => trace("group", "error", { id: inc.id, error: String(e) }, who.id))
     .finally(() => pending.set(camp.id, (pending.get(camp.id) ?? 1) - 1));

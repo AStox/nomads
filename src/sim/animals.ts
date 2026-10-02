@@ -62,10 +62,24 @@ function nibble(w: World, an: Animal) {
   t.hp = (t.hp ?? 3) - 1; t.size = Math.round(t.size * 80) / 100; mark(w, t);
 }
 
-// How much grass grows at a point, and how much of it the snow leaves to get at, 0..1 (the generator's cover).
-function forage(w: World, an: Animal) {
-  const { fine } = groundOf(w.seed), x = an.px * TILE_M - SIZE / 2, z = an.py * TILE_M - SIZE / 2;
-  return fine.fine(fine.cover.grass, x, z) * (1 - 0.7 * snowAt(w, an.px, an.py));
+// How much a grazer finds to eat at a point, 0..1 (the generator's cover): the grass the snow leaves to get at, and the
+// twigs, buds and bark of shrubs and young trees, which stand above it.
+function grassAt(w: World, px: number, py: number) {
+  const { fine } = groundOf(w.seed), x = px * TILE_M - SIZE / 2, z = py * TILE_M - SIZE / 2, snow = snowAt(w, px, py);
+  const browse = fine.fine(fine.cover.shrub, x, z) * 0.6 + fine.fine(fine.cover.tree, x, z) * 0.3;
+  return Math.min(1, fine.fine(fine.cover.grass, x, z) * (1 - 0.7 * snow) + browse * (1 - 0.3 * snow));
+}
+const forage = (w: World, an: Animal) => grassAt(w, an.px, an.py);
+// Better grazing than here, if there is any: the best of a few dry points out to r meters.
+function pasture(w: World, an: Animal, r: number): [number, number] | null {
+  let best: [number, number] | null = null, bv = forage(w, an) + 0.1;
+  for (let k = 0; k < 8; k++) {
+    const a = Math.random() * Math.PI * 2, d = ((0.3 + Math.random() * 0.7) * r) / TILE_M, [x, y] = onMap(an.px + Math.cos(a) * d, an.py + Math.sin(a) * d);
+    if (!dryAt(w, x, y)) continue;
+    const v = grassAt(w, x, y);
+    if (v > bv) { bv = v; best = [x, y]; }
+  }
+  return best;
 }
 
 function deer(w: World, d: Animal, n: Near) {
@@ -82,6 +96,8 @@ function deer(w: World, d: Animal, n: Near) {
     const food = d.hunger < 90 ? forage(w, d) : 0, grass = food > 0.25;
     setState(w, d, grass ? "graze" : "wander");
     if (grass) { d.hunger = Math.min(100, d.hunger + 0.35 * Math.min(1, food * 1.6) * (0.35 + 0.65 * warmRate(w.weather.temp))); nibble(w, d); }
+    // Where the grass is poor, a hungry deer moves on to better and keeps to it.
+    if (!grass && d.hunger < 85 && Math.random() < 0.05) { const better = pasture(w, d, 400); if (better) { d.home = better; d.aim = better; } }
     const mate = closest(d, n.deer, 200);
     if (mate && meters(d, mate) > 25 && Math.random() < 0.3) goTo(w, d, mate.px, mate.py, FAUNA.deer.walk);
     else if (!grass || Math.random() < 0.15) roam(w, d, 60, FAUNA.deer.walk);
@@ -93,9 +109,10 @@ function deer(w: World, d: Animal, n: Near) {
   if (d.hunger <= 0) { carcass(w, d); log(w, "death", [], d, "A deer starved."); }
 }
 
+// A wolf eats its fill at a kill and goes days before it needs another; a pack takes a deer every few days.
 function wolf(w: World, wf: Animal, n: Near) {
   const cold = coldBite(w.weather.temp);
-  wf.hunger -= 0.08 + 0.04 * cold;
+  wf.hunger -= 0.035 + 0.02 * cold;
   const fire = closest(wf, n.fires, 40), crowd = n.awake.filter((a) => meters(a, wf) <= 15).length >= 2;
   if (fire || crowd || wf.hp < wf.maxHp * 0.4) {
     setState(w, wf, "flee");
@@ -113,12 +130,22 @@ function wolf(w: World, wf: Animal, n: Near) {
     } else goTo(w, wf, meat.px, meat.py, FAUNA.wolf.walk * 2);
     return;
   }
-  const prey = wf.hunger < 50 ? closest(wf, n.deer, 400) ?? closest(wf, n.rabbits, 100) : null;
+  // whichever is nearer of a deer in sight or a rabbit close by
+  const deerNear = wf.hunger < 50 ? closest(wf, n.deer, 400) : null, rabbitNear = wf.hunger < 50 ? closest(wf, n.rabbits, 200) : null;
+  const prey = deerNear && rabbitNear ? (meters(wf, deerNear) < meters(wf, rabbitNear) ? deerNear : rabbitNear) : deerNear ?? rabbitNear;
   const lone = (a: Agent) => n.awake.every((b) => b === a || meters(a, b) > 30) && !closest(a, n.fires, 40);
-  // A starving wolf takes anyone alone; a hungry one waits for hard cold or snow, or for a person to be out in the dark.
-  const stalks = (a: Agent) => wf.hunger < 12 || (wf.hunger < 30 && (cold > 0.6 || snowAt(w, a.px, a.py) > 0.5 || lightOn(w, a).bright < DARK));
+  // A starving wolf takes anyone alone; a hungry one only someone out alone in the dark, or in a hard frost.
+  const stalks = (a: Agent) => wf.hunger < 12 || (wf.hunger < 25 && (cold > 0.8 || lightOn(w, a).bright < DARK));
   const person = !prey && wf.hunger < 30 ? closest(wf, n.awake, 150, (a) => lone(a) && stalks(a)) : null;
   const target: Animal | Agent | null = person ?? prey;
+  // Nothing in sight: a hungry pack follows the scent of the nearest herd, or of rabbits, and settles where it hunts.
+  const scent = !target && wf.hunger < 50 ? closest(wf, n.deer, 3000) ?? closest(wf, n.rabbits, 1500) : null;
+  if (scent) {
+    setState(w, wf, "hunt"); wf.target = undefined;
+    wf.home = [scent.px, scent.py];
+    goTo(w, wf, scent.px, scent.py, FAUNA.wolf.walk * 2);
+    return;
+  }
   if (!target) {
     setState(w, wf, "wander"); wf.target = undefined;
     const pack = closest(wf, n.wolves, 300);

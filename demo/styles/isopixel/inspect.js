@@ -233,6 +233,9 @@ const ITEMS = {
   flower: [[".v.v.", "vvyvv", ".vvv.", "..g..", ".gg..", "..g.."], { v: "violet", y: "f3", g: "g4" }],
   metal: [["..sss..", ".sWWss.", "sssssss"], { s: "r4", W: "snow" }],
   pot: [[".ddddd.", "..ddd..", ".ddddd.", "ddDdddd", "ddddddd", ".ddddd."], { d: "k2", D: "k1" }],
+  bag: [["..aaa..", "...h...", ".hhhhh.", "hhHhhhh", "hhhhhhh", ".hhhhh."], { h: "d3", H: "d4", a: "a1" }],
+  basket: [["..aaa..", ".a...a.", "aAaAaAa", "AaAaAaA", "aAaAaAa", ".AaAaA."], { a: "a2", A: "a3" }],
+  bow: [["..dd...", ".d.a...", "d..a...", "d..a...", "d..a...", ".d.a...", "..dd..."], { d: "d3", a: "a1" }],
   axe: [[".ssd", "sWsd", "sssd", ".ssd", "...d", "...d", "...d"], { s: "r4", W: "snow", d: "d3" }],
   spear: [[".....ss", "....sWs", "....ds.", "...d...", "..d....", ".d.....", "d......"], { s: "r4", W: "snow", d: "d3" }],
   blade: [["......s", ".....ss", "....sW.", "...ss..", "..dd...", ".dd....", "d......"], { s: "r4", W: "snow", d: "d2" }],
@@ -243,6 +246,11 @@ const ITEMS = {
   rod: [["......d", ".....d.", "....d..", "...d...", "..d....", ".d.....", "d......"], { d: "d4" }],
   brick: [["kkkkkkk", "kKkkkKk", "kkkkkkk"], { k: "k2", K: "k1" }],
   lump: [["..lll..", ".lllll.", "lllllll", ".lllll."], { l: "h2" }],
+  grain: [["y.y.y..", ".y.y.y.", "y.yYy..", ".yYyY..", "..yYy..", "...g...", "...g..."], { y: "a2", Y: "a3", g: "a1" }],
+  meal: [["..sss..", ".sSsss.", "ddddddd", ".ddddd.", "..ddd.."], { s: "s3", S: "snow", d: "d2" }],
+  dough: [["..sss..", ".sssss.", "sSsssss", ".sssss."], { s: "s2", S: "s3" }],
+  bread: [[".ddddd.", "dDdDdDd", "ddddddd", ".ddddd."], { d: "d3", D: "d5" }],
+  smoked: [["..rrr..", ".rRrrr.", ".rrrrr.", "..rrr..", "...w...", "..w.w.."], { r: "d1", R: "f0", w: "s3" }],
 };
 function itemSprite(look) {
   const [rows, names] = ITEMS[look] ?? ITEMS.lump, w = Math.max(...rows.map((r) => r.length));

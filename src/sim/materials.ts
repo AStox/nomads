@@ -29,7 +29,7 @@ export type Kind = {
 
 // Raw materials. Everything else is made from these.
 export const BASE: Record<string, Omit<Kind, "id">> = {
-  berry: { name: "berry", props: { edible: 0.2, seed: 0.6, toughness: 0.02 }, shelf: 2 },
+  berry: { name: "berry", props: { edible: 0.2, seed: 0.6, toughness: 0.02 }, shelf: 3 },
   nut: { name: "nut", props: { edible: 0.14, hard: 0.3, seed: 0.4, toughness: 0.2 }, shelf: 25 },
   mushroom: { name: "mushroom", props: { edible: 0.18, toxic: 0.12, toughness: 0.03 }, shelf: 1.5 },
   herb: { name: "herb", props: { edible: 0.04, medicinal: 0.8, fibrous: 0.3, toughness: 0.03 }, shelf: 3 },
@@ -55,6 +55,8 @@ export const BASE: Record<string, Omit<Kind, "id">> = {
   pebble: { name: "pebble", props: { hard: 0.9, heavy: 0.05, toughness: 0.7 } },
   fern: { name: "fern fronds", props: { fibrous: 0.5, flexible: 0.6, flammable: 0.6, insulating: 0.4, toxic: 0.3, toughness: 0.05 } },
   flower: { name: "flower", props: { edible: 0.02, medicinal: 0.15, seed: 0.3, flammable: 0.3, toughness: 0.01 } },
+  // wild grass seed stripped from the heads in late summer: hard, dry and slow to spoil, and little use raw
+  grain: { name: "grain", props: { edible: 0.1, seed: 0.9, hard: 0.35, toughness: 0.05 }, shelf: 40 },
 };
 
 // World things are made of materials too.

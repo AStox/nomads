@@ -12,7 +12,7 @@ export const W = TILES;
 export const H = TILES;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export { YEAR_DAYS }; // the sky's: a year is the sun's round
-export const VERSION = 13;
+export const VERSION = 14;
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -63,7 +63,8 @@ export type Weather = {
   speed: number; // m/s at head height over the open sea
   wet: number; // 0..1 how much of the last day or two's rain is still running off the land
 };
-export type Law = { id: string; key: string; text: string; verb: string; source: "physics" | "jev"; by: string; t: number; result?: unknown };
+// result: what it gives, builds or does, as the outcome that first showed it (physics.ts Fields)
+export type Law = { id: string; key: string; text: string; verb: string; source: "physics" | "jev"; by: string; t: number; result?: { gives: string[]; builds?: string; effect?: string; target?: string } };
 
 export const BONDS = {
   saved_my_life: "They saved me when I was in real danger",

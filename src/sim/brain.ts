@@ -8,6 +8,7 @@ import { shelterName } from "./physics";
 import { TRAITS } from "./traits";
 import { DARK, canSee, lightOn, lightWords } from "./light";
 import { airOn, airWords } from "./air";
+import { ripening } from "./cues";
 import { PROPS, THING_MATERIAL, type Kind, type Props } from "./materials";
 import { beliefText } from "./beliefs";
 import { campTag, campView } from "./groups";
@@ -23,12 +24,16 @@ export type Brain = { kind: "random" } | { kind: "jev" } | { kind: "relay"; url:
 let brain: Brain = process.env.NOMADS_BRAIN === "random" ? { kind: "random" } : { kind: "jev" };
 export const useBrain = (b: Brain) => { brain = b; };
 export const brainKind = () => brain.kind;
+// Jev calls not yet answered: a headless run can wait for them each tick, so the world moves as if Jev answered at once.
+let inflight = 0;
+export const asking = () => inflight;
 
 type Answer = { type: string; choice?: string; probabilities?: Record<string, number>; confidence?: number; noul?: number; score?: number };
 type Question = { type: "choice" | "noul" | "score"; instructions: unknown; criteria?: unknown };
 
+// bias: weights for a choice's options, and for a yes or no question a cap on how likely the answer is ("noul").
 function randomAnswer(q: Question, bias?: Record<string, number>): Answer {
-  if (q.type === "noul") return { type: "noul", noul: Math.random() };
+  if (q.type === "noul") return { type: "noul", noul: Math.random() * (bias?.noul ?? 1) };
   if (q.type === "score") {
     const levels = (q.criteria as unknown[]).length;
     return { type: "score", score: Math.random() * (levels - 1), confidence: 0.5 };
@@ -38,7 +43,9 @@ function randomAnswer(q: Question, bias?: Record<string, number>): Answer {
   const total = raw.reduce((a, b) => a + b, 0) || 1;
   const probabilities = Object.fromEntries(keys.map((k, i) => [k, raw[i] / total]));
   const choice = keys[raw.indexOf(Math.max(...raw))];
-  return { type: "choice", choice, probabilities, confidence: 0.3 };
+  // as sure of its pick as Jev is of a middling one, so choices that need some conviction (a new label for a
+  // relationship) still happen offline
+  return { type: "choice", choice, probabilities, confidence: 0.5 };
 }
 
 async function ask(w: World, purpose: string, agent: string | undefined, state: unknown, questions: Record<string, Question>, bias?: Record<string, number>) {
@@ -48,6 +55,7 @@ async function ask(w: World, purpose: string, agent: string | undefined, state: 
     jevLog({ agent, purpose, ms: 0, tokens: 0, state, questions, answers });
     return answers;
   }
+  inflight++;
   try {
     const relay = brain.kind === "relay" ? brain : null;
     const res = await fetch(relay ? relay.url : ENDPOINT, {
@@ -66,6 +74,8 @@ async function ask(w: World, purpose: string, agent: string | undefined, state: 
   } catch (e) {
     jevLog({ agent, purpose, ms: Math.round(performance.now() - t0), tokens: 0, state, questions, error: String(e) });
     throw e;
+  } finally {
+    inflight--;
   }
 }
 
@@ -190,9 +200,16 @@ function needBias(w: World, a: Agent, options: Record<string, string>) {
     if ((k === "eat" || k === "forage") && a.needs.food < 45) b[k] = 8;
     if (k === "rest" && a.needs.energy < 30) b[k] = 8;
     if ((k === "rest" || k === "warm_up") && lightOn(w, a).bright < DARK) b[k] = Math.max(b[k] ?? 0, 4);
+    // A fire for the night: light and warmth, and the wolves keep off.
+    if (k === "make_fire" && (lightOn(w, a).bright < DARK || a.needs.warmth < 60)) b[k] = 4;
     if ((k === "warm_up" || k === "make_fire" || k === "build_shelter") && a.needs.warmth < 40) b[k] = 6;
+    // Cold with no fire or roof they know how to make: try for one, or keep close to someone who has one.
+    if ((k === "experiment:fire" || k === "experiment:shelter" || k === "share_fire" || k === "stay_close") && a.needs.warmth < 40) b[k] = 4;
     if (k === "tinker") b[k] = 3;
+    if (k === "experiment:fireside") b[k] = 3;
     if (k.startsWith("make:") || k === "build_shelter" || k.startsWith("hunt:")) b[k] = Math.max(b[k] ?? 0, 2);
+    // as the days draw in and things ripen, lay food by
+    if (k === "stock_up" && ripening(w.t)) b[k] = 3;
   }
   return b;
 }
@@ -293,10 +310,11 @@ export async function rule(w: World, a: Agent, attempt: string, parts: Kind[], t
     useful: { type: "noul", instructions: `Realistically, would a person doing this end up with a new object that holds together and could be used for something?`, criteria: { true: "A usable new object comes out of it", false: "It falls apart, does nothing, or just wastes the materials" } },
   };
   for (const prop of relevant) q[prop] = { type: "score", instructions: `If it did make something, how ${prop} would the result be?`, criteria: LEVELS };
+  // Offline, nothing the rules don't cover comes of an attempt: random answers would write nonsense into the world's laws.
   const ans = await ask(w, "rule", a.id, {
     attempt,
     materials: parts.map((k) => ({ name: k.name, properties: Object.fromEntries(Object.entries(k.props).filter(([, v]) => (v ?? 0) >= 0.1)) })),
-  }, q);
+  }, q, { noul: 0.5 });
   w.jev.rulings++;
   const props: Props = {};
   for (const prop of relevant) {
@@ -362,17 +380,19 @@ async function pickWord(w: World, a: Agent, purpose: string, lex: Lexicon, state
   return word === "none of these" ? null : word;
 }
 
-// Offline runs lean toward the milder answers, the way most camps do.
+// Offline runs lean toward the milder answers, the way most camps do, and leave a kindness be.
 const MILD: Partial<Record<Response, number>> = { let_go: 3, scold: 2, repay: 1.5, shun: 1, drive_out: 0.4 };
-// Someone decides how the camp answers what another person did. The same call asks whether the doer would make amends if told to.
-export async function judge(w: World, me: Agent, doer: string, state: object) {
+const KIND: Partial<Record<Response, number>> = { let_go: 30, scold: 0.5, repay: 0.2, shun: 0.1, drive_out: 0.02 };
+// Someone decides how the camp answers what another person did (harm: whether it hurt anyone). The same call asks
+// whether the doer would make amends if told to.
+export async function judge(w: World, me: Agent, doer: string, state: object, harm: boolean) {
   const ans = await ask(w, "judge", me.id, state, {
     response: {
       type: "choice", criteria: RESPONSES,
       instructions: `${me.name} decides how the camp answers what ${doer} did. Given who ${me.name} is, what happened, and how this camp has handled cases like it before, what does ${me.name} decide?`,
     },
     comply: { type: "noul", instructions: `If the camp told ${doer} to give it back or make up for it, would ${doer} actually do it?` },
-  }, MILD);
+  }, harm ? MILD : KIND);
   const odds = ans.response.probabilities!;
   return { response: sample(odds, 1) as Response, odds, comply: ans.comply.noul ?? 0.5 };
 }

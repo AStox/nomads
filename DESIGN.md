@@ -329,6 +329,28 @@ New raw materials, found in specific places so that where you live shapes what y
 - **Tying depth** now counts only layers of binding, so a fired pot, smelted metal, or leather counts as a plain material and can be hafted or tied.
 - **Deferred:** a resin-sealed basket is watertight (container 0.9) but nothing carries water yet.
 
+### Grain, keeping food, bows and fiber crafts
+
+Added after headless tech runs (scripts/tech.ts) showed worlds stalling at fire and shelter. Still no recipes: each step is a property meeting a rule.
+
+| Material | Where | Properties | Why it matters |
+| --- | --- | --- | --- |
+| grain | stripped from grass while it ripens (the ripening cue), three at a time, leaving the tuft | hard little seeds, barely edible raw, keeps 40 days | winter food; sown, it comes up as grass |
+
+- Grinding a small hard seed on something harder (a stone) crushes it to a meal; the meal dipped in water becomes dough; dough held over a fire bakes firm into bread, which keeps five days.
+- Food held in the smoke of a covered fire (the kiln) dries into smoked food that keeps about eight times as long.
+- A long, light, pointed shaft (a pointed stick) shot from a bow (a stick strung with cord) flies twice as far as a throw and hits far harder: deer become huntable without closing to arm's reach.
+- Any soft sheet tied with cord closes into a bag, and that now includes a mat woven of reeds: a woven basket. Carrying a bag or basket lets someone carry more (ten times its container value on top of sixteen). A woven basket, loose enough to let water through, swept through water where fish swim scoops up one or two.
+- Two or more soft sheets laced together with cord make a wrap warmer than any one of them (two hides: insulating 0.96).
+- A home's store keeps food half as long again with a pot, a basket or a bag in it.
+
+Behaviour that came out of the same runs:
+- Anyone warming at a fire or sitting by it lays wood on when it burns low (wood: burns a good while, not food, a tool, tinder or charcoal). Fires used to burn out within hours of being lit.
+- Walls and a roof keep the cold and the rain off whoever is inside them, not only their owner.
+- Tinder can be dry grass, fern or a dead bush's twigs at your feet; rain soaks any rubbing within the hour, and nobody plans to light a fire out in the rain.
+- A home more than half a day's walk away (150 m) doesn't count for sleeping or warming up; a new shelter beyond that becomes home. Shelter work is only offered while adding to the home could still make it better.
+- New goals: try things by a fire (hold them in it, set them in and around it), and lay by food that keeps (grain, nuts) at home. Teaching favours what has worked most for the teacher and what the learner is short of (fire and roofs for the cold, food for the hungry).
+
 ### Seeing inside the world
 
 Everything the simulation decides is recorded, so any surprise can be traced back to its cause.

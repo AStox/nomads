@@ -57,7 +57,11 @@ export function sentence(w: World, f: Fields, ticks?: number): string {
     case "shape":
       return `Pressing ${ins[0]} into a ${f.shape} makes ${an(gives(w, f))}.`;
     case "place":
-      if (f.builds === "fire") return `Setting ${an(ins.find((x) => x.startsWith("burning")) ?? ins[0])} into ${ins.filter((x) => !x.startsWith("burning")).join(" and ") || "a fire"} starts a campfire.`;
+      if (f.builds === "fire") {
+        // the flame by what it is, whatever people have come to call it
+        const flame = f.inputs.find((k) => k.startsWith("burning:")) ?? f.inputs[0];
+        return `Setting ${an(nm(w, flame))} into ${f.inputs.filter((k) => k !== flame).map((k) => nm(w, k)).join(" and ") || "a fire"} starts a campfire.`;
+      }
       if (f.builds === "fed_fire") return `Feeding ${ins.join(" and ")} to a fire keeps it going.`;
       if (f.builds === "hearth") return `Ringing a fire with ${ins.join(" and ")} keeps it contained and burning steady.`;
       if (f.builds === "kiln") return `Heaping ${ins.join(" and ")} over a ringed fire closes it in to smolder.`;
@@ -65,7 +69,7 @@ export function sentence(w: World, f: Fields, ticks?: number): string {
       if (f.builds === "shelter") return `Leaning and stacking ${ins.join(", ")} makes a shelter.`;
       return `Stacking ${ins.join(", ")} makes a pile.`;
     case "plant":
-      return f.builds === "bush" ? `${an(ins[0])[0].toUpperCase() + an(ins[0]).slice(1)} pushed into the ground grows into a bush.` : `They pushed ${an(ins[0])} into the ground.`;
+      return f.builds ? `${an(ins[0])[0].toUpperCase() + an(ins[0]).slice(1)} pushed into the ground grows into ${f.builds === "grass" ? "grass that bears grain" : `a ${f.builds}`}.` : `They pushed ${an(ins[0])} into the ground.`;
     case "eat":
       if (f.effect === "sick") return `Eating ${ins[0]} can make you sick.`;
       if (f.effect === "cure") return `Eating ${ins[0]} helps when you're sick.`;
@@ -74,8 +78,10 @@ export function sentence(w: World, f: Fields, ticks?: number): string {
       return `Wearing ${ins[0]} keeps the cold out.`;
     case "dig":
       return `Digging ${with_(w, f.tool)} makes a deep pit.`;
-    case "throw":
-      return f.gives.length ? `Throwing ${an(ins[0])} at ${an(f.target ?? "animal")} can bring it down.` : `Throwing ${an(ins[0])} at ${an(f.target ?? "animal")} can wound it.`;
+    case "throw": {
+      const how = f.tool ? `Shooting ${an(ins[0])} from ${an(nm(w, f.tool))}` : `Throwing ${an(ins[0])}`;
+      return f.gives.length ? `${how} at ${an(f.target ?? "animal")} can bring it down.` : `${how} at ${an(f.target ?? "animal")} can wound it.`;
+    }
   }
   return `${f.verb} ${ins.join(", ")}`;
 }
@@ -101,7 +107,7 @@ export function record(w: World, a: Agent, out: Outcome, ticks: number, how: Bel
   if (how === "discovered") for (const k of out.newKinds) log(w, "invent", [a.id], a, `${a.name} made the first ${nm(w, k)} anyone has ever made.`, nm(w, k));
   let law = w.laws[key];
   if (!law && out.ok) {
-    law = w.laws[key] = { id: `L${Object.keys(w.laws).length + 1}`, key, text: sentence(w, f, ticks), verb: f.verb, source: out.ruled ? "jev" : "physics", by: a.id, t: w.t };
+    law = w.laws[key] = { id: `L${Object.keys(w.laws).length + 1}`, key, text: sentence(w, f, ticks), verb: f.verb, source: out.ruled ? "jev" : "physics", by: a.id, t: w.t, result: { gives: f.gives, builds: f.builds, effect: f.effect, target: f.target } };
     // An invention already has its own milestone, and a second way to make the same thing isn't a new one.
     const tag = out.newKinds.length ? undefined : lawTag(w, f);
     log(w, "law", [a.id], a, `${a.name} found out something new about the world: ${law.text}`, tag && !w.events.some((e) => e.kind === "law" && e.tag === tag) ? tag : undefined);
@@ -109,7 +115,9 @@ export function record(w: World, a: Agent, out: Outcome, ticks: number, how: Bel
   let b = a.beliefs[key];
   const isNew = !b;
   b ??= a.beliefs[key] = { key, fields: f, uses: out.uses, out: out.gives, ticks, tries: 0, wins: 0, how, from: from?.id, t: w.t };
-  b.fields = { ...f, gives: f.gives.length ? f.gives : b.fields.gives };
+  // An attempt that showed nothing new doesn't unlearn what it was seen to give or build before: a seed pushed into the
+  // ground today grows into a bush days from now, as one did last time.
+  b.fields = { ...f, gives: f.gives.length ? f.gives : b.fields.gives, builds: f.builds ?? b.fields.builds };
   if (Object.keys(out.gives).length) b.out = out.gives;
   if (out.ok) b.uses = out.uses;
   b.tries++;

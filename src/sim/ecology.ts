@@ -319,6 +319,17 @@ function matured(w: World, t: Thing) {
     return;
   }
   const from = t.item ?? "berry";
+  // grain sown in the ground comes up as a tuft of grass that bears seed in its season
+  if (from === "grain") {
+    setKind(w, t, "grass"); t.size = 0.7; t.hp = 4; t.maxHp = 4; delete t.stage;
+    mark(w, t);
+    if (t.owner) {
+      log(w, "grow", [t.owner], t, `The grain ${w.agents.find((a) => a.id === t.owner)?.name} sowed came up as grass.`);
+      see(w, t, "grows:grain", "Grain pushed into the ground comes up as grass that bears more grain.", 80);
+      grewFor(w, t.owner, from, t);
+    }
+    return;
+  }
   setKind(w, t, "bush"); t.species = "berry"; t.n = 1; t.hp = BERRY_HP; t.maxHp = BERRY_HP; t.size = 0.9; delete t.stage;
   mark(w, t);
   log(w, "grow", t.owner ? [t.owner] : [], t, t.owner ? `The ${w.kinds[from]?.name ?? from} ${w.agents.find((a) => a.id === t.owner)?.name} pushed into the ground grew into a berry bush.` : "A new berry bush sprang up.");
@@ -339,18 +350,20 @@ function decay(w: World, live: Thing[]) {
     if (isNew) newKinds.add(kind.id);
     return kind.id;
   };
-  const spoiled = (k: string, born: number) => {
+  // keep: how much longer than loose food keeps it does where it is: half as long again in with a pot, a basket or a bag
+  const spoiled = (k: string, born: number, keep = 1) => {
     const kind = w.kinds[k];
-    return !!kind?.shelf && w.t - born > kind.shelf * DAY;
+    return !!kind?.shelf && w.t - born > kind.shelf * DAY * keep;
   };
+  const vessel = (ks: { k: string }[]) => (ks.some((s) => p(w.kinds[s.k], "container") >= 0.6) ? 1.5 : 1);
   for (const a of w.agents) {
-    const f = nearFire(w, a);
+    const f = nearFire(w, a), keep = vessel(a.inv);
     const forge = !!f && fireHeat(w, f) >= 1.5;
     for (const s of a.inv) {
       // Hot metal stays soft only while it's kept at a hot fire.
       const k = w.kinds[s.k];
       if (k?.cools && k.parts?.[0]) { if (forge) s.born = w.t; else if (w.t - s.born > k.cools) { s.k = k.parts[0]; s.born = w.t; } continue; }
-      if (!spoiled(s.k, s.born)) continue;
+      if (!spoiled(s.k, s.born, keep)) continue;
       if (s.k.startsWith("rotten:")) { a.inv.splice(a.inv.indexOf(s), 1); continue; }
       log(w, "spoil", [a.id], a, `${a.name}'s ${w.kinds[s.k]?.name} went bad.`);
       s.k = rot(s.k); s.born = w.t;
@@ -364,8 +377,9 @@ function decay(w: World, live: Thing[]) {
       if (t.item.startsWith("rotten:")) { removeThing(w, t); continue; }
       t.item = rot(t.item); t.born = w.t; mark(w, t);
     }
+    const kept = vessel(t.store ?? []);
     for (const s of t.store ?? []) {
-      if (!spoiled(s.k, s.born)) continue;
+      if (!spoiled(s.k, s.born, kept)) continue;
       if (s.k.startsWith("rotten:")) { t.store!.splice(t.store!.indexOf(s), 1); continue; }
       s.k = rot(s.k); s.born = w.t;
     }
