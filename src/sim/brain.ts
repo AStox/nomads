@@ -17,6 +17,12 @@ import PLACES from "./places.json";
 
 const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 // NOMADS_BRAIN=random answers every question with random numbers, for fast offline runs of the physics (and for tests).
+// Where the answers come from: the random brain; Jev itself, with TYPESAFE_API_KEY (the server); or a relay that holds
+// the key for a page that must not see it (scripts/play/serve.ts /jev), reached with the relay's token.
+export type Brain = { kind: "random" } | { kind: "jev" } | { kind: "relay"; url: string; token: string };
+let brain: Brain = process.env.NOMADS_BRAIN === "random" ? { kind: "random" } : { kind: "jev" };
+export const useBrain = (b: Brain) => { brain = b; };
+export const brainKind = () => brain.kind;
 
 type Answer = { type: string; choice?: string; probabilities?: Record<string, number>; confidence?: number; noul?: number; score?: number };
 type Question = { type: "choice" | "noul" | "score"; instructions: unknown; criteria?: unknown };
@@ -37,15 +43,16 @@ function randomAnswer(q: Question, bias?: Record<string, number>): Answer {
 
 async function ask(w: World, purpose: string, agent: string | undefined, state: unknown, questions: Record<string, Question>, bias?: Record<string, number>) {
   const t0 = performance.now();
-  if (process.env.NOMADS_BRAIN === "random") {
+  if (brain.kind === "random") {
     const answers = Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, randomAnswer(q, bias)]));
     jevLog({ agent, purpose, ms: 0, tokens: 0, state, questions, answers });
     return answers;
   }
   try {
-    const res = await fetch(ENDPOINT, {
+    const relay = brain.kind === "relay" ? brain : null;
+    const res = await fetch(relay ? relay.url : ENDPOINT, {
       method: "POST",
-      headers: { Authorization: `Bearer ${process.env.TYPESAFE_API_KEY}`, "Content-Type": "application/json" },
+      headers: relay ? { "X-Nomads-Token": relay.token, "Content-Type": "application/json" } : { Authorization: `Bearer ${process.env.TYPESAFE_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model: "jev-latest", state, questions }),
       signal: AbortSignal.timeout(20_000),
     });

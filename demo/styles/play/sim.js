@@ -1,5 +1,5 @@
 // Runs the game's simulation in the page the way server.ts loop() does: one tick per task, the same change sets, cleared the same way.
-import { DAY, changed, changedKinds, groupsChanged, iceChanged, inspect, inspectGround, newKinds, newWorld, objects, pathChanges, removed, thingById, tick, trailChanges, trails } from "../sim.js";
+import { DAY, brainKind, changed, changedKinds, groupsChanged, iceChanged, inspect, inspectGround, newKinds, newWorld, objects, pathChanges, removed, thingById, tick, trailChanges, trails, useBrain } from "../sim.js";
 
 const BASE_MS = 500;
 
@@ -18,8 +18,9 @@ function clearChanges() {
   changed.clear(); removed.clear(); newKinds.clear(); changedKinds.clear(); pathChanges.clear(); trailChanges.clear();
 }
 
-// One live sim per page: the change sets are module globals inside the bundle.
-export async function createSim({ seed = 1, warm = 0, onProgress } = {}) {
+// One live sim per page: the change sets are module globals inside the bundle. jev: the relay's token (scripts/play/serve.ts)
+// for people to think with Jev once the world is warm; without it, and while warming, they think with the random brain.
+export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } = {}) {
   const w = newWorld(seed);
   // Where each agent and animal stood before the last tick, so a frame can draw them partway between, and who's alive now.
   const prev = new Map(), ents = new Map();
@@ -61,6 +62,11 @@ export async function createSim({ seed = 1, warm = 0, onProgress } = {}) {
     if (onProgress && ((i + 1) % 50 === 0 || i + 1 === warm)) onProgress(i + 1, warm);
   }
   clearChanges();
+  // the relay says whether it would let this token through without asking Jev anything
+  const url = new URL("/jev", location.href).href;
+  const ok = !!jev && (await fetch(url, { headers: { "X-Nomads-Token": jev } }).then((r) => r.json()).then((r) => r.ready && r.ok).catch(() => false));
+  if (jev && !ok) console.warn("the Jev relay refused this page's token or is off; people think with the random brain");
+  useBrain(ok ? { kind: "relay", url, token: jev } : { kind: "random" });
   lastEvent = w.events.at(-1)?.id ?? 0;
   remember();
   roll();
@@ -69,6 +75,9 @@ export async function createSim({ seed = 1, warm = 0, onProgress } = {}) {
     get w() { return w; },
     get alpha() { return alpha; },
     get tickMs() { return tickMs; },
+    // "relay" while people think with Jev, "random" otherwise; jev: calls and tokens so far
+    get brain() { return brainKind(); },
+    get jev() { return w.jev; },
     speed: 1,
     paused: false,
     // Current and previous float positions in tiles; things don't move, so theirs match.

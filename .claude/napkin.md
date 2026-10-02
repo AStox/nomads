@@ -16,6 +16,7 @@
 3a. **[2026-10-01] The Jev key is the operator's personal one, in the gitignored .env**
    The operator gave a personal TYPESAFE_API_KEY on 2026-10-01 to use from then on, as much as needed. It lives in .env at the repo root (gitignored, mode 600), which Bun loads for every `bun` command run here, so server.ts and scripts/run.ts reach Jev with no flags. `bun test` also loads .env.test (NOMADS_BRAIN=random), so tests stay offline. The browser bundles never inline it (checked).
    Do instead: use only this key; never print it, paste it into commits, docs, logs or bundles, or set it anywhere else; run with NOMADS_BRAIN=random only when a run should be offline, not to save money.
+   The play page thinks with Jev through scripts/play/serve.ts, which serves the built pages and relays POST /jev with the key added, only for requests carrying NOMADS_RELAY_TOKEN (also in .env) and shaped like the game's questions, at most 300 a minute and 16 at once. The page takes the token once as ?jev=<token>, keeps it in localStorage and strips it from the address bar; it warms the world with the random brain and switches to the relay after (brain.ts useBrain). A decision costs about 1,300 input tokens.
 3. **[2026-09-26] Watching the live world costs money**
    The world only ticks while a client is connected, and the live brain bills Jev.
    Do instead: never open :8095 or goldclaw.duckdns.org/nomads to test. Run `PORT=8196 NOMADS_DATA=/tmp/<dir> NOMADS_BRAIN=random bun server.ts` and check the live server only through `/api/debug/*`.

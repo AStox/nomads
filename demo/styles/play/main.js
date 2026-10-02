@@ -43,9 +43,17 @@ async function main() {
   const say = () => { const r = steps.renderer, w = steps.sim; loadingScreen(canvas, `${r[0]}  ${w[1] < 1 && withSim ? "/ " + w[0] : ""}`.trim(), (r[1] + (withSim ? w[1] : 1)) / 2); };
   say();
   // the sim and the renderer's workers grow the same island at the same time
-  const simP = withSim ? import("./sim.js").then(({ createSim }) => createSim({ seed, warm, onProgress: (d, n) => { steps.sim = ["warming the world", d / n]; say(); } })) : Promise.resolve(null);
+  // ?jev=<token> lets the people think with Jev through this server's relay, and is remembered on this browser;
+  // ?jev=off forgets it
+  const jevQ = Q.get("jev");
+  if (jevQ === "off") localStorage.removeItem("nomads-jev"); else if (jevQ) localStorage.setItem("nomads-jev", jevQ);
+  const jev = jevQ === "off" ? null : localStorage.getItem("nomads-jev");
+  // the token is kept, not shown: a copied link doesn't carry it
+  if (jevQ) { Q.delete("jev"); history.replaceState(null, "", `${location.pathname}${Q.size ? `?${Q}` : ""}`); }
+  const simP = withSim ? import("./sim.js").then(({ createSim }) => createSim({ seed, warm, jev, onProgress: (d, n) => { steps.sim = ["warming the world", d / n]; say(); } })) : Promise.resolve(null);
   const live = await createLive({ seed, canvas, workers: Math.trunc(num("workers", 0, 0, 8)) || undefined, adjacent: Q.get("adj") !== "0", check: Q.get("check") === "1", onProgress: (d, n, what) => { steps.renderer = [what, 0.5 * (what === "baking the island" ? 1 : 0) + (0.5 * d) / n]; say(); } });
   const sim = await simP;
+  if (sim?.brain === "relay") { document.title = "Nomads: live, thinking with Jev"; hint.textContent += " · thinking with Jev"; }
   // ?hour= pins the hour the island is drawn at, its light and sun, while the sim runs on
   if (sim) sim.hour = num("hour", null, 0, 24);
   const ready = performance.now() - t0;
