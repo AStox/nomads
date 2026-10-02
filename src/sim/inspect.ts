@@ -6,7 +6,7 @@ import { BONDS, DAY, H, LABELS, QUIET, TILE_M, Tile, W, ageOf, clock, colorIndex
 import { thingById } from "./space";
 import { shelterName } from "./physics";
 import { activity, agentDetail, goalText, heading, type Activity } from "./sim";
-import { beliefText, type Belief } from "./beliefs";
+import { beliefText, conditionWords, groundOfKey, type Belief } from "./beliefs";
 import { campOf, knownCustoms, sharedStore, standing } from "./groups";
 import { lightAt, lightOn, lightWords, type Light } from "./light";
 import { airAt, airWords } from "./air";
@@ -140,6 +140,12 @@ function thing(w: World, t: Thing): Inspected {
     if (t.charcoal) rows.push({ label: "charcoal", value: r(t.charcoal) });
     if (t.hp !== undefined) rows.push({ label: "burns for", value: `${Math.round(t.hp)} more ticks` });
   }
+  if (t.kind === "sapling") {
+    // what it lives on where it stands: the same the sim weighs (ecology.ts seedlings)
+    rows.push({ label: "doing", value: (t.hp ?? 5) < (t.maxHp ?? 5) * 0.8 ? "wilting" : "thriving" });
+    if (t.fit !== undefined) rows.push({ label: "ground suits it", bar: [r(t.fit, 2), 1] });
+    if (t.water) rows.push({ label: "watered", bar: [r(t.water, 2), 1] });
+  }
   if (t.kind === "grave") {
     rows.push({ label: "died", value: t.died !== undefined ? clock(t.died) : "?" }, { label: "of", value: t.cause ?? "?" });
     // the path they walked in life is drawn from the grave while it is selected
@@ -190,7 +196,7 @@ function animal(w: World, a: Animal): Inspected {
 // ---------- people ----------
 // The icon of a belief: what it gives, else what it builds or does.
 const BUILDS: Record<string, string> = { fire: "act:fire", fed_fire: "act:fire", hearth: "act:fire", kiln: "act:fire", forge: "act:fire", shelter: "act:build", pile: "act:build", bush: "act:plant", pit: "act:dig", trap: "act:dig", worn: "item:cloth", cured: "item:herb" };
-const VERBS: Record<string, string> = { strike: "act:craft", rub: "act:fire", join: "act:craft", heat: "act:fire", wet: "act:collect", shape: "act:craft", place: "act:build", plant: "act:plant", eat: "act:eat", wear: "item:cloth", throw: "act:hunt", dig: "act:dig" };
+const VERBS: Record<string, string> = { strike: "act:craft", rub: "act:fire", join: "act:craft", heat: "act:fire", wet: "act:collect", shape: "act:craft", place: "act:build", plant: "act:plant", pour: "act:plant", eat: "act:eat", wear: "item:cloth", throw: "act:hunt", dig: "act:dig" };
 const HOW: Record<Belief["how"], string> = { discovered: "worked it out themselves", watched: "learned it watching", taught: "was taught it by", seen: "saw it happen" };
 function beliefRow(w: World, a: Agent, b: Belief): Row {
   const out = Object.keys(b.out)[0] ?? b.fields.gives[0];
@@ -198,6 +204,9 @@ function beliefRow(w: World, a: Agent, b: Belief): Row {
   const uses = Object.entries(b.uses).filter(([, n]) => n > 0);
   if (uses.length) more.push(`uses up ${uses.map(([k, n]) => `${n} ${w.kinds[k]?.name ?? words(k)}`).join(", ")}`);
   if (Object.keys(b.out).length) more.push(`gives ${Object.entries(b.out).map(([k, n]) => `${r(n)} ${w.kinds[k]?.name ?? words(k)}`).join(", ")}`);
+  // how it has gone for them in each condition they've done it in: the record a theory of theirs rests on
+  const record = Object.entries(b.when ?? {}).filter(([, s]) => s.tries > 0);
+  if (record.length) more.push(record.map(([c, s]) => `${conditionWords(c)} ${s.wins} of ${s.tries}`).join(", "));
   const law = b.law ? Object.values(w.laws).find((l) => l.id === b.law) : undefined;
   if (law && law.by !== a.id) more.push(who(w, law.by, `first found by ${nameOf(w, law.by)}`));
   return { label: beliefText(w, b), icon: out ? `item:${lookOf(w.kinds[out])}` : (b.fields.builds && BUILDS[b.fields.builds]) || VERBS[b.fields.verb] || "act:craft", more };
@@ -234,6 +243,16 @@ function person(w: World, a: Agent): Inspected {
   // knows: how to do things, what they've seen, what their camp holds to
   const beliefs = Object.values(a.beliefs).sort((x, y) => Number(y.wins > 0) - Number(x.wins > 0) || y.t - x.t);
   sections.push({ tab: "knows", title: `how to (${beliefs.length})`, rows: beliefs.map((b) => beliefRow(w, a, b)), none: "nothing yet" });
+  // what they've done that hasn't shown what comes of it yet
+  const waiting = a.waiting ?? [];
+  if (waiting.length) sections.push({
+    tab: "knows", title: `waiting to see (${waiting.length})`,
+    rows: waiting.map((e) => {
+      const b = a.beliefs[e.key], ground = e.now.find((c) => groundOfKey(c));
+      const what = b?.fields.verb === "pour" ? "watered a young plant" : `planted ${w.kinds[b?.fields.inputs[0] ?? ""]?.name ?? "something"}`;
+      return { label: `${what}${ground ? ` ${conditionWords(ground)}` : ""}`, value: days(w, e.t), link: e.thing };
+    }),
+  });
   const seen = Object.values(a.facts);
   if (seen.length) sections.push({ tab: "knows", title: `seen (${seen.length})`, rows: seen.map((f) => ({ label: f })) });
   const customs = knownCustoms(w, a);

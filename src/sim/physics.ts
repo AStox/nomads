@@ -8,6 +8,7 @@ import { see } from "./beliefs";
 import { enrich } from "./soil";
 import { streamNow } from "./streams";
 import { snowAt } from "./air";
+import { GROUND, SIZE, groundClass } from "../terrain/flora";
 
 // Kinds of stuff the rules below care about, by what they're like rather than what they're called.
 export const greasy = (k?: Kind) => !!k && p(k, "edible") >= 0.1 && p(k, "flammable") >= 0.7;
@@ -65,6 +66,7 @@ export type Outcome = {
   numbers?: Record<string, number>;
   newKinds: string[];
   ruled?: boolean; // decided by a Jev ruling, not the physics rules
+  later?: string; // a thing whose result is still to come: a seed now in the ground, a seedling just watered
 };
 
 // ---------- inventory ----------
@@ -619,6 +621,14 @@ export function wet(w: World, a: Agent, act: Act): Outcome {
     fields.gives = [k.id];
     return outcome({ ok: true, text: `The ${x.name} soaked up the water into a sticky dough.`, uses: { [x.id]: 1 }, gives: { [k.id]: 1 }, fields, newKinds: nk });
   }
+  // A vessel that holds water, which a woven basket doesn't, comes up full.
+  if (p(x, "container") >= 0.6 && p(x, "fibrous") < 0.5 && !x.id.startsWith("full:")) {
+    const [k] = ensure(w.kinds, `full:${x.id}`, () => ({ name: `${short(x)} of water`, props: { ...x.props, heavy: Math.min(1, p(x, "heavy") + 0.3) }, parts: [x.id], verb: "wet" }));
+    takeItems(a, x.id);
+    giveItems(w, a, k.id);
+    fields.gives = [k.id];
+    return outcome({ ok: true, text: `They dipped the ${x.name} in the water and lifted it out full.`, uses: { [x.id]: 1 }, gives: { [k.id]: 1 }, fields });
+  }
   // A basket woven loose enough to let the water through, swept along where fish are swimming, scoops one or two up.
   if (p(x, "container") >= 0.6 && p(x, "container") < 0.85 && p(x, "fibrous") >= 0.6) {
     const near = w.animals.filter((m) => m.species === "fish" && meters(m, a) <= 15);
@@ -652,6 +662,26 @@ export function wet(w: World, a: Agent, act: Act): Outcome {
     return outcome({ text: `They dangled the ${x.name} in the water. Something tugged at it, then let go.`, effect: "nibble", fields, numbers: { chance } });
   }
   return outcome({ text: `The ${x.name} got wet. Nothing else happened.`, fields });
+}
+
+// ---------- pour ----------
+// Water carried in a vessel, poured over a young plant within reach or out on the ground. The ground round the plant stays
+// wet a day or two (ecology.ts seedlings); what that does for it shows only as it grows, or doesn't.
+export function pour(w: World, a: Agent, act: Act): Outcome {
+  const x = kind(w, act.items[0]);
+  const fields: Fields = { verb: "pour", inputs: act.items.slice(0, 1), target: act.target?.kind, gives: [] };
+  if (!x?.id.startsWith("full:") || !count(a, x.id)) return outcome({ text: "They had no water to pour.", fields });
+  takeItems(a, x.id);
+  giveItems(w, a, x.parts![0]);
+  const t = act.target?.thing ? thingById(w, act.target.thing) : null;
+  if (!t || meters(a, t) > reachOf(t) + 1) {
+    delete fields.target;
+    return outcome({ text: `They poured the water out of the ${short(kind(w, x.parts![0])!)}. It soaked into the ground.`, uses: { [x.id]: 1 }, fields });
+  }
+  t.water = Math.min(1, (t.water ?? 0) + 0.5);
+  mark(w, t);
+  fields.effect = "watered";
+  return outcome({ ok: true, text: `They poured the water over the ${t.kind === "sapling" ? "young plant" : t.kind.replaceAll("_", " ")}. The ground round it darkened.`, uses: { [x.id]: 1 }, effect: "watered", fields, later: t.kind === "sapling" ? t.id : undefined });
 }
 
 // Water they could dip something in from where they stand: open water within a couple of paces, or a well.
@@ -709,30 +739,52 @@ export function throwTick(w: World, a: Agent, act: Act, st: { progress: number; 
 }
 const an = (s: string) => (/^[aeiou]/.test(s) ? `an ${s}` : `a ${s}`);
 
-// ---------- dig ----------
+// ---------- the ground ----------
 // Meters of soil over the rock at a point (the generator's regolith).
 export const soilAt = (w: World, px: number, py: number) => { const { isle, fine } = groundOf(w.seed); return fine.bilinear(isle.soil, (px * TILE_M) / CELL - 0.5, (py * TILE_M) / CELL - 0.5); };
-// Soft ground, a spade's depth of soil or more, with nothing standing on it within a pace or two.
-export function diggable(w: World, px: number, py: number) {
-  return soilAt(w, px, py) >= 0.2 && dryAt(w, px, py) && !anyAround(w, px, py, 1.5, SOLID);
+// The ground at a point as anyone standing on it would call it, by the rule the map is drawn with (terrain/flora.ts).
+export function groundWord(w: World, px: number, py: number) {
+  const { isle, fine } = groundOf(w.seed);
+  return GROUND[groundClass(isle, fine, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2).cls] || "water";
 }
-// What takes up the ground it stands on, so no one can dig or plant right there.
+// What can stand on a spot, and how far its own footprint reaches: a trunk, a bush's stems, a stone, a wall, a fire, a
+// hole. Anything else (another plant's leaves, its roots, its shade) is no bar to pushing a seed in beside it.
 const SOLID = ["tree", "stump", "burnt_stump", "bush", "dead_bush", "sapling", "boulder", "fallen_log", "structure", "fire", "pit", "trap", "well", "grave"];
-function softNear(w: World, a: Agent): [number, number] | null {
+const FOOT: Record<string, number> = { tree: 0.5, stump: 0.4, burnt_stump: 0.4, sapling: 0.15, fallen_log: 0.5, fire: 0.8, pit: 0.8, trap: 0.8, well: 0.8 };
+const occupied = (w: World, px: number, py: number) => !!anyAround(w, px, py, 6, SOLID, (t) => meters({ px, py }, t) < (FOOT[t.kind] ?? t.size / 2));
+// A pit goes into a spade's depth of soil or more, on dry ground nothing stands on, clear of a tree's roots.
+export function diggable(w: World, px: number, py: number) {
+  return soilAt(w, px, py) >= 0.2 && dryAt(w, px, py) && !occupied(w, px, py) && !anyAround(w, px, py, 1.5, ["tree", "stump", "burnt_stump"]);
+}
+// The first spot a pace to three off, turning round, where the ground takes what they're doing, or what stopped them
+// at the most spots: water, rock under too little soil, roots, or something standing on it.
+type Bar = "water" | "rock" | "roots" | "taken";
+function spotNear(w: World, a: Agent, soil: number, roots: boolean): [number, number] | Bar {
+  const bars: Record<Bar, number> = { water: 0, rock: 0, roots: 0, taken: 0 };
   for (const m of [1, 2, 3])
     for (let k = 0; k < 8; k++) {
       const ang = (a.heading ?? 0) + (k * Math.PI) / 4, px = a.px + (Math.cos(ang) * m) / TILE_M, py = a.py + (Math.sin(ang) * m) / TILE_M;
-      if (diggable(w, px, py)) return [px, py];
+      const bar: Bar | null = !dryAt(w, px, py) ? "water" : soilAt(w, px, py) < soil ? "rock" : occupied(w, px, py) ? "taken" : roots && anyAround(w, px, py, 1.5, ["tree", "stump", "burnt_stump"]) ? "roots" : null;
+      if (!bar) return [px, py];
+      bars[bar]++;
     }
-  return null;
+  return (Object.keys(bars) as Bar[]).sort((x, y) => bars[y] - bars[x])[0];
 }
+const BARRED: Record<Bar, (ground: string) => string> = {
+  water: () => "There was only water within reach.",
+  rock: (g) => (g === "bare rock" ? "The ground here was bare rock, with no soil to work." : `Under a skin of soil the ${g} here was rock.`),
+  roots: () => "Roots ran through the ground everywhere within reach.",
+  taken: () => "Something already stood on every spot within reach.",
+};
+
+// ---------- dig ----------
 export function digTick(w: World, a: Agent, act: Act, st: { progress: number; at?: [number, number] }): { done: boolean; out?: Outcome } {
   const tool = toolOf(w, act);
   const fields: Fields = { verb: "dig", inputs: [], tool: act.tool ?? null, gives: [] };
-  // soft ground a pace or two off, the first they find turning round
-  const spot = (st.at ??= softNear(w, a) ?? undefined);
-  if (!spot) return { done: true, out: outcome({ text: "The ground here couldn't be dug.", fields }) };
-  const [px, py] = spot;
+  // ground a pit can go into a pace or two off, the first they find turning round
+  const where = st.at ?? spotNear(w, a, 0.2, true);
+  if (typeof where === "string") return { done: true, out: outcome({ text: BARRED[where](groundWord(w, a.px, a.py)), fields }) };
+  const [px, py] = (st.at = where);
   const power = 0.15 + p(tool, "hard") * 0.4 + p(tool, "sharp") * 0.3 + p(tool, "long") * 0.3;
   st.progress += power * (1 + level(a.skills.digging ?? 0) * 0.1);
   if (!act.tool) a.needs.health = Math.max(0, a.needs.health - 0.05);
@@ -973,20 +1025,29 @@ export function plant(w: World, a: Agent, act: Act): Outcome {
   const x = kind(w, act.items[0]);
   const fields: Fields = { verb: "plant", inputs: act.items.slice(0, 1), gives: [] };
   if (!x || !count(a, x.id)) return outcome({ text: "They had nothing to plant.", fields });
-  // soft ground a pace or two off, clear of roots and stones, the first they find turning round
-  const spot = softNear(w, a);
-  if (!spot) return outcome({ text: "The ground was too hard here.", fields });
+  // any soil a pace or two off that nothing stands on, the first they find turning round: a seed goes in beside a
+  // bush or under a tree as well as anywhere, and whether it comes up is up to what it finds there
+  const spot = spotNear(w, a, 0.03, false);
+  if (typeof spot === "string") return outcome({ text: BARRED[spot](groundWord(w, a.px, a.py)), fields });
   const [px, py] = spot;
   takeItems(a, x.id);
+  const ground = INTO[groundWord(w, px, py)] ?? "the ground";
   if (p(x, "seed") < 0.4) {
     fields.effect = "buried";
-    return outcome({ text: `They pushed the ${x.name} into the dirt.`, uses: { [x.id]: 1 }, effect: "buried", fields });
+    return outcome({ text: `They pushed the ${x.name} into ${ground}.`, uses: { [x.id]: 1 }, effect: "buried", fields });
   }
-  mark(w, addThing(w, "sapling", px, py, { owner: a.id, stage: 0, item: x.id, born: w.t, hp: 5, maxHp: 5 }));
+  const t = addThing(w, "sapling", px, py, { owner: a.id, stage: 0, item: x.id, born: w.t, hp: 5, maxHp: 5 });
+  mark(w, t);
   fields.effect = "buried";
-  // done as well as it can be: whether it grows is up to the ground and the days
-  return outcome({ ok: true, text: `They pushed the ${x.name} into the soft ground${nearWater(w, a.x, a.y, 1) ? " near the water" : ""}.`, uses: { [x.id]: 1 }, effect: "buried", fields });
+  // done as well as it can be: whether it comes up is up to the ground and the days, and shows only then
+  return outcome({ ok: true, text: `They pushed the ${x.name} into ${ground}${nearWater(w, a.x, a.y, 1) ? " near the water" : ""}.`, uses: { [x.id]: 1 }, effect: "buried", fields, later: t.id });
 }
+// The ground a seed goes into, as they'd put it.
+const INTO: Record<string, string> = {
+  grassland: "the grassy soil", "forest floor": "the leaf litter of the forest floor", scrub: "the scrubby ground", marsh: "the marsh mud",
+  "bare ground": "the bare ground", sand: "the sand", "grass with outcrops": "the thin soil among the rocks", "bare rock": "a crack in the rock",
+  stream: "the wet ground by the stream", lake: "the wet ground by the lake", sea: "the wet ground by the sea",
+};
 
 export function eat(w: World, a: Agent, k: string): Outcome {
   const x = w.kinds[k];

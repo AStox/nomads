@@ -117,7 +117,7 @@ test("out in the rain rubbing sticks is soaked within the hour, and someone who 
   const start = { inv: { stick: 2, fiber: 1 }, at: null, flags: [] };
   // with no theory of why it failed, they would try again
   expect(plan(start, "make_fire", ctx(["rain"]))).not.toBeNull();
-  knows.unless = "rain";
+  knows.unless = ["rain"];
   expect(plan(start, "make_fire", ctx(["rain", "dark"]))).toBeNull();
   expect(plan(start, "make_fire", ctx(["dark"]))).not.toBeNull();
 });

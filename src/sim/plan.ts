@@ -1,5 +1,5 @@
 // GOAP over what each agent believes. Agents can only plan with things they've seen work.
-import type { Belief } from "./beliefs";
+import { bestGround, type Belief } from "./beliefs";
 import { THING_MATERIAL, p, type Registry } from "./materials";
 import { HUNTED } from "./fauna";
 
@@ -12,7 +12,7 @@ export type Ctx = {
   toxic: string[]; // kinds they believe make you sick
   store?: Record<string, number>; // what's kept in their home
   shared?: Record<string, number>; // what's in their camp's shared store
-  now?: string[]; // the conditions they're in (rain, dark, cold, wind), for what they believe won't work in them
+  now?: string[]; // the conditions they're in (rain, dark, cold, wind, the ground underfoot), for what they believe won't work in them
 };
 export type PlanStep = { op: string; arg?: string; key?: string };
 type Op = PlanStep & { cost: number; needs: string[]; makes: string[]; pre: (s: PState) => boolean; eff: (s: PState) => PState };
@@ -70,15 +70,18 @@ const BUILD_NEAR = 10;
 function beliefOp(b: Belief, ctx: Ctx): Op | null {
   const req = required(b), out = outputs(b, ctx);
   const f = b.fields;
-  const target = (f.verb === "strike" && f.target && !f.inputs.length) || f.verb === "throw" ? f.target ?? null : null;
-  // A shelter goes up at home, or next to someone they like, unless that's far off: then where they stand.
+  const target = (f.verb === "strike" && f.target && !f.inputs.length) || f.verb === "throw" || f.verb === "pour" ? f.target ?? null : null;
+  // A shelter goes up at home, or next to someone they like, unless that's far off: then where they stand. What's done
+  // to the ground is done on the ground it has gone best on for them, once they know one.
   const near = (k: string) => (ctx.dist[k] ?? Infinity) <= BUILD_NEAR;
-  const place = target ?? f.at ?? (f.builds !== "shelter" ? null : near("home") ? "home" : near("homesite") ? "homesite" : null);
-  const builds = f.builds ?? (f.effect === "cure" ? "cured" : null);
+  const ground = f.verb === "plant" || f.verb === "dig" ? bestGround(b) : null;
+  const place = target ?? f.at ?? (ground && ground in ctx.dist ? ground : null) ?? (f.builds !== "shelter" ? null : near("home") ? "home" : near("homesite") ? "homesite" : null);
+  const builds = f.builds ?? (f.effect === "cure" ? "cured" : f.effect === "watered" ? "watered" : null);
   if (!Object.keys(out).length && !builds) return null;
   // What they've come to think won't work in the conditions they're in, they don't plan on, however badly they need it:
-  // seeing it done in those conditions, or doing it, is what changes their mind.
-  if (b.unless && ctx.now?.includes(b.unless)) return null;
+  // seeing it done in those conditions, or doing it, is what changes their mind. Ground they think it fails on is only
+  // a bar if they'd be doing it there.
+  if (b.unless?.some((c) => ctx.now?.includes(c) && !(c.startsWith("ground:") && place?.startsWith("ground:")))) return null;
   if ((f.verb === "strike" || f.verb === "throw") && target && (b.rate ?? 0) <= 0 && b.wins === 0) return null;
   if (f.verb !== "strike" && f.verb !== "throw" && b.wins === 0) return null;
   if (f.verb === "eat") return null;
@@ -176,6 +179,7 @@ function goal(type: string, start: PState, ctx: Ctx): { done: (s: PState) => boo
   if (type === "build_shelter") return { done: has("shelter"), needs: ["shelter"] };
   if (type === "contain_fire") return { done: has("hearth"), needs: ["hearth"] };
   if (type === "plant") return { done: has("bush"), needs: ["bush"] };
+  if (type === "tend_plants") return { done: has("watered"), needs: ["watered"] };
   if (type === "cure") return { done: has("cured"), needs: ["cured"] };
   if (type === "put_on") return { done: has("worn"), needs: ["worn"] };
   if (type === "dig_pit") return { done: has("pit"), needs: ["pit"] };

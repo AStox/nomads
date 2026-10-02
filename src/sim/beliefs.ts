@@ -1,6 +1,6 @@
 // What each agent thinks happens when they do something, and the laws of the world those beliefs come from.
 import type { Fields, Outcome } from "./physics";
-import { log, meters, stageOf, type Agent, type World } from "./world";
+import { DAY, log, meters, stageOf, type Agent, type World } from "./world";
 import { canSee } from "./light";
 import { trace } from "./trace";
 
@@ -9,7 +9,8 @@ export type Belief = {
   fields: Fields;
   uses: Record<string, number>; // what it used up
   out: Record<string, number>; // what it produced
-  ticks: number; // how long it tends to take
+  ticks: number; // how long it tends to take to do
+  later?: number; // how long after doing it the result shows, once they've seen it come: a seed takes days to come up
   rate?: number; // damage per blow, for strikes
   tries: number;
   wins: number;
@@ -18,12 +19,20 @@ export type Belief = {
   t: number;
   spurious?: string; // a kind they wrongly think they need to hold
   law?: string;
-  // how it has gone for them in conditions anyone can see (rain, dark, cold, wind): tries and wins under each
+  // how it has gone for them in conditions anyone can see (rain, dark, cold, wind, and for what's done to the ground, the
+  // ground): tries and wins under each
   when?: Record<string, { tries: number; wins: number }>;
-  unless?: string; // a condition they've come to think it won't work in: their own theory of why it once failed
+  unless?: string[]; // conditions they've come to think it won't work in: their own theories of why it failed
 };
-// A condition, as a theory names it.
-export const CONDITION_WORDS: Record<string, string> = { rain: "in the rain", dark: "in the dark", cold: "in freezing cold", wind: "in a strong wind" };
+// A condition, as a theory names it: the weather and light anyone can see, and the ground underfoot.
+const WEATHER_WORDS: Record<string, string> = { rain: "in the rain", dark: "in the dark", cold: "in freezing cold", wind: "in a strong wind" };
+const ON_GROUND: Record<string, string> = { marsh: "in a marsh", scrub: "in scrub", "forest floor": "on the forest floor", stream: "by a stream", lake: "by a lake", sea: "by the sea" };
+export const groundKey = (word: string) => `ground:${word.replaceAll(" ", "_")}`;
+export const groundOfKey = (c: string) => (c.startsWith("ground:") ? c.slice(7).replaceAll("_", " ") : null);
+export const conditionWords = (c: string) => {
+  const g = groundOfKey(c);
+  return WEATHER_WORDS[c] ?? (g ? ON_GROUND[g] ?? `on ${g}` : c);
+};
 
 export const beliefKey = (f: Fields) =>
   [f.verb, f.inputs.join("+"), f.tool ?? "-", f.target ?? "-", f.at ?? "-", f.shape ?? "-"].join("|");
@@ -33,7 +42,11 @@ const an = (s: string) => (s.includes("'s ") ? s : /^[aeiou]/.test(s) ? `an ${s}
 const with_ = (w: World, tool?: string | null) => (tool ? `with ${an(nm(w, tool))}` : "with bare hands");
 const gives = (w: World, f: Fields) => f.gives.map((k) => nm(w, k)).join(" and ");
 
-export function sentence(w: World, f: Fields, ticks?: number): string {
+// How long after, in words: a seed takes days to come up.
+const laterWords = (t: number) => (t < DAY / 2 ? "some hours later" : t < DAY * 1.5 ? "about a day later" : `about ${Math.round(t / DAY)} days later`);
+const THING_WORD: Record<string, string> = { sapling: "young plant" };
+// later: how long after the result shows, for what they've seen come of it in time
+export function sentence(w: World, f: Fields, ticks?: number, later?: number): string {
   const time = ticks && ticks > 12 ? ` (about ${Math.max(1, Math.round((ticks * 5) / 60))} hours)` : "";
   const ins = f.inputs.map((k) => nm(w, k));
   const fireWord = ({ hearth: "a ringed fire", kiln: "a ringed fire heaped over with stone", forge: "a ringed charcoal fire" } as Record<string, string>)[f.at ?? ""] ?? "a fire";
@@ -58,7 +71,13 @@ export function sentence(w: World, f: Fields, ticks?: number): string {
       return f.gives.length ? `Holding ${ins.join(" and ")} in ${fireWord}${f.tool ? `, blowing air at it with ${an(nm(w, f.tool))},` : ""} makes ${an(gives(w, f))}.` : `Fire doesn't change ${ins.join(" or ")}.`;
     case "wet":
       if (f.effect === "nibble") return `Something in the water tugs at ${an(ins[0])} dangled in it.`;
+      if (f.gives[0]?.startsWith("full:")) return `Dipping ${an(ins[0])} in the water fills it.`;
       return f.gives.length ? `Dipping ${an(ins[0])} in the water ${f.gives.includes("fish") ? "can catch a fish" : `gives ${gives(w, f)}`}.` : `Water does nothing to ${ins[0]}.`;
+    case "pour": {
+      if (!f.target) return `Pouring out ${an(ins[0])} soaks the ground.`;
+      const onto = an(THING_WORD[f.target] ?? f.target.replaceAll("_", " "));
+      return later ? `Pouring ${an(ins[0])} over ${onto} helps it grow.` : `Pouring ${an(ins[0])} over ${onto} soaks the ground round it.`;
+    }
     case "shape":
       return `Pressing ${ins[0]} into a ${f.shape} makes ${an(gives(w, f))}.`;
     case "place":
@@ -74,7 +93,7 @@ export function sentence(w: World, f: Fields, ticks?: number): string {
       if (f.builds === "shelter") return f.at === "home" ? `Building ${ins.join(", ")} into the shelter they have makes it bigger or better.` : `Leaning and stacking ${ins.join(", ")} makes a shelter.`;
       return `Stacking ${ins.join(", ")} makes a pile.`;
     case "plant":
-      return f.builds ? `${an(ins[0])[0].toUpperCase() + an(ins[0]).slice(1)} pushed into the ground grows into ${f.builds === "grass" ? "grass that bears grain" : `a ${f.builds}`}.` : `They pushed ${an(ins[0])} into the ground.`;
+      return f.builds ? `${an(ins[0])[0].toUpperCase() + an(ins[0]).slice(1)} pushed into the ground grows into ${f.builds === "grass" ? "grass that bears grain" : `a ${f.builds}`}${later ? `, ${laterWords(later)}` : ""}.` : `They pushed ${an(ins[0])} into the ground.`;
     case "eat":
       if (f.effect === "sick") return `Eating ${ins[0]} can make you sick.`;
       if (f.effect === "cure") return `Eating ${ins[0]} helps when you're sick.`;
@@ -91,8 +110,8 @@ export function sentence(w: World, f: Fields, ticks?: number): string {
   return `${f.verb} ${ins.join(", ")}`;
 }
 export const beliefText = (w: World, b: Belief) =>
-  sentence(w, b.fields, b.ticks) + (b.spurious ? ` They're convinced it only works if they hold ${an(nm(w, b.spurious))}.` : "")
-  + (b.unless ? ` They think it won't work ${CONDITION_WORDS[b.unless]}.` : "");
+  sentence(w, b.fields, b.ticks, b.later) + (b.spurious ? ` They're convinced it only works if they hold ${an(nm(w, b.spurious))}.` : "")
+  + (b.unless?.length ? ` They think it won't work ${b.unless.map(conditionWords).join(" or ")}.` : "");
 
 // Useful enough to remember: it made something, built something, or had a clear effect.
 const useful = (o: Outcome) => o.ok || !!o.effect || !!o.fields.gives.length || (!!o.fields.builds && o.fields.builds !== "pile" && o.fields.builds !== "ring");
@@ -100,6 +119,15 @@ const useful = (o: Outcome) => o.ok || !!o.effect || !!o.fields.gives.length || 
 const BUILT: Record<string, string> = { bush: "planting", worn: "clothing", cured: "a cure", pile: "", ring: "", stored: "", fed_fire: "" };
 // What a new law was about, in a word or two: what it built, else what it gave.
 const lawTag = (w: World, f: Fields) => (f.builds ? BUILT[f.builds] ?? f.builds.replaceAll("_", " ") : "") || (f.gives[0] ? nm(w, f.gives[0]) : undefined);
+// A law of the world, the first time anyone sees it hold. later: for what only shows in time, how long it took.
+export function found(w: World, a: Agent, f: Fields, ticks: number, ruled = false, newKinds: string[] = [], later?: number) {
+  const key = beliefKey(f);
+  const law = (w.laws[key] = { id: `L${Object.keys(w.laws).length + 1}`, key, text: sentence(w, f, ticks, later), verb: f.verb, source: ruled ? "jev" : "physics", by: a.id, t: w.t, result: { gives: f.gives, builds: f.builds, effect: f.effect, target: f.target } });
+  // An invention already has its own milestone, and a second way to make the same thing isn't a new one.
+  const tag = newKinds.length ? undefined : lawTag(w, f);
+  log(w, "law", [a.id], a, `${a.name} found out something new about the world: ${law.text}`, tag && !w.events.some((e) => e.kind === "law" && e.tag === tag) ? tag : undefined);
+  return law;
+}
 
 export function record(w: World, a: Agent, out: Outcome, ticks: number, how: Belief["how"] = "discovered", from?: Agent) {
   const f = out.fields;
@@ -111,13 +139,11 @@ export function record(w: World, a: Agent, out: Outcome, ticks: number, how: Bel
   }
   // Watchers learn from the same outcome, but only the maker made it first.
   if (how === "discovered") for (const k of out.newKinds) log(w, "invent", [a.id], a, `${a.name} made the first ${nm(w, k)} anyone has ever made.`, nm(w, k));
+  // Done, with what comes of it still to show (a seed in the ground, a seedling watered): it counts as tried now, and as
+  // working or not when the result shows (sim.ts came), not before.
+  const pending = !!out.later;
   let law = w.laws[key];
-  if (!law && out.ok) {
-    law = w.laws[key] = { id: `L${Object.keys(w.laws).length + 1}`, key, text: sentence(w, f, ticks), verb: f.verb, source: out.ruled ? "jev" : "physics", by: a.id, t: w.t, result: { gives: f.gives, builds: f.builds, effect: f.effect, target: f.target } };
-    // An invention already has its own milestone, and a second way to make the same thing isn't a new one.
-    const tag = out.newKinds.length ? undefined : lawTag(w, f);
-    log(w, "law", [a.id], a, `${a.name} found out something new about the world: ${law.text}`, tag && !w.events.some((e) => e.kind === "law" && e.tag === tag) ? tag : undefined);
-  }
+  if (!law && out.ok && !pending) law = found(w, a, f, ticks, out.ruled, out.newKinds);
   let b = a.beliefs[key];
   const isNew = !b;
   b ??= a.beliefs[key] = { key, fields: f, uses: out.uses, out: out.gives, ticks, tries: 0, wins: 0, how, from: from?.id, t: w.t };
@@ -127,12 +153,12 @@ export function record(w: World, a: Agent, out: Outcome, ticks: number, how: Bel
   if (Object.keys(out.gives).length) b.out = out.gives;
   if (out.ok) b.uses = out.uses;
   b.tries++;
-  if (out.ok) b.wins++;
+  if (out.ok && !pending) b.wins++;
   b.ticks = b.tries === 1 ? ticks : b.ticks * 0.7 + ticks * 0.3;
   if (out.numbers?.rate) b.rate = out.numbers.rate;
   if (law) b.law = law.id;
   if (isNew && how === "discovered" && law && law.by !== a.id) log(w, "discover", [a.id], a, `${a.name} worked out on their own: ${sentence(w, f, ticks)}`);
-  if (isNew) superstition(w, a, b);
+  if (isNew && !pending) superstition(w, a, b);
   trace("belief", isNew ? "learned" : "reinforced", { key, how, tries: b.tries, wins: b.wins, spurious: b.spurious }, a.id);
   return b;
 }
@@ -161,10 +187,12 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number, now
         log(w, "learn", [b.id], b, `${b.name} watched ${doer.name} do it without ${an(nm(w, mine.spurious))} and realized it was never needed.`);
         delete mine.spurious;
       }
-      // Whoever thinks it can't be done in the rain, and watches it done in the rain, thinks again.
-      if (mine.unless && out.ok && now.includes(mine.unless)) {
-        log(w, "theory", [b.id], b, `${b.name} watched ${doer.name} do it ${CONDITION_WORDS[mine.unless]}, and stopped thinking it couldn't be done: ${sentence(w, mine.fields)}`);
-        delete mine.unless;
+      // Whoever thinks it can't be done in the rain, and watches it done in the rain, thinks again; what only shows
+      // later (a seed going into the sand) shows nothing yet.
+      const wrong = out.ok && !out.later ? mine.unless?.filter((c) => now.includes(c)) ?? [] : [];
+      if (wrong.length) {
+        log(w, "theory", [b.id], b, `${b.name} watched ${doer.name} do it ${wrong.map(conditionWords).join(" and ")}, and stopped thinking it couldn't be done: ${sentence(w, mine.fields)}`);
+        rethink(mine, wrong);
       }
       continue;
     }
@@ -179,11 +207,27 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number, now
   }
 }
 
+// The ground it has gone best on for them, of the ground it has worked on at all: where they'd go to do it again.
+export function bestGround(b: Belief) {
+  let best: string | null = null, rate = -1;
+  for (const [c, s] of Object.entries(b.when ?? {})) {
+    const r = (s.wins + 1) / (s.tries + 2);
+    if (c.startsWith("ground:") && s.wins > 0 && r > rate) { best = c; rate = r; }
+  }
+  return best;
+}
+
+// A theory they've given up: the conditions it named, struck off.
+export function rethink(b: Belief, conds: string[]) {
+  b.unless = b.unless?.filter((c) => !conds.includes(c));
+  if (!b.unless?.length) delete b.unless;
+}
+
 export function teach(w: World, teacher: Agent, learner: Agent, key: string) {
   const b = teacher.beliefs[key];
   if (!b) return;
-  // the teacher's theory of when it fails comes with it; their record of trying it doesn't
-  learner.beliefs[key] = { ...b, fields: { ...b.fields }, how: "taught", from: teacher.id, t: w.t, tries: 0, wins: Math.min(1, b.wins), when: undefined };
+  // the teacher's theories of when it fails come with it, and how long it takes to show; their record of trying it doesn't
+  learner.beliefs[key] = { ...b, fields: { ...b.fields }, unless: b.unless && [...b.unless], how: "taught", from: teacher.id, t: w.t, tries: 0, wins: Math.min(1, b.wins), when: undefined };
   trace("belief", "taught", { key, from: teacher.id, spurious: b.spurious }, learner.id);
 }
 

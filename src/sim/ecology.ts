@@ -1,6 +1,6 @@
 // The world keeps moving on its own: weather, fire, plants, animals, rot, and sickness.
 import { THING_MATERIAL, clamp01, ensure, p } from "./materials";
-import { dropPile, fireHeat, mark, nearFire, newKinds, removeThing, residentsOf, shelterName } from "./physics";
+import { dropPile, fireHeat, groundWord, mark, nearFire, newKinds, removeThing, residentsOf, shelterName } from "./physics";
 import { see } from "./beliefs";
 import {
   DAY, H, TILE_M, W, Tile, addThing, dayOfYear, groundOf, log, meters, nearWater, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
@@ -9,8 +9,9 @@ import {
 import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
-import { enrich, settle } from "./soil";
-import { SIZE, TREES, rockAt } from "../terrain/flora";
+import { enrich, settle, soilWaterAt } from "./soil";
+import { skyShare } from "./light";
+import { SIZE, TREES, rockAt, smooth } from "../terrain/flora";
 import { fitHere, growth, pickHere } from "./plants";
 import { ripening, warmRate } from "./cues";
 import { streamNow } from "./streams";
@@ -204,6 +205,7 @@ function fire(w: World, live: Thing[]) {
         removeThing(w, t);
         enrich(w, t.px, t.py, 0.03);
         log(w, "fire_out", t.owner ? [t.owner] : [], t, rainy(w) ? "The rain put out a campfire." : "A campfire burned out.");
+        fireOutFor(w, t, rainy(w));
         continue;
       }
       if (!t.contained) sources.push({ t, heat: Math.min(1, (t.hp ?? 0) / 150) * 0.6, by: t.owner });
@@ -258,10 +260,20 @@ function plants(w: World, live: Thing[]) {
     } else if (t.kind === "dead_bush" && Math.random() < 1 / 4000 && Math.random() < growth(w, t.px, t.py)) {
       setKind(w, t, "bush"); t.species = "berry"; t.n = 0; t.hp = BERRY_HP; t.maxHp = BERRY_HP; mark(w, t);
     } else if (t.kind === "sapling") {
-      // a tree takes four times as long to grow as a bush
-      const grew = (1 / (3 * DAY)) * (treeOf(t) ? 0.25 : 1) * growth(w, t.px, t.py);
+      // A seedling lives on what its spot gives it: the ground it stands in (its niche, light and soil, the same as decides
+      // where seed takes root), and water, its shallow roots wanting the soil moister than a grown plant does, with what's
+      // poured round it soaking in. It grows as the warmth lets it, a tree four times slower than a bush; short of what it
+      // needs it wilts, and wilted long enough it dies. Nothing it asks of the ground is that no other plant be near.
+      t.fit ??= fitHere(w, nicheOf(t), t.px, t.py);
+      const drink = smooth(0.35, 0.75, soilWaterAt(w, t.px, t.py) + (t.water ?? 0));
+      const grew = (1 / (3 * DAY)) * (treeOf(t) ? 0.25 : 1) * growth(w, t.px, t.py) * (0.4 + 0.6 * drink) * (0.5 + 0.5 * t.fit);
       t.stage = (t.stage ?? 0) + grew;
       if (Math.round((t.stage ?? 0) * 20) !== Math.round(((t.stage ?? 0) - grew) * 20)) { t.size = Math.round((0.3 + t.stage * 0.5) * 100) / 100; mark(w, t); }
+      if (w.t % 12 === 0) {
+        t.hp = Math.min(t.maxHp ?? 5, (t.hp ?? 5) + 0.25 * (t.fit * drink - 0.25));
+        if (t.water && (t.water *= 0.97) < 0.02) delete t.water;
+        if (t.hp <= 0) { wither(w, t, drink); continue; }
+      }
       if (t.stage >= 1) matured(w, t);
     } else if ((t.kind === "stump" || t.kind === "burnt_stump") && t.until! <= w.t && warm > 0.3) {
       // A new stem comes up from the old roots.
@@ -304,10 +316,24 @@ const treeOf = (t: Thing) => (TREES as readonly string[]).includes(t.species ?? 
 function seedNear(w: World, t: Thing, species: string, near: number, far: number) {
   const a = Math.random() * Math.PI * 2, d = (near + Math.random() * (far - near)) / TILE_M, px = t.px + Math.cos(a) * d, py = t.py + Math.sin(a) * d;
   if (!dryAt(w, px, py) || anyAround(w, px, py, 2, ["tree", "bush", "sapling", "boulder", "structure", "dead_bush", "stump", "burnt_stump"])) return;
-  if (Math.random() > fitHere(w, species, px, py)) return;
-  mark(w, addThing(w, "sapling", px, py, species === "berry" ? { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5 } : { stage: 0, species, born: w.t, hp: 5, maxHp: 5 }));
+  const fit = fitHere(w, species, px, py);
+  if (Math.random() > fit) return;
+  mark(w, addThing(w, "sapling", px, py, species === "berry" ? { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5, fit } : { stage: 0, species, born: w.t, hp: 5, maxHp: 5, fit }));
+}
+// What a seedling will grow into, as the niches name it: a tree's seedling its own kind, a nut an oak, grain grass.
+const nicheOf = (t: Thing) => (treeOf(t) ? (t.species && t.species !== "berry" ? t.species : "oak") : t.item === "grain" ? "grass" : "berry");
+// A seedling wilted away: gone, and whoever put it in the ground or watered it learns why, as they'd see it: the ground
+// dried out round it, too little light under the trees, or ground that was no place for it.
+function wither(w: World, t: Thing, drink: number) {
+  removeThing(w, t);
+  const ground = groundWord(w, t.px, t.py);
+  const why = drink < 0.3 ? `the ${ground} dried out round it` : skyShare(w, t.px, t.py) < 0.4 ? `it got too little light under the trees on the ${ground}` : `${ground} was no ground for it`;
+  const owner = w.agents.find((a) => a.id === t.owner);
+  if (owner) log(w, "grow", [owner.id], t, `The ${w.kinds[t.item ?? ""]?.name ?? t.item ?? "seed"} ${owner.name} pushed into the ${ground} withered: ${why}.`);
+  witheredFor(w, t, `It withered: ${why}.`);
 }
 function matured(w: World, t: Thing) {
+  delete t.fit; delete t.water;
   if (treeOf(t)) {
     // a nut grows into an oak; a tree's seedling into its own kind
     const from = t.item;
@@ -316,8 +342,8 @@ function matured(w: World, t: Thing) {
     if (from && t.owner) {
       log(w, "grow", [t.owner], t, `The ${w.kinds[from]?.name ?? from} ${w.agents.find((a) => a.id === t.owner)?.name} pushed into the ground grew into a young tree.`);
       see(w, t, `grows:${from}`, `A ${w.kinds[from]?.name ?? from} in the ground can grow into a tree.`, 80);
-      grewFor(w, t.owner, from, t);
     }
+    grewFor(w, t, "tree");
     return;
   }
   const from = t.item ?? "berry";
@@ -328,19 +354,24 @@ function matured(w: World, t: Thing) {
     if (t.owner) {
       log(w, "grow", [t.owner], t, `The grain ${w.agents.find((a) => a.id === t.owner)?.name} sowed came up as grass.`);
       see(w, t, "grows:grain", "Grain pushed into the ground comes up as grass that bears more grain.", 80);
-      grewFor(w, t.owner, from, t);
     }
+    grewFor(w, t, "grass");
     return;
   }
   setKind(w, t, "bush"); t.species = "berry"; t.n = 1; t.hp = BERRY_HP; t.maxHp = BERRY_HP; t.size = 0.9; delete t.stage;
   mark(w, t);
   log(w, "grow", t.owner ? [t.owner] : [], t, t.owner ? `The ${w.kinds[from]?.name ?? from} ${w.agents.find((a) => a.id === t.owner)?.name} pushed into the ground grew into a berry bush.` : "A new berry bush sprang up.");
   see(w, t, `grows:${from}`, `A ${w.kinds[from]?.name ?? from} in the ground can grow into a berry bush.`, 80);
-  if (t.owner) grewFor(w, t.owner, from, t);
+  grewFor(w, t, "bush");
 }
-// The planter connects planting to the bush, whenever they see it.
-export let grewFor: (w: World, owner: string, from: string, at: Thing) => void = () => {};
+// What came of a seedling, for whoever is waiting to see (sim.ts): it came up as a bush, a tree or grass, or it withered.
+export let grewFor: (w: World, t: Thing, builds: string) => void = () => {};
 export const onGrew = (fn: typeof grewFor) => (grewFor = fn);
+export let witheredFor: (w: World, t: Thing, why: string) => void = () => {};
+export const onWithered = (fn: typeof witheredFor) => (witheredFor = fn);
+// A fire gone out, for whoever was keeping it: rained out, or burned down to nothing.
+export let fireOutFor: (w: World, t: Thing, rained: boolean) => void = () => {};
+export const onFireOut = (fn: typeof fireOutFor) => (fireOutFor = fn);
 
 // ---------- rot, wear, weathering ----------
 function decay(w: World, live: Thing[]) {

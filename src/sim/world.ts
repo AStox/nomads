@@ -12,7 +12,7 @@ export const W = TILES;
 export const H = TILES;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export { YEAR_DAYS }; // the sky's: a year is the sun's round
-export const VERSION = 15;
+export const VERSION = 16;
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -45,6 +45,7 @@ export type Thing = {
   scarred?: number; resin?: number; bark?: number; // when a tree was last cut into, resin beaded on it, bark peeled off it
   covered?: boolean; charcoal?: number; air?: number; heat?: number; // fires: closed over, charcoal left, air blown in until, heat level
   shared?: string; given?: Record<string, number>; // a store a camp treats as its own, and who put how much in
+  fit?: number; water?: number; // a seedling's: how well its spot suits its kind, and water poured round it, soaking away
 };
 export type Stack = { k: string; hp: number; born: number };
 export type AnimalSpecies = "deer" | "wolf" | "rabbit" | "heron" | "gull" | "crow" | "eagle" | "fish" | "butterfly";
@@ -120,7 +121,7 @@ export type Relationship = {
   met: number;
 };
 
-export type Verb = "strike" | "rub" | "join" | "heat" | "wet" | "shape" | "place" | "plant" | "eat" | "wear" | "throw" | "dig";
+export type Verb = "strike" | "rub" | "join" | "heat" | "wet" | "shape" | "place" | "plant" | "pour" | "eat" | "wear" | "throw" | "dig";
 // One concrete attempt: which verb, with which held items, on what.
 export type Act = {
   verb: Verb;
@@ -162,6 +163,8 @@ export type Agent = {
   pregnant: { father: string; due: number } | null;
   // needs they keep failing to meet by their own efforts: how many tries in a row have come to nothing
   struggles?: Partial<Record<"food" | "warmth" | "energy", number>>;
+  // what they've done whose result is still to show: a seed in the ground, a seedling they watered
+  waiting?: Waiting[];
   home: string | null; // structure id
   rel: Record<string, Relationship>;
   memory: string[];
@@ -178,6 +181,8 @@ export type Agent = {
   near: Record<string, number>; // ticks spent close to each person today
   customs: Record<string, number>; // spoken customs they've heard, custom id -> when
 };
+// Something done that only shows later: the belief acted on, the thing it will show in, when, and the conditions then.
+export type Waiting = { key: string; thing: string; t: number; now: string[] };
 
 // The five ways a camp can answer what someone did. Which acts get which answer is up to the camp's history.
 export const RESPONSES = {

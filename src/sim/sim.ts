@@ -1,16 +1,16 @@
 import {
-  DAY, H, REACH, TILE_M, W, clock, isNight, shoreOf, level, log, meters, reachOf, stageOf,
-  type Act, type Agent, type Animal, type BondKind, type Step, type Thing, type World,
+  DAY, H, REACH, TILE_M, W, clock, dryAt, isNight, shoreOf, level, log, meters, reachOf, stageOf,
+  type Act, type Agent, type Animal, type BondKind, type Step, type Thing, type Waiting, type World,
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
 import {
   airy, applyRuling, arrowy, beside, count, counts, shooting, stave, digTick, diggable, eat, fireKind, force, giveItems, greasy, heat, homeOf, join, mark, nearFire, openWater, place as placeItems, plant,
-  fireHours, hoursToDawn, leaveHome, raining, reaches, removeThing, residentsOf, rubTick, shape, sheltered, shelterName, stash, strikeDamage, strikeTick, takeItems, throwTick, unstash, wearIt, wet, type Fields, type Outcome,
+  fireHours, groundWord, hoursToDawn, leaveHome, pour, raining, reaches, removeThing, residentsOf, rubTick, shape, sheltered, shelterName, stash, strikeDamage, strikeTick, takeItems, throwTick, unstash, wearIt, wet, type Fields, type Outcome,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
-import { CONDITION_WORDS, beliefKey, beliefText, record, see, sentence, teach, watchers, type Belief } from "./beliefs";
+import { beliefKey, beliefText, bestGround, conditionWords, found, groundKey, groundOfKey, record, rethink, see, sentence, teach, watchers, type Belief } from "./beliefs";
 import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
-import { burnedHomes, ecology, onGrew, trample, trapped, tread } from "./ecology";
+import { burnedHomes, ecology, onFireOut, onGrew, onWithered, trample, trapped, tread } from "./ecology";
 import { FAUNA, HUNTED } from "./fauna";
 import { attacked } from "./animals";
 import { chooseTinker, decide, describeKind, fadeBonds, grudge, nameIt, newRel, reflect, respond, rule, sample, theorize, type Felt } from "./brain";
@@ -41,6 +41,8 @@ export const GOALS: Record<string, string> = {
   tinker: "Experiment: try things with what's at hand to see what happens",
   "experiment:shelter": "Try to put together some kind of shelter from what's at hand",
   "experiment:home": "Try to make their shelter warmer or sturdier with what's at hand",
+  tend_plants: "See to the young plants they've put in the ground",
+  lay_by_wood: "Gather wood to keep the fire going through the night",
   "experiment:fire": "Try to find a way to make fire",
   "experiment:tool": "Try to make a better tool",
   "experiment:food": "Try new ways to get food",
@@ -114,6 +116,7 @@ const THING_PLACES: Record<string, Place> = {
   bush: { kinds: ["bush"], ok: (t) => (t.n ?? 0) > 0 && !t.burning },
   mushroom: { kinds: ["mushroom"] }, herb: { kinds: ["herb"] }, stick: { kinds: ["stick"] }, stone: { kinds: ["stone"] },
   reeds: { kinds: ["reeds"], ok: (t) => !t.burning }, clay: { kinds: ["clay"] }, tree: { kinds: ["tree"], ok: (t) => !t.burning },
+  sapling: { kinds: ["sapling"] },
   boulder: { kinds: ["boulder"] }, stump: { kinds: ["stump"] }, dead_bush: { kinds: ["dead_bush"] }, fallen_log: { kinds: ["fallen_log"], ok: (t) => !t.burning },
   // Anything on fire is a fire you can take a flame from or warm up by.
   fire: { kinds: [] },
@@ -173,8 +176,20 @@ function spot(w: World, a: Agent, kind: string): Spot | null {
   const ok = (t: Thing) => reachable(w, a, t.x, t.y);
   if (kind.startsWith("item:")) { const k = kind.slice(5); return thingSpot(nearestThing(w, a.px, a.py, ["item"], (t) => t.item === k && ok(t), SEARCH)); }
   if (kind === "fire") return thingSpot(nearest(a, liveThings(w), (t) => (t.kind === "fire" || (t.burning ?? 0) > 0.3) && meters(a, t) <= SEARCH && ok(t)));
+  const g = groundOfKey(kind);
+  if (g) return groundNear(w, a, g);
   const f = THING_PLACES[kind];
   return f ? thingSpot(nearestThing(w, a.px, a.py, f.kinds, (t) => (!f.ok || f.ok(t, w)) && ok(t), SEARCH)) : null;
+}
+// The nearest ground of a kind they could walk to, by what it looks like underfoot, looking out in rings to 100 m.
+function groundNear(w: World, a: Agent, word: string): Spot | null {
+  for (const r of [0, 5, 10, 20, 35, 55, 80, 100])
+    for (let k = 0; k < (r ? 12 : 1); k++) {
+      const ang = (k / 12) * Math.PI * 2, px = a.px + (Math.cos(ang) * r) / TILE_M, py = a.py + (Math.sin(ang) * r) / TILE_M;
+      if (px < 0 || py < 0 || px >= W || py >= H || !dryAt(w, px, py) || !reachable(w, a, Math.floor(px), Math.floor(py))) continue;
+      if (groundWord(w, px, py) === word) return { px, py, reach: 1 };
+    }
+  return null;
 }
 // The place, if they're already close enough to it to work there (give or take `slack` meters).
 const within = (w: World, a: Agent, kind: string, slack = 0) => { const s = spot(w, a, kind); return s && meters(a, s) <= s.reach + slack ? s : null; };
@@ -220,6 +235,13 @@ export function ctxFor(w: World, a: Agent): Ctx {
   around(w, a.px, a.py, 600, ["item"], (t, m) => { if (t.item && reachable(w, a, t.x, t.y) && (!blind || canSee(w, a, t, SEARCH))) d[`item:${t.item}`] = Math.min(d[`item:${t.item}`] ?? 99, m / STEP_M); });
   const target = agentById(w, a.goal?.target);
   if (target) d.agent = meters(a, target) / STEP_M;
+  // the ground what they do to the ground has gone best on for them, wherever that's nearest
+  for (const b of Object.values(a.beliefs)) {
+    const best = bestGround(b);
+    if (!best || best in d) continue;
+    const s = spot(w, a, best);
+    if (s) d[best] = meters(a, s) / STEP_M;
+  }
   const toxic = Object.values(a.beliefs).filter((b) => b.fields.verb === "eat" && b.fields.effect === "sick").map((b) => b.fields.inputs[0]);
   const home = homeOf(w, a);
   const store: Record<string, number> = {};
@@ -270,6 +292,17 @@ function planGoal(w: World, a: Agent, type: string, target?: string, ctx = ctxFo
   if (type === "tend") return [{ op: "goto", arg: "agent", progress: 0 }, { op: "tend", arg: target, progress: 0 }];
   if (type === "flee" || type === "fight" || type === "defend") return mk(type === "flee" ? "flee" : "fight", target);
   if (type === "store_food" && homeOf(w, a)) return [{ op: "goto", arg: "home", progress: 0 }, { op: "stash", progress: 0 }];
+  if (type === "tend_plants") {
+    // what they know works for a wilting plant, or else over to it to try what they're holding
+    const known = plan(pstate(w, a), "tend_plants", ctx);
+    if (known) return known.map((s) => ({ op: s.op, arg: s.arg, key: s.key, progress: 0 }));
+    return "sapling" in ctx.dist ? [{ op: "goto", arg: "sapling", progress: 0 }, ...mk("tinker", "food")] : null;
+  }
+  if (type === "lay_by_wood") {
+    const fuel = Object.values(a.beliefs).find((b) => b.fields.builds === "fed_fire" && b.wins > 0)?.fields.inputs[0];
+    const sub = fuel ? plan(pstate(w, a), `have:${fuel}:3`, ctx) : null;
+    return sub ? sub.map((s) => ({ op: s.op, arg: s.arg, key: s.key, progress: 0 })) : null;
+  }
   if (type === "tend_fire") {
     // Whoever has seen wood laid on a fire keep it going that way; anyone else tries what they have on it.
     const known = plan(pstate(w, a), "tend_fire", ctx);
@@ -400,6 +433,12 @@ function feasible(w: World, a: Agent) {
   const left = fire?.thing?.kind === "fire" && meters(a, fire) <= FIRESIDE ? fireHours(fire.thing) : Infinity;
   const dying = left < 4 || (isNight(w.t) && left < hoursToDawn(w.t));
   add("tend_fire", dying && holding && can("tend_fire"));
+  // A young plant of theirs wilting where they can get to it: something to see to, by what they know or by trying things.
+  const wilting = nearestThing(w, a.px, a.py, ["sapling"], (t) => t.owner === a.id && (t.hp ?? 5) < (t.maxHp ?? 5) * 0.8, 100);
+  add("tend_plants", !!wilting && !dark && (holding || can("tend_plants")));
+  // Someone who has watched a fire burn down with nothing at hand to feed it gets wood in before night falls.
+  const fuel = a.facts.fuel_at_hand ? believes.find((b) => b.fields.builds === "fed_fire" && b.wins > 0)?.fields.inputs[0] : undefined;
+  add("lay_by_wood", !!fuel && !dark && isNight(w.t + DAY / 6) && !!fire && meters(a, fire) <= FIRESIDE && count(a, fuel) < 3 && can("lay_by_wood"));
   add("build_shelter", builds("shelter") && shelterWork(w, a, home) && can("build_shelter"));
   const site = homesite(w, a);
   if (site && home) add("move_home", builds("shelter") && can("move_home"));
@@ -521,6 +560,7 @@ export function actText(w: World, act: Act): string {
       return items.length >= 3 ? `Lean and stack ${what} against each other here` : `Set down ${what} here`;
     }
     case "plant": return `Push the ${items[0]} into the ground`;
+    case "pour": return act.target?.kind ? `Pour the water from the ${nm(w, w.kinds[act.items[0]]?.parts?.[0] ?? act.items[0])} over the young plant` : `Pour out the ${items[0]}`;
     case "wear": return `Wrap the ${items[0]} around themselves`;
     case "eat": return `Eat the ${items[0]}`;
     case "throw": return act.tool ? `Shoot the ${items[0]} at the ${act.target?.kind} with the ${nm(w, act.tool)}` : `Throw the ${items[0]} at the ${act.target?.kind}`;
@@ -538,7 +578,7 @@ const SKILL: Record<string, (act: Act, w: World) => string> = {
     const ks = act.items.map((k) => w.kinds[k]);
     return ks.some((k) => p(k, "metal") >= 0.3) ? "smithing" : ks.some((k) => p(k, "plastic") > 0.5) ? "pottery" : ks.some((k) => p(k, "insulating") >= 0.5 && p(k, "flexible") >= 0.5) ? "leatherworking" : ks.some((k) => p(k, "edible") > 0) ? "cooking" : "charcoal burning";
   },
-  wet: () => "fishing", shape: () => "pottery", place: () => "building", plant: () => "farming", wear: () => "crafting", eat: () => "foraging",
+  wet: () => "fishing", shape: () => "pottery", place: () => "building", plant: () => "farming", pour: () => "farming", wear: () => "crafting", eat: () => "foraging",
   throw: () => "throwing", dig: () => "digging",
 };
 function gain(w: World, a: Agent, skill: string, n: number) {
@@ -547,7 +587,7 @@ function gain(w: World, a: Agent, skill: string, n: number) {
   if (level(a.skills[skill]) > before) log(w, "level", [a.id], a, `${a.name} got better at ${skill} (level ${level(a.skills[skill])}).`);
 }
 
-const DURATION: Record<string, number> = { join: 8, heat: 8, wet: 10, shape: 6, place: 3, plant: 3, wear: 2 };
+const DURATION: Record<string, number> = { join: 8, heat: 8, wet: 10, shape: 6, place: 3, plant: 3, pour: 2, wear: 2 };
 const pendingRulings = new Set<string>();
 const namingNow = new Set<string>();
 const rulingKey = (act: Act) => `rule|${actSig(act)}`;
@@ -633,6 +673,17 @@ function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
     const r = throwTick(w, a, act, s);
     return r.done ? r.out! : "wait";
   }
+  // water is poured over a young plant, walked over to first
+  if (act.verb === "pour" && act.target?.kind) {
+    act.target.thing ??= nearestThing(w, a.px, a.py, [act.target.kind], (x) => reachable(w, a, x.x, x.y), 25)?.id;
+    const t = thingById(w, act.target.thing);
+    if (!t) return "the young plant was gone";
+    if (meters(a, t) > reachOf(t) + 0.5) {
+      a.status = "Walking over to the young plant";
+      if ((s.tries = (s.tries ?? 0) + 1) > 40) return "couldn't get to the young plant";
+      return stepToward(w, a, t.px, t.py, reachOf(t)) === "stuck" ? "couldn't get to the young plant" : "wait";
+    }
+  }
   if (act.at && act.at !== "home" && !(act.at === "water" ? openWater(w, a) : within(w, a, act.at, 1))) return `not at the ${act.at}`;
   if (act.verb !== "eat" && fumbles(w, a)) return "wait";
   a.status = actText(w, act);
@@ -668,6 +719,7 @@ function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
     case "shape": return shape(w, a, act);
     case "place": return placeItems(w, a, act);
     case "plant": return plant(w, a, act);
+    case "pour": return pour(w, a, act);
     case "wear": return wearIt(w, a, act);
     case "eat": return eat(w, a, act.items[0]);
   }
@@ -675,7 +727,8 @@ function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
 }
 const rulingsAt = new Map<number, number>();
 
-// Conditions anyone can see they're working in, which might be why something works one time and not another.
+// Conditions anyone can see they're working in, which might be why something works one time and not another; and for
+// what's done to the ground (planting, digging, watering), the ground itself, which tells as much as the weather does.
 // hint: what the outcome would say if this were the reason, for the offline guess (Jev reads the outcome itself)
 const CONDITIONS: Record<string, { now: (w: World, a: Agent) => boolean; words: string; hint: RegExp }> = {
   rain: { now: (w, a) => raining(w) && !sheltered(w, a), words: "It was raining and there was nothing over their heads", hint: /damp|wet|rain|soak/ },
@@ -683,42 +736,103 @@ const CONDITIONS: Record<string, { now: (w: World, a: Agent) => boolean; words: 
   cold: { now: (w, a) => airOn(w, a).feels < 0, words: "It was freezing", hint: /froze|frozen|freezing|ice/ },
   wind: { now: (w, a) => airOn(w, a).wind > 8, words: "A strong wind was blowing", hint: /wind|blew|gust/ },
 };
-export const conditionsNow = (w: World, a: Agent) => Object.keys(CONDITIONS).filter((c) => CONDITIONS[c].now(w, a));
+const GROUND_VERBS: Record<string, true> = { plant: true, dig: true, pour: true };
+// verb: what they did, which brings in the ground for what's done to it; without one, everything they could see
+export const conditionsNow = (w: World, a: Agent, verb?: string) => {
+  const now = Object.keys(CONDITIONS).filter((c) => CONDITIONS[c].now(w, a));
+  if (!verb || GROUND_VERBS[verb]) now.push(groundKey(groundWord(w, a.px, a.py)));
+  return now;
+};
+const condition = (c: string) => CONDITIONS[c] ?? { words: `The ground there was ${groundOfKey(c)}`, hint: new RegExp(groundOfKey(c) ?? "$^") };
 const theorizing = new Set<string>();
-// They did what they believe works, and it came off or it didn't: what was meant to come of it (what it builds, or what
-// it gives) is what counts, though what only shows later (a seed pushed into the ground) counts as done once done. Each time is noted against the conditions they were in; a failure of something that has
-// worked before sets them wondering what was different, and their answer is their theory until it's proven wrong.
-function attempted(w: World, a: Agent, b: Belief, out: Outcome) {
-  const meant = out.ok && (!out.fields.builds || !b.fields.builds || out.fields.builds === b.fields.builds) && (!Object.keys(b.out).length || Object.keys(b.out).some((k) => (out.gives[k] ?? 0) > 0));
-  // an outcome that went into the books under another key (a rub that only got hot) still counts against this one
-  if (beliefKey(out.fields) !== b.key) { b.tries++; if (meant) b.wins++; }
-  const now = conditionsNow(w, a);
+// How what they did went, counted against the conditions they did it in. Working where they'd thought it wouldn't ends
+// that theory. A failure of something that has worked for them before sets them wondering what was different, and their
+// answer is their theory until it's proven wrong. text: what they saw of how it failed.
+function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], text: string) {
   b.when ??= {};
-  for (const c of now) { const s = (b.when[c] ??= { tries: 0, wins: 0 }); s.tries++; if (meant) s.wins++; }
-  if (meant) {
-    if (b.unless && now.includes(b.unless)) {
-      log(w, "theory", [a.id], a, `${a.name} found it works ${CONDITION_WORDS[b.unless]} after all: ${sentence(w, b.fields)}`);
-      delete b.unless;
+  for (const c of now) { const s = (b.when[c] ??= { tries: 0, wins: 0 }); s.tries++; if (worked) s.wins++; }
+  if (worked) {
+    const wrong = b.unless?.filter((c) => now.includes(c)) ?? [];
+    if (wrong.length) {
+      log(w, "theory", [a.id], a, `${a.name} found it works ${wrong.map(conditionWords).join(" and ")} after all: ${sentence(w, b.fields, undefined, b.later)}`);
+      rethink(b, wrong);
     }
     return;
   }
   const id = `${a.id}|${b.key}`;
   // Only something that has worked for them before leaves them wondering what was different, and a condition it has
   // worked in before can't be the reason: someone who has lit fires in the dark won't blame the dark.
-  const suspects = now.filter((c) => !b.when![c].wins);
-  if (!suspects.length || b.unless || !b.wins || theorizing.has(id)) return;
+  const suspects = now.filter((c) => !b.when![c].wins && !b.unless?.includes(c));
+  if (!suspects.length || !b.wins || theorizing.has(id)) return;
   theorizing.add(id);
-  const present = Object.fromEntries(suspects.map((c) => [c, CONDITIONS[c].words]));
-  const lean = Object.fromEntries(suspects.map((c) => [c, 1 + 2 * b.when![c].tries + (CONDITIONS[c].hint.test(out.text) ? 6 : 0)]));
-  theorize(w, a, sentence(w, b.fields), out.text, present, lean)
+  const present = Object.fromEntries(suspects.map((c) => [c, condition(c).words]));
+  const lean = Object.fromEntries(suspects.map((c) => [c, 1 + 2 * b.when![c].tries + (condition(c).hint.test(text) ? 6 : 0)]));
+  theorize(w, a, sentence(w, b.fields, undefined, b.later), text, present, lean)
     .then((c) => {
-      if (!c || !a.beliefs[b.key]) return;
-      b.unless = c;
-      log(w, "theory", [a.id], a, `${a.name} decided it won't work ${CONDITION_WORDS[c]}: ${sentence(w, b.fields)}`);
+      if (!c || !a.beliefs[b.key] || b.unless?.includes(c)) return;
+      b.unless = [...(b.unless ?? []), c];
+      log(w, "theory", [a.id], a, `${a.name} decided it won't work ${conditionWords(c)}: ${sentence(w, b.fields, undefined, b.later)}`);
     })
     .catch(() => {})
     .finally(() => theorizing.delete(id));
 }
+// They did what they believe works, and it came off or it didn't: what was meant to come of it (what it builds, or what
+// it gives) is what counts. What only shows later (a seed pushed into the ground) is judged when it shows (came, withered).
+function attempted(w: World, a: Agent, b: Belief, out: Outcome) {
+  if (out.later) return;
+  const meant = out.ok && (!out.fields.builds || !b.fields.builds || out.fields.builds === b.fields.builds) && (!Object.keys(b.out).length || Object.keys(b.out).some((k) => (out.gives[k] ?? 0) > 0));
+  // an outcome that went into the books under another key (a rub that only got hot) still counts against this one
+  if (beliefKey(out.fields) !== b.key) { b.tries++; if (meant) b.wins++; }
+  judged(w, a, b, meant, conditionsNow(w, a, b.fields.verb), out.text);
+}
+// Everyone waiting on a thing, done waiting: their entries for it, taken off their lists.
+function waitingOn(a: Agent, id: string) {
+  const mine = a.waiting?.filter((e) => e.thing === id) ?? [];
+  if (mine.length) a.waiting = a.waiting!.filter((e) => e.thing !== id);
+  if (!a.waiting?.length) delete a.waiting;
+  return mine;
+}
+// What they did days ago has come up: a seedling grown into a bush. It worked, under the conditions it was done in, and
+// the first time it's how they learn it takes days, not hours.
+function came(w: World, a: Agent, e: Waiting, at: Thing, builds: string) {
+  const b = a.beliefs[e.key];
+  if (!b) return;
+  const took = w.t - e.t, first = !b.later;
+  if (b.fields.verb === "plant") b.fields = { ...b.fields, builds };
+  b.later = first ? took : Math.round(b.later! * 0.7 + took * 0.3);
+  b.wins++;
+  judged(w, a, b, true, e.now, "");
+  b.law ??= (w.laws[b.key] ?? found(w, a, b.fields, b.ticks, false, [], b.later)).id;
+  const days = took < DAY * 1.5 ? "a day" : `${Math.round(took / DAY)} days`;
+  if (first) log(w, "discover", [a.id], at, b.fields.verb === "plant"
+    ? `${a.name} realized the ${nm(w, b.fields.inputs[0])} they pushed into the ground ${days} ago has come up as ${builds === "grass" ? "grass" : an(builds)}.`
+    : `${a.name} saw the young plant they watered ${days} ago come up as ${an(builds)}.`);
+}
+onGrew((w, t, builds) => { for (const a of w.agents) for (const e of waitingOn(a, t.id)) came(w, a, e, t, builds); });
+onWithered((w, t, why) => {
+  for (const a of w.agents) for (const e of waitingOn(a, t.id)) { const b = a.beliefs[e.key]; if (b) judged(w, a, b, false, e.now, why); }
+});
+// Once a day: what they were waiting on that's gone without coming up (burned, broken off for a stick) they stop waiting
+// for, as they do anything waited on past all hope, neither telling them why.
+function giveUpWaiting(w: World) {
+  for (const a of w.agents) {
+    if (!a.waiting) continue;
+    a.waiting = a.waiting.filter((e) => thingById(w, e.thing) && w.t - e.t < DAY * 30);
+    if (!a.waiting.length) delete a.waiting;
+  }
+}
+// A fire burned down to nothing with someone who knows wood feeds a fire sitting by it empty-handed: next time, they'll
+// have wood by them before night comes.
+onFireOut((w, t, rained) => {
+  if (rained) return;
+  for (const a of w.agents) {
+    if (a.down > w.t || meters(a, t) > FIRESIDE || a.facts.fuel_at_hand) continue;
+    const fuel = Object.values(a.beliefs).find((b) => b.fields.builds === "fed_fire" && b.wins > 0)?.fields.inputs[0];
+    if (!fuel || count(a, fuel)) continue;
+    a.facts.fuel_at_hand = `A fire burns down to nothing unless there's ${plural(nm(w, fuel))} at hand to feed it.`;
+    log(w, "learn", [a.id], a, `${a.name} watched the fire burn down with nothing at hand to feed it, and resolved to have ${plural(nm(w, fuel))} by them before night.`);
+  }
+});
 
 // Everything that follows from an act finishing: beliefs, watchers, the chronicle, skills, names.
 function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean) {
@@ -727,6 +841,8 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
   trace("physics", "outcome", { act: actSig(act), ok: out.ok, text: out.text, uses: out.uses, gives: out.gives, builds: out.builds, effect: out.effect, numbers: out.numbers, ticks }, a.id);
   const knew = !!a.beliefs[beliefKey(out.fields)];
   const b = record(w, a, out, ticks);
+  // done, with the result to show later: they'll know whether it worked when it does
+  if (b && out.ok && out.later) (a.waiting ??= []).push({ key: b.key, thing: out.later, t: w.t, now: conditionsNow(w, a, act.verb) });
   // Whoever lights a fire by rubbing watches the stick they rubbed catch and burn in it: wood feeds a fire.
   if (out.builds === "fire" && act.verb === "rub") {
     const fuel = act.items.find((k) => (out.uses[k] ?? 0) > 0);
@@ -829,7 +945,7 @@ const AIM: Record<string, (act: Act, w: World) => boolean> = {
   home: (act) => act.verb === "place" || (act.verb === "join" && act.items.length >= 2),
   fire: (act) => act.verb === "rub" || act.verb === "heat" || (act.verb === "strike" && !THING_MATERIAL[act.target?.kind ?? ""]) || act.verb === "place",
   tool: (act) => act.verb === "join" || act.verb === "rub" || act.verb === "shape" || (act.verb === "strike" && !THING_MATERIAL[act.target?.kind ?? ""]),
-  food: (act) => act.verb === "throw" || act.verb === "wet" || act.verb === "plant" || act.verb === "heat" || (act.verb === "strike" && ["deer", "wolf", "rabbit", "bush"].includes(act.target?.kind ?? "")),
+  food: (act) => act.verb === "throw" || act.verb === "wet" || act.verb === "plant" || act.verb === "pour" || act.verb === "heat" || (act.verb === "strike" && ["deer", "wolf", "rabbit", "bush"].includes(act.target?.kind ?? "")),
   // at a fire: hold things in it, or set them in and around it
   fireside: (act) => act.verb === "heat" || act.verb === "place",
 };
@@ -866,6 +982,11 @@ function tinkerOptions(w: World, a: Agent, aim?: string): Option[] {
     if (openWater(w, a)) push({ verb: "wet", items: [x], at: "water" });
     if (p(k, "plastic") >= 0.6) { push({ verb: "shape", items: [x], shape: "bowl" }); push({ verb: "shape", items: [x], shape: "block" }); }
     if (p(k, "seed") > 0 || p(k, "edible") > 0) push({ verb: "plant", items: [x] });
+    // water carried in something: over a young plant within reach, or out on the ground
+    if (x.startsWith("full:")) {
+      if (anyAround(w, a.px, a.py, 3, ["sapling"])) push({ verb: "pour", items: [x], target: { kind: "sapling" } });
+      push({ verb: "pour", items: [x] });
+    }
     if (p(k, "flexible") >= 0.4) push({ verb: "wear", items: [x] });
     push({ verb: "place", items: Array(Math.min(c[x], 6)).fill(x) });
   }
@@ -1547,18 +1668,6 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
   }));
 }
 
-// A planted seed that grew teaches its planter the connection, and the world a new law.
-onGrew((w, owner, from, at) => {
-  const a = agentById(w, owner);
-  if (!a) return;
-  // what it came up as: a bush, a tree, or grass bearing grain
-  const builds = at.kind === "tree" ? "tree" : at.kind === "grass" ? "grass" : "bush";
-  const fields = { verb: "plant", inputs: [from], gives: [], builds };
-  const knew = !!a.beliefs[beliefKey(fields)];
-  record(w, a, { ok: true, text: "", uses: { [from]: 1 }, gives: {}, builds, fields, newKinds: [] }, DAY * 3, "seen");
-  if (!knew) log(w, "discover", [a.id], at, `${a.name} realized the ${nm(w, from)} they pushed into the ground grew into ${builds === "grass" ? "grass" : `a ${builds}`}.`);
-});
-
 function burned(w: World) {
   for (const b of burnedHomes.splice(0)) {
     const owner = agentById(w, b.owner), lighter = agentById(w, b.by);
@@ -1747,7 +1856,7 @@ export function tick(w: World) {
   burned(w);
   timed("groups", () => groups(w));
   if (w.t % DAY === 0) for (const a of w.agents) fadeBonds(a);
-  if (w.t % DAY === DAY / 2) timed("shelve", () => shelve(w));
+  if (w.t % DAY === DAY / 2) { timed("shelve", () => shelve(w)); giveUpWaiting(w); }
   timed("agents", () => { for (const a of [...w.agents]) if (w.agents.includes(a)) agentTick(w, a); });
   timed("journeys", () => travel(w));
   bump("ticks");
@@ -1822,7 +1931,7 @@ export function activity(w: World, a: Agent): Activity | null {
       const target = act?.target?.kind ?? "";
       if (act?.verb === "strike" && ["tree", "stump", "fallen_log", "dead_bush"].includes(target)) return "chop";
       if (act?.verb === "place") return a.goal?.type === "make_fire" || a.goal?.type === "contain_fire" ? "fire" : "build";
-      if (act?.verb === "plant") return "plant";
+      if (act?.verb === "plant" || act?.verb === "pour") return "plant";
       if (act?.verb === "dig") return "dig";
       if (act?.verb === "rub" || act?.verb === "heat") return a.goal?.type === "make_fire" ? "fire" : "craft";
       if (act?.verb === "throw") return "hunt";

@@ -187,6 +187,8 @@ export function view(w: World, a: Agent) {
     carrying: inventoryText(w, a),
     wearing: a.wearing ? w.kinds[a.wearing.k]?.name : undefined,
     what_they_know_works: Object.values(a.beliefs).sort((x, y) => y.t - x.t).slice(0, 12).map((b) => beliefText(w, b)),
+    // what they've done that hasn't shown what comes of it yet: a seed in the ground, a young plant watered
+    waiting_to_see: a.waiting?.map((e) => `${a.beliefs[e.key]?.fields.verb === "pour" ? "watered a young plant" : `pushed ${w.kinds[a.beliefs[e.key]?.fields.inputs[0] ?? ""]?.name ?? "something"} into the ground`} ${Math.max(1, Math.round((w.t - e.t) / DAY))} days ago`),
     what_they_have_seen: Object.values(a.facts).slice(-6),
     home: home ? `a ${["pile", "lean-to", "hut", "cabin"][home.shelter?.tier ?? 0]} ${m(home)} m away` : "no home yet",
     current_goal: a.goal?.type ?? "none",
@@ -218,6 +220,8 @@ function needBias(w: World, a: Agent, options: Record<string, string>) {
     if (k === "ask_help") b[k] = 6;
     if (k === "move_in") b[k] = 2;
     if (k === "experiment:fireside") b[k] = 3;
+    // a wilting seedling of theirs, or a fire to keep through the night that they've seen burn down for want of wood
+    if (k === "tend_plants" || k === "lay_by_wood") b[k] = 3;
     if (k.startsWith("make:") || k === "build_shelter" || k.startsWith("hunt:")) b[k] = Math.max(b[k] ?? 0, 2);
     // as the days draw in and things ripen, lay food by
     if (k === "stock_up" && ripening(w.t)) b[k] = 3;

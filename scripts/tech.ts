@@ -74,6 +74,11 @@ const MILESTONES: Record<string, (w: World) => boolean> = {
   helped: (w) => w.events.some((e) => e.kind === "ask_help" && !/turned them away/.test(e.text)),
   shared_home: () => maxHome >= 2,
   longhouse: () => maxRoom >= 6,
+  // what only shows later: a planted seed seen to come up, a theory about the ground, a seedling watered, wood laid by
+  came_up: (w) => w.events.some((e) => e.kind === "discover" && / has come up as /.test(e.text)),
+  ground_theory: (w) => w.events.some((e) => e.kind === "theory" && / won't work (on |in a marsh|in scrub|by a |by the )/.test(e.text)),
+  watered: (w) => w.events.some((e) => / poured the water over the young plant/.test(e.text)),
+  laid_by_wood: (w) => w.events.some((e) => e.kind === "goal" && / gather wood to keep the fire going/i.test(e.text)),
 };
 // the most people living in one shelter, and the most any shelter sleeps
 let maxHome = 0, maxRoom = 0;
@@ -112,6 +117,14 @@ console.log(JSON.stringify({
   jev: w.jev, fails: top(fails, 8),
   social: Object.fromEntries(["ask_help", "move_in", "avoid", "theory", "steal", "insult", "talk", "teach"].map((k) => [k, w.events.filter((e) => e.kind === k).length])),
   kept_away: w.events.filter((e) => e.kind === "goal" && / keep away from /.test(e.text)).length,
+  garden: {
+    planted: w.events.filter((e) => / pushed the \S+ into /.test(e.text)).length,
+    came_up: w.events.filter((e) => e.kind === "grow" && / pushed into the ground grew| sowed came up/.test(e.text)).length,
+    withered: w.events.filter((e) => e.kind === "grow" && / withered: /.test(e.text)).length,
+    ground_theories: w.events.filter((e) => e.kind === "theory" && / won't work (on |in a marsh|in scrub|by a |by the )/.test(e.text)).length,
+    watered: w.events.filter((e) => / poured the water over the young plant/.test(e.text)).length,
+    lay_by_wood: w.events.filter((e) => e.kind === "goal" && / gather wood to keep the fire going/i.test(e.text)).length,
+  },
   homes: { maxRoom, maxHome }, counters: { stepFailed: counters["plan.step_failed"] ?? 0, interrupts: counters["plan.interrupt"] ?? 0, decided: counters["brain.decided"] ?? 0, tinker: counters["brain.tinker_choice"] ?? 0 },
 }));
 // --dump file: what this world's people found out, what they did, and what happened, to read through afterwards
@@ -124,7 +137,7 @@ if (dump) {
     laws: Object.values(w.laws).map((l) => `${(l.t / DAY).toFixed(1)} ${l.by}: ${l.text}`),
     made: Object.values(w.kinds).filter((k) => k.made).map((k) => `${k.name} x${k.count ?? 1}`),
     structures: w.things.filter((t) => t.kind === "structure").map((t) => ({ owner: t.owner, tier: t.shelter?.tier, room: t.shelter?.room, living: w.agents.filter((a) => a.home === t.id).map((a) => a.name), parts: t.parts })),
-    notable: w.events.filter((e) => !["goal", "gather", "eat", "weather", "notice", "talk", "bond", "gossip", "level", "spoil", "grow", "birth", "death", "recover"].includes(e.kind)).map((e) => `${(e.t / DAY).toFixed(2)} ${e.kind}: ${e.text}`),
+    notable: w.events.filter((e) => !["goal", "gather", "eat", "weather", "notice", "talk", "bond", "gossip", "level", "spoil", "grow", "birth", "death", "recover"].includes(e.kind) || (e.kind === "grow" && / pushed into | sowed /.test(e.text)) || (e.kind === "goal" && / gather wood to keep the fire going| see to the young plants/i.test(e.text))).map((e) => `${(e.t / DAY).toFixed(2)} ${e.kind}: ${e.text}`),
     goals: w.events.filter((e) => e.kind === "goal").map((e) => e.text.replace(/^\S+ decided to /, "").replace(/ \(\d+% likely\)$/, "").replace(/\. ?$/, "")).reduce<Record<string, number>>((m, g) => ((m[g] = (m[g] ?? 0) + 1), m), {}),
     agents: w.agents.map((a) => ({ name: a.name, inv: a.inv.map((s) => w.kinds[s.k]?.name), beliefs: Object.keys(a.beliefs).length, needs: a.needs })),
   }, null, 1));
