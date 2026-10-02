@@ -4,9 +4,6 @@ import { count, giveItems, heat, join, place, rubTick, strikeDamage, strikeTick 
 import { thingById } from "./space";
 import { record } from "./beliefs";
 import { plan } from "./plan";
-import { tick } from "./sim";
-
-process.env.NOMADS_BRAIN = "random";
 
 const fresh = (): [World, Agent] => { const w = newWorld(42); const a = w.agents[0]; a.inv = []; return [w, a]; };
 const K = (w: World, id: string) => w.kinds[id];
@@ -103,35 +100,37 @@ test("the planner only uses what an agent believes works", () => {
   expect(steps.filter((s) => s.op === "pick_stone").length).toBe(2);
 });
 
-test("out in the rain rubbing sticks is soaked within the hour, and someone who can make fire plans none until under a roof", () => {
+test("out in the rain rubbing sticks is soaked within the hour, and someone who has come to think fire won't light in the rain plans none while it rains", () => {
   const [w, a] = fresh();
   const rub = () => { const st = { progress: 0 }; let r, n = 0; do { r = rubTick(w, a, { verb: "rub", items: ["stick", "stick"] }, st); n++; } while (!r.done); return { out: r.out!, n }; };
   giveItems(w, a, "stick", 2); giveItems(w, a, "fiber");
   w.weather.sky = "clear";
   const lit = rub().out;
   expect(lit.builds).toBe("fire");
-  record(w, a, lit, 30);
+  const knows = record(w, a, lit, 30)!;
   giveItems(w, a, "stick", 2); giveItems(w, a, "fiber");
   w.weather.sky = "rain";
   const soaked = rub();
   expect(soaked.out.builds).toBeUndefined();
   expect(soaked.n).toBeLessThanOrEqual(12);
-  const ctx = (rain: boolean) => ({ dist: { stick: 2, reeds: 3 }, beliefs: Object.values(a.beliefs), facts: a.facts, kinds: w.kinds, toxic: [], rain });
+  const ctx = (now: string[]) => ({ dist: { stick: 2, reeds: 3 }, beliefs: Object.values(a.beliefs), facts: a.facts, kinds: w.kinds, toxic: [], now });
   const start = { inv: { stick: 2, fiber: 1 }, at: null, flags: [] };
-  expect(plan(start, "make_fire", ctx(false))).not.toBeNull();
-  expect(plan(start, "make_fire", ctx(true))).toBeNull();
+  // with no theory of why it failed, they would try again
+  expect(plan(start, "make_fire", ctx(["rain"]))).not.toBeNull();
+  knows.unless = "rain";
+  expect(plan(start, "make_fire", ctx(["rain", "dark"]))).toBeNull();
+  expect(plan(start, "make_fire", ctx(["dark"]))).not.toBeNull();
 });
 
-test("someone warming up by a fire that has burned low lays a stick on it", () => {
+test("someone who has seen wood laid on a fire plans to keep a dying fire going with what they carry", () => {
   const [w, a] = fresh();
-  w.agents = [a];
-  w.weather.sky = "clear";
-  giveItems(w, a, "stick", 3);
-  a.needs = { ...a.needs, food: 80, energy: 80, warmth: 30 };
-  const fire = addThing(w, "fire", a.px, a.py, { hp: 50, maxHp: 400 });
-  a.goal = { type: "warm_up", since: w.t, odds: {}, fails: 0 };
-  a.plan = [{ op: "warm_up", progress: 0 }];
-  tick(w);
-  expect(fire.hp!).toBeGreaterThan(80);
-  expect(count(a, "stick")).toBe(2);
+  const fire = addThing(w, "fire", a.px, a.py, { hp: 40, maxHp: 400 });
+  giveItems(w, a, "stick", 2);
+  const ctx = () => ({ dist: { stick: 2 }, beliefs: Object.values(a.beliefs), facts: a.facts, kinds: w.kinds, toxic: [] });
+  expect(plan({ inv: { stick: 1 }, at: "fire", flags: [] }, "tend_fire", ctx())).toBeNull();
+  const fed = place(w, a, { verb: "place", items: ["stick"] });
+  expect(fed.builds).toBe("fed_fire");
+  expect(fire.hp!).toBeGreaterThan(70);
+  record(w, a, fed, 1);
+  expect(plan({ inv: { stick: 1 }, at: "fire", flags: [] }, "tend_fire", ctx())?.at(-1)?.op).toBe("act");
 });

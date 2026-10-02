@@ -12,7 +12,7 @@ export const W = TILES;
 export const H = TILES;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export { YEAR_DAYS }; // the sky's: a year is the sun's round
-export const VERSION = 14;
+export const VERSION = 15;
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -28,7 +28,8 @@ export type ThingKind =
   | "tree" | "stump" | "burnt_stump" | "bush" | "dead_bush" | "sapling" | "mushroom" | "herb"
   | "stick" | "stone" | "pebble" | "boulder" | "fallen_log" | "reeds" | "fern" | "flowers" | "grass" | "clay" | "fire" | "structure" | "item" | "ash"
   | "pit" | "trap" | "well" | "grave";
-export type Shelter = { tier: 0 | 1 | 2 | 3; style: string; cover: number; insul: number; sturdy: number; flam: number };
+// room: how many people can sleep inside it
+export type Shelter = { tier: 0 | 1 | 2 | 3; style: string; cover: number; insul: number; sturdy: number; flam: number; room: number };
 // px, py: where it stands, in tiles (150 m each); x, y are always their floor, the tile it's on.
 export type Thing = {
   id: string; kind: ThingKind; x: number; y: number; px: number; py: number;
@@ -39,6 +40,7 @@ export type Thing = {
   item?: string; parts?: Record<string, number>; shelter?: Shelter; until?: number; born?: number; burnedBy?: string;
   store?: Stack[]; name?: string; died?: number; cause?: string; caught?: string; progress?: number;
   person?: string; // a grave's: whose
+  stale?: number; // a shelter's: how many loads in a row were added to it without making it any better
   inside?: Record<string, number>; // hidden in a boulder until it breaks
   scarred?: number; resin?: number; bark?: number; // when a tree was last cut into, resin beaded on it, bark peeled off it
   covered?: boolean; charcoal?: number; air?: number; heat?: number; // fires: closed over, charcoal left, air blown in until, heat level
@@ -158,6 +160,8 @@ export type Agent = {
   parents: string[];
   children: string[];
   pregnant: { father: string; due: number } | null;
+  // needs they keep failing to meet by their own efforts: how many tries in a row have come to nothing
+  struggles?: Partial<Record<"food" | "warmth" | "energy", number>>;
   home: string | null; // structure id
   rel: Record<string, Relationship>;
   memory: string[];

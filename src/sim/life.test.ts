@@ -66,7 +66,7 @@ test("sweethearts with a home and full bellies have a child who inherits from th
   w.agents = [a, b];
   put(w, b, a.px, a.py);
   for (const [x, y] of [[a, b], [b, a]]) x.rel[y.id] = { ...newRel(0), affinity: 0.8, trust: 0.8, label: "sweetheart" };
-  addThing(w, "structure", a.px, a.py, { owner: a.id, shelter: { tier: 1, style: "sticks", cover: 0.5, insul: 0.3, sturdy: 0.3, flam: 0.5 } });
+  addThing(w, "structure", a.px, a.py, { owner: a.id, shelter: { tier: 1, style: "sticks", cover: 0.5, insul: 0.3, sturdy: 0.3, flam: 0.5, room: 1 } });
   for (const x of [a, b]) { x.needs.food = 90; x.needs.health = 100; }
   let tries = 0;
   while (!a.pregnant && !b.pregnant && tries++ < 50) { w.t = DAY * tries + Math.round(DAY * 0.88); life(w); }

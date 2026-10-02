@@ -148,7 +148,12 @@ function thing(w: World, t: Thing): Inspected {
   }
   rows.push({ label: "tile", value: `${t.x}, ${t.y}` });
   if (t.shelter) {
-    sections.push({ tab: "thing", title: "shelter", rows: [{ label: "style", value: t.shelter.style }, { label: "cover", bar: [r(t.shelter.cover, 2), 1] }, { label: "insulation", bar: [r(t.shelter.insul, 2), 1] }, { label: "sturdiness", bar: [r(t.shelter.sturdy, 2), 1] }] });
+    const living = w.agents.filter((x) => x.home === t.id);
+    sections.push({ tab: "thing", title: "shelter", rows: [
+      { label: "style", value: t.shelter.style }, { label: "sleeps", value: `${living.length} of ${t.shelter.room ?? 1}` },
+      ...living.map((x) => ({ label: "lives here", value: x.name, link: x.id })),
+      { label: "cover", bar: [r(t.shelter.cover, 2), 1] }, { label: "insulation", bar: [r(t.shelter.insul, 2), 1] }, { label: "sturdiness", bar: [r(t.shelter.sturdy, 2), 1] },
+    ] });
     sections.push({ tab: "thing", title: "built from", bag: bagOf(w, t.parts ?? {}), none: "nothing" });
   }
   if (t.store?.length) sections.push({ tab: "thing", title: "stores", bag: bag(w, t.store.map((s) => s.k)) });

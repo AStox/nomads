@@ -180,6 +180,8 @@ function simSections() {
       ...[0, 4].map((d0) => cell("LOGS TIER 2", `DIR ${d0} TO ${d0 + 3}`, range(4, (d) => TH.shelter(2, "logs", hut, 3, P.c1, d0 + d)))),
       ...[0, 4].map((d0) => cell("PLANKS TIER 3", `DIR ${d0} TO ${d0 + 3}`, range(4, (d) => TH.shelter(3, "planks", hut, 4, -1, d0 + d)))),
     ]]);
+    // lodges drawn out longer to sleep more: stretch 1, 1.5, 2.2 and 3 times a cabin's length
+    out.push([`SIM LODGES  ${zoom}  STRETCH 1 1.5 2.2 3`, STYLES.map((s, i) => cell(s.toUpperCase(), `HUT ${hut}`, [1, 1.5, 2.2, 3].map((x) => TH.shelter(3, s, hut, i + 1, -1, 0, x))))]);
     out.push([`SIM WOLVES AND PEOPLE  ${zoom}`, [
       ...POSES.map((p) => cell(`WOLF ${p.toUpperCase()}`, `${wolf}  FRAMES 0-3`, range(4, (f) => TH.wolf(wolf, p, f, 1)))),
       cell("WOLF COATS", "BY DEER", [...range(4, (s) => TH.wolf(wolf, "stand", 0, s)), LF.deer(zoom === "VALLEY" ? 4 : 12, "stand", 1, 1)]),

@@ -1,6 +1,6 @@
 // The world keeps moving on its own: weather, fire, plants, animals, rot, and sickness.
 import { THING_MATERIAL, clamp01, ensure, p } from "./materials";
-import { dropPile, fireHeat, mark, nearFire, newKinds, removeThing, shelterName } from "./physics";
+import { dropPile, fireHeat, mark, nearFire, newKinds, removeThing, residentsOf, shelterName } from "./physics";
 import { see } from "./beliefs";
 import {
   DAY, H, TILE_M, W, Tile, addThing, dayOfYear, groundOf, log, meters, nearWater, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
@@ -178,7 +178,9 @@ function burnOut(w: World, t: Thing, by?: string) {
     const owner = w.agents.find((a) => a.id === t.owner);
     const text = `Fire burned down ${owner ? `${owner.name}'s` : "a"} ${shelterName(w, t)}.`;
     log(w, "burned", [owner?.id, by].filter(Boolean) as string[], t, text, owner ? `${owner.name}'s home burned` : "a home burned");
-    if (owner) { burnedHomes.push({ owner: owner.id, by, text }); if (owner.home === t.id) owner.home = null; }
+    if (owner) burnedHomes.push({ owner: owner.id, by, text });
+    // everyone who lived there is out in the cold
+    for (const x of residentsOf(w, t)) x.home = null;
   }
   removeThing(w, t);
   if (t.kind !== "item" && t.kind !== "stick" && t.size >= 0.4) {
@@ -385,14 +387,16 @@ function decay(w: World, live: Thing[]) {
     }
     if (t.kind === "structure" && t.shelter) {
       const sky = w.weather.sky;
-      // Loose piles that aren't ringing a fire scatter within a few days.
+      // Loose piles that aren't ringing a fire scatter within a few days. Weather tells on a flimsy shelter far more than
+      // a sturdy one: sticks and grass are down after a few days of rain, walls of stone or logs stand for a season.
       const pile = t.shelter.tier === 0 && !anyAround(w, t.px, t.py, 1, ["fire"]);
-      t.hp = (t.hp ?? 100) - (0.03 + (pile ? 0.5 : 0) + (sky === "rain" ? 0.1 : sky === "storm" ? 0.5 : 0)) * (1.2 - t.shelter.sturdy);
+      const weather = 0.03 + (sky === "rain" ? 0.1 : sky === "storm" ? 0.5 : 0);
+      t.hp = (t.hp ?? 100) - (pile ? 0.5 * (1.2 - t.shelter.sturdy) : 0) - weather * Math.max(0.02, 1.4 * (1 - t.shelter.sturdy) ** 2);
       if (t.hp <= 0) {
         const owner = w.agents.find((a) => a.id === t.owner);
         log(w, "ruin", owner ? [owner.id] : [], t, `${owner ? `${owner.name}'s` : "A"} shelter fell apart in the weather.`);
         for (const [k, n] of Object.entries(t.parts ?? {})) if (Math.random() < 0.5) dropPile(w, t.px, t.py, k, Math.ceil(n / 2));
-        if (owner?.home === t.id) owner.home = null;
+        for (const x of residentsOf(w, t)) x.home = null;
         removeThing(w, t);
       }
     }

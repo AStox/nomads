@@ -15,7 +15,7 @@ function village(seed = 11): [World, Agent[]] {
   const [x, y] = [30.5, 30.5];
   w.agents.forEach((a, i) => {
     put(w, a, x + (i * 20) / TILE_M, y);
-    a.home = addThing(w, "structure", a.px, a.py, { owner: a.id, parts: { stick: 6 }, shelter: { tier: 1, style: "sticks", cover: 0.5, insul: 0.3, sturdy: 0.3, flam: 0.5 }, hp: 100, maxHp: 100, born: i }).id;
+    a.home = addThing(w, "structure", a.px, a.py, { owner: a.id, parts: { stick: 6 }, shelter: { tier: 1, style: "sticks", cover: 0.5, insul: 0.3, sturdy: 0.3, flam: 0.5, room: 1 }, hp: 100, maxHp: 100, born: i }).id;
   });
   for (const a of w.agents) for (const b of w.agents) if (a !== b) a.rel[b.id] = { ...newRel(0), affinity: 0.5 };
   return [w, w.agents];

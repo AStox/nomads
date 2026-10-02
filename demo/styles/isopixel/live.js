@@ -518,7 +518,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
         o.id = id++; owners[o.id] = o.pick ?? null; sl.e[o.id] = o.e ?? 0; sl.lit[o.id] = 0;
         blit(B, o.spr, o.sx, o.sy, o.z, o.id, o.mirror, o.bias);
       }
-      // people behind trees still show, as a checkered silhouette through the leaves
+      // people and their homes behind trees still show, as a checkered silhouette through the leaves
       for (const o of E.out) if (o.xray && o.id) xray(o, warp);
       drawFires(cam, E.fires, now, night, sl);
       fires = E.fires; picks = E.picks;
@@ -776,7 +776,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       if (t.kind === "fire" || t.burning > 0) fires.push({ a, big: t.kind === "fire" ? 1 : 0.7 + (t.burning || 0), id: t.id });
       if (hpx < 1) continue;
       const s = thingSprite(t, hpx, md.b);
-      if (s) { s.kind ??= t.kind; add(a, s, { mirror: ((t.seed >>> 3) & 1) === 1 && !FACED.has(t.kind), bias: t.kind === "structure" ? md.hb + 4 : 2, pick: { kind: "thing", id: t.id } }); }
+      // a home under the trees shows through the leaves the way its people do
+      if (s) { s.kind ??= t.kind; add(a, s, { mirror: ((t.seed >>> 3) & 1) === 1 && !FACED.has(t.kind), bias: t.kind === "structure" ? md.hb + 4 : 2, xray: t.kind === "structure" && (t.shelter?.tier ?? 0) >= 1, pick: { kind: "thing", id: t.id } }); }
       pk(a, { kind: "thing", id: t.id, sx: a.sx, sy: a.sy - hpx / 2, h: Math.max(3, hpx), name: t.name || t.kind.replaceAll("_", " "), top: a.sy - hpx - 2 });
     }
     for (const an of W.animals || []) {
@@ -836,8 +837,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const seedT = (t.seed >>> 0) % 8, dir = (((t.seed >>> 5) & 7) - bearing + 16) % 8, hq = hpx < 8 ? Math.round(hpx * 2) / 2 : Math.round(hpx);
     // flames are drawn by drawFires on the clock, so the sprite is always the unlit thing
     const species = t.kind === "structure" ? t.shelter?.style : t.kind === "item" ? t.item : t.species;
-    const o = { species, stage: clamp(t.stage ?? 1, 0, 1), tier: t.shelter?.tier ?? 0, caught: !!t.caught, n: t.n, covered: !!t.covered, charcoal: t.charcoal > 0, dir, burning: 0 };
-    return spr(`t${t.kind}|${species}|${hq}|${seedT}|${o.stage}|${o.tier}|${o.caught}|${o.n > 0}|${o.covered}|${o.charcoal}|${dir}`, () => TH.object(t.kind, hq, seedT * 131 + 7, o));
+    const o = { species, stage: clamp(t.stage ?? 1, 0, 1), tier: t.shelter?.tier ?? 0, room: t.shelter?.room ?? 0, caught: !!t.caught, n: t.n, covered: !!t.covered, charcoal: t.charcoal > 0, dir, burning: 0 };
+    return spr(`t${t.kind}|${species}|${hq}|${seedT}|${o.stage}|${o.tier}|${o.room}|${o.caught}|${o.n > 0}|${o.covered}|${o.charcoal}|${dir}`, () => TH.object(t.kind, hq, seedT * 131 + 7, o));
   }
 
 

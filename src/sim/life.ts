@@ -1,7 +1,7 @@
 // Generations: people grow up, pair off, have children, grow old, and die. What they knew lives on only if they passed it on.
 import { TRAITS } from "./traits";
 import { COLORS, DAY, DESIRES, NAMES, YEAR, addThing, ageOf, clash, landing, log, meters, stageOf, type Agent, type World } from "./world";
-import { dropPile, mark } from "./physics";
+import { dropPile, leaveHome, mark } from "./physics";
 import { liveThings } from "./space";
 import { newRel } from "./brain";
 import { see } from "./beliefs";
@@ -16,7 +16,8 @@ export function die(w: World, a: Agent, cause: string) {
   const c: Record<string, number> = {};
   for (const s of [...a.inv, ...(a.wearing ? [a.wearing] : [])]) c[s.k] = (c[s.k] ?? 0) + 1;
   for (const [k, n] of Object.entries(c)) dropPile(w, a.px, a.py, k, n);
-  for (const t of liveThings(w)) if (t.owner === a.id && t.kind === "structure") { delete t.owner; mark(w, t); }
+  // what they built goes to whoever lived there with them, or stands empty
+  for (const t of liveThings(w)) if (t.owner === a.id && t.kind === "structure") leaveHome(w, a, t);
   log(w, "died", [a.id], a, `${a.name} died of ${cause}, aged ${Math.floor(ageOf(w, a))}.${Object.keys(a.beliefs).length ? ` What they knew went with them, unless they taught it.` : ""}`, `${a.name} died`);
   trace("world", "died", { id: a.id, cause, age: ageOf(w, a), beliefs: Object.keys(a.beliefs).length });
   see(w, a, "death", "People can die, and what they know dies with them unless they pass it on.", 300);
@@ -118,7 +119,8 @@ export function life(w: World) {
       for (let j = i + 1; j < adults.length; j++) {
         const [a, b] = [adults[i], adults[j]];
         if (meters(a, b) > 30 || !paired(a, b) || a.pregnant || b.pregnant) continue;
-        const home = [...liveThings(w)].some((t) => t.kind === "structure" && (t.owner === a.id || t.owner === b.id) && (t.shelter?.tier ?? 0) >= 1 && meters(t, a) <= 40);
+        // a shelter either of them built or lives in, close by
+        const home = [...liveThings(w)].some((t) => t.kind === "structure" && (t.owner === a.id || t.owner === b.id || t.id === a.home || t.id === b.home) && (t.shelter?.tier ?? 0) >= 1 && meters(t, a) <= 40);
         if (!home || Math.random() > 0.3) continue;
         const mother = Math.random() < 0.5 ? a : b, father = mother === a ? b : a;
         mother.pregnant = { father: father.id, due: w.t + DAY * 10 };

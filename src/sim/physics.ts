@@ -1,7 +1,7 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
 import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props } from "./materials";
 import { CELL } from "../terrain/grid";
-import { DAY, REACH, TILE_M, Tile, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, level, log, meters, nearWater, reachOf, tileAt, wetAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
+import { DAY, REACH, TILE_M, Tile, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, isNight, level, log, meters, nearWater, reachOf, tileAt, wetAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
 import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } from "./space";
 import { clock, trace } from "./trace";
 import { see } from "./beliefs";
@@ -25,6 +25,15 @@ export function fireHeat(w: World, f: Thing) {
 // What people would call the fire they're standing at, most specific first.
 export const fireKind = (f: Thing) =>
   f.kind !== "fire" || !f.contained ? "fire" : (f.charcoal ?? 0) > 0 ? "forge" : f.covered ? "kiln" : "hearth";
+// How many hours a fire has left in it, as anyone by it can judge from what's burning: an open fire eats its wood
+// fastest, a ringed one half as fast, one heaped over to smolder slower still (ecology.ts fire).
+export const fireHours = (t: Thing) => (t.hp ?? 0) / (t.covered ? 0.3 : t.contained ? 0.5 : 1) / 12;
+// Hours until the night ends, if it's night: how long a fire has to last to see them through it.
+export function hoursToDawn(t: number) {
+  let h = 0;
+  while (isNight(t + h * 12) && h < 18) h += 0.5;
+  return h;
+}
 // The hottest fire within r meters: a campfire, or anything burning well enough to cook over.
 export function nearFire(w: World, a: { px: number; py: number }, r = 3) {
   let best: Thing | null = null, bh = 0;
@@ -791,10 +800,14 @@ export function shelterOf(w: World, parts: Record<string, number>): Shelter {
     : coverS >= 0.95 && sturdyS >= 0.45 && n >= 16 && frame >= 6 && walls >= 12 ? 3
       : coverS >= 0.7 && sturdyS >= 0.3 && (frame >= 6 || walls >= 12) ? 2 : 1;
   const style = Object.entries(byStyle).sort((x, y) => y[1] - x[1])[0]?.[0] ?? "mixed";
-  return { tier: tier as Shelter["tier"], style, cover: coverS, insul: insulS, sturdy: sturdyS, flam: n ? flam / n : 0 };
+  // How many it sleeps: the more that goes into it, the more floor it closes in. A lean-to's one slope covers two at
+  // most and a round hut's poles span four; only a framed and walled lodge can be drawn out longer for as many again.
+  const room = tier === 0 ? 0 : tier === 1 ? Math.min(2, 1 + Math.floor(n / 10)) : tier === 2 ? Math.min(4, 2 + Math.floor(Math.max(0, n - 12) / 8)) : 3 + Math.floor(Math.max(0, n - 16) / 8);
+  return { tier: tier as Shelter["tier"], style, cover: coverS, insul: insulS, sturdy: sturdyS, flam: n ? flam / n : 0, room };
 }
 export const homeOf = (w: World, a: Agent) => { const h = thingById(w, a.home); return h?.kind === "structure" ? h : null; };
 const TIER = ["a pile", "a lean-to", "a hut", "a cabin"];
+const GAIN_WORDS: Record<"sturdy" | "insul" | "cover", string> = { sturdy: "sturdier", insul: "warmer", cover: "better at keeping the rain off" };
 const WIDTH = [1.2, 2.2, 3, 4.5]; // meters across, by tier
 // Close enough to set something into it or take something out: within reach of its walls.
 export const reaches = (a: { px: number; py: number }, t: Thing) => meters(a, t) <= reachOf(t) + 1;
@@ -802,7 +815,8 @@ export const reaches = (a: { px: number; py: number }, t: Thing) => meters(a, t)
 const ringOf = (w: World, fire: Thing) => nearestThing(w, fire.px, fire.py, ["structure"], () => true, 1);
 // What people call a structure: a stones-round-a-fire ring, a pile, a lean-to, a hut or a cabin.
 export const shelterName = (w: World, t: Thing) =>
-  (t.shelter?.tier ?? 0) === 0 && nearestThing(w, t.px, t.py, ["fire"], () => true, 1) ? "fire ring" : ["pile", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0];
+  (t.shelter?.tier ?? 0) === 0 && nearestThing(w, t.px, t.py, ["fire"], () => true, 1) ? "fire ring"
+    : (t.shelter?.tier ?? 0) === 3 && (t.shelter?.room ?? 0) >= 6 ? "longhouse" : ["pile", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0];
 
 export function place(w: World, a: Agent, act: Act): Outcome {
   const parts = act.items.map((id) => kind(w, id)!).filter(Boolean);
@@ -866,7 +880,8 @@ export function place(w: World, a: Agent, act: Act): Outcome {
     abandoned.owner = a.id;
     log(w, "claim", [a.id], abandoned, `${a.name} moved into an empty ${TIER[abandoned.shelter!.tier].replace(/^an? /, "")} and made it theirs.`);
   }
-  const own = nearestThing(w, a.px, a.py, ["structure"], (t) => t.owner === a.id && reaches(a, t) && !nearestThing(w, t.px, t.py, ["fire"], () => true, 1), 6);
+  // their own shelter, or the one they live in with others, within reach
+  const own = nearestThing(w, a.px, a.py, ["structure"], (t) => (t.owner === a.id || a.home === t.id) && reaches(a, t) && !nearestThing(w, t.px, t.py, ["fire"], () => true, 1), 6);
   // Food set down inside a home is kept, not built into the walls, and so is a pot or basket to keep it in.
   if (own && (own.shelter?.tier ?? 0) >= 1 && parts.every((k) => p(k, "edible") >= 0.1 || p(k, "container") >= 0.6)) {
     take();
@@ -880,26 +895,48 @@ export function place(w: World, a: Agent, act: Act): Outcome {
   take();
   const s = own ?? addThing(w, "structure", ...beside(w, a, 1.5), { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t });
   for (const [k, n] of Object.entries(need)) s.parts![k] = (s.parts![k] ?? 0) + n;
-  const before = own?.shelter?.tier ?? 0;
-  s.shelter = shelterOf(w, s.parts!);
-  s.size = WIDTH[s.shelter.tier];
+  const before = own?.shelter?.tier ?? 0, roomBefore = own?.shelter?.room ?? 0, was = own?.shelter;
+  const sh = s.shelter = shelterOf(w, s.parts!);
+  s.size = sizeOf(sh);
   s.hp = Math.min(s.maxHp!, (s.hp ?? 100) + 20);
+  const grew = sh.tier > before, roomier = sh.room > roomBefore;
+  // what else its builders can tell got better: it stands firmer, keeps the cold out, or keeps the rain off
+  const gain = was && (["sturdy", "insul", "cover"] as const).find((q) => sh[q] > was[q] + 0.03);
+  // Another load that made it neither a better shelter nor room for someone who needed it is something its builders
+  // notice: more space than the people in it is no gain.
+  if (own) s.stale = grew || gain || (roomier && residentsOf(w, s).length >= roomBefore) ? 0 : (s.stale ?? 0) + 1;
   mark(w, s);
   const home = homeOf(w, a);
   // A better shelter, or any shelter at all when the old home is more than half a day's walk away, is home now.
   const far = home && meters(home, s) > ((home.shelter?.tier ?? 0) <= 1 ? 60 : 150);
   if (s.shelter.tier >= 1 && (!home || home === s || (home.shelter?.tier ?? 0) < s.shelter.tier || far)) {
-    // Moving into a better place leaves the old one empty for anyone to take.
-    if (home && home !== s) { delete home.owner; mark(w, home); }
+    if (home && home !== s) leaveHome(w, a, home);
     a.home = s.id;
   }
-  const grew = s.shelter.tier > before;
   fields.builds = s.shelter.tier >= 1 ? "shelter" : "pile";
+  // Built onto the shelter they have, what they learn is about building it up: three stones that made a lean-to sturdier
+  // are no shelter on their own.
+  if (own) fields.at = "home";
   trace("physics", "place", { parts: s.parts, shelter: s.shelter }, a.id);
+  const named = TIER[s.shelter.tier].replace(/^an? /, "");
   const text = own
-    ? grew ? `Adding ${list(w, need)} turned their ${TIER[before].slice(2)} into ${TIER[s.shelter.tier]}.` : `They added ${list(w, need)} to their ${TIER[s.shelter.tier].replace(/^an? /, "")}.`
+    ? grew ? `Adding ${list(w, need)} turned their ${TIER[before].slice(2)} into ${TIER[s.shelter.tier]}.`
+      : roomier ? `Adding ${list(w, need)} made their ${named} big enough for ${s.shelter.room}.`
+        : gain ? `Adding ${list(w, need)} made their ${named} ${GAIN_WORDS[gain]}.` : `They added ${list(w, need)} to their ${named}.`
     : s.shelter.tier >= 1 ? `Leaning and stacking ${list(w, need)} together made ${TIER[s.shelter.tier]} they could shelter in.` : `They stacked ${list(w, need)} into a small pile.`;
-  return outcome({ ok: s.shelter.tier >= 1, text, uses: need, builds: fields.builds, fields, numbers: { cover: s.shelter.cover, insul: s.shelter.insul, tier: s.shelter.tier } });
+  return outcome({ ok: s.shelter.tier >= 1, text, uses: need, builds: fields.builds, fields, numbers: { cover: s.shelter.cover, insul: s.shelter.insul, tier: s.shelter.tier, room: s.shelter.room } });
+}
+// Footprint in meters, by tier, and for a lodge drawn out longer, a pace and a half for each more it sleeps.
+export const sizeOf = (sh: Shelter) => WIDTH[sh.tier] + (sh.tier === 3 ? 1.6 * Math.max(0, sh.room - 3) : 0);
+// Who lives in a shelter: whoever calls it home.
+export const residentsOf = (w: World, t: Thing) => w.agents.filter((x) => x.home === t.id);
+// Someone moving out leaves the place to whoever still lives there, or empty for anyone to take.
+export function leaveHome(w: World, a: Agent, home: Thing) {
+  if (a.home === home.id) a.home = null;
+  if (home.owner !== a.id) return;
+  const next = residentsOf(w, home)[0];
+  if (next) home.owner = next.id; else delete home.owner;
+  mark(w, home);
 }
 
 // Putting things away inside a home keeps them out of your hands and out of the weather.

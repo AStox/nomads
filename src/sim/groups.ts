@@ -4,7 +4,7 @@ import {
   type Agent, type Camp, type Custom, type Incident, type Precedent, type Response, type Thing, type World,
 } from "./world";
 import { p } from "./materials";
-import { count, giveItems, homeOf, mark as touch, nearFire, reaches, stash, takeItems, unstash } from "./physics";
+import { count, giveItems, homeOf, leaveHome, mark as touch, nearFire, reaches, stash, takeItems, unstash } from "./physics";
 import { thingById } from "./space";
 import { describeRel, judge, nameCamp } from "./brain";
 import { canSee } from "./light";
@@ -13,7 +13,7 @@ import { trace } from "./trace";
 const LINK = 200; // meters: homes this close, between people who don't dislike each other, make neighbors
 const WATCH = DAY * 3; // how long people are watched to see whether they go along with a ruling
 const EXILE = DAY * 10;
-const HARM: Record<string, true> = { take: true, steal: true, raid: true, attack: true, insult: true, lie: true, refused_food: true, burned_home: true, trapped: true, last_deer: true, took_from_store: true };
+const HARM: Record<string, true> = { take: true, steal: true, raid: true, attack: true, insult: true, lie: true, refused_food: true, refused_help: true, burned_home: true, trapped: true, last_deer: true, took_from_store: true };
 const HOSTILE: Record<string, true> = { take: true, steal: true, raid: true, attack: true, insult: true };
 
 export const groupsChanged = { now: true };
@@ -73,7 +73,7 @@ export function cluster(w: World) {
       // Someone driven out can't keep a home inside the camp.
       const a = agentOf(w, id), h = a && homeOf(w, a);
       if (!a || !h || !camp.members.some((m) => homes.get(m) && meters(homes.get(m)!, h) <= LINK)) continue;
-      delete h.owner; a.home = null; touch(w, h);
+      leaveHome(w, a, h);
       log(w, "driven_out", [a.id], h, `${a.name} tried to keep a home too close to ${camp.name}, and it was taken from them.`, `${a.name} lost their home`);
       const p = camp.precedents.find((x) => x.id === ex.precedent);
       if (p && !p.defied.includes(a.id)) { p.defied.push(a.id); trace("group", "defy", { precedent: p.id, who: a.id, how: "kept a home inside" }, a.id); }
@@ -298,7 +298,7 @@ function exile(w: World, camp: Camp, doer: Agent, p: Precedent) {
   delete camp.shunned[doer.id];
   if (camp.leader === doer.id) camp.leader = null;
   const home = homeOf(w, doer);
-  if (home && meters(home, camp) <= LINK + 30) { delete home.owner; doer.home = null; touch(w, home); }
+  if (home && meters(home, camp) <= LINK + 30) leaveHome(w, doer, home);
   doer.needs.social = Math.max(0, doer.needs.social - 25);
   doer.goal = null; doer.plan = [];
   p.open = w.t + WATCH;
@@ -398,6 +398,8 @@ const ACTS: Record<string, (v: string) => [string, string]> = {
   insult: (v) => [`Insulting ${v}`, `insults ${v}`],
   lie: (v) => [`Lying about ${v}`, `lies about ${v}`],
   refused_food: (v) => [`Refusing food to ${v}`, `refuses food to ${v}`],
+  refused_help: (v) => [`Turning away ${v} when they asked for help`, `turns away ${v} when they ask for help`],
+  take_in: (v) => [`Taking in ${v}`, `takes in ${v}`],
   give: (v) => [`Giving things to ${v}`, `gives things to ${v}`],
   share: (v) => (v ? [`Sharing with ${v}`, `shares with ${v}`] : ["Putting food by for everyone", "puts food by for everyone"]),
   tend: (v) => [`Tending ${v}`, `tends ${v}`],

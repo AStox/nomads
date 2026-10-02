@@ -69,7 +69,14 @@ const MILESTONES: Record<string, (w: World) => boolean> = {
   shot_with_bow: (w) => laws(w).some((l) => l.verb === "throw" && l.key.split("|")[2] !== "-"),
   camp: (w) => w.camps.length > 0,
   named_tool: (w) => kindIs(w, (k) => !!k.named && !!k.plain),
+  fire_kept: (w) => lawBuilds(w, "fed_fire"),
+  theory: (w) => w.events.some((e) => e.kind === "theory"),
+  helped: (w) => w.events.some((e) => e.kind === "ask_help" && !/turned them away/.test(e.text)),
+  shared_home: () => maxHome >= 2,
+  longhouse: () => maxRoom >= 6,
 };
+// the most people living in one shelter, and the most any shelter sleeps
+let maxHome = 0, maxRoom = 0;
 const reached: Record<string, number> = {};
 const t0 = performance.now();
 let births = 0;
@@ -82,7 +89,11 @@ for (let d = 1; d <= days; d++) {
     // Jev's answers, and whatever they set off, all land before the next tick
     if (brainKind() !== "random") for (;;) { await Bun.sleep(asking() ? 10 : 0); if (!asking()) { await Bun.sleep(0); if (!asking()) break; } }
   }
-  for (const t of w.things) if (t.kind === "structure" && t.shelter) maxTier = Math.max(maxTier, t.shelter.tier);
+  for (const t of w.things) if (t.kind === "structure" && t.shelter) {
+    maxTier = Math.max(maxTier, t.shelter.tier);
+    maxRoom = Math.max(maxRoom, t.shelter.room ?? 0);
+    maxHome = Math.max(maxHome, w.agents.filter((a) => a.home === t.id).length);
+  }
   for (const [name, ok] of Object.entries(MILESTONES)) if (!(name in reached) && ok(w)) reached[name] = d;
   if (d % 10 === 0) console.error(`seed ${seed} day ${d}: ${Math.round((performance.now() - t0) / 1000)}s, ${w.agents.length} alive, ${Object.keys(reached).length} milestones`);
   if (!w.agents.length) break;
@@ -98,7 +109,10 @@ console.log(JSON.stringify({
   reached, missing: Object.keys(MILESTONES).filter((m) => !(m in reached)),
   laws: Object.keys(w.laws).length, ruled: laws(w).filter((l) => l.source === "jev").length, made: Object.values(w.kinds).filter((k) => k.made).length,
   animals: w.animals.reduce<Record<string, number>>((m, a) => ((m[a.species] = (m[a.species] ?? 0) + 1), m), {}),
-  jev: w.jev, fails: top(fails, 8), counters: { stepFailed: counters["plan.step_failed"] ?? 0, interrupts: counters["plan.interrupt"] ?? 0, decided: counters["brain.decided"] ?? 0, tinker: counters["brain.tinker_choice"] ?? 0 },
+  jev: w.jev, fails: top(fails, 8),
+  social: Object.fromEntries(["ask_help", "move_in", "avoid", "theory", "steal", "insult", "talk", "teach"].map((k) => [k, w.events.filter((e) => e.kind === k).length])),
+  kept_away: w.events.filter((e) => e.kind === "goal" && / keep away from /.test(e.text)).length,
+  homes: { maxRoom, maxHome }, counters: { stepFailed: counters["plan.step_failed"] ?? 0, interrupts: counters["plan.interrupt"] ?? 0, decided: counters["brain.decided"] ?? 0, tinker: counters["brain.tinker_choice"] ?? 0 },
 }));
 // --dump file: what this world's people found out, what they did, and what happened, to read through afterwards
 const dump = arg("dump", "");
@@ -109,7 +123,7 @@ if (dump) {
     events: kinds,
     laws: Object.values(w.laws).map((l) => `${(l.t / DAY).toFixed(1)} ${l.by}: ${l.text}`),
     made: Object.values(w.kinds).filter((k) => k.made).map((k) => `${k.name} x${k.count ?? 1}`),
-    structures: w.things.filter((t) => t.kind === "structure").map((t) => ({ owner: t.owner, tier: t.shelter?.tier, parts: t.parts })),
+    structures: w.things.filter((t) => t.kind === "structure").map((t) => ({ owner: t.owner, tier: t.shelter?.tier, room: t.shelter?.room, living: w.agents.filter((a) => a.home === t.id).map((a) => a.name), parts: t.parts })),
     notable: w.events.filter((e) => !["goal", "gather", "eat", "weather", "notice", "talk", "bond", "gossip", "level", "spoil", "grow", "birth", "death", "recover"].includes(e.kind)).map((e) => `${(e.t / DAY).toFixed(2)} ${e.kind}: ${e.text}`),
     goals: w.events.filter((e) => e.kind === "goal").map((e) => e.text.replace(/^\S+ decided to /, "").replace(/ \(\d+% likely\)$/, "").replace(/\. ?$/, "")).reduce<Record<string, number>>((m, g) => ((m[g] = (m[g] ?? 0) + 1), m), {}),
     agents: w.agents.map((a) => ({ name: a.name, inv: a.inv.map((s) => w.kinds[s.k]?.name), beliefs: Object.keys(a.beliefs).length, needs: a.needs })),

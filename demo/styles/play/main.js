@@ -54,8 +54,9 @@ async function main() {
   const live = await createLive({ seed, canvas, workers: Math.trunc(num("workers", 0, 0, 8)) || undefined, adjacent: Q.get("adj") !== "0", check: Q.get("check") === "1", onProgress: (d, n, what) => { steps.renderer = [what, 0.5 * (what === "baking the island" ? 1 : 0) + (0.5 * d) / n]; say(); } });
   const sim = await simP;
   if (sim?.brain === "relay") { document.title = "Nomads: live, thinking with Jev"; hint.textContent += " · thinking with Jev"; }
-  // ?hour= pins the hour the island is drawn at, its light and sun, while the sim runs on
-  if (sim) sim.hour = num("hour", null, 0, 24);
+  // ?hour= pins the hour the island is drawn at, its light and sun, while the sim runs on; ?speed= starts it faster
+  // (a tick each frame at most, so 32 runs a day in about five seconds), for timelapses
+  if (sim) { sim.hour = num("hour", null, 0, 24); sim.speed = num("speed", 1, 0.25, 32); }
   const ready = performance.now() - t0;
   // ?zoom= takes a name, the old 0..3 index, or a number of zoom steps; ?bearing= one of the 8 whole bearings
   const zq = Q.get("zoom"), names = ["island", "region", "valley", "close"];

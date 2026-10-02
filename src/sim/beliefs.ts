@@ -18,7 +18,12 @@ export type Belief = {
   t: number;
   spurious?: string; // a kind they wrongly think they need to hold
   law?: string;
+  // how it has gone for them in conditions anyone can see (rain, dark, cold, wind): tries and wins under each
+  when?: Record<string, { tries: number; wins: number }>;
+  unless?: string; // a condition they've come to think it won't work in: their own theory of why it once failed
 };
+// A condition, as a theory names it.
+export const CONDITION_WORDS: Record<string, string> = { rain: "in the rain", dark: "in the dark", cold: "in freezing cold", wind: "in a strong wind" };
 
 export const beliefKey = (f: Fields) =>
   [f.verb, f.inputs.join("+"), f.tool ?? "-", f.target ?? "-", f.at ?? "-", f.shape ?? "-"].join("|");
@@ -66,7 +71,7 @@ export function sentence(w: World, f: Fields, ticks?: number): string {
       if (f.builds === "hearth") return `Ringing a fire with ${ins.join(" and ")} keeps it contained and burning steady.`;
       if (f.builds === "kiln") return `Heaping ${ins.join(" and ")} over a ringed fire closes it in to smolder.`;
       if (f.builds === "forge") return `Feeding ${ins.join(" and ")} to a ringed fire makes it burn white-hot.`;
-      if (f.builds === "shelter") return `Leaning and stacking ${ins.join(", ")} makes a shelter.`;
+      if (f.builds === "shelter") return f.at === "home" ? `Building ${ins.join(", ")} into the shelter they have makes it bigger or better.` : `Leaning and stacking ${ins.join(", ")} makes a shelter.`;
       return `Stacking ${ins.join(", ")} makes a pile.`;
     case "plant":
       return f.builds ? `${an(ins[0])[0].toUpperCase() + an(ins[0]).slice(1)} pushed into the ground grows into ${f.builds === "grass" ? "grass that bears grain" : `a ${f.builds}`}.` : `They pushed ${an(ins[0])} into the ground.`;
@@ -86,7 +91,8 @@ export function sentence(w: World, f: Fields, ticks?: number): string {
   return `${f.verb} ${ins.join(", ")}`;
 }
 export const beliefText = (w: World, b: Belief) =>
-  sentence(w, b.fields, b.ticks) + (b.spurious ? ` They're convinced it only works if they hold ${an(nm(w, b.spurious))}.` : "");
+  sentence(w, b.fields, b.ticks) + (b.spurious ? ` They're convinced it only works if they hold ${an(nm(w, b.spurious))}.` : "")
+  + (b.unless ? ` They think it won't work ${CONDITION_WORDS[b.unless]}.` : "");
 
 // Useful enough to remember: it made something, built something, or had a clear effect.
 const useful = (o: Outcome) => o.ok || !!o.effect || !!o.fields.gives.length || (!!o.fields.builds && o.fields.builds !== "pile" && o.fields.builds !== "ring");
@@ -142,8 +148,8 @@ function superstition(w: World, a: Agent, b: Belief) {
   log(w, "mistaken", [a.id], a, `${a.name} is convinced it only worked because they were holding ${an(nm(w, other.k))}.`);
 }
 
-// Everyone nearby sees what happened and slowly picks it up.
-export function watchers(w: World, doer: Agent, out: Outcome, ticks: number) {
+// Everyone nearby sees what happened and slowly picks it up. now: the conditions it was done in.
+export function watchers(w: World, doer: Agent, out: Outcome, ticks: number, now: string[] = []) {
   if (!useful(out)) return;
   const key = beliefKey(out.fields);
   for (const b of w.agents) {
@@ -154,6 +160,11 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number) {
       if (mine.spurious && !doer.inv.some((s) => s.k === mine.spurious) && (b.traits.skeptical ?? 0) + (b.traits.observant ?? 0) > 0.3) {
         log(w, "learn", [b.id], b, `${b.name} watched ${doer.name} do it without ${an(nm(w, mine.spurious))} and realized it was never needed.`);
         delete mine.spurious;
+      }
+      // Whoever thinks it can't be done in the rain, and watches it done in the rain, thinks again.
+      if (mine.unless && out.ok && now.includes(mine.unless)) {
+        log(w, "theory", [b.id], b, `${b.name} watched ${doer.name} do it ${CONDITION_WORDS[mine.unless]}, and stopped thinking it couldn't be done: ${sentence(w, mine.fields)}`);
+        delete mine.unless;
       }
       continue;
     }
@@ -171,7 +182,8 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number) {
 export function teach(w: World, teacher: Agent, learner: Agent, key: string) {
   const b = teacher.beliefs[key];
   if (!b) return;
-  learner.beliefs[key] = { ...b, fields: { ...b.fields }, how: "taught", from: teacher.id, t: w.t, tries: 0, wins: Math.min(1, b.wins) };
+  // the teacher's theory of when it fails comes with it; their record of trying it doesn't
+  learner.beliefs[key] = { ...b, fields: { ...b.fields }, how: "taught", from: teacher.id, t: w.t, tries: 0, wins: Math.min(1, b.wins), when: undefined };
   trace("belief", "taught", { key, from: teacher.id, spurious: b.spurious }, learner.id);
 }
 

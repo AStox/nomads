@@ -226,18 +226,19 @@ function roundOpening(S, R, ang, w, h) {
 // tier 2 hut at this zoom; the other tiers scale from it. flag: an optional palette index for the owner's pennant.
 // dir 0..7 turns it in 45 degree steps clockwise on screen: the door faces down-left at 0, left at 1, up-left at 2,
 // up at 3, up-right at 4, right at 5, down-right at 6 and down (toward the camera) at 7.
-export function shelter(tier = 2, style = "sticks", hpx = 16, seed = 0, flag = -1, dir = 0) {
-  return turned(dir, () => building(tier, style, hpx, seed, flag));
+// stretch: how many times its tier's own length a lodge has been drawn out to, to sleep more.
+export function shelter(tier = 2, style = "sticks", hpx = 16, seed = 0, flag = -1, dir = 0, stretch = 1) {
+  return turned(dir, () => building(tier, style, hpx, seed, flag, stretch));
 }
-function building(tier, style, hpx, seed, flag) {
+function building(tier, style, hpx, seed, flag, stretch = 1) {
   tier = clamp(tier | 0, 0, 3);
   const st = MAT[style] ? style : "sticks", k = Math.max(0.45, hpx / 16);
   let S;
   if (tier === 0) return heap(st, hpx * 0.42, seed);
   if (tier === 1) S = leanto(st, k, seed);
-  else if (st === "hide") S = tent(k * (tier === 3 ? 1.3 : 1), tier, seed);
+  else if (st === "hide") S = tent(k * (tier === 3 ? 1.3 * Math.sqrt(stretch) : 1), tier, seed);
   else if (tier === 2) S = st === "reeds" || st === "clay" ? dome(st, k, seed) : st === "sticks" || st === "stone" ? roundhut(st, k, seed) : house(st, k, 5.2 * k, 4 * k, 6 * k, 6.5 * k, seed, false);
-  else S = st === "clay" ? adobe(k, seed) : st === "reeds" || st === "sticks" ? longhouse(st, k, seed) : house(st, k, 7.5 * k, 5 * k, 7 * k, 7 * k, seed, true);
+  else S = st === "clay" ? adobe(k, seed, stretch) : st === "reeds" || st === "sticks" ? longhouse(st, k, seed, stretch) : house(st, k, 7.5 * k * stretch, 5 * k, 7 * k, 7 * k, seed, true);
   return pennantOn(S, flag, k);
 }
 
@@ -353,8 +354,8 @@ function leanto(st, k, seed) {
 }
 
 // A flat-roofed adobe block: parapet, roof-beam ends through the wall, a ladder up the lit side.
-function adobe(k, seed) {
-  const hu = 7 * k, hv = 5 * k, hw = 8 * k, M = MAT.clay, S = iso(hu + 2, hv + 3, hw + 3), wall = surfer(M.wall, "smooth", seed, k, 0.35);
+function adobe(k, seed, stretch = 1) {
+  const hu = 7 * k * stretch, hv = 5 * k, hw = 8 * k, M = MAT.clay, S = iso(hu + 2, hv + 3, hw + 3), wall = surfer(M.wall, "smooth", seed, k, 0.35);
   for (const s of [1, -1]) {
     quad(S, [-hu, s * hv, 0], [2 * hu, 0, 0], [0, 0, hw], [0, s, 0], wall);
     quad(S, [s * hu, -hv, 0], [0, 2 * hv, 0], [0, 0, hw], [s, 0, 0], wall);
@@ -371,8 +372,8 @@ function adobe(k, seed) {
 }
 
 // A long low house under a big hipped roof of thatch or leaves reaching nearly to the ground.
-function longhouse(st, k, seed) {
-  const M = MAT[st], hu = 8 * k, hv = 4.4 * k, hw = (st === "sticks" ? 3.6 : 2.6) * k, rise = 8.5 * k, o = 1.2 * k, S = iso(hu + o + 2, hv + o + 2, hw + rise + 2);
+function longhouse(st, k, seed, stretch = 1) {
+  const M = MAT[st], hu = 8 * k * stretch, hv = 4.4 * k, hw = (st === "sticks" ? 3.6 : 2.6) * k, rise = 8.5 * k, o = 1.2 * k, S = iso(hu + o + 2, hv + o + 2, hw + rise + 2);
   const wall = surfer(st === "sticks" ? MAT.sticks.wall : MAT.reeds.wall, st === "sticks" ? "twigs" : "thatch", seed, k);
   const roof = surfer(M.roof, M.rt, seed + 1, k, 0.25);
   for (const s of [1, -1]) {
@@ -381,7 +382,9 @@ function longhouse(st, k, seed) {
   }
   field(S, -hu - o, hu + o, -hv - o, hv + o, (u, v) => Math.min(hw + rise, hw + rise * Math.min(1 - Math.abs(v) / hv, (hu - Math.abs(u)) / hv + 0.25)), (u, v, z, x, y, sh) =>
     Math.abs(v) > hv + o - 0.6 || Math.abs(u) > hu + o - 0.6 ? dith(M.roof, 0.5 + sh, x, y) : roof(u + v * 0.3, (hw + rise - z) * 1.1, x, y, sh));
-  opening(S, -hu * 0.1, hv, 0, Math.max(0.8, 1.1 * k), Math.max(1.5, hw - 0.4), "v");
+  // a door down the long side for every eight meters or so of house, and one in the end
+  const doors = Math.max(1, Math.round(stretch));
+  for (let i = 0; i < doors; i++) opening(S, -hu + (2 * hu * (i + 0.45)) / doors, hv, 0, Math.max(0.8, 1.1 * k), Math.max(1.5, hw - 0.4), "v");
   opening(S, hu, 0, 0, Math.max(0.8, k), Math.max(1.5, hw - 0.4), "u");
   return done(S, boxFoot(hu, hv));
 }
@@ -1219,9 +1222,11 @@ function drawObject(kind, hpx, seed, o) {
     case "grave": return grave(h, seed, o.dir ?? 0);
     case "item": return turned(o.dir ?? 0, () => heap(o.what ?? ITEM_HEAP[String(sp ?? "").split(":")[0]] ?? "misc", Math.max(2.5, h), seed));
     case "structure": {
-      // size is the building's height by tier; shelter() wants the height a tier 2 hut would have at this zoom
-      const tier = o.tier ?? 1;
-      return shelter(tier, o.style ?? sp ?? "sticks", (h * 3) / TIER_M[clamp(tier | 0, 0, 3)], seed, o.flag ?? -1, o.dir ?? 0);
+      // size is the building's length: its tier's width, and for a lodge the sim (physics.ts sizeOf) draws out longer,
+      // a pace and a half more for each it sleeps past three. shelter() wants the height a tier 2 hut would have at
+      // this zoom, and how much longer than its tier's own this one is.
+      const tier = o.tier ?? 1, ti = clamp(tier | 0, 0, 3), len = TIER_M[ti] + (ti === 3 ? 1.6 * Math.max(0, (o.room ?? 0) - 3) : 0);
+      return shelter(tier, o.style ?? sp ?? "sticks", (h * 3) / len, seed, o.flag ?? -1, o.dir ?? 0, len / TIER_M[ti]);
     }
     case "fire": return fire(h, seed, o);
   }

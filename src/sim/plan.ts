@@ -12,7 +12,7 @@ export type Ctx = {
   toxic: string[]; // kinds they believe make you sick
   store?: Record<string, number>; // what's kept in their home
   shared?: Record<string, number>; // what's in their camp's shared store
-  rain?: boolean; // out in the rain with no roof over them: no tinder will catch
+  now?: string[]; // the conditions they're in (rain, dark, cold, wind), for what they believe won't work in them
 };
 export type PlanStep = { op: string; arg?: string; key?: string };
 type Op = PlanStep & { cost: number; needs: string[]; makes: string[]; pre: (s: PState) => boolean; eff: (s: PState) => PState };
@@ -25,7 +25,7 @@ const at = (s: PState, place: string | null): PState => ({ ...s, at: place });
 const WITHIN: Record<string, string[]> = { fire: ["hearth", "kiln", "forge"], hearth: ["kiln", "forge"] };
 export const atPlace = (s: PState, place: string) => s.at === place || !!WITHIN[place]?.includes(s.at ?? "");
 
-export const SOCIAL = ["talk", "give", "trade", "share_meal", "share_fire", "help", "gossip", "teach", "tend", "beg", "insult", "take", "steal", "attack"];
+export const SOCIAL = ["talk", "give", "trade", "share_meal", "share_fire", "help", "gossip", "teach", "tend", "beg", "ask_help", "move_in", "insult", "take", "steal", "attack"];
 export const SOCIAL_ITEM_NEEDS: Record<string, (s: PState, kinds: Registry) => boolean> = {
   give: (s) => Object.values(s.inv).some((v) => v > 0),
   share_meal: (s, kinds) => Object.entries(s.inv).some(([k, v]) => v && p(kinds[k], "edible") > 0.1),
@@ -76,8 +76,9 @@ function beliefOp(b: Belief, ctx: Ctx): Op | null {
   const place = target ?? f.at ?? (f.builds !== "shelter" ? null : near("home") ? "home" : near("homesite") ? "homesite" : null);
   const builds = f.builds ?? (f.effect === "cure" ? "cured" : null);
   if (!Object.keys(out).length && !builds) return null;
-  // Nobody out in the rain gets wet tinder to catch, by friction or by sparks.
-  if (builds === "fire" && ctx.rain && (f.verb === "rub" || f.verb === "strike")) return null;
+  // What they've come to think won't work in the conditions they're in, they don't plan on, however badly they need it:
+  // seeing it done in those conditions, or doing it, is what changes their mind.
+  if (b.unless && ctx.now?.includes(b.unless)) return null;
   if ((f.verb === "strike" || f.verb === "throw") && target && (b.rate ?? 0) <= 0 && b.wins === 0) return null;
   if (f.verb !== "strike" && f.verb !== "throw" && b.wins === 0) return null;
   if (f.verb === "eat") return null;
@@ -171,6 +172,7 @@ function goal(type: string, start: PState, ctx: Ctx): { done: (s: PState) => boo
   if (type.startsWith("have:")) { const [, k, c] = type.split(":"); return { done: (s) => n(s, k) >= +c, needs: [k] }; }
   if (type.startsWith("hunt:")) { const f = `hunted:${type.slice(5)}`; return { done: has(f), needs: [f] }; }
   if (type === "make_fire") return { done: has("fire"), needs: ["fire"] };
+  if (type === "tend_fire") return { done: has("fed_fire"), needs: ["fed_fire"] };
   if (type === "build_shelter") return { done: has("shelter"), needs: ["shelter"] };
   if (type === "contain_fire") return { done: has("hearth"), needs: ["hearth"] };
   if (type === "plant") return { done: has("bush"), needs: ["bush"] };

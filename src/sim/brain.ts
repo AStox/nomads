@@ -4,7 +4,7 @@ import {
   type Agent, type BondKind, type Label, type Relationship, type Response, type World,
 } from "./world";
 import { around, thingById } from "./space";
-import { shelterName } from "./physics";
+import { fireHours, shelterName } from "./physics";
 import { TRAITS } from "./traits";
 import { DARK, canSee, lightOn, lightWords } from "./light";
 import { airOn, airWords } from "./air";
@@ -31,15 +31,17 @@ export const asking = () => inflight;
 type Answer = { type: string; choice?: string; probabilities?: Record<string, number>; confidence?: number; noul?: number; score?: number };
 type Question = { type: "choice" | "noul" | "score"; instructions: unknown; criteria?: unknown };
 
-// bias: weights for a choice's options, and for a yes or no question a cap on how likely the answer is ("noul").
-function randomAnswer(q: Question, bias?: Record<string, number>): Answer {
-  if (q.type === "noul") return { type: "noul", noul: Math.random() * (bias?.noul ?? 1) };
+// How an offline answer leans, per question: weights for a choice's options; for a yes or no question its likely answer
+// (p) or a cap (cap); for a score the level it centres on (at).
+export type Lean = Record<string, number>;
+function randomAnswer(q: Question, lean?: Lean): Answer {
+  if (q.type === "noul") return { type: "noul", noul: lean?.p !== undefined ? clamp(lean.p + (Math.random() - 0.5) * 0.4, 0, 1) : Math.random() * (lean?.cap ?? 1) };
   if (q.type === "score") {
-    const levels = (q.criteria as unknown[]).length;
-    return { type: "score", score: Math.random() * (levels - 1), confidence: 0.5 };
+    const top = (q.criteria as unknown[]).length - 1;
+    return { type: "score", score: lean?.at !== undefined ? clamp(lean.at + (Math.random() - 0.5) * 1.5, 0, top) : Math.random() * top, confidence: 0.5 };
   }
   const keys = Object.keys(q.criteria as object);
-  const raw = keys.map((k) => Math.random() * (bias?.[k] ?? 1));
+  const raw = keys.map((k) => Math.random() * (lean?.[k] ?? 1));
   const total = raw.reduce((a, b) => a + b, 0) || 1;
   const probabilities = Object.fromEntries(keys.map((k, i) => [k, raw[i] / total]));
   const choice = keys[raw.indexOf(Math.max(...raw))];
@@ -48,10 +50,11 @@ function randomAnswer(q: Question, bias?: Record<string, number>): Answer {
   return { type: "choice", choice, probabilities, confidence: 0.5 };
 }
 
-async function ask(w: World, purpose: string, agent: string | undefined, state: unknown, questions: Record<string, Question>, bias?: Record<string, number>) {
+// leans: how each question would lean offline, by question id; Jev never sees them and judges for itself.
+async function ask(w: World, purpose: string, agent: string | undefined, state: unknown, questions: Record<string, Question>, leans: Record<string, Lean> = {}) {
   const t0 = performance.now();
   if (brain.kind === "random") {
-    const answers = Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, randomAnswer(q, bias)]));
+    const answers = Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, randomAnswer(q, leans[k])]));
     jevLog({ agent, purpose, ms: 0, tokens: 0, state, questions, answers });
     return answers;
   }
@@ -133,6 +136,8 @@ export function view(w: World, a: Agent) {
     let kind = t.kind === "item" ? `${w.kinds[t.item ?? ""]?.name ?? "something"} on the ground` : t.kind === "structure" ? (shelterName(w, t) === "fire ring" ? "ring of stones round a fire" : ["pile of stuff", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0]) : t.kind === "bush" ? `${t.species ?? "berry"} bush` : t.kind.replaceAll("_", " ");
     if (t.burning) kind = `burning ${kind}`;
     if (t.kind === "fire") kind = t.covered ? "fire heaped over with stone" : t.contained && (t.charcoal ?? 0) > 0 ? "ringed fire glowing white-hot with charcoal" : t.contained ? "ringed fire" : "fire";
+    // how long it will last, as anyone sitting by it can judge from what's burning
+    if (t.kind === "fire") { const h = fireHours(t); kind = `${kind}, ${h < 1 ? "almost out" : `wood enough for about ${Math.round(h)} hours`}`; }
     if ((t.resin ?? 0) > 0) kind = `${kind} beaded with resin`;
     if (t.kind === "boulder" && t.inside?.flint) kind = "boulder studded with dark nodules";
     if (t.shared) kind = `${kind} kept as the camp's store`;
@@ -202,10 +207,16 @@ function needBias(w: World, a: Agent, options: Record<string, string>) {
     if ((k === "rest" || k === "warm_up") && lightOn(w, a).bright < DARK) b[k] = Math.max(b[k] ?? 0, 4);
     // A fire for the night: light and warmth, and the wolves keep off.
     if (k === "make_fire" && (lightOn(w, a).bright < DARK || a.needs.warmth < 60)) b[k] = 4;
-    if ((k === "warm_up" || k === "make_fire" || k === "build_shelter") && a.needs.warmth < 40) b[k] = 6;
-    // Cold with no fire or roof they know how to make: try for one, or keep close to someone who has one.
-    if ((k === "experiment:fire" || k === "experiment:shelter" || k === "share_fire" || k === "stay_close") && a.needs.warmth < 40) b[k] = 4;
+    if (k === "tend_fire") b[k] = lightOn(w, a).bright < DARK || a.needs.warmth < 60 ? 5 : 2;
+    // the colder, the more nothing else matters
+    if ((k === "warm_up" || k === "make_fire" || k === "build_shelter") && a.needs.warmth < 40) b[k] = 6 + (40 - a.needs.warmth) / 2;
+    // Cold with no fire or roof they know how to make, or a roof that isn't enough: try for one, or keep close to
+    // someone who has one.
+    if ((k === "experiment:fire" || k === "experiment:shelter" || k === "experiment:home" || k === "share_fire" || k === "stay_close") && a.needs.warmth < 40) b[k] = 4 + (40 - a.needs.warmth) / 4;
     if (k === "tinker") b[k] = 3;
+    // nothing they've tried works, and someone is near: ask
+    if (k === "ask_help") b[k] = 6;
+    if (k === "move_in") b[k] = 2;
     if (k === "experiment:fireside") b[k] = 3;
     if (k.startsWith("make:") || k === "build_shelter" || k.startsWith("hunt:")) b[k] = Math.max(b[k] ?? 0, 2);
     // as the days draw in and things ripen, lay food by
@@ -213,6 +224,27 @@ function needBias(w: World, a: Agent, options: Record<string, string>) {
   }
   return b;
 }
+
+// Offline, people act on the character and the ties Jev would weigh: the traits that pull toward each social act and,
+// for acts against someone, a grudge to act on. Nobody turns on people they like for no reason.
+const PULL: Partial<Record<string, string[]>> = {
+  avoid: ["loner", "shy", "anxious", "suspicious", "cowardly"],
+  steal: ["greedy", "deceitful", "ruthless"], take: ["greedy", "domineering", "ruthless"], raid: ["greedy", "ruthless", "vengeful"],
+  insult: ["abrasive", "hot-tempered", "cruel", "arrogant", "jealous"], attack: ["hot-tempered", "cruel", "vengeful", "ruthless"],
+  talk: ["gregarious", "cheerful", "charismatic", "gossip", "flirtatious"], gossip: ["gossip", "jealous"],
+  give: ["generous", "selfless"], share_meal: ["generous", "gregarious"], share_fire: ["generous", "gregarious", "protective"],
+  help: ["selfless", "loyal", "protective", "hardworking"], teach: ["patient", "generous", "wise"], trade: ["thrifty", "practical", "greedy"],
+};
+const AGAINST = ["avoid", "steal", "take", "raid", "insult", "attack"];
+// What someone holds against another: how much they dislike them, and the wrongs they remember, the less the fonder
+// they are of them (a brush-off counts for little).
+const WRONGS: Partial<Record<BondKind, number>> = { stole_from_me: 1, lied_to_me: 1, humiliated_me: 1, destroyed_my_home: 1, rival: 0.7, refused_me: 0.25 };
+export function grudge(a: Agent, id: string) {
+  const r = a.rel[id];
+  if (!r) return 0;
+  return Math.max(0, -r.affinity) + (1 - Math.max(0, r.affinity)) * r.bonds.reduce((t, b) => t + b.weight * (WRONGS[b.kind] ?? 0), 0);
+}
+const fondness = (a: Agent, id: string) => { const r = a.rel[id]; return r ? Math.max(0, r.affinity) + (r.label === "kin" ? 0.5 : 0) : 0; };
 
 export async function decide(w: World, a: Agent, options: Record<string, string>, towards: string[], against: string[]) {
   const q: Record<string, Question> = {
@@ -223,7 +255,14 @@ export async function decide(w: World, a: Agent, options: Record<string, string>
   const names = (ids: string[]) => Object.fromEntries(ids.map((id) => [w.people[id]?.name ?? id, null]));
   if (towards.length) q.towards = { type: "choice", instructions: `If ${a.name} sought someone out to be friendly, ask for something, or work together, who would it be?`, criteria: names(towards) };
   if (against.length) q.against = { type: "choice", instructions: `If ${a.name} acted against someone or wanted to keep away from them, who would it be?`, criteria: names(against) };
-  const ans = await ask(w, "decide", a.id, view(w, a), q, needBias(w, a, options));
+  const goal = needBias(w, a, options), worst = Math.max(0, ...against.map((id) => grudge(a, id)));
+  for (const k of Object.keys(options)) {
+    const pull = PULL[k];
+    // a passing slight is shrugged off; it takes a real grudge to act on
+    if (pull) goal[k] = (goal[k] ?? 1) * (1 + pull.reduce((t, x) => t + (a.traits[x] ?? 0), 0)) * (AGAINST.includes(k) ? 0.1 + Math.max(0, worst - 0.25) : 1);
+  }
+  const by = (ids: string[], f: (id: string) => number) => Object.fromEntries(ids.map((id) => [w.people[id]?.name ?? id, f(id)]));
+  const ans = await ask(w, "decide", a.id, view(w, a), q, { goal, towards: by(towards, (id) => 0.5 + 2 * fondness(a, id)), against: by(against, (id) => 0.1 + 3 * grudge(a, id)) });
   const byName = (p?: Record<string, number>) => p && Object.fromEntries(Object.entries(p).filter(([n]) => idOf.has(n)).map(([n, v]) => [idOf.get(n)!, v]));
   return { goal: ans.goal.probabilities!, towards: byName(ans.towards?.probabilities), against: byName(ans.against?.probabilities) };
 }
@@ -241,17 +280,49 @@ export async function chooseTinker(w: World, a: Agent, options: string[]) {
   return sample(ans.attempt.probabilities!, 1.6);
 }
 
+// Something that has worked for them before just didn't. What do they make of it: something about the conditions
+// they were in (present: the ones they could see, each in words), or just bad luck? Offline the guess leans toward the
+// condition it has gone worst in (lean).
+export async function theorize(w: World, a: Agent, what: string, happened: string, present: Record<string, string>, lean: Lean) {
+  const ans = await ask(w, "theory", a.id, { ...view(w, a), tried: what, what_happened: happened }, {
+    why: {
+      type: "choice",
+      instructions: `${a.name} has done this before and it worked: ${what} This time it didn't: ${happened} What does ${a.name} make of it?`,
+      criteria: { ...present, luck: "Just bad luck; it will work next time", unsure: "No idea what was different" },
+    },
+  }, { why: { luck: 1.5, unsure: 1, ...lean } });
+  const pick = ans.why.choice!;
+  return pick in present && (ans.why.confidence ?? 0) >= 0.3 ? pick : null;
+}
+
+// Offline, a reply leans the way the one answering is inclined: warmly toward those they like and as their nature
+// runs, coldly toward those they hold something against.
+const WARM = ["welcome", "accept", "join", "give", "believe", "let_it_go", "shrug", "share_fire", "take_in", "show", "welcome_in", "huddle", "forage_with"];
+const COLD = ["brush_off", "refuse", "decline", "doubt", "confront", "insult_back", "walk_away"];
+const REPLY_PULL: Partial<Record<string, string[]>> = {
+  welcome: ["gregarious", "cheerful", "charismatic"], accept: ["trusting", "cheerful"], join: ["gregarious", "cheerful"], give: ["generous", "selfless", "merciful"],
+  believe: ["trusting", "gossip"], let_it_go: ["forgiving", "calm", "deferential"], shrug: ["calm", "stoic"],
+  share_fire: ["generous", "protective", "selfless"], take_in: ["generous", "protective", "selfless", "loyal"], show: ["patient", "generous", "wise"], welcome_in: ["generous", "loyal", "gregarious"],
+  huddle: ["protective", "gregarious", "selfless"], forage_with: ["hardworking", "loyal", "selfless"],
+  brush_off: ["shy", "loner", "abrasive", "arrogant"], refuse: ["greedy", "suspicious", "proud"], decline: ["shy", "loner"], doubt: ["suspicious", "skeptical"],
+  confront: ["hot-tempered", "just", "vengeful", "brave"], insult_back: ["hot-tempered", "abrasive"], walk_away: ["shy", "melancholy"],
+  fight_back: ["brave", "hot-tempered"], flee: ["cowardly", "anxious"], submit: ["deferential", "calm"],
+};
 export async function respond(w: World, me: Agent, them: Agent, situation: string, options: Record<string, string>) {
+  const tie = (k: string) => (WARM.includes(k) ? 1 + 2 * fondness(me, them.id) : COLD.includes(k) ? 0.6 + 2 * grudge(me, them.id) : 1);
+  const lean = Object.fromEntries(Object.keys(options).map((k) => [k, tie(k) * (1 + (REPLY_PULL[k] ?? []).reduce((t, x) => t + (me.traits[x] ?? 0), 0))]));
   const ans = await ask(w, "respond", me.id, { ...view(w, me), what_is_happening: situation }, {
     reply: { type: "choice", instructions: `${situation} How does ${me.name} respond?`, criteria: options },
-  });
+  }, { reply: lean });
   return sample(ans.reply.probabilities!);
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-// After something happens between two people, `me` decides what it meant for how they see `them`.
-export async function reflect(w: World, me: Agent, them: Agent, happened: string) {
+// After something happens between two people, `me` decides what it meant for how they see `them`. lean says how it
+// would land offline: how it feels (-2 much worse .. 2 much better) and the mark it would leave; Jev reads the event.
+export type Felt = { feel?: number; bond?: BondKind };
+export async function reflect(w: World, me: Agent, them: Agent, happened: string, lean: Felt = {}) {
   const r = (me.rel[them.id] ??= newRel(w.t));
   const shift = ["much worse", "a bit worse", "no change", "a bit better", "much better"];
   const q: Record<string, Question> = {
@@ -261,11 +332,22 @@ export async function reflect(w: World, me: Agent, them: Agent, happened: string
     label: { type: "choice", instructions: `After this, what best describes how ${me.name} sees their relationship with ${them.name}?`, criteria: LABELS },
   };
   for (const b of OPINIONS) q[`believes_${b}`] = { type: "noul", instructions: `From everything ${me.name} has seen and heard, is ${them.name} ${b}?` };
+  const feel = lean.feel ?? 0, aff = r.affinity + feel * 0.1, romantic = (me.traits.flirtatious ?? 0) + (me.traits.romantic ?? 0);
+  const leans: Record<string, Lean> = {
+    bond: Object.fromEntries(Object.keys(BONDS).map((k) => [k, k === lean.bond ? 6 : k === "none" ? 3 : k === "kindred_spirit" && feel > 0 && aff > 0.4 ? 0.5 : k === "sweetheart" && feel > 0 && aff > 0.45 ? 0.2 + romantic : 0.03])),
+    feeling: { at: 2 + feel },
+    trust: { at: 2 + Math.sign(feel) * 0.5 },
+    label: {
+      stranger: r.history.length < 3 ? 2 : 0, acquaintance: 2, friend: aff > 0.3 ? 3 : 0, confidant: aff > 0.6 ? 1 : 0, rival: aff < 0 ? 1 : 0.05, enemy: aff < -0.5 ? 2 : 0,
+      sweetheart: aff > 0.45 ? 0.3 + romantic : 0, mentor: lean.bond === "taught_me" ? 3 : 0.05, apprentice: 0.05, kin: 0,
+    },
+  };
+  for (const b of OPINIONS) leans[`believes_${b}`] = { p: clamp((r.beliefs[b] ?? 0.5) + feel * (b === "dangerous" ? -0.08 : 0.06), 0, 1) };
   const ans = await ask(w, "reflect", me.id, {
     who: { name: me.name, bio: me.bio, traits: Object.keys(me.traits) },
     them: { name: them.name, ...describeRel(w, me, them) },
     what_just_happened: happened,
-  }, q);
+  }, q, leans);
   // Slights sting a little less than kindness warms, so one bad day doesn't sour everything.
   const delta = ans.feeling.score! - 2;
   r.affinity = clamp(r.affinity + delta * (delta < 0 ? 0.08 : 0.12), -1, 1);
@@ -314,7 +396,7 @@ export async function rule(w: World, a: Agent, attempt: string, parts: Kind[], t
   const ans = await ask(w, "rule", a.id, {
     attempt,
     materials: parts.map((k) => ({ name: k.name, properties: Object.fromEntries(Object.entries(k.props).filter(([, v]) => (v ?? 0) >= 0.1)) })),
-  }, q, { noul: 0.5 });
+  }, q, { useful: { cap: 0.5 } });
   w.jev.rulings++;
   const props: Props = {};
   for (const prop of relevant) {
@@ -392,7 +474,7 @@ export async function judge(w: World, me: Agent, doer: string, state: object, ha
       instructions: `${me.name} decides how the camp answers what ${doer} did. Given who ${me.name} is, what happened, and how this camp has handled cases like it before, what does ${me.name} decide?`,
     },
     comply: { type: "noul", instructions: `If the camp told ${doer} to give it back or make up for it, would ${doer} actually do it?` },
-  }, harm ? MILD : KIND);
+  }, { response: harm ? MILD : KIND });
   const odds = ans.response.probabilities!;
   return { response: sample(odds, 1) as Response, odds, comply: ans.comply.noul ?? 0.5 };
 }
