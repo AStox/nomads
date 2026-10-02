@@ -635,8 +635,10 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     for (const o of over) { const [x, y] = map ? map(o.ax, o.ay, o.az) : [o.ax, o.ay]; blit(B, o.spr, x, y + o.sy - o.ay, o.z, 0, o.mirror, o.bias); }
     if (view.selected) {
       const shown = map ? picks.map((p) => { const [x, y] = map(p.ax, p.ay, p.az), dx = x - p.ax, dy = y - p.ay; return { ...p, sx: p.sx + dx, sy: p.sy + dy, top: p.top + dy }; }) : picks;
+      pins = [];
+      if (typeof view.selected === "string" && simRef) journey(cam, tcam ?? cam, view.selected, now, map, view.path !== false);
       markSelected(cam, view.selected, shown, map);
-    }
+    } else pins = [];
   }
   function finish(sl, cam, now, clock, view, fires, over, picks) {
     B = viewOf(sl, cam.AW, cam.AH); light = B.light;
@@ -819,9 +821,11 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       }
       const own = { kind: "agent", id: ag.id };
       add(a, s, { mirror, bias: 4, lift: hp < 16 && !down ? 2 : 0, xray: true, pick: own });
-      const icon = down ? "sleep" : ag.sickness ? "sick" : ag.thinking ? "think" : ag.engaged ? "fight" : null;
-      if (icon && !isle && TH.icon) { const ic = spr(`icon${icon}`, () => TH.icon(icon)); if (ic) out.push({ z: 1e9, sx: a.sx, sy: a.sy - hp - 2, spr: ic, bias: 0, shadow: false, pick: own, over: true, ax: a.sx, ay: a.sy, az: a.cz }); }
-      pk(a, { kind: "agent", id: ag.id, sx: a.sx, sy: a.sy - (hp >> 1), h: hp + 3, name: ag.name, top: a.sy - hp - 2 });
+      // what they are at, as the sim words it (sim.ts activity); a server's sim without it gives the old few
+      const icon = sim.activity ? sim.activity(ag.id) : down ? "faint" : ag.sickness ? "sick" : ag.thinking ? "think" : ag.engaged ? "fight" : null;
+      let lid = 0;
+      if (icon && !isle && TH.icon) { const ic = spr(`icon${icon}`, () => TH.icon(icon)); if (ic) { lid = ic.h; out.push({ z: 1e9, sx: a.sx, sy: a.sy - hp - 2, spr: ic, bias: 0, shadow: false, pick: own, over: true, ax: a.sx, ay: a.sy, az: a.cz }); } }
+      pk(a, { kind: "agent", id: ag.id, sx: a.sx, sy: a.sy - (hp >> 1), h: hp + 3, name: ag.name, top: a.sy - hp - 2 - lid });
     }
     return { out, fires, picks };
   }
@@ -1489,6 +1493,60 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   }
   const dot = (x, y) => { if (x >= 0 && y >= 0 && x < B.w && y < B.h) { B.need?.(x, y, x, y); B.c[y * B.w + x] = P.snow; } };
 
+  // ---------- where the selection has been, and where it is going ----------
+  // The hero path: a line through every point they have passed (sim.journey), its older stretches thinning out through
+  // the dither, with a flag wherever something that mattered happened to them; and a marching dotted line from where
+  // they stand to where they are walking (sim.heading), ending in a ring. pins: last frame's flags in canvas px, for the
+  // page's tooltips.
+  let pins = [];
+  const PIN = { law: P.f3, discover: P.f3, invent: P.f3, learn: P.w5, teach: P.w5, collapse: P.red, attack: P.red, fight: P.red, hunt: P.f1, kill: P.f1, bond: P.violet, custom: P.violet, camp: P.violet, born: P.k0 };
+  const put = (x, y, c) => { if (x >= 0 && y >= 0 && x < B.w && y < B.h) { B.need?.(x, y, x, y); B.c[y * B.w + x] = c; } };
+  // the pixels of a line, each told how far along the whole polyline it lies; returns the distance at its end
+  function along(x0, y0, x1, y1, d0, fn) {
+    const n = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0))), len = Math.hypot(x1 - x0, y1 - y0);
+    for (let k = 0; k < n; k++) fn(Math.round(x0 + ((x1 - x0) * k) / n), Math.round(y0 + ((y1 - y0) * k) / n), d0 + (len * k) / n);
+    return d0 + len;
+  }
+  function journey(cam, out, id, now, map, path) {
+    const md = cam.md, m = motion(id, simRef);
+    if (!m) return;
+    const at = (x, z) => { const p = project(md, x, z), ax = p.gx - cam.gx0, ay = p.gy - cam.gy0; return map ? map(ax, ay, p.cz) : [ax, ay]; };
+    const here = at(m.x, m.z), M = 40, off = (a, b) => (a[0] < -M && b[0] < -M) || (a[1] < -M && b[1] < -M) || (a[0] > B.w + M && b[0] > B.w + M) || (a[1] > B.h + M && b[1] > B.h + M);
+    const J = path && simRef.journey?.(id);
+    if (J && J.x.length) {
+      const n = J.x.length, pts = new Array(n + 1);
+      for (let i = 0; i < n; i++) pts[i] = at(toM(J.x[i]), toM(J.y[i]));
+      pts[n] = here;
+      // a shadow under it first, so the line reads on any ground
+      for (const pass of [0, 1])
+        for (let i = 0; i < n; i++) {
+          const a = pts[i], b = pts[i + 1], keep = 0.3 + 0.7 * ((i + 1) / n) ** 0.7;
+          if (!off(a, b)) along(a[0], a[1], b[0], b[1], 0, (x, y) => { if (bayer(x + out.gx0, y + out.gy0) < keep) { if (pass) put(x, y, P.f3); else put(x, y + 1, P.ink); } });
+        }
+      for (const mk of J.marks) {
+        const [fx, fy] = at(toM(mk.px), toM(mk.py)), x = Math.round(fx), y = Math.round(fy);
+        if (x < -4 || y < -4 || x > B.w + 4 || y > B.h + 4) continue;
+        const c = PIN[mk.kind] ?? P.snow;
+        // a little flag: an ink pole with the event's colour flying from its top
+        for (let j = 0; j <= 7; j++) put(x, y - j, P.ink);
+        for (let i = 1; i <= 4; i++) for (let j = 5; j <= 8; j++) put(x + i, y - j, i === 4 || j === 5 || j === 8 ? P.ink : c);
+        pins.push({ x: out.dx + (x + 2) * out.s, y: out.dy + (y - 6) * out.s, t: mk.t, kind: mk.kind, text: mk.text });
+      }
+    }
+    const to = simRef.heading?.(id);
+    if (!to) return;
+    const tx = toM(to.px), tz = toM(to.py), k = clamp(Math.ceil(Math.hypot(tx - m.x, tz - m.z) / 4), 1, 240), phase = now / 90;
+    let prev = here, d = 0;
+    for (let i = 1; i <= k; i++) {
+      const p = at(m.x + ((tx - m.x) * i) / k, m.z + ((tz - m.z) * i) / k);
+      d = off(prev, p) ? d + Math.hypot(p[0] - prev[0], p[1] - prev[1]) : along(prev[0], prev[1], p[0], p[1], d, (x, y, s) => { if ((((s - phase) % 6) + 6) % 6 < 3) { put(x, y + 1, P.ink); put(x, y, P.snow); } });
+      prev = p;
+    }
+    // a ring on the ground where they are going
+    const [ex, ey] = prev;
+    for (let a = 0; a < 28; a++) { const x = Math.round(ex + Math.cos((a / 28) * TAU) * 5), y = Math.round(ey + Math.sin((a / 28) * TAU) * 2.5); put(x, y + 1, P.ink); put(x, y, P.snow); }
+  }
+
   // the island level is small; baked whole up front it is the last fallback under everything, so no view shows flat colour
   {
     const md = maps.get(mk(0, 0)), m = 30, hb = md.H * 0.5;
@@ -1519,6 +1577,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     // what draws the frames: the GPU, and which, or the CPU and why (cause "none": no WebGL2, "build", or "lost")
     renderer: () => (gpu && !gpu.lost ? { gpu: true, name: gpu.name, ao: gpu.ao } : { gpu: false, ...(gpuOff ?? { cause: "lost", why: gpu?.why || "the GPU renderer stopped" }) }),
     picks: () => lastPick.map((p) => ({ kind: p.kind, id: p.id, sx: p.sx, sy: p.sy })),
+    // the selection's hero-path flags last frame: canvas px, and the event each stands for
+    pins: () => pins,
     // the last frame's sky (skyFor): sun and moon ({ dir, el in radians; the moon's phase and lit share }), e: the sun's
     // elevation in degrees, cloud: the cover it is lit under, 0 to 1
     sky: () => sky,

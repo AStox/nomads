@@ -1471,3 +1471,66 @@ export function agentDetail(w: World, a: Agent) {
   };
 }
 export { beliefText };
+
+// ---------- what anyone watching can see them doing ----------
+// The one word for what a person is at, for the icon over their head: out cold, in a meeting (talking, giving,
+// quarrelling, fighting), thinking, or the step of their plan they are on or walking to (resting is sleeping); else sick.
+export type Activity =
+  | "sleep" | "faint" | "talk" | "give" | "angry" | "steal" | "think" | "warm" | "eat" | "flee" | "fight" | "hunt" | "tend"
+  | "store" | "tinker" | "chop" | "build" | "plant" | "dig" | "fire" | "craft" | "forage" | "collect" | "explore" | "help" | "sick";
+// What each icon means, in the words the map's key and tooltips use.
+export const ACTIVITY: Record<Activity, string> = {
+  sleep: "sleeping or resting", faint: "collapsed, out cold", talk: "talking with someone", give: "giving, trading or sharing", angry: "quarrelling",
+  steal: "taking or stealing", think: "making up their mind", warm: "warming up by a fire", eat: "eating", flee: "running away or keeping clear",
+  fight: "fighting", hunt: "hunting", tend: "looking after someone", store: "putting things away or fetching them", tinker: "experimenting",
+  chop: "chopping wood", build: "building", plant: "planting", dig: "digging", fire: "making or tending a fire", craft: "making something",
+  forage: "picking food", collect: "gathering materials", explore: "exploring", help: "helping or keeping close to someone", sick: "sick",
+};
+const MEETING: Record<string, Activity> = {
+  talk: "talk", gossip: "talk", teach: "talk", beg: "talk", give: "give", share_meal: "give", share_fire: "give", trade: "give",
+  help: "help", tend: "tend", insult: "angry", attack: "fight", take: "steal", steal: "steal",
+};
+const STEP: Record<string, Activity> = {
+  warm_up: "warm", eat: "eat", flee: "flee", avoid: "flee", fight: "fight", hunt: "hunt", tend: "tend", follow: "help", assist: "help",
+  stash: "store", take_stored: "store", share: "store", take_shared: "store", raid: "steal", tinker: "tinker", wander: "explore", pick_up: "collect",
+  pick_berries: "forage", pick_mushroom: "forage", pick_herb: "forage", pick_stick: "collect", pick_stone: "collect", pull_reeds: "collect", dig_clay: "dig", scrape_resin: "collect",
+};
+export function activity(w: World, a: Agent): Activity | null {
+  if (a.down > w.t) return "faint";
+  if (a.engaged) return MEETING[a.plan.find((s) => s.op === "social")?.arg ?? ""] ?? MEETING[a.goal?.type ?? ""] ?? "talk";
+  if (a.thinking) return "think";
+  // walking somewhere is walking to do what comes next
+  const s = a.plan[0]?.op === "goto" ? a.plan[1] ?? a.plan[0] : a.plan[0];
+  if (s) {
+    if (s.op === "rest") return "sleep";
+    if (s.op === "social") return MEETING[s.arg ?? ""] ?? "talk";
+    if (s.op === "act") {
+      const act = s.act ?? (s.key && a.beliefs[s.key] ? actFromBelief(a.beliefs[s.key]) : null);
+      const target = act?.target?.kind ?? "";
+      if (act?.verb === "strike" && ["tree", "stump", "fallen_log", "dead_bush"].includes(target)) return "chop";
+      if (act?.verb === "place") return a.goal?.type === "make_fire" || a.goal?.type === "contain_fire" ? "fire" : "build";
+      if (act?.verb === "plant") return "plant";
+      if (act?.verb === "dig") return "dig";
+      if (act?.verb === "rub" || act?.verb === "heat") return a.goal?.type === "make_fire" ? "fire" : "craft";
+      if (act?.verb === "throw") return "hunt";
+      if (act?.verb === "eat") return "eat";
+      return "craft";
+    }
+    const step = STEP[s.op];
+    if (step) return step;
+  }
+  return a.sickness ? "sick" : null;
+}
+// Where a person is headed, in tiles, while their step takes them somewhere: the place their goto names, the point they
+// are exploring toward, or whoever they are following, helping, tending or meeting. Null when they are not going anywhere.
+export function heading(w: World, a: Agent): { px: number; py: number } | null {
+  const s = a.plan[0];
+  if (!s || a.down > w.t || a.engaged) return null;
+  if (s.op === "goto") { const t = spot(w, a, s.arg!); return t && { px: t.px, py: t.py }; }
+  if (s.op === "wander") { const [px, py] = s.arg!.split(",").map(Number); return { px, py }; }
+  if (s.op === "follow" || s.op === "assist" || s.op === "tend") { const b = agentById(w, s.arg); return b ? { px: b.px, py: b.py } : null; }
+  if (s.op === "social") { const b = agentById(w, a.goal?.target); return b ? { px: b.px, py: b.py } : null; }
+  if (s.op === "raid") { const h = thingById(w, s.arg); return h ? { px: h.px, py: h.py } : null; }
+  if (s.op === "hunt") { const prey = nearest(a, w.animals, (m) => m.species === s.arg); return prey && { px: prey.px, py: prey.py }; }
+  return null;
+}

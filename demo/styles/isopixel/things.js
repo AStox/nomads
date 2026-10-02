@@ -706,12 +706,36 @@ export function stick(len = 5, seed = 0) {
 
 // --------------------------------------------------------------------------------------------------------- icons
 
+// One per sim.ts Activity: what a person is at, over their head.
 const ICONS = {
   think: [["..www..", ".wwwww.", "wwiwiww", ".wwwww.", "..www..", ".......", ".w....."], { w: "snow", i: "r2" }],
   sleep: [["...zzz", "....z.", "..zzz.", "zzz...", ".z....", "zzz..."], { z: "snow" }],
-  sick: [["..g..", ".gGg.", "gGGGg", "gGGGg", ".ggg."], { g: "g5", G: "g6" }],
+  faint: [[".y...y.", "yWy.yWy", ".y...y.", "...y...", "..yWy..", "...y..."], { y: "f3", W: "f4" }],
+  sick: [[".ggg.", "gigig", "ggggg", "giiig", ".ggg."], { g: "g5", i: "ink" }],
   fight: [["f...f", ".fyf.", ".yWy.", ".fyf.", "f...f"], { f: "f1", y: "f3", W: "f4" }],
+  talk: [["wwwwwww", "wiwiwiw", "wwwwwww", ".ww....", ".w....."], { w: "snow", i: "ink" }],
+  give: [[".rr.rr.", "rWrrrrr", "rrrrrrr", ".rrrrr.", "..rrr..", "...r..."], { r: "red", W: "snow" }],
+  help: [[".bb.bb.", "bWbbbbb", "bbbbbbb", ".bbbbb.", "..bbb..", "...b..."], { b: "w5", W: "snow" }],
+  angry: [[".r.r.", "rr.rr", ".....", "rr.rr", ".r.r."], { r: "red" }],
+  steal: [[".d.d.", "..d..", ".DDD.", "DDDDD", "DDDDD", ".DDD."], { d: "d4", D: "d2" }],
+  warm: [["..f..", ".ff..", ".fyf.", "fyyyf", "fyWyf", ".fff."], { f: "f1", y: "f3", W: "f4" }],
+  fire: [["..f..", ".fyf.", "fyWyf", ".fff.", "ddddd"], { f: "f1", y: "f3", W: "f4", d: "d3" }],
+  eat: [[".rrr..", "rrRrr.", "rrrrr.", ".rrrw.", "....ww", ".....w"], { r: "d3", R: "d5", w: "snow" }],
+  flee: [["yy", "yy", "yy", "yy", "..", "yy"], { y: "f3" }],
+  hunt: [["....ss", "...sWs", "...ds.", "..d...", ".d....", "d....."], { s: "r4", W: "snow", d: "d3" }],
+  tend: [[".www.", "wwrww", "wrrrw", "wwrww", ".www."], { w: "snow", r: "red" }],
+  store: [["DDDDD", "DdddD", "DDDDD", "DdddD", "DDDDD"], { D: "d2", d: "d4" }],
+  tinker: [[".yyy.", "yWyyy", "yyyyy", ".yyy.", ".rrr.", "..r.."], { y: "f3", W: "f4", r: "r3" }],
+  chop: [[".ssd", "sWsd", "sssd", ".ssd", "...d", "...d"], { s: "r4", W: "snow", d: "d3" }],
+  build: [["..d..", ".ddd.", "ddddd", ".D.D.", ".DDD."], { d: "d3", D: "d1" }],
+  plant: [["gg.gg", ".ggg.", "..g..", "..g..", "ddddd"], { g: "g5", d: "d2" }],
+  dig: [["..d..", "..d..", "..d..", ".sss.", ".sss.", "..s.."], { d: "d3", s: "r4" }],
+  craft: [["sssss", "sWsss", "..d..", "..d..", "..d.."], { s: "r3", W: "r5", d: "d3" }],
+  forage: [[".r.r.", "rWrrr", "ddddd", "dDdDd", ".ddd."], { r: "red", W: "snow", d: "d2", D: "d4" }],
+  collect: [["d.d.d", "d.d.d", "yyyyy", "d.d.d", "d.d.d"], { d: "d3", y: "a2" }],
+  explore: [["...kk", "...kk", "kk...", "kk...", "...kk"], { k: "s3" }],
 };
+export const ICON_NAMES = Object.keys(ICONS);
 // A marker above a person's head, anchored at its bottom centre.
 export function icon(name = "think") {
   const [list, names] = ICONS[name] ?? ICONS.think, w = list[0].length;

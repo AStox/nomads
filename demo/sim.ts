@@ -1,7 +1,7 @@
 // The game's simulation, bundled for the browser so a page can run a live world: with the random brain, or with Jev
 // through a relay that holds the key (useBrain).
-export { DAY, H, TILE_M, Tile, W, YEAR_DAYS, clock, colorIndex, dayOfYear, dryAt, isNight, newWorld, seasonOf, spriteSeed, wetAt } from "../src/sim/world";
-export { changedKinds, summary, tick } from "../src/sim/sim";
+export { DAY, H, QUIET, TILE_M, Tile, W, YEAR_DAYS, clock, colorIndex, dayOfYear, dryAt, isNight, newWorld, seasonOf, spriteSeed, wetAt } from "../src/sim/world";
+export { ACTIVITY, activity, changedKinds, heading, summary, tick } from "../src/sim/sim";
 export { brainKind, useBrain } from "../src/sim/brain";
 export { changed, newKinds, removed } from "../src/sim/physics";
 export { iceChanged, pathChanges, trailChanges, trails } from "../src/sim/ecology";

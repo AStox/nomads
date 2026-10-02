@@ -1,5 +1,5 @@
 // Runs the game's simulation in the page the way server.ts loop() does: one tick per task, the same change sets, cleared the same way.
-import { DAY, brainKind, changed, changedKinds, groupsChanged, iceChanged, inspect, inspectGround, newKinds, newWorld, objects, pathChanges, removed, thingById, tick, trailChanges, trails, useBrain } from "../sim.js";
+import { ACTIVITY, DAY, QUIET, TILE_M, activity, brainKind, changed, changedKinds, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, objects, pathChanges, removed, thingById, tick, trailChanges, trails, useBrain } from "../sim.js";
 
 const BASE_MS = 500;
 
@@ -24,6 +24,7 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
   const w = newWorld(seed);
   // Where each agent and animal stood before the last tick, so a frame can draw them partway between, and who's alive now.
   const prev = new Map(), ents = new Map();
+  let headed = { id: null, t: -1, to: null };
   let alpha = 0, tickMs = 0, last = null, pausedAt = null, lastIv = 0, lastEvent = 0;
 
   const step = () => {
@@ -42,10 +43,56 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
     for (const a of w.agents) prev.set(a.id, [a.px, a.py]);
     for (const a of w.animals) prev.set(a.id, [a.px, a.py]);
   };
+  // what each person is at, for the icon over their head, worked out once a tick
+  const acts = new Map();
   const roll = () => {
-    ents.clear();
-    for (const a of w.agents) ents.set(a.id, a);
+    ents.clear(); acts.clear();
+    for (const a of w.agents) { ents.set(a.id, a); acts.set(a.id, activity(w, a)); }
     for (const a of w.animals) ents.set(a.id, a);
+  };
+  // How many people and animals of each kind were alive, every SAMPLE ticks from the start; past MAX samples every
+  // other one is dropped and the spacing doubles, so a long run keeps its whole history in a bounded list.
+  const SAMPLE = 12, MAX = 600, history = { every: SAMPLE, t: [], people: [], animals: {} };
+  const census = () => {
+    if (w.t % history.every) return;
+    const n = history.t.length, count = {};
+    for (const a of w.animals) if (a.hp > 0) count[a.species] = (count[a.species] ?? 0) + 1;
+    history.t.push(w.t); history.people.push(w.agents.length);
+    for (const sp of new Set([...Object.keys(history.animals), ...Object.keys(count)])) (history.animals[sp] ??= Array(n).fill(0)).push(count[sp] ?? 0);
+    if (history.t.length > MAX) {
+      const half = (xs) => xs.filter((_, i) => i % 2 === 0);
+      history.t = half(history.t); history.people = half(history.people);
+      for (const sp in history.animals) history.animals[sp] = half(history.animals[sp]);
+      history.every *= 2;
+    }
+  };
+  // Hero paths: where each person and animal has been, a point (px, py in tiles, at tick t) each time they get STRIDE
+  // meters from the last, and what happened to them that mattered (the chronicle's events that aren't QUIET), pinned
+  // where they stood. Past PATH_MAX points every other one is dropped, so a long life keeps its whole shape.
+  const STRIDE = 3 / TILE_M, PATH_MAX = 2000, journeys = new Map();
+  let markedTo = 0;
+  const travel = () => {
+    for (const list of [w.agents, w.animals])
+      for (const a of list) {
+        const j = journeys.get(a.id);
+        if (!j) { journeys.set(a.id, { x: [a.px], y: [a.py], t: [w.t], marks: [] }); continue; }
+        const n = j.x.length - 1;
+        if (Math.hypot(a.px - j.x[n], a.py - j.y[n]) < STRIDE) continue;
+        j.x.push(a.px); j.y.push(a.py); j.t.push(w.t);
+        if (j.x.length > PATH_MAX) for (const k of ["x", "y", "t"]) j[k] = j[k].filter((_, i) => i % 2 === 0 || i === j[k].length - 1);
+      }
+    let i = w.events.length;
+    while (i > 0 && w.events[i - 1].id > markedTo) i--;
+    for (const e of w.events.slice(i)) {
+      if (QUIET[e.kind]) continue;
+      for (const id of new Set(e.who)) {
+        const j = journeys.get(id), b = ents.get(id) ?? w.agents.find((x) => x.id === id) ?? w.animals.find((x) => x.id === id);
+        if (j) j.marks.push({ px: b ? b.px : e.x + 0.5, py: b ? b.py : e.y + 0.5, t: e.t, kind: e.kind, text: e.text });
+      }
+    }
+    markedTo = w.events.at(-1)?.id ?? markedTo;
+    // the dead leave no path to follow
+    if (w.t % 100 === 0) { const live = new Set([...w.agents, ...w.animals].map((a) => a.id)); for (const id of journeys.keys()) if (!live.has(id)) journeys.delete(id); }
   };
   const newEvents = () => {
     let i = w.events.length;
@@ -55,8 +102,10 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
   };
 
   clearChanges();
+  census(); travel();
   for (let i = 0; i < warm; i++) {
     took(step());
+    census(); travel();
     clearChanges();
     await nextTask();
     if (onProgress && ((i + 1) % 50 === 0 || i + 1 === warm)) onProgress(i + 1, warm);
@@ -92,6 +141,18 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
     // row-major index from the island's north-west corner.
     trails: () => { const t = trails(w); return { cell: t.cell, n: t.n, wear: t.wear }; },
     inspect: (id) => inspect(w, id),
+    // what a person is at (sim.ts Activity), and what each one means
+    activity: (id) => acts.get(id) ?? null,
+    activities: ACTIVITY,
+    // where a person is walking to, in tiles, or null; worked out at most once a tick
+    heading(id) {
+      if (headed.id !== id || headed.t !== w.t) { const a = ents.get(id); headed = { id, t: w.t, to: a && w.agents.includes(a) ? heading(w, a) : null }; }
+      return headed.to;
+    },
+    // population counts over time: t (ticks), people, and animals by species, all the same length
+    history: () => history,
+    // a person's or animal's hero path: { x, y, t } the points they have passed, marks: [{ px, py, t, kind, text }]
+    journey: (id) => journeys.get(id) ?? null,
     inspectGround: (px, py) => inspectGround(w, px, py),
     // the hour the page is drawn at: null follows the sim, a number pins it there (?hour=, or from the console)
     hour: null,
@@ -111,6 +172,7 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
       remember();
       const t0 = step();
       roll();
+      census(); travel();
       const things = [...changed].map((id) => thingById(w, id)).filter(Boolean);
       const out = {
         things,

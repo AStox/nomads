@@ -1,6 +1,6 @@
 // The live page: the game's sim running in this tab, drawn by the isopixel renderer with a pan, zoom and orbit camera.
 import { createLive, loadingScreen } from "../isopixel/live.js";
-import { drawInspector } from "../isopixel/inspect.js";
+import { drawInspector, drawPanel } from "../isopixel/inspect.js";
 import { RGB, P } from "../isopixel/pal.js";
 import { Buf } from "../isopixel/px.js";
 import { text } from "../isopixel/ui.js";
@@ -81,17 +81,30 @@ async function main() {
     openingPerson = person.id;
   }
   let tabWatch = null;
-  // anything can be selected: a person, animal or thing by id, or a point of ground; people and animals are followed
+  // anything can be selected: a person, animal or thing by id, or a point of ground; people and animals are followed.
+  // how: "link" (from a window: remember where we were for the back button, and bring it into view), "keep" (Tab: the
+  // same tab of the inspector, to compare), else a fresh look
   const movers = (id) => !!sim && (sim.w.agents.some((a) => a.id === id) || sim.w.animals.some((a) => a.id === id));
-  const select = (sel, watch = true) => {
-    view.selected = sel; follow = typeof sel === "string" && movers(sel) ? sel : null; farSince = 0;
+  const select = (sel, watch = true, how = null) => {
+    if (how === "link" && view.selected != null && view.selected !== sel) back.push(view.selected);
+    else if (how !== "link" && how !== "back") back.length = 0;
+    view.selected = sel; farSince = 0;
+    follow = typeof sel === "string" && (movers(sel) || ((how === "link" || how === "back") && sim?.pos(sel))) ? sel : null;
     if (watch && follow) tabWatch = { t0: performance.now(), hole: 0, cutAt: 0, last: performance.now() };
-    inspScroll = 0; inspect();
+    if (how !== "keep") ui.tab = null;
+    ui.open.clear(); ui.scroll = 0;
+    inspect();
   };
 
-  // ---------- inspector: the selection's real data, redrawn every tick, with a box to close it ----------
-  const insp = document.getElementById("inspector"), IW = 184, IH = 232, CB = { x: IW - 15, y: 4, s: 9 };
-  let inspScroll = 0, inspMax = 0, inspData = null;
+  // ---------- inspector: the selection's real data in tabs, redrawn every tick; rows open, names go to whoever they
+  // name, and a back button returns along the way that came ----------
+  const insp = document.getElementById("inspector"), IW = 212, back = [];
+  let IH = 300;
+  const fitInsp = () => { IH = clamp(Math.floor((window.innerHeight - 24) / 2), 160, 320); };
+  fitInsp();
+  const CB = { y: 4, s: 9 }, cbx = () => IW - 15, BK = { x: 5, y: 4, s: 9 };
+  const ui = { tab: null, open: new Set(), scroll: 0, max: 0, hover: null, hits: [] };
+  let inspData = null;
   function inspect() {
     const sel = view.selected;
     inspData = sel && sim ? (typeof sel === "object" ? sim.inspectGround(sel.px, sel.py) : sim.inspect(sel)) : null;
@@ -99,24 +112,158 @@ async function main() {
     if (!inspData) { insp.hidden = true; return; }
     paintInspector();
   }
-  function paintInspector() {
-    const B = drawInspector(inspData, { w: IW, h: IH, scroll: inspScroll });
-    inspScroll = B.scroll; inspMax = B.scrollMax;
-    // a raised button at the end of the title bar, over the end of a long title
-    const { x, y, s } = CB, put = (i, j, c) => { B.c[j * B.w + i] = c; };
-    for (let j = y; j < y + s; j++) for (let i = x - 2; i < x + s; i++) put(i, j, P.w2);
+  // a raised square button in a title bar with a glyph drawn by fn(put, x, y)
+  function button(B, x, y, s, fn) {
+    const put = (i, j, c) => { B.c[j * B.w + i] = c; };
+    for (let j = y; j < y + s; j++) for (let i = x - 1; i < x + s; i++) put(i, j, P.w2);
     for (let k = 0; k < s; k++) { put(x + k, y, P.w4); put(x, y + k, P.w4); put(x + k, y + s - 1, P.ink); put(x + s - 1, y + k, P.ink); }
-    for (let k = 0; k < 5; k++) { put(x + 2 + k, y + 2 + k, P.snow); put(x + 6 - k, y + 2 + k, P.snow); }
+    fn(put, x, y);
+  }
+  const cross = (put, x, y) => { for (let k = 0; k < 5; k++) { put(x + 2 + k, y + 2 + k, P.snow); put(x + 6 - k, y + 2 + k, P.snow); } };
+  function paintInspector() {
+    const B = drawInspector(inspData, { w: IW, h: IH, tab: ui.tab, open: ui.open, scroll: ui.scroll, hover: ui.hover, back: back.length > 0 });
+    ui.tab = B.tab; ui.scroll = B.scroll; ui.max = B.scrollMax; ui.hits = B.hits;
+    button(B, cbx(), CB.y, CB.s, cross);
+    if (back.length) button(B, BK.x, BK.y, BK.s, (put, x, y) => { for (let k = 0; k < 4; k++) { put(x + 2 + k, y + 4 - k, P.snow); put(x + 2 + k, y + 4 + k, P.snow); } });
     paintBuf(insp, B);
     insp.hidden = false;
   }
-  const onClose = (e) => {
-    const r = insp.getBoundingClientRect(), x = ((e.clientX - r.left) / r.width) * IW, y = ((e.clientY - r.top) / r.height) * IH;
-    return x >= CB.x - 1 && x <= CB.x + CB.s && y >= CB.y - 1 && y <= CB.y + CB.s;
-  };
-  insp.addEventListener("wheel", (e) => { e.preventDefault(); inspScroll = clamp(inspScroll + e.deltaY / 2, 0, inspMax); if (inspData) paintInspector(); }, { passive: false });
-  insp.addEventListener("pointerdown", (e) => { if (onClose(e)) { e.preventDefault(); select(null); } });
-  insp.addEventListener("pointermove", (e) => { insp.style.cursor = onClose(e) ? "pointer" : ""; });
+  // a pointer event on one of the art windows, in its art px
+  const artAt = (cv, e) => { const r = cv.getBoundingClientRect(); return { x: ((e.clientX - r.left) / r.width) * cv.width, y: ((e.clientY - r.top) / r.height) * cv.height }; };
+  const onBox = (p, x, y, s) => p.x >= x - 1 && p.x <= x + s && p.y >= y - 1 && p.y <= y + s;
+  const hitAt = (hits, p) => hits.find((h) => p.x >= h.x0 && p.x <= h.x1 && p.y >= h.y0 && p.y <= h.y1) ?? null;
+  // go to what a window names: a person, an animal or a thing
+  const go = (id) => { if (sim?.inspect(id)) select(id, true, "link"); };
+  insp.addEventListener("wheel", (e) => { e.preventDefault(); ui.scroll = clamp(ui.scroll + e.deltaY / 2, 0, ui.max); if (inspData) paintInspector(); }, { passive: false });
+  insp.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const p = artAt(insp, e);
+    if (onBox(p, cbx(), CB.y, CB.s)) { select(null); return; }
+    if (back.length && onBox(p, BK.x, BK.y, BK.s)) { select(back.pop(), true, "back"); return; }
+    const h = hitAt(ui.hits, p);
+    if (!h) return;
+    if (h.tab != null) { ui.tab = h.tab; ui.scroll = 0; }
+    else if (h.toggle) { if (ui.open.has(h.toggle)) ui.open.delete(h.toggle); else ui.open.add(h.toggle); }
+    else if (h.link) { go(h.link); return; }
+    paintInspector();
+  });
+  insp.addEventListener("pointermove", (e) => {
+    const p = artAt(insp, e), was = hitAt(ui.hits, ui.hover ?? { x: -1, y: -1 }), now = hitAt(ui.hits, p);
+    ui.hover = p;
+    insp.style.cursor = now || onBox(p, cbx(), CB.y, CB.s) || (back.length && onBox(p, BK.x, BK.y, BK.s)) ? "pointer" : "";
+    if (was !== now && inspData) paintInspector();
+  });
+  insp.addEventListener("pointerleave", () => { ui.hover = null; if (inspData) paintInspector(); });
+
+  // ---------- the world window: everyone and everything, by kind, to click and go to; population over time; the key
+  // to the markers. Closed it is just its tabs; a tab opens it, the open tab closes it. ----------
+  const worldEl = document.getElementById("world"), WW = 212, TABS = ["people", "animals", "things", "graphs", "key"];
+  const wui = { open: false, tab: "people", fold: new Set(), scroll: 0, max: 0, hover: null, hits: [] };
+  const words = (x) => String(x).replaceAll("_", " ");
+  const SPECIES_C = { deer: P.d3, wolf: P.r2, rabbit: P.k1, fish: P.w4, heron: P.w6, gull: P.r4, crow: P.ink, eagle: P.d1, butterfly: P.violet };
+  const far = (px, py) => { const m = Math.hypot(toM(px) - view.x, toM(py) - view.z); return m < 1000 ? `${Math.round(m)} M` : `${(m / 1000).toFixed(1)} KM`; };
+  const near = (list) => list.map((e) => [e, (toM(e.px) - view.x) ** 2 + (toM(e.py) - view.z) ** 2]).sort((a, b) => a[1] - b[1]).map(([e]) => e);
+  function worldData() {
+    const W = sim.w, out = [];
+    const tab = wui.tab;
+    if (tab === "people") {
+      out.push({ tab: "people", title: `people (${W.agents.length})`, rows: W.agents.map((a) => ({ label: a.name, value: a.status, icon: sim.activity(a.id) ? `act:${sim.activity(a.id)}` : `agent:${a.color}`, link: a.id, hot: a.id === view.selected })), none: "no one is left" });
+      const camps = W.camps.filter((c) => !c.gone);
+      if (camps.length) out.push({ tab: "people", title: "camps", rows: camps.map((c) => ({ label: c.name, value: `${c.members.length} people`, more: c.members.map((id) => ({ text: W.people[id]?.name ?? id, link: id })) })) });
+    } else if (tab === "animals") {
+      const by = {};
+      for (const a of W.animals) if (a.hp > 0) (by[a.species] ??= []).push(a);
+      for (const [sp, list] of Object.entries(by).sort((a, b) => b[1].length - a[1].length))
+        out.push({ tab: "animals", title: `${sp} (${list.length})`, key: `animals|${sp}`, fold: true, rows: wui.fold.has(`animals|${sp}`) ? near(list).slice(0, 200).map((a) => ({ label: words(a.state), value: far(a.px, a.py), icon: `animal:${sp}`, link: a.id, hot: a.id === view.selected })) : [] });
+      if (!out.length) out.push({ tab: "animals", none: "no animals" });
+    } else if (tab === "things") {
+      const by = {};
+      for (const t of W.things) if (!t.contained) (by[t.kind] ??= []).push(t);
+      for (const [k, list] of Object.entries(by).sort((a, b) => a[0].localeCompare(b[0]))) {
+        const title = `${words(k)} (${list.length})`;
+        out.push({ tab: "things", title, key: `things|${k}`, fold: true, rows: wui.fold.has(`things|${k}`) ? near(list).slice(0, 150).map((t) => ({ label: t.kind === "structure" ? ["pile", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0] : t.kind === "item" ? W.kinds[t.item]?.name ?? words(t.item ?? "item") : words(t.species ?? t.kind), value: far(t.px, t.py), link: t.id, hot: t.id === view.selected })) : [] });
+      }
+    } else if (tab === "graphs") {
+      const h = sim.history(), span = h.t.length > 1 ? (h.t.at(-1) - h.t[0]) / 288 : 0;
+      out.push({ tab: "graphs", title: `people, last ${span.toFixed(1)} days`, rows: [{ label: "people", spark: h.people, h: 44, color: P.f1 }] });
+      out.push({ tab: "graphs", title: "animals", rows: Object.entries(h.animals).sort((a, b) => (b[1].at(-1) ?? 0) - (a[1].at(-1) ?? 0)).map(([sp, xs]) => ({ label: sp, spark: xs, h: 26, color: SPECIES_C[sp] ?? P.w3, link: `@animals|${sp}` })) });
+    } else {
+      out.push({ tab: "key", title: "over their heads", rows: Object.entries(sim.activities).map(([k, v]) => ({ label: v, icon: `act:${k}` })) });
+      out.push({ tab: "key", title: "on the ground", rows: [{ label: "gold line: where they have been" }, { label: "flags: what happened there" }, { label: "dots: where they are going" }, { label: "H hides or shows the lines" }] });
+    }
+    // every tab is there to click, its sections only the open one's
+    return { sections: [...TABS.filter((t) => t !== tab).map((t) => ({ tab: t })), ...out].sort((a, b) => TABS.indexOf(a.tab) - TABS.indexOf(b.tab)) };
+  }
+  function paintWorld() {
+    if (!sim) { worldEl.hidden = true; return; }
+    const H = wui.open ? clamp(window.innerHeight / 2 - 40, 120, 340) | 0 : 21, B = new Buf(WW, H);
+    B.c.fill(P.ink);
+    for (let x = 1; x < WW - 1; x++) for (let y = 1; y < H - 1; y++) B.c[y * WW + x] = P.r4;
+    const p = drawPanel(B, 3, 3, WW - 4, H - 4, worldData(), { tab: wui.open ? wui.tab : false, open: wui.fold, scroll: wui.scroll, hover: wui.hover });
+    wui.scroll = p.scroll; wui.max = p.scrollMax; wui.hits = p.hits;
+    paintBuf(worldEl, B);
+    worldEl.hidden = false;
+  }
+  worldEl.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const h = hitAt(wui.hits, artAt(worldEl, e));
+    if (!h) return;
+    if (h.tab != null) { if (wui.open && wui.tab === h.tab) wui.open = false; else { wui.open = true; wui.tab = h.tab; wui.scroll = 0; } }
+    else if (h.toggle) { if (wui.fold.has(h.toggle)) wui.fold.delete(h.toggle); else wui.fold.add(h.toggle); }
+    else if (h.link?.startsWith("@")) {
+      // a graph's species: its list, unfolded
+      const [tab, sp] = h.link.slice(1).split("|");
+      wui.tab = tab; wui.scroll = 0; wui.fold.add(`animals|${sp}`);
+    } else if (h.link) go(h.link);
+    paintWorld();
+  });
+  worldEl.addEventListener("pointermove", (e) => {
+    const p = artAt(worldEl, e), was = hitAt(wui.hits, wui.hover ?? { x: -1, y: -1 }), now = hitAt(wui.hits, p);
+    wui.hover = p; worldEl.style.cursor = now ? "pointer" : "";
+    if (was !== now) paintWorld();
+  });
+  worldEl.addEventListener("pointerleave", () => { wui.hover = null; paintWorld(); });
+  worldEl.addEventListener("wheel", (e) => { e.preventDefault(); wui.scroll = clamp(wui.scroll + e.deltaY / 2, 0, wui.max); paintWorld(); }, { passive: false });
+
+  // ---------- a tooltip in the game's font: what a person or animal under the pointer is at, or the event a path's flag
+  // stands for ----------
+  const tipEl = document.getElementById("tip");
+  const when = (t) => { const h = ((t % 288) / 288) * 24; return `DAY ${Math.floor(t / 288) + 1} ${String(Math.floor(h)).padStart(2, "0")}:${String(Math.floor((h % 1) * 60)).padStart(2, "0")}`; };
+  let tipAt = 0, tipKey = "";
+  function tip(sx, sy) {
+    let lines = null;
+    const pin = live.pins().find((q) => Math.abs(q.x - sx) <= 8 && Math.abs(q.y - sy) <= 10);
+    if (pin) lines = [when(pin.t), pin.text];
+    else {
+      const hit = live.pick(sx, sy, view);
+      if (hit?.kind === "agent") { const a = sim.w.agents.find((x) => x.id === hit.id), act = sim.activity(hit.id); if (a) lines = [a.name, a.status, ...(act ? [sim.activities[act]] : [])]; }
+      else if (hit?.kind === "animal") { const a = sim.w.animals.find((x) => x.id === hit.id); if (a) lines = [a.species, words(a.state)]; }
+    }
+    const key = lines ? lines.join("|") : "";
+    if (key !== tipKey) {
+      tipKey = key;
+      if (!lines) { tipEl.hidden = true; return; }
+      const rows = lines.flatMap((l) => { const out = []; let cur = ""; for (const wd of String(l).toUpperCase().split(" ")) { if ((cur + " " + wd).trim().length > 34) { out.push(cur); cur = wd; } else cur = (cur + " " + wd).trim(); } out.push(cur); return out; }).slice(0, 8);
+      const B = new Buf(Math.max(...rows.map((r) => r.length)) * 6 + 7, rows.length * 9 + 5);
+      B.c.fill(P.s3);
+      for (let i = 0; i < B.w; i++) { B.c[i] = P.ink; B.c[(B.h - 1) * B.w + i] = P.ink; }
+      for (let j = 0; j < B.h; j++) { B.c[j * B.w] = P.ink; B.c[j * B.w + B.w - 1] = P.ink; }
+      rows.forEach((r, i) => text(B, r, 4, 3 + i * 9, i ? P.d1 : P.ink));
+      paintBuf(tipEl, B);
+    }
+    tipEl.style.left = `${Math.min(window.innerWidth - tipEl.width * 2 - 4, sx + 14)}px`;
+    tipEl.style.top = `${Math.min(window.innerHeight - tipEl.height * 2 - 4, sy + 14)}px`;
+    tipEl.hidden = false;
+  }
+  canvas.addEventListener("pointermove", (e) => {
+    if (drag?.on || orbit || pinching || !sim) { tipEl.hidden = true; return; }
+    const now = performance.now();
+    if (now - tipAt < 90) return;
+    tipAt = now;
+    tip(e.clientX, e.clientY);
+  });
+  canvas.addEventListener("pointerleave", () => { tipEl.hidden = true; tipKey = ""; });
+  window.addEventListener("resize", () => { fitInsp(); if (inspData) paintInspector(); paintWorld(); });
 
   // ---------- pause and speed: a small marker in the corner while either is off the usual ----------
   let paceKey = "";
@@ -297,7 +444,7 @@ async function main() {
     else if (e.key === "Tab" && sim?.w.agents.length) {
       e.preventDefault();
       const list = sim.w.agents, k = list.findIndex((a) => a.id === view.selected), n = list.length;
-      select(list[((k < 0 ? (e.shiftKey ? 0 : -1) : k) + (e.shiftKey ? -1 : 1) + n) % n].id);
+      select(list[((k < 0 ? (e.shiftKey ? 0 : -1) : k) + (e.shiftKey ? -1 : 1) + n) % n].id, true, "keep");
     }
     else if (e.key === " " && sim) { sim.paused = !sim.paused; e.preventDefault(); }
     else if ((e.key === "[" || e.key === "]") && sim) { const k = SPEEDS.indexOf(sim.speed); sim.speed = SPEEDS[clamp((k < 0 ? 2 : k) + (e.key === "]" ? 1 : -1), 0, SPEEDS.length - 1)]; }
@@ -305,11 +452,12 @@ async function main() {
       const mid = follow ? [null, null] : [canvas.width / 2, canvas.height / 2];
       camera.zoomTo(Math.round(camera.goal) + (e.key === "-" ? -1 : 1), ...mid);
     }
+    else if (e.key === "h" || e.key === "H") view.path = view.path === false;
     else if (e.key === "q" || e.key === "Q") camera.turnBy(-1);
     else if (e.key === "e" || e.key === "E") camera.turnBy(1);
   });
   setTimeout(() => hint.classList.add("gone"), 8000);
-  globalThis.play = globalThis.nomads = { live, sim, view, camera, select, metrics, zoomTo: (g, sx, sy) => camera.zoomTo(g, sx, sy), turnBy: (d) => camera.turnBy(d), inspected: () => inspData };
+  globalThis.play = globalThis.nomads = { live, sim, view, camera, select, metrics, zoomTo: (g, sx, sy) => camera.zoomTo(g, sx, sy), turnBy: (d) => camera.turnBy(d), inspected: () => inspData, inspector: ui, world: wui, paintWorld };
 
   // Near targets are eased toward. A far one (a Tab to someone across the island) is baked first while the camera
   // holds, then cut to, so the close level never sits on a fallback.
@@ -346,7 +494,7 @@ async function main() {
     // the world waits behind the loading line until the opening view is baked, so nothing is missed
     if (sim && revealed) {
       const ch = sim.update(now);
-      if (ch) { live.changed(ch); if (view.selected) inspect(); }
+      if (ch) { live.changed(ch); if (view.selected) inspect(); if (wui.open) paintWorld(); }
     }
     if (revealed && bench) bench.step(now);
     camera.step(dt, now);
@@ -367,6 +515,7 @@ async function main() {
       if (rd.ready && !r.holes) {
         revealed = true;
         metrics.revealMs = Math.round(performance.now() - t0);
+        paintWorld();
         // follow the settlement's person only if they are in this frame
         if (openingPerson && !bench && live.picks().some((p) => p.id === openingPerson)) select(openingPerson, false);
       } else loadingScreen(canvas, `baking the view from every side ${rd.done}/${rd.all}`, rd.done / rd.all);
