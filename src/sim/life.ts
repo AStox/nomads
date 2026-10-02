@@ -12,7 +12,7 @@ const MAX_PEOPLE = 12;
 export function die(w: World, a: Agent, cause: string) {
   w.agents = w.agents.filter((x) => x !== a);
   w.people[a.id] = { ...(w.people[a.id] ?? { id: a.id, name: a.name, color: a.color }), alive: false, died: w.t, cause };
-  mark(w, addThing(w, "grave", a.px, a.py, { name: a.name, died: w.t, cause, born: w.t }));
+  mark(w, addThing(w, "grave", a.px, a.py, { name: a.name, person: a.id, died: w.t, cause, born: w.t }));
   const c: Record<string, number> = {};
   for (const s of [...a.inv, ...(a.wearing ? [a.wearing] : [])]) c[s.k] = (c[s.k] ?? 0) + 1;
   for (const [k, n] of Object.entries(c)) dropPile(w, a.px, a.py, k, n);

@@ -21,6 +21,7 @@ import { landOf, walk } from "./walk";
 import { DARK, canSee, lightOn, moveRate, restRate, workRate } from "./light";
 import { airOn } from "./air";
 import { enrich } from "./soil";
+import { travel } from "./journeys";
 
 const VISION = 300; // meters: how far off someone notices another person
 const WALK = 2, RUN = 6; // meters a tick for an adult
@@ -1438,6 +1439,7 @@ export function tick(w: World) {
   if (w.t % DAY === 0) for (const a of w.agents) fadeBonds(a);
   if (w.t % DAY === DAY / 2) timed("shelve", () => shelve(w));
   timed("agents", () => { for (const a of [...w.agents]) if (w.agents.includes(a)) agentTick(w, a); });
+  timed("journeys", () => travel(w));
   bump("ticks");
 }
 

@@ -38,6 +38,7 @@ export type Thing = {
   n?: number; owner?: string; hp?: number; maxHp?: number; burning?: number; contained?: boolean; stage?: number;
   item?: string; parts?: Record<string, number>; shelter?: Shelter; until?: number; born?: number; burnedBy?: string;
   store?: Stack[]; name?: string; died?: number; cause?: string; caught?: string; progress?: number;
+  person?: string; // a grave's: whose
   inside?: Record<string, number>; // hidden in a boulder until it breaks
   scarred?: number; resin?: number; bark?: number; // when a tree was last cut into, resin beaded on it, bark peeled off it
   covered?: boolean; charcoal?: number; air?: number; heat?: number; // fires: closed over, charcoal left, air blown in until, heat level
@@ -205,6 +206,11 @@ export type Camp = {
   store?: string; gone?: number; mergedInto?: string; from?: string;
 };
 
+// A hero path: every point someone has passed (px, py in tiles, at tick t), a point each time they get a few meters
+// from the last and straight stretches kept as their ends, and what happened to them that mattered, pinned where they
+// stood. Kept for good, past their death.
+export type Journey = { x: number[]; y: number[]; t: number[]; marks: { px: number; py: number; t: number; kind: string; text: string }[] };
+
 // tag: a few words naming a milestone, for timelines.
 export type Event = { id: number; t: number; kind: string; who: string[]; x: number; y: number; text: string; tag?: string };
 
@@ -232,6 +238,7 @@ export type World = {
   weather: Weather;
   camps: Camp[];
   incidents: Incident[]; // recent, judged or not
+  journeys: { seen: number; of: Record<string, Journey> }; // every person's hero path, and the last event pinned to one
 };
 
 export function rng(seed: number) {
@@ -461,7 +468,7 @@ export function newWorld(seed: number, agentCount = 5): World {
     version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, heights: [...land.heights], terrain: land.terrain, paths: new Array(W * H).fill(0), things: [], stocked: [], fert: {}, agents: [], animals: [], events: [],
     nextId: g.flora.n + 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {}, ice: [], people: {},
     weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 8, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, speed: 4, wet: 0.2, drought: false, dryTicks: 0 },
-    camps: [], incidents: [],
+    camps: [], incidents: [], journeys: { seen: 0, of: {} },
   };
   // Loose stones of ore lie about from the start, to be picked up like anything dropped.
   for (const o of g.flora.ore) addThing(w, "item", o.px, o.py, { item: "ore", n: 1, size: o.size, seed: o.seed });

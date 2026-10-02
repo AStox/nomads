@@ -1,5 +1,5 @@
 // Runs the game's simulation in the page the way server.ts loop() does: one tick per task, the same change sets, cleared the same way.
-import { ACTIVITY, DAY, QUIET, TILE_M, activity, brainKind, changed, changedKinds, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, objects, pathChanges, removed, thingById, tick, trailChanges, trails, useBrain } from "../sim.js";
+import { ACTIVITY, DAY, TILE_M, activity, brainKind, changed, changedKinds, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, objects, pathChanges, removed, thingById, tick, trailChanges, trails, useBrain } from "../sim.js";
 
 const BASE_MS = 500;
 
@@ -66,33 +66,20 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
       history.every *= 2;
     }
   };
-  // Hero paths: where each person and animal has been, a point (px, py in tiles, at tick t) each time they get STRIDE
-  // meters from the last, and what happened to them that mattered (the chronicle's events that aren't QUIET), pinned
-  // where they stood. Past PATH_MAX points every other one is dropped, so a long life keeps its whole shape.
-  const STRIDE = 3 / TILE_M, PATH_MAX = 2000, journeys = new Map();
-  let markedTo = 0;
+  // Animals' paths, kept by the page: people's are the world's own and kept for good (src/sim/journeys.ts), but
+  // hundreds of animals walking for ever would outgrow any save. A point each time one gets STRIDE meters from the
+  // last; past PATH_MAX every other one is dropped, so a long life keeps its shape; the dead are let go.
+  const STRIDE = 3 / TILE_M, PATH_MAX = 2000, tracks = new Map();
   const travel = () => {
-    for (const list of [w.agents, w.animals])
-      for (const a of list) {
-        const j = journeys.get(a.id);
-        if (!j) { journeys.set(a.id, { x: [a.px], y: [a.py], t: [w.t], marks: [] }); continue; }
-        const n = j.x.length - 1;
-        if (Math.hypot(a.px - j.x[n], a.py - j.y[n]) < STRIDE) continue;
-        j.x.push(a.px); j.y.push(a.py); j.t.push(w.t);
-        if (j.x.length > PATH_MAX) for (const k of ["x", "y", "t"]) j[k] = j[k].filter((_, i) => i % 2 === 0 || i === j[k].length - 1);
-      }
-    let i = w.events.length;
-    while (i > 0 && w.events[i - 1].id > markedTo) i--;
-    for (const e of w.events.slice(i)) {
-      if (QUIET[e.kind]) continue;
-      for (const id of new Set(e.who)) {
-        const j = journeys.get(id), b = ents.get(id) ?? w.agents.find((x) => x.id === id) ?? w.animals.find((x) => x.id === id);
-        if (j) j.marks.push({ px: b ? b.px : e.x + 0.5, py: b ? b.py : e.y + 0.5, t: e.t, kind: e.kind, text: e.text });
-      }
+    for (const a of w.animals) {
+      const j = tracks.get(a.id);
+      if (!j) { tracks.set(a.id, { x: [a.px], y: [a.py], t: [w.t], marks: [] }); continue; }
+      const n = j.x.length - 1;
+      if (Math.hypot(a.px - j.x[n], a.py - j.y[n]) < STRIDE) continue;
+      j.x.push(a.px); j.y.push(a.py); j.t.push(w.t);
+      if (j.x.length > PATH_MAX) for (const k of ["x", "y", "t"]) j[k] = j[k].filter((_, i) => i % 2 === 0 || i === j[k].length - 1);
     }
-    markedTo = w.events.at(-1)?.id ?? markedTo;
-    // the dead leave no path to follow
-    if (w.t % 100 === 0) { const live = new Set([...w.agents, ...w.animals].map((a) => a.id)); for (const id of journeys.keys()) if (!live.has(id)) journeys.delete(id); }
+    if (w.t % 100 === 0) { const live = new Set(w.animals.map((a) => a.id)); for (const id of tracks.keys()) if (!live.has(id)) tracks.delete(id); }
   };
   const newEvents = () => {
     let i = w.events.length;
@@ -151,8 +138,12 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
     },
     // population counts over time: t (ticks), people, and animals by species, all the same length
     history: () => history,
-    // a person's or animal's hero path: { x, y, t } the points they have passed, marks: [{ px, py, t, kind, text }]
-    journey: (id) => journeys.get(id) ?? null,
+    // a person's or animal's hero path (world.ts Journey): x, y, t the points they have passed, marks [{ px, py, t, kind, text }]
+    // a grave's is the path its person walked in life
+    journey(id) {
+      const t = id?.startsWith?.("t") ? thingById(w, id) : null;
+      return w.journeys?.of[t?.kind === "grave" ? t.person : id] ?? tracks.get(id) ?? null;
+    },
     inspectGround: (px, py) => inspectGround(w, px, py),
     // the hour the page is drawn at: null follows the sim, a number pins it there (?hour=, or from the console)
     hour: null,

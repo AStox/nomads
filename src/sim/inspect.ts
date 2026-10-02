@@ -16,6 +16,7 @@ import { fertilityAt } from "./soil";
 import { fitHere } from "./plants";
 import { NICHE } from "../terrain/niche";
 import { streamNow } from "./streams";
+import { walked } from "./journeys";
 import { TRICKLE } from "../terrain/water";
 
 // A line under an opened row: words, or words that go somewhere when clicked.
@@ -130,7 +131,12 @@ function thing(w: World, t: Thing): Inspected {
     if (t.charcoal) rows.push({ label: "charcoal", value: r(t.charcoal) });
     if (t.hp !== undefined) rows.push({ label: "burns for", value: `${Math.round(t.hp)} more ticks` });
   }
-  if (t.kind === "grave") rows.push({ label: "died", value: t.died !== undefined ? clock(t.died) : "?" }, { label: "of", value: t.cause ?? "?" });
+  if (t.kind === "grave") {
+    rows.push({ label: "died", value: t.died !== undefined ? clock(t.died) : "?" }, { label: "of", value: t.cause ?? "?" });
+    // the path they walked in life is drawn from the grave while it is selected
+    const path = t.person ? w.journeys?.of[t.person] : undefined;
+    if (path) rows.push({ label: "walked", value: `${r(walked(path) / 1000, 1)} km in life` });
+  }
   rows.push({ label: "tile", value: `${t.x}, ${t.y}` });
   if (t.shelter) {
     sections.push({ tab: "thing", title: "shelter", rows: [{ label: "style", value: t.shelter.style }, { label: "cover", bar: [r(t.shelter.cover, 2), 1] }, { label: "insulation", bar: [r(t.shelter.insul, 2), 1] }, { label: "sturdiness", bar: [r(t.shelter.sturdy, 2), 1] }] });
@@ -259,7 +265,8 @@ function person(w: World, a: Agent): Inspected {
 
   // self: who they are
   const xpTo = (L: number) => 10 * L * L;
-  sections.push({ tab: "self", rows: [{ label: "age", value: `${r(ageOf(w, a))} years, ${stageOf(w, a)}` }, ...(a.bio ? [{ label: a.bio }] : [])] });
+  const path = w.journeys?.of[a.id];
+  sections.push({ tab: "self", rows: [{ label: "age", value: `${r(ageOf(w, a))} years, ${stageOf(w, a)}` }, ...(path ? [{ label: "walked", value: `${r(walked(path) / 1000, 1)} km` }] : []), ...(a.bio ? [{ label: a.bio }] : [])] });
   sections.push({ tab: "self", title: "traits", rows: Object.entries(a.traits).sort((x, y) => y[1] - x[1]).map(([t, s]) => ({ label: t, bar: [Math.round(s * 100), 100] as [number, number] })) });
   if (a.desires.length) sections.push({ tab: "self", title: "wants to", rows: a.desires.map((x) => ({ label: x })) });
   const skills = Object.entries(a.skills).filter(([, xp]) => xp > 0).sort((x, y) => y[1] - x[1]);
