@@ -69,6 +69,8 @@ function stock(w: World, ix: Index, t: number) {
   const f = groundOf(w.seed).flora;
   for (let k = f.start[t]; k < f.start[t + 1]; k++) { const th = grown(w, k); add(w, ix, th, !settled(th)); }
 }
+// Whether the tile a point is on has been looked at since it was last put back as it grew: its grown things are Things.
+export const stockedAt = (w: World, px: number, py: number) => index(w).stocked[Math.min(H - 1, Math.floor(py)) * W + Math.min(W - 1, Math.floor(px))] === 1;
 // The index into the grown arrays a thing id names, or -1 if it names something made since.
 function grownIndex(w: World, id: string) {
   const k = Number(id.slice(1)) - 1;

@@ -12,7 +12,7 @@ export const W = TILES;
 export const H = TILES;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export { YEAR_DAYS }; // the sky's: a year is the sun's round
-export const VERSION = 16;
+export const VERSION = 17;
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -45,7 +45,9 @@ export type Thing = {
   scarred?: number; resin?: number; bark?: number; // when a tree was last cut into, resin beaded on it, bark peeled off it
   covered?: boolean; charcoal?: number; air?: number; heat?: number; // fires: closed over, charcoal left, air blown in until, heat level
   shared?: string; given?: Record<string, number>; // a store a camp treats as its own, and who put how much in
-  fit?: number; water?: number; // a seedling's: how well its spot suits its kind, and water poured round it, soaking away
+  // a seedling's: how well its spot suits its kind, water poured round it soaking away, and the share of its spot's light
+  // and water the plants round it leave it
+  fit?: number; water?: number; share?: number;
 };
 export type Stack = { k: string; hp: number; born: number };
 export type AnimalSpecies = "deer" | "wolf" | "rabbit" | "heron" | "gull" | "crow" | "eagle" | "fish" | "butterfly";

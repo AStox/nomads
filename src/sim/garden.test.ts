@@ -24,6 +24,28 @@ const clear = (r: number) => {
   w.animals = [];
 };
 const ring = (m: number, k: number) => [a.px + (Math.cos((k * Math.PI) / 4) * m) / TILE_M, a.py + (Math.sin((k * Math.PI) / 4) * m) / TILE_M] as const;
+// ticks until done, the random brain answering within a few turns of the microtask queue
+const run = async (n: number, done: () => boolean) => {
+  for (let i = 0; i < n && !done(); i++) { tick(w); for (let k = 0; k < 20; k++) await Promise.resolve(); }
+};
+// a berry pushed into the ground where they started, once they've finished whatever they were thinking
+const sow = async () => {
+  await run(50, () => !a.thinking);
+  put(w, a, home.px, home.py);
+  a.heading = 0;
+  giveItems(w, a, "berry");
+  a.nextDecide = w.t + DAY * 10;
+  a.goal = { type: "plant", since: w.t, odds: {}, fails: 0 };
+  a.plan = [{ op: "tinker", progress: 0, started: w.t, act: { verb: "plant", items: ["berry"] } }];
+  await run(40, () => a.plan[0]?.op !== "tinker");
+  return thingById(w, a.waiting?.at(-1)?.thing)!;
+};
+// midsummer, midday, everything they need
+const summer = () => {
+  w.t = (Math.round((YEAR_DAYS * 3) / 8) * DAY) + DAY / 2;
+  a.inv = [];
+  a.needs = { food: 100, energy: 100, warmth: 100, health: 100, social: 100 };
+};
 
 test("a seed goes into the ground right beside a bush, and bare rock takes none", () => {
   put(w, a, home.px, home.py);
@@ -55,26 +77,9 @@ test("a seed goes into the ground right beside a bush, and bare rock takes none"
 test("what's planted is judged when it comes up: the planter waits, learns how long it took and what ground it came up on, and counts one that withers against that ground", async () => {
   put(w, a, home.px, home.py);
   clear(20);
-  w.t = (Math.round((YEAR_DAYS * 3) / 8) * DAY) + DAY / 2; // midsummer, midday
-  a.inv = [];
-  a.needs = { food: 100, energy: 100, warmth: 100, health: 100, social: 100 };
+  summer();
   const ground = groundKey(groundWord(w, a.px, a.py));
   const key = "plant|berry|-|-|-|-";
-  // ticks until done, the random brain answering within a few turns of the microtask queue
-  const run = async (n: number, done: () => boolean) => {
-    for (let i = 0; i < n && !done(); i++) { tick(w); for (let k = 0; k < 20; k++) await Promise.resolve(); }
-  };
-  // a berry pushed into the ground where they started, once they've finished whatever they were thinking
-  const sow = async () => {
-    await run(50, () => !a.thinking);
-    put(w, a, home.px, home.py);
-    giveItems(w, a, "berry");
-    a.nextDecide = w.t + DAY * 10;
-    a.goal = { type: "plant", since: w.t, odds: {}, fails: 0 };
-    a.plan = [{ op: "tinker", progress: 0, started: w.t, act: { verb: "plant", items: ["berry"] } }];
-    await run(40, () => a.plan[0]?.op !== "tinker");
-    return thingById(w, a.waiting?.at(-1)?.thing)!;
-  };
   // done, but nothing to show yet: tried, not worked
   const first = await sow();
   expect(first.kind).toBe("sapling");
@@ -112,4 +117,37 @@ test("someone whose berries came up on grassland walks to grassland to plant, an
   const steps = plan(start, "plant", ctx({ "ground:grassland": 4 }));
   expect(steps?.map((s) => [s.op, s.arg ?? ""])).toEqual([["goto", "ground:grassland"], ["act", b.key]]);
   expect(plan(start, "plant", ctx({}))).toBeNull();
+});
+
+test("berries that come up only now and then on their own ground send them to try new ground nearby, and back again once the new ground does worse", () => {
+  const b: Belief = {
+    key: "plant|berry|-|-|-|-", fields: { verb: "plant", inputs: ["berry"], gives: [], builds: "bush", effect: "buried" }, uses: { berry: 1 }, out: {},
+    ticks: 3, later: DAY * 3, tries: 8, wins: 4, how: "discovered", t: 0, tally: { tries: 8, wins: 4 },
+    when: { "ground:forest_floor": { tries: 8, wins: 4 } },
+  };
+  const ctx = { dist: { "ground:forest_floor": 0.5, "ground:grassland": 2 }, beliefs: [b], facts: {}, kinds: w.kinds, toxic: [], now: ["ground:forest_floor"] };
+  const start = { inv: { berry: 2 }, at: null, flags: [] };
+  expect(plan(start, "plant", ctx)?.[0]).toMatchObject({ op: "goto", arg: "ground:grassland" });
+  b.when!["ground:grassland"] = { tries: 4, wins: 1 };
+  b.tally = { tries: 12, wins: 5 };
+  expect(plan(start, "plant", ctx)?.[0]).toMatchObject({ op: "goto", arg: "ground:forest_floor" });
+});
+
+test("someone who thinks berries won't come up crowded in among bushes and trees puts the seed clear of them, and counts it against the spot it went into", async () => {
+  put(w, a, home.px, home.py);
+  clear(20);
+  summer();
+  // bushes two paces off to the east: the first spots turning round from the east are within a pace and a half of one
+  const bushes = [-1, 0, 1].map((k) => addThing(w, "bush", ...ring(2, k), { species: "berry", size: 1 }));
+  const nearest = (t: Thing) => Math.min(...bushes.map((b) => meters(t, b)));
+  const b = a.beliefs["plant|berry|-|-|-|-"];
+  delete b.unless;
+  const crowded = await sow();
+  expect(nearest(crowded)).toBeLessThan(1.5);
+  expect(a.waiting?.at(-1)?.now).toContain("crowded");
+  removeThing(w, crowded);
+  b.unless = ["crowded"];
+  const clearOf = await sow();
+  expect(nearest(clearOf)).toBeGreaterThan(1.5);
+  expect(a.waiting?.at(-1)?.now).not.toContain("crowded");
 });

@@ -751,24 +751,27 @@ export function groundWord(w: World, px: number, py: number) {
 // hole. Anything else (another plant's leaves, its roots, its shade) is no bar to pushing a seed in beside it.
 const SOLID = ["tree", "stump", "burnt_stump", "bush", "dead_bush", "sapling", "boulder", "fallen_log", "structure", "fire", "pit", "trap", "well", "grave"];
 const FOOT: Record<string, number> = { tree: 0.5, stump: 0.4, burnt_stump: 0.4, sapling: 0.15, fallen_log: 0.5, fire: 0.8, pit: 0.8, trap: 0.8, well: 0.8 };
-const occupied = (w: World, px: number, py: number) => !!anyAround(w, px, py, 6, SOLID, (t) => meters({ px, py }, t) < (FOOT[t.kind] ?? t.size / 2));
+export const occupied = (w: World, px: number, py: number) => !!anyAround(w, px, py, 6, SOLID, (t) => meters({ px, py }, t) < (FOOT[t.kind] ?? t.size / 2));
 // A pit goes into a spade's depth of soil or more, on dry ground nothing stands on, clear of a tree's roots.
 export function diggable(w: World, px: number, py: number) {
   return soilAt(w, px, py) >= 0.2 && dryAt(w, px, py) && !occupied(w, px, py) && !anyAround(w, px, py, 1.5, ["tree", "stump", "burnt_stump"]);
 }
-// The first spot a pace to three off, turning round, where the ground takes what they're doing, or what stopped them
-// at the most spots: water, rock under too little soil, roots, or something standing on it.
+// The first spot a pace to three off, turning round, where the ground takes what they're doing (and that looks right
+// to them, by `ok`, if any does), or what stopped them at the most spots: water, rock under too little soil, roots, or
+// something standing on it.
 type Bar = "water" | "rock" | "roots" | "taken";
-function spotNear(w: World, a: Agent, soil: number, roots: boolean): [number, number] | Bar {
+function spotNear(w: World, a: Agent, soil: number, roots: boolean, ok?: (px: number, py: number) => boolean): [number, number] | Bar {
   const bars: Record<Bar, number> = { water: 0, rock: 0, roots: 0, taken: 0 };
+  let first: [number, number] | null = null;
   for (const m of [1, 2, 3])
     for (let k = 0; k < 8; k++) {
       const ang = (a.heading ?? 0) + (k * Math.PI) / 4, px = a.px + (Math.cos(ang) * m) / TILE_M, py = a.py + (Math.sin(ang) * m) / TILE_M;
       const bar: Bar | null = !dryAt(w, px, py) ? "water" : soilAt(w, px, py) < soil ? "rock" : occupied(w, px, py) ? "taken" : roots && anyAround(w, px, py, 1.5, ["tree", "stump", "burnt_stump"]) ? "roots" : null;
-      if (!bar) return [px, py];
-      bars[bar]++;
+      if (bar) { bars[bar]++; continue; }
+      if (!ok || ok(px, py)) return [px, py];
+      first ??= [px, py];
     }
-  return (Object.keys(bars) as Bar[]).sort((x, y) => bars[y] - bars[x])[0];
+  return first ?? (Object.keys(bars) as Bar[]).sort((x, y) => bars[y] - bars[x])[0];
 }
 const BARRED: Record<Bar, (ground: string) => string> = {
   water: () => "There was only water within reach.",
@@ -1021,13 +1024,15 @@ export function unstash(w: World, a: Agent, home: Thing, k: string, n: number) {
 const isToolish = (k?: Kind) => !!k && (k.verb === "join" || k.verb === "rub" || p(k, "sharp") >= 0.5 || p(k, "container") >= 0.6);
 
 // ---------- plant, eat, wear ----------
-export function plant(w: World, a: Agent, act: Act): Outcome {
+// ok: whether a spot looks right to them for it (their theories of where seed won't come up)
+export function plant(w: World, a: Agent, act: Act, ok?: (px: number, py: number) => boolean): Outcome {
   const x = kind(w, act.items[0]);
   const fields: Fields = { verb: "plant", inputs: act.items.slice(0, 1), gives: [] };
   if (!x || !count(a, x.id)) return outcome({ text: "They had nothing to plant.", fields });
-  // any soil a pace or two off that nothing stands on, the first they find turning round: a seed goes in beside a
-  // bush or under a tree as well as anywhere, and whether it comes up is up to what it finds there
-  const spot = spotNear(w, a, 0.03, false);
+  // any soil a pace or two off that nothing stands on, the first they find turning round that looks right to them, or
+  // failing that the first: a seed goes in beside a bush or under a tree as well as anywhere, and whether it comes up
+  // is up to what it finds there
+  const spot = spotNear(w, a, 0.03, false, ok);
   if (typeof spot === "string") return outcome({ text: BARRED[spot](groundWord(w, a.px, a.py)), fields });
   const [px, py] = spot;
   takeItems(a, x.id);

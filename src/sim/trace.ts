@@ -12,6 +12,8 @@ const traceBuf: TraceEntry[] = [], jevBuf: JevEntry[] = [];
 let dir: string | null = null, pending: { file: string; line: string }[] = [], nextId = 1;
 export const clock = { t: 0 };
 export const counters: Record<string, number> = {};
+// Whatever else wants every entry as it's made: an analysis run collecting one system's trail (scripts/theories.ts).
+export const traceListeners: ((e: TraceEntry) => void)[] = [];
 export const tickMs: Record<string, number> = {};
 
 export function logTo(path: string | null) {
@@ -25,6 +27,7 @@ export function trace(sys: string, kind: string, data: unknown, agent?: string) 
   traceBuf.push(e);
   if (traceBuf.length > MAX_TRACE) traceBuf.splice(0, traceBuf.length - MAX_TRACE);
   count(`${sys}.${kind}`);
+  for (const f of traceListeners) f(e);
   if (dir) pending.push({ file: "trace.jsonl", line: JSON.stringify(e) });
 }
 export function jevLog(e: Omit<JevEntry, "id" | "t">) {

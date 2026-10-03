@@ -19,20 +19,59 @@ export type Belief = {
   t: number;
   spurious?: string; // a kind they wrongly think they need to hold
   law?: string;
-  // how it has gone for them in conditions anyone can see (rain, dark, cold, wind, and for what's done to the ground, the
-  // ground): tries and wins under each
+  // how it has gone for them, all told and in each condition anyone can see they did it in (rain, dark, cold, wind, and
+  // for what's done to the ground, the ground, shade, dry ground and crowding): tries and wins
+  tally?: { tries: number; wins: number };
   when?: Record<string, { tries: number; wins: number }>;
   unless?: string[]; // conditions they've come to think it won't work in: their own theories of why it failed
 };
-// A condition, as a theory names it: the weather and light anyone can see, and the ground underfoot.
-const WEATHER_WORDS: Record<string, string> = { rain: "in the rain", dark: "in the dark", cold: "in freezing cold", wind: "in a strong wind" };
+// A condition, as a theory names it: the weather and light anyone can see, and the ground underfoot and round about.
+const WORDS: Record<string, string> = {
+  rain: "in the rain", dark: "in the dark", cold: "in freezing cold", wind: "in a strong wind",
+  shade: "in the shade of trees", dry: "on dry ground", crowded: "crowded in among bushes and trees",
+};
 const ON_GROUND: Record<string, string> = { marsh: "in a marsh", scrub: "in scrub", "forest floor": "on the forest floor", stream: "by a stream", lake: "by a lake", sea: "by the sea" };
 export const groundKey = (word: string) => `ground:${word.replaceAll(" ", "_")}`;
 export const groundOfKey = (c: string) => (c.startsWith("ground:") ? c.slice(7).replaceAll("_", " ") : null);
 export const conditionWords = (c: string) => {
   const g = groundOfKey(c);
-  return WEATHER_WORDS[c] ?? (g ? ON_GROUND[g] ?? `on ${g}` : c);
+  return WORDS[c] ?? (g ? ON_GROUND[g] ?? `on ${g}` : c);
 };
+// A goal of putting a theory to the test, test:<condition>@<belief key>, as its condition and belief.
+export const testOf = (type: string): [string, string] => { const rest = type.slice(5), at = rest.indexOf("@"); return [rest.slice(0, at), rest.slice(at + 1)]; };
+// The rule a belief key names, back from the key: what's done, with what, to what, where.
+export function fieldsOf(key: string): Fields {
+  const [verb, inputs, tool, target, at, shape] = key.split("|");
+  return { verb, inputs: inputs ? inputs.split("+") : [], tool: tool === "-" ? null : tool, target: target === "-" ? undefined : target, at: at === "-" ? null : at, shape: shape === "-" ? undefined : shape, gives: [] };
+}
+// Conditions of the spot itself rather than the hour or the weather: somewhere else, they don't hold.
+export const ofPlace = (c: string) => c.startsWith("ground:") || c === "shade" || c === "dry" || c === "crowded";
+// The odds of it working, by what they've seen: all told, and in a condition they did it in (null for all told).
+export function odds(b: Belief, c: string | null) {
+  const all = b.tally ?? { tries: b.tries, wins: b.wins };
+  if (c === null) return (all.wins + 1) / (all.tries + 2);
+  const s = b.when?.[c] ?? { tries: 0, wins: 0 };
+  return (s.wins + 1) / (s.tries + 2);
+}
+// The odds without a condition: everything they've seen of it when that condition didn't hold.
+export function oddsWithout(b: Belief, c: string) {
+  const all = b.tally ?? { tries: b.tries, wins: b.wins }, s = b.when?.[c] ?? { tries: 0, wins: 0 };
+  return (Math.max(0, all.wins - s.wins) + 1) / (Math.max(0, all.tries - s.tries) + 2);
+}
+// How likely it is to work for them now, by their own record: its odds all told (or, for what's done to the ground, on
+// the ground they'd do it on), or in whichever condition they're in it has done worst in; and some hope besides for what
+// they've hardly tried (all told, or on that ground), which is what gets it tried, and new ground tried for it.
+export function chance(b: Belief, now: string[] = [], ground?: string) {
+  let p = odds(b, ground ?? null);
+  for (const c of now) if (b.when?.[c]?.tries && c !== ground) p = Math.min(p, odds(b, c));
+  const tries = ground ? b.when?.[ground]?.tries ?? 0 : b.tally?.tries ?? b.tries;
+  return Math.min(1, p + 0.3 / Math.sqrt(tries + 1));
+}
+
+// Whether what was meant to come of doing it came of it: what it builds, if it builds anything, and what it gives, if it
+// gives anything. A strike that only chips the stone has lit no fire, whatever else it did.
+export const cameOff = (b: Belief, out: Outcome) =>
+  out.ok && (!b.fields.builds || out.fields.builds === b.fields.builds) && (!Object.keys(b.out).length || Object.keys(b.out).some((k) => (out.gives[k] ?? 0) > 0));
 
 export const beliefKey = (f: Fields) =>
   [f.verb, f.inputs.join("+"), f.tool ?? "-", f.target ?? "-", f.at ?? "-", f.shape ?? "-"].join("|");
@@ -192,6 +231,7 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number, now
       const wrong = out.ok && !out.later ? mine.unless?.filter((c) => now.includes(c)) ?? [] : [];
       if (wrong.length) {
         log(w, "theory", [b.id], b, `${b.name} watched ${doer.name} do it ${wrong.map(conditionWords).join(" and ")}, and stopped thinking it couldn't be done: ${sentence(w, mine.fields)}`);
+        trace("theory", "dropped", { key, conds: wrong, how: "watched" }, b.id);
         rethink(mine, wrong);
       }
       continue;
@@ -207,16 +247,6 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number, now
   }
 }
 
-// The ground it has gone best on for them, of the ground it has worked on at all: where they'd go to do it again.
-export function bestGround(b: Belief) {
-  let best: string | null = null, rate = -1;
-  for (const [c, s] of Object.entries(b.when ?? {})) {
-    const r = (s.wins + 1) / (s.tries + 2);
-    if (c.startsWith("ground:") && s.wins > 0 && r > rate) { best = c; rate = r; }
-  }
-  return best;
-}
-
 // A theory they've given up: the conditions it named, struck off.
 export function rethink(b: Belief, conds: string[]) {
   b.unless = b.unless?.filter((c) => !conds.includes(c));
@@ -229,6 +259,7 @@ export function teach(w: World, teacher: Agent, learner: Agent, key: string) {
   // the teacher's theories of when it fails come with it, and how long it takes to show; their record of trying it doesn't
   learner.beliefs[key] = { ...b, fields: { ...b.fields }, unless: b.unless && [...b.unless], how: "taught", from: teacher.id, t: w.t, tries: 0, wins: Math.min(1, b.wins), when: undefined };
   trace("belief", "taught", { key, from: teacher.id, spurious: b.spurious }, learner.id);
+  if (b.unless?.length) trace("theory", "taught", { key, conds: b.unless }, learner.id);
 }
 
 // Things seen about the world that aren't someone's action: what trees break into, which berries grow. radius in meters.

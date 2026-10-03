@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
-import { addThing, meters, newWorld, type Act, type Agent, type World } from "./world";
-import { count, giveItems, heat, join, place, rubTick, strikeDamage, strikeTick } from "./physics";
+import { DAY, addThing, meters, newWorld, type Act, type Agent, type World } from "./world";
+import { count, giveItems, heat, join, place, rubTick, strikeDamage, strikeTick, type Outcome } from "./physics";
 import { thingById } from "./space";
-import { record } from "./beliefs";
+import { cameOff, record, type Belief } from "./beliefs";
 import { plan } from "./plan";
+import { tick } from "./sim";
 
 const fresh = (): [World, Agent] => { const w = newWorld(42); const a = w.agents[0]; a.inv = []; return [w, a]; };
 const K = (w: World, id: string) => w.kinds[id];
@@ -133,4 +134,72 @@ test("someone who has seen wood laid on a fire plans to keep a dying fire going 
   expect(fire.hp!).toBeGreaterThan(70);
   record(w, a, fed, 1);
   expect(plan({ inv: { stick: 1 }, at: "fire", flags: [] }, "tend_fire", ctx())?.at(-1)?.op).toBe("act");
+});
+
+// Two ways they know to light a fire, with the record of each, all told and in the rain.
+const fireBelief = (tinder: string, tries: number, wins: number, rain: { tries: number; wins: number }): Belief => ({
+  key: `rub|${[tinder, "stick", "stick"].sort().join("+")}|-|-|-|-`, fields: { verb: "rub", inputs: ["stick", "stick", tinder], gives: [], builds: "fire" },
+  uses: { [tinder]: 1 }, out: {}, ticks: 20, tries, wins, tally: { tries, wins }, how: "discovered", t: 0, when: { rain },
+});
+
+test("knowing two ways to light a fire, they use whichever has worked best for them in the conditions they're in", () => {
+  const [w] = fresh();
+  const fiber = fireBelief("fiber", 10, 9, { tries: 3, wins: 0 }), bark = fireBelief("bark", 4, 3, { tries: 2, wins: 2 });
+  const ctx = (now: string[]) => ({ dist: {}, beliefs: [fiber, bark], facts: {}, kinds: w.kinds, toxic: [], now });
+  const start = { inv: { stick: 2, fiber: 1, bark: 1 }, at: null, flags: [] };
+  expect(plan(start, "make_fire", ctx([]))?.at(-1)?.key).toBe(fiber.key);
+  expect(plan(start, "make_fire", ctx(["rain"]))?.at(-1)?.key).toBe(bark.key);
+});
+
+test("someone who thinks fire won't light in the rain lights none in the rain, unless they set out to test it", () => {
+  const [w] = fresh();
+  const fiber = { ...fireBelief("fiber", 10, 9, { tries: 1, wins: 0 }), unless: ["rain"] };
+  const ctx = (testing?: string) => ({ dist: {}, beliefs: [fiber], facts: {}, kinds: w.kinds, toxic: [], now: ["rain"], testing });
+  const start = { inv: { stick: 2, fiber: 1 }, at: null, flags: [] };
+  expect(plan(start, "make_fire", ctx())).toBeNull();
+  expect(plan(start, `try:${fiber.key}`, ctx(fiber.key))?.map((s) => s.op)).toEqual(["act"]);
+});
+
+test("striking stone for fire in the rain only chips it: that's no fire, and it doesn't count as having worked; dry, a spark that catches does", () => {
+  const [w, a] = fresh();
+  const b: Belief = {
+    key: "strike|fiber+stone|stone|stone|-|-", fields: { verb: "strike", inputs: ["fiber", "stone"], tool: "stone", target: "stone", gives: [], builds: "fire" },
+    uses: { fiber: 1 }, out: {}, ticks: 3, tries: 1, wins: 1, how: "discovered", t: 0,
+  };
+  // strikes with tinder in hand until one comes off one way or the other
+  const strikeUntil = (ok: (o: Outcome) => boolean) => {
+    for (let i = 0; i < 200; i++) {
+      giveItems(w, a, "stone", 2); giveItems(w, a, "fiber");
+      const st = { progress: 0 };
+      let r;
+      do r = strikeTick(w, a, { verb: "strike", items: [], tool: "stone", target: { kind: "stone" } }, st); while (!r.done);
+      if (ok(r.out!)) return r.out!;
+    }
+    throw new Error("never came off");
+  };
+  w.weather.sky = "rain";
+  const chipped = strikeUntil((o) => o.ok);
+  expect(chipped.builds).toBeUndefined();
+  expect(cameOff(b, chipped)).toBe(false);
+  w.weather.sky = "clear";
+  expect(cameOff(b, strikeUntil((o) => o.builds === "fire"))).toBe(true);
+});
+
+test("rain that starts after they planned a fire stops them rubbing sticks, if they think fire won't light in the rain", () => {
+  const [w, a] = fresh();
+  w.agents = [a];
+  const b = { ...fireBelief("fiber", 10, 9, { tries: 2, wins: 0 }), unless: ["rain"] };
+  a.beliefs = { [b.key]: b };
+  giveItems(w, a, "stick", 2); giveItems(w, a, "fiber");
+  a.needs = { food: 100, energy: 100, warmth: 100, health: 100, social: 100 };
+  a.nextDecide = w.t + DAY;
+  a.goal = { type: "make_fire", since: w.t, odds: {}, fails: 0 };
+  a.plan = [{ op: "act", key: b.key, arg: b.key, progress: 0 }];
+  // the sky only turns on the twelfth tick: this one keeps the rain
+  w.t = Math.ceil(w.t / 12) * 12 + 1;
+  w.weather.sky = "rain";
+  tick(w);
+  expect(b.tally).toEqual({ tries: 10, wins: 9 });
+  expect(a.goal?.type).not.toBe("make_fire");
+  expect(count(a, "fiber")).toBe(1);
 });

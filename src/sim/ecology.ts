@@ -1,16 +1,15 @@
 // The world keeps moving on its own: weather, fire, plants, animals, rot, and sickness.
 import { THING_MATERIAL, clamp01, ensure, p } from "./materials";
-import { dropPile, fireHeat, groundWord, mark, nearFire, newKinds, removeThing, residentsOf, shelterName } from "./physics";
+import { dropPile, fireHeat, mark, nearFire, newKinds, occupied, removeThing, residentsOf, shelterName } from "./physics";
 import { see } from "./beliefs";
 import {
   DAY, H, TILE_M, W, Tile, addThing, dayOfYear, groundOf, log, meters, nearWater, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
-import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind } from "./space";
+import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind, stockedAt } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
 import { enrich, settle, soilWaterAt } from "./soil";
-import { skyShare } from "./light";
 import { SIZE, TREES, rockAt, smooth } from "../terrain/flora";
 import { fitHere, growth, pickHere } from "./plants";
 import { ripening, warmRate } from "./cues";
@@ -262,17 +261,19 @@ function plants(w: World, live: Thing[]) {
     } else if (t.kind === "sapling") {
       // A seedling lives on what its spot gives it: the ground it stands in (its niche, light and soil, the same as decides
       // where seed takes root), and water, its shallow roots wanting the soil moister than a grown plant does, with what's
-      // poured round it soaking in. It grows as the warmth lets it, a tree four times slower than a bush; short of what it
-      // needs it wilts, and wilted long enough it dies. Nothing it asks of the ground is that no other plant be near.
+      // poured round it soaking in. Grown plants close by take their share of both, the closer and the bigger the more. It
+      // grows as the warmth lets it, a tree four times slower than a bush; short of what it needs it wilts, and wilted long
+      // enough it dies.
       t.fit ??= fitHere(w, nicheOf(t), t.px, t.py);
-      const drink = smooth(0.35, 0.75, soilWaterAt(w, t.px, t.py) + (t.water ?? 0));
-      const grew = (1 / (3 * DAY)) * (treeOf(t) ? 0.25 : 1) * growth(w, t.px, t.py) * (0.4 + 0.6 * drink) * (0.5 + 0.5 * t.fit);
+      if (t.share === undefined || (w.t % 12 === 0 && stockedAt(w, t.px, t.py))) t.share = shareOf(w, t);
+      const drink = smooth(0.35, 0.75, (soilWaterAt(w, t.px, t.py) + (t.water ?? 0)) * t.share);
+      const grew = (1 / (3 * DAY)) * (treeOf(t) ? 0.25 : 1) * growth(w, t.px, t.py) * (0.4 + 0.6 * drink) * (0.5 + 0.5 * t.fit) * t.share;
       t.stage = (t.stage ?? 0) + grew;
       if (Math.round((t.stage ?? 0) * 20) !== Math.round(((t.stage ?? 0) - grew) * 20)) { t.size = Math.round((0.3 + t.stage * 0.5) * 100) / 100; mark(w, t); }
       if (w.t % 12 === 0) {
-        t.hp = Math.min(t.maxHp ?? 5, (t.hp ?? 5) + 0.25 * (t.fit * drink - 0.25));
+        t.hp = Math.min(t.maxHp ?? 5, (t.hp ?? 5) + 0.25 * (t.fit * drink * t.share - 0.25));
         if (t.water && (t.water *= 0.97) < 0.02) delete t.water;
-        if (t.hp <= 0) { wither(w, t, drink); continue; }
+        if (t.hp <= 0) { wither(w, t); continue; }
       }
       if (t.stage >= 1) matured(w, t);
     } else if ((t.kind === "stump" || t.kind === "burnt_stump") && t.until! <= w.t && warm > 0.3) {
@@ -312,28 +313,36 @@ function plants(w: World, live: Thing[]) {
 const FUNGI = ["bolete", "chanterelle", "puffball"] as const, HERBS = ["yarrow", "sorrel", "mint"] as const;
 // A sapling or a planted seed that will grow into a tree: a tree's own seed, or a nut someone pushed into the ground.
 const treeOf = (t: Thing) => (TREES as readonly string[]).includes(t.species ?? "") || t.item === "nut";
-// Seed of a species falling between near and far meters from a plant, taking root if the spot is open ground it fits.
+// Seed of a species falling between near and far meters from a plant, taking root as the spot fits it, on any ground
+// nothing stands on: whether it lives is up to the light, water and soil it finds there, other plants' share included.
 function seedNear(w: World, t: Thing, species: string, near: number, far: number) {
   const a = Math.random() * Math.PI * 2, d = (near + Math.random() * (far - near)) / TILE_M, px = t.px + Math.cos(a) * d, py = t.py + Math.sin(a) * d;
-  if (!dryAt(w, px, py) || anyAround(w, px, py, 2, ["tree", "bush", "sapling", "boulder", "structure", "dead_bush", "stump", "burnt_stump"])) return;
+  // Ground nobody has looked at since it grew stays as it grew: seed takes root, as a seedling the world keeps, only where
+  // it's been looked at.
+  if (!dryAt(w, px, py) || !stockedAt(w, px, py) || occupied(w, px, py)) return;
   const fit = fitHere(w, species, px, py);
   if (Math.random() > fit) return;
   mark(w, addThing(w, "sapling", px, py, species === "berry" ? { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5, fit } : { stage: 0, species, born: w.t, hp: 5, maxHp: 5, fit }));
 }
 // What a seedling will grow into, as the niches name it: a tree's seedling its own kind, a nut an oak, grain grass.
 const nicheOf = (t: Thing) => (treeOf(t) ? (t.species && t.species !== "berry" ? t.species : "oak") : t.item === "grain" ? "grass" : "berry");
-// A seedling wilted away: gone, and whoever put it in the ground or watered it learns why, as they'd see it: the ground
-// dried out round it, too little light under the trees, or ground that was no place for it.
-function wither(w: World, t: Thing, drink: number) {
+// The share of the light and water at a seedling's spot left to it by grown plants close round it: all of it with none
+// within two meters, half with a bush right beside it, less with more.
+function shareOf(w: World, t: Thing) {
+  let take = 0;
+  around(w, t.px, t.py, 2, ["tree", "bush", "dead_bush", "sapling"], (o, d) => { if (o !== t && (o.kind !== "sapling" || (o.stage ?? 0) > (t.stage ?? 0))) take += Math.max(0, 1 - d / 2) * (o.kind === "tree" ? 1.5 : o.kind === "sapling" ? 0.3 : 1); });
+  return 1 / (1 + take);
+}
+// A seedling wilted away: gone. Whoever put it in the ground or watered it sees it withered, and nothing tells them why:
+// what they make of it is their own theory (sim.ts judged), from what they saw when they planted it.
+function wither(w: World, t: Thing) {
   removeThing(w, t);
-  const ground = groundWord(w, t.px, t.py);
-  const why = drink < 0.3 ? `the ${ground} dried out round it` : skyShare(w, t.px, t.py) < 0.4 ? `it got too little light under the trees on the ${ground}` : `${ground} was no ground for it`;
   const owner = w.agents.find((a) => a.id === t.owner);
-  if (owner) log(w, "grow", [owner.id], t, `The ${w.kinds[t.item ?? ""]?.name ?? t.item ?? "seed"} ${owner.name} pushed into the ${ground} withered: ${why}.`);
-  witheredFor(w, t, `It withered: ${why}.`);
+  if (owner) log(w, "grow", [owner.id], t, `The ${w.kinds[t.item ?? ""]?.name ?? t.item ?? "seed"} ${owner.name} pushed into the ground withered.`);
+  witheredFor(w, t, "It withered.");
 }
 function matured(w: World, t: Thing) {
-  delete t.fit; delete t.water;
+  delete t.fit; delete t.water; delete t.share;
   if (treeOf(t)) {
     // a nut grows into an oak; a tree's seedling into its own kind
     const from = t.item;

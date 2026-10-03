@@ -1,5 +1,5 @@
 // GOAP over what each agent believes. Agents can only plan with things they've seen work.
-import { bestGround, type Belief } from "./beliefs";
+import { chance, ofPlace, type Belief } from "./beliefs";
 import { THING_MATERIAL, p, type Registry } from "./materials";
 import { HUNTED } from "./fauna";
 
@@ -13,6 +13,7 @@ export type Ctx = {
   store?: Record<string, number>; // what's kept in their home
   shared?: Record<string, number>; // what's in their camp's shared store
   now?: string[]; // the conditions they're in (rain, dark, cold, wind, the ground underfoot), for what they believe won't work in them
+  testing?: string; // a belief whose theories they're setting aside, to see whether they hold
 };
 export type PlanStep = { op: string; arg?: string; key?: string };
 type Op = PlanStep & { cost: number; needs: string[]; makes: string[]; pre: (s: PState) => boolean; eff: (s: PState) => PState };
@@ -67,46 +68,58 @@ const PLACE_OF: Record<string, string> = { fire: "fire", hearth: "hearth", kiln:
 
 // How far off a home or a homesite can be for a shelter to go up there: half a day's walk (ctx.dist counts 15 m steps).
 const BUILD_NEAR = 10;
-function beliefOp(b: Belief, ctx: Ctx): Op | null {
+// What's done to the ground (planting, digging) can be done on any ground they know of nearby (ctx.dist ground:*): each
+// is a way of its own, as likely to work as it has for them there, new ground as hopeful as it is untried.
+const GROUND_WORK: Record<string, true> = { plant: true, dig: true };
+function beliefOps(b: Belief, ctx: Ctx): Op[] {
   const req = required(b), out = outputs(b, ctx);
   const f = b.fields;
   const target = (f.verb === "strike" && f.target && !f.inputs.length) || f.verb === "throw" || f.verb === "pour" ? f.target ?? null : null;
-  // A shelter goes up at home, or next to someone they like, unless that's far off: then where they stand. What's done
-  // to the ground is done on the ground it has gone best on for them, once they know one.
+  // A shelter goes up at home, or next to someone they like, unless that's far off: then where they stand.
   const near = (k: string) => (ctx.dist[k] ?? Infinity) <= BUILD_NEAR;
-  const ground = f.verb === "plant" || f.verb === "dig" ? bestGround(b) : null;
-  const place = target ?? f.at ?? (ground && ground in ctx.dist ? ground : null) ?? (f.builds !== "shelter" ? null : near("home") ? "home" : near("homesite") ? "homesite" : null);
+  const testing = ctx.testing === b.key;
   const builds = f.builds ?? (f.effect === "cure" ? "cured" : f.effect === "watered" ? "watered" : null);
-  if (!Object.keys(out).length && !builds) return null;
-  // What they've come to think won't work in the conditions they're in, they don't plan on, however badly they need it:
-  // seeing it done in those conditions, or doing it, is what changes their mind. Ground they think it fails on is only
-  // a bar if they'd be doing it there.
-  if (b.unless?.some((c) => ctx.now?.includes(c) && !(c.startsWith("ground:") && place?.startsWith("ground:")))) return null;
-  if ((f.verb === "strike" || f.verb === "throw") && target && (b.rate ?? 0) <= 0 && b.wins === 0) return null;
-  if (f.verb !== "strike" && f.verb !== "throw" && b.wins === 0) return null;
-  if (f.verb === "eat") return null;
-  const wr = Math.max(0.2, (b.wins + 1) / (b.tries + 2));
+  if (!Object.keys(out).length && !builds) return [];
+  if ((f.verb === "strike" || f.verb === "throw") && target && (b.rate ?? 0) <= 0 && b.wins === 0) return [];
+  if (f.verb !== "strike" && f.verb !== "throw" && b.wins === 0) return [];
+  if (f.verb === "eat") return [];
   const prey = target && (HUNTED as readonly string[]).includes(target) ? `hunted:${target}` : null;
-  const makes = [...Object.keys(out), ...(builds ? [builds] : []), ...(prey ? [prey] : []), ...(PLACE_OF[builds ?? ""] ? [`place:${PLACE_OF[builds!]}`] : [])];
+  const makes = [...Object.keys(out), ...(builds ? [builds] : []), ...(prey ? [prey] : []), ...(PLACE_OF[builds ?? ""] ? [`place:${PLACE_OF[builds!]}`] : []), ...(testing ? [`tried:${b.key}`] : [])];
   if (builds === "shelter") makes.push("place:home");
-  return {
-    op: "act", key: b.key, arg: b.key,
-    cost: 1 + b.ticks / 8 / wr,
-    needs: [...Object.keys(req), ...(place ? [`place:${place}`] : [])],
-    makes,
-    pre: (s) => Object.entries(req).every(([k, v]) => n(s, k) >= v) && (!place || atPlace(s, place)) && !(builds === "fire" && atPlace(s, "fire")),
-    eff: (s) => {
-      let o = s;
-      for (const [k, v] of Object.entries(b.uses)) o = add(o, k, -v);
-      for (const [k, v] of Object.entries(out)) o = add(o, k, v);
-      if (builds) o = flag(o, builds);
-      if (prey) o = flag(o, prey);
-      if (PLACE_OF[builds ?? ""]) o = at(o, PLACE_OF[builds!]);
-      if (builds === "shelter") o = at(o, "home");
-      if (target) o = at(o, null);
-      return o;
-    },
+  // A failure that only shows days later (a seed that never comes up) costs more than the doing: another seed, another
+  // trip and the days lost, which they weigh as a walk of a couple of hundred meters.
+  const way = (place: string | null, chance: number): Op => {
+    const wr = Math.max(0.05, chance);
+    return {
+      op: "act", key: b.key, arg: b.key,
+      cost: 1 + b.ticks / 8 / wr + (b.later ? 3 * (1 / wr - 1) : 0),
+      needs: [...Object.keys(req), ...(place ? [`place:${place}`] : [])],
+      makes,
+      pre: (s) => Object.entries(req).every(([k, v]) => n(s, k) >= v) && (!place || atPlace(s, place)) && !(builds === "fire" && atPlace(s, "fire")),
+      eff: (s) => {
+        let o = s;
+        for (const [k, v] of Object.entries(b.uses)) o = add(o, k, -v);
+        for (const [k, v] of Object.entries(out)) o = add(o, k, v);
+        if (builds) o = flag(o, builds);
+        if (prey) o = flag(o, prey);
+        if (testing) o = flag(o, `tried:${b.key}`);
+        if (PLACE_OF[builds ?? ""]) o = at(o, PLACE_OF[builds!]);
+        if (builds === "shelter") o = at(o, "home");
+        if (target) o = at(o, null);
+        return o;
+      },
+    };
   };
+  // What they've come to think won't work in the conditions they're in, they don't plan on, however badly they need it:
+  // seeing it done in those conditions, or doing it, is what changes their mind, and putting it to the test (here and
+  // now, whatever the ground) is how they come to see it. What they blame on a spot holds only for doing it there.
+  const grounds = GROUND_WORK[f.verb] && !testing ? Object.keys(ctx.dist).filter((k) => k.startsWith("ground:")) : [];
+  if (grounds.length) {
+    const elsewhere = ctx.now?.filter((c) => !ofPlace(c)) ?? [];
+    return grounds.filter((g) => !b.unless?.some((c) => c === g || elsewhere.includes(c))).map((g) => way(g, chance(b, elsewhere, g)));
+  }
+  if (!testing && b.unless?.some((c) => ctx.now?.includes(c))) return [];
+  return [way(target ?? f.at ?? (f.builds !== "shelter" ? null : near("home") ? "home" : near("homesite") ? "homesite" : null), chance(b, ctx.now))];
 }
 
 function ops(ctx: Ctx): Op[] {
@@ -119,7 +132,7 @@ function ops(ctx: Ctx): Op[] {
     const k = place.slice(5);
     list.push({ op: "pick_up", arg: k, cost: 1, needs: [`place:${place}`], makes: [k], pre: (s) => s.at === place, eff: (s) => at(add(s, k, 1), null) });
   }
-  for (const b of ctx.beliefs) { const o = beliefOp(b, ctx); if (o) list.push(o); }
+  for (const b of ctx.beliefs) list.push(...beliefOps(b, ctx));
   // Anyone can put things away at home and take them back out.
   if ("home" in ctx.dist) {
     list.push({ op: "stash", cost: 1, needs: ["place:home"], makes: ["stashed"], pre: (s) => s.at === "home", eff: (s) => flag(s, "stashed") });
@@ -180,6 +193,7 @@ function goal(type: string, start: PState, ctx: Ctx): { done: (s: PState) => boo
   if (type === "contain_fire") return { done: has("hearth"), needs: ["hearth"] };
   if (type === "plant") return { done: has("bush"), needs: ["bush"] };
   if (type === "tend_plants") return { done: has("watered"), needs: ["watered"] };
+  if (type.startsWith("try:")) return { done: has(`tried:${type.slice(4)}`), needs: [`tried:${type.slice(4)}`] };
   if (type === "cure") return { done: has("cured"), needs: ["cured"] };
   if (type === "put_on") return { done: has("worn"), needs: ["worn"] };
   if (type === "dig_pit") return { done: has("pit"), needs: ["pit"] };
@@ -219,7 +233,9 @@ export function plan(start: PState, type: string, ctx: Ctx, depth = 2): PlanStep
   return null;
 }
 
-// ponytail: uniform-cost search over a small abstract state, pruned per goal; plan() covers what's too deep.
+// ponytail: uniform-cost search over a small abstract state, pruned per goal; plan() covers what's too deep. A plan is
+// done when it comes off the queue, not when it's first found: of two ways to the goal, the cheaper one (what's surer in
+// the conditions they're in, as well as quicker) comes off first.
 function search(start: PState, type: string, ctx: Ctx): PlanStep[] | null {
   const g = goal(type, start, ctx);
   if (!g) return null;
@@ -230,21 +246,22 @@ function search(start: PState, type: string, ctx: Ctx): PlanStep[] | null {
     for (const x of Object.keys(s.inv).sort()) if (s.inv[x]) k += `${x}:${s.inv[x]},`;
     return k;
   };
-  const open = [{ s: start, cost: 0, steps: [] as PlanStep[] }];
-  const seen = new Set<string>([key(start)]);
+  type Node = { s: PState; cost: number; steps: PlanStep[]; done: boolean; k: string };
+  const open: Node[] = [{ s: start, cost: 0, steps: [], done: false, k: key(start) }];
+  // the cheapest way found yet to each state
+  const best = new Map<string, number>([[open[0].k, 0]]);
   // ponytail: node cap keeps a think under a few ms; raise it if plans start coming back null for reachable goals.
-  while (open.length && seen.size < 3000) {
+  while (open.length && best.size < 3000) {
     const cur = open.shift()!;
+    if (cur.cost > best.get(cur.k)!) continue;
+    if (cur.done) return cur.steps;
     if (cur.steps.length >= 14) continue;
     for (const o of all) {
       if (!o.pre(cur.s)) continue;
-      const s = o.eff(cur.s);
-      const steps = [...cur.steps, { op: o.op, arg: o.arg, key: o.key }];
-      if (g.done(s)) return steps;
-      const k = key(s);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      const node = { s, cost: cur.cost + o.cost, steps };
+      const s = o.eff(cur.s), cost = cur.cost + o.cost, k = key(s);
+      if ((best.get(k) ?? Infinity) <= cost) continue;
+      best.set(k, cost);
+      const node = { s, cost, steps: [...cur.steps, { op: o.op, arg: o.arg, key: o.key }], done: g.done(s), k };
       let lo = 0, hi = open.length;
       while (lo < hi) { const m = (lo + hi) >> 1; if (open[m].cost > node.cost) hi = m; else lo = m + 1; }
       open.splice(lo, 0, node);
