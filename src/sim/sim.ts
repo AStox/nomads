@@ -8,7 +8,7 @@ import {
   fireHours, groundWord, hoursToDawn, leaveHome, pour, raining, reaches, removeThing, residentsOf, rubTick, shape, sheltered, shelterName, stash, strikeDamage, strikeTick, takeItems, throwTick, unstash, wearIt, wet, type Fields, type Outcome,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
-import { beliefKey, beliefText, cameOff, conditionWords, fieldsOf, found, groundKey, groundOfKey, odds, oddsWithout, ofPlace, record, rethink, see, sentence, teach, testOf, watchers, type Belief } from "./beliefs";
+import { beliefKey, beliefText, cameOff, conditionWords, fieldsOf, found, groundKey, groundOfKey, odds, oddsWithout, ofPlace, record, worseIn, rethink, see, sentence, teach, testOf, watchers, type Belief } from "./beliefs";
 import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
 import { burnedHomes, ecology, onFireOut, onGrew, onWithered, trample, trapped, tread } from "./ecology";
 import { FAUNA, HUNTED } from "./fauna";
@@ -790,10 +790,11 @@ const theorizing = new Set<string>();
 // theory of theirs when it works in the very condition they blamed and has there at least as often as not (one seedling
 // that comes up in the shade is luck), or has come to do about as well in it as out of it over a few tries. A failure
 // of something that has worked for them sets them wondering what was different: a condition they were in is a suspect
-// once it has failed them there more than once and done worse there than elsewhere, or when the failure itself points
-// at it (the tinder too damp to catch); likelier the worse and the more often (or Jev weighs the record itself), and bad
-// luck likelier the more often it usually works. Whatever they settle on is their theory until what they see tells
-// against it. text: what they saw of how it failed; done: when they did it, for what shows later.
+// once it has done worse for them there than elsewhere by more than chance would make it (beliefs.ts worseIn), or when
+// the failure itself points at it (the tinder too damp to catch); likelier the worse and the more often (or Jev weighs
+// the record itself), and bad luck likelier the more often it usually works. Whatever they settle on is their theory
+// until what they see tells against it. text: what they saw of how it failed; done: when they did it, for what shows
+// later.
 function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], text: string, done = w.t) {
   b.tally ??= { tries: 0, wins: 0 };
   b.tally.tries++;
@@ -814,8 +815,7 @@ function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], t
   }
   if (worked) return;
   const id = `${a.id}|${b.key}`;
-  const failedThere = (c: string) => b.when![c].tries - b.when![c].wins;
-  const suspects = now.filter((c) => !b.unless?.includes(c) && odds(b, c) < oddsWithout(b, c) && (failedThere(c) >= 2 || condition(c).hint.test(text)));
+  const suspects = now.filter((c) => !b.unless?.includes(c) && (worseIn(b, c) || (odds(b, c) < oddsWithout(b, c) && condition(c).hint.test(text))));
   if (!suspects.length || !b.wins || theorizing.has(id)) return;
   theorizing.add(id);
   const present = Object.fromEntries(suspects.map((c) => [c, `${condition(c).words} (${evidence(b, c)})`]));

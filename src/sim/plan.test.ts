@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { DAY, addThing, meters, newWorld, type Act, type Agent, type World } from "./world";
 import { count, giveItems, heat, join, place, rubTick, strikeDamage, strikeTick, type Outcome } from "./physics";
 import { thingById } from "./space";
-import { cameOff, record, type Belief } from "./beliefs";
+import { cameOff, record, worseIn, type Belief } from "./beliefs";
 import { plan } from "./plan";
 import { tick } from "./sim";
 
@@ -160,7 +160,7 @@ test("someone who thinks fire won't light in the rain lights none in the rain, u
   expect(plan(start, `try:${fiber.key}`, ctx(fiber.key))?.map((s) => s.op)).toEqual(["act"]);
 });
 
-test("striking stone for fire in the rain only chips it: that's no fire, and it doesn't count as having worked; dry, a spark that catches does", () => {
+test("striking stone for fire in the rain only chips it, the sparks dying in the wet tinder: that's no fire, and it doesn't count as having worked; dry, a spark that catches does", () => {
   const [w, a] = fresh();
   const b: Belief = {
     key: "strike|fiber+stone|stone|stone|-|-", fields: { verb: "strike", inputs: ["fiber", "stone"], tool: "stone", target: "stone", gives: [], builds: "fire" },
@@ -181,6 +181,8 @@ test("striking stone for fire in the rain only chips it: that's no fire, and it 
   const chipped = strikeUntil((o) => o.ok);
   expect(chipped.builds).toBeUndefined();
   expect(cameOff(b, chipped)).toBe(false);
+  // what they see of it points at the rain
+  expect(chipped.text).toMatch(/wet/);
   w.weather.sky = "clear";
   expect(cameOff(b, strikeUntil((o) => o.builds === "fire"))).toBe(true);
 });
@@ -202,4 +204,17 @@ test("rain that starts after they planned a fire stops them rubbing sticks, if t
   expect(b.tally).toEqual({ tries: 10, wins: 9 });
   expect(a.goal?.type).not.toBe("make_fire");
   expect(count(a, "fiber")).toBe(1);
+});
+
+test("a condition is only suspected when it has done worse there by more than chance: a couple of berries lost in the dark among many aren't enough, a run of them in the shade is", () => {
+  const berries = (when: Belief["when"], tries: number, wins: number): Belief => ({
+    key: "plant|berry|-|-|-|-", fields: { verb: "plant", inputs: ["berry"], gives: [], builds: "bush" }, uses: { berry: 1 }, out: {},
+    ticks: 3, tries, wins, tally: { tries, wins }, how: "discovered", t: 0, when,
+  });
+  // 3 of 5 in the dark against 6 of 9 out of it: no worse than luck
+  expect(worseIn(berries({ dark: { tries: 5, wins: 3 } }, 14, 9), "dark")).toBe(false);
+  // 1 of 6 in the shade against 8 of 10 out of it
+  expect(worseIn(berries({ shade: { tries: 6, wins: 1 } }, 16, 9), "shade")).toBe(true);
+  // a single failure there says little either way
+  expect(worseIn(berries({ shade: { tries: 1, wins: 0 } }, 11, 8), "shade")).toBe(false);
 });

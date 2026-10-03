@@ -207,7 +207,10 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
       // Two very hard stones throw sparks, the harder the more; with fine dry tinder in hand, a spark can catch.
       const tinder = tinderOf(w, a);
       const spark = 0.12 * (1 + Math.max(0, Math.max(p(tool, "hard"), p(tk, "hard")) - 0.9) * 40);
-      if (tinder && p(tool, "hard") >= 0.8 && p(tk, "hard") >= 0.8 && !(raining(w) && !sheltered(w, a)) && Math.random() < spark) {
+      const sparks = p(tool, "hard") >= 0.8 && p(tk, "hard") >= 0.8, wet = raining(w) && !sheltered(w, a);
+      // in the rain with nothing overhead the sparks fall into wet tinder and die, which anyone striking can see
+      const drowned = tinder && sparks && wet ? ` Sparks hissed out in the wet ${tinder.name}.` : "";
+      if (tinder && sparks && !wet && Math.random() < spark) {
         if (tinder.kind) takeItems(a, tinder.kind.id);
         mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: 50, maxHp: 400, born: w.t }));
         fields.inputs = [tk.id, ...(tinder.kind ? [tinder.kind.id] : [])].sort(); fields.builds = "fire";
@@ -218,9 +221,9 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
         const gives = { ...tk.breaks };
         for (const [k, n] of Object.entries(gives)) giveItems(w, a, k, n);
         fields.gives = Object.keys(gives);
-        return { done: true, broke: broke ?? undefined, damage: 1, out: outcome({ ok: true, text: `Striking the ${tk.name} with ${tool.id === "hands" ? "bare hands" : `the ${tool.name}`} chipped off ${list(w, gives)}.`, uses: { [tk.id]: 1 }, gives, fields, numbers: { chance } }) };
+        return { done: true, broke: broke ?? undefined, damage: 1, out: outcome({ ok: true, text: `Striking the ${tk.name} with ${tool.id === "hands" ? "bare hands" : `the ${tool.name}`} chipped off ${list(w, gives)}.${drowned}`, uses: { [tk.id]: 1 }, gives, fields, numbers: { chance } }) };
       }
-      if (++st.progress >= 10) return { done: true, broke: broke ?? undefined, damage: 0, out: outcome({ text: `They struck the ${tk.name} again and again. Sparks and grit, but nothing broke off.`, fields, numbers: { chance } }) };
+      if (++st.progress >= 10) return { done: true, broke: broke ?? undefined, damage: 0, out: outcome({ text: `They struck the ${tk.name} again and again. Sparks and grit, but nothing broke off.${drowned}`, fields, numbers: { chance } }) };
       return { done: false, broke: broke ?? undefined, damage: 0 };
     }
     // Splitting along the grain needs a focused edge.

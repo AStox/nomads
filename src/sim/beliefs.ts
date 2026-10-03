@@ -58,6 +58,15 @@ export function oddsWithout(b: Belief, c: string) {
   const all = b.tally ?? { tries: b.tries, wins: b.wins }, s = b.when?.[c] ?? { tries: 0, wins: 0 };
   return (Math.max(0, all.wins - s.wins) + 1) / (Math.max(0, all.tries - s.tries) + 2);
 }
+// Whether it has done worse for them in a condition than out of it by more than chance would make it: it has failed
+// them there more than once, and by more than a standard error of the difference, from their own counts. A few failures
+// in the dark among many plantings aren't that.
+export function worseIn(b: Belief, c: string) {
+  const all = b.tally ?? { tries: b.tries, wins: b.wins }, s = b.when?.[c] ?? { tries: 0, wins: 0 };
+  if (s.tries - s.wins < 2) return false;
+  const p = (all.wins + 1) / (all.tries + 2), se = Math.sqrt(p * (1 - p) * (1 / (s.tries + 1) + 1 / (all.tries - s.tries + 1)));
+  return oddsWithout(b, c) - odds(b, c) > se;
+}
 // How likely it is to work for them now, by their own record: its odds all told (or, for what's done to the ground, on
 // the ground they'd do it on), or in whichever condition they're in it has done worst in; and some hope besides for what
 // they've hardly tried (all told, or on that ground), which is what gets it tried, and new ground tried for it.
