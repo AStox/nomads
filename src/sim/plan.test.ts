@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { DAY, addThing, meters, newWorld, type Act, type Agent, type World } from "./world";
 import { count, giveItems, heat, join, place, rubTick, strikeDamage, strikeTick, type Outcome } from "./physics";
 import { thingById } from "./space";
-import { cameOff, record, worseIn, type Belief } from "./beliefs";
+import { cameOff, fades, record, worseIn, type Belief } from "./beliefs";
 import { plan } from "./plan";
 import { tick } from "./sim";
 
@@ -217,4 +217,15 @@ test("a condition is only suspected when it has done worse there by more than ch
   expect(worseIn(berries({ shade: { tries: 6, wins: 1 } }, 16, 9), "shade")).toBe(true);
   // a single failure there says little either way
   expect(worseIn(berries({ shade: { tries: 1, wins: 0 } }, 11, 8), "shade")).toBe(false);
+});
+
+test("a theory that it won't work in the rain stands while it has never once worked there, however rarely it works anywhere; it fades once it works there about as often as not", () => {
+  const sparks = (rain: { tries: number; wins: number }, tries: number, wins: number): Belief => ({
+    key: "strike|fiber+stone|stone|stone|-|-", fields: { verb: "strike", inputs: ["fiber", "stone"], tool: "stone", target: "stone", gives: [], builds: "fire" },
+    uses: { fiber: 1 }, out: {}, ticks: 3, tries, wins, tally: { tries, wins }, how: "discovered", t: 0, when: { rain }, unless: ["rain"],
+  });
+  // never in 6 strikes in the rain, 2 of 12 out of it
+  expect(fades(sparks({ tries: 6, wins: 0 }, 18, 2), "rain")).toBe(false);
+  // 2 of 4 in the rain, 3 of 6 out of it
+  expect(fades(sparks({ tries: 4, wins: 2 }, 10, 5), "rain")).toBe(true);
 });

@@ -8,7 +8,7 @@ import {
   fireHours, groundWord, hoursToDawn, leaveHome, pour, raining, reaches, removeThing, residentsOf, rubTick, shape, sheltered, shelterName, stash, strikeDamage, strikeTick, takeItems, throwTick, unstash, wearIt, wet, type Fields, type Outcome,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
-import { beliefKey, beliefText, cameOff, conditionWords, fieldsOf, found, groundKey, groundOfKey, odds, oddsWithout, ofPlace, record, worseIn, rethink, see, sentence, teach, testOf, watchers, type Belief } from "./beliefs";
+import { beliefKey, beliefText, cameOff, conditionWords, fieldsOf, found, groundKey, groundOfKey, odds, oddsWithout, fades, ofPlace, record, worseIn, rethink, see, sentence, teach, testOf, watchers, type Belief } from "./beliefs";
 import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
 import { burnedHomes, ecology, onFireOut, onGrew, onWithered, trample, trapped, tread } from "./ecology";
 import { FAUNA, HUNTED } from "./fauna";
@@ -806,7 +806,7 @@ function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], t
   const alts = aim ? Object.values(a.beliefs).filter((o) => o !== b && aimOf(o) === aim).map((o) => o.key) : [];
   trace("theory", "attempt", { key: b.key, verb: b.fields.verb, now, worked, done, ticks: b.ticks, aim, alts }, a.id);
   const seen = b.unless?.filter((c) => worked && now.includes(c) && 2 * b.when![c].wins >= b.when![c].tries) ?? [];
-  const faded = b.unless?.filter((c) => !seen.includes(c) && (b.when![c]?.tries ?? 0) >= 3 && odds(b, c) >= oddsWithout(b, c) - 0.1) ?? [];
+  const faded = b.unless?.filter((c) => !seen.includes(c) && fades(b, c)) ?? [];
   if (seen.length) log(w, "theory", [a.id], a, `${a.name} found it works ${seen.map(conditionWords).join(" and ")} after all: ${sentence(w, b.fields, undefined, b.later)}`);
   if (faded.length) log(w, "theory", [a.id], a, `${a.name} came to think it makes no difference whether it's done ${faded.map(conditionWords).join(" or ")}: ${sentence(w, b.fields, undefined, b.later)}`);
   if (seen.length || faded.length) {

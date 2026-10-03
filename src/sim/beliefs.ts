@@ -67,6 +67,13 @@ export function worseIn(b: Belief, c: string) {
   const p = (all.wins + 1) / (all.tries + 2), se = Math.sqrt(p * (1 - p) * (1 / (s.tries + 1) + 1 / (all.tries - s.tries + 1)));
   return oddsWithout(b, c) - odds(b, c) > se;
 }
+// Whether their record has come to tell against a theory that it won't work in a condition: over three or more tries
+// there it has worked at least once, and about as often as out of it (within 10 points). A spark that never once caught
+// in the rain says the theory is right, however rarely it catches anywhere.
+export function fades(b: Belief, c: string) {
+  const s = b.when?.[c];
+  return !!s && s.tries >= 3 && s.wins >= 1 && odds(b, c) >= oddsWithout(b, c) - 0.1;
+}
 // How likely it is to work for them now, by their own record: its odds all told (or, for what's done to the ground, on
 // the ground they'd do it on), or in whichever condition they're in it has done worst in; and some hope besides for what
 // they've hardly tried (all told, or on that ground), which is what gets it tried, and new ground tried for it.
