@@ -1,7 +1,7 @@
 // The few rules of the world a probe can set otherwise (scripts/probes.ts), to see whether people learn what is so
 // rather than what we wrote, and the switch that runs whole worlds with learning off or known from the start
 // (scripts/evals.ts worlds). The live world never changes them.
-import type { Agent, World } from "./world";
+import type { Agent, Thing, World } from "./world";
 
 // A condition anyone can see they're in (sim.ts CONDITIONS) that can keep a spark or an ember from catching.
 export type Quench = "rain" | "wind" | "dark" | "cold";
@@ -23,9 +23,11 @@ export const RULES = {
   truth: {} as Record<string, string[]>,
 };
 
-// Where a probe steps in: the weather just after each hour's turn of the sky (ecology.ts), and what people weigh doing
-// (sim.ts feasible).
+// Where a probe steps in: the weather just after each hour's turn of the sky (ecology.ts), what people weigh doing
+// (sim.ts feasible), and what becomes of each seedling (ecology.ts plants): it comes up now, withers now, or neither yet
+// (wait), through the same paths as in the world; or, undefined, whatever its spot makes of it, as in the world.
 export const hooks: {
   weather?: (w: World) => void;
   options?: (w: World, a: Agent, opts: Record<string, string>) => void;
+  seedling?: (w: World, t: Thing) => "up" | "withered" | "wait" | undefined;
 } = {};

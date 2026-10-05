@@ -266,7 +266,9 @@ function plants(w: World, live: Thing[]) {
       // where seed takes root), and water, its shallow roots wanting the soil moister than a grown plant does, with what's
       // poured round it soaking in. Grown plants close by take their share of both, the closer and the bigger the more. It
       // grows as the warmth lets it, a tree four times slower than a bush; short of what it needs it wilts, and wilted long
-      // enough it dies.
+      // enough it dies. (A probe may say instead when it comes up or withers: rules.ts hooks.)
+      const fate = hooks.seedling?.(w, t);
+      if (fate) { if (fate === "up") matured(w, t); else if (fate === "withered") wither(w, t); continue; }
       t.fit ??= fitHere(w, nicheOf(t), t.px, t.py);
       if (t.share === undefined || (w.t % 12 === 0 && stockedAt(w, t.px, t.py))) t.share = shareOf(w, t);
       const drink = smooth(0.35, 0.75, (soilWaterAt(w, t.px, t.py) + (t.water ?? 0)) * t.share);

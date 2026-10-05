@@ -11,11 +11,12 @@
 //   bun scripts/evals.ts trend [--tier probes|worlds|live] [--brain random|jev]
 //   bun scripts/evals.ts proxy
 //     whether the offline brain, which every gate runs on, finds what Jev finds
-// A build is compared with the baseline, seed by seed: the latest build that clearly improved on the one before it (or
-// --against a commit, run now). A number worse by more than its tolerance, with the whole 99% interval of the
-// difference on the worse side, is a regression and fails the build; one better the same way is an improvement, and a
-// passing build with an improvement becomes the new baseline, so the bar only rises. A claim (what learning should
-// show, held over the seeds with a 95% interval) that the baseline met and this build doesn't is a regression too.
+// A build is compared with the baseline, seed by seed: the latest build that clearly improved on the one before it, or
+// measured something it didn't (or --against a commit, run now). A number worse by more than its tolerance, with the
+// whole 99% interval of the difference on the worse side, is a regression and fails the build; one better the same way
+// is an improvement, and a passing build with an improvement or a new probe becomes the new baseline, so the bar only
+// rises. A claim (what learning should show, held over the seeds with a 95% interval) that the baseline met and this
+// build doesn't is a regression too.
 // Runs go in separate processes, from a copy of the sim and these scripts named by what's in it (data/evals/snap), so
 // edits made meanwhile don't leak into later seeds and the same code, committed or not, never runs twice: each run's
 // result is kept (data/evals/runs). The ledger is a file per tier run in evals/, so runs on different machines never
@@ -135,9 +136,11 @@ function claimHolds(c: Claim, runs: Record<string, Numbers> | undefined): boolea
   return "above" in c ? lo > c.value : hi < c.value;
 }
 type Row = { variant: string; metric: string; cand: number; ci: [number, number]; base?: number; diff?: number; dci?: [number, number]; mark: string };
-type Comparison = { rows: Row[]; regressions: string[]; improvements: string[]; claims: Entry["claims"]; claimText: string[] };
+// added: what this build measures that the baseline never did (a new probe), so a pass that adds one becomes the baseline
+type Comparison = { rows: Row[]; regressions: string[]; improvements: string[]; added: string[]; claims: Entry["claims"]; claimText: string[] };
 function compare(specs: Record<string, Spec>, cand: Runs, base: Runs | undefined): Comparison {
   const rows: Row[] = [], regressions: string[] = [], improvements: string[] = [], claims: Entry["claims"] = {}, claimText: string[] = [];
+  const added = base ? Object.keys(specs).filter((v) => Object.keys(cand[v] ?? {}).length && !Object.keys(base[v] ?? {}).length) : [];
   for (const [variant, spec] of Object.entries(specs)) {
     for (const [m, s] of Object.entries(spec.metrics)) {
       const xs = values(cand[variant], m);
@@ -163,7 +166,7 @@ function compare(specs: Record<string, Spec>, cand: Runs, base: Runs | undefined
       claimText.push(`${variant.padEnd(20)} ${now === true ? "holds" : now === false ? (was === true ? "LOST " : "open ") : "  -  "} ${c.text}${was === false && now === true ? " (newly)" : ""}`);
     }
   }
-  return { rows, regressions, improvements, claims, claimText };
+  return { rows, regressions, improvements, added, claims, claimText };
 }
 function show(title: string, r: Comparison, against?: string) {
   console.log(`\n${title}${against ? `, against ${against}` : ", no baseline yet"}`);
@@ -188,14 +191,16 @@ function keep(e: Entry) {
 }
 const sameKind = (e: Entry, x: Pick<Entry, "tier" | "brain" | "days" | "people">) => e.version === VERSION[e.tier] && e.tier === x.tier && e.brain === x.brain && e.days === x.days && e.people === x.people;
 // The verdict: the first build of its kind becomes the baseline (unless it has uncommitted changes: then it's unjudged);
-// after that, a regression fails, and a pass with an improvement becomes the new baseline.
+// after that, a regression fails, and a pass with an improvement, or that measures something new, becomes the baseline.
 function settle(entry: Omit<Entry, "verdict" | "baseline" | "regressions" | "improvements" | "claims">, r: Comparison, hadBase: boolean) {
   const verdict: Entry["verdict"] = !hadBase ? (entry.dirty ? "unjudged" : "baseline") : r.regressions.length ? "fail" : "pass";
-  const baseline = !entry.dirty && (verdict === "baseline" || (verdict === "pass" && r.improvements.length > 0));
+  const better = r.improvements.length > 0 || r.added.length > 0;
+  const baseline = !entry.dirty && (verdict === "baseline" || (verdict === "pass" && better));
   const full: Entry = { ...entry, claims: r.claims, regressions: r.regressions, improvements: r.improvements, verdict, baseline };
   if (r.regressions.length) console.log(`\nregressions:\n${r.regressions.map((x) => `  ${x}`).join("\n")}`);
   if (r.improvements.length) console.log(`\nimprovements:\n${r.improvements.map((x) => `  ${x}`).join("\n")}`);
-  console.log(`\nverdict: ${verdict}${baseline && hadBase ? " (now the baseline)" : entry.dirty && verdict === "pass" && r.improvements.length ? " (commit it and rerun to make it the baseline: the runs are kept)" : ""}`);
+  if (r.added.length) console.log(`\nnew, not in the baseline: ${r.added.join(", ")}`);
+  console.log(`\nverdict: ${verdict}${baseline && hadBase ? " (now the baseline)" : entry.dirty && verdict === "pass" && better ? " (commit it and rerun to make it the baseline: the runs are kept)" : ""}`);
   keep(full);
   return full;
 }
