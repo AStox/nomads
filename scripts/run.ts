@@ -9,9 +9,12 @@ import { beliefText } from "../src/sim/beliefs";
 import { trailChanges } from "../src/sim/ecology";
 import { counters, logTo, flush, tickMs } from "../src/sim/trace";
 import { patterns, patternText, standing } from "../src/sim/groups";
+import { seedRandom } from "./seeded";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 const ticks = Number(arg("ticks", "5000")), minutes = Number(arg("minutes", "0")), seed = Number(arg("seed", String(Math.floor(Math.random() * 1e9))));
+// the run's own draws, the island's seed unless told otherwise: the same seed runs the same world again
+seedRandom(Number(arg("rng", String(seed))));
 const logs = arg("logs", "");
 if (logs) logTo(logs);
 const w = newWorld(seed);

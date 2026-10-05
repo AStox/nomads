@@ -1,18 +1,29 @@
 // How people's theories of why things fail hold up, and whether what they do gets better for them: run one world
-// headless and write, as JSON lines, every attempt judged (what was done, the conditions, whether it worked), every
-// planting as it goes in, every theory formed, dropped, taught or put to the test, and each day the theories everyone
-// alive holds. scripts/theory-report.ts pools many
-// runs into the world's own odds and scores the theories, and the attempts, against them.
+// headless and write, as JSON lines, every attempt judged (what was done, the conditions, whether it worked, how long it
+// took, whether it was a test), every planting as it goes in, every theory formed, dropped, taught or put to the test,
+// each day the theories everyone alive holds, and at the end the things this world made and the rulings it settled, so
+// scripts/truth.ts can try its ways. scripts/theory-report.ts pools many runs and scores them against the answer key.
 //   NOMADS_BRAIN=random bun scripts/theories.ts --seed 3 --days 80 --out /tmp/theories/3.jsonl
+// --learning off: nobody ever forms a theory (the floor a world is measured against); --learning known --key key.json:
+// everyone knows from the start what truly hurts each way they learn (the ceiling). --rng: the run's own draws, when
+// they should differ from the island's seed.
 import { DAY, newWorld } from "../src/sim/world";
 import { tick } from "../src/sim/sim";
 import { changed, newKinds, removed } from "../src/sim/physics";
 import { trailChanges } from "../src/sim/ecology";
 import { traceListeners } from "../src/sim/trace";
 import { asking, brainKind } from "../src/sim/brain";
+import { RULES } from "../src/sim/rules";
+import { seedRandom } from "./seeded";
+import { hurting, loadKey } from "./answer-key";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 const seed = Number(arg("seed", "1")), days = Number(arg("days", "80")), out = arg("out", `/tmp/theories/${seed}.jsonl`);
+const learning = arg("learning", "seen");
+if (learning !== "seen" && learning !== "off" && learning !== "known") throw new Error(`--learning ${learning}: seen, off or known`);
+RULES.learning = learning;
+if (learning === "known") RULES.truth = hurting(loadKey(arg("key", "")));
+seedRandom(Number(arg("rng", String(seed))));
 const w = newWorld(seed);
 const lines: string[] = [];
 traceListeners.push((e) => {
@@ -38,5 +49,7 @@ for (let d = 1; d <= days; d++) {
   if (d % 20 === 0) console.error(`seed ${seed} day ${d}: ${Math.round((performance.now() - t0) / 1000)}s, ${w.agents.length} alive`);
   if (!w.agents.length) break;
 }
+// what this world made and settled, for trying its ways on the island afterwards
+lines.push(JSON.stringify({ ev: "kinds", t: w.t, learning, kinds: Object.fromEntries(Object.entries(w.kinds).filter(([, k]) => k.made)), rulings: w.rulings }));
 await Bun.write(out, lines.join("\n") + "\n");
 process.exit(0);

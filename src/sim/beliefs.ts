@@ -3,6 +3,7 @@ import type { Fields, Outcome } from "./physics";
 import { DAY, log, meters, stageOf, type Agent, type World } from "./world";
 import { canSee } from "./light";
 import { trace } from "./trace";
+import { RULES } from "./rules";
 
 export type Belief = {
   key: string;
@@ -202,6 +203,8 @@ export function record(w: World, a: Agent, out: Outcome, ticks: number, how: Bel
   let b = a.beliefs[key];
   const isNew = !b;
   b ??= a.beliefs[key] = { key, fields: f, uses: out.uses, out: out.gives, ticks, tries: 0, wins: 0, how, from: from?.id, t: w.t };
+  // known from the start (the ceiling a world is measured against): what truly hurts it comes with it
+  if (isNew && RULES.learning === "known" && RULES.truth[key]?.length) b.unless = [...RULES.truth[key]];
   // An attempt that showed nothing new doesn't unlearn what it was seen to give or build before: a seed pushed into the
   // ground today grows into a bush days from now, as one did last time.
   b.fields = { ...f, gives: f.gives.length ? f.gives : b.fields.gives, builds: f.builds ?? b.fields.builds };
@@ -243,8 +246,8 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number, now
         delete mine.spurious;
       }
       // Whoever thinks it can't be done in the rain, and watches it done in the rain, thinks again; what only shows
-      // later (a seed going into the sand) shows nothing yet.
-      const wrong = out.ok && !out.later ? mine.unless?.filter((c) => now.includes(c)) ?? [] : [];
+      // later (a seed going into the sand) shows nothing yet. (Unless theories are never had, or known from the start.)
+      const wrong = RULES.learning === "seen" && out.ok && !out.later ? mine.unless?.filter((c) => now.includes(c)) ?? [] : [];
       if (wrong.length) {
         log(w, "theory", [b.id], b, `${b.name} watched ${doer.name} do it ${wrong.map(conditionWords).join(" and ")}, and stopped thinking it couldn't be done: ${sentence(w, mine.fields)}`);
         trace("theory", "dropped", { key, conds: wrong, how: "watched" }, b.id);

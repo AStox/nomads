@@ -7,7 +7,9 @@ import { clock, trace } from "./trace";
 import { see } from "./beliefs";
 import { enrich } from "./soil";
 import { streamNow } from "./streams";
-import { snowAt } from "./air";
+import { airOn, snowAt } from "./air";
+import { DARK, lightOn } from "./light";
+import { RULES, type Quench } from "./rules";
 import { GROUND, SIZE, groundClass } from "../terrain/flora";
 
 // Kinds of stuff the rules below care about, by what they're like rather than what they're called.
@@ -206,11 +208,12 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
       trace("physics", "knap", { tool: tool.id, target: tk.id, chance }, a.id);
       // Two very hard stones throw sparks, the harder the more; with fine dry tinder in hand, a spark can catch.
       const tinder = tinderOf(w, a);
-      const spark = 0.12 * (1 + Math.max(0, Math.max(p(tool, "hard"), p(tk, "hard")) - 0.9) * 40);
-      const sparks = p(tool, "hard") >= 0.8 && p(tk, "hard") >= 0.8, wet = raining(w) && !sheltered(w, a);
+      const hard = Math.max(p(tool, "hard"), p(tk, "hard"));
+      const spark = 0.12 * (1 + Math.max(0, RULES.sparks === "harder" ? hard - 0.9 : 0.95 - hard) * 40);
+      const sparks = p(tool, "hard") >= 0.8 && p(tk, "hard") >= 0.8, q = quenched(w, a);
       // in the rain with nothing overhead the sparks fall into wet tinder and die, which anyone striking can see
-      const drowned = tinder && sparks && wet ? ` Sparks hissed out in the wet ${tinder.name}.` : "";
-      if (tinder && sparks && !wet && Math.random() < spark) {
+      const drowned = tinder && sparks && q && RULES.tell ? QUENCHED[q].strike(tinder.name) : "";
+      if (tinder && sparks && !q && Math.random() < spark) {
         if (tinder.kind) takeItems(a, tinder.kind.id);
         mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: 50, maxHp: 400, born: w.t }));
         fields.inputs = [tk.id, ...(tinder.kind ? [tinder.kind.id] : [])].sort(); fields.builds = "fire";
@@ -305,6 +308,22 @@ export function sheltered(w: World, a: Agent) {
   return !!anyAround(w, a.px, a.py, 4, ["structure"], (t) => (t.shelter?.tier ?? 0) >= 1);
 }
 export const raining = (w: World) => w.weather.sky === "rain" || w.weather.sky === "storm";
+// The weather and light anyone can see they're working in (sim.ts CONDITIONS gives them words).
+export const WEATHER_NOW: Record<Exclude<Quench, "none">, (w: World, a: Agent) => boolean> = {
+  rain: (w, a) => raining(w) && !sheltered(w, a),
+  dark: (w, a) => lightOn(w, a).bright < DARK,
+  cold: (w, a) => airOn(w, a).feels < 0,
+  wind: (w, a) => airOn(w, a).wind > 8,
+};
+// What keeps a spark or an ember from catching, if it holds where they are (rules.ts RULES.quench): in the world, wet
+// tinder in the rain with nothing overhead. What they see of it, for a strike and for rubbing, if the world tells them.
+export const quenched = (w: World, a: Agent) => (RULES.quench !== "none" && WEATHER_NOW[RULES.quench](w, a) ? RULES.quench : null);
+const QUENCHED: Record<Exclude<Quench, "none">, { strike: (tinder: string) => string; rub: string }> = {
+  rain: { strike: (t) => ` Sparks hissed out in the wet ${t}.`, rub: " Everything was too damp to catch." },
+  wind: { strike: (t) => ` The wind whipped the sparks off the ${t}.`, rub: " The wind took the heat off the wood as fast as it came." },
+  dark: { strike: (t) => ` In the dark the sparks fell wide of the ${t}.`, rub: " In the dark they kept losing the spot, and the heat with it." },
+  cold: { strike: (t) => ` The sparks died on the frozen ${t}.`, rub: " The wood was too frozen to catch." },
+};
 
 // Rubbing: sharpens the softer thing on a much harder one, or builds friction heat between two woods.
 export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; heat?: number }): { done: boolean; out?: Outcome } {
@@ -356,11 +375,11 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
   const firm = (k: Kind) => p(k, "hard") >= 0.25 && p(k, "long") >= 0.5;
   const bow = (isBow(A) && firm(B)) || (isBow(B) && firm(A));
   if (p(A, "hard") < 0.6 && p(B, "hard") < 0.6 && (p(A, "flammable") >= 0.5 || p(B, "flammable") >= 0.5) && ((firm(A) && firm(B)) || bow)) {
-    const wet = raining(w) && !sheltered(w, a);
-    st.heat = Math.max(0, (st.heat ?? 0) + (bow ? 0.11 : 0.05) * (wet ? 0.5 : 1) * (1 + level(a.skills.firemaking ?? 0) * 0.1) - 0.015);
-    trace("physics", "friction", { a: ia, b: ib, bow, wet, heat: st.heat }, a.id);
+    const q = quenched(w, a);
+    st.heat = Math.max(0, (st.heat ?? 0) + (bow ? 0.11 : 0.05) * (q ? 0.5 : 1) * (1 + level(a.skills.firemaking ?? 0) * 0.1) - 0.015);
+    trace("physics", "friction", { a: ia, b: ib, bow, quenched: q, heat: st.heat }, a.id);
     const tinder = tinderOf(w, a);
-    if (st.heat >= 1 && tinder && !wet) {
+    if (st.heat >= 1 && tinder && !q) {
       if (tinder.kind) takeItems(a, tinder.kind.id);
       const fuel = [ia, ib].map((id) => kind(w, id)!).find((k) => !isBow(k) && p(k, "flammable") >= 0.5);
       if (fuel) takeItems(a, fuel.id);
@@ -371,9 +390,9 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
       return { done: true, out: outcome({ ok: true, text: `Rubbing the ${A.name} against the ${B.name} got hot enough to catch the ${tinder.name}. A fire!`, uses: { ...(tinder.kind ? { [tinder.kind.id]: 1 } : {}), ...(fuel ? { [fuel.id]: 1 } : {}) }, builds: "fire", fields, numbers: { heat: st.heat } }) };
     }
     // in the rain, wood and tinder are soaked through within an hour's rubbing
-    if (st.progress >= 60 || (wet && st.progress >= 12) || (st.heat >= 1 && (!tinder || wet))) {
+    if (st.progress >= 60 || (q && st.progress >= 12) || (st.heat >= 1 && (!tinder || q))) {
       fields.effect = "heat";
-      const why = wet ? " Everything was too damp to catch." : !tinder && st.heat >= 1 ? " It smoked, but there was nothing dry and fine to catch." : "";
+      const why = q ? (RULES.tell ? QUENCHED[q].rub : "") : !tinder && st.heat >= 1 ? " It smoked, but there was nothing dry and fine to catch." : "";
       return { done: true, out: outcome({ text: `Rubbing the ${A.name} against the ${B.name} made them hot.${why}`, effect: "heat", fields, numbers: { heat: st.heat } }) };
     }
     return { done: false };

@@ -5,7 +5,7 @@ import {
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
 import {
   airy, applyRuling, arrowy, beside, count, counts, shooting, stave, digTick, diggable, eat, fireKind, force, giveItems, greasy, heat, homeOf, join, mark, nearFire, openWater, place as placeItems, plant,
-  fireHours, groundWord, hoursToDawn, leaveHome, pour, raining, reaches, removeThing, residentsOf, rubTick, shape, sheltered, shelterName, stash, strikeDamage, strikeTick, takeItems, throwTick, unstash, wearIt, wet, type Fields, type Outcome,
+  fireHours, groundWord, hoursToDawn, leaveHome, pour, raining, reaches, removeThing, residentsOf, rubTick, shape, sheltered, shelterName, stash, strikeDamage, strikeTick, takeItems, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
 import { beliefKey, beliefText, cameOff, conditionWords, fieldsOf, found, groundKey, groundOfKey, odds, oddsWithout, fades, ofPlace, record, worseIn, rethink, see, sentence, teach, testOf, watchers, type Belief } from "./beliefs";
@@ -23,6 +23,7 @@ import { ripening } from "./cues";
 import { airOn } from "./air";
 import { enrich, soilWaterAt } from "./soil";
 import { travel } from "./journeys";
+import { RULES, hooks } from "./rules";
 
 const VISION = 300; // meters: how far off someone notices another person
 const WALK = 2, RUN = 6; // meters a tick for an adult
@@ -445,8 +446,9 @@ function feasible(w: World, a: Agent) {
   const dying = left < 4 || (isNight(w.t) && left < hoursToDawn(w.t));
   add("tend_fire", dying && holding && can("tend_fire"));
   // A theory of theirs about something they could do here and now: when they aren't in trouble (not starving, freezing,
-  // hurt or spent), they might do it anyway to see whether it holds, the one resting on the least of all.
-  if (a.needs.food >= 25 && a.needs.warmth >= 40 && a.needs.health >= 40 && a.needs.energy >= 15) {
+  // hurt or spent), they might do it anyway to see whether it holds, the one resting on the least of all. (Not when
+  // theories are never had, or known from the start: rules.ts RULES.learning.)
+  if (RULES.learning === "seen" && a.needs.food >= 25 && a.needs.warmth >= 40 && a.needs.health >= 40 && a.needs.energy >= 15) {
     let doubt: { type: string; n: number } | null = null;
     for (const b of believes) for (const c of b.unless ?? []) {
       const n = b.when?.[c]?.tries ?? 0;
@@ -522,6 +524,8 @@ function feasible(w: World, a: Agent) {
     opts[kind] = GOALS[kind];
     targets[kind] = valid.map((b) => b.id);
   }
+  // A probe narrows what they weigh to what it's about (rules.ts hooks).
+  hooks.options?.(w, a, opts);
   // Dark, tired of nothing, and nothing to mend: sitting it out is always there to choose.
   if (!Object.keys(opts).length) opts.rest = goalText(w, "rest");
   return { opts, targets, people: [...people, ...fallen].map((b) => b.id) };
@@ -623,7 +627,7 @@ function fumbles(w: World, a: Agent) {
 }
 
 // Run one tick of an act. Returns the outcome when it resolves, "wait" while working, or a reason string if it can't happen.
-function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
+export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
   const act = s.act!;
   if (act.verb === "strike") {
     const long = p(w.kinds[act.tool ?? ""], "long") >= 0.6 ? 1 : 0;
@@ -759,10 +763,10 @@ const rulingsAt = new Map<number, number>();
 // hint: what the outcome would say if this were the reason, for the offline guess (Jev reads the outcome itself)
 type Pos = { px: number; py: number };
 const CONDITIONS: Record<string, { now: (w: World, a: Agent, at: Pos) => boolean; words: string; hint: RegExp; place?: true }> = {
-  rain: { now: (w, a) => raining(w) && !sheltered(w, a), words: "It was raining and there was nothing over their heads", hint: /damp|wet|rain|soak/ },
-  dark: { now: (w, a) => lightOn(w, a).bright < DARK, words: "It was dark", hint: /dark|couldn't see/ },
-  cold: { now: (w, a) => airOn(w, a).feels < 0, words: "It was freezing", hint: /froze|frozen|freezing|ice/ },
-  wind: { now: (w, a) => airOn(w, a).wind > 8, words: "A strong wind was blowing", hint: /wind|blew|gust/ },
+  rain: { now: WEATHER_NOW.rain, words: "It was raining and there was nothing over their heads", hint: /damp|wet|rain|soak/ },
+  dark: { now: WEATHER_NOW.dark, words: "It was dark", hint: /dark|couldn't see/ },
+  cold: { now: WEATHER_NOW.cold, words: "It was freezing", hint: /froze|frozen|freezing|ice/ },
+  wind: { now: WEATHER_NOW.wind, words: "A strong wind was blowing", hint: /wind|blew|gust/ },
   shade: { now: (w, _, at) => skyShare(w, at.px, at.py) < 0.5, words: "It was in the shade of trees", hint: /shade|under the trees/, place: true },
   dry: { now: (w, _, at) => soilWaterAt(w, at.px, at.py) < 0.5, words: "The ground there was dry", hint: /dry|parched/, place: true },
   crowded: { now: (w, _, at) => !!anyAround(w, at.px, at.py, 1.5, ["tree", "bush", "dead_bush"]), words: "Bushes or trees grew close round it", hint: /crowd|close round/, place: true },
@@ -794,8 +798,8 @@ const theorizing = new Set<string>();
 // the failure itself points at it (the tinder too damp to catch); likelier the worse and the more often (or Jev weighs
 // the record itself), and bad luck likelier the more often it usually works. Whatever they settle on is their theory
 // until what they see tells against it. text: what they saw of how it failed; done: when they did it, for what shows
-// later.
-function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], text: string, done = w.t) {
+// later; took: how long the doing took them, for what showed at once.
+function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], text: string, done = w.t, took?: number) {
   b.tally ??= { tries: 0, wins: 0 };
   b.tally.tries++;
   if (worked) b.tally.wins++;
@@ -804,7 +808,10 @@ function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], t
   // for measuring how well they choose (scripts/theories.ts): the other ways they know to the same end
   const aimOf = (o: Belief) => o.fields.builds ?? Object.keys(o.out).sort().join("+"), aim = aimOf(b);
   const alts = aim ? Object.values(a.beliefs).filter((o) => o !== b && aimOf(o) === aim).map((o) => o.key) : [];
-  trace("theory", "attempt", { key: b.key, verb: b.fields.verb, now, worked, done, ticks: b.ticks, aim, alts }, a.id);
+  const testing = !!a.goal?.type.startsWith("test:") && testOf(a.goal.type)[1] === b.key;
+  trace("theory", "attempt", { key: b.key, verb: b.fields.verb, now, worked, done, took, testing, ticks: b.ticks, aim, alts }, a.id);
+  // with learning off, or every theory known from the start, nothing they see makes or unmakes one
+  if (RULES.learning !== "seen") return;
   const seen = b.unless?.filter((c) => worked && now.includes(c) && 2 * b.when![c].wins >= b.when![c].tries) ?? [];
   const faded = b.unless?.filter((c) => !seen.includes(c) && fades(b, c)) ?? [];
   if (seen.length) log(w, "theory", [a.id], a, `${a.name} found it works ${seen.map(conditionWords).join(" and ")} after all: ${sentence(w, b.fields, undefined, b.later)}`);
@@ -833,13 +840,13 @@ function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], t
 }
 // They did what they believe works, and it came off or it didn't (beliefs.ts cameOff). What only shows later (a seed
 // pushed into the ground) is judged when it shows (came, withered).
-function attempted(w: World, a: Agent, b: Belief, out: Outcome) {
+function attempted(w: World, a: Agent, b: Belief, out: Outcome, took: number) {
   if (out.later) return;
   const meant = cameOff(b, out);
   // an outcome that went into the books under another key (a rub that only got hot) still counts against this one
   if (beliefKey(out.fields) !== b.key) { b.tries++; if (meant) b.wins++; }
   const now = conditionsNow(w, a, b.fields.verb);
-  judged(w, a, b, meant, now, out.text);
+  judged(w, a, b, meant, now, out.text, w.t, took);
   // put to the test, and it held
   const test = a.goal?.type.startsWith("test:") ? testOf(a.goal.type) : null;
   if (test && test[1] === b.key && !meant && now.includes(test[0])) log(w, "theory", [a.id], a, `${a.name} tried it ${conditionWords(test[0])} to see, and it didn't work, as they'd thought: ${sentence(w, b.fields, undefined, b.later)}`);
@@ -1279,7 +1286,7 @@ function run(w: World, a: Agent): boolean | string {
       if (r === "wait") return false;
       if (typeof r === "string") return r;
       finishAct(w, a, s, r, false);
-      attempted(w, a, b, r);
+      attempted(w, a, b, r, Math.max(1, w.t - (s.started ?? w.t)));
       return r.ok ? true : r.text;
     }
     case "tinker": {

@@ -11,9 +11,12 @@ import { trailChanges } from "../src/sim/ecology";
 import { counters } from "../src/sim/trace";
 import { p } from "../src/sim/materials";
 import { asking, brainKind } from "../src/sim/brain";
+import { seedRandom } from "./seeded";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 const seed = Number(arg("seed", "1")), days = Number(arg("days", "120"));
+// the run's own draws, the island's seed unless told otherwise: the same seed runs the same world again
+seedRandom(Number(arg("rng", String(seed))));
 const w = newWorld(seed);
 
 const laws = (w: World) => Object.values(w.laws);

@@ -17,6 +17,7 @@ import { streamNow } from "./streams";
 import { WIND, baseTemp, seasonAt, swing } from "./air";
 import { SEASONS } from "../terrain/climate";
 import { count, timed, trace } from "./trace";
+import { hooks } from "./rules";
 
 export const pathChanges = new Set<number>();
 export const iceChanged = { now: false };
@@ -58,6 +59,8 @@ function weather(w: World) {
       trace("weather", "sky", { from: before, to: wx.sky, season });
     }
   }
+  // a probe's own weather, set just after the sky turns (rules.ts hooks)
+  hooks.weather?.(w);
   wx.temp = baseTemp(w.t) + swing(w.t, wx.sky) - (rainy(w) ? 2 : 0);
   wx.dryTicks = rainy(w) ? 0 : wx.dryTicks + 1;
   if (w.t % 12 === 0) ice(w);
