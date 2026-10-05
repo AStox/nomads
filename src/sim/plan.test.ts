@@ -238,7 +238,7 @@ const striking = (): Belief => ({
 });
 const tries = (b: Belief, now: string[], n: number, catches: boolean) => { for (let i = 0; i < n; i++) noteTry(b, catches && i % 2 === 0, now); };
 
-test("where the rain falls mostly at night, the dark is only suspected until it has been seen dark and dry: like for like, it does as well as by day, and the rain takes the blame alone", () => {
+test("where the rain falls mostly at night, the dark is suspected along with it until it has been seen dark and dry often enough: like for like, it does as well as by day, and the rain takes the blame alone; to someone who already blames the rain, sooner", () => {
   const b = striking();
   // by day it catches every other time; at night it rains, and it never does
   for (let i = 0; i < 4; i++) { tries(b, [], 4, true); tries(b, ["dark", "rain"], 2, false); }
@@ -246,7 +246,12 @@ test("where the rain falls mostly at night, the dark is only suspected until it 
   expect(worseIn(b, "dark")).toBe(true);
   expect(worseIn(b, "rain")).toBe(true);
   // dark and dry, it catches as often as by day; dark and raining it still never does
-  for (let i = 0; i < 3; i++) { tries(b, ["dark"], 2, true); tries(b, [], 2, true); tries(b, ["dark", "rain"], 1, false); }
+  const blames: Belief = { ...structuredClone(b), unless: ["rain"] };
+  const night = (x: Belief) => { tries(x, ["dark"], 2, true); tries(x, [], 2, true); tries(x, ["dark", "rain"], 1, false); };
+  for (let i = 0; i < 2; i++) { night(b); night(blames); }
+  expect(worseIn(b, "dark")).toBe(true);
+  expect(worseIn(blames, "dark")).toBe(false);
+  for (let i = 0; i < 6; i++) night(b);
   expect(worseIn(b, "dark")).toBe(false);
   expect(worseIn(b, "rain")).toBe(true);
 });

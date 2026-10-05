@@ -81,38 +81,45 @@ export function odds(b: Belief, c: string | null) {
   const s = b.when?.[c] ?? { tries: 0, wins: 0 };
   return (s.wins + 1) / (s.tries + 2);
 }
+// How many tries of their record without a condition all told stand in for a thin record of a mix without it (apart).
+const THIN = 4;
 // How much worse it has done for them in a condition than out of it (diff, in how often it worked), give or take what
 // chance alone would make of their counts (se), and the tries and wins in the condition that rests on. For the weather
-// it goes by the mixes of it, like for like where it can: within each mix of the other weather, the tries in the
-// condition against the tries without it, pooled by how much each mix can tell (Mantel and Haenszel's weights), so the
-// dark takes no blame for the rain that falls mostly at night (most: the mix of the other weather that tells the most);
-// all told when it has never been seen apart from what comes with it. For the spot, all told.
+// it goes like for like: each mix of the weather with the condition in it set against the same mix without it, pooled by
+// how much each can tell (Mantel and Haenszel's weights), so the dark takes no blame for the rain that falls mostly at
+// night once it has been seen dark and dry. Where the mix without the condition is thin, or has never come, it's made up
+// from their record without the condition all told, as if it held THIN tries of that: what it would have done there
+// without the condition, as far as they can say, so a condition never seen apart from another is suspected along with it
+// until tries apart tell them which. Tries in weather they already blame for something else are set aside: to someone
+// who blames the rain, a spark dying in the rain at night says nothing about the dark. most: the mix of the other
+// weather, seen both ways, that tells the most. For the spot, all told.
 export function apart(b: Belief, c: string): { diff: number; se: number; tries: number; wins: number; most?: string } {
   const told = (inn: Count, all: Count) => {
     const p = (all.wins + 1) / (all.tries + 2), out = { tries: Math.max(0, all.tries - inn.tries), wins: Math.max(0, all.wins - inn.wins) };
     return { diff: (out.wins + 1) / (out.tries + 2) - (inn.wins + 1) / (inn.tries + 2), se: Math.sqrt(p * (1 - p) * (1 / (inn.tries + 1) + 1 / (out.tries + 1))), tries: inn.tries, wins: inn.wins };
   };
   if (ofPlace(c) || !b.mix) return told(b.when?.[c] ?? { tries: 0, wins: 0 }, b.tally ?? { tries: b.tries, wins: b.wins });
-  let weight = 0, diff = 0, v = 0, tries = 0, wins = 0, most = "", best = 0;
-  const inn = { tries: 0, wins: 0 }, all = { tries: 0, wins: 0 };
-  for (const [k, s] of Object.entries(b.mix)) {
-    all.tries += s.tries;
-    all.wins += s.wins;
-    const conds = k.split("+");
-    if (!conds.includes(c)) continue;
-    inn.tries += s.tries;
-    inn.wins += s.wins;
-    const others = conds.filter((x) => x !== c).join("+"), o = b.mix[others];
-    if (!o?.tries || !s.tries) continue;
-    const wt = (s.tries * o.tries) / (s.tries + o.tries), q = (s.wins + o.wins + 1) / (s.tries + o.tries + 2);
-    weight += wt;
-    diff += wt * (o.wins / o.tries - s.wins / s.tries);
-    v += wt * q * (1 - q);
-    tries += s.tries;
-    wins += s.wins;
-    if (wt > best) { best = wt; most = others; }
+  const mixes = Object.entries(b.mix).filter(([k]) => !k.split("+").some((x) => x !== c && b.unless?.includes(x)));
+  const inn = { tries: 0, wins: 0 }, out = { tries: 0, wins: 0 };
+  for (const [k, s] of mixes) {
+    const t = k.split("+").includes(c) ? inn : out;
+    t.tries += s.tries;
+    t.wins += s.wins;
   }
-  return weight ? { diff: diff / weight, se: Math.sqrt(v) / weight, tries, wins, most } : told(inn, all);
+  if (!inn.tries || !out.tries) return told(inn, { tries: inn.tries + out.tries, wins: inn.wins + out.wins });
+  let weight = 0, diff = 0, v = 0, most: string | undefined, best = 0;
+  for (const [k, s] of mixes) {
+    const conds = k.split("+");
+    if (!conds.includes(c) || !s.tries) continue;
+    const others = conds.filter((x) => x !== c).join("+"), o = b.mix[others];
+    const n0 = (o?.tries ?? 0) + THIN, w0 = (o?.wins ?? 0) + (THIN * out.wins) / out.tries;
+    const wt = (s.tries * n0) / (s.tries + n0), q = (s.wins + w0 + 1) / (s.tries + n0 + 2);
+    weight += wt;
+    diff += wt * (w0 / n0 - s.wins / s.tries);
+    v += wt * q * (1 - q);
+    if (o?.tries && wt > best) { best = wt; most = others; }
+  }
+  return { diff: diff / weight, se: Math.sqrt(v) / weight, tries: inn.tries, wins: inn.wins, most };
 }
 // Whether it has done worse for them in a condition than out of it by more than chance would make it: it has failed
 // them there more than once, and by more than a standard error of the difference, from their own counts (apart). A few
