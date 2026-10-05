@@ -8,7 +8,7 @@ import {
   fireHours, groundWord, hoursToDawn, leaveHome, pour, raining, reaches, removeThing, residentsOf, rubTick, shape, sheltered, shelterName, stash, strikeDamage, strikeTick, takeItems, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
-import { beliefKey, beliefText, cameOff, conditionWords, fieldsOf, found, groundKey, groundOfKey, odds, oddsWithout, fades, ofPlace, record, worseIn, rethink, see, sentence, teach, testOf, watchers, type Belief } from "./beliefs";
+import { apart, beliefKey, beliefText, cameOff, conditionWords, fieldsOf, found, groundKey, groundOfKey, likeNow, mixOf, odds, fades, noteTry, ofPlace, record, worseIn, rethink, see, sentence, teach, testOf, watchers, type Belief } from "./beliefs";
 import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
 import { burnedHomes, ecology, onFireOut, onGrew, onWithered, trample, trapped, tread } from "./ecology";
 import { FAUNA, HUNTED } from "./fauna";
@@ -446,13 +446,17 @@ function feasible(w: World, a: Agent) {
   const dying = left < 4 || (isNight(w.t) && left < hoursToDawn(w.t));
   add("tend_fire", dying && holding && can("tend_fire"));
   // A theory of theirs about something they could do here and now: when they aren't in trouble (not starving, freezing,
-  // hurt or spent), they might do it anyway to see whether it holds, the one resting on the least of all. (Not when
-  // theories are never had, or known from the start: rules.ts RULES.learning.)
+  // hurt or spent), they might do it anyway to see whether it holds, the one resting on the least of all. Only where
+  // nothing else they blame it on holds as well (what they blame on a spot, they'd keep clear of): a spark that dies in
+  // the rain at night says nothing about the dark to someone who blames the rain. (Not when theories are never had, or
+  // known from the start: rules.ts RULES.learning.)
   if (RULES.learning === "seen" && a.needs.food >= 25 && a.needs.warmth >= 40 && a.needs.health >= 40 && a.needs.energy >= 15) {
     let doubt: { type: string; n: number } | null = null;
+    const now = ctx.now ?? [];
     for (const b of believes) for (const c of b.unless ?? []) {
       const n = b.when?.[c]?.tries ?? 0;
-      if (ctx.now?.includes(c) && (!doubt || n < doubt.n)) doubt = { type: `test:${c}@${b.key}`, n };
+      if (!now.includes(c) || b.unless?.some((o) => o !== c && !ofPlace(o) && now.includes(o))) continue;
+      if (!doubt || n < doubt.n) doubt = { type: `test:${c}@${b.key}`, n };
     }
     if (doubt) add(doubt.type, can(doubt.type));
   }
@@ -762,11 +766,12 @@ const rulingsAt = new Map<number, number>();
 // it, how dry it is, and bushes and trees crowded round it, which tell as much as the weather does.
 // hint: what the outcome would say if this were the reason, for the offline guess (Jev reads the outcome itself)
 type Pos = { px: number; py: number };
-const CONDITIONS: Record<string, { now: (w: World, a: Agent, at: Pos) => boolean; words: string; hint: RegExp; place?: true }> = {
-  rain: { now: WEATHER_NOW.rain, words: "It was raining and there was nothing over their heads", hint: /damp|wet|rain|soak/ },
-  dark: { now: WEATHER_NOW.dark, words: "It was dark", hint: /dark|couldn't see/ },
-  cold: { now: WEATHER_NOW.cold, words: "It was freezing", hint: /froze|frozen|freezing|ice/ },
-  wind: { now: WEATHER_NOW.wind, words: "A strong wind was blowing", hint: /wind|blew|gust/ },
+// on, off: the weather in a word, and its lack, for telling Jev how it went like for like
+const CONDITIONS: Record<string, { now: (w: World, a: Agent, at: Pos) => boolean; words: string; hint: RegExp; place?: true; on?: string; off?: string }> = {
+  rain: { now: WEATHER_NOW.rain, words: "It was raining and there was nothing over their heads", hint: /damp|wet|rain|soak/, on: "raining", off: "dry" },
+  dark: { now: WEATHER_NOW.dark, words: "It was dark", hint: /dark|couldn't see/, on: "dark", off: "light" },
+  cold: { now: WEATHER_NOW.cold, words: "It was freezing", hint: /froze|frozen|freezing|ice/, on: "freezing", off: "above freezing" },
+  wind: { now: WEATHER_NOW.wind, words: "A strong wind was blowing", hint: /wind|blew|gust/, on: "windy", off: "calm" },
   shade: { now: (w, _, at) => skyShare(w, at.px, at.py) < 0.5, words: "It was in the shade of trees", hint: /shade|under the trees/, place: true },
   dry: { now: (w, _, at) => soilWaterAt(w, at.px, at.py) < 0.5, words: "The ground there was dry", hint: /dry|parched/, place: true },
   crowded: { now: (w, _, at) => !!anyAround(w, at.px, at.py, 1.5, ["tree", "bush", "dead_bush"]), words: "Bushes or trees grew close round it", hint: /crowd|close round/, place: true },
@@ -784,27 +789,37 @@ export const conditionsNow = (w: World, a: Agent, verb?: string, at: Pos = a) =>
 // ground anywhere like that.
 const blamed = (a: Agent) => [...new Set(Object.values(a.beliefs).flatMap((b) => b.unless ?? []).filter((c) => CONDITIONS[c]?.place))];
 const condition = (c: string) => CONDITIONS[c] ?? { words: `The ground there was ${groundOfKey(c)}`, hint: new RegExp(groundOfKey(c) ?? "$^") };
-// What they've seen of it in a condition and out of it, in their words, for weighing a theory.
+// What they've seen of it in a condition and out of it, in their words, for weighing a theory; and for the weather, how
+// it went with it and without it in the mix of the other weather that tells the most (beliefs.ts apart), when other
+// weather has come into it ("when it was dark but dry it has worked 3 of 9 times for them, and 4 of 12 when light and
+// dry"). Their counts fade with time (beliefs.ts noteTry); they're told what they round to.
 const evidence = (b: Belief, c: string) => {
-  const s = b.when?.[c] ?? { tries: 0, wins: 0 }, all = b.tally ?? { tries: 0, wins: 0 };
-  return `it has worked ${s.wins} of ${s.tries} times for them like that, and ${all.wins - s.wins} of ${all.tries - s.tries} otherwise`;
+  const s = b.when?.[c] ?? { tries: 0, wins: 0 }, all = b.tally ?? { tries: 0, wins: 0 }, r = Math.round;
+  const told = `it has worked ${r(s.wins)} of ${r(s.tries)} times for them like that, and ${r(all.wins - s.wins)} of ${r(all.tries - s.tries)} otherwise`;
+  const { most } = apart(b, c), word = CONDITIONS[c];
+  // the other weather that has come into it, as it was in that mix
+  const others = [...new Set(Object.keys(b.mix ?? {}).flatMap((k) => k.split("+")))].filter((x) => x !== c && CONDITIONS[x]?.on).sort();
+  if (most === undefined || !others.length || !word?.on) return told;
+  const held = most ? most.split("+") : [], rest = others.map((x) => (held.includes(x) ? CONDITIONS[x].on : CONDITIONS[x].off));
+  const inn = b.mix![mixOf([...held, c])], out = b.mix![most];
+  return `${told}; when it was ${[word.on, ...rest].join(" and ")} it has worked ${r(inn.wins)} of ${r(inn.tries)} times, and ${r(out.wins)} of ${r(out.tries)} when it was ${[word.off, ...rest].join(" and ")}`;
 };
 const theorizing = new Set<string>();
-// How what they did went, counted all told and against each condition they did it in. What they see tells against a
-// theory of theirs when it works in the very condition they blamed and has there at least as often as not (one seedling
-// that comes up in the shade is luck), or has come to do about as well in it as out of it over a few tries. A failure
-// of something that has worked for them sets them wondering what was different: a condition they were in is a suspect
-// once it has done worse for them there than elsewhere by more than chance would make it (beliefs.ts worseIn), or when
-// the failure itself points at it (the tinder too damp to catch); likelier the worse and the more often (or Jev weighs
-// the record itself), and bad luck likelier the more often it usually works. Whatever they settle on is their theory
-// until what they see tells against it. text: what they saw of how it failed; done: when they did it, for what shows
-// later; took: how long the doing took them, for what showed at once.
+// How what they did went, counted all told, against each condition they did it in and in the mix of the weather it was
+// done in, the latest tries counting most (beliefs.ts noteTry). A try in a condition they blame is what can tell against
+// that theory (the record it was formed on can't): it works there and has done there at least as often as not (for the
+// weather, in this same mix of it: one spark that catches in the rain by day says nothing to set against many that died
+// in it at night; one seedling that comes up in the shade is luck), or it has come to do about as well there as out of
+// it over a few tries, like for like. A failure of something that has worked for them sets them wondering what was
+// different: a condition they were in is a suspect once it has done worse for them there than without it by more than
+// chance would make it (beliefs.ts worseIn, like for like where it can be: the dark is no suspect for the rain that
+// falls mostly at night), or when the failure itself points at it (the tinder too damp to catch) and it has done no
+// better there than without it; likelier the worse and the more often (or Jev weighs the record itself), and bad luck
+// likelier the more often it usually works. Whatever they settle on is their theory until what they see tells against
+// it. text: what they saw of how it failed; done: when they did it, for what shows later; took: how long the doing took
+// them, for what showed at once.
 function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], text: string, done = w.t, took?: number) {
-  b.tally ??= { tries: 0, wins: 0 };
-  b.tally.tries++;
-  if (worked) b.tally.wins++;
-  b.when ??= {};
-  for (const c of now) { const s = (b.when[c] ??= { tries: 0, wins: 0 }); s.tries++; if (worked) s.wins++; }
+  noteTry(b, worked, now);
   // for measuring how well they choose (scripts/theories.ts): the other ways they know to the same end
   const aimOf = (o: Belief) => o.fields.builds ?? Object.keys(o.out).sort().join("+"), aim = aimOf(b);
   const alts = aim ? Object.values(a.beliefs).filter((o) => o !== b && aimOf(o) === aim).map((o) => o.key) : [];
@@ -812,8 +827,8 @@ function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], t
   trace("theory", "attempt", { key: b.key, verb: b.fields.verb, now, worked, done, took, testing, ticks: b.ticks, aim, alts }, a.id);
   // with learning off, or every theory known from the start, nothing they see makes or unmakes one
   if (RULES.learning !== "seen") return;
-  const seen = b.unless?.filter((c) => worked && now.includes(c) && 2 * b.when![c].wins >= b.when![c].tries) ?? [];
-  const faded = b.unless?.filter((c) => !seen.includes(c) && fades(b, c)) ?? [];
+  const seen = b.unless?.filter((c) => { const s = likeNow(b, c, now); return worked && now.includes(c) && 2 * s.wins >= s.tries; }) ?? [];
+  const faded = b.unless?.filter((c) => !seen.includes(c) && now.includes(c) && fades(b, c)) ?? [];
   if (seen.length) log(w, "theory", [a.id], a, `${a.name} found it works ${seen.map(conditionWords).join(" and ")} after all: ${sentence(w, b.fields, undefined, b.later)}`);
   if (faded.length) log(w, "theory", [a.id], a, `${a.name} came to think it makes no difference whether it's done ${faded.map(conditionWords).join(" or ")}: ${sentence(w, b.fields, undefined, b.later)}`);
   if (seen.length || faded.length) {
@@ -822,12 +837,12 @@ function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], t
   }
   if (worked) return;
   const id = `${a.id}|${b.key}`;
-  const suspects = now.filter((c) => !b.unless?.includes(c) && (worseIn(b, c) || (odds(b, c) < oddsWithout(b, c) && condition(c).hint.test(text))));
+  const suspects = now.filter((c) => !b.unless?.includes(c) && (worseIn(b, c) || (apart(b, c).diff >= 0 && condition(c).hint.test(text))));
   if (!suspects.length || !b.wins || theorizing.has(id)) return;
   theorizing.add(id);
   const present = Object.fromEntries(suspects.map((c) => [c, `${condition(c).words} (${evidence(b, c)})`]));
   const lean: Record<string, number> = { luck: 1 + 3 * odds(b, null) };
-  for (const c of suspects) lean[c] = 1 + 10 * (oddsWithout(b, c) - odds(b, c)) * Math.min(1, b.when![c].tries / 2) + (condition(c).hint.test(text) ? 6 : 0);
+  for (const c of suspects) { const d = apart(b, c); lean[c] = 1 + 10 * d.diff * Math.min(1, d.tries / 2) + (condition(c).hint.test(text) ? 6 : 0); }
   theorize(w, a, sentence(w, b.fields, undefined, b.later), text, present, lean)
     .then((c) => {
       if (!c || !a.beliefs[b.key] || b.unless?.includes(c)) return;

@@ -204,9 +204,10 @@ function beliefRow(w: World, a: Agent, b: Belief): Row {
   const uses = Object.entries(b.uses).filter(([, n]) => n > 0);
   if (uses.length) more.push(`uses up ${uses.map(([k, n]) => `${n} ${w.kinds[k]?.name ?? words(k)}`).join(", ")}`);
   if (Object.keys(b.out).length) more.push(`gives ${Object.entries(b.out).map(([k, n]) => `${r(n)} ${w.kinds[k]?.name ?? words(k)}`).join(", ")}`);
-  // how it has gone for them in each condition they've done it in: the record a theory of theirs rests on
-  const record = Object.entries(b.when ?? {}).filter(([, s]) => s.tries > 0);
-  if (record.length) more.push(record.map(([c, s]) => `${conditionWords(c)} ${s.wins} of ${s.tries}`).join(", "));
+  // how it has gone for them in each condition they've done it in: the record a theory of theirs rests on, the latest
+  // tries counting most (beliefs.ts noteTry), so what it rounds to
+  const record = Object.entries(b.when ?? {}).filter(([, s]) => Math.round(s.tries) > 0);
+  if (record.length) more.push(record.map(([c, s]) => `${conditionWords(c)} ${Math.round(s.wins)} of ${Math.round(s.tries)}`).join(", "));
   const law = b.law ? Object.values(w.laws).find((l) => l.id === b.law) : undefined;
   if (law && law.by !== a.id) more.push(who(w, law.by, `first found by ${nameOf(w, law.by)}`));
   return { label: beliefText(w, b), icon: out ? `item:${lookOf(w.kinds[out])}` : (b.fields.builds && BUILDS[b.fields.builds]) || VERBS[b.fields.verb] || "act:craft", more };

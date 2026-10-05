@@ -10,7 +10,7 @@ import { DARK, canSee, lightOn, lightWords } from "./light";
 import { airOn, airWords } from "./air";
 import { ripening } from "./cues";
 import { PROPS, THING_MATERIAL, type Kind, type Props } from "./materials";
-import { beliefText, odds, oddsWithout, testOf } from "./beliefs";
+import { apart, beliefText, testOf } from "./beliefs";
 import { campTag, campView } from "./groups";
 import { jevLog } from "./trace";
 import LEXICON from "./lexicon.json";
@@ -223,10 +223,10 @@ function needBias(w: World, a: Agent, options: Record<string, string>) {
     // a wilting seedling of theirs, or a fire to keep through the night that they've seen burn down for want of wood
     if (k === "tend_plants" || k === "lay_by_wood") b[k] = 3;
     // a theory they could put to the test here: the less it rests on (the tries in the condition, by how much worse it
-    // has done there), the likelier, and likelier for the curious, the doubting and the clever
+    // has done there, like for like), the likelier, and likelier for the curious, the doubting and the clever
     if (k.startsWith("test:")) {
-      const [c, key] = testOf(k), x = a.beliefs[key];
-      const rests = x ? (x.when?.[c]?.tries ?? 0) * Math.max(0, oddsWithout(x, c) - odds(x, c)) : 0;
+      const [c, key] = testOf(k), x = a.beliefs[key], d = x && apart(x, c);
+      const rests = d ? d.tries * Math.max(0, d.diff) : 0;
       b[k] = (3 * (1 + (a.traits.curious ?? 0) + (a.traits.skeptical ?? 0) + (a.traits.clever ?? 0))) / (1 + 2 * rests);
     }
     if (k.startsWith("make:") || k === "build_shelter" || k.startsWith("hunt:")) b[k] = Math.max(b[k] ?? 0, 2);

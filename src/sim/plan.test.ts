@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { DAY, addThing, meters, newWorld, type Act, type Agent, type World } from "./world";
 import { count, giveItems, heat, join, place, rubTick, strikeDamage, strikeTick, type Outcome } from "./physics";
 import { thingById } from "./space";
-import { cameOff, fades, record, worseIn, type Belief } from "./beliefs";
+import { cameOff, fades, noteTry, record, rethink, worseIn, type Belief } from "./beliefs";
 import { plan } from "./plan";
 import { tick } from "./sim";
 
@@ -228,4 +228,48 @@ test("a theory that it won't work in the rain stands while it has never once wor
   expect(fades(sparks({ tries: 6, wins: 0 }, 18, 2), "rain")).toBe(false);
   // 2 of 4 in the rain, 3 of 6 out of it
   expect(fades(sparks({ tries: 4, wins: 2 }, 10, 5), "rain")).toBe(true);
+});
+
+// Striking a spark into tinder, as someone who has lit a fire that way would know it, and their tries of it one by one:
+// n tries in what they could see (now), every other one catching (from the first) or none.
+const striking = (): Belief => ({
+  key: "strike|fiber+stone|stone|stone|-|-", fields: { verb: "strike", inputs: ["fiber", "stone"], tool: "stone", target: "stone", gives: [], builds: "fire" },
+  uses: { fiber: 1 }, out: {}, ticks: 3, tries: 1, wins: 1, how: "discovered", t: 0,
+});
+const tries = (b: Belief, now: string[], n: number, catches: boolean) => { for (let i = 0; i < n; i++) noteTry(b, catches && i % 2 === 0, now); };
+
+test("where the rain falls mostly at night, the dark is only suspected until it has been seen dark and dry: like for like, it does as well as by day, and the rain takes the blame alone", () => {
+  const b = striking();
+  // by day it catches every other time; at night it rains, and it never does
+  for (let i = 0; i < 4; i++) { tries(b, [], 4, true); tries(b, ["dark", "rain"], 2, false); }
+  // never seen apart, either could be why
+  expect(worseIn(b, "dark")).toBe(true);
+  expect(worseIn(b, "rain")).toBe(true);
+  // dark and dry, it catches as often as by day; dark and raining it still never does
+  for (let i = 0; i < 3; i++) { tries(b, ["dark"], 2, true); tries(b, [], 2, true); tries(b, ["dark", "rain"], 1, false); }
+  expect(worseIn(b, "dark")).toBe(false);
+  expect(worseIn(b, "rain")).toBe(true);
+});
+
+test("once the rain stops mattering, the long record of sparks dying in it gives way to tries there that catch as often as anywhere, and the theory goes; the wind that kills them now keeps its theory, and a theory given up isn't brought straight back by the failures it was formed on", () => {
+  const b = striking();
+  b.unless = ["rain", "wind"];
+  // for a long while the rain and the wind each killed every spark; out of both it caught every other time
+  for (let i = 0; i < 20; i++) { tries(b, [], 2, true); tries(b, ["rain"], 1, false); tries(b, ["wind"], 1, false); }
+  expect(fades(b, "rain")).toBe(false);
+  // then the rain stopped mattering: in the rain it catches every other time, as out of it, and the wind still kills it
+  let rounds = 0;
+  while (!fades(b, "rain") && rounds < 50) { tries(b, [], 2, true); tries(b, ["rain"], 2, true); tries(b, ["wind"], 1, false); rounds++; }
+  expect(rounds).toBeGreaterThan(1);
+  expect(rounds).toBeLessThanOrEqual(15);
+  for (let i = 0; i < 30; i++) { tries(b, [], 2, true); tries(b, ["wind"], 1, false); }
+  expect(fades(b, "wind")).toBe(false);
+  // someone who saw it catch in the rain and gave the theory up doesn't take it up again on the old failures there
+  const saw = striking();
+  saw.unless = ["rain"];
+  for (let i = 0; i < 20; i++) { tries(saw, [], 2, true); tries(saw, ["rain"], 1, false); }
+  expect(worseIn(saw, "rain")).toBe(true);
+  rethink(saw, ["rain"]);
+  expect(saw.unless).toBeUndefined();
+  expect(worseIn(saw, "rain")).toBe(false);
 });
