@@ -43,8 +43,8 @@
 
 ## Shell & Command Reliability
 1. **[2026-10-04] On the operator's Mac bun lives in ~/.bun/bin, off PATH, and a world takes 10 s to make**
-   `bun test src` there also matches dist/src's dead 2023 tests (5 fail), and the sim tests that make a world overrun bun's 5 s timeout.
-   Do instead: `export PATH="$HOME/.bun/bin:$PATH"`, and run `bun test ./src --timeout 120000`.
+   `bun test src` there also matches dist/src's dead 2023 tests (5 fail), a bare filter like `bun test garden.test.ts` also runs every copy of it under data/evals/snap (one old copy fails), and the sim tests that make a world overrun bun's 5 s timeout.
+   Do instead: `export PATH="$HOME/.bun/bin:$PATH"`, and run `bun test ./src --timeout 120000` (one file: `bun test ./src/sim/garden.test.ts`).
 
 ## Domain Behavior Guardrails
 1. **[2026-09-26] No slope may face away from the isometric camera**

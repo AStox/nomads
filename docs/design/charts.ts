@@ -18,9 +18,11 @@ const ledger: Entry[] = readdirSync(join(ROOT, "evals")).filter((f) => f.endsWit
   .map((f) => JSON.parse(readFileSync(join(ROOT, "evals", f), "utf8")));
 const probes = ledger.filter((e) => e.tier === "probes" && e.brain === "random" && e.seeds.length >= 5).at(-1);
 const worlds = ledger.filter((e) => e.tier === "worlds").at(-1);
-// the baseline a run was held to: the last of its kind before it that became the baseline, on another commit
+// where things stood before: the last baseline of its kind before it, on another commit, that gave other numbers for
+// something both measured (a build that only adds probes leaves the rest as they were, so the chart looks past it)
+const same = (a: Entry, b: Entry) => Object.keys(a.runs).every((v) => !b.runs[v] || JSON.stringify(a.runs[v]) === JSON.stringify(b.runs[v]));
 const before = (e: Entry) => ledger.filter((x) => x.tier === e.tier && x.brain === e.brain && x.version === e.version && x.days === e.days
-  && x.people === e.people && x.at < e.at && x.baseline && x.commit !== e.commit).at(-1);
+  && x.people === e.people && x.at < e.at && x.baseline && x.commit !== e.commit && !same(e, x)).at(-1);
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const pct = (v: number) => `${Math.round(v * 100)}%`;
@@ -30,7 +32,8 @@ const valuesOf = (e: Entry, run: string, m: string) =>
 const source = (e: Entry) => `evals/${e.at.replace(/:/g, "-").replace(".", "-")}-${e.tier}-${e.brain}-${e.commit}.json`;
 
 // ---------- probes: one row per number, a dot per seed, the world as it is and flipped ----------
-const ROWS: { probe: string; metric: string; label: string; good: "high" | "low" }[] = [
+// only: a variant drawn on its own line, as the world is drawn, for a probe with a third way of staging it
+const ROWS: { probe: string; metric: string; label: string; good: "high" | "low"; only?: string }[] = [
   { probe: "choose", metric: "first", label: "First five tries made the faster way", good: "high" },
   { probe: "choose", metric: "best", label: "Late tries made the faster way", good: "high" },
   { probe: "blame", metric: "right", label: "Blame what truly kills sparks", good: "high" },
@@ -41,6 +44,14 @@ const ROWS: { probe: string; metric: string; label: string; good: "high" | "low"
   { probe: "recover", metric: "kept", label: "Still blame the old cause", good: "low" },
   { probe: "spread", metric: "right", label: "Blame the true cause by the end", good: "high" },
   { probe: "spread", metric: "wrong", label: "Keep the false cause they were told", good: "low" },
+  { probe: "superstition", metric: "wrong", label: "Blame something anyway", good: "low" },
+  { probe: "two", metric: "right", label: "Blame both", good: "high" },
+  { probe: "weak", metric: "right", label: "Blame it", good: "high" },
+  { probe: "rare", metric: "right", label: "Blame it", good: "high" },
+  { probe: "seed", metric: "right", label: "Blame what withers seedlings", good: "high" },
+  { probe: "seed", metric: "right", label: "The same, one planting a day", good: "high", only: "sparse" },
+  { probe: "seed", metric: "right", label: "The same, four in ten come up elsewhere", good: "high", only: "poor" },
+  { probe: "seed", metric: "weather", label: "Blame the weather for it", good: "low" },
 ];
 const PROBE_TEXT: Record<string, string> = {
   choose: "Choose: two ways to a fire, one truly faster",
@@ -48,6 +59,11 @@ const PROBE_TEXT: Record<string, string> = {
   confounded: "Confounded: night rain, one of two kills sparks",
   recover: "Recover: the cause changes halfway",
   spread: "Spread: some know, some were told wrong",
+  superstition: "Superstition: nothing in the weather matters",
+  two: "Two: rain and wind both kill sparks",
+  weak: "Weak: the rain only halves the sparks",
+  rare: "Rare: what kills sparks comes one hour in twelve",
+  seed: "Seed: shade withers seedlings, days later",
 };
 
 function probesChart(e: Entry, was?: Entry) {
@@ -67,7 +83,8 @@ function probesChart(e: Entry, was?: Entry) {
     const cy = y + rowH / 2;
     rows.push(`<text class="c-label" x="12" y="${cy + 5}">${esc(r.label)}</text>`);
     rows.push(`<line class="c-row" x1="${L}" x2="${L + plot}" y1="${cy}" y2="${cy}"/>`);
-    for (const [variant, dy, cls] of [["real", -6, "c-real"], ["flipped", 6, "c-flip"]] as const) {
+    const lines: [string, number, string][] = r.only ? [[r.only, 0, "c-real"]] : [["real", -6, "c-real"], ["flipped", 6, "c-flip"]];
+    for (const [variant, dy, cls] of lines) {
       const xs = valuesOf(e, `${r.probe}/${variant}`, r.metric);
       if (!xs.length) continue;
       const m = mean(xs), old = was && valuesOf(was, `${r.probe}/${variant}`, r.metric);
@@ -104,8 +121,11 @@ function probesChart(e: Entry, was?: Entry) {
   const cell = (x: Entry | undefined, run: string, m: string) => { const v = x ? valuesOf(x, run, m) : []; return v.length ? pct(mean(v)) : "none"; };
   const head = was ? `<th scope="col">As it is</th><th scope="col">Flipped</th><th scope="col">Before, as it is</th><th scope="col">Before, flipped</th>` : `<th scope="col">As it is</th><th scope="col">Flipped</th>`;
   const table = `<details class="numbers"><summary>The numbers</summary><table><thead><tr><th scope="col">Probe</th><th scope="col">Share of people who</th>${head}</tr></thead><tbody>`
-    + ROWS.map((r) => `<tr><td>${r.probe}</td><td>${esc(r.label.toLowerCase())}</td><td>${cell(e, `${r.probe}/real`, r.metric)}</td><td>${cell(e, `${r.probe}/flipped`, r.metric)}</td>`
-      + (was ? `<td>${cell(was, `${r.probe}/real`, r.metric)}</td><td>${cell(was, `${r.probe}/flipped`, r.metric)}</td>` : "") + `</tr>`).join("") + `</tbody></table></details>`;
+    + ROWS.map((r) => {
+      const real = `${r.probe}/${r.only ?? "real"}`, flipped = r.only ? "" : `${r.probe}/flipped`;
+      return `<tr><td>${r.probe}</td><td>${esc(r.label.toLowerCase())}</td><td>${cell(e, real, r.metric)}</td><td>${cell(e, flipped, r.metric)}</td>`
+        + (was ? `<td>${cell(was, real, r.metric)}</td><td>${cell(was, flipped, r.metric)}</td>` : "") + `</tr>`;
+    }).join("") + `</tbody></table></details>`;
   const claims = Object.entries(e.claims).flatMap(([variant, cs]) => Object.entries(cs).map(([id, ok]) => ({ variant, id, ok })));
   const held = claims.filter((c) => c.ok === true).length;
   const count = (x: Entry) => { const cs = Object.values(x.claims).flatMap((c) => Object.values(c)); return `${cs.filter((c) => c === true).length} of ${cs.length}`; };
