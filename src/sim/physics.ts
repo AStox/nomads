@@ -211,9 +211,10 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
       const hard = Math.max(p(tool, "hard"), p(tk, "hard"));
       const spark = 0.12 * (1 + Math.max(0, RULES.sparks === "harder" ? hard - 0.9 : 0.95 - hard) * 40);
       const sparks = p(tool, "hard") >= 0.8 && p(tk, "hard") >= 0.8, q = quenched(w, a);
-      // in the rain with nothing overhead the sparks fall into wet tinder and die, which anyone striking can see
+      // in the rain with nothing overhead the sparks fall into wet tinder and die, which anyone striking can see (unless a
+      // probe lets some catch anyway: rules.ts RULES.leak)
       const drowned = tinder && sparks && q && RULES.tell ? QUENCHED[q].strike(tinder.name) : "";
-      if (tinder && sparks && !q && Math.random() < spark) {
+      if (tinder && sparks && (!q || (RULES.leak > 0 && Math.random() < RULES.leak)) && Math.random() < spark) {
         if (tinder.kind) takeItems(a, tinder.kind.id);
         mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: 50, maxHp: 400, born: w.t }));
         fields.inputs = [tk.id, ...(tinder.kind ? [tinder.kind.id] : [])].sort(); fields.builds = "fire";
@@ -309,16 +310,17 @@ export function sheltered(w: World, a: Agent) {
 }
 export const raining = (w: World) => w.weather.sky === "rain" || w.weather.sky === "storm";
 // The weather and light anyone can see they're working in (sim.ts CONDITIONS gives them words).
-export const WEATHER_NOW: Record<Exclude<Quench, "none">, (w: World, a: Agent) => boolean> = {
+export const WEATHER_NOW: Record<Quench, (w: World, a: Agent) => boolean> = {
   rain: (w, a) => raining(w) && !sheltered(w, a),
   dark: (w, a) => lightOn(w, a).bright < DARK,
   cold: (w, a) => airOn(w, a).feels < 0,
   wind: (w, a) => airOn(w, a).wind > 8,
 };
-// What keeps a spark or an ember from catching, if it holds where they are (rules.ts RULES.quench): in the world, wet
-// tinder in the rain with nothing overhead. What they see of it, for a strike and for rubbing, if the world tells them.
-export const quenched = (w: World, a: Agent) => (RULES.quench !== "none" && WEATHER_NOW[RULES.quench](w, a) ? RULES.quench : null);
-const QUENCHED: Record<Exclude<Quench, "none">, { strike: (tinder: string) => string; rub: string }> = {
+// What keeps a spark or an ember from catching, the first that holds where they are (rules.ts RULES.quench): in the
+// world, wet tinder in the rain with nothing overhead. What they see of it, for a strike and for rubbing, if the world
+// tells them.
+export const quenched = (w: World, a: Agent) => RULES.quench.find((q) => WEATHER_NOW[q](w, a)) ?? null;
+const QUENCHED: Record<Quench, { strike: (tinder: string) => string; rub: string }> = {
   rain: { strike: (t) => ` Sparks hissed out in the wet ${t}.`, rub: " Everything was too damp to catch." },
   wind: { strike: (t) => ` The wind whipped the sparks off the ${t}.`, rub: " The wind took the heat off the wood as fast as it came." },
   dark: { strike: (t) => ` In the dark the sparks fell wide of the ${t}.`, rub: " In the dark they kept losing the spot, and the heat with it." },

@@ -6,7 +6,7 @@
 // sparks instead of the rain): a learner with the answer written in passes one and fails the other.
 //   bun scripts/probes.ts --probe blame --variant flipped --seed 3 [--days 6] [--people 6] [--brain jev] [--out run.json]
 // scripts/evals.ts runs every probe over many seeds and holds each build to the last good one.
-import { DAY, TILE_M, dryAt, newWorld, type Thing, type World } from "../src/sim/world";
+import { DAY, TILE_M, dryAt, newWorld, type Agent, type Thing, type World } from "../src/sim/world";
 import { tick } from "../src/sim/sim";
 import { changed, counts, giveItems, newKinds, removeThing, removed } from "../src/sim/physics";
 import { trailChanges } from "../src/sim/ecology";
@@ -31,14 +31,21 @@ export type ProbeRun = {
 const STONE = "strike|fiber+stone|stone|stone|-|-", FLINT = "strike|fiber+flint|stone|flint|-|-";
 // Each hour, the chance of rain and of a strong wind, given whether it is dark where they are.
 type Sky = (dark: boolean) => { rain: number; wind: number };
-// starts: by person, the causes they start out blaming, or null for someone who doesn't know how at all; talk: they may
-// also teach and talk
-type Setup = { quench: Quench; then?: Quench; tell: boolean; sparks: "harder" | "softer"; ways: string[]; sky: Sky; starts?: (Quench[] | null)[]; talk?: boolean };
+// quench: what truly keeps sparks from catching, any of them (none, for bad luck alone); then: what does from halfway on;
+// leak: how often a spark catches anyway where it's quenched (rules.ts RULES.leak); bystander: what comes with the cause
+// and doesn't matter; starts: by person, the causes they start out blaming, or null for someone who doesn't know how at
+// all; talk: they may also teach and talk
+type Setup = {
+  quench: Quench[]; then?: Quench[]; leak?: number; bystander?: Quench; tell: boolean; sparks: "harder" | "softer"; ways: string[]; sky: Sky;
+  starts?: (Quench[] | null)[]; talk?: boolean;
+};
 type Probe = { text: string; metrics: Record<string, Metric>; claims: Claim[]; variants: Record<string, Setup> };
 
 const fair: Sky = () => ({ rain: 0, wind: 0 });
 const changeable: Sky = () => ({ rain: 0.35, wind: 0.35 });
 const nightRain: Sky = (dark) => ({ rain: dark ? 0.7 : 0.05, wind: 0 });
+const rareWind: Sky = () => ({ rain: 0.35, wind: 0.08 });
+const rareRain: Sky = () => ({ rain: 0.08, wind: 0.35 });
 
 const CAUSE = {
   right: { better: "higher", tol: 0.1, text: "share of people who end up blaming what truly kills the sparks" },
@@ -62,9 +69,9 @@ export const PROBES: Record<string, Probe> = {
     ],
     variants: {
       // flint throws three times the sparks
-      real: { quench: "rain", tell: true, sparks: "harder", ways: [STONE, FLINT], sky: fair },
+      real: { quench: ["rain"], tell: true, sparks: "harder", ways: [STONE, FLINT], sky: fair },
       // plain stone does
-      flipped: { quench: "rain", tell: true, sparks: "softer", ways: [STONE, FLINT], sky: fair },
+      flipped: { quench: ["rain"], tell: true, sparks: "softer", ways: [STONE, FLINT], sky: fair },
     },
   },
   blame: {
@@ -76,8 +83,8 @@ export const PROBES: Record<string, Probe> = {
       { id: "less-waste", text: "fewer of their tries go to waste late than early", gap: ["wastedEarly", "wasted"], value: 0 },
     ],
     variants: {
-      real: { quench: "rain", tell: true, sparks: "harder", ways: [STONE], sky: changeable },
-      flipped: { quench: "wind", tell: true, sparks: "harder", ways: [STONE], sky: changeable },
+      real: { quench: ["rain"], tell: true, sparks: "harder", ways: [STONE], sky: changeable },
+      flipped: { quench: ["wind"], tell: true, sparks: "harder", ways: [STONE], sky: changeable },
     },
   },
   confounded: {
@@ -89,8 +96,8 @@ export const PROBES: Record<string, Probe> = {
       { id: "few-bystanders", text: "fewer than one in four also blame the one that only comes with it", below: "bystander", value: 0.25 },
     ],
     variants: {
-      real: { quench: "rain", tell: false, sparks: "harder", ways: [STONE], sky: nightRain },
-      flipped: { quench: "dark", tell: false, sparks: "harder", ways: [STONE], sky: nightRain },
+      real: { quench: ["rain"], bystander: "dark", tell: false, sparks: "harder", ways: [STONE], sky: nightRain },
+      flipped: { quench: ["dark"], bystander: "rain", tell: false, sparks: "harder", ways: [STONE], sky: nightRain },
     },
   },
   recover: {
@@ -107,8 +114,8 @@ export const PROBES: Record<string, Probe> = {
       { id: "find", text: "at least two in three come to blame the new cause", above: "right", value: 0.65 },
     ],
     variants: {
-      real: { quench: "rain", then: "wind", tell: true, sparks: "harder", ways: [STONE], sky: changeable },
-      flipped: { quench: "wind", then: "rain", tell: true, sparks: "harder", ways: [STONE], sky: changeable },
+      real: { quench: ["rain"], then: ["wind"], tell: true, sparks: "harder", ways: [STONE], sky: changeable },
+      flipped: { quench: ["wind"], then: ["rain"], tell: true, sparks: "harder", ways: [STONE], sky: changeable },
     },
   },
   spread: {
@@ -124,8 +131,56 @@ export const PROBES: Record<string, Probe> = {
       { id: "error-fades", text: "fewer than half end up with the false one", below: "wrong", value: 0.5 },
     ],
     variants: {
-      real: { quench: "rain", tell: true, sparks: "harder", ways: [STONE], sky: changeable, starts: [["rain"], ["rain"], ["dark"], ["dark"], null, null], talk: true },
-      flipped: { quench: "dark", tell: true, sparks: "harder", ways: [STONE], sky: changeable, starts: [["dark"], ["dark"], ["rain"], ["rain"], null, null], talk: true },
+      real: { quench: ["rain"], tell: true, sparks: "harder", ways: [STONE], sky: changeable, starts: [["rain"], ["rain"], ["dark"], ["dark"], null, null], talk: true },
+      flipped: { quench: ["dark"], tell: true, sparks: "harder", ways: [STONE], sky: changeable, starts: [["dark"], ["dark"], ["rain"], ["rain"], null, null], talk: true },
+    },
+  },
+  // The second round: what the first five don't reach.
+  superstition: {
+    text: "Nothing in the weather matters, but sparks die now and then by bad luck: do they come to blame something anyway?",
+    metrics: { wrong: { better: "lower", tol: 0.1, text: "share of people who end up blaming anything at all" } },
+    claims: [{ id: "few", text: "fewer than one in four come to blame anything", below: "wrong", value: 0.25 }],
+    variants: {
+      // plain stone: about one try in four dies for want of a spark
+      real: { quench: [], tell: false, sparks: "harder", ways: [STONE], sky: changeable },
+      // the rain falls mostly at night, so the rain and the dark go together in what they see
+      flipped: { quench: [], tell: false, sparks: "harder", ways: [STONE], sky: nightRain },
+    },
+  },
+  two: {
+    text: "Two kinds of weather each kill sparks: do they come to blame both, or stop at the first?",
+    metrics: { ...CAUSE, partly: { better: "lower", tol: 0.1, text: "share of people who end up blaming one of the two and not the other" } },
+    claims: [
+      { id: "both", text: "most come to blame both", above: "right", value: 0.5 },
+      { id: "only", text: "more blame both than anything else", gap: ["right", "wrong"], value: 0 },
+    ],
+    variants: {
+      real: { quench: ["rain", "wind"], tell: true, sparks: "harder", ways: [STONE], sky: changeable },
+      flipped: { quench: ["wind", "dark"], tell: true, sparks: "harder", ways: [STONE], sky: changeable },
+    },
+  },
+  weak: {
+    text: "A kind of weather only halves the sparks that catch, and nothing they see says so: do they still come to blame it?",
+    metrics: CAUSE,
+    claims: [
+      { id: "most", text: "most come to blame it", above: "right", value: 0.5 },
+      { id: "only", text: "more blame it than anything else", gap: ["right", "wrong"], value: 0 },
+    ],
+    variants: {
+      real: { quench: ["rain"], leak: 0.5, tell: false, sparks: "harder", ways: [STONE], sky: changeable },
+      flipped: { quench: ["wind"], leak: 0.5, tell: false, sparks: "harder", ways: [STONE], sky: changeable },
+    },
+  },
+  rare: {
+    text: "What kills sparks comes only one hour in twelve, and nothing they see says so: do they come to blame it?",
+    metrics: CAUSE,
+    claims: [
+      { id: "most", text: "most come to blame it", above: "right", value: 0.5 },
+      { id: "only", text: "more blame it than anything else", gap: ["right", "wrong"], value: 0 },
+    ],
+    variants: {
+      real: { quench: ["wind"], tell: false, sparks: "harder", ways: [STONE], sky: rareWind },
+      flipped: { quench: ["rain"], tell: false, sparks: "harder", ways: [STONE], sky: rareRain },
     },
   },
 };
@@ -183,7 +238,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   const w = newWorld(seed, people);
   w.t = Math.max(w.t, START);
   w.animals = w.animals.filter((m) => m.species !== "wolf");
-  Object.assign(RULES, { quench: v.quench, tell: v.tell, sparks: v.sparks, learning: "seen" });
+  Object.assign(RULES, { quench: v.quench, leak: v.leak ?? 0, tell: v.tell, sparks: v.sparks, learning: "seen" });
   const [cx, cy] = openGround(w, w.agents[0].px, w.agents[0].py);
   const fresh: string[] = [];
   w.agents.forEach((a, i) => {
@@ -193,7 +248,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     a.beliefs = start === null ? {} : Object.fromEntries(v.ways.map((key) => [key, start?.length ? { ...knownWay(key, w.t), unless: [...start] } : knownWay(key, w.t)]));
     if (start === null) fresh.push(a.id);
   });
-  const truth: Record<string, string | number> = { quench: v.quench, ...(v.then ? { then: v.then } : {}) };
+  const truth: Record<string, string | number> = { quench: v.quench.join("+") || "none", ...(v.then ? { then: v.then.join("+") } : {}), ...(v.leak ? { leak: v.leak } : {}) };
   const ticks = probe === "choose" ? await fastest(w, v.ways) : {};
   const best = probe === "choose" ? v.ways.reduce((x, y) => (ticks[y] < ticks[x] ? y : x)) : "";
   if (best) Object.assign(truth, { best, ...Object.fromEntries(v.ways.map((k) => [`ticks:${k}`, Math.round(ticks[k] * 10) / 10])) });
@@ -216,7 +271,9 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     else if (e.kind === "formed" && d.cond) formed.push({ agent: e.agent, key: d.key, cond: d.cond, t: e.t });
     else if (e.kind === "dropped") for (const c of d.conds ?? []) dropped.push({ agent: e.agent, key: d.key, cond: c, t: e.t });
   });
-  const blames = (c: string) => w.agents.filter((a) => v.ways.some((k) => a.beliefs[k]?.unless?.includes(c))).map((a) => a.id);
+  const holds = (a: Agent, c: string) => v.ways.some((k) => a.beliefs[k]?.unless?.includes(c));
+  // who blames each of these (one, for most probes)
+  const blames = (cs: string[]) => w.agents.filter((a) => cs.every((c) => holds(a, c))).map((a) => a.id);
   const begin = w.t, end = begin + days * DAY, half = begin + Math.floor((days * DAY) / 2);
   let heldOld: string[] = [];
   while (w.t < end) {
@@ -244,9 +301,10 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   const third = (k: 0 | 2) => tries.filter((x) => (k === 0 ? x.t < begin + (end - begin) / 3 : x.t >= begin + ((end - begin) * 2) / 3));
   const share = (xs: Attempt[], ok: (x: Attempt) => boolean) => (xs.length ? xs.filter(ok).length / xs.length : null);
   const n = w.agents.length, day = (t: number) => (t - begin) / DAY;
-  // days from `from` until each person (or each of `who`) first did it, the rest of the run if they never did
-  const until = (xs: Change[], cond: string, from: number, who = w.agents.map((a) => a.id)) =>
-    who.length ? who.reduce((s, id) => s + day(xs.find((x) => x.agent === id && x.cond === cond && x.t >= from)?.t ?? end) - day(from), 0) / who.length : null;
+  // days from `from` until each person (or each of `who`) first did it for every one of these, the rest of the run if
+  // they never did
+  const until = (xs: Change[], conds: string[], from: number, who = w.agents.map((a) => a.id)) =>
+    who.length ? who.reduce((s, id) => s + day(Math.max(...conds.map((cond) => xs.find((x) => x.agent === id && x.cond === cond && x.t >= from)?.t ?? end))) - day(from), 0) / who.length : null;
   const metrics: Record<string, number | null> = {};
   if (probe === "choose") {
     const worse = Math.max(...v.ways.map((k) => ticks[k])), lost = (x: Attempt) => Math.min(ticks[x.key], worse) - ticks[best];
@@ -256,28 +314,30 @@ export async function runProbe(probe: string, variant: string, seed: number, day
       regret: tries.length ? tries.reduce((s, x) => s + lost(x), 0) / tries.length : null,
     });
   } else {
-    const cause = v.then ?? v.quench, wasted = (x: Attempt) => x.now.includes(cause);
-    const others = (id: string) => v.ways.some((k) => w.agents.find((a) => a.id === id)?.beliefs[k]?.unless?.some((c) => c !== cause && c !== v.quench));
+    // what truly kills sparks by the end (none at all, for bad luck alone)
+    const causes: string[] = v.then ?? v.quench, quench: string[] = v.quench, wasted = (x: Attempt) => x.now.some((c) => causes.includes(c));
+    const others = (a: Agent) => v.ways.some((k) => a.beliefs[k]?.unless?.some((c) => !causes.includes(c) && !quench.includes(c)));
     Object.assign(metrics, {
-      right: blames(cause).length / n,
-      wasted: share(third(2), wasted),
+      right: causes.length ? blames(causes).length / n : null,
+      wasted: causes.length ? share(third(2), wasted) : null,
     });
     if (probe === "recover") Object.assign(metrics, {
       kept: blames(v.quench).length / n,
       dropped: until(dropped, v.quench, half, heldOld),
-      found: until(formed, cause, half),
+      found: until(formed, causes, half),
     });
     else if (probe === "spread") {
-      const told = v.starts?.flat().find((c) => c && c !== cause), newcomers = w.agents.filter((a) => fresh.includes(a.id));
+      const told = v.starts?.flat().find((c) => c && !causes.includes(c)), newcomers = w.agents.filter((a) => fresh.includes(a.id));
       Object.assign(metrics, {
-        wrong: told ? blames(told).length / n : null,
+        wrong: told ? blames([told]).length / n : null,
         learned: newcomers.length ? newcomers.filter((a) => v.ways.some((k) => a.beliefs[k])).length / newcomers.length : null,
       });
     } else Object.assign(metrics, {
-      wrong: w.agents.filter((a) => others(a.id)).length / n,
-      wastedEarly: share(third(0), wasted),
-      formed: until(formed, cause, begin),
-      ...(probe === "confounded" ? { bystander: blames(v.quench === "rain" ? "dark" : "rain").length / n } : {}),
+      wrong: w.agents.filter(others).length / n,
+      wastedEarly: causes.length ? share(third(0), wasted) : null,
+      formed: causes.length ? until(formed, causes, begin) : null,
+      ...(v.bystander ? { bystander: blames([v.bystander]).length / n } : {}),
+      ...(causes.length > 1 ? { partly: w.agents.filter((a) => causes.some((c) => holds(a, c)) && !causes.every((c) => holds(a, c))).length / n } : {}),
     });
   }
   hooks.weather = hooks.options = undefined;
