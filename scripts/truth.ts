@@ -15,7 +15,7 @@ import { DAY, W, H, addThing, dryAt, newWorld, reachOf, shoreOf, stageOf, type A
 import { ecology, trailChanges } from "../src/sim/ecology";
 import { beside, changed, fireHeat, giveItems, newKinds, plant, removeThing, removed, sheltered, shelterOf, sizeOf, type Fields } from "../src/sim/physics";
 import { airAt } from "../src/sim/air";
-import { liveThings, nearestThing, put, shelve, thingById } from "../src/sim/space";
+import { nearestThing, put, shelve, thingById } from "../src/sim/space";
 import { THING_MATERIAL, type Registry } from "../src/sim/materials";
 import { FAUNA } from "../src/sim/fauna";
 import { fieldsOf, groundOfKey, type Belief } from "../src/sim/beliefs";
@@ -152,7 +152,8 @@ async function attempt(key: string, rain: boolean, gale: boolean) {
     keep = t.id;
     sown.push({ key, id: t.id, at: w.t, now: conditionsNow(w, a, f.verb, t), took: r.took, open });
   } else plan.trials.push({ now, worked: r.worked, took: r.took, open });
-  if (w.nextId !== from) for (const t of [...liveThings(w)]) if (t.id !== keep && Number(t.id.slice(1)) >= from) removeThing(w, t);
+  // what the try made took the ids from nextId on: look those up, never the whole island's things
+  for (let n = from; n < w.nextId; n++) { const t = thingById(w, `t${n}`); if (t && t.id !== keep) removeThing(w, t); }
   w.weather.sky = sky;
   w.weather.speed = speed;
 }

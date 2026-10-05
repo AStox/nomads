@@ -56,30 +56,35 @@ const git = (...args: string[]) => {
 
 // ---------- snapshots and runs ----------
 type Snap = { id: string; dir: string; commit: string; dirty: boolean };
-// What a run depends on: the sim, and the scripts beside this one (not this one, which only orders runs, nor the play
-// page's checks).
-const FILES = ["src", ":(glob)scripts/*.ts", ":(exclude)scripts/evals.ts"];
+// What a tier's runs depend on: the sim, and the scripts they run and import, so a change to a script one tier doesn't
+// use never reruns it. A script newly imported by these has to be added here, or its runs fail to start.
+type Tier = "probes" | "worlds";
+const USES: Record<Tier, string[]> = {
+  probes: ["probes.ts", "trial.ts", "seeded.ts"],
+  worlds: ["theories.ts", "truth.ts", "theory-report.ts", "answer-key.ts", "stats.ts", "trial.ts", "seeded.ts"],
+};
+const pathsOf = (tier: Tier) => ["src", ...USES[tier].map((f) => `scripts/${f}`)];
 function copy(from: string, files: string[], into: string) {
   for (const f of files) { mkdirSync(dirname(join(into, f)), { recursive: true }); cpSync(join(from, f), join(into, f)); }
 }
 const contentOf = (dir: string, files: string[]) => Bun.hash(files.map((f) => `${f}\0${readFileSync(join(dir, f), "utf8")}`).join("\0")).toString(36);
-// The working tree's sim and scripts as they are now.
-function snapshot(): Snap {
-  const commit = git("rev-parse", "--short=10", "HEAD"), dirty = git("status", "--porcelain", "--", ...FILES) !== "";
-  const files = git("ls-files", "-co", "--exclude-standard", "--", ...FILES).split("\n").filter((f) => f && existsSync(join(ROOT, f))).sort();
+// The working tree's sim and a tier's scripts as they are now, named by what's in them.
+function snapshot(tier: Tier): Snap {
+  const paths = pathsOf(tier), commit = git("rev-parse", "--short=10", "HEAD"), dirty = git("status", "--porcelain", "--", ...paths) !== "";
+  const files = git("ls-files", "-co", "--exclude-standard", "--", ...paths).split("\n").filter((f) => f && existsSync(join(ROOT, f))).sort();
   const id = contentOf(ROOT, files), dir = join(DATA, "snap", id);
   if (!existsSync(dir)) copy(ROOT, files, dir);
   return { id, dir, commit, dirty };
 }
-// A commit's sim with this tree's scripts, to run a baseline the ledger doesn't have.
-function snapshotOf(commit: string): Snap {
+// A commit's sim with this tree's scripts for a tier, to run a baseline the ledger doesn't have.
+function snapshotOf(commit: string, tier: Tier): Snap {
   const full = git("rev-parse", "--short=10", commit), tmp = join(DATA, "snap", `${full}.tmp`), tar = join(DATA, `${full}.tar`);
   rmSync(tmp, { recursive: true, force: true });
   mkdirSync(tmp, { recursive: true });
   writeFileSync(tar, Bun.spawnSync(["git", "archive", "--format=tar", full, "src"], { cwd: ROOT }).stdout);
   if (Bun.spawnSync(["tar", "-xf", tar, "-C", tmp]).exitCode) throw new Error(`couldn't unpack ${full}'s src`);
   rmSync(tar);
-  const scripts = git("ls-files", "-co", "--exclude-standard", "--", ...FILES.slice(1)).split("\n").filter(Boolean);
+  const scripts = pathsOf(tier).slice(1);
   copy(ROOT, scripts, tmp);
   const src = readdirSync(join(tmp, "src"), { recursive: true }).map((f) => join("src", String(f))).filter((f) => statSync(join(tmp, f)).isFile());
   const id = contentOf(tmp, [...src, ...scripts].sort()), dir = join(DATA, "snap", id);
@@ -187,9 +192,9 @@ function settle(entry: Omit<Entry, "verdict" | "baseline" | "regressions" | "imp
   return full;
 }
 // The baseline: --against a commit, run now with this tree's scripts; else the ledger's.
-async function baselineFor(kind: Pick<Entry, "tier" | "brain" | "days" | "people">, measure: (snap: Snap) => Promise<Runs>) {
+async function baselineFor(tier: Tier, kind: Pick<Entry, "tier" | "brain" | "days" | "people">, measure: (snap: Snap) => Promise<Runs>) {
   const against = opt("against", "");
-  if (against) { const snap = snapshotOf(against); return { commit: snap.commit, runs: await measure(snap) }; }
+  if (against) { const snap = snapshotOf(against, tier); return { commit: snap.commit, runs: await measure(snap) }; }
   const e = ledger().filter((x) => sameKind(x, kind) && x.baseline).at(-1);
   return e ? { commit: e.commit, runs: e.runs } : null;
 }
@@ -212,7 +217,7 @@ async function probes() {
     return runs;
   };
   const kind = { tier: "probes", brain, days, people };
-  const snap = snapshot(), cand = await measure(snap), base = await baselineFor(kind, measure);
+  const snap = snapshot("probes"), cand = await measure(snap), base = await baselineFor("probes", kind, measure);
   const r = compare(specs, cand, base?.runs);
   show(`probes: ${brain} brain, seeds 1-${seeds.length}, ${days} days, ${people} people: ${snap.id}`, r, base?.commit);
   return settle({ at: new Date().toISOString(), ...kind, commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION, seeds, runs: cand, against: base?.commit }, r, !!base);
@@ -273,7 +278,7 @@ async function worlds() {
     return runs;
   };
   const kind = { tier: "worlds", brain, days, people: undefined };
-  const snap = snapshot(), cand = await measure(snap), base = await baselineFor(kind, measure);
+  const snap = snapshot("worlds"), cand = await measure(snap), base = await baselineFor("worlds", kind, measure);
   const r = compare(specs, cand, base?.runs);
   show(`worlds: seeds 1-${seeds.length}, ${days} days: ${snap.id}`, r, base?.commit);
   for (const mode of ["off", "known"]) console.log(`${mode.padEnd(6)} ${Object.keys(KPIS).map((k) => `${k} ${fmt(mean(values(cand[mode], k)))}`).join("  ")}`);
@@ -285,7 +290,7 @@ async function worlds() {
 // for its island built from what its people did. What everyone holds each day is worked out from the theories formed,
 // taught and dropped; who was alive, from who did anything that day.
 async function live() {
-  const data = resolve(ROOT, opt("data", "data")), snap = snapshot(), stamp = new Date().toISOString().slice(0, 10);
+  const data = resolve(ROOT, opt("data", "data")), snap = snapshot("worlds"), stamp = new Date().toISOString().slice(0, 10);
   const save = JSON.parse(readFileSync(join(data, "world.json"), "utf8")) as { seed: number; t: number; kinds: Record<string, { made?: unknown }>; rulings: Record<string, unknown> };
   const traces = ["trace.jsonl.1", "trace.jsonl"].map((f) => join(data, "logs", f)).filter(existsSync);
   type Trace = { t: number; sys: string; kind: string; agent?: string; data: Record<string, unknown> };
