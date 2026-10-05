@@ -220,6 +220,9 @@ export const PROBES: Record<string, Probe> = {
       // as real, with a berry a day: ten plantings each, nearer what a planter in a whole world goes on (one to a dozen
       // seen to come up or not in sixty days), where a record that fades with every try and one lucky seedling count most
       sparse: { withers: "shade", comes: 0.7, sky: changeable, every: DAY },
+      // as sparse, where only four in ten come up elsewhere: a failure in the shade stands out less from the rest, as on
+      // the islands where whole worlds learned least
+      poor: { withers: "shade", comes: 0.4, sky: changeable, every: DAY },
     },
   },
 };
@@ -337,8 +340,8 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   const fresh: string[] = [];
   const truth: Record<string, string | number> = {};
   if (sowing) {
-    // each on a plot of their own, facing east, nothing in hand, knowing that a berry pushed into the ground comes up:
-    // one did for them, on the ground of their plot
+    // each on a plot of their own, facing east to start, nothing in hand, knowing that a berry pushed into the ground
+    // comes up: one did for them, on the ground of their plot
     const ps = plots(w, { px: cx, py: cy }, w.agents.length);
     w.agents.forEach((a, i) => {
       put(w, a, ps[i].px, ps[i].py);
@@ -409,11 +412,16 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   while (w.t < end) {
     if (!sowing && v.then && w.t === half) { heldOld = blames(v.quench); RULES.quench = v.then; }
     // they keep wanting a fire and keep what it takes in hand, or to plant and get a berry to plant as often as the
-    // probe says, the first as it starts; whatever fire they light is gone by the next tick
+    // probe says, the first as it starts, turning to face a new way with each (the first spot they'd try is the one in
+    // front of them: physics.ts spotNear), so their seed goes in all round them however seldom they plant; whatever
+    // fire they light is gone by the next tick
     for (const a of w.agents) {
       Object.assign(a.needs, { food: Math.max(a.needs.food, 80), energy: Math.max(a.needs.energy, 90), health: Math.max(a.needs.health, 90), warmth: 50 });
       const c = counts(a);
-      if (sowing) { if (!c.berry && (w.t - begin) % v.every === 0) giveItems(w, a, "berry"); continue; }
+      if (sowing) {
+        if (!c.berry && (w.t - begin) % v.every === 0) { giveItems(w, a, "berry"); a.heading = Math.random() * Math.PI * 2; }
+        continue;
+      }
       if ((c.stone ?? 0) < 3) giveItems(w, a, "stone", 3 - (c.stone ?? 0));
       // two flints, so one chipped away mid-try doesn't leave them only the other way to choose for the next
       if (ways.includes(FLINT) && (c.flint ?? 0) < 2) giveItems(w, a, "flint", 2 - (c.flint ?? 0));
