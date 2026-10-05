@@ -1,7 +1,8 @@
 // Holding each build to the last good one. Each tier runs many seeds and keeps one set of numbers per seed, stored with
 // the commit in evals/:
-//   bun scripts/evals.ts probes [--seeds 10] [--days 5] [--people 6] [--brain random|jev] [--jobs N] [--against <commit>] [--dry]
+//   bun scripts/evals.ts probes [--seeds 10] [--days 5] [--people 6] [--brain random|jev] [--jobs N] [--against <commit>] [--dry] [--only choose,recover]
 //     every learning probe (scripts/probes.ts) in the world as it is and flipped: the gate for any change to the sim
+//     (--only: a few probes while working on something, compared but never kept)
 //   bun scripts/evals.ts worlds [--seeds 6] [--days 60] [--jobs N] [--against <commit>] [--dry]
 //     whole worlds (scripts/theories.ts) with learning as it is, off (the floor) and known from the start (the ceiling),
 //     each scored against its island's answer key (scripts/truth.ts, scripts/theory-report.ts): nightly
@@ -27,9 +28,11 @@ import { PROBES, type Claim, type Metric, type ProbeRun } from "./probes";
 import { bootstrap, mean } from "./stats";
 
 // Bump a tier's version when what it measures changes meaning: ledger entries of another version are never compared.
+// probes 2: choose keeps two flints in hand (one chipped away mid-try had left the other way as the only one to plan),
+// and measures where people start by their first five tries; claims raised to the bar the learning fixes are held to.
 // worlds 3: regrets capped at a day of trying, and the share of the gap closed only where knowing from the start beats
 // never learning by more than a number's tolerance.
-const VERSION: Record<string, number> = { probes: 1, worlds: 3, live: 3 };
+const VERSION: Record<string, number> = { probes: 2, worlds: 3, live: 3 };
 const ROOT = join(import.meta.dir, ".."), DATA = join(ROOT, "data/evals");
 type Numbers = Record<string, number | null>;
 // what a tier measured: by variant ("blame/real", "seen"...), by seed, its numbers
@@ -178,7 +181,8 @@ function show(title: string, r: Comparison, against?: string) {
 // ---------- the ledger ----------
 const ledger = (): Entry[] => (existsSync(LEDGER) ? readdirSync(LEDGER).filter((f) => f.endsWith(".json")).sort().map((f) => JSON.parse(readFileSync(join(LEDGER, f), "utf8"))) : []);
 function keep(e: Entry) {
-  if (flag("dry")) return;
+  // --only runs a few probes while working on something: never a verdict to keep
+  if (flag("dry") || opt("only", "")) return;
   mkdirSync(LEDGER, { recursive: true });
   writeFileSync(join(LEDGER, `${e.at.replace(/[:.]/g, "-")}-${e.tier}-${e.brain}-${e.commit}${e.dirty ? "-dirty" : ""}.json`), JSON.stringify(e) + "\n");
 }
@@ -207,7 +211,8 @@ async function baselineFor(tier: Tier, kind: Pick<Entry, "tier" | "brain" | "day
 async function probes() {
   const seeds = range(Number(opt("seeds", "10"))), days = Number(opt("days", "5")), people = Number(opt("people", "6")), brain = opt("brain", "random");
   if (brain !== "random" && brain !== "jev") throw new Error(`--brain ${brain}: random or jev`);
-  const variants = Object.entries(PROBES).flatMap(([p, x]) => Object.keys(x.variants).map((v) => [p, v] as const));
+  const only = opt("only", "").split(",").filter(Boolean);
+  const variants = Object.entries(PROBES).filter(([p]) => !only.length || only.includes(p)).flatMap(([p, x]) => Object.keys(x.variants).map((v) => [p, v] as const));
   const specs: Record<string, Spec> = Object.fromEntries(variants.map(([p, v]) => [`${p}/${v}`, { metrics: PROBES[p].metrics, claims: PROBES[p].claims }]));
   const measure = async (snap: Snap): Promise<Runs> => {
     console.error(`probes on ${snap.id}: ${variants.length} variants x ${seeds.length} seeds, ${PROBE_JOBS} at a time`);

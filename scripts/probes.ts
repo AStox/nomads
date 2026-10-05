@@ -53,12 +53,12 @@ export const PROBES: Record<string, Probe> = {
     text: "Two ways to a fire that look alike at first, one truly faster: do they settle on it?",
     metrics: {
       best: { better: "higher", tol: 0.1, text: "share of their last third of tries made the faster way" },
-      early: { better: "higher", tol: 0.1, text: "share of their first third of tries made the faster way" },
+      first: { better: "higher", tol: 0.1, text: "share of each person's first five tries made the faster way" },
       regret: { better: "lower", tol: 1, text: "ticks lost per try to choosing the slower way, against the faster" },
     },
     claims: [
-      { id: "settle", text: "most of their late tries use the faster way", above: "best", value: 0.5 },
-      { id: "learn", text: "they use the faster way more late than early", gap: ["best", "early"], value: 0 },
+      { id: "learn", text: "they use the faster way more once they've learned than in their first tries", gap: ["best", "first"], value: 0 },
+      { id: "settle", text: "nearly all their late tries use the faster way (more than 85%)", above: "best", value: 0.85 },
     ],
     variants: {
       // flint throws three times the sparks
@@ -85,7 +85,8 @@ export const PROBES: Record<string, Probe> = {
     metrics: { ...CAUSE, bystander: { better: "lower", tol: 0.1, text: "share of people who end up blaming the other of the two" } },
     claims: [
       { id: "cause", text: "more blame the true cause than the one that comes with it", gap: ["right", "bystander"], value: 0 },
-      { id: "most", text: "most come to blame the true cause", above: "right", value: 0.5 },
+      { id: "most", text: "nearly everyone comes to blame the true cause (more than 85%)", above: "right", value: 0.85 },
+      { id: "few-bystanders", text: "fewer than one in four also blame the one that only comes with it", below: "bystander", value: 0.25 },
     ],
     variants: {
       real: { quench: "rain", tell: false, sparks: "harder", ways: [STONE], sky: nightRain },
@@ -102,8 +103,8 @@ export const PROBES: Record<string, Probe> = {
       found: { better: "lower", tol: 0.5, text: "days from the change until each blames the new cause" },
     },
     claims: [
-      { id: "let-go", text: "fewer than half still blame the old cause at the end", below: "kept", value: 0.5 },
-      { id: "find", text: "most come to blame the new cause", above: "right", value: 0.5 },
+      { id: "let-go", text: "fewer than three in ten still blame the old cause at the end", below: "kept", value: 0.3 },
+      { id: "find", text: "at least two in three come to blame the new cause", above: "right", value: 0.65 },
     ],
     variants: {
       real: { quench: "rain", then: "wind", tell: true, sparks: "harder", ways: [STONE], sky: changeable },
@@ -225,7 +226,8 @@ export async function runProbe(probe: string, variant: string, seed: number, day
       Object.assign(a.needs, { food: Math.max(a.needs.food, 80), energy: Math.max(a.needs.energy, 90), health: Math.max(a.needs.health, 90), warmth: 50 });
       const c = counts(a);
       if ((c.stone ?? 0) < 3) giveItems(w, a, "stone", 3 - (c.stone ?? 0));
-      if (v.ways.includes(FLINT) && !c.flint) giveItems(w, a, "flint");
+      // two flints, so one chipped away mid-try doesn't leave them only the other way to choose for the next
+      if (v.ways.includes(FLINT) && (c.flint ?? 0) < 2) giveItems(w, a, "flint", 2 - (c.flint ?? 0));
       if ((c.fiber ?? 0) < 2) giveItems(w, a, "fiber", 2 - (c.fiber ?? 0));
     }
     const fires: Thing[] = [];
@@ -249,7 +251,8 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   if (probe === "choose") {
     const worse = Math.max(...v.ways.map((k) => ticks[k])), lost = (x: Attempt) => Math.min(ticks[x.key], worse) - ticks[best];
     Object.assign(metrics, {
-      best: share(third(2), (x) => x.key === best), early: share(third(0), (x) => x.key === best),
+      best: share(third(2), (x) => x.key === best),
+      first: share(w.agents.flatMap((a) => tries.filter((x) => x.agent === a.id).slice(0, 5)), (x) => x.key === best),
       regret: tries.length ? tries.reduce((s, x) => s + lost(x), 0) / tries.length : null,
     });
   } else {
