@@ -26,8 +26,9 @@ import { DAY } from "../src/sim/world";
 import { PROBES, type Claim, type Metric, type ProbeRun } from "./probes";
 import { bootstrap, mean } from "./stats";
 
-// Bump when what a tier measures changes meaning: ledger entries of another version are never compared.
-const VERSION = 1;
+// Bump a tier's version when what it measures changes meaning: ledger entries of another version are never compared.
+// worlds 2: regrets capped at a day of trying, and the gap only where the floor and the ceiling truly differ.
+const VERSION: Record<string, number> = { probes: 1, worlds: 2, live: 2 };
 const ROOT = join(import.meta.dir, ".."), DATA = join(ROOT, "data/evals");
 type Numbers = Record<string, number | null>;
 // what a tier measured: by variant ("blame/real", "seen"...), by seed, its numbers
@@ -178,7 +179,7 @@ function keep(e: Entry) {
   mkdirSync(LEDGER, { recursive: true });
   writeFileSync(join(LEDGER, `${e.at.replace(/[:.]/g, "-")}-${e.tier}-${e.brain}-${e.commit}${e.dirty ? "-dirty" : ""}.json`), JSON.stringify(e) + "\n");
 }
-const sameKind = (e: Entry, x: Pick<Entry, "tier" | "brain" | "days" | "people">) => e.version === VERSION && e.tier === x.tier && e.brain === x.brain && e.days === x.days && e.people === x.people;
+const sameKind = (e: Entry, x: Pick<Entry, "tier" | "brain" | "days" | "people">) => e.version === VERSION[e.tier] && e.tier === x.tier && e.brain === x.brain && e.days === x.days && e.people === x.people;
 // The verdict: the first build of its kind becomes the baseline (unless it has uncommitted changes: then it's unjudged);
 // after that, a regression fails, and a pass with an improvement becomes the new baseline.
 function settle(entry: Omit<Entry, "verdict" | "baseline" | "regressions" | "improvements" | "claims">, r: Comparison, hadBase: boolean) {
@@ -220,7 +221,7 @@ async function probes() {
   const snap = snapshot("probes"), cand = await measure(snap), base = await baselineFor("probes", kind, measure);
   const r = compare(specs, cand, base?.runs);
   show(`probes: ${brain} brain, seeds 1-${seeds.length}, ${days} days, ${people} people: ${snap.id}`, r, base?.commit);
-  return settle({ at: new Date().toISOString(), ...kind, commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION, seeds, runs: cand, against: base?.commit }, r, !!base);
+  return settle({ at: new Date().toISOString(), ...kind, commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION.probes, seeds, runs: cand, against: base?.commit }, r, !!base);
 }
 
 // ---------- whole worlds ----------
@@ -271,8 +272,10 @@ async function worlds() {
       runs.seen[s] = { ...seen.late, wastedEarly: seen.early.wasted };
       runs.off[s] = off.late; runs.known[s] = known.late;
       runs.gap[s] = Object.fromEntries(Object.keys(GAP).map((k) => {
+        // only where knowing from the start does better than never learning by more than the number's tolerance: across
+        // a smaller gap the share is noise
         const [a, lo, hi] = [seen.late[k], off.late[k], known.late[k]];
-        return [k, typeof a === "number" && typeof lo === "number" && typeof hi === "number" && Math.abs(hi - lo) > 1e-9 ? (a - lo) / (hi - lo) : null];
+        return [k, typeof a === "number" && typeof lo === "number" && typeof hi === "number" && Math.abs(hi - lo) >= KPIS[k].tol ? (a - lo) / (hi - lo) : null];
       }));
     }));
     return runs;
@@ -282,7 +285,7 @@ async function worlds() {
   const r = compare(specs, cand, base?.runs);
   show(`worlds: seeds 1-${seeds.length}, ${days} days: ${snap.id}`, r, base?.commit);
   for (const mode of ["off", "known"]) console.log(`${mode.padEnd(6)} ${Object.keys(KPIS).map((k) => `${k} ${fmt(mean(values(cand[mode], k)))}`).join("  ")}`);
-  return settle({ at: new Date().toISOString(), ...kind, commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION, seeds, runs: cand, against: base?.commit }, r, !!base);
+  return settle({ at: new Date().toISOString(), ...kind, commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION.worlds, seeds, runs: cand, against: base?.commit }, r, !!base);
 }
 
 // ---------- the live world ----------
@@ -333,7 +336,7 @@ async function live() {
   console.log(readFileSync(join(at, "report.log"), "utf8"));
   console.log(`live, early third: ${Object.keys(KPIS).map((x) => `${x} ${fmt(k.early[x])}`).join("  ")}`);
   console.log(`live, late third:  ${Object.keys(KPIS).map((x) => `${x} ${fmt(k.late[x])}`).join("  ")}`);
-  keep({ at: new Date().toISOString(), tier: "live", brain: "jev", commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION, seeds: [save.seed], days: Math.floor(save.t / DAY), runs: { early: { [save.seed]: k.early }, late: { [save.seed]: k.late } }, claims: {}, regressions: [], improvements: [], verdict: "monitor", baseline: false });
+  keep({ at: new Date().toISOString(), tier: "live", brain: "jev", commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION.live, seeds: [save.seed], days: Math.floor(save.t / DAY), runs: { early: { [save.seed]: k.early }, late: { [save.seed]: k.late } }, claims: {}, regressions: [], improvements: [], verdict: "monitor", baseline: false });
 }
 
 // ---------- the trend ----------
@@ -344,7 +347,7 @@ const spark = (xs: (number | null)[]) => {
 };
 function trend() {
   const tier = opt("tier", "probes"), brain = opt("brain", tier === "live" ? "jev" : "random");
-  const es = ledger().filter((e) => e.tier === tier && e.brain === brain && e.version === VERSION);
+  const es = ledger().filter((e) => e.tier === tier && e.brain === brain && e.version === VERSION[tier]);
   if (!es.length) { console.log(`no ${tier} entries for the ${brain} brain`); return; }
   for (const e of es) console.log(`${e.at.slice(0, 16)} ${e.commit}${e.dirty ? "+" : " "} ${e.verdict.padEnd(8)}${e.baseline ? " baseline" : "         "} ${e.regressions.length} worse, ${e.improvements.length} better`);
   console.log("");
@@ -363,7 +366,7 @@ function trend() {
 // and people), what each found, side by side; and between the last two such builds, whether they moved the same way. If
 // the offline brain calls a change better where Jev calls it worse, the cheap gate is wrong about it.
 function proxy() {
-  const es = ledger().filter((e) => e.tier === "probes" && e.version === VERSION);
+  const es = ledger().filter((e) => e.tier === "probes" && e.version === VERSION.probes);
   const pairs = es.filter((j) => j.brain === "jev").flatMap((jev) => {
     const random = es.filter((r) => r.brain === "random" && r.content === jev.content && r.days === jev.days && r.people === jev.people).at(-1);
     return random ? [{ jev, random }] : [];

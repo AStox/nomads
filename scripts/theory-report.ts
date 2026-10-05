@@ -53,13 +53,15 @@ for (const key of Object.keys(answers.ways)) {
 // How many ticks the quickest way to the same end, at the same place, would have saved over the one chosen, in the
 // conditions it was chosen in, trying again until it worked: of the other ways they knew (choice; best when within a
 // tenth of the quickest), and of every way the key knows, whether they knew it or not (discovery). Building onto their
-// home isn't the same as putting up a new pile, so only ways done at the same place count.
+// home isn't the same as putting up a new pile, so only ways done at the same place count. A way that would take more
+// than a day of trying counts as a day: one that never works in those conditions would otherwise count as fifty tries,
+// and one such choice would swamp everything else people chose.
 function regrets(l: Line) {
   const mine = judged(l.key!), now = l.now ?? [];
   if (!mine) return null;
-  const e = expectedTicks(mine, now), where = l.key!.split("|")[4];
-  const known = (l.alts ?? []).filter((k) => k !== l.key && k.split("|")[4] === where).map(judged).filter((w): w is Way => !!w).map((w) => expectedTicks(w, now));
-  const least = Math.min(e, ...known), found = Math.min(e, ...(island.get(`${mine.aim}|${mine.at}`) ?? []).map((w) => expectedTicks(w, now)));
+  const ticks = (way: Way) => Math.min(expectedTicks(way, now), DAY), e = ticks(mine), where = l.key!.split("|")[4];
+  const known = (l.alts ?? []).filter((k) => k !== l.key && k.split("|")[4] === where).map(judged).filter((w): w is Way => !!w).map(ticks);
+  const least = Math.min(e, ...known), found = Math.min(e, ...(island.get(`${mine.aim}|${mine.at}`) ?? []).map(ticks));
   return { choice: known.length ? { regret: e - least, best: e <= least * 1.1 } : null, discovery: e - found };
 }
 
