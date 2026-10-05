@@ -1,0 +1,845 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nomads: the design, illustrated</title>
+<meta name="description" content="How Nomads works: a generated island, people who know almost nothing, and how they come to know the world. Built and planned, with pictures and videos from the running game.">
+<style>
+@font-face { font-family: "Fraunces"; src: url("media/fraunces-normal.woff2") format("woff2"); font-weight: 300 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "Fraunces"; src: url("media/fraunces-italic.woff2") format("woff2"); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: "Source Serif 4"; src: url("media/source-serif-4-normal.woff2") format("woff2"); font-weight: 400 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "Source Serif 4"; src: url("media/source-serif-4-italic.woff2") format("woff2"); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("media/jetbrains-mono-normal.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; }
+
+/* Expedition Morning, on paper: the artbook's turquoise shallows, low gold sun and forest, as ink and washes */
+:root {
+  --paper: #f5efe3; --paper-deep: #ece3d0; --card: #fbf8f1;
+  --ink: #1f1b15; --ink-2: #463f34; --ink-3: #665d4e;
+  --rule: #dccfb6; --rule-strong: #bba984;
+  --sea: #17466e; --sea-deep: #0e2b47; --shallow: #2b9a95; --shallow-soft: #d3e9e4;
+  --sun: #e0a03a; --sun-soft: #f5e2b9; --sun-ink: #82500e;
+  --forest: #3d6c32; --forest-soft: #dce8d0; --ember: #b4472a;
+  --serif: "Source Serif 4", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --display: "Fraunces", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  --measure: 40rem; --wide: 66rem;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation: none !important; transition: none !important; } }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 400 1.125rem/1.62 var(--serif); font-synthesis: none; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; font-optical-sizing: auto; }
+::selection { background: var(--sun-soft); color: var(--ink); }
+a { color: var(--sea); text-decoration-thickness: from-font; text-underline-offset: 0.18em; }
+a:hover { color: var(--sea-deep); text-decoration-thickness: 2px; }
+:focus-visible { outline: 3px solid var(--shallow); outline-offset: 3px; border-radius: 3px; }
+code, kbd { font: 500 0.82em/1.4 var(--mono); background: var(--paper-deep); padding: 0.08em 0.32em; border-radius: 3px; overflow-wrap: anywhere; }
+.skip { position: absolute; left: 1rem; top: -4rem; background: var(--ink); color: var(--paper); padding: 0.6rem 1rem; border-radius: 4px; z-index: 10; }
+.skip:focus { top: 1rem; }
+
+/* ---------- frame ---------- */
+.shell { display: grid; grid-template-columns: 14.5rem minmax(0, 1fr); gap: 0 clamp(2rem, 4vw, 4.5rem); max-width: 90rem; margin: 0 auto; padding: 0 clamp(1rem, 3vw, 2.5rem); }
+.rail { position: sticky; top: 0; align-self: start; max-height: 100vh; overflow: auto; padding: 2.4rem 0 2rem; }
+.rail details > summary { list-style: none; cursor: pointer; font: 500 0.72rem/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--sun-ink); padding: 0.4rem 0 0.9rem; }
+.rail details > summary::-webkit-details-marker { display: none; }
+.rail ol { list-style: none; margin: 0; padding: 0; counter-reset: ch; }
+.rail li a { display: grid; grid-template-columns: 2rem 1fr; padding: 0.34rem 0.5rem 0.34rem 0.4rem; border-left: 2px solid var(--rule); color: var(--ink-2); text-decoration: none; font-size: 0.93rem; line-height: 1.35; transition: border-color 0.25s, color 0.25s, background-color 0.25s; }
+.rail li a span { font: 500 0.72rem/1.9 var(--mono); color: var(--ink-3); }
+.rail li a:hover { color: var(--ink); border-left-color: var(--rule-strong); }
+.rail li a[aria-current="true"] { color: var(--ink); border-left-color: var(--sun); background: linear-gradient(90deg, var(--sun-soft), transparent); }
+.rail .legend { margin: 1.6rem 0 0; padding: 1rem 0 0; border-top: 1px solid var(--rule); font-size: 0.85rem; color: var(--ink-2); }
+.rail .legend p { margin: 0 0 0.45rem; }
+main { min-width: 0; padding-bottom: 6rem; }
+
+/* ---------- hero ---------- */
+.hero { padding: clamp(2.4rem, 6vw, 4.5rem) 0 1rem; }
+.hero .kicker { margin-bottom: 1.2rem; }
+.hero h1 { font: 380 clamp(3.6rem, 10vw, 8.4rem)/0.9 var(--display); letter-spacing: -0.035em; margin: 0; font-variation-settings: "SOFT" 50, "WONK" 1; }
+.hero h1 em { font-style: italic; font-weight: 400; color: var(--sea); }
+.hero .lede { font: 400 clamp(1.25rem, 2.3vw, 1.6rem)/1.4 var(--display); max-width: 36rem; margin: 1.6rem 0 2.2rem; color: var(--ink-2); text-wrap: pretty; }
+.hero figure { margin: 0; max-width: var(--wide); }
+@media (prefers-reduced-motion: no-preference) {
+  .hero > * { animation: rise 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .hero > *:nth-child(2) { animation-delay: 0.08s; } .hero > *:nth-child(3) { animation-delay: 0.16s; } .hero > *:nth-child(4) { animation-delay: 0.26s; }
+}
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+/* ---------- chapters ---------- */
+.kicker { font: 500 0.74rem/1.2 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--sun-ink); margin: 0; }
+.chapter { padding: clamp(3.5rem, 8vw, 6rem) 0 0; }
+.chapter > header { border-top: 1px solid var(--rule-strong); padding-top: 1.4rem; margin-bottom: 1.8rem; max-width: var(--wide); }
+.chapter h2 { font: 400 clamp(2.1rem, 4.4vw, 3.2rem)/1.04 var(--display); letter-spacing: -0.02em; margin: 0.5rem 0 0.9rem; text-wrap: balance; }
+.chapter h2 .num { display: block; font: 500 0.78rem/1 var(--mono); letter-spacing: 0.14em; color: var(--sun-ink); margin-bottom: 0.8rem; }
+.dek { font: italic 400 clamp(1.15rem, 1.9vw, 1.38rem)/1.45 var(--display); color: var(--ink-2); max-width: var(--measure); margin: 0 0 1.1rem; text-wrap: pretty; }
+.chapter h3 { font: 500 1.35rem/1.25 var(--display); margin: 2.6rem 0 0.6rem; max-width: var(--measure); text-wrap: balance; }
+.chapter h4 { font: 500 0.78rem/1.3 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-2); margin: 1.8rem 0 0.4rem; }
+.chapter p, .chapter ul, .chapter ol, .chapter dl, .chapter blockquote { max-width: var(--measure); }
+.chapter p { margin: 0 0 1em; }
+.chapter li { margin-bottom: 0.4em; }
+.chapter li::marker { color: var(--ink-3); }
+.chapter strong { font-weight: 650; }
+.example { font-style: italic; color: var(--ink-2); }
+blockquote { margin: 1.6rem 0; padding: 0.2rem 0 0.2rem 1.2rem; border-left: 3px solid var(--sun); font: 400 1.3rem/1.42 var(--display); color: var(--ink); }
+blockquote p { margin: 0; }
+.aside { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: 1rem 1.2rem; margin: 1.4rem 0; max-width: var(--measure); font-size: 1rem; }
+.aside > :last-child { margin-bottom: 0; }
+.aside .kicker { margin-bottom: 0.5rem; }
+
+/* status markers: shape and word, never colour alone */
+.st { display: inline-flex; align-items: center; gap: 0.4em; font: 500 0.7rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; padding: 0.32em 0.6em 0.3em 0.5em; border-radius: 99px; white-space: nowrap; vertical-align: 0.12em; }
+.st::before { content: ""; width: 0.72em; height: 0.72em; border-radius: 50%; flex: none; }
+.st-built { background: var(--forest-soft); color: #2b4d22; }
+.st-built::before { background: var(--forest); }
+.st-part { background: var(--sun-soft); color: var(--sun-ink); }
+.st-part::before { background: linear-gradient(90deg, var(--sun-ink) 50%, transparent 50%); box-shadow: inset 0 0 0 1.5px var(--sun-ink); }
+.st-plan { background: transparent; color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--rule-strong); }
+.st-plan::before { box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+.systems { list-style: none; padding: 0; margin: 0 0 0.6rem; display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; font-size: 0.95rem; color: var(--ink-2); max-width: var(--wide) !important; }
+.systems li { margin: 0; display: inline-flex; align-items: center; gap: 0.5rem; }
+
+/* ---------- figures ---------- */
+figure { margin: 2rem 0; }
+figure.wide { max-width: var(--wide); }
+figure.mid { max-width: 48rem; }
+figure img, figure video { display: block; width: 100%; height: auto; border-radius: 4px; background: var(--paper-deep); }
+figure video { background: #12100d; }
+figcaption { font-size: 0.92rem; line-height: 1.5; color: var(--ink-2); margin-top: 0.65rem; max-width: var(--measure); text-wrap: pretty; }
+.fig-n { font: 500 0.7rem/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--sun-ink); margin-right: 0.5em; }
+.grid { display: grid; gap: 1.2rem; max-width: var(--wide); margin: 2rem 0; }
+.grid figure { margin: 0; }
+.g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 40rem) { .g2 { grid-template-columns: minmax(0, 1fr); } }
+.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 44rem) { .g3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.g-side { grid-template-columns: minmax(0, 1fr) minmax(0, 2.3fr); align-items: start; }
+@media (max-width: 44rem) { .g-side { grid-template-columns: minmax(0, 1fr); } .g-side figure:first-child { max-width: 20rem; } }
+.g4 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr)); }
+.grid figcaption { font-size: 0.86rem; }
+.pixel img { image-rendering: pixelated; }
+.plate { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: clamp(0.8rem, 2vw, 1.4rem); }
+.plate svg { display: block; width: 100%; height: auto; }
+
+/* ---------- tables ---------- */
+.table-wrap { max-width: var(--wide); overflow-x: auto; margin: 1.4rem 0 1.8rem; }
+table { border-collapse: collapse; width: 100%; font-size: 0.95rem; line-height: 1.45; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; vertical-align: top; padding: 0.55rem 1rem 0.55rem 0; border-bottom: 1px solid var(--rule); }
+thead th { font: 500 0.7rem/1.3 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); border-bottom-color: var(--rule-strong); }
+tbody th { font-weight: 600; }
+.board td:nth-child(2) { white-space: nowrap; }
+.board a { color: var(--ink); }
+
+/* ---------- diagrams and charts (inline SVG) ---------- */
+.d-node { fill: var(--card); stroke: var(--rule-strong); stroke-width: 1.2; }
+.d-node.hot { fill: var(--sun-soft); stroke: var(--sun); }
+.d-node.cool { fill: var(--shallow-soft); stroke: var(--shallow); }
+.d-node.leaf { fill: var(--forest-soft); stroke: #8fae7c; }
+.d-edge { fill: none; stroke: var(--ink-3); stroke-width: 1.4; }
+.d-edge.soft { stroke: var(--rule-strong); stroke-dasharray: 4 4; }
+.d-head { fill: var(--ink-3); }
+.d-t { font: 600 14px var(--serif); fill: var(--ink); }
+.d-s { font: 400 11.5px var(--serif); fill: var(--ink-2); }
+.d-k { font: 500 10.5px var(--mono); letter-spacing: 0.1em; fill: var(--sun-ink); text-transform: uppercase; }
+.d-big { font: italic 400 17px var(--display); fill: var(--ink-2); }
+.d-bar { fill: var(--sea); }
+.d-bar-bg { fill: var(--rule); }
+.chart { display: block; width: 100%; height: auto; }
+.c-group { font: 600 14px var(--serif); fill: var(--ink); }
+.c-label { font: 400 13.5px var(--serif); fill: var(--ink-2); }
+.c-tick { font: 500 11px var(--mono); fill: var(--ink-3); }
+.c-grid { stroke: var(--rule); stroke-width: 1; }
+.c-row { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 2 3; }
+.c-real { fill: var(--sea); fill-opacity: 0.78; stroke: var(--card); stroke-width: 1; }
+.c-flip { fill: var(--card); stroke: var(--sun-ink); stroke-width: 1.6; }
+.c-real-mean { stroke: var(--sea-deep); stroke-width: 3; }
+.c-flip-mean { stroke: var(--sun-ink); stroke-width: 3; }
+.c-off { fill: var(--ink-3); }
+.c-known { fill: var(--forest); }
+.c-span { stroke: var(--forest); stroke-opacity: 0.35; stroke-width: 6; stroke-linecap: round; }
+.c-before { stroke: var(--ink-3); stroke-width: 2; }
+.c-shift { stroke: var(--ink-3); stroke-opacity: 0.45; stroke-width: 1.5; stroke-dasharray: 3 2; }
+.c-was { fill: var(--card); stroke: var(--ink-3); stroke-width: 1.6; stroke-dasharray: 2 2; }
+.chart-fig { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: clamp(0.8rem, 2vw, 1.4rem); }
+.chart-source { font-size: 0.82rem; color: var(--ink-3); margin: 0.6rem 0 0 !important; }
+.numbers { margin-top: 0.8rem; font-size: 0.9rem; }
+.numbers summary { cursor: pointer; font: 500 0.72rem/1.6 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--sea); }
+.numbers table { margin-top: 0.6rem; font-size: 0.88rem; }
+
+/* ---------- glossary ---------- */
+dl.glossary { display: grid; grid-template-columns: minmax(7rem, 11rem) 1fr; gap: 0.5rem 1.4rem; max-width: var(--wide) !important; }
+dl.glossary dt { font-weight: 650; }
+dl.glossary dd { margin: 0; color: var(--ink-2); }
+.colophon { margin-top: 4rem; padding-top: 1.2rem; border-top: 1px solid var(--rule-strong); font-size: 0.88rem; color: var(--ink-3); max-width: var(--wide); }
+
+/* ---------- small screens: the rail becomes a contents block at the top ---------- */
+@media (max-width: 68rem) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .rail { position: static; max-height: none; padding: 1rem 0 0; border-bottom: 1px solid var(--rule); }
+  .rail details > summary { padding: 0.8rem 0; display: flex; justify-content: space-between; }
+  .rail details > summary::after { content: "+"; font-size: 1rem; line-height: 0.7; }
+  .rail details[open] > summary::after { content: "\2212"; }
+  .rail ol { columns: 2 14rem; column-gap: 1.2rem; padding-bottom: 1rem; }
+  .rail li { break-inside: avoid; }
+  .rail .legend { display: none; }
+}
+@media (max-width: 48rem) {
+  .plate, .chart-fig { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .plate svg { min-width: 44rem; }
+  .plate.big svg { min-width: 54rem; }
+  .chart-fig svg { min-width: 36rem; }
+  .plate::before, .chart-fig::before { content: "Swipe sideways to see all of it"; display: block; font: 500 0.68rem/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 0.7rem; position: sticky; left: 0; }
+  .plate figcaption, .chart-fig figcaption, .chart-fig .chart-source, .chart-fig .numbers { position: sticky; left: 0; max-width: calc(100vw - 4.5rem); }
+}
+@media (max-width: 34rem) {
+  body { font-size: 1.0625rem; }
+  dl.glossary { grid-template-columns: 1fr; gap: 0.1rem; }
+  dl.glossary dd { margin-bottom: 0.7rem; }
+  .board thead { display: none; }
+  .board tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 0.8rem; border-bottom: 1px solid var(--rule); padding: 0.5rem 0; }
+  .board td { border: 0; padding: 0; }
+  .board td:nth-child(3) { grid-column: 1 / -1; color: var(--ink-2); font-size: 0.9rem; padding-top: 0.2rem; }
+  .board td:nth-child(3):empty { display: none; }
+  .stack thead { display: none; }
+  .stack tr { display: block; border-bottom: 1px solid var(--rule); padding: 0.55rem 0; }
+  .stack td { display: block; border: 0; padding: 0; }
+  .stack td:first-child { margin-bottom: 0.25rem; }
+  .panels { grid-template-columns: minmax(0, 1fr); }
+  .panels figure { max-width: 24rem; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#top">Skip to the doc</a>
+<div class="shell">
+<nav class="rail" aria-label="Contents">
+  <details open id="toc">
+    <summary>Contents</summary>
+    <ol>
+      <li><a href="#what"><span>01</span>What Nomads is</a></li>
+      <li><a href="#island"><span>02</span>The island</a></li>
+      <li><a href="#sky"><span>03</span>Time, sky, light and air</a></li>
+      <li><a href="#people"><span>04</span>People</a></li>
+      <li><a href="#knowing"><span>05</span>How people come to know things</a></li>
+      <li><a href="#theories"><span>06</span>Theories and tests</a></li>
+      <li><a href="#making"><span>07</span>Making things</a></li>
+      <li><a href="#groups"><span>08</span>Groups and norms</a></li>
+      <li><a href="#living"><span>09</span>The living world</a></li>
+      <li><a href="#brain"><span>10</span>The brain</a></li>
+      <li><a href="#inside"><span>11</span>Seeing inside</a></li>
+      <li><a href="#play"><span>12</span>The play page and the look</a></li>
+      <li><a href="#testing"><span>13</span>Testing that people learn</a></li>
+      <li><a href="#code"><span>14</span>Code map and glossary</a></li>
+    </ol>
+  </details>
+  <div class="legend" aria-label="Status markers">
+    <p><span class="st st-built">Built</span></p>
+    <p><span class="st st-part">Partly built</span></p>
+    <p><span class="st st-plan">Planned</span></p>
+  </div>
+</nav>
+
+<main id="top">
+<header class="hero">
+  <p class="kicker">Nomads &middot; the design, illustrated &middot; October 2026</p>
+  <h1>Nomads</h1>
+  <p class="lede">People wake on an island that grew itself, knowing almost nothing, and work the world out by trying, watching and being told.</p>
+  <figure>
+    <video id="hero-video" autoplay muted loop playsinline controls preload="auto" poster="media/poster-zoom.webp" width="1280" height="712" aria-label="The play page zooming from the whole island down to one person, Mara, walking across open ground">
+      <source src="media/zoom.mp4" type="video/mp4">
+    </video>
+    <figcaption><span class="fig-n">Video 1</span> From the whole island down to Mara, on day 19 of seed 1, in the play page. Everything drawn is a thing the simulation holds; the sim runs in the browser with the offline brain, so watching costs nothing.</figcaption>
+  </figure>
+</header>
+
+<!-- 01 -->
+<section class="chapter" id="what" aria-labelledby="h-what">
+  <header>
+    <h2 id="h-what"><span class="num">01</span>What Nomads is</h2>
+    <p class="dek">A life sim where nobody is told how the world works. Jev is their judgment; code is the physics.</p>
+  </header>
+  <p>Five people come ashore on a generated island 19.2 km across. They can walk, pick things up, eat, sleep and talk. They don't know that two hard stones struck over dry grass throw a spark, that a sharp stone lashed to a stick fells a tree, or that berries pushed into the ground come up as bushes three days later. Everything past walking and eating is know-how they have to find by trying, notice by watching, or be taught by someone who found it.</p>
+  <p>Two things share the work. <strong>Code is the physics</strong>: materials are bags of properties, a handful of verbs act on them, and a few rules (force, sharpness, friction, heat, binding) decide what happens. <strong>Jev is their judgment</strong>: TypeSafe's calibrated judgment model picks what a person would most likely do, what they'd think to try, what they make of a failure, and how they feel about each other. Jev can't write text; it picks, rates and answers yes or no with odds. Templates turn what happened back into words.</p>
+  <blockquote><p>Mara noticed sparks when the stones struck.</p></blockquote>
+  <p>That line is the whole game in small: an attempt, a physical result the code worked out, a clue the person kept, and a story the chronicle can tell. Over days, those clues become beliefs, the beliefs become theories about when things fail, and the theories are tested, taught, gossiped and sometimes wrong.</p>
+  <figure class="wide">
+    <img src="media/play-inspector.webp" width="1600" height="900" alt="The play page at close zoom: Mara among trees at midday, with her inspector open showing her needs, her goal to collect stones and her six-step plan" loading="lazy" decoding="async">
+    <figcaption><span class="fig-n">Fig. 1.1</span> Mara at midday on day 13. The inspector shows what the sim holds about her: food, energy, warmth, health and company, her goal (collect stones), the light she works by, and the plan the planner built for it.</figcaption>
+  </figure>
+
+  <h3>What is built and what is planned</h3>
+  <p>DESIGN.md is the engineers' record and runs ahead of the code in places. Every chapter here carries a marker for each system it covers. The board below is the whole picture at a glance.</p>
+  <div class="table-wrap">
+  <table class="board">
+    <thead><tr><th scope="col">System</th><th scope="col">Status</th><th scope="col">Note</th></tr></thead>
+    <tbody>
+      <tr><td><a href="#island">Island generator</a></td><td><span class="st st-built">Built</span></td><td>Uplift, erosion, ice, climate, rock, soil, water, plants by niche</td></tr>
+      <tr><td><a href="#sky">Sky, sun, moon, light and air</a></td><td><span class="st st-built">Built</span></td><td>Fields the sim and the renderer share</td></tr>
+      <tr><td><a href="#people">Needs, traits, relationships, families</a></td><td><span class="st st-built">Built</span></td><td>The 100 traits are the words Jev reads</td></tr>
+      <tr><td><a href="#people">The 111 skills</a></td><td><span class="st st-plan">Planned</span></td><td>Crafts appear and level up with use; the long list is the eventual set</td></tr>
+      <tr><td><a href="#knowing">Materials, verbs and physics</a></td><td><span class="st st-built">Built</span></td><td>No recipe book: properties meet rules</td></tr>
+      <tr><td><a href="#knowing">Jev rulings as world laws, naming</a></td><td><span class="st st-built">Built</span></td><td>Only Jev writes new laws; offline, nothing the rules don't cover comes of an attempt</td></tr>
+      <tr><td><a href="#theories">Theories of failure and tests</a></td><td><span class="st st-built">Built</span></td><td>Revised October 5: the latest tries count most, blame is judged like for like, one theory is tested at a time</td></tr>
+      <tr><td><a href="#making">Tech chain, stone to metal</a></td><td><span class="st st-part">Partly built</span></td><td>The physics for every step is in; carrying water is deferred</td></tr>
+      <tr><td><a href="#groups">Camps, precedents, customs, leaders</a></td><td><span class="st st-built">Built</span></td><td>Voting, roles and feasts are planned</td></tr>
+      <tr><td><a href="#living">Animals, plants, fire, decay, disease, weather</a></td><td><span class="st st-built">Built</span></td><td>All read fields and cues, never a season's name</td></tr>
+      <tr><td><a href="#living">A weekly chronicle written by a language model</a></td><td><span class="st st-plan">Planned</span></td><td>Optional; the sim never depends on it</td></tr>
+      <tr><td><a href="#brain">Jev and the offline brain</a></td><td><span class="st st-built">Built</span></td><td>Every gate runs offline; Jev on demand</td></tr>
+      <tr><td><a href="#inside">Trace, debug API, history page, inspector</a></td><td><span class="st st-built">Built</span></td><td></td></tr>
+      <tr><td><a href="#play">Play page renderer</a></td><td><span class="st st-built">Built</span></td><td>The real sim in the browser, every object drawn</td></tr>
+      <tr><td><a href="#testing">Learning tests: probes, gate, whole worlds</a></td><td><span class="st st-built">Built</span></td><td>Every change is held to the last good build; the bar only rises</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- 02 -->
+<section class="chapter" id="island" aria-labelledby="h-island">
+  <header>
+    <h2 id="h-island"><span class="num">02</span>The island</h2>
+    <p class="dek">An island that makes itself from rock, rain and time. Nothing on it is placed by hand: every lake, wood and flint nodule is where the fields put it.</p>
+    <ul class="systems"><li><span class="st st-built">Built</span> generator, rock, soil, water, plants, snow</li></ul>
+  </header>
+  <p>The island is 19.2 km across, cut into tiles of 150 m for the game's rules and sampled much finer for water and ground. On seed 1 it holds about 3.3 million grown things, 870,000 of them trees. They live in compact arrays until someone looks at a tile, so the sim never has to hold them all as objects.</p>
+  <figure class="wide">
+    <video controls muted loop playsinline preload="none" poster="media/poster-genesis.webp" width="1280" height="720" aria-label="The generator replayed stage by stage: bedrock, fifty steps of uplift against erosion, ice, rain, warmth, snow, water with springs and streams, soil and what grows">
+      <source src="media/genesis.mp4" type="video/mp4">
+    </video>
+    <figcaption><span class="fig-n">Video 2</span> The island being made, replayed by the genesis page from the game's own generator (seed 1, 29 s). Each stage is what the generator worked out at that point, with its caption.</figcaption>
+  </figure>
+
+  <h3>Rock first, then uplift against erosion</h3>
+  <p>Two fields are laid down under the island together: how hard the rock is, and its chemistry. They make five rocks: mudstone, sandstone, limestone, granite and basalt, each with its own permeability, the soil it weathers to, how much nourishment it releases, and how often its stones hold flint or iron.</p>
+  <p>Then the land rises a little each step while streams cut down by the water they carry, which is the rain that runs off rather than soaking in. Slopes creep smooth, each rock at its own pace, so hard rock is left standing as the ranges and limestone and sandstone keep broad dry uplands. Ice then scoured the big valleys into troughs over soft rock and left hard rock as sills; the lakes lie behind them. Peaks end up 250 to 450 m high.</p>
+  <div class="grid g3 pixel">
+    <figure><img src="media/gen-bedrock.webp" width="640" height="640" alt="Map of the bedrock: interlocking bands of mudstone, sandstone, limestone, granite and basalt" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 2.1</span> Bedrock. Brighter is harder; the hard bands become the ranges.</figcaption></figure>
+    <figure><img src="media/gen-erosion.webp" width="640" height="640" alt="The island halfway through uplift and erosion, with the first valleys cut" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 2.2</span> Halfway: streams have begun cutting the valleys.</figcaption></figure>
+    <figure><img src="media/gen-ice.webp" width="640" height="640" alt="The finished landform with pale blue where glaciers scoured the valleys" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 2.3</span> Ice: pale blue is how deep the glaciers cut.</figcaption></figure>
+  </div>
+
+  <h3>Climate, water and soil</h3>
+  <p>The generator sums a year of weather. Air off the sea rises over the hills, cools and rains out, and behind them it sinks and dries. Each slope gets the sun each season's cloud lets through, less the hills' shadows. Snow lies where the winter stays cold enough, inland and up high, never on the mild coasts. Evaporation follows sun, warmth, wind and damp air.</p>
+  <p>What the plants leave soaks into the rock as far as the rock lets it and runs off for the rest. Groundwater comes out in springs and through stream beds, which keeps some streams running all summer while the ones rain alone feeds run dry. A stream's bed is cut to its wettest season; the water in it now rises after rain and can drop below a trickle, and a dry bed can't be drunk from.</p>
+  <p>The soil is the rock's weathering, with silt on the valley floors and sand on the shores. Rain leaches it sour unless the rock keeps it sweet, as limestone and basalt do. Its fertility is the rock's nourishment as far as acidity, depth and waterlogging allow, and it changes in play: a burn's ash and dung feed it, taking what grows draws it down, and both fade over weeks.</p>
+  <div class="grid g3 pixel">
+    <figure><img src="media/gen-rain.webp" width="640" height="640" alt="Rainfall map: deep blue on the windward heights, pale in the rain shadow" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 2.4</span> Rain, wettest on the windward heights.</figcaption></figure>
+    <figure><img src="media/gen-snow.webp" width="640" height="640" alt="Snow map: white on the high inland ground, none on the coasts" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 2.5</span> Snow: the whiter, the longer it lies.</figcaption></figure>
+    <figure><img src="media/gen-water.webp" width="640" height="640" alt="Water map with red springs, blue streams that run all summer and yellow streams that run only in the wet seasons" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 2.6</span> Springs in red, year-round streams in blue, wet-season streams in yellow.</figcaption></figure>
+    <figure><img src="media/gen-warmth.webp" width="640" height="640" alt="Map of the year's mean warmth, colder on the heights and milder by the coast" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 2.7</span> The year's mean warmth.</figcaption></figure>
+    <figure><img src="media/gen-soil.webp" width="640" height="640" alt="Soil acidity map, orange where the soil is sour and teal where the rock keeps it sweet" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 2.8</span> Soil acidity: sour in orange, sweet in teal.</figcaption></figure>
+    <figure><img src="media/gen-plants.webp" width="640" height="640" alt="Plant cover map: woods, purple heath on the ridges, grass, marsh and bare rock, with streams and lakes" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 2.9</span> What grows, with nothing drawn by hand.</figcaption></figure>
+  </div>
+
+  <h3>Plants by niche</h3>
+  <p>Every plant has a niche: a response curve over each thing it answers to (summer warmth, winter cold, the soil's water through the season, waterlogging, acidity, fertility, light, wind, salt, soil depth). Its fit at a place is the product of its curves. The generator draws plants by fit and vigour, trees in the open sky, shrubs in what the crowns leave, low plants in the light that reaches the floor. Nothing says where a plant grows: woods, heath and marsh are just the places where one kind wins.</p>
+  <p>The same rule runs in play. Rules for plants and animals read fields and cues (the air's warmth, the day's length, the soil's water now), never a season's name or a tile class. Flint, ore and clay follow the rock: flint went from 45% of all boulders to between 2 and 9% by island, so some islands wake their people 250 m from the nearest.</p>
+  <figure class="wide">
+    <img src="media/play-island.webp" width="1600" height="900" alt="The whole island in the play page at the farthest zoom: green valleys, bare brown ridges, blue lakes and turquoise shallows on a deep sea" loading="lazy" decoding="async">
+    <figcaption><span class="fig-n">Fig. 2.10</span> The same island in the play page, morning of day 20. The ridges are the hard rock the rivers couldn't wear down.</figcaption>
+  </figure>
+  <details class="numbers">
+    <summary>The generator's first layers (from the generator write-up)</summary>
+    <div class="grid g4 pixel">
+      <figure><img src="media/layer-relief.webp" width="512" height="512" alt="Elevation map with streams" loading="lazy" decoding="async"><figcaption>Height, with streams</figcaption></figure>
+      <figure><img src="media/layer-precip.webp" width="512" height="512" alt="Rainfall map" loading="lazy" decoding="async"><figcaption>Rain</figcaption></figure>
+      <figure><img src="media/layer-wind.webp" width="512" height="512" alt="Exposure to wind in red and salt spray in green" loading="lazy" decoding="async"><figcaption>Wind and salt</figcaption></figure>
+      <figure><img src="media/layer-table.webp" width="512" height="512" alt="Water table map" loading="lazy" decoding="async"><figcaption>Groundwater</figcaption></figure>
+      <figure><img src="media/layer-soil.webp" width="512" height="512" alt="Soil depth map, grey where there is bare rock" loading="lazy" decoding="async"><figcaption>Soil depth</figcaption></figure>
+      <figure><img src="media/layer-moist.webp" width="512" height="512" alt="Soil moisture map" loading="lazy" decoding="async"><figcaption>Soil moisture</figcaption></figure>
+      <figure><img src="media/layer-cover.webp" width="512" height="512" alt="Blended plant cover map" loading="lazy" decoding="async"><figcaption>Plant cover</figcaption></figure>
+      <figure><img src="media/layer-dominant.webp" width="512" height="512" alt="Map of whichever plant wins at each place" loading="lazy" decoding="async"><figcaption>Which plant wins</figcaption></figure>
+    </div>
+  </details>
+</section>
+
+<!-- 03 -->
+<section class="chapter" id="sky" aria-labelledby="h-sky">
+  <header>
+    <h2 id="h-sky"><span class="num">03</span>Time, sky, light and air</h2>
+    <p class="dek">A 40-day year under a real sky at 52&deg; north. Light and air are fields, worked out at any point, and people see, work and get cold by them.</p>
+    <ul class="systems"><li><span class="st st-built">Built</span> clock, sun and moon, light, air, weather</li></ul>
+  </header>
+  <p>A tick is five minutes, so a day is 288 ticks; people walk about 2 m a tick, which makes 300 m half a day's errand. The year is 40 days, four seasons of ten. The sun's path swings with it: a midsummer noon stands 61&deg; up and the day lasts 16.5 hours; a midwinter noon stands 15&deg; up and lasts 7.5. The moon waxes over 29.5 days. Night is the sun more than six degrees under the horizon.</p>
+  <figure class="wide">
+    <img src="media/play-day-phases.webp" width="1600" height="1202" alt="Twelve views of the same hillside from midday through golden hour, sunset, blue hour, moonlight, dawn and sunrise to morning, each labelled with the time and the sun's height" loading="lazy" decoding="async">
+    <figcaption><span class="fig-n">Fig. 3.1</span> One hillside through day 8, from the play page (an earlier build, September 30). The colour of the light is the sky's: the sun reddened by the air it crosses, twilight turning gold, rose and then blue, and the moon.</figcaption>
+  </figure>
+
+  <h3>Light is a field</h3>
+  <p>Every point of the island has a light level, as it has moisture: the sun's beam and the sky's glow, the moon and the stars, less cloud, less hills that hide the beam, less the crowns of the trees overhead, plus what fires and lamps throw. A campfire gives 60 lux at a metre; a lamp 12. Nothing is stored, so felling a wood or lighting a fire changes it at once.</p>
+  <p>People live by it. In the dark they see a fraction as far, walk and work slower and fumble, and plan only around what they can see (their home, the water and any fire excepted), so nobody sets out to forage or hunt at night. A thick wood goes dark an hour before open ground does. A hungry wolf stalks a lone person out in the dark.</p>
+  <div class="grid g2">
+    <figure>
+      <video controls muted loop playsinline preload="none" poster="media/poster-day.webp" width="1280" height="712" aria-label="Timelapse of a summer day on rocky grassland: golden dawn, bright midday with cloud shadows, rain in the afternoon, then dusk and night">
+        <source src="media/day.mp4" type="video/mp4">
+      </video>
+      <figcaption><span class="fig-n">Video 3</span> Day 18 on seed 1, from dawn to midnight, on rocky grassland. Cloud and rain come and go with the island's weather.</figcaption>
+    </figure>
+    <figure>
+      <video controls muted loop playsinline preload="none" poster="media/poster-dusk.webp" width="1280" height="720" aria-label="Afternoon to night over a bare peak above lakes, the light turning gold, rose and then blue, with campfires showing in the dark">
+        <source src="media/dusk.mp4" type="video/mp4">
+      </video>
+      <figcaption><span class="fig-n">Video 4</span> Afternoon to night over the peak (the September 30 build). Long shadows, golden hour, then the blue hour and campfires.</figcaption>
+    </figure>
+  </div>
+
+  <h3>Air and wind chill</h3>
+  <p>Every point has its own air too. The weather is the island's: the day's mean at sea level, a swing over the day that follows the sun, and a wind off the open sea that rises with cloud and storm. A place takes it through what the generator found there. It is colder with height, milder by a coast the sea air blows in over, warmer on slopes the sun favours, and on still, clear nights the cold slides off the slopes into the hollows. People lose warmth by the wind chill, not the air alone, except inside walls. Frost freezes the lakes whatever the season, and a thaw drops whoever is standing on the ice into the water.</p>
+  <figure class="mid">
+    <img src="media/gen-winter.webp" width="1400" height="900" alt="The island in winter on a tilted board, its lakes frozen white while the sea stays open blue" loading="lazy" decoding="async">
+    <figcaption><span class="fig-n">Fig. 3.2</span> Winter in the first web client: the lakes freeze and the sea doesn't. People and animals can walk on the ice.</figcaption>
+  </figure>
+</section>
+
+<!-- 04 -->
+<section class="chapter" id="people" aria-labelledby="h-people">
+  <header>
+    <h2 id="h-people"><span class="num">04</span>People</h2>
+    <p class="dek">Each person is a body with needs, a handful of traits in words, and a web of remembered dealings with everyone they've met.</p>
+    <ul class="systems"><li><span class="st st-built">Built</span> needs, traits, relationships, families, ageing</li><li><span class="st st-plan">Planned</span> the 111 skills</li></ul>
+  </header>
+  <p>A person has five needs (food, energy, warmth, health and company), five to eight traits from a list of 100 (calm, hot-tempered, curious, greedy, observant, superstitious), and desires. Traits are the words Jev reads when it judges what someone would do; a loner keeps to themselves, the greedy steal, the hot-tempered pick fights.</p>
+  <div class="grid g3 panels">
+    <figure><img src="media/insp-self.webp" width="530" height="800" alt="Mara's Self tab: age 2.2 years, walked 2.4 km, traits craftsperson at heart 81, honest 78, cowardly 75, rebellious 63, charismatic 62, nature lover 52, hot-tempered 52; wants to make a true friend and protect the people they care about; skills foraging, building and toolwork" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 4.1</span> Self: Mara's traits with their strengths, what she wants, and the crafts she has begun.</figcaption></figure>
+    <figure><img src="media/insp-people.webp" width="530" height="800" alt="Mara's People tab with Aldric opened: know each other a little, liking 0.4, trust 0.29, they worked beside me, thinks they are generous, honest and friendly, unsure if they are dangerous" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 4.2</span> People: what Mara holds about Aldric, from feeling and trust to her beliefs about his traits.</figcaption></figure>
+    <figure><img src="media/insp-story.webp" width="530" height="800" alt="Mara's Story tab: a list of events such as Aldric gave Mara 2 berry, Brenna turned down Mara's offer, Mara spotted a stranger, Brenna insulted Mara" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 4.3</span> Story: her week as the chronicle tells it, from gifts and insults to strangers spotted.</figcaption></figure>
+  </div>
+  <h3>Relationships with lore</h3>
+  <p>Every dealing between two people is recorded as an event and rendered by a template: <span class="example">"Day 3: Mara gave me 2 berries when I was starving."</span> From those, each person keeps, for everyone they know:</p>
+  <ul>
+    <li><strong>Feeling and trust</strong>, moved by how each event lands, scored by Jev.</li>
+    <li><strong>Bonds</strong> from a closed list (saved my life, stole from me, shared a fire, taught me, sweetheart, blood feud), each with a weight that fades at its own speed: a theft is remembered longer than a shared meal.</li>
+    <li><strong>A label</strong>: stranger, acquaintance, friend, confidant, rival, enemy, lover, mentor, apprentice, kin or leader.</li>
+    <li><strong>Beliefs about the other's traits</strong>, each a yes or no with odds from Jev (<span class="example">"Is Mara generous?"</span>), which can be wrong.</li>
+    <li><strong>Gossip</strong>: when A talks to B about C, B's beliefs about C move toward A's, weighted by how much B trusts A. Reputation spreads that way, and so do lies.</li>
+    <li><strong>A favour ledger</strong>, kept by code: favours done minus favours received. Debt and resentment fall out of it without any Jev call.</li>
+  </ul>
+  <div class="aside">
+    <p class="kicker">How one relationship reads (Mara on Aldric, day 8)</p>
+    <p><strong>Aldric:</strong> acquaintance; they know each other a little. Liking 0.4, trust 0.29. <em>They worked beside me.</em> Thinks he is generous, honest, friendly and hardworking; unsure if he is dangerous. <span class="example">"Day 7, night: Aldric gave Mara 2 berry."</span></p>
+  </div>
+  <h3>Families, ageing and death</h3>
+  <p>A year is 40 days. People are children under one year, adults to five, then elders, and old age starts killing after six and a half. Sweethearts who both like each other, eat well and share a home can conceive in the evening, and ten days later a child is born with a mix of their parents' traits plus one of its own. Children walk at half speed and learn by watching twice as fast, so what a family knows passes down only if the young stay close.</p>
+  <p>A death leaves a grave; belongings fall to the ground and homes stand empty for anyone to claim. Close friends and kin grieve. Knowledge never taught is gone. When the land is nearly empty, strangers wander in knowing nothing and find the tools and homes of the dead.</p>
+  <h3>Drives and care</h3>
+  <p>A starving or freezing person skips deliberation and goes for food or warmth, or huddles against the nearest body. Anyone can choose to tend someone who has collapsed, warming and feeding them back to their feet, which tends to leave a lasting bond. Once a day dislike fades, slower for the vengeful, and time spent near someone slowly breeds familiarity.</p>
+  <h3>Skills, the long plan</h3>
+  <p>There is no fixed skill list at the start. A craft (stonework, firemaking, pottery) appears on a person's page the first time they learn something in it, and it levels up with use. The 111 skills in DESIGN.md, from foraging and knapping to law, astronomy and runecraft, are the eventual list of crafts, to fill in as the world's physics grows. Most of them don't exist in play yet.</p>
+</section>
+
+<!-- 05 -->
+<section class="chapter" id="knowing" aria-labelledby="h-knowing">
+  <header>
+    <h2 id="h-knowing"><span class="num">05</span>How people come to know things</h2>
+    <p class="dek">There is no recipe book. Materials have properties, a few verbs act on them, and people learn what the rules do by doing, watching and being told.</p>
+    <ul class="systems"><li><span class="st st-built">Built</span> materials, verbs, physics, tinkering, laws, naming, teaching</li></ul>
+  </header>
+  <h3>Materials are bags of properties</h3>
+  <p>Every item carries properties with strengths from 0 to 1: hard, sharp, heavy, long, flexible, fibrous, binding, flammable, edible, toxic, plastic, container, insulating, plus states like dry, wet and hot. Two stones are the same item until one gets chipped. A tree is a standing mass of wood with an integrity and what it breaks into (logs, branches, bark); a boulder breaks into stones, a dead deer into meat, hide and bone.</p>
+  <h3>A few verbs and the physics rules</h3>
+  <p>There is no chop, mine or butcher. People strike, press and rub, join, heat and wet, shape, move and consume, and what happens depends only on the materials:</p>
+  <ul>
+    <li><strong>Damage</strong> from a strike is force times focus, less the target's toughness. Force comes from the held thing's weight and length plus the person's strength; focus comes from sharpness.</li>
+    <li><strong>Recoil</strong>: force the target doesn't absorb comes back. A fist on a tree hurts; a brittle tool chips.</li>
+    <li><strong>Friction</strong> builds heat with pressure and speed; enough on something dry and flammable makes an ember.</li>
+    <li><strong>Heat</strong> past a material's threshold changes it: wet to dry, raw to cooked, clay to fired.</li>
+    <li><strong>Joining</strong>: a joined thing takes its parts' properties by where they sit, and is only as strong as its weakest joint.</li>
+  </ul>
+  <div class="table-wrap">
+  <table>
+    <caption class="kicker" style="text-align:left;padding-bottom:0.6rem">Felling a tree with whatever is at hand</caption>
+    <thead><tr><th scope="col">Held</th><th scope="col">What happens</th></tr></thead>
+    <tbody>
+      <tr><td>Nothing</td><td>Almost no damage; their hand hurts and they give up</td></tr>
+      <tr><td>A stone</td><td>Slow; most of a day, and the stone may split</td></tr>
+      <tr><td>A sharp stone</td><td>Faster, but it's short, so there is little force</td></tr>
+      <tr><td>A sharp stone bound to a stick</td><td>Fast: most of the force is focused; the binding may loosen</td></tr>
+      <tr><td>A heavy sharp thing nobody designed</td><td>Also works, by the same rule</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h3>Tinkering: Jev is the intuition</h3>
+  <p>Tinkering is a goal like any other. Jev picks which combination a person would think to try from what they hold and what's near: <span class="example">"Mara is holding two stones and a stick, standing by a dry bush. What would she try?"</span> Jev knows how the real world works, so discoveries come out in a believable order without anyone scripting it. The code then decides what happened. Aimed experiments narrow it further: someone can set out to find a way to make fire or shelter without knowing how.</p>
+  <p>The planner works from beliefs, not physics: <span class="example">"strike tree with sharp stone on a stick: tree fell, took about 10 minutes."</span> Someone who has never seen a tree fall can't plan to fell one; they can still tinker. Beliefs come from doing, watching (a watcher within sight gets progress, faster if observant) and teaching (fast, and it leaves a "taught me" bond). Knowledge flows along relationships, so friends end up sharing a toolkit and rivals don't.</p>
+  <figure class="wide">
+    <img src="media/play-knows.webp" width="1600" height="900" alt="Mara's inspector on the Knows tab: seven ways she knows how to do things, such as striking a bush with a stick and pressing wet clay into a block, and four things she has seen, such as that a rabbit breaks down into meat" loading="lazy" decoding="async">
+    <figcaption><span class="fig-n">Fig. 5.1</span> What Mara knows on day 19: seven ways of doing things she has found or been shown, and four things she has seen happen (<span class="example">"Mushroom can make you sick"</span>).</figcaption>
+  </figure>
+  <h3>Jev's rulings become the world's laws</h3>
+  <p>Rules can't cover every pair. When someone tries something they don't (bind a mushroom to a fish, heat reeds in water), Jev answers a few typed questions about the physical result: would it hold together, how sharp would it be, is it edible now. Every ruling is cached as a world law keyed by the operation and the rounded properties of the inputs, so the next time anyone tries the same thing the law applies without a call. The physics grows as people explore it, and stays consistent. Laws are world facts; knowing one is per person. Offline, nothing the rules don't cover comes of an attempt, because random answers would write nonsense into the laws.</p>
+  <h3>Naming things from WordNet words</h3>
+  <p>Jev can't invent a word, so a made thing starts with a working name that says what it is: <span class="example">"sharp stone lashed to a stick"</span>, then <span class="example">"sharp stone lashed to a stick for felling trees"</span> once people use it. After it has been made three times, Jev picks a common word from about 3,000 real object nouns from WordNet in 17 kinds of thing (cutting tool, vessel, rope, shelter, light, trap): first the kind, then favourites from lists of 240, then the final word. "None of these" keeps the descriptive name; a word already taken gets its material in front ("bone knife").</p>
+</section>
+
+<!-- 06 -->
+<section class="chapter" id="theories" aria-labelledby="h-theories">
+  <header>
+    <h2 id="h-theories"><span class="num">06</span>Theories and tests</h2>
+    <p class="dek">When something that has worked for them fails, people look for what was different, settle on a theory, act on it, test it, and sometimes let it go.</p>
+    <ul class="systems"><li><span class="st st-built">Built</span> records, suspicion, theories, tests, letting go</li></ul>
+  </header>
+  <div class="aside">
+    <p class="kicker">Revised October 5</p>
+    <p>The probes in chapter 13 found three faults in these rules: people blamed what merely comes with the true cause, held on to a cause that had stopped mattering, and drifted back from the faster of two ways. Four changes fixed them, all below: records where the latest tries count most, comparing like with like, testing one theory at a time, and marking a way down only where it has truly done worse.</p>
+  </div>
+  <figure class="wide plate">
+<!-- diagram:loop --><svg viewBox="0 0 820 470" role="img" aria-labelledby="loop-t loop-d"><title id="loop-t">The learning loop</title><desc id="loop-d">Try, outcome, a record in which the latest tries count most, suspicion judged like for like, theory, test, and letting go, which leads back to trying. A theory is taught with its record and the planner respects it.</desc><defs><marker id="ah-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="d-head" d="M0 0L10 5L0 10z"/></marker></defs><line class="d-edge " x1="508.0" y1="93.0" x2="546.5" y2="103.2" marker-end="url(#ah-loop)"/><line class="d-edge " x1="656.2" y1="157.1" x2="690.9" y2="240.7" marker-end="url(#ah-loop)"/><line class="d-edge " x1="661.9" y1="296.7" x2="580.8" y2="352.7" marker-end="url(#ah-loop)"/><line class="d-edge " x1="442.2" y1="380.7" x2="377.8" y2="380.7" marker-end="url(#ah-loop)"/><line class="d-edge " x1="239.2" y1="352.7" x2="158.1" y2="296.7" marker-end="url(#ah-loop)"/><line class="d-edge " x1="129.1" y1="240.7" x2="163.8" y2="157.1" marker-end="url(#ah-loop)"/><line class="d-edge " x1="273.5" y1="103.2" x2="312.0" y2="93.0" marker-end="url(#ah-loop)"/><rect class="d-node " x="315.0" y="42.0" width="190" height="50" rx="8"/><text class="d-t" x="410.0" y="64.0" text-anchor="middle">Try</text><text class="d-s" x="410.0" y="80.0" text-anchor="middle">what they believe works</text><rect class="d-node " x="549.5" y="104.1" width="190" height="50" rx="8"/><text class="d-t" x="644.5" y="126.1" text-anchor="middle">Outcome</text><text class="d-s" x="644.5" y="142.1" text-anchor="middle">worked, or failed</text><rect class="d-node " x="607.5" y="243.7" width="190" height="50" rx="8"/><text class="d-t" x="702.5" y="265.7" text-anchor="middle">Record</text><text class="d-s" x="702.5" y="281.7" text-anchor="middle">the latest tries count most</text><rect class="d-node " x="445.2" y="355.7" width="190" height="50" rx="8"/><text class="d-t" x="540.2" y="377.7" text-anchor="middle">Suspicion</text><text class="d-s" x="540.2" y="393.7" text-anchor="middle">worse there, like for like</text><rect class="d-node hot" x="184.8" y="355.7" width="190" height="50" rx="8"/><text class="d-t" x="279.8" y="377.7" text-anchor="middle">Theory</text><text class="d-s" x="279.8" y="393.7" text-anchor="middle">“won&#x27;t work in the rain”</text><rect class="d-node cool" x="22.5" y="243.7" width="190" height="50" rx="8"/><text class="d-t" x="117.5" y="265.7" text-anchor="middle">Test</text><text class="d-s" x="117.5" y="281.7" text-anchor="middle">a try where they blame it</text><rect class="d-node cool" x="80.5" y="104.1" width="190" height="50" rx="8"/><text class="d-t" x="175.5" y="126.1" text-anchor="middle">Let go</text><text class="d-s" x="175.5" y="142.1" text-anchor="middle">it works there after all</text><text class="d-big" x="410" y="222" text-anchor="middle">per person, per way of doing a thing,</text><text class="d-big" x="410" y="246" text-anchor="middle">per condition and mix of the weather</text><text class="d-s" x="410" y="276" text-anchor="middle">a theory is taught with its record and the planner respects it</text></svg><!-- /diagram:loop -->
+    <figcaption><span class="fig-n">Fig. 6.1</span> The learning loop, per person and per way of doing a thing. Nothing tells them the cause; a spark just dies, a seedling just withers.</figcaption>
+  </figure>
+  <h3>Records, the latest counting most</h3>
+  <p>Every time someone does what they believe works, the attempt is noted all told, against each condition they could see (rain, dark, freezing cold, a strong wind, and for what's done to the ground, the spot itself: the ground, the shade of trees over it, dry ground, bushes and trees crowded round), and against the mix of the weather it was done in: dark and raining, dark and dry, light and windy.</p>
+  <p>Each try counts for a little less with every try after it (0.95 of what it counted before), so a record is mostly the last twenty or so tries, and what a way used to do is forgotten once it does otherwise. A mix of the weather keeps its own last twenty, however long ago they were, since rain by day may come only now and then. How long a way takes them is averaged the same way, so one try that dragged on doesn't make it look slow for good. What they've done in their whole life stays counted in full.</p>
+  <h3>Suspicion, like for like</h3>
+  <p>When something that has worked for them fails, a condition they were in becomes a suspect once it has failed them there more than once and done worse there than without it by more than chance would make it (a standard error of the difference, by their own counts), or when the failure itself points at it (the tinder too damp to catch) and it has done no better there.</p>
+  <p>For the weather, the comparison is like for like: each mix of the weather with the condition in it is set against the same mix without it, pooled by how much each can tell. Where the mix without it is thin or has never come, it is made up from their record without the condition all told, as if it held four tries of that, so a condition never seen apart from another is suspected along with it until tries apart tell them which. Tries in weather they already blame for something else are set aside: to someone who blames the rain, a spark dying in the rain at night says nothing about the dark. So where the rain falls mostly at night, the dark stays a suspect only until sparks struck dark and dry catch as often as by day; then the rain takes the blame alone. Jev is shown the same comparison: <span class="example">"It was dark (it has worked 5 of 18 times for them like that, and 12 of 22 otherwise; when it was dark and dry it has worked 5 of 8 times, and 12 of 20 when it was light and dry)"</span>. Offline, the guess leans on the same record.</p>
+  <figure class="wide plate">
+<!-- diagram:mix --><svg viewBox="0 0 860 300" role="img" aria-labelledby="mix-t mix-d"><title id="mix-t">Like for like</title><desc id="mix-d">An example record of striking sparks where the rain falls mostly at night. Light and dry: 12 of 20 caught. Light and raining: 0 of 2. Dark and dry: 5 of 8. Dark and raining: 0 of 10. All told the dark looks to blame, 5 of 18 against 12 of 22; set beside tries in the same weather it does as well as the light, 5 of 8 against 12 of 20, so only the rain is blamed.</desc><text class="d-k" x="190" y="40" text-anchor="middle">dry</text><text class="d-k" x="362" y="40" text-anchor="middle">raining</text><text class="d-k" x="92" y="103" text-anchor="end">light</text><text class="d-k" x="92" y="191" text-anchor="end">dark</text><rect class="d-node " x="110" y="60" width="160" height="76" rx="8"/><text class="d-t" x="190" y="90" text-anchor="middle">12 of 20</text><text class="d-s" x="190" y="107" text-anchor="middle">sparks caught, 60%</text><rect class="d-bar-bg" x="130" y="116" width="120" height="6" rx="3"/><rect class="d-bar" x="130" y="116" width="72.0" height="6" rx="3"/><rect class="d-node " x="282" y="60" width="160" height="76" rx="8"/><text class="d-t" x="362" y="90" text-anchor="middle">0 of 2</text><text class="d-s" x="362" y="107" text-anchor="middle">sparks caught, 0%</text><rect class="d-bar-bg" x="302" y="116" width="120" height="6" rx="3"/><rect class="d-node cool" x="110" y="148" width="160" height="76" rx="8"/><text class="d-t" x="190" y="178" text-anchor="middle">5 of 8</text><text class="d-s" x="190" y="195" text-anchor="middle">sparks caught, 62%</text><rect class="d-bar-bg" x="130" y="204" width="120" height="6" rx="3"/><rect class="d-bar" x="130" y="204" width="75.0" height="6" rx="3"/><rect class="d-node hot" x="282" y="148" width="160" height="76" rx="8"/><text class="d-t" x="362" y="178" text-anchor="middle">0 of 10</text><text class="d-s" x="362" y="195" text-anchor="middle">sparks caught, 0%</text><rect class="d-bar-bg" x="302" y="204" width="120" height="6" rx="3"/><rect class="d-edge soft" x="102" y="52" width="176" height="180" rx="10"/><text class="d-s" x="190" y="252" text-anchor="middle">like for like: dry either way, light or dark</text><text class="d-k" x="490" y="74">All told</text><text class="d-t" x="490" y="98">In the dark: 5 of 18 caught, 28%</text><text class="d-t" x="490" y="119">Out of it: 12 of 22 caught, 55%</text><text class="d-s" x="490" y="140">The dark looks to blame, though it only</text><text class="d-s" x="490" y="156">comes with the rain.</text><text class="d-k" x="490" y="196">Like for like</text><text class="d-t" x="490" y="220">Dark and dry: 5 of 8 caught, 62%</text><text class="d-t" x="490" y="241">Light and dry: 12 of 20 caught, 60%</text><text class="d-s" x="490" y="262">No worse: the dark is let off,</text><text class="d-s" x="490" y="278">and the rain takes the blame alone.</text></svg>
+    <figcaption><span class="fig-n">Fig. 6.2</span> Like for like, with made-up counts. Where the rain falls mostly at night, the dark looks to blame all told; set beside tries in the same weather, it does as well as the light.</figcaption>
+  </figure>
+  <p>They settle on one suspect, or on bad luck, or on no idea. What they settle on is a theory (<span class="example">"they think it won't work in the rain"</span>), shown with the record it rests on, taught with it, and respected by the planner however badly they need it. Freezing in the rain, someone who thinks fire won't light in it asks for help rather than rubbing wet sticks until they drop. Letting the desperate try anyway was tried: a whole camp froze rubbing sticks in a winter rain.</p>
+  <h3>Tests, one theory at a time</h3>
+  <p>When they aren't in trouble, someone standing in a condition they blame can set out to try it anyway, to see whether it really won't work: likelier the less the theory rests on and the more curious, doubting or clever they are. They test a theory only where nothing else they blame holds as well, since a spark that dies in the rain at night says nothing about the dark to someone who blames the rain. A test is one try, and one that fails is one more failure the theory rests on, so tests of it grow rarer.</p>
+  <h3>Letting go</h3>
+  <p>Only a try in the condition they blame can tell against a theory, never the record it was formed on. It goes when it works there and, in that same mix of the weather, has worked at least as often as not; when they watch someone else do it there; or when, over a few tries there, it has come to do about as well as without it, like for like. Because old tries fade, a long record of sparks dying in the rain gives way, once the rain stops mattering, to the tries there that catch as often as anywhere. When they give up a theory about the weather, their record in each mix it was part of starts again, so the failures it was formed on don't bring it straight back. A plan made before the weather turned doesn't carry them into what they think won't work in it.</p>
+  <h3>Choosing between ways</h3>
+  <p>Between ways of doing the same thing, the planner takes the cheapest, weighing each by how long it takes them over its odds. The odds are its record all told (or on that ground), marked down to its record in a condition they're in only where it has done worse there than chance would make it, so a few unlucky tries in the dark don't make one way look worse than another. Some hope is added for what they've hardly tried, which is what gets it tried. So mistakes are made, and corrected, and what people do drifts toward what works best where and when they do it.</p>
+  <h3>Results that show days later</h3>
+  <p>Some things only show what they did days on, like a seed pushed into the ground. Done, it counts as tried and nothing more; it counts as having worked when it comes up, or against them if it withers. The first one that comes up teaches them it takes days: <span class="example">"A berry pushed into the ground grows into a bush, about 3 days later."</span> It used to be scored the moment the seed went in, as a failure, and people blamed the rain or the dark for it.</p>
+  <h3>Knowing ground</h3>
+  <p>Planting, digging and watering are noted against the spot they were done on, so people come to think berries won't come up on sand or in the shade, or that a pit can't be dug on bare rock. To the planner every kind of ground within a hundred metres is a way of its own: someone whose berries come up only now and then on the forest floor tries the grassland over the rise, and goes back if it does worse. Berries planted in summer came up 28 of 30 on grassland, 23 on scrub, 20 on the forest floor, 14 in marsh, 11 on sand, 8 on grass with outcrops and none on bare rock.</p>
+  <h3>What the answer key says is true</h3>
+  <p>Rain hurts lighting a fire by rubbing or striking; crowding, shade and rocky ground hurt planting, and rocky ground digging; the dark and the wind hurt none of them. The key is found by experiment on each island, not written down (chapter 13).</p>
+</section>
+
+<!-- 07 -->
+<section class="chapter" id="making" aria-labelledby="h-making">
+  <header>
+    <h2 id="h-making"><span class="num">07</span>Making things</h2>
+    <p class="dek">From knapped stone to a forged blade, every step is a property meeting a rule. The chain is long enough that it only climbs where knowledge is passed on.</p>
+    <ul class="systems"><li><span class="st st-built">Built</span> the physics of every step</li><li><span class="st st-part">Partly built</span> worlds climbing it</li><li><span class="st st-plan">Planned</span> carrying water</li></ul>
+  </header>
+  <figure class="wide plate big">
+<!-- diagram:tech --><svg viewBox="0 0 1080 520" role="img" aria-labelledby="tech-t tech-d"><title id="tech-t">The tech chain</title><desc id="tech-d">Knapped stone and cord lead to a hafted tool. Fire by hand leads to a campfire, then a ringed hearth at heat 1.3 for fired pots, a covered fire for charcoal, smoked food and leather, charcoal at heat 2.0, bellows at 2.5, smelted metal at 2.2 and a forged blade. Shelters grow from lean-to to hut, walled lodge and longhouse. Grain becomes meal, dough and bread. A bow shoots arrows, a woven basket catches fish, fat makes a lamp, and resin glue seals a basket.</desc><defs><marker id="ah-tech" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="d-head" d="M0 0L10 5L0 10z"/></marker></defs><text class="d-k" x="14.0" y="39.0">Tools and heat</text><text class="d-k" x="14.0" y="239.0">Shelter and keeping</text><text class="d-k" x="14.0" y="339.0">Grain</text><text class="d-k" x="14.0" y="439.0">Fibre, fat and resin</text><line class="d-edge " x1="149.0" y1="70.0" x2="164.0" y2="70.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="233.0" y1="144.0" x2="233.0" y2="96.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="455.0" y1="70.0" x2="470.0" y2="70.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="608.0" y1="70.0" x2="623.0" y2="70.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="539.0" y1="96.0" x2="539.0" y2="144.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="692.0" y1="96.0" x2="692.0" y2="144.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="731.8" y1="96.0" x2="805.2" y2="144.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="845.0" y1="144.0" x2="845.0" y2="96.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="914.0" y1="70.0" x2="929.0" y2="70.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="884.8" y1="96.0" x2="958.2" y2="144.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="998.0" y1="96.0" x2="998.0" y2="144.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="998.0" y1="196.0" x2="998.0" y2="244.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="805.2" y1="196.0" x2="731.8" y2="244.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="845.0" y1="196.0" x2="845.0" y2="244.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="149.0" y1="270.0" x2="164.0" y2="270.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="302.0" y1="270.0" x2="317.0" y2="270.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="455.0" y1="270.0" x2="470.0" y2="270.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="149.0" y1="370.0" x2="164.0" y2="370.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="302.0" y1="370.0" x2="317.0" y2="370.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="455.0" y1="370.0" x2="470.0" y2="370.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="149.0" y1="470.0" x2="164.0" y2="470.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="455.0" y1="470.0" x2="470.0" y2="470.0" marker-end="url(#ah-tech)"/><line class="d-edge " x1="914.0" y1="470.0" x2="929.0" y2="470.0" marker-end="url(#ah-tech)"/><rect class="d-node " x="14.0" y="47.0" width="132" height="46" rx="8"/><text class="d-t" x="80.0" y="67.0" text-anchor="middle">Knapped stone</text><text class="d-s" x="80.0" y="83.0" text-anchor="middle">two stones struck</text><rect class="d-node " x="167.0" y="47.0" width="132" height="46" rx="8"/><text class="d-t" x="233.0" y="67.0" text-anchor="middle">Hafted tool</text><text class="d-s" x="233.0" y="83.0" text-anchor="middle">stone, stick, cord</text><rect class="d-node hot" x="320.0" y="47.0" width="132" height="46" rx="8"/><text class="d-t" x="386.0" y="67.0" text-anchor="middle">Fire by hand</text><text class="d-s" x="386.0" y="83.0" text-anchor="middle">spark or friction</text><rect class="d-node hot" x="473.0" y="47.0" width="132" height="46" rx="8"/><text class="d-t" x="539.0" y="67.0" text-anchor="middle">Campfire</text><text class="d-s" x="539.0" y="83.0" text-anchor="middle">heat 1.0</text><rect class="d-node hot" x="626.0" y="47.0" width="132" height="46" rx="8"/><text class="d-t" x="692.0" y="67.0" text-anchor="middle">Ringed hearth</text><text class="d-s" x="692.0" y="83.0" text-anchor="middle">heat 1.3</text><rect class="d-node hot" x="779.0" y="47.0" width="132" height="46" rx="8"/><text class="d-t" x="845.0" y="67.0" text-anchor="middle">Charcoal</text><text class="d-s" x="845.0" y="83.0" text-anchor="middle">heat 2.0</text><rect class="d-node hot" x="932.0" y="47.0" width="132" height="46" rx="8"/><text class="d-t" x="998.0" y="67.0" text-anchor="middle">Bellows</text><text class="d-s" x="998.0" y="83.0" text-anchor="middle">air: heat 2.5</text><rect class="d-node " x="167.0" y="147.0" width="132" height="46" rx="8"/><text class="d-t" x="233.0" y="167.0" text-anchor="middle">Cord</text><text class="d-s" x="233.0" y="183.0" text-anchor="middle">fibre twisted</text><rect class="d-node " x="473.0" y="147.0" width="132" height="46" rx="8"/><text class="d-t" x="539.0" y="167.0" text-anchor="middle">Kept fire</text><text class="d-s" x="539.0" y="183.0" text-anchor="middle">wood laid on, laid by</text><rect class="d-node " x="626.0" y="147.0" width="132" height="46" rx="8"/><text class="d-t" x="692.0" y="167.0" text-anchor="middle">Fired pot</text><text class="d-s" x="692.0" y="183.0" text-anchor="middle">clay at 1.2</text><rect class="d-node " x="779.0" y="147.0" width="132" height="46" rx="8"/><text class="d-t" x="845.0" y="167.0" text-anchor="middle">Covered fire</text><text class="d-s" x="845.0" y="183.0" text-anchor="middle">a kiln</text><rect class="d-node hot" x="932.0" y="147.0" width="132" height="46" rx="8"/><text class="d-t" x="998.0" y="167.0" text-anchor="middle">Smelted metal</text><text class="d-s" x="998.0" y="183.0" text-anchor="middle">ore at 2.2</text><rect class="d-node leaf" x="14.0" y="247.0" width="132" height="46" rx="8"/><text class="d-t" x="80.0" y="267.0" text-anchor="middle">Lean-to</text><text class="d-s" x="80.0" y="283.0" text-anchor="middle">sleeps two</text><rect class="d-node leaf" x="167.0" y="247.0" width="132" height="46" rx="8"/><text class="d-t" x="233.0" y="267.0" text-anchor="middle">Hut</text><text class="d-s" x="233.0" y="283.0" text-anchor="middle">sleeps four</text><rect class="d-node leaf" x="320.0" y="247.0" width="132" height="46" rx="8"/><text class="d-t" x="386.0" y="267.0" text-anchor="middle">Walled lodge</text><text class="d-s" x="386.0" y="283.0" text-anchor="middle">grows with work</text><rect class="d-node leaf" x="473.0" y="247.0" width="132" height="46" rx="8"/><text class="d-t" x="539.0" y="267.0" text-anchor="middle">Longhouse</text><text class="d-s" x="539.0" y="283.0" text-anchor="middle">past six sleepers</text><rect class="d-node " x="626.0" y="247.0" width="132" height="46" rx="8"/><text class="d-t" x="692.0" y="267.0" text-anchor="middle">Smoked food</text><text class="d-s" x="692.0" y="283.0" text-anchor="middle">keeps 8 times longer</text><rect class="d-node " x="779.0" y="247.0" width="132" height="46" rx="8"/><text class="d-t" x="845.0" y="267.0" text-anchor="middle">Leather</text><text class="d-s" x="845.0" y="283.0" text-anchor="middle">hide in smoke or fat</text><rect class="d-node hot" x="932.0" y="247.0" width="132" height="46" rx="8"/><text class="d-t" x="998.0" y="267.0" text-anchor="middle">Forged blade</text><text class="d-s" x="998.0" y="283.0" text-anchor="middle">hot working</text><rect class="d-node leaf" x="14.0" y="347.0" width="132" height="46" rx="8"/><text class="d-t" x="80.0" y="367.0" text-anchor="middle">Grain</text><text class="d-s" x="80.0" y="383.0" text-anchor="middle">stripped while ripe</text><rect class="d-node leaf" x="167.0" y="347.0" width="132" height="46" rx="8"/><text class="d-t" x="233.0" y="367.0" text-anchor="middle">Meal</text><text class="d-s" x="233.0" y="383.0" text-anchor="middle">ground on stone</text><rect class="d-node leaf" x="320.0" y="347.0" width="132" height="46" rx="8"/><text class="d-t" x="386.0" y="367.0" text-anchor="middle">Dough</text><text class="d-s" x="386.0" y="383.0" text-anchor="middle">dipped in water</text><rect class="d-node leaf" x="473.0" y="347.0" width="132" height="46" rx="8"/><text class="d-t" x="539.0" y="367.0" text-anchor="middle">Bread</text><text class="d-s" x="539.0" y="383.0" text-anchor="middle">held over a fire</text><rect class="d-node cool" x="14.0" y="447.0" width="132" height="46" rx="8"/><text class="d-t" x="80.0" y="467.0" text-anchor="middle">Bow</text><text class="d-s" x="80.0" y="483.0" text-anchor="middle">stick strung with cord</text><rect class="d-node cool" x="167.0" y="447.0" width="132" height="46" rx="8"/><text class="d-t" x="233.0" y="467.0" text-anchor="middle">Shot arrow</text><text class="d-s" x="233.0" y="483.0" text-anchor="middle">twice a throw</text><rect class="d-node cool" x="320.0" y="447.0" width="132" height="46" rx="8"/><text class="d-t" x="386.0" y="467.0" text-anchor="middle">Woven basket</text><text class="d-s" x="386.0" y="483.0" text-anchor="middle">reed mat and cord</text><rect class="d-node cool" x="473.0" y="447.0" width="132" height="46" rx="8"/><text class="d-t" x="539.0" y="467.0" text-anchor="middle">Basket fishing</text><text class="d-s" x="539.0" y="483.0" text-anchor="middle">swept through water</text><rect class="d-node cool" x="626.0" y="447.0" width="132" height="46" rx="8"/><text class="d-t" x="692.0" y="467.0" text-anchor="middle">Lamp</text><text class="d-s" x="692.0" y="483.0" text-anchor="middle">fat, wick, vessel</text><rect class="d-node cool" x="779.0" y="447.0" width="132" height="46" rx="8"/><text class="d-t" x="845.0" y="467.0" text-anchor="middle">Resin glue</text><text class="d-s" x="845.0" y="483.0" text-anchor="middle">binder 0.95</text><rect class="d-node cool" x="932.0" y="447.0" width="132" height="46" rx="8"/><text class="d-t" x="998.0" y="467.0" text-anchor="middle">Sealed basket</text><text class="d-s" x="998.0" y="483.0" text-anchor="middle">watertight</text></svg><!-- /diagram:tech -->
+    <figcaption><span class="fig-n">Fig. 7.1</span> The tech chain as scripts/tech.ts checks it, day by day, in headless worlds. Arrows mark what a step needs; the numbers are fire heat.</figcaption>
+  </figure>
+  <h3>Fire has a heat level</h3>
+  <p>An open fire is 1.0. Ringed with stone it is 1.3. A ringed fire burning charcoal is 2.0, and 2.5 with air blown in from anything soft and hollow used as bellows (a hide bag, a woven mat). Heat changes happen only above a threshold, so pots need at least a ringed hearth.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th scope="col">Change</th><th scope="col">Heat needed</th></tr></thead>
+    <tbody>
+      <tr><td>Cook food, melt resin</td><td>0.8</td></tr>
+      <tr><td>Fire clay</td><td>1.2</td></tr>
+      <tr><td>Soften metal for working</td><td>1.5</td></tr>
+      <tr><td>Smelt ore into a metal lump</td><td>2.2</td></tr>
+      <tr><td>Wood to charcoal</td><td>A log in a ringed fire covered over with stones or clay</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p><strong>Hot working.</strong> Anything hot and plastic can be shaped by striking it with something heavy and hard. Each blow closes the gap between the edge's sharpness and 1 by a fifth of the striker's weight times its hardness, up to 30 blows. A metal lump hammered at a charcoal fire becomes a blade sharper than flint and far tougher. Hammering cold metal only dents it.</p>
+  <h3>Grain, keeping food, bows and fibre crafts</h3>
+  <p>Added after headless runs showed worlds stalling at fire and shelter. Grain is stripped from grass while it ripens; ground on a harder stone it becomes meal, dipped in water dough, held over a fire bread that keeps five days. Food held in the smoke of a covered fire keeps about eight times as long. A pointed shaft shot from a stick strung with cord flies twice as far as a throw. A soft sheet tied with cord closes into a bag, a woven reed mat into a basket that can scoop fish. Hides laced together make a wrap warmer than any one of them.</p>
+  <h3>Shelters that grow</h3>
+  <p>Sticks and grass lean into a lean-to that sleeps two and is down after a few days of rain. No amount more of them makes a hut: weather tells on a flimsy shelter far more than a sturdy one. Stones stacked into a lean-to make it sturdier, a dozen with its frame make a walled lodge, and a lodge grows with what goes into it, past six sleepers a longhouse with a door every eight metres or so. Someone fond of another can ask to move in where there's room.</p>
+  <h3>Where worlds get to</h3>
+  <p>The physics for every step above is in the code. How far a world's people climb is another matter, and it is what scripts/tech.ts measures: the first day each milestone holds, who is alive, what killed the rest and where plans fail. In the play page on seed 1, by day 19 the five people had stacked stone piles and dug pits but had no fire yet. A resin-sealed basket is watertight, but nothing carries water yet: that is deferred.</p>
+  <figure class="wide">
+    <img src="media/art-final-camp.webp" width="1280" height="720" alt="Art direction target: tents round a campfire by the water, a path down to the beach and a marsh, with small people at work" loading="lazy" decoding="async">
+    <figcaption><span class="fig-n">Fig. 7.2</span> What a camp should come to look like: the artbook's final camp view, drawn from the same island's data with dressing placed by hand.</figcaption>
+  </figure>
+</section>
+
+<!-- 08 -->
+<section class="chapter" id="groups" aria-labelledby="h-groups">
+  <header>
+    <h2 id="h-groups"><span class="num">08</span>Groups and norms</h2>
+    <p class="dek">Nobody is assigned to a group and nobody writes the rules. Camps are noticed, customs build up from what a camp did last time, and leaders are whoever gets followed.</p>
+    <ul class="systems"><li><span class="st st-built">Built</span> camps, incidents, precedents, customs, leaders, shared stores</li><li><span class="st st-plan">Planned</span> voting, roles, feasts</li></ul>
+  </header>
+  <figure class="wide plate big">
+<!-- diagram:camp --><svg viewBox="0 0 1020 300" role="img" aria-labelledby="camp-t camp-d"><title id="camp-t">How a camp answers an incident</title><desc id="camp-d">An incident is recorded with its features. The leader, or the person hurt, decides; Jev picks one of five responses. Whether people follow or defy it is watched for three days. The case becomes a precedent that later cases lean on, and three alike with none against can be spoken as a custom. Standing from followed rulings decides who leads.</desc><defs><marker id="ah-camp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="d-head" d="M0 0L10 5L0 10z"/></marker></defs><line class="d-edge " x1="159.0" y1="90.0" x2="178.0" y2="90.0" marker-end="url(#ah-camp)"/><line class="d-edge " x1="330.0" y1="90.0" x2="349.0" y2="90.0" marker-end="url(#ah-camp)"/><line class="d-edge " x1="501.0" y1="90.0" x2="520.0" y2="90.0" marker-end="url(#ah-camp)"/><line class="d-edge " x1="672.0" y1="90.0" x2="691.0" y2="90.0" marker-end="url(#ah-camp)"/><line class="d-edge " x1="843.0" y1="90.0" x2="862.0" y2="90.0" marker-end="url(#ah-camp)"/><rect class="d-node " x="10.0" y="59.0" width="146" height="62" rx="8"/><text class="d-t" x="83.0" y="87.0" text-anchor="middle">Incident</text><text class="d-s" x="83.0" y="103.0" text-anchor="middle">features, not a verdict</text><rect class="d-node " x="181.0" y="59.0" width="146" height="62" rx="8"/><text class="d-t" x="254.0" y="87.0" text-anchor="middle">Who decides</text><text class="d-s" x="254.0" y="103.0" text-anchor="middle">leader, or the one hurt</text><rect class="d-node hot" x="352.0" y="59.0" width="146" height="62" rx="8"/><text class="d-t" x="425.0" y="87.0" text-anchor="middle">Response</text><text class="d-s" x="425.0" y="103.0" text-anchor="middle">Jev picks one of five</text><rect class="d-node " x="523.0" y="59.0" width="146" height="62" rx="8"/><text class="d-t" x="596.0" y="87.0" text-anchor="middle">Followed?</text><text class="d-s" x="596.0" y="103.0" text-anchor="middle">watched for 3 days</text><rect class="d-node leaf" x="694.0" y="59.0" width="146" height="62" rx="8"/><text class="d-t" x="767.0" y="87.0" text-anchor="middle">Precedent</text><text class="d-s" x="767.0" y="103.0" text-anchor="middle">what was done here</text><rect class="d-node leaf" x="865.0" y="59.0" width="146" height="62" rx="8"/><text class="d-t" x="938.0" y="87.0" text-anchor="middle">Custom</text><text class="d-s" x="938.0" y="103.0" text-anchor="middle">3 alike, none against</text><text class="d-s" x="425" y="150" text-anchor="middle">let it go, scold, make it right, shun, drive out</text><path class="d-edge" d="M596 124.0 V230 H254 V127.0" marker-end="url(#ah-camp)"/><rect class="d-node cool" x="345" y="208" width="160" height="44" rx="8"/><text class="d-t" x="425" y="228" text-anchor="middle">Standing</text><text class="d-s" x="425" y="244" text-anchor="middle">share of last 12 followed</text><path class="d-edge soft" d="M767 56.0 V22 H425 V53.0" marker-end="url(#ah-camp)"/><text class="d-s" x="596" y="16" text-anchor="middle">similar precedents go into the next ruling</text></svg><!-- /diagram:camp -->
+    <figcaption><span class="fig-n">Fig. 8.1</span> How a camp answers an incident. What is fixed in code is the acts and the five responses; which acts matter, how harshly, and who decides all come from what happens.</figcaption>
+  </figure>
+  <h3>Camps form on their own</h3>
+  <p>Once a day, code looks at who lives near whom. People whose homes are within 8 tiles and who don't dislike each other are linked, and each connected cluster of three or more is a camp. A camp keeps its identity by matching members, so it can grow, split over a feud or merge with a neighbour. It starts with a place name from its founder and the nearest landmark (<span class="example">"Mara's camp by the lake"</span>); after a season Jev picks a lasting name from the lexicon's place words.</p>
+  <h3>Incidents and precedents</h3>
+  <p>Anything one person does that lands on another, seen by at least one member, is an incident: a theft, a raid, an insult, refusing food, a fire someone lit burning a home, but also a gift, tending, teaching. Code records its features, not a verdict: against a member, kin or a child, how much it cost, how desperate the doer was, how hard times were, whether they've done it before.</p>
+  <p>The camp then answers it. When there is a leader, the leader decides; otherwise the person hurt, or the witness whose rulings have been followed most. Jev chooses from five responses: <strong>let it go</strong>, <strong>scold</strong>, <strong>make it right</strong>, <strong>shun</strong> or <strong>drive out</strong>, seeing the incident, the people and the camp's most similar precedents. The pair becomes a precedent, so a camp that shunned the last hungry thief will probably shun the next one, though a sympathetic leader can break from it.</p>
+  <div class="aside">
+    <p class="kicker">What happens around here</p>
+    <p>Taking from a neighbour's store: shunned 3 times, let go once.</p>
+    <p>Spoken at an evening fire: <span class="example">"Here, anyone who raids a neighbour's home is driven out."</span></p>
+  </div>
+  <h3>Customs and leaders</h3>
+  <p>Code summarises each camp's precedents by act, and those summaries go into every member's state as "what happens around here". When the same response meets the same kind of act at least three times with no exceptions, a member may put it into words at an evening fire, with another member near. A spoken custom travels by gossip and teaching, and fades once broken at least twice and more often than it held.</p>
+  <p>Following and defying are watched for three days after a ruling. Each person's standing is the share of their last 12 rulings that others followed. A leader needs at least 60% followed and keeps the role until they fall under half or someone clearly outdoes them. Different camps end up with different customs: one tolerates stealing from outsiders and exiles for stealing from kin, another lets the starving take food in winter.</p>
+</section>
+
+<!-- 09 -->
+<section class="chapter" id="living" aria-labelledby="h-living">
+  <header>
+    <h2 id="h-living"><span class="num">09</span>The living world</h2>
+    <p class="dek">Simple systems that collide: fire meets drought, wolves follow deer, food rots, crowds sicken, seeds take root where they fit.</p>
+    <ul class="systems"><li><span class="st st-built">Built</span> animals, plants, fire, decay, disease, weather</li><li><span class="st st-plan">Planned</span> a written chronicle</li></ul>
+  </header>
+  <ul>
+    <li><strong>Animals</strong> go by the air and the day, not a calendar: grazers find grass where the snow leaves it, the cold burns what they've eaten, and young are born as the days draw out past eleven hours. Deer flee people; wolves hunt deer and, in hard cold, people. Overhunting crashes a population.</li>
+    <li><strong>Plants</strong> grow by the air's warmth, the soil's water, light and nourishment. Berries regrow, trees shed seed, birds carry berries, and what lands where it fits may take root, so clearings fill in. A seedling wilts and dies if grown plants nearby take its water.</li>
+    <li><strong>Fire</strong> spreads to dry, flammable things nearby, faster in wind, slower after rain. A campfire beside a lean-to can burn it down; a forest fire clears land and drives off animals. Lightning can light a tree, which is a fire anyone can warm up by or take a flame from.</li>
+    <li><strong>Decay</strong>: food spoils in days unless dried or smoked; tools wear; shelters weaken in weather. Decay is what makes storage, preservation and upkeep worth inventing.</li>
+    <li><strong>Disease</strong>: toxic or rotten food makes people sick, and crowds with no well nearby fall sick and pass it on.</li>
+  </ul>
+  <p>World events feed the same memory, bonds and gossip as everything else. A fire that burns someone's hut leaves a "destroyed my home" bond with whoever lit it; a wolf fought off leaves "saved my life" and makes living together safer than living alone.</p>
+  <div class="grid g-side">
+    <figure>
+      <img src="media/play-population.webp" width="512" height="800" alt="The play page's world window on its Graphs tab: population over 18.5 days for people and for fish, rabbits, butterflies, gulls, crows, deer, herons, eagles and wolves" loading="lazy" decoding="async">
+      <figcaption><span class="fig-n">Fig. 9.1</span> The world window's graphs on day 19: 5 people, 200 fish, 117 rabbits, 16 deer and 3 wolves among about 500 animals.</figcaption>
+    </figure>
+    <figure>
+      <img src="media/play-woods-rain.webp" width="1600" height="900" alt="Close view of broadleaf woods on a grassy slope on a rainy morning" loading="lazy" decoding="async">
+      <figcaption><span class="fig-n">Fig. 9.2</span> A wood's edge on a rainy morning. Every tree is one the sim holds and could fell.</figcaption>
+    </figure>
+  </div>
+  <p>A short chronicle written once an in-game week by a language model, for the player to read, is an optional later idea. The simulation never depends on it.</p>
+</section>
+
+<!-- 10 -->
+<section class="chapter" id="brain" aria-labelledby="h-brain">
+  <header>
+    <h2 id="h-brain"><span class="num">10</span>The brain</h2>
+    <p class="dek">Jev never picks an action. It picks a goal or a reading of a situation, with odds, and code does the rest.</p>
+    <ul class="systems"><li><span class="st st-built">Built</span> Jev questions, offline brain, cost tracking</li></ul>
+  </header>
+  <p>Every question to Jev carries a state (who the person is, their traits and needs, what they know works, what they can see and who is near, the weather and the light) and one or more typed questions. There are three kinds:</p>
+  <ul>
+    <li><strong>A choice</strong> from named options, answered with a probability for each: <span class="example">"Given who Mara is, what she needs, what she knows how to do, and who is around, what will she most likely do next?"</span></li>
+    <li><strong>A yes or no</strong>, answered with the odds of yes: <span class="example">"From everything Mara has seen and heard, is Tamsin generous?"</span></li>
+    <li><strong>A score</strong> on a scale: <span class="example">"How does this change how much Mara likes Tamsin?"</span></li>
+  </ul>
+  <figure class="wide plate big">
+<!-- diagram:jev --><svg viewBox="0 0 1000 400" role="img" aria-labelledby="jev-t jev-d"><title id="jev-t">How a Jev question works</title><desc id="jev-d">The sim sends Jev a state and typed questions. Jev returns probabilities. Code samples a goal, plans the steps and the physics decides what happens, which updates beliefs and the next state. Offline, the same questions are answered at random, leaning on traits and records, at no cost.</desc><defs><marker id="ah-jev" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="d-head" d="M0 0L10 5L0 10z"/></marker></defs><rect class="d-node " x="20" y="20" width="290" height="250" rx="10"/><text class="d-k" x="36" y="44">State</text><text class="d-t" x="36" y="70">Mara, 2.3 years, adult</text><text class="d-s" x="36" y="90">curious (strongly), stubborn</text><text class="d-s" x="36" y="110">food low, warmth 100/100</text><text class="d-s" x="36" y="130">knows: striking a bush with a stick</text><text class="d-s" x="36" y="150">sees: 3 stones (nearest 14 m)</text><text class="d-s" x="36" y="170">Tamsin, 9 m away: a friend</text><text class="d-s" x="36" y="190">summer, midday, rain; bright</text><text class="d-s" x="36" y="210">a theory: no fire in the rain</text><rect class="d-node cool" x="355" y="20" width="290" height="250" rx="10"/><text class="d-k" x="371" y="44">Questions</text><text class="d-t" x="371" y="70">choice: what will she do next?</text><text class="d-s" x="371" y="90">warm up, forage, collect stones,</text><text class="d-s" x="371" y="110">tinker, talk to Tamsin...</text><text class="d-t" x="371" y="150">yes or no: is Tamsin generous?</text><text class="d-t" x="371" y="190">score: how much does this</text><text class="d-t" x="371" y="210">change how she likes him?</text><rect class="d-node hot" x="690" y="20" width="290" height="250" rx="10"/><text class="d-k" x="706" y="44">Answers, with odds</text><text class="d-t" x="706" y="70">collect stones 0.46</text><text class="d-s" x="706" y="90">forage 0.31, talk 0.12, ...</text><text class="d-t" x="706" y="150">generous: 0.72</text><text class="d-t" x="706" y="190">liking: 2.6 of 4</text><line class="d-edge" x1="312" y1="145" x2="351" y2="145" marker-end="url(#ah-jev)"/><line class="d-edge" x1="647" y1="145" x2="686" y2="145" marker-end="url(#ah-jev)"/><text class="d-s" x="668" y="135" text-anchor="middle">Jev</text><rect class="d-node leaf" x="690.0" y="307.0" width="290" height="56" rx="8"/><text class="d-t" x="835.0" y="332.0" text-anchor="middle">Code applies it</text><text class="d-s" x="835.0" y="348.0" text-anchor="middle">sample a goal, plan steps, run the physics</text><line class="d-edge" x1="835" y1="272" x2="835" y2="303" marker-end="url(#ah-jev)"/><path class="d-edge" d="M690 335 H165 V274" marker-end="url(#ah-jev)"/><text class="d-s" x="420" y="327" text-anchor="middle">what happened becomes beliefs, bonds and the next state</text><rect class="d-node " x="20.0" y="352.0" width="650" height="40" rx="8"/><text class="d-t" x="345.0" y="377.0" text-anchor="middle">Offline: the same questions, answered at random, leaning on traits and records</text></svg><!-- /diagram:jev -->
+    <figcaption><span class="fig-n">Fig. 10.1</span> How a Jev question works, and the offline brain that stands in for it.</figcaption>
+  </figure>
+  <h3>What Jev is asked</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th scope="col">When</th><th scope="col">Questions</th></tr></thead>
+    <tbody>
+      <tr><td>Deciding what to do</td><td>A choice of goal; who they'd seek out; who they'd act against</td></tr>
+      <tr><td>Tinkering</td><td>Which combination they'd most likely try</td></tr>
+      <tr><td>Something that worked failed</td><td>What they make of it: a condition, bad luck, or no idea</td></tr>
+      <tr><td>Being asked, offered or insulted</td><td>How they respond</td></tr>
+      <tr><td>After a dealing</td><td>The bond it leaves, change in feeling and trust (scores), the label, a yes or no for each trait belief</td></tr>
+      <tr><td>Trying what the rules don't cover</td><td>Would it make a usable thing (yes or no); how sharp, hard or binding (scores)</td></tr>
+      <tr><td>Naming</td><td>What kind of thing it is; then the word</td></tr>
+      <tr><td>A camp's incident</td><td>The response; whether the doer would comply (yes or no)</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h3>The offline brain</h3>
+  <p>The offline brain stands in for Jev's judgment, so worlds can run headless for nothing. It answers the same questions at random, leaning the way Jev would: traits pull toward social acts, acts against someone need a grudge, replies lean on how the one answering feels, a theory leans on the person's own record, and the colder they get the more the ways to get warm outweigh everything else. Every test gate runs on it. It never writes a new world law.</p>
+  <h3>What it costs</h3>
+  <p>A decision is about 1,300 input tokens. In the probe worlds, Jev is asked about 90 times per person per day, about 180,000 tokens; a full tier of probes runs to millions of tokens even at two seeds, three people and a day, so it runs on demand, never on a schedule. The play page can think with Jev through a relay that adds the key server-side, at most 300 questions a minute and 16 at once, after warming the world with the offline brain. Most attempts in play hit a rule or a cached law and never reach Jev.</p>
+</section>
+
+<!-- 11 -->
+<section class="chapter" id="inside" aria-labelledby="h-inside">
+  <header>
+    <h2 id="h-inside"><span class="num">11</span>Seeing inside</h2>
+    <p class="dek">Everything the simulation decides is recorded, so any surprise can be traced back to its cause.</p>
+    <ul class="systems"><li><span class="st st-built">Built</span> trace, Jev log, debug API and page, history page, inspector</li></ul>
+  </header>
+  <ul>
+    <li><strong>The trace</strong>: every plan, interrupt, physics result (with its force, focus, damage, chance and heat), belief change, fire spread, weather change and animal attack, in a ring buffer and <code>data/logs/trace.jsonl</code>.</li>
+    <li><strong>The Jev log</strong>: every call with its full state, questions, answers, latency and tokens, in <code>data/logs/jev.jsonl</code>.</li>
+    <li><strong>The debug API</strong>: <code>api/debug/stats</code> (populations, weather, per-system tick cost, Jev cost), <code>jev</code>, <code>trace</code> (by system, person, kind), <code>laws</code> (each law and who believes it, mistaken versions too), <code>kinds</code>, <code>rulings</code> and <code>state</code>. <code>debug.html</code> shows all of it.</li>
+    <li><strong>The history page</strong>: every day of the world in rows (technology, survival, social, conflict, camps, life, the wild), with seals for milestones; tap a day to list everything from it.</li>
+    <li><strong>The command line</strong>: <code>bun scripts/inspect.ts</code> reads the live server; <code>NOMADS_BRAIN=random bun scripts/run.ts --ticks N --seed S</code> runs a whole world offline and prints every law, invention and belief.</li>
+    <li><strong>The play page's inspector</strong>: click anyone or anything for its window, with tabs for now, bag, knows, people, story and self; the world window lists everyone and everything, with population graphs and the key to the map's markers.</li>
+  </ul>
+  <figure class="wide">
+    <img src="media/play-graphs.webp" width="1600" height="900" alt="The play page with Mara's inspector on the left showing what she knows, and the world window on the right showing population graphs" loading="lazy" decoding="async">
+    <figcaption><span class="fig-n">Fig. 11.1</span> The inspector and the world window together. Both are drawn from the sim's own sections, so the page shows what the sim holds and nothing else.</figcaption>
+  </figure>
+</section>
+
+<!-- 12 -->
+<section class="chapter" id="play" aria-labelledby="h-play">
+  <header>
+    <h2 id="h-play"><span class="num">12</span>The play page and the look</h2>
+    <p class="dek">Isometric pixel art in the spirit of Transport Tycoon, drawn from the live sim: every tree, rock and person on screen is one the simulation holds.</p>
+    <ul class="systems"><li><span class="st st-built">Built</span> renderer, camera, inspector, art direction</li></ul>
+  </header>
+  <p>The play page runs the real sim in the browser with the offline brain: no server, no Jev bill, and the island matches the renderer because both grow it in one engine. The renderer bakes world-anchored chunks in workers and draws every frame on the GPU through WebGL2, over nine zoom levels and eight bearings. The sun casts shadows that stretch across valleys toward evening, ambient occlusion darkens the folds of the ground and the floor of the woods, and heights are drawn at 1.5 times true, which reads as hills without turning the eroded ridges into needles.</p>
+  <div class="grid g2">
+    <figure>
+      <video controls muted loop playsinline preload="none" poster="media/poster-turn.webp" width="1280" height="712" aria-label="The camera turning around Mara on a grassy slope through all eight bearings in late afternoon, long tree shadows sweeping round">
+        <source src="media/turn.mp4" type="video/mp4">
+      </video>
+      <figcaption><span class="fig-n">Video 5</span> A turn of the camera through all eight bearings, late afternoon on day 19. Relief turns in 3D and sprites stay upright.</figcaption>
+    </figure>
+    <figure>
+      <video controls muted loop playsinline preload="none" poster="media/poster-work.webp" width="1280" height="712" aria-label="Timelapse following Mara at close zoom from midday through a storm into night as she walks between trees and stones">
+        <source src="media/work.mp4" type="video/mp4">
+      </video>
+      <figcaption><span class="fig-n">Video 6</span> Following Mara at four times speed, midday to past midnight on day 13: collecting stones, walking to the others, a storm, then the dark.</figcaption>
+    </figure>
+  </div>
+  <figure class="wide">
+    <img src="media/play-afternoon.webp" width="1600" height="900" alt="Close zoom on a grassy slope in afternoon sun, Mara among scattered trees and stones with long shadows" loading="lazy" decoding="async">
+    <figcaption><span class="fig-n">Fig. 12.1</span> Afternoon on day 19, at 16:53 with the sun 35&deg; up in the west-south-west.</figcaption>
+  </figure>
+
+  <h3>Expedition Morning</h3>
+  <p>The look was found the way a game art team settles one: a brief, a reference board, pillars, exploration, readability checks, a style guide and critique rounds. The brief was the operator's: <span class="example">"A world full of possibilities and adventure"</span>, small SimCity people, the land as the star, no interface. The direction takes Transport Tycoon's clarity, lush turquoise shallows and dawn's warm low sun, with 2&times; pixels and clustered dressing.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th scope="col">Pillar</th><th scope="col">The rule</th></tr></thead>
+    <tbody>
+      <tr><td>A horizon of promise</td><td>Every view shows somewhere you haven't been: a peak, a lake, smoke, birds over a headland.</td></tr>
+      <tr><td>The clarity of a toy</td><td>Every tile reads at a glance: one light, three tones a face, distinct silhouettes. It must survive a squint.</td></tr>
+      <tr><td>A living island</td><td>Nothing is still: smoke, surf, fish, deer, birds, people at work.</td></tr>
+      <tr><td>Rich in clusters</td><td>Detail gathers into little stories, with quiet ground between them.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <figure class="wide">
+    <img src="media/art-loop-valley.webp" width="1280" height="720" alt="The artbook's final valley, animated: a camp's firelight and smoke between a forest mass, a lake and a sandy cove, with a giant oak and shimmering water" loading="lazy" decoding="async">
+    <figcaption><span class="fig-n">Fig. 12.2</span> The artbook's final valley, in its eight-frame loop. The camp is the warmest point on screen, with a giant oak as the landmark; water, fire and smoke move while the land holds still, as in Transport Tycoon.</figcaption>
+  </figure>
+  <div class="grid g2">
+    <figure><img src="media/art-value-before.webp" width="1600" height="600" alt="Before: grayscale and blurred versions of three palettes, all a uniform grey" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 12.3</span> The squint test before: meadow, forest and water in one middle grey.</figcaption></figure>
+    <figure><img src="media/art-value-after.webp" width="1600" height="600" alt="After: water, forest, meadow, beach and camp separating into distinct bands" loading="lazy" decoding="async"><figcaption><span class="fig-n">Fig. 12.4</span> After: deep water darkest, then forest, meadow and sand, with fire brightest.</figcaption></figure>
+  </div>
+  <div class="grid g2">
+    <figure><img src="media/art-final-island.webp" width="1280" height="720" alt="The whole island on the sea with turquoise shallows and drifting clouds" loading="lazy" decoding="async"><figcaption>Island: the jewel on the sea.</figcaption></figure>
+    <figure><img src="media/art-loop-coast.webp" width="1280" height="720" alt="Animated coast: a sea cliff band on a headland, sea stacks with moving foam and a flock of gulls" loading="lazy" decoding="async"><figcaption>Coast: the only real cliffs, with foam and gulls moving.</figcaption></figure>
+    <figure><img src="media/art-final-lake.webp" width="1280" height="720" alt="The largest lake with an islet, reeds and morning mist" loading="lazy" decoding="async"><figcaption>Lake: the biggest one in the data.</figcaption></figure>
+    <figure><img src="media/art-final-peak.webp" width="1280" height="720" alt="Shaded rock faces with a snow cap and a cairn on the summit" loading="lazy" decoding="async"><figcaption>Peak: still the weakest view.</figcaption></figure>
+  </div>
+  <figure class="wide">
+    <img src="media/art-palettes.webp" width="1600" height="600" alt="Six palettes on the same valley: classic, SimCity 2000, Transport Tycoon, lush, dawn and dusk" loading="lazy" decoding="async">
+    <figcaption><span class="fig-n">Fig. 12.5</span> Palette exploration on one valley. Top: classic, SimCity 2000, Transport Tycoon. Bottom: lush, dawn, dusk. The direction took Transport Tycoon's clarity, lush's water and dawn's light.</figcaption>
+  </figure>
+  <details class="numbers">
+    <summary>The sprite sheet and an earlier critique round</summary>
+    <div class="grid g2">
+      <figure><img src="media/art-sprite-sheet.webp" width="880" height="2262" alt="The sprite sheet: trees, landmarks, wildlife, camp props, understory, people, animation frames and the palette by colour group" loading="lazy" decoding="async"><figcaption>Every asset at game size shown 3&times;, and the palette.</figcaption></figure>
+      <div>
+        <figure><img src="media/art-round4.webp" width="1600" height="600" alt="The second production pass across six views" loading="lazy" decoding="async"><figcaption>A critique round: rock confetti on the meadows, a flat grey peak, cliffs spreading inland as staircases. Each note was fixed in the next pass.</figcaption></figure>
+        <figure><img src="media/gen-map-client.webp" width="1400" height="900" alt="The first web client: the island as a tilted board with five people marked by name, and cards for each person below" loading="lazy" decoding="async"><figcaption>Before the isometric renderer: the first web client's island, seed 1, day 1.</figcaption></figure>
+      </div>
+    </div>
+  </details>
+</section>
+
+<!-- 13 -->
+<section class="chapter" id="testing" aria-labelledby="h-testing">
+  <header>
+    <h2 id="h-testing"><span class="num">13</span>Testing that people learn</h2>
+    <p class="dek">Whether people come to what's true, and how fast, is tested rather than read off a run, and every change to the sim is held to the last good build.</p>
+    <ul class="systems"><li><span class="st st-built">Built</span> probes, gate, answer key, whole worlds, live monitor</li></ul>
+  </header>
+  <div class="aside">
+    <p class="kicker">The bar the learning fixes were held to</p>
+    <p>Set before any fix was made: every claim of every probe, in the world as it is and flipped, holds over ten seeds with a 95% interval; no number is worse than the baseline before the fixes by more than its tolerance, with the whole 99% interval of the change on the worse side; and whole worlds show no regression against theirs. The claims were raised to meet it first: late tries make the faster of two ways more than 85% of the time, and more often than their first five tries; more than 85% come to blame the true cause where the rain falls mostly at night, and fewer than one in four the one that comes with it; when the cause changes, fewer than three in ten still blame the old one at the end and at least two in three the new one.</p>
+  </div>
+  <figure class="wide plate">
+<!-- diagram:tiers --><svg viewBox="0 0 1000 340" role="img" aria-labelledby="tiers-t tiers-d"><title id="tiers-t">The eval tiers</title><desc id="tiers-d">Probes gate every change in about 19 minutes. Whole worlds run nightly between a floor and a ceiling, 35 to 60 minutes. The live tier scores the live world nightly. The Jev proxy runs the probes with Jev on demand, costing millions of tokens. All but the last use the offline brain.</desc><defs><marker id="ah-tiers" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="d-head" d="M0 0L10 5L0 10z"/></marker></defs><rect class="d-node hot" x="20" y="20" width="790" height="62" rx="10"/><text class="d-t" x="38" y="46">Probes</text><text class="d-s" x="170" y="46">the gate for every sim change</text><text class="d-s" x="38" y="67">10 seeds, 5 probes, as is and flipped; 19 minutes</text><text class="d-k" x="980" y="56" text-anchor="end">offline</text><rect class="d-node " x="56" y="96" width="754" height="62" rx="10"/><text class="d-t" x="74" y="122">Whole worlds</text><text class="d-s" x="206" y="122">a floor and a ceiling</text><text class="d-s" x="74" y="143">6 islands, 60 days, learning off, as is, known; 35 to 60 minutes</text><text class="d-k" x="980" y="132" text-anchor="end">offline, nightly</text><rect class="d-node " x="92" y="172" width="718" height="62" rx="10"/><text class="d-t" x="110" y="198">Live</text><text class="d-s" x="242" y="198">the live world&#x27;s own trace</text><text class="d-s" x="110" y="219">scored against its island&#x27;s key</text><text class="d-k" x="980" y="208" text-anchor="end">nightly</text><rect class="d-node cool" x="128" y="248" width="682" height="62" rx="10"/><text class="d-t" x="146" y="274">Jev proxy</text><text class="d-s" x="278" y="274">does the cheap brain agree?</text><text class="d-s" x="146" y="295">probes with Jev; millions of tokens</text><text class="d-k" x="980" y="284" text-anchor="end">on demand</text><line class="d-edge" x1="824" y1="22" x2="824" y2="306" marker-end="url(#ah-tiers)"/><text class="d-s" x="824" y="330" text-anchor="middle">slower, dearer, rarer</text></svg><!-- /diagram:tiers -->
+    <figcaption><span class="fig-n">Fig. 13.1</span> The eval tiers, from the cheap gate every change must pass to the expensive check against Jev.</figcaption>
+  </figure>
+  <ul>
+    <li><strong>Runs replay.</strong> Headless runs replace <code>Math.random</code> with one stream seeded from the island, so with the offline brain a seed runs the same world every time, and a build and its baseline on the same seed share their draws.</li>
+    <li><strong>The world writes the answer key.</strong> scripts/truth.ts tries every way of doing things people used, on the island itself, through a year of its weather, ice and soil, at random spots and hours, and records how often each works in each condition and out of it. Dark and cold, which come together, are each judged where the other doesn't hold. Nothing about what hurts what is written down, so a change to the physics changes the key.</li>
+    <li><strong>One currency.</strong> Runs are scored against the key: tries made where they can't work, true and false theories held, theories formed again after being dropped, and the ticks lost to a slower way someone knew or a faster way the world allows.</li>
+    <li><strong>Probes.</strong> Small staged worlds where the truth is set: six people on open ground in summer, wanting a fire. <em>Choose</em>: two ways to a fire, one truly faster. <em>Blame</em>: sparks die in one kind of weather. <em>Confounded</em>: the rain falls mostly at night and only one of the two kills sparks. <em>Recover</em>: what kills sparks changes halfway. <em>Spread</em>: some know the true cause, some were told a false one. Each also runs flipped, through src/sim/rules.ts, the one place the physics can be set otherwise.</li>
+    <li><strong>The gate.</strong> <code>bun scripts/evals.ts probes</code> runs every probe on ten seeds and compares each number with the baseline seed by seed. One worse by more than its tolerance, with the whole 99% interval of the change on the worse side, fails the build; so does losing a claim the baseline met. A passing build that improves something becomes the baseline, so the bar only rises.</li>
+    <li><strong>Whole worlds between a floor and a ceiling.</strong> <code>bun scripts/evals.ts worlds</code> runs whole worlds with learning as it is, off (nobody forms a theory) and known from the start (everyone holds the key's true theories), and reports how much of the gap the real people close. A harder world moves both ends, so this tells a worse learner from a harder world.</li>
+    <li><strong>The live monitor.</strong> <code>bun scripts/evals.ts live</code> scores the live world's own trace the same way, nightly with the worlds tier, from a checkout of its own.</li>
+    <li><strong>The cheap brain against the real one.</strong> <code>bun scripts/evals.ts probes --brain jev</code> runs the probes with Jev, on demand; <code>proxy</code> says whether the two brains moved the same way between builds.</li>
+  </ul>
+  <h3>What the tests found</h3>
+<!-- chart:probes -->
+<figure class="chart-fig wide"><svg class="chart" viewBox="0 0 760 604" role="img" aria-labelledby="probes-title probes-desc"><title id="probes-title">Probe results by seed</title><desc id="probes-desc">For each probe, the share of people who end up holding each belief, one dot per seed, for the world as it is and with the physics flipped, with a grey tick where the mean stood at the baseline before. Read the table below the chart for every number.</desc><g transform="translate(10,14)"><circle class="c-real" cx="0" cy="0" r="5"/><text class="c-tick" x="10" y="4">the world as it is</text><circle class="c-flip" cx="150" cy="0" r="5"/><text class="c-tick" x="160" y="4">flipped physics</text><line class="c-real-mean" x1="290" x2="290" y1="-8" y2="8"/><text class="c-tick" x="298" y="4">mean of 10 seeds</text><line class="c-before" x1="440" x2="440" y1="-7" y2="7"/><text class="c-tick" x="448" y="4">mean before, at 3bda10e</text></g><line class="c-grid" x1="300" x2="300" y1="34" y2="576"/><text class="c-tick" x="300" y="594" text-anchor="middle">0%</text><line class="c-grid" x1="409" x2="409" y1="34" y2="576"/><text class="c-tick" x="409" y="594" text-anchor="middle">25%</text><line class="c-grid" x1="518" x2="518" y1="34" y2="576"/><text class="c-tick" x="518" y="594" text-anchor="middle">50%</text><line class="c-grid" x1="627" x2="627" y1="34" y2="576"/><text class="c-tick" x="627" y="594" text-anchor="middle">75%</text><line class="c-grid" x1="736" x2="736" y1="34" y2="576"/><text class="c-tick" x="736" y="594" text-anchor="middle">100%</text><text class="c-group" x="0" y="60">Choose: two ways to a fire, one truly faster</text><text class="c-label" x="12" y="92">First five tries made the faster way</text><line class="c-row" x1="300" x2="736" y1="87" y2="87"/><line class="c-shift" x1="541.3" x2="535.4" y1="81" y2="81"/><line class="c-before" x1="541.3" x2="541.3" y1="74" y2="88"><title>real, before: 55%</title></line><circle class="c-real" cx="532.5" cy="81" r="3.6"><title>real: 53%</title></circle><circle class="c-real" cx="529.1" cy="81" r="3.6"><title>real: 53%</title></circle><circle class="c-real" cx="576.1" cy="81" r="3.6"><title>real: 63%</title></circle><circle class="c-real" cx="445.3" cy="81" r="3.6"><title>real: 33%</title></circle><circle class="c-real" cx="488.9" cy="81" r="3.6"><title>real: 43%</title></circle><circle class="c-real" cx="590.7" cy="81" r="3.6"><title>real: 67%</title></circle><circle class="c-real" cx="634.3" cy="81" r="3.6"><title>real: 77%</title></circle><circle class="c-real" cx="474.4" cy="81" r="3.6"><title>real: 40%</title></circle><circle class="c-real" cx="605.2" cy="81" r="3.6"><title>real: 70%</title></circle><circle class="c-real" cx="477.8" cy="81" r="3.6"><title>real: 40%</title></circle><line class="c-real-mean" x1="535.4" x2="535.4" y1="73" y2="89"/><line class="c-shift" x1="648.8" x2="661.9" y1="93" y2="93"/><line class="c-before" x1="648.8" x2="648.8" y1="86" y2="100"><title>flipped, before: 80%</title></line><circle class="c-flip" cx="547.1" cy="93" r="3.6"><title>flipped: 57%</title></circle><circle class="c-flip" cx="736.0" cy="93" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="692.4" cy="93" r="3.6"><title>flipped: 90%</title></circle><circle class="c-flip" cx="721.5" cy="93" r="3.6"><title>flipped: 97%</title></circle><circle class="c-flip" cx="590.7" cy="93" r="3.6"><title>flipped: 67%</title></circle><circle class="c-flip" cx="663.3" cy="93" r="3.6"><title>flipped: 83%</title></circle><circle class="c-flip" cx="648.8" cy="93" r="3.6"><title>flipped: 80%</title></circle><circle class="c-flip" cx="634.3" cy="93" r="3.6"><title>flipped: 77%</title></circle><circle class="c-flip" cx="706.9" cy="93" r="3.6"><title>flipped: 93%</title></circle><circle class="c-flip" cx="677.9" cy="93" r="3.6"><title>flipped: 87%</title></circle><line class="c-flip-mean" x1="661.9" x2="661.9" y1="85" y2="101"/><text class="c-label" x="12" y="126">Late tries made the faster way</text><line class="c-row" x1="300" x2="736" y1="121" y2="121"/><line class="c-shift" x1="610.3" x2="734.7" y1="115" y2="115"/><line class="c-before" x1="610.3" x2="610.3" y1="108" y2="122"><title>real, before: 71%</title></line><circle class="c-real" cx="735.1" cy="115" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="732.6" cy="115" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="729.7" cy="115" r="3.6"><title>real: 99%</title></circle><circle class="c-real" cx="734.2" cy="115" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="729.2" cy="115" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="724.9" cy="115" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="730.8" cy="115" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="722.4" cy="115" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="718.1" cy="115" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="715.6" cy="115" r="3.6"><title>real: 100%</title></circle><line class="c-real-mean" x1="734.7" x2="734.7" y1="107" y2="123"/><line class="c-shift" x1="653.1" x2="731.2" y1="127" y2="127"/><line class="c-before" x1="653.1" x2="653.1" y1="120" y2="134"><title>flipped, before: 81%</title></line><circle class="c-flip" cx="736.0" cy="127" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="731.6" cy="127" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="728.7" cy="127" r="3.6"><title>flipped: 98%</title></circle><circle class="c-flip" cx="728.2" cy="127" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="731.5" cy="127" r="3.6"><title>flipped: 99%</title></circle><circle class="c-flip" cx="728.9" cy="127" r="3.6"><title>flipped: 99%</title></circle><circle class="c-flip" cx="715.1" cy="127" r="3.6"><title>flipped: 95%</title></circle><circle class="c-flip" cx="725.6" cy="127" r="3.6"><title>flipped: 99%</title></circle><circle class="c-flip" cx="733.2" cy="127" r="3.6"><title>flipped: 99%</title></circle><circle class="c-flip" cx="729.8" cy="127" r="3.6"><title>flipped: 99%</title></circle><line class="c-flip-mean" x1="731.2" x2="731.2" y1="119" y2="135"/><text class="c-group" x="0" y="168">Blame: sparks die in one kind of weather</text><text class="c-label" x="12" y="200">Blame what truly kills sparks</text><line class="c-row" x1="300" x2="736" y1="195" y2="195"/><line class="c-shift" x1="736.0" x2="736.0" y1="189" y2="189"/><line class="c-before" x1="736.0" x2="736.0" y1="182" y2="196"><title>real, before: 100%</title></line><circle class="c-real" cx="736.0" cy="189" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="732.6" cy="189" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="729.2" cy="189" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="725.8" cy="189" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="722.4" cy="189" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="719.0" cy="189" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="715.6" cy="189" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="712.2" cy="189" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="708.8" cy="189" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="705.4" cy="189" r="3.6"><title>real: 100%</title></circle><line class="c-real-mean" x1="736.0" x2="736.0" y1="181" y2="197"/><line class="c-shift" x1="736.0" x2="736.0" y1="201" y2="201"/><line class="c-before" x1="736.0" x2="736.0" y1="194" y2="208"><title>flipped, before: 100%</title></line><circle class="c-flip" cx="736.0" cy="201" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="732.6" cy="201" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="729.2" cy="201" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="725.8" cy="201" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="722.4" cy="201" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="719.0" cy="201" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="715.6" cy="201" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="712.2" cy="201" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="708.8" cy="201" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="705.4" cy="201" r="3.6"><title>flipped: 100%</title></circle><line class="c-flip-mean" x1="736.0" x2="736.0" y1="193" y2="209"/><text class="c-label" x="12" y="234">Blame something that doesn't</text><line class="c-row" x1="300" x2="736" y1="229" y2="229"/><line class="c-shift" x1="329.1" x2="350.9" y1="223" y2="223"/><line class="c-before" x1="329.1" x2="329.1" y1="216" y2="230"><title>real, before: 7%</title></line><circle class="c-real" cx="445.3" cy="223" r="3.6"><title>real: 33%</title></circle><circle class="c-real" cx="448.7" cy="223" r="3.6"><title>real: 33%</title></circle><circle class="c-real" cx="372.7" cy="223" r="3.6"><title>real: 17%</title></circle><circle class="c-real" cx="300.0" cy="223" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="303.4" cy="223" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="306.8" cy="223" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="376.1" cy="223" r="3.6"><title>real: 17%</title></circle><circle class="c-real" cx="310.2" cy="223" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="379.5" cy="223" r="3.6"><title>real: 17%</title></circle><circle class="c-real" cx="313.6" cy="223" r="3.6"><title>real: 0%</title></circle><line class="c-real-mean" x1="350.9" x2="350.9" y1="215" y2="231"/><line class="c-shift" x1="300.0" x2="307.3" y1="235" y2="235"/><line class="c-before" x1="300.0" x2="300.0" y1="228" y2="242"><title>flipped, before: 0%</title></line><circle class="c-flip" cx="300.0" cy="235" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="303.4" cy="235" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="306.8" cy="235" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="310.2" cy="235" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="313.6" cy="235" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="317.0" cy="235" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="320.4" cy="235" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="323.8" cy="235" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="327.2" cy="235" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="372.7" cy="235" r="3.6"><title>flipped: 17%</title></circle><line class="c-flip-mean" x1="307.3" x2="307.3" y1="227" y2="243"/><text class="c-group" x="0" y="276">Confounded: night rain, one of two kills sparks</text><text class="c-label" x="12" y="308">Blame the true cause</text><line class="c-row" x1="300" x2="736" y1="303" y2="303"/><line class="c-shift" x1="736.0" x2="728.7" y1="297" y2="297"/><line class="c-before" x1="736.0" x2="736.0" y1="290" y2="304"><title>real, before: 100%</title></line><circle class="c-real" cx="736.0" cy="297" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="732.6" cy="297" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="729.2" cy="297" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="663.3" cy="297" r="3.6"><title>real: 83%</title></circle><circle class="c-real" cx="725.8" cy="297" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="722.4" cy="297" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="719.0" cy="297" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="715.6" cy="297" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="712.2" cy="297" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="708.8" cy="297" r="3.6"><title>real: 100%</title></circle><line class="c-real-mean" x1="728.7" x2="728.7" y1="289" y2="305"/><line class="c-shift" x1="736.0" x2="706.9" y1="309" y2="309"/><line class="c-before" x1="736.0" x2="736.0" y1="302" y2="316"><title>flipped, before: 100%</title></line><circle class="c-flip" cx="736.0" cy="309" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="732.6" cy="309" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="663.3" cy="309" r="3.6"><title>flipped: 83%</title></circle><circle class="c-flip" cx="729.2" cy="309" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="659.9" cy="309" r="3.6"><title>flipped: 83%</title></circle><circle class="c-flip" cx="725.8" cy="309" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="656.5" cy="309" r="3.6"><title>flipped: 83%</title></circle><circle class="c-flip" cx="653.1" cy="309" r="3.6"><title>flipped: 83%</title></circle><circle class="c-flip" cx="722.4" cy="309" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="719.0" cy="309" r="3.6"><title>flipped: 100%</title></circle><line class="c-flip-mean" x1="706.9" x2="706.9" y1="301" y2="317"/><text class="c-label" x="12" y="342">Also blame the one that comes with it</text><line class="c-row" x1="300" x2="736" y1="337" y2="337"/><line class="c-shift" x1="532.5" x2="336.3" y1="331" y2="331"/><line class="c-before" x1="532.5" x2="532.5" y1="324" y2="338"><title>real, before: 53%</title></line><circle class="c-real" cx="300.0" cy="331" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="303.4" cy="331" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="445.3" cy="331" r="3.6"><title>real: 33%</title></circle><circle class="c-real" cx="306.8" cy="331" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="310.2" cy="331" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="313.6" cy="331" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="317.0" cy="331" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="518.0" cy="331" r="3.6"><title>real: 50%</title></circle><circle class="c-real" cx="320.4" cy="331" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="323.8" cy="331" r="3.6"><title>real: 0%</title></circle><line class="c-real-mean" x1="336.3" x2="336.3" y1="323" y2="339"/><line class="c-shift" x1="467.1" x2="329.1" y1="343" y2="343"/><line class="c-before" x1="467.1" x2="467.1" y1="336" y2="350"><title>flipped, before: 38%</title></line><circle class="c-flip" cx="372.7" cy="343" r="3.6"><title>flipped: 17%</title></circle><circle class="c-flip" cx="300.0" cy="343" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="303.4" cy="343" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="306.8" cy="343" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="310.2" cy="343" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="376.1" cy="343" r="3.6"><title>flipped: 17%</title></circle><circle class="c-flip" cx="313.6" cy="343" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="379.5" cy="343" r="3.6"><title>flipped: 17%</title></circle><circle class="c-flip" cx="317.0" cy="343" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="382.9" cy="343" r="3.6"><title>flipped: 17%</title></circle><line class="c-flip-mean" x1="329.1" x2="329.1" y1="335" y2="351"/><text class="c-group" x="0" y="384">Recover: the cause changes halfway</text><text class="c-label" x="12" y="416">Blame the new cause by the end</text><line class="c-row" x1="300" x2="736" y1="411" y2="411"/><line class="c-shift" x1="590.7" x2="736.0" y1="405" y2="405"/><line class="c-before" x1="590.7" x2="590.7" y1="398" y2="412"><title>real, before: 67%</title></line><circle class="c-real" cx="736.0" cy="405" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="732.6" cy="405" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="729.2" cy="405" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="725.8" cy="405" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="722.4" cy="405" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="719.0" cy="405" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="715.6" cy="405" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="712.2" cy="405" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="708.8" cy="405" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="705.4" cy="405" r="3.6"><title>real: 100%</title></circle><line class="c-real-mean" x1="736.0" x2="736.0" y1="397" y2="413"/><line class="c-shift" x1="547.1" x2="736.0" y1="417" y2="417"/><line class="c-before" x1="547.1" x2="547.1" y1="410" y2="424"><title>flipped, before: 57%</title></line><circle class="c-flip" cx="736.0" cy="417" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="732.6" cy="417" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="729.2" cy="417" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="725.8" cy="417" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="722.4" cy="417" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="719.0" cy="417" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="715.6" cy="417" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="712.2" cy="417" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="708.8" cy="417" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="705.4" cy="417" r="3.6"><title>flipped: 100%</title></circle><line class="c-flip-mean" x1="736.0" x2="736.0" y1="409" y2="425"/><text class="c-label" x="12" y="450">Still blame the old cause</text><line class="c-row" x1="300" x2="736" y1="445" y2="445"/><line class="c-shift" x1="481.7" x2="314.5" y1="439" y2="439"/><line class="c-before" x1="481.7" x2="481.7" y1="432" y2="446"><title>real, before: 42%</title></line><circle class="c-real" cx="300.0" cy="439" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="303.4" cy="439" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="306.8" cy="439" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="310.2" cy="439" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="313.6" cy="439" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="317.0" cy="439" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="320.4" cy="439" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="323.8" cy="439" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="445.3" cy="439" r="3.6"><title>real: 33%</title></circle><circle class="c-real" cx="327.2" cy="439" r="3.6"><title>real: 0%</title></circle><line class="c-real-mean" x1="314.5" x2="314.5" y1="431" y2="447"/><line class="c-shift" x1="510.7" x2="321.8" y1="451" y2="451"/><line class="c-before" x1="510.7" x2="510.7" y1="444" y2="458"><title>flipped, before: 48%</title></line><circle class="c-flip" cx="300.0" cy="451" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="372.7" cy="451" r="3.6"><title>flipped: 17%</title></circle><circle class="c-flip" cx="376.1" cy="451" r="3.6"><title>flipped: 17%</title></circle><circle class="c-flip" cx="303.4" cy="451" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="306.8" cy="451" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="310.2" cy="451" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="313.6" cy="451" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="317.0" cy="451" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="379.5" cy="451" r="3.6"><title>flipped: 17%</title></circle><circle class="c-flip" cx="320.4" cy="451" r="3.6"><title>flipped: 0%</title></circle><line class="c-flip-mean" x1="321.8" x2="321.8" y1="443" y2="459"/><text class="c-group" x="0" y="492">Spread: some know, some were told wrong</text><text class="c-label" x="12" y="524">Blame the true cause by the end</text><line class="c-row" x1="300" x2="736" y1="519" y2="519"/><line class="c-shift" x1="736.0" x2="736.0" y1="513" y2="513"/><line class="c-before" x1="736.0" x2="736.0" y1="506" y2="520"><title>real, before: 100%</title></line><circle class="c-real" cx="736.0" cy="513" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="732.6" cy="513" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="729.2" cy="513" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="725.8" cy="513" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="722.4" cy="513" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="719.0" cy="513" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="715.6" cy="513" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="712.2" cy="513" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="708.8" cy="513" r="3.6"><title>real: 100%</title></circle><circle class="c-real" cx="705.4" cy="513" r="3.6"><title>real: 100%</title></circle><line class="c-real-mean" x1="736.0" x2="736.0" y1="505" y2="521"/><line class="c-shift" x1="736.0" x2="736.0" y1="525" y2="525"/><line class="c-before" x1="736.0" x2="736.0" y1="518" y2="532"><title>flipped, before: 100%</title></line><circle class="c-flip" cx="736.0" cy="525" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="732.6" cy="525" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="729.2" cy="525" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="725.8" cy="525" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="722.4" cy="525" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="719.0" cy="525" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="715.6" cy="525" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="712.2" cy="525" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="708.8" cy="525" r="3.6"><title>flipped: 100%</title></circle><circle class="c-flip" cx="705.4" cy="525" r="3.6"><title>flipped: 100%</title></circle><line class="c-flip-mean" x1="736.0" x2="736.0" y1="517" y2="533"/><text class="c-label" x="12" y="558">Keep the false cause they were told</text><line class="c-row" x1="300" x2="736" y1="553" y2="553"/><line class="c-shift" x1="307.3" x2="300.0" y1="547" y2="547"/><line class="c-before" x1="307.3" x2="307.3" y1="540" y2="554"><title>real, before: 2%</title></line><circle class="c-real" cx="300.0" cy="547" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="303.4" cy="547" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="306.8" cy="547" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="310.2" cy="547" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="313.6" cy="547" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="317.0" cy="547" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="320.4" cy="547" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="323.8" cy="547" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="327.2" cy="547" r="3.6"><title>real: 0%</title></circle><circle class="c-real" cx="330.6" cy="547" r="3.6"><title>real: 0%</title></circle><line class="c-real-mean" x1="300.0" x2="300.0" y1="539" y2="555"/><line class="c-shift" x1="329.1" x2="300.0" y1="559" y2="559"/><line class="c-before" x1="329.1" x2="329.1" y1="552" y2="566"><title>flipped, before: 7%</title></line><circle class="c-flip" cx="300.0" cy="559" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="303.4" cy="559" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="306.8" cy="559" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="310.2" cy="559" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="313.6" cy="559" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="317.0" cy="559" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="320.4" cy="559" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="323.8" cy="559" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="327.2" cy="559" r="3.6"><title>flipped: 0%</title></circle><circle class="c-flip" cx="330.6" cy="559" r="3.6"><title>flipped: 0%</title></circle><line class="c-flip-mean" x1="300.0" x2="300.0" y1="551" y2="567"/></svg><figcaption><span class="fig-n">Chart 1</span> What the probes found. Each dot is one seed; the tick is the mean, and the grey tick where the mean stood before. The physics is set otherwise in the flipped runs (plain stone sparks better than flint, the wind or the dark kills sparks instead of the rain), so a learner with the answer written in passes one and fails the other.</figcaption><p class="chart-source">From <code>evals/2026-10-05T07-03-40-415Z-probes-random-8272cc81c6.json</code>: 10 seeds of 5 days with 6 people, the offline brain, commit 8272cc81c6, 2026-10-05. 24 of 24 claims hold (15 of 24 at 3bda10e6f2); open: none.</p><details class="numbers"><summary>The numbers</summary><table><thead><tr><th scope="col">Probe</th><th scope="col">Share of people who</th><th scope="col">As it is</th><th scope="col">Flipped</th><th scope="col">Before, as it is</th><th scope="col">Before, flipped</th></tr></thead><tbody><tr><td>choose</td><td>first five tries made the faster way</td><td>54%</td><td>83%</td><td>55%</td><td>80%</td></tr><tr><td>choose</td><td>late tries made the faster way</td><td>100%</td><td>99%</td><td>71%</td><td>81%</td></tr><tr><td>blame</td><td>blame what truly kills sparks</td><td>100%</td><td>100%</td><td>100%</td><td>100%</td></tr><tr><td>blame</td><td>blame something that doesn't</td><td>12%</td><td>2%</td><td>7%</td><td>0%</td></tr><tr><td>confounded</td><td>blame the true cause</td><td>98%</td><td>93%</td><td>100%</td><td>100%</td></tr><tr><td>confounded</td><td>also blame the one that comes with it</td><td>8%</td><td>7%</td><td>53%</td><td>38%</td></tr><tr><td>recover</td><td>blame the new cause by the end</td><td>100%</td><td>100%</td><td>67%</td><td>57%</td></tr><tr><td>recover</td><td>still blame the old cause</td><td>3%</td><td>5%</td><td>42%</td><td>48%</td></tr><tr><td>spread</td><td>blame the true cause by the end</td><td>100%</td><td>100%</td><td>100%</td><td>100%</td></tr><tr><td>spread</td><td>keep the false cause they were told</td><td>0%</td><td>0%</td><td>2%</td><td>7%</td></tr></tbody></table></details></figure>
+<!-- /chart:probes -->
+  <p><strong>Before the fixes</strong> (commit 3bda10e), 15 of the 24 claims held. People came to blame what truly kills their sparks within a third of a day and wasted half as many tries for it, in the flipped world as in this one; a false cause some were told died out, and those who didn't know how learned it. Three things they did badly. Where the rain falls mostly at night, everyone blamed the true cause, but 53% (38% flipped) also blamed the one that comes with it, and kept blaming it. When what kills sparks changed halfway, 42 to 48% still blamed the old cause at the end, and only 57 to 67% came to blame the new one. And between two ways to a fire, only 71% of late tries (81% flipped) took the faster way: one try that dragged on had made it look slow for good.</p>
+  <p><strong>After them</strong> (commit 8272cc8), all 24 claims hold and the gate found nothing worse. Late tries take the faster way 100% of the time (99% flipped), and the time lost per try to the slower way fell from about 1.2 ticks to 0.15. Where the rain falls mostly at night, 98% blame the true cause (93% flipped) and 8% the one that comes with it (7%); in the world as it is they come to the rain in 1.4 days rather than 2.2. When the cause changes, 3 to 5% still blame the old one at the end and everyone comes to blame the new one, wasting fewer tries on it. The one number that moved the wrong way, people blaming something that doesn't matter in the blame probe (7% to 12%), stayed within its tolerance.</p>
+<!-- chart:worlds -->
+<figure class="chart-fig wide"><svg class="chart" viewBox="0 0 760 326" role="img" aria-labelledby="worlds-title worlds-desc"><title id="worlds-title">True theories held per person-day, by island</title><desc id="worlds-desc">For each island, true theories held per person-day in the last third of the run, on a log scale: with learning off, as it is, and with the true theories known from the start.</desc><g transform="translate(10,16)"><rect class="c-off" x="-5" y="-5" width="10" height="10"/><text class="c-tick" x="10" y="4">learning off (the floor)</text><circle class="c-real" cx="190" cy="0" r="6"/><text class="c-tick" x="202" y="4">as it is</text><circle class="c-was" cx="290" cy="0" r="6"/><text class="c-tick" x="302" y="4">before, at 5a11bf1</text><path class="c-known" d="M440 -7l7 7l-7 7l-7-7z"/><text class="c-tick" x="454" y="4">known from the start (the ceiling)</text></g><line class="c-grid" x1="140" x2="140" y1="36" y2="294"/><text class="c-tick" x="140" y="314" text-anchor="middle">0.01</text><line class="c-grid" x1="336.66666666666663" x2="336.66666666666663" y1="36" y2="294"/><text class="c-tick" x="336.66666666666663" y="314" text-anchor="middle">0.1</text><line class="c-grid" x1="533.3333333333333" x2="533.3333333333333" y1="36" y2="294"/><text class="c-tick" x="533.3333333333333" y="314" text-anchor="middle">1</text><line class="c-grid" x1="730" x2="730" y1="36" y2="294"/><text class="c-tick" x="730" y="314" text-anchor="middle">10</text><text class="c-tick" x="106" y="314" text-anchor="middle">none</text><text class="c-label" x="0" y="71">Island 1</text><line class="c-row" x1="106" x2="730" y1="66" y2="66"/><line class="c-span" x1="106" x2="695.3687190523827" y1="66" y2="66"/><rect class="c-off" x="87" y="61" width="10" height="10"><title>learning off: 0</title></rect><path class="c-known" d="M695.3687190523827 59l7 7l-7 7l-7-7z"><title>known from the start: 6.67</title></path><circle class="c-was" cx="502.58505049754825" cy="66" r="6"><title>as it was before: 0.70</title></circle><circle class="c-real" cx="106" cy="66" r="6"><title>as it is: 0.00</title></circle><text class="c-label" x="0" y="111">Island 2</text><line class="c-row" x1="106" x2="730" y1="106" y2="106"/><line class="c-span" x1="106" x2="641.2436348780282" y1="106" y2="106"/><rect class="c-off" x="87" y="101" width="10" height="10"><title>learning off: 0</title></rect><path class="c-known" d="M641.2436348780282 99l7 7l-7 7l-7-7z"><title>known from the start: 3.54</title></path><circle class="c-was" cx="106" cy="106" r="6"><title>as it was before: 0.00</title></circle><circle class="c-real" cx="106" cy="106" r="6"><title>as it is: 0.00</title></circle><text class="c-label" x="0" y="151">Island 3</text><line class="c-row" x1="106" x2="730" y1="146" y2="146"/><line class="c-span" x1="440.5605095095186" x2="707.537741994083" y1="146" y2="146"/><rect class="c-off" x="87" y="141" width="10" height="10"><title>learning off: 0</title></rect><path class="c-known" d="M707.537741994083 139l7 7l-7 7l-7-7z"><title>known from the start: 7.69</title></path><circle class="c-was" cx="449.55948265311804" cy="146" r="6"><title>as it was before: 0.38</title></circle><circle class="c-real" cx="440.5605095095186" cy="146" r="6"><title>as it is: 0.34</title></circle><text class="c-label" x="0" y="191">Island 4</text><line class="c-row" x1="106" x2="730" y1="186" y2="186"/><line class="c-span" x1="106" x2="645.5401115101065" y1="186" y2="186"/><rect class="c-off" x="87" y="181" width="10" height="10"><title>learning off: 0</title></rect><path class="c-known" d="M645.5401115101065 179l7 7l-7 7l-7-7z"><title>known from the start: 3.72</title></path><circle class="c-was" cx="106" cy="186" r="6"><title>as it was before: 0.00</title></circle><circle class="c-real" cx="106" cy="186" r="6"><title>as it is: 0.00</title></circle><text class="c-label" x="0" y="231">Island 5</text><line class="c-row" x1="106" x2="730" y1="226" y2="226"/><line class="c-span" x1="106" x2="640.3333820555542" y1="226" y2="226"/><rect class="c-off" x="87" y="221" width="10" height="10"><title>learning off: 0</title></rect><path class="c-known" d="M640.3333820555542 219l7 7l-7 7l-7-7z"><title>known from the start: 3.50</title></path><circle class="c-was" cx="106" cy="226" r="6"><title>as it was before: 0.00</title></circle><circle class="c-real" cx="106" cy="226" r="6"><title>as it is: 0.00</title></circle><text class="c-label" x="0" y="271">Island 6</text><line class="c-row" x1="106" x2="730" y1="266" y2="266"/><line class="c-span" x1="106" x2="623.387304540817" y1="266" y2="266"/><rect class="c-off" x="87" y="261" width="10" height="10"><title>learning off: 0</title></rect><path class="c-known" d="M623.387304540817 259l7 7l-7 7l-7-7z"><title>known from the start: 2.87</title></path><circle class="c-was" cx="106" cy="266" r="6"><title>as it was before: 0.00</title></circle><circle class="c-real" cx="106" cy="266" r="6"><title>as it is: 0.00</title></circle></svg><figcaption><span class="fig-n">Chart 2</span> Whole worlds between a floor and a ceiling: true theories held per person-day, on a log scale, with a hollow dot where the island stood before. Where the dot sits far left of the diamond, the island had much more to teach than its people learned.</figcaption><p class="chart-source">From <code>evals/2026-10-05T07-20-45-151Z-worlds-random-890ff5c7ab.json</code>: 6 islands of 60 days, the offline brain, commit 890ff5c7ab, 2026-10-05; the last third of each run; before is 5a11bf1d29.</p><details class="numbers"><summary>The numbers</summary><table><thead><tr><th scope="col">Island</th><th scope="col">Off</th><th scope="col">As it is</th><th scope="col">Before</th><th scope="col">Known</th><th scope="col">Tries wasted, as it is</th><th scope="col">Tries the key could judge</th></tr></thead><tbody><tr><td>1</td><td>0.00</td><td>0.00</td><td>0.70</td><td>6.67</td><td>0%</td><td>96%</td></tr><tr><td>2</td><td>0.00</td><td>0.00</td><td>0.00</td><td>3.54</td><td>0%</td><td>100%</td></tr><tr><td>3</td><td>0.00</td><td>0.34</td><td>0.38</td><td>7.69</td><td>6%</td><td>100%</td></tr><tr><td>4</td><td>0.00</td><td>0.00</td><td>0.00</td><td>3.72</td><td>0%</td><td>96%</td></tr><tr><td>5</td><td>0.00</td><td>0.00</td><td>0.00</td><td>3.50</td><td>0%</td><td>100%</td></tr><tr><td>6</td><td>0.00</td><td>0.00</td><td>0.00</td><td>2.87</td><td>0%</td><td>95%</td></tr></tbody></table></details></figure>
+<!-- /chart:worlds -->
+  <p>In whole worlds the fixes passed the gate too. In the last third of their days people now make 1% of their tries where they can't work (9% before) and lose 0.12 ticks a try to a slower way (0.32), and false theories stay rare (0.01 a person-day, from none). They hold about 0.06 true theories a person-day, where knowing from the start would give them 4.7 (0.18 before), nearly all of them about rain and fire. That fall is one island: before the fixes its people had all died by day 31, and now three live to day 60, none of them holding a theory in the last third. The worlds are small and few people are left trying things late, so these numbers move a lot from island to island, and the gate counts none of the changes as more than chance.</p>
+  <p>The gate catches what matters. A bug planted on purpose, offering tests only where a theory doesn't apply, failed it: in the flipped blame probe people came to blame causes that don't matter (none before, 15% with it). It also caught the first try at these fixes: comparing strictly like for like left some people too little evidence to blame anything where the rain falls mostly at night, and the claim that nearly everyone blames the true cause fell to 90%, so a thin record now borrows from the record all told.</p>
+  <p>The probes run on the offline brain; Jev is looked at by hand. The first look (one seed, two days, three people, about 12 million tokens) had Jev's people blame the bystander in the confounded probe none of the time, where the offline brain's did a third of the time. A second look just before the fixes found Jev's people drifting off the faster way too, 41% of late tries against 80% of their first five (51% against 87% flipped), so that fault looks like the rules', not the offline brain's. One seed is too few to say more, and the look after the fixes waits on TypeSafe credits.</p>
+</section>
+
+<!-- 14 -->
+<section class="chapter" id="code" aria-labelledby="h-code">
+  <header>
+    <h2 id="h-code"><span class="num">14</span>Code map and glossary</h2>
+    <p class="dek">Where each system lives, and the words this doc and the code use.</p>
+  </header>
+  <div class="table-wrap">
+  <table class="stack">
+    <thead><tr><th scope="col">Path</th><th scope="col">What is there</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/terrain/</code></td><td>The generator: <code>island.ts</code> (uplift and erosion), <code>geology.ts</code> (rock), <code>climate.ts</code> (rain, sun, warmth, snow, evaporation), <code>water.ts</code> (groundwater, springs, streams), <code>ground.ts</code> (soil), <code>niche.ts</code> (plants' response curves), <code>flora.ts</code> (the scatter)</td></tr>
+      <tr><td><code>src/sim/world.ts</code>, <code>sim.ts</code></td><td>The World and its tick: goals, plans, acts and what follows from them; <code>VERSION</code> starts a new world when bumped</td></tr>
+      <tr><td><code>src/sim/physics.ts</code>, <code>materials.ts</code>, <code>plan.ts</code></td><td>Materials meeting rules; the planner over beliefs</td></tr>
+      <tr><td><code>src/sim/beliefs.ts</code>, <code>rules.ts</code></td><td>Records, theories and tests; the physics set otherwise for probes</td></tr>
+      <tr><td><code>src/sim/brain.ts</code>, <code>traits.ts</code>, <code>lexicon.json</code></td><td>Jev questions and the offline brain; trait words; WordNet nouns for naming</td></tr>
+      <tr><td><code>src/sim/groups.ts</code>, <code>life.ts</code></td><td>Camps, incidents, precedents, customs, leaders; births, ageing and death</td></tr>
+      <tr><td><code>src/sim/sky.ts</code>, <code>light.ts</code>, <code>air.ts</code>, <code>cues.ts</code></td><td>Sun and moon, light, air and the cues plants and animals read</td></tr>
+      <tr><td><code>src/sim/ecology.ts</code>, <code>animals.ts</code>, <code>plants.ts</code>, <code>soil.ts</code>, <code>streams.ts</code></td><td>Fire, spoiling, sickness and trails; animals; plant growth; fertility; water in streams now</td></tr>
+      <tr><td><code>src/sim/space.ts</code>, <code>walk.ts</code>, <code>journeys.ts</code>, <code>inspect.ts</code>, <code>trace.ts</code></td><td>Spatial queries and stocking tiles; walking; people's paths; the inspector's data; the trace</td></tr>
+      <tr><td><code>demo/styles/isopixel/</code>, <code>play/</code>, <code>genesis/</code></td><td>The renderer, the play page and the generator replay</td></tr>
+      <tr><td><code>scripts/</code></td><td><code>run.ts</code> and <code>tech.ts</code> (headless worlds), <code>probes.ts</code>, <code>evals.ts</code>, <code>truth.ts</code>, <code>theory-report.ts</code> (learning tests), <code>demo.ts</code> and <code>play/serve.ts</code> (build and serve the pages), <code>play/*.cjs</code> (renderer checks)</td></tr>
+      <tr><td><code>server.ts</code>, <code>public/</code></td><td>The live server, its web client, <code>debug.html</code> and <code>history.html</code></td></tr>
+      <tr><td><code>DESIGN.md</code>, <code>docs/research/</code></td><td>The engineers' design record; the generator write-up and the artbook</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h3>Glossary</h3>
+  <dl class="glossary">
+    <dt>Jev</dt><dd>TypeSafe's calibrated judgment model. It answers choices, yes or no questions and scores with probabilities; it never writes text.</dd>
+    <dt>Noul</dt><dd>Jev's answer to a yes or no question: the probability of yes.</dd>
+    <dt>Offline brain</dt><dd>The stand-in for Jev that answers at random, leaning the way Jev would. Also called the random brain.</dd>
+    <dt>Tick</dt><dd>Five minutes of world time; 288 make a day.</dd>
+    <dt>Tile</dt><dd>A 150 m square, the grain of the game's rules. The island is 128 tiles across.</dd>
+    <dt>Kind</dt><dd>A type of item with its properties, such as a sharp stone or a cord; made kinds get working names, then words.</dd>
+    <dt>Law</dt><dd>A cached Jev ruling on something the rules don't cover, applied the same way from then on.</dd>
+    <dt>Belief</dt><dd>What a person thinks a way of doing something does, with their record of it.</dd>
+    <dt>Theory</dt><dd>A person's idea that a way fails under one condition, such as rain or shade.</dd>
+    <dt>Test</dt><dd>One deliberate try in a condition a person blames, to see if the theory holds.</dd>
+    <dt>Precedent</dt><dd>An incident and the camp's response to it, which later cases lean on.</dd>
+    <dt>Custom</dt><dd>A pattern in a camp's precedents put into words at a fire.</dd>
+    <dt>Standing</dt><dd>The share of a person's last 12 rulings that others followed.</dd>
+    <dt>Probe</dt><dd>A small staged world where the truth is set, used to measure learning.</dd>
+    <dt>Flipped</dt><dd>A probe with the physics set otherwise, so a learner with the answer written in fails it.</dd>
+    <dt>Answer key</dt><dd>What truly hurts what on an island, found by trying every way there.</dd>
+    <dt>Gate, baseline</dt><dd>The probe comparison every change must pass; the last good build it compares with.</dd>
+    <dt>Floor, ceiling</dt><dd>Whole worlds with learning off and with the truth known from the start.</dd>
+    <dt>Warm</dt><dd>The ticks the play page runs before it opens, a week by default.</dd>
+    <dt>Bearing</dt><dd>One of the camera's eight turns round the island.</dd>
+    <dt>Bake</dt><dd>Drawing a chunk of the world into a texture once, so frames are cheap.</dd>
+  </dl>
+  <p class="colophon">Made from DESIGN.md, docs/research and the code as they stood on October 5, 2026. Pictures and videos are from the play and genesis pages built from this checkout and run with the offline brain, except where a caption says otherwise; the artbook's images are from docs/research. Set in Fraunces, Source Serif 4 and JetBrains Mono.</p>
+</section>
+</main>
+</div>
+<script>
+// contents: mark the chapter in view; on narrow screens start folded
+(() => {
+  const toc = document.getElementById("toc");
+  if (matchMedia("(max-width: 68rem)").matches) toc.open = false;
+  const links = new Map([...toc.querySelectorAll("a")].map((a) => [a.getAttribute("href").slice(1), a]));
+  const seen = new Set();
+  const io = new IntersectionObserver((entries) => {
+    for (const e of entries) e.isIntersecting ? seen.add(e.target.id) : seen.delete(e.target.id);
+    const first = [...links.keys()].find((id) => seen.has(id));
+    for (const [id, a] of links) { if (id === first) a.setAttribute("aria-current", "true"); else a.removeAttribute("aria-current"); }
+  }, { rootMargin: "-20% 0px -70% 0px" });
+  for (const id of links.keys()) io.observe(document.getElementById(id));
+  // the hero video only plays by itself for those who haven't asked for less motion
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) { const v = document.getElementById("hero-video"); v.removeAttribute("autoplay"); v.pause(); }
+})();
+</script>
+</body>
+</html>
