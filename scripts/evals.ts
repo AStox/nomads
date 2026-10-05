@@ -27,8 +27,9 @@ import { PROBES, type Claim, type Metric, type ProbeRun } from "./probes";
 import { bootstrap, mean } from "./stats";
 
 // Bump a tier's version when what it measures changes meaning: ledger entries of another version are never compared.
-// worlds 2: regrets capped at a day of trying, and the gap only where the floor and the ceiling truly differ.
-const VERSION: Record<string, number> = { probes: 1, worlds: 2, live: 2 };
+// worlds 3: regrets capped at a day of trying, and the share of the gap closed only where knowing from the start beats
+// never learning by more than a number's tolerance.
+const VERSION: Record<string, number> = { probes: 1, worlds: 3, live: 3 };
 const ROOT = join(import.meta.dir, ".."), DATA = join(ROOT, "data/evals");
 type Numbers = Record<string, number | null>;
 // what a tier measured: by variant ("blame/real", "seen"...), by seed, its numbers
@@ -44,8 +45,10 @@ type Spec = { metrics: Record<string, Metric>; claims: Claim[] };
 const argv = process.argv.slice(2);
 const opt = (name: string, d: string) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : d; };
 const flag = (name: string) => argv.includes(`--${name}`);
-// at most half the cores, and about a gigabyte and a quarter of memory each, half the machine's
-const JOBS = Number(opt("jobs", String(Math.max(1, Math.min(Math.floor(cpus().length / 2), Math.floor(totalmem() / 2 / 1.25e9))))));
+// at most half the cores, and half the machine's memory at what a run holds: a probe about 1.25 GB, a whole world of 60
+// days (or an answer key) up to 2 GB
+const jobs = (gb: number) => Number(opt("jobs", String(Math.max(1, Math.min(Math.floor(cpus().length / 2), Math.floor(totalmem() / 2 / (gb * 1e9)))))));
+const PROBE_JOBS = jobs(1.25), WORLD_JOBS = jobs(2);
 // where the ledger lives: evals/, committed with the code it judged (--ledger elsewhere for trying things out)
 const LEDGER = resolve(ROOT, opt("ledger", "evals"));
 
@@ -101,7 +104,7 @@ async function script(snap: Snap, name: string, args: string[], log: string, off
   const p = Bun.spawn([process.execPath, join(snap.dir, "scripts", name), ...args], { cwd: ROOT, env, stdout: Bun.file(log), stderr: Bun.file(`${log}.err`) });
   if (await p.exited) throw new Error(`${name} ${args.join(" ")} failed: see ${log}.err\n${readFileSync(`${log}.err`, "utf8").slice(-1500)}`);
 }
-async function pool<T>(tasks: (() => Promise<T>)[], jobs = JOBS): Promise<T[]> {
+async function pool<T>(tasks: (() => Promise<T>)[], jobs: number): Promise<T[]> {
   const out: T[] = new Array(tasks.length);
   let next = 0, done = 0;
   await Promise.all(Array.from({ length: Math.min(jobs, tasks.length) }, async () => {
@@ -207,14 +210,14 @@ async function probes() {
   const variants = Object.entries(PROBES).flatMap(([p, x]) => Object.keys(x.variants).map((v) => [p, v] as const));
   const specs: Record<string, Spec> = Object.fromEntries(variants.map(([p, v]) => [`${p}/${v}`, { metrics: PROBES[p].metrics, claims: PROBES[p].claims }]));
   const measure = async (snap: Snap): Promise<Runs> => {
-    console.error(`probes on ${snap.id}: ${variants.length} variants x ${seeds.length} seeds, ${JOBS} at a time`);
+    console.error(`probes on ${snap.id}: ${variants.length} variants x ${seeds.length} seeds, ${PROBE_JOBS} at a time`);
     const tasks = variants.flatMap(([p, v]) => seeds.map((s) => async () => {
       const out = join(DATA, "runs", snap.id, "probes", `${p}-${v}-s${s}-${brain}-${days}d-${people}p.json`);
       if (!existsSync(out)) await script(snap, "probes.ts", ["--probe", p, "--variant", v, "--seed", String(s), "--days", String(days), "--people", String(people), "--brain", brain, "--out", out], out.replace(/\.json$/, ".log"), brain === "random");
       return JSON.parse(readFileSync(out, "utf8")) as ProbeRun;
     }));
     const runs: Runs = {};
-    for (const r of await pool(tasks)) (runs[`${r.probe}/${r.variant}`] ??= {})[r.seed] = r.metrics;
+    for (const r of await pool(tasks, PROBE_JOBS)) (runs[`${r.probe}/${r.variant}`] ??= {})[r.seed] = r.metrics;
     return runs;
   };
   const kind = { tier: "probes", brain, days, people };
@@ -251,16 +254,16 @@ async function worlds() {
       if (!existsSync(file(mode, s))) await script(snap, "theories.ts", ["--seed", String(s), "--days", String(days), "--learning", mode, "--out", file(mode, s), ...extra], join(at, "logs", `${mode}-${s}.log`), true);
     };
     console.error(`worlds on ${snap.id}: ${seeds.length} seeds, ${days} days, learning as it is first`);
-    await pool(seeds.map((s) => theories("seen", s)));
+    await pool(seeds.map((s) => theories("seen", s)), WORLD_JOBS);
     // every way anyone used on any island, tried on each island
     const pooled = join(at, "seen-all");
     mkdirSync(pooled, { recursive: true });
     for (const s of seeds) if (!existsSync(join(pooled, `s${s}.jsonl`))) symlinkSync(file("seen", s), join(pooled, `s${s}.jsonl`));
     const key = (s: number) => join(at, `key-s${s}.json`);
     console.error("  the answer key for each island");
-    await pool(seeds.map((s) => async () => { if (!existsSync(key(s))) await script(snap, "truth.ts", ["--seed", String(s), "--runs", pooled, "--per", "8", "--out", key(s)], join(at, "logs", `truth-${s}.log`), true); }));
+    await pool(seeds.map((s) => async () => { if (!existsSync(key(s))) await script(snap, "truth.ts", ["--seed", String(s), "--runs", pooled, "--per", "8", "--out", key(s)], join(at, "logs", `truth-${s}.log`), true); }), WORLD_JOBS);
     console.error("  learning off, and known from the start");
-    await pool(seeds.flatMap((s) => [theories("off", s), theories("known", s, ["--key", key(s)])]));
+    await pool(seeds.flatMap((s) => [theories("off", s), theories("known", s, ["--key", key(s)])]), WORLD_JOBS);
     const kpis = async (mode: string, s: number) => {
       const out = join(at, mode, `s${s}`, "report.json");
       if (!existsSync(out)) await script(snap, "theory-report.ts", [dirname(file(mode, s)), "--key", key(s), "--json", out], join(at, "logs", `report-${mode}-${s}.log`), true);
@@ -272,12 +275,12 @@ async function worlds() {
       runs.seen[s] = { ...seen.late, wastedEarly: seen.early.wasted };
       runs.off[s] = off.late; runs.known[s] = known.late;
       runs.gap[s] = Object.fromEntries(Object.keys(GAP).map((k) => {
-        // only where knowing from the start does better than never learning by more than the number's tolerance: across
-        // a smaller gap the share is noise
-        const [a, lo, hi] = [seen.late[k], off.late[k], known.late[k]];
-        return [k, typeof a === "number" && typeof lo === "number" && typeof hi === "number" && Math.abs(hi - lo) >= KPIS[k].tol ? (a - lo) / (hi - lo) : null];
+        // only where knowing from the start does better than never learning, by more than the number's tolerance: across
+        // a smaller gap, or one the wrong way, the share is noise
+        const [a, lo, hi] = [seen.late[k], off.late[k], known.late[k]], better = KPIS[k].better === "higher" ? 1 : -1;
+        return [k, typeof a === "number" && typeof lo === "number" && typeof hi === "number" && (hi - lo) * better >= KPIS[k].tol ? (a - lo) / (hi - lo) : null];
       }));
-    }));
+    }), WORLD_JOBS);
     return runs;
   };
   const kind = { tier: "worlds", brain, days, people: undefined };
