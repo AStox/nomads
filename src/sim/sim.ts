@@ -811,6 +811,12 @@ const evidence = (b: Belief, c: string) => {
   return `${told}; when it was ${[word.on, ...rest].join(" and ")} it has worked ${r(inn.wins)} of ${r(inn.tries)} times, and ${r(out.wins)} of ${r(out.tries)} when it was ${[word.off, ...rest].join(" and ")}`;
 };
 const theorizing = new Set<string>();
+// The theory they're putting to the test with this try of a way, if they set out to and it holds here (one about the
+// spot holds where they chose to do it): a test whose weather has passed is an ordinary try.
+const testingNow = (a: Agent, b: Belief, now: string[]) => {
+  const test = a.goal?.type.startsWith("test:") ? testOf(a.goal.type) : null;
+  return test && test[1] === b.key && (ofSpot(test[0]) || holds(test[0], now)) ? test[0] : null;
+};
 // How what they did went, counted all told, against each condition they did it in and in the mix of all of them, every
 // try kept (beliefs.ts noteTry). A try where a theory of theirs holds is what can tell against it (the record it was
 // formed on can't): over a few tries there it has come to do about as well as where the theory doesn't hold, like for
@@ -828,7 +834,7 @@ function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], t
   // for measuring how well they choose (scripts/theories.ts): the other ways they know to the same end
   const aimOf = (o: Belief) => o.fields.builds ?? Object.keys(o.out).sort().join("+"), aim = aimOf(b);
   const alts = aim ? Object.values(a.beliefs).filter((o) => o !== b && aimOf(o) === aim).map((o) => o.key) : [];
-  const testing = !!a.goal?.type.startsWith("test:") && testOf(a.goal.type)[1] === b.key;
+  const testing = !!testingNow(a, b, now);
   trace("theory", "attempt", { key: b.key, verb: b.fields.verb, now, worked, done, took, testing, ticks: b.ticks, aim, alts }, a.id);
   // with learning off, or every theory known from the start, nothing they see makes or unmakes one
   if (RULES.learning !== "seen") return;
@@ -1348,10 +1354,12 @@ function run(w: World, a: Agent): boolean | string {
       const b = a.beliefs[s.key ?? ""];
       if (!b) return "forgot how";
       // What they've come to think won't work in the weather now, they don't start, or keep at once the weather turns
-      // partway through (the rain coming on as they strike), unless it's what they set out to test. (The spot was weighed
-      // when they chose it.)
-      if (!(a.goal?.type.startsWith("test:") && testOf(a.goal.type)[1] === b.key)) {
-        const now = conditionsNow(w, a, b.fields.verb), bar = b.unless?.find((t) => !ofSpot(t) && holds(t, now));
+      // partway through (the rain coming on as they strike), unless it's what they set out to test, there and then: a
+      // test whose weather has passed is an ordinary try, held to every theory of theirs like any other. (The spot was
+      // weighed when they chose it.)
+      const now = conditionsNow(w, a, b.fields.verb);
+      if (!testingNow(a, b, now)) {
+        const bar = b.unless?.find((t) => !ofSpot(t) && holds(t, now));
         if (bar) return `they think it won't work ${conditionWords(bar)}`;
       }
       s.act ??= actFromBelief(b);
