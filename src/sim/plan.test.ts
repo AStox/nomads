@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { DAY, addThing, meters, newWorld, type Act, type Agent, type World } from "./world";
 import { count, giveItems, heat, join, place, rubTick, strikeDamage, strikeTick, type Outcome } from "./physics";
 import { thingById } from "./space";
-import { apart, cameOff, chance, fades, noteTry, record, rethink, suspected, teach, worseIn, type Belief } from "./beliefs";
+import { apart, cameOff, chance, differed, fades, noteTry, record, refuted, rethink, suspected, teach, weighs, worseIn, type Belief } from "./beliefs";
 import { plan } from "./plan";
 import { actFromBelief, tick } from "./sim";
 
@@ -270,6 +270,27 @@ test("once the rain stops mattering, the sparks that died in it are never forgot
   expect(rounds).toBeLessThan(60);
   for (let i = 0; i < 30; i++) { tries(b, [], 2, true); tries(b, ["wind"], 1, false); }
   expect(fades(b, "wind")).toBe(false);
+});
+
+test("a spark that catches in the rain after twenty that died there doesn't wipe them: the theory still rests on them, and what was different that once (the wind was up, as it never was when they died) is the exception it offers, not the dark that came with half of them", () => {
+  const b = striking();
+  b.unless = ["rain"];
+  for (let i = 0; i < 10; i++) { tries(b, [], 2, true); tries(b, ["rain"], 1, false); tries(b, ["dark", "rain"], 1, false); }
+  noteTry(b, true, ["rain", "wind"]);
+  expect(weighs(b, "rain")).toEqual({ fails: 20, wins: 1 });
+  expect(differed(b, "rain", ["rain", "wind"]).map((x) => [x.theory, x.agree])).toEqual([["!wind+rain", 1]]);
+});
+
+test("an exception they believe in goes once it has failed as often as it worked: a spark dying in the rain with the wind up takes them back to blaming the rain, and one that caught there doesn't", () => {
+  const b = striking();
+  b.unless = ["!wind+rain"];
+  for (let i = 0; i < 5; i++) { tries(b, [], 2, true); tries(b, ["rain"], 1, false); }
+  noteTry(b, true, ["rain", "wind"]);
+  expect(refuted(b, ["rain", "wind"])).toEqual([]);
+  noteTry(b, false, ["rain", "wind"]);
+  expect(refuted(b, ["rain", "wind"])).toEqual([{ theory: "!wind+rain", to: "rain" }]);
+  // where the theory holds, the failure is its own, and nothing is refuted
+  expect(refuted(b, ["rain"])).toEqual([]);
 });
 
 // Planting berries, as someone who has seen one come up would know it, on grassland (GRASS) or in the shade there (SHADE).

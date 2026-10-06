@@ -25,10 +25,13 @@ export type Belief = {
   // (noteTry; an old save's faded counts aren't whole)
   tally?: Count;
   when?: Record<string, Count>;
-  // and in each mix of the weather they did it in, its conditions joined by "+" ("" for none of them): what lets them
-  // tell the dark from the rain that falls mostly at night (apart)
+  // and in each mix of what held when they did it, the conditions joined by "+" ("" for none of them): the weather, and
+  // for what's done to the ground the spot too. What lets them tell the dark from the rain that falls mostly at night
+  // (apart), and what was different the time it worked where they thought it wouldn't (differed).
   mix?: Record<string, Count>;
-  unless?: string[]; // conditions they've come to think it won't work in: their own theories of why it failed
+  // their own theories of why it fails: each a condition they think it won't work in, or several joined by "+" that
+  // together keep it from working, "!" before one for an exception ("rain+!wind": not in the rain, unless the wind is up)
+  unless?: string[];
 };
 type Count = { tries: number; wins: number };
 // A condition, as a theory names it: the weather and light anyone can see, and the ground underfoot and round about.
@@ -39,9 +42,21 @@ const WORDS: Record<string, string> = {
 const ON_GROUND: Record<string, string> = { marsh: "in a marsh", scrub: "in scrub", "forest floor": "on the forest floor", stream: "by a stream", lake: "by a lake", sea: "by the sea" };
 export const groundKey = (word: string) => `ground:${word.replaceAll(" ", "_")}`;
 export const groundOfKey = (c: string) => (c.startsWith("ground:") ? c.slice(7).replaceAll("_", " ") : null);
-export const conditionWords = (c: string) => {
+// What a lack reads as, after "unless" in a theory.
+const UNLESS: Record<string, string> = {
+  rain: "it's raining", dark: "it's dark", cold: "it's freezing", wind: "a strong wind is blowing", nofish: "there are no fish close by",
+  shade: "it's in the shade of trees", dry: "the ground is dry", crowded: "bushes or trees grow close round it",
+};
+const oneWord = (c: string) => {
   const g = groundOfKey(c);
   return WORDS[c] ?? (g ? ON_GROUND[g] ?? `on ${g}` : c);
+};
+// A theory in words: the conditions it won't work in, together, and its exceptions ("in the rain, unless a strong wind
+// is blowing").
+export const conditionWords = (t: string) => {
+  const parts = t.split("+"), lacks = parts.filter((c) => c.startsWith("!")).map((c) => c.slice(1));
+  const unless = lacks.map((c) => UNLESS[c] ?? `it's ${oneWord(c)}`).join(" or ");
+  return [parts.filter((c) => !c.startsWith("!")).map(oneWord).join(" and "), unless && `unless ${unless}`].filter(Boolean).join(", ");
 };
 // A goal of putting a theory to the test, test:<condition>@<belief key>, as its condition and belief.
 export const testOf = (type: string): [string, string] => { const rest = type.slice(5), at = rest.indexOf("@"); return [rest.slice(0, at), rest.slice(at + 1)]; };
@@ -57,8 +72,16 @@ export const ofPlace = (c: string) => c.startsWith("ground:") || c === "shade" |
 export const holds = (t: string, now: string[]) => t.split("+").every((c) => (c.startsWith("!") ? !now.includes(c.slice(1)) : now.includes(c)));
 // Whether their theories of a way rule it out in conditions like these: one of them holds.
 export const ruledOut = (b: Belief, now: string[]) => !!b.unless?.some((t) => holds(t, now));
+// The conditions a theory names, whether as ones it won't work in or as exceptions.
+export const partsOf = (t: string) => t.split("+").map((c) => c.replace(/^!/, ""));
+// Whether a theory is about the spot: what they'd keep clear of when choosing where to do something to the ground.
+export const ofSpot = (t: string) => partsOf(t).some(ofPlace);
+// A theory from its parts, each once, in one order whichever way it was come to.
+const theoryOf = (parts: string[]) => [...new Set(parts)].sort().join("+");
 // The mix of the weather in what they could see (now): its conditions, joined by "+".
 export const mixOf = (now: string[]) => now.filter((c) => !ofPlace(c)).sort().join("+");
+// The conditions of a mix in their record, back from its key.
+const condsOf = (k: string) => (k ? k.split("+") : []);
 // The mixes of the weather a record kept before it had them (an old save) stands for: each condition it holds on its
 // own, and the rest of its tries in none of them. One that holds nothing of the weather has nothing of it to keep, and
 // starts them empty, as a new record does.
@@ -69,21 +92,20 @@ function mixesOf(tally: Count, when: Record<string, Count>) {
   const cells: [string, Count][] = [...weather.map(([c, s]): [string, Count] => [c, { ...s }]), ["", rest]];
   return Object.fromEntries(cells.filter(([, s]) => s.tries > 0));
 }
-// What a try adds to their record of a way: all told, in each condition they did it in (now), and in the mix of the
-// weather it was done in. Every try stays, however long ago: what it did a hundred tries back counts as much as what it
-// did last time, so a failure isn't forgotten because it has since worked, nor a success because it has since failed,
-// and what changes their mind is the whole of what they've seen. A record kept before it had mixes (an old save) starts
-// them from what it holds; one kept while tries faded goes on from what it had come to.
+// What a try adds to their record of a way: all told, in each condition they did it in (now), and in the mix of all of
+// them. Every try stays, however long ago: what it did a hundred tries back counts as much as what it did last time, so a
+// failure isn't forgotten because it has since worked, nor a success because it has since failed, and what changes their
+// mind is the whole of what they've seen. A record kept before it had mixes (an old save) starts them from what it holds;
+// one kept while tries faded goes on from what it had come to; and one of what's done to the ground whose mixes held
+// only the weather starts them again, since nobody can say now what spots those tries were in.
 export function noteTry(b: Belief, worked: boolean, now: string[]) {
   const tally = (b.tally ??= { tries: 0, wins: 0 }), when = (b.when ??= {}), mix = (b.mix ??= mixesOf(tally, when));
-  for (const s of [tally, ...now.map((c) => (when[c] ??= { tries: 0, wins: 0 })), (mix[mixOf(now)] ??= { tries: 0, wins: 0 })]) {
+  if (now.some((c) => c.startsWith("ground:"))) for (const k of Object.keys(mix)) if (!k.includes("ground:")) delete mix[k];
+  for (const s of [tally, ...now.map((c) => (when[c] ??= { tries: 0, wins: 0 })), (mix[[...now].sort().join("+")] ??= { tries: 0, wins: 0 })]) {
     s.tries++;
     if (worked) s.wins++;
   }
 }
-// How it has gone for them in conditions like these (now), for a condition they blame: for the weather, in this very
-// mix of it; for the spot, wherever it held.
-export const likeNow = (b: Belief, c: string, now: string[]) => (ofPlace(c) ? b.when?.[c] : b.mix?.[mixOf(now)]) ?? { tries: 0, wins: 0 };
 // The odds of it working, by what they've seen: all told, and in a condition they did it in (null for all told).
 export function odds(b: Belief, c: string | null) {
   const all = b.tally ?? { tries: b.tries, wins: b.wins };
@@ -109,24 +131,33 @@ const THIN = 4;
 // night once it has been seen dark and dry. Where the mix without the condition is thin, or has never come, it's made up
 // from their record without the condition all told, as if it held THIN tries of that: what it would have done there
 // without the condition, as far as they can say, so a condition never seen apart from another is suspected along with it
-// until tries apart tell them which. Tries in weather they already blame for something else are set aside: to someone
+// until tries apart tell them which. Tries where a theory of theirs about something else holds are set aside: to someone
 // who blames the rain, a spark dying in the rain at night says nothing about the dark. most: the mix of the other
-// weather, seen both ways, that tells the most. For the spot, all told.
-export function apart(b: Belief, c: string): { diff: number; se: number; tries: number; wins: number; most?: string } {
+// weather, seen both ways, that tells the most; mixes: their record by the weather, as it was weighed. For the spot, all
+// told.
+export function apart(b: Belief, c: string): { diff: number; se: number; tries: number; wins: number; most?: string; mixes?: Record<string, Count> } {
   if (ofPlace(c) || !b.mix) return allTold(b, c);
-  const mixes = Object.entries(b.mix).filter(([k]) => !k.split("+").some((x) => x !== c && b.unless?.includes(x)));
+  // their record by the mix of the weather alone, whatever the spot
+  const mix: Record<string, Count> = {};
+  for (const [k, s] of Object.entries(b.mix)) {
+    const now = condsOf(k);
+    if (b.unless?.some((t) => !partsOf(t).includes(c) && holds(t, now))) continue;
+    const m = (mix[mixOf(now)] ??= { tries: 0, wins: 0 });
+    m.tries += s.tries;
+    m.wins += s.wins;
+  }
   const inn = { tries: 0, wins: 0 }, out = { tries: 0, wins: 0 };
-  for (const [k, s] of mixes) {
-    const t = k.split("+").includes(c) ? inn : out;
+  for (const [k, s] of Object.entries(mix)) {
+    const t = condsOf(k).includes(c) ? inn : out;
     t.tries += s.tries;
     t.wins += s.wins;
   }
   if (!inn.tries || !out.tries) return told(inn, { tries: inn.tries + out.tries, wins: inn.wins + out.wins });
   let weight = 0, diff = 0, v = 0, most: string | undefined, best = 0;
-  for (const [k, s] of mixes) {
-    const conds = k.split("+");
+  for (const [k, s] of Object.entries(mix)) {
+    const conds = condsOf(k);
     if (!conds.includes(c) || !s.tries) continue;
-    const others = conds.filter((x) => x !== c).join("+"), o = b.mix[others];
+    const others = conds.filter((x) => x !== c).join("+"), o = mix[others];
     const n0 = (o?.tries ?? 0) + THIN, w0 = (o?.wins ?? 0) + (THIN * out.wins) / out.tries;
     const wt = (s.tries * n0) / (s.tries + n0), q = (s.wins + w0 + 1) / (s.tries + n0 + 2);
     weight += wt;
@@ -134,7 +165,7 @@ export function apart(b: Belief, c: string): { diff: number; se: number; tries: 
     v += wt * q * (1 - q);
     if (o?.tries && wt > best) { best = wt; most = others; }
   }
-  return { diff: diff / weight, se: Math.sqrt(v) / weight, tries: inn.tries, wins: inn.wins, most };
+  return { diff: diff / weight, se: Math.sqrt(v) / weight, tries: inn.tries, wins: inn.wins, most, mixes: mix };
 }
 // Whether it has done worse for them in a condition than out of it by more than chance would make it: it has failed
 // them there more than once (a hair more, so an old save's faded counts that sum to one failure and a rounding error
@@ -144,27 +175,89 @@ export function worseIn(b: Belief, c: string) {
   const d = apart(b, c);
   return d.tries - d.wins > 1 + 1e-9 && d.diff > d.se;
 }
-// The conditions a failure in these (now) sets them suspecting, of those they don't blame yet: what it has done worse in
-// for them than chance would make it (worseIn), or what they saw of the failure points at (points: the tinder too damp
-// to catch) where it has done no better than without it, like for like, unless the try was in weather they blame for
-// something else, which like for like sets aside: then all told, this try with it.
+// The conditions a failure in these (now) sets them suspecting, of those they don't blame yet, alone or as part of a
+// theory that holds here (to someone who thinks it won't work in the rain unless the wind is up, a spark dying in the
+// calm rain is the rain's): what it has done worse in for them than chance would make it (worseIn), or what they saw of
+// the failure points at (points: the tinder too damp to catch) where it has done no better than without it, like for
+// like, unless a theory of theirs about the weather holds here, which like for like sets aside: then all told, this try
+// with it.
 export function suspected(b: Belief, now: string[], points: (c: string) => boolean) {
-  const aside = mixOf(now).split("+").some((x) => b.unless?.includes(x));
-  return now.filter((c) => !b.unless?.includes(c) && (worseIn(b, c) || (points(c) && (aside ? allTold(b, c) : apart(b, c)).diff >= 0)));
+  const here = b.unless?.filter((t) => holds(t, now)) ?? [], aside = here.some((t) => !ofSpot(t));
+  const blames = (c: string) => !!b.unless?.includes(c) || here.some((t) => t.split("+").includes(c));
+  return now.filter((c) => !blames(c) && (worseIn(b, c) || (points(c) && (aside ? allTold(b, c) : apart(b, c)).diff >= 0)));
 }
-// How much a theory that it won't work in a condition rests on, for which of theirs they'd put to the test and how
-// readily: the tries there by how much worse it has done there than without it, like for like (apart).
-export function restsOn(b: Belief, c: string) {
-  const d = apart(b, c);
+// How much worse it has done for them where a theory holds than where it doesn't: for one condition, like for like
+// (apart); for a theory of several parts, all told, the tries where another theory of theirs holds set aside.
+function bears(b: Belief, t: string) {
+  if (!t.includes("+") && !t.startsWith("!")) return apart(b, t);
+  const others = b.unless?.filter((o) => o !== t) ?? [], inn = { tries: 0, wins: 0 }, all = { tries: 0, wins: 0 };
+  for (const [k, s] of Object.entries(b.mix ?? {})) {
+    const now = condsOf(k);
+    if (others.some((o) => holds(o, now))) continue;
+    for (const x of holds(t, now) ? [inn, all] : [all]) {
+      x.tries += s.tries;
+      x.wins += s.wins;
+    }
+  }
+  return told(inn, all);
+}
+// How much a theory rests on, for which of theirs they'd put to the test and how readily: the tries where it holds by
+// how much worse it has done there than where it doesn't (bears).
+export function restsOn(b: Belief, t: string) {
+  const d = bears(b, t);
   return d.tries * Math.max(0, d.diff);
 }
-// Whether their record has come to tell against a theory that it won't work in a condition: over three or more tries
-// there it has worked at least once, and about as often as out of it (within 10 points), like for like where it can
-// be (apart). A spark that never once caught in the rain says the theory is right, however rarely it catches anywhere.
-// (An old save's faded counts go by what they round to: 2.5 tries is three.)
-export function fades(b: Belief, c: string) {
-  const d = apart(b, c);
+// Whether their record has come to tell against a theory: over three or more tries where it holds it has worked at
+// least once, and about as often as where it doesn't (within 10 points), like for like where it can be (bears). A spark
+// that never once caught in the rain says the theory is right, however rarely it catches anywhere. (An old save's faded
+// counts go by what they round to: 2.5 tries is three.)
+export function fades(b: Belief, t: string) {
+  const d = bears(b, t);
   return d.tries >= 2.5 && d.wins >= 0.5 && d.diff <= 0.1;
+}
+// The mixes of their record a theory holds in, each with what held: the failures there it rests on, only where no
+// other theory of theirs holds (a spark dying in the rain at night is the rain's, to someone who blames it, not the
+// dark's), and every try there that worked, which tells against it however many others hold too.
+function under(b: Belief, t: string) {
+  const others = b.unless?.filter((o) => o !== t) ?? [];
+  return Object.entries(b.mix ?? {}).flatMap(([k, s]) => {
+    const now = condsOf(k);
+    return holds(t, now) ? [{ now, fails: others.some((o) => holds(o, now)) ? 0 : s.tries - s.wins, wins: s.wins }] : [];
+  });
+}
+// How a theory stands with their record: the failures it rests on, and the tries that worked where it holds.
+export function weighs(b: Belief, t: string) {
+  const xs = under(b, t);
+  return { fails: xs.reduce((s, x) => s + x.fails, 0), wins: xs.reduce((s, x) => s + x.wins, 0) };
+}
+// What set a try that worked (in now) apart from the failures a theory rests on, as narrower theories that wouldn't
+// hold where it worked: the theory unless something that held this time ("rain+!wind": not in the rain, unless the wind
+// is up), or only with something this time lacked ("dark+rain": only in the rain at night). Each with the share of the
+// tries under the theory it calls right (failures where it would hold, the rest where it wouldn't); those that call at
+// least three in four right, best first.
+export function differed(b: Belief, t: string, now: string[]) {
+  const xs = under(b, t), all = xs.reduce((s, x) => s + x.fails + x.wins, 0), named = partsOf(t);
+  const conds = [...new Set([...now, ...xs.flatMap((x) => x.now)])].filter((c) => !named.includes(c));
+  return conds.map((c) => {
+    const part = now.includes(c) ? `!${c}` : c;
+    const right = xs.reduce((s, x) => s + (holds(part, x.now) ? x.fails : x.wins), 0);
+    return { theory: theoryOf([...t.split("+"), part]), part, agree: all ? right / all : 0 };
+  }).filter((x) => x.agree >= 0.75).sort((x, y) => y.agree - x.agree);
+}
+// What a failure in these conditions (now) tells against, where no theory of theirs holds: a part of a theory but for
+// which it would hold here, when where the rest of it holds and that part doesn't their record has failed at least as
+// often as it worked (this failure among them), and the rest still names something it won't work in. Each as the
+// theory, and what it becomes without that part.
+export function refuted(b: Belief, now: string[]) {
+  if (ruledOut(b, now)) return [];
+  return (b.unless ?? []).flatMap((t) => {
+    const parts = t.split("+"), off = parts.filter((p) => !holds(p, now)), rest = parts.filter((p) => !off.includes(p));
+    if (off.length !== 1 || !rest.some((p) => !p.startsWith("!"))) return [];
+    const base = rest.join("+"), others = b.unless!.filter((o) => o !== t);
+    const xs = Object.entries(b.mix ?? {}).map(([k, s]) => ({ now: condsOf(k), ...s })).filter((x) => holds(base, x.now) && !holds(off[0], x.now) && !others.some((o) => holds(o, x.now)));
+    const fails = xs.reduce((s, x) => s + x.tries - x.wins, 0), wins = xs.reduce((s, x) => s + x.wins, 0);
+    return fails >= wins ? [{ theory: t, to: theoryOf(rest) }] : [];
+  });
 }
 // How likely it is to work for them now, by their own record: its odds all told (or, for what's done to the ground, on
 // the ground they'd do it on), or in a condition they're in, if it has done worse for them there than chance would make
@@ -327,9 +420,13 @@ function superstition(w: World, a: Agent, b: Belief) {
   log(w, "mistaken", [a.id], a, `${a.name} is convinced it only worked because they were holding ${an(nm(w, other.k))}.`);
 }
 
-// Everyone nearby sees what happened and slowly picks it up. now: the conditions it was done in.
+// Everyone nearby sees what happened and slowly picks it up. now: the conditions it was done in. Returns, for those who
+// already knew how, the theories of theirs it was seen to work in spite of (sim.ts weighs them as it does a try of
+// their own); what only shows later (a seed going into the sand) shows nothing yet, and theories never had or known from
+// the start aren't weighed.
 export function watchers(w: World, doer: Agent, out: Outcome, ticks: number, now: string[] = []) {
-  if (!useful(out)) return;
+  const seen: { who: Agent; b: Belief; theories: string[] }[] = [];
+  if (!useful(out)) return seen;
   const key = beliefKey(out.fields);
   for (const b of w.agents) {
     if (b === doer || b.down > w.t || !canSee(w, b, doer, 25)) continue;
@@ -340,14 +437,8 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number, now
         log(w, "learn", [b.id], b, `${b.name} watched ${doer.name} do it without ${an(nm(w, mine.spurious))} and realized it was never needed.`);
         delete mine.spurious;
       }
-      // Whoever thinks it can't be done in the rain, and watches it done in the rain, thinks again; what only shows
-      // later (a seed going into the sand) shows nothing yet. (Unless theories are never had, or known from the start.)
-      const wrong = RULES.learning === "seen" && out.ok && !out.later ? mine.unless?.filter((c) => now.includes(c)) ?? [] : [];
-      if (wrong.length) {
-        log(w, "theory", [b.id], b, `${b.name} watched ${doer.name} do it ${wrong.map(conditionWords).join(" and ")}, and stopped thinking it couldn't be done: ${sentence(w, mine.fields)}`);
-        trace("theory", "dropped", { key, conds: wrong, how: "watched" }, b.id);
-        rethink(mine, wrong);
-      }
+      const theories = RULES.learning === "seen" && out.ok && !out.later ? mine.unless?.filter((t) => holds(t, now)) ?? [] : [];
+      if (theories.length) seen.push({ who: b, b: mine, theories });
       continue;
     }
     // Children soak up what the grown-ups around them do.
@@ -359,6 +450,12 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number, now
     const got = record(w, b, out, ticks, "watched", doer);
     if (got) log(w, "learn", [b.id, doer.id], b, `${b.name} learned by watching ${doer.name}: ${sentence(w, out.fields, ticks)}`);
   }
+  return seen;
+}
+// A theory they've narrowed to an exception, or widened back: the new one in place of the old, unless they hold it
+// already.
+export function refine(b: Belief, from: string, to: string) {
+  b.unless = [...new Set((b.unless ?? []).map((t) => (t === from ? to : t)))];
 }
 
 // A theory they've given up: the conditions it named, struck off. Their record stays as it was: the failures it was

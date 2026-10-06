@@ -1,5 +1,5 @@
 // GOAP over what each agent believes. Agents can only plan with things they've seen work.
-import { chance, ofPlace, type Belief } from "./beliefs";
+import { chance, ofPlace, ruledOut, type Belief } from "./beliefs";
 import { THING_MATERIAL, p, type Registry } from "./materials";
 import { HUNTED } from "./fauna";
 
@@ -116,9 +116,9 @@ function beliefOps(b: Belief, ctx: Ctx): Op[] {
   const grounds = GROUND_WORK[f.verb] && !testing ? Object.keys(ctx.dist).filter((k) => k.startsWith("ground:")) : [];
   if (grounds.length) {
     const elsewhere = ctx.now?.filter((c) => !ofPlace(c)) ?? [];
-    return grounds.filter((g) => !b.unless?.some((c) => c === g || elsewhere.includes(c))).map((g) => way(g, chance(b, elsewhere, g)));
+    return grounds.filter((g) => !ruledOut(b, [g, ...elsewhere])).map((g) => way(g, chance(b, elsewhere, g)));
   }
-  if (!testing && b.unless?.some((c) => ctx.now?.includes(c))) return [];
+  if (!testing && ruledOut(b, ctx.now ?? [])) return [];
   return [way(target ?? f.at ?? (f.builds !== "shelter" ? null : near("home") ? "home" : near("homesite") ? "homesite" : null), chance(b, ctx.now))];
 }
 

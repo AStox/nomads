@@ -305,6 +305,21 @@ export async function theorize(w: World, a: Agent, what: string, happened: strin
   return pick in present && (ans.why.confidence ?? 0) >= 0.3 ? pick : null;
 }
 
+// Something they thought wouldn't work where they were (where: the theory in words) just did, though it had failed for
+// them there before (fails times). What was different this time (present: what might have been, each in words), or
+// nothing they can tell? Offline the guess leans toward what sets this time furthest apart from those failures (lean).
+export async function wonder(w: World, a: Agent, what: string, where: string, fails: number, present: Record<string, string>, lean: Lean) {
+  const ans = await ask(w, "wonder", a.id, { ...view(w, a), tried: what }, {
+    why: {
+      type: "choice",
+      instructions: `${a.name} thought this wouldn't work ${where}, where it had failed for them ${fails} times: ${what} This time it worked. What does ${a.name} make of what was different?`,
+      criteria: { ...present, unsure: "Nothing they can tell; it just works there now and then" },
+    },
+  }, { why: { unsure: 1.5, ...lean } });
+  const pick = ans.why.choice!;
+  return pick in present && (ans.why.confidence ?? 0) >= 0.3 ? pick : null;
+}
+
 // Offline, a reply leans the way the one answering is inclined: warmly toward those they like and as their nature
 // runs, coldly toward those they hold something against.
 const WARM = ["welcome", "accept", "join", "give", "believe", "let_it_go", "shrug", "share_fire", "take_in", "show", "welcome_in", "huddle", "forage_with"];
