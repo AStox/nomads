@@ -44,6 +44,7 @@ export type Thing = {
   inside?: Record<string, number>; // hidden in a boulder until it breaks
   scarred?: number; resin?: number; bark?: number; // when a tree was last cut into, resin beaded on it, bark peeled off it
   covered?: boolean; charcoal?: number; air?: number; heat?: number; // fires: closed over, charcoal left, air blown in until, heat level
+  scorch?: number; // how much heat flames beside it have put into it, toward catching (ecology.ts fire)
   shared?: string; given?: Record<string, number>; // a store a camp treats as its own, and who put how much in
   // a seedling's: how well its spot suits its kind, water poured round it soaking away, and the share of its spot's light
   // and water the plants round it leave it

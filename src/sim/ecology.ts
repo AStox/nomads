@@ -229,13 +229,17 @@ function fire(w: World, live: Thing[]) {
       if (far && !downwind) return;
       const flam = flammability(w, t);
       if (flam <= 0) return;
-      const chance = s.heat * flam * dry * 0.02 * (downwind ? 2 : 1) * (far ? 0.4 : 1);
-      if (Math.random() >= chance) return;
+      // Each tick beside flames heats and dries it a little more, the more the hotter, drier and more downwind; it
+      // catches once that has added up.
+      const heat = s.heat * flam * dry * 0.02 * (downwind ? 2 : 1) * (far ? 0.4 : 1);
+      t.scorch = (t.scorch ?? 0) + heat;
+      if (t.scorch < 1) return;
+      delete t.scorch;
       t.burning = 0.3;
       t.burnedBy = s.by;
       mark(w, t);
       count("fire.spread");
-      trace("fire", "spread", { from: s.t.id, to: t.id, kind: t.kind, chance });
+      trace("fire", "spread", { from: s.t.id, to: t.id, kind: t.kind, heat });
       if (t.kind === "structure") log(w, "fire_spread", [t.owner ?? ""].filter(Boolean), t, "Fire caught on a shelter!");
       else if (Math.random() < 0.1) log(w, "fire_spread", [], t, `Fire spread to a ${t.kind.replace("_", " ")}.`);
     });

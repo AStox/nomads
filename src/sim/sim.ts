@@ -4,8 +4,8 @@ import {
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
 import {
-  airy, applyRuling, arrowy, beside, count, counts, shooting, stave, digTick, diggable, eat, fireKind, force, giveItems, greasy, heat, homeOf, join, mark, nearFire, openWater, place as placeItems, plant,
-  fireHours, groundWord, hoursToDawn, leaveHome, pour, raining, reaches, removeThing, residentsOf, rubTick, shape, sheltered, shelterName, stash, strikeDamage, strikeTick, takeItems, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
+  airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, force, giveItems, greasy, heat, homeOf, join, mark, nearFire, openWater, place as placeItems, plant,
+  fireHours, groundWord, hoursToDawn, leaveHome, pour, raining, reaches, removeThing, residentsOf, rubTick, shape, sheltered, shelterName, stash, strikeDamage, strikeTick, takeItems, throwReach, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
 import { apart, beliefKey, beliefText, cameOff, conditionWords, fieldsOf, found, groundKey, groundOfKey, likeNow, mixOf, odds, fades, noteTry, ofPlace, record, restsOn, rethink, see, sentence, suspected, teach, testOf, watchers, type Belief } from "./beliefs";
@@ -565,8 +565,9 @@ async function think(w: World, a: Agent) {
 export const actFromBelief = (b: Belief) => actOfFields(b.fields);
 function actOfFields(f: Fields): Act {
   if (f.verb === "strike") {
-    if (!f.inputs.length) return { verb: "strike", items: [], tool: f.tool ?? null, target: { kind: f.target } };
-    return { verb: "strike", items: [], tool: f.tool ?? null, target: { kind: f.target ?? f.inputs[0] } };
+    // what they struck besides the thing struck: the tinder a spark is struck into
+    const target = f.target ?? f.inputs[0];
+    return { verb: "strike", items: f.inputs.filter((_, i) => i !== f.inputs.indexOf(target ?? "")), tool: f.tool ?? null, target: { kind: target } };
   }
   // a throw is at something: the kind of animal it was aimed at
   return { verb: f.verb as Act["verb"], items: f.verb === "rub" ? f.inputs.slice(0, 2) : [...f.inputs], tool: f.tool ?? null, shape: f.shape as Act["shape"], at: f.at ?? null, ...(f.target ? { target: { kind: f.target } } : {}) };
@@ -576,7 +577,7 @@ export function actText(w: World, act: Act): string {
   const items = act.items.map((k) => nm(w, k));
   const same = items.length === 2 && items[0] === items[1];
   switch (act.verb) {
-    case "strike": return `Strike ${act.target?.thing || act.target?.animal || ["tree", "bush", "boulder", "reeds", "stump", "dead_bush", "deer", "wolf"].includes(act.target?.kind ?? "") ? "the" : "a"} ${nm(w, act.target?.kind ?? "")} with ${act.tool ? tool : "bare hands"}`;
+    case "strike": return `Strike ${act.target?.thing || act.target?.animal || ["tree", "bush", "boulder", "reeds", "stump", "dead_bush", "deer", "wolf"].includes(act.target?.kind ?? "") ? "the" : "a"} ${nm(w, act.target?.kind ?? "")} with ${act.tool ? tool : "bare hands"}${items.length ? ` over the ${items[0]}` : ""}`;
     case "rub": return same ? `Rub two ${items[0]}s together` : `Rub the ${items[0]} against the ${items[1]}`;
     case "join": return same && items.length === 2 ? `Twist two ${items[0]}s together` : `Bind ${items.map((x) => `the ${x}`).join(", ")} together`;
     case "heat": return act.tool ? `Heat the ${items.join(" and ")} in the fire, blowing air at it with the ${nm(w, act.tool)}` : `Hold ${items.map((x) => `the ${x}`).join(" and ")} in the fire`;
@@ -689,8 +690,8 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
     const prey = w.animals.find((m) => m.id === act.target?.animal) ?? nearest(a, w.animals, (m) => m.species === act.target?.kind && m.alt < 2);
     if (!prey || meters(a, prey) > 250) return `the ${act.target?.kind} got away`;
     act.target = { ...act.target, animal: prey.id };
-    // a bow carries twice as far as an arm
-    const range = shooting(w, a, act) ? 40 : 20;
+    // close enough for the throw to fly true: a bow carries twice as far as an arm
+    const range = throwReach(w, a, act);
     if (meters(a, prey) > range) {
       a.status = `Stalking the ${prey.species}`;
       if ((s.tries = (s.tries ?? 0) + 1) > 80) return `the ${prey.species} got away`;
@@ -761,13 +762,14 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
 }
 const rulingsAt = new Map<number, number>();
 
-// Conditions anyone can see they're working in, which might be why something works one time and not another; and for
+// Conditions anyone can see they're working in, which might be why something works one time and not another; for
 // what's done to the ground (planting, digging, watering), the spot itself (at): the ground, the shade of trees over
-// it, how dry it is, and bushes and trees crowded round it, which tell as much as the weather does.
+// it, how dry it is, and bushes and trees crowded round it, which tell as much as the weather does; and for what's
+// dipped in the water (verb), whether any fish were swimming close by.
 // hint: what the outcome would say if this were the reason, for the offline guess (Jev reads the outcome itself)
 type Pos = { px: number; py: number };
 // on, off: the weather in a word, and its lack, for telling Jev how it went like for like
-const CONDITIONS: Record<string, { now: (w: World, a: Agent, at: Pos) => boolean; words: string; hint: RegExp; place?: true; on?: string; off?: string }> = {
+const CONDITIONS: Record<string, { now: (w: World, a: Agent, at: Pos) => boolean; words: string; hint: RegExp; place?: true; verb?: string; on?: string; off?: string }> = {
   rain: { now: WEATHER_NOW.rain, words: "It was raining and there was nothing over their heads", hint: /damp|wet|rain|soak/, on: "raining", off: "dry" },
   dark: { now: WEATHER_NOW.dark, words: "It was dark", hint: /dark|couldn't see/, on: "dark", off: "light" },
   cold: { now: WEATHER_NOW.cold, words: "It was freezing", hint: /froze|frozen|freezing|ice/, on: "freezing", off: "above freezing" },
@@ -775,13 +777,14 @@ const CONDITIONS: Record<string, { now: (w: World, a: Agent, at: Pos) => boolean
   shade: { now: (w, _, at) => skyShare(w, at.px, at.py) < 0.5, words: "It was in the shade of trees", hint: /shade|under the trees/, place: true },
   dry: { now: (w, _, at) => soilWaterAt(w, at.px, at.py) < 0.5, words: "The ground there was dry", hint: /dry|parched/, place: true },
   crowded: { now: (w, _, at) => !!anyAround(w, at.px, at.py, 1.5, ["tree", "bush", "dead_bush"]), words: "Bushes or trees grew close round it", hint: /crowd|close round/, place: true },
+  nofish: { now: (w, a, at) => !fishClose(w, a, at), words: "No fish were swimming close by", hint: /no fish/, verb: "wet" },
 };
 const GROUND_VERBS: Record<string, true> = { plant: true, dig: true, pour: true };
 // verb: what they did, which brings in the spot (at: where it was done, if not where they stand) for what's done to the
-// ground; without one, everything they could see
+// ground, and what bears only on that verb; without one, everything they could see
 export const conditionsNow = (w: World, a: Agent, verb?: string, at: Pos = a) => {
   const ground = !verb || GROUND_VERBS[verb];
-  const now = Object.keys(CONDITIONS).filter((c) => (ground || !CONDITIONS[c].place) && CONDITIONS[c].now(w, a, at));
+  const now = Object.keys(CONDITIONS).filter((c) => (ground || !CONDITIONS[c].place) && (!verb || !CONDITIONS[c].verb || CONDITIONS[c].verb === verb) && CONDITIONS[c].now(w, a, at));
   if (ground) now.push(groundKey(groundWord(w, at.px, at.py)));
   return now;
 };
@@ -1055,6 +1058,10 @@ function tinkerOptions(w: World, a: Agent, aim?: string): Option[] {
   for (const x of held) {
     const k = w.kinds[x];
     for (const tool of tools) if (tool !== x || c[x] >= 2) push({ verb: "strike", items: [], tool, target: { kind: x } });
+    // Two hard things struck together over something fine and dry held under the blow, as for sparks.
+    if (p(k, "hard") >= 0.5)
+      for (const tool of tools.filter((t) => !!t && p(w.kinds[t], "hard") >= 0.5 && (t !== x || c[x] >= 2)))
+        for (const f of held) if (f !== x && f !== tool && p(w.kinds[f], "fibrous") >= 0.5 && p(w.kinds[f], "flammable") >= 0.5) push({ verb: "strike", items: [f], tool, target: { kind: x } });
     if (within(w, a, "fire", 1)) {
       push({ verb: "heat", items: [x], at: "fire" });
       // Something soft and hollow can be squeezed or flapped at the flames while something else heats.

@@ -3,15 +3,12 @@
 // (scripts/evals.ts worlds). The live world never changes them.
 import type { Agent, Thing, World } from "./world";
 
-// A condition anyone can see they're in (sim.ts CONDITIONS) that can keep a spark or an ember from catching.
-export type Quench = "rain" | "wind" | "dark" | "cold";
 export const RULES = {
-  // what keeps tinder from catching, any of them where it holds (none at all, for a probe of bad luck alone): wet tinder
-  // in the rain with nothing overhead, as in the world
-  quench: ["rain"] as Quench[],
-  // how often a spark that falls where it's quenched catches anyway: never, as in the world (a probe of a cause that
-  // only hurts sets it between)
-  leak: 0,
+  // what keeps tinder from catching, the first that holds where they are (none at all, for a probe of bad luck alone):
+  // each a condition anyone can see they're in (sim.ts CONDITIONS: rain, wind, dark, cold), or several joined by "+",
+  // any of them written with "!" before it for its lack, which holds only when every part does ("dark+rain" for rain
+  // at night, "rain+!wind" for rain unless the wind is up). In the world, wet tinder in the rain with nothing overhead.
+  quench: ["rain"] as string[],
   // whether a fire that wouldn't catch shows why (sparks hissing out in the wet tinder), or only that it didn't
   tell: true,
   // which of two hard stones struck together throws more sparks: the harder, as in the world, or the softer

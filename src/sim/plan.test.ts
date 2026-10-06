@@ -4,7 +4,7 @@ import { count, giveItems, heat, join, place, rubTick, strikeDamage, strikeTick,
 import { thingById } from "./space";
 import { apart, cameOff, chance, fades, noteTry, record, rethink, suspected, teach, worseIn, type Belief } from "./beliefs";
 import { plan } from "./plan";
-import { tick } from "./sim";
+import { actFromBelief, tick } from "./sim";
 
 const fresh = (): [World, Agent] => { const w = newWorld(42); const a = w.agents[0]; a.inv = []; return [w, a]; };
 const K = (w: World, id: string) => w.kinds[id];
@@ -160,31 +160,31 @@ test("someone who thinks fire won't light in the rain lights none in the rain, u
   expect(plan(start, `try:${fiber.key}`, ctx(fiber.key))?.map((s) => s.op)).toEqual(["act"]);
 });
 
-test("striking stone for fire in the rain only chips it, the sparks dying in the wet tinder: that's no fire, and it doesn't count as having worked; dry, a spark that catches does", () => {
+test("striking stone over tinder in the rain only throws sparks that die in the wet tinder: that's no fire, and it doesn't count as having worked; dry, the spark catches", () => {
   const [w, a] = fresh();
   const b: Belief = {
     key: "strike|fiber+stone|stone|stone|-|-", fields: { verb: "strike", inputs: ["fiber", "stone"], tool: "stone", target: "stone", gives: [], builds: "fire" },
     uses: { fiber: 1 }, out: {}, ticks: 3, tries: 1, wins: 1, how: "discovered", t: 0,
   };
-  // strikes with tinder in hand until one comes off one way or the other
-  const strikeUntil = (ok: (o: Outcome) => boolean) => {
-    for (let i = 0; i < 200; i++) {
-      giveItems(w, a, "stone", 2); giveItems(w, a, "fiber");
-      const st = { progress: 0 };
-      let r;
-      do r = strikeTick(w, a, { verb: "strike", items: [], tool: "stone", target: { kind: "stone" } }, st); while (!r.done);
-      if (ok(r.out!)) return r.out!;
-    }
-    throw new Error("never came off");
+  // what they believe lights a fire is striking the stone over the fiber they hold
+  const act = actFromBelief(b);
+  expect(act.items).toEqual(["fiber"]);
+  const strike = () => {
+    giveItems(w, a, "stone", 2); giveItems(w, a, "fiber");
+    const st = { progress: 0 };
+    let r;
+    do r = strikeTick(w, a, act, st); while (!r.done);
+    return r.out!;
   };
   w.weather.sky = "rain";
-  const chipped = strikeUntil((o) => o.ok);
-  expect(chipped.builds).toBeUndefined();
-  expect(cameOff(b, chipped)).toBe(false);
+  const drowned = strike();
+  expect(drowned.ok).toBe(false);
+  expect(drowned.builds).toBeUndefined();
+  expect(cameOff(b, drowned)).toBe(false);
   // what they see of it points at the rain
-  expect(chipped.text).toMatch(/wet/);
+  expect(drowned.text).toMatch(/wet/);
   w.weather.sky = "clear";
-  expect(cameOff(b, strikeUntil((o) => o.builds === "fire"))).toBe(true);
+  expect(cameOff(b, strike())).toBe(true);
 });
 
 test("rain that starts after they planned a fire stops them rubbing sticks, if they think fire won't light in the rain", () => {
