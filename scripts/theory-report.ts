@@ -1,12 +1,14 @@
 // Pools theory runs (scripts/theories.ts) and scores, over the days, what people believed and chose against the answer
 // key (scripts/answer-key.ts): what trying each way of doing things on the island found hurts it, and how long it takes.
-// Over the days: how often what they did worked; how often they did it in a condition that truly hurts it ("wasted");
-// how long it took; the theories they held (right: it names a condition that truly hurts; wrong: one that doesn't) and
-// how many were formed again after being dropped; whether, of the ways they knew to an end, they used the quickest in
-// the conditions they were in, and how much quicker the best way the island has would have been; how good the spots
-// they planted in were; and the tests they made. --json adds the numbers scripts/evals.ts compares builds by, over the
-// first and the last third of the runs' days.
-//   bun scripts/theory-report.ts /tmp/theories/new --key key.json [--json out.json]
+// Over the days: how often what they did worked; how often they did it in a condition that truly hurts it ("wasted",
+// plantings judged as they went in); how long it took; the theories they held (right: it names a condition that truly
+// hurts; wrong: one that doesn't) and how many were formed again after being dropped; whether, of the ways they knew to
+// an end, they used the quickest in the conditions they were in, and how much quicker the best way the island has would
+// have been; how good the spots they planted in were; and the tests they made. --json adds the numbers scripts/evals.ts
+// compares builds by, over the first and the last third of the runs' days.
+//   bun scripts/theory-report.ts /tmp/theories/new --key key.json [--evidence /tmp/theories/seen] [--json out.json]
+// --evidence: the runs whose tries say what could be learned on the island (below), when not the runs scored: the real
+// people's, for a world where everyone knew from the start.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { DAY } from "../src/sim/world";
 import { expectedTicks, loadKey, verdict } from "./answer-key";
@@ -20,11 +22,12 @@ type Line = {
 const BUCKET = 10;
 const argv = process.argv.slice(2);
 const opt = (name: string) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : null; };
-const dir = argv[0] ?? "/tmp/theories", jsonOut = opt("json"), keyPath = opt("key");
+const dir = argv[0] ?? "/tmp/theories", jsonOut = opt("json"), keyPath = opt("key"), evidenceDir = opt("evidence");
 if (!keyPath) throw new Error("--key key.json: the answer key to score against (scripts/truth.ts writes it)");
 const answers = loadKey(keyPath);
 const jsonl = <T>(path: string) => readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as T);
-const runs = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).map((f) => ({ run: f.replace(/\.jsonl$/, ""), lines: jsonl<Line>(`${dir}/${f}`) }));
+const load = (from: string) => readdirSync(from).filter((f) => f.endsWith(".jsonl")).map((f) => ({ run: f.replace(/\.jsonl$/, ""), lines: jsonl<Line>(`${from}/${f}`) }));
+const runs = load(dir);
 
 // ---------- the answer key ----------
 type Count = { n: number; wins: number };
@@ -65,6 +68,17 @@ function regrets(l: Line) {
   return { choice: known.length ? { regret: e - least, best: e <= least * 1.1 } : null, discovery: e - found };
 }
 
+// What could be learned on the island: a way done in a condition at least twice (tries whose outcome showed, tests among
+// them) by someone in the runs, or in the --evidence runs. A true theory counts as right only for that: one that names
+// a way nobody there did in that condition, or did at all, is nothing learning could have come to, though someone who
+// knew from the start holds it. All of them, judged or not, make rightAll.
+const EVIDENCE = 2;
+const tried = new Map<string, number>();
+for (const r of evidenceDir ? load(evidenceDir) : runs) for (const l of r.lines) {
+  if (l.ev !== "attempt" || !l.key) continue;
+  for (const c of l.now ?? []) tried.set(`${l.key}#${c}`, (tried.get(`${l.key}#${c}`) ?? 0) + 1);
+}
+
 // ---------- over the days ----------
 // Each run's own days, 1 on: its first day ends DAY ticks after it starts, and the daily lines (held, day) are written
 // at a day's last moment.
@@ -87,8 +101,8 @@ type Row = {
   planted: number; came: number; spot: number;
   grounds: Record<string, number>;
   // plantings as they went in (runs that note them), whether or not they ever showed: how many, the odds of the spots
-  // chosen, and how many went into the shade or in among bushes and trees
-  sown: number; sownSpot: number; sownShade: number; sownCrowded: number;
+  // chosen, how many went into the shade or in among bushes and trees, and how many into a condition that truly hurts
+  sown: number; sownSpot: number; sownShade: number; sownCrowded: number; sownHurt: number;
   // person-days holding the lessons that matter most: berries won't come up in the shade, or crowded in among bushes
   // and trees; fire won't light in the rain
   lessons: Record<string, number>;
@@ -105,14 +119,16 @@ const rows: Row[] = [];
 const row = (b: number) => (rows[b] ??= {
   attempts: 0, wins: 0, wasted: 0, took: 0, timed: 0, agentDays: 0, tests: 0, held: byVerdict(), formed: byVerdict(), dropped: byVerdict(), reformed: 0,
   offered: 0, tested: 0, chose: 0, best: 0, regret: 0, found: 0, discovery: 0, planted: 0, came: 0, spot: 0, grounds: {},
-  sown: 0, sownSpot: 0, sownShade: 0, sownCrowded: 0, lessons: {},
+  sown: 0, sownSpot: 0, sownShade: 0, sownCrowded: 0, sownHurt: 0, lessons: {},
 });
-// The first and the last third of each run's days, pooled over the runs, for scripts/evals.ts.
+// The first and the last third of each run's days, pooled over the runs, for scripts/evals.ts. attempts and wins are of
+// what shows at once; tries and wasted take in plantings too, as they went in; right is of what could be learned there,
+// rightAll of every true theory held.
 type Part = {
-  attempts: number; wins: number; wasted: number; agentDays: number; right: number; wrong: number;
+  attempts: number; wins: number; tries: number; wasted: number; agentDays: number; right: number; rightAll: number; wrong: number;
   chose: number; regret: number; found: number; discovery: number; formed: number; reformed: number; all: number; judged: number;
 };
-const part = (): Part => ({ attempts: 0, wins: 0, wasted: 0, agentDays: 0, right: 0, wrong: 0, chose: 0, regret: 0, found: 0, discovery: 0, formed: 0, reformed: 0, all: 0, judged: 0 });
+const part = (): Part => ({ attempts: 0, wins: 0, tries: 0, wasted: 0, agentDays: 0, right: 0, rightAll: 0, wrong: 0, chose: 0, regret: 0, found: 0, discovery: 0, formed: 0, reformed: 0, all: 0, judged: 0 });
 const parts = { early: part(), late: part() };
 // each person's k-th try at a thing: did it work, and was it done in a condition that hurts it
 const curve: { n: number; wins: number; wasted: number }[] = [];
@@ -156,7 +172,7 @@ for (const r of runs) {
     if (!later) {
       x.attempts++; if (l.worked) x.wins++; if (wasted) x.wasted++;
       if (l.took !== undefined) { x.took += l.took; x.timed++; }
-      if (k) { k.attempts++; if (l.worked) k.wins++; if (wasted) k.wasted++; }
+      if (k) { k.attempts++; k.tries++; if (l.worked) k.wins++; if (wasted) k.wasted++; }
       const id = `${l.agent}|${key}`, i = (nth.get(id) ?? 0) + 1;
       nth.set(id, i);
       const c = (curve[Math.min(i, 30)] ??= { n: 0, wins: 0, wasted: 0 });
@@ -168,14 +184,30 @@ for (const r of runs) {
       x.grounds[ground] = (x.grounds[ground] ?? 0) + 1;
     }
   }
+  // What went into the ground (planted, or a seedling watered) is wasted if it went into a condition that truly hurts it,
+  // whenever it showed or if it never did: each on the day it went in, by its attempt once it showed (which says whether
+  // it was a test) or else as it was sown (runs that note it).
+  const inGround = new Map<string, Line>();
+  for (const l of r.lines) {
+    if (l.ev !== "sown" && !(l.ev === "attempt" && (l.verb === "plant" || l.verb === "pour"))) continue;
+    const id = `${l.agent}|${l.key}|${l.done ?? l.t}`;
+    if (l.ev === "attempt" || !inGround.has(id)) inGround.set(id, l);
+  }
+  for (const l of inGround.values()) {
+    const k = third(dayIn(start, l.done ?? l.t));
+    if (!k || !l.key || l.testing) continue;
+    k.tries++;
+    if ((l.now ?? []).some((c) => verdict(answers, l.key!, c) === "hurts")) k.wasted++;
+  }
   // each person each day counts once for each lesson they hold, however many ways of doing it it's about
-  const learned = new Set<string>(), dropped = new Set<string>();
+  const learned = new Set<string>(), dropped = new Set<string>(), lastHeld = new Map<string, number>();
   for (const l of r.lines) {
     const day = dayIn(start, l.t), x = row(bucket(day)), k = third(day);
     if (l.ev === "held" && l.key && l.cond) {
       const v = verdict(answers, l.key, l.cond);
       x.held[v]++;
-      if (k && v === "hurts") k.right++;
+      lastHeld.set(`${r.run}|${l.agent}|${l.key}|${l.cond}`, l.t);
+      if (k && v === "hurts") { k.rightAll++; if ((tried.get(`${l.key}#${l.cond}`) ?? 0) >= EVIDENCE) k.right++; }
       if (k && v === "no effect") k.wrong++;
       for (const [lesson, is] of Object.entries(LESSONS)) {
         const id = `${day}|${l.agent}|${lesson}`;
@@ -189,6 +221,7 @@ for (const r of runs) {
     else if (l.ev === "sown" && l.key?.startsWith("plant|") && l.now) {
       const way = judged(l.key);
       x.sown++; if (way) x.sownSpot += oddsIn(way, l.now); if (l.now.includes("shade")) x.sownShade++; if (l.now.includes("crowded")) x.sownCrowded++;
+      if (l.now.some((c) => verdict(answers, l.key!, c) === "hurts")) x.sownHurt++;
     }
     else if (l.ev === "formed" && l.key && l.cond) {
       const v = verdict(answers, l.key, l.cond), id = `${r.run}|${l.agent}|${l.key}|${l.cond}`, again = dropped.has(id);
@@ -208,8 +241,9 @@ for (const r of runs) {
       if (born) { lifetimes[born.v].push((l.t - born.t) / DAY); lives.delete(id); }
     }
   }
-  // what was still held at the end, or died with whoever held it, lived to the end of the run at least
-  for (const [id, born] of lives) if (id.startsWith(`${r.run}|`)) { lifetimes[born.v].push((end - born.t) / DAY); lives.delete(id); }
+  // what nobody dropped lived as long as it was held (each day's end, by everyone alive who held it): to the end of the
+  // run, or the last day its holder lived through, or not past the day it was formed if they died that same day
+  for (const [id, born] of lives) if (id.startsWith(`${r.run}|`)) { lifetimes[born.v].push(Math.max(0, (lastHeld.get(id) ?? born.t) - born.t) / DAY); lives.delete(id); }
 }
 
 // ---------- before and after a theory ----------
@@ -259,8 +293,8 @@ rows.forEach((x, b) => {
   ].join(" | "));
 });
 if (rows.some((x) => x?.sown)) {
-  console.log("\nplantings as they went in, per ten days: how many, odds of the spot (by the key), in shade, crowded");
-  for (const [b, x] of rows.entries()) if (x?.sown) console.log(`${days(b)} ${String(x.sown).padStart(5)} ${pct(x.sownSpot, x.sown).padStart(5)} ${pct(x.sownShade, x.sown).padStart(5)} ${pct(x.sownCrowded, x.sown).padStart(5)}`);
+  console.log("\nplantings as they went in, per ten days: how many, odds of the spot (by the key), in shade, crowded, in a condition that truly hurts");
+  for (const [b, x] of rows.entries()) if (x?.sown) console.log(`${days(b)} ${String(x.sown).padStart(5)} ${pct(x.sownSpot, x.sown).padStart(5)} ${pct(x.sownShade, x.sown).padStart(5)} ${pct(x.sownCrowded, x.sown).padStart(5)} ${pct(x.sownHurt, x.sown).padStart(5)}`);
 }
 console.log("\nshare of people holding each lesson, per ten days:");
 for (const lesson of Object.keys(LESSONS)) console.log(`  ${lesson.padEnd(10)} ${rows.map((x) => (x?.agentDays ? pct(x.lessons[lesson] ?? 0, x.agentDays) : "-").padStart(5)).join(" ")}`);
@@ -305,11 +339,11 @@ if (churned.size) {
     console.log(`  ${String(c.again).padStart(5)} ${String(c.people.size).padStart(4)}  ${verdict(answers, key, cond).padEnd(9)}  ${key}  ${cond}  ${inOut(key, cond)}`);
   }
 }
-// the numbers scripts/evals.ts compares builds by; null where there was nothing to measure
+// the numbers scripts/evals.ts compares builds by; null where there was nothing to measure. tries: what wasted is over
 const share = (a: number, b: number) => (b ? a / b : null);
 const kpi = (p: Part) => ({
-  attempts: p.attempts, worked: share(p.wins, p.attempts), wasted: share(p.wasted, p.attempts),
-  right: share(p.right, p.agentDays), wrong: share(p.wrong, p.agentDays), regret: share(p.regret, p.chose), discovery: share(p.discovery, p.found),
-  churn: share(p.reformed, p.formed), coverage: share(p.judged, p.all),
+  attempts: p.attempts, tries: p.tries, worked: share(p.wins, p.attempts), wasted: share(p.wasted, p.tries),
+  right: share(p.right, p.agentDays), rightAll: share(p.rightAll, p.agentDays), wrong: share(p.wrong, p.agentDays),
+  regret: share(p.regret, p.chose), discovery: share(p.discovery, p.found), churn: share(p.reformed, p.formed), coverage: share(p.judged, p.all),
 });
 if (jsonOut) writeFileSync(jsonOut, JSON.stringify({ runs: runs.length, rows, curve, lifetimes, dropHow, verbs, verdicts: VERDICTS, around: around_, kpis: { early: kpi(parts.early), late: kpi(parts.late) } }));

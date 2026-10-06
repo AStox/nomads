@@ -5,7 +5,8 @@
 //     (--only: a few probes while working on something, compared but never kept)
 //   bun scripts/evals.ts worlds [--seeds 6] [--days 60] [--jobs N] [--against <commit>] [--dry]
 //     whole worlds (scripts/theories.ts) with learning as it is, off (the floor) and known from the start (the ceiling),
-//     each scored against its island's answer key (scripts/truth.ts, scripts/theory-report.ts): nightly
+//     scored against an answer key for each island (scripts/truth.ts, scripts/theory-report.ts), the same key for this
+//     build and the baseline it's compared with: nightly
 //   bun scripts/evals.ts live [--data data] [--dry]
 //     the live world's own trace and save, scored the same way: a monitor, not a gate
 //   bun scripts/evals.ts trend [--tier probes|worlds|live] [--brain random|jev]
@@ -33,7 +34,10 @@ import { bootstrap, mean } from "./stats";
 // and measures where people start by their first five tries; claims raised to the bar the learning fixes are held to.
 // worlds 3: regrets capped at a day of trying, and the share of the gap closed only where knowing from the start beats
 // never learning by more than a number's tolerance.
-const VERSION: Record<string, number> = { probes: 2, worlds: 3, live: 3 };
+// worlds 4: builds compared on one answer key, the baseline's runs rescored on it; plantings into a condition that truly
+// hurts count as wasted; right, and the ceiling, only of what someone on the island had seen; the key judges what's in
+// a spot like for like. live 4: scored as worlds 4 are.
+const VERSION: Record<string, number> = { probes: 2, worlds: 4, live: 4 };
 const ROOT = join(import.meta.dir, ".."), DATA = join(ROOT, "data/evals");
 type Numbers = Record<string, number | null>;
 // what a tier measured: by variant ("blame/real", "seen"...), by seed, its numbers
@@ -245,8 +249,8 @@ async function probes() {
 // ---------- whole worlds ----------
 const KPIS: Record<string, Metric> = {
   worked: { better: "higher", tol: 0.05, text: "share of their tries (tests aside) that worked" },
-  wasted: { better: "lower", tol: 0.03, text: "share of their tries made in a condition that truly hurts" },
-  right: { better: "higher", tol: 0.1, text: "true theories held per person-day" },
+  wasted: { better: "lower", tol: 0.03, text: "share of their tries, plantings as they went in among them, made in a condition that truly hurts" },
+  right: { better: "higher", tol: 0.1, text: "true theories held per person-day, of what someone on the island had seen" },
   wrong: { better: "lower", tol: 0.1, text: "false theories held per person-day" },
   regret: { better: "lower", tol: 2, text: "ticks lost per try to a slower way they knew" },
   discovery: { better: "lower", tol: 2, text: "ticks lost per try to a faster way the world allows" },
@@ -257,35 +261,65 @@ const KPIS: Record<string, Metric> = {
 // as knowing, 0 no better than never learning. Higher is better whichever way the number itself runs.
 const GAP: Record<string, Metric> = Object.fromEntries(["worked", "wasted", "right", "regret"].map((k) => [k, { better: "higher", tol: 0.1, text: `share of the gap closed in ${KPIS[k].text}` } satisfies Metric]));
 type Kpis = { early: Numbers; late: Numbers };
+// A build's worlds: its sim, its seeds, where its runs with learning as it is and off are kept (the same on any key),
+// and where its runs knowing from the start and its reports on this key go.
+type Build = { snap: Snap; seeds: number[]; at: string; scored: string };
+// Builds are compared on one answer key. A key worked out for each build would set them apart by itself: which ways get
+// tried, and so the draws every try gets, move with the ways either build's people used, and a world that ran exactly
+// the same would score differently. So the key for each island is worked out once, by this build's sim, from both
+// builds' runs with learning as it is (every way either's people used, on any island, tried on each), and both are
+// scored on it: this build's runs and the baseline's kept ones, the reports kept in this build's runs under
+// vs-<the baseline's content>. Each build keeps a floor and a ceiling of its own, from its own sim and rules: its runs
+// with learning off, which no key steers, are scored on the shared key, and its runs knowing from the start are run
+// again with it (what they know is the key), so each closes its share of the gap between its own floor and ceiling on
+// the same key, and a number moves between the builds only where their worlds did. Without the baseline's runs and the
+// copy of the sim they ran from on this machine, the comparison is with the ledger's numbers, on the baseline's own key,
+// and says so.
 async function worlds() {
-  const seeds = range(Number(opt("seeds", "6"))), days = Number(opt("days", "60")), brain = "random";
+  const seeds = range(Number(opt("seeds", "6"))), days = Number(opt("days", "60")), brain = "random", against = opt("against", "");
   const specs: Record<string, Spec> = {
     seen: { metrics: KPIS, claims: [{ id: "learn", text: "fewer tries go to waste late than early", gap: ["wastedEarly", "wasted"], value: 0 }] },
     gap: { metrics: GAP, claims: [{ id: "closes", text: "learning closes some of the gap in wasted tries", above: "wasted", value: 0 }] },
   };
-  const measure = async (snap: Snap): Promise<Runs> => {
-    const at = join(DATA, "runs", snap.id, `worlds-${days}d`), file = (mode: string, s: number) => join(at, mode, `s${s}`, "run.jsonl");
-    const theories = (mode: string, s: number, extra: string[] = []) => async () => {
-      if (!existsSync(file(mode, s))) await script(snap, "theories.ts", ["--seed", String(s), "--days", String(days), "--learning", mode, "--out", file(mode, s), ...extra], join(at, "logs", `${mode}-${s}.log`), true);
-    };
-    console.error(`worlds on ${snap.id}: ${seeds.length} seeds, ${days} days, learning as it is first`);
-    await pool(seeds.map((s) => theories("seen", s)), WORLD_JOBS);
-    // every way anyone used on any island, tried on each island
-    const pooled = join(at, "seen-all");
-    mkdirSync(pooled, { recursive: true });
-    for (const s of seeds) if (!existsSync(join(pooled, `s${s}.jsonl`))) symlinkSync(file("seen", s), join(pooled, `s${s}.jsonl`));
-    const key = (s: number) => join(at, `key-s${s}.json`);
-    console.error("  the answer key for each island");
-    await pool(seeds.map((s) => async () => { if (!existsSync(key(s))) await script(snap, "truth.ts", ["--seed", String(s), "--runs", pooled, "--per", "8", "--out", key(s)], join(at, "logs", `truth-${s}.log`), true); }), WORLD_JOBS);
-    console.error("  learning off, and known from the start");
-    await pool(seeds.flatMap((s) => [theories("off", s), theories("known", s, ["--key", key(s)])]), WORLD_JOBS);
+  const kind = { tier: "worlds", brain, days, people: undefined };
+  const runsOf = (id: string) => join(DATA, "runs", id, `worlds-${days}d`), file = (at: string, mode: string, s: number) => join(at, mode, `s${s}`, "run.jsonl");
+  const snap = snapshot("worlds"), at = runsOf(snap.id), entry = against ? undefined : ledger().filter((x) => sameKind(x, kind) && x.baseline).at(-1);
+  // the baseline: --against a commit, run now with this tree's scripts; else the ledger's, if its runs and its sim are
+  // here. One that is this very build is these same runs on this same key.
+  const base = against ? { snap: snapshotOf(against, "worlds"), seeds }
+    : entry && { snap: { id: entry.content, dir: join(DATA, "snap", entry.content), commit: entry.commit, dirty: false }, seeds: entry.seeds.filter((s) => seeds.includes(s)) };
+  const other = base && base.snap.id !== snap.id ? base : undefined;
+  const kept = other && (against || (existsSync(other.snap.dir) && other.seeds.every((s) => existsSync(file(runsOf(other.snap.id), "seen", s)) && existsSync(file(runsOf(other.snap.id), "off", s))))) ? other : undefined;
+  const missing = other && !kept ? `the baseline ${other.snap.commit}'s runs (${runsOf(other.snap.id)}) or the sim they ran from (${other.snap.dir}) aren't on this machine: it's compared by the ledger's numbers, on its own answer key, so a change may be the key's alone` : "";
+  if (missing) console.error(`\n!!! ${missing}\n`);
+  const on = kept ? join(at, `vs-${kept.snap.id}`) : at, key = (s: number) => join(on, `key-s${s}.json`);
+  const builds: Build[] = [{ snap, seeds, at, scored: on }, ...(kept ? [{ ...kept, at: runsOf(kept.snap.id), scored: join(on, "base") }] : [])];
+  const world = (b: Build, dir: string, mode: string, s: number, extra: string[] = []) => async () => {
+    if (!existsSync(file(dir, mode, s))) await script(b.snap, "theories.ts", ["--seed", String(s), "--days", String(days), "--learning", mode, "--out", file(dir, mode, s), ...extra], join(dir, "logs", `${mode}-${s}.log`), true);
+  };
+  console.error(`worlds on ${snap.id}: ${seeds.length} seeds, ${days} days${kept ? `, and the baseline ${kept.snap.commit} (${kept.snap.id})` : ""}: learning as it is, and off`);
+  await pool(builds.flatMap((b) => b.seeds.flatMap((s) => [world(b, b.at, "seen", s), world(b, b.at, "off", s)])), WORLD_JOBS);
+  // every way anyone used on any island, in either build, tried on each island
+  const pooled = join(on, "seen-all");
+  mkdirSync(pooled, { recursive: true });
+  for (const b of builds) for (const s of b.seeds) {
+    const link = join(pooled, `${b.snap.id}-s${s}.jsonl`);
+    if (!existsSync(link)) symlinkSync(file(b.at, "seen", s), link);
+  }
+  console.error(`  the answer key for each island${kept ? ", shared" : ""}`);
+  await pool(seeds.map((s) => async () => { if (!existsSync(key(s))) await script(snap, "truth.ts", ["--seed", String(s), "--runs", pooled, "--per", "8", "--out", key(s)], join(on, "logs", `truth-${s}.log`), true); }), WORLD_JOBS);
+  console.error("  known from the start");
+  await pool(builds.flatMap((b) => b.seeds.map((s) => world(b, b.scored, "known", s, ["--key", key(s)]))), WORLD_JOBS);
+  // what could be learned on an island is what the build's own people did there, learning as it is (theory-report.ts)
+  const numbers = async (b: Build): Promise<Runs> => {
     const kpis = async (mode: string, s: number) => {
-      const out = join(at, mode, `s${s}`, "report.json");
-      if (!existsSync(out)) await script(snap, "theory-report.ts", [dirname(file(mode, s)), "--key", key(s), "--json", out], join(at, "logs", `report-${mode}-${s}.log`), true);
-      return (JSON.parse(readFileSync(out, "utf8")) as { kpis: Kpis }).kpis;
+      const out = join(b.scored, `report-${mode}-s${s}.json`);
+      if (!existsSync(out)) await script(snap, "theory-report.ts", [dirname(file(mode === "known" ? b.scored : b.at, mode, s)), "--key", key(s), "--evidence", dirname(file(b.at, "seen", s)), "--json", out], join(b.scored, "logs", `report-${mode}-${s}.log`), true);
+      const report: { kpis: Kpis } = JSON.parse(readFileSync(out, "utf8"));
+      return report.kpis;
     };
     const runs: Runs = { seen: {}, off: {}, known: {}, gap: {} };
-    await pool(seeds.map((s) => async () => {
+    await pool(b.seeds.map((s) => async () => {
       const [seen, off, known] = [await kpis("seen", s), await kpis("off", s), await kpis("known", s)];
       runs.seen[s] = { ...seen.late, wastedEarly: seen.early.wasted };
       runs.off[s] = off.late; runs.known[s] = known.late;
@@ -298,12 +332,14 @@ async function worlds() {
     }), WORLD_JOBS);
     return runs;
   };
-  const kind = { tier: "worlds", brain, days, people: undefined };
-  const snap = snapshot("worlds"), cand = await measure(snap), base = await baselineFor("worlds", kind, measure);
-  const r = compare(specs, cand, base?.runs);
-  show(`worlds: seeds 1-${seeds.length}, ${days} days: ${snap.id}`, r, base?.commit);
+  const cand = await numbers(builds[0]), baseRuns = kept ? await numbers(builds[1]) : base && !other ? cand : entry?.runs;
+  const r = compare(specs, cand, baseRuns);
+  show(`worlds: seeds 1-${seeds.length}, ${days} days: ${snap.id}`, r, base && `${base.snap.commit}${missing ? ", by the ledger's numbers on its own answer key" : ", on the same answer key"}`);
+  if (missing) console.log(`\n!!! ${missing}`);
   for (const mode of ["off", "known"]) console.log(`${mode.padEnd(6)} ${Object.keys(KPIS).map((k) => `${k} ${fmt(mean(values(cand[mode], k)))}`).join("  ")}`);
-  return settle({ at: new Date().toISOString(), ...kind, commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION.worlds, seeds, runs: cand, against: base?.commit }, r, !!base);
+  // kept but never judged: every true theory held, whether or not anyone on the island had seen what it's about
+  console.log(`rightAll, unjudged: ${["seen", "off", "known"].map((mode) => `${mode} ${fmt(mean(values(cand[mode], "rightAll")))}`).join("  ")}`);
+  return settle({ at: new Date().toISOString(), ...kind, commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION.worlds, seeds, runs: cand, against: base?.snap.commit }, r, !!baseRuns);
 }
 
 // ---------- the live world ----------
@@ -410,4 +446,4 @@ else if (tier === "worlds") process.exit((await worlds()).verdict === "fail" ? 1
 else if (tier === "live") await live();
 else if (tier === "trend") trend();
 else if (tier === "proxy") proxy();
-else console.log(readFileSync(import.meta.path, "utf8").split("\n").filter((l) => l.startsWith("//")).slice(0, 18).join("\n"));
+else console.log(readFileSync(import.meta.path, "utf8").split("\n").filter((l) => l.startsWith("//")).slice(0, 20).join("\n"));

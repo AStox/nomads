@@ -5,8 +5,8 @@
 // bring besides. Each try is noted with the conditions they could see (sim.ts conditionsNow), whether it came
 // off as meant (beliefs.ts cameOff) and how long it took (scripts/trial.ts). A seed pushed into the ground, or a young
 // plant watered, counts when it comes up or withers, the island's own ecology running on meanwhile. Then, for each
-// condition, whether it truly hurts the way (stats.ts judge). scripts/answer-key.ts has the key's shape, and
-// scripts/theory-report.ts scores people's theories and choices against it.
+// condition, whether it truly hurts the way, like for like (stats.ts judge). scripts/answer-key.ts has the key's shape,
+// and scripts/theory-report.ts scores people's theories and choices against it.
 //   NOMADS_BRAIN=random bun scripts/truth.ts --seed 3 --runs /tmp/theories/3 --days 40 --per 6 --out /tmp/truth/3.json
 // --runs: a directory of scripts/theories.ts runs of this island. Their ways are what gets tried, and the things they
 // made and the rulings they settled come too, so the same things can be made here.
@@ -23,7 +23,7 @@ import { conditionsNow } from "../src/sim/sim";
 import { seedRandom } from "./seeded";
 import { tryAct } from "./trial";
 import { judge } from "./stats";
-import type { AnswerKey, Cond, Tally, Way } from "./answer-key";
+import type { AnswerKey, Cond, Tally, Verdict, Way } from "./answer-key";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 const seed = Number(arg("seed", "1")), days = Number(arg("days", "40")), per = Number(arg("per", "6"));
@@ -205,18 +205,45 @@ const tally = (ts: Trial[]): Tally => ({ n: ts.length, wins: ts.filter((t) => t.
 // would take the blame for it. So dark and cold, which come with the hour and the season and go together at night and in
 // winter, are each judged without the other; and dark not in the shade of trees either, which darkens a spot before the
 // rest. Rain and wind are judged only over the tries they could have reached: under a roof it never rains on anyone, and
-// a gale is felt only on open ground, which is ground of its own sort. What's in a spot itself is judged as it falls.
+// a gale is felt only on open ground, which is ground of its own sort. What's in a spot itself (shade, dry ground,
+// bushes or trees close round, the sort of ground) is judged like for like: each against its absence where the rest of
+// the spot is the same (below).
 const WEATHER = ["rain", "dark", "cold", "wind"];
+// A spot condition in and out of it like for like: the tries split by the rest of the spot (the other spot conditions,
+// any ground but its own for a ground, since a spot is of one sort or another), and the odds in it and out of it pooled
+// over the splits that have both, by how much each can tell (Mantel and Haenszel's weights, as beliefs.ts weighs a
+// record like for like), as if over the tries in those splits. So crowding, which mostly comes beside a tree, takes no
+// blame for the shade, nor the forest floor for the trees on it.
+type Count = { n: number; wins: number };
+function likeForLike(ts: Trial[], c: string): [Count, Count] {
+  const ground = c.startsWith("ground:"), splits = new Map<string, { in: Trial[]; out: Trial[] }>();
+  for (const t of ts) {
+    const rest = t.now.filter((o) => o !== c && !WEATHER.includes(o) && !(ground && o.startsWith("ground:"))).sort().join(" ");
+    const s = splits.get(rest) ?? splits.set(rest, { in: [], out: [] }).get(rest)!;
+    (t.now.includes(c) ? s.in : s.out).push(t);
+  }
+  let weight = 0, oddsIn = 0, oddsOut = 0, nIn = 0, nOut = 0;
+  for (const s of splits.values()) {
+    if (!s.in.length || !s.out.length) continue;
+    const a = tally(s.in), b = tally(s.out), wt = (a.n * b.n) / (a.n + b.n);
+    weight += wt; oddsIn += (wt * a.wins) / a.n; oddsOut += (wt * b.wins) / b.n; nIn += a.n; nOut += b.n;
+  }
+  return [{ n: nIn, wins: weight ? (nIn * oddsIn) / weight : 0 }, { n: nOut, wins: weight ? (nOut * oddsOut) / weight : 0 }];
+}
 const ways: Record<string, Way> = {};
 for (const [key, plan] of Object.entries(plans)) {
   const f = plan.belief.fields, ts = plan.trials, conds: Record<string, Cond> = {};
   const reason = Object.entries(plan.reasons).sort((x, y) => y[1] - x[1])[0]?.[0];
   const why = plan.why ?? (!ts.length ? reason ?? "never tried" : undefined);
   for (const c of new Set([...WEATHER, ...ts.flatMap((t) => t.now)])) {
-    const over = !WEATHER.includes(c) ? ts : ts.filter((t) =>
-      !t.now.some((o) => o !== c && (WEATHER.includes(o) || (c === "dark" && o === "shade"))) && ((c !== "rain" && c !== "wind") || t.open.includes(c)));
     const inn = ts.filter((t) => t.now.includes(c)), rest = ts.filter((t) => !t.now.includes(c));
-    conds[c] = { in: tally(inn), out: tally(rest), verdict: judge(tally(over.filter((t) => t.now.includes(c))), tally(over.filter((t) => !t.now.includes(c)))) };
+    let verdict: Verdict;
+    if (WEATHER.includes(c)) {
+      const over = ts.filter((t) =>
+        !t.now.some((o) => o !== c && (WEATHER.includes(o) || (c === "dark" && o === "shade"))) && ((c !== "rain" && c !== "wind") || t.open.includes(c)));
+      verdict = judge(tally(over.filter((t) => t.now.includes(c))), tally(over.filter((t) => !t.now.includes(c))));
+    } else verdict = judge(...likeForLike(ts, c));
+    conds[c] = { in: tally(inn), out: tally(rest), verdict };
   }
   // a planting's aim, if no run saw one come up: what came up here
   const grew = Object.entries(plan.grew).sort((x, y) => y[1] - x[1])[0]?.[0];
