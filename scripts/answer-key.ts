@@ -19,8 +19,13 @@ export type AnswerKey = { seed: number; days: number; trials: number; ways: Reco
 
 export const loadKey = (path: string): AnswerKey => JSON.parse(readFileSync(path, "utf8"));
 
-// Whether a condition truly hurts a way, by the key; unclear where the key couldn't say.
-export const verdict = (k: AnswerKey, key: string, cond: string): Verdict => k.ways[key]?.conds[cond]?.verdict ?? "unclear";
+// Whether a theory truly holds where a way is hurt, by the key; unclear where the key couldn't say. A theory of several
+// conditions together, with exceptions ("rain+!wind", beliefs.ts holds), goes by the conditions it names it won't work
+// in, the exceptions only narrowing it: right if one of those truly hurts, wrong if none does.
+export const verdict = (k: AnswerKey, key: string, t: string): Verdict => {
+  const named = t.split("+").filter((c) => !c.startsWith("!")).map((c) => k.ways[key]?.conds[c]?.verdict ?? "unclear");
+  return named.includes("hurts") ? "hurts" : named.length && named.every((v) => v === "no effect") ? "no effect" : "unclear";
+};
 
 // Each way's conditions that truly hurt it, for RULES.truth.
 export function hurting(k: AnswerKey): Record<string, string[]> {

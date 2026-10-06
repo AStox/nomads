@@ -11,6 +11,7 @@
 // people's, for a world where everyone knew from the start.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { DAY } from "../src/sim/world";
+import { holds } from "../src/sim/beliefs";
 import { expectedTicks, loadKey, verdict } from "./answer-key";
 import type { Tally, Verdict, Way } from "./answer-key";
 
@@ -78,6 +79,9 @@ for (const r of evidenceDir ? load(evidenceDir) : runs) for (const l of r.lines)
   if (l.ev !== "attempt" || !l.key) continue;
   for (const c of l.now ?? []) tried.set(`${l.key}#${c}`, (tried.get(`${l.key}#${c}`) ?? 0) + 1);
 }
+// whether someone there could have come to a true theory: a condition it names that truly hurts the way was tried
+// often enough
+const learnable = (key: string, t: string) => t.split("+").some((c) => !c.startsWith("!") && verdict(answers, key, c) === "hurts" && (tried.get(`${key}#${c}`) ?? 0) >= EVIDENCE);
 
 // ---------- over the days ----------
 // Each run's own days, 1 on: its first day ends DAY ticks after it starts, and the daily lines (held, day) are written
@@ -110,10 +114,12 @@ type Row = {
 // what a way is for, by the key or as the runs noted it
 const aims = new Map<string, string>();
 for (const r of runs) for (const l of r.lines) if (l.ev === "attempt" && l.key && l.aim) aims.set(l.key, l.aim);
+// a lesson is held by a theory that names its condition as one it won't work in, whatever exceptions it makes
+const names = (t: string, c: string) => t.split("+").includes(c);
 const LESSONS: Record<string, (key: string, cond: string) => boolean> = {
-  shade: (key, cond) => key.startsWith("plant|") && cond === "shade",
-  crowded: (key, cond) => key.startsWith("plant|") && cond === "crowded",
-  "rain-fire": (key, cond) => cond === "rain" && (answers.ways[key]?.aim ?? aims.get(key)) === "fire",
+  shade: (key, cond) => key.startsWith("plant|") && names(cond, "shade"),
+  crowded: (key, cond) => key.startsWith("plant|") && names(cond, "crowded"),
+  "rain-fire": (key, cond) => names(cond, "rain") && (answers.ways[key]?.aim ?? aims.get(key)) === "fire",
 };
 const rows: Row[] = [];
 const row = (b: number) => (rows[b] ??= {
@@ -207,7 +213,7 @@ for (const r of runs) {
       const v = verdict(answers, l.key, l.cond);
       x.held[v]++;
       lastHeld.set(`${r.run}|${l.agent}|${l.key}|${l.cond}`, l.t);
-      if (k && v === "hurts") { k.rightAll++; if ((tried.get(`${l.key}#${l.cond}`) ?? 0) >= EVIDENCE) k.right++; }
+      if (k && v === "hurts") { k.rightAll++; if (learnable(l.key, l.cond)) k.right++; }
       if (k && v === "no effect") k.wrong++;
       for (const [lesson, is] of Object.entries(LESSONS)) {
         const id = `${day}|${l.agent}|${lesson}`;
@@ -263,7 +269,7 @@ for (const r of runs) {
     for (const l of xs) {
       const at = l.done ?? l.t, s = at < f.t ? around_[v].before : at < end ? around_[v].after : null;
       if (!s) continue;
-      s.n++; if (l.now?.includes(f.cond!)) s.inCond++; if (l.worked) s.wins++;
+      s.n++; if (holds(f.cond!, l.now ?? [])) s.inCond++; if (l.worked) s.wins++;
     }
   }
 }
