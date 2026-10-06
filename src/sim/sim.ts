@@ -795,7 +795,7 @@ const condition = (c: string) => CONDITIONS[c] ?? { words: `The ground there was
 // What they've seen of it in a condition and out of it, in their words, for weighing a theory; and for the weather, how
 // it went with it and without it in the mix of the other weather that tells the most (beliefs.ts apart), when other
 // weather has come into it ("when it was dark but dry it has worked 3 of 9 times for them, and 4 of 12 when light and
-// dry"). Their counts fade with time (beliefs.ts noteTry); they're told what they round to.
+// dry"). An old save's faded counts are told as what they round to.
 const evidence = (b: Belief, c: string) => {
   const s = b.when?.[c] ?? { tries: 0, wins: 0 }, all = b.tally ?? { tries: 0, wins: 0 }, r = Math.round;
   const told = `it has worked ${r(s.wins)} of ${r(s.tries)} times for them like that, and ${r(all.wins - s.wins)} of ${r(all.tries - s.tries)} otherwise`;

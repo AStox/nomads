@@ -2,7 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 import { DAY, H, TILE_M, W, addThing, dryAt, meters, newWorld, type Agent, type Thing, type World } from "./world";
 import { giveItems, groundWord, plant, removeThing, soilAt } from "./physics";
 import { around, put, thingById } from "./space";
-import { FADE, groundKey, noteTry, type Belief } from "./beliefs";
+import { groundKey, noteTry, type Belief } from "./beliefs";
 import { plan } from "./plan";
 import { tick } from "./sim";
 import { YEAR_DAYS } from "./sky";
@@ -95,16 +95,15 @@ test("what's planted is judged when it comes up: the planter waits, learns how l
   expect(b.later).toBe(w.t - planted);
   expect(b.when?.[ground]).toEqual({ tries: 1, wins: 1 });
   expect(a.waiting).toBeUndefined();
-  // the next one, on the same ground, starved of what it needs: it withers, and that counts against the ground (the one
-  // that came up counting for a little less now)
+  // the next one, on the same ground, starved of what it needs: it withers, and that counts against the ground, beside
+  // the one that came up
   const second = await sow();
   second.fit = 0;
   second.hp = 0.01;
   await run(30, () => !thingById(w, second.id));
   expect(thingById(w, second.id)).toBeUndefined();
   expect(b).toMatchObject({ tries: 2, wins: 1 });
-  expect(b.when?.[ground]?.tries).toBeCloseTo(1 + FADE);
-  expect(b.when?.[ground]?.wins).toBeCloseTo(FADE);
+  expect(b.when?.[ground]).toEqual({ tries: 2, wins: 1 });
   expect(a.waiting).toBeUndefined();
 });
 

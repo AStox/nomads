@@ -256,7 +256,7 @@ test("where the rain falls mostly at night, the dark is suspected along with it 
   expect(worseIn(b, "rain")).toBe(true);
 });
 
-test("once the rain stops mattering, the long record of sparks dying in it gives way to tries there that catch as often as anywhere, and the theory goes; the wind that kills them now keeps its theory, and a theory given up isn't brought straight back by the failures it was formed on", () => {
+test("once the rain stops mattering, the sparks that died in it are never forgotten: the theory stands until the tries there that catch have come to make it look no worse than anywhere, like for like; the wind that kills them all along keeps its theory", () => {
   const b = striking();
   b.unless = ["rain", "wind"];
   // for a long while the rain and the wind each killed every spark; out of both it caught every other time
@@ -264,19 +264,12 @@ test("once the rain stops mattering, the long record of sparks dying in it gives
   expect(fades(b, "rain")).toBe(false);
   // then the rain stopped mattering: in the rain it catches every other time, as out of it, and the wind still kills it
   let rounds = 0;
-  while (!fades(b, "rain") && rounds < 50) { tries(b, [], 2, true); tries(b, ["rain"], 2, true); tries(b, ["wind"], 1, false); rounds++; }
-  expect(rounds).toBeGreaterThan(1);
-  expect(rounds).toBeLessThanOrEqual(15);
+  while (!fades(b, "rain") && rounds < 60) { tries(b, [], 2, true); tries(b, ["rain"], 2, true); tries(b, ["wind"], 1, false); rounds++; }
+  // twenty failures take as many good rounds and more to outweigh
+  expect(rounds).toBeGreaterThan(20);
+  expect(rounds).toBeLessThan(60);
   for (let i = 0; i < 30; i++) { tries(b, [], 2, true); tries(b, ["wind"], 1, false); }
   expect(fades(b, "wind")).toBe(false);
-  // someone who saw it catch in the rain and gave the theory up doesn't take it up again on the old failures there
-  const saw = striking();
-  saw.unless = ["rain"];
-  for (let i = 0; i < 20; i++) { tries(saw, [], 2, true); tries(saw, ["rain"], 1, false); }
-  expect(worseIn(saw, "rain")).toBe(true);
-  rethink(saw, ["rain"]);
-  expect(saw.unless).toBeUndefined();
-  expect(worseIn(saw, "rain")).toBe(false);
 });
 
 // Planting berries, as someone who has seen one come up would know it, on grassland (GRASS) or in the shade there (SHADE).
@@ -286,7 +279,7 @@ const planting = (): Belief => ({
 });
 const GRASS = ["ground:grassland"], SHADE = ["shade", "ground:grassland"];
 
-test("one failure is one failure however faded counts add up: a seedling lost in the shade after two came up there is no suspect, though it has done worse there", () => {
+test("one failure is one failure: a seedling lost in the shade after two came up there is no suspect, though it has done worse there", () => {
   const b = planting();
   for (let i = 0; i < 20; i++) noteTry(b, true, GRASS);
   for (const ok of [true, true, false]) noteTry(b, ok, SHADE);

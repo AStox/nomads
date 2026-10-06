@@ -21,8 +21,8 @@ export type Belief = {
   spurious?: string; // a kind they wrongly think they need to hold
   law?: string;
   // how it has gone for them, all told and in each condition anyone can see they did it in (rain, dark, cold, wind, and
-  // for what's done to the ground, the ground, shade, dry ground and crowding): tries and wins, the latest counting most
-  // (noteTry), so these are rarely whole numbers
+  // for what's done to the ground, the ground, shade, dry ground and crowding): every try and every win, however long ago
+  // (noteTry; an old save's faded counts aren't whole)
   tally?: Count;
   when?: Record<string, Count>;
   // and in each mix of the weather they did it in, its conditions joined by "+" ("" for none of them): what lets them
@@ -57,12 +57,6 @@ export const ofPlace = (c: string) => c.startsWith("ground:") || c === "shade" |
 export const holds = (t: string, now: string[]) => t.split("+").every((c) => (c.startsWith("!") ? !now.includes(c.slice(1)) : now.includes(c)));
 // Whether their theories of a way rule it out in conditions like these: one of them holds.
 export const ruledOut = (b: Belief, now: string[]) => !!b.unless?.some((t) => holds(t, now));
-// Each try they make of a way counts for a little less with every try after it (FADE of what it was each time), so
-// their record of it is mostly the last twenty or so: what it used to do is forgotten once it does otherwise. All told
-// and in each condition, that's the last twenty tries of it; in each mix of the weather, the last twenty in weather like
-// that, however long ago, since rain by day or a still night may come only now and then. Its tries and wins all told
-// (b.tries, b.wins) stay whole: what they've done in their life.
-export const FADE = 0.95;
 // The mix of the weather in what they could see (now): its conditions, joined by "+".
 export const mixOf = (now: string[]) => now.filter((c) => !ofPlace(c)).sort().join("+");
 // The mixes of the weather a record kept before it had them (an old save) stands for: each condition it holds on its
@@ -76,12 +70,13 @@ function mixesOf(tally: Count, when: Record<string, Count>) {
   return Object.fromEntries(cells.filter(([, s]) => s.tries > 0));
 }
 // What a try adds to their record of a way: all told, in each condition they did it in (now), and in the mix of the
-// weather it was done in. A record kept before it had mixes (an old save) starts them from what it holds.
+// weather it was done in. Every try stays, however long ago: what it did a hundred tries back counts as much as what it
+// did last time, so a failure isn't forgotten because it has since worked, nor a success because it has since failed,
+// and what changes their mind is the whole of what they've seen. A record kept before it had mixes (an old save) starts
+// them from what it holds; one kept while tries faded goes on from what it had come to.
 export function noteTry(b: Belief, worked: boolean, now: string[]) {
   const tally = (b.tally ??= { tries: 0, wins: 0 }), when = (b.when ??= {}), mix = (b.mix ??= mixesOf(tally, when));
-  const cell = (mix[mixOf(now)] ??= { tries: 0, wins: 0 });
-  for (const s of [tally, ...Object.values(when), cell]) { s.tries *= FADE; s.wins *= FADE; }
-  for (const s of [tally, ...now.map((c) => (when[c] ??= { tries: 0, wins: 0 })), cell]) {
+  for (const s of [tally, ...now.map((c) => (when[c] ??= { tries: 0, wins: 0 })), (mix[mixOf(now)] ??= { tries: 0, wins: 0 })]) {
     s.tries++;
     if (worked) s.wins++;
   }
@@ -142,9 +137,9 @@ export function apart(b: Belief, c: string): { diff: number; se: number; tries: 
   return { diff: diff / weight, se: Math.sqrt(v) / weight, tries: inn.tries, wins: inn.wins, most };
 }
 // Whether it has done worse for them in a condition than out of it by more than chance would make it: it has failed
-// them there more than once (a hair more, so faded counts that sum to one failure and a rounding error aren't two), and
-// by more than a standard error of the difference, from their own counts (apart). A few failures in the dark among many
-// plantings aren't that.
+// them there more than once (a hair more, so an old save's faded counts that sum to one failure and a rounding error
+// aren't two), and by more than a standard error of the difference, from their own counts (apart). A few failures in
+// the dark among many plantings aren't that.
 export function worseIn(b: Belief, c: string) {
   const d = apart(b, c);
   return d.tries - d.wins > 1 + 1e-9 && d.diff > d.se;
@@ -166,7 +161,7 @@ export function restsOn(b: Belief, c: string) {
 // Whether their record has come to tell against a theory that it won't work in a condition: over three or more tries
 // there it has worked at least once, and about as often as out of it (within 10 points), like for like where it can
 // be (apart). A spark that never once caught in the rain says the theory is right, however rarely it catches anywhere.
-// (Counts that have faded go by what they round to: 2.5 tries is three.)
+// (An old save's faded counts go by what they round to: 2.5 tries is three.)
 export function fades(b: Belief, c: string) {
   const d = apart(b, c);
   return d.tries >= 2.5 && d.wins >= 0.5 && d.diff <= 0.1;
@@ -310,9 +305,9 @@ export function record(w: World, a: Agent, out: Outcome, ticks: number, how: Bel
   if (out.ok) b.uses = out.uses;
   b.tries++;
   if (out.ok && !pending) b.wins++;
-  // how long it takes them: the average of their tries, the latest counting most once there are twenty or so (as with
-  // their record of how it went, noteTry), so one try that dragged on doesn't make it look slow for good
-  b.ticks = b.tries === 1 ? ticks : b.ticks + (ticks - b.ticks) / Math.min(b.tries, 1 / (1 - FADE));
+  // how long it takes them: the average of their tries, the latest counting most once there are twenty or so, so one try
+  // that dragged on doesn't make it look slow for good, and as they get handier it comes to look quicker
+  b.ticks = b.tries === 1 ? ticks : b.ticks + (ticks - b.ticks) / Math.min(b.tries, 20);
   if (out.numbers?.rate) b.rate = out.numbers.rate;
   if (law) b.law = law.id;
   if (isNew && how === "discovered" && law && law.by !== a.id) log(w, "discover", [a.id], a, `${a.name} worked out on their own: ${sentence(w, f, ticks)}`);
@@ -366,18 +361,11 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number, now
   }
 }
 
-// A theory they've given up: the conditions it named, struck off, and for the weather, what they'd counted against it
-// there put down to something else: their record in each mix of the weather it was part of starts again (apart), so the
-// failures it was formed on don't bring it straight back, unless the mix holds weather they still blame, which explains
-// those failures and keeps its record (dropping the dark leaves the rain theory its record of dark and raining).
+// A theory they've given up: the conditions it named, struck off. Their record stays as it was: the failures it was
+// formed on are still there, set against everything that has come since.
 export function rethink(b: Belief, conds: string[]) {
   b.unless = b.unless?.filter((c) => !conds.includes(c));
   if (!b.unless?.length) delete b.unless;
-  const mix = b.mix ?? {};
-  for (const k of Object.keys(mix)) {
-    const ks = k.split("+");
-    if (ks.some((c) => conds.includes(c)) && !ks.some((c) => b.unless?.includes(c))) delete mix[k];
-  }
 }
 
 export function teach(w: World, teacher: Agent, learner: Agent, key: string) {
