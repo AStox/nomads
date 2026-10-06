@@ -55,12 +55,22 @@ const nightRain: Sky = (dark) => ({ rain: dark ? 0.7 : 0.05, wind: 0 });
 const rareWind: Sky = () => ({ rain: 0.35, wind: 0.08 });
 const rareRain: Sky = () => ({ rain: 0.08, wind: 0.35 });
 
+// What the evidence would support, beside what they came to: evident, the share of people whose own tries (all they saw
+// the outcome of, tests too) show the true cause doing worse than its absence beyond chance, as a statistician holding
+// every one of their tries would judge it (two proportions, one-sided at 95%); not judged, since it rises and falls with
+// where they choose to try (tol 1 never flags it). caught: of those, the share who came to blame it.
+const EVIDENCE = {
+  evident: { better: "higher", tol: 1, text: "share of people whose own tries show the true cause worse beyond chance (not judged)" },
+  caught: { better: "higher", tol: 0.1, text: "share of those whose own tries show the true cause who come to blame it" },
+} satisfies Record<string, Metric>;
+const CAUGHT: Claim = { id: "caught", text: "nearly all whose own tries show the true cause beyond chance come to blame it (more than 75%)", above: "caught", value: 0.75 };
 const CAUSE = {
   right: { better: "higher", tol: 0.1, text: "share of people who end up blaming what truly kills the sparks" },
   wrong: { better: "lower", tol: 0.1, text: "share of people who end up blaming something that doesn't" },
   wasted: { better: "lower", tol: 0.05, text: "share of their last third of tries (tests aside) made where it can't work" },
   wastedEarly: { better: "lower", tol: 0.05, text: "share of their first third of tries (tests aside) made where it can't work" },
   formed: { better: "lower", tol: 0.5, text: "days until each first blames the true cause (the whole run if never)" },
+  ...EVIDENCE,
 } satisfies Record<string, Metric>;
 
 export const PROBES: Record<string, Probe> = {
@@ -89,6 +99,7 @@ export const PROBES: Record<string, Probe> = {
       { id: "most", text: "most come to blame the true cause", above: "right", value: 0.5 },
       { id: "only", text: "more blame the true cause than anything else", gap: ["right", "wrong"], value: 0 },
       { id: "less-waste", text: "fewer of their tries go to waste late than early", gap: ["wastedEarly", "wasted"], value: 0 },
+      CAUGHT,
     ],
     variants: {
       real: { quench: ["rain"], tell: true, sparks: "harder", ways: [STONE], sky: changeable },
@@ -102,6 +113,7 @@ export const PROBES: Record<string, Probe> = {
       { id: "cause", text: "more blame the true cause than the one that comes with it", gap: ["right", "bystander"], value: 0 },
       { id: "most", text: "nearly everyone comes to blame the true cause (more than 85%)", above: "right", value: 0.85 },
       { id: "few-bystanders", text: "fewer than one in four also blame the one that only comes with it", below: "bystander", value: 0.25 },
+      CAUGHT,
     ],
     variants: {
       real: { quench: ["rain"], bystander: "dark", tell: false, sparks: "harder", ways: [STONE], sky: nightRain },
@@ -116,10 +128,12 @@ export const PROBES: Record<string, Probe> = {
       wasted: { better: "lower", tol: 0.05, text: "share of their last third of tries (tests aside) made where it can't work" },
       dropped: { better: "lower", tol: 0.5, text: "days from the change until those who blamed the old cause let it go" },
       found: { better: "lower", tol: 0.5, text: "days from the change until each blames the new cause" },
+      ...EVIDENCE,
     },
     claims: [
       { id: "let-go", text: "fewer than three in ten still blame the old cause at the end", below: "kept", value: 0.3 },
       { id: "find", text: "at least two in three come to blame the new cause", above: "right", value: 0.65 },
+      CAUGHT,
     ],
     variants: {
       real: { quench: ["rain"], then: ["wind"], tell: true, sparks: "harder", ways: [STONE], sky: changeable },
@@ -161,6 +175,7 @@ export const PROBES: Record<string, Probe> = {
     claims: [
       { id: "both", text: "most come to blame both", above: "right", value: 0.5 },
       { id: "only", text: "more blame both than anything else", gap: ["right", "wrong"], value: 0 },
+      CAUGHT,
     ],
     variants: {
       real: { quench: ["rain", "wind"], tell: true, sparks: "harder", ways: [STONE], sky: changeable },
@@ -173,6 +188,7 @@ export const PROBES: Record<string, Probe> = {
     claims: [
       { id: "most", text: "most come to blame it", above: "right", value: 0.5 },
       { id: "only", text: "more blame it than anything else", gap: ["right", "wrong"], value: 0 },
+      CAUGHT,
     ],
     variants: {
       real: { quench: ["rain"], leak: 0.5, tell: false, sparks: "harder", ways: [STONE], sky: changeable },
@@ -185,6 +201,7 @@ export const PROBES: Record<string, Probe> = {
     claims: [
       { id: "most", text: "most come to blame it", above: "right", value: 0.5 },
       { id: "only", text: "more blame it than anything else", gap: ["right", "wrong"], value: 0 },
+      CAUGHT,
     ],
     variants: {
       real: { quench: ["wind"], tell: false, sparks: "harder", ways: [STONE], sky: rareWind },
@@ -210,6 +227,7 @@ export const PROBES: Record<string, Probe> = {
       { id: "only", text: "more blame the true cause than anything else", gap: ["right", "wrong"], value: 0 },
       { id: "less-waste", text: "fewer of their plantings go where nothing comes up late than early", gap: ["wastedEarly", "wasted"], value: 0 },
       { id: "not-weather", text: "fewer than one in four blame the weather", below: "weather", value: 0.25 },
+      CAUGHT,
     ],
     variants: {
       // in the shade of trees, as in the world; elsewhere seven in ten come up; a berry to plant every four hours, so
@@ -472,6 +490,26 @@ export async function runProbe(probe: string, variant: string, seed: number, day
       right: causes.length ? blames(causes).length / n : null,
       wasted: causes.length ? share(third(2), wasted) : null,
     });
+    // what the evidence would support (EVIDENCE): each person's own tries since the cause last changed, all they saw the
+    // outcome of, and whether they show every true cause doing worse than its absence beyond chance
+    if (causes.length && probe !== "spread") {
+      const from = !sowing && v.then ? half : begin;
+      const shows = (xs: Attempt[], c: string) => {
+        const inn = xs.filter((x) => x.now.includes(c)), out = xs.filter((x) => !x.now.includes(c));
+        if (inn.length < 2 || !out.length) return false;
+        const wi = inn.filter((x) => x.worked).length, wo = out.filter((x) => x.worked).length, p = (wi + wo) / xs.length;
+        const se = Math.sqrt(p * (1 - p) * (1 / inn.length + 1 / out.length));
+        return se > 0 && (wo / out.length - wi / inn.length) / se > 1.645;
+      };
+      const evident = w.agents.filter((a) => {
+        const xs = attempts.filter((x) => x.agent === a.id && x.t >= from && (!sowing || x.t + SPROUT <= end));
+        return causes.every((c) => shows(xs, c));
+      });
+      Object.assign(metrics, {
+        evident: evident.length / n,
+        caught: evident.length ? evident.filter((a) => causes.every((c) => holds(a, c))).length / evident.length : null,
+      });
+    }
     if (!sowing && probe === "recover") Object.assign(metrics, {
       kept: blames(v.quench).length / n,
       dropped: until(dropped, v.quench, half, heldOld),

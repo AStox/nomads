@@ -136,11 +136,16 @@ function claimHolds(c: Claim, runs: Record<string, Numbers> | undefined): boolea
   return "above" in c ? lo > c.value : hi < c.value;
 }
 type Row = { variant: string; metric: string; cand: number; ci: [number, number]; base?: number; diff?: number; dci?: [number, number]; mark: string };
-// added: what this build measures that the baseline never did (a new probe), so a pass that adds one becomes the baseline
+// added: what this build measures that the baseline never did (a new probe, or a new number for one), so a pass that
+// adds one becomes the baseline
 type Comparison = { rows: Row[]; regressions: string[]; improvements: string[]; added: string[]; claims: Entry["claims"]; claimText: string[] };
 function compare(specs: Record<string, Spec>, cand: Runs, base: Runs | undefined): Comparison {
   const rows: Row[] = [], regressions: string[] = [], improvements: string[] = [], claims: Entry["claims"] = {}, claimText: string[] = [];
-  const added = base ? Object.keys(specs).filter((v) => Object.keys(cand[v] ?? {}).length && !Object.keys(base[v] ?? {}).length) : [];
+  const added = base ? Object.entries(specs).flatMap(([v, spec]) => {
+    if (!Object.keys(cand[v] ?? {}).length) return [];
+    if (!Object.keys(base[v] ?? {}).length) return [v];
+    return Object.keys(spec.metrics).filter((m) => values(cand[v], m).length && !values(base[v], m).length).map((m) => `${v} ${m}`);
+  }) : [];
   for (const [variant, spec] of Object.entries(specs)) {
     for (const [m, s] of Object.entries(spec.metrics)) {
       const xs = values(cand[variant], m);
