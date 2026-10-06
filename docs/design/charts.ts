@@ -52,6 +52,9 @@ const ROWS: { probe: string; metric: string; label: string; good: "high" | "low"
   { probe: "seed", metric: "right", label: "The same, one planting a day", good: "high", only: "sparse" },
   { probe: "seed", metric: "right", label: "The same, four in ten come up elsewhere", good: "high", only: "poor" },
   { probe: "seed", metric: "weather", label: "Blame the weather for it", good: "low" },
+  { probe: "hearsay", metric: "heard", label: "Pick it up from the two who know", good: "high" },
+  { probe: "unlearn", metric: "kept", label: "Keep the false theory they began with", good: "low" },
+  { probe: "unlearn", metric: "kept", label: "The same, one planting a day", good: "low", only: "sparse" },
 ];
 const PROBE_TEXT: Record<string, string> = {
   choose: "Choose: two ways to a fire, one truly faster",
@@ -64,6 +67,8 @@ const PROBE_TEXT: Record<string, string> = {
   weak: "Weak: the rain only halves the sparks",
   rare: "Rare: what kills sparks comes one hour in twelve",
   seed: "Seed: shade withers seedlings, days later",
+  hearsay: "Hearsay: two planters know, four don't",
+  unlearn: "Unlearn: planters start out wrong about the rain",
 };
 
 function probesChart(e: Entry, was?: Entry) {
