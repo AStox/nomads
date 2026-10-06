@@ -43,8 +43,10 @@ type Setup = {
   starts?: (Quench[] | null)[]; talk?: boolean;
 };
 // The planting probe's: withers: the kind of spot (sim.ts CONDITIONS: shade, crowded) a seedling put in never comes up
-// in; comes: how often one comes up anywhere else; every: how often a berry comes to hand for a planter who has none
-type Sow = { withers: string; comes: number; sky: Sky; every: number };
+// in; comes: how often one comes up anywhere else; every: how often a berry comes to hand for a planter who has none;
+// starts: by person, what they start out blaming for seedlings that never come up (none, for most); talk: they may also
+// teach and talk
+type Sow = { withers: string; comes: number; sky: Sky; every: number; starts?: string[][]; talk?: boolean };
 // days: how long it runs, whatever the run asks (scripts/evals.ts asks the same of every probe), for a probe whose
 // outcomes take days to show
 type Probe = { text: string; metrics: Record<string, Metric>; claims: Claim[]; variants: Record<string, Setup | Sow>; days?: number };
@@ -243,6 +245,48 @@ export const PROBES: Record<string, Probe> = {
       poor: { withers: "shade", comes: 0.4, sky: changeable, every: DAY },
     },
   },
+  // The third round: what passes between planters who all know how, and a false theory a planter starts out with.
+  hearsay: {
+    text: "Two planters already blame the kind of spot seedlings never come up in, and the rest know how to plant but not that: does it pass among them, beside what each sees for themselves?",
+    days: 10,
+    metrics: {
+      right: { better: "higher", tol: 0.1, text: "share of people who end up blaming the kind of spot seedlings truly never come up in" },
+      heard: { better: "higher", tol: 0.1, text: "share of those who started out not blaming it who end up blaming it" },
+      wrong: CAUSE.wrong,
+      ...EVIDENCE,
+    },
+    claims: [
+      { id: "spreads", text: "nearly all who started out not blaming it come to (more than 75%)", above: "heard", value: 0.75 },
+      CAUGHT,
+    ],
+    variants: {
+      // a berry a day, so what each sees for themselves is thin (seed/sparse: two in three come to it alone)
+      real: { withers: "shade", comes: 0.7, sky: changeable, every: DAY, starts: [["shade"], ["shade"], [], [], [], []], talk: true },
+      flipped: { withers: "crowded", comes: 0.7, sky: changeable, every: DAY, starts: [["crowded"], ["crowded"], [], [], [], []], talk: true },
+    },
+  },
+  unlearn: {
+    text: "Planters start out sure seedlings won't come up in one kind of weather, which is false, while a kind of spot is what withers them: do they let the false theory go, and find the true one?",
+    days: 10,
+    metrics: {
+      ...CAUSE,
+      right: { ...CAUSE.right, text: "share of people who end up blaming the kind of spot seedlings truly never come up in" },
+      kept: { better: "lower", tol: 0.1, text: "share of people who end up still blaming the weather they started out blaming" },
+    },
+    claims: [
+      { id: "let-go", text: "fewer than three in ten keep the false theory they started with", below: "kept", value: 0.3 },
+      { id: "most", text: "most come to blame the true cause", above: "right", value: 0.5 },
+      CAUGHT,
+    ],
+    variants: {
+      // a berry every four hours, as seed/real, so there is time enough to put the false theory to the test
+      real: { withers: "shade", comes: 0.7, sky: changeable, every: DAY / 6, starts: [["rain"], ["rain"], ["rain"], ["rain"], ["rain"], ["rain"]] },
+      flipped: { withers: "crowded", comes: 0.7, sky: changeable, every: DAY / 6, starts: [["wind"], ["wind"], ["wind"], ["wind"], ["wind"], ["wind"]] },
+      // as real, with a berry a day: what planters in whole worlds go on, where a false theory about the weather was
+      // never once tested (nobody plants in weather they blame, and a planting can't be watched coming up)
+      sparse: { withers: "shade", comes: 0.7, sky: changeable, every: DAY, starts: [["rain"], ["rain"], ["rain"], ["rain"], ["rain"], ["rain"]] },
+    },
+  },
 };
 
 // Summer, a little after sunrise: no frost at night to muddy what they see.
@@ -359,12 +403,13 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   const truth: Record<string, string | number> = {};
   if (sowing) {
     // each on a plot of their own, facing east to start, nothing in hand, knowing that a berry pushed into the ground
-    // comes up: one did for them, on the ground of their plot
+    // comes up (one did for them, on the ground of their plot), and blaming what the probe says they start out blaming
     const ps = plots(w, { px: cx, py: cy }, w.agents.length);
     w.agents.forEach((a, i) => {
       put(w, a, ps[i].px, ps[i].py);
       a.heading = 0; a.home = null; a.goal = null; a.plan = []; a.inv = [];
-      a.beliefs = { [PLANT]: { ...knownWay(PLANT, w.t), when: { [groundKey(groundWord(w, a.px, a.py))]: { tries: 1, wins: 1 } } } };
+      const start = v.starts?.[i] ?? [];
+      a.beliefs = { [PLANT]: { ...knownWay(PLANT, w.t), when: { [groundKey(groundWord(w, a.px, a.py))]: { tries: 1, wins: 1 } }, ...(start.length ? { unless: [...start] } : {}) } };
     });
     // of the spots a seed could go into round where they stand, the share where nothing comes up; and the kinds of ground
     // they know of to plant on (one, unless the island has nowhere so)
@@ -394,7 +439,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   // they weigh only doing it (lighting a fire, or planting a berry in hand: one fetched from a bush would have them
   // planting more often than the probe hands them out, and far from where it put them), resting, and putting a theory
   // to the test
-  const aim = sowing ? "plant" : "make_fire", talk = !sowing && !!v.talk;
+  const aim = sowing ? "plant" : "make_fire", talk = !!v.talk;
   hooks.options = (_w, a, opts) => {
     const held = !sowing || count(a, "berry") > 0;
     for (const k of Object.keys(opts)) if (!(k === "rest" || (held && (k === aim || k.startsWith("test:"))) || (talk && (k === "teach" || k === "talk")))) delete opts[k];
@@ -530,6 +575,16 @@ export async function runProbe(probe: string, variant: string, seed: number, day
         : v.bystander ? { bystander: blames([v.bystander]).length / n } : {}),
       ...(causes.length > 1 ? { partly: w.agents.filter((a) => causes.some((c) => holds(a, c)) && !causes.every((c) => holds(a, c))).length / n } : {}),
     });
+    // for planters who start out blaming something: those who still blame what they were wrong about, and of those who
+    // started out not blaming the true cause, those who came to
+    if (sowing && v.starts) {
+      const told = [...new Set(v.starts.flat())].filter((c) => !causes.includes(c));
+      const unaware = w.agents.filter((_, i) => !v.starts?.[i]?.some((c) => causes.includes(c)));
+      Object.assign(metrics, {
+        ...(told.length ? { kept: w.agents.filter((a) => told.some((c) => holds(a, c))).length / n } : {}),
+        ...(unaware.length < n ? { heard: unaware.length ? unaware.filter((a) => causes.every((c) => holds(a, c))).length / unaware.length : null } : {}),
+      });
+    }
   }
   hooks.weather = hooks.options = hooks.seedling = undefined;
   return { probe, variant, seed, brain, days, people: n, secs: Math.round((performance.now() - t0) / 1000), attempts: attempts.length, jev: { calls: w.jev.calls, tokens: w.jev.tokens }, truth, metrics };
