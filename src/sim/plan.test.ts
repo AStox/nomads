@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { DAY, addThing, meters, newWorld, type Act, type Agent, type World } from "./world";
 import { count, giveItems, heat, join, place, rubTick, strikeDamage, strikeTick, type Outcome } from "./physics";
 import { thingById } from "./space";
-import { cameOff, fades, noteTry, record, rethink, worseIn, type Belief } from "./beliefs";
+import { apart, cameOff, chance, fades, noteTry, record, rethink, suspected, teach, worseIn, type Belief } from "./beliefs";
 import { plan } from "./plan";
 import { tick } from "./sim";
 
@@ -277,4 +277,58 @@ test("once the rain stops mattering, the long record of sparks dying in it gives
   rethink(saw, ["rain"]);
   expect(saw.unless).toBeUndefined();
   expect(worseIn(saw, "rain")).toBe(false);
+});
+
+// Planting berries, as someone who has seen one come up would know it, on grassland (GRASS) or in the shade there (SHADE).
+const planting = (): Belief => ({
+  key: "plant|berry|-|-|-|-", fields: { verb: "plant", inputs: ["berry"], gives: [], builds: "bush" }, uses: { berry: 1 }, out: {},
+  ticks: 3, tries: 1, wins: 1, tally: { tries: 1, wins: 1 }, how: "discovered", t: 0,
+});
+const GRASS = ["ground:grassland"], SHADE = ["shade", "ground:grassland"];
+
+test("one failure is one failure however faded counts add up: a seedling lost in the shade after two came up there is no suspect, though it has done worse there", () => {
+  const b = planting();
+  for (let i = 0; i < 20; i++) noteTry(b, true, GRASS);
+  for (const ok of [true, true, false]) noteTry(b, ok, SHADE);
+  const d = apart(b, "shade");
+  expect(d.diff).toBeGreaterThan(d.se);
+  expect(worseIn(b, "shade")).toBe(false);
+});
+
+test("giving up the dark leaves the rain theory the record it rests on: dark and raining, the rain still explains every spark that died", () => {
+  const b = striking();
+  b.unless = ["rain", "dark"];
+  // by day it catches every other time; at night it rains and none catch
+  for (let i = 0; i < 6; i++) { tries(b, [], 2, true); tries(b, ["dark", "rain"], 2, false); }
+  rethink(b, ["dark"]);
+  expect(worseIn(b, "rain")).toBe(true);
+});
+
+test("a record kept before the weather had its mixes (an old save) keeps what it held of the rain through the first try after loading", () => {
+  const b: Belief = { ...striking(), tries: 40, wins: 30, tally: { tries: 40, wins: 30 }, when: { rain: { tries: 10, wins: 0 } }, unless: ["rain"] };
+  expect(worseIn(b, "rain")).toBe(true);
+  noteTry(b, true, []);
+  expect(worseIn(b, "rain")).toBe(true);
+});
+
+test("a way they were taught looks to them as any way they've yet to try does, and no surer than one that works for them", () => {
+  const [w, teacher] = fresh();
+  const learner = w.agents[1];
+  const bark = fireBelief("bark", 30, 28, { tries: 0, wins: 0 }), fiber = fireBelief("fiber", 10, 8, { tries: 0, wins: 0 });
+  teacher.beliefs = { [bark.key]: bark };
+  learner.beliefs = { [fiber.key]: fiber };
+  teach(w, teacher, learner, bark.key);
+  const taught = learner.beliefs[bark.key];
+  expect(chance(taught)).toBeCloseTo(0.5 + 0.3);
+  const ctx = { dist: {}, beliefs: [fiber, taught], facts: {}, kinds: w.kinds, toxic: [], now: [] };
+  expect(plan({ inv: { stick: 2, fiber: 1, bark: 1 }, at: null, flags: [] }, "make_fire", ctx)?.at(-1)?.key).toBe(fiber.key);
+});
+
+test("a failure that points at the rain sets them suspecting it even in weather they blame for something else: to someone who blames the wind, sparks hissing out in wet tinder in the rain and the wind", () => {
+  const b = striking();
+  b.unless = ["wind"];
+  // out of the wind it catches two times in five
+  for (let i = 0; i < 20; i++) noteTry(b, i % 5 < 2, []);
+  noteTry(b, false, ["rain", "wind"]);
+  expect(suspected(b, ["rain", "wind"], (c) => c === "rain")).toEqual(["rain"]);
 });

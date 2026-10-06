@@ -2,7 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 import { DAY, H, TILE_M, W, addThing, dryAt, meters, newWorld, type Agent, type Thing, type World } from "./world";
 import { giveItems, groundWord, plant, removeThing, soilAt } from "./physics";
 import { around, put, thingById } from "./space";
-import { FADE, groundKey, type Belief } from "./beliefs";
+import { FADE, groundKey, noteTry, type Belief } from "./beliefs";
 import { plan } from "./plan";
 import { tick } from "./sim";
 import { YEAR_DAYS } from "./sky";
@@ -152,4 +152,37 @@ test("someone who thinks berries won't come up crowded in among bushes and trees
   const clearOf = await sow();
   expect(nearest(clearOf)).toBeGreaterThan(1.5);
   expect(a.waiting?.at(-1)?.now).not.toContain("crowded");
+});
+
+test("standing in the rain, someone with a theory about each of two ways is offered a test of the one they can set about there, however little the other rests on", async () => {
+  put(w, a, home.px, home.py);
+  clear(20);
+  summer();
+  await run(50, () => !a.thinking);
+  const ground = groundKey(groundWord(w, a.px, a.py));
+  // rubbing sticks for a fire, which they think won't work in the rain after ten tries died in it
+  const rub: Belief = {
+    key: "rub|fiber+stick+stick|-|-|-|-", fields: { verb: "rub", inputs: ["stick", "stick", "fiber"], gives: [], builds: "fire" }, uses: { fiber: 1 }, out: {},
+    ticks: 20, tries: 20, wins: 10, how: "discovered", t: 0, unless: ["rain"],
+  };
+  for (let i = 0; i < 10; i++) { noteTry(rub, true, []); noteTry(rub, false, ["rain"]); }
+  // digging with an antler they no longer have, which they think won't work in the rain after one try there
+  const dig: Belief = {
+    key: "dig|-|antler|-|-|-", fields: { verb: "dig", inputs: [], tool: "antler", gives: [], builds: "pit" }, uses: {}, out: {},
+    ticks: 30, tries: 2, wins: 1, how: "discovered", t: 0, unless: ["rain"],
+  };
+  noteTry(dig, true, [ground]);
+  noteTry(dig, false, ["rain", ground]);
+  a.beliefs = { [rub.key]: rub, [dig.key]: dig };
+  giveItems(w, a, "stick", 2);
+  giveItems(w, a, "fiber");
+  // the sky only turns on the twelfth tick
+  w.t = Math.ceil(w.t / 12) * 12 + 1;
+  w.weather.sky = "rain";
+  const before = a.lastDecision;
+  a.goal = null;
+  a.plan = [];
+  a.nextDecide = w.t;
+  await run(5, () => a.lastDecision !== before);
+  expect(Object.keys(a.lastDecision?.labels ?? {})).toContain(`test:rain@${rub.key}`);
 });

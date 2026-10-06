@@ -10,7 +10,7 @@ import { DARK, canSee, lightOn, lightWords } from "./light";
 import { airOn, airWords } from "./air";
 import { ripening } from "./cues";
 import { PROPS, THING_MATERIAL, type Kind, type Props } from "./materials";
-import { apart, beliefText, testOf } from "./beliefs";
+import { beliefText, restsOn, testOf } from "./beliefs";
 import { campTag, campView } from "./groups";
 import { jevLog } from "./trace";
 import LEXICON from "./lexicon.json";
@@ -222,12 +222,11 @@ function needBias(w: World, a: Agent, options: Record<string, string>) {
     if (k === "experiment:fireside") b[k] = 3;
     // a wilting seedling of theirs, or a fire to keep through the night that they've seen burn down for want of wood
     if (k === "tend_plants" || k === "lay_by_wood") b[k] = 3;
-    // a theory they could put to the test here: the less it rests on (the tries in the condition, by how much worse it
-    // has done there, like for like), the likelier, and likelier for the curious, the doubting and the clever
+    // a theory they could put to the test here: the less it rests on (beliefs.ts restsOn), the likelier, and likelier for
+    // the curious, the doubting and the clever
     if (k.startsWith("test:")) {
-      const [c, key] = testOf(k), x = a.beliefs[key], d = x && apart(x, c);
-      const rests = d ? d.tries * Math.max(0, d.diff) : 0;
-      b[k] = (3 * (1 + (a.traits.curious ?? 0) + (a.traits.skeptical ?? 0) + (a.traits.clever ?? 0))) / (1 + 2 * rests);
+      const [c, key] = testOf(k), x = a.beliefs[key];
+      b[k] = (3 * (1 + (a.traits.curious ?? 0) + (a.traits.skeptical ?? 0) + (a.traits.clever ?? 0))) / (1 + 2 * (x ? restsOn(x, c) : 0));
     }
     if (k.startsWith("make:") || k === "build_shelter" || k.startsWith("hunt:")) b[k] = Math.max(b[k] ?? 0, 2);
     // as the days draw in and things ripen, lay food by

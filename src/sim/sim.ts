@@ -8,7 +8,7 @@ import {
   fireHours, groundWord, hoursToDawn, leaveHome, pour, raining, reaches, removeThing, residentsOf, rubTick, shape, sheltered, shelterName, stash, strikeDamage, strikeTick, takeItems, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
-import { apart, beliefKey, beliefText, cameOff, conditionWords, fieldsOf, found, groundKey, groundOfKey, likeNow, mixOf, odds, fades, noteTry, ofPlace, record, worseIn, rethink, see, sentence, teach, testOf, watchers, type Belief } from "./beliefs";
+import { apart, beliefKey, beliefText, cameOff, conditionWords, fieldsOf, found, groundKey, groundOfKey, likeNow, mixOf, odds, fades, noteTry, ofPlace, record, restsOn, rethink, see, sentence, suspected, teach, testOf, watchers, type Belief } from "./beliefs";
 import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
 import { burnedHomes, ecology, onFireOut, onGrew, onWithered, trample, trapped, tread } from "./ecology";
 import { FAUNA, HUNTED } from "./fauna";
@@ -446,19 +446,19 @@ function feasible(w: World, a: Agent) {
   const dying = left < 4 || (isNight(w.t) && left < hoursToDawn(w.t));
   add("tend_fire", dying && holding && can("tend_fire"));
   // A theory of theirs about something they could do here and now: when they aren't in trouble (not starving, freezing,
-  // hurt or spent), they might do it anyway to see whether it holds, the one resting on the least of all. Only where
-  // nothing else they blame it on holds as well (what they blame on a spot, they'd keep clear of): a spark that dies in
-  // the rain at night says nothing about the dark to someone who blames the rain. (Not when theories are never had, or
-  // known from the start: rules.ts RULES.learning.)
+  // hurt or spent), they might do it anyway to see whether it holds, the one resting on the least of all (beliefs.ts
+  // restsOn) of those they could set about here, so one they can't (no seed in reach to test what they think of planting
+  // in the rain) hides no other. Only where nothing else they blame it on holds as well (what they blame on a spot,
+  // they'd keep clear of): a spark that dies in the rain at night says nothing about the dark to someone who blames the
+  // rain. (Not when theories are never had, or known from the start: rules.ts RULES.learning.)
   if (RULES.learning === "seen" && a.needs.food >= 25 && a.needs.warmth >= 40 && a.needs.health >= 40 && a.needs.energy >= 15) {
-    let doubt: { type: string; n: number } | null = null;
-    const now = ctx.now ?? [];
+    const now = ctx.now ?? [], doubts: { type: string; n: number }[] = [];
     for (const b of believes) for (const c of b.unless ?? []) {
-      const n = b.when?.[c]?.tries ?? 0;
       if (!now.includes(c) || b.unless?.some((o) => o !== c && !ofPlace(o) && now.includes(o))) continue;
-      if (!doubt || n < doubt.n) doubt = { type: `test:${c}@${b.key}`, n };
+      doubts.push({ type: `test:${c}@${b.key}`, n: restsOn(b, c) });
     }
-    if (doubt) add(doubt.type, can(doubt.type));
+    const doubt = doubts.sort((x, y) => x.n - y.n).find((d) => can(d.type));
+    if (doubt) add(doubt.type, true);
   }
   // A young plant of theirs wilting where they can get to it: something to see to, by what they know or by trying things.
   const wilting = nearestThing(w, a.px, a.py, ["sapling"], (t) => t.owner === a.id && (t.hp ?? 5) < (t.maxHp ?? 5) * 0.8, 100);
@@ -837,7 +837,7 @@ function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], t
   }
   if (worked) return;
   const id = `${a.id}|${b.key}`;
-  const suspects = now.filter((c) => !b.unless?.includes(c) && (worseIn(b, c) || (apart(b, c).diff >= 0 && condition(c).hint.test(text))));
+  const suspects = suspected(b, now, (c) => condition(c).hint.test(text));
   if (!suspects.length || !b.wins || theorizing.has(id)) return;
   theorizing.add(id);
   const present = Object.fromEntries(suspects.map((c) => [c, `${condition(c).words} (${evidence(b, c)})`]));
