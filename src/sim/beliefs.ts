@@ -61,9 +61,11 @@ export const FADE = 0.95;
 // The mix of the weather in what they could see (now): its conditions, joined by "+".
 export const mixOf = (now: string[]) => now.filter((c) => !ofPlace(c)).sort().join("+");
 // The mixes of the weather a record kept before it had them (an old save) stands for: each condition it holds on its
-// own, and the rest of its tries in none of them.
+// own, and the rest of its tries in none of them. One that holds nothing of the weather has nothing of it to keep, and
+// starts them empty, as a new record does.
 function mixesOf(tally: Count, when: Record<string, Count>) {
   const weather = Object.entries(when).filter(([c]) => !ofPlace(c));
+  if (!weather.length) return {};
   const rest = weather.reduce((r, [, s]) => ({ tries: Math.max(0, r.tries - s.tries), wins: Math.max(0, r.wins - s.wins) }), { ...tally });
   const cells: [string, Count][] = [...weather.map(([c, s]): [string, Count] => [c, { ...s }]), ["", rest]];
   return Object.fromEntries(cells.filter(([, s]) => s.tries > 0));
