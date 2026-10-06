@@ -37,7 +37,12 @@ import { bootstrap, mean } from "./stats";
 // worlds 4: builds compared on one answer key, the baseline's runs rescored on it; plantings into a condition that truly
 // hurts count as wasted; right, and the ceiling, only of what someone on the island had seen; the key judges what's in
 // a spot like for like. live 4: scored as worlds 4 are.
-const VERSION: Record<string, number> = { probes: 2, worlds: 4, live: 4 };
+// probes 3: a world without luck (nothing anyone tries fails by chance, physics.ts): the probes of bad luck alone and of
+// a half-strength cause gone, an exception (except) in their place; seedlings come up wherever the cause doesn't hold;
+// what people's theories would have them do held against the truth over the probe's own hours, at the midpoint and the
+// end (acc, needless, blind), with right, wrong and caught read the same way; longer runs where the cause comes seldom or
+// shows late; recover asks that those who blamed the old cause try it there again, not that they forget it.
+const VERSION: Record<string, number> = { probes: 3, worlds: 4, live: 4 };
 const ROOT = join(import.meta.dir, ".."), DATA = join(ROOT, "data/evals");
 type Numbers = Record<string, number | null>;
 // what a tier measured: by variant ("blame/real", "seen"...), by seed, its numbers

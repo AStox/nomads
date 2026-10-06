@@ -33,7 +33,7 @@ export type Belief = {
 type Count = { tries: number; wins: number };
 // A condition, as a theory names it: the weather and light anyone can see, and the ground underfoot and round about.
 const WORDS: Record<string, string> = {
-  rain: "in the rain", dark: "in the dark", cold: "in freezing cold", wind: "in a strong wind",
+  rain: "in the rain", dark: "in the dark", cold: "in freezing cold", wind: "in a strong wind", nofish: "with no fish close by",
   shade: "in the shade of trees", dry: "on dry ground", crowded: "crowded in among bushes and trees",
 };
 const ON_GROUND: Record<string, string> = { marsh: "in a marsh", scrub: "in scrub", "forest floor": "on the forest floor", stream: "by a stream", lake: "by a lake", sea: "by the sea" };
@@ -52,6 +52,11 @@ export function fieldsOf(key: string): Fields {
 }
 // Conditions of the spot itself rather than the hour or the weather: somewhere else, they don't hold.
 export const ofPlace = (c: string) => c.startsWith("ground:") || c === "shade" || c === "dry" || c === "crowded";
+// Whether a theory holds in conditions like these (now): every condition it names holds, and every lack it names (a
+// condition with "!" before it) does. A theory that names one condition holds wherever that one does.
+export const holds = (t: string, now: string[]) => t.split("+").every((c) => (c.startsWith("!") ? !now.includes(c.slice(1)) : now.includes(c)));
+// Whether their theories of a way rule it out in conditions like these: one of them holds.
+export const ruledOut = (b: Belief, now: string[]) => !!b.unless?.some((t) => holds(t, now));
 // Each try they make of a way counts for a little less with every try after it (FADE of what it was each time), so
 // their record of it is mostly the last twenty or so: what it used to do is forgotten once it does otherwise. All told
 // and in each condition, that's the last twenty tries of it; in each mix of the weather, the last twenty in weather like

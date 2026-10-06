@@ -1297,9 +1297,10 @@ function run(w: World, a: Agent): boolean | string {
     case "act": {
       const b = a.beliefs[s.key ?? ""];
       if (!b) return "forgot how";
-      // Planned in other weather: what they've come to think won't work in the weather now, they don't start, unless
-      // it's what they set out to test. (The spot was weighed when they chose it.)
-      if (!s.act && !(a.goal?.type.startsWith("test:") && testOf(a.goal.type)[1] === b.key)) {
+      // What they've come to think won't work in the weather now, they don't start, or keep at once the weather turns
+      // partway through (the rain coming on as they strike), unless it's what they set out to test. (The spot was weighed
+      // when they chose it.)
+      if (!(a.goal?.type.startsWith("test:") && testOf(a.goal.type)[1] === b.key)) {
         const now = conditionsNow(w, a, b.fields.verb), bar = b.unless?.find((c) => !ofPlace(c) && now.includes(c));
         if (bar) return `they think it won't work ${conditionWords(bar)}`;
       }
