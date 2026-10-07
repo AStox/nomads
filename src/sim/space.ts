@@ -188,13 +188,20 @@ export function anyAround(w: World, px: number, py: number, r: number, kinds: re
   around(w, px, py, r, kinds, (t) => { if (ok(t)) { hit = t; return true; } });
   return hit as Thing | null;
 }
-// The nearest thing of these kinds that passes ok, searching outward ring by ring of tiles, out to max meters.
+// How far a point lies from tile i, in meters (0 on it).
+const fromTile = (i: number, px: number, py: number) => {
+  const x = i % W, y = (i - x) / W;
+  return Math.hypot(Math.max(x - px, 0, px - x - 1), Math.max(y - py, 0, py - y - 1)) * TILE_M;
+};
+// The nearest thing of these kinds that passes ok, searching outward ring by ring of tiles, out to max meters. A tile
+// that lies wholly farther off than the nearest found so far can't hold anything nearer, and isn't looked at.
 export function nearestThing(w: World, px: number, py: number, kinds: readonly string[], ok: (t: Thing) => boolean = () => true, max = Infinity): Thing | null {
   const ix = index(w), lists = binsOf(ix, kinds);
   if (!lists.length) return null;
   let best: Thing | null = null, bd = max, lim = (bd / TILE_M) * SLACK;
   for (let R = 0; R < Math.max(W, H) && (R - 1) * TILE_M <= bd; R++)
     for (const i of ringOf(Math.floor(px), Math.floor(py), R)) {
+      if (fromTile(i, px, py) > bd * SLACK) continue;
       stock(w, ix, i);
       for (const tiles of lists) {
         const b = tiles[i];
@@ -214,7 +221,8 @@ export function nearestThing(w: World, px: number, py: number, kinds: readonly s
 export function lookFor(w: World, px: number, py: number, kinds: readonly string[], max: number) {
   const ix = index(w);
   if (!binsOf(ix, kinds).length) return;
-  for (let R = 0; R < Math.max(W, H) && (R - 1) * TILE_M <= max; R++) for (const i of ringOf(Math.floor(px), Math.floor(py), R)) stock(w, ix, i);
+  for (let R = 0; R < Math.max(W, H) && (R - 1) * TILE_M <= max; R++)
+    for (const i of ringOf(Math.floor(px), Math.floor(py), R)) if (fromTile(i, px, py) <= max * SLACK) stock(w, ix, i);
 }
 // The grown things of each kind, as indexes into the grown arrays, gathered the first time a kind is asked for.
 const ofKind = new WeakMap<Scatter, Map<string, Uint32Array>>();
