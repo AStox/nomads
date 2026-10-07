@@ -19,14 +19,19 @@ const skin = (k?: Kind) => !!k && !k.parts?.length && p(k, "flexible") >= 0.5 &&
 const sticky = (k?: Kind) => !!k && p(k, "binding") >= 0.5 && p(k, "flammable") >= 0.6 && p(k, "fibrous") < 0.3 && p(k, "plastic") < 0.5;
 const short = (k: Kind) => (k.parts ? (k.named ? k.name : noun(k)) : k.name);
 
+// A fire as what it burns at turns on: what it is (a campfire, or something else alight), and whether it's ringed in,
+// heaped over, fed charcoal or has air blown into it.
+export type Fire = Pick<Thing, "kind" | "burning" | "contained" | "covered" | "charcoal" | "air">;
+// Ticks air blown into a fire keeps it burning hotter.
+export const BLOWN = 12;
 // How hot a fire burns: a ring of stone holds heat in, charcoal burns far hotter than wood, air blown through a ring hotter still.
-export function fireHeat(w: World, f: Thing) {
+export function fireHeat(w: World, f: Fire) {
   if (f.kind !== "fire") return f.burning ? 1 : 0;
   const coal = (f.charcoal ?? 0) > 0 ? (f.contained ? BASE.charcoal.burns! : 1.1) : 1;
   return Math.round(((f.contained ? 1.3 : 1) * coal + ((f.air ?? 0) > w.t && f.contained ? 0.5 : 0)) * 100) / 100;
 }
 // What people would call the fire they're standing at, most specific first.
-export const fireKind = (f: Thing) =>
+export const fireKind = (f: Fire) =>
   f.kind !== "fire" || !f.contained ? "fire" : (f.charcoal ?? 0) > 0 ? "forge" : f.covered ? "kiln" : "hearth";
 // How many hours a fire has left in it, as anyone by it can judge from what's burning: an open fire eats its wood
 // fastest, a ringed one half as fast, one heaped over to smolder slower still (ecology.ts fire).
@@ -135,6 +140,32 @@ function made(w: World, a: Agent, k: Kind, isNew: boolean, out: string[]) {
   if (isNew) { k.made = { by: a.id, t: w.t }; out.push(k.id); newKinds.add(k.id); }
 }
 const outcome = (o: Partial<Outcome> & { text: string; fields: Fields }): Outcome => ({ ok: false, uses: {}, gives: {}, newKinds: [], ...o });
+
+// ---------- deciding, then doing ----------
+// What doing something comes to, worked out before a hand moves: the outcome it will be and, for a kind it makes, the
+// kind's id and how to make it the first time. Each act asks its decision and then does what it says, so the answer key
+// (formulas.ts) can ask the very same decision without anything being done.
+export type Decision = Omit<Outcome, "newKinds"> & { make?: Make };
+// A kind a decision makes. quiet: making it is nothing anyone would remark on (a pot dipped full is still the pot).
+export type Make = { id: string; make: () => Omit<Kind, "id">; quiet?: boolean };
+const decided = (o: Partial<Decision> & { text: string; fields: Fields }): Decision => ({ ok: false, uses: {}, gives: {}, ...o });
+// The name a made kind goes by: what it's called already, or what it will be called once it's made.
+const nameOf = (w: World, m: Make) => w.kinds[m.id]?.name ?? m.make().name;
+// How many of each thing, by kind, in the order they're named.
+const tally = (items: string[]) => items.reduce<Record<string, number>>((m, k) => ((m[k] = (m[k] ?? 0) + 1), m), {});
+// Whether they have these things to hand, as many of each as are named (and anything is).
+const holding = (a: Agent, items: string[]) => items.length > 0 && Object.entries(tally(items)).every(([k, n]) => count(a, k) >= n);
+// Doing what was decided: the kind it makes registered (theirs to have made first, if it's new and anything to remark
+// on), what it uses taken from their hands, what it gives put in them.
+function enact(w: World, a: Agent, d: Decision): Outcome {
+  const { make, ...o } = d;
+  const nk: string[] = [];
+  const k = make && ensure(w.kinds, make.id, make.make);
+  for (const [id, n] of Object.entries(o.uses)) takeItems(a, id, n);
+  for (const [id, n] of Object.entries(o.gives)) giveItems(w, a, id, n);
+  if (k && !make.quiet) made(w, a, k[0], k[1], nk);
+  return outcome({ ...o, newKinds: nk });
+}
 
 // ---------- strike ----------
 export function force(tool: Kind, a?: Agent) {
@@ -438,15 +469,14 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
 }
 
 // ---------- join ----------
-// Returns "ask" when the rules can't say whether these would hold together.
-export function join(w: World, a: Agent, act: Act): Outcome | "ask" {
-  const parts = act.items.map((id) => kind(w, id)!).filter(Boolean);
-  const fields: Fields = { verb: "join", inputs: [...act.items].sort(), gives: [] };
-  const need = act.items.reduce<Record<string, number>>((m, k) => ((m[k] = (m[k] ?? 0) + 1), m), {});
-  if (parts.length < 2 || Object.entries(need).some(([k, n]) => count(a, k) < n)) return outcome({ text: "They didn't have those things to hand.", fields });
+// What binding these together comes to: "ask" when the rules can't say whether they would hold together.
+export function joining(w: World, items: string[], c: { held: boolean }): Decision | "ask" {
+  const parts = items.map((id) => kind(w, id)!).filter(Boolean);
+  const fields: Fields = { verb: "join", inputs: [...items].sort(), gives: [] };
+  const need = tally(items);
+  if (parts.length < 2 || !c.held) return decided({ text: "They didn't have those things to hand.", fields });
   const id = `join:${fields.inputs.join("+")}`;
-  const nk: string[] = [];
-  let k: Kind, isNew: boolean, text = `Binding ${parts.map((x) => `the ${x.name}`).join(", ")} together made`;
+  let make: Make, text = `Binding ${parts.map((x) => `the ${x.name}`).join(", ")} together made`;
   // Fat with a wick in something hard and hollow: a lamp that burns slow and steady.
   const hollow = parts.find((x) => p(x, "container") >= 0.6 && p(x, "hard") >= 0.5), fat = parts.find(greasy);
   const wick = parts.find((x) => x !== fat && x !== hollow && p(x, "fibrous") >= 0.6 && p(x, "flammable") >= 0.6);
@@ -454,27 +484,27 @@ export function join(w: World, a: Agent, act: Act): Outcome | "ask" {
   const glue = parts.find((x) => p(x, "binding") >= 0.9 && p(x, "fibrous") < 0.3 && p(x, "flammable") >= 0.5);
   const basket = parts.find((x) => x !== glue && p(x, "container") >= 0.4 && p(x, "hard") < 0.5);
   if (parts.length === 3 && hollow && fat && wick) {
-    [k, isNew] = ensure(w.kinds, id, () => ({
+    make = { id, make: () => ({
       name: `${short(hollow)} filled with ${short(fat)} and a ${short(wick)} wick`,
       props: { container: p(hollow, "container"), hard: p(hollow, "hard"), heavy: p(hollow, "heavy"), flammable: 0.8, toughness: p(hollow, "toughness") },
       parts: fields.inputs, verb: "join",
-    }));
+    }) };
     text = `Filling the ${hollow.name} with ${fat.name} and a ${wick.name} wick made`;
   } else if (parts.length === 2 && glue && basket) {
-    [k, isNew] = ensure(w.kinds, id, () => ({
+    make = { id, make: () => ({
       name: `${short(basket)} sealed with ${short(glue)}`,
       props: { ...basket.props, container: 0.9, binding: 0, flammable: Math.max(p(basket, "flammable"), p(glue, "flammable")), toughness: clamp01(p(basket, "toughness") + 0.1) },
       parts: fields.inputs, verb: "join",
-    }));
+    }) };
     text = `Smearing the ${glue.name} over the ${basket.name} sealed it tight. That made`;
   } else if (parts.some((x) => depth(w.kinds, x) >= 2)) {
     // ponytail: two levels of tying (fiber > cord > tool) covers every tool so far; lift when a real need shows up.
-    return outcome({ text: `There was no way to tie anything more onto the ${parts.find((x) => depth(w.kinds, x) >= 2)!.name}.`, fields });
+    return decided({ text: `There was no way to tie anything more onto the ${parts.find((x) => depth(w.kinds, x) >= 2)!.name}.`, fields });
   } else if (parts.every((x) => p(x, "fibrous") >= 0.6 && !x.parts)) {
     const n = parts.length;
-    [k, isNew] = ensure(w.kinds, id, () => n === 2
+    make = { id, make: () => n === 2
       ? { name: `twisted ${parts[0].name === parts[1].name ? parts[0].name : "fiber"} cord`, props: { binding: 0.85, flexible: 0.9, fibrous: 0.6, long: 0.5, flammable: 0.7, toughness: 0.3 }, parts: fields.inputs, verb: "join", fuel: 10 }
-      : { name: `woven ${parts[0].name} mat`, props: { container: 0.5, insulating: 0.6, fibrous: 0.8, flexible: 0.7, flammable: 0.8, toughness: 0.2 }, parts: fields.inputs, verb: "join", fuel: 20 });
+      : { name: `woven ${parts[0].name} mat`, props: { container: 0.5, insulating: 0.6, fibrous: 0.8, flexible: 0.7, flammable: 0.8, toughness: 0.2 }, parts: fields.inputs, verb: "join", fuel: 20 } };
   } else {
     const binder = [...parts].sort((x, y) => p(y, "binding") - p(x, "binding"))[0];
     if (p(binder, "binding") < 0.6) return "ask";
@@ -485,7 +515,7 @@ export function join(w: World, a: Agent, act: Act): Outcome | "ask" {
     const sheet = rest.length === 1 && soft(rest[0]) ? rest[0] : null, sheets = rest.length >= 2 && rest.every(soft) ? rest : null;
     const headK = [...rest].sort((x, y) => p(y, "sharp") + p(y, "heavy") * 0.5 - p(x, "sharp") - p(x, "heavy") * 0.5)[0];
     const handle = rest.length > 1 ? [...rest].filter((x) => x !== headK).sort((x, y) => p(y, "long") - p(x, "long"))[0] : headK;
-    [k, isNew] = ensure(w.kinds, id, () => {
+    make = { id, make: () => {
       // A soft sheet gathered up and tied closes into a bag; a woven mat tied up so is a basket, loose enough to let
       // water through.
       if (sheet) return {
@@ -515,145 +545,148 @@ export function join(w: World, a: Agent, act: Act): Outcome | "ask" {
         metal: p(headK, "metal"),
       };
       return { name: compoundName(w.kinds, parts), props, parts: fields.inputs, verb: "join" };
-    });
+    } };
   }
-  for (const [kk, n] of Object.entries(need)) takeItems(a, kk, n);
-  giveItems(w, a, k.id);
-  made(w, a, k, isNew, nk);
-  fields.gives = [k.id];
-  trace("physics", "join", { parts: fields.inputs, made: k.id, props: k.props }, a.id);
-  return outcome({ ok: true, text: `${text} a ${k.name}.`, uses: need, gives: { [k.id]: 1 }, fields, newKinds: nk });
+  fields.gives = [id];
+  return decided({ ok: true, text: `${text} a ${nameOf(w, make)}.`, uses: need, gives: { [id]: 1 }, fields, make });
+}
+export function join(w: World, a: Agent, act: Act): Outcome | "ask" {
+  const d = joining(w, act.items, { held: holding(a, act.items) });
+  if (d === "ask") return d;
+  const out = enact(w, a, d);
+  if (d.make) trace("physics", "join", { parts: d.fields.inputs, made: d.make.id, props: w.kinds[d.make.id].props }, a.id);
+  return out;
 }
 
 // ---------- heat ----------
+// What there is to heat things at: the fire they hold them in, as it burns now (fanned already, if they're fanning it),
+// and the fan they blow air into it with, if they hold one.
+export type HeatSetting = { held: boolean; fire: Fire | null; fan?: string };
+// What heating these comes to: "ask" when the rules can't say.
 // Thresholds: cooking and melting resin 0.8, firing clay 1.2, softening metal 1.5, smelting ore 2.2. Wood only chars in a covered fire.
-export function heat(w: World, a: Agent, act: Act): Outcome | "ask" {
-  const parts = act.items.map((id) => kind(w, id)!).filter(Boolean);
-  const fields: Fields = { verb: "heat", inputs: [...act.items].sort(), at: "fire", gives: [] };
-  const need = act.items.reduce<Record<string, number>>((m, k) => ((m[k] = (m[k] ?? 0) + 1), m), {});
-  if (!parts.length || Object.entries(need).some(([k, n]) => count(a, k) < n)) return outcome({ text: "They didn't have those things to hand.", fields });
-  const fire = nearFire(w, a);
-  if (!fire) return outcome({ text: "The fire had gone out.", fields });
-  // Something soft and hollow squeezed or flapped at the flames drives air into them.
-  const fan = kind(w, act.tool);
-  if (fan && airy(fan) && count(a, fan.id)) {
-    fields.tool = fan.id;
-    if (fire.kind === "fire") { fire.air = w.t + 12; fire.heat = fireHeat(w, fire); mark(w, fire); }
-  }
+export function heating(w: World, items: string[], c: HeatSetting): Decision | "ask" {
+  const parts = items.map((id) => kind(w, id)!).filter(Boolean);
+  const fields: Fields = { verb: "heat", inputs: [...items].sort(), at: "fire", gives: [] };
+  const need = tally(items);
+  if (!parts.length || !c.held) return decided({ text: "They didn't have those things to hand.", fields });
+  const fire = c.fire;
+  if (!fire) return decided({ text: "The fire had gone out.", fields });
+  if (c.fan) fields.tool = c.fan;
   const level = fireHeat(w, fire);
-  trace("physics", "heat", { items: act.items, fire: fireKind(fire), heat: level, fan: fields.tool }, a.id);
-  const nk: string[] = [];
-  const done = (k: Kind, isNew: boolean, text: string, keep: string[] = [], n = 1): Outcome => {
-    for (const [kk, c] of Object.entries(need)) if (!keep.includes(kk)) takeItems(a, kk, c);
-    giveItems(w, a, k.id, n);
-    made(w, a, k, isNew, nk);
-    fields.gives = [k.id];
+  const done = (make: Make, text: string, keep: string[] = []): Decision => {
+    fields.gives = [make.id];
     const uses = Object.fromEntries(Object.entries(need).filter(([kk]) => !keep.includes(kk)));
-    return outcome({ ok: true, text, uses, gives: { [k.id]: n }, fields, newKinds: nk, numbers: { heat: level } });
+    return decided({ ok: true, text, uses, gives: { [make.id]: 1 }, fields, numbers: { heat: level }, make });
   };
   // Not hot enough: remember where it was tried, so "a ringed fire isn't hot enough for this" is something people can learn.
   const cool = (text: string) => {
     fields.at = fireKind(fire);
     fields.effect = "too_cool";
-    return outcome({ text, effect: "too_cool", fields, numbers: { heat: level } });
+    return decided({ text, effect: "too_cool", fields, numbers: { heat: level } });
   };
   const pot = parts.find((x) => p(x, "container") >= 0.6 && p(x, "hard") >= 0.5);
   const foods = parts.filter((x) => p(x, "edible") > 0 && x !== pot);
   if (pot && foods.length >= 1) {
-    const id = `stew:${foods.map((x) => x.id).sort().join("+")}`;
-    const [k, isNew] = ensure(w.kinds, id, () => ({
+    const stew: Make = { id: `stew:${foods.map((x) => x.id).sort().join("+")}`, make: () => ({
       name: `${foods.length > 1 ? "mixed" : foods[0].name} stew`,
       props: { edible: clamp01(foods.reduce((t, x) => t + p(x, "edible"), 0) * 1.4), toxic: Math.min(...foods.map((x) => p(x, "toxic"))) * 0.1, medicinal: Math.max(...foods.map((x) => p(x, "medicinal"))) },
       parts: fields.inputs, verb: "heat", shelf: 3,
-    }));
-    return done(k, isNew, `Cooking ${foods.map((x) => `the ${x.name}`).join(" and ")} in the ${pot.name} made a ${k.name}.`, [pot.id]);
+    }) };
+    return done(stew, `Cooking ${foods.map((x) => `the ${x.name}`).join(" and ")} in the ${pot.name} made a ${nameOf(w, stew)}.`, [pot.id]);
   }
   if (parts.length !== 1) return "ask";
   const x = parts[0];
-  if (/^(cooked|smoked|fired|burning|hot|melt|forge):/.test(x.id)) return outcome({ text: `Heating the ${x.name} again did nothing more.`, fields });
+  if (/^(cooked|smoked|fired|burning|hot|melt|forge):/.test(x.id)) return decided({ text: `Heating the ${x.name} again did nothing more.`, fields });
   // Hung in the thick smoke of a fire closed over to smolder, food dries out and keeps for weeks instead of days.
   if (p(x, "edible") > 0 && fire.covered) {
     fields.at = "kiln";
-    const [k, isNew] = ensure(w.kinds, `smoked:${x.id}`, () => ({
+    return done({ id: `smoked:${x.id}`, make: () => ({
       name: `smoked ${x.name}`,
       props: { ...x.props, edible: clamp01(p(x, "edible") * 1.3 + 0.03), toxic: p(x, "toxic") * 0.1, seed: 0 },
       parts: [x.id], verb: "heat", shelf: (x.shelf ?? 1) * 8 + 6,
-    }));
-    return done(k, isNew, `Hung in the smoke under the cover, the ${x.name} dried dark and hard. It would keep.`);
+    }) }, `Hung in the smoke under the cover, the ${x.name} dried dark and hard. It would keep.`);
   }
   if (p(x, "edible") > 0) {
     // a soft dough bakes firm into bread
     const dough = p(x, "plastic") >= 0.5;
-    const [k, isNew] = ensure(w.kinds, `cooked:${x.id}`, () => ({
+    return done({ id: `cooked:${x.id}`, make: () => ({
       name: x.id === "meat" ? "roast meat" : dough ? "bread" : `cooked ${x.name}`,
       props: { ...x.props, edible: clamp01(p(x, "edible") * 1.6 + 0.05), toxic: p(x, "toxic") * 0.15, seed: 0, ...(dough ? { plastic: 0, hard: 0.2 } : {}) },
       parts: [x.id], verb: "heat", shelf: dough ? 5 : (x.shelf ?? 1) * 2 + 1,
-    }));
-    return done(k, isNew, dough ? `The ${x.name} baked firm into bread over the fire.` : `Holding the ${x.name} over the fire cooked it.`);
+    }) }, dough ? `The ${x.name} baked firm into bread over the fire.` : `Holding the ${x.name} over the fire cooked it.`);
   }
   if (sticky(x)) {
-    const [k, isNew] = ensure(w.kinds, `melt:${x.id}`, () => ({
+    return done({ id: `melt:${x.id}`, make: () => ({
       name: `melted ${x.name}`, props: { binding: 0.95, flammable: p(x, "flammable"), plastic: 0.3, toughness: 0.1 }, parts: [x.id], verb: "heat", fuel: x.fuel,
-    }));
-    return done(k, isNew, `The ${x.name} softened in the heat and ran into a thick, sticky glue.`);
+    }) }, `The ${x.name} softened in the heat and ran into a thick, sticky glue.`);
   }
   if (p(x, "plastic") >= 0.6) {
     if (level < 1.2) return cool(`The ${x.name} dried and cracked at the edges, but an open fire wasn't hot enough to harden it.`);
     fields.at = "hearth";
-    const [k, isNew] = ensure(w.kinds, `fired:${x.id}`, () => ({
+    return done({ id: `fired:${x.id}`, make: () => ({
       name: x.id === "clay" ? "fired clay lump" : `fired ${x.name.replace(/^clay |^wet clay /, "clay ")}`,
       props: { ...x.props, plastic: 0, binding: 0, hard: 0.75, toughness: 0.45 },
       parts: [x.id], verb: "heat",
-    }));
-    return done(k, isNew, `The heat of the ringed fire baked the ${x.name} hard.`);
+    }) }, `The heat of the ringed fire baked the ${x.name} hard.`);
   }
   if (p(x, "metal") >= 0.8) {
     if (level < 1.5) return cool(`The ${x.name} got hot, but stayed as hard as ever.`);
     fields.at = "forge";
-    const [k, isNew] = ensure(w.kinds, `hot:${x.id}`, () => ({ name: `glowing ${x.name}`, props: { ...x.props, plastic: 0.7 }, parts: [x.id], verb: "heat", cools: 36 }));
-    return done(k, isNew, `The ${x.name} glowed orange in the charcoal and went soft enough to work.`);
+    return done({ id: `hot:${x.id}`, make: () => ({ name: `glowing ${x.name}`, props: { ...x.props, plastic: 0.7 }, parts: [x.id], verb: "heat", cools: 36 }) },
+      `The ${x.name} glowed orange in the charcoal and went soft enough to work.`);
   }
   if (p(x, "metal") >= 0.3) {
-    if (level < 2.2) return level >= 1.9 ? cool(`The ${x.name} glowed and sweated, but the fire wasn't quite hot enough.`) : outcome({ text: `The ${x.name} got hot, then cooled. Nothing changed.`, fields });
+    if (level < 2.2) return level >= 1.9 ? cool(`The ${x.name} glowed and sweated, but the fire wasn't quite hot enough.`) : decided({ text: `The ${x.name} got hot, then cooled. Nothing changed.`, fields });
     fields.at = "forge";
-    const [k, isNew] = ensure(w.kinds, `smelt:${x.id}`, () => ({
+    return done({ id: `smelt:${x.id}`, make: () => ({
       name: "metal lump", props: { hard: 0.8, heavy: 0.85, metal: 1, toughness: clamp01(p(x, "toughness") + 0.15) }, parts: [x.id], verb: "heat",
-    }));
-    return done(k, isNew, `In the roaring charcoal the ${x.name} bled bright metal, which cooled into a lump.`);
+    }) }, `In the roaring charcoal the ${x.name} bled bright metal, which cooled into a lump.`);
   }
   const woody = p(x, "flammable") >= 0.5 && p(x, "hard") >= 0.3 && x.verb !== "join";
   if (woody && fire.covered) {
     fields.at = "kiln";
-    return done(w.kinds.charcoal, false, `Starved of air under the cover, the ${x.name} blackened into charcoal instead of burning away.`, [], Math.max(1, Math.round(p(x, "heavy") * 2.5)));
+    fields.gives = ["charcoal"];
+    return decided({ ok: true, text: `Starved of air under the cover, the ${x.name} blackened into charcoal instead of burning away.`, uses: need, gives: { charcoal: Math.max(1, Math.round(p(x, "heavy") * 2.5)) }, fields, numbers: { heat: level } });
   }
   if (skin(x)) {
     if (!fire.covered) {
       fields.effect = "scorched";
-      return outcome({ text: `The ${x.name} dried stiff and scorched at the edges.`, effect: "scorched", fields });
+      return decided({ text: `The ${x.name} dried stiff and scorched at the edges.`, effect: "scorched", fields });
     }
     fields.at = "kiln";
-    const [k, isNew] = leather(w, x);
-    return done(k, isNew, `Held in the thick smoke, the ${x.name} cured into ${k.name}.`);
+    const cured = leatherOf(x);
+    return done(cured, `Held in the thick smoke, the ${x.name} cured into ${nameOf(w, cured)}.`);
   }
   const lamp = p(x, "container") >= 0.5 && p(x, "hard") >= 0.4;
   if (p(x, "flammable") >= 0.6 && (p(x, "long") >= 0.5 || lamp)) {
-    const [k, isNew] = ensure(w.kinds, `burning:${x.id}`, () => ({ name: `${lamp ? "lit" : "burning"} ${x.name}`, props: { ...x.props, flammable: 1 }, parts: [x.id], verb: "heat" }));
-    return done(k, isNew, lamp ? `The wick of the ${x.name} caught and burned low and steady. They could carry the flame.` : `The end of the ${x.name} caught fire. They could carry the flame.`);
+    return done({ id: `burning:${x.id}`, make: () => ({ name: `${lamp ? "lit" : "burning"} ${x.name}`, props: { ...x.props, flammable: 1 }, parts: [x.id], verb: "heat" }) },
+      lamp ? `The wick of the ${x.name} caught and burned low and steady. They could carry the flame.` : `The end of the ${x.name} caught fire. They could carry the flame.`);
   }
   if (p(x, "flammable") >= 0.7) {
-    takeItems(a, x.id);
     fields.effect = "burned";
-    return outcome({ text: `The ${x.name} burned away to nothing.`, uses: { [x.id]: 1 }, effect: "burned", fields });
+    return decided({ text: `The ${x.name} burned away to nothing.`, uses: { [x.id]: 1 }, effect: "burned", fields });
   }
-  if (p(x, "hard") >= 0.5 && p(x, "flammable") < 0.2) return outcome({ text: `The ${x.name} got hot, then cooled. Nothing changed.`, fields });
+  if (p(x, "hard") >= 0.5 && p(x, "flammable") < 0.2) return decided({ text: `The ${x.name} got hot, then cooled. Nothing changed.`, fields });
   return "ask";
 }
+export function heat(w: World, a: Agent, act: Act): Outcome | "ask" {
+  const held = holding(a, act.items), fire = held ? nearFire(w, a) : null;
+  // Something soft and hollow squeezed or flapped at the flames drives air into them.
+  const tool = kind(w, act.tool), fan = fire && tool && airy(tool) && count(a, tool.id) ? tool.id : undefined;
+  if (fire && fan && fire.kind === "fire") { fire.air = w.t + BLOWN; fire.heat = fireHeat(w, fire); mark(w, fire); }
+  const d = heating(w, act.items, { held, fire, fan });
+  if (fire) trace("physics", "heat", { items: act.items, fire: fireKind(fire), heat: fireHeat(w, fire), fan }, a.id);
+  return d === "ask" ? d : enact(w, a, d);
+}
+// Hide cured into leather, in thick smoke (heating) or with fat rubbed into it (rubTick).
+export const leatherOf = (hide: Kind): Make => ({ id: `leather:${hide.id}`, make: () => ({
+  name: hide.id === "hide" ? "leather" : `${hide.name} leather`,
+  props: { insulating: clamp01(p(hide, "insulating") + 0.05), flexible: clamp01(p(hide, "flexible") + 0.25), fibrous: p(hide, "fibrous") * 0.6, toughness: clamp01(p(hide, "toughness") + 0.3), flammable: p(hide, "flammable") * 0.6 },
+  parts: [hide.id], verb: "heat",
+}) });
 export function leather(w: World, hide: Kind) {
-  return ensure(w.kinds, `leather:${hide.id}`, () => ({
-    name: hide.id === "hide" ? "leather" : `${hide.name} leather`,
-    props: { insulating: clamp01(p(hide, "insulating") + 0.05), flexible: clamp01(p(hide, "flexible") + 0.25), fibrous: p(hide, "fibrous") * 0.6, toughness: clamp01(p(hide, "toughness") + 0.3), flammable: p(hide, "flammable") * 0.6 },
-    parts: [hide.id], verb: "heat",
-  }));
+  const { id, make } = leatherOf(hide);
+  return ensure(w.kinds, id, make);
 }
 
 // ---------- wet ----------
@@ -664,64 +697,68 @@ export const FISH_REACH: Record<"basket" | "line", number> = { basket: 15, line:
 const landed = perWorld(() => new Map<string, number>());
 export const fishClose = (w: World, a: Agent, at: { px: number; py: number } = a) =>
   landed(w).get(a.id) === w.t || w.animals.some((m) => m.species === "fish" && meters(m, at) <= FISH_REACH.basket);
-export function wet(w: World, a: Agent, act: Act): Outcome {
-  const x = kind(w, act.items[0]);
-  const fields: Fields = { verb: "wet", inputs: act.items.slice(0, 1), at: "water", gives: [] };
-  if (!x || !count(a, x.id)) return outcome({ text: "They had nothing to dip.", fields });
-  if (!openWater(w, a)) return outcome({ text: "The water was frozen solid.", fields: { ...fields, effect: "frozen" }, effect: "frozen" });
-  if (x.id.startsWith("burning:")) {
-    takeItems(a, x.id);
-    giveItems(w, a, x.parts![0]);
-    return outcome({ ok: true, text: `The water put out the ${x.name}.`, uses: { [x.id]: 1 }, gives: { [x.parts![0]]: 1 }, fields: { ...fields, gives: [x.parts![0]] } });
-  }
+// What there is to dip something into where they stand: open water (not frozen over), how many fish swim within a
+// basket's and a line's reach (FISH_REACH), how practised a hand at fishing they are, and a draw of chance, taken only
+// when a basket might bring up two.
+export type WetSetting = { held: boolean; water: boolean; fish: Record<keyof typeof FISH_REACH, number>; skill: number; draw: () => number };
+// fishing: what it fishes with, when it does: the basket or line wears in the water, and what it brings up comes out of
+// the water from within its reach.
+export type Wetting = Decision & { fishing?: keyof typeof FISH_REACH };
+export function wetting(w: World, items: string[], c: WetSetting): Wetting {
+  const x = kind(w, items[0]);
+  const fields: Fields = { verb: "wet", inputs: items.slice(0, 1), at: "water", gives: [] };
+  if (!x || !c.held) return decided({ text: "They had nothing to dip.", fields });
+  if (!c.water) return decided({ text: "The water was frozen solid.", fields: { ...fields, effect: "frozen" }, effect: "frozen" });
+  if (x.id.startsWith("burning:")) return decided({ ok: true, text: `The water put out the ${x.name}.`, uses: { [x.id]: 1 }, gives: { [x.parts![0]]: 1 }, fields: { ...fields, gives: [x.parts![0]] } });
   // A meal ground from seed takes up water into a sticky dough.
   if (x.verb === "rub" && p(x, "edible") >= 0.1) {
-    const [k, isNew] = ensure(w.kinds, `wet:${x.id}`, () => ({
+    const id = `wet:${x.id}`;
+    fields.gives = [id];
+    return decided({ ok: true, text: `The ${x.name} soaked up the water into a sticky dough.`, uses: { [x.id]: 1 }, gives: { [id]: 1 }, fields, make: { id, make: () => ({
       name: "dough", props: { edible: p(x, "edible"), plastic: 0.7, toughness: 0.02 }, parts: [x.id], verb: "wet", shelf: 1,
-    }));
-    takeItems(a, x.id);
-    giveItems(w, a, k.id);
-    const nk: string[] = [];
-    made(w, a, k, isNew, nk);
-    fields.gives = [k.id];
-    return outcome({ ok: true, text: `The ${x.name} soaked up the water into a sticky dough.`, uses: { [x.id]: 1 }, gives: { [k.id]: 1 }, fields, newKinds: nk });
+    }) } });
   }
   // A vessel that holds water, which a woven basket doesn't, comes up full.
   if (p(x, "container") >= 0.6 && p(x, "fibrous") < 0.5 && !x.id.startsWith("full:")) {
-    const [k] = ensure(w.kinds, `full:${x.id}`, () => ({ name: `${short(x)} of water`, props: { ...x.props, heavy: Math.min(1, p(x, "heavy") + 0.3) }, parts: [x.id], verb: "wet" }));
-    takeItems(a, x.id);
-    giveItems(w, a, k.id);
-    fields.gives = [k.id];
-    return outcome({ ok: true, text: `They dipped the ${x.name} in the water and lifted it out full.`, uses: { [x.id]: 1 }, gives: { [k.id]: 1 }, fields });
+    const id = `full:${x.id}`;
+    fields.gives = [id];
+    return decided({ ok: true, text: `They dipped the ${x.name} in the water and lifted it out full.`, uses: { [x.id]: 1 }, gives: { [id]: 1 }, fields, make: {
+      id, make: () => ({ name: `${short(x)} of water`, props: { ...x.props, heavy: Math.min(1, p(x, "heavy") + 0.3) }, parts: [x.id], verb: "wet" }), quiet: true,
+    } });
   }
   // A basket woven loose enough to let the water through, swept along where fish are swimming, scoops one or two up.
   if (p(x, "container") >= 0.6 && p(x, "container") < 0.85 && p(x, "fibrous") >= 0.6) {
-    const near = w.animals.filter((m) => m.species === "fish" && meters(m, a) <= FISH_REACH.basket);
-    const s = a.inv.find((q) => q.k === x.id)!;
-    s.hp -= 0.03;
-    if (!near.length) return outcome({ text: `They swept the ${x.name} through the water, but no fish were swimming close enough to scoop up.`, fields });
+    if (!c.fish.basket) return { ok: false, text: `They swept the ${x.name} through the water, but no fish were swimming close enough to scoop up.`, uses: {}, gives: {}, fields, fishing: "basket" };
     // how many it brings up is chance: two now and then where two or more are swimming, more often for a practised hand
-    const n = near.length >= 2 && Math.random() < 0.4 + level(a.skills.fishing ?? 0) * 0.05 ? 2 : 1;
-    const caught = new Set(near.slice(0, n));
-    w.animals = w.animals.filter((m) => !caught.has(m));
-    landed(w).set(a.id, w.t);
-    giveItems(w, a, "fish", n);
+    const n = c.fish.basket >= 2 && c.draw() < 0.4 + c.skill * 0.05 ? 2 : 1;
     fields.gives = ["fish"];
-    return outcome({ ok: true, text: `They swept the ${x.name} through the water and lifted it out with ${n > 1 ? "two fish" : "a fish"} flapping in it.`, gives: { fish: n }, fields });
+    return { ok: true, text: `They swept the ${x.name} through the water and lifted it out with ${n > 1 ? "two fish" : "a fish"} flapping in it.`, uses: {}, gives: { fish: n }, fields, fishing: "basket" };
   }
   if (p(x, "long") >= 0.5 && p(x, "flexible") >= 0.8 && p(x, "binding") >= 0.5) {
     // A fish swimming within a stone's throw of the line comes to it and bites.
-    const fish = w.animals.find((m) => m.species === "fish" && meters(m, a) <= FISH_REACH.line);
-    const s = a.inv.find((q) => q.k === x.id)!;
-    s.hp -= 0.03;
-    if (!fish) return outcome({ text: `They dangled the ${x.name} in the water, but no fish came near it.`, fields });
-    w.animals = w.animals.filter((m) => m !== fish);
-    landed(w).set(a.id, w.t);
-    giveItems(w, a, "fish");
+    if (!c.fish.line) return { ok: false, text: `They dangled the ${x.name} in the water, but no fish came near it.`, uses: {}, gives: {}, fields, fishing: "line" };
     fields.gives = ["fish"];
-    return outcome({ ok: true, text: `They dangled the ${x.name} in the water and something bit. A fish!`, gives: { fish: 1 }, fields });
+    return { ok: true, text: `They dangled the ${x.name} in the water and something bit. A fish!`, uses: {}, gives: { fish: 1 }, fields, fishing: "line" };
   }
-  return outcome({ text: `The ${x.name} got wet. Nothing else happened.`, fields });
+  return decided({ text: `The ${x.name} got wet. Nothing else happened.`, fields });
+}
+export function wet(w: World, a: Agent, act: Act): Outcome {
+  // the fish swimming within a line's reach, and of those, the ones within a basket's
+  const line = w.animals.filter((m) => m.species === "fish" && meters(m, a) <= FISH_REACH.line);
+  const basket = line.filter((m) => meters(m, a) <= FISH_REACH.basket);
+  const { fishing, ...d } = wetting(w, act.items, {
+    held: count(a, act.items[0]) > 0, water: openWater(w, a), fish: { basket: basket.length, line: line.length },
+    skill: level(a.skills.fishing ?? 0), draw: () => Math.random(),
+  });
+  if (fishing) {
+    a.inv.find((q) => q.k === act.items[0])!.hp -= 0.03;
+    const caught = new Set((fishing === "basket" ? basket : line).slice(0, d.gives.fish ?? 0));
+    if (caught.size) {
+      w.animals = w.animals.filter((m) => !caught.has(m));
+      landed(w).set(a.id, w.t);
+    }
+  }
+  return enact(w, a, d);
 }
 
 // ---------- pour ----------
@@ -877,26 +914,25 @@ export function digTick(w: World, a: Agent, act: Act, st: { progress: number; at
 }
 
 // ---------- shape ----------
-export function shape(w: World, a: Agent, act: Act): Outcome {
-  const held = kind(w, act.items[0]);
-  const fields: Fields = { verb: "shape", inputs: act.items.slice(0, 1), shape: act.shape, gives: [] };
-  if (!held || !count(a, held.id)) return outcome({ text: "They had nothing to shape.", fields });
+// What pressing it into a bowl or a block comes to.
+export function shaping(w: World, items: string[], form: string | undefined, c: { held: boolean }): Decision {
+  const held = kind(w, items[0]);
+  const fields: Fields = { verb: "shape", inputs: items.slice(0, 1), shape: form, gives: [] };
+  if (!held || !c.held) return decided({ text: "They had nothing to shape.", fields });
   // Reshaping works on the raw material underneath.
   const x = held.verb === "shape" ? kind(w, held.parts![0])! : held;
-  if (p(x, "plastic") < 0.6) return outcome({ text: `The ${x.name} wouldn't take a shape.`, fields });
-  const bowl = act.shape === "bowl";
-  const [k, isNew] = ensure(w.kinds, `shape:${act.shape}:${x.id}`, () => ({
+  if (p(x, "plastic") < 0.6) return decided({ text: `The ${x.name} wouldn't take a shape.`, fields });
+  const bowl = form === "bowl", id = `shape:${form}:${x.id}`;
+  if (id === held.id) return decided({ text: `The ${held.name} was already that shape.`, fields });
+  fields.gives = [id];
+  return decided({ ok: true, text: `They pressed the ${held.name} into a ${bowl ? "hollow bowl" : "flat-sided block"}.`, uses: { [held.id]: 1 }, gives: { [id]: 1 }, fields, make: { id, make: () => ({
     name: `${x.id === "clay" ? "clay" : noun(x)} ${bowl ? "bowl" : "block"}`,
     props: bowl ? { ...x.props, container: 0.8, binding: 0, heavy: 0.35 } : { ...x.props, binding: 0.1, heavy: 0.6, hard: 0.2 },
     parts: [x.id], verb: "shape",
-  }));
-  if (k.id === held.id) return outcome({ text: `The ${held.name} was already that shape.`, fields });
-  takeItems(a, held.id);
-  giveItems(w, a, k.id);
-  const nk: string[] = [];
-  made(w, a, k, isNew, nk);
-  fields.gives = [k.id];
-  return outcome({ ok: true, text: `They pressed the ${held.name} into a ${bowl ? "hollow bowl" : "flat-sided block"}.`, uses: { [held.id]: 1 }, gives: { [k.id]: 1 }, fields, newKinds: nk });
+  }) } });
+}
+export function shape(w: World, a: Agent, act: Act): Outcome {
+  return enact(w, a, shaping(w, act.items, act.shape, { held: count(a, act.items[0]) > 0 }));
 }
 
 // ---------- place: fires, hearths, shelters ----------
@@ -951,113 +987,164 @@ export const shelterName = (w: World, t: Thing) =>
   (t.shelter?.tier ?? 0) === 0 && nearestThing(w, t.px, t.py, ["fire"], () => true, 1) ? "fire ring"
     : (t.shelter?.tier ?? 0) === 3 && (t.shelter?.room ?? 0) >= 6 ? "longhouse" : ["pile", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0];
 
-export function place(w: World, a: Agent, act: Act): Outcome {
-  const parts = act.items.map((id) => kind(w, id)!).filter(Boolean);
-  const need = act.items.reduce<Record<string, number>>((m, k) => ((m[k] = (m[k] ?? 0) + 1), m), {});
-  const fields: Fields = { verb: "place", inputs: [...act.items].sort(), gives: [] };
-  if (!parts.length || Object.entries(need).some(([k, n]) => count(a, k) < n)) return outcome({ text: "They didn't have those things to hand.", fields });
-  const take = () => { for (const [k, n] of Object.entries(need)) takeItems(a, k, n); };
-  const fire = nearestThing(w, a.px, a.py, ["fire"], (t) => reaches(a, t), 4);
+// What there is to place things at, within reach: the fire (and how many pieces already ring it in), a pit, the shelter
+// they'd build onto (their own, one they live in, or an empty one they'd move into), and whether there's an empty one to
+// move into, they having no home of their own.
+export type PlaceSetting = { held: boolean; fire: Fire | null; ring: number; pit: boolean; own: Pick<Thing, "parts" | "shelter"> | null; empty: boolean };
+// What placing them does besides taking them from their hands: lights a fire (or lends its flame to the one there, a lamp
+// keeping its own), feeds the fire, rings it in, hides the pit, stores them at home, or builds a shelter or a pile.
+type PlaceWork =
+  | { does: "light"; fuel: number; keep?: string }
+  | { does: "feed"; fuel: number; charcoal: number; heat: number }
+  | { does: "ring"; contained: boolean; covered: boolean; heat: number }
+  | { does: "trap" | "store" }
+  | { does: "build"; shelter: Shelter; better: boolean; roomier: boolean };
+// claims: they move into the empty shelter within reach, and make it theirs.
+export type Placing = Decision & { claims?: boolean; work?: PlaceWork };
+export function placing(w: World, items: string[], c: PlaceSetting): Placing {
+  const parts = items.map((id) => kind(w, id)!).filter(Boolean);
+  const need = tally(items);
+  const fields: Fields = { verb: "place", inputs: [...items].sort(), gives: [] };
+  if (!parts.length || !c.held) return decided({ text: "They didn't have those things to hand.", fields });
+  const fire = c.fire;
   const flame = parts.find((k) => k.id.startsWith("burning:"));
   const fuels = parts.filter((k) => p(k, "flammable") >= 0.5 && k !== flame);
   if (flame && (fuels.length || fire)) {
-    // A lamp lends its flame and keeps burning; a torch is used up.
-    for (const [k, n] of Object.entries(need)) takeItems(a, k, k === flame.id && p(flame, "container") >= 0.5 ? n - 1 : n);
-    const fuel = fuels.reduce((t, k) => t + (k.fuel ?? 20), 20);
-    if (fire) { fire.hp = Math.min(400, (fire.hp ?? 0) + fuel); mark(w, fire); }
-    else mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: fuel, maxHp: 400, born: w.t, heat: 1 }));
     fields.builds = "fire";
-    return outcome({ ok: true, text: `Setting the ${flame.name} into ${fuels.length ? fuels.map((k) => `the ${k.name}`).join(" and ") : "the fire"} started a campfire.`, uses: need, builds: "fire", fields });
+    return {
+      ok: true, text: `Setting the ${flame.name} into ${fuels.length ? fuels.map((k) => `the ${k.name}`).join(" and ") : "the fire"} started a campfire.`, uses: need, gives: {}, builds: "fire", fields,
+      work: { does: "light", fuel: fuels.reduce((t, k) => t + (k.fuel ?? 20), 20), keep: p(flame, "container") >= 0.5 ? flame.id : undefined },
+    };
   }
   if (fire && fuels.length === parts.length) {
-    take();
-    fire.hp = Math.min(400, (fire.hp ?? 0) + fuels.reduce((t, k) => t + (k.fuel ?? 20), 0));
+    const fuel = fuels.reduce((t, k) => t + (k.fuel ?? 20), 0);
     const coal = fuels.filter((k) => (k.burns ?? 1) > 1.2).reduce((t, k) => t + (k.fuel ?? 20), 0);
-    fire.charcoal = (fire.charcoal ?? 0) + coal;
-    fire.heat = fireHeat(w, fire);
-    mark(w, fire);
+    const heat = fireHeat(w, { ...fire, charcoal: (fire.charcoal ?? 0) + coal });
     const forge = coal > 0 && !!fire.contained;
     fields.at = forge ? "hearth" : "fire"; fields.builds = forge ? "forge" : "fed_fire";
-    return outcome({ ok: true, text: forge ? `The ${list(w, need)} caught inside the ring and glowed white-hot.` : `Feeding ${list(w, need)} to the fire built it up.`, uses: need, builds: fields.builds, fields, numbers: { heat: fire.heat } });
+    return {
+      ok: true, text: forge ? `The ${list(w, need)} caught inside the ring and glowed white-hot.` : `Feeding ${list(w, need)} to the fire built it up.`, uses: need, gives: {}, builds: fields.builds, fields, numbers: { heat },
+      work: { does: "feed", fuel, charcoal: coal, heat },
+    };
   }
   // Stone or clay set around a fire rings it in; heaped over a fire that's already ringed, it closes it off to smolder.
   if (fire && parts.every((k) => (p(k, "hard") >= 0.5 && p(k, "flammable") < 0.2) || p(k, "plastic") >= 0.6)) {
-    take();
-    let ring = ringOf(w, fire);
-    if (!ring) ring = addThing(w, "structure", fire.px, fire.py, { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t, size: 1.6 });
-    for (const [k, n] of Object.entries(need)) ring.parts![k] = (ring.parts![k] ?? 0) + n;
-    ring.shelter = { ...shelterOf(w, ring.parts!), tier: 0 };
-    const walls = Object.values(ring.parts!).reduce((t, n) => t + n, 0);
+    const walls = c.ring + items.length;
     const was = { contained: !!fire.contained, covered: !!fire.covered };
-    fire.contained = walls >= 3;
-    fire.covered = was.covered || (was.contained && (walls >= 6 || parts.some((k) => p(k, "plastic") >= 0.6)));
-    fire.heat = fireHeat(w, fire);
-    mark(w, ring); mark(w, fire);
+    const contained = walls >= 3, covered = was.covered || (was.contained && (walls >= 6 || parts.some((k) => p(k, "plastic") >= 0.6)));
+    const heat = fireHeat(w, { ...fire, contained, covered });
     fields.at = was.contained ? "hearth" : "fire";
-    fields.builds = fire.covered ? "kiln" : fire.contained ? "hearth" : "ring";
-    const text = fire.covered && !was.covered ? `Heaping ${list(w, need)} over the ringed fire closed it in. It smoldered low and smoky under the cover.`
-      : fire.contained && !was.contained ? `Ringing the fire with ${list(w, need)} closed it in. The flames stayed put and burned steady.` : `They set ${list(w, need)} beside the fire.`;
-    return outcome({ ok: (fire.contained && !was.contained) || (fire.covered && !was.covered), text, uses: need, builds: fields.builds, fields, numbers: { heat: fire.heat } });
+    fields.builds = covered ? "kiln" : contained ? "hearth" : "ring";
+    const text = covered && !was.covered ? `Heaping ${list(w, need)} over the ringed fire closed it in. It smoldered low and smoky under the cover.`
+      : contained && !was.contained ? `Ringing the fire with ${list(w, need)} closed it in. The flames stayed put and burned steady.` : `They set ${list(w, need)} beside the fire.`;
+    return { ok: (contained && !was.contained) || (covered && !was.covered), text, uses: need, gives: {}, builds: fields.builds, fields, numbers: { heat }, work: { does: "ring", contained, covered, heat } };
   }
-  const pit = nearestThing(w, a.px, a.py, ["pit"], (t) => reaches(a, t), 4);
   const cover = parts.filter((k) => p(k, "long") >= 0.5 || p(k, "fibrous") >= 0.6);
-  if (pit && cover.length >= 2 && cover.length === parts.length) {
-    take();
-    setKind(w, pit, "trap"); pit.owner = a.id;
-    mark(w, pit);
+  if (c.pit && cover.length >= 2 && cover.length === parts.length) {
     fields.at = "pit"; fields.builds = "trap";
-    return outcome({ ok: true, text: `Laying ${list(w, need)} over the pit hid it from view.`, uses: need, builds: "trap", fields });
+    return { ok: true, text: `Laying ${list(w, need)} over the pit hid it from view.`, uses: need, gives: {}, builds: "trap", fields, work: { does: "trap" } };
   }
-  const abandoned = nearestThing(w, a.px, a.py, ["structure"], (t) => !t.owner && (t.shelter?.tier ?? 0) >= 1 && reaches(a, t), 6);
-  if (abandoned && !homeOf(w, a)) {
-    abandoned.owner = a.id;
-    log(w, "claim", [a.id], abandoned, `${a.name} moved into an empty ${TIER[abandoned.shelter!.tier].replace(/^an? /, "")} and made it theirs.`);
-  }
-  // their own shelter, or the one they live in with others, within reach
-  const own = nearestThing(w, a.px, a.py, ["structure"], (t) => (t.owner === a.id || a.home === t.id) && reaches(a, t) && !nearestThing(w, t.px, t.py, ["fire"], () => true, 1), 6);
+  const own = c.own, claims = c.empty;
   // Food set down inside a home is kept, not built into the walls, and so is a pot or basket to keep it in.
   if (own && (own.shelter?.tier ?? 0) >= 1 && parts.every((k) => p(k, "edible") >= 0.1 || p(k, "container") >= 0.6)) {
-    take();
-    own.store ??= [];
-    for (const [k, n] of Object.entries(need)) for (let i = 0; i < n; i++) own.store.push({ k, hp: 1, born: w.t });
-    mark(w, own);
     fields.at = "home"; fields.builds = "stored";
-    return outcome({ text: `They tucked ${list(w, need)} away inside their shelter.`, uses: need, builds: "stored", fields });
+    return { ok: false, text: `They tucked ${list(w, need)} away inside their shelter.`, uses: need, gives: {}, builds: "stored", fields, claims, work: { does: "store" } };
   }
-  if (parts.some((k) => p(k, "edible") >= 0.1)) return outcome({ text: `Food makes a poor thing to build with. The ${parts.find((k) => p(k, "edible") >= 0.1)!.name} just rolled away.`, fields });
-  take();
-  const s = own ?? addThing(w, "structure", ...beside(w, a, 1.5), { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t });
-  for (const [k, n] of Object.entries(need)) s.parts![k] = (s.parts![k] ?? 0) + n;
-  const before = own?.shelter?.tier ?? 0, roomBefore = own?.shelter?.room ?? 0, was = own?.shelter;
-  const sh = s.shelter = shelterOf(w, s.parts!);
-  s.size = sizeOf(sh);
-  s.hp = Math.min(s.maxHp!, (s.hp ?? 100) + 20);
+  if (parts.some((k) => p(k, "edible") >= 0.1)) return { ok: false, text: `Food makes a poor thing to build with. The ${parts.find((k) => p(k, "edible") >= 0.1)!.name} just rolled away.`, uses: {}, gives: {}, fields, claims };
+  const built: Record<string, number> = { ...own?.parts };
+  for (const [k, n] of Object.entries(need)) built[k] = (built[k] ?? 0) + n;
+  const was = own?.shelter, before = was?.tier ?? 0, roomBefore = was?.room ?? 0;
+  const sh = shelterOf(w, built);
   const grew = sh.tier > before, roomier = sh.room > roomBefore;
   // what else its builders can tell got better: it stands firmer, keeps the cold out, or keeps the rain off
   const gain = was && (["sturdy", "insul", "cover"] as const).find((q) => sh[q] > was[q] + 0.03);
-  // Another load that made it neither a better shelter nor room for someone who needed it is something its builders
-  // notice: more space than the people in it is no gain.
-  if (own) s.stale = grew || gain || (roomier && residentsOf(w, s).length >= roomBefore) ? 0 : (s.stale ?? 0) + 1;
-  mark(w, s);
-  const home = homeOf(w, a);
-  // A better shelter, or any shelter at all when the old home is more than half a day's walk away, is home now.
-  const far = home && meters(home, s) > ((home.shelter?.tier ?? 0) <= 1 ? 60 : 150);
-  if (s.shelter.tier >= 1 && (!home || home === s || (home.shelter?.tier ?? 0) < s.shelter.tier || far)) {
-    if (home && home !== s) leaveHome(w, a, home);
-    a.home = s.id;
-  }
-  fields.builds = s.shelter.tier >= 1 ? "shelter" : "pile";
+  fields.builds = sh.tier >= 1 ? "shelter" : "pile";
   // Built onto the shelter they have, what they learn is about building it up: three stones that made a lean-to sturdier
   // are no shelter on their own.
   if (own) fields.at = "home";
-  trace("physics", "place", { parts: s.parts, shelter: s.shelter }, a.id);
-  const named = TIER[s.shelter.tier].replace(/^an? /, "");
+  const named = TIER[sh.tier].replace(/^an? /, "");
   const text = own
-    ? grew ? `Adding ${list(w, need)} turned their ${TIER[before].slice(2)} into ${TIER[s.shelter.tier]}.`
-      : roomier ? `Adding ${list(w, need)} made their ${named} big enough for ${s.shelter.room}.`
+    ? grew ? `Adding ${list(w, need)} turned their ${TIER[before].slice(2)} into ${TIER[sh.tier]}.`
+      : roomier ? `Adding ${list(w, need)} made their ${named} big enough for ${sh.room}.`
         : gain ? `Adding ${list(w, need)} made their ${named} ${GAIN_WORDS[gain]}.` : `They added ${list(w, need)} to their ${named}.`
-    : s.shelter.tier >= 1 ? `Leaning and stacking ${list(w, need)} together made ${TIER[s.shelter.tier]} they could shelter in.` : `They stacked ${list(w, need)} into a small pile.`;
-  return outcome({ ok: s.shelter.tier >= 1, text, uses: need, builds: fields.builds, fields, numbers: { cover: s.shelter.cover, insul: s.shelter.insul, tier: s.shelter.tier, room: s.shelter.room } });
+    : sh.tier >= 1 ? `Leaning and stacking ${list(w, need)} together made ${TIER[sh.tier]} they could shelter in.` : `They stacked ${list(w, need)} into a small pile.`;
+  return {
+    ok: sh.tier >= 1, text, uses: need, gives: {}, builds: fields.builds, fields, numbers: { cover: sh.cover, insul: sh.insul, tier: sh.tier, room: sh.room },
+    claims, work: { does: "build", shelter: sh, better: grew || !!gain, roomier },
+  };
+}
+export function place(w: World, a: Agent, act: Act): Outcome {
+  const fire = nearestThing(w, a.px, a.py, ["fire"], (t) => reaches(a, t), 4), ring = fire && ringOf(w, fire);
+  const pit = nearestThing(w, a.px, a.py, ["pit"], (t) => reaches(a, t), 4);
+  const empty = homeOf(w, a) ? null : nearestThing(w, a.px, a.py, ["structure"], (t) => !t.owner && (t.shelter?.tier ?? 0) >= 1 && reaches(a, t), 6);
+  // their own shelter, or the one they live in with others, within reach: or the empty one they'd move into
+  const own = nearestThing(w, a.px, a.py, ["structure"], (t) => (t.owner === a.id || a.home === t.id || t === empty) && reaches(a, t) && !nearestThing(w, t.px, t.py, ["fire"], () => true, 1), 6);
+  const { claims, work, ...d } = placing(w, act.items, {
+    held: holding(a, act.items), fire, ring: ring ? Object.values(ring.parts!).reduce((t, n) => t + n, 0) : 0, pit: !!pit, own, empty: !!empty,
+  });
+  if (claims && empty) {
+    empty.owner = a.id;
+    log(w, "claim", [a.id], empty, `${a.name} moved into an empty ${TIER[empty.shelter!.tier].replace(/^an? /, "")} and made it theirs.`);
+  }
+  if (!work) return outcome(d);
+  // A lamp lends its flame and keeps burning; a torch is used up.
+  for (const [k, n] of Object.entries(d.uses)) takeItems(a, k, work.does === "light" && k === work.keep ? n - 1 : n);
+  switch (work.does) {
+    case "light":
+      if (fire) { fire.hp = Math.min(400, (fire.hp ?? 0) + work.fuel); mark(w, fire); }
+      else mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: work.fuel, maxHp: 400, born: w.t, heat: 1 }));
+      break;
+    case "feed": {
+      const f = fire!;
+      f.hp = Math.min(400, (f.hp ?? 0) + work.fuel);
+      f.charcoal = (f.charcoal ?? 0) + work.charcoal;
+      f.heat = work.heat;
+      mark(w, f);
+      break;
+    }
+    case "ring": {
+      const f = fire!, r = ring ?? addThing(w, "structure", f.px, f.py, { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t, size: 1.6 });
+      for (const [k, n] of Object.entries(d.uses)) r.parts![k] = (r.parts![k] ?? 0) + n;
+      r.shelter = { ...shelterOf(w, r.parts!), tier: 0 };
+      f.contained = work.contained;
+      f.covered = work.covered;
+      f.heat = work.heat;
+      mark(w, r); mark(w, f);
+      break;
+    }
+    case "trap":
+      setKind(w, pit!, "trap"); pit!.owner = a.id;
+      mark(w, pit!);
+      break;
+    case "store": {
+      const home = own!;
+      home.store ??= [];
+      for (const [k, n] of Object.entries(d.uses)) for (let i = 0; i < n; i++) home.store.push({ k, hp: 1, born: w.t });
+      mark(w, home);
+      break;
+    }
+    case "build": {
+      const s = own ?? addThing(w, "structure", ...beside(w, a, 1.5), { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t });
+      for (const [k, n] of Object.entries(d.uses)) s.parts![k] = (s.parts![k] ?? 0) + n;
+      const roomBefore = own?.shelter?.room ?? 0;
+      s.shelter = work.shelter;
+      s.size = sizeOf(work.shelter);
+      s.hp = Math.min(s.maxHp!, (s.hp ?? 100) + 20);
+      // Another load that made it neither a better shelter nor room for someone who needed it is something its builders
+      // notice: more space than the people in it is no gain.
+      if (own) s.stale = work.better || (work.roomier && residentsOf(w, s).length >= roomBefore) ? 0 : (s.stale ?? 0) + 1;
+      mark(w, s);
+      const home = homeOf(w, a);
+      // A better shelter, or any shelter at all when the old home is more than half a day's walk away, is home now.
+      const far = home && meters(home, s) > ((home.shelter?.tier ?? 0) <= 1 ? 60 : 150);
+      if (work.shelter.tier >= 1 && (!home || home === s || (home.shelter?.tier ?? 0) < work.shelter.tier || far)) {
+        if (home && home !== s) leaveHome(w, a, home);
+        a.home = s.id;
+      }
+      trace("physics", "place", { parts: s.parts, shelter: s.shelter }, a.id);
+    }
+  }
+  return outcome(d);
 }
 // Footprint in meters, by tier, and for a lodge drawn out longer, a pace and a half for each more it sleeps.
 export const sizeOf = (sh: Shelter) => WIDTH[sh.tier] + (sh.tier === 3 ? 1.6 * Math.max(0, sh.room - 3) : 0);
@@ -1135,38 +1222,56 @@ const INTO: Record<string, string> = {
 // Food rank enough to taste it, raw meat or anything gone rotten, makes whoever eats it sick, every time; food milder
 // than that (raw fish, a mushroom, anything cooked) never does. How badly, and for how long, is chance.
 const RANK = 0.25;
-export function eat(w: World, a: Agent, k: string): Outcome {
+// What eating it comes to, for someone sick or not. How sick rank food makes them is chance, drawn as they eat it (eat).
+export function eating(w: World, k: string, c: { held: boolean; sick: boolean }): Decision {
   const x = w.kinds[k];
   const fields: Fields = { verb: "eat", inputs: [k], gives: [] };
-  if (!x || (p(x, "edible") < 0.03 && p(x, "medicinal") < 0.3)) return outcome({ text: `The ${x?.name ?? "thing"} isn't food.`, fields });
-  if (!takeItems(a, k)) return outcome({ text: "Nothing to eat.", fields });
-  a.needs.food = Math.min(100, a.needs.food + p(x, "edible") * 100);
-  if (p(x, "medicinal") >= 0.5 && a.sickness) {
-    a.sickness.until -= DAY;
-    a.needs.health = Math.min(100, a.needs.health + 8);
+  if (!x || (p(x, "edible") < 0.03 && p(x, "medicinal") < 0.3)) return decided({ text: `The ${x?.name ?? "thing"} isn't food.`, fields });
+  if (!c.held) return decided({ text: "Nothing to eat.", fields });
+  if (p(x, "medicinal") >= 0.5 && c.sick) {
     fields.effect = "cure";
-    return outcome({ ok: true, text: `Eating the ${x.name} eased their sickness.`, uses: { [k]: 1 }, effect: "cure", fields });
+    return decided({ ok: true, text: `Eating the ${x.name} eased their sickness.`, uses: { [k]: 1 }, effect: "cure", fields });
   }
   if (p(x, "toxic") >= RANK) {
+    fields.effect = "sick";
+    return decided({ text: `The ${x.name} tasted rank, and eating it made them sick.`, uses: { [k]: 1 }, effect: "sick", fields });
+  }
+  return decided({ ok: true, text: `They ate the ${x.name}.`, uses: { [k]: 1 }, fields });
+}
+export function eat(w: World, a: Agent, k: string): Outcome {
+  const d = eating(w, k, { held: count(a, k) > 0, sick: !!a.sickness });
+  const out = enact(w, a, d), x = w.kinds[k];
+  if (!d.uses[k]) return out;
+  a.needs.food = Math.min(100, a.needs.food + p(x, "edible") * 100);
+  if (d.effect === "cure" && a.sickness) {
+    a.sickness.until -= DAY;
+    a.needs.health = Math.min(100, a.needs.health + 8);
+  }
+  if (d.effect === "sick") {
     const sev = clamp01(p(x, "toxic") + 0.1 + Math.random() * 0.2);
     a.sickness = { until: w.t + Math.round(DAY * (0.5 + sev * 1.5)), severity: Math.max(sev, a.sickness?.severity ?? 0) };
-    fields.effect = "sick";
-    return outcome({ text: `The ${x.name} tasted rank, and eating it made them sick.`, uses: { [k]: 1 }, effect: "sick", fields });
   }
-  return outcome({ ok: true, text: `They ate the ${x.name}.`, uses: { [k]: 1 }, fields });
+  return out;
 }
 
-export function wearIt(w: World, a: Agent, act: Act): Outcome {
-  const x = kind(w, act.items[0]);
-  const fields: Fields = { verb: "wear", inputs: act.items.slice(0, 1), gives: [] };
-  if (!x || !count(a, x.id)) return outcome({ text: "They had nothing to put on.", fields });
-  if (p(x, "insulating") < 0.5 || p(x, "flexible") < 0.4) return outcome({ text: `The ${x.name} wouldn't stay on.`, fields });
-  const s = a.inv.find((q) => q.k === x.id)!;
-  a.inv.splice(a.inv.indexOf(s), 1);
-  if (a.wearing) a.inv.push(a.wearing);
-  a.wearing = s;
+// What putting it on comes to.
+export function wearing(w: World, items: string[], c: { held: boolean }): Decision {
+  const x = kind(w, items[0]);
+  const fields: Fields = { verb: "wear", inputs: items.slice(0, 1), gives: [] };
+  if (!x || !c.held) return decided({ text: "They had nothing to put on.", fields });
+  if (p(x, "insulating") < 0.5 || p(x, "flexible") < 0.4) return decided({ text: `The ${x.name} wouldn't stay on.`, fields });
   fields.builds = "worn";
-  return outcome({ ok: true, text: `They wrapped the ${x.name} around themselves. It kept the cold out.`, uses: { [x.id]: 1 }, builds: "worn", fields });
+  return decided({ ok: true, text: `They wrapped the ${x.name} around themselves. It kept the cold out.`, uses: { [x.id]: 1 }, builds: "worn", fields });
+}
+export function wearIt(w: World, a: Agent, act: Act): Outcome {
+  const d = wearing(w, act.items, { held: count(a, act.items[0]) > 0 });
+  if (d.ok) {
+    const s = a.inv.find((q) => q.k === act.items[0])!;
+    a.inv.splice(a.inv.indexOf(s), 1);
+    if (a.wearing) a.inv.push(a.wearing);
+    a.wearing = s;
+  }
+  return outcome(d);
 }
 
 // A Jev ruling, once made, is a law: apply it the same way every time.

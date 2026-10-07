@@ -628,10 +628,10 @@ function gain(w: World, a: Agent, skill: string, n: number) {
   if (level(a.skills[skill]) > before) log(w, "level", [a.id], a, `${a.name} got better at ${skill} (level ${level(a.skills[skill])}).`);
 }
 
-const DURATION: Record<string, number> = { join: 8, heat: 8, wet: 10, shape: 6, place: 3, plant: 3, pour: 2, wear: 2 };
+export const DURATION: Record<string, number> = { join: 8, heat: 8, wet: 10, shape: 6, place: 3, plant: 3, pour: 2, wear: 2 };
 const pendingRulings = perWorld(() => new Set<string>());
 const namingNow = perWorld(() => new Set<string>());
-const rulingKey = (act: Act) => `rule|${actSig(act)}`;
+export const rulingKey = (act: Act) => `rule|${actSig(act)}`;
 
 // In poor light a tick's work is sometimes lost to groping about, though not in a fight, which is quick and close.
 function fumbles(w: World, a: Agent) {
