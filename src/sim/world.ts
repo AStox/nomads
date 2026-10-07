@@ -263,6 +263,16 @@ export function rng(seed: number) {
     return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
   };
 }
+// A list put in a random order in place, every order as likely, with one draw for every place but the first. Sorting by
+// a random comparator draws as many times as the engine's sort happens to compare, and that changes once the JIT has
+// optimized a sort that runs often, so a seeded run stopped replaying.
+export function shuffle<T>(xs: T[], rand: () => number = Math.random): T[] {
+  for (let i = xs.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [xs[i], xs[j]] = [xs[j], xs[i]];
+  }
+  return xs;
+}
 
 export function nearWater(w: World, x: number, y: number, r: number) {
   for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) if (tileAt(w, x + dx, y + dy) === Tile.Water) return true;

@@ -1,5 +1,5 @@
 import {
-  DAY, H, REACH, TILE_M, W, clock, dryAt, isNight, nearestShore, level, log, meters, perWorld, reachOf, stageOf,
+  DAY, H, REACH, TILE_M, W, clock, dryAt, isNight, nearestShore, level, log, meters, perWorld, reachOf, shuffle, stageOf,
   type Act, type Agent, type Animal, type BondKind, type Step, type Thing, type Waiting, type World,
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
@@ -293,7 +293,7 @@ function planGoal(w: World, a: Agent, type: string, target?: string, ctx = ctxFo
     const aim = type.slice(11), steps: Step[] = [], suits = AIM_STUFF[aim], armful = aim === "shelter" || aim === "home" ? 4 : 2;
     if (suits) {
       const about = Object.values(COLLECT).filter((k) => suits(w.kinds[k]) && count(a, k) < armful && (k === "stone" || k === "stick" || (ctx.dist[k === "fiber" ? "reeds" : k] ?? ctx.dist[`item:${k}`]) !== undefined));
-      for (const k of about.sort(() => Math.random() - 0.5).slice(0, 2)) {
+      for (const k of shuffle(about).slice(0, 2)) {
         const sub = plan(pstate(w, a), `have:${k}:${armful}`, ctx);
         if (sub) steps.push(...sub.map((st) => ({ op: st.op, arg: st.arg, key: st.key, progress: 0 })));
       }
@@ -1166,7 +1166,7 @@ function tinkerOptions(w: World, a: Agent, aim?: string): Option[] {
     }
   // ponytail: random cap to stay under Jev's 255 options and keep the prompt small.
   const aimed = aim && AIM[aim] ? opts.filter((o) => AIM[aim](o.act, w)) : opts;
-  return (aimed.length ? aimed : opts).sort(() => Math.random() - 0.5).slice(0, 100);
+  return shuffle(aimed.length ? aimed : opts).slice(0, 100);
 }
 const tinkerWait = perWorld(() => new Set<string>());
 
