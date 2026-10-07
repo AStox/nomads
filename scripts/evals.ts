@@ -133,7 +133,6 @@ async function pool<T>(tasks: (() => Promise<T>)[], jobs: number, what = "runs")
   return out;
 }
 const range = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
-const chunks = <T>(xs: T[], n: number) => Array.from({ length: Math.ceil(xs.length / n) }, (_, i) => xs.slice(i * n, (i + 1) * n));
 
 // ---------- comparing ----------
 const fmt = (x: number | null | undefined) => (x === null || x === undefined || Number.isNaN(x) ? "-" : Math.abs(x) >= 10 ? x.toFixed(1) : x.toFixed(2));
@@ -241,8 +240,13 @@ async function probes() {
     const dir = join(DATA, "runs", snap.id, "probes");
     const all: ProbeSpec[] = variants.flatMap(([probe, variant]) => seeds.map((seed) => ({ probe, variant, seed, days, people, brain, out: join(dir, `${probe}-${variant}-s${seed}-${brain}-${days}d-${people}p.json`) })));
     // The runs on one island go a few to a process, which grows the island once for them all (about 9 s for every run
-    // otherwise, more than many a probe's own ticks take).
-    const todo = all.filter((s) => !existsSync(s.out!)), batches = seeds.flatMap((seed) => chunks(todo.filter((s) => s.seed === seed), PER_PROCESS));
+    // otherwise, more than many a probe's own ticks take). Each process gets a share of the long probes and the short ones,
+    // dealt round, and the longest go first, so the last few to finish aren't all long ones.
+    const todo = all.filter((s) => !existsSync(s.out!)), cost = (b: ProbeSpec[]) => b.reduce((t, s) => t + (PROBES[s.probe].days ?? days), 0);
+    const batches = seeds.flatMap((seed) => {
+      const mine = todo.filter((s) => s.seed === seed).sort((x, y) => cost([y]) - cost([x])), n = Math.ceil(mine.length / PER_PROCESS);
+      return Array.from({ length: n }, (_, i) => mine.filter((_, j) => j % n === i));
+    }).sort((x, y) => cost(y) - cost(x));
     console.error(`probes on ${snap.id}: ${variants.length} variants x ${seeds.length} seeds, ${todo.length} to run in ${batches.length} processes, ${PROBE_JOBS} at a time`);
     await pool(batches.map((b, i) => async () => {
       const file = join(dir, "batches", `${i + 1}-s${b[0].seed}.json`);
