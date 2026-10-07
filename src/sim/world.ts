@@ -50,7 +50,8 @@ export type Thing = {
   // and water the plants round it leave it
   fit?: number; water?: number; share?: number;
 };
-export type Stack = { k: string; hp: number; born: number };
+// wet: how wet it is, 0 to 1, for tinder (wetness.ts); none is dry
+export type Stack = { k: string; hp: number; born: number; wet?: number };
 export type AnimalSpecies = "deer" | "wolf" | "rabbit" | "heron" | "gull" | "crow" | "eagle" | "fish" | "butterfly";
 export type Animal = {
   id: string; species: AnimalSpecies; x: number; y: number; px: number; py: number;
@@ -68,6 +69,7 @@ export type Weather = {
   wind: { dx: number; dy: number }; // the way it blows
   speed: number; // m/s at head height over the open sea
   wet: number; // 0..1 how much of the last day or two's rain is still running off the land
+  litter?: number; // 0..1 how wet the grass, fern and twigs lying about in the open are (wetness.ts); none is dry
 };
 // result: what it gives, builds or does, as the outcome that first showed it (physics.ts Fields)
 export type Law = { id: string; key: string; text: string; verb: string; source: "physics" | "jev"; by: string; t: number; result?: { gives: string[]; builds?: string; effect?: string; target?: string } };

@@ -34,10 +34,14 @@ export type Belief = {
   unless?: string[];
 };
 type Count = { tries: number; wins: number };
-// A condition, as a theory names it: the weather and light anyone can see, and the ground underfoot and round about.
+// A condition, as a theory names it: the weather and light anyone can see, how wet their tinder is, and the ground
+// underfoot and round about.
 const WORDS: Record<string, string> = {
   rain: "in the rain", dark: "in the dark", cold: "in freezing cold", wind: "in a strong wind", nofish: "with no fish close by",
-  shade: "in the shade of trees", dry: "on dry ground", crowded: "crowded in among bushes and trees",
+  damp: "with damp tinder", soaked: "with tinder soaked through",
+  shade: "in the shade of trees", deep: "in deep shade", dry: "on dry ground", crowded: "crowded in among bushes and trees", sour: "on sour soil",
+  limy: "on limy soil", poor: "on poor soil", thin: "on thin soil", boggy: "on boggy ground", exposed: "on ground open to the gales",
+  salty: "where salt spray reaches",
 };
 const ON_GROUND: Record<string, string> = { marsh: "in a marsh", scrub: "in scrub", "forest floor": "on the forest floor", stream: "by a stream", lake: "by a lake", sea: "by the sea" };
 export const groundKey = (word: string) => `ground:${word.replaceAll(" ", "_")}`;
@@ -45,7 +49,10 @@ export const groundOfKey = (c: string) => (c.startsWith("ground:") ? c.slice(7).
 // What a lack reads as, after "unless" in a theory.
 const UNLESS: Record<string, string> = {
   rain: "it's raining", dark: "it's dark", cold: "it's freezing", wind: "a strong wind is blowing", nofish: "there are no fish close by",
-  shade: "it's in the shade of trees", dry: "the ground is dry", crowded: "bushes or trees grow close round it",
+  damp: "the tinder is damp", soaked: "the tinder is soaked through",
+  shade: "it's in the shade of trees", deep: "it's in deep shade", dry: "the ground is dry", crowded: "bushes or trees grow close round it", sour: "the soil is sour",
+  limy: "the soil is limy", poor: "the soil is poor", thin: "the soil is thin", boggy: "the ground is boggy", exposed: "the spot lies open to the gales",
+  salty: "salt spray reaches it",
 };
 const oneWord = (c: string) => {
   const g = groundOfKey(c);
@@ -65,8 +72,9 @@ export function fieldsOf(key: string): Fields {
   const [verb, inputs, tool, target, at, shape] = key.split("|");
   return { verb, inputs: inputs ? inputs.split("+") : [], tool: tool === "-" ? null : tool, target: target === "-" ? undefined : target, at: at === "-" ? null : at, shape: shape === "-" ? undefined : shape, gives: [] };
 }
-// Conditions of the spot itself rather than the hour or the weather: somewhere else, they don't hold.
-export const ofPlace = (c: string) => c.startsWith("ground:") || c === "shade" || c === "dry" || c === "crowded";
+// Conditions of the spot itself rather than the hour, the weather or what they hold: somewhere else, they don't hold.
+const PLACES = new Set(["shade", "deep", "dry", "crowded", "sour", "limy", "poor", "thin", "boggy", "exposed", "salty"]);
+export const ofPlace = (c: string) => c.startsWith("ground:") || PLACES.has(c);
 // Whether a theory holds in conditions like these (now): every condition it names holds, and every lack it names (a
 // condition with "!" before it) does. A theory that names one condition holds wherever that one does.
 export const holds = (t: string, now: string[]) => t.split("+").every((c) => (c.startsWith("!") ? !now.includes(c.slice(1)) : now.includes(c)));
@@ -177,14 +185,11 @@ export function worseIn(b: Belief, c: string) {
 }
 // The conditions a failure in these (now) sets them suspecting, of those they don't blame yet, alone or as part of a
 // theory that holds here (to someone who thinks it won't work in the rain unless the wind is up, a spark dying in the
-// calm rain is the rain's): what it has done worse in for them than chance would make it (worseIn), or what they saw of
-// the failure points at (points: the tinder too damp to catch) where it has done no better than without it, like for
-// like, unless a theory of theirs about the weather holds here, which like for like sets aside: then all told, this try
-// with it.
-export function suspected(b: Belief, now: string[], points: (c: string) => boolean) {
-  const here = b.unless?.filter((t) => holds(t, now)) ?? [], aside = here.some((t) => !ofSpot(t));
+// calm rain is the rain's): what it has done worse in for them than chance would make it (worseIn).
+export function suspected(b: Belief, now: string[]) {
+  const here = b.unless?.filter((t) => holds(t, now)) ?? [];
   const blames = (c: string) => !!b.unless?.includes(c) || here.some((t) => t.split("+").includes(c));
-  return now.filter((c) => !blames(c) && (worseIn(b, c) || (points(c) && (aside ? allTold(b, c) : apart(b, c)).diff >= 0)));
+  return now.filter((c) => !blames(c) && worseIn(b, c));
 }
 // How much worse it has done for them where a theory holds than where it doesn't: for one condition, like for like
 // (apart); for a theory of several parts, all told, the tries where another theory of theirs holds set aside.

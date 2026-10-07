@@ -1,7 +1,7 @@
 // Holding each build to the last good one. Each tier runs many seeds and keeps one set of numbers per seed, stored with
 // the commit in evals/:
 //   bun scripts/evals.ts probes [--seeds 10] [--days 5] [--people 6] [--brain random|jev] [--jobs N] [--against <commit>] [--dry] [--only choose,recover]
-//     every learning probe (scripts/probes.ts) in the world as it is and flipped: the gate for any change to the sim
+//     every learning probe (scripts/probes.ts), its truth the world's own formulas: the gate for any change to the sim
 //     (--only: a few probes while working on something, compared but never kept)
 //   bun scripts/evals.ts worlds [--seeds 6] [--days 60] [--jobs N] [--against <commit>] [--dry]
 //     whole worlds (scripts/theories.ts) with learning as it is, off (the floor) and known from the start (the ceiling),
@@ -42,7 +42,13 @@ import { bootstrap, mean } from "./stats";
 // what people's theories would have them do held against the truth over the probe's own hours, at the midpoint and the
 // end (acc, needless, blind), with right, wrong and caught read the same way; longer runs where the cause comes seldom or
 // shows late; recover asks that those who blamed the old cause try it there again, not that they forget it.
-const VERSION: Record<string, number> = { probes: 3, worlds: 4, live: 4 };
+// probes 4: no rule of the probe's decides anything: fire catches by how wet the tinder is and the wind (a spark not in
+// damp tinder or a gale, an ember not in tinder soaked through), seedlings come up or wither by their formula, and each
+// probe's truth is those formulas worked out hour by hour (planting: run ahead over the weather to come); no flipped
+// variants; nothing that fails says why, and people notice every input to what decides it (damp and soaked tinder,
+// deep shade, sour, limy, poor, thin, boggy, exposed and salty ground).
+// worlds 5, live 5: the answer key worked out from the same formulas for every way people used, never tried.
+const VERSION: Record<string, number> = { probes: 4, worlds: 5, live: 5 };
 const ROOT = join(import.meta.dir, ".."), DATA = join(ROOT, "data/evals");
 type Numbers = Record<string, number | null>;
 // what a tier measured: by variant ("blame/real", "seen"...), by seed, its numbers
@@ -80,8 +86,8 @@ type Snap = { id: string; dir: string; commit: string; dirty: boolean };
 // use never reruns it. A script newly imported by these has to be added here, or its runs fail to start.
 type Tier = "probes" | "worlds";
 const USES: Record<Tier, string[]> = {
-  probes: ["probes.ts", "trial.ts", "seeded.ts"],
-  worlds: ["theories.ts", "truth.ts", "theory-report.ts", "answer-key.ts", "stats.ts", "trial.ts", "seeded.ts"],
+  probes: ["probes.ts", "seeded.ts"],
+  worlds: ["theories.ts", "truth.ts", "theory-report.ts", "answer-key.ts", "stats.ts", "seeded.ts"],
 };
 const pathsOf = (tier: Tier) => ["src", ...USES[tier].map((f) => `scripts/${f}`)];
 function copy(from: string, files: string[], into: string) {
@@ -318,7 +324,7 @@ async function worlds() {
   };
   console.error(`worlds on ${snap.id}: ${seeds.length} seeds, ${days} days${kept ? `, and the baseline ${kept.snap.commit} (${kept.snap.id})` : ""}: learning as it is, and off`);
   await pool(builds.flatMap((b) => b.seeds.flatMap((s) => [world(b, b.at, "seen", s), world(b, b.at, "off", s)])), WORLD_JOBS);
-  // every way anyone used on any island, in either build, tried on each island
+  // every way anyone used on any island, in either build, worked out on each island over the runs' days
   const pooled = join(on, "seen-all");
   mkdirSync(pooled, { recursive: true });
   for (const b of builds) for (const s of b.seeds) {
@@ -326,7 +332,7 @@ async function worlds() {
     if (!existsSync(link)) symlinkSync(file(b.at, "seen", s), link);
   }
   console.error(`  the answer key for each island${kept ? ", shared" : ""}`);
-  await pool(seeds.map((s) => async () => { if (!existsSync(key(s))) await script(snap, "truth.ts", ["--seed", String(s), "--runs", pooled, "--per", "8", "--out", key(s)], join(on, "logs", `truth-${s}.log`), true); }), WORLD_JOBS);
+  await pool(seeds.map((s) => async () => { if (!existsSync(key(s))) await script(snap, "truth.ts", ["--seed", String(s), "--days", String(days), "--runs", pooled, "--out", key(s)], join(on, "logs", `truth-${s}.log`), true); }), WORLD_JOBS);
   console.error("  known from the start");
   await pool(builds.flatMap((b) => b.seeds.map((s) => world(b, b.scored, "known", s, ["--key", key(s)]))), WORLD_JOBS);
   // what could be learned on an island is what the build's own people did there, learning as it is (theory-report.ts)
@@ -402,8 +408,8 @@ async function live() {
   const at = join(DATA, "live", stamp), runs = join(at, "run");
   mkdirSync(runs, { recursive: true });
   writeFileSync(join(runs, "live.jsonl"), lines.join("\n") + "\n");
-  console.error(`live: ${lines.length} lines from ${traces.length} trace files, island ${save.seed}; trying its ways for the answer key`);
-  await script(snap, "truth.ts", ["--seed", String(save.seed), "--runs", runs, "--per", "8", "--out", join(at, "key.json")], join(at, "truth.log"), true);
+  console.error(`live: ${lines.length} lines from ${traces.length} trace files, island ${save.seed}; working out its ways for the answer key`);
+  await script(snap, "truth.ts", ["--seed", String(save.seed), "--runs", runs, "--out", join(at, "key.json")], join(at, "truth.log"), true);
   await script(snap, "theory-report.ts", [runs, "--key", join(at, "key.json"), "--json", join(at, "report.json")], join(at, "report.log"), true);
   const k = (JSON.parse(readFileSync(join(at, "report.json"), "utf8")) as { kpis: Kpis }).kpis;
   console.log(readFileSync(join(at, "report.log"), "utf8"));

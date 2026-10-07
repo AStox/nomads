@@ -197,7 +197,8 @@ test("seedlings grow slower in the shade of trees than in the open", () => {
   const shaded = addThing(w, "sapling", px, py + 1 / TILE_M, { stage: 0 });
   const open = addThing(w, "sapling", px + 40 / TILE_M, py, { stage: 0 });
   w.t = at(12) + 1;
-  for (let i = 0; i < 50; i++) ecology(w);
+  // seedlings are tended as the sky turns, once an hour
+  for (let i = 0; i < 50; i++) { w.t++; ecology(w); }
   expect(shaded.stage).toBeGreaterThan(0);
   expect(shaded.stage!).toBeLessThan(open.stage! * 0.5);
 });

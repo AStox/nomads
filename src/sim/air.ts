@@ -28,6 +28,9 @@ export function swing(t: number, sky: World["weather"]["sky"]) {
   return SWING[sky] * (0.4 + (0.6 * noon) / HIGH) * Math.cos((2 * Math.PI * (hourOf(t) - NOON - 2)) / 24);
 }
 
+// The day's air at sea level inland at tick t under a sky: its mean and swing, two degrees cooler in rain.
+export const islandTemp = (t: number, sky: World["weather"]["sky"]) => baseTemp(t) + swing(t, sky) - (sky === "rain" || sky === "storm" ? 2 : 0);
+
 // The wind over the open sea at head height, m/s, toward which it settles under each sky.
 export const WIND: Record<World["weather"]["sky"], number> = { clear: 4, cloudy: 6, rain: 8, storm: 15 };
 
@@ -45,22 +48,27 @@ export type Air = {
 };
 // The air at a point now. sheltered: out of the wind, inside walls.
 export function airAt(w: World, px: number, py: number, sheltered = false): Air {
-  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), wx = w.weather, { s, f } = seasonAt(w.t);
-  // the place's own season means against the island's, without the cold it pools, which comes with the night below
-  const own = (k: number) => field(isle.seasons[k].temp, px, py, n) - SEASONS[k].t + POOL_C[k] * field(isle.pool, px, py, n);
-  const pool = field(isle.pool, px, py, n), off = own(s) * (1 - f) + own((s + 1) % 4) * f;
+  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), wx = w.weather;
   // the wind at the place, for the way it blows now
   const a = Math.atan2(wx.wind.dy, wx.wind.dx), k = ((Math.round((a / (2 * Math.PI)) * DIRS) % DIRS) + DIRS) % DIRS;
   const x = Math.max(0, Math.min(n - 1.001, cellAt(px))), y = Math.max(0, Math.min(n - 1.001, cellAt(py))), x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0;
   const lee = (i: number) => isle.lee[i * DIRS + k] / 100, i = y0 * n + x0;
   const open = (lee(i) * (1 - fx) + lee(i + 1) * fx) * (1 - fy) + (lee(i + n) * (1 - fx) + lee(i + n + 1) * fx) * fy;
   const wind = sheltered ? 0 : wx.speed * open * (1 - 0.65 * Math.min(1, canopyAt(w, px, py)));
-  // On a still, clear night the cold slides off the slopes into the hollows: as much as five degrees more than the
-  // season's mean there, nothing in a wind or under cloud.
-  const night = Math.max(0, -Math.cos((2 * Math.PI * (hourOf(w.t) - NOON - 2)) / 24));
-  const calm = Math.max(0, 1 - wx.speed / 6), clear = wx.sky === "clear" ? 1 : wx.sky === "cloudy" ? 0.3 : 0;
-  const temp = wx.temp + off - pool * 5 * calm * clear * night;
+  const temp = wx.temp + placeTemp(w, px, py, w.t, wx.sky, wx.speed);
   return { temp, wind, feels: chill(temp, wind) };
+}
+// How much warmer or colder than the island's air a point is at tick t under a sky and a wind speed: the place's own
+// season means against the island's, without the cold it pools, which comes with the night: on a still, clear night the
+// cold slides off the slopes into the hollows, as much as five degrees more than the season's mean there, nothing in a
+// wind or under cloud.
+export function placeTemp(w: World, px: number, py: number, t: number, sky: World["weather"]["sky"], speed: number) {
+  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), { s, f } = seasonAt(t);
+  const own = (k: number) => field(isle.seasons[k].temp, px, py, n) - SEASONS[k].t + POOL_C[k] * field(isle.pool, px, py, n);
+  const pool = field(isle.pool, px, py, n), off = own(s) * (1 - f) + own((s + 1) % 4) * f;
+  const night = Math.max(0, -Math.cos((2 * Math.PI * (hourOf(t) - NOON - 2)) / 24));
+  const calm = Math.max(0, 1 - speed / 6), clear = sky === "clear" ? 1 : sky === "cloudy" ? 0.3 : 0;
+  return off - pool * 5 * calm * clear * night;
 }
 // Where an entity stands, worked out once a tick however many questions ask.
 const memo = new WeakMap<object, { t: number; px: number; py: number; sheltered: boolean; air: Air }>();

@@ -1,44 +1,45 @@
-// The answer key for one island, found by trying every way of doing things people used there: someone taken out of the
-// world does each way over and over, a few times every day, each try at a random hour and a random spot (by the water for
-// what needs water, beside the tree or boulder for a strike at one, by a fire of the right kind for what's done at a
-// fire), under a sky of rain or clear and a gale or a breath of wind taken in turn, whatever the hour and the season
-// bring besides. Each try is noted with the conditions they could see (sim.ts conditionsNow), whether it came
-// off as meant (beliefs.ts cameOff) and how long it took (scripts/trial.ts). A seed pushed into the ground, or a young
-// plant watered, counts when it comes up or withers, the island's own ecology running on meanwhile. Then, for each
-// condition, whether it truly hurts the way, like for like (stats.ts judge). scripts/answer-key.ts has the key's shape,
-// and scripts/theory-report.ts scores people's theories and choices against it.
-//   NOMADS_BRAIN=random bun scripts/truth.ts --seed 3 --runs /tmp/theories/3 --days 40 --per 6 --out /tmp/truth/3.json
-// --runs: a directory of scripts/theories.ts runs of this island. Their ways are what gets tried, and the things they
-// made and the rulings they settled come too, so the same things can be made here.
+// The answer key for one island, worked out from the world's own formulas rather than by trying anything: for every way
+// of doing things people used there (the runs' attempts and plantings), what it comes to (src/sim/formulas.ts predict)
+// in each of many situations the island gives over the run's days: a random dry spot (by the water, for what needs
+// water), a random hour, the island's weather then as its own weather, drawn on from the start, would bring it, and
+// tinder as wet as what lies about in the open. Each is noted with the conditions anyone there could see (sim.ts
+// conditionsNow), whether the way would come off for what it's for, and the ticks it would take a hand practised at
+// nothing (more in poor light, where work goes slower). Then, for each condition, whether it truly hurts the way, like
+// for like (stats.ts judge). scripts/answer-key.ts has the key's shape, and scripts/theory-report.ts scores people's
+// theories and choices against it.
+//   NOMADS_BRAIN=random bun scripts/truth.ts --seed 3 --runs /tmp/theories/3 --days 40 --out /tmp/truth/3.json
+// --runs: a directory of scripts/theories.ts runs of this island. Their ways are what gets worked out, and the things
+// they made and the rulings they settled come too, so the same things can be made here.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { DAY, W, H, addThing, dryAt, newWorld, reachOf, shoreOf, stageOf, type Agent, type World } from "../src/sim/world";
-import { ecology, trailChanges } from "../src/sim/ecology";
-import { beside, changed, fireHeat, giveItems, newKinds, plant, removeThing, removed, sheltered, shelterOf, sizeOf, type Fields } from "../src/sim/physics";
-import { airAt } from "../src/sim/air";
-import { nearestThing, put, shelve, thingById } from "../src/sim/space";
-import { THING_MATERIAL, type Registry } from "../src/sim/materials";
-import { FAUNA } from "../src/sim/fauna";
-import { fieldsOf, groundOfKey, type Belief } from "../src/sim/beliefs";
+import { W, H, dryAt, meters, newWorld, rng, shoreOf, stageOf, type World } from "../src/sim/world";
+import { forecast } from "../src/sim/ecology";
+import { FISH_REACH, giveItems, lineLike, openWater, type Fields } from "../src/sim/physics";
+import { airOn, islandTemp } from "../src/sim/air";
+import { lightOn, workRate } from "../src/sim/light";
+import { put, shelve } from "../src/sim/space";
+import { fieldsOf, ofPlace } from "../src/sim/beliefs";
 import { conditionsNow } from "../src/sim/sim";
+import { litterHour, tinder, tinderOf, wetHere } from "../src/sim/wetness";
+import { ahead } from "../src/sim/seedling";
+import { predict, type Prediction } from "../src/sim/formulas";
 import { seedRandom } from "./seeded";
-import { tryAct } from "./trial";
 import { judge } from "./stats";
 import type { AnswerKey, Cond, Tally, Verdict, Way } from "./answer-key";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
-const seed = Number(arg("seed", "1")), days = Number(arg("days", "40")), per = Number(arg("per", "6"));
+const seed = Number(arg("seed", "1")), days = Number(arg("days", "40")), samples = Number(arg("samples", "400"));
 const runs = arg("runs", ""), out = arg("out", `/tmp/truth/${seed}.json`);
 if (!runs) throw new Error("--runs: a directory of scripts/theories.ts runs of this island");
 seedRandom(seed);
 const w = newWorld(seed);
-// one of the island's grown people, taken out of the world to do the trying and nothing else, knowing nothing and
-// practised at nothing, so neither a theory of theirs nor a skill tips a try
+// one of the island's grown people, taken out of the world to stand where each situation is, knowing nothing and
+// practised at nothing, so neither a theory of theirs nor a skill tips what the formulas make of it
 const stand = w.agents.find((a) => stageOf(w, a) !== "child") ?? w.agents[0];
 w.agents = [];
 Object.assign(stand, { skills: {}, beliefs: {}, goal: null, plan: [], home: null });
 
 // What the runs did, and what for (the aim sim.ts judged gives each attempt), and what they made and settled.
-type Line = { ev: string; key?: string; aim?: string; kinds?: Registry; rulings?: World["rulings"] };
+type Line = { ev: string; key?: string; aim?: string; kinds?: World["kinds"]; rulings?: World["rulings"] };
 const aims: Record<string, Record<string, number>> = {};
 for (const file of readdirSync(runs).filter((f) => f.endsWith(".jsonl")))
   for (const line of readFileSync(`${runs}/${file}`, "utf8").split("\n")) {
@@ -54,28 +55,21 @@ for (const file of readdirSync(runs).filter((f) => f.endsWith(".jsonl")))
     }
   }
 
-// Each way as a belief anyone might hold of it: what's done, and what it's for, so cameOff judges a try by what the way
-// is meant to get (a fire, not the chips a strike knocked off the stone). An aim of things to hold is what it gives;
-// anything else is what it builds.
-const FIRES: Record<string, true> = { fire: true, hearth: true, kiln: true, forge: true };
-// A try: the conditions it was done in, whether it worked and how long it took; open: the weather given it that could
-// have held where it was done (rain with nothing overhead, a gale felt as a strong wind out of the lee of the land and
-// the trees).
-type Trial = { now: string[]; worked: boolean; took: number; open: string[] };
-// ground: whether it's done to the ground, which brings in the spot's own conditions (sim.ts conditionsNow)
-type Plan = { belief: Belief; ground: boolean; trials: Trial[]; reasons: Record<string, number>; grew: Record<string, number>; why?: string };
-const plans: Record<string, Plan> = {};
-for (const [key, seen] of Object.entries(aims)) {
-  const f = fieldsOf(key), aim = Object.entries(seen).sort((x, y) => y[1] - x[1])[0]?.[0] ?? "";
-  const gives = aim ? aim.split("+") : [], holds = gives.length > 0 && gives.every((k) => w.kinds[k]);
-  const belief: Belief = { key, fields: { ...f, ...(aim && !holds ? { builds: aim } : {}) }, uses: {}, out: holds ? Object.fromEntries(gives.map((k) => [k, 1])) : {}, ticks: 0, tries: 0, wins: 0, how: "discovered", t: w.t };
-  const struck = f.verb === "strike" && !f.inputs.length ? f.target : undefined;
-  const unknown = [...f.inputs, f.tool, struck && !THING_MATERIAL[struck] ? struck : null].find((k) => k && !w.kinds[k]);
-  const why = f.verb === "throw" || (struck && struck in FAUNA) ? "hunting isn't tried"
-    : unknown ? `no run made the ${unknown}`
-      : f.at && !FIRES[f.at] && f.at !== "water" && f.at !== "home" && f.at !== "pit" ? `there's no setting it up at a ${f.at}` : undefined;
-  const ground = conditionsNow(w, stand, f.verb).some((c) => groundOfKey(c));
-  plans[key] = { belief, ground, trials: [], reasons: {}, grew: {}, ...(why ? { why } : {}) };
+// The island's weather through the run's days and a month past them, turn by turn of the sky from how it stood at the
+// start, drawn once (its own draws, not the world's): the sky, the wind, the rain running off the land, and how wet the
+// litter lying about in the open is.
+const start = w.t, hours = forecast(w, (days + 30) * 24, rng(seed * 104729 + 7));
+const litter: number[] = [];
+{
+  let l = w.weather.litter ?? 0, t = Math.ceil((start + 1) / 12) * 12;
+  for (const h of hours) { l = litterHour(l, t, h.sky, h.speed, islandTemp(t, h.sky)); litter.push(l); t += 12; }
+}
+const first = Math.ceil((start + 1) / 12) * 12;
+// Set the world to an hour of the run (i) and a tick in it, as the weather had it then.
+function setHour(i: number, tick: number) {
+  const h = hours[i];
+  w.t = first + i * 12 + tick;
+  Object.assign(w.weather, { sky: h.sky, speed: h.speed, wet: h.wet, litter: litter[i], temp: islandTemp(w.t, h.sky) });
 }
 
 function drySpot(): [number, number] {
@@ -85,140 +79,76 @@ function drySpot(): [number, number] {
   }
   throw new Error("no dry ground on the island");
 }
-// Where it's done, and whatever has to be there: the water's edge, the tree or boulder struck at, a fire of the kind it's
-// done at, a pit, a shelter of their own; then what it takes in hand. Why it can't be, when it can't. What's done to the
-// ground is done every other time by a tree or a bush: so few random spots have one close enough round to crowd them
-// that crowding could never be judged.
-function setUp(plan: Plan, a: Agent): string | null {
-  const f = plan.belief.fields;
-  if (f.at === "water" || f.verb === "wet") {
-    const shore = shoreOf(w), edge = shore[Math.floor(Math.random() * shore.length)];
-    put(w, a, edge.px, edge.py);
-  } else put(w, a, ...drySpot());
-  const by = plan.ground && Math.random() < 0.5 ? nearestThing(w, a.px, a.py, ["tree", "bush"], () => true, 300) : null;
-  if (by) put(w, a, by.px, by.py);
-  if (f.verb === "strike" && !f.inputs.length && f.target && THING_MATERIAL[f.target]) {
-    const t = nearestThing(w, a.px, a.py, [f.target], (x) => !x.burning, 300);
-    if (!t) return `no ${f.target} within 300 m`;
-    put(w, a, ...beside(w, t, reachOf(t) - 0.3));
+const shore = shoreOf(w).filter((s) => openWater(w, s));
+
+// Each way as anyone might hold it: what's done, and what it's for, so what it comes to is judged by what the way is
+// meant to get (a fire, not the chips a strike knocked off the stone), as beliefs.ts cameOff judges a try. An aim of
+// things to hold is what it gives; anything else is what it builds.
+type Plan = { fields: Fields; aim: string; builds?: string; gives: string[] };
+// Kinds joined by "+", as keys and aims list them, back into kinds: a made kind's own id can hold a "+" (cord twisted of
+// fiber and fiber), so the longest run of parts that names a kind is one.
+function kindsIn(joined: string) {
+  const parts = joined ? joined.split("+") : [], out: string[] = [];
+  for (let i = 0; i < parts.length; ) {
+    let j = parts.length;
+    while (j > i + 1 && !w.kinds[parts.slice(i, j).join("+")]) j--;
+    out.push(parts.slice(i, j).join("+"));
+    i = j;
   }
-  // a fire as fireKind tells them apart: ringed for a hearth, ringed and heaped over for a kiln, charcoal in the ring
-  // for a forge
-  if (f.at && FIRES[f.at]) {
-    const fire = addThing(w, "fire", ...beside(w, a, 0.8), { hp: 200, maxHp: 400, born: w.t, contained: f.at !== "fire", covered: f.at === "kiln", ...(f.at === "forge" ? { charcoal: 100 } : {}) });
-    fire.heat = fireHeat(w, fire);
-  }
-  if (f.at === "pit") addThing(w, "pit", ...beside(w, a, 1), { owner: a.id, born: w.t });
-  if (f.at === "home") {
-    const parts = { stick: 4 }, home = addThing(w, "structure", ...beside(w, a, 1.5), { owner: a.id, parts, hp: 100, maxHp: 100, born: w.t });
-    home.shelter = shelterOf(w, parts);
-    home.size = sizeOf(home.shelter);
-    a.home = home.id;
-  }
-  // a young plant to water: a berry pushed into the ground the way anyone does
-  if (f.verb === "pour" && f.target === "sapling") {
-    giveItems(w, a, "berry");
-    if (!plant(w, a, { verb: "plant", items: ["berry"], tool: null }).later) return "nowhere to plant something to water";
-  }
-  for (const k of f.inputs) giveItems(w, a, k);
-  if (f.tool) giveItems(w, a, f.tool);
-  return null;
+  return out;
+}
+const plans: Record<string, Plan> = {};
+for (const [key, seen] of Object.entries(aims)) {
+  const aim = Object.entries(seen).sort((x, y) => y[1] - x[1])[0]?.[0] ?? "", parts = kindsIn(aim), f = fieldsOf(key);
+  const held = parts.length > 0 && parts.every((k) => w.kinds[k]);
+  plans[key] = { fields: { ...f, inputs: kindsIn(f.inputs.join("+")) }, aim, ...(held ? { gives: parts } : { builds: aim || undefined, gives: [] }) };
+}
+const meant = (plan: Plan, r: Prediction) => r.ok && (!plan.builds || r.builds === plan.builds) && (!plan.gives.length || plan.gives.some((k) => r.gives.includes(k)));
+
+// A situation for a way: where (the water's edge for what needs water), when, and what they hold: the way's things,
+// tinder as wet as what lies about there. What the formulas make of it there, and what anyone could see.
+type Trial = { now: string[]; worked: boolean; ticks: number };
+function situation(plan: Plan): Trial | string {
+  const f = plan.fields, water = f.at === "water" || f.verb === "wet";
+  const i = Math.floor(Math.random() * days * 24);
+  setHour(i, Math.floor(Math.random() * 12));
+  const edge = water ? shore[Math.floor(Math.random() * shore.length)] : null, [px, py] = edge ? [edge.px, edge.py] : drySpot();
+  put(w, stand, px, py);
+  stand.heading = Math.random() * Math.PI * 2;
+  stand.inv = [];
+  const wet = wetHere(w, stand);
+  for (const k of [...f.inputs, ...(f.tool ? [f.tool] : [])]) giveItems(w, stand, k, 1, wet);
+  const over = f.verb === "strike" ? f.inputs.find((k) => tinder(w.kinds[k])) : undefined;
+  const lit = f.verb === "strike" ? (over ? tinderOf(w, stand, over) : null) : tinderOf(w, stand);
+  const reach = f.inputs.some((k) => lineLike(w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket;
+  const fish = w.animals.filter((m) => m.species === "fish" && meters(m, stand) <= reach).length;
+  const ground = f.verb === "plant" || f.verb === "pour" || f.verb === "dig";
+  const r = predict(w, f, { tinder: lit ? lit.wet : null, wind: airOn(w, stand).wind, spot: stand, ahead: ground ? ahead(w, px, py, w.t, hours.slice(i + 1)) : { soil: [], temp: [] }, fish });
+  if ("why" in r) return r.why;
+  // a ruling settled in the runs is the law for it; one never settled leaves it unsaid
+  const ruled = "ask" in r ? w.rulings[r.ask] : undefined;
+  const done: Prediction | null = "ask" in r ? (ruled ? { ok: ruled.useful, gives: ruled.useful ? [`law:${r.ask}`] : [], at: f.at ?? null, ticks: 8 } : null) : r;
+  if (!done) return "no ruling was settled for it";
+  const at = done.spot ? { px: done.spot[0], py: done.spot[1] } : stand;
+  return { now: conditionsNow(w, stand, f.verb, at, f.inputs), worked: meant(plan, done), ticks: done.ticks / (f.verb === "eat" ? 1 : workRate(lightOn(w, stand).bright)) };
 }
 
-// What's been put into the ground (planted, or watered as a seedling), waiting to come up or wither.
-type Sown = { key: string; id: string; at: number; now: string[]; took: number; open: string[] };
-const sown: Sown[] = [];
-// One try of a way, under the sky and the wind given it, cleaned up after: whatever it added to the island (the fire it
-// lit, the pit, the shelter it stood by) goes, save a seedling still to show what comes of it. A tree it felled stays
-// felled, a few hundred on an island of millions.
-async function attempt(key: string, rain: boolean, gale: boolean) {
-  const plan = plans[key], f = plan.belief.fields, sky = w.weather.sky, speed = w.weather.speed, from = w.nextId;
-  w.weather.sky = rain ? "rain" : "clear";
-  // a fresh copy of the stand-in each time: nothing the last try left in their hands, and nothing worked out for them
-  // this tick (the light and air on them) carries over
-  const a: Agent = { ...stand, inv: [], needs: { ...stand.needs }, heading: Math.random() * Math.PI * 2 };
-  const bar = setUp(plan, a);
-  w.weather.speed = 18;
-  const open = [...(sheltered(w, a) ? [] : ["rain"]), ...(airAt(w, a.px, a.py).wind > 8 ? ["wind"] : [])];
-  w.weather.speed = gale ? 18 : 2;
-  const now = conditionsNow(w, a, f.verb);
-  const r = bar ?? (await tryAct(w, a, plan.belief));
-  let keep: string | undefined;
-  if (typeof r === "string") plan.reasons[r] = (plan.reasons[r] ?? 0) + 1;
-  else if (r.out.later && (f.verb === "plant" || f.verb === "pour")) {
-    // what shows later is judged where it went in, when it shows
-    const t = thingById(w, r.out.later)!;
-    t.owner = undefined;
-    keep = t.id;
-    sown.push({ key, id: t.id, at: w.t, now: conditionsNow(w, a, f.verb, t), took: r.took, open });
-  } else plan.trials.push({ now, worked: r.worked, took: r.took, open });
-  // what the try made took the ids from nextId on: look those up, never the whole island's things
-  for (let n = from; n < w.nextId; n++) { const t = thingById(w, `t${n}`); if (t && t.id !== keep) removeThing(w, t); }
-  w.weather.sky = sky;
-  w.weather.speed = speed;
-}
-
-// A day's tries, each way's at hours of their own, so the dark falls on some of a day's tries and not others and what
-// the days after bring (a drought, a frost) can't side with it. Rain and the gale go round in turn through a way's tries
-// of the day, so no day's luck sides with them either.
-type Due = { key: string; rain: boolean; gale: boolean };
-const due = new Map<number, Due[]>();
-function schedule(start: number, end: number) {
-  for (const [key, plan] of Object.entries(plans)) {
-    if (plan.why) continue;
-    for (let i = 0; i < per; i++) {
-      const t = start + Math.floor(Math.random() * (end - start)), list = due.get(t) ?? [];
-      list.push({ key, rain: i % 2 === 0, gale: (i >> 1) % 2 === 0 });
-      due.set(t, list);
-    }
-  }
-}
-
-const t0 = performance.now();
-// the world starts some hours into its first day: its tries come in what's left of it
-schedule(w.t + 1, DAY);
-while (w.t < (days + 30) * DAY) {
-  w.t++;
-  ecology(w);
-  changed.clear(); removed.clear(); newKinds.clear(); trailChanges.clear();
-  // ground looked at a day ago and left as it grew goes back to the generator's arrays, as in a running world
-  if (w.t % DAY === DAY / 2) shelve(w);
-  if (w.t % DAY === 0 && w.t < days * DAY) schedule(w.t, w.t + DAY);
-  for (const d of due.get(w.t) ?? []) await attempt(d.key, d.rain, d.gale);
-  due.delete(w.t);
-  if (w.t % 12) continue;
-  // come up, withered, or 30 days in the ground and still a seedling (counted neither way)
-  for (let i = sown.length - 1; i >= 0; i--) {
-    const s = sown[i], t = thingById(w, s.id), came = !!t && t.kind !== "sapling";
-    if (t && !came && w.t - s.at < 30 * DAY) continue;
-    sown.splice(i, 1);
-    if (t && !came) continue;
-    const plan = plans[s.key];
-    plan.trials.push({ now: s.now, worked: came, took: s.took, open: s.open });
-    if (t && came) plan.grew[t.kind] = (plan.grew[t.kind] ?? 0) + 1;
-  }
-}
-
-const tally = (ts: Trial[]): Tally => ({ n: ts.length, wins: ts.filter((t) => t.worked).length, ticks: ts.reduce((s, t) => s + t.took, 0) });
-// The tries each condition is judged over, so that it takes no blame for what comes with it. The weather is judged only
-// over tries when no other weather held: rain soaks the tinder whatever the hour, and rain clouds darken the day, so dark
-// would take the blame for it. So dark and cold, which come with the hour and the season and go together at night and in
-// winter, are each judged without the other; and dark not in the shade of trees either, which darkens a spot before the
-// rest. Rain and wind are judged only over the tries they could have reached: under a roof it never rains on anyone, and
-// a gale is felt only on open ground, which is ground of its own sort. What's in a spot itself (shade, dry ground,
-// bushes or trees close round, the sort of ground) is judged like for like: each against its absence where the rest of
-// the spot is the same (below).
-const WEATHER = ["rain", "dark", "cold", "wind"];
-// A spot condition in and out of it like for like: the tries split by the rest of the spot (the other spot conditions,
-// any ground but its own for a ground, since a spot is of one sort or another), and the odds in it and out of it pooled
-// over the splits that have both, by how much each can tell (Mantel and Haenszel's weights, as beliefs.ts weighs a
-// record like for like), as if over the tries in those splits. So crowding, which mostly comes beside a tree, takes no
-// blame for the shade, nor the forest floor for the trees on it.
+const tally = (ts: Trial[]): Tally => ({ n: ts.length, wins: ts.filter((t) => t.worked).length, ticks: ts.reduce((s, t) => s + t.ticks, 0) });
+// What judging a condition like for like sets aside: what comes of it rather than with it (rain soaks the tinder, so
+// the damp it leaves takes none of the rain's blame), and the coarser level of one cut finer (soaked is damp, and deep
+// shade is shade, so neither is set against the other's own kind). The coarser is judged within the finer's levels:
+// damp tinder that isn't soaked against dry, light shade against open sky.
+const AFTER: Record<string, string[]> = { rain: ["damp", "soaked"], soaked: ["damp"], deep: ["shade"] };
+// A condition in and out of it like for like: the trials split by the rest of what was seen of its own sort (the
+// weather and the tinder for those, the spot for a spot's, any ground but its own for a ground, since a spot is of
+// one sort or another), and the odds in it and out of it pooled over the splits that have both, by how much each can
+// tell (Mantel and Haenszel's weights), as if over the trials in those splits. So the dark takes no blame for the rain
+// that falls mostly at night, nor crowding for the shade it comes with.
 type Count = { n: number; wins: number };
 function likeForLike(ts: Trial[], c: string): [Count, Count] {
-  const ground = c.startsWith("ground:"), splits = new Map<string, { in: Trial[]; out: Trial[] }>();
+  const place = ofPlace(c), ground = c.startsWith("ground:"), aside = AFTER[c] ?? [], splits = new Map<string, { in: Trial[]; out: Trial[] }>();
   for (const t of ts) {
-    const rest = t.now.filter((o) => o !== c && !WEATHER.includes(o) && !(ground && o.startsWith("ground:"))).sort().join(" ");
+    const rest = t.now.filter((o) => o !== c && ofPlace(o) === place && !aside.includes(o) && !(ground && o.startsWith("ground:"))).sort().join(" ");
     const s = splits.get(rest) ?? splits.set(rest, { in: [], out: [] }).get(rest)!;
     (t.now.includes(c) ? s.in : s.out).push(t);
   }
@@ -230,29 +160,33 @@ function likeForLike(ts: Trial[], c: string): [Count, Count] {
   }
   return [{ n: nIn, wins: weight ? (nIn * oddsIn) / weight : 0 }, { n: nOut, wins: weight ? (nOut * oddsOut) / weight : 0 }];
 }
+
+const t0 = performance.now();
 const ways: Record<string, Way> = {};
+let worked = 0;
 for (const [key, plan] of Object.entries(plans)) {
-  const f = plan.belief.fields, ts = plan.trials, conds: Record<string, Cond> = {};
-  const reason = Object.entries(plan.reasons).sort((x, y) => y[1] - x[1])[0]?.[0];
-  const why = plan.why ?? (!ts.length ? reason ?? "never tried" : undefined);
-  for (const c of new Set([...WEATHER, ...ts.flatMap((t) => t.now)])) {
-    const inn = ts.filter((t) => t.now.includes(c)), rest = ts.filter((t) => !t.now.includes(c));
-    let verdict: Verdict;
-    if (WEATHER.includes(c)) {
-      const over = ts.filter((t) =>
-        !t.now.some((o) => o !== c && (WEATHER.includes(o) || (c === "dark" && o === "shade"))) && ((c !== "rain" && c !== "wind") || t.open.includes(c)));
-      verdict = judge(tally(over.filter((t) => t.now.includes(c))), tally(over.filter((t) => !t.now.includes(c))));
-    } else verdict = judge(...likeForLike(ts, c));
-    conds[c] = { in: tally(inn), out: tally(rest), verdict };
+  const f = plan.fields, ts: Trial[] = [];
+  let why: string | undefined;
+  for (let n = 0; n < samples && !why; n++) {
+    const t = situation(plan);
+    if (typeof t === "string") why = t;
+    else ts.push(t);
+    if (++worked % 200 === 0) shelve(w);
   }
-  // a planting's aim, if no run saw one come up: what came up here
-  const grew = Object.entries(plan.grew).sort((x, y) => y[1] - x[1])[0]?.[0];
-  const aim = f.builds ?? (Object.keys(plan.belief.out).sort().join("+") || grew || "");
-  ways[key] = { verb: f.verb, aim, at: f.at ?? "-", all: tally(ts), conds: ts.length ? conds : {}, ...(why ? { why } : {}) };
+  const conds: Record<string, Cond> = {};
+  if (!why) for (const c of new Set(ts.flatMap((t) => t.now))) {
+    const verdict: Verdict = judge(...likeForLike(ts, c));
+    conds[c] = { in: tally(ts.filter((t) => t.now.includes(c))), out: tally(ts.filter((t) => !t.now.includes(c))), verdict };
+  }
+  ways[key] = { verb: f.verb, aim: plan.aim, at: f.at ?? "-", all: tally(why ? [] : ts), conds, ...(why ? { why } : {}) };
 }
 const key: AnswerKey = { seed, days, trials: Object.values(ways).reduce((s, x) => s + x.all.n, 0), ways };
 writeFileSync(out, JSON.stringify(key, null, 1) + "\n");
 const whys = Object.entries(ways).filter(([, x]) => x.why);
-console.error(`seed ${seed}: ${Object.keys(ways).length - whys.length} ways tried, ${key.trials} trials, ${whys.length} with why, ${((performance.now() - t0) / 1000).toFixed(0)} s`);
+console.error(`seed ${seed}: ${Object.keys(ways).length - whys.length} ways worked out, ${key.trials} situations, ${whys.length} with why, ${((performance.now() - t0) / 1000).toFixed(0)} s`);
 for (const [k, x] of whys) console.error(`  ${k}: ${x.why}`);
+for (const [k, x] of Object.entries(ways)) {
+  const hurt = Object.entries(x.conds).filter(([, c]) => c.verdict === "hurts").map(([c]) => c);
+  if (hurt.length) console.error(`  ${k} (${x.aim}): ${hurt.join(", ")}`);
+}
 process.exit(0);

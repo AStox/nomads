@@ -9,26 +9,54 @@ import {
 import { anyAround, anyOf, around, liveThings, onPath, put, setKind, stockedAt } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
-import { enrich, settle, soilWaterAt } from "./soil";
-import { SIZE, TREES, rockAt, smooth } from "../terrain/flora";
-import { fitHere, growth, pickHere } from "./plants";
+import { enrich, feedRate, settle, soilWaterAt } from "./soil";
+import { SIZE, rockAt } from "../terrain/flora";
+import { fitHere, growth, growthOf, pickHere } from "./plants";
 import { ripening, warmRate } from "./cues";
 import { streamNow } from "./streams";
-import { WIND, baseTemp, seasonAt, swing } from "./air";
+import { WIND, airAt, baseTemp, islandTemp, seasonAt } from "./air";
+import { growRate } from "./light";
+import { nicheOf, seedlingHour, shareAt, treeOf, type Hour } from "./seedling";
 import { SEASONS } from "../terrain/climate";
 import { count, timed, trace } from "./trace";
 import { hooks } from "./rules";
+import { wetness } from "./wetness";
 
 export const pathChanges = new Set<number>();
 export const iceChanged = { now: false };
 // Homes destroyed by fire this tick, for the social layer: [owner, whoseFire, text].
 export const burnedHomes: { owner: string; by?: string; text: string }[] = [];
 
-const rainy = (w: World) => w.weather.sky === "rain" || w.weather.sky === "storm";
+const rainy = (sky: World["weather"]["sky"]) => sky === "rain" || sky === "storm";
 
 // ---------- weather and seasons ----------
 // The time of year's share of the year's storms, drawn between the seasons' as the air is.
 const stormShare = (t: number) => { const { s, f } = seasonAt(t); return SEASONS[s].wet * (1 - f) + SEASONS[(s + 1) % 4].wet * f; };
+// The sky an hour on (r: a draw): cloud turns to rain as often as the time of year brings its share of the year's storms
+// (climate.ts SEASONS), and rain to storm the more often the warmer the air (temp), which feeds the thunderheads.
+export function nextSky(sky: World["weather"]["sky"], r: number, t: number, temp: number): World["weather"]["sky"] {
+  if (sky === "clear") return r < 0.25 ? "cloudy" : "clear";
+  if (sky === "cloudy") return r < stormShare(t) * 1.1 ? "rain" : r < 0.4 ? "clear" : "cloudy";
+  if (sky === "rain") return r < 0.25 ? "cloudy" : r < 0.27 + 0.06 * warmRate(temp) ? "storm" : "rain";
+  return r < 0.35 ? "rain" : "storm";
+}
+// The wind over the open sea an hour on (r: a draw), settling toward what the sky brings.
+export const nextSpeed = (speed: number, sky: World["weather"]["sky"], r: number) => Math.max(0.5, speed + (WIND[sky] - speed) * 0.25 + (r - 0.5) * 2);
+// Rain runs off into the streams and drains away over a day or so (Weather.wet), an hour on under this sky.
+export const nextWet = (wet: number, sky: World["weather"]["sky"]) => (rainy(sky) ? wet + (sky === "storm" ? 0.15 : 0.06) * (1 - wet) : wet * 0.97);
+// The island's weather at the next n turns of the sky after now, from how it stands, drawn with r (a seeded draw of the
+// caller's own, so nothing here moves the world's): what the coming days might bring (seedling.ts seedlingFate).
+export function forecast(w: World, n: number, r: () => number): Hour[] {
+  let { sky, speed, wet } = w.weather, t = Math.ceil((w.t + 1) / 12) * 12;
+  const out: Hour[] = [];
+  for (let i = 0; i < n; i++, t += 12) {
+    sky = nextSky(sky, r(), t, islandTemp(t - 1, sky));
+    speed = nextSpeed(speed, sky, r());
+    wet = nextWet(wet, sky);
+    out.push({ sky, speed, wet });
+  }
+  return out;
+}
 function weather(w: World) {
   const wx = w.weather;
   const season = seasonOf(w.t);
@@ -40,29 +68,24 @@ function weather(w: World) {
   wx.year = Math.floor(w.t / DAY / 40) + 1;
   if (w.t % 12 === 0) {
     const before = wx.sky;
-    const r = Math.random();
-    if (wx.sky === "clear") wx.sky = r < 0.25 ? "cloudy" : "clear";
-    // cloud turns to rain as often as the time of year brings its share of the year's storms (climate.ts SEASONS), and
-    // rain to storm the more often the warmer the air, which feeds the thunderheads
-    else if (wx.sky === "cloudy") wx.sky = r < stormShare(w.t) * 1.1 ? "rain" : r < 0.4 ? "clear" : "cloudy";
-    else if (wx.sky === "rain") wx.sky = r < 0.25 ? "cloudy" : r < 0.27 + 0.06 * warmRate(wx.temp) ? "storm" : "rain";
-    else wx.sky = r < 0.35 ? "rain" : "storm";
+    wx.sky = nextSky(wx.sky, Math.random(), w.t, wx.temp);
     // The wind wanders, but keeps coming back to blow the way it prevails, the way that laid the island's rain.
     const [px, py] = w.terrain.wind, pull = (v: number, p: number) => clamp(v + (p * 0.5 - v) * 0.02 + (Math.random() - 0.5) * 0.3, -1, 1);
     wx.wind = { dx: pull(wx.wind.dx, px), dy: pull(wx.wind.dy, py) };
-    wx.speed = Math.max(0.5, wx.speed + (WIND[wx.sky] - wx.speed) * 0.25 + (Math.random() - 0.5) * 2);
-    // rain runs off into the streams and drains away over a day or so
-    wx.wet = rainy(w) ? wx.wet + (wx.sky === "storm" ? 0.15 : 0.06) * (1 - wx.wet) : wx.wet * 0.97;
+    wx.speed = nextSpeed(wx.speed, wx.sky, Math.random());
+    // a probe's own weather, set as the sky turns (rules.ts hooks), so the runoff, the air and how wet things get follow
+    // from it as from the island's own
+    hooks.weather?.(w);
+    wx.wet = nextWet(wx.wet, wx.sky);
     if (wx.sky !== before) {
       const words = { clear: "The sky cleared.", cloudy: "Clouds rolled in.", rain: "It started to rain.", storm: "A storm broke." };
       log(w, "weather", [], { x: W / 2, y: H / 2 }, words[wx.sky]);
       trace("weather", "sky", { from: before, to: wx.sky, season });
     }
   }
-  // a probe's own weather, set just after the sky turns (rules.ts hooks)
-  hooks.weather?.(w);
-  wx.temp = baseTemp(w.t) + swing(w.t, wx.sky) - (rainy(w) ? 2 : 0);
-  wx.dryTicks = rainy(w) ? 0 : wx.dryTicks + 1;
+  wx.temp = islandTemp(w.t, wx.sky);
+  wx.dryTicks = rainy(wx.sky) ? 0 : wx.dryTicks + 1;
+  wetness(w);
   if (w.t % 12 === 0) ice(w);
   // days without rain in warm weather dry everything out
   const drought = wx.dryTicks > DAY * 4 && baseTemp(w.t) > 14;
@@ -199,20 +222,20 @@ function fire(w: World, live: Thing[]) {
   for (const t of live) {
     if (t.kind === "fire") {
       const burn = t.covered ? 0.3 : t.contained ? 0.5 : 1;
-      t.hp = (t.hp ?? 0) - burn - (rainy(w) && !t.contained ? 2 : 0);
+      t.hp = (t.hp ?? 0) - burn - (rainy(w.weather.sky) && !t.contained ? 2 : 0);
       if (t.charcoal) t.charcoal = Math.max(0, t.charcoal - burn);
       const h = fireHeat(w, t);
       if (h !== (t.heat ?? 1)) { t.heat = h; mark(w, t); }
       if (t.hp <= 0) {
         removeThing(w, t);
         enrich(w, t.px, t.py, 0.03);
-        log(w, "fire_out", t.owner ? [t.owner] : [], t, rainy(w) ? "The rain put out a campfire." : "A campfire burned out.");
-        fireOutFor(w, t, rainy(w));
+        log(w, "fire_out", t.owner ? [t.owner] : [], t, rainy(w.weather.sky) ? "The rain put out a campfire." : "A campfire burned out.");
+        fireOutFor(w, t, rainy(w.weather.sky));
         continue;
       }
       if (!t.contained) sources.push({ t, heat: Math.min(1, (t.hp ?? 0) / 150) * 0.6, by: t.owner });
     } else if (t.burning) {
-      t.burning = clamp01(t.burning + (rainy(w) ? -0.08 : 0.05));
+      t.burning = clamp01(t.burning + (rainy(w.weather.sky) ? -0.08 : 0.05));
       t.hp = (t.hp ?? THING_MATERIAL[t.kind]?.hp ?? 10) - 2 * t.burning;
       mark(w, t);
       if (t.burning <= 0) { t.burning = 0; continue; }
@@ -266,25 +289,16 @@ function plants(w: World, live: Thing[]) {
     } else if (t.kind === "dead_bush" && Math.random() < 1 / 4000 && Math.random() < growth(w, t.px, t.py)) {
       setKind(w, t, "bush"); t.species = "berry"; t.n = 0; t.hp = BERRY_HP; t.maxHp = BERRY_HP; mark(w, t);
     } else if (t.kind === "sapling") {
-      // A seedling lives on what its spot gives it: the ground it stands in (its niche, light and soil, the same as decides
-      // where seed takes root), and water, its shallow roots wanting the soil moister than a grown plant does, with what's
-      // poured round it soaking in. Grown plants close by take their share of both, the closer and the bigger the more. It
-      // grows as the warmth lets it, a tree four times slower than a bush; short of what it needs it wilts, and wilted long
-      // enough it dies. (A probe may say instead when it comes up or withers: rules.ts hooks.)
-      const fate = hooks.seedling?.(w, t);
-      if (fate) { if (fate === "up") matured(w, t); else if (fate === "withered") wither(w, t); continue; }
+      // tended once an hour as the sky turns (seedling.ts), by the spot's fit as it was the first time and the share of
+      // it the plants round it leave it now
+      if (w.t % 12) continue;
       t.fit ??= fitHere(w, nicheOf(t), t.px, t.py);
-      if (t.share === undefined || (w.t % 12 === 0 && stockedAt(w, t.px, t.py))) t.share = shareOf(w, t);
-      const drink = smooth(0.35, 0.75, (soilWaterAt(w, t.px, t.py) + (t.water ?? 0)) * t.share);
-      const grew = (1 / (3 * DAY)) * (treeOf(t) ? 0.25 : 1) * growth(w, t.px, t.py) * (0.4 + 0.6 * drink) * (0.5 + 0.5 * t.fit) * t.share;
-      t.stage = (t.stage ?? 0) + grew;
-      if (Math.round((t.stage ?? 0) * 20) !== Math.round(((t.stage ?? 0) - grew) * 20)) { t.size = Math.round((0.3 + t.stage * 0.5) * 100) / 100; mark(w, t); }
-      if (w.t % 12 === 0) {
-        t.hp = Math.min(t.maxHp ?? 5, (t.hp ?? 5) + 0.25 * (t.fit * drink * t.share - 0.25));
-        if (t.water && (t.water *= 0.97) < 0.02) delete t.water;
-        if (t.hp <= 0) { wither(w, t); continue; }
-      }
-      if (t.stage >= 1) matured(w, t);
+      if (t.share === undefined || stockedAt(w, t.px, t.py)) t.share = shareAt(w, t.px, t.py, t.stage ?? 0, t);
+      const was = t.stage ?? 0, soil = soilWaterAt(w, t.px, t.py);
+      const fate = seedlingHour(t, t.fit, t.share, soil, growthOf(airAt(w, t.px, t.py).temp, soil, growRate(w, t.px, t.py), feedRate(w, t.px, t.py)), treeOf(t));
+      if (fate === "withered") { wither(w, t); continue; }
+      if (Math.round((t.stage ?? 0) * 20) !== Math.round(was * 20)) { t.size = Math.round((0.3 + (t.stage ?? 0) * 0.5) * 100) / 100; mark(w, t); }
+      if (fate === "up") matured(w, t);
     } else if ((t.kind === "stump" || t.kind === "burnt_stump") && t.until! <= w.t && warm > 0.3) {
       // A new stem comes up from the old roots.
       setKind(w, t, "tree"); t.size = 5; t.hp = 53; t.maxHp = 53; delete t.until; delete t.scarred; delete t.resin; delete t.bark; mark(w, t);
@@ -320,8 +334,6 @@ function plants(w: World, live: Thing[]) {
   }
 }
 const FUNGI = ["bolete", "chanterelle", "puffball"] as const, HERBS = ["yarrow", "sorrel", "mint"] as const;
-// A sapling or a planted seed that will grow into a tree: a tree's own seed, or a nut someone pushed into the ground.
-const treeOf = (t: Thing) => (TREES as readonly string[]).includes(t.species ?? "") || t.item === "nut";
 // Seed of a species falling between near and far meters from a plant, taking root as the spot fits it, on any ground
 // nothing stands on: whether it lives is up to the light, water and soil it finds there, other plants' share included.
 function seedNear(w: World, t: Thing, species: string, near: number, far: number) {
@@ -333,22 +345,13 @@ function seedNear(w: World, t: Thing, species: string, near: number, far: number
   if (Math.random() > fit) return;
   mark(w, addThing(w, "sapling", px, py, species === "berry" ? { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5, fit } : { stage: 0, species, born: w.t, hp: 5, maxHp: 5, fit }));
 }
-// What a seedling will grow into, as the niches name it: a tree's seedling its own kind, a nut an oak, grain grass.
-const nicheOf = (t: Thing) => (treeOf(t) ? (t.species && t.species !== "berry" ? t.species : "oak") : t.item === "grain" ? "grass" : "berry");
-// The share of the light and water at a seedling's spot left to it by grown plants close round it: all of it with none
-// within two meters, half with a bush right beside it, less with more.
-function shareOf(w: World, t: Thing) {
-  let take = 0;
-  around(w, t.px, t.py, 2, ["tree", "bush", "dead_bush", "sapling"], (o, d) => { if (o !== t && (o.kind !== "sapling" || (o.stage ?? 0) > (t.stage ?? 0))) take += Math.max(0, 1 - d / 2) * (o.kind === "tree" ? 1.5 : o.kind === "sapling" ? 0.3 : 1); });
-  return 1 / (1 + take);
-}
 // A seedling wilted away: gone. Whoever put it in the ground or watered it sees it withered, and nothing tells them why:
 // what they make of it is their own theory (sim.ts judged), from what they saw when they planted it.
 function wither(w: World, t: Thing) {
   removeThing(w, t);
   const owner = w.agents.find((a) => a.id === t.owner);
   if (owner) log(w, "grow", [owner.id], t, `The ${w.kinds[t.item ?? ""]?.name ?? t.item ?? "seed"} ${owner.name} pushed into the ground withered.`);
-  witheredFor(w, t, "It withered.");
+  witheredFor(w, t);
 }
 function matured(w: World, t: Thing) {
   delete t.fit; delete t.water; delete t.share;
@@ -385,7 +388,7 @@ function matured(w: World, t: Thing) {
 // What came of a seedling, for whoever is waiting to see (sim.ts): it came up as a bush, a tree or grass, or it withered.
 export let grewFor: (w: World, t: Thing, builds: string) => void = () => {};
 export const onGrew = (fn: typeof grewFor) => (grewFor = fn);
-export let witheredFor: (w: World, t: Thing, why: string) => void = () => {};
+export let witheredFor: (w: World, t: Thing) => void = () => {};
 export const onWithered = (fn: typeof witheredFor) => (witheredFor = fn);
 // A fire gone out, for whoever was keeping it: rained out, or burned down to nothing.
 export let fireOutFor: (w: World, t: Thing, rained: boolean) => void = () => {};

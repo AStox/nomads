@@ -1,15 +1,15 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
 import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props } from "./materials";
 import { CELL } from "../terrain/grid";
-import { DAY, REACH, TILE_M, Tile, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, isNight, level, log, meters, nearWater, perWorld, reachOf, tileAt, wetAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
+import { DAY, REACH, TILE_M, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, isNight, level, log, meters, nearWater, perWorld, reachOf, wetAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
 import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } from "./space";
 import { clock, trace } from "./trace";
 import { see } from "./beliefs";
 import { enrich } from "./soil";
 import { streamNow } from "./streams";
-import { airOn, snowAt } from "./air";
+import { airOn } from "./air";
 import { DARK, lightOn } from "./light";
-import { RULES } from "./rules";
+import { DAMP, SOAKED, raining, sheltered, tinder, tinderOf } from "./wetness";
 import { GROUND, SIZE, groundClass } from "../terrain/flora";
 
 // Kinds of stuff the rules below care about, by what they're like rather than what they're called.
@@ -92,10 +92,13 @@ const young = (a: Agent) => clock.t - a.born < YEAR;
 // the roomier the more (the best one counts; a second only weighs them down).
 export const carryOf = (w: World, a: Agent) =>
   (young(a) ? 8 : CARRY) + Math.max(0, ...a.inv.map((s) => { const k = w.kinds[s.k]; return p(k, "container") >= 0.6 && p(k, "flexible") >= 0.4 ? Math.round(p(k, "container") * 10) : 0; }));
-export function giveItems(w: World, a: Agent, k: string, n = 1) {
+// wet: how wet what comes into their hands is (wetness.ts), kept for tinder: what they pick up off the ground is as wet
+// as the ground
+export function giveItems(w: World, a: Agent, k: string, n = 1, wet = 0) {
+  const soaked = wet >= 0.005 && tinder(w.kinds[k]);
   for (let i = 0; i < n; i++) {
     if (a.inv.length >= carryOf(w, a) && !makeRoom(w, a, k)) { dropPile(w, a.px, a.py, k, n - i); return i; }
-    a.inv.push({ k, hp: 1, born: w.t });
+    a.inv.push(soaked ? { k, hp: 1, born: w.t, wet } : { k, hp: 1, born: w.t });
   }
   return n;
 }
@@ -132,7 +135,7 @@ export function removeThing(w: World, t: Thing) {
   removed.add(t.id);
 }
 const kind = (w: World, id?: string | null) => (id ? w.kinds[id] : undefined);
-const HAND: Kind = { id: "hands", name: "bare hands", props: { hard: 0.2, heavy: 0.1 } };
+export const HAND: Kind = { id: "hands", name: "bare hands", props: { hard: 0.2, heavy: 0.1 } };
 const nm = (w: World, id: string) => w.kinds[id]?.name ?? id.replaceAll("_", " ");
 const list = (w: World, m: Record<string, number>) =>
   Object.entries(m).map(([k, n]) => (n > 1 ? `${n} ${plural(nm(w, k))}` : `a ${nm(w, k)}`)).join(" and ");
@@ -173,8 +176,23 @@ export function force(tool: Kind, a?: Agent) {
   return (0.25 + p(tool, "heavy") * 0.8 + p(tool, "long") * 0.35) * (1 + skill) * (a && young(a) ? 0.5 : 1);
 }
 export const focus = (tool: Kind) => 0.3 + p(tool, "sharp") * 1.2;
+// How far toward a flake each blow takes a stone that flakes (knapping): the striker's hardness and the stone's, and a
+// practised hand; a flake comes away once the blows add up to 1, or never within ten.
+export const knapPer = (tool: Kind, tk: Kind, skill = 0) => p(tool, "hard") ** 2 * p(tk, "hard") * 0.4 * (1 + level(skill) * 0.08);
+// What each blow along the grain does to splitting it, from 20: nothing unless the edge's force beats its toughness.
+export function splitDamage(tool: Kind, tk: Kind, a?: Agent) {
+  const eff = force(tool, a) * focus(tool);
+  return tk.grain === "split" && eff > p(tk, "toughness") * 0.8 ? 5 * (eff - p(tk, "toughness") * 0.5) : 0;
+}
+// How much each blow at a hot enough fire tightens hot metal's edge toward a blade: a heavy, hard striker's.
+export const forgeGain = (tool: Kind) => 0.2 * p(tool, "heavy") * p(tool, "hard");
 // Damage per blow: force concentrated by an edge, minus what the target can shrug off.
 export const strikeDamage = (tool: Kind, toughness: number, a?: Agent) => 5 * Math.max(0, force(tool, a) * focus(tool) - toughness * 0.3);
+// What striking something held comes to, by what it is: sparks thrown into the tinder held under the blow (over), hot
+// soft metal drawn out under the blows, cold metal only dented, stone that flakes knapped, anything else split along
+// its grain if it splits at all.
+export const heldStrike = (tk: Kind, over: boolean) =>
+  over ? "sparks" : tk.cools && p(tk, "plastic") >= 0.5 ? "forge" : p(tk, "metal") >= 0.8 ? "dent" : tk.grain === "shatter" && tk.breaks ? "knap" : "split";
 
 const toolOf = (w: World, act: Act) => kind(w, act.tool) ?? HAND;
 function wear(w: World, a: Agent, act: Act, hardness: number): string | null {
@@ -204,14 +222,15 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
     if (!tk || !count(a, tk.id)) return { done: true, damage: 0, out: outcome({ text: `There was no ${act.target?.kind} to strike.`, fields }) };
     fields.inputs = [tk.id];
     const broke = wear(w, a, act, p(tk, "hard"));
-    if (act.items.length) return { ...sparkTick(w, a, act, tool, tk, st, fields), broke: broke ?? undefined, damage: 0 };
+    const how = heldStrike(tk, act.items.length > 0);
+    if (how === "sparks") return { ...sparkTick(w, a, act, tool, tk, st, fields), broke: broke ?? undefined, damage: 0 };
     // Hot, soft metal takes a shape under a heavy, hard striker; each blow at the fire draws the edge out and tightens it.
-    if (tk.cools && p(tk, "plastic") >= 0.5) {
+    if (how === "forge") {
       const cold = kind(w, tk.parts?.[0]) ?? tk;
       const fire = nearFire(w, a);
       fields.at = "forge";
-      if (!fire || fireHeat(w, fire) < 1.5) return { done: true, broke: broke ?? undefined, damage: 0, out: outcome({ text: `Away from a hot enough fire, the ${tk.name} stiffened before it could be worked.`, fields }) };
-      const g = 0.2 * p(tool, "heavy") * p(tool, "hard");
+      if (!fire || fireHeat(w, fire) < 1.5) return { done: true, broke: broke ?? undefined, damage: 0, out: outcome({ text: `The ${tk.name} stiffened before it could be worked.`, fields }) };
+      const g = forgeGain(tool);
       st.progress++;
       const sharp = 1 - (1 - p(cold, "sharp")) * (1 - g) ** st.progress;
       trace("physics", "forge", { tool: tool.id, target: tk.id, g, blows: st.progress, sharp }, a.id);
@@ -229,15 +248,15 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
       fields.gives = [k.id];
       return { done: true, broke: broke ?? undefined, damage: 1, out: outcome({ ok: true, text: `Hammering the ${tk.name} with the ${tool.name} at the fire drew it out into a ${k.name}.`, uses: { [tk.id]: 1 }, gives: { [k.id]: 1 }, fields, newKinds: nk, numbers: { blows: st.progress, sharp } }) };
     }
-    if (p(tk, "metal") >= 0.8) {
+    if (how === "dent") {
       if (++st.progress < 4) return { done: false, broke: broke ?? undefined, damage: 0 };
       fields.effect = "dented";
-      return { done: true, broke: broke ?? undefined, damage: 0, out: outcome({ text: `Hammering the cold ${tk.name} only dented it.`, effect: "dented", fields }) };
+      return { done: true, broke: broke ?? undefined, damage: 0, out: outcome({ text: `Hammering the ${tk.name} only dented it.`, effect: "dented", fields }) };
     }
-    if (tk.grain === "shatter" && tk.breaks) {
+    if (how === "knap") {
       // Only something as hard as the stone can flake it: each blow does what the striker's hardness and the stone's
       // give it to do, and a flake comes away once the blows add up to it. A striker too soft never gets there.
-      const per = p(tool, "hard") ** 2 * p(tk, "hard") * 0.4 * (1 + level(a.skills.stonework ?? 0) * 0.08);
+      const per = knapPer(tool, tk, a.skills.stonework ?? 0);
       st.progress++;
       trace("physics", "knap", { tool: tool.id, target: tk.id, per, blows: st.progress }, a.id);
       if (st.progress * per >= 1) {
@@ -247,12 +266,11 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
         fields.gives = Object.keys(gives);
         return { done: true, broke: broke ?? undefined, damage: 1, out: outcome({ ok: true, text: `Striking the ${tk.name} with ${tool.id === "hands" ? "bare hands" : `the ${tool.name}`} chipped off ${list(w, gives)}.`, uses: { [tk.id]: 1 }, gives, fields, numbers: { blows: st.progress } }) };
       }
-      if (st.progress >= 10) return { done: true, broke: broke ?? undefined, damage: 0, out: outcome({ text: `They struck the ${tk.name} again and again, but ${tool.id === "hands" ? "bare hands were" : `the ${tool.name} was`} too soft to flake it. Grit, and nothing broke off.`, fields, numbers: { blows: st.progress } }) };
+      if (st.progress >= 10) return { done: true, broke: broke ?? undefined, damage: 0, out: outcome({ text: `They struck the ${tk.name} again and again. Grit, and nothing broke off.`, fields, numbers: { blows: st.progress } }) };
       return { done: false, broke: broke ?? undefined, damage: 0 };
     }
     // Splitting along the grain needs a focused edge.
-    const eff = force(tool, a) * focus(tool);
-    const dmg = tk.grain === "split" && eff > p(tk, "toughness") * 0.8 ? 5 * (eff - p(tk, "toughness") * 0.5) : 0;
+    const eff = force(tool, a) * focus(tool), dmg = splitDamage(tool, tk, a);
     st.progress += dmg;
     trace("physics", "split", { tool: tool.id, target: tk.id, eff, dmg, progress: st.progress }, a.id);
     if (dmg === 0 || !tk.breaks) {
@@ -315,29 +333,30 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
 }
 
 // Striking one stone on another over tinder held under the blow: glancing blows that throw sparks into it rather than
-// break anything off. Only two very hard stones of the kind that flakes throw sparks, the harder (or, in a probe, the
-// softer: rules.ts RULES.sparks) the more; the tinder catches once enough have fallen into it, if it is fine, dry stuff
-// and nothing where they are quenches it (wet tinder in the rain with nothing overhead).
+// break anything off. Only two very hard stones of the kind that flakes throw sparks, the harder the more (sparksPer:
+// how much of the way to catching each blow's sparks take it); the tinder catches once enough have fallen into it, if it
+// is tinder at all, drier than DAMP (wetness.ts), and the wind where they are doesn't carry the sparks off first (GALE).
+export const throwsSparks = (tool: Kind, tk: Kind) => p(tool, "hard") >= 0.8 && p(tk, "hard") >= 0.8 && tk.grain === "shatter";
+export const sparksPer = (tool: Kind, tk: Kind) => 0.12 * (1 + Math.max(0, Math.max(p(tool, "hard"), p(tk, "hard")) - 0.9) * 40);
+// A wind at head height stronger than this, in m/s, carries a spark off before it lands: the strong wind anyone can feel
+// (sim.ts CONDITIONS wind).
+export const GALE = 8;
+export const sparkCatches = (wet: number, wind: number) => wet < DAMP && wind <= GALE;
 function sparkTick(w: World, a: Agent, act: Act, tool: Kind, tk: Kind, st: { progress: number }, fields: Fields): { done: boolean; out?: Outcome } {
   const over = kind(w, act.items[0]);
   fields.inputs = [tk.id, act.items[0]].sort();
   if (!over || !count(a, over.id)) return { done: true, out: outcome({ text: `They had no ${nm(w, act.items[0])} to strike over.`, fields }) };
   st.progress++;
   const how = `Striking the ${tk.name} with ${tool.id === "hands" ? "bare hands" : `the ${tool.name}`} over the ${over.name}`;
-  const soft = [tool, tk].find((k) => p(k, "hard") < 0.8);
-  if (soft || tk.grain !== "shatter") {
+  if (!throwsSparks(tool, tk)) {
     if (st.progress < 4) return { done: false };
-    const why = soft === HAND ? "bare hands throw none" : soft ? `the ${soft.name} was too soft` : `the ${tk.name} isn't a stone that throws them`;
-    return { done: true, out: outcome({ text: `${how} threw no sparks: ${why}.`, fields }) };
+    return { done: true, out: outcome({ text: `${how} threw no sparks.`, fields }) };
   }
-  const hard = Math.max(p(tool, "hard"), p(tk, "hard"));
-  const per = 0.12 * (1 + Math.max(0, RULES.sparks === "harder" ? hard - 0.9 : 0.95 - hard) * 40);
+  const per = sparksPer(tool, tk);
   trace("physics", "sparks", { tool: tool.id, target: tk.id, over: over.id, per, blows: st.progress }, a.id);
   if (st.progress * per < 1) return { done: false };
   const numbers = { blows: st.progress };
-  if (!tinder(over)) return { done: true, out: outcome({ text: `${how} threw sparks onto it, but the ${over.name} isn't fine and dry enough to catch.`, fields, numbers }) };
-  const q = quenched(w, a);
-  if (q) return { done: true, out: outcome({ text: `${how} threw sparks into it, but it wouldn't catch.${seen(q, over.name)}`, fields, numbers }) };
+  if (!tinder(over) || !sparkCatches(tinderOf(w, a, over.id)?.wet ?? 0, airOn(w, a).wind)) return { done: true, out: outcome({ text: `${how} threw sparks into it, but it wouldn't catch.`, fields, numbers }) };
   takeItems(a, over.id);
   mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: 50, maxHp: 400, born: w.t }));
   fields.builds = "fire";
@@ -345,53 +364,43 @@ function sparkTick(w: World, a: Agent, act: Act, tool: Kind, tk: Kind, st: { pro
 }
 
 // ---------- rub ----------
-// Tinder: fine, dry, stringy stuff an ember or a spark can catch in. For rubbing, held (fiber, bark), or failing that,
-// while it isn't raining, dry grass or fern within arm's reach that snow hasn't buried, or the dead twigs of a bush,
-// which stand above it; a spark struck from stone wants it held right under the blow (sparkTick).
-const tinder = (k: Kind) => !k.parts?.length && p(k, "fibrous") >= 0.6 && p(k, "flammable") >= 0.7;
-const GROUND_TINDER: Record<string, string> = { grass: "dry grass at their feet", fern: "dry fern at their feet", dead_bush: "dead twigs of a bush" };
-function tinderOf(w: World, a: Agent): { kind?: Kind; name: string } | null {
-  const held = a.inv.map((s) => kind(w, s.k)!).find(tinder);
-  if (held) return { kind: held, name: held.name };
-  if (raining(w)) return null;
-  const buried = snowAt(w, a.px, a.py) > 0.5;
-  const t = nearestThing(w, a.px, a.py, buried ? ["dead_bush"] : Object.keys(GROUND_TINDER), () => true, 2);
-  return t ? { name: GROUND_TINDER[t.kind] } : null;
-}
 export const isBow = (k?: Kind) => !!k && p(k, "flexible") >= 0.8 && p(k, "long") >= 0.5 && p(k, "binding") >= 0.5;
-export function sheltered(w: World, a: Agent) {
-  return !!anyAround(w, a.px, a.py, 4, ["structure"], (t) => (t.shelter?.tier ?? 0) >= 1);
-}
-export const raining = (w: World) => w.weather.sky === "rain" || w.weather.sky === "storm";
 // The weather and light anyone can see they're working in (sim.ts CONDITIONS gives them words).
 export const WEATHER_NOW: Record<string, (w: World, a: Agent) => boolean> = {
   rain: (w, a) => raining(w) && !sheltered(w, a),
   dark: (w, a) => lightOn(w, a).bright < DARK,
   cold: (w, a) => airOn(w, a).feels < 0,
-  wind: (w, a) => airOn(w, a).wind > 8,
+  wind: (w, a) => airOn(w, a).wind > GALE,
 };
-// Whether one part of a rules.ts RULES.quench entry holds where they are: a condition, or with "!" before it, its lack.
-function holds(w: World, a: Agent, part: string) {
-  const lack = part.startsWith("!"), now = WEATHER_NOW[lack ? part.slice(1) : part];
-  if (!now) throw new Error(`RULES.quench names no condition anyone can see: ${part}`);
-  return now(w, a) !== lack;
-}
-// What keeps a spark or an ember from catching where they are: the first entry of rules.ts RULES.quench every part of
-// which holds. In the world, wet tinder in the rain with nothing overhead.
-export const quenched = (w: World, a: Agent) => RULES.quench.find((q) => q.split("+").every((part) => holds(w, a, part))) ?? null;
-// What they see of it, if the world tells them, for a strike over this tinder or for rubbing: what the condition the
-// entry is seen by (its first part that is a condition rather than a lack) does to sparks and embers.
-const QUENCHED: Record<string, { strike: (tinder: string) => string; rub: string }> = {
-  rain: { strike: (t) => ` Sparks hissed out in the wet ${t}.`, rub: " Everything was too damp to catch." },
-  wind: { strike: (t) => ` The wind whipped the sparks off the ${t}.`, rub: " The wind took the heat off the wood as fast as it came." },
-  dark: { strike: (t) => ` In the dark the sparks fell wide of the ${t}.`, rub: " In the dark they kept losing the spot, and the heat with it." },
-  cold: { strike: (t) => ` The sparks died on the frozen ${t}.`, rub: " The wood was too frozen to catch." },
-};
-function seen(q: string, tinder?: string) {
-  const why = RULES.tell ? QUENCHED[q.split("+").find((part) => !part.startsWith("!")) ?? ""] : undefined;
-  return !why ? "" : tinder === undefined ? why.rub : why.strike(tinder);
-}
+// Friction heat: what a tick's rubbing adds, for a bow drawn round one stick or for two sawn or spun together, and the
+// more for a practised hand, less what the wood loses to the air meanwhile. An ember catches in tinder short of SOAKED
+// (wetness.ts).
+export const frictionPer = (bow: boolean, skill: number) => (bow ? 0.11 : 0.05) * (1 + level(skill) * 0.1) - 0.015;
+export const emberCatches = (wet: number) => wet < SOAKED;
 
+// What rubbing two things together comes to, by what they're like: fat worked into a raw hide softens and cures it;
+// small hard seeds ground between a stone and something harder still crush to a meal that cooks into far better food;
+// the softer, if long, ground to a point on something much harder; or, wood worked against wood, two firm long pieces
+// one spun or sawn against the other or a cord drawn back and forth round one, friction heat (a limp handful of fiber
+// against a stick just slides); or nothing much. ticks: how long each takes to come to it (friction: until hot enough).
+export type Rubbing =
+  | { does: "leather"; fat: Kind; hide: Kind; ticks: number }
+  | { does: "grind" | "point"; soft: Kind; harder: Kind; ticks: number }
+  | { does: "friction"; bow: boolean }
+  | { does: "nothing"; ticks: number };
+export function rubbing(A: Kind, B: Kind): Rubbing {
+  const fat = greasy(A) ? A : greasy(B) ? B : null, hide = skin(A) ? A : skin(B) ? B : null;
+  if (fat && hide && fat !== hide) return { does: "leather", fat, hide, ticks: 10 };
+  const soft = p(A, "hard") <= p(B, "hard") ? A : B, harder = soft === A ? B : A;
+  if (p(soft, "seed") >= 0.5 && p(soft, "hard") >= 0.25 && p(soft, "edible") > 0 && p(soft, "long") < 0.3 && p(harder, "hard") >= 0.8 && soft !== harder) return { does: "grind", soft, harder, ticks: 12 };
+  if (p(harder, "hard") - p(soft, "hard") >= 0.35 && p(soft, "long") >= 0.5 && p(soft, "sharp") < 0.5 && soft.verb !== "rub") return { does: "point", soft, harder, ticks: 10 };
+  const firm = (k: Kind) => p(k, "hard") >= 0.25 && p(k, "long") >= 0.5;
+  const bow = (isBow(A) && firm(B)) || (isBow(B) && firm(A));
+  if (p(A, "hard") < 0.6 && p(B, "hard") < 0.6 && (p(A, "flammable") >= 0.5 || p(B, "flammable") >= 0.5) && ((firm(A) && firm(B)) || bow)) return { does: "friction", bow };
+  return { does: "nothing", ticks: 6 };
+}
+// What rubbing makes of the softer of two: ground to a meal, or to a point.
+export const rubbedOf = (r: { does: "grind" | "point"; soft: Kind }) => `rub:${r.soft.id}`;
 // Rubbing: sharpens the softer thing on a much harder one, or builds friction heat between two woods.
 export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; heat?: number }): { done: boolean; out?: Outcome } {
   const [ia, ib] = act.items;
@@ -399,10 +408,10 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
   const fields: Fields = { verb: "rub", inputs: [ia, ib].filter(Boolean).sort(), gives: [] };
   if (!A || !B || count(a, ia) < 1 || count(a, ib) < (ia === ib ? 2 : 1)) return { done: true, out: outcome({ text: "They didn't have both things to rub together.", fields }) };
   st.progress++;
-  // Fat worked into a raw hide softens and cures it.
-  const fat = greasy(A) ? A : greasy(B) ? B : null, hide = skin(A) ? A : skin(B) ? B : null;
-  if (fat && hide && fat !== hide) {
-    if (st.progress < 10) return { done: false };
+  const r = rubbing(A, B);
+  if (r.does === "leather") {
+    const { fat, hide } = r;
+    if (st.progress < r.ticks) return { done: false };
     const [k, isNew] = leather(w, hide);
     takeItems(a, fat.id); takeItems(a, hide.id);
     giveItems(w, a, k.id);
@@ -411,11 +420,10 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
     fields.gives = [k.id];
     return { done: true, out: outcome({ ok: true, text: `Rubbing the ${fat.name} into the ${hide.name} softened it into ${k.name}.`, uses: { [fat.id]: 1, [hide.id]: 1 }, gives: { [k.id]: 1 }, fields, newKinds: nk }) };
   }
-  const soft = p(A, "hard") <= p(B, "hard") ? A : B, harder = soft === A ? B : A;
-  // Small hard seeds ground between a stone and something harder still crush to a meal that cooks into far better food.
-  if (p(soft, "seed") >= 0.5 && p(soft, "hard") >= 0.25 && p(soft, "edible") > 0 && p(soft, "long") < 0.3 && p(harder, "hard") >= 0.8 && soft !== harder) {
-    if (st.progress < 12) return { done: false };
-    const [k, isNew] = ensure(w.kinds, `rub:${soft.id}`, () => ({
+  if (r.does === "grind") {
+    const { soft, harder } = r;
+    if (st.progress < r.ticks) return { done: false };
+    const [k, isNew] = ensure(w.kinds, rubbedOf(r), () => ({
       name: `ground ${soft.name}`, props: { edible: clamp01(p(soft, "edible") * 1.4), toughness: 0.01 }, parts: [soft.id], verb: "rub", shelf: Math.round((soft.shelf ?? 10) / 2),
     }));
     takeItems(a, soft.id);
@@ -425,9 +433,10 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
     fields.gives = [k.id];
     return { done: true, out: outcome({ ok: true, text: `Grinding the ${soft.name} on the ${harder.name} crushed it to a coarse meal.`, uses: { [soft.id]: 1 }, gives: { [k.id]: 1 }, fields, newKinds: nk }) };
   }
-  if (p(harder, "hard") - p(soft, "hard") >= 0.35 && p(soft, "long") >= 0.5 && p(soft, "sharp") < 0.5 && soft.verb !== "rub") {
-    if (st.progress < 10) return { done: false };
-    const [k, isNew] = ensure(w.kinds, `rub:${soft.id}`, () => ({
+  if (r.does === "point") {
+    const { soft, harder } = r;
+    if (st.progress < r.ticks) return { done: false };
+    const [k, isNew] = ensure(w.kinds, rubbedOf(r), () => ({
       name: `pointed ${soft.name}`, props: { ...soft.props, sharp: clamp01(p(soft, "sharp") + 0.4), long: p(soft, "long") * 0.95 }, parts: [soft.id], verb: "rub", fuel: soft.fuel,
     }));
     takeItems(a, soft.id);
@@ -437,34 +446,28 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
     fields.gives = [k.id];
     return { done: true, out: outcome({ ok: true, text: `Rubbing the ${soft.name} on the ${harder.name} ground it to a point.`, uses: { [soft.id]: 1 }, gives: { [k.id]: 1 }, fields, newKinds: nk }) };
   }
-  // Friction is wood worked against wood: two firm, long pieces, one spun or sawn against the other, or a cord drawn back
-  // and forth around one. A limp handful of fiber against a stick just slides.
-  const firm = (k: Kind) => p(k, "hard") >= 0.25 && p(k, "long") >= 0.5;
-  const bow = (isBow(A) && firm(B)) || (isBow(B) && firm(A));
-  if (p(A, "hard") < 0.6 && p(B, "hard") < 0.6 && (p(A, "flammable") >= 0.5 || p(B, "flammable") >= 0.5) && ((firm(A) && firm(B)) || bow)) {
-    const q = quenched(w, a);
-    st.heat = Math.max(0, (st.heat ?? 0) + (bow ? 0.11 : 0.05) * (q ? 0.5 : 1) * (1 + level(a.skills.firemaking ?? 0) * 0.1) - 0.015);
-    trace("physics", "friction", { a: ia, b: ib, bow, quenched: q, heat: st.heat }, a.id);
-    const tinder = tinderOf(w, a);
-    if (st.heat >= 1 && tinder && !q) {
-      if (tinder.kind) takeItems(a, tinder.kind.id);
+  if (r.does === "friction") {
+    const { bow } = r;
+    st.heat = Math.max(0, (st.heat ?? 0) + frictionPer(bow, a.skills.firemaking ?? 0));
+    trace("physics", "friction", { a: ia, b: ib, bow, heat: st.heat }, a.id);
+    const into = tinderOf(w, a);
+    if (st.heat >= 1 && into && emberCatches(into.wet)) {
+      if (into.kind) takeItems(a, into.kind.id);
       const fuel = [ia, ib].map((id) => kind(w, id)!).find((k) => !isBow(k) && p(k, "flammable") >= 0.5);
       if (fuel) takeItems(a, fuel.id);
       mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: 60 + (fuel?.fuel ?? 0), maxHp: 200, born: w.t }));
       fields.builds = "fire";
       // the two rubbed together first, then the tinder: a belief replays the first two as the rub
-      if (tinder.kind) fields.inputs = [...fields.inputs, tinder.kind.id];
-      return { done: true, out: outcome({ ok: true, text: `Rubbing the ${A.name} against the ${B.name} got hot enough to catch the ${tinder.name}. A fire!`, uses: { ...(tinder.kind ? { [tinder.kind.id]: 1 } : {}), ...(fuel ? { [fuel.id]: 1 } : {}) }, builds: "fire", fields, numbers: { heat: st.heat } }) };
+      if (into.kind) fields.inputs = [...fields.inputs, into.kind.id];
+      return { done: true, out: outcome({ ok: true, text: `Rubbing the ${A.name} against the ${B.name} got hot enough to catch the ${into.name}. A fire!`, uses: { ...(into.kind ? { [into.kind.id]: 1 } : {}), ...(fuel ? { [fuel.id]: 1 } : {}) }, builds: "fire", fields, numbers: { heat: st.heat } }) };
     }
-    // in the rain, wood and tinder are soaked through within an hour's rubbing
-    if (st.progress >= 60 || (q && st.progress >= 12) || (st.heat >= 1 && (!tinder || q))) {
+    if (st.progress >= 60 || st.heat >= 1) {
       fields.effect = "heat";
-      const why = q ? seen(q) : !tinder && st.heat >= 1 ? " It smoked, but there was nothing dry and fine to catch." : "";
-      return { done: true, out: outcome({ text: `Rubbing the ${A.name} against the ${B.name} made them hot.${why}`, effect: "heat", fields, numbers: { heat: st.heat } }) };
+      return { done: true, out: outcome({ text: `Rubbing the ${A.name} against the ${B.name} made them hot.`, effect: "heat", fields, numbers: { heat: st.heat } }) };
     }
     return { done: false };
   }
-  if (st.progress < 6) return { done: false };
+  if (st.progress < r.ticks) return { done: false };
   return { done: true, out: outcome({ text: `Rubbing the ${A.name} on the ${B.name} did nothing much.`, fields }) };
 }
 
@@ -499,7 +502,7 @@ export function joining(w: World, items: string[], c: { held: boolean }): Decisi
     text = `Smearing the ${glue.name} over the ${basket.name} sealed it tight. That made`;
   } else if (parts.some((x) => depth(w.kinds, x) >= 2)) {
     // ponytail: two levels of tying (fiber > cord > tool) covers every tool so far; lift when a real need shows up.
-    return decided({ text: `There was no way to tie anything more onto the ${parts.find((x) => depth(w.kinds, x) >= 2)!.name}.`, fields });
+    return decided({ text: `Nothing more would stay tied onto the ${parts.find((x) => depth(w.kinds, x) >= 2)!.name}.`, fields });
   } else if (parts.every((x) => p(x, "fibrous") >= 0.6 && !x.parts)) {
     const n = parts.length;
     make = { id, make: () => n === 2
@@ -621,7 +624,7 @@ export function heating(w: World, items: string[], c: HeatSetting): Decision | "
     }) }, `The ${x.name} softened in the heat and ran into a thick, sticky glue.`);
   }
   if (p(x, "plastic") >= 0.6) {
-    if (level < 1.2) return cool(`The ${x.name} dried and cracked at the edges, but an open fire wasn't hot enough to harden it.`);
+    if (level < 1.2) return cool(`The ${x.name} dried and cracked at the edges, but didn't harden.`);
     fields.at = "hearth";
     return done({ id: `fired:${x.id}`, make: () => ({
       name: x.id === "clay" ? "fired clay lump" : `fired ${x.name.replace(/^clay |^wet clay /, "clay ")}`,
@@ -636,7 +639,7 @@ export function heating(w: World, items: string[], c: HeatSetting): Decision | "
       `The ${x.name} glowed orange in the charcoal and went soft enough to work.`);
   }
   if (p(x, "metal") >= 0.3) {
-    if (level < 2.2) return level >= 1.9 ? cool(`The ${x.name} glowed and sweated, but the fire wasn't quite hot enough.`) : decided({ text: `The ${x.name} got hot, then cooled. Nothing changed.`, fields });
+    if (level < 2.2) return level >= 1.9 ? cool(`The ${x.name} glowed and sweated, but nothing came of it.`) : decided({ text: `The ${x.name} got hot, then cooled. Nothing changed.`, fields });
     fields.at = "forge";
     return done({ id: `smelt:${x.id}`, make: () => ({
       name: "metal lump", props: { hard: 0.8, heavy: 0.85, metal: 1, toughness: clamp01(p(x, "toughness") + 0.15) }, parts: [x.id], verb: "heat",
@@ -695,8 +698,11 @@ export function leather(w: World, hide: Kind) {
 export const FISH_REACH: Record<"basket" | "line", number> = { basket: 15, line: 40 };
 // Who last lifted a fish out of the water, and when: the fish they caught was close by, though it swims there no more.
 const landed = perWorld(() => new Map<string, number>());
-export const fishClose = (w: World, a: Agent, at: { px: number; py: number } = a) =>
-  landed(w).get(a.id) === w.t || w.animals.some((m) => m.species === "fish" && meters(m, at) <= FISH_REACH.basket);
+// Whether a fish swims within reach of what they dip (a basket's, unless a line's) or they just lifted one out.
+export const fishClose = (w: World, a: Agent, at: { px: number; py: number } = a, reach = FISH_REACH.basket) =>
+  landed(w).get(a.id) === w.t || w.animals.some((m) => m.species === "fish" && meters(m, at) <= reach);
+// A line to dangle in the water: long, limp and strong.
+export const lineLike = (k?: Kind) => p(k, "long") >= 0.5 && p(k, "flexible") >= 0.8 && p(k, "binding") >= 0.5;
 // What there is to dip something into where they stand: open water (not frozen over), how many fish swim within a
 // basket's and a line's reach (FISH_REACH), how practised a hand at fishing they are, and a draw of chance, taken only
 // when a basket might bring up two.
@@ -728,15 +734,15 @@ export function wetting(w: World, items: string[], c: WetSetting): Wetting {
   }
   // A basket woven loose enough to let the water through, swept along where fish are swimming, scoops one or two up.
   if (p(x, "container") >= 0.6 && p(x, "container") < 0.85 && p(x, "fibrous") >= 0.6) {
-    if (!c.fish.basket) return { ok: false, text: `They swept the ${x.name} through the water, but no fish were swimming close enough to scoop up.`, uses: {}, gives: {}, fields, fishing: "basket" };
+    if (!c.fish.basket) return { ok: false, text: `They swept the ${x.name} through the water, and it came up empty.`, uses: {}, gives: {}, fields, fishing: "basket" };
     // how many it brings up is chance: two now and then where two or more are swimming, more often for a practised hand
     const n = c.fish.basket >= 2 && c.draw() < 0.4 + c.skill * 0.05 ? 2 : 1;
     fields.gives = ["fish"];
     return { ok: true, text: `They swept the ${x.name} through the water and lifted it out with ${n > 1 ? "two fish" : "a fish"} flapping in it.`, uses: {}, gives: { fish: n }, fields, fishing: "basket" };
   }
-  if (p(x, "long") >= 0.5 && p(x, "flexible") >= 0.8 && p(x, "binding") >= 0.5) {
+  if (lineLike(x)) {
     // A fish swimming within a stone's throw of the line comes to it and bites.
-    if (!c.fish.line) return { ok: false, text: `They dangled the ${x.name} in the water, but no fish came near it.`, uses: {}, gives: {}, fields, fishing: "line" };
+    if (!c.fish.line) return { ok: false, text: `They dangled the ${x.name} in the water, and nothing bit.`, uses: {}, gives: {}, fields, fishing: "line" };
     fields.gives = ["fish"];
     return { ok: true, text: `They dangled the ${x.name} in the water and something bit. A fish!`, uses: {}, gives: { fish: 1 }, fields, fishing: "line" };
   }
@@ -800,6 +806,8 @@ export const shooting = (w: World, a: Agent, act: Act) => !!act.tool && stave(ki
 // How far a throw flies true, and as close as anyone stalks an animal before throwing at it (sim.ts doAct): a bow
 // carries twice as far as an arm.
 export const throwReach = (w: World, a: Agent, act: Act) => (shooting(w, a, act) ? 40 : 20);
+// What a throw that hits does, a shot from a bow far more: weight and edge driven home, less what the animal shrugs off.
+export const throwDamage = (k: Kind, toughness: number, shot: boolean) => 5 * Math.max(0, (0.25 + p(k, "heavy") * 0.8) * (0.3 + p(k, "sharp") * 1.2) * (shot ? 5.5 : 2.2) - toughness * 0.3);
 // Throwing trades leverage for range: only weight and edge count. Whatever is within the throw's reach is hit; what is
 // farther off, it falls short of.
 export function throwTick(w: World, a: Agent, act: Act, st: { progress: number; tries?: number }): { done: boolean; out?: Outcome } {
@@ -819,7 +827,7 @@ export function throwTick(w: World, a: Agent, act: Act, st: { progress: number; 
   // where a throw that falls short lands, a pace or more short of the animal, is chance
   const fall = hit ? 0 : (1 + Math.random() * 3) / TILE_M, dir = Math.atan2(prey.py - a.py, prey.px - a.px);
   dropPile(w, prey.px - Math.cos(dir) * fall, prey.py - Math.sin(dir) * fall, k.id, 1);
-  const dmg = hit ? 5 * Math.max(0, (0.25 + p(k, "heavy") * 0.8) * (0.3 + p(k, "sharp") * 1.2) * (shot ? 5.5 : 2.2) - mat.toughness * 0.3) : 0;
+  const dmg = hit ? throwDamage(k, mat.toughness, shot) : 0;
   prey.hp -= dmg;
   if (prey.species === "deer") prey.state = "flee";
   else prey.target = a.id;
@@ -834,7 +842,7 @@ export function throwTick(w: World, a: Agent, act: Act, st: { progress: number; 
   }
   if (st.tries >= 6 || !count(a, k.id)) {
     fields.effect = dmg > 0 || st.progress > 3 ? "wounded" : undefined;
-    const how = !hit ? `, but it was too far off, and the ${k.name} fell short` : dmg > 0 ? " and hit it, but it got away hurt" : `, but the ${k.name} glanced off it`;
+    const how = !hit ? `, but the ${k.name} fell short` : dmg > 0 ? " and hit it, but it got away hurt" : `, but the ${k.name} glanced off it`;
     return { done: true, out: outcome({ text: `They ${shot ? "shot" : "threw"} ${an(k.name)} at the ${prey.species}${how}.`, effect: fields.effect, fields, numbers: { rate: dmg } }) };
   }
   return { done: false };
@@ -869,41 +877,36 @@ const FOOT: Record<string, number> = { tree: 0.5, stump: 0.4, burnt_stump: 0.4, 
 export const occupied = (w: World, px: number, py: number) => !!anyAround(w, px, py, 6, SOLID, (t) => meters({ px, py }, t) < (FOOT[t.kind] ?? t.size / 2));
 // A pit goes into a spade's depth of soil or more, on dry ground nothing stands on, clear of a tree's roots.
 export function diggable(w: World, px: number, py: number) {
-  return soilAt(w, px, py) >= 0.2 && dryAt(w, px, py) && !occupied(w, px, py) && !anyAround(w, px, py, 1.5, ["tree", "stump", "burnt_stump"]);
+  return soilAt(w, px, py) >= PIT_SOIL && dryAt(w, px, py) && !occupied(w, px, py) && !anyAround(w, px, py, 1.5, ["tree", "stump", "burnt_stump"]);
 }
 // The first spot a pace to three off, turning round, where the ground takes what they're doing (and that looks right
-// to them, by `ok`, if any does), or what stopped them at the most spots: water, rock under too little soil, roots, or
-// something standing on it.
-type Bar = "water" | "rock" | "roots" | "taken";
-function spotNear(w: World, a: Agent, soil: number, roots: boolean, ok?: (px: number, py: number) => boolean): [number, number] | Bar {
-  const bars: Record<Bar, number> = { water: 0, rock: 0, roots: 0, taken: 0 };
+// to them, by `ok`, if any does): dry land with soil this deep, nothing standing on it, and for a pit no roots of a tree
+// or stump within a pace and a half. None, if nowhere within reach does.
+export function spotNear(w: World, a: { px: number; py: number; heading?: number }, soil: number, roots: boolean, ok?: (px: number, py: number) => boolean): [number, number] | null {
   let first: [number, number] | null = null;
   for (const m of [1, 2, 3])
     for (let k = 0; k < 8; k++) {
       const ang = (a.heading ?? 0) + (k * Math.PI) / 4, px = a.px + (Math.cos(ang) * m) / TILE_M, py = a.py + (Math.sin(ang) * m) / TILE_M;
-      const bar: Bar | null = !dryAt(w, px, py) ? "water" : soilAt(w, px, py) < soil ? "rock" : occupied(w, px, py) ? "taken" : roots && anyAround(w, px, py, 1.5, ["tree", "stump", "burnt_stump"]) ? "roots" : null;
-      if (bar) { bars[bar]++; continue; }
+      if (!dryAt(w, px, py) || soilAt(w, px, py) < soil || occupied(w, px, py) || (roots && anyAround(w, px, py, 1.5, ["tree", "stump", "burnt_stump"]))) continue;
       if (!ok || ok(px, py)) return [px, py];
       first ??= [px, py];
     }
-  return first ?? (Object.keys(bars) as Bar[]).sort((x, y) => bars[y] - bars[x])[0];
+  return first;
 }
-const BARRED: Record<Bar, (ground: string) => string> = {
-  water: () => "There was only water within reach.",
-  rock: (g) => (g === "bare rock" ? "The ground here was bare rock, with no soil to work." : `Under a skin of soil the ${g} here was rock.`),
-  roots: () => "Roots ran through the ground everywhere within reach.",
-  taken: () => "Something already stood on every spot within reach.",
-};
+// How deep the soil has to be: a spade's depth for a pit, and a little for a seed.
+export const PIT_SOIL = 0.2, SEED_SOIL = 0.03;
+// How much of a pit a tick's digging makes, with a tool or bare hands, before a practised hand's share: a pit is done at 12.
+export const digPower = (tool: Kind) => 0.15 + p(tool, "hard") * 0.4 + p(tool, "sharp") * 0.3 + p(tool, "long") * 0.3;
 
 // ---------- dig ----------
 export function digTick(w: World, a: Agent, act: Act, st: { progress: number; at?: [number, number] }): { done: boolean; out?: Outcome } {
   const tool = toolOf(w, act);
   const fields: Fields = { verb: "dig", inputs: [], tool: act.tool ?? null, gives: [] };
   // ground a pit can go into a pace or two off, the first they find turning round
-  const where = st.at ?? spotNear(w, a, 0.2, true);
-  if (typeof where === "string") return { done: true, out: outcome({ text: BARRED[where](groundWord(w, a.px, a.py)), fields }) };
+  const where = st.at ?? spotNear(w, a, PIT_SOIL, true);
+  if (!where) return { done: true, out: outcome({ text: "They looked all round for somewhere to dig, and found nowhere.", fields }) };
   const [px, py] = (st.at = where);
-  const power = 0.15 + p(tool, "hard") * 0.4 + p(tool, "sharp") * 0.3 + p(tool, "long") * 0.3;
+  const power = digPower(tool);
   st.progress += power * (1 + level(a.skills.digging ?? 0) * 0.1);
   if (!act.tool) a.needs.health = Math.max(0, a.needs.health - 0.05);
   trace("physics", "dig", { tool: tool.id, power, progress: st.progress }, a.id);
@@ -1050,7 +1053,7 @@ export function placing(w: World, items: string[], c: PlaceSetting): Placing {
     fields.at = "home"; fields.builds = "stored";
     return { ok: false, text: `They tucked ${list(w, need)} away inside their shelter.`, uses: need, gives: {}, builds: "stored", fields, claims, work: { does: "store" } };
   }
-  if (parts.some((k) => p(k, "edible") >= 0.1)) return { ok: false, text: `Food makes a poor thing to build with. The ${parts.find((k) => p(k, "edible") >= 0.1)!.name} just rolled away.`, uses: {}, gives: {}, fields, claims };
+  if (parts.some((k) => p(k, "edible") >= 0.1)) return { ok: false, text: `The ${parts.find((k) => p(k, "edible") >= 0.1)!.name} just rolled away.`, uses: {}, gives: {}, fields, claims };
   const built: Record<string, number> = { ...own?.parts };
   for (const [k, n] of Object.entries(need)) built[k] = (built[k] ?? 0) + n;
   const was = own?.shelter, before = was?.tier ?? 0, roomBefore = was?.room ?? 0;
@@ -1197,8 +1200,8 @@ export function plant(w: World, a: Agent, act: Act, ok?: (px: number, py: number
   // any soil a pace or two off that nothing stands on, the first they find turning round that looks right to them, or
   // failing that the first: a seed goes in beside a bush or under a tree as well as anywhere, and whether it comes up
   // is up to what it finds there
-  const spot = spotNear(w, a, 0.03, false, ok);
-  if (typeof spot === "string") return outcome({ text: BARRED[spot](groundWord(w, a.px, a.py)), fields });
+  const spot = spotNear(w, a, SEED_SOIL, false, ok);
+  if (!spot) return outcome({ text: `They looked all round for somewhere to push the ${x.name} in, and found nowhere.`, fields });
   const [px, py] = spot;
   takeItems(a, x.id);
   const ground = INTO[groundWord(w, px, py)] ?? "the ground";
@@ -1226,7 +1229,7 @@ const RANK = 0.25;
 export function eating(w: World, k: string, c: { held: boolean; sick: boolean }): Decision {
   const x = w.kinds[k];
   const fields: Fields = { verb: "eat", inputs: [k], gives: [] };
-  if (!x || (p(x, "edible") < 0.03 && p(x, "medicinal") < 0.3)) return decided({ text: `The ${x?.name ?? "thing"} isn't food.`, fields });
+  if (!x || (p(x, "edible") < 0.03 && p(x, "medicinal") < 0.3)) return decided({ text: `They couldn't eat the ${x?.name ?? "thing"}.`, fields });
   if (!c.held) return decided({ text: "Nothing to eat.", fields });
   if (p(x, "medicinal") >= 0.5 && c.sick) {
     fields.effect = "cure";

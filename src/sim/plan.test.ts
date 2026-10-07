@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { DAY, addThing, meters, newWorld, type Act, type Agent, type World } from "./world";
 import { count, giveItems, heat, join, place, rubTick, strikeDamage, strikeTick, type Outcome } from "./physics";
+import { DAMP, SOAKED } from "./wetness";
 import { thingById } from "./space";
 import { apart, cameOff, chance, differed, fades, noteTry, record, refuted, rethink, suspected, teach, weighs, worseIn, type Belief } from "./beliefs";
 import { plan } from "./plan";
@@ -101,7 +102,7 @@ test("the planner only uses what an agent believes works", () => {
   expect(steps.filter((s) => s.op === "pick_stone").length).toBe(2);
 });
 
-test("out in the rain rubbing sticks is soaked within the hour, and someone who has come to think fire won't light in the rain plans none while it rains", () => {
+test("rubbing sticks over tinder soaked through only makes them hot, and someone who has come to think fire won't light in the rain plans none while it rains", () => {
   const [w, a] = fresh();
   const rub = () => { const st = { progress: 0 }; let r, n = 0; do { r = rubTick(w, a, { verb: "rub", items: ["stick", "stick"] }, st); n++; } while (!r.done); return { out: r.out!, n }; };
   giveItems(w, a, "stick", 2); giveItems(w, a, "fiber");
@@ -109,11 +110,11 @@ test("out in the rain rubbing sticks is soaked within the hour, and someone who 
   const lit = rub().out;
   expect(lit.builds).toBe("fire");
   const knows = record(w, a, lit, 30)!;
-  giveItems(w, a, "stick", 2); giveItems(w, a, "fiber");
-  w.weather.sky = "rain";
+  a.inv = [];
+  giveItems(w, a, "stick", 2); giveItems(w, a, "fiber", 1, SOAKED);
   const soaked = rub();
   expect(soaked.out.builds).toBeUndefined();
-  expect(soaked.n).toBeLessThanOrEqual(12);
+  expect(soaked.out.effect).toBe("heat");
   const ctx = (now: string[]) => ({ dist: { stick: 2, reeds: 3 }, beliefs: Object.values(a.beliefs), facts: a.facts, kinds: w.kinds, toxic: [], now });
   const start = { inv: { stick: 2, fiber: 1 }, at: null, flags: [] };
   // with no theory of why it failed, they would try again
@@ -160,7 +161,7 @@ test("someone who thinks fire won't light in the rain lights none in the rain, u
   expect(plan(start, `try:${fiber.key}`, ctx(fiber.key))?.map((s) => s.op)).toEqual(["act"]);
 });
 
-test("striking stone over tinder in the rain only throws sparks that die in the wet tinder: that's no fire, and it doesn't count as having worked; dry, the spark catches", () => {
+test("striking stone over damp tinder only throws sparks that won't catch: that's no fire, and it doesn't count as having worked; dry, the spark catches", () => {
   const [w, a] = fresh();
   const b: Belief = {
     key: "strike|fiber+stone|stone|stone|-|-", fields: { verb: "strike", inputs: ["fiber", "stone"], tool: "stone", target: "stone", gives: [], builds: "fire" },
@@ -176,14 +177,16 @@ test("striking stone over tinder in the rain only throws sparks that die in the 
     do r = strikeTick(w, a, act, st); while (!r.done);
     return r.out!;
   };
-  w.weather.sky = "rain";
-  const drowned = strike();
+  a.inv = [];
+  giveItems(w, a, "stone", 2); giveItems(w, a, "fiber", 1, DAMP);
+  const st = { progress: 0 };
+  let r;
+  do r = strikeTick(w, a, act, st); while (!r.done);
+  const drowned = r.out!;
   expect(drowned.ok).toBe(false);
   expect(drowned.builds).toBeUndefined();
   expect(cameOff(b, drowned)).toBe(false);
-  // what they see of it points at the rain
-  expect(drowned.text).toMatch(/wet/);
-  w.weather.sky = "clear";
+  a.inv = [];
   expect(cameOff(b, strike())).toBe(true);
 });
 
@@ -338,11 +341,13 @@ test("a way they were taught looks to them as any way they've yet to try does, a
   expect(plan({ inv: { stick: 2, fiber: 1, bark: 1 }, at: null, flags: [] }, "make_fire", ctx)?.at(-1)?.key).toBe(fiber.key);
 });
 
-test("a failure that points at the rain sets them suspecting it even in weather they blame for something else: to someone who blames the wind, sparks hissing out in wet tinder in the rain and the wind", () => {
+test("nothing about how a try failed points anywhere: a condition becomes a suspect only once their record shows it doing worse, never on one failure", () => {
   const b = striking();
-  b.unless = ["wind"];
-  // out of the wind it catches two times in five
+  // it catches two times in five, whatever the weather
   for (let i = 0; i < 20; i++) noteTry(b, i % 5 < 2, []);
-  noteTry(b, false, ["rain", "wind"]);
-  expect(suspected(b, ["rain", "wind"], (c) => c === "rain")).toEqual(["rain"]);
+  noteTry(b, false, ["rain"]);
+  expect(suspected(b, ["rain"])).toEqual([]);
+  noteTry(b, false, ["rain"]);
+  noteTry(b, false, ["rain"]);
+  expect(suspected(b, ["rain"])).toEqual(["rain"]);
 });

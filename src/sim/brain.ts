@@ -292,14 +292,14 @@ export async function chooseTinker(w: World, a: Agent, options: string[]) {
   return sample(ans.attempt.probabilities!, 1.6);
 }
 
-// Something that has worked for them before just didn't. What do they make of it: something about the conditions
-// they were in (present: the ones they could see, each in words), or just bad luck? Offline the guess leans toward the
-// condition it has gone worst in (lean).
-export async function theorize(w: World, a: Agent, what: string, happened: string, present: Record<string, string>, lean: Lean) {
-  const ans = await ask(w, "theory", a.id, { ...view(w, a), tried: what, what_happened: happened }, {
+// Something that has worked for them before just didn't, and nothing about how it failed said why. What do they make of
+// it: something about the conditions they were in (present: the ones they could see, each in words), or just bad luck?
+// Offline the guess leans toward the condition it has gone worst in (lean).
+export async function theorize(w: World, a: Agent, what: string, present: Record<string, string>, lean: Lean) {
+  const ans = await ask(w, "theory", a.id, { ...view(w, a), tried: what }, {
     why: {
       type: "choice",
-      instructions: `${a.name} has done this before and it worked: ${what} This time it didn't: ${happened} What does ${a.name} make of it?`,
+      instructions: `${a.name} has done this before and it worked: ${what} This time it didn't. What does ${a.name} make of it?`,
       criteria: { ...present, luck: "Just bad luck; it will work next time", unsure: "No idea what was different" },
     },
   }, { why: { luck: 1.5, unsure: 1, ...lean } });

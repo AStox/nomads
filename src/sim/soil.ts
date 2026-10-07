@@ -21,11 +21,13 @@ export function fertilityAt(w: World, px: number, py: number) {
   return Math.max(0, fine.bilinear(isle.fertility, (px * TILE_M) / CELL - 0.5, (py * TILE_M) / CELL - 0.5) + (w.fert[cellOf(px, py)] ?? 0));
 }
 // How full the soil is at a point now, 0..1: drawn between the seasons' ends as the air is, and topped up by recent rain.
-export function soilWaterAt(w: World, px: number, py: number) {
-  const { isle, fine } = groundOf(w.seed), { s, f } = seasonAt(w.t), cx = (px * TILE_M) / CELL - 0.5, cy = (py * TILE_M) / CELL - 0.5;
+export const soilWaterAt = (w: World, px: number, py: number) => soilWater(w, px, py, w.t, w.weather.wet);
+// The same at tick t with this much recent rain still running off the land (Weather.wet).
+export function soilWater(w: World, px: number, py: number, t: number, wet: number) {
+  const { isle, fine } = groundOf(w.seed), { s, f } = seasonAt(t), cx = (px * TILE_M) / CELL - 0.5, cy = (py * TILE_M) / CELL - 0.5;
   // a season's soil is as it stands at its end; its middle is halfway from the season before
   const end = (k: number) => fine.bilinear(isle.soilWater[(k + 4) % 4], cx, cy), mid = (k: number) => (end(k - 1) + end(k)) / 2;
-  return clamp(mid(s) * (1 - f) + mid(s + 1) * f + 0.3 * w.weather.wet, 0, 1);
+  return clamp(mid(s) * (1 - f) + mid(s + 1) * f + 0.3 * wet, 0, 1);
 }
 // How well a plant grows on the soil at a point: three quarters as fast on barren ground as on good soil, a quarter faster
 // again on the richest.

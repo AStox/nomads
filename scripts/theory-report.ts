@@ -107,8 +107,8 @@ type Row = {
   // plantings as they went in (runs that note them), whether or not they ever showed: how many, the odds of the spots
   // chosen, how many went into the shade or in among bushes and trees, and how many into a condition that truly hurts
   sown: number; sownSpot: number; sownShade: number; sownCrowded: number; sownHurt: number;
-  // person-days holding the lessons that matter most: berries won't come up in the shade, or crowded in among bushes
-  // and trees; fire won't light in the rain
+  // person-days holding the lessons that matter most: berries won't come up in deep shade, or crowded in among bushes
+  // and trees; fire won't light with damp tinder, or in the rain that soaks it
   lessons: Record<string, number>;
 };
 // what a way is for, by the key or as the runs noted it
@@ -117,9 +117,9 @@ for (const r of runs) for (const l of r.lines) if (l.ev === "attempt" && l.key &
 // a lesson is held by a theory that names its condition as one it won't work in, whatever exceptions it makes
 const names = (t: string, c: string) => t.split("+").includes(c);
 const LESSONS: Record<string, (key: string, cond: string) => boolean> = {
-  shade: (key, cond) => key.startsWith("plant|") && names(cond, "shade"),
+  shade: (key, cond) => key.startsWith("plant|") && (names(cond, "deep") || names(cond, "shade")),
   crowded: (key, cond) => key.startsWith("plant|") && names(cond, "crowded"),
-  "rain-fire": (key, cond) => names(cond, "rain") && (answers.ways[key]?.aim ?? aims.get(key)) === "fire",
+  "wet-fire": (key, cond) => ["rain", "damp", "soaked"].some((c) => names(cond, c)) && (answers.ways[key]?.aim ?? aims.get(key)) === "fire",
 };
 const rows: Row[] = [];
 const row = (b: number) => (rows[b] ??= {

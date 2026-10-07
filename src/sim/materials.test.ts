@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
-import { TILE_M, addThing, newWorld, shoreOf, type Act, type Agent, type Thing, type World } from "./world";
-import { WEATHER_NOW, count, eat, fireHeat, giveItems, heat, join, openWater, place, quenched, strikeTick, throwTick, wet, type Outcome } from "./physics";
+import { DAY, TILE_M, addThing, newWorld, rng, shoreOf, type Act, type Agent, type Thing, type World } from "./world";
+import { WEATHER_NOW, count, eat, fireHeat, giveItems, heat, join, openWater, place, strikeTick, throwTick, wet, type Outcome } from "./physics";
 import { addAnimal } from "./fauna";
-import { put as moveTo } from "./space";
+import { put as moveTo, thingById } from "./space";
 import { conditionsNow } from "./sim";
-import { RULES } from "./rules";
-import { DARK, lightOn } from "./light";
+import { hooks } from "./rules";
+import { DAMP, SOAKED, wetness } from "./wetness";
+import { ecology, forecast } from "./ecology";
+import { ahead, bedAt, seedlingFate } from "./seedling";
 
 const setup = (): [World, Agent, Thing] => {
   const w = newWorld(42);
@@ -103,30 +105,55 @@ test("hands full of food still make room for a stick", () => {
 
 // Whether a try comes off follows from what anyone trying could notice: the same things in hand, weather and spot give
 // the same outcome every time, and changing what decides it changes it.
-test("struck over fiber, two hard stones light it after the same number of blows every time, flint sooner than plain stone; in the rain the sparks always hiss out, and over a stick they never catch", () => {
+test("struck over fiber, two hard stones light it after the same number of blows every time, flint sooner than plain stone; over damp fiber or in a gale the sparks never catch, and over a stick they never do", () => {
   const [w, a] = fresh();
-  const light = (tool: string, target: string, over: string) => {
+  const light = (tool: string, target: string, over: string, wet = 0) => {
     a.inv = [];
-    giveItems(w, a, tool); giveItems(w, a, target); giveItems(w, a, over);
+    giveItems(w, a, tool); giveItems(w, a, target); giveItems(w, a, over, 1, wet);
     return hammer(w, a, tool, target, over);
   };
   w.weather.sky = "clear";
+  w.weather.speed = 2;
   const stone = Array.from({ length: 5 }, () => light("stone", "stone", "fiber"));
   expect(stone.every((o) => o.builds === "fire")).toBe(true);
   expect(new Set(stone.map((o) => o.numbers?.blows)).size).toBe(1);
   const flint = light("stone", "flint", "fiber");
   expect(flint.builds).toBe("fire");
   expect(flint.numbers!.blows).toBeLessThan(stone[0].numbers!.blows);
-  w.weather.sky = "rain";
-  const soaked = Array.from({ length: 5 }, () => light("stone", "stone", "fiber"));
-  expect(soaked.every((o) => !o.ok && /hissed out in the wet fiber/.test(o.text))).toBe(true);
-  w.weather.sky = "clear";
+  // just short of damp it still catches; damp, it never does
+  expect(light("stone", "stone", "fiber", DAMP - 0.01).builds).toBe("fire");
+  expect(Array.from({ length: 3 }, () => light("stone", "stone", "fiber", DAMP)).every((o) => !o.ok)).toBe(true);
+  // the air where they stand is worked out once a tick: a new wind, a new tick
+  w.weather.speed = 60;
+  w.t++;
+  expect(WEATHER_NOW.wind(w, a)).toBe(true);
+  expect(light("stone", "stone", "fiber").ok).toBe(false);
+  w.weather.speed = 2;
+  w.t++;
   const stick = light("stone", "stone", "stick");
   expect(stick.ok).toBe(false);
-  expect(stick.text).toMatch(/isn't fine and dry enough/);
 });
 
-test("knapping stone with stone chips off a sharp stone at the same blow every time, fiber in hand or not; a striker too soft never does, and it shows", () => {
+test("tinder held in the rain soaks through within the hour, dries out of it, and stays dry under a roof or in a bag", () => {
+  const [w, a] = fresh();
+  const fiber = () => a.inv.find((s) => s.k === "fiber")!;
+  const hours = (n: number) => { for (let i = 0; i < n * 12; i++) { w.t++; wetness(w); } };
+  a.inv = [];
+  giveItems(w, a, "fiber");
+  w.weather.sky = "rain";
+  hours(1);
+  expect(fiber().wet!).toBeGreaterThanOrEqual(SOAKED);
+  w.weather.sky = "clear";
+  hours(8);
+  expect(fiber().wet ?? 0).toBeLessThan(DAMP);
+  w.kinds.bag = { id: "bag", name: "bag", props: { container: 0.75, flexible: 0.7 } };
+  giveItems(w, a, "bag");
+  w.weather.sky = "rain";
+  hours(2);
+  expect(fiber().wet ?? 0).toBeLessThan(DAMP);
+});
+
+test("knapping stone with stone chips off a sharp stone at the same blow every time, fiber in hand or not; a striker too soft never does", () => {
   const [w, a] = fresh();
   const knap = (tool: string, target: string) => {
     a.inv = [];
@@ -139,7 +166,7 @@ test("knapping stone with stone chips off a sharp stone at the same blow every t
   expect(count(a, "fiber")).toBe(1);
   const soft = knap("stick", "stone");
   expect(soft.ok).toBe(false);
-  expect(soft.text).toMatch(/stick was too soft/);
+  expect(soft.gives.sharp_stone).toBeUndefined();
 });
 
 test("felling a tree with a sharp stone peels the same strips of bark every time; a blunt stone peels none", () => {
@@ -159,7 +186,7 @@ test("felling a tree with a sharp stone peels the same strips of bark every time
   expect(strips("stone")).toBe(0);
 });
 
-test("a line or a basket dipped where a fish swims within reach catches every time, and with none about never does: that's put down to no fish close by, which only what's dipped in the water records", () => {
+test("a line or a basket dipped where a fish swims within reach catches every time, and with none about never does: anyone dipping sees there were no fish close by, and only what's dipped in the water records it", () => {
   const [w, a] = fresh();
   const shore = shoreOf(w).find((s) => { moveTo(w, a, s.px, s.py); return openWater(w, a); });
   expect(shore).toBeDefined();
@@ -178,7 +205,6 @@ test("a line or a basket dipped where a fish swims within reach catches every ti
   for (const k of ["line", "basket", "line", "basket"]) {
     const out = dip(k);
     expect(out.ok).toBe(false);
-    expect(out.text).toMatch(/no fish/);
     expect(conditionsNow(w, a, "wet")).toContain("nofish");
     w.t++;
   }
@@ -203,7 +229,7 @@ test("a stone thrown at a deer within reach hits it every time, for the same har
   for (let i = 0; i < 3; i++) {
     const hp = deer.hp, out = toss();
     expect(deer.hp).toBe(hp);
-    expect(out.text).toMatch(/too far off/);
+    expect(out.ok).toBe(false);
   }
 });
 
@@ -219,36 +245,23 @@ test("raw meat makes whoever eats it sick every time; raw fish and cooked meat n
     }
 });
 
-test("a quench rule of several parts holds only where every part does, and what shows of it is its first plain part", () => {
+test("a seedling's hours ahead come to what ecology makes of the same weather, hour by hour", () => {
   const [w, a] = fresh();
-  // the light as it is under the rain, tick by tick over a day
-  w.weather.sky = "rain";
-  const from = w.t, ticks = Array.from({ length: 300 }, (_, i) => from + i);
-  const dark = (t: number) => { w.t = t; return lightOn(w, a).bright < DARK; };
-  const nights = ticks.filter(dark), days = ticks.filter((t) => !dark(t));
-  const strike = () => { giveItems(w, a, "stone", 2); giveItems(w, a, "fiber"); return hammer(w, a, "stone", "stone", "fiber"); };
-  const saved = RULES.quench;
+  // nobody about to feed the soil with dung, nothing roaming: the seedling alone with its spot and the weather
+  w.agents = [];
+  w.animals = [];
+  const spot = { px: a.px + 2 / TILE_M, py: a.py };
+  // the weather ecology will give it: a seeded stretch of the island's own
+  const hours = forecast(w, 30 * 24, rng(7));
+  const fate = seedlingFate(bedAt(w, spot.px, spot.py, "berry"), false, ahead(w, spot.px, spot.py, w.t, hours));
+  const t = addThing(w, "sapling", spot.px, spot.py, { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5 });
+  const first = Math.ceil((w.t + 1) / 12) * 12, end = w.t + 30 * DAY;
+  hooks.weather = (w) => { const h = hours[(w.t - first) / 12]; Object.assign(w.weather, { sky: h.sky, speed: h.speed }); };
   try {
-    RULES.quench = ["dark+rain", "rain+!wind"];
-    w.weather.speed = 2;
-    w.t = days[0];
-    expect(quenched(w, a)).toBe("rain+!wind");
-    w.t = nights[0];
-    expect(quenched(w, a)).toBe("dark+rain");
-    expect(strike().text).toMatch(/In the dark the sparks fell wide of the fiber/);
-    w.weather.speed = 60;
-    w.t = days[1];
-    expect(WEATHER_NOW.wind(w, a)).toBe(true);
-    expect(quenched(w, a)).toBeNull();
-    expect(strike().builds).toBe("fire");
-    RULES.quench = ["!wind+rain"];
-    w.weather.speed = 2;
-    w.t = days[2];
-    expect(strike().text).toMatch(/hissed out in the wet fiber/);
-    w.weather.sky = "clear";
-    w.t = days[3];
-    expect(quenched(w, a)).toBeNull();
+    while (w.t < end && thingById(w, t.id)?.kind === "sapling") { w.t++; ecology(w); }
   } finally {
-    RULES.quench = saved;
+    hooks.weather = undefined;
   }
+  // the hour it came up, counted from the first it was tended; none if it withered or never did
+  expect(thingById(w, t.id)?.kind === "bush" ? (w.t - first) / 12 : null).toBe(fate);
 });

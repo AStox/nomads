@@ -71,7 +71,7 @@ test("a seed goes into the ground right beside a bush, and bare rock takes none"
   giveItems(w, a, "berry");
   const none = plant(w, a, { verb: "plant", items: ["berry"] });
   expect(none.ok).toBe(false);
-  expect(none.text).toMatch(/rock/);
+  expect(none.later).toBeUndefined();
 });
 
 test("what's planted is judged when it comes up: the planter waits, learns how long it took and what ground it came up on, and counts one that withers against that ground", async () => {

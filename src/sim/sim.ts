@@ -4,8 +4,8 @@ import {
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
 import {
-  airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, force, giveItems, greasy, heat, homeOf, join, mark, nearFire, openWater, place as placeItems, plant,
-  fireHours, groundWord, hoursToDawn, leaveHome, pour, raining, reaches, removeThing, residentsOf, rubTick, shape, sheltered, shelterName, stash, strikeDamage, strikeTick, takeItems, throwReach, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
+  airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, FISH_REACH, force, giveItems, greasy, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
+  fireHours, groundWord, hoursToDawn, leaveHome, pour, reaches, removeThing, residentsOf, rubTick, shape, shelterName, stash, strikeDamage, strikeTick, takeItems, throwReach, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
 import { apart, beliefKey, beliefText, cameOff, conditionWords, differed, weighs, fieldsOf, found, groundKey, groundOfKey, holds, mixOf, odds, fades, noteTry, ofSpot, record, refine, refuted, restsOn, rethink, see, sentence, suspected, teach, testOf, watchers, type Belief } from "./beliefs";
@@ -21,7 +21,11 @@ import { landOf, walk } from "./walk";
 import { DARK, canSee, lightOn, moveRate, restRate, skyShare, workRate } from "./light";
 import { ripening } from "./cues";
 import { airOn } from "./air";
-import { enrich, soilWaterAt } from "./soil";
+import { enrich, fertilityAt, soilWaterAt } from "./soil";
+import { DAMP, SOAKED, tinder, tinderOf, wetHere } from "./wetness";
+import { envHere } from "./plants";
+import { shareAt } from "./seedling";
+import type { Env } from "../terrain/niche";
 import { travel } from "./journeys";
 import { RULES, hooks } from "./rules";
 
@@ -777,36 +781,65 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
 }
 const rulingsAt = perWorld(() => new Map<number, number>());
 
-// Conditions anyone can see they're working in, which might be why something works one time and not another; for
-// what's done to the ground (planting, digging, watering), the spot itself (at): the ground, the shade of trees over
-// it, how dry it is, and bushes and trees crowded round it, which tell as much as the weather does; and for what's
-// dipped in the water (verb), whether any fish were swimming close by.
-// hint: what the outcome would say if this were the reason, for the offline guess (Jev reads the outcome itself)
+// Conditions anyone can see they're working in, which might be why something works one time and not another: every
+// input to whatever decides whether it comes off (physics.ts, wetness.ts, seedling.ts), as someone there would notice it,
+// cut where the formula turns. The weather and the light; for a fire, how wet the tinder is (a spark won't catch in damp
+// tinder, an ember not in tinder soaked through); for what's dipped in the water (verbs), whether any fish were
+// swimming in reach; and for what's done to the ground (planting, digging, watering), the spot itself (at): the shade of
+// trees over it, how dry the soil is, the plants close round it taking their share, how sour, limy, poor or thin the
+// soil is, how boggy, how open to the gales, how much salt spray reaches it, each where a berry's niche starts to suffer
+// (niche.ts), and the ground as anyone would call it.
 type Pos = { px: number; py: number };
-// on, off: the weather in a word, and its lack, for telling Jev how it went like for like
-const CONDITIONS: Record<string, { now: (w: World, a: Agent, at: Pos) => boolean; words: string; hint: RegExp; place?: true; verb?: string; on?: string; off?: string }> = {
-  rain: { now: WEATHER_NOW.rain, words: "It was raining and there was nothing over their heads", hint: /damp|wet|rain|soak/, on: "raining", off: "dry" },
-  dark: { now: WEATHER_NOW.dark, words: "It was dark", hint: /dark|couldn't see/, on: "dark", off: "light" },
-  cold: { now: WEATHER_NOW.cold, words: "It was freezing", hint: /froze|frozen|freezing|ice/, on: "freezing", off: "above freezing" },
-  wind: { now: WEATHER_NOW.wind, words: "A strong wind was blowing", hint: /wind|blew|gust/, on: "windy", off: "calm" },
-  shade: { now: (w, _, at) => skyShare(w, at.px, at.py) < 0.5, words: "It was in the shade of trees", hint: /shade|under the trees/, place: true },
-  dry: { now: (w, _, at) => soilWaterAt(w, at.px, at.py) < 0.5, words: "The ground there was dry", hint: /dry|parched/, place: true },
-  crowded: { now: (w, _, at) => !!anyAround(w, at.px, at.py, 1.5, ["tree", "bush", "dead_bush"]), words: "Bushes or trees grew close round it", hint: /crowd|close round/, place: true },
-  nofish: { now: (w, a, at) => !fishClose(w, a, at), words: "No fish were swimming close by", hint: /no fish/, verb: "wet" },
+// What a spot is like, worked out once for all the conditions that ask: its lasting ground (plants.ts envHere), the
+// share of the sky's light that reaches it, the soil's water and nourishment now, and the share of both the plants round
+// it would leave a seedling (seedling.ts shareAt).
+type Ground = { env: Env; light: number; water: number; fert: number; share: number };
+// items: what they do it with; on, off: the weather in a word, and its lack, for telling Jev how it went like for like
+type Condition = { now: (w: World, a: Agent, at: Pos, spot: () => Ground, items: string[], verb?: string) => boolean; words: string; place?: true; verbs?: string[]; on?: string; off?: string };
+// How wet the tinder they'd light a fire with is: what they strike over, or for rubbing (or anything else they might
+// do) whatever tinder they hold or lies about them; striking anything else, none.
+function kindling(w: World, a: Agent, items: string[], verb?: string) {
+  const k = items.find((x) => tinder(w.kinds[x]));
+  return (k ? tinderOf(w, a, k) : verb === "strike" ? null : tinderOf(w, a))?.wet ?? 0;
+}
+const CONDITIONS: Record<string, Condition> = {
+  rain: { now: WEATHER_NOW.rain, words: "It was raining and there was nothing over their heads", on: "raining", off: "not raining" },
+  dark: { now: WEATHER_NOW.dark, words: "It was dark", on: "dark", off: "light" },
+  cold: { now: WEATHER_NOW.cold, words: "It was freezing", on: "freezing", off: "above freezing" },
+  wind: { now: WEATHER_NOW.wind, words: "A strong wind was blowing", on: "windy", off: "calm" },
+  damp: { now: (w, a, _, __, items, verb) => kindling(w, a, items, verb) >= DAMP, words: "Their tinder was damp", verbs: ["strike", "rub"], on: "damp", off: "dry" },
+  soaked: { now: (w, a, _, __, items, verb) => kindling(w, a, items, verb) >= SOAKED, words: "Their tinder was soaked through", verbs: ["strike", "rub"], on: "soaked", off: "not soaked" },
+  nofish: { now: (w, a, at, _, items) => !fishClose(w, a, at, items.some((k) => lineLike(w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket), words: "No fish were swimming close by", verbs: ["wet"] },
+  shade: { now: (_, __, ___, s) => s().light < 0.5, words: "It was in the shade of trees", place: true },
+  deep: { now: (_, __, ___, s) => s().light < 0.2, words: "It was in deep shade under the trees", place: true },
+  dry: { now: (_, __, ___, s) => s().water < 0.5, words: "The ground there was dry", place: true },
+  crowded: { now: (_, __, ___, s) => s().share < 0.8, words: "Bushes or trees grew close round it", place: true },
+  sour: { now: (_, __, ___, s) => s().env.ph < 4.5, words: "The soil there was sour", place: true },
+  limy: { now: (_, __, ___, s) => s().env.ph > 7.5, words: "The soil there was limy", place: true },
+  poor: { now: (_, __, ___, s) => s().fert < 0.1, words: "The soil there was poor", place: true },
+  thin: { now: (_, __, ___, s) => s().env.soil < 0.2, words: "The soil there was thin over rock", place: true },
+  boggy: { now: (_, __, ___, s) => s().env.wet > 0.4, words: "The ground there was boggy", place: true },
+  exposed: { now: (_, __, ___, s) => s().env.wind > 0.45, words: "The spot lay open to the gales", place: true },
+  salty: { now: (_, __, ___, s) => s().env.salt > 0.3, words: "Salt spray reached the spot", place: true },
 };
 const GROUND_VERBS: Record<string, true> = { plant: true, dig: true, pour: true };
 // verb: what they did, which brings in the spot (at: where it was done, if not where they stand) for what's done to the
-// ground, and what bears only on that verb; without one, everything they could see
-export const conditionsNow = (w: World, a: Agent, verb?: string, at: Pos = a) => {
+// ground, and what bears only on that verb; without one, everything they could see. items: what they did it with.
+export function conditionsNow(w: World, a: Agent, verb?: string, at: Pos = a, items: string[] = []) {
   const ground = !verb || GROUND_VERBS[verb];
-  const now = Object.keys(CONDITIONS).filter((c) => (ground || !CONDITIONS[c].place) && (!verb || !CONDITIONS[c].verb || CONDITIONS[c].verb === verb) && CONDITIONS[c].now(w, a, at));
+  let seen: Ground | undefined;
+  const spot = () => (seen ??= { env: envHere(w, at.px, at.py), light: skyShare(w, at.px, at.py), water: soilWaterAt(w, at.px, at.py), fert: fertilityAt(w, at.px, at.py), share: shareAt(w, at.px, at.py) });
+  const now = Object.keys(CONDITIONS).filter((c) => {
+    const x = CONDITIONS[c];
+    return (ground || !x.place) && (!verb || !x.verbs || x.verbs.includes(verb)) && x.now(w, a, at, spot, items, verb);
+  });
   if (ground) now.push(groundKey(groundWord(w, at.px, at.py)));
   return now;
-};
+}
 // What they've come to blame on a spot (shade, dry ground, crowding, the ground), whatever it was about: they'd do
 // nothing to the ground anywhere a theory like that holds.
 const blamed = (a: Agent) => [...new Set(Object.values(a.beliefs).flatMap((b) => b.unless ?? []).filter(ofSpot))];
-const condition = (c: string) => CONDITIONS[c] ?? { words: `The ground there was ${groundOfKey(c)}`, hint: new RegExp(groundOfKey(c) ?? "$^") };
+const condition = (c: string): Pick<Condition, "words" | "on" | "off"> => CONDITIONS[c] ?? { words: `The ground there was ${groundOfKey(c)}` };
 // What they've seen of it in a condition and out of it, in their words, for weighing a theory; and for the weather, how
 // it went with it and without it in the mix of the other weather that tells the most (beliefs.ts apart), when other
 // weather has come into it ("when it was dark but dry it has worked 3 of 9 times for them, and 4 of 12 when light and
@@ -836,12 +869,11 @@ const testingNow = (a: Agent, b: Belief, now: string[]) => {
 // of it, tells against that part (beliefs.ts refuted: it was windy, and it failed in the rain all the same). A failure of
 // something that has worked for them sets them wondering what was different: a condition they were in is a suspect once
 // it has done worse for them there than without it by more than chance would make it (beliefs.ts worseIn, like for like
-// where it can be: the dark is no suspect for the rain that falls mostly at night), or when the failure itself points at
-// it (the tinder too damp to catch) and it has done no better there than without it; likelier the worse and the more
-// often (or Jev weighs the record itself), and bad luck likelier the more often it usually works. Whatever they settle
-// on is their theory until what they see tells against it. text: what they saw of how it failed; done: when they did
-// it, for what shows later; took: how long the doing took them, for what showed at once.
-function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], text: string, done = w.t, took?: number) {
+// where it can be: the dark is no suspect for the rain that falls mostly at night); likelier the worse and the more
+// often (or Jev weighs the record itself), and bad luck likelier the more often it usually works. Nothing about how it
+// failed tells them why. Whatever they settle on is their theory until what they see tells against it. done: when they
+// did it, for what shows later; took: how long the doing took them, for what showed at once.
+function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], done = w.t, took?: number) {
   noteTry(b, worked, now);
   // for measuring how well they choose (scripts/theories.ts): the other ways they know to the same end
   const aimOf = (o: Belief) => o.fields.builds ?? Object.keys(o.out).sort().join("+"), aim = aimOf(b);
@@ -866,14 +898,14 @@ function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], t
     trace("theory", "refined", { key: b.key, from: r.theory, to: r.to, how: "failed" }, a.id);
   }
   const id = `${a.id}|${b.key}`;
-  const suspects = suspected(b, now, (c) => condition(c).hint.test(text));
+  const suspects = suspected(b, now);
   const busy = theorizing(w);
   if (!suspects.length || !b.wins || busy.has(id)) return;
   busy.add(id);
   const present = Object.fromEntries(suspects.map((c) => [c, `${condition(c).words} (${evidence(b, c)})`]));
   const lean: Record<string, number> = { luck: 1 + 3 * odds(b, null) };
-  for (const c of suspects) { const d = apart(b, c); lean[c] = 1 + 10 * d.diff * Math.min(1, d.tries / 2) + (condition(c).hint.test(text) ? 6 : 0); }
-  theorize(w, a, sentence(w, b.fields, undefined, b.later), text, present, lean)
+  for (const c of suspects) { const d = apart(b, c); lean[c] = 1 + 10 * d.diff * Math.min(1, d.tries / 2); }
+  theorize(w, a, sentence(w, b.fields, undefined, b.later), present, lean)
     .then((c) => {
       if (!c || !a.beliefs[b.key] || b.unless?.includes(c)) return;
       b.unless = [...(b.unless ?? []), c];
@@ -931,8 +963,8 @@ function attempted(w: World, a: Agent, b: Belief, out: Outcome, took: number) {
   const meant = cameOff(b, out);
   // an outcome that went into the books under another key (a rub that only got hot) still counts against this one
   if (beliefKey(out.fields) !== b.key) { b.tries++; if (meant) b.wins++; }
-  const now = conditionsNow(w, a, b.fields.verb);
-  judged(w, a, b, meant, now, out.text, w.t, took);
+  const now = conditionsNow(w, a, b.fields.verb, a, b.fields.inputs);
+  judged(w, a, b, meant, now, w.t, took);
   // put to the test, and it held
   const test = a.goal?.type.startsWith("test:") ? testOf(a.goal.type) : null;
   if (test && test[1] === b.key && !meant && holds(test[0], now)) log(w, "theory", [a.id], a, `${a.name} tried it ${conditionWords(test[0])} to see, and it didn't work, as they'd thought: ${sentence(w, b.fields, undefined, b.later)}`);
@@ -953,7 +985,7 @@ function came(w: World, a: Agent, e: Waiting, at: Thing, builds: string) {
   if (b.fields.verb === "plant") b.fields = { ...b.fields, builds };
   b.later = first ? took : Math.round(b.later! * 0.7 + took * 0.3);
   b.wins++;
-  judged(w, a, b, true, e.now, "", e.t);
+  judged(w, a, b, true, e.now, e.t);
   b.law ??= (w.laws[b.key] ?? found(w, a, b.fields, b.ticks, false, [], b.later)).id;
   const days = took < DAY * 1.5 ? "a day" : `${Math.round(took / DAY)} days`;
   if (first) log(w, "discover", [a.id], at, b.fields.verb === "plant"
@@ -961,8 +993,8 @@ function came(w: World, a: Agent, e: Waiting, at: Thing, builds: string) {
     : `${a.name} saw the young plant they watered ${days} ago come up as ${an(builds)}.`);
 }
 onGrew((w, t, builds) => { for (const a of w.agents) for (const e of waitingOn(a, t.id)) came(w, a, e, t, builds); });
-onWithered((w, t, why) => {
-  for (const a of w.agents) for (const e of waitingOn(a, t.id)) { const b = a.beliefs[e.key]; if (b) judged(w, a, b, false, e.now, why, e.t); }
+onWithered((w, t) => {
+  for (const a of w.agents) for (const e of waitingOn(a, t.id)) { const b = a.beliefs[e.key]; if (b) judged(w, a, b, false, e.now, e.t); }
 });
 // Once a day: what they were waiting on that's gone without coming up (burned, broken off for a stick) they stop waiting
 // for, as they do anything waited on past all hope, neither telling them why.
@@ -994,7 +1026,7 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
   const knew = !!a.beliefs[beliefKey(out.fields)];
   const b = record(w, a, out, ticks);
   // done, with the result to show later: they'll know whether it worked when it does
-  if (b && out.ok && out.later) (a.waiting ??= []).push({ key: b.key, thing: out.later, t: w.t, now: conditionsNow(w, a, act.verb, thingById(w, out.later) ?? a) });
+  if (b && out.ok && out.later) (a.waiting ??= []).push({ key: b.key, thing: out.later, t: w.t, now: conditionsNow(w, a, act.verb, thingById(w, out.later) ?? a, act.items) });
   // Whoever lights a fire by rubbing watches the stick they rubbed catch and burn in it: wood feeds a fire.
   if (out.builds === "fire" && act.verb === "rub") {
     const fuel = act.items.find((k) => (out.uses[k] ?? 0) > 0);
@@ -1004,7 +1036,7 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
   // an experiment that came to nothing, or only to what it showed before, is one less thing to try
   if (tinkering && (!b || (!out.ok && knew))) a.tried[actSig(act)] = (a.tried[actSig(act)] ?? 0) + 1;
   // what bears on what they did, as anyone doing it would note it, for those watching who had thought it couldn't be done
-  const seenNow = conditionsNow(w, a, act.verb);
+  const seenNow = conditionsNow(w, a, act.verb, a, act.items);
   for (const x of watchers(w, a, out, ticks, seenNow)) for (const t of x.theories) surprised(w, x.who, x.b, t, seenNow, a);
   const kind = out.builds === "fire" ? "fire" : out.builds === "shelter" || out.builds === "hearth" ? "build" : act.target?.animal && out.ok ? "hunt" : out.ok ? "craft" : "tinker";
   log(w, kind, [a.id], a, `${a.name}: ${out.text}`);
@@ -1351,7 +1383,7 @@ function run(w: World, a: Agent): boolean | string {
       const n = Math.min(t.n ?? 1, 3);
       t.n = (t.n ?? 1) - n;
       if (t.n <= 0) removeThing(w, t); else mark(w, t);
-      const got = giveItems(w, a, t.item!, n);
+      const got = giveItems(w, a, t.item!, n, wetHere(w, t));
       if (!got) return "their hands were full";
       const word = nm(w, t.item!);
       log(w, "gather", [a.id], a, `${a.name} picked up ${got > 1 ? `${got} ${plural(word)}` : an(word)}.`);
@@ -1372,7 +1404,7 @@ function run(w: World, a: Agent): boolean | string {
       // partway through (the rain coming on as they strike), unless it's what they set out to test, there and then: a
       // test whose weather has passed is an ordinary try, held to every theory of theirs like any other. (The spot was
       // weighed when they chose it.)
-      const now = conditionsNow(w, a, b.fields.verb);
+      const now = conditionsNow(w, a, b.fields.verb, a, b.fields.inputs);
       if (!testingNow(a, b, now)) {
         const bar = b.unless?.find((t) => !ofSpot(t) && holds(t, now));
         if (bar) return `they think it won't work ${conditionWords(bar)}`;
@@ -1454,7 +1486,7 @@ function run(w: World, a: Agent): boolean | string {
     t.hp = (t.hp ?? 3) - 1;
     mark(w, t);
   } else removeThing(w, t);
-  giveItems(w, a, g.item, n);
+  giveItems(w, a, g.item, n, wetHere(w, t));
   // what is carried off a plant is taken from the soil it grew on
   if (t.kind === "bush" || t.kind === "mushroom" || t.kind === "herb" || t.kind === "reeds") enrich(w, t.px, t.py, -0.004 * n);
   if (t.kind === "bush" || t.kind === "mushroom" || t.kind === "herb") gain(w, a, "foraging", 2);
