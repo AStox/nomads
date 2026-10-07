@@ -807,10 +807,23 @@ const an = (s: string) => (/^[aeiou]/.test(s) ? `an ${s}` : `a ${s}`);
 // ---------- the ground ----------
 // Meters of soil over the rock at a point (the generator's regolith).
 export const soilAt = (w: World, px: number, py: number) => { const { isle, fine } = groundOf(w.seed); return fine.bilinear(isle.soil, (px * TILE_M) / CELL - 0.5, (py * TILE_M) / CELL - 0.5); };
-// The ground at a point as anyone standing on it would call it, by the rule the map is drawn with (terrain/flora.ts).
+// The ground at a point as anyone standing on it would call it, by the rule the map is drawn with (terrain/flora.ts). It
+// never changes, and planters ask it of the same points round them at every thought (sim.ts groundsNear), so each point's
+// word is kept (let go of when the points pile up past a few thousand).
+const groundWords = perWorld(() => new Map<number, Map<number, string>>());
 export function groundWord(w: World, px: number, py: number) {
+  const xs = groundWords(w);
+  let ys = xs.get(px);
+  const kept = ys?.get(py);
+  if (kept !== undefined) return kept;
   const { isle, fine } = groundOf(w.seed);
-  return GROUND[groundClass(isle, fine, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2).cls] || "water";
+  const word = GROUND[groundClass(isle, fine, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2).cls] || "water";
+  if (!ys) {
+    if (xs.size >= 4096) xs.clear();
+    xs.set(px, (ys = new Map()));
+  }
+  ys.set(py, word);
+  return word;
 }
 // What can stand on a spot, and how far its own footprint reaches: a trunk, a bush's stems, a stone, a wall, a fire, a
 // hole. Anything else (another plant's leaves, its roots, its shade) is no bar to pushing a seed in beside it.
