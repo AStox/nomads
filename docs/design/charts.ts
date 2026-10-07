@@ -1,8 +1,10 @@
 // Draws the learning charts in docs/design/index.html from the eval ledger (evals/*.json): the latest probes run on
-// five or more seeds with the offline brain, and the latest whole-worlds run, each beside the baseline before it (the
-// last build of its kind that became the baseline, on another commit), so what a change did shows. Each chart replaces
-// what sits between its markers, <!-- chart:NAME --> and <!-- /chart:NAME -->, so the page keeps working from disk
-// with no script.
+// five or more seeds with the offline brain, beside the baseline before it (the last build of its kind that became the
+// baseline, on another commit), so what a change did shows; and the latest whole-worlds run on its own. A whole-worlds
+// run scores its build and the one it was held against on an answer key of their own (scripts/evals.ts, tier 4), and the
+// ledger keeps only its build's numbers, so another run's islands, on another key, can't stand beside them. Each chart
+// replaces what sits between its markers, <!-- chart:NAME --> and <!-- /chart:NAME -->, so the page keeps working from
+// disk with no script.
 //   bun docs/design/charts.ts
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -38,20 +40,22 @@ const ROWS: { probe: string; metric: string; label: string; good: "high" | "low"
   { probe: "choose", metric: "best", label: "Late tries made the faster way", good: "high" },
   { probe: "blame", metric: "right", label: "Blame what truly kills sparks", good: "high" },
   { probe: "blame", metric: "wrong", label: "Blame something that doesn't", good: "low" },
+  { probe: "blame", metric: "acc", label: "Theories call it right, at the end", good: "high" },
   { probe: "confounded", metric: "right", label: "Blame the true cause", good: "high" },
   { probe: "confounded", metric: "bystander", label: "Also blame the one that comes with it", good: "low" },
   { probe: "recover", metric: "right", label: "Blame the new cause by the end", good: "high" },
-  { probe: "recover", metric: "kept", label: "Still blame the old cause", good: "low" },
+  { probe: "recover", metric: "retried", label: "Try the old cause again and see it work", good: "high" },
   { probe: "spread", metric: "right", label: "Blame the true cause by the end", good: "high" },
   { probe: "spread", metric: "wrong", label: "Keep the false cause they were told", good: "low" },
-  { probe: "superstition", metric: "wrong", label: "Blame something anyway", good: "low" },
   { probe: "two", metric: "right", label: "Blame both", good: "high" },
-  { probe: "weak", metric: "right", label: "Blame it", good: "high" },
+  { probe: "except", metric: "exact", label: "Rule it out just where it fails", good: "high" },
+  { probe: "except", metric: "acc", label: "Theories call it right, at the end", good: "high" },
   { probe: "rare", metric: "right", label: "Blame it", good: "high" },
   { probe: "seed", metric: "right", label: "Blame what withers seedlings", good: "high" },
   { probe: "seed", metric: "right", label: "The same, one planting a day", good: "high", only: "sparse" },
-  { probe: "seed", metric: "right", label: "The same, four in ten come up elsewhere", good: "high", only: "poor" },
+  { probe: "seed", metric: "right", label: "The same, shade and crowding both", good: "high", only: "two" },
   { probe: "seed", metric: "weather", label: "Blame the weather for it", good: "low" },
+  { probe: "seed", metric: "acc", label: "Theories call it right, at the end", good: "high" },
   { probe: "hearsay", metric: "heard", label: "Pick it up from the two who know", good: "high" },
   { probe: "unlearn", metric: "kept", label: "Keep the false theory they began with", good: "low" },
   { probe: "unlearn", metric: "kept", label: "The same, one planting a day", good: "low", only: "sparse" },
@@ -62,9 +66,8 @@ const PROBE_TEXT: Record<string, string> = {
   confounded: "Confounded: night rain, one of two kills sparks",
   recover: "Recover: the cause changes halfway",
   spread: "Spread: some know, some were told wrong",
-  superstition: "Superstition: nothing in the weather matters",
   two: "Two: rain and wind both kill sparks",
-  weak: "Weak: the rain only halves the sparks",
+  except: "Except: sparks die in the rain unless the wind is up",
   rare: "Rare: what kills sparks comes one hour in twelve",
   seed: "Seed: shade withers seedlings, days later",
   hearsay: "Hearsay: two planters know, four don't",
@@ -184,6 +187,6 @@ const put = (name: string, html: string) => {
   page = page.replace(re, `$1\n${html}\n$2`);
 };
 if (probes) put("probes", probesChart(probes, before(probes)));
-if (worlds) put("worlds", worldsChart(worlds, before(worlds)));
+if (worlds) put("worlds", worldsChart(worlds));
 writeFileSync(PAGE, page);
 console.log(`charts from ${probes ? source(probes) : "no probes run"} and ${worlds ? source(worlds) : "no worlds run"}`);
