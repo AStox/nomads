@@ -48,7 +48,9 @@ import { bootstrap, mean } from "./stats";
 // variants; nothing that fails says why, and people notice every input to what decides it (damp and soaked tinder,
 // deep shade, sour, limy, poor, thin, boggy, exposed and salty ground).
 // worlds 5, live 5: the answer key worked out from the same formulas for every way people used, never tried.
-const VERSION: Record<string, number> = { probes: 4, worlds: 5, live: 5 };
+// probes 5: choose's two ways look alike to start with again (both as quick as the quicker), as before probes 4, which
+// started each at its true time and so had everyone planning the faster from their first try.
+const VERSION: Record<string, number> = { probes: 5, worlds: 5, live: 5 };
 const ROOT = join(import.meta.dir, ".."), DATA = join(ROOT, "data/evals");
 type Numbers = Record<string, number | null>;
 // what a tier measured: by variant ("blame/real", "seen"...), by seed, its numbers

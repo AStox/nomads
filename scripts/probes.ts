@@ -16,7 +16,7 @@
 // scripts/evals.ts runs every probe over many seeds and holds each build to the last good one.
 import { readFileSync } from "node:fs";
 import { DAY, TILE_M, addThing, dryAt, isNight, newWorld, rng, type Agent, type Thing, type World } from "../src/sim/world";
-import { conditionsNow, tick } from "../src/sim/sim";
+import { DURATION, conditionsNow, tick } from "../src/sim/sim";
 import { changed, count, counts, emberCatches, frictionPer, giveItems, groundWord, newKinds, occupied, removeThing, removed, soilAt, sparkCatches, sparksPer, SEED_SOIL } from "../src/sim/physics";
 import { nextWet, trailChanges } from "../src/sim/ecology";
 import { traceListeners, type TraceEntry } from "../src/sim/trace";
@@ -353,13 +353,13 @@ function judge(bs: Belief[], cases: Case[]): Judged {
 // Whether any of their theories names a condition, as one that has to hold for it.
 const names = (bs: Belief[], c: string) => bs.some((b) => b.unless?.some((t) => t.split("+").includes(c)));
 
-// A way they know that has worked for them, as if they'd done it once: lit a fire, or pushed a berry into the ground and
-// seen it come up some days later.
-const knownWay = (w: World, key: string, t: number): Belief => {
+// A way they know that has worked for them, as if they'd done it once and it took the ticks given: lit a fire, or pushed
+// a berry into the ground and seen it come up some days later.
+const knownWay = (key: string, t: number, ticks: number): Belief => {
   const f = fieldsOf(key), plant = f.verb === "plant", rub = f.verb === "rub";
   const uses: Record<string, number> = plant ? { berry: 1 } : rub ? { stick: 1, fiber: 1 } : { fiber: 1 };
   return {
-    key, fields: { ...f, builds: plant ? "bush" : "fire" }, uses, out: {}, ticks: plant ? 3 : ticksOf(w, key), ...(plant ? { later: 3 * DAY } : {}),
+    key, fields: { ...f, builds: plant ? "bush" : "fire" }, uses, out: {}, ticks, ...(plant ? { later: 3 * DAY } : {}),
     tries: 1, wins: 1, tally: { tries: 1, wins: 1 }, how: "discovered", t,
   };
 };
@@ -489,15 +489,19 @@ export async function runProbe(probe: string, variant: string, seed: number, day
       put(w, a, ps[i].px, ps[i].py);
       a.heading = 0; a.home = null; a.goal = null; a.plan = []; a.inv = [];
       const start = v.starts?.[i] ?? [];
-      a.beliefs = { [PLANT]: { ...knownWay(w, PLANT, w.t), when: { [groundKey(groundWord(w, a.px, a.py))]: { tries: 1, wins: 1 } }, ...(start.length ? { unless: [...start] } : {}) } };
+      a.beliefs = { [PLANT]: { ...knownWay(PLANT, w.t, DURATION.plant), when: { [groundKey(groundWord(w, a.px, a.py))]: { tries: 1, wins: 1 } }, ...(start.length ? { unless: [...start] } : {}) } };
     });
     Object.assign(truth, { grounds: groundsSeen(w, ps).size });
   } else {
+    // every way to a fire they know looks as quick as the quickest of them, so which is slower is theirs to find: of
+    // ways that look alike they plan the first they know (plan.ts search), and a try that takes longer than they thought
+    // makes it look slower, where one that took as long as they thought would leave the two alike for good
+    const quick = Math.min(...v.ways.map((k) => ticksOf(w, k)));
     w.agents.forEach((a, i) => {
       put(w, a, cx + (Math.cos(i) * 2) / TILE_M, cy + (Math.sin(i) * 2) / TILE_M);
       a.home = null; a.goal = null; a.plan = [];
       const start = v.starts?.[i];
-      a.beliefs = start === null ? {} : Object.fromEntries(v.ways.map((key) => [key, start?.length ? { ...knownWay(w, key, w.t), unless: [...start] } : knownWay(w, key, w.t)]));
+      a.beliefs = start === null ? {} : Object.fromEntries(v.ways.map((key) => [key, start?.length ? { ...knownWay(key, w.t, quick), unless: [...start] } : knownWay(key, w.t, quick)]));
       if (start === null) fresh.push(a.id);
     });
   }
