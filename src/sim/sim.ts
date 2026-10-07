@@ -1,5 +1,5 @@
 import {
-  DAY, H, REACH, TILE_M, W, clock, dryAt, isNight, shoreOf, level, log, meters, reachOf, stageOf,
+  DAY, H, REACH, TILE_M, W, clock, dryAt, isNight, nearestShore, level, log, meters, perWorld, reachOf, stageOf,
   type Act, type Agent, type Animal, type BondKind, type Step, type Thing, type Waiting, type World,
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
@@ -16,7 +16,7 @@ import { attacked } from "./animals";
 import { chooseTinker, decide, describeKind, fadeBonds, grudge, nameIt, newRel, reflect, respond, rule, sample, theorize, wonder, type Felt } from "./brain";
 import { clock as traceClock, count as bump, timed, trace } from "./trace";
 import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sharedStore, snubbed, spread, standing, takeShared } from "./groups";
-import { anyAround, around, liveThings, nearestThing, shelve, thingById } from "./space";
+import { anyAround, around, liveThings, lookFor, nearestThing, shelve, thingById } from "./space";
 import { landOf, walk } from "./walk";
 import { DARK, canSee, lightOn, moveRate, restRate, skyShare, workRate } from "./light";
 import { ripening } from "./cues";
@@ -111,10 +111,12 @@ const isTool = (k?: Kind) => !!k && (k.verb === "join" || k.verb === "rub" || p(
 const valueOf = (w: World, k: string) => { const x = w.kinds[k]; return isTool(x) ? 0.45 : p(x, "edible") >= 0.1 ? 0.15 + p(x, "edible") * 0.5 : 0.1; };
 
 // ---------- places ----------
-type Place = { kinds: readonly string[]; ok?: (t: Thing, w: World) => boolean };
+// when: whether there can be one at all now; changed: only a thing changed from how it grew can be one, and the world
+// keeps an eye on every such thing (space.ts liveThings), so where none of those is one there's none to find.
+type Place = { kinds: readonly string[]; ok?: (t: Thing, w: World) => boolean; when?: (w: World) => boolean; changed?: true };
 const THING_PLACES: Record<string, Place> = {
   // grass bears seed as the days draw in
-  grain: { kinds: ["grass"], ok: (t, w) => ripening(w.t) && (t.hp ?? 3) > 1 },
+  grain: { kinds: ["grass"], when: (w) => ripening(w.t), ok: (t) => (t.hp ?? 3) > 1 },
   bush: { kinds: ["bush"], ok: (t) => (t.n ?? 0) > 0 && !t.burning },
   mushroom: { kinds: ["mushroom"] }, herb: { kinds: ["herb"] }, stick: { kinds: ["stick"] }, stone: { kinds: ["stone"] },
   reeds: { kinds: ["reeds"], ok: (t) => !t.burning }, clay: { kinds: ["clay"] }, tree: { kinds: ["tree"], ok: (t) => !t.burning },
@@ -126,7 +128,8 @@ const THING_PLACES: Record<string, Place> = {
   hearth: { kinds: ["fire"], ok: (t) => !!t.contained },
   kiln: { kinds: ["fire"], ok: (t) => !!t.contained && !!t.covered },
   forge: { kinds: ["fire"], ok: (t) => !!t.contained && (t.charcoal ?? 0) > 0 },
-  resin: { kinds: ["tree", "stump"], ok: (t) => (t.resin ?? 0) > 0 },
+  // a tree cut into beads with resin a day or more later (ecology.ts plants)
+  resin: { kinds: ["tree", "stump"], ok: (t) => (t.resin ?? 0) > 0, changed: true },
 };
 // What everyone knows the whereabouts of in the dark. The rest they find by sight, so a plant, a stone or an animal beyond it
 // is no place to go.
@@ -164,13 +167,18 @@ function homesite(w: World, a: Agent): Spot | null {
     }
   return null;
 }
+// Whether anything the world keeps an eye on is one of these places.
+function someLive(w: World, f: Place) {
+  for (const t of liveThings(w)) if (f.kinds.includes(t.kind) && (!f.ok || f.ok(t, w))) return true;
+  return false;
+}
 function spot(w: World, a: Agent, kind: string): Spot | null {
   if (kind === "home") { const h = homeOf(w, a); return h && { px: h.px, py: h.py, reach: reachOf(h) + 0.5, thing: h }; }
   if (kind === "homesite") return homesite(w, a);
   if (kind === "store") return thingSpot(sharedStore(w, a));
   if (kind === "agent") { const b = agentById(w, a.goal?.target); return b ? { px: b.px, py: b.py, reach: 2, agent: b } : null; }
   if (kind === "water") {
-    const s = nearest(a, shoreOf(w), (p) => reachable(w, a, Math.floor(p.px), Math.floor(p.py)));
+    const s = nearestShore(w, a.px, a.py, (p) => reachable(w, a, Math.floor(p.px), Math.floor(p.py)));
     const well = nearestThing(w, a.px, a.py, ["well"], (t) => reachable(w, a, t.x, t.y), s ? meters(a, s) : SEARCH);
     return well ? thingSpot(well) : s && { ...s, reach: 1 };
   }
@@ -181,7 +189,10 @@ function spot(w: World, a: Agent, kind: string): Spot | null {
   const g = groundOfKey(kind);
   if (g) return groundsNear(w, a, g).get(g) ?? null;
   const f = THING_PLACES[kind];
-  return f ? thingSpot(nearestThing(w, a.px, a.py, f.kinds, (t) => (!f.ok || f.ok(t, w)) && ok(t), SEARCH)) : null;
+  if (!f) return null;
+  // None to be had: they look about all the same, and see none.
+  if ((f.when && !f.when(w)) || (f.changed && !someLive(w, f))) { lookFor(w, a.px, a.py, f.kinds, SEARCH); return null; }
+  return thingSpot(nearestThing(w, a.px, a.py, f.kinds, (t) => (!f.ok || f.ok(t, w)) && ok(t), SEARCH));
 }
 // The ground round about they could walk to and work, by what it looks like underfoot, looking out in rings to 100 m,
 // clear of whatever else about a spot they've come to think gets in the way (shade, dry ground, crowding: a theory of
@@ -398,7 +409,7 @@ function shelterWork(w: World, a: Agent, home: Thing | null) {
   if (!home || meters(a, home) > HOME_NEAR || (home.hp ?? 100) < (home.maxHp ?? 100) * 0.7) return true;
   return residentsOf(w, home).length > (home.shelter?.room ?? 1) || (home.stale ?? 0) < 2;
 }
-const canCache = new Map<string, Record<string, { t: number; ok: boolean }>>();
+const canCache = perWorld(() => new Map<string, Record<string, { t: number; ok: boolean }>>());
 function feasible(w: World, a: Agent) {
   const opts: Record<string, string> = {};
   const ctx = ctxFor(w, a);
@@ -411,10 +422,10 @@ function feasible(w: World, a: Agent) {
   const home = homeOf(w, a);
   const can = (type: string) => {
     if (a.cooldowns[type] > w.t) return false;
-    const hit = canCache.get(a.id)?.[type];
+    const mine = canCache(w).get(a.id) ?? canCache(w).set(a.id, {}).get(a.id)!, hit = mine[type];
     if (hit && w.t - hit.t < 40) return hit.ok;
     const ok = !!planGoal(w, a, type, undefined, ctx);
-    (canCache.get(a.id) ?? canCache.set(a.id, {}).get(a.id)!)[type] = { t: w.t, ok };
+    mine[type] = { t: w.t, ok };
     return ok;
   };
   const add = (type: string, ok: boolean) => { if (ok && !(a.cooldowns[type] > w.t)) opts[type] = goalText(w, type); };
@@ -618,8 +629,8 @@ function gain(w: World, a: Agent, skill: string, n: number) {
 }
 
 const DURATION: Record<string, number> = { join: 8, heat: 8, wet: 10, shape: 6, place: 3, plant: 3, pour: 2, wear: 2 };
-const pendingRulings = new Set<string>();
-const namingNow = new Set<string>();
+const pendingRulings = perWorld(() => new Set<string>());
+const namingNow = perWorld(() => new Set<string>());
 const rulingKey = (act: Act) => `rule|${actSig(act)}`;
 
 // In poor light a tick's work is sometimes lost to groping about, though not in a fight, which is quick and close.
@@ -726,11 +737,12 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
       const key = rulingKey(act);
       const cached = w.rulings[key];
       if (cached) return applyRuling(w, a, act, key, cached);
-      if (pendingRulings.has(key)) return "wait";
-      const hourly = w.jev.rulings - (rulingsAt.get(Math.floor(w.t / 12)) ?? w.jev.rulings);
-      if (!rulingsAt.has(Math.floor(w.t / 12))) rulingsAt.set(Math.floor(w.t / 12), w.jev.rulings);
+      const waiting = pendingRulings(w), hours = rulingsAt(w);
+      if (waiting.has(key)) return "wait";
+      const hourly = w.jev.rulings - (hours.get(Math.floor(w.t / 12)) ?? w.jev.rulings);
+      if (!hours.has(Math.floor(w.t / 12))) hours.set(Math.floor(w.t / 12), w.jev.rulings);
       if (hourly >= 6) return applyRuling(w, a, act, key, { useful: false, name: "", props: {} });
-      pendingRulings.add(key);
+      waiting.add(key);
       const parts = act.items.map((k) => w.kinds[k]).filter(Boolean);
       const uniq = [...new Set(parts.map((k) => (k.parts ? noun(k) : k.name)))];
       const soft = parts.find((k) => p(k, "plastic") >= 0.5 || p(k, "fibrous") >= 0.6);
@@ -741,7 +753,7 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
       rule(w, a, actText(w, act), parts, template)
         .then((r) => { w.rulings[key] = r; trace("physics", "ruling", { key, ruling: r }, a.id); })
         .catch((e) => { trace("brain", "error", { error: String(e), key }, a.id); })
-        .finally(() => pendingRulings.delete(key));
+        .finally(() => waiting.delete(key));
       a.status = "Puzzling over what happened";
       return "wait";
     }
@@ -763,7 +775,7 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
   }
   return "nothing to do";
 }
-const rulingsAt = new Map<number, number>();
+const rulingsAt = perWorld(() => new Map<number, number>());
 
 // Conditions anyone can see they're working in, which might be why something works one time and not another; for
 // what's done to the ground (planting, digging, watering), the spot itself (at): the ground, the shade of trees over
@@ -810,7 +822,7 @@ const evidence = (b: Belief, c: string) => {
   const inn = mixes[mixOf([...held, c])], out = mixes[most];
   return `${told}; when it was ${[word.on, ...rest].join(" and ")} it has worked ${r(inn.wins)} of ${r(inn.tries)} times, and ${r(out.wins)} of ${r(out.tries)} when it was ${[word.off, ...rest].join(" and ")}`;
 };
-const theorizing = new Set<string>();
+const theorizing = perWorld(() => new Set<string>());
 // The theory they're putting to the test with this try of a way, if they set out to and it holds here (one about the
 // spot holds where they chose to do it): a test whose weather has passed is an ordinary try.
 const testingNow = (a: Agent, b: Belief, now: string[]) => {
@@ -855,8 +867,9 @@ function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], t
   }
   const id = `${a.id}|${b.key}`;
   const suspects = suspected(b, now, (c) => condition(c).hint.test(text));
-  if (!suspects.length || !b.wins || theorizing.has(id)) return;
-  theorizing.add(id);
+  const busy = theorizing(w);
+  if (!suspects.length || !b.wins || busy.has(id)) return;
+  busy.add(id);
   const present = Object.fromEntries(suspects.map((c) => [c, `${condition(c).words} (${evidence(b, c)})`]));
   const lean: Record<string, number> = { luck: 1 + 3 * odds(b, null) };
   for (const c of suspects) { const d = apart(b, c); lean[c] = 1 + 10 * d.diff * Math.min(1, d.tries / 2) + (condition(c).hint.test(text) ? 6 : 0); }
@@ -868,7 +881,7 @@ function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], t
       trace("theory", "formed", { key: b.key, cond: c, when: b.when }, a.id);
     })
     .catch(() => {})
-    .finally(() => theorizing.delete(id));
+    .finally(() => busy.delete(id));
 }
 // What tells a try that worked apart from the failures a theory rests on (beliefs.ts differed), in words: this time
 // something held that never did when it failed there, or something that always did, didn't.
@@ -892,12 +905,13 @@ function surprised(w: World, a: Agent, b: Belief, t: string, now: string[], by?:
     return;
   }
   const id = `${a.id}|${b.key}`;
-  if (theorizing.has(id)) return;
+  const busy = theorizing(w);
+  if (busy.has(id)) return;
   const options = differed(b, t, now).slice(0, 3);
   trace("theory", "possible", { key: b.key, cond: t, fails: s.fails, wins: s.wins, options: options.map((o) => o.theory), how: by ? "watched" : "own" }, a.id);
   const unsure = () => log(w, "theory", [a.id], a, `${a.name} ${by ? `saw ${by.name} do it` : "did it"} ${conditionWords(t)}, where it had failed ${s.fails} times, and can't say what was different: ${so}`);
   if (!options.length) { unsure(); return; }
-  theorizing.add(id);
+  busy.add(id);
   const present = Object.fromEntries(options.map((o) => [o.theory, differenceWords(o.part)]));
   const lean = Object.fromEntries(options.map((o) => [o.theory, 1 + 10 * o.agree * Math.min(1, s.fails / 2)]));
   wonder(w, a, so, conditionWords(t), s.fails, present, lean)
@@ -908,7 +922,7 @@ function surprised(w: World, a: Agent, b: Belief, t: string, now: string[], by?:
       trace("theory", "refined", { key: b.key, from: t, to, how: "differed" }, a.id);
     })
     .catch(() => {})
-    .finally(() => theorizing.delete(id));
+    .finally(() => busy.delete(id));
 }
 // They did what they believe works, and it came off or it didn't (beliefs.ts cameOff). What only shows later (a seed
 // pushed into the ground) is judged when it shows (came, withered).
@@ -1008,8 +1022,9 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
     const kind = w.kinds[k];
     if (!kind?.made) continue;
     kind.count = (kind.count ?? 0) + 1;
-    if (kind.count >= 3 && !kind.named && !namingNow.has(k)) {
-      namingNow.add(k);
+    const naming = namingNow(w);
+    if (kind.count >= 3 && !kind.named && !naming.has(k)) {
+      naming.add(k);
       // What people actually do with it matters more to what they call it than what it's made of.
       const uses = [...new Set(w.agents.flatMap((x) => Object.values(x.beliefs))
         .filter((b) => b.fields.tool === k || b.fields.inputs.includes(k))
@@ -1026,7 +1041,7 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
           kind.name = name;
           changedKinds.add(k);
         }
-      }).catch(() => {}).finally(() => namingNow.delete(k));
+      }).catch(() => {}).finally(() => naming.delete(k));
     }
   }
 }
@@ -1153,7 +1168,7 @@ function tinkerOptions(w: World, a: Agent, aim?: string): Option[] {
   const aimed = aim && AIM[aim] ? opts.filter((o) => AIM[aim](o.act, w)) : opts;
   return (aimed.length ? aimed : opts).sort(() => Math.random() - 0.5).slice(0, 100);
 }
-const tinkerWait = new Set<string>();
+const tinkerWait = perWorld(() => new Set<string>());
 
 // ---------- running plan steps ----------
 const GATHER_STATUS: Record<string, string> = {
@@ -1378,10 +1393,11 @@ function run(w: World, a: Agent): boolean | string {
         finishAct(w, a, s, r, true);
         return true;
       }
-      if (tinkerWait.has(a.id)) return false;
+      const choosing = tinkerWait(w);
+      if (choosing.has(a.id)) return false;
       const options = tinkerOptions(w, a, s.arg);
       if (!options.length) return "had nothing to try";
-      tinkerWait.add(a.id);
+      choosing.add(a.id);
       a.status = "Turning things over in their hands";
       chooseTinker(w, a, options.map((o) => o.text))
         .then((text) => {
@@ -1391,7 +1407,7 @@ function run(w: World, a: Agent): boolean | string {
           trace("brain", "tinker_choice", { chose: text, from: options.length }, a.id);
         })
         .catch((e) => { trace("brain", "error", { error: String(e) }, a.id); a.plan = []; })
-        .finally(() => tinkerWait.delete(a.id));
+        .finally(() => choosing.delete(a.id));
       return false;
     }
     case "social": {
@@ -1850,9 +1866,17 @@ function needs(w: World, a: Agent) {
   // air gives some back.
   const cold = Math.max(0, (12 - air.feels) / 110) * (night ? 1.2 : 1) * ((wx.sky === "rain" || wx.sky === "storm") && !inside ? 1.3 : 1) * (1 - worn * 0.6);
   const mild = Math.max(0, (air.temp - 12) / 60);
-  const fire = nearest(a, liveThings(w), (t) => t.kind === "fire" || (t.burning ?? 0) > 0.3);
+  // The nearest fire or thing burning well, to warm by, and the nearest burning fiercely, to be hurt by.
+  let fire: Thing | null = null, flames: Thing | null = null, warmAt = Infinity, hurtAt = Infinity;
+  for (const t of liveThings(w)) {
+    const b = t.burning ?? 0;
+    if (!(t.kind === "fire" || b > 0.3)) continue;
+    const d = meters(a, t);
+    if (d < warmAt) { warmAt = d; fire = t; }
+    if (b > 0.4 && d < hurtAt) { hurtAt = d; flames = t; }
+  }
   let heat = 0;
-  if (fire && meters(a, fire) <= (fire.contained ? 5 : 4)) heat += fire.contained ? 1.1 : 0.9;
+  if (fire && warmAt <= (fire.contained ? 5 : 4)) heat += fire.contained ? 1.1 : 0.9;
   if (roof) heat += 0.2 + (roof.shelter?.insul ?? 0) * 0.8 + (roof.shelter?.tier ?? 0) * 0.1;
   if (night) heat += Math.min(2, w.agents.filter((b) => b !== a && meters(a, b) <= 2).length) * 0.25;
   // Out in the sun a body soaks up warmth: a clear midday sun (some 60,000 lux) all but makes up for a cool breeze.
@@ -1862,8 +1886,7 @@ function needs(w: World, a: Agent) {
   n.warmth = Math.max(0, Math.min(100, n.warmth + heat - cold + mild));
   if (n.food <= 0 || n.warmth <= 0) n.health -= 0.4;
   else if (n.food > 40 && n.warmth > 40 && !a.sickness) n.health = Math.min(100, n.health + 0.1);
-  const flames = nearest(a, liveThings(w), (t) => (t.burning ?? 0) > 0.4);
-  if (flames && meters(a, flames) <= 2) n.health -= 1.5;
+  if (flames && hurtAt <= 2) n.health -= 1.5;
 }
 
 function perceive(w: World, a: Agent) {
@@ -1873,7 +1896,7 @@ function perceive(w: World, a: Agent) {
     if (!a.seen[b.id] || w.t - a.seen[b.id] > 150) {
       if (!a.rel[b.id]) log(w, "notice", [a.id], a, `${a.name} spotted a stranger: ${b.name}.`);
       a.nextDecide = Math.min(a.nextDecide, w.t);
-      if (a.goal && w.t - a.goal.since > 5 && !a.engaged && !tinkerWait.has(a.id) && !["flee", "fight", "defend"].includes(a.goal.type)) { a.goal = null; a.plan = []; }
+      if (a.goal && w.t - a.goal.since > 5 && !a.engaged && !tinkerWait(w).has(a.id) && !["flee", "fight", "defend"].includes(a.goal.type)) { a.goal = null; a.plan = []; }
     }
     a.seen[b.id] = w.t;
   }

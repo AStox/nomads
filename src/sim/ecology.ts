@@ -6,7 +6,7 @@ import {
   DAY, H, TILE_M, W, Tile, addThing, dayOfYear, groundOf, log, meters, nearWater, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
-import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind, stockedAt } from "./space";
+import { anyAround, anyOf, around, liveThings, onPath, put, setKind, stockedAt } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
 import { enrich, settle, soilWaterAt } from "./soil";
@@ -522,8 +522,9 @@ function overgrow(w: World) {
 export function ecology(w: World) {
   attacked.clear();
   timed("weather", () => weather(w));
-  // The live set as it stands, less anything an earlier step burned, ate or took away.
-  const live = () => [...liveThings(w)].filter((t) => exists(w, t));
+  // The live set as it stands, less anything an earlier step burned, ate or took away (leaving the world takes a thing out
+  // of it: space.ts leave).
+  const live = () => [...liveThings(w)];
   timed("fire", () => fire(w, live()));
   timed("plants", () => plants(w, live()));
   timed("holes", () => holes(w, live()));

@@ -1,7 +1,7 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
 import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props } from "./materials";
 import { CELL } from "../terrain/grid";
-import { DAY, REACH, TILE_M, Tile, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, isNight, level, log, meters, nearWater, reachOf, tileAt, wetAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
+import { DAY, REACH, TILE_M, Tile, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, isNight, level, log, meters, nearWater, perWorld, reachOf, tileAt, wetAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
 import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } from "./space";
 import { clock, trace } from "./trace";
 import { see } from "./beliefs";
@@ -661,9 +661,9 @@ export function leather(w: World, hide: Kind) {
 // which a fish swims to from farther off. A try that comes to nothing had no fish close by (sim.ts CONDITIONS nofish).
 export const FISH_REACH: Record<"basket" | "line", number> = { basket: 15, line: 40 };
 // Who last lifted a fish out of the water, and when: the fish they caught was close by, though it swims there no more.
-const landed = new Map<string, number>();
+const landed = perWorld(() => new Map<string, number>());
 export const fishClose = (w: World, a: Agent, at: { px: number; py: number } = a) =>
-  landed.get(a.id) === w.t || w.animals.some((m) => m.species === "fish" && meters(m, at) <= FISH_REACH.basket);
+  landed(w).get(a.id) === w.t || w.animals.some((m) => m.species === "fish" && meters(m, at) <= FISH_REACH.basket);
 export function wet(w: World, a: Agent, act: Act): Outcome {
   const x = kind(w, act.items[0]);
   const fields: Fields = { verb: "wet", inputs: act.items.slice(0, 1), at: "water", gives: [] };
@@ -704,7 +704,7 @@ export function wet(w: World, a: Agent, act: Act): Outcome {
     const n = near.length >= 2 && Math.random() < 0.4 + level(a.skills.fishing ?? 0) * 0.05 ? 2 : 1;
     const caught = new Set(near.slice(0, n));
     w.animals = w.animals.filter((m) => !caught.has(m));
-    landed.set(a.id, w.t);
+    landed(w).set(a.id, w.t);
     giveItems(w, a, "fish", n);
     fields.gives = ["fish"];
     return outcome({ ok: true, text: `They swept the ${x.name} through the water and lifted it out with ${n > 1 ? "two fish" : "a fish"} flapping in it.`, gives: { fish: n }, fields });
@@ -716,7 +716,7 @@ export function wet(w: World, a: Agent, act: Act): Outcome {
     s.hp -= 0.03;
     if (!fish) return outcome({ text: `They dangled the ${x.name} in the water, but no fish came near it.`, fields });
     w.animals = w.animals.filter((m) => m !== fish);
-    landed.set(a.id, w.t);
+    landed(w).set(a.id, w.t);
     giveItems(w, a, "fish");
     fields.gives = ["fish"];
     return outcome({ ok: true, text: `They dangled the ${x.name} in the water and something bit. A fish!`, gives: { fish: 1 }, fields });

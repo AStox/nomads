@@ -5,9 +5,9 @@
 //
 // People and animals answer to how bright a place looks, which is the log of its lux: they see less far, walk and work
 // slower, sleep better and keep to a fire when it is dark. The rates below are those answers.
-import { DAY, TILE_M, groundOf, hourOf, meters, type Agent, type World } from "./world";
+import { DAY, TILE_M, groundOf, hourOf, meters, perWorld, type Agent, type World } from "./world";
 import { SIZE, clamp, smooth } from "../terrain/flora";
-import { around, liveThings } from "./space";
+import { around, liveThings, lookAround } from "./space";
 import { fireHeat } from "./physics";
 import { p } from "./materials";
 import { COVER, STAR_LUX, beam, moonAt, moonLux, sunAt, sunLux, through } from "./sky";
@@ -20,13 +20,25 @@ const SHARE: Record<string, number> = { oak: 0.35, ash: 0.29, pine: 0.18 };
 // A crown hides all of the sky within CORE of its radius and none past EDGE, easing out between.
 const CORE = 0.55, EDGE = 1.2;
 const REACH = 12; // meters: no crown, of the tallest tree, reaches further from its trunk
-// How much of the sky the trees overhead hide, in crowns: 1 under one, more where they overlap.
+// How much of the sky the trees overhead hide, in crowns: 1 under one, more where they overlap. Seedlings and the air
+// under the trees ask it of the same points tick after tick, so each point's answer is kept until anything round it
+// comes, goes or changes (space.ts lookAround); the points are let go of when they pile up past a few thousand.
+const canopies = perWorld(() => new Map<number, Map<number, { at: number; cover: number }>>());
 export function canopyAt(w: World, px: number, py: number) {
+  const at = lookAround(w, px, py, REACH), xs = canopies(w);
+  let ys = xs.get(px);
+  const kept = ys?.get(py);
+  if (kept?.at === at) return kept.cover;
   let cover = 0;
   around(w, px, py, REACH, ["tree"], (t, d) => {
     const r = (SHARE[t.species ?? ""] ?? 0.22) * t.size;
     if (d <= r * EDGE) cover += d <= r * CORE ? 1 : 1 - smooth(CORE, EDGE, d / r);
   });
+  if (!ys) {
+    if (xs.size >= 4096) xs.clear();
+    xs.set(px, (ys = new Map()));
+  }
+  ys.set(py, { at, cover });
   return cover;
 }
 // Leaves let a little through: under one crown an eighth of the sky's glow and a twenty-sixth of the sun's beam, which crosses

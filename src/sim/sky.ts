@@ -22,10 +22,16 @@ export function declination(day: number, hour: number) {
   return TILT * Math.sin((2 * Math.PI * (d - YEAR_DAYS / 8)) / YEAR_DAYS);
 }
 
-// Hours between sunrise and sunset on day `day`.
+// Hours between sunrise and sunset on day `day`, worked out once a day: the living things that go by the length of the
+// day (cues.ts) ask it again and again, for every blade of grass a forager looks over.
+const daylightOn = new Map<number, number>();
 export function daylight(day: number) {
-  const c = -Math.tan(LAT) * Math.tan(declination(day, NOON));
-  return (Math.acos(Math.max(-1, Math.min(1, c))) * 24) / Math.PI;
+  let h = daylightOn.get(day);
+  if (h === undefined) {
+    const c = -Math.tan(LAT) * Math.tan(declination(day, NOON));
+    daylightOn.set(day, (h = (Math.acos(Math.max(-1, Math.min(1, c))) * 24) / Math.PI));
+  }
+  return h;
 }
 
 // dir: toward it across the ground (x east, z south), el: its elevation in radians, tan: of the angle its beam makes

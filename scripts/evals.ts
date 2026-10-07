@@ -26,7 +26,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, r
 import { cpus, totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DAY } from "../src/sim/world";
-import { PROBES, type Claim, type Metric, type ProbeRun } from "./probes";
+import { PROBES, type Claim, type Metric, type ProbeRun, type ProbeSpec } from "./probes";
 import { bootstrap, mean } from "./stats";
 
 // Bump a tier's version when what it measures changes meaning: ledger entries of another version are never compared.
@@ -62,6 +62,9 @@ const flag = (name: string) => argv.includes(`--${name}`);
 // days (or an answer key) up to 2 GB
 const jobs = (gb: number) => Number(opt("jobs", String(Math.max(1, Math.min(Math.floor(cpus().length / 2), Math.floor(totalmem() / 2 / (gb * 1e9)))))));
 const PROBE_JOBS = jobs(1.25), WORLD_JOBS = jobs(2);
+// probe runs on one island to a process: enough that growing the island is a small part of each, few enough that the
+// processes still share out evenly over the jobs
+const PER_PROCESS = 5;
 // where the ledger lives: evals/, committed with the code it judged (--ledger elsewhere for trying things out)
 const LEDGER = resolve(ROOT, opt("ledger", "evals"));
 
@@ -117,19 +120,20 @@ async function script(snap: Snap, name: string, args: string[], log: string, off
   const p = Bun.spawn([process.execPath, join(snap.dir, "scripts", name), ...args], { cwd: ROOT, env, stdout: Bun.file(log), stderr: Bun.file(`${log}.err`) });
   if (await p.exited) throw new Error(`${name} ${args.join(" ")} failed: see ${log}.err\n${readFileSync(`${log}.err`, "utf8").slice(-1500)}`);
 }
-async function pool<T>(tasks: (() => Promise<T>)[], jobs: number): Promise<T[]> {
+async function pool<T>(tasks: (() => Promise<T>)[], jobs: number, what = "runs"): Promise<T[]> {
   const out: T[] = new Array(tasks.length);
   let next = 0, done = 0;
   await Promise.all(Array.from({ length: Math.min(jobs, tasks.length) }, async () => {
     while (next < tasks.length) {
       const i = next++;
       out[i] = await tasks[i]();
-      if (++done % Math.max(1, Math.ceil(tasks.length / 10)) === 0 || done === tasks.length) console.error(`  ${done}/${tasks.length} runs`);
+      if (++done % Math.max(1, Math.ceil(tasks.length / 10)) === 0 || done === tasks.length) console.error(`  ${done}/${tasks.length} ${what}`);
     }
   }));
   return out;
 }
 const range = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+const chunks = <T>(xs: T[], n: number) => Array.from({ length: Math.ceil(xs.length / n) }, (_, i) => xs.slice(i * n, (i + 1) * n));
 
 // ---------- comparing ----------
 const fmt = (x: number | null | undefined) => (x === null || x === undefined || Number.isNaN(x) ? "-" : Math.abs(x) >= 10 ? x.toFixed(1) : x.toFixed(2));
@@ -234,14 +238,20 @@ async function probes() {
   const variants = Object.entries(PROBES).filter(([p]) => !only.length || only.includes(p)).flatMap(([p, x]) => Object.keys(x.variants).map((v) => [p, v] as const));
   const specs: Record<string, Spec> = Object.fromEntries(variants.map(([p, v]) => [`${p}/${v}`, { metrics: PROBES[p].metrics, claims: PROBES[p].claims }]));
   const measure = async (snap: Snap): Promise<Runs> => {
-    console.error(`probes on ${snap.id}: ${variants.length} variants x ${seeds.length} seeds, ${PROBE_JOBS} at a time`);
-    const tasks = variants.flatMap(([p, v]) => seeds.map((s) => async () => {
-      const out = join(DATA, "runs", snap.id, "probes", `${p}-${v}-s${s}-${brain}-${days}d-${people}p.json`);
-      if (!existsSync(out)) await script(snap, "probes.ts", ["--probe", p, "--variant", v, "--seed", String(s), "--days", String(days), "--people", String(people), "--brain", brain, "--out", out], out.replace(/\.json$/, ".log"), brain === "random");
-      return JSON.parse(readFileSync(out, "utf8")) as ProbeRun;
-    }));
+    const dir = join(DATA, "runs", snap.id, "probes");
+    const all: ProbeSpec[] = variants.flatMap(([probe, variant]) => seeds.map((seed) => ({ probe, variant, seed, days, people, brain, out: join(dir, `${probe}-${variant}-s${seed}-${brain}-${days}d-${people}p.json`) })));
+    // The runs on one island go a few to a process, which grows the island once for them all (about 9 s for every run
+    // otherwise, more than many a probe's own ticks take).
+    const todo = all.filter((s) => !existsSync(s.out!)), batches = seeds.flatMap((seed) => chunks(todo.filter((s) => s.seed === seed), PER_PROCESS));
+    console.error(`probes on ${snap.id}: ${variants.length} variants x ${seeds.length} seeds, ${todo.length} to run in ${batches.length} processes, ${PROBE_JOBS} at a time`);
+    await pool(batches.map((b, i) => async () => {
+      const file = join(dir, "batches", `${i + 1}-s${b[0].seed}.json`);
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify(b));
+      await script(snap, "probes.ts", ["--batch", file], file.replace(/\.json$/, ".log"), brain === "random");
+    }), PROBE_JOBS, "processes");
     const runs: Runs = {};
-    for (const r of await pool(tasks, PROBE_JOBS)) (runs[`${r.probe}/${r.variant}`] ??= {})[r.seed] = r.metrics;
+    for (const s of all) { const r = JSON.parse(readFileSync(s.out!, "utf8")) as ProbeRun; (runs[`${r.probe}/${r.variant}`] ??= {})[r.seed] = r.metrics; }
     return runs;
   };
   const kind = { tier: "probes", brain, days, people };

@@ -1,6 +1,6 @@
 // Camps notice themselves from who lives near whom. Their customs are only what they actually did the last time.
 import {
-  DAY, H, RESPONSES, Tile, W, clock, dist, log, meters, stageOf, tileAt,
+  DAY, H, RESPONSES, Tile, W, clock, dist, log, meters, perWorld, stageOf, tileAt,
   type Agent, type Camp, type Custom, type Incident, type Precedent, type Response, type Thing, type World,
 } from "./world";
 import { p } from "./materials";
@@ -123,12 +123,13 @@ function landmark(w: World, x: number, y: number) {
     }
   return water > 25 ? "by the lake" : water > 0 ? "by the water" : rock > 12 ? "under the crags" : wood > 40 ? "in the woods" : wood > 10 ? "at the wood's edge" : "on the open meadow";
 }
-const naming = new Set<string>();
+const naming = perWorld(() => new Set<string>());
 // After a season, people settle on a lasting name for the place.
 async function christen(w: World, camp: Camp) {
   const speaker = agentOf(w, camp.leader ?? camp.founder) ?? agentOf(w, camp.members[0]);
-  if (!speaker || naming.has(camp.id)) return;
-  naming.add(camp.id);
+  const busy = naming(w);
+  if (!speaker || busy.has(camp.id)) return;
+  busy.add(camp.id);
   try {
     const word = await nameCamp(w, speaker, {
       place: { called_for_now: camp.name, where: landmark(w, camp.x, camp.y).replace(/^\w+ the /, ""), people: names(w, camp.members) },
@@ -148,7 +149,7 @@ async function christen(w: World, camp: Camp) {
   } catch (e) {
     trace("group", "error", { camp: camp.id, error: String(e) });
   } finally {
-    naming.delete(camp.id);
+    busy.delete(camp.id);
   }
 }
 
@@ -181,8 +182,8 @@ export function incident(w: World, d: Deed): Incident | null {
   return inc;
 }
 
-const pending = new Map<string, number>();
-const judgedIn = new Map<number, number>();
+const pending = perWorld(() => new Map<string, number>());
+const judgedIn = perWorld(() => new Map<number, number>());
 function judgeLater(w: World, camp: Camp, inc: Incident) {
   const who = decider(w, camp, inc);
   const hour = Math.floor(w.t / 12);
@@ -190,15 +191,16 @@ function judgeLater(w: World, camp: Camp, inc: Incident) {
   if (!who) return skip("no one to decide");
   // The same thing between the same two people moments ago: that answer covers this one too.
   if (w.incidents.some((i) => i !== inc && i.group === camp.id && i.act === inc.act && i.by === inc.by && i.against === inc.against && inc.t - i.t < 24)) return skip("just answered");
-  if ((judgedIn.get(hour) ?? 0) >= 4 || (pending.get(camp.id) ?? 0) >= 2) return skip("busy");
-  judgedIn.set(hour, (judgedIn.get(hour) ?? 0) + 1);
-  for (const h of judgedIn.keys()) if (h < hour - 2) judgedIn.delete(h);
-  pending.set(camp.id, (pending.get(camp.id) ?? 0) + 1);
+  const waiting = pending(w), hours = judgedIn(w);
+  if ((hours.get(hour) ?? 0) >= 4 || (waiting.get(camp.id) ?? 0) >= 2) return skip("busy");
+  hours.set(hour, (hours.get(hour) ?? 0) + 1);
+  for (const h of hours.keys()) if (h < hour - 2) hours.delete(h);
+  waiting.set(camp.id, (waiting.get(camp.id) ?? 0) + 1);
   inc.group = camp.id;
   judge(w, who, nameOf(w, inc.by), judgeState(w, camp, inc, who), !!HARM[inc.act])
     .then((r) => ruled(w, camp, inc, who, r))
     .catch((e) => trace("group", "error", { id: inc.id, error: String(e) }, who.id))
-    .finally(() => pending.set(camp.id, (pending.get(camp.id) ?? 1) - 1));
+    .finally(() => waiting.set(camp.id, (waiting.get(camp.id) ?? 1) - 1));
 }
 // The person hurt, or the one people bring grievances to, or whoever saw it and carries the most weight.
 function decider(w: World, camp: Camp, inc: Incident): Agent | null {

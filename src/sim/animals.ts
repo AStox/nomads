@@ -394,8 +394,12 @@ export function animals(w: World) {
   const fires = [...liveThings(w)].filter((t) => t.kind === "fire");
   const n: Near = { awake, fires, wolves: of("wolf"), deer: of("deer"), rabbits: of("rabbit"), eagles: of("eagle"), fish: of("fish") };
   const warm = warmRate(w.weather.temp) > 0.3;
+  // Whether an animal is still about. One that goes takes the list with it (it is replaced, never cut down in place), so
+  // the set of those about is made again only then.
+  let list = w.animals, about = new Set(list);
+  const still = (an: Animal) => { if (w.animals !== list) { list = w.animals; about = new Set(list); } return about.has(an); };
   for (const an of [...w.animals]) {
-    if (an.state === "trapped" || !w.animals.includes(an)) continue;
+    if (an.state === "trapped" || !still(an)) continue;
     const x0 = an.px, y0 = an.py;
     switch (an.species) {
       case "deer": deer(w, an, n); break;
@@ -408,7 +412,7 @@ export function animals(w: World) {
       case "eagle": eagle(w, an, n); break;
       case "butterfly": butterfly(w, an, warm); break;
     }
-    if (FAUNA[an.species].ground && w.animals.includes(an)) caught(w, an, x0, y0);
+    if (FAUNA[an.species].ground && still(an)) caught(w, an, x0, y0);
   }
   // Animals swim across to the island when it empties out.
   const deerNow = w.animals.filter((a) => a.species === "deer").length, wolves = w.animals.filter((a) => a.species === "wolf");
@@ -424,7 +428,7 @@ export function animals(w: World) {
     addAnimal(w, "wolf", wolves[0].px, wolves[0].py, { home: wolves[0].home });
     log(w, "birth", [], wolves[0], "A wolf pup was born.");
   }
-  const rabbits = n.rabbits.filter((r) => w.animals.includes(r));
+  const rabbits = n.rabbits.filter(still);
   if (breeding(w.t) && rabbits.length >= 2 && rabbits.length < 120 && Math.random() < rabbits.length / 2500) {
     const mom = rabbits[Math.floor(Math.random() * rabbits.length)];
     addAnimal(w, "rabbit", mom.px, mom.py, { home: mom.home, state: "graze" });

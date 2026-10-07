@@ -10,12 +10,15 @@
 // coming to hand every few hours (or once a day, sparse), and every seed put where the probe's cause holds withering two
 // days later, every other coming up.
 //   bun scripts/probes.ts --probe blame --variant flipped --seed 3 [--days 6] [--people 6] [--brain jev] [--out run.json]
+//   bun scripts/probes.ts --batch runs.json: several runs (ProbeSpec), one after another in one process, each island grown
+//   once however many of them are on it
 // scripts/evals.ts runs every probe over many seeds and holds each build to the last good one.
+import { readFileSync } from "node:fs";
 import { DAY, TILE_M, addThing, dryAt, newWorld, type Agent, type Thing, type World } from "../src/sim/world";
 import { conditionsNow, tick } from "../src/sim/sim";
 import { changed, count, counts, giveItems, groundWord, newKinds, occupied, removeThing, removed, soilAt } from "../src/sim/physics";
 import { trailChanges } from "../src/sim/ecology";
-import { traceListeners } from "../src/sim/trace";
+import { traceListeners, type TraceEntry } from "../src/sim/trace";
 import { asking, brainKind, useBrain } from "../src/sim/brain";
 import { DARK, lightOn, skyShare } from "../src/sim/light";
 import { anyAround, around, put, thingById } from "../src/sim/space";
@@ -32,6 +35,10 @@ export type ProbeRun = {
   probe: string; variant: string; seed: number; brain: string; days: number; people: number; secs: number;
   attempts: number; jev: { calls: number; tokens: number }; truth: Record<string, string | number>; metrics: Record<string, number | null>;
 };
+// One run, and the file its result goes to (printed, without one).
+export type ProbeSpec = { probe: string; variant: string; seed: number; days: number; people: number; brain: "random" | "jev"; out?: string };
+// The world's own rules, as they are before any probe sets its own: every run starts from them.
+const WORLD_RULES = structuredClone(RULES);
 
 const STONE = "strike|fiber+stone|stone|stone|-|-", FLINT = "strike|fiber+flint|stone|flint|-|-", PLANT = "plant|berry|-|-|-|-";
 // Each hour, the chance of rain and of a strong wind, given whether it is dark where they are.
@@ -443,6 +450,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   if (!v) throw new Error(`no probe ${probe}/${variant}: ${Object.entries(PROBES).map(([p, x]) => Object.keys(x.variants).map((k) => `${p}/${k}`).join(", ")).join(", ")}`);
   days = P.days ?? days;
   if (brain === "random") useBrain({ kind: "random" });
+  Object.assign(RULES, structuredClone(WORLD_RULES));
   seedRandom(seed);
   const t0 = performance.now();
   const w = newWorld(seed, people);
@@ -511,11 +519,12 @@ export async function runProbe(probe: string, variant: string, seed: number, day
 
   // what they did (a try at a fire, judged at once; a planting, when it went in, whatever came of it)
   const attempts: Attempt[] = [];
-  traceListeners.push((e) => {
+  const listen = (e: TraceEntry) => {
     if (e.sys !== "theory" || e.kind !== "attempt" || !e.agent || sowing) return;
     const d = e.data as { key: string; now?: string[]; worked?: boolean; testing?: boolean };
     if (ways.includes(d.key)) attempts.push({ agent: e.agent, key: d.key, t: e.t, now: d.now ?? [], worked: !!d.worked, testing: !!d.testing });
-  });
+  };
+  traceListeners.push(listen);
   // each person's theories of these ways as they stood, from the start, whenever they changed, at the midpoint and at
   // the end
   const states = new Map<string, { t: number; bs: Belief[]; shape: string }[]>();
@@ -672,16 +681,21 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     }
   }
   hooks.weather = hooks.options = hooks.seedling = undefined;
+  traceListeners.splice(traceListeners.indexOf(listen), 1);
   return { probe, variant, seed, brain, days, people: n, secs: Math.round((performance.now() - t0) / 1000), attempts: attempts.length, jev: { calls: w.jev.calls, tokens: w.jev.tokens }, truth, metrics };
 }
 
 if (import.meta.main) {
   const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
-  const brain = arg("brain", "random");
+  const brain = arg("brain", "random"), batch = arg("batch", "");
   if (brain !== "random" && brain !== "jev") throw new Error(`--brain ${brain}: random or jev`);
-  const r = await runProbe(arg("probe", "blame"), arg("variant", "real"), Number(arg("seed", "1")), Number(arg("days", "6")), Number(arg("people", "6")), brain);
-  const out = arg("out", "");
-  if (out) await Bun.write(out, JSON.stringify(r) + "\n");
-  else console.log(JSON.stringify(r));
+  const specs: ProbeSpec[] = batch
+    ? JSON.parse(readFileSync(batch, "utf8"))
+    : [{ probe: arg("probe", "blame"), variant: arg("variant", "real"), seed: Number(arg("seed", "1")), days: Number(arg("days", "6")), people: Number(arg("people", "6")), brain, out: arg("out", "") }];
+  for (const s of specs) {
+    const r = await runProbe(s.probe, s.variant, s.seed, s.days, s.people, s.brain);
+    if (s.out) await Bun.write(s.out, JSON.stringify(r) + "\n");
+    else console.log(JSON.stringify(r));
+  }
   process.exit(0);
 }

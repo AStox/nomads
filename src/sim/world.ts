@@ -382,8 +382,20 @@ const OPPOSITES = [
 ];
 export const clash = (a: string, b: string) => OPPOSITES.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
 
-// Growing an island and everything on it takes a good fraction of a second and depends only on the seed, so tests that
-// rebuild the same world reuse it. Callers get their own copies of anything the game might change.
+// What a module keeps about each world beside the world itself (never saved with it), so that two worlds in one process,
+// in tests or a batch of probes, never share it.
+export function perWorld<T>(make: () => T): (w: World) => T {
+  const of = new WeakMap<World, T>();
+  return (w) => {
+    let s = of.get(w);
+    if (s === undefined) of.set(w, (s = make()));
+    return s;
+  };
+}
+
+// Growing an island and everything on it takes about nine seconds and depends only on the seed, so tests that rebuild the
+// same world, and a batch of probe runs on one island, reuse it. Callers get their own copies of anything the game might
+// change.
 export type Ground = { land: Lay; isle: Island; fine: Fine; flora: Scatter; dry: Uint8Array; shore?: { px: number; py: number }[] }; // dry: 1 per tile with dry ground in it
 const grounds = new Map<number, Ground>();
 let lastSeed = NaN, last: Ground | null = null;
@@ -443,6 +455,30 @@ export function shoreByTile(w: World) {
   }
   return g;
 }
+// The tiles R rings out from tile (qx, qy) that are on the map, in the order a search outward takes them. A point in one
+// is more than R - 1 tiles from any point in the first, so a search can stop at the first ring that far past its best.
+export function ringOf(qx: number, qy: number, R: number) {
+  const out: number[] = [];
+  for (let y = qy - R; y <= qy + R; y++) {
+    if (y < 0 || y >= H) continue;
+    const edge = y === qy - R || y === qy + R;
+    for (let x = qx - R; x <= qx + R; x += edge || R === 0 ? 1 : 2 * R) if (x >= 0 && x < W) out.push(y * W + x);
+  }
+  return out;
+}
+// The shore point nearest a point that passes ok (the first in shoreOf's order of any as near), looking out ring by ring
+// and no further than the nearest found: everyone asks where the nearest water is, every time they plan.
+export function nearestShore(w: World, px: number, py: number, ok: (p: { px: number; py: number }) => boolean) {
+  const s = shoreOf(w), g = shoreByTile(w), at = { px, py };
+  let best = -1, bd = Infinity;
+  for (let R = 0; R < Math.max(W, H) && (R - 1) * TILE_M <= bd; R++)
+    for (const t of ringOf(Math.floor(px), Math.floor(py), R))
+      for (const i of g[t]) {
+        const d = meters(at, s[i]);
+        if ((d < bd || (d === bd && i < best)) && ok(s[i])) { bd = d; best = i; }
+      }
+  return best < 0 ? null : s[best];
+}
 // Which of the heraldic colors a person wears, as an index into COLORS.
 export const colorIndex = (a: { color: string }) => Math.max(0, COLORS.indexOf(a.color));
 // World meters (the island's center at 0) to tiles, to a tenth of a millimeter's worth of tile.
@@ -455,15 +491,15 @@ const HP: Record<string, (size: number) => number> = {
 };
 // Entry k of what the ground grew (groundOf flora), as the thing it is before anyone touches it: thing t{k + 1}.
 export function grown(w: World, k: number): Thing {
-  const f = groundOf(w.seed).flora, kind = FLORA[f.kind[k]], px = f.px[k], py = f.py[k], size = f.size[k], seed = f.seed[k];
+  const g = groundOf(w.seed), f = g.flora, kind = FLORA[f.kind[k]], px = f.px[k], py = f.py[k], size = f.size[k], seed = f.seed[k];
   const hp = HP[kind](size), species = SPECIES[f.species[k]];
   const t: Thing = { id: `t${k + 1}`, kind, x: Math.floor(px), y: Math.floor(py), px, py, size, seed, hp, maxHp: hp };
   if (species) t.species = species;
   if (kind === "bush" && species === "berry") t.n = 4;
   // Flint forms as nodules inside the rock that holds it, chalky limestone above all; ore shows as reddish stones, and
   // sometimes inside boulders of the rock that carries iron.
-  const q = ((seed >>> 8) & 0xffff) / 65536, rock = rockAt(groundOf(w.seed).isle, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2);
   if (kind === "boulder") {
+    const q = ((seed >>> 8) & 0xffff) / 65536, rock = rockAt(g.isle, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2);
     if (q < 0.6 * rock.flint) t.inside = { flint: q < 0.2 * rock.flint ? 2 : 1 };
     else if (q > 1 - 0.35 * rock.ore) t.inside = { ore: 1 };
   }
@@ -483,8 +519,9 @@ export function newWorld(seed: number, agentCount = 5): World {
     weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 8, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, speed: 4, wet: 0.2, drought: false, dryTicks: 0 },
     camps: [], incidents: [], journeys: { seen: 0, of: {} },
   };
-  // Loose stones of ore lie about from the start, to be picked up like anything dropped.
-  for (const o of g.flora.ore) addThing(w, "item", o.px, o.py, { item: "ore", n: 1, size: o.size, seed: o.seed });
+  // Loose stones of ore lie about from the start, to be picked up like anything dropped. Ore neither rots nor burns, so
+  // the world needn't keep looking at them until someone does.
+  for (const o of g.flora.ore) addThing(w, "item", o.px, o.py, { item: "ore", n: 1, size: o.size, seed: o.seed }, false);
   const traitNames = Object.keys(TRAITS), main = mainland(w);
   const open = (px: number, py: number) => tileAt(w, Math.floor(px), Math.floor(py)) === Tile.Grass && !!main[Math.floor(py) * W + Math.floor(px)] && dryAt(w, px, py);
   // They wake within a few minutes' walk of each other, each alone.
@@ -532,12 +569,13 @@ const MADE_SIZE: Partial<Record<ThingKind, number>> = {
   fire: 1, structure: 2, item: 0.3, ash: 1.2, pit: 1.5, trap: 1.5, well: 1.5, grave: 2, sapling: 0.3, stump: 0.6, burnt_stump: 0.6,
   dead_bush: 1, stick: 1, stone: 0.2, mushroom: 0.1, herb: 0.3, reeds: 1.5, clay: 1,
 };
-// Anything that comes into the world after the ground was laid out, at a point in tiles.
-export function addThing(w: World, kind: ThingKind, px: number, py: number, extra: Partial<Thing> = {}): Thing {
+// Anything that comes into the world after the ground was laid out, at a point in tiles; watched (space.ts liveThings)
+// unless nothing about it changes until someone moves it.
+export function addThing(w: World, kind: ThingKind, px: number, py: number, extra: Partial<Thing> = {}, watched = true): Thing {
   const n = w.nextId++;
   const t: Thing = { id: `t${n}`, kind, x: 0, y: 0, px: 0, py: 0, size: MADE_SIZE[kind] ?? 0.5, seed: Math.imul(n, 2654435761) >>> 0, ...extra };
   put(w, t, px, py);
-  enter(w, t, true);
+  enter(w, t, watched);
   return t;
 }
 
