@@ -203,7 +203,7 @@ Gaps are recorded as model gaps, not tuned: wind blow-off of small wood flames, 
   - Unsized kinds keep today's by-kind piles, with a characteristic thickness and mass from fuel.ts for physics and one moisture per pile, merged by mass.
 - **Lighting carries its lay, decided before the act.**
   - The strike or rub act's inputs are the lay: tinder plus whatever kindling and fuel are set with it, each kind listed as many times as it is laid.
-  - combustion.ts decides from the lay projected to the act's end. The lighting lasts if the bed is still alight when a feeding act begun at that moment would finish (DURATION.place later).
+  - combustion.ts decides from the lay followed until it goes out. The lighting lasts if everything laid with what the ember caught catches and burns through (restated at Unit 5 on the operator's call; it was "still alight when a feeding act begun at that moment would finish, DURATION.place later").
   - Feeding is a place act on an existing bed. It is decided the same way, and reports whether the laid pieces light and whether the bed survives taking them in.
   - A carried flame (brand or lamp) set into a lay is the third way to light. Brands and lamps burn down while carried.
 - **Spark and ember catching keep their formulas, re-expressed on physical moisture.** The catching moisture limits and the gale that carries sparks off come from the cited data at a probability level and fuel temperature recorded in Unit 1. Moisture acts once per piece.
@@ -496,7 +496,7 @@ Then run a throwaway check over a year of island weather. It reports the share o
   - rain is a sink at the sky's rate.
 - Char is left at the fixed yield. It glows by Albini's law and lights kindling laid on it.
 - The decisions read the lay or bed projected to the act's end:
-  - lighting(lay, conditions) lasts if the bed is still alight DURATION.place after the act ends, else it is a spent flare;
+  - lighting(lay, conditions) lasts if everything laid with what the ember caught catches and burns through, else it is a spent flare (restated at Unit 5, see below);
   - feeding(bed, pieces, conditions) reports whether the pieces light before the bed's heat on them runs out, and whether the bed survives the heat they draw from it.
 
 **Execution note:**
@@ -513,13 +513,13 @@ Then run a throwaway check over a year of island weather. It reports the share o
 **Test scenarios:**
 - Happy path, the ladder (each with dry fuel in still air, sizes from the allometry):
   - tinder alone flares and leaves no lasting bed;
-  - tinder with twigs and finger-thick sticks leaves a bed still alight when a feed would finish;
+  - tinder with twigs and finger-thick sticks lasts: the twigs and sticks catch and burn through (restated; it was "leaves a bed still alight when a feed would finish");
   - a log of a felled oak's trunk diameter laid on a lone tinder flame doesn't light;
   - three such logs on a bed of burning sticks keep burning, while one alone on the same start goes out once the sticks are spent;
-  - kindling laid on four-hour-old coals lights.
-- Happy path: at the island's median bed-height wind, a tinder-and-twigs flame goes out that a bed of burning logs survives. At the storm rain rate, the small fire goes out and the big one doesn't.
+  - kindling laid on the coals a log fire leaves once its flames are gone lights (restated; it was "on four-hour-old coals").
+- Happy path: the gale leaves a tinder-and-twigs flame its twigs and blows a bed of logs' flames off; storm rain slows a burning bed and a small fire still lights and lasts in it (both restated; they were "at the median wind a tinder-and-twigs flame goes out that a bed of logs survives" and "at the storm rain rate the small fire goes out and the big one doesn't").
 - Happy path: a bed of logs burns faster in a moderate wind than in still air.
-- Happy path: soaked wood laid on a small fire puts it out, and the same wood dry feeds it.
+- Happy path: soaked sticks laid on a small fire catch, later than the same sticks dry (restated; it was "soaked wood laid on a small fire puts it out, and the same wood dry feeds it").
 - Edge case: twigs at 35% moisture don't carry flame, and at 10% they do.
 - Edge case: a damp log takes longer to light than a dry one, by the moisture factor alone.
 - Edge case: a group preheated by one burning piece and then another lights sooner than one heated only by the second.
@@ -527,6 +527,14 @@ Then run a throwaway check over a year of island weather. It reports the share o
 - Error path: an empty lay gives no bed; an unknown kind or a zero thickness is not fuel.
 
 **Verification:** Every ladder case holds with constants copied from the document. Any that fails is written up as a model gap in the constants document and the plan's risks, not tuned.
+
+**Result (2026-10-08):** fails above tinder. Tinder flares and goes out, a log won't light on it, and the moisture, preheating and stepping cases hold; nothing thicker than tinder keeps a flame, so every rung from twigs up fails, with each alternative the constants document records. Written up in docs/research/fire-constants.md, section 28's Result and the gaps; the operator decides whether to accept it or revisit the model.
+
+**Revisit (2026-10-08, operator's call):** the flame over what burns, groups lighting by their share in it, and lit wood burning at Heskestad's crib rate. Twigs now catch and burn through; the sticks, the timings (15 minutes alight, coals after hours), oak logs in still air and the median-wind blowout still fail. Constants document, section 28's "Result of the revision".
+
+**Second revision (2026-10-08, operator's call):** a lay built from its heart outward with the flame reaching what touches the burning part, thick wood at Anderson's large-fuel rate beside other burning wood, and two cases restated (a lighting lasts when everything laid catches and burns through; the blowout case at the gale). The ladder now holds from tinder through sticks to three logs; a lone log on its own coals, four-hour coals, the gale, the storm, logs in wind after half an hour and soaked sticks still fail. Constants document, section 28's "Result of the second revision".
+
+**Third revision (2026-10-08, operator's call):** coals as a compact bed at the heart (packing 0.5, char at its no-shrinkage density, 202.5 kg/m3 for generic wood, which charcoal's record now carries), glowing without widening the flame, and beside a thick piece only when they came from another shell; the storm, gale, soaked-feeding and coals cases restated to what the cited physics gives. All fourteen cases hold (constants document, section 28's "Result of the third revision"). Unit 5's tests pass as the phase 2 checkpoint.
 
 - [ ] **Unit 6: Setups and heat through the physics**
 
@@ -605,7 +613,7 @@ Then run a throwaway check over a year of island weather. It reports the share o
 **Patterns to follow:** doAct's plant fits (pieces by theories); round five's decide-then-apply verbs; CONDITIONS' tinder entries.
 
 **Test scenarios:**
-- Happy path: holding fiber, twigs and finger-thick sticks in calm, dry air, a strike leaves a fire still alight when a feed would finish. Holding fiber alone, the flare dies within the act.
+- Happy path: holding fiber, twigs and finger-thick sticks in calm, dry air, a strike's lay catches and burns through. Holding fiber alone, the flare dies within the act.
 - Happy path: a stick laid on a bed with an hour left lights, while a log laid on a dying flame doesn't.
 - Happy path: kindling laid on coals relights the fire.
 - Edge case: someone who holds a theory that thick fuel won't take on a small fire lays their thinnest stick instead.
@@ -838,7 +846,7 @@ Then run a throwaway check over a year of island weather. It reports the share o
 
 | Risk | Mitigation |
 |------|------------|
-| The ladder or the lone-log result fails with the cited constants | Every deciding constant is fixed in Unit 1 before tests run, and test sizes come from the allometry. A failure is recorded as a model gap (packing, blow-off, grain row), and the operator decides whether to accept it or revisit the model, never quietly retune |
+| The ladder or the lone-log result fails with the cited constants | Every deciding constant is fixed in Unit 1 before tests run, and test sizes come from the allometry. A failure is recorded as a model gap (packing, blow-off, grain row), and the operator decides whether to accept it or revisit the model, never quietly retune. Happened at Unit 5 (2026-10-08): the heap's width, groups lighting all at once and the burning balance together keep any wood from holding a flame (constants document, section 28's Result) |
 | Island humidity keeps tinder too wet to catch most hours | Unit 1's year-of-weather check reports it before any code, with drying by fire, sun and the body as the physical routes people have |
 | Logs at trunk diameter barely season within the 40-day year | Unit 1's check reports seasoning times. Splitting (planks) and thinner branches are physical answers people can learn, and whole worlds report it |
 | Most open-air lightings blow out | Bed-height wind by the log profile, not head height. Unit 13 reports how often lightings fail to the wind |

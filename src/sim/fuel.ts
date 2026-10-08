@@ -103,7 +103,7 @@ export const PHYS: Record<string, Phys> = {
   flint_blade: flint(0.01, 0.066),
   ore: { rho: 3800, c: 0.8, k: 2.8, mmax: 0, d: 0.05, mass: 0.475 },
   clay: { rho: 1608, c: 0.8, k: 0.52, mmax: 0.65, green: 0.275, d: 0.05, mass: 0.2 },
-  charcoal: { ...woodOf("generic", 0.025, 0.05), rho: 90, burn: BURNS.char },
+  charcoal: { ...woodOf("generic", 0.025, 0.05), rho: 1000 * WOODS.generic.G * BURNS.softwood.charYield, burn: BURNS.char },
   fat: { rho: 900, c: 2, k: 0.15, mmax: 0, d: 0.02, mass: 0.5, burn: BURNS.fat },
   resin: { rho: 1080, c: 1.98, k: 0.13, mmax: 0, d: 0.01, mass: 0.05, burn: BURNS.resin },
   meat: flesh(0.13),
