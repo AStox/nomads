@@ -3,6 +3,7 @@
 // holds the two to each other). A record is of the dry stuff: water is kg of it to each kg of that, and what a thing
 // holds comes and goes with the weather (wetness.ts).
 import type { Kind, Registry } from "./materials";
+import type { Size } from "./world";
 import type { SHRUBS, TREES } from "../terrain/flora";
 
 // How something burns, if it does: what lights it, the heat its flames and its glowing char give, the char it leaves,
@@ -145,3 +146,33 @@ export function physOf(reg: Registry, k: Kind | undefined): Phys | undefined {
   if (k.base) return PHYS[k.base];
   return k.phys ?? mix((k.parts ?? []).flatMap((id) => physOf(reg, reg[id]) ?? []));
 }
+
+// ---------- pieces of wood ----------
+// What a plant gives, piece by piece (sec. 27e). A trunk is as thick as a forest tree of its height (sec. 19a; a fallen log
+// is a trunk as tall as it is long), and a log is a meter of it. A stick, branch or stem is a young stem as long as it is,
+// by its species' height-to-diameter ratio, but a gorse stem, which thickens faster, and heather's, which stays thin
+// (sec. 19c). A tree's branch is a fifth of its height, a stump's a meter, a bush's stem as long as the bush is tall.
+const TRUNK: Partial<Record<Wood | "generic", (H: number) => number>> = {
+  pine: (H) => 0.01721 * H ** 0.842, oak: (H) => 0.00489 * H ** 1.334, ash: (H) => ((100 * H) / 290) ** 1.938 / 100, aspen: (H) => 0.00343 * H ** 1.371,
+};
+const STEM: Record<Wood | "generic", (len: number) => number> = {
+  pine: (len) => len / 105, oak: (len) => len / 112, ash: (len) => len / 133, aspen: (len) => len / 142, hazel: (len) => len / 119, berry: (len) => len / 119,
+  gorse: (len) => Math.min(0.025 * len, 0.033), heather: () => 0.0035, generic: (len) => len / 123,
+};
+export const LOG_LEN = 1;
+// A round piece of a species' wood, so thick and so long.
+export const roundSize = (species: Wood | "generic", d: number, len: number): Size => ({ d, len, mass: (Math.PI / 4) * d * d * len * 1000 * WOODS[species].G });
+// The piece of wood of the item a thing standing or lying in the world gives, with what it grew as: none if it gives none.
+export function pieceOf(t: { kind: string; species?: string; size: number }, item: string): { size: Size; species?: Wood } | undefined {
+  const sp = t.species && t.species in WOODS ? (t.species as Wood) : "generic", grew = sp === "generic" ? {} : { species: sp };
+  const trunk = t.kind === "tree" || t.kind === "fallen_log";
+  if (item === "log" && trunk) return { size: roundSize(sp, TRUNK[sp]?.(t.size) ?? STEM[sp](t.size), LOG_LEN), ...grew };
+  if (item !== "stick" || !["tree", "fallen_log", "stump", "bush", "dead_bush", "stick"].includes(t.kind)) return undefined;
+  const len = trunk ? t.size / 5 : t.kind === "stump" ? 1 : t.size;
+  return { size: roundSize(sp, STEM[sp](len), len), ...grew };
+}
+// Splitting a piece into n along its grain: each 1/n as thick, as long, with 1/n of its mass.
+export const splitSize = (s: Size, n: number): Size => ({ d: s.d / n, len: s.len, mass: s.mass / n });
+// The char a piece of wood leaves burnt in a smothered fire, shared among n lumps: each as thick as the wood (no shrinkage
+// was read, sec. 27e), its length shared out, with its row's char yield of the wood's mass.
+export const charSize = (s: Size, charYield: number, n: number): Size => ({ d: s.d, len: s.len / n, mass: (s.mass * charYield) / n });

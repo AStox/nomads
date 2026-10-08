@@ -1,8 +1,8 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
 import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props, type Registry } from "./materials";
-import { COPPER, FIRED_CLAY, LEATHER, POT_WALL, mix, physOf, remade } from "./fuel";
+import { COPPER, FIRED_CLAY, LEATHER, POT_WALL, charSize, mix, physOf, pieceOf, remade, splitSize } from "./fuel";
 import { CELL } from "../terrain/grid";
-import { DAY, REACH, TILE_M, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, isNight, level, log, meters, nearWater, perWorld, reachOf, wetAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
+import { DAY, REACH, TILE_M, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, isNight, level, log, meters, nearWater, perWorld, reachOf, wetAt, type Act, type Agent, type Shelter, type Stack, type Thing, type World } from "./world";
 import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } from "./space";
 import { clock, trace } from "./trace";
 import { see } from "./beliefs";
@@ -81,26 +81,37 @@ export type Outcome = {
 export const count = (a: Agent, k: string) => a.inv.reduce((n, s) => n + (s.k === k ? 1 : 0), 0);
 export const counts = (a: Agent) => a.inv.reduce<Record<string, number>>((m, s) => ((m[s.k] = (m[s.k] ?? 0) + 1), m), {});
 export function takeItems(a: Agent, k: string, n = 1) {
-  for (let i = 0; i < n; i++) {
-    const idx = a.inv.findIndex((s) => s.k === k);
-    if (idx < 0) return false;
-    a.inv.splice(idx, 1);
-  }
+  for (let i = 0; i < n; i++) if (!takeStack(a, k)) return false;
   return true;
 }
+// One of a kind out of their hands, as it is: its size, wear and age go with it.
+export function takeStack(a: Agent, k: string): Stack | undefined {
+  const i = a.inv.findIndex((s) => s.k === k);
+  return i < 0 ? undefined : a.inv.splice(i, 1)[0];
+}
+export const takeStacks = (a: Agent, k: string, n: number) => Array.from({ length: n }, () => takeStack(a, k)).filter((s): s is Stack => !!s);
 const young = (a: Agent) => clock.t - a.born < YEAR;
 // What someone can carry: a child half what a grown body can, and anyone more with a bag or basket to put things in,
 // the roomier the more (the best one counts; a second only weighs them down).
 export const carryOf = (w: World, a: Agent) =>
   (young(a) ? 8 : CARRY) + Math.max(0, ...a.inv.map((s) => { const k = w.kinds[s.k]; return p(k, "container") >= 0.6 && p(k, "flexible") >= 0.4 ? Math.round(p(k, "container") * 10) : 0; }));
-// wet: how wet what comes into their hands is (wetness.ts), kept for tinder: what they pick up off the ground is as wet
-// as the ground
+// Something put into their hands as it is; with their hands full, it goes down beside them instead. Whether they hold it.
+export function giveStack(w: World, a: Agent, s: Stack) {
+  if (a.inv.length >= carryOf(w, a) && !makeRoom(w, a, s.k)) { dropStacks(w, a.px, a.py, [s]); return false; }
+  a.inv.push(s);
+  return true;
+}
+// Handing up to n of a kind from one to another, as they are. How many changed hands.
+export function hand(w: World, from: Agent, to: Agent, k: string, n = 1) {
+  const moving = takeStacks(from, k, n);
+  for (const s of moving) giveStack(w, to, s);
+  return moving.length;
+}
+// A new one of a kind. wet: how wet what comes into their hands is (wetness.ts), kept for tinder: what they pick up off
+// the ground is as wet as the ground.
+const fresh = (w: World, k: string, wet = 0): Stack => (wet >= 0.005 && tinder(w.kinds[k]) ? { k, hp: 1, born: w.t, wet } : { k, hp: 1, born: w.t });
 export function giveItems(w: World, a: Agent, k: string, n = 1, wet = 0) {
-  const soaked = wet >= 0.005 && tinder(w.kinds[k]);
-  for (let i = 0; i < n; i++) {
-    if (a.inv.length >= carryOf(w, a) && !makeRoom(w, a, k)) { dropPile(w, a.px, a.py, k, n - i); return i; }
-    a.inv.push(soaked ? { k, hp: 1, born: w.t, wet } : { k, hp: 1, born: w.t });
-  }
+  for (let i = 0; i < n; i++) if (!giveStack(w, a, fresh(w, k, wet))) { if (n - i > 1) dropPile(w, a.px, a.py, k, n - i - 1); return i; }
   return n;
 }
 // Hands full: set down one of whatever plain material they have most of, unless that's what they're picking up.
@@ -115,8 +126,7 @@ function makeRoom(w: World, a: Agent, incoming: string) {
     // A hungry hand drops anything that isn't food before it drops food.
     ?? (food(incoming) ? Object.keys(c).filter((x) => !food(x)).sort((x, y) => Number(isToolish(w.kinds[x])) - Number(isToolish(w.kinds[y])))[0] : surplus(food));
   if (!spare) return false;
-  takeItems(a, spare);
-  dropPile(w, a.px, a.py, spare, 1);
+  dropStacks(w, a.px, a.py, [takeStack(a, spare)!]);
   return true;
 }
 // Set things down at a point: on a pile of the same within a meter, or as a new pile close by.
@@ -126,6 +136,20 @@ export function dropPile(w: World, px: number, py: number, k: string, n: number)
   const t = addThing(w, "item", ...beside(w, { px, py }, 0.2 + Math.random() * 0.5), { item: k, n, born: w.t });
   mark(w, t);
   return t;
+}
+// A piece of wood is laid down as it is (fuel.ts); anything else only adds to a pile's count.
+export const isPiece = (s: Stack) => !!(s.size || s.species);
+export function dropStacks(w: World, px: number, py: number, stacks: Stack[]) {
+  for (const k of new Set(stacks.map((s) => s.k))) {
+    const of = stacks.filter((s) => s.k === k), pile = dropPile(w, px, py, k, of.length), pieces = of.filter(isPiece);
+    if (pieces.length) pile.pieces = [...(pile.pieces ?? []), ...pieces];
+  }
+}
+// One thing off a pile: a piece of wood as it was laid down, or one of the rest, as wet as the ground it lay on.
+export function takeFromPile(w: World, t: Thing, wet: number): Stack {
+  t.n = (t.n ?? 1) - 1;
+  if (t.n <= 0) removeThing(w, t); else mark(w, t);
+  return t.pieces?.pop() ?? fresh(w, t.item!, wet);
 }
 // Things touched this tick, so the server can send deltas.
 export const changed = new Set<string>(), removed = new Set<string>(), newKinds = new Set<string>();
@@ -165,10 +189,21 @@ function enact(w: World, a: Agent, d: Decision): Outcome {
   const { make, ...o } = d;
   const nk: string[] = [];
   const k = make && ensure(w.kinds, make.id, make.make);
-  for (const [id, n] of Object.entries(o.uses)) takeItems(a, id, n);
-  for (const [id, n] of Object.entries(o.gives)) giveItems(w, a, id, n);
+  const used = Object.entries(o.uses).flatMap(([id, n]) => takeStacks(a, id, n));
+  for (const [id, n] of Object.entries(o.gives)) for (const s of madeOf(w, used, id, n)) giveStack(w, a, s);
   if (k && !make.quiet) made(w, a, k[0], k[1], nk);
   return outcome({ ...o, newKinds: nk });
+}
+// What making n of a kind leaves of the pieces of wood used (fuel.ts sec. 27e): a thing made from one piece alone, or
+// the one thing it was made from, is that piece still, and charcoal smothered from one shares out its char. Anything
+// else comes new.
+function madeOf(w: World, used: Stack[], k: string, n: number): Stack[] {
+  const fresh = () => ({ k, hp: 1, born: w.t }), from = used.length === 1 ? used[0] : undefined;
+  if (!from?.size) return Array.from({ length: n }, fresh);
+  const grew = from.species ? { species: from.species } : {};
+  if (k === "charcoal") return Array.from({ length: n }, () => ({ ...fresh(), size: charSize(from.size!, physOf(w.kinds, w.kinds[from.k])?.burn?.charYield ?? 0, n), ...grew }));
+  const one = (x?: Kind) => x?.parts?.length === 1 ? x.parts[0] : undefined;
+  return n === 1 && (one(w.kinds[k]) === from.k || one(w.kinds[from.k]) === k) ? [{ ...fresh(), size: from.size, ...grew }] : Array.from({ length: n }, fresh);
 }
 
 // ---------- strike ----------
@@ -280,8 +315,10 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
       return { done: false, broke: broke ?? undefined, damage: 0 };
     }
     if (st.progress < 20) return { done: false, broke: broke ?? undefined, damage: dmg };
-    takeItems(a, tk.id);
-    for (const [k, n] of Object.entries(tk.breaks)) giveItems(w, a, k, n);
+    // each piece split out of a piece of wood is as long as it was, a share as thick and as heavy (fuel.ts)
+    const whole = takeStack(a, tk.id);
+    for (const [k, n] of Object.entries(tk.breaks))
+      for (let i = 0; i < n; i++) giveStack(w, a, whole?.size ? { k, hp: 1, born: w.t, size: splitSize(whole.size, n), ...(whole.species ? { species: whole.species } : {}) } : fresh(w, k));
     fields.gives = Object.keys(tk.breaks);
     return { done: true, broke: broke ?? undefined, damage: dmg, out: outcome({ ok: true, text: `Striking along its grain split the ${tk.name} into ${list(w, tk.breaks)}.`, uses: { [tk.id]: 1 }, gives: { ...tk.breaks }, fields, numbers: { eff } }) };
   }
@@ -304,7 +341,7 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
     const peel = 0.08 * p(tool, "sharp"), blow = st.progress + 1;
     if (p(tool, "sharp") >= 0.4 && (target.bark ?? 0) < 3 && Math.floor(blow * peel) > Math.floor((blow - 1) * peel)) {
       target.bark = (target.bark ?? 0) + 1;
-      dropPile(w, target.px, target.py, "bark", 1);
+      dropStacks(w, target.px, target.py, [{ k: "bark", hp: 1, born: w.t, ...(target.species ? { species: target.species } : {}) }]);
       see(w, target, "bark", "A sharp edge struck into a tree peels off strips of bark.", 60);
     }
   }
@@ -325,10 +362,12 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
     return { done: true, damage: dmg, broke: broke ?? undefined, out: outcome({ ok: true, text: `They killed the ${target.species} and butchered it into ${list(w, gives)}.`, gives, fields, numbers: { rate, ticksNeeded } }) };
   }
   const t = target as Thing;
+  // what it gives, piece by piece, as it stood: a tree's trunk and branches, a bush's stems (fuel.ts)
+  const pieces = Object.entries(gives).flatMap(([k, n]) => Array.from({ length: n }, (): Stack => ({ ...fresh(w, k), ...pieceOf(t, k) })));
   // a felled tree's wood is carried off, and what it took from the soil with it
   if (t.kind === "tree") { setKind(w, t, "stump"); t.hp = 40; t.maxHp = 40; t.size = 0.6; t.until = w.t + DAY * 6; mark(w, t); enrich(w, t.px, t.py, -0.02); }
   else removeThing(w, t);
-  for (const [k, n] of Object.entries(gives)) giveItems(w, a, k, n);
+  for (const s of pieces) giveStack(w, a, s);
   const verb = act.target.kind === "tree" ? "brought the tree down" : `broke up the ${act.target.kind}`;
   return { done: true, damage: dmg, broke: broke ?? undefined, out: outcome({ ok: true, text: `Striking it with ${tool.id === "hands" ? "bare hands" : `the ${tool.name}`} ${verb}, leaving ${list(w, gives)}.`, gives, fields, numbers: { rate, ticksNeeded } }) };
 }
@@ -440,8 +479,7 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
     const [k, isNew] = ensure(w.kinds, rubbedOf(r), () => ({
       name: `pointed ${soft.name}`, props: { ...soft.props, sharp: clamp01(p(soft, "sharp") + 0.4), long: p(soft, "long") * 0.95 }, parts: [soft.id], verb: "rub", fuel: soft.fuel,
     }));
-    takeItems(a, soft.id);
-    giveItems(w, a, k.id);
+    for (const s of madeOf(w, takeStacks(a, soft.id, 1), k.id, 1)) giveStack(w, a, s);
     const nk: string[] = [];
     made(w, a, k, isNew, nk);
     fields.gives = [k.id];
@@ -824,10 +862,10 @@ export function throwTick(w: World, a: Agent, act: Act, st: { progress: number; 
   if (shot) fields.tool = act.tool;
   const hit = d <= throwReach(w, a, act);
   const mat = THING_MATERIAL[prey.species];
-  takeItems(a, k.id);
+  const thrown = takeStack(a, k.id)!;
   // where a throw that falls short lands, a pace or more short of the animal, is chance
   const fall = hit ? 0 : (1 + Math.random() * 3) / TILE_M, dir = Math.atan2(prey.py - a.py, prey.px - a.px);
-  dropPile(w, prey.px - Math.cos(dir) * fall, prey.py - Math.sin(dir) * fall, k.id, 1);
+  dropStacks(w, prey.px - Math.cos(dir) * fall, prey.py - Math.sin(dir) * fall, [thrown]);
   const dmg = hit ? throwDamage(k, mat.toughness, shot) : 0;
   prey.hp -= dmg;
   if (prey.species === "deer") prey.state = "flee";
@@ -1096,7 +1134,7 @@ export function place(w: World, a: Agent, act: Act): Outcome {
   }
   if (!work) return outcome(d);
   // A lamp lends its flame and keeps burning; a torch is used up.
-  for (const [k, n] of Object.entries(d.uses)) takeItems(a, k, work.does === "light" && k === work.keep ? n - 1 : n);
+  const taken = Object.entries(d.uses).flatMap(([k, n]) => takeStacks(a, k, work.does === "light" && k === work.keep ? n - 1 : n));
   switch (work.does) {
     case "light":
       if (fire) { fire.hp = Math.min(400, (fire.hp ?? 0) + work.fuel); mark(w, fire); }
@@ -1113,6 +1151,7 @@ export function place(w: World, a: Agent, act: Act): Outcome {
     case "ring": {
       const f = fire!, r = ring ?? addThing(w, "structure", f.px, f.py, { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t, size: 1.6 });
       for (const [k, n] of Object.entries(d.uses)) r.parts![k] = (r.parts![k] ?? 0) + n;
+      if (taken.some(isPiece)) r.pieces = [...(r.pieces ?? []), ...taken.filter(isPiece)];
       r.shelter = { ...shelterOf(w, r.parts!), tier: 0 };
       f.contained = work.contained;
       f.covered = work.covered;
@@ -1127,13 +1166,14 @@ export function place(w: World, a: Agent, act: Act): Outcome {
     case "store": {
       const home = own!;
       home.store ??= [];
-      for (const [k, n] of Object.entries(d.uses)) for (let i = 0; i < n; i++) home.store.push({ k, hp: 1, born: w.t });
+      home.store.push(...taken);
       mark(w, home);
       break;
     }
     case "build": {
       const s = own ?? addThing(w, "structure", ...beside(w, a, 1.5), { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t });
       for (const [k, n] of Object.entries(d.uses)) s.parts![k] = (s.parts![k] ?? 0) + n;
+      if (taken.some(isPiece)) s.pieces = [...(s.pieces ?? []), ...taken.filter(isPiece)];
       const roomBefore = own?.shelter?.room ?? 0;
       s.shelter = work.shelter;
       s.size = sizeOf(work.shelter);

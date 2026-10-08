@@ -1,6 +1,6 @@
 // The world keeps moving on its own: weather, fire, plants, animals, rot, and sickness.
 import { THING_MATERIAL, clamp01, ensure, p } from "./materials";
-import { dropPile, fireHeat, mark, nearFire, newKinds, occupied, removeThing, residentsOf, shelterName } from "./physics";
+import { dropPile, dropStacks, fireHeat, mark, nearFire, newKinds, occupied, removeThing, residentsOf, shelterName } from "./physics";
 import { see } from "./beliefs";
 import {
   DAY, H, TILE_M, W, Tile, addThing, dayOfYear, groundOf, log, meters, nearWater, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
@@ -431,6 +431,8 @@ function decay(w: World, live: Thing[]) {
       if (t.item.startsWith("rotten:")) { removeThing(w, t); continue; }
       t.item = rot(t.item); t.born = w.t; mark(w, t);
     }
+    // a pile's pieces are of whatever the pile has become
+    for (const s of t.pieces ?? []) if (t.kind === "item") s.k = t.item!;
     const kept = vessel(t.store ?? []);
     for (const s of t.store ?? []) {
       if (!spoiled(s.k, s.born, kept)) continue;
@@ -444,15 +446,22 @@ function decay(w: World, live: Thing[]) {
       const pile = t.shelter.tier === 0 && !anyAround(w, t.px, t.py, 1, ["fire"]);
       const weather = 0.03 + (sky === "rain" ? 0.1 : sky === "storm" ? 0.5 : 0);
       t.hp = (t.hp ?? 100) - (pile ? 0.5 * (1.2 - t.shelter.sturdy) : 0) - weather * Math.max(0.02, 1.4 * (1 - t.shelter.sturdy) ** 2);
-      if (t.hp <= 0) {
-        const owner = w.agents.find((a) => a.id === t.owner);
-        log(w, "ruin", owner ? [owner.id] : [], t, `${owner ? `${owner.name}'s` : "A"} shelter fell apart in the weather.`);
-        for (const [k, n] of Object.entries(t.parts ?? {})) if (Math.random() < 0.5) dropPile(w, t.px, t.py, k, Math.ceil(n / 2));
-        for (const x of residentsOf(w, t)) x.home = null;
-        removeThing(w, t);
-      }
+      if (t.hp <= 0) fallApart(w, t);
     }
   }
+}
+// A shelter fallen apart in the weather: half of each thing it was built of falls where it stood, its pieces of wood as
+// they were laid, and nobody lives there any more.
+export function fallApart(w: World, t: Thing) {
+  const owner = w.agents.find((a) => a.id === t.owner);
+  log(w, "ruin", owner ? [owner.id] : [], t, `${owner ? `${owner.name}'s` : "A"} shelter fell apart in the weather.`);
+  for (const [k, n] of Object.entries(t.parts ?? {})) {
+    if (Math.random() >= 0.5) continue;
+    const m = Math.ceil(n / 2), laid = (t.pieces ?? []).filter((s) => s.k === k).slice(0, m);
+    dropStacks(w, t.px, t.py, [...laid, ...Array.from({ length: m - laid.length }, () => ({ k, hp: 1, born: w.t }))]);
+  }
+  for (const x of residentsOf(w, t)) x.home = null;
+  removeThing(w, t);
 }
 
 // ---------- sickness ----------

@@ -4,9 +4,10 @@ import {
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
 import {
-  airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, FISH_REACH, force, giveItems, greasy, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
-  fireHours, groundWord, hoursToDawn, leaveHome, pour, reaches, removeThing, residentsOf, rubTick, shape, shelterName, stash, strikeDamage, strikeTick, takeItems, throwReach, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
+  airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, FISH_REACH, force, giveItems, giveStack, greasy, hand, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
+  fireHours, groundWord, hoursToDawn, leaveHome, pour, reaches, removeThing, residentsOf, rubTick, shape, shelterName, stash, strikeDamage, strikeTick, takeFromPile, takeItems, throwReach, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
 } from "./physics";
+import { pieceOf } from "./fuel";
 import { die, life, lifeSummary } from "./life";
 import { apart, beliefKey, beliefText, cameOff, conditionWords, differed, weighs, fieldsOf, found, groundKey, groundOfKey, holds, mixOf, odds, fades, noteTry, ofSpot, record, refine, refuted, restsOn, rethink, see, sentence, suspected, teach, testOf, watchers, type Belief } from "./beliefs";
 import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
@@ -1380,10 +1381,9 @@ function run(w: World, a: Agent): boolean | string {
     case "pick_up": {
       const t = within(w, a, `item:${s.arg}`, 0.5)?.thing;
       if (!t) return "it was gone";
-      const n = Math.min(t.n ?? 1, 3);
-      t.n = (t.n ?? 1) - n;
-      if (t.n <= 0) removeThing(w, t); else mark(w, t);
-      const got = giveItems(w, a, t.item!, n, wetHere(w, t));
+      const n = Math.min(t.n ?? 1, 3), wet = wetHere(w, t);
+      let got = 0;
+      while (got < n && giveStack(w, a, takeFromPile(w, t, wet))) got++;
       if (!got) return "their hands were full";
       const word = nm(w, t.item!);
       log(w, "gather", [a.id], a, `${a.name} picked up ${got > 1 ? `${got} ${plural(word)}` : an(word)}.`);
@@ -1486,7 +1486,10 @@ function run(w: World, a: Agent): boolean | string {
     t.hp = (t.hp ?? 3) - 1;
     mark(w, t);
   } else removeThing(w, t);
-  giveItems(w, a, g.item, n, wetHere(w, t));
+  // a stick picked up off the ground is as thick as a stem of its length (fuel.ts)
+  const piece = pieceOf(t, g.item);
+  if (piece) for (let i = 0; i < n; i++) giveStack(w, a, { k: g.item, hp: 1, born: w.t, ...piece });
+  else giveItems(w, a, g.item, n, wetHere(w, t));
   // what is carried off a plant is taken from the soil it grew on
   if (t.kind === "bush" || t.kind === "mushroom" || t.kind === "herb" || t.kind === "reeds") enrich(w, t.px, t.py, -0.004 * n);
   if (t.kind === "bush" || t.kind === "mushroom" || t.kind === "herb") gain(w, a, "foraging", 2);
@@ -1577,7 +1580,7 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
       const n = Math.min(count(a, item), item === "berry" ? 2 : 1);
       const r = await reply(`${a.name} offers ${b.name} ${n} ${nm(w, item)} as a gift.`, { accept: "Accept the gift", refuse: "Refuse it" });
       if (r === "accept") {
-        takeItems(a, item, n); giveItems(w, b, item, n);
+        hand(w, a, b, item, n);
         b.rel[a.id].ledger++; ra.ledger--;
         warm = true;
         deed = { act: "give", value: valueOf(w, item) * n, items: Array(n).fill(item) };
@@ -1592,7 +1595,7 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
       gain(w, a, "bargaining", 2);
       const r = await reply(`${a.name} offers ${b.name} 1 ${nm(w, give)} in exchange for 1 ${nm(w, want)}.`, { accept: "Make the trade", refuse: "Turn it down" });
       if (r === "accept") {
-        takeItems(a, give); giveItems(w, b, give); takeItems(b, want); giveItems(w, a, want);
+        hand(w, a, b, give); hand(w, b, a, want);
         gain(w, a, "bargaining", 3);
         warm = true;
         felt.a = felt.b = { feel: 0.5 };
@@ -1672,7 +1675,7 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
       if (!food) return;
       const r = await reply(`${a.name} asks ${b.name} for something to eat.${a.needs.food < 20 ? ` ${a.name} looks half starved.` : ""}`, { give: `Give ${a.name} some food`, refuse: "Refuse" });
       if (r === "give") {
-        takeItems(b, food); giveItems(w, a, food);
+        hand(w, b, a, food);
         ra.ledger++; b.rel[a.id].ledger--;
         warm = true;
         deed = { act: "give", value: valueOf(w, food), items: [food], by: b, against: a };
@@ -1715,7 +1718,7 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
       delete a.struggles?.[need];
       b.rel[a.id].ledger--; ra.ledger++;
       if (r === "give" && food) {
-        takeItems(b, food); giveItems(w, a, food);
+        hand(w, b, a, food);
         felt.a = { feel: 1.5, bond: "gave_me_food" }; felt.b = { feel: 0.5 };
         deed = { act: "give", value: valueOf(w, food), items: [food], by: b, against: a };
         text = `${a.name} came to ${b.name} for help, and ${b.name} gave them ${an(nm(w, food))}.`;
@@ -1829,7 +1832,7 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
       const hidden = kind === "steal";
       const eyes = (x: Agent) => 0.35 + trait(x, "observant") * 0.4 + trait(x, "suspicious") * 0.2 - level(a.skills.pickpocketing ?? 0) * 0.05;
       const noticed = !hidden || Math.random() < eyes(b);
-      takeItems(b, item); giveItems(w, a, item);
+      hand(w, b, a, item);
       if (hidden) gain(w, a, "pickpocketing", 4);
       deed = { act: kind, value: valueOf(w, item), items: [item] };
       if (!noticed) {
@@ -1846,7 +1849,7 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
         { let_it_go: "Let it go", confront: "Confront them and demand it back" },
       );
       const back = r === "confront" && Math.random() < 0.6;
-      if (back) { takeItems(a, item); giveItems(w, b, item); deed.items = []; }
+      if (back) { hand(w, a, b, item); deed.items = []; }
       felt.b = { feel: r === "let_it_go" ? -1 : -2, bond: "stole_from_me" }; felt.a = { feel: -0.5 };
       text = `${a.name} ${hidden ? "was caught stealing" : "took"} ${an(nm(w, item))} from ${b.name}. ${b.name} ${r === "let_it_go" ? "let it go" : back ? "confronted them and got it back" : "confronted them, but didn't get it back"}.`;
       break;
@@ -2092,7 +2095,8 @@ export function agentDetail(w: World, a: Agent) {
       key: k, text: beliefText(w, b), how: b.how, from: b.from, t: b.t, tries: b.tries, wins: b.wins,
       spurious: b.spurious ? nm(w, b.spurious) : undefined, law: b.law, gives: Object.keys(b.out),
     }])),
-    inventoryText: a.inv.map((s) => describeKind(w.kinds[s.k])),
+    // a piece of wood as anyone holding it can see it: what tree it came off, how thick and how long
+    inventoryText: a.inv.map((s) => describeKind(w.kinds[s.k]) + (s.size ? `: ${s.species ? `${s.species}, ` : ""}${Math.round(s.size.d * 1000) / 10} cm thick, ${Math.round(s.size.len * 10) / 10} m long` : "")),
     camp: camp ? { id: camp.id, name: camp.name, leader: camp.leader, founded: camp.founded, standing: standing(camp, a.id) } : null,
     outcast: liveCamps(w).flatMap((c) => [
       (c.shunned[a.id]?.until ?? 0) > w.t ? { camp: c.name, how: "shunned", until: c.shunned[a.id].until } : null,

@@ -1,7 +1,7 @@
 // Generations: people grow up, pair off, have children, grow old, and die. What they knew lives on only if they passed it on.
 import { TRAITS } from "./traits";
 import { COLORS, DAY, DESIRES, NAMES, YEAR, addThing, ageOf, clash, landing, log, meters, stageOf, type Agent, type World } from "./world";
-import { dropPile, leaveHome, mark } from "./physics";
+import { dropStacks, leaveHome, mark } from "./physics";
 import { liveThings } from "./space";
 import { newRel } from "./brain";
 import { see } from "./beliefs";
@@ -13,9 +13,7 @@ export function die(w: World, a: Agent, cause: string) {
   w.agents = w.agents.filter((x) => x !== a);
   w.people[a.id] = { ...(w.people[a.id] ?? { id: a.id, name: a.name, color: a.color }), alive: false, died: w.t, cause };
   mark(w, addThing(w, "grave", a.px, a.py, { name: a.name, person: a.id, died: w.t, cause, born: w.t }));
-  const c: Record<string, number> = {};
-  for (const s of [...a.inv, ...(a.wearing ? [a.wearing] : [])]) c[s.k] = (c[s.k] ?? 0) + 1;
-  for (const [k, n] of Object.entries(c)) dropPile(w, a.px, a.py, k, n);
+  dropStacks(w, a.px, a.py, [...a.inv, ...(a.wearing ? [a.wearing] : [])]);
   // what they built goes to whoever lived there with them, or stands empty
   for (const t of liveThings(w)) if (t.owner === a.id && t.kind === "structure") leaveHome(w, a, t);
   log(w, "died", [a.id], a, `${a.name} died of ${cause}, aged ${Math.floor(ageOf(w, a))}.${Object.keys(a.beliefs).length ? ` What they knew went with them, unless they taught it.` : ""}`, `${a.name} died`);

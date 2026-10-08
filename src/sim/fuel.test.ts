@@ -2,8 +2,11 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { BASE, ensure } from "./materials";
 import { BURNS, COPPER, FIRED_CLAY, LEATHER, PHYS, POT_WALL, WOODS, mix, physOf, woodOf, type Burn, type Phys, type Row, type Wood } from "./fuel";
-import { addThing, newWorld, type Agent, type World } from "./world";
-import { applyRuling, giveItems, heat, join, place, shape, type Outcome } from "./physics";
+import { addThing, newWorld, type Agent, type Stack, type Thing, type World } from "./world";
+import { applyRuling, dropStacks, giveItems, giveStack, hand, heat, join, place, shape, strikeTick, takeFromPile, type Outcome } from "./physics";
+import { nearestThing, thingById } from "./space";
+import { die } from "./life";
+import { fallApart } from "./ecology";
 
 // The tables of docs/research/fire-constants.md section 27, row by row, cells trimmed.
 const DOC = readFileSync(new URL("../../docs/research/fire-constants.md", import.meta.url), "utf8").split("\n");
@@ -126,4 +129,93 @@ test("a world saved before records were kept reads raw materials by their base a
   giveItems(w, a, "bone");
   const out = applyRuling(w, a, { verb: "join", items: ["stone", "bone"] }, "join|bone+stone", { useful: true, name: "knob", props: { hard: 0.7 } });
   expect(physOf(w.kinds, w.kinds[made(out)])).toEqual(mix([PHYS.bone, PHYS.stone]));
+});
+
+// ---------- pieces ----------
+const grown = (w: World, a: Agent) => { a.born = w.t - 1e6; return a; };
+const stick = (w: World, d: number, species = "ash"): Stack => ({ k: "stick", hp: 1, born: w.t, size: { d, len: 1.2, mass: (Math.PI / 4) * d * d * 1.2 * 570 }, species });
+const pileOf = (w: World, at: { px: number; py: number }, k: string) => nearestThing(w, at.px, at.py, ["item"], (t) => t.item === k, 3)!;
+
+test("felling a 15 m oak gives logs as thick as an oak's trunk, and branches thicker than a berry bush's stems", () => {
+  const [w, a] = setup();
+  grown(w, a);
+  w.kinds.axe = { id: "axe", name: "axe", props: { sharp: 0.9, heavy: 0.8, hard: 0.9, long: 0.8, toughness: 1 } };
+  giveItems(w, a, "axe");
+  const fell = (t: Thing) => { const st = { progress: 0 }; for (let i = 0; i < 500 && !strikeTick(w, a, { verb: "strike", items: [], tool: "axe", target: { kind: t.kind, thing: t.id } }, st).done; i++); };
+  fell(addThing(w, "tree", a.px, a.py, { species: "oak", size: 15 }));
+  const logs = a.inv.filter((s) => s.k === "log"), branches = a.inv.filter((s) => s.k === "stick");
+  expect(logs.length).toBe(2);
+  // sec. 19a: a forest oak 15 m tall stands on a trunk 18.1 cm across
+  for (const s of logs) { expect(s.species).toBe("oak"); expect(s.size!.d).toBeCloseTo(0.181, 3); }
+  a.inv = a.inv.filter((s) => s.k === "axe");
+  fell(addThing(w, "bush", a.px, a.py, { species: "berry", size: 1.5 }));
+  const stem = a.inv.find((s) => s.k === "stick")!;
+  expect(stem.species).toBe("berry");
+  expect(branches.length).toBe(2);
+  for (const s of branches) expect(s.size!.d).toBeGreaterThan(stem.size!.d);
+});
+
+test("a piece of wood keeps its size and species handed over, handed back, taken, dropped at a death and picked up again", () => {
+  const [w, a] = setup();
+  const b = w.agents[1];
+  b.inv = [];
+  const piece = stick(w, 0.021);
+  const held = (x: Agent) => x.inv.find((s) => s.k === "stick");
+  giveStack(w, a, { ...piece });
+  expect(hand(w, a, b, "stick")).toBe(1);
+  expect(held(b)).toEqual(piece);
+  hand(w, b, a, "stick");
+  expect(held(a)).toEqual(piece);
+  hand(w, a, b, "stick");
+  die(w, b, "cold");
+  expect(takeFromPile(w, pileOf(w, b, "stick"), 0)).toEqual(piece);
+});
+
+test("sticks of two thicknesses set down together lie in one pile as two pieces and come up as they were; a full hand sets a piece down whole", () => {
+  const [w, a] = setup();
+  grown(w, a);
+  const thin = stick(w, 0.008), thick = stick(w, 0.03, "pine");
+  dropStacks(w, a.px, a.py, [thin, thick]);
+  const pile = pileOf(w, a, "stick");
+  expect(pile.n).toBe(2);
+  expect([takeFromPile(w, pile, 0), takeFromPile(w, pile, 0)].sort((x, y) => x.size!.d - y.size!.d)).toEqual([thin, thick]);
+  // one each of sixteen things, none of them spare
+  for (const k of ["stone", "sharp_stone", "fiber", "clay", "log", "plank", "bark", "resin", "flint", "flint_blade", "charcoal", "ore", "pebble", "fern", "bone", "bone_shard"]) giveItems(w, a, k);
+  expect(giveStack(w, a, { ...thick })).toBe(false);
+  expect(pileOf(w, a, "stick").pieces).toEqual([thick]);
+});
+
+test("a shelter of sticks keeps its pieces, and when it falls apart they fall as they were laid", () => {
+  const [w, a] = setup();
+  const sticks = Array.from({ length: 5 }, (_, i) => stick(w, 0.01 + i * 0.002, "pine"));
+  for (const s of sticks) giveStack(w, a, { ...s });
+  giveItems(w, a, "fiber", 3);
+  expect(place(w, a, { verb: "place", items: [...Array(5).fill("stick"), "fiber", "fiber", "fiber"] }).builds).toBe("shelter");
+  const home = thingById(w, a.home)!;
+  expect(home.pieces).toEqual(sticks);
+  // every kind it was built of falls this time, half of each
+  const random = Math.random;
+  Math.random = () => 0;
+  try { fallApart(w, home); } finally { Math.random = random; }
+  expect(pileOf(w, home, "stick").pieces).toEqual(sticks.slice(0, 3));
+});
+
+test("what's made of one piece of wood is that piece: a brand lit from it, and the charcoal it smothers into", () => {
+  const [w, a] = setup();
+  const fire = addThing(w, "fire", a.px, a.py, { hp: 400, maxHp: 400 });
+  const piece = stick(w, 0.018, "hazel");
+  giveStack(w, a, { ...piece });
+  const lit = made(heat(w, a, { verb: "heat", items: ["stick"] })), brand = a.inv.find((s) => s.k === lit)!;
+  expect([brand.size, brand.species]).toEqual([piece.size, "hazel"]);
+  // heaped over with stone, the fire smothers a log into charcoal: two lumps, as thick as the log, sharing its char
+  giveItems(w, a, "stone", 6);
+  place(w, a, { verb: "place", items: ["stone", "stone", "stone"] });
+  place(w, a, { verb: "place", items: ["stone", "stone", "stone"] });
+  expect(fire.covered).toBe(true);
+  const log: Stack = { k: "log", hp: 1, born: w.t, size: { d: 0.15, len: 1, mass: 8 }, species: "oak" };
+  giveStack(w, a, { ...log });
+  heat(w, a, { verb: "heat", items: ["log"] });
+  const lumps = a.inv.filter((s) => s.k === "charcoal");
+  expect(lumps.length).toBe(2);
+  for (const s of lumps) expect(s).toEqual({ k: "charcoal", hp: 1, born: w.t, size: { d: 0.15, len: 0.5, mass: (8 * BURNS.hardwood.charYield) / 2 }, species: "oak" });
 });

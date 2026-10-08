@@ -4,7 +4,7 @@ import {
   type Agent, type Camp, type Custom, type Incident, type Precedent, type Response, type Thing, type World,
 } from "./world";
 import { p } from "./materials";
-import { count, giveItems, homeOf, leaveHome, mark as touch, nearFire, reaches, stash, takeItems, unstash } from "./physics";
+import { hand, homeOf, leaveHome, mark as touch, nearFire, reaches, stash, unstash } from "./physics";
 import { thingById } from "./space";
 import { describeRel, judge, nameCamp } from "./brain";
 import { canSee } from "./light";
@@ -287,10 +287,10 @@ function ruled(w: World, campAtAsk: Camp, inc: Incident, who: Agent, r: { respon
 function repay(w: World, inc: Incident, doer: Agent, to: Agent) {
   const [from, dest] = HARM[inc.act] ? [doer, to] : [to, doer];
   let moved = 0;
-  for (const k of inc.items ?? []) for (let i = 0; i < 2 && count(from, k) > 0; i++) { takeItems(from, k); giveItems(w, dest, k); moved++; }
+  for (const k of inc.items ?? []) moved += hand(w, from, dest, k, 2);
   if (!moved && HARM[inc.act]) {
     const k = [...new Set(from.inv.map((s) => s.k))].sort((x, y) => p(w.kinds[y], "edible") - p(w.kinds[x], "edible"))[0];
-    if (k) { takeItems(from, k); giveItems(w, dest, k); moved++; }
+    if (k) moved += hand(w, from, dest, k);
   }
   return moved > 0;
 }

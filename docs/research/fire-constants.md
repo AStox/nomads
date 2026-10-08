@@ -1071,6 +1071,21 @@ Made kinds take their parts' records by mass: mass adds; volume adds (so ρ is t
 
 A stew is the foods in it, not the pot it cooked in.
 
+### 27e. Pieces of wood (Unit 3)
+
+Each piece of wood keeps its own thickness, length, dry mass and the species it grew as, from what it came off:
+
+| Piece | Thickness | Length | Source |
+|---|---|---|---|
+| A log off a felled tree or a fallen log | the forest-grown trunk diameter at the tree's height (sec. 19a); a fallen log is taken as a trunk as tall as it is long [design] | 1 m [design] | sec. 19a |
+| A branch off a felled tree or a fallen log | a young stem of its length, by the species' height-to-diameter ratio sapHD: pine 105, oak 112, ash 133, aspen 142 (iLand, sec. 19a), a branch being a stem as long as it is [analogue] | a fifth of the tree's height or the log's length [design] | sec. 19a |
+| A stem off a bush or a stump | hazel by its sapHD, 119 (sec. 19c); berry canes by hazel's ratio (sec. 19c [UNVERIFIED]); gorse 0.025 times its length, at most 0.033 m (sec. 19c); heather 0.0035 m (sec. 19c) | the bush's height; a stump's 1 m [design] | sec. 19c |
+| A stick lying on the ground | a stem of its length by the four trees' mean ratio, 123 [derived], its species being unknown | its own length | sec. 19a |
+| Split pieces | a share of the thickness each (two planks are each half as thick) | as long | [derived] |
+| Charcoal smothered from a piece | as thick as the wood: no shrinkage was read [gap] | the wood's length shared among the lumps | the row's char yield of the wood's mass, shared [analogue] |
+
+A piece's dry mass is π/4 d^2 times its length times 1000 G of its species (the generic wood's 0.45 when the species is unknown). A brand lit from a piece, a pointed stick ground from one, and a stick drawn back out of a brand are that piece still.
+
 ## Recommended R2 constant set (with section refs)
 
 **Wood, side grain**

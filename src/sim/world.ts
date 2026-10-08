@@ -46,12 +46,16 @@ export type Thing = {
   covered?: boolean; charcoal?: number; air?: number; heat?: number; // fires: closed over, charcoal left, air blown in until, heat level
   scorch?: number; // how much heat flames beside it have put into it, toward catching (ecology.ts fire)
   shared?: string; given?: Record<string, number>; // a store a camp treats as its own, and who put how much in
+  pieces?: Stack[]; // an item pile's or a structure's pieces of wood, as they were laid down (the rest are counted)
   // a seedling's: how well its spot suits its kind, water poured round it soaking away, and the share of its spot's light
   // and water the plants round it leave it
   fit?: number; water?: number; share?: number;
 };
-// wet: how wet it is, 0 to 1, for tinder (wetness.ts); none is dry
-export type Stack = { k: string; hp: number; born: number; wet?: number };
+// wet: how wet it is, 0 to 1, for tinder (wetness.ts); none is dry. size and species: a piece of wood's own (fuel.ts),
+// what it grew as and how it was cut; none is a piece of no known size
+export type Stack = { k: string; hp: number; born: number; wet?: number; size?: Size; species?: string };
+// A piece of wood's size: how thick and how long, in meters, and its dry mass in kg.
+export type Size = { d: number; len: number; mass: number };
 export type AnimalSpecies = "deer" | "wolf" | "rabbit" | "heron" | "gull" | "crow" | "eagle" | "fish" | "butterfly";
 export type Animal = {
   id: string; species: AnimalSpecies; x: number; y: number; px: number; py: number;
