@@ -1,4 +1,6 @@
 // Materials are bags of properties. Items are kinds in a registry that grows as people make new things.
+import { mix, physOf, type Phys } from "./fuel";
+
 export const PROPS = [
   "hard", "sharp", "heavy", "long", "flexible", "fibrous", "binding", "flammable",
   "edible", "toxic", "plastic", "container", "insulating", "medicinal", "seed", "toughness", "metal",
@@ -20,6 +22,7 @@ export type Kind = {
   fuel?: number; // ticks of fire it feeds
   burns?: number; // how much hotter than wood it burns
   cools?: number; // ticks before a hot thing goes back to what it was
+  phys?: Phys; // what a made kind is made of, physically (fuel.ts; a raw material's is fuel.ts PHYS)
   count?: number; // times anyone has made it
   named?: boolean; // people settled on a common name
   plain?: string; // the descriptive name before that
@@ -101,6 +104,9 @@ export function ensure(reg: Registry, id: string, make: () => Omit<Kind, "id">):
   if (reg[id]) return [reg[id], false];
   const k = { id, ...make() };
   k.props = round(k.props);
+  // what it's made of: its parts by mass, unless making it made new matter (fuel.ts)
+  const phys = k.phys ?? mix((k.parts ?? []).flatMap((part) => physOf(reg, reg[part]) ?? []));
+  if (phys) k.phys = phys;
   reg[id] = k;
   return [k, true];
 }

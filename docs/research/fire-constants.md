@@ -145,9 +145,9 @@ Disagreements:
 
 Picks:
 - Flaming gives 13 MJ per kg of volatiles; char gives 30 MJ/kg.
-- Char yield 0.25.
-- Regression β = 0.028 q (mm/min, q kW/m2 net to the surface), capped near 1.6 mm/min in a bed. This gives 0.65 mm/min at about 23 kW/m2, which matches the furnace value.
-- A piece keeps flaming only while m'' = (q_in - q_loss)/L stays at or above about 3.5 g/m2s, with L = 6.8 kJ/g (R2's lower value), using the CLT and review midpoint.
+- Char yield 0.25. Superseded by section 16: 0.45, the across row.
+- Regression β = 0.028 q (mm/min, q kW/m2 net to the surface), capped near 1.6 mm/min in a bed. This gives 0.65 mm/min at about 23 kW/m2, which matches the furnace value. Superseded by section 16: β is derived from m'' and the char yield, about 0.019 q.
+- A piece keeps flaming only while m'' = (q_in - q_loss)/L stays at or above about 3.5 g/m2s, using the CLT and review midpoint. L was 6.8 kJ/g (R2's lower value); section 16 replaces it with the across row, 12.5 softwood and 9.4 hardwood.
 
 ## 4. Flames: height, tilt, blow-off
 
@@ -985,6 +985,92 @@ Branches and split wood from 100% to 30% at the same EMC, in game days, by secti
 
 **Result.** On this island's weather, tinder picked up from the ground or kept at the air's temperature mostly stops catching, a spark in 7% of hours against today's 28% and never in winter. Tinder carried against the body, or dried by a fire, catches in every hour. Fire-making carries on for people who carry their tinder on them and mostly stops for those who rely on what lies about.
 
+## 27. One physical record per kind (Unit 2)
+
+What src/sim/fuel.ts holds for each kind: the picks above set down per kind, with analogues and design values marked. src/sim/fuel.test.ts reads these tables and fails if fuel.ts differs from them.
+
+- Moisture is kg of water per kg dry.
+- ρ is the dry mass per volume of the piece as it is. For foods, clay and hide it is the cited density of the moist piece divided by 1 plus the water it holds as found [derived].
+- c is the dry heat capacity. Water adds its own 4.19 kJ/kgK per kg (the water term of Chen's model, sec. 23).
+- k is the dry conductivity across the grain for wood, bark, fine fuel and charcoal, by R6's relation at the kind's density; R6 adds G (0.4064) W/mK per unit of moisture below fibre saturation. For everything else it is the cited conductivity of the piece as found, which no moisture law read here changes [gap].
+- d is the thickness of one, which sets how fast heat and water reach its middle; mass is the dry mass of one. For kinds whose pieces vary in size these are design values (Unit 3 gives each piece its own), marked [design].
+- Plant matter's dry c is R6's c_p0 at 20 C, 0.1031 + 0.003867 x 293.15 = 1.237 kJ/kgK; its dry k is G x 0.1941 + 0.01864 W/mK; its mmax is (1.54 - G) / (1.54 G) (R6) [derived].
+
+### 27a. The rows things burn by
+
+| Row | Tig C | q_cr kW/m2 | kρc (kW/m2K)^2 s | Δh flame MJ/kg | Δh char MJ/kg | Char yield | L kJ/g | Source |
+|---|---|---|---|---|---|---|---|---|
+| softwood | 350 | 11 | 0.22 | 13 | 30 | 0.45 | 12.5 | sec. 1, 3, 16 |
+| hardwood | 305 | 11 | 0.22 | 13 | 30 | 0.45 | 9.4 | sec. 1, 3, 16 |
+| fine | 250 | 11 | 0.22 | 12 | 30 | 0.45 | 12.5 | Tig R8's 523 K for fine fuel (sec. 1); Δh flame 0.65 x 18.6 (sec. 22e); the rest the softwood row [analogue] |
+| fern | 250 | 11 | 0.22 | 13.7 | 30 | 0.45 | 12.5 | the fine row; Δh flame 0.65 x 21 (sec. 22e) |
+| bark | 350 | 11 | 0.22 | 13 | 30 | 0.45 | 12.5 | the softwood row; Δh flame 13 (sec. 22c) |
+| hide | 305 | 11 | 0.22 | 14 | 30 | 0.45 | 9.4 | Δh flame 0.65 x 21 (sec. 22d) [UNVERIFIED]; the rest the hardwood row [analogue, gap] |
+| fat | 265 | 11 | 0.27 | 36 | 30 | 0 | 1.82 | Tig the tallow flash point (sec. 22b); kρc from the record's k, ρ and c [derived]; q_cr the wood value and L R14's 1.82 [analogue, gap] |
+| resin | 187 | 11 | 0.28 | 36 | 30 | 0 | 1.82 | Tig the gum rosin flash point (sec. 22a); kρc [derived]; q_cr and L as fat [analogue, gap] |
+| char | 350 | 11 | 0.22 | 0 | 30 | 1 | 12.5 | Δh char (sec. 3); all of it char; Tig, q_cr, kρc and L the softwood row [analogue, gap] |
+
+### 27b. Wood by species
+
+| Species | G | Green, sapwood or whole stem | Green, heartwood | Row | Source |
+|---|---|---|---|---|---|
+| pine | 0.42 | 1.20 | 0.35 | softwood | sec. 21 |
+| oak | 0.58 | 0.78 | 0.64 | hardwood | sec. 21 |
+| ash | 0.57 | 0.44 | 0.46 | hardwood | sec. 21 |
+| aspen | 0.35 | 1.13 | 0.95 | hardwood | sec. 21 |
+| hazel | 0.50 | 0.80 | | hardwood | sec. 21 (G and green UNVERIFIED, the birch analogue) |
+| heather | 0.55 | 0.80 | | hardwood | sec. 21 (G the shrub mean, UNVERIFIED) |
+| gorse | 0.72 | 0.60 | | hardwood | sec. 21 |
+| berry | 0.55 | 0.65 | | hardwood | sec. 21: bramble; G the shrub mean and green the NFDRS woody dormant midpoint [gap] |
+| generic | 0.45 | | | softwood | the density the checks of sec. 3 and 16 use, and the Douglas-fir across row, for wood of no known species |
+
+ρ is 1000 G, and c, k and mmax follow from G as above.
+
+### 27c. Kinds
+
+| Kind | ρ kg/m3 | c kJ/kgK | k W/mK | mmax | Green | d m | Mass kg | Burns as | Source |
+|---|---|---|---|---|---|---|---|---|---|
+| stick | 450 | 1.237 | 0.106 | 1.573 | | 0.025 | 0.22 | softwood | generic wood; 25 mm by 1 m [design] |
+| log | 450 | 1.237 | 0.106 | 1.573 | | 0.17 | 10 | softwood | generic wood; a 1 m length of the trunk sec. 19 gives at typical height [design] |
+| plank | 450 | 1.237 | 0.106 | 1.573 | | 0.085 | 5 | softwood | generic wood; half a log [design] |
+| bark | 460 | 1.237 | 0.108 | 1.85 | | 0.002 | 0.1 | bark | sec. 22c: ρ pine bark, mmax [UNVERIFIED]; c and k by R6 at its density [analogue]; a 2 mm strip [design] |
+| fiber | 513 | 1.237 | 0.118 | 1.30 | | 0.00061 | 0.02 | fine | NFDRS fine fuel (R30) and the herbaceous class's thickness (sec. 22e); c, k and mmax by R6 at its density [analogue]; a handful [design] |
+| fern | 513 | 1.237 | 0.118 | 1.30 | 3.33 | 0.00061 | 0.05 | fern | sec. 22e: green fronds; as fiber otherwise; a bundle of fronds [design] |
+| flower | 513 | 1.237 | 0.118 | 1.30 | 2.5 | 0.00061 | 0.005 | fine | sec. 22e; green the NFDRS herbaceous cap (R30); as fiber otherwise [design] |
+| herb | 513 | 1.237 | 0.118 | 1.30 | 2.5 | 0.00061 | 0.01 | fine | as flower |
+| hide | 441 | 1.262 | 0.47 | 1.7 | 1.7 | 0.003 | 2 | hide | sec. 22d and 23: ρ 1190 (hydrated collagen) over 2.7; c Chen's model at all solids, 4.19 - 2.30 - 0.628 [derived]; k the meat row [analogue, gap]; mmax and green 150 to 185% [UNVERIFIED]; 3 mm; a deer's hide [design] |
+| bone | 1920 | 0.835 | 0.72 | 0.1 | 0.1 | 0.02 | 0.3 | | the fired clay row (sec. 23) as the nearest porous mineral [analogue, gap]; water [design, gap]; [design] |
+| bone_shard | 1920 | 0.835 | 0.72 | 0.1 | 0.1 | 0.005 | 0.02 | | as bone |
+| stone | 2630 | 0.775 | 2.79 | 0 | | 0.1 | 2.6 | | granite (sec. 23); a 10 cm stone [design] |
+| sharp_stone | 2630 | 0.775 | 2.79 | 0 | | 0.01 | 0.066 | | granite; a 1 cm flake 5 cm across [design] |
+| pebble | 2630 | 0.775 | 2.79 | 0 | | 0.02 | 0.021 | | granite; 2 cm [design] |
+| flint | 2650 | 0.74 | 3 | 0 | | 0.08 | 1.36 | | sec. 23, k the one value whose units were read; an 8 cm nodule [design] |
+| flint_blade | 2650 | 0.74 | 3 | 0 | | 0.01 | 0.066 | | as flint; a 1 cm flake [design] |
+| ore | 3800 | 0.8 | 2.8 | 0 | | 0.05 | 0.475 | | sec. 23, c and k [UNVERIFIED analogues]; a 5 cm lump [design] |
+| clay | 1608 | 0.8 | 0.52 | 0.65 | 0.275 | 0.05 | 0.2 | | sec. 23: ρ 2050 over 1.275; c the dry solids [UNVERIFIED]; k the soil row as found; mmax the kaolinite liquid limit's midpoint; green the plastic water; a 5 cm lump [design] |
+| charcoal | 90 | 1.237 | 0.106 | 1.573 | | 0.025 | 0.05 | char | ρ 20% of the generic wood (sec. 3, R14); c, k and mmax the generic wood's [analogue, gap]; a lump [design]. A char yield of 0.45 at a fifth of the density would swell the wood, a disagreement between R2 and R14 |
+| fat | 900 | 2 | 0.15 | 0 | | 0.02 | 0.5 | fat | sec. 22b: ρ solid [UNVERIFIED], c and k of the melt; a lump [design] |
+| resin | 1080 | 1.98 | 0.13 | 0 | | 0.01 | 0.05 | resin | sec. 22a: c and k of rosin oil; a 10 mm lump, 50 g gathered [design] |
+| meat | 263 | 1.262 | 0.47 | 3 | 3 | 0.03 | 0.13 | | sec. 23: ρ 1050 over 4 (75% water); c Chen's at all solids [derived]; k as found; 3 cm and a 0.5 kg cut [design] |
+| fish | 263 | 1.262 | 0.47 | 3 | 3 | 0.03 | 0.075 | | the meat row [analogue]; a 0.3 kg fish [design] |
+| berry | 150 | 1.262 | 0.51 | 5.67 | 5.67 | 0.012 | 0.00014 | | sec. 23: ρ 1000 [UNVERIFIED] over 6.67 (85% water); k [UNVERIFIED]; a 1.2 cm berry [design] |
+| mushroom | 150 | 1.262 | 0.51 | 5.67 | 5.67 | 0.03 | 0.0075 | | the berry row [analogue, gap]; 3 cm and 50 g [design] |
+| grain | 1131 | 1.262 | 0.15 | 0.15 | 0.15 | 0.004 | 0.044 | | sec. 23: ρ 1300 [UNVERIFIED] over 1.149 (13% water); k [design, gap]; a 4 mm kernel, a 50 g handful [design] |
+| nut | 1131 | 1.262 | 0.15 | 0.15 | 0.15 | 0.015 | 0.002 | | the grain row [analogue, gap]; a 1.5 cm nut [design] |
+
+### 27d. Matter made from other matter
+
+Made kinds take their parts' records by mass: mass adds; volume adds (so ρ is the total mass over the summed volumes); c, k and mmax are mass-weighted; d is the thickest part's; a burning record is mass-weighted over the parts that burn, with the share of the mass that burns. A Jev ruling's kind is made from its inputs the same way. Making changes the matter itself only here:
+
+| Made | ρ kg/m3 | c kJ/kgK | k W/mK | mmax | d m | Mass kg | Burns as | Source |
+|---|---|---|---|---|---|---|---|---|
+| fired clay | 1920 | 0.835 | 0.72 | 0.1 | as made from | as made from | | common brick (sec. 23); mmax: fired earthenware's absorption was not read [design, gap] |
+| copper | 8930 | 0.385 | 401 | 0 | 0.01 | 0.1 | | sec. 23; a lump smelted from a lump of ore [design] |
+| leather | 750 | 1.262 | 0.47 | 1.7 | as made from | as made from | hide | sec. 22d: ρ 600 to 900; the rest as hide |
+| a pot | as made from | | | | 0.007 | as made from | | the pot wall (sec. 23) [design], when clay is pressed into a bowl |
+
+A stew is the foods in it, not the pot it cooked in.
+
 ## Recommended R2 constant set (with section refs)
 
 **Wood, side grain**
@@ -1008,6 +1094,7 @@ Branches and split wood from 100% to 30% at the same EMC, in game days, by secti
 - Particle density: 32 lb/ft3 (513 kg/m3), the NFDRS constant (R30 [read]).
 - Heat content: 8000 Btu/lb (18.6 MJ/kg), from the NFDRS fuel model row (R30 [read]).
 - Thin-body ignition in flame contact at about 100 kW/m2.
+- Tig 250 C, R8's 523 K for fine fuel (sec. 1, 27a).
 - Mx 0.30.
 - Timelag scales as d^2 from the 10-h anchor.
 

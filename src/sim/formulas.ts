@@ -114,7 +114,7 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
       // the first two rubbed together, the tinder after them, if they held any
       const A = w.kinds[f.inputs[0]], B = w.kinds[f.inputs[1] ?? f.inputs[0]];
       const r = rubbing(A, B);
-      if (r.does === "leather") return out(true, r.ticks, { gives: [leatherOf(r.hide).id] });
+      if (r.does === "leather") return out(true, r.ticks, { gives: [leatherOf(w.kinds, r.hide).id] });
       if (r.does === "friction") {
         const ticks = Math.ceil(1 / frictionPer(r.bow, 0));
         return s.tinder !== null && emberCatches(s.tinder) ? out(true, ticks, { builds: "fire" }) : out(false, ticks, { effect: "heat" });

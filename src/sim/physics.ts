@@ -1,5 +1,6 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
-import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props } from "./materials";
+import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props, type Registry } from "./materials";
+import { COPPER, FIRED_CLAY, LEATHER, POT_WALL, mix, physOf, remade } from "./fuel";
 import { CELL } from "../terrain/grid";
 import { DAY, REACH, TILE_M, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, isNight, level, log, meters, nearWater, perWorld, reachOf, wetAt, type Act, type Agent, type Shelter, type Thing, type World } from "./world";
 import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } from "./space";
@@ -593,7 +594,7 @@ export function heating(w: World, items: string[], c: HeatSetting): Decision | "
     const stew: Make = { id: `stew:${foods.map((x) => x.id).sort().join("+")}`, make: () => ({
       name: `${foods.length > 1 ? "mixed" : foods[0].name} stew`,
       props: { edible: clamp01(foods.reduce((t, x) => t + p(x, "edible"), 0) * 1.4), toxic: Math.min(...foods.map((x) => p(x, "toxic"))) * 0.1, medicinal: Math.max(...foods.map((x) => p(x, "medicinal"))) },
-      parts: fields.inputs, verb: "heat", shelf: 3,
+      parts: fields.inputs, verb: "heat", shelf: 3, phys: mix(foods.flatMap((f) => physOf(w.kinds, f) ?? [])),
     }) };
     return done(stew, `Cooking ${foods.map((x) => `the ${x.name}`).join(" and ")} in the ${pot.name} made a ${nameOf(w, stew)}.`, [pot.id]);
   }
@@ -629,7 +630,7 @@ export function heating(w: World, items: string[], c: HeatSetting): Decision | "
     return done({ id: `fired:${x.id}`, make: () => ({
       name: x.id === "clay" ? "fired clay lump" : `fired ${x.name.replace(/^clay |^wet clay /, "clay ")}`,
       props: { ...x.props, plastic: 0, binding: 0, hard: 0.75, toughness: 0.45 },
-      parts: [x.id], verb: "heat",
+      parts: [x.id], verb: "heat", phys: remade(FIRED_CLAY, physOf(w.kinds, x)),
     }) }, `The heat of the ringed fire baked the ${x.name} hard.`);
   }
   if (p(x, "metal") >= 0.8) {
@@ -642,7 +643,7 @@ export function heating(w: World, items: string[], c: HeatSetting): Decision | "
     if (level < 2.2) return level >= 1.9 ? cool(`The ${x.name} glowed and sweated, but nothing came of it.`) : decided({ text: `The ${x.name} got hot, then cooled. Nothing changed.`, fields });
     fields.at = "forge";
     return done({ id: `smelt:${x.id}`, make: () => ({
-      name: "metal lump", props: { hard: 0.8, heavy: 0.85, metal: 1, toughness: clamp01(p(x, "toughness") + 0.15) }, parts: [x.id], verb: "heat",
+      name: "metal lump", props: { hard: 0.8, heavy: 0.85, metal: 1, toughness: clamp01(p(x, "toughness") + 0.15) }, parts: [x.id], verb: "heat", phys: COPPER,
     }) }, `In the roaring charcoal the ${x.name} bled bright metal, which cooled into a lump.`);
   }
   const woody = p(x, "flammable") >= 0.5 && p(x, "hard") >= 0.3 && x.verb !== "join";
@@ -657,7 +658,7 @@ export function heating(w: World, items: string[], c: HeatSetting): Decision | "
       return decided({ text: `The ${x.name} dried stiff and scorched at the edges.`, effect: "scorched", fields });
     }
     fields.at = "kiln";
-    const cured = leatherOf(x);
+    const cured = leatherOf(w.kinds, x);
     return done(cured, `Held in the thick smoke, the ${x.name} cured into ${nameOf(w, cured)}.`);
   }
   const lamp = p(x, "container") >= 0.5 && p(x, "hard") >= 0.4;
@@ -682,13 +683,13 @@ export function heat(w: World, a: Agent, act: Act): Outcome | "ask" {
   return d === "ask" ? d : enact(w, a, d);
 }
 // Hide cured into leather, in thick smoke (heating) or with fat rubbed into it (rubTick).
-export const leatherOf = (hide: Kind): Make => ({ id: `leather:${hide.id}`, make: () => ({
+export const leatherOf = (reg: Registry, hide: Kind): Make => ({ id: `leather:${hide.id}`, make: () => ({
   name: hide.id === "hide" ? "leather" : `${hide.name} leather`,
   props: { insulating: clamp01(p(hide, "insulating") + 0.05), flexible: clamp01(p(hide, "flexible") + 0.25), fibrous: p(hide, "fibrous") * 0.6, toughness: clamp01(p(hide, "toughness") + 0.3), flammable: p(hide, "flammable") * 0.6 },
-  parts: [hide.id], verb: "heat",
+  parts: [hide.id], verb: "heat", phys: remade(LEATHER, physOf(reg, hide)),
 }) });
 export function leather(w: World, hide: Kind) {
-  const { id, make } = leatherOf(hide);
+  const { id, make } = leatherOf(w.kinds, hide);
   return ensure(w.kinds, id, make);
 }
 
@@ -928,11 +929,15 @@ export function shaping(w: World, items: string[], form: string | undefined, c: 
   const bowl = form === "bowl", id = `shape:${form}:${x.id}`;
   if (id === held.id) return decided({ text: `The ${held.name} was already that shape.`, fields });
   fields.gives = [id];
-  return decided({ ok: true, text: `They pressed the ${held.name} into a ${bowl ? "hollow bowl" : "flat-sided block"}.`, uses: { [held.id]: 1 }, gives: { [id]: 1 }, fields, make: { id, make: () => ({
-    name: `${x.id === "clay" ? "clay" : noun(x)} ${bowl ? "bowl" : "block"}`,
-    props: bowl ? { ...x.props, container: 0.8, binding: 0, heavy: 0.35 } : { ...x.props, binding: 0.1, heavy: 0.6, hard: 0.2 },
-    parts: [x.id], verb: "shape",
-  }) } });
+  return decided({ ok: true, text: `They pressed the ${held.name} into a ${bowl ? "hollow bowl" : "flat-sided block"}.`, uses: { [held.id]: 1 }, gives: { [id]: 1 }, fields, make: { id, make: () => {
+    // a bowl's wall is thin, whatever lump it was pressed from
+    const phys = physOf(w.kinds, x);
+    return {
+      name: `${x.id === "clay" ? "clay" : noun(x)} ${bowl ? "bowl" : "block"}`,
+      props: bowl ? { ...x.props, container: 0.8, binding: 0, heavy: 0.35 } : { ...x.props, binding: 0.1, heavy: 0.6, hard: 0.2 },
+      parts: [x.id], verb: "shape", phys: bowl && phys ? { ...phys, d: POT_WALL } : phys,
+    };
+  } } });
 }
 export function shape(w: World, a: Agent, act: Act): Outcome {
   return enact(w, a, shaping(w, act.items, act.shape, { held: count(a, act.items[0]) > 0 }));
