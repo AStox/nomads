@@ -168,7 +168,7 @@ test("a piece of wood keeps its size and species handed over, handed back, taken
   expect(held(a)).toEqual(piece);
   hand(w, a, b, "stick");
   die(w, b, "cold");
-  expect(takeFromPile(w, pileOf(w, b, "stick"), 0)).toEqual(piece);
+  expect(takeFromPile(w, pileOf(w, b, "stick"))).toEqual(piece);
 });
 
 test("sticks of two thicknesses set down together lie in one pile as two pieces and come up as they were; a full hand sets a piece down whole", () => {
@@ -178,7 +178,7 @@ test("sticks of two thicknesses set down together lie in one pile as two pieces 
   dropStacks(w, a.px, a.py, [thin, thick]);
   const pile = pileOf(w, a, "stick");
   expect(pile.n).toBe(2);
-  expect([takeFromPile(w, pile, 0), takeFromPile(w, pile, 0)].sort((x, y) => x.size!.d - y.size!.d)).toEqual([thin, thick]);
+  expect([takeFromPile(w, pile), takeFromPile(w, pile)].sort((x, y) => x.size!.d - y.size!.d)).toEqual([thin, thick]);
   // one each of sixteen things, none of them spare
   for (const k of ["stone", "sharp_stone", "fiber", "clay", "log", "plank", "bark", "resin", "flint", "flint_blade", "charcoal", "ore", "pebble", "fern", "bone", "bone_shard"]) giveItems(w, a, k);
   expect(giveStack(w, a, { ...thick })).toBe(false);

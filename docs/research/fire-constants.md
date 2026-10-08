@@ -1086,6 +1086,22 @@ Each piece of wood keeps its own thickness, length, dry mass and the species it 
 
 A piece's dry mass is π/4 d^2 times its length times 1000 G of its species (the generic wood's 0.45 when the species is unknown). A brand lit from a piece, a pointed stick ground from one, and a stick drawn back out of a brand are that piece still.
 
+### 27f. Water in everything (Unit 4)
+
+Every thing holds water, kg to the kg of it dry, and each hour (src/sim/wetness.ts):
+- **In rain on it** it soaks toward its mmax as fast as its thickness lets water in, τ = 10 h (d / 12.7 mm)^2 (sec. 5), and no faster than the rain on its face brings water: a round piece turns 4 / (π ρ d) m2 to the sky for each kg, and rain falls at the sky's rate (sec. 13, 25). Lying in standing water it soaks as in the heaviest rain. A roof or a bag keeps rain off; nothing else does.
+- **Out of the rain** it draws toward the equilibrium of the air at its own warmth: Simard's EMC (R30) at the warmth and humidity Byram and Jemison's rule gives (sec. 11), with the sun on it in the open (less any canopy over it), a fire's radiant flux on it near one, and the wind at it. Things lying on the ground take the wind at the tops of short grass, 0.20 of head height (sec. 14); things held take the wind at head height [design].
+  - τ is the d^2 law for wood, bark, char and everything not herbaceous (sec. 5; an analogue for foods, hide and clay).
+  - Wood cut from a living plant follows sec. 20's τ_green = 500 h (d / 25 mm)^1.5 while it holds more than fibre saturation's 30%, and the d^2 law once it has first dried below it.
+  - Herbaceous stuff (grass, fiber, fern, flowers, herbs and anything made only of them) lets water in and out through a waxy skin: it dries over 2.2 h, the geometric middle of R34's 0.5 to 10 h for weathered fine fuel [derived], though rain soaks it by the d^2 law, as surface water.
+- **Near a fire** it also loses the water the fire's flux on its face boils off, at 2.6 MJ/kg (sec. 5). Until fires burn as beds of their own fuel (Units 5 to 9), every fire is taken as a campfire of 10 kW [design] whose radiant share, χr 0.3 (sec. 4), falls off as from a point (sec. 18).
+- **Against the body**, held by someone who wears anything or carries a bag, it sits in the body's own air, 32 C with the outside air's water plus 0.5 kPa (sec. 18), out of the sun and a fire's reach. Rain still reaches it unless it is in a bag.
+- **Bare skin** is wet as a thin piece a millimetre thick would be [design]: soaked in rain, dry within the hour after. A body loses heat in the cold (sim.ts needs) faster by 1 + 0.3 times how wet what it wears is (m over mmax), or its bare skin, the factor rain alone used to give [design until Unit 9].
+- **The island's dead stuff** lying about (grass, fern, twigs, sticks, fallen logs) holds what the island's weather has left in dead stuff of its thickness: kept hourly, island-wide, at a grass blade's 0.61 mm and the NFDRS class bounds of 6.35, 25.4, 76.2 and 203.2 mm (sec. 5, 22e), in the open (sun, wind at the grass tops, open ground taking 0.6 of the sea's wind) and in the shade, from the land's mean air water and rain for the season. A thing reads the value for its thickness between the two nearest by their logs, shaded by the canopy over it, and nothing is stored on it until someone takes it.
+- **As found**: wood cut from a living tree or bush holds its species' green water (a log the mean of sapwood and heartwood [design], a branch or stem its sapwood's), and is green; bark peeled off a living tree holds its sapwood's [analogue]; reeds pulled for fiber hold LIVE_HERB, the NFDRS's 250% for living herbaceous fuel (R30) [analogue]; berries, mushrooms, herbs, meat, hide and clay hold their kinds' green water (sec. 27c); stone and metal none.
+- **Made things** hold the water of all that went into them by mass, as much as they can hold; charcoal comes out of its smothered fire dry.
+- **Catching** (sec. 10): a struck spark catches in tinder holding 10% or less, an ember blown into it in tinder holding 13% or less.
+
 ## Recommended R2 constant set (with section refs)
 
 **Wood, side grain**

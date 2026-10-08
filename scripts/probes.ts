@@ -25,7 +25,7 @@ import { DARK, lightOn, skyShare } from "../src/sim/light";
 import { airOn } from "../src/sim/air";
 import { anyAround, around, put, thingById } from "../src/sim/space";
 import { fieldsOf, groundKey, ofPlace, ruledOut, type Belief } from "../src/sim/beliefs";
-import { tinder, tinderOf, wetHere } from "../src/sim/wetness";
+import { REF, deadAt, tinder, tinderOf } from "../src/sim/wetness";
 import { ahead, bedAt, seedlingFate, type Bed, type Hour } from "../src/sim/seedling";
 import { envHere } from "../src/sim/plants";
 import { feedRate, fertilityAt } from "../src/sim/soil";
@@ -370,12 +370,12 @@ function ticksOf(w: World, key: string) {
   return f.verb === "rub" ? Math.ceil(1 / frictionPer(false, 0)) : Math.ceil(1 / sparksPer(w.kinds[f.tool!], w.kinds[f.target!]));
 }
 // Whether a try of a way would come off for someone now, by the physics' own formulas: a spark struck over their tinder
-// catches if it is drier than damp and no gale carries the sparks off; an ember, if their tinder is short of soaked.
+// catches if it holds no more water than damp and no gale carries the sparks off; an ember, no more than soaked.
 function catchesNow(w: World, a: Agent, key: string) {
   const f = fieldsOf(key);
-  if (f.verb === "rub") return emberCatches(tinderOf(w, a)?.wet ?? 0);
+  if (f.verb === "rub") return emberCatches(tinderOf(w, a)?.m ?? 0);
   const over = f.inputs.find((k) => tinder(w.kinds[k])) ?? "fiber";
-  return sparkCatches(tinderOf(w, a, over)?.wet ?? 0, airOn(w, a).wind);
+  return sparkCatches(tinderOf(w, a, over)?.m ?? 0, airOn(w, a).wind);
 }
 
 // Open ground near where they came ashore: dry, the sky clear overhead, nothing standing within a few meters.
@@ -583,7 +583,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
       // two flints, so one chipped away mid-try doesn't leave them only the other way to choose for the next
       if (ways.includes(FLINT) && (c.flint ?? 0) < 2) giveItems(w, a, "flint", 2 - (c.flint ?? 0));
       if (ways.includes(RUB) && (c.stick ?? 0) < 3) giveItems(w, a, "stick", 3 - (c.stick ?? 0));
-      if ((c.fiber ?? 0) < 2) giveItems(w, a, "fiber", 2 - (c.fiber ?? 0), bagged ? 0 : wetHere(w, a));
+      if ((c.fiber ?? 0) < 2) giveItems(w, a, "fiber", 2 - (c.fiber ?? 0), bagged ? 0 : deadAt(w, a, REF[0]));
     }
     if (sowing) {
       // whatever came up last tick, and anything else that grew in, cleared off the plots

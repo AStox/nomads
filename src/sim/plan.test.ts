@@ -111,7 +111,7 @@ test("rubbing sticks over tinder soaked through only makes them hot, and someone
   expect(lit.builds).toBe("fire");
   const knows = record(w, a, lit, 30)!;
   a.inv = [];
-  giveItems(w, a, "stick", 2); giveItems(w, a, "fiber", 1, SOAKED);
+  giveItems(w, a, "stick", 2); giveItems(w, a, "fiber", 1, SOAKED + 0.05);
   const soaked = rub();
   expect(soaked.out.builds).toBeUndefined();
   expect(soaked.out.effect).toBe("heat");
@@ -178,7 +178,7 @@ test("striking stone over damp tinder only throws sparks that won't catch: that'
     return r.out!;
   };
   a.inv = [];
-  giveItems(w, a, "stone", 2); giveItems(w, a, "fiber", 1, DAMP);
+  giveItems(w, a, "stone", 2); giveItems(w, a, "fiber", 1, DAMP + 0.02);
   const st = { progress: 0 };
   let r;
   do r = strikeTick(w, a, act, st); while (!r.done);

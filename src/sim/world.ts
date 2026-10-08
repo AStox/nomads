@@ -47,13 +47,15 @@ export type Thing = {
   scorch?: number; // how much heat flames beside it have put into it, toward catching (ecology.ts fire)
   shared?: string; given?: Record<string, number>; // a store a camp treats as its own, and who put how much in
   pieces?: Stack[]; // an item pile's or a structure's pieces of wood, as they were laid down (the rest are counted)
+  m?: number; // an item pile's counted things' water, kg to the kg (wetness.ts)
   // a seedling's: how well its spot suits its kind, water poured round it soaking away, and the share of its spot's light
   // and water the plants round it leave it
   fit?: number; water?: number; share?: number;
 };
-// wet: how wet it is, 0 to 1, for tinder (wetness.ts); none is dry. size and species: a piece of wood's own (fuel.ts),
-// what it grew as and how it was cut; none is a piece of no known size
-export type Stack = { k: string; hp: number; born: number; wet?: number; size?: Size; species?: string };
+// m: the water in it, kg to each kg of it dry (wetness.ts; none is bone dry); green: cut from a living plant and not yet
+// dried below fibre saturation. size and species: a piece of wood's own (fuel.ts), what it grew as and how it was cut;
+// none is a piece of no known size
+export type Stack = { k: string; hp: number; born: number; m?: number; green?: true; size?: Size; species?: string };
 // A piece of wood's size: how thick and how long, in meters, and its dry mass in kg.
 export type Size = { d: number; len: number; mass: number };
 export type AnimalSpecies = "deer" | "wolf" | "rabbit" | "heron" | "gull" | "crow" | "eagle" | "fish" | "butterfly";
@@ -73,7 +75,9 @@ export type Weather = {
   wind: { dx: number; dy: number }; // the way it blows
   speed: number; // m/s at head height over the open sea
   wet: number; // 0..1 how much of the last day or two's rain is still running off the land
-  litter?: number; // 0..1 how wet the grass, fern and twigs lying about in the open are (wetness.ts); none is dry
+  // the water in dead wood and litter lying about the island, kg to the kg, at wetness.ts REF thicknesses, in the open
+  // and in the shade
+  dead?: { open: number[]; shade: number[] };
 };
 // result: what it gives, builds or does, as the outcome that first showed it (physics.ts Fields)
 export type Law = { id: string; key: string; text: string; verb: string; source: "physics" | "jev"; by: string; t: number; result?: { gives: string[]; builds?: string; effect?: string; target?: string } };
@@ -161,6 +165,7 @@ export type Agent = {
   skills: Record<string, number>; // appears the first time they use a craft
   inv: Stack[];
   wearing: Stack | null;
+  skin?: number; // how wet their bare skin is, 0 dry to 1 soaked (wetness.ts); none is dry
   beliefs: Record<string, Belief>; // what they think happens when they do things
   facts: Record<string, string>; // what they've seen about the world
   tried: Record<string, number>; // tinker attempts that led nowhere

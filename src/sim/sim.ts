@@ -4,10 +4,9 @@ import {
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
 import {
-  airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, FISH_REACH, force, giveItems, giveStack, greasy, hand, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
+  airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, FISH_REACH, force, gathered, giveItems, giveStack, greasy, hand, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
   fireHours, groundWord, hoursToDawn, leaveHome, pour, reaches, removeThing, residentsOf, rubTick, shape, shelterName, stash, strikeDamage, strikeTick, takeFromPile, takeItems, throwReach, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
 } from "./physics";
-import { pieceOf } from "./fuel";
 import { die, life, lifeSummary } from "./life";
 import { apart, beliefKey, beliefText, cameOff, conditionWords, differed, weighs, fieldsOf, found, groundKey, groundOfKey, holds, mixOf, odds, fades, noteTry, ofSpot, record, refine, refuted, restsOn, rethink, see, sentence, suspected, teach, testOf, watchers, type Belief } from "./beliefs";
 import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
@@ -23,7 +22,8 @@ import { DARK, canSee, lightOn, moveRate, restRate, skyShare, workRate } from ".
 import { ripening } from "./cues";
 import { airOn } from "./air";
 import { enrich, fertilityAt, soilWaterAt } from "./soil";
-import { DAMP, SOAKED, tinder, tinderOf, wetHere } from "./wetness";
+import { DAMP, SOAKED, moistureOf, tinder, tinderOf } from "./wetness";
+import { stackPhys } from "./fuel";
 import { envHere } from "./plants";
 import { shareAt } from "./seedling";
 import type { Env } from "../terrain/niche";
@@ -797,19 +797,19 @@ type Pos = { px: number; py: number };
 type Ground = { env: Env; light: number; water: number; fert: number; share: number };
 // items: what they do it with; on, off: the weather in a word, and its lack, for telling Jev how it went like for like
 type Condition = { now: (w: World, a: Agent, at: Pos, spot: () => Ground, items: string[], verb?: string) => boolean; words: string; place?: true; verbs?: string[]; on?: string; off?: string };
-// How wet the tinder they'd light a fire with is: what they strike over, or for rubbing (or anything else they might
+// The water in the tinder they'd light a fire with: what they strike over, or for rubbing (or anything else they might
 // do) whatever tinder they hold or lies about them; striking anything else, none.
 function kindling(w: World, a: Agent, items: string[], verb?: string) {
   const k = items.find((x) => tinder(w.kinds[x]));
-  return (k ? tinderOf(w, a, k) : verb === "strike" ? null : tinderOf(w, a))?.wet ?? 0;
+  return (k ? tinderOf(w, a, k) : verb === "strike" ? null : tinderOf(w, a))?.m ?? 0;
 }
 const CONDITIONS: Record<string, Condition> = {
   rain: { now: WEATHER_NOW.rain, words: "It was raining and there was nothing over their heads", on: "raining", off: "not raining" },
   dark: { now: WEATHER_NOW.dark, words: "It was dark", on: "dark", off: "light" },
   cold: { now: WEATHER_NOW.cold, words: "It was freezing", on: "freezing", off: "above freezing" },
   wind: { now: WEATHER_NOW.wind, words: "A strong wind was blowing", on: "windy", off: "calm" },
-  damp: { now: (w, a, _, __, items, verb) => kindling(w, a, items, verb) >= DAMP, words: "Their tinder was damp", verbs: ["strike", "rub"], on: "damp", off: "dry" },
-  soaked: { now: (w, a, _, __, items, verb) => kindling(w, a, items, verb) >= SOAKED, words: "Their tinder was soaked through", verbs: ["strike", "rub"], on: "soaked", off: "not soaked" },
+  damp: { now: (w, a, _, __, items, verb) => kindling(w, a, items, verb) > DAMP, words: "Their tinder was damp", verbs: ["strike", "rub"], on: "damp", off: "dry" },
+  soaked: { now: (w, a, _, __, items, verb) => kindling(w, a, items, verb) > SOAKED, words: "Their tinder was soaked through", verbs: ["strike", "rub"], on: "soaked", off: "not soaked" },
   nofish: { now: (w, a, at, _, items) => !fishClose(w, a, at, items.some((k) => lineLike(w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket), words: "No fish were swimming close by", verbs: ["wet"] },
   shade: { now: (_, __, ___, s) => s().light < 0.5, words: "It was in the shade of trees", place: true },
   deep: { now: (_, __, ___, s) => s().light < 0.2, words: "It was in deep shade under the trees", place: true },
@@ -1381,9 +1381,9 @@ function run(w: World, a: Agent): boolean | string {
     case "pick_up": {
       const t = within(w, a, `item:${s.arg}`, 0.5)?.thing;
       if (!t) return "it was gone";
-      const n = Math.min(t.n ?? 1, 3), wet = wetHere(w, t);
+      const n = Math.min(t.n ?? 1, 3);
       let got = 0;
-      while (got < n && giveStack(w, a, takeFromPile(w, t, wet))) got++;
+      while (got < n && giveStack(w, a, takeFromPile(w, t))) got++;
       if (!got) return "their hands were full";
       const word = nm(w, t.item!);
       log(w, "gather", [a.id], a, `${a.name} picked up ${got > 1 ? `${got} ${plural(word)}` : an(word)}.`);
@@ -1486,10 +1486,8 @@ function run(w: World, a: Agent): boolean | string {
     t.hp = (t.hp ?? 3) - 1;
     mark(w, t);
   } else removeThing(w, t);
-  // a stick picked up off the ground is as thick as a stem of its length (fuel.ts)
-  const piece = pieceOf(t, g.item);
-  if (piece) for (let i = 0; i < n; i++) giveStack(w, a, { k: g.item, hp: 1, born: w.t, ...piece });
-  else giveItems(w, a, g.item, n, wetHere(w, t));
+  // a stick picked up off the ground is as thick as a stem of its length, a berry as wet as it grew (physics.ts gathered)
+  for (let i = 0; i < n; i++) giveStack(w, a, gathered(w, t, g.item));
   // what is carried off a plant is taken from the soil it grew on
   if (t.kind === "bush" || t.kind === "mushroom" || t.kind === "herb" || t.kind === "reeds") enrich(w, t.px, t.py, -0.004 * n);
   if (t.kind === "bush" || t.kind === "mushroom" || t.kind === "herb") gain(w, a, "foraging", 2);
@@ -1886,8 +1884,9 @@ function burned(w: World) {
 }
 
 // ---------- needs ----------
-function needs(w: World, a: Agent) {
-  const n = a.needs, night = isNight(w.t), wx = w.weather;
+// A tick's toll on someone's needs, and what their surroundings give back.
+export function needs(w: World, a: Agent) {
+  const n = a.needs, night = isNight(w.t);
   if (a.struggles) for (const k of Object.keys(a.struggles) as Need[]) if (n[k] > 60) delete a.struggles[k];
   n.food = Math.max(0, n.food - 0.12 - (a.sickness ? 0.05 : 0));
   n.energy = Math.max(0, n.energy - (night ? 0.16 : 0.1));
@@ -1897,9 +1896,10 @@ function needs(w: World, a: Agent) {
   const own = homeOf(w, a), sheltering = (t: Thing) => (t.shelter?.tier ?? 0) >= 1 && reaches(a, t);
   const roof = own && sheltering(own) ? own : nearestThing(w, a.px, a.py, ["structure"], sheltering, 6);
   const inside = !!roof, air = airOn(w, a, inside);
-  // Below 12C the body loses heat, the faster the harder the wind blows, and faster still wet through; above it, the
-  // air gives some back.
-  const cold = Math.max(0, (12 - air.feels) / 110) * (night ? 1.2 : 1) * ((wx.sky === "rain" || wx.sky === "storm") && !inside ? 1.3 : 1) * (1 - worn * 0.6);
+  // Below 12C the body loses heat, the faster the harder the wind blows, and faster still the wetter what they wear is, or
+  // their bare skin (wetness.ts), soaked through a third faster; above it, the air gives some back.
+  const soaked = a.wearing ? Math.min(1, moistureOf(a.wearing) / Math.max(0.01, stackPhys(w.kinds, a.wearing)?.mmax ?? 1)) : (a.skin ?? 0);
+  const cold = Math.max(0, (12 - air.feels) / 110) * (night ? 1.2 : 1) * (1 + 0.3 * soaked) * (1 - worn * 0.6);
   const mild = Math.max(0, (air.temp - 12) / 60);
   // The nearest fire or thing burning well, to warm by, and the nearest burning fiercely, to be hurt by.
   let fire: Thing | null = null, flames: Thing | null = null, warmAt = Infinity, hurtAt = Infinity;

@@ -1,10 +1,10 @@
 // The answer key for one island, worked out from the world's own formulas rather than by trying anything: for every way
 // of doing things people used there (the runs' attempts and plantings), what it comes to (src/sim/formulas.ts predict)
 // in each of many situations the island gives over the run's days: a random dry spot (by the water, for what needs
-// water), a random hour, the island's weather then as its own weather, drawn on from the start, would bring it, and
-// tinder as wet as what lies about in the open. Each is noted with the conditions anyone there could see (sim.ts
-// conditionsNow), whether the way would come off for what it's for, and the ticks it would take a hand practised at
-// nothing (more in poor light, where work goes slower). Then, for each condition, whether it truly hurts the way, like
+// water), a random hour, the island's weather then as its own weather, drawn on from the start, would bring it, and what
+// they use as wet as dead stuff its thickness lying there. Each is noted with the conditions anyone there could see
+// (sim.ts conditionsNow), whether the way would come off for what it's for, and the ticks it would take a hand practised
+// at nothing (more in poor light, where work goes slower). Then, for each condition, whether it truly hurts the way, like
 // for like (stats.ts judge). scripts/answer-key.ts has the key's shape, and scripts/theory-report.ts scores people's
 // theories and choices against it.
 //   NOMADS_BRAIN=random bun scripts/truth.ts --seed 3 --runs /tmp/theories/3 --days 40 --out /tmp/truth/3.json
@@ -19,7 +19,8 @@ import { lightOn, workRate } from "../src/sim/light";
 import { put, shelve } from "../src/sim/space";
 import { fieldsOf, ofPlace } from "../src/sim/beliefs";
 import { conditionsNow } from "../src/sim/sim";
-import { litterHour, tinder, tinderOf, wetHere } from "../src/sim/wetness";
+import { deadAt, deadHour, tinder, tinderOf } from "../src/sim/wetness";
+import { stackPhys } from "../src/sim/fuel";
 import { ahead } from "../src/sim/seedling";
 import { predict, type Prediction } from "../src/sim/formulas";
 import { seedRandom } from "./seeded";
@@ -56,20 +57,20 @@ for (const file of readdirSync(runs).filter((f) => f.endsWith(".jsonl")))
   }
 
 // The island's weather through the run's days and a month past them, turn by turn of the sky from how it stood at the
-// start, drawn once (its own draws, not the world's): the sky, the wind, the rain running off the land, and how wet the
-// litter lying about in the open is.
+// start, drawn once (its own draws, not the world's): the sky, the wind, the rain running off the land, and the water in
+// the dead stuff lying about the island.
 const start = w.t, hours = forecast(w, (days + 30) * 24, rng(seed * 104729 + 7));
-const litter: number[] = [];
+const dead: NonNullable<typeof w.weather.dead>[] = [];
 {
-  let l = w.weather.litter ?? 0, t = Math.ceil((start + 1) / 12) * 12;
-  for (const h of hours) { l = litterHour(l, t, h.sky, h.speed, islandTemp(t, h.sky)); litter.push(l); t += 12; }
+  let d = w.weather.dead, t = Math.ceil((start + 1) / 12) * 12;
+  for (const h of hours) { d = deadHour(w, d, t, h.sky, h.speed, islandTemp(t, h.sky)); dead.push(d); t += 12; }
 }
 const first = Math.ceil((start + 1) / 12) * 12;
 // Set the world to an hour of the run (i) and a tick in it, as the weather had it then.
 function setHour(i: number, tick: number) {
   const h = hours[i];
   w.t = first + i * 12 + tick;
-  Object.assign(w.weather, { sky: h.sky, speed: h.speed, wet: h.wet, litter: litter[i], temp: islandTemp(w.t, h.sky) });
+  Object.assign(w.weather, { sky: h.sky, speed: h.speed, wet: h.wet, dead: dead[i], temp: islandTemp(w.t, h.sky) });
 }
 
 function drySpot(): [number, number] {
@@ -116,14 +117,17 @@ function situation(plan: Plan): Trial | string {
   put(w, stand, px, py);
   stand.heading = Math.random() * Math.PI * 2;
   stand.inv = [];
-  const wet = wetHere(w, stand);
-  for (const k of [...f.inputs, ...(f.tool ? [f.tool] : [])]) giveItems(w, stand, k, 1, wet);
+  // each as wet as dead stuff its thickness lying there, as much as it holds
+  for (const k of [...f.inputs, ...(f.tool ? [f.tool] : [])]) {
+    const x = stackPhys(w.kinds, { k });
+    giveItems(w, stand, k, 1, x ? Math.min(x.mmax, deadAt(w, stand, x.d)) : 0);
+  }
   const over = f.verb === "strike" ? f.inputs.find((k) => tinder(w.kinds[k])) : undefined;
   const lit = f.verb === "strike" ? (over ? tinderOf(w, stand, over) : null) : tinderOf(w, stand);
   const reach = f.inputs.some((k) => lineLike(w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket;
   const fish = w.animals.filter((m) => m.species === "fish" && meters(m, stand) <= reach).length;
   const ground = f.verb === "plant" || f.verb === "pour" || f.verb === "dig";
-  const r = predict(w, f, { tinder: lit ? lit.wet : null, wind: airOn(w, stand).wind, spot: stand, ahead: ground ? ahead(w, px, py, w.t, hours.slice(i + 1)) : { soil: [], temp: [] }, fish });
+  const r = predict(w, f, { tinder: lit ? lit.m : null, wind: airOn(w, stand).wind, spot: stand, ahead: ground ? ahead(w, px, py, w.t, hours.slice(i + 1)) : { soil: [], temp: [] }, fish });
   if ("why" in r) return r.why;
   // a ruling settled in the runs is the law for it; one never settled leaves it unsaid
   const ruled = "ask" in r ? w.rulings[r.ask] : undefined;

@@ -27,6 +27,7 @@ export type Phys = {
   heart?: number; // the water in a living trunk's heartwood
   d: number; // m: how thick one is, which sets how fast heat and water reach its middle
   mass: number; // kg of one, dry
+  herb?: true; // herbaceous, behind a waxy skin that lets water in and out slowly (sec. 27f)
   burn?: Burn;
 };
 
@@ -71,8 +72,10 @@ export function woodOf(species: Wood | "generic", d: number, mass: number): Phys
   return { ...plant(G, row, d, mass), ...(green === undefined ? {} : { green }), ...(heart === undefined ? {} : { heart }) };
 }
 
-// Fine dead fuel, the NFDRS's (R30): grass, fiber, fronds and petals, a blade thick.
-const fine = (mass: number): Phys => plant(0.513, "fine", 0.00061, mass);
+// Fine dead fuel, the NFDRS's (R30): grass, fiber, fronds and petals, a blade thick, herbaceous. Living herbaceous
+// matter holds the NFDRS's most, 250% (R30 [read]; reeds' too, an analogue, sec. 27f).
+const fine = (mass: number): Phys => ({ ...plant(0.513, "fine", 0.00061, mass), herb: true });
+export const LIVE_HERB = 2.5;
 const granite = (d: number, mass: number): Phys => ({ rho: 2630, c: 0.775, k: 2.79, mmax: 0, d, mass });
 const flint = (d: number, mass: number): Phys => ({ rho: 2650, c: 0.74, k: 3, mmax: 0, d, mass });
 const bone = (d: number, mass: number): Phys => ({ rho: 1920, c: 0.835, k: 0.72, mmax: 0.1, green: 0.1, d, mass });
@@ -88,8 +91,8 @@ export const PHYS: Record<string, Phys> = {
   bark: { rho: 460, c: PLANT_C, k: 0.46 * 0.1941 + 0.01864, mmax: 1.85, d: 0.002, mass: 0.1, burn: BURNS.bark },
   fiber: fine(0.02),
   fern: { ...fine(0.05), green: 3.33, burn: BURNS.fern },
-  flower: { ...fine(0.005), green: 2.5 },
-  herb: { ...fine(0.01), green: 2.5 },
+  flower: { ...fine(0.005), green: LIVE_HERB },
+  herb: { ...fine(0.01), green: LIVE_HERB },
   hide: { rho: 441, c: SOLIDS_C, k: 0.47, mmax: 1.7, green: 1.7, d: 0.003, mass: 2, burn: BURNS.hide },
   bone: bone(0.02, 0.3),
   bone_shard: bone(0.005, 0.02),
@@ -131,7 +134,7 @@ export function mix(parts: Phys[]): Phys | undefined {
   const byBurn = (f: (b: Burn) => number) => burning.reduce((t, x) => t + f(x.b) * x.m, 0) / burnt;
   return {
     rho: mass / parts.reduce((t, x) => t + x.mass / x.rho, 0), c: by((x) => x.c), k: by((x) => x.k), mmax: by((x) => x.mmax),
-    d: Math.max(...parts.map((x) => x.d)), mass,
+    d: Math.max(...parts.map((x) => x.d)), mass, ...(parts.every((x) => x.herb) ? { herb: true as const } : {}),
     ...(burnt > 0 ? { burn: {
       tig: byBurn((b) => b.tig), qcr: byBurn((b) => b.qcr), krc: byBurn((b) => b.krc), flame: byBurn((b) => b.flame), char: byBurn((b) => b.char),
       charYield: byBurn((b) => b.charYield), L: byBurn((b) => b.L), share: burnt / mass,
@@ -145,6 +148,20 @@ export function physOf(reg: Registry, k: Kind | undefined): Phys | undefined {
   if (!k) return undefined;
   if (k.base) return PHYS[k.base];
   return k.phys ?? mix((k.parts ?? []).flatMap((id) => physOf(reg, reg[id]) ?? []));
+}
+// What one held thing is made of: its kind's record, as big as the piece it is, and a piece of wood (a thing that chars,
+// not char itself) of its own species' wood.
+export function stackPhys(reg: Registry, s: { k: string; size?: Size; species?: string }): Phys | undefined {
+  const kind = physOf(reg, reg[s.k]);
+  if (!kind || !s.size) return kind;
+  const wood = s.species && s.species in WOODS && kind.burn && kind.burn.charYield < 1;
+  return { ...(wood ? woodOf(s.species as Wood, s.size.d, s.size.mass) : kind), d: s.size.d, mass: s.size.mass };
+}
+// The water in wood cut from a living plant of a species (sec. 27b, 27f): a branch's or stem's is its sapwood's, a log's
+// the mean of its sapwood and heartwood. None for no known species.
+export function greenOf(species: string | undefined, log = false) {
+  const w = species && species in WOODS ? WOODS[species as Wood] : undefined;
+  return w?.green === undefined ? undefined : log && w.heart !== undefined ? (w.green + w.heart) / 2 : w.green;
 }
 
 // ---------- pieces of wood ----------

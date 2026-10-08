@@ -5,7 +5,7 @@ import { addAnimal } from "./fauna";
 import { put as moveTo, thingById } from "./space";
 import { conditionsNow } from "./sim";
 import { hooks } from "./rules";
-import { DAMP, SOAKED, wetness } from "./wetness";
+import { DAMP } from "./wetness";
 import { ecology, forecast } from "./ecology";
 import { ahead, bedAt, seedlingFate } from "./seedling";
 
@@ -120,9 +120,9 @@ test("struck over fiber, two hard stones light it after the same number of blows
   const flint = light("stone", "flint", "fiber");
   expect(flint.builds).toBe("fire");
   expect(flint.numbers!.blows).toBeLessThan(stone[0].numbers!.blows);
-  // just short of damp it still catches; damp, it never does
-  expect(light("stone", "stone", "fiber", DAMP - 0.01).builds).toBe("fire");
-  expect(Array.from({ length: 3 }, () => light("stone", "stone", "fiber", DAMP)).every((o) => !o.ok)).toBe(true);
+  // at the spark limit it still catches; just wetter, it never does
+  expect(light("stone", "stone", "fiber", DAMP).builds).toBe("fire");
+  expect(Array.from({ length: 3 }, () => light("stone", "stone", "fiber", DAMP + 0.01)).every((o) => !o.ok)).toBe(true);
   // the air where they stand is worked out once a tick: a new wind, a new tick
   w.weather.speed = 60;
   w.t++;
@@ -132,25 +132,6 @@ test("struck over fiber, two hard stones light it after the same number of blows
   w.t++;
   const stick = light("stone", "stone", "stick");
   expect(stick.ok).toBe(false);
-});
-
-test("tinder held in the rain soaks through within the hour, dries out of it, and stays dry under a roof or in a bag", () => {
-  const [w, a] = fresh();
-  const fiber = () => a.inv.find((s) => s.k === "fiber")!;
-  const hours = (n: number) => { for (let i = 0; i < n * 12; i++) { w.t++; wetness(w); } };
-  a.inv = [];
-  giveItems(w, a, "fiber");
-  w.weather.sky = "rain";
-  hours(1);
-  expect(fiber().wet!).toBeGreaterThanOrEqual(SOAKED);
-  w.weather.sky = "clear";
-  hours(8);
-  expect(fiber().wet ?? 0).toBeLessThan(DAMP);
-  w.kinds.bag = { id: "bag", name: "bag", props: { container: 0.75, flexible: 0.7 } };
-  giveItems(w, a, "bag");
-  w.weather.sky = "rain";
-  hours(2);
-  expect(fiber().wet ?? 0).toBeLessThan(DAMP);
 });
 
 test("knapping stone with stone chips off a sharp stone at the same blow every time, fiber in hand or not; a striker too soft never does", () => {

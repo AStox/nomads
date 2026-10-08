@@ -1,6 +1,6 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
 import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props, type Registry } from "./materials";
-import { COPPER, FIRED_CLAY, LEATHER, POT_WALL, charSize, mix, physOf, pieceOf, remade, splitSize } from "./fuel";
+import { COPPER, FIRED_CLAY, LEATHER, LIVE_HERB, PHYS, POT_WALL, charSize, greenOf, mix, physOf, pieceOf, remade, splitSize, stackPhys } from "./fuel";
 import { CELL } from "../terrain/grid";
 import { DAY, REACH, TILE_M, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, isNight, level, log, meters, nearWater, perWorld, reachOf, wetAt, type Act, type Agent, type Shelter, type Stack, type Thing, type World } from "./world";
 import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } from "./space";
@@ -10,7 +10,7 @@ import { enrich } from "./soil";
 import { streamNow } from "./streams";
 import { airOn } from "./air";
 import { DARK, lightOn } from "./light";
-import { DAMP, SOAKED, raining, sheltered, tinder, tinderOf } from "./wetness";
+import { DAMP, SOAKED, deadAt, moistureOf, raining, sheltered, tinder, tinderOf } from "./wetness";
 import { GROUND, SIZE, groundClass } from "../terrain/flora";
 
 // Kinds of stuff the rules below care about, by what they're like rather than what they're called.
@@ -107,11 +107,10 @@ export function hand(w: World, from: Agent, to: Agent, k: string, n = 1) {
   for (const s of moving) giveStack(w, to, s);
   return moving.length;
 }
-// A new one of a kind. wet: how wet what comes into their hands is (wetness.ts), kept for tinder: what they pick up off
-// the ground is as wet as the ground.
-const fresh = (w: World, k: string, wet = 0): Stack => (wet >= 0.005 && tinder(w.kinds[k]) ? { k, hp: 1, born: w.t, wet } : { k, hp: 1, born: w.t });
-export function giveItems(w: World, a: Agent, k: string, n = 1, wet = 0) {
-  for (let i = 0; i < n; i++) if (!giveStack(w, a, fresh(w, k, wet))) { if (n - i > 1) dropPile(w, a.px, a.py, k, n - i - 1); return i; }
+// A new one of a kind holding m of water, kg to the kg (wetness.ts).
+const fresh = (w: World, k: string, m = 0): Stack => (m > 0 ? { k, hp: 1, born: w.t, m } : { k, hp: 1, born: w.t });
+export function giveItems(w: World, a: Agent, k: string, n = 1, m = 0) {
+  for (let i = 0; i < n; i++) if (!giveStack(w, a, fresh(w, k, m))) { if (n - i > 1) dropPile(w, a.px, a.py, k, n - i - 1, m); return i; }
   return n;
 }
 // Hands full: set down one of whatever plain material they have most of, unless that's what they're picking up.
@@ -129,27 +128,35 @@ function makeRoom(w: World, a: Agent, incoming: string) {
   dropStacks(w, a.px, a.py, [takeStack(a, spare)!]);
   return true;
 }
-// Set things down at a point: on a pile of the same within a meter, or as a new pile close by.
-export function dropPile(w: World, px: number, py: number, k: string, n: number): Thing {
+// Set n things down at a point, holding m of water: on a pile of the same within a meter, whose counted things hold the
+// water of all of them, or as a new pile close by.
+export function dropPile(w: World, px: number, py: number, k: string, n: number, m = 0): Thing {
   const pile = nearestThing(w, px, py, ["item"], (t) => t.item === k, 1);
-  if (pile) { pile.n = (pile.n ?? 1) + n; mark(w, pile); return pile; }
-  const t = addThing(w, "item", ...beside(w, { px, py }, 0.2 + Math.random() * 0.5), { item: k, n, born: w.t });
+  if (pile) {
+    const had = (pile.n ?? 1) - (pile.pieces?.length ?? 0);
+    pile.n = (pile.n ?? 1) + n;
+    if (n > 0) pile.m = ((pile.m ?? 0) * had + m * n) / (had + n);
+    mark(w, pile);
+    return pile;
+  }
+  const t = addThing(w, "item", ...beside(w, { px, py }, 0.2 + Math.random() * 0.5), { item: k, n, born: w.t, ...(m > 0 ? { m } : {}) });
   mark(w, t);
   return t;
 }
-// A piece of wood is laid down as it is (fuel.ts); anything else only adds to a pile's count.
+// A piece of wood is laid down as it is (fuel.ts); anything else only adds to a pile's count and its water.
 export const isPiece = (s: Stack) => !!(s.size || s.species);
 export function dropStacks(w: World, px: number, py: number, stacks: Stack[]) {
   for (const k of new Set(stacks.map((s) => s.k))) {
-    const of = stacks.filter((s) => s.k === k), pile = dropPile(w, px, py, k, of.length), pieces = of.filter(isPiece);
-    if (pieces.length) pile.pieces = [...(pile.pieces ?? []), ...pieces];
+    const of = stacks.filter((s) => s.k === k), pieces = of.filter(isPiece), rest = of.filter((s) => !isPiece(s));
+    const pile = dropPile(w, px, py, k, rest.length, rest.reduce((t, s) => t + (s.m ?? 0), 0) / Math.max(1, rest.length));
+    if (pieces.length) { pile.pieces = [...(pile.pieces ?? []), ...pieces]; pile.n = (pile.n ?? 0) + pieces.length; }
   }
 }
-// One thing off a pile: a piece of wood as it was laid down, or one of the rest, as wet as the ground it lay on.
-export function takeFromPile(w: World, t: Thing, wet: number): Stack {
+// One thing off a pile: a piece of wood as it was laid down, or one of the rest, as wet as the pile.
+export function takeFromPile(w: World, t: Thing): Stack {
   t.n = (t.n ?? 1) - 1;
   if (t.n <= 0) removeThing(w, t); else mark(w, t);
-  return t.pieces?.pop() ?? fresh(w, t.item!, wet);
+  return t.pieces?.pop() ?? fresh(w, t.item!, t.m);
 }
 // Things touched this tick, so the server can send deltas.
 export const changed = new Set<string>(), removed = new Set<string>(), newKinds = new Set<string>();
@@ -194,16 +201,29 @@ function enact(w: World, a: Agent, d: Decision): Outcome {
   if (k && !make.quiet) made(w, a, k[0], k[1], nk);
   return outcome({ ...o, newKinds: nk });
 }
-// What making n of a kind leaves of the pieces of wood used (fuel.ts sec. 27e): a thing made from one piece alone, or
-// the one thing it was made from, is that piece still, and charcoal smothered from one shares out its char. Anything
-// else comes new.
+// What making n of a kind leaves of what was used (fuel.ts sec. 27e, 27f): it holds the water of all that went into it, by
+// mass, as much as it can hold, but charcoal, dried out in the smothered fire; a thing made from one piece of wood alone,
+// or the one thing it was made from, is that piece still, and charcoal smothered from one shares out its char.
 function madeOf(w: World, used: Stack[], k: string, n: number): Stack[] {
-  const fresh = () => ({ k, hp: 1, born: w.t }), from = used.length === 1 ? used[0] : undefined;
-  if (!from?.size) return Array.from({ length: n }, fresh);
+  const mass = (s: Stack) => stackPhys(w.kinds, s)?.mass ?? 0, total = used.reduce((t, s) => t + mass(s), 0);
+  const wet = k === "charcoal" || !total ? 0 : Math.min(physOf(w.kinds, w.kinds[k])?.mmax ?? 0, used.reduce((t, s) => t + moistureOf(s) * mass(s), 0) / total);
+  const blank = (): Stack => (wet > 0 ? { k, hp: 1, born: w.t, m: wet } : { k, hp: 1, born: w.t }), from = used.length === 1 ? used[0] : undefined;
+  if (!from?.size) return Array.from({ length: n }, blank);
   const grew = from.species ? { species: from.species } : {};
-  if (k === "charcoal") return Array.from({ length: n }, () => ({ ...fresh(), size: charSize(from.size!, physOf(w.kinds, w.kinds[from.k])?.burn?.charYield ?? 0, n), ...grew }));
+  if (k === "charcoal") return Array.from({ length: n }, () => ({ ...blank(), size: charSize(from.size!, physOf(w.kinds, w.kinds[from.k])?.burn?.charYield ?? 0, n), ...grew }));
   const one = (x?: Kind) => x?.parts?.length === 1 ? x.parts[0] : undefined;
-  return n === 1 && (one(w.kinds[k]) === from.k || one(w.kinds[from.k]) === k) ? [{ ...fresh(), size: from.size, ...grew }] : Array.from({ length: n }, fresh);
+  return n === 1 && (one(w.kinds[k]) === from.k || one(w.kinds[from.k]) === k) ? [{ ...blank(), size: from.size, ...grew, ...(from.green ? { green: true as const } : {}) }] : Array.from({ length: n }, blank);
+}
+// What something standing or lying in the world gives of a kind, with the water in it as it's found (sec. 27f): wood off
+// a living tree or bush as green as it grew, off anything dead as the island's weather has left dead wood that thick;
+// reeds' fiber the most living herbaceous stuff holds; anything else what it holds alive, or none.
+export function gathered(w: World, t: Thing, k: string): Stack {
+  const piece = pieceOf(t, k), living = t.kind === "tree" || t.kind === "bush";
+  if (piece) {
+    const green = living ? greenOf(t.species, k === "log") : undefined;
+    return { ...fresh(w, k, green ?? deadAt(w, t, piece.size.d)), ...piece, ...(green === undefined ? {} : { green: true as const }) };
+  }
+  return fresh(w, k, t.kind === "reeds" ? LIVE_HERB : (physOf(w.kinds, w.kinds[k])?.green ?? 0));
 }
 
 // ---------- strike ----------
@@ -315,10 +335,10 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
       return { done: false, broke: broke ?? undefined, damage: 0 };
     }
     if (st.progress < 20) return { done: false, broke: broke ?? undefined, damage: dmg };
-    // each piece split out of a piece of wood is as long as it was, a share as thick and as heavy (fuel.ts)
+    // each piece split out of a piece of wood is as long as it was, a share as thick and as heavy, and as wet (fuel.ts)
     const whole = takeStack(a, tk.id);
     for (const [k, n] of Object.entries(tk.breaks))
-      for (let i = 0; i < n; i++) giveStack(w, a, whole?.size ? { k, hp: 1, born: w.t, size: splitSize(whole.size, n), ...(whole.species ? { species: whole.species } : {}) } : fresh(w, k));
+      for (let i = 0; i < n; i++) giveStack(w, a, whole?.size ? { ...fresh(w, k, whole.m), size: splitSize(whole.size, n), ...(whole.species ? { species: whole.species } : {}), ...(whole.green ? { green: true as const } : {}) } : fresh(w, k, whole?.m));
     fields.gives = Object.keys(tk.breaks);
     return { done: true, broke: broke ?? undefined, damage: dmg, out: outcome({ ok: true, text: `Striking along its grain split the ${tk.name} into ${list(w, tk.breaks)}.`, uses: { [tk.id]: 1 }, gives: { ...tk.breaks }, fields, numbers: { eff } }) };
   }
@@ -341,7 +361,8 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
     const peel = 0.08 * p(tool, "sharp"), blow = st.progress + 1;
     if (p(tool, "sharp") >= 0.4 && (target.bark ?? 0) < 3 && Math.floor(blow * peel) > Math.floor((blow - 1) * peel)) {
       target.bark = (target.bark ?? 0) + 1;
-      dropStacks(w, target.px, target.py, [{ k: "bark", hp: 1, born: w.t, ...(target.species ? { species: target.species } : {}) }]);
+      // bark peeled off a living tree holds what its sapwood does (fire-constants sec. 27f)
+      dropStacks(w, target.px, target.py, [{ ...fresh(w, "bark", target.kind === "tree" ? greenOf(target.species) : deadAt(w, target, PHYS.bark.d)), ...(target.species ? { species: target.species } : {}) }]);
       see(w, target, "bark", "A sharp edge struck into a tree peels off strips of bark.", 60);
     }
   }
@@ -358,12 +379,12 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
   fields.gives = Object.keys(gives);
   if ("alt" in target) {
     w.animals = w.animals.filter((x) => x !== target);
-    for (const [k, n] of Object.entries(gives)) giveItems(w, a, k, n);
+    for (const [k, n] of Object.entries(gives)) giveItems(w, a, k, n, physOf(w.kinds, w.kinds[k])?.green ?? 0);
     return { done: true, damage: dmg, broke: broke ?? undefined, out: outcome({ ok: true, text: `They killed the ${target.species} and butchered it into ${list(w, gives)}.`, gives, fields, numbers: { rate, ticksNeeded } }) };
   }
   const t = target as Thing;
-  // what it gives, piece by piece, as it stood: a tree's trunk and branches, a bush's stems (fuel.ts)
-  const pieces = Object.entries(gives).flatMap(([k, n]) => Array.from({ length: n }, (): Stack => ({ ...fresh(w, k), ...pieceOf(t, k) })));
+  // what it gives, piece by piece and with the water in it, as it stood: a tree's trunk and branches, a bush's stems
+  const pieces = Object.entries(gives).flatMap(([k, n]) => Array.from({ length: n }, () => gathered(w, t, k)));
   // a felled tree's wood is carried off, and what it took from the soil with it
   if (t.kind === "tree") { setKind(w, t, "stump"); t.hp = 40; t.maxHp = 40; t.size = 0.6; t.until = w.t + DAY * 6; mark(w, t); enrich(w, t.px, t.py, -0.02); }
   else removeThing(w, t);
@@ -375,13 +396,14 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
 // Striking one stone on another over tinder held under the blow: glancing blows that throw sparks into it rather than
 // break anything off. Only two very hard stones of the kind that flakes throw sparks, the harder the more (sparksPer:
 // how much of the way to catching each blow's sparks take it); the tinder catches once enough have fallen into it, if it
-// is tinder at all, drier than DAMP (wetness.ts), and the wind where they are doesn't carry the sparks off first (GALE).
+// is tinder at all, holding no more water than DAMP (wetness.ts), and the wind where they are doesn't carry the sparks off
+// first (GALE).
 export const throwsSparks = (tool: Kind, tk: Kind) => p(tool, "hard") >= 0.8 && p(tk, "hard") >= 0.8 && tk.grain === "shatter";
 export const sparksPer = (tool: Kind, tk: Kind) => 0.12 * (1 + Math.max(0, Math.max(p(tool, "hard"), p(tk, "hard")) - 0.9) * 40);
 // A wind at head height stronger than this, in m/s, carries a spark off before it lands: the strong wind anyone can feel
 // (sim.ts CONDITIONS wind).
 export const GALE = 8;
-export const sparkCatches = (wet: number, wind: number) => wet < DAMP && wind <= GALE;
+export const sparkCatches = (m: number, wind: number) => m <= DAMP && wind <= GALE;
 function sparkTick(w: World, a: Agent, act: Act, tool: Kind, tk: Kind, st: { progress: number }, fields: Fields): { done: boolean; out?: Outcome } {
   const over = kind(w, act.items[0]);
   fields.inputs = [tk.id, act.items[0]].sort();
@@ -396,7 +418,7 @@ function sparkTick(w: World, a: Agent, act: Act, tool: Kind, tk: Kind, st: { pro
   trace("physics", "sparks", { tool: tool.id, target: tk.id, over: over.id, per, blows: st.progress }, a.id);
   if (st.progress * per < 1) return { done: false };
   const numbers = { blows: st.progress };
-  if (!tinder(over) || !sparkCatches(tinderOf(w, a, over.id)?.wet ?? 0, airOn(w, a).wind)) return { done: true, out: outcome({ text: `${how} threw sparks into it, but it wouldn't catch.`, fields, numbers }) };
+  if (!tinder(over) || !sparkCatches(tinderOf(w, a, over.id)?.m ?? 0, airOn(w, a).wind)) return { done: true, out: outcome({ text: `${how} threw sparks into it, but it wouldn't catch.`, fields, numbers }) };
   takeItems(a, over.id);
   mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: 50, maxHp: 400, born: w.t }));
   fields.builds = "fire";
@@ -413,10 +435,10 @@ export const WEATHER_NOW: Record<string, (w: World, a: Agent) => boolean> = {
   wind: (w, a) => airOn(w, a).wind > GALE,
 };
 // Friction heat: what a tick's rubbing adds, for a bow drawn round one stick or for two sawn or spun together, and the
-// more for a practised hand, less what the wood loses to the air meanwhile. An ember catches in tinder short of SOAKED
-// (wetness.ts).
+// more for a practised hand, less what the wood loses to the air meanwhile. An ember catches in tinder holding no more
+// water than SOAKED (wetness.ts).
 export const frictionPer = (bow: boolean, skill: number) => (bow ? 0.11 : 0.05) * (1 + level(skill) * 0.1) - 0.015;
-export const emberCatches = (wet: number) => wet < SOAKED;
+export const emberCatches = (m: number) => m <= SOAKED;
 
 // What rubbing two things together comes to, by what they're like: fat worked into a raw hide softens and cures it;
 // small hard seeds ground between a stone and something harder still crush to a meal that cooks into far better food;
@@ -490,7 +512,7 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
     st.heat = Math.max(0, (st.heat ?? 0) + frictionPer(bow, a.skills.firemaking ?? 0));
     trace("physics", "friction", { a: ia, b: ib, bow, heat: st.heat }, a.id);
     const into = tinderOf(w, a);
-    if (st.heat >= 1 && into && emberCatches(into.wet)) {
+    if (st.heat >= 1 && into && emberCatches(into.m)) {
       if (into.kind) takeItems(a, into.kind.id);
       const fuel = [ia, ib].map((id) => kind(w, id)!).find((k) => !isBow(k) && p(k, "flammable") >= 0.5);
       if (fuel) takeItems(a, fuel.id);
@@ -875,7 +897,7 @@ export function throwTick(w: World, a: Agent, act: Act, st: { progress: number; 
   if (prey.hp <= 0) {
     w.animals = w.animals.filter((m) => m !== prey);
     const gives = { ...mat.breaks };
-    for (const [kk, n] of Object.entries(gives)) giveItems(w, a, kk, n);
+    for (const [kk, n] of Object.entries(gives)) giveItems(w, a, kk, n, physOf(w.kinds, w.kinds[kk])?.green ?? 0);
     fields.gives = Object.keys(gives);
     return { done: true, out: outcome({ ok: true, text: `A ${shot ? "shot" : "thrown"} ${k.name} brought down the ${prey.species}. They butchered it into ${list(w, gives)}.`, uses: { [k.id]: 1 }, gives, fields, numbers: { rate: dmg } }) };
   }

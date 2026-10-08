@@ -27,7 +27,7 @@ const STEP = 1.5; // how far upwind each cell looks, in cells
 // Water vapor air can hold at a temperature, g/kg (Magnus).
 const qsat = (t: number) => 3.8 * Math.exp((17.67 * t) / (t + 243.5));
 // Its pressure, kPa.
-const esat = (t: number) => 0.6108 * Math.exp((17.27 * t) / (t + 237.3));
+export const esat = (t: number) => 0.6108 * Math.exp((17.27 * t) / (t + 237.3));
 
 // Cells in downwind order, by counting sort on their position along the wind. The slices are thinner than the gap
 // between a cell and the upwind corners it reads (at least 1.5 - √2 cells), so every read is already settled.

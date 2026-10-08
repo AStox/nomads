@@ -4,7 +4,7 @@
 // sea air tempering it, the sun its slopes get, the cold that pools in its hollows on still, clear nights, and how the
 // ground upwind and the trees overhead break the wind. Nothing here is stored.
 import { CELL } from "../terrain/grid";
-import { DIRS, POOL_C, SEASONS } from "../terrain/climate";
+import { DIRS, POOL_C, SEASONS, esat } from "../terrain/climate";
 import { NOON, YEAR_DAYS, sunAt } from "./sky";
 import { canopyAt } from "./light";
 import { DAY, TILE_M, groundOf, hourOf, type World } from "./world";
@@ -85,6 +85,43 @@ export function snowAt(w: World, px: number, py: number) {
   const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), { s, f } = seasonAt(w.t);
   const pack = field(isle.seasons[s].snowpack, px, py, n) * (1 - f) + field(isle.seasons[(s + 1) % 4].snowpack, px, py, n) * f, x = Math.max(0, Math.min(1, (pack - 3) / 27));
   return x * x * (3 - 2 * x);
+}
+// The water in the air at a point at tick t, kPa: the place's season humidity at its season's warmth (climate.ts fields),
+// drawn between the seasons' middles as its warmth is, so air holding the same water is damper the colder it is.
+export function vapourAt(w: World, px: number, py: number, t: number) {
+  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), { s, f } = seasonAt(t);
+  const e = (k: number) => field(isle.seasons[k].humid, px, py, n) * esat(field(isle.seasons[k].temp, px, py, n));
+  return e(s) * (1 - f) + e((s + 1) % 4) * f;
+}
+// How much of the water air this warm could hold it holds, 0 to 1.
+export const humidity = (vapour: number, temp: number) => Math.min(1, vapour / esat(temp));
+// The share of a season's hours the island's sky rains and storms (docs/research/fire-constants.md sec. 25).
+const RAIN_HOURS = [[0.368, 0.047], [0.336, 0.107], [0.481, 0.053], [0.479, 0.012]];
+// The rain falling at a point now, mm an hour (sec. 13): the season's precipitation there spread over the hours a game
+// season rains, a storm hour five times a rain hour.
+export function rainAt(w: World, px: number, py: number) {
+  const sky = w.weather.sky;
+  if (sky !== "rain" && sky !== "storm") return 0;
+  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), { s, f } = seasonAt(w.t);
+  const rate = (k: number) => field(isle.seasons[k].precip, px, py, n) / (10 * 24 * (RAIN_HOURS[k][0] + 5 * RAIN_HOURS[k][1]));
+  return (rate(s) * (1 - f) + rate((s + 1) % 4) * f) * (sky === "storm" ? 5 : 1);
+}
+// The island's own air water (kPa) and rain (mm an hour) at tick t under a sky: the land's means of each season's,
+// worked out once an island and drawn between the seasons as everywhere's are.
+const landMeans = new Map<number, { vapour: number[]; rain: number[] }>();
+export function islandAir(w: World, t: number, sky: World["weather"]["sky"]) {
+  let m = landMeans.get(w.seed);
+  if (!m) {
+    const { isle } = groundOf(w.seed), land = Array.from(isle.height.keys()).filter((i) => isle.height[i] > 0);
+    const mean = (f: (i: number) => number) => land.reduce((t, i) => t + f(i), 0) / land.length;
+    m = {
+      vapour: [0, 1, 2, 3].map((k) => mean((i) => isle.seasons[k].humid[i] * esat(isle.seasons[k].temp[i]))),
+      rain: [0, 1, 2, 3].map((k) => mean((i) => isle.seasons[k].precip[i]) / (10 * 24 * (RAIN_HOURS[k][0] + 5 * RAIN_HOURS[k][1]))),
+    };
+    landMeans.set(w.seed, m);
+  }
+  const { s, f } = seasonAt(t), now = (v: number[]) => v[s] * (1 - f) + v[(s + 1) % 4] * f;
+  return { vapour: now(m.vapour), rain: sky === "rain" ? now(m.rain) : sky === "storm" ? 5 * now(m.rain) : 0 };
 }
 // Environment Canada's wind chill index, for air at or below 10 °C and a wind at head height (taken as three quarters of
 // the 10 m wind the index is reckoned in).
