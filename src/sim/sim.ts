@@ -1,14 +1,15 @@
 import {
   DAY, H, REACH, TILE_M, W, clock, dryAt, isNight, nearestShore, level, log, meters, perWorld, reachOf, shuffle, stageOf,
-  type Act, type Agent, type Animal, type BondKind, type Step, type Thing, type Waiting, type World,
+  type Act, type Agent, type Animal, type BondKind, type Stack, type Step, type Thing, type Waiting, type World,
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
 import {
-  airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, FISH_REACH, force, gathered, giveItems, giveStack, greasy, hand, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
-  fireHours, groundWord, hoursToDawn, leaveHome, pour, reaches, removeThing, residentsOf, rubTick, shape, shelterName, stash, strikeDamage, strikeTick, takeFromPile, takeItems, throwReach, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
+  DURATION, ablaze, airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, FISH_REACH, force, gathered, giveItems, giveStack, greasy, hand, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
+  fireHours, fireOutput, groundWord, hoursToDawn, leaveHome, pour, reaches, removeThing, residentsOf, rubTick, shape, shelterName, stash, strikeDamage, strikeTick, takeFromPile, takeItems, throwReach, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
+  bedAir, breeze, carry, fan, firstHeld, isFlame, isLamp, rubbing, tooThick,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
-import { apart, beliefKey, beliefText, cameOff, conditionWords, differed, weighs, fieldsOf, found, groundKey, groundOfKey, holds, mixOf, odds, fades, noteTry, ofSpot, record, refine, refuted, restsOn, rethink, see, sentence, suspected, teach, testOf, watchers, type Belief } from "./beliefs";
+import { apart, beliefKey, beliefText, cameOff, conditionWords, differed, weighs, fieldsOf, found, groundKey, groundOfKey, holds, mixOf, odds, fades, noteTry, ofSpot, partsOf, record, refine, refuted, restsOn, rethink, see, sentence, suspected, teach, testOf, watchers, type Belief } from "./beliefs";
 import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
 import { burnedHomes, ecology, onFireOut, onGrew, onWithered, trample, trapped, tread } from "./ecology";
 import { FAUNA, HUNTED } from "./fauna";
@@ -18,12 +19,13 @@ import { clock as traceClock, count as bump, timed, trace } from "./trace";
 import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sharedStore, snubbed, spread, standing, takeShared } from "./groups";
 import { anyAround, around, liveThings, lookFor, nearestThing, shelve, thingById } from "./space";
 import { landOf, walk } from "./walk";
-import { DARK, canSee, lightOn, moveRate, restRate, skyShare, workRate } from "./light";
+import { DARK, canSee, heatAt, lightOn, moveRate, restRate, skyShare, workRate } from "./light";
 import { ripening } from "./cues";
 import { airOn } from "./air";
 import { enrich, fertilityAt, soilWaterAt } from "./soil";
 import { DAMP, SOAKED, moistureOf, tinder, tinderOf } from "./wetness";
-import { stackPhys } from "./fuel";
+import { PHYS, stackPhys } from "./fuel";
+import { LEAST, advance, alight, drowned, output, radiation, type Air as BedAir, type Bed } from "./combustion";
 import { envHere } from "./plants";
 import { shareAt } from "./seedling";
 import type { Env } from "../terrain/niche";
@@ -122,11 +124,11 @@ type Place = { kinds: readonly string[]; ok?: (t: Thing, w: World) => boolean; w
 const THING_PLACES: Record<string, Place> = {
   // grass bears seed as the days draw in
   grain: { kinds: ["grass"], when: (w) => ripening(w.t), ok: (t) => (t.hp ?? 3) > 1 },
-  bush: { kinds: ["bush"], ok: (t) => (t.n ?? 0) > 0 && !t.burning },
+  bush: { kinds: ["bush"], ok: (t) => (t.n ?? 0) > 0 && !ablaze(t) },
   mushroom: { kinds: ["mushroom"] }, herb: { kinds: ["herb"] }, stick: { kinds: ["stick"] }, stone: { kinds: ["stone"] },
-  reeds: { kinds: ["reeds"], ok: (t) => !t.burning }, clay: { kinds: ["clay"] }, tree: { kinds: ["tree"], ok: (t) => !t.burning },
+  reeds: { kinds: ["reeds"], ok: (t) => !ablaze(t) }, clay: { kinds: ["clay"] }, tree: { kinds: ["tree"], ok: (t) => !ablaze(t) },
   sapling: { kinds: ["sapling"] },
-  boulder: { kinds: ["boulder"] }, stump: { kinds: ["stump"] }, dead_bush: { kinds: ["dead_bush"] }, fallen_log: { kinds: ["fallen_log"], ok: (t) => !t.burning },
+  boulder: { kinds: ["boulder"] }, stump: { kinds: ["stump"] }, dead_bush: { kinds: ["dead_bush"] }, fallen_log: { kinds: ["fallen_log"], ok: (t) => !ablaze(t) },
   // Anything on fire is a fire you can take a flame from or warm up by.
   fire: { kinds: [] },
   pit: { kinds: ["pit"] },
@@ -190,7 +192,7 @@ function spot(w: World, a: Agent, kind: string): Spot | null {
   if ((HUNTED as readonly string[]).includes(kind)) { const x = nearest(a, w.animals, (m) => m.species === kind); return x && { px: x.px, py: x.py, reach: REACH + 0.5, animal: x }; }
   const ok = (t: Thing) => reachable(w, a, t.x, t.y);
   if (kind.startsWith("item:")) { const k = kind.slice(5); return thingSpot(nearestThing(w, a.px, a.py, ["item"], (t) => t.item === k && ok(t), SEARCH)); }
-  if (kind === "fire") return thingSpot(nearest(a, liveThings(w), (t) => (t.kind === "fire" || (t.burning ?? 0) > 0.3) && meters(a, t) <= SEARCH && ok(t)));
+  if (kind === "fire") return thingSpot(nearest(a, liveThings(w), (t) => ablaze(t) && meters(a, t) <= SEARCH && ok(t)));
   const g = groundOfKey(kind);
   if (g) return groundsNear(w, a, g).get(g) ?? null;
   const f = THING_PLACES[kind];
@@ -415,7 +417,7 @@ function shelterWork(w: World, a: Agent, home: Thing | null) {
   return residentsOf(w, home).length > (home.shelter?.room ?? 1) || (home.stale ?? 0) < 2;
 }
 const canCache = perWorld(() => new Map<string, Record<string, { t: number; ok: boolean }>>());
-function feasible(w: World, a: Agent) {
+export function feasible(w: World, a: Agent) {
   const opts: Record<string, string> = {};
   const ctx = ctxFor(w, a);
   const fire = spot(w, a, "fire");
@@ -456,10 +458,10 @@ function feasible(w: World, a: Agent) {
   const believes = Object.values(a.beliefs);
   const builds = (b: string) => believes.some((x) => x.fields.builds === b && x.wins > 0);
   add("make_fire", builds("fire") && (!fire || meters(a, fire) > 60) && can("make_fire"));
-  // A fire close by that is burning down, or that plainly won't last the night, is something to do something about for
-  // anyone with things in hand.
-  const left = fire?.thing?.kind === "fire" && meters(a, fire) <= FIRESIDE ? fireHours(fire.thing) : Infinity;
-  const dying = left < 4 || (isNight(w.t) && left < hoursToDawn(w.t));
+  // A fire close by that has burned down to its coals, or that by what burns in it won't last until dawn, is something to
+  // do something about for anyone with things in hand.
+  const kept = fire?.thing?.kind === "fire" && meters(a, fire) <= FIRESIDE && ablaze(fire.thing) ? fire.thing : null;
+  const dying = !!kept && (fireOutput(w, kept).flaming <= 0 || fireHours(w, kept) < hoursToDawn(w.t));
   add("tend_fire", dying && holding && can("tend_fire"));
   // A theory of theirs about something they could do here and now: when they aren't in trouble (not starving, freezing,
   // hurt or spent), they might do it anyway to see whether it holds, the one resting on the least of all (beliefs.ts
@@ -479,9 +481,11 @@ function feasible(w: World, a: Agent) {
   // A young plant of theirs wilting where they can get to it: something to see to, by what they know or by trying things.
   const wilting = nearestThing(w, a.px, a.py, ["sapling"], (t) => t.owner === a.id && (t.hp ?? 5) < (t.maxHp ?? 5) * 0.8, 100);
   add("tend_plants", !!wilting && !dark && (holding || can("tend_plants")));
-  // Someone who has watched a fire burn down with nothing at hand to feed it gets wood in before night falls.
+  // Someone who has watched a fire burn down with nothing at hand to feed it gets wood in before night falls, if what burns
+  // in it won't see it to dawn: four hours on it is night, and dawn the rest of that night later.
   const fuel = a.facts.fuel_at_hand ? believes.find((b) => b.fields.builds === "fed_fire" && b.wins > 0)?.fields.inputs[0] : undefined;
-  add("lay_by_wood", !!fuel && !dark && isNight(w.t + DAY / 6) && !!fire && meters(a, fire) <= FIRESIDE && count(a, fuel) < 3 && can("lay_by_wood"));
+  const tonight = 4 + hoursToDawn(w.t + DAY / 6);
+  add("lay_by_wood", !!fuel && !dark && isNight(w.t + DAY / 6) && !!fire?.thing && meters(a, fire) <= FIRESIDE && fireHours(w, fire.thing) < tonight && count(a, fuel) < 3 && can("lay_by_wood"));
   add("build_shelter", builds("shelter") && shelterWork(w, a, home) && can("build_shelter"));
   const site = homesite(w, a);
   if (site && home) add("move_home", builds("shelter") && can("move_home"));
@@ -581,20 +585,28 @@ async function think(w: World, a: Agent) {
 export const actFromBelief = (b: Belief) => actOfFields(b.fields);
 function actOfFields(f: Fields): Act {
   if (f.verb === "strike") {
-    // what they struck besides the thing struck: the tinder a spark is struck into
+    // what they struck besides the thing struck: the lay a spark is struck into
     const target = f.target ?? f.inputs[0];
     return { verb: "strike", items: f.inputs.filter((_, i) => i !== f.inputs.indexOf(target ?? "")), tool: f.tool ?? null, target: { kind: target } };
   }
   // a throw is at something: the kind of animal it was aimed at
-  return { verb: f.verb as Act["verb"], items: f.verb === "rub" ? f.inputs.slice(0, 2) : [...f.inputs], tool: f.tool ?? null, shape: f.shape as Act["shape"], at: f.at ?? null, ...(f.target ? { target: { kind: f.target } } : {}) };
+  return { verb: f.verb as Act["verb"], items: [...f.inputs], tool: f.tool ?? null, shape: f.shape as Act["shape"], at: f.at ?? null, ...(f.target ? { target: { kind: f.target } } : {}) };
+}
+// A lay in words: its tinder (the first tinder in it, or the first thing), and what's laid with it, counted.
+function layText(w: World, items: string[]) {
+  const first = items.find((k) => tinder(w.kinds[k])) ?? items[0], rest = items.filter((_, i) => i !== items.indexOf(first));
+  const n: Record<string, number> = {};
+  for (const k of rest) n[k] = (n[k] ?? 0) + 1;
+  const with_ = Object.entries(n).map(([k, c]) => (c > 1 ? `${c} ${plural(nm(w, k))}` : an(nm(w, k)))).join(" and ");
+  return `the ${nm(w, first)}${with_ ? ` laid with ${with_}` : ""}`;
 }
 export function actText(w: World, act: Act): string {
   const tool = act.tool ? `the ${nm(w, act.tool)}` : "bare hands";
   const items = act.items.map((k) => nm(w, k));
   const same = items.length === 2 && items[0] === items[1];
   switch (act.verb) {
-    case "strike": return `Strike ${act.target?.thing || act.target?.animal || ["tree", "bush", "boulder", "reeds", "stump", "dead_bush", "deer", "wolf"].includes(act.target?.kind ?? "") ? "the" : "a"} ${nm(w, act.target?.kind ?? "")} with ${act.tool ? tool : "bare hands"}${items.length ? ` over the ${items[0]}` : ""}`;
-    case "rub": return same ? `Rub two ${items[0]}s together` : `Rub the ${items[0]} against the ${items[1]}`;
+    case "strike": return `Strike ${act.target?.thing || act.target?.animal || ["tree", "bush", "boulder", "reeds", "stump", "dead_bush", "deer", "wolf"].includes(act.target?.kind ?? "") ? "the" : "a"} ${nm(w, act.target?.kind ?? "")} with ${act.tool ? tool : "bare hands"}${items.length ? ` over ${layText(w, act.items)}` : ""}`;
+    case "rub": return `${items[0] === items[1] ? `Rub two ${plural(items[0])} together` : `Rub the ${items[0]} against the ${items[1]}`}${items.length > 2 ? ` over ${layText(w, act.items.slice(2))}` : ""}`;
     case "join": return same && items.length === 2 ? `Twist two ${items[0]}s together` : `Bind ${items.map((x) => `the ${x}`).join(", ")} together`;
     case "heat": return act.tool ? `Heat the ${items.join(" and ")} in the fire, blowing air at it with the ${nm(w, act.tool)}` : `Hold ${items.map((x) => `the ${x}`).join(" and ")} in the fire`;
     case "wet": return `Dip the ${items[0]} in the water`;
@@ -633,7 +645,6 @@ function gain(w: World, a: Agent, skill: string, n: number) {
   if (level(a.skills[skill]) > before) log(w, "level", [a.id], a, `${a.name} got better at ${skill} (level ${level(a.skills[skill])}).`);
 }
 
-export const DURATION: Record<string, number> = { join: 8, heat: 8, wet: 10, shape: 6, place: 3, plant: 3, pour: 2, wear: 2 };
 const pendingRulings = perWorld(() => new Set<string>());
 const namingNow = perWorld(() => new Set<string>());
 export const rulingKey = (act: Act) => `rule|${actSig(act)}`;
@@ -647,6 +658,15 @@ function fumbles(w: World, a: Agent) {
   return true;
 }
 
+// What they could see as they laid a fire's pieces or held things in it, for whatever follows from the act (finishAct,
+// attempted): the conditions of what they laid, chosen by their theories, and of the fire as it was when they did.
+const seenAt = new WeakMap<Step, string[]>();
+// The pieces they lay as an act is done, chosen by their theories (choose), with what they could see of them kept.
+const laying = (w: World, a: Agent, s: Step) => (items: string[]) => {
+  const verb = s.act!.verb, lay = choose(w, a, verb, items, a, 0);
+  if (lay) seenAt.set(s, conditionsNow(w, a, verb, a, items, lay, 0));
+  return lay;
+};
 // Run one tick of an act. Returns the outcome when it resolves, "wait" while working, or a reason string if it can't happen.
 export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
   const act = s.act!;
@@ -659,7 +679,7 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
         if (!prey || meters(a, prey) > 250) return `the ${kind} got away`;
         act.target.animal = prey.id;
       } else {
-        const t = nearestThing(w, a.px, a.py, [kind], (x) => !x.burning && reachable(w, a, x.x, x.y), 25);
+        const t = nearestThing(w, a.px, a.py, [kind], (x) => !ablaze(x) && reachable(w, a, x.x, x.y), 25);
         if (!t) return `no ${kind} within reach`;
         act.target.thing = t.id;
       }
@@ -686,14 +706,14 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
     }
     if (fumbles(w, a)) return "wait";
     a.status = actText(w, act);
-    const r = strikeTick(w, a, act, s);
+    const r = strikeTick(w, a, act, s, laying(w, a, s));
     if (r.broke) log(w, "break", [a.id], a, `${a.name}: ${r.broke}`);
     return r.done ? r.out! : "wait";
   }
   if (act.verb === "rub") {
     if (fumbles(w, a)) return "wait";
     a.status = actText(w, act);
-    const r = rubTick(w, a, act, s);
+    const r = rubTick(w, a, act, s, laying(w, a, s));
     return r.done ? r.out! : "wait";
   }
   if (act.verb === "dig") {
@@ -733,9 +753,11 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
   if (act.at && act.at !== "home" && !(act.at === "water" ? openWater(w, a) : within(w, a, act.at, 1))) return `not at the ${act.at}`;
   if (act.verb !== "eat" && fumbles(w, a)) return "wait";
   a.status = actText(w, act);
+  fan(w, a, act);
   if ((s.progress += 1 + level(a.skills[SKILL[act.verb](act, w)] ?? 0) * 0.1) < (DURATION[act.verb] ?? 4)) return "wait";
   switch (act.verb) {
     case "join": case "heat": {
+      if (act.verb === "heat") seenAt.set(s, conditionsNow(w, a, "heat", a, act.items, undefined, 0));
       const res = act.verb === "join" ? join(w, a, act) : heat(w, a, act);
       if (res !== "ask") return res;
       if (act.items.some((k) => depth(w.kinds, w.kinds[k]) >= 2)) return applyRuling(w, a, act, rulingKey(act), { useful: false, name: "", props: {} });
@@ -764,7 +786,7 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
     }
     case "wet": return wet(w, a, act);
     case "shape": return shape(w, a, act);
-    case "place": return placeItems(w, a, act);
+    case "place": return placeItems(w, a, act, laying(w, a, s));
     case "plant": {
       // nowhere a theory of theirs about the spot holds, unless that's what they're out to see: then just such a spot
       const test = a.goal?.type.startsWith("test:") ? testOf(a.goal.type)[0] : null, avoid = blamed(a).filter((t) => t !== test);
@@ -783,59 +805,138 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
 const rulingsAt = perWorld(() => new Map<number, number>());
 
 // Conditions anyone can see they're working in, which might be why something works one time and not another: every
-// input to whatever decides whether it comes off (physics.ts, wetness.ts, seedling.ts), as someone there would notice it,
-// cut where the formula turns. The weather and the light; for a fire, how wet the tinder is (a spark won't catch in damp
-// tinder, an ember not in tinder soaked through); for what's dipped in the water (verbs), whether any fish were
-// swimming in reach; and for what's done to the ground (planting, digging, watering), the spot itself (at): the shade of
-// trees over it, how dry the soil is, the plants close round it taking their share, how sour, limy, poor or thin the
-// soil is, how boggy, how open to the gales, how much salt spray reaches it, each where a berry's niche starts to suffer
-// (niche.ts), and the ground as anyone would call it.
+// input to whatever decides whether it comes off (physics.ts, combustion.ts, wetness.ts, seedling.ts), as someone there
+// would notice it, cut where the formula turns. The weather and the light; for a fire (fire-constants sec. 32), how wet the tinder
+// is (a spark won't catch in damp tinder, an ember not in tinder soaked through), whether anything laid is too thick to
+// catch on a tinder-and-twigs flame or kindling too wet to carry a flame, whether the fire it's laid on or held in is too
+// small to light a log, or nothing but coals, and whether there's a breeze that would blow such a small fire out; for
+// what's dipped in the water (verbs), whether any fish were swimming in reach; and for what's done to the ground
+// (planting, digging, watering), the spot itself (at): the shade of trees over it, how dry the soil is, the plants close
+// round it taking their share, how sour, limy, poor or thin the soil is, how boggy, how open to the gales, how much salt
+// spray reaches it, each where a berry's niche starts to suffer (niche.ts), and the ground as anyone would call it.
 type Pos = { px: number; py: number };
 // What a spot is like, worked out once for all the conditions that ask: its lasting ground (plants.ts envHere), the
 // share of the sky's light that reaches it, the soil's water and nourishment now, and the share of both the plants round
 // it would leave a seedling (seedling.ts shareAt).
 type Ground = { env: Env; light: number; water: number; fert: number; share: number };
-// items: what they do it with; on, off: the weather in a word, and its lack, for telling Jev how it went like for like
-type Condition = { now: (w: World, a: Agent, at: Pos, spot: () => Ground, items: string[], verb?: string) => boolean; words: string; place?: true; verbs?: string[]; on?: string; off?: string };
-// The water in the tinder they'd light a fire with: what they strike over, or for rubbing (or anything else they might
-// do) whatever tinder they hold or lies about them; striking anything else, none.
-function kindling(w: World, a: Agent, items: string[], verb?: string) {
-  const k = items.find((x) => tinder(w.kinds[x]));
-  return (k ? tinderOf(w, a, k) : verb === "strike" ? null : tinderOf(w, a))?.m ?? 0;
-}
+// What a fire act lays and what on (combustion.ts), worked out once for all the conditions that ask: the pieces they'd lay
+// (things they hold), the water in the lay's tinder (or in what lies about their feet, for an ember with none laid), the
+// bed of the fire they'd lay them on or hold things in, as it will be when the act is done, and the air there.
+type Firing = { pieces: Stack[]; tinder?: number; bed?: Bed; air: BedAir };
+// What someone doing something can see of it: where (at), the spot (for what's done to the ground), what they do it with
+// (items), what they do (verb), and for a fire act what it lays and on what (fire; none for anything else).
+type Seen = { w: World; a: Agent; at: Pos; spot: () => Ground; items: string[]; verb?: string; fire: () => Firing | null };
+// place: a condition of the spot; piece: of the pieces they'd lay in a fire, which they choose (choose). on, off: the
+// condition in a word, and its lack, for telling Jev how it went like for like.
+type Condition = { now: (x: Seen) => boolean; words: string; place?: true; piece?: true; verbs?: string[]; on?: string; off?: string };
+const FIRE_VERBS = ["strike", "rub", "place", "heat"], LAYING = ["strike", "rub", "place"], AT_FIRE = ["place", "heat"];
 const CONDITIONS: Record<string, Condition> = {
-  rain: { now: WEATHER_NOW.rain, words: "It was raining and there was nothing over their heads", on: "raining", off: "not raining" },
-  dark: { now: WEATHER_NOW.dark, words: "It was dark", on: "dark", off: "light" },
-  cold: { now: WEATHER_NOW.cold, words: "It was freezing", on: "freezing", off: "above freezing" },
-  wind: { now: WEATHER_NOW.wind, words: "A strong wind was blowing", on: "windy", off: "calm" },
-  damp: { now: (w, a, _, __, items, verb) => kindling(w, a, items, verb) > DAMP, words: "Their tinder was damp", verbs: ["strike", "rub"], on: "damp", off: "dry" },
-  soaked: { now: (w, a, _, __, items, verb) => kindling(w, a, items, verb) > SOAKED, words: "Their tinder was soaked through", verbs: ["strike", "rub"], on: "soaked", off: "not soaked" },
-  nofish: { now: (w, a, at, _, items) => !fishClose(w, a, at, items.some((k) => lineLike(w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket), words: "No fish were swimming close by", verbs: ["wet"] },
-  shade: { now: (_, __, ___, s) => s().light < 0.5, words: "It was in the shade of trees", place: true },
-  deep: { now: (_, __, ___, s) => s().light < 0.2, words: "It was in deep shade under the trees", place: true },
-  dry: { now: (_, __, ___, s) => s().water < 0.5, words: "The ground there was dry", place: true },
-  crowded: { now: (_, __, ___, s) => s().share < 0.8, words: "Bushes or trees grew close round it", place: true },
-  sour: { now: (_, __, ___, s) => s().env.ph < 4.5, words: "The soil there was sour", place: true },
-  limy: { now: (_, __, ___, s) => s().env.ph > 7.5, words: "The soil there was limy", place: true },
-  poor: { now: (_, __, ___, s) => s().fert < 0.1, words: "The soil there was poor", place: true },
-  thin: { now: (_, __, ___, s) => s().env.soil < 0.2, words: "The soil there was thin over rock", place: true },
-  boggy: { now: (_, __, ___, s) => s().env.wet > 0.4, words: "The ground there was boggy", place: true },
-  exposed: { now: (_, __, ___, s) => s().env.wind > 0.45, words: "The spot lay open to the gales", place: true },
-  salty: { now: (_, __, ___, s) => s().env.salt > 0.3, words: "Salt spray reached the spot", place: true },
+  rain: { now: (x) => WEATHER_NOW.rain(x.w, x.a), words: "It was raining and there was nothing over their heads", on: "raining", off: "not raining" },
+  dark: { now: (x) => WEATHER_NOW.dark(x.w, x.a), words: "It was dark", on: "dark", off: "light" },
+  cold: { now: (x) => WEATHER_NOW.cold(x.w, x.a), words: "It was freezing", on: "freezing", off: "above freezing" },
+  wind: { now: (x) => WEATHER_NOW.wind(x.w, x.a), words: "A strong wind was blowing", on: "windy", off: "calm" },
+  breezy: { now: (x) => (x.fire()?.air.wind ?? 0) > breeze(), words: "A breeze was blowing", verbs: FIRE_VERBS, on: "breezy", off: "still" },
+  damp: { now: (x) => (x.fire()?.tinder ?? 0) > DAMP, words: "Their tinder was damp", verbs: ["strike", "rub"], piece: true, on: "damp", off: "dry" },
+  soaked: { now: (x) => (x.fire()?.tinder ?? 0) > SOAKED, words: "Their tinder was soaked through", verbs: ["strike", "rub"], piece: true, on: "soaked", off: "not soaked" },
+  thick: { now: (x) => !!x.fire()?.pieces.some((s) => tooThick(stackPhys(x.w.kinds, s))), words: "Some of the wood they laid was thick", verbs: LAYING, piece: true, on: "laying thick wood", off: "laying thin wood" },
+  sodden: {
+    now: (x) => !!x.fire()?.pieces.some((s) => { const phys = stackPhys(x.w.kinds, s); return !!phys && !tinder(x.w.kinds[s.k]) && drowned({ phys, m: moistureOf(s) }); }),
+    words: "Their kindling was wet", verbs: LAYING, piece: true, on: "laying wet kindling", off: "laying dry kindling",
+  },
+  small: { now: (x) => { const f = x.fire(); return !!f?.bed && radiation(f.bed, f.air, PHYS.log) < LEAST; }, words: "The fire was small", verbs: AT_FIRE, on: "a small fire", off: "a big fire" },
+  coals: { now: (x) => { const f = x.fire(); return !!f?.bed && alight(f.bed) && output(f.bed, f.air).flaming <= 0; }, words: "Nothing was left of the fire but coals", verbs: AT_FIRE, on: "only coals", off: "flaming" },
+  nofish: { now: (x) => !fishClose(x.w, x.a, x.at, x.items.some((k) => lineLike(x.w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket), words: "No fish were swimming close by", verbs: ["wet"] },
+  shade: { now: (x) => x.spot().light < 0.5, words: "It was in the shade of trees", place: true },
+  deep: { now: (x) => x.spot().light < 0.2, words: "It was in deep shade under the trees", place: true },
+  dry: { now: (x) => x.spot().water < 0.5, words: "The ground there was dry", place: true },
+  crowded: { now: (x) => x.spot().share < 0.8, words: "Bushes or trees grew close round it", place: true },
+  sour: { now: (x) => x.spot().env.ph < 4.5, words: "The soil there was sour", place: true },
+  limy: { now: (x) => x.spot().env.ph > 7.5, words: "The soil there was limy", place: true },
+  poor: { now: (x) => x.spot().fert < 0.1, words: "The soil there was poor", place: true },
+  thin: { now: (x) => x.spot().env.soil < 0.2, words: "The soil there was thin over rock", place: true },
+  boggy: { now: (x) => x.spot().env.wet > 0.4, words: "The ground there was boggy", place: true },
+  exposed: { now: (x) => x.spot().env.wind > 0.45, words: "The spot lay open to the gales", place: true },
+  salty: { now: (x) => x.spot().env.salt > 0.3, words: "Salt spray reached the spot", place: true },
 };
 const GROUND_VERBS: Record<string, true> = { plant: true, dig: true, pour: true };
+const TICK_S = 86400 / DAY;
 // verb: what they did, which brings in the spot (at: where it was done, if not where they stand) for what's done to the
-// ground, and what bears only on that verb; without one, everything they could see. items: what they did it with.
-export function conditionsNow(w: World, a: Agent, verb?: string, at: Pos = a, items: string[] = []) {
+// ground, and what bears only on that verb; without one, everything they could see. items: what they did it with. For a
+// fire act, lay: the things they hold that they lay (one for each of items; by default those they'd choose), and after:
+// how long until the act is done, s (by default all of it), which the fire it's laid on or held in is seen as it will be
+// by then.
+export function conditionsNow(w: World, a: Agent, verb?: string, at: Pos = a, items: string[] = [], lay?: Stack[], after = (DURATION[verb ?? ""] ?? 0) * TICK_S) {
   const ground = !verb || GROUND_VERBS[verb];
-  let seen: Ground | undefined;
+  let seen: Ground | undefined, fire: Firing | null | undefined;
   const spot = () => (seen ??= { env: envHere(w, at.px, at.py), light: skyShare(w, at.px, at.py), water: soilWaterAt(w, at.px, at.py), fert: fertilityAt(w, at.px, at.py), share: shareAt(w, at.px, at.py) });
+  const x: Seen = { w, a, at, spot, items, verb, fire: () => (fire === undefined ? (fire = firing(w, a, verb, at, items, lay, after)) : fire) };
   const now = Object.keys(CONDITIONS).filter((c) => {
-    const x = CONDITIONS[c];
-    return (ground || !x.place) && (!verb || !x.verbs || x.verbs.includes(verb)) && x.now(w, a, at, spot, items, verb);
+    const cond = CONDITIONS[c];
+    return (ground || !cond.place) && (!verb || !cond.verbs || cond.verbs.includes(verb)) && cond.now(x);
   });
   if (ground) now.push(groundKey(groundWord(w, at.px, at.py)));
   return now;
+}
+// What a fire act lays and what on: striking over a lay, rubbing for an ember to blow into one, setting a carried flame
+// into one or things on a fire, holding things in a fire. Without a verb, all they could see: the driest tinder they hold
+// (or what lies about), and the fire they stand at as it burns now.
+function firing(w: World, a: Agent, verb: string | undefined, at: Pos, items: string[], lay: Stack[] | undefined, after: number): Firing | null {
+  const here = bedAir(w, at), laid = () => lay ?? choose(w, a, verb!, items, at, after) ?? [];
+  if (!verb) {
+    const held = a.inv.filter((s) => tinder(w.kinds[s.k])).map(moistureOf), fire = nearFire(w, a);
+    return { pieces: [], tinder: held.length ? Math.min(...held) : tinderOf(w, a)?.m, bed: fire?.bed, air: fire ? bedAir(w, fire) : here };
+  }
+  if (verb === "strike") {
+    if (!items.length) return null;
+    const pieces = laid(), over = pieces[items.indexOf(items.find((k) => tinder(w.kinds[k])) ?? "")];
+    return { pieces, tinder: over && moistureOf(over), air: here };
+  }
+  if (verb === "rub") {
+    const [A, B] = items.map((k) => w.kinds[k]);
+    if (!A || !B || rubbing(A, B).does !== "friction") return null;
+    const pieces = laid().slice(2), own = pieces.find((s) => tinder(w.kinds[s.k])), about = own ? null : tinderOf(w, a);
+    return { pieces, tinder: own ? moistureOf(own) : about && !about.kind ? about.m : undefined, air: here };
+  }
+  if (verb === "place") {
+    const fire = nearestThing(w, a.px, a.py, ["fire"], (t) => reaches(a, t) && ablaze(t), 4);
+    if (fire) return { pieces: laid().filter((s) => !isLamp(w.kinds[s.k])), bed: ahead(fire.bed!, after, bedAir(w, fire)), air: bedAir(w, fire) };
+    return items.some((k) => isFlame(w.kinds[k])) ? { pieces: laid().filter((s) => !isFlame(w.kinds[s.k])), air: here } : null;
+  }
+  const fire = verb === "heat" ? nearFire(w, a) : null;
+  return fire?.bed ? { pieces: [], bed: ahead(fire.bed, after, bedAir(w, fire)), air: bedAir(w, fire) } : null;
+}
+// A bed as it will be so many seconds on in this air, worked out once for each bed and time (a bed is a new one each
+// time it burns on or is fed).
+const aheadOf = new WeakMap<Bed, Map<number, Bed>>();
+function ahead(bed: Bed, after: number, air: BedAir) {
+  if (after <= 0) return bed;
+  const known = aheadOf.get(bed) ?? new Map<number, Bed>();
+  aheadOf.set(bed, known);
+  if (!known.has(after)) known.set(after, advance(bed, after, air));
+  return known.get(after)!;
+}
+// Whether a theory is about the pieces they lay in a fire (thick wood, wet kindling, damp tinder): what they choose them by.
+const ofPieces = (t: string) => partsOf(t).some((c) => CONDITIONS[c]?.piece);
+// The things they hold they'd lay in a fire, one for each of items, as doAct's plant fits chooses a spot: of each kind the
+// first they hold, or the thinnest, or the driest, whichever way first lays nothing a theory of theirs about the pieces
+// holds of (unless it's what they're out to test: then a way it does hold of), or failing that the first. Two rubbed
+// together for an ember aren't laid: they're the first they hold, the lay chosen from the rest. None if they don't hold
+// them all.
+function choose(w: World, a: Agent, verb: string, items: string[], at: Pos = a, after?: number): Stack[] | undefined {
+  const from = verb === "rub" ? 2 : 0, rubbed = firstHeld(a.inv)(items.slice(0, from));
+  const lay = (inv: Stack[]) => { const rest = rubbed && firstHeld(inv.filter((s) => !rubbed.includes(s)))(items.slice(from)); return rubbed && rest && [...rubbed, ...rest]; };
+  const first = lay(a.inv);
+  const test = a.goal?.type.startsWith("test:") ? testOf(a.goal.type)[0] : null;
+  const avoid = [...new Set(Object.values(a.beliefs).flatMap((b) => b.unless ?? []))].filter((t) => ofPieces(t) && t !== test);
+  if (!first || (!avoid.length && !(test && ofPieces(test)))) return first;
+  const thin = (s: Stack) => stackPhys(w.kinds, s)?.d ?? Infinity;
+  const ways = [first, ...[(x: Stack, y: Stack) => thin(x) - thin(y) || moistureOf(x) - moistureOf(y), (x: Stack, y: Stack) => moistureOf(x) - moistureOf(y) || thin(x) - thin(y)]
+    .map((by) => lay([...a.inv].sort(by))!)];
+  const fits = (pick: Stack[]) => {
+    const here = conditionsNow(w, a, verb, at, items, pick, after);
+    return (!test || !ofPieces(test) || holds(test, here)) && !avoid.some((t) => holds(t, here));
+  };
+  return ways.find(fits) ?? first;
 }
 // What they've come to blame on a spot (shade, dry ground, crowding, the ground), whatever it was about: they'd do
 // nothing to the ground anywhere a theory like that holds.
@@ -959,12 +1060,12 @@ function surprised(w: World, a: Agent, b: Belief, t: string, now: string[], by?:
 }
 // They did what they believe works, and it came off or it didn't (beliefs.ts cameOff). What only shows later (a seed
 // pushed into the ground) is judged when it shows (came, withered).
-function attempted(w: World, a: Agent, b: Belief, out: Outcome, took: number) {
+function attempted(w: World, a: Agent, b: Belief, out: Outcome, took: number, seen?: string[]) {
   if (out.later) return;
   const meant = cameOff(b, out);
   // an outcome that went into the books under another key (a rub that only got hot) still counts against this one
   if (beliefKey(out.fields) !== b.key) { b.tries++; if (meant) b.wins++; }
-  const now = conditionsNow(w, a, b.fields.verb, a, b.fields.inputs);
+  const now = seen ?? conditionsNow(w, a, b.fields.verb, a, b.fields.inputs);
   judged(w, a, b, meant, now, w.t, took);
   // put to the test, and it held
   const test = a.goal?.type.startsWith("test:") ? testOf(a.goal.type) : null;
@@ -1006,10 +1107,11 @@ function giveUpWaiting(w: World) {
     if (!a.waiting.length) delete a.waiting;
   }
 }
-// A fire burned down to nothing with someone who knows wood feeds a fire sitting by it empty-handed: next time, they'll
-// have wood by them before night comes.
-onFireOut((w, t, rained) => {
-  if (rained) return;
+// A fire burned down to nothing (its bed went out with no wood left in it unburnt, combustion.ts) with someone who knows
+// wood feeds a fire sitting by it empty-handed: next time, they'll have wood by them before night comes. One that went out
+// with wood lying in it that never caught didn't go out for want of wood.
+onFireOut((w, t) => {
+  if (t.bed?.groups.length) return;
   for (const a of w.agents) {
     if (a.down > w.t || meters(a, t) > FIRESIDE || a.facts.fuel_at_hand) continue;
     const fuel = Object.values(a.beliefs).find((b) => b.fields.builds === "fed_fire" && b.wins > 0)?.fields.inputs[0];
@@ -1028,16 +1130,16 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
   const b = record(w, a, out, ticks);
   // done, with the result to show later: they'll know whether it worked when it does
   if (b && out.ok && out.later) (a.waiting ??= []).push({ key: b.key, thing: out.later, t: w.t, now: conditionsNow(w, a, act.verb, thingById(w, out.later) ?? a, act.items) });
-  // Whoever lights a fire by rubbing watches the stick they rubbed catch and burn in it: wood feeds a fire.
-  if (out.builds === "fire" && act.verb === "rub") {
-    const fuel = act.items.find((k) => (out.uses[k] ?? 0) > 0);
-    const fed: Fields = { verb: "place", inputs: fuel ? [fuel] : [], at: "fire", builds: "fed_fire", gives: [] };
-    if (fuel && !a.beliefs[beliefKey(fed)]) record(w, a, { ok: true, text: "", uses: { [fuel]: 1 }, gives: {}, builds: "fed_fire", fields: fed, newKinds: [] }, 1, "seen");
-  }
+  // Whoever lights a fire from a lay watches the wood laid with the tinder catch and burn: wood feeds a fire.
+  if (out.builds === "fire")
+    for (const k of Object.keys(out.uses).filter((x) => !tinder(w.kinds[x]) && !isFlame(w.kinds[x]) && stackPhys(w.kinds, { k: x })?.burn)) {
+      const fed: Fields = { verb: "place", inputs: [k], at: "fire", builds: "fed_fire", gives: [] };
+      if (!a.beliefs[beliefKey(fed)]) record(w, a, { ok: true, text: "", uses: { [k]: 1 }, gives: {}, builds: "fed_fire", fields: fed, newKinds: [] }, 1, "seen");
+    }
   // an experiment that came to nothing, or only to what it showed before, is one less thing to try
   if (tinkering && (!b || (!out.ok && knew))) a.tried[actSig(act)] = (a.tried[actSig(act)] ?? 0) + 1;
   // what bears on what they did, as anyone doing it would note it, for those watching who had thought it couldn't be done
-  const seenNow = conditionsNow(w, a, act.verb, a, act.items);
+  const seenNow = seenAt.get(s) ?? conditionsNow(w, a, act.verb, a, act.items);
   for (const x of watchers(w, a, out, ticks, seenNow)) for (const t of x.theories) surprised(w, x.who, x.b, t, seenNow, a);
   const kind = out.builds === "fire" ? "fire" : out.builds === "shelter" || out.builds === "hearth" ? "build" : act.target?.animal && out.ok ? "hunt" : out.ok ? "craft" : "tinker";
   log(w, kind, [a.id], a, `${a.name}: ${out.text}`);
@@ -1137,18 +1239,28 @@ const AIM: Record<string, (act: Act, w: World) => boolean> = {
   // at a fire: hold things in it, or set them in and around it
   fireside: (act) => act.verb === "heat" || act.verb === "place",
 };
-function tinkerOptions(w: World, a: Agent, aim?: string): Option[] {
+export function tinkerOptions(w: World, a: Agent, aim?: string): Option[] {
   const c = counts(a);
   const held = Object.keys(c).filter((k) => !k.startsWith("rotten:"));
   const opts: Option[] = [];
   // What they already know works is no experiment: it's for their plans.
   const known = new Set(Object.values(a.beliefs).filter((b) => b.wins > 0).map((b) => actSig(actFromBelief(b))));
   const push = (act: Act) => { const sig = actSig(act); if ((a.tried[sig] ?? 0) < 2 && !known.has(sig)) opts.push({ text: actText(w, act), act }); };
+  // Lays they could make of what they hold, besides what they'd work with (spent): each fine, dry thing as tinder, alone,
+  // with all they hold of any one other thing that burns and isn't food or made, or with all of those together.
+  const lays = (spent: string[]) => {
+    const left = { ...c };
+    for (const k of spent) left[k]--;
+    const burns = (f: string) => held.filter((q) => q !== f && left[q] > 0 && !w.kinds[q]?.parts && p(w.kinds[q], "edible") < 0.1 && stackPhys(w.kinds, { k: q })?.burn);
+    const all = (qs: string[]) => qs.flatMap((q) => Array<string>(left[q]).fill(q));
+    return held.filter((f) => left[f] > 0 && p(w.kinds[f], "fibrous") >= 0.5 && p(w.kinds[f], "flammable") >= 0.5)
+      .flatMap((f) => { const qs = burns(f); return [[f], ...qs.map((q) => [f, ...all([q])]), ...(qs.length > 1 ? [[f, ...all(qs)]] : [])]; });
+  };
   // Soft things like berries or fiber don't get swung, dug with, or ground against anything.
   const tools = [null, ...held.filter((k) => p(w.kinds[k], "hard") >= 0.2 || p(w.kinds[k], "heavy") >= 0.3)];
   // What's lying or growing within a stone's throw that they could walk over to and strike.
   const targets: string[] = [];
-  around(w, a.px, a.py, 20, STRIKEABLE, (t) => { if (!t.burning) targets.push(t.kind); });
+  around(w, a.px, a.py, 20, STRIKEABLE, (t) => { if (!ablaze(t)) targets.push(t.kind); });
   const animalsNear = w.animals.filter((m) => meters(a, m) <= 60 && m.alt < 2 && THING_MATERIAL[m.species]).map((m) => m.species);
   for (const kind of new Set([...targets, ...animalsNear])) for (const tool of tools) push({ verb: "strike", items: [], tool, target: { kind } });
   const bows = held.filter((k) => stave(w.kinds[k]));
@@ -1162,10 +1274,11 @@ function tinkerOptions(w: World, a: Agent, aim?: string): Option[] {
   for (const x of held) {
     const k = w.kinds[x];
     for (const tool of tools) if (tool !== x || c[x] >= 2) push({ verb: "strike", items: [], tool, target: { kind: x } });
-    // Two hard things struck together over something fine and dry held under the blow, as for sparks.
+    // Two hard things struck together over something fine and dry held under the blow, as for sparks: the tinder alone,
+    // or laid with everything else they hold that burns.
     if (p(k, "hard") >= 0.5)
       for (const tool of tools.filter((t) => !!t && p(w.kinds[t], "hard") >= 0.5 && (t !== x || c[x] >= 2)))
-        for (const f of held) if (f !== x && f !== tool && p(w.kinds[f], "fibrous") >= 0.5 && p(w.kinds[f], "flammable") >= 0.5) push({ verb: "strike", items: [f], tool, target: { kind: x } });
+        for (const lay of lays([x, tool!])) push({ verb: "strike", items: lay, tool, target: { kind: x } });
     if (within(w, a, "fire", 1)) {
       push({ verb: "heat", items: [x], at: "fire" });
       // Something soft and hollow can be squeezed or flapped at the flames while something else heats.
@@ -1186,7 +1299,11 @@ function tinkerOptions(w: World, a: Agent, aim?: string): Option[] {
     for (let j = i; j < held.length; j++) {
       const [x, y] = [held[i], held[j]];
       if (x === y && c[x] < 2) continue;
-      if ([x, y].every((k) => p(w.kinds[k], "hard") >= 0.2 || p(w.kinds[k], "flammable") >= 0.5) || greasy(w.kinds[x]) || greasy(w.kinds[y])) push({ verb: "rub", items: [x, y] });
+      if ([x, y].every((k) => p(w.kinds[k], "hard") >= 0.2 || p(w.kinds[k], "flammable") >= 0.5) || greasy(w.kinds[x]) || greasy(w.kinds[y])) {
+        push({ verb: "rub", items: [x, y] });
+        // two woods worked for an ember, blown into a lay
+        if (rubbing(w.kinds[x], w.kinds[y]).does === "friction") for (const lay of lays([x, y])) push({ verb: "rub", items: [x, y, ...lay] });
+      }
       push({ verb: "join", items: [x, y] });
       if (x !== y) push({ verb: "place", items: [...Array(Math.min(c[x], 5)).fill(x), ...Array(Math.min(c[y], 3)).fill(y)] });
       if (within(w, a, "fire", 1) && x !== y) push({ verb: "heat", items: [x, y], at: "fire" });
@@ -1246,8 +1363,9 @@ function run(w: World, a: Agent): boolean | string {
     }
     case "flee": {
       const wolf = w.animals.find((m) => m.species === "wolf" && m.target === a.id) ?? nearest(a, w.animals, (m) => m.species === "wolf");
-      const burning = nearest(a, liveThings(w), (t) => !!t.burning);
-      const danger = wolf && meters(a, wolf) < 40 ? wolf : burning && meters(a, burning) < 10 ? burning : null;
+      // the fire throwing the most on them, while the heat there passes what bare skin bears
+      const heat = heatAt(w, a.px, a.py), burning = heat.q >= BEARABLE ? heat.from : null;
+      const danger = wolf && meters(a, wolf) < 40 ? wolf : burning;
       if (!danger || s.progress++ > 20) return true;
       a.status = wolf === danger ? "Running from a wolf" : "Running from the fire";
       const safe = nearest(a, w.agents, (b) => b !== a && b.down <= w.t) ?? nearest(a, liveThings(w), (t) => t.kind === "fire");
@@ -1363,9 +1481,9 @@ function run(w: World, a: Agent): boolean | string {
     case "warm_up": {
       a.status = "Warming up";
       if (!within(w, a, "fire", 1) && !within(w, a, "home")) return "the warmth was gone";
-      a.needs.warmth = Math.min(100, a.needs.warmth + 0.6);
-      // Warm and by the fire at night, there is nowhere better to be: they stay a while.
-      if (a.needs.warmth < 95) return false;
+      // Their warmth comes of where they are (needs): somewhere that no longer warms them is no place to warm up. Warm and
+      // by the fire at night, there is nowhere better to be: they stay a while.
+      if (a.needs.warmth < 95) return warming(w, a).change > 0 ? false : "the warmth was gone";
       if (isNight(w.t) && s.progress++ < 12) { a.status = "Sitting by the fire"; return false; }
       return true;
     }
@@ -1403,18 +1521,17 @@ function run(w: World, a: Agent): boolean | string {
       // What they've come to think won't work in the weather now, they don't start, or keep at once the weather turns
       // partway through (the rain coming on as they strike), unless it's what they set out to test, there and then: a
       // test whose weather has passed is an ordinary try, held to every theory of theirs like any other. (The spot was
-      // weighed when they chose it.)
-      const now = conditionsNow(w, a, b.fields.verb, a, b.fields.inputs);
+      // weighed when they chose it; what they lay in a fire, the pieces they'd choose.)
+      const act = (s.act ??= actFromBelief(b)), now = conditionsNow(w, a, b.fields.verb, a, act.items);
       if (!testingNow(a, b, now)) {
         const bar = b.unless?.find((t) => !ofSpot(t) && holds(t, now));
         if (bar) return `they think it won't work ${conditionWords(bar)}`;
       }
-      s.act ??= actFromBelief(b);
       const r = doAct(w, a, s);
       if (r === "wait") return false;
       if (typeof r === "string") return r;
       finishAct(w, a, s, r, false);
-      attempted(w, a, b, r, Math.max(1, w.t - (s.started ?? w.t)));
+      attempted(w, a, b, r, Math.max(1, w.t - (s.started ?? w.t)), seenAt.get(s));
       return r.ok ? true : r.text;
     }
     case "tinker": {
@@ -1884,44 +2001,53 @@ function burned(w: World) {
 }
 
 // ---------- needs ----------
-// A tick's toll on someone's needs, and what their surroundings give back.
-export function needs(w: World, a: Agent) {
-  const n = a.needs, night = isNight(w.t);
-  if (a.struggles) for (const k of Object.keys(a.struggles) as Need[]) if (n[k] > 60) delete a.struggles[k];
-  n.food = Math.max(0, n.food - 0.12 - (a.sickness ? 0.05 : 0));
-  n.energy = Math.max(0, n.energy - (night ? 0.16 : 0.1));
-  n.social = Math.max(0, n.social - 0.05);
-  const worn = a.wearing ? p(w.kinds[a.wearing.k], "insulating") : 0;
+// Fires warm people through their body's own terms (fire-constants secs. 18, 31): F_P of the radiant flux on them, the
+// share the side they turn to it takes, raises the temperature their body exchanges heat with by what they lose to
+// radiation, H_R W/m2K, and to the air moving past, H_STILL in still air or 10.4 V^0.56 in a wind of V m/s.
+const F_P = 0.35, H_R = 6, H_STILL = 3.4;
+// Bare skin bears radiant heat up to BEARABLE kW/m2. Past it, it burns by Purser's dose, q^(4/3) for each minute, which
+// pains at PAIN and burns through the skin at THIRD (sec. 7).
+const BEARABLE = 2.5, PAIN = 1.33, THIRD = 16.67;
+const TICK_MIN = 86400 / DAY / 60;
+// What a tick where they stand does to someone's warmth, the radiant heat on them, kW/m2, and the fire throwing the most of
+// it (light.ts heatAt).
+export function warming(w: World, a: Agent) {
+  const night = isNight(w.t), worn = a.wearing ? p(w.kinds[a.wearing.k], "insulating") : 0;
   // Walls keep the cold off whoever is in them, whoever put them up: their own home, or any lean-to or better they're in.
   const own = homeOf(w, a), sheltering = (t: Thing) => (t.shelter?.tier ?? 0) >= 1 && reaches(a, t);
   const roof = own && sheltering(own) ? own : nearestThing(w, a.px, a.py, ["structure"], sheltering, 6);
   const inside = !!roof, air = airOn(w, a, inside);
+  const fire = heatAt(w, a.px, a.py), rise = (F_P * fire.q * 1000) / (H_R + Math.max(H_STILL, 10.4 * air.wind ** 0.56));
   // Below 12C the body loses heat, the faster the harder the wind blows, and faster still the wetter what they wear is, or
-  // their bare skin (wetness.ts), soaked through a third faster; above it, the air gives some back.
+  // their bare skin (wetness.ts), soaked through a third faster; above it, the air gives some back. A fire raises both by
+  // the same rise, so one close enough cancels the cold and then warms them back up.
   const soaked = a.wearing ? Math.min(1, moistureOf(a.wearing) / Math.max(0.01, stackPhys(w.kinds, a.wearing)?.mmax ?? 1)) : (a.skin ?? 0);
-  const cold = Math.max(0, (12 - air.feels) / 110) * (night ? 1.2 : 1) * (1 + 0.3 * soaked) * (1 - worn * 0.6);
-  const mild = Math.max(0, (air.temp - 12) / 60);
-  // The nearest fire or thing burning well, to warm by, and the nearest burning fiercely, to be hurt by.
-  let fire: Thing | null = null, flames: Thing | null = null, warmAt = Infinity, hurtAt = Infinity;
-  for (const t of liveThings(w)) {
-    const b = t.burning ?? 0;
-    if (!(t.kind === "fire" || b > 0.3)) continue;
-    const d = meters(a, t);
-    if (d < warmAt) { warmAt = d; fire = t; }
-    if (b > 0.4 && d < hurtAt) { hurtAt = d; flames = t; }
-  }
+  const cold = Math.max(0, (12 - air.feels - rise) / 110) * (night ? 1.2 : 1) * (1 + 0.3 * soaked) * (1 - worn * 0.6);
+  const mild = Math.max(0, (air.temp + rise - 12) / 60);
   let heat = 0;
-  if (fire && warmAt <= (fire.contained ? 5 : 4)) heat += fire.contained ? 1.1 : 0.9;
   if (roof) heat += 0.2 + (roof.shelter?.insul ?? 0) * 0.8 + (roof.shelter?.tier ?? 0) * 0.1;
   if (night) heat += Math.min(2, w.agents.filter((b) => b !== a && meters(a, b) <= 2).length) * 0.25;
   // Out in the sun a body soaks up warmth: a clear midday sun (some 60,000 lux) all but makes up for a cool breeze.
   else if (!inside) heat += 0.05 * Math.min(1, lightOn(w, a).lux / 60000);
-  // A lit lamp in hand gives off a little warmth.
-  if (a.inv.some((s) => s.k.startsWith("burning:") && p(w.kinds[s.k], "container") >= 0.5)) heat += 0.25;
-  n.warmth = Math.max(0, Math.min(100, n.warmth + heat - cold + mild));
+  return { change: heat - cold + mild, q: fire.q, from: fire.from };
+}
+// A tick's toll on someone's needs, and what their surroundings give back.
+export function needs(w: World, a: Agent) {
+  const n = a.needs;
+  if (a.struggles) for (const k of Object.keys(a.struggles) as Need[]) if (n[k] > 60) delete a.struggles[k];
+  n.food = Math.max(0, n.food - 0.12 - (a.sickness ? 0.05 : 0));
+  n.energy = Math.max(0, n.energy - (isNight(w.t) ? 0.16 : 0.1));
+  n.social = Math.max(0, n.social - 0.05);
+  const { change, q } = warming(w, a);
+  n.warmth = Math.max(0, Math.min(100, n.warmth + change));
   if (n.food <= 0 || n.warmth <= 0) n.health -= 0.4;
   else if (n.food > 40 && n.warmth > 40 && !a.sickness) n.health = Math.min(100, n.health + 0.1);
-  if (flames && hurtAt <= 2) n.health -= 1.5;
+  // Radiant heat past what bare skin bears burns them: whoever can move takes it until it pains them and steps back,
+  // whoever lies collapsed takes the whole tick's; a dose that burns through the skin takes all their health (sec. 31).
+  if (q > BEARABLE) {
+    const dose = q ** (4 / 3) * TICK_MIN;
+    n.health -= (100 * (a.down > w.t ? dose : Math.min(dose, PAIN))) / THIRD;
+  }
 }
 
 function perceive(w: World, a: Agent) {
@@ -1956,11 +2082,13 @@ function perceive(w: World, a: Agent) {
     }
     return;
   }
-  const flames = nearest(a, liveThings(w), (t) => !!t.burning && t.burning > 0.3);
-  if (flames && meters(a, flames) <= 8 && !busy) {
+  // Where the radiant heat on them passes what bare skin bears, they get away from it; heat from something other than a
+  // fire burning shows them fire spreading.
+  const heat = heatAt(w, a.px, a.py);
+  if (heat.q >= BEARABLE && !busy) {
     a.goal = { type: "flee", since: w.t, odds: {}, fails: 0 };
     a.plan = [{ op: "flee", progress: 0 }];
-    see(w, a, "fire_spreads", "Fire spreads to anything dry and wooden nearby.", 60);
+    if (heat.from && heat.from.kind !== "fire") see(w, a, "fire_spreads", "Fire spreads to anything dry and wooden nearby.", 60);
   }
 }
 
@@ -1996,6 +2124,7 @@ function reflex(w: World, a: Agent) {
 }
 
 function agentTick(w: World, a: Agent) {
+  carry(w, a);
   needs(w, a);
   const n = a.needs;
   if (a.down > w.t) { a.status = "Unconscious"; return; }

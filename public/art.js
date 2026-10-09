@@ -467,7 +467,9 @@ export function drawThing(c, th, ownerColor, kinds) {
   c.lineJoin = "round"; c.lineCap = "round";
   const tier = th.shelter?.tier ?? 0, abandoned = th.kind === "structure" && !th.owner && tier >= 1;
   const filters = [];
-  if (th.burning > 0) filters.push(`brightness(${(1 - th.burning * 0.45).toFixed(2)}) saturate(${(1 - th.burning * 0.5).toFixed(2)})`);
+  // a thing alight darkens and dulls by how much of its output is in flame
+  const flaming = th.blaze?.kw > 0 ? th.blaze.kw / (th.blaze.kw + th.blaze.glow) : 0;
+  if (flaming > 0) filters.push(`brightness(${(1 - flaming * 0.45).toFixed(2)}) saturate(${(1 - flaming * 0.5).toFixed(2)})`);
   if (abandoned) filters.push("saturate(.5) brightness(.95)");
   if (filters.length) c.filter = filters.join(" ");
   switch (th.kind) {
@@ -1203,17 +1205,22 @@ function flag(c, x, y, s, color) {
   inked(c, color, 1);
 }
 
-// Flame colors by how hot the fire burns: orange for wood, yellow in a ring, near white on charcoal with air in it.
-const FLAMES = [[1, ["#c4541d", "#e8952e", "#f6d68a"]], [1.3, ["#d8701f", "#f2b340", "#fbe8a8"]], [2, ["#eba83a", "#fadf7c", "#fffbe8"]], [2.5, ["#f4d27e", "#fff4cc", "#f4f9ff"]]];
+// Flame colors by the coals' glowing surface (blaze.hot, kelvin): orange over a dull red bed in still air, yellow as wind
+// brightens it, near white only under the bellows. A blaze with no coals under it yet burns as the coolest.
+const FLAMES = [[873, ["#c4541d", "#e8952e", "#f6d68a"]], [1050, ["#d8701f", "#f2b340", "#fbe8a8"]], [1300, ["#eba83a", "#fadf7c", "#fffbe8"]], [1500, ["#f4d27e", "#fff4cc", "#f4f9ff"]]];
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-export function flameColors(heat = 1) {
-  const j = FLAMES.findIndex(([h]) => h >= heat), i = j < 0 ? FLAMES.length - 2 : Math.max(0, j - 1), [h0, a] = FLAMES[i], [h1, b] = FLAMES[i + 1];
-  const k = h1 > h0 ? Math.max(0, Math.min(1, (heat - h0) / (h1 - h0))) : 0;
-  return a.map((ca, j) => { const x = rgb(ca), y = rgb(b[j]); return `rgb(${x.map((v, n) => Math.round(v + (y[n] - v) * k)).join(",")})`; });
+// [outer, mid, core], each [r, g, b]
+export function flameRgb(hot = 0) {
+  const j = FLAMES.findIndex(([h]) => h >= hot), i = j < 0 ? FLAMES.length - 2 : Math.max(0, j - 1), [h0, a] = FLAMES[i], [h1, b] = FLAMES[i + 1];
+  const k = h1 > h0 ? Math.max(0, Math.min(1, (hot - h0) / (h1 - h0))) : 0;
+  return a.map((ca, j) => { const x = rgb(ca), y = rgb(b[j]); return x.map((v, n) => Math.round(v + (y[n] - v) * k)); });
 }
-// Fires are drawn live so they flicker. ring: loose stones, or a built "stone" / "brick" hearth.
-// heat tints the flames, coal lays a glowing bed of charcoal under them, covered heaps a smoldering dome over the fire.
-export function drawFire(c, x, y, s, now, seed, ring = "loose", power = 1, { heat = 1, coal = false, covered = false } = {}) {
+const flameColors = (hot) => flameRgb(hot).map((c) => `rgb(${c})`);
+// Fires are drawn live so they flicker, s across about a meter of the fire. ring: loose stones, or a built "stone" /
+// "brick" hearth. blaze (the sim's, inspect.ts Blaze) lights it: flames blaze.flame meters tall over a bed of coals
+// glowing while it has any, all tinted by blaze.hot; without a blaze the fire is out, cold stones round its ash.
+// covered heaps a smoldering dome over the fire.
+export function drawFire(c, x, y, s, now, seed, ring = "loose", blaze, { covered = false } = {}) {
   c.save();
   c.translate(x, y);
   c.lineJoin = "round";
@@ -1231,30 +1238,34 @@ export function drawFire(c, x, y, s, now, seed, ring = "loose", power = 1, { hea
   };
   const ids = [...Array(n).keys()], behind = (i) => Math.sin((i / n) * Math.PI * 2) < 0;
   ids.filter(behind).forEach(stone);
-  const t = now / 140 + seed * 10, hk = power, wk = 0.75 + 0.25 * power;
-  if (coal) {
-    const pulse = 0.8 + Math.sin(t * 0.7) * 0.15;
-    const bed = c.createRadialGradient(0, s * 0.12, 0, 0, s * 0.12, s * 0.34);
-    bed.addColorStop(0, `rgba(255, 236, 170, ${pulse})`); bed.addColorStop(0.5, `rgba(240, 110, 40, ${pulse * 0.9})`); bed.addColorStop(1, "rgba(120, 30, 10, 0)");
-    c.fillStyle = bed; c.beginPath(); c.ellipse(0, s * 0.12, s * 0.34, s * 0.15, 0, 0, Math.PI * 2); c.fill();
+  const t = now / 140 + seed * 10, [outer, mid, core] = flameColors(blaze?.hot ?? 0);
+  if (!blaze) { c.beginPath(); c.ellipse(0, s * 0.12, s * 0.26, s * 0.11, 0, 0, Math.PI * 2); c.fillStyle = "rgba(110, 104, 98, .6)"; c.fill(); }
+  else if (blaze.glow > 0) {
+    // the coals, as wide as the heap
+    const pulse = 0.8 + Math.sin(t * 0.7) * 0.15, br = Math.max(0.15, Math.min(0.4, blaze.r * 0.6)), [o, m] = flameRgb(blaze.hot);
+    const bed = c.createRadialGradient(0, s * 0.12, 0, 0, s * 0.12, s * br);
+    bed.addColorStop(0, `rgba(${m}, ${pulse})`); bed.addColorStop(0.5, `rgba(${o}, ${pulse * 0.9})`); bed.addColorStop(1, "rgba(120, 30, 10, 0)");
+    c.fillStyle = bed; c.beginPath(); c.ellipse(0, s * 0.12, s * br, s * br * 0.44, 0, 0, Math.PI * 2); c.fill();
     c.fillStyle = "#2a201b";
-    for (let i = 0; i < 5; i++) { c.beginPath(); c.ellipse((hash(seed * 100, i, 3) - 0.5) * s * 0.4, s * (0.1 + hash(seed * 100, i, 4) * 0.06), s * 0.04, s * 0.025, 0, 0, Math.PI * 2); c.fill(); }
+    for (let i = 0; i < 5; i++) { c.beginPath(); c.ellipse((hash(seed * 100, i, 3) - 0.5) * s * br * 1.2, s * (0.1 + hash(seed * 100, i, 4) * 0.06), s * 0.04, s * 0.025, 0, 0, Math.PI * 2); c.fill(); }
   }
-  const flame = (h, w, col) => {
-    const f1 = Math.sin(t) * 0.08, f2 = Math.cos(t * 1.3) * 0.08;
-    h *= hk; w *= wk;
-    c.beginPath();
-    c.moveTo(-w * s, s * 0.1);
-    c.quadraticCurveTo(-w * s * 1.1, -h * s * 0.4, (f1 - 0.02) * s, -h * s);
-    c.quadraticCurveTo(w * s * 1.1 + f2 * s, -h * s * 0.4, w * s, s * 0.1);
-    c.closePath();
-    c.fillStyle = col; c.fill();
-  };
-  const [outer, mid, core] = flameColors(heat);
-  const low = covered ? 0.45 : 1;
-  flame((0.62 + Math.sin(t * 1.7) * 0.06) * low, 0.2, outer);
-  flame((0.44 + Math.cos(t * 2.1) * 0.05) * low, 0.13, mid);
-  flame(0.24 * low, 0.07, core);
+  if (blaze?.flame > 0) {
+    // the outer tongue blaze.flame tall, never under a little lick, as wide as the heap
+    const hk = Math.min(2.5, Math.max(0.15, blaze.flame)) / 0.62, wk = 0.6 + Math.min(0.6, blaze.r * 0.8), low = covered ? 0.45 : 1;
+    const flame = (h, w, col) => {
+      const f1 = Math.sin(t) * 0.08, f2 = Math.cos(t * 1.3) * 0.08;
+      h *= hk * low; w *= wk;
+      c.beginPath();
+      c.moveTo(-w * s, s * 0.1);
+      c.quadraticCurveTo(-w * s * 1.1, -h * s * 0.4, (f1 - 0.02) * s, -h * s);
+      c.quadraticCurveTo(w * s * 1.1 + f2 * s, -h * s * 0.4, w * s, s * 0.1);
+      c.closePath();
+      c.fillStyle = col; c.fill();
+    };
+    flame(0.62 + Math.sin(t * 1.7) * 0.06, 0.2, outer);
+    flame(0.44 + Math.cos(t * 2.1) * 0.05, 0.13, mid);
+    flame(0.24, 0.07, core);
+  }
   ids.filter((i) => !behind(i)).forEach(stone);
   if (covered) {
     // A dome of stone heaped over the fire, glowing through a gap at the front.
@@ -1264,18 +1275,20 @@ export function drawFire(c, x, y, s, now, seed, ring = "loose", power = 1, { hea
     c.strokeStyle = "rgba(58, 42, 26, .45)"; c.lineWidth = 0.8;
     for (let i = 0; i < 7; i++) { c.beginPath(); c.ellipse((hash(seed * 100, i, 7) - 0.5) * s * 0.6, -s * (0.02 + hash(seed * 100, i, 8) * 0.2), s * 0.09, s * 0.06, 0, 0, Math.PI * 2); c.stroke(); }
     c.restore();
-    const gap = c.createRadialGradient(0, s * 0.1, 0, 0, s * 0.1, s * 0.12);
-    gap.addColorStop(0, core); gap.addColorStop(1, outer);
+    // glowing through a gap at the front while it burns
+    let gap = "#2a201b";
+    if (blaze) { gap = c.createRadialGradient(0, s * 0.1, 0, 0, s * 0.1, s * 0.12); gap.addColorStop(0, core); gap.addColorStop(1, outer); }
     c.fillStyle = gap; c.beginPath(); c.ellipse(0, s * 0.09, s * 0.1, s * 0.06, 0, Math.PI, 0); c.closePath(); c.fill();
   }
   c.restore();
 }
-// Flames licking along something that's on fire; k is intensity 0..1.
-export function drawFlames(c, x, y, w, h, now, seed, k) {
-  const n = 2 + Math.round(k * 3);
+// Flames licking along something that's on fire, h tall; k 0..1 how much of its output is in flame, more and wider
+// tongues; hot (blaze.hot, kelvin) tints them.
+export function drawFlames(c, x, y, w, h, now, seed, k, hot = 0) {
+  const n = 2 + Math.round(k * 3), [outer, mid, core] = flameColors(hot);
   for (let i = 0; i < n; i++) {
     const u = i / (n - 1) - 0.5, t = now / 130 + seed * 10 + i * 1.7;
-    const hh = h * (0.45 + 0.55 * k) * (0.7 + 0.3 * hash(i, 3, seed * 1000)) * (1 + Math.sin(t * 1.6) * 0.1) * (1 - Math.abs(u) * 0.5);
+    const hh = h * (0.7 + 0.3 * hash(i, 3, seed * 1000)) * (1 + Math.sin(t * 1.6) * 0.1) * (1 - Math.abs(u) * 0.5);
     const ww = w * (0.12 + 0.08 * k), bx = x + u * w * 0.8, by = y - Math.abs(u) * h * 0.08;
     const layer = (hk, wk, col) => {
       const f1 = Math.sin(t) * 0.1, f2 = Math.cos(t * 1.3) * 0.1;
@@ -1284,9 +1297,9 @@ export function drawFlames(c, x, y, w, h, now, seed, k) {
       c.quadraticCurveTo(bx + ww * wk * 1.1 + f2 * ww, by - hh * hk * 0.45, bx + ww * wk, by);
       c.closePath(); c.fillStyle = col; c.fill();
     };
-    layer(1, 1, "rgba(196, 84, 29, .92)");
-    layer(0.68, 0.64, "#e8952e");
-    layer(0.36, 0.34, "#f6d68a");
+    layer(1, 1, outer);
+    layer(0.68, 0.64, mid);
+    layer(0.36, 0.34, core);
   }
 }
 export function drawSmoke(c, x, y, s, now, seed, k, wind) {

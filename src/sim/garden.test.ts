@@ -159,9 +159,9 @@ test("standing in the rain, someone with a theory about each of two ways is offe
   summer();
   await run(50, () => !a.thinking);
   const ground = groundKey(groundWord(w, a.px, a.py));
-  // rubbing sticks for a fire, which they think won't work in the rain after ten tries died in it
+  // rubbing two sticks for an ember to blow into fiber, which they think won't work in the rain after ten tries died in it
   const rub: Belief = {
-    key: "rub|fiber+stick+stick|-|-|-|-", fields: { verb: "rub", inputs: ["stick", "stick", "fiber"], gives: [], builds: "fire" }, uses: { fiber: 1 }, out: {},
+    key: "rub|stick+stick+fiber|-|-|-|-", fields: { verb: "rub", inputs: ["stick", "stick", "fiber"], gives: [], builds: "fire" }, uses: { fiber: 1 }, out: {},
     ticks: 20, tries: 20, wins: 10, how: "discovered", t: 0, unless: ["rain"],
   };
   for (let i = 0; i < 10; i++) { noteTry(rub, true, []); noteTry(rub, false, ["rain"]); }

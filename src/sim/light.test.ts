@@ -1,11 +1,12 @@
 import { beforeAll, expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, isNight, newWorld, type Thing, type World } from "./world";
-import { removeThing } from "./physics";
+import { bedAir, carriedOutput, fireOf, fireOutput, removeThing } from "./physics";
+import { advance } from "./combustion";
 import { around, put } from "./space";
 import { addAnimal } from "./fauna";
 import { ecology } from "./ecology";
 import { ctxFor, tick } from "./sim";
-import { DARK, canSee, lightAt } from "./light";
+import { DARK, canSee, lightAt, lightOn } from "./light";
 import { YEAR_DAYS, sunAt } from "./sky";
 
 process.env.NOMADS_BRAIN = "random";
@@ -18,8 +19,9 @@ const sunsetOn = (day: number) => { let h = 13; while (sunAt(day, h).el > 0) h +
 const SUNSET = sunsetOn(SUMMER);
 
 // A world takes seconds to build, so these tests share one island with two people on it, and each works on a pad of its own:
-// nine spots 600 m apart round where the first person woke, far enough that a fire's glow (80 m) or a crown (12 m) at one is
-// never seen from another. The pad is cleared of everything within `bare` meters, so the light there is the sky's alone.
+// nine spots 600 m apart round where the first person woke, far enough that a crown (12 m) at one is never seen from
+// another. The pad is cleared of everything within `bare` meters, and the island of every fire and everything burning,
+// whose light carries any distance, so the light there is the sky's alone.
 let island: World, origin: { px: number; py: number };
 beforeAll(() => {
   island = newWorld(5);
@@ -31,7 +33,7 @@ function pad(n: number, bare = 60) {
   const spot = { px: origin.px + (((n % 3) - 1) * 600) / TILE_M, py: origin.py + ((Math.floor(n / 3) - 1) * 600) / TILE_M };
   const here: Thing[] = [];
   around(w, spot.px, spot.py, bare, null, (t) => void here.push(t));
-  for (const t of here) removeThing(w, t);
+  for (const t of [...here, ...w.things.filter((t) => t.kind === "fire" || t.bed)]) removeThing(w, t);
   w.animals = [];
   w.weather.sky = "clear";
   return { w, ...spot };
@@ -39,6 +41,12 @@ function pad(n: number, bare = 60) {
 // Three oaks standing close round a point, their crowns overlapping over it.
 function grove(w: World, px: number, py: number) {
   for (const [dx, dy] of [[0, 0], [3, 2], [-3, 2]]) addThing(w, "tree", px + dx / TILE_M, py + dy / TILE_M, { size: 14, species: "oak" });
+}
+// A fire lit from the standard lay (physics.ts fireOf) so many seconds before, with so many logs in it.
+function fire(w: World, px: number, py: number, secs = 300, logs = 2) {
+  const f = fireOf(w, px, py, 5, logs);
+  f.bed = advance(f.bed!, secs, bedAir(w, f));
+  return f;
 }
 
 test("night is the sun well under the horizon: it comes after sunset and goes before sunrise, once a day each way, and a winter night is far longer than a summer one", () => {
@@ -96,10 +104,52 @@ test("a fire lights the night around it and not far off", () => {
   const { w, px, py } = pad(3);
   w.t = at(1);
   expect(lightAt(w, px + 100 / TILE_M, py).bright).toBeLessThan(DARK);
-  addThing(w, "fire", px, py);
+  fire(w, px, py);
   w.t = at(1) + 1; // the light of fires is worked out once a tick
   expect(lightAt(w, px + 3 / TILE_M, py).bright).toBeGreaterThanOrEqual(DARK);
-  expect(lightAt(w, px + 100 / TILE_M, py).fire).toBe(0);
+  expect(lightAt(w, px + 100 / TILE_M, py).bright).toBeLessThan(DARK);
+});
+
+// Light from flames at 0.16 lm a watt of flaming output, and from coals at a glowing body's efficacy at their heat, which
+// is far less (fire-constants secs. 9, 31).
+test("a big fire lights the dark further than coals do, and a lamp's light follows its output", () => {
+  const { w, px, py } = pad(6);
+  w.t = at(2); // an hour no other case works at, as the light of fires is kept for the tick it was worked out in
+  // the farthest along a line from a fire that is still light enough to see by, m
+  const reach = (f: Thing) => { w.t++; let d = 0; while (d < 400 && lightAt(w, f.px + (d + 1) / TILE_M, f.py).bright >= DARK) d++; return d; };
+  const big = fire(w, px, py, 300, 6);
+  const blazing = reach(big);
+  removeThing(w, big);
+  const coals = fire(w, px, py, 3600);
+  expect(fireOutput(w, coals).flaming).toBe(0);
+  expect(fireOutput(w, coals).glowing).toBeGreaterThan(0);
+  expect(blazing).toBeGreaterThan(reach(coals) + 20);
+  removeThing(w, coals);
+
+  // a lamp in hand, lit and burnt dry, and a brand, burning hotter
+  const a = w.agents[0];
+  put(w, a, px, py);
+  w.kinds["lamp"] = { id: "lamp", name: "fat lamp", props: { container: 0.8, hard: 0.6 }, parts: ["stone", "fat"] };
+  w.kinds["burning:lamp"] = { id: "burning:lamp", name: "lit fat lamp", props: { container: 0.8, hard: 0.6, flammable: 1 }, parts: ["lamp"], verb: "heat" };
+  w.kinds["burning:stick"] = { id: "burning:stick", name: "burning stick", props: { ...w.kinds.stick.props, flammable: 1 }, parts: ["stick"], verb: "heat" };
+  const by = (k: string, hp = 1) => { a.inv = [{ k, hp, born: w.t }]; w.t++; return { lux: lightAt(w, a.px, a.py).fire, kw: carriedOutput(w, a, a.inv[0]).flaming }; };
+  const lamp = by("burning:lamp"), dry = by("burning:lamp", 0), brand = by("burning:stick");
+  expect(lamp.kw).toBeGreaterThan(0);
+  w.t++;
+  a.inv = [{ k: "burning:lamp", hp: 1, born: w.t }];
+  expect(lightOn(w, a).bright).toBeGreaterThanOrEqual(DARK);
+  expect(dry.lux).toBe(0);
+  expect(brand.kw).toBeGreaterThan(lamp.kw);
+  expect(brand.lux / lamp.lux).toBeCloseTo(brand.kw / lamp.kw, 6);
+  a.inv = [];
+});
+
+test("a bare fire thing with no bed gives no light", () => {
+  const { w, px, py } = pad(6);
+  w.t = at(2.5);
+  addThing(w, "fire", px, py);
+  w.t++;
+  expect(lightAt(w, px + 1 / TILE_M, py).fire).toBe(0);
 });
 
 test("sight shrinks with the light: at night a person across the clearing can't be made out, until they stand by a fire", () => {
@@ -111,7 +161,7 @@ test("sight shrinks with the light: at night a person across the clearing can't 
   expect(canSee(w, a, b, 300)).toBe(true);
   w.t = at(1);
   expect(canSee(w, a, b, 300)).toBe(false);
-  addThing(w, "fire", b.px + 1 / TILE_M, b.py);
+  fire(w, b.px + 1 / TILE_M, b.py);
   w.t = at(1) + 1;
   expect(canSee(w, a, b, 300)).toBe(true);
 });

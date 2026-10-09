@@ -16,8 +16,8 @@
 // scripts/evals.ts runs every probe over many seeds and holds each build to the last good one.
 import { readFileSync } from "node:fs";
 import { DAY, TILE_M, addThing, dryAt, isNight, newWorld, rng, type Agent, type Thing, type World } from "../src/sim/world";
-import { DURATION, conditionsNow, tick } from "../src/sim/sim";
-import { changed, count, counts, emberCatches, frictionPer, giveItems, groundWord, newKinds, occupied, removeThing, removed, soilAt, sparkCatches, sparksPer, SEED_SOIL } from "../src/sim/physics";
+import { conditionsNow, tick } from "../src/sim/sim";
+import { DURATION, changed, count, counts, emberCatches, frictionPer, giveItems, groundWord, newKinds, occupied, removeThing, removed, soilAt, sparkCatches, sparksPer, SEED_SOIL } from "../src/sim/physics";
 import { nextWet, trailChanges } from "../src/sim/ecology";
 import { traceListeners, type TraceEntry } from "../src/sim/trace";
 import { asking, brainKind, useBrain } from "../src/sim/brain";

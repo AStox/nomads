@@ -1087,14 +1087,21 @@ function layer(A, B, dx, dy) {
   return T;
 }
 
+// A burning bed's coals on the fire ramp by their glowing surface (blaze.hot, kelvin): a dull red bed in still air, orange
+// with wind in it, yellow toward white only under bellows. A dith() level on HOT.
+const HOT = ramp("f0", "f1", "f2", "f3", "f4");
+const heatOf = (blaze) => clamp((blaze.hot - 700) / 190, 0, 4);
 // A fire: open on the ground, or in a stone ring (contained), under a clay kiln dome (covered), or a forge bed of
-// charcoal. burning 0..1 sizes the flames, 0 leaves it cold; frame 0..3 flickers them. hpx: the fire's size.
-export function fire(hpx = 8, seed = 0, { contained, covered, charcoal, burning = 1, frame = 0 } = {}) {
-  const r = Math.max(2, hpx * 0.45), lit = burning > 0.05, hot = ramp("f0", "f1", "f2", "f3");
+// charcoal. blaze, the sim's (inspect.ts Blaze), lights it: flames blaze.flame meters tall at ppm art px a meter and,
+// while it has coals, a bed glowing by blaze.hot; without a blaze it is cold. frame 0..3 flickers them. hpx: the
+// fire's size, a meter across as the sim makes one, so ppm is hpx unless said.
+export function fire(hpx = 8, seed = 0, { contained, covered, charcoal, blaze, ppm = hpx, frame = 0 } = {}) {
+  const r = Math.max(2, hpx * 0.45), lit = !!blaze, coals = lit && blaze.glow > 0, heat = coals ? heatOf(blaze) : 0;
   let S = contained || covered || charcoal ? firering(r, seed) : ash(r * 0.8, seed);
-  if (charcoal) {
+  if (charcoal || coals) {
+    // the forge's heap of charcoal, or the coals a wood fire has burned down to
     const C = iso(r, r, r);
-    ball(C, 0, 0, 0, r * 0.6, r * 0.6, r * 0.35, (x, y, sh) => (lit && h2(x, y, seed + frame) < 0.3 ? dith(hot, 1.5 + sh * 1.5, x, y) : sh > 0.3 ? P.r1 : P.r0));
+    ball(C, 0, 0, 0, r * 0.6, r * 0.6, r * (charcoal ? 0.35 : 0.15), (x, y, sh) => (coals && h2(x, y, seed + frame) < (charcoal ? 0.3 : 0.5) ? dith(HOT, heat - 0.5 + sh * 1.5, x, y) : sh > 0.3 ? P.r1 : P.r0));
     S = layer(S, done(C, 0, P.ink), 0, -S.foot);
   }
   if (covered) {
@@ -1106,9 +1113,9 @@ export function fire(hpx = 8, seed = 0, { contained, covered, charcoal, burning 
     if (lit) ball(K, 0, 0, r * 1.15, 0.5, 0.5, 0.3, () => P.f2);
     return layer(S, done(K, 0), 0, -S.foot);
   }
-  if (!lit) return S;
-  const fh = Math.max(4, Math.round(hpx * (charcoal ? 0.6 : 1.1) * Math.min(1, burning + 0.2)));
-  return layer(S, SP.flames(fh, seed * 4 + (frame & 3)), 0, -S.foot);
+  // a bed of coals alone has no flames over it
+  if (!lit || blaze.flame <= 0) return S;
+  return layer(S, SP.flames(Math.round(blaze.flame * ppm), seed * 4 + (frame & 3)), 0, -S.foot);
 }
 
 // A tussock of tall grass, sized by its width on the ground (wpx): a dark mounded base under a mass of splaying
@@ -1142,25 +1149,27 @@ export function tallgrass(wpx = 8, seed = 0, dry = 0, seeding) {
   return S;
 }
 
-// The smallest fire, and anything drawObject does not know, in a few hand-placed pixels: a = lit, b = shade.
+// The smallest fire, and anything drawObject does not know, in a few hand-placed pixels: a = lit, b = shade. A fire
+// with no blaze is cold, a few grey pixels like a stone.
 const MINIS = {
   stem: [["a", "b"], ["a", "b", "b"], ["a", "b", "b", "b"]],
   rock: [["ab"], ["ab", "bb"], [" ab ", "abbb"]],
 };
-function mini(kind, hpx) {
-  const fire = kind === "fire", [a, b] = fire ? [P.f3, P.f1] : [P.r4, P.r2];
+function mini(kind, hpx, lit = false) {
+  const fire = kind === "fire" && lit, [a, b] = fire ? [P.f3, P.f1] : [P.r4, P.r2];
   if (hpx < 1.6) { const S = new Spr(1, 1, 0, 0); S.p[0] = a; return S; }
   return rows(MINIS[fire ? "stem" : "rock"][hpx < 2.6 ? 0 : hpx < 3.6 ? 1 : 2], { a, b, t: P.d1 }, 1, { outline: -1 });
 }
 
 // Draw any sim object by kind at any size: hpx is its size in art px (its size in meters times the zoom's px per
 // meter): height for most kinds, length for stick and fallen_log, width for grass. It grows smoothly from a 1 px dot to the close
-// zoom sprite. o: species, stage, berries, tier, style, dir, flag, burning. Anchored at the ground point.
+// zoom sprite. o: species, stage, berries, tier, style, dir, flag, and for a thing alight its blaze (inspect.ts Blaze)
+// with ppm its art px a meter (hpx unless said). Anchored at the ground point.
 export function object(kind, hpx, seed = 0, o = {}) {
-  const S = drawObject(kind, hpx, seed, o), b = o.burning ?? 0;
-  if (kind === "fire" || b <= 0.05 || hpx < 4) return S;
-  // a thing on fire: flames stood on it, reaching up its height; trees burn in the crown
-  const F = SP.flames(Math.max(4, Math.round(hpx * (kind === "tree" ? 0.55 : 0.8) * Math.min(1, b + 0.3))), seed * 4 + (o.frame ?? 0));
+  const S = drawObject(kind, hpx, seed, o), b = o.blaze;
+  if (kind === "fire" || !b || b.flame <= 0 || hpx < 4) return S;
+  // a thing on fire: flames blaze.flame meters tall stood on it; trees burn in the crown
+  const F = SP.flames(Math.round(b.flame * (o.ppm ?? hpx)), seed * 4 + (o.frame ?? 0));
   return layer(S, F, 0, kind === "tree" ? -Math.round(hpx * 0.45) : -(S.foot ?? 0));
 }
 const TREES = ["oak", "ash", "aspen", "pine"];
@@ -1189,7 +1198,7 @@ function small(kind, h, seed, o, minis) {
 function drawObject(kind, hpx, seed, o) {
   const sp = o.species, h = Math.max(0, hpx), minis = kind === "structure" ? 5 : kind === "boulder" ? 4.5 : 4;
   if (kind === "tree") return SP.tree(h, TREES.includes(sp) ? sp : "oak", Math.abs(seed | 0) % 8, SP.treeTint(o.tint ?? 0.5, sp), 0, h < 30);
-  if (h < minis) return kind === "fire" ? mini(kind, h) : small(kind, h, seed, o, minis);
+  if (h < minis) return kind === "fire" ? mini(kind, h, !!o.blaze) : small(kind, h, seed, o, minis);
   const r = Math.round;
   switch (kind) {
     case "sapling": return sapling(h, seed);

@@ -101,7 +101,11 @@ const OBJECTS = [["tree", "oak", 1.6], ["tree", "pine", 1.6], ["tree", "ash", 1.
   ["reeds", "", 0.6], ["grass", "", 1.8], ["fern", "bracken", 0.5], ["fern", "lady_fern", 0.5], ["flowers", "buttercup", 0.45], ["flowers", "daisy", 0.45], ["flowers", "clover", 0.45],
   ["flowers", "harebell", 0.45], ["flowers", "poppy", 0.45], ["sapling", "", 0.6], ["stump", "", 0.4], ["dead_bush", "", 0.5], ["clay", "", 0.5],
   ["item", "stone", 0.4], ["item", "meat", 0.4], ["item", "stick", 0.4], ["item", "hide", 0.4], ["structure", "reeds", 1.6]];
-const FIRES = [["OPEN", {}], ["RING", { contained: true }], ["RING COLD", { contained: true, burning: 0 }], ["KILN", { covered: true }], ["FORGE", { charcoal: true }]];
+// Fires as the sim's blaze (inspect.ts Blaze) has them: a wood fire in its flames, the coals it burns down to, one out,
+// a kiln, and a forge's charcoal under the bellows
+const OPEN = { kw: 60, glow: 50, flame: 0.4, r: 0.5, hot: 900 }, COALS = { kw: 0, glow: 40, flame: 0, r: 0.3, hot: 880 };
+const FIRES = [["OPEN", { blaze: OPEN }], ["RING", { contained: true, blaze: OPEN }], ["RING COALS", { contained: true, blaze: COALS }], ["RING COLD", { contained: true }],
+  ["KILN", { covered: true, blaze: { kw: 30, glow: 60, flame: 0.2, r: 0.4, hot: 1100 } }], ["FORGE", { charcoal: true, blaze: { kw: 5, glow: 80, flame: 0.1, r: 0.3, hot: 1450 } }]];
 const ANIMALS = [["deer", "graze"], ["deer", "flee"], ["wolf", "wander"], ["wolf", "hunt"], ["rabbit", "wander"], ["heron", "feed"], ["heron", "wade"], ["heron", "fly"],
   ["gull", "fly"], ["gull", "soar"], ["gull", "perch"], ["crow", "fly"], ["crow", "land"], ["eagle", "soar"], ["eagle", "dive"], ["fish", "swim"], ["fish", "jump"],
   ["butterfly", "flutter"], ["butterfly", "rest"]];
@@ -111,7 +115,10 @@ function ladderSections() {
     ["SIM OBJECTS  EVERY SIZE  THINGS OBJECT()", OBJECTS.map(([k, sp, f], i) => cell(`${k.replace("_", " ").toUpperCase()}${sp ? " " + sp.toUpperCase() : ""}`, "", LADDER.map((h) => TH.object(k, h * f, i + 3, { species: sp })), { ground: k === "reeds" ? "sand" : "grass" }))],
     ["SIM FIRES AND BURNING", [
       ...FIRES.map(([n, o], i) => cell(`FIRE ${n}`, "", [6, 10, 16].map((h, j) => TH.object("fire", h, i + j, o)), { shadow: false })),
-      cell("BURNING", "TREE BUSH STRUCTURE", [TH.object("tree", 26, 2, { species: "oak", burning: 0.8 }), TH.object("bush", 8, 3, { burning: 1 }), TH.object("structure", 22, 4, { tier: 2, species: "logs", burning: 0.6 })], { shadow: false }),
+      // a crown fire's flames meters over a 13 m oak, a bush's over its meter, a hut's along its roof
+      cell("BURNING", "TREE BUSH STRUCTURE", [TH.object("tree", 26, 2, { species: "oak", blaze: { kw: 2400, glow: 300, flame: 5, r: 2, hot: 1000 }, ppm: 2 }),
+        TH.object("bush", 8, 3, { blaze: { kw: 400, glow: 60, flame: 1.5, r: 0.6, hot: 950 }, ppm: 8 }),
+        TH.object("structure", 22, 4, { tier: 2, species: "logs", blaze: { kw: 900, glow: 200, flame: 2, r: 1.5, hot: 980 }, ppm: 7 })], { shadow: false }),
     ]],
     ["SIM ANIMALS  EVERY SIZE  THINGS ANIMAL()", ANIMALS.map(([sp, st], i) => cell(`${sp.toUpperCase()} ${st.toUpperCase()}`, `PX ${sub}`, LADDER.map((h, j) => TH.animal(sp, st, h, j, i + 2, 1)), { shadow: !/fly|swim|jump|soar|dive|flutter/.test(st), ground: sp === "fish" || (sp === "heron" && st !== "fly") ? "water" : "grass" }))],
   ];
@@ -148,8 +155,8 @@ const SAMPLES = [
   { id: "t70411", kind: "structure", name: "Lean-to", seed: 3, tier: 1, style: "logs", px: 31.3, py: 18.9,
     bars: [["HP", 55, 80], ["Cover", 60, 100]],
     rows: [["Tier", "1, lean-to"], ["Style", "logs"], ["Owner", "Mara"], ["Insulation", 0.3], ["Sturdiness", 0.55], ["Flammability", 0.5], ["Store", "sticks 6, berries 12"], ["Built", "day 3, 09:15"]] },
-  { id: "t80211", kind: "fire", name: "fire", seed: 41, px: 31.2, py: 18.8, bars: [["hp", 40, 60], ["burning", 0.8, 1]],
-    rows: [["kind", "fire"], ["heat", 1], ["ringed", "yes"], ["burns for", "40 more ticks"], ["tile", "31, 18"]] },
+  { id: "t80211", kind: "fire", name: "fire", seed: 41, px: 31.2, py: 18.8, contained: true, blaze: OPEN, bars: [["flames kW", 60, 150], ["coals kW", 50, 150]],
+    rows: [["kind", "fire"], ["output", "60 kW flaming, 50 kW glowing"], ["flame", "0.4 m"], ["coals", "900 K, dull red"], ["hours left", 2.5], ["setup", "stone ring"], ["tile", "31, 18"]] },
   { id: "t80533", kind: "trap", name: "trap", seed: 17, px: 28.4, py: 20.1, bars: [["hp", 20, 20]],
     rows: [["kind", "trap"], ["owner", "Mara"], ["caught", "rabbit"], ["tile", "28, 20"]] },
   { id: "t80611", kind: "item", name: "flint", item: "flint", seed: 9, px: 30.9, py: 18.4, bars: [],

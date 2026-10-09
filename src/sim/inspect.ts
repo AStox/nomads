@@ -4,7 +4,7 @@
 import { BASE, THING_MATERIAL, MADE_OF, PROPS, p, type Kind } from "./materials";
 import { BONDS, DAY, H, LABELS, QUIET, TILE_M, Tile, W, ageOf, clock, colorIndex, groundOf, iceAt, level, meters, spriteSeed, stageOf, tileAt, type Agent, type Animal, type Thing, type World } from "./world";
 import { thingById } from "./space";
-import { shelterName } from "./physics";
+import { ablaze, fireHours, fireKind, fireOutput, shelterName } from "./physics";
 import { activity, agentDetail, goalText, heading, type Activity } from "./sim";
 import { beliefText, conditionWords, groundOfKey, type Belief } from "./beliefs";
 import { campOf, knownCustoms, sharedStore, standing } from "./groups";
@@ -36,13 +36,29 @@ export type Inspected = {
   // For drawing the icon: the same fields the sprite is chosen and varied by.
   seed?: number; size?: number; state?: string; alt?: number; color?: string; colorIndex?: number;
   // Things: what picks the sprite on the map.
-  tier?: number; style?: string; item?: string; contained?: boolean; covered?: boolean; caught?: string; n?: number; burning?: number; stage?: number;
+  tier?: number; style?: string; item?: string; contained?: boolean; covered?: boolean; caught?: string; n?: number; blaze?: Blaze; stage?: number;
 };
 
 const r = (v: number, dp = 1) => Math.round(v * 10 ** dp) / 10 ** dp;
 const words = (s: string) => s.replaceAll("_", " ");
 const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 const nameOf = (w: World, id?: string) => (id ? w.people[id]?.name ?? id : undefined);
+
+// How a burning thing shows, a fire or anything alight: what it gives off now, kW from its flames and from its coals, how
+// tall its flame stands and how wide its heap is, m, and how hot its coals glow, K (physics.ts fireOutput). Clients draw
+// its flames by it; nothing alight shows none.
+export type Blaze = { kw: number; glow: number; flame: number; r: number; hot: number };
+export function blazeOf(w: World, t: Thing): Blaze | undefined {
+  if (!ablaze(t)) return undefined;
+  const o = fireOutput(w, t);
+  return { kw: r(o.flaming), glow: r(o.glowing), flame: r(o.flame, 2), r: r(o.radius, 2), hot: Math.round(o.hot) };
+}
+// A thing as clients are sent it: its blaze in place of its bed and the heat it has taken toward lighting, which are the
+// sim's own working.
+export function thingView(w: World, t: Thing) {
+  const { bed, absorbed, ...rest } = t, blaze = blazeOf(w, t);
+  return blaze ? { ...rest, blaze } : rest;
+}
 const lux = (l: Light) => `${l.lux >= 100 ? Math.round(l.lux).toLocaleString("en-US") : r(l.lux, l.lux < 1 ? 2 : 1)} lux`;
 const days = (w: World, t: number) => `${r((w.t - t) / DAY)} days ago`;
 const pct = (v: number) => `${Math.round(v * 100)}%`;
@@ -124,7 +140,26 @@ function thing(w: World, t: Thing): Inspected {
   rows.push({ label: "age", value: t.born !== undefined ? days(w, t.born) : "older than anyone" });
   if (t.n !== undefined) rows.push({ label: t.kind === "bush" ? "berries" : "count", value: t.n });
   if (t.owner) rows.push({ label: "owner", value: nameOf(w, t.owner) ?? t.owner, link: w.agents.some((a) => a.id === t.owner) ? t.owner : undefined });
-  if (t.burning) bars.push(["burning", r(t.burning, 2), 1]);
+  const blaze = blazeOf(w, t);
+  if (t.bed && blaze) {
+    // what burns in it, as anyone by it could see and judge (physics.ts fireOutput and fireHours, fire-constants sec. 31)
+    const coals = t.bed.coals.reduce((s, c) => s + c.kg, 0);
+    rows.push({ label: "output", value: `${blaze.kw} kW flaming, ${blaze.glow} kW glowing` }, { label: "flame", value: `${blaze.flame} m high` });
+    if (t.kind === "fire") rows.push({ label: "setup", value: fireKind(t) });
+    rows.push({ label: "hours left", value: r(fireHours(w, t), 2) });
+    // a group the flame has reached in part lies as two, the part alight and the rest: shown together by size and state
+    const laid = new Map<string, { d: number; lit: boolean; n: number; kg: number; was: number }>();
+    for (const g of t.bed.groups) {
+      const key = `${g.phys.d}|${g.lit}`, e = laid.get(key) ?? { d: g.phys.d, lit: g.lit, n: 0, kg: 0, was: 0 };
+      e.n += g.n; e.kg += g.n * g.mass; e.was += g.n * g.phys.mass;
+      laid.set(key, e);
+    }
+    rows.push({
+      label: "laid", value: `${r(t.bed.groups.reduce((s, g) => s + g.n, 0))} pieces`,
+      more: [...laid.values()].filter((e) => e.n >= 0.05).map((e) => `${r(e.n)} ${r(e.d * 1000, 0)} mm thick, ${r((100 * e.kg) / e.was, 0)}% left${e.lit ? ", alight" : ""}`),
+    });
+    if (coals > 0) rows.push({ label: "coals", value: `${r(coals, 2)} kg glowing at ${Math.round(blaze.hot - 273.15)} C` });
+  }
   if (t.burnedBy) rows.push({ label: "fire started by", value: nameOf(w, t.burnedBy) ?? t.burnedBy, link: w.agents.some((a) => a.id === t.burnedBy) ? t.burnedBy : undefined });
   if (t.stage !== undefined) bars.push(["grown", r(t.stage, 2), 1]);
   if (t.until !== undefined) rows.push({ label: t.kind === "ash" ? "blows away" : "grows back", value: t.until > w.t ? `in ${r((t.until - w.t) / DAY)} days` : "soon" });
@@ -133,13 +168,7 @@ function thing(w: World, t: Thing): Inspected {
   if (t.bark) rows.push({ label: "bark peeled", value: t.bark });
   if (t.caught) rows.push({ label: "caught", value: t.caught });
   if (t.shared) rows.push({ label: "shared by", value: w.camps.find((c) => c.id === t.shared)?.name ?? t.shared });
-  if (t.kind === "fire") {
-    rows.push({ label: "heat", value: t.heat ?? 1 });
-    if (t.contained) rows.push({ label: "ringed", value: "yes" });
-    if (t.covered) rows.push({ label: "covered", value: "yes" });
-    if (t.charcoal) rows.push({ label: "charcoal", value: r(t.charcoal) });
-    if (t.hp !== undefined) rows.push({ label: "burns for", value: `${Math.round(t.hp)} more ticks` });
-  }
+  if (t.kind === "fire" && t.charcoal) rows.push({ label: "charcoal", value: r(t.charcoal) });
   if (t.kind === "sapling") {
     // what it lives on where it stands: the same the sim weighs (ecology.ts seedlings)
     rows.push({ label: "doing", value: (t.hp ?? 5) < (t.maxHp ?? 5) * 0.8 ? "wilting" : "thriving" });
@@ -170,7 +199,7 @@ function thing(w: World, t: Thing): Inspected {
   if (m) sections.push(m);
   return {
     id: t.id, kind: t.kind, name, species: t.species, px: t.px, py: t.py, facts: [words(t.kind), ...(t.species ? [words(t.species)] : [])], bars, sections, seed: spriteSeed(t), size: t.size,
-    tier: t.shelter?.tier, style: t.shelter?.style, item: t.item, contained: t.contained, covered: t.covered, caught: t.caught, n: t.n, burning: t.burning, stage: t.stage,
+    tier: t.shelter?.tier, style: t.shelter?.style, item: t.item, contained: t.contained, covered: t.covered, caught: t.caught, n: t.n, blaze, stage: t.stage,
   };
 }
 

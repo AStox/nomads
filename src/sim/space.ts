@@ -17,11 +17,12 @@ type Index = {
 };
 const indexes = new WeakMap<World, Index>();
 
-// Plants and stones as the ground laid them out need nothing from the world until someone or something touches them.
+// Plants and stones as the ground laid them out need nothing from the world until someone or something touches them; one
+// burning, or still warm from a fire near it, stays in the world's eye until it has cooled (ecology.ts fire).
 const STILL: Record<string, true> = { tree: true, bush: true, boulder: true, stone: true, pebble: true, stick: true, fallen_log: true, mushroom: true, herb: true, reeds: true, fern: true, flowers: true, grass: true, clay: true };
 export const BERRIES = 4; // the most a berry bush carries
 const settled = (t: Thing) =>
-  STILL[t.kind] && !t.burning && !t.scarred && !t.owner && (t.hp ?? 0) >= (t.maxHp ?? 0) && !(t.kind === "bush" && t.species === "berry" && (t.n ?? 0) < BERRIES);
+  STILL[t.kind] && !t.bed && !t.absorbed && !t.scarred && !t.owner && (t.hp ?? 0) >= (t.maxHp ?? 0) && !(t.kind === "bush" && t.species === "berry" && (t.n ?? 0) < BERRIES);
 
 function bucket(ix: Index, t: Thing) {
   let tiles = ix.tiles.get(t.kind);

@@ -1,5 +1,5 @@
 // Runs the game's simulation in the page the way server.ts loop() does: one tick per task, the same change sets, cleared the same way.
-import { ACTIVITY, DAY, TILE_M, activity, brainKind, changed, changedKinds, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, objects, pathChanges, removed, thingById, tick, trailChanges, trails, useBrain } from "../sim.js";
+import { ACTIVITY, DAY, TILE_M, activity, brainKind, changed, changedKinds, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, objects, pathChanges, removed, thingById, thingView, tick, trailChanges, trails, useBrain } from "../sim.js";
 
 const BASE_MS = 500;
 
@@ -124,6 +124,8 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
       return { px: e.px, py: e.py, ppx: p ? p[0] : e.px, ppy: p ? p[1] : e.py };
     },
     objects: () => objects(w),
+    // a thing as the server sends it (inspect.ts thingView): its bed left out, its blaze in while it burns
+    view: (t) => thingView(w, t),
     // Fine wear where people have walked: cell meters, n cells a side, and the wear 1..255 of each worn cell by its
     // row-major index from the island's north-west corner.
     trails: () => { const t = trails(w); return { cell: t.cell, n: t.n, wear: t.wear }; },
@@ -164,7 +166,7 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
       const t0 = step();
       roll();
       census(); travel();
-      const things = [...changed].map((id) => thingById(w, id)).filter(Boolean);
+      const things = [...changed].map((id) => thingById(w, id)).filter(Boolean).map((t) => thingView(w, t));
       const out = {
         things,
         removed: [...removed].filter((id) => !thingById(w, id)),

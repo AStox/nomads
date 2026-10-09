@@ -4,6 +4,7 @@ import { FLORA, SIZE, SPECIES, TILES, TILE_M, fineGround, rockAt, scatter, water
 import { TRAITS } from "./traits";
 import { baseRegistry, type Registry } from "./materials";
 import type { Belief } from "./beliefs";
+import type { Bed, Ring } from "./combustion";
 import { enter, put } from "./space";
 import { populate } from "./fauna";
 import { NIGHT_EL, NOON, YEAR_DAYS, sunAt } from "./sky";
@@ -36,15 +37,19 @@ export type Thing = {
   size: number; // meters: a tree's height, a rock's width, a stick's length, a patch's or a building's width
   seed: number; // for variation in how it looks
   species?: string;
-  n?: number; owner?: string; hp?: number; maxHp?: number; burning?: number; contained?: boolean; stage?: number;
+  n?: number; owner?: string; hp?: number; maxHp?: number; contained?: boolean; stage?: number;
   item?: string; parts?: Record<string, number>; shelter?: Shelter; until?: number; born?: number; burnedBy?: string;
   store?: Stack[]; name?: string; died?: number; cause?: string; caught?: string; progress?: number;
   person?: string; // a grave's: whose
   stale?: number; // a shelter's: how many loads in a row were added to it without making it any better
   inside?: Record<string, number>; // hidden in a boulder until it breaks
   scarred?: number; resin?: number; bark?: number; // when a tree was last cut into, resin beaded on it, bark peeled off it
-  covered?: boolean; charcoal?: number; air?: number; heat?: number; // fires: closed over, charcoal left, air blown in until, heat level
-  scorch?: number; // how much heat flames beside it have put into it, toward catching (ecology.ts fire)
+  // fires: the stone ringed round it, closed over, charcoal fed it, air blown into it until
+  walls?: Ring; covered?: boolean; charcoal?: number; air?: number;
+  // the heat each of its parts has taken toward lighting from a fire near it, kJ/m2, in the order spread.ts lays them;
+  // gone once it has cooled (ecology.ts fire)
+  absorbed?: number[];
+  bed?: Bed; // what burns: a fire's pieces and coals, or a burning thing's own (combustion.ts)
   shared?: string; given?: Record<string, number>; // a store a camp treats as its own, and who put how much in
   pieces?: Stack[]; // an item pile's or a structure's pieces of wood, as they were laid down (the rest are counted)
   m?: number; // an item pile's counted things' water, kg to the kg (wetness.ts)
@@ -78,6 +83,9 @@ export type Weather = {
   // the water in dead wood and litter lying about the island, kg to the kg, at wetness.ts REF thicknesses, in the open
   // and in the shade
   dead?: { open: number[]; shade: number[] };
+  // the island's living plants coming green (wetness.ts growing): the day's coldest air, C, and its largest vapour
+  // pressure deficit, Pa, so far, the rain of the last few days, mm, and the growing season index
+  gsi?: { day: number; tmin: number; vpd: number; rain: number; index: number };
 };
 // result: what it gives, builds or does, as the outcome that first showed it (physics.ts Fields)
 export type Law = { id: string; key: string; text: string; verb: string; source: "physics" | "jev"; by: string; t: number; result?: { gives: string[]; builds?: string; effect?: string; target?: string } };

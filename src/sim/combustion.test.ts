@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { advance, alight, feed, feeding, group, kindle, lay, lighting, lightsIn, expose, output, type Air, type Bed, type Laid } from "./combustion";
+import { BLOWN, advance, alight, feed, feeding, group, heats, kindle, lay, lighting, lightsIn, expose, output, plumeRise, setIn, type Air, type Bed, type Laid, type Ring } from "./combustion";
 import { PHYS, WOODS, pieceOf, woodOf, type Wood } from "./fuel";
-import { DURATION } from "./sim";
+import { CURES, DURATION, MELTS, RED, usual } from "./physics";
 import { DAY } from "./world";
 
 // The ladder of the fire plan's Unit 5, each case with its pieces, counts, wind and rain fixed from
@@ -155,5 +155,48 @@ describe("pieces", () => {
     expect(lay([{ phys: undefined, n: 1, m: 0 }])).toBeUndefined();
     expect(lay([of({ ...TWIG, d: 0 }, 3)])).toBeUndefined();
     expect(lay([of(PHYS.stone, 1)])).toBeUndefined();
+  });
+});
+
+// Unit 6's setups (fire-constants sec. 29g), on the usual lay physics.ts lights fires with, kindled in still air. Restated
+// to the cited physics: a covered kiln runs cooler than the fire it covers, not hotter (sec. 29c), and a bed covered at dusk
+// is taken up at the eighth hour, as long as the usual lay's logs smoulder.
+describe("setups", () => {
+  const burning = (s: number) => advance(kindle(lay(usual())!), s, STILL);
+  const COVERED: Air = { ...STILL, covered: true };
+
+  test("in a wind that puts the usual lay out unringed, a closed ring of stone keeps it alight; three stones barely shelter it", () => {
+    const start = burning(2 * MIN), wind: Air = { ...STILL, wind: 8 };
+    const after = (ring?: Ring) => advance(start, 30 * MIN, { ...wind, ...(ring ? { ring } : {}) });
+    expect(alight(after())).toBe(false);
+    expect(alight(after({ tall: PHYS.stone.d, width: 3 * PHYS.stone.d }))).toBe(false);
+    expect(alight(after({ tall: PHYS.stone.d, width: 25 * PHYS.stone.d }))).toBe(true);
+  });
+
+  test("heaped over once burning, the usual lay runs cooler than open but smoulders on after the open bed is out, and eight hours on twigs laid on its coals catch once the cover's off", () => {
+    const bed = burning(10 * MIN);
+    expect(setIn(bed, COVERED, PHYS.clay.d)).toBeLessThan(setIn(bed, STILL, PHYS.clay.d));
+    expect(alight(advance(bed, 2 * HOUR, STILL))).toBe(false);
+    const night = advance(bed, 8 * HOUR, COVERED);
+    expect(alight(night)).toBe(true);
+    expect(feeding(night, [of(TWIG, 10, 0.12)], STILL, AFTER).lights).toBe(true);
+  });
+
+  test("the usual lay's coals an hour on pass copper's melting point only with air blown into them, never in the wind alone", () => {
+    const coals = burning(HOUR);
+    for (const air of [STILL, BREEZE, GALE]) expect(setIn(coals, air, PHYS.ore.d)).toBeLessThan(MELTS);
+    expect(setIn(coals, { ...STILL, blown: BLOWN }, PHYS.ore.d)).toBeGreaterThanOrEqual(MELTS);
+  });
+
+  test("clay set in a fire in a breeze comes to red heat if it's held there through the act, and not if it's taken out in five minutes", () => {
+    const T = setIn(burning(10 * MIN), BREEZE, PHYS.clay.d), ta = STILL.temp + 273.15;
+    expect(heats(PHYS.clay, PHYS.clay.green!, T, 5 * MIN, ta)).toBeLessThan(RED);
+    expect(heats(PHYS.clay, PHYS.clay.green!, T, DURATION.heat * (86400 / DAY), ta)).toBeGreaterThanOrEqual(RED);
+  });
+
+  test("a hide hung 1.5 m over the usual lay heaped over stays at 50 C or under, and over the same fire open the plume is far hotter", () => {
+    const bed = burning(10 * MIN), ta = STILL.temp + 273.15;
+    expect(ta + plumeRise(bed, COVERED, 1.5)).toBeLessThanOrEqual(CURES);
+    expect(ta + plumeRise(bed, STILL, 1.5)).toBeGreaterThan(CURES);
   });
 });

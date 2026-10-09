@@ -117,11 +117,7 @@ export function iconSprite(d) {
       break;
     }
     case "item": o.species = String(d.item ?? d.species ?? d.name ?? "").toLowerCase().replaceAll(" ", "_"); px = 9; break;
-    case "fire": {
-      o.contained = yes(field(d, "contained", "ringed")); o.covered = yes(field(d, "covered")); o.charcoal = yes(field(d, "charcoal"));
-      // a fire thing only exists while it burns; its own burning field is for things caught alight
-      o.burning = 1; px = 16; break;
-    }
+    case "fire": o.contained = yes(field(d, "contained", "ringed")); o.covered = yes(field(d, "covered")); o.charcoal = yes(field(d, "charcoal")); px = 16; break;
     case "trap": o.caught = yes(field(d, "caught")); px = 16; break;
     case "pit": px = 12; break;
     case "well": px = 18; break;
@@ -139,7 +135,8 @@ export function iconSprite(d) {
     case "stump": case "burnt_stump": px = 12; break;
     case "clay": case "ash": px = 9; break;
   }
-  if (kind !== "fire") o.burning = Number(d.burning ?? 0);
+  // alight by the sim's blaze (inspect.ts Blaze), its flames at the icon's px for the thing's meters; a fire without one is out
+  if (d.blaze) { o.blaze = d.blaze; o.ppm = px / (d.size || 1); }
   let S;
   try { S = TH.object(kind, px, obj, o); } catch { return null; }
   return S && !["structure", "shelter", "trap", "well", "grave", "item", "fire", "log", "fallen_log"].includes(kind) && flip ? mirrored(S) : S;

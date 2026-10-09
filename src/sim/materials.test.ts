@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, newWorld, rng, shoreOf, type Act, type Agent, type Thing, type World } from "./world";
-import { WEATHER_NOW, count, eat, fireHeat, giveItems, heat, join, openWater, place, strikeTick, throwTick, wet, type Outcome } from "./physics";
+import { WEATHER_NOW, bedAir, count, eat, fireOf, giveItems, giveStack, heat, join, openWater, place, strikeTick, throwTick, wet, type Fields, type Outcome } from "./physics";
+import { pieceOf } from "./fuel";
+import { advance } from "./combustion";
+import { predictMaterial } from "./formulas";
 import { addAnimal } from "./fauna";
 import { put as moveTo, thingById } from "./space";
 import { conditionsNow } from "./sim";
@@ -9,11 +12,15 @@ import { DAMP } from "./wetness";
 import { ecology, forecast } from "./ecology";
 import { ahead, bedAt, seedlingFate } from "./seedling";
 
-const setup = (): [World, Agent, Thing] => {
-  const w = newWorld(42);
-  const a = w.agents[0];
-  a.inv = [];
-  return [w, a, addThing(w, "fire", a.px, a.py, { hp: 400, maxHp: 400 })];
+// A fire burning so many seconds (ten minutes unless said) from the usual lay (fireOf), under a clear sky with a breeze
+// blowing u m/s.
+const burning = (u = 2, sticks = 5, logs = 2, age = 600): [World, Agent, Thing] => {
+  const [w, a] = fresh();
+  Object.assign(w.weather, { sky: "clear", speed: u });
+  w.t++;
+  const fire = fireOf(w, a.px, a.py, sticks, logs);
+  fire.bed = advance(fire.bed!, age, bedAir(w, fire));
+  return [w, a, fire];
 };
 const fresh = (): [World, Agent] => { const w = newWorld(42); const a = w.agents[0]; a.inv = []; return [w, a]; };
 const heated = (w: World, a: Agent, act: Omit<Act, "verb">): Outcome => {
@@ -22,28 +29,24 @@ const heated = (w: World, a: Agent, act: Omit<Act, "verb">): Outcome => {
   return r;
 };
 const put = (w: World, a: Agent, k: string, n: number) => { giveItems(w, a, k, n); return place(w, a, { verb: "place", items: Array(n).fill(k) }); };
-// One try of striking something held, blow by blow until it comes to something; over: what it's struck over, if anything
-const hammer = (w: World, a: Agent, tool: string, target: string, over?: string) => {
+// One try of striking something held, blow by blow until it comes to something; lay: what it's struck over, if anything
+const hammer = (w: World, a: Agent, tool: string, target: string, lay: string[] = []) => {
   const st = { progress: 0 };
   let r;
-  do r = strikeTick(w, a, { verb: "strike", items: over ? [over] : [], tool, target: { kind: target } }, st); while (!r.done);
+  do r = strikeTick(w, a, { verb: "strike", items: lay, tool, target: { kind: target } }, st); while (!r.done);
   return r.out!;
 };
+// Ten half-meter twigs off the ground (fuel.ts pieces), dry as wood kept in: kindling laid with tinder.
+const TWIG = pieceOf({ kind: "stick", size: 0.5 }, "stick")!.size;
+const twigs = (w: World, a: Agent) => { for (let i = 0; i < 10; i++) giveStack(w, a, { k: "stick", hp: 1, born: w.t, m: 0.12, size: TWIG }); return Array<string>(10).fill("stick"); };
 
-test("clay only hardens in a ringed fire, and ore only gives up metal to ringed charcoal with air blown in", () => {
-  const [w, a, fire] = setup();
+test("clay set in a burning fire fires hard, as pots do in a bonfire, and not in a small fire's few coals; ore gives up its copper only when air is blown into the coals", () => {
+  const [w, a] = burning();
   giveItems(w, a, "clay");
-  expect(heated(w, a, { items: ["clay"] }).effect).toBe("too_cool");
-  expect(count(a, "clay")).toBe(1);
-  put(w, a, "stone", 3);
-  expect(fireHeat(w, fire)).toBe(1.3);
   const pot = heated(w, a, { items: ["clay"] });
   expect(pot.ok).toBe(true);
-  expect(pot.fields.at).toBe("hearth");
+  expect(pot.fields.at).toBe("fire");
   giveItems(w, a, "ore");
-  expect(heated(w, a, { items: ["ore"] }).ok).toBe(false);
-  expect(put(w, a, "charcoal", 2).builds).toBe("forge");
-  expect(fireHeat(w, fire)).toBe(2);
   expect(heated(w, a, { items: ["ore"] }).effect).toBe("too_cool");
   giveItems(w, a, "fiber", 3);
   const mat = join(w, a, { verb: "join", items: ["fiber", "fiber", "fiber"] });
@@ -51,21 +54,68 @@ test("clay only hardens in a ringed fire, and ore only gives up metal to ringed 
   const lump = heated(w, a, { items: ["ore"], tool: Object.keys(mat.gives)[0] });
   expect(lump.ok).toBe(true);
   expect(w.kinds[Object.keys(lump.gives)[0]].props.metal).toBe(1);
+  // a lay of fibre and twigs a minute after lighting: flames gone and a few coals that can't bury a lump of clay
+  const [v, b] = burning(2, 0, 0, 60);
+  giveItems(v, b, "clay");
+  expect(heated(v, b, { items: ["clay"] }).effect).toBe("too_cool");
+  expect(count(b, "clay")).toBe(1);
 });
 
-test("wood burns in an open fire but turns to charcoal once the ringed fire is heaped over", () => {
-  const [w, a, fire] = setup();
+test("a stick set in an open fire catches and is carried off alight; under stone heaped over the same fire it smoulders to charcoal, and a log is still wood when they take it out", () => {
+  const [w, a, fire] = burning();
+  giveItems(w, a, "stick");
+  expect(Object.keys(heated(w, a, { items: ["stick"] }).gives)[0]).toBe("burning:stick");
   put(w, a, "stone", 3);
-  giveItems(w, a, "log");
-  expect(Object.keys(heated(w, a, { items: ["log"] }).gives)[0]).toBe("burning:log");
   expect(put(w, a, "stone", 3).builds).toBe("kiln");
   expect(fire.covered).toBe(true);
+  giveItems(w, a, "stick");
+  expect(heated(w, a, { items: ["stick"] }).gives).toEqual({ charcoal: 1 });
   giveItems(w, a, "log");
-  expect(heated(w, a, { items: ["log"] }).gives).toEqual({ charcoal: 2 });
+  expect(heated(w, a, { items: ["log"] }).effect).toBe("too_cool");
+  expect(count(a, "log")).toBe(1);
+});
+
+test("meat set in a small fire of twigs and sticks cooks through; under a cover it cooks in the smoke and comes out smoked", () => {
+  const [w, a] = burning(2, 5, 0, 120);
+  giveItems(w, a, "meat");
+  expect(Object.keys(heated(w, a, { items: ["meat"] }).gives)[0]).toBe("cooked:meat");
+  const [v, b] = burning();
+  put(v, b, "stone", 3); put(v, b, "stone", 3);
+  giveItems(v, b, "meat");
+  expect(Object.keys(heated(v, b, { items: ["meat"] }).gives)[0]).toBe("smoked:meat");
+});
+
+test("a hide hung over an open fire scorches, and over the same fire heaped over it cures in the smoke", () => {
+  const [w, a] = burning();
+  giveItems(w, a, "hide");
+  expect(heated(w, a, { items: ["hide"] }).effect).toBe("scorched");
+  put(w, a, "stone", 3); put(w, a, "stone", 3);
+  const cured = heated(w, a, { items: ["hide"] });
+  expect(cured.ok).toBe(true);
+  expect(Object.keys(cured.gives)[0]).toBe("leather:hide");
+});
+
+test("the staged fire, hearth, kiln and forge the answer key asks give what acts at fires laid and set up the same way give", () => {
+  for (const at of ["fire", "hearth", "kiln", "forge"] as const) {
+    const [w, a, fire] = burning(0);
+    if (at !== "fire") put(w, a, "stone", 3);
+    if (at === "kiln") put(w, a, "stone", 3);
+    if (at === "forge") fire.charcoal = 1;
+    giveItems(w, a, "fiber", 3);
+    const mat = join(w, a, { verb: "join", items: ["fiber", "fiber", "fiber"] });
+    if (mat === "ask") throw new Error();
+    const fan = Object.keys(mat.gives)[0];
+    for (const [items, tool] of [[["meat"]], [["ore"]], [["ore"], fan], [["stick"]]] as [string[], string?][]) {
+      giveItems(w, a, items[0]);
+      const f: Fields = { verb: "heat", inputs: items, at, gives: [], ...(tool ? { tool } : {}) };
+      const said = predictMaterial(w, f), done = heated(w, a, { items, ...(tool ? { tool } : {}) });
+      expect([at, items[0], tool, "ok" in said && said.ok, "ok" in said && said.gives]).toEqual([at, items[0], tool, done.ok, done.fields.gives]);
+    }
+  }
 });
 
 test("hammering hot metal at a charcoal fire draws out a blade sharper and tougher than flint; cold metal only dents", () => {
-  const [w, a] = setup();
+  const [w, a] = burning();
   put(w, a, "stone", 3);
   put(w, a, "charcoal", 3);
   w.kinds.lump = { id: "lump", name: "metal lump", props: { hard: 0.8, heavy: 0.85, metal: 1, toughness: 0.85 }, parts: ["ore"], verb: "heat" };
@@ -84,7 +134,7 @@ test("hammering hot metal at a charcoal fire draws out a blade sharper and tough
 });
 
 test("hands full of tools still make room for food", () => {
-  const [w, a] = setup();
+  const [w, a] = fresh();
   a.born = w.t - 1e6;
   giveItems(w, a, "sharp_stone", 11);
   for (const k of ["stick", "clay", "stone", "fiber", "bone"]) giveItems(w, a, k);
@@ -95,7 +145,7 @@ test("hands full of tools still make room for food", () => {
 });
 
 test("hands full of food still make room for a stick", () => {
-  const [w, a] = setup();
+  const [w, a] = fresh();
   a.born = w.t - 1e6;
   giveItems(w, a, "grain", 16);
   expect(giveItems(w, a, "stick")).toBe(1);
@@ -105,12 +155,12 @@ test("hands full of food still make room for a stick", () => {
 
 // Whether a try comes off follows from what anyone trying could notice: the same things in hand, weather and spot give
 // the same outcome every time, and changing what decides it changes it.
-test("struck over fiber, two hard stones light it after the same number of blows every time, flint sooner than plain stone; over damp fiber or in a gale the sparks never catch, and over a stick they never do", () => {
+test("struck over fiber laid with twigs, two hard stones light it after the same number of blows every time, flint sooner than plain stone; over damp fiber or in a gale the sparks never catch, and over sticks alone they never do", () => {
   const [w, a] = fresh();
   const light = (tool: string, target: string, over: string, wet = 0) => {
     a.inv = [];
     giveItems(w, a, tool); giveItems(w, a, target); giveItems(w, a, over, 1, wet);
-    return hammer(w, a, tool, target, over);
+    return hammer(w, a, tool, target, [over, ...twigs(w, a)]);
   };
   w.weather.sky = "clear";
   w.weather.speed = 2;

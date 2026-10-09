@@ -5,13 +5,15 @@
 // bags keep the rain off and nothing else. The grass, fern and dead wood lying about the island hold what the island's
 // weather has left in dead stuff of their thickness (Weather.dead) until somebody picks them up. What it comes to
 // decides whether a spark or an ember catches in tinder (physics.ts), and how cold the wet-through feel (sim.ts needs).
-import { DAY, hourOf, meters, wetAt, type Agent, type Stack, type Thing, type World } from "./world";
+import { DAY, YEAR_DAYS, hourOf, meters, wetAt, type Agent, type Stack, type Thing, type World } from "./world";
 import { anyAround, liveThings, nearestThing } from "./space";
 import { airAt, airOn, humidity, islandAir, rainAt, snowAt, vapourAt } from "./air";
 import { canopyAt } from "./light";
-import { sunAt } from "./sky";
+import { daylight, sunAt } from "./sky";
 import { p, type Kind } from "./materials";
 import { PHYS, stackPhys, type Phys } from "./fuel";
+import { output, setUp } from "./combustion";
+import { esat } from "../terrain/climate";
 
 // A struck spark catches in tinder this wet or drier, an ember blown into it in tinder this wet or drier (sec. 10).
 export const DAMP = 0.1, SOAKED = 0.13;
@@ -49,12 +51,14 @@ export function equilibrium(temp: number, vapour: number, shine = 0, wind = 0) {
 const body = (vapour: number) => equilibrium(32, vapour + 0.5);
 // The wind at the tops of short grass against the wind at head height (sec. 14): what reaches dead stuff on the ground.
 const GROUND = Math.log(0.36 / 0.13) / Math.log((2 - 0.064) / 0.013);
-// A fire's radiant flux on something near it, kW/m2 (sec. 18): the radiant share of its output from a point, at the
-// distance. Until fires burn as beds of their own fuel, every fire gives a campfire's 10 kW (sec. 27f).
-const FIRE_KW = 10, CHI_R = 0.3;
+// A fire's radiant flux on something near it, kW/m2 (sec. 18): the radiant share of what its bed gives off, flaming and
+// glowing, from a point at the distance (combustion.ts, in the air where the fire stands, ringed and heaped over as it is).
+const CHI_R = 0.3;
 function fireFlux(w: World, at: { px: number; py: number }) {
-  const f = nearestThing(w, at.px, at.py, ["fire"], () => true, 3);
-  return f ? (CHI_R * FIRE_KW) / (4 * Math.PI * Math.max(0.5, meters(at, f)) ** 2) : 0;
+  const f = nearestThing(w, at.px, at.py, ["fire"], (t) => !!t.bed, 3);
+  if (!f?.bed) return 0;
+  const air = airAt(w, f.px, f.py), o = output(f.bed, setUp(f, { temp: air.temp, wind: air.wind, rain: rainAt(w, f.px, f.py), veg: 0.1 }, w.t));
+  return (CHI_R * (o.flaming + o.glowing)) / (4 * Math.PI * Math.max(0.5, meters(at, f)) ** 2);
 }
 
 // How long something takes to come 63% of the way to new surroundings, hours (sec. 5, 20, 27f): as the square of its
@@ -107,11 +111,48 @@ export function deadAt(w: World, at: { px: number; py: number }, d: number) {
   return of(dead.open) * (1 - c) + of(dead.shade) * c;
 }
 
+// ---------- the island's grass and leaves ----------
+// Living plants come green as the growing season index of the NFDRS's 2024 rule climbs (sec. 12, R72): each day's product
+// of four ramps, its coldest air from -2 C to 5 C, its driest from a vapour pressure deficit of 4100 Pa down to 900, its
+// daylight from 10 h to 11 h, and the rain of the window before it from none to 10 mm, averaged over the window, 28 real
+// days being 3.1 of the sim's (sec. 12). The island keeps it hourly from its own weather, as it keeps its dead stuff; the
+// average is a running one over the window, and the rain a running sum over it (sec. 30a).
+const WINDOW = (28 * YEAR_DAYS) / 365.25; // days
+const ramp = (v: number, lo: number, hi: number) => Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
+type Grow = NonNullable<World["weather"]["gsi"]>;
+const dayOf = (g: Grow) => ramp(g.tmin, -2, 5) * (1 - ramp(g.vpd, 900, 4100)) * ramp(daylight(g.day + 1), 10, 11) * ramp(g.rain, 0, 10);
+// The island's growing season an hour on from tick t under a sky and a warmth. With none yet, it starts from this hour as
+// though the day had been like it, with the window's rain full, as the island's rain fills it in any season (sec. 12).
+export function gsiHour(w: World, g: Grow | undefined, t: number, sky: World["weather"]["sky"], temp: number): Grow {
+  const { vapour, rain } = islandAir(w, t, sky), day = Math.floor(t / DAY), vpd = Math.max(0, esat(temp) - vapour) * 1000;
+  if (!g) { const first = { day, tmin: temp, vpd, rain: 10, index: 0 }; return { ...first, index: dayOf(first) }; }
+  const kept = g.rain * Math.exp(-1 / (WINDOW * 24)) + rain;
+  if (day === g.day) return { ...g, tmin: Math.min(g.tmin, temp), vpd: Math.max(g.vpd, vpd), rain: kept };
+  return { day, tmin: temp, vpd, rain: kept, index: g.index + (dayOf(g) - g.index) / WINDOW };
+}
+// How green the island's living plants are now (sec. 12, R72): the growing season index; the water in living grass,
+// 30% until the index passes the green-up threshold of 0.2, then rising to 250% at 1, and the share of it cured, at
+// dead-fuel water, by the 1978 transfer, 1.33 - 0.0111 for each percent of it; and the water in living leaves and twigs of
+// trees and shrubs, 60% rising to 200% the same way. The index is not divided by the island's highest, which a world
+// just made has no record of (sec. 30a).
+export function growing(w: World) {
+  const wx = w.weather, index = (wx.gsi ?? gsiHour(w, undefined, w.t, wx.sky, wx.temp)).index, up = ramp(index, 0.2, 1);
+  const herb = 0.3 + 2.2 * up;
+  return { index, herb, cured: Math.max(0, Math.min(1, 1.33 - 1.11 * herb)), woody: 0.6 + 1.4 * up };
+}
+// The grass at a point: its living blades' water, the share of them cured, and the cured blades' water, as dead stuff a
+// blade thick lies there.
+export function grassAt(w: World, at: { px: number; py: number }) {
+  const { herb, cured } = growing(w);
+  return { herb, cured, dead: deadAt(w, at, REF[0]) };
+}
+
 // ---------- every hour ----------
 export function wetness(w: World) {
   if (w.t % 12) return;
   const wx = w.weather;
   wx.dead = deadHour(w, wx.dead, w.t, wx.sky, wx.speed, wx.temp);
+  wx.gsi = gsiHour(w, wx.gsi, w.t, wx.sky, wx.temp);
   for (const a of w.agents) carried(w, a);
   for (const t of liveThings(w)) {
     if (t.kind === "item") laid(w, t, true);

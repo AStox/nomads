@@ -1,6 +1,7 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
 import { BASE, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props, type Registry } from "./materials";
-import { COPPER, FIRED_CLAY, LEATHER, LIVE_HERB, PHYS, POT_WALL, charSize, greenOf, mix, physOf, pieceOf, remade, splitSize, stackPhys } from "./fuel";
+import { BURNS, COPPER, FIRED_CLAY, LEATHER, LIVE_HERB, PHYS, POT_WALL, charSize, greenOf, mix, physOf, pieceOf, remade, splitSize, stackPhys, woodOf, type Phys } from "./fuel";
+import { BLOWN, LEAST, advance, alight, feed, feeding, fluxIn, group, heats, inFlame, kindle, lasts, lay, lighting, lightsIn, output, plumeRise, radiation, setIn, setUp, smokes, type Air as BedAir, type Bed, type Group, type Laid, type Ring } from "./combustion";
 import { CELL } from "../terrain/grid";
 import { DAY, REACH, TILE_M, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, isNight, level, log, meters, nearWater, perWorld, reachOf, wetAt, type Act, type Agent, type Shelter, type Stack, type Thing, type World } from "./world";
 import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } from "./space";
@@ -8,7 +9,7 @@ import { clock, trace } from "./trace";
 import { see } from "./beliefs";
 import { enrich } from "./soil";
 import { streamNow } from "./streams";
-import { airOn } from "./air";
+import { airOn, rainAt } from "./air";
 import { DARK, lightOn } from "./light";
 import { DAMP, SOAKED, deadAt, moistureOf, raining, sheltered, tinder, tinderOf } from "./wetness";
 import { GROUND, SIZE, groundClass } from "../terrain/flora";
@@ -20,36 +21,165 @@ const skin = (k?: Kind) => !!k && !k.parts?.length && p(k, "flexible") >= 0.5 &&
 const sticky = (k?: Kind) => !!k && p(k, "binding") >= 0.5 && p(k, "flammable") >= 0.6 && p(k, "fibrous") < 0.3 && p(k, "plastic") < 0.5;
 const short = (k: Kind) => (k.parts ? (k.named ? k.name : noun(k)) : k.name);
 
-// A fire as what it burns at turns on: what it is (a campfire, or something else alight), and whether it's ringed in,
-// heaped over, fed charcoal or has air blown into it.
-export type Fire = Pick<Thing, "kind" | "burning" | "contained" | "covered" | "charcoal" | "air">;
-// Ticks air blown into a fire keeps it burning hotter.
-export const BLOWN = 12;
-// How hot a fire burns: a ring of stone holds heat in, charcoal burns far hotter than wood, air blown through a ring hotter still.
-export function fireHeat(w: World, f: Fire) {
-  if (f.kind !== "fire") return f.burning ? 1 : 0;
-  const coal = (f.charcoal ?? 0) > 0 ? (f.contained ? BASE.charcoal.burns! : 1.1) : 1;
-  return Math.round(((f.contained ? 1.3 : 1) * coal + ((f.air ?? 0) > w.t && f.contained ? 0.5 : 0)) * 100) / 100;
-}
+// A fire as what it burns at turns on: what it is (a campfire, or something else alight), its bed, and whether it's ringed
+// in (and with how much stone), heaped over, fed charcoal or has air blown into it.
+export type Fire = Pick<Thing, "kind" | "bed" | "contained" | "walls" | "covered" | "charcoal" | "air">;
 // What people would call the fire they're standing at, most specific first.
 export const fireKind = (f: Fire) =>
   f.kind !== "fire" || !f.contained ? "fire" : (f.charcoal ?? 0) > 0 ? "forge" : f.covered ? "kiln" : "hearth";
-// How many hours a fire has left in it, as anyone by it can judge from what's burning: an open fire eats its wood
-// fastest, a ringed one half as fast, one heaped over to smolder slower still (ecology.ts fire).
-export const fireHours = (t: Thing) => (t.hp ?? 0) / (t.covered ? 0.3 : t.contained ? 0.5 : 1) / 12;
+// The air a bed feels (combustion.ts): the air where it stands and its wind at head height (air.ts, under any canopy), the
+// rain falling on it, on the short grass most ground grows, as wetness.ts takes things lying on the ground (fire-constants
+// sec. 14a); and its setup.
+export function bedAir(w: World, t: { px: number; py: number } & Partial<Fire>): BedAir {
+  const air = airOn(w, t);
+  return setUp(t, { temp: air.temp, wind: air.wind, rain: rainAt(w, t.px, t.py), veg: 0.1 }, w.t);
+}
+// What a fire gives off now, and how many hours it has left as anyone by it can judge from what's burning (combustion.ts);
+// a fire with nothing in its bed gives nothing.
+export const fireOutput = (w: World, t: Thing) => (t.bed ? output(t.bed, bedAir(w, t)) : { flaming: 0, glowing: 0, flame: 0, base: 0, radius: 0, gas: 0, hot: 0 });
+export const fireHours = (w: World, t: Thing) => (t.bed ? lasts(t.bed, bedAir(w, t)) / 3600 : 0);
+export const ablaze = (t: Thing) => !!t.bed && alight(t.bed);
+// A fire lit where its bed was laid.
+export const newFire = (w: World, px: number, py: number, bed: Bed, owner?: string) => addThing(w, "fire", px, py, { ...(owner ? { owner } : {}), born: w.t, bed });
+// A lay as it's usually laid: a handful of fibre, ten half-meter twigs off the ground, so many sticks and so many logs
+// (fuel.ts pieces), dry as tinder kept against the body and wood kept in.
+const TWIG = pieceOf({ kind: "stick", size: 0.5 }, "stick")!;
+const TWIG_PHYS = woodOf("generic", TWIG.size.d, TWIG.size.mass);
+export const usual = (sticks = 5, logs = 2): Laid[] =>
+  [{ phys: PHYS.fiber, n: 1, m: 0.06 }, { phys: TWIG_PHYS, n: 10, m: 0.12 }, { phys: PHYS.stick, n: sticks, m: 0.12 }, { phys: PHYS.log, n: logs, m: 0.12 }];
+// A fire burning from the usual lay, the ember just caught in its tinder.
+export const fireOf = (w: World, px: number, py: number, sticks = 5, logs = 2, owner?: string) => newFire(w, px, py, kindle(lay(usual(sticks, logs))!), owner);
+
+// ---------- what's laid in a fire, and what's carried alight ----------
+// The air the conditions people notice are cut in (fire-constants sec. 32): the island's median warmth, 10 C (sec. 25), and no
+// wind or rain, over the short grass most ground grows (sec. 14a).
+export const STILL: BedAir = { temp: 10, wind: 0, rain: 0, veg: 0.1 };
+// Held things laid in a fire, pieces alike as one (combustion.ts lays alike pieces as one group): what each is, how many,
+// and its water; a brand as far as its piece has burnt down (sec. 27e). Anything that isn't fuel is laid all the same, and
+// the bed leaves it out.
+export function laidOf(w: World, stacks: Stack[]): Laid[] {
+  const out: (Laid & { key: string })[] = [];
+  for (const s of stacks) {
+    const whole = stackPhys(w.kinds, s), m = moistureOf(s), left = isFlame(w.kinds[s.k]) && !isLamp(w.kinds[s.k]) ? s.hp : 1;
+    const phys = whole && left < 1 ? { ...whole, d: whole.d * Math.sqrt(left), mass: whole.mass * left } : whole, key = `${s.k}|${phys?.d}|${phys?.mass}|${m}`;
+    const same = out.find((x) => x.key === key);
+    if (same) same.n++;
+    else out.push({ key, phys, n: 1, m });
+  }
+  return out.map(({ phys, n, m }) => ({ phys, n, m }));
+}
+// Thick fuel (fire-constants sec. 32): a piece that, laid as the usual lay's wood is, with its handful of fibre and its ten twigs
+// and nothing else, doesn't catch before their flame is spent, in still air. Worked out once for each size of piece.
+const thickness = new Map<string, boolean>();
+export function tooThick(phys: Phys | undefined) {
+  if (!phys?.burn) return false;
+  const key = `${phys.d}|${phys.mass}|${phys.rho}|${phys.burn.tig}`, known = thickness.get(key);
+  if (known !== undefined) return known;
+  const [tinder, twigs] = usual(0, 0), piece = { phys, n: 1, m: 0.12 };
+  const left = advance(kindle(lay([tinder, twigs, piece])!), DAY_S, STILL).groups.reduce((t, g) => t + (g.phys === phys ? g.n * g.mass : 0), 0);
+  thickness.set(key, left >= phys.mass * (1 - 1e-9));
+  return thickness.get(key)!;
+}
+// The breeze anyone at a fire can feel (fire-constants sec. 32): the least wind at head height, m/s, whose wind at the bed's
+// height blows the flames off the usual lay as its flame grows too small to light a log by its radiation (combustion.ts
+// LEAST), followed second by second in still air. Worked out once.
+let breezeCut: number | undefined;
+export function breeze() {
+  if (breezeCut !== undefined) return breezeCut;
+  let bed = kindle(lay(usual())!), peak = 0;
+  for (let t = 0; t < DAY_S && alight(bed); t++) {
+    const r = radiation(bed, STILL, PHYS.log);
+    if ((peak = Math.max(peak, r)) >= LEAST && r < LEAST) break;
+    bed = advance(bed, 1, STILL);
+  }
+  let lo = 0, hi = 60;
+  for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (output(bed, { ...STILL, wind: mid }).flaming > 0) lo = mid; else hi = mid; }
+  return (breezeCut = hi);
+}
+// A flame carried in hand: held about a meter up (fire-constants sec. 32); a lamp's, as tall as a candle's of the same heat, 42
+// mm (R10, sec. 14b); a wick burns 8 g of fat an hour (sec. 22b).
+const HELD = 1, LAMP_FLAME = 0.042, WICK = 0.008 / 3600;
+const TICK_S = 86400 / DAY, DAY_S = 86400;
+export const isFlame = (k?: Kind) => !!k?.id.startsWith("burning:");
+export const isLamp = (k?: Kind) => isFlame(k) && p(k, "container") >= 0.5;
+// The air round something carried: where they stand, out of the rain and wind under a roof, at the height it's held.
+function carriedAir(w: World, at: { px: number; py: number }): BedAir {
+  const roof = sheltered(w, at), air = airOn(w, at, roof);
+  return { temp: air.temp, wind: air.wind, rain: roof ? 0 : rainAt(w, at.px, at.py), veg: 0.1, held: HELD };
+}
+// A brand as the bed sees it (fire-constants sec. 27e: a brand lit from a piece is that piece still): the piece, alight,
+// with as much of it left as hasn't burnt (its hp, the share of its mass).
+export function brandOf(w: World, s: Stack): Group | undefined {
+  const phys = stackPhys(w.kinds, s);
+  return phys?.burn ? { ...group(phys, 1, moistureOf(s)), mass: phys.mass * s.hp, lit: true, inside: 1 } : undefined;
+}
+// The fat a lamp burns: the share of it that burns (fuel.ts mix), of what it is unlit.
+const lampFuel = (w: World, k: Kind) => { const phys = physOf(w.kinds, w.kinds[k.parts?.[0] ?? ""]); return (phys?.mass ?? 0) * (phys?.burn?.share ?? 0); };
+// What a flame carried in hand gives off now, kW, and how tall it stands, m: a lit lamp its wick's fat burning (its hp, the
+// share of its fat left), a brand its own piece burning alone where it's carried.
+export function carriedOutput(w: World, at: { px: number; py: number }, s: Stack) {
+  const k = w.kinds[s.k];
+  if (isLamp(k)) return s.hp > 0 ? { flaming: WICK * BURNS.fat.flame * 1000, glowing: 0, flame: LAMP_FLAME } : { flaming: 0, glowing: 0, flame: 0 };
+  const g = isFlame(k) ? brandOf(w, s) : undefined;
+  if (!g) return { flaming: 0, glowing: 0, flame: 0 };
+  const o = output({ groups: [g], coals: [], age: 0 }, carriedAir(w, at));
+  return { flaming: o.flaming, glowing: o.glowing, flame: o.flame };
+}
+// Flames carried in hand burn down a tick: a lamp its fat at its wick's rate, out once the fat is gone, leaving the hollow
+// it was filled in; a brand as its piece burns alone in the air where it's carried (combustion.ts), out when its flame is,
+// leaving the piece it was as far as it burnt down (sec. 27e), or nothing.
+export function carry(w: World, a: Agent) {
+  for (const s of a.inv.filter((x) => isFlame(w.kinds[x.k]))) {
+    const k = w.kinds[s.k], was = w.kinds[k.parts?.[0] ?? ""];
+    if (isLamp(k)) {
+      const fat = lampFuel(w, k);
+      s.hp = fat > 0 ? s.hp - (WICK * TICK_S) / fat : 0;
+      if (s.hp > 0) continue;
+      const hollow = was?.parts?.find((id) => p(w.kinds[id], "container") >= 0.6 && p(w.kinds[id], "hard") >= 0.5);
+      a.inv.splice(a.inv.indexOf(s), 1);
+      if (hollow) giveStack(w, a, fresh(w, hollow));
+      continue;
+    }
+    const g = brandOf(w, s);
+    const left = g && advance({ groups: [g], coals: [], age: 0 }, TICK_S, carriedAir(w, a)).groups[0];
+    if (left?.lit) { s.hp = left.mass / g!.phys.mass; continue; }
+    a.inv.splice(a.inv.indexOf(s), 1);
+    if (!left || !was) continue;
+    const share = left.mass / left.phys.mass;
+    giveStack(w, a, { ...s, k: was.id, hp: 1, ...(s.size ? { size: { d: s.size.d * Math.sqrt(share), len: s.size.len, mass: s.size.mass * share } } : {}) });
+  }
+}
+// Which of the things they hold they'd lay, one for each named (sim.ts chooses by their theories): by default the first
+// of each kind they hold, as a hand takes them up. None if they don't hold them all.
+export type Chooser = (items: string[]) => Stack[] | undefined;
+export const firstHeld = (inv: Stack[]): Chooser => (items) => {
+  const out: Stack[] = [];
+  for (const k of items) {
+    const s = inv.find((x) => x.k === k && !out.includes(x));
+    if (!s) return undefined;
+    out.push(s);
+  }
+  return out;
+};
+// Those of the pieces chosen that are used up, so many of each kind, out of their hands.
+function takeChosen(a: Agent, chosen: Stack[], uses: Record<string, number>) {
+  const taken = Object.entries(uses).flatMap(([k, n]) => chosen.filter((s) => s.k === k).slice(0, n));
+  a.inv = a.inv.filter((s) => !taken.includes(s));
+  return taken;
+}
 // Hours until the night ends, if it's night: how long a fire has to last to see them through it.
 export function hoursToDawn(t: number) {
   let h = 0;
   while (isNight(t + h * 12) && h < 18) h += 0.5;
   return h;
 }
-// The hottest fire within r meters: a campfire, or anything burning well enough to cook over.
+// The fire within r meters giving off the most heat, flaming and glowing: a campfire, or anything burning.
 export function nearFire(w: World, a: { px: number; py: number }, r = 3) {
   let best: Thing | null = null, bh = 0;
   for (const t of liveThings(w)) {
-    if ((t.kind !== "fire" && (t.burning ?? 0) <= 0.3) || meters(a, t) > r) continue;
-    const h = fireHeat(w, t);
-    if (h > bh) { bh = h; best = t; }
+    if (!ablaze(t) || meters(a, t) > r) continue;
+    const o = fireOutput(w, t), h = o.flaming + o.glowing;
+    if (h > bh || !best) { bh = h; best = t; }
   }
   return best;
 }
@@ -76,6 +206,9 @@ export type Outcome = {
   ruled?: boolean; // decided by a Jev ruling, not the physics rules
   later?: string; // a thing whose result is still to come: a seed now in the ground, a seedling just watered
 };
+// How many ticks the acts that take a set time take, before a practised hand's share (sim.ts doAct): what a decision
+// that looks ahead to the act's end looks ahead by. Striking, rubbing, throwing and digging go blow by blow until done.
+export const DURATION: Record<string, number> = { join: 8, heat: 8, wet: 10, shape: 6, place: 3, plant: 3, pour: 2, wear: 2 };
 
 // ---------- inventory ----------
 export const count = (a: Agent, k: string) => a.inv.reduce((n, s) => n + (s.k === k ? 1 : 0), 0);
@@ -268,8 +401,9 @@ function wear(w: World, a: Agent, act: Act, hardness: number): string | null {
   return parts.length ? `The ${t.name} broke apart into ${parts.map((id) => nm(w, id)).join(" and ")}.` : `The ${t.name} broke.`;
 }
 
-// One blow. The runner calls this every tick until it reports done.
-export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number; tries?: number }): { done: boolean; out?: Outcome; broke?: string; damage: number } {
+// One blow. The runner calls this every tick until it reports done. choose: which of what they hold they'd lay over (sim.ts
+// by their theories; the first of each kind they hold, by default).
+export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number; tries?: number }, choose: Chooser = firstHeld(a.inv)): { done: boolean; out?: Outcome; broke?: string; damage: number } {
   const tool = toolOf(w, act);
   const fields: Fields = { verb: "strike", inputs: [], tool: act.tool ?? null, target: act.target?.kind, gives: [] };
   // Striking something you hold: knapping or splitting, or over tinder, for sparks.
@@ -279,13 +413,13 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
     fields.inputs = [tk.id];
     const broke = wear(w, a, act, p(tk, "hard"));
     const how = heldStrike(tk, act.items.length > 0);
-    if (how === "sparks") return { ...sparkTick(w, a, act, tool, tk, st, fields), broke: broke ?? undefined, damage: 0 };
+    if (how === "sparks") return { ...sparkTick(w, a, act, tool, tk, st, fields, choose), broke: broke ?? undefined, damage: 0 };
     // Hot, soft metal takes a shape under a heavy, hard striker; each blow at the fire draws the edge out and tightens it.
     if (how === "forge") {
       const cold = kind(w, tk.parts?.[0]) ?? tk;
       const fire = nearFire(w, a);
       fields.at = "forge";
-      if (!fire || fireHeat(w, fire) < 1.5) return { done: true, broke: broke ?? undefined, damage: 0, out: outcome({ text: `The ${tk.name} stiffened before it could be worked.`, fields }) };
+      if (!redHot(w, fire, physOf(w.kinds, tk)?.d)) return { done: true, broke: broke ?? undefined, damage: 0, out: outcome({ text: `The ${tk.name} stiffened before it could be worked.`, fields }) };
       const g = forgeGain(tool);
       st.progress++;
       const sharp = 1 - (1 - p(cold, "sharp")) * (1 - g) ** st.progress;
@@ -393,21 +527,24 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
   return { done: true, damage: dmg, broke: broke ?? undefined, out: outcome({ ok: true, text: `Striking it with ${tool.id === "hands" ? "bare hands" : `the ${tool.name}`} ${verb}, leaving ${list(w, gives)}.`, gives, fields, numbers: { rate, ticksNeeded } }) };
 }
 
-// Striking one stone on another over tinder held under the blow: glancing blows that throw sparks into it rather than
-// break anything off. Only two very hard stones of the kind that flakes throw sparks, the harder the more (sparksPer:
-// how much of the way to catching each blow's sparks take it); the tinder catches once enough have fallen into it, if it
-// is tinder at all, holding no more water than DAMP (wetness.ts), and the wind where they are doesn't carry the sparks off
-// first (GALE).
+// Striking one stone on another over a lay held under the blow (its tinder, and whatever kindling and fuel are laid with
+// it): glancing blows that throw sparks into its tinder rather than break anything off. Only two very hard stones of the
+// kind that flakes throw sparks, the harder the more (sparksPer: how much of the way to catching each blow's sparks take
+// it); the tinder catches once enough have fallen into it, if it is tinder at all, holding no more water than DAMP
+// (wetness.ts), and the wind where they are doesn't carry the sparks off first (GALE). What the ember caught in comes to
+// what the lay does as the bed burns (combustion.ts lighting): a fire, if everything laid with it catches and burns
+// through, or a flare that burns up the tinder and leaves them the rest.
 export const throwsSparks = (tool: Kind, tk: Kind) => p(tool, "hard") >= 0.8 && p(tk, "hard") >= 0.8 && tk.grain === "shatter";
 export const sparksPer = (tool: Kind, tk: Kind) => 0.12 * (1 + Math.max(0, Math.max(p(tool, "hard"), p(tk, "hard")) - 0.9) * 40);
 // A wind at head height stronger than this, in m/s, carries a spark off before it lands: the strong wind anyone can feel
 // (sim.ts CONDITIONS wind).
 export const GALE = 8;
 export const sparkCatches = (m: number, wind: number) => m <= DAMP && wind <= GALE;
-function sparkTick(w: World, a: Agent, act: Act, tool: Kind, tk: Kind, st: { progress: number }, fields: Fields): { done: boolean; out?: Outcome } {
-  const over = kind(w, act.items[0]);
-  fields.inputs = [tk.id, act.items[0]].sort();
-  if (!over || !count(a, over.id)) return { done: true, out: outcome({ text: `They had no ${nm(w, act.items[0])} to strike over.`, fields }) };
+function sparkTick(w: World, a: Agent, act: Act, tool: Kind, tk: Kind, st: { progress: number }, fields: Fields, choose: Chooser): { done: boolean; out?: Outcome } {
+  const over = kind(w, act.items.find((k) => tinder(kind(w, k))) ?? act.items[0])!;
+  fields.inputs = [tk.id, ...act.items].sort();
+  const chosen = choose(act.items);
+  if (!chosen) return { done: true, out: outcome({ text: `They didn't have ${list(w, tally(act.items))} to strike over.`, fields }) };
   st.progress++;
   const how = `Striking the ${tk.name} with ${tool.id === "hands" ? "bare hands" : `the ${tool.name}`} over the ${over.name}`;
   if (!throwsSparks(tool, tk)) {
@@ -418,11 +555,18 @@ function sparkTick(w: World, a: Agent, act: Act, tool: Kind, tk: Kind, st: { pro
   trace("physics", "sparks", { tool: tool.id, target: tk.id, over: over.id, per, blows: st.progress }, a.id);
   if (st.progress * per < 1) return { done: false };
   const numbers = { blows: st.progress };
-  if (!tinder(over) || !sparkCatches(tinderOf(w, a, over.id)?.m ?? 0, airOn(w, a).wind)) return { done: true, out: outcome({ text: `${how} threw sparks into it, but it wouldn't catch.`, fields, numbers }) };
-  takeItems(a, over.id);
-  mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: 50, maxHp: 400, born: w.t }));
+  if (!tinder(over) || !sparkCatches(moistureOf(chosen[act.items.indexOf(over.id)]), airOn(w, a).wind)) return { done: true, out: outcome({ text: `${how} threw sparks into it, but it wouldn't catch.`, fields, numbers }) };
+  const [px, py] = beside(w, a, 0.8), lit = lighting(laidOf(w, chosen), bedAir(w, { px, py }));
+  if (!lit.lasts) {
+    const uses = tally(act.items.filter((k) => k === over.id));
+    takeChosen(a, chosen, uses);
+    return { done: true, out: outcome({ text: `${how} threw a spark into it. It flared up and died.`, uses, fields, numbers }) };
+  }
+  const uses = tally(act.items);
+  takeChosen(a, chosen, uses);
+  mark(w, newFire(w, px, py, lit.bed!, a.id));
   fields.builds = "fire";
-  return { done: true, out: outcome({ ok: true, text: `${how} threw a spark into it, and it caught. A fire!`, uses: { [over.id]: 1 }, builds: "fire", fields, numbers }) };
+  return { done: true, out: outcome({ ok: true, text: `${how} threw a spark into it, and it caught. A fire!`, uses, builds: "fire", fields, numbers }) };
 }
 
 // ---------- rub ----------
@@ -463,12 +607,15 @@ export function rubbing(A: Kind, B: Kind): Rubbing {
 }
 // What rubbing makes of the softer of two: ground to a meal, or to a point.
 export const rubbedOf = (r: { does: "grind" | "point"; soft: Kind }) => `rub:${r.soft.id}`;
-// Rubbing: sharpens the softer thing on a much harder one, or builds friction heat between two woods.
-export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; heat?: number }): { done: boolean; out?: Outcome } {
-  const [ia, ib] = act.items;
+// Rubbing: sharpens the softer thing on a much harder one, or builds friction heat between two woods, the ember it makes
+// blown into the lay held by (act.items after the two rubbed: its tinder, or what lies about, and whatever kindling and fuel
+// are laid with it). What the ember caught in comes to what the lay does as the bed burns (combustion.ts lighting), as a
+// spark's does. choose: which of what they hold they'd use (sim.ts by their theories; by default the first of each kind).
+export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; heat?: number }, choose: Chooser = firstHeld(a.inv)): { done: boolean; out?: Outcome } {
+  const [ia, ib, ...laid] = act.items;
   const A = kind(w, ia), B = kind(w, ib);
-  const fields: Fields = { verb: "rub", inputs: [ia, ib].filter(Boolean).sort(), gives: [] };
-  if (!A || !B || count(a, ia) < 1 || count(a, ib) < (ia === ib ? 2 : 1)) return { done: true, out: outcome({ text: "They didn't have both things to rub together.", fields }) };
+  const fields: Fields = { verb: "rub", inputs: [...[ia, ib].filter(Boolean).sort(), ...[...laid].sort()], gives: [] };
+  if (!A || !B || !holding(a, act.items)) return { done: true, out: outcome({ text: "They didn't have both things to rub together.", fields }) };
   st.progress++;
   const r = rubbing(A, B);
   if (r.does === "leather") {
@@ -511,16 +658,24 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
     const { bow } = r;
     st.heat = Math.max(0, (st.heat ?? 0) + frictionPer(bow, a.skills.firemaking ?? 0));
     trace("physics", "friction", { a: ia, b: ib, bow, heat: st.heat }, a.id);
-    const into = tinderOf(w, a);
-    if (st.heat >= 1 && into && emberCatches(into.m)) {
-      if (into.kind) takeItems(a, into.kind.id);
-      const fuel = [ia, ib].map((id) => kind(w, id)!).find((k) => !isBow(k) && p(k, "flammable") >= 0.5);
-      if (fuel) takeItems(a, fuel.id);
-      mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: 60 + (fuel?.fuel ?? 0), maxHp: 200, born: w.t }));
+    const chosen = st.heat >= 1 ? choose(act.items) : undefined, lay = chosen?.slice(2) ?? [];
+    // the ember goes into the lay's tinder, or failing that what lies about their feet
+    const own = lay.find((s) => tinder(w.kinds[s.k])), about = own ? null : tinderOf(w, a);
+    const into = own ? { name: w.kinds[own.k].name, m: moistureOf(own) } : about && !about.kind ? about : null;
+    if (chosen && into && emberCatches(into.m)) {
+      const pieces = own ? laidOf(w, lay) : [{ phys: PHYS.fiber, n: 1, m: into.m }, ...laidOf(w, lay)];
+      const [px, py] = beside(w, a, 0.8), lit = lighting(pieces, bedAir(w, { px, py }));
+      const what = `Rubbing the ${A.name} against the ${B.name} got hot enough to catch the ${into.name}`, numbers = { heat: st.heat };
+      if (!lit.lasts) {
+        const uses = own ? tally(laid.filter((k) => k === own.k)) : {};
+        takeChosen(a, lay, uses);
+        return { done: true, out: outcome({ text: `${what}. It flared up and died.`, uses, fields, numbers }) };
+      }
+      const uses = tally(laid);
+      takeChosen(a, lay, uses);
+      mark(w, newFire(w, px, py, lit.bed!, a.id));
       fields.builds = "fire";
-      // the two rubbed together first, then the tinder: a belief replays the first two as the rub
-      if (into.kind) fields.inputs = [...fields.inputs, into.kind.id];
-      return { done: true, out: outcome({ ok: true, text: `Rubbing the ${A.name} against the ${B.name} got hot enough to catch the ${into.name}. A fire!`, uses: { ...(into.kind ? { [into.kind.id]: 1 } : {}), ...(fuel ? { [fuel.id]: 1 } : {}) }, builds: "fire", fields, numbers: { heat: st.heat } }) };
+      return { done: true, out: outcome({ ok: true, text: `${what}. A fire!`, uses, builds: "fire", fields, numbers }) };
     }
     if (st.progress >= 60 || st.heat >= 1) {
       fields.effect = "heat";
@@ -623,124 +778,161 @@ export function join(w: World, a: Agent, act: Act): Outcome | "ask" {
 }
 
 // ---------- heat ----------
-// What there is to heat things at: the fire they hold them in, as it burns now (fanned already, if they're fanning it),
-// and the fan they blow air into it with, if they hold one.
-export type HeatSetting = { held: boolean; fire: Fire | null; fan?: string };
-// What heating these comes to: "ask" when the rules can't say.
-// Thresholds: cooking and melting resin 0.8, firing clay 1.2, softening metal 1.5, smelting ore 2.2. Wood only chars in a covered fire.
+// What there is to heat things at: the fire they hold them in as it burns now; the air it burns in (still air, as the
+// conditions people notice are cut in, if not said); the fan they blow air into it with, if they hold one; and the things
+// they'd heat as they hold them (as one of each kind comes, with the water it comes with, if not said).
+export type HeatSetting = { held: boolean; fire: Fire | null; air?: BedAir; fan?: string; stacks?: Stack[] };
+// The warmths things' cores come to, K (fire-constants sec. 29g): water boils (R36); food cooks (R50); resin runs (sec.
+// 24); clay fires (R55) and copper glows soft enough to work (R1) at red heat; copper runs out of its ore (R48); wood chars
+// where nothing can flame (sec. 29c); and a hide cures in smoke no warmer (sec. 24).
+const K0 = 273.15;
+export const BOILS = 100 + K0, COOKS = 62.8 + K0, RUNS = 100 + K0, RED = 600 + K0, MELTS = 1084.62 + K0, CHARS = 280 + K0, CURES = 50 + K0;
+// A hide is hung this high over a fire, m (sec. 29g); something lit in a fire is lifted out of it within the bed's look, s.
+const HUNG = 1.5, LIFTED = 10;
+// Whether a fire would hold metal this thick at red heat where it sits (sec. 29g): what keeps it soft to work.
+export const redHot = (w: World, f: Thing | null, d = COPPER.d) => !!f?.bed && setIn(f.bed, bedAir(w, f), d) >= RED;
+// What heating these comes to: "ask" when the physics can't say. Everything is set in the fire for the act, in its bed as
+// it is when they take it out; a hide is hung over it.
 export function heating(w: World, items: string[], c: HeatSetting): Decision | "ask" {
   const parts = items.map((id) => kind(w, id)!).filter(Boolean);
   const fields: Fields = { verb: "heat", inputs: [...items].sort(), at: "fire", gives: [] };
   const need = tally(items);
   if (!parts.length || !c.held) return decided({ text: "They didn't have those things to hand.", fields });
-  const fire = c.fire;
-  if (!fire) return decided({ text: "The fire had gone out.", fields });
+  const fire = c.fire, bed = fire?.bed;
+  if (!fire || !bed || !alight(bed)) return decided({ text: "The fire had gone out.", fields });
   if (c.fan) fields.tool = c.fan;
-  const level = fireHeat(w, fire);
-  const done = (make: Make, text: string, keep: string[] = []): Decision => {
+  fields.at = fireKind(fire);
+  // the air at the fire, blown into while they fan it; how long they hold things there; each thing as they hold it, and
+  // how warm its core gets in the fire where it comes toward T
+  const air: BedAir = { ...(c.air ?? setUp(fire, STILL, 0)), ...(c.fan && !fire.covered ? { blown: BLOWN } : {}) };
+  const s = DURATION.heat * TICK_S, ta = air.temp + K0;
+  const held = (i: number) => {
+    const st = c.stacks?.[i], phys = st ? stackPhys(w.kinds, st) : physOf(w.kinds, w.kinds[items[i]]);
+    return { phys, m: st ? moistureOf(st) : (phys?.green ?? 0) };
+  };
+  const core = (i: number, T: number) => { const h = held(i); return h.phys ? heats(h.phys, h.m, T, s, ta) : ta; };
+  const at = (T: number) => ({ warmth: Math.round(T - K0) });
+  const done = (make: Make, text: string, T: number, keep: string[] = []): Decision => {
     fields.gives = [make.id];
     const uses = Object.fromEntries(Object.entries(need).filter(([kk]) => !keep.includes(kk)));
-    return decided({ ok: true, text, uses, gives: { [make.id]: 1 }, fields, numbers: { heat: level }, make });
+    return decided({ ok: true, text, uses, gives: { [make.id]: 1 }, fields, numbers: at(T), make });
   };
-  // Not hot enough: remember where it was tried, so "a ringed fire isn't hot enough for this" is something people can learn.
-  const cool = (text: string) => {
-    fields.at = fireKind(fire);
+  // Not warm enough: remembered where it was tried, so "this fire isn't hot enough for that" is something people can learn.
+  const cool = (text: string, T: number) => {
     fields.effect = "too_cool";
-    return decided({ text, effect: "too_cool", fields, numbers: { heat: level } });
+    return decided({ text, effect: "too_cool", fields, numbers: at(T) });
   };
   const pot = parts.find((x) => p(x, "container") >= 0.6 && p(x, "hard") >= 0.5);
   const foods = parts.filter((x) => p(x, "edible") > 0 && x !== pot);
   if (pot && foods.length >= 1) {
+    // set in the fire, what's in the pot cooks in its water, no warmer than the boil
+    const T = Math.min(setIn(bed, air, POT_WALL), BOILS), raw = items.findIndex((k, i) => foods.includes(w.kinds[k]) && core(i, T) < COOKS);
+    if (raw >= 0) return cool(`The ${w.kinds[items[raw]].name} warmed in the ${pot.name} but didn't cook through.`, T);
     const stew: Make = { id: `stew:${foods.map((x) => x.id).sort().join("+")}`, make: () => ({
       name: `${foods.length > 1 ? "mixed" : foods[0].name} stew`,
       props: { edible: clamp01(foods.reduce((t, x) => t + p(x, "edible"), 0) * 1.4), toxic: Math.min(...foods.map((x) => p(x, "toxic"))) * 0.1, medicinal: Math.max(...foods.map((x) => p(x, "medicinal"))) },
       parts: fields.inputs, verb: "heat", shelf: 3, phys: mix(foods.flatMap((f) => physOf(w.kinds, f) ?? [])),
     }) };
-    return done(stew, `Cooking ${foods.map((x) => `the ${x.name}`).join(" and ")} in the ${pot.name} made a ${nameOf(w, stew)}.`, [pot.id]);
+    return done(stew, `Cooking ${foods.map((x) => `the ${x.name}`).join(" and ")} in the ${pot.name} made a ${nameOf(w, stew)}.`, T, [pot.id]);
   }
   if (parts.length !== 1) return "ask";
-  const x = parts[0];
+  const x = parts[0], { phys } = held(0);
   if (/^(cooked|smoked|fired|burning|hot|melt|forge):/.test(x.id)) return decided({ text: `Heating the ${x.name} again did nothing more.`, fields });
-  // Hung in the thick smoke of a fire closed over to smolder, food dries out and keeps for weeks instead of days.
-  if (p(x, "edible") > 0 && fire.covered) {
-    fields.at = "kiln";
-    return done({ id: `smoked:${x.id}`, make: () => ({
+  if (!phys) return "ask";
+  // A hide hung in what rises off the fire: cured in the smoke of what smoulders, if no warmer there than a hide stands.
+  if (skin(x)) {
+    const T = ta + plumeRise(bed, air, HUNG);
+    if (T > CURES) {
+      fields.effect = "scorched";
+      return decided({ text: `Hung over the fire, the ${x.name} dried stiff and scorched at the edges.`, effect: "scorched", fields, numbers: at(T) });
+    }
+    if (!smokes(bed, air)) return decided({ text: `Hung over the fire, the ${x.name} dried a little, and nothing more.`, fields, numbers: at(T) });
+    const cured = leatherOf(w.kinds, x);
+    return done(cured, `Hung in the thick smoke, the ${x.name} cured into ${nameOf(w, cured)}.`, T);
+  }
+  const T = setIn(bed, air, phys.d), warm = core(0, T);
+  if (p(x, "edible") > 0) {
+    if (warm < COOKS) return cool(`The ${x.name} warmed, but didn't cook through.`, T);
+    // cooked where wood smoulders, it takes the smoke, and keeps for weeks instead of days
+    if (smokes(bed, air)) return done({ id: `smoked:${x.id}`, make: () => ({
       name: `smoked ${x.name}`,
       props: { ...x.props, edible: clamp01(p(x, "edible") * 1.3 + 0.03), toxic: p(x, "toxic") * 0.1, seed: 0 },
       parts: [x.id], verb: "heat", shelf: (x.shelf ?? 1) * 8 + 6,
-    }) }, `Hung in the smoke under the cover, the ${x.name} dried dark and hard. It would keep.`);
-  }
-  if (p(x, "edible") > 0) {
+    }) }, `Cooked through in the smoke under the cover, the ${x.name} came out dark and dry. It would keep.`, T);
     // a soft dough bakes firm into bread
     const dough = p(x, "plastic") >= 0.5;
     return done({ id: `cooked:${x.id}`, make: () => ({
       name: x.id === "meat" ? "roast meat" : dough ? "bread" : `cooked ${x.name}`,
       props: { ...x.props, edible: clamp01(p(x, "edible") * 1.6 + 0.05), toxic: p(x, "toxic") * 0.15, seed: 0, ...(dough ? { plastic: 0, hard: 0.2 } : {}) },
       parts: [x.id], verb: "heat", shelf: dough ? 5 : (x.shelf ?? 1) * 2 + 1,
-    }) }, dough ? `The ${x.name} baked firm into bread over the fire.` : `Holding the ${x.name} over the fire cooked it.`);
+    }) }, dough ? `The ${x.name} baked firm into bread in the fire.` : `Set in the fire, the ${x.name} cooked through.`, T);
   }
   if (sticky(x)) {
+    if (warm < RUNS) return cool(`The ${x.name} softened, but didn't run.`, T);
     return done({ id: `melt:${x.id}`, make: () => ({
       name: `melted ${x.name}`, props: { binding: 0.95, flammable: p(x, "flammable"), plastic: 0.3, toughness: 0.1 }, parts: [x.id], verb: "heat", fuel: x.fuel,
-    }) }, `The ${x.name} softened in the heat and ran into a thick, sticky glue.`);
+    }) }, `The ${x.name} softened in the heat and ran into a thick, sticky glue.`, T);
   }
   if (p(x, "plastic") >= 0.6) {
-    if (level < 1.2) return cool(`The ${x.name} dried and cracked at the edges, but didn't harden.`);
-    fields.at = "hearth";
+    if (warm < RED) return cool(`The ${x.name} dried and cracked at the edges, but didn't harden.`, T);
     return done({ id: `fired:${x.id}`, make: () => ({
       name: x.id === "clay" ? "fired clay lump" : `fired ${x.name.replace(/^clay |^wet clay /, "clay ")}`,
       props: { ...x.props, plastic: 0, binding: 0, hard: 0.75, toughness: 0.45 },
       parts: [x.id], verb: "heat", phys: remade(FIRED_CLAY, physOf(w.kinds, x)),
-    }) }, `The heat of the ringed fire baked the ${x.name} hard.`);
+    }) }, `The heat of the fire baked the ${x.name} hard.`, T);
   }
   if (p(x, "metal") >= 0.8) {
-    if (level < 1.5) return cool(`The ${x.name} got hot, but stayed as hard as ever.`);
-    fields.at = "forge";
+    if (warm < RED) return cool(`The ${x.name} got hot, but stayed as hard as ever.`, T);
     return done({ id: `hot:${x.id}`, make: () => ({ name: `glowing ${x.name}`, props: { ...x.props, plastic: 0.7 }, parts: [x.id], verb: "heat", cools: 36 }) },
-      `The ${x.name} glowed orange in the charcoal and went soft enough to work.`);
+      `The ${x.name} glowed orange in the fire and went soft enough to work.`, T);
   }
   if (p(x, "metal") >= 0.3) {
-    if (level < 2.2) return level >= 1.9 ? cool(`The ${x.name} glowed and sweated, but nothing came of it.`) : decided({ text: `The ${x.name} got hot, then cooled. Nothing changed.`, fields });
-    fields.at = "forge";
-    return done({ id: `smelt:${x.id}`, make: () => ({
+    if (warm >= MELTS) return done({ id: `smelt:${x.id}`, make: () => ({
       name: "metal lump", props: { hard: 0.8, heavy: 0.85, metal: 1, toughness: clamp01(p(x, "toughness") + 0.15) }, parts: [x.id], verb: "heat", phys: COPPER,
-    }) }, `In the roaring charcoal the ${x.name} bled bright metal, which cooled into a lump.`);
+    }) }, `In the roaring coals the ${x.name} bled bright metal, which cooled into a lump.`, T);
+    return warm >= RED ? cool(`The ${x.name} glowed and sweated, but nothing came of it.`, T) : decided({ text: `The ${x.name} got hot, then cooled. Nothing changed.`, fields, numbers: at(T) });
   }
-  const woody = p(x, "flammable") >= 0.5 && p(x, "hard") >= 0.3 && x.verb !== "join";
-  if (woody && fire.covered) {
-    fields.at = "kiln";
-    fields.gives = ["charcoal"];
-    return decided({ ok: true, text: `Starved of air under the cover, the ${x.name} blackened into charcoal instead of burning away.`, uses: need, gives: { charcoal: Math.max(1, Math.round(p(x, "heavy") * 2.5)) }, fields, numbers: { heat: level } });
-  }
-  if (skin(x)) {
-    if (!fire.covered) {
-      fields.effect = "scorched";
-      return decided({ text: `The ${x.name} dried stiff and scorched at the edges.`, effect: "scorched", fields });
+  if (phys.burn) {
+    // Where nothing can flame, under a cover, wood chars as it warms through, a piece to a lump (fuel.ts charSize).
+    const woody = p(x, "flammable") >= 0.5 && p(x, "hard") >= 0.3 && x.verb !== "join";
+    if (fire.covered) {
+      if (!woody || warm < CHARS) return cool(`Under the cover the ${x.name} warmed and blackened a little, but stayed as it was.`, T);
+      fields.gives = ["charcoal"];
+      return decided({ ok: true, text: `Starved of air under the cover, the ${x.name} blackened into charcoal instead of burning away.`, uses: need, gives: { charcoal: 1 }, fields, numbers: at(T) });
     }
-    fields.at = "kiln";
-    const cured = leatherOf(w.kinds, x);
-    return done(cured, `Held in the thick smoke, the ${x.name} cured into ${nameOf(w, cured)}.`);
-  }
-  const lamp = p(x, "container") >= 0.5 && p(x, "hard") >= 0.4;
-  if (p(x, "flammable") >= 0.6 && (p(x, "long") >= 0.5 || lamp)) {
+    // In the open a lamp's wick, a twist of fibre, or the thing itself lights in the flux on it (combustion.ts lightsIn);
+    // lifted out alight it's a flame they can carry, unless burning by itself it's out before they can lift it.
+    const lamp = p(x, "container") >= 0.5 && p(x, "hard") >= 0.4, wick = lamp ? PHYS.fiber : phys, g = group(wick, 1, lamp ? 0 : held(0).m);
+    if (lightsIn(g, fluxIn(bed, air, wick.d), air) > s) return cool(lamp ? `The wick of the ${x.name} wouldn't catch.` : `The ${x.name} scorched black, but didn't catch.`, T);
+    const lone = advance({ groups: [{ ...g, lit: true, inside: 1 }], coals: [], age: 0 }, LIFTED, { temp: air.temp, wind: air.wind, rain: air.rain, veg: air.veg, held: HELD });
+    if (!lamp && !lone.groups.some((y) => y.lit)) {
+      fields.effect = "burned";
+      return decided({ text: `The ${x.name} flared up and burned away to nothing.`, uses: { [x.id]: 1 }, effect: "burned", fields, numbers: at(T) });
+    }
     return done({ id: `burning:${x.id}`, make: () => ({ name: `${lamp ? "lit" : "burning"} ${x.name}`, props: { ...x.props, flammable: 1 }, parts: [x.id], verb: "heat" }) },
-      lamp ? `The wick of the ${x.name} caught and burned low and steady. They could carry the flame.` : `The end of the ${x.name} caught fire. They could carry the flame.`);
+      lamp ? `The wick of the ${x.name} caught and burned low and steady. They could carry the flame.` : `The end of the ${x.name} caught fire. They could carry the flame.`, T);
   }
-  if (p(x, "flammable") >= 0.7) {
-    fields.effect = "burned";
-    return decided({ text: `The ${x.name} burned away to nothing.`, uses: { [x.id]: 1 }, effect: "burned", fields });
-  }
-  if (p(x, "hard") >= 0.5 && p(x, "flammable") < 0.2) return decided({ text: `The ${x.name} got hot, then cooled. Nothing changed.`, fields });
+  if (p(x, "hard") >= 0.5) return decided({ text: `The ${x.name} got hot, then cooled. Nothing changed.`, fields, numbers: at(T) });
   return "ask";
 }
-export function heat(w: World, a: Agent, act: Act): Outcome | "ask" {
+// choose: which of what they hold they'd heat (by default the first of each kind they hold).
+export function heat(w: World, a: Agent, act: Act, choose: Chooser = firstHeld(a.inv)): Outcome | "ask" {
   const held = holding(a, act.items), fire = held ? nearFire(w, a) : null;
-  // Something soft and hollow squeezed or flapped at the flames drives air into them.
+  // Something soft and hollow squeezed or flapped at the fire drives air into it.
   const tool = kind(w, act.tool), fan = fire && tool && airy(tool) && count(a, tool.id) ? tool.id : undefined;
-  if (fire && fan && fire.kind === "fire") { fire.air = w.t + BLOWN; fire.heat = fireHeat(w, fire); mark(w, fire); }
-  const d = heating(w, act.items, { held, fire, fan });
-  if (fire) trace("physics", "heat", { items: act.items, fire: fireKind(fire), heat: fireHeat(w, fire), fan }, a.id);
+  const d = heating(w, act.items, { held, fire, air: fire ? bedAir(w, fire) : undefined, fan, stacks: held ? choose(act.items) : undefined });
+  if (fire) trace("physics", "heat", { items: act.items, fire: fireKind(fire), fan }, a.id);
   return d === "ask" ? d : enact(w, a, d);
+}
+// Fanning a fire while they heat things in it blows air into its base through its next tick (sec. 29g): the fire burns at
+// the start of each tick, before anyone acts. A fire heaped over takes none.
+export function fan(w: World, a: Agent, act: Act) {
+  const tool = kind(w, act.tool);
+  if (act.verb !== "heat" || !tool || !airy(tool) || !count(a, tool.id) || !holding(a, act.items)) return;
+  const fire = nearFire(w, a);
+  if (!fire || fire.kind !== "fire" || fire.covered) return;
+  fire.air = w.t + 2;
+  mark(w, fire);
 }
 // Hide cured into leather, in thick smoke (heating) or with fat rubbed into it (rubTick).
 export const leatherOf = (reg: Registry, hide: Kind): Make => ({ id: `leather:${hide.id}`, make: () => ({
@@ -1057,14 +1249,20 @@ export const shelterName = (w: World, t: Thing) =>
 
 // What there is to place things at, within reach: the fire (and how many pieces already ring it in), a pit, the shelter
 // they'd build onto (their own, one they live in, or an empty one they'd move into), and whether there's an empty one to
-// move into, they having no home of their own.
-export type PlaceSetting = { held: boolean; fire: Fire | null; ring: number; pit: boolean; own: Pick<Thing, "parts" | "shelter"> | null; empty: boolean };
-// What placing them does besides taking them from their hands: lights a fire (or lends its flame to the one there, a lamp
-// keeping its own), feeds the fire, rings it in, hides the pit, stores them at home, or builds a shelter or a pile.
+// move into, they having no home of their own. stacks: which of what they hold they'd lay, one for each named (by default
+// one of each kind as it first comes, dry and whole); air: the air at the fire, or where a fire they light would stand
+// (by default the still air of fire-constants sec. 32); after: how long the act takes, s, which a feeding is judged over and a
+// lamp's flame is held to a lay for (by default a place act's).
+export type PlaceSetting = {
+  held: boolean; fire: Fire | null; ring: number; pit: boolean; own: Pick<Thing, "parts" | "shelter"> | null; empty: boolean;
+  stacks?: Stack[]; air?: BedAir; after?: number;
+};
+// What placing them does besides taking them from their hands: lights a fire from a lay (the bed it lit, none for a flare),
+// feeds the fire, rings it in, hides the pit, stores them at home, or builds a shelter or a pile.
 type PlaceWork =
-  | { does: "light"; fuel: number; keep?: string }
-  | { does: "feed"; fuel: number; charcoal: number; heat: number }
-  | { does: "ring"; contained: boolean; covered: boolean; heat: number }
+  | { does: "light"; bed?: Bed }
+  | { does: "feed"; pieces: Laid[]; charcoal: number }
+  | { does: "ring"; contained: boolean; covered: boolean; walls: Ring }
   | { does: "trap" | "store" }
   | { does: "build"; shelter: Shelter; better: boolean; roomier: boolean };
 // claims: they move into the empty shelter within reach, and make it theirs.
@@ -1074,38 +1272,53 @@ export function placing(w: World, items: string[], c: PlaceSetting): Placing {
   const need = tally(items);
   const fields: Fields = { verb: "place", inputs: [...items].sort(), gives: [] };
   if (!parts.length || !c.held) return decided({ text: "They didn't have those things to hand.", fields });
-  const fire = c.fire;
-  const flame = parts.find((k) => k.id.startsWith("burning:"));
-  const fuels = parts.filter((k) => p(k, "flammable") >= 0.5 && k !== flame);
-  if (flame && (fuels.length || fire)) {
-    fields.builds = "fire";
-    return {
-      ok: true, text: `Setting the ${flame.name} into ${fuels.length ? fuels.map((k) => `the ${k.name}`).join(" and ") : "the fire"} started a campfire.`, uses: need, gives: {}, builds: "fire", fields,
-      work: { does: "light", fuel: fuels.reduce((t, k) => t + (k.fuel ?? 20), 20), keep: p(flame, "container") >= 0.5 ? flame.id : undefined },
-    };
+  const fire = c.fire, burns = fire?.bed && alight(fire.bed) ? fire.bed : undefined;
+  const stacks = c.stacks ?? items.map((k): Stack => ({ k, hp: 1, born: 0 })), air = c.air ?? STILL, after = c.after ?? DURATION.place * TICK_S;
+  // a flame carried in hand (a brand, a lit lamp), and everything else that burns; a lamp keeps its own flame
+  const flame = parts.find(isFlame), lamp = isLamp(flame) ? flame : undefined;
+  const fuels = parts.filter((k) => p(k, "flammable") >= 0.5 && k !== lamp);
+  const of = (keep: (k: string) => boolean) => items.flatMap((k, i) => (keep(k) ? [stacks[i]] : []));
+  // A carried flame set into a lay with no fire there lights it as an ember would (combustion.ts lighting): a brand as a
+  // piece burning at the lay's heart, a lamp's flame as it touches the finest of it for as long as the act takes, if
+  // that catches. A fire if everything laid catches and burns through; a flare that burns up the finest otherwise.
+  if (flame && !burns && fuels.some((k) => k !== flame)) {
+    const laid = of((k) => k !== flame.id), pieces = laidOf(w, laid), names = list(w, tally(laid.map((s) => s.k)));
+    const finest = [...laid].sort((x, y) => (stackPhys(w.kinds, x)?.d ?? Infinity) - (stackPhys(w.kinds, y)?.d ?? Infinity))[0];
+    const fine = laidOf(w, [finest])[0];
+    const caught = !lamp || (!!fine.phys?.burn && lightsIn(group(fine.phys, fine.n, fine.m), inFlame(fine.phys.d, LAMP_FLAME), air) <= after);
+    const lit = caught ? lighting(pieces, air, lamp ? undefined : brandOf(w, stacks[items.indexOf(flame.id)])) : undefined;
+    if (lit?.lasts) {
+      fields.builds = "fire";
+      const uses = tally(items.filter((k) => k !== lamp?.id));
+      return { ok: true, text: `Setting the ${flame.name} into ${names} started a campfire.`, uses, gives: {}, builds: "fire", fields, work: { does: "light", bed: lit.bed } };
+    }
+    if (!caught) return decided({ text: `They held the ${flame.name} to ${names}, and nothing caught.`, fields });
+    return { ok: false, text: `They set the ${flame.name} into ${names}. It flared up and died.`, uses: tally(items.filter((k) => k === finest.k)), gives: {}, fields, work: { does: "light" } };
   }
-  if (fire && fuels.length === parts.length) {
-    const fuel = fuels.reduce((t, k) => t + (k.fuel ?? 20), 0);
+  if (flame && burns && fuels.length === 0) return decided({ text: `They held the ${flame.name} to the fire.`, fields });
+  // Wood laid on a burning fire (a brand as what's left of its piece): whether it catches before the act is done, and the
+  // fire still burns, by the bed (combustion.ts feeding). Laid on it either way.
+  if (burns && fuels.length && parts.every((k) => fuels.includes(k) || k === lamp)) {
+    const fed = of((k) => w.kinds[k] !== lamp), uses = tally(fed.map((s) => s.k)), pieces = laidOf(w, fed);
     const coal = fuels.filter((k) => (k.burns ?? 1) > 1.2).reduce((t, k) => t + (k.fuel ?? 20), 0);
-    const heat = fireHeat(w, { ...fire, charcoal: (fire.charcoal ?? 0) + coal });
-    const forge = coal > 0 && !!fire.contained;
-    fields.at = forge ? "hearth" : "fire"; fields.builds = forge ? "forge" : "fed_fire";
-    return {
-      ok: true, text: forge ? `The ${list(w, need)} caught inside the ring and glowed white-hot.` : `Feeding ${list(w, need)} to the fire built it up.`, uses: need, gives: {}, builds: fields.builds, fields, numbers: { heat },
-      work: { does: "feed", fuel, charcoal: coal, heat },
-    };
+    const forge = coal > 0 && !!fire!.contained, { lights, survives } = feeding(burns, pieces, air, after), ok = lights && survives;
+    fields.at = forge ? "hearth" : "fire";
+    if (ok) fields.builds = forge ? "forge" : "fed_fire";
+    const text = !ok ? `They laid ${list(w, uses)} on the fire.` : forge ? `The ${list(w, uses)} caught inside the ring and glowed white-hot.` : `Feeding ${list(w, uses)} to the fire built it up.`;
+    return { ok, text, uses, gives: {}, builds: fields.builds, fields, work: { does: "feed", pieces, charcoal: coal } };
   }
-  // Stone or clay set around a fire rings it in; heaped over a fire that's already ringed, it closes it off to smolder.
+  // Stone or clay set round a fire stands round it, side by side (fire-constants sec. 29g); heaped over a fire that's
+  // already ringed, it closes it off to smoulder. Three ring a fire, and six or any clay cover it: the act's own counts.
   if (fire && parts.every((k) => (p(k, "hard") >= 0.5 && p(k, "flammable") < 0.2) || p(k, "plastic") >= 0.6)) {
-    const walls = c.ring + items.length;
+    const walls = c.ring + items.length, laid = items.map((k, i) => stackPhys(w.kinds, stacks[i])?.d ?? 0);
     const was = { contained: !!fire.contained, covered: !!fire.covered };
     const contained = walls >= 3, covered = was.covered || (was.contained && (walls >= 6 || parts.some((k) => p(k, "plastic") >= 0.6)));
-    const heat = fireHeat(w, { ...fire, contained, covered });
+    const ring = { tall: Math.max(fire.walls?.tall ?? 0, ...laid), width: (fire.walls?.width ?? 0) + laid.reduce((t, d) => t + d, 0) };
     fields.at = was.contained ? "hearth" : "fire";
     fields.builds = covered ? "kiln" : contained ? "hearth" : "ring";
     const text = covered && !was.covered ? `Heaping ${list(w, need)} over the ringed fire closed it in. It smoldered low and smoky under the cover.`
       : contained && !was.contained ? `Ringing the fire with ${list(w, need)} closed it in. The flames stayed put and burned steady.` : `They set ${list(w, need)} beside the fire.`;
-    return { ok: (contained && !was.contained) || (covered && !was.covered), text, uses: need, gives: {}, builds: fields.builds, fields, numbers: { heat }, work: { does: "ring", contained, covered, heat } };
+    return { ok: (contained && !was.contained) || (covered && !was.covered), text, uses: need, gives: {}, builds: fields.builds, fields, work: { does: "ring", contained, covered, walls: ring } };
   }
   const cover = parts.filter((k) => p(k, "long") >= 0.5 || p(k, "fibrous") >= 0.6);
   if (c.pit && cover.length >= 2 && cover.length === parts.length) {
@@ -1141,32 +1354,33 @@ export function placing(w: World, items: string[], c: PlaceSetting): Placing {
     claims, work: { does: "build", shelter: sh, better: grew || !!gain, roomier },
   };
 }
-export function place(w: World, a: Agent, act: Act): Outcome {
+// choose: which of what they hold they'd lay (sim.ts by their theories; by default the first of each kind).
+export function place(w: World, a: Agent, act: Act, choose: Chooser = firstHeld(a.inv)): Outcome {
   const fire = nearestThing(w, a.px, a.py, ["fire"], (t) => reaches(a, t), 4), ring = fire && ringOf(w, fire);
   const pit = nearestThing(w, a.px, a.py, ["pit"], (t) => reaches(a, t), 4);
   const empty = homeOf(w, a) ? null : nearestThing(w, a.px, a.py, ["structure"], (t) => !t.owner && (t.shelter?.tier ?? 0) >= 1 && reaches(a, t), 6);
   // their own shelter, or the one they live in with others, within reach: or the empty one they'd move into
   const own = nearestThing(w, a.px, a.py, ["structure"], (t) => (t.owner === a.id || a.home === t.id || t === empty) && reaches(a, t) && !nearestThing(w, t.px, t.py, ["fire"], () => true, 1), 6);
+  // a fire they light from a carried flame stands where they lay it, in the air there
+  const stacks = choose(act.items), lights = !(fire && ablaze(fire)) && act.items.some((k) => isFlame(w.kinds[k]));
+  const spot = lights ? beside(w, a, 0.8) : null, air = fire && ablaze(fire) ? bedAir(w, fire) : spot ? bedAir(w, { px: spot[0], py: spot[1] }) : undefined;
   const { claims, work, ...d } = placing(w, act.items, {
-    held: holding(a, act.items), fire, ring: ring ? Object.values(ring.parts!).reduce((t, n) => t + n, 0) : 0, pit: !!pit, own, empty: !!empty,
+    held: !!stacks, fire, ring: ring ? Object.values(ring.parts!).reduce((t, n) => t + n, 0) : 0, pit: !!pit, own, empty: !!empty, stacks, air,
   });
   if (claims && empty) {
     empty.owner = a.id;
     log(w, "claim", [a.id], empty, `${a.name} moved into an empty ${TIER[empty.shelter!.tier].replace(/^an? /, "")} and made it theirs.`);
   }
-  if (!work) return outcome(d);
-  // A lamp lends its flame and keeps burning; a torch is used up.
-  const taken = Object.entries(d.uses).flatMap(([k, n]) => takeStacks(a, k, work.does === "light" && k === work.keep ? n - 1 : n));
+  if (!work || !stacks) return outcome(d);
+  const taken = takeChosen(a, stacks, d.uses);
   switch (work.does) {
     case "light":
-      if (fire) { fire.hp = Math.min(400, (fire.hp ?? 0) + work.fuel); mark(w, fire); }
-      else mark(w, addThing(w, "fire", ...beside(w, a, 0.8), { owner: a.id, hp: work.fuel, maxHp: 400, born: w.t, heat: 1 }));
+      if (work.bed && spot) mark(w, newFire(w, spot[0], spot[1], work.bed, a.id));
       break;
     case "feed": {
       const f = fire!;
-      f.hp = Math.min(400, (f.hp ?? 0) + work.fuel);
+      f.bed = feed(f.bed!, work.pieces);
       f.charcoal = (f.charcoal ?? 0) + work.charcoal;
-      f.heat = work.heat;
       mark(w, f);
       break;
     }
@@ -1177,7 +1391,7 @@ export function place(w: World, a: Agent, act: Act): Outcome {
       r.shelter = { ...shelterOf(w, r.parts!), tier: 0 };
       f.contained = work.contained;
       f.covered = work.covered;
-      f.heat = work.heat;
+      f.walls = work.walls;
       mark(w, r); mark(w, f);
       break;
     }

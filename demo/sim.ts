@@ -6,7 +6,7 @@ export { brainKind, useBrain } from "../src/sim/brain";
 export { changed, newKinds, removed } from "../src/sim/physics";
 export { iceChanged, pathChanges, trailChanges, trails } from "../src/sim/ecology";
 export { campSummary, groupsChanged } from "../src/sim/groups";
-export { inspect, inspectGround } from "../src/sim/inspect";
+export { blazeOf, inspect, inspectGround, thingView } from "../src/sim/inspect";
 export { objects, thingById } from "../src/sim/space";
 export { GROUND, groundClass, waterAt } from "../src/terrain/flora";
 

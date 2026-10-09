@@ -1,14 +1,47 @@
 import { expect, test } from "bun:test";
-import { DAY, addThing, meters, newWorld, type Act, type Agent, type World } from "./world";
-import { count, giveItems, heat, join, place, rubTick, strikeDamage, strikeTick, type Outcome } from "./physics";
+import { DAY, meters, newWorld, type Act, type Agent, type Stack, type Step, type World } from "./world";
+import { LEAST, advance, alight, output, radiation } from "./combustion";
+import { PHYS, pieceOf, roundSize } from "./fuel";
+import { ensure } from "./materials";
+import { GALE, ablaze, bedAir, breeze, carry, count, fireHours, fireOf, giveItems, giveStack, heat, join, place, rubTick, strikeDamage, strikeTick, type Fields, type Outcome } from "./physics";
 import { DAMP, SOAKED } from "./wetness";
 import { thingById } from "./space";
-import { apart, cameOff, chance, differed, fades, noteTry, record, refuted, rethink, suspected, teach, weighs, worseIn, type Belief } from "./beliefs";
+import { apart, beliefKey, cameOff, chance, differed, fades, noteTry, record, refuted, rethink, suspected, teach, weighs, worseIn, type Belief } from "./beliefs";
 import { plan } from "./plan";
-import { actFromBelief, tick } from "./sim";
+import { actFromBelief, conditionsNow, doAct, tick, tinkerOptions } from "./sim";
 
 const fresh = (): [World, Agent] => { const w = newWorld(42); const a = w.agents[0]; a.inv = []; return [w, a]; };
 const K = (w: World, id: string) => w.kinds[id];
+// Pieces of wood as the island gives them (fuel.ts): half-meter twigs off the ground, the stems of a 2 m hazel, a meter of
+// a full-grown oak's trunk; things held, so many of them, this wet (tinder kept against the body at 6%, wood kept in at
+// 10%, the most a spark catches in, fire-constants secs. 10, 18); and air with no wind and no rain.
+const TWIG = pieceOf({ kind: "stick", size: 0.5 }, "stick")!, STICK = pieceOf({ kind: "bush", species: "hazel", size: 2 }, "stick")!;
+const LOG = pieceOf({ kind: "tree", species: "oak", size: 15 }, "log")!;
+const DRY = 0.1, KEPT = 0.06;
+const hold = (w: World, a: Agent, k: string, n: number, m: number, piece: Partial<Stack> = {}) => { for (let i = 0; i < n; i++) giveStack(w, a, { k, hp: 1, born: w.t, m, ...piece }); };
+const still = (w: World) => { w.weather.sky = "clear"; w.weather.speed = 0; w.t++; };
+const sticks = (n: number) => Array<string>(n).fill("stick");
+// Striking stone on stone over a lay until the strike comes to something.
+const strike = (w: World, a: Agent, items: string[]) => {
+  const st = { progress: 0 };
+  let r;
+  do r = strikeTick(w, a, { verb: "strike", items, tool: "stone", target: { kind: "stone" } }, st); while (!r.done);
+  return r.out!;
+};
+// The usual fire (fireOf) an hour or so on, its logs' flame just too small to light another log by its radiation, and
+// still flaming: a dying flame, and a small fire.
+function dying(w: World, a: Agent) {
+  const fire = fireOf(w, a.px, a.py), air = bedAir(w, fire);
+  while (output(fire.bed!, air).flaming > 0 && radiation(fire.bed!, air, PHYS.log) >= LEAST) fire.bed = advance(fire.bed!, 10, air);
+  return fire;
+}
+// A flame they carry: a stick alight (a brand), or a lamp of fat with a fibre wick in a fired bowl, lit.
+const brandKind = (w: World) => ensure(w.kinds, "burning:stick", () => ({ name: "burning stick", props: { ...w.kinds.stick.props, flammable: 1 }, parts: ["stick"], verb: "heat" }))[0];
+function lampKind(w: World) {
+  ensure(w.kinds, "pot", () => ({ name: "fired clay bowl", props: { container: 0.8, hard: 0.75 } }));
+  ensure(w.kinds, "lamp", () => ({ name: "bowl filled with fat and a fiber wick", props: { container: 0.8, hard: 0.75, flammable: 0.8 }, parts: ["fat", "fiber", "pot"], verb: "join" }));
+  return ensure(w.kinds, "burning:lamp", () => ({ name: "lit lamp", props: { container: 0.8, hard: 0.75, flammable: 1 }, parts: ["lamp"], verb: "heat" }))[0];
+}
 
 test("a heavier, sharper, longer tool fells a tree faster, and bare hands barely mark it", () => {
   const [w, a] = fresh();
@@ -39,20 +72,24 @@ test("striking a stone with a stone eventually chips off a sharp stone", () => {
   expect(got).toBe(true);
 });
 
-test("rubbing sticks with a bow and tinder makes a fire; without tinder it only gets hot", () => {
+test("rubbing a stick with a bow over tinder laid with twigs makes a fire; with nothing laid it only gets hot", () => {
   const [w, a] = fresh();
-  giveItems(w, a, "stick", 3); giveItems(w, a, "fiber", 2);
+  still(w);
+  giveItems(w, a, "stick", 2); giveItems(w, a, "fiber", 2);
   const bow = join(w, a, { verb: "join", items: ["fiber", "fiber"] });
   if (bow === "ask") throw new Error();
   const strung = join(w, a, { verb: "join", items: [Object.keys(bow.gives)[0], "stick"] });
   if (strung === "ask") throw new Error();
   const bowId = Object.keys(strung.gives)[0];
   const rub = (act: Act) => { const st = { progress: 0 }; let r; do r = rubTick(w, a, act, st); while (!r.done); return r.out!; };
-  expect(rub({ verb: "rub", items: [bowId, "stick"] }).effect).toBe("heat"); // no fiber left
-  giveItems(w, a, "fiber");
-  w.weather.sky = "clear";
-  expect(rub({ verb: "rub", items: [bowId, "stick"] }).builds).toBe("fire");
-  expect(w.things.some((t) => t.kind === "fire" && meters(t, a) <= 2)).toBe(true);
+  expect(rub({ verb: "rub", items: [bowId, "stick"] }).effect).toBe("heat");
+  hold(w, a, "fiber", 1, KEPT); hold(w, a, "stick", 5, DRY, TWIG);
+  const lit = rub({ verb: "rub", items: [bowId, "stick", "fiber", ...sticks(5)] });
+  expect(lit.builds).toBe("fire");
+  expect(beliefKey(lit.fields)).toBe(`rub|${[bowId, "stick"].sort().join("+")}+fiber+stick+stick+stick+stick+stick|-|-|-|-`);
+  expect(w.things.some((t) => t.kind === "fire" && ablaze(t) && meters(t, a) <= 2)).toBe(true);
+  // the bow and the stick it turned are still in hand; the lay is in the fire
+  expect([count(a, bowId), count(a, "stick"), count(a, "fiber")]).toEqual([1, 1, 0]);
 });
 
 test("sticks leaned together shelter someone; enough logs make it a sturdier hut", () => {
@@ -70,7 +107,7 @@ test("sticks leaned together shelter someone; enough logs make it a sturdier hut
 
 test("cooking in a fired bowl makes a stew and keeps the bowl", () => {
   const [w, a] = fresh();
-  addThing(w, "fire", a.px, a.py, { hp: 100 });
+  fireOf(w, a.px, a.py);
   w.kinds["pot"] = { id: "pot", name: "fired clay bowl", props: { container: 0.8, hard: 0.75 } };
   giveItems(w, a, "pot"); giveItems(w, a, "mushroom");
   const out = heat(w, a, { verb: "heat", items: ["pot", "mushroom"], at: "fire" });
@@ -102,21 +139,22 @@ test("the planner only uses what an agent believes works", () => {
   expect(steps.filter((s) => s.op === "pick_stone").length).toBe(2);
 });
 
-test("rubbing sticks over tinder soaked through only makes them hot, and someone who has come to think fire won't light in the rain plans none while it rains", () => {
+test("rubbing sticks for an ember over tinder soaked through only makes them hot, and someone who has come to think fire won't light in the rain plans none while it rains", () => {
   const [w, a] = fresh();
-  const rub = () => { const st = { progress: 0 }; let r, n = 0; do { r = rubTick(w, a, { verb: "rub", items: ["stick", "stick"] }, st); n++; } while (!r.done); return { out: r.out!, n }; };
-  giveItems(w, a, "stick", 2); giveItems(w, a, "fiber");
-  w.weather.sky = "clear";
-  const lit = rub().out;
+  still(w);
+  const lay = ["stick", "stick", "fiber", ...sticks(5)];
+  const rub = () => { const st = { progress: 0 }; let r; do r = rubTick(w, a, { verb: "rub", items: lay }, st); while (!r.done); return r.out!; };
+  const stock = (m: number) => { a.inv = []; giveItems(w, a, "stick", 2); hold(w, a, "fiber", 1, m); hold(w, a, "stick", 5, DRY, TWIG); };
+  stock(KEPT);
+  const lit = rub();
   expect(lit.builds).toBe("fire");
   const knows = record(w, a, lit, 30)!;
-  a.inv = [];
-  giveItems(w, a, "stick", 2); giveItems(w, a, "fiber", 1, SOAKED + 0.05);
+  stock(SOAKED + 0.05);
   const soaked = rub();
-  expect(soaked.out.builds).toBeUndefined();
-  expect(soaked.out.effect).toBe("heat");
+  expect(soaked.builds).toBeUndefined();
+  expect(soaked.effect).toBe("heat");
   const ctx = (now: string[]) => ({ dist: { stick: 2, reeds: 3 }, beliefs: Object.values(a.beliefs), facts: a.facts, kinds: w.kinds, toxic: [], now });
-  const start = { inv: { stick: 2, fiber: 1 }, at: null, flags: [] };
+  const start = { inv: { stick: 7, fiber: 1 }, at: null, flags: [] };
   // with no theory of why it failed, they would try again
   expect(plan(start, "make_fire", ctx(["rain"]))).not.toBeNull();
   knows.unless = ["rain"];
@@ -124,22 +162,26 @@ test("rubbing sticks over tinder soaked through only makes them hot, and someone
   expect(plan(start, "make_fire", ctx(["dark"]))).not.toBeNull();
 });
 
-test("someone who has seen wood laid on a fire plans to keep a dying fire going with what they carry", () => {
+test("someone who has seen wood laid on a fire plans to keep it going with what they carry, and the wood goes into its bed", () => {
   const [w, a] = fresh();
-  const fire = addThing(w, "fire", a.px, a.py, { hp: 40, maxHp: 400 });
-  giveItems(w, a, "stick", 2);
+  still(w);
+  const fire = fireOf(w, a.px, a.py);
+  fire.bed = advance(fire.bed!, 15 * 60, bedAir(w, fire));
+  hold(w, a, "stick", 2, DRY, STICK);
   const ctx = () => ({ dist: { stick: 2 }, beliefs: Object.values(a.beliefs), facts: a.facts, kinds: w.kinds, toxic: [] });
   expect(plan({ inv: { stick: 1 }, at: "fire", flags: [] }, "tend_fire", ctx())).toBeNull();
+  const before = fire.bed!.groups.length;
   const fed = place(w, a, { verb: "place", items: ["stick"] });
   expect(fed.builds).toBe("fed_fire");
-  expect(fire.hp!).toBeGreaterThan(70);
+  expect(fire.bed!.groups.length).toBe(before + 1);
   record(w, a, fed, 1);
   expect(plan({ inv: { stick: 1 }, at: "fire", flags: [] }, "tend_fire", ctx())?.at(-1)?.op).toBe("act");
 });
 
-// Two ways they know to light a fire, with the record of each, all told and in the rain.
+// Two ways they know to light a fire, rubbing two sticks for an ember to blow into tinder, with the record of each, all
+// told and in the rain.
 const fireBelief = (tinder: string, tries: number, wins: number, rain: { tries: number; wins: number }): Belief => ({
-  key: `rub|${[tinder, "stick", "stick"].sort().join("+")}|-|-|-|-`, fields: { verb: "rub", inputs: ["stick", "stick", tinder], gives: [], builds: "fire" },
+  key: `rub|stick+stick+${tinder}|-|-|-|-`, fields: { verb: "rub", inputs: ["stick", "stick", tinder], gives: [], builds: "fire" },
   uses: { [tinder]: 1 }, out: {}, ticks: 20, tries, wins, tally: { tries, wins }, how: "discovered", t: 0, when: { rain },
 });
 
@@ -161,33 +203,22 @@ test("someone who thinks fire won't light in the rain lights none in the rain, u
   expect(plan(start, `try:${fiber.key}`, ctx(fiber.key))?.map((s) => s.op)).toEqual(["act"]);
 });
 
-test("striking stone over damp tinder only throws sparks that won't catch: that's no fire, and it doesn't count as having worked; dry, the spark catches", () => {
+test("striking stone over a lay whose tinder is damp only throws sparks that won't catch: that's no fire, and it doesn't count as having worked; dry, the spark catches", () => {
   const [w, a] = fresh();
+  still(w);
   const b: Belief = {
-    key: "strike|fiber+stone|stone|stone|-|-", fields: { verb: "strike", inputs: ["fiber", "stone"], tool: "stone", target: "stone", gives: [], builds: "fire" },
-    uses: { fiber: 1 }, out: {}, ticks: 3, tries: 1, wins: 1, how: "discovered", t: 0,
+    key: "strike|fiber+stick+stick+stick+stone|stone|stone|-|-", fields: { verb: "strike", inputs: ["fiber", "stick", "stick", "stick", "stone"], tool: "stone", target: "stone", gives: [], builds: "fire" },
+    uses: { fiber: 1, stick: 3 }, out: {}, ticks: 3, tries: 1, wins: 1, how: "discovered", t: 0,
   };
-  // what they believe lights a fire is striking the stone over the fiber they hold
+  // what they believe lights a fire is striking the stone over the fiber laid with three sticks
   const act = actFromBelief(b);
-  expect(act.items).toEqual(["fiber"]);
-  const strike = () => {
-    giveItems(w, a, "stone", 2); giveItems(w, a, "fiber");
-    const st = { progress: 0 };
-    let r;
-    do r = strikeTick(w, a, act, st); while (!r.done);
-    return r.out!;
-  };
-  a.inv = [];
-  giveItems(w, a, "stone", 2); giveItems(w, a, "fiber", 1, DAMP + 0.02);
-  const st = { progress: 0 };
-  let r;
-  do r = strikeTick(w, a, act, st); while (!r.done);
-  const drowned = r.out!;
+  expect(act.items).toEqual(["fiber", "stick", "stick", "stick"]);
+  const tried = (m: number) => { a.inv = []; giveItems(w, a, "stone", 2); hold(w, a, "fiber", 1, m); hold(w, a, "stick", 3, DRY, TWIG); return strike(w, a, act.items); };
+  const drowned = tried(DAMP + 0.02);
   expect(drowned.ok).toBe(false);
   expect(drowned.builds).toBeUndefined();
   expect(cameOff(b, drowned)).toBe(false);
-  a.inv = [];
-  expect(cameOff(b, strike())).toBe(true);
+  expect(cameOff(b, tried(KEPT))).toBe(true);
 });
 
 test("rain that starts after they planned a fire stops them rubbing sticks, if they think fire won't light in the rain", () => {
@@ -350,4 +381,172 @@ test("nothing about how a try failed points anywhere: a condition becomes a susp
   noteTry(b, false, ["rain"]);
   noteTry(b, false, ["rain"]);
   expect(suspected(b, ["rain"])).toEqual(["rain"]);
+});
+
+// ---------- lighting with a lay, feeding, and choosing pieces (fire plan, Unit 7) ----------
+// No failure says why: what a person sees of it is the conditions they were in, never a cause in the words.
+const CAUSES = /\b(damp|wet|soak\w*|wind\w*|breez\w*|thick|thin|small|big|coals?|cold|rain\w*|dark)\b/i;
+
+test("struck over fiber laid with twigs and finger-thick sticks in still, dry air, a spark lights a fire that lasts; over fiber alone it flares and dies within the act, and says nothing of why", () => {
+  const [w, a] = fresh();
+  still(w);
+  giveItems(w, a, "stone", 2); hold(w, a, "fiber", 1, KEPT); hold(w, a, "stick", 8, DRY, TWIG); hold(w, a, "stick", 5, DRY, STICK);
+  const lit = strike(w, a, ["fiber", ...sticks(13)]);
+  expect(lit.builds).toBe("fire");
+  expect(beliefKey(lit.fields)).toBe(`strike|fiber+${sticks(13).join("+")}+stone|stone|stone|-|-`);
+  const fire = w.things.find((t) => t.kind === "fire" && meters(t, a) <= 2)!;
+  expect(ablaze(fire)).toBe(true);
+  expect(count(a, "fiber") + count(a, "stick")).toBe(0);
+  // the fibre alone: it flares, burns itself up, and no fire is left of it
+  a.inv = [];
+  giveItems(w, a, "stone", 2); hold(w, a, "fiber", 1, KEPT);
+  const fires = w.things.filter((t) => t.kind === "fire").length;
+  const flare = strike(w, a, ["fiber"]);
+  expect(flare.ok).toBe(false);
+  expect(flare.builds).toBeUndefined();
+  expect(count(a, "fiber")).toBe(0);
+  expect(w.things.filter((t) => t.kind === "fire").length).toBe(fires);
+  expect(flare.text).not.toMatch(CAUSES);
+});
+
+test("a stick laid on a fire with an hour left lights; a log laid on a dying flame doesn't, and is seen laid as thick wood on a small fire", () => {
+  const [w, a] = fresh();
+  still(w);
+  const fire = fireOf(w, a.px, a.py);
+  fire.bed = advance(fire.bed!, 15 * 60, bedAir(w, fire));
+  expect(fireHours(w, fire)).toBeGreaterThan(1);
+  hold(w, a, "stick", 1, DRY, STICK);
+  const fed = place(w, a, { verb: "place", items: ["stick"] });
+  expect(fed.ok).toBe(true);
+  expect(fed.builds).toBe("fed_fire");
+  const [v, b] = fresh();
+  still(v);
+  const low = dying(v, b);
+  expect(output(low.bed!, bedAir(v, low)).flaming).toBeGreaterThan(0);
+  hold(v, b, "log", 1, DRY, LOG);
+  expect(conditionsNow(v, b, "place", b, ["log"])).toEqual(expect.arrayContaining(["thick", "small"]));
+  const laid = place(v, b, { verb: "place", items: ["log"] });
+  expect(laid.ok).toBe(false);
+  expect(laid.builds).toBeUndefined();
+  expect(laid.text).not.toMatch(CAUSES);
+  // laid on it all the same
+  expect(count(b, "log")).toBe(0);
+});
+
+test("twigs laid on the coals a fire leaves once its flames are gone light it again", () => {
+  const [w, a] = fresh();
+  still(w);
+  const fire = fireOf(w, a.px, a.py), air = bedAir(w, fire);
+  while (fire.bed!.age < 30 * 60 || output(fire.bed!, air).flaming > 0) fire.bed = advance(fire.bed!, 60, air);
+  expect(alight(fire.bed!)).toBe(true);
+  hold(w, a, "stick", 5, DRY, TWIG);
+  expect(conditionsNow(w, a, "place", a, sticks(5), undefined, 0)).toContain("coals");
+  const fed = place(w, a, { verb: "place", items: sticks(5) });
+  expect(fed.builds).toBe("fed_fire");
+  // within the act's time after it, the fire flames again
+  let bed = fire.bed!, flamed = false;
+  for (let t = 0; t < 15 * 60 && !flamed; t += 10) flamed = output((bed = advance(bed, 10, air)), air).flaming > 0;
+  expect(flamed).toBe(true);
+});
+
+test("someone who thinks thick wood won't take on a small fire lays their thinnest stick on one instead; without the theory, the first that comes to hand", () => {
+  const thick = roundSize("generic", 0.04, 1);
+  const feed = (theory: boolean) => {
+    const [w, a] = fresh();
+    still(w);
+    dying(w, a);
+    hold(w, a, "stick", 1, DRY, { size: thick }); hold(w, a, "stick", 1, DRY, STICK);
+    const fields: Fields = { verb: "place", inputs: ["stick"], at: "fire", builds: "fed_fire", gives: [] };
+    const b: Belief = { key: beliefKey(fields), fields, uses: { stick: 1 }, out: {}, ticks: 3, tries: 4, wins: 2, how: "discovered", t: 0, ...(theory ? { unless: ["small+thick"] } : {}) };
+    a.beliefs = { [b.key]: b };
+    const s: Step = { op: "act", key: b.key, act: actFromBelief(b), progress: 0 };
+    let r;
+    do r = doAct(w, a, s); while (r === "wait");
+    return a.inv.find((x) => x.k === "stick")?.size;
+  };
+  // the one they kept
+  expect(feed(true)).toEqual(thick);
+  expect(feed(false)).toEqual(STICK.size);
+});
+
+test("a burning brand set into fiber and twigs lights them; a brand carried too long has burned out and lights nothing", () => {
+  const [w, a] = fresh();
+  still(w);
+  brandKind(w);
+  const brand: Stack = { k: "burning:stick", hp: 1, born: w.t, m: DRY, ...STICK };
+  giveStack(w, a, { ...brand }); hold(w, a, "fiber", 1, KEPT); hold(w, a, "stick", 8, DRY, TWIG);
+  const lit = place(w, a, { verb: "place", items: ["burning:stick", "fiber", ...sticks(8)] });
+  expect(lit.builds).toBe("fire");
+  expect(w.things.some((t) => t.kind === "fire" && ablaze(t))).toBe(true);
+  const [v, b] = fresh();
+  still(v);
+  brandKind(v);
+  giveStack(v, b, { ...brand }); hold(v, b, "fiber", 1, KEPT); hold(v, b, "stick", 8, DRY, TWIG);
+  // two ticks, ten minutes, in hand
+  carry(v, b); carry(v, b);
+  expect(count(b, "burning:stick")).toBe(0);
+  const late = place(v, b, { verb: "place", items: ["burning:stick", "fiber", ...sticks(8)] });
+  expect(late.builds).toBeUndefined();
+  expect(v.things.some((t) => t.kind === "fire")).toBe(false);
+});
+
+test("a lit lamp held to fiber and twigs lights them and keeps its flame; set into a log alone it lights nothing", () => {
+  const [w, a] = fresh();
+  still(w);
+  const lamp = lampKind(w);
+  hold(w, a, lamp.id, 1, 0); hold(w, a, "log", 1, DRY, LOG);
+  const log = place(w, a, { verb: "place", items: [lamp.id, "log"] });
+  expect(log.ok).toBe(false);
+  expect(log.text).not.toMatch(CAUSES);
+  expect(w.things.some((t) => t.kind === "fire")).toBe(false);
+  expect([count(a, lamp.id), count(a, "log")]).toEqual([1, 1]);
+  hold(w, a, "fiber", 1, KEPT); hold(w, a, "stick", 8, DRY, TWIG);
+  expect(place(w, a, { verb: "place", items: [lamp.id, "fiber", ...sticks(8)] }).builds).toBe("fire");
+  expect(count(a, lamp.id)).toBe(1);
+});
+
+test("what anyone sees of a lay: tinder soaked through is soaked (and so damp), not wet kindling; twigs too wet to carry a flame are wet kindling; a breeze blows short of a gale", () => {
+  const [w, a] = fresh();
+  still(w);
+  const lay = ["fiber", ...sticks(3)];
+  giveItems(w, a, "stone", 2); hold(w, a, "fiber", 1, SOAKED + 0.05); hold(w, a, "stick", 3, DRY, TWIG);
+  const soaked = conditionsNow(w, a, "strike", a, lay);
+  expect(soaked).toEqual(expect.arrayContaining(["soaked", "damp"]));
+  expect(soaked).not.toContain("sodden");
+  a.inv = [];
+  giveItems(w, a, "stone", 2); hold(w, a, "fiber", 1, KEPT); hold(w, a, "stick", 3, 0.35, TWIG);
+  const wet = conditionsNow(w, a, "strike", a, lay);
+  expect(wet).toContain("sodden");
+  expect(wet).not.toContain("damp");
+  expect(wet).not.toContain("breezy");
+  // the breeze that blows a small fire's flames off is less than the gale that carries sparks off
+  expect(breeze()).toBeLessThan(GALE);
+  w.weather.speed = 60;
+  w.t++;
+  expect(conditionsNow(w, a, "strike", a, lay)).toEqual(expect.arrayContaining(["wind", "breezy"]));
+});
+
+test("experimenting with only tinder and logs lights no fire, until they hold something thinner", () => {
+  const [w, a] = fresh();
+  still(w);
+  const stock = (twigs: number) => { a.inv = []; giveItems(w, a, "stone", 2); hold(w, a, "fiber", 1, KEPT); hold(w, a, "log", 2, DRY, LOG); hold(w, a, "stick", twigs, DRY, TWIG); };
+  const lights = (twigs: number) => {
+    stock(twigs);
+    const tries = tinkerOptions(w, a, "fire").filter((o) => o.act.verb === "strike" && o.act.items.length);
+    expect(tries.length).toBeGreaterThan(0);
+    return tries.some((o) => { stock(twigs); return strike(w, a, o.act.items).builds === "fire"; });
+  };
+  expect(lights(0)).toBe(false);
+  expect(lights(5)).toBe(true);
+});
+
+test("the make_fire plan gathers the sticks the only lay they know needs", () => {
+  const [w] = fresh();
+  const way: Belief = {
+    key: "strike|fiber+stick+stick+stone|stone|stone|-|-", fields: { verb: "strike", inputs: ["fiber", "stick", "stick", "stone"], tool: "stone", target: "stone", gives: [], builds: "fire" },
+    uses: { fiber: 1, stick: 2 }, out: {}, ticks: 3, tries: 2, wins: 2, how: "discovered", t: 0,
+  };
+  const steps = plan({ inv: { fiber: 1, stone: 2 }, at: null, flags: [] }, "make_fire", { dist: { stick: 2, reeds: 3, stone: 2 }, beliefs: [way], facts: {}, kinds: w.kinds, toxic: [] })!;
+  expect(steps.filter((s) => s.op === "pick_stick").length).toBe(2);
+  expect(steps.at(-1)?.key).toBe(way.key);
 });

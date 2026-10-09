@@ -1,10 +1,10 @@
 // Every Jev call lives here: pick a goal, choose what to try, answer another agent, judge an unknown result, name a thing, answer for a camp.
 import {
   BONDS, BOND_FADE, DAY, LABELS, OPINIONS, RESPONSES, YEAR_DAYS, ageOf, clock, dayOfYear, level, meters, stageOf,
-  type Agent, type BondKind, type Label, type Relationship, type Response, type World,
+  type Agent, type BondKind, type Label, type Relationship, type Response, type Thing, type World,
 } from "./world";
 import { around, thingById } from "./space";
-import { fireHours, shelterName } from "./physics";
+import { ablaze, fireHours, fireOutput, shelterName } from "./physics";
 import { TRAITS } from "./traits";
 import { DARK, canSee, lightOn, lightWords } from "./light";
 import { airOn, airWords } from "./air";
@@ -128,16 +128,24 @@ export function inventoryText(w: World, a: Agent) {
   return Object.entries(c).map(([k, n]) => `${n} ${describeKind(w.kinds[k])}`).join(", ") || "nothing";
 }
 
+// How a burning thing looks to anyone by it: how tall its flames stand, unless a cover hides them, or its coals alone
+// glowing; and for a fire, how long what's in it will last (physics.ts fireOutput and fireHours, fire-constants sec. 31).
+function blazeWords(w: World, t: Thing) {
+  const o = fireOutput(w, t), size = t.covered ? [] : [o.flame >= 0.05 ? `flames ${o.flame.toFixed(1)} m high` : o.flaming > 0 ? "low flames" : "burned down to glowing coals"];
+  if (t.kind !== "fire") return size.join("");
+  const h = fireHours(w, t), hours = Math.round(h), minutes = Math.round((h * 60) / 5) * 5;
+  return [...size, h >= 1 ? `wood enough for about ${hours === 1 ? "an hour" : `${hours} hours`}` : minutes >= 5 ? `wood enough for about ${minutes} minutes` : "almost out"].join(", ");
+}
+
 export function view(w: World, a: Agent) {
   const near: Record<string, { count: number; nearest: number }> = {};
   const m = (b: { px: number; py: number }) => Math.round(meters(a, b));
   around(w, a.px, a.py, 60, null, (t, d) => {
     if (t.kind === "pebble" || t.kind === "grass" || (t.kind === "bush" && t.species === "berry" && !t.n) || !canSee(w, a, t, 60)) return;
     let kind = t.kind === "item" ? `${w.kinds[t.item ?? ""]?.name ?? "something"} on the ground` : t.kind === "structure" ? (shelterName(w, t) === "fire ring" ? "ring of stones round a fire" : ["pile of stuff", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0]) : t.kind === "bush" ? `${t.species ?? "berry"} bush` : t.kind.replaceAll("_", " ");
-    if (t.burning) kind = `burning ${kind}`;
+    if (t.kind !== "fire" && ablaze(t)) kind = `burning ${kind}`;
     if (t.kind === "fire") kind = t.covered ? "fire heaped over with stone" : t.contained && (t.charcoal ?? 0) > 0 ? "ringed fire glowing white-hot with charcoal" : t.contained ? "ringed fire" : "fire";
-    // how long it will last, as anyone sitting by it can judge from what's burning
-    if (t.kind === "fire") { const h = fireHours(t); kind = `${kind}, ${h < 1 ? "almost out" : `wood enough for about ${Math.round(h)} hours`}`; }
+    if (ablaze(t)) kind = `${kind}, ${blazeWords(w, t)}`;
     if ((t.resin ?? 0) > 0) kind = `${kind} beaded with resin`;
     if (t.kind === "boulder" && t.inside?.flint) kind = "boulder studded with dark nodules";
     if (t.shared) kind = `${kind} kept as the camp's store`;

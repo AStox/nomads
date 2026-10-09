@@ -8,6 +8,7 @@ import { beliefText } from "./src/sim/beliefs";
 import { counters, flush, jevCalls, logTo, tickMs, traces } from "./src/sim/trace";
 import { campSummary, groupsChanged, groupsDetail, liveCamps, standing } from "./src/sim/groups";
 import { thingById } from "./src/sim/space";
+import { thingView } from "./src/sim/inspect";
 
 const PORT = Number(process.env.PORT ?? 8095);
 // NOMADS_DATA lets a second, offline copy run beside the live world without touching its save.
@@ -59,7 +60,7 @@ function loop() {
     lastEvent = w.events.at(-1)?.id ?? lastEvent;
     const msg = {
       type: "tick", t: w.t, jev: w.jev, weather: w.weather, agents: w.agents.map((a) => summary(w, a)), animals: animalView(), events,
-      things: [...changed].map((id) => thingById(w, id)).filter(Boolean), removed: [...removed].filter((id) => !thingById(w, id)),
+      things: [...changed].flatMap((id) => { const t = thingById(w, id); return t ? [thingView(w, t)] : []; }), removed: [...removed].filter((id) => !thingById(w, id)),
       kinds: kindsById([...newKinds, ...changedKinds]),
       paths: [...pathChanges].map((i) => ({ i, v: w.paths[i] })),
       ...(iceChanged.now ? { ice: w.ice } : {}),
@@ -119,7 +120,7 @@ Bun.serve({
           ctl = c;
           clients.add(c);
           send(c, {
-            type: "init", t: w.t, jev: w.jev, control, tiles: w.tiles.join(""), heights: w.heights, terrain: w.terrain, things: w.things,
+            type: "init", t: w.t, jev: w.jev, control, tiles: w.tiles.join(""), heights: w.heights, terrain: w.terrain, things: w.things.map((t) => thingView(w, t)),
             agents: w.agents.map((a) => summary(w, a)), animals: animalView(), events: w.events.slice(-300),
             kinds: w.kinds, weather: w.weather, paths: w.paths.join(""),
             ice: w.tiles.map((_, i) => (w.ice.includes(i) ? "1" : "0")).join(""),

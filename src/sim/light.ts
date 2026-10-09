@@ -1,15 +1,14 @@
 // Light is an attribute of every point of the island, as moisture is: how much of it reaches the ground there now. It is
 // the sky's (the sun's beam and glow, the moon and the stars, less cloud), less what stands in the way (hills hide the sun's
-// beam, the crowns of trees hide all of the sky), plus what fires and lit lamps throw. Nothing here is stored; any point is
-// worked out from the world as it stands, so felling a wood or lighting a fire changes it at once.
+// beam, the crowns of trees hide all of the sky), plus what fires, burning things and flames carried throw. Nothing here is
+// stored; any point is worked out from the world as it stands, so felling a wood or lighting a fire changes it at once.
 //
 // People and animals answer to how bright a place looks, which is the log of its lux: they see less far, walk and work
 // slower, sleep better and keep to a fire when it is dark. The rates below are those answers.
-import { DAY, TILE_M, groundOf, hourOf, meters, perWorld, type Agent, type World } from "./world";
+import { DAY, TILE_M, groundOf, hourOf, meters, perWorld, type Thing, type World } from "./world";
 import { SIZE, clamp, smooth } from "../terrain/flora";
 import { around, liveThings, lookAround } from "./space";
-import { fireHeat } from "./physics";
-import { p } from "./materials";
+import { ablaze, carriedOutput, fireOutput, isFlame } from "./physics";
 import { COVER, STAR_LUX, beam, moonAt, moonLux, sunAt, sunLux, through } from "./sky";
 
 // ---------- crowns ----------
@@ -78,22 +77,54 @@ function beamClears(w: World, px: number, py: number, s: Sky) {
   return smooth(-0.012, 0.012, s.tan - skyline(fine.heightAt, x, z, s.dir[0], s.dir[1]));
 }
 
-// ---------- fires and lamps ----------
-// Lux at a meter's distance, for a fire at heat 1 (fireHeat) and for a lit lamp. Light falls off with the square of the distance
-// from them, softened within a meter or so of the flame.
-const FIRE_LUX = 60, LAMP_LUX = 12;
-const GLOW = 80; // meters: past this a flame is lost in the dark
-type Source = { px: number; py: number; lux: number };
+// ---------- fires and flames carried ----------
+// What every fire, everything alight and every flame someone carries throws round it, from what it gives off now
+// (physics.ts fireOutput and carriedOutput; fire-constants sec. 31): light, its flames' at FLAME_LM lumens a watt (sec. 9)
+// and its coals' at a glowing body's efficacy at their heat, the same every way; and radiant heat, a share CHI_R of all it
+// gives off (sec. 7). Both fall off as from a disc of the fire's own heap seen on its axis, I / (d^2 + r^2): the point
+// source's inverse square a few fire-widths off, and finite at the fire. A flame carried is held HELD m from what its
+// holder sees and works by (R122's lamp). A cover of stone over a fire hides it, its light and its heat alike.
+const FLAME_LM = 0.16, CHI_R = 0.3, HELD = 0.4;
+// cd and radiant kW of a source, and its r^2, m2
+type Source = { px: number; py: number; cd: number; kw: number; r2: number; thing?: Thing };
 const sources = new WeakMap<World, { t: number; list: Source[] }>();
-const lamp = (w: World, a: Agent) => a.inv.some((s) => s.k.startsWith("burning:") && p(w.kinds[s.k], "container") >= 0.5);
+// A glowing body's luminous efficacy at T K, lm/W: Planck's spectral emittance seen through the eye's photopic curve (CIE
+// 1924, in its Gaussian fit), 380 to 780 nm, over all it radiates (sec. 31).
+const C1 = 3.7418e-16, C2 = 0.014388, SIGMA = 5.670374e-8; // W m2, m K, W/m2K4
+function efficacy(T: number) {
+  if (T <= 0) return 0;
+  let lm = 0;
+  for (let nm = 380; nm <= 780; nm += 10) lm += 1.019 * Math.exp(-285.4 * (nm / 1000 - 0.559) ** 2) * (C1 / (nm * 1e-9) ** 5 / Math.expm1(C2 / (nm * 1e-9 * T))) * 1e-8;
+  return (683 * lm) / (SIGMA * T ** 4);
+}
 function glowing(w: World) {
   const old = sources.get(w);
   if (old && old.t === w.t) return old.list;
   const list: Source[] = [];
-  for (const t of liveThings(w)) if (t.kind === "fire" || (t.burning ?? 0) > 0.3) list.push({ px: t.px, py: t.py, lux: FIRE_LUX * fireHeat(w, t) * (t.covered ? 0.3 : 1) });
-  for (const a of w.agents) if (lamp(w, a)) list.push({ px: a.px, py: a.py, lux: LAMP_LUX });
+  for (const t of liveThings(w)) {
+    if (t.covered || !ablaze(t)) continue;
+    const o = fireOutput(w, t);
+    list.push({ px: t.px, py: t.py, cd: ((FLAME_LM * o.flaming + efficacy(o.hot) * o.glowing) * 1000) / (4 * Math.PI), kw: CHI_R * (o.flaming + o.glowing), r2: o.radius ** 2, thing: t });
+  }
+  // flames carried: their own flames' light only, a brand's coals being too dim to count
+  for (const a of w.agents)
+    for (const s of a.inv) {
+      if (!isFlame(w.kinds[s.k])) continue;
+      const o = carriedOutput(w, a, s);
+      if (o.flaming + o.glowing > 0) list.push({ px: a.px, py: a.py, cd: (FLAME_LM * o.flaming * 1000) / (4 * Math.PI), kw: CHI_R * (o.flaming + o.glowing), r2: HELD ** 2 });
+    }
   sources.set(w, { t: w.t, list });
   return list;
+}
+// The radiant heat fires throw on a point now, kW/m2, and the fire or burning thing throwing the most of it.
+export function heatAt(w: World, px: number, py: number) {
+  let q = 0, most = 0, from: Thing | null = null;
+  for (const f of glowing(w)) {
+    const d = Math.hypot(f.px - px, f.py - py) * TILE_M, h = f.kw / (4 * Math.PI * (d * d + f.r2));
+    q += h;
+    if (f.thing && h > most) { most = h; from = f.thing; }
+  }
+  return { q, from };
 }
 
 // ---------- light at a point ----------
@@ -103,7 +134,7 @@ export type Light = {
   sky: number; // lux on open ground, clear of trees and hills
   canopy: number; // share of the sky the trees overhead hide
   sun: number; // share of the sun's beam that clears the land; 0 whenever there is no beam
-  fire: number; // lux from fires and lamps
+  fire: number; // lux from fires, burning things and flames carried
 };
 export function lightAt(w: World, px: number, py: number): Light {
   const s = skyNow(w), cover = canopyAt(w, px, py), tau = sieve(cover);
@@ -112,7 +143,7 @@ export function lightAt(w: World, px: number, py: number): Light {
   let fire = 0;
   for (const f of glowing(w)) {
     const d = Math.hypot(f.px - px, f.py - py) * TILE_M;
-    if (d <= GLOW) fire += f.lux / (d * d + 2.25);
+    fire += f.cd / (d * d + f.r2);
   }
   const lux = s.day * (s.beam * clear * shaft + (1 - s.beam) * glow) + s.night * glow + fire;
   return { lux, bright: clamp((Math.log10(Math.max(lux, 1e-6)) + 2) / 6, 0, 1), sky: s.day + s.night, canopy: 1 - glow, sun: clear, fire };

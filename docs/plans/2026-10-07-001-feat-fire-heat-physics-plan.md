@@ -578,6 +578,16 @@ Then run a throwaway check over a year of island weather. It reports the share o
 
 **Verification:** No fixed heat factor remains in physics.ts. Every heating outcome reads a bed temperature or state against a cited value.
 
+**Result (2026-10-08):** section 29 of the constants document holds six readers' rows (R160 to R210) and the reading Unit 6 implements, written before its tests. The reading overturned two picks. A covered kiln runs cooler than the fire it covers, not hotter (29c), so that scenario is restated. Glowing char follows u^(1/8), not section 28's straight line (29d). What the physics now reaches or loses:
+- Clay fires and copper softens in an open fire's flames or coals in any breeze, as bonfire pottery does (R43).
+- Ore gives up copper only to coals with air blown in, ring or no ring.
+- Three stones barely shelter a fire; a closed ring of about 25 keeps the usual lay alight in an 8 m/s wind.
+- A stick chars under a cover in one heat act; a 17 cm log doesn't.
+- Smoked food and smoke-cured hide come only from a covered bed whose wood smoulders, the hide hung 1.5 m over it.
+- The usual lay heaped over smoulders about 11 hours. The dusk-to-dawn case is restated at the eighth hour.
+
+The act's counts for ringing (three) and covering (six, or any clay) are kept as design. Not modelled: smoulder spreading into unlit wood under a cover (its radiation is under the 12 kW/m2 lighting limit), the ring stones' own heat-up, and a thin ash bank as a third cover state.
+
 - [ ] **Unit 7: Lighting with a lay, feeding, choosing pieces, and the conditions people notice**
 
 **Goal:** People light fires by laying tinder, kindling and fuel and putting an ember or flame into it. They feed beds that outlast their lighting, choose pieces by their theories, and notice the conditions that decide all this.

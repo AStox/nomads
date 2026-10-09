@@ -3,7 +3,7 @@ import { DAY, TILE_M, addThing, newWorld, type Agent, type Shelter, type Stack, 
 import { DAMP, deadAt, emc, equilibrium, tinderOf, wetness } from "./wetness";
 import { PHYS, WOODS } from "./fuel";
 import { airOn, vapourAt } from "./air";
-import { dropStacks, giveItems, giveStack, strikeTick } from "./physics";
+import { dropStacks, fireOf, giveItems, giveStack, sparkCatches, strikeTick } from "./physics";
 import { nearestThing, put } from "./space";
 import { canopyAt } from "./light";
 import { needs } from "./sim";
@@ -29,7 +29,7 @@ function apart(w: World, a: Agent, i: number, fire = false) {
   b.inv = []; b.wearing = null;
   put(w, b, a.px + (60 * i) / TILE_M, a.py);
   addThing(w, "structure", b.px, b.py, { shelter: HUT, parts: { stick: 6 } });
-  if (fire) addThing(w, "fire", b.px + 1 / TILE_M, b.py, { hp: 400, maxHp: 400 });
+  if (fire) fireOf(w, b.px + 1 / TILE_M, b.py);
   return b;
 }
 
@@ -110,13 +110,9 @@ test("damp tinder carried in a bag through a dry day catches a spark", () => {
   w.kinds.bag = { id: "bag", name: "bag", props: { container: 0.75, flexible: 0.7 } };
   giveItems(w, a, "bag");
   giveItems(w, a, "fiber", 1, 0.3);
-  giveItems(w, a, "stone", 2);
   hours(w, 12);
   expect(held(a, "fiber").m!).toBeLessThanOrEqual(DAMP);
-  const st = { progress: 0 };
-  let r;
-  do r = strikeTick(w, a, { verb: "strike", items: ["fiber"], tool: "stone", target: { kind: "stone" } }, st); while (!r.done);
-  expect(r.out!.builds).toBe("fire");
+  expect(sparkCatches(held(a, "fiber").m!, airOn(w, a).wind)).toBe(true);
 });
 
 test("dead stuff holds more water the damper the air and less the warmer, in each of Simard's bands", () => {

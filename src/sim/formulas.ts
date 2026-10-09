@@ -7,11 +7,13 @@
 import type { Act, World } from "./world";
 import { THING_MATERIAL, depth, p } from "./materials";
 import {
-  BLOWN, HAND, PIT_SOIL, SEED_SOIL, airy, arrowy, digPower, eating, emberCatches, forgeGain, frictionPer, heating, heldStrike, joining,
+  DURATION, HAND, PIT_SOIL, SEED_SOIL, STILL, airy, arrowy, digPower, eating, emberCatches, forgeGain, frictionPer, heating, heldStrike, joining,
   knapPer, leatherOf, placing, rubbedOf, rubbing, shaping, shelterOf, sparkCatches, sparksPer, spotNear, splitDamage, stave, strikeDamage, throwDamage,
-  throwsSparks, wearing, wetting, type Decision, type Fields, type Fire,
+  throwsSparks, usual, wearing, wetting, type Decision, type Fields, type Fire,
 } from "./physics";
-import { DURATION, rulingKey } from "./sim";
+import { advance, feed, kindle, lay, type Bed } from "./combustion";
+import { BURNS, PHYS } from "./fuel";
+import { rulingKey } from "./sim";
 import { tinder } from "./wetness";
 import { bedAt, nicheOf, seedlingFate, treeOf, type Ahead } from "./seedling";
 
@@ -24,11 +26,21 @@ export type Prediction = { ok: boolean; gives: string[]; builds?: string; effect
 // of the hours ahead there (seedling.ts ahead), and the fish swimming within reach of the water.
 export type Situation = { tinder: number | null; wind: number; spot: { px: number; py: number; heading?: number }; ahead: Ahead; fish: number };
 
-// The places a way is done at, as they most plainly are: a fire as fireKind tells them apart (ringed by three stones for
-// a hearth, heaped over as well for a kiln, with charcoal in the ring for a forge), a pit, their own lean-to of four
-// sticks, open water. A way done at none of them is done with nothing near.
+// The places a way is done at, as they most plainly are: a fire as fireKind tells them apart, staged as the usual lay lit
+// and burning ten minutes in still air (physics.ts STILL), ringed by three stones for a hearth, heaped over as well for a
+// kiln, and fed the charcoal a log smothers into for a forge (fire-constants sec. 29g) [design]; a pit, their own lean-to
+// of four sticks, open water. A way done at none of them is done with nothing near. These stage the answer key.
 const PLACES: Record<string, true> = { fire: true, hearth: true, kiln: true, forge: true, pit: true, home: true, water: true };
-const RING = 3;
+const RING = 3, LIT = 600;
+let burning: Bed | undefined, forging: Bed | undefined;
+function staged(at: string | null): Fire | null {
+  if (at !== "fire" && at !== "hearth" && at !== "kiln" && at !== "forge") return null;
+  burning ??= advance(kindle(lay(usual())!), LIT, STILL);
+  const log = PHYS.log, coal = { ...PHYS.charcoal, d: log.d, mass: log.mass * BURNS.softwood.charYield };
+  forging ??= advance(feed(burning, [{ phys: coal, n: 1, m: 0 }]), LIT, STILL);
+  const ringed = at !== "fire", stone = PHYS.stone.d;
+  return { kind: "fire", bed: at === "forge" ? forging : burning, contained: ringed, ...(ringed ? { walls: { tall: stone, width: RING * stone } } : {}), covered: at === "kiln", charcoal: at === "forge" ? 1 : 0 };
+}
 const LEAN_TO: Record<string, number> = { stick: 4 };
 
 // fish: how many swim within reach of the water, none unless said.
@@ -38,10 +50,9 @@ export function predictMaterial(w: World, f: Fields, fish = 0): Prediction | { a
   const at = f.at ?? null;
   if (at && !PLACES[at]) return { why: `there's no setting it up at a ${at}` };
   const held = true, items = f.inputs, ticks = DURATION[f.verb] ?? 4;
-  const ringed = at === "hearth" || at === "kiln" || at === "forge";
-  // air blown into the fire, if what they hold to heat things with is a fan, burns it hotter while they do
+  // a fan they hold blows air into the fire while they heat things in it
   const fan = f.tool && airy(w.kinds[f.tool]) ? f.tool : undefined;
-  const fire: Fire | null = at === "fire" || ringed ? { kind: "fire", contained: ringed, covered: at === "kiln", charcoal: at === "forge" ? 100 : 0, air: fan ? w.t + BLOWN : 0 } : null;
+  const fire = staged(at);
   const predicted = (d: Decision): Prediction => ({ ok: d.ok, gives: d.fields.gives, builds: d.builds, effect: d.effect, at: d.fields.at ?? null, ticks });
   switch (f.verb) {
     case "join": case "heat": {
@@ -55,7 +66,7 @@ export function predictMaterial(w: World, f: Fields, fish = 0): Prediction | { a
     // one fish or two, a basket brings up fish
     case "wet": return predicted(wetting(w, items, { held, water: at === "water", fish: { basket: fish, line: fish }, skill: 0, draw: () => 1 }));
     case "shape": return predicted(shaping(w, items, f.shape, { held }));
-    case "place": return predicted(placing(w, items, { held, fire, ring: ringed ? RING : 0, pit: at === "pit", own: at === "home" ? { parts: LEAN_TO, shelter: shelterOf(w, LEAN_TO) } : null, empty: false }));
+    case "place": return predicted(placing(w, items, { held, fire, ring: fire?.contained ? RING : 0, pit: at === "pit", own: at === "home" ? { parts: LEAN_TO, shelter: shelterOf(w, LEAN_TO) } : null, empty: false }));
     case "wear": return predicted(wearing(w, items, { held }));
     case "eat": return predicted(eating(w, items[0], { held, sick: false }));
   }

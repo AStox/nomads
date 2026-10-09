@@ -30,6 +30,15 @@ const ANCHORS = [
   [levelOf("valley"), { person: 9, fire: 6, glow: 12, smoke: 5 }],
   [levelOf("close"), { person: 24, fire: 14, glow: 30, smoke: 3 }],
 ];
+// How big a blaze (the sim's, inspect.ts Blaze) shows: its flames blaze.flame meters tall at pv art px a meter, but never
+// under the level's tuned fire for a FLAME_M meter flame's share of it, so a camp still shows from far out; none over a
+// bed of coals alone, which its sprite shows glowing. k scales its glow and smoke by the root of its whole output against
+// a KW kW campfire's.
+const FLAME_M = 0.5, KW = 100;
+const blazeShown = (b, sz, pv) => ({
+  fl: b.flame > 0 ? Math.max(2, Math.round(Math.max(b.flame * pv, sz.fire * Math.min(1, b.flame / FLAME_M)))) : 0,
+  k: Math.max(0.3, Math.min(3, Math.sqrt((b.kw + b.glow) / KW))),
+});
 // animal body size in meters: standing height, a bird's wingspan, a fish's length
 const BODY = { deer: 1.5, wolf: 0.9, rabbit: 0.35, heron: 1, gull: 1.2, crow: 0.9, eagle: 2, fish: 0.5, butterfly: 0.1 };
 const FLIERS = new Set(["heron", "gull", "crow", "eagle", "butterfly"]);
@@ -309,7 +318,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   // Most are baked into the chunks from a binned copy each worker keeps; the kinds that change often draw every frame.
   let bins = null;
   const liveThings = new Map();
-  const isLive = (t) => ObjBins.LIVE.has(t.kind) || t.burning > 0;
+  const isLive = (t) => ObjBins.LIVE.has(t.kind) || !!t.blaze;
   const numId = (id) => +String(id).slice(1);
   function postState(msg) {
     stateVer++;
@@ -320,7 +329,13 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     bins = new ObjBins(o);
     buildCanopy(bins);
     liveThings.clear();
-    for (const t of W.things) if (!t.contained && isLive(t)) liveThings.set(t.id, t);
+    // as a client is sent them (inspect.ts thingView), a burning one with its blaze; only a thing with a bed can be alight,
+    // so the ground's thousands of others are passed by
+    for (const t of W.things) {
+      if (t.contained || !(ObjBins.LIVE.has(t.kind) || t.bed)) continue;
+      const v = sim.view(t);
+      if (isLive(v)) liveThings.set(t.id, v);
+    }
     lastIce = iceFlags(W.ice);
     trailSrc = sim.trails?.() ?? null;
     trailQ = null;
@@ -773,7 +788,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
       // drawn wherever the sim holds it: the sim keeps things off the fine wet field, and a level's coarse map would lose it
       if (!onScreen(a, 60)) continue;
       const hpx = ObjBins.shown(t.size ?? 1) * pv;
-      if (t.kind === "fire" || t.burning > 0) fires.push({ a, big: t.kind === "fire" ? 1 : 0.7 + (t.burning || 0), id: t.id });
+      if (t.blaze) fires.push({ a, id: t.id, ...blazeShown(t.blaze, sz, pv) });
       if (hpx < 1) continue;
       const s = thingSprite(t, hpx, md.b);
       // a home under the trees shows through the leaves the way its people do
@@ -835,10 +850,12 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   function thingSprite(t, hpx, bearing) {
     if (!TH.object) return null;
     const seedT = (t.seed >>> 0) % 8, dir = (((t.seed >>> 5) & 7) - bearing + 16) % 8, hq = hpx < 8 ? Math.round(hpx * 2) / 2 : Math.round(hpx);
-    // flames are drawn by drawFires on the clock, so the sprite is always the unlit thing
+    // flames are drawn by drawFires on the clock, so the sprite is the thing unlit but for a fire's bed of coals, glowing
+    // by their heat to the nearest 50 K so the cache keeps a few
     const species = t.kind === "structure" ? t.shelter?.style : t.kind === "item" ? t.item : t.species;
-    const o = { species, stage: clamp(t.stage ?? 1, 0, 1), tier: t.shelter?.tier ?? 0, room: t.shelter?.room ?? 0, caught: !!t.caught, n: t.n, covered: !!t.covered, charcoal: t.charcoal > 0, dir, burning: 0 };
-    return spr(`t${t.kind}|${species}|${hq}|${seedT}|${o.stage}|${o.tier}|${o.room}|${o.caught}|${o.n > 0}|${o.covered}|${o.charcoal}|${dir}`, () => TH.object(t.kind, hq, seedT * 131 + 7, o));
+    const coals = t.kind === "fire" && t.blaze?.glow > 0 ? Math.round(t.blaze.hot / 50) * 50 : 0;
+    const o = { species, stage: clamp(t.stage ?? 1, 0, 1), tier: t.shelter?.tier ?? 0, room: t.shelter?.room ?? 0, caught: !!t.caught, n: t.n, covered: !!t.covered, charcoal: t.charcoal > 0, dir, blaze: coals ? { kw: 0, glow: 1, flame: 0, r: 0, hot: coals } : undefined };
+    return spr(`t${t.kind}|${species}|${hq}|${seedT}|${o.stage}|${o.tier}|${o.room}|${o.caught}|${o.n > 0}|${o.covered}|${o.charcoal}|${dir}|${coals}`, () => TH.object(t.kind, hq, seedT * 131 + 7, o));
   }
 
 
@@ -846,9 +863,9 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   function drawFires(cam, fires, now, night, sl) {
     const md = cam.md, sz = SIZES[md.L];
     for (const f of fires) {
-      const { a } = f, fl = Math.max(2, Math.round(sz.fire * f.big)), ph = (now / 1000) * 5 + idH(f.id, 5) * 8;
+      const { a } = f, fl = f.fl, ph = (now / 1000) * 5 + idH(f.id, 5) * 8;
       // glow on the ground by day; warm light pools by night
-      const R = sz.glow * (1 + night * 1.6) * f.big * (0.95 + 0.05 * Math.sin(ph * 2.3));
+      const R = sz.glow * (1 + night * 1.6) * f.k * (0.95 + 0.05 * Math.sin(ph * 2.3));
       B.need?.(Math.floor(a.sx - R), Math.floor(a.sy - R * 0.6), Math.ceil(a.sx + R), Math.ceil(a.sy + R * 0.6));
       for (let y = Math.floor(a.sy - R * 0.6); y <= a.sy + R * 0.6; y++)
         for (let x = Math.floor(a.sx - R); x <= a.sx + R; x++) {
@@ -862,6 +879,7 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
           if (!B.id[p] && bayer(X, Y) < (1 - d) * (1.4 - night * 0.6)) { B.c[p] = GLOW[B.c[p]]; B.sh[p] &= 1; }
         }
       if (!md.isle) {
+        if (!fl) continue;
         const s = spr(`flame${fl}|${Math.floor(ph) & 7}`, () => SP.flames(fl, 5 + (Math.floor(ph) & 7))), id = owners.push({ kind: "thing", id: f.id }) - 1;
         sl.e[id] = md.hb + 6; sl.lit[id] = 1;
         blit(B, s, a.sx, a.sy + 1, a.cz + 2, id, false, md.hb + 3);
@@ -873,8 +891,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
     const md = cam.md, sz = SIZES[md.L];
     const wind = simRef?.w?.weather?.wind ?? { dx: 1, dy: 0 }, [du, dv] = md.dir(wind.dx ?? 1, wind.dy ?? 0), drift = clamp((du - dv) * 0.3, -0.45, 0.45);
     for (const f of fires) {
-      const { a } = f, fl = Math.max(2, Math.round(sz.fire * f.big)), [x, y] = map ? map(a.sx, a.sy, a.cz) : [a.sx, a.sy];
-      smoke(dcam, x, y - fl, sz.person * sz.smoke * f.big, Math.max(0.8, sz.person * 0.18), drift, now / 1000 + idH(f.id, 6) * 9);
+      const { a, fl } = f, [x, y] = map ? map(a.sx, a.sy, a.cz) : [a.sx, a.sy];
+      smoke(dcam, x, y - fl, sz.person * sz.smoke * f.k, Math.max(0.8, sz.person * 0.18), drift, now / 1000 + idH(f.id, 6) * 9);
     }
   }
   // the still's smoke column on a continuous clock: puffs rise, swell, lean downwind and fade

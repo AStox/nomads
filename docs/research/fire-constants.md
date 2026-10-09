@@ -260,7 +260,7 @@ Pick: χr 0.3; pain onset by Purser's dose model; tenability 2.5 kW/m2. Comforta
 | Wood crib flames | 650 to 1030 | C | Hägglund & Persson | R12 [read] |
 | Glowing char surface | 600 in still air; 830 at 2.5 m/s, where smoldering turns to flaming | C | Wood | R46 [ex] |
 | Low-temperature smoldering zone | 300 to 500 | C | | R46 [ex] |
-| Minimum surface for self-sustained wood smoldering | 350 +/- 20 | C | Ohlemiller, as cited | R52 [ex] |
+| Minimum surface for self-sustained wood smoldering | 350 +/- 20 | C | Liang, Lin and Huang (section 29e: R52's full text doesn't state it) | R197 [ex] |
 | Glowing spot | over 600 (red heat) | C | | R1 [read] |
 | Charcoal with bellows (copper smelt) | 1000 to 1200 held for 2 h; peaks over 1300; average about 1180 | C | Timberlake 2007 | R44 [ex] |
 | Bag-bellows furnace | over 1200 easily | C | | R44 [ex] |
@@ -274,7 +274,7 @@ Pick: χr 0.3; pain onset by Purser's dose model; tenability 2.5 kW/m2. Comforta
 | Safe cooking, internal | 145 F (62.8 C) plus 3 min rest for whole cuts; 160 F (71.1 C) ground meat; 165 F (73.9 C) poultry; 145 F fin fish | | USDA FSIS | R50 [ex] |
 | Glowing coal emission | σT^4 is about 33 kW/m2 at 600 C and about 84 kW/m2 at 830 C (ε about 0.95) | kW/m2 | Radiant flux at contact | [derived] from R46 and R14 |
 
-I found no direct measurement of banked coals or a covered kiln. Pick: banked coals emit as glowing char at about 600 C in still air (R46). A covered kiln sits between bonfire (600 to 900 C) and bellows charcoal (1100 to 1300 C), set by the bed's energy balance.
+I found no direct measurement of banked coals or a covered kiln. Pick: banked coals emit as glowing char at about 600 C in still air (R46). A covered kiln sits between bonfire (600 to 900 C) and bellows charcoal (1100 to 1300 C), set by the bed's energy balance. (Superseded by section 29: every measured covered kiln runs cooler than a bonfire, and glowing char's temperature follows section 29d's law.)
 
 ## 9. Light from flames
 
@@ -1094,7 +1094,7 @@ Every thing holds water, kg to the kg of it dry, and each hour (src/sim/wetness.
   - τ is the d^2 law for wood, bark, char and everything not herbaceous (sec. 5; an analogue for foods, hide and clay).
   - Wood cut from a living plant follows sec. 20's τ_green = 500 h (d / 25 mm)^1.5 while it holds more than fibre saturation's 30%, and the d^2 law once it has first dried below it.
   - Herbaceous stuff (grass, fiber, fern, flowers, herbs and anything made only of them) lets water in and out through a waxy skin: it dries over 2.2 h, the geometric middle of R34's 0.5 to 10 h for weathered fine fuel [derived], though rain soaks it by the d^2 law, as surface water.
-- **Near a fire** it also loses the water the fire's flux on its face boils off, at 2.6 MJ/kg (sec. 5). Until fires burn as beds of their own fuel (Units 5 to 9), every fire is taken as a campfire of 10 kW [design] whose radiant share, χr 0.3 (sec. 4), falls off as from a point (sec. 18).
+- **Near a fire** it also loses the water the fire's flux on its face boils off, at 2.6 MJ/kg (sec. 5). The flux is the radiant share, χr 0.3 (sec. 4), of what the fire's bed gives off, flaming and glowing (sec. 28), falling off as from a point (sec. 18). (Until Units 5 to 9, every fire was taken as a campfire of 10 kW [design].)
 - **Against the body**, held by someone who wears anything or carries a bag, it sits in the body's own air, 32 C with the outside air's water plus 0.5 kPa (sec. 18), out of the sun and a fire's reach. Rain still reaches it unless it is in a bag.
 - **Bare skin** is wet as a thin piece a millimetre thick would be [design]: soaked in rain, dry within the hour after. A body loses heat in the cold (sim.ts needs) faster by 1 + 0.3 times how wet what it wears is (m over mmax), or its bare skin, the factor rain alone used to give [design until Unit 9].
 - **The island's dead stuff** lying about (grass, fern, twigs, sticks, fallen logs) holds what the island's weather has left in dead stuff of its thickness: kept hourly, island-wide, at a grass blade's 0.61 mm and the NFDRS class bounds of 6.35, 25.4, 76.2 and 203.2 mm (sec. 5, 22e), in the open (sun, wind at the grass tops, open ground taking 0.6 of the sea's wind) and in the shade, from the land's mean air water and rain for the season. A thing reads the value for its thickness between the two nearest by their logs, shaded by the canopy over it, and nothing is stored on it until someone takes it.
@@ -1174,6 +1174,302 @@ How src/sim/combustion.ts puts the picks above together, written before its test
 - Storm rain slows a log bed a little and a small fire still lights and burns through in it; logs burn faster in the median wind than in still air.
 - Restated after this run: the gale's 5.8 m/s at a log bed's mid-height beats the 4.3 m/s its flames hold to, so it blows them off, while a tinder-and-twigs flame keeps its twigs; and soaked hazel sticks (135%) laid on a small fire do catch, about 90 s in against about 15 s dry, since a small fire's flame outlasts the soaking's (1 + 8.1 m) on the time.
 - The moisture, warming, stepping and not-fuel cases hold.
+
+## 29. Setups: a ring, a cover, blown air, smouldering, and what a fire heats (Unit 6)
+
+Researched for Unit 6 by six readers, one per subsection, and merged here; their sources are keyed R160 to R210. Each table keeps the rows a pick rests on.
+
+### 29a. A ring of stones in the wind
+
+| Quantity | Value | Units | Conditions | Source |
+|---|---|---|---|---|
+| Lee wind 2 to 5 barrier heights behind fences and belts, at most half their height up | 0.25 to 0.5 of the open wind at the same height for porosity 0.35 to 0.5; about 0.25 at 5 heights for solid or dense barriers; a tunnel's solid fence 0.15 to 0.3 | - | Field fences and tree belts, lidar, cups and tunnel hot wire | R160 [read], R161 [read], R162 [read], R163 [sec], R164 [sec], R165 [read], R167 [read] |
+| Line through 14 of those points, from seven sources | s = 0.20 + 0.44 φ, residuals -0.12 to +0.20 | - | φ the barrier's open share below its top, side on | [derived] |
+| Below porosity about 0.3 | a recirculating bubble, reattaching 11 to 15 heights downstream | | | R166 [read], R168 [ex], R171 [sec], R172 [ex] |
+| Above the barrier's top | no shelter, a speed-up over it; flame below a baffle's top stands up, the part above tilts in the full wind; burning still rises with wind behind the baffle | | Full-scale fence; heptane pools behind 2 to 12 cm baffles | R162 [read], R169 [read], R170 [read] |
+
+Findings: a ring's floor lies in the near lee of its upwind wall. Nobody has measured the wind inside a ring of stones, and every shelter measurement has a barrier 160 to 1900 times its ground's roughness, against 3 to 30 for a ring [gap].
+
+**Pick.** What lies below a ring's top takes the wind there times s = 0.20 + 0.44 φ; what stands above it, the full wind.
+
+### 29b. Re-radiation from the stones
+
+| Quantity | Value | Units | Conditions | Source |
+|---|---|---|---|---|
+| A re-radiating surface (insulated behind) | gives back σ T_R^4 with T_R^4 = Σ F_i T_i^4 / Σ F_i over what it sees; its own emissivity drops out, and views to itself cancel | | Grey diffuse enclosure | R173 [read] |
+| Emissivity of rock | 0.88 to 0.95 at 300 K; granite 0.78 at 250 C rising to 0.86 at 600 C (7.5 to 13 um) | - | | R174 [read], R175 [read] |
+| A stone face under a small fire | 400 to 500 C at 0.5 cm after 20 to 30 min | C | Birch fire on chert bedrock | R176 [read] |
+
+Findings: a face seeing half bed and half sky comes to 0.84 of the bed's kelvin warmth, 463 C beside a 600 C bed, almost whatever the sky's warmth; a 10 cm stone's core takes about 2 h (L^2 / α), but its face comes up in 20 to 30 min [derived].
+
+**Pick.** A ring's stone face gives back σ T_R^4 with T_R^4 the mean of what it sees, half bed and half sky.
+
+### 29c. A cover heaped over a fire
+
+| Quantity | Value | Units | Conditions | Source |
+|---|---|---|---|---|
+| Charring | gives off its own heat from 270 to 290 C; without added air stalls near 400 C | C | FAO manuals | R177 [read], R178 [read] |
+| Covered kilns, measured | bulk 250 to 350 C and 807 C only by the air inlets (a brick kiln, 19 thermocouples); 400 to 700 C (earth kilns) | C | | R180 [read], R181 [ex] |
+| Oxygen in a working kiln's exit gas | under 3 to 6% | vol% | | R180 [read] |
+| Wood's flaming limit | about 15% O2 under 30 kW/m2, 13% in hot gas; it smoulders at 4 to 15% | % O2 | Particleboard; candle tests | R185 [read], R184 [read], [derived] |
+| Net charcoal from an earth mound | 0.20 to 0.30 of the dry wood, 0.25 good practice | - | | R177 [read], R179 [ex] |
+| A campfire buried in sand | no smoke after 10 min; 267 C at 10 min, 91 C at 8 h | C | | R183 [read] |
+| Pots fired under a cover | the same 600 to 900 C peaks as a bonfire, held longer | C | 80 firings | R182 [read] |
+
+Findings: a cover starves a bed of air, so its flames die and its wood smoulders and chars. Section 8's pick that a covered kiln runs hotter than a bonfire is wrong: every covered kiln measured runs cooler. Earth sealed tight puts a fire out; stones heaped over leave gaps, a vented cover.
+
+**Pick.** Stones heaped over a fire are a vented cover: nothing under it flames, and what's alight smoulders (29e).
+
+### 29d. Blown air, and glowing char's warmth
+
+| Quantity | Value | Units | Conditions | Source |
+|---|---|---|---|---|
+| Embers' surface against the air at them | 750 C at 1 m/s and 950 C at 4 m/s; 930 C (750 to 1070) at 2.5 m/s; 1050 to 1150 C at 7 m/s | C | Colour pyrometry of wood embers | R190 [ex], R191 [read], R192 [read] |
+| The slope | T goes as u^(1/8) (0.129 and 0.128 in two sets): heat release as u^(1/2), held by radiation | | | [derived] |
+| Hand bellows into a furnace full of charcoal | 348 L/min (310 to 392) through a 2.5 cm tube, about 11.8 m/s | | 85 strokes a minute | R188 [read] |
+| A smith's double bellows | 209 L/min free, 88 to 139 against added resistance | | 2 cm outlet | R187 [read] |
+| A person blowing hard | 12.1 m/s mean 25 mm from the lips | | 31 adults | R189 [read] |
+| A charcoal bed blown by hand bellows | 1123 to 1281 C at its base | C | 40 cm shaft | R186 [read] |
+| Adiabatic ceilings | carbon to CO2 in air 2188 C; in breath 1515 C | C | JANAF | R193 [derived] |
+
+Findings: glowing char is about 600 C in still air (R46) and rises as u^(1/8) to a plateau near 1100 C. The straight line sec. 28 took from R46 runs 105 to 322 C cold at 1 to 2.5 m/s.
+
+**Pick.** Glowing char: T = min(1373 K, 1019.6 (u + 0.29)^(1/8)) K, u the air at it, m/s: 600 C still, 779 C at 1 m/s, 950 C at 4, 1100 C from 10.5. Air blown by hand comes at 11.8 m/s through a 2.5 cm mouth (R188), as hard as breath (R189).
+
+### 29e. Smouldering, and smoke at what hangs over it
+
+| Quantity | Value | Units | Conditions | Source |
+|---|---|---|---|---|
+| Smoulder | peak 500 to 700 C, typically about 500; 6 to 12 kJ given off for each g lost | C, kJ/g | Many fuels | R194 [read] |
+| Smoulder front | 10 to 30 mm/h through loose beds; 0.6 to 2.4 cm/h into logs in the field | | | R194 [read], R195 [ex], R196 [ex] |
+| Char's heat release in a smoulder | of the order of 10 kW/m2 | | Pine and oak channels | R52 [read] |
+| Plume over a fire | ΔT = 0.0853 T_a (χc Q)^(2/3) (z - z0)^(-5/3), z0 = -1.02 D + 0.083 Q^(2/5), χc 0.65 | K, kW, m | Heskestad | R199 [sec] |
+| Meat over a smoking fire | smoke at the meat 20 to 52 C on average, 1.5 m above the fire | C | Sámi lávvu | R198 [read] |
+| Hides | sewn into a sack hung over smouldering wood; a hand held 0.3 m above the smoke must stay comfortable | | Practitioners | R200 [read] |
+| The 350 +/- 20 C smoulder minimum of sec. 8 | is Liang, Lin and Huang's, not Ohlemiller's | | | R197 [ex] |
+
+**Pick.** A smouldering bed is at 500 C; its front eats 1 cm an hour into each piece; it gives off 9 kJ for each g it loses (1 cm an hour into wood of 450 kg/m3 is 11 kW/m2, R52's 10 [derived]). What hangs over it takes Heskestad's plume.
+
+### 29f. What a fire heats
+
+| Quantity | Value | Units | Conditions | Source |
+|---|---|---|---|---|
+| Where items sit | 559 +/- 95 C on and between burning charcoal, 174 C 15 cm above it | C | | R204 [read] |
+| Wet items | stall near 100 C while their water lasts: an earth oven's food zone 96 +/- 2 C; a pig's leg at 99.9 C from 4 to 9 h | C | | R203 [read], R202 [read, blog] |
+| Heating time | a core follows its surface as a first-order lag, τ = c L^2 / (E α): c 0.41 slab, 0.35 cylinder, 0.30 sphere; E 1, 2, 3 | | Diffusion's first eigenvalues | R205 [read], [derived] |
+| Diffusivity | meat 0.12 to 0.16 mm2/s; potato 0.17 | | | R205 [sec], R210 [ex] |
+| Emissivity | brick 0.87 to 0.88, granite 0.81 to 0.87, skin 0.95 to 0.98, raw meat 0.91 | - | | R209 [read], R207 [ex], R208 [ex], R206 [ex] |
+| Pots in a bonfire | 800 to 900 C in 7 to 22 min, gas and body together | C | | R43 [read] |
+| Meat over embers | 3 to 5 cm took 70 to 135 min to 72 C on a grill 18 cm above them; a 3 cm piece nested in coals would take 13 to 17 min | min | | R201 [read], [derived] |
+
+**Pick.** An item in a fire comes toward the warmth where it sits; while it holds water its surface stays at 100 C, and its core lags its surface by τ = c L^2 / (E α).
+
+### 29g. The reading for Unit 6, written before its tests
+
+**The setup is the fire's** (physics.ts placing): stones set round a fire stand round it, and once there are six, or any clay, they're heaped over it as well; these are the act's own counts, kept as they were [design]. A ring stands at the heap's rim, as tall as its tallest stone, its open share φ = 1 - w / (2π R), w the stones' thicknesses (sec. 27c) laid side by side, R the heap's radius as it is [design: the ring is taken to stand at the rim as the heap burns down inside it]. While someone heats things at a fire fanning it with something soft and hollow, air blows in at 11.8 m/s through a 2.5 cm mouth (29d).
+
+**The ring** (combustion.ts):
+- The share of the heap below its top (a half-sphere's volume below that height, sec. 17) takes the wind times s = 0.20 + 0.44 φ, the rest the full wind (29a) [derived].
+- Its stones give back, to the pieces yet to light in the heap's outermost shell, over the outward half of their view and as far as stone fills it below the ring's top, σ (T_R^4 - T_a^4) with T_R^4 the mean of the burning and glowing surfaces' T^4 and the air's (29b, a face seeing half bed) [derived]. Their faces are taken at that warmth at once (R176's 20 to 30 min) [design].
+
+**The cover**:
+- Nothing under it flames, and no wind or rain reaches it (29c).
+- What's alight smoulders: its front eats 1 cm an hour into each piece, wood leaving its char yield (sec. 27a) among the coals, which smoulder the same way (29e).
+- It gives off 9 kJ for each g it loses, and it is at 500 C while anything in it smoulders (29e).
+- Pieces yet to light take what they see as they would in the open; a smoulder's 500 C puts at most 0.5 x 0.95 x σ (773 K)^4 = 9.6 kW/m2 on them, under the 12 kW/m2 anything lights at (sec. 1), so none catch [derived].
+
+**Blown air**:
+- The jet adds its speed to the air at the coals and to the air feeding what flames (sec. 15), but not to the wind that blows flames off, since it enters at the bed's base under them [design].
+- Its oxygen burns coals to CO2 over what Albini's law takes: 348 L/min of air, 23.2% oxygen by mass, burns 0.61 g of char a second, char taken as carbon [derived].
+
+**Glowing char** everywhere is at 29d's warmth for the air at it, replacing sec. 28's straight line.
+
+**Where an item sits**:
+- What people heat they set in the fire [design]; a hide they hang 1.5 m over it, as meat over the lávvu's fire (R198) and hides over smoke (R200) [design].
+- Set in a covered bed it is at 500 C. Set in an open bed it is at the warmest of its coals' warmth, which a thing nested in them sees all round (29f), and the warmth at which a thing in its flame radiates what it takes: ε (ε_f σ T_f^4 + (1 - ε_f) σ T_a^4 - σ T^4) + h (T_f - T) = 0, with ε_f = 1 - exp(-κ L_f) and h the flame's contact flux on a piece its thickness over T_f - T_a (sec. 2) [derived].
+- The coals bury it whole once their heap (sec. 17) is as wide as it is thick, and short of that over the share of its surface their heap's breadth covers, the square of the two, the rest seeing the air [design]: a few coals don't heat what they can't cover.
+- Hung over a fire it is at the air's warmth plus the plume's rise for what the bed gives off (29e).
+- Items' emissivity is 0.9 [derived: the middle of 29f's 0.82 to 0.98].
+
+**How it comes up**:
+- While it holds water its surface stays at 100 C, the net flux there boiling it off at 2.6 MJ/kg (sec. 5); then its surface is where it sits.
+- Its core lags its surface as a round piece heated all round, τ = 0.35 (d/2)^2 / (2α), with α = k / (ρ (c + 4.19 m)) from its record and its water (sec. 23, 27c) [derived].
+- It's held there for the act, 2400 s (sim.ts DURATION), in the bed as it is when they take it out, as they see it (sec. 32) [design].
+
+**What it takes**, its core reaching:
+- Food cooks at 62.8 C (R50); cooked where something smoulders, it's smoked (sec. 24's hot smoking); in a pot, its surface goes no higher than the water's boil.
+- Resin runs at 100 C (sec. 24).
+- Clay fires at 600 C, its dehydroxylation mostly done (R55).
+- Copper glows soft enough to work at red heat, 600 C (R1; R56 anneals it at 375 to 650 C).
+- Ore gives up its copper when copper melts, 1084.62 C (R48).
+- Wood where nothing can flame chars from 280 C (29c) to its char yield (sec. 27a).
+- A hide cures in smoke at 50 C or less (sec. 24), and scorches hung where the plume is warmer.
+- Anything else that burns lights by the flux on it where it sits (sec. 28): its coals' ε σ T^4, its flame's contact and radiation. Lifted out alight it is a brand, or burned away if, burning by itself, it's out within the bed's look, 10 s [design].
+- Hot metal stays soft while the fire it's kept at would hold it at red heat.
+
+Read off before running:
+- Glowing coals are at 600 C in still air, 779 C in 1 m/s and 1100 C with air blown in by hand.
+- The usual lay lit in still air flames 0.15 to 0.3 m tall for about 50 minutes, gathers up to 3.4 kg of coals, and is out by 2 h. Something 5 cm thick set in it sits at its coals' 600 C.
+- Held there 2400 s, raw meat's core passes 62.8 C while its water boils off. Clay's core comes to within 0.01 K of 600 C in still air and to 791 C in 2 m/s, so clay fires in a fire with any breeze on it; ore's comes to 1100 C, past copper's melting, only with air blown in.
+- A lay of fibre and ten twigs flares 0.7 m for its first seconds and is out by 300 s; at 60 s its few coals bring a 5 cm lump only to 382 C.
+- Covered once burning 10 min, the usual lay smoulders for 11 h, its wood for 7 h; the plume 1.5 m over it is 14 K over the air, 122 K over the same bed open, so a hide cures over the one and scorches over the other.
+- Under the cover a 25 mm stick's core comes to 500 C and chars; a 17 cm log's comes to 144 C in the act and doesn't.
+- Lit in still air and then blown on at 8 m/s at head height, the usual lay is out in 18 min, in 21 min with three stones round it, and in 81 min inside a closed ring of 25.
+- Consequences: an open fire's flames and coals fire clay and soften copper, as bonfire pottery firing does (R43, R182); a covered kiln runs cooler than the fire it covers; ore gives up copper only to coals with air blown in, ring or no ring; three stones barely shelter a fire.
+
+## 30. Everything that burns, and spread (Unit 8)
+
+How src/sim/spread.ts and ecology.ts fire() put the picks above together for the world's own things, written before the tests of src/sim/fire.test.ts were run. Where the picks named a quantity without fixing it, the reading is given here with its basis, marked [derived] or [design]; new sources found for this unit are marked with how they were read.
+
+### 30a. What a thing in the world is, as fuel
+
+Every thing that burns is a bed of combustion.ts (sec. 28), laid from its own pieces, each with the water wetness.ts leaves in it. Pieces alike lie as one group; equal thicknesses keep the order they are laid in.
+
+**Trees** (sec. 19, species pine, oak, ash, aspen; a tree of no known species is taken as an oak, as ecology.ts matured() makes one):
+- Trunk: the forest-grown trunk diameter D at the tree's height (19a, as fuel.ts cuts a log), in meter logs, as many as iLand's stem mass at D over one log's mass (19b) [derived]. Its water the mean of sapwood and heartwood (27f).
+- Crown: iLand's branch mass B and foliage mass F at D (19b).
+  - The dead share of the crown (B + F) is dead twigs: pine 0.183 (ponderosa pine, 19b); the broadleaves, which have no value read, the mean of the four conifers read, 0.097 [derived; gap].
+  - Of the live branchwood, the twig share: pine 0.23 of 0.78 (Pinus densiflora's branchwood up to a centimetre against its other branchwood, 19b pick); the broadleaves (P2 - P1)/(1 - P1) by the ponderosa pine fractions at D (19b pick). The rest are branches as fuel.ts cuts a tree's branch (27e), at their sapwood's green water.
+  - Twigs, live and dead, are 3.5 mm thick: the mean brands burning trees shed (3 and 4 mm, R27, sec. 6) are their twigs [derived]. They are reckoned by the meter, which changes nothing in how they burn: a group's surface and volume follow from its mass and thickness alone.
+  - Leaves and needles are fine fuel a blade thick (sec. 22e) [analogue], by the handful. Needles hold pine's 1.2 (sec. 21). Broadleaf leaves and the live twigs of every tree and shrub hold the NFDRS v4 live woody water, 60% rising straight to 200% as the growing season index goes from its green-up threshold 0.2 to 1 (sec. 12, R72; the sec. 21 gap for broadleaf foliage). The broadleaves stand bare while the index is under 0.2 [design: green-up read as leaf-out].
+  - Dead twigs hold the island's dead stuff 3.5 mm thick (27f).
+  - The crown hangs over the top half of the tree: crown ratio 0.5 [derived: forest-grown Scots pines of 10 m or more in BAAD (R98, Albrektson 1984) average 0.51 (n 59, 0.28 to 0.67), 0.47 in stands 70 to 112 years old; forest Japanese oaks 0.55 (Q. serrata, n 8) and 0.43 (Q. crispula, n 5); ash and aspen not found].
+  - In the bed, the live twigs bear the leaves and the dead twigs lie among the branches they died on [design: shells of equal thickness laid leaves, live twigs, dead twigs, branches, trunk].
+- Lightning lights a tree's dead twigs, if they can carry a flame (combustion.ts kindle: fine fuel at 30% or less, sec. 5), and nothing otherwise.
+
+**Grass**: a tussock as wide as its patch and as tall as tall grass, 0.5 m (sec. 14a), holding tall grass's load, 0.675 kg/m2 (Anderson 1982 fuel model 3, R32 [read]: 3.01 t/acre at 2.5 ft depth), of blades 0.61 mm thick (sec. 22e) as long as it is tall. Its living blades hold the island's living grass water, MCHERB; the cured share FCTCUR = clip(1.33 - 0.0111 MCHERB, 0, 1) of it holds the dead stuff's at a blade's thickness (sec. 12 pick).
+- **The island's growing season index** (sec. 12 pick, R72), kept hourly in Weather.gsi from the island's own weather as Weather.dead is: each day's product of the four ramps (the day's lowest air temperature from -2 to 5 C; its largest vapour pressure deficit, esat(T) less the island's vapour, from 4100 Pa down to 900; its daylight, sky.ts daylight, from 10 h to 11 h; the window's rain from 0 to 10 mm), averaged as a running mean over the window of 3.1 days, the rain a running sum over it [derived: the window's mean and sum carried hourly without keeping each day].
+  - It starts from its first hour as though the day had been like it, with the window's rain full at 10 mm, as the island's rain fills it in any window (sec. 12 finding) [design].
+  - It is not divided by the island's highest index, which a world just made has no record of [gap]. On the island's climate the summer index reaches about 0.94 (sec. 12 finding, the VPD ramp), so the division would raise it by about 6%.
+  - MCHERB = 0.30 below the green-up threshold 0.2, rising straight to 2.50 at 1.
+
+**Bushes**: a crown as wide as it is tall, a ball, at a live crown's bulk density, 1.4 kg/m3, the middle of sec. 19b's 0.6 to 2.2 for conifer crowns [analogue], half of it leaves and half its stems ("about twice that of foliage alone", 19b), the stems as fuel.ts cuts a bush's (19c, 27e) at their green water and the leaves at the live woody water. A dead bush is its stems alone, at the dead stuff's water for their thickness.
+
+**Fallen wood**: a fallen log is its length in meter logs of its trunk (27e); a stick lying about one piece (27e); both at the dead stuff's water for their thickness (27f).
+
+**Shelters and piles**: their pieces of wood as they are (27e, 27f); a pile's counted things at the pile's water; a shelter's counted parts at the dead stuff's water for their thickness, as nothing else keeps their water (wetness.ts keeps a shelter's pieces only) [design].
+
+**Left out**: living herbaceous plants (reeds, fern, herbs, flowers) and seedlings hold their green water, more than the 30% fine fuel carries a flame at (sec. 5), so they are laid as nothing; stumps [gap].
+
+**Where they stand**: a tree's trunk from the ground to its top and its crown over its top half; grass up to its 0.5 m; a bush up to its height; a shelter up to half its width [design: a shelter heaped as a half-sphere, sec. 17]; things lying as high as they are thick. Grass, bushes and shelters spread half their width either side of where they stand; anything else is taken at its middle [design].
+
+**A thing burnt out**: it burns as long as its bed is alight; then a tree is a burnt stump, a shelter is burned down, and anything else is ash. Whatever of it never caught goes with it [design; gap: partly burnt things are not kept].
+
+### 30b. What a burning bed gives what is near it
+
+**Looks.** Every bed, a campfire's or a thing's own, is looked at every 10 s, the bed's own step (sec. 28 Time), and is held as it stood at the look's start for what it gives over the look [design].
+
+**The flame.** A column as wide as the burning part, r_b (combustion.ts output base), and L_f long (Heskestad, sec. 4), from the heart of the bed, leaning downwind from upright by Thomas's tilt (sec. 4): cos θ = min(1, 0.7 u*^-0.49), u* = u / (g m'' D / ρa)^(1/3), with u the wind at half the flame's height (sec. 14a), m'' the gas the flames burn over the base, gas / (π r_b^2), D = 2 r_b and ρa 1.2 kg/m3 [derived]. A part of a thing is in the flame where the column comes within r_b of the upright span of the part at the near edge of the thing's footprint, across the wind no further than r_b [derived]. A part in the flame takes the flame's flux on a piece its thickness (combustion.ts inFlame: contact 100 kW/m2 at 0.61 mm falling as d^-1/2, and the flame's radiation, sec. 2).
+
+**Radiation.** A part out of the flame takes the radiant share χr 0.3 of what the bed gives off, flaming and glowing, from a point at the middle of the flame's axis (sec. 7: q = χr Q / (4π R^2)), R to the part's nearest point and no nearer than the heap's edge [derived].
+
+**Heating and cooling.** Each part takes its flux as a lone piece does (combustion.ts expose: less its critical flux, its convection in the wind at the top of what it stands in, short grass for what lies on the ground and the head-height wind for anything as high as a head [design], and the rain). The heat it takes toward lighting is kept on the thing, Thing.absorbed, kJ/m2 by part. With nothing heating it, a part nets less than nothing and the heat goes, never below none; a thing whose parts hold no heat drops the field. Fluxes from several beds add.
+
+**Reach.** A bed heats nothing further off than its flame reaches, r_b + L_f, or than its radiation stays above 11 kW/m2, L_f / 2 + (χr Q / (4π 11))^(1/2): under the least critical flux of anything that burns (sec. 1, 27a) a piece only loses heat [derived]. Its brands land no further than they are carried from the highest a brand is lofted and still lands burning (below). Things are looked for that far and 3 m more, half the widest thing that stands, a hazel near 6 m across [design].
+
+**Brands** (sec. 6):
+- A brand is the mean brand off a burning tree, 3 mm across (R27), as dense as Albini takes brands, 300 kg/m3 (R28 [read]; his D44 burnout height carries it: z_max / D = ρs / (K ρa) = 300 / (0.0064 x 1.2) = 39,000).
+- It falls broadside at v = (π g ρs D / (2 C_D ρa))^(1/2) with C_D 1.2 for a cylinder in cross flow (Albini 1979, R28 [read], eq. F4): 3.1 m/s [derived]. Albini quotes typical brands falling at about 3 m/s (Clements 1977). Measured leaves fall at 1.3 to 2.4 m/s and pine needles at 2.9 to 4.1 (Almeida, Porto and Viegas 2021, doi:10.3389/fmech.2021.651135 [read]).
+- A flaming bed lofts 1000 hot brands for each kg of gas its flames burn: about 10^3 hot brands for each kg of dry mass burning trees lost, ranging 10^2 to 10^4, more the drier the foliage (Adusumilli, Chaplen and Blunck 2021, doi:10.3389/fmech.2021.655593 [read; figure values ex]), taken per kg a flaming bed loses [derived]. Disagreement flagged: those brands were mostly needles and leaves; by mass, 1000 brands of this one's 0.085 g are 8.5% of the fuel, against 3 to 4% (Hajilou and others 2021, doi:10.1007/s10694-021-01119-9 [ex], branches at 4 m/s, which gives about 410 of these brands per kg) and under 1% in still air (Suzuki and Manzello 2022, doi:10.1080/00102202.2022.2112034, as reviewed by Manzello and Suzuki 2023 [read]). Beds of sticks, logs and shelters have no measured rate; the trees' is taken for them [gap].
+- Each brand rises to a height drawn evenly up to 12.2 L_f (R29 gives the top only) [design], is carried downwind by the wind at that height (sec. 14a) for the time it takes to fall, and lands anywhere across the flame's base, 2 r_b [design]. One lofted higher than z_max = 0.39e5 D (117 m) has burnt away before it lands (Albini D44).
+- A thing takes the brands that land on its footprint, a square as wide as it is [design]; how many land is drawn as a Poisson count of the mean, from the world's random stream (plan, Resolved During Planning).
+- A brand falls through the air at 3.1 m/s, faster than the 0.5 to 1 m/s that blows a small brand's flame off (R26, sec. 4), so it lands glowing [derived]. Single glowing brands never lit a needle bed, and four together did (R26), so brands light only where four or more land on one thing within a look [design reading of R26]; then they light its driest fine part, thinner than the 1-hour class's 6.35 mm (sec. 5), with the NFDRS's odds P(I) at its water and its fuel temperature T_a + I / (32.7 + 42.2 U) (sec. 11, the sun on it under any canopy and U the wind at its top) (sec. 6, R30).
+
+**Fires heaped over with stone** (covered) keep their flames, radiation and brands under the stone that stands between [design].
+
+**Lighting.** A part whose heat reaches what lighting needs (combustion.ts expose), or that brands light, is alight, and the thing is a bed from then on: its parts laid, the lit ones burning and the rest holding the heat they had taken. Whoever's fire gave it the most heat (or landed the most brands) is who set it burning.
+
+### 30c. Read off before running the tests
+
+- In still air a burning grass tussock of the island's sizes (0.8 to 2.5 m across, 0.3 to 3.3 kg) chokes at the heap's packing and goes out as it lights; at 2 m/s head-height wind a 0.8 m tussock flares about 15 s at 100 to 230 kW with flames 1.4 to 1.8 m, and at 4.2 m/s a 1.6 m tussock about 20 s at up to 900 kW with flames up to 3.1 m. Grass beds are 50 to 100 times looser than a heap (Anderson's fuel models 1 and 3: packing 0.0011 and 0.0017, R32), which the bed's single packing does not see [gap, Main's to judge].
+- The standard lay of physics.ts fireOf, lit in a wind of 4.2 m/s or more, goes out within a minute; lit in still air and burning two minutes, it holds in 6.9 m/s with flames 0.5 to 0.66 m over a base 0.56 m across, giving 100 to 240 kW. So the windy scenarios light their campfire in still air first.
+- A campfire of fireOf's lay in still air gives 30 to 95 kW flaming: at 2 m its radiation is under 1 kW/m2, and brands in still air fall back on its own base. Grass touching its 0.5 m base takes about 140 kW/m2 of flame.
+- In a 6.9 m/s wind the same campfire's flame leans about 76 degrees and reaches about 1.2 m downwind; brands land up to about 20 m downwind; dry grass 5 m downwind sees about 8 brands a look.
+- A fallen pine log 9 m long (trunk 11 cm) at 50% water, lying within the base of the campfire, takes about 30 kW/m2 and lights on the third tick.
+
+## 31. What fire gives people (Unit 9)
+
+How src/sim/light.ts and sim.ts needs() turn what a bed gives off (sec. 28; physics.ts fireOutput, combustion.ts output) and what a carried flame gives off (physics.ts carriedOutput) into the light, warmth and hurt people get, and how a fire reads to them and to the clients. Written before src/sim/warmth.test.ts and the restated src/sim/light.test.ts were run. Readings the sections above don't fix are marked [derived] or [design], with their basis.
+
+**What a fire throws round it.** Every fire, every world thing alight and every flame someone carries is a source, gathered once a tick.
+- Its radiant heat is a share χr 0.3 of all it gives off, flaming and glowing (sec. 7's pick). The coals' own radiant share isn't cited; they are taken at the flames' χr [gap]. A carried lamp's wick flame is a candle's, whose χr is 0.17 (sec. 7); the pick's 0.3 is used for it too, and either way a lamp's warmth is under half a degree (below).
+- Light and heat both fall off as I / (d^2 + r^2), r the heap's radius (sec. 28's half-sphere) [derived: a uniform disc of radius r seen on its axis, matched far off to sec. 7's point source q = χr Q / (4π d^2); it agrees with the point source within 4% from 2.5 fire-diameters out (d = 5r), where sec. 7 holds the point source good to 5%, and stays finite at the fire].
+- A flame carried is at its holder, and taken as held 0.4 m from what they look at and work by, R122's lamp distance: r = 0.4 m for it [design].
+- Every source counts at every distance; the old cut at 80 m goes [design: the inverse square makes far fires negligible without one].
+- A cover of stone over a fire is opaque: a covered fire throws neither light nor radiant heat on anyone (operator's call, 2026-10-08; Unit 6 may give a covered bed an outer-surface temperature to radiate by).
+
+**Light** (sec. 9).
+- Flames: 0.16 lm for each W of flaming output, the same every way, so the fire's intensity is I = 0.16 x 1000 x flaming kW / 4π cd (sec. 9's own isotropic derivation).
+- Coals: their glowing output times a glowing body's luminous efficacy at the coals' surface temperature T (combustion.ts output's `hot`, which follows the air reaching them), K(T) = 683 lm/W x ∫ V(λ) M(λ, T) dλ / σT^4 over 380 to 780 nm, M Planck's spectral emittance, V the CIE 1924 photopic curve in its Gaussian fit V = 1.019 exp(-285.4 (λ/µm - 0.559)^2) [derived: the fit's K(T) is within 6% of the tabled curve's (10 nm steps) from 600 to 1430 C; K is 8.1e-6 lm/W at 600 C, 1.4e-4 at 727 C, 8.8e-4 at 830 C and 0.12 at 1277 C]. All the glowing heat is taken as radiation at T, an upper bound, since some leaves the coals by convection [derived]. So coals glow dimly: 50 kW of coals at 700 C is about 0.3 cd, a third of a lux at a metre.
+- A lamp or a brand: its flaming output (carriedOutput: a lamp's wick burns 8 g/h at the fat's flame heat, about 80 W, sec. 22b) at 0.16 lm/W; a brand's glowing share, if any, is too dim to count [design]. A lamp is then 1.0 cd, against the 0.59 cd R122 measured for a marrow-and-resin lamp, within a factor of two. Its holder gets 6.4 lux (brightness 0.47, above DARK's 0.3).
+- Checks [derived], the standard lay (physics.ts fireOf: fibre, ten twigs, five sticks, two logs) in a 2 m/s wind: 96 kW flaming at 5 min, 1230 cd, 280 lux at 2 m, 0.12 lux at 100 m (dark: DARK's brightness 0.3 is 0.63 lux); at 30 min 36 kW, 460 cd; once only coals glow (55 min on, 56 kW at 665 C), 0.2 cd, 0.04 lux at 2 m.
+
+**Warmth** (sec. 18's pick).
+- The fires round someone raise their operative temperature by Δt_o = f_p q / (h_r + h_c): q the radiant flux on them above, f_p 0.35 (standing; facing the fire or not, 0.35 and 0.347 at low altitude), h_r 6 W/m2K, h_c = max(3.4, 10.4 V^0.56) W/m2K with V the head-height wind where they stand (air.ts; none inside walls) [derived: the still-air and moving-air forms meet at 0.14 m/s], absorptivity ratio 1 [gap]. People are taken as standing; seated (f_p 0.29) would give 17% less [design].
+- The rise adds to the temperature both terms of needs() read: the cold term's wind chill, max(0, 12 - (feels + Δt_o)) / 110, and the mild term's air, max(0, temp + Δt_o - 12) / 60 [design: Δt_o is a rise in the temperature the body exchanges heat with, which both terms stand for]. A fire close enough cancels the cold and then warms people back up. The flat +0.9 and +1.1 of a fire, warm_up's flat +0.6 and a lamp's flat +0.25 go. Shelter, huddling and the sun keep their own terms.
+- Warming up ends when where they are doesn't warm them: warm_up's step gives up ("the warmth was gone") once a tick there would leave their warmth no higher [design: without the flat +0.6, someone could otherwise sit for ever by coals that no longer warm them].
+- Checks [derived], the standard lay at 5 min (150 kW in all): q 1.39 kW/m2 at 1.5 m, 0.83 at 2 m (where people stand to tend a fire, world.ts reachOf), 0.38 at 3 m; Δt_o at 2 m is 23.5 K in still air (115 kW then) and 13.6 K in a 2 m/s wind; at 3 m and 6 m the flux stands 3.9 to 1, the inverse square within 3%. A lamp in hand: 12 W/m2, 0.4 K.
+- So in 5 C air with a 2 m/s wind, someone 2 m from the standard lay at its height gains (5 + 13.6 - 12) / 60 = 0.11 a tick, against the old flat 1.5 a tick by a fire while warming up; below about -2 C air in that wind, the same fire at 2 m only slows their loss. Recorded as the measured consequence of the needs() rates, not adjusted.
+
+**Hurt** (sec. 7).
+- Past the tenability limit, 2.5 kW/m2, radiant heat burns by Purser's dose, q^(4/3) for each minute; below it nothing, as bare skin bears it more than 5 min.
+- Over a tick (5 min) someone who can move takes the dose until it pains them, the pain dose 1.33 (kW/m2)^(4/3) min, and steps back; someone who can't (collapsed, a.down) takes the whole tick's [design: the tick is longer than any pain time past 2.5 kW/m2, 30 s at 2.5 and 18 s at 3].
+- Health lost is 100 x dose / 16.67, the third-degree dose [design: health has no cited scale; a dose that burns through the skin of the side turned to the fire is taken to drop someone]. So anyone awake standing past 2.5 kW/m2 loses 8 of their health a tick and flees, and someone collapsed at 3 kW/m2 loses all of it.
+- Check [derived]: the standard lay puts 2.5 kW/m2 about 0.9 to 1.05 m from its centre at its height in a 2 m/s wind, so someone who lit it at arm's length (0.8 m, physics.ts beside) is hurt once and steps back; people tending it at 2 m aren't.
+
+**Flee.** Someone flees where the radiant flux on them reaches 2.5 kW/m2, the turn of the hurt formula (plan, "Condition cuts"), stepping away from the source throwing the most on them until it is under that. The old 8 m and 10 m from anything burning go.
+
+**Hours left and the fire's size, in words** (brain.ts view). Hours from physics.ts fireHours, sec. 28's projection of what burns now: "wood enough for about N hours" from an hour up, to the hour; under an hour "about N minutes", to five minutes; under five minutes "almost out". The fire's size is its flame's height to the tenth of a metre, or "burned down to glowing coals" when nothing flames (the coals cut) [design: words].
+
+**Tending** (sim.ts goal choice). A fire close by is one to tend when, at night, its projected hours fall short of the hours to dawn, or, by day, once its flames are gone and only its coals glow (the coals cut; kindling laid on coals still catches, sec. 28) [design: replaces the flat four hours, which an hp fire's hours were judged by]. Laying by wood before night (night within four hours, fewer than three of the wood they have fed fires with in hand, as before) also asks that the fire's projected hours fall short of the hours from now to dawn.
+
+**The inspector and the clients.** A fire's inspector rows: its output, flaming and glowing, kW; its flame's height; hours left; its setup (physics.ts fireKind: fire, hearth, kiln, forge); what's laid in it, by thickness, lit or not; its coals, kg. Clients get every burning thing's bed as `blaze: { kw, glow, flame, r, hot }` (flaming kW, glowing kW, flame height m, heap radius m, coals' temperature K; src/sim/inspect.ts thingView), never the bed itself, and draw flame size and tint from it.
+
+## 32. Lighting, feeding and the conditions people notice (Unit 7)
+
+How physics.ts and sim.ts light, feed and carry fire on the bed of section 28 (combustion.ts), and where the conditions people notice about it are cut. Written before Unit 7's tests were run. Every number below is computed by the code from combustion.ts's own formulas with the picks already in this document; nothing here is a new constant except the readings marked [design].
+
+**The reference air.** Every cut below is computed in the air the Unit 5 ladder uses: 10 C, the island's median (sec. 25), no wind and no rain, over the short grass most ground grows (veg 0.1 m, sec. 14a) [derived].
+
+**The usual lay.** fireOf's lay: a handful of fibre at 6% (tinder kept against the body, sec. 18), ten half-metre twigs off the ground (4.1 mm, sec. 27e), five 25 mm sticks and two 17 cm logs at 12% (wood kept in) [derived: the contract's standard fire]. It is the reference fire for thick fuel and the breeze.
+
+**Lighting carries its lay** (plan, Key Technical Decisions).
+- A strike's items are its lay: the tinder (the first tinder kind in it, else its first item) and whatever is laid with it, each kind listed as many times as laid. A rub's items are the two rubbed, then its lay. Belief keys list them so: `strike|fiber+stick+stick+stone|stone|stone|-|-`, `rub|stick+stick+fiber+stick+stick|-|-|-|-` (the two rubbed sorted, then the lay sorted).
+- A spark catches by sparkCatches on the tinder's own water (10%, sec. 10) and the gale (8 m/s, gap), an ember by emberCatches (13%), unchanged. Then combustion.lighting decides from the pieces held (stackPhys and moistureOf of each), in bedAir where the fire will stand, 0.8 m in front of them.
+- A lighting that lasts takes the whole lay from their hands and is a fire (newFire). One that doesn't is a spent flare: the tinder (every piece of the tinder's kind laid) is used up and the rest stays in hand [design]. Neither text names a cause.
+- A rub with no tinder in its lay blows its ember into what lies about their feet (wetness.ts tinderOf), laid as one handful of fine blades with fibre's record (0.61 mm, sec. 22e) at the water tinderOf gives [design: the ground's blades are fine fuel; a dead bush's twigs are taken as blades too].
+- The two sticks rubbed are no longer burnt in the fire: the lay carries the fuel.
+- Pieces alike (same kind, size and water) are laid as one group, as combustion.ts expects [derived].
+- Consequence of section 28's lasting rule: a lay with logs in it never lasts (two 17 cm logs on tinder, twigs and sticks don't burn through), so fires are lit with kindling and fed fuel. Fibre with ten twigs lasts; fibre with three 25 mm sticks doesn't; fibre with five 1 m ground sticks (8.1 mm) does, with five 2 m ones (16.3 mm) doesn't.
+
+**A carried flame set into a lay** (placing's light branch, no burning fire within reach).
+- A brand is its piece burning (sec. 27e); its Stack's hp is the share of the piece's mass left. It is set lit at the lay's heart (combustion.lighting with `by`), and is laid with it.
+- A lit lamp keeps its flame. Its flame is the candle's, 42 mm (R10, sec. 14b), a lamp burning at the candle's heat (sec. 22b's check: 8 g/h of tallow is 80 W against the candle's 77 W) [derived]. It is held to the finest piece of the lay for the place act's length, 900 s: that piece catches if combustion.lightsIn under inFlame(d, 0.042 m) is no longer [derived]. Then the lay is lit as an ember would light it (combustion.lighting). Read off: fibre catches in 0.4 s (103 kW/m2), a twig in 9 s (42), a 25 mm stick in 219 s (19); a 17 cm log never (9.5 kW/m2, under LEAST).
+- Lasting, flare and texts as for a spark; a lamp's flame that catches nothing uses nothing.
+
+**Carried flames burn down** (physics.ts carry, once a tick at the top of an agent's tick).
+- A brand burns as its one piece alone (combustion.advance of a one-piece lit bed) for a tick, 300 s, in the air where it's carried: the air at the person, out of the rain and wind under a roof (wetness.ts sheltered, air.ts sheltered air), over short grass, held 1 m up (combustion.ts Air.held) [design: a brand carried at the hand]. Out of flame, it is the piece it was, burnt down to what's left (thickness times the square root of the share left, mass times the share, length kept, sec. 27e), or nothing once burnt through. Read off: an 18 mm hazel brand a metre long flames 330 s in still air, 280 s at 1 m/s, so it is still alight after one tick and gone after two; at 6 m/s its flame blows off at once.
+- A lit lamp burns its fat at a wick's 8 g/h (sec. 22b); its fat is the share of the lamp that burns (fuel.ts mix), and its hp the share of that left. With none left it is the hollow it was filled in.
+- What a carried flame gives off (carriedOutput): a lamp 8 g/h at the fat's 36 MJ/kg flame heat, 0.08 kW, flame 42 mm; a brand what its bed gives (combustion.output).
+
+**Feeding** (placing's feed branch: a burning fire within reach, everything placed burns, or is a lit lamp, which keeps its flame).
+- combustion.feeding on the fire's bed, the pieces placed (a brand as far as it has burnt down) and bedAir at the fire, after = DURATION.place in seconds (3 ticks, 900 s). It comes off when the pieces light and the fire still burns at the end [design: "keeps it going" needs both]. The pieces are laid on the bed (combustion.feed) when the act is done, whether or not they catch.
+
+**Choosing pieces** (as doAct's plant fits chooses a spot). Of the things they hold, they lay for each kind named the first they hold, or failing that the thinnest first (then the driest), or the driest first (then the thinnest) [design: the two things about a piece anyone can see], whichever first lays nothing any theory of theirs about pieces holds of (one they're out to test aside: then the first it does hold of), or failing that the first. The two sticks of a rub are the first held; the lay is chosen from the rest.
+
+**What anyone sees of a fire act.** For a feed or heating, the bed of the fire as it will be when the act is done (combustion.advance by DURATION in seconds: 900 s for a place, 2400 s for heating); at the act's end, as it is. The conditions seen as the pieces are laid (or as the heating is done) are the ones a try is judged in.
+
+**Conditions people notice, cut where their formulas turn** (plan, Resolved During Planning, "Condition cuts"):
+- **Thick fuel** (`thick`; striking, rubbing, placing): a piece laid that, with the usual lay's handful of fibre and ten twigs and nothing else, at the usual lay's 12%, in the reference air, loses none of its mass before their flame is spent (combustion.advance until out) [derived: the plan's "stops lighting before a tinder-and-twig flame is spent", by U5's own lighting]. Worked out once for each size of piece. Read off for round pieces: generic wood 25.6 mm at 0.5 m long, 27.3 mm at 1 m, 29.7 mm at 2 m, 31.5 mm at 3 m; pine 27.7 mm at 1 m; oak and hazel 52.4 mm at 1 m (hardwood lights at 305 C, softwood at 350 C, sec. 27a). So the generic 25 mm stick, ground sticks, twigs and a 2 m hazel's 16.8 mm stems aren't thick, and a 17 cm log is.
+- **Small fire** (`small`; placing, heating): the radiation a 17 cm generic log laid on the bed would take where the flame reaches it, the flame's and what it sees of the burning and glowing surfaces (combustion.radiation), falls below 12 kW/m2 (combustion.LEAST, sec. 1) [derived: the plan's cut]. From the flame alone, that is a flame under 0.148 m.
+- **Coals** (`coals`; placing, heating): the bed is alight and nothing in it flames (combustion.output, flaming 0).
+- **Breezy** (`breezy`; striking, rubbing, placing, heating; without an act, always): the wind at head height at the fire (or where they stand) is over 3.91 m/s. Derivation: the usual lay, kindled and followed second by second in the reference air, falls below 12 kW/m2 to a log 3585 s in (0.33 kW flaming, flame 0.117 m, heap radius 0.37 m); the least head-height wind over short grass whose wind at the heap's mid-height blows its flames off (combustion.output flaming 0) is 3.91 m/s, 1.75 m/s at the bed [derived]. The same reading for other beds as they cross the boundary: Unit 5's small fire (fibre, ten twigs, five hazel sticks) at 303 s, 9.60 m/s at head height (1.95 at the bed); fibre and ten twigs at 34 s, 13.8 m/s (2.81); three oak logs on that small fire at 4908 s, 5.12 m/s (1.74). At the bed the blow-off at the boundary is 1.7 to 2.8 m/s for all of them; the head-height cut depends on how tall the heap is, and the usual lay is the reference [design]. 3.91 m/s lies under the 8 m/s gale, so the gale lies inside breezy, and like for like (beliefs.ts apart) sets one aside from the other.
+- **Wet kindling** (`sodden`; striking, rubbing, placing): a piece laid that isn't tinder and that combustion.drowned holds of: of the 1-h class as laid (under 6.35 mm) and wetter than 0.30, fine fuel's moisture of extinction (sec. 5). The tinder's water is read by damp and soaked, so a lay whose tinder is soaked reports soaked, not wet kindling.
+- **Damp and soaked** (`damp`, `soaked`; striking, rubbing): the lay's tinder holds more than 10% or 13% (sec. 10, the catching limits); for a rub with no tinder laid, what lies about their feet; without an act, the driest tinder they hold (or what lies about), which is what they'd choose. Soaked lies inside damp.
+- Moisture of thick pieces only lengthens their lighting and is judged through thick fuel and small fire (plan).
+- Theories that name thick, wet kindling, damp or soaked are about the pieces: people choose pieces by them (above) rather than give up the act, unless no pieces they hold escape them.
+
+**Learning from fires.** Whoever lights a fire from a lay sees the wood laid with the tinder catch and burn, and knows that kind feeds a fire. A fire that goes out with no wood left unburnt in its bed has burned down for want of wood (onFireOut); one that went out with wood lying in it that never caught hasn't.
 
 ## Recommended R2 constant set (with section refs)
 
@@ -1338,7 +1634,7 @@ How src/sim/combustion.ts puts the picks above together, written before its test
 - R40 Modak (1977) via NUREG-1805 ch. 5 / PDH M312. https://pdhonline.com/courses/m312/Radiant%20Flux.pdf
 - R41 Radiant, convective and heat release characterization of vegetation fire (2013), Int J Therm Sci. https://www.sciencedirect.com/science/article/abs/pii/S1290072913000550
 - R42 Bennett J.L. (1999), J Archaeol Sci 26:1-8 (via The Effects of Fire on Archaeological Soils and Sediments). https://www.researchgate.net/publication/276372040
-- R43 Gosselain O.P. (1992), Bonfire of the enquiries, J Archaeol Sci 19:243-259. https://os.pennds.org/archaeobib_filestore/pdf_articles/ANTH501/1992_Gosselain.pdf ; Temperature evolution inside a pot during experimental surface (bonfire) firing, https://www.sciencedirect.com/science/article/abs/pii/S016913171000308X
+- R43 Gosselain O.P. (1992), Bonfire of the enquiries, J Archaeol Sci 19:243-259. https://os.pennds.org/archaeobib_filestore/pdf_articles/ANTH501/1992_Gosselain.pdf ; Maggetti M., Neururer C., Ramseyer D. (2011, online October 2010), Temperature evolution inside a pot during experimental surface (bonfire) firing, Applied Clay Science 53(3):500-508, doi:10.1016/j.clay.2010.09.013, https://folia.unifr.ch/documents/301729/files/mag_tei.pdf
 - R44 Timberlake S. (2007), The use of experimental archaeology/archaeometallurgy for understanding and reconstructing early Bronze Age mining and smelting, in Metals and Mines (La Niece, Hook, Craddock eds.) 27-36. https://www.researchgate.net/publication/283996810 ; Mitt. Österr. Miner. Ges. 156 (2010), https://www.uibk.ac.at/media/filer_public/9e/09/9e0963b8-3c5e-49b7-9ff5-3adfbe266cf7/156_115-128.pdf
 - R45 Historical Metallurgy Society Datasheet 301. https://historicalmetallurgy.org/media/l5dh3df0/hmsdatasheet301.pdf ; By the hand of the smelter (2022), doi:10.1007/s12520-022-01516-3
 - R46 Zhang Z., Ding P., Wang S., Huang X. (2023), Smouldering-to-flaming transition on wood induced by glowing char cracks and cross wind, Fuel 352:129091. https://www.sciencedirect.com/science/article/abs/pii/S0016236123017052
@@ -1454,3 +1750,54 @@ How src/sim/combustion.ts puts the picks above together, written before its test
 - R157 Factors affecting thermal stability of collagen from the aspects of extraction, processing and modification, Journal of Leather Science and Engineering (2020), doi:10.1186/s42825-020-00033-0 (excerpt).
 - R158 US patent 8481169 (Leather; glutaraldehyde shrinkage temperature); US patent 9938592B1 (Liquid smoke tanning method); Lost Dutchman Leather, The chemistry of tanning (excerpts).
 - R159 AIC Conservation Wiki, Leather and skin. https://conservation-wiki.com/wiki/Leather_and_Skin (excerpt).
+- R160 Brandle J.R., Zhou X., Hodges L. (2002), How windbreaks work, University of Nebraska-Lincoln Extension EC02-1763. https://www.env.nm.gov/wp-content/uploads/sites/2/2017/02/How_windbreaks_work.pdf
+- R161 Skidmore E.L., Hagen L.J. (1977), Reducing wind erosion with barriers, Transactions of the ASAE 20(5):911-915, doi:10.13031/2013.35674. https://www.ars.usda.gov/ARSUserFiles/30200525/1599-A%20Reducing%20wind%20erosion%20with%20barriers.pdf
+- R162 Peña A., Bechmann A., Conti D., Angelou N. (2016), The fence experiment: full-scale lidar-based shelter observations, Wind Energy Science 1:101-114, doi:10.5194/wes-1-101-2016.
+- R163 Wilson J.D. (2004), Oblique, stratified winds about a shelter fence. Part I: Measurements, Journal of Applied Meteorology 43:1149-1167 (values as quoted in R162).
+- R164 Seginer I. (1975), Atmospheric-stability effect on windbreak shelter and drag, Boundary-Layer Meteorology 8:383-400 (values as quoted in R162).
+- R165 Santiago J.L., Martín F., Cuerva A., Bezdenejnykh N., Sanz-Andrés A. (2007), Experimental and numerical study of wind flow behind windbreaks, Atmospheric Environment 41:6406-6420, doi:10.1016/j.atmosenv.2007.01.014. https://oa.upm.es/39706/1/ASA52_2.pdf
+- R166 Liu B., Qu J., Zhang W., Tan L., Gao Y. (2014), Numerical evaluation of the scale problem on the wind flow of a windbreak, Scientific Reports 4:6619, doi:10.1038/srep06619.
+- R167 Řeháček D., Khel T., Kučera J., Vopravil J., Petera M. (2017), Effect of windbreaks on wind speed reduction and soil protection against wind erosion, Soil and Water Research 12(2):128-135, doi:10.17221/45/2016-SWR.
+- R168 Baek S.J., Lee S.J. (1999), Velocity field measurement of flow around a surface-mounted vertical fence using the two-frame PTV system, Trans. KSME B 23(10):1340-1346 (abstract). https://www.osti.gov/etdeweb/biblio/20119549
+- R169 Yu Z., Huang X. (2023), Study of baffle height and wind velocity effect on the characteristics of pool fires in a wind tunnel, Applied Sciences 13(3):1920, doi:10.3390/app13031920.
+- R170 Huang X., Yu Z., Zhan Z. (2024), An experimental study of pool fire characteristics under the effects of cross winds and baffles, Fire 7(1):4, doi:10.3390/fire7010004.
+- R171 Perera M.D.A.E.S. (1981), Shelter behind two-dimensional solid and porous fences, J Wind Eng Ind Aerodyn 8:93-104, doi:10.1016/0167-6105(81)90010-6 (as given in R162 and R165).
+- R172 Dong Z., Luo W., Qian G., Wang H. (2007), A wind tunnel simulation of the mean velocity fields behind upright porous fences, Agricultural and Forest Meteorology 146:82-93, doi:10.1016/j.agrformet.2007.05.009 (excerpt).
+- R173 Incropera F.P., DeWitt D.P., Bergman T.L., Lavine A.S., Fundamentals of Heat and Mass Transfer, 6th ed., Wiley, ch. 13 (Eqs 13.17, 13.25, 13.26; Examples 13.6, 13.7). http://ndl.ethernet.edu.et/bitstream/123456789/87833/27/Radiation%20Heattransfe.pdf
+- R174 The same book, Appendix A, Tables A.3, A.11 and A.12.
+- R175 Hoser D., Wallimann R., Rudolf von Rohr P. (2016), Uncertainty analysis for emissivity measurement at elevated temperatures with an infrared camera, International Journal of Thermophysics 37:14, doi:10.1007/s10765-015-2022-0.
+- R176 Storemyr P. (2013), Burning rock! Experiments with fire setting at the Stone Age Melsvik chert quarries in Northern Norway (blog). https://per-storemyr.net/2013/08/28/burning-rock-experiments-with-fire-setting-at-the-stone-age-melsvik-chert-quarries-in-northern-norway/
+- R177 FAO (1987), Simple technologies for charcoal making, FAO Forestry Paper 41. https://www.fao.org/4/x5328e/x5328e00.htm
+- R178 FAO (1985), Industrial charcoal making, FAO Forestry Paper 63, ch. 2. https://www.fao.org/4/x5555e/x5555e03.htm
+- R179 Schenkel Y., Bertaux P., Vanwijnbserghe S., Carre J. (1998), An evaluation of the mound kiln carbonization technique, Biomass and Bioenergy 14(5-6):505-516, doi:10.1016/S0961-9534(97)10033-2 (excerpt).
+- R180 Charvet F., Matos A., Figueiredo da Silva J., Tarelho L., Leite M., Neves D. (2022), Charcoal production in Portugal: operating conditions and performance of a traditional brick kiln, Energies 15(13):4775, doi:10.3390/en15134775.
+- R181 Tintner J. and others (2020), Pyrolysis profile of a rectangular kiln, J Anal Appl Pyrolysis 146:104757; Pyrolysis profiles of a traditional circular kiln in Austria and a drum kiln in Namibia, J Anal Appl Pyrolysis 150:104865 (excerpts).
+- R182 Livingstone Smith A. (2001), Bonfire II: the return of pottery firing temperatures, J Archaeol Sci 28(9):991-1003, doi:10.1006/jasc.2001.0713.
+- R183 Fraser J.F., Choo K.L., Sutch D., Kimble R.M. (2003), The morning after the night before: campfires revisited, Med J Aust 178(1):30, doi:10.5694/j.1326-5377.2003.tb05037.x.
+- R184 White R.H. (1979), Oxygen index evaluation of fire-retardant-treated wood, Wood Science 12(2):113-121. https://research.fs.usda.gov/download/treesearch/8900.pdf
+- R185 Richter F., Jervis F.X., Huang X., Rein G. (2021), Effect of oxygen on the burning rate of wood, Combust Flame 234:111591, doi:10.1016/j.combustflame.2021.111591.
+- R186 Marks Y.A. and others (2020), Smelting conditions and smelting products: experimental insights into the development of iron bloomery furnaces, EXARC Journal 2020/2. https://exarc.net/issue-2020-2/ea/development-bloomery-furnaces
+- R187 Markewitz D., Peterson N. (2007), Revised air delivery test: Norse double chamber bellows. https://www.warehamforge.ca/ironsmelting/bellowstest.html
+- R188 Markewitz D. (2012), Air flow rates, Wareham Forge. https://www.warehamforge.ca/ironsmelting/flowrates.html
+- R189 Geoghegan P.H., Laffra A.M., Hoogendorp N.K., Taylor M.C., Jermy M.C. (2017), Experimental measurement of breath exit velocity and expirated bloodstain patterns, Int J Legal Med 131(5):1193-1201, doi:10.1007/s00414-017-1545-2.
+- R190 Urban J.L., Vicariotto M., Dunn-Rankin D., Fernandez-Pello A.C. (2019), Temperature measurement of glowing embers with color pyrometry, Fire Technology 55:1013-1026, doi:10.1007/s10694-018-0810-3 (abstract).
+- R191 Kim D.K., Sunderland P.B. (2019), Fire ember pyrometry using a color camera, Fire Safety J 106:88-93, doi:10.1016/j.firesaf.2019.04.006.
+- R192 Kim D.K. (2019), Imaging pyrometry of smoldering wood embers, PhD thesis, University of Maryland, doi:10.13016/agcp-vrg6.
+- R193 Chase M.W. Jr. (1998), NIST-JANAF Thermochemical Tables, 4th ed., via the NIST WebBook.
+- R194 Rein G. (2009), Smouldering combustion phenomena in science and technology, International Review of Chemical Engineering 1:3-18. https://era.ed.ac.uk/bitstream/handle/1842/2678/Rein_SmoulderingReview_IRECHE09.pdf
+- R195 Rabelo E.R.C. and others (2004), Log smoldering after an Amazonian deforestation fire, Atmospheric Environment 38(2):203-211 (abstract).
+- R196 Carvalho E.R., Veras C.A.G., Carvalho J.A. Jr. (2002), Experimental investigation of smouldering in biomass, Biomass and Bioenergy 22:283-294 (abstract, and as quoted in R195).
+- R197 Liang Z., Lin S., Huang X. (2023), Smoldering ignition and emission dynamics of wood under low irradiation, Fire and Materials, doi:10.1002/fam.3107 (abstract).
+- R198 Krarup Hansen K., Turi I., Sundset M.A., Mathiesen S.D. (2022), Bridging traditional and scientific knowledge on reindeer meat smoking: a pilot study, Int J Circumpolar Health 81(1):2073056, doi:10.1080/22423982.2022.2073056.
+- R199 US NRC (about 2006), Verification of NUREG-1805 by hand calculations, ML062020082, reproducing Heskestad G., Fire plumes, SFPE Handbook 2nd ed. (1995). https://www.nrc.gov/docs/ML0620/ML062020082.pdf
+- R200 Richards M., Smokin' hides!, Traditional Tanners (braintan.com). https://braintan.com/gallery/smoking/smoking.html
+- R201 Conchione C., Socal S., Barp L., Moret S. (2025), Evaluation of polycyclic aromatic hydrocarbons in pork meat cooked with two different methods, Molecules 30(9):1886, doi:10.3390/molecules30091886.
+- R202 Singleton D. (2022), Kalua pork, cooked in an imu (blog, not peer reviewed). https://blog.singleton.io/posts/2022-05-29-kalua-pork-cooked-in-an-imu/
+- R203 Campanelli M., Muir J., Mora A., Clarke D.R., Griffin D. (2018), Re-creating an Aboriginal earth oven with clayey heating elements, EXARC Journal 2018/2. https://exarc.net/ark:/88735/10352
+- R204 Müller P. and others (2017), Prehistoric cooking versus accurate palaeotemperature records in shell midden constituents, Scientific Reports 7:3555, doi:10.1038/s41598-017-03715-8.
+- R205 Baldwin D.E. (2019 manuscript), Heat transfer in meat, for the CRC Handbook of Molecular Gastronomy. https://douglasbaldwin.com/media/Heat_Transfer_in_Meat_for_CRC%20Handbook.pdf
+- R206 Ibarra J.G., Tao Y., Cardarelli A.J., Shultz J. (2000), Cooked and raw chicken meat: emissivity in the mid-infrared region, Applied Engineering in Agriculture 16(2):143-148 (excerpt).
+- R207 Sørensen D.D., Clausen S., Mercer J.B., Pedersen L.J. (2014), Determining the emissivity of pig skin for accurate infrared thermography, Computers and Electronics in Agriculture 109:52-58 (abstract).
+- R208 Steketee J. (1973), Spectral emissivity of skin and pericardium, Physics in Medicine and Biology 18(5):686-694 (excerpt).
+- R209 Barreira E., Almeida R.M.S.F., Simões M.L. (2021), Emissivity of building materials for infrared measurements, Sensors 21(6):1961, doi:10.3390/s21061961.
+- R210 Rao M.A., Barnard J., Kenny J.F. (1975), Thermal conductivity and thermal diffusivity of process variety squash and white potatoes, Transactions of the ASAE 18(6):1188-1192 (abstract).

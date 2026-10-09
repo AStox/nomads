@@ -1,6 +1,6 @@
 import {
   T, buildBase, readTerrain, isoView, eachTile, drawTile, drawSlab, drawMarks, drawThing, drawFire, drawFlames, drawSmoke, drawToken, drawLabel,
-  drawThinking, drawSleep, drawAnimal, drawTrapped, drawIce, drawPaths, drawRain, drawSnow, drawBolt, thingSpot, hash, flameColors,
+  drawThinking, drawSleep, drawAnimal, drawTrapped, drawIce, drawPaths, drawRain, drawSnow, drawBolt, thingSpot, hash, flameRgb,
 } from "./art.js";
 
 const $ = (s) => document.querySelector(s);
@@ -61,7 +61,8 @@ const SICK = `<span class="sick" role="img" aria-label="Sick" title="Sick"><svg 
 
 // ---------- world things ----------
 const isHome = (th) => th.kind === "structure" && !!th.owner && (th.shelter?.tier ?? 0) >= 1;
-const isHot = (th) => th.kind === "fire" || th.burning > 0;
+// drawn live every frame: fires, lit or out, and anything alight (its blaze, inspect.ts Blaze)
+const isHot = (th) => th.kind === "fire" || !!th.blaze;
 const TIER = ["pile", "lean-to", "hut", "cabin"], TENT = ["pile", "lean-to", "tent", "lodge"];
 const STYLE_WORD = { sticks: "stick", reeds: "reed", logs: "log", planks: "plank", stone: "stone", brick: "brick", hide: "hide", clay: "clay" };
 const shelterName = (sh) => [STYLE_WORD[sh?.style], (sh?.style === "hide" ? TENT : TIER)[sh?.tier ?? 1] ?? "shelter"].filter(Boolean).join(" ");
@@ -331,7 +332,8 @@ function drawCamps() {
   }
 }
 
-// [width, height, base offset] in tiles for flames on things that catch fire.
+// [width, height, base offset] in tiles for flames on things that catch fire: the glyph's, which a flame as tall as the
+// thing's own meters would fill.
 const FLAME = { tree: [0.55, 1.15, 0.1], bush: [0.5, 0.6, 0.15], dead_bush: [0.5, 0.55, 0.15], reeds: [0.45, 0.55, 0.15], sapling: [0.3, 0.45, 0.15], structure: [0.9, 0.9, 0.2] };
 function ringFor(th) {
   if (!th.contained) return "loose";
@@ -343,33 +345,36 @@ function ringFor(th) {
       }
   return "stone";
 }
-const firePower = (th) => Math.max(0, Math.min(1, typeof th.burning === "number" ? th.burning : th.maxHp ? th.hp / th.maxHp : 1));
+// A blaze's halo grows with the root of its whole output against a KW kW campfire's.
+const KW = 100;
 function drawHot(now, night) {
   for (const id of S.hot) {
     const th = S.things.get(id);
     if (!th) continue;
-    const fire = th.kind === "fire";
+    const fire = th.kind === "fire", b = th.blaze;
     const [fx, fy] = toScreen(...(fire ? [th.x + 0.5, th.y + 0.5] : thingSpot(th)));
     if (fx < -200 || fy < -200 || fx > cw + 200 || fy > ch + 200) continue;
-    const k = fire ? firePower(th) : Math.min(1, th.burning), seed = hash(th.x, th.y);
-    const heat = fire ? th.heat ?? 1 : 1, coal = fire && th.contained && th.charcoal > 0;
-    const glow = ctx.createRadialGradient(fx, fy, 0, fx, fy, cam.s * (2 + k * (fire ? 1 : 2) + night * 2 + (heat - 1) * 1.2));
-    const flick = 0.85 + Math.sin(now / 90 + th.x) * 0.08;
-    const [gr, gg, gb] = flameColors(heat)[1].match(/\d+/g).map(Number);
-    glow.addColorStop(0, `rgba(${gr}, ${gg}, ${gb}, ${Math.min(1, (0.25 + night * 0.4) * flick * (fire ? 0.6 + 0.4 * k : 0.5 + 0.7 * k) * (coal ? 1.4 : 1))})`);
-    glow.addColorStop(1, `rgba(${gr}, ${gg}, ${gb}, 0)`);
-    ctx.globalCompositeOperation = "screen";
-    ctx.fillStyle = glow;
-    ctx.fillRect(fx - cam.s * 7, fy - cam.s * 7, cam.s * 14, cam.s * 14);
-    ctx.globalCompositeOperation = "source-over";
+    const seed = hash(th.x, th.y), out = b ? Math.min(3, Math.sqrt((b.kw + b.glow) / KW)) : 0;
+    if (b) {
+      const R = cam.s * (1.5 + out * 1.5 + night * 2), glow = ctx.createRadialGradient(fx, fy, 0, fx, fy, R);
+      const flick = 0.85 + Math.sin(now / 90 + th.x) * 0.08;
+      const [gr, gg, gb] = flameRgb(b.hot)[1];
+      glow.addColorStop(0, `rgba(${gr}, ${gg}, ${gb}, ${Math.min(1, (0.25 + night * 0.4) * flick * (0.5 + 0.5 * Math.min(1, out)))})`);
+      glow.addColorStop(1, `rgba(${gr}, ${gg}, ${gb}, 0)`);
+      ctx.globalCompositeOperation = "screen";
+      ctx.fillStyle = glow;
+      ctx.fillRect(fx - R, fy - R, R * 2, R * 2);
+      ctx.globalCompositeOperation = "source-over";
+    }
     if (fire) {
-      drawFire(ctx, fx, fy + cam.s * 0.1, cam.s * 0.9, now, seed, ringFor(th), 0.35 + 0.8 * k, { heat, coal, covered: th.covered });
-      if (th.covered) drawSmoke(ctx, fx, fy - cam.s * 0.3, cam.s, now, seed, 0.8, S.weather?.wind);
+      drawFire(ctx, fx, fy + cam.s * 0.1, cam.s * 0.9, now, seed, ringFor(th), b, { covered: th.covered });
+      if (th.covered && b) drawSmoke(ctx, fx, fy - cam.s * 0.3, cam.s, now, seed, 0.8, S.weather?.wind);
     } else {
       const [w, h, dy] = FLAME[th.kind] ?? [0.5, 0.6, 0.15];
-      const wide = th.kind === "structure" ? 0.6 + (th.shelter?.tier ?? 0) * 0.3 : w;
-      drawFlames(ctx, fx, fy + dy * cam.s, wide * cam.s, h * cam.s, now, seed, k);
-      drawSmoke(ctx, fx, fy - h * cam.s * 0.8, cam.s, now, seed, k, S.weather?.wind);
+      const wide = th.kind === "structure" ? 0.6 + (th.shelter?.tier ?? 0) * 0.3 : w, tall = h * Math.min(1.5, Math.max(0.2, b.flame / (th.size || 1)));
+      // a thing smoldering with no flame over it glows and smokes
+      if (b.flame > 0) drawFlames(ctx, fx, fy + dy * cam.s, wide * cam.s, tall * cam.s, now, seed, b.kw / (b.kw + b.glow), b.hot);
+      drawSmoke(ctx, fx, fy - tall * cam.s * 0.8, cam.s, now, seed, Math.min(1, out), S.weather?.wind);
     }
   }
 }

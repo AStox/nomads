@@ -1,6 +1,7 @@
 // What each agent thinks happens when they do something, and the laws of the world those beliefs come from.
 import type { Fields, Outcome } from "./physics";
 import { DAY, log, meters, stageOf, type Agent, type World } from "./world";
+import { plural } from "./materials";
 import { canSee } from "./light";
 import { trace } from "./trace";
 import { RULES } from "./rules";
@@ -34,11 +35,12 @@ export type Belief = {
   unless?: string[];
 };
 type Count = { tries: number; wins: number };
-// A condition, as a theory names it: the weather and light anyone can see, how wet their tinder is, and the ground
-// underfoot and round about.
+// A condition, as a theory names it: the weather and light anyone can see, how wet their tinder is, what they lay in a
+// fire and the fire they lay it on, and the ground underfoot and round about.
 const WORDS: Record<string, string> = {
   rain: "in the rain", dark: "in the dark", cold: "in freezing cold", wind: "in a strong wind", nofish: "with no fish close by",
-  damp: "with damp tinder", soaked: "with tinder soaked through",
+  damp: "with damp tinder", soaked: "with tinder soaked through", breezy: "in a breeze", thick: "with thick wood", sodden: "with wet kindling",
+  small: "on a small fire", coals: "on coals with no flame left",
   shade: "in the shade of trees", deep: "in deep shade", dry: "on dry ground", crowded: "crowded in among bushes and trees", sour: "on sour soil",
   limy: "on limy soil", poor: "on poor soil", thin: "on thin soil", boggy: "on boggy ground", exposed: "on ground open to the gales",
   salty: "where salt spray reaches",
@@ -49,7 +51,8 @@ export const groundOfKey = (c: string) => (c.startsWith("ground:") ? c.slice(7).
 // What a lack reads as, after "unless" in a theory.
 const UNLESS: Record<string, string> = {
   rain: "it's raining", dark: "it's dark", cold: "it's freezing", wind: "a strong wind is blowing", nofish: "there are no fish close by",
-  damp: "the tinder is damp", soaked: "the tinder is soaked through",
+  damp: "the tinder is damp", soaked: "the tinder is soaked through", breezy: "a breeze is blowing", thick: "the wood is thick", sodden: "the kindling is wet",
+  small: "the fire is small", coals: "nothing but coals is left of the fire",
   shade: "it's in the shade of trees", deep: "it's in deep shade", dry: "the ground is dry", crowded: "bushes or trees grow close round it", sour: "the soil is sour",
   limy: "the soil is limy", poor: "the soil is poor", thin: "the soil is thin", boggy: "the ground is boggy", exposed: "the spot lies open to the gales",
   salty: "salt spray reaches it",
@@ -288,6 +291,12 @@ const nm = (w: World, id: string) => w.kinds[id]?.name ?? id.replaceAll("_", " "
 const an = (s: string) => (s.includes("'s ") ? s : /^[aeiou]/.test(s) ? `an ${s}` : `a ${s}`);
 const with_ = (w: World, tool?: string | null) => (tool ? `with ${an(nm(w, tool))}` : "with bare hands");
 const gives = (w: World, f: Fields) => f.gives.map((k) => nm(w, k)).join(" and ");
+// Things laid together in a fire, each kind counted: "a fiber and 5 sticks".
+const laid = (w: World, ks: string[]) => {
+  const n: Record<string, number> = {};
+  for (const k of ks) n[k] = (n[k] ?? 0) + 1;
+  return Object.entries(n).map(([k, c]) => (c > 1 ? `${c} ${plural(nm(w, k))}` : an(nm(w, k)))).join(" and ");
+};
 
 // How long after, in words: a seed takes days to come up.
 const laterWords = (t: number) => (t < DAY / 2 ? "some hours later" : t < DAY * 1.5 ? "about a day later" : `about ${Math.round(t / DAY)} days later`);
@@ -299,14 +308,14 @@ export function sentence(w: World, f: Fields, ticks?: number, later?: number): s
   const fireWord = ({ hearth: "a ringed fire", kiln: "a ringed fire heaped over with stone", forge: "a ringed charcoal fire" } as Record<string, string>)[f.at ?? ""] ?? "a fire";
   switch (f.verb) {
     case "strike":
-      if (f.builds === "fire") return `Striking ${an(nm(w, f.target ?? "stone"))} ${with_(w, f.tool)} over dry tinder can throw a spark that lights a fire.`;
+      if (f.builds === "fire") return `Striking ${an(nm(w, f.target ?? "stone"))} ${with_(w, f.tool)} over a lay of ${laid(w, f.inputs.filter((_, i) => i !== f.inputs.indexOf(f.target ?? "")))} can throw a spark that lights a fire.`;
       if (f.effect === "dented") return `Hammering cold ${ins[0]} only dents it.`;
       if (f.at === "forge" && f.gives.length) return `Hammering ${an(ins[0])} ${with_(w, f.tool)} at ${fireWord} draws it out into ${an(gives(w, f))}.`;
       if (f.target && !f.inputs.length)
         return f.gives.length ? `Striking ${an(f.target)} ${with_(w, f.tool)} breaks it into ${gives(w, f)}${time}.` : `Striking ${an(f.target)} ${with_(w, f.tool)} barely marks it.`;
       return f.gives.length ? `Striking ${an(ins[0])} ${with_(w, f.tool)} can break off ${gives(w, f)}.` : `Striking ${an(ins[0])} ${with_(w, f.tool)} does nothing much.`;
     case "rub":
-      if (f.builds === "fire") return `Rubbing ${ins.filter((x, i) => i < 2).map(an).join(" against ")} gets hot enough to light ${ins[2] ? `the ${ins[2]}` : "tinder"}. Fire.`;
+      if (f.builds === "fire") return `Rubbing ${ins.filter((x, i) => i < 2).map(an).join(" against ")} gets hot enough to light ${f.inputs.length > 2 ? `a lay of ${laid(w, f.inputs.slice(2))}` : "tinder"}. Fire.`;
       if (f.effect === "heat") return `Rubbing ${an(ins[0])} against ${an(ins[1] ?? ins[0])} makes them hot.`;
       return f.gives.length ? `Rubbing ${an(ins[0])} on ${an(ins[1] ?? ins[0])} makes ${an(gives(w, f))}.` : `Rubbing ${ins.join(" on ")} does nothing much.`;
     case "join":
@@ -331,9 +340,9 @@ export function sentence(w: World, f: Fields, ticks?: number, later?: number): s
       if (f.builds === "fire") {
         // the flame by what it is, whatever people have come to call it
         const flame = f.inputs.find((k) => k.startsWith("burning:")) ?? f.inputs[0];
-        return `Setting ${an(nm(w, flame))} into ${f.inputs.filter((k) => k !== flame).map((k) => nm(w, k)).join(" and ") || "a fire"} starts a campfire.`;
+        return `Setting ${an(nm(w, flame))} into ${laid(w, f.inputs.filter((_, i) => i !== f.inputs.indexOf(flame))) || "a fire"} starts a campfire.`;
       }
-      if (f.builds === "fed_fire") return `Feeding ${ins.join(" and ")} to a fire keeps it going.`;
+      if (f.builds === "fed_fire") return `Feeding ${laid(w, f.inputs)} to a fire keeps it going.`;
       if (f.builds === "hearth") return `Ringing a fire with ${ins.join(" and ")} keeps it contained and burning steady.`;
       if (f.builds === "kiln") return `Heaping ${ins.join(" and ")} over a ringed fire closes it in to smolder.`;
       if (f.builds === "forge") return `Feeding ${ins.join(" and ")} to a ringed fire makes it burn white-hot.`;

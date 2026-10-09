@@ -1,12 +1,15 @@
 // The world keeps moving on its own: weather, fire, plants, animals, rot, and sickness.
-import { THING_MATERIAL, clamp01, ensure, p } from "./materials";
-import { dropPile, dropStacks, fireHeat, mark, nearFire, newKinds, occupied, removeThing, residentsOf, shelterName } from "./physics";
+import { ensure, p } from "./materials";
+import { ablaze, bedAir, dropPile, dropStacks, mark, nearFire, newKinds, occupied, redHot, removeThing, residentsOf, shelterName } from "./physics";
+import { advance, alight, expose, output, type Air, type Group } from "./combustion";
+import { physOf } from "./fuel";
+import { BURNABLE, WIDEST, airFor, bedOf, blazeOf, fluxOn, landing, landsOn, partsOf, reach, struck, tinderIn, together, warmed, type Part } from "./spread";
 import { see } from "./beliefs";
 import {
   DAY, H, TILE_M, W, Tile, addThing, dayOfYear, groundOf, log, meters, nearWater, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
-import { anyAround, anyOf, around, liveThings, onPath, put, setKind, stockedAt } from "./space";
+import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind, stockedAt } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
 import { enrich, feedRate, settle, soilWaterAt } from "./soil";
@@ -21,6 +24,9 @@ import { SEASONS } from "../terrain/climate";
 import { count, timed, trace } from "./trace";
 import { hooks } from "./rules";
 import { wetness } from "./wetness";
+
+// Seconds a tick lasts (world.ts DAY: five minutes each).
+const TICK_S = 86400 / DAY;
 
 export const pathChanges = new Set<number>();
 export const iceChanged = { now: false };
@@ -93,11 +99,16 @@ function weather(w: World) {
   wx.drought = drought;
   if (wx.sky === "storm" && Math.random() < 1 / 150) {
     const t = anyOf(w, "tree");
-    if (t) {
-      t.burning = 0.6;
+    if (t && !t.bed) {
+      // the strike lights the tree's dead twigs if they're dry enough to carry a flame (spread.ts struck)
+      const bed = struck(w, t);
+      if (bed) {
+        t.bed = bed;
+        delete t.absorbed;
+        log(w, "lightning", [], t, "Lightning struck a tree and set it burning.");
+        see(w, t, "lightning", "Lightning can set a tree on fire, and fire eats wood.", 1000);
+      } else log(w, "lightning", [], t, "Lightning struck a tree.");
       mark(w, t);
-      log(w, "lightning", [], t, "Lightning struck a tree and set it burning.");
-      see(w, t, "lightning", "Lightning can set a tree on fire, and fire eats wood.", 1000);
     }
   }
 }
@@ -181,25 +192,11 @@ function crowding(w: World) {
 }
 
 // ---------- fire ----------
-function dryness(w: World) {
-  const wx = w.weather;
-  if (wx.sky === "storm") return 0.03;
-  if (wx.sky === "rain") return 0.05;
-  // dry fuel burns the better the warmer and the longer since rain
-  return wx.drought ? 1.6 : (0.4 + 0.75 * warmRate(wx.temp)) * (1 - 0.5 * wx.wet);
-}
-export function flammability(w: World, t: Thing) {
-  if (t.kind === "structure") return t.shelter?.flam ?? 0.5;
-  if (t.kind === "item") return p(w.kinds[t.item ?? ""], "flammable");
-  if (t.kind === "sapling" || t.kind === "herb" || t.kind === "mushroom" || t.kind === "flowers") return 0.3;
-  if (t.kind === "stick") return 0.7;
-  if (t.kind === "fern") return 0.6;
-  if (t.kind === "grass") return 0.5;
-  return THING_MATERIAL[t.kind]?.flammable ?? 0;
-}
+// A thing burnt out: a tree is left a burnt stump, a shelter is burned down with its people out in the cold, and anything
+// else is gone to ash where it stood. What the fire leaves feeds the soil, a tree's ash most.
 function burnOut(w: World, t: Thing, by?: string) {
-  // what the fire leaves feeds the soil, a tree's ash most
-  if (t.kind === "tree") { setKind(w, t, "burnt_stump"); t.burning = 0; t.hp = 30; t.maxHp = 30; t.size = 0.6; t.until = w.t + DAY * 10; mark(w, t); enrich(w, t.px, t.py, 0.25); return; }
+  delete t.bed;
+  if (t.kind === "tree") { setKind(w, t, "burnt_stump"); t.hp = 30; t.maxHp = 30; t.size = 0.6; t.until = w.t + DAY * 10; mark(w, t); enrich(w, t.px, t.py, 0.25); return; }
   if (t.kind === "structure") {
     const owner = w.agents.find((a) => a.id === t.owner);
     const text = `Fire burned down ${owner ? `${owner.name}'s` : "a"} ${shelterName(w, t)}.`;
@@ -214,59 +211,116 @@ function burnOut(w: World, t: Thing, by?: string) {
     enrich(w, t.px, t.py, 0.1);
   }
 }
-// Flames reach what's within a few meters, and twice as far downwind.
-const NEAR = 5, DOWNWIND = 10;
-function fire(w: World, live: Thing[]) {
-  const dry = dryness(w);
-  const sources: { t: Thing; heat: number; by?: string }[] = [];
+// A campfire with nothing in it alight any more.
+function fireOut(w: World, t: Thing) {
+  removeThing(w, t);
+  enrich(w, t.px, t.py, 0.03);
+  log(w, "fire_out", t.owner ? [t.owner] : [], t, rainy(w.weather.sky) && !t.covered ? "The rain put out a campfire." : "A campfire burned out.");
+  fireOutFor(w, t, rainy(w.weather.sky));
+}
+// Something near a fire caught: it burns as a bed of its own pieces, those that lit alight and the rest holding the heat
+// they've taken (spread.ts), lit by whoever's fire it was.
+function caught(w: World, x: Thing, h: Warm, by: Thing) {
+  x.bed = bedOf(h.parts, h.groups);
+  delete x.absorbed;
+  const who = by.owner ?? by.burnedBy;
+  if (who) x.burnedBy = who;
+  mark(w, x);
+  count("fire.spread");
+  trace("fire", "spread", { from: by.id, to: x.id, kind: x.kind });
+  if (x.kind === "structure") log(w, "fire_spread", [x.owner ?? ""].filter(Boolean), x, "Fire caught on a shelter!");
+  else if (Math.random() < 0.1) log(w, "fire_spread", [], x, `Fire spread to a ${x.kind.replace("_", " ")}.`);
+}
+// A thing near a fire: its parts as fuel, each part's heat toward lighting, and the air each takes it in.
+type Warm = { parts: Part[]; groups: Group[]; air: Air[] };
+// Every bed, a campfire's or a burning thing's own, burns on through the tick in the air where it stands (combustion.ts),
+// looked at as often as a bed steps, every ten seconds (fire-constants sec. 28). At each look what stands within a burning
+// bed's reach takes its flame's heat or its radiation, and its brands where they land (spread.ts); a part that lights
+// makes the thing a bed of its own from then on, and whatever nothing heats any more cools. A bed gone out is a campfire
+// gone, or a thing burnt out. A fire heaped over with stone keeps its flames, its heat and its brands under the stone.
+const LOOK = 10;
+export function fire(w: World, live: Thing[]) {
+  // each burning bed, how far it has looked for what it might heat and for what its brands might land on, and what it found
+  const beds = new Map<Thing, { heat: number; brands: number; close: Thing[]; far: Thing[] }>(), warm = new Map<Thing, Warm>();
+  const burning = (t: Thing) => beds.set(t, { heat: -1, brands: -1, close: [], far: [] });
+  const heated = (x: Thing) => {
+    let h = warm.get(x);
+    if (!h) {
+      const parts = partsOf(w, x);
+      warm.set(x, (h = { parts, groups: warmed(x, parts), air: parts.map((p) => airFor(w, x, p)) }));
+    }
+    return h;
+  };
+  const light = (x: Thing, h: Warm, by: Thing) => {
+    caught(w, x, h, by);
+    warm.delete(x);
+    burning(x);
+  };
   for (const t of live) {
-    if (t.kind === "fire") {
-      const burn = t.covered ? 0.3 : t.contained ? 0.5 : 1;
-      t.hp = (t.hp ?? 0) - burn - (rainy(w.weather.sky) && !t.contained ? 2 : 0);
-      if (t.charcoal) t.charcoal = Math.max(0, t.charcoal - burn);
-      const h = fireHeat(w, t);
-      if (h !== (t.heat ?? 1)) { t.heat = h; mark(w, t); }
-      if (t.hp <= 0) {
-        removeThing(w, t);
-        enrich(w, t.px, t.py, 0.03);
-        log(w, "fire_out", t.owner ? [t.owner] : [], t, rainy(w.weather.sky) ? "The rain put out a campfire." : "A campfire burned out.");
-        fireOutFor(w, t, rainy(w.weather.sky));
-        continue;
+    if (t.bed) burning(t);
+    else if (t.kind === "fire") fireOut(w, t);
+    else if (t.absorbed) heated(t);
+  }
+  for (let s = 0; s < TICK_S; s += LOOK) {
+    // what things near a burning bed take over this look, from each bed as it stands at the look's start: the flux on
+    // each part and the bed giving the most of it; the brands landing, and the bed landing the most
+    const hot = new Map<Thing, { f: number[]; by: Thing; most: number }>(), landed = new Map<Thing, { n: number; from: Thing; most: number }>();
+    for (const [t, src] of beds) {
+      const air = bedAir(w, t);
+      if (alight(t.bed!) && !t.covered) {
+        const b = blazeOf(w, t, output(t.bed!, air), air), r = reach(b);
+        if (r.heat > src.heat) {
+          [src.heat, src.close] = [r.heat, []];
+          around(w, t.px, t.py, r.heat + WIDEST, BURNABLE, (x) => { if (x !== t) src.close.push(x); });
+        }
+        if (r.brands > src.brands) {
+          [src.brands, src.far] = [r.brands, []];
+          around(w, t.px, t.py, r.brands + WIDEST, BURNABLE, (x) => { if (x !== t && landsOn(x)) src.far.push(x); });
+        }
+        for (const x of src.close) {
+          if (x.bed || !exists(w, x)) continue;
+          const f = fluxOn(b, x, heated(x).parts), sum = f.reduce((u, v) => u + v, 0), had = hot.get(x);
+          if (!had) hot.set(x, { f, by: t, most: sum });
+          else {
+            had.f = had.f.map((v, i) => v + f[i]);
+            if (sum > had.most) Object.assign(had, { by: t, most: sum });
+          }
+        }
+        for (const x of src.far) {
+          const n = x.bed ? 0 : landing(b, x, LOOK), had = landed.get(x);
+          if (n <= 0) continue;
+          if (!had) landed.set(x, { n, from: t, most: n });
+          else Object.assign(had, { n: had.n + n }, n > had.most ? { from: t, most: n } : {});
+        }
       }
-      if (!t.contained) sources.push({ t, heat: Math.min(1, (t.hp ?? 0) / 150) * 0.6, by: t.owner });
-    } else if (t.burning) {
-      t.burning = clamp01(t.burning + (rainy(w.weather.sky) ? -0.08 : 0.05));
-      t.hp = (t.hp ?? THING_MATERIAL[t.kind]?.hp ?? 10) - 2 * t.burning;
-      mark(w, t);
-      if (t.burning <= 0) { t.burning = 0; continue; }
-      if (t.hp <= 0) { burnOut(w, t, t.burnedBy); continue; }
-      sources.push({ t, heat: t.burning, by: t.burnedBy });
+      t.bed = advance(t.bed!, LOOK, air);
+      if (alight(t.bed)) continue;
+      beds.delete(t);
+      if (t.kind === "fire") fireOut(w, t);
+      else burnOut(w, t, t.burnedBy);
+    }
+    for (const [x, h] of warm) {
+      if (x.bed || !exists(w, x)) { warm.delete(x); continue; }
+      const on = hot.get(x);
+      h.groups = h.groups.map((g, i) => expose(g, on?.f[i] ?? 0, LOOK, h.air[i]));
+      if (on && h.groups.some((g) => g.lit)) light(x, h, on.by);
+    }
+    // brands landing together light the driest fine fuel they land in by the NFDRS's odds (spread.ts)
+    for (const [x, l] of landed) {
+      if (x.bed || !exists(w, x) || Math.random() >= together(l.n)) continue;
+      const h = heated(x), tinder = tinderIn(w, x, h.parts);
+      if (tinder.i < 0 || Math.random() >= tinder.odds) continue;
+      h.groups[tinder.i].lit = true;
+      light(x, h, l.from);
     }
   }
-  const { dx: wdx, dy: wdy } = w.weather.wind;
-  for (const s of sources) {
-    around(w, s.t.px, s.t.py, DOWNWIND, null, (t, d) => {
-      if (t === s.t || t.burning || t.kind === "fire" || d < 1e-6) return;
-      const along = (((t.px - s.t.px) * wdx + (t.py - s.t.py) * wdy) * TILE_M) / d;
-      const far = d > NEAR, downwind = along > 0.3;
-      if (far && !downwind) return;
-      const flam = flammability(w, t);
-      if (flam <= 0) return;
-      // Each tick beside flames heats and dries it a little more, the more the hotter, drier and more downwind; it
-      // catches once that has added up.
-      const heat = s.heat * flam * dry * 0.02 * (downwind ? 2 : 1) * (far ? 0.4 : 1);
-      t.scorch = (t.scorch ?? 0) + heat;
-      if (t.scorch < 1) return;
-      delete t.scorch;
-      t.burning = 0.3;
-      t.burnedBy = s.by;
-      mark(w, t);
-      count("fire.spread");
-      trace("fire", "spread", { from: s.t.id, to: t.id, kind: t.kind, heat });
-      if (t.kind === "structure") log(w, "fire_spread", [t.owner ?? ""].filter(Boolean), t, "Fire caught on a shelter!");
-      else if (Math.random() < 0.1) log(w, "fire_spread", [], t, `Fire spread to a ${t.kind.replace("_", " ")}.`);
-    });
+  // what's still warm keeps the heat it has taken, and what has cooled right down is as it was
+  for (const [x, h] of warm) {
+    const heat = h.groups.map((g) => g.heat);
+    if (heat.some((v) => v > 0)) { x.absorbed = heat; mark(w, x); }
+    else if (x.absorbed) { delete x.absorbed; mark(w, x); }
   }
+  for (const t of beds.keys()) mark(w, t);
 }
 
 // ---------- plants ----------
@@ -277,7 +331,7 @@ const BERRY_HP = 20;
 function plants(w: World, live: Thing[]) {
   const warm = warmRate(w.weather.temp);
   for (const t of live) {
-    if (t.burning) continue;
+    if (ablaze(t)) continue;
     if (t.scarred && (t.kind === "tree" || t.kind === "stump") && (t.resin ?? 0) < 2 && w.t - t.scarred > DAY && Math.random() < 1 / (DAY * 1.5)) {
       t.resin = (t.resin ?? 0) + 1;
       mark(w, t);
@@ -307,7 +361,7 @@ function plants(w: World, live: Thing[]) {
   // Trees drop nuts as the days draw in, a few a day over the island. They keep for weeks, if someone gathers and stores them.
   if (ripening(w.t) && Math.random() < 0.3) {
     const t = anyOf(w, "tree");
-    if (t && !t.burning) { const a = Math.random() * Math.PI * 2, d = (1 + Math.random() * 3) / TILE_M; dropPile(w, t.px + Math.cos(a) * d, t.py + Math.sin(a) * d, "nut", 1); }
+    if (t && !ablaze(t)) { const a = Math.random() * Math.PI * 2, d = (1 + Math.random() * 3) / TILE_M; dropPile(w, t.px + Math.cos(a) * d, t.py + Math.sin(a) * d, "nut", 1); }
   }
   // Birds carry berry seeds off, and trees shed theirs about them; what lands where it fits may take root.
   if (Math.random() < warm / 100) {
@@ -316,7 +370,7 @@ function plants(w: World, live: Thing[]) {
   }
   if (Math.random() < warm / 60) {
     const t = anyOf(w, "tree");
-    if (t?.species && !t.burning) seedNear(w, t, t.species, 4, 30);
+    if (t?.species && !ablaze(t)) seedNear(w, t, t.species, 4, 30);
   }
   if (Math.random() < 1 / 60 + (1 / 18 - 1 / 60) * warm) {
     const x = Math.floor(Math.random() * W), y = Math.floor(Math.random() * H), px = x + Math.random(), py = y + Math.random();
@@ -412,10 +466,9 @@ function decay(w: World, live: Thing[]) {
   const vessel = (ks: { k: string }[]) => (ks.some((s) => p(w.kinds[s.k], "container") >= 0.6) ? 1.5 : 1);
   for (const a of w.agents) {
     const f = nearFire(w, a), keep = vessel(a.inv);
-    const forge = !!f && fireHeat(w, f) >= 1.5;
     for (const s of a.inv) {
-      // Hot metal stays soft only while it's kept at a hot fire.
-      const k = w.kinds[s.k];
+      // Hot metal stays soft only while it's kept at a fire that holds it at red heat (fire-constants sec. 29g).
+      const k = w.kinds[s.k], forge = !!k?.cools && redHot(w, f, physOf(w.kinds, k)?.d);
       if (k?.cools && k.parts?.[0]) { if (forge) s.born = w.t; else if (w.t - s.born > k.cools) { s.k = k.parts[0]; s.born = w.t; } continue; }
       if (!spoiled(s.k, s.born, keep)) continue;
       if (s.k.startsWith("rotten:")) { a.inv.splice(a.inv.indexOf(s), 1); continue; }

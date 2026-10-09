@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { BASE, ensure } from "./materials";
 import { BURNS, COPPER, FIRED_CLAY, LEATHER, PHYS, POT_WALL, WOODS, mix, physOf, woodOf, type Burn, type Phys, type Row, type Wood } from "./fuel";
 import { addThing, newWorld, type Agent, type Stack, type Thing, type World } from "./world";
-import { applyRuling, dropStacks, giveItems, giveStack, hand, heat, join, place, shape, strikeTick, takeFromPile, type Outcome } from "./physics";
+import { applyRuling, bedAir, dropStacks, fireOf, giveItems, giveStack, hand, heat, join, place, shape, strikeTick, takeFromPile, type Outcome } from "./physics";
+import { advance } from "./combustion";
 import { nearestThing, thingById } from "./space";
 import { die } from "./life";
 import { fallApart } from "./ecology";
@@ -31,6 +32,12 @@ const setup = (): [World, Agent] => {
   const w = newWorld(42), a = w.agents[0];
   a.inv = [];
   return [w, a];
+};
+// A fire burning ten minutes from the usual lay (fireOf) where they stand.
+const burning = (w: World, a: Agent) => {
+  const fire = fireOf(w, a.px, a.py);
+  fire.bed = advance(fire.bed!, 600, bedAir(w, fire));
+  return fire;
 };
 const made = (o: Outcome | "ask") => {
   if (o === "ask" || !o.ok) throw new Error("it should have made something");
@@ -101,7 +108,7 @@ test("a stone is dense and thick but nothing in it burns, and a joined thing bur
 
 test("making new matter: clay fired in a pot's shape, a stew of what's in the pot, copper whose conductivity no rounding touches", () => {
   const [w, a] = setup();
-  addThing(w, "fire", a.px, a.py, { hp: 400, maxHp: 400 });
+  burning(w, a);
   giveItems(w, a, "stone", 3);
   place(w, a, { verb: "place", items: ["stone", "stone", "stone"] });
   giveItems(w, a, "clay");
@@ -202,20 +209,19 @@ test("a shelter of sticks keeps its pieces, and when it falls apart they fall as
 
 test("what's made of one piece of wood is that piece: a brand lit from it, and the charcoal it smothers into", () => {
   const [w, a] = setup();
-  const fire = addThing(w, "fire", a.px, a.py, { hp: 400, maxHp: 400 });
+  const fire = burning(w, a);
   const piece = stick(w, 0.018, "hazel");
   giveStack(w, a, { ...piece });
   const lit = made(heat(w, a, { verb: "heat", items: ["stick"] })), brand = a.inv.find((s) => s.k === lit)!;
   expect([brand.size, brand.species]).toEqual([piece.size, "hazel"]);
-  // heaped over with stone, the fire smothers a log into charcoal: two lumps, as thick as the log, sharing its char
+  // heaped over with stone, the fire smothers a stick into charcoal: one lump, as thick as the stick, holding its char
   giveItems(w, a, "stone", 6);
   place(w, a, { verb: "place", items: ["stone", "stone", "stone"] });
   place(w, a, { verb: "place", items: ["stone", "stone", "stone"] });
   expect(fire.covered).toBe(true);
-  const log: Stack = { k: "log", hp: 1, born: w.t, size: { d: 0.15, len: 1, mass: 8 }, species: "oak" };
-  giveStack(w, a, { ...log });
-  heat(w, a, { verb: "heat", items: ["log"] });
+  const oak = { ...stick(w, 0.03, "oak"), k: "stick" };
+  giveStack(w, a, { ...oak });
+  heat(w, a, { verb: "heat", items: ["stick"] });
   const lumps = a.inv.filter((s) => s.k === "charcoal");
-  expect(lumps.length).toBe(2);
-  for (const s of lumps) expect(s).toEqual({ k: "charcoal", hp: 1, born: w.t, size: { d: 0.15, len: 0.5, mass: (8 * BURNS.hardwood.charYield) / 2 }, species: "oak" });
+  expect(lumps).toEqual([{ k: "charcoal", hp: 1, born: w.t, size: { d: 0.03, len: 1.2, mass: oak.size!.mass * BURNS.hardwood.charYield }, species: "oak" }]);
 });
