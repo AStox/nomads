@@ -1,31 +1,36 @@
 // Learning probes: small staged worlds whose truth is the world's own formulas, run to see whether people come to it and
-// how fast. A few people stand on open ground in summer for days, wanting a fire and holding what it takes; each fire
-// is cleared away as soon as it catches, so they keep making them; the probe sets the weather by the hour; and they
-// weigh only lighting a fire, resting in the dark, and putting a theory of theirs to the test. Whether a try comes off
-// is the physics' alone (physics.ts, wetness.ts): a spark catches only in tinder drier than damp, out of a gale; an ember
-// in tinder short of soaked through. The probe stages what decides it (the rain that soaks their tinder, the gales, bags
-// to keep it dry), never the outcome, and works out from the same formulas whether a try would come off for each person
-// in each hour they met, so what they come to think can be held against the truth at the midpoint and at the end. The
-// planting probes do the same with seed: each person on a plot of their own with an oak's deep shade over part of it
-// (and bushes crowding another, in one), a berry coming to hand every few hours (or once a day, sparse), and whether a
-// seed put in a spot would come up worked out by running the seedling's formula ahead over the weather the coming days
-// might bring (seedling.ts), as often as it would under the probe's sky.
+// how fast. A few people stand on open ground in summer for days, wanting a fire and holding what it takes, a lay of
+// tinder and kindling; each fire is cleared away as soon as it catches, so they keep making them; the probe sets the
+// weather by the hour; and they weigh only lighting a fire, resting in the dark, and putting a theory of theirs to the
+// test. Whether a try comes off is the physics' alone (physics.ts, combustion.ts, wetness.ts): a spark catches only in
+// tinder drier than damp, out of a gale; an ember in tinder short of soaked through; and what caught makes a fire only if
+// everything laid with it burns through. The probe stages what decides it (the rain that soaks their tinder, the hide
+// they wear that it dries against, the gales, bags to keep it dry, the sticks that come to hand), never the outcome, and
+// works out from the same formulas the act runs (formulas.ts predict) whether a try would come off for each person in
+// each hour they met, so what they come to think can be held against the truth at the midpoint and at the end, and
+// against what learning nothing and holding the truth would score. The planting probes do the same with seed: each
+// person on a plot of their own with an oak's deep shade over part of it (and bushes crowding another, in one), a berry
+// coming to hand every few hours (or once a day, sparse), and whether a seed put in a spot would come up worked out by
+// running the seedling's formula ahead over the weather the coming days might bring (seedling.ts), as often as it would
+// under the probe's sky.
 //   bun scripts/probes.ts --probe blame --variant real --seed 3 [--days 6] [--people 6] [--brain jev] [--out run.json]
 //   bun scripts/probes.ts --batch runs.json: several runs (ProbeSpec), one after another in one process, each island grown
 //   once however many of them are on it
 // scripts/evals.ts runs every probe over many seeds and holds each build to the last good one.
 import { readFileSync } from "node:fs";
-import { DAY, TILE_M, addThing, dryAt, isNight, newWorld, rng, type Agent, type Thing, type World } from "../src/sim/world";
+import { DAY, TILE_M, addThing, dryAt, isNight, newWorld, rng, type Agent, type Stack, type Thing, type World } from "../src/sim/world";
 import { conditionsNow, tick } from "../src/sim/sim";
-import { DURATION, changed, count, counts, emberCatches, frictionPer, giveItems, groundWord, newKinds, occupied, removeThing, removed, soilAt, sparkCatches, sparksPer, SEED_SOIL } from "../src/sim/physics";
+import { DURATION, changed, count, counts, frictionPer, giveItems, giveStack, groundWord, layAt, newKinds, occupied, removeThing, removed, soilAt, sparksPer, SEED_SOIL } from "../src/sim/physics";
+import { predict } from "../src/sim/formulas";
+import { pieceOf, roundSize, stackPhys } from "../src/sim/fuel";
 import { nextWet, trailChanges } from "../src/sim/ecology";
 import { traceListeners, type TraceEntry } from "../src/sim/trace";
 import { asking, brainKind, useBrain } from "../src/sim/brain";
 import { DARK, lightOn, skyShare } from "../src/sim/light";
 import { airOn } from "../src/sim/air";
 import { anyAround, around, put, thingById } from "../src/sim/space";
-import { fieldsOf, groundKey, ofPlace, ruledOut, type Belief } from "../src/sim/beliefs";
-import { REF, deadAt, tinder, tinderOf } from "../src/sim/wetness";
+import { beliefKey, fieldsOf, groundKey, ofPlace, ruledOut, type Belief } from "../src/sim/beliefs";
+import { moistureOf } from "../src/sim/wetness";
 import { ahead, bedAt, seedlingFate, type Bed, type Hour } from "../src/sim/seedling";
 import { envHere } from "../src/sim/plants";
 import { feedRate, fertilityAt } from "../src/sim/soil";
@@ -35,8 +40,10 @@ import { seedRandom } from "./seeded";
 
 export type Metric = { better: "higher" | "lower"; tol: number; text: string };
 // What a probe expects of learning, held over every seed with a 95% interval (scripts/evals.ts): a number's mean above
-// or below a value, or one number's mean above another's by more than a value.
-export type Claim = { id: string; text: string } & ({ above: string; value: number } | { below: string; value: number } | { gap: [string, string]; value: number });
+// or below a value, or one number's mean above another's by more than a value. scaled: the number is held, run by run, as
+// the share of the way it has come from what someone learning nothing would score to what someone holding the true
+// theory would (each run's number, Floor and Ceil), so the bar sits between them whatever the run's truth.
+export type Claim = { id: string; text: string; scaled?: true } & ({ above: string; value: number } | { below: string; value: number } | { gap: [string, string]; value: number });
 export type ProbeRun = {
   probe: string; variant: string; seed: number; brain: string; days: number; people: number; secs: number;
   attempts: number; jev: { calls: number; tokens: number }; truth: Record<string, string | number>; metrics: Record<string, number | null>;
@@ -44,7 +51,18 @@ export type ProbeRun = {
 // One run, and the file its result goes to (printed, without one).
 export type ProbeSpec = { probe: string; variant: string; seed: number; days: number; people: number; brain: "random" | "jev"; out?: string };
 
-const STONE = "strike|fiber+stone|stone|stone|-|-", FLINT = "strike|fiber+flint|stone|flint|-|-", RUB = "rub|stick+stick+fiber|-|-|-|-", PLANT = "plant|berry|-|-|-|-";
+// The ways they know: to a fire, a lay of tinder and three twigs struck over or rubbed for, as the acts list it (fire-
+// constants sec. 32: a lay lights only if everything laid catches and burns through, and three twigs on a handful of
+// fibre do); and planting a berry.
+const way = (verb: string, inputs: string[], tool?: string, target?: string) => beliefKey({ verb, inputs, tool, target, gives: [] });
+const STONE = way("strike", ["fiber", "stick", "stick", "stick", "stone"], "stone", "stone");
+const FLINT = way("strike", ["fiber", "flint", "stick", "stick", "stick"], "stone", "flint");
+const RUB = way("rub", ["stick", "stick", "fiber", "stick", "stick", "stick"]), PLANT = "plant|berry|-|-|-|-";
+// The sticks that come to hand (fuel.ts pieces): half-meter twigs off the ground, and for the kindling probe sticks 35 mm
+// thick, past the thick cut (physics.ts tooThick); all kept in dry, as the usual lay's wood is (physics.ts usual). Two
+// sticks to rub are sticks as they're gathered. Tinder is kept against the body, as dry as the usual lay's.
+const TWIG = pieceOf({ kind: "stick", size: 0.5 }, "stick")!, THICK = { size: roundSize("generic", 0.035, 1) }, KEPT = 0.12, KEPT_TINDER = 0.06;
+const piece = (w: World, p: { size: Stack["size"]; species?: string }): Stack => ({ k: "stick", hp: 1, born: w.t, m: KEPT, size: p.size, ...(p.species ? { species: p.species } : {}) });
 // Each hour, the chance of rain and of a gale, given whether it is dark where they are.
 type Sky = (dark: boolean) => { rain: number; wind: number };
 // ways: what they know to make a fire with; causes: the conditions anyone can see that the formula makes it fail in, as
@@ -52,9 +70,10 @@ type Sky = (dark: boolean) => { rain: number; wind: number };
 // what changes halfway, the sky and bags to keep their tinder dry, the causes from then on and the one they'd have had
 // cause to blame before that no longer fails (old); starts: by person, the theories they start out with, or null for
 // someone who doesn't know how at all; talk: they may also teach and talk
+// sticks: what comes to hand to lay, twigs (by default), or twigs and thick sticks alike (mixed)
 type Setup = {
   ways: string[]; sky: Sky; causes: string[]; bystander?: string; half?: { sky: Sky; causes: string[]; old: string };
-  starts?: (string[] | null)[]; talk?: boolean;
+  starts?: (string[] | null)[]; talk?: boolean; sticks?: "twigs" | "mixed";
 };
 // A planter's plot, in meters from where they stand facing east: an oak this tall this far to the west, its deep shade
 // over the spots on that side of them, and bushes at these offsets east and south of them, crowding the spots round
@@ -68,10 +87,15 @@ type Sow = { plot: Plot; sky: Sky; causes: string[]; every: number; starts?: str
 // outcomes take days to show or whose cause comes seldom
 type Probe = { text: string; metrics: Record<string, Metric>; claims: Claim[]; variants: Record<string, Setup | Sow>; days?: number };
 
+// Tinder kept against the body takes the best part of half a day to dry once rain has soaked it through (wetness.ts,
+// fire-constants sec. 18 and 27f), so rain comes seldom enough for the damp it leaves to come and go: one hour in twenty,
+// as in summer, or at night three hours in ten and by day one in fifty. The gales come as often as ever. After recover's
+// change their tinder is in bags, so the rain only gives those who blamed it the chance to see it work.
 const fair: Sky = () => ({ rain: 0, wind: 0 });
-const wet: Sky = () => ({ rain: 0.35, wind: 0 });
-const stormy: Sky = () => ({ rain: 0.35, wind: 0.35 });
-const nightRain: Sky = (dark) => ({ rain: dark ? 0.7 : 0.05, wind: 0 });
+const wet: Sky = () => ({ rain: 0.05, wind: 0 });
+const stormy: Sky = () => ({ rain: 0.05, wind: 0.35 });
+const squally: Sky = () => ({ rain: 0.35, wind: 0.35 });
+const nightRain: Sky = (dark) => ({ rain: dark ? 0.3 : 0.02, wind: 0 });
 const gusty: Sky = () => ({ rain: 0, wind: 1 / 12 });
 const changeable: Sky = () => ({ rain: 0.35, wind: 0.35 });
 
@@ -97,13 +121,14 @@ const TRUTH = {
   needlessMid: { better: "lower", tol: 0.05, text: "the same at the midpoint" },
   blind: { better: "lower", tol: 0.05, text: "share where they'd go ahead though it can't work, at the end" },
 } satisfies Record<string, Metric>;
-// Theories that tend toward the truth: no worse at the end than at the midpoint, nearly always right by the end, and
-// holding back needlessly no more as time goes on.
-const TREND: Claim[] = [
-  { id: "truthward", text: "what they'd do matches whether it would work at least as often at the end as at the midpoint", gap: ["acc", "accMid"], value: -0.02 },
-  { id: "knows", text: "what they'd do matches whether it would work more than nine times in ten by the end", above: "acc", value: 0.9 },
-  { id: "unsuperstitious", text: "they hold back where it would work no more at the end than at the midpoint", gap: ["needlessMid", "needless"], value: -0.02 },
-];
+// Theories that come most of the way to the truth by the end. Holding them no worse at the end than at the midpoint, and
+// holding back needlessly no more as time goes on, were claims once; anyone who learns nothing meets both, so they're
+// left to the numbers' own checks against the last good build. A claim of learning, late against early, is held only
+// against learning nothing: someone holding the true theory from the start has nothing to learn.
+const KNOWS: Claim = { id: "knows", text: "what they'd do matches whether it would work nine tenths of the way from learning nothing to holding the true theory, by the end", above: "acc", value: 0.9, scaled: true };
+// Theories formed and dropped, all told, per person: each time a condition comes into or leaves someone's theories of
+// these ways, as docs/research/learning-round5.md section 3 counts them, with each condition's own in the truth record.
+const CHURN = { churn: { better: "lower", tol: 1, text: "theories formed and dropped per person, all told (not judged)" } } satisfies Record<string, Metric>;
 const CAUSE = {
   right: { better: "higher", tol: 0.1, text: "share of people whose theories rule it out wherever it truly fails" },
   wrong: { better: "lower", tol: 0.1, text: "share of people whose theories rule it out somewhere it would work" },
@@ -113,6 +138,7 @@ const CAUSE = {
   formed: { better: "lower", tol: 0.5, text: "days until each first rules it out wherever it truly fails (the whole run if never)" },
   ...EVIDENCE,
   ...TRUTH,
+  ...CHURN,
 } satisfies Record<string, Metric>;
 const SOWN = {
   ...CAUSE,
@@ -150,7 +176,7 @@ export const PROBES: Record<string, Probe> = {
       { id: "only", text: "more blame the true cause than anything else", gap: ["right", "wrong"], value: 0 },
       { id: "less-waste", text: "fewer of their tries go to waste late than early", gap: ["wastedEarly", "wasted"], value: 0 },
       CAUGHT,
-      ...TREND,
+      KNOWS,
     ],
     variants: {
       real: { ways: [STONE], sky: wet, causes: ["damp"] },
@@ -165,7 +191,7 @@ export const PROBES: Record<string, Probe> = {
       { id: "most", text: "nearly everyone comes to blame the true cause (more than 85%)", above: "right", value: 0.85 },
       { id: "few-bystanders", text: "fewer than one in four also blame the dark, which only comes with it", below: "bystander", value: 0.25 },
       CAUGHT,
-      ...TREND,
+      KNOWS,
     ],
     variants: {
       real: { ways: [STONE], sky: nightRain, causes: ["damp"], bystander: "dark" },
@@ -192,7 +218,7 @@ export const PROBES: Record<string, Probe> = {
       CAUGHT,
     ],
     variants: {
-      real: { ways: [STONE], sky: wet, causes: ["damp"], half: { sky: stormy, causes: ["wind"], old: "rain" } },
+      real: { ways: [STONE], sky: wet, causes: ["damp"], half: { sky: squally, causes: ["wind"], old: "rain" } },
     },
   },
   spread: {
@@ -207,7 +233,7 @@ export const PROBES: Record<string, Probe> = {
     claims: [
       { id: "truth-wins", text: "more end up blaming the true cause than the false one", gap: ["right", "wrong"], value: 0 },
       { id: "error-fades", text: "fewer than half end up with the false one", below: "wrong", value: 0.5 },
-      ...TREND,
+      KNOWS,
     ],
     variants: {
       real: { ways: [STONE], sky: wet, causes: ["damp"], starts: [["damp"], ["damp"], ["dark"], ["dark"], null, null], talk: true },
@@ -221,7 +247,7 @@ export const PROBES: Record<string, Probe> = {
       { id: "both", text: "most come to blame both", above: "right", value: 0.5 },
       { id: "only", text: "more blame both than anything else", gap: ["right", "wrong"], value: 0 },
       CAUGHT,
-      ...TREND,
+      KNOWS,
     ],
     variants: {
       real: { ways: [STONE], sky: stormy, causes: ["damp", "wind"] },
@@ -237,7 +263,7 @@ export const PROBES: Record<string, Probe> = {
     claims: [
       { id: "exact", text: "most end up ruling it out just where it fails", above: "exact", value: 0.5 },
       CAUGHT,
-      ...TREND,
+      KNOWS,
     ],
     variants: {
       real: { ways: [RUB], sky: wet, causes: ["soaked"] },
@@ -251,10 +277,34 @@ export const PROBES: Record<string, Probe> = {
       { id: "most", text: "most come to blame it", above: "right", value: 0.5 },
       { id: "only", text: "more blame it than anything else", gap: ["right", "wrong"], value: 0 },
       CAUGHT,
-      ...TREND,
+      KNOWS,
     ],
     variants: {
       real: { ways: [STONE], sky: gusty, causes: ["wind"] },
+    },
+  },
+  // The sixth round: what a fire is laid of (fire plan unit 11, restated on the operator's call). Three sticks go in each
+  // lay, and only three twigs light: a thick one is more than any three bring through, thin ones beside it or not (fire-
+  // constants sec. 32), and anyone can see it's thick. Whoever blames thick wood lays the thinnest they hold. Finger-thick
+  // sticks fail in a lay of three too but look no thicker than the cut, so with them in hand no lay of what can be seen
+  // would tell which works; they aren't handed out.
+  kindle: {
+    text: "Twigs and thick sticks come to hand alike, and a lay of three lights only if it's all twigs: do they come to lay thin wood and leave the thick out?",
+    days: 10,
+    metrics: {
+      thin: { better: "higher", tol: 0.1, text: "share of their last third of lays (tests aside) holding no piece as thick as the thick cut" },
+      thinEarly: { better: "higher", tol: 1, text: "the same of their first third (not judged: where they start)" },
+      wasted: CAUSE.wasted,
+      wastedEarly: CAUSE.wastedEarly,
+      ...CHURN,
+    },
+    claims: [
+      { id: "thinner", text: "more of their late lays than their early ones hold only pieces thinner than the thick cut", gap: ["thin", "thinEarly"], value: 0 },
+      { id: "no-thick", text: "their late lays seldom hold a thick piece (under one in four)", above: "thin", value: 0.75 },
+      { id: "less-waste", text: "fewer of their tries go to waste late than early", gap: ["wastedEarly", "wasted"], value: 0 },
+    ],
+    variants: {
+      real: { ways: [STONE], sky: fair, causes: ["thick"], sticks: "mixed" },
     },
   },
   // The third round: what's done to the ground, where most of what an island can teach lies. Tries are few, what comes
@@ -271,7 +321,7 @@ export const PROBES: Record<string, Probe> = {
       { id: "less-waste", text: "fewer of their plantings go where nothing comes up late than early", gap: ["wastedEarly", "wasted"], value: 0 },
       { id: "not-weather", text: "fewer than one in four blame the weather", below: "weather", value: 0.25 },
       CAUGHT,
-      ...TREND,
+      KNOWS,
     ],
     variants: {
       // a berry to plant every four hours, so a few plantings a day (with berries in hand all the time, they plant thirty
@@ -299,7 +349,7 @@ export const PROBES: Record<string, Probe> = {
     claims: [
       { id: "spreads", text: "nearly all who started out not blaming it come to (more than 75%)", above: "heard", value: 0.75 },
       CAUGHT,
-      ...TREND,
+      KNOWS,
     ],
     variants: {
       // a berry a day, so what each sees for themselves is thin
@@ -314,7 +364,7 @@ export const PROBES: Record<string, Probe> = {
       { id: "let-go", text: "fewer than three in ten keep the false theory they started with", below: "kept", value: 0.3 },
       { id: "most", text: "most come to blame the true cause", above: "right", value: 0.5 },
       CAUGHT,
-      ...TREND,
+      KNOWS,
     ],
     variants: {
       // a berry every four hours, as seed/real, so there is time enough to put the false theory to the test
@@ -356,8 +406,8 @@ const names = (bs: Belief[], c: string) => bs.some((b) => b.unless?.some((t) => 
 // A way they know that has worked for them, as if they'd done it once and it took the ticks given: lit a fire, or pushed
 // a berry into the ground and seen it come up some days later.
 const knownWay = (key: string, t: number, ticks: number): Belief => {
-  const f = fieldsOf(key), plant = f.verb === "plant", rub = f.verb === "rub";
-  const uses: Record<string, number> = plant ? { berry: 1 } : rub ? { stick: 1, fiber: 1 } : { fiber: 1 };
+  const f = fieldsOf(key), plant = f.verb === "plant";
+  const uses: Record<string, number> = plant ? { berry: 1 } : { fiber: 1, stick: 3 };
   return {
     key, fields: { ...f, builds: plant ? "bush" : "fire" }, uses, out: {}, ticks, ...(plant ? { later: 3 * DAY } : {}),
     tries: 1, wins: 1, tally: { tries: 1, wins: 1 }, how: "discovered", t,
@@ -369,13 +419,23 @@ function ticksOf(w: World, key: string) {
   const f = fieldsOf(key);
   return f.verb === "rub" ? Math.ceil(1 / frictionPer(false, 0)) : Math.ceil(1 / sparksPer(w.kinds[f.tool!], w.kinds[f.target!]));
 }
-// Whether a try of a way would come off for someone now, by the physics' own formulas: a spark struck over their tinder
-// catches if it holds no more water than damp and no gale carries the sparks off; an ember, no more than soaked.
-function catchesNow(w: World, a: Agent, key: string) {
-  const f = fieldsOf(key);
-  if (f.verb === "rub") return emberCatches(tinderOf(w, a)?.m ?? 0);
-  const over = f.inputs.find((k) => tinder(w.kinds[k])) ?? "fiber";
-  return sparkCatches(tinderOf(w, a, over)?.m ?? 0, airOn(w, a).wind);
+// Whether a try of a way would come off for someone now, by the formulas the act runs (formulas.ts predict): a spark or
+// an ember caught in their tinder as wet as they hold it (as they'd be handed it, holding none), and the lay of it and
+// three twigs followed where the fire would stand.
+function lightsNow(w: World, a: Agent, key: string, handed: number) {
+  const f = fieldsOf(key), held = a.inv.find((s) => s.k === "fiber"), m = held ? moistureOf(held) : handed;
+  const pieces: Stack[] = [{ k: "fiber", hp: 1, born: w.t, m }, ...[0, 1, 2].map(() => piece(w, TWIG))];
+  const r = predict(w, f, { tinder: m, wind: airOn(w, a).wind, spot: a, ahead: { soil: [], temp: [] }, fish: 0, pieces, air: layAt(w, a).air, fire: null });
+  return "ok" in r && r.ok && r.builds === "fire";
+}
+// The conditions that settle a try, from the cases met: those every case it holds in mostly fails, none implied by
+// another of them, and whether between them they hold wherever most tries fail.
+function derive(cases: Case[]) {
+  const fails = (c: Case) => c.ok * 2 < c.n, conds = [...new Set(cases.flatMap((c) => c.now))];
+  const kills = conds.filter((x) => cases.every((c) => !c.now.includes(x) || fails(c)));
+  const within = (x: string, y: string) => cases.every((c) => !c.now.includes(x) || c.now.includes(y));
+  const causes = kills.filter((x) => !kills.some((y) => y !== x && within(x, y) && !within(y, x))).sort();
+  return { causes, covered: cases.filter(fails).every((c) => causes.some((x) => c.now.includes(x))) };
 }
 
 // Open ground near where they came ashore: dry, the sky clear overhead, nothing standing within a few meters.
@@ -511,7 +571,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   if (best) Object.assign(truth, { best, ...Object.fromEntries(ways.map((k) => [`ticks:${k}`, ticks[k]])) });
 
   const begin = w.t, end = begin + days * DAY, half = begin + Math.floor((days * DAY) / 2);
-  let sky = v.sky, bagged = false;
+  let sky = v.sky;
   hooks.weather = (w) => {
     const s = sky(lightOn(w, w.agents[0]).bright < DARK);
     w.weather.sky = Math.random() < s.rain ? "rain" : "clear";
@@ -561,17 +621,19 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     if (w.t === half) {
       if (change) {
         sky = change.sky;
-        bagged = true;
         // a leather bag, as anyone could tie one of a hide: something that shuts, to keep what's in it out of the rain
         w.kinds.bag ??= { id: "bag", name: "leather bag", props: { container: 0.75, flexible: 0.7, insulating: 0.4, toughness: 0.4 } };
         for (const a of w.agents) giveItems(w, a, "bag");
       }
       for (const a of w.agents) note(a, true);
     }
-    // they keep wanting a fire and keep what it takes in hand, the fiber gathered round about as wet as what lies there
-    // (or from their bag, dry), or to plant and get a berry to plant as often as the probe says, the first as it starts,
-    // turning to face a new way with each (the first spot they'd try is the one in front of them: physics.ts spotNear),
-    // so their seed goes in all round them however seldom they plant; whatever fire they light is gone by the next tick
+    // they keep wanting a fire and keep what it takes in hand, dressed in a hide so what they hold is kept against them
+    // (wetness.ts carried): tinder drying there as people keep it, which rain soaks while it falls on them unless it's in
+    // a bag, a fresh handful as wet as what they hold of it already; and sticks to lay, three twigs, or six twigs and
+    // three thick sticks picked up in no order, with two sticks to rub held before them; or to plant, and get a berry to
+    // plant as often as the probe says, the first as it starts, turning to face a new way with each (the first spot
+    // they'd try is the one in front of them: physics.ts spotNear), so their seed goes in all round them however seldom
+    // they plant; whatever fire they light is gone by the next tick
     for (const a of w.agents) {
       Object.assign(a.needs, { food: Math.max(a.needs.food, 80), energy: Math.max(a.needs.energy, 90), health: Math.max(a.needs.health, 90), warmth: 50 });
       const c = counts(a);
@@ -579,11 +641,19 @@ export async function runProbe(probe: string, variant: string, seed: number, day
         if (!c.berry && (w.t - begin) % v.every === 0) { giveItems(w, a, "berry"); a.heading = Math.random() * Math.PI * 2; }
         continue;
       }
+      a.wearing ??= { k: "hide", hp: 1, born: w.t };
       if (ways.includes(STONE) || ways.includes(FLINT)) { if ((c.stone ?? 0) < 3) giveItems(w, a, "stone", 3 - (c.stone ?? 0)); }
       // two flints, so one chipped away mid-try doesn't leave them only the other way to choose for the next
       if (ways.includes(FLINT) && (c.flint ?? 0) < 2) giveItems(w, a, "flint", 2 - (c.flint ?? 0));
-      if (ways.includes(RUB) && (c.stick ?? 0) < 3) giveItems(w, a, "stick", 3 - (c.stick ?? 0));
-      if ((c.fiber ?? 0) < 2) giveItems(w, a, "fiber", 2 - (c.fiber ?? 0), bagged ? 0 : deadAt(w, a, REF[0]));
+      const sized = (p: { size: Stack["size"] }) => a.inv.filter((s) => s.k === "stick" && s.size?.d === p.size!.d).length;
+      for (const [p, want] of v.sticks === "mixed" ? ([[TWIG, 6], [THICK, 3]] as const) : ([[TWIG, 3]] as const)) for (let k = sized(p); k < want; k++) giveStack(w, a, piece(w, p));
+      if (v.sticks === "mixed") {
+        const at = a.inv.flatMap((s, j) => (s.k === "stick" ? [j] : [])), sticks = at.map((j) => a.inv[j]).sort(() => Math.random() - 0.5);
+        at.forEach((j, q) => { a.inv[j] = sticks[q]; });
+      }
+      if (ways.includes(RUB)) for (let k = a.inv.filter((s) => s.k === "stick" && !s.size).length; k < 2; k++) a.inv.unshift({ k: "stick", hp: 1, born: w.t, m: KEPT });
+      const kept = a.inv.find((s) => s.k === "fiber");
+      if ((c.fiber ?? 0) < 2) giveItems(w, a, "fiber", 2 - (c.fiber ?? 0), kept ? moistureOf(kept) : KEPT_TINDER);
     }
     if (sowing) {
       // whatever came up last tick, and anything else that grew in, cleared off the plots
@@ -608,8 +678,8 @@ export async function runProbe(probe: string, variant: string, seed: number, day
         sown.push({ agent: a.id, key: e.key, t: e.t, now: e.now, worked: up, testing: testing.includes(a.id) });
       }
     });
-    if (!sowing && w.t % 12 === 6) w.agents.forEach((a, i) => {
-      const now = conditionsNow(w, a, way.verb, a, way.inputs), ok = catchesNow(w, a, ways[0]);
+    if (!sowing && v.sticks !== "mixed" && w.t % 12 === 6) w.agents.forEach((a, i) => {
+      const now = conditionsNow(w, a, way.verb, a, way.inputs), ok = lightsNow(w, a, ways[0], KEPT_TINDER);
       bump(cases[i], now, ok);
       if (change && w.t >= half) bump(after[i], now, ok);
     });
@@ -626,6 +696,9 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     if (brainKind() !== "random") for (;;) { await Bun.sleep(asking() ? 10 : 0); if (!asking()) { await Bun.sleep(0); if (!asking()) break; } }
   }
   for (const a of w.agents) note(a, true);
+  // the kindling probe's cases are the lays they made, each as it came off (the act's own formulas): what goes in a lay
+  // is theirs to choose, so no hour stands for one
+  if (!sowing && v.sticks === "mixed") for (const x of attempts) bump(cases[w.agents.findIndex((a) => a.id === x.agent)], x.now, x.worked);
 
   // what they did, by thirds of the run, tests aside: tries at a fire, which failed just where the formulas say it can't
   // work, or plantings as they went in, by what the formulas say comes of them
@@ -654,7 +727,21 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     const failing = judged.some((cs) => cs.some((c) => c.ok * 2 < c.n));
     // whose theories rule it out wherever it mostly fails, and whose somewhere it mostly works
     const knows = (j: Judged) => !!j && j.missed === 0, overcautious = (j: Judged) => !!j && j.over > 0;
-    const causes = change?.causes ?? v.causes, wasted = (x: Attempt) => !x.worked;
+    // the causes as the formulas have them, from the cases met: the conditions every case they hold in mostly fails,
+    // where they hold wherever most fail (planting's causes only lower the odds, so the probe's own stand there)
+    const derived = derive(judged.flat());
+    const causes = sowing || !derived.covered || !derived.causes.length ? change?.causes ?? v.causes : derived.causes, wasted = (x: Attempt) => !x.worked;
+    if (!sowing) Object.assign(truth, { derived: derived.causes.join(" or ") || "none", covered: derived.covered ? 1 : 0 });
+    // what someone learning nothing would come to (knowing the ways, holding no theory) and someone holding the true one
+    // (the ways ruled out wherever a cause holds), on the same cases: each judged number's floor and ceiling
+    const nothing = ways.map((k) => knownWay(k, begin, 1)), truly = nothing.map((b) => ({ ...b, unless: [...causes] }));
+    const bounds = (js: Judged[]) => ({
+      acc: avg(js.flatMap((j) => (j ? [j.acc] : []))),
+      right: failing ? js.filter(knows).length / n : null,
+      exact: failing ? js.filter((j) => knows(j) && !overcautious(j)).length / n : null,
+    });
+    const lo = bounds(judged.map((cs) => judge(nothing, cs))), hi = bounds(judged.map((cs) => judge(truly, cs)));
+    Object.assign(metrics, { accFloor: lo.acc, accCeil: hi.acc, rightFloor: lo.right, rightCeil: hi.right, exactFloor: lo.exact, exactCeil: hi.exact });
     Object.assign(metrics, {
       right: failing ? ends.filter(knows).length / n : null,
       wasted: share(third(2), wasted),
@@ -710,6 +797,12 @@ export async function runProbe(probe: string, variant: string, seed: number, day
         ? { weather: w.agents.filter((a) => at(a, end).some((b) => b.unless?.some((t) => t.split("+").some((c) => !c.startsWith("!") && !ofPlace(c))))).length / n }
         : !sowing && v.bystander ? { bystander: w.agents.filter((a) => names(at(a, end), v.bystander!)).length / n } : {}),
       ...(v.causes.length > 1 ? { partly: ends.filter((j, i) => !!j && j.missed > 0 && j.missed < failingKeys(i)).length / n } : {}),
+      // what their lays held, for the kindling probe: none of the thick sticks, early and late, against picking three of
+      // the nine at hand blind and picking the three thinnest
+      ...(!sowing && v.sticks === "mixed" ? {
+        thin: share(third(2), (x) => !x.now.includes("thick")), thinEarly: share(third(0), (x) => !x.now.includes("thick")),
+        thinFloor: (6 * 5 * 4) / (9 * 8 * 7), thinCeil: 1,
+      } : {}),
     });
     // for planters who start out blaming something: those who still blame what they were wrong about, and of those who
     // started out not blaming the true cause, those whose theories came to rule it out
@@ -722,6 +815,25 @@ export async function runProbe(probe: string, variant: string, seed: number, day
       });
     }
   }
+  // theories formed and dropped, each condition's own
+  const turns: Record<string, number> = {};
+  for (const list of states.values()) for (let j = 1; j < list.length; j++) {
+    const terms = (k: number) => new Set(list[k].bs.flatMap((b) => b.unless ?? []));
+    const was = terms(j - 1), now = terms(j);
+    for (const t of new Set([...was, ...now])) if (was.has(t) !== now.has(t)) turns[t] = (turns[t] ?? 0) + 1;
+  }
+  metrics.churn = Object.values(turns).reduce((s, x) => s + x, 0) / n;
+  for (const [t, x] of Object.entries(turns)) truth[`churn:${t}`] = Math.round((x / n) * 100) / 100;
+  // which claims the run's own truth leaves out of reach of the true theory, or met by learning nothing
+  const num = (m: string) => metrics[m];
+  const passes = (c: Claim, get: (m: string) => number | null | undefined) => {
+    if ("gap" in c) return null;
+    const x = get("above" in c ? c.above : c.below);
+    return typeof x !== "number" ? null : "above" in c ? x > c.value : x < c.value;
+  };
+  const plain = P.claims.filter((c) => !c.scaled && !("gap" in c) && typeof num(`${"above" in c ? c.above : c.below}Ceil`) === "number");
+  const reach = (end: "Floor" | "Ceil") => plain.filter((c) => passes(c, (m) => num(`${m}${end}`)) === (end === "Floor"));
+  Object.assign(truth, { unreachable: reach("Ceil").map((c) => c.id).join(" ") || "none", free: reach("Floor").map((c) => c.id).join(" ") || "none" });
   hooks.weather = hooks.options = undefined;
   traceListeners.splice(traceListeners.indexOf(listen), 1);
   return { probe, variant, seed, brain, days, people: n, secs: Math.round((performance.now() - t0) / 1000), attempts: attempts.length, jev: { calls: w.jev.calls, tokens: w.jev.tokens }, truth, metrics };

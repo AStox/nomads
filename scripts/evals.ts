@@ -50,7 +50,14 @@ import { bootstrap, mean } from "./stats";
 // worlds 5, live 5: the answer key worked out from the same formulas for every way people used, never tried.
 // probes 5: choose's two ways look alike to start with again (both as quick as the quicker), as before probes 4, which
 // started each at its true time and so had everyone planning the faster from their first try.
-const VERSION: Record<string, number> = { probes: 5, worlds: 5, live: 5 };
+// probes 6, worlds 6, live 6: fire is a bed of pieces (docs/plans/2026-10-07-001-feat-fire-heat-physics-plan.md): the
+// fire probes' ways are lays of tinder and three twigs, judged hour by hour by what the act itself comes to (formulas.ts
+// predict), their causes derived from the cases met; their people wear a hide, so the tinder they hold dries against
+// them, and rain comes seldom enough (one hour in twenty) for the damp it leaves to come and go; a claim marked scaled
+// is held run by run between what learning nothing and the true theory score; truthward and unsuperstitious are gone,
+// since learning nothing meets them; theories' churn is counted; the kindling probe is new. The answer key stages lays
+// from the island's own pieces and fires as people keep them.
+const VERSION: Record<string, number> = { probes: 6, worlds: 6, live: 6 };
 const ROOT = join(import.meta.dir, ".."), DATA = join(ROOT, "data/evals");
 type Numbers = Record<string, number | null>;
 // what a tier measured: by variant ("blame/real", "seen"...), by seed, its numbers
@@ -145,12 +152,18 @@ const range = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
 // ---------- comparing ----------
 const fmt = (x: number | null | undefined) => (x === null || x === undefined || Number.isNaN(x) ? "-" : Math.abs(x) >= 10 ? x.toFixed(1) : x.toFixed(2));
 const values = (runs: Record<string, Numbers> | undefined, m: string) => Object.values(runs ?? {}).map((r) => r[m]).filter((x): x is number => typeof x === "number");
+// A claim over the seeds: its number (or a gap of two) held against its value with a 95% interval, a scaled one as the
+// share of the way each run came from its floor to its ceiling (runs with no room between them aside).
 function claimHolds(c: Claim, runs: Record<string, Numbers> | undefined): boolean | null {
   if ("gap" in c) {
     const xs = Object.values(runs ?? {}).map((r) => (typeof r[c.gap[0]] === "number" && typeof r[c.gap[1]] === "number" ? r[c.gap[0]]! - r[c.gap[1]]! : null)).filter((x): x is number => x !== null);
     return xs.length < 2 ? null : bootstrap(xs)[0] > c.value;
   }
-  const xs = values(runs, "above" in c ? c.above : c.below);
+  const m = "above" in c ? c.above : c.below;
+  const xs = !c.scaled ? values(runs, m) : Object.values(runs ?? {}).flatMap((r) => {
+    const [x, lo, hi] = [r[m], r[`${m}Floor`], r[`${m}Ceil`]];
+    return typeof x === "number" && typeof lo === "number" && typeof hi === "number" && hi - lo > 1e-9 ? [(x - lo) / (hi - lo)] : [];
+  });
   if (xs.length < 2) return null;
   const [lo, hi] = bootstrap(xs);
   return "above" in c ? lo > c.value : hi < c.value;

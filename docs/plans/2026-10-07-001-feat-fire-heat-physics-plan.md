@@ -757,6 +757,11 @@ The act's counts for ringing (three) and covering (six, or any clay) are kept as
 
 **Verification:** No claim is unreachable by the true theory, and none is met by learning nothing. Churn is reported beside the claims.
 
+**Result (2026-10-08):** restaged; on seeds 1 and 2 every fire probe's truth is pure (1.0), the causes derived from the cases match the staged ones (the wind with its breeze, which comes with it in the probe sky), and no claim is unreachable or free.
+- Tinder held bare in the open takes up the night's damp air (0.07 by day, 0.25 by night in a dry sky), and tinder rained on stays damp about nine hours against the body. Under the old sky, raining 35% of hours, it was damp 98% of hours. So probe people wear a hide, keeping what they hold against them as wetness.ts models, and rain comes one hour in twenty, or at night three in ten and by day one in fifty. Blame now fails 14 to 23% of hours, two 60 to 69%, except 30 to 36%.
+- Kindle's truth is the lays people made, each judged by the act. Thick wood is the derived cause; people form that theory within about six hours, so 95% of first-third lays are already thin.
+- Truthward and unsuperstitious are dropped: learning nothing meets them. A learning claim (late against early) is held only against learning nothing, since a learner holding the true theory from the start has nothing to learn.
+
 - [ ] **Unit 12: Load-time migration**
 
 **Goal:** A save from before this change loads into the new physics without a version bump, and can be rolled back.
