@@ -2,17 +2,17 @@
 // turns only on the materials and the place they're worked at, the decision the act itself comes to (physics.ts), asked
 // of that place as it most plainly is, with the things in hand and nothing done; for the rest, the same formulas the
 // acts run, given what decides them where and when it's done (Situation): how wet the tinder is, the wind, the spot,
-// the weather ahead for what's done to the ground, the fish in reach. The answer key (scripts/truth.ts) computes every
-// way by it.
-import type { Act, World } from "./world";
+// the weather ahead for what's done to the ground, the fish in reach, and for what's done with fire the pieces laid, the
+// air a fire stands in and the fire itself. The answer key (scripts/truth.ts) computes every way by it.
+import type { Act, Stack, World } from "./world";
 import { THING_MATERIAL, depth, p } from "./materials";
 import {
   DURATION, HAND, PIT_SOIL, SEED_SOIL, STILL, airy, arrowy, digPower, eating, emberCatches, forgeGain, frictionPer, heating, heldStrike, joining,
-  knapPer, leatherOf, placing, rubbedOf, rubbing, shaping, shelterOf, sparkCatches, sparksPer, spotNear, splitDamage, stave, strikeDamage, throwDamage,
-  throwsSparks, usual, wearing, wetting, type Decision, type Fields, type Fire,
+  knapPer, laidOf, leatherOf, placing, rubbedOf, rubbing, shaping, shelterOf, sparkCatches, sparksPer, spotNear, splitDamage, stave, strikeDamage,
+  RED, throwDamage, throwsSparks, usual, wearing, wetting, type Decision, type Fields, type Fire,
 } from "./physics";
-import { advance, feed, kindle, lay, type Bed } from "./combustion";
-import { BURNS, PHYS } from "./fuel";
+import { advance, feed, kindle, lay, lighting, setIn, type Air, type Bed } from "./combustion";
+import { BURNS, COPPER, PHYS, physOf } from "./fuel";
 import { rulingKey } from "./sim";
 import { tinder } from "./wetness";
 import { bedAt, nicheOf, seedlingFate, treeOf, type Ahead } from "./seedling";
@@ -23,8 +23,17 @@ import { bedAt, nicheOf, seedlingFate, treeOf, type Ahead } from "./seedling";
 export type Prediction = { ok: boolean; gives: string[]; builds?: string; effect?: string; at: string | null; ticks: number; spot?: readonly [number, number] };
 // Where and when it's done, for what turns on more than the materials: how wet the tinder they'd light a fire with is
 // (wetness.ts tinderOf; null for none), the wind at head height, the spot and, for what's done to the ground, the weather
-// of the hours ahead there (seedling.ts ahead), and the fish swimming within reach of the water.
-export type Situation = { tinder: number | null; wind: number; spot: { px: number; py: number; heading?: number }; ahead: Ahead; fish: number };
+// of the hours ahead there (seedling.ts ahead), and the fish swimming within reach of the water. For what's done with
+// fire (fire-constants sec. 32): the pieces they'd lay or hold as they hold them (for a rub, those after the two rubbed),
+// the air a fire stands in there (the one they're at, or one they'd light, physics.ts layAt), and the fire they're at as
+// it burns then, with its setup (none for none).
+export type Situation = {
+  tinder: number | null; wind: number; spot: { px: number; py: number; heading?: number }; ahead: Ahead; fish: number;
+  pieces: Stack[]; air: Air; fire: Fire | null;
+};
+// Where a way that turns on a fire is done, if not at a place as it most plainly is: the fire, the air it burns in and the
+// pieces as held.
+type Here = { fire: Fire | null; air: Air; stacks: Stack[] };
 
 // The places a way is done at, as they most plainly are: a fire as fireKind tells them apart, staged as the usual lay lit
 // and burning ten minutes in still air (physics.ts STILL), ringed by three stones for a hearth, heaped over as well for a
@@ -42,9 +51,11 @@ function staged(at: string | null): Fire | null {
   return { kind: "fire", bed: at === "forge" ? forging : burning, contained: ringed, ...(ringed ? { walls: { tall: stone, width: RING * stone } } : {}), covered: at === "kiln", charcoal: at === "forge" ? 1 : 0 };
 }
 const LEAN_TO: Record<string, number> = { stick: 4 };
+// The stones round a fire, by how much stone stands round it.
+const rings = (f: Fire | null) => Math.round((f?.walls?.width ?? 0) / PHYS.stone.d);
 
-// fish: how many swim within reach of the water, none unless said.
-export function predictMaterial(w: World, f: Fields, fish = 0): Prediction | { ask: string } | { why: string } {
+// fish: how many swim within reach of the water, none unless said; here: the fire it's done at, if not a staged one.
+export function predictMaterial(w: World, f: Fields, fish = 0, here?: Here): Prediction | { ask: string } | { why: string } {
   const unknown = [...f.inputs, f.tool].find((k) => k && !w.kinds[k]);
   if (unknown) return { why: `no ${unknown} has been made` };
   const at = f.at ?? null;
@@ -52,11 +63,11 @@ export function predictMaterial(w: World, f: Fields, fish = 0): Prediction | { a
   const held = true, items = f.inputs, ticks = DURATION[f.verb] ?? 4;
   // a fan they hold blows air into the fire while they heat things in it
   const fan = f.tool && airy(w.kinds[f.tool]) ? f.tool : undefined;
-  const fire = staged(at);
+  const fire = here ? here.fire : staged(at), air = here?.air, stacks = here?.stacks;
   const predicted = (d: Decision): Prediction => ({ ok: d.ok, gives: d.fields.gives, builds: d.builds, effect: d.effect, at: d.fields.at ?? null, ticks });
   switch (f.verb) {
     case "join": case "heat": {
-      const d = f.verb === "join" ? joining(w, items, { held }) : heating(w, items, { held, fire, fan });
+      const d = f.verb === "join" ? joining(w, items, { held }) : heating(w, items, { held, fire, fan, air, stacks });
       if (d !== "ask") return predicted(d);
       // what doAct makes of it (sim.ts): anything tied twice over already is no use, unasked; anything else, what a
       // ruling settles, kept in w.rulings under this key
@@ -66,7 +77,7 @@ export function predictMaterial(w: World, f: Fields, fish = 0): Prediction | { a
     // one fish or two, a basket brings up fish
     case "wet": return predicted(wetting(w, items, { held, water: at === "water", fish: { basket: fish, line: fish }, skill: 0, draw: () => 1 }));
     case "shape": return predicted(shaping(w, items, f.shape, { held }));
-    case "place": return predicted(placing(w, items, { held, fire, ring: fire?.contained ? RING : 0, pit: at === "pit", own: at === "home" ? { parts: LEAN_TO, shelter: shelterOf(w, LEAN_TO) } : null, empty: false }));
+    case "place": return predicted(placing(w, items, { held, fire, ring: rings(fire), pit: at === "pit", own: at === "home" ? { parts: LEAN_TO, shelter: shelterOf(w, LEAN_TO) } : null, empty: false, stacks, air }));
     case "wear": return predicted(wearing(w, items, { held }));
     case "eat": return predicted(eating(w, items[0], { held, sick: false }));
   }
@@ -93,17 +104,19 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
       if (!tk) return { why: `no ${f.target} has been made` };
       const rest = [...f.inputs];
       rest.splice(rest.indexOf(tk.id), 1);
-      const over = rest[0];
+      const over = rest.find((k) => tinder(w.kinds[k])) ?? rest[0];
       switch (heldStrike(tk, !!over)) {
         case "sparks": {
           if (!throwsSparks(tool, tk)) return out(false, 4);
+          // a spark caught in the lay's tinder, and the lay followed where the fire would stand (combustion.ts lighting)
           const blows = Math.ceil(1 / sparksPer(tool, tk));
-          return tinder(w.kinds[over]) && sparkCatches(s.tinder ?? 0, s.wind) ? out(true, blows, { builds: "fire" }) : out(false, blows);
+          if (!tinder(w.kinds[over]) || !sparkCatches(s.tinder ?? 0, s.wind)) return out(false, blows);
+          return lighting(laidOf(w, s.pieces), s.air).lasts ? out(true, blows, { builds: "fire" }) : out(false, blows);
         }
         case "forge": {
-          // only at a fire hot enough to keep it soft, a forge's; the edge drawn out blow by blow
+          // only at a fire that holds the metal at red heat where it sits; the edge drawn out blow by blow
           const cold = (tk.parts?.[0] && w.kinds[tk.parts[0]]) || tk, g = forgeGain(tool);
-          if (at !== "forge") return out(false, 1, { at: "forge" });
+          if (!s.fire?.bed || setIn(s.fire.bed, s.air, physOf(w.kinds, tk)?.d ?? COPPER.d) < RED) return out(false, 1, { at: "forge" });
           if (g < 0.02) return out(false, 6, { at: "forge" });
           let n = 0, sharp = p(cold, "sharp");
           while (sharp < 0.95 && n < 30) sharp = 1 - (1 - p(cold, "sharp")) * (1 - g) ** ++n;
@@ -127,8 +140,12 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
       const r = rubbing(A, B);
       if (r.does === "leather") return out(true, r.ticks, { gives: [leatherOf(w.kinds, r.hide).id] });
       if (r.does === "friction") {
+        // the ember goes into the lay's tinder, or what lies about their feet, a handful of fine blades; then the lay is
+        // followed where the fire would stand, as a spark's is
         const ticks = Math.ceil(1 / frictionPer(r.bow, 0));
-        return s.tinder !== null && emberCatches(s.tinder) ? out(true, ticks, { builds: "fire" }) : out(false, ticks, { effect: "heat" });
+        if (s.tinder === null || !emberCatches(s.tinder)) return out(false, ticks, { effect: "heat" });
+        const own = s.pieces.some((x) => tinder(w.kinds[x.k])), laid = laidOf(w, s.pieces);
+        return lighting(own ? laid : [{ phys: PHYS.fiber, n: 1, m: s.tinder }, ...laid], s.air).lasts ? out(true, ticks, { builds: "fire" }) : out(false, ticks);
       }
       if (r.does === "nothing") return out(false, r.ticks);
       return out(true, r.ticks, { gives: [rubbedOf(r)] });
@@ -156,5 +173,5 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
       return throws <= 6 ? out(true, 3 * throws, { gives: Object.keys(mat.breaks) }) : out(false, 18);
     }
   }
-  return predictMaterial(w, f, s.fish);
+  return predictMaterial(w, f, s.fish, { fire: s.fire, air: s.air, stacks: s.pieces });
 }

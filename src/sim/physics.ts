@@ -193,6 +193,12 @@ export function beside(w: World, e: { px: number; py: number; heading?: number }
   }
   return dryNear(w, e.px, e.py) ?? [e.px, e.py];
 }
+// Where a fire someone lights from a lay stands, 0.8 m in front of them, and the air it burns in there (fire-constants
+// sec. 32): what a strike, a rub or a carried flame set into a lay is followed in, and what formulas.ts asks of it.
+export function layAt(w: World, a: { px: number; py: number; heading?: number }) {
+  const [px, py] = beside(w, a, 0.8);
+  return { px, py, air: bedAir(w, { px, py }) };
+}
 
 export const CARRY = 16;
 export type Fields = { verb: string; inputs: string[]; tool?: string | null; target?: string; at?: string | null; gives: string[]; builds?: string; effect?: string; shape?: string };
@@ -556,7 +562,7 @@ function sparkTick(w: World, a: Agent, act: Act, tool: Kind, tk: Kind, st: { pro
   if (st.progress * per < 1) return { done: false };
   const numbers = { blows: st.progress };
   if (!tinder(over) || !sparkCatches(moistureOf(chosen[act.items.indexOf(over.id)]), airOn(w, a).wind)) return { done: true, out: outcome({ text: `${how} threw sparks into it, but it wouldn't catch.`, fields, numbers }) };
-  const [px, py] = beside(w, a, 0.8), lit = lighting(laidOf(w, chosen), bedAir(w, { px, py }));
+  const at = layAt(w, a), lit = lighting(laidOf(w, chosen), at.air);
   if (!lit.lasts) {
     const uses = tally(act.items.filter((k) => k === over.id));
     takeChosen(a, chosen, uses);
@@ -564,7 +570,7 @@ function sparkTick(w: World, a: Agent, act: Act, tool: Kind, tk: Kind, st: { pro
   }
   const uses = tally(act.items);
   takeChosen(a, chosen, uses);
-  mark(w, newFire(w, px, py, lit.bed!, a.id));
+  mark(w, newFire(w, at.px, at.py, lit.bed!, a.id));
   fields.builds = "fire";
   return { done: true, out: outcome({ ok: true, text: `${how} threw a spark into it, and it caught. A fire!`, uses, builds: "fire", fields, numbers }) };
 }
@@ -664,7 +670,7 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
     const into = own ? { name: w.kinds[own.k].name, m: moistureOf(own) } : about && !about.kind ? about : null;
     if (chosen && into && emberCatches(into.m)) {
       const pieces = own ? laidOf(w, lay) : [{ phys: PHYS.fiber, n: 1, m: into.m }, ...laidOf(w, lay)];
-      const [px, py] = beside(w, a, 0.8), lit = lighting(pieces, bedAir(w, { px, py }));
+      const at = layAt(w, a), lit = lighting(pieces, at.air);
       const what = `Rubbing the ${A.name} against the ${B.name} got hot enough to catch the ${into.name}`, numbers = { heat: st.heat };
       if (!lit.lasts) {
         const uses = own ? tally(laid.filter((k) => k === own.k)) : {};
@@ -673,7 +679,7 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
       }
       const uses = tally(laid);
       takeChosen(a, lay, uses);
-      mark(w, newFire(w, px, py, lit.bed!, a.id));
+      mark(w, newFire(w, at.px, at.py, lit.bed!, a.id));
       fields.builds = "fire";
       return { done: true, out: outcome({ ok: true, text: `${what}. A fire!`, uses, builds: "fire", fields, numbers }) };
     }
@@ -1363,7 +1369,7 @@ export function place(w: World, a: Agent, act: Act, choose: Chooser = firstHeld(
   const own = nearestThing(w, a.px, a.py, ["structure"], (t) => (t.owner === a.id || a.home === t.id || t === empty) && reaches(a, t) && !nearestThing(w, t.px, t.py, ["fire"], () => true, 1), 6);
   // a fire they light from a carried flame stands where they lay it, in the air there
   const stacks = choose(act.items), lights = !(fire && ablaze(fire)) && act.items.some((k) => isFlame(w.kinds[k]));
-  const spot = lights ? beside(w, a, 0.8) : null, air = fire && ablaze(fire) ? bedAir(w, fire) : spot ? bedAir(w, { px: spot[0], py: spot[1] }) : undefined;
+  const spot = lights ? layAt(w, a) : null, air = fire && ablaze(fire) ? bedAir(w, fire) : spot?.air;
   const { claims, work, ...d } = placing(w, act.items, {
     held: !!stacks, fire, ring: ring ? Object.values(ring.parts!).reduce((t, n) => t + n, 0) : 0, pit: !!pit, own, empty: !!empty, stacks, air,
   });
@@ -1375,7 +1381,7 @@ export function place(w: World, a: Agent, act: Act, choose: Chooser = firstHeld(
   const taken = takeChosen(a, stacks, d.uses);
   switch (work.does) {
     case "light":
-      if (work.bed && spot) mark(w, newFire(w, spot[0], spot[1], work.bed, a.id));
+      if (work.bed && spot) mark(w, newFire(w, spot.px, spot.py, work.bed, a.id));
       break;
     case "feed": {
       const f = fire!;

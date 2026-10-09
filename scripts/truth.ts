@@ -11,16 +11,17 @@
 // --runs: a directory of scripts/theories.ts runs of this island. Their ways are what gets worked out, and the things
 // they made and the rulings they settled come too, so the same things can be made here.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { W, H, dryAt, meters, newWorld, rng, shoreOf, stageOf, type World } from "../src/sim/world";
+import { W, H, addThing, dryAt, meters, newWorld, rng, shoreOf, stageOf, type Stack, type Thing, type World } from "../src/sim/world";
 import { forecast } from "../src/sim/ecology";
-import { FISH_REACH, giveItems, lineLike, openWater, type Fields } from "../src/sim/physics";
+import { FISH_REACH, bedAir, firstHeld, gathered, giveItems, giveStack, layAt, lineLike, openWater, removeThing, usual, type Fields, type Fire } from "../src/sim/physics";
 import { airOn, islandTemp } from "../src/sim/air";
 import { lightOn, workRate } from "../src/sim/light";
-import { put, shelve } from "../src/sim/space";
+import { nearestThing, put, shelve } from "../src/sim/space";
 import { fieldsOf, ofPlace } from "../src/sim/beliefs";
 import { conditionsNow } from "../src/sim/sim";
-import { deadAt, deadHour, tinder, tinderOf } from "../src/sim/wetness";
-import { stackPhys } from "../src/sim/fuel";
+import { deadAt, deadHour, moistureOf, tinder, tinderOf } from "../src/sim/wetness";
+import { BURNS, PHYS, pieceOf, stackPhys } from "../src/sim/fuel";
+import { advance, alight, feed, kindle, lay } from "../src/sim/combustion";
 import { ahead } from "../src/sim/seedling";
 import { predict, type Prediction } from "../src/sim/formulas";
 import { seedRandom } from "./seeded";
@@ -106,8 +107,36 @@ for (const [key, seen] of Object.entries(aims)) {
 }
 const meant = (plan: Plan, r: Prediction) => r.ok && (!plan.builds || r.builds === plan.builds) && (!plan.gives.length || plan.gives.some((k) => r.gives.includes(k)));
 
-// A situation for a way: where (the water's edge for what needs water), when, and what they hold: the way's things,
-// tinder as wet as what lies about there. What the formulas make of it there, and what anyone could see.
+// The things a way is done with, as the island gives them: a piece of wood cut from the nearest plant or lying wood that
+// gives one (physics.ts gathered: its own size, species and water), anything else as wet as dead stuff its thickness
+// lying there, as much as it holds.
+const SOURCES: Record<string, Thing["kind"][]> = { stick: ["stick", "dead_bush", "bush"], log: ["fallen_log", "tree"] };
+function pieceHere(k: string, at: { px: number; py: number }): Stack {
+  const from = SOURCES[k] && nearestThing(w, at.px, at.py, SOURCES[k], (t) => !!pieceOf(t, k), 2);
+  if (from) return gathered(w, from, k);
+  const x = stackPhys(w.kinds, { k });
+  return { k, hp: 1, born: w.t, ...(x && Math.min(x.mmax, deadAt(w, at, x.d)) > 0 ? { m: Math.min(x.mmax, deadAt(w, at, x.d)) } : {}) };
+}
+// A fire as people keep one, for a way done at a fire: the usual lay (physics.ts usual) lit 0.8 m in front of them in the
+// hour's air and burning up to an hour and a half, until it's caught on and before it's out [design], set up as the way's
+// place is: ringed with three stones for a hearth, heaped over as well for a kiln, fed a log's charcoal ten minutes before
+// for a forge (formulas.ts stages the same).
+const FIRE_PLACES: Record<string, true> = { fire: true, hearth: true, kiln: true, forge: true };
+function fireHere(at: string): Thing {
+  const spot = layAt(w, stand), air = spot.air, stone = PHYS.stone.d;
+  let bed = kindle(lay(usual())!);
+  for (let guard = 0; guard < 20; guard++) {
+    const tried = advance(bed, 60 + Math.random() * 89 * 60, air);
+    if (alight(tried)) { bed = tried; break; }
+  }
+  if (at === "forge") bed = advance(feed(bed, [{ phys: { ...PHYS.charcoal, d: PHYS.log.d, mass: PHYS.log.mass * BURNS.softwood.charYield }, n: 1, m: 0 }]), 600, air);
+  const setup: Partial<Fire> = at === "fire" ? {} : { contained: true, walls: { tall: stone, width: (at === "kiln" ? 6 : 3) * stone }, covered: at === "kiln", charcoal: at === "forge" ? 1 : 0 };
+  return addThing(w, "fire", spot.px, spot.py, { born: w.t, bed, ...setup });
+}
+
+// A situation for a way: where (the water's edge for what needs water), when, and what they hold: the way's things as the
+// island gives them, and for a way done at a fire, a fire as people keep one. What the formulas make of it there, and
+// what anyone could see.
 type Trial = { now: string[]; worked: boolean; ticks: number };
 function situation(plan: Plan): Trial | string {
   const f = plan.fields, water = f.at === "water" || f.verb === "wet";
@@ -117,32 +146,41 @@ function situation(plan: Plan): Trial | string {
   put(w, stand, px, py);
   stand.heading = Math.random() * Math.PI * 2;
   stand.inv = [];
-  // each as wet as dead stuff its thickness lying there, as much as it holds
-  for (const k of [...f.inputs, ...(f.tool ? [f.tool] : [])]) {
-    const x = stackPhys(w.kinds, { k });
-    giveItems(w, stand, k, 1, x ? Math.min(x.mmax, deadAt(w, stand, x.d)) : 0);
-  }
-  const over = f.verb === "strike" ? f.inputs.find((k) => tinder(w.kinds[k])) : undefined;
-  const lit = f.verb === "strike" ? (over ? tinderOf(w, stand, over) : null) : tinderOf(w, stand);
+  for (const k of [...f.inputs, ...(f.tool ? [f.tool] : [])]) if (!giveStack(w, stand, pieceHere(k, stand))) giveItems(w, stand, k);
+  // what they'd lay or hold, as the act takes them up: a strike's lay without what it strikes, a rub's after the two rubbed
+  const lay = f.verb === "strike" && f.target ? f.inputs.filter((k, j) => j !== f.inputs.indexOf(f.target!)) : f.inputs;
+  const held = firstHeld(stand.inv)(lay) ?? [], pieces = f.verb === "rub" ? held.slice(2) : held;
+  // the tinder a spark or an ember would catch in: the lay's own, or for a rub without any, what lies about their feet
+  const own = pieces.find((s) => tinder(w.kinds[s.k])), about = own ? null : tinderOf(w, stand);
+  const lit = own ? moistureOf(own) : f.verb === "strike" ? null : about && !about.kind ? about.m : null;
+  const fire = f.verb === "heat" || (f.verb === "place" && f.at && FIRE_PLACES[f.at]) ? fireHere(f.at ?? "fire") : null;
   const reach = f.inputs.some((k) => lineLike(w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket;
   const fish = w.animals.filter((m) => m.species === "fish" && meters(m, stand) <= reach).length;
   const ground = f.verb === "plant" || f.verb === "pour" || f.verb === "dig";
-  const r = predict(w, f, { tinder: lit ? lit.m : null, wind: airOn(w, stand).wind, spot: stand, ahead: ground ? ahead(w, px, py, w.t, hours.slice(i + 1)) : { soil: [], temp: [] }, fish });
-  if ("why" in r) return r.why;
-  // a ruling settled in the runs is the law for it; one never settled leaves it unsaid
-  const ruled = "ask" in r ? w.rulings[r.ask] : undefined;
-  const done: Prediction | null = "ask" in r ? (ruled ? { ok: ruled.useful, gives: ruled.useful ? [`law:${r.ask}`] : [], at: f.at ?? null, ticks: 8 } : null) : r;
-  if (!done) return "no ruling was settled for it";
-  const at = done.spot ? { px: done.spot[0], py: done.spot[1] } : stand;
-  return { now: conditionsNow(w, stand, f.verb, at, f.inputs), worked: meant(plan, done), ticks: done.ticks / (f.verb === "eat" ? 1 : workRate(lightOn(w, stand).bright)) };
+  const r = predict(w, f, {
+    tinder: lit, wind: airOn(w, stand).wind, spot: stand, ahead: ground ? ahead(w, px, py, w.t, hours.slice(i + 1)) : { soil: [], temp: [] }, fish,
+    pieces, air: fire ? bedAir(w, fire) : layAt(w, stand).air, fire,
+  });
+  const seen = (done: Prediction) => conditionsNow(w, stand, f.verb, done.spot ? { px: done.spot[0], py: done.spot[1] } : stand, f.inputs);
+  try {
+    if ("why" in r) return r.why;
+    // a ruling settled in the runs is the law for it; one never settled leaves it unsaid
+    const ruled = "ask" in r ? w.rulings[r.ask] : undefined;
+    const done: Prediction | null = "ask" in r ? (ruled ? { ok: ruled.useful, gives: ruled.useful ? [`law:${r.ask}`] : [], at: f.at ?? null, ticks: 8 } : null) : r;
+    if (!done) return "no ruling was settled for it";
+    return { now: seen(done), worked: meant(plan, done), ticks: done.ticks / (f.verb === "eat" ? 1 : workRate(lightOn(w, stand).bright)) };
+  } finally {
+    if (fire) removeThing(w, fire);
+  }
 }
 
 const tally = (ts: Trial[]): Tally => ({ n: ts.length, wins: ts.filter((t) => t.worked).length, ticks: ts.reduce((s, t) => s + t.ticks, 0) });
-// What judging a condition like for like sets aside: what comes of it rather than with it (rain soaks the tinder, so
-// the damp it leaves takes none of the rain's blame), and the coarser level of one cut finer (soaked is damp, and deep
-// shade is shade, so neither is set against the other's own kind). The coarser is judged within the finer's levels:
-// damp tinder that isn't soaked against dry, light shade against open sky.
-const AFTER: Record<string, string[]> = { rain: ["damp", "soaked"], soaked: ["damp"], deep: ["shade"] };
+// What judging a condition like for like sets aside: what comes of it rather than with it (rain soaks the tinder and the
+// kindling, so the damp it leaves takes none of the rain's blame, and a breeze blows a fire down to coals and a small
+// fire), and the coarser level of one cut finer (soaked is damp, and deep shade is shade, so neither is set against the
+// other's own kind). The coarser is judged within the finer's levels: damp tinder that isn't soaked against dry, light
+// shade against open sky.
+const AFTER: Record<string, string[]> = { rain: ["damp", "soaked", "sodden"], breezy: ["small", "coals"], soaked: ["damp"], deep: ["shade"] };
 // A condition in and out of it like for like: the trials split by the rest of what was seen of its own sort (the
 // weather and the tinder for those, the spot for a spot's, any ground but its own for a ground, since a spot is of
 // one sort or another), and the odds in it and out of it pooled over the splits that have both, by how much each can
