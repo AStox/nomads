@@ -9,6 +9,7 @@ import { counters, flush, jevCalls, logTo, tickMs, traces } from "./src/sim/trac
 import { campSummary, groupsChanged, groupsDetail, liveCamps, standing } from "./src/sim/groups";
 import { thingById } from "./src/sim/space";
 import { thingView } from "./src/sim/inspect";
+import { migrateSave } from "./src/sim/migrate";
 
 const PORT = Number(process.env.PORT ?? 8095);
 // NOMADS_DATA lets a second, offline copy run beside the live world without touching its save.
@@ -23,6 +24,9 @@ async function load(): Promise<World> {
   if (await f.exists()) {
     const w = (await f.json()) as World;
     if (w.version === VERSION) {
+      // the save kept as it was before its first migration, once, then what's still in the shape a save had before fire
+      // was a bed of pieces read into the new physics (migrate.ts)
+      for (const line of migrateSave(SAVE, w)) console.log("migrate:", line);
       for (const a of w.agents) {
         a.near ??= {};
         a.thinking = false;
