@@ -1,7 +1,7 @@
 ---
 title: "feat: Fire from heat physics, with moisture in everything"
 type: feat
-status: active
+status: completed
 date: 2026-10-07
 origin: docs/brainstorms/2026-10-07-fire-physics-requirements.md
 deepened: 2026-10-07
@@ -306,7 +306,7 @@ next event     = min(group lights, group burns out, group goes out, dt end)
 
 ### Phase 1: Constants and matter
 
-- [ ] **Unit 1: Complete and fix the constants**
+- [x] **Unit 1: Complete and fix the constants**
 
 **Goal:** Every constant that decides a success criterion is in docs/research/fire-constants.md, cited or marked as a gap, before any code reads it.
 
@@ -338,7 +338,7 @@ Then run a throwaway check over a year of island weather. It reports the share o
 
 **Verification:** Every constant the later units name resolves to a row with a citation or a marked gap. The humidity and seasoning results are written down.
 
-- [ ] **Unit 2: Physical properties of kinds**
+- [x] **Unit 2: Physical properties of kinds**
 
 **Goal:** Every kind, natural or made, carries the physical quantities the formulas read, from the constants document or its parts by mass.
 
@@ -376,7 +376,7 @@ Then run a throwaway check over a year of island weather. It reports the share o
 
 **Verification:** Every kind a fire, moisture or heating could meet resolves physical properties traceable to the constants document.
 
-- [ ] **Unit 3: Every piece of fuel has its own size and species**
+- [x] **Unit 3: Every piece of fuel has its own size and species**
 
 **Goal:** Sticks, logs, bark, fiber and other fuel carry thickness, length and species from what they came from, and keep them through every move, into structures and out of them.
 
@@ -423,7 +423,7 @@ Then run a throwaway check over a year of island weather. It reports the share o
 
 **Verification:** No path that moves a fuel item loses its size or species. Unsized items behave exactly as before.
 
-- [ ] **Unit 4: Moisture in everything, then the phase gate**
+- [x] **Unit 4: Moisture in everything, then the phase gate**
 
 **Goal:** Every material thing has a physical moisture content that the weather, fire and shelter move. Today's tinder and litter wetness and their readers move onto it, and phase 1 is gated against round five's baselines.
 
@@ -474,7 +474,7 @@ Then run a throwaway check over a year of island weather. It reports the share o
 
 ### Phase 2: The bed, and fire in the world (Units 5 to 9 land on main together)
 
-- [ ] **Unit 5: The bed physics**
+- [x] **Unit 5: The bed physics**
 
 **Goal:** A pure module that lights, burns, sustains and puts out groups of pieces by the cited formulas, and decides lightings and feedings.
 
@@ -536,7 +536,7 @@ Then run a throwaway check over a year of island weather. It reports the share o
 
 **Third revision (2026-10-08, operator's call):** coals as a compact bed at the heart (packing 0.5, char at its no-shrinkage density, 202.5 kg/m3 for generic wood, which charcoal's record now carries), glowing without widening the flame, and beside a thick piece only when they came from another shell; the storm, gale, soaked-feeding and coals cases restated to what the cited physics gives. All fourteen cases hold (constants document, section 28's "Result of the third revision"). Unit 5's tests pass as the phase 2 checkpoint.
 
-- [ ] **Unit 6: Setups and heat through the physics**
+- [x] **Unit 6: Setups and heat through the physics**
 
 **Goal:** A ring, a cover, blown air and charcoal change a fire only through the bed physics. Heating outcomes read the temperature and state of the bed the item is actually in.
 
@@ -588,7 +588,7 @@ Then run a throwaway check over a year of island weather. It reports the share o
 
 The act's counts for ringing (three) and covering (six, or any clay) are kept as design. Not modelled: smoulder spreading into unlit wood under a cover (its radiation is under the 12 kW/m2 lighting limit), the ring stones' own heat-up, and a thin ash bank as a third cover state.
 
-- [ ] **Unit 7: Lighting with a lay, feeding, choosing pieces, and the conditions people notice**
+- [x] **Unit 7: Lighting with a lay, feeding, choosing pieces, and the conditions people notice**
 
 **Goal:** People light fires by laying tinder, kindling and fuel and putting an ember or flame into it. They feed beds that outlast their lighting, choose pieces by their theories, and notice the conditions that decide all this.
 
@@ -635,7 +635,7 @@ The act's counts for ringing (three) and covering (six, or any clay) are kept as
 
 **Verification:** No path makes a whole fire without a lay deciding it, a failed lighting never names its cause, and every new condition is cut at the turning point the resolved questions give.
 
-- [ ] **Unit 8: Everything that burns, and spread, on the same physics**
+- [x] **Unit 8: Everything that burns, and spread, on the same physics**
 
 **Goal:** Trees, grass, fallen wood and shelters burn as beds of their own pieces. What lies near any bed catches by radiation, flame contact and wind-borne embers. The burning ramp and the scorch counter go.
 
@@ -673,7 +673,7 @@ The act's counts for ringing (three) and covering (six, or any clay) are kept as
 
 **Verification:** No burning ramp or scorch counter remains, and no reader of `burning` is left. One bed model serves campfires and world fires.
 
-- [ ] **Unit 9: What fire gives people, and how it shows**
+- [x] **Unit 9: What fire gives people, and how it shows**
 
 **Goal:** Warmth, hurt, light, hours left and how fires look all follow from the bed's output.
 
@@ -705,7 +705,7 @@ The act's counts for ringing (three) and covering (six, or any clay) are kept as
 
 ### Phase 3: Truth and the gate
 
-- [ ] **Unit 10: Predictions and the answer key**
+- [x] **Unit 10: Predictions and the answer key**
 
 **Goal:** formulas.ts predicts every fire outcome people cause from the same functions and the real bed. The answer key stages them from the island's own fuel.
 
@@ -727,7 +727,7 @@ The act's counts for ringing (three) and covering (six, or any clay) are kept as
 
 **Verification:** The cross-check shows zero disagreements, and the answer key needs no trial runs.
 
-- [ ] **Unit 11: Fire probes restaged and re-based**
+- [x] **Unit 11: Fire probes restaged and re-based**
 
 **Goal:** Every fire probe stages lays, and its causes and claims are re-derived from formulas.ts. Each claim sits between what a learner with no theories scores and what a learner holding exactly the true conditions scores. A new probe checks that people come to include small fuel with large.
 
@@ -757,12 +757,12 @@ The act's counts for ringing (three) and covering (six, or any clay) are kept as
 
 **Verification:** No claim is unreachable by the true theory, and none is met by learning nothing. Churn is reported beside the claims.
 
-**Result (2026-10-08):** restaged; on seeds 1 and 2 every fire probe's truth is pure (1.0), the causes derived from the cases match the staged ones (the wind with its breeze, which comes with it in the probe sky), and no claim is unreachable or free.
+**Result (2026-10-09):** restaged; on seeds 1 and 2 every fire probe's truth is pure (1.0), the causes derived from the cases match the staged ones (the wind with its breeze, which comes with it in the probe sky), and no claim is unreachable or free.
 - Tinder held bare in the open takes up the night's damp air (0.07 by day, 0.25 by night in a dry sky), and tinder rained on stays damp about nine hours against the body. Under the old sky, raining 35% of hours, it was damp 98% of hours. So probe people wear a hide, keeping what they hold against them as wetness.ts models, and rain comes one hour in twenty, or at night three in ten and by day one in fifty. Blame now fails 14 to 23% of hours, two 60 to 69%, except 30 to 36%.
 - Kindle's truth is the lays people made, each judged by the act. Thick wood is the derived cause; people form that theory within about six hours, so 95% of first-third lays are already thin.
 - Truthward and unsuperstitious are dropped: learning nothing meets them. A learning claim (late against early) is held only against learning nothing, since a learner holding the true theory from the start has nothing to learn.
 
-- [ ] **Unit 12: Load-time migration**
+- [x] **Unit 12: Load-time migration**
 
 **Goal:** A save from before this change loads into the new physics without a version bump, and can be rolled back.
 
@@ -795,7 +795,7 @@ The act's counts for ringing (three) and covering (six, or any clay) are kept as
 
 **Verification:** The migrated fixture runs a day with no exceptions, and its people still make fires.
 
-- [ ] **Unit 13: Bench, gate, whole worlds and docs**
+- [x] **Unit 13: Bench, gate, whole worlds and docs**
 
 **Goal:** The change is measured and judged as the repo requires, and its story is written down.
 
@@ -824,6 +824,12 @@ The act's counts for ringing (three) and covering (six, or any clay) are kept as
 - The ledger entries are committed with the code they judged.
 - The docs and charts are redrawn.
 - The napkin gains the fire-physics guidance: one model of fire, constants from the document, conditions at the formulas' turning points.
+
+**Result (2026-10-09):** the gate on twenty seeds is the probes 6 baseline (57b9da5): every fire probe's claims hold, kindle's too, and the planting probes leave the 16 claims round five left open. Whole worlds, six islands over 60 days, are the worlds 6 baseline (458dc46). Against round five, replayed with deaths recorded:
+- Nobody makes a fire, against 55 fires on all six islands. People try lays, but tinder held bare is damp or soaked nearly always under a sky that rains in 47% of hours. Twenty of 21 struck lays failed in damp tinder, none to a gale; 15 of 16 rubbed made an ember the tinder wouldn't take; one caught and flared out over an 18 mm stick of green wood. This is the risk Unit 1 reported, written into the constants document's gaps, not tuned.
+- 63% of people survive (70%); cold kills 11 and hunger 1 (10 and 5), and no death was a mislabelled burn. 154 plantings went in and 61% came up (171 and 68%).
+- Log seasoning: three in four pieces of wood people hold are green (median water 0.67 to 0.72); one in ten is seasoned below 20%.
+- Bench: 20 days of a world take 7.2 s (8 s in round five; the budget is 16 s). The spreading grass fire takes 13 s, 9 s of it growing the island.
 
 ## System-Wide Impact
 
