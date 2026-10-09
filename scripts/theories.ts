@@ -1,7 +1,8 @@
 // How people's theories of why things fail hold up, and whether what they do gets better for them: run one world
 // headless and write, as JSON lines, every attempt judged (what was done, the conditions, whether it worked, how long it
 // took, whether it was a test), every planting as it goes in, every theory formed, dropped, taught or put to the test,
-// each day the theories everyone alive holds, and at the end the things this world made and the rulings it settled, so
+// every death and what it was of, each day the theories everyone alive holds and the water in the wood they hold (how
+// far what they'll burn has seasoned), and at the end the things this world made and the rulings it settled, so
 // scripts/truth.ts can try its ways. scripts/theory-report.ts pools many runs and scores them against the answer key.
 //   NOMADS_BRAIN=random bun scripts/theories.ts --seed 3 --days 80 --out /tmp/theories/3.jsonl
 // --learning off: nobody ever forms a theory (the floor a world is measured against); --learning known --key key.json:
@@ -14,6 +15,7 @@ import { trailChanges } from "../src/sim/ecology";
 import { traceListeners } from "../src/sim/trace";
 import { asking, brainKind } from "../src/sim/brain";
 import { RULES } from "../src/sim/rules";
+import { moistureOf } from "../src/sim/wetness";
 import { seedRandom } from "./seeded";
 import { hurting, loadKey } from "./answer-key";
 
@@ -33,7 +35,13 @@ traceListeners.push((e) => {
     const d = e.data as { chosen: string; odds: Record<string, number> }, test = Object.keys(d.odds).find((k) => k.startsWith("test:"));
     if (test) lines.push(JSON.stringify({ ev: "test", t: e.t, agent: e.agent, goal: test, p: d.odds[test], chosen: d.chosen === test }));
   }
+  if (e.sys === "world" && e.kind === "died") {
+    const d = e.data as { id: string; cause: string };
+    lines.push(JSON.stringify({ ev: "died", t: e.t, agent: d.id, cause: d.cause }));
+  }
 });
+// the wood people burn
+const WOOD = new Set(["stick", "log", "plank"]);
 const t0 = performance.now();
 for (let d = 1; d <= days; d++) {
   for (let i = 0; i < DAY; i++) {
@@ -45,6 +53,8 @@ for (let d = 1; d <= days; d++) {
     if (brainKind() !== "random") for (;;) { await Bun.sleep(asking() ? 10 : 0); if (!asking()) { await Bun.sleep(0); if (!asking()) break; } }
   }
   for (const a of w.agents) for (const b of Object.values(a.beliefs)) for (const c of b.unless ?? []) lines.push(JSON.stringify({ ev: "held", t: w.t, agent: a.id, key: b.key, cond: c }));
+  const wood = w.agents.flatMap((a) => a.inv.filter((s) => WOOD.has(s.k)).map((s) => Math.round(moistureOf(s) * 1000) / 1000));
+  if (wood.length) lines.push(JSON.stringify({ ev: "wood", t: w.t, day: d, m: wood }));
   lines.push(JSON.stringify({ ev: "day", t: w.t, day: d, alive: w.agents.length }));
   if (d % 20 === 0) console.error(`seed ${seed} day ${d}: ${Math.round((performance.now() - t0) / 1000)}s, ${w.agents.length} alive`);
   if (!w.agents.length) break;
