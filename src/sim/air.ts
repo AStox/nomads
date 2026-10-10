@@ -46,15 +46,29 @@ export type Air = {
   wind: number; // m/s at head height
   feels: number; // °C: the wind chill, the air as cold as bare skin finds it
 };
-// The air at a point now. sheltered: out of the wind, inside walls.
-export function airAt(w: World, px: number, py: number, sheltered = false): Air {
-  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), wx = w.weather;
-  // the wind at the place, for the way it blows now
-  const a = Math.atan2(wx.wind.dy, wx.wind.dx), k = ((Math.round((a / (2 * Math.PI)) * DIRS) % DIRS) + DIRS) % DIRS;
+// How much of the open sea's wind reaches head height at a point when it blows this way: what the generator found the
+// ground upwind leaves of it there (climate.ts lee), before any trees.
+export function leeAt(w: World, px: number, py: number, way: { dx: number; dy: number }) {
+  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length));
+  const a = Math.atan2(way.dy, way.dx), k = ((Math.round((a / (2 * Math.PI)) * DIRS) % DIRS) + DIRS) % DIRS;
   const x = Math.max(0, Math.min(n - 1.001, cellAt(px))), y = Math.max(0, Math.min(n - 1.001, cellAt(py))), x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0;
   const lee = (i: number) => isle.lee[i * DIRS + k] / 100, i = y0 * n + x0;
-  const open = (lee(i) * (1 - fx) + lee(i + 1) * fx) * (1 - fy) + (lee(i + n) * (1 - fx) + lee(i + n + 1) * fx) * fy;
-  const wind = sheltered ? 0 : wx.speed * open * (1 - 0.65 * Math.min(1, canopyAt(w, px, py)));
+  return (lee(i) * (1 - fx) + lee(i + 1) * fx) * (1 - fy) + (lee(i + n) * (1 - fx) + lee(i + n + 1) * fx) * fy;
+}
+// How steeply the ground rises at a point, meters for each meter east (x) and south (y), across a cell either way.
+export function slopeAt(w: World, px: number, py: number): [number, number] {
+  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), h = CELL / 2 / TILE_M;
+  const at = (x: number, y: number) => field(isle.height, x, y, n);
+  return [(at(px + h, py) - at(px - h, py)) / CELL, (at(px, py + h) - at(px, py - h)) / CELL];
+}
+// The head-height wind at a point, blowing this way at speed over the open sea: what the ground upwind leaves of it, and
+// the trees over the point.
+export const headWind = (w: World, px: number, py: number, way: { dx: number; dy: number }, speed: number) =>
+  speed * leeAt(w, px, py, way) * (1 - 0.65 * Math.min(1, canopyAt(w, px, py)));
+// The air at a point now. sheltered: out of the wind, inside walls.
+export function airAt(w: World, px: number, py: number, sheltered = false): Air {
+  const wx = w.weather;
+  const wind = sheltered ? 0 : headWind(w, px, py, wx.wind, wx.speed);
   const temp = wx.temp + placeTemp(w, px, py, w.t, wx.sky, wx.speed);
   return { temp, wind, feels: chill(temp, wind) };
 }
@@ -123,15 +137,17 @@ function meansOf(w: World): Means {
 }
 // The share of the year's hours the island's sky rains or storms.
 export const wetHours = (w: World) => meansOf(w).wet;
-// The rain falling at a point now, mm an hour (sec. 13): the season's precipitation there spread over the hours a game
-// season rains, a storm hour five times a rain hour.
-export function rainAt(w: World, px: number, py: number) {
-  const sky = w.weather.sky;
+// The rain falling on open level ground at a point at tick t under a sky, mm an hour (sec. 13): the season's
+// precipitation there spread over the hours a game season rains, a storm hour five times a rain hour. What reaches the
+// ground under trees, behind rocks or on a slope is rain.ts's.
+export function rainWhen(w: World, px: number, py: number, t: number, sky: World["weather"]["sky"]) {
   if (sky !== "rain" && sky !== "storm") return 0;
-  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), { s, f } = seasonAt(w.t), { hours } = meansOf(w);
+  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), { s, f } = seasonAt(t), { hours } = meansOf(w);
   const rate = (k: number) => field(isle.seasons[k].precip, px, py, n) / (10 * 24 * (hours[k][0] + 5 * hours[k][1]));
   return (rate(s) * (1 - f) + rate((s + 1) % 4) * f) * (sky === "storm" ? 5 : 1);
 }
+// The same now.
+export function rainAt(w: World, px: number, py: number) { return rainWhen(w, px, py, w.t, w.weather.sky); }
 // The island's own air water (kPa) and rain (mm an hour) at tick t under a sky, drawn between the seasons as
 // everywhere's are.
 export function islandAir(w: World, t: number, sky: World["weather"]["sky"]) {

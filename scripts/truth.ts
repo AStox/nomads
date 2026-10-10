@@ -19,7 +19,7 @@ import { lightOn, workRate } from "../src/sim/light";
 import { nearestThing, put, shelve } from "../src/sim/space";
 import { fieldsOf, ofPlace } from "../src/sim/beliefs";
 import { conditionsNow } from "../src/sim/sim";
-import { deadAt, deadHour, moistureOf, tinder, tinderOf } from "../src/sim/wetness";
+import { deadAt, deadHour, moistureOf, pastHour, tinder, tinderOf } from "../src/sim/wetness";
 import { BURNS, PHYS, pieceOf, stackPhys } from "../src/sim/fuel";
 import { advance, alight, feed, kindle, lay } from "../src/sim/combustion";
 import { ahead } from "../src/sim/seedling";
@@ -58,20 +58,26 @@ for (const file of readdirSync(runs).filter((f) => f.endsWith(".jsonl")))
   }
 
 // The island's weather through the run's days and a month past them, turn by turn of the sky from how it stood at the
-// start, drawn once (its own draws, not the world's): the sky, the wind, the rain running off the land, and the water in
-// the dead stuff lying about the island.
+// start, drawn once (its own draws, not the world's): the sky, the wind, the rain running off the land, the water in the
+// dead stuff lying about the island, and the hours kept for what fell where (wetness.ts pastHour).
 const start = w.t, hours = forecast(w, (days + 30) * 24, rng(seed * 104729 + 7));
-const dead: NonNullable<typeof w.weather.dead>[] = [];
+const dead: NonNullable<typeof w.weather.dead>[] = [], pasts: NonNullable<typeof w.weather.past>[] = [];
 {
-  let d = w.weather.dead, t = Math.ceil((start + 1) / 12) * 12;
-  for (const h of hours) { d = deadHour(w, d, t, h.sky, h.speed, islandTemp(t, h.sky)); dead.push(d); t += 12; }
+  let d = w.weather.dead, t = Math.ceil((start + 1) / 12) * 12, past = w.weather.past && { ...w.weather.past, hours: [...w.weather.past.hours] };
+  for (const h of hours) {
+    const temp = islandTemp(t, h.sky), next = deadHour(w, d, t, h.sky, h.speed, temp);
+    past = pastHour(w, past, d ?? next, t, h.sky, h.speed, temp, w.weather.wind);
+    dead.push((d = next));
+    pasts.push({ ...past, hours: [...past.hours] });
+    t += 12;
+  }
 }
 const first = Math.ceil((start + 1) / 12) * 12;
 // Set the world to an hour of the run (i) and a tick in it, as the weather had it then.
 function setHour(i: number, tick: number) {
   const h = hours[i];
   w.t = first + i * 12 + tick;
-  Object.assign(w.weather, { sky: h.sky, speed: h.speed, wet: h.wet, dead: dead[i], temp: islandTemp(w.t, h.sky) });
+  Object.assign(w.weather, { sky: h.sky, speed: h.speed, wet: h.wet, dead: dead[i], past: pasts[i], temp: islandTemp(w.t, h.sky) });
 }
 
 function drySpot(): [number, number] {

@@ -8,9 +8,10 @@
 // the beds, heats what's near them and lights what catches, drawing brands from the world's own random stream.
 import { group, inFlame, kindle, lay, windAt, type Air, type Bed, type Group } from "./combustion";
 import { BURNS, PHYS, WOODS, greenOf, pieceOf, stackPhys, woodOf, type Phys, type Wood } from "./fuel";
-import { REF, deadAt, grassAt, growing, moistureOf, sunOn } from "./wetness";
+import { REF, deadAt, grassAt, growing, leafless, moistureOf, sunOn } from "./wetness";
 import { TILE_M, type Thing, type World } from "./world";
 import { airOn, rainAt } from "./air";
+import { rainOn } from "./rain";
 import { canopyAt } from "./light";
 import { TREES } from "../terrain/flora";
 
@@ -58,22 +59,23 @@ const DEAD: Record<Tree, number> = { pine: 0.183, oak: 0.097, ash: 0.097, aspen:
 const TWIG = 0.0035;
 // How deep a tree's crown hangs, as a share of its height: half, as forest-grown Scots pines and oaks carry theirs (BAAD,
 // R98; sec. 30a).
-const CROWN = 0.5;
+export const CROWN = 0.5;
 // Pine's needles hold its live foliage water (sec. 21); the broadleaves' leaves, and the live twigs and leaves of every
-// tree and shrub, the NFDRS's live woody water (sec. 12); the broadleaves stand bare while the growing season index is
-// under its green-up threshold (sec. 30a).
-const NEEDLES = 1.2, GREEN_UP = 0.2;
+// tree and shrub, the NFDRS's live woody water (sec. 12); the broadleaves stand bare out of the growing season
+// (wetness.ts leafless).
+const NEEDLES = 1.2;
 
 function tree(w: World, t: Thing): Part[] {
   const sp: Tree = (TREES as readonly string[]).includes(t.species ?? "") ? (t.species as Tree) : "oak", H = t.size, as = { kind: "tree", species: sp, size: H };
-  const log = pieceOf(as, "log")!.size, branch = pieceOf(as, "stick")!.size, D = log.d * 100, { woody, index } = growing(w);
-  const wood = BRANCH[sp](D), leaves = sp !== "pine" && index < GREEN_UP ? 0 : LEAVES[sp](D), alive = 1 - DEAD[sp];
+  const log = pieceOf(as, "log")!.size, branch = pieceOf(as, "stick")!.size, D = log.d * 100, { woody } = growing(w);
+  const wood = BRANCH[sp](D), leaves = sp !== "pine" && leafless(w) ? 0 : LEAVES[sp](D), alive = 1 - DEAD[sp];
   const twigs = wood * alive * twigShare(sp, D), twig = woodOf(sp, TWIG, (Math.PI / 4) * TWIG * TWIG * 1000 * WOODS[sp].G), crown = H * (1 - CROWN);
-  // the live twigs bear the leaves, and the dead ones lie in among the branches they died on (sec. 30a)
+  // the live twigs bear the leaves, and the dead ones lie in among the branches they died on, under the leaves that
+  // shaded them dead, so the rain reaches them only through their own crown (wetness.ts deadAt)
   return [
     { phys: { ...PHYS.fiber }, n: (leaves * alive) / PHYS.fiber.mass, m: sp === "pine" ? NEEDLES : woody, lo: crown, hi: H },
     { phys: twig, n: twigs / twig.mass, m: woody, lo: crown, hi: H },
-    { phys: { ...twig }, n: (DEAD[sp] * (wood + leaves)) / twig.mass, m: deadAt(w, t, TWIG), lo: crown, hi: H },
+    { phys: { ...twig }, n: (DEAD[sp] * (wood + leaves)) / twig.mass, m: deadAt(w, t, TWIG, sp), lo: crown, hi: H },
     { phys: woodOf(sp, branch.d, branch.mass), n: (wood * alive - twigs) / branch.mass, m: greenOf(sp)!, lo: crown, hi: H },
     { phys: woodOf(sp, log.d, log.mass), n: STEM[sp](D) / log.mass, m: greenOf(sp, true)!, lo: 0, hi: H },
   ];
@@ -159,10 +161,11 @@ export function bedOf(parts: Part[], groups: Group[]): Bed | undefined {
   return bed;
 }
 // The air a part of a thing takes heat in: where the thing stands, with the wind at the top of what the part stands in,
-// short grass for what lies on the ground and the head-height wind for anything as high as a head (combustion.ts windAt).
+// short grass for what lies on the ground and the head-height wind for anything as high as a head (combustion.ts windAt),
+// and the rain on it: the sky's on a tree's crown, and what reaches the ground there on anything else (rain.ts).
 export function airFor(w: World, t: Thing, p: Part): Air {
   const air = airOn(w, t);
-  return { temp: air.temp, wind: air.wind, rain: rainAt(w, t.px, t.py), veg: Math.max(0.1, p.hi) };
+  return { temp: air.temp, wind: air.wind, rain: t.kind === "tree" ? rainAt(w, t.px, t.py) : rainOn(w, t.px, t.py), veg: Math.max(0.1, p.hi) };
 }
 // A tree struck by lightning: its bed with its dead twigs alight, if they're dry enough to carry a flame (combustion.ts
 // kindle); none if not.

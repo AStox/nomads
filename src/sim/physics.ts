@@ -9,9 +9,10 @@ import { clock, trace } from "./trace";
 import { see } from "./beliefs";
 import { enrich } from "./soil";
 import { streamNow } from "./streams";
-import { airOn, rainAt } from "./air";
+import { airOn } from "./air";
+import { rainOn } from "./rain";
 import { DARK, lightOn } from "./light";
-import { DAMP, SOAKED, deadAt, moistureOf, raining, sheltered, tinder, tinderOf } from "./wetness";
+import { DAMP, SOAKED, deadAt, moistureOf, sheltered, tinder, tinderOf } from "./wetness";
 import { GROUND, SIZE, groundClass } from "../terrain/flora";
 
 // Kinds of stuff the rules below care about, by what they're like rather than what they're called.
@@ -28,11 +29,11 @@ export type Fire = Pick<Thing, "kind" | "bed" | "contained" | "walls" | "covered
 export const fireKind = (f: Fire) =>
   f.kind !== "fire" || !f.contained ? "fire" : (f.charcoal ?? 0) > 0 ? "forge" : f.covered ? "kiln" : "hearth";
 // The air a bed feels (combustion.ts): the air where it stands and its wind at head height (air.ts, under any canopy), the
-// rain falling on it, on the short grass most ground grows, as wetness.ts takes things lying on the ground (fire-constants
-// sec. 14a); and its setup.
+// rain reaching the ground there (rain.ts), on the short grass most ground grows, as wetness.ts takes things lying on the
+// ground (fire-constants sec. 14a); and its setup.
 export function bedAir(w: World, t: { px: number; py: number } & Partial<Fire>): BedAir {
   const air = airOn(w, t);
-  return setUp(t, { temp: air.temp, wind: air.wind, rain: rainAt(w, t.px, t.py), veg: 0.1 }, w.t);
+  return setUp(t, { temp: air.temp, wind: air.wind, rain: rainOn(w, t.px, t.py), veg: 0.1 }, w.t);
 }
 // What a fire gives off now, and how many hours it has left as anyone by it can judge from what's burning (combustion.ts);
 // a fire with nothing in its bed gives nothing.
@@ -105,7 +106,7 @@ export const isLamp = (k?: Kind) => isFlame(k) && p(k, "container") >= 0.5;
 // The air round something carried: where they stand, out of the rain and wind under a roof, at the height it's held.
 function carriedAir(w: World, at: { px: number; py: number }): BedAir {
   const roof = sheltered(w, at), air = airOn(w, at, roof);
-  return { temp: air.temp, wind: air.wind, rain: roof ? 0 : rainAt(w, at.px, at.py), veg: 0.1, held: HELD };
+  return { temp: air.temp, wind: air.wind, rain: roof ? 0 : rainOn(w, at.px, at.py), veg: 0.1, held: HELD };
 }
 // A brand as the bed sees it (fire-constants sec. 27e: a brand lit from a piece is that piece still): the piece, alight,
 // with as much of it left as hasn't burnt (its hp, the share of its mass).
@@ -579,7 +580,7 @@ function sparkTick(w: World, a: Agent, act: Act, tool: Kind, tk: Kind, st: { pro
 export const isBow = (k?: Kind) => !!k && p(k, "flexible") >= 0.8 && p(k, "long") >= 0.5 && p(k, "binding") >= 0.5;
 // The weather and light anyone can see they're working in (sim.ts CONDITIONS gives them words).
 export const WEATHER_NOW: Record<string, (w: World, a: Agent) => boolean> = {
-  rain: (w, a) => raining(w) && !sheltered(w, a),
+  rain: (w, a) => !sheltered(w, a) && rainOn(w, a.px, a.py) > 0,
   dark: (w, a) => lightOn(w, a).bright < DARK,
   cold: (w, a) => airOn(w, a).feels < 0,
   wind: (w, a) => airOn(w, a).wind > GALE,

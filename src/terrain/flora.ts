@@ -147,7 +147,10 @@ export type Scatter = {
 
 const F = Object.fromEntries(FLORA.map((k, i) => [k, i])) as Record<Flora, number>;
 const S = Object.fromEntries(SPECIES.map((k, i) => [k, i])) as Record<Species, number>;
-const TALL = { pine: 17, oak: 15, ash: 16, aspen: 13 } as const;
+export const TALL = { pine: 17, oak: 15, ash: 16, aspen: 13 } as const;
+// The tallest a tree grows (its kind's TALL, at its best fit, at the top of its spread, as put below) and the widest
+// boulder, m: nothing standing on the island is bigger.
+export const TALLEST = Math.max(...Object.values(TALL)) * 1.2 * 1.25, BOULDER = 0.5 + 5;
 // the plants that compete for each place, by layer and kind
 export const TREES = ["pine", "oak", "ash", "aspen"] as const satisfies readonly Species[];
 export const SHRUBS = ["berry", "hazel", "heather", "gorse"] as const satisfies readonly Species[];
@@ -254,7 +257,7 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
       }
       for (let c = Math.floor(bare * 1.6 + slope * 1.5 + r() * 0.8); c > 0; c--) {
         const [x, z] = spot();
-        if (fine(wet, x, z) < 0.3) put(F.boulder, 0, x, z, 0.5 + r() ** 3 * 5);
+        if (fine(wet, x, z) < 0.3) put(F.boulder, 0, x, z, 0.5 + r() ** 3 * (BOULDER - 0.5));
       }
       // The small stuff, each where the ground would hold it.
       const rv = river[i];

@@ -18,21 +18,23 @@ import { COVER, STAR_LUX, beam, moonAt, moonLux, sunAt, sunLux, through } from "
 const SHARE: Record<string, number> = { oak: 0.35, ash: 0.29, pine: 0.18 };
 // A crown hides all of the sky within CORE of its radius and none past EDGE, easing out between.
 const CORE = 0.55, EDGE = 1.2;
-const REACH = 12; // meters: no crown, of the tallest tree, reaches further from its trunk
+export const CROWN_REACH = 12; // meters: no crown, of the tallest tree, reaches further from its trunk
+// How much of the sky one tree's crown hides at d meters from its trunk: all of it near the trunk, easing to none.
+export function crownCover(t: { species?: string; size: number }, d: number) {
+  const r = (SHARE[t.species ?? ""] ?? 0.22) * t.size;
+  return d > r * EDGE ? 0 : d <= r * CORE ? 1 : 1 - smooth(CORE, EDGE, d / r);
+}
 // How much of the sky the trees overhead hide, in crowns: 1 under one, more where they overlap. Seedlings and the air
 // under the trees ask it of the same points tick after tick, so each point's answer is kept until anything round it
 // comes, goes or changes (space.ts lookAround); the points are let go of when they pile up past a few thousand.
 const canopies = perWorld(() => new Map<number, Map<number, { at: number; cover: number }>>());
 export function canopyAt(w: World, px: number, py: number) {
-  const at = lookAround(w, px, py, REACH), xs = canopies(w);
+  const at = lookAround(w, px, py, CROWN_REACH), xs = canopies(w);
   let ys = xs.get(px);
   const kept = ys?.get(py);
   if (kept?.at === at) return kept.cover;
   let cover = 0;
-  around(w, px, py, REACH, ["tree"], (t, d) => {
-    const r = (SHARE[t.species ?? ""] ?? 0.22) * t.size;
-    if (d <= r * EDGE) cover += d <= r * CORE ? 1 : 1 - smooth(CORE, EDGE, d / r);
-  });
+  around(w, px, py, CROWN_REACH, ["tree"], (t, d) => { cover += crownCover(t, d); });
   if (!ys) {
     if (xs.size >= 4096) xs.clear();
     xs.set(px, (ys = new Map()));

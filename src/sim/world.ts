@@ -86,6 +86,15 @@ export type Weather = {
   // the island's living plants coming green (wetness.ts growing): the day's coldest air, C, and its largest vapour
   // pressure deficit, Pa, so far, the rain of the last few days, mm, and the growing season index
   gsi?: { day: number; tmin: number; vpd: number; rain: number; index: number };
+  // the island's last few days of weather, kept for what fell where (wetness.ts deadAt): the dead stuff as it stood before
+  // them (as in dead), each hour's sky, warmth, wind and the water each kind of crown held as its rain began (rain.ts),
+  // and the water the crowns hold now
+  past?: { base: { open: number[]; shade: number[] }; hours: PastHour[]; crowns: number[] };
+};
+export type PastHour = {
+  t: number; sky: Weather["sky"]; temp: number; speed: number; wind: { dx: number; dy: number };
+  held: number[]; // mm on each kind of crown (flora.ts TREES) as the hour's rain began
+  bare: boolean; // the broadleaves out of leaf
 };
 // result: what it gives, builds or does, as the outcome that first showed it (physics.ts Fields)
 export type Law = { id: string; key: string; text: string; verb: string; source: "physics" | "jev"; by: string; t: number; result?: { gives: string[]; builds?: string; effect?: string; target?: string } };

@@ -62,6 +62,7 @@ function weather(at: { px: number; py: number }, wind: number, dead: number | nu
   w.weather.speed = wind / airAt(w, at.px, at.py).wind;
   const ms = typeof dead === "number" ? REF.map(() => dead) : dead;
   w.weather.dead = { open: ms, shade: ms };
+  delete w.weather.past;
   w.weather.gsi = { day: Math.floor(w.t / DAY), tmin: -5, vpd: 500, rain: 10, index: 0 };
 }
 // Five minutes of fire, drawing brands from a seeded stream.
@@ -192,6 +193,7 @@ test("a seeded world run replays the same spread exactly", () => {
     const pin = (x: World) => {
       Object.assign(x.weather, { sky: "clear", wind: { dx: 1, dy: 0.2 }, speed: 12 });
       x.weather.dead = { open: REF.map(() => DRY), shade: REF.map(() => DRY) };
+      delete x.weather.past;
       x.weather.gsi = { day: Math.floor(x.t / DAY), tmin: -5, vpd: 500, rain: 10, index: 0 };
     };
     pin(isle);

@@ -831,7 +831,7 @@ type Seen = { w: World; a: Agent; at: Pos; spot: () => Ground; items: string[]; 
 type Condition = { now: (x: Seen) => boolean; words: string; place?: true; piece?: true; verbs?: string[]; on?: string; off?: string };
 const FIRE_VERBS = ["strike", "rub", "place", "heat"], LAYING = ["strike", "rub", "place"], AT_FIRE = ["place", "heat"];
 const CONDITIONS: Record<string, Condition> = {
-  rain: { now: (x) => WEATHER_NOW.rain(x.w, x.a), words: "It was raining and there was nothing over their heads", on: "raining", off: "not raining" },
+  rain: { now: (x) => WEATHER_NOW.rain(x.w, x.a), words: "Rain was falling on them", on: "raining", off: "not raining" },
   dark: { now: (x) => WEATHER_NOW.dark(x.w, x.a), words: "It was dark", on: "dark", off: "light" },
   cold: { now: (x) => WEATHER_NOW.cold(x.w, x.a), words: "It was freezing", on: "freezing", off: "above freezing" },
   wind: { now: (x) => WEATHER_NOW.wind(x.w, x.a), words: "A strong wind was blowing", on: "windy", off: "calm" },
