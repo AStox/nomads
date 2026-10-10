@@ -16,7 +16,7 @@ export const SEASONS = [
   { t: 10, sea: 14, wet: 0.32, cloud: 0.65 },
   { t: -4, sea: 7, wet: 0.3, cloud: 0.7 },
 ];
-const SEASON_DAYS = 365.25 / 4; // real days of weather in each
+export const SEASON_DAYS = 365.25 / 4; // real days of weather in each
 // the game day in the middle of season s, the clock counting days from 1
 export const midSeason = (s: number) => 1 + (YEAR_DAYS * (2 * s + 1)) / 8;
 // How much colder, on a season's mean, the cold pooling on still, clear nights leaves the hollows where it lies deepest.

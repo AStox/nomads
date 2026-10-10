@@ -15,7 +15,7 @@ import { daylight, sunAt } from "./sky";
 import { p, type Kind } from "./materials";
 import { PHYS, stackPhys, type Phys } from "./fuel";
 import { output, setUp } from "./combustion";
-import { esat } from "../terrain/climate";
+import { SEASON_DAYS, esat } from "../terrain/climate";
 
 // A struck spark catches in tinder this wet or drier, an ember blown into it in tinder this wet or drier (sec. 10).
 export const DAMP = 0.1, SOAKED = 0.13;
@@ -173,10 +173,13 @@ type Grow = NonNullable<World["weather"]["gsi"]>;
 const dayOf = (g: Grow) => ramp(g.tmin, -2, 5) * (1 - ramp(g.vpd, 900, 4100)) * ramp(daylight(g.day + 1), 10, 11) * ramp(g.rain, 0, 10);
 // The island's growing season an hour on from tick t under a sky and a warmth. With none yet, it starts from this hour as
 // though the day had been like it, with the window's rain full, as the island's rain fills it in any season (sec. 12).
+// A wet hour rains as a real one does (air.ts rainWhen), so each hour's rain counts for the real hours it stands for in
+// the season, as the window's 3.1 days stand for 28 [derived].
+const REAL_DAYS = SEASON_DAYS / (YEAR_DAYS / 4);
 export function gsiHour(w: World, g: Grow | undefined, t: number, sky: World["weather"]["sky"], temp: number): Grow {
   const { vapour, rain } = islandAir(w, t, sky), day = Math.floor(t / DAY), vpd = Math.max(0, esat(temp) - vapour) * 1000;
   if (!g) { const first = { day, tmin: temp, vpd, rain: 10, index: 0 }; return { ...first, index: dayOf(first) }; }
-  const kept = g.rain * Math.exp(-1 / (WINDOW * 24)) + rain;
+  const kept = g.rain * Math.exp(-1 / (WINDOW * 24)) + rain * REAL_DAYS;
   if (day === g.day) return { ...g, tmin: Math.min(g.tmin, temp), vpd: Math.max(g.vpd, vpd), rain: kept };
   return { day, tmin: temp, vpd, rain: kept, index: g.index + (dayOf(g) - g.index) / WINDOW };
 }
