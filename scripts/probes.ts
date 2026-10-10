@@ -97,7 +97,9 @@ const stormy: Sky = () => ({ rain: 0.05, wind: 0.35 });
 const squally: Sky = () => ({ rain: 0.35, wind: 0.35 });
 const nightRain: Sky = (dark) => ({ rain: dark ? 0.3 : 0.02, wind: 0 });
 const gusty: Sky = () => ({ rain: 0, wind: 1 / 12 });
-const changeable: Sky = () => ({ rain: 0.35, wind: 0.35 });
+// The planting probes' changeable weather rains as the islands do (fire-constants sec. 25b: about 16% of hours, each
+// rain hour carrying its season's share of the year's rain), and blows a gale as often as ever.
+const changeable: Sky = () => ({ rain: 0.16, wind: 0.35 });
 
 // What the evidence would support, beside what they came to: evident, the share of people whose own tries (all they saw
 // the outcome of, tests too) show the true cause doing worse than its absence beyond chance, as a statistician holding
