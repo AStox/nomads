@@ -27,7 +27,7 @@ import { nextWet, trailChanges } from "../src/sim/ecology";
 import { traceListeners, type TraceEntry } from "../src/sim/trace";
 import { asking, brainKind, useBrain } from "../src/sim/brain";
 import { DARK, lightOn, skyShare } from "../src/sim/light";
-import { airOn } from "../src/sim/air";
+import { airOn, islandAir } from "../src/sim/air";
 import { anyAround, around, put, thingById } from "../src/sim/space";
 import { beliefKey, fieldsOf, groundKey, ofPlace, ruledOut, type Belief } from "../src/sim/beliefs";
 import { moistureOf } from "../src/sim/wetness";
@@ -474,7 +474,7 @@ function skies(w: World, sky: Sky, r: () => number): Hour[][] {
     const hours: Hour[] = [];
     for (let i = 0; i < AHEAD; i++, t += 12) {
       const s = sky(isNight(t)), rain = r() < s.rain, gale = r() < s.wind;
-      wet = nextWet(wet, rain ? "rain" : "clear");
+      wet = nextWet(wet, rain ? islandAir(w, t, "rain").rain : 0);
       hours.push({ sky: rain ? "rain" : "clear", speed: gale ? 18 : 2, wet });
     }
     return hours;

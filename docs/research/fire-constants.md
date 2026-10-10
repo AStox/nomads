@@ -936,6 +936,24 @@ Findings:
 - Rain rates on the game-time base, so a game year receives the island's annual precipitation. With section 13's K = 5: rain about 1.6 mm/h and storm about 7.8 mm/h over the year, by season as in section 13.
 - Inland hourly RH median 0.85 and 10th percentile 0.67; head-height land wind median 4.2 m/s (open ground 4.6). The gale case is the land 99th percentile, about 10 m/s, with 15 m/s, the storm sky's target in air.ts WIND, as the extreme.
 
+### 25b. How often it rains (2026-10-10, on the operator's call)
+
+Section 25 found the sky wet in 47% of hours, a property of nextSky's transition table rather than of the climate it carries. The operator asked for a realistic share.
+
+| Quantity | Value | Units | Conditions | Source |
+|---|---|---|---|---|
+| Wet hours, London (Hampstead) | 1.6 a day, i.e. 6.7% of hours | hours | Station means 2009 to 2026; about 618 mm a year (the station's 365-day total of 569 mm reported 8% below normal) | R211 [read] |
+| Wet hours, Ireland | one hourly observation in five reports measurable rain; one in 3.5 to 4 on high ground in Kerry and Wicklow | share of hours | National hourly gauge record, 1939 to 2017 | R212 [read] |
+| Ireland's mean yearly rainfall | about 1,205 mm | mm | National mean | R213 [ex] |
+
+**Pick.**
+- An island's share of wet hours is read straight between the two by its land's mean yearly precipitation: W = 0.067 + (P - 618) (0.200 - 0.067) / (1205 - 618) [derived]. At section 25's three islands (about 1,035 mm on average) that is about 16%; by island 12 to 21%.
+- Each season takes its share of the year's wet hours as it takes its share of the year's rain (climate.ts SEASONS wet) [derived].
+- nextSky keeps every other transition as it was (cloud clearing as the season brings it, rain clearing to cloud a quarter of the time, rain to storm by the warmth, storm easing back), and sets cloud's turn to rain so the chain's balance holds the season's share: p = (4c + 1) W / (4 (1 + q) (1 - W)), c the season's clearing, q the storms per rain hour [derived].
+- Rain per wet hour rises so each season still receives its precipitation (air.ts rainAt, islandAir). Runoff (ecology.ts nextWet) moves by the millimetre, at the rate a millimetre of the old year-mean rain hour (1.6 mm, 6% of the way) moved it, so the same rain runs off alike in few hours or many [derived].
+
+**Check** (a throwaway, six years after one of spin-up, seeds 1 to 3): wet 16, 22 and 13% of hours against picks of 16, 21 and 12%; clear 24 to 28%, cloudy 54 to 60%; the yearly rain unchanged, now about 6.6 mm a wet hour on the game-time base (2.3 before). Fine dead stuff in the open is at or under the spark limit in 8 to 11% of hours (7.4% before, section 26) and the ember limit in 17 to 23% (17.5%): the air's humidity, not the rain, keeps it damp.
+
 ## 26. The island's weather against these limits (Unit 1 check)
 
 A throwaway check (in /tmp, not kept) ran a year of the sim's own weather and set the picks above against it. Every number here is [derived] from the sim code at commit 958d736 and the picks of sections 10, 11, 14, 18 and 19 to 21.
@@ -1587,7 +1605,7 @@ How physics.ts and sim.ts light, feed and carry fire on the bed of section 28 (c
 - Ignition of hide; bark-specific ignition; resin's critical flux.
 - Ore heat capacity and conductivity; grain properties; berry conductivity.
 - Rosin's full melt; a measured temperature for smoke-curing hide.
-- The sky rains in 47% of hours against about a tenth in real climates of the same rainfall: a property of the sky model, not a fire constant.
+- The sky rained in 47% of hours against about a tenth in real climates of the same rainfall. Resolved in section 25b (wet hours from two cited stations by the island's own rainfall); open tinder is still spark-dry in only about a tenth of hours, by the island's humidity.
 - The bed of sec. 28 holds the Unit 5 ladder only after three revisions on the operator's calls and six cases restated to what the physics gives (sec. 28's results). Left as gaps: the lay's shells are a design reading of how fires are laid, not measured; lone sticks hold a flame up to 5 cm here against Bryan's 12 to 19 mm; the soaking factor (1 + 8.1 m) is taken past the 20 to 60% it was fitted on; coals have no ash over them, so they glow minutes, not the hours banked coals keep; and the blow-off form, fitted to nothing, blows a log fire's flames off in the gale.
 - Units 6 to 9 left these as found: smoulder under a cover never spreads to unlit wood beneath it; ring stones take up no heat of their own; there is still no ash over banked coals; the sun's warmth on a body is a flat term, not its flux. Warming by a fire is slow against the needs() rates, 0.11 a tick 2 m from the usual lay in 5 C air and a 2 m/s wind (sec. 31). Whoever lights a fire stands 0.8 m off it and takes one burn as it flares, and a brand held in hand warms its holder by about 58 K, both from treating them as points. A death whose health went to burns is labelled cold, since sim.ts agentTick names a cause from wounds, sickness and hunger only (no burn killed anyone in the Unit 13 worlds, checked by replaying them).
 - Grass beds are packed as a heap (sec. 30c). The island's own tussocks lie about 6 m apart round its grassiest spots, too far for one to light the next, so on the island grass burns a tussock at a time; a grass fire runs only through tussocks that touch (scripts/bench.ts stages one).
@@ -1805,3 +1823,6 @@ How physics.ts and sim.ts light, feed and carry fire on the bed of section 28 (c
 - R208 Steketee J. (1973), Spectral emissivity of skin and pericardium, Physics in Medicine and Biology 18(5):686-694 (excerpt).
 - R209 Barreira E., Almeida R.M.S.F., Simões M.L. (2021), Emissivity of building materials for infrared measurements, Sensors 21(6):1961, doi:10.3390/s21061961.
 - R210 Rao M.A., Barnard J., Kenny J.F. (1975), Thermal conductivity and thermal diffusivity of process variety squash and white potatoes, Transactions of the ASAE 18(6):1188-1192 (abstract).
+- R211 NW3 Weather (Hampstead, London) station, Detailed Rainfall Data: wet hours, station means 2009 to 2026. https://nw3weather.co.uk/wx12.php (read 2026-10-10)
+- R212 Met Éireann, Rainfall: Rainfall Climate of Ireland. https://www.met.ie/climate/what-we-measure/rainfall (read 2026-10-10)
+- R213 Ireland's mean annual precipitation, about 1,205 mm, as compiled by Current Results and WorldData from Met Éireann normals. https://www.currentresults.com/Weather/Ireland/precipitation-annual-average.php [search excerpt]

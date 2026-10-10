@@ -95,32 +95,47 @@ export function vapourAt(w: World, px: number, py: number, t: number) {
 }
 // How much of the water air this warm could hold it holds, 0 to 1.
 export const humidity = (vapour: number, temp: number) => Math.min(1, vapour / esat(temp));
-// The share of a season's hours the island's sky rains and storms (docs/research/fire-constants.md sec. 25).
-const RAIN_HOURS = [[0.368, 0.047], [0.336, 0.107], [0.481, 0.053], [0.479, 0.012]];
+// How often the sky rains (docs/research/fire-constants.md sec. 25b): measurable rain falls in 1.6 hours a day at a London
+// station taking 618 mm a year (R211), and in one hourly observation in five over Ireland's 1,205 mm (R212). An island's
+// share of wet hours is read between the two by its land's own yearly precipitation, and each season takes its share of
+// the year's wet hours as it takes its share of the year's rain (climate.ts SEASONS wet). Of a season's wet hours, the
+// share that storm is the sky model's own (sec. 25), which this leaves as it was.
+const LONDON = { mm: 618, wet: 1.6 / 24 }, IRELAND = { mm: 1205, wet: 0.2 };
+const STORMY = [0.113, 0.242, 0.099, 0.024];
+// The land's means, worked out once an island: each season's air water (kPa) and rain in a rain hour (mm), the share of
+// the year's hours wet, and each season's shares of hours raining and storming.
+type Means = { vapour: number[]; rain: number[]; wet: number; hours: [number, number][] };
+const landMeans = new Map<number, Means>();
+function meansOf(w: World): Means {
+  const kept = landMeans.get(w.seed);
+  if (kept) return kept;
+  const { isle } = groundOf(w.seed), land = Array.from(isle.height.keys()).filter((i) => isle.height[i] > 0);
+  const mean = (f: (i: number) => number) => land.reduce((t, i) => t + f(i), 0) / land.length;
+  const precip = [0, 1, 2, 3].map((k) => mean((i) => isle.seasons[k].precip[i])), year = precip.reduce((t, x) => t + x, 0);
+  const wet = LONDON.wet + ((year - LONDON.mm) * (IRELAND.wet - LONDON.wet)) / (IRELAND.mm - LONDON.mm);
+  const hours = SEASONS.map((s, k): [number, number] => [4 * s.wet * wet * (1 - STORMY[k]), 4 * s.wet * wet * STORMY[k]]);
+  const m: Means = {
+    vapour: [0, 1, 2, 3].map((k) => mean((i) => isle.seasons[k].humid[i] * esat(isle.seasons[k].temp[i]))),
+    rain: precip.map((p, k) => p / (10 * 24 * (hours[k][0] + 5 * hours[k][1]))), wet, hours,
+  };
+  landMeans.set(w.seed, m);
+  return m;
+}
+// The share of the year's hours the island's sky rains or storms.
+export const wetHours = (w: World) => meansOf(w).wet;
 // The rain falling at a point now, mm an hour (sec. 13): the season's precipitation there spread over the hours a game
 // season rains, a storm hour five times a rain hour.
 export function rainAt(w: World, px: number, py: number) {
   const sky = w.weather.sky;
   if (sky !== "rain" && sky !== "storm") return 0;
-  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), { s, f } = seasonAt(w.t);
-  const rate = (k: number) => field(isle.seasons[k].precip, px, py, n) / (10 * 24 * (RAIN_HOURS[k][0] + 5 * RAIN_HOURS[k][1]));
+  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), { s, f } = seasonAt(w.t), { hours } = meansOf(w);
+  const rate = (k: number) => field(isle.seasons[k].precip, px, py, n) / (10 * 24 * (hours[k][0] + 5 * hours[k][1]));
   return (rate(s) * (1 - f) + rate((s + 1) % 4) * f) * (sky === "storm" ? 5 : 1);
 }
-// The island's own air water (kPa) and rain (mm an hour) at tick t under a sky: the land's means of each season's,
-// worked out once an island and drawn between the seasons as everywhere's are.
-const landMeans = new Map<number, { vapour: number[]; rain: number[] }>();
+// The island's own air water (kPa) and rain (mm an hour) at tick t under a sky, drawn between the seasons as
+// everywhere's are.
 export function islandAir(w: World, t: number, sky: World["weather"]["sky"]) {
-  let m = landMeans.get(w.seed);
-  if (!m) {
-    const { isle } = groundOf(w.seed), land = Array.from(isle.height.keys()).filter((i) => isle.height[i] > 0);
-    const mean = (f: (i: number) => number) => land.reduce((t, i) => t + f(i), 0) / land.length;
-    m = {
-      vapour: [0, 1, 2, 3].map((k) => mean((i) => isle.seasons[k].humid[i] * esat(isle.seasons[k].temp[i]))),
-      rain: [0, 1, 2, 3].map((k) => mean((i) => isle.seasons[k].precip[i]) / (10 * 24 * (RAIN_HOURS[k][0] + 5 * RAIN_HOURS[k][1]))),
-    };
-    landMeans.set(w.seed, m);
-  }
-  const { s, f } = seasonAt(t), now = (v: number[]) => v[s] * (1 - f) + v[(s + 1) % 4] * f;
+  const m = meansOf(w), { s, f } = seasonAt(t), now = (v: number[]) => v[s] * (1 - f) + v[(s + 1) % 4] * f;
   return { vapour: now(m.vapour), rain: sky === "rain" ? now(m.rain) : sky === "storm" ? 5 * now(m.rain) : 0 };
 }
 // Environment Canada's wind chill index, for air at or below 10 °C and a wind at head height (taken as three quarters of

@@ -17,7 +17,7 @@ import { SIZE, rockAt } from "../terrain/flora";
 import { fitHere, growth, growthOf, pickHere } from "./plants";
 import { ripening, warmRate } from "./cues";
 import { streamNow } from "./streams";
-import { WIND, airAt, baseTemp, islandTemp, seasonAt } from "./air";
+import { WIND, airAt, baseTemp, islandAir, islandTemp, seasonAt, wetHours } from "./air";
 import { growRate } from "./light";
 import { nicheOf, seedlingHour, shareAt, treeOf, type Hour } from "./seedling";
 import { SEASONS } from "../terrain/climate";
@@ -36,29 +36,43 @@ export const burnedHomes: { owner: string; by?: string; text: string }[] = [];
 const rainy = (sky: World["weather"]["sky"]) => sky === "rain" || sky === "storm";
 
 // ---------- weather and seasons ----------
-// The time of year's share of the year's storms, drawn between the seasons' as the air is.
+// The time of year's share of the year's rain, drawn between the seasons' as the air is.
 const stormShare = (t: number) => { const { s, f } = seasonAt(t); return SEASONS[s].wet * (1 - f) + SEASONS[(s + 1) % 4].wet * f; };
-// The sky an hour on (r: a draw): cloud turns to rain as often as the time of year brings its share of the year's storms
-// (climate.ts SEASONS), and rain to storm the more often the warmer the air (temp), which feeds the thunderheads.
-export function nextSky(sky: World["weather"]["sky"], r: number, t: number, temp: number): World["weather"]["sky"] {
+// The sky an hour on (r: a draw). Cloud clears as often as the time of year brings it (more readily in a dry season),
+// rain clears to cloud a quarter of the time, and rain turns to storm the more often the warmer the air (temp), which
+// feeds the thunderheads; a storm eases back to rain. Cloud turns to rain as often as it takes for the sky to be wet in
+// the share of hours the time of year's rain brings: the island's share of wet hours (air.ts wetHours, wet) times four
+// times the season's share of the year's rain. Held to that share, the chain's own balance gives the chance: in it,
+// clear stands to cloud as its clearing (c) to a quarter, and wet to cloud as rain's onset (p) to a quarter, with storms
+// q of every rain hour, so a share W wet needs p = (4c + 1) W / (4 (1 + q) (1 - W)) (docs/research/fire-constants.md
+// sec. 25b).
+export function nextSky(sky: World["weather"]["sky"], r: number, t: number, temp: number, wet: number): World["weather"]["sky"] {
+  const storms = 0.02 + 0.06 * warmRate(temp);
   if (sky === "clear") return r < 0.25 ? "cloudy" : "clear";
-  if (sky === "cloudy") return r < stormShare(t) * 1.1 ? "rain" : r < 0.4 ? "clear" : "cloudy";
-  if (sky === "rain") return r < 0.25 ? "cloudy" : r < 0.27 + 0.06 * warmRate(temp) ? "storm" : "rain";
+  if (sky === "cloudy") {
+    const c = 0.4 - 1.1 * stormShare(t), W = 4 * stormShare(t) * wet, p = ((4 * c + 1) * W) / (4 * (1 + storms / 0.35) * (1 - W));
+    return r < p ? "rain" : r < p + c ? "clear" : "cloudy";
+  }
+  if (sky === "rain") return r < 0.25 ? "cloudy" : r < 0.25 + storms ? "storm" : "rain";
   return r < 0.35 ? "rain" : "storm";
 }
 // The wind over the open sea an hour on (r: a draw), settling toward what the sky brings.
 export const nextSpeed = (speed: number, sky: World["weather"]["sky"], r: number) => Math.max(0.5, speed + (WIND[sky] - speed) * 0.25 + (r - 0.5) * 2);
-// Rain runs off into the streams and drains away over a day or so (Weather.wet), an hour on under this sky.
-export const nextWet = (wet: number, sky: World["weather"]["sky"]) => (rainy(sky) ? wet + (sky === "storm" ? 0.15 : 0.06) * (1 - wet) : wet * 0.97);
+// Rain runs off into the streams and drains away over a day or so (Weather.wet), an hour on with this much rain falling
+// (mm). Each millimetre takes it as far toward running full as a millimetre of the old rain hour did: 6% of the way for
+// the island's year-mean 1.6 mm (sec. 25), when the sky rained in half its hours. So the same rain runs off alike
+// whether it falls in few hours or many.
+const RUNOFF_MM = 1.6 / -Math.log(1 - 0.06);
+export const nextWet = (wet: number, rain: number) => (rain > 0 ? 1 - (1 - wet) * Math.exp(-rain / RUNOFF_MM) : wet * 0.97);
 // The island's weather at the next n turns of the sky after now, from how it stands, drawn with r (a seeded draw of the
 // caller's own, so nothing here moves the world's): what the coming days might bring (seedling.ts seedlingFate).
 export function forecast(w: World, n: number, r: () => number): Hour[] {
   let { sky, speed, wet } = w.weather, t = Math.ceil((w.t + 1) / 12) * 12;
   const out: Hour[] = [];
   for (let i = 0; i < n; i++, t += 12) {
-    sky = nextSky(sky, r(), t, islandTemp(t - 1, sky));
+    sky = nextSky(sky, r(), t, islandTemp(t - 1, sky), wetHours(w));
     speed = nextSpeed(speed, sky, r());
-    wet = nextWet(wet, sky);
+    wet = nextWet(wet, islandAir(w, t, sky).rain);
     out.push({ sky, speed, wet });
   }
   return out;
@@ -74,7 +88,7 @@ function weather(w: World) {
   wx.year = Math.floor(w.t / DAY / 40) + 1;
   if (w.t % 12 === 0) {
     const before = wx.sky;
-    wx.sky = nextSky(wx.sky, Math.random(), w.t, wx.temp);
+    wx.sky = nextSky(wx.sky, Math.random(), w.t, wx.temp, wetHours(w));
     // The wind wanders, but keeps coming back to blow the way it prevails, the way that laid the island's rain.
     const [px, py] = w.terrain.wind, pull = (v: number, p: number) => clamp(v + (p * 0.5 - v) * 0.02 + (Math.random() - 0.5) * 0.3, -1, 1);
     wx.wind = { dx: pull(wx.wind.dx, px), dy: pull(wx.wind.dy, py) };
@@ -82,7 +96,7 @@ function weather(w: World) {
     // a probe's own weather, set as the sky turns (rules.ts hooks), so the runoff, the air and how wet things get follow
     // from it as from the island's own
     hooks.weather?.(w);
-    wx.wet = nextWet(wx.wet, wx.sky);
+    wx.wet = nextWet(wx.wet, islandAir(w, w.t, wx.sky).rain);
     if (wx.sky !== before) {
       const words = { clear: "The sky cleared.", cloudy: "Clouds rolled in.", rain: "It started to rain.", storm: "A storm broke." };
       log(w, "weather", [], { x: W / 2, y: H / 2 }, words[wx.sky]);
