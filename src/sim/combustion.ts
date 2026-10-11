@@ -24,14 +24,15 @@ export type Ring = { tall: number; width: number };
 // off, and air blown in by hand until a time, at the time t.
 export const setUp = (f: { walls?: Ring; covered?: boolean; air?: number }, air: Air, t: number): Air =>
   ({ ...air, ...(f.walls ? { ring: f.walls } : {}), ...(f.covered ? { covered: true, rain: 0 } : {}), ...((f.air ?? 0) > t ? { blown: BLOWN } : {}) });
-// Pieces laid: what one is (none if it isn't anything that burns), how many, and the water in each, kg to the kg dry.
-export type Laid = { phys: Phys | undefined; n: number; m: number };
-// A group of pieces alike: what each was as laid, how many, the dry mass each has left, its water, whether it's alight,
-// how old the bed was when it was laid, and the shell it lies in, counted from the heart. Yet to light, it keeps the heat
-// toward lighting (kJ/m2) of its pieces inside the flame and of those outside it, the share of its shell the flame has
-// already lit, and the share of it the flame held when last looked at.
+// Pieces laid: what one is (none if it isn't anything that burns), how many, and the water in each, kg to the kg dry, and
+// in its outer half where that differs (wetness.ts skin).
+export type Laid = { phys: Phys | undefined; n: number; m: number; skin?: number };
+// A group of pieces alike: what each was as laid, how many, the dry mass each has left, its water (and its skin's, where
+// that differs), whether it's alight, how old the bed was when it was laid, and the shell it lies in, counted from the
+// heart. Yet to light, it keeps the heat toward lighting (kJ/m2) of its pieces inside the flame and of those outside it,
+// the share of its shell the flame has already lit, and the share of it the flame held when last looked at.
 export type Group = {
-  phys: Phys; n: number; mass: number; m: number; lit: boolean; since: number; ring: number;
+  phys: Phys; n: number; mass: number; m: number; skin?: number; lit: boolean; since: number; ring: number;
   heat: number; warm: number; cover: number; inside: number;
 };
 // Coals: the char of one shell's pieces, glowing at the heart, kg, how thick its lumps are, m, and how dense, kg/m3.
@@ -146,10 +147,11 @@ function crib(g: Group, u: number, rain: number, beside: boolean) {
 }
 // Fine dead fuel, of the 1-h class as laid, too wet to carry a flame (sec. 5).
 export const drowned = (g: { phys: Phys; m: number }) => g.phys.d < ONE_HOUR && g.m > MX;
-// The heat a piece yet to light must take before it does, under a net flux q_n (R4's Eq. 7, sec. 28).
+// The heat a piece yet to light must take before it does, under a net flux q_n (R4's Eq. 7, sec. 28): heating it through,
+// with all its water; or heating its face as a thick piece does, which a skin's water slows as kρc's does (sec. 27g).
 function needs(g: Group, ta: number, qn: number) {
   const burn = g.phys.burn!, dT = burn.tig + 273.15 - ta;
-  const thin = g.phys.rho * g.phys.c * (thick(g) / 4) * dT * (1 + 5 * g.m), deep = (Math.PI / 4) * burn.krc * (1 + 8.1 * g.m) * dT * dT;
+  const thin = g.phys.rho * g.phys.c * (thick(g) / 4) * dT * (1 + 5 * g.m), deep = (Math.PI / 4) * burn.krc * (1 + 8.1 * (g.skin ?? g.m)) * dT * dT;
   return qn > 0 ? (thin ** -4 + (qn / deep) ** 4) ** -0.25 : Infinity;
 }
 // What a piece yet to light nets, kW/m2, of a flux coming in: less what lighting it needs to make up, the wind and the rain.
@@ -162,11 +164,11 @@ const fuel = (x: Laid) =>
   !!x.phys?.burn && x.n > 0 && Number.isFinite(x.n) && x.m >= 0 && Number.isFinite(x.m) &&
   [x.phys.d, x.phys.mass, x.phys.rho, x.phys.c].every((v) => Number.isFinite(v) && v > 0);
 // Pieces laid as a group, none alight, in a shell.
-export const group = (phys: Phys, n: number, m: number, since = 0, ring = 0): Group =>
-  ({ phys, n, mass: phys.mass, m, lit: false, since, ring, heat: 0, warm: 0, cover: 0, inside: 0 });
+export const group = (phys: Phys, n: number, m: number, since = 0, ring = 0, skin?: number): Group =>
+  ({ phys, n, mass: phys.mass, m, ...(skin === undefined || skin === m ? {} : { skin }), lit: false, since, ring, heat: 0, warm: 0, cover: 0, inside: 0 });
 // A lay: its pieces in shells by thickness, the finest at the heart; nothing if none of them is fuel.
 export function lay(pieces: Laid[]): Bed | undefined {
-  const groups = pieces.filter(fuel).sort((x, y) => x.phys!.d - y.phys!.d).map((x, i) => group(x.phys!, x.n, x.m, 0, i));
+  const groups = pieces.filter(fuel).sort((x, y) => x.phys!.d - y.phys!.d).map((x, i) => group(x.phys!, x.n, x.m, 0, i, x.skin));
   return groups.length ? { groups, coals: [], age: 0 } : undefined;
 }
 // More pieces laid on a bed: against what burns in it, outside its outermost burning shell; on the coals at the heart if
@@ -174,7 +176,7 @@ export function lay(pieces: Laid[]): Bed | undefined {
 export function feed(bed: Bed, pieces: Laid[]): Bed {
   const b = copy(bed), rings = b.groups.map((g) => g.ring), lit = b.groups.filter((g) => g.lit).map((g) => g.ring);
   const ring = lit.length ? Math.max(...lit) + 0.5 : b.coals.length ? Math.min(0, ...rings) - 1 : Math.max(-1, ...rings) + 1;
-  b.groups.push(...pieces.filter(fuel).map((x) => group(x.phys!, x.n, x.m, b.age, ring)));
+  b.groups.push(...pieces.filter(fuel).map((x) => group(x.phys!, x.n, x.m, b.age, ring, x.skin)));
   return b;
 }
 const copy = (b: Bed): Bed => ({ ...b, groups: b.groups.map((g) => ({ ...g })), coals: b.coals.map((c) => ({ ...c })) });

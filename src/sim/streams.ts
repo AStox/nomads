@@ -4,14 +4,23 @@
 // below a trickle only its dry bed is left.
 import { TRICKLE, depthOf, flowNow, widthOf } from "../terrain/water";
 import { SIZE, streamAt } from "../terrain/flora";
-import { seasonAt } from "./air";
+import { islandAir, meanRain, seasonAt } from "./air";
 import { TILE_M, groundOf, type World } from "./world";
 
-// The runoff now against its mean: the season's, drawn between the seasons as the air is, swollen by recent rain, and
-// a downpour's own, which runs off ground too dry to take it even in a dry season.
+// Rain that runs off reaches the streams as a linear store that keeps this share of itself an hour on: surface runoff's
+// recession constant, 0.3 to 0.8 a day (Pilgrim and Cordery, R224), taken at its middle, 0.55 [derived].
+const KEEP = 0.55 ** (1 / 24);
+// The runoff store an hour on (Weather.runoff, mm of the island's rain still to come down the streams) from tick t under
+// a sky: what it held, receding, and the hour's rain.
+export const runoffHour = (w: World, store: number | undefined, t: number, sky: World["weather"]["sky"]) =>
+  (store ?? meanRain(w, t) / (1 - KEEP)) * KEEP + islandAir(w, t, sky).rain;
+// The runoff now against its mean: the season's, drawn between the seasons as the air is, by the runoff store against
+// what the season's mean rain keeps in it, so a stream rises with the rain of the last day or two as its share of the
+// season's runoff would [derived: runoff taken as one share of the rain all season].
 export function quickNow(w: World) {
-  const { s, f } = seasonAt(w.t), q = groundOf(w.seed).isle.quick, wet = w.weather.wet;
-  return (q[s] * (1 - f) + q[(s + 1) % 4] * f) * (0.6 + 2 * wet) + 0.5 * wet;
+  const { s, f } = seasonAt(w.t), q = groundOf(w.seed).isle.quick, store = w.weather.runoff;
+  const season = q[s] * (1 - f) + q[(s + 1) % 4] * f, mean = meanRain(w, w.t) / (1 - KEEP);
+  return store === undefined || mean <= 0 ? season : (season * store) / mean;
 }
 export type Stream = {
   q: number; // m³/s now

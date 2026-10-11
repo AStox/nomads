@@ -993,7 +993,34 @@ The operator asked for real rain shadows and real places to find dry tinder, kin
 - 1-h twigs (6.35 mm): mean water in the open 30 to 32%, in a boulder's lee 20 to 25%, in a pine's crown 24 to 27%, in an oak's 26 to 30%, under either 28 to 33%. Spark-dry in the open 14 to 15% of hours, in the lee 14 to 17%, under or in a crown 3 to 4%: the crowns keep showers off, but their shade dries slowly, so what they hold back shows in the mean, not in the driest hours.
 - In rain hours almost nothing outdoors is spark-dry: the lee of a boulder 0.7 to 1.9% of rain hours, everywhere else 0 to 0.2%. The air's equilibrium in rain is above the spark limit; only a roof, a bag, or wood thick enough to lag behind the weather keeps fuel dry through rain.
 
-**Gaps.** Stemflow (R214's 1.1%) is left out. Each kind of crown's store is one for the island, wetted by the island's mean rain. A crown's dead twigs take no sun or crown-height wind. Litter lying on wet soil takes nothing from it. Wood holds one water content, so a split stick's dry heart isn't modelled. Thick wood beyond 120 hours holds what the island's open or shade left in it, not its place's own history. Dew on crowns is ignored. Boulder shape is a dome by design, and huts and fallen logs cast no rain shadow (a roof within 4 m keeps the rain off altogether, wetness.ts sheltered).
+**Gaps.** Each kind of crown's store is one for the island, wetted by the island's mean rain: a store per tree would mean hourly state on hundreds of thousands of trees. Thick wood beyond 120 hours holds what the island's open or shade left in it, not its place's own history. Dew on crowns is ignored. Boulder shape is a dome by design, and huts and fallen logs cast no rain shadow (a roof within 4 m keeps the rain off altogether, wetness.ts sheltered).
+
+**Closed the next day (2026-10-11, on the operator's call):**
+- **Stemflow.** Of the rain on a crown, Gash's stemflow share, 0.029 (R214), runs down the trunk instead of dripping, and wets only the trunk's foot [derived]; its trunk storage, 0.14 mm, is left out.
+- **A crown's dead twigs** take the sun's beam through their own crown's gaps, the share the rain falls straight through (0.07 in leaf, 0.9 bare) [derived: the gaps let light and drops through alike], in the head-height wind under the crowns [design: the wind among the branches].
+- **Dead stuff lying on the ground** draws toward the mean of two equilibria: the air's on its upper half, and on its lower half the air in the top soil, as near saturated as the soil can still give water: RH_s = RH + (1 - RH) Kr, Kr FAO-56's stage-2 reduction of the top soil (sec. 25d) [derived; design: half its face against the ground]. Piles take the same; grass, dead bushes and crown twigs stand clear.
+- Check (seeds 1 to 3, as sec. 27g's): a 1-h twig lying in open grass is spark-dry in 4 to 6% of hours against 13 to 15% for one standing there, its mean water 31 to 35% against 29 to 31%; a pine's crown twigs 4 to 5% (2 to 3% before they took any sun).
+
+### 25d. The soil's water and the streams' runoff (2026-10-11, on the operator's call)
+
+Until now one number, Weather.wet, rose 6% of the way to full with each 1.6 mm of rain and fell 3% an hour, and the soil's water was its seasonal bucket plus 0.3 times it, and a stream's runoff its season's times 0.6 + 2 wet, plus 0.5 wet. Every one of those was set by hand.
+
+| Quantity | Value | Units | Conditions | Source |
+|---|---|---|---|---|
+| Readily and totally evaporable water of the top 10 cm | REW 8 to 10, TEW 16 to 22 for loam; sand 2 to 7 and 6 to 12; clay 8 to 12 and 22 to 29 | mm | Ze 0.10 m, Table 19 | R221 [read] |
+| Stages of soil evaporation | stage 1 at the air's pull until REW is gone (Kr = 1); stage 2 Kr = (TEW - De) / (TEW - REW) | | | R221 [read] |
+| Kc max | 1.2 following rain, the most the wet surface takes of ET0 | | Eq. 72 | R221 [read] |
+| Hourly reference evapotranspiration | ET0 = [0.408 Δ (Rn - G) + γ (37 / (T + 273)) u2 (es - ea)] / [Δ + γ (1 + 0.34 u2)], G 0.1 Rn by day and 0.5 Rn by night, Rns = 0.77 Rs | mm/h | Eq. 53 | R221 [ex] |
+| Recession constant | groundwater 0.95, interflow 0.8 to 0.9, surface runoff 0.3 to 0.8, a day | - | 300 to 16,000 km2 basins (Pilgrim and Cordery 1992) | R224 [read] |
+
+**Pick.**
+- **The top soil** (Weather.wet, the share of TEW it holds): each hour the island's rain fills it, whatever it can't hold draining on down, and it loses Kr x 1.2 x ET0 of the island's air, sun and open-ground wind [derived]. The island's soils are taken as loam, REW 9 and TEW 19 mm, the middles of Table 19's [analogue]. A wet hour rains as a real one (sec. 25b), so the top soil wets and dries at real rates.
+- **The root zone** (soil.ts soilWater) is the generator's seasonal bucket, as the compressed calendar carries it, plus the top soil's water above or below the end of its stage 1, over all the root zone holds there (ground.ts holds) [design: the seasonal bucket counts no single rain].
+- **Runoff** reaches the streams through a linear store that keeps 0.55 of itself a day, the middle of surface runoff's 0.3 to 0.8 (R224) [derived], fed each hour by the island's rain. A stream's runoff now is its season's times that store against what the season's mean rain keeps in it [derived: runoff taken as one share of the rain all season].
+
+**Check** (a throwaway, a year and a half of each island's weather after ten days, seeds 1 to 3): the top soil holds 48 to 59% of its TEW on the mean and is in stage 1 43 to 57% of hours; the root zone averages 0.65 to 0.69 at open grass; a stream's runoff against its season's averages 0.53 to 1.17 (1 by construction over a long run), ranging from 0.1 to 2.9 times it between the tenth and ninetieth percentiles.
+
+**Gaps.** The island's top soil is one store, wetted by the island's mean rain under any crown or roof. How much of a season's rain runs off is the generator's share all season, not more on soaked ground and less on dry; nor does a downpour on dry ground run off before it soaks in.
 
 ## 26. The island's weather against these limits (Unit 1 check)
 
@@ -1156,10 +1183,26 @@ Every thing holds water, kg to the kg of it dry, and each hour (src/sim/wetness.
 - **Near a fire** it also loses the water the fire's flux on its face boils off, at 2.6 MJ/kg (sec. 5). The flux is the radiant share, χr 0.3 (sec. 4), of what the fire's bed gives off, flaming and glowing (sec. 28), falling off as from a point (sec. 18). (Until Units 5 to 9, every fire was taken as a campfire of 10 kW [design].)
 - **Against the body**, held by someone who wears anything or carries a bag, it sits in the body's own air, 32 C with the outside air's water plus 0.5 kPa (sec. 18), out of the sun and a fire's reach. Rain still reaches it unless it is in a bag.
 - **Bare skin** is wet as a thin piece a millimetre thick would be [design]: soaked in rain, dry within the hour after. A body loses heat in the cold (sim.ts needs) faster by 1 + 0.3 times how wet what it wears is (m over mmax), or its bare skin, the factor rain alone used to give [design until Unit 9].
-- **The island's dead stuff** lying about (grass, fern, twigs, sticks, fallen logs) holds what the weather has left in dead stuff of its thickness where it lies (sec. 25c): the island keeps its last 120 hours of weather, and a place starts from the island's open and shade classes as they stood before them (kept hourly, island-wide, at a grass blade's 0.61 mm and the NFDRS class bounds of 6.35, 25.4, 76.2 and 203.2 mm, sec. 5, 22e, in the open with sun and grass-top wind, open ground taking 0.6 of the sea's wind, and in the shade, from the land's mean air water and rain for the season), blended by the canopy over it, then takes each kept hour with the rain that reached it and the sun and wind the crowns let through. A crown's dead twigs take only what passes their own crown, in shade. A thing reads the value for its thickness between the two nearest by their logs, and nothing is stored on it until someone takes it.
+- **The island's dead stuff** lying about (grass, fern, twigs, sticks, fallen logs) holds what the weather has left in dead stuff of its thickness where it lies (sec. 25c): the island keeps its last 120 hours of weather, and a place starts from the island's open and shade classes as they stood before them (kept hourly, island-wide, at a grass blade's 0.61 mm and the NFDRS class bounds of 6.35, 25.4, 76.2 and 203.2 mm, sec. 5, 22e, in the open with sun and grass-top wind, open ground taking 0.6 of the sea's wind, and in the shade, from the land's mean air water and rain for the season), blended by the canopy over it, then takes each kept hour with the rain that reached it and the sun and wind the crowns let through, and lying on the ground the top soil's damp (sec. 25c, 25d). A crown's dead twigs take only what passes their own crown's gaps, rain and sun. Every piece holds its water in a skin and a heart (sec. 27g). A thing reads the value for its thickness between the two nearest by their logs, and nothing is stored on it until someone takes it.
 - **As found**: wood cut from a living tree or bush holds its species' green water (a log the mean of sapwood and heartwood [design], a branch or stem its sapwood's), and is green; bark peeled off a living tree holds its sapwood's [analogue]; reeds pulled for fiber hold LIVE_HERB, the NFDRS's 250% for living herbaceous fuel (R30) [analogue]; berries, mushrooms, herbs, meat, hide and clay hold their kinds' green water (sec. 27c); stone and metal none.
 - **Made things** hold the water of all that went into them by mass, as much as they can hold; charcoal comes out of its smothered fire dry.
 - **Catching** (sec. 10): a struck spark catches in tinder holding 10% or less, an ember blown into it in tinder holding 13% or less.
+
+### 27g. Skin and heart (2026-10-11, on the operator's call)
+
+Rain wets a log's face long before its heart, so splitting a wet log gives dry kindling. One water content per piece couldn't show that.
+
+**Pick.**
+- **Two halves.** A piece's water lies in its skin, the outer half of it (a round piece beyond 0.707 of its radius), and its heart, the inner half [design: the coarsest split that keeps a dry heart]. The piece's water m is their mean.
+- **Exchange.** Water moves between the skin and the air across the skin's half-thickness, and between skin and heart between their middles, both by diffusion. Taking the piece's own time τ (sec. 5, 20) as the first mode of diffusion in a cylinder, τ = R^2 / (j0^2 D) with j0 = 2.405, the skin's exchange with the air takes 0.211 τ and the heart's with the skin 0.782 τ; the pair's slow mode then comes out at 1.05 τ, the piece's own within 5% [derived]. The pair is solved exactly each hour.
+- **Rain** soaks the skin toward mmax and no faster than the rain on the piece's face brings water, as before; **a fire's flux** boils water off the skin.
+- **Lighting.** A piece lights by R4's Eq. 7 (sec. 28): heating it through takes all its water, (1 + 5 m); heating its face as a thick piece does takes its skin's, (1 + 8.1 skin), since a thick piece lights when its face's thin heated layer reaches ignition and Janssens' kρc there is the skin's [derived]. Burning takes the water of all the wood it eats, m.
+- **Splitting** a piece along its grain into n wedges keeps each one's water, m. Its new skin lies along its share of the old face, π/n of the round's width, against the two cut faces' width, and along the cut faces, which run 0.707 of their length through the old heart: skin' = s skin + (1 - s)(0.707 heart + 0.293 skin), s = (π/n) / (π/n + 1) [derived].
+- **Gathered** dead wood comes with the skin and heart its place's weather left in dead stuff its thickness (sec. 25c); made things take only their parts' mean.
+
+**Check** (a throwaway, a year and a half of each island's weather, seeds 1 to 3, a 15 cm log lying in open grass): its mean water 26 to 30%, its skin 28 to 33%, its heart 24 to 26%; split in eight, the pieces' skins sit at the log's mean. An hour's rain on a dry 10 cm log raises its skin over five times as much as its heart (src/sim/wetness.test.ts).
+
+**Gaps.** The skin is half the piece. For a thick log that is centimetres, while lighting and rain both act on its first millimetres, which wet and dry faster still, so a rained-on log's face is wetter at once than its skin shows, and a split log's cut faces drier.
 
 ## 28. The bed (Unit 5)
 
@@ -1874,6 +1917,7 @@ How physics.ts and sim.ts light, feed and carry fire on the bed of section 28 (c
 - R218 Marshall J.S., Palmer W.McK. (1948), The distribution of raindrops with size, J. Meteorology 5:165-166, as given in Wikipedia, Raindrop size distribution [search excerpt]
 - R219 Atlas D., Srivastava R.C., Sekhon R.S. (1973), Doppler radar characteristics of precipitation at vertical incidence, Rev. Geophys. 11(1):1-35, doi:10.1029/RG011i001p00001, as restated by Das and others (2020), Earth and Space Science, doi:10.1029/2019EA000956 [search excerpt]
 - R220 Rutter A.J., Kershaw K.A., Robins P.C., Morton A.J. (1971), A predictive model of rainfall interception in forests, 1. Derivation of the model from observations in a plantation of Corsican pine, Agricultural Meteorology 9:367-384, doi:10.1016/0002-1571(71)90034-3 [not read]
-- R221 Allen R.G., Pereira L.S., Raes D., Smith M. (1998), Crop evapotranspiration, FAO Irrigation and Drainage Paper 56, eqs. 3, 4, 13, 39 (the forms climate.ts already uses) [ex]
+- R221 Allen R.G., Pereira L.S., Raes D., Smith M. (1998), Crop evapotranspiration, FAO Irrigation and Drainage Paper 56, eqs. 3, 4, 13, 39, 53 (the forms climate.ts already uses) [ex]; ch. 7, eqs. 71 to 74 and Table 19 (read 2026-10-11). https://www.fao.org/4/x0490e/x0490e0c.htm
 - R222 Sharon D. (1980), The distribution of hydrologically effective rainfall incident on sloping ground, J. Hydrology 46(1-2):165-188, doi:10.1016/0022-1694(80)90041-4 (abstract)
 - R223 Andreasen M. and others (2023), Seasonal dynamics of canopy interception loss within a deciduous and a coniferous forest, Hydrological Processes 37:e14828, doi:10.1002/hyp.14828 (abstract)
+- R224 US Army Corps of Engineers, HEC-HMS Technical Reference Manual, Recession Model (baseflow), quoting Pilgrim D.H. and Cordery I. (1992), Flood runoff, in Maidment D.R. (ed.), Handbook of Hydrology, ch. 9. https://www.hec.usace.army.mil/confluence/hmsdocs/hmstrm/baseflow/recession-model (read 2026-10-11)

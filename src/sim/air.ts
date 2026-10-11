@@ -156,6 +156,18 @@ export function islandAir(w: World, t: number, sky: World["weather"]["sky"]) {
   const m = meansOf(w), { s, f } = seasonAt(t), now = (v: number[]) => v[s] * (1 - f) + v[(s + 1) % 4] * f;
   return { vapour: now(m.vapour), rain: sky === "rain" ? now(m.rain) : sky === "storm" ? 5 * now(m.rain) : 0 };
 }
+// The island's rain an hour at tick t, wet and dry hours together, mm: its season's precipitation over all its real hours.
+export function meanRain(w: World, t: number) {
+  const m = meansOf(w), { s, f } = seasonAt(t), of = (k: number) => m.rain[k] * (m.hours[k][0] + 5 * m.hours[k][1]);
+  return of(s) * (1 - f) + of((s + 1) % 4) * f;
+}
+// The share of the sun's beam each sky lets through, as the NFDRS has the cloud of its states of weather (sec. 11).
+export const CLOUD: Record<World["weather"]["sky"], number> = { clear: 0.05, cloudy: 0.7, rain: 0.95, storm: 0.95 };
+// The sun on something lying in the open at tick t under a sky, W/m2: the clear-sky beam at the sun's height (sec. 11).
+export function sunOn(t: number, sky: World["weather"]["sky"]) {
+  const el = sunAt(Math.floor(t / DAY) + 1, hourOf(t)).el;
+  return el > 0 ? 1381.6 * 0.745 ** (1 / Math.sin(el)) * Math.sin(el) * (1 - CLOUD[sky]) : 0;
+}
 // Environment Canada's wind chill index, for air at or below 10 °C and a wind at head height (taken as three quarters of
 // the 10 m wind the index is reckoned in).
 export function chill(t: number, v: number) {

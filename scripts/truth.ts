@@ -19,7 +19,7 @@ import { lightOn, workRate } from "../src/sim/light";
 import { nearestThing, put, shelve } from "../src/sim/space";
 import { fieldsOf, ofPlace } from "../src/sim/beliefs";
 import { conditionsNow } from "../src/sim/sim";
-import { deadAt, deadHour, moistureOf, pastHour, tinder, tinderOf } from "../src/sim/wetness";
+import { deadHour, deadOf, moistureOf, pastHour, tinder, tinderOf } from "../src/sim/wetness";
 import { BURNS, PHYS, pieceOf, stackPhys } from "../src/sim/fuel";
 import { advance, alight, feed, kindle, lay } from "../src/sim/combustion";
 import { ahead } from "../src/sim/seedling";
@@ -66,7 +66,7 @@ const dead: NonNullable<typeof w.weather.dead>[] = [], pasts: NonNullable<typeof
   let d = w.weather.dead, t = Math.ceil((start + 1) / 12) * 12, past = w.weather.past && { ...w.weather.past, hours: [...w.weather.past.hours] };
   for (const h of hours) {
     const temp = islandTemp(t, h.sky), next = deadHour(w, d, t, h.sky, h.speed, temp);
-    past = pastHour(w, past, d ?? next, t, h.sky, h.speed, temp, w.weather.wind);
+    past = pastHour(w, past, d ?? next, t, h.sky, h.speed, temp, w.weather.wind, h.wet);
     dead.push((d = next));
     pasts.push({ ...past, hours: [...past.hours] });
     t += 12;
@@ -121,7 +121,8 @@ function pieceHere(k: string, at: { px: number; py: number }): Stack {
   const from = SOURCES[k] && nearestThing(w, at.px, at.py, SOURCES[k], (t) => !!pieceOf(t, k), 2);
   if (from) return gathered(w, from, k);
   const x = stackPhys(w.kinds, { k });
-  return { k, hp: 1, born: w.t, ...(x && Math.min(x.mmax, deadAt(w, at, x.d)) > 0 ? { m: Math.min(x.mmax, deadAt(w, at, x.d)) } : {}) };
+  const dead = x ? deadOf(w, at, x.d, { lying: true }) : undefined, m = dead ? Math.min(x!.mmax, dead.m) : 0;
+  return { k, hp: 1, born: w.t, ...(m > 0 ? { m } : {}), ...(dead && m > 0 && Math.abs(dead.skin - m) > 0.0005 ? { skin: Math.min(2 * m, dead.skin) } : {}) };
 }
 // A fire as people keep one, for a way done at a fire: the usual lay (physics.ts usual) lit 0.8 m in front of them in the
 // hour's air and burning up to an hour and a half, until it's caught on and before it's out [design], set up as the way's

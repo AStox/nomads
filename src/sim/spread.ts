@@ -8,10 +8,10 @@
 // the beds, heats what's near them and lights what catches, drawing brands from the world's own random stream.
 import { group, inFlame, kindle, lay, windAt, type Air, type Bed, type Group } from "./combustion";
 import { BURNS, PHYS, WOODS, greenOf, pieceOf, stackPhys, woodOf, type Phys, type Wood } from "./fuel";
-import { REF, deadAt, grassAt, growing, leafless, moistureOf, sunOn } from "./wetness";
+import { REF, deadAt, deadOf, grassAt, growing, leafless, moistureOf, waterOf, type Water } from "./wetness";
 import { TILE_M, type Thing, type World } from "./world";
-import { airOn, rainAt } from "./air";
-import { rainOn } from "./rain";
+import { airOn, rainAt, sunOn } from "./air";
+import { CROWN, rainOn } from "./rain";
 import { canopyAt } from "./light";
 import { TREES } from "../terrain/flora";
 
@@ -35,7 +35,7 @@ const ONE_HOUR = REF[1]; // fine dead fuel, the NFDRS's 1-hour class, is thinner
 
 // ---------- what a thing is, as fuel ----------
 // Pieces laid, and how high they stand, m from the ground to their top.
-export type Part = { phys: Phys; n: number; m: number; lo: number; hi: number };
+export type Part = { phys: Phys; n: number; m: number; skin?: number; lo: number; hi: number };
 
 // Trees by section 19: the trunk as thick as a forest tree of its height (19a), in meter logs to iLand's stem mass; the
 // crown iLand's branch and foliage mass at that trunk (19b), its branchwood split into twigs and branches, and a share of
@@ -57,9 +57,6 @@ function twigShare(sp: Tree, D: number) {
 const DEAD: Record<Tree, number> = { pine: 0.183, oak: 0.097, ash: 0.097, aspen: 0.097 };
 // A twig: as thick as the brands burning trees shed, which are their twigs, 3 to 4 mm (sec. 6, R27; sec. 30a).
 const TWIG = 0.0035;
-// How deep a tree's crown hangs, as a share of its height: half, as forest-grown Scots pines and oaks carry theirs (BAAD,
-// R98; sec. 30a).
-export const CROWN = 0.5;
 // Pine's needles hold its live foliage water (sec. 21); the broadleaves' leaves, and the live twigs and leaves of every
 // tree and shrub, the NFDRS's live woody water (sec. 12); the broadleaves stand bare out of the growing season
 // (wetness.ts leafless).
@@ -75,7 +72,7 @@ function tree(w: World, t: Thing): Part[] {
   return [
     { phys: { ...PHYS.fiber }, n: (leaves * alive) / PHYS.fiber.mass, m: sp === "pine" ? NEEDLES : woody, lo: crown, hi: H },
     { phys: twig, n: twigs / twig.mass, m: woody, lo: crown, hi: H },
-    { phys: { ...twig }, n: (DEAD[sp] * (wood + leaves)) / twig.mass, m: deadAt(w, t, TWIG, sp), lo: crown, hi: H },
+    { phys: { ...twig }, n: (DEAD[sp] * (wood + leaves)) / twig.mass, m: deadAt(w, t, TWIG, { crown: sp }), lo: crown, hi: H },
     { phys: woodOf(sp, branch.d, branch.mass), n: (wood * alive - twigs) / branch.mass, m: greenOf(sp)!, lo: crown, hi: H },
     { phys: woodOf(sp, log.d, log.mass), n: STEM[sp](D) / log.mass, m: greenOf(sp, true)!, lo: 0, hi: H },
   ];
@@ -108,18 +105,19 @@ function bush(w: World, t: Thing, dead: boolean): Part[] {
 }
 
 // What was made or dropped: a shelter's or a pile's pieces of wood, each as it is, and the rest counted, a pile's at its
-// own water and a shelter's at what dead stuff of their thickness holds there (sec. 30a). Pieces alike lie as one group.
+// own water and a shelter's at what dead stuff of their thickness holds there, standing (sec. 30a). Pieces alike lie as
+// one group.
 function made(w: World, t: Thing, hi?: number): Part[] {
   const out = new Map<string, Part>();
-  const add = (s: { k: string; size?: { d: number; mass: number; len: number }; species?: string }, m: number | undefined, n: number) => {
+  const add = (s: { k: string; size?: { d: number; mass: number; len: number }; species?: string }, x: Water | undefined, n: number) => {
     const phys = stackPhys(w.kinds, s);
     if (!phys?.burn || n <= 0) return;
-    const water = m ?? deadAt(w, t, phys.d), key = `${s.k}|${s.size?.d}|${s.size?.mass}|${s.species}|${water}`, had = out.get(key);
+    const water = x ?? deadOf(w, t, phys.d), key = `${s.k}|${s.size?.d}|${s.size?.mass}|${s.species}|${water.m}|${water.skin}`, had = out.get(key);
     if (had) had.n += n;
-    else out.set(key, { phys, n, m: water, lo: 0, hi: hi ?? phys.d });
+    else out.set(key, { phys, n, m: water.m, ...(water.skin === water.m ? {} : { skin: water.skin }), lo: 0, hi: hi ?? phys.d });
   };
-  for (const s of t.pieces ?? []) add(s, moistureOf(s), 1);
-  if (t.kind === "item" && t.item) add({ k: t.item }, t.m ?? 0, (t.n ?? 1) - (t.pieces?.length ?? 0));
+  for (const s of t.pieces ?? []) add(s, waterOf(s), 1);
+  if (t.kind === "item" && t.item) add({ k: t.item }, waterOf(t), (t.n ?? 1) - (t.pieces?.length ?? 0));
   for (const [k, n] of Object.entries(t.kind === "structure" ? t.parts ?? {} : {})) add({ k }, undefined, n - (t.pieces ?? []).filter((s) => s.k === k).length);
   return [...out.values()];
 }
@@ -133,8 +131,8 @@ export function partsOf(w: World, t: Thing): Part[] {
   if (t.kind === "stick" || t.kind === "fallen_log") {
     const piece = pieceOf(t, t.kind === "stick" ? "stick" : "log");
     if (!piece) return [];
-    const phys = woodOf(piece.species ?? "generic", piece.size.d, piece.size.mass);
-    return [{ phys, n: t.kind === "stick" ? 1 : t.size / piece.size.len, m: deadAt(w, t, piece.size.d), lo: 0, hi: piece.size.d }];
+    const phys = woodOf(piece.species ?? "generic", piece.size.d, piece.size.mass), water = deadOf(w, t, piece.size.d, { lying: true });
+    return [{ phys, n: t.kind === "stick" ? 1 : t.size / piece.size.len, m: water.m, ...(water.skin === water.m ? {} : { skin: water.skin }), lo: 0, hi: piece.size.d }];
   }
   if (t.kind === "structure") return made(w, t, t.size / 2);
   if (t.kind === "item") return made(w, t);
@@ -150,7 +148,7 @@ const halfOf = (t: Thing) => (t.kind === "grass" || t.kind === "bush" || t.kind 
 export const WIDEST = 3;
 
 // A thing's parts as groups yet to light, each holding the heat it has taken toward lighting.
-export const warmed = (t: Thing, parts: Part[]): Group[] => parts.map((p, i) => ({ ...group(p.phys, p.n, p.m), heat: t.absorbed?.[i] ?? 0 }));
+export const warmed = (t: Thing, parts: Part[]): Group[] => parts.map((p, i) => ({ ...group(p.phys, p.n, p.m, 0, 0, p.skin), heat: t.absorbed?.[i] ?? 0 }));
 // A thing's parts laid as its bed, each group with the heat its part has taken and alight if it is (from warmed).
 export function bedOf(parts: Part[], groups: Group[]): Bed | undefined {
   const bed = lay(parts);

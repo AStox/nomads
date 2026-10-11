@@ -8,11 +8,11 @@
 // sec. 25c).
 import { esat } from "../terrain/climate";
 import { BOULDER, TALL, TALLEST, TREES } from "../terrain/flora";
-import { headWind, islandAir, rainAt, slopeAt } from "./air";
+import { CLOUD, headWind, islandAir, rainAt, slopeAt, sunOn } from "./air";
 import { CROWN_REACH, crownCover } from "./light";
 import { around, lookAround } from "./space";
-import { CROWN } from "./spread";
-import { COVER, leafless, sunOn } from "./wetness";
+import { leafless } from "./wetness";
+import { glowAway } from "./soil";
 import { TILE_M, perWorld, type Thing, type World } from "./world";
 
 // ---------- drops ----------
@@ -27,6 +27,9 @@ const Z0 = 0.03, TO_2M = Math.log(2 / Z0);
 export const drift = (z: number, u: number, v: number) => (z > Z0 * Math.E ? (z * u * (Math.log(z / Z0) - 1)) / (TO_2M * v) : 0);
 
 // ---------- crowns ----------
+// How deep a tree's crown hangs, as a share of its height: half, as forest-grown Scots pines and oaks carry theirs (BAAD,
+// R98; sec. 30a).
+export const CROWN = 0.5;
 // A crown in leaf, and a pine's in any season, lets 0.07 of the rain straight through its own gaps, as a closed stand's
 // crowns let through before they wet (R214; the stand's 0.3 counts the gaps between crowns too, which a place here has
 // for itself); a broadleaf's bare branches let through 0.9 (R216). Wet through, a pine's crown holds 1.21 mm over the
@@ -39,16 +42,22 @@ function crownWay(k: number, bare: boolean) {
   const p = bare && TREES[k] !== "pine" ? BARE_GAP : GAP;
   return { p, full: (HOLDS[TREES[k]] * (1 - p)) / (1 - GAP) };
 }
+// The share of the sky a crown of kind k shows through its own gaps: the rain falls straight through them, and the sun's
+// beam shines through them onto what lies among its branches.
+export const crownGap = (k: number, bare: boolean) => crownWay(k, bare).p;
 // The share of rain falling at this rate (mm an hour) that reaches the ground under a crown of kind k holding `held` mm
-// as the rain begins: what falls through its gaps, and whatever lands on it past what it can hold (Rutter's bucket, R220).
+// as the rain begins: what falls through its gaps, and whatever lands on it past what it can hold (Rutter's bucket,
+// R220), less the 0.029 of the rain the branches lead down the trunk (Gash's stemflow share, R214), which wets only the
+// trunk's foot.
+const STEM = 0.029;
 export function through(k: number, held: number, rain: number, bare: boolean) {
   if (rain <= 0) return 1;
   const { p, full } = crownWay(k, bare);
-  return (p * rain + Math.max(0, held + (1 - p) * rain - full)) / rain;
+  return (p * rain + Math.max(0, held + (1 - p - STEM) * rain - full)) / rain;
 }
 // How fast a wet crown h meters tall dries, mm an hour: FAO-56's Penman-Monteith with nothing in the way at the surface,
 // as wet leaves have no stomata to close (R221). The sun it takes in, 0.88 of it [UNVERIFIED], less the warmth it glows
-// away to a sky this cloudy (FAO-56's net longwave); and the damp air the wind carries off it, by the log law over a crown
+// away to a sky this cloudy (soil.ts glowAway); and the damp air the wind carries off it, by the log law over a crown
 // (z0 0.13 h and d 0.64 h, sec. 14, and heat's z0 a tenth of the wind's, FAO-56), with the wind over it read from the
 // open ground's at twice its height, where its own stirring of the air gives out [design]. In air at temp C holding
 // vapour kPa, under sun W/m2, cloud the sky's share hidden, and a head-height wind on open ground.
@@ -56,8 +65,7 @@ export function wetDrying(temp: number, vapour: number, sun: number, cloud: numb
   if (h <= 0) return 0;
   const es = esat(temp), slope = (4098 * es) / (temp + 237.3) ** 2, gamma = 0.000665 * 101.3, z = 2 * h;
   const u = (head * Math.log(z / Z0)) / TO_2M, ra = (Math.log((z - 0.64 * h) / (0.13 * h)) * Math.log((z - 0.64 * h) / (0.013 * h))) / (0.41 ** 2 * u);
-  const glow = (4.903e-9 / 24) * (temp + 273.16) ** 4 * (0.34 - 0.14 * Math.sqrt(vapour)) * Math.max(0, 1.35 * (1 - cloud) - 0.35);
-  const net = 0.88 * sun * 0.0036 - glow; // MJ/m2 an hour
+  const net = 0.88 * sun * 0.0036 - glowAway(temp, vapour, cloud); // MJ/m2 an hour
   return Math.max(0, (slope * net + (1.2 * 1.013e-3 * 3600 * Math.max(0, es - vapour)) / ra) / (slope + gamma) / 2.45);
 }
 
@@ -70,7 +78,7 @@ export function crownsHour(w: World, crowns: number[] | undefined, t: number, sk
   const { vapour, rain } = islandAir(w, t, sky), bare = leafless(w), sun = sunOn(t, sky);
   const held = TREES.map((_, k) => {
     const c = crowns?.[k] ?? 0;
-    return c > 0 ? c * Math.exp(-wetDrying(temp, vapour, sun, COVER[sky], speed * 0.6, TALL[TREES[k]]) / crownWay(k, bare).full) : 0;
+    return c > 0 ? c * Math.exp(-wetDrying(temp, vapour, sun, CLOUD[sky], speed * 0.6, TALL[TREES[k]]) / crownWay(k, bare).full) : 0;
   });
   return { held, bare, next: held.map((c, k) => { const { p, full } = crownWay(k, bare); return Math.min(full, c + (1 - p) * rain); }) };
 }

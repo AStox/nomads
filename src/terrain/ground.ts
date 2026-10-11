@@ -79,9 +79,8 @@ export function ground(s: Site): Ground {
     const sour = 1 - 0.7 * ramp(Math.abs(ph[i] - 6.5), 0.5, 2.5);
     fertility[i] = (R.feed * (1 - al) + 0.85 * al) * sour * (0.6 + 0.4 * humus[i]) * (1 - 0.6 * peat[i]) * (0.3 + 0.7 * ramp(soil[i], 0.05, 0.5)) * (1 - 0.8 * sand[i]);
     // A soil bucket through the seasons: spring rain tops it up and summer drinks it down. What plants go short of
-    // in the growing seasons is their drought. Roots that reach shallow groundwater never go short. A meter of loam
-    // holds some 170 mm for roots, of sand under half of that, and humus holds more.
-    const cap = 10 + soil[i] * (170 - 110 * sandy[i] - 80 * Math.max(0, clayey[i] - 0.4) + 60 * humus[i]);
+    // in the growing seasons is their drought. Roots that reach shallow groundwater never go short.
+    const cap = holds(soil[i], sandy[i], clayey[i], humus[i]);
     let store = cap, short = 0, want = 0;
     for (let year = 0; year < 2; year++)
       for (let k = 0; k < 4; k++) {
@@ -108,4 +107,9 @@ export function ground(s: Site): Ground {
     bare[i] = Math.max(0, 1 - tree[i] - shrub[i] - marsh[i] - grass[i]);
   }
   return { soil, silt, sand, peat, sandy, clayey, humus, ph, fertility, moist, soilWater, tree, shrub, grass, marsh, bare };
+}
+// What the root zone holds for plants, mm: a meter of loam some 170 mm, of sand under half of that, and humus more, over
+// as much soil as there is (soil, m; the rest shares of it).
+export function holds(soil: number, sandy: number, clayey: number, humus: number) {
+  return 10 + soil * (170 - 110 * sandy - 80 * Math.max(0, clayey - 0.4) + 60 * humus);
 }

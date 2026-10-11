@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, newWorld, type Agent, type Shelter, type Stack, type World } from "./world";
-import { DAMP, deadAt, emc, equilibrium, tinderOf, wetness } from "./wetness";
+import { DAMP, REF, deadAt, emc, equilibrium, splitWater, tinderOf, wetness } from "./wetness";
+import { referenceEt, topKr, wetHour, TEW, REW } from "./soil";
 import { PHYS, WOODS } from "./fuel";
 import { airOn, vapourAt } from "./air";
 import { dropStacks, fireOf, giveItems, giveStack, sparkCatches, strikeTick } from "./physics";
@@ -59,7 +60,8 @@ test("out of the rain thin fuel dries within hours while a log takes days, and a
   const lying = (at: { px: number; py: number }) => nearestThing(w, at.px, at.py, ["item"], (t) => t.item === "stick", 2)!.pieces![0];
   hours(w, 8);
   expect(held(a, "fiber").m!).toBeLessThan(0.3);
-  expect(held(a, "log").m!).toBeGreaterThan(0.49);
+  // its skin starts drying at once, but the log as a whole has come under a tenth of the way
+  expect(held(a, "log").m!).toBeGreaterThan(0.45);
   expect(lying(open).m!).toBeLessThan(lying(shade).m!);
 });
 
@@ -142,4 +144,49 @@ test("soaked clothes, or bare skin in the rain, lose a body's heat faster than d
   const hide = (m: number) => () => { a.wearing = { k: "hide", hp: 1, born: 0, m }; delete a.skin; };
   expect(loss(hide(PHYS.hide.mmax))).toBeGreaterThan(loss(hide(0)));
   expect(loss(() => { a.wearing = null; a.skin = 1; })).toBeGreaterThan(loss(() => { a.wearing = null; delete a.skin; }));
+});
+
+test("an hour's rain on a dry log wets its skin, not its heart, and splitting it lays its dry heart on the cut faces", () => {
+  const [w, a] = setup();
+  giveStack(w, a, round("log", 0.1, 0.12));
+  w.weather.sky = "rain";
+  hours(w, 1);
+  const log = held(a, "log"), skin = log.skin!, heart = 2 * log.m! - skin;
+  expect(skin - 0.12).toBeGreaterThan(5 * (heart - 0.12));
+  const split = splitWater({ m: log.m!, skin }, 4);
+  expect(split.m).toBe(log.m!);
+  expect(split.skin).toBeLessThan(skin);
+});
+
+test("dead sticks lying on wet ground hold more water than the same standing clear of it, and as much on dry ground", () => {
+  const [w, a] = setup();
+  at(w, 13);
+  Object.assign(w.weather, { sky: "clear", speed: 3 });
+  w.weather.wet = 1;
+  hours(w, 6);
+  const on = { px: a.px, py: a.py };
+  expect(deadAt(w, on, REF[1], { lying: true })).toBeGreaterThan(deadAt(w, on, REF[1]));
+  delete w.weather.past;
+  w.weather.wet = 0;
+  hours(w, 6);
+  w.weather.wet = 0;
+  for (const h of w.weather.past!.hours) h.soil = 0;
+  expect(deadAt(w, { px: a.px + 1e-6, py: a.py }, REF[1], { lying: true })).toBeCloseTo(deadAt(w, { px: a.px + 1e-6, py: a.py }, REF[1]), 6);
+});
+
+test("the top soil dries at the air's pull while wet, then ever slower, and rain wets it again", () => {
+  const [w] = setup();
+  at(w, 13);
+  const et = referenceEt(22, 1.2, 600, 0.05, 2);
+  expect(et).toBeGreaterThan(0.2);
+  expect(topKr(1)).toBe(1);
+  expect(topKr(1 - REW / TEW - 0.1)).toBeLessThan(1);
+  let wet = 1, t = w.t;
+  const first = 1 - wetHour(w, wet, t, "clear", 3, 22);
+  for (let i = 0; i < 240; i++, t += 12) wet = wetHour(w, wet, t, "clear", 3, 22);
+  expect(wet).toBeLessThan(1 - REW / TEW);
+  const later = wet - wetHour(w, wet, t, "clear", 3, 22);
+  expect(wet).toBeLessThan(1);
+  expect(later).toBeLessThan(first);
+  expect(wetHour(w, wet, t, "rain", 8, 15)).toBeGreaterThan(wet);
 });

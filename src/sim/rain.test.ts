@@ -28,10 +28,10 @@ function patch(): [World, { px: number; py: number }] {
   throw new Error("no open ground");
 }
 
-test("a dry crown keeps a light shower off the ground beneath it, and once wet through lets it all fall", () => {
+test("a dry crown keeps a light shower off the ground beneath it, and once wet through lets it all fall but what runs down the trunk", () => {
   const pine = crownKind("pine");
   expect(through(pine, 0, 0.5, false)).toBeLessThan(0.1);
-  expect(through(pine, 1.21, 0.5, false)).toBeCloseTo(1, 9);
+  expect(through(pine, 1.21, 0.5, false)).toBeCloseTo(1 - 0.029, 9);
   const [w, at] = patch();
   w.weather.speed = 0;
   addThing(w, "tree", at.px, at.py, { species: "pine", size: 15 });
@@ -39,7 +39,7 @@ test("a dry crown keeps a light shower off the ground beneath it, and once wet t
   expect(rainOn(w, under.px, under.py)).toBeLessThan(rainOn(w, open.px, open.py));
   w.weather.past = { base: { open: [], shade: [] }, hours: [{ t: w.t, sky: "rain", temp: 10, speed: 0, wind: { dx: 1, dy: 0 }, held: [1.21, 0.8, 0.8, 0.8], bare: false }], crowns: [1.21, 0.8, 0.8, 0.8] };
   w.t++;
-  expect(rainOn(w, under.px, under.py)).toBeCloseTo(rainAt(w, under.px, under.py), 9);
+  expect(rainOn(w, under.px, under.py)).toBeCloseTo(rainAt(w, under.px, under.py) * (1 - 0.029), 9);
 });
 
 test("in a wind the rain slants, so the ground in a boulder's lee takes none of it, though in still air it takes it all", () => {

@@ -53,6 +53,7 @@ export type Thing = {
   shared?: string; given?: Record<string, number>; // a store a camp treats as its own, and who put how much in
   pieces?: Stack[]; // an item pile's or a structure's pieces of wood, as they were laid down (the rest are counted)
   m?: number; // an item pile's counted things' water, kg to the kg (wetness.ts)
+  skin?: number; // the same in their outer halves, where it isn't m (wetness.ts)
   // a seedling's: how well its spot suits its kind, water poured round it soaking away, and the share of its spot's light
   // and water the plants round it leave it
   fit?: number; water?: number; share?: number;
@@ -60,7 +61,8 @@ export type Thing = {
 // m: the water in it, kg to each kg of it dry (wetness.ts; none is bone dry); green: cut from a living plant and not yet
 // dried below fibre saturation. size and species: a piece of wood's own (fuel.ts), what it grew as and how it was cut;
 // none is a piece of no known size
-export type Stack = { k: string; hp: number; born: number; m?: number; green?: true; size?: Size; species?: string };
+// m: water, kg to the kg dry (wetness.ts); skin: the water in its outer half, where it isn't m
+export type Stack = { k: string; hp: number; born: number; m?: number; skin?: number; green?: true; size?: Size; species?: string };
 // A piece of wood's size: how thick and how long, in meters, and its dry mass in kg.
 export type Size = { d: number; len: number; mass: number };
 export type AnimalSpecies = "deer" | "wolf" | "rabbit" | "heron" | "gull" | "crow" | "eagle" | "fish" | "butterfly";
@@ -79,22 +81,25 @@ export type Weather = {
   temp: number; // °C, the air at sea level away from the coast: air.ts has it where anyone stands
   wind: { dx: number; dy: number }; // the way it blows
   speed: number; // m/s at head height over the open sea
-  wet: number; // 0..1 how much of the last day or two's rain is still running off the land
+  wet: number; // 0..1 how much of the water the top soil can lose to the air it holds (soil.ts wetHour)
+  runoff?: number; // mm of the island's rain still to come down the streams (streams.ts runoffHour)
   // the water in dead wood and litter lying about the island, kg to the kg, at wetness.ts REF thicknesses, in the open
-  // and in the shade
-  dead?: { open: number[]; shade: number[] };
+  // and in the shade; skin, the same in their outer halves, where it isn't the whole's
+  dead?: Dead;
   // the island's living plants coming green (wetness.ts growing): the day's coldest air, C, and its largest vapour
   // pressure deficit, Pa, so far, the rain of the last few days, mm, and the growing season index
   gsi?: { day: number; tmin: number; vpd: number; rain: number; index: number };
   // the island's last few days of weather, kept for what fell where (wetness.ts deadAt): the dead stuff as it stood before
   // them (as in dead), each hour's sky, warmth, wind and the water each kind of crown held as its rain began (rain.ts),
   // and the water the crowns hold now
-  past?: { base: { open: number[]; shade: number[] }; hours: PastHour[]; crowns: number[] };
+  past?: { base: Dead; hours: PastHour[]; crowns: number[] };
 };
+export type Dead = { open: number[]; shade: number[]; skin?: { open: number[]; shade: number[] } };
 export type PastHour = {
   t: number; sky: Weather["sky"]; temp: number; speed: number; wind: { dx: number; dy: number };
   held: number[]; // mm on each kind of crown (flora.ts TREES) as the hour's rain began
   bare: boolean; // the broadleaves out of leaf
+  soil?: number; // the top soil's wetness (Weather.wet) that hour
 };
 // result: what it gives, builds or does, as the outcome that first showed it (physics.ts Fields)
 export type Law = { id: string; key: string; text: string; verb: string; source: "physics" | "jev"; by: string; t: number; result?: { gives: string[]; builds?: string; effect?: string; target?: string } };

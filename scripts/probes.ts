@@ -23,11 +23,12 @@ import { conditionsNow, tick } from "../src/sim/sim";
 import { DURATION, changed, count, counts, frictionPer, giveItems, giveStack, groundWord, layAt, newKinds, occupied, removeThing, removed, soilAt, sparksPer, SEED_SOIL } from "../src/sim/physics";
 import { predict } from "../src/sim/formulas";
 import { pieceOf, roundSize, stackPhys } from "../src/sim/fuel";
-import { nextWet, trailChanges } from "../src/sim/ecology";
+import { trailChanges } from "../src/sim/ecology";
+import { wetHour } from "../src/sim/soil";
 import { traceListeners, type TraceEntry } from "../src/sim/trace";
 import { asking, brainKind, useBrain } from "../src/sim/brain";
 import { DARK, lightOn, skyShare } from "../src/sim/light";
-import { airOn, islandAir } from "../src/sim/air";
+import { airOn, islandTemp } from "../src/sim/air";
 import { anyAround, around, put, thingById } from "../src/sim/space";
 import { beliefKey, fieldsOf, groundKey, ofPlace, ruledOut, type Belief } from "../src/sim/beliefs";
 import { moistureOf } from "../src/sim/wetness";
@@ -467,7 +468,7 @@ function groundsSeen(w: World, ps: Pos[]) {
   }
   return seen;
 }
-// The weather of the hours ahead under the probe's sky, from the rain still running off the land now, drawn with r (its
+// The weather of the hours ahead under the probe's sky, from how wet the top soil is now, drawn with r (its
 // own draws, not the world's): K stretches of it, for working out what a seed put in now would come to.
 const K = 6, AHEAD = 30 * 24;
 function skies(w: World, sky: Sky, r: () => number): Hour[][] {
@@ -475,9 +476,9 @@ function skies(w: World, sky: Sky, r: () => number): Hour[][] {
     let wet = w.weather.wet, t = Math.ceil((w.t + 1) / 12) * 12;
     const hours: Hour[] = [];
     for (let i = 0; i < AHEAD; i++, t += 12) {
-      const s = sky(isNight(t)), rain = r() < s.rain, gale = r() < s.wind;
-      wet = nextWet(wet, rain ? islandAir(w, t, "rain").rain : 0);
-      hours.push({ sky: rain ? "rain" : "clear", speed: gale ? 18 : 2, wet });
+      const s = sky(isNight(t)), rain = r() < s.rain, gale = r() < s.wind, kind: World["weather"]["sky"] = rain ? "rain" : "clear", speed = gale ? 18 : 2;
+      wet = wetHour(w, wet, t, kind, speed, islandTemp(t, kind));
+      hours.push({ sky: kind, speed, wet });
     }
     return hours;
   });

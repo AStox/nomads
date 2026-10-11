@@ -12,11 +12,11 @@ import {
 import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind, stockedAt } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
-import { enrich, feedRate, settle, soilWaterAt } from "./soil";
+import { enrich, feedRate, settle, soilWaterAt, wetHour } from "./soil";
 import { SIZE, rockAt } from "../terrain/flora";
 import { fitHere, growth, growthOf, pickHere } from "./plants";
 import { ripening, warmRate } from "./cues";
-import { streamNow } from "./streams";
+import { runoffHour, streamNow } from "./streams";
 import { WIND, airAt, baseTemp, islandAir, islandTemp, seasonAt, wetHours } from "./air";
 import { growRate } from "./light";
 import { nicheOf, seedlingHour, shareAt, treeOf, type Hour } from "./seedling";
@@ -58,12 +58,6 @@ export function nextSky(sky: World["weather"]["sky"], r: number, t: number, temp
 }
 // The wind over the open sea an hour on (r: a draw), settling toward what the sky brings.
 export const nextSpeed = (speed: number, sky: World["weather"]["sky"], r: number) => Math.max(0.5, speed + (WIND[sky] - speed) * 0.25 + (r - 0.5) * 2);
-// Rain runs off into the streams and drains away over a day or so (Weather.wet), an hour on with this much rain falling
-// (mm). Each millimetre takes it as far toward running full as a millimetre of the old rain hour did: 6% of the way for
-// the island's year-mean 1.6 mm (sec. 25), when the sky rained in half its hours. So the same rain runs off alike
-// whether it falls in few hours or many.
-const RUNOFF_MM = 1.6 / -Math.log(1 - 0.06);
-export const nextWet = (wet: number, rain: number) => (rain > 0 ? 1 - (1 - wet) * Math.exp(-rain / RUNOFF_MM) : wet * 0.97);
 // The island's weather at the next n turns of the sky after now, from how it stands, drawn with r (a seeded draw of the
 // caller's own, so nothing here moves the world's): what the coming days might bring (seedling.ts seedlingFate).
 export function forecast(w: World, n: number, r: () => number): Hour[] {
@@ -72,7 +66,7 @@ export function forecast(w: World, n: number, r: () => number): Hour[] {
   for (let i = 0; i < n; i++, t += 12) {
     sky = nextSky(sky, r(), t, islandTemp(t - 1, sky), wetHours(w));
     speed = nextSpeed(speed, sky, r());
-    wet = nextWet(wet, islandAir(w, t, sky).rain);
+    wet = wetHour(w, wet, t, sky, speed, islandTemp(t, sky));
     out.push({ sky, speed, wet });
   }
   return out;
@@ -96,7 +90,8 @@ function weather(w: World) {
     // a probe's own weather, set as the sky turns (rules.ts hooks), so the runoff, the air and how wet things get follow
     // from it as from the island's own
     hooks.weather?.(w);
-    wx.wet = nextWet(wx.wet, islandAir(w, w.t, wx.sky).rain);
+    wx.wet = wetHour(w, wx.wet, w.t, wx.sky, wx.speed, islandTemp(w.t, wx.sky));
+    wx.runoff = runoffHour(w, wx.runoff, w.t, wx.sky);
     if (wx.sky !== before) {
       const words = { clear: "The sky cleared.", cloudy: "Clouds rolled in.", rain: "It started to rain.", storm: "A storm broke." };
       log(w, "weather", [], { x: W / 2, y: H / 2 }, words[wx.sky]);

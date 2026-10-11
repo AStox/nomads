@@ -132,6 +132,11 @@ describe("pieces", () => {
     expect(damp).toBeGreaterThan(dry);
   });
 
+  test("a log rained on lights later than one as wet through but dry on its face", () => {
+    const skinWet = lightsIn(group(LOG, 1, DAMP, 0, 0, 2 * DAMP - DRY), 40, STILL), skinDry = lightsIn(group(LOG, 1, DAMP, 0, 0, DRY), 40, STILL);
+    expect(skinWet).toBeGreaterThan(skinDry);
+  });
+
   test("a piece warmed by one fire and then another lights sooner than one warmed by the second alone", () => {
     const warmed = expose(group(LOG, 1, DRY), 20, 5 * MIN, STILL);
     expect(warmed.lit).toBe(false);

@@ -12,7 +12,7 @@ import { streamNow } from "./streams";
 import { airOn } from "./air";
 import { rainOn } from "./rain";
 import { DARK, lightOn } from "./light";
-import { DAMP, SOAKED, deadAt, moistureOf, sheltered, tinder, tinderOf } from "./wetness";
+import { DAMP, SOAKED, deadAt, deadOf, moistureOf, sheltered, splitWater, tinder, tinderOf, waterOf } from "./wetness";
 import { GROUND, SIZE, groundClass } from "../terrain/flora";
 
 // Kinds of stuff the rules below care about, by what they're like rather than what they're called.
@@ -56,18 +56,18 @@ export const fireOf = (w: World, px: number, py: number, sticks = 5, logs = 2, o
 // wind or rain, over the short grass most ground grows (sec. 14a).
 export const STILL: BedAir = { temp: 10, wind: 0, rain: 0, veg: 0.1 };
 // Held things laid in a fire, pieces alike as one (combustion.ts lays alike pieces as one group): what each is, how many,
-// and its water; a brand as far as its piece has burnt down (sec. 27e). Anything that isn't fuel is laid all the same, and
-// the bed leaves it out.
+// and its water, and its skin's; a brand as far as its piece has burnt down (sec. 27e). Anything that isn't fuel is laid
+// all the same, and the bed leaves it out.
 export function laidOf(w: World, stacks: Stack[]): Laid[] {
   const out: (Laid & { key: string })[] = [];
   for (const s of stacks) {
-    const whole = stackPhys(w.kinds, s), m = moistureOf(s), left = isFlame(w.kinds[s.k]) && !isLamp(w.kinds[s.k]) ? s.hp : 1;
-    const phys = whole && left < 1 ? { ...whole, d: whole.d * Math.sqrt(left), mass: whole.mass * left } : whole, key = `${s.k}|${phys?.d}|${phys?.mass}|${m}`;
+    const whole = stackPhys(w.kinds, s), m = moistureOf(s), skin = s.skin ?? m, left = isFlame(w.kinds[s.k]) && !isLamp(w.kinds[s.k]) ? s.hp : 1;
+    const phys = whole && left < 1 ? { ...whole, d: whole.d * Math.sqrt(left), mass: whole.mass * left } : whole, key = `${s.k}|${phys?.d}|${phys?.mass}|${m}|${skin}`;
     const same = out.find((x) => x.key === key);
     if (same) same.n++;
-    else out.push({ key, phys, n: 1, m });
+    else out.push({ key, phys, n: 1, m, skin });
   }
-  return out.map(({ phys, n, m }) => ({ phys, n, m }));
+  return out.map(({ phys, n, m, skin }) => (skin === m ? { phys, n, m } : { phys, n, m, skin }));
 }
 // Thick fuel (fire-constants sec. 32): a piece that, laid as the usual lay's wood is, with its handful of fibre and its ten twigs
 // and nothing else, doesn't catch before their flame is spent, in still air. Worked out once for each size of piece.
@@ -352,16 +352,20 @@ function madeOf(w: World, used: Stack[], k: string, n: number): Stack[] {
   const grew = from.species ? { species: from.species } : {};
   if (k === "charcoal") return Array.from({ length: n }, () => ({ ...blank(), size: charSize(from.size!, physOf(w.kinds, w.kinds[from.k])?.burn?.charYield ?? 0, n), ...grew }));
   const one = (x?: Kind) => x?.parts?.length === 1 ? x.parts[0] : undefined;
-  return n === 1 && (one(w.kinds[k]) === from.k || one(w.kinds[from.k]) === k) ? [{ ...blank(), size: from.size, ...grew, ...(from.green ? { green: true as const } : {}) }] : Array.from({ length: n }, blank);
+  return n === 1 && (one(w.kinds[k]) === from.k || one(w.kinds[from.k]) === k) ? [{ ...blank(), size: from.size, ...grew, ...(from.green ? { green: true as const } : {}), ...(from.skin !== undefined && wet > 0 ? { skin: Math.min(2 * wet, from.skin) } : {}) }] : Array.from({ length: n }, blank);
 }
 // What something standing or lying in the world gives of a kind, with the water in it as it's found (sec. 27f): wood off
-// a living tree or bush as green as it grew, off anything dead as the island's weather has left dead wood that thick;
-// reeds' fiber the most living herbaceous stuff holds; anything else what it holds alive, or none.
+// a living tree or bush as green as it grew, off anything dead as the weather has left dead wood that thick there, skin
+// and heart, lying on the ground as sticks and fallen logs do or standing; reeds' fiber the most living herbaceous stuff
+// holds; anything else what it holds alive, or none.
+const LYING: Record<string, true> = { stick: true, fallen_log: true };
 export function gathered(w: World, t: Thing, k: string): Stack {
   const piece = pieceOf(t, k), living = t.kind === "tree" || t.kind === "bush";
   if (piece) {
     const green = living ? greenOf(t.species, k === "log") : undefined;
-    return { ...fresh(w, k, green ?? deadAt(w, t, piece.size.d)), ...piece, ...(green === undefined ? {} : { green: true as const }) };
+    if (green !== undefined) return { ...fresh(w, k, green), ...piece, green: true as const };
+    const dead = deadOf(w, t, piece.size.d, { lying: LYING[t.kind] });
+    return { ...fresh(w, k, dead.m), ...piece, ...(Math.abs(dead.skin - dead.m) > 0.0005 ? { skin: dead.skin } : {}) };
   }
   return fresh(w, k, t.kind === "reeds" ? LIVE_HERB : (physOf(w.kinds, w.kinds[k])?.green ?? 0));
 }
@@ -476,10 +480,11 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
       return { done: false, broke: broke ?? undefined, damage: 0 };
     }
     if (st.progress < 20) return { done: false, broke: broke ?? undefined, damage: dmg };
-    // each piece split out of a piece of wood is as long as it was, a share as thick and as heavy, and as wet (fuel.ts)
-    const whole = takeStack(a, tk.id);
+    // each piece split out of a piece of wood is as long as it was, a share as thick and as heavy (fuel.ts), as wet, and
+    // with its heart's water on its cut faces (wetness.ts splitWater)
+    const whole = takeStack(a, tk.id), water = splitWater(waterOf(whole), Object.values(tk.breaks).reduce((t, x) => t + x, 0));
     for (const [k, n] of Object.entries(tk.breaks))
-      for (let i = 0; i < n; i++) giveStack(w, a, whole?.size ? { ...fresh(w, k, whole.m), size: splitSize(whole.size, n), ...(whole.species ? { species: whole.species } : {}), ...(whole.green ? { green: true as const } : {}) } : fresh(w, k, whole?.m));
+      for (let i = 0; i < n; i++) giveStack(w, a, whole?.size ? { ...fresh(w, k, water.m), ...(Math.abs(water.skin - water.m) > 0.0005 ? { skin: water.skin } : {}), size: splitSize(whole.size, n), ...(whole.species ? { species: whole.species } : {}), ...(whole.green ? { green: true as const } : {}) } : fresh(w, k, whole?.m));
     fields.gives = Object.keys(tk.breaks);
     return { done: true, broke: broke ?? undefined, damage: dmg, out: outcome({ ok: true, text: `Striking along its grain split the ${tk.name} into ${list(w, tk.breaks)}.`, uses: { [tk.id]: 1 }, gives: { ...tk.breaks }, fields, numbers: { eff } }) };
   }
