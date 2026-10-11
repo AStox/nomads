@@ -24,24 +24,31 @@ export function crownCover(t: { species?: string; size: number }, d: number) {
   const r = (SHARE[t.species ?? ""] ?? 0.22) * t.size;
   return d > r * EDGE ? 0 : d <= r * CORE ? 1 : 1 - smooth(CORE, EDGE, d / r);
 }
-// How much of the sky the trees overhead hide, in crowns: 1 under one, more where they overlap. Seedlings and the air
+// How much of the sky the trees overhead hide, in crowns: 1 under one, more where they overlap; and the crowns' height and
+// how much of it they fill (crown ratio, a crown as deep as it is wide), weighted by what each hides. Seedlings and the air
 // under the trees ask it of the same points tick after tick, so each point's answer is kept until anything round it
 // comes, goes or changes (space.ts lookAround); the points are let go of when they pile up past a few thousand.
-const canopies = perWorld(() => new Map<number, Map<number, { at: number; cover: number }>>());
-export function canopyAt(w: World, px: number, py: number) {
+type Crowns = { at: number; cover: number; height: number; ratio: number };
+const canopies = perWorld(() => new Map<number, Map<number, Crowns>>());
+export function crownsAt(w: World, px: number, py: number): Crowns {
   const at = lookAround(w, px, py, CROWN_REACH), xs = canopies(w);
   let ys = xs.get(px);
   const kept = ys?.get(py);
-  if (kept?.at === at) return kept.cover;
-  let cover = 0;
-  around(w, px, py, CROWN_REACH, ["tree"], (t, d) => { cover += crownCover(t, d); });
+  if (kept?.at === at) return kept;
+  let cover = 0, height = 0, ratio = 0;
+  around(w, px, py, CROWN_REACH, ["tree"], (t, d) => {
+    const c = crownCover(t, d);
+    cover += c; height += c * t.size; ratio += c * 2 * (SHARE[t.species ?? ""] ?? 0.22);
+  });
   if (!ys) {
     if (xs.size >= 4096) xs.clear();
     xs.set(px, (ys = new Map()));
   }
-  ys.set(py, { at, cover });
-  return cover;
+  const out = { at, cover, height: cover > 0 ? height / cover : 0, ratio: cover > 0 ? ratio / cover : 0 };
+  ys.set(py, out);
+  return out;
 }
+export const canopyAt = (w: World, px: number, py: number) => crownsAt(w, px, py).cover;
 // Leaves let a little through: under one crown an eighth of the sky's glow and a twenty-sixth of the sun's beam, which crosses
 // more of them; where two overlap, a sixty-fourth of the glow, and no more is lost past that.
 const LEAVES = 2.6;
@@ -136,6 +143,7 @@ export type Light = {
   sky: number; // lux on open ground, clear of trees and hills
   canopy: number; // share of the sky the trees overhead hide
   sun: number; // share of the sun's beam that clears the land; 0 whenever there is no beam
+  beam: number; // share of the sun's beam that reaches the point, past the land and through the crowns
   fire: number; // lux from fires, burning things and flames carried
 };
 export function lightAt(w: World, px: number, py: number): Light {
@@ -148,7 +156,7 @@ export function lightAt(w: World, px: number, py: number): Light {
     fire += f.cd / (d * d + f.r2);
   }
   const lux = s.day * (s.beam * clear * shaft + (1 - s.beam) * glow) + s.night * glow + fire;
-  return { lux, bright: clamp((Math.log10(Math.max(lux, 1e-6)) + 2) / 6, 0, 1), sky: s.day + s.night, canopy: 1 - glow, sun: clear, fire };
+  return { lux, bright: clamp((Math.log10(Math.max(lux, 1e-6)) + 2) / 6, 0, 1), sky: s.day + s.night, canopy: 1 - glow, sun: clear, beam: clear * shaft, fire };
 }
 
 // Where an entity stands, worked out once a tick however many questions ask.

@@ -8,6 +8,7 @@ import { ecology } from "./ecology";
 import { ctxFor, tick } from "./sim";
 import { DARK, canSee, lightAt, lightOn } from "./light";
 import { YEAR_DAYS, sunAt } from "./sky";
+import { bodyOf } from "./body";
 
 process.env.NOMADS_BRAIN = "random";
 
@@ -174,7 +175,7 @@ test("whoever is out after something when the dark falls gives it up where they 
     put(w, a, px, py);
     w.t = at(hour) - 1;
     a.cooldowns = {};
-    a.needs.energy = 30; // a long rest to be in the middle of
+    bodyOf(w, a).sleep = 0.7; // a long sleep to be in the middle of
     a.goal = { type: goal, since: w.t, odds: {}, fails: 0 };
     a.plan = [{ op, arg: op === "wander" ? `${px + 40 / TILE_M},${py}` : undefined, progress: 0 }];
     tick(w);

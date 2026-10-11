@@ -2,6 +2,8 @@
 import { chance, ofPlace, ruledOut, type Belief } from "./beliefs";
 import { THING_MATERIAL, p, type Registry } from "./materials";
 import { HUNTED } from "./fauna";
+import { PHYS, asFound } from "./fuel";
+import { DAY } from "./world";
 
 export type PState = { inv: Record<string, number>; at: string | null; flags: string[] };
 export type Ctx = {
@@ -33,9 +35,13 @@ export const SOCIAL_ITEM_NEEDS: Record<string, (s: PState, kinds: Registry) => b
   trade: (s) => Object.values(s.inv).some((v) => v > 0),
 };
 
-// What anyone can do from birth.
-export const GATHER: Record<string, { place: string; item: string; n: number; keep?: boolean }> = {
-  pick_berries: { place: "bush", item: "berry", n: 2, keep: true },
+// What anyone can do from birth. A gathering takes PICK ticks of work at full pace (sim.ts) and comes away with so many of
+// a thing, or, for food, what a picker takes in that time at a measured rate, kg an hour as picked: blackberries by
+// hand, and wild grass seed stripped by hand and cleaned (body-constants sec. 10).
+export const PICK = 2.5;
+const pickedIn = (rate: number, item: string) => Math.round((rate * PICK * 24) / DAY / asFound(PHYS[item]));
+export const GATHER: Record<string, { place: string; item: string; n: number; rate?: number; keep?: boolean }> = {
+  pick_berries: { place: "bush", item: "berry", rate: 5.1, n: pickedIn(5.1, "berry"), keep: true },
   pick_mushroom: { place: "mushroom", item: "mushroom", n: 1 },
   pick_herb: { place: "herb", item: "herb", n: 1 },
   pick_stick: { place: "stick", item: "stick", n: 1 },
@@ -43,7 +49,7 @@ export const GATHER: Record<string, { place: string; item: string; n: number; ke
   pull_reeds: { place: "reeds", item: "fiber", n: 2 },
   dig_clay: { place: "clay", item: "clay", n: 2, keep: true },
   scrape_resin: { place: "resin", item: "resin", n: 1 },
-  strip_grain: { place: "grain", item: "grain", n: 3 },
+  strip_grain: { place: "grain", item: "grain", rate: 1, n: pickedIn(1, "grain") },
 };
 
 export const edibleKinds = (ctx: Ctx) => Object.keys(ctx.kinds).filter((k) => p(ctx.kinds[k], "edible") >= 0.1 && !ctx.toxic.includes(k));

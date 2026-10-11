@@ -14,6 +14,7 @@ import { rainOn } from "./rain";
 import { DARK, lightOn } from "./light";
 import { DAMP, SOAKED, deadAt, deadOf, moistureOf, sheltered, splitWater, tinder, tinderOf, waterOf } from "./wetness";
 import { GROUND, SIZE, groundClass } from "../terrain/flora";
+import { GUT, bodyOf, ingest } from "./body";
 
 // Kinds of stuff the rules below care about, by what they're like rather than what they're called.
 export const greasy = (k?: Kind) => !!k && p(k, "edible") >= 0.1 && p(k, "flammable") >= 0.7;
@@ -1534,11 +1535,19 @@ export function eating(w: World, k: string, c: { held: boolean; sick: boolean })
   }
   return decided({ ok: true, text: `They ate the ${x.name}.`, uses: { [k]: 1 }, fields });
 }
+// What one of something gives whoever eats it (body.ts): the energy in its dry matter, kJ, and its mass as it is, kg.
+export function meal(w: World, s: Stack) {
+  const x = stackPhys(w.kinds, s);
+  return { kj: (x?.mass ?? 0) * (x?.kj ?? 0), kg: (x?.mass ?? 0) * (1 + moistureOf(s)) };
+}
+// Eating one: it goes into the stomach, as long as there's room left in it.
 export function eat(w: World, a: Agent, k: string): Outcome {
-  const d = eating(w, k, { held: count(a, k) > 0, sick: !!a.sickness });
+  const s = a.inv.find((x) => x.k === k), b = bodyOf(w, a), m = s ? meal(w, s) : { kj: 0, kg: 0 };
+  if (s && b.gutKg + m.kg > GUT) return outcome({ text: `They couldn't eat any more.`, fields: { verb: "eat", inputs: [k], gives: [] } });
+  const d = eating(w, k, { held: !!s, sick: !!a.sickness });
   const out = enact(w, a, d), x = w.kinds[k];
   if (!d.uses[k]) return out;
-  a.needs.food = Math.min(100, a.needs.food + p(x, "edible") * 100);
+  ingest(b, m.kj, m.kg);
   if (d.effect === "cure" && a.sickness) {
     a.sickness.until -= DAY;
     a.needs.health = Math.min(100, a.needs.health + 8);

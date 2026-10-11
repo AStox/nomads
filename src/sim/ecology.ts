@@ -6,7 +6,7 @@ import { physOf } from "./fuel";
 import { BURNABLE, WIDEST, airFor, bedOf, blazeOf, fluxOn, landing, landsOn, partsOf, reach, struck, tinderIn, together, warmed, type Part } from "./spread";
 import { see } from "./beliefs";
 import {
-  DAY, H, TILE_M, W, Tile, addThing, dayOfYear, groundOf, log, meters, nearWater, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
+  DAY, H, TILE_M, W, Tile, YEAR, addThing, cropOf, dayOfYear, groundOf, log, meters, nearWater, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
 import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind, stockedAt } from "./space";
@@ -24,6 +24,7 @@ import { SEASONS } from "../terrain/climate";
 import { count, timed, trace } from "./trace";
 import { hooks } from "./rules";
 import { wetness } from "./wetness";
+import { bodyOf } from "./body";
 
 // Seconds a tick lasts (world.ts DAY: five minutes each).
 const TICK_S = 86400 / DAY;
@@ -143,8 +144,12 @@ function ice(w: World) {
   } else if (t > 1 && w.ice.length) {
     for (const a of w.agents) {
       if (!wetAt(w, a.px, a.py)) continue;
-      a.needs.health = Math.max(0, a.needs.health - 25);
-      a.needs.warmth = Math.max(0, a.needs.warmth - 50);
+      // The ice water soaks them and all they wear, and takes their skin down to near its own cold, as ten minutes in
+      // ice water does (body-constants sec. 4); their core, minutes in, is still as it was.
+      const b = bodyOf(w, a), worn = a.wearing && physOf(w.kinds, w.kinds[a.wearing.k]);
+      a.skin = 1;
+      if (a.wearing && worn) a.wearing.m = a.wearing.skin = worn.mmax;
+      b.skin = Math.min(b.skin, 5);
       log(w, "hazard", [a.id], a, `The ice gave way under ${a.name}. They crawled out soaked and freezing.`);
       see(w, a, "thin_ice", "Ice melts when it warms up. Don't be standing on it.", 80);
       // They crawl out to the nearest dry ground once the ice is gone.
@@ -346,7 +351,12 @@ function plants(w: World, live: Thing[]) {
       mark(w, t);
     }
     if (t.kind === "bush") {
-      if (t.species === "berry" && (t.n ?? 0) < 4 && Math.random() < 1 / 70 && Math.random() < growth(w, t.px, t.py)) { t.n = (t.n ?? 0) + 1; mark(w, t); }
+      // the crop sets as the bush grows, a year's over half a year of the best growth (plants.ts growth) [design]
+      const full = cropOf(t), was = t.n ?? 0;
+      if (t.species === "berry" && was < full) {
+        t.n = Math.min(full, was + (full * growth(w, t.px, t.py)) / (YEAR / 2));
+        if (Math.floor(t.n) !== Math.floor(was) || t.n === full) mark(w, t);
+      }
       if ((t.hp ?? BERRY_HP) < (t.maxHp ?? BERRY_HP)) t.hp = Math.min(t.maxHp ?? BERRY_HP, (t.hp ?? BERRY_HP) + 0.02);
       if ((t.hp ?? BERRY_HP) <= 0) { setKind(w, t, "dead_bush"); t.n = 0; mark(w, t); log(w, "grow", [], t, "A berry bush was picked to death."); }
     } else if (t.kind === "dead_bush" && Math.random() < 1 / 4000 && Math.random() < growth(w, t.px, t.py)) {
@@ -532,7 +542,10 @@ function disease(w: World) {
     const s = a.sickness;
     if (!s) continue;
     a.needs.health = Math.max(0, a.needs.health - 0.06 * s.severity);
-    a.needs.energy = Math.max(0, a.needs.energy - 0.05 * s.severity);
+    a.hurt = "sickness";
+    // and wears them out, adding to their want of sleep (body.ts) [design]
+    const b = bodyOf(w, a);
+    b.sleep = Math.min(1, b.sleep + 0.0005 * s.severity);
     if (w.t >= s.until) {
       a.sickness = null;
       log(w, "recover", [a.id], a, `${a.name} got over their sickness.`);

@@ -13,6 +13,7 @@ import { airAt, airWords } from "./air";
 import { CELL } from "../terrain/grid";
 import { GROUND, LAKE, RIVER, SEA, SIZE, groundClass, rockAt } from "../terrain/flora";
 import { fertilityAt } from "./soil";
+import { bodyOf, frameOf } from "./body";
 import { fitHere } from "./plants";
 import { NICHE } from "../terrain/niche";
 import { streamNow } from "./streams";
@@ -138,7 +139,7 @@ function thing(w: World, t: Thing): Inspected {
   rows.push({ label: t.kind === "tree" || t.kind === "bush" || t.kind === "reeds" || t.kind === "sapling" ? "height" : t.kind === "stick" || t.kind === "fallen_log" ? "length" : "width", value: `${r(t.size, 2)} m` });
   if (t.hp !== undefined) bars.push(["hp", r(Math.max(0, t.hp)), t.maxHp ?? THING_MATERIAL[t.kind]?.hp ?? r(t.hp)]);
   rows.push({ label: "age", value: t.born !== undefined ? days(w, t.born) : "older than anyone" });
-  if (t.n !== undefined) rows.push({ label: t.kind === "bush" ? "berries" : "count", value: t.n });
+  if (t.n !== undefined) rows.push({ label: t.kind === "bush" ? "berries, portions" : "count", value: Math.floor(t.n) });
   if (t.owner) rows.push({ label: "owner", value: nameOf(w, t.owner) ?? t.owner, link: w.agents.some((a) => a.id === t.owner) ? t.owner : undefined });
   const blaze = blazeOf(w, t);
   if (t.bed && blaze) {
@@ -332,6 +333,14 @@ function person(w: World, a: Agent): Inspected {
   sections.push({ tab: "self", rows: [{ label: "age", value: `${r(ageOf(w, a))} years, ${stageOf(w, a)}` }, ...(path ? [{ label: "walked", value: `${r(walked(path) / 1000, 1)} km` }] : []), ...(a.bio ? [{ label: a.bio }] : [])] });
   sections.push({ tab: "self", title: "traits", rows: Object.entries(a.traits).sort((x, y) => y[1] - x[1]).map(([t, s]) => ({ label: t, bar: [Math.round(s * 100), 100] as [number, number] })) });
   if (a.desires.length) sections.push({ tab: "self", title: "wants to", rows: a.desires.map((x) => ({ label: x })) });
+  // the body the bars are read off (body.ts)
+  const b = bodyOf(w, a), f = frameOf(w, a);
+  sections.push({ tab: "self", title: "body", rows: [
+    { label: "core", value: `${r(b.core, 1)} C` }, { label: "skin", value: `${r(b.skin, 1)} C` },
+    { label: "mass", value: `${r(f.kg, 1)} kg, ${r(f.m, 2)} m` }, { label: "fat", value: `${r(b.fat, 1)} kg` },
+    { label: "glycogen", value: `${r(b.gly / 1000, 1)} MJ` }, { label: "in the stomach", value: `${r(b.gutKg, 2)} kg, ${r(b.gut / 1000, 1)} MJ` },
+    { label: "want of sleep", value: `${r(b.sleep, 2)}${b.asleep ? ", asleep" : ""}` },
+  ] });
   const skills = Object.entries(a.skills).filter(([, xp]) => xp > 0).sort((x, y) => y[1] - x[1]);
   if (skills.length) sections.push({ tab: "self", title: "skills", rows: skills.map(([s, xp]) => { const L = level(xp); return { label: `${s} ${L}`, bar: [r(xp - xpTo(L)), xpTo(L + 1) - xpTo(L)] as [number, number] }; }) });
 

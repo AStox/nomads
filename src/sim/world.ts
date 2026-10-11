@@ -3,7 +3,9 @@ import { lay, type Lay, type Terrain } from "../terrain/land";
 import { FLORA, SIZE, SPECIES, TILES, TILE_M, fineGround, rockAt, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
 import { TRAITS } from "./traits";
 import { baseRegistry, type Registry } from "./materials";
+import { PHYS, asFound } from "./fuel";
 import type { Belief } from "./beliefs";
+import type { Body } from "./body";
 import type { Bed, Ring } from "./combustion";
 import { enter, put } from "./space";
 import { populate } from "./fauna";
@@ -188,6 +190,8 @@ export type Agent = {
   inv: Stack[];
   wearing: Stack | null;
   skin?: number; // how wet their bare skin is, 0 dry to 1 soaked (wetness.ts); none is dry
+  body?: Body; // their heat, stores and sleep (body.ts); made from their needs the first time it's asked for
+  hurt?: string; // what last took from their health, which is what they die of if it runs out
   beliefs: Record<string, Belief>; // what they think happens when they do things
   facts: Record<string, string>; // what they've seen about the world
   tried: Record<string, number>; // tinker attempts that led nowhere
@@ -527,6 +531,9 @@ export const colorIndex = (a: { color: string }) => Math.max(0, COLORS.indexOf(a
 // World meters (the island's center at 0) to tiles, to a tenth of a millimeter's worth of tile.
 export const tileOf = (m: number) => Math.round(((m + SIZE / 2) / TILE_M) * 1e4) / 1e4;
 
+// The berries a bramble bears in a year, in portions as picked (fuel.ts PHYS): 0.5 kg for each m2 of thicket
+// (body-constants sec. 10), a thicket as wide as it is tall [design].
+export const cropOf = (t: { size: number }) => (0.5 * Math.PI * (t.size / 2) ** 2) / asFound(PHYS.berry);
 // What each kind of growing or lying thing can take before it's gone, by its size in meters.
 const HP: Record<string, (size: number) => number> = {
   tree: (s) => Math.round(30 + s * 4.5), bush: () => 20, boulder: (s) => Math.round(60 + s * 40), stone: () => 40, pebble: () => 10,
@@ -538,7 +545,7 @@ export function grown(w: World, k: number): Thing {
   const hp = HP[kind](size), species = SPECIES[f.species[k]];
   const t: Thing = { id: `t${k + 1}`, kind, x: Math.floor(px), y: Math.floor(py), px, py, size, seed, hp, maxHp: hp };
   if (species) t.species = species;
-  if (kind === "bush" && species === "berry") t.n = 4;
+  if (kind === "bush" && species === "berry") t.n = cropOf(t);
   // Flint forms as nodules inside the rock that holds it, chalky limestone above all; ore shows as reddish stones, and
   // sometimes inside boulders of the rock that carries iron.
   if (kind === "boulder") {

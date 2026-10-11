@@ -6,16 +6,17 @@ import { airAt } from "./air";
 import { heatAt } from "./light";
 import { feasible, needs } from "./sim";
 import { YEAR_DAYS } from "./sky";
+import { bodyOf } from "./body";
 
 process.env.NOMADS_BRAIN = "random";
 
 // What fires give people, read off docs/research/fire-constants.md before these were run (sec. 31): the radiant flux on
-// someone, chi_r 0.3 of all a fire gives off over 4 pi (d^2 + r^2), raises the temperature their body feels by
-// f_p q / (h_r + h_c) (sec. 18), which both the cold and the mild terms of needs() read; past 2.5 kW/m2 it burns by
-// Purser's dose (sec. 7). The fires are the standard lay (physics.ts fireOf: fibre, ten twigs, five sticks and two logs)
-// and a blaze of six logs, each five minutes after lighting, when the standard lay gives off about 115 kW in still air.
-// The air is still and 2 C where the person stands, at night under cloud, so the sun, cold pooling and wind stay out of it.
-// Time only runs forward here, a tick or more for each case, since what the air and fires give is worked out once a tick.
+// someone, chi_r 0.3 of all a fire gives off over 4 pi (d^2 + r^2), is heat their skin takes in, as the sun's is, in the
+// body's heat balance (docs/research/body-constants.md); past 2.5 kW/m2 it burns by Purser's dose (sec. 7). The fires
+// are the standard lay (physics.ts fireOf: fibre, ten twigs, five sticks and two logs) and a blaze of six logs, each five
+// minutes after lighting, when the standard lay gives off about 115 kW in still air. The air is still and 2 C where the
+// person stands, at night under cloud, so the sun, cold pooling and wind stay out of it. Time only runs forward here, a
+// tick or more for each case, since what the air and fires give is worked out once a tick.
 
 let island: World;
 beforeAll(() => {
@@ -24,15 +25,17 @@ beforeAll(() => {
   // a winter evening, eight o'clock
   island.t = Math.round((YEAR_DAYS * 7) / 8) * DAY + Math.round((20 / 24) * DAY);
 }, 120_000);
-// The world's one person, cold, on a patch of ground with nothing about them and no fire anywhere.
+// The world's one person, naked and cold (their skin at 22 C), on a patch of ground with nothing about them and no fire
+// anywhere.
 function cold() {
   const w = island, a = w.agents[0];
   for (const t of w.things.filter((t) => t.kind === "fire" || t.bed || Math.hypot(t.px - a.px, t.py - a.py) * TILE_M < 30)) removeThing(w, t);
   Object.assign(w.weather, { sky: "cloudy", speed: 0 });
   w.weather.temp += 2 - airAt(w, a.px, a.py).temp;
   w.t++;
-  Object.assign(a, { goal: null, plan: [], inv: [], wearing: null, skin: 0, down: 0, struggles: undefined });
+  Object.assign(a, { goal: null, plan: [], inv: [], wearing: null, skin: 0, down: 0, struggles: undefined, body: undefined });
   Object.assign(a.needs, { food: 80, energy: 80, warmth: 30, health: 100, social: 80 });
+  bodyOf(w, a).skin = 22;
   expect(isNight(w.t)).toBe(true);
   return { w, a };
 }
@@ -43,20 +46,20 @@ function fireAt(w: World, a: Agent, d: number, logs = 2) {
   w.t++;
   return f;
 }
-// Their warmth after so many ticks of needs where they are.
+// Their skin's temperature after so many ticks of needs where they are.
 function after(w: World, a: Agent, ticks: number) {
   for (let i = 0; i < ticks; i++, w.t++) needs(w, a);
-  return a.needs.warmth;
+  return bodyOf(w, a).skin;
 }
 
 test("someone cold 1.5 m from a fire warms back up, more by a bigger fire, and the fire's warmth falls as one over the distance squared", () => {
   let { w, a } = cold();
-  expect(after(w, a, 10)).toBeLessThan(30);
+  expect(after(w, a, 10)).toBeLessThan(22);
 
   ({ w, a } = cold());
   fireAt(w, a, 1.5);
   const campfire = after(w, a, 10);
-  expect(campfire).toBeGreaterThan(30);
+  expect(campfire).toBeGreaterThan(22);
 
   ({ w, a } = cold());
   fireAt(w, a, 1.5, 6);
@@ -77,7 +80,6 @@ test("someone standing where a blaze throws 3 kW/m2 is hurt within the tick, whi
   for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (heatAt(w, blaze.px + mid / TILE_M, blaze.py).q > 3) lo = mid; else hi = mid; }
 
   ({ w, a } = cold());
-  a.needs.warmth = 80;
   fireAt(w, a, lo, 6);
   expect(heatAt(w, a.px, a.py).q).toBeCloseTo(3, 1);
   needs(w, a);
@@ -86,7 +88,6 @@ test("someone standing where a blaze throws 3 kW/m2 is hurt within the tick, whi
 
   // someone lying collapsed there can't step back, and takes the whole tick's dose, past the third-degree one
   ({ w, a } = cold());
-  a.needs.warmth = 80;
   fireAt(w, a, lo, 6);
   a.down = w.t + 60;
   needs(w, a);
@@ -94,7 +95,6 @@ test("someone standing where a blaze throws 3 kW/m2 is hurt within the tick, whi
 
   // two metres off the standard lay, where people stand to tend it (world.ts reachOf)
   ({ w, a } = cold());
-  a.needs.warmth = 80;
   fireAt(w, a, 2);
   expect(heatAt(w, a.px, a.py).q).toBeLessThan(2.5);
   needs(w, a);
@@ -106,7 +106,7 @@ test("a bare fire thing with no bed gives no warmth", () => {
   addThing(w, "fire", a.px + 1.5 / TILE_M, a.py);
   w.t++;
   expect(heatAt(w, a.px, a.py).q).toBe(0);
-  expect(after(w, a, 5)).toBeLessThan(30);
+  expect(after(w, a, 5)).toBeLessThan(22);
 });
 
 // Hours left are projected from the bed by the same closed forms (fire-constants sec. 28); the coals cut is when nothing

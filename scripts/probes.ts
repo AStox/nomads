@@ -38,6 +38,7 @@ import { feedRate, fertilityAt } from "../src/sim/soil";
 import { fit } from "../src/terrain/niche";
 import { RULES, hooks } from "../src/sim/rules";
 import { seedRandom } from "./seeded";
+import { bodyOf, frameOf, glyMax } from "../src/sim/body";
 
 export type Metric = { better: "higher" | "lower"; tol: number; text: string };
 // What a probe expects of learning, held over every seed with a 95% interval (scripts/evals.ts): a number's mean above
@@ -638,7 +639,12 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     // they'd try is the one in front of them: physics.ts spotNear), so their seed goes in all round them however seldom
     // they plant; whatever fire they light is gone by the next tick
     for (const a of w.agents) {
-      Object.assign(a.needs, { food: Math.max(a.needs.food, 80), energy: Math.max(a.needs.energy, 90), health: Math.max(a.needs.health, 90), warmth: 50 });
+      // fed, rested and unhurt, and cool enough to want a fire, through their bodies (src/sim/body.ts), whose readings
+      // are what their needs are: glycogen four-fifths full, little want of sleep, and their skin at 24 C, half way between
+      // where cold hurts and where it stops being cool
+      const b = bodyOf(w, a);
+      b.gly = Math.max(b.gly, 0.8 * glyMax(frameOf(w, a))); b.sleep = Math.min(b.sleep, 0.1); b.core = Math.max(b.core, 36.8); b.skin = 23.8;
+      a.needs.health = Math.max(a.needs.health, 90);
       const c = counts(a);
       if (sowing) {
         if (!c.berry && (w.t - begin) % v.every === 0) { giveItems(w, a, "berry"); a.heading = Math.random() * Math.PI * 2; }

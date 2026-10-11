@@ -6,7 +6,7 @@
 // any other, ids t1 upward by their place in the arrays. A stocked tile no one has looked at for a day, far from
 // everyone, whose grown things are all still exactly as they grew, is put back: its Things go, to be made the same way
 // the next time anything looks. What anyone made, dropped or changed stays.
-import { DAY, H, TILE_M, W, groundOf, grown, ringOf, type Thing, type World } from "./world";
+import { DAY, H, TILE_M, W, cropOf, groundOf, grown, ringOf, type Thing, type World } from "./world";
 import { FLORA, SPECIES, type Scatter } from "../terrain/flora";
 
 type Index = {
@@ -20,9 +20,8 @@ const indexes = new WeakMap<World, Index>();
 // Plants and stones as the ground laid them out need nothing from the world until someone or something touches them; one
 // burning, or still warm from a fire near it, stays in the world's eye until it has cooled (ecology.ts fire).
 const STILL: Record<string, true> = { tree: true, bush: true, boulder: true, stone: true, pebble: true, stick: true, fallen_log: true, mushroom: true, herb: true, reeds: true, fern: true, flowers: true, grass: true, clay: true };
-export const BERRIES = 4; // the most a berry bush carries
 const settled = (t: Thing) =>
-  STILL[t.kind] && !t.bed && !t.absorbed && !t.scarred && !t.owner && (t.hp ?? 0) >= (t.maxHp ?? 0) && !(t.kind === "bush" && t.species === "berry" && (t.n ?? 0) < BERRIES);
+  STILL[t.kind] && !t.bed && !t.absorbed && !t.scarred && !t.owner && (t.hp ?? 0) >= (t.maxHp ?? 0) && !(t.kind === "bush" && t.species === "berry" && (t.n ?? 0) < cropOf(t));
 
 function bucket(ix: Index, t: Thing) {
   let tiles = ix.tiles.get(t.kind);

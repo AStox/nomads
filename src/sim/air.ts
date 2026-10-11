@@ -6,7 +6,7 @@
 import { CELL } from "../terrain/grid";
 import { DIRS, POOL_C, SEASONS, SEASON_DAYS, esat } from "../terrain/climate";
 import { NOON, YEAR_DAYS, sunAt } from "./sky";
-import { canopyAt } from "./light";
+import { crownsAt } from "./light";
 import { DAY, TILE_M, groundOf, hourOf, type World } from "./world";
 
 // Where tick t falls between the middles of two seasons: the earlier's index and how far toward the next. A day's air is
@@ -62,9 +62,16 @@ export function slopeAt(w: World, px: number, py: number): [number, number] {
   return [(at(px + h, py) - at(px - h, py)) / CELL, (at(px, py + h) - at(px, py - h)) / CELL];
 }
 // The head-height wind at a point, blowing this way at speed over the open sea: what the ground upwind leaves of it, and
-// the trees over the point.
-export const headWind = (w: World, px: number, py: number, way: { dx: number; dy: number }, speed: number) =>
-  speed * leeAt(w, px, py, way) * (1 - 0.65 * Math.min(1, canopyAt(w, px, py)));
+// under trees Albini and Baughman's sheltered wind (fire-constants sec. 14a, R81): the wind 20 ft above open ground times
+// 0.555 / (sqrt(f H) ln((20 + 0.36 H) / (0.13 H))), H the crowns' height in feet and f the share of the space under them
+// their crowns fill, cover times crown ratio over 3, wherever that share passes 5%. The 20-ft wind is the head-height
+// wind carried up the open class's log profile (z0 0.03 m, sec. 14a).
+const FT = 0.3048, TWENTY = Math.log((20 * FT) / 0.03) / Math.log(2 / 0.03);
+export function headWind(w: World, px: number, py: number, way: { dx: number; dy: number }, speed: number) {
+  const open = speed * leeAt(w, px, py, way), c = crownsAt(w, px, py), f = (Math.min(1, c.cover) * c.ratio) / 3, H = c.height / FT;
+  if (f <= 0.05 || H <= 0) return open;
+  return Math.min(open, (open * TWENTY * 0.555) / (Math.sqrt(f * H) * Math.log((20 + 0.36 * H) / (0.13 * H))));
+}
 // The air at a point now. sheltered: out of the wind, inside walls.
 export function airAt(w: World, px: number, py: number, sheltered = false): Air {
   const wx = w.weather;

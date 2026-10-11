@@ -28,6 +28,8 @@ export type Phys = {
   d: number; // m: how thick one is, which sets how fast heat and water reach its middle
   mass: number; // kg of one, dry
   herb?: true; // herbaceous, behind a waxy skin that lets water in and out slowly (sec. 27f)
+  kj?: number; // kJ in each kg of it, dry, to whoever eats it (body-constants sec. 10)
+  pile?: number; // m of hair standing proud of it, which insulates whoever wears it (body-constants sec. 5)
   burn?: Burn;
 };
 
@@ -83,6 +85,13 @@ const flesh = (mass: number): Phys => ({ rho: 263, c: SOLIDS_C, k: 0.47, mmax: 3
 const fruit = (d: number, mass: number): Phys => ({ rho: 150, c: SOLIDS_C, k: 0.51, mmax: 5.67, green: 5.67, d, mass });
 const seed = (d: number, mass: number): Phys => ({ rho: 1131, c: SOLIDS_C, k: 0.15, mmax: 0.15, green: 0.15, d, mass });
 
+// What eating a kind gives, kJ for each kg of it dry (body-constants sec. 10): USDA's energy over the dry matter of the
+// wild food each stands for, blackberries, raw acorns, wild rice, chanterelles, dandelion greens, venison, wild trout (half
+// a whole fish is eaten, FAO) and rendered fat.
+export const FOOD_KJ = { berry: 15230, nut: 22470, grain: 16190, mushroom: 13140, greens: 13100, meat: 19040, fish: 17740 * 0.5, fat: 37740 };
+// Food gathered off plants comes in portions as picked (body-constants sec. 10): berries as much as fills both hands,
+// grain and nuts a handful.
+export const BOTH_HANDS = 0.25, HANDFUL = 0.05;
 // Every raw material (materials.ts BASE), as one of it is (sec. 27c).
 export const PHYS: Record<string, Phys> = {
   stick: woodOf("generic", 0.025, 0.22),
@@ -91,9 +100,9 @@ export const PHYS: Record<string, Phys> = {
   bark: { rho: 460, c: PLANT_C, k: 0.46 * 0.1941 + 0.01864, mmax: 1.85, d: 0.002, mass: 0.1, burn: BURNS.bark },
   fiber: fine(0.02),
   fern: { ...fine(0.05), green: 3.33, burn: BURNS.fern },
-  flower: { ...fine(0.005), green: LIVE_HERB },
-  herb: { ...fine(0.01), green: LIVE_HERB },
-  hide: { rho: 441, c: SOLIDS_C, k: 0.47, mmax: 1.7, green: 1.7, d: 0.003, mass: 2, burn: BURNS.hide },
+  flower: { ...fine(0.005), green: LIVE_HERB, kj: FOOD_KJ.greens },
+  herb: { ...fine(0.01), green: LIVE_HERB, kj: FOOD_KJ.greens },
+  hide: { rho: 441, c: SOLIDS_C, k: 0.47, mmax: 1.7, green: 1.7, d: 0.003, mass: 2, burn: BURNS.hide, pile: 0.02 },
   bone: bone(0.02, 0.3),
   bone_shard: bone(0.005, 0.02),
   stone: granite(0.1, 2.6),
@@ -104,15 +113,17 @@ export const PHYS: Record<string, Phys> = {
   ore: { rho: 3800, c: 0.8, k: 2.8, mmax: 0, d: 0.05, mass: 0.475 },
   clay: { rho: 1608, c: 0.8, k: 0.52, mmax: 0.65, green: 0.275, d: 0.05, mass: 0.2 },
   charcoal: { ...woodOf("generic", 0.025, 0.05), rho: 1000 * WOODS.generic.G * BURNS.softwood.charYield, burn: BURNS.char },
-  fat: { rho: 900, c: 2, k: 0.15, mmax: 0, d: 0.02, mass: 0.5, burn: BURNS.fat },
+  fat: { rho: 900, c: 2, k: 0.15, mmax: 0, d: 0.02, mass: 0.5, burn: BURNS.fat, kj: FOOD_KJ.fat },
   resin: { rho: 1080, c: 1.98, k: 0.13, mmax: 0, d: 0.01, mass: 0.05, burn: BURNS.resin },
-  meat: flesh(0.13),
-  fish: flesh(0.075),
-  berry: fruit(0.012, 0.00014),
-  mushroom: fruit(0.03, 0.0075),
-  grain: seed(0.004, 0.044),
-  nut: seed(0.015, 0.002),
+  meat: { ...flesh(0.13), kj: FOOD_KJ.meat },
+  fish: { ...flesh(0.075), kj: FOOD_KJ.fish },
+  berry: { ...fruit(0.012, BOTH_HANDS / (1 + 5.67)), kj: FOOD_KJ.berry },
+  mushroom: { ...fruit(0.03, 0.0075), kj: FOOD_KJ.mushroom },
+  grain: { ...seed(0.004, HANDFUL / (1 + 0.15)), kj: FOOD_KJ.grain },
+  nut: { ...seed(0.015, HANDFUL / (1 + 0.15)), kj: FOOD_KJ.nut },
 };
+// One of something as it's found, kg: its dry mass and the water it holds alive.
+export const asFound = (x: Phys) => x.mass * (1 + (x.green ?? 0));
 
 // The matter making makes new (sec. 27d): clay fired hard, copper bled from ore, hide cured into leather, each the size
 // of what it was made from but the copper, and the wall of a pot pressed from clay.
@@ -135,6 +146,9 @@ export function mix(parts: Phys[]): Phys | undefined {
   return {
     rho: mass / parts.reduce((t, x) => t + x.mass / x.rho, 0), c: by((x) => x.c), k: by((x) => x.k), mmax: by((x) => x.mmax),
     d: Math.max(...parts.map((x) => x.d)), mass, ...(parts.every((x) => x.herb) ? { herb: true as const } : {}),
+    // what it gives eaten is its parts' by mass, food or not; its hair is its hairiest part's
+    ...(parts.some((x) => x.kj) ? { kj: by((x) => x.kj ?? 0) } : {}),
+    ...(parts.some((x) => x.pile) ? { pile: Math.max(...parts.map((x) => x.pile ?? 0)) } : {}),
     ...(burnt > 0 ? { burn: {
       tig: byBurn((b) => b.tig), qcr: byBurn((b) => b.qcr), krc: byBurn((b) => b.krc), flame: byBurn((b) => b.flame), char: byBurn((b) => b.char),
       charYield: byBurn((b) => b.charYield), L: byBurn((b) => b.L), share: burnt / mass,

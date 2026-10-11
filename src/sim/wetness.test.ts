@@ -8,6 +8,7 @@ import { dropStacks, fireOf, giveItems, giveStack, sparkCatches, strikeTick } fr
 import { nearestThing, put } from "./space";
 import { canopyAt } from "./light";
 import { needs } from "./sim";
+import { bodyOf } from "./body";
 
 // Before Unit 4 (materials.test.ts, as it stood): fiber held in the rain soaked past SOAKED, 0.6 of a wetness running 0
 // to 1, within the hour; eight clear hours on it was drier than DAMP, 0.3; in a bag it stayed drier than DAMP through
@@ -135,11 +136,13 @@ test("soaked clothes, or bare skin in the rain, lose a body's heat faster than d
   const [w, a] = setup();
   at(w, 2);
   Object.assign(w.weather, { sky: "clear", speed: 2, temp: -2 });
+  // what one tick takes off the mean of their skin's and core's warmth, from the same body each time
   const loss = (dress: () => void) => {
-    a.needs.warmth = 50;
+    delete a.body;
     dress();
+    const b = bodyOf(w, a), was = b.skin + 9 * b.core;
     needs(w, a);
-    return 50 - a.needs.warmth;
+    return was - (b.skin + 9 * b.core);
   };
   const hide = (m: number) => () => { a.wearing = { k: "hide", hp: 1, born: 0, m }; delete a.skin; };
   expect(loss(hide(PHYS.hide.mmax))).toBeGreaterThan(loss(hide(0)));

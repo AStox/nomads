@@ -429,7 +429,7 @@ Disagreement: mean-rate ratios (4 to 5) and extreme-rate ratios (8) differ becau
 | Davenport-Wieringa z0 classes | sea 0.0002; smooth (featureless land, ice) 0.005; open (flat grass, very low vegetation; WMO lists heather, moor, tundra here) 0.03; roughly open (low crops) 0.10; rough 0.25; very rough (bushes, young dense forest) 0.5; closed (mature forest) 1.0; chaotic over 2 | m | Wieringa 1993 review of 1970s and 80s experiments | R83 [ex: search excerpts of the table and the WMO registry] |
 | Bare sand | 0.0003 | m | Common textbook value | [UNVERIFIED, not read] |
 | Ratio U(z)/U(2 m), bed heights 0.1, 0.2, 0.3, 0.5 m | sand (z0 0.0003): 0.66, 0.74, 0.78, 0.84. Bare ground or rock (0.005): 0.50, 0.62, 0.68, 0.77. Open class (0.03): 0.29, 0.45, 0.55, 0.67. Short grass H 0.1 m (z0 0.013, D0 0.064): 0.20, 0.47, 0.58, 0.70. Tall grass or heather H 0.5 m (z0 0.065, D0 0.32), bed inside it: 0.31 at all four. Gorse or scrub H 1.5 m (z0 0.195, D0 0.96), bed inside it: 0.61 | - | Log law; inside vegetation the wind at the canopy top is used, per R81 | [derived] from R81, R83 |
-| Forest floor | under trees the sim's head-height wind is already cut by canopy (air.ts: 0.65 x canopy); Albini and Baughman take the sub-canopy wind as constant with height, so bed wind = that head-height wind | | | R81 [read]; near-floor log layer over litter is a gap |
+| Forest floor | under trees the head-height wind is Albini and Baughman's sheltered wind (the sheltered WAF row; air.ts headWind, 2026-10-11): the 20-ft open wind carried up from head height by the open class's log profile, times the sheltered WAF of the crowns' height and fill (cover x crown ratio / 3, the crown as deep as it is wide), where the fill passes 5%; Albini and Baughman take the sub-canopy wind as constant with height, so bed wind = that head-height wind. The flat 0.65 x canopy cut it replaced is gone | | | R81 [read]; near-floor log layer over litter is a gap |
 
 **Pick (profile).** Wind at a bed of height z_b: U(z_b) = U_head x ln((max(z_b, H) - 0.64 H)/(0.13 H)) / ln((2 - 0.64 H)/(0.13 H)) over vegetation of height H below 2 m; over bare ground use ln(z_b/z0)/ln(2/z0) with z0 0.005 (rock, bare soil) or 0.0003 (sand, UNVERIFIED); under tree canopy use U_head itself. Vegetation heights: short grass 0.1 m, tall grass 0.5 m, heather 0.3 to 0.5 m, gorse or scrub 1 to 2 m (from the sim's own plant sizes when present). Reasoning: Albini and Baughman's z0 and D0 tie roughness to the plant height the sim already knows, they are the fire community's standard, and they agree with the Davenport classes (z0 0.013 to 0.065 for grass and heather, against 0.03 for the open class). Bed height z_b: the bed's mid-height, at least 0.05 m.
 
@@ -1124,7 +1124,7 @@ What src/sim/fuel.ts holds for each kind: the picks above set down per kind, wit
 | fern | 513 | 1.237 | 0.118 | 1.30 | 3.33 | 0.00061 | 0.05 | fern | sec. 22e: green fronds; as fiber otherwise; a bundle of fronds [design] |
 | flower | 513 | 1.237 | 0.118 | 1.30 | 2.5 | 0.00061 | 0.005 | fine | sec. 22e; green the NFDRS herbaceous cap (R30); as fiber otherwise [design] |
 | herb | 513 | 1.237 | 0.118 | 1.30 | 2.5 | 0.00061 | 0.01 | fine | as flower |
-| hide | 441 | 1.262 | 0.47 | 1.7 | 1.7 | 0.003 | 2 | hide | sec. 22d and 23: ρ 1190 (hydrated collagen) over 2.7; c Chen's model at all solids, 4.19 - 2.30 - 0.628 [derived]; k the meat row [analogue, gap]; mmax and green 150 to 185% [UNVERIFIED]; 3 mm; a deer's hide [design] |
+| hide | 441 | 1.262 | 0.47 | 1.7 | 1.7 | 0.003 | 2 | hide | sec. 22d and 23: ρ 1190 (hydrated collagen) over 2.7; c Chen's model at all solids, 4.19 - 2.30 - 0.628 [derived]; k the meat row [analogue, gap]; mmax and green 150 to 185% [UNVERIFIED]; 3 mm; a deer's hide [design]; with 2 cm of hair over the skin, a red deer's winter undercoat, which insulates whoever wears it (body-constants sec. 5) |
 | bone | 1920 | 0.835 | 0.72 | 0.1 | 0.1 | 0.02 | 0.3 | | the fired clay row (sec. 23) as the nearest porous mineral [analogue, gap]; water [design, gap]; [design] |
 | bone_shard | 1920 | 0.835 | 0.72 | 0.1 | 0.1 | 0.005 | 0.02 | | as bone |
 | stone | 2630 | 0.775 | 2.79 | 0 | | 0.1 | 2.6 | | granite (sec. 23); a 10 cm stone [design] |
@@ -1139,10 +1139,12 @@ What src/sim/fuel.ts holds for each kind: the picks above set down per kind, wit
 | resin | 1080 | 1.98 | 0.13 | 0 | | 0.01 | 0.05 | resin | sec. 22a: c and k of rosin oil; a 10 mm lump, 50 g gathered [design] |
 | meat | 263 | 1.262 | 0.47 | 3 | 3 | 0.03 | 0.13 | | sec. 23: ρ 1050 over 4 (75% water); c Chen's at all solids [derived]; k as found; 3 cm and a 0.5 kg cut [design] |
 | fish | 263 | 1.262 | 0.47 | 3 | 3 | 0.03 | 0.075 | | the meat row [analogue]; a 0.3 kg fish [design] |
-| berry | 150 | 1.262 | 0.51 | 5.67 | 5.67 | 0.012 | 0.00014 | | sec. 23: ρ 1000 [UNVERIFIED] over 6.67 (85% water); k [UNVERIFIED]; a 1.2 cm berry [design] |
+| berry | 150 | 1.262 | 0.51 | 5.67 | 5.67 | 0.012 | 0.0375 | | sec. 23: ρ 1000 [UNVERIFIED] over 6.67 (85% water); k [UNVERIFIED]; 1.2 cm berries, 0.25 kg of them as picked, both hands full (2026-10-11, was one berry) [design] |
 | mushroom | 150 | 1.262 | 0.51 | 5.67 | 5.67 | 0.03 | 0.0075 | | the berry row [analogue, gap]; 3 cm and 50 g [design] |
-| grain | 1131 | 1.262 | 0.15 | 0.15 | 0.15 | 0.004 | 0.044 | | sec. 23: ρ 1300 [UNVERIFIED] over 1.149 (13% water); k [design, gap]; a 4 mm kernel, a 50 g handful [design] |
-| nut | 1131 | 1.262 | 0.15 | 0.15 | 0.15 | 0.015 | 0.002 | | the grain row [analogue, gap]; a 1.5 cm nut [design] |
+| grain | 1131 | 1.262 | 0.15 | 0.15 | 0.15 | 0.004 | 0.0435 | | sec. 23: ρ 1300 [UNVERIFIED] over 1.149 (13% water); k [design, gap]; a 4 mm kernel, a 50 g handful [design] |
+| nut | 1131 | 1.262 | 0.15 | 0.15 | 0.15 | 0.015 | 0.0435 | | the grain row [analogue, gap]; a 1.5 cm nut, a 50 g handful (2026-10-11, was one nut) [design] |
+
+Food also carries what it gives eaten, kJ for each kg dry (fuel.ts FOOD_KJ; body-constants sec. 10, 2026-10-11): berry 15,230, nut 22,470, grain 16,190, mushroom 13,140, herb and flower 13,100, meat 19,040, fish 8,870 (half of a whole fish eaten), fat 37,740. Made food takes its parts' by mass (sec. 27d), so cooking, which only drives water off, changes nothing of it.
 
 ### 27d. Matter made from other matter
 
@@ -1508,8 +1510,8 @@ How src/sim/light.ts and sim.ts needs() turn what a bed gives off (sec. 28; phys
 
 **Warmth** (sec. 18's pick).
 - The fires round someone raise their operative temperature by Δt_o = f_p q / (h_r + h_c): q the radiant flux on them above, f_p 0.35 (standing; facing the fire or not, 0.35 and 0.347 at low altitude), h_r 6 W/m2K, h_c = max(3.4, 10.4 V^0.56) W/m2K with V the head-height wind where they stand (air.ts; none inside walls) [derived: the still-air and moving-air forms meet at 0.14 m/s], absorptivity ratio 1 [gap]. People are taken as standing; seated (f_p 0.29) would give 17% less [design].
-- The rise adds to the temperature both terms of needs() read: the cold term's wind chill, max(0, 12 - (feels + Δt_o)) / 110, and the mild term's air, max(0, temp + Δt_o - 12) / 60 [design: Δt_o is a rise in the temperature the body exchanges heat with, which both terms stand for]. A fire close enough cancels the cold and then warms people back up. The flat +0.9 and +1.1 of a fire, warm_up's flat +0.6 and a lamp's flat +0.25 go. Shelter, huddling and the sun keep their own terms.
-- Warming up ends when where they are doesn't warm them: warm_up's step gives up ("the warmth was gone") once a tick there would leave their warmth no higher [design: without the flat +0.6, someone could otherwise sit for ever by coals that no longer warm them].
+- The rise adds to the temperature both terms of needs() read: the cold term's wind chill, max(0, 12 - (feels + Δt_o)) / 110, and the mild term's air, max(0, temp + Δt_o - 12) / 60 [design: Δt_o is a rise in the temperature the body exchanges heat with, which both terms stand for]. A fire close enough cancels the cold and then warms people back up. The flat +0.9 and +1.1 of a fire, warm_up's flat +0.6 and a lamp's flat +0.25 go. Shelter, huddling and the sun keep their own terms. **Superseded 2026-10-11:** the warmth bar and both terms went with it; the fire's flux is now heat the skin takes in, in a two-node body's balance (docs/research/body-constants.md), and warmth is read off the body's skin and core.
+- Warming up ends when where they are doesn't warm them: warm_up's step gives up ("the warmth was gone") once a tick there would leave their warmth no higher [design: without the flat +0.6, someone could otherwise sit for ever by coals that no longer warm them]. Since 2026-10-11: once a tick there would leave their body losing heat (sim.ts warmsThem).
 - Checks [derived], the standard lay at 5 min (150 kW in all): q 1.39 kW/m2 at 1.5 m, 0.83 at 2 m (where people stand to tend a fire, world.ts reachOf), 0.38 at 3 m; Δt_o at 2 m is 23.5 K in still air (115 kW then) and 13.6 K in a 2 m/s wind; at 3 m and 6 m the flux stands 3.9 to 1, the inverse square within 3%. A lamp in hand: 12 W/m2, 0.4 K.
 - So in 5 C air with a 2 m/s wind, someone 2 m from the standard lay at its height gains (5 + 13.6 - 12) / 60 = 0.11 a tick, against the old flat 1.5 a tick by a fire while warming up; below about -2 C air in that wind, the same fire at 2 m only slows their loss. Recorded as the measured consequence of the needs() rates, not adjusted.
 
@@ -1637,7 +1639,7 @@ How physics.ts and sim.ts light, feed and carry fire on the bed of section 28 (c
 - Coals at the heart at packing 0.5, char at its wood's density times the char yield (charcoal 202.5 kg/m3), glowing by Albini's law at no less than 1 m/s, kept by the shell they came from.
 
 **People (sec. 18)**
-- Δt_o = f_p q / (h_r + h_c): f_p 0.35 standing and facing the fire (0.29 seated), h_r 6, h_c 3.4 W/m2K in still air or 10.4 V^0.56. The sun by the same law, with absorptivity ratio 0.7 / 0.95.
+- The fires' and the sun's radiation enter the body's heat balance (docs/research/body-constants.md secs. 2 to 4, 2026-10-11) as the flux the skin takes in, α f_p (A_r/A_D) q, with f_p 0.35 for a fire low down and Fanger's table for the sun, absorptivity 0.95 for flame infrared (ratio 1 [gap]) and 0.7 for sunlight, and h_c 3.4 W/m2K in still air or 10.4 V^0.56. The Δt_o form, f_p q / (h_r + h_c) with h_r 6, is what this comes to in operative temperature; the body's own h_r is now computed (4 ε σ (A_r/A_D) T^3, about 4.5).
 - Tinder carried against the body relaxes toward the EMC of 32 C air holding the outside vapour pressure plus 0.5 kPa.
 
 **Trees, shrubs and species (secs. 19 and 21)**

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, newWorld, rng, shoreOf, type Act, type Agent, type Thing, type World } from "./world";
-import { WEATHER_NOW, bedAir, count, eat, fireOf, giveItems, giveStack, heat, join, openWater, place, strikeTick, throwTick, wet, type Fields, type Outcome } from "./physics";
+import { WEATHER_NOW, bedAir, count, eat, fireOf, giveItems, giveStack, heat, join, openWater, place, removeThing, strikeTick, throwTick, wet, type Fields, type Outcome } from "./physics";
 import { pieceOf } from "./fuel";
 import { advance } from "./combustion";
 import { predictMaterial } from "./formulas";
@@ -173,7 +173,9 @@ test("struck over fiber laid with twigs, two hard stones light it after the same
   // at the spark limit it still catches; just wetter, it never does
   expect(light("stone", "stone", "fiber", DAMP).builds).toBe("fire");
   expect(Array.from({ length: 3 }, () => light("stone", "stone", "fiber", DAMP + 0.01)).every((o) => !o.ok)).toBe(true);
-  // the air where they stand is worked out once a tick: a new wind, a new tick
+  // the air where they stand is worked out once a tick: a new wind, a new tick; out from under the crowns, which keep a
+  // gale off (air.ts headWind)
+  for (const t of w.things.filter((t) => t.kind === "tree" && Math.hypot(t.px - a.px, t.py - a.py) * TILE_M < 15)) removeThing(w, t);
   w.weather.speed = 60;
   w.t++;
   expect(WEATHER_NOW.wind(w, a)).toBe(true);

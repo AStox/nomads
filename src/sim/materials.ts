@@ -1,5 +1,5 @@
 // Materials are bags of properties. Items are kinds in a registry that grows as people make new things.
-import { mix, physOf, type Phys } from "./fuel";
+import { PHYS, asFound, mix, physOf, type Phys } from "./fuel";
 
 export const PROPS = [
   "hard", "sharp", "heavy", "long", "flexible", "fibrous", "binding", "flammable",
@@ -62,6 +62,18 @@ export const BASE: Record<string, Omit<Kind, "id">> = {
   grain: { name: "grain", props: { edible: 0.1, seed: 0.9, hard: 0.35, toughness: 0.05 }, shelf: 40 },
 };
 
+// What a carcass gives (body-constants sec. 10): its meat, the dressed carcass (its live mass's dressing share) less its
+// bone and its own fat, in cuts as meat comes (fuel.ts PHYS); and its fat, the carcass's own and what lies about its gut
+// and kidneys, the means of winter's and summer's, in lumps. A deer's shares are measured, a rabbit's bone and fat too;
+// the rest are taken as a deer's [design].
+const DEER = { dressed: 0.55, bone: 0.22, fat: 0.0517 }, GUT_FAT = 0.0314;
+const carcass = (live: number, rest: Record<string, number>, c = DEER) => {
+  const out: Record<string, number> = {}, dressed = live * c.dressed;
+  const meat = Math.round((dressed * (1 - c.bone - c.fat)) / asFound(PHYS.meat)), fat = Math.round((dressed * c.fat + live * GUT_FAT) / asFound(PHYS.fat));
+  if (meat > 0) out.meat = meat;
+  if (fat > 0) out.fat = fat;
+  return { ...out, ...rest };
+};
 // World things are made of materials too.
 export const THING_MATERIAL: Record<string, { toughness: number; hp: number; flammable: number; breaks: Record<string, number> }> = {
   tree: { toughness: 0.55, hp: 100, flammable: 0.5, breaks: { log: 2, stick: 2 } },
@@ -71,13 +83,14 @@ export const THING_MATERIAL: Record<string, { toughness: number; hp: number; fla
   boulder: { toughness: 0.85, hp: 120, flammable: 0, breaks: { stone: 3 } },
   stump: { toughness: 0.5, hp: 40, flammable: 0.4, breaks: { stick: 1 } },
   fallen_log: { toughness: 0.35, hp: 60, flammable: 0.6, breaks: { log: 1, stick: 2 } },
-  deer: { toughness: 0.1, hp: 30, flammable: 0, breaks: { meat: 3, hide: 1, bone: 2, fat: 1 } },
-  wolf: { toughness: 0.15, hp: 35, flammable: 0, breaks: { meat: 2, hide: 1, bone: 1, fat: 1 } },
-  rabbit: { toughness: 0.05, hp: 6, flammable: 0, breaks: { meat: 1, hide: 1 } },
-  heron: { toughness: 0.05, hp: 8, flammable: 0, breaks: { meat: 1, bone: 1 } },
-  gull: { toughness: 0.05, hp: 5, flammable: 0, breaks: { meat: 1, bone: 1 } },
-  crow: { toughness: 0.05, hp: 4, flammable: 0, breaks: { meat: 1 } },
-  eagle: { toughness: 0.08, hp: 12, flammable: 0, breaks: { meat: 1, bone: 1 } },
+  // live masses, kg: a red deer's (the mean of stags' and hinds'), wolves', a rabbit's and the birds' measured
+  deer: { toughness: 0.1, hp: 30, flammable: 0, breaks: carcass(116, { hide: 1, bone: 2 }) },
+  wolf: { toughness: 0.15, hp: 35, flammable: 0, breaks: carcass(41.5, { hide: 1, bone: 1 }) },
+  rabbit: { toughness: 0.05, hp: 6, flammable: 0, breaks: carcass(1.6, { hide: 1 }, { dressed: 0.555, bone: 0.13, fat: 0.035 }) },
+  heron: { toughness: 0.05, hp: 8, flammable: 0, breaks: carcass(1.5, { bone: 1 }) },
+  gull: { toughness: 0.05, hp: 5, flammable: 0, breaks: carcass(0.97, { bone: 1 }) },
+  crow: { toughness: 0.05, hp: 4, flammable: 0, breaks: carcass(0.51, {}) },
+  eagle: { toughness: 0.08, hp: 12, flammable: 0, breaks: carcass(4.38, { bone: 1 }) },
   fish: { toughness: 0.02, hp: 3, flammable: 0, breaks: { fish: 1 } },
 };
 // What each kind of thing in the world is made of, as a kind in the registry, for anyone asking what it's like.

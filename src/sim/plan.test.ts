@@ -3,7 +3,7 @@ import { DAY, meters, newWorld, type Act, type Agent, type Stack, type Step, typ
 import { LEAST, advance, alight, output, radiation } from "./combustion";
 import { PHYS, pieceOf, roundSize } from "./fuel";
 import { ensure } from "./materials";
-import { GALE, ablaze, bedAir, breeze, carry, count, fireHours, fireOf, giveItems, giveStack, heat, join, place, rubTick, strikeDamage, strikeTick, type Fields, type Outcome } from "./physics";
+import { GALE, ablaze, bedAir, breeze, carry, count, fireHours, fireOf, giveItems, giveStack, heat, join, place, removeThing, rubTick, strikeDamage, strikeTick, type Fields, type Outcome } from "./physics";
 import { DAMP, SOAKED } from "./wetness";
 import { thingById } from "./space";
 import { apart, beliefKey, cameOff, chance, differed, fades, noteTry, record, refuted, rethink, suspected, teach, weighs, worseIn, type Belief } from "./beliefs";
@@ -521,6 +521,8 @@ test("what anyone sees of a lay: tinder soaked through is soaked (and so damp), 
   expect(wet).not.toContain("breezy");
   // the breeze that blows a small fire's flames off is less than the gale that carries sparks off
   expect(breeze()).toBeLessThan(GALE);
+  // out from under the crowns, which keep a gale off (air.ts headWind)
+  for (const t of w.things.filter((t) => t.kind === "tree" && meters(t, a) < 15)) removeThing(w, t);
   w.weather.speed = 60;
   w.t++;
   expect(conditionsNow(w, a, "strike", a, lay)).toEqual(expect.arrayContaining(["wind", "breezy"]));

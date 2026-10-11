@@ -6,16 +6,15 @@
 // it off altogether. The grass, fern and dead wood lying about the island hold what the weather of the last few days
 // left in dead stuff of their thickness where they lie (deadAt) until somebody picks them up. What it comes to decides
 // whether a spark or an ember catches in tinder (physics.ts), and how cold the wet-through feel (sim.ts needs).
-import { DAY, YEAR_DAYS, hourOf, meters, perWorld, wetAt, type Agent, type Dead, type Stack, type Thing, type Weather, type World } from "./world";
+import { DAY, YEAR_DAYS, hourOf, perWorld, wetAt, type Agent, type Dead, type Stack, type Thing, type Weather, type World } from "./world";
 import { anyAround, liveThings, lookAround, nearestThing } from "./space";
 import { airAt, airOn, headWind, humidity, islandAir, rainWhen, snowAt, sunOn, vapourAt } from "./air";
-import { CROWN_REACH, canopyAt } from "./light";
+import { CROWN_REACH, canopyAt, heatAt } from "./light";
 import { crownGap, crownKind, crownsHour, placeOf, rainOn, rainThere, reachOf, through } from "./rain";
 import { topKr } from "./soil";
 import { daylight, sunAt } from "./sky";
 import { p, type Kind } from "./materials";
 import { PHYS, stackPhys, type Phys } from "./fuel";
-import { output, setUp } from "./combustion";
 import { SEASON_DAYS, esat } from "../terrain/climate";
 
 // A struck spark catches in tinder this wet or drier, an ember blown into it in tinder this wet or drier (sec. 10).
@@ -47,15 +46,8 @@ export function equilibrium(temp: number, vapour: number, shine = 0, wind = 0) {
 const body = (vapour: number) => equilibrium(32, vapour + 0.5);
 // The wind at the tops of short grass against the wind at head height (sec. 14): what reaches dead stuff on the ground.
 const GROUND = Math.log(0.36 / 0.13) / Math.log((2 - 0.064) / 0.013);
-// A fire's radiant flux on something near it, kW/m2 (sec. 18): the radiant share of what its bed gives off, flaming and
-// glowing, from a point at the distance (combustion.ts, in the air where the fire stands, ringed and heaped over as it is).
-const CHI_R = 0.3;
-function fireFlux(w: World, at: { px: number; py: number }) {
-  const f = nearestThing(w, at.px, at.py, ["fire"], (t) => !!t.bed, 3);
-  if (!f?.bed) return 0;
-  const air = airAt(w, f.px, f.py), o = output(f.bed, setUp(f, { temp: air.temp, wind: air.wind, rain: rainOn(w, f.px, f.py), veg: 0.1 }, w.t));
-  return (CHI_R * (o.flaming + o.glowing)) / (4 * Math.PI * Math.max(0.5, meters(at, f)) ** 2);
-}
+// What fires throw on something near them, kW/m2: the radiant heat light.ts heatAt has them throw on anyone (sec. 31).
+const fireFlux = (w: World, at: { px: number; py: number }) => heatAt(w, at.px, at.py).q;
 
 // How long something takes to come 63% of the way to new surroundings, hours (sec. 5, 20, 27f): as the square of its
 // thickness from the 10-hour stick; green wood above fibre saturation slower, as its thickness to the 1.5; herbaceous

@@ -1,12 +1,12 @@
 import {
-  DAY, H, REACH, TILE_M, W, clock, dryAt, isNight, nearestShore, level, log, meters, perWorld, reachOf, shuffle, stageOf,
+  DAY, H, REACH, TILE_M, W, clock, dryAt, hourOf, isNight, nearestShore, level, log, meters, perWorld, reachOf, shuffle, stageOf,
   type Act, type Agent, type Animal, type BondKind, type Stack, type Step, type Thing, type Waiting, type World,
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
 import {
   DURATION, ablaze, airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, FISH_REACH, force, gathered, giveItems, giveStack, greasy, hand, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
   fireHours, fireOutput, groundWord, hoursToDawn, leaveHome, pour, reaches, removeThing, residentsOf, rubTick, shape, shelterName, stash, strikeDamage, strikeTick, takeFromPile, takeItems, throwReach, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
-  bedAir, breeze, carry, fan, firstHeld, isFlame, isLamp, rubbing, tooThick,
+  bedAir, breeze, carry, fan, firstHeld, isFlame, isLamp, rubbing, sizeOf, tooThick,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
 import { apart, beliefKey, beliefText, cameOff, conditionWords, differed, weighs, fieldsOf, found, groundKey, groundOfKey, holds, mixOf, odds, fades, noteTry, ofSpot, partsOf, record, refine, refuted, restsOn, rethink, see, sentence, suspected, teach, testOf, watchers, type Belief } from "./beliefs";
@@ -19,12 +19,14 @@ import { clock as traceClock, count as bump, timed, trace } from "./trace";
 import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sharedStore, snubbed, spread, standing, takeShared } from "./groups";
 import { anyAround, around, liveThings, lookFor, nearestThing, shelve, thingById } from "./space";
 import { landOf, walk } from "./walk";
-import { DARK, canSee, heatAt, lightOn, moveRate, restRate, skyShare, workRate } from "./light";
+import { DARK, canSee, canopyAt, heatAt, lightOn, moveRate, restRate, skyShare, workRate } from "./light";
 import { ripening } from "./cues";
-import { airOn } from "./air";
+import { CLOUD, airAt, airOn, sunOn, vapourAt } from "./air";
+import { sunAt } from "./sky";
+import { DOWN_HOT, basal, bodyOf, fate, feed, feels, fireGain, frameOf, hc, insulation, openRadiant, pressure, rested, skyTemp, sleepy, sunGain, warm, type Around } from "./body";
 import { enrich, fertilityAt, soilWaterAt } from "./soil";
 import { DAMP, SOAKED, moistureOf, tinder, tinderOf } from "./wetness";
-import { PHYS, stackPhys } from "./fuel";
+import { PHYS, asFound, physOf, stackPhys } from "./fuel";
 import { LEAST, advance, alight, drowned, output, radiation, type Air as BedAir, type Bed } from "./combustion";
 import { envHere } from "./plants";
 import { shareAt } from "./seedling";
@@ -117,14 +119,17 @@ const isTool = (k?: Kind) => !!k && (k.verb === "join" || k.verb === "rub" || p(
 // Roughly how much losing one of these costs someone: tools more than food, food more than raw stuff.
 const valueOf = (w: World, k: string) => { const x = w.kinds[k]; return isTool(x) ? 0.45 : p(x, "edible") >= 0.1 ? 0.15 + p(x, "edible") * 0.5 : 0.1; };
 
+// The handfuls of seed a grass tuft gives a stripping: it bears 75 g for each m2 it covers, half of it to each of the two
+// strippings it takes (body-constants sec. 10).
+const seedOn = (t: Thing) => Math.floor((0.075 * Math.PI * (t.size / 2) ** 2) / 2 / asFound(PHYS.grain));
 // ---------- places ----------
 // when: whether there can be one at all now; changed: only a thing changed from how it grew can be one, and the world
 // keeps an eye on every such thing (space.ts liveThings), so where none of those is one there's none to find.
 type Place = { kinds: readonly string[]; ok?: (t: Thing, w: World) => boolean; when?: (w: World) => boolean; changed?: true };
 const THING_PLACES: Record<string, Place> = {
-  // grass bears seed as the days draw in
-  grain: { kinds: ["grass"], when: (w) => ripening(w.t), ok: (t) => (t.hp ?? 3) > 1 },
-  bush: { kinds: ["bush"], ok: (t) => (t.n ?? 0) > 0 && !ablaze(t) },
+  // grass bears seed as the days draw in, on tufts big enough to give a handful
+  grain: { kinds: ["grass"], when: (w) => ripening(w.t), ok: (t) => (t.hp ?? 3) > 1 && seedOn(t) >= 1 },
+  bush: { kinds: ["bush"], ok: (t) => (t.n ?? 0) >= 1 && !ablaze(t) },
   mushroom: { kinds: ["mushroom"] }, herb: { kinds: ["herb"] }, stick: { kinds: ["stick"] }, stone: { kinds: ["stone"] },
   reeds: { kinds: ["reeds"], ok: (t) => !ablaze(t) }, clay: { kinds: ["clay"] }, tree: { kinds: ["tree"], ok: (t) => !ablaze(t) },
   sapling: { kinds: ["sapling"] },
@@ -1435,21 +1440,16 @@ function run(w: World, a: Agent): boolean | string {
         }
         return true;
       }
-      if (meters(a, b) > 2) { stepToward(w, a, b.px, b.py, 1.5); return false; }
+      // Lying against them, their body keeps some of the cold off (surroundings: contact); someone out cold can't eat.
+      if (meters(a, b) > REACH) { stepToward(w, a, b.px, b.py, 1); return false; }
       a.status = `Looking after ${b.name}`;
-      // Warmth from a body beside them, and a little food pressed into their hands.
-      b.needs.warmth = Math.min(100, b.needs.warmth + 0.6);
-      b.needs.health = Math.min(100, b.needs.health + 0.3);
-      const f = bestFood(w, a);
-      if (f && b.needs.food < 40 && s.progress % 10 === 1) { takeItems(a, f); b.needs.food = Math.min(100, b.needs.food + p(w.kinds[f], "edible") * 100); }
-      if (b.needs.health > 50 && b.needs.food > 25 && b.needs.warmth > 25) b.down = w.t;
       return false;
     }
     case "follow": {
       const b = agentById(w, s.arg);
       if (!b || s.progress++ > 40) return true;
       a.status = `Staying close to ${b.name}`;
-      // close enough to share warmth (needs: two meters)
+      // close enough to lie against when they rest (surroundings: contact)
       stepToward(w, a, b.px, b.py, 1.5);
       return false;
     }
@@ -1465,25 +1465,22 @@ function run(w: World, a: Agent): boolean | string {
       return r.ok ? true : r.text;
     }
     case "rest": {
-      const home = within(w, a, "home")?.thing;
+      const home = within(w, a, "home")?.thing, body = bodyOf(w, a), hour = hourOf(w.t);
       const kind = home ? ["pile", "lean-to", "hut", "cabin"][home.shelter?.tier ?? 0] : null;
-      const here = lightOn(w, a).bright, target = isNight(w.t) ? 98 : 85;
-      a.status = isNight(w.t) ? (kind ? `Sleeping in the ${kind}` : "Sleeping on the ground") : kind ? `Resting in the ${kind}` : "Resting";
-      // Nothing left to sleep off: in the dark they sit it out, rather than start over every tick.
-      if (a.needs.energy >= target) {
-        if (here >= DARK) return true;
-        a.status = nearFire(w, a, 12) ? "Sitting by the fire" : "Waiting out the dark";
-        return s.progress++ >= 12;
-      }
-      a.needs.energy = Math.min(100, a.needs.energy + 0.7 * (1 + (home?.shelter?.tier ?? 0) * 0.35) * restRate(here));
-      return a.needs.energy >= target;
+      // Sleep comes once their want of it reaches the clock's upper threshold, and ends at its lower (body.ts).
+      if (!body.asleep && body.sleep >= sleepy(hour)) body.asleep = true;
+      if (body.asleep && body.sleep <= rested(hour)) delete body.asleep;
+      if (body.asleep) { a.status = kind ? `Sleeping in the ${kind}` : "Sleeping on the ground"; return false; }
+      // Awake with nothing to sleep off, they lie or sit an hour out, rather than start over every tick.
+      a.status = lightOn(w, a).bright < DARK ? (nearFire(w, a, 12) ? "Sitting by the fire" : "Waiting out the dark") : kind ? `Resting in the ${kind}` : "Resting";
+      return s.progress++ >= 12;
     }
     case "warm_up": {
       a.status = "Warming up";
       if (!within(w, a, "fire", 1) && !within(w, a, "home")) return "the warmth was gone";
       // Their warmth comes of where they are (needs): somewhere that no longer warms them is no place to warm up. Warm and
       // by the fire at night, there is nowhere better to be: they stay a while.
-      if (a.needs.warmth < 95) return warming(w, a).change > 0 ? false : "the warmth was gone";
+      if (a.needs.warmth < 95) return warmsThem(w, a) ? false : "the warmth was gone";
       if (isNight(w.t) && s.progress++ < 12) { a.status = "Sitting by the fire"; return false; }
       return true;
     }
@@ -1492,6 +1489,7 @@ function run(w: World, a: Agent): boolean | string {
       if (!k) return "nothing to eat";
       s.act = { verb: "eat", items: [k] };
       const out = eat(w, a, k);
+      if (!out.uses[k]) return "they couldn't eat any more";
       if (out.effect) { finishAct(w, a, s, out, false); if (out.effect === "sick") see(w, a, `sick:${k}`, `${cap(nm(w, k))} can make you sick.`, 50); }
       else log(w, "eat", [a.id], a, `${a.name} ate ${an(nm(w, k))}.`);
       return true;
@@ -1586,8 +1584,10 @@ function run(w: World, a: Agent): boolean | string {
   if (!t) return `the ${g.place} was gone`;
   let n = g.n;
   if (t.kind === "bush") {
-    n = Math.min(t.n!, 2 + Math.floor(level(a.skills.foraging ?? 0) / 4));
-    t.n! -= n;
+    // as many portions as they pick in the time, of those ripe on it
+    n = Math.min(Math.floor(t.n ?? 0), g.n);
+    if (n <= 0) return "the berries were gone";
+    t.n = (t.n ?? 0) - n;
     t.hp = (t.hp ?? 20) - 3;
     mark(w, t);
   } else if (t.kind === "reeds") {
@@ -1600,8 +1600,10 @@ function run(w: World, a: Agent): boolean | string {
     if (Math.random() < 0.25) removeThing(w, t);
   } else if (g.place === "grain") {
     // stripping the heads leaves the tuft standing
+    n = Math.min(g.n, seedOn(t));
     t.hp = (t.hp ?? 3) - 1;
     mark(w, t);
+    if (n <= 0) return "there was too little seed on it";
   } else removeThing(w, t);
   // a stick picked up off the ground is as thick as a stem of its length, a berry as wet as it grew (physics.ts gathered)
   for (let i = 0; i < n; i++) giveStack(w, a, gathered(w, t, g.item));
@@ -1723,10 +1725,10 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
       if (!f) return;
       const r = await reply(`${a.name} invites ${b.name} to share some food and eat together.`, { join: "Eat together", decline: "Decline" });
       if (r === "join") {
-        takeItems(a, f);
-        b.needs.food = Math.min(100, b.needs.food + p(w.kinds[f], "edible") * 100);
+        // each eats theirs, as anyone eats (physics.ts eat)
+        if (hand(w, a, b, f)) eat(w, b, f);
         const g = bestFood(w, a);
-        if (g) { takeItems(a, g); a.needs.food = Math.min(100, a.needs.food + p(w.kinds[g], "edible") * 100); }
+        if (g) eat(w, a, g);
         a.needs.social = Math.min(100, a.needs.social + 25);
         b.needs.social = Math.min(100, b.needs.social + 25);
         b.rel[a.id].ledger++; ra.ledger--;
@@ -2000,54 +2002,102 @@ function burned(w: World) {
   }
 }
 
-// ---------- needs ----------
-// Fires warm people through their body's own terms (fire-constants secs. 18, 31): F_P of the radiant flux on them, the
-// share the side they turn to it takes, raises the temperature their body exchanges heat with by what they lose to
-// radiation, H_R W/m2K, and to the air moving past, H_STILL in still air or 10.4 V^0.56 in a wind of V m/s.
-const F_P = 0.35, H_R = 6, H_STILL = 3.4;
+// ---------- the body ----------
 // Bare skin bears radiant heat up to BEARABLE kW/m2. Past it, it burns by Purser's dose, q^(4/3) for each minute, which
 // pains at PAIN and burns through the skin at THIRD (sec. 7).
 const BEARABLE = 2.5, PAIN = 1.33, THIRD = 16.67;
-const TICK_MIN = 86400 / DAY / 60;
-// What a tick where they stand does to someone's warmth, the radiant heat on them, kW/m2, and the fire throwing the most of
-// it (light.ts heatAt).
-export function warming(w: World, a: Agent) {
-  const night = isNight(w.t), worn = a.wearing ? p(w.kinds[a.wearing.k], "insulating") : 0;
-  // Walls keep the cold off whoever is in them, whoever put them up: their own home, or any lean-to or better they're in.
+const TICK_MIN = TICK_S / 60;
+// The walls round someone: their own home, or any lean-to or better they're within reach of, whoever put it up.
+function roofOf(w: World, a: Agent) {
   const own = homeOf(w, a), sheltering = (t: Thing) => (t.shelter?.tier ?? 0) >= 1 && reaches(a, t);
-  const roof = own && sheltering(own) ? own : nearestThing(w, a.px, a.py, ["structure"], sheltering, 6);
-  const inside = !!roof, air = airOn(w, a, inside);
-  const fire = heatAt(w, a.px, a.py), rise = (F_P * fire.q * 1000) / (H_R + Math.max(H_STILL, 10.4 * air.wind ** 0.56));
-  // Below 12C the body loses heat, the faster the harder the wind blows, and faster still the wetter what they wear is, or
-  // their bare skin (wetness.ts), soaked through a third faster; above it, the air gives some back. A fire raises both by
-  // the same rise, so one close enough cancels the cold and then warms them back up.
-  const soaked = a.wearing ? Math.min(1, moistureOf(a.wearing) / Math.max(0.01, stackPhys(w.kinds, a.wearing)?.mmax ?? 1)) : (a.skin ?? 0);
-  const cold = Math.max(0, (12 - air.feels - rise) / 110) * (night ? 1.2 : 1) * (1 + 0.3 * soaked) * (1 - worn * 0.6);
-  const mild = Math.max(0, (air.temp + rise - 12) / 60);
-  let heat = 0;
-  if (roof) heat += 0.2 + (roof.shelter?.insul ?? 0) * 0.8 + (roof.shelter?.tier ?? 0) * 0.1;
-  if (night) heat += Math.min(2, w.agents.filter((b) => b !== a && meters(a, b) <= 2).length) * 0.25;
-  // Out in the sun a body soaks up warmth: a clear midday sun (some 60,000 lux) all but makes up for a cool breeze.
-  else if (!inside) heat += 0.05 * Math.min(1, lightOn(w, a).lux / 60000);
-  return { change: heat - cold + mild, q: fire.q, from: fire.from };
+  return own && sheltering(own) ? own : nearestThing(w, a.px, a.py, ["structure"], sheltering, 6);
 }
-// A tick's toll on someone's needs, and what their surroundings give back.
+// The air inside a shelter (body-constants sec. 5): its walls are a dome as wide as it is (physics.ts sizeOf), the solid of
+// its parts spread over the dome, each conducting as it does, between still air's film inside and the wind's outside; what
+// the skins of those in it give off warms it until its walls lose as much. Air leaking through gaps is left out [gap].
+function shelterAir(w: World, roof: Thing, outside: number) {
+  const r = sizeOf(roof.shelter!) / 2, area = 2 * Math.PI * r * r;
+  const film = (wind: number) => 1 / (hc(wind) + 4 * 0.95 * 5.67e-8 * (outside + 273.15) ** 3);
+  let R = film(0) + film(airAt(w, roof.px, roof.py).wind);
+  for (const [k, n] of Object.entries(roof.parts ?? {})) {
+    const x = physOf(w.kinds, w.kinds[k]);
+    if (x) R += (n * x.mass) / x.rho / area / x.k;
+  }
+  let heat = 0;
+  for (const b of w.agents) if (b.body?.dry && roofOf(w, b) === roof) heat += b.body.dry * frameOf(w, b).area;
+  return outside + (heat * R) / area;
+}
+// The share of someone's skin against another body lying beside them, each of up to two [design: no measure of people's
+// contact was found; body-constants sec. 6].
+const CONTACT = 0.1, TOUCHING = 2;
+const lying = (w: World, b: Agent) => b.down > w.t || b.plan[0]?.op === "rest";
+const tends = (b: Agent, a: Agent) => b.plan[0]?.op === "tend" && b.plan[0].arg === a.id;
+// What is round someone this tick (body.ts Around): the air where they stand, or inside the walls they're in; the sky,
+// ground and crowns they see, or the walls; the fires' radiation on them and, out in the open, the sun's beam; what they
+// wear and how wet it and their skin are; and who lies against them. And the radiant heat on them, kW/m2.
+export function surroundings(w: World, a: Agent): { e: Around; q: number } {
+  const roof = roofOf(w, a), air = airOn(w, a, !!roof), fire = heatAt(w, a.px, a.py), f = frameOf(w, a);
+  let temp = air.temp, radiant = air.temp, gain = fireGain(fire.q);
+  if (roof) radiant = temp = shelterAir(w, roof, air.temp);
+  else {
+    const el = sunAt(Math.floor(w.t / DAY) + 1, hourOf(w.t)).el;
+    radiant = openRadiant(air.temp, skyTemp(air.temp, CLOUD[w.weather.sky]), canopyAt(w, a.px, a.py));
+    if (el > 0) gain += sunGain((sunOn(w.t, w.weather.sky) / Math.sin(el)) * lightOn(w, a).beam, el);
+  }
+  // a garment covers as much of them as it is wide (its dry mass over its thickness and density), insulating by its
+  // thickness and its hair
+  const x = a.wearing ? stackPhys(w.kinds, a.wearing) : undefined, water = a.wearing ? moistureOf(a.wearing) : 0;
+  const touching = w.agents.filter((b) => b !== a && meters(a, b) <= REACH && ((lying(w, a) && (lying(w, b) || tends(b, a))) || (tends(a, b) && lying(w, b)))).length;
+  return {
+    e: {
+      air: temp, wind: air.wind, vapour: vapourAt(w, a.px, a.py, w.t), radiant, gain,
+      cover: x ? Math.min(1, x.mass / (x.rho * x.d) / f.area) : 0, r: x ? insulation(x.d + (x.pile ?? 0), water) : 0,
+      wetCloth: x && x.mmax > 0 ? Math.min(1, water / x.mmax) : 0, wetSkin: a.skin ?? 0, contact: CONTACT * Math.min(TOUCHING, touching),
+    },
+    q: fire.q,
+  };
+}
+// What someone is doing, as a multiple of their basal rate (body-constants sec. 8): the Compendium's MET for each, taken
+// as FAO's activity ratios are, and walking for whatever takes them somewhere.
+const MET: Record<Activity, number> = {
+  sleep: 1, faint: 1, talk: 1.3, give: 1.3, angry: 1.3, steal: 2.5, think: 1.3, warm: 1.3, eat: 1.5, flee: 8.3, fight: 6, hunt: 6, tend: 1.3,
+  store: 3.3, tinker: 3, chop: 8, build: 4, plant: 4.1, dig: 5, fire: 2.5, craft: 3, forage: 3.5, collect: 3.3, explore: 3.5, help: 3.5, sick: 1.3,
+};
+const STANDING = 1.3, WALKING = 3.5;
+function metOf(w: World, a: Agent) {
+  const op = a.plan[0]?.op;
+  if (a.down <= w.t && !a.engaged && !a.thinking && (op === "goto" || op === "wander")) return WALKING;
+  const act = activity(w, a);
+  return act ? MET[act] : STANDING;
+}
+// A tick of someone's body where they are (body.ts): its heat, its stores and its want of sleep, and the needs the rest of
+// the sim reads off it. Their health is their wounds': it heals while they are well, warm and not out of glycogen
+// [design: no cited rate], and radiant heat past what bare skin bears burns it.
 export function needs(w: World, a: Agent) {
   const n = a.needs;
   if (a.struggles) for (const k of Object.keys(a.struggles) as Need[]) if (n[k] > 60) delete a.struggles[k];
-  n.food = Math.max(0, n.food - 0.12 - (a.sickness ? 0.05 : 0));
-  n.energy = Math.max(0, n.energy - (isNight(w.t) ? 0.16 : 0.1));
   n.social = Math.max(0, n.social - 0.05);
-  const { change, q } = warming(w, a);
-  n.warmth = Math.max(0, Math.min(100, n.warmth + change));
-  if (n.food <= 0 || n.warmth <= 0) n.health -= 0.4;
-  else if (n.food > 40 && n.warmth > 40 && !a.sickness) n.health = Math.min(100, n.health + 0.1);
-  // Radiant heat past what bare skin bears burns them: whoever can move takes it until it pains them and steps back,
-  // whoever lies collapsed takes the whole tick's; a dose that burns through the skin takes all their health (sec. 31).
+  const b = bodyOf(w, a), f = frameOf(w, a), { e, q } = surroundings(w, a), rest = basal(f) / f.area;
+  const out = warm(b, f, rest * metOf(w, a), rest, e, TICK_S);
+  b.dry = out.dry;
+  feed(b, f, out.spent, TICK_S);
+  const asleep = a.down > w.t || (!!b.asleep && a.plan[0]?.op === "rest");
+  if (!asleep) delete b.asleep;
+  pressure(b, asleep, restRate(lightOn(w, a).bright), TICK_S);
+  Object.assign(n, feels(b, frameOf(w, a)));
+  if (!a.sickness && b.core >= 35 && b.gly > 0) n.health = Math.min(100, n.health + 0.1);
+  // Whoever can move takes the dose until it pains them and steps back, whoever lies collapsed takes the whole tick's; a
+  // dose that burns through the skin takes all their health (sec. 31).
   if (q > BEARABLE) {
     const dose = q ** (4 / 3) * TICK_MIN;
     n.health -= (100 * (a.down > w.t ? dose : Math.min(dose, PAIN))) / THIRD;
+    a.hurt = "burns";
   }
+}
+// Whether a tick where they are would warm them: their body gaining heat, tried on a copy of it.
+export function warmsThem(w: World, a: Agent) {
+  const b = { ...bodyOf(w, a) }, f = frameOf(w, a), rest = basal(f) / f.area;
+  return warm(b, f, rest * metOf(w, a), rest, surroundings(w, a).e, TICK_S).store > 0;
 }
 
 function perceive(w: World, a: Agent) {
@@ -2126,20 +2176,23 @@ function reflex(w: World, a: Agent) {
 function agentTick(w: World, a: Agent) {
   carry(w, a);
   needs(w, a);
-  const n = a.needs;
-  if (a.down > w.t) { a.status = "Unconscious"; return; }
-  if (n.health <= 0) {
-    const cause = attacked.has(a.id) ? "their wounds" : a.sickness ? "sickness" : n.food <= 0 ? "hunger" : "cold";
-    // A second collapse soon after the first is fatal.
-    if (w.t - (a.cooldowns.collapsed ?? -Infinity) < DAY * 1.5) { die(w, a, cause); return; }
-    a.cooldowns.collapsed = w.t;
-    n.health = 25; n.food = Math.max(n.food, 15); n.warmth = Math.max(n.warmth, 20);
-    a.down = w.t + 60;
-    a.goal = null; a.plan = [];
-    log(w, "collapse", [a.id], a, `${a.name} collapsed from ${cause}.`);
-    for (const b of w.agents) if (b !== a && canSee(w, b, a, VISION) && !b.engaged && !b.thinking) { b.nextDecide = w.t; if (b.goal && !["flee", "fight", "defend"].includes(b.goal.type)) { b.goal = null; b.plan = []; } }
+  const n = a.needs, b = bodyOf(w, a), end = fate(b, frameOf(w, a));
+  // Death and collapse come of the body (body.ts fate): a core too cold or too hot, a body wasted past living, or wounds
+  // that have taken all their health.
+  if (end === "cold" || end === "heat" || end === "hunger") { die(w, a, end); return; }
+  if (n.health <= 0) { die(w, a, a.hurt ?? "their wounds"); return; }
+  if (end === "down") {
+    if (a.down <= w.t) {
+      a.goal = null; a.plan = [];
+      log(w, "collapse", [a.id], a, `${a.name} collapsed from ${b.core > DOWN_HOT ? "the heat" : "cold"}.`);
+      for (const c of w.agents) if (c !== a && canSee(w, c, a, VISION) && !c.engaged && !c.thinking) { c.nextDecide = w.t; if (c.goal && !["flee", "fight", "defend"].includes(c.goal.type)) { c.goal = null; c.plan = []; } }
+    }
+    // down through their next tick, until their core comes back
+    a.down = w.t + 2;
+    a.status = "Unconscious";
     return;
   }
+  if (a.down > w.t) a.down = w.t;
   perceive(w, a);
   if (a.thinking || a.engaged) return;
   const critical = (["food", "energy", "warmth"] as const).find((k) => n[k] < 20);
