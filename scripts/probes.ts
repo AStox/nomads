@@ -19,7 +19,7 @@
 // scripts/evals.ts runs every probe over many seeds and holds each build to the last good one.
 import { readFileSync } from "node:fs";
 import { DAY, TILE_M, addThing, dryAt, isNight, newWorld, rng, type Agent, type Stack, type Thing, type World } from "../src/sim/world";
-import { conditionsNow, tick } from "../src/sim/sim";
+import { conditionsNow, surroundings, tick } from "../src/sim/sim";
 import { DURATION, changed, count, counts, frictionPer, giveItems, giveStack, groundWord, layAt, newKinds, occupied, removeThing, removed, soilAt, sparksPer, SEED_SOIL } from "../src/sim/physics";
 import { predict } from "../src/sim/formulas";
 import { pieceOf, roundSize, stackPhys } from "../src/sim/fuel";
@@ -38,7 +38,7 @@ import { feedRate, fertilityAt } from "../src/sim/soil";
 import { fit } from "../src/terrain/niche";
 import { RULES, hooks } from "../src/sim/rules";
 import { seedRandom } from "./seeded";
-import { bodyOf, frameOf, glyMax } from "../src/sim/body";
+import { basal, bodyOf, frameOf, glyMax, warm } from "../src/sim/body";
 
 export type Metric = { better: "higher" | "lower"; tol: number; text: string };
 // What a probe expects of learning, held over every seed with a 95% interval (scripts/evals.ts): a number's mean above
@@ -524,6 +524,21 @@ function plots(w: World, at: Pos, n: number, plot: Plot, sky: Sky, r: () => numb
   return ps;
 }
 
+// Where a body reads half warm (body.ts feels: skin between cold pain at 15 C and cool's edge at 32.6 C), and a tick's
+// seconds. Someone pinned by a probe has their skin set to what this tick's air on them, as they're dressed, takes down
+// or up to that.
+const HALF = 15 + 0.5 * (32.6 - 15), TICK_S = 86400 / DAY;
+function pin(w: World, a: Agent) {
+  const b = bodyOf(w, a), f = frameOf(w, a), rest = basal(f) / f.area, e = surroundings(w, a).e;
+  b.gly = Math.max(b.gly, 0.8 * glyMax(f)); b.sleep = Math.min(b.sleep, 0.1); b.core = Math.max(b.core, 36.8);
+  let lo = 0, hi = 40;
+  for (let i = 0; i < 16; i++) {
+    const mid = (lo + hi) / 2, c = { ...b, skin: mid };
+    warm(c, f, rest * 1.3, rest, e, TICK_S);
+    if (c.skin < HALF) lo = mid; else hi = mid;
+  }
+  b.skin = (lo + hi) / 2;
+}
 export async function runProbe(probe: string, variant: string, seed: number, days: number, people: number, brain: "random" | "jev"): Promise<ProbeRun> {
   const P = PROBES[probe], v = P?.variants[variant];
   if (!v) throw new Error(`no probe ${probe}/${variant}: ${Object.entries(PROBES).map(([p, x]) => Object.keys(x.variants).map((k) => `${p}/${k}`).join(", ")).join(", ")}`);
@@ -639,11 +654,6 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     // they'd try is the one in front of them: physics.ts spotNear), so their seed goes in all round them however seldom
     // they plant; whatever fire they light is gone by the next tick
     for (const a of w.agents) {
-      // fed, rested and unhurt, and cool enough to want a fire, through their bodies (src/sim/body.ts), whose readings
-      // are what their needs are: glycogen four-fifths full, little want of sleep, and their skin at 24 C, half way between
-      // where cold hurts and where it stops being cool
-      const b = bodyOf(w, a);
-      b.gly = Math.max(b.gly, 0.8 * glyMax(frameOf(w, a))); b.sleep = Math.min(b.sleep, 0.1); b.core = Math.max(b.core, 36.8); b.skin = 23.8;
       a.needs.health = Math.max(a.needs.health, 90);
       const c = counts(a);
       if (sowing) {
@@ -674,6 +684,10 @@ export async function runProbe(probe: string, variant: string, seed: number, day
       around(w, cx, cy, 200, ["fire"], (t) => { fires.push(t); });
       for (const t of fires) removeThing(w, t);
     }
+    // fed, rested and only cool, through their bodies (src/sim/body.ts), whose readings are their needs: glycogen
+    // four-fifths full, little want of sleep, and their skin where this tick's air, on them as they're dressed, leaves
+    // their warmth reading half, as the probes have always held it
+    for (const a of w.agents) pin(w, a);
     // who is out to test a theory as the tick starts: a planting that tick is a test
     const testing = sowing ? w.agents.filter((a) => a.goal?.type.startsWith("test:")).map((a) => a.id) : [];
     const before = sowing ? w.agents.map((a) => new Set((a.waiting ?? []).map((e) => e.thing))) : [];
