@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>Nomads: live</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0b14; }
-  canvas#view { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; touch-action: none; cursor: grab; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0b14; overscroll-behavior: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  canvas#view { display: block; width: 100vw; height: 100vh; height: 100dvh; image-rendering: pixelated; touch-action: none; cursor: grab; }
   canvas#view.dragging { cursor: grabbing; }
   #hint, #stats { position: fixed; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; color: #eef2f6; pointer-events: none; }
   #hint { left: 12px; bottom: 10px; padding: 5px 9px; background: rgba(13, 11, 20, 0.66); border-radius: 3px; transition: opacity 1.2s; }
@@ -23,6 +23,20 @@
   canvas#clock { position: fixed; left: 50%; top: 10px; transform: translateX(-50%); image-rendering: pixelated; pointer-events: none; }
   canvas#clock[hidden] { display: none; }
   #stats { right: 10px; top: 44px; padding: 5px 9px; background: rgba(13, 11, 20, 0.72); white-space: pre; border-radius: 3px; }
+  canvas#inspector, canvas#world { touch-action: none; }
+  /* buttons for what keys do, on touch screens */
+  #pad { position: fixed; left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); display: flex; flex-wrap: wrap; justify-content: center; gap: 3px; z-index: 4; }
+  #pad[hidden] { display: none; }
+  #pad button { min-width: 34px; height: 38px; padding: 0 5px; font: bold 12px/1 ui-monospace, Menlo, Consolas, monospace; color: #eef2f6; background: rgba(36, 32, 52, 0.86); border: 2px solid #0d0b14; border-radius: 0; box-shadow: inset 2px 2px #4a4566, inset -2px -2px #16131f; touch-action: manipulation; }
+  #pad button.on { background: rgba(92, 64, 30, 0.9); }
+  #pad button:active { box-shadow: inset -2px -2px #4a4566, inset 2px 2px #16131f; }
+  /* phones and narrow windows: the windows fit the width, the inspector sits at the bottom */
+  body.narrow canvas#inspector { left: 8px; top: auto; bottom: calc(8px + env(safe-area-inset-bottom)); }
+  body.narrow canvas#world { right: auto; left: 8px; top: calc(78px + env(safe-area-inset-top)); }
+  body.narrow canvas#clock { top: calc(6px + env(safe-area-inset-top)); }
+  body.narrow canvas#render { display: none; }
+  body.narrow canvas#pace { display: none; }
+  body.narrow #hint { left: 8px; right: 8px; bottom: auto; top: calc(124px + env(safe-area-inset-top)); }
 </style>
 </head>
 <body>
@@ -31,6 +45,12 @@
 <canvas id="world" hidden aria-label="Everyone and everything in the world, population over time, and the key to the markers"></canvas>
 <canvas id="tip" hidden></canvas>
 <div id="hint">drag to pan &middot; scroll or double-click to zoom &middot; Q/E or right-drag to turn &middot; click anything to inspect it, people and animals to follow &middot; Tab for the next person &middot; the window at top right lists everyone and everything &middot; H hides paths &middot; Esc or click it again to let go &middot; space pauses &middot; [ ] speed</div>
+<div id="pad" hidden>
+  <button data-act="left" aria-label="Turn left">&#8634;</button><button data-act="right" aria-label="Turn right">&#8635;</button>
+  <button data-act="out" aria-label="Zoom out">&minus;</button><button data-act="in" aria-label="Zoom in">+</button>
+  <button data-act="pause" aria-label="Pause">II</button><button data-act="slower" aria-label="Slower">&laquo;</button><button data-act="faster" aria-label="Faster">&raquo;</button>
+  <button data-act="next" aria-label="Next person">NEXT</button><button data-act="paths" aria-label="Show or hide paths">PATH</button>
+</div>
 <canvas id="pace" hidden aria-label="The sim is paused or running at another speed"></canvas>
 <canvas id="render" hidden aria-label="What draws the frames: the GPU through WebGL2, or the CPU and why"></canvas>
 <canvas id="clock" hidden aria-label="The hour, the light it should show, and where that light comes from"></canvas>

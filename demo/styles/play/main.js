@@ -16,6 +16,9 @@ const num = (k, def, lo = -Infinity, hi = Infinity) => {
 const seed = Math.trunc(num("seed", 1)), warm = Math.trunc(num("warm", 2016, 0, 40000)), withSim = Q.get("sim") !== "0";
 const benchKind = ["zoom", "orbit", "turn", "pan"].includes(Q.get("bench")) ? Q.get("bench") : null;
 const canvas = document.getElementById("view"), hint = document.getElementById("hint"), statsEl = document.getElementById("stats"), pace = document.getElementById("pace"), renderEl = document.getElementById("render"), clockEl = document.getElementById("clock");
+// a touch screen: buttons stand in for the keys, and the hint speaks of fingers (?pad=1 or 0 to choose)
+const pad = document.getElementById("pad"), touchy = Q.get("pad") === "1" || (Q.get("pad") !== "0" && matchMedia("(pointer: coarse)").matches);
+if (touchy) hint.textContent = "drag to pan · pinch to zoom · twist two fingers to turn · tap anyone or anything to inspect it, people and animals to follow · tap it again to let go · the tabs at the top list everyone and everything";
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8], DBL_MS = 300;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const toM = (t) => t * TILE_M - SIZE / 2;
@@ -99,10 +102,22 @@ async function main() {
 
   // ---------- inspector: the selection's real data in tabs, redrawn every tick; rows open, names go to whoever they
   // name, and a back button returns along the way that came ----------
-  const insp = document.getElementById("inspector"), IW = 212, back = [];
-  let IH = 300;
-  const fitInsp = () => { IH = clamp(Math.floor((window.innerHeight - 24) / 2), 160, 320); };
+  // On a phone or a narrow window the windows take the width less a margin, the inspector a bottom sheet under half the
+  // height, and buttons stand in for the keys (index.html body.narrow, #pad).
+  const insp = document.getElementById("inspector"), back = [], narrow = () => window.innerWidth < 640;
+  let IW = 212, IH = 300;
+  const fitInsp = () => {
+    document.body.classList.toggle("narrow", narrow());
+    IW = narrow() ? clamp(Math.floor((window.innerWidth - 16) / 2), 150, 212) : clamp(Math.floor((window.innerWidth - 36) / 4), 150, 212);
+    IH = narrow() ? clamp(Math.floor((window.innerHeight * 0.42) / 2), 120, 320) : clamp(Math.floor((window.innerHeight - 24) / 2), 160, 320);
+  };
   fitInsp();
+  // the buttons sit at the bottom, above the inspector when it is a bottom sheet
+  function placePad() {
+    if (pad.hidden) return;
+    const up = narrow() && !insp.hidden ? insp.getBoundingClientRect().height + 12 : 8;
+    pad.style.bottom = `calc(${Math.round(up)}px + env(safe-area-inset-bottom))`;
+  }
   const CB = { y: 4, s: 9 }, cbx = () => IW - 15, BK = { x: 5, y: 4, s: 9 };
   const ui = { tab: null, open: new Set(), scroll: 0, max: 0, hover: null, hits: [] };
   let inspData = null;
@@ -110,7 +125,7 @@ async function main() {
     const sel = view.selected;
     inspData = sel && sim ? (typeof sel === "object" ? sim.inspectGround(sel.px, sel.py) : sim.inspect(sel)) : null;
     if (sel && !inspData) { view.selected = null; follow = null; }
-    if (!inspData) { insp.hidden = true; return; }
+    if (!inspData) { insp.hidden = true; placePad(); return; }
     paintInspector();
   }
   // a raised square button in a title bar with a glyph drawn by fn(put, x, y)
@@ -128,6 +143,7 @@ async function main() {
     if (back.length) button(B, BK.x, BK.y, BK.s, (put, x, y) => { for (let k = 0; k < 4; k++) { put(x + 2 + k, y + 4 - k, P.snow); put(x + 2 + k, y + 4 + k, P.snow); } });
     paintBuf(insp, B);
     insp.hidden = false;
+    placePad();
   }
   // a pointer event on one of the art windows, in its art px
   const artAt = (cv, e) => { const r = cv.getBoundingClientRect(); return { x: ((e.clientX - r.left) / r.width) * cv.width, y: ((e.clientY - r.top) / r.height) * cv.height }; };
@@ -135,10 +151,23 @@ async function main() {
   const hitAt = (hits, p) => hits.find((h) => p.x >= h.x0 && p.x <= h.x1 && p.y >= h.y0 && p.y <= h.y1) ?? null;
   // go to what a window names: a person, an animal or a thing
   const go = (id) => { if (sim?.inspect(id)) select(id, true, "link"); };
-  insp.addEventListener("wheel", (e) => { e.preventDefault(); ui.scroll = clamp(ui.scroll + e.deltaY / 2, 0, ui.max); if (inspData) paintInspector(); }, { passive: false });
-  insp.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    const p = artAt(insp, e);
+  // A window scrolls by the wheel or by dragging a finger (or the mouse) up and down it; a press that hardly moves is a
+  // tap, acted on as it lifts.
+  function scrollable(cv, get, set, tap) {
+    let press = null;
+    cv.addEventListener("wheel", (e) => { e.preventDefault(); set(get() + e.deltaY / 2); }, { passive: false });
+    cv.addEventListener("pointerdown", (e) => { e.preventDefault(); cv.setPointerCapture(e.pointerId); press = { id: e.pointerId, y: e.clientY, from: get(), moved: false }; });
+    cv.addEventListener("pointermove", (e) => {
+      if (!press || press.id !== e.pointerId) return;
+      const dy = e.clientY - press.y;
+      if (Math.abs(dy) > 6) press.moved = true;
+      if (press.moved) set(press.from - (dy * cv.height) / cv.getBoundingClientRect().height);
+    });
+    const lift = (e) => { if (press && press.id === e.pointerId && !press.moved && e.type === "pointerup") tap(artAt(cv, e)); press = null; };
+    cv.addEventListener("pointerup", lift);
+    cv.addEventListener("pointercancel", lift);
+  }
+  scrollable(insp, () => ui.scroll, (v) => { ui.scroll = clamp(v, 0, ui.max); if (inspData) paintInspector(); }, (p) => {
     if (onBox(p, cbx(), CB.y, CB.s)) { select(null); return; }
     if (back.length && onBox(p, BK.x, BK.y, BK.s)) { select(back.pop(), true, "back"); return; }
     const h = hitAt(ui.hits, p);
@@ -149,6 +178,7 @@ async function main() {
     paintInspector();
   });
   insp.addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse") return;
     const p = artAt(insp, e), was = hitAt(ui.hits, ui.hover ?? { x: -1, y: -1 }), now = hitAt(ui.hits, p);
     ui.hover = p;
     insp.style.cursor = now || onBox(p, cbx(), CB.y, CB.s) || (back.length && onBox(p, BK.x, BK.y, BK.s)) ? "pointer" : "";
@@ -158,7 +188,7 @@ async function main() {
 
   // ---------- the world window: everyone and everything, by kind, to click and go to; population over time; the key
   // to the markers. Closed it is just its tabs; a tab opens it, the open tab closes it. ----------
-  const worldEl = document.getElementById("world"), WW = 212, TABS = ["people", "animals", "things", "graphs", "key"];
+  const worldEl = document.getElementById("world"), TABS = ["people", "animals", "things", "graphs", "key"], WW = () => IW;
   const wui = { open: false, tab: "people", fold: new Set(), scroll: 0, max: 0, hover: null, hits: [] };
   const words = (x) => String(x).replaceAll("_", " ");
   const SPECIES_C = { deer: P.d3, wolf: P.r2, rabbit: P.k1, fish: P.w4, heron: P.w6, gull: P.r4, crow: P.ink, eagle: P.d1, butterfly: P.violet };
@@ -190,24 +220,23 @@ async function main() {
       out.push({ tab: "graphs", title: "animals", rows: Object.entries(h.animals).sort((a, b) => (b[1].at(-1) ?? 0) - (a[1].at(-1) ?? 0)).map(([sp, xs]) => ({ label: sp, spark: xs, h: 26, color: SPECIES_C[sp] ?? P.w3, link: `@animals|${sp}` })) });
     } else {
       out.push({ tab: "key", title: "over their heads", rows: Object.entries(sim.activities).map(([k, v]) => ({ label: v, icon: `act:${k}` })) });
-      out.push({ tab: "key", title: "on the ground", rows: [{ label: "gold line: where they have been" }, { label: "flags: what happened there" }, { label: "dots: where they are going" }, { label: "H hides or shows the lines" }] });
+      out.push({ tab: "key", title: "on the ground", rows: [{ label: "gold line: where they have been" }, { label: "flags: what happened there" }, { label: "dots: where they are going" }, { label: `${touchy ? "PATH" : "H"} hides or shows the lines` }] });
     }
     // every tab is there to click, its sections only the open one's
     return { sections: [...TABS.filter((t) => t !== tab).map((t) => ({ tab: t })), ...out].sort((a, b) => TABS.indexOf(a.tab) - TABS.indexOf(b.tab)) };
   }
   function paintWorld() {
     if (!sim) { worldEl.hidden = true; return; }
-    const H = wui.open ? clamp(window.innerHeight / 2 - 40, 120, 340) | 0 : 21, B = new Buf(WW, H);
+    const w = WW(), H = wui.open ? clamp(narrow() ? (window.innerHeight * 0.36) / 2 : window.innerHeight / 2 - 40, 100, 340) | 0 : 21, B = new Buf(w, H);
     B.c.fill(P.ink);
-    for (let x = 1; x < WW - 1; x++) for (let y = 1; y < H - 1; y++) B.c[y * WW + x] = P.r4;
-    const p = drawPanel(B, 3, 3, WW - 4, H - 4, worldData(), { tab: wui.open ? wui.tab : false, open: wui.fold, scroll: wui.scroll, hover: wui.hover });
+    for (let x = 1; x < w - 1; x++) for (let y = 1; y < H - 1; y++) B.c[y * w + x] = P.r4;
+    const p = drawPanel(B, 3, 3, w - 4, H - 4, worldData(), { tab: wui.open ? wui.tab : false, open: wui.fold, scroll: wui.scroll, hover: wui.hover });
     wui.scroll = p.scroll; wui.max = p.scrollMax; wui.hits = p.hits;
     paintBuf(worldEl, B);
     worldEl.hidden = false;
   }
-  worldEl.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    const h = hitAt(wui.hits, artAt(worldEl, e));
+  scrollable(worldEl, () => wui.scroll, (v) => { wui.scroll = clamp(v, 0, wui.max); paintWorld(); }, (p) => {
+    const h = hitAt(wui.hits, p);
     if (!h) return;
     if (h.tab != null) { if (wui.open && wui.tab === h.tab) wui.open = false; else { wui.open = true; wui.tab = h.tab; wui.scroll = 0; } }
     else if (h.toggle) { if (wui.fold.has(h.toggle)) wui.fold.delete(h.toggle); else wui.fold.add(h.toggle); }
@@ -219,12 +248,12 @@ async function main() {
     paintWorld();
   });
   worldEl.addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse") return;
     const p = artAt(worldEl, e), was = hitAt(wui.hits, wui.hover ?? { x: -1, y: -1 }), now = hitAt(wui.hits, p);
     wui.hover = p; worldEl.style.cursor = now ? "pointer" : "";
     if (was !== now) paintWorld();
   });
   worldEl.addEventListener("pointerleave", () => { wui.hover = null; paintWorld(); });
-  worldEl.addEventListener("wheel", (e) => { e.preventDefault(); wui.scroll = clamp(wui.scroll + e.deltaY / 2, 0, wui.max); paintWorld(); }, { passive: false });
 
   // ---------- a tooltip in the game's font: what a person or animal under the pointer is at, or the event a path's flag
   // stands for ----------
@@ -264,7 +293,7 @@ async function main() {
     tip(e.clientX, e.clientY);
   });
   canvas.addEventListener("pointerleave", () => { tipEl.hidden = true; tipKey = ""; });
-  window.addEventListener("resize", () => { fitInsp(); if (inspData) paintInspector(); paintWorld(); });
+  window.addEventListener("resize", () => { fitInsp(); if (inspData) paintInspector(); paintWorld(); placePad(); });
 
   // ---------- pause and speed: a small marker in the corner while either is off the usual ----------
   let paceKey = "";
@@ -440,23 +469,43 @@ async function main() {
     e.preventDefault();
     camera.zoomTo(camera.goal - clamp(e.deltaY, -200, 200) * 0.004, follow ? null : e.clientX, follow ? null : e.clientY);
   }, { passive: false });
+  // what the keys do, and the touch buttons with them
+  const next = (backward = false) => {
+    if (!sim?.w.agents.length) return;
+    const list = sim.w.agents, k = list.findIndex((a) => a.id === view.selected), n = list.length;
+    select(list[((k < 0 ? (backward ? 0 : -1) : k) + (backward ? -1 : 1) + n) % n].id, true, "keep");
+  };
+  const speedBy = (d) => { if (!sim) return; const k = SPEEDS.indexOf(sim.speed); sim.speed = SPEEDS[clamp((k < 0 ? 2 : k) + d, 0, SPEEDS.length - 1)]; };
+  const zoomBy = (d) => { const mid = follow ? [null, null] : [canvas.width / 2, canvas.height / 2]; camera.zoomTo(Math.round(camera.goal) + d, ...mid); };
+  const ACT = {
+    left: () => camera.turnBy(-1), right: () => camera.turnBy(1), out: () => zoomBy(-1), in: () => zoomBy(1),
+    pause: () => { if (sim) sim.paused = !sim.paused; }, slower: () => speedBy(-1), faster: () => speedBy(1),
+    next: () => next(), paths: () => { view.path = view.path === false; },
+  };
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") select(null);
-    else if (e.key === "Tab" && sim?.w.agents.length) {
-      e.preventDefault();
-      const list = sim.w.agents, k = list.findIndex((a) => a.id === view.selected), n = list.length;
-      select(list[((k < 0 ? (e.shiftKey ? 0 : -1) : k) + (e.shiftKey ? -1 : 1) + n) % n].id, true, "keep");
-    }
-    else if (e.key === " " && sim) { sim.paused = !sim.paused; e.preventDefault(); }
-    else if ((e.key === "[" || e.key === "]") && sim) { const k = SPEEDS.indexOf(sim.speed); sim.speed = SPEEDS[clamp((k < 0 ? 2 : k) + (e.key === "]" ? 1 : -1), 0, SPEEDS.length - 1)]; }
-    else if (e.key === "+" || e.key === "=" || e.key === "-") {
-      const mid = follow ? [null, null] : [canvas.width / 2, canvas.height / 2];
-      camera.zoomTo(Math.round(camera.goal) + (e.key === "-" ? -1 : 1), ...mid);
-    }
-    else if (e.key === "h" || e.key === "H") view.path = view.path === false;
-    else if (e.key === "q" || e.key === "Q") camera.turnBy(-1);
-    else if (e.key === "e" || e.key === "E") camera.turnBy(1);
+    else if (e.key === "Tab" && sim?.w.agents.length) { e.preventDefault(); next(e.shiftKey); }
+    else if (e.key === " " && sim) { ACT.pause(); e.preventDefault(); }
+    else if (e.key === "[" || e.key === "]") speedBy(e.key === "]" ? 1 : -1);
+    else if (e.key === "+" || e.key === "=" || e.key === "-") zoomBy(e.key === "-" ? -1 : 1);
+    else if (e.key === "h" || e.key === "H") ACT.paths();
+    else if (e.key === "q" || e.key === "Q") ACT.left();
+    else if (e.key === "e" || e.key === "E") ACT.right();
   });
+  for (const b of pad.querySelectorAll("button")) b.addEventListener("click", () => { ACT[b.dataset.act]?.(); paintPad(); });
+  // the buttons light for what they hold: paused, a speed off the usual, paths hidden
+  let padKey = "";
+  function paintPad() {
+    if (pad.hidden) return;
+    const on = { pause: !!sim?.paused, slower: !!sim && sim.speed < 1, faster: !!sim && sim.speed > 1, paths: view.path === false };
+    const key = JSON.stringify(on);
+    if (key === padKey) return;
+    padKey = key;
+    for (const b of pad.querySelectorAll("button")) b.classList.toggle("on", !!on[b.dataset.act]);
+    pad.querySelector('[data-act="pause"]').textContent = sim?.paused ? "\u25B6" : "II";
+  }
+  pad.hidden = !touchy;
+  placePad();
   setTimeout(() => hint.classList.add("gone"), 8000);
   globalThis.play = globalThis.nomads = { live, sim, view, camera, select, metrics, zoomTo: (g, sx, sy) => camera.zoomTo(g, sx, sy), turnBy: (d) => camera.turnBy(d), inspected: () => inspData, inspector: ui, world: wui, paintWorld };
 
@@ -527,7 +576,7 @@ async function main() {
       if (r.holes) tabWatch.hole += dt2;
       if (now - tabWatch.t0 > 6000) { metrics.tabs.push({ holeMs: Math.round(tabWatch.hole), cutMs: Math.round(tabWatch.cutAt) }); tabWatch = null; }
     }
-    if (revealed) { paintPace(); paintClock(); }
+    if (revealed) { paintPace(); paintClock(); paintPad(); }
     paintRender();
     if (!readyMarked && revealed && !bench) { readyMarked = true; document.body.dataset.firstFrame = String(Math.round(performance.now() - t0)); document.body.classList.add("ready"); }
     if (showStats && now - lastStats > 250) {
