@@ -16,7 +16,7 @@ const PORT = Number(process.env.PORT ?? 8095);
 const DATA = process.env.NOMADS_DATA ?? `${import.meta.dir}/data`;
 const SAVE = `${DATA}/world.json`;
 const BASE_MS = 500;
-if (!process.env.TYPESAFE_API_KEY && process.env.NOMADS_BRAIN !== "random") throw new Error("missing TYPESAFE_API_KEY");
+if (!process.env.TYPESAFE_API_KEY && !process.env.SUBQ_API_KEY && process.env.NOMADS_BRAIN !== "random") throw new Error("missing TYPESAFE_API_KEY or SUBQ_API_KEY");
 logTo(`${DATA}/logs`);
 
 async function load(): Promise<World> {

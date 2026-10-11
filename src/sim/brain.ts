@@ -16,7 +16,12 @@ import { jevLog } from "./trace";
 import LEXICON from "./lexicon.json";
 import PLACES from "./places.json";
 
-const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
+// Who answers the server's questions: Jev, or SubQ's decision model while SUBQ_API_KEY is set (a free trial, from
+// 2026-10-11), which takes the same questions and gives the same answers. Read when asked, so no bundle holds a key.
+const decider = () =>
+  process.env.SUBQ_API_KEY
+    ? { endpoint: "https://api.subq.ai/v1/systemone", model: "subq-snap-preview", key: process.env.SUBQ_API_KEY }
+    : { endpoint: "https://api.typesafe.ai/v1/systemone", model: "jev-latest", key: process.env.TYPESAFE_API_KEY };
 // NOMADS_BRAIN=random answers every question with random numbers, for fast offline runs of the physics (and for tests).
 // Where the answers come from: the random brain; Jev itself, with TYPESAFE_API_KEY (the server); or a relay that holds
 // the key for a page that must not see it (scripts/play/serve.ts /jev), reached with the relay's token.
@@ -58,22 +63,31 @@ async function ask(w: World, purpose: string, agent: string | undefined, state: 
     jevLog({ agent, purpose, ms: 0, tokens: 0, state, questions, answers });
     return answers;
   }
+  // a choice of one has its answer already, and SubQ won't take one
+  const only = (q: Question) => q.type === "choice" && Object.keys(q.criteria as object).length === 1;
+  const given: Record<string, Answer> = {}, asked: Record<string, Question> = {};
+  for (const [k, q] of Object.entries(questions)) {
+    const one = only(q) ? Object.keys(q.criteria as object)[0] : null;
+    if (one !== null) given[k] = { type: "choice", choice: one, probabilities: { [one]: 1 }, confidence: 1 };
+    else asked[k] = q;
+  }
+  if (!Object.keys(asked).length) return given;
   inflight++;
   try {
-    const relay = brain.kind === "relay" ? brain : null;
-    const res = await fetch(relay ? relay.url : ENDPOINT, {
+    const relay = brain.kind === "relay" ? brain : null, d = decider();
+    const res = await fetch(relay ? relay.url : d.endpoint, {
       method: "POST",
-      headers: relay ? { "X-Nomads-Token": relay.token, "Content-Type": "application/json" } : { Authorization: `Bearer ${process.env.TYPESAFE_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "jev-latest", state, questions }),
+      headers: relay ? { "X-Nomads-Token": relay.token, "Content-Type": "application/json" } : { Authorization: `Bearer ${d.key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: d.model, state, questions: asked }),
       signal: AbortSignal.timeout(20_000),
     });
-    if (!res.ok) throw new Error(`jev ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    if (!res.ok) throw new Error(`${relay ? "relay" : d.model} ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const body = (await res.json()) as { answers: Record<string, Answer>; usage?: { input_tokens: number } };
     const tokens = body.usage?.input_tokens ?? 0;
     w.jev.calls++;
     w.jev.tokens += tokens;
-    jevLog({ agent, purpose, ms: Math.round(performance.now() - t0), tokens, state, questions, answers: body.answers });
-    return body.answers;
+    jevLog({ agent, purpose, ms: Math.round(performance.now() - t0), tokens, state, questions, answers: { ...given, ...body.answers } });
+    return { ...given, ...body.answers };
   } catch (e) {
     jevLog({ agent, purpose, ms: Math.round(performance.now() - t0), tokens: 0, state, questions, error: String(e) });
     throw e;

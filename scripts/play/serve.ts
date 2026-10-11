@@ -7,8 +7,10 @@ import { timingSafeEqual } from "node:crypto";
 import { join, normalize } from "node:path";
 
 const ROOT = process.argv[2] ?? "/tmp/nomads-styles", PORT = Number(process.argv[3] ?? 8197);
-const KEY = process.env.TYPESAFE_API_KEY ?? "", TOKEN = process.env.NOMADS_RELAY_TOKEN ?? "";
-const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
+// SubQ's decision model while SUBQ_API_KEY is set (a free trial, from 2026-10-11), Jev otherwise: the same contract.
+const SUBQ = process.env.SUBQ_API_KEY ?? "", TOKEN = process.env.NOMADS_RELAY_TOKEN ?? "";
+const KEY = SUBQ || (process.env.TYPESAFE_API_KEY ?? "");
+const ENDPOINT = SUBQ ? "https://api.subq.ai/v1/systemone" : "https://api.typesafe.ai/v1/systemone", MODEL = SUBQ ? "subq-snap-preview" : "jev-latest";
 const RATE = 300, BUSY = 16, MAX_BYTES = 256_000, MAX_QUESTIONS = 16;
 const NO_STORE = { "Cache-Control": "no-store" };
 
@@ -43,7 +45,7 @@ async function relay(req: Request) {
     const res = await fetch(ENDPOINT, {
       method: "POST",
       headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "jev-latest", state: body.state, questions: body.questions }),
+      body: JSON.stringify({ model: MODEL, state: body.state, questions: body.questions }),
       signal: AbortSignal.timeout(20_000),
     });
     const out = await res.text();
