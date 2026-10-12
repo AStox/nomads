@@ -1,6 +1,6 @@
 // Deer, rabbits and wolves as populations over the island's tiles (docs/research/animal-constants.md): how many there are
 // on each tile and the fat each carries on average, run on energy. The ground grows forage by the plant rule; grazers eat
-// it and burn their field metabolic rate; wolves kill deer by their functional response; the young come in their
+// it and burn their field metabolic rate; wolves kill deer and rabbits by their functional response; the young come in their
 // seasons by condition, and as many starve as a shortfall is worth in full reserves. The animals people see are the
 // tiles' own, stood on the ground within sight of them (reveal): one killed or eaten is one fewer on its tile.
 import { DAY, H, TILE_M, Tile, W, groundOf, tileAt, dryAt, type Animal, type AnimalSpecies, type World } from "./world";
@@ -47,8 +47,13 @@ const ME = 11, INTERCEPT = 0.8, MOST = 300, BROWSE = { shrub: 0.3, tree: 0.1 };
 // The forage at which a grazer eats at half its most, g DM/m2: Mulder and Hendriks' grazing mammals, 4.9e4 m^0.20 kg/km2
 // of wet vegetation over the ground, m in kg (R374), a quarter of it dry [UNVERIFIED].
 const half = (kg: number) => 49 * kg ** 0.2 * 0.25;
-// Messier: kills a wolf a day at most, and the density for half of that, moose-equivalents a km2, by biomass (sec. 6).
+// Messier: kills a wolf a day at most, and the density for half of that, moose-equivalents a km2, taken on all the prey's
+// biomass, deer and rabbits alike (sec. 6).
 const KILL_MAX = 3.36 / 100, KILL_HALF = 0.46, MOOSE = 400, REACH = 3;
+// A grown wolf's chance of living the year at a density of d wolves a 1000 km2, by strife among packs: Cubaynes et al.'s
+// Northern Range survival, 0.55 to 0.92 over 20 to 99 wolves, below 0.7 above 65 (R381), as a line [derived]; no
+// better than the year's other deaths allow where wolves are few.
+const wolfSurvival = (d: number) => Math.max(0.01, Math.min(Math.exp(-SPEC.wolf.die), 1.018 - 0.00489 * d));
 // Births (sec. 5): the island days (counted from 0) of the rut, calving and whelping, and of the rabbits' season: the
 // real dates' days after the spring equinox, 20 March, at the year's pace, from the island's equinox in the middle of
 // its spring (sky.ts).
@@ -57,6 +62,8 @@ const RUT = onDay(219), CALVING = onDay(77), WHELPING = onDay(36), KITS_FROM = o
 const LITTER = 5, LITTER_DAYS = 30, PUPS = 5.5, PACK = 4;
 // The share of kits alive at a year old, which join the grown at birth (R375).
 const KIT_YEAR = 0.083;
+// The share of wolf pups alive at a year old, in Voyageurs, where wolves live on deer (R368), joining the grown at birth.
+const PUP_YEAR = 0.29;
 const TILE_KM2 = (TILE_M * TILE_M) / 1e6;
 
 // ---------- the ground (sec. 3) ----------
@@ -140,27 +147,40 @@ export function stepHerds(w: World, hs: Herds, dt: number, t: number, skip?: Set
     if (g.grass[i] > 0) hs.forage[i] = Math.max(0, hs.forage[i] - (onGrass * gScale) / (area * g.grass[i]));
     if (g.woody[i] > 0) hs.browse[i] = Math.max(0, hs.browse[i] - (onBrowse * bScale) / (area * g.woody[i]));
   }
-  // wolves kill deer in their reach, every tile's wolves at once: each takes its kills as a share of the deer round it,
-  // and each tile's deer lose the shares of all the wolves that reach them
-  const deerKj = edible("deer"), round = box(hs.deer.n, scratch(0)), rate = scratch(1);
+  // wolves kill deer and rabbits in their reach by the prey's whole biomass there, each kind as its share of it, every
+  // tile's wolves at once: each takes its kills as a share of each kind round it, and each tile's deer and rabbits lose
+  // the shares of all the wolves that reach them
+  const Dk = D.kg, Rk = SPEC.rabbit.kg, deerKj = edible("deer"), rabbitKj = edible("rabbit");
+  const deerRound = box(hs.deer.n, scratch(0)), rabbitRound = box(hs.rabbit.n, scratch(1)), deerRate = scratch(2), rabbitRate = scratch(3);
   for (const i of g.land) {
-    const wn = hs.wolf.n[i], deer = round[i];
+    const wn = hs.wolf.n[i], mass = deerRound[i] * Dk + rabbitRound[i] * Rk;
     if (wn <= 0) continue;
-    if (!skip?.has(i) && deer > 0) {
-      const X = (deer * SPEC.deer.kg) / (g.reach[i] * TILE_KM2) / MOOSE, kills = Math.min(deer, (wn * KILL_MAX * X) / (KILL_HALF + X) * (MOOSE / SPEC.deer.kg) * days);
-      rate[i] = kills / deer;
-      hs.wolf.e[i] += (kills * deerKj) / wn;
+    if (!skip?.has(i) && mass > 0) {
+      // as fast as the prey allow, but no more than fills them: a pack gorged on rabbits leaves the deer be
+      const X = mass / (g.reach[i] * TILE_KM2) / MOOSE, most = Math.min(mass, (wn * KILL_MAX * X) / (KILL_HALF + X) * MOOSE * days);
+      const kjPerKg = (deerRound[i] * deerKj + rabbitRound[i] * rabbitKj) / mass, want = Math.max(0, (SPEC.wolf.full - hs.wolf.e[i] + SPEC.wolf.fmr * days) * wn);
+      const kg = Math.min(most, want / kjPerKg);
+      const deerKills = (kg * (deerRound[i] * Dk)) / mass / Dk, rabbitKills = (kg * (rabbitRound[i] * Rk)) / mass / Rk;
+      if (deerRound[i] > 0) deerRate[i] = deerKills / deerRound[i];
+      if (rabbitRound[i] > 0) rabbitRate[i] = rabbitKills / rabbitRound[i];
+      hs.wolf.e[i] += (deerKills * deerKj + rabbitKills * rabbitKj) / wn;
     }
     hs.wolf.e[i] -= SPEC.wolf.fmr * days;
   }
-  const taken = box(rate, scratch(2));
-  for (const i of g.land) if (taken[i] > 0) hs.deer.n[i] *= Math.max(0, 1 - taken[i]);
+  const deerTaken = box(deerRate, scratch(4)), rabbitTaken = box(rabbitRate, scratch(5));
+  for (const i of g.land) {
+    if (deerTaken[i] > 0) hs.deer.n[i] *= Math.max(0, 1 - deerTaken[i]);
+    if (rabbitTaken[i] > 0) hs.rabbit.n[i] *= Math.max(0, 1 - rabbitTaken[i]);
+  }
   // hunger, the year's other deaths, and the young
   const before = hs.day, now = ((t / DAY) % YEAR_DAYS + YEAR_DAYS) % YEAR_DAYS;
   const rut = crossed(before, now, RUT), calving = crossed(before, now, CALVING), whelping = crossed(before, now, WHELPING);
   const kits = KITS_FROM > KITS_TO ? now >= KITS_FROM || now < KITS_TO : now >= KITS_FROM && now < KITS_TO;
+  let wolves = 0;
+  for (const i of g.land) wolves += hs.wolf.n[i];
+  const density = (1000 * wolves) / (g.land.length * TILE_KM2);
   for (const sp of HERDED) {
-    const h = hs[sp], k = SPEC[sp], keep = Math.exp(-(k.die * days) / 365.25);
+    const h = hs[sp], k = SPEC[sp], keep = sp === "wolf" ? wolfSurvival(density) ** (days / 365.25) : Math.exp(-(k.die * days) / 365.25);
     for (const i of g.land) {
       // too few to be worth the arithmetic (and below where doubles slow to a crawl) count as none
       if (h.n[i] <= 1e-9) { h.n[i] = 0; continue; }
@@ -172,16 +192,16 @@ export function stepHerds(w: World, hs: Herds, dt: number, t: number, skip?: Set
         if (rut) hs.deer.preg[i] = (h.n[i] / 2) * Math.min(0.9, 0.25 + 0.65 * fit);
         if (calving) { h.n[i] += Math.min(hs.deer.preg[i], h.n[i] / 2); hs.deer.preg[i] = 0; }
       } else if (sp === "rabbit" && kits && fit > 0.5) h.n[i] += (h.n[i] / 2) * (LITTER / LITTER_DAYS) * KIT_YEAR * days;
-      else if (sp === "wolf" && whelping) h.n[i] += (h.n[i] / PACK) * PUPS * fit;
+      else if (sp === "wolf" && whelping) h.n[i] += (h.n[i] / PACK) * PUPS * PUP_YEAR * fit;
     }
   }
   hs.day = now;
   // moving on to better ground: grazers to more forage a head (a deer eating as many rabbits' worth as its fill is to
-  // theirs), wolves to more deer
+  // theirs), wolves to more prey by its biomass
   const deerEats = SPEC.deer.maxDM / SPEC.rabbit.maxDM;
   for (const sp of HERDED) {
     const h = hs[sp], share = Math.min(0.5, SPEC[sp].move * days), out = scratch(0), inn = scratch(1), kj = scratch(2), carried = scratch(3), pull = scratch(4);
-    for (const j of g.land) pull[j] = sp === "wolf" ? hs.deer.n[j] : (hs.forage[j] * g.grass[j] + (sp === "deer" ? hs.browse[j] * g.woody[j] : 0)) / (1 + hs.deer.n[j] * deerEats + hs.rabbit.n[j]);
+    for (const j of g.land) pull[j] = sp === "wolf" ? hs.deer.n[j] * SPEC.deer.kg + hs.rabbit.n[j] * SPEC.rabbit.kg : (hs.forage[j] * g.grass[j] + (sp === "deer" ? hs.browse[j] * g.woody[j] : 0)) / (1 + hs.deer.n[j] * deerEats + hs.rabbit.n[j]);
     for (let k = 0; k < g.land.length; k++) {
       const i = g.land[k];
       if (h.n[i] <= 0) continue;

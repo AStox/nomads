@@ -9,7 +9,7 @@ Substrate 5 of `rule-audit.md`: deer, rabbits and wolves. Each species is a popu
 | A few founding animals placed near people; caps of 18 deer, 6 wolves, 120 rabbits | Densities on every land tile from twenty years of the island's own herd dynamics before anyone wakes (sec. 8); no caps |
 | hunger 0 to 100 drained by a hand-set rate, raised by grazing at a hand-set rate, death at 0 | Each tile's animals carry a mean fat reserve, kJ: they burn their field metabolic rate, eat forage or prey, and as many die as the shortfall's worth of a full reserve when it runs out; hunger is the reserve as a share of a full one |
 | Births by a 1-in-400 roll near a mate when the days lengthen past 11 h; rabbits by a roll on their count; wolves 1-in-4000 | Deer conceive at the rut by condition and calve in early June; rabbits litter monthly from January to August while in condition; a wolf pack whelps once a year (sec. 5) |
-| Wolves bite a deer for 6 hp until it drops | Away from people, wolves kill deer by Messier's functional response; within sight of people, as they did, one carcass at a time |
+| Wolves bite a deer for 6 hp until it drops | Away from people, wolves kill deer and rabbits by Messier's functional response on their biomass, no more than fills them, and strife among packs thins them as they crowd; within sight of people, as they did, one carcass at a time |
 | Deer and wolves swim ashore when the island empties | Gone |
 
 ## 2. Bodies
@@ -22,7 +22,7 @@ Substrate 5 of `rule-audit.md`: deer, rabbits and wolves. Each species is a popu
 | Fat's energy | 37.74 MJ/kg | | | fuel.ts FOOD_KJ.fat |
 | Most dry matter eaten a day | 3.4 kg | 0.08 kg | - | deer: R363 (older hinds, 2.2 to 4.2) [ex]; rabbit 65 to 80 g a kg of its mass (72.5) R373 [ex] |
 | Forage's metabolisable energy | 11 MJ/kg DM | | | R362 (rough upland grazing, 11.0 to 11.1) [ex] |
-| A deer's edible energy to a wolf | its meat and fat as butchered (materials.ts carcass), at fuel.ts's energies | | | [derived] |
+| A deer's or rabbit's edible energy to a wolf | its meat and fat as butchered (materials.ts carcass), at fuel.ts's energies | | | [derived] |
 
 ## 3. Forage
 
@@ -57,19 +57,21 @@ Each step of dt island days, at the year's pace (a herd's day is YEARS_PACE days
 | Rabbit: breeding condition | over half a full reserve [design] | |
 | Rabbit: kits alive at a year old | 8.3% (8.6% in an Australian population) | R375 [ex]; they join the grown at birth [gap: age classes] |
 | Wolf: litter | one a year, 4 to 6 pups (5.5) | R367 [ex] |
+| Wolf: pups alive at a year old | 29% in Voyageurs, where wolves live on deer (68% in Yellowstone, on elk) | R368 [ex]; they join the grown at birth [gap: age classes] |
 | Wolf: pack | 4 | R368 [ex] |
 | Wolf: whelping | late April [UNVERIFIED] | |
 | Deaths besides hunger and wolves, a year | rabbit 1/2 (wild rabbits live 1 to 3 years, R369 [ex]); deer 1/12, wolf 1/5 [UNVERIFIED] | |
+| Wolf: a grown wolf's chance of living the year at d wolves a 1000 km2 | 1.018 - 0.00489 d, no more than the 1/5 deaths' 0.82 | Cubaynes et al.'s Northern Range survival, 0.55 to 0.92 over 20 to 99 wolves, below 0.7 above 65 (R381), as a line through those [derived]; d over the whole island's land, as their densities are the whole range's |
 
 The young join the tile's count at once, as the adults' size [gap: age classes].
 
-## 6. Wolves killing deer
+## 6. Wolves killing deer and rabbits
 
-Kills per wolf a day = 0.0336 X / (0.46 + X) moose-equivalents, X the moose-equivalent density in a wolf's reach (km2), Messier's functional response for wolves on moose (R370) [read: abstract], taken by biomass: a moose 400 kg [UNVERIFIED], a deer 116, so X = deer kg/km2 / 400 and kills of deer = kills x 400 / 116 [derived assumption: wolves' killing saturates on prey biomass]. A wolf's reach: the 7 x 7 tiles round it, about 1 km across [design]. Every tile's wolves hunt at once: each takes its kills as a share of the deer in its reach, and each tile's deer lose the sum of the shares of the wolves that reach them, which kills exactly what the wolves ate unless they would take more than are there [derived]. Wolves within sight of people kill as individuals instead, and their tile's predation then waits on them.
+Kills per wolf a day = 0.0336 X / (0.46 + X) moose-equivalents, X the moose-equivalent density of prey in a wolf's reach (km2), Messier's functional response for wolves on moose (R370) [read: abstract], taken by biomass: a moose 400 kg [UNVERIFIED], so X = the deer's and rabbits' kg a km2 there / 400, and the kills come out in kg [derived assumption: wolves' killing saturates on prey biomass, whatever the prey]. Each kind is killed as its share of that biomass [derived assumption: no preference]. Wolves eat lagomorphs as buffer prey when ungulates are short (R379, R380). A pack kills no more than brings its reserves to full and pays its day [derived: kills are what wolves eat, as a grazer eats], so wolves fed on rabbits leave deer be. A wolf's reach: the 7 x 7 tiles round it, about 1 km across [design]. Every tile's wolves hunt at once: each takes its kills as a share of each kind in its reach, and each tile's deer and rabbits lose the sum of the shares of the wolves that reach them, which kills exactly what the wolves ate unless they would take more than are there [derived]. Wolves within sight of people kill as individuals instead, and their tile's predation then waits on them.
 
 ## 7. Moving
 
-Each step a share of a tile's animals moves to whichever neighbouring tile offers more forage per grazer (wolves: more deer), a share set by how far they range [design]: deer half a day (hinds range 2 to 4 km2, R371), wolves all of it, rabbits a fiftieth (home ranges of 0.3 to 0.7 ha, R372, a tile being 2.25 ha).
+Each step a share of a tile's animals moves to whichever neighbouring tile offers more forage per grazer (wolves: more prey, by its biomass), a share set by how far they range [design]: deer half a day (hinds range 2 to 4 km2, R371), wolves all of it, rabbits a fiftieth (home ranges of 0.3 to 0.7 ha, R372, a tile being 2.25 ha).
 
 ## 8. Starting and showing
 
@@ -82,12 +84,14 @@ Seed 5 (228 km2 of land, mostly wooded), ten island years on from the twenty-yea
 
 | Check | Model | Field | Verdict |
 |---|---|---|---|
-| Red deer a km2 | 2 to 3 (400 to 710 on the island), rising slowly after a wolf boom | Scotland's open hill 9.35 in winter 2018/19, Deer Management Areas 1.7 to 31.4 (R376) | passes, at the low end of the range for an island mostly under trees |
-| Rabbits a ha | 20 to 31 (443k to 715k), cycling with the season | 25 to 100 where they run high (R377), 46.65 on South Walney's dunes in 2023 (R378) | passes, for an island with no foxes, stoats or disease |
-| Start (newWorld, twenty years a day at a time) | seed 5: 881 deer, 390k rabbits, 0.4 wolves; seed 10: 1,041 deer, 279k rabbits, 0.4 wolves | | |
-| Wolves | a pack grows to about 10, kills the deer round it down, and falls to a fraction of one | none for a 228 km2 island | fails: on an island this small the deer they reach run out before they recover; no rabbits in their diet away from people (sec. 10) |
+| Red deer a km2 | 4 to 6 (seed 5: 950 to 1,450 and still rising slowly; seed 10: 1,100 to 1,410, level by year eight) | Scotland's open hill 9.35 in winter 2018/19, Deer Management Areas 1.7 to 31.4 (R376) | passes |
+| Rabbits a ha | 16 to 24 (seed 5: 370k to 540k; seed 10: 285k to 413k), the same each year | 25 to 100 where they run high (R377), 46.65 on South Walney's dunes in 2023 (R378) | passes, a little under where they run high, with wolves eating them |
+| Wolves a 1000 km2 | 55 to 73 (seed 5: 12.6 to 16.6), the same each year, always fed | Cariappa et al.'s upper bound of 69 (R380); Yellowstone's Northern Range 20 to 99 (R381) | passes |
+| What wolves eat | about five parts in six rabbit by biomass, as the prey stand | lagomorphs 1.3 to 7.7% of European wolves' food biomass, hare and beaver 14.5% in one range (R379) | fails: the island's rabbits stand at 20 a ha where Europe's hares stand at a few a km2, and the wolves take each kind as its biomass |
 
-Runs before the field layer and the kits' first-year loss, kept as the record of what each gap did: with one grazeable pool of grass and a fixed half-fill, 20,000 to 28,000 deer and 12,000 to 27,000 rabbits; with Mulder's scaling and no browse apart, rabbits grazed every sward below a deer's half-fill and the deer died out; with browse apart but every kit joining the grown, 2 million rabbits boomed and crashed each year and 60 deer lived on browse alone; with the kits' loss but no field layer, 55,000 rabbits and 65 deer.
+Ten island years on from the twenty-year start, a quarter-year apart, every number repeats its year by the end: the island is at equilibrium, deer still creeping up on seed 5.
+
+Earlier runs, kept as the record of what each gap did: wolves on deer alone grew to about 10, killed the deer round them down and fell to a fraction of one (the first version of this pass); wolves on rabbits too, killing at Messier's most whether hungry or not and with no strife, grew to 110 and killed the deer down to 1 to 5 on the island; with their kills held to what fills them and strife among packs, 20 to 41 wolves, whose pups all lived; with the pups' first-year loss, the numbers above. Runs before the field layer and the kits' first-year loss, kept as the record of what each gap did: with one grazeable pool of grass and a fixed half-fill, 20,000 to 28,000 deer and 12,000 to 27,000 rabbits; with Mulder's scaling and no browse apart, rabbits grazed every sward below a deer's half-fill and the deer died out; with browse apart but every kit joining the grown, 2 million rabbits boomed and crashed each year and 60 deer lived on browse alone; with the kits' loss but no field layer, 55,000 rabbits and 65 deer.
 
 ### The probe gate (aec50e9, against a8bf4da)
 
@@ -101,7 +105,8 @@ Fails one number: discovery regret 1.90 to 13.3 (+11.4 [1.47, 21.8]); worked, wa
 
 - Age and sex classes; calves and kits as adults at once.
 - Winter's poorer forage; browse as a fixed share of shrubs and trees; the field layer as grass in an eighth of the sun, whatever grows there.
-- Wolves on rabbits and eagles on rabbits away from people; foxes, stoats and disease, whose share of the kits' first-year loss (R375) is taken as it was measured, with them.
+- Eagles on rabbits away from people; foxes, stoats and disease, whose share of the kits' first-year loss (R375) is taken as it was measured, with them.
+- Wolves catching a rabbit as easily as a kilogram of deer, and with no preference between them; strife among packs judged over the whole island, not pack by pack.
 - Rabbits keeping to cover: they graze any of a tile's ground layer, not only within reach of their warrens.
 - Running and walking speeds (substrate 6), wounds (the hp pools).
 - Fish, birds and butterflies stay individuals with their old caps.
@@ -115,7 +120,7 @@ Fails one number: discovery regret 1.90 to 13.3 (+11.4 [1.47, 21.8]); worked, wa
 - R365 Wildlife Online, Red deer breeding biology (conception timing; pregnancy rates by food; Clutton-Brock on Rum). https://www.wildlifeonline.me.uk/animals/article/red-deer-breeding-biology (search excerpt)
 - R366 Mammal Society, European rabbit (breeding January to August, several litters of 3 to 7 about monthly). https://mammal.org.uk/british-mammals/european-rabbit (search excerpt)
 - R367 Living with Wolves, wolves have one litter a year (4 to 6). https://www.livingwithwolves.org/did-you-know-pups/ (search excerpt)
-- R368 Hynes et al. (2026), Born to die: wolf pup survival and recruitment in the Greater Voyageurs Ecosystem, Wildlife Biology (mean pack 4.0). https://nsojournals.onlinelibrary.wiley.com/doi/full/10.1002/wlb3.01562 (search excerpt)
+- R368 Hynes et al. (2026), Born to die: wolf pup survival and recruitment in the Greater Voyageurs Ecosystem, Wildlife Biology (mean pack 4.0; 71% of pups dead within their first year; Yellowstone 1996 to 2010 mean 0.68, range 0.29 to 0.85, in its table). https://nsojournals.onlinelibrary.wiley.com/doi/full/10.1002/wlb3.01562 (search excerpt)
 - R369 Wildlife Online, European rabbit (longevity and mortality). https://www.wildlifeonline.me.uk/animals/species/european-rabbit (search excerpt)
 - R370 Messier F. (1994), Ungulate population models with predation: a case study with the North American moose, Ecology 75:478-488. https://esajournals.onlinelibrary.wiley.com/doi/10.2307/1939551 (abstract)
 - R371 Wildlife Online, Red deer territory and home range (hinds on Rum 200 to 400 ha). https://www.wildlifeonline.me.uk/animals/article/red-deer-territory-home-range (search excerpt)
@@ -126,3 +131,6 @@ Fails one number: discovery regret 1.90 to 13.3 (+11.4 [1.47, 21.8]); worked, wa
 - R376 NatureScot, Deer management in Scotland, FAQs (open-hill mean 9.35 a km2 in 2018/19; Deer Management Areas 1.7 to 31.4). https://www.nature.scot/doc/deer-management-scotland-frequently-asked-questions-faqs (search excerpt)
 - R377 Wildlife Online, Seasonal update May 2023 ("anywhere between 25 and 100 rabbits per hectare"). https://www.wildlifeonline.me.uk/blog/post/seasonal-update-may-2023 (search excerpt)
 - R378 Dynamic Dunescapes (2023), A survey of rabbit populations on sand dunes at South Walney and Drigg Dunes (46.65 a ha). https://dynamicdunescapes.co.uk/wp-content/uploads/2023/11/Rabbit-Populations-Cumbria-Report-23-v1.pdf (search excerpt)
+- R379 Low contribution of livestock in the grey wolf diet in the area with high availability of free-ranging cattle and horses (2025), European Journal of Wildlife Research (hare 7.7% of food biomass; hare and beaver 14.5%; Poland 1.3%; citing Zlatanova et al. 2014 and Newsome et al. 2016 on wolves' preference for wild ungulates). https://link.springer.com/article/10.1007/s10344-025-01926-3 (search excerpt)
+- R380 Cariappa C.A., Oakleaf J.K., Ballard W.B., Breck S.W. (2011), A reappraisal of the evidence for regulation of wolf populations, J Wildl Manage 75:726-730 (an upper bound of 69 wolves a 1000 km2; contested by McRoberts and Mech 2014). https://www.researchgate.net/publication/227738209 (search excerpt); also Feeding ecology of the wolf in a near-natural ecosystem in Mongolia (lagomorphs as buffer prey), https://d-nb.info/1226061435/34 (search excerpt)
+- R381 Cubaynes S. et al. (2014), Density-dependent intraspecific aggression regulates survival in northern Yellowstone wolves, J Anim Ecol 83:1344-1356 (adult survival 0.55 to 0.92 in the Northern Range at 20 to 99 wolves a 1000 km2; below 0.7 above 65). https://wolfwatcher.org/wp-content/uploads/2016/07/Cubaynes-et-al-2014.pdf (read)
