@@ -101,6 +101,10 @@ Fails, nine regressions: blame/real's fewer wasted tries late than early; seed/r
 
 Fails one number: discovery regret 1.90 to 13.3 (+11.4 [1.47, 21.8]); worked, wasted, right and wrong within their intervals. The time pass (36eb189) passed. The key now holds striking rabbits, which stand about people at the herds' densities: with a stone 400 tries take 5,100 ticks, bare-handed 13,500, and people who take to killing rabbits do it bare-handed long before a stone, so the ticks a faster way would have saved are new regret. Not retuned.
 
+### The gates after wolves took rabbits (7e48707)
+
+Probes, against a8bf4da: fails five, down from nine. seed/real caught 0.93 to 0.78 and its caught claim, seed/two's caught claim (both lost in the same build with no herd animal on the ground, above), and the accuracy claims of hearsay/real and unlearn/real. Better: two/real's early waste 0.33 to 0.20, seed/sparse's theories formed 25.9 to 23.7 and caught 0.56 to 0.75; blame/real and unlearn/sparse hold every claim again. Worlds, against 155adec: fails one number, discovery regret 1.87 to 8.06 (+6.19 [0.38, 13.0]), down from 13.3, rabbits' striking still in the key; fewer tries go to waste late than early now holds. Not retuned.
+
 ## 10. Gaps
 
 - Age and sex classes; calves and kits as adults at once.
