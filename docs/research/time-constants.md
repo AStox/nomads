@@ -88,7 +88,12 @@ Sources: R357 (conifers mostly can't coppice), R358 (Scots pine cannot resprout)
 
 Gap: a sprout draws on its roots' stores and grows far faster than a seedling; here it starts from a seed's mass. A pine stump never goes, as stumps don't rot.
 
-## 7. Still on the old rules
+## 7. The gates at 36eb189
+
+- Worlds tier: passes (wasted 0.08 against 0.06).
+- Probe gate: fails on one claim. unlearn/real's "nearly all whose own tries show the true cause come to rule it out" drops from 0.87 to 0.64 over nine seeds. Seeds 1, 6, 7 and 10 come out exactly as before, and the planting probes' sky has no storms. The old ice and dead-bush rolls drew on the world's random stream every tick through the winter and wherever a dead bush stood, and their going changes the draws from there on, so the other seeds go their own way [INFERENCE: not traced seed by seed]. Every other claim stands as at a8bf4da.
+
+## 8. Still on the old rules
 
 - Nut fall (a 30% roll a tick for one nut on one random tree as the days draw in), seed dispersal (two island-wide rolls into fixed rings), and the litter, fungi, herbs, sticks, stones, reeds and clay that appear by a threshold table: they need the trees' measured crops and dispersal kernels, and a world that holds that many things [gap].
 - Resin beading on a dice capped at two [gap: no measured wound exudation found].
