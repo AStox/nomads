@@ -99,6 +99,7 @@ Gaps the checks show:
 - Compensation points of 10 to 17% of open sun are high for tree seedlings, whose whole-plant compensation is commonly put at a few percent [UNVERIFIED]. Maintenance at McCree's crop value and no shade acclimation (R343: SLA rises 17% from open to 40% sun) are the likely causes [gap].
 - Aspen's tiny seed takes 17 island days in spring, and does not make it before winter if sown at midsummer. Real aspen seedlings grow far faster in their first months [UNVERIFIED]; the single SLA and LMF for every kind are the likely cause [gap].
 - Oak's leaf area ratio runs 1.7 times measured: an acorn seedling puts much of its mass in root and the acorn [gap: LMF per kind].
+- The planting probes (scripts/probes.ts seed, hearsay, unlearn) fail at 155adec. A berry needs about 11 island days to come up in the open, and the probes plant from day 5 for 20 days, so most plantings cannot show before the run ends or run into autumn. In seed/real seed 1 the formula fails 75% of cases, and holding the staged causes (deep or crowded) gets only 52% of them right (accCeil): what withers them is no longer mostly what the probe stages. The probes need restaging (when and how long they sow), not the plants retuning [gap].
 
 ## 7. Still open
 
