@@ -1,6 +1,7 @@
 // GOAP over what each agent believes. Agents can only plan with things they've seen work.
 import { chance, ofPlace, ruledOut, type Belief } from "./beliefs";
 import { THING_MATERIAL, p, type Registry } from "./materials";
+import { breaksOf } from "./physics";
 import { HUNTED } from "./fauna";
 import { PHYS, asFound } from "./fuel";
 import { DAY } from "./world";
@@ -67,7 +68,7 @@ function required(b: Belief): Record<string, number> {
 function outputs(b: Belief, ctx: Ctx): Record<string, number> {
   if (Object.keys(b.out).length) return b.out;
   const target = b.fields.target;
-  if ((b.fields.verb === "strike" || b.fields.verb === "throw") && target && (b.rate ?? 0) > 0 && ctx.facts[`breaks:${target}`]) return THING_MATERIAL[target]?.breaks ?? {};
+  if ((b.fields.verb === "strike" || b.fields.verb === "throw") && target && (b.rate ?? 0) > 0 && ctx.facts[`breaks:${target}`]) return breaksOf(target);
   return {};
 }
 const PLACE_OF: Record<string, string> = { fire: "fire", hearth: "hearth", kiln: "kiln", forge: "forge", fed_fire: "fire", pit: "pit" };

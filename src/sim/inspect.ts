@@ -4,7 +4,7 @@
 import { BASE, THING_MATERIAL, MADE_OF, PROPS, p, type Kind } from "./materials";
 import { BONDS, DAY, H, LABELS, QUIET, TILE_M, Tile, W, ageOf, clock, colorIndex, groundOf, iceAt, level, meters, spriteSeed, stageOf, tileAt, type Agent, type Animal, type Thing, type World } from "./world";
 import { thingById } from "./space";
-import { ablaze, fireHours, fireKind, fireOutput, shelterName } from "./physics";
+import { ablaze, breaksOf, fireHours, fireKind, fireOutput, inWorld, shelterName } from "./physics";
 import { activity, agentDetail, goalText, heading, type Activity } from "./sim";
 import { beliefText, conditionWords, groundOfKey, type Belief } from "./beliefs";
 import { campOf, knownCustoms, sharedStore, standing } from "./groups";
@@ -194,8 +194,7 @@ function thing(w: World, t: Thing): Inspected {
   }
   if (t.store?.length) sections.push({ tab: "thing", title: "stores", bag: bag(w, t.store.map((s) => s.k)) });
   if (t.inside) sections.push({ tab: "thing", title: "inside", bag: bagOf(w, t.inside) });
-  const mat = THING_MATERIAL[t.kind];
-  if (mat) sections.push({ tab: "thing", title: "breaks into", bag: bagOf(w, mat.breaks) });
+  if (inWorld(t.kind)) sections.push({ tab: "thing", title: "breaks into", bag: bagOf(w, breaksOf(t.kind)) });
   const m = material(w, t.kind === "item" ? t.item : MADE_OF[t.kind]);
   if (m) sections.push(m);
   return {

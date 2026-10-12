@@ -93,11 +93,12 @@ test("in a bag or under a roof tinder takes no rain but still dries, and dries f
 
 test("a stick broken off a living hazel starts as wet as hazel grows, and seasons over days", () => {
   const [w, a] = setup();
-  w.kinds.axe = { id: "axe", name: "axe", props: { sharp: 0.9, heavy: 0.8, hard: 0.9, long: 0.8, toughness: 1 } };
+  // a flint blade hafted on a stick (physics.ts holdOf), kept sharp as it's used
+  w.kinds.axe = { id: "axe", name: "axe", props: { sharp: 0.9, heavy: 0.8, hard: 0.9, long: 0.8, toughness: 1 }, parts: ["flint_blade", "stick"], verb: "join" };
   giveItems(w, a, "axe");
   const bush = addThing(w, "bush", a.px, a.py, { species: "hazel", size: 2.5 });
   const st = { progress: 0 };
-  for (let i = 0; i < 200 && !strikeTick(w, a, { verb: "strike", items: [], tool: "axe", target: { kind: "bush", thing: bush.id } }, st).done; i++);
+  for (let i = 0; i < 200; i++) { for (const s of a.inv) if (s.k === "axe") s.hp = 1; if (strikeTick(w, a, { verb: "strike", items: [], tool: "axe", target: { kind: "bush", thing: bush.id } }, st).done) break; }
   const stick = held(a, "stick");
   expect([stick.m, stick.green]).toEqual([WOODS.hazel.green, true]);
   Object.assign(w.weather, { sky: "clear", speed: 3 });

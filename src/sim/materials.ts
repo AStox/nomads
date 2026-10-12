@@ -55,6 +55,8 @@ export const BASE: Record<string, Omit<Kind, "id">> = {
   fat: { name: "fat", props: { edible: 0.25, flammable: 0.9, binding: 0.15, toughness: 0.02 }, shelf: 4, fuel: 60 },
   charcoal: { name: "charcoal", props: { flammable: 0.95, hard: 0.2, heavy: 0.1, toughness: 0.05 }, fuel: 150, burns: 1.54 },
   ore: { name: "reddish stone", props: { hard: 0.8, heavy: 0.9, toughness: 0.7, metal: 0.6 } },
+  // iron pyrite: brassy, heavy and hard, and shaved by flint it throws sparks that burn (matter-constants sec. 7)
+  pyrite: { name: "brassy stone", props: { hard: 0.85, heavy: 0.7, toughness: 0.5 } },
   pebble: { name: "pebble", props: { hard: 0.9, heavy: 0.05, toughness: 0.7 } },
   fern: { name: "fern fronds", props: { fibrous: 0.5, flexible: 0.6, flammable: 0.6, insulating: 0.4, toxic: 0.3, toughness: 0.05 } },
   flower: { name: "flower", props: { edible: 0.02, medicinal: 0.15, seed: 0.3, flammable: 0.3, toughness: 0.01 } },
@@ -74,24 +76,20 @@ const carcass = (live: number, rest: Record<string, number>, c = DEER) => {
   if (fat > 0) out.fat = fat;
   return { ...out, ...rest };
 };
-// World things are made of materials too.
-export const THING_MATERIAL: Record<string, { toughness: number; hp: number; flammable: number; breaks: Record<string, number> }> = {
-  tree: { toughness: 0.55, hp: 100, flammable: 0.5, breaks: { log: 2, stick: 2 } },
-  bush: { toughness: 0.15, hp: 20, flammable: 0.6, breaks: { stick: 1 } },
-  dead_bush: { toughness: 0.1, hp: 8, flammable: 0.9, breaks: { stick: 2 } },
-  reeds: { toughness: 0.05, hp: 6, flammable: 0.8, breaks: { fiber: 2 } },
-  boulder: { toughness: 0.85, hp: 120, flammable: 0, breaks: { stone: 3 } },
-  stump: { toughness: 0.5, hp: 40, flammable: 0.4, breaks: { stick: 1 } },
-  fallen_log: { toughness: 0.35, hp: 60, flammable: 0.6, breaks: { log: 1, stick: 2 } },
+// What animals and reeds take and give, by the old reckoning: their hit points, how much of a blow they shrug off, and
+// what they break into. Animals' carcasses are by their live mass; their hurts belong with the wounds, and reeds' with
+// the plants (matter-constants sec. 12). Trees, bushes, stumps, logs and boulders take and give by physics.ts STRUCK.
+export const THING_MATERIAL: Record<string, { toughness?: number; hp?: number; breaks: Record<string, number> }> = {
+  reeds: { toughness: 0.05, hp: 6, breaks: { fiber: 2 } },
   // live masses, kg: a red deer's (the mean of stags' and hinds'), wolves', a rabbit's and the birds' measured
-  deer: { toughness: 0.1, hp: 30, flammable: 0, breaks: carcass(116, { hide: 1, bone: 2 }) },
-  wolf: { toughness: 0.15, hp: 35, flammable: 0, breaks: carcass(41.5, { hide: 1, bone: 1 }) },
-  rabbit: { toughness: 0.05, hp: 6, flammable: 0, breaks: carcass(1.6, { hide: 1 }, { dressed: 0.555, bone: 0.13, fat: 0.035 }) },
-  heron: { toughness: 0.05, hp: 8, flammable: 0, breaks: carcass(1.5, { bone: 1 }) },
-  gull: { toughness: 0.05, hp: 5, flammable: 0, breaks: carcass(0.97, { bone: 1 }) },
-  crow: { toughness: 0.05, hp: 4, flammable: 0, breaks: carcass(0.51, {}) },
-  eagle: { toughness: 0.08, hp: 12, flammable: 0, breaks: carcass(4.38, { bone: 1 }) },
-  fish: { toughness: 0.02, hp: 3, flammable: 0, breaks: { fish: 1 } },
+  deer: { toughness: 0.1, hp: 30, breaks: carcass(116, { hide: 1, bone: 2 }) },
+  wolf: { toughness: 0.15, hp: 35, breaks: carcass(41.5, { hide: 1, bone: 1 }) },
+  rabbit: { toughness: 0.05, hp: 6, breaks: carcass(1.6, { hide: 1 }, { dressed: 0.555, bone: 0.13, fat: 0.035 }) },
+  heron: { toughness: 0.05, hp: 8, breaks: carcass(1.5, { bone: 1 }) },
+  gull: { toughness: 0.05, hp: 5, breaks: carcass(0.97, { bone: 1 }) },
+  crow: { toughness: 0.05, hp: 4, breaks: carcass(0.51, {}) },
+  eagle: { toughness: 0.08, hp: 12, breaks: carcass(4.38, { bone: 1 }) },
+  fish: { toughness: 0.02, hp: 3, breaks: { fish: 1 } },
 };
 // What each kind of thing in the world is made of, as a kind in the registry, for anyone asking what it's like.
 export const MADE_OF: Record<string, string> = {

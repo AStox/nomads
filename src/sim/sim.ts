@@ -5,7 +5,7 @@ import {
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
 import {
   DURATION, ablaze, airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, FISH_REACH, force, gathered, giveItems, giveStack, greasy, hand, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
-  fireHours, fireOutput, groundWord, hoursToDawn, leaveHome, pour, reaches, removeThing, residentsOf, rubTick, shape, shelterName, stash, strikeDamage, strikeTick, takeFromPile, takeItems, throwReach, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
+  STRUCK, breaksOf, inWorld, fireHours, fireOutput, groundWord, hoursToDawn, leaveHome, pour, reaches, removeThing, residentsOf, rubTick, shape, shelterName, stash, strikeDamage, strikeTick, takeFromPile, takeItems, throwReach, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
   bedAir, breeze, carry, fan, firstHeld, isFlame, isLamp, rubbing, sizeOf, tooThick,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
@@ -150,7 +150,7 @@ const FIRES: Record<string, true> = { fire: true, hearth: true, kiln: true, forg
 // A step that takes someone out after what they would have to see: exploring, gathering, or walking to a plant, a stone, an
 // animal or a thing lying about.
 const foray = (s: Step) => s.op === "wander" || s.op in GATHER || (s.op === "goto" && !!s.arg && !KNOWN[s.arg] && !FIRES[s.arg]);
-const STRIKEABLE = Object.keys(THING_MATERIAL).filter((k) => !(k in FAUNA));
+const STRIKEABLE = [...STRUCK, ...Object.keys(THING_MATERIAL).filter((k) => !(k in FAUNA))];
 // A place to go and how near to get: a thing, an animal, a person, or a point.
 type Spot = { px: number; py: number; reach: number; thing?: Thing; animal?: Animal; agent?: Agent };
 function nearest<T extends { px: number; py: number }>(a: { px: number; py: number }, list: Iterable<T>, ok: (t: T) => boolean = () => true): T | null {
@@ -507,7 +507,7 @@ export function feasible(w: World, a: Agent) {
   add("stock_up", !dark && !!home && (home.shelter?.tier ?? 0) >= 1 && (home.store?.length ?? 0) < 24 && can("stock_up"));
   const store = sharedStore(w, a);
   add("share_store", !!campOf(w, a.id) && (foodHeld > 3 || a.inv.length > 10) && ((!!store && meters(a, store) <= 400) || (!!home && meters(a, home) <= 300)));
-  const products = new Set(believes.filter((b) => b.wins > 0 || (b.rate ?? 0) > 0).flatMap((b) => [...Object.keys(b.out), ...(b.fields.target && a.facts[`breaks:${b.fields.target}`] ? Object.keys(THING_MATERIAL[b.fields.target]?.breaks ?? {}) : [])]));
+  const products = new Set(believes.filter((b) => b.wins > 0 || (b.rate ?? 0) > 0).flatMap((b) => [...Object.keys(b.out), ...(b.fields.target && a.facts[`breaks:${b.fields.target}`] ? Object.keys(breaksOf(b.fields.target)) : [])]));
   for (const k of products) {
     if (Object.keys(FAUNA).some((s) => THING_MATERIAL[s]?.breaks[k])) continue;
     const kind = w.kinds[k];
@@ -677,7 +677,7 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
   const act = s.act!;
   if (act.verb === "strike") {
     const long = p(w.kinds[act.tool ?? ""], "long") >= 0.6 ? 1 : 0;
-    if (act.target && !act.target.thing && !act.target.animal && THING_MATERIAL[act.target.kind ?? ""]) {
+    if (act.target && !act.target.thing && !act.target.animal && inWorld(act.target.kind ?? "")) {
       const kind = act.target.kind!;
       if (kind in FAUNA) {
         const prey = nearest(a, w.animals, (m) => m.species === kind && m.alt < 2);
@@ -898,7 +898,7 @@ function firing(w: World, a: Agent, verb: string | undefined, at: Pos, items: st
   }
   if (verb === "rub") {
     const [A, B] = items.map((k) => w.kinds[k]);
-    if (!A || !B || rubbing(A, B).does !== "friction") return null;
+    if (!A || !B || rubbing(A, B, w.kinds).does !== "friction") return null;
     const pieces = laid().slice(2), own = pieces.find((s) => tinder(w.kinds[s.k])), about = own ? null : tinderOf(w, a);
     return { pieces, tinder: own ? moistureOf(own) : about && !about.kind ? about.m : undefined, air: here };
   }
@@ -1150,8 +1150,8 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
   log(w, kind, [a.id], a, `${a.name}: ${out.text}`);
   if (out.ok) gain(w, a, SKILL[act.verb](act, w), tinkering ? 3 : 5);
   if (act.verb === "strike") gain(w, a, "toolwork", 1);
-  if (out.ok && act.verb === "strike" && act.target?.kind && THING_MATERIAL[act.target.kind]) {
-    const breaks = THING_MATERIAL[act.target.kind].breaks;
+  if (out.ok && act.verb === "strike" && act.target?.kind && inWorld(act.target.kind)) {
+    const breaks = breaksOf(act.target.kind);
     see(w, a, `breaks:${act.target.kind}`, `A ${act.target.kind} breaks down into ${Object.keys(breaks).map((k) => nm(w, k)).join(", ")}.`);
   }
   // Bringing down the last deer anywhere near is something the neighbors notice.
@@ -1238,8 +1238,8 @@ type Option = { text: string; act: Act };
 const AIM: Record<string, (act: Act, w: World) => boolean> = {
   shelter: (act) => act.verb === "place" || act.verb === "dig" || (act.verb === "join" && act.items.length >= 2),
   home: (act) => act.verb === "place" || (act.verb === "join" && act.items.length >= 2),
-  fire: (act) => act.verb === "rub" || act.verb === "heat" || (act.verb === "strike" && !THING_MATERIAL[act.target?.kind ?? ""]) || act.verb === "place",
-  tool: (act) => act.verb === "join" || act.verb === "rub" || act.verb === "shape" || (act.verb === "strike" && !THING_MATERIAL[act.target?.kind ?? ""]),
+  fire: (act) => act.verb === "rub" || act.verb === "heat" || (act.verb === "strike" && !inWorld(act.target?.kind ?? "")) || act.verb === "place",
+  tool: (act) => act.verb === "join" || act.verb === "rub" || act.verb === "shape" || (act.verb === "strike" && !inWorld(act.target?.kind ?? "")),
   food: (act) => act.verb === "throw" || act.verb === "wet" || act.verb === "plant" || act.verb === "pour" || act.verb === "heat" || (act.verb === "strike" && ["deer", "wolf", "rabbit", "bush"].includes(act.target?.kind ?? "")),
   // at a fire: hold things in it, or set them in and around it
   fireside: (act) => act.verb === "heat" || act.verb === "place",
@@ -1307,7 +1307,7 @@ export function tinkerOptions(w: World, a: Agent, aim?: string): Option[] {
       if ([x, y].every((k) => p(w.kinds[k], "hard") >= 0.2 || p(w.kinds[k], "flammable") >= 0.5) || greasy(w.kinds[x]) || greasy(w.kinds[y])) {
         push({ verb: "rub", items: [x, y] });
         // two woods worked for an ember, blown into a lay
-        if (rubbing(w.kinds[x], w.kinds[y]).does === "friction") for (const lay of lays([x, y])) push({ verb: "rub", items: [x, y, ...lay] });
+        if (rubbing(w.kinds[x], w.kinds[y], w.kinds).does === "friction") for (const lay of lays([x, y])) push({ verb: "rub", items: [x, y, ...lay] });
       }
       push({ verb: "join", items: [x, y] });
       if (x !== y) push({ verb: "place", items: [...Array(Math.min(c[x], 5)).fill(x), ...Array(Math.min(c[y], 3)).fill(y)] });

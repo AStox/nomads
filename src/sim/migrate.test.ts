@@ -139,7 +139,7 @@ test("the save as it was is kept before anything migrated is saved over it, and 
   expect(readFileSync(save + BACKUP, "utf8")).toBe(saved);
 });
 
-test("struck over fiber and ten twigs, the migrated way lights a fire under its own key and finds no new law", () => {
+test("struck over fiber and ten twigs, the migrated way keys under its own key, throws no sparks that catch (stone on stone, matter-constants sec. 7) and finds no new law", () => {
   Object.assign(w.weather, { sky: "clear", speed: 0 });
   w.t++;
   a.inv = [];
@@ -151,13 +151,13 @@ test("struck over fiber and ten twigs, the migrated way lights a fire under its 
   let r;
   do r = strikeTick(w, a, { verb: "strike", items: ["fiber", ...Array<string>(10).fill("stick")], tool: "stone", target: { kind: "stone" } }, st); while (!r.done);
   const out = r.out!;
-  expect(out.fields.builds).toBe("fire");
+  expect(out.fields.builds).toBeUndefined();
   expect(beliefKey(out.fields)).toBe(NEW);
-  const laws = Object.keys(w.laws).length, found = w.events.filter((e) => e.kind === "law").length;
+  const laws = Object.keys(w.laws).length, found = w.events.filter((e) => e.kind === "law").length, tried = a.tried[NEW] ?? 0;
   record(w, a, out, st.progress);
   expect(Object.keys(w.laws).length).toBe(laws);
   expect(w.events.filter((e) => e.kind === "law").length).toBe(found);
-  expect(a.beliefs[NEW].tries).toBe(1);
+  expect(a.tried[NEW]).toBe(tried + 1);
 });
 
 test("the migrated world lives a day", async () => {

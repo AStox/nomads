@@ -15,7 +15,7 @@ export const W = TILES;
 export const H = TILES;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export { YEAR_DAYS }; // the sky's: a year is the sun's round
-export const VERSION = 17;
+export const VERSION = 18;
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -45,6 +45,7 @@ export type Thing = {
   person?: string; // a grave's: whose
   stale?: number; // a shelter's: how many loads in a row were added to it without making it any better
   inside?: Record<string, number>; // hidden in a boulder until it breaks
+  girth?: number; // a stump's: how wide its trunk was, m
   scarred?: number; resin?: number; bark?: number; // when a tree was last cut into, resin beaded on it, bark peeled off it
   // fires: the stone ringed round it, closed over, charcoal fed it, air blown into it until
   walls?: Ring; covered?: boolean; charcoal?: number; air?: number;
@@ -547,11 +548,12 @@ export function grown(w: World, k: number): Thing {
   if (species) t.species = species;
   if (kind === "bush" && species === "berry") t.n = cropOf(t);
   // Flint forms as nodules inside the rock that holds it, chalky limestone above all; ore shows as reddish stones, and
-  // sometimes inside boulders of the rock that carries iron.
+  // sometimes inside boulders of the rock that carries iron; pyrite forms as nodules in mudstone and chalk.
   if (kind === "boulder") {
     const q = ((seed >>> 8) & 0xffff) / 65536, rock = rockAt(g.isle, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2);
     if (q < 0.6 * rock.flint) t.inside = { flint: q < 0.2 * rock.flint ? 2 : 1 };
     else if (q > 1 - 0.35 * rock.ore) t.inside = { ore: 1 };
+    if (((seed >>> 24) & 0xff) / 256 < 0.5 * rock.pyrite) t.inside = { ...t.inside, pyrite: 1 };
   }
   return t;
 }

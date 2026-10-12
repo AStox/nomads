@@ -51,20 +51,20 @@ const told = (o: { ok: boolean; builds?: string; effect?: string; gives?: string
 // fires lit or kept in one draw, gone before the next (through the world's own removal, which its index keeps up with)
 const clear = (w: World) => { for (const t of w.things.filter((x) => x.kind === "fire")) removeThing(w, t); };
 
-test("striking stone on stone over a lay comes to what predict says, across tinder and kindling as wet as anything gets, winds to a gale and rain", () => {
+test("striking pyrite with a stone over a lay comes to what predict says, across tinder and kindling as wet as anything gets, winds to a gale and rain", () => {
   const [w, a] = setup(), r = rng(1);
   for (let n = 0; n < 60; n++) {
     blow(w, pick(r, WIND), r);
     a.inv = [];
-    giveItems(w, a, "stone", 2);
+    giveItems(w, a, "stone", 1); giveItems(w, a, "pyrite", 1);
     const lay = layOf(w, a, r);
     if (!lay.length) continue;
     const pieces = firstHeld(a.inv)(lay)!, over = pieces.find((s) => tinder(w.kinds[s.k]));
-    const f: Fields = { verb: "strike", inputs: ["stone", ...lay].sort(), tool: "stone", target: "stone", gives: [] };
+    const f: Fields = { verb: "strike", inputs: ["pyrite", ...lay].sort(), tool: "stone", target: "pyrite", gives: [] };
     const p = said(predict(w, f, situation(w, a, pieces, over ? over.m ?? 0 : null)));
     const st = { progress: 0 };
     let out;
-    do out = strikeTick(w, a, { verb: "strike", items: lay, tool: "stone", target: { kind: "stone" } }, st); while (!out.done);
+    do out = strikeTick(w, a, { verb: "strike", items: lay, tool: "stone", target: { kind: "pyrite" } }, st); while (!out.done);
     expect([n, told({ ...p, gives: [] })]).toEqual([n, told({ ...out.out!, gives: [] })]);
     clear(w);
   }
@@ -80,7 +80,7 @@ test("rubbing two sticks for an ember blown into a lay, or into what lies about 
     const chosen = firstHeld(a.inv)(items)!, pieces = chosen.slice(2), own = pieces.find((s) => tinder(w.kinds[s.k]));
     const about = own ? null : tinderOf(w, a), m = own ? own.m ?? 0 : about && !about.kind ? about.m : null;
     const f: Fields = { verb: "rub", inputs: ["stick", "stick", ...[...lay].sort()], gives: [] };
-    const p = said(predict(w, f, situation(w, a, pieces, m)));
+    const p = said(predict(w, f, { ...situation(w, a, pieces, m), rubbed: chosen.slice(0, 2) }));
     const st = { progress: 0 };
     let out;
     do out = rubTick(w, a, { verb: "rub", items }, st); while (!out.done);

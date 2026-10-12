@@ -4,15 +4,16 @@
 // acts run, given what decides them where and when it's done (Situation): how wet the tinder is, the wind, the spot,
 // the weather ahead for what's done to the ground, the fish in reach, and for what's done with fire the pieces laid, the
 // air a fire stands in and the fire itself. The answer key (scripts/truth.ts) computes every way by it.
-import type { Act, Stack, World } from "./world";
+import type { Act, Stack, Thing, World } from "./world";
 import { THING_MATERIAL, depth, p } from "./materials";
 import {
-  DURATION, HAND, PIT_SOIL, SEED_SOIL, STILL, airy, arrowy, digPower, eating, emberCatches, forgeGain, frictionPer, heating, heldStrike, joining,
-  knapPer, laidOf, leatherOf, placing, rubbedOf, rubbing, shaping, shelterOf, sparkCatches, sparksPer, spotNear, splitDamage, stave, strikeDamage,
-  RED, throwDamage, throwsSparks, usual, wearing, wetting, type Decision, type Fields, type Fire,
+  DURATION, EMBER_GIVE_UP, HAND, PIT_SOIL, SEED_SOIL, STILL, STRUCK, airy, arrowy, breaking, breaksOf, cutting, digPower, eating, emberCatches, emberTime, forging as drawing, heating,
+  RED, TYPICAL, heldStrike, holdOf, joining, laidOf, leatherOf, placing, rubbedOf, rubbing, shaping, shelterOf, sparkCatches, spotNear, stemOf, stave, strikeDamage,
+  throwDamage, throwsSparks, usual, wearing, wetting, yieldOf, type Decision, type Fields, type Fire,
 } from "./physics";
 import { advance, feed, kindle, lay, lighting, setIn, type Air, type Bed } from "./combustion";
-import { BURNS, COPPER, PHYS, physOf } from "./fuel";
+import { BURNS, PHYS, physOf } from "./fuel";
+import { BLOWS, DAY_WORK, GROWN, SPARKS_TO_CATCH, TICK_S, blowEnergy, flakeEnergy, isBlade, splitEnergy } from "./mechanics";
 import { rulingKey } from "./sim";
 import { tinder } from "./wetness";
 import { bedAt, nicheOf, seedlingFate, treeOf, type Ahead } from "./seedling";
@@ -30,6 +31,7 @@ export type Prediction = { ok: boolean; gives: string[]; builds?: string; effect
 export type Situation = {
   tinder: number | null; wind: number; spot: { px: number; py: number; heading?: number }; ahead: Ahead; fish: number;
   pieces: Stack[]; air: Air; fire: Fire | null;
+  rubbed?: Stack[]; // for a rub, the two rubbed together as held (as their kinds are, if not said)
 };
 // Where a way that turns on a fire is done, if not at a place as it most plainly is: the fire, the air it burns in and the
 // pieces as held.
@@ -93,11 +95,22 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
   switch (f.verb) {
     case "strike": {
       if (!f.target) return { why: "nothing to strike" };
-      // something standing in the world or roaming it: blow after blow, each doing what the edge's force beats its
-      // toughness by, until it's down, or barely a mark after five
+      const hold = holdOf(w, f.tool ? tool : null);
+      // something standing or lying in the world, one of the size most are: the blows a grown body takes to cut it
+      // through or break a stone off it, unless more than a day's work
+      if (STRUCK.includes(f.target)) {
+        const t = { kind: f.target as Thing["kind"], size: TYPICAL[f.target], px: s.spot.px, py: s.spot.py };
+        if (f.target === "boulder") {
+          const b = breaking(t, hold, GROWN);
+          return b.per <= DAY_WORK ? out(true, Math.ceil(b.per / BLOWS), { gives: Object.keys(breaksOf("boulder")) }) : out(false, 1);
+        }
+        const c = cutting(stemOf(w, t)!, hold, GROWN);
+        return c.blows <= DAY_WORK ? out(true, Math.ceil(c.blows / BLOWS), { gives: Object.keys(yieldOf(t)).filter((k) => yieldOf(t)[k] > 0) }) : out(false, 1);
+      }
+      // an animal or reeds, by the old reckoning: blow after blow until it's down, or barely a mark after five
       const mat = THING_MATERIAL[f.target];
-      if (mat) {
-        const dmg = strikeDamage(tool, mat.toughness);
+      if (mat?.hp) {
+        const dmg = strikeDamage(tool, mat.toughness ?? 0);
         return dmg > 0.01 ? out(true, Math.ceil(mat.hp / dmg), { gives: Object.keys(mat.breaks) }) : out(false, 5);
       }
       const tk = w.kinds[f.target];
@@ -105,45 +118,44 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
       const rest = [...f.inputs];
       rest.splice(rest.indexOf(tk.id), 1);
       const over = rest.find((k) => tinder(w.kinds[k])) ?? rest[0];
-      switch (heldStrike(tk, !!over)) {
-        case "sparks": {
-          if (!throwsSparks(tool, tk)) return out(false, 4);
-          // a spark caught in the lay's tinder, and the lay followed where the fire would stand (combustion.ts lighting)
-          const blows = Math.ceil(1 / sparksPer(tool, tk));
-          if (!tinder(w.kinds[over]) || !sparkCatches(s.tinder ?? 0, s.wind)) return out(false, blows);
-          return lighting(laidOf(w, s.pieces), s.air).lasts ? out(true, blows, { builds: "fire" }) : out(false, blows);
-        }
-        case "forge": {
-          // only at a fire that holds the metal at red heat where it sits; the edge drawn out blow by blow
-          const cold = (tk.parts?.[0] && w.kinds[tk.parts[0]]) || tk, g = forgeGain(tool);
-          if (!s.fire?.bed || setIn(s.fire.bed, s.air, physOf(w.kinds, tk)?.d ?? COPPER.d) < RED) return out(false, 1, { at: "forge" });
-          if (g < 0.02) return out(false, 6, { at: "forge" });
-          let n = 0, sharp = p(cold, "sharp");
-          while (sharp < 0.95 && n < 30) sharp = 1 - (1 - p(cold, "sharp")) * (1 - g) ** ++n;
-          return out(true, n, { gives: [`forge:${cold.id}:${Math.round(sharp * 10)}`], at: "forge" });
-        }
-        case "dent": return out(false, 4, { effect: "dented" });
-        case "knap": {
-          const blows = Math.ceil(1 / knapPer(tool, tk));
-          return blows <= 10 ? out(true, blows, { gives: Object.keys(tk.breaks ?? {}) }) : out(false, 10);
-        }
-        case "split": {
-          const dmg = splitDamage(tool, tk);
-          return dmg > 0 && tk.breaks ? out(true, Math.ceil(20 / dmg), { gives: Object.keys(tk.breaks) }) : out(false, 6);
-        }
+      const how = heldStrike(w, tk, !!over);
+      if (how === "sparks") {
+        if (!throwsSparks(w, tool, tk)) return out(false, 1);
+        // a spark caught in the lay's tinder, and the lay followed where the fire would stand (combustion.ts lighting)
+        const ticks = Math.ceil(SPARKS_TO_CATCH / BLOWS);
+        if (!tinder(w.kinds[over]) || !sparkCatches(s.tinder ?? 0, s.wind)) return out(false, ticks);
+        return lighting(laidOf(w, s.pieces), s.air).lasts ? out(true, ticks, { builds: "fire" }) : out(false, ticks);
       }
-      return out(false, 1);
+      if (hold.soft || how === "nothing") return out(false, 1);
+      const x = physOf(w.kinds, tk)!, E = blowEnergy(hold.swung);
+      if (how === "forge") {
+        // red hot at a fire that holds the metal so where it sits, or cold; drawn out a tick's blows' worth
+        const cold = (tk.cools && tk.parts?.[0] && w.kinds[tk.parts[0]]) || tk, hot = !!tk.cools && !!s.fire?.bed && setIn(s.fire.bed, s.air, x.d) >= RED;
+        const fg = drawing(x, E, hot), e0 = x.edge ? Math.log(x.d / (2 * x.edge.r)) : 0;
+        if (fg.strain <= e0 + 1e-9) return out(false, 1, { at: hot ? "forge" : null });
+        return out(true, 1, { gives: [`forge:${cold.id.replace(/^forge:([^:]+):\d+$/, "$1")}:${Math.round(fg.edge * 1e6)}`], at: hot ? "forge" : null });
+      }
+      if (how === "knap") {
+        const fk = Object.keys(tk.breaks!)[0], flake = physOf(w.kinds, w.kinds[fk])!;
+        return x.mass >= flake.mass && E >= flakeEnergy(flake) ? out(true, 1, { gives: [fk] }) : out(false, 1);
+      }
+      // splitting: only a blade drives it
+      if (!isBlade(hold.edge)) return out(false, 1);
+      const n = Object.values(tk.breaks!).reduce((t, v) => t + v, 0), blows = splitEnergy(x.d, x.mass / ((x.rho * Math.PI * x.d * x.d) / 4), n, hold.edge.angle) / E;
+      return blows <= DAY_WORK ? out(true, Math.ceil(blows / BLOWS), { gives: Object.keys(tk.breaks!) }) : out(false, 1);
     }
     case "rub": {
       // the first two rubbed together, the tinder after them, if they held any
       const A = w.kinds[f.inputs[0]], B = w.kinds[f.inputs[1] ?? f.inputs[0]];
-      const r = rubbing(A, B);
+      const r = rubbing(A, B, w.kinds);
       if (r.does === "leather") return out(true, r.ticks, { gives: [leatherOf(w.kinds, r.hide).id] });
       if (r.does === "friction") {
-        // the ember goes into the lay's tinder, or what lies about their feet, a handful of fine blades; then the lay is
-        // followed where the fire would stand, as a spark's is
-        const ticks = Math.ceil(1 / frictionPer(r.bow, 0));
-        if (s.tinder === null || !emberCatches(s.tinder)) return out(false, ticks, { effect: "heat" });
+        // rubbed until the dust lights (or given up as past a day's work); the ember goes into the lay's tinder, or what
+        // lies about their feet, a handful of fine blades; then the lay is followed where the fire would stand, as a
+        // spark's is
+        const spindle = s.rubbed?.[[A, B].indexOf(r.spindle)], secs = emberTime(w, spindle, r.spindle, r.bow, s.air.temp);
+        const ticks = secs > EMBER_GIVE_UP ? 1 : Math.max(1, Math.ceil(secs / TICK_S));
+        if (secs > EMBER_GIVE_UP || s.tinder === null || !emberCatches(s.tinder)) return out(false, ticks, { effect: "heat" });
         const own = s.pieces.some((x) => tinder(w.kinds[x.k])), laid = laidOf(w, s.pieces);
         return lighting(own ? laid : [{ phys: PHYS.fiber, n: 1, m: s.tinder }, ...laid], s.air).lasts ? out(true, ticks, { builds: "fire" }) : out(false, ticks);
       }
@@ -168,8 +180,8 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
     case "throw": {
       // thrown, or shot from a bow, every three ticks, six at most: down once what each does adds up to the animal
       const mat = THING_MATERIAL[f.target ?? ""], item = w.kinds[f.inputs[0]];
-      if (!mat) return { why: `nothing to throw at` };
-      const dmg = throwDamage(item, mat.toughness, !!f.tool && stave(w.kinds[f.tool]) && arrowy(item)), throws = dmg > 0 ? Math.ceil(mat.hp / dmg) : Infinity;
+      if (!mat?.hp) return { why: `nothing to throw at` };
+      const dmg = throwDamage(item, mat.toughness ?? 0, !!f.tool && stave(w.kinds[f.tool]) && arrowy(item)), throws = dmg > 0 ? Math.ceil(mat.hp / dmg) : Infinity;
       return throws <= 6 ? out(true, 3 * throws, { gives: Object.keys(mat.breaks) }) : out(false, 18);
     }
   }

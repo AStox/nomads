@@ -1133,6 +1133,7 @@ What src/sim/fuel.ts holds for each kind: the picks above set down per kind, wit
 | flint | 2650 | 0.74 | 3 | 0 | | 0.08 | 1.36 | | sec. 23, k the one value whose units were read; an 8 cm nodule [design] |
 | flint_blade | 2650 | 0.74 | 3 | 0 | | 0.01 | 0.066 | | as flint; a 1 cm flake [design] |
 | ore | 3800 | 0.8 | 2.8 | 0 | | 0.05 | 0.475 | | sec. 23, c and k [UNVERIFIED analogues]; a 5 cm lump [design] |
+| pyrite | 5010 | 0.52 | 19 | 0 | | 0.05 | 0.33 | | matter-constants sec. 7: ρ pyrite's 5.0 g/cm3, c and k [UNVERIFIED]; a 5 cm nodule [design] |
 | clay | 1608 | 0.8 | 0.52 | 0.65 | 0.275 | 0.05 | 0.2 | | sec. 23: ρ 2050 over 1.275; c the dry solids [UNVERIFIED]; k the soil row as found; mmax the kaolinite liquid limit's midpoint; green the plastic water; a 5 cm lump [design] |
 | charcoal | 202.5 | 1.237 | 0.106 | 1.573 | | 0.025 | 0.05 | char | ρ the generic wood's density times the char yield, 0.45 x 450, as dense as char a piece's size leaves it (sec. 27e) [derived; operator's call, sec. 28], against R14's fifth of the wood's density, which at R2's yield would swell the wood; c, k and mmax the generic wood's [analogue, gap]; a lump [design] |
 | fat | 900 | 2 | 0.15 | 0 | | 0.02 | 0.5 | fat | sec. 22b: ρ solid [UNVERIFIED], c and k of the melt; a lump [design] |

@@ -20,7 +20,8 @@
 import { readFileSync } from "node:fs";
 import { DAY, TILE_M, addThing, dryAt, isNight, newWorld, rng, type Agent, type Stack, type Thing, type World } from "../src/sim/world";
 import { conditionsNow, surroundings, tick } from "../src/sim/sim";
-import { DURATION, changed, count, counts, frictionPer, giveItems, giveStack, groundWord, layAt, newKinds, occupied, removeThing, removed, soilAt, sparksPer, SEED_SOIL } from "../src/sim/physics";
+import { DURATION, STILL, changed, count, counts, emberTime, giveItems, giveStack, groundWord, layAt, newKinds, occupied, removeThing, removed, soilAt, SEED_SOIL } from "../src/sim/physics";
+import { BLOWS, SPARKS_TO_CATCH } from "../src/sim/mechanics";
 import { predict } from "../src/sim/formulas";
 import { pieceOf, roundSize, stackPhys } from "../src/sim/fuel";
 import { trailChanges } from "../src/sim/ecology";
@@ -57,9 +58,13 @@ export type ProbeSpec = { probe: string; variant: string; seed: number; days: nu
 // constants sec. 32: a lay lights only if everything laid catches and burns through, and three twigs on a handful of
 // fibre do); and planting a berry.
 const way = (verb: string, inputs: string[], tool?: string, target?: string) => beliefKey({ verb, inputs, tool, target, gives: [] });
-const STONE = way("strike", ["fiber", "stick", "stick", "stick", "stone"], "stone", "stone");
-const FLINT = way("strike", ["fiber", "flint", "stick", "stick", "stick"], "stone", "flint");
+// sparks are pyrite's, shaved by a harder stone (matter-constants sec. 7): struck with a plain stone or with flint
+const STONE = way("strike", ["fiber", "pyrite", "stick", "stick", "stick"], "stone", "pyrite");
+const FLINT = way("strike", ["fiber", "pyrite", "stick", "stick", "stick"], "flint", "pyrite");
 const RUB = way("rub", ["stick", "stick", "fiber", "stick", "stick", "stick"]), PLANT = "plant|berry|-|-|-|-";
+// for choosing between rubbing and striking: the two sticks to rub kept apart from the twigs laid, as a kind of their own
+// (a stick, as fuel.ts PHYS has one), so neither way takes the other's sticks
+const SPINDLES = way("rub", ["spindle", "spindle", "fiber", "stick", "stick", "stick"]);
 // The sticks that come to hand (fuel.ts pieces): half-meter twigs off the ground, and for the kindling probe sticks 35 mm
 // thick, past the thick cut (physics.ts tooThick); all kept in dry, as the usual lay's wood is (physics.ts usual). Two
 // sticks to rub are sticks as they're gathered. Tinder is kept against the body, as dry as the usual lay's.
@@ -168,8 +173,9 @@ export const PROBES: Record<string, Probe> = {
       { id: "settle", text: "nearly all their late tries use the faster way (more than 85%)", above: "best", value: 0.85 },
     ],
     variants: {
-      // flint, the harder, throws more sparks a blow, under a fair sky where both always catch
-      real: { ways: [STONE, FLINT], sky: fair, causes: [] },
+      // two sticks worked by hand take the best part of an hour to an ember, flint shaving pyrite catches in a tick (matter-constants
+      // secs. 7, 8), under a fair sky where both always catch
+      real: { ways: [SPINDLES, FLINT], sky: fair, causes: [] },
     },
   },
   blame: {
@@ -417,11 +423,11 @@ const knownWay = (key: string, t: number, ticks: number): Belief => {
     tries: 1, wins: 1, tally: { tries: 1, wins: 1 }, how: "discovered", t,
   };
 };
-// The ticks a way takes to a fire in daylight, by the formulas: a blow a tick until a spark catches (physics.ts sparksPer),
-// or a tick's rubbing at a time until the wood is hot enough (frictionPer), practised at neither.
+// The ticks a way takes to a fire in daylight, by the formulas: strokes until a spark catches (mechanics.ts
+// SPARKS_TO_CATCH), or rubbing until the dust lights (physics.ts emberTime), the sticks rubbed as they're kept.
 function ticksOf(w: World, key: string) {
   const f = fieldsOf(key);
-  return f.verb === "rub" ? Math.ceil(1 / frictionPer(false, 0)) : Math.ceil(1 / sparksPer(w.kinds[f.tool!], w.kinds[f.target!]));
+  return f.verb === "rub" ? Math.ceil(emberTime(w, { k: f.inputs[0], hp: 1, born: w.t, m: KEPT }, w.kinds[f.inputs[0]], false, STILL.temp) / TICK_S) : Math.ceil(SPARKS_TO_CATCH / BLOWS);
 }
 // Whether a try of a way would come off for someone now, by the formulas the act runs (formulas.ts predict): a spark or
 // an ember caught in their tinder as wet as they hold it (as they'd be handed it, holding none), and the lay of it and
@@ -575,6 +581,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     // every way to a fire they know looks as quick as the quickest of them, so which is slower is theirs to find: of
     // ways that look alike they plan the first they know (plan.ts search), and a try that takes longer than they thought
     // makes it look slower, where one that took as long as they thought would leave the two alike for good
+    if (v.ways.includes(SPINDLES)) w.kinds.spindle ??= { ...w.kinds.stick, id: "spindle" };
     const quick = Math.min(...v.ways.map((k) => ticksOf(w, k)));
     w.agents.forEach((a, i) => {
       put(w, a, cx + (Math.cos(i) * 2) / TILE_M, cy + (Math.sin(i) * 2) / TILE_M);
@@ -661,7 +668,10 @@ export async function runProbe(probe: string, variant: string, seed: number, day
         continue;
       }
       a.wearing ??= { k: "hide", hp: 1, born: w.t };
-      if (ways.includes(STONE) || ways.includes(FLINT)) { if ((c.stone ?? 0) < 3) giveItems(w, a, "stone", 3 - (c.stone ?? 0)); }
+      if (ways.includes(STONE) || ways.includes(FLINT)) {
+        if ((c.stone ?? 0) < 3) giveItems(w, a, "stone", 3 - (c.stone ?? 0));
+        if ((c.pyrite ?? 0) < 2) giveItems(w, a, "pyrite", 2 - (c.pyrite ?? 0));
+      }
       // two flints, so one chipped away mid-try doesn't leave them only the other way to choose for the next
       if (ways.includes(FLINT) && (c.flint ?? 0) < 2) giveItems(w, a, "flint", 2 - (c.flint ?? 0));
       const sized = (p: { size: Stack["size"] }) => a.inv.filter((s) => s.k === "stick" && s.size?.d === p.size!.d).length;
@@ -671,6 +681,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
         at.forEach((j, q) => { a.inv[j] = sticks[q]; });
       }
       if (ways.includes(RUB)) for (let k = a.inv.filter((s) => s.k === "stick" && !s.size).length; k < 2; k++) a.inv.unshift({ k: "stick", hp: 1, born: w.t, m: KEPT });
+      if (ways.includes(SPINDLES)) for (let k = count(a, "spindle"); k < 2; k++) a.inv.unshift({ k: "spindle", hp: 1, born: w.t, m: KEPT });
       const kept = a.inv.find((s) => s.k === "fiber");
       if ((c.fiber ?? 0) < 2) giveItems(w, a, "fiber", 2 - (c.fiber ?? 0), kept ? moistureOf(kept) : KEPT_TINDER);
     }

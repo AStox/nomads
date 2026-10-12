@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, newWorld, rng, shoreOf, type Act, type Agent, type Thing, type World } from "./world";
 import { WEATHER_NOW, bedAir, count, eat, fireOf, giveItems, giveStack, heat, join, openWater, place, removeThing, strikeTick, throwTick, wet, type Fields, type Outcome } from "./physics";
-import { pieceOf } from "./fuel";
+import { COPPER, PHYS, pieceOf } from "./fuel";
+import { BLADE } from "./mechanics";
 import { advance } from "./combustion";
 import { predictMaterial } from "./formulas";
 import { addAnimal } from "./fauna";
@@ -114,23 +115,20 @@ test("the staged fire, hearth, kiln and forge the answer key asks give what acts
   }
 });
 
-test("hammering hot metal at a charcoal fire draws out a blade sharper and tougher than flint; cold metal only dents", () => {
+test("hammering copper red hot at a charcoal fire draws its edge out into a blade; cold, it hardens before the edge is thin enough for one", () => {
   const [w, a] = burning();
   put(w, a, "stone", 3);
   put(w, a, "charcoal", 3);
-  w.kinds.lump = { id: "lump", name: "metal lump", props: { hard: 0.8, heavy: 0.85, metal: 1, toughness: 0.85 }, parts: ["ore"], verb: "heat" };
-  giveItems(w, a, "stone", 2); giveItems(w, a, "sharp_stone"); giveItems(w, a, "lump", 2);
-  expect(hammer(w, a, "stone", "lump").effect).toBe("dented");
-  const blade = (tool: string) => {
-    const hot = Object.keys(heated(w, a, { items: ["lump"] }).gives)[0];
-    const out = hammer(w, a, tool, hot);
-    expect(out.ok).toBe(true);
-    return w.kinds[Object.keys(out.gives)[0]].props;
-  };
-  const heavy = blade("stone"), light = blade("sharp_stone");
-  expect(heavy.sharp!).toBeGreaterThan(w.kinds.flint_blade.props.sharp!);
-  expect(heavy.toughness!).toBeGreaterThan(w.kinds.flint_blade.props.toughness! + 0.3);
-  expect(light.sharp!).toBeLessThan(heavy.sharp!);
+  w.kinds.lump = { id: "lump", name: "metal lump", props: { hard: 0.8, heavy: 0.85, metal: 1, toughness: 0.85 }, parts: ["ore"], verb: "heat", phys: COPPER };
+  giveItems(w, a, "stone", 2); giveItems(w, a, "lump", 2);
+  const edge = (o: Outcome) => w.kinds[Object.keys(o.gives)[0]].phys!.edge!.r * 2;
+  const cold = hammer(w, a, "stone", "lump");
+  expect(cold.ok).toBe(true);
+  expect(edge(cold)).toBeGreaterThan(BLADE);
+  const hot = hammer(w, a, "stone", Object.keys(heated(w, a, { items: ["lump"] }).gives)[0]);
+  expect(hot.ok).toBe(true);
+  expect(hot.fields.at).toBe("forge");
+  expect(edge(hot)).toBeLessThanOrEqual(BLADE * 1.001);
 });
 
 test("hands full of tools still make room for food", () => {
@@ -155,7 +153,7 @@ test("hands full of food still make room for a stick", () => {
 
 // Whether a try comes off follows from what anyone trying could notice: the same things in hand, weather and spot give
 // the same outcome every time, and changing what decides it changes it.
-test("struck over fiber laid with twigs, two hard stones light it after the same number of blows every time, flint sooner than plain stone; over damp fiber or in a gale the sparks never catch, and over sticks alone they never do", () => {
+test("struck over fiber laid with twigs, pyrite shaved by flint or a plain stone lights it at the same stroke every time; two stones never do; over damp fiber or in a gale the sparks never catch, and over sticks alone they never do", () => {
   const [w, a] = fresh();
   const light = (tool: string, target: string, over: string, wet = 0) => {
     a.inv = [];
@@ -164,59 +162,65 @@ test("struck over fiber laid with twigs, two hard stones light it after the same
   };
   w.weather.sky = "clear";
   w.weather.speed = 2;
-  const stone = Array.from({ length: 5 }, () => light("stone", "stone", "fiber"));
+  const stone = Array.from({ length: 5 }, () => light("stone", "pyrite", "fiber"));
   expect(stone.every((o) => o.builds === "fire")).toBe(true);
   expect(new Set(stone.map((o) => o.numbers?.blows)).size).toBe(1);
-  const flint = light("stone", "flint", "fiber");
-  expect(flint.builds).toBe("fire");
-  expect(flint.numbers!.blows).toBeLessThan(stone[0].numbers!.blows);
+  expect(light("flint", "pyrite", "fiber").builds).toBe("fire");
+  expect(light("stone", "stone", "fiber").ok).toBe(false);
+  expect(light("stone", "flint", "fiber").ok).toBe(false);
   // at the spark limit it still catches; just wetter, it never does
-  expect(light("stone", "stone", "fiber", DAMP).builds).toBe("fire");
-  expect(Array.from({ length: 3 }, () => light("stone", "stone", "fiber", DAMP + 0.01)).every((o) => !o.ok)).toBe(true);
+  expect(light("stone", "pyrite", "fiber", DAMP).builds).toBe("fire");
+  expect(Array.from({ length: 3 }, () => light("stone", "pyrite", "fiber", DAMP + 0.01)).every((o) => !o.ok)).toBe(true);
   // the air where they stand is worked out once a tick: a new wind, a new tick; out from under the crowns, which keep a
   // gale off (air.ts headWind)
   for (const t of w.things.filter((t) => t.kind === "tree" && Math.hypot(t.px - a.px, t.py - a.py) * TILE_M < 15)) removeThing(w, t);
   w.weather.speed = 60;
   w.t++;
   expect(WEATHER_NOW.wind(w, a)).toBe(true);
-  expect(light("stone", "stone", "fiber").ok).toBe(false);
+  expect(light("stone", "pyrite", "fiber").ok).toBe(false);
   w.weather.speed = 2;
   w.t++;
-  const stick = light("stone", "stone", "stick");
-  expect(stick.ok).toBe(false);
+  expect(light("stone", "pyrite", "stick").ok).toBe(false);
 });
 
-test("knapping stone with stone chips off a sharp stone at the same blow every time, fiber in hand or not; a striker too soft never does", () => {
+test("a stone struck with a stone or a stick knocks off a sharp stone at every blow until the core is spent; bare hands knock off nothing", () => {
   const [w, a] = fresh();
-  const knap = (tool: string, target: string) => {
-    a.inv = [];
-    giveItems(w, a, tool); giveItems(w, a, target); giveItems(w, a, "fiber");
-    return hammer(w, a, tool, target);
-  };
-  const chips = Array.from({ length: 5 }, () => knap("stone", "stone"));
-  expect(chips.every((o) => o.ok && o.gives.sharp_stone === 1 && !o.builds)).toBe(true);
-  expect(new Set(chips.map((o) => o.numbers?.blows)).size).toBe(1);
-  expect(count(a, "fiber")).toBe(1);
-  const soft = knap("stick", "stone");
-  expect(soft.ok).toBe(false);
-  expect(soft.gives.sharp_stone).toBeUndefined();
+  a.born = w.t - 1e6;
+  giveItems(w, a, "stone", 2); giveItems(w, a, "stick");
+  const flakes = (PHYS.stone.mass / PHYS.sharp_stone.mass) | 0;
+  let n = 0;
+  while (count(a, "stone") === 2 && n < 100) { a.inv = a.inv.filter((s) => s.k !== "sharp_stone"); if (hammer(w, a, "stone", "stone").gives.sharp_stone === 1) n++; }
+  expect(n).toBe(flakes);
+  expect(count(a, "stone")).toBe(1);
+  expect(hammer(w, a, "stick", "stone").gives.sharp_stone).toBe(1);
+  const bare = strikeTick(w, a, { verb: "strike", items: [], tool: null, target: { kind: "stone" } }, { progress: 0 }).out!;
+  expect(bare.ok).toBe(false);
 });
 
-test("felling a tree with a sharp stone peels the same strips of bark every time; a blunt stone peels none", () => {
+test("felling an oak with a hafted flint blade peels the same strips of bark every time, and the oak gives logs and sticks; a stone in the fist never cuts it", () => {
   const [w, a] = fresh();
-  // the strips a tree gave in up to 60 blows of a tool
-  const strips = (tool: string) => {
-    const tree = addThing(w, "tree", a.px, a.py, { size: 10 });
+  a.born = w.t - 1e6;
+  w.kinds.axe = { id: "axe", name: "flint axe", props: { sharp: 0.9 }, parts: ["flint_blade", "stick"], verb: "join" };
+  // tree: an oak this tall; sharp: the axe kept sharp, as if resharpened whenever it dulled
+  const fell = (tool: string, size: number, sharp = false) => {
+    const tree = addThing(w, "tree", a.px, a.py, { size, species: "oak", hp: 100, maxHp: 100 });
     a.inv = [];
     giveItems(w, a, tool);
     const st = { progress: 0 };
-    for (let i = 0; i < 60 && !strikeTick(w, a, { verb: "strike", items: [], tool, target: { kind: "tree", thing: tree.id } }, st).done; i++);
-    return tree.bark ?? 0;
+    let r;
+    do { if (sharp) for (const s of a.inv) s.hp = 1; r = strikeTick(w, a, { verb: "strike", items: [], tool, target: { kind: "tree", thing: tree.id } }, st); } while (!r.done);
+    return { out: r.out!, bark: tree.bark ?? 0 };
   };
-  const sharp = [strips("sharp_stone"), strips("sharp_stone"), strips("sharp_stone")];
-  expect(sharp[0]).toBeGreaterThan(0);
-  expect(new Set(sharp).size).toBe(1);
-  expect(strips("stone")).toBe(0);
+  const young = [fell("axe", 10), fell("axe", 10)];
+  expect(young.every((f) => f.out.ok && f.out.gives.log! >= 1 && f.out.gives.stick! > 1)).toBe(true);
+  expect(young[1].out.gives).toEqual(young[0].out.gives);
+  // a big oak dulls the edge many times over before it's down; kept sharp, it gives its bark over the notch
+  expect(fell("axe", 25).out.ok).toBe(false);
+  const old = [fell("axe", 25, true), fell("axe", 25, true)];
+  expect(old[0].out.ok).toBe(true);
+  expect(old[0].bark).toBeGreaterThan(0);
+  expect(old[1].bark).toBe(old[0].bark);
+  expect(fell("stone", 10).out.ok).toBe(false);
 });
 
 test("a line or a basket dipped where a fish swims within reach catches every time, and with none about never does: anyone dipping sees there were no fish close by, and only what's dipped in the water records it", () => {

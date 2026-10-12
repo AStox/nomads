@@ -487,7 +487,7 @@ export async function nameCamp(w: World, a: Agent, state: object): Promise<strin
     "Given the land around it and what happened there, which of these words would the people who live here most naturally come to call their place?");
 }
 // Words that already mean something in the world: a carried thing called "shelter" would be read as a building.
-const RESERVED = new Set(["shelter", "pile", "lean-to", "hut", "cabin", "home", "fire", "campfire", "hearth", "kiln", "forge", "pit", "trap", "well", "camp", "grave", ...Object.keys(THING_MATERIAL).map((k) => k.replaceAll("_", " "))]);
+const RESERVED = new Set(["shelter", "pile", "lean-to", "hut", "cabin", "home", "fire", "campfire", "hearth", "kiln", "forge", "pit", "trap", "well", "camp", "grave", ...[...Object.keys(THING_MATERIAL), "tree", "bush", "dead_bush", "stump", "fallen_log", "boulder"].map((k) => k.replaceAll("_", " "))]);
 async function pickWord(w: World, a: Agent, purpose: string, lex: Lexicon, state: object, cat: { instructions: string; none: string }, instructions: string, skip = new Set<string>()): Promise<string | null> {
   const kinds = Object.fromEntries(Object.entries(lex).map(([id, c]) => [id, c.description]));
   const first = await ask(w, purpose, a.id, state, { category: { type: "choice", instructions: cat.instructions, criteria: { ...kinds, none: cat.none } } });

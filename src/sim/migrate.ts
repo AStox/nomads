@@ -234,7 +234,7 @@ function relaid(w: World, key: string): string | undefined {
   if (f.verb === "strike") return held.length && tinderOnly ? beliefKey({ ...f, inputs: [...f.inputs, ...TWIGS].sort() }) : undefined;
   if (f.verb !== "rub") return undefined;
   const [a, b] = f.inputs, A = w.kinds[a], B = w.kinds[b];
-  if (!A || !B || rubbing(A, B).does !== "friction" || !tinderOnly) return undefined;
+  if (!A || !B || rubbing(A, B, w.kinds).does !== "friction" || !tinderOnly) return undefined;
   const fuel = [a, b].filter((k) => !isBow(w.kinds[k]));
   return beliefKey({ ...f, inputs: [a, b].sort().concat([...(held.length ? held : ["fiber"]), ...fuel].sort()) });
 }

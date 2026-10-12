@@ -31,7 +31,14 @@ export type Phys = {
   kj?: number; // kJ in each kg of it, dry, to whoever eats it (body-constants sec. 10)
   pile?: number; // m of hair standing proud of it, which insulates whoever wears it (body-constants sec. 5)
   burn?: Burn;
+  mech?: Mech; // how it takes a blow, if not as wood does (matter-constants)
+  edge?: Edge; // its edge, if it has one (matter-constants sec. 6)
 };
+// A blade's edge: its included angle, rad; how round it is across, m; and how long, m.
+export type Edge = { angle: number; r: number; len: number };
+// How a solid takes a blow (matter-constants): its scratch hardness on Mohs's scale and its indentation hardness, Pa;
+// whether it flakes; pyrite, which burns where it's shaved; and a metal's Hollomon curve, Pa.
+export type Mech = { mohs?: number; H?: number; flakes?: true; pyrite?: true; flow?: { K: number; n: number } };
 
 // The ways things burn (sec. 27a).
 export const BURNS = {
@@ -78,9 +85,13 @@ export function woodOf(species: Wood | "generic", d: number, mass: number): Phys
 // matter holds the NFDRS's most, 250% (R30 [read]; reeds' too, an analogue, sec. 27f).
 const fine = (mass: number): Phys => ({ ...plant(0.513, "fine", 0.00061, mass), herb: true });
 export const LIVE_HERB = 2.5;
-const granite = (d: number, mass: number): Phys => ({ rho: 2630, c: 0.775, k: 2.79, mmax: 0, d, mass });
-const flint = (d: number, mass: number): Phys => ({ rho: 2650, c: 0.74, k: 3, mmax: 0, d, mass });
-const bone = (d: number, mass: number): Phys => ({ rho: 1920, c: 0.835, k: 0.72, mmax: 0.1, green: 0.1, d, mass });
+// How the hard things take a blow (matter-constants secs. 5 to 7): granite scratches like its quartz and feldspar and flakes,
+// coarsely; flint and chert harder still, finely; bone flakes into shards; each flake's edge as knapping leaves it.
+const deg = Math.PI / 180;
+const GRANITE = { mohs: 6.5, H: 7e9, flakes: true as const }, FLINT = { mohs: 7, H: 10e9, flakes: true as const }, BONE = { mohs: 2.5, H: 0.6e9, flakes: true as const };
+const granite = (d: number, mass: number, edge?: Edge): Phys => ({ rho: 2630, c: 0.775, k: 2.79, mmax: 0, d, mass, mech: GRANITE, ...(edge ? { edge } : {}) });
+const flint = (d: number, mass: number, edge?: Edge): Phys => ({ rho: 2650, c: 0.74, k: 3, mmax: 0, d, mass, mech: FLINT, ...(edge ? { edge } : {}) });
+const bone = (d: number, mass: number, edge?: Edge): Phys => ({ rho: 1920, c: 0.835, k: 0.72, mmax: 0.1, green: 0.1, d, mass, mech: BONE, ...(edge ? { edge } : {}) });
 const flesh = (mass: number): Phys => ({ rho: 263, c: SOLIDS_C, k: 0.47, mmax: 3, green: 3, d: 0.03, mass });
 const fruit = (d: number, mass: number): Phys => ({ rho: 150, c: SOLIDS_C, k: 0.51, mmax: 5.67, green: 5.67, d, mass });
 const seed = (d: number, mass: number): Phys => ({ rho: 1131, c: SOLIDS_C, k: 0.15, mmax: 0.15, green: 0.15, d, mass });
@@ -104,13 +115,15 @@ export const PHYS: Record<string, Phys> = {
   herb: { ...fine(0.01), green: LIVE_HERB, kj: FOOD_KJ.greens },
   hide: { rho: 441, c: SOLIDS_C, k: 0.47, mmax: 1.7, green: 1.7, d: 0.003, mass: 2, burn: BURNS.hide, pile: 0.02 },
   bone: bone(0.02, 0.3),
-  bone_shard: bone(0.005, 0.02),
+  bone_shard: bone(0.005, 0.02, { angle: 40 * deg, r: 20e-6, len: 0.03 }),
   stone: granite(0.1, 2.6),
-  sharp_stone: granite(0.01, 0.066),
+  sharp_stone: granite(0.01, 0.066, { angle: 70 * deg, r: 1e-3, len: 0.04 }),
   pebble: granite(0.02, 0.021),
   flint: flint(0.08, 1.36),
-  flint_blade: flint(0.01, 0.066),
-  ore: { rho: 3800, c: 0.8, k: 2.8, mmax: 0, d: 0.05, mass: 0.475 },
+  flint_blade: flint(0.01, 0.066, { angle: 35 * deg, r: 1e-6, len: 0.04 }),
+  ore: { rho: 3800, c: 0.8, k: 2.8, mmax: 0, d: 0.05, mass: 0.475, mech: { mohs: 4 } },
+  // a nodule of iron pyrite, as one lies in chalk or mudstone (matter-constants sec. 7) [UNVERIFIED]
+  pyrite: { rho: 5010, c: 0.52, k: 19, mmax: 0, d: 0.05, mass: 0.33, mech: { mohs: 6.25, pyrite: true } },
   clay: { rho: 1608, c: 0.8, k: 0.52, mmax: 0.65, green: 0.275, d: 0.05, mass: 0.2 },
   charcoal: { ...woodOf("generic", 0.025, 0.05), rho: 1000 * WOODS.generic.G * BURNS.softwood.charYield, burn: BURNS.char },
   fat: { rho: 900, c: 2, k: 0.15, mmax: 0, d: 0.02, mass: 0.5, burn: BURNS.fat, kj: FOOD_KJ.fat },
@@ -129,7 +142,8 @@ export const asFound = (x: Phys) => x.mass * (1 + (x.green ?? 0));
 // of what it was made from but the copper, and the wall of a pot pressed from clay.
 export const FIRED_CLAY = { rho: 1920, c: 0.835, k: 0.72, mmax: 0.1 };
 export const LEATHER = { rho: 750, c: SOLIDS_C, k: 0.47, mmax: 1.7, burn: BURNS.hide };
-export const COPPER: Phys = { rho: 8930, c: 0.385, k: 401, mmax: 0, d: 0.01, mass: 0.1 };
+// annealed copper drawn out under the hammer by its Hollomon curve, 55 HV annealed (matter-constants sec. 9)
+export const COPPER: Phys = { rho: 8930, c: 0.385, k: 401, mmax: 0, d: 0.01, mass: 0.1, mech: { mohs: 3, H: 0.54e9, flow: { K: 320e6, n: 0.54 } } };
 export const POT_WALL = 0.007;
 export const remade = (matter: Omit<Phys, "d" | "mass">, from: Phys | undefined): Phys | undefined => from && { ...matter, d: from.d, mass: from.mass };
 
@@ -137,7 +151,7 @@ export const remade = (matter: Omit<Phys, "d" | "mass">, from: Phys | undefined)
 // and the water it holds go by each part's share of the mass; it is as thick as its thickest part; and it burns as the
 // parts that burn do, by their share of the mass.
 export function mix(parts: Phys[]): Phys | undefined {
-  if (!parts.length) return undefined;
+  if (parts.length <= 1) return parts[0];
   const mass = parts.reduce((t, x) => t + x.mass, 0);
   const by = (f: (x: Phys) => number) => parts.reduce((t, x) => t + f(x) * x.mass, 0) / mass;
   const burning = parts.flatMap((x) => (x.burn ? [{ b: x.burn, m: x.mass * x.burn.share }] : []));

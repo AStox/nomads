@@ -3,7 +3,8 @@ import { DAY, meters, newWorld, type Act, type Agent, type Stack, type Step, typ
 import { LEAST, advance, alight, output, radiation } from "./combustion";
 import { PHYS, pieceOf, roundSize } from "./fuel";
 import { ensure } from "./materials";
-import { GALE, ablaze, bedAir, breeze, carry, count, fireHours, fireOf, giveItems, giveStack, heat, join, place, removeThing, rubTick, strikeDamage, strikeTick, type Fields, type Outcome } from "./physics";
+import { GALE, ablaze, bedAir, breeze, carry, count, cutting, fireHours, fireOf, giveItems, giveStack, heat, holdOf, join, place, removeThing, rubTick, stemOf, strikeTick, type Fields, type Outcome } from "./physics";
+import { GROWN } from "./mechanics";
 import { DAMP, SOAKED } from "./wetness";
 import { thingById } from "./space";
 import { apart, beliefKey, cameOff, chance, differed, fades, noteTry, record, refuted, rethink, suspected, teach, weighs, worseIn, type Belief } from "./beliefs";
@@ -21,11 +22,11 @@ const DRY = 0.1, KEPT = 0.06;
 const hold = (w: World, a: Agent, k: string, n: number, m: number, piece: Partial<Stack> = {}) => { for (let i = 0; i < n; i++) giveStack(w, a, { k, hp: 1, born: w.t, m, ...piece }); };
 const still = (w: World) => { w.weather.sky = "clear"; w.weather.speed = 0; w.t++; };
 const sticks = (n: number) => Array<string>(n).fill("stick");
-// Striking stone on stone over a lay until the strike comes to something.
+// Striking pyrite with a stone over a lay until the strike comes to something.
 const strike = (w: World, a: Agent, items: string[]) => {
   const st = { progress: 0 };
   let r;
-  do r = strikeTick(w, a, { verb: "strike", items, tool: "stone", target: { kind: "stone" } }, st); while (!r.done);
+  do r = strikeTick(w, a, { verb: "strike", items, tool: "stone", target: { kind: "pyrite" } }, st); while (!r.done);
   return r.out!;
 };
 // The usual fire (fireOf) an hour or so on, its logs' flame just too small to light another log by its radiation, and
@@ -43,20 +44,19 @@ function lampKind(w: World) {
   return ensure(w.kinds, "burning:lamp", () => ({ name: "lit lamp", props: { container: 0.8, hard: 0.75, flammable: 1 }, parts: ["lamp"], verb: "heat" }))[0];
 }
 
-test("a heavier, sharper, longer tool fells a tree faster, and bare hands barely mark it", () => {
+test("a sharp stone cuts a tree through in fewer blows than a round one, and hafted to a stick in fewer still; bare hands never", () => {
   const [w, a] = fresh();
   giveItems(w, a, "sharp_stone"); giveItems(w, a, "stick"); giveItems(w, a, "fiber", 2);
   const cord = join(w, a, { verb: "join", items: ["fiber", "fiber"] });
   if (cord === "ask") throw new Error("cord should not need a ruling");
   const axe = join(w, a, { verb: "join", items: [...Object.keys(cord.gives), "sharp_stone", "stick"] });
   if (axe === "ask") throw new Error("axe should not need a ruling");
-  const hafted = K(w, Object.keys(axe.gives)[0]);
-  const tree = 0.55;
-  const dmg = [K(w, "stone"), K(w, "sharp_stone"), hafted].map((k) => strikeDamage(k, tree));
-  expect(strikeDamage({ id: "hands", name: "", props: { hard: 0.2, heavy: 0.1 } }, tree)).toBe(0);
-  expect(dmg[0]).toBeGreaterThan(0);
-  expect(dmg[1]).toBeGreaterThan(dmg[0]);
-  expect(dmg[2]).toBeGreaterThan(dmg[1]);
+  const stem = stemOf(w, { kind: "tree", size: 10, species: "pine", px: a.px, py: a.py })!;
+  const blows = (k: string | null) => cutting(stem, holdOf(w, k ? K(w, k) : null), GROWN).blows;
+  const [stone, sharp, hafted] = ["stone", "sharp_stone", Object.keys(axe.gives)[0]].map(blows);
+  expect(sharp).toBeLessThan(stone);
+  expect(hafted).toBeLessThan(sharp);
+  expect(blows(null)).toBe(Infinity);
 });
 
 test("striking a stone with a stone eventually chips off a sharp stone", () => {
@@ -203,17 +203,17 @@ test("someone who thinks fire won't light in the rain lights none in the rain, u
   expect(plan(start, `try:${fiber.key}`, ctx(fiber.key))?.map((s) => s.op)).toEqual(["act"]);
 });
 
-test("striking stone over a lay whose tinder is damp only throws sparks that won't catch: that's no fire, and it doesn't count as having worked; dry, the spark catches", () => {
+test("striking pyrite over a lay whose tinder is damp only throws sparks that won't catch: that's no fire, and it doesn't count as having worked; dry, the spark catches", () => {
   const [w, a] = fresh();
   still(w);
   const b: Belief = {
-    key: "strike|fiber+stick+stick+stick+stone|stone|stone|-|-", fields: { verb: "strike", inputs: ["fiber", "stick", "stick", "stick", "stone"], tool: "stone", target: "stone", gives: [], builds: "fire" },
+    key: "strike|fiber+pyrite+stick+stick+stick|stone|pyrite|-|-", fields: { verb: "strike", inputs: ["fiber", "pyrite", "stick", "stick", "stick"], tool: "stone", target: "pyrite", gives: [], builds: "fire" },
     uses: { fiber: 1, stick: 3 }, out: {}, ticks: 3, tries: 1, wins: 1, how: "discovered", t: 0,
   };
-  // what they believe lights a fire is striking the stone over the fiber laid with three sticks
+  // what they believe lights a fire is striking the pyrite over the fiber laid with three sticks
   const act = actFromBelief(b);
   expect(act.items).toEqual(["fiber", "stick", "stick", "stick"]);
-  const tried = (m: number) => { a.inv = []; giveItems(w, a, "stone", 2); hold(w, a, "fiber", 1, m); hold(w, a, "stick", 3, DRY, TWIG); return strike(w, a, act.items); };
+  const tried = (m: number) => { a.inv = []; giveItems(w, a, "stone"); giveItems(w, a, "pyrite"); hold(w, a, "fiber", 1, m); hold(w, a, "stick", 3, DRY, TWIG); return strike(w, a, act.items); };
   const drowned = tried(DAMP + 0.02);
   expect(drowned.ok).toBe(false);
   expect(drowned.builds).toBeUndefined();
@@ -390,16 +390,16 @@ const CAUSES = /\b(damp|wet|soak\w*|wind\w*|breez\w*|thick|thin|small|big|coals?
 test("struck over fiber laid with twigs and finger-thick sticks in still, dry air, a spark lights a fire that lasts; over fiber alone it flares and dies within the act, and says nothing of why", () => {
   const [w, a] = fresh();
   still(w);
-  giveItems(w, a, "stone", 2); hold(w, a, "fiber", 1, KEPT); hold(w, a, "stick", 8, DRY, TWIG); hold(w, a, "stick", 5, DRY, STICK);
+  giveItems(w, a, "stone"); giveItems(w, a, "pyrite"); hold(w, a, "fiber", 1, KEPT); hold(w, a, "stick", 8, DRY, TWIG); hold(w, a, "stick", 5, DRY, STICK);
   const lit = strike(w, a, ["fiber", ...sticks(13)]);
   expect(lit.builds).toBe("fire");
-  expect(beliefKey(lit.fields)).toBe(`strike|fiber+${sticks(13).join("+")}+stone|stone|stone|-|-`);
+  expect(beliefKey(lit.fields)).toBe(`strike|fiber+pyrite+${sticks(13).join("+")}|stone|pyrite|-|-`);
   const fire = w.things.find((t) => t.kind === "fire" && meters(t, a) <= 2)!;
   expect(ablaze(fire)).toBe(true);
   expect(count(a, "fiber") + count(a, "stick")).toBe(0);
   // the fibre alone: it flares, burns itself up, and no fire is left of it
   a.inv = [];
-  giveItems(w, a, "stone", 2); hold(w, a, "fiber", 1, KEPT);
+  giveItems(w, a, "stone"); giveItems(w, a, "pyrite"); hold(w, a, "fiber", 1, KEPT);
   const fires = w.things.filter((t) => t.kind === "fire").length;
   const flare = strike(w, a, ["fiber"]);
   expect(flare.ok).toBe(false);
@@ -531,7 +531,7 @@ test("what anyone sees of a lay: tinder soaked through is soaked (and so damp), 
 test("experimenting with only tinder and logs lights no fire, until they hold something thinner", () => {
   const [w, a] = fresh();
   still(w);
-  const stock = (twigs: number) => { a.inv = []; giveItems(w, a, "stone", 2); hold(w, a, "fiber", 1, KEPT); hold(w, a, "log", 2, DRY, LOG); hold(w, a, "stick", twigs, DRY, TWIG); };
+  const stock = (twigs: number) => { a.inv = []; giveItems(w, a, "stone"); giveItems(w, a, "pyrite"); hold(w, a, "fiber", 1, KEPT); hold(w, a, "log", 2, DRY, LOG); hold(w, a, "stick", twigs, DRY, TWIG); };
   const lights = (twigs: number) => {
     stock(twigs);
     const tries = tinkerOptions(w, a, "fire").filter((o) => o.act.verb === "strike" && o.act.items.length);
