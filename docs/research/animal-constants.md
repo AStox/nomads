@@ -89,6 +89,14 @@ Seed 5 (228 km2 of land, mostly wooded), ten island years on from the twenty-yea
 
 Runs before the field layer and the kits' first-year loss, kept as the record of what each gap did: with one grazeable pool of grass and a fixed half-fill, 20,000 to 28,000 deer and 12,000 to 27,000 rabbits; with Mulder's scaling and no browse apart, rabbits grazed every sward below a deer's half-fill and the deer died out; with browse apart but every kit joining the grown, 2 million rabbits boomed and crashed each year and 60 deer lived on browse alone; with the kits' loss but no field layer, 55,000 rabbits and 65 deer.
 
+### The probe gate (aec50e9, against a8bf4da)
+
+Fails, nine regressions: blame/real's fewer wasted tries late than early; seed/real's and seed/two's caught claim (nearly all whose own tries show the true cause beyond chance rule it out where it holds); seed/sparse accMid 0.95 to 0.85; unlearn/real wrong 0.77 to 0.92 and its caught and accuracy claims; unlearn/sparse caught 0.87 to 0.69 and its accuracy claim. The time pass (36eb189) had already lost unlearn/real's caught claim. The same build with no herd animal ever stood on the ground (reveal off) keeps blame/real's claim and every number, and still loses seed/real's, seed/two's and unlearn/real's caught claims and unlearn/real's accuracy: those four don't come of the animals people see, but of the rest of the change (the founding deer, wolves and rabbits gone from populate, which shifts what the world's draws and ids fall on). The other five come with the herds' animals standing about the probes' people (about twenty rabbits within 50 m at these densities, where 80 were scattered over the island before). Not retuned: the probes stage people among whatever animals the island holds.
+
+### The worlds tier (aec50e9, against 155adec, one answer key)
+
+Fails one number: discovery regret 1.90 to 13.3 (+11.4 [1.47, 21.8]); worked, wasted, right and wrong within their intervals. The time pass (36eb189) passed. The key now holds striking rabbits, which stand about people at the herds' densities: with a stone 400 tries take 5,100 ticks, bare-handed 13,500, and people who take to killing rabbits do it bare-handed long before a stone, so the ticks a faster way would have saved are new regret. Not retuned.
+
 ## 10. Gaps
 
 - Age and sex classes; calves and kits as adults at once.
