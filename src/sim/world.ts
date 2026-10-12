@@ -46,6 +46,7 @@ export type Thing = {
   stale?: number; // a shelter's: how many loads in a row were added to it without making it any better
   inside?: Record<string, number>; // hidden in a boulder until it breaks
   girth?: number; // a stump's: how wide its trunk was, m
+  dry?: number; peak?: number; // a seedling's dry mass and the most it has weighed, g (seedling.ts)
   scarred?: number; resin?: number; bark?: number; // when a tree was last cut into, resin beaded on it, bark peeled off it
   // fires: the stone ringed round it, closed over, charcoal fed it, air blown into it until
   walls?: Ring; covered?: boolean; charcoal?: number; air?: number;

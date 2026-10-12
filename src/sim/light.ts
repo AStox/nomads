@@ -53,9 +53,6 @@ export const canopyAt = (w: World, px: number, py: number) => crownsAt(w, px, py
 // more of them; where two overlap, a sixty-fourth of the glow, and no more is lost past that.
 const LEAVES = 2.6;
 const sieve = (cover: number) => LEAVES * Math.min(cover, 2);
-// How well a plant grows in the light it gets at a point, whatever the hour: a quarter as well under the deepest canopy as in
-// the open. Seedlings and berry bushes answer to it.
-export const growRate = (w: World, px: number, py: number) => 0.25 + 0.75 * skyShare(w, px, py);
 // The share of the sky's light that reaches the ground through the crowns over a point.
 export const skyShare = (w: World, px: number, py: number) => Math.exp(-0.8 * sieve(canopyAt(w, px, py)));
 

@@ -17,9 +17,9 @@ import { SIZE, rockAt } from "../terrain/flora";
 import { fitHere, growth, growthOf, pickHere } from "./plants";
 import { ripening, warmRate } from "./cues";
 import { runoffHour, streamNow } from "./streams";
-import { WIND, airAt, baseTemp, islandAir, islandTemp, seasonAt, wetHours } from "./air";
-import { growRate } from "./light";
-import { nicheOf, seedlingHour, shareAt, treeOf, type Hour } from "./seedling";
+import { WIND, airAt, baseTemp, islandAir, islandTemp, seasonAt, sunOn, wetHours } from "./air";
+import { skyShare } from "./light";
+import { nicheOf, seedlingHour, seedlingOf, shareAt, treeOf, type Hour } from "./seedling";
 import { SEASONS } from "../terrain/climate";
 import { count, timed, trace } from "./trace";
 import { hooks } from "./rules";
@@ -363,12 +363,12 @@ function plants(w: World, live: Thing[]) {
       setKind(w, t, "bush"); t.species = "berry"; t.n = 0; t.hp = BERRY_HP; t.maxHp = BERRY_HP; mark(w, t);
     } else if (t.kind === "sapling") {
       // tended once an hour as the sky turns (seedling.ts), by the spot's fit as it was the first time and the share of
-      // it the plants round it leave it now
+      // it the plants round it leave it now, in the sun on the open ground and the share the crowns let through
       if (w.t % 12) continue;
       t.fit ??= fitHere(w, nicheOf(t), t.px, t.py);
       if (t.share === undefined || stockedAt(w, t.px, t.py)) t.share = shareAt(w, t.px, t.py, t.stage ?? 0, t);
-      const was = t.stage ?? 0, soil = soilWaterAt(w, t.px, t.py);
-      const fate = seedlingHour(t, t.fit, t.share, soil, growthOf(airAt(w, t.px, t.py).temp, soil, growRate(w, t.px, t.py), feedRate(w, t.px, t.py)), treeOf(t));
+      const was = t.stage ?? 0;
+      const fate = seedlingHour(t, seedlingOf(nicheOf(t)), t.fit, t.share, soilWaterAt(w, t.px, t.py), airAt(w, t.px, t.py).temp, sunOn(w.t, w.weather.sky), skyShare(w, t.px, t.py));
       if (fate === "withered") { wither(w, t); continue; }
       if (Math.round((t.stage ?? 0) * 20) !== Math.round(was * 20)) { t.size = Math.round((0.3 + (t.stage ?? 0) * 0.5) * 100) / 100; mark(w, t); }
       if (fate === "up") matured(w, t);

@@ -36,6 +36,8 @@ The seedling hour is uncited end to end: a drink curve smooth(0.35, 0.75), a sta
 
 **Physics that replaces it:** growth as light-use efficiency times intercepted radiation (Beer-Lambert through crowns with a leaf area index from the iLand foliage masses spread.ts already cites), limited by FAO-56's water-stress coefficient Ks and thermal time; seedling death from carbon starvation or drought stress against measured seedling tolerances; competition as shared light and water rather than a radius; crown radius from crown allometry.
 
+**Done 2026-10-12** (src/sim/plants.ts, src/sim/seedling.ts, docs/research/plant-constants.md): a seedling is grams of dry matter, gaining Monteith's 1.4 g per MJ of the sun its leaves catch through the crowns, while warm enough (the GSI ramp) and watered enough (FAO-56 Ks), less McCree's growth and maintenance respiration. It comes up at a bush's or young tree's mass and withers once burnt down to half its peak; "deep shade" is now below its compensation point. Grown plants' growth is the same limits as a 0..1 rate. Still on the old rules: competition (shareAt), poured water, fertility, the berry crop's pace, stumps resprouting and nut fall.
+
 ### 5. Animals live on caps and drains (medium to high)
 
 Each species has a hand-tuned hunger drain, fixed founding counts and a hard population cap (deer 18, wolves 6, rabbits 120, fish 200, butterflies 90), breeds on photoperiod and dice, and is a row of hp, speed and habitat in FAUNA; a struck deer flees and a wolf fights by species name; a hunt ends past 250 m or after 40, 60 or 80 tries; a wolf's bite is a fixed damage (animals.ts, fauna.ts, sim.ts 1097).

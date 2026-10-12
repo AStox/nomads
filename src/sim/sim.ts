@@ -28,8 +28,8 @@ import { enrich, fertilityAt, soilWaterAt } from "./soil";
 import { DAMP, SOAKED, moistureOf, tinder, tinderOf } from "./wetness";
 import { PHYS, asFound, physOf, stackPhys } from "./fuel";
 import { LEAST, advance, alight, drowned, output, radiation, type Air as BedAir, type Bed } from "./combustion";
-import { envHere } from "./plants";
-import { shareAt } from "./seedling";
+import { compensation, envHere } from "./plants";
+import { nicheOf, seedlingOf, shareAt } from "./seedling";
 import type { Env } from "../terrain/niche";
 import { travel } from "./journeys";
 import { RULES, hooks } from "./rules";
@@ -852,7 +852,8 @@ const CONDITIONS: Record<string, Condition> = {
   coals: { now: (x) => { const f = x.fire(); return !!f?.bed && alight(f.bed) && output(f.bed, f.air).flaming <= 0; }, words: "Nothing was left of the fire but coals", verbs: AT_FIRE, on: "only coals", off: "flaming" },
   nofish: { now: (x) => !fishClose(x.w, x.a, x.at, x.items.some((k) => lineLike(x.w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket), words: "No fish were swimming close by", verbs: ["wet"] },
   shade: { now: (x) => x.spot().light < 0.5, words: "It was in the shade of trees", place: true },
-  deep: { now: (x) => x.spot().light < 0.2, words: "It was in deep shade under the trees", place: true },
+  // below the light at which the seed going in makes no more than it burns (plants.ts compensation)
+  deep: { now: (x) => x.spot().light < compensation(seedlingOf(nicheOf({ item: x.items[0] }))), words: "It was in deep shade under the trees", place: true },
   dry: { now: (x) => x.spot().water < 0.5, words: "The ground there was dry", place: true },
   crowded: { now: (x) => x.spot().share < 0.8, words: "Bushes or trees grew close round it", place: true },
   sour: { now: (x) => x.spot().env.ph < 4.5, words: "The soil there was sour", place: true },

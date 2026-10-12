@@ -1,4 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
+import { SEEDLINGS } from "./plants";
 import { DAY, TILE_M, addThing, isNight, newWorld, type Thing, type World } from "./world";
 import { bedAir, carriedOutput, fireOf, fireOutput, removeThing } from "./physics";
 import { advance } from "./combustion";
@@ -242,7 +243,7 @@ test("a hungry wolf takes a lone person who is out in the dark, and leaves one i
   }
 });
 
-test("seedlings grow slower in the shade of trees than in the open", () => {
+test("seedlings grow in the open and burn down in the deep shade of a grove", () => {
   const { w, px, py } = pad(8);
   grove(w, px, py);
   const shaded = addThing(w, "sapling", px, py + 1 / TILE_M, { stage: 0 });
@@ -250,6 +251,6 @@ test("seedlings grow slower in the shade of trees than in the open", () => {
   w.t = at(12) + 1;
   // seedlings are tended as the sky turns, once an hour
   for (let i = 0; i < 50; i++) { w.t++; ecology(w); }
-  expect(shaded.stage).toBeGreaterThan(0);
-  expect(shaded.stage!).toBeLessThan(open.stage! * 0.5);
+  expect(open.stage).toBeGreaterThan(0);
+  expect(shaded.dry!).toBeLessThan(SEEDLINGS.berry.seed);
 });

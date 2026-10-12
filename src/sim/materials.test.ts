@@ -290,7 +290,7 @@ test("a seedling's hours ahead come to what ecology makes of the same weather, h
   const spot = { px: a.px + 2 / TILE_M, py: a.py };
   // the weather ecology will give it: a seeded stretch of the island's own
   const hours = forecast(w, 30 * 24, rng(7));
-  const fate = seedlingFate(bedAt(w, spot.px, spot.py, "berry"), false, ahead(w, spot.px, spot.py, w.t, hours));
+  const fate = seedlingFate(bedAt(w, spot.px, spot.py, "berry"), ahead(w, spot.px, spot.py, w.t, hours));
   const t = addThing(w, "sapling", spot.px, spot.py, { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5 });
   const first = Math.ceil((w.t + 1) / 12) * 12, end = w.t + 30 * DAY;
   hooks.weather = (w) => { const h = hours[(w.t - first) / 12]; Object.assign(w.weather, { sky: h.sky, speed: h.speed }); };

@@ -35,7 +35,7 @@ import { beliefKey, fieldsOf, groundKey, ofPlace, ruledOut, type Belief } from "
 import { moistureOf } from "../src/sim/wetness";
 import { ahead, bedAt, seedlingFate, type Bed, type Hour } from "../src/sim/seedling";
 import { envHere } from "../src/sim/plants";
-import { feedRate, fertilityAt } from "../src/sim/soil";
+import { fertilityAt } from "../src/sim/soil";
 import { fit } from "../src/terrain/niche";
 import { RULES, hooks } from "../src/sim/rules";
 import { seedRandom } from "./seeded";
@@ -496,12 +496,12 @@ function comingUp(w: World, at: Pos, beds: Bed[], weathers: Hour[][]) {
   const up = beds.map(() => 0);
   for (const hours of weathers) {
     const to = ahead(w, at.px, at.py, w.t, hours);
-    beds.forEach((b, i) => { if (seedlingFate(b, false, to) !== null) up[i]++; });
+    beds.forEach((b, i) => { if (seedlingFate(b, to) !== null) up[i]++; });
   }
   return up;
 }
 // What open ground at a point would give a berry once cleared: the whole sky's light, and nothing round it to share with.
-const openBed = (w: World, at: Pos): Bed => ({ fit: fit("berry", { ...envHere(w, at.px, at.py), light: 1, fert: fertilityAt(w, at.px, at.py) }), share: 1, light: 1, feed: feedRate(w, at.px, at.py) });
+const openBed = (w: World, at: Pos): Bed => ({ fit: fit("berry", { ...envHere(w, at.px, at.py), light: 1, fert: fertilityAt(w, at.px, at.py) }), share: 1, light: 1, niche: "berry" });
 // A plot for each of n planters, in a column running south from the first spot near (at) where every plot is dry and
 // has soil enough for a seed everywhere a seed or the oak or a bush could go, no other kind of ground is in sight to go
 // and try, and a berry put in the open spots east of them would come up, as the probe's sky makes the weather (or

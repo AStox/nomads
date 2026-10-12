@@ -1,4 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
+import { SEEDLINGS } from "./plants";
 import { DAY, H, TILE_M, W, addThing, dryAt, meters, newWorld, type Agent, type Thing, type World } from "./world";
 import { giveItems, groundWord, plant, removeThing, soilAt } from "./physics";
 import { around, put, thingById } from "./space";
@@ -38,6 +39,8 @@ const sow = async () => {
   a.goal = { type: "plant", since: w.t, odds: {}, fails: 0 };
   a.plan = [{ op: "tinker", progress: 0, started: w.t, act: { verb: "plant", items: ["berry"] } }];
   await run(40, () => a.plan[0]?.op !== "tinker");
+  // and then they wait, doing nothing else
+  a.nextDecide = w.t + DAY * 10;
   return thingById(w, a.waiting?.at(-1)?.thing)!;
 };
 // midsummer, midday, everything they need
@@ -85,7 +88,7 @@ test("what's planted is judged when it comes up: the planter waits, learns how l
   expect(first.kind).toBe("sapling");
   expect(a.beliefs[key]).toMatchObject({ tries: 1, wins: 0 });
   // it comes up: now it has worked, on this ground, and they know how long it took
-  first.stage = 0.95;
+  first.dry = SEEDLINGS.berry.up * 0.95;
   const planted = a.waiting![0].t;
   await run(600, () => first.kind !== "sapling");
   expect(first.kind).toBe("bush");
@@ -98,8 +101,8 @@ test("what's planted is judged when it comes up: the planter waits, learns how l
   // the next one, on the same ground, starved of what it needs: it withers, and that counts against the ground, beside
   // the one that came up
   const second = await sow();
-  second.fit = 0;
-  second.hp = 0.01;
+  // it has burnt down to less than half the most it weighed
+  second.peak = SEEDLINGS.berry.up;
   await run(30, () => !thingById(w, second.id));
   expect(thingById(w, second.id)).toBeUndefined();
   expect(b).toMatchObject({ tries: 2, wins: 1 });
