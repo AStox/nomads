@@ -71,8 +71,13 @@ test("a stick 12.7 mm thick comes about 63% of the way to new air in ten hours",
   at(w, 0);
   const b = apart(w, a, 1);
   giveStack(w, b, round("stick", 0.0127, 0.5));
-  hours(w, 10);
-  const air = airOn(w, b, true), eq = equilibrium(air.temp, vapourAt(w, b.px, b.py, w.t));
+  // the air it's drying toward moves through the hours: the way to it is measured against its mean over them
+  let eq = 0;
+  for (let i = 0; i < 10; i++) {
+    hours(w, 1);
+    const air = airOn(w, b, true);
+    eq += equilibrium(air.temp, vapourAt(w, b.px, b.py, w.t)) / 10;
+  }
   expect((0.5 - held(b, "stick").m!) / (0.5 - eq)).toBeGreaterThan(0.55);
   expect((0.5 - held(b, "stick").m!) / (0.5 - eq)).toBeLessThan(0.72);
 });

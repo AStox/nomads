@@ -1,5 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
-import { SEEDLINGS } from "./plants";
+import { SEEDLINGS, fitHere } from "./plants";
 import { DAY, TILE_M, addThing, isNight, newWorld, type Thing, type World } from "./world";
 import { bedAir, carriedOutput, fireOf, fireOutput, removeThing } from "./physics";
 import { advance } from "./combustion";
@@ -244,7 +244,19 @@ test("a hungry wolf takes a lone person who is out in the dark, and leaves one i
 });
 
 test("seedlings grow in the open and burn down in the deep shade of a grove", () => {
-  const { w, px, py } = pad(8);
+  const pd = pad(8), w = pd.w;
+  // the nearest point to the pad's middle where a berry's ground suits it (plants.ts fitHere), there and 40 m east,
+  // cleared of anything standing within 60 m
+  const suits = (x: number, y: number) => fitHere(w, "berry", x, y) > 0.5 && fitHere(w, "berry", x + 40 / TILE_M, y) > 0.5;
+  let px = pd.px, py = pd.py;
+  for (let r = 0; r <= 250 && !suits(px, py); r += 10)
+    for (let k = 0; k < 16 && !suits(px, py); k++) { px = pd.px + (Math.cos((k * Math.PI) / 8) * r) / TILE_M; py = pd.py + (Math.sin((k * Math.PI) / 8) * r) / TILE_M; }
+  expect(suits(px, py)).toBe(true);
+  for (const at of [{ px, py }, { px: px + 40 / TILE_M, py }]) {
+    const here: Thing[] = [];
+    around(w, at.px, at.py, 60, null, (t) => void here.push(t));
+    for (const t of here) removeThing(w, t);
+  }
   grove(w, px, py);
   const shaded = addThing(w, "sapling", px, py + 1 / TILE_M, { stage: 0 });
   const open = addThing(w, "sapling", px + 40 / TILE_M, py, { stage: 0 });

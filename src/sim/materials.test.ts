@@ -299,6 +299,7 @@ test("a seedling's hours ahead come to what ecology makes of the same weather, h
   } finally {
     hooks.weather = undefined;
   }
-  // the hour it came up, counted from the first it was tended; none if it withered or never did
-  expect(thingById(w, t.id)?.kind === "bush" ? (w.t - first) / 12 : null).toBe(fate);
+  // the hour it came up or withered, counted from the first it was tended; none if it did neither
+  const now = thingById(w, t.id)?.kind;
+  expect(now === "bush" ? { up: true, hours: (w.t - first) / 12 } : now === undefined ? { up: false, hours: (w.t - first) / 12 } : null).toEqual(fate);
 });

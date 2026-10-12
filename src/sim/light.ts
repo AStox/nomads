@@ -9,7 +9,8 @@ import { DAY, TILE_M, groundOf, hourOf, meters, perWorld, type Thing, type World
 import { SIZE, clamp, smooth } from "../terrain/flora";
 import { around, liveThings, lookAround } from "./space";
 import { ablaze, carriedOutput, fireOutput, isFlame } from "./physics";
-import { COVER, STAR_LUX, beam, moonAt, moonLux, sunAt, sunLux, through } from "./sky";
+import { COVER, STAR_LUX, beam, moonAt, moonLux, sunAt, sunLux, through as throughCloud } from "./sky";
+import { sieve, through } from "../terrain/growth";
 
 // ---------- crowns ----------
 // A crown's radius as a share of its tree's height, by species: the width sprites.js draws it at (oak 0.8 of its height, ash
@@ -49,12 +50,10 @@ export function crownsAt(w: World, px: number, py: number): Crowns {
   return out;
 }
 export const canopyAt = (w: World, px: number, py: number) => crownsAt(w, px, py).cover;
-// Leaves let a little through: under one crown an eighth of the sky's glow and a twenty-sixth of the sun's beam, which crosses
-// more of them; where two overlap, a sixty-fourth of the glow, and no more is lost past that.
-const LEAVES = 2.6;
-const sieve = (cover: number) => LEAVES * Math.min(cover, 2);
+// Leaves let a little through (terrain/growth.ts through): under one crown an eighth of the sky's glow and a twenty-sixth of
+// the sun's beam, which crosses more of them; where two overlap, a sixty-fourth of the glow, and no more is lost past that.
 // The share of the sky's light that reaches the ground through the crowns over a point.
-export const skyShare = (w: World, px: number, py: number) => Math.exp(-0.8 * sieve(canopyAt(w, px, py)));
+export const skyShare = (w: World, px: number, py: number) => through(canopyAt(w, px, py));
 
 // ---------- the sky now ----------
 type Sky = { t: number; sky: string; el: number; tan: number; dir: [number, number]; day: number; beam: number; night: number };
@@ -63,7 +62,7 @@ function skyNow(w: World): Sky {
   const old = skies.get(w);
   if (old && old.t === w.t && old.sky === w.weather.sky) return old;
   const hour = hourOf(w.t), day = Math.floor(w.t / DAY) + 1, sun = sunAt(day, hour), moon = moonAt(day, hour);
-  const cover = COVER[w.weather.sky], open = through(cover);
+  const cover = COVER[w.weather.sky], open = throughCloud(cover);
   // day: the sun's beam and the sky's glow on open ground; night: the moon's and the stars'
   const s: Sky = { t: w.t, sky: w.weather.sky, el: sun.el, tan: sun.tan, dir: sun.dir, day: sunLux(sun.el) * open, beam: beam(sun.el, cover), night: (moonLux(moon) + STAR_LUX) * (0.3 + 0.7 * open) };
   skies.set(w, s);

@@ -57,7 +57,11 @@ import { bootstrap, mean } from "./stats";
 // is held run by run between what learning nothing and the true theory score; truthward and unsuperstitious are gone,
 // since learning nothing meets them; theories' churn is counted; the kindling probe is new. The answer key stages lays
 // from the island's own pieces and fires as people keep them.
-const VERSION: Record<string, number> = { probes: 6, worlds: 6, live: 6 };
+// probes 7: seedlings grow by their carbon (docs/research/plant-constants.md): one in deep shade lingers rather than
+// withers, so a planter counts one given up on after a growing season as not having worked; the planting probes sow
+// from the first day of spring, see over the summer and autumn what never came up, and sow again the next spring, under
+// the island's own cloud; deep shade, the crowns' or the plants' crowded round, is their one cause.
+const VERSION: Record<string, number> = { probes: 7, worlds: 6, live: 6 };
 const ROOT = join(import.meta.dir, ".."), DATA = join(ROOT, "data/evals");
 type Numbers = Record<string, number | null>;
 // what a tier measured: by variant ("blame/real", "seen"...), by seed, its numbers

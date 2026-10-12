@@ -28,8 +28,8 @@ import { enrich, fertilityAt, soilWaterAt } from "./soil";
 import { DAMP, SOAKED, moistureOf, tinder, tinderOf } from "./wetness";
 import { PHYS, asFound, physOf, stackPhys } from "./fuel";
 import { LEAST, advance, alight, drowned, output, radiation, type Air as BedAir, type Bed } from "./combustion";
-import { compensation, envHere } from "./plants";
-import { nicheOf, seedlingOf, shareAt } from "./seedling";
+import { envHere } from "./plants";
+import { PATIENCE, nicheOf, shareAt, tooDark } from "./seedling";
 import type { Env } from "../terrain/niche";
 import { travel } from "./journeys";
 import { RULES, hooks } from "./rules";
@@ -852,8 +852,9 @@ const CONDITIONS: Record<string, Condition> = {
   coals: { now: (x) => { const f = x.fire(); return !!f?.bed && alight(f.bed) && output(f.bed, f.air).flaming <= 0; }, words: "Nothing was left of the fire but coals", verbs: AT_FIRE, on: "only coals", off: "flaming" },
   nofish: { now: (x) => !fishClose(x.w, x.a, x.at, x.items.some((k) => lineLike(x.w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket), words: "No fish were swimming close by", verbs: ["wet"] },
   shade: { now: (x) => x.spot().light < 0.5, words: "It was in the shade of trees", place: true },
-  // below the light at which the seed going in makes no more than it burns (plants.ts compensation)
-  deep: { now: (x) => x.spot().light < compensation(seedlingOf(nicheOf({ item: x.items[0] }))), words: "It was in deep shade under the trees", place: true },
+  // too dark for the seed going in to come up there in as long as anyone waits on one, in the light the crowns overhead
+  // and the plants close round it leave it (seedling.ts tooDark)
+  deep: { now: (x) => { const g = x.spot(); return g.light * g.share < tooDark(x.w, nicheOf({ item: x.items[0] }), x.at.px, x.at.py, x.w.t, g.share); }, words: "It was in deep shade", place: true },
   dry: { now: (x) => x.spot().water < 0.5, words: "The ground there was dry", place: true },
   crowded: { now: (x) => x.spot().share < 0.8, words: "Bushes or trees grew close round it", place: true },
   sour: { now: (x) => x.spot().env.ph < 4.5, words: "The soil there was sour", place: true },
@@ -1105,11 +1106,13 @@ onWithered((w, t) => {
   for (const a of w.agents) for (const e of waitingOn(a, t.id)) { const b = a.beliefs[e.key]; if (b) judged(w, a, b, false, e.now, e.t); }
 });
 // Once a day: what they were waiting on that's gone without coming up (burned, broken off for a stick) they stop waiting
-// for, as they do anything waited on past all hope, neither telling them why.
+// for, neither telling them why; what has stood there without coming up as long as anyone waits on one (seedling.ts
+// PATIENCE) they give up on, and count it as not having worked, as they would one that withered.
 function giveUpWaiting(w: World) {
   for (const a of w.agents) {
     if (!a.waiting) continue;
-    a.waiting = a.waiting.filter((e) => thingById(w, e.thing) && w.t - e.t < DAY * 30);
+    for (const e of a.waiting) if (w.t - e.t >= PATIENCE && thingById(w, e.thing)) { const b = a.beliefs[e.key]; if (b) judged(w, a, b, false, e.now, e.t); }
+    a.waiting = a.waiting.filter((e) => thingById(w, e.thing) && w.t - e.t < PATIENCE);
     if (!a.waiting.length) delete a.waiting;
   }
 }

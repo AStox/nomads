@@ -6,13 +6,15 @@
 // poured round it soaks in [gap: a pour's own physics]. Ecology runs it on every seedling there is; seedlingFate runs
 // it ahead on one not yet in the ground, over the weather the coming days might bring, for what the world's own formulas
 // say comes of planting there (scripts/probes.ts, scripts/truth.ts).
-import { type Thing, type World } from "./world";
+import { DAY, type Thing, type World } from "./world";
+import { YEAR_DAYS } from "./sky";
 import { TREES } from "../terrain/flora";
 import { around } from "./space";
-import { SEEDLINGS, fitHere, seedlingGain, type Seedling } from "./plants";
+import { SEEDLINGS, YEARS_PACE, fitHere, seasonsHere, seedlingGain, type Seedling } from "./plants";
+import { keptOf, madeOf } from "../terrain/growth";
 import { skyShare } from "./light";
 import { soilWater } from "./soil";
-import { islandTemp, placeTemp, sunOn } from "./air";
+import { islandTemp, placeTemp, seasonAt, sunOn } from "./air";
 
 // The weather at a turn of the sky, an hour apart: the sky, the wind over the open sea, and the rain still running off
 // the land (world.ts Weather).
@@ -25,6 +27,24 @@ export const treeOf = (t: { species?: string; item?: string }) => (TREES as read
 export const nicheOf = (t: { species?: string; item?: string }) => (treeOf(t) ? (t.species && t.species !== "berry" ? t.species : "oak") : t.item === "grain" ? "grass" : "berry");
 // What a seedling of this niche is (plants.ts SEEDLINGS).
 export const seedlingOf = (niche: string): Seedling => SEEDLINGS[niche] ?? SEEDLINGS.berry;
+// How long anyone waits on what they put in the ground before giving it up (sim.ts giveUpWaiting), and how far ahead the
+// world's own formulas look for what comes of a planting: a growing season, the warm half of the year [design].
+export const PATIENCE = (DAY * YEAR_DAYS) / 2;
+// The least share of the open sky's sun in which seed of a niche going into the ground at a point at tick t comes up
+// within PATIENCE: all it must grow, from its seed's mass to what it comes up at, over what a gram of it makes in the open
+// and burns day by day there, the island's seasons at the point drawn between their middles (air.ts seasonAt), as well as
+// the ground suits it and on the share of the soil's water the plants round it leave it (share) [derived: the seasons'
+// means, not the weather the days bring].
+export function tooDark(w: World, niche: string, px: number, py: number, t = w.t, share = 1) {
+  const k = seedlingOf(niche), here = seasonsHere(w, px, py);
+  let made = 0, kept = 0;
+  for (let d = 0; d < PATIENCE / DAY; d++) {
+    const { s, f } = seasonAt(t + d * DAY), mix = (a: number[]) => a[s] * (1 - f) + a[(s + 1) % 4] * f, temp = mix(here.temp);
+    made += madeOf(k.sla, mix(here.sun), temp, mix(here.water) * share);
+    kept += keptOf(temp);
+  }
+  return (Math.log(k.up / k.seed) / YEARS_PACE + kept) / (made * fitHere(w, niche, px, py));
+}
 // The share of the light and water at a spot left to a seedling this far along (stage) by the grown plants close round
 // it: all of it with none within two meters, half with a bush right beside it, less with more. Seedlings further along
 // than it count a little; itself (self), not at all [gap].
@@ -75,13 +95,15 @@ export function ahead(w: World, px: number, py: number, at: number, hours: Hour[
 // leave it, and the share of the sky's sun the crowns let through.
 export type Bed = { fit: number; share: number; light: number; niche: string };
 export const bedAt = (w: World, px: number, py: number, niche: string): Bed => ({ fit: fitHere(w, niche, px, py), share: shareAt(w, px, py), light: skyShare(w, px, py), niche });
-// What comes of seed pushed into the ground in a bed, the weather to come being what `ahead` makes of it: how many hours
-// on it comes up, or null if it withers or is still a seedling when the hours run out. water: what's poured round it.
-export function seedlingFate(bed: Bed, to: Ahead, water = 0): number | null {
+// What comes of seed pushed into the ground in a bed, the weather to come being what `ahead` makes of it: whether it
+// comes up or withers and how many hours on, or null if it is still a seedling when the hours run out. water: what's
+// poured round it.
+export type Fate = { up: boolean; hours: number } | null;
+export function seedlingFate(bed: Bed, to: Ahead, water = 0): Fate {
   const k = seedlingOf(bed.niche), s: Sprout = { stage: 0, water };
   for (let i = 0; i < to.soil.length; i++) {
     const r = seedlingHour(s, k, bed.fit, bed.share, to.soil[i], to.temp[i], to.sun?.[i] ?? 0, bed.light);
-    if (r) return r === "up" ? i : null;
+    if (r) return { up: r === "up", hours: i };
   }
   return null;
 }

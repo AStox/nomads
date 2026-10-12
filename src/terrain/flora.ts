@@ -6,6 +6,7 @@ import type { Island } from "./island";
 import { ROCKS, type Rock } from "./geology";
 import { widthOf } from "./water";
 import { NICHE, draw, envAt, fit, lightFit } from "./niche";
+import { SLA, through, thrive, yearComp } from "./growth";
 
 export const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 export const smooth = (a: number, b: number, v: number) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
@@ -196,20 +197,31 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
   };
   const { h, wet, moist, river, cover, fine, heightAt, slopeAt, dry, bilinear } = g;
   const cellOf = (v: number) => (v - START) / CELL;
-  // Every plant's fit at every cell but for the light it gets (niche.ts), worked out once and read between cells.
-  const NS = PLANTS.length, table = new Float32Array(N * N * NS), fits = new Float32Array(NS);
+  // Every plant's fit at every cell but for the light it gets (niche.ts), and for a green plant the share of the open
+  // sky's sun it needs there to make what it burns over the year (growth.ts yearComp): the cell's sun, warmth and soil
+  // water through the seasons, as well as the ground suits it. Worked out once and read between cells.
+  const NS = PLANTS.length, table = new Float32Array(N * N * NS), comps = new Float32Array(N * N * NS), fits = new Float32Array(NS), comp = new Float32Array(NS);
+  const seasons = isle.seasons.length, sun = new Float32Array(seasons), temp = new Float32Array(seasons), water = new Float32Array(seasons);
   for (let i = 0; i < N * N; i++) {
     if (isle.height[i] < -2) continue;
     const e = envAt(isle, bilinear, START + (i % N) * CELL, START + Math.floor(i / N) * CELL, NaN, START);
-    for (let k = 0; k < NS; k++) table[i * NS + k] = fit(PLANTS[k], e);
+    for (let s = 0; s < seasons; s++) { sun[s] = isle.seasons[s].sun[i]; temp[s] = isle.seasons[s].temp[i]; water[s] = isle.soilWater[s][i]; }
+    for (let k = 0; k < NS; k++) {
+      const f = (table[i * NS + k] = fit(PLANTS[k], e)), sla = SLA[PLANTS[k]];
+      comps[i * NS + k] = sla ? Math.min(2, yearComp(sla, sun, temp, water, f)) : 0;
+    }
   }
   const fitsAt = (x: number, z: number) => {
     const cx = clamp(cellOf(x), 0, N - 1.001), cy = clamp(cellOf(z), 0, N - 1.001), x1 = cx | 0, y1 = cy | 0, tx = cx - x1, ty = cy - y1, i = (y1 * N + x1) * NS;
-    for (let k = 0; k < NS; k++)
-      fits[k] = (table[i + k] * (1 - tx) + table[i + NS + k] * tx) * (1 - ty) + (table[i + N * NS + k] * (1 - tx) + table[i + N * NS + NS + k] * tx) * ty;
+    const between = (f: Float32Array, k: number) => (f[i + k] * (1 - tx) + f[i + NS + k] * tx) * (1 - ty) + (f[i + N * NS + k] * (1 - tx) + f[i + N * NS + NS + k] * tx) * ty;
+    for (let k = 0; k < NS; k++) { fits[k] = between(table, k); comp[k] = between(comps, k); }
   };
-  // the fits of one layer's plants (PLANTS[at] onward) in the light they get
-  const layer = (at: number, names: readonly Species[], light: number, out: Float32Array) => { for (let k = 0; k < names.length; k++) out[k] = fits[at + k] * lightFit(names[k], light); return out; };
+  // the fits of one layer's plants (PLANTS[at] onward) in the light they get: a green plant by how far that light clears
+  // its compensation point (growth.ts thrive), a fungus by its niche's light
+  const layer = (at: number, names: readonly Species[], light: number, out: Float32Array) => {
+    for (let k = 0; k < names.length; k++) out[k] = fits[at + k] * (SLA[names[k]] ? thrive(light, comp[at + k]) : lightFit(names[k], light));
+    return out;
+  };
   const treeF = new Float32Array(TREES.length), shrubF = new Float32Array(SHRUBS.length), lowF = new Float32Array(8);
   for (let v = 0; v < M - 1; v++)
     for (let u = 0; u < M - 1; u++) {
@@ -232,24 +244,24 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
         }
       }
       if (wet[i] > 0.3 || h[i] < 0.8) continue;
-      // What the quad's ground offers each plant, in the light that reaches its layer: trees stand in the open sky;
-      // shrubs in what the crowns leave; the low plants, which grow from spring into summer, in what reaches the floor
-      // over those months, more under bare spring branches than under a pine's all-year needles.
+      // What the quad's ground offers each plant, in the light that reaches its layer: trees stand in the open sky; what
+      // grows under them in the open share of the quad and, in the rest, what one crown lets through (growth.ts through),
+      // as the game has it.
       fitsAt(x0 + STEP / 2, z0 + STEP / 2);
       const slope = slopeAt(x0, z0);
       layer(0, TREES, 1, treeF);
-      let fitSum = 0, evergreen = 0;
-      for (const [k, t] of TREES.entries()) { fitSum += treeF[k]; if (NICHE[t].evergreen) evergreen += treeF[k]; }
-      const ev = fitSum > 0 ? evergreen / fitSum : 0, under = 1 - 0.85 * tree * (0.5 + 0.5 * (ev + (1 - ev) * 0.3));
-      layer(TREES.length, SHRUBS, 1 - 0.7 * tree, shrubF);
-      for (let c = Math.floor(tree * 3.6 + r()); c > 0; c--) {
+      const under = 1 - tree + tree * through(1);
+      layer(TREES.length, SHRUBS, under, shrubF);
+      // none of a layer where none of its plants can keep itself
+      const any = (f: Float32Array, n: number) => { for (let k = 0; k < n; k++) if (f[k] > 0) return true; return false; };
+      for (let c = any(treeF, TREES.length) ? Math.floor(tree * 3.6 + r()) : 0; c > 0; c--) {
         const [x, z] = spot();
         if (!dry(x, z) || slopeAt(x, z) > 0.7) continue;
         const sp = draw(TREES, treeF, r());
         put(F.tree, S[sp], x, z, TALL[sp] * clamp(0.45 + 0.75 * treeF[TREES.indexOf(sp)], 0.45, 1.2) * (0.7 + r() * 0.55));
       }
       const edge = tree * (1 - tree) * 4;
-      for (let c = Math.floor((shrub * 5 + edge * 1.2) * 0.6 + r()); c > 0; c--) {
+      for (let c = any(shrubF, SHRUBS.length) ? Math.floor((shrub * 5 + edge * 1.2) * 0.6 + r()) : 0; c > 0; c--) {
         const [x, z] = spot();
         if (!dry(x, z)) continue;
         const sp = draw(SHRUBS, shrubF, r());
@@ -282,7 +294,7 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
       // The low plants: as many as the best fitted of their kind would hold, each of a kind drawn by its fit.
       const low = <T extends Species>(names: readonly T[], base: number, make: (sp: T, f: number, x: number, z: number) => void) => {
         const f = layer(PLANTS.indexOf(names[0]), names, under, lowF), best = Math.max(...f.subarray(0, names.length));
-        for (let c = Math.floor(base * (0.2 + best) + r()); c > 0; c--) {
+        for (let c = best > 0 ? Math.floor(base * (0.2 + best) + r()) : 0; c > 0; c--) {
           const [x, z] = spot();
           if (!dry(x, z)) continue;
           const sp = draw(names, f, r());

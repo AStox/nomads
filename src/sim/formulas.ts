@@ -174,7 +174,7 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
       const spot = f.verb === "plant" ? spotNear(w, s.spot, SEED_SOIL, false) : ([s.spot.px, s.spot.py] as const);
       if (!spot) return out(false, ticks);
       const seed = f.verb === "plant" ? { item: f.inputs[0] } : { item: "berry" }, niche = nicheOf(seed), tree = treeOf(seed);
-      const up = seedlingFate(bedAt(w, spot[0], spot[1], niche), s.ahead, f.verb === "pour" ? 0.5 : 0) !== null;
+      const up = seedlingFate(bedAt(w, spot[0], spot[1], niche), s.ahead, f.verb === "pour" ? 0.5 : 0)?.up === true;
       return out(up, ticks, { spot, ...(up ? { builds: tree ? "tree" : niche === "grass" ? "grass" : "bush" } : {}) });
     }
     case "throw": {

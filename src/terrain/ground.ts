@@ -5,6 +5,7 @@ import { clamp } from "math";
 import { CELL, LEN, N, ramp } from "./grid";
 import { ROCKS } from "./geology";
 import type { Season } from "./climate";
+import { SLA, yearComp } from "./growth";
 
 export type Ground = {
   soil: Float32Array; // regolith depth, m
@@ -27,12 +28,19 @@ export type Site = {
   seasons: Season[];
 };
 
+// The leaf areas of each form's kinds (growth.ts SLA, flora.ts TREES and SHRUBS).
+const TREE_SLA = [SLA.pine, SLA.oak, SLA.ash, SLA.aspen], SHRUB_SLA = [SLA.berry, SLA.hazel, SLA.heather, SLA.gorse];
+// Whether any of a form's kinds (their leaf areas) keeps itself here in the open over the year: makes more of the
+// seasons' sun (MJ/m2 a day), warm and watered as they are there, than it burns (growth.ts yearComp). 1 if so, else 0.
+const keeps = (slas: number[], sun: ArrayLike<number>, temp: ArrayLike<number>, water: ArrayLike<number>) => (slas.some((sla) => yearComp(sla, sun, temp, water, 1) < 1) ? 1 : 0);
+
 export function ground(s: Site): Ground {
   const { height: h } = s;
   const soil = new Float32Array(LEN), silt = new Float32Array(LEN), sand = new Float32Array(LEN), peat = new Float32Array(LEN), moist = new Float32Array(LEN);
   const soilWater = [0, 1, 2, 3].map(() => new Float32Array(LEN).fill(1));
   const sandy = new Float32Array(LEN), clayey = new Float32Array(LEN), humus = new Float32Array(LEN), ph = new Float32Array(LEN).fill(7), fertility = new Float32Array(LEN);
   const tree = new Float32Array(LEN), shrub = new Float32Array(LEN), grass = new Float32Array(LEN), marsh = new Float32Array(LEN), bare = new Float32Array(LEN);
+  const sun = new Float32Array(4), temp = new Float32Array(4), water = new Float32Array(4);
   // Slope and curvature over a smoothed surface, so soil answers to hillsides and hollows rather than single cells.
   let hb = new Float32Array(LEN);
   for (let i = 0; i < LEN; i++) hb[i] = Math.max(0, h[i]);
@@ -89,16 +97,20 @@ export function ground(s: Site): Ground {
         if (year) { short += pet[i] - used; want += pet[i]; soilWater[k][i] = Math.max(store / cap, Math.exp(-s.table[i] / 2.5)); }
       }
     moist[i] = Math.max(want > 0 ? 1 - short / want : 1, Math.exp(-s.table[i] / 2.5));
-    const summer = s.seasons[1].temp[i];
     const harsh = clamp(ramp(s.exposure[i], 0.45, 0.85) + ramp(s.salt[i], 0.3, 0.7), 0, 1);
-    // Trees want deep, moist, sheltered ground, the better fed the better. Heath takes thin soil where it's always wet,
-    // wind-scoured or sour, the way moorland does. Grass takes what's too dry or thin for either, and thrives where the
-    // soil is rich.
-    const pTree = ramp(summer, 11, 15) * ramp(soil[i], 0.3, 0.9) * ramp(moist[i], 0.72, 0.92) * (1 - peat[i]) ** 2 * (1 - harsh) ** 2 * (1 - sand[i]) * (0.8 + 0.2 * ramp(fertility[i], 0.05, 0.3));
+    // Each form grows here only if one of its kinds keeps itself through the year (growth.ts): makes more of the seasons'
+    // sun, while warm and watered enough, than it burns to stay alive. How fast it grows decides nothing here: the
+    // taller form takes the light wherever it can live.
+    for (let k = 0; k < 4; k++) { sun[k] = s.seasons[k].sun[i]; temp[k] = s.seasons[k].temp[i]; water[k] = soilWater[k][i]; }
+    const gTree = keeps(TREE_SLA, sun, temp, water), gShrub = keeps(SHRUB_SLA, sun, temp, water), gGrass = keeps([SLA.grass], sun, temp, water);
+    // Trees want deep, sheltered ground, the better fed the better. Heath takes thin soil where it's always wet,
+    // wind-scoured or sour, the way moorland does. Grass takes what's too thin for either, and thrives where the soil is
+    // rich [gap: the soil, shelter and moor terms are the old hand-set ramps].
+    const pTree = gTree * ramp(soil[i], 0.3, 0.9) * (1 - peat[i]) ** 2 * (1 - harsh) ** 2 * (1 - sand[i]) * (0.8 + 0.2 * ramp(fertility[i], 0.05, 0.3));
     const moor = Math.max(ramp(s.precip[i] - s.pet[i], 300, 900), ramp(s.exposure[i], 0.35, 0.7), 0.6 * ramp(5.2 - ph[i], 0, 1));
-    const pShrub = ramp(soil[i], 0.05, 0.25) * ramp(moist[i], 0.6, 0.85) * moor * (1 - 0.6 * ramp(soil[i], 0.8, 2)) * (1 - 0.3 * harsh) * (1 - 0.8 * sand[i]);
+    const pShrub = gShrub * ramp(soil[i], 0.05, 0.25) * moor * (1 - 0.6 * ramp(soil[i], 0.8, 2)) * (1 - 0.3 * harsh) * (1 - 0.8 * sand[i]);
     const pMarsh = peat[i] * ramp(soil[i], 0.02, 0.15);
-    const pGrass = ramp(soil[i], 0.02, 0.12) * ramp(moist[i], 0.15, 0.4) * (1 - 0.6 * sand[i]) * (1 - 0.5 * peat[i]) * (0.7 + 0.3 * ramp(fertility[i], 0.05, 0.4));
+    const pGrass = gGrass * ramp(soil[i], 0.02, 0.12) * (1 - 0.6 * sand[i]) * (1 - 0.5 * peat[i]) * (0.7 + 0.3 * ramp(fertility[i], 0.05, 0.4));
     // Taller plants shade out shorter ones where both could grow.
     tree[i] = pTree;
     shrub[i] = pShrub * (1 - tree[i]);

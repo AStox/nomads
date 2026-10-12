@@ -3,7 +3,7 @@ import { DAY, TILE_M, addThing, dryAt, newWorld, rng, type Thing, type World } f
 import { ecology, fire } from "./ecology";
 import { bedAir, fireOf, fireOutput, removeThing } from "./physics";
 import { anyOf, around, exists, liveThings } from "./space";
-import { advance, kindle } from "./combustion";
+import { advance, alight, kindle } from "./combustion";
 import { REF } from "./wetness";
 import { bedOf, partsOf, struck, warmed } from "./spread";
 import { airAt } from "./air";
@@ -178,18 +178,11 @@ test("a thing heated by a fire whose heat stops cools, and doesn't light later",
 }, 60_000);
 
 test("a seeded world run replays the same spread exactly", () => {
-  // the island's own grass, the tussock with the most grass round it of forty drawn, a campfire a metre west of it, and
-  // a dry, cured, windy afternoon for an hour and a half
+  // the island's own grass, the tussock with the most grass round it of forty drawn where a campfire a metre west of it
+  // stays alight its first minute, that campfire, and a dry, cured, windy afternoon for an hour and a half
   const run = () => seeded(7, () => {
     const isle = newWorld(5);
     isle.agents = [];
-    let best: Thing | null = null, most = -1;
-    for (let i = 0; i < 40; i++) {
-      const g = anyOf(isle, "grass", Math.random);
-      let n = 0;
-      if (g) around(isle, g.px, g.py, 20, ["grass"], () => { n++; });
-      if (g && n > most) [best, most] = [g, n];
-    }
     const pin = (x: World) => {
       Object.assign(x.weather, { sky: "clear", wind: { dx: 1, dy: 0.2 }, speed: 12 });
       x.weather.dead = { open: REF.map(() => DRY), shade: REF.map(() => DRY) };
@@ -198,6 +191,18 @@ test("a seeded world run replays the same spread exactly", () => {
     };
     pin(isle);
     hooks.weather = pin;
+    const holds = (g: Thing) => {
+      const f = fireOf(isle, g.px - m(1), g.py), lit = alight(advance(f.bed!, MIN, bedAir(isle, f)));
+      removeThing(isle, f);
+      return lit;
+    };
+    let best: Thing | null = null, most = -1;
+    for (let i = 0; i < 40; i++) {
+      const g = anyOf(isle, "grass", Math.random);
+      let n = 0;
+      if (g) around(isle, g.px, g.py, 20, ["grass"], () => { n++; });
+      if (g && n > most && holds(g)) [best, most] = [g, n];
+    }
     const spread: string[] = [];
     const watch = (e: TraceEntry) => { if (e.sys === "fire" && e.kind === "spread") spread.push(`${isle.t} ${JSON.stringify(e.data)}`); };
     traceListeners.push(watch);

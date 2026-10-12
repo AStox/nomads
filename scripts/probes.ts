@@ -29,11 +29,13 @@ import { wetHour } from "../src/sim/soil";
 import { traceListeners, type TraceEntry } from "../src/sim/trace";
 import { asking, brainKind, useBrain } from "../src/sim/brain";
 import { DARK, lightOn, skyShare } from "../src/sim/light";
-import { airOn, islandTemp } from "../src/sim/air";
+import { airOn, islandTemp, seasonAt } from "../src/sim/air";
+import { SEASONS } from "../src/terrain/climate";
+import { YEAR_DAYS } from "../src/sim/sky";
 import { anyAround, around, put, thingById } from "../src/sim/space";
 import { beliefKey, fieldsOf, groundKey, ofPlace, ruledOut, type Belief } from "../src/sim/beliefs";
 import { moistureOf } from "../src/sim/wetness";
-import { ahead, bedAt, seedlingFate, type Bed, type Hour } from "../src/sim/seedling";
+import { PATIENCE, ahead, bedAt, seedlingFate, type Bed, type Hour } from "../src/sim/seedling";
 import { envHere } from "../src/sim/plants";
 import { fertilityAt } from "../src/sim/soil";
 import { fit } from "../src/terrain/niche";
@@ -71,7 +73,7 @@ const SPINDLES = way("rub", ["spindle", "spindle", "fiber", "stick", "stick", "s
 const TWIG = pieceOf({ kind: "stick", size: 0.5 }, "stick")!, THICK = { size: roundSize("generic", 0.035, 1) }, KEPT = 0.12, KEPT_TINDER = 0.06;
 const piece = (w: World, p: { size: Stack["size"]; species?: string }): Stack => ({ k: "stick", hp: 1, born: w.t, m: KEPT, size: p.size, ...(p.species ? { species: p.species } : {}) });
 // Each hour, the chance of rain and of a gale, given whether it is dark where they are.
-type Sky = (dark: boolean) => { rain: number; wind: number };
+type Sky = (dark: boolean, t: number) => { rain: number; wind: number; cloud?: number };
 // ways: what they know to make a fire with; causes: the conditions anyone can see that the formula makes it fail in, as
 // staged (what the evidence is held to, and the record); bystander: one that comes with them and doesn't matter; half:
 // what changes halfway, the sky and bags to keep their tinder dry, the causes from then on and the one they'd have had
@@ -105,8 +107,13 @@ const squally: Sky = () => ({ rain: 0.35, wind: 0.35 });
 const nightRain: Sky = (dark) => ({ rain: dark ? 0.3 : 0.02, wind: 0 });
 const gusty: Sky = () => ({ rain: 0, wind: 1 / 12 });
 // The planting probes' changeable weather rains as the islands do (fire-constants sec. 25b: about 16% of hours, each
-// rain hour carrying its season's share of the year's rain), and blows a gale as often as ever.
-const changeable: Sky = () => ({ rain: 0.16, wind: 0.35 });
+// rain hour carrying its season's share of the year's rain), is overcast as often as the island's season is (climate.ts
+// SEASONS cloud, drawn between the seasons' middles), the rain's hours among them, so seedlings get the sun the island's
+// climate gives them, and blows a gale as often as ever.
+const overcast = (t: number) => { const { s, f } = seasonAt(t); return SEASONS[s].cloud * (1 - f) + SEASONS[(s + 1) % 4].cloud * f; };
+const changeable: Sky = (_dark, t) => ({ rain: 0.16, cloud: Math.max(0, overcast(t) - 0.16), wind: 0.35 });
+// The sky an hour of a probe's weather draws (r: 0..1).
+const skyOf = (s: ReturnType<Sky>, r: number): World["weather"]["sky"] => (r < s.rain ? "rain" : r < s.rain + (s.cloud ?? 0) ? "cloudy" : "clear");
 
 // What the evidence would support, beside what they came to: evident, the share of people whose own tries (all they saw
 // the outcome of, tests too) show the true cause doing worse than its absence beyond chance, as a statistician holding
@@ -152,9 +159,11 @@ const CAUSE = {
 const SOWN = {
   ...CAUSE,
   right: { ...CAUSE.right, text: "share of people whose theories rule out planting wherever seedlings truly never come up" },
-  wasted: { ...CAUSE.wasted, text: "share of their last third of plantings (tests aside) made where nothing comes up" },
-  wastedEarly: { ...CAUSE.wastedEarly, text: "share of their first third of plantings (tests aside) made where nothing comes up" },
+  wasted: { ...CAUSE.wasted, text: "share of their second spring's plantings (tests aside) made where nothing comes up" },
+  wastedEarly: { ...CAUSE.wastedEarly, text: "share of their first spring's plantings (tests aside) made where nothing comes up" },
 } satisfies Record<string, Metric>;
+// A planting probe's run: from the first day of one spring to the end of the next's sowing.
+const SOWING_DAYS = YEAR_DAYS + 16;
 
 // The plot every planting probe stages, but for one: an oak of 18 m five paces west, its crown deep over the spots on
 // that side of them and thinning over those north and south; no bushes.
@@ -318,12 +327,14 @@ export const PROBES: Record<string, Probe> = {
     },
   },
   // The third round: what's done to the ground, where most of what an island can teach lies. Tries are few, what comes
-  // of one shows days later, and a seedling that withers says nothing of why. Seedlings they planted crowd the next:
-  // the formula has them take their share of the light and water from anything planted after them close by.
+  // of one shows days later, and a seedling that never comes up says nothing of why. Seedlings they planted crowd the
+  // next: the formula has them take their share of the light and water from anything planted after them close by.
   seed: {
-    text: "Seedlings never come up in deep shade, nor crowded in close among others, though they do in the light shade at its edge, and it shows only days later: do they come to blame what withers them, and not the weather?",
-    // a seedling shows some days after it goes in, and a planter with a berry a day sees twenty come up or not
-    days: 20,
+    text: "Seedlings never come up in deep shade, the crowns' or that of the plants crowded round them, though they do in the light shade at its edge, and it shows only a season later: do they come to blame what keeps them from coming up, and not the weather?",
+    // a seedling comes up some days after it goes in, and one that won't is given up on only after a growing season
+    // (seedling.ts PATIENCE): they sow one spring, see over the summer and autumn what never came up, and sow again the
+    // next spring
+    days: SOWING_DAYS,
     metrics: { ...SOWN, weather: { better: "lower", tol: 0.1, text: "share of people who end up blaming any weather for their plantings" } },
     claims: [
       { id: "most", text: "most come to blame the true cause", above: "right", value: 0.5 },
@@ -336,19 +347,19 @@ export const PROBES: Record<string, Probe> = {
     variants: {
       // a berry to plant every four hours, so a few plantings a day (with berries in hand all the time, they plant thirty
       // a day)
-      real: { plot: SHADED, sky: changeable, causes: ["deep", "crowded"], every: DAY / 6 },
+      real: { plot: SHADED, sky: changeable, causes: ["deep"], every: DAY / 6 },
       // as real, with a berry a day: nearer what a planter in a whole world goes on
-      sparse: { plot: SHADED, sky: changeable, causes: ["deep", "crowded"], every: DAY },
+      sparse: { plot: SHADED, sky: changeable, causes: ["deep"], every: DAY },
       // as sparse, with three bushes crowding the spots east of them so close that what they leave a seedling of the
       // light and water can't keep it alive: crowding stands out less from the rest, as on the islands where whole worlds
       // learned least
-      two: { plot: { ...SHADED, bushes: [[1.8, 0], [1.3, -1.3], [1.3, 1.3]] }, sky: changeable, causes: ["deep", "crowded"], every: DAY },
+      two: { plot: { ...SHADED, bushes: [[1.8, 0], [1.3, -1.3], [1.3, 1.3]] }, sky: changeable, causes: ["deep"], every: DAY },
     },
   },
   // The third round: what passes between planters who all know how.
   hearsay: {
     text: "Two planters already blame the deep shade seedlings never come up in, and the rest know how to plant but not that: does it pass among them, beside what each sees for themselves?",
-    days: 20,
+    days: SOWING_DAYS,
     metrics: {
       right: SOWN.right,
       heard: { better: "higher", tol: 0.1, text: "share of those who started out not blaming it whose theories come to rule it out" },
@@ -363,12 +374,12 @@ export const PROBES: Record<string, Probe> = {
     ],
     variants: {
       // a berry a day, so what each sees for themselves is thin
-      real: { plot: SHADED, sky: changeable, causes: ["deep", "crowded"], every: DAY, starts: [["deep"], ["deep"], [], [], [], []], talk: true },
+      real: { plot: SHADED, sky: changeable, causes: ["deep"], every: DAY, starts: [["deep"], ["deep"], [], [], [], []], talk: true },
     },
   },
   unlearn: {
-    text: "Planters start out sure seedlings won't come up in the rain, which is false, while deep shade and crowding are what wither them: do they let the false theory go, and find the true one?",
-    days: 20,
+    text: "Planters start out sure seedlings won't come up in the rain, which is false, while deep shade is what keeps them from coming up: do they let the false theory go, and find the true one?",
+    days: SOWING_DAYS,
     metrics: { ...SOWN, kept: { better: "lower", tol: 0.1, text: "share of people who end up still blaming the weather they started out blaming" } },
     claims: [
       { id: "let-go", text: "fewer than three in ten keep the false theory they started with", below: "kept", value: 0.3 },
@@ -378,17 +389,18 @@ export const PROBES: Record<string, Probe> = {
     ],
     variants: {
       // a berry every four hours, as seed/real, so there is time enough to put the false theory to the test
-      real: { plot: SHADED, sky: changeable, causes: ["deep", "crowded"], every: DAY / 6, starts: [["rain"], ["rain"], ["rain"], ["rain"], ["rain"], ["rain"]] },
+      real: { plot: SHADED, sky: changeable, causes: ["deep"], every: DAY / 6, starts: [["rain"], ["rain"], ["rain"], ["rain"], ["rain"], ["rain"]] },
       // as real, with a berry a day: what planters in whole worlds go on, where a false theory about the weather was
       // never once tested (nobody plants in weather they blame, and a planting can't be watched coming up)
-      sparse: { plot: SHADED, sky: changeable, causes: ["deep", "crowded"], every: DAY, starts: [["rain"], ["rain"], ["rain"], ["rain"], ["rain"], ["rain"]] },
+      sparse: { plot: SHADED, sky: changeable, causes: ["deep"], every: DAY, starts: [["rain"], ["rain"], ["rain"], ["rain"], ["rain"], ["rain"]] },
     },
   },
 };
 
-// Fires in summer, a little after sunrise: no frost at night to muddy what they see. Planting in spring, through
-// midsummer into the start of autumn, while it's warm enough for seed to come up.
-const START = 12 * DAY + 6 * 12, SOW_START = 5 * DAY + 6 * 12;
+// Fires in summer, a little after sunrise: no frost at night to muddy what they see. Planting from the first day of
+// spring, for as long as seed sown in the open would still come up within a planter's patience (sowingEnds), and again
+// the next spring.
+const START = 12 * DAY + 6 * 12, SOW_START = 1 * DAY + 6 * 12;
 type Attempt = { agent: string; key: string; t: number; now: string[]; worked: boolean; testing: boolean };
 // What holds in an hour (and, planting, at a spot): how often it came, and how often a try there would have come off by
 // the formulas. A case fails where most tries would.
@@ -477,31 +489,43 @@ function groundsSeen(w: World, ps: Pos[]) {
 }
 // The weather of the hours ahead under the probe's sky, from how wet the top soil is now, drawn with r (its
 // own draws, not the world's): K stretches of it, for working out what a seed put in now would come to.
-const K = 6, AHEAD = 30 * 24;
+const K = 6, AHEAD = PATIENCE / 12;
 function skies(w: World, sky: Sky, r: () => number): Hour[][] {
   return Array.from({ length: K }, () => {
     let wet = w.weather.wet, t = Math.ceil((w.t + 1) / 12) * 12;
     const hours: Hour[] = [];
     for (let i = 0; i < AHEAD; i++, t += 12) {
-      const s = sky(isNight(t)), rain = r() < s.rain, gale = r() < s.wind, kind: World["weather"]["sky"] = rain ? "rain" : "clear", speed = gale ? 18 : 2;
+      const s = sky(isNight(t), t), kind = skyOf(s, r()), speed = r() < s.wind ? 18 : 2;
       wet = wetHour(w, wet, t, kind, speed, islandTemp(t, kind));
       hours.push({ sky: kind, speed, wet });
     }
     return hours;
   });
 }
-// How many of those stretches a berry pushed into the ground in each bed now would come up in (seedling.ts), the
-// weather at each worked out at a point among them (at), whose fields they share.
+// How many of those stretches a berry pushed into the ground in each bed now would come up in, within as long as its
+// planter waits on it (seedling.ts), the weather at each worked out at a point among them (at), whose fields they share.
 function comingUp(w: World, at: Pos, beds: Bed[], weathers: Hour[][]) {
   const up = beds.map(() => 0);
   for (const hours of weathers) {
     const to = ahead(w, at.px, at.py, w.t, hours);
-    beds.forEach((b, i) => { if (seedlingFate(b, to) !== null) up[i]++; });
+    beds.forEach((b, i) => { if (seedlingFate(b, to)?.up) up[i]++; });
   }
   return up;
 }
 // What open ground at a point would give a berry once cleared: the whole sky's light, and nothing round it to share with.
 const openBed = (w: World, at: Pos): Bed => ({ fit: fit("berry", { ...envHere(w, at.px, at.py), light: 1, fert: fertilityAt(w, at.px, at.py) }), share: 1, light: 1, niche: "berry" });
+// The first day on from now (w.t) that a berry put in the open spot east of a plot (at) would no longer come up within
+// its planter's patience in most of the probe's weathers, or the end (by): the sowing season, by the formulas.
+function sowingEnds(w: World, at: Pos, sky: Sky, r: () => number, by: number) {
+  const now = w.t;
+  let t = now;
+  for (; t < by; t += DAY) {
+    w.t = t;
+    if (comingUp(w, at, [openBed(w, off(at, 3, 0))], skies(w, sky, r))[0] * 2 <= K) break;
+  }
+  w.t = now;
+  return t;
+}
 // A plot for each of n planters, in a column running south from the first spot near (at) where every plot is dry and
 // has soil enough for a seed everywhere a seed or the oak or a bush could go, no other kind of ground is in sight to go
 // and try, and a berry put in the open spots east of them would come up, as the probe's sky makes the weather (or
@@ -597,10 +621,15 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   if (best) Object.assign(truth, { best, ...Object.fromEntries(ways.map((k) => [`ticks:${k}`, ticks[k]])) });
 
   const begin = w.t, end = begin + days * DAY, half = begin + Math.floor((days * DAY) / 2);
+  // planting, berries come only while sown seed could come up, each spring, and what's judged is what's done then
+  const springs: [number, number][] = [];
+  if (sowing) for (let t = begin; t < end; t += YEAR_DAYS * DAY) { const was = w.t; w.t = t; springs.push([t, sowingEnds(w, ps[0], v.sky, draws, end)]); w.t = was; }
+  if (sowing) truth.sowing = springs.map(([a, b]) => Math.round((b - a) / DAY)).join("+");
+  const sowingNow = (t: number) => !sowing || springs.some(([a, b]) => t >= a && t < b);
   let sky = v.sky;
   hooks.weather = (w) => {
-    const s = sky(lightOn(w, w.agents[0]).bright < DARK);
-    w.weather.sky = Math.random() < s.rain ? "rain" : "clear";
+    const s = sky(lightOn(w, w.agents[0]).bright < DARK, w.t);
+    w.weather.sky = skyOf(s, Math.random());
     w.weather.speed = Math.random() < s.wind ? 18 : 2;
   };
   // they weigh only doing it (lighting a fire, or planting a berry in hand: one fetched from a bush would have them
@@ -664,7 +693,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
       a.needs.health = Math.max(a.needs.health, 90);
       const c = counts(a);
       if (sowing) {
-        if (!c.berry && (w.t - begin) % v.every === 0) { giveItems(w, a, "berry"); a.heading = Math.random() * Math.PI * 2; }
+        if (!c.berry && sowingNow(w.t) && (w.t - begin) % v.every === 0) { giveItems(w, a, "berry"); a.heading = Math.random() * Math.PI * 2; }
         continue;
       }
       a.wearing ??= { k: "hide", hp: 1, born: w.t };
@@ -717,7 +746,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
       bump(cases[i], now, ok);
       if (change && w.t >= half) bump(after[i], now, ok);
     });
-    if (sowing && w.t % 48 === 6) {
+    if (sowing && sowingNow(w.t) && w.t % 48 === 6) {
       const weathers = skies(w, v.sky, draws);
       w.agents.forEach((a, i) => {
         const spots = plotSpots[i].filter((s) => !occupied(w, s.px, s.py)), up = comingUp(w, ps[i], spots.map((s) => bedAt(w, s.px, s.py, "berry")), weathers);
@@ -734,10 +763,10 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   // is theirs to choose, so no hour stands for one
   if (!sowing && v.sticks === "mixed") for (const x of attempts) bump(cases[w.agents.findIndex((a) => a.id === x.agent)], x.now, x.worked);
 
-  // what they did, by thirds of the run, tests aside: tries at a fire, which failed just where the formulas say it can't
-  // work, or plantings as they went in, by what the formulas say comes of them
+  // what they did, by thirds of the run (planting, the first spring's and the last's), tests aside: tries at a fire, which failed just
+  // where the formulas say it can't work, or plantings as they went in, by what the formulas say comes of them
   const tries = (sowing ? sown : attempts).filter((x) => !x.testing);
-  const third = (k: 0 | 2) => tries.filter((x) => (k === 0 ? x.t < begin + (end - begin) / 3 : x.t >= begin + ((end - begin) * 2) / 3));
+  const third = (k: 0 | 2) => tries.filter((x) => (sowing ? x.t >= springs[k ? springs.length - 1 : 0][0] && x.t < springs[k ? springs.length - 1 : 0][1] : k === 0 ? x.t < begin + (end - begin) / 3 : x.t >= begin + ((end - begin) * 2) / 3));
   const share = (xs: Attempt[], ok: (x: Attempt) => boolean) => (xs.length ? xs.filter(ok).length / xs.length : null);
   const n = w.agents.length, day = (t: number) => (t - begin) / DAY, avg = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null);
   // their theories as they stood at a time
