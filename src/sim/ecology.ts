@@ -1,29 +1,32 @@
 // The world keeps moving on its own: weather, fire, plants, animals, rot, and sickness.
 import { ensure, p } from "./materials";
-import { ablaze, bedAir, dropPile, dropStacks, mark, nearFire, newKinds, occupied, redHot, removeThing, residentsOf, shelterName } from "./physics";
-import { advance, alight, expose, output, type Air, type Group } from "./combustion";
+import { ablaze, bedAir, dropPile, dropStacks, mark, nearFire, newKinds, occupied, removeThing, residentsOf, shelterName } from "./physics";
+import { advance, alight, cooling, expose, output, setIn, type Air, type Group } from "./combustion";
 import { physOf } from "./fuel";
 import { BURNABLE, WIDEST, airFor, bedOf, blazeOf, fluxOn, landing, landsOn, partsOf, reach, struck, tinderIn, together, warmed, type Part } from "./spread";
 import { see } from "./beliefs";
 import {
-  DAY, H, TILE_M, W, Tile, YEAR, addThing, cropOf, dayOfYear, groundOf, log, meters, nearWater, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
+  DAY, H, TILE_M, W, Tile, YEAR, addThing, cropOf, dayOfYear, groundOf, log, meters, nearWater, rng, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
 import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind, stockedAt } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
 import { enrich, feedRate, settle, soilWaterAt, wetHour } from "./soil";
-import { SIZE, rockAt } from "../terrain/flora";
+import { SIZE, START, TALLEST, rockAt } from "../terrain/flora";
+import { YEAR_DAYS } from "./sky";
+import { CELL } from "../terrain/grid";
 import { fitHere, growth, growthOf, pickHere } from "./plants";
 import { ripening, warmRate } from "./cues";
 import { runoffHour, streamNow } from "./streams";
-import { WIND, airAt, baseTemp, islandAir, islandTemp, seasonAt, sunOn, wetHours } from "./air";
+import { WIND, airAt, airOn, baseTemp, islandAir, islandTemp, seasonAt, sunOn, wetHours } from "./air";
 import { skyShare } from "./light";
 import { nicheOf, seedlingHour, seedlingOf, shareAt, treeOf, type Hour } from "./seedling";
 import { SEASONS } from "../terrain/climate";
 import { count, timed, trace } from "./trace";
 import { hooks } from "./rules";
-import { wetness } from "./wetness";
+import { GREEN_UP, growing, wetness } from "./wetness";
+import { rotPerHour } from "./spoil";
 import { bodyOf } from "./body";
 
 // Seconds a tick lasts (world.ts DAY: five minutes each).
@@ -107,8 +110,15 @@ function weather(w: World) {
   const drought = wx.dryTicks > DAY * 4 && baseTemp(w.t) > 14;
   if (drought && !wx.drought) log(w, "weather", [], { x: W / 2, y: H / 2 }, "It hasn't rained in days. Everything is bone dry.");
   wx.drought = drought;
-  if (wx.sky === "storm" && Math.random() < 1 / 150) {
-    const t = anyOf(w, "tree");
+  // Flashes come down in a storm as often as the island's thunder days bring them over its land (stormFlashes), each at
+  // a spot anywhere on it and onto the tallest tree that stands within three of its heights of the spot, as a structure
+  // draws a flash from that far round (docs/research/time-constants.md sec. 4); one landing where no tree does strikes the
+  // ground.
+  for (let n = wx.sky === "storm" ? poisson(stormFlashes(w) / 12) : 0; n > 0; n--) {
+    const land = landTiles(w), i = land[Math.floor(Math.random() * land.length)], px = (i % W) + Math.random(), py = Math.floor(i / W) + Math.random();
+    const hit: { t: Thing | null } = { t: null };
+    around(w, px, py, 3 * TALLEST, ["tree"], (x, d) => { if (d <= 3 * x.size && (!hit.t || x.size > hit.t.size)) hit.t = x; });
+    const t = hit.t;
     if (t && !t.bed) {
       // the strike lights the tree's dead twigs if they're dry enough to carry a flame (spread.ts struck)
       const bed = struck(w, t);
@@ -123,25 +133,56 @@ function weather(w: World) {
   }
 }
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+// How many of something that comes at a mean of m a time come this time, by the world's own draws.
+function poisson(m: number) {
+  let n = 0, p = Math.exp(-m), s = p;
+  for (const r = Math.random(); r > s && n < 1000; ) { n++; p *= m / n; s += p; }
+  return n;
+}
+// The island's dry land, tile by tile.
+const lands = new WeakMap<World, number[]>(), flashes = new WeakMap<World, number>();
+function landTiles(w: World) {
+  let out = lands.get(w);
+  if (!out) { out = []; for (let i = 0; i < W * H; i++) if (tileAt(w, i % W, Math.floor(i / W)) !== Tile.Water) out.push(i); lands.set(w, out); }
+  return out;
+}
+// Flashes to ground over the island's land in an hour of storm: its ground flash density from its thunder days a year,
+// 0.04 Td^1.25 a km2 (Chisholm), over its land, shared among its storm hours a year, both as twenty years of its own sky
+// come out (nextSky, drawn from the island's seed) (docs/research/time-constants.md sec. 4).
+function stormFlashes(w: World) {
+  const known = flashes.get(w);
+  if (known !== undefined) return known;
+  const r = rng(w.seed * 7919 + 101), years = 20;
+  let sky: World["weather"]["sky"] = "clear", hours = 0, days = 0, lastDay = -1;
+  for (let h = 0; h < years * YEAR_DAYS * 24; h++) {
+    const t = h * 12;
+    sky = nextSky(sky, r(), t, islandTemp(t, sky), wetHours(w));
+    if (sky !== "storm") continue;
+    hours++;
+    if (Math.floor(h / 24) !== lastDay) { days++; lastDay = Math.floor(h / 24); }
+  }
+  const km2 = (landTiles(w).length * TILE_M * TILE_M) / 1e6, Ng = 0.04 * (days / years) ** 1.25, rate = hours ? (Ng * km2) / (hours / years) : 0;
+  flashes.set(w, rate);
+  return rate;
+}
 
 // ---------- ice ----------
-// Hard frost freezes the shallows of the lakes, then further out; salt water holds out. A thaw drops everyone
-// standing on the ice into the water.
+// Ice on the island's fresh still water, the same thickness on all of it, grows an hour at a time by Stefan's law
+// (h^2 rising by a^2 for each degree-day of frost) and melts from the air above freezing at the degree-day rate a lake's
+// ice does (docs/research/time-constants.md sec. 3). Salt water holds out. Anyone can walk on it once it is as thick as
+// new clear ice should be to walk on; once it thins under that, anyone standing on it goes through.
+export const STEFAN = 0.033, MELT = 0.0043, WALK_ICE = 0.1; // m per (C day)^0.5; m per C day; m
 function ice(w: World) {
-  const t = w.weather.temp;
-  if (t < -2) {
-    const frozen = new Set(w.ice), salt = sea(w);
-    let grew = false;
-    for (let y = 0; y < H; y++)
-      for (let x = 0; x < W; x++) {
-        const i = y * W + x;
-        if (frozen.has(i) || salt[i] || tileAt(w, x, y) !== Tile.Water) continue;
-        const edge = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => { const nx = x + dx, ny = y + dy; return (tileAt(w, nx, ny) !== Tile.Water && nx >= 0 && ny >= 0 && nx < W && ny < H) || frozen.has(ny * W + nx); });
-        if (edge && Math.random() < 0.25) { w.ice.push(i); grew = true; }
-      }
-    if (grew) iceChanged.now = true;
-    if (grew && w.ice.length < 40) log(w, "weather", [], { x: W / 2, y: H / 2 }, "The water's edge froze over.");
-  } else if (t > 1 && w.ice.length) {
+  const wx = w.weather, t = wx.temp, was = wx.ice ?? 0, day = 1 / 24;
+  const h = t < 0 ? Math.sqrt(was * was + STEFAN * STEFAN * -t * day) : Math.max(0, was - MELT * t * day);
+  if (h > 0) wx.ice = h; else delete wx.ice;
+  const bears = h >= WALK_ICE;
+  if (bears && !w.ice.length) {
+    const salt = sea(w);
+    for (let i = 0; i < W * H; i++) if (!salt[i] && tileAt(w, i % W, Math.floor(i / W)) === Tile.Water) w.ice.push(i);
+    iceChanged.now = true;
+    log(w, "weather", [], { x: W / 2, y: H / 2 }, "The ice on the still water grew thick enough to stand on.");
+  } else if (!bears && w.ice.length) {
     for (const a of w.agents) {
       if (!wetAt(w, a.px, a.py)) continue;
       // The ice water soaks them and all they wear, and takes their skin down to near its own cold, as ten minutes in
@@ -159,16 +200,24 @@ function ice(w: World) {
     for (const an of w.animals) if (FAUNA[an.species].ground && wetAt(w, an.px, an.py)) an.hp = 0;
     w.ice = [];
     iceChanged.now = true;
-    log(w, "weather", [], { x: W / 2, y: H / 2 }, "The ice broke up and melted.");
+    log(w, "weather", [], { x: W / 2, y: H / 2 }, "The ice thinned and broke up.");
   }
 }
 
 // ---------- pits, traps, wells ----------
+// A pit is dug as deep as someone stands in it, PIT_DEPTH [design]; where the water table lies above its floor (water.ts
+// table, the generator's depth to it there), the groundwater seeps in and stands in it: a well
+// (docs/research/time-constants.md sec. 5) [gap: how long the seeping takes].
+export const PIT_DEPTH = 1.5;
+const tableAt = (w: World, px: number, py: number) => {
+  const { isle, fine } = groundOf(w.seed);
+  return fine.bilinear(isle.table, (px * TILE_M - SIZE / 2 - START) / CELL, (py * TILE_M - SIZE / 2 - START) / CELL);
+};
 function holes(w: World, live: Thing[]) {
   for (const t of live) {
-    if (t.kind === "pit" && nearWater(w, t.x, t.y, 2) && w.t - (t.born ?? w.t) > DAY) {
+    if (t.kind === "pit" && tableAt(w, t.px, t.py) < PIT_DEPTH) {
       setKind(w, t, "well"); mark(w, t);
-      log(w, "dig", t.owner ? [t.owner] : [], t, "Water seeped into a pit near the shore and filled it. A well.");
+      log(w, "dig", t.owner ? [t.owner] : [], t, "Water seeped into a pit and stood in it. A well.");
       see(w, t, "well", "A pit dug near water fills up with water.", 80);
     }
     if (t.kind === "trap" && t.caught && w.t - (t.until ?? w.t) > DAY / 2) {
@@ -210,7 +259,7 @@ function crowding(w: World) {
 // else is gone to ash where it stood. What the fire leaves feeds the soil, a tree's ash most.
 function burnOut(w: World, t: Thing, by?: string) {
   delete t.bed;
-  if (t.kind === "tree") { setKind(w, t, "burnt_stump"); t.hp = 30; t.maxHp = 30; t.size = 0.6; t.until = w.t + DAY * 10; mark(w, t); enrich(w, t.px, t.py, 0.25); return; }
+  if (t.kind === "tree") { setKind(w, t, "burnt_stump"); t.hp = 30; t.maxHp = 30; t.size = 0.6; mark(w, t); enrich(w, t.px, t.py, 0.25); return; }
   if (t.kind === "structure") {
     const owner = w.agents.find((a) => a.id === t.owner);
     const text = `Fire burned down ${owner ? `${owner.name}'s` : "a"} ${shelterName(w, t)}.`;
@@ -342,8 +391,12 @@ export function fire(w: World, live: Thing[]) {
 // the soil's nourishment where they stand (plants.ts growth); seed falls where it fits (niche.ts) and takes root as it
 // fits; trees ripen their nuts as the days draw in (cues.ts).
 const BERRY_HP = 20;
+// Which stumps put up a new stem from their roots: oak, ash and hazel coppice, aspen suckers, a bramble regrows from its
+// crown; a cut Scots pine dies (docs/research/time-constants.md sec. 6).
+const SPROUTS = new Set(["oak", "ash", "aspen", "hazel", "berry"]);
+const sprouts = (t: Thing) => SPROUTS.has(t.kind === "dead_bush" ? "berry" : t.species ?? "");
 function plants(w: World, live: Thing[]) {
-  const warm = warmRate(w.weather.temp);
+  const warm = warmRate(w.weather.temp), greening = growing(w).index >= GREEN_UP;
   for (const t of live) {
     if (ablaze(t)) continue;
     if (t.scarred && (t.kind === "tree" || t.kind === "stump") && (t.resin ?? 0) < 2 && w.t - t.scarred > DAY && Math.random() < 1 / (DAY * 1.5)) {
@@ -359,8 +412,16 @@ function plants(w: World, live: Thing[]) {
       }
       if ((t.hp ?? BERRY_HP) < (t.maxHp ?? BERRY_HP)) t.hp = Math.min(t.maxHp ?? BERRY_HP, (t.hp ?? BERRY_HP) + 0.02);
       if ((t.hp ?? BERRY_HP) <= 0) { setKind(w, t, "dead_bush"); t.n = 0; mark(w, t); log(w, "grow", [], t, "A berry bush was picked to death."); }
-    } else if (t.kind === "dead_bush" && Math.random() < 1 / 4000 && Math.random() < growth(w, t.px, t.py)) {
-      setKind(w, t, "bush"); t.species = "berry"; t.n = 0; t.hp = BERRY_HP; t.maxHp = BERRY_HP; mark(w, t);
+    } else if ((t.kind === "dead_bush" || t.kind === "stump" || t.kind === "burnt_stump") && greening && sprouts(t)) {
+      // Broadleaves and brambles put up a new stem from the old roots once the growing season comes round; a pine's stump
+      // dies (docs/research/time-constants.md sec. 6). The sprout grows as a seedling of its kind does [gap: what the
+      // roots hold makes a sprout grow far faster than a seedling].
+      const sp = t.kind === "dead_bush" ? "berry" : t.species!;
+      setKind(w, t, "sapling");
+      Object.assign(t, sp === "berry" ? { item: "berry" } : { species: sp }, { stage: 0, born: w.t, hp: 5, maxHp: 5, size: 0.3 });
+      for (const k of ["until", "scarred", "resin", "bark", "girth", "n", "fit", "share", "dry", "peak"] as const) delete t[k];
+      if (sp === "berry") delete t.species;
+      mark(w, t);
     } else if (t.kind === "sapling") {
       // tended once an hour as the sky turns (seedling.ts), by the spot's fit as it was the first time and the share of
       // it the plants round it leave it now, in the sun on the open ground and the share the crowns let through
@@ -372,9 +433,6 @@ function plants(w: World, live: Thing[]) {
       if (fate === "withered") { wither(w, t); continue; }
       if (Math.round((t.stage ?? 0) * 20) !== Math.round(was * 20)) { t.size = Math.round((0.3 + (t.stage ?? 0) * 0.5) * 100) / 100; mark(w, t); }
       if (fate === "up") matured(w, t);
-    } else if ((t.kind === "stump" || t.kind === "burnt_stump") && t.until! <= w.t && warm > 0.3) {
-      // A new stem comes up from the old roots.
-      setKind(w, t, "tree"); t.size = 5; t.hp = 53; t.maxHp = 53; delete t.until; delete t.scarred; delete t.resin; delete t.bark; mark(w, t);
     } else if (t.kind === "ash" && t.until! <= w.t) removeThing(w, t);
   }
   // Trees drop nuts as the days draw in, a few a day over the island. They keep for weeks, if someone gathers and stores them.
@@ -467,49 +525,81 @@ export const onWithered = (fn: typeof witheredFor) => (witheredFor = fn);
 export let fireOutFor: (w: World, t: Thing, rained: boolean) => void = () => {};
 export const onFireOut = (fn: typeof fireOutFor) => (fireOutFor = fn);
 
+// ---------- heat leaving things ----------
+// Each tick, what heat made of a thing (hot metal soft enough to work, physics.ts heating) lasts only while it stays
+// warm enough (Kind.hotAbove): held at a fire that keeps it that warm it takes the fire's warmth there (combustion.ts
+// setIn); anywhere else it cools in the air where it is (combustion.ts cooling), and once under that warmth it is what it
+// was (docs/research/time-constants.md sec. 2).
+function cool(w: World, live: Thing[]) {
+  const tick = (s: { k: string; T?: number }, at: { px: number; py: number }, f: Thing | null) => {
+    const k = w.kinds[s.k], phys = k && physOf(w.kinds, k);
+    if (!k?.hotAbove || !phys || !k.parts?.[0]) return false;
+    if (f?.bed) {
+      const T = setIn(f.bed, bedAir(w, f), phys.d);
+      if (T >= k.hotAbove) { s.T = T; return false; }
+    }
+    const air = airOn(w, at);
+    s.T = cooling(phys, s.T ?? k.hotAbove, air.temp + 273.15, air.wind, TICK_S);
+    if (s.T >= k.hotAbove) return false;
+    s.k = k.parts[0];
+    delete s.T;
+    return true;
+  };
+  for (const a of w.agents) { const f = nearFire(w, a); for (const s of a.inv) tick(s, a, f); }
+  for (const t of live) {
+    if (t.kind !== "item" || !t.item || !w.kinds[t.item]?.hotAbove) continue;
+    const s = { k: t.item, T: t.heat };
+    if (tick(s, t, nearFire(w, t))) { t.item = s.k; delete t.heat; mark(w, t); } else t.heat = s.T;
+  }
+}
+
 // ---------- rot, wear, weathering ----------
 function decay(w: World, live: Thing[]) {
   if (w.t % 12) return;
   const rot = (k: string) => {
     const [kind, isNew] = ensure(w.kinds, `rotten:${k}`, () => ({
-      name: `rotten ${w.kinds[k]?.name ?? k}`, props: { edible: 0.05, toxic: 0.85, seed: p(w.kinds[k], "seed") }, parts: [k], shelf: 3,
+      name: `rotten ${w.kinds[k]?.name ?? k}`, props: { edible: 0.05, toxic: 0.85, seed: p(w.kinds[k], "seed") }, parts: [k], shelf: 3, spoils: "chill",
     }));
     if (isNew) newKinds.add(kind.id);
     return kind.id;
   };
-  // keep: how much longer than loose food keeps it does where it is: half as long again in with a pot, a basket or a bag
-  const spoiled = (k: string, born: number, keep = 1) => {
-    const kind = w.kinds[k];
-    return !!kind?.shelf && w.t - born > kind.shelf * DAY * keep;
+  // An hour's spoiling of food at the warmth of the air it's kept in, C (spoil.ts), the more slowly in with a pot, a
+  // basket or a bag, half as long again (keep) [design]: true once it has gone all the way.
+  const spoiled = (s: { k: string; rot?: number }, T: number, keep = 1) => {
+    const r = rotPerHour(w.kinds, w.kinds[s.k], T) / keep;
+    if (r <= 0) return false;
+    s.rot = (s.rot ?? 0) + r;
+    return s.rot >= 1;
   };
   const vessel = (ks: { k: string }[]) => (ks.some((s) => p(w.kinds[s.k], "container") >= 0.6) ? 1.5 : 1);
   for (const a of w.agents) {
-    const f = nearFire(w, a), keep = vessel(a.inv);
-    for (const s of a.inv) {
-      // Hot metal stays soft only while it's kept at a fire that holds it at red heat (fire-constants sec. 29g).
-      const k = w.kinds[s.k], forge = !!k?.cools && redHot(w, f, physOf(w.kinds, k)?.d);
-      if (k?.cools && k.parts?.[0]) { if (forge) s.born = w.t; else if (w.t - s.born > k.cools) { s.k = k.parts[0]; s.born = w.t; } continue; }
-      if (!spoiled(s.k, s.born, keep)) continue;
+    const keep = vessel(a.inv), T = airOn(w, a).temp;
+    for (const s of [...a.inv]) {
+      if (w.kinds[s.k]?.hotAbove || !spoiled(s, T, keep)) continue;
       if (s.k.startsWith("rotten:")) { a.inv.splice(a.inv.indexOf(s), 1); continue; }
       log(w, "spoil", [a.id], a, `${a.name}'s ${w.kinds[s.k]?.name} went bad.`);
-      s.k = rot(s.k); s.born = w.t;
+      s.k = rot(s.k); s.born = w.t; delete s.rot;
     }
     if (a.wearing && (a.wearing.hp -= 0.006 * (1.3 - p(w.kinds[a.wearing.k], "toughness"))) <= 0) { log(w, "break", [a.id], a, `${a.name}'s ${w.kinds[a.wearing.k]?.name} wore through.`); a.wearing = null; }
   }
   for (const t of live) {
-    const cools = t.kind === "item" && t.item ? w.kinds[t.item]?.cools : undefined;
-    if (cools && w.t - (t.born ?? w.t) > cools) { t.item = w.kinds[t.item!].parts![0]; t.born = w.t; mark(w, t); }
-    if (t.kind === "item" && t.item && spoiled(t.item, t.born ?? w.t)) {
-      if (t.item.startsWith("rotten:")) { removeThing(w, t); continue; }
-      t.item = rot(t.item); t.born = w.t; mark(w, t);
+    if (t.kind === "item" && t.item && w.kinds[t.item]?.hotAbove) continue;
+    const food = t.kind === "item" && t.item ? { k: t.item, rot: t.rot } : null;
+    if (food && w.kinds[food.k]?.spoils) {
+      const gone = spoiled(food, airOn(w, t).temp);
+      t.rot = food.rot;
+      if (gone) {
+        if (t.item!.startsWith("rotten:")) { removeThing(w, t); continue; }
+        t.item = rot(t.item!); t.born = w.t; delete t.rot; mark(w, t);
+      }
     }
     // a pile's pieces are of whatever the pile has become
     for (const s of t.pieces ?? []) if (t.kind === "item") s.k = t.item!;
-    const kept = vessel(t.store ?? []);
-    for (const s of t.store ?? []) {
-      if (!spoiled(s.k, s.born, kept)) continue;
+    const kept = vessel(t.store ?? []), inside = t.store?.length ? airOn(w, t, true).temp : 0;
+    for (const s of [...(t.store ?? [])]) {
+      if (!spoiled(s, inside, kept)) continue;
       if (s.k.startsWith("rotten:")) { t.store!.splice(t.store!.indexOf(s), 1); continue; }
-      s.k = rot(s.k); s.born = w.t;
+      s.k = rot(s.k); s.born = w.t; delete s.rot;
     }
     if (t.kind === "structure" && t.shelter) {
       const sky = w.weather.sky;
@@ -616,6 +706,7 @@ export function ecology(w: World) {
   timed("plants", () => plants(w, live()));
   timed("holes", () => holes(w, live()));
   timed("animals", () => animals(w));
+  timed("cool", () => cool(w, live()));
   timed("decay", () => decay(w, live()));
   timed("disease", () => { disease(w); crowding(w); });
   paths(w);

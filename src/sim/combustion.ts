@@ -438,6 +438,16 @@ export function plumeRise(b: Bed, air: Air, z: number) {
 // How warm something's core gets, K, held s seconds where it comes toward T, K, from the air's warmth ta (sec. 29g): while
 // it holds water (m, kg to the kg dry) its surface stays at 100 C, what the warmth there nets it boiling the water off; its
 // core lags its surface as a round piece heated all round does, wet and then dry.
+// How warm something taken out of a fire at T, K, is s seconds on, in air at ta, K, with a wind of u m/s over it (docs/
+// research/time-constants.md sec. 2): what it gives off from its whole surface, its own glow to the air's (as anything
+// lying about glows, EPS_ITEM) and what the air carries off it (Churchill and Bernstein), out of its heat as a whole, a
+// piece small and conducting enough to cool evenly through (its Biot number well under a tenth), stepped five seconds at
+// a time.
+export function cooling(phys: Phys, T: number, ta: number, u: number, s: number) {
+  const area = Math.PI * phys.d * ((4 * phys.mass) / (Math.PI * phys.rho * phys.d * phys.d) + phys.d / 2), held = phys.mass * phys.c, h = convection(u, phys.d);
+  for (let t = 0; t < s && T > ta; t += 5) T -= (Math.min(5, s - t) * area * (EPS_ITEM * SIGMA * (T ** 4 - ta ** 4) + h * (T - ta))) / held;
+  return Math.max(T, ta);
+}
 export function heats(phys: Phys, m: number, T: number, s: number, ta: number) {
   const d = phys.d, area = Math.PI * d * ((4 * phys.mass) / (Math.PI * phys.rho * d * d) + d / 2);
   const tau = (w: number) => (0.35 * (d / 2) ** 2 * 1000 * phys.rho * (phys.c + 4.19 * w)) / (2 * phys.k);

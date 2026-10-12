@@ -30,6 +30,8 @@ import { PHYS, asFound, physOf, stackPhys } from "./fuel";
 import { LEAST, advance, alight, drowned, output, radiation, type Air as BedAir, type Bed } from "./combustion";
 import { envHere } from "./plants";
 import { PATIENCE, nicheOf, shareAt, tooDark } from "./seedling";
+import { keepsFor } from "./spoil";
+import { STILL } from "./physics";
 import type { Env } from "../terrain/niche";
 import { travel } from "./journeys";
 import { RULES, hooks } from "./rules";
@@ -345,10 +347,10 @@ function planGoal(w: World, a: Agent, type: string, target?: string, ctx = ctxFo
     return [...(nearFire(w, a) ? [] : [{ op: "goto", arg: "fire", progress: 0 }]), ...mk("tinker", "fireside")];
   }
   if (type === "stock_up") {
-    // Food that keeps for weeks and grows wild (seed stripped from the grass, nuts under the trees), an armful more of
-    // whichever is nearer to hand, carried home and put away.
+    // Food that keeps for weeks at the island's median warmth (physics.ts STILL, spoil.ts) and grows wild (seed stripped
+    // from the grass, nuts under the trees), an armful more of whichever is nearer to hand, carried home and put away.
     if (!("home" in ctx.dist)) return null;
-    const keeps = Object.values(w.kinds).filter((k) => !k.made && p(k, "edible") >= 0.1 && (k.shelf ?? 0) >= 10);
+    const keeps = Object.values(w.kinds).filter((k) => !k.made && p(k, "edible") >= 0.1 && keepsFor(w.kinds, k, STILL.temp) >= 10);
     const runs = keeps.map((k) => plan(pstate(w, a), `have:${k.id}:${count(a, k.id) + 6}`, ctx)).filter((s): s is PlanStep[] => !!s).sort((x, y) => x.length - y.length);
     if (!runs.length) return null;
     return [...runs[0].map((s) => ({ op: s.op, arg: s.arg, key: s.key, progress: 0 })), { op: "goto", arg: "home", progress: 0 }, { op: "stash", progress: 0 }];

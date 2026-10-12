@@ -225,7 +225,7 @@ export function gsiHour(w: World, g: Grow | undefined, t: number, sky: World["we
 // dead-fuel water, by the 1978 transfer, 1.33 - 0.0111 for each percent of it; and the water in living leaves and twigs of
 // trees and shrubs, 60% rising to 200% the same way. The index is not divided by the island's highest, which a world
 // just made has no record of (sec. 30a).
-const GREEN_UP = 0.2;
+export const GREEN_UP = 0.2;
 export function growing(w: World) {
   const wx = w.weather, index = (wx.gsi ?? gsiHour(w, undefined, w.t, wx.sky, wx.temp)).index, up = ramp(index, GREEN_UP, 1);
   const herb = 0.3 + 2.2 * up;

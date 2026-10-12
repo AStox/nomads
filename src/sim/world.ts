@@ -46,6 +46,8 @@ export type Thing = {
   stale?: number; // a shelter's: how many loads in a row were added to it without making it any better
   inside?: Record<string, number>; // hidden in a boulder until it breaks
   girth?: number; // a stump's: how wide its trunk was, m
+  heat?: number; // a hot thing's warmth, K, as it cools (ecology.ts cool)
+  rot?: number; // how far food lying here has gone toward spoiled, 0..1 (spoil.ts)
   dry?: number; peak?: number; // a seedling's dry mass and the most it has weighed, g (seedling.ts)
   scarred?: number; resin?: number; bark?: number; // when a tree was last cut into, resin beaded on it, bark peeled off it
   // fires: the stone ringed round it, closed over, charcoal fed it, air blown into it until
@@ -66,7 +68,7 @@ export type Thing = {
 // dried below fibre saturation. size and species: a piece of wood's own (fuel.ts), what it grew as and how it was cut;
 // none is a piece of no known size
 // m: water, kg to the kg dry (wetness.ts); skin: the water in its outer half, where it isn't m
-export type Stack = { k: string; hp: number; born: number; m?: number; skin?: number; green?: true; size?: Size; species?: string };
+export type Stack = { k: string; hp: number; born: number; m?: number; skin?: number; green?: true; size?: Size; species?: string; T?: number; rot?: number };
 // A piece of wood's size: how thick and how long, in meters, and its dry mass in kg.
 export type Size = { d: number; len: number; mass: number };
 export type AnimalSpecies = "deer" | "wolf" | "rabbit" | "heron" | "gull" | "crow" | "eagle" | "fish" | "butterfly";
@@ -87,6 +89,7 @@ export type Weather = {
   speed: number; // m/s at head height over the open sea
   wet: number; // 0..1 how much of the water the top soil can lose to the air it holds (soil.ts wetHour)
   runoff?: number; // mm of the island's rain still to come down the streams (streams.ts runoffHour)
+  ice?: number; // m of ice on the island's fresh still water (ecology.ts ice)
   // the water in dead wood and litter lying about the island, kg to the kg, at wetness.ts REF thicknesses, in the open
   // and in the shade; skin, the same in their outer halves, where it isn't the whole's
   dead?: Dead;
@@ -387,8 +390,14 @@ export function landing(w: World) {
   }
   return null;
 }
-// ponytail: linear scan of the ice list; index it if winters ever freeze more than a few hundred tiles.
-export const iceAt = (w: World, x: number, y: number) => w.ice.length > 0 && w.ice.includes(y * W + x);
+// The frozen tiles as a set, kept for the list as long as it stands as it was (ecology.ts ice lays it down whole).
+const iceSets = new WeakMap<number[], { n: number; at: Set<number> }>();
+export const iceAt = (w: World, x: number, y: number) => {
+  if (!w.ice.length) return false;
+  let s = iceSets.get(w.ice);
+  if (s?.n !== w.ice.length) iceSets.set(w.ice, (s = { n: w.ice.length, at: new Set(w.ice) }));
+  return s.at.has(y * W + x);
+};
 export const ageOf = (w: World, a: { born: number }) => (w.t - a.born) / YEAR;
 export const stageOf = (w: World, a: { born: number }) => { const y = ageOf(w, a); return y < 1 ? "child" : y < 5 ? "adult" : "elder"; };
 export const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =>

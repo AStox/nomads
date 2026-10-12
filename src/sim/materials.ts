@@ -1,4 +1,5 @@
 // Materials are bags of properties. Items are kinds in a registry that grows as people make new things.
+import type { Spoils } from "./spoil";
 import { PHYS, asFound, mix, physOf, type Phys } from "./fuel";
 
 export const PROPS = [
@@ -17,11 +18,12 @@ export type Kind = {
   made?: { by: string; t: number };
   verb?: string;
   grain?: "split" | "shatter";
-  shelf?: number; // days before food spoils
+  shelf?: number; // days food keeps at 0 C (spoil.ts; none for grain, whose keeping goes by its warmth and water)
+  spoils?: Spoils; // how it spoils (spoil.ts)
   breaks?: Record<string, number>; // what it turns into when it fails
   fuel?: number; // ticks of fire it feeds
   burns?: number; // how much hotter than wood it burns
-  cools?: number; // ticks before a hot thing goes back to what it was
+  hotAbove?: number; // K: a hot thing is what heat made it only while it stays this warm (ecology.ts cool)
   phys?: Phys; // what a made kind is made of, physically (fuel.ts; a raw material's is fuel.ts PHYS)
   count?: number; // times anyone has made it
   named?: boolean; // people settled on a common name
@@ -30,14 +32,17 @@ export type Kind = {
   uses?: Record<string, number>; // what people have done with it, e.g. "felling trees" -> 4
 };
 
-// Raw materials. Everything else is made from these.
+// Raw materials. Everything else is made from these. Food keeps at 0 C (docs/research/time-constants.md sec. 1): a
+// blackberry 2 to 14 days, a mushroom 7 to 9, mint 2 to 3 weeks, the middles taken (USDA Handbook 66); a salmonid 11.8
+// days in ice (FAO); meat in air about a week; fat as meat [UNVERIFIED]; hazelnuts dried in the shell 24 months up to
+// 10 C (Handbook 66); grain as Fraser and Muir have it.
 export const BASE: Record<string, Omit<Kind, "id">> = {
-  berry: { name: "berry", props: { edible: 0.2, seed: 0.6, toughness: 0.02 }, shelf: 3 },
-  nut: { name: "nut", props: { edible: 0.14, hard: 0.3, seed: 0.4, toughness: 0.2 }, shelf: 25 },
-  mushroom: { name: "mushroom", props: { edible: 0.18, toxic: 0.12, toughness: 0.03 }, shelf: 1.5 },
-  herb: { name: "herb", props: { edible: 0.04, medicinal: 0.8, fibrous: 0.3, toughness: 0.03 }, shelf: 3 },
-  fish: { name: "fish", props: { edible: 0.18, toxic: 0.2, toughness: 0.05 }, shelf: 1 },
-  meat: { name: "meat", props: { edible: 0.3, toxic: 0.3, toughness: 0.1 }, shelf: 1 },
+  berry: { name: "berry", props: { edible: 0.2, seed: 0.6, toughness: 0.02 }, shelf: 8, spoils: "berry" },
+  nut: { name: "nut", props: { edible: 0.14, hard: 0.3, seed: 0.4, toughness: 0.2 }, shelf: 730, spoils: "nut" },
+  mushroom: { name: "mushroom", props: { edible: 0.18, toxic: 0.12, toughness: 0.03 }, shelf: 8, spoils: "mushroom" },
+  herb: { name: "herb", props: { edible: 0.04, medicinal: 0.8, fibrous: 0.3, toughness: 0.03 }, shelf: 17.5, spoils: "leaf" },
+  fish: { name: "fish", props: { edible: 0.18, toxic: 0.2, toughness: 0.05 }, shelf: 11.8, spoils: "chill" },
+  meat: { name: "meat", props: { edible: 0.3, toxic: 0.3, toughness: 0.1 }, shelf: 7, spoils: "chill" },
   hide: { name: "hide", props: { insulating: 0.8, flexible: 0.6, fibrous: 0.3, toughness: 0.3, flammable: 0.3 } },
   bone: { name: "bone", props: { hard: 0.6, sharp: 0.15, long: 0.35, heavy: 0.2, toughness: 0.45 }, grain: "shatter", breaks: { bone_shard: 1 } },
   bone_shard: { name: "bone shard", props: { hard: 0.6, sharp: 0.6, heavy: 0.05, toughness: 0.35 } },
@@ -52,7 +57,7 @@ export const BASE: Record<string, Omit<Kind, "id">> = {
   resin: { name: "resin", props: { binding: 0.55, flammable: 0.8, toughness: 0.1 }, fuel: 30 },
   flint: { name: "flint", props: { hard: 0.95, heavy: 0.4, toughness: 0.6 }, grain: "shatter", breaks: { flint_blade: 1 } },
   flint_blade: { name: "flint blade", props: { hard: 0.9, sharp: 0.9, heavy: 0.2, toughness: 0.45 } },
-  fat: { name: "fat", props: { edible: 0.25, flammable: 0.9, binding: 0.15, toughness: 0.02 }, shelf: 4, fuel: 60 },
+  fat: { name: "fat", props: { edible: 0.25, flammable: 0.9, binding: 0.15, toughness: 0.02 }, shelf: 7, spoils: "chill", fuel: 60 },
   charcoal: { name: "charcoal", props: { flammable: 0.95, hard: 0.2, heavy: 0.1, toughness: 0.05 }, fuel: 150, burns: 1.54 },
   ore: { name: "reddish stone", props: { hard: 0.8, heavy: 0.9, toughness: 0.7, metal: 0.6 } },
   // iron pyrite: brassy, heavy and hard, and shaved by flint it throws sparks that burn (matter-constants sec. 7)
@@ -61,7 +66,7 @@ export const BASE: Record<string, Omit<Kind, "id">> = {
   fern: { name: "fern fronds", props: { fibrous: 0.5, flexible: 0.6, flammable: 0.6, insulating: 0.4, toxic: 0.3, toughness: 0.05 } },
   flower: { name: "flower", props: { edible: 0.02, medicinal: 0.15, seed: 0.3, flammable: 0.3, toughness: 0.01 } },
   // wild grass seed stripped from the heads in late summer: hard, dry and slow to spoil, and little use raw
-  grain: { name: "grain", props: { edible: 0.1, seed: 0.9, hard: 0.35, toughness: 0.05 }, shelf: 40 },
+  grain: { name: "grain", props: { edible: 0.1, seed: 0.9, hard: 0.35, toughness: 0.05 }, spoils: "grain" },
 };
 
 // What a carcass gives (body-constants sec. 10): its meat, the dressed carcass (its live mass's dressing share) less its

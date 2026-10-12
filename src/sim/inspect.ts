@@ -15,6 +15,7 @@ import { GROUND, LAKE, RIVER, SEA, SIZE, groundClass, rockAt } from "../terrain/
 import { fertilityAt } from "./soil";
 import { bodyOf, frameOf } from "./body";
 import { fitHere } from "./plants";
+import { keepsFor } from "./spoil";
 import { NICHE } from "../terrain/niche";
 import { streamNow } from "./streams";
 import { walked } from "./journeys";
@@ -109,7 +110,7 @@ function itemLines(w: World, k: Kind | undefined): Line[] {
   if (k.made) out.push(who(w, k.made.by, `first made by ${nameOf(w, k.made.by)}, ${days(w, k.made.t)}`));
   const uses = Object.entries(k.uses ?? {}).sort((x, y) => y[1] - x[1]).slice(0, 3);
   if (uses.length) out.push(`used for ${uses.map(([u, n]) => `${u} (${n})`).join(", ")}`);
-  if (k.shelf) out.push(`keeps ${k.shelf} days`);
+  if (k.spoils) out.push(`keeps ${keepWords(keepsFor(w.kinds, k, w.weather.temp))} as warm as it is now`);
   if (k.fuel) out.push(`burns ${k.fuel} ticks`);
   return out;
 }
@@ -121,13 +122,15 @@ function bag(w: World, ks: Iterable<string>): Bag[] {
 const bagOf = (w: World, counts: Record<string, number>) => bag(w, Object.entries(counts).flatMap(([k, n]) => Array<string>(n).fill(k)));
 const itemRow = (w: World, label: string, k: string): Row => ({ label, value: w.kinds[k]?.name ?? words(k), icon: `item:${lookOf(w.kinds[k])}`, more: itemLines(w, w.kinds[k]) });
 
+// How long something keeps, in words: hours, days, months or years.
+const keepWords = (d: number) => (d === Infinity ? "indefinitely" : d < 1 ? `${Math.max(1, Math.round(d * 24))} hours` : d < 60 ? `${Math.round(d)} days` : d < 730 ? `${Math.round(d / 30)} months` : `${Math.round(d / 365)} years`);
 function material(w: World, id: string | undefined): Section | null {
   const k = id ? w.kinds[id] : undefined;
   if (!k) return null;
   const rows: Row[] = [{ label: "made of", value: k.name, icon: `item:${lookOf(k)}` }];
   for (const prop of PROPS) if (p(k, prop) > 0) rows.push({ label: PROP_WORDS[prop], bar: [r(p(k, prop), 2), 1] });
   if (k.fuel) rows.push({ label: "burns for", value: `${k.fuel} ticks` });
-  if (k.shelf) rows.push({ label: "keeps", value: `${k.shelf} days` });
+  if (k.spoils) rows.push({ label: "keeps", value: keepWords(keepsFor(w.kinds, k, w.weather.temp)) });
   return { tab: "material", rows };
 }
 

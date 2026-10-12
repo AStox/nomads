@@ -635,7 +635,7 @@ function worldTick(w: World, a: Agent, act: Act, t: Thing, tool: Kind, hold: Hol
   const gives = yieldOf(t), pieces = Object.entries(gives).flatMap(([k, n]) => Array.from({ length: n }, () => gathered(w, t, k)));
   fields.gives = Object.keys(gives).filter((k) => gives[k] > 0);
   // a felled tree's wood is carried off, and what it took from the soil with it
-  if (t.kind === "tree") { const girth = stem.D; setKind(w, t, "stump"); Object.assign(t, { hp: 40, maxHp: 40, size: 0.6, until: w.t + DAY * 6, girth }); mark(w, t); enrich(w, t.px, t.py, -0.02); }
+  if (t.kind === "tree") { const girth = stem.D; setKind(w, t, "stump"); Object.assign(t, { hp: 40, maxHp: 40, size: 0.6, girth }); mark(w, t); enrich(w, t.px, t.py, -0.02); }
   else removeThing(w, t);
   stow(w, a, pieces);
   const verb = t.kind === "stump" && act.target?.kind === "tree" ? "brought the tree down" : `cut through the ${nm(w, act.target?.kind ?? t.kind)}`;
@@ -653,7 +653,7 @@ export function forging(x: Phys, E: number, hot: boolean, blows = BLOWS) {
   return { strain: reached, edge: d * Math.exp(-reached), blows: blowsTo, hardened: !hot && reached >= COLD_SPLITS };
 }
 function forgeTick(w: World, a: Agent, tool: Kind, tk: Kind, piece: Stack, x: Phys, E: number, fields: Fields) {
-  const cold = (tk.cools && kind(w, tk.parts?.[0])) || tk, fire = nearFire(w, a), hot = !!tk.cools && redHot(w, fire, x.d);
+  const cold = (tk.hotAbove && kind(w, tk.parts?.[0])) || tk, fire = nearFire(w, a), hot = !!tk.hotAbove && redHot(w, fire, x.d);
   fields.at = hot ? "forge" : null;
   const f = forging(x, E, hot), t = f.edge, blade = t <= BLADE * 1.0001;
   trace("physics", "forge", { tool: tool.id, target: tk.id, hot, energy: E, ...f }, a.id);
@@ -782,7 +782,7 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
     const { soft, harder } = r;
     if (st.progress < r.ticks) return { done: false };
     const [k, isNew] = ensure(w.kinds, rubbedOf(r), () => ({
-      name: `ground ${soft.name}`, props: { edible: clamp01(p(soft, "edible") * 1.4), toughness: 0.01 }, parts: [soft.id], verb: "rub", shelf: Math.round((soft.shelf ?? 10) / 2),
+      name: `ground ${soft.name}`, props: { edible: clamp01(p(soft, "edible") * 1.4), toughness: 0.01 }, parts: [soft.id], verb: "rub", ...(soft.spoils ? { spoils: soft.spoils, ...(soft.shelf ? { shelf: soft.shelf / 2 } : {}) } : {}),
     }));
     takeItems(a, soft.id);
     giveItems(w, a, k.id);
@@ -927,6 +927,9 @@ export function join(w: World, a: Agent, act: Act): Outcome | "ask" {
 }
 
 // ---------- heat ----------
+// Cooked food keeps 3 to 4 days at 4.4 C (USDA FSIS) and smoked fish 14 (FDA's chart): at 0 C, by the flesh's square
+// root (spoil.ts), 7.2 and 29 days (docs/research/time-constants.md sec. 1); dough and bread as cooked [UNVERIFIED].
+export const COOKED_KEEPS = 3.5 * ((4.4 + 10) / 10) ** 2, SMOKED_KEEPS = 14 * ((4.4 + 10) / 10) ** 2;
 // What there is to heat things at: the fire they hold them in as it burns now; the air it burns in (still air, as the
 // conditions people notice are cut in, if not said); the fan they blow air into it with, if they hold one; and the things
 // they'd heat as they hold them (as one of each kind comes, with the water it comes with, if not said).
@@ -980,7 +983,7 @@ export function heating(w: World, items: string[], c: HeatSetting): Decision | "
     const stew: Make = { id: `stew:${foods.map((x) => x.id).sort().join("+")}`, make: () => ({
       name: `${foods.length > 1 ? "mixed" : foods[0].name} stew`,
       props: { edible: clamp01(foods.reduce((t, x) => t + p(x, "edible"), 0) * 1.4), toxic: Math.min(...foods.map((x) => p(x, "toxic"))) * 0.1, medicinal: Math.max(...foods.map((x) => p(x, "medicinal"))) },
-      parts: fields.inputs, verb: "heat", shelf: 3, phys: mix(foods.flatMap((f) => physOf(w.kinds, f) ?? [])),
+      parts: fields.inputs, verb: "heat", shelf: COOKED_KEEPS, spoils: "chill", phys: mix(foods.flatMap((f) => physOf(w.kinds, f) ?? [])),
     }) };
     return done(stew, `Cooking ${foods.map((x) => `the ${x.name}`).join(" and ")} in the ${pot.name} made a ${nameOf(w, stew)}.`, T, [pot.id]);
   }
@@ -1006,14 +1009,14 @@ export function heating(w: World, items: string[], c: HeatSetting): Decision | "
     if (smokes(bed, air)) return done({ id: `smoked:${x.id}`, make: () => ({
       name: `smoked ${x.name}`,
       props: { ...x.props, edible: clamp01(p(x, "edible") * 1.3 + 0.03), toxic: p(x, "toxic") * 0.1, seed: 0 },
-      parts: [x.id], verb: "heat", shelf: (x.shelf ?? 1) * 8 + 6,
+      parts: [x.id], verb: "heat", shelf: SMOKED_KEEPS, spoils: "chill",
     }) }, `Cooked through in the smoke under the cover, the ${x.name} came out dark and dry. It would keep.`, T);
     // a soft dough bakes firm into bread
     const dough = p(x, "plastic") >= 0.5;
     return done({ id: `cooked:${x.id}`, make: () => ({
       name: x.id === "meat" ? "roast meat" : dough ? "bread" : `cooked ${x.name}`,
       props: { ...x.props, edible: clamp01(p(x, "edible") * 1.6 + 0.05), toxic: p(x, "toxic") * 0.15, seed: 0, ...(dough ? { plastic: 0, hard: 0.2 } : {}) },
-      parts: [x.id], verb: "heat", shelf: dough ? 5 : (x.shelf ?? 1) * 2 + 1,
+      parts: [x.id], verb: "heat", shelf: COOKED_KEEPS, spoils: "chill",
     }) }, dough ? `The ${x.name} baked firm into bread in the fire.` : `Set in the fire, the ${x.name} cooked through.`, T);
   }
   if (sticky(x)) {
@@ -1032,7 +1035,7 @@ export function heating(w: World, items: string[], c: HeatSetting): Decision | "
   }
   if (p(x, "metal") >= 0.8) {
     if (warm < RED) return cool(`The ${x.name} got hot, but stayed as hard as ever.`, T);
-    return done({ id: `hot:${x.id}`, make: () => ({ name: `glowing ${x.name}`, props: { ...x.props, plastic: 0.7 }, parts: [x.id], verb: "heat", cools: 36 }) },
+    return done({ id: `hot:${x.id}`, make: () => ({ name: `glowing ${x.name}`, props: { ...x.props, plastic: 0.7 }, parts: [x.id], verb: "heat", hotAbove: RED }) },
       `The ${x.name} glowed orange in the fire and went soft enough to work.`, T);
   }
   if (p(x, "metal") >= 0.3) {
@@ -1123,7 +1126,7 @@ export function wetting(w: World, items: string[], c: WetSetting): Wetting {
     const id = `wet:${x.id}`;
     fields.gives = [id];
     return decided({ ok: true, text: `The ${x.name} soaked up the water into a sticky dough.`, uses: { [x.id]: 1 }, gives: { [id]: 1 }, fields, make: { id, make: () => ({
-      name: "dough", props: { edible: p(x, "edible"), plastic: 0.7, toughness: 0.02 }, parts: [x.id], verb: "wet", shelf: 1,
+      name: "dough", props: { edible: p(x, "edible"), plastic: 0.7, toughness: 0.02 }, parts: [x.id], verb: "wet", shelf: COOKED_KEEPS, spoils: "chill",
     }) } });
   }
   // A vessel that holds water, which a woven basket doesn't, comes up full.
