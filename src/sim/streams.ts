@@ -4,7 +4,8 @@
 // below a trickle only its dry bed is left.
 import { TRICKLE, depthOf, flowNow, widthOf } from "../terrain/water";
 import { SIZE, streamAt } from "../terrain/flora";
-import { islandAir, meanRain, seasonAt } from "./air";
+import { islandAir, meanRain } from "./air";
+import { seasonAt } from "./sky";
 import { TILE_M, groundOf, type World } from "./world";
 
 // Rain that runs off reaches the streams as a linear store that keeps this share of itself an hour on: surface runoff's

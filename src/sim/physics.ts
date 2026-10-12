@@ -1,4 +1,5 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
+import { gone } from "./herds";
 import { BASE, MADE_OF, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props, type Registry } from "./materials";
 import { BURNS, COPPER, FIRED_CLAY, LEATHER, LIVE_HERB, LOG_LEN, PHYS, POT_WALL, charSize, greenOf, mix, physOf, pieceOf, remade, splitSize, stackPhys, woodOf, type Edge, type Phys } from "./fuel";
 import {
@@ -572,7 +573,7 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
   const gives = { ...mat.breaks };
   fields.gives = Object.keys(gives);
   if ("alt" in target) {
-    w.animals = w.animals.filter((x) => x !== target);
+    gone(w, target);
     for (const [k, n] of Object.entries(gives)) giveItems(w, a, k, n, physOf(w.kinds, w.kinds[k])?.green ?? 0);
     return { done: true, damage: dmg, out: outcome({ ok: true, text: `They killed the ${target.species} and butchered it into ${list(w, gives)}.`, gives, fields, numbers: { rate, ticksNeeded } }) };
   }
@@ -1239,7 +1240,7 @@ export function throwTick(w: World, a: Agent, act: Act, st: { progress: number; 
   trace("physics", "throw", { item: k.id, at: prey.species, dist: d, hit, dmg, hp: prey.hp }, a.id);
   st.tries = (st.tries ?? 0) + 1;
   if (prey.hp <= 0) {
-    w.animals = w.animals.filter((m) => m !== prey);
+    gone(w, prey);
     const gives = { ...mat.breaks };
     for (const [kk, n] of Object.entries(gives)) giveItems(w, a, kk, n, physOf(w.kinds, w.kinds[kk])?.green ?? 0);
     fields.gives = Object.keys(gives);

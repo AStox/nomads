@@ -14,6 +14,7 @@ import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, 
 import { burnedHomes, ecology, onFireOut, onGrew, onWithered, trample, trapped, tread } from "./ecology";
 import { FAUNA, HUNTED } from "./fauna";
 import { attacked } from "./animals";
+import { herdNear } from "./herds";
 import { chooseTinker, decide, describeKind, fadeBonds, grudge, nameIt, newRel, reflect, respond, rule, sample, theorize, wonder, type Felt } from "./brain";
 import { clock as traceClock, count as bump, timed, trace } from "./trace";
 import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sharedStore, snubbed, spread, standing, takeShared } from "./groups";
@@ -1161,7 +1162,7 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
     see(w, a, `breaks:${act.target.kind}`, `A ${act.target.kind} breaks down into ${Object.keys(breaks).map((k) => nm(w, k)).join(", ")}.`);
   }
   // Bringing down the last deer anywhere near is something the neighbors notice.
-  if (out.ok && act.target?.kind === "deer" && !w.animals.some((m) => m.species === "deer" && meters(m, a) <= 500))
+  if (out.ok && act.target?.kind === "deer" && herdNear(w, "deer", a, 500) < 1)
     incident(w, { act: "last_deer", by: a, at: a, text: `${a.name} killed the last deer anywhere near.`, value: 0.6, seenBy: w.agents.filter((b) => canSee(w, b, a, VISION)) });
   if (out.ok) for (const k of new Set([act.tool, ...act.items].filter(Boolean) as string[])) noteUse(w, k, act, out);
   for (const k of Object.keys(out.gives)) {

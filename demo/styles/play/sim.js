@@ -1,5 +1,5 @@
 // Runs the game's simulation in the page the way server.ts loop() does: one tick per task, the same change sets, cleared the same way.
-import { ACTIVITY, DAY, TILE_M, activity, brainKind, changed, changedKinds, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, objects, pathChanges, removed, thingById, thingView, tick, trailChanges, trails, useBrain } from "../sim.js";
+import { ACTIVITY, DAY, census as headcount, TILE_M, activity, brainKind, changed, changedKinds, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, objects, pathChanges, removed, thingById, thingView, tick, trailChanges, trails, useBrain } from "../sim.js";
 
 const BASE_MS = 500;
 
@@ -55,8 +55,7 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
   const SAMPLE = 12, MAX = 600, history = { every: SAMPLE, t: [], people: [], animals: {} };
   const census = () => {
     if (w.t % history.every) return;
-    const n = history.t.length, count = {};
-    for (const a of w.animals) if (a.hp > 0) count[a.species] = (count[a.species] ?? 0) + 1;
+    const n = history.t.length, count = headcount(w);
     history.t.push(w.t); history.people.push(w.agents.length);
     for (const sp of new Set([...Object.keys(history.animals), ...Object.keys(count)])) (history.animals[sp] ??= Array(n).fill(0)).push(count[sp] ?? 0);
     if (history.t.length > MAX) {

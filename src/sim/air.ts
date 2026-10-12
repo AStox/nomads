@@ -5,16 +5,10 @@
 // ground upwind and the trees overhead break the wind. Nothing here is stored.
 import { CELL } from "../terrain/grid";
 import { DIRS, POOL_C, SEASONS, SEASON_DAYS, esat } from "../terrain/climate";
-import { NOON, YEAR_DAYS, sunAt } from "./sky";
+import { NOON, YEAR_DAYS, seasonAt, sunAt } from "./sky";
 import { crownsAt } from "./light";
 import { DAY, TILE_M, groundOf, hourOf, type World } from "./world";
 
-// Where tick t falls between the middles of two seasons: the earlier's index and how far toward the next. A day's air is
-// drawn straight between the seasons' means, as the island's fields are.
-export function seasonAt(t: number) {
-  const u = (((t / DAY) % YEAR_DAYS) - YEAR_DAYS / 8) / (YEAR_DAYS / 4), s = Math.floor(u);
-  return { s: (s + 4) % 4, f: u - s };
-}
 const between = (t: number, of: (s: number) => number) => { const { s, f } = seasonAt(t); return of(s) * (1 - f) + of((s + 1) % 4) * f; };
 // The day's mean air at sea level inland.
 export const baseTemp = (t: number) => between(t, (s) => SEASONS[s].t);

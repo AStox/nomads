@@ -14,7 +14,8 @@ import { SEEDLINGS, YEARS_PACE, fitHere, seasonsHere, seedlingGain, type Seedlin
 import { keptOf, madeOf } from "../terrain/growth";
 import { skyShare } from "./light";
 import { soilWater } from "./soil";
-import { islandTemp, placeTemp, seasonAt, sunOn } from "./air";
+import { islandTemp, placeTemp, sunOn } from "./air";
+import { seasonAt } from "./sky";
 
 // The weather at a turn of the sky, an hour apart: the sky, the wind over the open sea, and the rain still running off
 // the land (world.ts Weather).

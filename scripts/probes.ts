@@ -29,7 +29,8 @@ import { wetHour } from "../src/sim/soil";
 import { traceListeners, type TraceEntry } from "../src/sim/trace";
 import { asking, brainKind, useBrain } from "../src/sim/brain";
 import { DARK, lightOn, skyShare } from "../src/sim/light";
-import { airOn, islandTemp, seasonAt } from "../src/sim/air";
+import { airOn, islandTemp } from "../src/sim/air";
+import { seasonAt } from "../src/sim/sky";
 import { SEASONS } from "../src/terrain/climate";
 import { YEAR_DAYS } from "../src/sim/sky";
 import { anyAround, around, put, thingById } from "../src/sim/space";
@@ -583,6 +584,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   const sowing = "plot" in v, ways = sowing ? [PLANT] : v.ways, change = sowing ? undefined : v.half;
   w.t = Math.max(w.t, sowing ? SOW_START : START);
   w.animals = w.animals.filter((m) => m.species !== "wolf");
+  if (w.herds) w.herds.wolf.n.fill(0);
   const [cx, cy] = openGround(w, w.agents[0].px, w.agents[0].py);
   const fresh: string[] = [];
   const truth: Record<string, string | number> = { causes: v.causes.join(" or ") || "none" };

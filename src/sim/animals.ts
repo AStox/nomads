@@ -1,7 +1,7 @@
 // What the animals do each tick: graze, wander, flee, hunt, swim, fly, perch and feed. Speeds are meters a tick of
 // five minutes' game time, the way a person's are; what each kind is like is in fauna.ts.
 import { THING_MATERIAL } from "./materials";
-import { TILE_M, H, W, dryAt, groundOf, shoreByTile, shoreOf, isNight, landing, log, meters, walkable, wetAt, type Agent, type Animal, type AnimalSpecies, type Thing, type World } from "./world";
+import { TILE_M, H, W, dryAt, groundOf, shoreByTile, shoreOf, isNight, log, meters, walkable, wetAt, type Agent, type Animal, type AnimalSpecies, type Thing, type World } from "./world";
 import { SIZE } from "../terrain/flora";
 import { snowAt } from "./air";
 import { breeding, coldBite, warmRate } from "./cues";
@@ -10,7 +10,11 @@ import { steer } from "./walk";
 import { dropPile, mark, removeThing } from "./physics";
 import { see } from "./beliefs";
 import { trace } from "./trace";
-import { FAUNA, addAnimal } from "./fauna";
+import { FAUNA, addAnimal, spawn } from "./fauna";
+import { SPEC, edible, gone, herded, moved, reveal, stepHerds } from "./herds";
+import { PHYS } from "./fuel";
+// A cut of meat lying about, to a wolf that eats it, kJ (fuel.ts).
+const MEAT_KJ = PHYS.meat.mass * PHYS.meat.kj!;
 import { DARK, lightOn } from "./light";
 
 // Agents being attacked this tick, agent id -> wolf id.
@@ -49,7 +53,7 @@ function roam(w: World, an: Animal, r: number, speed: number, odds = 0.35) {
   if (Math.random() < odds) goTo(w, an, an.aim[0], an.aim[1], speed);
 }
 function carcass(w: World, an: Animal) {
-  w.animals = w.animals.filter((x) => x !== an);
+  gone(w, an);
   for (const [k, n] of Object.entries(THING_MATERIAL[an.species]?.breaks ?? {})) dropPile(w, an.px, an.py, k, n);
 }
 const lift = (an: Animal, to: number, rate: number) => { an.alt = Math.round((an.alt + Math.max(-rate, Math.min(rate, to - an.alt))) * 10) / 10; };
@@ -82,10 +86,9 @@ function pasture(w: World, an: Animal, r: number): [number, number] | null {
   return best;
 }
 
+// What a deer, a rabbit or a wolf eats and burns, and the young they bear, are their herd's (herds.ts): here, only what
+// each one standing in sight of people does.
 function deer(w: World, d: Animal, n: Near) {
-  // the cold burns more of what a deer has eaten, and the grass grows little in it
-  const cold = coldBite(w.weather.temp);
-  d.hunger -= 0.05 + 0.05 * cold;
   const threat = closest(d, n.wolves, 60) ?? closest(d, n.awake, 30);
   if (threat || d.hp < d.maxHp * 0.6) {
     setState(w, d, "flee");
@@ -95,24 +98,18 @@ function deer(w: World, d: Animal, n: Near) {
   } else {
     const food = d.hunger < 90 ? forage(w, d) : 0, grass = food > 0.25;
     setState(w, d, grass ? "graze" : "wander");
-    if (grass) { d.hunger = Math.min(100, d.hunger + 0.35 * Math.min(1, food * 1.6) * (0.35 + 0.65 * warmRate(w.weather.temp))); nibble(w, d); }
+    if (grass) nibble(w, d);
     // Where the grass is poor, a hungry deer moves on to better and keeps to it.
     if (!grass && d.hunger < 85 && Math.random() < 0.05) { const better = pasture(w, d, 400); if (better) { d.home = better; d.aim = better; } }
     const mate = closest(d, n.deer, 200);
     if (mate && meters(d, mate) > 25 && Math.random() < 0.3) goTo(w, d, mate.px, mate.py, FAUNA.deer.walk);
     else if (!grass || Math.random() < 0.15) roam(w, d, 60, FAUNA.deer.walk);
-    if (breeding(w.t) && mate && meters(d, mate) <= 10 && d.hunger > 55 && n.deer.length < 18 && Math.random() < 1 / 400) {
-      n.deer.push(addAnimal(w, "deer", d.px, d.py, { home: d.home }));
-      log(w, "birth", [], d, "A fawn was born.");
-    }
   }
-  if (d.hunger <= 0) { carcass(w, d); log(w, "death", [], d, "A deer starved."); }
 }
 
 // A wolf eats its fill at a kill and goes days before it needs another; a pack takes a deer every few days.
 function wolf(w: World, wf: Animal, n: Near) {
   const cold = coldBite(w.weather.temp);
-  wf.hunger -= 0.035 + 0.02 * cold;
   const fire = closest(wf, n.fires, 40), crowd = n.awake.filter((a) => meters(a, wf) <= 15).length >= 2;
   if (fire || crowd || wf.hp < wf.maxHp * 0.4) {
     setState(w, wf, "flee");
@@ -125,7 +122,7 @@ function wolf(w: World, wf: Animal, n: Near) {
   if (meat) {
     setState(w, wf, "eat");
     if (meters(wf, meat) <= 1.5) {
-      meat.n = (meat.n ?? 1) - 1; wf.hunger = Math.min(100, wf.hunger + 30); mark(w, meat);
+      meat.n = (meat.n ?? 1) - 1; fed(w, wf, MEAT_KJ); mark(w, meat);
       if (meat.n <= 0) removeThing(w, meat);
     } else goTo(w, wf, meat.px, meat.py, FAUNA.wolf.walk * 2);
     return;
@@ -160,6 +157,7 @@ function wolf(w: World, wf: Animal, n: Near) {
     target.hp -= 6;
     if (target.hp <= 0) {
       carcass(w, target);
+      fed(w, wf, edible(target.species as "deer" | "rabbit"));
       log(w, "death", [], target, `Wolves brought down a ${target.species}.`);
       if (target.species === "deer") see(w, target, "breaks:deer", "A deer can be killed. It's all meat, hide, and bone inside.", 90);
     }
@@ -342,7 +340,7 @@ function eagle(w: World, e: Animal, n: Near) {
     lift(e, 0, 15);
     goTo(w, e, prey.px, prey.py, FAUNA.eagle.fly!);
     if (e.alt < 2 && d < 3) {
-      w.animals = w.animals.filter((x) => x !== prey);
+      gone(w, prey);
       e.hunger = 100; e.target = undefined;
       setState(w, e, "feed");
     } else if (inState(w, e) > 12) { e.target = undefined; setState(w, e, "soar"); }
@@ -413,25 +411,7 @@ export function animals(w: World) {
       case "butterfly": butterfly(w, an, warm); break;
     }
     if (FAUNA[an.species].ground && still(an)) caught(w, an, x0, y0);
-  }
-  // Animals swim across to the island when it empties out.
-  const deerNow = w.animals.filter((a) => a.species === "deer").length, wolves = w.animals.filter((a) => a.species === "wolf");
-  const ashore = (sp: AnimalSpecies, k: number, text: string) => {
-    const e = landing(w);
-    if (!e) return;
-    for (let i = 0; i < k; i++) addAnimal(w, sp, e.px, e.py, { home: [e.px, e.py] });
-    log(w, "birth", [], e, text);
-  };
-  if (deerNow < 4 && Math.random() < 1 / 1500) ashore("deer", 2, "A pair of deer swam ashore.");
-  if (deerNow >= 8 && !wolves.length && Math.random() < 1 / 4000) ashore("wolf", 2, "Wolves came across the water, following the deer.");
-  if (breeding(w.t) && wolves.length >= 2 && wolves.length < 6 && Math.random() < 1 / 4000) {
-    addAnimal(w, "wolf", wolves[0].px, wolves[0].py, { home: wolves[0].home });
-    log(w, "birth", [], wolves[0], "A wolf pup was born.");
-  }
-  const rabbits = n.rabbits.filter(still);
-  if (breeding(w.t) && rabbits.length >= 2 && rabbits.length < 120 && Math.random() < rabbits.length / 2500) {
-    const mom = rabbits[Math.floor(Math.random() * rabbits.length)];
-    addAnimal(w, "rabbit", mom.px, mom.py, { home: mom.home, state: "graze" });
+    if (still(an)) moved(w, an, x0, y0);
   }
   const fishes = w.animals.filter((a) => a.species === "fish");
   if (fishes.length && fishes.length < 200 && Math.random() < fishes.length / 6000) {
@@ -444,8 +424,19 @@ export function animals(w: World) {
     const f = anyOf(w, "flowers");
     if (f) addAnimal(w, "butterfly", f.px, f.py, { home: [f.px, f.py], alt: 0.5, state: "flutter" });
   }
-  for (const wf of w.animals.filter((a) => a.species === "wolf" && a.hunger <= 0)) { carcass(w, wf); log(w, "death", [], wf, "A wolf starved."); }
-  // Anything else left without food weakens and dies; deer and wolves drop as carcasses above.
-  for (const an of w.animals) if (an.hunger <= 0) an.hp -= 0.05;
-  for (const an of w.animals.filter((a) => a.hp <= 0)) { w.animals = w.animals.filter((x) => x !== an); log(w, "death", [], an, an.hunger <= 0 ? `A ${an.species} starved.` : `A ${an.species} went through the ice and drowned.`); }
+  // Anything else left without food weakens and dies (deer, rabbits and wolves starve as their herds do).
+  for (const an of w.animals) if (!herded(an.species) && an.hunger <= 0) an.hp -= 0.05;
+  for (const an of w.animals.filter((a) => a.hp <= 0)) { gone(w, an); log(w, "death", [], an, an.hunger <= 0 ? `A ${an.species} starved.` : `A ${an.species} went through the ice and drowned.`); }
+  // An hour of the herds' lives, the wolves people can see killing as themselves, and the herds stood within their sight.
+  if (w.herds && w.t % 12 === 0) {
+    const seen = new Set(w.animals.filter((a) => a.species === "wolf").map((a) => Math.min(H - 1, Math.floor(a.py)) * W + Math.min(W - 1, Math.floor(a.px))));
+    stepHerds(w, w.herds, 1 / 24, w.t, seen);
+    reveal(w, (sp, px, py) => spawn(w, sp, px, py, { home: [px, py], state: sp === "rabbit" ? "graze" : "wander" }));
+  }
+}
+// What one of a herd ate goes to its herd's reserve on its tile, shared among them.
+function fed(w: World, an: Animal, kj: number) {
+  if (!w.herds || !herded(an.species)) return;
+  const h = w.herds[an.species], i = Math.min(H - 1, Math.floor(an.py)) * W + Math.min(W - 1, Math.floor(an.px));
+  h.e[i] = Math.min(SPEC[an.species].full, h.e[i] + kj / Math.max(1, h.n[i]));
 }

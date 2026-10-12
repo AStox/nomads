@@ -15,7 +15,7 @@ export const W = TILES;
 export const H = TILES;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export { YEAR_DAYS }; // the sky's: a year is the sun's round
-export const VERSION = 19;
+export const VERSION = 20;
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -282,6 +282,7 @@ export type World = {
   fert: Record<number, number>; // what has fed the soil or drawn it down since it grew, by soil.ts cell
   agents: Agent[];
   animals: Animal[];
+  herds?: import("./herds").Herds; // deer, rabbits and wolves as populations over the tiles (herds.ts)
   events: Event[];
   nextId: number;
   jev: { calls: number; tokens: number; rulings: number };

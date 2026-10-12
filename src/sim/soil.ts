@@ -8,7 +8,8 @@ import { clamp, smooth } from "../terrain/flora";
 import { esat } from "../terrain/climate";
 import { holds } from "../terrain/ground";
 import { FAUNA } from "./fauna";
-import { CLOUD, islandAir, seasonAt, sunOn } from "./air";
+import { CLOUD, islandAir, sunOn } from "./air";
+import { seasonAt } from "./sky";
 import { DAY, TILE_M, W, groundOf, type World } from "./world";
 
 export const FERT_CELL = 25;

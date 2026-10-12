@@ -5,6 +5,8 @@
 //
 // Light is counted in lux, the way it is measured, because eyes meet it on a log scale: a day is a hundred thousand of them
 // and a clear night under a full moon a quarter of one, and people work comfortably across almost all of that range.
+import { DAY } from "./world";
+
 const DEG = Math.PI / 180;
 
 // The island lies at 52 degrees north; the sun crosses the south at 13:00. A year is YEAR_DAYS days, the first ten spring:
@@ -14,6 +16,12 @@ const DEG = Math.PI / 180;
 // the equator when full as the sun is north, so a summer full moon rides low and a winter one high.
 export const YEAR_DAYS = 40;
 export const NOON = 13; // the sun crosses the south
+// Where tick t falls between the middles of two seasons: the earlier's index and how far toward the next. A day's air is
+// drawn straight between the seasons' means, as the island's fields are.
+export function seasonAt(t: number) {
+  const u = (((t / DAY) % YEAR_DAYS) - YEAR_DAYS / 8) / (YEAR_DAYS / 4), s = Math.floor(u);
+  return { s: (s + 4) % 4, f: u - s };
+}
 const LAT = 52 * DEG, TILT = 23.44 * DEG, LUNAR = 29.53;
 const hourAngle = (hour: number, transit: number) => ((hour - transit) * Math.PI) / 12;
 // How far north of the equator the sun stands on day `day` of the world (counting from 1, as the clock does) at an hour.

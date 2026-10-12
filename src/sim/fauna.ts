@@ -2,6 +2,7 @@
 // tick is in animals.ts. Speeds are meters a tick of five minutes' game time, the way a person's are.
 import { H, TILE_M, Tile, W, YEAR, dryAt, dryNear, sea, shoreOf, tileAt, wetAt, type Animal, type AnimalSpecies, type World } from "./world";
 import { anyOf, put } from "./space";
+import { herded, reveal, startHerds } from "./herds";
 
 type Kind = { hp: number; walk: number; run: number; fly?: number; ground: boolean };
 export const FAUNA: Record<AnimalSpecies, Kind> = {
@@ -18,7 +19,13 @@ export const FAUNA: Record<AnimalSpecies, Kind> = {
 // People can walk up to and trap what lives on the ground; hunting works on the bigger of those.
 export const HUNTED = ["deer", "wolf", "rabbit"] as const;
 
+// An animal put down in the world: a deer, rabbit or wolf put down by hand is one more on its tile (herds.ts); those
+// the herds stand on the ground themselves come by spawn, being theirs already.
 export function addAnimal(w: World, species: AnimalSpecies, px: number, py: number, extra: Partial<Animal> = {}): Animal {
+  if (herded(species) && w.herds) w.herds[species].n[Math.min(H - 1, Math.floor(py)) * W + Math.min(W - 1, Math.floor(px))] += 1;
+  return spawn(w, species, px, py, extra);
+}
+export function spawn(w: World, species: AnimalSpecies, px: number, py: number, extra: Partial<Animal> = {}): Animal {
   const n = w.nextId++, hp = FAUNA[species].hp;
   const a: Animal = { id: `a${n}`, species, x: 0, y: 0, px: 0, py: 0, alt: 0, heading: (n * 2.39996) % (Math.PI * 2), hp, maxHp: hp, hunger: 80, state: species === "fish" ? "swim" : "wander", born: w.t, dx: 0, dy: 0, ...extra };
   put(w, a, px, py);
@@ -84,16 +91,11 @@ export function populate(w: World, rand: () => number, main: Uint8Array) {
     }
     return c;
   };
-  for (let herd = 0; herd < 2; herd++) {
-    const c = nearPeople(herd ? 1 : 0.5, herd ? 3 : 1.2, (t) => w.tiles[t] === Tile.Grass);
-    for (let i = 0; i < 4; i++) addAnimal(w, "deer", ...scatter(c, 12), { home: c });
-  }
+  // Deer, rabbits and wolves as populations, run on twenty years of the island's own forage before anyone wakes, a pack
+  // of wolves denning some way off (herds.ts); those within sight of anyone stand on the ground from the start.
   const den = nearPeople(5, 10, (t) => w.tiles[t] !== Tile.Water);
-  for (let i = 0; i < 3; i++) addAnimal(w, "wolf", ...scatter(den, 8), { home: den });
-  for (let k = 0; k < 20; k++) {
-    const c = k < 6 ? nearPeople(0.5, 1.7, (t) => w.tiles[t] === Tile.Grass) : onGround(pick(grass));
-    for (let i = 0; i < 4; i++) addAnimal(w, "rabbit", ...scatter(c, 6), { home: c, state: "graze" });
-  }
+  w.herds = startHerds(w, den);
+  reveal(w, (sp, px, py) => spawn(w, sp, px, py, { home: [px, py], state: sp === "rabbit" ? "graze" : "wander" }), rand);
   // Fish keep to the margins, in water within a stone's throw of the bank, where anyone fishing from shore can reach.
   const waters = [...p.coast, ...p.lake], near = [...waters].sort((a, b) => Math.hypot((a % W) - people.px, ((a / W) | 0) - people.py) - Math.hypot((b % W) - people.px, ((b / W) | 0) - people.py)).slice(0, 12);
   const wet = (x: number, y: number) => wetAt(w, x, y), banked = (x: number, y: number) => wet(x, y) && ring(x, y, 25, dry);
