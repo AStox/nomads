@@ -140,6 +140,8 @@ Restaged for this (scripts/probes.ts; evals probes 7):
 - The weather is overcast as often as the island's season (climate.ts SEASONS cloud) as well as raining 16% of hours, so seedlings get the sun the island's climate gives and the truth matches tooDark's means.
 - The one cause is `deep`. The early and late waste are the first and the second spring's plantings.
 - Seed/real seed 1: truth 0.989 pure, 86% of cases failing; right 1.0, wrong 0.67, wasted 0.99 the first spring and 0.44 the second, evident 0.67.
+- The probe gate at a8bf4da (evals probes 7, a new baseline; every other probe's claims hold): over ten seeds, the share who come to blame deep shade (right) is 0.90 for seed/real, 0.72 sparse, 0.95 two, 0.57 hearsay, 0.87 unlearn/real, 0.92 unlearn/sparse; wasted plantings fall from 0.98 to 1.00 the first spring to 0.10 to 0.33 the second. Every seed/two claim holds. Open: seed/real's "more blame the true cause than anything else" (wrong 0.82: they also blame crowding and light shade) and its scaled accuracy; seed/sparse's evidence and scaled accuracy; hearsay's spreading (0.57 of those not told come to blame it); and both unlearn variants' letting go of the rain (kept 0.58 and 0.92), as before: a planter who blames the rain never plants in it, so never sees it work.
+- The worlds tier at a8bf4da fails on wasted, 0.09 to 0.50, over 0 to 7 judged tries a world: people plant at any time of year, and a berry sown from midsummer on, or anywhere shaded, no longer comes up within a planter's patience. The answer key then looked ahead to the run's end and a month past it rather than PATIENCE; it now looks PATIENCE ahead (scripts/truth.ts), as a planter does.
 
 ## 9. Still open
 

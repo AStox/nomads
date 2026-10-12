@@ -22,7 +22,7 @@ import { conditionsNow } from "../src/sim/sim";
 import { deadHour, deadOf, moistureOf, pastHour, tinder, tinderOf } from "../src/sim/wetness";
 import { BURNS, PHYS, pieceOf, stackPhys } from "../src/sim/fuel";
 import { advance, alight, feed, kindle, lay } from "../src/sim/combustion";
-import { ahead } from "../src/sim/seedling";
+import { PATIENCE, ahead } from "../src/sim/seedling";
 import { predict, type Prediction } from "../src/sim/formulas";
 import { seedRandom } from "./seeded";
 import { judge } from "./stats";
@@ -57,10 +57,11 @@ for (const file of readdirSync(runs).filter((f) => f.endsWith(".jsonl")))
     }
   }
 
-// The island's weather through the run's days and a month past them, turn by turn of the sky from how it stood at the
-// start, drawn once (its own draws, not the world's): the sky, the wind, the rain running off the land, the water in the
-// dead stuff lying about the island, and the hours kept for what fell where (wetness.ts pastHour).
-const start = w.t, hours = forecast(w, (days + 30) * 24, rng(seed * 104729 + 7));
+// The island's weather through the run's days and as long past them as anyone waits on a planting (seedling.ts
+// PATIENCE), turn by turn of the sky from how it stood at the start, drawn once (its own draws, not the world's): the sky,
+// the wind, the rain running off the land, the water in the dead stuff lying about the island, and the hours kept for
+// what fell where (wetness.ts pastHour).
+const start = w.t, hours = forecast(w, days * 24 + PATIENCE / 12, rng(seed * 104729 + 7));
 const dead: NonNullable<typeof w.weather.dead>[] = [], pasts: NonNullable<typeof w.weather.past>[] = [];
 {
   let d = w.weather.dead, t = Math.ceil((start + 1) / 12) * 12, past = w.weather.past && { ...w.weather.past, hours: [...w.weather.past.hours] };
@@ -165,7 +166,7 @@ function situation(plan: Plan): Trial | string {
   const fish = w.animals.filter((m) => m.species === "fish" && meters(m, stand) <= reach).length;
   const ground = f.verb === "plant" || f.verb === "pour" || f.verb === "dig";
   const r = predict(w, f, {
-    tinder: lit, wind: airOn(w, stand).wind, spot: stand, ahead: ground ? ahead(w, px, py, w.t, hours.slice(i + 1)) : { soil: [], temp: [] }, fish,
+    tinder: lit, wind: airOn(w, stand).wind, spot: stand, ahead: ground ? ahead(w, px, py, w.t, hours.slice(i + 1, i + 1 + PATIENCE / 12)) : { soil: [], temp: [] }, fish,
     pieces, air: fire ? bedAir(w, fire) : layAt(w, stand).air, fire,
   });
   const seen = (done: Prediction) => conditionsNow(w, stand, f.verb, done.spot ? { px: done.spot[0], py: done.spot[1] } : stand, f.inputs);
