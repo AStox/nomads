@@ -123,6 +123,10 @@ Fails one number: discovery regret 1.90 to 13.3 (+11.4 [1.47, 21.8]); worked, wa
 
 Probes, against a8bf4da: fails five, down from nine. seed/real caught 0.93 to 0.78 and its caught claim, seed/two's caught claim (both lost in the same build with no herd animal on the ground, above), and the accuracy claims of hearsay/real and unlearn/real. Better: two/real's early waste 0.33 to 0.20, seed/sparse's theories formed 25.9 to 23.7 and caught 0.56 to 0.75; blame/real and unlearn/sparse hold every claim again. Worlds, against 155adec: fails one number, discovery regret 1.87 to 8.06 (+6.19 [0.38, 13.0]), down from 13.3, rabbits' striking still in the key; fewer tries go to waste late than early now holds. Not retuned.
 
+### The gates after the foxes and the forage (4257b28)
+
+Probes, against a8bf4da: fails one, unlearn/real's claim that what they'd do matches whether it would work nine tenths of the way to the true theory by the end, lost since the first animals pass; better, seed/real's theories formed 18.9 to 17.6; every other claim the baseline met holds. Worlds, against 155adec: passes; discovery regret 2.32 to 5.54 within its interval (+3.22 [-6.22, 10.6]), and fewer tries go to waste late than early now holds. Not retuned.
+
 ## 10. Gaps
 
 - Age and sex classes; calves and kits as adults at once.
@@ -130,7 +134,9 @@ Probes, against a8bf4da: fails five, down from nine. seed/real caught 0.93 to 0.
 - Eagles on rabbits away from people; stoats, raptors and disease, whose share of the kits' loss is taken from where predators were kept down (R388), which held them back too, but not wholly.
 - Foxes' other food (voles, birds, beetles, fruit), which in Spain they turn to as rabbits fall (R391); wolves killing foxes; foxes' own spacing.
 - A deer's body taken as made like a rabbit, for what a wolf gets of it.
-- Wolves catching a rabbit as easily as a kilogram of deer, and with no preference between them; strife among packs judged over the whole island, not pack by pack.
+- Wolves taking each prey as its share of the biomass up to a coyote's chases, with no preference for deer; strife among packs judged over the whole island, not pack by pack.
+- Rabbits grazing all of a tile's ground layer rather than near their warrens and cover, so they outeat the deer everywhere; no culling, and no thermoregulation or lactation in a deer's winter costs.
+- Gorse's worth taken as heather's; deer's browse quality and fibre the same for every plant's green; marsh, rushes and sedges uneaten.
 - Rabbits keeping to cover: they graze any of a tile's ground layer, not only within reach of their warrens.
 - Running and walking speeds (substrate 6), wounds (the hp pools).
 - Fish, birds and butterflies stay individuals with their old caps.
