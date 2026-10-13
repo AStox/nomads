@@ -59,6 +59,11 @@ const LEAF_DD = 460, LEAF_BASE = 4, ME_DEAD = 0.16 * 45, DECAY = 0.004;
 // eats 3.5 kg a day of green, its measured most (R363), and 2 kg of dead. A rabbit passes fibre through fast and eats
 // to its own most [derived].
 const RUMEN = 0.012, NDF_GREEN = 0.4, NDF_DEAD = 0.7;
+// Rabbits graze from their warrens, the grazing heaviest within 50 m of them (R405) and most of it within 10 m of a
+// refuge (R406), so a tile's rabbits reach only the share of its ground a warren can be dug in: soil over the water table
+// and the bedrock deep enough for the tunnels, which lie 0.3 to 0.75 m down in heavy soils (R407) with nearly all the
+// chambers within 0.55 m (R408), from none at 0.3 m to all of it at 0.55 [derived].
+const WARREN = [0.3, 0.55];
 // What a gram of each woody plant's green browse is worth, kJ, in the growing season and out of it, at 0.16 MJ/kg a point
 // of digestibility (R394): deciduous leaves as green grass's, their twigs after leaf fall as dead stuff (R396); heather's
 // shoots 55.9% digestible in July and 41.9% in March (R397); gorse taken as heather [UNVERIFIED]; pine's 56%, low in
@@ -119,8 +124,8 @@ const TILE_KM2 = (TILE_M * TILE_M) / 1e6;
 // nb: each land tile's land neighbours, eight a tile, -1 where none; wolfLand, foxLand: the land tiles in a wolf's and a
 // fox's reach round each.
 // ever: the evergreens' share of a tile's browse; summer, winter: what a gram of its green browse is worth then, kJ;
-// bare: whether its broadleaves stand bare now.
-type Ground = { ever: Float32Array; summer: Float32Array; winter: Float32Array; bare: Uint8Array; land: number[]; grass: Float32Array; lit: Float32Array; woody: Float32Array; fed: Float32Array; sun: Float32Array[]; temp: Float32Array[]; water: Float32Array[]; nb: Int32Array; wolfLand: Float64Array; foxLand: Float64Array };
+// bare: whether its broadleaves stand bare now; warren: the share of its ground rabbits can dig and graze from.
+type Ground = { warren: Float32Array; ever: Float32Array; summer: Float32Array; winter: Float32Array; bare: Uint8Array; land: number[]; grass: Float32Array; lit: Float32Array; woody: Float32Array; fed: Float32Array; sun: Float32Array[]; temp: Float32Array[]; water: Float32Array[]; nb: Int32Array; wolfLand: Float64Array; foxLand: Float64Array };
 // The sums over the (2 r + 1)^2 tiles round each tile, clipped at the map's edge, by a summed-area table.
 let table: Float64Array;
 function box(src: ArrayLike<number>, out: Float64Array, r: number) {
@@ -143,7 +148,7 @@ function groundFor(w: World): Ground {
   let g = grounds.get(w);
   if (g) return g;
   const { isle, fine } = groundOf(w.seed), land: number[] = [];
-  const ever = new Float32Array(W * H), summer = new Float32Array(W * H), winter = new Float32Array(W * H), grass = new Float32Array(W * H), lit = new Float32Array(W * H), woody = new Float32Array(W * H), fed = new Float32Array(W * H), sun = isle.seasons.map(() => new Float32Array(W * H)), temp = isle.seasons.map(() => new Float32Array(W * H)), water = isle.seasons.map(() => new Float32Array(W * H));
+  const warren = new Float32Array(W * H), ever = new Float32Array(W * H), summer = new Float32Array(W * H), winter = new Float32Array(W * H), grass = new Float32Array(W * H), lit = new Float32Array(W * H), woody = new Float32Array(W * H), fed = new Float32Array(W * H), sun = isle.seasons.map(() => new Float32Array(W * H)), temp = isle.seasons.map(() => new Float32Array(W * H)), water = isle.seasons.map(() => new Float32Array(W * H));
   for (let i = 0; i < W * H; i++) {
     if (tileAt(w, i % W, Math.floor(i / W)) === Tile.Water) continue;
     land.push(i);
@@ -163,6 +168,8 @@ function groundFor(w: World): Ground {
     ever[i] = all > 0 ? ev / all : 0; summer[i] = all > 0 ? su / all : ME; winter[i] = ev > 0 ? wi / ev : ME_DEAD;
     const cx = (mx - START) / CELL, cy = (mz - START) / CELL;
     fed[i] = fine.bilinear(isle.fertility, cx, cy);
+    const dig = Math.min(fine.bilinear(isle.soil, cx, cy), fine.bilinear(isle.table, cx, cy));
+    warren[i] = Math.max(0, Math.min(1, (dig - WARREN[0]) / (WARREN[1] - WARREN[0])));
     isle.seasons.forEach((s, k) => { sun[k][i] = fine.bilinear(s.sun, cx, cy); temp[k][i] = fine.bilinear(s.temp, cx, cy); water[k][i] = fine.bilinear(isle.soilWater[k], cx, cy); });
   }
   const nb = new Int32Array(land.length * 8).fill(-1);
@@ -173,7 +180,7 @@ function groundFor(w: World): Ground {
       if ((dx || dy) && x >= 0 && y >= 0 && x < W && y < H && tileAt(w, x, y) !== Tile.Water) nb[k * 8 + m++] = y * W + x;
     }
   });
-  g = { ever, summer, winter, bare: new Uint8Array(W * H), land, grass, lit, woody, fed, sun, temp, water, nb, wolfLand: new Float64Array(W * H), foxLand: new Float64Array(W * H) };
+  g = { warren, ever, summer, winter, bare: new Uint8Array(W * H), land, grass, lit, woody, fed, sun, temp, water, nb, wolfLand: new Float64Array(W * H), foxLand: new Float64Array(W * H) };
   const isLand = new Float64Array(W * H);
   for (const i of land) isLand[i] = 1;
   box(isLand, g.wolfLand, WOLF_REACH); box(isLand, g.foxLand, FOX_REACH);
@@ -226,11 +233,14 @@ export function stepHerds(w: World, hs: Herds, dt: number, t: number, skip?: Set
     const rG = askG, rD = askD;
     // the deer's green and dead split between the ground layer and the browse as each stands
     const dGg = gG + bG > 0 ? dG * (gG / (gG + bG)) : 0, dDg = gD + bD > 0 ? dD * (gD / (gD + bD)) : 0;
-    const onGG = dGg * deer.n[i] + rG * rabbit.n[i], onGD = dDg * deer.n[i] + rD * rabbit.n[i], onBG = (dG - dGg) * deer.n[i], onBD = (dD - dDg) * deer.n[i];
-    const sGG = share(onGG / area, gG), sGD = share(onGD / area, gD), sBG = share(onBG / area, bG), sBD = share(onBD / area, bD);
+    // the rabbits crop what lies round their warrens, and the deer take what's left of the ground layer and the browse
+    const rGG = rG * rabbit.n[i], rGD = rD * rabbit.n[i], sRG = share(rGG / area, gG * g.warren[i]), sRD = share(rGD / area, gD * g.warren[i]);
+    const dOnGG = dGg * deer.n[i], dOnGD = dDg * deer.n[i], onBG = (dG - dGg) * deer.n[i], onBD = (dD - dDg) * deer.n[i];
+    const sGG = share(dOnGG / area, gG - (rGG * sRG) / area), sGD = share(dOnGD / area, gD - (rGD * sRD) / area), sBG = share(onBG / area, bG), sBD = share(onBD / area, bD);
+    const onGG = dOnGG * sGG + rGG * sRG, onGD = dOnGD * sGD + rGD * sRD;
     if (deer.n[i] > 0) deer.e[i] += dGg * sGG * ME + (dG - dGg) * sBG * bQ + (dDg * sGD + (dD - dDg) * sBD) * ME_DEAD - D.fmr * days;
-    if (rabbit.n[i] > 0) rabbit.e[i] += rG * sGG * ME + rD * sGD * ME_DEAD - R.fmr * days;
-    if (g.grass[i] > 0) { hs.forage[i] = Math.max(0, hs.forage[i] - (onGG * sGG) / (area * g.grass[i])); hs.forageDead[i] = Math.max(0, hs.forageDead[i] - (onGD * sGD) / (area * g.grass[i])); }
+    if (rabbit.n[i] > 0) rabbit.e[i] += rG * sRG * ME + rD * sRD * ME_DEAD - R.fmr * days;
+    if (g.grass[i] > 0) { hs.forage[i] = Math.max(0, hs.forage[i] - onGG / (area * g.grass[i])); hs.forageDead[i] = Math.max(0, hs.forageDead[i] - onGD / (area * g.grass[i])); }
     if (g.woody[i] > 0) { hs.browse[i] = Math.max(0, hs.browse[i] - (onBG * sBG) / (area * g.woody[i])); hs.browseDead[i] = Math.max(0, hs.browseDead[i] - (onBD * sBD) / (area * g.woody[i])); }
   }
   // wolves kill deer and rabbits over their territory by the prey's whole biomass there, each kind as its share of it,
@@ -306,7 +316,7 @@ export function stepHerds(w: World, hs: Herds, dt: number, t: number, skip?: Set
       // the energy they'd take in there: their response to the forage standing, at what it's worth
       const fG = hs.forage[j] * g.grass[j], fD = hs.forageDead[j] * g.grass[j], bG = hs.browse[j] * g.woody[j], bD = hs.browseDead[j] * g.woody[j];
       const deerQ = fG + bG > 0 ? (fG * ME + bG * (g.bare[j] ? g.winter[j] : g.summer[j])) / (fG + bG) : ME;
-      pull[j] = sp === "wolf" ? hs.deer.n[j] * SPEC.deer.kg + hs.rabbit.n[j] * SPEC.rabbit.kg : sp === "fox" ? hs.rabbit.n[j] : sp === "deer" ? rate(fG + bG, deerQ, fD + bD, deerHalf) : rate(fG, ME, fD, rabbitHalf);
+      pull[j] = sp === "wolf" ? hs.deer.n[j] * SPEC.deer.kg + hs.rabbit.n[j] * SPEC.rabbit.kg : sp === "fox" ? hs.rabbit.n[j] : sp === "deer" ? rate(fG + bG, deerQ, fD + bD, deerHalf) : g.warren[j] * rate(fG, ME, fD, rabbitHalf);
     }
     for (let k = 0; k < g.land.length; k++) {
       const i = g.land[k];
@@ -336,7 +346,7 @@ export function startHerds(w: World, den: [number, number]): Herds {
   for (const i of g.land) {
     hs.forage[i] = hs.browse[i] = MOST / 2;
     hs.deer.n[i] = 2 * TILE_KM2 * Math.min(1, g.grass[i] + g.woody[i]); hs.deer.e[i] = SPEC.deer.full / 2;
-    hs.rabbit.n[i] = TILE_KM2 * 400 * g.grass[i]; hs.rabbit.e[i] = SPEC.rabbit.full / 2;
+    hs.rabbit.n[i] = TILE_KM2 * 400 * g.grass[i] * g.warren[i]; hs.rabbit.e[i] = SPEC.rabbit.full / 2;
     hs.fox.n[i] = TILE_KM2; hs.fox.e[i] = SPEC.fox.full / 2;
   }
   const d = Math.floor(den[1]) * W + Math.floor(den[0]);
