@@ -134,6 +134,10 @@ Probes, against a8bf4da: fails one, unlearn/real's claim that what they'd do mat
 
 Probes, against a8bf4da: fails four, hearsay/real accMid 0.79 to 0.63, unlearn/real exact 0.15 to 0.02 and its claims that most blame the true cause and that nearly all whose tries show it rule it out where it holds; better, seed/real's theories formed 18.9 to 17.9. Hearsay and unlearn have won and lost claims from pass to pass since the first animals pass, as the island's animals move what happens around the probes' people. Worlds, against 155adec: passes and is the new baseline; fewer tries go to waste late than early holds. Not retuned.
 
+### The gates after migration (d465dc7)
+
+Probes, against a8bf4da: fails three, seed/real's caught claim, unlearn/real caught 0.87 to 0.57 and its caught claim, the claims that have come and gone pass by pass; better, unlearn/sparse's wasted tries 0.15 to 0.02. Worlds, against 175bd75: fails one claim, fewer tries go to waste late than early, which 175bd75 was the first to hold. Not retuned.
+
 ## 10. Gaps
 
 - Age and sex classes; calves and kits as adults at once.
