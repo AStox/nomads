@@ -146,6 +146,10 @@ Probes, against a8bf4da: fails four, hearsay/real accMid 0.79 to 0.63, unlearn/r
 
 Probes, against a8bf4da: fails three, seed/real's caught claim, unlearn/real caught 0.87 to 0.57 and its caught claim, the claims that have come and gone pass by pass; better, unlearn/sparse's wasted tries 0.15 to 0.02. Worlds, against 175bd75: fails one claim, fewer tries go to waste late than early, which 175bd75 was the first to hold. Not retuned.
 
+### The gates after the fish, birds, carrion and butterflies (2258536)
+
+Probes, against a8bf4da: fails nine. blame/real's fewer wasted tries late than early; two/real exact 1.00 to 0.83 and its caught claim; seed/real caught 1.00 to 0.64 and its caught claim; seed/two's caught claim; unlearn/real kept 0.58 to 0.72, its caught claim and its claim that what they'd do matches whether it would work by the end. Better: two/real's early waste 0.33 to 0.17; seed/real and seed/sparse newly hold that what they'd do matches whether it would work. These are the caught and accuracy claims that have come and gone pass by pass since the first animals pass, now with gulls, crows and herons revealed about the probes' people where none stood before. Worlds, against 175bd75: passes and is the new baseline; fewer tries go to waste late than early holds again, discovery regret 1.66 to 0.17. Not retuned.
+
 ## 10. Gaps
 
 - Age and sex classes; calves and kits as adults at once.
