@@ -89,6 +89,7 @@ export const THING_MATERIAL: Record<string, { toughness?: number; hp?: number; b
   // live masses, kg: a red deer's (the mean of stags' and hinds'), wolves', a rabbit's and the birds' measured
   deer: { toughness: 0.1, hp: 30, breaks: carcass(116, { hide: 1, bone: 2 }) },
   wolf: { toughness: 0.15, hp: 35, breaks: carcass(41.5, { hide: 1, bone: 1 }) },
+  fox: { toughness: 0.08, hp: 12, breaks: carcass(6, { hide: 1, bone: 1 }) },
   rabbit: { toughness: 0.05, hp: 6, breaks: carcass(1.6, { hide: 1 }, { dressed: 0.555, bone: 0.13, fat: 0.035 }) },
   heron: { toughness: 0.05, hp: 8, breaks: carcass(1.5, { bone: 1 }) },
   gull: { toughness: 0.05, hp: 5, breaks: carcass(0.97, { bone: 1 }) },

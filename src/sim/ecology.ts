@@ -26,7 +26,8 @@ import { nicheOf, seedlingHour, seedlingOf, shareAt, treeOf, type Hour } from ".
 import { SEASONS } from "../terrain/climate";
 import { count, timed, trace } from "./trace";
 import { hooks } from "./rules";
-import { GREEN_UP, growing, wetness } from "./wetness";
+import { growing, wetness } from "./wetness";
+import { GREEN_UP } from "../terrain/growth";
 import { rotPerHour } from "./spoil";
 import { bodyOf } from "./body";
 

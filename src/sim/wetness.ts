@@ -6,6 +6,7 @@
 // it off altogether. The grass, fern and dead wood lying about the island hold what the weather of the last few days
 // left in dead stuff of their thickness where they lie (deadAt) until somebody picks them up. What it comes to decides
 // whether a spark or an ember catches in tinder (physics.ts), and how cold the wet-through feel (sim.ts needs).
+import { GREEN_UP } from "../terrain/growth";
 import { DAY, YEAR_DAYS, hourOf, perWorld, wetAt, type Agent, type Dead, type Stack, type Thing, type Weather, type World } from "./world";
 import { anyAround, liveThings, lookAround, nearestThing } from "./space";
 import { airAt, airOn, headWind, humidity, islandAir, rainWhen, snowAt, sunOn, vapourAt } from "./air";
@@ -225,7 +226,6 @@ export function gsiHour(w: World, g: Grow | undefined, t: number, sky: World["we
 // dead-fuel water, by the 1978 transfer, 1.33 - 0.0111 for each percent of it; and the water in living leaves and twigs of
 // trees and shrubs, 60% rising to 200% the same way. The index is not divided by the island's highest, which a world
 // just made has no record of (sec. 30a).
-export const GREEN_UP = 0.2;
 export function growing(w: World) {
   const wx = w.weather, index = (wx.gsi ?? gsiHour(w, undefined, w.t, wx.sky, wx.temp)).index, up = ramp(index, GREEN_UP, 1);
   const herb = 0.3 + 2.2 * up;

@@ -750,6 +750,8 @@ export function icon(name = "think") {
 
 // -------------------------------------------------------------------------------------------------------- wolves
 
+// a red fox's coat, rust with a dark brush
+const FOX_PELTS = [ramp("d0", "d1", "d2", "d3", "d4")];
 const PELTS = [ramp("r0", "r1", "r2", "r3", "r4"), ramp("r0", "r1", "r2", "r3", "r4"), ramp("ink", "r0", "r1", "r2", "r3"), ramp("r1", "r2", "r3", "r4", "r5")];
 // Tiny wolves, a frame list per pose: L back, B body, T tail, K ear, W pale chest, E legs, N nose.
 const TINY_WOLF = {
@@ -761,9 +763,9 @@ const TINY_WOLF = {
 };
 
 // hpx: standing head height. Drawn facing right; callers mirror. pose 'stand' 'walk' 'run' 'eat' 'rest', frame 0..3.
-export function wolf(hpx = 6, pose = "stand", frame = 0, seed = 0) {
+export function wolf(hpx = 6, pose = "stand", frame = 0, seed = 0, pelts = PELTS) {
   frame &= 3;
-  const h = Math.max(3, Math.round(hpx)), coat = pick(PELTS, rv(seed, 1)), gait = pose === "walk" || pose === "run";
+  const h = Math.max(3, Math.round(hpx)), coat = pick(pelts, rv(seed, 1)), gait = pose === "walk" || pose === "run";
   if (h <= 5) {
     const f = TINY_WOLF[pose] ?? TINY_WOLF.stand, list = f[(gait ? frame : frame >> 1) % f.length];
     const key = { L: coat[3], B: coat[2], T: coat[2], K: coat[3], W: coat[4] === P.r5 ? P.snow : P.r5, E: coat[1], N: P.ink };
@@ -1299,6 +1301,11 @@ export function animal(species, state = "wander", hpx = 6, frame = 0, seed = 0, 
       if (hpx < 3) return dot(P.r3, P.r1);
       const pose = /hunt|attack|flee|run/.test(st) ? "run" : /wander|walk|move/.test(st) ? "walk" : /eat|feed/.test(st) ? "eat" : /rest|sleep/.test(st) ? "rest" : "stand";
       return face(wolf(hpx, pose, frame, seed), true);
+    }
+    case "fox": {
+      if (hpx < 3) return dot(P.d3, P.d1);
+      const pose = /hunt|flee|run/.test(st) ? "run" : /wander|walk|move/.test(st) ? "walk" : /eat|feed/.test(st) ? "eat" : /rest|sleep/.test(st) ? "rest" : "stand";
+      return face(wolf(hpx, pose, frame, seed, FOX_PELTS), true);
     }
     case "rabbit": case "hare": {
       if (hpx < 2) return dot(P.d3, P.d2);

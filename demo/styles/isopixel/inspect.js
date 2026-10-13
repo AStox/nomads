@@ -95,7 +95,7 @@ export function iconSprite(d) {
   }
   if (kind === "animal") {
     const state = String(d.state ?? field(d, "doing") ?? "wander").replaceAll(" ", "_"), fly = BIRDS.has(sp) || sp === "butterfly";
-    const px = sp === "wolf" ? 12 : sp === "fish" ? 10 : sp === "butterfly" ? 5 : BIRDS.has(sp) ? 16 : sp === "rabbit" ? 12 : 18;
+    const px = sp === "wolf" ? 12 : sp === "fox" ? 9 : sp === "fish" ? 10 : sp === "butterfly" ? 5 : BIRDS.has(sp) ? 16 : sp === "rabbit" ? 12 : 18;
     return TH.animal(sp, state, px, fly ? 1 : 0, strHash(id) % 8, 1);
   }
   if (kind === "tree") {

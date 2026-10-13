@@ -191,7 +191,7 @@ async function main() {
   const worldEl = document.getElementById("world"), TABS = ["people", "animals", "things", "graphs", "key"], WW = () => IW;
   const wui = { open: false, tab: "people", fold: new Set(), scroll: 0, max: 0, hover: null, hits: [] };
   const words = (x) => String(x).replaceAll("_", " ");
-  const SPECIES_C = { deer: P.d3, wolf: P.r2, rabbit: P.k1, fish: P.w4, heron: P.w6, gull: P.r4, crow: P.ink, eagle: P.d1, butterfly: P.violet };
+  const SPECIES_C = { deer: P.d3, wolf: P.r2, fox: P.d4, rabbit: P.k1, fish: P.w4, heron: P.w6, gull: P.r4, crow: P.ink, eagle: P.d1, butterfly: P.violet };
   const far = (px, py) => { const m = Math.hypot(toM(px) - view.x, toM(py) - view.z); return m < 1000 ? `${Math.round(m)} M` : `${(m / 1000).toFixed(1)} KM`; };
   const near = (list) => list.map((e) => [e, (toM(e.px) - view.x) ** 2 + (toM(e.py) - view.z) ** 2]).sort((a, b) => a[1] - b[1]).map(([e]) => e);
   function worldData() {

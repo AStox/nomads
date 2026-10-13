@@ -40,7 +40,7 @@ const blazeShown = (b, sz, pv) => ({
   k: Math.max(0.3, Math.min(3, Math.sqrt((b.kw + b.glow) / KW))),
 });
 // animal body size in meters: standing height, a bird's wingspan, a fish's length
-const BODY = { deer: 1.5, wolf: 0.9, rabbit: 0.35, heron: 1, gull: 1.2, crow: 0.9, eagle: 2, fish: 0.5, butterfly: 0.1 };
+const BODY = { deer: 1.5, wolf: 0.9, fox: 0.5, rabbit: 0.35, heron: 1, gull: 1.2, crow: 0.9, eagle: 2, fish: 0.5, butterfly: 0.1 };
 const FLIERS = new Set(["heron", "gull", "crow", "eagle", "butterfly"]);
 const strHash = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
 const idH = (id, k) => h2(strHash(String(id)), k, 611);

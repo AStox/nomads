@@ -8,6 +8,7 @@ type Kind = { hp: number; walk: number; run: number; fly?: number; ground: boole
 export const FAUNA: Record<AnimalSpecies, Kind> = {
   deer: { hp: 30, walk: 1.5, run: 8, ground: true },
   wolf: { hp: 35, walk: 1.5, run: 8, ground: true },
+  fox: { hp: 12, walk: 1.2, run: 7, ground: true },
   rabbit: { hp: 6, walk: 0.6, run: 5, ground: true },
   heron: { hp: 8, walk: 0.4, run: 1, fly: 12, ground: false },
   gull: { hp: 5, walk: 0.5, run: 1, fly: 14, ground: false },
@@ -17,7 +18,7 @@ export const FAUNA: Record<AnimalSpecies, Kind> = {
   butterfly: { hp: 1, walk: 1, run: 2.5, fly: 2.5, ground: false },
 };
 // People can walk up to and trap what lives on the ground; hunting works on the bigger of those.
-export const HUNTED = ["deer", "wolf", "rabbit"] as const;
+export const HUNTED = ["deer", "wolf", "fox", "rabbit"] as const;
 
 // An animal put down in the world: a deer, rabbit or wolf put down by hand is one more on its tile (herds.ts); those
 // the herds stand on the ground themselves come by spawn, being theirs already.
@@ -91,7 +92,7 @@ export function populate(w: World, rand: () => number, main: Uint8Array) {
     }
     return c;
   };
-  // Deer, rabbits and wolves as populations, run on twenty years of the island's own forage before anyone wakes, a pack
+  // Deer, rabbits, wolves and foxes as populations, run on twenty years of the island's own forage before anyone wakes, a pack
   // of wolves denning some way off (herds.ts); those within sight of anyone stand on the ground from the start.
   const den = nearPeople(5, 10, (t) => w.tiles[t] !== Tile.Water);
   w.herds = startHerds(w, den);

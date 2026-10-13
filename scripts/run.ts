@@ -59,7 +59,7 @@ for (const a of w.agents) {
   console.log(`  ${a.name}: ${a.status} | needs ${Object.entries(a.needs).map(([k, v]) => `${k} ${Math.round(v)}`).join(" ")} | carrying ${a.inv.map((s) => w.kinds[s.k]?.name).join(", ")}`);
   for (const b of Object.values(a.beliefs)) console.log(`    - ${beliefText(w, b)} [${b.how}, ${b.wins}/${b.tries}]`);
 }
-console.log(`\nanimals: deer ${census(w).deer ?? 0}, rabbits ${census(w).rabbit ?? 0}, wolves ${census(w).wolf ?? 0}; structures ${w.things.filter((t) => t.kind === "structure").length}; fires ${w.things.filter((t) => t.kind === "fire").length}`);
+console.log(`\nanimals: deer ${census(w).deer ?? 0}, rabbits ${census(w).rabbit ?? 0}, wolves ${census(w).wolf ?? 0}, foxes ${census(w).fox ?? 0}; structures ${w.things.filter((t) => t.kind === "structure").length}; fires ${w.things.filter((t) => t.kind === "fire").length}`);
 console.log("tickMs", JSON.stringify(Object.fromEntries(Object.entries(tickMs).map(([k, v]) => [k, Math.round(v * 100) / 100]))));
 console.log("jev", JSON.stringify(w.jev), "counters", JSON.stringify(Object.fromEntries(Object.entries(counters).filter(([k]) => !k.startsWith("belief")))));
 process.exit(0);

@@ -15,7 +15,7 @@ export const W = TILES;
 export const H = TILES;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export { YEAR_DAYS }; // the sky's: a year is the sun's round
-export const VERSION = 20;
+export const VERSION = 21;
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -71,7 +71,7 @@ export type Thing = {
 export type Stack = { k: string; hp: number; born: number; m?: number; skin?: number; green?: true; size?: Size; species?: string; T?: number; rot?: number };
 // A piece of wood's size: how thick and how long, in meters, and its dry mass in kg.
 export type Size = { d: number; len: number; mass: number };
-export type AnimalSpecies = "deer" | "wolf" | "rabbit" | "heron" | "gull" | "crow" | "eagle" | "fish" | "butterfly";
+export type AnimalSpecies = "deer" | "wolf" | "fox" | "rabbit" | "heron" | "gull" | "crow" | "eagle" | "fish" | "butterfly";
 export type Animal = {
   id: string; species: AnimalSpecies; x: number; y: number; px: number; py: number;
   alt: number; // meters above the ground: birds in flight or on a perch, butterflies
@@ -282,7 +282,7 @@ export type World = {
   fert: Record<number, number>; // what has fed the soil or drawn it down since it grew, by soil.ts cell
   agents: Agent[];
   animals: Animal[];
-  herds?: import("./herds").Herds; // deer, rabbits and wolves as populations over the tiles (herds.ts)
+  herds?: import("./herds").Herds; // deer, rabbits, wolves and foxes as populations over the tiles (herds.ts)
   events: Event[];
   nextId: number;
   jev: { calls: number; tokens: number; rulings: number };

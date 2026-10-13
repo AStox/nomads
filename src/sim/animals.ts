@@ -11,7 +11,7 @@ import { dropPile, mark, removeThing } from "./physics";
 import { see } from "./beliefs";
 import { trace } from "./trace";
 import { FAUNA, addAnimal, spawn } from "./fauna";
-import { SPEC, edible, gone, herded, moved, reveal, stepHerds } from "./herds";
+import { SPEC, meal, gone, herded, moved, reveal, stepHerds } from "./herds";
 import { PHYS } from "./fuel";
 // A cut of meat lying about, to a wolf that eats it, kJ (fuel.ts).
 const MEAT_KJ = PHYS.meat.mass * PHYS.meat.kj!;
@@ -20,7 +20,7 @@ import { DARK, lightOn } from "./light";
 // Agents being attacked this tick, agent id -> wolf id.
 export const attacked = new Map<string, string>();
 
-type Near = { awake: Agent[]; fires: Thing[]; wolves: Animal[]; deer: Animal[]; rabbits: Animal[]; eagles: Animal[]; fish: Animal[] };
+type Near = { awake: Agent[]; fires: Thing[]; wolves: Animal[]; foxes: Animal[]; deer: Animal[]; rabbits: Animal[]; eagles: Animal[]; fish: Animal[] };
 function closest<T extends { px: number; py: number }>(from: { px: number; py: number }, list: readonly T[], r: number, ok: (t: T) => boolean = () => true) {
   let best: T | null = null, bd = r;
   for (const o of list) { const d = meters(from, o); if (d <= bd && o !== (from as unknown) && ok(o)) { bd = d; best = o; } }
@@ -157,7 +157,7 @@ function wolf(w: World, wf: Animal, n: Near) {
     target.hp -= 6;
     if (target.hp <= 0) {
       carcass(w, target);
-      fed(w, wf, edible(target.species as "deer" | "rabbit"));
+      fed(w, wf, meal(target.species as "deer" | "rabbit"));
       log(w, "death", [], target, `Wolves brought down a ${target.species}.`);
       if (target.species === "deer") see(w, target, "breaks:deer", "A deer can be killed. It's all meat, hide, and bone inside.", 90);
     }
@@ -170,9 +170,23 @@ function wolf(w: World, wf: Animal, n: Near) {
   }
 }
 
+// A fox keeps clear of people and wolves, and when hungry runs down the nearest rabbit and eats it where it falls.
+function fox(w: World, f: Animal, n: Near) {
+  const threat = closest(f, n.awake, 40) ?? closest(f, n.wolves, 80);
+  if (threat) { setState(w, f, "flee"); away(w, f, threat, FAUNA.fox.run); return; }
+  const prey = f.hunger < 70 ? closest(f, n.rabbits, 100) : null;
+  if (!prey) { setState(w, f, "wander"); roam(w, f, 150, FAUNA.fox.walk); return; }
+  setState(w, f, "hunt");
+  if (meters(f, prey) > 1.5) { goTo(w, f, prey.px, prey.py, FAUNA.fox.run); return; }
+  setState(w, f, "eat");
+  gone(w, prey);
+  fed(w, f, meal("rabbit"));
+  log(w, "death", [], prey, "A fox caught a rabbit.");
+}
+
 function rabbit(w: World, r: Animal, n: Near) {
   const diving = n.eagles.find((e) => e.state === "dive" && meters(e, r) < 30);
-  const threat = closest(r, n.awake, 15) ?? closest(r, n.wolves, 40) ?? diving ?? null;
+  const threat = closest(r, n.awake, 15) ?? closest(r, n.wolves, 40) ?? closest(r, n.foxes, 30) ?? diving ?? null;
   // A rabbit bolts a few ticks, then freezes flat and hopes not to be seen.
   if (threat) { setState(w, r, "flee"); if (inState(w, r) <= 3) away(w, r, threat, FAUNA.rabbit.run); return; }
   setState(w, r, forage(w, r) > 0.25 ? "graze" : "wander");
@@ -390,7 +404,7 @@ export function animals(w: World) {
   const awake = w.agents.filter((a) => a.down <= w.t);
   const of = (s: AnimalSpecies) => w.animals.filter((a) => a.species === s);
   const fires = [...liveThings(w)].filter((t) => t.kind === "fire");
-  const n: Near = { awake, fires, wolves: of("wolf"), deer: of("deer"), rabbits: of("rabbit"), eagles: of("eagle"), fish: of("fish") };
+  const n: Near = { awake, fires, wolves: of("wolf"), foxes: of("fox"), deer: of("deer"), rabbits: of("rabbit"), eagles: of("eagle"), fish: of("fish") };
   const warm = warmRate(w.weather.temp) > 0.3;
   // Whether an animal is still about. One that goes takes the list with it (it is replaced, never cut down in place), so
   // the set of those about is made again only then.
@@ -402,6 +416,7 @@ export function animals(w: World) {
     switch (an.species) {
       case "deer": deer(w, an, n); break;
       case "wolf": wolf(w, an, n); break;
+      case "fox": fox(w, an, n); break;
       case "rabbit": rabbit(w, an, n); break;
       case "fish": fish(w, an); break;
       case "heron": heron(w, an, n); break;
@@ -424,7 +439,7 @@ export function animals(w: World) {
     const f = anyOf(w, "flowers");
     if (f) addAnimal(w, "butterfly", f.px, f.py, { home: [f.px, f.py], alt: 0.5, state: "flutter" });
   }
-  // Anything else left without food weakens and dies (deer, rabbits and wolves starve as their herds do).
+  // Anything else left without food weakens and dies (deer, rabbits, wolves and foxes starve as their herds do).
   for (const an of w.animals) if (!herded(an.species) && an.hunger <= 0) an.hp -= 0.05;
   for (const an of w.animals.filter((a) => a.hp <= 0)) { gone(w, an); log(w, "death", [], an, an.hunger <= 0 ? `A ${an.species} starved.` : `A ${an.species} went through the ice and drowned.`); }
   // An hour of the herds' lives, the wolves people can see killing as themselves, and the herds stood within their sight.

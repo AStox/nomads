@@ -7,6 +7,9 @@ import { clamp } from "math";
 
 // Warm enough to grow: the NFDRS growing season index's minimum-temperature ramp, nothing at -2 C and all of it from 5 C
 // (fire-constants R72).
+// The growing season index past which living plants come green and the broadleaves leaf out: the NFDRS's green-up
+// threshold (fire-constants sec. 12, R72; wetness.ts).
+export const GREEN_UP = 0.2;
 export const warmEnough = (temp: number) => clamp((temp + 2) / 7, 0, 1);
 // Water enough: FAO-56's stress coefficient Ks (R221 eq. 84) for a root zone holding this share of what it can, with
 // half of it taken before stress begins (p 0.5).

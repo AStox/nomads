@@ -106,7 +106,7 @@ const OBJECTS = [["tree", "oak", 1.6], ["tree", "pine", 1.6], ["tree", "ash", 1.
 const OPEN = { kw: 60, glow: 50, flame: 0.4, r: 0.5, hot: 900 }, COALS = { kw: 0, glow: 40, flame: 0, r: 0.3, hot: 880 };
 const FIRES = [["OPEN", { blaze: OPEN }], ["RING", { contained: true, blaze: OPEN }], ["RING COALS", { contained: true, blaze: COALS }], ["RING COLD", { contained: true }],
   ["KILN", { covered: true, blaze: { kw: 30, glow: 60, flame: 0.2, r: 0.4, hot: 1100 } }], ["FORGE", { charcoal: true, blaze: { kw: 5, glow: 80, flame: 0.1, r: 0.3, hot: 1450 } }]];
-const ANIMALS = [["deer", "graze"], ["deer", "flee"], ["wolf", "wander"], ["wolf", "hunt"], ["rabbit", "wander"], ["heron", "feed"], ["heron", "wade"], ["heron", "fly"],
+const ANIMALS = [["deer", "graze"], ["deer", "flee"], ["wolf", "wander"], ["wolf", "hunt"], ["fox", "wander"], ["fox", "hunt"], ["rabbit", "wander"], ["heron", "feed"], ["heron", "wade"], ["heron", "fly"],
   ["gull", "fly"], ["gull", "soar"], ["gull", "perch"], ["crow", "fly"], ["crow", "land"], ["eagle", "soar"], ["eagle", "dive"], ["fish", "swim"], ["fish", "jump"],
   ["butterfly", "flutter"], ["butterfly", "rest"]];
 function ladderSections() {
