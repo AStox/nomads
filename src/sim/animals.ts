@@ -4,14 +4,15 @@ import { THING_MATERIAL } from "./materials";
 import { TILE_M, H, W, dryAt, groundOf, shoreByTile, shoreOf, isNight, log, meters, walkable, wetAt, type Agent, type Animal, type AnimalSpecies, type Thing, type World } from "./world";
 import { SIZE } from "../terrain/flora";
 import { snowAt } from "./air";
-import { breeding, coldBite, warmRate } from "./cues";
-import { anyOf, liveThings, nearestThing, onPath, put, thingById } from "./space";
+import { coldBite, warmRate } from "./cues";
+import { liveThings, nearestThing, onPath, put, thingById } from "./space";
 import { steer } from "./walk";
 import { dropPile, mark, removeThing } from "./physics";
 import { see } from "./beliefs";
 import { trace } from "./trace";
-import { FAUNA, addAnimal, spawn } from "./fauna";
-import { SPEC, meal, gone, herded, moved, reveal, stepHerds } from "./herds";
+import { FAUNA, revealed, spawn } from "./fauna";
+import { FISH_KG } from "./fish";
+import { SPEC, meal, mealOf, gone, herded, hungerOf, moved, reveal, stepHerds } from "./herds";
 import { PHYS } from "./fuel";
 // A cut of meat lying about, to a wolf that eats it, kJ (fuel.ts).
 const MEAT_KJ = PHYS.meat.mass * PHYS.meat.kj!;
@@ -331,14 +332,14 @@ function crow(w: World, c: Animal, n: Near) {
   const meat = nearestThing(w, c.px, c.py, ["item"], (t) => t.item === "meat" || !!t.item?.startsWith("rotten:"), 60);
   if (meat && meters(c, meat) > 1) { c.aim = [meat.px, meat.py]; c.target = undefined; setState(w, c, "fly"); return; }
   setState(w, c, "feed");
-  if (meat && Math.random() < 0.02) { meat.n = (meat.n ?? 1) - 1; mark(w, meat); if (meat.n <= 0) removeThing(w, meat); }
+  // and eats while it has room for it
+  if (meat && hungerOf(w, c) < 100) { meat.n = (meat.n ?? 1) - 1; mark(w, meat); if (meat.n <= 0) removeThing(w, meat); fed(w, c, MEAT_KJ); }
   if (Math.random() < 0.004) { perch(); return; }
   roam(w, c, 40, FAUNA.crow.walk, 0.3);
 }
 
 function eagle(w: World, e: Animal, n: Near) {
   const home = e.home ?? [e.px, e.py];
-  e.hunger = Math.max(0, e.hunger - 0.04);
   if (e.state === "feed") { lift(e, 0, 5); if (inState(w, e) > 20) setState(w, e, "soar"); return; }
   if (e.state === "perch") { if (holdPerch(w, e) && !isNight(w.t)) { e.target = undefined; setState(w, e, "soar"); } return; }
   if (isNight(w.t)) {
@@ -355,7 +356,8 @@ function eagle(w: World, e: Animal, n: Near) {
     goTo(w, e, prey.px, prey.py, FAUNA.eagle.fly!);
     if (e.alt < 2 && d < 3) {
       gone(w, prey);
-      e.hunger = 100; e.target = undefined;
+      fed(w, e, prey.species === "fish" ? mealOf(FISH_KG) : meal(prey.species as "rabbit"));
+      e.target = undefined;
       setState(w, e, "feed");
     } else if (inState(w, e) > 12) { e.target = undefined; setState(w, e, "soar"); }
     return;
@@ -428,17 +430,6 @@ export function animals(w: World) {
     if (FAUNA[an.species].ground && still(an)) caught(w, an, x0, y0);
     if (still(an)) moved(w, an, x0, y0);
   }
-  const fishes = w.animals.filter((a) => a.species === "fish");
-  if (fishes.length && fishes.length < 200 && Math.random() < fishes.length / 6000) {
-    const mom = fishes[Math.floor(Math.random() * fishes.length)];
-    addAnimal(w, "fish", mom.px, mom.py, { home: mom.home });
-  }
-  // Butterflies live while the air is warm, and frost kills them; new ones hatch among the flowers as the days draw out.
-  if (w.weather.temp < 2 && w.animals.some((a) => a.species === "butterfly")) w.animals = w.animals.filter((a) => a.species !== "butterfly");
-  if (breeding(w.t) && warm && Math.random() < 0.05 && w.animals.filter((a) => a.species === "butterfly").length < 90) {
-    const f = anyOf(w, "flowers");
-    if (f) addAnimal(w, "butterfly", f.px, f.py, { home: [f.px, f.py], alt: 0.5, state: "flutter" });
-  }
   // Anything else left without food weakens and dies (deer, rabbits, wolves and foxes starve as their herds do).
   for (const an of w.animals) if (!herded(an.species) && an.hunger <= 0) an.hp -= 0.05;
   for (const an of w.animals.filter((a) => a.hp <= 0)) { gone(w, an); log(w, "death", [], an, an.hunger <= 0 ? `A ${an.species} starved.` : `A ${an.species} went through the ice and drowned.`); }
@@ -446,7 +437,7 @@ export function animals(w: World) {
   if (w.herds && w.t % 12 === 0) {
     const seen = new Set(w.animals.filter((a) => a.species === "wolf").map((a) => Math.min(H - 1, Math.floor(a.py)) * W + Math.min(W - 1, Math.floor(a.px))));
     stepHerds(w, w.herds, 1 / 24, w.t, seen);
-    reveal(w, (sp, px, py) => spawn(w, sp, px, py, { home: [px, py], state: sp === "rabbit" ? "graze" : "wander" }));
+    reveal(w, (sp, px, py) => spawn(w, sp, px, py, revealed(sp, px, py)));
   }
 }
 // What one of a herd ate goes to its herd's reserve on its tile, shared among them.

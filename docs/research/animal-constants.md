@@ -1,6 +1,6 @@
 # Animal constants
 
-Substrate 5 of `rule-audit.md`: deer, rabbits, wolves and red foxes. Each species is a population over the island's tiles (src/sim/herds.ts), how many there are on a tile and the fat each carries, run on energy: what the ground grows for them to eat, what they burn, what they bear and what eats them. Individual animals stand on the ground only within sight of people, and are the tile's own: one killed, trapped or eaten is one fewer on its tile. Every number below is cited, [derived], [design], [gap] or [UNVERIFIED]. References continue from `time-constants.md` (R361 on).
+Substrate 5 of `rule-audit.md`: deer, rabbits, wolves and red foxes, and (sec. 11) the fish, herons, eagles, gulls, crows and butterflies. Each species is a population over the island's tiles (src/sim/herds.ts), how many there are on a tile and the fat each carries, run on energy: what the ground grows for them to eat, what they burn, what they bear and what eats them. Individual animals stand on the ground only within sight of people, and are the tile's own: one killed, trapped or eaten is one fewer on its tile. Every number below is cited, [derived], [design], [gap] or [UNVERIFIED]. References continue from `time-constants.md` (R361 on).
 
 ## 1. What replaced what
 
@@ -12,6 +12,8 @@ Substrate 5 of `rule-audit.md`: deer, rabbits, wolves and red foxes. Each specie
 | Births by a 1-in-400 roll near a mate when the days lengthen past 11 h; rabbits by a roll on their count; wolves 1-in-4000 | Deer conceive at the rut by condition and calve in early June; rabbits litter monthly from January to August while in condition; a wolf pack whelps once a year (sec. 5) |
 | Wolves bite a deer for 6 hp until it drops | Away from people, wolves kill deer and rabbits by Messier's functional response on their biomass, no more than fills them, and strife among packs thins them as they crowd; within sight of people, as they did, one carcass at a time |
 | Deer and wolves swim ashore when the island empties | Gone |
+| 200 founding fish breeding by a roll; 12 herons, 4 eagles, 36 gulls and 30 crows placed at the start and never born or dying but by a hunger drain; 90 butterflies at most, hatched by a roll and all killed by frost under 2 C | Fish, herons, eagles, gulls and crows are populations like the rest, on energy and their own food; butterflies come out as the warmth adds up and live their days (sec. 11) |
+| A crow eats a piece of meat by a 1-in-50 roll | It eats while it has room, the meat's energy going to its tile's reserve |
 
 ## 2. Bodies
 
@@ -68,17 +70,17 @@ Each step of dt island days, at the year's pace (a herd's day is YEARS_PACE days
 | Deer: calving | early June, one calf | [UNVERIFIED: about 8 months' gestation] |
 | Rabbit: breeding | January to August, litters of 3 to 7 (5) about monthly | R366 [ex] |
 | Rabbit: breeding condition | over half a full reserve [design] | |
-| Rabbit: kits that live to be grown, with no predators about | 12.8%: 18% of those that came above ground where predators were kept down (R388), of the 71% of litters not drowned in the burrow (R389) | [derived]; the foxes and wolves here take their share themselves. With them, 8.3% live a year (R375). They join the grown at birth [gap: age classes] |
+| Rabbit: kits that live to be grown, with no predators about | 12.8%: 18% of those that came above ground where predators were kept down (R388), of the 71% of litters not drowned in the burrow (R389) | [derived]; the foxes and wolves here take their share themselves. With them, 8.3% live a year (R375). They join the grown at birth, at that share over the grown's survival to three months, when they are grown [UNVERIFIED: the age] |
 | Wolf: litter | one a year, 4 to 6 pups (5.5) | R367 [ex] |
-| Wolf: pups alive at a year old | 29% in Voyageurs, where wolves live on deer (68% in Yellowstone, on elk) | R368 [ex]; they join the grown at birth [gap: age classes] |
+| Wolf: pups alive at a year old | 29% in Voyageurs, where wolves live on deer (68% in Yellowstone, on elk) | R368 [ex]; they join the grown at birth, at that share over the grown's survival for the year [derived] |
 | Wolf: pack | 4 | R368 [ex] |
 | Wolf: whelping | late April [UNVERIFIED] | |
 | Fox: litter | one a year, about 5, born in March | R382 [ex] |
-| Fox: deaths with neither cars nor guns | Bristol's 50% of the grown a year and 61% of cubs before they are grown (R384), at the 58% of Britain's 425,000 fox deaths a year that are neither the roads' 100,000 nor the guns' 80,000 (R384): 0.40 a year for the grown, 58% of cubs living to be grown | [derived] |
+| Fox: deaths with neither cars nor guns | Bristol's 50% of the grown a year and 61% of cubs before they are grown (R384), at the 58% of Britain's 425,000 fox deaths a year that are neither the roads' 100,000 nor the guns' 80,000 (R384): 0.40 a year for the grown, 58% of cubs living to be grown, at six months [UNVERIFIED: the age]; they join the grown at birth, at that share over the grown's survival for six months | [derived] |
 | Deaths besides hunger and predators, a year | rabbit 1/2 (wild rabbits live 1 to 3 years, R369 [ex]); deer 1/12, wolf 1/5 [UNVERIFIED] | |
 | Wolf: a grown wolf's chance of living the year at d wolves a 1000 km2 | 1.018 - 0.00489 d, no more than the 1/5 deaths' 0.82 | Cubaynes et al.'s Northern Range survival, 0.55 to 0.92 over 20 to 99 wolves, below 0.7 above 65 (R381), as a line through those [derived]; d over the whole island's land, as their densities are the whole range's |
 
-The young join the tile's count at once, as the adults' size [gap: age classes].
+The young join the tile's count at once, as the adults' size, at the field's survival to the age it was counted at over the grown's survival as long, since from then they die at the grown's rate [derived; gap: age classes]. Joined at the field's survival itself they died twice, once by it and again at the grown's rate.
 
 ## 6. Wolves killing deer and rabbits
 
@@ -86,7 +88,7 @@ Kills per wolf a day = 0.0336 X / (0.46 + X) moose-equivalents, X the moose-equi
 
 ### Foxes killing rabbits
 
-A fox kills rabbits by Pech et al.'s measured response at Yathong, as Pech and Hood fitted it: at most 100.01 kg of rabbit a quarter of a year, on a Type III curve with its inflection at 1.32 rabbits a ha (R383), N the rabbits a ha over its home range, a rural fox's 200 to 600 ha (R403), taken as 4 km2, 13 tiles across [derived]. It kills no more than brings its reserve to full and pays its day. Its share of the rabbits round it is added to the wolves', and every tile's foxes hunt at once as the wolves do. Within sight of people foxes are individuals: they keep 40 m from people and 80 m from wolves, and a hungry one runs down the nearest rabbit within 100 m and eats it [design].
+A fox kills rabbits by Pech et al.'s measured response at Yathong, as Pech and Hood fitted it: at most 100.01 kg of rabbit a quarter of a year, on a Type III curve with its inflection at 1.32 rabbits a ha (R383), N the rabbits a ha over its home range, a rural fox's 200 to 600 ha (R403), taken as 4 km2, 13 tiles across [derived]. It kills no more than brings its reserve to full and pays its day, and makes up what the rabbits leave it short from the carrion on its range (sec. 11), by Mulder and Hendriks' predators' half-saturation (R374): ungulate remains were 44.9% of what a boreal forest's foxes ate in winter (R448). Its share of the rabbits round it is added to the wolves', and every tile's foxes hunt at once as the wolves do. Within sight of people foxes are individuals: they keep 40 m from people and 80 m from wolves, and a hungry one runs down the nearest rabbit within 100 m and eats it [design].
 
 ## 7. Moving
 
@@ -99,15 +101,21 @@ Each step a share of a tile's animals moves to whichever neighbouring tile would
 
 ## 9. Checks
 
-Ten island years on from the twenty-year start, every fourth day, on seeds 1 (220 km2 of land, the play page's), 5 (228), 10 (214) and 22 (226); medians, then the 10th to 90th percentile:
+Ten island years on from the twenty-year start, every fourth day, on seeds 1 (220 km2 of land, the play page's), 5 (228), 10 (214) and 22 (226); medians, then the 10th to 90th percentile (after the fish, birds, carrion and butterflies, sec. 11):
 
 | Check | Model | Field | Verdict |
 |---|---|---|---|
-| Red deer a km2 | seed 1 9.1 (8.3 to 11.1), 5 7.5 (6.8 to 8.9), 10 4.6 (4.0 to 5.2), 22 11.5 (10.5 to 13.7) | Scotland's open hill 9.35 in winter 2018/19, Deer Management Areas 1.7 to 31.4 (R376), all of it culled | passes |
-| Rabbits a ha | 4.2 (2.9 to 6.0), 2.6 (1.9 to 3.8), 1.2 (0.8 to 1.6), 3.3 (2.4 to 5.4) | 25 to 100 where they run high (R377), 46.65 on South Walney's dunes in 2023 (R378) | passes, well under where they run high |
-| Foxes a km2 | 0.62 (0.38 to 0.97), 0.24 (0.16 to 0.36), 0.03 (0.01 to 0.07), 0.49 (0.31 to 0.73) | rural Britain 0.21 to 2.23 by landscape, England 1.45 and Wales 1.78 before breeding; France 1.92 (R390) | passes on 1, 5 and 22, at the low end; on 10, where rabbits are fewest, under it |
-| Wolves a 1000 km2 | 61 (54 to 70) on all four | Yellowstone's Northern Range 20 to 99 (R381); Cariappa et al.'s bound of 69 (R380) | passes |
+| Red deer a km2 | seed 1 4.6 (3.8 to 5.9), 5 7.8 (7.1 to 9.1), 10 3.2 (2.7 to 3.7), 22 10.5 (9.3 to 12.3) | Scotland's open hill 9.35 in winter 2018/19, Deer Management Areas 1.7 to 31.4 (R376), all of it culled | passes |
+| Rabbits a ha | 1.9 (1.3 to 2.8), 1.2 (0.8 to 1.8), 0.7 (0.5 to 0.9), 1.4 (0.9 to 2.1) | 25 to 100 where they run high (R377), 46.65 on South Walney's dunes in 2023 (R378) | passes, well under where they run high |
+| Foxes a km2 | 1.04 (0.70 to 1.49), 0.87 (0.56 to 1.32), 0.31 (0.21 to 0.43), 1.06 (0.72 to 1.53) | rural Britain 0.21 to 2.23 by landscape, England 1.45 and Wales 1.78 before breeding; France 1.92 (R390) | passes on all four, the carrion carrying them through the rabbits' lows; before they ate it, 0.19 on seed 5 and 0.03 on 10, under it |
+| Wolves a 1000 km2 | 75 (64 to 91) on 1, 5 and 22, 63 (37 to 85) on 10 | Yellowstone's Northern Range 20 to 99 (R381); Cariappa et al.'s bound of 69 (R380) | passes |
 | Deer through the year, seed 1 (land 55 m high on average, its top 462 m) | mean height about 97 m in winter, 55% of them on high ground (over 1.5 times the mean); about 120 m in spring, 75% | red deer go up to summer pastures and down out of the snow to winter in the forests and low ground, 4 to 16 km apart in the Alps (R410, R415) | passes in kind: nothing sends them, the green and the snow do |
+| Grey herons a km2 | 0.77 (0.68 to 0.87), 0.66, 0.75, 0.67, every bird; the pairs the shore's feeding territories hold, about 22 a 100 km2 on seed 1 | Scotland 0.3 to over 15 pairs a 100 km2, the most on the Uists' shores (R428) | fails, over: half again Scotland's densest, on an island that is all shore |
+| White-tailed eagles a km2 | 0.11 on all four, every bird; the pairs the territories hold, 2 a 100 km2 | Smøla's 23 pairs a 100 km2, the densest known (R447) | passes, under the densest |
+| Herring gulls a km2 | 5.8 (3.8 to 8.9), 5.1, 5.6, 5.2, rising through the ten years; on seed 1 over 35, cycling between 15 and 24 every six or seven years, picking the shore down to 1 to 4 g a m2 and starving back | [gap: no density kept] | bounded |
+| Carrion crows a km2 | 9.4 (8.1 to 10.6), 9.7, 9.7, 9.6, every bird; 2.65 pairs a km2 on territories | [gap: no density kept] | bounded |
+| Fish, kg a ha of inshore water | 46 (45 to 47), 48, 51, 51; on seed 1 over 35 years 413 t to 366 t; alone they settle at 414 t | [gap: no standing stock kept] | bounded; with what's eaten netted tile by tile, herons on the shore took the island's fish from 331 t to 44 t |
+| Butterflies a ha at the season's height | 200 to 228 | 750 to 1,250 a ha over a Scilly season (R435), which sets it | by construction |
 | What wolves eat | 24 to 47% rabbit by biomass, as the prey stand | lagomorphs 1.3 to 7.7% of European wolves' food biomass, hare and beaver 14.5% in one range (R379) | fails, less: rabbits still outweigh Europe's hares many times over, and the wolves take them as their share up to a coyote's chases |
 
 Every population is bounded and none runs away, each held where it is by what it eats and what eats it, swinging with the seasons and from year to year.
@@ -150,7 +158,39 @@ Probes, against a8bf4da: fails three, seed/real's caught claim, unlearn/real cau
 - Gorse's worth taken as heather's; deer's browse quality and fibre the same for every plant's green; marsh, rushes and sedges uneaten.
 - Rabbits keeping to cover: they graze any of a tile's ground layer, not only within reach of their warrens.
 - Running and walking speeds (substrate 6), wounds (the hp pools).
-- Fish, birds and butterflies stay individuals with their old caps.
+- The young join the grown at birth, at the field's survival to the age it was counted at over the grown's (sec. 5 keeps the per-species ages).
+- One kind of fish, brown trout, over all the island's water; no bathymetry, so the shallows are a strip as wide as a heron's wading depth over the shore's fall.
+- Herons, eagles and crows breed only on territories but every bird feeds; gulls are held by their shore food alone, and pick it over (sec. 11).
+- Crows' worms never thin; the dead go to foxes, gulls and crows and rot, never to wolves; individual eagles near people kill on top of their tile's count.
+- Butterflies are one species, a density on the grass with no larvae, eggs or nectar: the season's numbers are Scilly's whatever the year.
+
+## 11. Fish, birds, carrion and butterflies
+
+Fish (src/sim/fish.ts) are each water tile's stock, kg a ha, over the water within a kilometre of land (open sea past that). The birds are herds like the mammals (src/sim/herds.ts), with Nagy's field metabolic rate for birds, 10.5 M^0.681 kJ a day, M in g (R361), and reserves as a deer's shares [design]. Each predator takes its food as its share of the food's biomass round it, by Mulder and Hendriks' half-saturation for predators, 15 m^0.57 kg a km2 (R374), no more than fills it; where several tiles' predators ask more of a tile than it holds, each gets its share of what there is [derived].
+
+| Quantity | Value | Source |
+|---|---|---|
+| Fish: brown trout, L-infinity and K | 45 cm, 0.27 a year; the most one weighs, L^3 / 100 g, 0.91 kg | Lar dam (R416); condition 1 [UNVERIFIED] |
+| Fish: natural deaths | Pauly: log M = -0.0066 - 0.279 log Linf + 0.6543 log K + 0.4634 log T, T the water's mean (no lower than 4 C); Lar dam's 0.40 at 8.9 C checks it | R417, R416 |
+| Fish: production | Downing and Plante: log P = 0.32 + 0.94 log B - 0.17 log W, kg a ha a year | R418 |
+| Fish: food | the water's production, 75 to 2,190 mg C a m2 a day by the fertility of the shores draining into it, two steps of 10% up the food chain, wet fish 12.5% carbon | R419, R420, R421 [derived] |
+| Fish: what's eaten | counted among Pauly's deaths of the whole body of water, so only the rest die otherwise | [derived]: M is all of a stock's natural deaths, predators' too, and its fish range over its water. Netted tile by tile, herons on the shore emptied it and the stock fell to a tenth |
+| Fish: moving | a sea trout's month's home range, 0.43 km2; each step its days' share of a month's ranging spreads evenly over the water within it | R426 [derived]. Moving to where they'd grow fastest piled them into single tiles and lost stock |
+| Grey heron | 1.5 kg; 73.2% of grown birds live the year; a pair fledges 2.31, 26% living to two; first flights in June | R422; June [UNVERIFIED] |
+| Heron: feeding | the fish in the strip of shallows it wades, 0.4 m deep over the shore's fall, within its 2.8 km winter flights, none under lake ice | wading depth [UNVERIFIED: great blue herons to 0.6 m, R424]; R425 [derived]. Fishing only beside its own tile, a frozen lake starved every heron on it within a step |
+| Heron: breeding | only as many as hold the shore's feeding territories, about 20 ha each, two to a pair | R427 [derived]. Without it they rose to 2.1 a km2 and ate the fish out |
+| White-tailed eagle | 4.38 kg; 90% of grown birds live the year; a territorial pair fledges 0.76, 75% living their first year; territories 30 to 70 km2, 50 here; first flights mid July | R423, R446; July [UNVERIFIED] |
+| Eagle: feeding | rabbits and fish over its territory, neither under ice | [derived] |
+| Herring gull | 0.97 kg; 88% live the year; 0.52 fledged a pair, 63% living to breed at four; first flights mid July | R429, R431 [derived from R429's dates] |
+| Gull: feeding | the shore's shellfish, worms and crabs within 4.2 km, and the dead; no live fish | R432 (island colonies' longest trips); 70% molluscs in the Wadden Sea (R441), fish 8.9% of Scottish pellets (R442) [derived]. On inshore fish alone they took the fish down to 6 t |
+| The shore's animals | 27 g AFDW a m2 standing, regrowing at 0.44 of it a year on what's missing (larvae settle from the open sea); 23 kJ a g AFDW, 79% of it kept | R440, R444, R443 [derived]. Regrown as a logistic, a picked-over shore never came back |
+| Carrion crow | 0.51 kg; 75% of grown birds live the year (BTO's typical four years at breeding age; its 0.52 is two years and couldn't be kept up with a clutch of 3.9); 1.64 fledged a pair, 49% living the first year; territories of 37.7 ha; first flights end of May | R430 [derived], R433 [UNVERIFIED: American crows' fledglings] |
+| Crow: feeding | the dead on its territory and the worms of the open ground layer, 85 g a m2 in pasture, none frozen or under deep snow; the worms never thinned | R437 [derived] |
+| Carrion | every herd animal that dies lies where it fell, and the ravens' share of a pack's deer (sec. 6); foxes eat it first (sec. 6), then gulls and crows; it rots at the air's warmth, down to bone in 2,440 degree-days over 0 C | R436 |
+| Butterflies (meadow brown) | 1,000 a ha of open ground layer over a season, coming out evenly between 125 and 594 degree-days over 10 C (to 30) since midwinter, living 8.5 days | R435 (Scilly, 750 to 1,250 a ha), R445 (the thresholds), R438 and R439 (the UK's mid June to end of August at its months' mean warmth) [derived], R434 (5 to 12 days) |
+| Young of every herd | join the grown at birth as the field's survival to the age it was counted at over the grown's survival as long | [derived]: they die at the grown's rate from then, and else die twice. Herons fell 6% a year on BTO's own numbers before it |
+
+Within sight of people, herons wade, eagles soar and stoop, gulls fly and crows feed as before; each is one of its tile's count, its hunger its tile's reserve, and one taken is one fewer [design: poses]. Butterflies show within 30 m [design].
 
 ## References
 
@@ -208,3 +248,36 @@ Probes, against a8bf4da: fails three, seed/real's caught claim, unlearn/real cau
 - R412 Varhola A., Coops N.C., Weiler M., Moore R.D. (2010), Forest canopy effects on snow accumulation and ablation: an integrative review, J Hydrol 392:219 (up to 60% less on the ground under forest). https://www.sciencedirect.com/science/article/abs/pii/S0022169410005172 (search excerpt)
 - R413 Red deer's advance stopped by snow 60 to 70 cm deep (Yakutia), phys.org 2005. https://phys.org/news/2005-07-red-deer-global.html (search excerpt)
 - R415 Green-up selection by red deer in heterogeneous, human-dominated landscapes of Central Europe (2022), Ecol Evol (migrants travel 12.1 km on average); five populations 4.08 to 15.74 km. https://pmc.ncbi.nlm.nih.gov/articles/PMC9251849/ (search excerpt)
+- R416 Growth and mortality of brown trout, Salmo trutta fario, in Lar dam, Iran (L∞ 45.0 cm, K 0.27, M 0.40). https://www.researchgate.net/publication/236137053_Growth_and_mortality_of_brown_trout_Salmo_trutta_fario_in_Lar_dam_Iran (search excerpt)
+- R417 Pauly D. (1980), On the interrelationships between natural mortality, growth parameters, and mean environmental temperature in 175 fish stocks, J Cons int Explor Mer 39:175-192.
+- R418 Downing J.A., Plante C. (1993), Production of fish populations in lakes, Can J Fish Aquat Sci 50:110-120.
+- R419 Britannica, inland water ecosystem: primary production of oligotrophic lakes 50 to 100, mesotrophic 250 to 1,000, eutrophic 600 to 8,000 mg C a m2 a day. https://www.britannica.com/science/inland-water-ecosystem (search excerpt)
+- R420 Pauly D., Christensen V. (1995), Primary production required to sustain global fisheries, Nature 374:255-257 (10% transfer between levels).
+- R421 Fish as 12.5% carbon by wet weight (search excerpt) [UNVERIFIED: source link not kept].
+- R422 BTO BirdFacts, Grey Heron (adult survival 0.732, juveniles 0.26 to age 2, breeding at 2). https://www.bto.org/understanding-birds/birdfacts/grey-heron
+- R423 Evans R.J. et al. (2009), Growth and demography of a re-introduced population of White-tailed Eagles Haliaeetus albicilla, Ibis 151:244 (0.76 fledged a territorial pair; 73.6% first-year survival). https://www.researchgate.net/publication/229939286 (search excerpt)
+- R424 Great blue herons wade to about 60 cm (search excerpt) [UNVERIFIED].
+- R425 Habitat selectivity during the annual life cycle of the grey heron revealed by GPS-tracking (2025), Anim Biotelemetry (winter foraging flights 2.8 km on average). https://link.springer.com/article/10.1186/s40317-025-00436-y (search excerpt)
+- R426 Potential of a no-take marine reserve to protect home ranges of anadromous brown trout (monthly home range 0.430 km2). https://pmc.ncbi.nlm.nih.gov/articles/PMC6342106/ (search excerpt)
+- R427 Cornell Lab, All About Birds, Gray Heron life history (feeding territories about 20 ha). https://www.allaboutbirds.org/guide/Gray_Heron/lifehistory (search excerpt)
+- R428 Grey Herons breeding in Scotland: numbers, distribution, and census techniques (1989), Bird Study 36(3) (0.3 to over 15 pairs a 100 km2). https://www.tandfonline.com/doi/abs/10.1080/00063658909477023 (search excerpt)
+- R429 BTO BirdFacts, Herring Gull (adults 970.6 g; survival 0.88; juveniles 0.63 to age 4; breeding at 4; incubation 28 to 30 days, fledging 35 to 40). https://www.bto.org/understanding-birds/birdfacts/herring-gull
+- R430 BTO BirdFacts, Carrion Crow (adults 508.7 g; survival 0.52; juveniles 0.49 in the first year; typical life 4 years at breeding age; first clutches 7 April; incubation 18.5 days, fledging 29). https://www.bto.org/understanding-birds/birdfacts/carrion-crow
+- R431 Seabird Monitoring Programme, UK herring gull productivity 0.52 chicks a pair (search excerpt). https://jncc.gov.uk/our-work/official-statistic-on-seabird-breeding-population-changes/
+- R432 Intercolony variations in movement patterns and foraging behaviors among herring gulls breeding in the eastern Wadden Sea (mean maximum distance 4.2 km from the outermost island). https://pmc.ncbi.nlm.nih.gov/articles/PMC6106178/ (search excerpt)
+- R433 McGowan K.J. (2001), Demographic and behavioral comparisons of suburban and rural American Crows, in Avian Ecology and Conservation in an Urbanizing World 365-381 (Richner 1989: carrion crows defend 37.7 ha in farmland; American crows fledge 1.64 a nest rurally). https://www.birds.cornell.edu/crows/McGowan%202001%20Avian%20Urb%20Ecol.pdf (search excerpt)
+- R434 Ecological studies on the butterfly Maniola jurtina (Leiden thesis; adults' expectation of life 5 to 12 days; flight June to September). https://scholarlypublications.universiteitleiden.nl/access/item:2723676/download (search excerpt)
+- R435 Butterflies on British and Irish offshore islands, supplementary appendix 3.1A (Isles of Scilly populations of 15,000 to 20,000 M. jurtina, at least 750 to 1,250 a ha). https://www.cabi.org/wp-content/uploads/Book-resources/Environmental-Science/British-and-Irish-Butterflies-An-Island-Perspective/3.1a-Supplementary-Appendix-31A.pdf (search excerpt)
+- R436 Scoring and comparing decomposition of pig carcass (skeletonized at 790 ADD buried, 2,440 ADD on the surface, base 0 C), Rom J Leg Med. http://www.rjlm.ro/system/revista/46/162-166.pdf (search excerpt)
+- R437 The role of earthworms in managed, permanent pastures in Devon, England, Soil Biol Biochem (71 to 100 g a m2). https://www.sciencedirect.com/science/article/abs/pii/003807179290142K (search excerpt)
+- R438 UKBMS, Meadow Brown (flies mid June to September); Belgium late May to end of August (PMC4540417). https://ukbms.org/species/meadow-brown (search excerpt)
+- R439 UK monthly mean temperatures, about 11.8, 14.6, 16.6 and 16.3 C for May to August [UNVERIFIED].
+- R440 Beukema J.J. (1976), Biomass and species richness of the macro-benthic animals living on the tidal flats of the Dutch Wadden Sea, Neth J Sea Res 10:236 (27 g AFDW a m2). https://www.sciencedirect.com/science/article/abs/pii/007775797690017X (search excerpt)
+- R441 Cadée G.C. (1995), Birds as producers of shell fragments in the Wadden Sea, in particular the role of the Herring gull, Geobios (diet ca 70% molluscs). https://www.sciencedirect.com/science/article/abs/pii/S0016699595801553 (search excerpt)
+- R442 Ragworms and other marine food items in the diet of Herring Gulls breeding on Lady Isle, Firth of Clyde (2021), Bird Study (fish 8.9% of pellets). https://www.tandfonline.com/doi/full/10.1080/00063657.2020.1869697 (search excerpt)
+- R443 Brey T., Rumohr H., Ankar S. (1988), Energy content of macrobenthic invertebrates: general conversion factors from weight to energy, J Exp Mar Biol Ecol 117:271 (23 J a mg AFDW). https://sciencedirect.com/science/article/pii/0022098188900627 (search excerpt)
+- R444 Growth and production of the bivalve Macoma balthica in the southeastern Baltic Sea (P/B 0.44 shallow, 0.38 deep). https://link.springer.com/article/10.1134/S1063074012010063 (search excerpt)
+- R445 Cayton H.L., Haddad N.M., Gross K., Diamond S.E., Ries L. (2015), Do growing degree days predict phenology across butterfly species?, Ecology 96:1473 (degree-days over 10 C, to 30). https://esajournals.onlinelibrary.wiley.com/doi/full/10.1890/15-0131.1 (search excerpt)
+- R446 Ranging behavior of non-breeding and breeding adult White-tailed Eagles (2023), Diversity 15:1208 (core ranges 5 to 30 km2; breeding males' annual ranges to 278 km2). https://www.mdpi.com/1424-2818/15/12/1208 (search excerpt)
+- R447 Smøla, Norway: 50 breeding pairs of white-tailed eagles on 216 km2, the densest population known (search excerpt). https://meanderingwild.com/white-tailed-sea-eagle-smola-island-norway/
+- R448 Seasonal diets of red foxes in a boreal forest with a dense population of moose: the importance of winter scavenging (2014), Acta Theriol (ungulates 44.9% of remains in winter; scavenging up to 30% of winter intake elsewhere). https://link.springer.com/article/10.1007/s13364-014-0188-7 (search excerpt)

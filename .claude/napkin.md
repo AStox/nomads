@@ -89,6 +89,7 @@
    Reading W or H at module top level in src/terrain or src/sim/herds.ts throws "Cannot access 'W' before initialization"; importing a const from plants.ts into herds.ts does the same for DAY.
    `simplex2d.create(seed)` uses `seed & 0xffff`.
    `for (const i of int32Array)` under Bun/JSC spends more than half its time in the iterator; hot per-tile loops want a plain number[] or an index loop.
+   Time stepHerds only with no other bun jobs running: under parallel runs plus Unity it read 140 ms a step against 21 ms alone. Converting its number[] pools to Float64Array made it slower (48 vs 16 ms), not faster.
    Do instead: read W and H only inside functions there (lazy module arrays). Derive sub-seeds with `Math.floor(rand() * 65536)` from the world rng.
 10. **[2026-09-27] The operator rejects recolored mocks and stepped, blocky terrain**
    Two rounds of looks dressed on one shared heightfield with blob trees read as the same picture recolored. In the isopixel style, terraced cliffs, per-tile rock cubes and tile-column shading read as "too cliffy" or blocks, and raw data rocks drawn one by one read as confetti.

@@ -1,7 +1,7 @@
 // Everything alive on the island that isn't a person: what each kind is like and where they start. What they do each
 // tick is in animals.ts. Speeds are meters a tick of five minutes' game time, the way a person's are.
-import { H, TILE_M, Tile, W, YEAR, dryAt, dryNear, sea, shoreOf, tileAt, wetAt, type Animal, type AnimalSpecies, type World } from "./world";
-import { anyOf, put } from "./space";
+import { H, Tile, W, YEAR, dryAt, dryNear, sea, tileAt, type Animal, type AnimalSpecies, type World } from "./world";
+import { put } from "./space";
 import { herded, reveal, startHerds } from "./herds";
 
 type Kind = { hp: number; walk: number; run: number; fly?: number; ground: boolean };
@@ -61,12 +61,17 @@ export function placesOf(w: World): Places {
   return p;
 }
 // The animals a new world starts with, placed from the world's own stream: walkers on dry ground, fish in water.
+// How one of a herd stands when it comes into sight: rabbits grazing, fish swimming, herons wading, eagles soaring, gulls
+// on the wing, crows feeding, butterflies among the flowers.
+const POSE: Partial<Record<AnimalSpecies, [string, number, number]>> = { rabbit: ["graze", 0, 0], fish: ["swim", 0, 0], heron: ["wade", 0, 0], eagle: ["soar", 60, 60], gull: ["fly", 8, 20], crow: ["feed", 0, 0], butterfly: ["flutter", 0.5, 1] };
+export const revealed = (sp: AnimalSpecies, px: number, py: number): Partial<Animal> => {
+  const [state, alt, spread] = POSE[sp] ?? ["wander", 0, 0];
+  return { home: [px, py], state, alt: alt + ((px * 977 + py * 131) % 1) * spread };
+};
 export function populate(w: World, rand: () => number, main: Uint8Array) {
   const p = placesOf(w), pick = (list: number[]) => list[Math.floor(rand() * list.length)], grass = p.grass.filter((t) => main[t]);
   const people = w.agents.length ? { px: w.agents.reduce((s, a) => s + a.px, 0) / w.agents.length, py: w.agents.reduce((s, a) => s + a.py, 0) / w.agents.length } : { px: W / 2, py: H / 2 };
   const dry = (x: number, y: number) => dryAt(w, x, y);
-  const ring = (x: number, y: number, m: number, ok: (x: number, y: number) => boolean) =>
-    [0, 1, 2, 3, 4, 5, 6, 7].some((k) => ok(x + (Math.cos((k * Math.PI) / 4) * m) / TILE_M, y + (Math.sin((k * Math.PI) / 4) * m) / TILE_M));
   // A point in a tile that passes ok, or null if thirty tries find none.
   const inTile = (t: number, ok: (x: number, y: number) => boolean = dry): [number, number] | null => {
     for (let tries = 0; tries < 30; tries++) {
@@ -85,41 +90,11 @@ export function populate(w: World, rand: () => number, main: Uint8Array) {
     }
     return onGround(pick(grass));
   };
-  const scatter = (c: [number, number], r: number): [number, number] => {
-    for (let tries = 0; tries < 20; tries++) {
-      const a = rand() * Math.PI * 2, d = (rand() * r) / TILE_M, px = c[0] + Math.cos(a) * d, py = c[1] + Math.sin(a) * d;
-      if (dry(px, py)) return [px, py];
-    }
-    return c;
-  };
-  // Deer, rabbits, wolves and foxes as populations, run on twenty years of the island's own forage before anyone wakes, a pack
+  // Deer, rabbits, wolves, foxes and the fish as populations, run on twenty years of the island's own forage before anyone wakes, a pack
   // of wolves denning some way off (herds.ts); those within sight of anyone stand on the ground from the start.
   const den = nearPeople(5, 10, (t) => w.tiles[t] !== Tile.Water);
   w.herds = startHerds(w, den);
-  reveal(w, (sp, px, py) => spawn(w, sp, px, py, { home: [px, py], state: sp === "rabbit" ? "graze" : "wander" }), rand);
-  // Fish keep to the margins, in water within a stone's throw of the bank, where anyone fishing from shore can reach.
-  const waters = [...p.coast, ...p.lake], near = [...waters].sort((a, b) => Math.hypot((a % W) - people.px, ((a / W) | 0) - people.py) - Math.hypot((b % W) - people.px, ((b / W) | 0) - people.py)).slice(0, 12);
-  const wet = (x: number, y: number) => wetAt(w, x, y), banked = (x: number, y: number) => wet(x, y) && ring(x, y, 25, dry);
-  for (let i = 0; i < 160 && waters.length; i++) {
-    const t = i < 30 && near.length ? near[i % near.length] : pick(waters), c = inTile(t, banked) ?? inTile(t, wet);
-    if (c) addAnimal(w, "fish", ...c, { home: c });
-  }
-  const edges = shoreOf(w);
-  for (let i = 0; i < 12 && edges.length; i++) { const e = edges[Math.floor(rand() * edges.length)], c: [number, number] = [e.px, e.py]; addAnimal(w, "heron", ...c, { home: c, state: "wade" }); }
-  for (let k = 0; k < 6 && p.coast.length; k++) {
-    const c = inTile(pick(p.coast), () => true)!;
-    for (let i = 0; i < 6; i++) addAnimal(w, "gull", c[0] + (rand() - 0.5) * 0.2, c[1] + (rand() - 0.5) * 0.2, { home: c, alt: 8 + rand() * 20, state: "fly" });
-  }
-  for (let k = 0; k < 10 && p.edge.length; k++) {
-    const c = k < 2 ? nearPeople(0.5, 3, (t) => p.edge.includes(t)) : onGround(pick(p.edge));
-    for (let i = 0; i < 3; i++) addAnimal(w, "crow", ...scatter(c, 10), { home: c, state: "feed" });
-  }
-  for (let i = 0; i < 4 && p.high.length; i++) { const c = onGround(p.high[i * 5] ?? pick(p.high)); addAnimal(w, "eagle", ...c, { home: c, alt: 60 + rand() * 60, state: "soar" }); }
-  for (let k = 0; k < 30; k++) {
-    const f = anyOf(w, "flowers", rand);
-    if (!f) break;
-    for (let i = 0; i < 3; i++) addAnimal(w, "butterfly", f.px + (rand() - 0.5) * 0.05, f.py + (rand() - 0.5) * 0.05, { home: [f.px, f.py], alt: 0.5 + rand(), state: "flutter" });
-  }
-  // The island's first animals were there long before anyone woke; this spring's butterflies are new.
+  reveal(w, (sp, px, py) => spawn(w, sp, px, py, revealed(sp, px, py)), rand);
+  // The island's first animals were there long before anyone woke; this summer's butterflies are new.
   for (const a of w.animals) if (a.species !== "butterfly") a.born = -Math.floor(rand() * 2 * YEAR);
 }

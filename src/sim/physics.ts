@@ -1,4 +1,5 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
+import { fishNear, takeFish } from "./fish";
 import { gone } from "./herds";
 import { BASE, MADE_OF, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props, type Registry } from "./materials";
 import { BURNS, COPPER, FIRED_CLAY, LEATHER, LIVE_HERB, LOG_LEN, PHYS, POT_WALL, charSize, greenOf, mix, physOf, pieceOf, remade, splitSize, stackPhys, woodOf, type Edge, type Phys } from "./fuel";
@@ -1106,7 +1107,7 @@ export const FISH_REACH: Record<"basket" | "line", number> = { basket: 15, line:
 const landed = perWorld(() => new Map<string, number>());
 // Whether a fish swims within reach of what they dip (a basket's, unless a line's) or they just lifted one out.
 export const fishClose = (w: World, a: Agent, at: { px: number; py: number } = a, reach = FISH_REACH.basket) =>
-  landed(w).get(a.id) === w.t || w.animals.some((m) => m.species === "fish" && meters(m, at) <= reach);
+  landed(w).get(a.id) === w.t || fishNear(w, w.herds?.fish, at, reach) >= 1;
 // A line to dangle in the water: long, limp and strong.
 export const lineLike = (k?: Kind) => p(k, "long") >= 0.5 && p(k, "flexible") >= 0.8 && p(k, "binding") >= 0.5;
 // What there is to dip something into where they stand: open water (not frozen over), how many fish swim within a
@@ -1155,18 +1156,20 @@ export function wetting(w: World, items: string[], c: WetSetting): Wetting {
   return decided({ text: `The ${x.name} got wet. Nothing else happened.`, fields });
 }
 export function wet(w: World, a: Agent, act: Act): Outcome {
-  // the fish swimming within a line's reach, and of those, the ones within a basket's
-  const line = w.animals.filter((m) => m.species === "fish" && meters(m, a) <= FISH_REACH.line);
-  const basket = line.filter((m) => meters(m, a) <= FISH_REACH.basket);
+  // the fish swimming within a line's reach, and within a basket's, as the water's stock has them (fish.ts)
+  const line = Math.floor(fishNear(w, w.herds?.fish, a, FISH_REACH.line)), basket = Math.floor(fishNear(w, w.herds?.fish, a, FISH_REACH.basket));
   const { fishing, ...d } = wetting(w, act.items, {
-    held: count(a, act.items[0]) > 0, water: openWater(w, a), fish: { basket: basket.length, line: line.length },
+    held: count(a, act.items[0]) > 0, water: openWater(w, a), fish: { basket, line },
     skill: level(a.skills.fishing ?? 0), draw: () => Math.random(),
   });
   if (fishing) {
     a.inv.find((q) => q.k === act.items[0])!.hp -= 0.03;
-    const caught = new Set((fishing === "basket" ? basket : line).slice(0, d.gives.fish ?? 0));
-    if (caught.size) {
-      w.animals = w.animals.filter((m) => !caught.has(m));
+    // what's caught comes out of the water's stock, the nearest of the fish standing in it first
+    const n = d.gives.fish ?? 0;
+    if (n) {
+      const close = w.animals.filter((m) => m.species === "fish").sort((x, y) => meters(x, a) - meters(y, a)).slice(0, n);
+      w.animals = w.animals.filter((m) => !close.includes(m));
+      takeFish(w, w.herds?.fish, a, n);
       landed(w).set(a.id, w.t);
     }
   }

@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
-import { DAY, TILE_M, addThing, newWorld, rng, shoreOf, type Act, type Agent, type Thing, type World } from "./world";
+import { DAY, H, TILE_M, Tile, W, addThing, newWorld, rng, shoreOf, type Act, type Agent, type Thing, type World } from "./world";
 import { WEATHER_NOW, bedAir, count, eat, fireOf, giveItems, giveStack, heat, join, openWater, place, removeThing, strikeTick, throwTick, wet, type Fields, type Outcome } from "./physics";
 import { COPPER, PHYS, pieceOf } from "./fuel";
 import { BLADE } from "./mechanics";
 import { advance } from "./combustion";
 import { predictMaterial } from "./formulas";
 import { addAnimal } from "./fauna";
+import { fishNear } from "./fish";
 import { put as moveTo, thingById } from "./space";
 import { conditionsNow } from "./sim";
 import { hooks } from "./rules";
@@ -225,20 +226,24 @@ test("felling an oak with a hafted flint blade peels the same strips of bark eve
 
 test("a line or a basket dipped where a fish swims within reach catches every time, and with none about never does: anyone dipping sees there were no fish close by, and only what's dipped in the water records it", () => {
   const [w, a] = fresh();
-  const shore = shoreOf(w).find((s) => { moveTo(w, a, s.px, s.py); return openWater(w, a); });
+  // the water's stock (fish.ts), kg a ha: thick with fish everywhere, and a shore where a basket's sweep reaches it
+  const fish = w.herds!.fish;
+  for (let i = 0; i < W * H; i++) fish[i] = w.tiles[i] === Tile.Water ? 1000 : 0;
+  const shore = shoreOf(w).find((s) => { moveTo(w, a, s.px, s.py); return openWater(w, a) && fishNear(w, fish, a, 15) >= 2; });
   expect(shore).toBeDefined();
   w.kinds.line = { id: "line", name: "line", props: { long: 0.7, flexible: 0.9, binding: 0.8 } };
   w.kinds.basket = { id: "basket", name: "basket", props: { container: 0.7, fibrous: 0.8 } };
-  w.animals = [];
   const dip = (k: string) => { giveItems(w, a, k); return wet(w, a, { verb: "wet", items: [k], at: "water" }); };
   for (const k of ["line", "basket", "line", "basket"]) {
-    const fish = addAnimal(w, "fish", a.px + 10 / TILE_M, a.py);
+    const before = fishNear(w, fish, a, 40);
     expect(dip(k).gives.fish).toBeGreaterThanOrEqual(1);
-    expect(w.animals).not.toContain(fish);
-    // the fish they lifted out was close by, though it swims there no more
+    // what they lifted out came out of the water's stock
+    expect(fishNear(w, fish, a, 40)).toBeLessThan(before);
+    // the fish they lifted out was close by
     expect(conditionsNow(w, a, "wet")).not.toContain("nofish");
     w.t++;
   }
+  fish.fill(0);
   for (const k of ["line", "basket", "line", "basket"]) {
     const out = dip(k);
     expect(out.ok).toBe(false);

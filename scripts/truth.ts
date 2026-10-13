@@ -10,8 +10,9 @@
 //   NOMADS_BRAIN=random bun scripts/truth.ts --seed 3 --runs /tmp/theories/3 --days 40 --out /tmp/truth/3.json
 // --runs: a directory of scripts/theories.ts runs of this island. Their ways are what gets worked out, and the things
 // they made and the rulings they settled come too, so the same things can be made here.
+import { fishNear } from "../src/sim/fish";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { W, H, addThing, dryAt, meters, newWorld, rng, shoreOf, stageOf, type Stack, type Thing, type World } from "../src/sim/world";
+import { W, H, addThing, dryAt, newWorld, rng, shoreOf, stageOf, type Stack, type Thing, type World } from "../src/sim/world";
 import { forecast } from "../src/sim/ecology";
 import { FISH_REACH, bedAir, firstHeld, gathered, giveItems, giveStack, layAt, lineLike, openWater, removeThing, usual, type Fields, type Fire } from "../src/sim/physics";
 import { airOn, islandTemp } from "../src/sim/air";
@@ -163,7 +164,7 @@ function situation(plan: Plan): Trial | string {
   const lit = own ? moistureOf(own) : f.verb === "strike" ? null : about && !about.kind ? about.m : null;
   const fire = f.verb === "heat" || (f.verb === "place" && f.at && FIRE_PLACES[f.at]) ? fireHere(f.at ?? "fire") : null;
   const reach = f.inputs.some((k) => lineLike(w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket;
-  const fish = w.animals.filter((m) => m.species === "fish" && meters(m, stand) <= reach).length;
+  const fish = Math.floor(fishNear(w, w.herds?.fish, stand, reach));
   const ground = f.verb === "plant" || f.verb === "pour" || f.verb === "dig";
   const r = predict(w, f, {
     tinder: lit, wind: airOn(w, stand).wind, spot: stand, ahead: ground ? ahead(w, px, py, w.t, hours.slice(i + 1, i + 1 + PATIENCE / 12)) : { soil: [], temp: [] }, fish,
