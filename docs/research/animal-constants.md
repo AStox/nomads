@@ -128,6 +128,10 @@ Probes, against a8bf4da: fails five, down from nine. seed/real caught 0.93 to 0.
 
 Probes, against a8bf4da: fails one, unlearn/real's claim that what they'd do matches whether it would work nine tenths of the way to the true theory by the end, lost since the first animals pass; better, seed/real's theories formed 18.9 to 17.6; every other claim the baseline met holds. Worlds, against 155adec: passes; discovery regret 2.32 to 5.54 within its interval (+3.22 [-6.22, 10.6]), and fewer tries go to waste late than early now holds. Not retuned.
 
+### The gates after the warrens (175bd75)
+
+Probes, against a8bf4da: fails four, hearsay/real accMid 0.79 to 0.63, unlearn/real exact 0.15 to 0.02 and its claims that most blame the true cause and that nearly all whose tries show it rule it out where it holds; better, seed/real's theories formed 18.9 to 17.9. Hearsay and unlearn have won and lost claims from pass to pass since the first animals pass, as the island's animals move what happens around the probes' people. Worlds, against 155adec: passes and is the new baseline; fewer tries go to waste late than early holds. Not retuned.
+
 ## 10. Gaps
 
 - Age and sex classes; calves and kits as adults at once.
