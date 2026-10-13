@@ -64,6 +64,24 @@ const RUMEN = 0.012, NDF_GREEN = 0.4, NDF_DEAD = 0.7;
 // and the bedrock deep enough for the tunnels, which lie 0.3 to 0.75 m down in heavy soils (R407) with nearly all the
 // chambers within 0.55 m (R408), from none at 0.3 m to all of it at 0.55 [derived].
 const WARREN = [0.3, 0.55];
+// Snow: a season's snowpack (climate.ts, mm of water) stands as deep as Sturm et al.'s maritime snow is dense on the
+// season's middle day of the year, (0.5979 - 0.2578)(1 - e^(-0.0010 h - 0.0038 doy)) + 0.2578 g/cm3, h in cm and doy from
+// 1 January (R409); summer's at its most. Red deer herds start to leave once it lies 20 to 30 cm deep (R410), and 60 to
+// 70 cm stops them (R413): the ground layer under it goes out of reach of deer and rabbits alike from 25 cm to 65
+// [derived]; the browse stands above it.
+const SNOW_DOY = [105, NaN, -77, 15], SNOW_REACH = [0.25, 0.65];
+// The crowns hold up to 60% of the snow off the ground under a forest (R412), as the tile's trees cover it [derived].
+const INTERCEPT_SNOW = 0.6;
+function snowDepth(swe: number, doy: number) {
+  if (swe <= 0) return 0;
+  let h = swe / 10 / 0.3;
+  for (let k = 0; k < 6; k++) { const rho = Number.isNaN(doy) ? 0.5979 : (0.5979 - 0.2578) * (1 - Math.exp(-0.001 * h - 0.0038 * doy)) + 0.2578; h = swe / 10 / rho; }
+  return h / 100;
+}
+// How far a deer walks a day, 3.2 to 9.7 km (R411), the least of it taken as how far a herd shifts its ground [derived];
+// it looks along eight bearings out to that far for where it would feed best.
+const DEER_WALK = 3200;
+const BEARINGS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
 // What a gram of each woody plant's green browse is worth, kJ, in the growing season and out of it, at 0.16 MJ/kg a point
 // of digestibility (R394): deciduous leaves as green grass's, their twigs after leaf fall as dead stuff (R396); heather's
 // shoots 55.9% digestible in July and 41.9% in March (R397); gorse taken as heather [UNVERIFIED]; pine's 56%, low in
@@ -124,8 +142,9 @@ const TILE_KM2 = (TILE_M * TILE_M) / 1e6;
 // nb: each land tile's land neighbours, eight a tile, -1 where none; wolfLand, foxLand: the land tiles in a wolf's and a
 // fox's reach round each.
 // ever: the evergreens' share of a tile's browse; summer, winter: what a gram of its green browse is worth then, kJ;
-// bare: whether its broadleaves stand bare now; warren: the share of its ground rabbits can dig and graze from.
-type Ground = { warren: Float32Array; ever: Float32Array; summer: Float32Array; winter: Float32Array; bare: Uint8Array; land: number[]; grass: Float32Array; lit: Float32Array; woody: Float32Array; fed: Float32Array; sun: Float32Array[]; temp: Float32Array[]; water: Float32Array[]; nb: Int32Array; wolfLand: Float64Array; foxLand: Float64Array };
+// bare: whether its broadleaves stand bare now; warren: the share of its ground rabbits can dig and graze from; snow: each
+// season's snow depth there, m; open: the share of its ground layer the snow leaves in reach now; isLand.
+type Ground = { open: Float32Array; isLand: Uint8Array; snow: Float32Array[]; warren: Float32Array; ever: Float32Array; summer: Float32Array; winter: Float32Array; bare: Uint8Array; land: number[]; grass: Float32Array; lit: Float32Array; woody: Float32Array; fed: Float32Array; sun: Float32Array[]; temp: Float32Array[]; water: Float32Array[]; nb: Int32Array; wolfLand: Float64Array; foxLand: Float64Array };
 // The sums over the (2 r + 1)^2 tiles round each tile, clipped at the map's edge, by a summed-area table.
 let table: Float64Array;
 function box(src: ArrayLike<number>, out: Float64Array, r: number) {
@@ -148,7 +167,7 @@ function groundFor(w: World): Ground {
   let g = grounds.get(w);
   if (g) return g;
   const { isle, fine } = groundOf(w.seed), land: number[] = [];
-  const warren = new Float32Array(W * H), ever = new Float32Array(W * H), summer = new Float32Array(W * H), winter = new Float32Array(W * H), grass = new Float32Array(W * H), lit = new Float32Array(W * H), woody = new Float32Array(W * H), fed = new Float32Array(W * H), sun = isle.seasons.map(() => new Float32Array(W * H)), temp = isle.seasons.map(() => new Float32Array(W * H)), water = isle.seasons.map(() => new Float32Array(W * H));
+  const snow = isle.seasons.map(() => new Float32Array(W * H)), warren = new Float32Array(W * H), ever = new Float32Array(W * H), summer = new Float32Array(W * H), winter = new Float32Array(W * H), grass = new Float32Array(W * H), lit = new Float32Array(W * H), woody = new Float32Array(W * H), fed = new Float32Array(W * H), sun = isle.seasons.map(() => new Float32Array(W * H)), temp = isle.seasons.map(() => new Float32Array(W * H)), water = isle.seasons.map(() => new Float32Array(W * H));
   for (let i = 0; i < W * H; i++) {
     if (tileAt(w, i % W, Math.floor(i / W)) === Tile.Water) continue;
     land.push(i);
@@ -168,6 +187,7 @@ function groundFor(w: World): Ground {
     ever[i] = all > 0 ? ev / all : 0; summer[i] = all > 0 ? su / all : ME; winter[i] = ev > 0 ? wi / ev : ME_DEAD;
     const cx = (mx - START) / CELL, cy = (mz - START) / CELL;
     fed[i] = fine.bilinear(isle.fertility, cx, cy);
+    isle.seasons.forEach((se, k) => { snow[k][i] = snowDepth(fine.bilinear(se.snowpack, cx, cy), SNOW_DOY[k]) * (1 - INTERCEPT_SNOW * Math.min(1, tree)); });
     const dig = Math.min(fine.bilinear(isle.soil, cx, cy), fine.bilinear(isle.table, cx, cy));
     warren[i] = Math.max(0, Math.min(1, (dig - WARREN[0]) / (WARREN[1] - WARREN[0])));
     isle.seasons.forEach((s, k) => { sun[k][i] = fine.bilinear(s.sun, cx, cy); temp[k][i] = fine.bilinear(s.temp, cx, cy); water[k][i] = fine.bilinear(isle.soilWater[k], cx, cy); });
@@ -180,9 +200,9 @@ function groundFor(w: World): Ground {
       if ((dx || dy) && x >= 0 && y >= 0 && x < W && y < H && tileAt(w, x, y) !== Tile.Water) nb[k * 8 + m++] = y * W + x;
     }
   });
-  g = { warren, ever, summer, winter, bare: new Uint8Array(W * H), land, grass, lit, woody, fed, sun, temp, water, nb, wolfLand: new Float64Array(W * H), foxLand: new Float64Array(W * H) };
+  g = { open: new Float32Array(W * H).fill(1), isLand: new Uint8Array(W * H), snow, warren, ever, summer, winter, bare: new Uint8Array(W * H), land, grass, lit, woody, fed, sun, temp, water, nb, wolfLand: new Float64Array(W * H), foxLand: new Float64Array(W * H) };
   const isLand = new Float64Array(W * H);
-  for (const i of land) isLand[i] = 1;
+  for (const i of land) { isLand[i] = 1; g.isLand[i] = 1; }
   box(isLand, g.wolfLand, WOLF_REACH); box(isLand, g.foxLand, FOX_REACH);
   grounds.set(w, g);
   return g;
@@ -226,7 +246,9 @@ export function stepHerds(w: World, hs: Herds, dt: number, t: number, skip?: Set
     // deer's can't), and makes up what that leaves short of its need from the dead, as its response to the dead allows
     // [derived]; deer reach the browse and the ground layer both, each in the share it stands. Where they all ask more
     // of a pool's green or dead than stands, each gets its share of what there is.
-    const gG = hs.forage[i] * g.grass[i], gD = hs.forageDead[i] * g.grass[i], bG = hs.browse[i] * g.woody[i], bD = hs.browseDead[i] * g.woody[i], bQ = bare ? g.winter[i] : g.summer[i];
+    const deep = g.snow[s][i] * (1 - f) + g.snow[s1][i] * f, open = 1 - Math.max(0, Math.min(1, (deep - SNOW_REACH[0]) / (SNOW_REACH[1] - SNOW_REACH[0])));
+    g.open[i] = open;
+    const gG = hs.forage[i] * g.grass[i] * g.open[i], gD = hs.forageDead[i] * g.grass[i] * g.open[i], bG = hs.browse[i] * g.woody[i], bD = hs.browseDead[i] * g.woody[i], bQ = bare ? g.winter[i] : g.summer[i];
     ask(deer.n[i], deer.e[i], D, deerMost, deerHalf, gG + bG, gD + bD, true);
     const dG = askG, dD = askD;
     ask(rabbit.n[i], rabbit.e[i], R, rabbitMost, rabbitHalf, gG, gD, false);
@@ -310,11 +332,12 @@ export function stepHerds(w: World, hs: Herds, dt: number, t: number, skip?: Set
   // moving on to better ground: grazers to where they would eat faster, by their response to the forage there (which
   // falls as those already there graze it down), wolves to more prey by its biomass, foxes to more rabbits
   const rate = (green: number, q: number, dead: number, half: number) => { const gr = green / (green + half); return gr * q + (1 - gr) * (dead / (dead + half)) * ME_DEAD; };
+  const far = Math.round((DEER_WALK * days) / TILE_M);
   for (const sp of HERDED) {
     const h = hs[sp], share = Math.min(0.5, SPEC[sp].move * days), out = scratch(0), inn = scratch(1), kj = scratch(2), carried = scratch(3), pull = scratch(4);
     for (const j of g.land) {
       // the energy they'd take in there: their response to the forage standing, at what it's worth
-      const fG = hs.forage[j] * g.grass[j], fD = hs.forageDead[j] * g.grass[j], bG = hs.browse[j] * g.woody[j], bD = hs.browseDead[j] * g.woody[j];
+      const fG = hs.forage[j] * g.grass[j] * g.open[j], fD = hs.forageDead[j] * g.grass[j] * g.open[j], bG = hs.browse[j] * g.woody[j], bD = hs.browseDead[j] * g.woody[j];
       const deerQ = fG + bG > 0 ? (fG * ME + bG * (g.bare[j] ? g.winter[j] : g.summer[j])) / (fG + bG) : ME;
       pull[j] = sp === "wolf" ? hs.deer.n[j] * SPEC.deer.kg + hs.rabbit.n[j] * SPEC.rabbit.kg : sp === "fox" ? hs.rabbit.n[j] : sp === "deer" ? rate(fG + bG, deerQ, fD + bD, deerHalf) : g.warren[j] * rate(fG, ME, fD, rabbitHalf);
     }
@@ -323,6 +346,16 @@ export function stepHerds(w: World, hs: Herds, dt: number, t: number, skip?: Set
       if (h.n[i] <= 0) continue;
       let best = -1, bv = pull[i];
       for (let m = k * 8; m < k * 8 + 8; m++) { const j = g.nb[m]; if (j < 0) break; if (pull[j] > bv) { bv = pull[j]; best = j; } }
+      // deer look further, along eight bearings out to a step's walk, at doubling distances
+      if (sp === "deer") {
+        const x0 = i % W, y0 = Math.floor(i / W);
+        for (const [dx, dy] of BEARINGS) for (let d = 2; d <= far; d *= 2) {
+          const x = x0 + dx * d, y = y0 + dy * d;
+          if (x < 0 || y < 0 || x >= W || y >= H) break;
+          const j = y * W + x;
+          if (g.isLand[j] && pull[j] > bv) { bv = pull[j]; best = j; }
+        }
+      }
       if (best < 0) continue;
       const m = h.n[i] * share;
       out[i] += m; inn[best] += m; kj[best] += m * h.e[i];

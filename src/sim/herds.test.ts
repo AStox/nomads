@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { DAY, H, TILE_M, Tile, W, newWorld, tileAt } from "./world";
 import { HERDED, stepHerds } from "./herds";
-import { YEAR_DAYS } from "./sky";
+import { YEAR_DAYS, seasonAt } from "./sky";
 
 // The island's deer, rabbits, wolves and foxes hold steady on their own: over ten island years from the start every
 // kind is still there, none drifts off to a boom or a crash (foxes and rabbits cycle over some years, so the two halves
@@ -44,3 +44,21 @@ for (const seed of [1, 5])
       expect(density).toBeLessThanOrEqual(FIELD[sp][1]);
     }
   }, 300_000);
+
+// Nothing tells the deer where to go: they go where they'd feed best, so they follow the green up the hills in spring
+// and summer and come down off them under winter's cold and snow.
+test("island 1's deer climb the hills in spring and summer and come down in winter", () => {
+  const w = newWorld(1), hs = w.herds!;
+  const height = (i: number) => { const x = i % W, y = Math.floor(i / W), c = (a: number, b: number) => w.heights[b * (W + 1) + a]; return (TILE_M * (c(x, y) + c(x + 1, y) + c(x, y + 1) + c(x + 1, y + 1))) / 4; };
+  const by: number[][] = [[], [], [], []];
+  for (let d = 0; d < YEAR_DAYS * 3; d++) {
+    w.t += DAY;
+    stepHerds(w, hs, 1, w.t);
+    let n = 0, up = 0;
+    hs.deer.n.forEach((x, i) => { if (x > 0) { n += x; up += x * height(i); } });
+    by[seasonAt(w.t).s].push(up / n);
+  }
+  const [spring, summer, , winter] = by.map(mean);
+  expect(spring - winter).toBeGreaterThan(10);
+  expect(summer - winter).toBeGreaterThan(10);
+}, 300_000);
