@@ -168,6 +168,8 @@ Checks, seed 1, the ground round its people over ten island years with nothing b
 
 Gaps: planted seed still comes up as a 4 to 6 m tree at once (seedling.ts matured, the planting probes' rule); the young aren't drawn; trees once up don't grow; grass's competition with the young beyond what emergence counts hold; bushes once up aren't browsed; hazel, heather and gorse don't spread, having no seedling of their own (their seed would grow up as a bramble).
 
+Gates at c321a54: probes, against a8bf4da, fail three, the claims that have come and gone pass by pass (seed/two's and unlearn/real's that nearly all whose own tries show the true cause come to rule it out) and unlearn/real caught 0.87 to 0.68; seed/sparse caught 0.56 to 0.76. Worlds, against 2258536, fail one claim, fewer tries going to waste late than early, with wasted at 0.06 against 0.10 and worked 0.94 against 0.91, both within their intervals. Not retuned.
+
 ## 10. Still open
 
 - `shareAt` (seedling.ts): how much light and water grown plants close by take [gap].
