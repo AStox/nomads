@@ -112,6 +112,10 @@ The rates are biology's, at the year's pace (plants.ts YEARS_PACE); ash, resin a
 - Worlds tier: passes (wasted 0.08 against 0.06).
 - Probe gate: fails on one claim. unlearn/real's "nearly all whose own tries show the true cause come to rule it out" drops from 0.87 to 0.64 over nine seeds. Seeds 1, 6, 7 and 10 come out exactly as before, and the planting probes' sky has no storms. The old ice and dead-bush rolls drew on the world's random stream every tick through the winter and wherever a dead bush stood, and their going changes the draws from there on, so the other seeds go their own way [INFERENCE: not traced seed by seed]. Every other claim stands as at a8bf4da.
 
+### The gates at ae23f16 (traps, ash, resin, acorns, regrowth)
+
+Probes, against a8bf4da: fails four, the claims that have come and gone pass by pass since the first animals pass: seed/real's, seed/two's and unlearn/real's that nearly all whose own tries show the true cause come to rule it out, and seed/two right 0.95 to 0.83. Worlds, against 2258536: passes; worked 0.88 to 1.00 and wasted 0.12 to 0.05 within their intervals. The first build of these, 0374aaa, dropped each oak's acorns as a pile: thousands of live things whose wetness and decay ran every tick slowed the probes tenfold, and its gate was stopped. Not retuned.
+
 ## 10. Still on the old rules
 
 - Seed dispersal (two island-wide rolls into fixed rings): Scots pine's seed crop (12,000 a tree in good years, 50 to 70% viable), its kernel (80% within 20 m of a 20 m tree) and its spring germination are measured (Nixon and Worrell, R455), but how many seeds become seedlings is only bounded (under 5,000 established a ha within 50 m of the trees without disturbing the soil), and oak, ash, aspen and bramble have none [gap].
