@@ -1,5 +1,5 @@
 import {
-  DAY, H, REACH, TILE_M, W, clock, dryAt, hourOf, isNight, nearestShore, level, log, meters, perWorld, reachOf, shuffle, stageOf,
+  DAY, H, REACH, TILE_M, W, clock, dryAt, heldStore, hourOf, isNight, nearestShore, level, log, meters, perWorld, reachOf, shuffle, stageOf,
   type Act, type Agent, type Animal, type BondKind, type Stack, type Step, type Thing, type Waiting, type World,
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
@@ -2256,19 +2256,28 @@ function agentTick(w: World, a: Agent) {
   }
 }
 
-// One tick of the world. Async because the world's objects are moving to the GPU, whose results come back as promises;
-// every caller awaits it, one tick at a time.
+// One tick of the world. Async because the world's objects live on the GPU: the deltas queued last tick are uploaded
+// and the laws due set running there while the CPU's own work goes on, and the windows round people come back into
+// the mirror before the tick ends. A world with no object kinds on the GPU yet never touches it. Every caller awaits
+// a tick, one at a time.
 export async function tick(w: World) {
   w.t++;
   traceClock.t = w.t;
-  timed("ecology", () => ecology(w));
-  timed("life", () => life(w));
-  burned(w);
-  timed("groups", () => groups(w));
-  if (w.t % DAY === 0) for (const a of w.agents) fadeBonds(a);
-  if (w.t % DAY === DAY / 2) { timed("shelve", () => shelve(w)); giveUpWaiting(w); }
-  timed("agents", () => { for (const a of [...w.agents]) if (w.agents.includes(a)) agentTick(w, a); });
-  timed("journeys", () => travel(w));
+  const store = heldStore(w), gpu = store?.kinds.length ? store : undefined;
+  gpu?.begin(w.t);
+  try {
+    timed("ecology", () => ecology(w));
+    timed("life", () => life(w));
+    burned(w);
+    timed("groups", () => groups(w));
+    if (w.t % DAY === 0) for (const a of w.agents) fadeBonds(a);
+    if (w.t % DAY === DAY / 2) { timed("shelve", () => shelve(w)); giveUpWaiting(w); }
+    timed("agents", () => { for (const a of [...w.agents]) if (w.agents.includes(a)) agentTick(w, a); });
+    timed("journeys", () => travel(w));
+  } finally {
+    // even when the CPU's work fails, so the store's next tick can begin
+    if (gpu) await gpu.land();
+  }
   bump("ticks");
 }
 

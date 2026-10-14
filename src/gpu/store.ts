@@ -1,0 +1,526 @@
+// The world's objects on the GPU: every kind (stems, seedlings, logs, each animal...) a structure of arrays in GPU
+// buffers, indexed by slot, with deterministic births and deaths, a spatial index rebuilt every tick, a CPU mirror of
+// the cells round people (mirror.ts) that CPU code changes through queued deltas, and dump and load for saves. Plan:
+// docs/plans/2026-10-14-001-refactor-gpu-object-world-plan.md, Unit 4.
+//
+// A kind is declared with a name, a capacity and its fields, each a u32 or an i32 word holding a quantity in a stated
+// unit times a stated scale (a field { unit: "m", scale: 1000 } holds millimetres). A placed kind also has x and y,
+// millimetres east of the island's west edge and south of its north edge (the grid of src/terrain/grid.ts), and is
+// indexed by cell. Buffers of a kind with capacity C and F fields, all u32 words:
+// - body, (1 + F) C words: C slot words (bit 0 alive, bits 1 to 31 the slot's generation, 0 before its first birth),
+//   then field f in words (1 + f) C to (2 + f) C.
+// - alloc, 16 + C words: control words (CTL in wgsl/alloc.ts: the free list's head and length, the tail, children
+//   lost for want of capacity), then the free list.
+// - order (C words) and start (N^2 + 1 words), placed kinds only: the live slots sorted by cell, stable by slot, and
+//   where each cell's run begins (start[N^2] is the live count). Rebuilt every tick; kept so a save holds every buffer.
+//
+// An object's id packs (kind, slot, generation) into one exact JavaScript number, kind * 2^47 + (generation mod 2^17)
+// * 2^30 + slot, so a slot given to a new object never answers to an old object's id (until the same slot has been
+// reborn 2^17 times). A kernel that keeps a reference keeps the slot and the generation in two fields.
+//
+// Births: a kernel writes each parent's child count; the counts are scanned in parent-slot order, so the j-th child of
+// the tick's call takes the j-th free slot (free slots in index order) and then the tail; its slot gets the next
+// generation and its fields zero, and the kind's own initialization runs with the parent and the slot. Deaths clear
+// the alive bit; dead slots join the free list at one fixed point in the tick (after the laws have run), so births in
+// a tick only ever take slots that were free when it began. Integer scans in a fixed order throughout, so the same ids
+// come out every run on any GPU.
+//
+// A tick: begin(t) uploads the deltas queued since the last tick and applies them, runs the laws due, reclaims dead
+// slots and rebuilds the index, all in one submit; the CPU does its own work while that runs; land() copies the
+// windows round people into one staging buffer, awaits it and keeps it for the mirror. Spawns the CPU queues get their
+// slots at the upload, placed from the free list's head the last landing read back, the same rule the GPU follows.
+// Kernels recorded outside a tick (births, reclaim, index called directly) go to the GPU at flush().
+//
+// Representation tiers (dormant, event-driven, lumped; Unit 4b) extend a kind's declaration and the per-kind steps of
+// begin (reclaim, index) and land (gather): every one of those steps takes the kind, so a tier changes what that step
+// does for its kinds without touching the others.
+import type { Gpu } from "./device";
+import { cover, pipeline, readback, storage } from "./kernel";
+import { SCAN } from "./wgsl/scan";
+import { BIRTH_COMMIT, BIRTH_MASK, CTL, CTL_WORDS, DELTA_APPLY, OP, PEEK, RECLAIM_CTL, RECLAIM_FLAG, RECLAIM_SCATTER, birthAssign } from "./wgsl/alloc";
+import { CELLS, GATHER_HEAD, GATHER_ROWS, INDEX_COMPACT, INDEX_KEYS, RADIX_HIST, RADIX_SCATTER } from "./wgsl/index";
+import { Mirror, type Obj } from "./mirror";
+
+// ---------- ids ----------
+const IX = 2 ** 30, GEN = 2 ** 17;
+export const MAX_KINDS = 64;
+export const idOf = (kind: number, slot: number, gen: number) => (kind * GEN + (gen % GEN)) * IX + slot;
+export const kindOfId = (id: number) => Math.floor(id / (IX * GEN));
+export const slotOfId = (id: number) => id % IX;
+export const genOfId = (id: number) => Math.floor(id / IX) % GEN;
+
+// ---------- kinds ----------
+export type Field = { name: string; type: "u32" | "i32"; unit: string; scale: number };
+export type KindSpec = { name: string; capacity: number; fields: Field[]; placed?: boolean };
+// The two fields every placed kind starts with.
+export const PLACE: readonly Field[] = [
+  { name: "x", type: "u32", unit: "m", scale: 1000 },
+  { name: "y", type: "u32", unit: "m", scale: 1000 },
+];
+// What the last landing read back of a kind's allocation: control words, the next PEEK_SLOTS free slots and their slot
+// words. Fresh until a law runs births again.
+export const PEEK_SLOTS = 1024;
+export type Peek = { head: number; nfree: number; tail: number; overflow: number; free: Uint32Array; meta: Uint32Array; fresh: boolean };
+export type Kind = {
+  n: number; name: string; capacity: number; placed: boolean; spec: KindSpec;
+  fields: readonly Field[]; field: Record<string, number>; // every field, place first, and each one's number
+  body: GPUBuffer; alloc: GPUBuffer; order: GPUBuffer | null; start: GPUBuffer | null;
+  peek: Peek;
+};
+
+// A law: kernels run in begin when due, in the order laws were added.
+export type Law = { name: string; due: (t: number) => boolean; run: (s: Store, t: number) => void };
+
+// A change CPU code queued: applied to the mirror at once, to the GPU at the next upload.
+export type Delta =
+  | { seq: number; op: "set"; id: number; field: number; value: number }
+  | { seq: number; op: "kill"; id: number }
+  | { seq: number; op: "spawn"; obj: Obj };
+
+const NAME = /^[a-z][a-z0-9]*$/;
+const RESERVED: Record<string, true> = { alive: true, gen: true, kill: true };
+const CHUNK = 64 << 20;
+const MAGIC = 0x55504d4e; // "NMPU"
+
+// The 64-bit hash state of buffers being folded, two 32-bit lanes.
+type Hash = { a: number; b: number };
+function fold(h: Hash, w: Uint32Array) {
+  let a = h.a, b = h.b;
+  for (let i = 0; i < w.length; i++) {
+    const x = w[i];
+    a = Math.imul(a ^ x, 0x01000193);
+    b = Math.imul(b ^ ((x << 16) | (x >>> 16)), 0x85ebca77) ^ (b >>> 13);
+  }
+  h.a = a; h.b = b;
+}
+
+export class Store {
+  readonly kinds: Kind[] = [];
+  readonly laws: Law[] = [];
+  readonly mirror: Mirror;
+  queue: Delta[] = [];
+  t = 0;
+  private seq = 0;
+  private prov = 0;
+  private landing: Promise<void> | null = null;
+  private begun = false;
+  private budget = 1 << 16;
+  private readonly scratchBufs = new Map<string, GPUBuffer>();
+  private enc: GPUCommandEncoder | null = null;
+  private pass: GPUComputePassEncoder | null = null;
+  private readonly pool: GPUBuffer[] = [];
+  private used = 0;
+  private retired: GPUBuffer[] = [];
+  private readonly pipes = new Map<string, Map<string, GPUComputePipeline>>(); // by source, then entry point
+
+  constructor(readonly g: Gpu) {
+    this.mirror = new Mirror(this);
+  }
+
+  // Declares a kind; its slots start empty, never born.
+  declare(spec: KindSpec): Kind {
+    const fields = [...(spec.placed ? PLACE : []), ...spec.fields];
+    if (this.kinds.length >= MAX_KINDS) throw new Error(`a store holds at most ${MAX_KINDS} kinds`);
+    if (!NAME.test(spec.name) || this.kinds.some((k) => k.name === spec.name)) throw new Error(`kind name "${spec.name}" must be new, lower case letters and digits`);
+    if (!Number.isInteger(spec.capacity) || spec.capacity < 1 || spec.capacity > IX) throw new Error(`kind ${spec.name}: capacity ${spec.capacity} must be from 1 to 2^30`);
+    const names = new Set<string>();
+    for (const f of fields) {
+      if (!NAME.test(f.name) || RESERVED[f.name] || names.has(f.name)) throw new Error(`kind ${spec.name}: field name "${f.name}" must be new, lower case letters and digits, not alive, gen or kill`);
+      if (f.type !== "u32" && f.type !== "i32") throw new Error(`kind ${spec.name}: field ${f.name} must be u32 or i32`);
+      names.add(f.name);
+    }
+    const C = spec.capacity, bytes = (1 + fields.length) * C * 4, most = this.g.device.limits.maxStorageBufferBindingSize;
+    if (bytes > most) throw new Error(`kind ${spec.name}: its body of ${bytes} bytes is past the GPU's ${most}-byte binding limit`);
+    const k: Kind = {
+      n: this.kinds.length, name: spec.name, capacity: C, placed: !!spec.placed, spec: structuredClone(spec),
+      fields, field: Object.fromEntries(fields.map((f, i) => [f.name, i])),
+      body: storage(this.g, bytes), alloc: storage(this.g, (CTL_WORDS + C) * 4),
+      order: spec.placed ? storage(this.g, C * 4) : null, start: spec.placed ? storage(this.g, (CELLS + 1) * 4) : null,
+      peek: { head: 0, nfree: 0, tail: 0, overflow: 0, free: new Uint32Array(0), meta: new Uint32Array(0), fresh: true },
+    };
+    this.kinds.push(k);
+    this.mirror.add(k);
+    return k;
+  }
+  kind(name: string): Kind {
+    const k = this.kinds.find((x) => x.name === name);
+    if (!k) throw new Error(`no kind ${name} in the store`);
+    return k;
+  }
+  law(l: Law) { this.laws.push(l); }
+
+  // ---------- running kernels ----------
+  // Kernels, clears and copies go into one command encoder, submitted by flush (begin and land flush; so do reads),
+  // since a submit costs the CPU a few tenths of a millisecond. Each dispatch's parameters get their own small
+  // uniform buffer from a pool, written before the submit.
+  private run(src: string, bufs: GPUBuffer[], groups: [number, number?, number?], params?: number[], entry = "main") {
+    const d = this.g.device;
+    let byEntry = this.pipes.get(src);
+    if (!byEntry) this.pipes.set(src, (byEntry = new Map()));
+    let p = byEntry.get(entry);
+    if (!p) byEntry.set(entry, (p = pipeline(this.g, src, entry)));
+    if (params) {
+      let u = this.pool[this.used];
+      if (!u) this.pool.push((u = d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })));
+      this.used++;
+      d.queue.writeBuffer(u, 0, Uint32Array.from(params));
+      bufs = [...bufs, u];
+    }
+    const bind = d.createBindGroup({ layout: p.getBindGroupLayout(0), entries: bufs.map((buffer, binding) => ({ binding, resource: { buffer } })) });
+    this.pass ??= (this.enc ??= d.createCommandEncoder()).beginComputePass();
+    this.pass.setPipeline(p);
+    this.pass.setBindGroup(0, bind);
+    this.pass.dispatchWorkgroups(groups[0], groups[1] ?? 1, groups[2] ?? 1);
+  }
+  private encode(f: (e: GPUCommandEncoder) => void) {
+    this.pass?.end();
+    this.pass = null;
+    f((this.enc ??= this.g.device.createCommandEncoder()));
+  }
+  // Submits what has been recorded.
+  flush() {
+    this.pass?.end();
+    this.pass = null;
+    if (this.enc) this.g.device.queue.submit([this.enc.finish()]);
+    this.enc = null;
+    this.used = 0;
+    for (const b of this.retired) b.destroy();
+    this.retired = [];
+  }
+  // A scratch buffer of at least so many words, kept and grown as needed (an outgrown one is let go after the next
+  // submit, since recorded commands may still use it).
+  private scratch(name: string, words: number): GPUBuffer {
+    let b = this.scratchBufs.get(name);
+    if (!b || b.size < words * 4) {
+      if (b) this.retired.push(b);
+      b = storage(this.g, Math.max(words, 1) * 4);
+      this.scratchBufs.set(name, b);
+    }
+    return b;
+  }
+  // An exclusive prefix sum of the first n words of buf, in place; the buffer returned holds the total at word 0.
+  scan(buf: GPUBuffer, n: number): GPUBuffer {
+    const levels: [GPUBuffer, number, GPUBuffer][] = [];
+    for (let cur = buf, len = n, level = 0; ; level++) {
+      const blocks = Math.max(1, Math.ceil(len / 1024)), sums = this.scratch(`sum${level}`, blocks);
+      this.run(SCAN, [cur, sums], cover(this.g, blocks, 1), [len, 0, 0, 0], "blocks");
+      levels.push([cur, len, sums]);
+      if (blocks === 1) break;
+      cur = sums; len = blocks;
+    }
+    for (let i = levels.length - 2; i >= 0; i--) {
+      const [cur, len, sums] = levels[i];
+      this.run(SCAN, [cur, sums], cover(this.g, Math.ceil(len / 1024), 1), [len, 0, 0, 0], "add");
+    }
+    return levels[levels.length - 1][2];
+  }
+
+  // ---------- births and deaths ----------
+  // Children of the live parents of one kind into another (or the same): counts holds a u32 for every parent slot,
+  // init the WGSL body run for each child, with slot, parent, k (its place among its siblings), j (its place among all
+  // the call's children) and tick in scope, and the accessors parent_<field>(i), child_<field>(i) and
+  // child_set_<field>(i, v) (wgsl/alloc.ts).
+  births(parent: string, child: string, counts: GPUBuffer, init: string) {
+    const P = this.kind(parent), C = this.kind(child), same = P === C, g = this.g;
+    const m = this.scratch("m", P.capacity), kept = this.scratch("kept", P.capacity);
+    this.run(BIRTH_MASK, [P.body, P.alloc, counts, m, kept], cover(g, P.capacity), [P.capacity, 0, 0, 0]);
+    const tot = this.scan(m, P.capacity);
+    const src = birthAssign(P, C, same, init);
+    this.run(src, same ? [C.body, C.alloc, kept, m] : [P.body, C.body, C.alloc, kept, m], cover(g, P.capacity), [P.capacity, this.t, P.capacity, C.capacity]);
+    this.run(BIRTH_COMMIT, [C.alloc, tot], [1], [C.capacity, 0, 0, 0]);
+    C.peek.fresh = false;
+  }
+  // The fixed point where dead slots join the free list: all of them below the tail, in index order.
+  reclaim(k: Kind) {
+    const f = this.scratch("flag", k.capacity), g = this.g;
+    this.run(RECLAIM_FLAG, [k.body, k.alloc, f], cover(g, k.capacity), [k.capacity, 0, 0, 0]);
+    const tot = this.scan(f, k.capacity);
+    this.run(RECLAIM_SCATTER, [k.body, k.alloc, f], cover(g, k.capacity), [k.capacity, 0, 0, 0]);
+    this.run(RECLAIM_CTL, [k.alloc, tot], [1]);
+  }
+
+  // ---------- the spatial index ----------
+  index(k: Kind) {
+    if (!k.placed) return;
+    const C = k.capacity, g = this.g, tiles = Math.ceil(C / 1024), order = k.order!, start = k.start!;
+    const key = this.scratch("key", C), flag = this.scratch("flag", C), ids = this.scratch("ids", C), cells = this.scratch("cells", C);
+    const len = this.scratch("len", 1), hist = this.scratch("hist", 256 * tiles);
+    this.encode((e) => e.clearBuffer(start));
+    this.run(INDEX_KEYS, [k.body, k.alloc, key, flag, start], cover(g, C), [C, k.field.x, k.field.y, 0]);
+    const live = this.scan(flag, C);
+    this.encode((e) => e.copyBufferToBuffer(live, 0, len, 0, 4));
+    this.run(INDEX_COMPACT, [k.body, k.alloc, flag, key, ids, cells], cover(g, C), [C, 0, 0, 0]);
+    // (slots, cells) from ids and cells into flag and key, and back into order and cells
+    const pass = (src: GPUBuffer, kin: GPUBuffer, dst: GPUBuffer, kout: GPUBuffer, shift: number) => {
+      this.run(RADIX_HIST, [kin, len, hist], cover(g, tiles, 1), [shift, tiles, 0, 0]);
+      this.scan(hist, 256 * tiles);
+      this.run(RADIX_SCATTER, [kin, src, len, hist, dst, kout], cover(g, tiles, 1), [shift, tiles, 0, 0]);
+    };
+    pass(ids, cells, flag, key, 0);
+    pass(flag, key, order, cells, 8);
+    const total = this.scan(start, CELLS);
+    this.encode((e) => e.copyBufferToBuffer(total, 0, start, CELLS * 4, 4));
+  }
+
+  // ---------- deltas ----------
+  private word(k: Kind, f: number, v: number) {
+    const t = k.fields[f].type, ok = Number.isInteger(v) && (t === "u32" ? v >= 0 && v <= 0xffffffff : v >= -(2 ** 31) && v < 2 ** 31);
+    if (!ok) throw new Error(`kind ${k.name}: ${v} doesn't fit field ${k.fields[f].name} (${t})`);
+    return v >>> 0;
+  }
+  kindOf(id: number): Kind {
+    const k = id < 0 ? this.mirror.spawned(id)?.kind : this.kinds[kindOfId(id)]?.name;
+    if (k === undefined) throw new Error(`no kind for object ${id}`);
+    return this.kind(k);
+  }
+  // Sets a field of an object (by id, or the provisional id of a spawn not yet uploaded).
+  set(id: number, field: string, value: number) {
+    const k = this.kindOf(id), f = k.field[field];
+    if (f === undefined) throw new Error(`kind ${k.name} has no field ${field}`);
+    this.word(k, f, value);
+    this.push({ seq: this.seq++, op: "set", id, field: f, value });
+  }
+  kill(id: number) {
+    this.kindOf(id);
+    this.push({ seq: this.seq++, op: "kill", id });
+  }
+  // A new object of a kind with the field values given (the rest zero). Its id is provisional, below zero, until the
+  // next upload gives it a slot, when the object's id becomes the real one.
+  spawn(kind: string, values: Record<string, number>): Obj {
+    const k = this.kind(kind), v: Record<string, number> = {};
+    for (const name of Object.keys(values)) if (k.field[name] === undefined) throw new Error(`kind ${kind} has no field ${name}`);
+    k.fields.forEach((f, i) => { v[f.name] = values[f.name] ?? 0; this.word(k, i, v[f.name]); });
+    const obj: Obj = { id: -++this.prov, kind, v, cell: -1 };
+    this.push({ seq: this.seq++, op: "spawn", obj });
+    return obj;
+  }
+  private push(d: Delta) {
+    this.queue.push(d);
+    this.mirror.apply(d);
+  }
+
+  // The queue's records for the GPU, by kind, sorted by slot and then by queue order (each delta's seq, whatever
+  // order the queue's array holds them in); spawns placed as the GPU places births, from the free list's head and then
+  // the tail. A spawn the read-back head can't place (more spawns of a kind in one tick than PEEK_SLOTS while the free
+  // list is longer) waits for the next tick, and with it every later spawn of its kind and every delta to a spawn
+  // still waiting.
+  private upload() {
+    const recs = this.kinds.map(() => [] as { slot: number; w: number[] }[]);
+    const placed = this.kinds.map(() => ({ j: 0, blocked: false }));
+    const keep: Delta[] = [];
+    for (const d of [...this.queue].sort((a, b) => a.seq - b.seq)) {
+      if (d.op === "spawn") {
+        const k = this.kind(d.obj.kind), p = k.peek, s = placed[k.n], avail = p.nfree - p.head;
+        if (!p.fresh) throw new Error(`kind ${k.name}: spawns are placed from the last landing's free list, and births have run since`);
+        if (s.blocked || (s.j < avail && s.j >= p.free.length)) { s.blocked = true; keep.push(d); continue; }
+        let slot: number, gen: number;
+        if (s.j < avail) { slot = p.free[s.j]; gen = (((p.meta[s.j] >>> 1) + 1) & 0x7fffffff) || 1; } else {
+          slot = p.tail + (s.j - avail);
+          if (slot >= k.capacity) throw new Error(`kind ${k.name} is full: capacity ${k.capacity}`);
+          gen = 1;
+        }
+        s.j++;
+        const old = d.obj.id;
+        d.obj.id = idOf(k.n, slot, gen);
+        this.mirror.placed(d.obj, old);
+        recs[k.n].push({ slot, w: [slot, gen, OP.born << 16, 0] });
+        k.fields.forEach((f, i) => { const v = d.obj.v[f.name]; if (v) recs[k.n].push({ slot, w: [slot, gen, (OP.set << 16) | i, v >>> 0] }); });
+        continue;
+      }
+      const id = d.id < 0 ? this.mirror.spawned(d.id)?.id ?? d.id : d.id;
+      if (id < 0) { keep.push(d); continue; }
+      const k = this.kinds[kindOfId(id)], slot = slotOfId(id), gen = genOfId(id);
+      recs[k.n].push({ slot, w: d.op === "set" ? [slot, gen, (OP.set << 16) | d.field, d.value >>> 0] : [slot, gen, OP.kill << 16, 0] });
+    }
+    this.queue = keep;
+    this.mirror.uploaded();
+    for (const k of this.kinds) {
+      const s = placed[k.n], p = k.peek;
+      if (s.j) {
+        const used = Math.min(s.j, p.nfree - p.head);
+        p.head += used;
+        p.tail += s.j - used;
+        p.free = p.free.subarray(used);
+        p.meta = p.meta.subarray(used);
+        this.g.device.queue.writeBuffer(k.alloc, CTL.head * 4, Uint32Array.of(p.head));
+        this.g.device.queue.writeBuffer(k.alloc, CTL.tail * 4, Uint32Array.of(p.tail));
+      }
+    }
+    // every kind's records in one buffer, each kind's sorted by slot (a stable sort, so one slot's stay in queue order)
+    const all: number[] = [], from = this.kinds.map((k) => {
+      const at = all.length;
+      for (const r of recs[k.n].sort((a, b) => a.slot - b.slot)) all.push(...r.w);
+      return at;
+    });
+    if (!all.length) return;
+    const buf = this.scratch("deltas", all.length);
+    this.g.device.queue.writeBuffer(buf, 0, Uint32Array.from(all));
+    for (const k of this.kinds) {
+      const n = recs[k.n].length;
+      if (n) this.run(DELTA_APPLY, [k.body, buf], cover(this.g, n), [n, k.capacity, k.fields.length, from[k.n]]);
+    }
+  }
+
+  // ---------- a tick ----------
+  begin(t: number) {
+    if (this.begun || this.landing) throw new Error("a store tick begins only once the last one has landed");
+    this.flush();
+    this.t = t;
+    this.begun = true;
+    try {
+      this.upload();
+      for (const l of this.laws) if (l.due(t)) l.run(this, t);
+      for (const k of this.kinds) this.reclaim(k);
+      for (const k of this.kinds) this.index(k);
+    } catch (e) {
+      // the failure stays with this tick: what was recorded goes out (an upload that finished has already taken its
+      // deltas off the queue), and the next tick can begin
+      this.begun = false;
+      throw e;
+    } finally {
+      this.flush();
+    }
+  }
+  // The windowed objects and each kind's allocation head copied back in one staging copy and merged into the mirror,
+  // the deltas queued since the upload laid over them again.
+  land(): Promise<void> {
+    if (!this.begun) throw new Error("a store tick lands only after it has begun");
+    this.begun = false;
+    const g = this.g, ents = this.kinds.map((k) => this.mirror.entries(k));
+    let w = 1 + this.kinds.length;
+    const at = this.kinds.map((k) => { const peek = w; w += CTL_WORDS + 2 * PEEK_SLOTS; const head = w; w += 2 * ents[k.n].length; return { peek, head }; });
+    const limit = w + this.budget, out = this.scratch("out", limit), dummy = this.scratch("dummy", 1);
+    const from: number[] = [], flat = new Uint32Array(ents.reduce((s, e) => { from.push(s); return s + e.length; }, 0));
+    ents.forEach((e, i) => flat.set(e, from[i]));
+    const eb = this.scratch("ents", flat.length);
+    g.device.queue.writeBuffer(out, 0, Uint32Array.from([w, ...this.kinds.map(() => 0)]));
+    g.device.queue.writeBuffer(eb, 0, flat);
+    for (const k of this.kinds) {
+      const e = ents[k.n], row = 2 + k.fields.length;
+      this.run(PEEK, [k.body, k.alloc, out], cover(g, CTL_WORDS + PEEK_SLOTS), [at[k.n].peek, PEEK_SLOTS, 0, 0]);
+      if (!e.length) continue;
+      this.run(GATHER_HEAD, [k.start ?? dummy, eb, out], [1], [e.length, at[k.n].head, row, limit, 1 + k.n, from[k.n], 0, 0]);
+      this.run(GATHER_ROWS, [k.body, k.order ?? dummy, k.start ?? dummy, eb, out], cover(g, e.length, 1), [e.length, at[k.n].head, row, k.capacity, from[k.n], 0, 0, 0]);
+    }
+    this.flush();
+    const back = readback(g, out, limit * 4);
+    this.landing = (async () => {
+      try {
+        const o = new Uint32Array(await back);
+        let need = 0;
+        for (const k of this.kinds) {
+          const p = at[k.n].peek, ctl = o.subarray(p, p + CTL_WORDS), lost = ctl[CTL.overflow] - k.peek.overflow;
+          k.peek = {
+            head: ctl[CTL.head], nfree: ctl[CTL.nfree], tail: ctl[CTL.tail], overflow: ctl[CTL.overflow], fresh: true,
+            free: o.slice(p + CTL_WORDS, p + CTL_WORDS + Math.min(PEEK_SLOTS, ctl[CTL.nfree] - ctl[CTL.head])),
+            meta: o.slice(p + CTL_WORDS + PEEK_SLOTS, p + CTL_WORDS + PEEK_SLOTS + Math.min(PEEK_SLOTS, ctl[CTL.nfree] - ctl[CTL.head])),
+          };
+          if (lost) throw new Error(`kind ${k.name} is full: ${lost} children found no slot in its capacity of ${k.capacity}`);
+          need += o[1 + k.n];
+          this.mirror.land(k, ents[k.n], o, at[k.n].head);
+        }
+        this.budget = Math.max(this.budget, Math.ceil((need * 1.25) / 4096) * 4096);
+        for (const d of [...this.queue].sort((a, b) => a.seq - b.seq)) this.mirror.apply(d);
+      } finally {
+        this.landing = null;
+      }
+    })();
+    return this.landing;
+  }
+  step(t: number) {
+    this.begin(t);
+    return this.land();
+  }
+
+  // ---------- reading every buffer ----------
+  private async *chunks(buf: GPUBuffer): AsyncGenerator<ArrayBuffer> {
+    this.flush();
+    for (let o = 0; o < buf.size; o += CHUNK) yield await readback(this.g, buf, Math.min(CHUNK, buf.size - o), o);
+  }
+  // A whole buffer of a kind read back.
+  async read(kind: string, part: "body" | "alloc" | "order" | "start"): Promise<Uint32Array> {
+    const buf = buffersOf(this.kind(kind)).find(([n]) => n === part)?.[1];
+    if (!buf) throw new Error(`kind ${kind} has no ${part} buffer`);
+    const all = new Uint8Array(buf.size);
+    let o = 0;
+    for await (const c of this.chunks(buf)) { all.set(new Uint8Array(c), o); o += c.byteLength; }
+    return new Uint32Array(all.buffer);
+  }
+  // A hash of every buffer of every kind and of their declarations, read back from the GPU.
+  async hash(): Promise<string> {
+    if (this.landing) await this.landing;
+    const h: Hash = { a: 0x811c9dc5, b: 0x2545f491 };
+    fold(h, Uint32Array.from(new TextEncoder().encode(JSON.stringify(this.kinds.map((k) => k.spec)))));
+    for (const k of this.kinds) for (const [, buf] of buffersOf(k)) for await (const c of this.chunks(buf)) fold(h, new Uint32Array(c));
+    return (h.a >>> 0).toString(16).padStart(8, "0") + (h.b >>> 0).toString(16).padStart(8, "0");
+  }
+
+  // ---------- saving ----------
+  // Every buffer of every kind, with the kinds' declarations and the deltas still queued: a little-endian u32 magic
+  // ("NMPU"), a u32 format (1), a u32 header length in bytes, the header as JSON padded with spaces to four bytes, then
+  // each kind's buffers in the header's order.
+  async dump(): Promise<Uint8Array> {
+    if (this.landing) await this.landing;
+    if (this.begun) throw new Error("a store is saved between ticks, not inside one");
+    const parts: Uint8Array[] = [];
+    const kinds = [];
+    for (const k of this.kinds) {
+      const bufs = [];
+      for (const [name, buf] of buffersOf(k)) {
+        for await (const c of this.chunks(buf)) parts.push(new Uint8Array(c));
+        bufs.push({ name, bytes: buf.size });
+      }
+      kinds.push({ spec: k.spec, buffers: bufs });
+    }
+    const queue = this.queue.map((d) => (d.op === "spawn" ? { seq: d.seq, op: d.op, obj: d.obj } : d));
+    const header = { format: 1, t: this.t, seq: this.seq, prov: this.prov, budget: this.budget, kinds, queue };
+    let json = JSON.stringify(header);
+    json = json.padEnd(Math.ceil(json.length / 4) * 4, " ");
+    const head = new TextEncoder().encode(json);
+    const total = 12 + head.length + parts.reduce((s, p) => s + p.length, 0), bytes = new Uint8Array(total);
+    new Uint32Array(bytes.buffer, 0, 3).set([MAGIC, 1, head.length]);
+    bytes.set(head, 12);
+    let o = 12 + head.length;
+    for (const p of parts) { bytes.set(p, o); o += p.length; }
+    return bytes;
+  }
+  // The counters and queued deltas of a dump (loadStore).
+  restore(h: SavedHeader) {
+    this.t = h.t; this.seq = h.seq; this.prov = h.prov; this.budget = h.budget;
+    for (const d of h.queue) this.push(d);
+  }
+}
+
+// A kind's buffers by name, in the order a dump keeps them.
+function buffersOf(k: Kind): [string, GPUBuffer][] {
+  return [["body", k.body], ["alloc", k.alloc], ...(k.placed ? [["order", k.order!], ["start", k.start!]] as [string, GPUBuffer][] : [])];
+}
+
+type SavedHeader = { format: number; t: number; seq: number; prov: number; budget: number; kinds: { spec: KindSpec; buffers: { name: string; bytes: number }[] }[]; queue: Delta[] };
+// The header of a dump, read without a GPU.
+export function savedHeader(bytes: Uint8Array): SavedHeader {
+  const w = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.length < 12 || w.getUint32(0, true) !== MAGIC || w.getUint32(4, true) !== 1) throw new Error("not a saved object store");
+  return JSON.parse(new TextDecoder().decode(bytes.subarray(12, 12 + w.getUint32(8, true))));
+}
+// A store made again from a dump: the same kinds, buffers and queued deltas; an empty mirror.
+export function loadStore(g: Gpu, bytes: Uint8Array): Store {
+  const h = savedHeader(bytes), s = new Store(g), len = new DataView(bytes.buffer, bytes.byteOffset).getUint32(8, true);
+  let o = 12 + len;
+  for (const saved of h.kinds) {
+    const k = s.declare(saved.spec);
+    const got: Record<string, Uint8Array> = {};
+    for (const b of saved.buffers) {
+      const buf = buffersOf(k).find(([n]) => n === b.name)?.[1];
+      if (!buf || buf.size !== b.bytes) throw new Error(`saved kind ${k.name}: buffer ${b.name} of ${b.bytes} bytes doesn't match its declaration`);
+      got[b.name] = bytes.slice(o, o + b.bytes);
+      for (let c = 0; c < b.bytes; c += CHUNK) g.device.queue.writeBuffer(buf, c, got[b.name].buffer, c, Math.min(CHUNK, b.bytes - c));
+      o += b.bytes;
+    }
+    const alloc = new Uint32Array(got.alloc.buffer), body = new Uint32Array(got.body.buffer);
+    const head = alloc[CTL.head], nfree = alloc[CTL.nfree], free = alloc.slice(CTL_WORDS + head, CTL_WORDS + head + Math.min(PEEK_SLOTS, nfree - head));
+    k.peek = { head, nfree, tail: alloc[CTL.tail], overflow: alloc[CTL.overflow], free, meta: free.map((slot) => body[slot]), fresh: true };
+  }
+  s.restore(h);
+  return s;
+}

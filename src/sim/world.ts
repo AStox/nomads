@@ -11,6 +11,8 @@ import type { Bed, Ring } from "./combustion";
 import { enter, put } from "./space";
 import { populate } from "./fauna";
 import { NIGHT_EL, NOON, YEAR_DAYS, sunAt } from "./sky";
+import { Store } from "../gpu/store";
+import type { Gpu } from "../gpu/device";
 
 export const W = TILES;
 export const H = TILES;
@@ -303,6 +305,17 @@ export type World = {
   incidents: Incident[]; // recent, judged or not
   journeys: { seen: number; of: Record<string, Journey> }; // every person's hero path, and the last event pinned to one
 };
+// The world's objects on the GPU (src/gpu/store.ts): made the first time something asks for them, on the GPU given,
+// and held beside the world rather than in it, so a save's JSON never carries them; server.ts saves the store's
+// buffers beside the JSON and gives a loaded world its store back.
+const stores = new WeakMap<World, Store>();
+export function storeOf(w: World, g: Gpu): Store {
+  let s = stores.get(w);
+  if (!s) stores.set(w, (s = new Store(g)));
+  return s;
+}
+export const heldStore = (w: World): Store | undefined => stores.get(w);
+export const adoptStore = (w: World, s: Store) => { stores.set(w, s); };
 
 export function rng(seed: number) {
   let s = seed >>> 0;

@@ -1,5 +1,5 @@
 import { mkdirSync, renameSync } from "node:fs";
-import { DAY, QUIET, VERSION, YEAR_DAYS, clock, newWorld, type World } from "./src/sim/world";
+import { DAY, QUIET, VERSION, YEAR_DAYS, adoptStore, clock, heldStore, newWorld, type World } from "./src/sim/world";
 import { agentDetail, changedKinds, summary, tick } from "./src/sim/sim";
 import { changed, newKinds, removed } from "./src/sim/physics";
 import { iceChanged, pathChanges, trailChanges } from "./src/sim/ecology";
@@ -10,11 +10,15 @@ import { campSummary, groupsChanged, groupsDetail, liveCamps, standing } from ".
 import { thingById } from "./src/sim/space";
 import { thingView } from "./src/sim/inspect";
 import { migrateSave } from "./src/sim/migrate";
+import { theGpu } from "./src/gpu/device";
+import { loadStore, savedHeader } from "./src/gpu/store";
 
 const PORT = Number(process.env.PORT ?? 8095);
 // NOMADS_DATA lets a second, offline copy run beside the live world without touching its save.
 const DATA = process.env.NOMADS_DATA ?? `${import.meta.dir}/data`;
 const SAVE = `${DATA}/world.json`;
+// The GPU's objects, every buffer of every kind (src/gpu/store.ts dump), saved beside the JSON at the same tick.
+const GPU_SAVE = `${DATA}/world.gpu`;
 const BASE_MS = 500;
 if (!process.env.TYPESAFE_API_KEY && !process.env.SUBQ_API_KEY && process.env.NOMADS_BRAIN !== "random") throw new Error("missing TYPESAFE_API_KEY or SUBQ_API_KEY");
 logTo(`${DATA}/logs`);
@@ -34,6 +38,12 @@ async function load(): Promise<World> {
         for (const s of a.plan) if (s.op === "social") s.progress = 0;
         a.plan = a.plan.filter((s) => s.op !== "tinker" || s.act);
       }
+      const gpu = Bun.file(GPU_SAVE);
+      if (await gpu.exists()) {
+        const bytes = new Uint8Array(await gpu.arrayBuffer()), t = savedHeader(bytes).t;
+        if (t === w.t) adoptStore(w, loadStore(await theGpu(), bytes));
+        else console.error(`world.gpu is from tick ${t} but world.json from tick ${w.t}; the GPU's objects are not loaded`);
+      }
       return w;
     }
     renameSync(SAVE, `${SAVE}.v${w.version ?? 2}.bak`);
@@ -41,10 +51,18 @@ async function load(): Promise<World> {
   return newWorld(Math.floor(Math.random() * 1e9));
 }
 const w = await load();
-function save() {
+// The JSON, and then, when the world holds objects on the GPU, their buffers read back, each written and then moved
+// into place. The JSON goes first, so it is kept even when the buffers can't be read (a save called mid-tick, by a
+// signal); load only takes a world.gpu of the JSON's own tick.
+async function save() {
   mkdirSync(DATA, { recursive: true });
   w.events = w.events.slice(-50_000);
-  Bun.write(`${SAVE}.tmp`, JSON.stringify(w)).then(() => renameSync(`${SAVE}.tmp`, SAVE));
+  await Bun.write(`${SAVE}.tmp`, JSON.stringify(w));
+  renameSync(`${SAVE}.tmp`, SAVE);
+  const store = heldStore(w);
+  if (!store?.kinds.length) return;
+  await Bun.write(`${GPU_SAVE}.tmp`, await store.dump());
+  renameSync(`${GPU_SAVE}.tmp`, GPU_SAVE);
 }
 
 const kindsById = (ids: Iterable<string>) => Object.fromEntries([...ids].filter((id) => w.kinds[id]).map((id) => [id, w.kinds[id]]));
@@ -75,12 +93,12 @@ async function loop() {
     changed.clear(); removed.clear(); newKinds.clear(); changedKinds.clear(); pathChanges.clear(); trailChanges.clear();
     for (const c of clients) send(c, msg);
     flush();
-    if (w.t % 50 === 0) save();
+    if (w.t % 50 === 0) try { await save(); } catch (e) { console.error("save", e); }
   }
   setTimeout(loop, BASE_MS / control.speed);
 }
 loop();
-for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { save(); flush(); setTimeout(() => process.exit(0), 200); });
+for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { save().catch((e) => console.error("save", e)).finally(() => { flush(); setTimeout(() => process.exit(0), 200); }); });
 
 function stats() {
   const things: Record<string, number> = {};

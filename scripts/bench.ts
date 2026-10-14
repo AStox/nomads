@@ -4,7 +4,7 @@
 // the same world, only quicker.
 //   NOMADS_BRAIN=random bun scripts/bench.ts [--only make,seed,blame,world,spread] [--days 20]
 // Profile one: NOMADS_BRAIN=random bun --cpu-prof-md --cpu-prof-dir=/tmp/prof scripts/bench.ts --only seed
-import { DAY, TILE_M, addThing, dryAt, newWorld, type Thing, type World } from "../src/sim/world";
+import { DAY, TILE_M, addThing, dryAt, heldStore, newWorld, type Thing, type World } from "../src/sim/world";
 import { tick } from "../src/sim/sim";
 import { bedAir, changed, fireOf, newKinds, removeThing, removed } from "../src/sim/physics";
 import { ecology, trailChanges } from "../src/sim/ecology";
@@ -22,12 +22,16 @@ const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${n
 const only = arg("only", "make,blame,seed,world,spread").split(","), days = Number(arg("days", "20"));
 const hash = (s: string) => Bun.hash(s).toString(36);
 // What a world came to: its clock, its people (where they are, what they need and hold, what they know and think), what
-// stands on it and roams it.
-const stateOf = (w: World) => hash(JSON.stringify({
-  t: w.t, things: w.things.length, laws: Object.keys(w.laws).length,
-  agents: w.agents.map((a) => ({ id: a.id, px: a.px, py: a.py, needs: a.needs, inv: a.inv, beliefs: a.beliefs })),
-  animals: w.animals.map((m) => [m.species, m.px, m.py]),
-}));
+// stands on it and roams it, and a hash of every buffer of its objects on the GPU once it has any.
+const stateOf = async (w: World) => {
+  const store = heldStore(w);
+  return hash(JSON.stringify({
+    t: w.t, things: w.things.length, laws: Object.keys(w.laws).length,
+    agents: w.agents.map((a) => ({ id: a.id, px: a.px, py: a.py, needs: a.needs, inv: a.inv, beliefs: a.beliefs })),
+    animals: w.animals.map((m) => [m.species, m.px, m.py]),
+    gpu: store?.kinds.length ? await store.hash() : undefined,
+  }));
+};
 const WORK: Record<string, () => Promise<string>> = {
   make: async () => hash(JSON.stringify(newWorld(1, 6))),
   blame: async () => hash(JSON.stringify((await runProbe("blame", "real", 1, 5, 6, "random")).metrics)),
@@ -41,7 +45,7 @@ const WORK: Record<string, () => Promise<string>> = {
       // as scripts/theories.ts runs a world: what people are thinking over comes to them every few ticks
       if (i % 4 === 0) await Bun.sleep(0);
     }
-    return stateOf(w);
+    return await stateOf(w);
   },
   // A grass fire through a field, staged as fire.test.ts stages its spread cases: open, dry ground cleared for 60 m
   // round; 60 ranks of 31 cured tussocks 1.5 m across, 1.2 m apart so they touch as standing grass does (the island's
@@ -86,7 +90,7 @@ const WORK: Record<string, () => Promise<string>> = {
       hooks.weather = undefined;
       traceListeners.splice(traceListeners.indexOf(watch), 1);
     }
-    return hash(JSON.stringify({ spread, burning: [...liveThings(w)].filter((t) => !!t.bed).length, world: stateOf(w) }));
+    return hash(JSON.stringify({ spread, burning: [...liveThings(w)].filter((t) => !!t.bed).length, world: await stateOf(w) }));
   },
 };
 console.error(`gpu: ${await holdGpu()}`);
