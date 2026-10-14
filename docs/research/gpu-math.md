@@ -122,6 +122,10 @@ Measured on the AMD unless stated; tests are src/gpu/fixed.test.ts and src/gpu/r
 - **WGSL `select` runs both arms.** This caused the one twin bug found: a random draw inside `select` was always consumed. Never put a draw inside `select`.
 - **Shader compile time:** the geowait kernel took about 4.6 s to compile on first use (once `bernpow` had a single call site); macOS's shader cache makes later runs fast.
 
+## Gates at 13b967b (Phase A)
+
+Phase A changes no law of the world, but awaiting each tick lets the random brain's promise chains move after every tick rather than every fourth, which moves the probe runs. Probes, against a8bf4da, fail eleven: two/real right, exact and caught 1.00 to 0.85 to 0.87 and partly 0.00 to 0.13; seed/real wasted 0.30 to 0.69; unlearn/real wasted 0.32 to 0.49; and the claims that come and go pass by pass (seed/real's, seed/two's and unlearn/real's that nearly all whose tries show the true cause come to rule it out, seed/sparse's that more blame the true cause than anything else, hearsay/real's by the end); two/real wastedEarly improves 0.33 to 0.19. Worlds, against 2258536, pass: worked 0.91 to 0.99, wasted 0.10 to 0.05. Ledger versions were left as they were: what the tiers measure did not change meaning, only when the brain's answers land. Not retuned.
+
 ## Sources
 
 - Salmon J.K., Moraes M.A., Dror R.O., Shaw D.E. (2011), Parallel random numbers: as easy as 1, 2, 3, SC11 (Philox4x32-10 and its known-answer vectors). https://www.thesalmons.org/john/random123/papers/random123sc11.pdf
