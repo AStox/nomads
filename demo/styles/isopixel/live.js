@@ -954,8 +954,8 @@ export async function createLive({ seed = 1, canvas, onProgress, workers: nW, ad
   // under a low sun the slopes turned to it glow, and under cloud and by a thin moon the relief fades. The dusk's glow, a
   // broad light, shades only through the light table.
   const LOW = 12 * DEG, GLOW_EL = 25 * DEG, RELIEF = 2, TONE_G = 12;
-  // cloud cover by the sim's weather
-  const COVER = { clear: 0, cloudy: 0.7, rain: 0.88, storm: 0.95 };
+  // cloud cover by the sim's weather (src/sim/air.ts CLOUD)
+  const COVER = { clear: 0.077, cloudy: 0.826, rain: 0.883, storm: 0.893 };
   const lum = (c) => c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11;
   const keyed = (keys, x) => { let i = 0; while (i < keys.length - 2 && keys[i + 1][0] <= x) i++; const [x0, a] = keys[i], [x1, b] = keys[i + 1], t = clamp((x - x0) / (x1 - x0), 0, 1); return a.map((v, k) => v + (b[k] - v) * t); };
   const transmit = (el) => { const m = 1 / (Math.sin(Math.max(el, -0.5 * DEG)) + 0.50572 * Math.max(0.5, el / DEG + 6.07995) ** -1.6364); return DEPTH.map((t) => Math.exp(-t * m)); };

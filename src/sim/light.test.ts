@@ -72,11 +72,10 @@ test("open ground is lit by the sky: noon far outshines sunset, sunset far outsh
   const noon = lux(12);
   expect(noon).toBeGreaterThan(lux(SUNSET) * 50);
   expect(lux(SUNSET)).toBeGreaterThan(lux(0) * 100);
-  let dimmer = noon;
-  for (const sky of ["cloudy", "rain", "storm"] as const) {
-    expect(lux(12, sky)).toBeLessThan(dimmer);
-    dimmer = lux(12, sky);
-  }
+  expect(lux(12, "cloudy")).toBeLessThan(noon);
+  expect(lux(12, "rain")).toBeLessThan(lux(12, "cloudy"));
+  // a storm's overcast is a rain's (air.ts SKYLIGHT)
+  expect(lux(12, "storm")).toBeLessThanOrEqual(lux(12, "rain"));
 });
 
 test("a crown shades the ground under it, and felling the tree gives the light back", () => {
@@ -228,7 +227,15 @@ test("a hungry person with a bush 100 m off goes out after food by day, but in t
 }, 60_000);
 
 test("a hungry wolf takes a lone person who is out in the dark, and leaves one in the light alone", () => {
-  const cases = [[12, false, "wander"], [1, false, "hunt"], [SUNSET + 0.75, false, "wander"], [SUNSET + 0.75, true, "hunt"]] as const;
+  // a dusk hour when the open is still light enough and the floor of a grove already dark
+  const probe = pad(7);
+  grove(probe.w, probe.px, probe.py);
+  let dusk = SUNSET;
+  for (let h = SUNSET; h <= SUNSET + 2; h += 0.25) {
+    probe.w.t = at(h);
+    if (lightAt(probe.w, probe.px + 40 / TILE_M, probe.py).bright >= DARK && lightAt(probe.w, probe.px, probe.py).bright < DARK) { dusk = h; break; }
+  }
+  const cases = [[12, false, "wander"], [1, false, "hunt"], [dusk, false, "wander"], [dusk, true, "hunt"]] as const;
   for (const [i, [hour, trees, state]] of cases.entries()) {
     const { w, px, py } = pad(7);
     const a = w.agents[0];

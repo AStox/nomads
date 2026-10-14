@@ -22,8 +22,8 @@ import { anyAround, around, liveThings, lookFor, nearestThing, shelve, thingById
 import { landOf, walk } from "./walk";
 import { DARK, canSee, canopyAt, heatAt, lightOn, moveRate, restRate, skyShare, workRate } from "./light";
 import { ripening } from "./cues";
-import { CLOUD, airAt, airOn, sunOn, vapourAt } from "./air";
-import { sunAt } from "./sky";
+import { airAt, airOn, sunOn, vapourAt } from "./air";
+import { CLOUD, sunAt } from "./sky";
 import { DOWN_HOT, basal, bodyOf, fate, feed, feels, fireGain, frameOf, hc, insulation, openRadiant, pressure, rested, skyTemp, sleepy, sunGain, warm, type Around } from "./body";
 import { enrich, fertilityAt, soilWaterAt } from "./soil";
 import { DAMP, SOAKED, moistureOf, tinder, tinderOf } from "./wetness";

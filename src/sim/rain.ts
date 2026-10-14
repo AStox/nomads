@@ -8,7 +8,8 @@
 // sec. 25c).
 import { esat } from "../terrain/climate";
 import { BOULDER, TALL, TALLEST, TREES } from "../terrain/flora";
-import { CLOUD, headWind, islandAir, rainAt, slopeAt, sunOn } from "./air";
+import { headWind, islandAir, rainAt, slopeAt, sunOn } from "./air";
+import { CLOUD } from "./sky";
 import { CROWN_REACH, crownCover } from "./light";
 import { around, lookAround } from "./space";
 import { leafless } from "./wetness";

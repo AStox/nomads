@@ -9,7 +9,7 @@ import { DAY, TILE_M, groundOf, hourOf, meters, perWorld, type Thing, type World
 import { SIZE, clamp, smooth } from "../terrain/flora";
 import { around, liveThings, lookAround } from "./space";
 import { ablaze, carriedOutput, fireOutput, isFlame } from "./physics";
-import { COVER, STAR_LUX, beam, moonAt, moonLux, sunAt, sunLux, through as throughCloud } from "./sky";
+import { CLOUD, NIGHT_EL, SKYLIGHT, STAR_LUX, moonAt, moonLux, sunAt, sunLux } from "./sky";
 import { sieve, through } from "../terrain/growth";
 
 // ---------- crowns ----------
@@ -63,9 +63,10 @@ function skyNow(w: World): Sky {
   const old = skies.get(w);
   if (old && old.t === w.t && old.sky === w.weather.sky) return old;
   const hour = hourOf(w.t), day = Math.floor(w.t / DAY) + 1, sun = sunAt(day, hour), moon = moonAt(day, hour);
-  const cover = COVER[w.weather.sky], open = throughCloud(cover);
-  // day: the sun's beam and the sky's glow on open ground; night: the moon's and the stars'
-  const s: Sky = { t: w.t, sky: w.weather.sky, el: sun.el, tan: sun.tan, dir: sun.dir, day: sunLux(sun.el) * open, beam: beam(sun.el, cover), night: (moonLux(moon) + STAR_LUX) * (0.3 + 0.7 * open) };
+  // day: the sun's beam and the sky's glow on open ground, as much of a clear sky's as the cloud lets down, the beam only
+  // where the cloud doesn't hide it; night: the moon's and the stars', through the same cloud
+  const lit = SKYLIGHT[w.weather.sky], clear = sunLux(sun.el);
+  const s: Sky = { t: w.t, sky: w.weather.sky, el: sun.el, tan: sun.tan, dir: sun.dir, day: clear.lux * lit, beam: lit > 0 ? Math.min(1, (clear.beam * (1 - CLOUD[w.weather.sky])) / lit) : 0, night: (moonLux(moon) + STAR_LUX) * lit };
   skies.set(w, s);
   return s;
 }
@@ -153,7 +154,7 @@ export function lightAt(w: World, px: number, py: number): Light {
     fire += f.cd / (d * d + f.r2);
   }
   const lux = s.day * (s.beam * clear * shaft + (1 - s.beam) * glow) + s.night * glow + fire;
-  return { lux, bright: clamp((Math.log10(Math.max(lux, 1e-6)) + 2) / 6, 0, 1), sky: s.day + s.night, canopy: 1 - glow, sun: clear, beam: clear * shaft, fire };
+  return { lux, bright: brightOf(lux), sky: s.day + s.night, canopy: 1 - glow, sun: clear, beam: clear * shaft, fire };
 }
 
 // Where an entity stands, worked out once a tick however many questions ask.
@@ -167,8 +168,12 @@ export function lightOn(w: World, e: { px: number; py: number }): Light {
 }
 
 // ---------- what it does to people ----------
-// Below this it is dark: nobody sets out to forage, explore or hunt, and a wolf takes a lone person for prey.
-export const DARK = 0.3;
+// How bright lux looks, 0 to 1, on the log scale eyes meet light on: a hundredth of a lux black, ten thousand full day.
+const brightOf = (lux: number) => clamp((Math.log10(Math.max(lux, 1e-6)) + 2) / 6, 0, 1);
+// Below this it is dark: nobody sets out to forage, explore or hunt, and a wolf takes a lone person for prey. It is the
+// light under a clear sky at the end of civil twilight, after which, as the US Naval Observatory has it, light other than
+// the sky's is normally needed to carry on ordinary outdoor work (fire-constants sec. 33, R483): some 3 lux.
+export const DARK = brightOf(sunLux(NIGHT_EL).lux);
 // Work goes at this share of its pace, and walking at this share of its speed.
 export const workRate = (b: number) => clamp(0.15 + 1.1 * b, 0.2, 1);
 export const moveRate = (b: number) => clamp(0.55 + 0.7 * b, 0.55, 1);

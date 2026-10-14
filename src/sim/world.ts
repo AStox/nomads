@@ -16,7 +16,7 @@ export const W = TILES;
 export const H = TILES;
 export const DAY = 288; // ticks per in-game day, 5 minutes each
 export { YEAR_DAYS }; // the sky's: a year is the sun's round
-export const VERSION = 22;
+export const VERSION = 23;
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -87,10 +87,12 @@ export type Animal = {
 };
 export type Weather = {
   season: "spring" | "summer" | "autumn" | "winter"; dayOfYear: number; year: number;
-  sky: "clear" | "cloudy" | "rain" | "storm"; drought: boolean; dryTicks: number;
+  sky: "clear" | "cloudy" | "rain" | "storm"; drought: boolean;
+  dryDays: number; today: number; // days on end with under 0.2 mm of rain, and the mm fallen so far today
   temp: number; // °C, the air at sea level away from the coast: air.ts has it where anyone stands
   wind: { dx: number; dy: number }; // the way it blows
   speed: number; // m/s at head height over the open sea
+  anomaly: number; // how many spreads the wind stands above its sky's mean (air.ts windOf)
   wet: number; // 0..1 how much of the water the top soil can lose to the air it holds (soil.ts wetHour)
   runoff?: number; // mm of the island's rain still to come down the streams (streams.ts runoffHour)
   ice?: number; // m of ice on the island's fresh still water (ecology.ts ice)
@@ -584,7 +586,7 @@ export function newWorld(seed: number, agentCount = 5): World {
   const w: World = {
     version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, heights: [...land.heights], terrain: land.terrain, paths: new Array(W * H).fill(0), things: [], stocked: [], fert: {}, agents: [], animals: [], events: [],
     nextId: g.flora.n + 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {}, ice: [], people: {},
-    weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 8, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, speed: 4, wet: 0.2, drought: false, dryTicks: 0 },
+    weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 8, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, speed: 4, anomaly: 0, wet: 0.2, drought: false, dryDays: 0, today: 0 },
     camps: [], incidents: [], journeys: { seen: 0, of: {} },
   };
   // Loose stones of ore lie about from the start, to be picked up like anything dropped. Ore neither rots nor burns, so

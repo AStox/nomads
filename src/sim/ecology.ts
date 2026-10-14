@@ -17,13 +17,10 @@ import { SIZE, START, TALLEST } from "../terrain/flora";
 import { YEAR_DAYS } from "./sky";
 import { CELL } from "../terrain/grid";
 import { YEARS_PACE, fitHere, growth } from "./plants";
-import { warmRate } from "./cues";
 import { runoffHour } from "./streams";
-import { WIND, airAt, airOn, baseTemp, islandTemp, rainAt, sunOn, wetHours } from "./air";
-import { seasonAt } from "./sky";
+import { airAt, airOn, islandAir, islandTemp, nextAnomaly, nextSky, nextWay, rainAt, sunOn, windOf } from "./air";
 import { crownRadius, skyShare } from "./light";
 import { nicheOf, seedlingHour, seedlingOf, shareAt, treeOf, type Hour } from "./seedling";
-import { SEASONS } from "../terrain/climate";
 import { count, timed, trace } from "./trace";
 import { hooks } from "./rules";
 import { growing, wetness } from "./wetness";
@@ -44,36 +41,17 @@ export const burnedHomes: { owner: string; by?: string; text: string }[] = [];
 const rainy = (sky: World["weather"]["sky"]) => sky === "rain" || sky === "storm";
 
 // ---------- weather and seasons ----------
-// The time of year's share of the year's rain, drawn between the seasons' as the air is.
-const stormShare = (t: number) => { const { s, f } = seasonAt(t); return SEASONS[s].wet * (1 - f) + SEASONS[(s + 1) % 4].wet * f; };
-// The sky an hour on (r: a draw). Cloud clears as often as the time of year brings it (more readily in a dry season),
-// rain clears to cloud a quarter of the time, and rain turns to storm the more often the warmer the air (temp), which
-// feeds the thunderheads; a storm eases back to rain. Cloud turns to rain as often as it takes for the sky to be wet in
-// the share of hours the time of year's rain brings: the island's share of wet hours (air.ts wetHours, wet) times four
-// times the season's share of the year's rain. Held to that share, the chain's own balance gives the chance: in it,
-// clear stands to cloud as its clearing (c) to a quarter, and wet to cloud as rain's onset (p) to a quarter, with storms
-// q of every rain hour, so a share W wet needs p = (4c + 1) W / (4 (1 + q) (1 - W)) (docs/research/fire-constants.md
-// sec. 25b).
-export function nextSky(sky: World["weather"]["sky"], r: number, t: number, temp: number, wet: number): World["weather"]["sky"] {
-  const storms = 0.02 + 0.06 * warmRate(temp);
-  if (sky === "clear") return r < 0.25 ? "cloudy" : "clear";
-  if (sky === "cloudy") {
-    const c = 0.4 - 1.1 * stormShare(t), W = 4 * stormShare(t) * wet, p = ((4 * c + 1) * W) / (4 * (1 + storms / 0.35) * (1 - W));
-    return r < p ? "rain" : r < p + c ? "clear" : "cloudy";
-  }
-  if (sky === "rain") return r < 0.25 ? "cloudy" : r < 0.25 + storms ? "storm" : "rain";
-  return r < 0.35 ? "rain" : "storm";
-}
-// The wind over the open sea an hour on (r: a draw), settling toward what the sky brings.
-export const nextSpeed = (speed: number, sky: World["weather"]["sky"], r: number) => Math.max(0.5, speed + (WIND[sky] - speed) * 0.25 + (r - 0.5) * 2);
+// A normal draw from two uniform ones (Box and Muller).
+const normal = (r1: number, r2: number) => Math.sqrt(-2 * Math.log(1 - r1)) * Math.cos(2 * Math.PI * r2);
 // The island's weather at the next n turns of the sky after now, from how it stands, drawn with r (a seeded draw of the
 // caller's own, so nothing here moves the world's): what the coming days might bring (seedling.ts seedlingFate).
 export function forecast(w: World, n: number, r: () => number): Hour[] {
-  let { sky, speed, wet } = w.weather, t = Math.ceil((w.t + 1) / 12) * 12;
+  let { sky, speed, wet, anomaly } = w.weather, t = Math.ceil((w.t + 1) / 12) * 12;
   const out: Hour[] = [];
   for (let i = 0; i < n; i++, t += 12) {
-    sky = nextSky(sky, r(), t, islandTemp(t - 1, sky), wetHours(w));
-    speed = nextSpeed(speed, sky, r());
+    sky = nextSky(w, sky, r(), t);
+    anomaly = nextAnomaly(anomaly, normal(r(), r()));
+    speed = windOf(t, sky, anomaly);
     wet = wetHour(w, wet, t, sky, speed, islandTemp(t, sky));
     out.push({ sky, speed, wet });
   }
@@ -90,11 +68,11 @@ function weather(w: World) {
   wx.year = Math.floor(w.t / DAY / 40) + 1;
   if (w.t % 12 === 0) {
     const before = wx.sky;
-    wx.sky = nextSky(wx.sky, Math.random(), w.t, wx.temp, wetHours(w));
+    wx.sky = nextSky(w, wx.sky, Math.random(), w.t);
     // The wind wanders, but keeps coming back to blow the way it prevails, the way that laid the island's rain.
-    const [px, py] = w.terrain.wind, pull = (v: number, p: number) => clamp(v + (p * 0.5 - v) * 0.02 + (Math.random() - 0.5) * 0.3, -1, 1);
-    wx.wind = { dx: pull(wx.wind.dx, px), dy: pull(wx.wind.dy, py) };
-    wx.speed = nextSpeed(wx.speed, wx.sky, Math.random());
+    wx.wind = nextWay(w.t, wx.wind, w.terrain.wind, normal(Math.random(), Math.random()), normal(Math.random(), Math.random()));
+    wx.anomaly = nextAnomaly(wx.anomaly, normal(Math.random(), Math.random()));
+    wx.speed = windOf(w.t, wx.sky, wx.anomaly);
     // a probe's own weather, set as the sky turns (rules.ts hooks), so the runoff, the air and how wet things get follow
     // from it as from the island's own
     hooks.weather?.(w);
@@ -107,13 +85,18 @@ function weather(w: World) {
     }
   }
   wx.temp = islandTemp(w.t, wx.sky);
-  wx.dryTicks = rainy(wx.sky) ? 0 : wx.dryTicks + 1;
   wetness(w);
   if (w.t % 12 === 0) ice(w);
-  // days without rain in warm weather dry everything out
-  const drought = wx.dryTicks > DAY * 4 && baseTemp(w.t) > 14;
-  if (drought && !wx.drought) log(w, "weather", [], { x: W / 2, y: H / 2 }, "It hasn't rained in days. Everything is bone dry.");
-  wx.drought = drought;
+  // A drought, as Met Éireann and the Met Office count an absolute one: fifteen days or more on end, none with 0.2 mm of
+  // rain (fire-constants sec. 33, R477); the island's own rain an hour, summed over each day.
+  if (w.t % 12 === 0) wx.today += rainy(wx.sky) ? islandAir(w, w.t, wx.sky).rain : 0;
+  if (w.t % DAY === DAY - 1) {
+    wx.dryDays = wx.today < 0.2 ? wx.dryDays + 1 : 0;
+    wx.today = 0;
+    const drought = wx.dryDays >= 15;
+    if (drought && !wx.drought) log(w, "weather", [], { x: W / 2, y: H / 2 }, "It hasn't rained in over two weeks.");
+    wx.drought = drought;
+  }
   // Flashes come down in a storm as often as the island's thunder days bring them over its land (stormFlashes), each at
   // a spot anywhere on it and onto the tallest tree that stands within three of its heights of the spot, as a structure
   // draws a flash from that far round (docs/research/time-constants.md sec. 4); one landing where no tree does strikes the
@@ -136,7 +119,6 @@ function weather(w: World) {
     }
   }
 }
-const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 // How many of something that comes at a mean of m a time come this time, by the world's own draws.
 function poisson(m: number) {
   let n = 0, p = Math.exp(-m), s = p;
@@ -160,7 +142,7 @@ function stormFlashes(w: World) {
   let sky: World["weather"]["sky"] = "clear", hours = 0, days = 0, lastDay = -1;
   for (let h = 0; h < years * YEAR_DAYS * 24; h++) {
     const t = h * 12;
-    sky = nextSky(sky, r(), t, islandTemp(t, sky), wetHours(w));
+    sky = nextSky(w, sky, r(), t);
     if (sky !== "storm") continue;
     hours++;
     if (Math.floor(h / 24) !== lastDay) { days++; lastDay = Math.floor(h / 24); }

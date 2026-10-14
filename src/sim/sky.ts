@@ -5,7 +5,7 @@
 //
 // Light is counted in lux, the way it is measured, because eyes meet it on a log scale: a day is a hundred thousand of them
 // and a clear night under a full moon a quarter of one, and people work comfortably across almost all of that range.
-import { DAY } from "./world";
+import { DAY, type World } from "./world";
 
 const DEG = Math.PI / 180;
 
@@ -56,28 +56,42 @@ export function moonAt(day: number, hour: number): Body & { phase: number; lit: 
   return { ...bodyAt(hourAngle(hour, NOON + phase * 24), declination(day, hour) * Math.cos(w)), phase, lit: (1 - Math.cos(w)) / 2 };
 }
 
-// log10 of the lux on bare ground under a clear sky by the sun's height in degrees, its beam and the sky's glow together:
-// sunrise is some 500 lux, the end of civil twilight (6 below) a few, the end of nautical twilight (12 below) a fiftieth.
-const SUN: [number, number][] = [[-18, -3], [-12, -1.2], [-6, 0.6], [-3, 1.6], [0, 2.7], [3, 3.3], [10, 4.0], [20, 4.5], [40, 4.9], [90, 5.1]];
-export function sunLux(el: number): number {
-  const d = el / DEG;
-  if (d <= SUN[0][0]) return 10 ** SUN[0][1];
-  for (let i = 1; i < SUN.length; i++)
-    if (d <= SUN[i][0]) { const [d0, l0] = SUN[i - 1], [d1, l1] = SUN[i]; return 10 ** (l0 + ((l1 - l0) * (d - d0)) / (d1 - d0)); }
-  return 10 ** SUN[SUN.length - 1][1];
+// The light a body leaves on bare ground under a clear sky at an elevation, as the US Naval Observatory reckons it (Circular
+// 171, Janiczek and DeYoung 1987: its beam fitted to Jones and Condit, its sky's glow to Brown's charts; fire-constants
+// sec. 33, R483): the elevation lifted by refraction above -5/6 of a degree, the path through the air at it, and from that
+// the beam's share and the glow's, in lux for every 133,775 of the sun's at the top of the sky. A clear noon at 61
+// degrees is some 110,000 lux, sunset 1,000, the end of civil twilight (6 below) 3, of nautical (12 below) a 230th.
+function overhead(el: number) {
+  let h = el / DEG;
+  if (h >= -5 / 6) h += 1 / Math.tan((h + 8.59 / (h + 4.42)) * DEG) / 60;
+  const u = Math.sin(h * DEG), X = 753.6616, s = Math.asin((X * Math.cos(h * DEG)) / (X + 1)), m = X * (Math.cos(s) - u) + Math.cos(s);
+  return { beam: Math.max(0, Math.exp(-0.21 * m) * u), glow: 0.0289 * Math.exp(-0.042 * m) * (1 + ((h + 90) * u) / 57.29578) };
 }
-// A full moon overhead lights the ground with a quarter of a lux; the stars with a thousandth or two.
-const MOON_LUX = 0.25;
-export const STAR_LUX = 0.0015;
-export const moonLux = (m: { el: number; lit: number }) => MOON_LUX * m.lit * Math.max(0, Math.sin(m.el)) ** 0.8;
+// The sun's lux on bare ground under a clear sky, and the share of it that comes as the beam.
+export function sunLux(el: number) {
+  const { beam, glow } = overhead(el);
+  return { lux: 133775 * (beam + glow), beam: beam + glow > 0 ? beam / (beam + glow) : 0 };
+}
+// The moon's, the same way (Circular 171): a full moon at the top of the sky 0.4 lux, a half one a fifteenth of that, by
+// how far it stands from the sun (its elongation, from how much of it is lit), a little more the higher it stands and so
+// the nearer it is.
+export function moonLux(m: { el: number; lit: number }) {
+  const E = Math.acos(Math.max(-1, Math.min(1, 1 - 2 * m.lit))), half = Math.tan(E / 2);
+  const p = (half > 0 ? 0.892 * Math.exp(-3.343 / half ** 0.632) : 0) + 0.0344 * (Math.sin(E) - E * Math.cos(E));
+  const { beam, glow } = overhead(m.el);
+  return ((0.418 * p) / (1 - 0.005 * Math.cos(E) - 0.03 * Math.sin(Math.max(0, m.el)))) * (beam + glow);
+}
+// The night sky's own glow, the stars' and the air's, in Circular 171's sums: 0.0005 lux.
+export const STAR_LUX = 0.0005;
 
-// How hidden the sun is behind cloud, 0 to 1 (the renderer lights with the same), and the share of the sky's light that gets
-// through it.
-export const COVER = { clear: 0, cloudy: 0.7, rain: 0.88, storm: 0.95 } as const;
-export const through = (cover: number) => 1 - 0.9 * cover;
-// The share of a clear day's light that arrives as the sun's beam, which a hill or a tree can hide, the rest being the sky's
-// glow from everywhere. The beam is nothing at night and thins to nothing behind cloud.
-export const beam = (el: number, cover: number) => 0.8 * Math.sqrt(Math.max(0, Math.min(1, el / (20 * DEG)))) * (1 - cover);
+// How much of the sky each sky's cloud covers, the share of the sun's beam it hides: Belmullet's mean cloud amount in the
+// hours of each (fire-constants sec. 33, R479), its clear hours with no cloud reported counted as none [derived].
+export const CLOUD: Record<World["weather"]["sky"], number> = { clear: 0.077, cloudy: 0.826, rain: 0.883, storm: 0.893 };
+// The share of a clear sky's daylight that reaches the ground under each sky: Kasten and Czeplak's 1 - 0.71 (N/8)^3.4 as
+// fitted to London (CIBSE, R482) for the broken skies it holds for, and an overcast of nimbostratus's 0.16 for the
+// raining ones (CIBSE Table 14) (sec. 33).
+const kasten = (cover: number) => 1 - 0.71 * cover ** 3.4;
+export const SKYLIGHT: Record<World["weather"]["sky"], number> = { clear: kasten(CLOUD.clear), cloudy: kasten(CLOUD.cloudy), rain: 0.16, storm: 0.16 };
 
 // When the sun has gone this far below the horizon the sky is dark: the end of civil twilight.
 export const NIGHT_EL = -6 * DEG;
