@@ -165,6 +165,10 @@ There is no floor: everything is an individual. What differs by kind is only whe
 - Exact fixed-point scales per buffer, and table sizes and accuracy for exp/log/pow: set per routine in Unit 2 with error bounds documented.
 - The exact Bin(2N, 1/2) sampler's slow path decides every case its 224-bit arithmetic separates; cases closer than that (about a 2^-203 share of proposals, none seen outside forced tests) are rejected and counted. An unbounded-precision slow path would make it exact without exception: done before any gate depends on lumped kinds (Unit 12b), docs/research/gpu-math.md.
 - Exact geometric waits slow down as log2(1/p)^2; event-driven kinds draw at p_max = 2^-8 and thin to the true hazard (Unit 4), docs/research/gpu-math.md.
+- Lumped identity is (kind, bin key, entry step, Feistel rank): stable while a member stays in its bin; a member whose state changes continues as a member of the bin it reaches, with its fate recorded. A kind whose laws need one identity across its states carries what it needs (birth, lineage) in its state tuple; kinds needing more decide it in Unit 12b. GPU-requested promotion and fate replay under changing per-cell drivers also land there.
+- Dormant members cost 20 to 32 bytes each (slot word, place, birth, one anchor per integrated channel): sticks at 2 x 10^8 would take about 4 GB, so Unit 9 holds sticks as dormant bins by (cell, birth week) with places by hash, one anchor per bin.
+- Event-driven kinds with daily hazards step per day (52 ms a day at 10^8); per-tick steps at 10^8 cost 5 s a day.
+- Rebuilding the spatial index costs about 65 ms per 10^7 objects, so it is rebuilt only for kinds that moved.
 - Readback window shapes and sizes round people: tuned in Unit 4 against the 0.1 to 3 ms readback latencies measured.
 - Linux or GPU-less machines (lavapipe or a fail-fast notice): open; no CI exists today.
 
@@ -518,6 +522,7 @@ Each unit lands one kind of object with its laws, a single-step oracle per kerne
 **Test scenarios:**
 - Integration: fixed cameras and seed render palette-index identical (or within a recorded tolerance) to the committed reference frames.
 - Performance: `?bench=zoom`, `orbit`, `turn` and `pan` on the dev machine show no frame over 16.7 ms; the same runs on the WebGL2 page before the port are recorded as the baseline.
+- Baseline (WebGL2 page at 992c8d6, seed 1, 1600x1000, 12 s each): all four hold about 59 fps with mean frames of 1.4 to 1.8 ms, but zoom shows unbaked holes in 529 of 710 frames and pan in 434 of 704; turn has frames of 22.8, 20.4 and 13.3 ms as new bearings bake; every bench has a 150 to 167 ms stall; the first view takes 78 to 101 s of baking before it is shown. Raw figures: `demo/styles/isopixel/reference/bench-webgl2.json`. Reference frames (midday, day 1, sim paused, zooms island, region, valley, close at bearings 0 and 3): `demo/styles/isopixel/reference/ref-*.png`.
 
 **Verification:** The page runs on WebGPU only, with the bench figures recorded before and after.
 
