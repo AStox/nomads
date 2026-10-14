@@ -15,41 +15,41 @@ export const baseTemp = (t: number) => between(t, (s) => SEASONS[s].t);
 
 type Sky = World["weather"]["sky"];
 const wet = (sky: Sky) => sky === "rain" || sky === "storm";
-// How far the day's warmth swings either side of its mean: half the day's range at De Kooy, on the Dutch coast, by season
-// (spring, summer, autumn, winter) on clear days (a cloud amount of 1 okta or less), overcast dry ones (6 or more) and
-// days with a millimetre of rain, KNMI 1991 to 2020 (fire-constants sec. 33, R478) [derived]; a storm's as rain's. The
-// warmest of the day two hours after the sun crosses the south, the coldest twelve hours later.
-const RANGE: Record<Sky, number[]> = { clear: [8.7, 8.9, 7.7, 5.5], cloudy: [5.7, 6.0, 4.9, 3.8], rain: [5.4, 5.8, 5.0, 4.4], storm: [5.4, 5.8, 5.0, 4.4] };
+// How far the day's warmth swings either side of its mean: half the day's range at Rønne, Bornholm's airport, by season
+// (spring, summer, autumn, winter) on clear days (a mean cloud of 1 okta or less, no rain), overcast dry ones (6 or more)
+// and days with two hours of rain or more, NOAA ISD 2015 to 2024 (fire-constants sec. 33, R479) [derived]; a storm's as
+// rain's. The warmest of the day two hours after the sun crosses the south, the coldest twelve hours later.
+const RANGE: Record<Sky, number[]> = { clear: [8.18, 8.55, 6.83, 4.65], cloudy: [3.71, 4.0, 2.73, 2.41], rain: [4.22, 4.9, 3.52, 2.72], storm: [4.22, 4.9, 3.52, 2.72] };
 export const swing = (t: number, sky: Sky) => (between(t, (s) => RANGE[sky][s]) / 2) * Math.cos((2 * Math.PI * (hourOf(t) - NOON - 2)) / 24);
-// How much warmer an hour of steady rain is than a dry one at the same place, month and hour, by season: De Kooy and De
-// Bilt, KNMI hourly 2011 to 2020 (sec. 33, R478) [derived]: colder in summer, as the rain cools the air it falls through
-// toward its wet bulb, warmer in winter, the rain coming with the mild Atlantic air.
-const RAIN_OFF = [-0.75, -2.5, -0.15, 1.4];
+// How much warmer an hour of rain is than a dry one at Rønne at the same month and hour, by season (sec. 33) [derived]:
+// colder all year, most in spring and summer, as the rain cools the air it falls through toward its wet bulb.
+const RAIN_OFF = [-1.5, -1.41, -1.0, -0.52];
 
 // The day's air at sea level inland at tick t under a sky: its mean and swing, and rain's own warmth.
 export const islandTemp = (t: number, sky: Sky) => baseTemp(t) + swing(t, sky) + (wet(sky) ? between(t, (s) => RAIN_OFF[s]) : 0);
 
-// The wind over the open sea at head height under each sky, m/s, its mean and spread by season: Belmullet, on Ireland's
-// exposed west coast, hourly 2015 to 2024 (NOAA ISD) sorted into the four skies (sec. 33, R479) [derived], its 10 m wind
-// brought down to head height over open ground by the log profile (z0 0.03 m, sec. 14a).
+// The wind over the open sea at head height under each sky, m/s, its mean and spread by season: Hammer Odde, the
+// lighthouse on Bornholm's exposed northern tip, hourly 2015 to 2024 (NOAA ISD) sorted into the four skies (sec. 33,
+// R479) [derived], its 10 m wind brought down to head height over open ground by the log profile (z0 0.03 m, sec. 14a).
 const HEAD = Math.log(2 / 0.03) / Math.log(10 / 0.03);
 const SPEED: Record<Sky, [number, number][]> = {
-  clear: [[4.64, 2.57], [4.39, 2.39], [4.47, 2.63], [4.86, 3.08]],
-  cloudy: [[5.97, 3.26], [5.51, 2.76], [5.92, 3.17], [7.08, 3.79]],
-  rain: [[7.77, 3.53], [6.67, 3.17], [7.86, 3.63], [8.48, 3.8]],
-  storm: [[19.0, 0.98], [19.0, 1.0], [19.16, 1.2], [19.33, 1.61]],
+  clear: [[5.28, 3.14], [5.47, 3.23], [6.28, 4.04], [7.2, 4.31]],
+  cloudy: [[6.06, 3.57], [5.84, 3.49], [6.43, 4.25], [7.62, 4.49]],
+  rain: [[6.76, 3.63], [5.92, 3.62], [6.94, 4.23], [7.37, 4.06]],
+  storm: [[18.38, 1.06], [19.33, 1.22], [19.08, 1.17], [19.68, 2.07]],
 };
-// The wind's anomaly, how many spreads it stands above or below its sky's mean, keeps 0.854 of itself from one hour to the
+// The wind's anomaly, how many spreads it stands above or below its sky's mean, keeps 0.936 of itself from one hour to the
 // next there (sec. 33) [derived].
-const KEEPS = 0.854;
+const KEEPS = 0.936;
 // The wind over the open sea at head height at tick t under a sky, for an anomaly z.
 export const windOf = (t: number, sky: Sky, z: number) => Math.max(0, HEAD * between(t, (s) => SPEED[sky][s][0] + z * SPEED[sky][s][1]));
 // The anomaly an hour on, from a normal draw n.
 export const nextAnomaly = (z: number, n: number) => KEEPS * z + Math.sqrt(1 - KEEPS * KEEPS) * n;
 // The way the wind blows an hour on, from normal draws nx and ny: its direction as a vector settling toward the way it
-// prevails (unit) as much as the island's year has it, each part keeping 0.925 of its departure an hour with a spread of
-// 0.68; at Belmullet the hours' mean direction is 0.12, 0.34, 0.26 and 0.39 of a steady wind by season (sec. 33) [derived].
-const STEADY = [0.12, 0.339, 0.26, 0.391], TURNS = 0.925, VEERS = 0.68 * Math.sqrt(1 - TURNS * TURNS);
+// prevails (unit) as much as the island's year has it, each part keeping 0.938 of its departure an hour with a spread of
+// 0.66; at Hammer Odde the hours' mean direction is 0.23, 0.35, 0.27 and 0.43 of a steady wind by season (sec. 33)
+// [derived].
+const STEADY = [0.229, 0.348, 0.265, 0.432], TURNS = 0.938, VEERS = 0.66 * Math.sqrt(1 - TURNS * TURNS);
 export function nextWay(t: number, way: { dx: number; dy: number }, prevails: [number, number], nx: number, ny: number) {
   const len = Math.hypot(prevails[0], prevails[1]) || 1, R = between(t, (s) => STEADY[s]), mx = (R * prevails[0]) / len, my = (R * prevails[1]) / len;
   return { dx: mx + TURNS * (way.dx - mx) + VEERS * nx, dy: my + TURNS * (way.dy - my) + VEERS * ny };
@@ -150,23 +150,18 @@ export function vapourAt(w: World, px: number, py: number, t: number) {
 }
 // How much of the water air this warm could hold it holds, 0 to 1.
 export const humidity = (vapour: number, temp: number) => Math.min(1, vapour / esat(temp));
-// How often the sky rains (docs/research/fire-constants.md sec. 25b): measurable rain falls in 1.6 hours a day at a London
-// station taking 618 mm a year (R211), and in one hourly observation in five over Ireland's 1,205 mm (R212). An island's
-// share of wet hours is read between the two by its land's own yearly precipitation, and each season takes its share of
-// the year's wet hours as it takes its share of the year's rain (climate.ts SEASONS wet). Of a season's wet hours, the
-// share that storm, and how the sky turns, are Belmullet's (CHAIN).
-const LONDON = { mm: 618, wet: 1.6 / 24 }, IRELAND = { mm: 1205, wet: 0.2 };
-// How the sky turns from one hour to the next at Belmullet, hourly 2015 to 2024 (NOAA ISD; sec. 33, R479) [derived]: by
-// season, from clear, cloudy, rain and storm (rows) to each (columns). A clear hour is a dry one with 2 oktas of cloud or
-// less, or none reported; a cloudy one any other dry hour; rain an hour of falling rain, drizzle or snow (present weather
+// How the sky turns from one hour to the next at Hammer Odde, hourly 2015 to 2024 (NOAA ISD; fire-constants sec. 33, R479)
+// [derived]: by season, from clear, cloudy, rain and storm (rows) to each (columns). A clear hour is a dry one with 2
+// oktas of cloud or less; a cloudy one any other dry hour; rain an hour of falling rain, drizzle or snow (present weather
 // 40 to 89) in a wind under a gale's 17.2 m/s, a storm one at a gale or more. Storms are too few in any one season for
-// their own row, so each season leaves a storm as the four seasons together do.
-const STORM_ROW = [0.0038, 0.2256, 0.282, 0.4887];
+// their own row, so each season leaves a storm as the four seasons together do. Wet hours rain as the island's season's
+// precipitation spread over them has it (rainWhen).
+const STORM_ROW = [0.0224, 0.3955, 0.1418, 0.4403];
 const CHAIN: number[][][] = [
-  [[0.733, 0.243, 0.024, 0], [0.1114, 0.781, 0.1069, 0.0007], [0.0381, 0.3979, 0.5605, 0.0036], STORM_ROW],
-  [[0.6648, 0.319, 0.0162, 0], [0.0737, 0.8371, 0.089, 0.0001], [0.0187, 0.4224, 0.5586, 0.0003], STORM_ROW],
-  [[0.6171, 0.3374, 0.0455, 0], [0.0924, 0.7734, 0.133, 0.0011], [0.037, 0.3993, 0.5602, 0.0034], STORM_ROW],
-  [[0.5489, 0.3642, 0.0869, 0], [0.08, 0.7453, 0.1717, 0.0031], [0.0499, 0.4096, 0.5324, 0.0081], STORM_ROW],
+  [[0.8298, 0.1664, 0.0038, 0], [0.1252, 0.8083, 0.066, 0.0005], [0.0151, 0.3347, 0.6465, 0.0036], STORM_ROW],
+  [[0.8258, 0.1683, 0.0059, 0], [0.1895, 0.7396, 0.0704, 0.0004], [0.0388, 0.387, 0.5734, 0.0008], STORM_ROW],
+  [[0.7598, 0.2321, 0.0078, 0.0002], [0.103, 0.8182, 0.0772, 0.0017], [0.0193, 0.3659, 0.6133, 0.0015], STORM_ROW],
+  [[0.7148, 0.2811, 0.0037, 0.0004], [0.0582, 0.8642, 0.075, 0.0026], [0.0078, 0.2865, 0.703, 0.0027], STORM_ROW],
 ];
 const SKIES: Sky[] = ["clear", "cloudy", "rain", "storm"];
 // The share of hours a chain spends in each sky in the long run.
@@ -175,49 +170,31 @@ function settled(P: number[][]) {
   for (let n = 0; n < 400; n++) p = [0, 1, 2, 3].map((j) => p.reduce((t, x, i) => t + x * P[i][j], 0));
   return p;
 }
-// A season's chain held to the island's own share of wet hours: the chance of rain or storm coming on out of a dry sky
-// scaled by one factor until the chain rains that share of its hours, the rest of a dry row keeping its own proportions
-// [derived].
-function heldTo(P: number[][], share: number) {
-  const scaled = (k: number) => P.map((row, i) => {
-    if (i >= 2) return row;
-    const wet = (row[2] + row[3]) * k, keep = (1 - wet) / (row[0] + row[1]);
-    return [row[0] * keep, row[1] * keep, row[2] * k, row[3] * k];
-  });
-  let lo = 0, hi = 1 / Math.max(P[0][2] + P[0][3], P[1][2] + P[1][3]);
-  for (let n = 0; n < 50; n++) {
-    const mid = (lo + hi) / 2, p = settled(scaled(mid));
-    if (p[2] + p[3] < share) lo = mid; else hi = mid;
-  }
-  return scaled((lo + hi) / 2);
-}
-// The land's means, worked out once an island: each season's air water (kPa) and rain in a rain hour (mm), the share of
-// the year's hours wet, each season's shares of hours raining and storming, and the chain its sky turns by. A wet hour
-// rains as one of the real season's wet hours does: its precipitation spread over the hours of its real 91 days that
-// rain, whatever share of them a game season's ten days stand for.
-type Means = { vapour: number[]; rain: number[]; wet: number; hours: [number, number][]; chain: number[][][] };
+// The land's means, worked out once an island: each season's air water (kPa) and rain in a rain hour (mm), and each
+// season's shares of hours raining and storming. A wet hour rains as one of the real season's wet hours does: its
+// precipitation spread over the hours of its real 91 days that rain, whatever share of them a game season's ten days
+// stand for.
+type Means = { vapour: number[]; rain: number[]; hours: [number, number][] };
 const landMeans = new Map<number, Means>();
 function meansOf(w: World): Means {
   const kept = landMeans.get(w.seed);
   if (kept) return kept;
   const { isle } = groundOf(w.seed), land = Array.from(isle.height.keys()).filter((i) => isle.height[i] > 0);
   const mean = (f: (i: number) => number) => land.reduce((t, i) => t + f(i), 0) / land.length;
-  const precip = [0, 1, 2, 3].map((k) => mean((i) => isle.seasons[k].precip[i])), year = precip.reduce((t, x) => t + x, 0);
-  const wet = LONDON.wet + ((year - LONDON.mm) * (IRELAND.wet - LONDON.wet)) / (IRELAND.mm - LONDON.mm);
-  const chain = SEASONS.map((s, k) => heldTo(CHAIN[k], 4 * s.wet * wet));
-  const hours = chain.map((P): [number, number] => { const p = settled(P); return [p[2], p[3]]; });
+  const precip = [0, 1, 2, 3].map((k) => mean((i) => isle.seasons[k].precip[i]));
+  const hours = CHAIN.map((P): [number, number] => { const p = settled(P); return [p[2], p[3]]; });
   const m: Means = {
     vapour: [0, 1, 2, 3].map((k) => mean((i) => isle.seasons[k].humid[i] * esat(isle.seasons[k].temp[i]))),
-    rain: precip.map((p, k) => p / (SEASON_DAYS * 24 * (hours[k][0] + 5 * hours[k][1]))), wet, hours, chain,
+    rain: precip.map((p, k) => p / (SEASON_DAYS * 24 * (hours[k][0] + 5 * hours[k][1]))), hours,
   };
   landMeans.set(w.seed, m);
   return m;
 }
-// The sky an hour after one at tick t, for a draw r: the island's chain for the time of year, drawn between the seasons'.
-export function nextSky(w: World, sky: Sky, r: number, t: number): Sky {
-  const { chain } = meansOf(w), { s, f } = seasonAt(t), i = SKIES.indexOf(sky);
+// The sky an hour after one at tick t, for a draw r: the chain for the time of year, drawn between the seasons'.
+export function nextSky(sky: Sky, r: number, t: number): Sky {
+  const { s, f } = seasonAt(t), i = SKIES.indexOf(sky);
   let sum = 0;
-  for (let j = 0; j < 4; j++) if (r < (sum += chain[s][i][j] * (1 - f) + chain[(s + 1) % 4][i][j] * f)) return SKIES[j];
+  for (let j = 0; j < 4; j++) if (r < (sum += CHAIN[s][i][j] * (1 - f) + CHAIN[(s + 1) % 4][i][j] * f)) return SKIES[j];
   return sky;
 }
 // The rain falling on open level ground at a point at tick t under a sky, mm an hour (sec. 13, 25b): the season's

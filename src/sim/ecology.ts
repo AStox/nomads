@@ -49,7 +49,7 @@ export function forecast(w: World, n: number, r: () => number): Hour[] {
   let { sky, speed, wet, anomaly } = w.weather, t = Math.ceil((w.t + 1) / 12) * 12;
   const out: Hour[] = [];
   for (let i = 0; i < n; i++, t += 12) {
-    sky = nextSky(w, sky, r(), t);
+    sky = nextSky(sky, r(), t);
     anomaly = nextAnomaly(anomaly, normal(r(), r()));
     speed = windOf(t, sky, anomaly);
     wet = wetHour(w, wet, t, sky, speed, islandTemp(t, sky));
@@ -68,7 +68,7 @@ function weather(w: World) {
   wx.year = Math.floor(w.t / DAY / 40) + 1;
   if (w.t % 12 === 0) {
     const before = wx.sky;
-    wx.sky = nextSky(w, wx.sky, Math.random(), w.t);
+    wx.sky = nextSky(wx.sky, Math.random(), w.t);
     // The wind wanders, but keeps coming back to blow the way it prevails, the way that laid the island's rain.
     wx.wind = nextWay(w.t, wx.wind, w.terrain.wind, normal(Math.random(), Math.random()), normal(Math.random(), Math.random()));
     wx.anomaly = nextAnomaly(wx.anomaly, normal(Math.random(), Math.random()));
@@ -142,7 +142,7 @@ function stormFlashes(w: World) {
   let sky: World["weather"]["sky"] = "clear", hours = 0, days = 0, lastDay = -1;
   for (let h = 0; h < years * YEAR_DAYS * 24; h++) {
     const t = h * 12;
-    sky = nextSky(w, sky, r(), t);
+    sky = nextSky(sky, r(), t);
     if (sky !== "storm") continue;
     hours++;
     if (Math.floor(h / 24) !== lastDay) { days++; lastDay = Math.floor(h / 24); }
