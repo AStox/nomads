@@ -11,6 +11,10 @@ date: 2026-10-14
 
 Every living and lying thing on the island becomes an individual object simulated on the GPU: each stem, seedling, log, stick, stone, deer, rabbit, wolf, fox, bird and fish, at the densities measured in the field. Their state lives in GPU buffers, their laws run as WebGPU compute kernels in fixed-point integer arithmetic, and the renderer draws them straight from those buffers. People and their minds stay on the CPU; the objects near them are mirrored back each tick so agents see, take, fell and eat real individuals.
 
+No approximation stands in for things that exist as individuals: the island holds hundreds of millions of them at measured density (about 10 million stems, a hundred million or more seedlings, some 200 million sticks, billions of stones down to pebbles), and the plan gets there with three representations of one kind of object, all exact: **active** objects whose state is stored and stepped every time their laws need it; **dormant** objects whose state is a closed-form function of their identity, birth and the recorded drivers they have lived through, evaluated exactly when anything looks at them and promoted to active the moment something touches them; and **streamed** objects (seeds in flight) whose whole short life is evaluated one by one in a kernel and only the survivors stored. A test proves each dormant or streamed kind equal, bit for bit, to stepping it as an active object.
+
+The game must also run better than today: no stutter when zooming, panning or rotating the island. Today's lag comes from CPU work in the renderer (bake workers rasterize terrain and objects into chunks per level and bearing, and only eight chunk uploads fit a frame); the WebGPU renderer rasterizes everything on the GPU, so a zoom or a turn costs GPU time inside the frame and no CPU baking at all.
+
 This replaces the population approximations built so far (`src/sim/herds.ts` per-tile densities, `src/sim/fish.ts` stocks, `src/sim/recruits.ts` cohorts) with per-object simulation, as the operator asked, and lands substrate 11's measured densities (real stems, per-piece deadwood) that per-object JavaScript cannot carry.
 
 WebGPU runs headless under Bun through Google's Dawn bindings (`webgpu` npm), inside `bun test`, bit-identical to headless Chrome on the same GPU, and integer kernels were bit-identical across both GPUs of the dev machine and JavaScript. One WGSL codebase serves the play page and the gates.
@@ -20,12 +24,13 @@ WebGPU runs headless under Bun through Google's Dawn bindings (`webgpu` npm), in
 - Substrate 11 found real stem density ~10x and deadwood 1 to 3 orders of magnitude above what the generator lays (docs/research/generator/2026-10-14-flora.md); the operator chose real stems and per-piece deadwood, and GPU use everywhere.
 - The generator already lays 3.3 million things (870,000 trees) on seed 1, kept as packed typed arrays (`src/terrain/flora.ts` `Scatter`) and materialized as JavaScript `Thing`s per touched tile (`src/sim/space.ts`). Animals and young plants are densities and cohorts, not individuals; animals are "revealed" out of densities near people.
 - The play page runs sim and renderer on the main thread (`demo/styles/play/main.js`); the renderer bakes objects into art chunks on CPU workers (`demo/styles/isopixel/bake.js`, `things.js`); WebGL2 instancing is used once (`gpu.js`, shadow rows). No WebGPU exists.
+- Zooming, panning and rotating stutter today: a new level or bearing needs chunks baked on CPU workers (`bake.js` rasterizes 256x256 terrain-and-object chunks; `gpu.js` uploads at most 8 a frame), so the view waits on the CPU.
 - `tick(w)` is synchronous everywhere (`src/sim/sim.ts`, `server.ts`, `scripts/run.ts`, `scripts/bench.ts`, `scripts/probes.ts`, `demo/styles/play/sim.js`, several tests); GPU readback is asynchronous.
 
 ## Requirements Trace
 
 **World model**
-- R1. Every plant stem, seedling, deadwood piece, clast, animal and fish is an individual object at measured density, with its own state (position, size or mass, age, reserves, condition).
+- R1. Every plant, seedling, seed, deadwood piece, stone, animal and fish is an individual object at measured density, with its own state (position, size or mass, age, reserves, condition), down to the floor set in Capacity and Representation; nothing above that floor is a density, a cohort or a revealed stand-in.
 - R2. The object an agent sees, takes, fells or eats is the object the GPU simulates and draws: one identity, one state.
 - R3. Population behaviour (growth, competition, reproduction, dispersal, foraging, predation, death, decay) emerges from per-object laws; the density and cohort approximations are removed.
 
@@ -38,6 +43,7 @@ WebGPU runs headless under Bun through Google's Dawn bindings (`webgpu` npm), in
 
 **Renderer**
 - R7. The renderer draws every object from the GPU buffers at interactive frame rates (GPU culling, indirect draws), keeping the isometric pixel-art look and its depth and anchor invariants.
+- R9. Zooming, panning and rotating never stutter: on the dev machine no frame exceeds 16.7 ms during the page's `?bench=zoom`, `orbit`, `turn` and `pan` runs at default settings, and the renderer does no CPU rasterization.
 
 **House rule**
 - R8. Every physical constant moved or introduced is cited, [derived], [design] or [gap]; nothing is retuned to pass a check, and the world must still play: scarcity of food and fuel stays meaningful at real densities.
@@ -84,7 +90,31 @@ WebGPU runs headless under Bun through Google's Dawn bindings (`webgpu` npm), in
 - WebGPU browser support (Chrome 113+, Safari 26; Firefox on Intel Macs pending): https://web.dev/blog/webgpu-supported-major-browsers
 - Measured on the dev machine (AMD Radeon Pro 5500M): a 1M-element, 64-step float kernel 1,866 ms in JS against 8 to 12 ms on WebGPU including an 8 MB readback; integer kernels bit-identical across the AMD and Intel GPUs and JS; small readback p50 0.11 to 0.15 ms.
 
+## Capacity and Representation
+
+Counts on seed 1 (22,217 ha of land: 10,886 ha of tree cover, 2,081 shrub, 3,638 grass, 1,195 marsh) at the densities in docs/research/generator/2026-10-14-flora.md and the plant and animal constants, against the dev GPU's 4 GB and 192 GB/s and the machine's 16 GB of RAM. Counts are [INFERENCE] from cited densities until Unit 4 measures them.
+
+| Kind | Density | Count on the island | State changes by | Representation |
+|---|---|---|---|---|
+| Tree stems | 600 to 1,200/ha closed wood | 7 to 13 million | growth, competition, damage | active |
+| Tree seedlings and saplings | 10^3 to 10^4/ha standing | 10^7 to 10^8 | growth, browsing, shade | active |
+| Seeds in flight and on the ground | 10^4 to 10^5 per tree a year | 10^10 to 10^11 a year | dispersal, predation, emergence | streamed: each evaluated, survivors stored |
+| Shrubs (bramble, hazel, heather plants) | 10^3 to 10^5/ha | 10^7 to 10^8 | growth, browsing | active |
+| Herbs, ferns, flowers, reed shoots | 10^4 to 10^6/ha | 10^8 to 10^9 | growth, grazing, season | active where grazed or touched, dormant between |
+| Logs (10 cm and up) | 48 to 154 m³/ha unmanaged | 10^6 to 10^7 | decay, moisture, fire | dormant until touched |
+| Sticks (1 to 10 cm) | ~17,000/ha | ~2 x 10^8 | decay, moisture, fire | dormant until touched |
+| Boulders, stones, pebbles (2 cm and up) | till power law d^-2.9 | 10^9 to 10^10 | nothing unless moved | dormant (static): stored only once moved |
+| Deer, rabbits, wolves, foxes, small mammals, birds | measured densities | 10^5 to 10^6 | every law | active |
+| Fish | measured biomass | 10^5 to 10^6 | every law | active |
+
+What the representations cost: an active object 8 to 32 bytes per buffer set, a dormant one 0 to 8 bytes (static ones nothing until moved, decaying ones a birth tick and a packed parent and place), a streamed seed nothing unless it survives. The table fits in 4 GB with active kinds near 1 to 2 GB; stepping all active kinds once reads and writes a few GB, which the GPU's bandwidth covers in tens of milliseconds, so daily laws fit easily and per-tick animal laws touch only animals.
+
+**The floor.** Below it the counts outrun any GPU by orders of magnitude, and the cited models treat them as measured quantities per area: grass tillers (10^7/ha, about 10^11 on the island), leaves and twigs under 1 cm (10^10 and up), insects and soil fauna (10^10 to 10^13), sand and fine gravel. These are carried as measured biomass, litter and cover per square metre on the GPU, exactly as the cited grassland, litter and soil models define them, and are the only non-individual quantities in the world. See Open Questions: the operator confirms or moves this floor.
+
 ## Key Technical Decisions
+
+- **Three exact representations of one object kind.** Active (stored, stepped), dormant (state computed exactly on demand from identity, birth and recorded drivers; promoted to active when touched, burned, eaten or moved) and streamed (short lives evaluated one by one in a kernel, survivors stored). Rationale: R1 at hundreds of millions to billions of objects without approximation; equality with active stepping is tested per kind.
+- **Recorded drivers make dormancy exact.** The per-cell drivers a dormant object's laws read (hourly air, rain, canopy over it, fire passes) are recorded as compact per-cell histories on the GPU, so a log's moisture and decay at any hour equal what stepping it hourly would give. Rationale: dormancy must not be an approximation.
 
 - **Per-object state on the GPU, structure of arrays per kind.** Each kind (stems, seedlings, logs, sticks, clasts, low plants, each animal kind, fish) is a set of parallel GPU buffers indexed by object id. Rationale: R1 to R3; the operator wants individuals, not densities.
 - **Integer arithmetic end to end in gate kernels.** Gate-relevant state and the arithmetic producing it are fixed-point integers with a documented unit and scale per buffer; exp, log, fractional powers, gamma and lnGamma come from shared fixed-point routines with WGSL and TypeScript twins. No float appears between a buffer read and a buffer write in a gate kernel; float is allowed only in drawing. Rationale: R4; floats differed across GPUs from the 6th digit, integers didn't.
@@ -102,6 +132,10 @@ WebGPU runs headless under Bun through Google's Dawn bindings (`webgpu` npm), in
 
 ## Open Questions
 
+### Awaiting the Operator
+
+- The floor of individuality (Capacity and Representation): grass tillers, leaves and twigs under 1 cm, insects and soil fauna, sand and fine gravel carried as measured quantities per square metre, everything above as individuals.
+
 ### Resolved During Planning
 
 - Is Bun the blocker? No: Dawn bindings run under Bun and `bun test`.
@@ -112,8 +146,8 @@ WebGPU runs headless under Bun through Google's Dawn bindings (`webgpu` npm), in
 
 ### Deferred to Implementation
 
-- **Fine woody debris per piece exceeds any GPU memory budget at measured volume.** About 12 m³/ha of fine debris is roughly 17,000 one-metre sticks a hectare; over some 11,000 ha of wood that is about 190 million pieces, about 3 GB at 16 bytes each. Logs (coarse debris) at 48 to 154 m³/ha are a few hundred thousand pieces and fit. The operator chose per piece; Unit 9 measures the real buffer size and brings the numbers back for a decision (per piece island-wide, per piece within a radius of people with a pool beyond, or a minimum piece size).
-- Seedling counts: recruits produced up to millions of young a season on seed 1; whether every seedling is an object or the smallest age class is held as per-parent counts until it emerges is decided in Unit 8 against the memory budget.
+- The size of each per-cell driver history (how many hours of air, rain and canopy a dormant object may need to integrate across) and when histories are folded into exact running sums: set in Unit 4 against memory, with the equality tests as the guard.
+- Whether herbs below a size stay dormant between grazings or are active all season: decided per kind by measured cost, both exact.
 - Exact fixed-point scales per buffer, and table sizes and accuracy for exp/log/pow: set per routine in Unit 2 with error bounds documented.
 - Readback window shapes and sizes round people: tuned in Unit 4 against the 0.1 to 3 ms readback latencies measured.
 - Linux or GPU-less machines (lavapipe or a fail-fast notice): open; no CI exists today.
@@ -233,6 +267,7 @@ Tick shape (async): upload deltas, rebuild the spatial index when due, run the k
 - Mirror pages per window; a `stock()` on a cell with no mirror page marks it pending and widens the next window, resolving the next tick rather than returning nothing silently.
 - Deltas apply to the mirror at queue time and to GPU buffers at the next upload, in a fixed order.
 - Save reads back every buffer once; load uploads.
+- Representation tiers: dormant kinds store identity and birth only (static ones nothing until moved); a query evaluates their state from the recorded per-cell drivers; touching promotes them to active with exactly that state. Driver histories per cell are written by the hourly and daily kernels.
 
 **Test scenarios:**
 - Happy path: 1,000 parents each spawning 0 to 3 children give the same ids and order on every run and adapter.
@@ -241,6 +276,8 @@ Tick shape (async): upload deltas, rebuild the spatial index when due, run the k
 - Edge case: two deltas to one object in one tick from different agents apply in a fixed order regardless of arrival.
 - Error path: a query outside every window returns pending and is satisfied next tick.
 - Integration: a world saved mid-run and reloaded gives identical buffer hashes and identical Things; two bench runs give identical checksums including buffer hashes.
+- Happy path: a dormant log queried after 30 days has exactly the moisture and mass of the same log stepped hourly as an active object over the same weather.
+- Edge case: a dormant stone moved by a person is stored from then on at its new place; an unmoved one stores nothing.
 
 **Verification:** Store round trips under `bun test`; recorded idle-machine baseline tick times are written into this plan.
 
@@ -314,7 +351,7 @@ Each unit lands one kind of object with its laws, a single-step oracle per kerne
 
 - [ ] **Unit 8: Seed, seedlings and recruitment per object**
 
-**Goal:** Seed shed by each parent stem disperses by its species' kernel and emerges as seedling objects that grow, are browsed and thinned individually, replacing `src/sim/recruits.ts`.
+**Goal:** Every seed each parent stem sheds is evaluated as an individual (its landing by the species' kernel, its predation, its emergence) in a streamed kernel; the survivors become seedling objects that grow, are browsed and thinned individually, replacing `src/sim/recruits.ts`.
 
 **Requirements:** R1, R3, R4
 
@@ -327,6 +364,7 @@ Each unit lands one kind of object with its laws, a single-step oracle per kerne
 
 **Test scenarios:**
 - Happy path: one pine's seed lands with 80% inside one tree height; one ash's at the cited kernel mean.
+- Happy path: the streamed evaluation of a parent's year of seed gives exactly the survivors that stepping each seed as an active object would.
 - Edge case: seed landing on water or under full crowns follows the emergence rules; a parent's death stops its shed.
 - Integration: the measured seedling densities (pine under 5,000/ha within 50 m, oak 147 to 287/ha in old fields) are compared and recorded as gaps if they differ.
 
@@ -345,11 +383,13 @@ Each unit lands one kind of object with its laws, a single-step oracle per kerne
 - Modify: `src/terrain/flora.ts`, `src/sim/ecology.ts`, `docs/research/plant-constants.md`
 - Test: `src/gpu/deadwood.test.ts`
 
-**Approach:** Measure the real buffer size at unmanaged-reserve volumes first and bring the fine-debris memory decision (see Deferred) back to the operator before landing it.
+**Approach:** Pieces are dormant from birth (litterfall and stem death write their birth and parent), decaying and wetting exactly from the recorded drivers; a person, an animal or a fire touching one promotes it to active. Stones are dormant and static from the generator, stored only once moved.
 
 **Test scenarios:**
 - Happy path: a stand at steady state holds the decay-balanced volume V = I/k by piece class.
 - Edge case: a picked stick never returns as itself; new sticks come only from litterfall.
+- Happy path: a dormant stick under a closing canopy queried after a year equals the same stick stepped hourly.
+- Integration: seed-1 counts of logs, sticks and stones recorded against the cited densities and the memory budget.
 
 **Verification:** Island deadwood volumes recorded against the cited reserve values.
 
@@ -418,7 +458,7 @@ Each unit lands one kind of object with its laws, a single-step oracle per kerne
 
 - [ ] **Unit 13: WebGPU renderer in a worker, pixel parity**
 
-**Goal:** Reproduce the isopixel pipeline (point-splat MRT, fill, combine, composite, sun map, terrain AO) on WebGPU inside a worker with OffscreenCanvas, then delete the WebGL2 path.
+**Goal:** Reproduce the isopixel look on WebGPU inside a worker with OffscreenCanvas with all rasterization on the GPU: terrain and object chunks are rasterized by GPU passes (no `bake.js` CPU rasterization, no per-frame upload cap), so zoom, pan and rotation never wait on the CPU; then delete the WebGL2 path.
 
 **Requirements:** R6, R7
 
@@ -431,8 +471,9 @@ Each unit lands one kind of object with its laws, a single-step oracle per kerne
 
 **Test scenarios:**
 - Integration: fixed cameras and seed render palette-index identical (or within a recorded tolerance) to the committed reference frames.
+- Performance: `?bench=zoom`, `orbit`, `turn` and `pan` on the dev machine show no frame over 16.7 ms; the same runs on the WebGL2 page before the port are recorded as the baseline.
 
-**Verification:** The page runs on WebGPU only; frame cost recorded with `?bench=`.
+**Verification:** The page runs on WebGPU only, with the bench figures recorded before and after.
 
 - [ ] **Unit 14: Draw every object from the buffers**
 
@@ -493,7 +534,8 @@ Each unit lands one kind of object with its laws, a single-step oracle per kerne
 - Seed 1 holds measured densities as individuals: stems, seedlings, logs and clasts at the cited values, sticks per the decision in Unit 9, animals and fish as individuals.
 - Resident GPU memory for seed 1 at or under 1.5 GB [design] on the dev GPU, recorded per kind.
 - A whole-island daily step (plants, seedlings, deadwood) at or under 50 ms and a per-tick animal step at or under 5 ms on the dev GPU [design]; compared against the idle baseline recorded at Unit 4.
-- Default-zoom play at or under 16.7 ms a frame drawing every object in view [design].
+- Default-zoom play at or under 16.7 ms a frame drawing every object in view [design], and no frame over 16.7 ms through the zoom, orbit, turn and pan benches (R9), against today's recorded figures.
+- Every dormant and streamed kind proven equal to active stepping by its equality test.
 - Gates run headless on the GPU, ledgers naming the adapter, reproducible run to run and across both adapters of the dev machine.
 - Agent outcomes at real densities stay within the playability band recorded at Unit 6, or the difference is judged and documented.
 
