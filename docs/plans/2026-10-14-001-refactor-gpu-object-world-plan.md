@@ -11,7 +11,15 @@ date: 2026-10-14
 
 Every living and lying thing on the island becomes an individual object simulated on the GPU: each stem, seedling, log, stick, stone, deer, rabbit, wolf, fox, bird and fish, at the densities measured in the field. Their state lives in GPU buffers, their laws run as WebGPU compute kernels in fixed-point integer arithmetic, and the renderer draws them straight from those buffers. People and their minds stay on the CPU; the objects near them are mirrored back each tick so agents see, take, fell and eat real individuals.
 
-No approximation stands in for things that exist as individuals: the island holds hundreds of millions of them at measured density (about 10 million stems, a hundred million or more seedlings, some 200 million sticks, billions of stones down to pebbles), and the plan gets there with three representations of one kind of object, all exact: **active** objects whose state is stored and stepped every time their laws need it; **dormant** objects whose state is a closed-form function of their identity, birth and the recorded drivers they have lived through, evaluated exactly when anything looks at them and promoted to active the moment something touches them; and **streamed** objects (seeds in flight) whose whole short life is evaluated one by one in a kernel and only the survivors stored. A test proves each dormant or streamed kind equal, bit for bit, to stepping it as an active object.
+No approximation stands in for anything: the island holds about 10 million stems, 10^8 seedlings, 2 x 10^8 sticks, billions of stones, 10^11 grass tillers, 10^10 and more leaves and twigs, and 10^10 to 10^13 insects and soil animals, and every one of them is an individual with an identity. Measured on the dev GPU, brute-force storage tops out near 1 to 3 x 10^9 individuals (4 GB of VRAM is the limit, not compute), so each kind takes the cheapest of five exact representations:
+
+- **Active:** stored and stepped every tick its laws need (stems, animals, fish). Pathwise exact.
+- **Event-driven:** stored, but stepped only when its next event falls due, its waiting times drawn exactly in integers and thinned when hazards change (seedlings, anything whose state changes only at events). Pathwise exact; measured 35.6 ms a simulated day for 5.4 x 10^8 individuals.
+- **Dormant:** state computed exactly on demand from identity, birth and recorded per-cell drivers; stored only once touched (logs, sticks, stones; sand at 0 bytes). Pathwise exact.
+- **Streamed:** short lives evaluated one by one in a kernel, survivors stored (seeds). Pathwise exact.
+- **Lumped:** where a kind outruns memory (grass tillers, small litter, insects, soil fauna, moving sand), individuals sharing a cell and an identical integer state are held as a count, each tick's fates drawn by exact integer binomial and multinomial samplers (a sublinear sampler after Bringmann et al. 2014 ran at up to 5 x 10^12 fates a second, bit-identical on both GPUs), and any member's identity, birth and fate recoverable on demand through a seeded permutation. The cited laws for these kinds act on per-square-metre or per-plant shared inputs plus each individual's own state (tiller density per m², litter pools, insects per unit habitat), so lumping at that scale is the same stochastic process the law defines, exact in distribution; a member a world event singles out (a bird takes this beetle) is promoted to a full individual. Bins degenerate into plain individuals wherever states are diverse, automatically.
+
+A test proves each event-driven, dormant and streamed kind bit-equal to stepping it as active, and each lumped kind equal in distribution (exact sampler tests and equality of the count chain).
 
 The game must also run better than today: no stutter when zooming, panning or rotating the island. Today's lag comes from CPU work in the renderer (bake workers rasterize terrain and objects into chunks per level and bearing, and only eight chunk uploads fit a frame); the WebGPU renderer rasterizes everything on the GPU, so a zoom or a turn costs GPU time inside the frame and no CPU baking at all.
 
@@ -99,21 +107,28 @@ Counts on seed 1 (22,217 ha of land: 10,886 ha of tree cover, 2,081 shrub, 3,638
 | Tree stems | 600 to 1,200/ha closed wood | 7 to 13 million | growth, competition, damage | active |
 | Tree seedlings and saplings | 10^3 to 10^4/ha standing | 10^7 to 10^8 | growth, browsing, shade | active |
 | Seeds in flight and on the ground | 10^4 to 10^5 per tree a year | 10^10 to 10^11 a year | dispersal, predation, emergence | streamed: each evaluated, survivors stored |
-| Shrubs (bramble, hazel, heather plants) | 10^3 to 10^5/ha | 10^7 to 10^8 | growth, browsing | active |
-| Herbs, ferns, flowers, reed shoots | 10^4 to 10^6/ha | 10^8 to 10^9 | growth, grazing, season | active where grazed or touched, dormant between |
+| Shrubs (bramble, hazel, heather plants) | 10^3 to 10^5/ha | 10^7 to 10^8 | growth, browsing | active or event-driven |
+| Herbs, ferns, flowers, reed shoots | 10^4 to 10^6/ha | 10^8 to 10^9 | growth, grazing, season | event-driven, lumped where a cell's members share state |
+| Grass tillers | ~10^7/ha | ~10^11 | birth, growth class, defoliation, death | lumped by (cell, integer state), identity on demand |
+| Leaves and twigs under 1 cm | 10^5 to 10^7/ha | 10^10 and up | fall, decay, fragmentation | lumped, decay dormant from recorded drivers |
+| Insects and soil fauna | 10^6 to 10^9/ha | 10^10 to 10^13 | stage, growth, predation, death | lumped by (cell, taxon, stage, integer state); promoted when singled out |
 | Logs (10 cm and up) | 48 to 154 m³/ha unmanaged | 10^6 to 10^7 | decay, moisture, fire | dormant until touched |
 | Sticks (1 to 10 cm) | ~17,000/ha | ~2 x 10^8 | decay, moisture, fire | dormant until touched |
 | Boulders, stones, pebbles (2 cm and up) | till power law d^-2.9 | 10^9 to 10^10 | nothing unless moved | dormant (static): stored only once moved |
+| Sand and fine gravel | per bed | astronomical | nothing unless moved | dormant (static) by hash at 0 bytes; moved sand lumped by size class |
 | Deer, rabbits, wolves, foxes, small mammals, birds | measured densities | 10^5 to 10^6 | every law | active |
 | Fish | measured biomass | 10^5 to 10^6 | every law | active |
 
-What the representations cost: an active object 8 to 32 bytes per buffer set, a dormant one 0 to 8 bytes (static ones nothing until moved, decaying ones a birth tick and a packed parent and place), a streamed seed nothing unless it survives. The table fits in 4 GB with active kinds near 1 to 2 GB; stepping all active kinds once reads and writes a few GB, which the GPU's bandwidth covers in tens of milliseconds, so daily laws fit easily and per-tick animal laws touch only animals.
+What the representations cost (measured on the dev GPU): an active individual 4 to 32 bytes; event-driven 2 to 4 bytes; dormant 0 to 8 bytes; a streamed seed nothing unless it survives; a lumped bin 8 bytes (16 double-buffered) for any number of members, worth it from about 80 members a bin. Brute-force stepping runs about 5 x 10^9 simple individual updates a second; the exact samplers run 10^11 to 10^15 fates a second depending on bin size. The table fits in 4 GB with active and event-driven kinds near 1 to 2 GB and lumped kinds in a few hundred MB.
 
-**The floor.** Below it the counts outrun any GPU by orders of magnitude, and the cited models treat them as measured quantities per area: grass tillers (10^7/ha, about 10^11 on the island), leaves and twigs under 1 cm (10^10 and up), insects and soil fauna (10^10 to 10^13), sand and fine gravel. These are carried as measured biomass, litter and cover per square metre on the GPU, exactly as the cited grassland, litter and soil models define them, and are the only non-individual quantities in the world. See Open Questions: the operator confirms or moves this floor.
+There is no floor: everything is an individual. What differs by kind is only whether its randomness is keyed per individual (pathwise exact) or per bin (exact in distribution relative to a law that reads shared per-area inputs). Individual-scale laws finer than the cited ones (centimetre competition between tillers, continuous per-tiller size noise at 16-bit resolution) would collapse bins into individuals and exceed memory; none of the cited laws needs them.
 
 ## Key Technical Decisions
 
 - **Three exact representations of one object kind.** Active (stored, stepped), dormant (state computed exactly on demand from identity, birth and recorded drivers; promoted to active when touched, burned, eaten or moved) and streamed (short lives evaluated one by one in a kernel, survivors stored). Rationale: R1 at hundreds of millions to billions of objects without approximation; equality with active stepping is tested per kind.
+- **Event-driven stepping where state changes only at events.** Exact integer geometric waiting times (bitwise Bernoulli digits) with thinning for hazards that change with the drivers; a scan-and-compact pass gathers the individuals due each day. Rationale: pathwise exact at a fraction of per-tick cost.
+- **Lumped individuals with recoverable identity.** Per (cell, integer state) bins; exact multinomial splits over a law's dyadic outcome intervals; bit-sliced binomials for small bins and a sublinear exact sampler (Bringmann et al. 2014 rejection with Karney's exact exponential, integer bounds, and an exact slow path for the rare ambiguous case) for large ones; identity by a seeded Feistel permutation per bin with cycle-walking; promotion to a full individual when a world event singles one out; observation is read-only. Rationale: exactness relative to per-area laws at 10^10 to 10^13 members.
+- **Root the GPU instance for the device's life.** dawn.node frees its instance when the JavaScript `GPU` object is collected while work is pending (a segfault under Bun and Node alike); the device layer ties the instance to the device. Measured: 100 of 100 runs clean under Bun, Bun workers, `bun test` and Node with the fix, 0 of 100 without.
 - **Recorded drivers make dormancy exact.** The per-cell drivers a dormant object's laws read (hourly air, rain, canopy over it, fire passes) are recorded as compact per-cell histories on the GPU, so a log's moisture and decay at any hour equal what stepping it hourly would give. Rationale: dormancy must not be an approximation.
 
 - **Per-object state on the GPU, structure of arrays per kind.** Each kind (stems, seedlings, logs, sticks, clasts, low plants, each animal kind, fish) is a set of parallel GPU buffers indexed by object id. Rationale: R1 to R3; the operator wants individuals, not densities.
@@ -132,11 +147,10 @@ What the representations cost: an active object 8 to 32 bytes per buffer set, a 
 
 ## Open Questions
 
-### Awaiting the Operator
-
-- The floor of individuality (Capacity and Representation): grass tillers, leaves and twigs under 1 cm, insects and soil fauna, sand and fine gravel carried as measured quantities per square metre, everything above as individuals.
-
 ### Resolved During Planning
+
+- No floor of individuality: every thing is an individual; the representation per kind is one of the five exact ones (Capacity and Representation).
+- Bun stays the headless runtime: the dawn.node crash is a collected-instance bug fixed by rooting the instance.
 
 - Is Bun the blocker? No: Dawn bindings run under Bun and `bun test`.
 - Fallbacks? None (operator).
@@ -192,13 +206,14 @@ Tick shape (async): upload deltas, rebuild the spatial index when due, run the k
 
 **Approach:**
 - Acquisition is explicit and fails loudly, naming the WebGPU requirement; adapter by env override, default high-performance, name exposed for ledgers.
-- Process-lifetime device, released on exit so Bun processes don't hang.
+- Process-lifetime device, released on exit so Bun processes don't hang; the `create()` instance is tied to the device so garbage collection can never free it under pending work.
 
 **Test scenarios:**
 - Happy path: a doubling kernel over 1M u32 values returns them doubled in `bun test`.
 - Happy path: two consecutive staging-ring readbacks return their own submissions' data.
 - Error path: an unavailable forced adapter throws an error naming WebGPU; there is no CPU path.
 - Integration: a test file using the device exits without hanging the suite.
+- Error path: a forced garbage collection while a 256 MB upload and a map are pending leaves the process running and the data correct (100 runs).
 
 **Verification:** `bun test` runs a kernel and exits cleanly on the dev machine.
 
@@ -216,13 +231,16 @@ Tick shape (async): upload deltas, rebuild the spatial index when due, run the k
 
 **Approach:**
 - Fixed-point formats with documented ranges; multiply, divide, sqrt, exp, log, fractional pow, gamma and lnGamma by integer tables and polynomial steps, error bounds stated.
-- Counter-based generator keyed by (seed, stream, id, tick); uniform, normal, Poisson, exponential, gamma, lognormal, binomial and Weibull-quantile draws in fixed point, matching what `src/sim/recruits.ts`, `herds.ts` and the planned laws draw.
+- Counter-based Philox generator keyed by (seed, stream, id, tick); uniform, normal, Poisson, exponential, gamma, lognormal and Weibull-quantile draws in fixed point, matching what `src/sim/recruits.ts`, `herds.ts` and the planned laws draw.
+- Exact samplers: bit-sliced Bin(n, K/2^32); the sublinear exact Bin(2N, 1/2) rejection sampler with Karney's exact exponential and its exact slow path; multinomial splits over dyadic outcome intervals; exact integer geometric waits; Feistel permutations with cycle-walking for identity.
 
 **Test scenarios:**
 - Happy path: each routine over a dense grid of inputs gives the TS twin's result bit for bit on the GPU.
 - Edge case: each routine at its range limits neither overflows nor loses its stated precision; exp of large negatives underflows to zero exactly.
 - Edge case: draws from keys one bit apart are uncorrelated (mean and lag correlation within sampling bounds).
 - Integration: the same kernels on the high-performance and low-power adapters give identical output.
+- Happy path: the exact binomial at n = 4,097, 10^6 and 10^9 passes chi-squared, mean and variance tests over millions of samples; the slow path is exercised by forced ambiguous cases and agrees with a BigInt reference.
+- Happy path: a Feistel permutation over a bin of any size is a bijection (checked exhaustively at small sizes, by sampling at large).
 
 **Verification:** Twin equality on both adapters; documented error bounds against float references.
 
@@ -268,6 +286,8 @@ Tick shape (async): upload deltas, rebuild the spatial index when due, run the k
 - Deltas apply to the mirror at queue time and to GPU buffers at the next upload, in a fixed order.
 - Save reads back every buffer once; load uploads.
 - Representation tiers: dormant kinds store identity and birth only (static ones nothing until moved); a query evaluates their state from the recorded per-cell drivers; touching promotes them to active with exactly that state. Driver histories per cell are written by the hourly and daily kernels.
+- Event-driven kinds keep a next-event day per individual; a daily scan compacts the due ones for their kernels.
+- Lumped kinds keep sparse (cell, state) bins with counts, densify into individuals where bins fall below the break-even size and lump back above it, and answer identity queries through the bin's permutation.
 
 **Test scenarios:**
 - Happy path: 1,000 parents each spawning 0 to 3 children give the same ids and order on every run and adapter.
@@ -278,6 +298,8 @@ Tick shape (async): upload deltas, rebuild the spatial index when due, run the k
 - Integration: a world saved mid-run and reloaded gives identical buffer hashes and identical Things; two bench runs give identical checksums including buffer hashes.
 - Happy path: a dormant log queried after 30 days has exactly the moisture and mass of the same log stepped hourly as an active object over the same weather.
 - Edge case: a dormant stone moved by a person is stored from then on at its new place; an unmoved one stores nothing.
+- Happy path: an event-driven population's deaths over a year match per-tick stepping within sampling error, and its kernels are bit-identical across adapters.
+- Happy path: a lumped bin and the same members stepped individually under bin-keyed draws give the same counts every tick; asking for member k returns the same identity and fate before and after other members leave.
 
 **Verification:** Store round trips under `bun test`; recorded idle-machine baseline tick times are written into this plan.
 
@@ -454,6 +476,28 @@ Each unit lands one kind of object with its laws, a single-step oracle per kerne
 
 **Verification:** One crown source of truth; per-object moisture replaces the per-Thing paths.
 
+- [ ] **Unit 12b: Grass tillers, small litter, insects and soil fauna, sand**
+
+**Goal:** The smallest things become lumped individuals: grass tillers by cell and integer state under the cited per-m² tiller laws; leaves and twigs under 1 cm from litterfall, decaying by Olson-type pools as individuals; insects and soil animals by taxon and stage under cited per-habitat laws; sand static by hash and lumped once moved.
+
+**Requirements:** R1, R3, R4, R8
+
+**Dependencies:** Units 4, 7, 10 (grazers and insectivores read them)
+
+**Files:**
+- Create: `src/gpu/wgsl/lumped.wgsl`, `src/gpu/lumped.ts`
+- Modify: `src/sim/herds.ts` replacements in Unit 10 (forage reads tillers), `src/sim/ecology.ts`, `docs/research/plant-constants.md`, `docs/research/animal-constants.md` (new insect and soil fauna sections with cited laws)
+- Test: `src/gpu/lumped.test.ts`
+
+**Approach:** Research first: the cited per-area laws for tiller birth and death, litter decay, and each insect and soil-fauna group present on a Baltic island; bins at the scale each law is defined; promotion when a grazer, bird or person singles a member out.
+
+**Test scenarios:**
+- Happy path: a sward's tiller density under constant drivers settles where the cited self-thinning law puts it.
+- Happy path: a promoted beetle keeps the identity and state it had as a bin member.
+- Integration: grazers' intake from tillers matches the forage the herds model used to read, or the difference is recorded as a model change.
+
+**Verification:** Every kind on the island is an individual; memory for lumped kinds recorded.
+
 ### Phase D: Renderer on WebGPU
 
 - [ ] **Unit 13: WebGPU renderer in a worker, pixel parity**
@@ -522,7 +566,8 @@ Each unit lands one kind of object with its laws, a single-step oracle per kerne
 | Risk | Mitigation |
 |------|------------|
 | Fixed-point transcendentals are slow or imprecise | Tables plus polynomial steps with stated error bounds; measured in Unit 2 before any law ports |
-| Memory at real densities (stems 5 to 8 million, seedlings, deadwood pieces) | Per-kind budgets measured at each unit; fine-debris decision brought back with numbers (Deferred) |
+| Memory at real densities (10^8 to 10^13 individuals by kind) | Five representations chosen per kind by measured cost; budgets recorded at each unit; Metal pages silently past ~3.5 GB, so the store refuses to exceed 3 GB |
+| A sampler's rare ambiguous case breaks exactness | Exact slow path implemented and tested with forced cases |
 | Real densities make food or fuel free or absent | Playability band from Unit 6 checked at every Phase C unit; stop and decide, never retune |
 | Dawn bindings regress under a Bun upgrade | Pin `webgpu`; the device test catches it first |
 | Readback latency stalls ticks in the browser | Staging ring; write-through mirror for own deltas |
@@ -535,7 +580,7 @@ Each unit lands one kind of object with its laws, a single-step oracle per kerne
 - Resident GPU memory for seed 1 at or under 1.5 GB [design] on the dev GPU, recorded per kind.
 - A whole-island daily step (plants, seedlings, deadwood) at or under 50 ms and a per-tick animal step at or under 5 ms on the dev GPU [design]; compared against the idle baseline recorded at Unit 4.
 - Default-zoom play at or under 16.7 ms a frame drawing every object in view [design], and no frame over 16.7 ms through the zoom, orbit, turn and pan benches (R9), against today's recorded figures.
-- Every dormant and streamed kind proven equal to active stepping by its equality test.
+- Every event-driven, dormant and streamed kind proven bit-equal to active stepping; every lumped kind proven equal in distribution.
 - Gates run headless on the GPU, ledgers naming the adapter, reproducible run to run and across both adapters of the dev machine.
 - Agent outcomes at real densities stay within the playability band recorded at Unit 6, or the difference is judged and documented.
 
