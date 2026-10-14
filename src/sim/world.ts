@@ -45,6 +45,7 @@ export type Thing = {
   person?: string; // a grave's: whose
   rained?: number; // ash's: the rain that has fallen on it since it was left, mm
   oozing?: number; // a pine's: the resin its open wounds have still to give, g
+  gleaned?: { n: number; t: number }; // an oak's: the acorns people have taken from under it, nuts, and when last
   stale?: number; // a shelter's: how many loads in a row were added to it without making it any better
   inside?: Record<string, number>; // hidden in a boulder until it breaks
   girth?: number; // a stump's: how wide its trunk was, m

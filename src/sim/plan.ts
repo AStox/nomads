@@ -45,6 +45,8 @@ export const GATHER: Record<string, { place: string; item: string; n: number; ra
   pick_berries: { place: "bush", item: "berry", rate: 5.1, n: pickedIn(5.1, "berry"), keep: true },
   pick_mushroom: { place: "mushroom", item: "mushroom", n: 1 },
   pick_herb: { place: "herb", item: "herb", n: 1 },
+  // a handful of acorns off the ground under an oak [design: as a mushroom or herb; gap: a measured collecting rate]
+  gather_nuts: { place: "nuts", item: "nut", n: 1 },
   pick_stick: { place: "stick", item: "stick", n: 1 },
   pick_stone: { place: "stone", item: "stone", n: 1 },
   pull_reeds: { place: "reeds", item: "fiber", n: 2 },

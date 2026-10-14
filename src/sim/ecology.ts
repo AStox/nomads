@@ -1,6 +1,6 @@
 // The world keeps moving on its own: weather, fire, plants, animals, rot, and sickness.
 import { ensure, p } from "./materials";
-import { ablaze, bedAir, dropPile, dropStacks, mark, nearFire, newKinds, occupied, removeThing, residentsOf, shelterName } from "./physics";
+import { ablaze, bedAir, dropStacks, mark, nearFire, newKinds, occupied, removeThing, residentsOf, shelterName } from "./physics";
 import { advance, alight, cooling, expose, output, setIn, type Air, type Group } from "./combustion";
 import { PHYS, physOf } from "./fuel";
 import { BURNABLE, WIDEST, airFor, bedOf, blazeOf, fluxOn, landing, landsOn, partsOf, reach, struck, tinderIn, together, warmed, type Part } from "./spread";
@@ -406,8 +406,26 @@ const STICK_TURNOVER = 0.2, FRUIT_DAYS = 10;
 // that had a crop and none in the rest (R454), a year's mean. They fall from mid September [UNVERIFIED] to the last week of
 // October, by when the trees had shed the bulk of them (R454): real days after the spring equinox.
 const ACORNS = (0.196 * 13) / 27, ACORNS_FROM = onDay(179), ACORNS_TO = onDay(218);
-// How much of the year's acorns have fallen by tick t.
-const fallen = (t: number) => { const d = (((t / DAY) % YEAR_DAYS) + YEAR_DAYS) % YEAR_DAYS; return Math.max(0, Math.min(1, (d - ACORNS_FROM) / (ACORNS_TO - ACORNS_FROM))); };
+// Mice, jays and boar take what lies on the ground: 92 to 97% of fallen acorns were gone by the next spring (Kamler et
+// al., R456), some 165 days on, so 94.5% at a steady rate, a day [derived].
+const ACORN_LOSS = Math.log(1 / 0.055) / 165;
+// The share of something lying under the oaks since ticks ago that the animals haven't taken.
+const lasting = (ticks: number) => Math.exp(-ACORN_LOSS * (ticks / DAY) * YEARS_PACE);
+// The acorns lying under an oak at tick t, in nuts (fuel.ts): falling evenly through the fall at the rate that leaves
+// its crown's measured crop on the ground at the end of it, each one lasting as long as the animals let it, less what
+// people have gleaned there [derived]. Worked out when anyone looks, from the date: nothing lies there as things.
+export function acornsUnder(w: World, t: Thing) {
+  if (t.kind !== "tree" || t.species !== "oak") return 0;
+  const k = ACORN_LOSS, L = (ACORNS_TO - ACORNS_FROM) * YEARS_PACE, d = ((((w.t / DAY - ACORNS_FROM) % YEAR_DAYS) + YEAR_DAYS) % YEAR_DAYS) * YEARS_PACE;
+  const end = (ACORNS * Math.PI * crownRadius(t) ** 2) / (PHYS.nut.mass * (1 + (PHYS.nut.green ?? 0))), fall = (end * k) / (1 - Math.exp(-k * L));
+  const lying = d <= L ? (fall / k) * (1 - Math.exp(-k * d)) : end * Math.exp(-k * (d - L));
+  return Math.max(0, Math.floor(lying - (t.gleaned ? t.gleaned.n * lasting(w.t - t.gleaned.t) : 0)));
+}
+// n nuts gleaned from under an oak.
+export function glean(w: World, t: Thing, n: number) {
+  t.gleaned = { n: (t.gleaned ? t.gleaned.n * lasting(w.t - t.gleaned.t) : 0) + n, t: w.t };
+  mark(w, t);
+}
 const FROM_ROOTS = new Set(["herb", "reeds", "fern", "flowers", "grass"]);
 // When the growing season last turned on, each world.
 const greenings = new WeakMap<World, { on: boolean; since: number }>();
@@ -468,15 +486,8 @@ function plants(w: World, live: Thing[]) {
       if (t.rained >= ASH_RAIN) removeThing(w, t);
     }
   }
-  // Oaks shed their acorns from mid September to late October, each as big a crop as its crown's ground holds (R454),
-  // day by day as that time goes by, into a pile under its crown; they keep for months if someone gathers them
-  if (w.t % DAY === 0) {
-    const f = fallen(w.t), f0 = fallen(w.t - DAY);
-    if (f > f0) for (const t of [...w.things]) if (t.kind === "tree" && t.species === "oak" && !ablaze(t)) {
-      const crop = (ACORNS * Math.PI * crownRadius(t) ** 2) / (PHYS.nut.mass * (1 + (PHYS.nut.green ?? 0))), n = Math.floor(crop * f) - Math.floor(crop * f0);
-      if (n > 0) dropPile(w, t.px + (crownRadius(t) / 2) / TILE_M, t.py, "nut", n);
-    }
-  }
+  // what someone gleaned from under an oak counts for nothing once the mice would have had it anyway
+  if (w.t % DAY === 0) for (const t of w.things) if (t.gleaned && t.gleaned.n * lasting(w.t - t.gleaned.t) < 0.5) { delete t.gleaned; mark(w, t); }
   // Birds carry berry seeds off, and trees shed theirs about them; what lands where it fits may take root.
   if (Math.random() < warm / 100) {
     const b = anyOf(w, "bush");

@@ -11,7 +11,7 @@ import {
 import { die, life, lifeSummary } from "./life";
 import { apart, beliefKey, beliefText, cameOff, conditionWords, differed, weighs, fieldsOf, found, groundKey, groundOfKey, holds, mixOf, odds, fades, noteTry, ofSpot, partsOf, record, refine, refuted, restsOn, rethink, see, sentence, suspected, teach, testOf, watchers, type Belief } from "./beliefs";
 import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
-import { burnedHomes, ecology, onFireOut, onGrew, onWithered, trample, trapped, tread } from "./ecology";
+import { acornsUnder, burnedHomes, ecology, glean, onFireOut, onGrew, onWithered, trample, trapped, tread } from "./ecology";
 import { FAUNA, HUNTED } from "./fauna";
 import { attacked } from "./animals";
 import { herdNear } from "./herds";
@@ -143,6 +143,8 @@ const THING_PLACES: Record<string, Place> = {
   hearth: { kinds: ["fire"], ok: (t) => !!t.contained },
   kiln: { kinds: ["fire"], ok: (t) => !!t.contained && !!t.covered },
   forge: { kinds: ["fire"], ok: (t) => !!t.contained && (t.charcoal ?? 0) > 0 },
+  // the acorns lying under an oak in the fall (ecology.ts acornsUnder)
+  nuts: { kinds: ["tree"], ok: (t, w) => !ablaze(t) && acornsUnder(w, t) >= 1 },
   // a pine cut into beads with resin over the next days (ecology.ts plants)
   resin: { kinds: ["tree", "stump"], ok: (t) => (t.resin ?? 0) >= 1, changed: true },
 };
@@ -1334,7 +1336,7 @@ const tinkerWait = perWorld(() => new Set<string>());
 
 // ---------- running plan steps ----------
 const GATHER_STATUS: Record<string, string> = {
-  pick_berries: "Picking berries", pick_mushroom: "Gathering a mushroom", pick_herb: "Picking herbs", pick_stick: "Picking up a stick",
+  pick_berries: "Picking berries", pick_mushroom: "Gathering a mushroom", pick_herb: "Picking herbs", gather_nuts: "Gathering acorns", pick_stick: "Picking up a stick",
   pick_stone: "Picking up a stone", pull_reeds: "Pulling up reeds", dig_clay: "Digging clay", scrape_resin: "Scraping resin off a tree",
   strip_grain: "Stripping seed from the grass",
 };
@@ -1600,6 +1602,10 @@ function run(w: World, a: Agent): boolean | string {
   } else if (t.kind === "reeds") {
     t.hp = (t.hp ?? 6) - 3;
     if (t.hp <= 0) removeThing(w, t); else mark(w, t);
+  } else if (g.place === "nuts") {
+    n = Math.min(g.n, acornsUnder(w, t));
+    if (n <= 0) return "the acorns were gone";
+    glean(w, t, n);
   } else if (g.place === "resin") {
     t.resin = Math.max(0, (t.resin ?? 1) - 1);
     mark(w, t);
@@ -2317,7 +2323,7 @@ const MEETING: Record<string, Activity> = {
 const STEP: Record<string, Activity> = {
   warm_up: "warm", eat: "eat", flee: "flee", avoid: "flee", fight: "fight", hunt: "hunt", tend: "tend", follow: "help", assist: "help",
   stash: "store", take_stored: "store", share: "store", take_shared: "store", raid: "steal", tinker: "tinker", wander: "explore", pick_up: "collect",
-  pick_berries: "forage", pick_mushroom: "forage", pick_herb: "forage", pick_stick: "collect", pick_stone: "collect", pull_reeds: "collect", dig_clay: "dig", scrape_resin: "collect",
+  pick_berries: "forage", pick_mushroom: "forage", pick_herb: "forage", gather_nuts: "forage", pick_stick: "collect", pick_stone: "collect", pull_reeds: "collect", dig_clay: "dig", scrape_resin: "collect",
   strip_grain: "forage",
 };
 export function activity(w: World, a: Agent): Activity | null {
