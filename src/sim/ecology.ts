@@ -6,10 +6,10 @@ import { PHYS, physOf } from "./fuel";
 import { BURNABLE, WIDEST, airFor, bedOf, blazeOf, fluxOn, landing, landsOn, partsOf, reach, struck, tinderIn, together, warmed, type Part } from "./spread";
 import { see } from "./beliefs";
 import {
-  DAY, H, TILE_M, W, Tile, YEAR, addThing, cropOf, dayOfYear, groundOf, log, meters, rng, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
+  DAY, H, HP, TILE_M, W, Tile, YEAR, addThing, cropOf, dayOfYear, groundOf, log, meters, rng, sea, seasonOf, tileAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
-import { anyAround, anyOf, around, exists, liveThings, onPath, put, regrow, setKind, stockedAt } from "./space";
+import { anyAround, around, exists, liveThings, onPath, put, regrow, setKind, stockedAt } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
 import { enrich, settle, soilWaterAt, wetHour } from "./soil";
@@ -31,6 +31,7 @@ import { GREEN_UP } from "../terrain/growth";
 import { rotPerHour } from "./spoil";
 import { bodyOf } from "./body";
 import { fasting, onDay, starved } from "./herds";
+import { recruit, suckers } from "./recruits";
 
 // Seconds a tick lasts (world.ts DAY: five minutes each).
 const TICK_S = 86400 / DAY;
@@ -414,10 +415,12 @@ const lasting = (ticks: number) => Math.exp(-ACORN_LOSS * (ticks / DAY) * YEARS_
 // The acorns lying under an oak at tick t, in nuts (fuel.ts): falling evenly through the fall at the rate that leaves
 // its crown's measured crop on the ground at the end of it, each one lasting as long as the animals let it, less what
 // people have gleaned there [derived]. Worked out when anyone looks, from the date: nothing lies there as things.
+// The acorns lying under an oak at the end of the fall, nuts: its crown's measured crop.
+export const acornCrop = (t: Thing) => (t.kind === "tree" && t.species === "oak" ? (ACORNS * Math.PI * crownRadius(t) ** 2) / (PHYS.nut.mass * (1 + (PHYS.nut.green ?? 0))) : 0);
 export function acornsUnder(w: World, t: Thing) {
   if (t.kind !== "tree" || t.species !== "oak") return 0;
   const k = ACORN_LOSS, L = (ACORNS_TO - ACORNS_FROM) * YEARS_PACE, d = ((((w.t / DAY - ACORNS_FROM) % YEAR_DAYS) + YEAR_DAYS) % YEAR_DAYS) * YEARS_PACE;
-  const end = (ACORNS * Math.PI * crownRadius(t) ** 2) / (PHYS.nut.mass * (1 + (PHYS.nut.green ?? 0))), fall = (end * k) / (1 - Math.exp(-k * L));
+  const end = acornCrop(t), fall = (end * k) / (1 - Math.exp(-k * L));
   const lying = d <= L ? (fall / k) * (1 - Math.exp(-k * d)) : end * Math.exp(-k * (d - L));
   return Math.max(0, Math.floor(lying - (t.gleaned ? t.gleaned.n * lasting(w.t - t.gleaned.t) : 0)));
 }
@@ -438,7 +441,7 @@ const RESIN_DAYS = 0.8;
 const SPROUTS = new Set(["oak", "ash", "aspen", "hazel", "berry"]);
 const sprouts = (t: Thing) => SPROUTS.has(t.kind === "dead_bush" ? "berry" : t.species ?? "");
 function plants(w: World, live: Thing[]) {
-  const warm = warmRate(w.weather.temp), greening = growing(w).index >= GREEN_UP;
+  const greening = growing(w).index >= GREEN_UP;
   for (const t of live) {
     if (ablaze(t)) continue;
     if (t.oozing) {
@@ -463,6 +466,8 @@ function plants(w: World, live: Thing[]) {
       // dies (docs/research/time-constants.md sec. 6). The sprout grows as a seedling of its kind does [gap: what the
       // roots hold makes a sprout grow far faster than a seedling].
       const sp = t.kind === "dead_bush" ? "berry" : t.species!;
+      // a felled or burned aspen sends up suckers all round from its roots as well (recruits.ts)
+      if (sp === "aspen") suckers(w, t);
       setKind(w, t, "sapling");
       Object.assign(t, sp === "berry" ? { item: "berry" } : { species: sp }, { stage: 0, born: w.t, hp: 5, maxHp: 5, size: 0.3 });
       for (const k of ["until", "scarred", "resin", "oozing", "bark", "girth", "n", "fit", "share", "dry", "peak"] as const) delete t[k];
@@ -488,15 +493,8 @@ function plants(w: World, live: Thing[]) {
   }
   // what someone gleaned from under an oak counts for nothing once the mice would have had it anyway
   if (w.t % DAY === 0) for (const t of w.things) if (t.gleaned && t.gleaned.n * lasting(w.t - t.gleaned.t) < 0.5) { delete t.gleaned; mark(w, t); }
-  // Birds carry berry seeds off, and trees shed theirs about them; what lands where it fits may take root.
-  if (Math.random() < warm / 100) {
-    const b = anyOf(w, "bush");
-    if (b?.species === "berry") seedNear(w, b, "berry", 5, 45);
-  }
-  if (Math.random() < warm / 60) {
-    const t = anyOf(w, "tree");
-    if (t?.species && !ablaze(t)) seedNear(w, t, t.species, 4, 30);
-  }
+  // Each kind spreads as it does, and its young grow on as counts until they stand as trees or bushes (recruits.ts).
+  if (w.t % DAY === 0) recruit(w, acornCrop, (sp, px, py, h) => grownUp(w, sp, px, py, h));
   // the season's growth turning on: what grew from roots comes back from them from here
   const g = greenings.get(w) ?? { on: greening, since: -Infinity };
   if (greening && !g.on) g.since = w.t;
@@ -513,16 +511,13 @@ function plants(w: World, live: Thing[]) {
     return FROM_ROOTS.has(t.kind) && g.since > went;
   });
 }
-// Seed of a species falling between near and far meters from a plant, taking root as the spot fits it, on any ground
-// nothing stands on: whether it lives is up to the light, water and soil it finds there, other plants' share included.
-function seedNear(w: World, t: Thing, species: string, near: number, far: number) {
-  const a = Math.random() * Math.PI * 2, d = (near + Math.random() * (far - near)) / TILE_M, px = t.px + Math.cos(a) * d, py = t.py + Math.sin(a) * d;
-  // Ground nobody has looked at since it grew stays as it grew: seed takes root, as a seedling the world keeps, only where
-  // it's been looked at.
-  if (!dryAt(w, px, py) || !stockedAt(w, px, py) || occupied(w, px, py)) return;
-  const fit = fitHere(w, species, px, py);
-  if (Math.random() > fit) return;
-  mark(w, addThing(w, "sapling", px, py, species === "berry" ? { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5, fit } : { stage: 0, species, born: w.t, hp: 5, maxHp: 5, fit }));
+// One of the young grown tall enough stands up at a spot, if nothing stands there: a tree of its kind as tall as it has
+// grown, or a bramble bush, each as the ground lays its own down (world.ts grown): unwatched, a bush's crop on it.
+function grownUp(w: World, sp: string, px: number, py: number, h: number) {
+  if (occupied(w, px, py)) return false;
+  const kind = sp === "berry" ? "bush" : "tree", size = Math.round(h * 100) / 100, hp = HP[kind](size);
+  mark(w, addThing(w, kind, px, py, { species: sp, size, hp, maxHp: hp, ...(kind === "bush" ? { n: cropOf({ size }) } : {}) }, false));
+  return true;
 }
 // A seedling wilted away: gone. Whoever put it in the ground or watered it sees it withered, and nothing tells them why:
 // what they make of it is their own theory (sim.ts judged), from what they saw when they planted it.

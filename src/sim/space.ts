@@ -73,6 +73,10 @@ function stock(w: World, ix: Index, t: number) {
   const f = groundOf(w.seed).flora;
   for (let k = f.start[t]; k < f.start[t + 1]; k++) { const th = grown(w, k); add(w, ix, th, !settled(th)); }
 }
+// The things of a kind on tile i as it stands, without looking at it (it stays as it grew if no one has).
+export const onTile = (w: World, i: number, kind: string): readonly Thing[] => index(w).tiles.get(kind)?.[i] ?? [];
+// Whether tile i has been looked at since it was last put back as it grew.
+export const stockedTile = (w: World, i: number) => index(w).stocked[i] === 1;
 // Whether the tile a point is on has been looked at since it was last put back as it grew: its grown things are Things.
 export const stockedAt = (w: World, px: number, py: number) => index(w).stocked[Math.min(H - 1, Math.floor(py)) * W + Math.min(W - 1, Math.floor(px))] === 1;
 // The index into the grown arrays a thing id names, or -1 if it names something made since.

@@ -1,4 +1,5 @@
 import { generateIsland, type Island } from "../terrain/island";
+import type { Cohort } from "./recruits";
 import { lay, type Lay, type Terrain } from "../terrain/land";
 import { FLORA, SIZE, SPECIES, TILES, TILE_M, fineGround, rockAt, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
 import { TRAITS } from "./traits";
@@ -282,6 +283,7 @@ export type World = {
   paths: number[]; // walking wear per tile, 0..9
   things: Thing[]; // everything the game holds as things: the ground's own on the tiles in `stocked`, and all it has made
   stocked: number[]; // tiles whose ground has been taken over as things; elsewhere it is still as it grew (groundOf flora)
+  recruits?: Record<number, Cohort[]>; // the young plants coming on, on each tile being looked at (recruits.ts)
   fert: Record<number, number>; // what has fed the soil or drawn it down since it grew, by soil.ts cell
   agents: Agent[];
   animals: Animal[];
@@ -550,7 +552,7 @@ export const tileOf = (m: number) => Math.round(((m + SIZE / 2) / TILE_M) * 1e4)
 // (body-constants sec. 10), a thicket as wide as it is tall [design].
 export const cropOf = (t: { size: number }) => (0.5 * Math.PI * (t.size / 2) ** 2) / asFound(PHYS.berry);
 // What each kind of growing or lying thing can take before it's gone, by its size in meters.
-const HP: Record<string, (size: number) => number> = {
+export const HP: Record<string, (size: number) => number> = {
   tree: (s) => Math.round(30 + s * 4.5), bush: () => 20, boulder: (s) => Math.round(60 + s * 40), stone: () => 40, pebble: () => 10,
   stick: () => 8, fallen_log: (s) => Math.round(20 + s * 6), mushroom: () => 2, herb: () => 3, reeds: () => 6, fern: () => 4, flowers: () => 2, clay: () => 10, grass: () => 3,
 };

@@ -118,7 +118,6 @@ Probes, against a8bf4da: fails four, the claims that have come and gone pass by 
 
 ## 10. Still on the old rules
 
-- Seed dispersal (two island-wide rolls into fixed rings): Scots pine's seed crop (12,000 a tree in good years, 50 to 70% viable), its kernel (80% within 20 m of a 20 m tree) and its spring germination are measured (Nixon and Worrell, R455), but how many seeds become seedlings is only bounded (under 5,000 established a ha within 50 m of the trees without disturbing the soil), and oak, ash, aspen and bramble have none [gap].
 - Bushes' hit points regrowing at a flat rate (the picking substrate, 7).
 
 ## References

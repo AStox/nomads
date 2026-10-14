@@ -13,7 +13,11 @@ import { feedRate, fertilityAt, soilWaterAt } from "./soil";
 import { TILE_M, YEAR_DAYS, groundOf, type World } from "./world";
 
 export function fitHere(w: World, name: string, px: number, py: number) {
-  return fit(name, { ...envHere(w, px, py), light: skyShare(w, px, py), fert: fertilityAt(w, px, py) });
+  return fitIn(w, name, px, py, skyShare(w, px, py));
+}
+// The same in a given share of the open sky's light.
+export function fitIn(w: World, name: string, px: number, py: number, light: number) {
+  return fit(name, { ...envHere(w, px, py), light, fert: fertilityAt(w, px, py) });
 }
 // The island's lasting conditions at a point, as the niches read them (niche.ts Env): the light left out, and the soil's
 // nourishment as the generator had it, both of which fitHere takes as they are now.
