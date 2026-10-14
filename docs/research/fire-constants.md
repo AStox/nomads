@@ -1609,6 +1609,8 @@ Gaps:
 - The swing's shape (a cosine peaking two hours after the sun crosses the south) and the brightness scale's log mapping are still hand-set; the lux DARK stands at is not.
 - Belmullet's 10 m wind on its coastal grass is taken as the open sea's; the generator's lee then cuts it again inland.
 
+Gates at 7e211b3 (this section's first build, on Belmullet's sky): probes, against a8bf4da, fail eight: the claims that come and go pass by pass (seed/real's and unlearn/real's that nearly all whose own tries show the true cause come to rule it out, blame/real's that fewer tries go to waste late, seed/sparse's that most come to blame the true cause), two/real exact 1.00 to 0.87, seed/real wasted 0.31 to 0.42, seed/sparse wasted 0.05 to 0.23, seed/two formed 22.9 to 24.3. A darker dark (3 lux, not 0.63) ends the day's foraging earlier. Worlds, against 2258536, pass; the late-waste claim holds again. Not retuned.
+
 ## Recommended R2 constant set (with section refs)
 
 **Wood, side grain**
