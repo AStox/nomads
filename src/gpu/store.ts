@@ -31,13 +31,13 @@
 // slots at the upload, placed from the free list's head the last landing read back, the same rule the GPU follows.
 // Kernels recorded outside a tick (births, reclaim, index called directly) go to the GPU at flush().
 //
-// Representation tiers (dormant, event-driven, lumped; Unit 4b) extend a kind's declaration and the per-kind steps of
-// begin (reclaim, index) and land (gather): every one of those steps takes the kind, so a tier changes what that step
-// does for its kinds without touching the others.
+// Representation tiers (src/gpu/tiers: recorded drivers, dormant, event-driven and lumped kinds) run their kernels
+// through run, scan and births from inside laws, and ride the landing: a rider gets words of the tick's one staging
+// copy, records its own copies into them and reads them back when the tick lands.
 import type { Gpu } from "./device";
 import { cover, pipeline, readback, storage } from "./kernel";
 import { SCAN } from "./wgsl/scan";
-import { BIRTH_COMMIT, BIRTH_MASK, CTL, CTL_WORDS, DELTA_APPLY, OP, PEEK, RECLAIM_CTL, RECLAIM_FLAG, RECLAIM_SCATTER, birthAssign } from "./wgsl/alloc";
+import { BIRTH_COMMIT, BIRTH_MASK, CTL, CTL_WORDS, DELTA_APPLY, type Extra, OP, PEEK, RECLAIM_CTL, RECLAIM_FLAG, RECLAIM_SCATTER, birthAssign } from "./wgsl/alloc";
 import { CELLS, GATHER_HEAD, GATHER_ROWS, INDEX_COMPACT, INDEX_KEYS, RADIX_HIST, RADIX_SCATTER } from "./wgsl/index";
 import { Mirror, type Obj } from "./mirror";
 
@@ -71,6 +71,38 @@ export type Kind = {
 // A law: kernels run in begin when due, in the order laws were added.
 export type Law = { name: string; due: (t: number) => boolean; run: (s: Store, t: number) => void };
 
+// Something read back with every landing: it asks for so many words of the staging copy, records its copies into
+// them (at word at of out) after the kinds' gathers, and reads them when the tick lands. A rider with a name is part
+// of the store's state: its buffers and what save returns (JSON) go into hash and dump, and a store loaded from a
+// dump hands them to restore when a rider of that name rides it again.
+export type Rider = {
+  words(): number; record(out: GPUBuffer, at: number): void; land(o: Uint32Array, at: number): void;
+  name?: string; buffers?(): [string, GPUBuffer][]; save?(): unknown; restore?(state: unknown, data: Record<string, Uint8Array>): void;
+};
+// A rider's state as a dump holds it, waiting for the rider to ride the loaded store.
+type Stashed = { state: unknown; data: Record<string, Uint8Array> };
+// A rider's saved buffer written back into the buffer it was dumped from (made again with the same size).
+export function reload(g: Gpu, buf: GPUBuffer, bytes: Uint8Array | undefined, what: string) {
+  if (!bytes || bytes.byteLength !== buf.size) throw new Error(`saved ${what}: ${bytes?.byteLength ?? 0} bytes for a buffer of ${buf.size}`);
+  for (let c = 0; c < bytes.byteLength; c += CHUNK) g.device.queue.writeBuffer(buf, c, bytes.buffer, bytes.byteOffset + c, Math.min(CHUNK, bytes.byteLength - c));
+}
+// A number or an array a rider saved, read back from its state with a check that it is there (states come from a
+// dump, so from outside the program).
+export function savedNumber(state: unknown, key: string, what: string): number {
+  const v = state && typeof state === "object" && key in state ? Reflect.get(state, key) : undefined;
+  if (typeof v !== "number") throw new Error(`saved ${what}: ${key} is not a number`);
+  return v;
+}
+export function savedArray(state: unknown, key: string, what: string): unknown[] {
+  const v = state && typeof state === "object" && key in state ? Reflect.get(state, key) : undefined;
+  if (!Array.isArray(v)) throw new Error(`saved ${what}: ${key} is not a list`);
+  return v;
+}
+export function savedNumbers(v: unknown, what: string): number[] {
+  if (!Array.isArray(v) || !v.every((x) => typeof x === "number")) throw new Error(`saved ${what} is not a list of numbers`);
+  return v;
+}
+
 // A change CPU code queued: applied to the mirror at once, to the GPU at the next upload.
 export type Delta =
   | { seq: number; op: "set"; id: number; field: number; value: number }
@@ -97,6 +129,7 @@ function fold(h: Hash, w: Uint32Array) {
 export class Store {
   readonly kinds: Kind[] = [];
   readonly laws: Law[] = [];
+  readonly riders: Rider[] = [];
   readonly mirror: Mirror;
   queue: Delta[] = [];
   t = 0;
@@ -106,6 +139,7 @@ export class Store {
   private begun = false;
   private budget = 1 << 16;
   private readonly scratchBufs = new Map<string, GPUBuffer>();
+  private readonly stash = new Map<string, Stashed>();
   private enc: GPUCommandEncoder | null = null;
   private pass: GPUComputePassEncoder | null = null;
   private readonly pool: GPUBuffer[] = [];
@@ -142,18 +176,37 @@ export class Store {
     this.mirror.add(k);
     return k;
   }
+  // The kind of a loaded store declared again by what uses it (a tier): the kind already there when its declaration
+  // is the same, else a new one.
+  adopt(spec: KindSpec): Kind {
+    const k = this.kinds.find((x) => x.name === spec.name);
+    if (!k) return this.declare(spec);
+    if (JSON.stringify(k.spec) !== JSON.stringify(spec)) throw new Error(`kind ${spec.name} is already declared otherwise`);
+    return k;
+  }
   kind(name: string): Kind {
     const k = this.kinds.find((x) => x.name === name);
     if (!k) throw new Error(`no kind ${name} in the store`);
     return k;
   }
   law(l: Law) { this.laws.push(l); }
+  ride(r: Rider) {
+    if (r.name !== undefined && this.riders.some((x) => x.name === r.name)) throw new Error(`a rider named ${r.name} already rides this store`);
+    this.riders.push(r);
+    const saved = r.name === undefined ? undefined : this.stash.get(r.name);
+    if (saved) { this.stash.delete(r.name!); r.restore?.(saved.state, saved.data); }
+  }
+  // Riders that are part of the store's state, in the order they ride.
+  private saved(): Rider[] {
+    return this.riders.filter((r) => r.name !== undefined);
+  }
 
   // ---------- running kernels ----------
   // Kernels, clears and copies go into one command encoder, submitted by flush (begin and land flush; so do reads),
   // since a submit costs the CPU a few tenths of a millisecond. Each dispatch's parameters get their own small
-  // uniform buffer from a pool, written before the submit.
-  private run(src: string, bufs: GPUBuffer[], groups: [number, number?, number?], params?: number[], entry = "main") {
+  // uniform buffer from a pool, written before the submit. groups is the workgroup counts, or where in a buffer made
+  // with INDIRECT usage an earlier kernel wrote them.
+  run(src: string, bufs: GPUBuffer[], groups: [number, number?, number?] | { buffer: GPUBuffer; offset: number }, params?: number[], entry = "main") {
     const d = this.g.device;
     let byEntry = this.pipes.get(src);
     if (!byEntry) this.pipes.set(src, (byEntry = new Map()));
@@ -170,9 +223,10 @@ export class Store {
     this.pass ??= (this.enc ??= d.createCommandEncoder()).beginComputePass();
     this.pass.setPipeline(p);
     this.pass.setBindGroup(0, bind);
-    this.pass.dispatchWorkgroups(groups[0], groups[1] ?? 1, groups[2] ?? 1);
+    if (Array.isArray(groups)) this.pass.dispatchWorkgroups(groups[0], groups[1] ?? 1, groups[2] ?? 1);
+    else this.pass.dispatchWorkgroupsIndirect(groups.buffer, groups.offset);
   }
-  private encode(f: (e: GPUCommandEncoder) => void) {
+  encode(f: (e: GPUCommandEncoder) => void) {
     this.pass?.end();
     this.pass = null;
     f((this.enc ??= this.g.device.createCommandEncoder()));
@@ -187,12 +241,22 @@ export class Store {
     for (const b of this.retired) b.destroy();
     this.retired = [];
   }
+  // Lets go of every buffer the store made (its kinds' and its scratch), once what was recorded has been submitted;
+  // the store is not used after. Tiers own their buffers and let go of their own.
+  destroy() {
+    this.flush();
+    for (const k of this.kinds) for (const [, b] of buffersOf(k)) b.destroy();
+    for (const b of [...this.scratchBufs.values(), ...this.pool]) b.destroy();
+    this.scratchBufs.clear();
+  }
+  // A buffer replaced while commands recorded but not yet submitted may still use it: let go after the next submit.
+  retire(b: GPUBuffer) { this.retired.push(b); }
   // A scratch buffer of at least so many words, kept and grown as needed (an outgrown one is let go after the next
   // submit, since recorded commands may still use it).
-  private scratch(name: string, words: number): GPUBuffer {
+  scratch(name: string, words: number): GPUBuffer {
     let b = this.scratchBufs.get(name);
     if (!b || b.size < words * 4) {
-      if (b) this.retired.push(b);
+      if (b) this.retire(b);
       b = storage(this.g, Math.max(words, 1) * 4);
       this.scratchBufs.set(name, b);
     }
@@ -219,14 +283,24 @@ export class Store {
   // Children of the live parents of one kind into another (or the same): counts holds a u32 for every parent slot,
   // init the WGSL body run for each child, with slot, parent, k (its place among its siblings), j (its place among all
   // the call's children) and tick in scope, and the accessors parent_<field>(i), child_<field>(i) and
-  // child_set_<field>(i, v) (wgsl/alloc.ts).
-  births(parent: string, child: string, counts: GPUBuffer, init: string) {
+  // child_set_<field>(i, v) (wgsl/alloc.ts); extra binds more buffers for it to read or write.
+  births(parent: string, child: string, counts: GPUBuffer, init: string, extra?: Extra) {
     const P = this.kind(parent), C = this.kind(child), same = P === C, g = this.g;
     const m = this.scratch("m", P.capacity), kept = this.scratch("kept", P.capacity);
     this.run(BIRTH_MASK, [P.body, P.alloc, counts, m, kept], cover(g, P.capacity), [P.capacity, 0, 0, 0]);
     const tot = this.scan(m, P.capacity);
-    const src = birthAssign(P, C, same, init);
-    this.run(src, same ? [C.body, C.alloc, kept, m] : [P.body, C.body, C.alloc, kept, m], cover(g, P.capacity), [P.capacity, this.t, P.capacity, C.capacity]);
+    const src = birthAssign(P, C, same, init, extra), more = extra?.bufs.map((b) => b.buf) ?? [];
+    this.run(src, same ? [C.body, C.alloc, kept, m, ...more] : [P.body, C.body, C.alloc, kept, m, ...more], cover(g, P.capacity), [P.capacity, this.t, P.capacity, C.capacity]);
+    this.run(BIRTH_COMMIT, [C.alloc, tot], [1], [C.capacity, 0, 0, 0]);
+    C.peek.fresh = false;
+  }
+  // Children with no parent object: counts holds a u32 for each of n rows (bins of a lumped kind, requests), and the
+  // children are born in row order by the same rule as births, with parent the row's number and no parent accessors.
+  bear(child: string, counts: GPUBuffer, n: number, init: string, extra?: Extra) {
+    const C = this.kind(child), m = this.scratch("m", n), g = this.g;
+    this.encode((e) => e.copyBufferToBuffer(counts, 0, m, 0, n * 4));
+    const tot = this.scan(m, n);
+    this.run(birthAssign(null, C, false, init, extra), [C.body, C.alloc, counts, m, ...(extra?.bufs.map((b) => b.buf) ?? [])], cover(g, n), [n, this.t, 0, C.capacity]);
     this.run(BIRTH_COMMIT, [C.alloc, tot], [1], [C.capacity, 0, 0, 0]);
     C.peek.fresh = false;
   }
@@ -389,6 +463,7 @@ export class Store {
     const g = this.g, ents = this.kinds.map((k) => this.mirror.entries(k));
     let w = 1 + this.kinds.length;
     const at = this.kinds.map((k) => { const peek = w; w += CTL_WORDS + 2 * PEEK_SLOTS; const head = w; w += 2 * ents[k.n].length; return { peek, head }; });
+    const rat = this.riders.map((r) => { const a = w; w += r.words(); return a; });
     const limit = w + this.budget, out = this.scratch("out", limit), dummy = this.scratch("dummy", 1);
     const from: number[] = [], flat = new Uint32Array(ents.reduce((s, e) => { from.push(s); return s + e.length; }, 0));
     ents.forEach((e, i) => flat.set(e, from[i]));
@@ -402,6 +477,7 @@ export class Store {
       this.run(GATHER_HEAD, [k.start ?? dummy, eb, out], [1], [e.length, at[k.n].head, row, limit, 1 + k.n, from[k.n], 0, 0]);
       this.run(GATHER_ROWS, [k.body, k.order ?? dummy, k.start ?? dummy, eb, out], cover(g, e.length, 1), [e.length, at[k.n].head, row, k.capacity, from[k.n], 0, 0, 0]);
     }
+    this.riders.forEach((r, i) => r.record(out, rat[i]));
     this.flush();
     const back = readback(g, out, limit * 4);
     this.landing = (async () => {
@@ -420,6 +496,7 @@ export class Store {
           this.mirror.land(k, ents[k.n], o, at[k.n].head);
         }
         this.budget = Math.max(this.budget, Math.ceil((need * 1.25) / 4096) * 4096);
+        this.riders.forEach((r, i) => r.land(o, rat[i]));
         for (const d of [...this.queue].sort((a, b) => a.seq - b.seq)) this.mirror.apply(d);
       } finally {
         this.landing = null;
@@ -446,19 +523,24 @@ export class Store {
     for await (const c of this.chunks(buf)) { all.set(new Uint8Array(c), o); o += c.byteLength; }
     return new Uint32Array(all.buffer);
   }
-  // A hash of every buffer of every kind and of their declarations, read back from the GPU.
+  // A hash of every buffer of every kind and of their declarations, and of the named riders' state and buffers, read
+  // back from the GPU.
   async hash(): Promise<string> {
     if (this.landing) await this.landing;
     const h: Hash = { a: 0x811c9dc5, b: 0x2545f491 };
     fold(h, Uint32Array.from(new TextEncoder().encode(JSON.stringify(this.kinds.map((k) => k.spec)))));
     for (const k of this.kinds) for (const [, buf] of buffersOf(k)) for await (const c of this.chunks(buf)) fold(h, new Uint32Array(c));
+    for (const r of this.saved()) {
+      fold(h, Uint32Array.from(new TextEncoder().encode(JSON.stringify([r.name, r.save?.() ?? null]))));
+      for (const [, buf] of r.buffers?.() ?? []) for await (const c of this.chunks(buf)) fold(h, new Uint32Array(c));
+    }
     return (h.a >>> 0).toString(16).padStart(8, "0") + (h.b >>> 0).toString(16).padStart(8, "0");
   }
 
   // ---------- saving ----------
-  // Every buffer of every kind, with the kinds' declarations and the deltas still queued: a little-endian u32 magic
-  // ("NMPU"), a u32 format (1), a u32 header length in bytes, the header as JSON padded with spaces to four bytes, then
-  // each kind's buffers in the header's order.
+  // Every buffer of every kind, with the kinds' declarations and the deltas still queued, and every named rider's state
+  // and buffers: a little-endian u32 magic ("NMPU"), a u32 format (1), a u32 header length in bytes, the header as JSON
+  // padded with spaces to four bytes, then each kind's buffers in the header's order, then each rider's.
   async dump(): Promise<Uint8Array> {
     if (this.landing) await this.landing;
     if (this.begun) throw new Error("a store is saved between ticks, not inside one");
@@ -472,8 +554,17 @@ export class Store {
       }
       kinds.push({ spec: k.spec, buffers: bufs });
     }
+    const tiers = [];
+    for (const r of this.saved()) {
+      const bufs = [];
+      for (const [name, buf] of r.buffers?.() ?? []) {
+        for await (const c of this.chunks(buf)) parts.push(new Uint8Array(c));
+        bufs.push({ name, bytes: buf.size });
+      }
+      tiers.push({ name: r.name!, state: r.save?.() ?? null, buffers: bufs });
+    }
     const queue = this.queue.map((d) => (d.op === "spawn" ? { seq: d.seq, op: d.op, obj: d.obj } : d));
-    const header = { format: 1, t: this.t, seq: this.seq, prov: this.prov, budget: this.budget, kinds, queue };
+    const header = { format: 1, t: this.t, seq: this.seq, prov: this.prov, budget: this.budget, kinds, queue, tiers };
     let json = JSON.stringify(header);
     json = json.padEnd(Math.ceil(json.length / 4) * 4, " ");
     const head = new TextEncoder().encode(json);
@@ -484,10 +575,11 @@ export class Store {
     for (const p of parts) { bytes.set(p, o); o += p.length; }
     return bytes;
   }
-  // The counters and queued deltas of a dump (loadStore).
-  restore(h: SavedHeader) {
+  // The counters and queued deltas of a dump (loadStore), and its riders' state kept for them.
+  restore(h: SavedHeader, tiers: [string, Stashed][] = []) {
     this.t = h.t; this.seq = h.seq; this.prov = h.prov; this.budget = h.budget;
     for (const d of h.queue) this.push(d);
+    for (const [name, s] of tiers) this.stash.set(name, s);
   }
 }
 
@@ -496,14 +588,18 @@ function buffersOf(k: Kind): [string, GPUBuffer][] {
   return [["body", k.body], ["alloc", k.alloc], ...(k.placed ? [["order", k.order!], ["start", k.start!]] as [string, GPUBuffer][] : [])];
 }
 
-type SavedHeader = { format: number; t: number; seq: number; prov: number; budget: number; kinds: { spec: KindSpec; buffers: { name: string; bytes: number }[] }[]; queue: Delta[] };
+type SavedHeader = {
+  format: number; t: number; seq: number; prov: number; budget: number; kinds: { spec: KindSpec; buffers: { name: string; bytes: number }[] }[]; queue: Delta[];
+  tiers?: { name: string; state: unknown; buffers: { name: string; bytes: number }[] }[];
+};
 // The header of a dump, read without a GPU.
 export function savedHeader(bytes: Uint8Array): SavedHeader {
   const w = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (bytes.length < 12 || w.getUint32(0, true) !== MAGIC || w.getUint32(4, true) !== 1) throw new Error("not a saved object store");
   return JSON.parse(new TextDecoder().decode(bytes.subarray(12, 12 + w.getUint32(8, true))));
 }
-// A store made again from a dump: the same kinds, buffers and queued deltas; an empty mirror.
+// A store made again from a dump: the same kinds, buffers and queued deltas; an empty mirror. The riders' state waits
+// for riders of the same names (each tier made again on the loaded store, with the same declaration).
 export function loadStore(g: Gpu, bytes: Uint8Array): Store {
   const h = savedHeader(bytes), s = new Store(g), len = new DataView(bytes.buffer, bytes.byteOffset).getUint32(8, true);
   let o = 12 + len;
@@ -521,6 +617,11 @@ export function loadStore(g: Gpu, bytes: Uint8Array): Store {
     const head = alloc[CTL.head], nfree = alloc[CTL.nfree], free = alloc.slice(CTL_WORDS + head, CTL_WORDS + head + Math.min(PEEK_SLOTS, nfree - head));
     k.peek = { head, nfree, tail: alloc[CTL.tail], overflow: alloc[CTL.overflow], free, meta: free.map((slot) => body[slot]), fresh: true };
   }
-  s.restore(h);
+  const tiers: [string, Stashed][] = (h.tiers ?? []).map((t) => {
+    const data: Record<string, Uint8Array> = {};
+    for (const b of t.buffers) { data[b.name] = bytes.slice(o, o + b.bytes); o += b.bytes; }
+    return [t.name, { state: t.state, data }];
+  });
+  s.restore(h, tiers);
   return s;
 }

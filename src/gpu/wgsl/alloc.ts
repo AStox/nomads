@@ -58,34 +58,38 @@ ${INDEX}
 // generation, alive, its fields zeroed, and then the kind's own initialization runs with the parent and the slot.
 // Children past the capacity are not born (the commit counts them). A parent is alive and a child's slot was not, so
 // no invocation writes a word another reads as a parent's. Bindings with distinct kinds: parent body (bound whether
-// or not the initialization reads it), child body, child alloc, kept, offsets, P; with one kind: body, alloc, kept,
-// offsets, P. P: n parent capacity, t tick, pcap, ccap.
-export function birthAssign(parent: Layout, child: Layout, same: boolean, init: string): string {
-  const head = same
+// or not the initialization reads it), child body, child alloc, kept, offsets, extras, P; with one kind or no parent
+// kind (parent then the row number of kept): body, alloc, kept, offsets, extras, P. P: n parent capacity (or rows), t
+// tick, pcap, ccap.
+export function birthAssign(parent: Layout | null, child: Layout, same: boolean, init: string, extra?: Extra): string {
+  const own = same || !parent
     ? `@group(0) @binding(0) var<storage, read_write> cb: array<u32>;
 @group(0) @binding(1) var<storage, read_write> ca: array<u32>;
 @group(0) @binding(2) var<storage, read> kept: array<u32>;
-@group(0) @binding(3) var<storage, read> ofs: array<u32>;
-@group(0) @binding(4) var<uniform> P: Params;`
+@group(0) @binding(3) var<storage, read> ofs: array<u32>;`
     : `@group(0) @binding(0) var<storage, read> pb: array<u32>;
 @group(0) @binding(1) var<storage, read_write> cb: array<u32>;
 @group(0) @binding(2) var<storage, read_write> ca: array<u32>;
 @group(0) @binding(3) var<storage, read> kept: array<u32>;
-@group(0) @binding(4) var<storage, read> ofs: array<u32>;
-@group(0) @binding(5) var<uniform> P: Params;`;
+@group(0) @binding(4) var<storage, read> ofs: array<u32>;`;
+  const first = same || !parent ? 4 : 5, more = extra?.bufs ?? [];
+  const head = [own, ...more.map((b, i) => `@group(0) @binding(${first + i}) var<storage, ${b.write ? "read_write" : "read"}> ${b.name}: array<u32>;`),
+    `@group(0) @binding(${first + more.length}) var<uniform> P: Params;`].join("\n");
   return /* wgsl */ `
 struct Params { n: u32, t: u32, pcap: u32, ccap: u32 }
 ${head}
-${access("parent", same ? "cb" : "pb", "P.pcap", parent, false)}
+${parent ? access("parent", same ? "cb" : "pb", "P.pcap", parent, false) : ""}
 ${access("child", "cb", "P.ccap", child, true)}
 ${INDEX}
+${extra?.wgsl ?? ""}
 fn born(slot: u32, parent: u32, k: u32, j: u32, tick: u32) {
 ${init}
 }
 @compute @workgroup_size(256) fn main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
   let p = flat(g, n);
   if (p >= P.n) { return; }
-  ${same ? "" : "_ = &pb;"}
+  ${same || !parent ? "" : "_ = &pb;"}
+  ${more.map((b) => `_ = &${b.name};`).join(" ")}
   let c = kept[p];
   if (c == 0u) { return; }
   let head = ca[${CTL.head}u];
@@ -107,6 +111,9 @@ ${init}
   }
 }`;
 }
+// More storage buffers a births initialization reads (or writes), bound after the births' own as array<u32> under
+// the names given, and WGSL helpers placed ahead of the initialization.
+export type Extra = { bufs: { name: string; buf: GPUBuffer; write?: boolean }[]; wgsl: string };
 
 // Births, step three, one invocation: the free list's head and the tail move past the slots given; children the
 // capacity had no room for are counted in the overflow word. Bindings: child alloc, the scan's total, P (ccap).

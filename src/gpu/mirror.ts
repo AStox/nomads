@@ -87,6 +87,12 @@ export class Mirror {
   spawned(id: number): Obj | undefined {
     return this.prov.get(id) ?? this.fresh.get(id) ?? this.last.get(id);
   }
+  // Keeps an object's slot in the next landing's copy, as a lookup that missed would (a tier waiting on something
+  // else before it can act on the object asks for it this way).
+  want(id: number) {
+    const k = id >= 0 ? this.store.kinds[kindOfId(id)] : undefined;
+    if (k) this.pages[k.n].wantSlots.add(slotOfId(id));
+  }
 
   // ---------- objects made from the landing ----------
   private make(k: Kind, p: Pages, w: number, cell: number): Obj {

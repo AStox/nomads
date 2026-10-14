@@ -73,7 +73,9 @@ fn digit(i: u32) -> u32 {
 }`;
 
 // One radix pass, step one: each tile's count of each digit, written digit-major (hist[d * tiles + tile]) so a scan
-// gives every (digit, tile) its first place in the pass's output. Bindings: keys, len (the live count), hist, P.
+// gives every (digit, tile) its first place in the pass's output. Tiles wholly past the live count only write zeros,
+// so a sort dispatched over a large capacity costs what its live keys need. Bindings: keys, len (the live count),
+// hist, P.
 export const RADIX_HIST = /* wgsl */ `
 @group(0) @binding(0) var<storage, read> key: array<u32>;
 @group(0) @binding(1) var<storage, read> len: array<u32>;
@@ -81,8 +83,14 @@ export const RADIX_HIST = /* wgsl */ `
 @group(0) @binding(3) var<uniform> P: Params;
 ${TILE}
 var<workgroup> h: array<atomic<u32>, 256>;
+var<workgroup> live: u32;
 @compute @workgroup_size(256) fn main(@builtin(workgroup_id) w: vec3u, @builtin(num_workgroups) n: vec3u, @builtin(local_invocation_index) l: u32) {
   let tile = tileOf(w, n);
+  if (l == 0u) { live = len[0]; }
+  if (tile * 1024u >= workgroupUniformLoad(&live)) {
+    if (tile < P.tiles) { hist[l * P.tiles + tile] = 0u; }
+    return;
+  }
   atomicStore(&h[l], 0u);
   workgroupBarrier();
   for (var r = 0u; r < 4u; r++) {
@@ -107,8 +115,11 @@ ${TILE}
 var<workgroup> s: array<u32, 1024>;
 var<workgroup> h: array<atomic<u32>, 256>;
 var<workgroup> first: array<u32, 256>;
+var<workgroup> live: u32;
 @compute @workgroup_size(256) fn main(@builtin(workgroup_id) w: vec3u, @builtin(num_workgroups) n: vec3u, @builtin(local_invocation_index) l: u32) {
   let tile = tileOf(w, n);
+  if (l == 0u) { live = len[0]; }
+  if (tile * 1024u >= workgroupUniformLoad(&live)) { return; }
   atomicStore(&h[l], 0u);
   workgroupBarrier();
   for (var r = 0u; r < 4u; r++) {
