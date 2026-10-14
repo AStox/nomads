@@ -12,6 +12,10 @@
     "typescript": "^5.9.0"
   },
   "dependencies": {
-    "math": "0.1.0"
-  }
+    "math": "0.1.0",
+    "webgpu": "0.6.2"
+  },
+  "trustedDependencies": [
+    "webgpu"
+  ]
 }
