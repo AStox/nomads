@@ -143,8 +143,8 @@ const THING_PLACES: Record<string, Place> = {
   hearth: { kinds: ["fire"], ok: (t) => !!t.contained },
   kiln: { kinds: ["fire"], ok: (t) => !!t.contained && !!t.covered },
   forge: { kinds: ["fire"], ok: (t) => !!t.contained && (t.charcoal ?? 0) > 0 },
-  // a tree cut into beads with resin a day or more later (ecology.ts plants)
-  resin: { kinds: ["tree", "stump"], ok: (t) => (t.resin ?? 0) > 0, changed: true },
+  // a pine cut into beads with resin over the next days (ecology.ts plants)
+  resin: { kinds: ["tree", "stump"], ok: (t) => (t.resin ?? 0) >= 1, changed: true },
 };
 // What everyone knows the whereabouts of in the dark. The rest they find by sight, so a plant, a stone or an animal beyond it
 // is no place to go.

@@ -21,8 +21,9 @@ const SHARE: Record<string, number> = { oak: 0.35, ash: 0.29, pine: 0.18 };
 const CORE = 0.55, EDGE = 1.2;
 export const CROWN_REACH = 12; // meters: no crown, of the tallest tree, reaches further from its trunk
 // How much of the sky one tree's crown hides at d meters from its trunk: all of it near the trunk, easing to none.
+export const crownRadius = (t: { species?: string; size: number }) => (SHARE[t.species ?? ""] ?? 0.22) * t.size;
 export function crownCover(t: { species?: string; size: number }, d: number) {
-  const r = (SHARE[t.species ?? ""] ?? 0.22) * t.size;
+  const r = crownRadius(t);
   return d > r * EDGE ? 0 : d <= r * CORE ? 1 : 1 - smooth(CORE, EDGE, d / r);
 }
 // How much of the sky the trees overhead hide, in crowns: 1 under one, more where they overlap; and the crowns' height and

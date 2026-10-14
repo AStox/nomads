@@ -43,6 +43,8 @@ export type Thing = {
   item?: string; parts?: Record<string, number>; shelter?: Shelter; until?: number; born?: number; burnedBy?: string;
   store?: Stack[]; name?: string; died?: number; cause?: string; caught?: string; progress?: number;
   person?: string; // a grave's: whose
+  rained?: number; // ash's: the rain that has fallen on it since it was left, mm
+  oozing?: number; // a pine's: the resin its open wounds have still to give, g
   stale?: number; // a shelter's: how many loads in a row were added to it without making it any better
   inside?: Record<string, number>; // hidden in a boulder until it breaks
   girth?: number; // a stump's: how wide its trunk was, m

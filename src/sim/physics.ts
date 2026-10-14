@@ -618,10 +618,12 @@ function worldTick(w: World, a: Agent, act: Act, t: Thing, tool: Kind, hold: Hol
   st.progress += BLOWS;
   const broke = wear(w, a, act, BLOWS * (now - was) * c.blows / BLOWS, c.E, stem.crush) ?? undefined;
   trace("physics", "cut", { tool: tool.id, target: t.kind, energy: c.E, depth: c.x, blows: c.blows, left: 1 - now }, a.id);
-  // a blade cut into a standing tree takes off the bark over its notch, strips as the notch widens, and the wound beads
-  // resin over the next days
+  // a blade cut into a standing tree takes off the bark over its notch, strips as the notch widens, and a pine's wound
+  // beads resin over the next days from the ducts cut along its edges (ecology.ts plants): a notch across the stem, on
+  // both sides as wide as the stem and growing as tall as it is cut deep [derived]
   if (t.kind === "tree" || t.kind === "stump") {
     t.scarred = w.t;
+    if (t.species === "pine") t.oozing = (t.oozing ?? 0) + RESIN_EDGE * 100 * 2 * stem.D * ((was > 0 ? 0 : 1) + (now - was));
     const strips = (share: number) => Math.floor((share * stem.D ** 2) / (PHYS.bark.mass / (PHYS.bark.rho * PHYS.bark.d)));
     const peeled = isBlade(hold.edge) ? strips(now) - strips(was) : 0;
     if (peeled > 0) {
@@ -1102,6 +1104,9 @@ export function leather(w: World, hide: Kind) {
 // ---------- wet ----------
 // How far from where they stand a fish is in reach: of a basket swept through the water, and of a line dangled in it,
 // which a fish swims to from farther off. A try that comes to nothing had no fish close by (sim.ts CONDITIONS nofish).
+// What a pine's wound gives, g a cm of its edge (time-constants sec. 8): unstimulated, 1.6 g from a 12 by 2.5 cm groove's
+// 29 cm and 1.7 g from a 1.5 cm punched hole's 4.7 cm (Lema et al. 2024, R450).
+export const RESIN_EDGE = 1.65;
 export const FISH_REACH: Record<"basket" | "line", number> = { basket: 15, line: 40 };
 // Who last lifted a fish out of the water, and when: the fish they caught was close by, though it swims there no more.
 const landed = perWorld(() => new Map<string, number>());

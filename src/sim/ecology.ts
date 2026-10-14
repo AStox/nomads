@@ -2,26 +2,26 @@
 import { ensure, p } from "./materials";
 import { ablaze, bedAir, dropPile, dropStacks, mark, nearFire, newKinds, occupied, removeThing, residentsOf, shelterName } from "./physics";
 import { advance, alight, cooling, expose, output, setIn, type Air, type Group } from "./combustion";
-import { physOf } from "./fuel";
+import { PHYS, physOf } from "./fuel";
 import { BURNABLE, WIDEST, airFor, bedOf, blazeOf, fluxOn, landing, landsOn, partsOf, reach, struck, tinderIn, together, warmed, type Part } from "./spread";
 import { see } from "./beliefs";
 import {
-  DAY, H, TILE_M, W, Tile, YEAR, addThing, cropOf, dayOfYear, groundOf, log, meters, nearWater, rng, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
+  DAY, H, TILE_M, W, Tile, YEAR, addThing, cropOf, dayOfYear, groundOf, log, meters, rng, sea, seasonOf, tileAt, dryAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
-import { anyAround, anyOf, around, exists, liveThings, onPath, put, setKind, stockedAt } from "./space";
+import { anyAround, anyOf, around, exists, liveThings, onPath, put, regrow, setKind, stockedAt } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
-import { enrich, feedRate, settle, soilWaterAt, wetHour } from "./soil";
-import { SIZE, START, TALLEST, rockAt } from "../terrain/flora";
+import { enrich, settle, soilWaterAt, wetHour } from "./soil";
+import { SIZE, START, TALLEST } from "../terrain/flora";
 import { YEAR_DAYS } from "./sky";
 import { CELL } from "../terrain/grid";
-import { fitHere, growth, growthOf, pickHere } from "./plants";
-import { ripening, warmRate } from "./cues";
-import { runoffHour, streamNow } from "./streams";
-import { WIND, airAt, airOn, baseTemp, islandAir, islandTemp, sunOn, wetHours } from "./air";
+import { YEARS_PACE, fitHere, growth } from "./plants";
+import { warmRate } from "./cues";
+import { runoffHour } from "./streams";
+import { WIND, airAt, airOn, baseTemp, islandTemp, rainAt, sunOn, wetHours } from "./air";
 import { seasonAt } from "./sky";
-import { skyShare } from "./light";
+import { crownRadius, skyShare } from "./light";
 import { nicheOf, seedlingHour, seedlingOf, shareAt, treeOf, type Hour } from "./seedling";
 import { SEASONS } from "../terrain/climate";
 import { count, timed, trace } from "./trace";
@@ -30,6 +30,7 @@ import { growing, wetness } from "./wetness";
 import { GREEN_UP } from "../terrain/growth";
 import { rotPerHour } from "./spoil";
 import { bodyOf } from "./body";
+import { fasting, onDay, starved } from "./herds";
 
 // Seconds a tick lasts (world.ts DAY: five minutes each).
 const TICK_S = 86400 / DAY;
@@ -222,11 +223,16 @@ function holes(w: World, live: Thing[]) {
       log(w, "dig", t.owner ? [t.owner] : [], t, "Water seeped into a pit and stood in it. A well.");
       see(w, t, "well", "A pit dug near water fills up with water.", 80);
     }
-    if (t.kind === "trap" && t.caught && w.t - (t.until ?? w.t) > DAY / 2) {
+    if (t.kind === "trap" && t.caught) {
+      // A pit with steep walls as deep as someone stands in holds what falls in (docs/research/time-constants.md sec. 7):
+      // it stays till it's killed, or starves there, burning its reserve with nothing to eat.
       const an = w.animals.find((m) => m.state === "trapped" && meters(m, t) <= 1);
-      if (an) an.state = "wander";
-      delete t.caught; setKind(w, t, "pit"); mark(w, t);
-      log(w, "trap", t.owner ? [t.owner] : [], t, "Something broke out of a trap and got away.");
+      if (an && fasting(an, 1 / DAY)) {
+        starved(w, an);
+        log(w, "trap", t.owner ? [t.owner] : [], t, `The ${an.species} in the pit starved.`);
+      }
+      // once nothing is in it, its cover lies broken in the bottom: an open pit again
+      if (!an || an.hunger <= 0) { delete t.caught; setKind(w, t, "pit"); mark(w, t); }
     }
   }
 }
@@ -272,7 +278,7 @@ function burnOut(w: World, t: Thing, by?: string) {
   }
   removeThing(w, t);
   if (t.kind !== "item" && t.kind !== "stick" && t.size >= 0.4) {
-    mark(w, addThing(w, "ash", t.px, t.py, { born: w.t, until: w.t + DAY * 2, size: Math.min(3, t.kind === "bush" ? t.size : 1.2) }));
+    mark(w, addThing(w, "ash", t.px, t.py, { born: w.t, rained: 0, size: Math.min(3, t.kind === "bush" ? t.size : 1.2) }));
     enrich(w, t.px, t.py, 0.1);
   }
 }
@@ -391,8 +397,24 @@ export function fire(w: World, live: Thing[]) {
 // ---------- plants ----------
 // Nothing here asks the season or what a tile is called. Plants grow by the air's warmth, the soil's water, the light and
 // the soil's nourishment where they stand (plants.ts growth); seed falls where it fits (niche.ts) and takes root as it
-// fits; trees ripen their nuts as the days draw in (cues.ts).
+// fits; trees ripen their nuts as the days draw in (cues.ts); what's taken of the ground's growth comes back as it grows.
 const BERRY_HP = 20;
+// Fine woody debris on the ground turns over at 0.17 to 0.25 of its mass a year under oak (R452), a year's; a mushroom's
+// fruit body lasts a week or two (R453), days.
+const STICK_TURNOVER = 0.2, FRUIT_DAYS = 10;
+// The acorns left on the ground under twelve Southampton oaks, kg fresh a m2 of their crowns: 0.196 in the 13 of 27 years
+// that had a crop and none in the rest (R454), a year's mean. They fall from mid September [UNVERIFIED] to the last week of
+// October, by when the trees had shed the bulk of them (R454): real days after the spring equinox.
+const ACORNS = (0.196 * 13) / 27, ACORNS_FROM = onDay(179), ACORNS_TO = onDay(218);
+// How much of the year's acorns have fallen by tick t.
+const fallen = (t: number) => { const d = (((t / DAY) % YEAR_DAYS) + YEAR_DAYS) % YEAR_DAYS; return Math.max(0, Math.min(1, (d - ACORNS_FROM) / (ACORNS_TO - ACORNS_FROM))); };
+const FROM_ROOTS = new Set(["herb", "reeds", "fern", "flowers", "grass"]);
+// When the growing season last turned on, each world.
+const greenings = new WeakMap<World, { on: boolean; since: number }>();
+// The rain that washes ash away, mm (R449).
+const ASH_RAIN = 120;
+// How fast a pine's wound stops running, days (R450).
+const RESIN_DAYS = 0.8;
 // Which stumps put up a new stem from their roots: oak, ash and hazel coppice, aspen suckers, a bramble regrows from its
 // crown; a cut Scots pine dies (docs/research/time-constants.md sec. 6).
 const SPROUTS = new Set(["oak", "ash", "aspen", "hazel", "berry"]);
@@ -401,9 +423,13 @@ function plants(w: World, live: Thing[]) {
   const warm = warmRate(w.weather.temp), greening = growing(w).index >= GREEN_UP;
   for (const t of live) {
     if (ablaze(t)) continue;
-    if (t.scarred && (t.kind === "tree" || t.kind === "stump") && (t.resin ?? 0) < 2 && w.t - t.scarred > DAY && Math.random() < 1 / (DAY * 1.5)) {
-      t.resin = (t.resin ?? 0) + 1;
-      mark(w, t);
+    if (t.oozing) {
+      // a pine's wound runs resin fastest at first and stops within days, as its ducts seal: an exponential with a time
+      // constant of 0.8 days (R450). It beads on the bark, in beads as heavy as resin's piece (fuel.ts)
+      const ran = t.oozing * (1 - Math.exp(-1 / (RESIN_DAYS * DAY))), was = Math.floor(t.resin ?? 0);
+      t.oozing -= ran; t.resin = (t.resin ?? 0) + ran / (PHYS.resin.mass * 1000);
+      if (t.oozing < 0.01) delete t.oozing;
+      if (Math.floor(t.resin) !== was) mark(w, t);
     }
     if (t.kind === "bush") {
       // the crop sets as the bush grows, a year's over half a year of the best growth (plants.ts growth) [design]
@@ -421,7 +447,7 @@ function plants(w: World, live: Thing[]) {
       const sp = t.kind === "dead_bush" ? "berry" : t.species!;
       setKind(w, t, "sapling");
       Object.assign(t, sp === "berry" ? { item: "berry" } : { species: sp }, { stage: 0, born: w.t, hp: 5, maxHp: 5, size: 0.3 });
-      for (const k of ["until", "scarred", "resin", "bark", "girth", "n", "fit", "share", "dry", "peak"] as const) delete t[k];
+      for (const k of ["until", "scarred", "resin", "oozing", "bark", "girth", "n", "fit", "share", "dry", "peak"] as const) delete t[k];
       if (sp === "berry") delete t.species;
       mark(w, t);
     } else if (t.kind === "sapling") {
@@ -435,12 +461,21 @@ function plants(w: World, live: Thing[]) {
       if (fate === "withered") { wither(w, t); continue; }
       if (Math.round((t.stage ?? 0) * 20) !== Math.round(was * 20)) { t.size = Math.round((0.3 + (t.stage ?? 0) * 0.5) * 100) / 100; mark(w, t); }
       if (fate === "up") matured(w, t);
-    } else if (t.kind === "ash" && t.until! <= w.t) removeThing(w, t);
+    } else if (t.kind === "ash") {
+      // the rain beats it down and washes it into the soil: after a grassland fire, little of the ash went in the first
+      // 10 mm, most of it with the next 81 and all but traces by 120 mm (Pereira et al., time-constants sec. 8)
+      t.rained = (t.rained ?? 0) + (rainAt(w, t.px, t.py) * 24) / DAY;
+      if (t.rained >= ASH_RAIN) removeThing(w, t);
+    }
   }
-  // Trees drop nuts as the days draw in, a few a day over the island. They keep for weeks, if someone gathers and stores them.
-  if (ripening(w.t) && Math.random() < 0.3) {
-    const t = anyOf(w, "tree");
-    if (t && !ablaze(t)) { const a = Math.random() * Math.PI * 2, d = (1 + Math.random() * 3) / TILE_M; dropPile(w, t.px + Math.cos(a) * d, t.py + Math.sin(a) * d, "nut", 1); }
+  // Oaks shed their acorns from mid September to late October, each as big a crop as its crown's ground holds (R454),
+  // day by day as that time goes by, into a pile under its crown; they keep for months if someone gathers them
+  if (w.t % DAY === 0) {
+    const f = fallen(w.t), f0 = fallen(w.t - DAY);
+    if (f > f0) for (const t of [...w.things]) if (t.kind === "tree" && t.species === "oak" && !ablaze(t)) {
+      const crop = (ACORNS * Math.PI * crownRadius(t) ** 2) / (PHYS.nut.mass * (1 + (PHYS.nut.green ?? 0))), n = Math.floor(crop * f) - Math.floor(crop * f0);
+      if (n > 0) dropPile(w, t.px + (crownRadius(t) / 2) / TILE_M, t.py, "nut", n);
+    }
   }
   // Birds carry berry seeds off, and trees shed theirs about them; what lands where it fits may take root.
   if (Math.random() < warm / 100) {
@@ -451,22 +486,22 @@ function plants(w: World, live: Thing[]) {
     const t = anyOf(w, "tree");
     if (t?.species && !ablaze(t)) seedNear(w, t, t.species, 4, 30);
   }
-  if (Math.random() < 1 / 60 + (1 / 18 - 1 / 60) * warm) {
-    const x = Math.floor(Math.random() * W), y = Math.floor(Math.random() * H), px = x + Math.random(), py = y + Math.random();
-    if (!dryAt(w, px, py)) return;
-    const { isle, fine } = groundOf(w.seed), mx = px * TILE_M - SIZE / 2, mz = py * TILE_M - SIZE / 2, r = Math.random();
-    // Weather wears reddish stones out of bare ground over rock that carries iron, now and then.
-    if (r > 0.94 && Math.random() < 2 * fine.fine(fine.cover.bare, mx, mz) * rockAt(isle, mx, mz).ore) { dropPile(w, px, py, "ore", 1); return; }
-    // Reeds and clay at the water's edge while it is warm; under trees fungi, herbs and fallen sticks; elsewhere sticks and stones.
-    const edge = [0, 1, 2, 3, 4, 5, 6, 7].some((k) => { const ex = px + (Math.cos((k * Math.PI) / 4) * 8) / TILE_M, ey = py + (Math.sin((k * Math.PI) / 4) * 8) / TILE_M; return wetAt(w, ex, ey) || !!streamNow(w, ex, ey)?.flowing; });
-    const wooded = fine.fine(fine.cover.tree, mx, mz) > 0.45;
-    const kind = edge && warm > 0.3 ? (r < 0.7 ? "reeds" : "clay") : wooded ? (warm < 0.3 ? (r < 0.2 ? "mushroom" : "stick") : r < 0.45 ? "mushroom" : r < 0.6 ? "herb" : "stick") : r < 0.5 ? "stick" : "stone";
-    if (anyAround(w, px, py, 3, [kind])) return;
-    const extra: Partial<Thing> = kind === "reeds" ? { hp: 6, maxHp: 6, size: 1 + Math.random() * 1.5 } : kind === "mushroom" ? { species: pickHere(w, FUNGI, px, py, Math.random()), hp: 2, maxHp: 2 } : kind === "herb" ? { species: pickHere(w, HERBS, px, py, Math.random()), hp: 3, maxHp: 3 } : kind === "stick" ? { hp: 8, maxHp: 8, size: 0.4 + Math.random() * 1.2 } : kind === "stone" ? { hp: 40, maxHp: 40 } : { hp: 10, maxHp: 10 };
-    mark(w, addThing(w, kind, px, py, extra));
-  }
+  // the season's growth turning on: what grew from roots comes back from them from here
+  const g = greenings.get(w) ?? { on: greening, since: -Infinity };
+  if (greening && !g.on) g.since = w.t;
+  g.on = greening;
+  greenings.set(w, g);
+  // once a day, what was taken of the ground's growth comes back as its kind does (time-constants sec. 8): a fallen
+  // branch's place is filled as the trees drop the next, at the rate fine woody debris on the ground turns over (R452); a
+  // mushroom's as the fungus fruits again, a fruit body lasting 44 days for a chanterelle and a week or two for the rest
+  // (R453); herbs, reeds, ferns, flowers and grass from their roots at the next green-up, as a broadleaf's stump does;
+  // stones, clay and ore never, nothing making more of them in a lifetime
+  if (w.t % DAY === 0) regrow(w, (t, went) => {
+    if (t.kind === "stick") return Math.random() < 1 - Math.exp((-STICK_TURNOVER * YEARS_PACE) / 365.25);
+    if (t.kind === "mushroom") return Math.random() < 1 - Math.exp(-YEARS_PACE / (t.species === "chanterelle" ? 44 : FRUIT_DAYS));
+    return FROM_ROOTS.has(t.kind) && g.since > went;
+  });
 }
-const FUNGI = ["bolete", "chanterelle", "puffball"] as const, HERBS = ["yarrow", "sorrel", "mint"] as const;
 // Seed of a species falling between near and far meters from a plant, taking root as the spot fits it, on any ground
 // nothing stands on: whether it lives is up to the light, water and soil it finds there, other plants' share included.
 function seedNear(w: World, t: Thing, species: string, near: number, far: number) {

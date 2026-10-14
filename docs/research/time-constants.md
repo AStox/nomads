@@ -88,16 +88,33 @@ Sources: R357 (conifers mostly can't coppice), R358 (Scots pine cannot resprout)
 
 Gap: a sprout draws on its roots' stores and grows far faster than a seedling; here it starts from a seed's mass. A pine stump never goes, as stumps don't rot.
 
-## 7. The gates at 36eb189
+## 7. A trapped animal
+
+| Old rule | Now |
+|---|---|
+| Whatever fell into a hidden pit broke out half a day later | A pit with steep walls as deep as someone stands in (PIT_DEPTH 1.5 m) holds what falls in: trapping pits for elk, reindeer and wolves were up to about 2 m deep and steep-sided so that nothing could climb or jump out (R451). It stays until it's killed (wolves take one in a pit as readily as any) or starves: it burns its field metabolic rate from its own reserve with nothing to eat (herds.ts fasting), a deer from full in about a game day and a half at the herds' pace, and lies there as carrion. A pit with nothing left in it is an open pit again |
+
+Gaps: rabbits and foxes dig, and could dig out [gap: no digging rate found]; thirst would kill before hunger [gap: no measure of how long a deer lasts without water found].
+
+## 8. Ash, resin, acorns and what grows back
+
+| Old rule | Now |
+|---|---|
+| Ash lay two days | Ash lies until the rain on it adds up to 120 mm (Thing.rained, the rain on open ground there, air.ts rainAt): after a grassland fire near Vilnius little ash went in the first 10 mm, most of it with the next 81 mm and all but traces by 120 mm (Pereira et al., R449). Wind moved some between rains, which they could not measure [gap] |
+| A cut tree of any kind beaded resin on a dice, at most two beads | Only a pine's wound runs resin, from the ducts cut along its edges: unstimulated, 1.6 g a cm of edge from a 12 x 2.5 cm tapping groove (0.6 kg a tree from 13 grooves) and 1.7 g a cm from a 1.5 cm punched hole (8 g), so 1.65 g a cm (Lema et al., R450) [derived]. A blade's notch across a stem D wide has 2D of edge when it opens and 2D more as it's cut through [derived]. It flows out exponentially, the punched hole's 6.3 g on day one, 1.9 on day two and 0.3 by day four giving a time constant of 0.8 days (R450), and beads in resin's 50 g pieces; no cap |
+| One nut a tick, on a 30% roll, under a random tree while the days drew in | Oaks shed acorns from mid September [UNVERIFIED] to the last week of October, when the Southampton oaks had shed the bulk (R454), day by day as that time passes, into one pile under each oak's crown: 0.196 kg a m2 of crown in a crop year, 13 years of 27, so 0.094 kg a year (R454), over the crown a sprite draws (light.ts crownRadius). A 15 m oak gives about 8 kg, 160 nuts. Pine, ash and aspen bear none; hazel's figures are orchards' [gap] |
+| Sticks, stones, mushrooms, herbs, reeds, clay and ore appeared by a threshold table on one draw | The generator lays all of them down as they stand. What people take comes back where it grew, on ground being looked at: a stick's place at the rate fine woody debris on the ground turns over, 0.17 to 0.25 of it a year under oak (R452), 0.2; a mushroom as the fungus fruits again, a chanterelle's fruit body lasting 44 days (R453) and the others' a week or two, 10 days [derived]; herbs, reeds, ferns, flowers and grass from their roots at the first green-up after they were taken, as a broadleaf's stump (sec. 6). Stones, clay and ore don't come back |
+
+The rates are biology's, at the year's pace (plants.ts YEARS_PACE); ash, resin and the rain are physics, on the clock.
+
+## 9. The gates at 36eb189
 
 - Worlds tier: passes (wasted 0.08 against 0.06).
 - Probe gate: fails on one claim. unlearn/real's "nearly all whose own tries show the true cause come to rule it out" drops from 0.87 to 0.64 over nine seeds. Seeds 1, 6, 7 and 10 come out exactly as before, and the planting probes' sky has no storms. The old ice and dead-bush rolls drew on the world's random stream every tick through the winter and wherever a dead bush stood, and their going changes the draws from there on, so the other seeds go their own way [INFERENCE: not traced seed by seed]. Every other claim stands as at a8bf4da.
 
-## 8. Still on the old rules
+## 10. Still on the old rules
 
-- Nut fall (a 30% roll a tick for one nut on one random tree as the days draw in), seed dispersal (two island-wide rolls into fixed rings), and the litter, fungi, herbs, sticks, stones, reeds and clay that appear by a threshold table: they need the trees' measured crops and dispersal kernels, and a world that holds that many things [gap].
-- Resin beading on a dice capped at two [gap: no measured wound exudation found].
-- Ash lying two days; a trapped animal breaking out after half a day [gap].
+- Seed dispersal (two island-wide rolls into fixed rings): Scots pine's seed crop (12,000 a tree in good years, 50 to 70% viable), its kernel (80% within 20 m of a 20 m tree) and its spring germination are measured (Nixon and Worrell, R455), but how many seeds become seedlings is only bounded (under 5,000 established a ha within 50 m of the trees without disturbing the soil), and oak, ash, aspen and bramble have none [gap].
 - Bushes' hit points regrowing at a flat rate (the picking substrate, 7).
 
 ## References
@@ -118,3 +135,10 @@ Gap: a sprout draws on its roots' stores and grows far faster than a seedling; h
 - R358 bplant, Scots pine (cannot resprout). https://bplant.org/plant/157 (search excerpt)
 - R359 Forest Research (2004), Restoration of neglected hazel coppice, Information Note FCIN056. https://cdn.forestresearch.gov.uk/2004/01/fcin056.pdf (search excerpt)
 - R360 Aspen root sucker formation and apical dominance, Forest Science 8 (Aspen Bibliography). https://digitalcommons.usu.edu/aspen_bib/6092 (search excerpt)
+- R449 Pereira P., Cerdà A., Úbeda X. et al. (2013), Spatial models for monitoring the spatio-temporal evolution of ashes after fire, a case study of a burnt grassland in Lithuania, Solid Earth 4:153-165. https://se.copernicus.org/articles/4/153/2013/ (read 2026-10-13)
+- R450 Lema M., Touza R., Feijoo D., Bustingorri G., Martínez É., Zas R. (2024), Resin tapping of Atlantic pine forests: towards an optimized use of stimulant pastes over the season, Eur J Forest Res 143:1213-1224, Figs 1, 4 and 5 (controls). https://link.springer.com/article/10.1007/s10342-024-01684-y (read 2026-10-13)
+- R451 Wikipedia, Trapping pit (pits for elk, reindeer and wolves, steep-sided, "impossible for the animal to escape"); Norwegian Wikipedia, Fangstgrav (earth pits 4 to 7 m across and up to 2 m deep, narrowing to a slot that locked the legs). https://en.wikipedia.org/wiki/Trapping_pit (read 2026-10-13)
+- R452 Decomposition of fine woody debris in a deciduous forest in North Carolina (2011), J Torrey Bot Soc 138(2) (k 0.06 to 0.33 a year over eleven species, 0.17 to 0.25 for white oak and its companion, on the surface). https://bioone.org/journals/the-journal-of-the-torrey-botanical-society/volume-138/issue-2/TORREY-D-10-00009.1 (search excerpt)
+- R453 Pilz D., Norvell L., Danell E., Molina R. (2003), Ecology and management of commercially harvested chanterelle mushrooms, USDA PNW-GTR-576 (chanterelles persist 44 days on average, where most mushrooms flush over a week or two, as Galloway Wild Foods summarises it). https://gallowaywildfoods.com/chanterelles-sustainable-and-considerate-harvesting (search excerpt)
+- R454 Climate variation, reproductive frequency and acorn yield in English oaks (2018), J Plant Ecol 12(3):542-549 (12 Q. robur on Southampton Common, 1989 to 2015: crops in 13 of 27 years, mean 0.196 kg a m2, shed by the last week of October). https://pmc.ncbi.nlm.nih.gov/articles/PMC7787049/ (read 2026-10-13)
+- R455 Nixon C.J., Worrell R. (1999), The potential for the natural regeneration of conifers in Britain, Forestry Commission Bulletin 120, Tables 2.2, 2.5 and 2.6, Fig. 2.4. https://cdn.forestresearch.gov.uk/1999/06/fcbu120.pdf (read 2026-10-13)

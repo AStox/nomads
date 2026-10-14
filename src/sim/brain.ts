@@ -160,7 +160,7 @@ export function view(w: World, a: Agent) {
     if (t.kind !== "fire" && ablaze(t)) kind = `burning ${kind}`;
     if (t.kind === "fire") kind = t.covered ? "fire heaped over with stone" : t.contained && (t.charcoal ?? 0) > 0 ? "ringed fire glowing white-hot with charcoal" : t.contained ? "ringed fire" : "fire";
     if (ablaze(t)) kind = `${kind}, ${blazeWords(w, t)}`;
-    if ((t.resin ?? 0) > 0) kind = `${kind} beaded with resin`;
+    if ((t.resin ?? 0) >= 1) kind = `${kind} beaded with resin`;
     if (t.kind === "boulder" && t.inside?.flint) kind = "boulder studded with dark nodules";
     if (t.shared) kind = `${kind} kept as the camp's store`;
     const label = t.owner && t.kind !== "fire" && t.kind !== "sapling" ? (t.owner === a.id ? `your ${kind}` : `${w.agents.find((x) => x.id === t.owner)?.name}'s ${kind}`) : kind;

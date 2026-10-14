@@ -166,9 +166,10 @@ function thing(w: World, t: Thing): Inspected {
   }
   if (t.burnedBy) rows.push({ label: "fire started by", value: nameOf(w, t.burnedBy) ?? t.burnedBy, link: w.agents.some((a) => a.id === t.burnedBy) ? t.burnedBy : undefined });
   if (t.stage !== undefined) bars.push(["grown", r(t.stage, 2), 1]);
-  if (t.until !== undefined) rows.push({ label: t.kind === "ash" ? "blows away" : "grows back", value: t.until > w.t ? `in ${r((t.until - w.t) / DAY)} days` : "soon" });
+  if (t.until !== undefined) rows.push({ label: "grows back", value: t.until > w.t ? `in ${r((t.until - w.t) / DAY)} days` : "soon" });
+  if (t.rained !== undefined) rows.push({ label: "rained on", value: `${r(t.rained)} mm` });
   if (t.scarred !== undefined) rows.push({ label: "cut into", value: days(w, t.scarred) });
-  if (t.resin) rows.push({ label: "resin", value: t.resin });
+  if (t.resin && t.resin >= 1) rows.push({ label: "resin", value: Math.floor(t.resin) });
   if (t.bark) rows.push({ label: "bark peeled", value: t.bark });
   if (t.caught) rows.push({ label: "caught", value: t.caught });
   if (t.shared) rows.push({ label: "shared by", value: w.camps.find((c) => c.id === t.shared)?.name ?? t.shared });

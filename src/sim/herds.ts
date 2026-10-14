@@ -150,7 +150,7 @@ const wolfSurvival = (d: number) => Math.max(0.01, Math.min(Math.exp(-SPEC.wolf.
 // Births (sec. 5): the island days (counted from 0) of the rut, calving and whelping, and of the rabbits' season: the
 // real dates' days after the spring equinox, 20 March, at the year's pace, from the island's equinox in the middle of
 // its spring (sky.ts).
-const onDay = (realDays: number) => (YEAR_DAYS / 8 + realDays / YEARS_PACE) % YEAR_DAYS;
+export const onDay = (realDays: number) => (YEAR_DAYS / 8 + realDays / YEARS_PACE) % YEAR_DAYS;
 const RUT = onDay(219), CALVING = onDay(77), WHELPING = onDay(36), CUBBING = onDay(-5), KITS_FROM = onDay(287), KITS_TO = onDay(164);
 const LITTER = 5, LITTER_DAYS = 30, PUPS = 5.5, PACK = 4;
 // The young join the grown at birth and from then die at the grown's rate, so they join as many as the field's share
@@ -657,6 +657,19 @@ export function gone(w: World, an: Animal) {
   if (an.species === "fish") takeFish(w, w.herds?.fish, an, 1);
   if (counted(an.species) && w.herds) { const n = countOf(w.herds, an.species), i = tileOf(an); n[i] = Math.max(0, n[i] - 1); }
 }
+// One that can't feed, fallen into a pit: dt island days of its field metabolic rate come off its own reserve, which its
+// hunger is the share of; true once that's gone.
+export function fasting(an: Animal, dt: number) {
+  if (!herded(an.species)) return false;
+  const k = SPEC[an.species];
+  an.hunger -= (100 * k.fmr * dt * YEARS_PACE) / k.full;
+  return an.hunger <= 0;
+}
+// One that starved where it stood: gone from its tile's count, and lying there as carrion.
+export function starved(w: World, an: Animal) {
+  gone(w, an);
+  if (herded(an.species) && w.herds) (w.herds.carrion ??= blank())[tileOf(an)] += SPEC[an.species].kg;
+}
 // An individual that walked onto another tile takes one of the count with it.
 export function moved(w: World, an: Animal, x0: number, y0: number) {
   if (!counted(an.species) || !w.herds) return;
@@ -712,7 +725,8 @@ export function reveal(w: World, spawn: (sp: AnimalSpecies, px: number, py: numb
       if (!pts.length) continue;
       const n = count[i], show = (n * pts.length) / (K * K), ans = here.get(i) ?? [];
       let have = ans.length;
-      for (const an of ans) an.hunger = hunger(i);
+      // one held in a pit keeps its own reserve, which it can't feed to make up (fasting)
+      for (const an of ans) if (an.state !== "trapped") an.hunger = hunger(i);
       if (have > Math.ceil(n)) { const gone = new Set(ans.filter((an) => an.state !== "trapped").slice(0, have - Math.ceil(n))); w.animals = w.animals.filter((x) => !gone.has(x)); have -= gone.size; }
       const want = Math.floor(show) + (!ans.length && rand() < show - Math.floor(show) ? 1 : 0);
       for (let k = 0; have < want && k < 30; k++) {

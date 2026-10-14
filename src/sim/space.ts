@@ -14,6 +14,7 @@ type Index = {
   stocked: Uint8Array; // 1 where the tile's grown things are Things in w.things
   seen: Int32Array; // the tick something last looked at each tile
   changes: Uint32Array; // how many times anything has come onto each tile's bins or left them
+  taken: Map<string, number>; // grown things gone from a stocked tile, and the tick they went
 };
 const indexes = new WeakMap<World, Index>();
 
@@ -47,7 +48,7 @@ function add(w: World, ix: Index, t: Thing, live: boolean) {
 export function index(w: World): Index {
   let ix = indexes.get(w);
   if (ix) return ix;
-  ix = { at: new Map(), tiles: new Map(), live: new Set(), stocked: new Uint8Array(W * H), seen: new Int32Array(W * H), changes: new Uint32Array(W * H) };
+  ix = { at: new Map(), tiles: new Map(), live: new Set(), stocked: new Uint8Array(W * H), seen: new Int32Array(W * H), changes: new Uint32Array(W * H), taken: new Map() };
   // every kind the ground grows has its bins from the start, so stocking a tile mid-search never adds a list to search
   for (const k of FLORA) ix.tiles.set(k, new Array(W * H));
   for (const t of w.stocked) ix.stocked[t] = 1;
@@ -93,6 +94,7 @@ export function leave(w: World, t: Thing) {
   ix.at.delete(t.id);
   unbucket(ix, t);
   ix.live.delete(t);
+  if (grownIndex(w, t.id) >= 0) ix.taken.set(t.id, w.t);
 }
 export const thingById = (w: World, id?: string | null) => {
   if (!id) return undefined;
@@ -285,10 +287,25 @@ export function shelve(w: World) {
       asGrown = i !== undefined && same(w.things[i], grown(w, k));
     }
     if (!asGrown) { kept.push(t); continue; }
-    for (let k = f.start[t]; k < f.start[t + 1]; k++) leave(w, w.things[ix.at.get(`t${k + 1}`)!]);
+    for (let k = f.start[t]; k < f.start[t + 1]; k++) { leave(w, w.things[ix.at.get(`t${k + 1}`)!]); ix.taken.delete(`t${k + 1}`); }
     ix.stocked[t] = 0;
   }
   w.stocked = kept;
+}
+
+// What was taken of the ground's own growth comes back where it grew: back: given one as it grew and the tick it went
+// (that of the world's loading, for one gone before), whether it's back now (ecology.ts regrowth).
+export function regrow(w: World, back: (t: Thing, went: number) => boolean) {
+  const ix = index(w), f = groundOf(w.seed).flora;
+  for (const t of w.stocked)
+    for (let k = f.start[t]; k < f.start[t + 1]; k++) {
+      const id = `t${k + 1}`;
+      if (ix.at.has(id)) continue;
+      const th = grown(w, k);
+      if (!back(th, ix.taken.get(id) ?? (ix.taken.set(id, w.t), w.t))) continue;
+      ix.taken.delete(id);
+      add(w, ix, th, !settled(th));
+    }
 }
 
 // Everything in the world, for drawing. The grown arrays are shared as they are, not copied; `gone` lists the grown
