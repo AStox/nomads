@@ -26,10 +26,12 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
   const prev = new Map(), ents = new Map();
   let headed = { id: null, t: -1, to: null };
   let alpha = 0, tickMs = 0, last = null, pausedAt = null, lastIv = 0, lastEvent = 0;
+  // a tick under way, and what the last one changed, not yet handed to the page
+  let running = false, done = null;
 
-  const step = () => {
+  const step = async () => {
     const t0 = performance.now();
-    try { tick(w); } catch (e) { console.error("tick", e); }
+    try { await tick(w); } catch (e) { console.error("tick", e); }
     // The server's save() trims the chronicle like this every 50 ticks.
     if (w.t % 50 === 0 && w.events.length > 50_000) w.events = w.events.slice(-50_000);
     return t0;
@@ -90,7 +92,7 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
   clearChanges();
   census(); travel();
   for (let i = 0; i < warm; i++) {
-    took(step());
+    took(await step());
     census(); travel();
     clearChanges();
     await nextTask();
@@ -152,34 +154,40 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
       const ft = w.t + alpha, h = sim.hour ?? ((ft % DAY) / DAY) * 24;
       return { hour: h, day: Math.floor(ft / DAY) + 1, season: w.weather.season };
     },
-    // At most one tick per call: each tick needs its own task, and the server never bursts to catch up either.
+    // At most one tick per call: each tick needs its own task, and the server never bursts to catch up either. A tick
+    // is awaited, so what it changed is handed back by the first call after it ends, which may start the next; none
+    // starts while one runs, and one that fails is logged and leaves the next free to start.
     update(now) {
       if (sim.paused) { pausedAt ??= now; return null; }
       if (pausedAt !== null) { if (last !== null) last += now - pausedAt; pausedAt = null; }
       const iv = BASE_MS / sim.speed;
       if (last === null) { last = now; lastIv = iv; return null; }
       if (iv !== lastIv) { last = now - alpha * iv; lastIv = iv; }
-      if (now - last < iv) { alpha = Math.max(0, (now - last) / iv); return null; }
+      const ready = done;
+      done = null;
+      if (running || now - last < iv) { alpha = Math.min(1, Math.max(0, (now - last) / iv)); return ready; }
       last = now - last < 2 * iv ? last + iv : now;
-      remember();
-      const t0 = step();
-      roll();
-      census(); travel();
-      const things = [...changed].map((id) => thingById(w, id)).filter(Boolean).map((t) => thingView(w, t));
-      const out = {
-        things,
-        removed: [...removed].filter((id) => !thingById(w, id)),
-        paths: [...pathChanges],
-        trails: [...trailChanges],
-        ice: iceChanged.now,
-        groups: groupsChanged.now,
-        events: newEvents(),
-        kinds: newKinds.size || changedKinds.size ? [...new Set([...newKinds, ...changedKinds])].filter((id) => w.kinds[id]) : [],
-      };
-      clearChanges();
-      took(t0);
       alpha = Math.min(1, (now - last) / iv);
-      return out;
+      remember();
+      running = true;
+      step().then((t0) => {
+        roll();
+        census(); travel();
+        const things = [...changed].map((id) => thingById(w, id)).filter(Boolean).map((t) => thingView(w, t));
+        done = {
+          things,
+          removed: [...removed].filter((id) => !thingById(w, id)),
+          paths: [...pathChanges],
+          trails: [...trailChanges],
+          ice: iceChanged.now,
+          groups: groupsChanged.now,
+          events: newEvents(),
+          kinds: newKinds.size || changedKinds.size ? [...new Set([...newKinds, ...changedKinds])].filter((id) => w.kinds[id]) : [],
+        };
+        clearChanges();
+        took(t0);
+      }).catch((e) => console.error("tick", e)).finally(() => { running = false; });
+      return ready;
     },
   };
   return sim;

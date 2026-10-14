@@ -45,6 +45,14 @@
 2. **[2026-10-06] The harness's Python kernel rewrites a line holding `= !x` as a shell call, even inside a string**
    Two lines of scripts/probes.ts written from a Python string came out as `__omp_shell("...")`.
    Do instead: write source with the edit and write tools; after any Python that writes code, grep the result for __omp_shell.
+3. **[2026-10-14] Headless runs hold one GPU device; NOMADS_GPU pins the adapter**
+   src/gpu/device.ts theGpu() opens one device a process (Dawn's `webgpu` package under Bun, navigator.gpu in a page). Dawn frees its instance when the JS object `create()` returned is collected, even with a map or submit pending, and the next call segfaults (Bun and Node alike); device.ts roots the instance on the device, so never call `create()` elsewhere or drop that property. A live device keeps Bun from exiting. NOMADS_GPU is "high-performance" (default), "low-power", or a piece of the adapter's name; evals.ts pins each child to the full name it read and writes it in the ledger (`adapter`), and bounds jobs by maxBufferSize over a per-run GPU budget as well as RAM.
+   Do instead: in a headless script call scripts/seeded.ts `holdGpu()` before making the world and end with its `exit()` (releaseGpu then process.exit); in a test, `afterAll(releaseGpu)`. Compare runs only on the same adapter.
+
+## GPU Sim
+1. **[2026-10-14] tick(w) is async; integer-only arithmetic in gate kernels**
+   The world's objects are moving to the GPU (docs/plans/2026-10-14-001-refactor-gpu-object-world-plan.md), so `tick` returns a promise and every host awaits it, one at a time (server.ts loop schedules the next only after; play/sim.js update starts one and hands its changes back on a later call). The random brain's promise chains therefore now move after every tick (each `await` runs one microtask turn of them), not only at the Bun.sleep(0) every fourth tick in bench.ts, probes.ts, theories.ts and tech.ts; bench's blame, seed and world checksums were rebaselined for it on 2026-10-14 (HEAD with `tick(w); await Promise.resolve();` gives the new ones exactly). Where a caller yields can change a run. In a gate kernel no float sits between a buffer read and a buffer write: state is fixed point with a documented unit and scale, and exp, log, pow and gamma come from src/gpu/fixed.ts with WGSL twins (floats differed between the AMD and Intel GPUs from the 6th digit; integers never did).
+   Do instead: never call tick without awaiting it or run two at once; keep floats to drawing; check a kernel against its TypeScript twin bit for bit and long runs against bench.ts checksums.
 
 ## Domain Behavior Guardrails
 1. **[2026-10-07, fire 2026-10-09] Every outcome comes of a formula; people notice its inputs**

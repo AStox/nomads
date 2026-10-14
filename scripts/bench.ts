@@ -16,7 +16,7 @@ import { around, liveThings } from "../src/sim/space";
 import { hooks } from "../src/sim/rules";
 import { traceListeners, type TraceEntry } from "../src/sim/trace";
 import { runProbe } from "./probes";
-import { seedRandom } from "./seeded";
+import { exit, holdGpu, seedRandom } from "./seeded";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 const only = arg("only", "make,blame,seed,world,spread").split(","), days = Number(arg("days", "20"));
@@ -36,7 +36,7 @@ const WORK: Record<string, () => Promise<string>> = {
     seedRandom(1);
     const w = newWorld(1);
     for (let i = 0; i < days * DAY; i++) {
-      tick(w);
+      await tick(w);
       changed.clear(); removed.clear(); newKinds.clear(); trailChanges.clear();
       // as scripts/theories.ts runs a world: what people are thinking over comes to them every few ticks
       if (i % 4 === 0) await Bun.sleep(0);
@@ -89,9 +89,10 @@ const WORK: Record<string, () => Promise<string>> = {
     return hash(JSON.stringify({ spread, burning: [...liveThings(w)].filter((t) => !!t.bed).length, world: stateOf(w) }));
   },
 };
+console.error(`gpu: ${await holdGpu()}`);
 for (const name of only) {
   const t0 = performance.now();
   const sum = await WORK[name]();
   console.log(JSON.stringify({ work: name, secs: Math.round((performance.now() - t0) / 100) / 10, check: `${sum}:${Math.random().toFixed(12)}` }));
 }
-process.exit(0);
+await exit();

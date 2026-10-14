@@ -16,7 +16,7 @@ import { traceListeners } from "../src/sim/trace";
 import { asking, brainKind } from "../src/sim/brain";
 import { RULES } from "../src/sim/rules";
 import { moistureOf } from "../src/sim/wetness";
-import { seedRandom } from "./seeded";
+import { exit, holdGpu, seedRandom } from "./seeded";
 import { hurting, loadKey } from "./answer-key";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
@@ -26,6 +26,7 @@ if (learning !== "seen" && learning !== "off" && learning !== "known") throw new
 RULES.learning = learning;
 if (learning === "known") RULES.truth = hurting(loadKey(arg("key", "")));
 seedRandom(Number(arg("rng", String(seed))));
+await holdGpu();
 const w = newWorld(seed);
 const lines: string[] = [];
 traceListeners.push((e) => {
@@ -45,7 +46,7 @@ const WOOD = new Set(["stick", "log", "plank"]);
 const t0 = performance.now();
 for (let d = 1; d <= days; d++) {
   for (let i = 0; i < DAY; i++) {
-    tick(w);
+    await tick(w);
     changed.clear(); removed.clear(); newKinds.clear(); trailChanges.clear();
     // what was planted (or watered) this tick, where it went in, whether or not it ever shows
     for (const a of w.agents) for (const e of a.waiting ?? []) if (e.t === w.t) lines.push(JSON.stringify({ ev: "sown", t: w.t, agent: a.id, key: e.key, now: e.now }));
@@ -62,4 +63,4 @@ for (let d = 1; d <= days; d++) {
 // what this world made and settled, for trying its ways on the island afterwards
 lines.push(JSON.stringify({ ev: "kinds", t: w.t, learning, kinds: Object.fromEntries(Object.entries(w.kinds).filter(([, k]) => k.made)), rulings: w.rulings }));
 await Bun.write(out, lines.join("\n") + "\n");
-process.exit(0);
+await exit();

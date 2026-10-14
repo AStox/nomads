@@ -2256,7 +2256,9 @@ function agentTick(w: World, a: Agent) {
   }
 }
 
-export function tick(w: World) {
+// One tick of the world. Async because the world's objects are moving to the GPU, whose results come back as promises;
+// every caller awaits it, one tick at a time.
+export async function tick(w: World) {
   w.t++;
   traceClock.t = w.t;
   timed("ecology", () => ecology(w));

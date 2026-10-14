@@ -221,7 +221,7 @@ test("striking pyrite over a lay whose tinder is damp only throws sparks that wo
   expect(cameOff(b, tried(KEPT))).toBe(true);
 });
 
-test("rain that starts after they planned a fire stops them rubbing sticks, if they think fire won't light in the rain", () => {
+test("rain that starts after they planned a fire stops them rubbing sticks, if they think fire won't light in the rain", async () => {
   const [w, a] = fresh();
   w.agents = [a];
   const b = { ...fireBelief("fiber", 10, 9, { tries: 2, wins: 0 }), unless: ["rain"] };
@@ -234,7 +234,7 @@ test("rain that starts after they planned a fire stops them rubbing sticks, if t
   // the sky only turns on the twelfth tick: this one keeps the rain
   w.t = Math.ceil(w.t / 12) * 12 + 1;
   w.weather.sky = "rain";
-  tick(w);
+  await tick(w);
   expect(b.tally).toEqual({ tries: 10, wins: 9 });
   expect(a.goal?.type).not.toBe("make_fire");
   expect(count(a, "fiber")).toBe(1);

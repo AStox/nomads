@@ -10,12 +10,13 @@ import { beliefText } from "../src/sim/beliefs";
 import { trailChanges } from "../src/sim/ecology";
 import { counters, logTo, flush, tickMs } from "../src/sim/trace";
 import { patterns, patternText, standing } from "../src/sim/groups";
-import { seedRandom } from "./seeded";
+import { exit, holdGpu, seedRandom } from "./seeded";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 const ticks = Number(arg("ticks", "5000")), minutes = Number(arg("minutes", "0")), seed = Number(arg("seed", String(Math.floor(Math.random() * 1e9))));
 // the run's own draws, the island's seed unless told otherwise: the same seed runs the same world again
 seedRandom(Number(arg("rng", String(seed))));
+console.log(`gpu: ${await holdGpu()}`);
 const logs = arg("logs", "");
 if (logs) logTo(logs);
 const w = newWorld(seed);
@@ -23,7 +24,7 @@ const t0 = performance.now();
 let ran = 0;
 for (let i = 0; i < ticks; i++, ran++) {
   if (minutes && performance.now() - t0 > minutes * 60_000) break;
-  tick(w);
+  await tick(w);
   if (w.t % DAY === 0) {
     const alive = w.agents.length, dead = Object.values(w.people).filter((p) => !p.alive).length;
     console.log(`[${Math.round((performance.now() - t0) / 1000)}s] ${clock(w.t)} ${w.weather.season}: ${alive} alive, ${dead} dead, ${w.agents.filter((a) => a.pregnant).length} expecting, camps ${w.camps.filter((c) => !c.gone).length}, laws ${Object.keys(w.laws).length}, made ${Object.values(w.kinds).filter((k) => k.made).length}, structures ${w.things.filter((t) => t.kind === "structure").length}, fires ${w.things.filter((t) => t.kind === "fire").length}, deer ${census(w).deer ?? 0}, wolves ${census(w).wolf ?? 0}, things ${w.things.length}, agentsMs ${(tickMs.agents ?? 0).toFixed(1)}`);
@@ -62,4 +63,4 @@ for (const a of w.agents) {
 console.log(`\nanimals: deer ${census(w).deer ?? 0}, rabbits ${census(w).rabbit ?? 0}, wolves ${census(w).wolf ?? 0}, foxes ${census(w).fox ?? 0}; structures ${w.things.filter((t) => t.kind === "structure").length}; fires ${w.things.filter((t) => t.kind === "fire").length}`);
 console.log("tickMs", JSON.stringify(Object.fromEntries(Object.entries(tickMs).map(([k, v]) => [k, Math.round(v * 100) / 100]))));
 console.log("jev", JSON.stringify(w.jev), "counters", JSON.stringify(Object.fromEntries(Object.entries(counters).filter(([k]) => !k.startsWith("belief")))));
-process.exit(0);
+await exit();

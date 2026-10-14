@@ -26,6 +26,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, r
 import { cpus, totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DAY } from "../src/sim/world";
+import { releaseGpu, theGpu } from "../src/gpu/device";
 import { PROBES, type Claim, type Metric, type ProbeRun, type ProbeSpec } from "./probes";
 import { bootstrap, mean } from "./stats";
 
@@ -68,6 +69,8 @@ type Numbers = Record<string, number | null>;
 type Runs = Record<string, Record<string, Numbers>>;
 type Entry = {
   at: string; tier: string; brain: string; commit: string; dirty: boolean; content: string; version: number;
+  // the GPU the runs went on (entries from before the world ran on one have none)
+  adapter?: string;
   seeds: number[]; days: number; people?: number;
   runs: Runs; claims: Record<string, Record<string, boolean | null>>;
   against?: string; regressions: string[]; improvements: string[]; verdict: "baseline" | "pass" | "fail" | "unjudged" | "monitor"; baseline: boolean;
@@ -77,10 +80,25 @@ type Spec = { metrics: Record<string, Metric>; claims: Claim[] };
 const argv = process.argv.slice(2);
 const opt = (name: string, d: string) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : d; };
 const flag = (name: string) => argv.includes(`--${name}`);
-// at most half the cores, and half the machine's memory at what a run holds: a probe about 1.25 GB, a whole world of 60
-// days (or an answer key) up to 2 GB
-const jobs = (gb: number) => Number(opt("jobs", String(Math.max(1, Math.min(Math.floor(cpus().length / 2), Math.floor(totalmem() / 2 / (gb * 1e9)))))));
-const PROBE_JOBS = jobs(1.25), WORLD_JOBS = jobs(2);
+// The GPU every run goes on, read once here and let go, since each run opens its own: its adapter, pinned for every run
+// by name through NOMADS_GPU (src/gpu/device.ts) and named in the ledger, and how much it holds. WebGPU doesn't say how
+// much memory an adapter has; the largest buffer it allows stands for it (3.2 GB of the dev machine's 4 GB AMD rdna-1,
+// 2.1 GB on its Intel gen-9).
+let gpu: { adapter: string; memory: number } | undefined;
+async function theAdapter() {
+  if (gpu) return gpu;
+  const g = await theGpu();
+  gpu = { adapter: g.adapter, memory: g.device.limits.maxBufferSize };
+  await releaseGpu();
+  process.env.NOMADS_GPU = gpu.adapter;
+  return gpu;
+}
+// At most half the cores; half the machine's memory at what a run holds, a probe about 1.25 GB, a whole world of 60
+// days (or an answer key) up to 2 GB; and the GPU's memory at what a run holds on it, 256 MB a probe process and 512 MB
+// a world [design], until the world's objects live on the GPU and their buffers are measured
+// (docs/plans/2026-10-14-001-refactor-gpu-object-world-plan.md, Unit 4).
+const jobs = (gb: number, gpuGb: number, memory: number) =>
+  Number(opt("jobs", String(Math.max(1, Math.min(Math.floor(cpus().length / 2), Math.floor(totalmem() / 2 / (gb * 1e9)), Math.floor(memory / (gpuGb * 1e9)))))));
 // probe runs on one island to a process: enough that growing the island is a small part of each, few enough that the
 // processes still share out evenly over the jobs
 const PER_PROCESS = 5;
@@ -125,6 +143,8 @@ function snapshotOf(commit: string, tier: Tier): Snap {
   rmSync(tar);
   const scripts = pathsOf(tier).slice(1);
   copy(ROOT, scripts, tmp);
+  // a commit from before the device layer gets this tree's, which the scripts open the GPU with
+  if (!existsSync(join(tmp, "src/gpu/device.ts"))) copy(ROOT, ["src/gpu/device.ts"], tmp);
   const src = readdirSync(join(tmp, "src"), { recursive: true }).map((f) => join("src", String(f))).filter((f) => statSync(join(tmp, f)).isFile());
   const id = contentOf(tmp, [...src, ...scripts].sort()), dir = join(DATA, "snap", id);
   if (existsSync(dir)) rmSync(tmp, { recursive: true }); else renameSync(tmp, dir);
@@ -256,6 +276,7 @@ async function baselineFor(tier: Tier, kind: Pick<Entry, "tier" | "brain" | "day
 
 // ---------- probes ----------
 async function probes() {
+  const { adapter, memory } = await theAdapter(), probeJobs = jobs(1.25, 0.256, memory);
   const seeds = range(Number(opt("seeds", "10"))), days = Number(opt("days", "5")), people = Number(opt("people", "6")), brain = opt("brain", "random");
   if (brain !== "random" && brain !== "jev") throw new Error(`--brain ${brain}: random or jev`);
   const only = opt("only", "").split(",").filter(Boolean);
@@ -272,13 +293,13 @@ async function probes() {
       const mine = todo.filter((s) => s.seed === seed).sort((x, y) => cost([y]) - cost([x])), n = Math.ceil(mine.length / PER_PROCESS);
       return Array.from({ length: n }, (_, i) => mine.filter((_, j) => j % n === i));
     }).sort((x, y) => cost(y) - cost(x));
-    console.error(`probes on ${snap.id}: ${variants.length} variants x ${seeds.length} seeds, ${todo.length} to run in ${batches.length} processes, ${PROBE_JOBS} at a time`);
+    console.error(`probes on ${snap.id}: ${variants.length} variants x ${seeds.length} seeds, ${todo.length} to run in ${batches.length} processes, ${probeJobs} at a time on ${adapter}`);
     await pool(batches.map((b, i) => async () => {
       const file = join(dir, "batches", `${i + 1}-s${b[0].seed}.json`);
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, JSON.stringify(b));
       await script(snap, "probes.ts", ["--batch", file], file.replace(/\.json$/, ".log"), brain === "random");
-    }), PROBE_JOBS, "processes");
+    }), probeJobs, "processes");
     const runs: Runs = {};
     for (const s of all) { const r = JSON.parse(readFileSync(s.out!, "utf8")) as ProbeRun; (runs[`${r.probe}/${r.variant}`] ??= {})[r.seed] = r.metrics; }
     return runs;
@@ -287,7 +308,7 @@ async function probes() {
   const snap = snapshot("probes"), cand = await measure(snap), base = await baselineFor("probes", kind, measure);
   const r = compare(specs, cand, base?.runs);
   show(`probes: ${brain} brain, seeds 1-${seeds.length}, ${days} days, ${people} people: ${snap.id}`, r, base?.commit);
-  return settle({ at: new Date().toISOString(), ...kind, commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION.probes, seeds, runs: cand, against: base?.commit }, r, !!base);
+  return settle({ at: new Date().toISOString(), ...kind, commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION.probes, adapter, seeds, runs: cand, against: base?.commit }, r, !!base);
 }
 
 // ---------- whole worlds ----------
@@ -320,6 +341,7 @@ type Build = { snap: Snap; seeds: number[]; at: string; scored: string };
 // copy of the sim they ran from on this machine, the comparison is with the ledger's numbers, on the baseline's own key,
 // and says so.
 async function worlds() {
+  const { adapter, memory } = await theAdapter(), worldJobs = jobs(2, 0.512, memory);
   const seeds = range(Number(opt("seeds", "6"))), days = Number(opt("days", "60")), brain = "random", against = opt("against", "");
   const specs: Record<string, Spec> = {
     seen: { metrics: KPIS, claims: [{ id: "learn", text: "fewer tries go to waste late than early", gap: ["wastedEarly", "wasted"], value: 0 }] },
@@ -342,7 +364,7 @@ async function worlds() {
     if (!existsSync(file(dir, mode, s))) await script(b.snap, "theories.ts", ["--seed", String(s), "--days", String(days), "--learning", mode, "--out", file(dir, mode, s), ...extra], join(dir, "logs", `${mode}-${s}.log`), true);
   };
   console.error(`worlds on ${snap.id}: ${seeds.length} seeds, ${days} days${kept ? `, and the baseline ${kept.snap.commit} (${kept.snap.id})` : ""}: learning as it is, and off`);
-  await pool(builds.flatMap((b) => b.seeds.flatMap((s) => [world(b, b.at, "seen", s), world(b, b.at, "off", s)])), WORLD_JOBS);
+  await pool(builds.flatMap((b) => b.seeds.flatMap((s) => [world(b, b.at, "seen", s), world(b, b.at, "off", s)])), worldJobs);
   // every way anyone used on any island, in either build, worked out on each island over the runs' days
   const pooled = join(on, "seen-all");
   mkdirSync(pooled, { recursive: true });
@@ -351,9 +373,9 @@ async function worlds() {
     if (!existsSync(link)) symlinkSync(file(b.at, "seen", s), link);
   }
   console.error(`  the answer key for each island${kept ? ", shared" : ""}`);
-  await pool(seeds.map((s) => async () => { if (!existsSync(key(s))) await script(snap, "truth.ts", ["--seed", String(s), "--days", String(days), "--runs", pooled, "--out", key(s)], join(on, "logs", `truth-${s}.log`), true); }), WORLD_JOBS);
+  await pool(seeds.map((s) => async () => { if (!existsSync(key(s))) await script(snap, "truth.ts", ["--seed", String(s), "--days", String(days), "--runs", pooled, "--out", key(s)], join(on, "logs", `truth-${s}.log`), true); }), worldJobs);
   console.error("  known from the start");
-  await pool(builds.flatMap((b) => b.seeds.map((s) => world(b, b.scored, "known", s, ["--key", key(s)]))), WORLD_JOBS);
+  await pool(builds.flatMap((b) => b.seeds.map((s) => world(b, b.scored, "known", s, ["--key", key(s)]))), worldJobs);
   // what could be learned on an island is what the build's own people did there, learning as it is (theory-report.ts)
   const numbers = async (b: Build): Promise<Runs> => {
     const kpis = async (mode: string, s: number) => {
@@ -373,7 +395,7 @@ async function worlds() {
         const [a, lo, hi] = [seen.late[k], off.late[k], known.late[k]], better = KPIS[k].better === "higher" ? 1 : -1;
         return [k, typeof a === "number" && typeof lo === "number" && typeof hi === "number" && (hi - lo) * better >= KPIS[k].tol ? (a - lo) / (hi - lo) : null];
       }));
-    }), WORLD_JOBS);
+    }), worldJobs);
     return runs;
   };
   const cand = await numbers(builds[0]), baseRuns = kept ? await numbers(builds[1]) : base && !other ? cand : entry?.runs;
@@ -383,7 +405,7 @@ async function worlds() {
   for (const mode of ["off", "known"]) console.log(`${mode.padEnd(6)} ${Object.keys(KPIS).map((k) => `${k} ${fmt(mean(values(cand[mode], k)))}`).join("  ")}`);
   // kept but never judged: every true theory held, whether or not anyone on the island had seen what it's about
   console.log(`rightAll, unjudged: ${["seen", "off", "known"].map((mode) => `${mode} ${fmt(mean(values(cand[mode], "rightAll")))}`).join("  ")}`);
-  return settle({ at: new Date().toISOString(), ...kind, commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION.worlds, seeds, runs: cand, against: base?.snap.commit }, r, !!baseRuns);
+  return settle({ at: new Date().toISOString(), ...kind, commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION.worlds, adapter, seeds, runs: cand, against: base?.snap.commit }, r, !!baseRuns);
 }
 
 // ---------- the live world ----------
@@ -391,6 +413,7 @@ async function worlds() {
 // for its island built from what its people did. What everyone holds each day is worked out from the theories formed,
 // taught and dropped; who was alive, from who did anything that day.
 async function live() {
+  const { adapter } = await theAdapter();
   const data = resolve(ROOT, opt("data", "data")), snap = snapshot("worlds"), stamp = new Date().toISOString().slice(0, 10);
   const save = JSON.parse(readFileSync(join(data, "world.json"), "utf8")) as { seed: number; t: number; kinds: Record<string, { made?: unknown }>; rulings: Record<string, unknown> };
   const traces = ["trace.jsonl.1", "trace.jsonl"].map((f) => join(data, "logs", f)).filter(existsSync);
@@ -434,7 +457,7 @@ async function live() {
   console.log(readFileSync(join(at, "report.log"), "utf8"));
   console.log(`live, early third: ${Object.keys(KPIS).map((x) => `${x} ${fmt(k.early[x])}`).join("  ")}`);
   console.log(`live, late third:  ${Object.keys(KPIS).map((x) => `${x} ${fmt(k.late[x])}`).join("  ")}`);
-  keep({ at: new Date().toISOString(), tier: "live", brain: "jev", commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION.live, seeds: [save.seed], days: Math.floor(save.t / DAY), runs: { early: { [save.seed]: k.early }, late: { [save.seed]: k.late } }, claims: {}, regressions: [], improvements: [], verdict: "monitor", baseline: false });
+  keep({ at: new Date().toISOString(), tier: "live", brain: "jev", commit: snap.commit, dirty: snap.dirty, content: snap.id, version: VERSION.live, adapter, seeds: [save.seed], days: Math.floor(save.t / DAY), runs: { early: { [save.seed]: k.early }, late: { [save.seed]: k.late } }, claims: {}, regressions: [], improvements: [], verdict: "monitor", baseline: false });
 }
 
 // ---------- the trend ----------

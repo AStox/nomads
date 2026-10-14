@@ -27,7 +27,7 @@ const clear = (r: number) => {
 const ring = (m: number, k: number) => [a.px + (Math.cos((k * Math.PI) / 4) * m) / TILE_M, a.py + (Math.sin((k * Math.PI) / 4) * m) / TILE_M] as const;
 // ticks until done, the random brain answering within a few turns of the microtask queue
 const run = async (n: number, done: () => boolean) => {
-  for (let i = 0; i < n && !done(); i++) { tick(w); for (let k = 0; k < 20; k++) await Promise.resolve(); }
+  for (let i = 0; i < n && !done(); i++) { await tick(w); for (let k = 0; k < 20; k++) await Promise.resolve(); }
 };
 // a berry pushed into the ground where they started, once they've finished whatever they were thinking
 const sow = async () => {

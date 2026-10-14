@@ -163,6 +163,8 @@ There is no floor: everything is an individual. What differs by kind is only whe
 - The size of each per-cell driver history (how many hours of air, rain and canopy a dormant object may need to integrate across) and when histories are folded into exact running sums: set in Unit 4 against memory, with the equality tests as the guard.
 - Whether herbs below a size stay dormant between grazings or are active all season: decided per kind by measured cost, both exact.
 - Exact fixed-point scales per buffer, and table sizes and accuracy for exp/log/pow: set per routine in Unit 2 with error bounds documented.
+- The exact Bin(2N, 1/2) sampler's slow path decides every case its 224-bit arithmetic separates; cases closer than that (about a 2^-203 share of proposals, none seen outside forced tests) are rejected and counted. An unbounded-precision slow path would make it exact without exception: done before any gate depends on lumped kinds (Unit 12b), docs/research/gpu-math.md.
+- Exact geometric waits slow down as log2(1/p)^2; event-driven kinds draw at p_max = 2^-8 and thin to the true hazard (Unit 4), docs/research/gpu-math.md.
 - Readback window shapes and sizes round people: tuned in Unit 4 against the 0.1 to 3 ms readback latencies measured.
 - Linux or GPU-less machines (lavapipe or a fail-fast notice): open; no CI exists today.
 
@@ -262,7 +264,7 @@ Tick shape (async): upload deltas, rebuild the spatial index when due, run the k
 - Integration: the full suite and a bench run give the same checksums before and after the async conversion.
 - Integration: an eval ledger names the adapter; a full probe-tier run completes with each child holding its own device.
 
-**Verification:** Gates run end to end with a device present and unchanged results.
+**Verification:** Gates run end to end with a device present. Outcome: the sim is unchanged, but awaiting each tick lets the random brain's promise chains move after every tick rather than every fourth, so bench's blame, seed and world checksums were rebaselined (proved by reproducing them from the old code with an awaited microtask after each tick); the gate ledgers record the shift as a harness change. `server.ts` opens its device only when Unit 4 gives a tick something to run on it, so a live restart doesn't depend on a GPU before it needs one.
 
 ### Phase B: Objects on the GPU
 

@@ -41,7 +41,7 @@ import { envHere } from "../src/sim/plants";
 import { fertilityAt } from "../src/sim/soil";
 import { fit } from "../src/terrain/niche";
 import { RULES, hooks } from "../src/sim/rules";
-import { seedRandom } from "./seeded";
+import { exit, holdGpu, seedRandom } from "./seeded";
 import { basal, bodyOf, frameOf, glyMax, warm } from "../src/sim/body";
 
 export type Metric = { better: "higher" | "lower"; tol: number; text: string };
@@ -733,7 +733,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     // who is out to test a theory as the tick starts: a planting that tick is a test
     const testing = sowing ? w.agents.filter((a) => a.goal?.type.startsWith("test:")).map((a) => a.id) : [];
     const before = sowing ? w.agents.map((a) => new Set((a.waiting ?? []).map((e) => e.thing))) : [];
-    tick(w);
+    await tick(w);
     if (sowing) w.agents.forEach((a, i) => {
       for (const e of a.waiting ?? []) {
         if (before[i].has(e.thing) || !ways.includes(e.key)) continue;
@@ -911,10 +911,11 @@ if (import.meta.main) {
   const specs: ProbeSpec[] = batch
     ? JSON.parse(readFileSync(batch, "utf8"))
     : [{ probe: arg("probe", "blame"), variant: arg("variant", "real"), seed: Number(arg("seed", "1")), days: Number(arg("days", "6")), people: Number(arg("people", "6")), brain, out: arg("out", "") }];
+  await holdGpu();
   for (const s of specs) {
     const r = await runProbe(s.probe, s.variant, s.seed, s.days, s.people, s.brain);
     if (s.out) await Bun.write(s.out, JSON.stringify(r) + "\n");
     else console.log(JSON.stringify(r));
   }
-  process.exit(0);
+  await exit();
 }

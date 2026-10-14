@@ -11,12 +11,13 @@ import { trailChanges } from "../src/sim/ecology";
 import { counters } from "../src/sim/trace";
 import { p } from "../src/sim/materials";
 import { asking, brainKind } from "../src/sim/brain";
-import { seedRandom } from "./seeded";
+import { exit, holdGpu, seedRandom } from "./seeded";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 const seed = Number(arg("seed", "1")), days = Number(arg("days", "120"));
 // the run's own draws, the island's seed unless told otherwise: the same seed runs the same world again
 seedRandom(Number(arg("rng", String(seed))));
+await holdGpu();
 const w = newWorld(seed);
 
 const laws = (w: World) => Object.values(w.laws);
@@ -90,7 +91,7 @@ const t0 = performance.now();
 let births = 0;
 for (let d = 1; d <= days; d++) {
   for (let i = 0; i < DAY; i++) {
-    tick(w);
+    await tick(w);
     changed.clear(); removed.clear(); newKinds.clear(); trailChanges.clear();
     // the random brain answers through promise chains: let them settle as the server's loop would
     if (i % 4 === 0) await Bun.sleep(0);
@@ -145,4 +146,4 @@ if (dump) {
     agents: w.agents.map((a) => ({ name: a.name, inv: a.inv.map((s) => w.kinds[s.k]?.name), beliefs: Object.keys(a.beliefs).length, needs: a.needs })),
   }, null, 1));
 }
-process.exit(0);
+await exit();

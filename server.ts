@@ -57,9 +57,10 @@ const control = { paused: false, speed: 1 };
 let lastEvent = w.events.at(-1)?.id ?? 0;
 
 // ponytail: the world only advances while someone is watching, so Jev isn't billed for an empty room.
-function loop() {
+// One tick at a time: the next is set going only once this one is done.
+async function loop() {
   if (clients.size && !control.paused) {
-    try { tick(w); } catch (e) { console.error("tick", e); }
+    try { await tick(w); } catch (e) { console.error("tick", e); }
     const events = w.events.filter((e) => e.id > lastEvent);
     lastEvent = w.events.at(-1)?.id ?? lastEvent;
     const msg = {

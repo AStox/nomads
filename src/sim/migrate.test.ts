@@ -163,7 +163,7 @@ test("struck over fiber and ten twigs, the migrated way keys under its own key, 
 test("the migrated world lives a day", async () => {
   // nothing in the migrated world throws as it ticks: what's asked of a day is only that it runs
   for (let i = 0; i < DAY; i++) {
-    tick(w);
+    await tick(w);
     for (let k = 0; k < 20; k++) await Promise.resolve();
   }
 }, 120_000);

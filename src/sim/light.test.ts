@@ -167,7 +167,7 @@ test("sight shrinks with the light: at night a person across the clearing can't 
   expect(canSee(w, a, b, 300)).toBe(true);
 });
 
-test("whoever is out after something when the dark falls gives it up where they stand, but not in daylight, and work at camp goes on", () => {
+test("whoever is out after something when the dark falls gives it up where they stand, but not in daylight, and work at camp goes on", async () => {
   const cases = [[12, "forage", "wander", "forage"], [1, "forage", "wander", "none"], [1, "rest", "rest", "rest"]] as const;
   for (const [hour, goal, op, kept] of cases) {
     const { w, px, py } = pad(4);
@@ -178,7 +178,7 @@ test("whoever is out after something when the dark falls gives it up where they 
     bodyOf(w, a).sleep = 0.7; // a long sleep to be in the middle of
     a.goal = { type: goal, since: w.t, odds: {}, fails: 0 };
     a.plan = [{ op, arg: op === "wander" ? `${px + 40 / TILE_M},${py}` : undefined, progress: 0 }];
-    tick(w);
+    await tick(w);
     expect(a.goal?.type ?? "none").toBe(kept);
   }
 });
@@ -213,7 +213,7 @@ test("a hungry person with a bush 100 m off goes out after food by day, but in t
       Object.assign(a.needs, { food: 40, energy: 90, warmth: 90, health: 100 });
       w.t = at(hour) - 1;
       for (let i = 0; i < 10; i++) {
-        tick(w);
+        await tick(w);
         // The random brain answers within a few turns of the microtask queue.
         for (let turn = 0; turn < 20; turn++) await Promise.resolve();
         if (a.goal) seen.add(a.goal.type);
