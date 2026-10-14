@@ -38,7 +38,7 @@ WebGPU runs headless under Bun through Google's Dawn bindings (`webgpu` npm), in
 ## Requirements Trace
 
 **World model**
-- R1. Every plant, seedling, seed, deadwood piece, stone, animal and fish is an individual object at measured density, with its own state (position, size or mass, age, reserves, condition), down to the floor set in Capacity and Representation; nothing above that floor is a density, a cohort or a revealed stand-in.
+- R1. Every thing on the island (plants, seedlings, seeds, grass tillers, deadwood and litter, stones and sand, animals, insects and soil fauna, fish) is an individual at measured density with its own identity and state, held in one of the five exact representations in Capacity and Representation; nothing is a density, an approximate cohort or a revealed stand-in.
 - R2. The object an agent sees, takes, fells or eats is the object the GPU simulates and draws: one identity, one state.
 - R3. Population behaviour (growth, competition, reproduction, dispersal, foraging, predation, death, decay) emerges from per-object laws; the density and cohort approximations are removed.
 
