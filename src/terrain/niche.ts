@@ -11,7 +11,7 @@ import type { Island } from "./island";
 
 export type Env = {
   ph: number; // soil pH (water)
-  table: number; // depth to the water table, m
+  table: number; // depth to the winter water table, m (water.ts winterTable)
   light: number; // 0..1 of the open sky's light reaching the plant (only fungi's niches read it)
   // read by no curve, only by what the game's people make of a spot (sim.ts CONDITIONS):
   wind: number; // the year's wind there against the coast's, 0..1 (climate.ts windShare)
@@ -45,9 +45,9 @@ const herb = (R: number, N: number): Curve => {
 };
 
 // The water table. The ESC's soil moisture regimes by the mean winter water table (R606 Table 5): very wet under 0.2 m,
-// wet 0.2 to 0.4, very moist 0.4 to 0.6, moist 0.6 to 0.8, fresh 0.8 to 1.0, the drier regimes freely drained. Here
-// the table's depth through the year stands in for its winter depth [gap]. A curve rises from the regime where a plant
-// first fits to where it is best, and stays there on drier ground, where drought is its water's (growth.ts watered).
+// wet 0.2 to 0.4, very moist 0.4 to 0.6, moist 0.6 to 0.8, fresh 0.8 to 1.0, the drier regimes freely drained. The
+// curves read water.ts's winter table. A curve rises from the regime where a plant first fits to where it is best, and
+// stays there on drier ground, where drought is its water's (growth.ts watered).
 const DEEP = Infinity;
 // The trees by ESC Fig. 13 (R606): pine suitable in very moist ground and very suitable in moist or drier; pedunculate
 // oak, ash and aspen suitable in wet and very suitable from very moist [derived].
@@ -137,5 +137,5 @@ export function draw<T extends string>(names: readonly T[], weights: ArrayLike<n
 // canopy, or the light the sim works out now).
 export function envAt(isle: Island, bilinear: (f: Float32Array, cx: number, cy: number) => number, x: number, z: number, light: number, start: number): Env {
   const cx = (x - start) / CELL, cy = (z - start) / CELL, b = (f: Float32Array) => bilinear(f, cx, cy);
-  return { ph: b(isle.ph), table: b(isle.table), light, wind: b(isle.windShare), salt: b(isle.salt), soil: b(isle.soil) };
+  return { ph: b(isle.ph), table: b(isle.winterTable), light, wind: b(isle.windShare), salt: b(isle.salt), soil: b(isle.soil) };
 }

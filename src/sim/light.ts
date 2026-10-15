@@ -51,8 +51,9 @@ export function crownsAt(w: World, px: number, py: number): Crowns {
   return out;
 }
 export const canopyAt = (w: World, px: number, py: number) => crownsAt(w, px, py).cover;
-// Leaves let a little through (terrain/growth.ts through): under one crown an eighth of the sky's glow and a twenty-sixth of
-// the sun's beam, which crosses more of them; where two overlap, a sixty-fourth of the glow, and no more is lost past that.
+// Leaves let a little through (terrain/growth.ts through): under one crown a fiftieth of the sky's glow and less of the
+// sun's beam, which crosses more of them (a 450th with the sun 53 degrees up); where two overlap, a fiftieth of that
+// again, and no more is lost past that.
 // The share of the sky's light that reaches the ground through the crowns over a point.
 export const skyShare = (w: World, px: number, py: number) => through(canopyAt(w, px, py));
 

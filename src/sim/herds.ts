@@ -9,7 +9,7 @@
 import { DAY, H, TILE_M, Tile, W, groundOf, sea, tileAt, dryAt, type Animal, type AnimalSpecies, type World } from "./world";
 import { CELL } from "../terrain/grid";
 import { SIZE, START } from "../terrain/flora";
-import { GREEN_UP, RUE, through, warmEnough, watered } from "../terrain/growth";
+import { GREEN_UP, RUE, warmEnough, watered } from "../terrain/growth";
 import { fishCount, revealFish, startFish, stepFish, takeFish } from "./fish";
 import { SHRUBS, TREES, envAt, fit } from "../terrain/niche";
 import { YEAR_DAYS, daylight, seasonAt } from "./sky";
@@ -119,8 +119,14 @@ const RAVENS = 0.37 + ((0.17 - 0.37) * (4 - 2)) / (6 - 2);
 // The broadleaves' browse stands bare, its leaves fallen and only twigs left, while the growing season index is under
 // green-up, as the game's broadleaves do (wetness.ts leafless): its cold ramp, which warmEnough is, and its daylight
 // ramp from 10 h to 11 h; the rain and the dry air left out, the soil's water standing for them in the growth [derived].
-// The forage at which a grazer eats at half its most, g DM/m2: Mulder and Hendriks' grazing mammals, 4.9e4 m^0.20 kg/km2
-// of wet vegetation over the ground, m in kg (R374), a quarter of it dry [UNVERIFIED].
+// The forage at which a grazer eats at half its most, g DM/m2 of the ground it grazes: Mulder and Hendriks' grazing
+// mammals, 4.9e4 m^0.20 kg/km2 of wet vegetation over the ground, m in kg (R374), a quarter of it dry [UNVERIFIED].
+// Grazers pick their patches (1 m2 to 1 ha) every 1 to 30 minutes and their feeding sites (1 to 10 ha) within a grazing
+// bout of 1 to 4 hours, and spend their time where the forage is (Senft et al.'s matching, as Bailey and Provenza give it,
+// R640). A tile, 2.25 ha, is a feeding site, its ground layer and browse its patches: a deer walks 3.2 to 9.7 km a day
+// (R411) and a rabbit grazes within 50 m of its warren (R405), so the walk between a tile's patches costs minutes against
+// hours of grazing, and each eats at its response to the forage standing on the patches it grazes, not over the tile
+// [derived]. What the patches hold in all still bounds what all of them take.
 const half = (kg: number) => 49 * kg ** 0.2 * 0.25;
 // Messier: kills a wolf a day at most, and the density for half of that, moose-equivalents a km2, taken on all the prey's
 // biomass, deer and rabbits alike (sec. 6).
@@ -202,9 +208,9 @@ const EAGLE_REACH = Math.round((Math.sqrt(EAGLE_TERRITORY / ((TILE_M * TILE_M) /
 const TILE_KM2 = (TILE_M * TILE_M) / 1e6;
 
 // ---------- the ground (sec. 3) ----------
-// grass: the ground layer's share of a tile, the open sward and the field layer the generator lays under the crowns
-// (ground.ts field); lit: the share of the open sun its growth gets, the field layer's under a crown (growth.ts through);
-// woody: browse's share.
+// grass: the ground layer's share of a tile, the open sward and the field layer the generator lays in the shade of the
+// canopy and its gaps (ground.ts field); lit: the share of the open sun its growth gets, the field layer's what reaches
+// it there (ground.ts fieldLight); woody: browse's share.
 // nb: each land tile's land neighbours, eight a tile, -1 where none; wolfLand, foxLand: the land tiles in a wolf's and a
 // fox's reach round each.
 // ever: the evergreens' share of a tile's browse; summer, winter: what a gram of its green browse is worth then, kJ;
@@ -258,9 +264,9 @@ function groundFor(w: World): Ground {
     land.push(i);
     const mx = (i % W) * TILE_M + TILE_M / 2 - SIZE / 2, mz = Math.floor(i / W) * TILE_M + TILE_M / 2 - SIZE / 2;
     const open = fine.fine(fine.cover.grass, mx, mz), tree = fine.fine(fine.cover.tree, mx, mz), shrub = fine.fine(fine.cover.shrub, mx, mz);
-    const under = (tree + shrub) * fine.bilinear(isle.field, (mx - START) / CELL, (mz - START) / CELL);
+    const cx0 = (mx - START) / CELL, cy0 = (mz - START) / CELL, under = fine.bilinear(isle.field, cx0, cy0);
     grass[i] = Math.min(1, open + under);
-    lit[i] = grass[i] > 0 ? (open + under * through(1)) / grass[i] : 0;
+    lit[i] = grass[i] > 0 ? (open + under * fine.bilinear(isle.fieldLight, cx0, cy0)) / grass[i] : 0;
     woody[i] = Math.min(1, BROWSE.shrub * shrub + BROWSE.tree * tree);
     // the browse's kinds as the generator draws them, each by its fit there (flora.ts), within its form
     const env = envAt(isle, fine.bilinear, mx, mz, NaN, START);
@@ -355,16 +361,17 @@ export function stepHerds(w: World, hs: Herds, dt: number, t: number, skip?: Set
     const bare = warmEnough(temp) * light < GREEN_UP, fall = bare && !g.bare[i] ? 1 - (1 - dies) * g.ever[i] : dies;
     g.bare[i] = bare ? 1 : 0;
     hs.browse[i] = Math.max(0, bNew * (1 - fall)); hs.browseDead[i] = (hs.browseDead[i] + Math.max(0, bNew) * fall) * rots;
-    // A grazer crops the green as its response to the green standing allows (a rabbit's bite takes a short sward a
-    // deer's can't), and makes up what that leaves short of its need from the dead, as its response to the dead allows
-    // [derived]; deer reach the browse and the ground layer both, each in the share it stands. Where they all ask more
-    // of a pool's green or dead than stands, each gets its share of what there is.
+    // A grazer crops the green as its response to the green standing on what it grazes allows (a rabbit's bite takes a
+    // short sward a deer's can't), and makes up what that leaves short of its need from the dead, as its response to the
+    // dead allows [derived]; deer graze the browse and the ground layer both, as one stand over their shares. Where they
+    // all ask more of a pool's green or dead than stands, each gets its share of what there is.
     const deep = g.snow[s][i] * (1 - f) + g.snow[s1][i] * f, open = 1 - Math.max(0, Math.min(1, (deep - SNOW_REACH[0]) / (SNOW_REACH[1] - SNOW_REACH[0])));
     g.open[i] = open;
-    const gG = hs.forage[i] * g.grass[i] * g.open[i], gD = hs.forageDead[i] * g.grass[i] * g.open[i], bG = hs.browse[i] * g.woody[i], bD = hs.browseDead[i] * g.woody[i], bQ = bare ? g.winter[i] : g.summer[i];
-    ask(deer.n[i], deer.e[i], D, deerMost, deerHalf, gG + bG, gD + bD, true);
+    const gA = g.grass[i] * open, dA = gA + g.woody[i];
+    const gG = hs.forage[i] * gA, gD = hs.forageDead[i] * gA, bG = hs.browse[i] * g.woody[i], bD = hs.browseDead[i] * g.woody[i], bQ = bare ? g.winter[i] : g.summer[i];
+    ask(deer.n[i], deer.e[i], D, deerMost, deerHalf, dA > 0 ? (gG + bG) / dA : 0, dA > 0 ? (gD + bD) / dA : 0, true);
     const dG = askG, dD = askD;
-    ask(rabbit.n[i], rabbit.e[i], R, rabbitMost, rabbitHalf, gG, gD, false);
+    ask(rabbit.n[i], rabbit.e[i], R, rabbitMost, rabbitHalf, gA > 0 ? hs.forage[i] : 0, gA > 0 ? hs.forageDead[i] : 0, false);
     const rG = askG, rD = askD;
     // the deer's green and dead split between the ground layer and the browse as each stands
     const dGg = gG + bG > 0 ? dG * (gG / (gG + bG)) : 0, dDg = gD + bD > 0 ? dD * (gD / (gD + bD)) : 0;
@@ -567,12 +574,14 @@ export function stepHerds(w: World, hs: Herds, dt: number, t: number, skip?: Set
   // working arrays the moving reads and writes on land alone, so zeroed there alone
   const onLand = (k: number) => { const a = (scratches[k] ??= new Float64Array(W * H)); for (const i of g.land) a[i] = 0; return a; };
   const rate = (green: number, q: number, dead: number, half: number) => { const gr = green / (green + half); return gr * q + (1 - gr) * (dead / (dead + half)) * ME_DEAD; };
-  // the energy grazers would take in on a tile: their response to the forage standing, at what it's worth
+  // the energy grazers would take in on a tile: their response to the forage standing on what they graze there, at what
+  // it's worth
   const graze = (j: number, deer: boolean) => {
-    const fG = hs.forage[j] * g.grass[j] * g.open[j], fD = hs.forageDead[j] * g.grass[j] * g.open[j];
-    if (!deer) return g.warren[j] * rate(fG, ME, fD, rabbitHalf);
+    const gA = g.grass[j] * g.open[j], dA = gA + g.woody[j], fG = hs.forage[j] * gA, fD = hs.forageDead[j] * gA;
+    if (!deer) return gA > 0 ? g.warren[j] * rate(hs.forage[j], ME, hs.forageDead[j], rabbitHalf) : 0;
+    if (dA <= 0) return 0;
     const bG = hs.browse[j] * g.woody[j], bD = hs.browseDead[j] * g.woody[j];
-    return rate(fG + bG, fG + bG > 0 ? (fG * ME + bG * (g.bare[j] ? g.winter[j] : g.summer[j])) / (fG + bG) : ME, fD + bD, deerHalf);
+    return rate((fG + bG) / dA, fG + bG > 0 ? (fG * ME + bG * (g.bare[j] ? g.winter[j] : g.summer[j])) / (fG + bG) : ME, (fD + bD) / dA, deerHalf);
   };
   // what draws each kind: the grazers their intake, predators their prey's biomass round them
   const PULL: Record<Herded, (j: number) => number> = {

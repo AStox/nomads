@@ -253,7 +253,7 @@ export function generateIsland(rand: () => number, watch?: Watch): Island {
     // a hollow that holds no lake is overgrown to bog (R528); ground.ts grows its peat where the water table stays high
     if (land[i] && !open[i] && hollow[i] >= 0) drift[i] = PEAT;
   }
-  const cover = ground({ ...air, height, open, table: hy.table, valley: hy.valley, channel: hy.channel, power: hy.power, driftDepth, drift, rock });
+  const cover = ground({ ...air, height, open, seasonTable: hy.seasonTable, winterTable: hy.winterTable, dryTable: hy.dryTable, valley: hy.valley, channel: hy.channel, power: hy.power, driftDepth, drift, rock });
   if (watch) {
     watch({ stage: "soil", height, water: hy.water, rock, ph: cover.ph, fertility: cover.fertility });
     // beach sand is its own share, beside the bare ground's

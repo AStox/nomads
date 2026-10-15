@@ -9,10 +9,18 @@
 // lakes where their inflow and the rain on them outlast their evaporation.
 import { clamp } from "math";
 import { CELL, DX, DY, LEN, N, ramp } from "./grid";
-import { DRIFTS, ROCKS } from "./geology";
+import { BARE, DOLERITE, DRIFTS, GRANITE, LIMESTONE, MELTWATER, MUDSTONE, PEAT, ROCKS, SANDSTONE, TILL_CLAY, TILL_SAND } from "./geology";
+import { ROOTS } from "./growth";
 import type { Climate } from "./climate";
 
 const YEAR_S = 31_557_600, SEASON_S = YEAR_S / 4;
+// The share of its volume a deposit gives up as the water table falls through it (specific yield): Johnson's fine sand
+// 0.21 for the meltwater sand, Morris and Johnson's sandy till 0.16 and silty till 0.06 for the two tills, and hemic peat
+// 0.15 to 0.42 (Boelter), so 0.285, for a fen's decomposed peat [derived]; where the rock is bare, its own: siltstone
+// 0.12 for mudstone, fine sandstone 0.21, limestone 0.14, and the 0 of hard rock for granite and dolerite (R629, R630,
+// R631). GEUS's national model takes 0.15 to 0.25 for its open aquifers (R632).
+const SY_DRIFT: Record<number, number> = { [TILL_CLAY]: 0.06, [TILL_SAND]: 0.16, [MELTWATER]: 0.21, [PEAT]: 0.285 };
+const SY_ROCK: Record<number, number> = { [MUDSTONE]: 0.12, [SANDSTONE]: 0.21, [LIMESTONE]: 0.14, [GRANITE]: 0, [DOLERITE]: 0 };
 // mm of rain the soil holds for plants to drink between rains [gap]: FAO-56's TAW from ground.ts's texture (R221) would
 // replace it, but the soil is made after the water
 const BUCKET = 100;
@@ -73,6 +81,9 @@ export type Hydro = {
   flow: Float32Array; // mean discharge through each cell, m³ a second
   seasonFlow: Float32Array[]; // the same in each of the game's seasons
   table: Float32Array; // depth of the year's mean water table below the ground, m; 0 under open water
+  seasonTable: Float32Array[]; // its depth in the middle of each of the game's seasons, m; 0 under open water
+  winterTable: Float32Array; // winter's (seasonTable's last), the one the forestry site classification reads
+  dryTable: Float32Array; // the deepest it falls in the year, m: the acrotelm's floor; 0 under open water
   spring: Float32Array; // groundwater coming out at the surface in each cell, m³ a second: seeps, springs, stream beds
   base: Float32Array; // share of the flow through each cell that came out of the ground rather than off it
   valley: Float32Array; // 1 on floodplain: ground no higher above the stream it drains to than that stream's flood stands, 0 elsewhere
@@ -182,11 +193,11 @@ export function hydrology(h: Float32Array, filled: Float32Array, order: Int32Arr
   };
 
   // ---------- the rain the year leaves ----------
-  // A bucket of soil through the seasons, twice round: what overflows it is the surplus. Of it the aquifer takes GSI's
-  // share for what lies over the rock and how thick (R569, R570), to at most what the rock accepts as an aquifer; the
-  // rest runs off and through the soil to the streams in the season it fell, and so does what the aquifer then rejects
-  // where the water table meets the ground.
-  const surplus = air.seasons.map(() => new Float32Array(LEN)), wet = new Float32Array(LEN);
+  // A bucket of soil through the seasons, twice round: what overflows it is the surplus, and what the plants want that
+  // it can't give them is its shortfall. Of the surplus the aquifer takes GSI's share for what lies over the rock and how
+  // thick (R569, R570), to at most what the rock accepts as an aquifer; the rest runs off and through the soil to the
+  // streams in the season it fell, and so does what the aquifer then rejects where the water table meets the ground.
+  const surplus = air.seasons.map(() => new Float32Array(LEN)), shortfall = air.seasons.map(() => new Float32Array(LEN)), wet = new Float32Array(LEN);
   // The aquifer's transmissivity, m2 a year: the rock's conductivity times the thickness of it that carries water (R522),
   // and over it the drift's times as much of it as lies under the water table. The first solve takes all of the drift
   // as saturated; the second takes it as the first left it [design: one step toward the unconfined solution].
@@ -200,9 +211,9 @@ export function hydrology(h: Float32Array, filled: Float32Array, order: Int32Arr
     let store = BUCKET;
     for (let year = 0; year < 2; year++)
       for (let s = 0; s < S; s++) {
-        const have = store + air.seasons[s].precip[i], left = have - Math.min(air.seasons[s].pet[i], have), over = Math.max(0, left - BUCKET);
+        const have = store + air.seasons[s].precip[i], used = Math.min(air.seasons[s].pet[i], have), left = have - used, over = Math.max(0, left - BUCKET);
         store = left - over;
-        if (year) surplus[s][i] = over;
+        if (year) { surplus[s][i] = over; shortfall[s][i] = air.seasons[s].pet[i] - used; }
       }
     for (let s = 0; s < S; s++) wet[i] += surplus[s][i] / 1000;
     const d = driftDepth[i], share = DRIFTS[drift[i]].recharge[d <= 3 ? 0 : d <= 5 ? 1 : 2];
@@ -327,6 +338,32 @@ export function hydrology(h: Float32Array, filled: Float32Array, order: Int32Arr
     spring[i] = open[i] ? 0 : Math.max(0, gw[i]) / YEAR_S;
     if (open[i]) channel[i] = 0;
   }
+  // The water table through the seasons: the steady solve's table is the year's mean, and each season's middle stands
+  // above or below it by the water the ground holds then over the year's mean, over its specific yield [derived]. The
+  // ground takes in each season its share of the year's recharge, as that season's surplus is of the year's, and gives
+  // the year's recharge back evenly, as the steady solve does; where the year's table lies within the roots, the plants
+  // draw from it what the soil's bucket can't give them (FAO-56's root zone, R221), less what the groundwater brings up
+  // there. It never stands above the ground, where the rest runs off, and nothing reads it deeper than the roots or the
+  // year's mean, where it is held [design]. That the plants' drawing leaves the year's mean where the steady solve put it,
+  // and the reference crop's evaporation (Kc), are [gaps].
+  const seasonTable = air.seasons.map(() => new Float32Array(LEN)), dryTable = new Float32Array(LEN), net = new Float64Array(S), held = new Float64Array(S);
+  for (let i = 0; i < LEN; i++) {
+    if (open[i]) continue;
+    const sy = drift[i] === BARE ? SY_ROCK[rock[i]] : SY_DRIFT[drift[i]], floor = Math.max(table[i], ROOTS), up = (spring[i] * SEASON_S) / A;
+    let mean = 0;
+    for (let s = 0; s < S; s++) {
+      const into = wet[i] > 0 ? (R[i] * surplus[s][i]) / 1000 / wet[i] : R[i] / S, drawn = table[i] <= ROOTS ? Math.max(0, shortfall[s][i] / 1000 - up) : 0;
+      net[s] = into - drawn;
+      mean += net[s] / S;
+    }
+    let sum = 0, heldMean = 0;
+    for (let s = 0; s < S; s++) { const d = net[s] - mean; held[s] = sum + d / 2; sum += d; heldMean += held[s] / S; }
+    for (let s = 0; s < S; s++) {
+      const x = held[s] - heldMean, rise = sy > 0 ? x / sy : x > 0 ? Infinity : x < 0 ? -Infinity : 0;
+      seasonTable[s][i] = clamp(table[i] - rise, 0, floor);
+      dryTable[i] = Math.max(dryTable[i], seasonTable[s][i]);
+    }
+  }
 
   // ---------- channels ----------
   // Each channel's bankfull flood and its power, traced from each source to where it meets the sea or a lake.
@@ -385,7 +422,7 @@ export function hydrology(h: Float32Array, filled: Float32Array, order: Int32Arr
   // Each point carries the flow the valley's fill carries under its bed (T S W, the fill as wide as the floodplain and
   // at least the channel): a stream whose flow falls below it runs dry.
   const rivers = lines.map((line) => line.map((i): River => [i % N, Math.floor(i / N), flow[i], base[i], qbf[i], slope[i], channel[i] ? T_FILL * slope[i] * Math.max(bankWidth(qbf[i], true), plain[i] / reach[i]) : 0]));
-  return { water, flow, seasonFlow, table, spring, base, valley, channel, qbf, slope, power, quick, rivers: shape(rivers), springs, lakes };
+  return { water, flow, seasonFlow, table, seasonTable, winterTable: seasonTable[S - 1], dryTable, spring, base, valley, channel, qbf, slope, power, quick, rivers: shape(rivers), springs, lakes };
 }
 
 const chaikin = (p: River[]): River[] => [p[0], ...p.slice(0, -1).flatMap((a, i) => [a.map((v, k) => v * 0.75 + p[i + 1][k] * 0.25) as River, a.map((v, k) => v * 0.25 + p[i + 1][k] * 0.75) as River]), p.at(-1)!];

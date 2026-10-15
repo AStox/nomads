@@ -47,9 +47,12 @@ export const SLA: Record<string, number> = {
 export const madeOf = (sla: number, sun: number, temp: number, water: number, p = P_STRESS) => (1 - GROWTH_RESP) * RUE * sun * sla * LMF * warmEnough(temp) * watered(water, p);
 export const keptOf = (temp: number) => MAINT * Q10 ** ((temp - 20) / 10);
 
-// Crowns: under one, an eighth of the sky's glow gets through; where two overlap, a sixty-fourth, and no more is lost past
-// that (light.ts, Beer-Lambert through a crown's leaves).
-export const LEAVES = 2.6;
+// Crowns: under one closed canopy 2% of the open sky's light reaches the ground, the most of Emborg's relative light
+// in every phase of the Danish near-natural beech and ash wood at Suserup but its gaps (R633); temperate forests let
+// through under 5% (Lieffers et al., R634). Where two crowns overlap, its square, and no more is lost past that (light.ts,
+// Beer-Lambert through a crown's leaves).
+export const UNDER_CROWN = 0.02;
+export const LEAVES = -Math.log(UNDER_CROWN) / 0.8;
 export const sieve = (cover: number) => LEAVES * Math.min(cover, 2);
 export const through = (cover: number) => Math.exp(-0.8 * sieve(cover));
 
@@ -65,8 +68,8 @@ export function yearComp(sla: number, sun: ArrayLike<number>, temp: ArrayLike<nu
   for (let s = 0; s < sun.length; s++) { made += madeOf(sla, sun[s], temp[s], water[s], p); kept += keptOf(temp[s]); }
   return made * fit > 0 ? kept / (made * fit) : Infinity;
 }
-// The share of the ground a stand of plants that need this share of the open sky's sun (comp) covers: its crowns fill
-// in until the light under them falls to what its own leaves need, the light under crowns being growth.ts through()
-// (Monsi and Saeki's canopy, R614) [derived]. All of it where even a full crown leaves them enough; none where the open
-// sky doesn't.
-export const closes = (comp: number) => (comp >= 1 ? 0 : clamp(-Math.log(comp) / (0.8 * LEAVES), 0, 1));
+// The share of the ground a stand of plants that need this share of the light they stand in (comp) covers: it fills in
+// until the light at its floor, under its crowns and between them, falls to what its own lowest leaves need (Monsi and
+// Saeki's optimum, R614): (1 - c) + c UNDER_CROWN = comp, so c = (1 - comp) / (1 - UNDER_CROWN), at most all of it
+// [derived]. None where the light doesn't keep it.
+export const closes = (comp: number) => clamp((1 - comp) / (1 - UNDER_CROWN), 0, 1);

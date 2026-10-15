@@ -6,7 +6,7 @@ import { clamp } from "math";
 import { CELL, LEN, N, distance } from "./grid";
 import { DRIFTS, LIMESTONE, MUDSTONE, DOLERITE, MELTWATER, PEAT, ROCKS, TILL_CLAY, CREEP, crystalline } from "./geology";
 import type { Season } from "./climate";
-import { ROOTS, RUE, SLA, closes, pOf, through, warmEnough, watered, yearComp } from "./growth";
+import { ROOTS, RUE, SLA, UNDER_CROWN, closes, pOf, warmEnough, watered, yearComp } from "./growth";
 import { NICHE, SHRUBS, TREES, fit, type Env } from "./niche";
 
 export type Ground = {
@@ -24,11 +24,12 @@ export type Ground = {
   moist: Float32Array; // 0..1 water available to roots through the growing season
   soilWater: Float32Array[]; // 0..1 how full the root zone is at the end of each season
   tree: Float32Array; shrub: Float32Array; grass: Float32Array; marsh: Float32Array; bare: Float32Array; // cover shares, with sand summing to 1
-  field: Float32Array; // 0..1 the share of the ground under the tree and shrub crowns that grass and herbs cover
+  field: Float32Array; // 0..1 the share of the ground where grass and herbs grow in shade: under the canopy and in its gaps
+  fieldLight: Float32Array; // the share of the open sky's light that shaded field layer gets
 };
 
 export type Site = {
-  height: Float32Array; open: Uint8Array; table: Float32Array; valley: Float32Array; channel: Uint8Array; power: Float32Array;
+  height: Float32Array; open: Uint8Array; seasonTable: Float32Array[]; winterTable: Float32Array; dryTable: Float32Array; valley: Float32Array; channel: Uint8Array; power: Float32Array;
   driftDepth: Float32Array; drift: Uint8Array; rock: Uint8Array;
   precip: Float32Array; pet: Float32Array; temp: Float32Array; windShare: Float32Array; salt: Float32Array;
   seasons: Season[];
@@ -45,11 +46,12 @@ const H_STAR = 0.5, W0 = Math.sqrt(0.026e-3 * 0.096e-3), DENSITY = 2, AGE = 1850
 export const SC = 1.25;
 
 // ---------- peat ----------
-// Peat grows where the water table stays within the acrotelm, 0.3 m, the top of the 0.25 to 0.30 m measured in Baltic
-// raised bogs, and as Clymo's bog does: (p / a)(1 - e^(-a t)) of dry mass, p 50 g a m2 a year, a 1e-4 a year (R594),
-// from the ice's going [design], at 0.1 g a cm3 [UNVERIFIED]. Blanket peat wants 1,000 mm of rain a year or more and 160
-// wet days (R595); the days are not known here [gap], the rain is.
-const ACROTELM = 0.3, PEAT_P = 50, PEAT_A = 1e-4, PEAT_RHO = 100, BLANKET = 1000;
+// Peat grows where the water table stays within the acrotelm through the growing season (water.ts dryTable), 0.3 m, the
+// top of the 0.25 to 0.30 m measured in Baltic raised bogs, and as Clymo's bog does: (p / a)(1 - e^(-a t)) of dry mass,
+// p 50 g a m2 a year, a 1e-4 a year (R594), from the ice's going [design], at 0.1 g a cm3 [UNVERIFIED]. Blanket peat
+// wants 1,000 mm of rain a year or more on 160 wet days or more (R595); the wet days are not known here, so it is left out
+// [gap] (Bornholm's 550 to 650 mm fails it, the ground notes).
+const ACROTELM = 0.3, PEAT_P = 50, PEAT_A = 1e-4, PEAT_RHO = 100;
 
 // ---------- beach sand ----------
 // Storm waves run up 1.6 m above the still water: Stockdon's R2 (R604) for storm waves of 4 m (Arkona's storm maxima,
@@ -82,9 +84,9 @@ const CARBONATE = 8.3, SILICATE = 5.6, EXCHANGER = 5.3, MOR = 4;
 // woodland 0.25 and unimproved grassland and scrub 0.67; inert matter 0.049 TOC^1.139; the topsoil 23 cm. Monthly in
 // RothC, by the game's four seasons here [design].
 const K_DPM = 10, K_RPM = 0.3, K_BIO = 0.66, K_HUM = 0.02, TOPSOIL = 0.23, DPM_RPM = { tree: 0.25, open: 0.67 };
-// The plants' carbon: dry matter at Monteith's 1.4 g a MJ the leaves intercept (growth.ts RUE), the share a closed stand
-// intercepts being what one crown stops (growth.ts through), 0.47 of it carbon (IPCC, R617). Organic matter twice the
-// carbon (Pribyl, R602).
+// The plants' carbon: dry matter at Monteith's 1.4 g a MJ the leaves intercept (growth.ts RUE), a stand intercepting what
+// a closed canopy stops (growth.ts UNDER_CROWN) of the light it stands in, 0.47 of it carbon (IPCC, R617). Organic
+// matter twice the carbon (Pribyl, R602).
 const CARBON = 0.47, OM_C = 2;
 // The nitrogen it releases: what the biomass and humus give back as they turn over, at the microbial biomass's C:N, 60:7
 // by atoms, and the soil's, 186:13 (Cleveland and Liptzin, R615), so 7.3 and 12.3 by mass [derived; the ground notes'
@@ -96,6 +98,12 @@ const CN_BIO = (60 * 12) / (7 * 14), CN_HUM = (186 * 12) / (13 * 14), N_PLANT = 
 const DAYS = 365.25 / 4;
 // The grazed field layer: the sward and the herbs and flowers flora.ts lays under and between the woody plants.
 const FIELD = ["grass", "yarrow", "sorrel", "mint", "buttercup", "daisy", "clover", "harebell", "poppy"];
+// The natural forest's gaps: 11.75% of its ground, the median of the gap fractions measured in primeval and old-growth
+// beech forests, gaps whose regrowth stands under half to two thirds of the canopy (Drössler and von Lüpke 16 and 14.6%,
+// Feldmann et al. 13.6 and 8.2%, Rugani et al. 3.9 and 9.9% over their periods; R635, R636, R637) [derived]; Drössler's
+// 0.387 to 0.529% of the forest opened a year over the some 35 years a fallen canopy tree takes to rot gives 14 to 19%.
+// Light in them, about 10% of the open sky's, as in the gaps of the Danish near-natural wood at Suserup (R633).
+const GAP = (9.9 + 13.6) / 2 / 100, GAP_LIGHT = 0.1;
 
 // What the root zone holds for plants, mm: field capacity less wilting point by Saxton and Rawls (R597 eqs. 1, 2), sand
 // and clay shares by mass, organic matter %, over the root zone or the soil if it is shallower (FAO-56 eq. 82, R221).
@@ -135,7 +143,7 @@ export function ground(s: Site): Ground {
   const soilWater = [0, 1, 2, 3].map(() => new Float32Array(LEN));
   const sandy = new Float32Array(LEN), clayey = new Float32Array(LEN), carbon = new Float32Array(LEN), organic = new Float32Array(LEN), nitrogen = new Float32Array(LEN);
   const ph = new Float32Array(LEN), fertility = new Float32Array(LEN);
-  const tree = new Float32Array(LEN), shrub = new Float32Array(LEN), grass = new Float32Array(LEN), marsh = new Float32Array(LEN), bare = new Float32Array(LEN), field = new Float32Array(LEN);
+  const tree = new Float32Array(LEN), shrub = new Float32Array(LEN), grass = new Float32Array(LEN), marsh = new Float32Array(LEN), bare = new Float32Array(LEN), field = new Float32Array(LEN), fieldLight = new Float32Array(LEN);
 
   // How fast creep lowers each cell, m a year: the divergence of the slope flux D S / (1 - (S / Sc)^2) across its four
   // faces, with the sea level as the ground's floor at the coast.
@@ -179,8 +187,8 @@ export function ground(s: Site): Ground {
     // Fine alluvium on floodplains whose stream is too weak to carry sand.
     const flood = s.valley[i] > 0 && near[i] < Infinity;
     silt[i] = flood && near[i] < COHESIVE ? 1 : 0;
-    // Peat where the water table stays in the acrotelm, or where it rains enough for blanket bog.
-    const wet = s.table[i] <= ACROTELM || s.precip[i] >= BLANKET;
+    // Peat where the water table stays in the acrotelm the year round: its deepest within 0.3 m.
+    const wet = s.dryTable[i] <= ACROTELM;
     peat[i] = wet && !sand[i] ? (PEAT_P / PEAT_A) * (1 - Math.exp(-PEAT_A * AGE)) / 1000 / PEAT_RHO : 0;
     // Texture: beach sand, alluvium, or the drift over the rock in the root zone.
     const inDrift = Math.min(1, d0 / ROOTS), D = DRIFTS[kind];
@@ -195,43 +203,49 @@ export function ground(s: Site): Ground {
     const rich = flood || parent === TILL_CLAY || (parent < 0 && (s.rock[i] === MUDSTONE || s.rock[i] === DOLERITE));
     const mineral = carbonate ? CARBONATE : rich ? SILICATE : EXCHANGER;
     ph[i] = mineral;
-    const env: Env = { ph: mineral, table: s.table[i], light: NaN, wind: s.windShare[i], salt: s.salt[i], soil: soil[i] };
+    // The niches read the winter table, the one the forestry site classification's moisture regimes are defined on.
+    const env: Env = { ph: mineral, table: s.winterTable[i], light: NaN, wind: s.windShare[i], salt: s.salt[i], soil: soil[i] };
     for (let k = 0; k < 4; k++) { sun[k] = s.seasons[k].sun[i]; temp[k] = s.seasons[k].temp[i]; }
 
     // Two passes [design]: the cover's organic matter changes what the soil holds, and so the cover.
     let om = 0, veg = 0, npp = 0, morShare = 0, wTree = 0, wOpen = 0;
     for (let pass = 0; pass < 2; pass++) {
       // A soil bucket through the seasons: spring rain tops it up and summer drinks it down; two years for it to settle.
-      // Roots that reach the water table never go short (FAO-56's root zone, R221; the capillary fringe above it [gap]).
-      const cap = holds(soil[i], sa, cl, om), fed = s.table[i] <= ROOTS;
+      // Roots that reach the season's water table don't go short that season, and it fills the root zone back up from
+      // below (FAO-56's root zone, R221; the capillary fringe above it [gap]).
+      const cap = holds(soil[i], sa, cl, om);
       let store = cap, short = 0, want = 0;
       for (let year = 0; year < 2; year++)
         for (let k = 0; k < 4; k++) {
-          const { precip, pet } = s.seasons[k], have = store + precip[i], used = Math.min(pet[i], have);
-          store = Math.min(cap, have - used);
-          if (year) { short += pet[i] - used; want += pet[i]; water[k] = fed ? 1 : cap > 0 ? store / cap : 0; }
+          const { precip, pet } = s.seasons[k], fed = s.seasonTable[k][i] <= ROOTS, have = store + precip[i], used = fed ? pet[i] : Math.min(pet[i], have);
+          store = fed ? cap : Math.min(cap, have - used);
+          if (year) { short += pet[i] - used; want += pet[i]; water[k] = cap > 0 ? store / cap : fed ? 1 : 0; }
         }
-      moist[i] = fed ? 1 : want > 0 ? 1 - short / want : 1;
+      moist[i] = want > 0 ? 1 - short / want : 1;
       // Each form's best kind: the one that keeps itself on the least of the open sky's sun over the year (growth.ts),
-      // as the ground suits it (niche.ts). A form's crowns close as far as that kind's light allows (growth.ts closes),
-      // taller forms first over the open ground, each lower one in the gaps the higher leave, so the tallest that can
-      // live somewhere takes it. Nothing grows on the beach sand.
+      // as the ground suits it (niche.ts). Where trees keep themselves they close a canopy (growth.ts closes), but for the
+      // gaps their fallen trees leave; under the canopy and in its gaps only what keeps itself on the light there grows,
+      // in the gaps the young trees first. On the open ground the taller forms take the light first, each lower one in
+      // what the higher leave. Grass and herbs in shade are the field layer, which only the herds see; the sward is the
+      // open ground's. Nothing grows on the beach sand.
       const best = (names: readonly string[]) => {
         let comp = Infinity, name = names[0];
         for (const n of names) { const c = yearComp(SLA[n], sun, temp, water, fit(n, env), pOf(n)); if (c < comp) { comp = c; name = n; } }
         return { comp, name };
       };
       const T = best(TREES), Sh = best(SHRUBS), Re = best(["reeds"]), G = best(["grass"]), F = best(FIELD);
-      const ground = 1 - sand[i];
-      tree[i] = ground * closes(T.comp);
-      // shrubs and reeds take the gaps by height, then the sward
+      const ground = 1 - sand[i], forest = ground * closes(T.comp), canopy = forest * (1 - GAP), gap = forest * GAP;
+      const young = gap * closes(T.comp / GAP_LIGHT);
+      tree[i] = canopy + young;
+      // shrubs and reeds take the open ground and the gaps' floor by height, then the sward the open ground
       const [hi, lo] = (NICHE[Sh.name].tall ?? 0) >= (NICHE.reeds.tall ?? 0) ? [Sh, Re] : [Re, Sh];
-      const first = (ground - tree[i]) * closes(hi.comp), second = (ground - tree[i] - first) * closes(lo.comp);
-      shrub[i] = hi === Sh ? first : second; marsh[i] = hi === Re ? first : second;
-      grass[i] = (ground - tree[i] - shrub[i] - marsh[i]) * closes(G.comp);
-      // The field layer under the crowns: the grass or herb that keeps itself on the least light fills in, by the same
-      // closing, as far as the light one crown lets through allows it (its need as a share of that light).
-      field[i] = closes(F.comp / through(1));
+      const layers = (room: number, light: number) => { const a = room * closes(hi.comp / light), b = (room - a) * closes(lo.comp / light); return hi === Sh ? [a, b] : [b, a]; };
+      const [oSh, oRe] = layers(ground - forest, 1), [gSh, gRe] = layers(gap - young, GAP_LIGHT);
+      shrub[i] = oSh + gSh; marsh[i] = oRe + gRe;
+      grass[i] = (ground - forest - oSh - oRe) * closes(G.comp);
+      const fieldGap = (gap - young - gSh - gRe) * closes(F.comp / GAP_LIGHT), fieldUnder = canopy * closes(F.comp / UNDER_CROWN);
+      field[i] = fieldGap + fieldUnder;
+      fieldLight[i] = field[i] > 0 ? (fieldGap * GAP_LIGHT + fieldUnder * UNDER_CROWN) / field[i] : 0;
       bare[i] = Math.max(0, 1 - tree[i] - shrub[i] - marsh[i] - grass[i] - sand[i]);
       veg = tree[i] + shrub[i] + marsh[i] + grass[i];
       morShare = (T.name === "pine" ? tree[i] : 0) + (Sh.name === "heather" ? shrub[i] : 0);
@@ -242,15 +256,15 @@ export function ground(s: Site): Ground {
       const clay = cl * 100, x = 1.67 * (1.85 + 1.6 * Math.exp(-0.0786 * clay)), e = 1 / (1 + x);
       const turnover = (e / (1 - e)) * (0.46 / CN_BIO + 0.54 / CN_HUM);
       fertility[i] = clamp((turnover * CARBON) / N_PLANT, 0, 1);
-      // The year's carbon from the plants, t a ha: each form's at its own drought tolerance, the field layer's in the light
-      // the crowns let through, as far as that nitrogen lets it grow (as herds.ts grows its grass) [derived].
+      // The year's carbon from the plants, t a ha: each form's at its own drought tolerance in the light it stands in,
+      // what it stops of that light being what a closed canopy stops, as far as that nitrogen lets it grow (as herds.ts
+      // grows its grass) [derived].
       npp = 0;
-      const under = (tree[i] + shrub[i]) * field[i] * through(1);
-      for (const [share, name] of [[tree[i], T.name], [shrub[i], Sh.name], [marsh[i], "reeds"], [grass[i], "grass"], [under, F.name]] as const) {
+      for (const [share, light, name] of [[tree[i], 1, T.name], [oSh, 1, Sh.name], [oRe, 1, "reeds"], [grass[i], 1, "grass"], [gSh, GAP_LIGHT, Sh.name], [gRe, GAP_LIGHT, "reeds"], [field[i], fieldLight[i], F.name]] as const) {
         if (share <= 0) continue;
         let dm = 0;
         for (let k = 0; k < 4; k++) dm += DAYS * RUE * sun[k] * warmEnough(temp[k]) * watered(water[k], pOf(name));
-        npp += share * (1 - through(1)) * dm;
+        npp += share * light * (1 - UNDER_CROWN) * dm;
       }
       npp *= (CARBON / 100) * fertility[i];
       nitrogen[i] = 1000 * npp * turnover;
@@ -284,5 +298,5 @@ export function ground(s: Site): Ground {
     // The mor pine and heather lay down sours base-poor ground.
     if (mineral === EXCHANGER && veg > 0) ph[i] = mineral + (MOR - mineral) * (morShare / veg);
   }
-  return { soil, silt, sand, peat, sandy, clayey, carbon, organic, nitrogen, ph, fertility, moist, soilWater, tree, shrub, grass, marsh, bare, field };
+  return { soil, silt, sand, peat, sandy, clayey, carbon, organic, nitrogen, ph, fertility, moist, soilWater, tree, shrub, grass, marsh, bare, field, fieldLight };
 }
