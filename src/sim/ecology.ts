@@ -454,11 +454,11 @@ function plants(w: World, live: Thing[]) {
       const sp = t.kind === "dead_bush" ? "berry" : t.species!;
       // a felled or burned aspen sends up suckers all round from its roots as well (recruits.ts)
       if (sp === "aspen") suckers(w, t);
-      setKind(w, t, "sapling");
-      Object.assign(t, sp === "berry" ? { item: "berry" } : { species: sp }, { stage: 0, born: w.t, hp: 5, maxHp: 5, size: 0.3 });
-      for (const k of ["until", "scarred", "resin", "oozing", "bark", "girth", "n", "fit", "share", "dry", "peak"] as const) delete t[k];
-      if (sp === "berry") delete t.species;
-      mark(w, t);
+      // The sprout is a new stem on the old roots, a thing of its own as a sucker is: the stem the ground laid down stays
+      // gone (gpu/flora.ts: a tree or bush never comes back where it stood once gone).
+      const { px, py, owner } = t;
+      removeThing(w, t);
+      mark(w, addThing(w, "sapling", px, py, { ...(sp === "berry" ? { item: "berry" } : { species: sp }), ...(owner ? { owner } : {}), stage: 0, born: w.t, hp: 5, maxHp: 5, size: 0.3 }));
     } else if (t.kind === "sapling") {
       // tended once an hour as the sky turns (seedling.ts), by the spot's fit as it was the first time and the share of
       // it the plants round it leave it now, in the sun on the open ground and the share the crowns let through
