@@ -31,7 +31,7 @@ Substrate 5 of `rule-audit.md`: deer, rabbits, wolves and red foxes, and (sec. 1
 
 Two pools a tile, each split into what is green and what has died and still stands, in g per m2 of its own share of the tile, from the generator's cover there:
 
-- The ground layer: the open grass and the field layer under the trees' and shrubs' crowns. Both deer and rabbits eat it.
+- The ground layer: the open grass and the field layer under the trees' and shrubs' crowns, as much of the crowns' ground as the generator's field layer covers (ground.ts `field`, terrain-constants sec. 12c). Both deer and rabbits eat it.
 - Browse: the woody shoots within a deer's reach, a share of the shrubs' cover and a smaller of the trees' [design: 0.3, 0.1]. Only deer eat it.
 
 Green grows by the plant rule (terrain/growth.ts): 1.4 g per MJ of the season's sun there (climate.ts seasons, MJ/m2 a day), the share a sward intercepts [UNVERIFIED 0.8], warm and watered enough as the seasons there are, scaled by the ground's fertility (isle.fertility), at the year's pace (plants.ts YEARS_PACE), slowing as green and dead together near what a sward stands at. The field layer grows in the eighth of the sun under a crown (growth.ts through(1), light.ts's Beer-Lambert) [derived].
@@ -42,8 +42,8 @@ Green grows by the plant rule (terrain/growth.ts): 1.4 g per MJ of the season's 
 | A green leaf's life | 460 degree-days over 4 C (a grazed temperate sward's 400 to 520), so about 40 days in summer and the most of a cool winter | R392 [ex] |
 | Dead standing stuff rotting away | 0.4% a day (litter losing 0.33 to 0.5% a day) | R395 [UNVERIFIED: a tropical grass's litter] |
 | What a gram is worth, kJ | 0.16 MJ/kg a point of digestibility (R394): green grass and broadleaf leaves 11 (R362; green over 65% digestible, R393); anything dead, and broadleaf twigs after leaf fall, 7.2 (under 45%, R393, R396) | [derived] |
-| Evergreen browse | heather and gorse 8.9 in the growing season, 6.7 out of it (heather 55.9% digestible in July, 41.9% in March, R397; gorse taken as heather [UNVERIFIED]); pine 9.0 all year (56%, low in every season, R396); bramble 11 all year (evergreen leaves unchanging, R396) | [ex] |
-| A tile's browse | its kinds as the generator draws them, each by its niche fit and vigour there within its form (flora.ts), so heath ground browses as heather and gorse and oakwood as oak and hazel | [derived] |
+| Evergreen browse | heather 8.9 in the growing season, 6.7 out of it (55.9% digestible in July, 41.9% in March, R397); pine 9.0 all year (56%, low in every season, R396); bramble 11 all year (evergreen leaves unchanging, R396). Gorse left the island (terrain-constants sec. 13a) | [ex] |
+| A tile's browse | its kinds as the generator draws them, each by its niche fit there within its form (flora.ts; vigour is gone, terrain-constants sec. 13), so heath ground browses as heather and oakwood as oak and hazel | [derived] |
 | Leaf fall | the broadleaves' green browse drops to dead when the growing season index goes under green-up (the cold ramp, which warmEnough is, times the daylight ramp from 10 h to 11 h), as the game's broadleaves go bare (wetness.ts leafless); the evergreens keep theirs | [derived] |
 
 - A grazer crops the green as its Holling type II over the green it can reach a m2 of ground allows, half its fill at Mulder and Hendriks' half-saturation for grazing mammals, 4.9e4 m^0.20 kg/km2 of wet vegetation, m in kg (R374) [ex: Table 1], a quarter of it dry [UNVERIFIED]: 31.7 g DM/m2 for a deer, 13.5 for a rabbit [derived]. What that leaves short of its need it makes up from the dead, as its response to the dead allows [derived: grazers pick the green leaf].
@@ -153,13 +153,13 @@ Probes, against a8bf4da: fails nine. blame/real's fewer wasted tries late than e
 ## 10. Gaps
 
 - Age and sex classes; calves and kits as adults at once.
-- Winter's poorer forage; browse as a fixed share of shrubs and trees; the field layer as grass in an eighth of the sun, whatever grows there.
+- Winter's poorer forage; browse as a fixed share of shrubs and trees; the field layer as grass in an eighth of the sun over the share of the crowns' ground the generator's field layer covers (a fifth on islands 1 to 3; with it every mammal dies out, terrain-constants sec. 12f).
 - Eagles on rabbits away from people; stoats, raptors and disease, whose share of the kits' loss is taken from where predators were kept down (R388), which held them back too, but not wholly.
 - Foxes' other food (voles, birds, beetles, fruit), which in Spain they turn to as rabbits fall (R391); wolves killing foxes; foxes' own spacing.
 - A deer's body taken as made like a rabbit, for what a wolf gets of it.
 - Wolves taking each prey as its share of the biomass up to a coyote's chases, with no preference for deer; strife among packs judged over the whole island, not pack by pack.
 - A warren's share of a tile from soil depth and water table alone, not slope, stones or texture; rabbits' patch and the deer's mixed in one pool a tile; no culling, and no thermoregulation or lactation in a deer's winter costs.
-- Gorse's worth taken as heather's; deer's browse quality and fibre the same for every plant's green; marsh, rushes and sedges uneaten.
+- Deer's browse quality and fibre the same for every plant's green; marsh, rushes and sedges uneaten.
 - Rabbits keeping to cover: they graze any of a tile's ground layer, not only within reach of their warrens.
 - Running and walking speeds (substrate 6), wounds (the hp pools).
 - The young join the grown at birth, at the field's survival to the age it was counted at over the grown's (sec. 5 keeps the per-species ages).

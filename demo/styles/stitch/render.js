@@ -53,7 +53,7 @@ function setup(kind, w) {
   const world = (u, v) => [C[0] + ((u - uc) * R0[0] + (v - vc) * R1[0]) * mpc, C[1] + ((u - uc) * R0[1] + (v - vc) * R1[1]) * mpc];
   const fabOf = (x, z) => { const dx = x - C[0], dz = z - C[1]; return [uc + (dx * R0[0] + dz * R0[1]) / mpc, vc + (dx * R1[0] + dz * R1[1]) / mpc]; };
   const lightW = [lightS[0] * R0[0] + lightS[1] * R1[0], lightS[0] * R0[1] + lightS[1] * R1[1]];
-  const exposureAt = (x, z) => w.bilinear(w.isle.exposure, (x - w.START) / w.CELL, (z - w.START) / w.CELL);
+  const exposureAt = (x, z) => w.bilinear(w.isle.windShare, (x - w.START) / w.CELL, (z - w.START) / w.CELL);
   return { kind, W, H, fab, mpc, world, fabOf, inside, lightW, lightS, exposureAt, hoopAt, campAt: camp, depthScale: kind === "island" ? 1 : 0.15, R0, R1, uc, vc };
 }
 

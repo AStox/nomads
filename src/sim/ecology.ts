@@ -13,12 +13,13 @@ import { anyAround, around, exists, liveThings, onPath, put, regrow, setKind, st
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
 import { enrich, settle, soilWaterAt, wetHour } from "./soil";
-import { SIZE, START, TALLEST } from "../terrain/flora";
+import { SIZE, START } from "../terrain/flora";
+import { TALLEST } from "../terrain/niche";
 import { YEAR_DAYS } from "./sky";
 import { CELL } from "../terrain/grid";
 import { YEARS_PACE, fitHere, growth } from "./plants";
 import { runoffHour } from "./streams";
-import { airAt, airOn, islandAir, islandTemp, nextAnomaly, nextSky, nextWay, rainAt, sunOn, windOf } from "./air";
+import { airAt, airOn, islandAir, islandTemp, nextAnomaly, nextSky, nextWarmth, nextWay, rainAt, sunOn, windOf } from "./air";
 import { crownRadius, skyShare } from "./light";
 import { nicheOf, seedlingHour, seedlingOf, shareAt, treeOf, type Hour } from "./seedling";
 import { count, timed, trace } from "./trace";
@@ -46,14 +47,15 @@ const normal = (r1: number, r2: number) => Math.sqrt(-2 * Math.log(1 - r1)) * Ma
 // The island's weather at the next n turns of the sky after now, from how it stands, drawn with r (a seeded draw of the
 // caller's own, so nothing here moves the world's): what the coming days might bring (seedling.ts seedlingFate).
 export function forecast(w: World, n: number, r: () => number): Hour[] {
-  let { sky, speed, wet, anomaly } = w.weather, t = Math.ceil((w.t + 1) / 12) * 12;
+  let { sky, speed, wet, anomaly, warm } = w.weather, t = Math.ceil((w.t + 1) / 12) * 12;
   const out: Hour[] = [];
   for (let i = 0; i < n; i++, t += 12) {
-    sky = nextSky(w, sky, r(), t);
+    sky = nextSky(sky, r(), t);
     anomaly = nextAnomaly(anomaly, normal(r(), r()));
+    warm = nextWarmth(warm, normal(r(), r()));
     speed = windOf(t, sky, anomaly);
-    wet = wetHour(w, wet, t, sky, speed, islandTemp(t, sky));
-    out.push({ sky, speed, wet });
+    wet = wetHour(w, wet, t, sky, speed, islandTemp(t, sky, warm));
+    out.push({ sky, speed, wet, warm });
   }
   return out;
 }
@@ -68,15 +70,17 @@ function weather(w: World) {
   wx.year = Math.floor(w.t / DAY / 40) + 1;
   if (w.t % 12 === 0) {
     const before = wx.sky;
-    wx.sky = nextSky(w, wx.sky, Math.random(), w.t);
+    wx.sky = nextSky(wx.sky, Math.random(), w.t);
     // The wind wanders, but keeps coming back to blow the way it prevails, the way that laid the island's rain.
     wx.wind = nextWay(w.t, wx.wind, w.terrain.wind, normal(Math.random(), Math.random()), normal(Math.random(), Math.random()));
     wx.anomaly = nextAnomaly(wx.anomaly, normal(Math.random(), Math.random()));
+    // the day's air wanders from its time of year's, and keeps its standing for days
+    wx.warm = nextWarmth(wx.warm, normal(Math.random(), Math.random()));
     wx.speed = windOf(w.t, wx.sky, wx.anomaly);
     // a probe's own weather, set as the sky turns (rules.ts hooks), so the runoff, the air and how wet things get follow
     // from it as from the island's own
     hooks.weather?.(w);
-    wx.wet = wetHour(w, wx.wet, w.t, wx.sky, wx.speed, islandTemp(w.t, wx.sky));
+    wx.wet = wetHour(w, wx.wet, w.t, wx.sky, wx.speed, islandTemp(w.t, wx.sky, wx.warm));
     wx.runoff = runoffHour(w, wx.runoff, w.t, wx.sky);
     if (wx.sky !== before) {
       const words = { clear: "The sky cleared.", cloudy: "Clouds rolled in.", rain: "It started to rain.", storm: "A storm broke." };
@@ -84,7 +88,7 @@ function weather(w: World) {
       trace("weather", "sky", { from: before, to: wx.sky, season });
     }
   }
-  wx.temp = islandTemp(w.t, wx.sky);
+  wx.temp = islandTemp(w.t, wx.sky, wx.warm);
   wetness(w);
   if (w.t % 12 === 0) ice(w);
   // A drought, as Met Éireann and the Met Office count an absolute one: fifteen days or more on end, none with 0.2 mm of
@@ -142,7 +146,7 @@ function stormFlashes(w: World) {
   let sky: World["weather"]["sky"] = "clear", hours = 0, days = 0, lastDay = -1;
   for (let h = 0; h < years * YEAR_DAYS * 24; h++) {
     const t = h * 12;
-    sky = nextSky(w, sky, r(), t);
+    sky = nextSky(sky, r(), t);
     if (sky !== "storm") continue;
     hours++;
     if (Math.floor(h / 24) !== lastDay) { days++; lastDay = Math.floor(h / 24); }

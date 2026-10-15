@@ -217,11 +217,11 @@ export function streams(w, common, V) {
   for (const line of w.rivers) {
     const b0 = pos.length / 3;
     for (let k = 0; k < line.length; k++) {
-      const [x, z, q] = line[k], a = line[Math.max(0, k - 1)], c = line[Math.min(line.length - 1, k + 1)];
+      const [x, z] = line[k], a = line[Math.max(0, k - 1)], c = line[Math.min(line.length - 1, k + 1)];
       let tx = c[0] - a[0], tz = c[1] - a[1];
       const tl = Math.hypot(tx, tz) || 1;
       tx /= tl; tz /= tl;
-      const half = w.riverWidth(q) * 0.5;
+      const half = w.riverWidth(line[k]) * 0.5;
       for (const s of [-1, 1]) {
         const px = x - tz * half * s, pz = z + tx * half * s;
         pos.push(px, w.heightAt(px, pz) * V.exag + 0.45, pz);

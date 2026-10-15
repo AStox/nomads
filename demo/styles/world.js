@@ -6,7 +6,7 @@ import { CELL, COVERS, FLORA, N, SIZE, SPECIES, START, STEP, K, M, TILE_M, clamp
 export { COVERS, clamp, fbm, hash, noise, smooth };
 
 // How heathy each kind of shrub looks, 0 leafy to 1 heather.
-const HEATH = { berry: 0.1, hazel: 0.25, gorse: 0.7, heather: 0.9 };
+const HEATH = { berry: 0.1, hazel: 0.25, heather: 0.9 };
 
 export function grow(seed = 1) {
   const isle = generateIsland(rng(seed)), rand = rng(seed ^ 0x51f15e);

@@ -102,7 +102,7 @@ export function drawWorldMap(g, F, W, paths, seed) {
   m.fillStyle = `rgb(${to255(MAPCOL.shallow).join(",")})`;
   for (const line of W.rivers)
     for (let k = 1; k < line.length; k++) {
-      const [ax, az, q] = line[k - 1], [bx, bz] = line[k], n = Math.ceil(Math.hypot(bx - ax, bz - az) / (mpp * 0.5)), wide = W.riverWidth(q) > 6 ? 2 : 1;
+      const [ax, az] = line[k - 1], [bx, bz] = line[k], n = Math.ceil(Math.hypot(bx - ax, bz - az) / (mpp * 0.5)), wide = W.riverWidth(line[k - 1]) > 6 ? 2 : 1;
       for (let s = 0; s <= n; s++) m.fillRect(Math.floor(px(ax + ((bx - ax) * s) / n)), Math.floor(py(az + ((bz - az) * s) / n)), wide, wide);
     }
 

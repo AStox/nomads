@@ -3,9 +3,8 @@
 // What grows and lies on the ground is in flora.ts.
 import { H, Tile, W } from "../sim/world";
 import { CELL, LEN, N } from "./grid";
+import { BARE_ROCK, COVER, coverClass } from "./ground";
 import type { Island } from "./island";
-
-import { QMIN } from "./water";
 
 // W and H come from the world module, which imports this one, so they're only read once it has loaded.
 
@@ -41,17 +40,26 @@ export function lay(isle: Island): Lay {
     tree: mean(isle.tree), shrub: mean(isle.shrub), grass: mean(isle.grass), marsh: mean(isle.marsh),
     bare: mean(isle.bare), sand: mean(isle.sand), silt: mean(isle.silt), moist: mean(isle.moist),
   };
+  const soil = mean(isle.soil), slope = new Float32Array(T), z = (x: number, y: number) => Math.max(0, isle.height[Math.min(N - 1, Math.max(0, y)) * N + Math.min(N - 1, Math.max(0, x))]);
+  for (let i = 0; i < LEN; i++) {
+    const x = i % N, y = (i - x) / N;
+    slope[Math.floor(y / R) * W + Math.floor(x / R)] += Math.hypot(z(x + 1, y) - z(x - 1, y), z(x, y + 1) - z(x, y - 1)) / (2 * CELL) / (R * R);
+  }
+  const shares = new Float32Array(COVER.length), FOREST = COVER.indexOf("tree");
   const wet = new Float32Array(T), level = new Float32Array(T), stream = new Uint8Array(T);
   for (let i = 0; i < LEN; i++) {
     const x = i % N, y = (i - x) / N, t = Math.floor(y / R) * W + Math.floor(x / R);
     if (isle.water[i] > 0) { wet[t]++; level[t] += Math.max(0, isle.height[i] + isle.water[i]); }
-    else if (isle.seasonFlow.some((f) => f[i] >= QMIN)) stream[t] = 1;
+    else if (isle.channel[i]) stream[t] = 1;
   }
   const tiles = new Array<Tile>(T);
   for (let t = 0; t < T; t++) {
-    // Rock where the ground is mostly bare stone rather than sand, forest where trees hold most of it.
-    if (wet[t] >= (R * R) / 2) { tiles[t] = Tile.Water; level[t] /= wet[t]; }
-    else tiles[t] = tile.bare[t] - tile.sand[t] >= 0.5 ? Tile.Rock : tile.tree[t] >= 0.45 ? Tile.Forest : Tile.Grass;
+    // The tile's class by the one rule the map is drawn with (ground.ts coverClass): rock where it is bare rock, forest
+    // where trees hold the largest share.
+    if (wet[t] >= (R * R) / 2) { tiles[t] = Tile.Water; level[t] /= wet[t]; continue; }
+    COVER.forEach((k, q) => { shares[q] = tile[k][t]; });
+    const cls = coverClass(shares, soil[t], slope[t]);
+    tiles[t] = cls === BARE_ROCK ? Tile.Rock : cls === FOREST ? Tile.Forest : Tile.Grass;
   }
   const shore = new Uint8Array(T);
   for (let t = 0; t < T; t++) {

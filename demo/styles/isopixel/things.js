@@ -1206,9 +1206,7 @@ function drawObject(kind, hpx, seed, o) {
     case "sapling": return sapling(h, seed);
     case "bush": {
       const berries = o.berries ?? (o.n != null ? o.n > 0 : sp === "berry");
-      const S = SP.bush(h * 0.9, seed, sp === "heath" || sp === "heather" ? 1 : 0, berries ? 0.95 : 0);
-      if (sp === "gorse") for (let i = 0; i < S.p.length; i++) if (S.p[i] !== 255 && S.p[i] !== P.ink && h2(i, seed, 7) < 0.14) S.p[i] = h2(i, seed, 8) < 0.5 ? P.a3 : P.f3;
-      return S;
+      return SP.bush(h * 0.9, seed, sp === "heath" || sp === "heather" ? 1 : 0, berries ? 0.95 : 0);
     }
     case "dead_bush": return deadbush(h, seed);
     case "fern": return recolor(SP.fern(h * 0.9, seed), sp === "bracken" ? BRACKEN : null);

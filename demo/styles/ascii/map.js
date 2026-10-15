@@ -262,7 +262,7 @@ export function localGrid(w, cols, rows, s, cx, cz) {
   }
   const dist = shoreDistance(g, water);
   const ex = fineScale ? 3 : 6, hgt = new Float32Array(n).fill(NaN);
-  const heathAt = (x, z) => clamp(w.bilinear(w.isle.exposure, (x - w.START) / w.CELL, (z - w.START) / w.CELL) * 1.4 + w.fine(w.cover.shrub, x, z) - w.fine(w.moist, x, z) * 0.3, 0, 1);
+  const heathAt = (x, z) => clamp(w.bilinear(w.isle.windShare, (x - w.START) / w.CELL, (z - w.START) / w.CELL) * 1.4 + w.fine(w.cover.shrub, x, z) - w.fine(w.moist, x, z) * 0.3, 0, 1);
   const lit = new Float32Array(n);
   for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
     const k = j * cols + i, x = g.cx(i), z = g.cz(j), r = hash(i + (g.ox / s | 0), j + (g.oz / s | 0), 21), r2 = hash(i, j, 22), r3 = hash(i, j, 23);

@@ -234,7 +234,7 @@ function pixels(texture, color) {
 const TILE = 32;
 const PALETTES = [
   [0x45552a, 0x4f6030, 0x596b36, 0x76603a], // forest floor, with fallen needles
-  [0x6a4c5e, 0x77566a, 0x846076, 0xa09250], // heather, a little gorse
+  [0x6a4c5e, 0x77566a, 0x846076, 0xa09250], // heather
   [0x588a38, 0x60933e, 0x699c44, 0x9cb85c], // green grass
   [0x9c9650, 0xa8a15a, 0xb4ad64, 0x8a8246], // straw
   [0x566b40, 0x5e7446, 0x667d4c, 0x4d6a74], // marsh, with standing water

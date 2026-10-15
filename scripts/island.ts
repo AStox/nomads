@@ -67,13 +67,14 @@ console.log("cover on land:", Object.entries(share).map(([k, v]) => `${k} ${((v 
 save("relief", (i) => { const t = h[i] / top; return t < 0.5 ? mix([110, 150, 80], [190, 170, 120], t * 2) : mix([190, 170, 120], [245, 245, 240], (t - 0.5) * 2); });
 save("precip", (i) => mix([214, 190, 130], [40, 120, 110], (isle.precip[i] - 500) / 2000));
 save("table", (i) => mix([60, 110, 200], [150, 110, 70], isle.table[i] / 15), false);
-save("wind", (i) => [Math.min(255, isle.exposure[i] * 255), Math.min(255, isle.salt[i] * 400), 90], false);
+save("wind", (i) => [Math.min(255, isle.windShare[i] * 255), Math.min(255, isle.salt[i] * 400), 90], false);
 save("soil", (i) => mix([120, 120, 120], [110, 80, 40], isle.soil[i] / 2), false);
 save("cover", (i) => {
   const parts: [number, RGB][] = [[isle.tree[i], [52, 92, 48]], [isle.shrub[i], [128, 96, 110]], [isle.grass[i], [170, 190, 100]], [isle.marsh[i], [110, 130, 90]], [isle.bare[i], [150, 145, 135]]];
   const c: RGB = [0, 0, 0];
   for (const [w, rgb] of parts) for (let k = 0; k < 3; k++) c[k] += w * rgb[k];
-  return mix(c, [226, 208, 160], isle.sand[i]);
+  c.forEach((v, k) => { c[k] = v + isle.sand[i] * [226, 208, 160][k]; });
+  return c;
 });
 save("dominant", (i) => {
   if (isle.sand[i] > 0.5) return [226, 208, 160];

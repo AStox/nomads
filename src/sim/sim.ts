@@ -866,7 +866,8 @@ const CONDITIONS: Record<string, Condition> = {
   limy: { now: (x) => x.spot().env.ph > 7.5, words: "The soil there was limy", place: true },
   poor: { now: (x) => x.spot().fert < 0.1, words: "The soil there was poor", place: true },
   thin: { now: (x) => x.spot().env.soil < 0.2, words: "The soil there was thin over rock", place: true },
-  boggy: { now: (x) => x.spot().env.wet > 0.4, words: "The ground there was boggy", place: true },
+  // the ESC's wet regimes: the water table within 0.4 m (terrain-constants R606)
+  boggy: { now: (x) => x.spot().env.table < 0.4, words: "The ground there was boggy", place: true },
   exposed: { now: (x) => x.spot().env.wind > 0.45, words: "The spot lay open to the gales", place: true },
   salty: { now: (x) => x.spot().env.salt > 0.3, words: "Salt spray reached the spot", place: true },
 };

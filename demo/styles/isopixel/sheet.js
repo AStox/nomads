@@ -95,7 +95,7 @@ function sections() {
 
 // Every sim object and animal through things.js object() and animal(), from a 1 px dot to close zoom.
 const LADDER = [1, 2, 3, 4, 6, 9, 13, 18];
-const OBJECTS = [["tree", "oak", 1.6], ["tree", "pine", 1.6], ["tree", "ash", 1.6], ["tree", "aspen", 1.6], ["bush", "berry", 0.6], ["bush", "hazel", 0.6], ["bush", "heather", 0.6], ["bush", "gorse", 0.6],
+const OBJECTS = [["tree", "oak", 1.6], ["tree", "pine", 1.6], ["tree", "ash", 1.6], ["tree", "aspen", 1.6], ["bush", "berry", 0.6], ["bush", "hazel", 0.6], ["bush", "heather", 0.6],
   ["boulder", "", 1], ["stone", "", 0.4], ["pebble", "", 0.3], ["stick", "", 1.2], ["fallen_log", "oak", 2.4], ["fallen_log", "pine", 2.4], ["fallen_log", "ash", 2.4],
   ["mushroom", "bolete", 0.4], ["mushroom", "chanterelle", 0.4], ["mushroom", "puffball", 0.4], ["herb", "yarrow", 0.45], ["herb", "sorrel", 0.45], ["herb", "mint", 0.45],
   ["reeds", "", 0.6], ["grass", "", 1.8], ["fern", "bracken", 0.5], ["fern", "lady_fern", 0.5], ["flowers", "buttercup", 0.45], ["flowers", "daisy", 0.45], ["flowers", "clover", 0.45],

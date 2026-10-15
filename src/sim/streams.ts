@@ -1,8 +1,8 @@
 // Running water now. The generator gives every stream its mean flow and the share of it that comes out of the ground
 // (src/terrain/water.ts); the ground's share runs all year, and the rest, the runoff, rises and falls with the season's
-// rain and with the rain of the last day or two. A stream is as wide and deep as its flow now, and where that flow drops
-// below a trickle only its dry bed is left.
-import { TRICKLE, depthOf, flowNow, widthOf } from "../terrain/water";
+// rain and with the rain of the last day or two. A stream is as wide and deep as its flow now makes it in the bed its
+// bankfull flood cut, and where that flow drops to what the valley's fill carries under the bed only the dry bed is left.
+import { depthOf, flowNow, widthOf } from "../terrain/water";
 import { SIZE, streamAt } from "../terrain/flora";
 import { islandAir, meanRain } from "./air";
 import { seasonAt } from "./sky";
@@ -28,12 +28,13 @@ export type Stream = {
   width: number; depth: number; // of the water now, m
   bed: number; // width of the channel the stream keeps cut, m
   d: number; // meters from the point to the stream's middle
+  under: number; // m³/s the valley's fill carries under the bed: no less, and the bed is dry
   flowing: boolean; // water runs at the point
 };
 // The stream at a point in tiles, if one runs within 20 m.
 export function streamNow(w: World, px: number, py: number): Stream | null {
   const p = streamAt(groundOf(w.seed).fine, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2);
   if (!p) return null;
-  const q = flowNow(p.q, p.base, quickNow(w)), width = widthOf(q);
-  return { q, width, depth: depthOf(q), bed: widthOf(p.hi), d: p.d, flowing: q >= TRICKLE && p.d <= width / 2 };
+  const q = flowNow(p.q, p.base, quickNow(w)), width = widthOf(q, p.qbf, p.wbf);
+  return { q, width, depth: depthOf(q, p.qbf, p.dbf), bed: p.wbf, d: p.d, under: p.under, flowing: q > p.under && p.d <= width / 2 };
 }

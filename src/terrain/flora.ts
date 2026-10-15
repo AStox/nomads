@@ -3,10 +3,11 @@
 // listed here and the renderer draws the same list, so both read this one function.
 import { CELL, N, TILE_CELLS } from "./grid";
 import type { Island } from "./island";
-import { ROCKS, type Rock } from "./geology";
-import { widthOf } from "./water";
-import { NICHE, draw, envAt, fit, lightFit } from "./niche";
-import { SLA, through, thrive, yearComp } from "./growth";
+import { DRIFTS, ROCKS, type Drift, type Rock } from "./geology";
+import { WOODED, bankDepth, bankWidth, widthOf } from "./water";
+import { NICHE, SHRUBS, TREES, draw, envAt, fit, lightFit } from "./niche";
+import { SLA, pOf, through, thrive, yearComp } from "./growth";
+import { COVER, coverClass } from "./ground";
 
 export const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 export const smooth = (a: number, b: number, v: number) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
@@ -40,9 +41,12 @@ export const RM = N * 16;
 // Game tiles: their side in meters, and how many cross the island.
 export const TILE_M = CELL * TILE_CELLS, TILES = N / TILE_CELLS;
 
+// A point on a stream in world meters: x, z, mean discharge m³/s, the share of it from groundwater, bankfull discharge
+// m³/s, slope m/m, the flow under its bed m³/s (water.ts River), and its bankfull width and depth, m.
+export type FineRiver = [number, number, number, number, number, number, number, number, number];
 export type Fine = {
   h: Float32Array; wet: Float32Array; river: Float32Array; moist: Float32Array; cover: Record<Cover, Float32Array>;
-  rivers: [number, number, number, number, number][][]; // streams in world meters as water.ts shapes them: [x, z, mean m³/s, share from groundwater, wettest season's m³/s]
+  rivers: FineRiver[][]; // streams in world meters as water.ts shapes them
   mask: Uint8Array; // RM x RM, 255 where a stream runs
   at: (f: Float32Array, i: number, j: number) => number;
   bilinear: (f: Float32Array, cx: number, cy: number) => number;
@@ -51,7 +55,7 @@ export type Fine = {
   heightAt: (x: number, z: number) => number;
   slopeAt: (x: number, z: number) => number;
   riverAt: (x: number, z: number) => number;
-  riverWidth: (q: number) => number;
+  riverWidth: (p: FineRiver) => number; // the width of a stream's mean flow at a point of its line, m
   dry: (x: number, z: number) => boolean;
 };
 
@@ -69,16 +73,19 @@ export function fineGround(isle: Island): Fine {
     return cr(row(y - 1), row(y), row(y + 1), row(y + 2), ty);
   };
 
-  // Streams in world meters, drawn into a mask for carving and shading at the width they run in the wettest season, the
-  // bed they keep cut. Round-capped strokes a pixel wider than the stream, coverage antialiased and stacked the way a
-  // canvas stacks one stroke over another.
-  const rivers = isle.rivers.map((line) => line.map(([x, y, q, b, hi]): [number, number, number, number, number] => [START + x * CELL, START + y * CELL, q, b, hi]));
-  const riverWidth = widthOf;
+  // Streams in world meters, drawn into a mask for carving and shading at their bankfull width, the bed they keep cut:
+  // wider where trees or shrubs hold 5% or more of the ground the banks stand on (R556). Round-capped strokes a pixel
+  // wider than the stream (antialiasing [design]), coverage stacked the way a canvas stacks one stroke over another;
+  // beside it the depth the bed is cut to (R557), in centimeters.
+  const rivers = isle.rivers.map((line) => line.map(([x, y, q, b, qbf, s, under]): FineRiver => {
+    const wooded = bilinear(isle.tree, x, y) + bilinear(isle.shrub, x, y) >= WOODED;
+    return [START + x * CELL, START + y * CELL, q, b, qbf, s, under, bankWidth(qbf, wooded), qbf > 0 ? bankDepth(qbf, s) : 0];
+  }));
   const px = (x: number) => ((x + SIZE / 2) / SIZE) * RM;
-  const mask = new Uint8Array(RM * RM), cov = new Float32Array(RM * RM);
+  const mask = new Uint8Array(RM * RM), cov = new Float32Array(RM * RM), cut = new Uint8Array(RM * RM);
   for (const line of rivers)
     for (let k = 1; k < line.length; k++) {
-      const half = ((riverWidth((line[k - 1][4] + line[k][4]) / 2) * RM) / SIZE + 1) / 2;
+      const half = ((((line[k - 1][7] + line[k][7]) / 2) * RM) / SIZE + 1) / 2, deep = Math.min(255, Math.round(((line[k - 1][8] + line[k][8]) / 2) * 100));
       const ax = px(line[k - 1][0]), ay = px(line[k - 1][1]), bx = px(line[k][0]), by = px(line[k][1]);
       const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1e-9;
       const i0 = Math.max(0, Math.floor(Math.min(ax, bx) - half - 1)), i1 = Math.min(RM - 1, Math.ceil(Math.max(ax, bx) + half + 1));
@@ -87,14 +94,16 @@ export function fineGround(isle: Island): Fine {
         for (let i = i0; i <= i1; i++) {
           const cx = i + 0.5, cy = j + 0.5, t = clamp(((cx - ax) * dx + (cy - ay) * dy) / l2, 0, 1);
           const a = clamp(half + 0.5 - Math.hypot(cx - ax - t * dx, cy - ay - t * dy), 0, 1);
-          if (a > 0) cov[j * RM + i] += a * (1 - cov[j * RM + i]);
+          if (a > 0) { cov[j * RM + i] += a * (1 - cov[j * RM + i]); cut[j * RM + i] = Math.max(cut[j * RM + i], deep); }
         }
     }
   for (let i = 0; i < mask.length; i++) mask[i] = Math.round(cov[i] * 255);
-  const riverAt = (x: number, z: number) => mask[clamp(Math.floor(px(z)), 0, RM - 1) * RM + clamp(Math.floor(px(x)), 0, RM - 1)] / 255;
+  const texel = (x: number, z: number) => clamp(Math.floor(px(z)), 0, RM - 1) * RM + clamp(Math.floor(px(x)), 0, RM - 1);
+  const riverAt = (x: number, z: number) => mask[texel(x, z)] / 255;
 
   // Heights come from a smooth cubic through the generator's cells, plus a little ground swell the cells are too
-  // coarse to hold. Streams cut their beds. Covers wander at their edges instead of following the cell grid.
+  // coarse to hold [design]. Streams cut their beds a bankfull depth down. Covers wander at their edges instead of
+  // following the cell grid.
   const h = new Float32Array(LEN), wet = new Float32Array(LEN), river = new Float32Array(LEN), moist = new Float32Array(LEN);
   const cover = Object.fromEntries(COVERS.map((k) => [k, new Float32Array(LEN)])) as Record<Cover, Float32Array>;
   const src = COVERS.map((k) => isle[k]), dst = COVERS.map((k) => cover[k]), share = new Float32Array(COVERS.length);
@@ -103,7 +112,7 @@ export function fineGround(isle: Island): Fine {
       const i = v * M + u, cx = u / K, cy = v / K, x = START + u * STEP, z = START + v * STEP;
       const base = bicubic(Hc, cx, cy), wf = bilinear(wetC, cx, cy), rv = riverAt(x, z);
       const swell = 2.6 * fbm(x / 240, z / 240, 7, 3) + 0.8 * fbm(x / 60, z / 60, 8, 2);
-      h[i] = base + smooth(-2, 6, base) * (1 - wf) * swell - rv * 1.8;
+      h[i] = base + smooth(-2, 6, base) * (1 - wf) * swell - (rv * cut[texel(x, z)]) / 100;
       wet[i] = wf;
       river[i] = rv;
       moist[i] = bilinear(isle.moist, cx, cy);
@@ -121,7 +130,18 @@ export function fineGround(isle: Island): Fine {
   };
   const heightAt = (x: number, z: number) => fine(h, x, z);
   const slopeAt = (x: number, z: number) => Math.hypot(heightAt(x + 4, z) - heightAt(x - 4, z), heightAt(x, z + 4) - heightAt(x, z - 4)) / 8;
-  const dry = (x: number, z: number) => fine(wet, x, z) < 0.15 && riverAt(x, z) < 0.25 && heightAt(x, z) > 0.8;
+  // Dry ground: outside the stream's bank line (half the mask's coverage [design]) and above the year's high water on
+  // the nearest lake or the sea, which stands 0.8 m over its level [gap]: the Baltic's yearly high at Rønne was not
+  // read, and the old cut stands in.
+  const dry = (x: number, z: number) => {
+    if (riverAt(x, z) >= 0.5) return false;
+    const i = Math.round((x - START) / CELL), j = Math.round((z - START) / CELL);
+    let level = i < 0 || j < 0 || i >= N || j >= N ? 0 : -Infinity;
+    for (let b = Math.max(0, j - 1); b <= Math.min(N - 1, j + 1); b++)
+      for (let a = Math.max(0, i - 1); a <= Math.min(N - 1, i + 1); a++) { const k = b * N + a; if (isle.water[k] > 0) level = Math.max(level, isle.height[k] + isle.water[k]); }
+    return heightAt(x, z) > level + 0.8;
+  };
+  const riverWidth = (p: FineRiver) => widthOf(p[2], p[4], p[7]);
   return { h, wet, river, moist, cover, rivers, mask, at, bilinear, bicubic, fine, heightAt, slopeAt, riverAt, riverWidth, dry };
 }
 
@@ -129,7 +149,7 @@ export function fineGround(isle: Island): Fine {
 export const FLORA = ["tree", "bush", "boulder", "stone", "pebble", "stick", "fallen_log", "mushroom", "herb", "reeds", "fern", "flowers", "clay", "grass"] as const;
 export type Flora = (typeof FLORA)[number];
 export const SPECIES = [
-  "", "pine", "oak", "ash", "aspen", "berry", "hazel", "heather", "gorse", "bolete", "chanterelle", "puffball",
+  "", "pine", "oak", "ash", "aspen", "berry", "hazel", "heather", "bolete", "chanterelle", "puffball",
   "yarrow", "sorrel", "mint", "bracken", "lady_fern", "buttercup", "daisy", "clover", "harebell", "poppy",
 ] as const;
 export type Species = (typeof SPECIES)[number];
@@ -148,13 +168,12 @@ export type Scatter = {
 
 const F = Object.fromEntries(FLORA.map((k, i) => [k, i])) as Record<Flora, number>;
 const S = Object.fromEntries(SPECIES.map((k, i) => [k, i])) as Record<Species, number>;
-export const TALL = { pine: 17, oak: 15, ash: 16, aspen: 13 } as const;
-// The tallest a tree grows (its kind's TALL, at its best fit, at the top of its spread, as put below) and the widest
-// boulder, m: nothing standing on the island is bigger.
-export const TALLEST = Math.max(...Object.values(TALL)) * 1.2 * 1.25, BOULDER = 0.5 + 5;
-// the plants that compete for each place, by layer and kind
-export const TREES = ["pine", "oak", "ash", "aspen"] as const satisfies readonly Species[];
-export const SHRUBS = ["berry", "hazel", "heather", "gorse"] as const satisfies readonly Species[];
+// A tree's height, m: its kind's tallest (niche.ts) spread by how well it fits there (f) and a draw (r, 0..1), the
+// best-fitted at the top of the spread reaching the tallest [design: the old spread, scaled so nothing outgrows its kind].
+export const treeHeight = (sp: string, f: number, r: number) => (NICHE[sp].tall ?? 0) * (clamp(0.45 + 0.75 * f, 0.45, 1.2) / 1.2) * ((0.7 + 0.55 * r) / 1.25);
+// The widest boulder, m.
+export const BOULDER = 0.5 + 5;
+// the plants that compete for each place, by layer and kind (the trees and shrubs niche.ts's)
 const FUNGI = ["bolete", "chanterelle", "puffball"] as const satisfies readonly Species[];
 const HERBS = ["yarrow", "sorrel", "mint"] as const satisfies readonly Species[];
 const FERNS = ["bracken", "lady_fern"] as const satisfies readonly Species[];
@@ -162,10 +181,11 @@ const FLOWERS = ["buttercup", "daisy", "clover", "harebell", "poppy"] as const s
 // all of them, each layer's in a run, as the scatter's table of fits holds them
 const PLANTS: readonly Species[] = [...TREES, ...SHRUBS, ...FUNGI, ...HERBS, ...FERNS, ...FLOWERS];
 
-// Conifers take cold, thin, windswept ground; oak the deep soils; ash the moist ones; aspen the wet edges. Shrubs
-// thicken at the woods' edge, heather and gorse on exposed ground. Rocks and stones break out where the ground is bare
-// or steep and lie in stream beds; fallen wood, ferns and mushrooms fill the shade; flowers and herbs the open grass;
-// reeds and clay the wet margins. Each quad draws from its own stream, so a quad's objects depend only on the seed.
+// Conifers take the poor, sour ground; oak and aspen the middling; ash the rich, base-rich ground; each where the water
+// table lets it. Shrubs thicken at the woods' edge, heather on the sourest ground. Rocks and stones break out where the
+// ground is bare or steep and lie in stream beds; fallen wood, ferns and mushrooms fill the shade; flowers and herbs the
+// open grass; reeds and clay the wet margins. Each quad draws from its own stream, so a quad's objects depend only on the
+// seed.
 export function scatter(isle: Island, g: Fine, seed: number): Scatter {
   let cap = 1 << 19, n = 0;
   let kind = new Uint8Array(cap), species = new Uint8Array(cap), pxs = new Float32Array(cap), pys = new Float32Array(cap), size = new Float32Array(cap), seeds = new Uint32Array(cap);
@@ -208,7 +228,7 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
     for (let s = 0; s < seasons; s++) { sun[s] = isle.seasons[s].sun[i]; temp[s] = isle.seasons[s].temp[i]; water[s] = isle.soilWater[s][i]; }
     for (let k = 0; k < NS; k++) {
       const f = (table[i * NS + k] = fit(PLANTS[k], e)), sla = SLA[PLANTS[k]];
-      comps[i * NS + k] = sla ? Math.min(2, yearComp(sla, sun, temp, water, f)) : 0;
+      comps[i * NS + k] = sla ? Math.min(2, yearComp(sla, sun, temp, water, f, pOf(PLANTS[k]))) : 0;
     }
   }
   const fitsAt = (x: number, z: number) => {
@@ -258,14 +278,14 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
         const [x, z] = spot();
         if (!dry(x, z) || slopeAt(x, z) > 0.7) continue;
         const sp = draw(TREES, treeF, r());
-        put(F.tree, S[sp], x, z, TALL[sp] * clamp(0.45 + 0.75 * treeF[TREES.indexOf(sp)], 0.45, 1.2) * (0.7 + r() * 0.55));
+        put(F.tree, S[sp], x, z, treeHeight(sp, treeF[TREES.indexOf(sp)], r()));
       }
       const edge = tree * (1 - tree) * 4;
       for (let c = any(shrubF, SHRUBS.length) ? Math.floor((shrub * 5 + edge * 1.2) * 0.6 + r()) : 0; c > 0; c--) {
         const [x, z] = spot();
         if (!dry(x, z)) continue;
         const sp = draw(SHRUBS, shrubF, r());
-        put(F.bush, S[sp], x, z, (NICHE[sp].tall ?? 1) * clamp(0.4 + 0.8 * shrubF[SHRUBS.indexOf(sp)], 0.4, 1.2) * (0.6 + r() * 0.8));
+        put(F.bush, S[sp], x, z, ((NICHE[sp].tall ?? 1) * clamp(0.4 + 0.8 * shrubF[SHRUBS.indexOf(sp)], 0.4, 1.2) * (0.6 + r() * 0.8)) / (1.2 * 1.4));
       }
       for (let c = Math.floor(bare * 1.6 + slope * 1.5 + r() * 0.8); c > 0; c--) {
         const [x, z] = spot();
@@ -310,8 +330,9 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
         const [x, z] = spot();
         if (dry(x, z)) put(F.grass, 0, x, z, 0.8 + r() * 1.7);
       }
-      // Weather wears reddish stones out of the bare rock that carries iron.
-      for (let c = Math.floor(bare * 0.04 * rockAt(isle, x0, z0).ore + r()); c > 0; c--) {
+      // Bog iron forms in bogs and wet meadows from the iron the groundwater brings up out of the till, a spade's depth
+      // down (R533); how much of it there is to find is a gap (the old 0.04 a cell stands in).
+      for (let c = Math.floor(marsh * 0.04 + r()); c > 0; c--) {
         const [x, z] = spot();
         if (fine(wet, x, z) < 0.3) put(-1, 0, x, z, 0.15 + r() * 0.2);
       }
@@ -333,9 +354,10 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
 }
 
 const ramp01 = (v: number) => clamp(v / 0.3, 0, 1);
-// The stream nearest world meters x, z within REACH meters, read off its line: how far off its middle the point lies and
-// what flows there (mean m³/s, the share from groundwater, the wettest season's), or null. Lines are binned once per island.
-export type StreamPoint = { d: number; q: number; base: number; hi: number };
+// The stream nearest world meters x, z within REACH meters (more than any bankfull half-width here), read off its line:
+// how far off its middle the point lies and what flows there (mean m³/s, the share from groundwater, bankfull m³/s, the
+// flow under its bed m³/s, and its bankfull width and depth, m), or null. Lines are binned once per island.
+export type StreamPoint = { d: number; q: number; base: number; qbf: number; under: number; wbf: number; dbf: number };
 const BIN = 50, REACH = 20, streamBins = new WeakMap<Fine, Map<number, [number, number][]>>();
 export function streamAt(g: Fine, x: number, z: number): StreamPoint | null {
   let bins = streamBins.get(g);
@@ -357,21 +379,22 @@ export function streamAt(g: Fine, x: number, z: number): StreamPoint | null {
   for (const [l, k] of bins.get(key(cell(x), cell(z))) ?? []) {
     const a = g.rivers[l][k - 1], b = g.rivers[l][k], dx = b[0] - a[0], dz = b[1] - a[1];
     const t = clamp(((x - a[0]) * dx + (z - a[1]) * dz) / (dx * dx + dz * dz || 1e-9), 0, 1), d = Math.hypot(x - a[0] - dx * t, z - a[1] - dz * t);
-    if (d <= REACH && (!best || d < best.d)) best = { d, q: a[2] + (b[2] - a[2]) * t, base: a[3] + (b[3] - a[3]) * t, hi: a[4] + (b[4] - a[4]) * t };
+    const mix = (c: number) => a[c] + (b[c] - a[c]) * t;
+    if (d <= REACH && (!best || d < best.d)) best = { d, q: mix(2), base: mix(3), qbf: mix(4), under: mix(6), wbf: mix(7), dbf: mix(8) };
   }
   return best;
 }
 // The bedrock under world meters x, z.
 export const rockAt = (isle: Island, x: number, z: number): Rock => ROCKS[isle.rock[clamp(Math.round((z - START) / CELL), 0, N - 1) * N + clamp(Math.round((x - START) / CELL), 0, N - 1)]];
+// What lies on the bedrock under world meters x, z.
+export const driftAt = (isle: Island, x: number, z: number): Drift => DRIFTS[isle.drift[clamp(Math.round((z - START) / CELL), 0, N - 1) * N + clamp(Math.round((x - START) / CELL), 0, N - 1)]];
 
 // ---------- what a ground point is ----------
 // One rule for the map and the inspector alike, from world data in meters only, so it is the same at every zoom.
 // Water is the generator's standing water, with the lake's level reaching up the fine ground, and streams wider than the
-// map's river mask shows them; land is the cover that wins, weighted, at a point whose edge wanders a little, with steep
-// or exposed bare ground as rock.
+// map's river mask shows them; land is ground.ts coverClass of the covers at a point whose edge wanders a little.
 export const GROUND = ["grassland", "forest floor", "scrub", "marsh", "bare ground", "sand", "grass with outcrops", "bare rock", "", "", "sea", "lake", "stream"] as const;
-export const SEA = 10, LAKE = 11, RIVER = 12, ROCKY = 7, MEADOW = 0, SCRUB = 2, ROCK = 4, SAND = 5, HILL = 6;
-const COV = ["grass", "tree", "shrub", "marsh", "bare", "sand"] as const, WEIGHT = [1.0, 1.05, 1.2, 1.5, 1.3, 1.6];
+export const SEA = 10, LAKE = 11, RIVER = 12, ROCKY = 7;
 // How much standing water covers a point, 0..1; over 0.5 is water.
 export function waterAt(isle: Island, g: Fine, x: number, z: number) {
   const cx = (x - START) / CELL, cy = (z - START) / CELL, i = Math.round(cx), j = Math.round(cy);
@@ -410,23 +433,15 @@ export function worldSlope(g: Fine, x: number, z: number) {
   const fx = clamp((x + SIZE / 2) / S, 0, n - 1.001), fz = clamp((z + SIZE / 2) / S, 0, n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = j * n + i;
   return (s[k] * (1 - a) + s[k + 1] * a) * (1 - b) + (s[k + n] * (1 - a) + s[k + n + 1] * a) * b;
 }
-export type GroundPoint = { cls: number; water: number; wet: number; river: number; slope: number; cover: number[]; exposure: number };
+export type GroundPoint = { cls: number; water: number; wet: number; river: number; slope: number; cover: number[]; windShare: number };
 // The class of the ground at world meters x, z: an index into GROUND. Water classes are SEA, LAKE and RIVER.
 export function groundClass(isle: Island, g: Fine, x: number, z: number): GroundPoint {
   const wet = waterAt(isle, g, x, z), river = riverSmooth(g, x, z), slope = worldSlope(g, x, z);
-  const exposure = g.bilinear(isle.exposure, (x - START) / CELL, (z - START) / CELL);
+  const cx = (x - START) / CELL, cy = (z - START) / CELL, windShare = g.bilinear(isle.windShare, cx, cy);
   const water = wet > 0.5 ? (g.heightAt(x, z) < 0.5 ? SEA : LAKE) : river > 0.5 ? RIVER : 0;
-  // biome edges wander in world meters
+  // edges wander in world meters [design]
   const wx = x + fbm(x / 40, z / 40, 64, 2) * 14, wz = z + fbm(x / 40, z / 40, 66, 2) * 14;
-  const cover: number[] = [];
-  let best = 0, bs = -1;
-  for (let q = 0; q < 6; q++) { const c = g.fine(g.cover[COV[q]], wx, wz); cover.push(c); if (c * WEIGHT[q] > bs) { bs = c * WEIGHT[q]; best = q; } }
-  if (water) return { cls: water, water, wet, river, slope, cover, exposure };
-  // thin bare ground is grass with outcrops; so is bare ground that is gentle and sheltered
-  const base = best === ROCK && cover[4] < 0.6 ? HILL : best;
-  const bare = base === ROCK && slope < 0.32 && exposure < 0.36 ? HILL : base;
-  // a face past 35 degrees is bare whatever grows round it; past 27 degrees open ground breaks into outcrops
-  const cls = slope > 0.7 && bare !== SAND ? ROCK : slope > 0.5 && (bare === MEADOW || bare === SCRUB) ? HILL : bare;
-  const rocky = cls === ROCK || (cls === HILL && fbm(x / 45, z / 45, 26, 2) + cover[4] * 0.8 + (slope - 0.5) * 2 - 0.8 > 0);
-  return { cls: rocky ? ROCKY : cls, water, wet, river, slope, cover, exposure };
+  const cover = COVER.map((k) => g.fine(g.cover[k], wx, wz));
+  if (water) return { cls: water, water, wet, river, slope, cover, windShare };
+  return { cls: coverClass(cover, g.bilinear(isle.soil, cx, cy), slope), water, wet, river, slope, cover, windShare };
 }

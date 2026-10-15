@@ -38,7 +38,6 @@ import { beliefKey, fieldsOf, groundKey, ofPlace, ruledOut, type Belief } from "
 import { moistureOf } from "../src/sim/wetness";
 import { PATIENCE, ahead, bedAt, seedlingFate, type Bed, type Hour } from "../src/sim/seedling";
 import { envHere } from "../src/sim/plants";
-import { fertilityAt } from "../src/sim/soil";
 import { fit } from "../src/terrain/niche";
 import { RULES, hooks } from "../src/sim/rules";
 import { exit, holdGpu, seedRandom } from "./seeded";
@@ -514,7 +513,7 @@ function comingUp(w: World, at: Pos, beds: Bed[], weathers: Hour[][]) {
   return up;
 }
 // What open ground at a point would give a berry once cleared: the whole sky's light, and nothing round it to share with.
-const openBed = (w: World, at: Pos): Bed => ({ fit: fit("berry", { ...envHere(w, at.px, at.py), light: 1, fert: fertilityAt(w, at.px, at.py) }), share: 1, light: 1, niche: "berry" });
+const openBed = (w: World, at: Pos): Bed => ({ fit: fit("berry", { ...envHere(w, at.px, at.py), light: 1 }), share: 1, light: 1, niche: "berry" });
 // The first day on from now (w.t) that a berry put in the open spot east of a plot (at) would no longer come up within
 // its planter's patience in most of the probe's weathers, or the end (by): the sowing season, by the formulas.
 function sowingEnds(w: World, at: Pos, sky: Sky, r: () => number, by: number) {

@@ -131,7 +131,11 @@ test("a big fire lights the dark further than coals do, and a lamp's light follo
   expect(blazing).toBeGreaterThan(reach(coals) + 20);
   removeThing(w, coals);
 
-  // a lamp in hand, lit and burnt dry, and a brand, burning hotter
+  // a lamp in hand, lit and burnt dry, and a brand, burning hotter, on a still night of the test's own rather than the
+  // island's wind: a brand held in a head-height wind of 4 m/s blows out (fire-constants sec. 14b), and the case is
+  // about the light, not the wind
+  const wind = w.weather.speed;
+  w.weather.speed = 0;
   const a = w.agents[0];
   put(w, a, px, py);
   w.kinds["lamp"] = { id: "lamp", name: "fat lamp", props: { container: 0.8, hard: 0.6 }, parts: ["stone", "fat"] };
@@ -147,6 +151,7 @@ test("a big fire lights the dark further than coals do, and a lamp's light follo
   expect(brand.kw).toBeGreaterThan(lamp.kw);
   expect(brand.lux / lamp.lux).toBeCloseTo(brand.kw / lamp.kw, 6);
   a.inv = [];
+  w.weather.speed = wind;
 });
 
 test("a bare fire thing with no bed gives no light", () => {

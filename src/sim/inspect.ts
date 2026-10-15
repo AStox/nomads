@@ -19,7 +19,6 @@ import { keepsFor } from "./spoil";
 import { NICHE } from "../terrain/niche";
 import { streamNow } from "./streams";
 import { walked } from "./journeys";
-import { TRICKLE } from "../terrain/water";
 
 // A line under an opened row: words, or words that go somewhere when clicked.
 export type Line = string | { text: string; link: string };
@@ -390,19 +389,19 @@ export function inspectGround(w: World, px: number, py: number): Inspected {
     );
     const st = streamNow(w, px, py);
     if (st && (g.water === RIVER || st.d <= st.bed / 2))
-      land.push({ label: "stream", value: st.flowing ? `${r(st.width, 1)} m wide` : st.q < TRICKLE ? "a dry bed" : "a shrunken bank", more: [st.flowing ? `${r(st.width, 1)} m wide and ${r(st.depth, 2)} m deep, ${r(st.q, 3)} m3/s` : st.q < TRICKLE ? "it runs in the wetter seasons" : "the bank of a shrunken stream"] });
+      land.push({ label: "stream", value: st.flowing ? `${r(st.width, 1)} m wide` : st.q <= st.under ? "a dry bed" : "a shrunken bank", more: [st.flowing ? `${r(st.width, 1)} m wide and ${r(st.depth, 2)} m deep, ${r(st.q, 3)} m3/s` : st.q <= st.under ? "it runs in the wetter seasons" : "the bank of a shrunken stream"] });
     sections.push({
       tab: "land", title: "soil", rows: [
         { label: "depth", value: `${r(at(isle.soil), 2)} m` }, { label: "texture", value: texture(at(isle.sandy), at(isle.clayey)) }, { label: "pH", value: r(at(isle.ph), 1) },
-        { label: "fertility", bar: [r(fertilityAt(w, px, py), 2), 1], more: [`as it grew ${r(at(isle.fertility), 2)}`] },
-        { label: "humus", bar: [r(at(isle.humus), 2), 1] }, { label: "peat", bar: [r(at(isle.peat), 2), 1] }, { label: "silt", bar: [r(at(isle.silt), 2), 1] },
+        { label: "fertility", bar: [r(fertilityAt(w, px, py), 2), 1], more: [`as it grew ${r(at(isle.fertility), 2)}`, `${r(at(isle.nitrogen))} kg of nitrogen a ha a year`] },
+        { label: "organic matter", value: `${r(at(isle.organic), 1)}%`, more: [`${r(at(isle.carbon))} t of carbon a ha`] }, { label: "peat", value: `${r(at(isle.peat), 1)} m` }, { label: "silt", bar: [r(at(isle.silt), 2), 1] },
         { label: "moisture", bar: [r(fine.fine(fine.moist, x, z), 2), 1] },
       ],
     });
     climate.push(
       { label: "yearly mean", value: `${r(at(isle.temp))} C`, more: [`summer ${r(at(isle.seasons[1].temp))} C, winter ${r(at(isle.seasons[3].temp))} C`] },
       { label: "sunlight", bar: [r(at(isle.sun), 2), 1], more: [`${pct(at(isle.sun))} of open level ground's`, `${pct(at(isle.sky))} of the sky open`] },
-      { label: "wind", value: `${r(at(isle.breeze), 1)} m/s`, more: [`exposure ${r(g.exposure, 2)}`] },
+      { label: "wind", value: `${r(at(isle.breeze), 1)} m/s`, more: [`${pct(g.windShare)} of the coast's`] },
       { label: "snow", value: `${pct(at(isle.snow))} of the fall`, more: [`lies ${pct(at(isle.snowCover))} of the year`] },
       { label: "cold air pools", bar: [r(at(isle.pool), 2), 1] },
     );

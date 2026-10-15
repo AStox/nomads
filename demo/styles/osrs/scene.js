@@ -89,7 +89,7 @@ export function populate(W, G, V, focus) {
     return cover("marsh", x, z) > 0.35;
   };
   const clearedAt = (x, z, r0, r1, rnd) => { const d = Math.hypot(x - camp.x, z - camp.z); return d < r0 || (d < r1 && rnd() < (r1 - d) / (r1 - r0)); };
-  const exposure = (x, z) => W.bilinear(W.isle.exposure, (x - W.START) / W.CELL, (z - W.START) / W.CELL);
+  const exposure = (x, z) => W.bilinear(W.isle.windShare, (x - W.START) / W.CELL, (z - W.START) / W.CELL);
   const soil = (x, z) => Math.min(1.5, W.bilinear(W.isle.soil, (x - W.START) / W.CELL, (z - W.START) / W.CELL));
   const kindAt = (x, z, rnd) => {
     const m = W.fine(W.moist, x, z), ex = exposure(x, z), so = soil(x, z);

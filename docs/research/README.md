@@ -11,7 +11,7 @@ Everything researched and decided while building the island generator, choosing 
 - `briefs/gamemap.md` and `briefs/isomap.md`: maps of the game (sim, wire shapes, client) and of the isopixel renderer.
 
 ## Timeline and decisions
-1. Generator: realistic erosion island, then gentled to 250 to 450 m peaks. Unchanged since island-gen.
+1. Generator: realistic erosion island, then gentled to 250 to 450 m peaks. On 2026-10-14 (the rule audit's substrate 11) the drawn peak went: heights now come out of uplift against erosion in metres and years on a Bornholm-like horst, the uplift inverted from Bornholm's relief, with joint-valley scour and a till blanket (terrain-constants.md).
 2. Style search: several rounds of mocks; recolor-only rounds were rejected, so each style changed its representation. The operator picked isometric pixel art (F).
 3. Art direction: industry process (brief, references, pillars, exploration grid, grayscale and squint checks, style guide, paintover critiques). Direction: Transport Tycoon clarity, turquoise shallows, low morning sun, a landmark in every view, small SimCity people, no UI.
 4. Play page (demo/styles/play): the real sim runs in the browser with the random brain (no server, no Jev cost). Renderer bakes world-anchored chunks in workers, composes live objects at 60 fps, smooth zoom over nine levels, eight-bearing orbit, day and night palette.

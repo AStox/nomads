@@ -434,11 +434,11 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
 
   // ---------- the sky: the sun and the moon, and the light they give ----------
   // As the sim's (src/sim/sky.ts, change both together): the island at LAT north, the sun crossing the south at NOON, its
-  // path swinging with the year by the earth's TILT, equinoxes in the middle of spring and of autumn: 61 degrees at a
-  // midsummer noon and a 16.6 hour day, 15 degrees and 7.7 hours at midwinter. The moon crosses the same sky phase x 24
+  // path swinging with the year by the earth's TILT, equinoxes in the middle of spring and of autumn: 58 degrees at a
+  // midsummer noon and a 17.1 hour day, 11.5 degrees and 6.9 hours at midwinter. The moon crosses the same sky phase x 24
   // hours behind the sun as it waxes over LUNAR days, as far south of the equator when full as the sun is north, so a
   // summer full moon rides low. SUN_HIGH, the midsummer noon sun on REF_DAY, is what the light is measured against.
-  const DEG = Math.PI / 180, LAT = 52 * DEG, TILT = 23.44 * DEG, NOON = 13, YEAR_DAYS = 40, LUNAR = 29.53;
+  const DEG = Math.PI / 180, LAT = 55.1 * DEG, TILT = 23.44 * DEG, NOON = 13, YEAR_DAYS = 40, LUNAR = 29.53;
   const SUN_HIGH = Math.PI / 2 - LAT + TILT, REF_DAY = 1 + (YEAR_DAYS * 3) / 8;
   const hourAngle = (hour, transit) => ((hour - transit) * Math.PI) / 12;
   const declination = (day, hour) => { const d = (((day - 1 + hour / 24) % YEAR_DAYS) + YEAR_DAYS) % YEAR_DAYS; return TILT * Math.sin((2 * Math.PI * (d - YEAR_DAYS / 8)) / YEAR_DAYS); };

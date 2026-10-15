@@ -8,7 +8,7 @@
 // say comes of planting there (scripts/probes.ts, scripts/truth.ts).
 import { DAY, type Thing, type World } from "./world";
 import { YEAR_DAYS } from "./sky";
-import { TREES } from "../terrain/flora";
+import { TREES } from "../terrain/niche";
 import { around } from "./space";
 import { SEEDLINGS, YEARS_PACE, fitHere, seasonsHere, seedlingGain, type Seedling } from "./plants";
 import { keptOf, madeOf } from "../terrain/growth";
@@ -17,9 +17,9 @@ import { soilWater } from "./soil";
 import { islandTemp, placeTemp, sunOn } from "./air";
 import { seasonAt } from "./sky";
 
-// The weather at a turn of the sky, an hour apart: the sky, the wind over the open sea, and the rain still running off
-// the land (world.ts Weather).
-export type Hour = { sky: World["weather"]["sky"]; speed: number; wet: number };
+// The weather at a turn of the sky, an hour apart: the sky, the wind over the open sea, the rain still running off the
+// land and how far the day's air stands from its time of year's (world.ts Weather).
+export type Hour = { sky: World["weather"]["sky"]; speed: number; wet: number; warm?: number };
 
 // A seedling that will grow into a tree: a tree's own seed, or a nut someone pushed into the ground.
 export const treeOf = (t: { species?: string; item?: string }) => (TREES as readonly string[]).includes(t.species ?? "") || t.item === "nut";
@@ -86,7 +86,7 @@ export function ahead(w: World, px: number, py: number, at: number, hours: Hour[
   let t = Math.ceil((at + 1) / 12) * 12;
   for (const h of hours) {
     soil.push(soilWater(w, px, py, t, h.wet));
-    temp.push(islandTemp(t, h.sky) + placeTemp(w, px, py, t, h.sky, h.speed));
+    temp.push(islandTemp(t, h.sky, h.warm) + placeTemp(w, px, py, t, h.sky, h.speed));
     sun.push(sunOn(t, h.sky));
     t += 12;
   }

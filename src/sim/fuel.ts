@@ -4,7 +4,7 @@
 // holds comes and goes with the weather (wetness.ts).
 import type { Kind, Registry } from "./materials";
 import type { Size } from "./world";
-import type { SHRUBS, TREES } from "../terrain/flora";
+import type { SHRUBS, TREES } from "../terrain/niche";
 
 // How something burns, if it does: what lights it, the heat its flames and its glowing char give, the char it leaves,
 // and the heat it takes to drive its gases off.
@@ -71,7 +71,6 @@ export const WOODS: Record<Wood | "generic", { G: number; green?: number; heart?
   aspen: { G: 0.35, green: 1.13, heart: 0.95, row: "hardwood" },
   hazel: { G: 0.5, green: 0.8, row: "hardwood" },
   heather: { G: 0.55, green: 0.8, row: "hardwood" },
-  gorse: { G: 0.72, green: 0.6, row: "hardwood" },
   berry: { G: 0.55, green: 0.65, row: "hardwood" },
   generic: { G: 0.45, row: "softwood" },
 };
@@ -195,14 +194,14 @@ export function greenOf(species: string | undefined, log = false) {
 // ---------- pieces of wood ----------
 // What a plant gives, piece by piece (sec. 27e). A trunk is as thick as a forest tree of its height (sec. 19a; a fallen log
 // is a trunk as tall as it is long), and a log is a meter of it. A stick, branch or stem is a young stem as long as it is,
-// by its species' height-to-diameter ratio, but a gorse stem, which thickens faster, and heather's, which stays thin
-// (sec. 19c). A tree's branch is a fifth of its height, a stump's a meter, a bush's stem as long as the bush is tall.
+// by its species' height-to-diameter ratio, but heather's, which stays thin (sec. 19c). A tree's branch is a fifth of its
+// height, a stump's a meter, a bush's stem as long as the bush is tall.
 const TRUNK: Partial<Record<Wood | "generic", (H: number) => number>> = {
   pine: (H) => 0.01721 * H ** 0.842, oak: (H) => 0.00489 * H ** 1.334, ash: (H) => ((100 * H) / 290) ** 1.938 / 100, aspen: (H) => 0.00343 * H ** 1.371,
 };
 const STEM: Record<Wood | "generic", (len: number) => number> = {
   pine: (len) => len / 105, oak: (len) => len / 112, ash: (len) => len / 133, aspen: (len) => len / 142, hazel: (len) => len / 119, berry: (len) => len / 119,
-  gorse: (len) => Math.min(0.025 * len, 0.033), heather: () => 0.0035, generic: (len) => len / 123,
+  heather: () => 0.0035, generic: (len) => len / 123,
 };
 export const LOG_LEN = 1;
 // A round piece of a species' wood, so thick and so long.

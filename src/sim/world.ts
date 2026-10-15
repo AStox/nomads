@@ -1,7 +1,7 @@
 import { generateIsland, type Island } from "../terrain/island";
 import type { Cohort } from "./recruits";
 import { lay, type Lay, type Terrain } from "../terrain/land";
-import { FLORA, SIZE, SPECIES, TILES, TILE_M, fineGround, rockAt, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
+import { FLORA, SIZE, SPECIES, TILES, TILE_M, driftAt, fineGround, rockAt, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
 import { TRAITS } from "./traits";
 import { baseRegistry, type Registry } from "./materials";
 import { PHYS, asFound } from "./fuel";
@@ -92,7 +92,8 @@ export type Weather = {
   season: "spring" | "summer" | "autumn" | "winter"; dayOfYear: number; year: number;
   sky: "clear" | "cloudy" | "rain" | "storm"; drought: boolean;
   dryDays: number; today: number; // days on end with under 0.2 mm of rain, and the mm fallen so far today
-  temp: number; // °C, the air at sea level away from the coast: air.ts has it where anyone stands
+  temp: number; // °C, the air at sea level: air.ts has it where anyone stands
+  warm: number; // how many spreads the day's air stands above its time of year's (air.ts islandTemp)
   wind: { dx: number; dy: number }; // the way it blows
   speed: number; // m/s at head height over the open sea
   anomaly: number; // how many spreads the wind stands above its sky's mean (air.ts windOf)
@@ -580,12 +581,12 @@ export function grown(w: World, e: number, s: Stand): Thing {
   const t: Thing = { id: `t${e}`, kind, x: Math.floor(px), y: Math.floor(py), px, py, size, seed, hp, maxHp: hp };
   if (species) t.species = species;
   if (kind === "bush" && species === "berry") t.n = cropOf(t);
-  // Flint forms as nodules inside the rock that holds it, chalky limestone above all; ore shows as reddish stones, and
-  // sometimes inside boulders of the rock that carries iron; pyrite forms as nodules in mudstone and chalk.
+  // A boulder lying in till is a stone the ice brought, and some of those hold flint (src/terrain/geology.ts DRIFTS); one
+  // on bare rock is the bedrock's own. Pyrite forms as nodules in the bedrock, mudstone above all. Bog iron forms in
+  // wetlands, not in boulders (flora.ts).
   if (kind === "boulder") {
-    const q = ((seed >>> 8) & 0xffff) / 65536, rock = rockAt(g.isle, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2);
-    if (q < 0.6 * rock.flint) t.inside = { flint: q < 0.2 * rock.flint ? 2 : 1 };
-    else if (q > 1 - 0.35 * rock.ore) t.inside = { ore: 1 };
+    const q = ((seed >>> 8) & 0xffff) / 65536, wx = px * TILE_M - SIZE / 2, wz = py * TILE_M - SIZE / 2, rock = rockAt(g.isle, wx, wz), till = driftAt(g.isle, wx, wz);
+    if (q < 0.6 * till.flint) t.inside = { flint: q < 0.2 * till.flint ? 2 : 1 };
     if (((seed >>> 24) & 0xff) / 256 < 0.5 * rock.pyrite) t.inside = { ...t.inside, pyrite: 1 };
   }
   return t;
@@ -601,7 +602,7 @@ export function newWorld(seed: number, agentCount = 5): World {
   const w: World = {
     version: VERSION, seed, t: Math.round(DAY * 0.3), tiles, heights: [...land.heights], terrain: land.terrain, paths: new Array(W * H).fill(0), things: [], stocked: [], fert: {}, agents: [], animals: [], events: [],
     nextId: g.flora.n + 1, jev: { calls: 0, tokens: 0, rulings: 0 }, kinds: baseRegistry(), laws: {}, rulings: {}, ice: [], people: {},
-    weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 8, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, speed: 4, anomaly: 0, wet: 0.2, drought: false, dryDays: 0, today: 0 },
+    weather: { season: "spring", dayOfYear: 0, year: 1, sky: "clear", temp: 8, warm: 0, wind: { dx: land.terrain.wind[0] / 2, dy: land.terrain.wind[1] / 2 }, speed: 4, anomaly: 0, wet: 0.2, drought: false, dryDays: 0, today: 0 },
     camps: [], incidents: [], journeys: { seen: 0, of: {} },
   };
   // Loose stones of ore lie about from the start, to be picked up like anything dropped. Ore neither rots nor burns, so

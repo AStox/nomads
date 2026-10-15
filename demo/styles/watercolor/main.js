@@ -367,13 +367,13 @@ function drawMap(kind, w, F, V, D, R, T, opt) {
   for (const line of w.rivers) {
     const pts = line.map(([x, z]) => V.toS(x, z)), runs = [];
     let run = [];
-    pts.forEach((p, i) => { if (dep(p[0], p[1]) > 0.3) { if (run.length > 1) runs.push(run); run = []; } else run.push([...p, line[i][2]]); });
+    pts.forEach((p, i) => { if (dep(p[0], p[1]) > 0.3) { if (run.length > 1) runs.push(run); run = []; } else run.push([...p, line[i][2], w.riverWidth(line[i])]); });
     if (run.length > 1) runs.push(run);
     for (const r of runs) {
-      const q0 = r[0][2], q1 = r[r.length - 1][2];
+      const q0 = r[0][2], q1 = r[r.length - 1][2], w0 = r[0][3], w1 = r[r.length - 1][3];
       D.wash.globalAlpha = 0.55;
       D.wash.strokeStyle = "#5f9ab8";
-      D.wash.lineWidth = Math.max(C.riverW, (w.riverWidth((q0 + q1) / 2) / V.mpp) * 1.3);
+      D.wash.lineWidth = Math.max(C.riverW, ((w0 + w1) / 2 / V.mpp) * 1.3);
       D.wash.beginPath();
       r.forEach(([x, y], i) => (i ? D.wash.lineTo(x, y) : D.wash.moveTo(x, y)));
       D.wash.stroke();

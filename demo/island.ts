@@ -3,5 +3,6 @@
 export { generateIsland } from "../src/terrain/island";
 export { CELL, N } from "../src/terrain/grid";
 export { COVERS, FLORA, GROUND, K, LAKE, M, RIVER, RM, ROCKY, SEA, SIZE, SPECIES, START, STEP, TILES, TILE_M, clamp, fbm, fineGround, groundClass, hash, noise, riverSmooth, scatter, smooth, streamAt, waterAt, worldSlope } from "../src/terrain/flora";
-export { TRICKLE, depthOf, flowNow, widthOf } from "../src/terrain/water";
+export { LEPTOSOL, SC } from "../src/terrain/ground";
+export { depthOf, flowNow, widthOf } from "../src/terrain/water";
 export { COLORS, NAMES, rng } from "../src/sim/world";

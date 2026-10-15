@@ -23,7 +23,7 @@ function ramp(stops, v) {
 const LAND = [[0, [86, 120, 64]], [60, [110, 138, 74]], [180, [146, 140, 96]], [350, [160, 150, 140]], [560, [226, 226, 222]]];
 const SEA = [[0, [52, 104, 150]], [8, [34, 76, 128]], [40, [22, 46, 92]], [80, [16, 30, 66]]];
 const ROCK = [[118, 104, 92], [176, 140, 96], [204, 196, 176], [170, 142, 138], [80, 78, 76]];
-const ROCK_NAMES = ["mudstone", "sandstone", "limestone", "granite", "basalt"];
+const ROCK_NAMES = ["mudstone", "sandstone", "limestone", "granite", "dolerite"];
 const COVER = { tree: [38, 68, 44], shrub: [118, 84, 104], grass: [112, 142, 66], marsh: [80, 98, 60], bare: [150, 140, 120], sand: [222, 204, 152] };
 
 // Light from the north-west over the ground's slope, in meters.
@@ -57,8 +57,8 @@ function rivers(list, quick) {
   for (const line of list)
     for (let k = 1; k < line.length; k++) {
       const p = line[k], q = p[2] * (p[3] + (1 - p[3]) * low);
-      ctx.strokeStyle = q >= 0.004 ? "rgb(70,150,235)" : "rgba(230,214,140,0.9)";
-      ctx.lineWidth = Math.max(1, Math.min(4, 1 + Math.sqrt(p[4]) * 2.2));
+      ctx.strokeStyle = q > p[6] ? "rgb(70,150,235)" : "rgba(230,214,140,0.9)";
+      ctx.lineWidth = Math.max(1, Math.min(4, 1 + Math.sqrt(p[4]) * 0.8));
       ctx.beginPath(); ctx.moveTo(...at(line[k - 1][0], line[k - 1][1])); ctx.lineTo(...at(p[0], p[1])); ctx.stroke();
     }
 }
@@ -80,21 +80,19 @@ function legend(items) {
 
 // ---------- the shots ----------
 // Each stage the worker posts becomes one or more shots: what to draw, a title and caption, and how long to hold it.
-let shots = [], peak = 0, rawTop = 1, erosion = [];
+let shots = [], erosion = [];
 const STAGES = ["bedrock", "erosion", "ice", "rain", "warmth", "snow", "water", "soil", "fertility", "plants"];
 function take(s) {
   if (s.stage === "rock") {
-    shots.push({ group: "bedrock", hold: 3500, title: "Bedrock", caption: "Two fields laid down together under the island: how hard the rock is, and whether it weathers to bases. Soft mudstone, sandstone, limestone, hard granite and basalt. The brighter, the harder the island will be pushed up there.", draw: () => {
-      paint(s.lift, { plain: true, wet: Float32Array.from(s.lift, (v) => (v > 0.002 ? 0 : 1)), colour: (i) => mix([20, 18, 28], ROCK[s.rock[i]], clamp(0.35 + s.lift[i] * 2.2, 0, 1)) });
+    shots.push({ group: "bedrock", hold: 3500, title: "Bedrock", caption: "A horst of granite and gneiss, cut by dolerite dykes, high in the north and dipping south under sandstone, shale and limestone, broken into fault blocks. The brighter, the faster the ground rises there.", draw: () => {
+      paint(s.lift, { plain: true, wet: Float32Array.from(s.lift, (v) => (v > 0 ? 0 : 1)), colour: (i) => mix([20, 18, 28], ROCK[s.rock[i]], clamp(s.lift[i], 0, 1)) });
       legend(ROCK_NAMES.map((n, k) => [n, ROCK[k]]));
     } });
   } else if (s.stage === "erode") erosion.push(s);
   else if (s.stage === "ice") {
-    for (const h of s.height) peak = Math.max(peak, h);
-    rawTop = Math.max(...erosion.at(-1).height);
     for (const e of erosion) {
-      const metres = Float32Array.from(e.height, (v) => (v > 0 ? (v / rawTop) * peak : Math.max(-60, v * 1200)));
-      shots.push({ group: "erosion", hold: 140, title: `Uplift against erosion, step ${e.step + 1} of ${e.steps}`, caption: "The land rises a little each step. Streams cut down by the water they carry (the rain that runs off, more on the heights and less off rock that soaks it in), and slopes creep smooth, each rock at its own pace: hard rock is left standing as the ranges.", draw: () => {
+      const metres = e.height;
+      shots.push({ group: "erosion", hold: 140, title: `Uplift against erosion, step ${e.step + 1} of ${e.steps}`, caption: "The horst rises about a metre a million years. Streams cut down by the area they drain and slopes creep smooth, each rock at its own pace, until the two balance: the granite stands high and the soft rock lies low.", draw: () => {
         paint(metres);
         const lim = 40 + (e.step / e.steps) * 80;
         ctx.fillStyle = "rgba(90,170,240,0.85)";
@@ -102,8 +100,8 @@ function take(s) {
       } });
     }
     shots.at(-1).hold = 1600;
-    shots.push({ group: "ice", hold: 3500, title: "Ice", caption: "The last cold age's glaciers scoured the big valleys into troughs, deep over soft rock and hardly at all over hard, which they left standing as sills across the valley floors. The pale blue is how deep they cut.", draw: () => {
-      paint(s.height, { colour: (i, h) => mix(ramp(LAND, h), [200, 228, 245], clamp(s.trough[i] / 30, 0, 0.85)) });
+    shots.push({ group: "ice", hold: 3500, title: "Ice", caption: "The last ice sheet cleared the crushed rock out of the granite's fracture zones into narrow joint valleys, each with a sill at its middle, then left its till over the island. The pale blue is how deep it cut.", draw: () => {
+      paint(s.height, { colour: (i, h) => mix(ramp(LAND, h), [200, 228, 245], clamp(s.scour[i] / 30, 0, 0.85)) });
     } });
   } else if (s.stage === "climate") {
     // each map spans its own island's range over the land, from the 5th to the 95th percentile, its middle at the median
@@ -120,7 +118,7 @@ function take(s) {
       paint(s.height, { colour: (i, h) => mix(ramp(LAND, h), [250, 252, 255], clamp(s.snow[i] * 4, 0, 1)) });
     } });
   } else if (s.stage === "water") {
-    shots.push({ group: "water", hold: 5000, title: "Water", caption: "The rain the plants leave soaks into the rock as far as the rock lets it and runs off for the rest. Groundwater comes out in springs (red) and through stream beds, which keeps those streams running all summer (blue); the others run only in the wet seasons (yellow). Lakes lie behind the ice's sills. Teal ground is where the water table reaches the surface.", draw: () => {
+    shots.push({ group: "water", hold: 5000, title: "Water", caption: "Of the rain the plants leave, what the drift and the rock under it let through soaks in and the rest runs off to the streams. Groundwater comes out in springs (red) and through stream beds, which keeps those streams running all summer (blue); the others run only in the wet seasons (yellow). Lakes lie behind the ice's sills. Teal ground is where the water table reaches the surface.", draw: () => {
       paint(s.height, { wet: s.water, colour: (i, h) => mix(ramp(LAND, h), [60, 140, 130], s.table[i] < 0.3 ? 0.55 : 0) });
       rivers(s.rivers, s.quick); springs(s.springs);
     } });
@@ -181,7 +179,7 @@ function buttons() {
 let done = false, worker = null;
 function grow() {
   worker?.terminate();
-  shots = []; erosion = []; peak = 0; k = -1; done = false; made = performance.now();
+  shots = []; erosion = []; k = -1; done = false; made = performance.now();
   $("seed").textContent = `island ${seed}`;
   $("title").textContent = "growing the island…"; $("caption").textContent = ""; $("bar").style.width = "0";
   history.replaceState(null, "", `?seed=${seed}${SPEED !== 1 ? `&speed=${SPEED}` : ""}`);

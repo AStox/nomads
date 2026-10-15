@@ -7,7 +7,7 @@
 // tens of thousands, with a thousandth of a cell lost to rounding at the island's edge. So every scale is taken as a
 // ratio of whole numbers, x / S = x q / p, and the lattice cell and the place inside it are found with integer
 // division, exact to about a millionth of a cell.
-import { CELL, M, N, RM, SIZE, START, STEP, TILES, TILE_M } from "../island.js";
+import { CELL, LEPTOSOL, M, N, RM, SC, SIZE, START, STEP, TILES, TILE_M } from "../island.js";
 import { P, RGB } from "./pal.js";
 
 const ORIGIN = -SIZE / 2, WS = 12.5, WN = Math.ceil(SIZE / WS) + 1, TN = Math.round(SIZE / 3);
@@ -15,7 +15,7 @@ const ORIGIN = -SIZE / 2, WS = 12.5, WN = Math.ceil(SIZE / WS) + 1, TN = Math.ro
 const BIN = 50, REACH = 20, NB = Math.ceil(SIZE / BIN) + 3;
 const COVER_LAYERS = ["tree", "shrub", "grass", "marsh", "bare", "sand"];
 // The island fields the painter reads, one layer each of the isle texture, in this order.
-const ISLE_LAYERS = ["height", "water", "exposure", "rock", "precip", "pet", "table", "peat", "soil", "silt", "fog", "snow0", "snow1", "snow2", "snow3"];
+const ISLE_LAYERS = ["height", "water", "windShare", "rock", "precip", "pet", "table", "peat", "soil", "silt", "fog", "snow0", "snow1", "snow2", "snow3"];
 const IL = Object.fromEntries(ISLE_LAYERS.map((n, i) => [n, i]));
 
 // ---------- packing ----------
@@ -26,7 +26,7 @@ const IL = Object.fromEntries(ISLE_LAYERS.map((n, i) => [n, i]));
 export function packGround(isle, g) {
   const MM = M * M, fine = new Float32Array(MM * 10);
   [g.h, g.wet, g.moist, g.river, ...COVER_LAYERS.map((k) => g.cover[k])].forEach((f, L) => fine.set(f, L * MM));
-  const NN = N * N, S1 = isle.seasons[1], src = { height: isle.height, water: isle.water, exposure: isle.exposure, rock: isle.rock, precip: S1.precip, pet: S1.pet, table: isle.table, peat: isle.peat, soil: isle.soil, silt: isle.silt, fog: isle.fog };
+  const NN = N * N, S1 = isle.seasons[1], src = { height: isle.height, water: isle.water, windShare: isle.windShare, rock: isle.rock, precip: S1.precip, pet: S1.pet, table: isle.table, peat: isle.peat, soil: isle.soil, silt: isle.silt, fog: isle.fog };
   for (let s = 0; s < 4; s++) src[`snow${s}`] = isle.seasons[s].snowpack;
   const isl = new Float32Array(NN * ISLE_LAYERS.length);
   ISLE_LAYERS.forEach((n, L) => isl.set(src[n], L * NN));
@@ -49,11 +49,11 @@ export function packGround(isle, g) {
   const grad = new Float32Array(8192);
   for (let k = 0; k < 4096; k++) { grad[k * 2] = Math.cos((k / 4096) * 6.2831853); grad[k * 2 + 1] = Math.sin((k / 4096) * 6.2831853); }
 
-  // Streams: every vertex as x, z, mean flow, groundwater share, wettest flow; a bin's list holds the index of each
-  // segment's second vertex, in flora.ts's order, so ties fall to the same segment. The bins' list starts come first,
-  // as indices into the same array.
+  // Streams: every vertex as x, z, mean flow, groundwater share, bankfull flow, the flow under its bed, bankfull width
+  // (flora.ts FineRiver); a bin's list holds the index of each segment's second vertex, in flora.ts's order, so ties
+  // fall to the same segment. The bins' list starts come first, as indices into the same array.
   const starts = [], verts = [];
-  for (const line of g.rivers) { starts.push(verts.length / 5); for (const p of line) verts.push(p[0], p[1], p[2], p[3], p[4]); }
+  for (const line of g.rivers) { starts.push(verts.length / 7); for (const p of line) verts.push(p[0], p[1], p[2], p[3], p[4], p[6], p[7]); }
   const bins = Array.from({ length: NB * NB }, () => []), cell = (v) => Math.floor((v + SIZE / 2) / BIN);
   g.rivers.forEach((line, l) => {
     for (let k = 1; k < line.length; k++) {
@@ -396,17 +396,19 @@ fn g_riverSmooth(x: f32, z: f32) -> f32 {
 }
 // flora.ts streamAt's bin of a coordinate, from its whole meters, which cannot cross a bin edge on their own
 fn g_binOf(x: f32) -> i32 { return g_fdiv(i32(floor(x)) + g_HALFI, ${BIN}) + 1; }
-// flora.ts streamAt: (distance off the nearest stream's middle, its mean flow, its groundwater share, 1) or all 0
-fn g_streamAt(x: f32, z: f32) -> vec4<f32> {
-  var best = vec4<f32>(0.0);
+// flora.ts streamAt: the nearest stream's distance off its middle, its mean flow, groundwater share, bankfull flow, the
+// flow under its bed and bankfull width; ok is 0 if there is none
+struct GStream { d: f32, q: f32, base: f32, qbf: f32, under: f32, wbf: f32, ok: f32 }
+fn g_streamAt(x: f32, z: f32) -> GStream {
+  var best = GStream(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
   let i = g_binOf(x);
   let j = g_binOf(z);
   if (i < 0 || j < 0 || i >= g_NB || j >= g_NB) { return best; }
   let bin = u32(j * g_NB + i);
   let end = gStreamBins[bin + 1u];
   for (var e = gStreamBins[bin]; e < end; e++) {
-    let kb = gStreamBins[e] * 5u;
-    let ka = kb - 5u;
+    let kb = gStreamBins[e] * 7u;
+    let ka = kb - 7u;
     let ax = gStreams[ka];
     let az = gStreams[ka + 1u];
     let dx = gStreams[kb] - ax;
@@ -415,8 +417,9 @@ fn g_streamAt(x: f32, z: f32) -> vec4<f32> {
     if (l2 == 0.0) { l2 = 1e-9; }
     let t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0.0, 1.0);
     let d = length(vec2<f32>(x - ax - dx * t, z - az - dz * t));
-    if (d <= ${REACH}.0 && (best.w == 0.0 || d < best.x)) {
-      best = vec4<f32>(d, gStreams[ka + 2u] + (gStreams[kb + 2u] - gStreams[ka + 2u]) * t, gStreams[ka + 3u] + (gStreams[kb + 3u] - gStreams[ka + 3u]) * t, 1.0);
+    if (d <= ${REACH}.0 && (best.ok == 0.0 || d < best.d)) {
+      best = GStream(d, mix(gStreams[ka + 2u], gStreams[kb + 2u], t), mix(gStreams[ka + 3u], gStreams[kb + 3u], t), mix(gStreams[ka + 4u], gStreams[kb + 4u], t),
+        mix(gStreams[ka + 5u], gStreams[kb + 5u], t), mix(gStreams[ka + 6u], gStreams[kb + 6u], t), 1.0);
     }
   }
   return best;
@@ -466,11 +469,12 @@ fn g_water(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32, kind: u32, w
     gx = (g_riverSmooth(x + 3.0, z) - g_riverSmooth(x - 3.0, z)) / 6.0;
     gz = (g_riverSmooth(x, z + 3.0) - g_riverSmooth(x, z - 3.0)) / 6.0;
     v0 = river;
-    // the channel is cut to the wettest season's width; this season's water runs down the middle of it, or not at all
+    // the channel is cut to the bankfull width; this season's water runs down the middle of it, as wide as the flow
+    // makes it (water.ts widthOf), or not at all where the flow is no more than the valley's fill carries under the bed
     let st = g_streamAt(x, z);
     var q = 0.0;
-    if (st.w > 0.0) { q = st.y * (st.z + (1.0 - st.z) * g_QUICK[ctx.season & 3u]); }
-    bed = st.w == 0.0 || q < 0.004 || st.x > clamp(2.5 + 2.8 * sqrt(q), 2.5, 16.0) / 2.0;
+    if (st.ok > 0.0) { q = st.q * (st.base + (1.0 - st.base) * g_QUICK[ctx.season & 3u]); }
+    bed = st.ok == 0.0 || st.qbf <= 0.0 || q <= st.under || st.d > st.wbf * pow(q / st.qbf, 0.26) / 2.0;
   } else {
     gx = (waterAt(x + 3.0, z) - waterAt(x - 3.0, z)) / 6.0;
     gz = (waterAt(x, z + 3.0) - waterAt(x, z - 3.0)) / 6.0;
@@ -678,30 +682,27 @@ fn g_land(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32, wet: f32, riv
   let slope = g_gridAt(2, x, z);
   let cx = g_cellC(x);
   let cy = g_cellC(z);
-  let ex = g_bil(${IL.exposure}, cx, cy);
+  let ex = g_bil(${IL.windShare}, cx, cy);
   // biome edges wander in world meters
   let wx = x + ${FBM(40, 40, 64)} * 14.0;
   let wz = z + ${FBM(40, 40, 66)} * 14.0;
   var L: g_Land;
   // grass, tree, shrub, marsh, bare, sand
   let layer = array<i32, 6>(6, 4, 5, 7, 8, 9);
-  let weight = array<f32, 6>(1.0, 1.05, 1.2, 1.5, 1.3, 1.6);
   var best = 0u;
   var bs = -1.0;
   for (var q = 0u; q < 6u; q++) {
     let c = g_fineAt(layer[q], wx, wz);
     L.c[q] = c;
-    if (c * weight[q] > bs) { bs = c * weight[q]; best = q; }
+    if (c > bs) { bs = c; best = q; }
   }
-  // thin bare ground is grass with outcrops; so is bare ground that is gentle and sheltered
-  let base = select(best, 6u, best == 4u && L.c[4] < 0.6);
-  let bare = select(base, 6u, base == 4u && slope < 0.32 && ex < 0.36);
-  // a face past 35 degrees is bare whatever grows round it; past 27 degrees open ground breaks into outcrops
-  var cls = bare;
-  if (slope > 0.7 && bare != 5u) { cls = 4u; } else if (slope > 0.5 && (bare == 0u || bare == 2u)) { cls = 6u; }
-  var rocky = cls == 4u;
-  if (cls == 6u) { rocky = ${FBM(45, 45, 26)} + L.c[4] * 0.8 + (slope - 0.5) * 2.0 - 0.8 > 0.0; }
-  if (rocky) { cls = 7u; }
+  // ground.ts coverClass: past the critical slope bare rock; on a Leptosol's thin soil bare ground is bare rock and grass
+  // or scrub grass with outcrops
+  var cls = best;
+  let soil = g_bil(${IL.soil}, cx, cy);
+  if (slope >= ${SC}) { cls = 7u; } else if (soil < ${LEPTOSOL}) {
+    if (best == 4u) { cls = 7u; } else if (best == 0u || best == 2u) { cls = 6u; }
+  }
   L.cls = cls;
   L.ex = ex;
   L.cx = cx;

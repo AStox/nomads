@@ -9,7 +9,7 @@ import { SLA, keptOf, madeOf, warmEnough, watered } from "../terrain/growth";
 import { CELL } from "../terrain/grid";
 import { airAt } from "./air";
 import { skyShare } from "./light";
-import { feedRate, fertilityAt, soilWaterAt } from "./soil";
+import { feedRate, soilWaterAt } from "./soil";
 import { TILE_M, YEAR_DAYS, groundOf, type World } from "./world";
 
 export function fitHere(w: World, name: string, px: number, py: number) {
@@ -17,15 +17,15 @@ export function fitHere(w: World, name: string, px: number, py: number) {
 }
 // The same in a given share of the open sky's light.
 export function fitIn(w: World, name: string, px: number, py: number, light: number) {
-  return fit(name, { ...envHere(w, px, py), light, fert: fertilityAt(w, px, py) });
+  return fit(name, { ...envHere(w, px, py), light });
 }
-// The island's lasting conditions at a point, as the niches read them (niche.ts Env): the light left out, and the soil's
-// nourishment as the generator had it, both of which fitHere takes as they are now.
+// The island's lasting conditions at a point, as the niches read them (niche.ts Env): the light left out, which fitHere
+// takes as it is now.
 export function envHere(w: World, px: number, py: number) {
   const { isle, fine } = groundOf(w.seed);
   return envAt(isle, fine.bilinear, px * TILE_M - SIZE / 2, py * TILE_M - SIZE / 2, NaN, START);
 }
-// Of the names, the one that takes root at a point, drawn by fit and vigor as the ground's own were (r: 0..1).
+// Of the names, the one that takes root at a point, drawn by fit as the ground's own were (r: 0..1).
 export const pickHere = <T extends string>(w: World, names: readonly T[], px: number, py: number, r: number) => draw(names, names.map((n) => fitHere(w, n, px, py)), r);
 
 // ---------- what limits growth (secs. 2 and 3; terrain/growth.ts) ----------

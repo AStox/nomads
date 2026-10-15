@@ -7,7 +7,8 @@
 // that wets the open leaves the ground under a pine dry, and a long rain soaks both (docs/research/fire-constants.md
 // sec. 25c).
 import { esat } from "../terrain/climate";
-import { BOULDER, TALL, TALLEST, TREES } from "../terrain/flora";
+import { BOULDER, treeHeight } from "../terrain/flora";
+import { TALLEST, TREES } from "../terrain/niche";
 import { headWind, islandAir, rainAt, slopeAt, sunOn } from "./air";
 import { CLOUD } from "./sky";
 import { CROWN_REACH, crownCover } from "./light";
@@ -72,14 +73,15 @@ export function wetDrying(temp: number, vapour: number, sun: number, cloud: numb
 
 // The water each kind of crown on the island holds (mm) an hour on from tick t under a sky, a wind over the open sea and a
 // warmth: what it held dries off by Rutter's rate, as fast as a wet crown dries for the share of it still wet (R220), a
-// crown as tall as its kind grows where it fits best (flora.ts TALL), and the hour's rain tops it up to what it can hold.
+// crown as tall as its kind grows where it fits best (flora.ts treeHeight, its spread's middle), and the hour's rain tops
+// it up to what it can hold.
 // held: what it holds when the hour's rain starts falling on it; next: at the hour's end. With none yet, the crowns
 // start dry.
 export function crownsHour(w: World, crowns: number[] | undefined, t: number, sky: World["weather"]["sky"], speed: number, temp: number) {
   const { vapour, rain } = islandAir(w, t, sky), bare = leafless(w), sun = sunOn(t, sky);
   const held = TREES.map((_, k) => {
     const c = crowns?.[k] ?? 0;
-    return c > 0 ? c * Math.exp(-wetDrying(temp, vapour, sun, CLOUD[sky], speed * 0.6, TALL[TREES[k]]) / crownWay(k, bare).full) : 0;
+    return c > 0 ? c * Math.exp(-wetDrying(temp, vapour, sun, CLOUD[sky], speed * 0.6, treeHeight(TREES[k], 1, 0.5)) / crownWay(k, bare).full) : 0;
   });
   return { held, bare, next: held.map((c, k) => { const { p, full } = crownWay(k, bare); return Math.min(full, c + (1 - p) * rain); }) };
 }
@@ -110,7 +112,7 @@ export function placeOf(w: World, px: number, py: number, reach: number): Place 
   return place;
 }
 // How far the rain falling at this rate in this head-height wind might slant past anything that stands, m: from the
-// middle of the tallest crown or the top of the biggest boulder (flora.ts TALLEST, BOULDER).
+// middle of the tallest crown or the top of the biggest boulder (niche.ts TALLEST, flora.ts BOULDER).
 export const reachOf = (rain: number, head: number) => drift(Math.max(TALLEST * (1 - CROWN / 2), BOULDER / 2), head, fallSpeed(rain));
 // The rain reaching the ground at a place, mm an hour, of the open ground's rain falling at this rate in a head-height
 // wind blowing this way, the crowns holding what they hold (held, by kind) and the broadleaves bare or not. The ground

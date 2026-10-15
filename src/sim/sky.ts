@@ -9,10 +9,11 @@ import { DAY, type World } from "./world";
 
 const DEG = Math.PI / 180;
 
-// The island lies at 52 degrees north; the sun crosses the south at 13:00. A year is YEAR_DAYS days, the first ten spring:
+// The island lies at 55.1 degrees north, as Bornholm does, whose climate it has (terrain/climate.ts); the sun crosses the
+// south at 13:00. A year is YEAR_DAYS days, the first ten spring:
 // the sun's path climbs and sinks over it by the earth's tilt, crossing the equator in the middle of spring and of autumn,
-// highest in the middle of summer (61 degrees at noon, a 16.6 hour day) and lowest in the middle of winter (15 degrees, a
-// 7.7 hour day). The moon crosses the same sky phase x 24 hours behind the sun as it waxes over LUNAR days, as far south of
+// highest in the middle of summer (58 degrees at noon, a 17.1 hour day) and lowest in the middle of winter (11.5 degrees,
+// a 6.9 hour day). The moon crosses the same sky phase x 24 hours behind the sun as it waxes over LUNAR days, as far south of
 // the equator when full as the sun is north, so a summer full moon rides low and a winter one high.
 export const YEAR_DAYS = 40;
 export const NOON = 13; // the sun crosses the south
@@ -22,7 +23,7 @@ export function seasonAt(t: number) {
   const u = (((t / DAY) % YEAR_DAYS) - YEAR_DAYS / 8) / (YEAR_DAYS / 4), s = Math.floor(u);
   return { s: (s + 4) % 4, f: u - s };
 }
-const LAT = 52 * DEG, TILT = 23.44 * DEG, LUNAR = 29.53;
+const LAT = 55.1 * DEG, TILT = 23.44 * DEG, LUNAR = 29.53;
 const hourAngle = (hour: number, transit: number) => ((hour - transit) * Math.PI) / 12;
 // How far north of the equator the sun stands on day `day` of the world (counting from 1, as the clock does) at an hour.
 export function declination(day: number, hour: number) {
@@ -59,8 +60,8 @@ export function moonAt(day: number, hour: number): Body & { phase: number; lit: 
 // The light a body leaves on bare ground under a clear sky at an elevation, as the US Naval Observatory reckons it (Circular
 // 171, Janiczek and DeYoung 1987: its beam fitted to Jones and Condit, its sky's glow to Brown's charts; fire-constants
 // sec. 33, R483): the elevation lifted by refraction above -5/6 of a degree, the path through the air at it, and from that
-// the beam's share and the glow's, in lux for every 133,775 of the sun's at the top of the sky. A clear noon at 61
-// degrees is some 110,000 lux, sunset 1,000, the end of civil twilight (6 below) 3, of nautical (12 below) a 230th.
+// the beam's share and the glow's, in lux for every 133,775 of the sun's at the top of the sky. A clear noon at 58
+// degrees is some 100,000 lux, sunset 1,000, the end of civil twilight (6 below) 3, of nautical (12 below) a 230th.
 function overhead(el: number) {
   let h = el / DEG;
   if (h >= -5 / 6) h += 1 / Math.tan((h + 8.59 / (h + 4.42)) * DEG) / 60;
@@ -84,9 +85,9 @@ export function moonLux(m: { el: number; lit: number }) {
 // The night sky's own glow, the stars' and the air's, in Circular 171's sums: 0.0005 lux.
 export const STAR_LUX = 0.0005;
 
-// How much of the sky each sky's cloud covers, the share of the sun's beam it hides: Belmullet's mean cloud amount in the
-// hours of each (fire-constants sec. 33, R479), its clear hours with no cloud reported counted as none [derived].
-export const CLOUD: Record<World["weather"]["sky"], number> = { clear: 0.077, cloudy: 0.826, rain: 0.883, storm: 0.893 };
+// How much of the sky each sky's cloud covers, the share of the sun's beam it hides: Hammer Odde's mean total cloud in the
+// hours of each (fire-constants sec. 33, R479) [derived].
+export const CLOUD: Record<World["weather"]["sky"], number> = { clear: 0.053, cloudy: 0.814, rain: 0.899, storm: 0.868 };
 // The share of a clear sky's daylight that reaches the ground under each sky: Kasten and Czeplak's 1 - 0.71 (N/8)^3.4 as
 // fitted to London (CIBSE, R482) for the broken skies it holds for, and an overcast of nimbostratus's 0.16 for the
 // raining ones (CIBSE Table 14) (sec. 33).

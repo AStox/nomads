@@ -69,9 +69,11 @@ export function soilWater(w: World, px: number, py: number, t: number, wet: numb
   const end = (k: number) => fine.bilinear(isle.soilWater[(k + 4) % 4], cx, cy), mid = (k: number) => (end(k - 1) + end(k)) / 2;
   if (held.seed !== w.seed || held.px !== px || held.py !== py) {
     const at = (a: Float32Array) => fine.bilinear(a, cx, cy);
-    held = { seed: w.seed, px, py, cap: holds(at(isle.soil), at(isle.sandy), at(isle.clayey), at(isle.humus)) };
+    held = { seed: w.seed, px, py, cap: holds(at(isle.soil), at(isle.sandy), at(isle.clayey), at(isle.organic)) };
   }
-  return clamp(mid(s) * (1 - f) + mid(s + 1) * f + (TEW * wet - (TEW - REW)) / held.cap, 0, 1);
+  // bare rock holds nothing for the top soil's water to add to
+  const now = mid(s) * (1 - f) + mid(s + 1) * f;
+  return held.cap > 0 ? clamp(now + (TEW * wet - (TEW - REW)) / held.cap, 0, 1) : clamp(now, 0, 1);
 }
 // How well a plant grows on the soil at a point: three quarters as fast on barren ground as on good soil, a quarter faster
 // again on the richest.

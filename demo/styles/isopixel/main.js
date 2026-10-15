@@ -1,7 +1,7 @@
 // Nomads as a 90s isometric sim: a 2:1 tile map with integer height steps, slope shapes and cliff strips, painted
 // pixel by pixel into a small indexed buffer with one fixed palette, then blown up with nearest neighbour.
 import { grow, fbm, noise, smooth } from "../world.js";
-import { groundClass, waterAt, riverSmooth, streamAt, flowNow, widthOf, depthOf, TRICKLE, SEA as G_SEA, LAKE as G_LAKE, RIVER as G_RIVER, ROCKY as G_ROCKY, SIZE, TILE_M } from "../island.js";
+import { groundClass, waterAt, riverSmooth, streamAt, flowNow, widthOf, depthOf, SEA as G_SEA, LAKE as G_LAKE, RIVER as G_RIVER, ROCKY as G_ROCKY, SIZE, TILE_M } from "../island.js";
 import { LADDER } from "./ladder.js";
 import { P, RGB as RGB_, ramp, SHADOW, GLOW, HAZE, MIST, NCOL, THEME } from "./pal.js";
 import { Buf, Spr, ObjBins, tri, strip, blit, castShadow, shadowPx, bayer, dith, h2 } from "./px.js";
@@ -43,7 +43,6 @@ const CFG = {
 const SEA = 1, LAKE = 2, RIVER = 3;
 const MEADOW = 0, FOREST = 1, SCRUB = 2, MARSH = 3, ROCK = 4, SAND = 5, HILL = 6;
 const COV = ["grass", "tree", "shrub", "marsh", "bare", "sand"];
-const WEIGHT = [1.0, 1.05, 1.2, 1.5, 1.3, 1.6];
 
 const GR = ramp("g0", "g1", "g2", "g3", "g4", "g5", "g6");
 const FF = ramp("p0", "t1", "t2", "g1", "g2", "g3");
@@ -324,7 +323,7 @@ function buildMap(w, V) {
         wet += V.live ? waterAt(w.isle, w, x, z) : w.fine(w.wet, x, z);
         COV.forEach((k, q) => (cv[q] += w.fine(w.cover[k], x, z)));
         m += w.fine(w.moist, x, z);
-        ex += w.bilinear(I.exposure, (x - w.START) / w.CELL, (z - w.START) / w.CELL);
+        ex += w.bilinear(I.windShare, (x - w.START) / w.CELL, (z - w.START) / w.CELL);
       }
       wet /= offs.length; m /= offs.length; ex /= offs.length;
       const [x, z] = V.toW(i0 + i + 0.5, j0 + j + 0.5);
@@ -336,8 +335,9 @@ function buildMap(w, V) {
         const s = surfAt(x, z);
         M.kind[t] = s > 0.5 ? LAKE : SEA; M.surf[t] = s; M.wlev[t] = q(s / V.levelM);
       } else {
+        // the largest share, as the generator's own rule (ground.ts coverClass) takes it
         let best = 0, bs = -1;
-        COV.forEach((k, q) => { const s = M.cov[q][t] * WEIGHT[q]; if (s > bs) { bs = s; best = q; } });
+        COV.forEach((k, q) => { const s = M.cov[q][t]; if (s > bs) { bs = s; best = q; } });
         M.cls[t] = best === ROCK && hh < capH && (VIEW === "island" || THEME === "adventure") ? HILL : best;
         if (M.cls[t] === ROCK || (LOCAL && hh > 0.8 * peak)) M.snow[t] = 0.6 * snowLying(w, V, x, z);
         // near the summit even grassy ground turns to bare rock with snow in its hollows
@@ -981,17 +981,18 @@ function groundAt(w, V, x, z) {
     G.depth = G.water === SEA ? Math.max(0, -w.heightAt(x, z)) : G.water === LAKE ? w.bilinear(w.isle.water, (x - w.START) / w.CELL, (z - w.START) / w.CELL) : 1.5;
     G.bed = 0;
     if (G.water === RIVER) {
-      // the channel is cut to the wettest season's width; this season's water runs down the middle of it, or not at all
-      // (the season's runoff, with the rain of an ordinary few days, src/sim/streams.ts)
+      // the channel is cut to the bankfull width; this season's water runs down the middle of it, or not at all where
+      // the flow is no more than the valley's fill carries under the bed (the season's runoff, with the rain of an
+      // ordinary few days, src/sim/streams.ts)
       const st = streamAt(w, x, z), q = st ? flowNow(st.q, st.base, w.isle.quick[SEASON_I[V.season] ?? 0] * 1.2) : 0;
-      G.depth = depthOf(q);
-      G.bed = !st || q < TRICKLE || st.d > widthOf(q) / 2 ? 1 : 0;
+      G.depth = st ? depthOf(q, st.qbf, st.dbf) : 0;
+      G.bed = !st || q <= st.under || st.d > widthOf(q, st.qbf, st.wbf) / 2 ? 1 : 0;
     }
     return G;
   }
   for (let q = 0; q < 6; q++) G["c" + q] = r.cover[q];
   G.cls = r.cls === G_ROCKY ? ROCKY : r.cls;
-  G.h = w.heightAt(x, z); G.moist = w.fine(w.moist, x, z); G.ex = r.exposure;
+  G.h = w.heightAt(x, z); G.moist = w.fine(w.moist, x, z); G.ex = r.windShare;
   // the generator's share of the year's precipitation falling as snow: only its highest reaches keep patches of it
   G.snowNow = snowLying(w, V, x, z);
   G.snow = 0.6 * G.snowNow;
@@ -1113,7 +1114,7 @@ const C_LUSH = [56, 96, 48], C_MID = [98, 126, 60], C_STRAW = [160, 150, 90], C_
 const C_MARSH = [74, 94, 56], C_PEAT = [48, 50, 38], C_BARE = [146, 136, 116], C_SOIL = [126, 98, 70], C_SILT = [186, 168, 128], C_SAND = [220, 202, 150];
 const C_BURN = [152, 128, 84], C_FOG = [140, 162, 152], C_AUTUMN = [178, 138, 64], C_WINTER = [150, 150, 142];
 // bare ground takes the colour of the rock it weathered from (src/terrain/geology.ts ROCKS): grey-brown mudstone, ochre
-// sandstone, pale limestone, pinkish granite, dark basalt
+// sandstone, pale limestone, pinkish granite, dark dolerite
 const BARE_ROCK = [[118, 104, 92], [176, 140, 96], [204, 196, 176], [164, 144, 138], [92, 88, 84]];
 const mixc = (a, b, t) => { t = clamp(t, 0, 1); return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; };
 // m60: the broad mottle at (x, z), which paintLand has already worked out

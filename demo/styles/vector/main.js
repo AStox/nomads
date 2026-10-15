@@ -106,7 +106,7 @@ export async function run() {
       if (inWaterRing(mx, mz)) continue;
       const d = cam.project(mx, w.heightAt(mx, mz), mz, o);
       if (d <= cam.near * 3 || o.x < -200 || o.x > W + 200 || o.y < -200 || o.y > H + 200) continue;
-      items.push({ k: d - stepAt(mx, mz) * 0.8, f: riverSeg, a: [a, b, nrm[k - 1], nrm[k], w.riverWidth((a[2] + b[2]) / 2), k], p: fog(d) * edge(mx, mz) });
+      items.push({ k: d - stepAt(mx, mz) * 0.8, f: riverSeg, a: [a, b, nrm[k - 1], nrm[k], (w.riverWidth(a) + w.riverWidth(b)) / 2, k], p: fog(d) * edge(mx, mz) });
     }
   }
   function riverSeg([a, b, na, nb, width, k], I) {

@@ -11,7 +11,7 @@ import { CELL } from "../terrain/grid";
 import { SIZE, START } from "../terrain/flora";
 import { GREEN_UP, RUE, through, warmEnough, watered } from "../terrain/growth";
 import { fishCount, revealFish, startFish, stepFish, takeFish } from "./fish";
-import { NICHE, envAt, fit } from "../terrain/niche";
+import { SHRUBS, TREES, envAt, fit } from "../terrain/niche";
 import { YEAR_DAYS, daylight, seasonAt } from "./sky";
 // a herd's day is the year's 365.25 / YEAR_DAYS days of eating and burning, as a plant's is of growing (plants.ts YEARS_PACE)
 const YEARS_PACE = 365.25 / YEAR_DAYS;
@@ -105,16 +105,14 @@ const DEER_WALK = 3200;
 const BEARINGS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
 // What a gram of each woody plant's green browse is worth, kJ, in the growing season and out of it, at 0.16 MJ/kg a point
 // of digestibility (R394): deciduous leaves as green grass's, their twigs after leaf fall as dead stuff (R396); heather's
-// shoots 55.9% digestible in July and 41.9% in March (R397); gorse taken as heather [UNVERIFIED]; pine's 56%, low in
-// every season (R396); bramble's evergreen leaves as green grass's, unchanging through the year (R396). Evergreens keep
-// their leaves through the winter; the rest drop them.
+// shoots 55.9% digestible in July and 41.9% in March (R397); pine's 56%, low in every season (R396); bramble's evergreen
+// leaves as green grass's, unchanging through the year (R396). Evergreens keep their leaves through the winter; the rest
+// drop them.
 const BROWSE_ME: Record<string, { summer: number; winter: number; evergreen: boolean }> = {
   oak: { summer: ME, winter: ME_DEAD, evergreen: false }, ash: { summer: ME, winter: ME_DEAD, evergreen: false }, aspen: { summer: ME, winter: ME_DEAD, evergreen: false },
   hazel: { summer: ME, winter: ME_DEAD, evergreen: false }, pine: { summer: 0.16 * 56, winter: 0.16 * 56, evergreen: true },
   berry: { summer: ME, winter: ME, evergreen: true }, heather: { summer: 0.16 * 55.9, winter: 0.16 * 41.9, evergreen: true },
-  gorse: { summer: 0.16 * 55.9, winter: 0.16 * 41.9, evergreen: true },
 };
-const TREES = ["pine", "oak", "ash", "aspen"], SHRUBS = ["berry", "hazel", "heather", "gorse"];
 // A pack of four loses a share of each deer it kills to ravens before it has eaten it: a pair 37%, a pack of six 17%
 // (R398), between them for four [derived]; a rabbit is eaten whole at once.
 const RAVENS = 0.37 + ((0.17 - 0.37) * (4 - 2)) / (6 - 2);
@@ -204,8 +202,9 @@ const EAGLE_REACH = Math.round((Math.sqrt(EAGLE_TERRITORY / ((TILE_M * TILE_M) /
 const TILE_KM2 = (TILE_M * TILE_M) / 1e6;
 
 // ---------- the ground (sec. 3) ----------
-// grass: the ground layer's share of a tile; lit: the share of the open sun its growth gets, the field layer's under a
-// crown (growth.ts through); woody: browse's share.
+// grass: the ground layer's share of a tile, the open sward and the field layer the generator lays under the crowns
+// (ground.ts field); lit: the share of the open sun its growth gets, the field layer's under a crown (growth.ts through);
+// woody: browse's share.
 // nb: each land tile's land neighbours, eight a tile, -1 where none; wolfLand, foxLand: the land tiles in a wolf's and a
 // fox's reach round each.
 // ever: the evergreens' share of a tile's browse; summer, winter: what a gram of its green browse is worth then, kJ;
@@ -259,14 +258,15 @@ function groundFor(w: World): Ground {
     land.push(i);
     const mx = (i % W) * TILE_M + TILE_M / 2 - SIZE / 2, mz = Math.floor(i / W) * TILE_M + TILE_M / 2 - SIZE / 2;
     const open = fine.fine(fine.cover.grass, mx, mz), tree = fine.fine(fine.cover.tree, mx, mz), shrub = fine.fine(fine.cover.shrub, mx, mz);
-    grass[i] = Math.min(1, open + tree + shrub);
-    lit[i] = grass[i] > 0 ? (open + (tree + shrub) * through(1)) / grass[i] : 0;
+    const under = (tree + shrub) * fine.bilinear(isle.field, (mx - START) / CELL, (mz - START) / CELL);
+    grass[i] = Math.min(1, open + under);
+    lit[i] = grass[i] > 0 ? (open + under * through(1)) / grass[i] : 0;
     woody[i] = Math.min(1, BROWSE.shrub * shrub + BROWSE.tree * tree);
-    // the browse's kinds as the generator draws them, each by its fit and vigour there (flora.ts), within its form
+    // the browse's kinds as the generator draws them, each by its fit there (flora.ts), within its form
     const env = envAt(isle, fine.bilinear, mx, mz, NaN, START);
     let ev = 0, su = 0, wi = 0, all = 0;
     for (const [kinds, form] of [[TREES, BROWSE.tree * tree], [SHRUBS, BROWSE.shrub * shrub]] as const) {
-      const wts = kinds.map((k) => fit(k, env) * (NICHE[k].vigor ?? 1)), sum = wts.reduce((s, x) => s + x, 0);
+      const wts = kinds.map((k) => fit(k, env)), sum = wts.reduce((s, x) => s + x, 0);
       if (sum <= 0 || form <= 0) continue;
       kinds.forEach((k, j) => { const m = (form * wts[j]) / sum, q = BROWSE_ME[k]; all += m; su += m * q.summer; if (q.evergreen) { ev += m; wi += m * q.winter; } });
     }

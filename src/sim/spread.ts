@@ -13,7 +13,7 @@ import { TILE_M, type Thing, type World } from "./world";
 import { airOn, rainAt, sunOn } from "./air";
 import { CROWN, rainOn } from "./rain";
 import { canopyAt } from "./light";
-import { TREES } from "../terrain/flora";
+import { TREES } from "../terrain/niche";
 
 const G = 9.81, RHO_AIR = 1.2; // air, kg/m3 (sec. 6)
 const CHI_R = 0.3; // the radiant share of a fire's heat (sec. 7)

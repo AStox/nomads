@@ -5,7 +5,7 @@
 // one another. Only ground being looked at keeps them (space.ts): put back as it grew, it holds them as the generator
 // already does.
 import { DAY, H, TILE_M, W, YEAR_DAYS, dryAt, type Thing, type World } from "./world";
-import { TALL } from "../terrain/flora";
+import { treeHeight } from "../terrain/flora";
 import { keptOf, madeOf, through } from "../terrain/growth";
 import { SEEDLINGS, YEARS_PACE, fitIn, seasonsHere } from "./plants";
 import { seasonAt } from "./sky";
@@ -66,9 +66,9 @@ function reference(w: World, sp: string) {
 const AT: Record<string, [number, number]> = { pine: [7.5, 23], oak: [7.8, 23], ash: [11.4, 23], aspen: [11.41, 20] };
 const C: Record<string, number> = Object.fromEntries(TREE_KINDS.map((sp) => { const [h, yr] = AT[sp]; return [sp, (4 * (treeKg(sp, h) ** 0.25 - (SEEDLINGS[sp].up / 1000) ** 0.25)) / (yr - 1)]; }));
 // Young trees stand up as trees once as tall as the ground's own of their kind there, as the generator lays them down
-// (flora.ts: TALL by the spot's fit, its spread's middle) [derived]; brambles as bushes in their second summer, when
+// (flora.ts treeHeight by the spot's fit, its spread's middle) [derived]; brambles as bushes in their second summer, when
 // their canes first fruit (Agriculture Victoria, R466), once come up.
-const standHeight = (sp: string, fit: number) => TALL[sp as keyof typeof TALL] * Math.max(0.45, Math.min(1.2, 0.45 + 0.75 * fit)) * 0.975;
+const standHeight = (sp: string, fit: number) => treeHeight(sp, fit, 0.5);
 const BRAMBLE_YEARS = 2;
 
 // ---------- browsing ----------

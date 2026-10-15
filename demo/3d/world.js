@@ -138,7 +138,7 @@ export function buildWorld(isle, { N, CELL, rand, people, anisotropy }) {
     if (Wd[i] > 0 || H[i] < 0.5) continue;
     const cx = center(i % N), cz = center(Math.floor(i / N));
     const spot = () => [cx + (rand() - 0.5) * CELL, cz + (rand() - 0.5) * CELL];
-    const exposure = isle.exposure[i], moist = isle.moist[i], soil = Math.min(1.5, isle.soil[i]);
+    const exposure = isle.windShare[i], moist = isle.moist[i], soil = Math.min(1.5, isle.soil[i]);
     // Conifers take the cold, thin, windswept ground; broadleaf the deep, damp soil of the valleys.
     const pine = clamp(0.15 + (H[i] - 120) / 450 + exposure * 0.6 - soil * 0.25 + (1 - moist) * 0.2, 0.05, 0.95);
     const vigor = clamp(0.55 + moist * 0.35 + soil * 0.25 - exposure * 0.45, 0.35, 1.25);
