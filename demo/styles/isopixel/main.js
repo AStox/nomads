@@ -22,7 +22,7 @@ const UI = Q.get("ui") === "1";
 // frame 0..7 of a seamless loop: only water, foam, fire, smoke, birds, fish and butterflies change
 let FRAME = pick("frame", [0, 1, 2, 3, 4, 5, 6, 7], 0), PH = (FRAME / 8) * Math.PI * 2;
 const TAU = Math.PI * 2;
-// the live renderer bakes several zoom levels in one worker, so the view and frame are switchable
+// the view and frame are switchable, so one module can paint several views and every frame of the water's loop
 export function setMode(view, frame = FRAME) {
   VIEW = view; LOCAL = VIEW !== "island"; FAR = VIEW !== "camp";
   FRAME = frame; PH = (FRAME / 8) * TAU;
@@ -942,15 +942,16 @@ function vertexLight(V, M) {
   return { lightV, curvV, crease };
 }
 
-// ---------- live: a fixed camera over the whole island, baked in chunks ----------
+// ---------- the live ground's painter ----------
+// What follows painted the live page's ground on the CPU before the renderer moved to WebGPU. ground.wgsl.js ports it
+// to the GPU line for line, and scripts/play/ground-parity.ts checks the port against it, so it stays as that oracle.
 export { LADDER };
 // One vertical exaggeration for every zoom and bearing, so a mountain has the same shape at each. 1.2 keeps the drawn
 // 99th percentile slope under 40 degrees at the generator's 75 m cells (true p99 34.4 degrees, seed 1); 1.5 trades a
-// little of that for more mountain. ?exag= overrides it once at load, in the page and in the bake workers alike.
+// little of that for more mountain. ?exag= overrides it once at load, in the page and in its workers alike.
 export const EXAG = (() => { const q = Number(new URLSearchParams(globalThis.location?.search ?? "").get("exag")); return q ? clamp(q, 1, 3) : 1.5; })();
 // hillshade gain on the true slope, strong enough that eroded ridges and valleys read at the low exaggeration
 const LIGHT = 4.4;
-export const BEARINGS = 8;
 export const ORIGIN = -SIZE / 2;
 
 // Bearing b turns the camera b * 45 degrees clockwise: tile axes eu, ev are the world axes turned by -b * 45 degrees,
@@ -960,155 +961,6 @@ export function bearingFrame(b) {
   const eu = [c, sn], ev = [-sn, c];
   return { eu, ev, ox: -R * (eu[0] + ev[0]), oz: -R * (eu[1] + ev[1]), span: 2 * R };
 }
-export function makeLiveView(w, level, bearing = 0) {
-  const Zl = LADDER[level];
-  setMode("valley", 0);
-  const V = { ...CFG.valley, ...Zl, view: "valley", level, bearing, live: true, name: VIEW, AW: 0, AH: 0, gx: 0, gy: 0, X0: 0, Y0: 0, exag: EXAG, grid: 0 };
-  // sprites grow a little slower than the world as you zoom in, the same curve at every level so sizes run smoothly
-  V.treeK = 1.15 * (Zl.W / 2 / Zl.tileM / 0.8533) ** -0.15;
-  V.H = V.W / 2;
-  if (LOWSUN) V.tsun = SUN * 0.75;
-  if (THEME === "adventure") V.band = VIEW === "island" ? 1.3 : 1.9;
-  V.marks = []; V.falls = null; V.rings = []; V.drifts = []; V.campOff = 1;
-  const F = bearingFrame(bearing);
-  V.eu = F.eu; V.ev = F.ev; V.ox = F.ox; V.oz = F.oz;
-  V.scale = (tileM) => { V.tileM = tileM; V.k = V.W / (tileM * Math.SQRT2); V.levelM = V.lp / (V.k * 0.866 * V.exag); };
-  V.toUV = (x, z) => { const dx = x - V.ox, dz = z - V.oz; return [(dx * V.eu[0] + dz * V.eu[1]) / V.tileM, (dx * V.ev[0] + dz * V.ev[1]) / V.tileM]; };
-  V.toW = (u, v) => [V.ox + (u * V.eu[0] + v * V.ev[0]) * V.tileM, V.oz + (u * V.eu[1] + v * V.ev[1]) * V.tileM];
-  V.sx = (u, v) => V.X0 + (u - v) * V.H;
-  V.sy = (u, v, hz) => V.Y0 + (u + v) * V.H * 0.5 - hz * V.lp;
-  V.cz = (u, v, hz) => 1.5 * V.H * (u + v) + hz * V.lp;
-  V.hsample = (x, z) => w.heightAt(x, z);
-  if (VIEW === "island") {
-    const lim = w.SIZE / 2 - 60;
-    V.hsample = (x, z) => Math.abs(x) > lim || Math.abs(z) > lim ? -60 : (w.heightAt(x, z) * 2 + w.heightAt(x + 45, z) + w.heightAt(x - 45, z) + w.heightAt(x, z + 45) + w.heightAt(x, z - 45)) / 6;
-  }
-  // exaggeration is fixed per level (island-wide slopes gave 1 for every local level), stepping down from the
-  // island map's so neighbouring levels agree when they cross-fade
-  V.scale(V.tileM);
-  const NT = Math.ceil(F.span / V.tileM);
-  let peak = 0;
-  for (const h of w.isle.height) peak = Math.max(peak, h);
-  V.peakLev = Math.ceil((peak + 10) / V.levelM);
-  V.peakM = peak; V.capH = peak * 0.68;
-  V.mpp = 1 / V.k;
-  V.i0 = 0; V.j0 = 0; V.i1 = NT; V.j1 = NT; V.NI = NT; V.NJ = NT;
-  V.visible = () => true; V.objVisible = () => true;
-  V.ms = V.tileM * (VIEW === "island" ? 3 : 2.6);
-  V.pm = V.tileM * 0.9;
-  V.rip = 3;
-  const dd = -1 / V.H;
-  V.upW = [(dd * V.eu[0] + dd * V.ev[0]) * V.tileM, (dd * V.eu[1] + dd * V.ev[1]) * V.tileM];
-  const cot = 1 / Math.tan(SUN), sd = [-LU / Math.hypot(LU, LV), -LV / Math.hypot(LU, LV)];
-  V.shx = (sd[0] - sd[1]) * 0.8165 * cot;
-  V.shy = (sd[0] + sd[1]) * 0.5 * 0.8165 * cot;
-  V.sd = sd; V.cot = cot;
-  return V;
-}
-
-// Point V at one chunk of global art pixels [gx0, gx0 + CS) x [gy0, gy0 + CS). Objects are gathered from a wider
-// window: tall sprites standing below the chunk, and sprites to its left whose shadows fall into it.
-export function chunkWindow(V, maxLev, gx0, gy0, CS, tall, shadowL) {
-  V.X0 = -gx0; V.Y0 = -gy0; V.gx = gx0; V.gy = gy0; V.AW = CS; V.AH = CS;
-  const hb = V.H * 0.5;
-  const amin = -V.X0 / V.H - 2, amax = (CS - V.X0) / V.H + 2;
-  const bmin = -V.Y0 / hb - 3, bmax = (CS - V.Y0 + maxLev * V.lp) / hb + 3;
-  const oa0 = amin - shadowL / V.H, ob0 = bmin - (shadowL * 0.4) / hb, ob1 = bmax + tall / hb;
-  V.i0 = Math.floor((amin + bmin) / 2); V.i1 = Math.ceil((amax + bmax) / 2);
-  V.j0 = Math.floor((bmin - amax) / 2); V.j1 = Math.ceil((bmax - amin) / 2);
-  V.visible = (u, v) => { const a = u - v, b = u + v; return a >= amin - 1 && a <= amax + 1 && b >= bmin && b <= bmax; };
-  V.objVisible = (u, v) => { const a = u - v, b = u + v; return a >= oa0 && a <= amax + 1 && b >= ob0 && b <= ob1; };
-  V.obox = [Math.floor((oa0 + ob0) / 2), Math.ceil((amax + 1 + ob1) / 2), Math.floor((ob0 - amax - 1) / 2), Math.ceil((ob1 - oa0) / 2)];
-}
-
-// How high the ground below a chunk climbs into it, in levels: tiles further down the screen whose hills rise into
-// view. Scanned from the true heights, so a paged level can size its map before building it.
-export function liftInto(w, V, gy0, gx0, CS) {
-  const hb = V.H * 0.5, b0 = (CS + gy0) / hb + 3, amin = gx0 / V.H - 2, amax = (gx0 + CS) / V.H + 2;
-  let need = 0;
-  for (let b = Math.floor(b0); (b - b0) * hb <= V.peakLev * V.lp; b++)
-    for (let a = Math.floor(amin); a <= amax; a += 2) {
-      const u = (a + b) / 2, v = (b - a) / 2, lev = w.heightAt(...V.toW(u, v)) / V.levelM;
-      if (lev * V.lp + 2 * V.lp >= (b - b0) * hb) need = Math.max(need, lev + 2);
-    }
-  return Math.ceil(need);
-}
-
-// Terrain shadow as a horizon per vertex: the lowest level a point there must stand at to see the sun. One march per
-// vertex when the map is built, instead of one per pixel.
-export function shadowHorizon(V, M) {
-  const rise = (Math.tan(V.tsun) * V.tileM) / (V.lp / (V.k * 0.866)), step = 0.3, su = -V.sd[0] * step, sv = -V.sd[1] * step;
-  const { NI, NJ, C, diag } = M, VI = NI + 1, hz = new Float32Array(VI * (NJ + 1)), top = M.maxLev;
-  const lev = (u, v) => {
-    const i = Math.floor(u), j = Math.floor(v);
-    if (i < 0 || j < 0 || i >= NI || j >= NJ) return -1e9;
-    const t = j * NI + i, fu = u - i, fv = v - j, T = C[t * 4], R = C[t * 4 + 1], B = C[t * 4 + 2], L = C[t * 4 + 3];
-    if (diag[t] === 0) return fu >= fv ? T + (R - T) * fu + (B - R) * fv : T + (B - L) * fu + (L - T) * fv;
-    return fu + fv <= 1 ? T + (R - T) * fu + (L - T) * fv : R + L - B + (B - L) * fu + (B - R) * fv;
-  };
-  for (let j = 0; j <= NJ; j++)
-    for (let i = 0; i <= NI; i++) {
-      let best = -1e9, cu = i, cv = j;
-      for (let k = 1; k < 80; k++) {
-        cu += su; cv += sv;
-        const drop = rise * step * k;
-        if (top - drop <= best) break;
-        const g = lev(cu, cv);
-        if (g === -1e9) break;
-        if (g - drop > best) best = g - drop;
-      }
-      hz[j * VI + i] = best;
-    }
-  return (u, v, l) => {
-    const x = clamp(u - M.i0, 0, NI - 0.001), y = clamp(v - M.j0, 0, NJ - 0.001), i = Math.floor(x), j = Math.floor(y), fx = x - i, fy = y - j, k = j * VI + i;
-    const h = (hz[k] * (1 - fx) + hz[k + 1] * fx) * (1 - fy) + (hz[k + VI] * (1 - fx) + hz[k + VI + 1] * fx) * fy;
-    return l < h - 0.05;
-  };
-}
-
-// The sim's objects for one live chunk, from D.objs (an ObjBins of sim.objects() and its changes since). Each is drawn
-// wherever it is at least one art pixel, at its size in meters times the level's art px per meter, so it keeps its
-// world position at every zoom and grows smoothly from a dot to its full sprite. D.trodden gives the worn paths.
-export function collectLive(w, V, M, D) {
-  const O = [], ob = D.objs;
-  if (!ob) return O;
-  // footprint sprites anchor below their footprint centre
-  const add = (at, spr, opt = {}) => O.push({ z: at.z, sx: at.sx, sy: at.sy + (spr.foot || 0), spr, shadow: opt.shadow !== false, mirror: !!opt.mirror, bias: opt.bias ?? V.H * 0.5 + 2, oid: opt.oid, ax: at.sx, ay: at.sy });
-  // art px per meter up (heights) and across (a tussock's width); a level coarser than DIRECT_PV draws its trees shrunk
-  const pv = V.k * 0.866 * V.treeK, pw = V.k * V.treeK, visW = (x, z) => V.objVisible(...V.toUV(x, z)), shrunk = pv < SP.DIRECT_PV;
-  // a canopy takes the value of the ground it stands on, so the forest reads as texture over the hillshade: lit slopes
-  // bright, shaded slopes and cast shadows dark
-  const cov = (x, z) => w.fine(w.cover.tree, x, z);
-  const dimAt = (x, z) => Math.round(clamp(0.05 - terrainLight(w, V, x, z) * 0.75, -0.75, 1) * 4) / 4;
-  const [u0, u1, v0, v1] = V.obox, cs = [V.toW(u0, v0), V.toW(u1, v0), V.toW(u0, v1), V.toW(u1, v1)], xs = cs.map((c) => c[0]), zs = cs.map((c) => c[1]);
-  const tile = (m) => Math.floor((m - ORIGIN) / TILE_M), kinds = ob.kinds, spn = ob.species, skip = kinds.map((k) => ObjBins.LIVE.has(k));
-  ob.each(tile(Math.min(...xs)), tile(Math.min(...zs)), tile(Math.max(...xs)), tile(Math.max(...zs)), (ki, si, px, py, size, seed, id, n) => {
-    if (skip[ki]) return;
-    const K = kinds[ki], hpx = K === "grass" ? size * pw : ObjBins.shown(size) * pv;
-    if (hpx < 1) return;
-    const x = px * TILE_M + ORIGIN, z = py * TILE_M + ORIGIN;
-    if (!visW(x, z)) return;
-    // drawn wherever the sim holds it, so what is drawn and what can be picked always agree
-    const sp = spn[si], at = place(V, M, x, z);
-    if (!at) return;
-    const mirror = ((seed >>> 3) & 1) === 1, vr = seed % 8, tint = ((seed >>> 8) & 255) / 255;
-    let spr;
-    if (K === "tree") {
-      // one drawing at every zoom (sprites.js tree); the terrain's light only sets how dark the wood is at its foot
-      const hp = Math.max(1, Math.round(hpx)), dim = dimAt(x, z), tq = SP.treeTint(tint, sp);
-      spr = cached(`tr${sp}|${hp}|${vr}|${tq}|${dim}|${shrunk ? 1 : 0}`, () => SP.tree(hp, sp, vr, tq, dim, shrunk));
-    } else if (!TH.object) return;
-    else {
-      const hq = hpx < 8 ? Math.round(hpx * 2) / 2 : Math.round(hpx), moss = K === "boulder" || K === "stone" ? (cov(x, z) > 0.4 ? 0.6 : 0.1) : 0;
-      const o = n === undefined ? { species: sp, moss } : { species: sp, moss, n };
-      spr = cached(`o${K}|${sp}|${hq}|${vr}|${moss}|${n === undefined ? "" : n > 0}`, () => TH.object(K, hq, vr * 131 + 7, o));
-    }
-    // a continuous canopy of minis casting shadows would darken the whole forest; trees cast theirs once they stand apart
-    if (spr) add(at, spr, { mirror, shadow: (K === "tree" ? hpx >= 8 : hpx >= 3) && !FLAT.has(K), oid: id });
-  });
-  return O;
-}
-const FLAT = new Set(["clay", "stick", "pebble", "flowers", "herb", "mushroom"]);
 
 
 // ---------- live terrain: every feature from world-space fields in meters ----------
@@ -1165,7 +1017,7 @@ function clusters(x, z, S, seed, mpp, cut = 0.42) {
   const n = noise(x / S, z / S, seed) * a;
   return n > cut ? 1 : n < -cut ? -1 : 0;
 }
-// What paintWater last painted, for the bake: its tone on the water ramp (-1 for foam, a ripple dash, a sparkle or ice),
+// What paintWater last painted: its tone on the water ramp (-1 for foam, a ripple dash, a sparkle or ice),
 // and whether any frame of the loop could paint it otherwise, so still water is painted once rather than eight times.
 export const WV = { v: -1, moves: false };
 function paintWater(w, V, g, X, Y) {
@@ -1197,11 +1049,6 @@ function paintWater(w, V, g, X, Y) {
 }
 // bare rock, the shared rule's code for it
 const ROCKY = 7;
-// What a ground point is, for the consistency check: a water kind (40 + SEA, LAKE, RIVER) or its land class.
-export function surfaceAt(w, V, x, z) {
-  const g = groundAt(w, V, x, z);
-  return g.water ? 40 + g.water : g.cls;
-}
 const TRACE = { cls: 0 };
 // Worn footpaths from the sim's 3 m wear cells, stepped into five widths (T maps a worn cell's row-major index to 1..4).
 // Each worn cell's centre is jittered inside it and joined to its worn neighbours, so a path wiggles through the grass
@@ -1427,8 +1274,8 @@ function worldShadow(w, b) {
 }
 const wsample = (g, x, z) => { const fx = clamp((x - ORIGIN) / WS, 0, WN - 1.001), fz = clamp((z - ORIGIN) / WS, 0, WN - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, c = fz - j, k = j * WN + i; return (g[k] * (1 - a) + g[k + 1] * a) * (1 - c) + (g[k + WN] * (1 - a) + g[k + WN + 1] * a) * c; };
 // the terrain's light at a world point for bearing b: slope light, less occlusion in hollows, less the cast shadow.
-// With V.realtime the GPU lights the slopes and casts the shadows for the hour, so only the occlusion is baked; and with
-// V.aoGpu it takes the hollows' share of the sky as well (gpu.js ambient occlusion), leaving only the ridges' light here.
+// With V.realtime the GPU lights the slopes and casts the shadows for the hour, so only the occlusion is left here; and
+// with V.aoGpu it takes the hollows' share of the sky as well (webgpu.js ambient occlusion), leaving only the ridges' light.
 export function terrainLight(w, V, x, z) {
   const ao = wsample(worldAO(w), x, z), sh = V.realtime ? 0 : wsample(worldShadow(w, V.bearing), x, z) / 255;
   TL.sh = sh;
@@ -1458,84 +1305,6 @@ function worldGrad(w, x, z) {
 }
 const WG = [0, 0];
 const lightOf = (gu, gv) => { const l = LIGHT * EXAG * (-LU * gu - LV * gv); return clamp(l < 0 ? l * 0.6 : l, -1.3, 2); };
-// The live ground: z-tested so steep slopes hide what is behind them, back faces culled, every pixel textured from
-// the world at its own position. Land meets standing water with a short bank strip. V.waterV, when the bake gives
-// one, gets 1 + 16 x the tone of each pixel of still open water, 0 elsewhere.
-export function drawTerrainLive(B, w, V, M) {
-  const { NI, NJ, i0, j0 } = M, C = M.C, GX = V.gx, GY = V.gy, VI = NI + 1;
-  const dbg = V.debug;
-  nearI = NaN;
-  const anim = V.anim, wv = V.waterV, frames = (p, f0, paint) => {
-    const cols = [f0];
-    let moving = false;
-    for (let f = 1; f < 8; f++) { setMode(VIEW, f); const c = paint(); cols.push(c); if (c !== f0) moving = true; }
-    setMode(VIEW, 0);
-    if (moving) anim.set(p, cols);
-  };
-  const shade = (col, X, Y) => (DARKER[col] !== col ? (bayer(X, Y) < 0.6 ? DARKER[col] : col) : SHADOW[col]);
-  const a0 = clamp(V.i0 - i0, 0, NI), a1 = clamp(V.i1 - i0, 0, NI), b0 = clamp(V.j0 - j0, 0, NJ), b1 = clamp(V.j1 - j0, 0, NJ);
-  for (let j = b0; j < b1; j++)
-    for (let i = a0; i < a1; i++) {
-      const t = j * NI + i, uT = i0 + i, vT = j0 + j;
-      if (!V.visible(uT + 0.5, vT + 0.5)) continue;
-      const c = [C[t * 4], C[t * 4 + 1], C[t * 4 + 2], C[t * 4 + 3]], P4 = [[uT, vT, c[0]], [uT + 1, vT, c[1]], [uT + 1, vT + 1, c[2]], [uT, vT + 1, c[3]]];
-      // a bank where this tile stands above the flat water tile in front of it
-      for (const face of [0, 1]) {
-        const nb = M.at(face ? i + 1 : i, face ? j : j + 1);
-        if (nb < 0 || !M.kind[nb] || M.kind[t]) continue;
-        const [A, Bk] = face ? [2, 1] : [3, 2], botA = C[nb * 4 + (face ? 3 : 0)], botB = C[nb * 4 + (face ? 0 : 1)];
-        if (botA >= c[A] && botB >= c[Bk]) continue;
-        const pa = P4[A], pb = P4[Bk];
-        strip(B, V.sx(pa[0], pa[1]), V.sx(pb[0], pb[1]), V.sy(pa[0], pa[1], pa[2]), V.sy(pb[0], pb[1], pb[2]), V.sy(pa[0], pa[1], botA), V.sy(pb[0], pb[1], botB), (p, x, y, tt, depth, hpx) => {
-          const u = pa[0] + (pb[0] - pa[0]) * tt, v = pa[1] + (pb[1] - pa[1]) * tt, lev = (V.Y0 + (u + v) * V.H * 0.5 - (y + 0.5)) / V.lp, z = V.cz(u, v, lev);
-          if (z < B.z[p]) return;
-          B.c[p] = texWall(V, DIRTW, face, x + GX, y + GY, depth, hpx, lev, true, 0); B.z[p] = z; B.id[p] = 0;
-          anim?.delete(p); if (wv) wv[p] = 0;
-          if (dbg) dbg.cls[p] = 254;
-        });
-      }
-      const tris = M.diag[t] === 0 ? [[0, 1, 2], [0, 2, 3]] : [[0, 1, 3], [3, 1, 2]];
-      for (const [a, b, cc] of tris) {
-        const A = P4[a], Bv = P4[b], Cv = P4[cc];
-        const ax = V.sx(A[0], A[1]), ay = V.sy(A[0], A[1], A[2]), bx = V.sx(Bv[0], Bv[1]), by = V.sy(Bv[0], Bv[1], Bv[2]), cx = V.sx(Cv[0], Cv[1]), cy = V.sy(Cv[0], Cv[1], Cv[2]);
-        // a triangle turned away from the camera is the far side of a slope; the near side hides it
-        const uvA = (Bv[0] - A[0]) * (Cv[1] - A[1]) - (Bv[1] - A[1]) * (Cv[0] - A[0]), scA = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
-        if (uvA * scA <= 0) continue;
-        tri(B, ax, ay, bx, by, cx, cy, (p, x, y, la, lb, lc) => {
-          const u = la * A[0] + lb * Bv[0] + lc * Cv[0], v = la * A[1] + lb * Bv[1] + lc * Cv[1], lev = la * A[2] + lb * Bv[2] + lc * Cv[2], z = V.cz(u, v, lev);
-          if (z < B.z[p]) return;
-          // what lay here before is painted over, its loop with it
-          anim?.delete(p);
-          const X = x + GX, Y = y + GY, fu = u - uT, fv = v - vT;
-          const wx = V.ox + (u * V.eu[0] + v * V.ev[0]) * V.tileM, wz = V.oz + (u * V.eu[1] + v * V.ev[1]) * V.tileM;
-          // light owns value: slope, hollows and cast shadows from one world surface, at every level alike
-          const s = terrainLight(w, V, wx, wz), inShade = TL.sh > 0.5;
-          const g = groundAt(w, V, wx, wz);
-          let col;
-          const dark = inShade && bayer(X, Y) < smooth(0.5, 0.8, TL.sh) + 0.5;
-          if (g.water) {
-            // g is groundAt's one shared record; nothing samples the ground again before this pixel is done
-            col = paintWater(w, V, g, X, Y);
-            const still = !WV.moves, tv = WV.v;
-            if (dark) col = shade(col, X, Y);
-            if (anim && !still) frames(p, col, () => { const c2 = paintWater(w, V, g, X, Y); return dark ? shade(c2, X, Y) : c2; });
-            // open water, which the GPU paints again from its tone on a turned grid so its dither does not swim
-            if (wv) wv[p] = tv >= 0 && still && !dark ? 1 + Math.min(126, Math.round(tv * 16)) : 0;
-            if (dbg) dbg.cls[p] = 40 + g.water;
-          } else {
-            col = paintLand(w, V, g, X, Y, s);
-            // land takes its shadow in its value already; the flag keeps sprite shadows from darkening it twice
-            if (inShade) B.sh[p] = 1;
-            if (wv) wv[p] = 0;
-            if (dbg) dbg.cls[p] = TRACE.cls;
-          }
-          if (dbg) { dbg.wx[p] = wx; dbg.wz[p] = wz; }
-          B.c[p] = col; B.z[p] = z; B.id[p] = 0;
-        });
-      }
-    }
-}
-
 // ---------- objects ----------
 // Sprites by key, the least recently used dropped past SPRITE_BYTES. A forest chunk wants thousands of tree variants;
 // emptying the whole cache at a count, as it once did, had most of them drawn again for every chunk.
@@ -1552,10 +1321,6 @@ const cached = (key, make) => {
 };
 // Creature and landmark sprites from life.js; anything it does not (yet) export is simply left out.
 let LIFE = {};
-export const setLife = (mod) => { LIFE = mod; };
-// Isolife's sprites for every sim kind; the stills never need them
-let TH = {};
-export const setThings = (mod) => { TH = mod; };
 const life = (name, key, ...args) => (typeof LIFE[name] === "function" ? cached(`L:${name}:${key}`, () => LIFE[name](...args)) : null);
 
 function place(V, M, x, z) {
@@ -2589,7 +2354,7 @@ async function main() {
   document.body.classList.add("ready");
 }
 
-// the still page runs itself; the live bake worker imports this file as a library
+// the still page runs itself; a script that only wants its functions sets ISO_LIB first
 if (typeof window !== "undefined" && document.getElementById("view") && !globalThis.ISO_LIB) {
   const fail = (e) => { document.body.dataset.error = String((e && e.stack) || e); document.body.classList.add("failed"); };
   window.addEventListener("error", (e) => fail(e.error || e.message));
@@ -2598,3 +2363,4 @@ if (typeof window !== "undefined" && document.getElementById("view") && !globalT
 }
 
 export { CFG, buildMap, drawTerrain, drawObjects, place, cached, SEA, LAKE, RIVER };
+export { groundAt, paintLand, paintWater, iceTex, texWall, dq, DQ, DIRTW, worldHeights, worldAO };

@@ -21,7 +21,7 @@ const rssMB = (pid) => tree(pid).reduce((a, p) => { try { return a + Number(exec
     let nextSample = t0, step = 0;
     while (Date.now() < end) {
       if (Date.now() >= nextSample) {
-        const s = await page.evaluate(() => ({ heap: Math.round(performance.memory.usedJSHeapSize / 1e6), cache: play.live.stats.cacheMB ?? 0, chunks: play.live.cache.size, fps: Math.round(play.live.stats.fps) }));
+        const s = await page.evaluate(() => ({ heap: Math.round(performance.memory.usedJSHeapSize / 1e6), gpuMs: +(play.live.stats.gpuMs ?? 0).toFixed(1), fps: Math.round(play.live.stats.fps) }));
         rows.push({ min: +((Date.now() - t0) / 60e3).toFixed(1), rssMB: Math.round(rssMB(pid)), ...s });
         console.log(JSON.stringify(rows.at(-1)));
         nextSample += 30e3;

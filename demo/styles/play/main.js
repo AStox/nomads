@@ -1,5 +1,5 @@
 // The live page: the game's sim running in this tab, drawn by the isopixel renderer with a pan, zoom and orbit camera.
-import { createLive, loadingScreen } from "../isopixel/live.js";
+import { createLive, hasWebGPU, loadingScreen } from "../isopixel/live.js";
 import { drawInspector, drawPanel } from "../isopixel/inspect.js";
 import { RGB, P } from "../isopixel/pal.js";
 import { Buf } from "../isopixel/px.js";
@@ -54,7 +54,7 @@ async function main() {
   // the token is kept, not shown: a copied link doesn't carry it
   if (jevQ) { Q.delete("jev"); history.replaceState(null, "", `${location.pathname}${Q.size ? `?${Q}` : ""}`); }
   const simP = withSim ? import("./sim.js").then(({ createSim }) => createSim({ seed, warm, jev, onProgress: (d, n) => { steps.sim = ["warming the world", d / n]; say(); } })) : Promise.resolve(null);
-  const live = await createLive({ seed, canvas, workers: Math.trunc(num("workers", 0, 0, 8)) || undefined, adjacent: Q.get("adj") !== "0", check: Q.get("check") === "1", onProgress: (d, n, what) => { steps.renderer = [what, 0.5 * (what === "baking the island" ? 1 : 0) + (0.5 * d) / n]; say(); } });
+  const live = await createLive({ seed, canvas, onProgress: (d, n, what) => { steps.renderer = [what, 0.5 * (what === "drawing the sprites" ? 1 : 0) + (0.5 * d) / n]; say(); } });
   const sim = await simP;
   if (sim?.brain === "relay") { document.title = "Nomads: live, thinking with Jev"; hint.textContent += " · thinking with Jev"; }
   // ?hour= pins the hour the island is drawn at, its light and sun, while the sim runs on; ?speed= starts it faster
@@ -260,12 +260,12 @@ async function main() {
   const tipEl = document.getElementById("tip");
   const when = (t) => { const h = ((t % 288) / 288) * 24; return `DAY ${Math.floor(t / 288) + 1} ${String(Math.floor(h)).padStart(2, "0")}:${String(Math.floor((h % 1) * 60)).padStart(2, "0")}`; };
   let tipAt = 0, tipKey = "";
-  function tip(sx, sy) {
+  async function tip(sx, sy) {
     let lines = null;
     const pin = live.pins().find((q) => Math.abs(q.x - sx) <= 8 && Math.abs(q.y - sy) <= 10);
     if (pin) lines = [when(pin.t), pin.text];
     else {
-      const hit = live.pick(sx, sy, view);
+      const hit = await live.pick(sx, sy, view);
       if (hit?.kind === "agent") { const a = sim.w.agents.find((x) => x.id === hit.id), act = sim.activity(hit.id); if (a) lines = [a.name, a.status, ...(act ? [sim.activities[act]] : [])]; }
       else if (hit?.kind === "animal") { const a = sim.w.animals.find((x) => x.id === hit.id); if (a) lines = [a.species, words(a.state)]; }
     }
@@ -375,7 +375,7 @@ async function main() {
     clockEl.hidden = false;
   }
 
-  // ---------- what draws the frames: WebGL2 on the GPU, and which, or the CPU and why, always in the corner ----------
+  // ---------- what draws the frames: WebGPU, and on which GPU, always in the corner ----------
   // a renderer's name in the 5x7 font: the device out of ANGLE's "(vendor, device, driver)", no trademarks
   const gpuName = (s) => {
     if (/swiftshader|llvmpipe|softpipe|software|basic render/i.test(s)) return "SOFTWARE, NO GPU: SLOW";
@@ -385,7 +385,7 @@ async function main() {
   let renderKey = "";
   function paintRender() {
     const r = live.renderer();
-    const key = r.gpu ? `WEBGL2 ON - ${gpuName(r.name) || "GPU"}` : r.cause === "none" ? "NO WEBGL2 - CPU DRAWS, NO TURNING" : r.cause === "lost" ? "WEBGL2 LOST - CPU DRAWS" : "WEBGL2 FAILED - CPU DRAWS";
+    const key = r.gpu ? `WEBGPU ON - ${gpuName(r.name) || "GPU"}` : "WEBGPU LOST";
     if (key === renderKey) return;
     renderKey = key;
     const B = new Buf(key.length * 6 + 7, 13), [bg, lit] = r.gpu ? [P.g1, P.g3] : [P.f0, P.f1];
@@ -393,7 +393,7 @@ async function main() {
     for (let i = 0; i < B.w; i++) { B.c[i] = lit; B.c[(B.h - 1) * B.w + i] = P.ink; }
     text(B, key, 4, 3, P.snow);
     paintBuf(renderEl, B);
-    renderEl.title = r.gpu ? `Drawn on the GPU through WebGL2: ${r.name}` : `Drawn on the CPU: ${r.why}`;
+    renderEl.title = r.gpu ? `Drawn on the GPU through WebGPU: ${r.name}` : `WebGPU stopped: ${r.why}`;
     renderEl.hidden = false;
   }
 
@@ -451,7 +451,7 @@ async function main() {
       return;
     }
     const hit = live.pick(sx, sy, view), c = { t: now, x: sx, y: sy, before: view.selected, done: false };
-    c.timer = setTimeout(() => { c.done = true; choose(hit, sx, sy); }, DBL_MS);
+    c.timer = setTimeout(async () => { c.done = true; choose(await hit, sx, sy); }, DBL_MS);
     lastClick = c;
   }
   // a second click on what is already selected lets it go
@@ -596,7 +596,7 @@ async function main() {
 
   // ?bench=zoom | orbit | turn | pan: drive the camera and record frame rate and frame cost, for the report.
   function benchRunner(kind, live, view) {
-    const secs = num("benchs", 12, 1, 600), out = { kind, samples: [] };
+    const secs = num("benchs", 12, 1, 600), out = { kind, samples: [] }, gpu = [];
     let start = 0, done = false, base = null, lastT = 0, k = 0;
     const finish = () => {
       const ms = out.samples.map((s) => s.ms).sort((a, b) => a - b), dts = out.samples.map((s) => s.dt).filter((d) => d > 0);
@@ -610,6 +610,11 @@ async function main() {
       out.reveal = metrics.revealMs;
       out.slow = [...out.samples].sort((a, b) => b.ms - a.ms).slice(0, 12).map((s) => [+s.ms.toFixed(1), s.z, s.slots, s.holes ? 1 : 0, ...(s.parts || [])]);
       out.slowGaps = [...out.samples].sort((a, b) => b.dt - a.dt).slice(0, 6).map((s) => [Math.round(s.dt), +s.ms.toFixed(1), s.z]);
+      // the render worker's frames: the GPU's own time for each (timestamps), the worker's time to record it, and the
+      // time from the page sending a frame to the GPU finishing it
+      const st = (xs) => { const v = [...xs].sort((a, b) => a - b); return v.length ? { mean: +(v.reduce((a, b) => a + b, 0) / v.length).toFixed(2), p95: +v[Math.floor(v.length * 0.95)].toFixed(2), max: +v.at(-1).toFixed(2), over16: v.filter((x) => x > 16.7).length } : null; };
+      out.worker = { frames: gpu.length, gpuMs: st(gpu.map((f) => f.gpu)), cpuMs: st(gpu.map((f) => f.cpu)), latencyMs: st(gpu.map((f) => f.latency)) };
+      out.dtMs = st(out.samples.map((s) => s.dt));
       delete out.samples;
       document.body.dataset.bench = JSON.stringify(out);
       document.body.classList.add("ready");
@@ -618,9 +623,10 @@ async function main() {
     return {
       step(now) {
         if (done) return;
-        if (!start) { start = now; base = { x: view.x, z: view.z, bearing: view.bearing }; lastT = now; }
+        if (!start) { start = now; base = { x: view.x, z: view.z, bearing: view.bearing }; lastT = now; live.frameTimes(); }
         const t = (now - start) / 1000, f = Math.min(1, t / secs);
         if (lastT !== now) out.samples.push({ dt: now - lastT, ms: live.lastMs, holes: live.lastHoles, slots: live.stats.slots, z: +view.zoom.toFixed(2), parts: live.lastParts });
+        for (const f of live.frameTimes()) gpu.push(f);
         lastT = now;
         if (kind === "zoom") camera.setZoom(live.zmax * (f < 0.5 ? f * 2 : 2 - f * 2));
         else if (kind === "orbit") view.bearing = norm8(base.bearing + 8 * f);
@@ -640,4 +646,13 @@ async function main() {
   }
 }
 
-main().catch(fail);
+// The page draws with WebGPU only: where the browser offers none, a plain notice says so and nothing else runs.
+if (hasWebGPU()) main().catch(fail);
+else {
+  const note = document.createElement("p");
+  note.textContent = "This page draws the island with WebGPU, which this browser does not offer. Open it in Chrome or Edge 113 or later, or Safari 26.";
+  Object.assign(note.style, { position: "fixed", inset: "0", margin: "auto", height: "fit-content", maxWidth: "36em", padding: "1em", font: "15px/1.5 ui-monospace, Menlo, Consolas, monospace", color: "#eef2f6", textAlign: "center" });
+  canvas.hidden = true; hint.hidden = true;
+  document.body.append(note);
+  document.body.classList.add("failed", "nogpu");
+}

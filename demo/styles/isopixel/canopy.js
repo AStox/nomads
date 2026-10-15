@@ -1,4 +1,4 @@
-// The trees' crowns on the ground, as the GPU's ambient occlusion reads them (gpu.js uCan). Cover is kept in cells of STEP
+// The trees' crowns on the ground, as the GPU's ambient occlusion reads them (webgpu.js can0, can3). Cover is kept in cells of STEP
 // meters over the island: every tree lays the disc its crown covers, full in the middle and fading out at the rim, and
 // the cells add them up, so a point under one crown reads about 1 and one deep in a forest more. A felled, grown or
 // planted tree takes its disc off and puts it back at its new size, so the cover follows the sim. Only the cells a change

@@ -15,10 +15,7 @@ const pickW = (ws) => { const tot = ws.reduce((a, [, w]) => a + w, 0); let r = r
 // ---------- in-page probe ----------
 function probe() {
   const { live } = play, D = live.debug, mod8 = (b) => ((Math.round(b) % 8) + 8) % 8;
-  if (!D) throw new Error("needs ?check=1");
-  // ?check=1 ships per-pixel debug arrays with every chunk, outside the cache budget; this test never reads them
-  for (const wk of live.pool) { const f = wk.onmessage; wk.onmessage = (e) => { if (e.data && e.data.dbg) e.data.dbg = null; f(e); }; }
-  for (const ch of live.cache.values()) ch.dbg = null;
+  if (!D) throw new Error("live.debug is missing");
   const P = (window.__probe = { cur: [0, 0], task: null, inv: { frames: 0, nan: 0, bounds: 0, bearing: 0, zoom: 0, first: null }, frameErr: null });
   addEventListener("pointermove", (e) => { P.cur = [e.clientX, e.clientY]; }, true);
   addEventListener("pointerdown", (e) => { P.cur = [e.clientX, e.clientY]; }, true);
