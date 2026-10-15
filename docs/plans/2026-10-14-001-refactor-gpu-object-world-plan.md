@@ -554,10 +554,12 @@ Each unit lands one kind of object with its laws, a single-step oracle per kerne
 **Dependencies:** Units 4, 13; gated on a measured main-thread long-task figure after Unit 14
 
 **Files:**
-- Modify: `demo/styles/play/main.js`, `demo/styles/play/sim.js`, `demo/styles/isopixel/worker.js`
+- Modify: `demo/styles/play/main.js`, `demo/styles/play/sim.js`, `demo/styles/isopixel/worker.js`, `demo/styles/isopixel/live.js`, `demo/sim.ts`, `src/gpu/device.ts` (`useGpu`, the process's device from one its host opened)
+- Create: `demo/styles/play/remote.js` (the page's side of the sim: state posted after each tick, the selection, things window and history on request)
 
 **Test scenarios:**
 - Integration: UI panels keep updating from posted snapshots while the worker ticks and draws.
+- Measured (seed 1, default warm, 1600x1000, 12 s each, AMD RDNA-1, the machine at load 8 to 10 from other jobs): one device per page (the worker's one requestDevice; the page loads no sim); no page-thread long task in any of the four benches, longest page gaps zoom 100, orbit 117, turn 100, pan 100 ms against 783, 833 and 867 ms with the sim on the page (`bench-webgpu.json`, whose zoom run stalled). GPU frame mean / p95 / max ms: zoom 7.80 / 13.57 / 21.21, orbit 6.59 / 8.67 / 15.55, turn 7.92 / 10.83 / 23.48, pan 6.69 / 12.50 / 15.61, against orbit 7.58 / 11.68 / 16.79, turn 7.04 / 10.20 / 20.95, pan 6.41 / 8.65 / 20.17 before. Page fps 54.8 to 56.5 against 52.3 to 53.2. A slow tick now delays the worker's frames rather than the page's: frame latency mean 31 to 40 ms, max 1.4 to 1.7 s in these runs and 140 ms in a rerun of orbit whose ticks took at most 45 ms. Raw figures: `demo/styles/isopixel/reference/bench-sim-worker.json`.
 
 **Verification:** No main-thread long tasks during play.
 
