@@ -268,21 +268,29 @@ fn member(i: u32, k: u32) -> Obj {
 }
 // Every cell's clasts of a class (src/gpu/wgsl/deadwood.ts clastBody: the placing that follows the halvings, taken from
 // it as written), but those moved or taken (the class's sorted gone list); those moved, as the class's kind holds them.
-function clastSources(store, c) {
+// The renderer keeps each shown cell's members of a size some level draws in a cache (wgsl/objects.js cacheFillWGSL):
+// dmin, the least diameter in mm drawn at a pixel at the nearest level, and cm, a cell's room, the fullest cell's count
+// when every member is that big, else its expected share of them and twelve standard deviations more [design].
+function clastSources(store, c, counts) {
   const L = c.law, body = B.clastBody(L), place = body.slice(body.indexOf(`rinit(${L.seed >>> 0}u, ${L.stream >>> 0}u, k, cell);`));
   const kind = looks.code(looks.kinds, c.kind), none = looks.code(looks.species, ""), mm = CELL_M * 1000;
   const tag = tags.push(async () => null) - 1;
   tagName[tag] = c.kind;
+  const pv = Math.max(...level.map((l) => Math.max(l.pv, l.pw))), dim = 65536 / L.dimq;
+  const dmin = pv >= 1 ? Math.max(0, Math.floor((1 / pv) ** (1 / 0.55) * 1000 * 0.999) - 1) : L.hi;
+  const share = dmin <= L.lo ? 1 : Math.max(0, ((dmin / L.lo) ** -dim - (L.hi / L.lo) ** -dim) / (1 - (L.hi / L.lo) ** -dim));
+  const most = counts.reduce((a, b) => Math.max(a, b), 0);
+  const cm = share >= 1 ? most : Math.min(most, Math.ceil(most * share + 12 * Math.sqrt(most * share * (1 - share)) + 64));
   const cells = {
     name: c.kind, tag, over: { counts: { buffer: c.counts } },
     spec: {
-      cap: 1, members: "cells", flat: c.kind === "pebble", most: L.hi / 1000, binds: ["counts", "gone"],
+      cap: 1, members: "cells", flat: c.kind === "pebble", most: L.hi / 1000, binds: ["gone"], cache: { dmin, cm: Math.max(1, cm), counts },
       needs: { kind, sp: none, lo: L.lo / 1000, hi: L.hi / 1000, mossy: c.kind !== "pebble" },
       decls: `${B.FIXED}\n${B.RAND}`,
       member: `
 const CL_SEED = ${L.seed >>> 0}u;
 const CL_STREAM = ${L.stream >>> 0}u;
-fn clastGone(cell: u32, k: u32) -> bool {
+fn rawGone(cell: u32, k: u32) -> bool {
   var lo = 0u; var hi = gone[0];
   loop {
     if (lo >= hi) { return false; }
@@ -291,16 +299,20 @@ fn clastGone(cell: u32, k: u32) -> bool {
     if (c < cell || (c == cell && j < k)) { lo = m + 1u; } else { hi = m; }
   }
 }
-fn member(cell: u32, k: u32, ix: u32, iy: u32) -> Obj {
-  var o: Obj;
+// member k of a cell in square (ix, iy): its place in mm, its diameter in mm and its seed
+fn rawMember(cell: u32, k: u32, ix: u32, iy: u32) -> vec4u {
   let x0 = (cell % ${CELLS_N}u) * ${mm}u; let y0 = (cell / ${CELLS_N}u) * ${mm}u;
   var out_x: u32; var out_y: u32; var out_dia: u32; var out_seed: u32;
   {
   ${place}
   }
-  o.ok = !clastGone(cell, k);
-  o.x = f32(out_x) * 0.001 + ORIGIN_M; o.z = f32(out_y) * 0.001 + ORIGIN_M;
-  o.kind = ${kind}u; o.sp = ${none}u; o.size = f32(out_dia) * 0.001; o.seed = out_seed; o.pick = ${pickBits(tag)}; o.nst = 0u;
+  return vec4u(out_x, out_y, out_dia, out_seed);
+}
+fn rawObj(v: vec4u, cell: u32, k: u32) -> Obj {
+  var o: Obj;
+  o.ok = !rawGone(cell, k);
+  o.x = f32(v.x) * 0.001 + ORIGIN_M; o.z = f32(v.y) * 0.001 + ORIGIN_M;
+  o.kind = ${kind}u; o.sp = ${none}u; o.size = f32(v.z) * 0.001; o.seed = v.w; o.pick = ${pickBits(tag)}; o.nst = 0u;
   return o;
 }`,
     },
@@ -325,10 +337,7 @@ async function setupKinds() {
   const dw = !S.dead && deadwoodOf();
   if (dw) {
     const D = dw.drawBuffers();
-    // every cell's pebbles are left out: hundreds of thousands a cell, expanded every frame they cost the default view
-    // about 32 ms of cull (measured 2026-10-15), so only those moved are drawn until a cell's pebbles are expanded once
-    // and kept
-    S.dead = [logSource(store, D, "log", "l"), logSource(store, D, "logup", null), ...stickSources(store, D, dw), ...D.clasts.flatMap((c) => clastSources(store, c)).filter((s) => s.name !== "pebble")];
+    S.dead = [logSource(store, D, "log", "l"), logSource(store, D, "logup", null), ...stickSources(store, D, dw), ...D.clasts.flatMap((c) => clastSources(store, c, dw.counts[c.kind]))];
     added = true;
   }
   if (!added) return false;
@@ -373,20 +382,21 @@ function dropExtra(id) {
 // Object e of the flora shown in its buffer or not, and a stem's berries (nst) as the CPU last saw them; only a change
 // goes to the GPU.
 function showGrown(e, on, nst = 0) {
-  if (S.flora.isPlant(e)) {
-    const j = S.flora.slot(e), M = S.plant.cpu, h = j >> 5, b = words32(S.plant.spec.cap) + (j >> 4), sh = (j & 15) * 2;
-    const hv = on ? M[h] & ~(1 << (j & 31)) : M[h] | (1 << (j & 31)), bv = (M[b] & ~(3 << sh)) | (nst << sh);
-    if (hv !== M[h]) { M[h] = hv; device.queue.writeBuffer(S.plant.marks, h * 4, M.subarray(h, h + 1)); S.dirty = true; }
-    if (bv !== M[b]) { M[b] = bv; device.queue.writeBuffer(S.plant.marks, b * 4, M.subarray(b, b + 1)); }
-    // a hidden slot's generation, so the stem a later birth puts in it (store.ts) is not hidden with it
-    if (on) S.hiddenSlots.delete(j);
-    else if (!S.hiddenSlots.has(j)) { S.hiddenSlots.set(j, -1); slotWord(S.plant.body, j).then((w) => { if (S.hiddenSlots.get(j) === -1) S.hiddenSlots.set(j, w >>> 1); }); }
-    return;
-  }
+  if (S.flora.isPlant(e)) return showSlot(S.flora.slot(e), on, nst);
   if (on !== S.hidden.has(e)) return;
   if (on) S.hidden.delete(e); else S.hidden.add(e);
   const s = staticSlot(e);
   if (s >= 0) device.queue.writeBuffer(S.statics.body, s * 4, Uint32Array.of(on ? 1 : 0));
+}
+// Plant slot j shown in its buffer or not, with its berries.
+function showSlot(j, on, nst = 0) {
+  const M = S.plant.cpu, h = j >> 5, b = words32(S.plant.spec.cap) + (j >> 4), sh = (j & 15) * 2;
+  const hv = on ? M[h] & ~(1 << (j & 31)) : M[h] | (1 << (j & 31)), bv = (M[b] & ~(3 << sh)) | (nst << sh);
+  if (hv !== M[h]) { M[h] = hv; device.queue.writeBuffer(S.plant.marks, h * 4, M.subarray(h, h + 1)); S.dirty = true; }
+  if (bv !== M[b]) { M[b] = bv; device.queue.writeBuffer(S.plant.marks, b * 4, M.subarray(b, b + 1)); }
+  // a hidden slot's generation, so the stem a later birth puts in it (store.ts) is not hidden with it
+  if (on) S.hiddenSlots.delete(j);
+  else if (!S.hiddenSlots.has(j)) { S.hiddenSlots.set(j, -1); slotWord(S.plant.body, j).then((w) => { if (S.hiddenSlots.get(j) === -1) S.hiddenSlots.set(j, w >>> 1); }); }
 }
 // The hidden plant slots born again since they were hidden (their generation moved on): shown, berries unknown. Run
 // after each day's step, when the stems' births land.
@@ -427,6 +437,8 @@ function place(t) {
     if (asBuffer) { showGrown(e, true, plant ? nstOf(t.n) : 0); dropExtra(t.id); return; }
     showGrown(e, false);
   }
+  // a tree or bush people raised is drawn from its record; its stem's slot (flora.ts made) is hidden
+  else if (S.flora.madeSlot(t.id) >= 0) showSlot(S.flora.madeSlot(t.id), false);
   putExtra(t);
 }
 function gone(id) {

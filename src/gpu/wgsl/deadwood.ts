@@ -256,8 +256,10 @@ fn taken(cell: u32, born: u32, k: u32) -> bool {
 }`;
 
 // Every bin's sticks still lying at the newest committed hour counted into tot[0] and each live bin's count into
-// each[slot]; with P.kill 1 only the bins of slots P.part modulo P.parts, each one with none left let go (a day's share
-// of the bins, so no day pays for all). Bindings: bins body, alloc, ring, gone, tot, each, P (cap, kill, part, parts).
+// each[slot]. With P.kill 1 instead only the bins of slots P.part modulo P.parts, one invocation each (a day's share,
+// so no day pays for all), and each of them with none left let go: a bin's sticks are read only until one is found
+// still lying, and tot and each are left as they were. Bindings: bins body, alloc, ring, gone, tot, each, P (cap, kill,
+// part, parts).
 export function binSweep(L: DeadLaw, bins: Layout, drv: DriverLayout) {
   return /* wgsl */ `
 ${FIXED}
@@ -276,10 +278,12 @@ ${drvAccess(drv)}
 ${STICK_MEMBER}
 ${FLAT}
 @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
-  let i = g.x + g.y * n.x * 64u;
+  let j = g.x + g.y * n.x * 64u;
+  let kill = P.kill == 1u;
+  let i = select(j, j * P.parts + P.part, kill);
   if (i >= P.cap) { return; }
-  each[i] = 0u;
-  if (i >= a[${CTL.tail}u] || !s_alive(i) || (P.kill == 1u && i % P.parts != P.part)) { return; }
+  if (!kill) { each[i] = 0u; }
+  if (i >= a[${CTL.tail}u] || !s_alive(i)) { return; }
   let cell = cell_of(s_x(i), s_y(i));
   let born = s_born(i);
   let l = lam(drv_sum(CH_ROT, cell, drv_hour()) - s_arot(i), KSTICK);
@@ -287,11 +291,11 @@ ${FLAT}
   var left = 0u;
   for (var k = 0u; k < s_n(i); k++) {
     let m = stick(cell, born, k);
-    if ((m.u >> 16u) < e && !taken(cell, born, k)) { left++; }
+    if ((m.u >> 16u) < e && !taken(cell, born, k)) { left++; if (kill) { break; } }
   }
+  if (kill) { if (left == 0u) { s_kill(i); } return; }
   each[i] = left;
   atomicAdd(&tot[0], left);
-  if (left == 0u && P.kill == 1u) { s_kill(i); }
 }`;
 }
 

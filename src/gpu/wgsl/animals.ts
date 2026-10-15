@@ -66,10 +66,15 @@ export const NL = 8, SATW = (TW + 1) * (TW + 1);
 export const PO_ = { rg: 0, rd: 1, dg: 2, dd: 3, dbg: 4, dbd: 5, strip: 6, water: 7, shore: 8, carr: 9, dtw: 10 } as const;
 export const NPOOL = 11;
 // The atomic buffer: asks, eaten, the fish eaten by water tile (g), carrion laid down this step (g), the census, the
-// claims by prey slot, and five runs by pack (pot J, want J, eaten J, kill tile + 1, the breeder's slot inverted).
-export const A_ = { ask: 0, eat: NPOOL * T, fish: 2 * NPOOL * T, carr: 2 * NPOOL * T + T, cen: 2 * NPOOL * T + 2 * T, claim: 2 * NPOOL * T + 2 * T + 16 } as const;
-export const PACK = { pot: 0, want: 1, eaten: 2, tile: 3, breed: 4 } as const;
-export const aWords = (cap: number) => A_.claim + cap + 5 * cap;
+// lowest-slot grown she-wolf whose pack has no grown male (her slot inverted), the claims by prey slot, and eight runs
+// by pack (pot J, want J, eaten J, kill tile + 1, the breeder's slot inverted, wolves, grown males, grown females),
+// all cleared each step; then, kept from step to step, two runs by pack: its larder, what is left of its kills (J),
+// and where it lies (tile + 1).
+export const A_ = { ask: 0, eat: NPOOL * T, fish: 2 * NPOOL * T, carr: 2 * NPOOL * T + T, cen: 2 * NPOOL * T + 2 * T, lone: 2 * NPOOL * T + 2 * T + 8, claim: 2 * NPOOL * T + 2 * T + 16 } as const;
+export const PACK = { pot: 0, want: 1, eaten: 2, tile: 3, breed: 4, n: 5, male: 6, fem: 7 } as const;
+export const PACK_RUNS = 8;
+export const larAt = (cap: number) => A_.claim + cap + PACK_RUNS * cap;
+export const aWords = (cap: number) => larAt(cap) + 2 * cap;
 // Each animal's scratch for the step: its young (first, so the store's births read them as its counts), its prey's
 // slot, the tile it acted on, up to five asks (mg) and its claim key.
 export const Q_ = { cnt: 0, tgt: 1, pick: 2, a0: 3, key: 8 } as const;
@@ -77,8 +82,9 @@ export const Q_RUNS = 9;
 // The territorial birds whose breeding the territories bound: heron, eagle, crow, a run of cap flags each.
 export const TERR_SP = [SP.heron, SP.eagle, SP.crow];
 // The constants buffer: KW words a species, then the global words, the browse class of every SPECIES index, the
-// wolves' tables by head count (a step's chance of dying, Q32; a pup's keeping, Q16), then the step's parameters.
-export const KW = 24, GK = NSP * KW, CLS = GK + 64, WTAB = CLS + 64, WTN = 1024, PO = WTAB + 2 * WTN, KP_WORDS = PO + 16;
+// wolves' tables by head count (a step's chance of dying, Q32; a pup's keeping, Q16), the deer's by day of the year
+// (DT words each: what it burns and the most it eats, Q16 of the K words), then the step's parameters.
+export const KW = 24, GK = NSP * KW, CLS = GK + 64, WTAB = CLS + 64, WTN = 1024, DTAB = WTAB + 2 * WTN, DT = 64, PO = DTAB + 2 * DT, KP_WORDS = PO + 16;
 export const K = {
   kg: 0, full: 1, fmr: 2, die: 3, capg: 4, capf: 5, half: 6, mature: 7, reach: 8, rate: 9, newe: 10, litter: 11,
   young: 12, move: 13, disp: 14, dreach: 15, chase: 16, prey: 17, terr: 18, half2: 19,
@@ -97,7 +103,10 @@ export const STREAM = { act: 0x414e0001, fate: 0x414e0002, birth: 0x414e0003, st
 
 const ACC = (cap: number) => /* wgsl */ `
 const CAP = ${cap}u; const T = ${T}u; const TW = ${TW}u; const TMM = ${TILE_MM}u; const NONE = 0xffffffffu;
-const KW = ${KW}u; const GK = ${GK}u; const CLS = ${CLS}u; const WTAB = ${WTAB}u; const PO = ${PO}u;
+const KW = ${KW}u; const GK = ${GK}u; const CLS = ${CLS}u; const WTAB = ${WTAB}u; const DTAB = ${DTAB}u; const DT = ${DT}u; const PO = ${PO}u;
+const LAR = ${larAt(cap)}u;
+// a pack's run of the atomic buffer's per-step runs (PACK)
+fn pk_at(run: u32, g: u32) -> u32 { return ${A_.claim}u + CAP * (1u + run) + g; }
 fn flat(g: vec3u, n: vec3u) -> u32 { return g.x + g.y * n.x * 256u; }
 fn tile_of(x: u32, y: u32) -> u32 { return min(y / TMM, TW - 1u) * TW + min(x / TMM, TW - 1u); }
 fn sat_add(a: u32, b: u32) -> u32 { let s = a + b; if (s < a) { return NONE; } return s; }
@@ -386,7 +395,10 @@ ${MAIN("CAP", /* wgsl */ `
   if ((b[i] & 1u) == 0u) { return; }
   let sw = b[fo(2u) + i]; let s = sw & 15u; let female = (sw >> 4u) & 1u;
   let held = b[fo(3u) + i];
-  let full = kk(s, ${K.full}u); let fmr = kk(s, ${K.fmr}u);
+  let day = pp(${P.day}u);
+  let full = kk(s, ${K.full}u); var fmr = kk(s, ${K.fmr}u);
+  // a deer burns as the season has it (its summer's rate times the day's share of it, DTAB)
+  if (s == ${SP.deer}u) { fmr = mulq(fmr, KP[DTAB + day]); }
   // what people fed it since the last step (fed counts up; fseen is how far the GPU has taken it in)
   let fed = b[fo(10u) + i];
   let more = min(fed - b[fo(11u) + i], full);
@@ -403,7 +415,12 @@ ${MAIN("CAP", /* wgsl */ `
   }
   let grp = b[fo(7u) + i];
   if (s == ${SP.wolf}u && grp > 0u && female == 1u && mature && held != 2u && (flags & ${FLAG.whelp}u) != 0u) {
-    atomicMax(&A[${A_.claim}u + CAP * ${1 + PACK.breed}u + grp - 1u], ~i);
+    atomicMax(&A[pk_at(${PACK.breed}u, grp - 1u)], ~i);
+  }
+  // each pack's wolves, and its grown males and females, for its larder, its whelping and its mate finding
+  if (s == ${SP.wolf}u && grp > 0u) {
+    atomicAdd(&A[pk_at(${PACK.n}u, grp - 1u)], 1u);
+    if (mature) { atomicAdd(&A[pk_at(select(${PACK.male}u, ${PACK.fem}u, female == 1u), grp - 1u)], 1u); }
   }
   if (held == 2u) { return; }
   let want = u32(max(0i, bitcast<i32>(full) - e));
@@ -418,7 +435,10 @@ ${MAIN("CAP", /* wgsl */ `
     // the green first, as its response to it has it; then, in what fibre the rumen has room for, the bare broadleaves'
     // twigs and then the dead (fibre: green 0.4, twigs twndf thousandths, dead 0.7)
     let half = kk(s, ${K.half}u);
-    let g1 = mulq(min(kk(s, ${K.capg}u), muldiv(want, 1000u, me)), resp(${w(W_.dgreen)}, half));
+    // the most green it eats as the season has it (its summer's most times the day's share of it, DTAB + DT); the
+    // rumen's fibre room stays as it is
+    let vfi = KP[DTAB + DT + day];
+    let g1 = mulq(min(mulq(kk(s, ${K.capg}u), vfi), muldiv(want, 1000u, me)), resp(${w(W_.dgreen)}, half));
     let fill = kk(s, ${K.capf}u); let used = g1 * 4u / 10u;
     let twme = kg(${G.twme}u); let twndf = kg(${G.twndf}u);
     var troom = 0u;
@@ -448,13 +468,18 @@ ${MAIN("CAP", /* wgsl */ `
   }
   let bx = boxof(home, kk(s, ${K.reach}u));
   if (s == ${SP.wolf}u) {
-    if (grp > 0u) { atomicAdd(&A[${A_.claim}u + CAP * ${1 + PACK.want}u + grp - 1u], want); }
+    if (grp > 0u) { atomicAdd(&A[pk_at(${PACK.want}u, grp - 1u)], want); }
     if (held != 0u) { return; }
+    // what is left of its pack's kills it eats before hunting again (the pack pass), staying by it while it lasts
+    var lard = 0u;
+    if (grp > 0u) { lard = atomicLoad(&A[LAR + grp - 1u]); }
     let wd = kk(${SP.deer}u, ${K.prey}u); let wr = kk(${SP.rabbit}u, ${K.prey}u);
     let tot = bw(${L.deer}u, wd, ${L.rabbit}u, wr, bx.x, bx.y, bx.z, bx.w);
-    if (hungry && tot > 0u) {
+    if (hungry && tot > 0u && lard < want) {
+      // searching, it kills at Messier's searching rate, its most over its half times the prey (src/sim/animals.ts
+      // KILL_MAX); the time a kill takes is its larder's and its fill's here
       let land = box(${L.land}u, bx.x, bx.y, bx.z, bx.w);
-      let rate = mulq(kk(s, ${K.rate}u), resp(tot, smul(land, kk(s, ${K.half}u))));
+      let rate = muldiv(kk(s, ${K.rate}u), tot, smul(land, kk(s, ${K.half}u)));
       let pk = pick(${L.deer}u, wd, ${L.rabbit}u, wr, bx.x, bx.y, bx.z, bx.w, unif(tot));
       ${q(Q_.pick)} = pk.x;
       let nd = wd * lay(${L.deer}u, pk.x);
@@ -463,6 +488,8 @@ ${MAIN("CAP", /* wgsl */ `
       var p = q32of(rate, kk(prey, ${K.kg}u));
       if (prey == ${SP.rabbit}u) { p = min(p, kk(s, ${K.chase}u)); }
       if (next32() < p) { claim(i, kth(pk.x, prey, k)); }
+    } else if (lard > 0u) {
+      ${q(Q_.pick)} = here;
     } else {
       ${q(Q_.pick)} = anyland(bx);
     }
@@ -573,6 +600,16 @@ ${PARTS([["resolve", "CAP", /* wgsl */ `
   let eat = min(e, want);
   b[fo(4u) + i] = bitcast<u32>(mine + bitcast<i32>(eat));
   atomicAdd(&A[${A_.carr}u + pt], (e - eat) / flesh);
+`], ["lone", "CAP", /* wgsl */ `
+  // a grown she-wolf whose pack has no grown male, past the step she could leave home in: the lowest-slot one is the
+  // one an unpaired grown male goes to (fate)
+  if ((b[i] & 1u) == 0u) { return; }
+  let sw = b[fo(2u) + i];
+  let grp = b[fo(7u) + i];
+  if ((sw & 15u) != ${SP.wolf}u || ((sw >> 4u) & 1u) == 0u || grp == 0u || b[fo(3u) + i] == 2u) { return; }
+  let age = pp(${P.tick}u) - b[fo(5u) + i];
+  if (age >= 0x80000000u || age < kk(${SP.wolf}u, ${K.mature}u) + pp(${P.tps}u)) { return; }
+  if (atomicLoad(&A[pk_at(${PACK.male}u, grp - 1u)]) == 0u) { atomicMax(&A[${A_.lone}u], ~i); }
 `], ["share", "T", /* wgsl */ `
   let t = i;
   for (var p = 0u; p < ${NPOOL}u; p++) { ${w(`${W_.share}u + p`)} = 65536u; }
@@ -599,8 +636,9 @@ ${PARTS([["resolve", "CAP", /* wgsl */ `
 }
 
 // ---------- eat (animals), then the packs ----------
-// Each forager gets its ask times its pool's share; then each wolf takes from its pack's pot its share of what the
-// pack lacks (a wolf's eat part changes nothing of it). Bindings: b, W, A, KP, Q. Dispatched as satRows set out.
+// Each forager gets its ask times its pool's share; then each wolf takes from its pack's kills, this step's and what
+// the larder keeps of earlier ones, its share of what the pack lacks (a wolf's eat part changes nothing of it).
+// Bindings: b, W, A, KP, Q. Dispatched as satRows set out.
 export function animalsEat(cap: number) {
   const q = (run: number) => `Q[${run}u * CAP + i]`;
   const sh = (p: number) => `W[(${W_.share}u + ${p}u) * T + t]`;
@@ -645,7 +683,7 @@ ${PARTS([["eat", "CAP", /* wgsl */ `
   if ((b[i] & 1u) == 0u || b[fo(3u) + i] == 2u || (b[fo(2u) + i] & 15u) != ${SP.wolf}u) { return; }
   let grp = b[fo(7u) + i];
   if (grp == 0u) { return; }
-  let pot = atomicLoad(&${pk(PACK.pot, "grp - 1u")}); let want = atomicLoad(&${pk(PACK.want, "grp - 1u")});
+  let pot = sat_add(atomicLoad(&${pk(PACK.pot, "grp - 1u")}), atomicLoad(&A[LAR + grp - 1u])); let want = atomicLoad(&${pk(PACK.want, "grp - 1u")});
   if (pot == 0u || want == 0u) { return; }
   let e = fe(i);
   let mine = u32(max(0i, bitcast<i32>(kk(${SP.wolf}u, ${K.full}u)) - e));
@@ -696,15 +734,24 @@ function settle() {
   }
 `;
 }
-// What a pack left of its kills lies where it killed.
+// What a pack has not eaten of its kills it keeps in its larder, where it killed last, and comes back to: Isle
+// Royale's wolves eat 91 to 95% of a carcass's edible parts before they leave it (R709). A pack with no wolf left
+// leaves what it kept lying as carrion. Over the pack slots, after the pack part has eaten.
 function leftover() {
   const pk = (run: number) => `A[${A_.claim}u + CAP * ${1 + run}u + i]`;
   return /* wgsl */ `
-  let pot = atomicLoad(&${pk(PACK.pot)});
-  if (pot == 0u) { return; }
-  let left = pot - atomicLoad(&${pk(PACK.eaten)});
-  let t = atomicLoad(&${pk(PACK.tile)}) - 1u;
-  atomicAdd(&A[${A_.carr}u + t], left / kg(${G.flesh}u));
+  let pot = atomicLoad(&${pk(PACK.pot)}); let kept = atomicLoad(&A[LAR + i]);
+  if (pot == 0u && kept == 0u) { return; }
+  let left = sat_sub(sat_add(pot, kept), atomicLoad(&${pk(PACK.eaten)}));
+  var t1 = atomicLoad(&A[LAR + CAP + i]);
+  let killed = atomicLoad(&${pk(PACK.tile)});
+  if (killed != 0u) { t1 = killed; }
+  if (atomicLoad(&${pk(PACK.n)}) == 0u) {
+    if (t1 != 0u) { atomicAdd(&A[${A_.carr}u + t1 - 1u], left / kg(${G.flesh}u)); }
+    atomicStore(&A[LAR + i], 0u); atomicStore(&A[LAR + CAP + i], 0u);
+    return;
+  }
+  atomicStore(&A[LAR + i], left); atomicStore(&A[LAR + CAP + i], t1);
 `;
 }
 
@@ -778,7 +825,10 @@ ${PARTS([["settle", "T", settle()], ["leftover", "CAP", leftover()], ["fate", "C
       to = vec2u(u32(max(0i, i32(hx) + i32(unif(100001u)) - 50000i)), u32(max(0i, i32(hy) + i32(unif(100001u)) - 50000i)));
       to = min(to, vec2u(TW * TMM - 1u));
     } else {
-      let t = Q[${Q_.pick}u * CAP + i];
+      // a wolf whose pack killed this step goes to the kill; the rest to where they hunted or foraged
+      var t = Q[${Q_.pick}u * CAP + i];
+      let g = b[fo(7u) + i];
+      if (s == ${SP.wolf}u && g > 0u) { let kt = atomicLoad(&A[pk_at(${PACK.tile}u, g - 1u)]); if (kt != 0u) { t = kt - 1u; } }
       if (t != NONE) { to = spot(t); }
     }
     b[fo(0u) + i] = to.x; b[fo(1u) + i] = to.y;
@@ -794,8 +844,20 @@ ${PARTS([["settle", "T", settle()], ["leftover", "CAP", leftover()], ["fate", "C
     let t = anyland(bx);
     if (t != NONE) { let h = spot(t); hx = h.x; hy = h.y; }
     if (s == ${SP.wolf}u) { b[fo(7u) + i] = i + 1u; }
+  } else if (s == ${SP.wolf}u && age < 0x80000000u && age >= mature && held != 2u) {
+    // a grown wolf of no pack founds its own; a grown male whose pack has no grown she-wolf goes to the lowest-slot
+    // she-wolf whose pack has no grown male, wherever she is, and joins her pack: packs begin when a male and a female
+    // meet and pair (R710), and on an island no wider than a pack's range the island's lone wolves meet [derived]
+    var g = b[fo(7u) + i];
+    if (g == 0u) { g = i + 1u; b[fo(7u) + i] = g; }
+    let lone = atomicLoad(&A[${A_.lone}u]);
+    if (female == 0u && lone != 0u && atomicLoad(&A[pk_at(${PACK.fem}u, g - 1u)]) == 0u) {
+      let f = ~lone;
+      b[fo(7u) + i] = b[fo(7u) + f]; hx = b[fo(8u) + f]; hy = b[fo(9u) + f];
+    }
   }
-  b[fo(8u) + i] = hx; b[fo(9u) + i] = hy;
+  // its home only when it moved, so no one reads a home its owner is writing (a male going to a she-wolf reads hers)
+  if (hx != b[fo(8u) + i] || hy != b[fo(9u) + i]) { b[fo(8u) + i] = hx; b[fo(9u) + i] = hy; }
   // the young
   if (female == 0u || age >= 0x80000000u || age < mature || held == 2u) { return; }
   let fit = muldiv(u32(max(e, 0i)), 65536u, full);
@@ -813,7 +875,8 @@ ${PARTS([["settle", "T", settle()], ["leftover", "CAP", leftover()], ["fate", "C
     }
   } else if (s == ${SP.wolf}u) {
     let grp = b[fo(7u) + i];
-    if ((flags & ${FLAG.whelp}u) != 0u && grp > 0u && atomicLoad(&A[${A_.claim}u + CAP * ${1 + PACK.breed}u + grp - 1u]) == ~i) {
+    // a pack's breeder whelps where it holds a grown male to have mated her
+    if ((flags & ${FLAG.whelp}u) != 0u && grp > 0u && atomicLoad(&A[pk_at(${PACK.breed}u, grp - 1u)]) == ~i && atomicLoad(&A[pk_at(${PACK.male}u, grp - 1u)]) != 0u) {
       var litter = kk(s, ${K.litter}u);
       if (next32() < 0x80000000u) { litter = litter + 1u; }
       n = young(litter, mulq(KP[WTAB + ${WTN}u + wolves], fit));

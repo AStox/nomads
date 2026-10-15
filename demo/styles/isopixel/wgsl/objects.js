@@ -162,40 +162,206 @@ fn spriteOf(F: Fam, f: u32, si: u32) -> u32 {
 // rows (a one-pixel speck as a point for the splat). An indexed source walks only the rows of cells under the view
 // (V.cx0..cx1, V.cy0..cy1), each row's run of the index split among the row's workgroups; any other walks its slots.
 // A source of bins walks its bins the same way, a workgroup's threads sharing each bin's members; a source of cells
-// takes a workgroup a cell of the view, which splits the cell's count into its 16 x 16 squares as the members' law
-// does (src/gpu/wgsl/deadwood.ts clastBody: halved 8 times, x then y, each a binhalf on (seed, stream + 1, cell, node))
-// and then gives every member its square by its place among them. A flat source (nothing of it casts) lists no rows.
+// takes a workgroup a cell of the view and walks the members its cache holds for the cell (CACHE_FILL_WGSL), a cell
+// the view can't reach skipped whole. A flat source (nothing of it casts) lists no rows.
+// The workgroup's threads take an object each a round and the round's sprites, specks and rows are given their places
+// together (emitRound): each thread's place among the workgroup's in workgroup memory, then one atomic a list for the
+// whole workgroup, rather than one a thread on the same three counters.
 export function cullWGSL(spec, far = false) {
-  const one = `fn cullOne(k: u32) { let o = readObj(k); if (o.ok) { cullObj(o); } }`;
+  const one = (k) => `{ let o = readObj(${k}); if (o.ok) { e = cullEval(o); } }`;
   const walk = far
-    ? `${one}
+    ? `
 @compute @workgroup_size(64)
 fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u) {
   let c = (V.cy0 + wid.y) * ${CELLS_N}u + V.cx0 + wid.x;
-  let a = fidx[c];
-  let b = a + fidx[${FAR_LVL}u + V.farL * ${CELLS}u + c];
-  for (var r = a + lid.x; r < b; r += 64u) { let k = flist[r]; if (k != NONE) { cullOne(k); } }
+  if (lid.x == 0u) { wa = fidx[c]; wb = wa + fidx[${FAR_LVL}u + V.farL * ${CELLS}u + c]; }
+  let a = workgroupUniformLoad(&wa);
+  let b = workgroupUniformLoad(&wb);
+  for (var r0 = a; r0 < b; r0 += 64u) {
+    let r = r0 + lid.x;
+    var e: Emit;
+    if (r < b) { let k = flist[r]; if (k != NONE) ${one("k")} }
+    emitRound(e, lid.x);
+  }
 }`
     : spec.members === "bins"
-    ? `@compute @workgroup_size(64)
+    ? `
+@compute @workgroup_size(64)
 fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u, @builtin(num_workgroups) nw: vec3u) {
   let cy = V.cy0 + wid.y;
-  let a = start[cy * ${CELLS_N}u + V.cx0];
-  let b = start[cy * ${CELLS_N}u + V.cx1 + 1u];
+  if (lid.x == 0u) { wa = start[cy * ${CELLS_N}u + V.cx0]; wb = start[cy * ${CELLS_N}u + V.cx1 + 1u]; }
+  let a = workgroupUniformLoad(&wa);
+  let b = workgroupUniformLoad(&wb);
   for (var r = a + wid.x; r < b; r += nw.x) {
     let i = order[r];
-    if ((body[i] & 1u) == 0u) { continue; }
     let n = memberCount(i);
-    for (var k = lid.x; k < n; k += 64u) { let o = member(i, k); if (o.ok) { cullObj(o); } }
+    if (lid.x == 0u) { wm = select(0u, n, (body[i] & 1u) == 1u); }
+    let m = workgroupUniformLoad(&wm);
+    for (var k0 = 0u; k0 < m; k0 += 64u) {
+      let k = k0 + lid.x;
+      var e: Emit;
+      if (k < m) { let o = member(i, k); if (o.ok) { e = cullEval(o); } }
+      emitRound(e, lid.x);
+    }
   }
 }`
     : spec.members === "cells"
-    ? `var<workgroup> wn: u32;
-var<workgroup> node: array<u32, 512>;
-var<workgroup> pre: array<u32, 257>;
+    ? `
+const CM: u32 = ${spec.cache.cm}u;
+// whether any of a cell's objects, reaching at most reach px, can reach into the view (cullEval's first test, for the
+// cell's corners)
+fn cellSeen(cell: u32, reach: f32) -> bool {
+  let x0 = f32(cell % ${CELLS_N}u) * ${f(CELL_M)} + ORIGIN_M;
+  let z0 = f32(cell / ${CELLS_N}u) * ${f(CELL_M)} + ORIGIN_M;
+  var lo = vec2f(1e30);
+  var hi = vec2f(-1e30);
+  for (var c = 0u; c < 4u; c++) {
+    let d = rel(x0 + f32(c & 1u) * ${f(CELL_M)}, z0 + f32(c >> 1u) * ${f(CELL_M)});
+    let s = vec2f((d.x - d.y) * V.H + V.offx, (d.x + d.y) * V.hb + V.offy);
+    lo = min(lo, s);
+    hi = max(hi, s);
+  }
+  return !(hi.x < -reach || lo.x > f32(V.aw) + reach || hi.y + V.levc * V.lp < -reach || lo.y - (V.peak - V.levc) * V.lp > f32(V.ah) + reach);
+}
 @compute @workgroup_size(64)
 fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u) {
   let cell = (V.cy0 + wid.y) * ${CELLS_N}u + V.cx0 + wid.x;
+  let most = ${f(spec.most)};
+  let hmost = select(most, pow(most, 0.55), most < 1.0) * max(V.pv, V.pw);
+  if (!cellSeen(cell, hmost * 6.0 + 8.0)) { return; }
+  if (lid.x == 0u) { wa = cslot[cell]; wb = select(min(ccntR[min(wa, arrayLength(&ccntR) - 1u)], CM), 0u, wa == NONE); }
+  let s = workgroupUniformLoad(&wa);
+  let n = workgroupUniformLoad(&wb);
+  for (var j0 = 0u; j0 < n; j0 += 64u) {
+    let j = j0 + lid.x;
+    var e: Emit;
+    if (j < n) {
+      let at = (s * CM + j) * 3u;
+      let w0 = cache[at];
+      let w1 = cache[at + 1u];
+      let x = (cell % ${CELLS_N}u) * ${CELL_M * 1000}u + (w0 & 0x1FFFFu);
+      let y = (cell / ${CELLS_N}u) * ${CELL_M * 1000}u + (w1 & 0x1FFFFu);
+      let o = rawObj(vec4u(x, y, w1 >> 17u, w0 >> 17u), cell, cache[at + 2u]);
+      if (o.ok) { e = cullEval(o); }
+    }
+    emitRound(e, lid.x);
+  }
+}`
+    : spec.indexed
+    ? `
+@compute @workgroup_size(256)
+fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u, @builtin(num_workgroups) nw: vec3u) {
+  let cy = V.cy0 + wid.y;
+  if (lid.x == 0u) { wa = start[cy * ${CELLS_N}u + V.cx0]; wb = start[cy * ${CELLS_N}u + V.cx1 + 1u]; }
+  let a = workgroupUniformLoad(&wa);
+  let b = workgroupUniformLoad(&wb);
+  for (var r0 = a + wid.x * 256u; r0 < b; r0 += nw.x * 256u) {
+    let r = r0 + lid.x;
+    var e: Emit;
+    if (r < b) ${one(spec.ordered ? "order[r]" : "r")}
+    emitRound(e, lid.x);
+  }
+}`
+    : `
+@compute @workgroup_size(256)
+fn cullMain(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_id) lid: vec3u, @builtin(num_workgroups) nw: vec3u) {
+  let k = gid.x + gid.y * nw.x * 256u;
+  var e: Emit;
+  if (k < CAP) ${one("k")}
+  emitRound(e, lid.x);
+}`;
+  const rows = !spec.flat;
+  return `
+// what an object makes: nothing (what 0), a sprite (1) with rows shadow-casting rows from the sprite's row0, or a speck (2)
+struct Emit { what: u32, it: Inst, rows: u32, row0: u32 }
+fn cullEval(o: Obj) -> Emit {
+  var e: Emit;
+  let kf = kindOf(o.kind);
+  if ((kf & ${K_DRAWN}u) == 0u) { return e; }
+  let tree = (kf & ${K_TREE}u) != 0u;
+  let hpx = hpxOf(o, kf, V.pv, V.pw);
+  if (hpx < 1.0) { return e; }
+  let d = rel(o.x, o.z);
+  // within reach whatever the ground's height: as tall and as wide as it is drawn, and its shadow
+  let reach = hpx * 2.0 + 8.0 + select(0.0, hpx * 4.0, V.casting != 0u);
+  let sx = (d.x - d.y) * V.H + V.offx;
+  let base = (d.x + d.y) * V.hb + V.offy;
+  if (sx < -reach || sx > f32(V.aw) + reach || base + V.levc * V.lp < -reach || base - (V.peak - V.levc) * V.lp > f32(V.ah) + reach) { return e; }
+  let g = gridUV(o.x, o.z);
+  let lev = groundLev(g.x, g.y);
+  if (lev < -1e8) { return e; }
+  let s = screen(d, lev);
+  let ax = rnd(s.x);
+  let ay = rnd(s.y);
+  if (ax < -reach || ay < -reach || ax > f32(V.aw) + reach || ay - hpx * 2.0 > f32(V.ah) + reach) { return e; }
+  let F = famOf(o, kf);
+  if (F.f == NONE) { return e; }
+  let sp = spriteOf(F, F.f + select(0u, V.shrunk, tree), sizeIdx(hpx, tree));
+  if (sp == 0u || sp == 0xFFFFFFFFu) { return e; }
+  let e0 = entries[(sp - 1u) * 2u];
+  let foot = f32(i32((e0.w >> 8u) & 255u) - 128);
+  e.it.sp = sp - 1u; e.it.x = i32(ax); e.it.y = i32(ay + foot); e.it.z = s.z + V.bias; e.it.flags = 1u | (((o.seed >> 3u) & 1u) << 4u); e.it.pick = o.pick; e.it.wx = o.x; e.it.wz = o.z;
+  // a speck of one pixel, as far levels draw most trees, is one point, not a quad
+  if (e0.y == 0x10001u) { e.what = 2u; return e; }
+  e.what = 1u;${rows ? `
+  let casts = (kf & ${K_FLAT}u) == 0u && hpx >= select(3.0, 8.0, tree);
+  if (V.casting != 0u && casts) { let e1 = entries[(sp - 1u) * 2u + 1u]; e.rows = e1.y; e.row0 = e1.x; }` : ""}
+  return e;
+}
+var<workgroup> wa: u32;
+var<workgroup> wb: u32;
+var<workgroup> wm: u32;
+var<workgroup> eN: array<atomic<u32>, 3>;
+var<workgroup> eB: array<u32, 3>;
+// A round's objects listed, every thread of the workgroup calling it together: sprites from args.ic, specks from
+// args.pic, and the rows of the sprites that found room from args.ric, as many as the lists hold.
+fn emitRound(e: Emit, l: u32) {
+  if (l == 0u) { atomicStore(&eN[0], 0u); atomicStore(&eN[1], 0u); atomicStore(&eN[2], 0u); }
+  workgroupBarrier();
+  var at = 0u;
+  if (e.what == 1u) { at = atomicAdd(&eN[0], 1u); } else if (e.what == 2u) { at = atomicAdd(&eN[1], 1u); }
+  workgroupBarrier();
+  if (l == 0u) {
+    let ns = atomicLoad(&eN[0]);
+    let np = atomicLoad(&eN[1]);
+    if (ns > 0u) { eB[0] = atomicAdd(&args.ic, ns); }
+    if (np > 0u) { eB[1] = atomicAdd(&args.pic, np); }
+  }
+  workgroupBarrier();
+  var slot = 0u;
+  if (e.what == 2u) { let ps = eB[1] + at; if (ps < V.maxinst) { inst[V.maxinst + ps] = e.it; } }
+  if (e.what == 1u) { slot = eB[0] + at; if (slot < V.maxinst) { inst[slot] = e.it; } }${rows ? `
+  let rn = select(0u, e.rows, e.what == 1u && slot < V.maxinst);
+  var rat = 0u;
+  if (rn > 0u) { rat = atomicAdd(&eN[2], rn); }
+  workgroupBarrier();
+  if (l == 0u) { let nr = atomicLoad(&eN[2]); if (nr > 0u) { eB[2] = atomicAdd(&args.ric, nr); } }
+  workgroupBarrier();
+  for (var r = 0u; r < rn; r++) { let ri = eB[2] + rat + r; if (ri < V.maxrows) { rowInst[ri] = vec2u(slot, e.row0 + r); } }` : ""}
+}
+${walk}`;
+}
+
+// ---------- the cells' caches ----------
+// A source of cells (the clasts: a count a cell, each member made by its law from its identity) keeps the members it
+// can ever draw, those of a size drawn at a pixel or more at some level (spec.cache.dmin mm and up), for the cells the
+// views have shown lately, so a frame walks a few thousand a cell rather than making the hundreds of thousands a cell
+// holds (webgpu.js cacheFrame picks the cells, fills them and lets the least lately shown go). Slot s of the cache
+// holds a cell's members (ccnt[s] of them, at most CM): each three words, the place in mm within its cell (17 bits)
+// with the low 15 bits of its seed above, the same with its diameter in mm above, and its number k in the cell. A
+// member moved or taken since its cell was filled is left out as it is culled (rawObj reads the gone list).
+// fillMain: workgroups (x) share a cell to fill (y: cfill's pairs of cell and slot after their count), the cell's count
+// split into its 16 x 16 squares as the members' law does (src/gpu/wgsl/deadwood.ts clastBody: halved 8 times, x then
+// y, each a binhalf on (seed, stream + 1, cell, node)), every member given its square by its place among them.
+export function cacheFillWGSL(spec) {
+  return `
+var<workgroup> wn: u32;
+var<workgroup> node: array<u32, 512>;
+var<workgroup> pre: array<u32, 257>;
+@compute @workgroup_size(64)
+fn fillMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u, @builtin(num_workgroups) nw: vec3u) {
+  let cell = cfill[1u + 2u * wid.y];
+  let slot = cfill[2u + 2u * wid.y];
   if (lid.x == 0u) { wn = counts[cell]; node[1] = wn; }
   let n = workgroupUniformLoad(&wn);
   if (n == 0u) { return; }
@@ -213,7 +379,7 @@ fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid
   }
   if (lid.x == 0u) { var s = 0u; for (var j = 0u; j < 256u; j++) { pre[j] = s; s += node[256u + j]; } pre[256] = s; }
   workgroupBarrier();
-  for (var k = lid.x; k < n; k += 64u) {
+  for (var k = wid.x * 64u + lid.x; k < n; k += nw.x * 64u) {
     var lo = 0u;
     var hi = 255u;
     while (lo < hi) { let mid = (lo + hi + 1u) >> 1u; if (pre[mid] <= k) { lo = mid; } else { hi = mid - 1u; } }
@@ -224,70 +390,16 @@ fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid
       let bit = (lo >> (7u - l)) & 1u;
       if ((l & 1u) == 0u) { ix = ix * 2u + bit; } else { iy = iy * 2u + bit; }
     }
-    let o = member(cell, k, ix, iy);
-    if (o.ok) { cullObj(o); }
+    let v = rawMember(cell, k, ix, iy);
+    if (v.z < ${spec.cache.dmin}u || rawGone(cell, k)) { continue; }
+    let j = atomicAdd(&ccnt[slot], 1u);
+    if (j >= ${spec.cache.cm}u) { continue; }
+    let at = (slot * ${spec.cache.cm}u + j) * 3u;
+    cache[at] = (v.x - (cell % ${CELLS_N}u) * ${CELL_M * 1000}u) | ((v.w & 0x7FFFu) << 17u);
+    cache[at + 1u] = (v.y - (cell / ${CELLS_N}u) * ${CELL_M * 1000}u) | (v.z << 17u);
+    cache[at + 2u] = k;
   }
-}`
-    : spec.indexed
-    ? `${one}
-@compute @workgroup_size(256)
-fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u, @builtin(num_workgroups) nw: vec3u) {
-  let cy = V.cy0 + wid.y;
-  let a = start[cy * ${CELLS_N}u + V.cx0];
-  let b = start[cy * ${CELLS_N}u + V.cx1 + 1u];
-  for (var r = a + wid.x * 256u + lid.x; r < b; r += nw.x * 256u) { cullOne(${spec.ordered ? "order[r]" : "r"}); }
-}`
-    : `${one}
-@compute @workgroup_size(256)
-fn cullMain(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw: vec3u) {
-  let k = gid.x + gid.y * nw.x * 256u;
-  if (k < CAP) { cullOne(k); }
 }`;
-  return `
-fn cullObj(o: Obj) {
-  let kf = kindOf(o.kind);
-  if ((kf & ${K_DRAWN}u) == 0u) { return; }
-  let tree = (kf & ${K_TREE}u) != 0u;
-  let hpx = hpxOf(o, kf, V.pv, V.pw);
-  if (hpx < 1.0) { return; }
-  let d = rel(o.x, o.z);
-  // within reach whatever the ground's height: as tall and as wide as it is drawn, and its shadow
-  let reach = hpx * 2.0 + 8.0 + select(0.0, hpx * 4.0, V.casting != 0u);
-  let sx = (d.x - d.y) * V.H + V.offx;
-  let base = (d.x + d.y) * V.hb + V.offy;
-  if (sx < -reach || sx > f32(V.aw) + reach || base + V.levc * V.lp < -reach || base - (V.peak - V.levc) * V.lp > f32(V.ah) + reach) { return; }
-  let g = gridUV(o.x, o.z);
-  let lev = groundLev(g.x, g.y);
-  if (lev < -1e8) { return; }
-  let s = screen(d, lev);
-  let ax = rnd(s.x);
-  let ay = rnd(s.y);
-  if (ax < -reach || ay < -reach || ax > f32(V.aw) + reach || ay - hpx * 2.0 > f32(V.ah) + reach) { return; }
-  let F = famOf(o, kf);
-  if (F.f == NONE) { return; }
-  let sp = spriteOf(F, F.f + select(0u, V.shrunk, tree), sizeIdx(hpx, tree));
-  if (sp == 0u || sp == 0xFFFFFFFFu) { return; }
-  let e0 = entries[(sp - 1u) * 2u];
-  let foot = f32(i32((e0.w >> 8u) & 255u) - 128);
-  var it: Inst;
-  it.sp = sp - 1u; it.x = i32(ax); it.y = i32(ay + foot); it.z = s.z + V.bias; it.flags = 1u | (((o.seed >> 3u) & 1u) << 4u); it.pick = o.pick; it.wx = o.x; it.wz = o.z;
-  // a speck of one pixel, as far levels draw most trees, is one point, not a quad
-  if (e0.y == 0x10001u) {
-    let ps = atomicAdd(&args.pic, 1u);
-    if (ps < V.maxinst) { inst[V.maxinst + ps] = it; }
-    return;
-  }
-  let slot = atomicAdd(&args.ic, 1u);
-  if (slot >= V.maxinst) { return; }
-  inst[slot] = it;${spec.flat ? "" : `
-  let casts = (kf & ${K_FLAT}u) == 0u && hpx >= select(3.0, 8.0, tree);
-  if (V.casting == 0u || !casts) { return; }
-  let e1 = entries[(sp - 1u) * 2u + 1u];
-  if (e1.y == 0u) { return; }
-  let r0 = atomicAdd(&args.ric, e1.y);
-  for (var r = 0u; r < e1.y; r++) { if (r0 + r < V.maxrows) { rowInst[r0 + r] = vec2u(slot, e1.x + r); } }`}
-}
-${walk}`;
 }
 export const CLAMP_WGSL = `
 @compute @workgroup_size(1)

@@ -33,7 +33,7 @@ import { YEAR_DAYS, daylight, onDay, seasonAt } from "./sky";
 import { SPECIES } from "../terrain/flora";
 import { PLANT } from "../gpu/flora";
 import { ANIMAL, Animals, type AnimalDriver } from "../gpu/animals";
-import { CLS, DR, DRIVERS, FLAG, G, GK, K, KW, NSP, PO, SP, STATIC_RUNS, STREAM, T, TILE_MM, W_, WTAB, WTN } from "../gpu/wgsl/animals";
+import { CLS, DR, DRIVERS, DT, DTAB, FLAG, G, GK, K, KW, NSP, PO, SP, STATIC_RUNS, STREAM, T, TILE_MM, W_, WTAB, WTN } from "../gpu/wgsl/animals";
 import { TEXELS_SIDE } from "../gpu/wgsl/stems";
 import { next32, rinit, unif } from "../gpu/rand";
 
@@ -64,10 +64,46 @@ type Spec = { kg: number; fmr: number; full: number; die: number; reveal: number
 // Of Britain's 425,000 fox deaths a year, 100,000 on the roads and 80,000 shot (R384): the rest's share, by which the
 // deaths measured among people's foxes are taken down to an island's with neither [derived].
 const FOX_WILD = 1 - 180 / 425;
-const reserve = (kg: number, a = 0.55, b = 0.0655) => (a * b + 0.0314) * kg * FAT_KJ;
+// a: the dressed share of live mass, b: carcass fat a kg of carcass, c: gut and kidney fat a kg of live mass (the
+// seasons' mean of R303's fallow does, body-constants sec. 10).
+const reserve = (kg: number, a = 0.55, b = 0.0655, c = 0.0314) => (a * b + c) * kg * FAT_KJ;
+// A red deer's year (sec. 12). What it burns: free-living red deer hinds burned 25 MJ a day in summer by doubly
+// labelled water, 757 kJ a kg^0.75 (Haggarty et al., R711), Nagy's 25.1 MJ for its 116 kg being that summer's and not
+// a year's; its heart rate, an index of its metabolism, rose steeply from late March to 65 to 70 beats a minute in May,
+// stood at 50 to 60 through summer and autumn and fell in late November to about 40 over the winter, 30% under the
+// summer's even with food to spare (Turbill et al., R712; Arnold et al.'s 60% fall, R707): so it burns its summer's
+// rate times its heart rate over the summer's 55, read between the points below by day of the year [derived]. What it
+// eats at most: red deer offered lucerne chaff without limit ate 59 g of dry matter a kg^0.75 a day in winter against
+// 89 in summer, the forage's digestibility and the rumen's volume unchanged (Freudenberger et al., R713), and their
+// intake runs lowest in late winter and early spring, at its plateau June to October and falling in late autumn
+// (Arnold et al., R714): the most green it eats (R363's, an appetite's most) taken down to 59/89 over winter, between
+// the points below, and the rumen's fibre room, its volume on a forage diet, kept [derived]. Taken down too (the
+// rumen's room as the appetite), every deer on seed 1 was dead by the first autumn, as the appetite here already falls
+// with the burn: a deer eats what refills its reserve and pays its day. Its full reserve is the fat it goes into winter
+// with, laid down over summer and autumn (a red deer hind's kidney fat 78% more in January and February than in July,
+// R714): R303's winter carcass, gut and kidney fat (2.75% and 0.75 kg of 40.5 kg bled), not the seasons' mean
+// [derived].
+const DEER_HEART: [doy: number, bpm: number][] = [[85, 40], [135, 67.5], [166, 55], [319, 55], [335, 40]];
+const DEER_INTAKE: [doy: number, share: number][] = [[85, 59 / 89], [152, 1], [304, 1], [335, 59 / 89]];
+const DEER_SUMMER_HEART = 55;
+// A yearly curve through its points (days of the year, in order), straight between them and round the year's turn.
+function yearly(points: [number, number][], doy: number) {
+  const d = ((doy % 365.25) + 365.25) % 365.25, n = points.length;
+  for (let k = 0; k + 1 < n; k++) {
+    const [a, va] = points[k], [b, vb] = points[k + 1];
+    if (d >= a && d < b) return va + ((vb - va) * (d - a)) / (b - a);
+  }
+  const [a, va] = points[n - 1], [b, vb] = points[0], dd = d < b ? d + 365.25 : d;
+  return va + ((vb - va) * (dd - a)) / (b + 365.25 - a);
+}
+// An island day's middle as a day of the year, 20 March the 79th (sky.ts onDay) [derived].
+const doyOf = (day: number) => 79 + (day + 0.5 - YEAR_DAYS / 8) * YEARS_PACE;
+export const deerBurn = (day: number) => yearly(DEER_HEART, doyOf(day)) / DEER_SUMMER_HEART;
+export const deerIntake = (day: number) => yearly(DEER_INTAKE, doyOf(day));
 export const SPEC: Record<Herded, Spec> = {
-  // red deer, 116 kg (body-constants R304); deaths 1/12 a year [UNVERIFIED]; hinds conceive as yearlings (R365)
-  deer: { kg: 116, fmr: fmr(116), full: reserve(116), die: 1 / 12, reveal: 300, grown: 1 },
+  // red deer, 116 kg (body-constants R304), burning its summer's rate (R711; the year's, deerBurn); deaths 1/12 a year
+  // [UNVERIFIED]; hinds conceive as yearlings (R365)
+  deer: { kg: 116, fmr: 757 * 116 ** 0.75, full: reserve(116, 0.55, 0.0655, 0.0275 + 0.75 / 40.5), die: 1 / 12, reveal: 300, grown: 1 },
   // rabbits live 1 to 3 years (R369); grown at three months [UNVERIFIED]
   rabbit: { kg: 1.6, fmr: fmr(1.6), full: reserve(1.6, 0.555, 0.035), die: 1 / 2, reveal: 50, grown: 0.25 },
   // a wolf's deaths 1/5 a year [UNVERIFIED], taken down by strife among packs as they crowd (wolfSurvival); pups
@@ -146,7 +182,11 @@ const half = (kg: number) => 49 * kg ** 0.2 * 0.25;
 
 // ---------- predators (secs. 6, 11) ----------
 // Messier: kills a wolf a day at most, and the density for half of that, moose-equivalents a km2, taken on all the prey's
-// biomass, deer and rabbits alike (sec. 6).
+// biomass, deer and rabbits alike (sec. 6). His response is kills a wolf a day over whole winters, the days a pack spends
+// on a kill and full after it among them: as Holling's, its most is one over the time a kill takes and its searching
+// rate a = most / half a moose a km2. Here a pack eats its kill down from its larder and hunts only once hungry with
+// the larder short (wgsl/animals.ts), the time a kill takes being its own, so a searching wolf kills at a X [derived];
+// at the curve's average it counted that time twice and the packs, hunting only when hungry, starved.
 const KILL_MAX = 3.36 / 100, KILL_HALF = 0.46, MOOSE = 400;
 // A wolf runs down a rabbit a chase at a time, no more of them a day than coyotes kill snowshoe hares at most, 2.3
 // (O'Donoghue et al., R404) [derived: a canid on a lagomorph of a rabbit's size].
@@ -272,6 +312,9 @@ export function lawConsts(per: number, island: { landKm2: number; shoreHa: numbe
     out[WTAB + n] = q32(1 - S ** (days / 365.25));
     out[WTAB + WTN + n] = q16(Math.min(1, joined(PUP_YEAR, 1, S)));
   }
+  // the deer's year, day by day: what it burns and the most it eats, each a share of its summer's
+  if (YEAR_DAYS > DT) throw new Error("the deer's day tables hold DT days");
+  for (let d = 0; d < YEAR_DAYS; d++) { out[DTAB + d] = q16(deerBurn(d)); out[DTAB + DT + d] = q16(deerIntake(d)); }
   return out;
 }
 

@@ -204,7 +204,7 @@ export const standHeight = (sp: string, f: number) => STAND[sp][0] + (STAND[sp][
 // (Siipilehto and Mehtätalo, R653): 3.6, every stand here standing at its maximum density [design], scaled so the
 // stems' quadratic mean diameter is the stand's.
 const SHAPE = 3.6;
-const lnGamma = (z: number): number => {
+export const lnGamma = (z: number): number => {
   const g = 7, c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
   let x = c[0];
   for (let i = 1; i < g + 2; i++) x += c[i] / (z - 1 + i);

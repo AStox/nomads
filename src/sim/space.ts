@@ -21,6 +21,7 @@ import { FLORA, SPECIES, clasts } from "../terrain/flora";
 import { Flora, type Stand, type StemDriver } from "../gpu/flora";
 import { theGpu } from "../gpu/device";
 import { BOULDERS_HA, CLASTS, CLAST_DIM, Deadwood, YEAR_DAYS as DEAD_YEAR, capacities, type Piece, type PieceKind } from "../gpu/deadwood";
+import { Seedlings, type SeedDriver } from "../gpu/seedlings";
 import { CELL_MM } from "../gpu/wgsl/index";
 import { N } from "../terrain/grid";
 
@@ -32,6 +33,7 @@ type Index = {
   taken: Map<string, number>; // grown things gone from a stocked tile, and the tick they went
   flora: Flora; // what the ground grew, as its objects stand
   dead: Deadwood | null; // the deadwood and clasts, once resident
+  seeds: Seedlings | null; // the seeds and seedlings, once resident
   views: Set<string>; // pieces made Things that no one has changed
   landings: number; // the flora's landings of its stems the Things have taken up
 };
@@ -68,7 +70,7 @@ export function index(w: World): Index {
   let ix = indexes.get(w);
   if (ix) return ix;
   const flora = new Flora(groundOf(w.seed).flora);
-  ix = { at: new Map(), tiles: new Map(), live: new Set(), stocked: new Uint8Array(W * H), seen: new Int32Array(W * H), changes: new Uint32Array(W * H), taken: new Map(), flora, landings: flora.landings, dead: null, views: new Set() };
+  ix = { at: new Map(), tiles: new Map(), live: new Set(), stocked: new Uint8Array(W * H), seen: new Int32Array(W * H), changes: new Uint32Array(W * H), taken: new Map(), flora, landings: flora.landings, dead: null, seeds: null, views: new Set() };
   // every kind the ground grows has its bins from the start, so stocking a tile mid-search never adds a list to search
   for (const k of FLORA) ix.tiles.set(k, new Array(W * H));
   for (const t of w.stocked) ix.stocked[t] = 1;
@@ -93,8 +95,9 @@ export function index(w: World): Index {
 // The world's flora: what the ground grew, as its objects stand.
 export const floraOf = (w: World) => index(w).flora;
 // The world's flora takes up residence on the GPU, the first time the world runs (sim.ts tick), on the store the world
-// has (one loaded with a save) or a new one, its stems growing by the world's own ground (plants.ts stemDriver).
-export async function resident(w: World, stems: StemDriver) {
+// has (one loaded with a save) or a new one, its stems growing by the world's own ground (plants.ts stemDriver), and its
+// seeds and seedlings after them (seeds.ts seedDriver).
+export async function resident(w: World, stems: StemDriver, seeds: SeedDriver) {
   const ix = index(w), flora = ix.flora;
   if (flora.store) return;
   const s = heldStore(w) ?? storeOf(w, await theGpu()), fresh = !s.kinds.some((k) => k.name === "log");
@@ -106,9 +109,12 @@ export async function resident(w: World, stems: StemDriver) {
   // a world whose store is new (one read from its JSON alone): the pieces its Things were made of and changed are
   // touched again, so none lies twice
   if (fresh) for (const t of w.things) if (PIECE_ID.test(t.id) && !ix.views.has(t.id)) ix.dead.touch(pieceOf(t), placeOf(t));
+  ix.seeds = new Seedlings();
+  ix.seeds.attach(s, flora, seeds);
 }
-// The world's deadwood and clasts, once resident.
+// The world's deadwood and clasts, and its seeds and seedlings, once resident.
 export const deadwoodOf = (w: World) => index(w).dead;
+export const seedlingsOf = (w: World) => index(w).seeds;
 
 // ---------- pieces ----------
 const PIECE_ID = /^[slbp][0-9]/;
@@ -171,9 +177,10 @@ function materialize(w: World, ix: Index, px: number, py: number, r: number, kin
     for (const p of piecesIn(ix, k as PieceKind, x - rm, y - rm, x + rm, y + rm)) if (!ix.at.has(p.id) && Math.hypot(p.x - x, p.y - y) <= rm) viewOf(w, ix, p);
   }
 }
-// The stems as the GPU last grew them: once a landing has brought them back, the trees and bushes on every stocked tile
-// take the heights they grew to, their hit points growing as much, and those the GPU starved or crowded out go: a dead
-// tree stands on as a snag on the GPU and falls as a log (src/gpu/deadwood.ts) [gap: a snag isn't yet a Thing].
+// The stems as the GPU last grew them: once a landing has brought them back, the trees and bushes on every stocked tile,
+// and those people raised wherever they stand (makeStem), take the heights they grew to, their hit points growing as
+// much, and those the GPU starved or crowded out go: a dead tree stands on as a snag on the GPU and falls as a log
+// (src/gpu/deadwood.ts) [gap: a snag isn't yet a Thing].
 export function grownOn(w: World) {
   const ix = index(w), flora = ix.flora, start = flora.f.start;
   if (ix.landings === flora.landings) return;
@@ -194,6 +201,24 @@ export function grownOn(w: World) {
       th.size = s.size;
       ix.changes[th.y * W + th.x]++;
     }
+  for (const id of flora.madeIds()) {
+    const i = ix.at.get(id), s = flora.madeStand(id);
+    if (i === undefined) continue;
+    const th = w.things[i];
+    if (!s) { flora.unmake(id); drop(w, ix, th); continue; }
+    if (th.size === s.size) continue;
+    const hp = HP[th.kind](s.size);
+    th.hp = Math.max(1, (th.hp ?? hp) + hp - (th.maxHp ?? hp));
+    th.maxHp = hp;
+    th.size = s.size;
+    ix.changes[th.y * W + th.x]++;
+  }
+}
+// A tree or bush people raised (ecology.ts matured) stands from now on as a stem on the GPU, which grows it and may
+// starve or crowd it out as it does the ground's own (gpu/flora.ts make).
+export function makeStem(w: World, t: Thing) {
+  const s = standOf(t);
+  if (s) index(w).flora.make(t.id, s);
 }
 
 // A grown thing as its object stands: null once it is no longer something the ground grows or lays (a felled tree's
@@ -252,6 +277,7 @@ export function leave(w: World, t: Thing) {
   if (ix.dead && PIECE_ID.test(t.id)) { ix.views.delete(t.id); ix.dead.touch(pieceOf(t), null); return; }
   const e = grownNumber(ix, t.id);
   if (e) { ix.taken.set(t.id, w.t); ix.flora.change(e, null); }
+  else ix.flora.unmake(t.id);
 }
 export const thingById = (w: World, id?: string | null) => {
   if (!id) return undefined;
@@ -276,6 +302,8 @@ function changed(ix: Index, t: Thing) {
   if (ix.dead && PIECE_ID.test(t.id)) { ix.views.delete(t.id); ix.dead.touch(pieceOf(t), placeOf(t)); return; }
   const e = grownNumber(ix, t.id);
   if (e) ix.flora.change(e, standOf(t));
+  // a stem people raised that is no longer a tree or bush (felled, burned) is gone from the GPU
+  else if (t.kind !== "tree" && t.kind !== "bush") ix.flora.unmake(t.id);
 }
 // Something happened to it: it changed kind, burned, got hurt, was picked. The world keeps an eye on it from now on, while
 // it is in the world: what the world keeps an eye on is always in it (ecology.ts relies on that).

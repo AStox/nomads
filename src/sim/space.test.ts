@@ -8,6 +8,7 @@ import { around, deadwoodOf, floraOf, nearestThing, onTile, resident, setKind, s
 import { mark, removeThing } from "./physics";
 import { tick } from "./sim";
 import { stemDriver } from "./plants";
+import { seedDriver } from "./seeds";
 import { animalsOf, residentAnimals } from "./animals";
 
 afterAll(releaseGpu);
@@ -77,14 +78,14 @@ test("a world saved with its GPU objects loads with them, and one saved without 
   const json = JSON.stringify(w), bytes = await s.dump(), hash = await s.hash();
   const loaded = JSON.parse(json) as World;
   adoptStore(loaded, loadStore(await theGpu(), bytes));
-  await resident(loaded, stemDriver(loaded));
+  await resident(loaded, stemDriver(loaded), seedDriver(loaded));
   await residentAnimals(loaded);
   expect(await heldStore(loaded)!.hash()).toBe(hash);
   expect(floraOf(loaded).gone().sort((p, q) => p - q)).toEqual(gone);
   if (stick) expect(deadwoodOf(loaded)!.piece(stick.id)).toBeNull();
   // without its world.gpu (an older save, or one of another tick): the changes are read from the Things
   const bare = JSON.parse(json) as World;
-  await resident(bare, stemDriver(bare));
+  await resident(bare, stemDriver(bare), seedDriver(bare));
   expect(floraOf(bare).gone().sort((p, q) => p - q)).toEqual(gone);
   // the queued kills uploaded on both
   await s.step(w.t + 1);

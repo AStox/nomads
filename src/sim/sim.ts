@@ -17,7 +17,7 @@ import { animalsOf, attacked, herdNear, residentAnimals } from "./animals";
 import { chooseTinker, decide, describeKind, fadeBonds, grudge, nameIt, newRel, reflect, respond, rule, sample, theorize, wonder, type Felt } from "./brain";
 import { clock as traceClock, count as bump, timed, trace, waited } from "./trace";
 import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sharedStore, snubbed, spread, standing, takeShared } from "./groups";
-import { anyAround, around, deadwoodOf, floraOf, liveThings, lookFor, nearestThing, resident, shelve, thingById } from "./space";
+import { anyAround, around, deadwoodOf, floraOf, liveThings, lookFor, nearestThing, resident, seedlingsOf, shelve, thingById } from "./space";
 import { landOf, walk } from "./walk";
 import { DARK, canSee, canopyAt, heatAt, lightOn, moveRate, restRate, skyShare, workRate } from "./light";
 import { ripening } from "./cues";
@@ -29,6 +29,7 @@ import { DAMP, SOAKED, moistureOf, tinder, tinderOf } from "./wetness";
 import { PHYS, asFound, physOf, stackPhys } from "./fuel";
 import { LEAST, advance, alight, drowned, output, radiation, type Air as BedAir, type Bed } from "./combustion";
 import { envHere, stemDriver } from "./plants";
+import { seedDriver } from "./seeds";
 import { PATIENCE, nicheOf, shareAt, tooDark } from "./seedling";
 import { keepsFor } from "./spoil";
 import { STILL } from "./physics";
@@ -2268,6 +2269,7 @@ export async function retire(w: World) {
   landings.delete(w);
   floraOf(w).destroy();
   deadwoodOf(w)?.destroy();
+  seedlingsOf(w)?.destroy();
   animalsOf(w).destroy();
   heldStore(w)?.destroy();
   dropStore(w);
@@ -2283,7 +2285,7 @@ export async function tick(w: World) {
   const flora = floraOf(w);
   // each await only when there is something to wait for: an await yields to whatever promises are waiting (the
   // brain's), and where a tick yields changes a run
-  if (!flora.store) await resident(w, stemDriver(w));
+  if (!flora.store) await resident(w, stemDriver(w), seedDriver(w));
   if (!animalsOf(w).store) await residentAnimals(w);
   const gpu = heldStore(w)!, last = landings.get(w);
   if (last && !last.done) await waited("land", () => last.p);

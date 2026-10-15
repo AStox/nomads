@@ -337,13 +337,14 @@ export class Store {
     C.touched = C.stale = true;
   }
   // Children with no parent object: counts holds a u32 for each of n rows (bins of a lumped kind, requests), and the
-  // children are born in row order by the same rule as births, with parent the row's number and no parent accessors.
-  bear(child: string, counts: GPUBuffer, n: number, init: string, extra?: Extra) {
+  // children are born in row order by the same rule as births, with parent the row's number and no parent accessors;
+  // drop as for births.
+  bear(child: string, counts: GPUBuffer, n: number, init: string, extra?: Extra, drop = false) {
     const C = this.kind(child), m = this.scratch("m", n), g = this.g;
     this.encode((e) => e.copyBufferToBuffer(counts, 0, m, 0, n * 4));
     const tot = this.scan(m, n);
     this.run(birthAssign(null, C, false, init, extra), [C.body, C.alloc, counts, m, ...(extra?.bufs.map((b) => b.buf) ?? [])], cover(g, n), [n, this.t, 0, C.capacity]);
-    this.run(BIRTH_COMMIT, [C.alloc, tot], [1], [C.capacity, 0, 0, 0]);
+    this.run(BIRTH_COMMIT, [C.alloc, tot], [1], [C.capacity, drop ? 1 : 0, 0, 0]);
     C.peek.fresh = false;
     C.touched = C.stale = true;
   }

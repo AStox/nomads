@@ -18,7 +18,7 @@ import { reload, savedArray, savedNumbers } from "./store";
 import { cover, readback, storage } from "./kernel";
 import { CELLS } from "./wgsl/index";
 import {
-  A_, BIRTH_HEAD, BIRTH_INIT, FIELDS, FLAG, KP_WORDS, LIVE_LAYERS, NL, NSP, PO, Q_RUNS, SATW, T, TW, W_, W_RUNS, aWords,
+  A_, BIRTH_HEAD, BIRTH_INIT, FIELDS, FLAG, KP_WORDS, LIVE_LAYERS, NL, NSP, PO, Q_RUNS, SATW, T, TW, W_, W_RUNS, aWords, larAt,
   animalsAct, animalsBrowse, animalsCensus, animalsClaim, animalsEat, animalsFate, animalsFront, animalsSatCols, animalsSatRows,
 } from "./wgsl/animals";
 
@@ -139,7 +139,8 @@ export class Animals implements Rider {
     if (this.browse && per === 24 && this.browse.filed(t)) this.browsed(this.browse.raster(s));
     s.encode((e) => {
       e.clearBuffer(b.A, 0, A_.carr * 4);
-      e.clearBuffer(b.A, A_.cen * 4, (aWords(cap) - A_.cen) * 4);
+      // the census, the claims and the packs' runs, but not the packs' larders, which carry from step to step
+      e.clearBuffer(b.A, A_.cen * 4, (larAt(cap) - A_.cen) * 4);
       e.copyBufferToBuffer(k.start!, 0, b.I, 0, (CELLS + 1) * 4);
       e.copyBufferToBuffer(k.order!, 0, b.I, (CELLS + 1) * 4, cap * 4);
     });

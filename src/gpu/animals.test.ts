@@ -13,7 +13,7 @@ import { N } from "../terrain/grid";
 import { divw, mul64, qexp, qmul } from "./fixed";
 import { next32, rinit, unif } from "./rand";
 import {
-  A_, CLS, DR, DRIVERS, F, FLAG, G, GK, K, KW, L, NL, NONE, NPOOL, NSP, PACK, PO, PO_, P, Q_, Q_RUNS, SATW, SP, STATIC_RUNS, STREAM, T, TILE_MM, TW, W_, W_RUNS, WTAB, WTN, aWords,
+  A_, CLS, DR, DRIVERS, DT, DTAB, F, FLAG, G, GK, K, KW, L, NL, NONE, NPOOL, NSP, PACK, PO, PO_, P, Q_, Q_RUNS, SATW, SP, STATIC_RUNS, STREAM, T, TILE_MM, TW, W_, W_RUNS, WTAB, WTN, aWords, larAt,
 } from "./wgsl/animals";
 
 afterAll(releaseGpu);
@@ -39,7 +39,7 @@ function oracleStep(st: State) {
   const fe = (i: number) => i32(b[fo(F.e) + i]);
   if (pp(P.flags) & (FLAG.calve | FLAG.kits | FLAG.whelp | FLAG.cub | FLAG.heron | FLAG.eagle | FLAG.gull | FLAG.crow)) throw new Error("the oracle steps no births");
   const S = new Uint32Array(NL * SATW), Q = new Uint32Array(Q_RUNS * cap), TERR = new Uint32Array(3 * cap);
-  A.fill(0, 0, A_.carr); A.fill(0, A_.cen);
+  A.fill(0, 0, A_.carr); A.fill(0, A_.cen, larAt(cap));
   // the index, as the store builds it: live slots by cell, each cell's in slot order
   const cellOf = (s: number) => Math.min(Math.floor(b[fo(F.y) + s] / 75000), N - 1) * N + Math.min(Math.floor(b[fo(F.x) + s] / 75000), N - 1);
   const runs = new Map<number, number[]>();
@@ -156,7 +156,8 @@ function oracleStep(st: State) {
     const q = (run: number, v: number) => { Q[run * cap + i] = u(v); };
     q(Q_.tgt, NONE); q(Q_.pick, NONE); q(Q_.key, 0);
     if (!(b[i] & 1)) continue;
-    const sw = b[fo(F.sp) + i], s = sw & 15, female = (sw >> 4) & 1, held = b[fo(F.held) + i], full = kk(s, K.full), fmr = kk(s, K.fmr);
+    const sw = b[fo(F.sp) + i], s = sw & 15, female = (sw >> 4) & 1, held = b[fo(F.held) + i], full = kk(s, K.full), day = pp(P.day);
+    const fmr = s === SP.deer ? mulq(kk(s, K.fmr), KP[DTAB + day]) : kk(s, K.fmr);
     const fed = b[fo(F.fed) + i], more = Math.min(u(fed - b[fo(F.fseen) + i]), full);
     b[fo(F.fseen) + i] = fed;
     const e = i32(fe(i) + i32(more) - i32(fmr));
@@ -168,6 +169,11 @@ function oracleStep(st: State) {
       if (s === SP.crow && flags & FLAG.crow) TERR[2 * cap + i] = 1;
     }
     const grp = b[fo(F.grp) + i];
+    if (s === SP.wolf && grp > 0 && female === 1 && mature && held !== 2 && flags & FLAG.whelp) A[packAt(PACK.breed, grp - 1)] = Math.max(A[packAt(PACK.breed, grp - 1)], u(~i));
+    if (s === SP.wolf && grp > 0) {
+      A[packAt(PACK.n, grp - 1)]++;
+      if (mature) A[packAt(female === 1 ? PACK.fem : PACK.male, grp - 1)]++;
+    }
     if (held === 2) continue;
     const want = u(Math.max(0, i32(full) - e)), hungry = e + i32(fmr) < i32(full);
     rinit(pp(P.seed), STREAM.act, i, tick);
@@ -182,7 +188,7 @@ function oracleStep(st: State) {
     if (s === SP.deer) {
       const t = here;
       if (w(W_.land, t) === 0) continue;
-      const half = kk(s, K.half), g1 = mulq(Math.min(kk(s, K.capg), muldiv(want, 1000, me)), resp(w(W_.dgreen, t), half));
+      const half = kk(s, K.half), vfi = KP[DTAB + DT + day], g1 = mulq(Math.min(mulq(kk(s, K.capg), vfi), muldiv(want, 1000, me)), resp(w(W_.dgreen, t), half));
       const fill = kk(s, K.capf), used = Math.floor(u(g1 * 4) / 10), twme = kg(G.twme), twndf = kg(G.twndf);
       const troom = fill > used ? Math.floor(((fill - used) * 1000) / twndf) : 0, got = muldiv(g1, me, 1000);
       const t1 = mulq(Math.min(troom, muldiv(satSub(want, got), 1000, twme)), resp(w(W_.dtw, t), half));
@@ -207,9 +213,10 @@ function oracleStep(st: State) {
     if (s === SP.wolf) {
       if (grp > 0) A[packAt(PACK.want, grp - 1)] = u(A[packAt(PACK.want, grp - 1)] + want);
       if (held !== 0) continue;
+      const lard = grp > 0 ? A[larAt(cap) + grp - 1] : 0;
       const wd = kk(SP.deer, K.prey), wr = kk(SP.rabbit, K.prey), tot = bw(L.deer, wd, L.rabbit, wr, x0, y0, x1, y1);
-      if (hungry && tot > 0) {
-        const land = box(L.land, x0, y0, x1, y1), rate = mulq(kk(s, K.rate), resp(tot, smul(land, kk(s, K.half))));
+      if (hungry && tot > 0 && lard < want) {
+        const land = box(L.land, x0, y0, x1, y1), rate = muldiv(kk(s, K.rate), tot, smul(land, kk(s, K.half)));
         const pk = pick(L.deer, wd, L.rabbit, wr, x0, y0, x1, y1, unif(tot));
         q(Q_.pick, pk[0]);
         const nd = u(Math.imul(wd, w(W_.layer + L.deer, pk[0])));
@@ -218,7 +225,8 @@ function oracleStep(st: State) {
         let p = q32of(rate, kk(prey, K.kg));
         if (prey === SP.rabbit) p = Math.min(p, kk(s, K.chase));
         if (next32() < p) claim(kth(pk[0], prey, k));
-      } else q(Q_.pick, anyland(bx));
+      } else if (lard > 0) q(Q_.pick, here);
+      else q(Q_.pick, anyland(bx));
       continue;
     }
     if (s === SP.fox) {
@@ -288,6 +296,14 @@ function oracleStep(st: State) {
     b[fo(F.e) + i] = u(mine + i32(eat));
     A[A_.carr + pt] += Math.floor((e - eat) / flesh);
   }
+  // the lowest-slot grown she-wolf, past the step she could leave home in, whose pack has no grown male
+  for (let i = 0; i < cap; i++) {
+    const sw = b[fo(F.sp) + i], grp = b[fo(F.grp) + i];
+    if (!(b[i] & 1) || (sw & 15) !== SP.wolf || !((sw >> 4) & 1) || grp === 0 || b[fo(F.held) + i] === 2) continue;
+    const age = u(pp(P.tick) - b[fo(F.born) + i]);
+    if (age >= 0x80000000 || age < kk(SP.wolf, K.mature) + pp(P.tps)) continue;
+    if (A[packAt(PACK.male, grp - 1)] === 0) A[A_.lone] = Math.max(A[A_.lone], u(~i));
+  }
   // share
   const part = (ask: number, avail: number) => (ask <= avail ? 65536 : muldiv(avail, 65536, ask));
   const askOf = (p: number, t: number) => A[A_.ask + p * T + t];
@@ -339,17 +355,22 @@ function oracleStep(st: State) {
     if (!(b[i] & 1) || b[fo(F.held) + i] === 2 || (b[fo(F.sp) + i] & 15) !== SP.wolf) continue;
     const grp = b[fo(F.grp) + i];
     if (grp === 0) continue;
-    const pot = A[packAt(PACK.pot, grp - 1)], want = A[packAt(PACK.want, grp - 1)];
+    const pot = satAdd(A[packAt(PACK.pot, grp - 1)], A[larAt(cap) + grp - 1]), want = A[packAt(PACK.want, grp - 1)];
     if (pot === 0 || want === 0) continue;
     const e = fe(i), mine = u(Math.max(0, i32(kk(SP.wolf, K.full)) - e)), take = muldiv(Math.min(pot, want), mine, want);
     b[fo(F.e) + i] = u(e + i32(take));
     A[packAt(PACK.eaten, grp - 1)] = u(A[packAt(PACK.eaten, grp - 1)] + take);
   }
   for (let p = 0; p < cap; p++) {
-    const pot = A[packAt(PACK.pot, p)];
-    if (pot === 0) continue;
-    const t = A[packAt(PACK.tile, p)] - 1;
-    A[A_.carr + t] += Math.floor(u(pot - A[packAt(PACK.eaten, p)]) / kg(G.flesh));
+    const pot = A[packAt(PACK.pot, p)], kept = A[larAt(cap) + p];
+    if (pot === 0 && kept === 0) continue;
+    const left = satSub(satAdd(pot, kept), A[packAt(PACK.eaten, p)]), killed = A[packAt(PACK.tile, p)], t1 = killed !== 0 ? killed : A[larAt(cap) + cap + p];
+    if (A[packAt(PACK.n, p)] === 0) {
+      if (t1 !== 0) A[A_.carr + t1 - 1] += Math.floor(left / kg(G.flesh));
+      A[larAt(cap) + p] = 0; A[larAt(cap) + cap + p] = 0;
+      continue;
+    }
+    A[larAt(cap) + p] = left; A[larAt(cap) + cap + p] = t1;
   }
   // settle
   const eat = (p: number, t: number) => A[A_.eat + p * T + t];
@@ -411,7 +432,12 @@ function oracleStep(st: State) {
         if (next32() < kk(s, K.move)) { const h = spot(matching(tileOf(hx, hy), W_.prabbit)); hx = h[0]; hy = h[1]; }
         const ox = unif(100001), oy = unif(100001);
         to = [Math.min(Math.max(0, hx + ox - 50000), TW * TILE_MM - 1), Math.min(Math.max(0, hy + oy - 50000), TW * TILE_MM - 1)];
-      } else { const t = Q[Q_.pick * cap + i]; if (t !== NONE) to = spot(t); }
+      } else {
+        let t = Q[Q_.pick * cap + i];
+        const g = b[fo(F.grp) + i];
+        if (s === SP.wolf && g > 0 && A[packAt(PACK.tile, g - 1)] !== 0) t = A[packAt(PACK.tile, g - 1)] - 1;
+        if (t !== NONE) to = spot(t);
+      }
       b[fo(F.x) + i] = to[0]; b[fo(F.y) + i] = to[1];
     }
     const age = u(tick - b[fo(F.born) + i]), mature = kk(s, K.mature), tps = pp(P.tps);
@@ -419,8 +445,16 @@ function oracleStep(st: State) {
       const dr = kk(s, K.dreach), bx = dr !== 0 ? boxof(tileOf(hx, hy), dr) : [0, 0, TW - 1, TW - 1], t = anyland(bx);
       if (t !== NONE) { const h = spot(t); hx = h[0]; hy = h[1]; }
       if (s === SP.wolf) b[fo(F.grp) + i] = i + 1;
+    } else if (s === SP.wolf && age < 0x80000000 && age >= mature && held !== 2) {
+      let g = b[fo(F.grp) + i];
+      if (g === 0) { g = i + 1; b[fo(F.grp) + i] = g; }
+      const lone = A[A_.lone];
+      if (female === 0 && lone !== 0 && A[packAt(PACK.fem, g - 1)] === 0) {
+        const f = u(~lone);
+        b[fo(F.grp) + i] = b[fo(F.grp) + f]; hx = b[fo(F.hx) + f]; hy = b[fo(F.hy) + f];
+      }
     }
-    b[fo(F.hx) + i] = hx; b[fo(F.hy) + i] = hy;
+    if (hx !== b[fo(F.hx) + i] || hy !== b[fo(F.hy) + i]) { b[fo(F.hx) + i] = hx; b[fo(F.hy) + i] = hy; }
     if (female === 0 || age >= 0x80000000 || age < mature || held === 2) continue;
     // no breeding flags in the oracle's steps (checked above); a deer's rut is the only draw left
     const fit = muldiv(u(Math.max(e, 0)), 65536, full);
@@ -570,6 +604,32 @@ test("two wolves of two packs claiming one deer: one gets it, the same one every
   // the winner ate from its pack's pot and the loser didn't
   const gained = [1, 2].map((i) => reserveOf(b, cap, i) - reserveOf(hi.start.b, cap, i));
   expect(gained.filter((x) => x > 0).length).toBe(1);
+}, 600_000);
+
+test("a pack keeps what it leaves of a kill and comes back to it, and a lone male goes to the lone she-wolf: bit for bit with the oracle on both adapters", async () => {
+  // a pair sure to kill (a rate past any prey's mass), hungry, beside the island's only deer; a grown she-wolf and a
+  // grown male apart, each the only wolf of its pack, full so they don't hunt
+  const consts = (per: number) => { const c = lawConsts(per, { landKm2: 9, shoreHa: 171 }); c[SP.wolf * KW + K.rate] = NONE; return c; };
+  const animals = () => laid([[SP.deer, 1, 50, 50, 0.5, 0], [SP.wolf, 0, 49, 50, 0.2, 2], [SP.wolf, 1, 51, 50, 0.2, 2], [SP.wolf, 1, 45, 45, 1, 4], [SP.wolf, 0, 55, 55, 1, 5]]);
+  const ticks = [300, 312, 324, 336];
+  const hi = await run(await theGpu(), islet(animals(), consts), ticks), oracle = oracleRun(hi.start, hi.cap, ticks, islet(animals(), consts));
+  const low = await openGpu("low-power"), lo = await run(low, islet(animals(), consts), ticks);
+  low.device.destroy();
+  for (let k = 0; k < ticks.length; k++) {
+    expect(hi.out[k].b).toEqual(oracle[k].b);
+    expect(hi.out[k].A).toEqual(oracle[k].A);
+    expect(lo.out[k].b).toEqual(hi.out[k].b);
+    expect(lo.out[k].A).toEqual(hi.out[k].A);
+  }
+  const cap = hi.cap, larder = (k: number) => hi.out[k].A[larAt(cap) + 1];
+  // the pair killed the deer, ate their fill and kept the rest, which they eat down in the hours after
+  expect(hi.out[0].b[0] & 1).toBe(0);
+  expect(larder(0)).toBeGreaterThan(0);
+  expect(larder(1)).toBeLessThan(larder(0));
+  // the lone male joined the she-wolf's pack and took her home for his
+  const b = hi.out[0].b, f = (fd: number, i: number) => b[(fd + 1) * cap + i];
+  expect(f(F.grp, 4)).toBe(4);
+  expect([f(F.hx, 4), f(F.hy, 4)]).toEqual([f(F.hx, 3), f(F.hy, 3)]);
 }, 600_000);
 
 test("every kind together for a few hours: grazing, hunting, scavenging, fishing and the shore, bit for bit with the oracle on both adapters", async () => {

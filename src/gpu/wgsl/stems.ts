@@ -26,7 +26,7 @@
 //   relative rate, (alpha L - beta) in Q16 a day, a quarter of the mass's, and never past 2^20 [design: a grown shrub's
 //   growth is a gap]; alpha and beta each under 2^16, so the product with q / 32 stays inside an i32.
 // A stem whose mass falls to half the most it weighed (q under 2^(-1/4) of its peak: 55109 / 2^16) dies, as the
-// recruits rule has it. A tree's height follows its q through its kind's table; a bush keeps its size.
+// seedlings' rule has it (wgsl/seedlings.ts). A tree's height follows its q through its kind's table; a bush keeps its size.
 // A stem that dies keeps DIED in its crop word for the deadwood. Its year's seed (crop), in a good or mast year of its
 // kind and none in the rest: its kind's crop a stem, plus its kind's crop a Q16 of texel times the share its crown holds.
 import { CELL, N } from "../../terrain/grid";
@@ -115,7 +115,18 @@ ${common(k)}
 }`;
 }
 
-// The raster, step one: every live stem counted into its texel. Bindings: body, counts (TEXELS + 1, cleared), rows.
+// The live stems of a workgroup's 256 slots that stand in one texel one after another in slot order (the generator lays
+// a texel's stems together) form a run, counted and filed with one or two atomics rather than one a stem. Each lane
+// puts its slot's texel in tex (NONE for a dead or missing slot); a run's first lane is its head, its last its end.
+const RUNS = /* wgsl */ `
+const NONE = 0xffffffffu;
+var<workgroup> tex: array<u32, 256>;
+fn mine(i: u32) -> u32 { if (i >= C || (b[i] & 1u) == 0u) { return NONE; } return texel_of(i); }
+fn is_head(l: u32, t: u32) -> bool { return t != NONE && (l == 0u || tex[l - 1u] != t); }
+fn is_end(l: u32, t: u32) -> bool { return t != NONE && (l == 255u || tex[l + 1u] != t); }`;
+
+// The raster, step one: every live stem counted into its texel, each run adding its end's lane plus one and taking
+// away its head's (so its length, the u32 sums wrapping back). Bindings: body, counts (TEXELS + 1, cleared), rows.
 export function stemsCount(k: StemLayout) {
   return /* wgsl */ `
 @group(0) @binding(0) var<storage, read> b: array<u32>;
@@ -123,15 +134,21 @@ export function stemsCount(k: StemLayout) {
 @group(0) @binding(2) var<storage, read> rows: array<u32>;
 @group(0) @binding(3) var<storage, read> tables: array<u32>;
 ${common(k)}
-@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
-  let i = flat(g, n);
-  if (i >= C || (b[i] & 1u) == 0u) { return; }
-  atomicAdd(&count[texel_of(i)], 1u);
+${RUNS}
+@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u, @builtin(local_invocation_index) l: u32) {
+  let t = mine(flat(g, n));
+  tex[l] = t;
+  workgroupBarrier();
+  var d = 0u;
+  if (is_end(l, t)) { d = l + 1u; }
+  if (is_head(l, t)) { d -= l; }
+  if (d != 0u) { atomicAdd(&count[t], d); }
 }`;
 }
 
-// The raster, step two: every live stem filed in its texel's run (the counts scanned into starts). Bindings: body,
-// starts, cursors (TEXELS, cleared), list, tables, rows.
+// The raster, step two: every live stem filed in its texel's run (the counts scanned into starts). Each lane finds its
+// run's head by a running maximum of the heads' lanes (hd), and each run's end takes the run's places in one atomic.
+// Bindings: body, starts, cursors (TEXELS, cleared), list, tables, rows.
 export function stemsFile(k: StemLayout) {
   return /* wgsl */ `
 @group(0) @binding(0) var<storage, read> b: array<u32>;
@@ -141,11 +158,28 @@ export function stemsFile(k: StemLayout) {
 @group(0) @binding(4) var<storage, read> tables: array<u32>;
 @group(0) @binding(5) var<storage, read> rows: array<u32>;
 ${common(k)}
-@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
+${RUNS}
+var<workgroup> hd: array<u32, 256>;
+var<workgroup> base: array<u32, 256>;
+@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u, @builtin(local_invocation_index) l: u32) {
   let i = flat(g, n);
-  if (i >= C || (b[i] & 1u) == 0u) { return; }
-  let t = texel_of(i);
-  let p = start[t] + atomicAdd(&cursor[t], 1u);
+  let t = mine(i);
+  tex[l] = t;
+  workgroupBarrier();
+  hd[l] = select(0u, l, is_head(l, t));
+  for (var o = 1u; o < 256u; o <<= 1u) {
+    workgroupBarrier();
+    var v = hd[l];
+    if (l >= o) { v = max(v, hd[l - o]); }
+    workgroupBarrier();
+    hd[l] = v;
+  }
+  workgroupBarrier();
+  let h = hd[l];
+  if (is_end(l, t)) { base[h] = start[t] + atomicAdd(&cursor[t], l + 1u - h); }
+  workgroupBarrier();
+  if (t == NONE) { return; }
+  let p = base[h] + (l - h);
   let r = row_of(i);
   let s = b[FS + i];
   list[3u * p] = i;
@@ -269,18 +303,36 @@ fn grow(i: u32, s: u32, tree: bool, above: u32, crowd: u32, taller: u32) {
 }`;
 }
 
-// What the CPU keeps of every stem after a day: its height in mm while it lives, 0 once dead, two slots to a word.
-// Bindings: body, packed (ceil(cap / 2)).
-export function stemsPack(k: StemLayout) {
+// What the CPU keeps of every stem after a day: its height in mm while it lives, 0 once dead, two slots to a word. A
+// slot of the generator's stems (below laid) holds its stem only at generation 1: one born in the slot later is another
+// stem, so the generator's stays gone. Each generator's slot that goes to 0 is listed in died (its count at word 0,
+// then up to DIED_ROOM slots in no order), so the CPU needn't compare the whole island to find them; P.x is 1 for the
+// first packing, which lists none. Bindings: body, packed (ceil(cap / 2)), died (1 + DIED_ROOM), P.
+// Room for the stems a landing lists dead [design]: past it the CPU compares every stem itself.
+export const DIED_ROOM = 1 << 16;
+export function stemsPack(k: StemLayout, laid: number) {
   return /* wgsl */ `
 @group(0) @binding(0) var<storage, read> b: array<u32>;
 @group(0) @binding(1) var<storage, read_write> packed: array<u32>;
-const C = ${k.cap}u; const FS = ${k.size}u;
+@group(0) @binding(2) var<storage, read_write> died: array<atomic<u32>>;
+@group(0) @binding(3) var<uniform> P: vec4u;
+const C = ${k.cap}u; const FS = ${k.size}u; const LAID = ${laid}u;
 ${FLAT}
-fn kept(i: u32) -> u32 { if (i >= C || (b[i] & 1u) == 0u) { return 0u; } return min(b[FS + i], 0xffffu); }
+fn kept(i: u32, was: u32) -> u32 {
+  if (i >= C) { return 0u; }
+  let live = select((b[i] & 1u) == 1u, b[i] == 3u, i < LAID);
+  var v = 0u;
+  if (live) { v = min(b[FS + i], 0xffffu); }
+  if (P.x == 0u && i < LAID && was != 0u && v == 0u) {
+    let at = atomicAdd(&died[0], 1u);
+    if (at < ${DIED_ROOM}u) { atomicStore(&died[1u + at], i); }
+  }
+  return v;
+}
 @compute @workgroup_size(256) fn main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
   let w = flat(g, n);
   if (w >= (C + 1u) / 2u) { return; }
-  packed[w] = kept(2u * w) | (kept(2u * w + 1u) << 16u);
+  let was = packed[w];
+  packed[w] = kept(2u * w, was & 0xffffu) | (kept(2u * w + 1u, was >> 16u) << 16u);
 }`;
 }

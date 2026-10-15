@@ -1,5 +1,4 @@
 import { generateIsland, type Island } from "../terrain/island";
-import type { Cohort } from "./recruits";
 import type { Pools } from "./pools";
 import { lay, type Lay, type Terrain } from "../terrain/land";
 import { FLORA, SIZE, SPECIES, TILES, TILE_M, driftAt, fineGround, rockAt, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
@@ -19,7 +18,7 @@ import type { Stand } from "../gpu/flora";
 export const W = TILES;
 export const H = TILES;
 export { DAY, YEAR_DAYS }; // the sky's: ticks a day (5 minutes each) and days a year, the sun's round
-export const VERSION = 27; // 27: the deer, rabbits, wolves, foxes and birds are GPU objects (src/gpu/animals.ts), not w.herds
+export const VERSION = 28; // 28: the seeds and seedlings are GPU objects (src/gpu/seedlings.ts), not w.recruits
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -290,7 +289,6 @@ export type World = {
   paths: number[]; // walking wear per tile, 0..9
   things: Thing[]; // everything the game holds as things: the ground's own on the tiles in `stocked`, and all it has made
   stocked: number[]; // tiles whose ground has been taken over as things; elsewhere it is still as it grew (groundOf flora)
-  recruits?: Record<number, Cohort[]>; // the young plants coming on, on each tile being looked at (recruits.ts)
   fert: Record<number, number>; // what has fed the soil or drawn it down since it grew, by soil.ts cell
   agents: Agent[];
   animals: Animal[];

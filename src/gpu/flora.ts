@@ -37,10 +37,10 @@ import { FLORA, SPECIES, TILES, type Scatter } from "../terrain/flora";
 import { CELL, N, TILE_CELLS } from "../terrain/grid";
 import type { Obj } from "./mirror";
 import { cover, storage } from "./kernel";
-import { type Field, type Kind, type KindSpec, type Rider, type Store, idOf, reload, savedArray } from "./store";
+import { type Field, type Kind, type KindSpec, type Rider, type Store, idOf, reload, savedArray, slotOfId } from "./store";
 import { CELLS } from "./wgsl/index";
 import {
-  MAP, ROWS, ROW_WORDS, RW, STEMS_BUSY, STEMS_BUSY_LIST, TEXELS, TEXELS_SIDE, TEXEL_MM, type StemLayout, stemsCount, stemsFile, stemsGrow, stemsInit, stemsPack,
+  DIED_ROOM, HQ, LAID, MAP, QSTEP, ROWS, ROW_WORDS, RW, STEMS_BUSY, STEMS_BUSY_LIST, TEXELS, TEXELS_SIDE, TEXEL_MM, type StemLayout, stemsCount, stemsFile, stemsGrow, stemsInit, stemsPack,
 } from "./wgsl/stems";
 
 // An object as it stands: kind and species as indices into FLORA and SPECIES, place in game tiles, size in metres.
@@ -48,13 +48,20 @@ export type Stand = { kind: number; species: number; px: number; py: number; siz
 // A change the CPU made to an entry: how it stands now (null once gone), and the piece it was lifted into, if any (an
 // object, while its spawn waits for a slot, or its id).
 type Held = { v: Stand | null; obj: Obj | number | null };
+// A stem the CPU made, by its Thing's id: how it stood when made, its object (a spawn waiting for its slot, its id once
+// placed, or null before the flora is resident), whether a landing has brought it back since it was placed, and its
+// height in mm then (0 once the GPU killed it).
+type Made = { s: Stand; obj: Obj | number | null; seen: boolean; mm: number };
 
 // What the stems' law reads from the sim (src/sim/plants.ts stemDriver), so this module needs none of it: the tables
 // (wgsl/stems.ts: the rows buffer, mast words left 0, and the height and crown tables), when the law is due, and each
-// day's coefficients by cell and row (alpha, beta, i32, CELLS x ROWS x 2) with each row's mast this year (1 or 0).
+// day's coefficients by cell and row (alpha, beta, i32, CELLS x ROWS x 2) with each row's mast this year (1 or 0). A
+// driver may work out the next due day's coefficients ahead, a share at a tick (ahead: the day, and coef holding that
+// day's from word 0 up to hi), so they go to the GPU before the day comes and its law has less to do.
 export type StemTables = { rows: Uint32Array; tables: Uint32Array };
 export type StemDay = { coef: Int32Array; mast: readonly number[] };
-export type StemDriver = { due(t: number): boolean; tables(): StemTables; day(t: number): StemDay };
+export type StemAhead = { t: number; coef: Int32Array; hi: number };
+export type StemDriver = { due(t: number): boolean; tables(): StemTables; day(t: number): StemDay; ahead?(t: number): StemAhead | null };
 
 export const PLANT = "plant", PIECE = "piece";
 const U32 = (name: string, unit: string, scale = 1): Field => ({ name, type: "u32", unit, scale });
@@ -67,8 +74,9 @@ const PLANT_FIELDS = [
 const PIECE_FIELDS = [WHAT, U32("size", "m, binary32 bits"), SEED, U32("e", "object number")];
 // Room for pieces lifted over a long-running world [design]: 2^18 objects, 7.3 MB of body.
 const PIECES = 1 << 18;
-// The stems room beyond the generator's, for none is born yet [design].
-const SPARE = 4096;
+// The stems room beyond the generator's, for the young that stand up as stems (gpu/seedlings.ts) and the trees people
+// raise (made): 2^20 more, 38 MB of body [design]; stems born past it are not born [gap].
+const SPARE = 1 << 20;
 // A place in game tiles to millimetres: a whole number of 15 mm steps (a ten-thousandth of a 150 m tile).
 const STEP_MM = (CELL * TILE_CELLS * 1000) / 1e4;
 // Windows widen to whole blocks of this many cells, 600 m [design]: a person walking 2 m a tick brings in a row of new
@@ -95,18 +103,21 @@ export class Flora implements Rider {
   readonly name = "flora";
   store: Store | null = null;
   private readonly held = new Map<number, Held>();
+  private readonly made = new Map<string, Made>();
+  private tabs: Uint32Array | null = null; // the stems' height and crown tables, as the CPU works out a made stem's mass
   private readonly active: Uint8Array; // 1 for the FLORA kinds held as plants
   private readonly plants: Uint32Array; // the entries (k) of the trees and bushes, in slot order
   private readonly kinds = new Map<number, Uint32Array>(); // the object numbers each kind was written with, made when asked
   private watched = new Set<string>();
-  // Every stem's height in mm as the GPU held it after its last law (0 once the GPU had killed it), by slot; and the
-  // stems the GPU killed, in the order the landings found them.
-  private readonly grown: Uint16Array;
+  // Every stem's height in mm as the GPU held it after its last law (0 once the GPU had killed it), by slot (after a
+  // landing a view of the whole packed copy, the plant kind's every slot); and the stems the GPU killed, in the order
+  // the landings found them.
+  private grown: Uint16Array;
   private readonly died: number[] = [];
   // Landings that brought the stems back: anything kept of how stems stood holds until this moves.
   landings = 0;
   private driver: StemDriver | null = null;
-  private bufs: { tables: GPUBuffer; rows: GPUBuffer; coef: GPUBuffer; packed: GPUBuffer } | null = null;
+  private bufs: { tables: GPUBuffer; rows: GPUBuffer; coef: GPUBuffer; packed: GPUBuffer; died: GPUBuffer } | null = null;
   private rowWords: Uint32Array | null = null;
   private packing = false;
   private src: { count: string; file: string; grow: string; pack: string } | null = null;
@@ -186,6 +197,59 @@ export class Flora implements Rider {
     return [...out];
   }
 
+  // ---------- stems the CPU made ----------
+  // A tree or bush people raised (a seedling come up as one, ecology.ts matured) is a stem as the generator's are: a
+  // plant object the stems' law grows, crowds and starves, known to the CPU by its Thing's id rather than an entry.
+  make(id: string, s: Stand) {
+    if (!STEM[s.kind]) throw new Error(`${id} is no tree or bush to stand as a stem`);
+    if (this.made.has(id)) throw new Error(`${id} already stands as a stem`);
+    this.made.set(id, { s, obj: this.store ? this.spawnStem(s) : null, seen: false, mm: Math.round(s.size * 1000) });
+  }
+  // The plant object of a made stand: its fields, and its mass (stemsInit's: a tree's least q whose height reaches its
+  // own, a bush's as laid).
+  private spawnStem(s: Stand): Obj {
+    const f = fieldsOf(s), rows = this.rowWords!, r = rows[Math.min(s.species, MAP - 1)], t = this.tabs;
+    let q = LAID;
+    if (t && rows[MAP + r * ROW_WORDS + RW.tree] === 1) {
+      const at = (v: number) => { const j = Math.min(v >>> QSTEP, HQ - 2), lo = t[r * HQ + j], hi = t[r * HQ + j + 1]; return lo + Math.floor(((hi - lo) * Math.min(v - j * 2 ** QSTEP, 2 ** QSTEP)) / 2 ** QSTEP); };
+      let lo = 0, hi = rows[MAP + r * ROW_WORDS + RW.qmax];
+      while (lo < hi) { const mid = (lo + hi) >>> 1; if (at(mid) >= f.size) hi = mid; else lo = mid + 1; }
+      q = lo;
+    }
+    this.busy(1);
+    return this.store!.spawn(PLANT, { ...f, q, peak: q });
+  }
+  // A made stem as it stands: at the height the GPU last grew it to, null once the GPU killed it, undefined for an id
+  // that names no made stem.
+  madeStand(id: string): Stand | null | undefined {
+    const m = this.made.get(id);
+    if (!m) return undefined;
+    return m.seen && !m.mm ? null : { ...m.s, size: Math.fround(m.mm / 1000) };
+  }
+  madeIds() { return [...this.made.keys()]; }
+  // The plant slot a made stem holds, or -1 while it waits for one (the renderer hides the slot of a stem it draws
+  // from its Thing).
+  madeSlot(id: string) {
+    const o = this.made.get(id)?.obj ?? null, n = o === null ? -1 : typeof o === "number" ? o : o.id;
+    return n >= 0 ? slotOfId(n) : -1;
+  }
+  // A made stem gone from the world (felled, burned, taken): its object killed, unless the GPU killed it first.
+  unmake(id: string) {
+    const m = this.made.get(id);
+    if (!m) return;
+    this.made.delete(id);
+    if (this.store && m.obj !== null && !(m.seen && !m.mm)) this.store.kill(typeof m.obj === "number" ? m.obj : m.obj.id);
+  }
+  // A landing's heights for the made stems placed by then.
+  private sawMade() {
+    for (const m of this.made.values()) {
+      const n = m.obj === null ? -1 : typeof m.obj === "number" ? m.obj : m.obj.id;
+      if (n < 0 || (m.seen && !m.mm)) continue;
+      m.seen = true;
+      m.mm = this.grown[slotOfId(n)] ?? 0;
+    }
+  }
+
   // ---------- changing ----------
   // Object e now stands as given (null: it is gone: taken, eaten, burned, or turned into something no longer
   // growing or lying as the ground laid it). The change goes to the GPU as deltas: a stem's fields set or the stem
@@ -239,12 +303,13 @@ export class Flora implements Rider {
     this.store = store;
     this.driver = driver;
     const g = store.g, t = driver?.tables();
+    this.tabs = t ? t.tables : null;
     this.rowWords = t ? Uint32Array.from(t.rows) : new Uint32Array(MAP + ROWS * ROW_WORDS);
     this.bufs = {
       tables: storage(g, t ? t.tables : new Uint32Array(1)), rows: storage(g, this.rowWords),
-      coef: storage(g, CELLS * ROWS * 2 * 4), packed: storage(g, Math.ceil(plant.capacity / 2) * 4),
+      coef: storage(g, CELLS * ROWS * 2 * 4), packed: storage(g, Math.ceil(plant.capacity / 2) * 4), died: storage(g, (1 + DIED_ROOM) * 4),
     };
-    // the texels holding stems as laid: no stem moves or is born yet (Unit 8 births them), so no more are ever busy
+    // the texels holding stems as laid; stems born since may take others, each widening the look (busy)
     const marks = new Uint8Array(TEXELS);
     for (const k of this.plants) {
       const x = Math.round(this.f.px[k] * 1e4) * STEP_MM, y = Math.round(this.f.py[k] * 1e4) * STEP_MM;
@@ -262,12 +327,14 @@ export class Flora implements Rider {
       }
       store.write(PLANT, n, cols);
       if (driver) store.run(stemsInit(this.layout(plant)), [plant.body, this.bufs.tables, this.bufs.rows], cover(g, plant.capacity));
-      store.run(stemsPack(this.layout(plant)), [plant.body, this.bufs.packed], cover(g, Math.ceil(plant.capacity / 2)));
+      store.run(stemsPack(this.layout(plant), this.plants.length), [plant.body, this.bufs.packed, this.bufs.died], cover(g, Math.ceil(plant.capacity / 2)), [1, 0, 0, 0]);
       const changes = [...this.held].sort((a, b) => a[0] - b[0]);
       this.held.clear();
       for (const [e, h] of changes) this.change(e, h.v);
+      for (const m of this.made.values()) if (m.obj === null) m.obj = this.spawnStem(m.s);
     }
     if (driver) store.law({ name: "stems", due: (t) => driver.due(t), run: (s, t) => this.law(s, t) });
+    if (driver?.ahead) store.law({ name: "stems ahead", due: (t) => !driver.due(t), run: (_, t) => { const a = driver.ahead!(t); if (a) this.send(a.t, a.coef, a.hi); } });
     store.ride(this);
   }
   private layout(k: Kind): StemLayout {
@@ -279,7 +346,7 @@ export class Flora implements Rider {
   // same day's lists after it (src/gpu/deadwood.ts); filed now when asked before any law has run.
   raster(): { start: GPUBuffer; list: GPUBuffer } {
     const s = this.store!, k = s.kind(PLANT), g = s.g, b = this.bufs!, lay = this.layout(k);
-    const src = (this.src ??= { count: stemsCount(lay), file: stemsFile(lay), grow: stemsGrow(lay), pack: stemsPack(lay) });
+    const src = (this.src ??= { count: stemsCount(lay), file: stemsFile(lay), grow: stemsGrow(lay), pack: stemsPack(lay, this.plants.length) });
     const count = s.scratch("stemcount", TEXELS + 1), cursor = s.scratch("stemcursor", TEXELS), list = s.scratch("stemlist", 3 * k.capacity);
     if (this.filed !== s.t) {
       this.filed = s.t;
@@ -291,13 +358,29 @@ export class Flora implements Rider {
     return { start: count, list };
   }
   private filed = -1;
+  // n stems born, or about to be, that may stand in texels no stem held: the stems' law looks over that many more.
+  busy(n: number) {
+    this.busyMax = Math.min(TEXELS, this.busyMax + n);
+  }
+  // The stems' tables and rows as the GPU holds them (wgsl/stems.ts), for laws that read the stems' heights and crowns.
+  stemBuffers(): { tables: GPUBuffer; rows: GPUBuffer } {
+    return { tables: this.bufs!.tables, rows: this.bufs!.rows };
+  }
+  // The coefficients of day t on the GPU from word 0 up to upto.
+  private sent = { t: -1, upto: 0 };
+  private send(t: number, coef: Int32Array, hi: number) {
+    if (this.sent.t !== t) this.sent = { t, upto: 0 };
+    const lo = this.sent.upto;
+    if (hi > lo) this.store!.g.device.queue.writeBuffer(this.bufs!.coef, lo * 4, coef.buffer, coef.byteOffset + lo * 4, (hi - lo) * 4);
+    this.sent.upto = Math.max(lo, hi);
+  }
   // A day of the stems (wgsl/stems.ts): the crown raster filed, every stem grown, crowded or starved, its seed set, and
   // every stem's height packed for the landing to bring back.
   private law(s: Store, t: number) {
     const k = s.kind(PLANT), g = s.g, b = this.bufs!, rows = this.rowWords!, day = this.driver!.day(t);
     for (let r = 0; r < ROWS; r++) rows[MAP + r * ROW_WORDS + RW.mast] = day.mast[r] ?? 0;
     g.device.queue.writeBuffer(b.rows, 0, rows);
-    g.device.queue.writeBuffer(b.coef, 0, day.coef.buffer, day.coef.byteOffset, day.coef.byteLength);
+    this.send(t, day.coef, day.coef.length);
     this.filed = -1;
     const { start: count, list } = this.raster(), src = this.src!;
     const flags = s.scratch("stemflags", TEXELS + 1), busy = s.scratch("stembusy", TEXELS);
@@ -305,7 +388,8 @@ export class Flora implements Rider {
     s.scan(flags, TEXELS + 1);
     s.run(STEMS_BUSY_LIST, [count, flags, busy], cover(g, TEXELS));
     s.run(src.grow, [k.body, count, list, b.tables, b.rows, b.coef, flags, busy], cover(g, this.busyMax, 1));
-    s.run(src.pack, [k.body, b.packed], cover(g, Math.ceil(k.capacity / 2)));
+    s.encode((e) => e.clearBuffer(b.died, 0, 4));
+    s.run(src.pack, [k.body, b.packed, b.died], cover(g, Math.ceil(k.capacity / 2)), [0, 0, 0, 0]);
     k.stale = true;
     this.packing = true;
   }
@@ -326,29 +410,38 @@ export class Flora implements Rider {
     this.watched = keys;
   }
 
-  // ---------- riding the store: the stems packed after a law; saved, the changes, the pieces they made and the stems ----------
+  // ---------- riding the store: the stems packed after a law and the generator's stems it killed; saved, the changes, the pieces they made and the stems ----------
   private packWords() { return Math.ceil(this.store!.kind(PLANT).capacity / 2); }
-  words() { return this.packing ? this.packWords() : 0; }
+  words() { return this.packing ? this.packWords() + 1 + DIED_ROOM : 0; }
   record(out: GPUBuffer, at: number) {
     if (!this.packing) return;
-    const b = this.bufs!.packed;
-    this.store!.encode((e) => e.copyBufferToBuffer(b, 0, out, at * 4, this.packWords() * 4));
+    const b = this.bufs!, n = this.packWords();
+    this.store!.encode((e) => {
+      e.copyBufferToBuffer(b.packed, 0, out, at * 4, n * 4);
+      e.copyBufferToBuffer(b.died, 0, out, (at + n) * 4, (1 + DIED_ROOM) * 4);
+    });
   }
   land(o: Uint32Array, at: number) {
     if (!this.packing) return;
     this.packing = false;
-    this.took(new Uint16Array(o.buffer, o.byteOffset + at * 4, this.plants.length));
+    const n = this.packWords(), dead = o[at + n];
+    this.took(new Uint16Array(o.buffer, o.byteOffset + at * 4, 2 * n), dead <= DIED_ROOM ? o.subarray(at + n + 1, at + n + 1 + dead) : null);
+    this.sawMade();
   }
-  // Stems as a landing or a save brought them back: heights by slot, 0 for the dead.
-  private took(next: Uint16Array) {
-    const g = this.grown;
-    for (let j = 0; j < g.length; j++) if (g[j] && !next[j]) this.died.push(this.plants[j] + 1);
-    g.set(next);
+  // Stems as a landing or a save brought them back: heights by slot, 0 for the dead, kept as given (not copied); and
+  // the generator's stems gone to 0 since the last, by slot in any order, or null to find them by comparing.
+  private took(next: Uint16Array, died: Uint32Array | null) {
+    if (died) for (const j of Uint32Array.from(died).sort()) this.died.push(this.plants[j] + 1);
+    else for (let j = 0, g = this.grown; j < this.plants.length; j++) if (g[j] && !next[j]) this.died.push(this.plants[j] + 1);
+    this.grown = next;
     this.landings++;
   }
   buffers(): [string, GPUBuffer][] { return this.bufs ? [["packed", this.bufs.packed]] : []; }
   save() {
-    return { held: [...this.held].map(([e, h]) => [e, h.v && [h.v.kind, h.v.species, h.v.px, h.v.py, h.v.size, h.v.seed], h.obj === null ? null : typeof h.obj === "number" ? h.obj : h.obj.id]) };
+    return {
+      held: [...this.held].map(([e, h]) => [e, h.v && [h.v.kind, h.v.species, h.v.px, h.v.py, h.v.size, h.v.seed], h.obj === null ? null : typeof h.obj === "number" ? h.obj : h.obj.id]),
+      made: [...this.made].map(([id, m]) => [id, [m.s.kind, m.s.species, m.s.px, m.s.py, m.s.size, m.s.seed], m.obj === null ? null : typeof m.obj === "number" ? m.obj : m.obj.id, m.seen, m.mm]),
+    };
   }
   restore(state: unknown, data: Record<string, Uint8Array> = {}) {
     this.held.clear();
@@ -358,9 +451,17 @@ export class Flora implements Rider {
       if (id !== null && obj === null) throw new Error(`flora: object ${e}'s piece ${id} is neither in the store nor waiting in its queue`);
       this.held.set(e, { v: v && { kind: v[0], species: v[1], px: v[2], py: v[3], size: v[4], seed: v[5] }, obj });
     }
+    this.made.clear();
+    for (const row of savedArray(state, "made", this.name)) {
+      const [id, v, oid, seen, mm] = row as [string, number[], number | null, boolean, number];
+      const obj = oid === null ? null : oid >= 0 ? oid : this.store!.mirror.spawned(oid) ?? null;
+      if (oid !== null && obj === null) throw new Error(`flora: made stem ${id}'s object ${oid} is neither in the store nor waiting in its queue`);
+      this.made.set(id, { s: { kind: v[0], species: v[1], px: v[2], py: v[3], size: v[4], seed: v[5] }, obj, seen, mm });
+      this.busy(1);
+    }
     const packed = data.packed;
     reload(this.store!.g, this.bufs!.packed, packed, "flora packed stems");
-    this.took(new Uint16Array(packed.buffer.slice(packed.byteOffset, packed.byteOffset + this.plants.length * 2)));
+    this.took(new Uint16Array(packed.buffer.slice(packed.byteOffset, packed.byteOffset + (packed.byteLength & ~1))), null);
   }
   // Lets go of the buffers the flora made (the store's own go with the store).
   destroy() {

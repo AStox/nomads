@@ -9,7 +9,7 @@ import {
   DAY, H, HP, TILE_M, W, Tile, YEAR, addThing, cropOf, dayOfYear, groundOf, log, meters, rng, sea, seasonOf, tileAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
-import { anyAround, around, exists, grownOn, liveThings, onPath, put, regrow, setKind, stockedAt } from "./space";
+import { anyAround, around, exists, grownOn, liveThings, makeStem, onPath, put, regrow, seedlingsOf, setKind, stockedAt } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked, gone, perished } from "./animals";
 import { enrich, settle, soilWaterAt, wetHour } from "./soil";
@@ -28,7 +28,6 @@ import { growing, wetness } from "./wetness";
 import { GREEN_UP } from "../terrain/growth";
 import { rotPerHour } from "./spoil";
 import { bodyOf } from "./body";
-import { recruit, suckers } from "./recruits";
 
 // Seconds a tick lasts (world.ts DAY: five minutes each).
 const TICK_S = 86400 / DAY;
@@ -453,8 +452,13 @@ function plants(w: World, live: Thing[]) {
       // dies (docs/research/time-constants.md sec. 6). The sprout grows as a seedling of its kind does [gap: what the
       // roots hold makes a sprout grow far faster than a seedling].
       const sp = t.kind === "dead_bush" ? "berry" : t.species!;
-      // a felled or burned aspen sends up suckers all round from its roots as well (recruits.ts)
-      if (sp === "aspen") suckers(w, t);
+      // a felled or burned aspen sends up suckers all round from its roots as well, on the GPU (gpu/seedlings.ts), named
+      // by the stump's id
+      if (sp === "aspen") {
+        let id = 0x811c9dc5;
+        for (let k = 0; k < t.id.length; k++) id = Math.imul(id ^ t.id.charCodeAt(k), 0x01000193);
+        seedlingsOf(w)?.sucker(Math.round(t.px * TILE_M * 1000), Math.round(t.py * TILE_M * 1000), id);
+      }
       // The sprout is a new stem on the old roots, a thing of its own as a sucker is: the stem the ground laid down stays
       // gone (gpu/flora.ts: a tree or bush never comes back where it stood once gone).
       const { px, py, owner } = t;
@@ -480,8 +484,6 @@ function plants(w: World, live: Thing[]) {
   }
   // what someone gleaned from under an oak counts for nothing once the mice would have had it anyway
   if (w.t % DAY === 0) for (const t of w.things) if (t.gleaned && t.gleaned.n * lasting(w.t - t.gleaned.t) < 0.5) { delete t.gleaned; mark(w, t); }
-  // Each kind spreads as it does, and its young grow on as counts until they stand as trees or bushes (recruits.ts).
-  if (w.t % DAY === 0) recruit(w, acornCrop, (sp, px, py, h) => grownUp(w, sp, px, py, h));
   // the season's growth turning on: what grew from roots comes back from them from here
   const g = greenings.get(w) ?? { on: greening, since: -Infinity };
   if (greening && !g.on) g.since = w.t;
@@ -496,14 +498,6 @@ function plants(w: World, live: Thing[]) {
     if (t.kind === "mushroom") return Math.random() < 1 - Math.exp(-YEARS_PACE / (t.species === "chanterelle" ? 44 : FRUIT_DAYS));
     return FROM_ROOTS.has(t.kind) && g.since > went;
   });
-}
-// One of the young grown tall enough stands up at a spot, if nothing stands there: a tree of its kind as tall as it has
-// grown, or a bramble bush, each as the ground lays its own down (world.ts grown): unwatched, a bush's crop on it.
-function grownUp(w: World, sp: string, px: number, py: number, h: number) {
-  if (occupied(w, px, py)) return false;
-  const kind = sp === "berry" ? "bush" : "tree", size = Math.round(h * 100) / 100, hp = HP[kind](size);
-  mark(w, addThing(w, kind, px, py, { species: sp, size, hp, maxHp: hp, ...(kind === "bush" ? { n: cropOf({ size }) } : {}) }, false));
-  return true;
 }
 // A seedling wilted away: gone. Whoever put it in the ground or watered it sees it withered, and nothing tells them why:
 // what they make of it is their own theory (sim.ts judged), from what they saw when they planted it.
@@ -520,6 +514,8 @@ function matured(w: World, t: Thing) {
     const from = t.item;
     setKind(w, t, "tree"); t.species = t.species && t.species !== "berry" ? t.species : "oak"; t.size = 4 + Math.random() * 2; t.hp = 48; t.maxHp = 48; delete t.stage; delete t.item;
     mark(w, t);
+    // from now on a stem on the GPU, which grows it as it does the ground's own (space.ts makeStem)
+    makeStem(w, t);
     if (from && t.owner) {
       log(w, "grow", [t.owner], t, `The ${w.kinds[from]?.name ?? from} ${w.agents.find((a) => a.id === t.owner)?.name} pushed into the ground grew into a young tree.`);
       see(w, t, `grows:${from}`, `A ${w.kinds[from]?.name ?? from} in the ground can grow into a tree.`, 80);
@@ -541,6 +537,7 @@ function matured(w: World, t: Thing) {
   }
   setKind(w, t, "bush"); t.species = "berry"; t.n = 1; t.hp = BERRY_HP; t.maxHp = BERRY_HP; t.size = 0.9; delete t.stage;
   mark(w, t);
+  makeStem(w, t);
   log(w, "grow", t.owner ? [t.owner] : [], t, t.owner ? `The ${w.kinds[from]?.name ?? from} ${w.agents.find((a) => a.id === t.owner)?.name} pushed into the ground grew into a berry bush.` : "A new berry bush sprang up.");
   see(w, t, `grows:${from}`, `A ${w.kinds[from]?.name ?? from} in the ground can grow into a berry bush.`, 80);
   grewFor(w, t, "bush");

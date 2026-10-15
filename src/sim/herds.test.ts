@@ -3,6 +3,7 @@ import { H, TILE_M, Tile, W, heldStore, newWorld, tileAt } from "./world";
 import { HERDED, animalsOf, residentAnimals } from "./animals";
 import { resident } from "./space";
 import { stemDriver } from "./plants";
+import { seedDriver } from "./seeds";
 import { retire } from "./sim";
 import { YEAR_DAYS, seasonAt } from "./sky";
 import { ANIMAL } from "../gpu/animals";
@@ -25,7 +26,7 @@ const YEARS = 3;
 
 test("seed 1's animals as individuals over three island years: counted right, within their room, deer and rabbits persisting; densities against the field", async () => {
   const w = newWorld(1);
-  await resident(w, stemDriver(w));
+  await resident(w, stemDriver(w), seedDriver(w));
   await residentAnimals(w);
   const s = heldStore(w)!, host = animalsOf(w), cap = s.kind(ANIMAL).capacity;
   let land = 0;

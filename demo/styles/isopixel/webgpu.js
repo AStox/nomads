@@ -12,7 +12,8 @@
 //      draw, with its shadow-casting rows;
 //   3. world: the ground's triangles and banks, the objects' sprites and the page's live sprites go into a G-buffer of
 //      what each pixel shows (ground to paint at a world point, or a sprite's colour and its anchor), depth tested;
-//   4. mask: every shadow-casting row's swept round laid along the sun, as px.js shadowRows lists them;
+//   4. mask: every shadow-casting row's swept round laid along the sun, as px.js shadowRows lists them, on the ground
+//      the world left uncovered (only ground takes it);
 //   5. overlays (smoke, labels, icons, paths, pins) in palette indices, and the people seen through the leaves;
 //   6. shade: each pixel's ground painted (paintGround), lit by the sun map, its slope, the sprites' shadows and the
 //      ambient occlusion, its fire light and haze added, and taken through the sky's light table;
@@ -21,7 +22,7 @@
 
 import { GROUND_BINDINGS, groundWGSL } from "./ground.wgsl.js";
 import { NS, ATLAS, META_WORDS } from "./atlas.js";
-import { CELLS_N, CELL_M, CELLS, FAR_LVL, objectWGSL, sourceWGSL, cullWGSL, CLAMP_WGSL, NEEDS_WGSL, FAR_COUNT_WGSL, FAR_FILE_WGSL, FAR_SCAN_WGSL, CANOPY_WGSL, CANOPY_BYTES_WGSL, CANOPY_WIDE_WGSL, CANOPY_TALL_WGSL } from "./wgsl/objects.js";
+import { CELLS_N, CELL_M, CELLS, FAR_LVL, objectWGSL, sourceWGSL, cullWGSL, cacheFillWGSL, CLAMP_WGSL, NEEDS_WGSL, FAR_COUNT_WGSL, FAR_FILE_WGSL, FAR_SCAN_WGSL, CANOPY_WGSL, CANOPY_BYTES_WGSL, CANOPY_WIDE_WGSL, CANOPY_TALL_WGSL } from "./wgsl/objects.js";
 
 // steps of the key light in the light table, each at the fire's four levels, the palette as drawn in a last row
 export const LEVELS = 16;
@@ -149,6 +150,13 @@ const RES = {
   drv: [52, "storage", "array<u32>"],
   gone: [53, "storage", "array<u32>"],
   counts: [54, "storage", "array<u32>"],
+  // a source of cells' cache (wgsl/objects.js cacheFillWGSL): each cell's slot, each slot's count, the members, and the
+  // cells to fill this frame
+  cslot: [55, "storage", "array<u32>"],
+  ccnt: [56, "storage", "array<atomic<u32>>"],
+  ccntR: [56, "storage", "array<u32>"],
+  cache: [57, "storage", "array<u32>"],
+  cfill: [58, "storage", "array<u32>"],
 };
 const TYPES = `
 struct Inst { sp: u32, x: i32, y: i32, z: f32, flags: u32, pick: u32, wx: f32, wz: f32 }
@@ -452,7 +460,9 @@ fn splatB(@builtin(global_invocation_id) id: vec3u) {
 // A shadow-casting row's shadow: k art px above its anchor it falls k * vec off the
 // anchor's row, the whole row as the round slab it stands for, flattened 2:1 as the ground shows a circle, and swept
 // on to k + 1 so that a low sun's long shadow has no gaps. P: twice the row's centre column, the anchor's row, the
-// row's width and k, as px.js shadowRows lists them.
+// row's width and k, as px.js shadowRows lists them. Only ground takes the mask (shadeFS: kinds 0 and 3, and the sea
+// past the map), so after the world pass maskZ puts every pixel a sprite or speck covers at depth 0 and the rest at 1,
+// and the shadows, drawn at depth 0.5, are tested against it before their fragments run.
 const MASK_COMMON = `
 struct MOut { @builtin(position) pos: vec4f, @location(0) @interpolate(flat) a: vec4f, @location(1) @interpolate(flat) r: f32 }
 fn shadeQuad(P: vec4f, vid: u32) -> MOut {
@@ -466,7 +476,7 @@ fn shadeQuad(P: vec4f, vid: u32) -> MOut {
   let hi = max(A, B) + e;
   // a strip of four corners
   let p = mix(lo, hi, vec2f(f32(vid & 1u), f32(vid >> 1u)));
-  o.pos = vec4f(p.x / f32(V.aw) * 2.0 - 1.0, 1.0 - p.y / f32(V.ah) * 2.0, 0.0, 1.0);
+  o.pos = vec4f(p.x / f32(V.aw) * 2.0 - 1.0, 1.0 - p.y / f32(V.ah) * 2.0, 0.5, 1.0);
   o.a = vec4f(A, B); o.r = R;
   return o;
 }
@@ -501,6 +511,16 @@ fn maskVS(@builtin(vertex_index) vid: u32, @builtin(instance_index) ii: u32) -> 
 const MASK_LIVE_WGSL = `${MASK_COMMON}
 @vertex
 fn maskLiveVS(@builtin(vertex_index) vid: u32, @builtin(instance_index) ii: u32) -> MOut { return shadeQuad(vec4f(liveRows[ii]), vid); }`;
+const MASK_Z_WGSL = `
+@vertex
+fn fullVS(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0); }
+@fragment
+fn maskZFS(@builtin(position) pos: vec4f) -> @builtin(frag_depth) f32 {
+  let kind = textureLoad(gK, vec2i(floor(pos.xy)), 0).x & 3u;
+  return select(1.0, 0.0, kind == 1u || kind == 2u);
+}`;
+// the shadows' test against maskZ's depth: drawn where nothing stands, never written
+const MASK_TEST = { format: "depth16unorm", depthWriteEnabled: false, depthCompare: "less" };
 
 // ---------- 5. overlays ----------
 // A primitive is two vec4i, [type, x, y, a] [b, c, d, e], in the view's art px, each drawn over the last: 0 a sprite at
@@ -861,7 +881,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     label: "ground",
     entries: GROUND_BINDINGS.map((b, i) => (b.kind === "storage" ? { binding: i, visibility: stage, buffer: { type: "read-only-storage" } } : { binding: i, visibility: stage, texture: { sampleType: b.sampleType, viewDimension: b.dim ?? "2d" } })),
   });
-  function pipe({ label, binds, code, compute, vs, fs, targets, depth, blend, withGround = false, topology = "triangle-list" }) {
+  function pipe({ label, binds, code, compute, vs, fs, targets, depth, depthStencil, writeMask, blend, withGround = false, topology = "triangle-list" }) {
     const bgl = device.createBindGroupLayout({ label, entries: layoutEntries(binds, !!compute).map((e) => (e.buffer?.type === "storage" && !compute ? { ...e, visibility: GPUShaderStage.FRAGMENT } : e)) });
     const layout = device.createPipelineLayout({ bindGroupLayouts: withGround ? [bgl, groundLayout] : [bgl] });
     const src = `${STRUCTS}\n${decl(binds)}\n${COMMON}\n${binds.includes("V") ? COMMON_V : ""}\n${withGround ? GROUND : ""}\n${code}`;
@@ -873,8 +893,9 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       ? device.createComputePipelineAsync({ label, layout, compute: { module: m, entryPoint: compute } })
       : device.createRenderPipelineAsync({
         label, layout, vertex: { module: m, entryPoint: vs }, primitive: { topology, cullMode: "none" },
-        fragment: { module: m, entryPoint: fs, targets: targets.map((f) => ({ format: f, ...(blend && { blend }) })) },
+        fragment: { module: m, entryPoint: fs, targets: targets.map((f) => ({ format: f, ...(blend && { blend }), ...(writeMask !== undefined && { writeMask }) })) },
         ...(depth && { depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less-equal" } }),
+        ...(depthStencil && { depthStencil }),
       })).then((p) => { o.p = p; stats.compile[label] = Math.round(performance.now() - t0); }, (e) => errors.push(`${label}: ${e.message.slice(0, 300)}`));
     return o;
   }
@@ -895,8 +916,9 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     splatB: pipe({ label: "splatB", binds: ["V", "pts", "entries", "argsR", "keysR", "zbuf", "gKs", "gWs", "atlas"], code: SPLAT_WGSL.replace(/@compute @workgroup_size\(64\)\nfn splatA[\s\S]*?\n}\n/, ""), compute: "splatB" }),
     live: pipe({ label: "live", binds: ["V", "live", "entries", "atlas"], code: SPRITE_WGSL("live").replace(/@fragment\nfn xrayFS[\s\S]*$/, ""), vs: "spriteVS", fs: "spriteFS", targets: GT, depth: true }),
     xray: pipe({ label: "xray", binds: ["V", "live", "entries", "atlas"], code: SPRITE_WGSL("live").replace(/@fragment\nfn spriteFS[\s\S]*?\n}\n(?=@fragment)/, ""), vs: "spriteVS", fs: "xrayFS", targets: ["rg32uint"] }),
-    mask: pipe({ label: "mask", binds: ["V", "rowInst", "inst", "entries", "rows"], code: MASK_WGSL, vs: "maskVS", fs: "maskFS", targets: ["r8unorm"], topology: "triangle-strip" }),
-    maskLive: pipe({ label: "maskLive", binds: ["V", "liveRows"], code: MASK_LIVE_WGSL, vs: "maskLiveVS", fs: "maskFS", targets: ["r8unorm"], topology: "triangle-strip" }),
+    mask: pipe({ label: "mask", binds: ["V", "rowInst", "inst", "entries", "rows"], code: MASK_WGSL, vs: "maskVS", fs: "maskFS", targets: ["r8unorm"], topology: "triangle-strip", depthStencil: MASK_TEST }),
+    maskLive: pipe({ label: "maskLive", binds: ["V", "liveRows"], code: MASK_LIVE_WGSL, vs: "maskLiveVS", fs: "maskFS", targets: ["r8unorm"], topology: "triangle-strip", depthStencil: MASK_TEST }),
+    maskZ: pipe({ label: "maskZ", binds: ["gK"], code: MASK_Z_WGSL, vs: "fullVS", fs: "maskZFS", targets: ["r8unorm"], writeMask: 0, depthStencil: { format: "depth16unorm", depthWriteEnabled: true, depthCompare: "always" } }),
     over: pipe({ label: "over", binds: ["V", "prims", "entries", "atlas", "tables"], code: OVER_WGSL(FONT0, extra.map((c) => c.codePointAt(0)), [P.r4, P.snow, P.r5]), vs: "overVS", fs: "overFS", targets: ["r8uint"] }),
     shade: pipe({ label: "shade", binds: ["V", "gK", "gW", "mask", "over", "xray", "sun", "can0", "can3", "tables", "fires"], code: SHADE_WGSL(LUT0), vs: "fullVS", fs: "shadeFS", targets: ["rgba8unorm"], withGround: true }),
     sun: pipe({ label: "sun", binds: ["T", "sunOut"], code: TRACE_WGSL, compute: "sunMain", withGround: true }),
@@ -992,8 +1014,8 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     w = Math.max(w, cap?.w ?? 0); h = Math.max(h, cap?.h ?? 0);
     cap?.list.forEach((t) => t.destroy());
     const T = (format, usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING) => device.createTexture({ size: [w, h], format, usage });
-    const c = { w, h, gK: T("rg32uint", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC), gW: T("rgba32float", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING), depth: T("depth32float", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING), keys: B(w * h * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, "keys"), mask: T("r8unorm"), over: T("r8uint"), xray: T("rg32uint"), art: [T("rgba8unorm"), T("rgba8unorm")], pickBuf: null };
-    c.list = [c.gK, c.gW, c.depth, c.mask, c.over, c.xray, ...c.art];
+    const c = { w, h, gK: T("rg32uint", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC), gW: T("rgba32float", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING), depth: T("depth32float", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING), keys: B(w * h * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, "keys"), mask: T("r8unorm"), maskZ: T("depth16unorm", GPUTextureUsage.RENDER_ATTACHMENT), over: T("r8uint"), xray: T("rg32uint"), art: [T("rgba8unorm"), T("rgba8unorm")], pickBuf: null };
+    c.list = [c.gK, c.gW, c.depth, c.mask, c.maskZ, c.over, c.xray, ...c.art];
     cap = c;
   }
 
@@ -1094,7 +1116,8 @@ export async function createRenderer({ device, context, format, pal, ground, tim
         const out = ["looks", "entries", "inst:w", ...(sp.flat ? [] : ["rowInst:w"]), "args:w", "gridTex", "fineTex"];
         const slots = !sp.members, ground = ["looks", "gridTex", "fineTex"];
         sp.passes = {
-          cull: pipe({ label: `cull ${s.name}`, binds: ["V", "map", ...own, ...index, ...out], code: `${MAP_READ}\n${src}\n${cullWGSL(sp)}`, compute: "cullMain" }),
+          cull: pipe({ label: `cull ${s.name}`, binds: ["V", "map", ...own, ...index, ...(sp.cache ? ["cslot", "ccntR", "cache"] : []), ...out], code: `${MAP_READ}\n${src}\n${cullWGSL(sp)}`, compute: "cullMain" }),
+          fill: sp.cache ? pipe({ label: `fill ${s.name}`, binds: ["counts", ...own, "cfill", "ccnt:w", "cache:w", "looks", "gridTex", "fineTex"], code: `${src}\n${cacheFillWGSL(sp)}`, compute: "fillMain" }) : null,
           needs: slots ? pipe({ label: `needs ${s.name}`, binds: ["Kp", ...own, "looks", "need:w", "gridTex", "fineTex"], code: `${src}\n${NEEDS_WGSL}`, compute: "needsMain" }) : null,
           canopy: sp.canopy ? pipe({ label: `canopy ${s.name}`, binds: ["Kp", ...own, "looks", "canAcc:w", "canTall:w", "gridTex", "fineTex"], code: `${src}\n${CANOPY_WGSL(pal.ORIGIN)}`, compute: "canopyMain" }) : null,
           far: slots && sp.indexed && !sp.moves ? {
@@ -1106,10 +1129,111 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       const over = { body: s.body && { buffer: s.body }, order: s.order && { buffer: s.order }, start: s.start && { buffer: s.start }, marks: s.marks && { buffer: s.marks }, ...s.over };
       return { ...s, ...sp.passes, over };
     });
-    await Promise.all(made.flatMap((s) => [s.cull.ready, s.needs?.ready, s.canopy?.ready, s.far?.cull.ready, s.far?.count.ready]));
+    await Promise.all(made.flatMap((s) => [s.cull.ready, s.fill?.ready, s.needs?.ready, s.canopy?.ready, s.far?.cull.ready, s.far?.count.ready]));
     if (errors.length) throw new Error(errors.join("\n"));
     sources = made;
   }
+  // ---------- the cells' caches (wgsl/objects.js cacheFillWGSL) ----------
+  // Per source of cells, by name so they outlive setSources: each cell's slot (NO_SLOT for none), each slot's count and
+  // members, and on the CPU the cell each slot holds and the frame that last showed it. A frame fills the cells its
+  // views reach that no slot holds, at most FILL_MEMBERS members' worth (at least one cell), into slots no view showed
+  // this frame, the least lately shown first; the slots grow when a frame shows more cells than they hold.
+  const FILL_MEMBERS = 1 << 19, FILL_MAX = 256, NO_SLOT = 0xffffffff, cacheState = new Map();
+  let cacheFrameNo = 0, cacheRetired = [];
+  function cacheOf(s) {
+    let c = cacheState.get(s.name);
+    if (c && c.cm === s.spec.cache.cm) return c;
+    if (c) cacheRetired.push(c.cslot, c.cnt, c.buf, c.fill);
+    c = { cm: s.spec.cache.cm, slots: 0, cslot: B(CELLS * 4, STOR, "cslot"), cnt: null, buf: null, fill: B((1 + 2 * FILL_MAX) * 4, STOR, "cfill"), cellOf: new Int32Array(0), used: new Uint32Array(0), slotOf: new Map() };
+    device.queue.writeBuffer(c.cslot, 0, new Uint32Array(CELLS).fill(NO_SLOT));
+    cacheGrow(c, 64, null);
+    cacheState.set(s.name, c);
+    return c;
+  }
+  // a cache's slots grown to n, what they hold copied over in enc
+  function cacheGrow(c, n, enc) {
+    const cnt = B(n * 4, STOR | GPUBufferUsage.COPY_SRC, "ccnt"), buf = B(n * c.cm * 12, STOR | GPUBufferUsage.COPY_SRC, "cache");
+    if (c.slots) {
+      enc.copyBufferToBuffer(c.cnt, 0, cnt, 0, c.slots * 4);
+      enc.copyBufferToBuffer(c.buf, 0, buf, 0, c.slots * c.cm * 12);
+      cacheRetired.push(c.cnt, c.buf);
+    }
+    const cellOf = new Int32Array(n).fill(-1), used = new Uint32Array(n);
+    cellOf.set(c.cellOf); used.set(c.used);
+    Object.assign(c, { slots: n, cnt, buf, cellOf, used });
+  }
+  // Whether any object of a cell reaching at most reach px can reach into a view (wgsl/objects.js cellSeen).
+  function cellSeen(U, cell, reach) {
+    const x0 = (cell % CELLS_N) * CELL_M + pal.ORIGIN, z0 = Math.floor(cell / CELLS_N) * CELL_M + pal.ORIGIN;
+    let lx = Infinity, hx = -Infinity, ly = Infinity, hy = -Infinity;
+    for (let k = 0; k < 4; k++) {
+      const dx = x0 + (k & 1) * CELL_M - U.cx, dz = z0 + (k >> 1) * CELL_M - U.cz;
+      const a = (dx * U.eux + dz * U.euy) / U.tileM, b = (dx * U.evx + dz * U.evy) / U.tileM;
+      const sx = (a - b) * U.H + U.offx, sy = (a + b) * U.hb + U.offy;
+      lx = Math.min(lx, sx); hx = Math.max(hx, sx); ly = Math.min(ly, sy); hy = Math.max(hy, sy);
+    }
+    return !(hx < -reach || lx > U.aw + reach || hy + U.levc * U.lp < -reach || ly - (U.peak - U.levc) * U.lp > U.ah + reach);
+  }
+  // The cells this frame's views reach, held or filled. The reach is four px wider than the cull's, so every cell the
+  // GPU walks is held whatever the floats round to.
+  function cacheFrame(enc, views) {
+    cacheFrameNo++;
+    const jobs = [];
+    for (const s of sources) {
+      if (!s.fill) continue;
+      const c = cacheOf(s), counts = s.spec.cache.counts, most = s.spec.most, shown = new Set(), want = [];
+      for (const v of views) {
+        const U = v.U, hm = (most < 1 ? most ** 0.55 : most) * Math.max(U.pv, U.pw);
+        if (hm < 1) continue;
+        const r = cellRect(U), reach = hm * 6 + 8 + 4;
+        for (let cy = r.cy0; cy <= r.cy1; cy++)
+          for (let cx = r.cx0; cx <= r.cx1; cx++) {
+            const cell = cy * CELLS_N + cx;
+            if (!counts[cell] || shown.has(cell) || !cellSeen(U, cell, reach)) continue;
+            shown.add(cell);
+            const slot = c.slotOf.get(cell);
+            if (slot === undefined) want.push(cell);
+            else c.used[slot] = cacheFrameNo;
+          }
+      }
+      if (shown.size > c.slots) cacheGrow(c, Math.ceil(shown.size * 1.25), enc);
+      const fill = [];
+      let budget = FILL_MEMBERS, fullest = 1;
+      for (const cell of want) {
+        if (fill.length && (budget < counts[cell] || fill.length >= 2 * FILL_MAX)) break;
+        let slot = -1;
+        for (let j = 0; j < c.slots; j++) {
+          if (c.used[j] === cacheFrameNo) continue;
+          if (c.cellOf[j] < 0) { slot = j; break; }
+          if (slot < 0 || c.used[j] < c.used[slot]) slot = j;
+        }
+        if (slot < 0) break;
+        const old = c.cellOf[slot];
+        if (old >= 0) { c.slotOf.delete(old); device.queue.writeBuffer(c.cslot, old * 4, Uint32Array.of(NO_SLOT)); }
+        c.cellOf[slot] = cell; c.slotOf.set(cell, slot); c.used[slot] = cacheFrameNo;
+        device.queue.writeBuffer(c.cslot, cell * 4, Uint32Array.of(slot));
+        // after any copy of a grown cache's counts, which the queue's writes would come before
+        enc.clearBuffer(c.cnt, slot * 4, 4);
+        fill.push(cell, slot);
+        budget -= counts[cell];
+        fullest = Math.max(fullest, counts[cell]);
+      }
+      if (!fill.length) continue;
+      device.queue.writeBuffer(c.fill, 0, Uint32Array.from([fill.length / 2, ...fill]));
+      jobs.push({ s, c, n: fill.length / 2, fullest });
+    }
+    if (!jobs.length) return;
+    const pass = enc.beginComputePass(tw("fill"));
+    for (const { s, c, n, fullest } of jobs) {
+      pass.setPipeline(s.fill.p);
+      pass.setBindGroup(0, group(s.fill, 0, { ...s.over, ...s.dyn?.(), cfill: { buffer: c.fill }, ccnt: { buffer: c.cnt }, cache: { buffer: c.buf } }));
+      // a thread for every 64 of the fullest cell's members, at most 256 workgroups a cell
+      pass.dispatchWorkgroups(Math.min(256, Math.ceil(fullest / 4096)), n);
+    }
+    pass.end();
+  }
+  // A source of cells' cache buffers as its cull binds them.
+  const cacheBinds = (s) => { const c = cacheState.get(s.name); return { cslot: { buffer: c.cslot }, ccntR: { buffer: c.cnt }, cache: { buffer: c.buf } }; };
   // ---------- the far levels' lists (wgsl/objects.js FAR_COUNT_WGSL) ----------
   // Per indexed source, by name so they outlive setSources: the slots' keys, the counts (then the runs' cursors), and two
   // lists with their cell index, one drawn from (front) while the other is built. A build goes a slice of slots a frame.
@@ -1302,6 +1426,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     fold(enc, f.exag);
     traceSun(enc, f.cast);
     farFrame(enc);
+    cacheFrame(enc, views);
     views.forEach((v, k) => drawView(enc, v, k, f.id));
     // present every view onto the canvas
     const out = context.getCurrentTexture();
@@ -1319,6 +1444,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     const names = qNames, nq = names.length * 2;
     if (qs && nq) { qr = qRead.find((r) => !r.busy); if (qr) { enc.resolveQuerySet(qs, 0, nq, qBuf, 0); enc.copyBufferToBuffer(qBuf, 0, qr.b, 0, nq * 8); } }
     device.queue.submit([enc.finish()]);
+    for (const b of cacheRetired.splice(0)) b.destroy();
     inFlight++;
     device.queue.onSubmittedWorkDone().then(() => { inFlight--; });
     if (qr) {
@@ -1358,7 +1484,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
         const most = s.spec.most;
         if (skipped.has(s.name)) continue;
         if (most !== undefined && (most < 1 ? most ** 0.55 : most) * Math.max(U.pv, U.pw) < 1) continue;
-        const over = s.dyn ? { ...s.over, ...s.dyn() } : s.over;
+        const over = { ...s.over, ...s.dyn?.(), ...(s.fill ? cacheBinds(s) : {}) };
         const f = farL >= 0 && s.far && farState.get(s.name);
         if (f && f.front >= 0 && f.body === s.body) {
           pass.setPipeline(s.far.cull.p); pass.setBindGroup(0, group(s.far.cull, k, { ...over, flist: { buffer: f.list[f.front] }, fidx: { buffer: f.idx[f.front] } }));
@@ -1373,20 +1499,10 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       pass.setPipeline(S.clampArgs.p); pass.setBindGroup(0, group(S.clampArgs, k)); pass.dispatchWorkgroups(1);
       pass.end();
     }
-    // 4. the sun's mask (first, so the world pass may reuse nothing of it)
-    const nLiveRows = v.liveRows ? v.liveRows.length / 4 : 0;
-    if (nLiveRows) device.queue.writeBuffer(liveRowsB, 0, Int32Array.from(v.liveRows));
-    let rp = enc.beginRenderPass({ colorAttachments: [{ view: cap.mask.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }], ...tw("mask") });
-    rp.setViewport(0, 0, U.aw, U.ah, 0, 1);
-    if (U.casting) {
-      if (objCount) { rp.setPipeline(S.mask.p); rp.setBindGroup(0, group(S.mask, k)); rp.drawIndirect(argsB, 16); }
-      if (nLiveRows) { rp.setPipeline(S.maskLive.p); rp.setBindGroup(0, group(S.maskLive, k)); rp.draw(4, nLiveRows); }
-    }
-    rp.end();
     // 3. the world
     const nLive = v.live ? v.live.byteLength / 32 : 0;
     if (nLive) device.queue.writeBuffer(liveB, 0, v.live);
-    rp = enc.beginRenderPass({
+    let rp = enc.beginRenderPass({
       colorAttachments: [
         { view: cap.gK.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0xffffffff, g: 0, b: 0, a: 0 } },
         { view: cap.gW.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } },
@@ -1410,6 +1526,21 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       pass.setPipeline(S.splatB.p); pass.setBindGroup(0, group(S.splatB, k)); pass.dispatchWorkgroupsIndirect(argsB, 48);
       pass.end();
     }
+    // 4. the sun's mask, on the ground the world pass left uncovered (maskZ)
+    const nLiveRows = v.liveRows ? v.liveRows.length / 4 : 0;
+    if (nLiveRows) device.queue.writeBuffer(liveRowsB, 0, Int32Array.from(v.liveRows));
+    rp = enc.beginRenderPass({
+      colorAttachments: [{ view: cap.mask.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+      depthStencilAttachment: { view: cap.maskZ.createView(), depthLoadOp: "clear", depthStoreOp: "discard", depthClearValue: 1 },
+      ...tw("mask"),
+    });
+    rp.setViewport(0, 0, U.aw, U.ah, 0, 1);
+    if (U.casting && (objCount || nLiveRows)) {
+      rp.setPipeline(S.maskZ.p); rp.setBindGroup(0, group(S.maskZ, k)); rp.draw(3);
+      if (objCount) { rp.setPipeline(S.mask.p); rp.setBindGroup(0, group(S.mask, k)); rp.drawIndirect(argsB, 16); }
+      if (nLiveRows) { rp.setPipeline(S.maskLive.p); rp.setBindGroup(0, group(S.maskLive, k)); rp.draw(4, nLiveRows); }
+    }
+    rp.end();
     if (k === 0) {
       const cr = countRead.find((q) => !q.busy);
       if (cr) {

@@ -145,7 +145,7 @@ Restaged for this (scripts/probes.ts; evals probes 7):
 
 ## 9. Spreading on their own
 
-src/sim/recruits.ts. The old rule: two island-wide rolls a tick dropped a seedling of a random bush or tree 4 to 45 m off, kept as the spot's fit allowed. Now each kind spreads as it does, and its young are counts on each tile being looked at, so many of a kind, an age and a place (the open, or under the crowns), each as heavy as the rest, until they stand up as things. Ground put back as it grew drops its young: the generator's layout already holds them.
+src/sim/recruits.ts, deleted in the GPU plan's Unit 8: its rule, below, is now each seed's and seedling's own on the GPU (sec. 13), its constants carried over but for pine's establishment (6.7% as R457 reads, not 6.5%), and its cohort counts became the test oracle (src/gpu/seedlings.test.ts). The old rule: two island-wide rolls a tick dropped a seedling of a random bush or tree 4 to 45 m off, kept as the spot's fit allowed. Then each kind spread as it does, and its young were counts on each tile being looked at, so many of a kind, an age and a place (the open, or under the crowns), each as heavy as the rest, until they stood up as things. Ground put back as it grew dropped its young: the generator's layout already held them.
 
 | Kind | What it puts out, a parent a year | When | How far | Source |
 |---|---|---|---|---|
@@ -315,6 +315,43 @@ Gaps the checks show:
 - A bush that dies leaves no piece; snags are not yet things people see; the renderer draws pieces only once they are Things (Unit 14).
 - Bins every 10 game days keep the deadwood at 194 MB, room for the bins' steady state included (each bin lasts until its last stick rots); bins ten times as often (a game day each, a tenth as big) would take about 6.6 times the bins' 142 MB, as H(48) / H(478) x 10 [derived].
 
+## 13. Seeds and seedlings (the GPU plan's Unit 8)
+
+Every seed a live parent stem sheds is evaluated on its own on the GPU (src/gpu/seedlings.ts, src/gpu/wgsl/seedlings.ts; constants and drivers src/sim/seeds.ts), and those that live to come up become seedlings. src/sim/recruits.ts is gone; its cohort rule (sec. 9) is the test oracle in src/gpu/seedlings.test.ts.
+
+### 13a. Representations
+
+- **Seeds, streamed.** Seed k of the stem in slot i in year y lives to come up when word k mod 4 of the Philox block (i, k / 4) under (seed ^ generation, SURV + y) falls below its kind's chance; one that lives draws its distance and one of 1,024 bearings from its own stream (i, k). Landing off the island or on water it is gone; else it joins its 18.75 m texel's count of seed in the soil until its kind's day. A day's blocks are shed over the day's first 32 ticks [design: cost], the sums the same however they are split. Only live parents shed, so a parent that dies stops shedding.
+- **Seedlings, lumped.** The crops cited make some 10^9 ash seedlings after a mast and 6 x 10^7 pine on seed 1, past what 4 GB holds as active objects (36 GB for ash alone at 24 bytes). Every input of the seedlings' law is shared within a texel (the crowns over it, its cell's coefficients, its 600 m block's deer and rabbits), so the members of a kind come up on one day in one texel share one state: a bin (store kind "seedling", 2^22 bins). A day's fates are drawn exactly for the bin (the binomial, keyed by the bin and day); a member is (bin, rank in the bin's seeded Feistel permutation), losses taking the highest ranks.
+- **Standing up.** A bin as tall as its cell's own stand (flora.ts treeHeight at the cell's fit, its spread's middle), or of brambles in their second summer at a bush's mass, is marked; the next day each member stands up as a stem of kind plant, at a place in the texel drawn from its identity, and the stems' law (sec. 11) has it from then on. Trees people raise (ecology.ts matured, a seedling come up) are plant objects too (flora.ts make): the GPU grows, crowds and starves them, and their Things follow.
+
+### 13b. Constants
+
+| Quantity | Value | Source |
+|---|---|---|
+| Pine: seed living to come up | 0.6 viable (50 to 70%) x 0.067 standing on unprepared ground | R455 Table 2.2, R457 [derived] |
+| Ash: fruit living to come up | sqrt(0.011 x 0.245), 5.2% | R458 [derived] |
+| Oak: acorns living to come up | 0.02 cached and lost x 0.685 coming up | R461, R462 [derived] |
+| Pine kernel | exponential, mean the tree's height / ln 5 (80% within its height) | R455 Table 2.6 [derived] |
+| Ash kernel | exponential-power, mean 39.1 m, shape 2.085 | R459 |
+| Oak kernel | lognormal, median 25.9 m, 95th percentile 116 m | R460 [derived] |
+| Bramble seed, daughters, aspen suckers | birds' exponential 95% within 100 m; 3.3 m; within 40 m, 75,000 a ha | R468, R466, R463, R464 [derived] |
+| Pine comes up only where the crowns leave | 60% of full light | R455 Table 4.1 (pines and larches; the table's layout read as 50 to 60%) |
+| Shed and coming up (island days) | pine sheds April 1 to mid May, up mid May [design: R455 Table 2.5's April to July held to one coming up]; oak sheds mid September to late October, up June 1; ash sheds October to December [UNVERIFIED], up early May after two winters; brambles April 20 and October 1 | R454, R455, R458, R460, R466 |
+| Browsing | as sec. 9 (R471 to R474), by the day's deer and rabbits in each 600 m block [design: the block] | |
+| Thinning | the larger bins of a texel first (ties by slot), each member's crown its share of a closed stand (flora.ts crownShare); the largest keeps one whatever its crown | [derived], as the stems |
+
+### 13c. Checks (seed 1, 2026-10-15)
+
+- The kernels: a 20 m pine's 12,000 seeds land 79.9% within 20 m (cited 80%); an ash's 140,000 fruits at a mean of 39.10 m (cited 39.1).
+- Streamed against active: two pines' year of 24,000 seeds, every seed also stepped day by day as an object of its own, give the same survivors texel by texel (950, 3.96% against the law's 4.02%); and so with a parent killed on the shed's third day (183 of its 475).
+- A law day (sheds, suckers, coming up, growth, browsing, thinning) equals the TypeScript oracle bit for bit over 15 days, on the AMD and the Intel adapter; the census equals the bins. A shore pine's seed: 134 lived but fell on the water and none came up there; pines' seed blown under a closed oak stand came up in no texel the crowns shade past 40%; ash fruit under crowns letting through under 10% came up two springs on. Pine bins as tall as their stand stood up as 381 stems at the places their identities give.
+- Seed 1 over four island years (the island's own mast draws: pine masted in years 1 and 3, oak and ash in none of years 0 to 3; oak first masts in year 5, ash in year 4): pine within 50 m of a pine on open ground 6,778 a ha at the end of year 2 (0.7 years after coming up), 4,604 at the end of year 3, 9,733 at the end of year 4 (two cohorts), against R455's under 5,000 a ha two years on on untreated ground: over it [gap]; under crowns 96 to 361 a ha. Oak in old fields (open ground within 100 m of an oak): none, as no oak masted in the run; R800's 147 to 287 a ha not yet compared [gap: a run to year 7].
+- Memory: bins 144 MB, seed in the soil, drivers and parent lists about 60 MB, store scratch 118 MB; the stems' room for the young (sec. 11) 38 MB more; with the stems' 0.78 GB and the deadwood's 194 MB about 1.2 GB, under the 1.5 GB budget.
+- Cost (AMD, other jobs running): a law day with the stems about 200 to 450 ms p50; a pine mast's shed day 1 to 3.5 s before the shed was split over the day's first 32 ticks.
+
+Gaps: pine seedlings over R455's count; the 6.7% establishment already holds early deaths the seedlings' own starvation and browsing count again (as sec. 9); oak's and ash's own light thresholds; what the deer and rabbits eat of the young doesn't feed them; stems the young stand up as aren't Things for people yet (the renderer draws them from the buffer); a world read from its JSON alone, without its store, keeps people's raised trees as Things off the GPU; aspen's seed, hazel's and heather's spread; bins past 2^22 and stems past the room are not born; the shed's slices are not yet timed on the play page.
+
 ## References
 
 - R335 Monteith J.L. (1977), Climate and the efficiency of crop production in Britain, Phil Trans R Soc Lond B 281:277-294 (1.4 g/MJ as commonly quoted) (search excerpt)
@@ -358,3 +395,4 @@ Gaps the checks show:
 - R756 SLU MarkInfo, Ytblockighet (surface boulders of 2 dm and up counted in a 314 m2 plot: classes none, 1 to 5, 6 to 10, 11 to 20, 21 to 30, 31 to 50, 51 to 100, over 100). https://www.slu.se/om-slu/organisation/institutioner/mark-miljo/miljoanalys/markinfo/markprofil/ytblockighet/ (read 2026-10-15)
 - R757 Hooke R.LeB., Iverson N.R. (1995), Grain-size distribution in deforming subglacial tills: role of grain fracture, Geology 23:57-60 (N(> d) ~ d^-2.9) [abs]. (via the generator notes)
 - R758 Nord-Larsen T. et al. (2016), Skove og plantager 2016, sec. 4.5, Tables 4.11 and 4.14 (Danish forests 4.6 m3/ha of deadwood of 10 cm and up, 34% lying; Hovedstaden 7.6, 3.5 lying). https://sgavmst.dk/media/00zj5xe5/2016_skove_og_plantager.pdf (via the generator notes)
+- R800 Broughton R.K. et al. (2021), Long-term woodland restoration on lowland farmland through passive rewilding, PLoS ONE 16:e0252466 (old fields beside Monks Wood: 147 oak seedlings a ha two years after abandonment, 287 young oaks a ha after six; 132 and 390 live trees a ha after 24 and 59 years). https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0252466 (read 2026-10-15)

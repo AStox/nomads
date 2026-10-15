@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { DAY, H, TILE_M, Tile, W, addThing, newWorld, rng, shoreOf, type Act, type Agent, type Thing, type World } from "./world";
+import { DAY, H, TILE_M, Tile, W, addThing, dryAt, newWorld, rng, shoreOf, type Act, type Agent, type Thing, type World } from "./world";
 import { WEATHER_NOW, bedAir, count, eat, fireOf, giveItems, giveStack, heat, join, openWater, place, removeThing, strikeTick, throwTick, wet, type Fields, type Outcome } from "./physics";
 import { COPPER, PHYS, pieceOf } from "./fuel";
 import { BLADE } from "./mechanics";
@@ -13,6 +13,7 @@ import { hooks } from "./rules";
 import { DAMP } from "./wetness";
 import { ecology, forecast } from "./ecology";
 import { ahead, bedAt, seedlingFate } from "./seedling";
+import { fitHere } from "./plants";
 
 // A fire burning so many seconds (ten minutes unless said) from the usual lay (fireOf), under a clear sky with a breeze
 // blowing u m/s.
@@ -292,13 +293,22 @@ test("a seedling's hours ahead come to what ecology makes of the same weather, h
   // nobody about to feed the soil with dung, nothing roaming: the seedling alone with its spot and the weather
   w.agents = [];
   w.animals = [];
-  const spot = { px: a.px + 2 / TILE_M, py: a.py };
+  // a spot that suits berries well, the nearest to where they started (a fit over a half [design]): they start on the
+  // marsh, where a seedling only burns down, and its soil's water would count for nothing
+  let spot: { px: number; py: number } | undefined;
+  for (let m = 5; m <= 400 && !spot; m += 5)
+    for (let k = 0; k < 16 && !spot; k++) {
+      const px = a.px + (Math.cos((k * Math.PI) / 8) * m) / TILE_M, py = a.py + (Math.sin((k * Math.PI) / 8) * m) / TILE_M;
+      if (dryAt(w, px, py) && fitHere(w, "berry", px, py) > 0.5) spot = { px, py };
+    }
+  if (!spot) throw new Error("no ground near them suits berries");
   // the weather ecology will give it: a seeded stretch of the island's own
   const hours = forecast(w, 30 * 24, rng(7));
   const fate = seedlingFate(bedAt(w, spot.px, spot.py, "berry"), ahead(w, spot.px, spot.py, w.t, hours));
   const t = addThing(w, "sapling", spot.px, spot.py, { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5 });
   const first = Math.ceil((w.t + 1) / 12) * 12, end = w.t + 30 * DAY;
-  hooks.weather = (w) => { const h = hours[(w.t - first) / 12]; Object.assign(w.weather, { sky: h.sky, speed: h.speed }); };
+  // all of it: the sky, the wind and how far the day's air stands from its time of year's (forecast's warm)
+  hooks.weather = (w) => { const h = hours[(w.t - first) / 12]; Object.assign(w.weather, { sky: h.sky, speed: h.speed, warm: h.warm }); };
   try {
     while (w.t < end && thingById(w, t.id)?.kind === "sapling") { w.t++; ecology(w); }
   } finally {

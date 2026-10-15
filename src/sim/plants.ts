@@ -15,6 +15,7 @@ import { seasonAt } from "./sky";
 import { branchKg, stemKg } from "./mechanics";
 import { PHYS } from "./fuel";
 import { rinit, next32 } from "../gpu/rand";
+import { HOUR } from "../gpu/tiers/drivers";
 import type { StemDriver } from "../gpu/flora";
 import { HC, HQ, LAID, MAP, QSTEP, QTOP, ROWS, ROW_WORDS, RW, SSTEP, TEXEL_MM, TREE_ROWS } from "../gpu/wgsl/stems";
 
@@ -197,25 +198,42 @@ export function stemDriver(w: World): StemDriver {
   const alphaK = STEM_ROWS.map((sp, r) => (lost[r] ? 0 : scale[r] * SLA[sp])), betaK = STEM_ROWS.map((_, r) => (lost[r] ? 0 : scale[r]));
   const betaLost = STEM_ROWS.map((sp, r) => (lost[r] ? Math.min(most, Math.round((GROWTH_C[sp] / 4) * part * 2 ** 20)) : 0));
   const perSla = new Float64Array(ps.length);
+  // The day whose coefficients coef holds, for its first `done` cells of `cells`: a day's depend on nothing but the day,
+  // so they are worked out the same whenever, and ahead spreads the next day's over the hours before it.
+  let held = { t: -1, done: 0 };
+  const work = (t: number, upTo: number) => {
+    if (held.t !== t) held = { t, done: 0 };
+    const { s, f: x } = seasonAt(t), s2 = (s + 1) % 4, a = isle.seasons[s], b = isle.seasons[s2], wa = isle.soilWater[s], wb = isle.soilWater[s2];
+    for (let c = held.done; c < upTo; c++) {
+      const i = cells[c];
+      const sun = a.sun[i] * (1 - x) + b.sun[i] * x, temp = a.temp[i] * (1 - x) + b.temp[i] * x, water = wa[i] * (1 - x) + wb[i] * x, kept = keptOf(temp);
+      // what a gram makes is in proportion to its leaf area: worked out once for each share of water drawn first
+      for (let p = 0; p < ps.length; p++) perSla[p] = madeOf(1, sun, temp, water, ps[p]);
+      for (let r = 0; r < NR; r++) {
+        coef[(i * ROWS + r) * 2] = Math.min(most, Math.round(alphaK[r] * fits[i * NR + r] * perSla[pAt[r]]));
+        coef[(i * ROWS + r) * 2 + 1] = lost[r] ? betaLost[r] : Math.min(most, Math.round(betaK[r] * kept));
+      }
+    }
+    held.done = Math.max(held.done, upTo);
+  };
   return {
     due: (t) => t % DAY === 0,
     tables: stemTables,
     day(t) {
-      const { s, f: x } = seasonAt(t), s2 = (s + 1) % 4, a = isle.seasons[s], b = isle.seasons[s2], wa = isle.soilWater[s], wb = isle.soilWater[s2];
-      for (const i of cells) {
-        const sun = a.sun[i] * (1 - x) + b.sun[i] * x, temp = a.temp[i] * (1 - x) + b.temp[i] * x, water = wa[i] * (1 - x) + wb[i] * x, kept = keptOf(temp);
-        // what a gram makes is in proportion to its leaf area: worked out once for each share of water drawn first
-        for (let p = 0; p < ps.length; p++) perSla[p] = madeOf(1, sun, temp, water, ps[p]);
-        for (let r = 0; r < NR; r++) {
-          coef[(i * ROWS + r) * 2] = Math.min(most, Math.round(alphaK[r] * fits[i * NR + r] * perSla[pAt[r]]));
-          coef[(i * ROWS + r) * 2 + 1] = lost[r] ? betaLost[r] : Math.min(most, Math.round(betaK[r] * kept));
-        }
-      }
+      work(t, cells.length);
       const year = Math.floor(t / (DAY * YEAR_DAYS)), mast = STEM_ROWS.map((sp, r) => {
         rinit(w.seed, MAST_STREAM, r, year);
         return next32() < (CROP[sp]?.often ?? 0) * 2 ** 32 ? 1 : 0;
       });
       return { coef, mast };
+    },
+    // The next day's coefficients after tick t, an even share of those left for each hour left before it.
+    ahead(t) {
+      const next = (Math.floor(t / DAY) + 1) * DAY, from = held.t === next ? held.done : 0;
+      if (from >= cells.length) return null;
+      const to = Math.min(cells.length, from + Math.ceil((cells.length - from) / Math.max(1, Math.ceil((next - t) / HOUR))));
+      work(next, to);
+      return { t: next, coef, hi: (cells[to - 1] + 1) * ROWS * 2 };
     },
   };
 }

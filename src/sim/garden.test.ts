@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { SEEDLINGS } from "./plants";
+import { SEEDLINGS, fitHere } from "./plants";
 import { DAY, H, TILE_M, W, addThing, dryAt, meters, newWorld, type Agent, type Thing, type World } from "./world";
 import { giveItems, groundWord, plant, removeThing, soilAt } from "./physics";
 import { around, put, thingById } from "./space";
@@ -14,13 +14,19 @@ afterAll(releaseGpu);
 
 process.env.NOMADS_BRAIN = "random";
 
-// One island with one person on it; each test clears the ground round where they stand.
+// One island with one person on it; each test clears the ground round where they stand. Home is the nearest dry spot to
+// where they start that suits berries well, a fit over a half as plants.ts fitHere has it [design]: people start on the
+// island's marsh, where no seed comes up at all.
 let w: World, a: Agent, home: { px: number; py: number };
 beforeAll(() => {
   w = newWorld(5);
   w.agents = w.agents.slice(0, 1);
   a = w.agents[0];
-  home = { px: a.px, py: a.py };
+  for (let m = 5; m <= 400 && !home; m += 5)
+    for (let k = 0; k < 16 && !home; k++) {
+      const px = a.px + (Math.cos((k * Math.PI) / 8) * m) / TILE_M, py = a.py + (Math.sin((k * Math.PI) / 8) * m) / TILE_M;
+      if (dryAt(w, px, py) && fitHere(w, "berry", px, py) > 0.5) home = { px, py };
+    }
 }, 120_000);
 const clear = (r: number) => {
   const here: Thing[] = [];
@@ -47,11 +53,13 @@ const sow = async () => {
   a.nextDecide = w.t + DAY * 10;
   return thingById(w, a.waiting?.at(-1)?.thing)!;
 };
-// midsummer, midday, everything they need
+// midsummer, midday, everything they need: fed, rested and warm through, their body made anew from those needs
+// (body.ts bodyOf), not chilled by whatever the last test left them standing in
 const summer = () => {
   w.t = (Math.round((YEAR_DAYS * 3) / 8) * DAY) + DAY / 2;
   a.inv = [];
   a.needs = { food: 100, energy: 100, warmth: 100, health: 100, social: 100 };
+  delete a.body;
 };
 
 test("a seed goes into the ground right beside a bush, and bare rock takes none", () => {

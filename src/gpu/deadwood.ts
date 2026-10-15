@@ -343,12 +343,13 @@ export class Deadwood implements Rider {
     this.sync = true;
   }
   // Every bin's sticks counted, the total and each bin's count (by slot) in scratch; or with kill set to a day, that
-  // day's share of the bins (slots of its number modulo BIN_DAYS) counted and the empty let go.
+  // day's share of the bins (slots of its number modulo BIN_DAYS) swept and the empty let go, nothing counted.
   sweepBins(kill: number | null): { tot: GPUBuffer; each: GPUBuffer } {
     const s = this.store!, k = s.kind("stickbin"), d = this.drivers!;
     const tot = s.scratch("deadtot", 1), each = s.scratch("deadeach", k.capacity);
     s.encode((e) => e.clearBuffer(tot, 0, 4));
-    s.run(this.src("bins", () => binSweep(this.law, k, d.layout)), [k.body, k.alloc, d.ring, this.bufs!.gone, tot, each], cover(s.g, k.capacity, 64), [k.capacity, kill === null ? 0 : 1, (kill ?? 0) % BIN_DAYS, BIN_DAYS]);
+    const rows = kill === null ? k.capacity : Math.ceil(k.capacity / BIN_DAYS);
+    s.run(this.src("bins", () => binSweep(this.law, k, d.layout)), [k.body, k.alloc, d.ring, this.bufs!.gone, tot, each], cover(s.g, rows, 64), [k.capacity, kill === null ? 0 : 1, (kill ?? 0) % BIN_DAYS, BIN_DAYS]);
     // the dead rows the index still holds are passed over (mirror.ts), and their slots reclaimed when births next touch
     // the kind, so a sweep doesn't rebuild the index
     if (kill !== null) k.stale = true;
