@@ -9,6 +9,7 @@ export { campSummary, groupsChanged } from "../src/sim/groups";
 export { blazeOf, inspect, inspectGround, thingView } from "../src/sim/inspect";
 export { deadwoodOf, floraOf, resident, thingById } from "../src/sim/space";
 export { stemDriver } from "../src/sim/plants";
+export { seedDriver } from "../src/sim/seeds";
 export { census } from "../src/sim/animals";
 export { FLORA, GROUND, SPECIES, groundClass, waterAt } from "../src/terrain/flora";
 export { useGpu } from "../src/gpu/device";

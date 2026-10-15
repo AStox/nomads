@@ -1,24 +1,20 @@
 {
-  "about": "PerfR9 (plan R9 and the 50 ms daily step), 2026-10-15, seed 1, AMD RDNA-1, headless Chrome 150 at 1600x1000, default warm, 12 s each. 'r9' is this build (mask after the world tested against a ground-only depth, cull rounds placing each workgroup's sprites, specks and rows with one atomic a list, clasts including pebbles drawn from per-cell GPU caches); 'base' is 09a2904 built and served beside it and run straight after. The machine was at load 7 to 36 with peers' Bun/Dawn GPU jobs holding up to 3.7 GB of the 4 GB of VRAM, so the same build swung by 2x between runs (base orbit 18.02 then 10.07 then 10.42 ms mean): the figures are not comparable with bench-sim-worker.json, which was taken on a quieter machine, and R9 is not shown here either way.",
-  "dailyStep": {
-    "note": "src/gpu stems' law plus the deadwood's day, per-kernel GPU timestamps on a store holding seed 1's flora and deadwood (scratch profiler, day 3). The stick bins' sweep took 48.8 ms of it because a day's tenth of the bins ran every invocation (one live lane in ten); it now runs one invocation a bin of the day's share and stops at the first stick still lying (kill mode reads no count): 0.1 ms. Coefficients are worked out ahead over the day's hours (stemDriver.ahead, uploaded as made), so the law's CPU part fell from 20 to 54 ms to 3.7 to 8 ms. The landing no longer unpacks 10 million heights: the pack lists the generator's stems that died and the heights are kept as a view of the landed copy (flora land 33 ms to 0.1 to 1 ms).",
-    "before": { "kernelsMs": 88.4, "binSweepMs": 48.8, "stemsCountMs": 11.1, "stemsFileMs": 11.1, "stemsGrowMs": 8.7, "lawCpuMs": [20.5, 54.4], "driverDayMs": [13.1, 19.1], "floraLandMs": [32.8, 51.1], "dayWithStemsMsDeadwoodTest": 143 },
-    "after": { "kernelsMs": [41.4, 46.7], "binSweepMs": 0.1, "stemsCountMs": [8.3, 10.4], "stemsFileMs": [8.4, 21.2], "stemsGrowMs": [7.9, 8.7], "lawCpuMs": [3.7, 7.9], "driverDayMsAtLaw": [0.1, 2.2], "floraLandMs": [0.1, 1.1], "stemsTestGpuMs": 44, "stemsTestLandMs": 22 },
-    "gap": "The raster's count and file kernels stay at 8 to 10 ms each in place against under 1 ms in isolation (first-touch and clock ramp after the idle hours, under the peers' VRAM pressure); the wall day (begin plus GPU) measured 59 to 98 ms on this loaded machine, so the 50 ms budget is not shown."
-  },
+  "about": "PerfR9 on a quiet machine (Main stopped every other agent and GPU job), 2026-10-15, build f9f2717 plus the page's seedDriver fix (demo/sim.ts, play/sim.js: the page failed to start without it), seed 1, AMD RDNA-1, headless Chrome 150 at 1600x1000, default warm, 12 s each, against bench-sim-worker.json (Unit 15, before Unit 7's real stem densities).",
   "benches": {
-    "orbit": {
-      "base": { "gpuMs": { "mean": 10.07, "p95": 11.24, "max": 14.12, "over16": 0 }, "passes": { "sun": 1.425, "map": 0.092, "cull": 1.862, "mask": 2.56, "world": 0.604, "shade": 1.707, "present": 0.216 }, "counts": { "sprites": 15793, "rows": 158747, "points": 0 } },
-      "maskOnly": { "gpuMs": { "mean": 8.62, "p95": 10.16, "max": 15.49, "over16": 0 }, "passes": { "sun": 1.434, "map": 0.091, "cull": 1.783, "world": 0.678, "mask": 1.52, "shade": 1.873, "present": 0.22 }, "counts": { "sprites": 21430, "rows": 153669, "points": 1 } },
-      "r9": { "gpuMs": { "mean": 17.04, "p95": 19.8, "max": 21.88, "over16": 366 }, "passes": { "sun": 2.352, "map": 0.146, "cull": 4.529, "world": 1.255, "mask": 2.858, "shade": 2.477, "present": 0.366 }, "counts": { "sprites": 24160, "rows": 173770, "points": 7866 }, "note": "run first, under load (sun and shade, unchanged, cost 1.6 and 1.4x the quiet run's); pebbles now drawn (7,866 specks at the close view)" },
-      "baseAfterR9": { "gpuMs": { "mean": 10.42, "p95": 18.98, "max": 20.44, "over16": 62 }, "passes": { "sun": 3.01, "map": 0.32, "cull": 3.497, "mask": 4.899, "world": 1.264, "shade": 2.578, "present": 0.367 } }
-    },
-    "zoom": {
-      "maskOnly": { "gpuMs": { "mean": 12.98, "p95": 30.2, "max": 66.93, "over16": 125 } },
-      "base": { "gpuMs": { "mean": 25.41, "p95": 57.08, "max": 96.05 }, "note": "the next run, heavier load" }
-    },
-    "turn": null,
-    "pan": null,
-    "missing": "turn and pan, the zoom of the final build and scripts/play/objects.ts were not run before the run's budget ran out"
+    "orbit": { "r9": { "gpuMs": { "mean": 7.93, "p95": 10.96, "max": 17.87, "over16": 3 }, "fps": 59.9, "passes": { "sun": 1.102, "map": 0.091, "cull": 2.514, "world": 0.736, "specks": 0.05, "mask": 1.628, "shade": 1.535, "present": 0.21 }, "counts": { "sprites": 23615, "rows": 165958, "points": 7777 } }, "simWorker": { "mean": 6.59, "p95": 8.67, "max": 15.55, "over16": 0 }, "unit14": { "mean": 9.0, "p95": 11.67, "max": 16.45, "over16": 0 } },
+    "zoom": { "r9": { "gpuMs": { "mean": 17.86, "p95": 34.92, "max": 104.21, "over16": 207 }, "fps": 56.1, "longTasks": [82] }, "simWorker": { "mean": 7.8, "p95": 13.57, "max": 21.21, "over16": 8 }, "unit14": { "mean": 10.95, "p95": 17.56, "max": 40.37, "over16": 56 } },
+    "turn": { "r9": { "gpuMs": { "mean": 8.75, "p95": 15.99, "max": 22.45, "over16": 28 }, "fps": 59.8, "passes": { "sun": 2.316, "cull": 4.122, "world": 1.066, "mask": 3.635, "shade": 2.706 } }, "simWorker": { "mean": 7.92, "p95": 10.83, "max": 23.48, "over16": 1 } },
+    "pan": { "r9": { "gpuMs": { "mean": 12.92, "p95": 18.67, "max": 23.11, "over16": 86 }, "fps": 58.7 }, "simWorker": { "mean": 6.69, "p95": 12.5, "max": 15.61, "over16": 0 } },
+    "verdict": "Every bench has more frames over 16.7 ms than bench-sim-worker.json (R9 not met). The cost is the drawn density since Unit 7 (10 million stems): a per-zoom scan (sim paused, median of 8 frames) has one view at the isle levels at 16 to 25 ms and every cross-fade between two levels (two views drawn whole) at 21 to 53 ms; close and region single views 4 to 15 ms."
+  },
+  "cullEmit": { "note": "A/B of the cull's emission on the same quiet build, per-zoom scan, cull pass ms: one atomic a list per workgroup round (kept) against one per thread", "island": [7.09, 10.96], "isle200": [9.8, 12.27], "isle100": [7.93, 8.1], "region": [1.36, 2.16], "close": [1.75, 4.13] },
+  "maskPixels": "Mask after the world, tested against maskZ: the frame at the close level, hour pinned at 9.5, sim paused, warm 0, is identical in all 1,600,000 pixels to the same build with maskZ letting every pixel take the shadows (the old behaviour); a second capture of the new build differed in 140 px of one 16 x 16 box (a sprite still being made).",
+  "objectsCheck": "scripts/play/objects.ts on this build: all passed (anchors within 1 px at four zooms, far lists equal to the whole index at every level, a killed stem gone from the next frame); pebbles drawn at close (7,943 specks).",
+  "dailyStep": {
+    "note": "Seed 1 through space.ts resident (stems, deadwood, seedlings), begin to the GPU idle (day) and the landing after, days 2 to 6 (day 1 compiles). Seedlings' coefficients are now worked out ahead over the day's hours as the stems' are (seeds.ts ahead, a 'seedlings ahead' law), identical by construction.",
+    "amdBefore": { "beginCpuMs": [34.1, 40.5], "gpuMs": [34.1, 55.1], "dayMs": [70.9, 89.2], "landMs": [11.5, 34.2] },
+    "amdAfter": { "beginCpuMs": [12.9, 24.5], "gpuMs": [36.9, 50.2], "dayMs": [50.7, 71.2], "landMs": [10.0, 32.2] },
+    "intelBefore": { "beginCpuMs": [27.6, 31.7], "gpuMs": [237.6, 242.4], "dayMs": [265.2, 272.4], "landMs": [38.6, 57.6] },
+    "gap": "The day is 51 to 71 ms on AMD against the 50 ms budget: the kernels' 37 to 50 ms (raster count and file 8 to 10 ms each in place) and the deadwood's and seedlings' own CPU recording remain."
   }
 }

@@ -1,7 +1,7 @@
 // Runs the game's simulation in the render worker (isopixel/worker.js), on the GPU device the island is drawn with, the
 // way server.ts loop() runs it: one tick at a time, the same change sets, cleared the same way. The page thread keeps
 // only what it shows (remote.js): after each tick the worker posts it state(), and what the page has asked about.
-import { ACTIVITY, DAY, census as headcount, TILE_M, activity, brainKind, changed, changedKinds, floraOf, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, pathChanges, removeThing, removed, resident, stemDriver, thingById, thingView, tick, trailChanges, trails, useBrain } from "../sim.js";
+import { ACTIVITY, DAY, census as headcount, TILE_M, activity, brainKind, changed, changedKinds, floraOf, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, pathChanges, removeThing, removed, resident, seedDriver, stemDriver, thingById, thingView, tick, trailChanges, trails, useBrain } from "../sim.js";
 
 // The random brain answers through promise chains and a thinking agent skips its turn, so each warming tick waits for a
 // fresh task.
@@ -26,7 +26,7 @@ function clearChanges() {
 export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev = null } = {}) {
   const w = newWorld(seed);
   // as the first tick would (sim.ts tick), so the buffers are there before any tick
-  if (!floraOf(w).store) await resident(w, stemDriver(w));
+  if (!floraOf(w).store) await resident(w, stemDriver(w), seedDriver(w));
   await onWorld?.(w);
   let tickMs = 0, lastEvent = 0;
 

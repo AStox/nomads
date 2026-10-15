@@ -136,7 +136,27 @@ export function seedDriver(w: World): SeedDriver {
   const treeScale = SEED_ROWS.map((sp) => (GROWTH_C[sp] ? ((GROWTH_C[sp] / 4) * part * 2 ** 20) / openNet(w, sp) : 0));
   const ps = [...new Set(SEED_ROWS.map((sp) => pOf(sp)))], pAt = SEED_ROWS.map((sp) => ps.indexOf(pOf(sp)));
   const perSla = new Float64Array(ps.length), young = new Int32Array(N * N * YOUNG_WORDS);
-  let memo = -1;
+  let memo = -1, done = 0;
+  // The day whose coefficients young holds, for its first `done` cells of `cells`.
+  const work = (t: number, upTo: number) => {
+    if (memo !== t) { memo = t; done = 0; }
+    const { s, f: x } = seasonAt(t), s2 = (s + 1) % 4, a = isle.seasons[s], b = isle.seasons[s2], wa = isle.soilWater[s], wb = isle.soilWater[s2];
+    for (let c = done; c < upTo; c++) {
+      const i = cells[c];
+      const sun = a.sun[i] * (1 - x) + b.sun[i] * x, temp = a.temp[i] * (1 - x) + b.temp[i] * x, water = wa[i] * (1 - x) + wb[i] * x, kept = keptOf(temp);
+      for (let p = 0; p < ps.length; p++) perSla[p] = madeOf(1, sun, temp, water, ps[p]);
+      for (let r = 0; r < NR; r++) {
+        const sp = SEED_ROWS[r], made = SLA[sp] * fits[i * NR + r] * perSla[pAt[r]], at = i * YOUNG_WORDS + r * 4;
+        young[at] = Math.min(most, Math.round(rel * made));
+        young[at + 1] = Math.min(most, Math.round(rel * kept));
+        if (r < 4) {
+          young[at + 2] = lost[r] ? 0 : Math.min(most, Math.round(treeScale[r] * made));
+          young[at + 3] = lost[r] ? Math.min(most, Math.round((GROWTH_C[sp] / 4) * part * 2 ** 20)) : Math.min(most, Math.round(treeScale[r] * kept));
+        }
+      }
+    }
+    done = Math.max(done, upTo);
+  };
   return {
     law,
     dry() {
@@ -150,23 +170,14 @@ export function seedDriver(w: World): SeedDriver {
       return out;
     },
     young(t) {
-      if (memo === t) return young;
-      memo = t;
-      const { s, f: x } = seasonAt(t), s2 = (s + 1) % 4, a = isle.seasons[s], b = isle.seasons[s2], wa = isle.soilWater[s], wb = isle.soilWater[s2];
-      for (const i of cells) {
-        const sun = a.sun[i] * (1 - x) + b.sun[i] * x, temp = a.temp[i] * (1 - x) + b.temp[i] * x, water = wa[i] * (1 - x) + wb[i] * x, kept = keptOf(temp);
-        for (let p = 0; p < ps.length; p++) perSla[p] = madeOf(1, sun, temp, water, ps[p]);
-        for (let r = 0; r < NR; r++) {
-          const sp = SEED_ROWS[r], made = SLA[sp] * fits[i * NR + r] * perSla[pAt[r]], at = i * YOUNG_WORDS + r * 4;
-          young[at] = Math.min(most, Math.round(rel * made));
-          young[at + 1] = Math.min(most, Math.round(rel * kept));
-          if (r < 4) {
-            young[at + 2] = lost[r] ? 0 : Math.min(most, Math.round(treeScale[r] * made));
-            young[at + 3] = lost[r] ? Math.min(most, Math.round((GROWTH_C[sp] / 4) * part * 2 ** 20)) : Math.min(most, Math.round(treeScale[r] * kept));
-          }
-        }
-      }
+      work(t, cells.length);
       return young;
+    },
+    // The next day's after tick t, an even share of those left for each hour left before it (they depend on nothing but
+    // the day, so they are the same worked out whenever).
+    ahead(t) {
+      const next = (Math.floor(t / DAY) + 1) * DAY, from = memo === next ? done : 0;
+      if (from < cells.length) work(next, Math.min(cells.length, from + Math.ceil((cells.length - from) / Math.max(1, Math.ceil((next - t) / (DAY / 24))))));
     },
   };
 }

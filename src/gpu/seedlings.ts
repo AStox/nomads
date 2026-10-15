@@ -41,7 +41,9 @@ export { BLOCK_CELLS, BLOCKS_SIDE, LAYER, ROW_OF, SEED_ROWS, YOUNG_WORDS } from 
 export type Layer = { row: number; q0: number; from: number; to: number; up: number; lag: number; parity: number };
 export type SeedLaw = SeedLawWords & { yearDays: number; layers: readonly Layer[]; browse: Uint32Array };
 // What the law reads from the sim each day (src/sim/seeds.ts seedDriver).
-export type SeedDriver = { law: SeedLaw; dry(): Uint32Array; stand(): Uint32Array; young(t: number): Int32Array };
+// young(t): the day's coefficients by cell; ahead(t), when given, works out a share of the next day's after tick t, so
+// the day's law has fewer left to work out.
+export type SeedDriver = { law: SeedLaw; dry(): Uint32Array; stand(): Uint32Array; young(t: number): Int32Array; ahead?(t: number): void };
 export type Census = { bins: number[]; members: number[]; grads: number; gradMembers: number; pend: number[] };
 
 export const SEEDLING = "seedling";
@@ -111,6 +113,7 @@ export class Seedlings implements Rider {
     };
     const law = driver.law;
     store.law({ name: "seedlings", due: (t) => t % law.dayTicks === 0, run: (s, t) => this.day(s, t) });
+    if (driver.ahead) store.law({ name: "seedlings ahead", due: (t) => t % law.dayTicks !== 0 && t % (law.dayTicks / 24) === 0, run: (_, t) => driver.ahead!(t) });
     store.law({ name: "seed shed", due: (t) => this.sheds.length > 0 && t % law.dayTicks !== 0 && t % law.dayTicks < this.slices, run: (s, t) => this.shed(s, t % law.dayTicks) });
     store.ride(this);
   }
