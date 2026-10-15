@@ -10,6 +10,7 @@
 1. **[2026-09-26] Other agents work in this checkout too**
    A second Paseo agent may have uncommitted edits here and a paid Jev run going on the live world.
    Do instead: before merging or restarting, check `git status` here and `list_agents` for a running nomads agent. If either is busy, ask before touching what it uses. Work on main and commit and push to main (the operator's rule since 2026-10-01); no feature branches.
+   **[2026-10-15] Deploy every change.** The operator wants to see progress at any time without asking: after every commit, rebuild the play site (`bun scripts/demo.ts styles --out ~/.cache/nomads-play`, served at :8197/play/ and through the tunnel), then carry on with the next step without waiting.
 2. **[2026-09-26] The live service serves this checkout, and watching it costs money**
    nomads.service runs `bun server.ts` here (branch web-v1, port 8095). public/ is read from disk on every request, so client edits go live at once; server edits go live on restart. The world only ticks while a client is connected, and the live brain bills Jev.
    Do instead: work in a git worktree, test it as an offline copy on another port (`PORT=8196 NOMADS_DATA=/tmp/<dir> NOMADS_BRAIN=random bun server.ts`), then fast-forward web-v1, `bun install`, and `systemctl restart nomads`. Never open :8095 or goldclaw.duckdns.org/nomads to test; check the live server only through `/api/debug/*`.
