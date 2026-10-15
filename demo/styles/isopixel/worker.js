@@ -1,7 +1,8 @@
 // The render worker: owns the WebGPU device and the page's canvas (an OffscreenCanvas), grows the island's fields once,
-// keeps every object of the sim on the GPU with the atlas of their sprites, and draws each frame the page asks for
-// (webgpu.js). The page (live.js) keeps the camera, the sky and the live sim, and sends what moves: the view, the light,
-// the people, animals, fires and overlays, and the sim's changes.
+// runs the game's sim on the same device (play/sim.js), keeps every object of the sim on the GPU with the atlas of their
+// sprites, and draws each frame the page asks for (webgpu.js). The page (live.js) keeps the camera, the sky and the UI;
+// it sends what moves (the view, the light, the people, animals, fires and overlays), asks for each tick, and gets the
+// sim's state after it (play/remote.js).
 import { generateIsland, fineGround, rng, SIZE, TILE_M, TILES } from "../island.js";
 import { P, NCOL, HAZE, GLOW, TONE, TONE_S } from "./pal.js";
 import { ObjBins } from "./px.js";
@@ -17,7 +18,7 @@ const ORIGIN = -SIZE / 2, WS = 12.5, toM = (t) => t * TILE_M + ORIGIN;
 // entries, rows and families kept for sprites made while the page runs (live sprites and objects the sim changed), and
 // the atlas layers they go in
 const DYN_ENTRIES = 32768, DYN_ROWS = 1 << 20, DYN_FAMILIES = 4096, DYN_LAYERS = 2;
-let R = null, device = null, canvas = null, context = null, fields = null, TH = {};
+let R = null, device = null, gpuName = "", canvas = null, context = null, fields = null, TH = {};
 let fam = null, objs = null, idx = new Map(), level = null;
 let table = null, nStatic = 0, rowsStatic = 0, dyn = null, liveIds = new Map(), extrasMade = new Map();
 // the page's live sprites as they came, by its ids: placed in the dynamic layers when a frame first draws them, and again
@@ -34,6 +35,8 @@ async function init(m) {
   const timing = adapter.features.has("timestamp-query");
   device = await adapter.requestDevice({ requiredFeatures: timing ? ["timestamp-query"] : [], requiredLimits: { maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize, maxTextureArrayLayers: adapter.limits.maxTextureArrayLayers } });
   device.lost.then((info) => post({ type: "lost", why: info.message || info.reason }));
+  // as src/gpu/device.ts names an adapter, for the sim that runs on this device
+  gpuName = [adapter.info?.vendor, adapter.info?.architecture, adapter.info?.description].filter(Boolean).join(" ") || "unknown adapter";
   device.addEventListener?.("uncapturederror", (e) => post({ type: "gpuerror", why: e.error.message }));
   canvas = m.canvas;
   context = canvas.getContext("webgpu");
@@ -60,6 +63,7 @@ async function init(m) {
   await new Promise((r) => setTimeout(r, 0));
   if (R.errors.length) throw new Error(R.errors.join("\n"));
   post({ type: "ready", ms: performance.now() - t0 });
+  if (m.sim) startSim(m.seed, m.sim).catch((err) => post({ type: "simError", error: String((err && err.stack) || err) }));
 }
 
 // ---------- fields read on the CPU: a tree's darkness and a stone's moss ----------
@@ -71,7 +75,7 @@ const aoAt = (x, z) => {
 const treeAt = (x, z) => fields.g.fine(fields.g.cover.tree, x, z);
 
 // ---------- objects ----------
-// The sim's objects (live.js sync: sim.objects()), each a GPU object in the order of the grown arrays, then the things
+// The sim's objects (startSim: sim.objects()), each a GPU object in the order of the grown arrays, then the things
 // the sim made, as they come. levels: the zoom ladder's { pv, pw, shrunk }.
 async function setObjects(m) {
   const t0 = performance.now(), o = m.objs, gr = o.grown, n = gr.n, spare = 1 << 16;
@@ -100,8 +104,10 @@ async function setObjects(m) {
   packAtlas(made);
   R.setObjects(W, objs.ids, objs.next);
   const t3 = performance.now();
-  // the trees' cover for the ambient occlusion
-  const bins = new ObjBins(o), c = await Canopy.build(bins, toM, { n: fields.GN, step: WS }, 1e9);
+  // the trees' cover for the ambient occlusion, from the drawn things' records
+  const bins = new ObjBins({ ...o, things: [] });
+  for (const r of o.things) bins.upsert(r);
+  const c = await Canopy.build(bins, toM, { n: fields.GN, step: WS }, 1e9);
   R.setCanopy(CAN_N, CAN_STEP, c.bytes(), c.tall);
   canopyOf = { c, bins };
   post({ type: "objects", n, sprites: made.length, families: fam.keys.length, ms: { words: t1 - t0, sprites: t2 - t1, pack: t3 - t2, canopy: performance.now() - t3 } });
@@ -230,6 +236,19 @@ function ensureSprites(k) {
     if (id !== null || !s) { R.tablePut(slot, table[slot]); if (s) extrasMade.set(slot, id); }
   }
 }
+// The sim's changes to its objects: records gone (rm, ids) and put (up), with the tables their codes index
+function changeObjects(up, rm) {
+  if (!objs) return;
+  objs.kinds = bins.kinds; objs.species = bins.species;
+  for (const id of rm) drop(id);
+  for (const r of up) upsert(r);
+  if (canopyOf) {
+    for (const id of rm) { const old = canopyOf.bins.get(id); if (old) { canopyOf.bins.drop(id); canopyOf.c.change(old, null, objs.kinds, objs.species); } }
+    for (const r of up) { const old = canopyOf.bins.get(r.id); canopyOf.bins.kinds = objs.kinds; canopyOf.bins.species = objs.species; canopyOf.bins.upsert(r); canopyOf.c.change(old, r, objs.kinds, objs.species); }
+    const u = canopyOf.c.flush();
+    if (u) R.updateCanopy(u.x, u.y, u.w, u.h, u.bytes);
+  }
+}
 
 // ---------- worn paths ----------
 // The sim's 3 m wear cells, each its drawn width step (0 to 4), and in bit 7 of the texel the GPU reads whether any worn
@@ -281,6 +300,101 @@ function trailCells(cells) {
   }
 }
 
+// ---------- the sim ----------
+// The game's sim (play/sim.js) runs here on this worker's device, so the world's objects and the drawing share one GPU
+// and the page thread keeps only the UI. Its objects go on the GPU as they stand once it is warm, and as each tick
+// changes them; the page asks for each tick and gets the people, animals and camps after it (play/remote.js), with what
+// it asks about (want: the selection, the things window, the history).
+let sim = null, bins = null, want = { sel: null, things: null, history: false };
+const levelsIn = Promise.withResolvers();
+const isLive = (t) => ObjBins.LIVE.has(t.kind) || !!t.bed;
+const numId = (id) => +String(id).slice(1);
+const iceOf = (ice) => { const f = new Uint8Array(TILES * TILES); if (ice) for (const i of ice) f[i] = 1; return f; };
+// the sim's footpath wear, stepped into the five widths the ground draws
+const wearStep = (v) => (v < 2 ? 0 : v < 5 ? 1 : v < 12 ? 2 : v < 30 ? 3 : 4);
+let trailSrc = null, trailQ = null, trailFlush = 0;
+const trailPending = new Set();
+
+async function startSim(seed, { warm = 0, jev = null }) {
+  const { useGpu } = await import("../sim.js"), { createSim } = await import("../play/sim.js");
+  useGpu({ device, adapter: gpuName });
+  sim = await createSim({ seed, warm, jev, onProgress: (d, n) => post({ type: "simProgress", d, n }) });
+  const w = sim.w, o = sim.objects();
+  bins = new ObjBins(o);
+  // the things the page draws every frame, as a client is sent them (inspect.ts thingView), a burning one with its
+  // blaze; only a thing with a bed can be alight, so the ground's thousands of others are passed by
+  const live = [];
+  for (const t of w.things) {
+    if (t.contained || !(ObjBins.LIVE.has(t.kind) || t.bed)) continue;
+    const v = sim.view(t);
+    if (ObjBins.LIVE.has(v.kind) || v.blaze) live.push(v);
+  }
+  post({ type: "simReady", activities: sim.activities, day: sim.day, opening: sim.opening(), state: sim.state(), live });
+  R.setIce(iceOf(w.ice));
+  trailSrc = sim.trails(); trailQ = new Map();
+  const all = new Uint8Array(TN * TN);
+  for (const [i, v] of trailSrc.wear) { const q = wearStep(v); if (q) { trailQ.set(i, q); all[i] = q; } }
+  trailsAll(all);
+  const things = [];
+  for (const t of o.things) if (!t.contained && !isLive(t)) things.push(bins.recOf(t));
+  await setObjects({ objs: { grown: o.grown, kindNames: bins.kinds, speciesNames: bins.species, gone: o.gone, things }, levels: await levelsIn.promise });
+}
+// One tick, its changes onto the GPU, and the state after it to the page with what changed of the things it draws every
+// frame (ch: live, those to draw as they are now; drop, the ids to draw no more).
+async function simTick() {
+  const ch = { live: [], drop: [] };
+  try { simChanged(await sim.tick(), ch); } catch (err) { console.error("tick", err); }
+  post({ type: "simState", state: sim.state(), ch, ...answers() });
+}
+function simChanged(done, ch) {
+  const up = [], rm = [];
+  const gone = (id) => { if (bins.get(id)) { bins.drop(id); rm.push(id); } };
+  for (const t of done.things) {
+    const id = numId(t.id);
+    if (t.contained || isLive(t)) {
+      if (t.contained) ch.drop.push(t.id); else ch.live.push(t);
+      gone(id);
+      continue;
+    }
+    ch.drop.push(t.id);
+    const r = bins.recOf(t), old = bins.get(id);
+    if (old && old.kind === r.kind && old.sp === r.sp && old.px === r.px && old.py === r.py && old.size === r.size && old.seed === r.seed && (old.n > 0) === (r.n > 0)) continue;
+    bins.upsert(r); up.push(r);
+  }
+  for (const sid of done.removed) { ch.drop.push(sid); gone(numId(sid)); }
+  if (up.length || rm.length) changeObjects(up, rm);
+  for (const i of done.trails) trailPending.add(i);
+  // wear changes every tick; only a change of drawn width counts, put up every few seconds
+  const now = performance.now();
+  if (trailPending.size && now - trailFlush > 4000) {
+    trailFlush = now;
+    const cells = [];
+    for (const i of trailPending) { const q = wearStep(trailSrc.wear.get(i) ?? 0); if (q !== (trailQ.get(i) ?? 0)) { if (q) trailQ.set(i, q); else trailQ.delete(i); cells.push([i, q]); } }
+    trailPending.clear();
+    if (cells.length) trailCells(cells);
+  }
+  if (done.ice) R.setIce(iceOf(sim.w.ice));
+}
+// What the page asked about, as it stands now: the selection (play/sim.js about, and for a thing on the ground the record
+// it is drawn from), the things window, the history.
+function answers() {
+  const m = {};
+  if (want.sel != null) { m.sel = want.sel; m.about = aboutOf(want.sel); }
+  if (want.things) m.things = sim.things(want.things);
+  if (want.history) m.history = sim.history();
+  return m;
+}
+function aboutOf(sel) {
+  try {
+    const a = sim.about(sel), r = typeof sel === "string" && sel.startsWith("t") ? bins.get(numId(sel)) : null;
+    if (r) a.mark = { px: r.px, py: r.py, size: r.size, kind: bins.kinds[r.kind], species: bins.species[r.sp] };
+    return a;
+  } catch (err) {
+    console.error("inspect", err);
+    return { data: null };
+  }
+}
+
 // ---------- frames ----------
 // The page's frame: views with their uniforms and live sprites by the page's sprite ids, which go into the dynamic
 // layers the first time they come.
@@ -310,7 +424,7 @@ function render() {
     const prims = v.prims ? Int32Array.from(v.prims) : null;
     // a sprite primitive names the page's sprite
     if (prims) for (let i = 0; i < prims.length; i += 8) if (prims[i] === 0) { const sp = liveId(prims[i + 3]); prims[i + 3] = sp ?? 0; if (sp === undefined) { prims[i] = 2; prims[i + 4] = 255; } }
-    return { ...v, live: v.live?.length ? liveInstances(v.live) : null, prims };
+    return { ...v, U: { ...v.U, gflags: trailQ?.size ? 1 : 0 }, live: v.live?.length ? liveInstances(v.live) : null, prims };
   });
   R.frame({ ...f, views });
   frames++;
@@ -326,22 +440,10 @@ const handle = async (e) => {
   const m = e.data;
   try {
     if (m.type === "init") await init(m);
-    else if (m.type === "objects") await setObjects(m);
+    else if (m.type === "levels") levelsIn.resolve(m.levels);
     else if (m.type === "frame") { pending = m; render(); }
-    else if (m.type === "changes") {
-      if (!objs) return;
-      if (m.kinds) objs.kinds = m.kinds;
-      if (m.species) objs.species = m.species;
-      for (const id of m.rm ?? []) { drop(id); }
-      for (const r of m.up ?? []) upsert(r);
-      if (canopyOf && (m.up?.length || m.rm?.length)) {
-        for (const id of m.rm ?? []) { const old = canopyOf.bins.get(id); if (old) { canopyOf.bins.drop(id); canopyOf.c.change(old, null, objs.kinds, objs.species); } }
-        for (const r of m.up ?? []) { const old = canopyOf.bins.get(r.id); canopyOf.bins.kinds = objs.kinds; canopyOf.bins.species = objs.species; canopyOf.bins.upsert(r); canopyOf.c.change(old, r, objs.kinds, objs.species); }
-        const u = canopyOf.c.flush();
-        if (u) R.updateCanopy(u.x, u.y, u.w, u.h, u.bytes);
-      }
-    } else if (m.type === "trails") { if (m.all) trailsAll(m.all); if (m.cells) trailCells(m.cells); }
-    else if (m.type === "ice") R.setIce(m.flags);
+    else if (m.type === "simTick") await simTick();
+    else if (m.type === "simWant") { want = m.want; post({ type: "simState", ...answers() }); }
     else if (m.type === "pick") { const r = await R.pick(m.x, m.y); post({ type: "pick", id: m.id, r }); }
     else if (m.type === "resize") { canvas.width = m.W; canvas.height = m.H; }
   } catch (err) {

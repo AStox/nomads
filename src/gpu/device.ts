@@ -51,6 +51,9 @@ const describe = (a: GPUAdapter) => [a.info.vendor, a.info.architecture, a.info.
 // The process's GPU: opened on first use, the same one after.
 let current: Promise<Gpu> | null = null;
 export const theGpu = () => (current ??= openGpu());
+// The process's GPU from a device its host already opened, before anything asks theGpu(): a page's render worker runs
+// the world on the device it draws with, so one device serves both.
+export const useGpu = (g: Gpu) => { current = Promise.resolve(g); };
 
 // Let the process exit: destroys the process's device.
 export async function releaseGpu() {

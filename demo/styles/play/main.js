@@ -1,5 +1,7 @@
-// The live page: the game's sim running in this tab, drawn by the isopixel renderer with a pan, zoom and orbit camera.
+// The live page: the game's sim running in the render worker beside the isopixel renderer (play/remote.js), drawn with a
+// pan, zoom and orbit camera; this thread keeps the camera, the input and the windows.
 import { createLive, hasWebGPU, loadingScreen } from "../isopixel/live.js";
+import { connectSim } from "./remote.js";
 import { drawInspector, drawPanel } from "../isopixel/inspect.js";
 import { RGB, P } from "../isopixel/pal.js";
 import { Buf } from "../isopixel/px.js";
@@ -45,7 +47,7 @@ async function main() {
   const steps = { renderer: ["growing the island", 0], sim: ["warming the world", 0] };
   const say = () => { const r = steps.renderer, w = steps.sim; loadingScreen(canvas, `${r[0]}  ${w[1] < 1 && withSim ? "/ " + w[0] : ""}`.trim(), (r[1] + (withSim ? w[1] : 1)) / 2); };
   say();
-  // the sim and the renderer's workers grow the same island at the same time
+  // the renderer's worker grows the island, then warms the world on the same GPU
   // ?jev=<token> lets the people think with Jev through this server's relay, and is remembered on this browser;
   // ?jev=off forgets it
   const jevQ = Q.get("jev");
@@ -53,9 +55,8 @@ async function main() {
   const jev = jevQ === "off" ? null : localStorage.getItem("nomads-jev");
   // the token is kept, not shown: a copied link doesn't carry it
   if (jevQ) { Q.delete("jev"); history.replaceState(null, "", `${location.pathname}${Q.size ? `?${Q}` : ""}`); }
-  const simP = withSim ? import("./sim.js").then(({ createSim }) => createSim({ seed, warm, jev, onProgress: (d, n) => { steps.sim = ["warming the world", d / n]; say(); } })) : Promise.resolve(null);
-  const live = await createLive({ seed, canvas, onProgress: (d, n, what) => { steps.renderer = [what, 0.5 * (what === "drawing the sprites" ? 1 : 0) + (0.5 * d) / n]; say(); } });
-  const sim = await simP;
+  const live = await createLive({ seed, canvas, sim: withSim ? { warm, jev } : null, onProgress: (d, n, what) => { steps.renderer = [what, 0.5 * (what === "drawing the sprites" ? 1 : 0) + (0.5 * d) / n]; say(); } });
+  const sim = withSim ? await connectSim(live, { onProgress: (d, n) => { steps.sim = ["warming the world", d / n]; say(); } }) : null;
   if (sim?.brain === "relay") { document.title = "Nomads: live, thinking with Jev"; hint.textContent += " · thinking with Jev"; }
   // ?hour= pins the hour the island is drawn at, its light and sun, while the sim runs on; ?speed= starts it faster
   // (a tick each frame at most, so 32 runs a day in about five seconds), for timelapses
@@ -70,16 +71,8 @@ async function main() {
   let follow = null, openingPerson = null, opening = null, farSince = 0, farDest = null;
   // Open on the person nearest the densest cluster of shelters, fires and stumps, and follow them; with nothing built
   // yet, on whoever has the most going on around them.
-  if (sim?.w.agents.length) {
-    const W = sim.w, weight = (t) => (t.contained || t.inside ? 0 : t.kind === "structure" ? 2 + (t.shelter?.tier ?? 0) * 2 : t.kind === "fire" ? 4 : t.kind === "well" ? 2 : ["stump", "burnt_stump", "pit", "ash", "grave"].includes(t.kind) ? 1 : 0);
-    const built = W.things.filter((t) => weight(t) > 0);
-    let best = null, bs = 0;
-    for (const t of built) {
-      const sc = built.reduce((a, o) => a + (Math.abs(o.x - t.x) <= 2 && Math.abs(o.y - t.y) <= 2 ? weight(o) : 0), 0);
-      if (sc > bs) { bs = sc; best = t; }
-    }
-    const busy = (a) => W.things.filter((t) => !t.contained && t.kind !== "tree" && Math.abs(t.x - a.x) <= 2 && Math.abs(t.y - a.y) <= 2).length + W.agents.filter((b) => Math.abs(b.x - a.x) <= 2 && Math.abs(b.y - a.y) <= 2).length * 4;
-    const person = best ? [...W.agents].sort((p, q) => Math.hypot(p.x - best.x, p.y - best.y) - Math.hypot(q.x - best.x, q.y - best.y))[0] : [...W.agents].sort((p, q) => busy(q) - busy(p))[0];
+  if (sim?.opening) {
+    const person = sim.opening;
     opening = view.zoom < 1 ? { kind: "ground", px: 32, py: 32 } : { kind: "ground", px: person.px, py: person.py };
     camera.lookAt(live.where(opening, sim, view));
     openingPerson = person.id;
@@ -93,7 +86,9 @@ async function main() {
     if (how === "link" && view.selected != null && view.selected !== sel) back.push(view.selected);
     else if (how !== "link" && how !== "back") back.length = 0;
     view.selected = sel; farSince = 0;
-    follow = typeof sel === "string" && (movers(sel) || ((how === "link" || how === "back") && sim?.pos(sel))) ? sel : null;
+    // the worker answers for the selection from now on (play/remote.js want); a thing gone by then is let go
+    sim?.want({ sel });
+    follow = typeof sel === "string" && (movers(sel) || ((how === "link" || how === "back") && sel.startsWith("t"))) ? sel : null;
     if (watch && follow) tabWatch = { t0: performance.now(), hole: 0, cutAt: 0, last: performance.now() };
     if (how !== "keep") ui.tab = null;
     ui.open.clear(); ui.scroll = 0;
@@ -120,12 +115,22 @@ async function main() {
   }
   const CB = { y: 4, s: 9 }, cbx = () => IW - 15, BK = { x: 5, y: 4, s: 9 };
   const ui = { tab: null, open: new Set(), scroll: 0, max: 0, hover: null, hits: [] };
-  let inspData = null;
+  // a link followed, until the worker says whether what it names is still there
+  let inspData = null, linkTo = null;
   function inspect() {
     const sel = view.selected;
-    inspData = sel && sim ? (typeof sel === "object" ? sim.inspectGround(sel.px, sel.py) : sim.inspect(sel)) : null;
-    if (sel && !inspData) { view.selected = null; follow = null; }
-    if (!inspData) { insp.hidden = true; placePad(); return; }
+    if (!sel || !sim) { inspData = null; insp.hidden = true; placePad(); return; }
+    const d = typeof sel === "object" ? sim.inspectGround(sel.px, sel.py) : sim.inspect(sel);
+    // undefined while the worker is asked: the window keeps what it showed until the answer comes
+    if (d === undefined) return;
+    inspData = d;
+    if (!d) {
+      // a link to one gone leads back where it came from
+      if (sel === linkTo && back.length) { linkTo = null; select(back.pop(), true, "back"); return; }
+      view.selected = null; follow = null; insp.hidden = true; placePad();
+      return;
+    }
+    if (sel === linkTo) linkTo = null;
     paintInspector();
   }
   // a raised square button in a title bar with a glyph drawn by fn(put, x, y)
@@ -150,7 +155,7 @@ async function main() {
   const onBox = (p, x, y, s) => p.x >= x - 1 && p.x <= x + s && p.y >= y - 1 && p.y <= y + s;
   const hitAt = (hits, p) => hits.find((h) => p.x >= h.x0 && p.x <= h.x1 && p.y >= h.y0 && p.y <= h.y1) ?? null;
   // go to what a window names: a person, an animal or a thing
-  const go = (id) => { if (sim?.inspect(id)) select(id, true, "link"); };
+  const go = (id) => { if (!sim) return; linkTo = id; select(id, true, "link"); };
   // A window scrolls by the wheel or by dragging a finger (or the mouse) up and down it; a press that hardly moves is a
   // tap, acted on as it lifts.
   function scrollable(cv, get, set, tap) {
@@ -199,8 +204,7 @@ async function main() {
     const tab = wui.tab;
     if (tab === "people") {
       out.push({ tab: "people", title: `people (${W.agents.length})`, rows: W.agents.map((a) => ({ label: a.name, value: a.status, icon: sim.activity(a.id) ? `act:${sim.activity(a.id)}` : `agent:${a.color}`, link: a.id, hot: a.id === view.selected })), none: "no one is left" });
-      const camps = W.camps.filter((c) => !c.gone);
-      if (camps.length) out.push({ tab: "people", title: "camps", rows: camps.map((c) => ({ label: c.name, value: `${c.members.length} people`, more: c.members.map((id) => ({ text: W.people[id]?.name ?? id, link: id })) })) });
+      if (W.camps.length) out.push({ tab: "people", title: "camps", rows: W.camps.map((c) => ({ label: c.name, value: `${c.members.length} people`, more: c.members.map((m) => ({ text: m.name, link: m.id })) })) });
     } else if (tab === "animals") {
       const by = {};
       for (const a of W.animals) if (a.hp > 0) (by[a.species] ??= []).push(a);
@@ -208,16 +212,17 @@ async function main() {
         out.push({ tab: "animals", title: `${sp} (${list.length})`, key: `animals|${sp}`, fold: true, rows: wui.fold.has(`animals|${sp}`) ? near(list).slice(0, 200).map((a) => ({ label: words(a.state), value: far(a.px, a.py), icon: `animal:${sp}`, link: a.id, hot: a.id === view.selected })) : [] });
       if (!out.length) out.push({ tab: "animals", none: "no animals" });
     } else if (tab === "things") {
-      const by = {};
-      for (const t of W.things) if (!t.contained) (by[t.kind] ??= []).push(t);
-      for (const [k, list] of Object.entries(by).sort((a, b) => a[0].localeCompare(b[0]))) {
-        const title = `${words(k)} (${list.length})`;
-        out.push({ tab: "things", title, key: `things|${k}`, fold: true, rows: wui.fold.has(`things|${k}`) ? near(list).slice(0, 150).map((t) => ({ label: t.kind === "structure" ? ["pile", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0] : t.kind === "item" ? W.kinds[t.item]?.name ?? words(t.item ?? "item") : words(t.species ?? t.kind), value: far(t.px, t.py), link: t.id, hot: t.id === view.selected })) : [] });
-      }
+      // the worker counts them by kind and lists the nearest of each kind unfolded (wantWorld)
+      for (const [k, g] of Object.entries(sim.things() ?? {}).sort((a, b) => a[0].localeCompare(b[0])))
+        out.push({ tab: "things", title: `${words(k)} (${g.n})`, key: `things|${k}`, fold: true, rows: wui.fold.has(`things|${k}`) ? g.rows.map((t) => ({ label: t.label, value: far(t.px, t.py), link: t.id, hot: t.id === view.selected })) : [] });
     } else if (tab === "graphs") {
-      const h = sim.history(), span = h.t.length > 1 ? (h.t.at(-1) - h.t[0]) / 288 : 0;
-      out.push({ tab: "graphs", title: `people, last ${span.toFixed(1)} days`, rows: [{ label: "people", spark: h.people, h: 44, color: P.f1 }] });
-      out.push({ tab: "graphs", title: "animals", rows: Object.entries(h.animals).sort((a, b) => (b[1].at(-1) ?? 0) - (a[1].at(-1) ?? 0)).map(([sp, xs]) => ({ label: sp, spark: xs, h: 26, color: SPECIES_C[sp] ?? P.w3, link: `@animals|${sp}` })) });
+      const h = sim.history();
+      if (!h) out.push({ tab: "graphs", none: "counting" });
+      else {
+        const span = h.t.length > 1 ? (h.t.at(-1) - h.t[0]) / 288 : 0;
+        out.push({ tab: "graphs", title: `people, last ${span.toFixed(1)} days`, rows: [{ label: "people", spark: h.people, h: 44, color: P.f1 }] });
+        out.push({ tab: "graphs", title: "animals", rows: Object.entries(h.animals).sort((a, b) => (b[1].at(-1) ?? 0) - (a[1].at(-1) ?? 0)).map(([sp, xs]) => ({ label: sp, spark: xs, h: 26, color: SPECIES_C[sp] ?? P.w3, link: `@animals|${sp}` })) });
+      }
     } else {
       out.push({ tab: "key", title: "over their heads", rows: Object.entries(sim.activities).map(([k, v]) => ({ label: v, icon: `act:${k}` })) });
       out.push({ tab: "key", title: "on the ground", rows: [{ label: "gold line: where they have been" }, { label: "flags: what happened there" }, { label: "dots: where they are going" }, { label: `${touchy ? "PATH" : "H"} hides or shows the lines` }] });
@@ -225,6 +230,12 @@ async function main() {
     // every tab is there to click, its sections only the open one's
     return { sections: [...TABS.filter((t) => t !== tab).map((t) => ({ tab: t })), ...out].sort((a, b) => TABS.indexOf(a.tab) - TABS.indexOf(b.tab)) };
   }
+  // what the open window needs of the worker: the things by kind, the nearest of each unfolded kind to the view's tile,
+  // or the population's history; asked again after each tick, so the nearest follow the view
+  const wantWorld = () => sim?.want({
+    things: wui.open && wui.tab === "things" ? { open: [...wui.fold].filter((f) => f.startsWith("things|")).map((f) => f.slice(7)).sort(), px: Math.round((view.x + SIZE / 2) / TILE_M), py: Math.round((view.z + SIZE / 2) / TILE_M) } : null,
+    history: wui.open && wui.tab === "graphs",
+  });
   function paintWorld() {
     if (!sim) { worldEl.hidden = true; return; }
     const w = WW(), H = wui.open ? clamp(narrow() ? (window.innerHeight * 0.36) / 2 : window.innerHeight / 2 - 40, 100, 340) | 0 : 21, B = new Buf(w, H);
@@ -245,6 +256,7 @@ async function main() {
       const [tab, sp] = h.link.slice(1).split("|");
       wui.tab = tab; wui.scroll = 0; wui.fold.add(`animals|${sp}`);
     } else if (h.link) go(h.link);
+    wantWorld();
     paintWorld();
   });
   worldEl.addEventListener("pointermove", (e) => {
@@ -508,12 +520,15 @@ async function main() {
   placePad();
   setTimeout(() => hint.classList.add("gone"), 8000);
   globalThis.play = globalThis.nomads = { live, sim, view, camera, select, metrics, zoomTo: (g, sx, sy) => camera.zoomTo(g, sx, sy), turnBy: (d) => camera.turnBy(d), inspected: () => inspData, inspector: ui, world: wui, paintWorld };
+  // an answer from the worker between ticks (a new selection, a window opened) is shown as it comes
+  if (sim) sim.onAnswer = () => { if (view.selected) inspect(); if (wui.open) paintWorld(); };
 
   // Near targets are eased toward. A far one (a Tab to someone across the island) is baked first while the camera
   // holds, then cut to, so the close level never sits on a fallback.
   function followStep(now, dt) {
     const p = live.where(follow, sim, view);
-    if (!p) { select(null); live.prefetch(null); return; }
+    // a thing linked to stands where the worker says, once it has answered; gone, it is let go
+    if (!p) { if (sim.inspect(follow) !== undefined) select(null); live.prefetch(null); return; }
     const upOf = (q) => q.y - live.camH(q.x, q.z), ahead = p.dx || p.dz ? [{ ...view, x: p.x + p.dx, z: p.z + p.dz, up: upOf(p), later: true }] : [];
     if (camera.offCentre(p) <= canvas.width * 0.35) {
       const iv = sim.paused || sim.alpha >= 1 ? Infinity : 500 / sim.speed;
@@ -544,7 +559,7 @@ async function main() {
     // the world waits behind the loading line until the opening view is baked, so nothing is missed
     if (sim && revealed) {
       const ch = sim.update(now);
-      if (ch) { live.changed(ch); if (view.selected) inspect(); if (wui.open) paintWorld(); }
+      if (ch) { wantWorld(); if (view.selected) inspect(); if (wui.open) paintWorld(); }
     }
     if (revealed && bench) bench.step(now);
     camera.step(dt, now);
@@ -598,6 +613,9 @@ async function main() {
   function benchRunner(kind, live, view) {
     const secs = num("benchs", 12, 1, 600), out = { kind, samples: [] }, gpu = [];
     let start = 0, done = false, base = null, lastT = 0, k = 0;
+    // the page thread's long tasks (over 50 ms) while the bench runs, in ms
+    const long = [], watch = new PerformanceObserver((l) => { if (start && !done) for (const e of l.getEntries()) long.push(Math.round(e.duration)); });
+    watch.observe({ type: "longtask" });
     const finish = () => {
       const ms = out.samples.map((s) => s.ms).sort((a, b) => a - b), dts = out.samples.map((s) => s.dt).filter((d) => d > 0);
       out.fps = +(1000 / (dts.reduce((a, b) => a + b, 0) / dts.length)).toFixed(1);
@@ -615,6 +633,9 @@ async function main() {
       const st = (xs) => { const v = [...xs].sort((a, b) => a - b); return v.length ? { mean: +(v.reduce((a, b) => a + b, 0) / v.length).toFixed(2), p95: +v[Math.floor(v.length * 0.95)].toFixed(2), max: +v.at(-1).toFixed(2), over16: v.filter((x) => x > 16.7).length } : null; };
       out.worker = { frames: gpu.length, gpuMs: st(gpu.map((f) => f.gpu)), cpuMs: st(gpu.map((f) => f.cpu)), latencyMs: st(gpu.map((f) => f.latency)) };
       out.dtMs = st(out.samples.map((s) => s.dt));
+      for (const e of watch.takeRecords()) long.push(Math.round(e.duration));
+      watch.disconnect();
+      out.longTasks = long.sort((a, b) => b - a);
       delete out.samples;
       document.body.dataset.bench = JSON.stringify(out);
       document.body.classList.add("ready");

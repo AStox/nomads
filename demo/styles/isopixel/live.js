@@ -1,11 +1,12 @@
 // The live isopixel renderer: an orbiting camera with a continuous zoom over the whole island, drawn on WebGPU in a
 // worker (worker.js, webgpu.js) on the page's canvas handed to it as an OffscreenCanvas. The GPU rasterizes everything
 // every frame: the ground of the level and bearing shown, painted pixel by pixel from the world's fields, and every
-// object standing on it as a sprite from one atlas, so a zoom, a pan or a turn never waits on the CPU. This side keeps
-// the camera and its exact projection, the sky of the hour, and what moves: it places the sim's people, animals and
-// fires on the drawn ground, lays out the smoke, labels, icons and paths over them, and sends each frame to the worker.
-// Between two bearings the GPU draws the tile map of the nearer one turned to the bearing shown, so the island turns as
-// a solid thing with its trees upright.
+// object standing on it as a sprite from one atlas, so a zoom, a pan or a turn never waits on the CPU. The game's sim runs
+// in the same worker on the same device (play/sim.js), which keeps every object of it on the GPU as it ticks. This side
+// keeps the camera and its exact projection, the sky of the hour, and what moves: it places the sim's people, animals and
+// fires (as the worker last posted them, play/remote.js) on the drawn ground, lays out the smoke, labels, icons and paths
+// over them, and sends each frame to the worker. Between two bearings the GPU draws the tile map of the nearer one turned
+// to the bearing shown, so the island turns as a solid thing with its trees upright.
 import { RGB, NCOL, P } from "./pal.js";
 import { Buf, ObjBins, shadowRows, h2 } from "./px.js";
 import { text } from "./ui.js";
@@ -13,7 +14,7 @@ import * as SP from "./sprites.js";
 import { LEVELS } from "./webgpu.js";
 import { createGround } from "./ground.js";
 import { LADDER, levelOf } from "./ladder.js";
-import { SIZE, TILE_M, TILES } from "../island.js";
+import { SIZE, TILE_M } from "../island.js";
 
 const SIM = TILE_M, ORIGIN = -SIZE / 2, DAY = 288, YEAR = DAY * 40, TAU = Math.PI * 2, NL = LADDER.length, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -61,7 +62,9 @@ function frameOf(b) {
 // The WebGPU renderer wants a browser that offers it; createLive throws { cause: "nogpu" } where none does.
 export const hasWebGPU = () => typeof navigator !== "undefined" && !!navigator.gpu;
 
-export async function createLive({ seed = 1, canvas, onProgress } = {}) {
+// sim: { warm, jev } runs the game's sim in the render worker (play/remote.js connectSim reads it); null draws the island
+// alone.
+export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = null } = {}) {
   if (!hasWebGPU()) throw new Error("this browser does not offer WebGPU", { cause: "nogpu" });
   const TH = await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {}));
   const tStart = performance.now();
@@ -77,7 +80,10 @@ export async function createLive({ seed = 1, canvas, onProgress } = {}) {
   const off = glc.transferControlToOffscreen();
   const ex = new URLSearchParams(location.search).get("exag");
   const worker = new Worker(new URL(`./worker.js${ex ? `?exag=${encodeURIComponent(ex)}` : ""}`, import.meta.url), { type: "module" });
-  let fieldsMsg = null, lost = null, info = null, objectsReady = false, sentObjects = false, lastDone = null, picksWait = new Map(), pickId = 0;
+  let fieldsMsg = null, lost = null, info = null, objectsReady = false, lastDone = null, picksWait = new Map(), pickId = 0;
+  // what the worker posts of the sim, held until the page listens (onSim)
+  let simTo = null;
+  const simEarly = [];
   const frameMs = [];
   await new Promise((done, fail) => {
     worker.onerror = (e) => fail(new Error(`render worker: ${e.message}`));
@@ -89,10 +95,11 @@ export async function createLive({ seed = 1, canvas, onProgress } = {}) {
       else if (m.type === "error") fail(new Error(m.error));
       else onWorker(m);
     };
-    worker.postMessage({ type: "init", seed, canvas: off }, [off]);
+    worker.postMessage({ type: "init", seed, canvas: off, sim: simOpts }, [off]);
   });
   function onWorker(m) {
-    if (m.type === "frameDone") {
+    if (m.type.startsWith("sim")) { if (simTo) simTo(m); else simEarly.push(m); }
+    else if (m.type === "frameDone") {
       lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts;
       const sent = sentAt.get(m.id);
       sentAt.delete(m.id);
@@ -117,6 +124,8 @@ export async function createLive({ seed = 1, canvas, onProgress } = {}) {
     const pv = k * 0.866 * treeK;
     return { L, name: Z.name, W: Z.W, H, hb: H / 2, lp: Z.lp, tileM: Z.tileM, k, treeK, levelM, p: H / Z.tileM, pv, pw: k * treeK, shrunk: pv < SP.DIRECT_PV, peakLev: Math.ceil((peak + 10) / levelM), tall: Math.round(34 * k * 0.866 * treeK) + 8 };
   });
+  // the levels' sprite scales, which the worker makes the sim's objects' sprites at
+  worker.postMessage({ type: "levels", levels: LV.map((l) => ({ pv: l.pv, pw: l.pw, shrunk: l.shrunk })) });
   const grids = new Map();
   // the tile grid of level L at whole bearing b, for the ground
   const gridOf = (L, b) => {
@@ -201,79 +210,9 @@ export async function createLive({ seed = 1, canvas, onProgress } = {}) {
   });
 
   // ---------- the sim's objects ----------
-  // The worker keeps them all on the GPU; this side keeps their bins (px.js ObjBins) to tell it what changed and to find
-  // a selected one, and draws the kinds that change often every frame.
-  let bins = null, simRef = null, synced = false;
-  const liveThings = new Map();
-  const isLive = (t) => ObjBins.LIVE.has(t.kind) || !!t.bed;
-  const numId = (id) => +String(id).slice(1);
-  function sync(sim) {
-    const W = sim.w, o = sim.objects();
-    bins = new ObjBins(o);
-    liveThings.clear();
-    // as a client is sent them (inspect.ts thingView), a burning one with its blaze; only a thing with a bed can be alight,
-    // so the ground's thousands of others are passed by
-    for (const t of W.things) {
-      if (t.contained || !(ObjBins.LIVE.has(t.kind) || t.bed)) continue;
-      const v = sim.view(t);
-      if (ObjBins.LIVE.has(v.kind) || v.blaze) liveThings.set(t.id, v);
-    }
-    const things = [];
-    for (const t of o.things) if (!t.contained && !isLive(t)) things.push(bins.recOf(t));
-    worker.postMessage({ type: "objects", objs: { grown: o.grown, kindNames: bins.kinds, speciesNames: bins.species, gone: o.gone, things }, levels: LV.map((l) => ({ pv: l.pv, pw: l.pw, shrunk: l.shrunk })) });
-    sentObjects = true;
-    lastIce = iceFlags(W.ice);
-    worker.postMessage({ type: "ice", flags: Uint8Array.from(lastIce) });
-    trailSrc = sim.trails?.() ?? null;
-    if (trailSrc) {
-      trailQ = new Map();
-      const all = new Uint8Array(TRAIL_N * TRAIL_N);
-      for (const [i, v] of trailSrc.wear) { const q = wearStep(v); if (q) { trailQ.set(i, q); all[i] = q; } }
-      worker.postMessage({ type: "trails", all }, [all.buffer]);
-    }
-    season = sim.clock?.().season ?? "spring";
-    synced = true;
-  }
-  function changed(ch) {
-    if (!ch || !simRef) return;
-    if (!synced) { sync(simRef); return; }
-    const W = simRef.w, up = [], rm = [];
-    const gone = (id) => { if (bins.get(id)) { bins.drop(id); rm.push(id); } };
-    for (const t of ch.things || []) {
-      const id = numId(t.id);
-      if (t.contained || isLive(t)) {
-        if (t.contained) liveThings.delete(t.id); else liveThings.set(t.id, t);
-        gone(id);
-        continue;
-      }
-      liveThings.delete(t.id);
-      const r = bins.recOf(t), old = bins.get(id);
-      if (old && old.kind === r.kind && old.sp === r.sp && old.px === r.px && old.py === r.py && old.size === r.size && old.seed === r.seed && (old.n > 0) === (r.n > 0)) continue;
-      bins.upsert(r); up.push(r);
-    }
-    for (const sid of ch.removed || []) { liveThings.delete(sid); gone(numId(sid)); }
-    if (up.length || rm.length) worker.postMessage({ type: "changes", up, rm, kinds: bins.kinds, species: bins.species });
-    if (trailQ && ch.trails) for (const i of ch.trails) trailPending.add(i);
-    // wear changes every tick; only a change of drawn width counts, sent every few seconds
-    const now = performance.now();
-    if (trailPending.size && now - trailFlush > 4000) {
-      trailFlush = now;
-      const cells = [];
-      for (const i of trailPending) { const q = wearStep(trailSrc.wear.get(i) ?? 0); if (q !== (trailQ.get(i) ?? 0)) { if (q) trailQ.set(i, q); else trailQ.delete(i); cells.push([i, q]); } }
-      trailPending.clear();
-      if (cells.length) worker.postMessage({ type: "trails", cells });
-    }
-    if (ch.ice) { lastIce = iceFlags(W.ice); worker.postMessage({ type: "ice", flags: Uint8Array.from(lastIce) }); }
-    // the ground's colour follows the season
-    const sn = simRef.clock?.().season;
-    if (sn && sn !== season) season = sn;
-  }
-  let lastIce = new Array(TILES * TILES).fill(0), season = "spring";
-  const iceFlags = (ice) => { const f = new Array(TILES * TILES).fill(0); if (ice) for (const i of ice) f[i] = 1; return f; };
-  // the sim's footpath wear, stepped into the five widths the ground draws
-  const TRAIL_N = Math.round(SIZE / 3), wearStep = (v) => (v < 2 ? 0 : v < 5 ? 1 : v < 12 ? 2 : v < 30 ? 3 : 4);
-  let trailSrc = null, trailQ = null, trailFlush = 0;
-  const trailPending = new Set();
+  // The worker keeps them all on the GPU and changes them as the sim ticks; this side draws the kinds that change often
+  // every frame (the sim's liveThings), and the page's tick ends with what changed of those.
+  let simRef = null, season = "spring";
 
   // ---------- live sprites, made here and sent to the worker's atlas once ----------
   const sprites = new Map(), sentSprites = new Set();
@@ -386,7 +325,7 @@ export async function createLive({ seed = 1, canvas, onProgress } = {}) {
     // each pick keeps the ground point it stands on, so labels can follow it
     const pk = (a, p) => picks.push({ ...p, ax: a.sx, ay: a.sy, az: a.cz });
     const alpha = clamp(sim.alpha ?? 1, 0, 1), selectedId = cam.view.selected ?? null;
-    for (const t of liveThings.values()) {
+    for (const t of sim.liveThings?.values() ?? []) {
       if (!inView(toM(t.px), toM(t.py), 60)) continue;
       const a = at(toM(t.px), toM(t.py));
       if (!onScreen(a, 60)) continue;
@@ -532,8 +471,8 @@ export async function createLive({ seed = 1, canvas, onProgress } = {}) {
   // under a low sun the slopes turned to it glow, and under cloud and by a thin moon the relief fades. The dusk's glow, a
   // broad light, shades only through the light table.
   const LOW = 12 * DEG, GLOW_EL = 25 * DEG, RELIEF = 2, TONE_G = 12;
-  // cloud cover by the sim's weather (src/sim/air.ts CLOUD)
-  const COVER = { clear: 0.077, cloudy: 0.826, rain: 0.883, storm: 0.893 };
+  // cloud cover by the sim's weather (src/sim/sky.ts CLOUD)
+  const COVER = { clear: 0.053, cloudy: 0.814, rain: 0.899, storm: 0.868 };
   const lum = (c) => c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11;
   const keyed = (keys, x) => { let i = 0; while (i < keys.length - 2 && keys[i + 1][0] <= x) i++; const [x0, a] = keys[i], [x1, b] = keys[i + 1], t = clamp((x - x0) / (x1 - x0), 0, 1); return a.map((v, k) => v + (b[k] - v) * t); };
   const transmit = (el) => { const m = 1 / (Math.sin(Math.max(el, -0.5 * DEG)) + 0.50572 * Math.max(0.5, el / DEG + 6.07995) ** -1.6364); return DEPTH.map((t) => Math.exp(-t * m)); };
@@ -656,7 +595,7 @@ export async function createLive({ seed = 1, canvas, onProgress } = {}) {
       eux: md.eu[0], euy: md.eu[1], evx: md.ev[0], evy: md.ev[1],
       cx: view.x, cz: view.z, levc: cam.lev, offx: cam.gcx - cam.gx0, offy: cam.gcy - cam.gy0, gx0: cam.gx0, gy0: cam.gy0, aw: cam.AW, ah: cam.AH,
       i0, j0, ni, nj, H: md.H, hb: md.hb, lp: md.lp, tileM: md.tileM, levelM: md.levelM, k: md.k, pv: md.pv, pw: md.pw, shrunk: md.shrunk ? 1 : 0, bias: md.hb + 2, peak: top, zinv: 1 / (2 * zSpan(cam, top)), mapN: LADDER[cam.L].paged ? 0 : Math.ceil((2 * (SIZE / 2) * (Math.abs(Math.cos((md.b * Math.PI) / 4)) + Math.abs(Math.sin((md.b * Math.PI) / 4)))) / md.tileM),
-      frame: Math.floor(now / 160) & 7, season: SEASON_I[season] ?? 0, gflags: trailQ?.size ? 1 : 0,
+      frame: Math.floor(now / 160) & 7, season: SEASON_I[season] ?? 0,
       casting: cast ? 1 : 0, sunx: vec[0], suny: vec[1],
       lx: sky.L[0], ly: sky.L[1], lz: sky.L[2], ar: sky.A[0], ag: sky.A[1], ab: sky.A[2], kr: sky.K[0], kg: sky.K[1], kb: sky.K[2],
       sunK: cast ? cast.k : 0, flat: sky.flat, relief: sky.relief, spr: spriteLight(view.bearing), toneK: sky.toneK,
@@ -676,9 +615,11 @@ export async function createLive({ seed = 1, canvas, onProgress } = {}) {
   const ownersOf = new Map();
   function frame(view, sim, { show = true } = {}) {
     const now = performance.now(), t0 = now;
-    if (sim) { simRef = sim; if (!synced) sync(sim); }
+    if (sim) simRef = sim;
     if (glc.width !== canvas.width || glc.height !== canvas.height) { worker.postMessage({ type: "resize", W: canvas.width, H: canvas.height }); glc.width = canvas.width; glc.height = canvas.height; }
     const clock = sim?.clock?.() ?? { hour: 8, day: 1 };
+    // the ground's colour follows the season
+    season = clock.season ?? season;
     sky = skyFor(clock, now);
     const pl = plan(view), T = tablesFor(sky);
     frameSprites = [];
@@ -690,7 +631,7 @@ export async function createLive({ seed = 1, canvas, onProgress } = {}) {
     sentAt.set(id, now);
     if (sentAt.size > 120) sentAt.delete(sentAt.keys().next().value);
     worker.postMessage(msg, msg.lut ? [msg.lut.buffer] : []);
-    const ready = objectsReady || (!sim && !sentObjects);
+    const ready = objectsReady || !simOpts;
     const holes = !ready || !!lost;
     if (show && ready && !shownGL) { glc.style.visibility = "visible"; shownGL = true; }
     stats.slots = pl.parts.length;
@@ -802,16 +743,8 @@ export async function createLive({ seed = 1, canvas, onProgress } = {}) {
     return m;
   }
   // the selection's name above it, and brackets round a thing standing on the ground, which has no live sprite to show;
-  // the label is the inspector's own title, fetched once per selection and tick
-  let titleOf = { sel: null, t: -1, name: "" };
-  const title = (sel) => {
-    const t = simRef?.w?.t ?? 0;
-    if (titleOf.sel !== sel || titleOf.t !== t) {
-      const d = typeof sel === "object" ? simRef?.inspectGround?.(sel.px, sel.py) : simRef?.inspect?.(sel);
-      titleOf = { sel, t, name: d?.name || "" };
-    }
-    return titleOf.name;
-  };
+  // the label is the inspector's own title
+  const title = (sel) => (typeof sel === "object" ? simRef?.inspectGround?.(sel.px, sel.py) : simRef?.inspect?.(sel))?.name || "";
   const UPRIGHT = new Set(["tree", "bush", "fern", "reeds", "sapling", "dead_bush", "herb", "flowers"]);
   function markSelected(cam, sel, picks, E) {
     const live = picks.find((p) => p.id === sel);
@@ -820,10 +753,9 @@ export async function createLive({ seed = 1, canvas, onProgress } = {}) {
     let x, z, hpx = 2, name = "ground", tall = true;
     if (typeof sel === "object") { x = toM(sel.px); z = toM(sel.py); }
     else {
-      const r = bins?.get(numId(sel));
+      const r = simRef?.mark?.(sel);
       if (!r) return;
-      const K = bins.kinds[r.kind];
-      x = toM(r.px); z = toM(r.py); hpx = Math.max(2, ObjBins.shown(r.size) * pv); name = bins.species[r.sp] || K; tall = UPRIGHT.has(K);
+      x = toM(r.px); z = toM(r.py); hpx = Math.max(2, ObjBins.shown(r.size) * pv); name = r.species || r.kind; tall = UPRIGHT.has(r.kind);
     }
     const p = project(cam, x, z), ox = Math.round(p.gx - cam.gx0), oy = Math.round(p.gy - cam.gy0);
     const hw = Math.ceil(Math.max(2, hpx * 0.5)) + 1, top = oy - Math.ceil(tall ? hpx : hpx * 0.7) - 2, bot = oy + 2;
@@ -888,7 +820,7 @@ export async function createLive({ seed = 1, canvas, onProgress } = {}) {
     size: SIZE, tileM: TILE_M,
     // every view is drawn whole on the GPU each frame; only the first, while the objects' sprites are still being made,
     // waits for them
-    readiness: () => { const ready = objectsReady || (!simRef && !sentObjects); return { done: ready ? 1 : 0, all: 1, ready }; },
+    readiness: () => { const ready = objectsReady || !simOpts; return { done: ready ? 1 : 0, all: 1, ready }; },
     prefetch: () => {}, centreOn, camH, screenOf, solveTarget, groundUnder,
     // what draws the frames: WebGPU in a worker, on which GPU
     renderer: () => ({ gpu: !lost, name: [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(" "), why: lost ?? "" }),
@@ -900,7 +832,10 @@ export async function createLive({ seed = 1, canvas, onProgress } = {}) {
     sky: () => sky,
     // the frames the worker finished since the last call: { id, latency (ms from sent to done), gpu, cpu (ms) }
     frameTimes: () => frameMs.splice(0),
-    frame, changed, pick, where, stats, lastMs: 0, lastHoles: true, level: null, lastParts: [],
+    frame, pick, where, stats, lastMs: 0, lastHoles: true, level: null, lastParts: [],
+    // the sim's side of the worker (play/remote.js): send it a message, and take what it posts of the sim
+    post: (m) => worker.postMessage(m),
+    onSim: (fn) => { simTo = fn; for (const m of simEarly.splice(0)) fn(m); },
     goal: null,
     // for the page checks (scripts/play/torture.cjs): a camera at a level and bearing, and a world point placed in one
     debug: { camera, project: (md, x, z) => project({ md }, x, z) },

@@ -1,9 +1,10 @@
-// Runs the game's simulation in the page the way server.ts loop() does: one tick per task, the same change sets, cleared the same way.
+// Runs the game's simulation in the render worker (isopixel/worker.js), on the GPU device the island is drawn with, the
+// way server.ts loop() runs it: one tick at a time, the same change sets, cleared the same way. The page thread keeps
+// only what it shows (remote.js): after each tick the worker posts it state(), and what the page has asked about.
 import { ACTIVITY, DAY, census as headcount, TILE_M, activity, brainKind, changed, changedKinds, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, objects, pathChanges, removed, thingById, thingView, tick, trailChanges, trails, useBrain } from "../sim.js";
 
-const BASE_MS = 500;
-
-// The random brain answers through promise chains and a thinking agent skips its turn, so each tick waits for a fresh task.
+// The random brain answers through promise chains and a thinking agent skips its turn, so each warming tick waits for a
+// fresh task.
 const port = new MessageChannel(), waiting = [];
 port.port1.onmessage = () => waiting.shift()();
 const nextTask = () => {
@@ -18,16 +19,11 @@ function clearChanges() {
   changed.clear(); removed.clear(); newKinds.clear(); changedKinds.clear(); pathChanges.clear(); trailChanges.clear();
 }
 
-// One live sim per page: the change sets are module globals inside the bundle. jev: the relay's token (scripts/play/serve.ts)
+// One live sim per worker: the change sets are module globals inside the bundle. jev: the relay's token (scripts/play/serve.ts)
 // for people to think with Jev once the world is warm; without it, and while warming, they think with the random brain.
 export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } = {}) {
   const w = newWorld(seed);
-  // Where each agent and animal stood before the last tick, so a frame can draw them partway between, and who's alive now.
-  const prev = new Map(), ents = new Map();
-  let headed = { id: null, t: -1, to: null };
-  let alpha = 0, tickMs = 0, last = null, pausedAt = null, lastIv = 0, lastEvent = 0;
-  // a tick under way, and what the last one changed, not yet handed to the page
-  let running = false, done = null;
+  let tickMs = 0, lastEvent = 0;
 
   const step = async () => {
     const t0 = performance.now();
@@ -40,17 +36,11 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
     const ms = performance.now() - t0;
     tickMs = tickMs ? tickMs * 0.95 + ms * 0.05 : ms;
   };
-  const remember = () => {
-    prev.clear();
-    for (const a of w.agents) prev.set(a.id, [a.px, a.py]);
-    for (const a of w.animals) prev.set(a.id, [a.px, a.py]);
-  };
   // what each person is at, for the icon over their head, worked out once a tick
   const acts = new Map();
   const roll = () => {
-    ents.clear(); acts.clear();
-    for (const a of w.agents) { ents.set(a.id, a); acts.set(a.id, activity(w, a)); }
-    for (const a of w.animals) ents.set(a.id, a);
+    acts.clear();
+    for (const a of w.agents) acts.set(a.id, activity(w, a));
   };
   // How many people and animals of each kind were alive, every SAMPLE ticks from the start; past MAX samples every
   // other one is dropped and the spacing doubles, so a long run keeps its whole history in a bounded list.
@@ -67,9 +57,9 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
       history.every *= 2;
     }
   };
-  // Animals' paths, kept by the page: people's are the world's own and kept for good (src/sim/journeys.ts), but
-  // hundreds of animals walking for ever would outgrow any save. A point each time one gets STRIDE meters from the
-  // last; past PATH_MAX every other one is dropped, so a long life keeps its shape; the dead are let go.
+  // Animals' paths, kept here: people's are the world's own and kept for good (src/sim/journeys.ts), but hundreds of
+  // animals walking for ever would outgrow any save. A point each time one gets STRIDE meters from the last; past
+  // PATH_MAX every other one is dropped, so a long life keeps its shape; the dead are let go.
   const STRIDE = 3 / TILE_M, PATH_MAX = 2000, tracks = new Map();
   const travel = () => {
     for (const a of w.animals) {
@@ -105,90 +95,93 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
   if (jev && !ok) console.warn("the Jev relay refused this page's token or is off; people think with the random brain");
   useBrain(ok ? { kind: "relay", url, token: jev } : { kind: "random" });
   lastEvent = w.events.at(-1)?.id ?? 0;
-  remember();
   roll();
 
-  const sim = {
-    get w() { return w; },
-    get alpha() { return alpha; },
-    get tickMs() { return tickMs; },
-    // "relay" while people think with Jev, "random" otherwise; jev: calls and tokens so far
-    get brain() { return brainKind(); },
-    get jev() { return w.jev; },
-    speed: 1,
-    paused: false,
-    // Current and previous float positions in tiles; things don't move, so theirs match.
-    pos(id) {
-      const e = ents.get(id) ?? thingById(w, id);
-      if (!e) return null;
-      const p = prev.get(id);
-      return { px: e.px, py: e.py, ppx: p ? p[0] : e.px, ppy: p ? p[1] : e.py };
-    },
+  // a thing's label in the world window: a shelter by its tier, an item by its kind's name, else its species or kind
+  const words = (x) => String(x).replaceAll("_", " ");
+  const labelOf = (t) => t.kind === "structure" ? ["pile", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0] : t.kind === "item" ? w.kinds[t.item]?.name ?? words(t.item ?? "item") : words(t.species ?? t.kind);
+
+  return {
+    w,
+    activities: ACTIVITY,
+    day: DAY,
     objects: () => objects(w),
     // a thing as the server sends it (inspect.ts thingView): its bed left out, its blaze in while it burns
     view: (t) => thingView(w, t),
     // Fine wear where people have walked: cell meters, n cells a side, and the wear 1..255 of each worn cell by its
     // row-major index from the island's north-west corner.
     trails: () => { const t = trails(w); return { cell: t.cell, n: t.n, wear: t.wear }; },
-    inspect: (id) => inspect(w, id),
-    // what a person is at (sim.ts Activity), and what each one means
-    activity: (id) => acts.get(id) ?? null,
-    activities: ACTIVITY,
-    // where a person is walking to, in tiles, or null; worked out at most once a tick
-    heading(id) {
-      if (headed.id !== id || headed.t !== w.t) { const a = ents.get(id); headed = { id, t: w.t, to: a && w.agents.includes(a) ? heading(w, a) : null }; }
-      return headed.to;
+    // One tick, awaited, and what it changed (things as a client is sent them), its change sets cleared after. None
+    // starts while one runs; one that fails is logged.
+    async tick() {
+      const t0 = await step();
+      roll();
+      census(); travel();
+      const things = [...changed].map((id) => thingById(w, id)).filter(Boolean).map((t) => thingView(w, t));
+      const done = {
+        things,
+        removed: [...removed].filter((id) => !thingById(w, id)),
+        paths: [...pathChanges],
+        trails: [...trailChanges],
+        ice: iceChanged.now,
+        groups: groupsChanged.now,
+        events: newEvents(),
+        kinds: newKinds.size || changedKinds.size ? [...new Set([...newKinds, ...changedKinds])].filter((id) => w.kinds[id]) : [],
+      };
+      clearChanges();
+      took(t0);
+      return done;
     },
-    // population counts over time: t (ticks), people, and animals by species, all the same length
+    // What the page draws and lists of the people and animals, sent after every tick: where each stands in tiles, what
+    // people are at (sim.ts activity), the weather the light and smoke follow, the camps and who is in them.
+    state() {
+      return {
+        t: w.t, tickMs, brain: brainKind(),
+        weather: { season: w.weather.season, sky: w.weather.sky, wind: w.weather.wind },
+        agents: w.agents.map((a) => ({ id: a.id, name: a.name, status: a.status, color: a.color, born: a.born, down: a.down, goal: String(a.goal?.type ?? a.goal ?? ""), px: a.px, py: a.py, act: acts.get(a.id) ?? null })),
+        animals: w.animals.map((a) => ({ id: a.id, species: a.species, state: a.state, hp: a.hp, alt: a.alt, heading: a.heading, px: a.px, py: a.py })),
+        camps: w.camps.filter((c) => !c.gone).map((c) => ({ name: c.name, members: c.members.map((id) => ({ id, name: w.people[id]?.name ?? id })) })),
+      };
+    },
+    // What the page shows of its selection (an id, or a point of ground { px, py }): its inspector (inspect.ts), and for
+    // a thing where it stands; for a person or animal the path they have walked (world.ts Journey, a grave's the one
+    // its person walked in life) and where they are walking to, in tiles.
+    about(sel) {
+      if (sel && typeof sel === "object") return { data: inspectGround(w, sel.px, sel.py) };
+      const t = sel.startsWith("t") ? thingById(w, sel) : null, a = t ? null : w.agents.find((x) => x.id === sel);
+      return {
+        data: inspect(w, sel),
+        pos: t ? { px: t.px, py: t.py } : null,
+        journey: w.journeys?.of[t?.kind === "grave" ? t.person : sel] ?? tracks.get(sel) ?? null,
+        heading: a ? heading(w, a) : null,
+      };
+    },
+    // Things on the ground, by kind: how many of each, and of each kind in open the NEAR nearest point (px, py) in tiles.
+    things({ open = [], px = 0, py = 0 } = {}, NEAR = 150) {
+      const by = {};
+      for (const t of w.things) if (!t.contained) (by[t.kind] ??= []).push(t);
+      const out = {};
+      for (const [k, list] of Object.entries(by)) {
+        const rows = open.includes(k) ? list.map((t) => [t, (t.px - px) ** 2 + (t.py - py) ** 2]).sort((a, b) => a[1] - b[1]).slice(0, NEAR).map(([t]) => ({ id: t.id, label: labelOf(t), px: t.px, py: t.py })) : [];
+        out[k] = { n: list.length, rows };
+      }
+      return out;
+    },
     history: () => history,
-    // a person's or animal's hero path (world.ts Journey): x, y, t the points they have passed, marks [{ px, py, t, kind, text }]
-    // a grave's is the path its person walked in life
-    journey(id) {
-      const t = id?.startsWith?.("t") ? thingById(w, id) : null;
-      return w.journeys?.of[t?.kind === "grave" ? t.person : id] ?? tracks.get(id) ?? null;
-    },
-    inspectGround: (px, py) => inspectGround(w, px, py),
-    // the hour the page is drawn at: null follows the sim, a number pins it there (?hour=, or from the console)
-    hour: null,
-    clock() {
-      const ft = w.t + alpha, h = sim.hour ?? ((ft % DAY) / DAY) * 24;
-      return { hour: h, day: Math.floor(ft / DAY) + 1, season: w.weather.season };
-    },
-    // At most one tick per call: each tick needs its own task, and the server never bursts to catch up either. A tick
-    // is awaited, so what it changed is handed back by the first call after it ends, which may start the next; none
-    // starts while one runs, and one that fails is logged and leaves the next free to start.
-    update(now) {
-      if (sim.paused) { pausedAt ??= now; return null; }
-      if (pausedAt !== null) { if (last !== null) last += now - pausedAt; pausedAt = null; }
-      const iv = BASE_MS / sim.speed;
-      if (last === null) { last = now; lastIv = iv; return null; }
-      if (iv !== lastIv) { last = now - alpha * iv; lastIv = iv; }
-      const ready = done;
-      done = null;
-      if (running || now - last < iv) { alpha = Math.min(1, Math.max(0, (now - last) / iv)); return ready; }
-      last = now - last < 2 * iv ? last + iv : now;
-      alpha = Math.min(1, (now - last) / iv);
-      remember();
-      running = true;
-      step().then((t0) => {
-        roll();
-        census(); travel();
-        const things = [...changed].map((id) => thingById(w, id)).filter(Boolean).map((t) => thingView(w, t));
-        done = {
-          things,
-          removed: [...removed].filter((id) => !thingById(w, id)),
-          paths: [...pathChanges],
-          trails: [...trailChanges],
-          ice: iceChanged.now,
-          groups: groupsChanged.now,
-          events: newEvents(),
-          kinds: newKinds.size || changedKinds.size ? [...new Set([...newKinds, ...changedKinds])].filter((id) => w.kinds[id]) : [],
-        };
-        clearChanges();
-        took(t0);
-      }).catch((e) => console.error("tick", e)).finally(() => { running = false; });
-      return ready;
+    // Who the page opens on: the person nearest the densest cluster of shelters, fires and stumps, or with nothing
+    // built yet, whoever has the most going on around them; null with no one alive.
+    opening() {
+      if (!w.agents.length) return null;
+      const weight = (t) => (t.contained || t.inside ? 0 : t.kind === "structure" ? 2 + (t.shelter?.tier ?? 0) * 2 : t.kind === "fire" ? 4 : t.kind === "well" ? 2 : ["stump", "burnt_stump", "pit", "ash", "grave"].includes(t.kind) ? 1 : 0);
+      const built = w.things.filter((t) => weight(t) > 0);
+      let best = null, bs = 0;
+      for (const t of built) {
+        const sc = built.reduce((a, o) => a + (Math.abs(o.x - t.x) <= 2 && Math.abs(o.y - t.y) <= 2 ? weight(o) : 0), 0);
+        if (sc > bs) { bs = sc; best = t; }
+      }
+      const busy = (a) => w.things.filter((t) => !t.contained && t.kind !== "tree" && Math.abs(t.x - a.x) <= 2 && Math.abs(t.y - a.y) <= 2).length + w.agents.filter((b) => Math.abs(b.x - a.x) <= 2 && Math.abs(b.y - a.y) <= 2).length * 4;
+      const p = best ? [...w.agents].sort((p, q) => Math.hypot(p.x - best.x, p.y - best.y) - Math.hypot(q.x - best.x, q.y - best.y))[0] : [...w.agents].sort((p, q) => busy(q) - busy(p))[0];
+      return { id: p.id, px: p.px, py: p.py };
     },
   };
-  return sim;
 }

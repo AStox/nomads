@@ -10,6 +10,7 @@ export { blazeOf, inspect, inspectGround, thingView } from "../src/sim/inspect";
 export { objects, thingById } from "../src/sim/space";
 export { census } from "../src/sim/herds";
 export { GROUND, groundClass, waterAt } from "../src/terrain/flora";
+export { useGpu } from "../src/gpu/device";
 
 // newWorld packs the terrain with Node's Buffer.from(buf, offset, length).toString("base64"), the only Buffer use in src.
 const g = globalThis as { Buffer?: unknown };
