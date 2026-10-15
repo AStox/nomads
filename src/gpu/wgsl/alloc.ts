@@ -116,9 +116,10 @@ ${init}
 export type Extra = { bufs: { name: string; buf: GPUBuffer; write?: boolean }[]; wgsl: string };
 
 // Births, step three, one invocation: the free list's head and the tail move past the slots given; children the
-// capacity had no room for are counted in the overflow word. Bindings: child alloc, the scan's total, P (ccap).
+// capacity had no room for are counted in the overflow word, unless the kind's births drop them (P.drop 1: a law
+// whose young past the room are simply not born). Bindings: child alloc, the scan's total, P (ccap, drop).
 export const BIRTH_COMMIT = /* wgsl */ `
-struct Params { ccap: u32, a: u32, b: u32, c: u32 }
+struct Params { ccap: u32, drop: u32, b: u32, c: u32 }
 @group(0) @binding(0) var<storage, read_write> ca: array<u32>;
 @group(0) @binding(1) var<storage, read> tot: array<u32>;
 @group(0) @binding(2) var<uniform> P: Params;
@@ -131,7 +132,7 @@ struct Params { ccap: u32, a: u32, b: u32, c: u32 }
   let tail = ca[${CTL.tail}u];
   let put = min(extra, P.ccap - tail);
   ca[${CTL.tail}u] = tail + put;
-  ca[${CTL.overflow}u] = ca[${CTL.overflow}u] + (extra - put);
+  if (P.drop == 0u) { ca[${CTL.overflow}u] = ca[${CTL.overflow}u] + (extra - put); }
 }`;
 
 // Reclaim, step one: a 1 for every dead slot below the tail. Bindings: body, alloc, flags, P (cap).
@@ -170,6 +171,31 @@ export const RECLAIM_CTL = /* wgsl */ `
 @compute @workgroup_size(1) fn main() {
   a[${CTL.head}u] = 0u;
   a[${CTL.nfree}u] = tot[0];
+}`;
+
+// Reclaim alongside the spatial index (store.ts index): below the tail every slot is alive or dead, so the dead before
+// slot i are i less the live before it, which the index's scan of its live flags gives. Step two from those: every
+// dead slot below the tail to its place. Bindings: body, alloc, scanned live flags, P (cap).
+export const RECLAIM_SCATTER_LIVE = /* wgsl */ `
+struct Params { cap: u32, a: u32, b: u32, c: u32 }
+@group(0) @binding(0) var<storage, read> b: array<u32>;
+@group(0) @binding(1) var<storage, read_write> a: array<u32>;
+@group(0) @binding(2) var<storage, read> f: array<u32>;
+@group(0) @binding(3) var<uniform> P: Params;
+${INDEX}
+@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
+  let i = flat(g, n);
+  if (i >= P.cap) { return; }
+  if (i < a[${CTL.tail}u] && (b[i] & 1u) == 0u) { a[${CTL_WORDS}u + i - f[i]] = i; }
+}`;
+// Step three from those, one invocation: the free list starts over at its head, as long as the tail less the live.
+// Bindings: alloc, the live total.
+export const RECLAIM_CTL_LIVE = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> a: array<u32>;
+@group(0) @binding(1) var<storage, read> tot: array<u32>;
+@compute @workgroup_size(1) fn main() {
+  a[${CTL.head}u] = 0u;
+  a[${CTL.nfree}u] = a[${CTL.tail}u] - tot[0];
 }`;
 
 // Delta records, four words each from word P.base: slot, generation, op << 16 | field, value; sorted by slot and then

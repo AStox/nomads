@@ -4,10 +4,11 @@ import { releaseGpu, theGpu } from "../gpu/device";
 import { idOf, loadStore } from "../gpu/store";
 import { PLANT, standOf } from "../gpu/flora";
 import { FLORA } from "../terrain/flora";
-import { around, floraOf, nearestThing, objects, onTile, resident, setKind, shelve, stockedTile, thingById } from "./space";
+import { around, deadwoodOf, floraOf, nearestThing, onTile, resident, setKind, shelve, stockedTile, thingById } from "./space";
 import { mark, removeThing } from "./physics";
 import { tick } from "./sim";
 import { stemDriver } from "./plants";
+import { animalsOf, residentAnimals } from "./animals";
 
 afterAll(releaseGpu);
 
@@ -37,9 +38,8 @@ test("felling a tree near a person kills its GPU object: gone from the mirror, f
   let found = false;
   around(w, tree.px, tree.py, 1, ["tree"], (t) => { found ||= t === tree; });
   expect(found).toBe(false);
-  const o = objects(w);
-  expect(o.gone).toContain(e);
-  expect(o.things).toContain(tree);
+  expect(flora.gone()).toContain(e);
+  expect(w.things).toContain(tree);
   await tick(w);
   expect((await s.read(PLANT, "body"))[flora.slot(e)] & 1).toBe(0);
 });
@@ -67,18 +67,21 @@ test("shelving and restocking a tile gives the same Things with the same ids", (
 });
 
 test("a world saved with its GPU objects loads with them, and one saved without loads them from its JSON", async () => {
-  // a stick taken near a person as well: a static object gone, stored nowhere
+  // a stick taken near a person as well: a piece gone for good (src/gpu/deadwood.ts), stored nowhere
   const a = w.agents[0], stick = nearestThing(w, a.px, a.py, ["stick"], () => true, 800);
   if (stick) removeThing(w, stick);
   const s = heldStore(w)!, gone = floraOf(w).gone().sort((p, q) => p - q);
-  expect(gone.length).toBeGreaterThanOrEqual(stick ? 2 : 1);
+  expect(gone.length).toBeGreaterThanOrEqual(1);
+  if (stick) expect(deadwoodOf(w)!.piece(stick.id)).toBeNull();
   // as server.ts saves, between ticks
   const json = JSON.stringify(w), bytes = await s.dump(), hash = await s.hash();
   const loaded = JSON.parse(json) as World;
   adoptStore(loaded, loadStore(await theGpu(), bytes));
   await resident(loaded, stemDriver(loaded));
+  await residentAnimals(loaded);
   expect(await heldStore(loaded)!.hash()).toBe(hash);
   expect(floraOf(loaded).gone().sort((p, q) => p - q)).toEqual(gone);
+  if (stick) expect(deadwoodOf(loaded)!.piece(stick.id)).toBeNull();
   // without its world.gpu (an older save, or one of another tick): the changes are read from the Things
   const bare = JSON.parse(json) as World;
   await resident(bare, stemDriver(bare));
@@ -88,5 +91,8 @@ test("a world saved with its GPU objects loads with them, and one saved without 
   await heldStore(bare)!.step(w.t + 1);
   expect(Bun.hash(await heldStore(bare)!.read(PLANT, "body"))).toBe(Bun.hash(await s.read(PLANT, "body")));
   heldStore(loaded)!.destroy();
+  animalsOf(loaded).destroy();
+  deadwoodOf(loaded)!.destroy();
   heldStore(bare)!.destroy();
+  deadwoodOf(bare)!.destroy();
 });

@@ -1,6 +1,5 @@
 // A low-resolution indexed framebuffer with a depth buffer, and the few primitives everything is drawn with.
 import { RGB, SHADOW } from "./pal.js";
-import { TILES } from "../island.js";
 
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map((v) => (v + 0.5) / 16);
 export const bayer = (x, y) => BAYER[((y & 3) << 2) | (x & 3)];
@@ -224,54 +223,11 @@ export function shadowRows(s, bx, by, mirror, out) {
   }
 }
 
-// The sim's objects binned by game tile. What the ground grew comes as the sim shares it (sim.objects() grown: typed arrays
-// in tile order, entry k being thing t{k + 1}), less the grown things gone; everything the sim made or changed comes as
-// records on top, kept up to date by numeric id with upsert and drop. Kinds and species are indices into the name tables,
-// which grow as new names turn up.
-export class ObjBins {
-  constructor(o) {
-    Object.assign(this, { g: o.grown, kinds: [...o.kindNames], species: [...o.speciesNames], gone: new Set(o.gone), extra: new Map(), extraBins: new Map() });
-    for (const t of o.things) this.upsert(this.recOf(t));
-  }
-  // kinds the page draws every frame, since they change, burn or get picked up too often to bake
-  static LIVE = new Set(["fire", "structure", "item", "trap", "pit", "ash", "well", "grave"]);
-  // the size in meters an object is drawn at: small things a little larger than life, so a stone still reads up close
-  static shown(size) { return size < 1 ? size ** 0.55 : size; }
-  static tile(px, py) { return Math.max(0, Math.min(TILES - 1, Math.floor(py))) * TILES + Math.max(0, Math.min(TILES - 1, Math.floor(px))); }
-  code(table, name) { if (!name) return 0; let k = table.indexOf(name); if (k < 0) { k = table.length; table.push(name); } return k; }
-  // a record from a full sim Thing, in this table's codes
-  recOf(t) { return { id: +String(t.id).slice(1), kind: this.code(this.kinds, t.kind), sp: this.code(this.species, t.species), px: t.px, py: t.py, size: t.size ?? 1, seed: t.seed >>> 0, n: t.n }; }
-  get(id) {
-    if (this.extra.has(id)) return this.extra.get(id);
-    if (this.gone.has(id)) return null;
-    const g = this.g, k = id - 1;
-    return k >= 0 && k < g.n ? { id, kind: g.kind[k], sp: g.species[k], px: g.px[k], py: g.py[k], size: g.size[k], seed: g.seed[k], n: undefined } : null;
-  }
-  upsert(r) {
-    this.drop(r.id);
-    this.extra.set(r.id, r);
-    const t = ObjBins.tile(r.px, r.py);
-    (this.extraBins.get(t) ?? this.extraBins.set(t, new Set()).get(t)).add(r.id);
-  }
-  drop(id) {
-    const r = this.extra.get(id);
-    if (r) { this.extraBins.get(ObjBins.tile(r.px, r.py))?.delete(id); this.extra.delete(id); }
-    this.gone.add(id);
-  }
-  // fn(kind, species, px, py, size, seed, id, n) for every object on tiles tx0..tx1, ty0..ty1; n (a bush's berries) is
-  // only known once the sim has changed the thing, and undefined before
-  each(tx0, ty0, tx1, ty1, fn) {
-    const g = this.g, { gone } = this, check = gone.size > 0;
-    tx0 = Math.max(0, tx0); ty0 = Math.max(0, ty0); tx1 = Math.min(TILES - 1, tx1); ty1 = Math.min(TILES - 1, ty1);
-    for (let ty = ty0; ty <= ty1; ty++)
-      for (let tx = tx0; tx <= tx1; tx++) {
-        const t = ty * TILES + tx;
-        for (let k = g.start[t]; k < g.start[t + 1]; k++) {
-          if (check && gone.has(k + 1)) continue;
-          fn(g.kind[k], g.species[k], g.px[k], g.py[k], g.size[k], g.seed[k], k + 1);
-        }
-        const ex = this.extraBins.get(t);
-        if (ex) for (const id of ex) { const r = this.extra.get(id); fn(r.kind, r.sp, r.px, r.py, r.size, r.seed, id, r.n); }
-      }
-  }
-}
+// The kinds the page draws every frame, since they change, burn or get picked up too often to stand in the GPU's
+// object buffers; the worker draws everything else straight from them (wgsl/objects.js).
+export const LIVE = new Set(["fire", "structure", "item", "trap", "pit", "ash", "well", "grave"]);
+// the size in meters an object is drawn at: small things a little larger than life, so a stone still reads up close
+export const shown = (size) => (size < 1 ? size ** 0.55 : size);
+// an animal's body in meters (standing height, a bird's wingspan, a fish's length), drawn at 1.5 times its shown size
+export const ANIMAL_BODY = { deer: 1.5, wolf: 0.9, fox: 0.5, rabbit: 0.35, heron: 1, gull: 1.2, crow: 0.9, eagle: 2, fish: 0.5, butterfly: 0.1 };
+export const ANIMAL_DRAWN = 1.5;

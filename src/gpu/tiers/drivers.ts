@@ -44,6 +44,7 @@ export class Drivers implements Rider {
   landedHour = -1;
   private landed = new Map<number, Uint32Array>();
   private asked = new Set<number>();
+  private writers = new Map<string, string>(); // writers' sources by inputs and body, made once
   private sent: number[] = [];
 
   constructor(readonly store: Store, readonly spec: DriversSpec) {
@@ -87,7 +88,9 @@ export class Drivers implements Rider {
   // Runs a writer over every cell for the hour about to be committed (wgsl/drivers.ts driverRecord), with the
   // buffers given bound as in0, in1...
   write(body: string, inputs: GPUBuffer[] = []) {
-    const src = driverRecord(this.layout, inputs.length, body);
+    const key = `${inputs.length}:${body}`;
+    let src = this.writers.get(key);
+    if (src === undefined) this.writers.set(key, (src = driverRecord(this.layout, inputs.length, body)));
     this.store.run(src, [this.cur, this.ring, ...inputs], cover(this.store.g, CELLS), [this.hour, 0, 0, 0]);
   }
   // Commits the current values as hour `hour`.

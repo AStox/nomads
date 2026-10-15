@@ -2,8 +2,8 @@
 //   NOMADS_BRAIN=random bun scripts/run.ts --ticks 20000 --seed 7     (no Jev, fast)
 //   bun scripts/run.ts --ticks 2000                                    (real Jev, needs TYPESAFE_API_KEY)
 //   NOMADS_BRAIN=random bun scripts/run.ts --minutes 60 --ticks 1e9    (stop on wall-clock time, with a progress line each day)
-import { census } from "../src/sim/herds";
 import { DAY, newWorld, clock } from "../src/sim/world";
+import { census } from "../src/sim/animals";
 import { tick } from "../src/sim/sim";
 import { changed, newKinds, removed } from "../src/sim/physics";
 import { beliefText } from "../src/sim/beliefs";

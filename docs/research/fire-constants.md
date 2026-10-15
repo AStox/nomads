@@ -1106,7 +1106,6 @@ What src/sim/fuel.ts holds for each kind: the picks above set down per kind, wit
 | aspen | 0.35 | 1.13 | 0.95 | hardwood | sec. 21 |
 | hazel | 0.50 | 0.80 | | hardwood | sec. 21 (G and green UNVERIFIED, the birch analogue) |
 | heather | 0.55 | 0.80 | | hardwood | sec. 21 (G the shrub mean, UNVERIFIED) |
-| gorse | 0.72 | 0.60 | | hardwood | sec. 21 |
 | berry | 0.55 | 0.65 | | hardwood | sec. 21: bramble; G the shrub mean and green the NFDRS woody dormant midpoint [gap] |
 | generic | 0.45 | | | softwood | the density the checks of sec. 3 and 16 use, and the Douglas-fir across row, for wood of no known species |
 

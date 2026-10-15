@@ -2,7 +2,7 @@
 // tick is in animals.ts. Speeds are meters a tick of five minutes' game time, the way a person's are.
 import { H, Tile, W, YEAR, dryAt, dryNear, sea, tileAt, type Animal, type AnimalSpecies, type World } from "./world";
 import { put } from "./space";
-import { herded, reveal, startHerds } from "./herds";
+import { reveal, startPools } from "./pools";
 
 type Kind = { hp: number; walk: number; run: number; fly?: number; ground: boolean };
 export const FAUNA: Record<AnimalSpecies, Kind> = {
@@ -20,12 +20,9 @@ export const FAUNA: Record<AnimalSpecies, Kind> = {
 // People can walk up to and trap what lives on the ground; hunting works on the bigger of those.
 export const HUNTED = ["deer", "wolf", "fox", "rabbit"] as const;
 
-// An animal put down in the world: a deer, rabbit or wolf put down by hand is one more on its tile (herds.ts); those
-// the herds stand on the ground themselves come by spawn, being theirs already.
-export function addAnimal(w: World, species: AnimalSpecies, px: number, py: number, extra: Partial<Animal> = {}): Animal {
-  if (herded(species) && w.herds) w.herds[species].n[Math.min(H - 1, Math.floor(py)) * W + Math.min(W - 1, Math.floor(px))] += 1;
-  return spawn(w, species, px, py, extra);
-}
+// An animal put down in the world by hand: a deer, rabbit, wolf, fox or bird gets a new object on the GPU at the next
+// tick (animals.ts sync), held where it stands; those people see of the GPU's own come by spawn as views of theirs.
+export const addAnimal = spawn;
 export function spawn(w: World, species: AnimalSpecies, px: number, py: number, extra: Partial<Animal> = {}): Animal {
   const n = w.nextId++, hp = FAUNA[species].hp;
   const a: Animal = { id: `a${n}`, species, x: 0, y: 0, px: 0, py: 0, alt: 0, heading: (n * 2.39996) % (Math.PI * 2), hp, maxHp: hp, hunger: 80, state: species === "fish" ? "swim" : "wander", born: w.t, dx: 0, dy: 0, ...extra };
@@ -90,11 +87,13 @@ export function populate(w: World, rand: () => number, main: Uint8Array) {
     }
     return onGround(pick(grass));
   };
-  // Deer, rabbits, wolves, foxes and the fish as populations, run on twenty years of the island's own forage before anyone wakes, a pack
-  // of wolves denning some way off (herds.ts); those within sight of anyone stand on the ground from the start.
+  // The fish and the butterflies as each tile's count, and a pack of wolves denning some way off; the deer, rabbits,
+  // wolves, foxes and birds take up residence on the GPU with the world's first tick, run on twenty years of the
+  // island's own forage before anyone wakes (animals.ts); the fish within sight of anyone stand in the water from the
+  // start.
   const den = nearPeople(5, 10, (t) => w.tiles[t] !== Tile.Water);
-  w.herds = startHerds(w, den);
+  w.pools = startPools(w, den);
   reveal(w, (sp, px, py) => spawn(w, sp, px, py, revealed(sp, px, py)), rand);
-  // The island's first animals were there long before anyone woke; this summer's butterflies are new.
+  // The island's fish were there long before anyone woke; this summer's butterflies are new.
   for (const a of w.animals) if (a.species !== "butterfly") a.born = -Math.floor(rand() * 2 * YEAR);
 }

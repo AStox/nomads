@@ -227,7 +227,7 @@ test("felling an oak with a hafted flint blade peels the same strips of bark eve
 test("a line or a basket dipped where a fish swims within reach catches every time, and with none about never does: anyone dipping sees there were no fish close by, and only what's dipped in the water records it", () => {
   const [w, a] = fresh();
   // the water's stock (fish.ts), kg a ha: thick with fish everywhere, and a shore where a basket's sweep reaches it
-  const fish = w.herds!.fish;
+  const fish = w.pools!.fish;
   for (let i = 0; i < W * H; i++) fish[i] = w.tiles[i] === Tile.Water ? 1000 : 0;
   const shore = shoreOf(w).find((s) => { moveTo(w, a, s.px, s.py); return openWater(w, a) && fishNear(w, fish, a, 15) >= 2; });
   expect(shore).toBeDefined();

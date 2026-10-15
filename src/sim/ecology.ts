@@ -11,11 +11,11 @@ import {
 } from "./world";
 import { anyAround, around, exists, grownOn, liveThings, onPath, put, regrow, setKind, stockedAt } from "./space";
 import { FAUNA } from "./fauna";
-import { animals, attacked } from "./animals";
+import { animals, attacked, gone, perished } from "./animals";
 import { enrich, settle, soilWaterAt, wetHour } from "./soil";
 import { SIZE, START } from "../terrain/flora";
 import { TALLEST } from "../terrain/niche";
-import { YEAR_DAYS } from "./sky";
+import { YEAR_DAYS, onDay } from "./sky";
 import { CELL } from "../terrain/grid";
 import { ACORN_KG, ACORN_YEARS, YEARS_PACE, fitHere, growth } from "./plants";
 import { runoffHour } from "./streams";
@@ -28,7 +28,6 @@ import { growing, wetness } from "./wetness";
 import { GREEN_UP } from "../terrain/growth";
 import { rotPerHour } from "./spoil";
 import { bodyOf } from "./body";
-import { fasting, onDay, starved } from "./herds";
 import { recruit, suckers } from "./recruits";
 
 // Seconds a tick lasts (world.ts DAY: five minutes each).
@@ -212,14 +211,16 @@ function holes(w: World, live: Thing[]) {
     }
     if (t.kind === "trap" && t.caught) {
       // A pit with steep walls as deep as someone stands in holds what falls in (docs/research/time-constants.md sec. 7):
-      // it stays till it's killed, or starves there, burning its reserve with nothing to eat.
+      // it stays till it's killed, or starves there, burning its reserve with nothing to eat (its object on the GPU,
+      // src/gpu/animals.ts, held fast while it lies there).
       const an = w.animals.find((m) => m.state === "trapped" && meters(m, t) <= 1);
-      if (an && fasting(an, 1 / DAY)) {
-        starved(w, an);
+      const starved = !!an && perished(w, an);
+      if (an && starved) {
+        gone(w, an);
         log(w, "trap", t.owner ? [t.owner] : [], t, `The ${an.species} in the pit starved.`);
       }
       // once nothing is in it, its cover lies broken in the bottom: an open pit again
-      if (!an || an.hunger <= 0) { delete t.caught; setKind(w, t, "pit"); mark(w, t); }
+      if (!an || starved) { delete t.caught; setKind(w, t, "pit"); mark(w, t); }
     }
   }
 }
@@ -386,9 +387,8 @@ export function fire(w: World, live: Thing[]) {
 // the soil's nourishment where they stand (plants.ts growth); seed falls where it fits (niche.ts) and takes root as it
 // fits; trees ripen their nuts as the days draw in (cues.ts); what's taken of the ground's growth comes back as it grows.
 const BERRY_HP = 20;
-// Fine woody debris on the ground turns over at 0.17 to 0.25 of its mass a year under oak (R452), a year's; a mushroom's
-// fruit body lasts a week or two (R453), days.
-const STICK_TURNOVER = 0.2, FRUIT_DAYS = 10;
+// A mushroom's fruit body lasts a week or two (R453), days.
+const FRUIT_DAYS = 10;
 // The acorns left on the ground under twelve Southampton oaks, kg fresh a m2 of their crowns: 0.196 in the 13 of 27 years
 // that had a crop and none in the rest (R454; plants.ts ACORN_KG), a year's mean. They fall from mid September
 // [UNVERIFIED] to the last week of October, by when the trees had shed the bulk of them (R454): real days after the
@@ -487,13 +487,12 @@ function plants(w: World, live: Thing[]) {
   if (greening && !g.on) g.since = w.t;
   g.on = greening;
   greenings.set(w, g);
-  // once a day, what was taken of the ground's growth comes back as its kind does (time-constants sec. 8): a fallen
-  // branch's place is filled as the trees drop the next, at the rate fine woody debris on the ground turns over (R452); a
-  // mushroom's as the fungus fruits again, a fruit body lasting 44 days for a chanterelle and a week or two for the rest
-  // (R453); herbs, reeds, ferns, flowers and grass from their roots at the next green-up, as a broadleaf's stump does;
-  // stones, clay and ore never, nothing making more of them in a lifetime
+  // once a day, what was taken of the ground's growth comes back as its kind does (time-constants sec. 8): a mushroom's
+  // as the fungus fruits again, a fruit body lasting 44 days for a chanterelle and a week or two for the rest (R453);
+  // herbs, reeds, ferns, flowers and grass from their roots at the next green-up, as a broadleaf's stump does; clay and
+  // ore never, nothing making more of them in a lifetime. Sticks are pieces that fall from the crowns and rot on the GPU,
+  // a stick taken never coming back (src/gpu/deadwood.ts); stones too are pieces there, never made again.
   if (w.t % DAY === 0) regrow(w, (t, went) => {
-    if (t.kind === "stick") return Math.random() < 1 - Math.exp((-STICK_TURNOVER * YEARS_PACE) / 365.25);
     if (t.kind === "mushroom") return Math.random() < 1 - Math.exp(-YEARS_PACE / (t.species === "chanterelle" ? 44 : FRUIT_DAYS));
     return FROM_ROOTS.has(t.kind) && g.since > went;
   });

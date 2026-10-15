@@ -1,5 +1,6 @@
 import { generateIsland, type Island } from "../terrain/island";
 import type { Cohort } from "./recruits";
+import type { Pools } from "./pools";
 import { lay, type Lay, type Terrain } from "../terrain/land";
 import { FLORA, SIZE, SPECIES, TILES, TILE_M, driftAt, fineGround, rockAt, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
 import { TRAITS } from "./traits";
@@ -10,16 +11,15 @@ import type { Body } from "./body";
 import type { Bed, Ring } from "./combustion";
 import { enter, put } from "./space";
 import { populate } from "./fauna";
-import { NIGHT_EL, NOON, YEAR_DAYS, sunAt } from "./sky";
+import { DAY, NIGHT_EL, NOON, YEAR_DAYS, sunAt } from "./sky";
 import { Store } from "../gpu/store";
 import type { Gpu } from "../gpu/device";
 import type { Stand } from "../gpu/flora";
 
 export const W = TILES;
 export const H = TILES;
-export const DAY = 288; // ticks per in-game day, 5 minutes each
-export { YEAR_DAYS }; // the sky's: a year is the sun's round
-export const VERSION = 25;
+export { DAY, YEAR_DAYS }; // the sky's: ticks a day (5 minutes each) and days a year, the sun's round
+export const VERSION = 27; // 27: the deer, rabbits, wolves, foxes and birds are GPU objects (src/gpu/animals.ts), not w.herds
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -87,6 +87,7 @@ export type Animal = {
   home?: [number, number]; // the warren, roost, stretch of shore or water it keeps to, in tiles
   aim?: [number, number]; // where it's headed, in tiles
   since?: number; // tick it took up its current state
+  obj?: number; // its object on the GPU (src/gpu/animals.ts): a deer, rabbit, wolf, fox or bird people see is a view of it
 };
 export type Weather = {
   season: "spring" | "summer" | "autumn" | "winter"; dayOfYear: number; year: number;
@@ -293,7 +294,7 @@ export type World = {
   fert: Record<number, number>; // what has fed the soil or drawn it down since it grew, by soil.ts cell
   agents: Agent[];
   animals: Animal[];
-  herds?: import("./herds").Herds; // deer, rabbits, wolves and foxes as populations over the tiles (herds.ts)
+  pools?: Pools; // the fish's stocks and the butterflies, each a tile's count (pools.ts)
   events: Event[];
   nextId: number;
   jev: { calls: number; tokens: number; rulings: number };
@@ -575,11 +576,11 @@ export const HP: Record<string, (size: number) => number> = {
   stick: () => 8, fallen_log: (s) => Math.round(20 + s * 6), mushroom: () => 2, herb: () => 3, reeds: () => 6, fern: () => 4, flowers: () => 2, clay: () => 10, grass: () => 3,
 };
 // Object e of what the ground grew (src/gpu/flora.ts) as the thing t{e} it is while no one has touched it, standing
-// as given (kind and species as their codes).
-export function grown(w: World, e: number, s: Stand): Thing {
+// as given (kind and species as their codes); or a GPU piece (src/gpu/deadwood.ts) under its own id.
+export function grown(w: World, e: number | string, s: Stand): Thing {
   const g = groundOf(w.seed), kind = FLORA[s.kind], { px, py, size, seed } = s;
   const hp = HP[kind](size), species = SPECIES[s.species];
-  const t: Thing = { id: `t${e}`, kind, x: Math.floor(px), y: Math.floor(py), px, py, size, seed, hp, maxHp: hp };
+  const t: Thing = { id: typeof e === "number" ? `t${e}` : e, kind, x: Math.floor(px), y: Math.floor(py), px, py, size, seed, hp, maxHp: hp };
   if (species) t.species = species;
   if (kind === "bush" && species === "berry") t.n = cropOf(t);
   // A boulder lying in till is a stone the ice brought, and some of those hold flint (src/terrain/geology.ts DRIFTS); one

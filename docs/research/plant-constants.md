@@ -246,6 +246,75 @@ Gaps the checks show:
 - The year's crop of aspen and the bushes, and a stem's crop by its size or light, are not known [gap].
 - Leafless broadleaves let through what they do in leaf [gap].
 
+## 12. Deadwood and clasts (the GPU plan's Unit 9; the rule audit's substrate 11f)
+
+Every log, snag, stick, boulder, stone and pebble on the island is a piece with its own identity on the GPU (src/gpu/deadwood.ts, src/gpu/wgsl/deadwood.ts), and the CPU makes a Thing of one only where a lookup asks for it (src/sim/space.ts). The generator no longer lays any of them (src/terrain/flora.ts).
+
+### 12a. What replaced what
+
+| Old rule | Now |
+|---|---|
+| Sticks `floor(tree 0.7 + edge 0.15 + 0.01 + r)` a quad, 0.4 to 1.6 m, about 20 a ha | Fine woody debris at Nordén et al.'s 12.2 m3 a ha (R750) as metre sticks, 17,000 a ha of closed canopy, rotting at 0.2 a year (R452), a stick a whole piece that goes at that rate; the world begins with each cell's steady pool, and new sticks fall from the crowns every BIN_DAYS days at input = rate x pool, by the cover the crowns kept over the cell |
+| A taken stick came back where it lay at the turnover rate (ecology.ts STICK_TURNOVER, the taken-tick rule) | A taken stick is listed gone and never comes back; new ones come only from litterfall |
+| Fallen logs `floor(tree 0.12 + r)` a quad, 2 to 9 m, about 3.4 a ha (0.6 m3) | Every tree the stems' law starves or crowds out is born a snag where it stood (its kind, height and diameter), falls at a snag's fall rate and rots at its kind's; the world begins with the reserves' pool, 94 m3 a ha of logs and 39 of snags (R752), each piece a copy of a tree of its stand |
+| Boulders `floor(bare 1.6 + slope 1.5 + 0.8 r)` a quad, 0.5 + r^3 5 m; stones and pebbles by cover and slope | Boulders of 2 dm and up at SLU's surface counts for the cell's drift (R756), stones (1 to 2 dm) and pebbles (2 cm to 1 dm) as many times that as till's N(> d) ~ d^-2.9 has them (R757), each piece's size drawn from the same law; nothing stored until one is moved |
+
+### 12b. Constants
+
+| Quantity | Value | Units | Source |
+|---|---|---|---|
+| Fine woody debris (1 to 10 cm), southern Swedish oak woods | 12.2 | m3/ha | R750 [abs] |
+| Sticks a ha, metre pieces | 17,000, each 3.02 cm thick | /ha | [derived] from R750; the spread of their sizes [gap] |
+| Fine woody debris's rate of loss | 0.2 (0.17 to 0.25) | /yr | R452 |
+| Rate of loss of logs | pine 0.032, aspen 0.066; oak 0.032 and ash 0.054 [gap: pine's and beech's stand in] | /yr | R753, R754 [abs] |
+| Wood loss in canopy gaps against under the canopy | about 10% more | - | R751 [abs]; as a rate [derived] |
+| Snags half fallen, 40 cm | pine 16 (lodgepole), broadleaves 28 (deciduous) | yr | R755 Table 2.2 [proxies: western North America] |
+| Snag persistence by diameter | half-life ~ diameter^0.60 (0.41 to 0.83) | - | R755 sec. 2.1 |
+| Unmanaged reserves' deadwood, European mean | logs 94, snags 39 (Danish reserves 48 to 154 of logs) | m3/ha | R752 Table 1 |
+| Danish forests, deadwood of 10 cm and up | 4.6 (34% lying); Hovedstaden 7.6, 3.5 lying | m3/ha | R758 Tables 4.11, 4.14 |
+| Surface boulders of 2 dm and up, in a 314 m2 plot | count classes 1 to 5, 6 to 10, 11 to 20, 21 to 30, 31 to 50, 51 to 100, over 100 | /plot | R756 |
+| Boulders a ha by drift | bare rock 1,289 (31 to 50), sandy till 493 (11 to 20), clay till 95 (1 to 5), meltwater sand and peat none | /ha | R756 classes, the pick [design] |
+| Clast number by size | N(> d) ~ d^-2.9 | - | R757 [abs]: a till's grains; for boulders and for surface counts an extrapolation [UNVERIFIED] |
+| Widest boulder | 5.5 | m | [gap] (the old generator's) |
+| Litterfall bins | every 10 game days (a quarter of a game year) | - | [design: memory, 12d] |
+| Rot units | 128 an hour under a closed canopy | - | [design: the canopy effect's resolution] |
+
+### 12c. The laws
+
+- **Rot.** Each hour every cell records its rot, 128 (1 + 0.1 open) units with open the share of the cell no tree crown covers (the stems' crown raster, refiled each day), as a recorded driver channel (tiers/drivers.ts). A piece's rot is the exact integral of its cell's channel since its birth, from its anchor; temperature and moisture don't drive it yet [gap: Unit 12's per-piece moisture].
+- **Rotting away.** A piece of rate k has Lambda = rot k / 128 game years (40 days) and lies on while the top 16 bits of its own uniform word stay below e^-Lambda (qexp, Q16.16): each piece lasts an exponential time at its class's rate and goes whole, so a pool fed I holds I / k [derived]. Snags rot at their kind's log rate [gap: snags rot slower].
+- **Falling.** A snag stands while the top 16 bits of its fall word stay below e^-(age fr), fr its kind's 40 cm rate times (40 cm / diameter)^0.60 [derived: R755's half-lives as constant rates; the synthesis finds rates rising with age for long-standing kinds].
+- **Litterfall.** Every 10 game days each cell's bin of sticks is born, Poisson(k 17,000 a ha x the cell's area x its cover-days / 40); the world's first bin is the steady pool, Poisson(17,000 a ha x area x cover / (1 + 0.1 open)). Member k of a bin is drawn from (seed, cell, born, k): its place in the cell, then its word.
+- **Clasts.** A cell's count of each class is split in half eight times, x then y, by exact Bin(n, 1/2) draws (rand.ts binhalf), so member k lies in one of 16 x 16 squares and the members of a square are a run of k (the CPU reads only the squares a lookup touches); its place in the square and its diameter (d = lo (1 - U (1 - (lo / hi)^2.9))^(-1 / 2.9)) from its own stream.
+- **Touching.** A piece a person, an animal or a fire changes goes active (a stick or clast at its place, a log as a logup with the state it had) and the dormant member is gone; one taken is stored nowhere and never returns. Active pieces don't rot further yet [gap: their law is the dormant one stepped; Unit 12].
+- **Fuel.** A stick or log Thing carries its own thickness (girth), which fuel.ts pieceOf gives the pieces gathered from it.
+- **Fixed point.** Every kernel is integer arithmetic, sums order-free; the dormant answer equals the same stick stepped hourly bit for bit on both adapters (src/gpu/deadwood.test.ts).
+
+### 12d. Checks (seed 1, 2026-10-15)
+
+| Quantity | Seed 1 | Cited |
+|---|---|---|
+| Crown cover of the cells (the raster's) | 7,102 ha | 12,191 ha of tree cover (sec. 11d, the generator's quads) |
+| Sticks | 114,625,461; 16,139 a ha of crown cover, 11.6 m3/ha | 17,000 a ha, 12.2 m3/ha (R750) under a closed canopy; open cells hold less by (1 + 0.1 open) |
+| Logs | 306,943; 101.8 m3/ha of crown cover | 94 (R752); Danish reserves 48 to 154 |
+| Snags | 127,287; 42.1 m3/ha | 39 (R752) |
+| Logs and snags by kind | aspen 256,068, oak 63,185, pine 57,637, ash 57,340 | - |
+| Boulders, stones, pebbles | 9,756,334; 63,065,700; 7,678,412,118 | SLU classes x the power law (12b) |
+| GPU memory of the deadwood and clasts | 194 MB (room for 726,074 logs and 4,454,833 bins) | 1.5 GB a world [design], the stems 0.78 GB |
+
+- A closed stand fed at a steady rate holds input / rate by piece class, counted the same hour each day just after the day's pulse (I / (1 - e^-k)): sticks 616,602 against 618,140, dead trees 8,201 against 8,202, snags among them 3,465 against 3,462 (a law sped up a hundred-fold so the test reaches steady state; deadwood.test.ts).
+- A stand's pool of some 28,000 sticks under a canopy closing from a fifth to whole over a game year, each stick also stepped hourly as an active object: every stick's state equal, and the GPU's count of the bins equal to both, bit for bit on the AMD and Intel adapters.
+- A picked stick never returns over three litterfalls; every new stick is of a bin born since.
+- A dead tree's state (gone, snag, log) on the GPU equals the twin's at every day, and its fall rate the twin's.
+- A cell's clasts on the GPU equal the twin's member for member, and their sizes follow the truncated power law.
+
+Gaps the checks show:
+- Logs stand 8% above the reserves' mean: the pool is laid by each tree's crown share of its texel, and crowns overfill some texels (lone trees, rounding), so the pool per ha of capped cover runs over [derived; not retuned].
+- The crowns' cover (7,102 ha) is under the generator's tree cover (12,191 ha), so the island holds sticks and logs on less ground than the quads' cover says (sec. 11d's gaps on crown sizes carry over).
+- The island holds reserve levels of deadwood, twenty times Denmark's managed forests (R758): right for a never-logged island, as the generator notes chose.
+- A bush that dies leaves no piece; snags are not yet things people see; the renderer draws pieces only once they are Things (Unit 14).
+- Bins every 10 game days keep the deadwood at 194 MB, room for the bins' steady state included (each bin lasts until its last stick rots); bins ten times as often (a game day each, a tenth as big) would take about 6.6 times the bins' 142 MB, as H(48) / H(478) x 10 [derived].
+
 ## References
 
 - R335 Monteith J.L. (1977), Climate and the efficiency of crop production in Britain, Phil Trans R Soc Lond B 281:277-294 (1.4 g/MJ as commonly quoted) (search excerpt)
@@ -280,3 +349,12 @@ Gaps the checks show:
 - R651 Pretzsch H., Biber P. (2005), A re-evaluation of Reineke's rule and stand density index, For Sci 51:304-320 (Reineke exponents: pine 1.593, oak 1.424) [abs]. https://portal.fis.tum.de/en/publications/a-re-evaluation-of-reinekes-rule-and-stand-density-index/
 - R652 Hemery G.E., Savill P.S., Pryor S.N. (2005), For Ecol Manage 215:285-294, Table 1 (crown width K = a + b d: oak 1.717 + 15.616 d, ash 0.758 + 20.357 d, poplar 0.801 + 18.950 d). https://benfieldgroup.uk/wp-content/uploads/2021/09/Hemery_et_al_2005_kd_paper.pdf
 - R653 Siipilehto J., Mehtätalo L. (2013), Silva Fennica article 1057 (Weibull shape about 2 to 3.6 in normal to dense stands) [abs]. https://www.silvafennica.fi/article/1057
+- R750 Nordén B., Götmark F., Tönnberg M., Ryberg M. (2004), Dead wood in semi-natural temperate broadleaved woodland: contribution of coarse and fine dead wood, attached dead wood and stumps, For Ecol Manage 194:235-248 (fine woody debris 12.2 m3/ha) [abs]. doi:10.1016/j.foreco.2004.02.043 (via the generator notes, docs/research/generator/2026-10-14-flora.md)
+- R751 Forrester J.A., Fraver S., Mladenoff D.J., Gower S.T., D'Amato A.W., Lindner D.L. (2023), Experimental evidence that forest structure controls detrital decomposition, Ecosystems 26:1396-1410 (about 10% greater mass loss in gaps than under the canopy, across litter, stakes and logs) [abs]. https://research.fs.usda.gov/treesearch/69412 (read 2026-10-15)
+- R752 Christensen M. et al. (2005), Dead wood in European beech (Fagus sylvatica) forest reserves, For Ecol Manage 210:267-282, Table 1 (European mean 94 m3/ha of logs and 39 of snags; Danish reserves 48 to 154 of logs). https://erdorezervatum.hu/sites/default/files/Christensen_etal_2005.pdf (via the generator notes)
+- R753 Herrmann S., Kahl T., Bauhus J. (2015), Decomposition dynamics of coarse woody debris of three important central European tree species, Forest Ecosystems 2:27 (pine 0.032, beech 0.054 a year) [abs]. https://www.sciopen.com/article/10.1186/s40663-015-0052-5 (via the generator notes)
+- R754 Shorohova E., Kapitsa E. (2014), Influence of the substrate and ecosystem attributes on the decomposition rates of coarse woody debris in European boreal forests, For Ecol Manage 315:173-184 (aspen 0.066, pine 0.014 a year) [abs]. https://www.sciencedirect.com/science/article/abs/pii/S037811271300827X (via the generator notes)
+- R755 Huggard D., Kremsater L. (2007), Quantitative synthesis of rates for projecting deadwood in BC forests, Forest Science Program S084000, Table 2.2 and sec. 2.1 (years until half of 40 cm snags have fallen: lodgepole pine 16, southern pines 11, deciduous 28; half-life ~ DBH^0.60, 0.41 to 0.83). http://www.for.gov.bc.ca/hfd/library/FIA/2008/FSP_S084000a.pdf (read 2026-10-15)
+- R756 SLU MarkInfo, Ytblockighet (surface boulders of 2 dm and up counted in a 314 m2 plot: classes none, 1 to 5, 6 to 10, 11 to 20, 21 to 30, 31 to 50, 51 to 100, over 100). https://www.slu.se/om-slu/organisation/institutioner/mark-miljo/miljoanalys/markinfo/markprofil/ytblockighet/ (read 2026-10-15)
+- R757 Hooke R.LeB., Iverson N.R. (1995), Grain-size distribution in deforming subglacial tills: role of grain fracture, Geology 23:57-60 (N(> d) ~ d^-2.9) [abs]. (via the generator notes)
+- R758 Nord-Larsen T. et al. (2016), Skove og plantager 2016, sec. 4.5, Tables 4.11 and 4.14 (Danish forests 4.6 m3/ha of deadwood of 10 cm and up, 34% lying; Hovedstaden 7.6, 3.5 lying). https://sgavmst.dk/media/00zj5xe5/2016_skove_og_plantager.pdf (via the generator notes)

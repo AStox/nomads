@@ -6,9 +6,10 @@
 // A frame, per view (one, or two cross-fading levels):
 //   1. tiles: a compute pass lays out the level's tile map under the view, as main.js buildMap laid out the live levels:
 //      each tile's water and every vertex's level, so the ground keeps z = 1.5H(u + v) + lev lp;
-//   2. cull: a compute pass walks every object, keeps those drawn at a pixel or more where they can reach into the view,
-//      stands each on the tile map's ground, picks its sprite from the atlas table and lists it for an indirect draw,
-//      with its shadow-casting rows;
+//   2. cull: a compute pass per drawn kind reads the sim's own object buffers (wgsl/objects.js), walking the spatial
+//      index's cells under the view, keeps the objects drawn at a pixel or more where they can reach into the view,
+//      works out each one's sprite from its buffer, stands it on the tile map's ground and lists it for an indirect
+//      draw, with its shadow-casting rows;
 //   3. world: the ground's triangles and banks, the objects' sprites and the page's live sprites go into a G-buffer of
 //      what each pixel shows (ground to paint at a world point, or a sprite's colour and its anchor), depth tested;
 //   4. mask: every shadow-casting row's swept round laid along the sun, as px.js shadowRows lists them;
@@ -19,12 +20,13 @@
 // drawn turned to the bearing shown, so the island turns as a solid thing with its sprites upright.
 
 import { GROUND_BINDINGS, groundWGSL } from "./ground.wgsl.js";
+import { NS, ATLAS, META_WORDS } from "./atlas.js";
+import { CELLS_N, CELL_M, CELLS, FAR_LVL, objectWGSL, sourceWGSL, cullWGSL, CLAMP_WGSL, NEEDS_WGSL, FAR_COUNT_WGSL, FAR_FILE_WGSL, FAR_SCAN_WGSL, CANOPY_WGSL, CANOPY_BYTES_WGSL, CANOPY_WIDE_WGSL, CANOPY_TALL_WGSL } from "./wgsl/objects.js";
 
 // steps of the key light in the light table, each at the fire's four levels, the palette as drawn in a last row
 export const LEVELS = 16;
 const ROWS = LEVELS * 4 + 1;
-// the sprite table's sizes per family, and the atlas's layer side
-export const NS = 320, ATLAS = 4096;
+export { NS, ATLAS };
 // the sun map is traced again once the sun has moved this far (radians), over SUN_STRIPES frames
 const SUN_MOVE = 0.004, SUN_STRIPES = 6;
 // how far from each cell of the island's heights the ground's folds are looked over for the sky they hide (meters)
@@ -66,8 +68,11 @@ const VU = struct("U", [
   // the level
   ["H", "f"], ["hb", "f"], ["lp", "f"], ["tileM", "f"], ["levelM", "f"], ["k", "f"], ["pv", "f"], ["pw", "f"], ["shrunk", "u"], ["bias", "f"], ["peak", "f"], ["mapN", "i"],
   ["zinv", "f"], ["frame", "u"], ["season", "u"], ["gflags", "u"],
-  // objects: how many, the most instances and rows, whether anything casts and a row's shadow step per px of height
-  ["nobj", "u"], ["maxinst", "u"], ["maxrows", "u"], ["casting", "u"], ["sunx", "f"], ["suny", "f"],
+  // objects: the cells under the view (the sim's spatial index), the most instances and rows, whether anything casts and
+  // a row's shadow step per px of height
+  ["cx0", "u"], ["cy0", "u"], ["cx1", "u"], ["cy1", "u"], ["maxinst", "u"], ["maxrows", "u"], ["casting", "u"], ["sunx", "f"], ["suny", "f"],
+  // the far level this view walks its sources' far lists at (wgsl/objects.js FAR_WGSL)
+  ["farL", "u"],
   // the light (live.js skyFor)
   ["lx", "f"], ["ly", "f"], ["lz", "f"], ["ar", "f"], ["ag", "f"], ["ab", "f"], ["kr", "f"], ["kg", "f"], ["kb", "f"],
   ["sunK", "f"], ["flat", "f"], ["relief", "f"], ["spr", "f"], ["toneK", "f"], ["toneLo", "f"], ["toneHi", "f"], ["toneN", "u"],
@@ -77,15 +82,17 @@ const VU = struct("U", [
 ]);
 const TU = struct("Tr", [["n", "u"], ["step", "f"], ["exag", "f"], ["tan", "f"], ["dx", "f"], ["dz", "f"], ["row0", "u"], ["reach", "f"]]);
 const PU = struct("Pr", [["dx", "f"], ["dy", "f"], ["sc", "f"], ["nn", "f"], ["alpha", "f"], ["aw", "u"], ["ah", "u"], ["nearest", "u"], ["sr", "f"], ["sg", "f"], ["sb", "f"]]);
+// the object passes outside a frame (wgsl/objects.js): the survey's mode and levels, and the trees' cover's grids
+const KU = struct("Ks", [["mode", "u"], ["nl", "u"], ["canN", "u"], ["canStep", "f"], ["gn", "u"], ["gs", "f"], ["rp", "u"], ["n3", "u"], ["rp3", "u"], ["rpt", "u"]]);
+// a slice of a far list's build: its first slot, how many, and how many far levels
+const FU = struct("Fs", [["base", "u"], ["n", "u"], ["nf", "u"]]);
 
 // Every resource a pass may bind in group 0: its binding, kind and type. A pass names the ones it uses (":w" for
 // read-write storage); its declarations and its layout are made from the same list.
 const RES = {
   V: [0, "uniform", "U"],
-  tiles: [1, "storage", "array<vec2f>"],
-  verts: [2, "storage", "array<f32>"],
-  objs: [3, "storage", "array<vec4u>"],
-  table: [4, "storage", "array<u32>"],
+  map: [1, "storage", "array<f32>"],
+  body: [3, "storage", "array<u32>"],
   entries: [5, "storage", "array<vec4u>"],
   rows: [6, "storage", "array<u32>"],
   inst: [7, "storage", "array<Inst>"],
@@ -106,7 +113,7 @@ const RES = {
   can3: [21, "texture_2d<f32>", "unfilterable-float"],
   tables: [22, "storage", "array<u32>"],
   fires: [23, "uniform", "Fires"],
-  ids: [24, "storage", "array<u32>"],
+  order: [24, "storage", "array<u32>"],
   T: [25, "uniform", "Tr"],
   sunOut: [26, "texture_storage_2d<r32float, write>", "r32float"],
   P: [27, "uniform", "Pr"],
@@ -117,6 +124,31 @@ const RES = {
   zbuf: [32, "texture_depth_2d", "depth"],
   gKs: [33, "texture_storage_2d<rg32uint, write>", "rg32uint"],
   gWs: [34, "texture_storage_2d<rgba32float, write>", "rgba32float"],
+  start: [35, "storage", "array<u32>"],
+  marks: [36, "storage", "array<u32>"],
+  looks: [37, "storage", "array<u32>"],
+  gridTex: [45, "texture_2d_array<f32>", "unfilterable-float"],
+  fineTex: [46, "texture_2d_array<f32>", "unfilterable-float"],
+  need: [38, "storage", "array<atomic<u32>>"],
+  canAcc: [39, "storage", "array<atomic<u32>>"],
+  canAccR: [39, "storage", "array<u32>"],
+  canTall: [40, "storage", "array<atomic<u32>>"],
+  canTallR: [40, "storage", "array<u32>"],
+  canBytes: [41, "storage", "array<u32>"],
+  canWide: [42, "storage", "array<f32>"],
+  canTallOut: [43, "storage", "array<f32>"],
+  Kp: [44, "uniform", "Ks"],
+  Fp: [47, "uniform", "Fs"],
+  fkey: [48, "storage", "array<u32>"],
+  fcnt: [49, "storage", "array<atomic<u32>>"],
+  fcntR: [49, "storage", "array<u32>"],
+  flist: [50, "storage", "array<u32>"],
+  fidx: [51, "storage", "array<u32>"],
+  // a source's own buffers beyond its body (worker.js): the deadwood's rot ring, a sorted list of the members gone, and
+  // a count of members a cell
+  drv: [52, "storage", "array<u32>"],
+  gone: [53, "storage", "array<u32>"],
+  counts: [54, "storage", "array<u32>"],
 };
 const TYPES = `
 struct Inst { sp: u32, x: i32, y: i32, z: f32, flags: u32, pick: u32, wx: f32, wz: f32 }
@@ -168,8 +200,10 @@ const QY = array<f32, 6>(0.0, 0.0, 1.0, 1.0, 0.0, 1.0);
 `;
 
 // ---------- 1. the tile map ----------
-// A tile's water (main.js buildMap on a live level): over 0.45 of five points under standing water, or over 0.1 and
-// below sea level, is water at the surface of the nearest water cell, a lake above half a meter, else the sea.
+// One buffer (map): each tile's water and level as a pair, then from VOFF each vertex's level. A tile's water (main.js
+// buildMap on a live level): over 0.45 of five points under standing water, or over 0.1 and below sea level, is water at
+// the surface of the nearest water cell, a lake above half a meter, else the sea.
+const VOFF = `${2 * MAX_TILES}u`;
 const TILES_WGSL = `
 @compute @workgroup_size(64)
 fn tilesMain(@builtin(global_invocation_id) id: vec3u) {
@@ -184,7 +218,8 @@ fn tilesMain(@builtin(global_invocation_id) id: vec3u) {
   let hh = heightAt(c.x, c.y);
   var out = vec2f(0.0, 0.0);
   if (wet > 0.45 || (wet > 0.1 && hh < -0.5)) { let s = surfAt(c.x, c.y); out = vec2f(select(1.0, 2.0, s > 0.5), s / V.levelM); }
-  tiles[id.x] = out;
+  map[2u * id.x] = out.x;
+  map[2u * id.x + 1u] = out.y;
 }`;
 // A vertex's level: the ground's height, or where it touches standing water the highest water's level, never below
 // the sea.
@@ -202,23 +237,24 @@ fn vertsMain(@builtin(global_invocation_id) id: vec3u) {
   for (var b = j - 1; b <= j; b++) {
     for (var a = i - 1; a <= i; a++) {
       if (a < 0 || b < 0 || a >= i32(V.ni) || b >= i32(V.nj)) { continue; }
-      let t = tiles[u32(b) * V.ni + u32(a)];
+      let t = vec2f(map[2u * (u32(b) * V.ni + u32(a))], map[2u * (u32(b) * V.ni + u32(a)) + 1u]);
       if (t.x > 0.5) { fl = select(t.y, max(fl, t.y), wetv); wetv = true; }
     }
   }
   if (wetv) { lev = fl; }
-  verts[id.x] = max(0.0, lev);
+  map[${VOFF} + id.x] = max(0.0, lev);
 }`;
 // The tile map read back: a tile's corners (top, right, bottom, left as main.js), its diagonal and its water.
 const MAP_READ = `
 struct T4 { c: vec4f, diag: u32, kind: u32 }
 fn tileAt(ti: i32, tj: i32) -> T4 {
   var o: T4;
-  let t = tiles[u32(tj) * V.ni + u32(ti)];
+  let ix = u32(tj) * V.ni + u32(ti);
+  let t = vec2f(map[2u * ix], map[2u * ix + 1u]);
   let vi = V.ni + 1u;
   let k = u32(tj) * vi + u32(ti);
   o.kind = u32(t.x + 0.5);
-  if (o.kind > 0u) { o.c = vec4f(t.y); } else { o.c = vec4f(verts[k], verts[k + 1u], verts[k + vi + 1u], verts[k + vi]); }
+  if (o.kind > 0u) { o.c = vec4f(t.y); } else { o.c = vec4f(map[${VOFF} + k], map[${VOFF} + k + 1u], map[${VOFF} + k + vi + 1u], map[${VOFF} + k + vi]); }
   let dTB = abs(o.c.x - o.c.z);
   let dLR = abs(o.c.w - o.c.y);
   if (dTB < dLR) { o.diag = 0u; } else if (dLR < dTB) { o.diag = 1u; } else { o.diag = select(1u, 0u, o.c.x + o.c.z > o.c.y + o.c.w); }
@@ -317,78 +353,6 @@ fn terrainFS(i: TOut) -> GOut {
   let c = bankColour(i.kind - 3u, X, Y, i.pos.y - i.bank.x, i.bank.y - i.bank.x, i.bank.z, V.lp);
   o.k = vec2u(3u | (c << 8u), 0u);
   return o;
-}`;
-
-// ---------- 2. cull ----------
-// An object: its tile position, its shown size (meters of height, or a tussock's width), and meta: its sprite family
-// (bits 0..19), grass (20, sized by width), a tree (21: its shrunk family next, its shadow from 8 px), flat (22, no
-// shadow), mirrored (23) and there (24). Drawn at a pixel or more and able to reach into the view, it stands on the
-// tile map's ground and takes its sprite at its size, as main.js collectLive drew it; should float rounding ask for a
-// size never made, the nearest one made.
-const CULL_WGSL = (TILE_M, ORIGIN) => `
-@compute @workgroup_size(256)
-fn cullMain(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw: vec3u) {
-  let k = gid.x + gid.y * nw.x * 256u;
-  if (k >= V.nobj) { return; }
-  let o = objs[k];
-  let mt = o.w;
-  if ((mt & (1u << 24u)) == 0u) { return; }
-  let grass = (mt & (1u << 20u)) != 0u;
-  let tree = (mt & (1u << 21u)) != 0u;
-  let hpx = bitcast<f32>(o.z) * select(V.pv, V.pw, grass);
-  if (hpx < 1.0) { return; }
-  let x = bitcast<f32>(o.x) * ${TILE_M} + (${ORIGIN});
-  let z = bitcast<f32>(o.y) * ${TILE_M} + (${ORIGIN});
-  let d = rel(x, z);
-  // within reach whatever the ground's height: as tall and as wide as it is drawn, and its shadow
-  let reach = hpx * 2.0 + 8.0 + select(0.0, hpx * 4.0, V.casting != 0u);
-  let sx = (d.x - d.y) * V.H + V.offx;
-  let base = (d.x + d.y) * V.hb + V.offy;
-  if (sx < -reach || sx > f32(V.aw) + reach || base + V.levc * V.lp < -reach || base - (V.peak - V.levc) * V.lp > f32(V.ah) + reach) { return; }
-  let g = gridUV(x, z);
-  let lev = groundLev(g.x, g.y);
-  if (lev < -1e8) { return; }
-  let s = screen(d, lev);
-  let ax = rnd(s.x);
-  let ay = rnd(s.y);
-  if (ax < -reach || ay < -reach || ax > f32(V.aw) + reach || ay - hpx * 2.0 > f32(V.ah) + reach) { return; }
-  var fam = mt & 0xFFFFFu;
-  if (tree && V.shrunk != 0u) { fam += 1u; }
-  var si = 0u;
-  if (tree) { si = u32(max(1.0, rnd(hpx))); } else if (hpx < 8.0) { si = u32(rnd(hpx * 2.0)); } else { si = 8u + u32(rnd(hpx)); }
-  si = min(si, ${NS - 1}u);
-  var sp = table[fam * ${NS}u + si];
-  for (var dd = 1u; sp == 0u && dd < 24u; dd++) {
-    if (si >= dd) { sp = table[fam * ${NS}u + si - dd]; }
-    if (sp == 0u && si + dd < ${NS}u) { sp = table[fam * ${NS}u + si + dd]; }
-  }
-  if (sp == 0u || sp == 0xFFFFFFFFu) { return; }
-  let e0 = entries[(sp - 1u) * 2u];
-  let foot = f32(i32((e0.w >> 8u) & 255u) - 128);
-  var it: Inst;
-  it.sp = sp - 1u; it.x = i32(ax); it.y = i32(ay + foot); it.z = s.z + V.bias; it.flags = 1u | (((mt >> 23u) & 1u) << 4u); it.pick = ids[k]; it.wx = x; it.wz = z;
-  // a speck of one pixel, as far levels draw most trees, is one point, not a quad
-  if (e0.y == 0x10001u) {
-    let ps = atomicAdd(&args.pic, 1u);
-    if (ps < V.maxinst) { pts[ps] = it; }
-    return;
-  }
-  let slot = atomicAdd(&args.ic, 1u);
-  if (slot >= V.maxinst) { return; }
-  inst[slot] = it;
-  let casts = (mt & (1u << 22u)) == 0u && hpx >= select(3.0, 8.0, tree);
-  if (V.casting == 0u || !casts) { return; }
-  let e1 = entries[(sp - 1u) * 2u + 1u];
-  if (e1.y == 0u) { return; }
-  let r0 = atomicAdd(&args.ric, e1.y);
-  for (var r = 0u; r < e1.y; r++) { if (r0 + r < V.maxrows) { rowInst[r0 + r] = vec2u(slot, e1.x + r); } }
-}
-@compute @workgroup_size(1)
-fn clampMain() {
-  atomicStore(&args.ic, min(atomicLoad(&args.ic), V.maxinst));
-  atomicStore(&args.ric, min(atomicLoad(&args.ric), V.maxrows));
-  atomicStore(&args.pic, min(atomicLoad(&args.pic), V.maxinst));
-  args.dx = (atomicLoad(&args.pic) + 63u) / 64u;
 }`;
 
 // ---------- 3. the world pass: sprites ----------
@@ -500,7 +464,8 @@ fn shadeQuad(P: vec4f, vid: u32) -> MOut {
   let e = vec2f(R + 1.0, R * 0.5 + 1.0);
   let lo = min(A, B) - e;
   let hi = max(A, B) + e;
-  let p = mix(lo, hi, vec2f(QX[vid], QY[vid]));
+  // a strip of four corners
+  let p = mix(lo, hi, vec2f(f32(vid & 1u), f32(vid >> 1u)));
   o.pos = vec4f(p.x / f32(V.aw) * 2.0 - 1.0, 1.0 - p.y / f32(V.ah) * 2.0, 0.0, 1.0);
   o.a = vec4f(A, B); o.r = R;
   return o;
@@ -890,7 +855,7 @@ const GLYPHS = {
 export async function createRenderer({ device, context, format, pal, ground, timing }) {
   const { P, NCOL, HAZE, GLOW, TONE, TONE_S, WATER } = pal;
   const errors = [], stats = { traces: 0, gpuMs: 0, tiles: 0, compile: {} };
-  const STRUCTS = `${VU.wgsl}\n${TU.wgsl}\n${PU.wgsl}\n${TYPES}`, GROUND = groundWGSL(1, ground.consts ?? {});
+  const STRUCTS = `${VU.wgsl}\n${TU.wgsl}\n${PU.wgsl}\n${KU.wgsl}\n${FU.wgsl}\n${TYPES}`, GROUND = groundWGSL(1, ground.consts ?? {});
   const stage = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE;
   const groundLayout = device.createBindGroupLayout({
     label: "ground",
@@ -918,18 +883,20 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   for (const ch of [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", ...extra]) fontRows.push(...GLYPHS[ch].split(" ").map((r) => parseInt(r, 2)));
   const LUT0 = 10 * NCOL, FONT0 = LUT0 + ROWS * NCOL;
   const S = {
-    tiles: pipe({ label: "tiles", binds: ["V", "tiles:w"], code: TILES_WGSL, compute: "tilesMain", withGround: true }),
-    verts: pipe({ label: "verts", binds: ["V", "tiles", "verts:w"], code: VERTS_WGSL, compute: "vertsMain", withGround: true }),
-    cull: pipe({ label: "cull", binds: ["V", "tiles", "verts", "objs", "table", "entries", "ids", "inst:w", "rowInst:w", "args:w", "pts:w"], code: `${MAP_READ}\n${CULL_WGSL(pal.TILE_M.toFixed(4), pal.ORIGIN.toFixed(4))}`, compute: "cullMain" }),
-    clampArgs: pipe({ label: "clampArgs", binds: ["V", "args:w"], code: CULL_WGSL(1, 0).replace(/@compute @workgroup_size\(256\)[\s\S]*?\n}\n(?=@compute)/, ""), compute: "clampMain" }),
-    terrain: pipe({ label: "terrain", binds: ["V", "tiles", "verts"], code: `${MAP_READ}\n${TERRAIN_WGSL}`, vs: "terrainVS", fs: "terrainFS", targets: GT, depth: true, withGround: true }),
+    tiles: pipe({ label: "tiles", binds: ["V", "map:w"], code: TILES_WGSL, compute: "tilesMain", withGround: true }),
+    verts: pipe({ label: "verts", binds: ["V", "map:w"], code: VERTS_WGSL, compute: "vertsMain", withGround: true }),
+    clampArgs: pipe({ label: "clampArgs", binds: ["V", "args:w"], code: CLAMP_WGSL, compute: "clampMain" }),
+    canBytes: pipe({ label: "canBytes", binds: ["Kp", "canAccR", "canBytes:w"], code: CANOPY_BYTES_WGSL, compute: "canBytesMain" }),
+    canWide: pipe({ label: "canWide", binds: ["Kp", "canAccR", "canWide:w"], code: CANOPY_WIDE_WGSL, compute: "canWideMain" }),
+    canTall: pipe({ label: "canTall", binds: ["Kp", "canTallR", "canTallOut:w"], code: CANOPY_TALL_WGSL, compute: "canTallMain" }),
+    terrain: pipe({ label: "terrain", binds: ["V", "map"], code: `${MAP_READ}\n${TERRAIN_WGSL}`, vs: "terrainVS", fs: "terrainFS", targets: GT, depth: true, withGround: true }),
     sprites: pipe({ label: "sprites", binds: ["V", "inst", "entries", "atlas"], code: SPRITE_WGSL("inst").replace(/@fragment\nfn xrayFS[\s\S]*$/, ""), vs: "spriteVS", fs: "spriteFS", targets: GT, depth: true }),
     splatA: pipe({ label: "splatA", binds: ["V", "pts", "entries", "argsR", "keys:w", "zbuf"], code: SPLAT_WGSL.replace(/@compute @workgroup_size\(64\)\nfn splatB[\s\S]*$/, ""), compute: "splatA" }),
     splatB: pipe({ label: "splatB", binds: ["V", "pts", "entries", "argsR", "keysR", "zbuf", "gKs", "gWs", "atlas"], code: SPLAT_WGSL.replace(/@compute @workgroup_size\(64\)\nfn splatA[\s\S]*?\n}\n/, ""), compute: "splatB" }),
     live: pipe({ label: "live", binds: ["V", "live", "entries", "atlas"], code: SPRITE_WGSL("live").replace(/@fragment\nfn xrayFS[\s\S]*$/, ""), vs: "spriteVS", fs: "spriteFS", targets: GT, depth: true }),
     xray: pipe({ label: "xray", binds: ["V", "live", "entries", "atlas"], code: SPRITE_WGSL("live").replace(/@fragment\nfn spriteFS[\s\S]*?\n}\n(?=@fragment)/, ""), vs: "spriteVS", fs: "xrayFS", targets: ["rg32uint"] }),
-    mask: pipe({ label: "mask", binds: ["V", "rowInst", "inst", "entries", "rows"], code: MASK_WGSL, vs: "maskVS", fs: "maskFS", targets: ["r8unorm"] }),
-    maskLive: pipe({ label: "maskLive", binds: ["V", "liveRows"], code: MASK_LIVE_WGSL, vs: "maskLiveVS", fs: "maskFS", targets: ["r8unorm"] }),
+    mask: pipe({ label: "mask", binds: ["V", "rowInst", "inst", "entries", "rows"], code: MASK_WGSL, vs: "maskVS", fs: "maskFS", targets: ["r8unorm"], topology: "triangle-strip" }),
+    maskLive: pipe({ label: "maskLive", binds: ["V", "liveRows"], code: MASK_LIVE_WGSL, vs: "maskLiveVS", fs: "maskFS", targets: ["r8unorm"], topology: "triangle-strip" }),
     over: pipe({ label: "over", binds: ["V", "prims", "entries", "atlas", "tables"], code: OVER_WGSL(FONT0, extra.map((c) => c.codePointAt(0)), [P.r4, P.snow, P.r5]), vs: "overVS", fs: "overFS", targets: ["r8uint"] }),
     shade: pipe({ label: "shade", binds: ["V", "gK", "gW", "mask", "over", "xray", "sun", "can0", "can3", "tables", "fires"], code: SHADE_WGSL(LUT0), vs: "fullVS", fs: "shadeFS", targets: ["rgba8unorm"], withGround: true }),
     sun: pipe({ label: "sun", binds: ["T", "sunOut"], code: TRACE_WGSL, compute: "sunMain", withGround: true }),
@@ -983,20 +950,39 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   const sunTex = () => device.createTexture({ size: [GN, GN], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC, label: "sun" });
   const sunMaps = [sunTex(), sunTex()], foldT = sunTex();
   let sunFront = 0, sunJob = null, sunShown = null, exagFolded = null;
-  // the trees' cover (canopy.js) and its wide average
-  let canopy = { n: 1, step: 1, t0: tex({ size: [1, 1], format: "r8uint" }), t3: tex({ size: [1, 1], format: "r32float" }), n3: 1 };
-  const traceU = B(TU.bytes, UNI, "trace");
+  // The trees' cover, laid by the GPU from the trees in the object buffers (wgsl/objects.js canopyMain): cells of
+  // canopy.step metres over the island (3 m, or coarser on an island too big for 3 m cells to stay under about 4800 a
+  // side), a byte each, its 8 x 8 means, and the scratch it is summed in; rows padded for the copies into textures.
+  const SIZE = -2 * pal.ORIGIN, pitch = (bytes) => Math.ceil(bytes / 256) * 256;
+  const canopy = { step: Math.max(3, SIZE / 4800) };
+  canopy.n = Math.ceil(SIZE / canopy.step) + 1; canopy.n3 = Math.floor(canopy.n / 8);
+  Object.assign(canopy, {
+    rp: pitch(canopy.n), rp3: pitch(canopy.n3 * 4) / 4, rpt: pitch(GN * 4) / 4,
+    t0: tex({ size: [canopy.n, canopy.n], format: "r8uint", label: "canopy" }), t3: tex({ size: [canopy.n3, canopy.n3], format: "r32float", label: "canopy3" }),
+  });
+  Object.assign(canopy, {
+    acc: B(Math.ceil((canopy.n * canopy.n) / 2) * 4, STOR, "canAcc"), tall: B(GN * GN * 8, STOR, "canTall"),
+    bytes: B(canopy.rp * canopy.n, STOR | GPUBufferUsage.COPY_SRC, "canBytes"), wide: B(canopy.rp3 * 4 * canopy.n3, STOR | GPUBufferUsage.COPY_SRC, "canWide"),
+    tallOut: B(canopy.rpt * 4 * GN, STOR | GPUBufferUsage.COPY_SRC, "canTallOut"),
+  });
+  const traceU = B(TU.bytes, UNI, "trace"), kpU = B(KU.bytes, UNI, "objpass");
 
-  // objects and sprites
-  let objCount = 0, objCap = 0, objsB = B(16, STOR, "objs"), idsB = B(16, STOR, "ids");
-  let tableB = B(16, STOR, "table"), entriesB = B(32, STOR, "entries"), rowsB = B(16, STOR, "rows");
+  // objects and sprites: the drawn kinds' sources (setSources), the tables their looks are read by, the survey's bits
+  let sources = [];
+  // the looks' tables (atlas.js Looks.meta), then from META_WORDS the sprite table: one binding, as a pass may bind only
+  // so many storage buffers (ten on some GPUs)
+  let looksB = B(META_WORDS * 4 + 16, STOR, "looks");
+  const metaCPU = new Uint32Array(META_WORDS);
+  let needB = B(16, STOR | GPUBufferUsage.COPY_SRC, "need");
+  let entriesB = B(32, STOR, "entries"), rowsB = B(16, STOR, "rows");
   let atlasT = device.createTexture({ size: [ATLAS, ATLAS, 1], format: "r8uint", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC, label: "atlas" });
   let entriesCap = 0;
-  const instB = B(MAX_INST * 32, GPUBufferUsage.STORAGE, "inst"), rowInstB = B(MAX_ROWS * 8, GPUBufferUsage.STORAGE, "rowInst");
+  // the instances of the sprites a view draws, then from MAX_INST its one-pixel specks
+  const instB = B(2 * MAX_INST * 32, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, "inst"), rowInstB = B(MAX_ROWS * 8, GPUBufferUsage.STORAGE, "rowInst");
   const argsB = B(64, GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC, "args"), argsInit = B(64, GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST, "argsInit");
-  device.queue.writeBuffer(argsInit, 0, new Uint32Array([6, 0, 0, 0, 6, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0]));
-  const ptsB = B(MAX_INST * 32, GPUBufferUsage.STORAGE, "pts");
-  const tilesB = B(MAX_TILES * 8, GPUBufferUsage.STORAGE, "tiles"), vertsB = B(MAX_TILES * 4 + 4 * 4096, GPUBufferUsage.STORAGE, "verts");
+  // the indirect draws: sprites (6 vertices), shadow rows (a strip of 4), specks (a dispatch)
+  device.queue.writeBuffer(argsInit, 0, new Uint32Array([6, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0]));
+  const mapB = B(MAX_TILES * 12 + 4 * 4096, GPUBufferUsage.STORAGE, "map");
   const liveB = B(MAX_LIVE * 32, STOR, "live"), liveRowsB = B(MAX_LIVE_ROWS * 16, STOR, "liveRows"), primsB = B(MAX_PRIMS * 32, STOR, "prims");
   const viewU = [0, 1].map((k) => B(VU.bytes, UNI, `view${k}`)), firesU = [0, 1].map((k) => B(MAX_FIRES * 16, UNI, `fires${k}`)), presentU = [0, 1].map((k) => B(PU.bytes, UNI, `present${k}`));
   // per-frame targets, sized to the largest view
@@ -1015,15 +1001,22 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   const res = (name, v) => {
     switch (name) {
       case "V": return { buffer: viewU[v] };
-      case "tiles": return { buffer: tilesB };
-      case "verts": return { buffer: vertsB };
-      case "objs": return { buffer: objsB };
-      case "ids": return { buffer: idsB };
-      case "table": return { buffer: tableB };
+      case "map": return { buffer: mapB };
+      case "gridTex": return gridT.createView({ dimension: "2d-array" });
+      case "fineTex": return fineT.createView({ dimension: "2d-array" });
+      case "need": return { buffer: needB };
+      case "Kp": return { buffer: kpU };
+      case "Fp": return { buffer: farU };
+      case "canAcc": case "canAccR": return { buffer: canopy.acc };
+      case "canTall": case "canTallR": return { buffer: canopy.tall };
+      case "canBytes": return { buffer: canopy.bytes };
+      case "canWide": return { buffer: canopy.wide };
+      case "canTallOut": return { buffer: canopy.tallOut };
+      case "looks": return { buffer: looksB };
       case "entries": return { buffer: entriesB };
       case "rows": return { buffer: rowsB };
       case "inst": return { buffer: instB };
-      case "pts": return { buffer: ptsB };
+      case "pts": return { buffer: instB, offset: MAX_INST * 32, size: MAX_INST * 32 };
       case "keys": case "keysR": return { buffer: cap.keys };
       case "argsR": return { buffer: argsB };
       case "zbuf": return cap.depth.createView();
@@ -1084,65 +1077,201 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     sunJob.row += rows;
     if (sunJob.row >= GN) { sunFront = 1 - sunFront; sunShown = sunJob; sunJob = null; stats.traces++; }
   }
-  // The trees' cover of the ground, n x n cells of `step` meters (canopy.js bytes), with its 8x8 means for the wide
-  // read, and the trees' mean height on the heights' grid into layer 5.
-  function setCanopy(n, step, bytes, tall) {
-    const n3 = Math.floor(n / 8), wide = new Float32Array(n3 * n3);
-    for (let j = 0; j < n3; j++)
-      for (let i = 0; i < n3; i++) {
-        let s = 0;
-        for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) s += bytes[(j * 8 + y) * n + i * 8 + x];
-        wide[j * n3 + i] = s / (64 * 255);
+  // ---------- objects ----------
+  // The drawn kinds (worker.js): each { spec (wgsl/objects.js sourceWGSL's, with indexed and canopy), body, order,
+  // start, marks }, the GPU buffers the cull reads, most of them the sim's own. Its cull, survey and canopy passes are
+  // made for it here, all at once.
+  // A source's passes are made once for its spec (a new spec, as a grown records buffer brings, makes them again). A
+  // source names any more buffers its reader binds in binds (drv, gone, counts) and gives them in over, or each frame in
+  // dyn() when they are replaced as the sim runs; a source of members has no survey, canopy or far lists.
+  async function setSources(list) {
+    const made = list.map((s) => {
+      const sp = s.spec;
+      if (!sp.passes) {
+        const own = [...(sp.members === "cells" ? [] : ["body"]), ...(sp.marks ? ["marks"] : []), ...(sp.binds ?? [])];
+        const src = `${objectWGSL({ ORIGIN: pal.ORIGIN, GN, WS: pal.GRID_STEP, M: gp.fine.size, FSTART: pal.FINE.start, FSTEP: pal.FINE.step })}\n${sourceWGSL(sp, pal.ORIGIN)}`;
+        const index = [...(sp.ordered || sp.members === "bins" ? ["order"] : []), ...(sp.indexed || sp.members === "bins" ? ["start"] : [])];
+        const out = ["looks", "entries", "inst:w", ...(sp.flat ? [] : ["rowInst:w"]), "args:w", "gridTex", "fineTex"];
+        const slots = !sp.members, ground = ["looks", "gridTex", "fineTex"];
+        sp.passes = {
+          cull: pipe({ label: `cull ${s.name}`, binds: ["V", "map", ...own, ...index, ...out], code: `${MAP_READ}\n${src}\n${cullWGSL(sp)}`, compute: "cullMain" }),
+          needs: slots ? pipe({ label: `needs ${s.name}`, binds: ["Kp", ...own, "looks", "need:w", "gridTex", "fineTex"], code: `${src}\n${NEEDS_WGSL}`, compute: "needsMain" }) : null,
+          canopy: sp.canopy ? pipe({ label: `canopy ${s.name}`, binds: ["Kp", ...own, "looks", "canAcc:w", "canTall:w", "gridTex", "fineTex"], code: `${src}\n${CANOPY_WGSL(pal.ORIGIN)}`, compute: "canopyMain" }) : null,
+          far: slots && sp.indexed && !sp.moves ? {
+            cull: pipe({ label: `cull far ${s.name}`, binds: ["V", "map", ...own, "flist", "fidx", ...out], code: `${MAP_READ}\n${src}\n${cullWGSL(sp, true)}`, compute: "cullMain" }),
+            count: pipe({ label: `far count ${s.name}`, binds: ["Fp", ...own, "fkey:w", "fcnt:w", ...ground], code: `${src}\n${FAR_COUNT_WGSL}`, compute: "farCount" }),
+          } : null,
+        };
       }
-    canopy.t0.destroy(); canopy.t3.destroy();
-    canopy = { n, step, n3, bytes, wide, t0: tex({ size: [n, n], format: "r8uint", label: "canopy" }), t3: tex({ size: [n3, n3], format: "r32float", label: "canopy3" }) };
-    upload(canopy.t0, bytes, n, n, 1); upload(canopy.t3, wide, n3, n3, 4);
-    if (tall) upload(gridT, tall, GN, GN, 4, 5);
+      const over = { body: s.body && { buffer: s.body }, order: s.order && { buffer: s.order }, start: s.start && { buffer: s.start }, marks: s.marks && { buffer: s.marks }, ...s.over };
+      return { ...s, ...sp.passes, over };
+    });
+    await Promise.all(made.flatMap((s) => [s.cull.ready, s.needs?.ready, s.canopy?.ready, s.far?.cull.ready, s.far?.count.ready]));
+    if (errors.length) throw new Error(errors.join("\n"));
+    sources = made;
   }
-  // cells of the cover that changed: the w x h block at (x, y), its bytes in rows
-  function updateCanopy(x, y, w, h, bytes) {
-    const c = canopy, n = c.n;
-    for (let j = 0; j < h; j++) c.bytes.set(bytes.subarray(j * w, j * w + w), (y + j) * n + x);
-    device.queue.writeTexture({ texture: c.t0, origin: [x, y] }, bytes, { bytesPerRow: w }, [w, h, 1]);
-    const i0 = Math.floor(x / 8), i1 = Math.min(c.n3 - 1, Math.floor((x + w - 1) / 8)), j0 = Math.floor(y / 8), j1 = Math.min(c.n3 - 1, Math.floor((y + h - 1) / 8));
-    if (i1 < i0 || j1 < j0) return;
-    const ww = i1 - i0 + 1, out = new Float32Array(ww * (j1 - j0 + 1));
-    for (let j = j0; j <= j1; j++)
-      for (let i = i0; i <= i1; i++) {
-        let s = 0;
-        for (let yy = 0; yy < 8; yy++) for (let xx = 0; xx < 8; xx++) s += c.bytes[(j * 8 + yy) * n + i * 8 + xx];
-        out[(j - j0) * ww + i - i0] = c.wide[j * c.n3 + i] = s / (64 * 255);
+  // ---------- the far levels' lists (wgsl/objects.js FAR_COUNT_WGSL) ----------
+  // Per indexed source, by name so they outlive setSources: the slots' keys, the counts (then the runs' cursors), and two
+  // lists with their cell index, one drawn from (front) while the other is built. A build goes a slice of slots a frame.
+  const FAR_SLICE = 1 << 20, FAR_IDX = FAR_LVL + 8 * CELLS;
+  const farU = B(FU.bytes, UNI, "far"), farState = new Map();
+  // farUse: off for the page checks (scripts/play/objects.ts), which compare a far view drawn both ways
+  let farN = 0, farUse = true, skipped = new Set();
+  const farScanP = pipe({ label: "far scan", binds: ["Fp", "fcntR:w", "fidx:w"], code: FAR_SCAN_WGSL, compute: "farScan" });
+  const farFileP = pipe({ label: "far file", binds: ["Fp", "fkey", "fcnt:w", "flist:w"], code: FAR_FILE_WGSL, compute: "farFile" });
+  function farOf(s) {
+    let f = farState.get(s.name);
+    if (f && f.body === s.body) return f;
+    if (f) for (const b of [f.key, f.cnt, ...f.idx, ...f.list]) b?.destroy();
+    f = { body: s.body, cap: s.spec.cap, key: B(s.spec.cap * 4, STOR, "farKey"), cnt: B(CELLS * 8 * 4, STOR, "farCnt"), idx: [0, 1].map(() => B(FAR_IDX * 4, STOR | GPUBufferUsage.COPY_SRC, "farIdx")), list: [null, null], n: [0, 0], front: -1, job: null };
+    farState.set(s.name, f);
+    return f;
+  }
+  // Every indexed source's lists built again from its buffers as they are now, nf: how many levels (the coarsest) are far;
+  // sync: by farNow, which no frame steps.
+  function farBuild(nf, sync = false) {
+    farN = nf;
+    for (const s of sources) if (s.far) { const f = farOf(s); f.job = { phase: "count", at: 0, sync }; }
+  }
+  // One step of a source's build into enc; after: what to run once enc is submitted.
+  function farStep(enc, s, f, slice) {
+    const j = f.job, back = f.front === 0 ? 1 : 0;
+    if (j.phase === "count" || j.phase === "file") {
+      const n = Math.min(slice, f.cap - j.at);
+      device.queue.writeBuffer(farU, 0, FU.pack({ base: j.at, n, nf: farN }));
+      if (j.phase === "count" && j.at === 0) enc.clearBuffer(f.cnt);
+      const pass = enc.beginComputePass();
+      if (j.phase === "count") { pass.setPipeline(s.far.count.p); pass.setBindGroup(0, group(s.far.count, 0, { ...s.over, fkey: { buffer: f.key }, fcnt: { buffer: f.cnt } })); pass.setBindGroup(1, groundGroup); }
+      else { pass.setPipeline(farFileP.p); pass.setBindGroup(0, group(farFileP, 0, { fkey: { buffer: f.key }, fcnt: { buffer: f.cnt }, flist: { buffer: f.list[back] } })); }
+      pass.dispatchWorkgroups(...spread(n));
+      pass.end();
+      j.at += n;
+      if (j.at < f.cap) return null;
+      if (j.phase === "count") { j.phase = "scan"; return null; }
+      f.front = back; f.job = null; stats.far = { ...stats.far, [s.name]: f.n[back] };
+      return null;
+    }
+    if (j.phase !== "scan") return null;
+    device.queue.writeBuffer(farU, 0, FU.pack({ base: 0, n: 0, nf: farN }));
+    const pass = enc.beginComputePass();
+    pass.setPipeline(farScanP.p); pass.setBindGroup(0, group(farScanP, 0, { fcntR: { buffer: f.cnt }, fidx: { buffer: f.idx[back] } })); pass.dispatchWorkgroups(1);
+    pass.end();
+    const rb = B(4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "farTotal");
+    enc.copyBufferToBuffer(f.idx[back], CELLS * 4, rb, 0, 4);
+    j.phase = "wait";
+    return () => rb.mapAsync(GPUMapMode.READ).then(() => {
+      const total = new Uint32Array(rb.getMappedRange())[0];
+      rb.unmap(); rb.destroy();
+      f.n ??= [0, 0]; f.n[back] = total;
+      if (!f.list[back] || f.list[back].size < total * 4) { f.list[back]?.destroy(); f.list[back] = B(Math.max(16, Math.ceil(total * 1.25) * 4), STOR, "farList"); }
+      if (f.job === j) { j.phase = "file"; j.at = 0; }
+    });
+  }
+  // in a frame: one step of the first source with a build under way
+  function farFrame(enc) {
+    for (const s of sources) {
+      const f = s.far && farState.get(s.name);
+      if (!f?.job || f.body !== s.body || f.job.sync) continue;
+      if (f.job.phase === "wait" || !farScanP.p || !farFileP.p) return;
+      const after = farStep(enc, s, f, FAR_SLICE);
+      if (after) pendingPickReads.push(after);
+      return;
+    }
+  }
+  // the whole build at once, outside the frames (before the first view)
+  async function farNow(nf) {
+    await Promise.all([farScanP.ready, farFileP.ready]);
+    farBuild(nf, true);
+    for (const s of sources) {
+      const f = s.far && farState.get(s.name);
+      while (f?.job) {
+        const enc = device.createCommandEncoder(), after = farStep(enc, s, f, f.cap);
+        device.queue.submit([enc.finish()]);
+        if (after) await after();
       }
-    device.queue.writeTexture({ texture: c.t3, origin: [i0, j0] }, out, { bytesPerRow: ww * 4 }, [ww, j1 - j0 + 1, 1]);
+    }
   }
-
-  // ---------- objects and sprites ----------
-  // The objects (worker.js packs them): objs four words each (px, py, shown size as f32 bits, meta), ids their sim ids.
-  function setObjects(objs, ids, count) {
-    objCap = ids.length; objCount = count;
-    objsB.destroy(); idsB.destroy();
-    objsB = B(objCap * 16, STOR, "objs"); idsB = B(objCap * 4, STOR, "ids");
-    device.queue.writeBuffer(objsB, 0, objs); device.queue.writeBuffer(idsB, 0, ids);
+  // a source's slots as workgroups, 256 threads each, folded into two dimensions past the 65535 limit
+  const spread = (n) => { const wg = Math.max(1, Math.ceil(n / 256)), wx = Math.min(wg, 32768); return [wx, Math.ceil(wg / wx)]; };
+  // the tables looks are read by (atlas.js Looks.meta)
+  function setMeta(words) { metaCPU.set(words); device.queue.writeBuffer(looksB, 0, words); }
+  // The survey (wgsl/objects.js needsMain) over every source: mode 0 the kind and species pairs, mode 1 the families and
+  // sizes the first nl levels draw, as bits; words: how many 32-bit words of them.
+  async function survey(mode, nl, words) {
+    if (needB.size < words * 4) { needB.destroy(); needB = B(words * 4, STOR | GPUBufferUsage.COPY_SRC, "need"); }
+    const read = B(words * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "needRead");
+    device.queue.writeBuffer(kpU, 0, KU.pack({ mode, nl }));
+    const enc = device.createCommandEncoder();
+    enc.clearBuffer(needB, 0, words * 4);
+    const pass = enc.beginComputePass();
+    for (const s of sources) {
+      if (!s.needs) continue;
+      pass.setPipeline(s.needs.p); pass.setBindGroup(0, group(s.needs, 0, s.over)); pass.setBindGroup(1, groundGroup);
+      pass.dispatchWorkgroups(...spread(s.spec.cap));
+    }
+    pass.end();
+    enc.copyBufferToBuffer(needB, 0, read, 0, words * 4);
+    device.queue.submit([enc.finish()]);
+    await read.mapAsync(GPUMapMode.READ);
+    const out = new Uint32Array(read.getMappedRange().slice(0));
+    read.destroy();
+    return out;
   }
-  // objects k.. changed: their words and ids
-  function updateObjects(k, objs, ids) {
-    device.queue.writeBuffer(objsB, k * 16, objs); device.queue.writeBuffer(idsB, k * 4, ids);
-    objCount = Math.max(objCount, k + ids.length);
+  // The trees' cover laid again from every tree the sources hold now: summed, packed and copied into the textures the
+  // light reads (can0, can3, and the trees' mean height into grid layer 5).
+  function buildCanopy() {
+    const c = canopy;
+    device.queue.writeBuffer(kpU, 0, KU.pack({ canN: c.n, canStep: c.step, gn: GN, gs: pal.GRID_STEP, rp: c.rp, n3: c.n3, rp3: c.rp3, rpt: c.rpt }));
+    const enc = device.createCommandEncoder();
+    enc.clearBuffer(c.acc); enc.clearBuffer(c.tall);
+    let pass = enc.beginComputePass();
+    for (const s of sources) if (s.canopy) { pass.setPipeline(s.canopy.p); pass.setBindGroup(0, group(s.canopy, 0, s.over)); pass.setBindGroup(1, groundGroup); pass.dispatchWorkgroups(...spread(s.spec.cap)); }
+    pass.end();
+    pass = enc.beginComputePass();
+    pass.setPipeline(S.canBytes.p); pass.setBindGroup(0, group(S.canBytes)); pass.dispatchWorkgroups(Math.ceil(c.rp / 4 / 64), c.n);
+    pass.setPipeline(S.canWide.p); pass.setBindGroup(0, group(S.canWide)); pass.dispatchWorkgroups(Math.ceil(c.n3 / 8), Math.ceil(c.n3 / 8));
+    pass.setPipeline(S.canTall.p); pass.setBindGroup(0, group(S.canTall)); pass.dispatchWorkgroups(Math.ceil(GN / 8), Math.ceil(GN / 8));
+    pass.end();
+    enc.copyBufferToTexture({ buffer: c.bytes, bytesPerRow: c.rp }, { texture: c.t0 }, [c.n, c.n, 1]);
+    enc.copyBufferToTexture({ buffer: c.wide, bytesPerRow: c.rp3 * 4 }, { texture: c.t3 }, [c.n3, c.n3, 1]);
+    enc.copyBufferToTexture({ buffer: c.tallOut, bytesPerRow: c.rpt * 4 }, { texture: gridT, origin: [0, 0, 5] }, [GN, GN, 1]);
+    device.queue.submit([enc.finish()]);
+  }
+  // The cells of the sim's spatial index under a view's tile window, whose corners in world metres bound it.
+  function cellRect(U) {
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const u of [U.i0, U.i0 + U.ni])
+      for (const v of [U.j0, U.j0 + U.nj]) {
+        const x = U.obx + (u * U.eubx + v * U.evbx) * U.tileM, z = U.obz + (u * U.euby + v * U.evby) * U.tileM;
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z);
+      }
+    const c = (m) => Math.max(0, Math.min(CELLS_N - 1, Math.floor((m - pal.ORIGIN) / CELL_M)));
+    return { cx0: c(x0), cx1: c(x1), cy0: c(z0), cy1: c(z1) };
   }
   // The atlas: layers of ATLAS x ATLAS palette indices; entries two vec4u per sprite; rows each casting row's span; table
   // the sprite (id + 1) of each family and size, 0 where none was made.
   function setAtlas({ layers, entries, rows, table }) {
     atlasT.destroy();
     atlasT = device.createTexture({ size: [ATLAS, ATLAS, layers], format: "r8uint", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC, label: "atlas" });
-    entriesB.destroy(); rowsB.destroy(); tableB.destroy();
+    entriesB.destroy(); rowsB.destroy();
     entriesCap = entries.length / 8;
-    entriesB = B(entries.byteLength, STOR, "entries"); rowsB = B(Math.max(16, rows.byteLength), STOR, "rows"); tableB = B(table.byteLength, STOR, "table");
-    device.queue.writeBuffer(entriesB, 0, entries); if (rows.length) device.queue.writeBuffer(rowsB, 0, rows); device.queue.writeBuffer(tableB, 0, table);
+    entriesB = B(entries.byteLength, STOR, "entries"); rowsB = B(Math.max(16, rows.byteLength), STOR, "rows");
+    device.queue.writeBuffer(entriesB, 0, entries); if (rows.length) device.queue.writeBuffer(rowsB, 0, rows);
+    setTable(table);
   }
   // pixels into the atlas: a w x h block at (x, y) of layer l
   const atlasPut = (l, x, y, w, h, px) => device.queue.writeTexture({ texture: atlasT, origin: [x, y, l] }, px, { bytesPerRow: w }, [w, h, 1]);
   // sprite entries from `at` on (live sprites, made as they are needed)
-  const tablePut = (slot, v) => device.queue.writeBuffer(tableB, slot * 4, Uint32Array.of(v));
+  const tablePut = (slot, v) => { if ((META_WORDS + slot + 1) * 4 <= looksB.size) device.queue.writeBuffer(looksB, (META_WORDS + slot) * 4, Uint32Array.of(v)); };
+  // the whole table again, when families were numbered since the atlas was laid out (the tables before it kept)
+  function setTable(table) {
+    if (looksB.size < (META_WORDS + table.length) * 4) {
+      looksB.destroy();
+      looksB = B((META_WORDS + Math.ceil(table.length * 1.25)) * 4, STOR, "looks");
+      device.queue.writeBuffer(looksB, 0, metaCPU);
+    }
+    device.queue.writeBuffer(looksB, META_WORDS * 4, table);
+  }
   const entriesPut = (at, words) => { if (at + words.length / 8 <= entriesCap) device.queue.writeBuffer(entriesB, at * 32, words); };
   const rowsPut = (at, words) => device.queue.writeBuffer(rowsB, at * 4, words);
   const setTrails = (bytes) => upload(trailT, bytes, TN, TN, 1);
@@ -1172,6 +1301,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     qNames = [];
     fold(enc, f.exag);
     traceSun(enc, f.cast);
+    farFrame(enc);
     views.forEach((v, k) => drawView(enc, v, k, f.id));
     // present every view onto the canvas
     const out = context.getCurrentTexture();
@@ -1203,10 +1333,12 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     }
     for (const r of pendingPickReads.splice(0)) r();
   }
-  const pendingPickReads = [];
+  const pendingPickReads = [], instWant = [];
   function drawView(enc, v, k, frameId) {
-    const U = v.U, nTiles = U.ni * U.nj;
-    device.queue.writeBuffer(viewU[k], 0, VU.pack({ ...U, nobj: objCount, maxinst: MAX_INST, maxrows: MAX_ROWS, gridN: GN, gridStep: pal.GRID_STEP, canN: canopy.n, canStep: canopy.step, can3: canopy.n3, ncol: NCOL, toneN: TONE_S.length, toneLo: TONE_S[0], toneHi: TONE_S[TONE_S.length - 1], wlo: Math.min(...WATER), whi: Math.max(...WATER) }));
+    const U = v.U, nTiles = U.ni * U.nj, rect = cellRect(U), objCount = sources.length;
+    // a far level walks its sources' far lists where they are built (v.L: the view's level, coarsest first)
+    const farL = farUse && v.L < farN ? v.L : -1;
+    device.queue.writeBuffer(viewU[k], 0, VU.pack({ ...U, ...rect, farL: Math.max(0, farL), maxinst: MAX_INST, maxrows: MAX_ROWS, gridN: GN, gridStep: pal.GRID_STEP, canN: canopy.n, canStep: canopy.step, can3: canopy.n3, ncol: NCOL, toneN: TONE_S.length, toneLo: TONE_S[0], toneHi: TONE_S[TONE_S.length - 1], wlo: Math.min(...WATER), whi: Math.max(...WATER) }));
     if (v.fires?.length) device.queue.writeBuffer(firesU[k], 0, v.fires);
     stats.tiles = nTiles;
     // 1. the tile map, 2. cull
@@ -1217,9 +1349,27 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     pass.setPipeline(S.verts.p); pass.setBindGroup(0, group(S.verts, k)); pass.dispatchWorkgroups(Math.ceil(((U.ni + 1) * (U.nj + 1)) / 64));
     pass.end();
     if (objCount) {
+      // an indexed source's rows of cells under the view, each row's run split among enough workgroups to keep the GPU busy
+      const rows = rect.cy1 - rect.cy0 + 1, perRow = Math.min(64, Math.max(1, Math.ceil(2048 / rows)));
       pass = enc.beginComputePass(tw("cull"));
-      const wg = Math.ceil(objCount / 256), wx = Math.min(wg, 32768), wy = Math.ceil(wg / wx);
-      pass.setPipeline(S.cull.p); pass.setBindGroup(0, group(S.cull, k)); pass.dispatchWorkgroups(wx, wy);
+      pass.setBindGroup(1, groundGroup);
+      for (const s of sources) {
+        // a source of members drawn under a pixel at this level (its biggest, spec.most metres) is not walked
+        const most = s.spec.most;
+        if (skipped.has(s.name)) continue;
+        if (most !== undefined && (most < 1 ? most ** 0.55 : most) * Math.max(U.pv, U.pw) < 1) continue;
+        const over = s.dyn ? { ...s.over, ...s.dyn() } : s.over;
+        const f = farL >= 0 && s.far && farState.get(s.name);
+        if (f && f.front >= 0 && f.body === s.body) {
+          pass.setPipeline(s.far.cull.p); pass.setBindGroup(0, group(s.far.cull, k, { ...over, flist: { buffer: f.list[f.front] }, fidx: { buffer: f.idx[f.front] } }));
+          pass.dispatchWorkgroups(rect.cx1 - rect.cx0 + 1, rows);
+          continue;
+        }
+        pass.setPipeline(s.cull.p); pass.setBindGroup(0, group(s.cull, k, over));
+        if (s.spec.members === "cells") pass.dispatchWorkgroups(rect.cx1 - rect.cx0 + 1, rows);
+        else if (s.spec.members === "bins" || s.spec.indexed) pass.dispatchWorkgroups(perRow, rows);
+        else pass.dispatchWorkgroups(...spread(s.spec.cap));
+      }
       pass.setPipeline(S.clampArgs.p); pass.setBindGroup(0, group(S.clampArgs, k)); pass.dispatchWorkgroups(1);
       pass.end();
     }
@@ -1230,7 +1380,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     rp.setViewport(0, 0, U.aw, U.ah, 0, 1);
     if (U.casting) {
       if (objCount) { rp.setPipeline(S.mask.p); rp.setBindGroup(0, group(S.mask, k)); rp.drawIndirect(argsB, 16); }
-      if (nLiveRows) { rp.setPipeline(S.maskLive.p); rp.setBindGroup(0, group(S.maskLive, k)); rp.draw(6, nLiveRows); }
+      if (nLiveRows) { rp.setPipeline(S.maskLive.p); rp.setBindGroup(0, group(S.maskLive, k)); rp.draw(4, nLiveRows); }
     }
     rp.end();
     // 3. the world
@@ -1268,6 +1418,23 @@ export async function createRenderer({ device, context, format, pal, ground, tim
         pendingPickReads.push(() => cr.b.mapAsync(GPUMapMode.READ).then(() => { const a = new Uint32Array(cr.b.getMappedRange().slice(0)); cr.b.unmap(); cr.busy = false; stats.counts = { sprites: a[1], rows: a[5], points: a[9], tiles: nTiles }; }).catch(() => { cr.busy = false; }));
       }
     }
+    // the instances asked for (checks: scripts/play/objects.ts), as view 0 drew them: sprites, then specks
+    if (k === 0 && instWant.length) {
+      const want = instWant.splice(0), n = 1 << 16, rb = B(48 + n * 64, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "instRead");
+      enc.copyBufferToBuffer(argsB, 0, rb, 0, 48);
+      enc.copyBufferToBuffer(instB, 0, rb, 48, n * 32);
+      enc.copyBufferToBuffer(instB, MAX_INST * 32, rb, 48 + n * 32, n * 32);
+      pendingPickReads.push(() => rb.mapAsync(GPUMapMode.READ).then(() => {
+        const all = rb.getMappedRange(), a = new Uint32Array(all, 0, 12), out = { sprites: [], points: [], counts: [a[1], a[9]] };
+        const read = (list, off, count) => {
+          const U = new Uint32Array(all, off, Math.min(count, n) * 8), I = new Int32Array(all, off, U.length), F = new Float32Array(all, off, U.length);
+          for (let i = 0; i < U.length; i += 8) list.push({ sp: U[i], x: I[i + 1], y: I[i + 2], pick: U[i + 5], wx: F[i + 6], wz: F[i + 7] });
+        };
+        read(out.sprites, 48, a[1]); read(out.points, 48 + n * 32, a[9]);
+        rb.unmap(); rb.destroy();
+        for (const r of want) r(out);
+      }));
+    }
     // the picks asked for, read from view 0's G-buffer
     if (k === 0) for (const pk of picks.splice(0)) {
       const r = pickRead.find((q) => !q.busy);
@@ -1296,9 +1463,14 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   }
   await Promise.all(Object.values(S).map((o) => o.ready));
   return {
-    errors, stats, frame, setObjects, updateObjects, setAtlas, atlasPut, entriesPut, rowsPut, tablePut, setCanopy, updateCanopy, setTrails, setTrailRect, setIce,
+    errors, stats, frame, setSources, setMeta, survey, buildCanopy, farBuild, farNow, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
     get busy() { return inFlight; },
+    setFarUse: (on) => { farUse = on; },
+    // sources the cull leaves out, by name (the page checks, to time each source's share)
+    setSkipped: (names) => { skipped = new Set(names); },
     // what view 0 shows at art px (x, y) in the next frame: { kind, pick } (kind -1: nothing), or null
     pick: (x, y) => new Promise((resolve) => picks.push({ x, y, resolve })),
+    // every object instance view 0 draws in the next frame: { sprites, points: [{ sp, x, y, pick, wx, wz }] }
+    instances: () => new Promise((resolve) => instWant.push(resolve)),
   };
 }

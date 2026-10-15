@@ -164,7 +164,7 @@ function situation(plan: Plan): Trial | string {
   const lit = own ? moistureOf(own) : f.verb === "strike" ? null : about && !about.kind ? about.m : null;
   const fire = f.verb === "heat" || (f.verb === "place" && f.at && FIRE_PLACES[f.at]) ? fireHere(f.at ?? "fire") : null;
   const reach = f.inputs.some((k) => lineLike(w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket;
-  const fish = Math.floor(fishNear(w, w.herds?.fish, stand, reach));
+  const fish = Math.floor(fishNear(w, w.pools?.fish, stand, reach));
   const ground = f.verb === "plant" || f.verb === "pour" || f.verb === "dig";
   const r = predict(w, f, {
     tinder: lit, wind: airOn(w, stand).wind, spot: stand, ahead: ground ? ahead(w, px, py, w.t, hours.slice(i + 1, i + 1 + PATIENCE / 12)) : { soil: [], temp: [] }, fish,

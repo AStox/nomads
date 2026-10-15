@@ -37,8 +37,8 @@
 // copy, records its own copies into them and reads them back when the tick lands.
 import type { Gpu } from "./device";
 import { cover, pipeline, readback, storage } from "./kernel";
-import { SCAN } from "./wgsl/scan";
-import { BIRTH_COMMIT, BIRTH_MASK, CTL, CTL_WORDS, DELTA_APPLY, type Extra, OP, PEEK, RECLAIM_CTL, RECLAIM_FLAG, RECLAIM_SCATTER, birthAssign } from "./wgsl/alloc";
+import { SCAN, SCAN_TOP } from "./wgsl/scan";
+import { BIRTH_COMMIT, BIRTH_MASK, CTL, CTL_WORDS, DELTA_APPLY, type Extra, OP, PEEK, RECLAIM_CTL, RECLAIM_CTL_LIVE, RECLAIM_FLAG, RECLAIM_SCATTER, RECLAIM_SCATTER_LIVE, birthAssign } from "./wgsl/alloc";
 import { CELLS, GATHER_HEAD, GATHER_ROWS, INDEX_COMPACT, INDEX_KEYS, RADIX_HIST, RADIX_SCATTER } from "./wgsl/index";
 import { Mirror, type Obj } from "./mirror";
 
@@ -52,8 +52,9 @@ export const genOfId = (id: number) => Math.floor(id / IX) % GEN;
 
 // ---------- kinds ----------
 export type Field = { name: string; type: "u32" | "i32"; unit: string; scale: number };
-// A still kind's slots and places change only by the CPU's deltas and by births, never in a law's kernel, so its dead
-// slots are reclaimed and its index rebuilt only in a tick that had some (the index costs about 65 ms per 10^7 objects).
+// A still kind's slots and places change only by the CPU's deltas, by births, and by a law that marks the kind touched
+// when it moves them (the animals' hourly step), so its dead slots are reclaimed and its index rebuilt only in a tick
+// that had some (the index costs about 65 ms per 10^7 objects).
 export type KindSpec = { name: string; capacity: number; fields: Field[]; placed?: boolean; still?: boolean };
 // The two fields every placed kind starts with.
 export const PLACE: readonly Field[] = [
@@ -292,36 +293,46 @@ export class Store {
     }
     return b;
   }
-  // An exclusive prefix sum of the first n words of buf, in place; the buffer returned holds the total at word 0.
+  // An exclusive prefix sum of the first n words of buf, in place; the buffer returned holds the total at word 0. Each
+  // level scans blocks of 1,024 words and keeps their totals; once the totals fit one block, each block sums those
+  // before it itself (SCAN_TOP) and the levels below add theirs back.
   scan(buf: GPUBuffer, n: number): GPUBuffer {
     const levels: [GPUBuffer, number, GPUBuffer][] = [];
+    let total: GPUBuffer;
     for (let cur = buf, len = n, level = 0; ; level++) {
       const blocks = Math.max(1, Math.ceil(len / 1024)), sums = this.scratch(`sum${level}`, blocks);
       this.run(SCAN, [cur, sums], cover(this.g, blocks, 1), [len, 0, 0, 0], "blocks");
       levels.push([cur, len, sums]);
-      if (blocks === 1) break;
+      if (blocks === 1) { total = sums; break; }
+      if (blocks <= 1024) {
+        total = this.scratch(`total${level}`, 1);
+        this.run(SCAN_TOP, [cur, sums, total], cover(this.g, blocks, 1), [len, blocks, 0, 0]);
+        break;
+      }
       cur = sums; len = blocks;
     }
     for (let i = levels.length - 2; i >= 0; i--) {
       const [cur, len, sums] = levels[i];
       this.run(SCAN, [cur, sums], cover(this.g, Math.ceil(len / 1024), 1), [len, 0, 0, 0], "add");
     }
-    return levels[levels.length - 1][2];
+    return total;
   }
 
   // ---------- births and deaths ----------
   // Children of the live parents of one kind into another (or the same): counts holds a u32 for every parent slot,
   // init the WGSL body run for each child, with slot, parent, k (its place among its siblings), j (its place among all
   // the call's children) and tick in scope, and the accessors parent_<field>(i), child_<field>(i) and
-  // child_set_<field>(i, v) (wgsl/alloc.ts); extra binds more buffers for it to read or write.
-  births(parent: string, child: string, counts: GPUBuffer, init: string, extra?: Extra) {
+  // child_set_<field>(i, v) (wgsl/alloc.ts); extra binds more buffers for it to read or write. Children past the
+  // child kind's capacity are not born; they count as lost (the next landing throws) unless drop is set, for a law
+  // whose young past its room are simply not born.
+  births(parent: string, child: string, counts: GPUBuffer, init: string, extra?: Extra, drop = false) {
     const P = this.kind(parent), C = this.kind(child), same = P === C, g = this.g;
     const m = this.scratch("m", P.capacity), kept = this.scratch("kept", P.capacity);
     this.run(BIRTH_MASK, [P.body, P.alloc, counts, m, kept], cover(g, P.capacity), [P.capacity, 0, 0, 0]);
     const tot = this.scan(m, P.capacity);
     const src = birthAssign(P, C, same, init, extra), more = extra?.bufs.map((b) => b.buf) ?? [];
     this.run(src, same ? [C.body, C.alloc, kept, m, ...more] : [P.body, C.body, C.alloc, kept, m, ...more], cover(g, P.capacity), [P.capacity, this.t, P.capacity, C.capacity]);
-    this.run(BIRTH_COMMIT, [C.alloc, tot], [1], [C.capacity, 0, 0, 0]);
+    this.run(BIRTH_COMMIT, [C.alloc, tot], [1], [C.capacity, drop ? 1 : 0, 0, 0]);
     C.peek.fresh = false;
     C.touched = C.stale = true;
   }
@@ -346,7 +357,9 @@ export class Store {
   }
 
   // ---------- the spatial index ----------
-  index(k: Kind) {
+  // With reclaim, the kind's dead slots join its free list too, from the same scan of its live flags (the same free
+  // list as reclaim makes, without a scan of its own).
+  index(k: Kind, reclaim = false) {
     if (!k.placed) return;
     const C = k.capacity, g = this.g, tiles = Math.ceil(C / 1024), order = k.order!, start = k.start!;
     const key = this.scratch("key", C), flag = this.scratch("flag", C), ids = this.scratch("ids", C), cells = this.scratch("cells", C);
@@ -354,6 +367,10 @@ export class Store {
     this.encode((e) => e.clearBuffer(start));
     this.run(INDEX_KEYS, [k.body, k.alloc, key, flag, start], cover(g, C), [C, k.field.x, k.field.y, 0]);
     const live = this.scan(flag, C);
+    if (reclaim) {
+      this.run(RECLAIM_SCATTER_LIVE, [k.body, k.alloc, flag], cover(g, C), [C, 0, 0, 0]);
+      this.run(RECLAIM_CTL_LIVE, [k.alloc, live], [1]);
+    }
     this.encode((e) => e.copyBufferToBuffer(live, 0, len, 0, 4));
     this.run(INDEX_COMPACT, [k.body, k.alloc, flag, key, ids, cells], cover(g, C), [C, 0, 0, 0]);
     // (slots, cells) from ids and cells into flag and key, and back into order and cells
@@ -476,10 +493,11 @@ export class Store {
     try {
       this.upload();
       for (const l of this.laws) if (l.due(t)) l.run(this, t);
-      // a still kind untouched since its last index has no dead slot to reclaim and no object out of place
+      // a still kind untouched since its last index has no dead slot to reclaim and no object out of place; a placed
+      // kind's reclaim rides its index's scan
       const due = this.kinds.filter((k) => !k.spec.still || k.touched);
-      for (const k of due) this.reclaim(k);
-      for (const k of due) { this.index(k); k.touched = false; }
+      for (const k of due) if (!k.placed) this.reclaim(k);
+      for (const k of due) { this.index(k, true); k.touched = false; }
     } catch (e) {
       // the failure stays with this tick: what was recorded goes out (an upload that finished has already taken its
       // deltas off the queue), and the next tick can begin
@@ -529,15 +547,7 @@ export class Store {
         const o = new Uint32Array(await back);
         let need = 0;
         for (const k of this.kinds) {
-          if (peeked[k.n]) {
-            const p = at[k.n].peek, ctl = o.subarray(p, p + CTL_WORDS), lost = ctl[CTL.overflow] - k.peek.overflow;
-            k.peek = {
-              head: ctl[CTL.head], nfree: ctl[CTL.nfree], tail: ctl[CTL.tail], overflow: ctl[CTL.overflow], fresh: true,
-              free: o.slice(p + CTL_WORDS, p + CTL_WORDS + Math.min(PEEK_SLOTS, ctl[CTL.nfree] - ctl[CTL.head])),
-              meta: o.slice(p + CTL_WORDS + PEEK_SLOTS, p + CTL_WORDS + PEEK_SLOTS + Math.min(PEEK_SLOTS, ctl[CTL.nfree] - ctl[CTL.head])),
-            };
-            if (lost) throw new Error(`kind ${k.name} is full: ${lost} children found no slot in its capacity of ${k.capacity}`);
-          }
+          if (peeked[k.n]) this.peekFrom(k, o, at[k.n].peek);
           need += o[1 + k.n];
           this.mirror.land(k, ents[k.n], o, at[k.n].head, asked[k.n].keep);
           k.stale = false;
@@ -554,6 +564,28 @@ export class Store {
   step(t: number) {
     this.begin(t);
     return this.land();
+  }
+  // A kind's allocation as words p on of a readback hold it (PEEK's layout): the next free slots the CPU places its
+  // spawns from.
+  private peekFrom(k: Kind, o: Uint32Array, p: number) {
+    const ctl = o.subarray(p, p + CTL_WORDS), lost = ctl[CTL.overflow] - k.peek.overflow, n = Math.min(PEEK_SLOTS, ctl[CTL.nfree] - ctl[CTL.head]);
+    k.peek = {
+      head: ctl[CTL.head], nfree: ctl[CTL.nfree], tail: ctl[CTL.tail], overflow: ctl[CTL.overflow], fresh: true,
+      free: o.slice(p + CTL_WORDS, p + CTL_WORDS + n), meta: o.slice(p + CTL_WORDS + PEEK_SLOTS, p + CTL_WORDS + PEEK_SLOTS + n),
+    };
+    if (lost) throw new Error(`kind ${k.name} is full: ${lost} children found no slot in its capacity of ${k.capacity}`);
+  }
+  // Reads back the allocation of every kind births have run on outside a tick (a world's animals born through the
+  // years before anyone wakes), so spawns the CPU queues can be placed again.
+  async refresh() {
+    if (this.begun || this.landing) throw new Error("a store refreshes its allocations between ticks");
+    const stale = this.kinds.filter((k) => !k.peek.fresh);
+    if (!stale.length) return;
+    const words = CTL_WORDS + 2 * PEEK_SLOTS, out = this.scratch("peek", words * stale.length);
+    stale.forEach((k, i) => this.run(PEEK, [k.body, k.alloc, out], cover(this.g, CTL_WORDS + PEEK_SLOTS), [i * words, PEEK_SLOTS, 0, 0]));
+    this.flush();
+    const o = new Uint32Array(await readback(this.g, out, words * stale.length * 4));
+    stale.forEach((k, i) => this.peekFrom(k, o, i * words));
   }
 
   // ---------- reading every buffer ----------

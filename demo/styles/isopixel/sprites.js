@@ -31,10 +31,11 @@ function clumps(x, y, c, seed) {
   return -(ox * 0.7 + oy * 0.8) * 0.9 - bd * 0.6 + 0.15;
 }
 
-// dim: -1 a sunlit edge tree, 0 plain, 1 deep in a forest (darker, highlights capped so the canopy reads as a mass)
-export function pine(hpx, seed, snow = false, dim = 0) {
+// dim: -1 a sunlit edge tree, 0 plain, 1 deep in a forest (darker, highlights capped so the canopy reads as a mass).
+// rho: the crown's width over the tree's height, in px.
+export function pine(hpx, seed, snow = false, dim = 0, rho = 0.42) {
   const h = Math.max(6, Math.round(hpx)), trunk = Math.max(1, Math.round(h * 0.11)), crown = h - trunk;
-  let w = Math.max(3, Math.round(h * 0.42));
+  let w = Math.max(3, Math.round(h * rho));
   if (w % 2 === 0) w++;
   const S = new Spr(w + 3, h + 2, (w + 1) >> 1, h), cx = S.ax, r = R.pine;
   const tiers = clamp(Math.round(crown / 4.2), 2, 8);
@@ -61,11 +62,12 @@ export function pine(hpx, seed, snow = false, dim = 0) {
   return S;
 }
 
-// A round crown built from overlapping leaf clumps, each shaded as a little sphere. nBlobs: how many clumps, else by size.
-export function broad(hpx, kind, seed, tint, dim = 0, nBlobs) {
+// A round crown built from overlapping leaf clumps, each shaded as a little sphere. nBlobs: how many clumps, else by size;
+// rho: the crown's width over the tree's height, in px, else the old drawing's by kind.
+export function broad(hpx, kind, seed, tint, dim = 0, nBlobs, rho) {
   const h = Math.max(6, Math.round(hpx));
   const r = kind === "aspen" && tint > 0.8 ? R.gold : R[kind] || R.ash;
-  const cw = Math.max(4, Math.round(h * (kind === "oak" ? 0.8 : kind === "ash" ? 0.68 : 0.5)));
+  const cw = Math.max(4, Math.round(h * (rho ?? (kind === "oak" ? 0.8 : kind === "ash" ? 0.68 : 0.5))));
   const ch = Math.max(4, Math.round(h * (kind === "aspen" ? 0.74 : 0.66)));
   const W = cw + 4, S = new Spr(W, h + 2, W >> 1, h), cx = W / 2, cy = ch / 2 + 0.5;
   const n = nBlobs ?? clamp(Math.round(cw / 3.2), 3, 9), rad = Math.min(cw, ch) / 2;
@@ -106,8 +108,9 @@ export function broad(hpx, kind, seed, tint, dim = 0, nBlobs) {
   return S;
 }
 
-export function bush(size, seed, heath = 0, berries = 0) {
-  const w = Math.max(3, Math.round(size * 1.5)), hh = Math.max(2, Math.round(size)), r = heath > 0.5 ? R.heath : R.bush;
+// across: the bush's width over its height, in px
+export function bush(size, seed, heath = 0, berries = 0, across = 1.5) {
+  const w = Math.max(3, Math.round(size * across)), hh = Math.max(2, Math.round(size)), r = heath > 0.5 ? R.heath : R.bush;
   const S = new Spr(w + 3, hh + 3, (w + 3) >> 1, hh + 1), cx = (w + 3) / 2, cy = hh / 2 + 1;
   const blobs = [[cx, cy + 0.3, Math.min(w / 2, hh) * 0.95]];
   for (let k = 1; k < 4; k++) blobs.push([cx + (h2(k, seed, 1) - 0.5) * w * 0.7, cy + (h2(k, seed, 2) - 0.3) * hh * 0.4, hh * (0.45 + 0.3 * h2(k, seed, 3))]);
@@ -485,15 +488,16 @@ function dimmed(T, r, dim, pined, dithered) {
     }
   return S;
 }
-// vr: 0..7 picks the crown's layout; dim as pine() and broad() take it, the forest's darkness at the tree's foot
-export function tree(hpx, sp, vr, tint, dim = 0, shrunk = false) {
+// vr: 0..7 picks the crown's layout; dim as pine() and broad() take it, the forest's darkness at the tree's foot; rho the
+// crown's width over the tree's height in px (atlas.js crownRatio), else the old drawing's by kind
+export function tree(hpx, sp, vr, tint, dim = 0, shrunk = false, rho) {
   const h = Math.max(1, Math.round(hpx)), pined = sp === "pine";
-  const draw = (n, d) => (pined ? pine(n, vr * 17 + 5, false, d) : broad(n, sp || "oak", vr * 31 + 7, tint, d, 9));
+  const draw = (n, d) => (pined ? pine(n, vr * 17 + 5, false, d, rho) : broad(n, sp || "oak", vr * 31 + 7, tint, d, 9, rho));
   if (h >= 32 || (!shrunk && h >= 6)) return draw(h, dim);
-  const key = `${sp}|${vr}|${tint}`;
+  const key = `${sp}|${vr}|${tint}|${rho}`;
   const base = kept(shrinks, `${key}|${h}`, 4000, () => {
     canopyTone ??= meanColor(broad(64, "oak", 7, 0.5, 0, 9));
-    return shrink(kept(masters, key, 300, () => draw(64, 0)), 64 / h, { contrast: contrastAt(h), toward: canopyTone });
+    return shrink(kept(masters, key, 1000, () => draw(64, 0)), 64 / h, { contrast: contrastAt(h), toward: canopyTone });
   });
   return dim ? dimmed(base, rampOf(sp, tint), dim, pined, h >= 12) : base;
 }

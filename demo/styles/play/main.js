@@ -599,8 +599,8 @@ async function main() {
       const s = live.stats, c = sim?.clock(), lf = live.level;
       statsEl.textContent = [
         `fps ${s.fps.toFixed(0)}  frame ${s.composeMs.toFixed(1)} ms  slots ${s.slots}`,
-        `bake queue ${s.bakeQueue}  baked ${s.bakedChunks}  avg ${s.bakeMsAvg.toFixed(0)} ms`,
-        `heap ${s.memMB} MB  chunks ${s.cacheMB ?? 0} MB  workers ${s.workers}`,
+        `gpu ${(s.gpuMs ?? 0).toFixed(1)} ms  worker ${(s.workerMs ?? 0).toFixed(1)} ms  sprites ${s.counts?.sprites ?? 0}  specks ${s.counts?.points ?? 0}`,
+        `heap ${s.memMB} MB  objects ${s.objects?.n ?? 0}  atlas ${s.objects?.sprites ?? 0} sprites`,
         `zoom ${view.zoom.toFixed(2)} ${live.levels[lf?.L ?? 0].name} x${(lf?.s ?? 0).toFixed(2)}  bearing ${view.bearing.toFixed(2)}`,
         sim ? `day ${c.day} ${String(Math.floor(c.hour)).padStart(2, "0")}:${String(Math.floor((c.hour % 1) * 60)).padStart(2, "0")}  x${sim.speed}${sim.paused ? " paused" : ""}  tick ${sim.tickMs.toFixed(1)} ms` : "no sim",
       ].join("\n");

@@ -5,7 +5,7 @@
 //
 // Light is counted in lux, the way it is measured, because eyes meet it on a log scale: a day is a hundred thousand of them
 // and a clear night under a full moon a quarter of one, and people work comfortably across almost all of that range.
-import { DAY, type World } from "./world";
+import type { World } from "./world";
 
 const DEG = Math.PI / 180;
 
@@ -15,6 +15,7 @@ const DEG = Math.PI / 180;
 // highest in the middle of summer (58 degrees at noon, a 17.1 hour day) and lowest in the middle of winter (11.5 degrees,
 // a 6.9 hour day). The moon crosses the same sky phase x 24 hours behind the sun as it waxes over LUNAR days, as far south of
 // the equator when full as the sun is north, so a summer full moon rides low and a winter one high.
+export const DAY = 288; // ticks per in-game day, 5 minutes each (here, not in world.ts, so the sky needs nothing of the world's at load)
 export const YEAR_DAYS = 40;
 export const NOON = 13; // the sun crosses the south
 // Where tick t falls between the middles of two seasons: the earlier's index and how far toward the next. A day's air is
@@ -23,6 +24,9 @@ export function seasonAt(t: number) {
   const u = (((t / DAY) % YEAR_DAYS) - YEAR_DAYS / 8) / (YEAR_DAYS / 4), s = Math.floor(u);
   return { s: (s + 4) % 4, f: u - s };
 }
+// The island day (counted from 0) of a real date so many days after the spring equinox, 20 March, at the year's pace
+// (365.25 / YEAR_DAYS real days to an island day), from the island's equinox in the middle of its spring.
+export const onDay = (realDays: number) => (YEAR_DAYS / 8 + realDays / (365.25 / YEAR_DAYS)) % YEAR_DAYS;
 const LAT = 55.1 * DEG, TILT = 23.44 * DEG, LUNAR = 29.53;
 const hourAngle = (hour: number, transit: number) => ((hour - transit) * Math.PI) / 12;
 // How far north of the equator the sun stands on day `day` of the world (counting from 1, as the clock does) at an hour.

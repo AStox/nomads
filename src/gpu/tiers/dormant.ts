@@ -181,8 +181,9 @@ export class StaticDormant implements Rider {
 
   constructor(readonly store: Store, readonly spec: StaticSpec) {
     if (spec.counts.length !== CELLS) throw new Error(`static ${spec.name}: counts must hold one word for each of the ${CELLS} cells`);
+    // still: its objects come only from lifts and change only by the CPU's deltas, so its index is rebuilt only then
     store.adopt({
-      name: spec.name, capacity: spec.capacity, placed: true,
+      name: spec.name, capacity: spec.capacity, placed: true, still: true,
       fields: [{ name: "ocell", type: "u32", unit: "cell", scale: 1 }, { name: "ok", type: "u32", unit: "member of its cell", scale: 1 }, ...spec.attrs],
     });
     this.name = `static:${spec.name}`;
@@ -207,6 +208,12 @@ export class StaticDormant implements Rider {
     return this.counts.size + this.goneBuf.size;
   }
   destroy() { this.counts.destroy(); this.goneBuf.destroy(); }
+  // The sorted list of members gone as the GPU reads it (staticMembers' gone): a new buffer after every lift.
+  get goneList(): GPUBuffer { return this.goneBuf; }
+  // Whether member k of a cell was moved or taken.
+  lifted(cell: number, k: number): boolean {
+    return this.gone.has(cell * 2 ** 32 + k);
+  }
   // Member k of a cell, made by the twin; what it became once moved; null past the cell's count.
   member(cell: number, k: number): Member | null {
     if (k >= this.spec.counts[cell]) return null;

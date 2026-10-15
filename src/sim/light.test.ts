@@ -1,10 +1,11 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { DAY, TILE_M, addThing, heldStore, isNight, newWorld, type Thing, type World } from "./world";
 import { SEEDLINGS, fitHere } from "./plants";
-import { DAY, TILE_M, addThing, isNight, newWorld, type Thing, type World } from "./world";
 import { bedAir, carriedOutput, fireOf, fireOutput, removeThing } from "./physics";
 import { advance } from "./combustion";
 import { around, put } from "./space";
 import { addAnimal } from "./fauna";
+import { cull } from "./animals";
 import { ecology } from "./ecology";
 import { ctxFor, tick } from "./sim";
 import { DARK, canSee, lightAt, lightOn } from "./light";
@@ -237,9 +238,14 @@ test("a hungry person with a bush 100 m off goes out after food by day, but in t
   expect(day.includes("eat") || day.includes("forage")).toBe(true);
 }, 60_000);
 
-test("a hungry wolf takes a lone person who is out in the dark, and leaves one in the light alone", () => {
+test("a hungry wolf takes a lone person who is out in the dark, and leaves one in the light alone", async () => {
   // a dusk hour when the open is still light enough and the floor of a grove already dark
   const probe = pad(7);
+  // the island's own deer and rabbits, GPU objects since a tick made the island resident, would stand in sight as
+  // prey or a scent: gone, and a tick landed to bring that back
+  cull(probe.w, "deer"); cull(probe.w, "rabbit");
+  await tick(probe.w);
+  await heldStore(probe.w)?.arriving;
   grove(probe.w, probe.px, probe.py);
   let dusk = SUNSET;
   for (let h = SUNSET; h <= SUNSET + 2; h += 0.25) {
@@ -259,7 +265,7 @@ test("a hungry wolf takes a lone person who is out in the dark, and leaves one i
     ecology(w);
     expect(wolf.state).toBe(state);
   }
-});
+}, 120_000);
 
 test("seedlings grow in the open and burn down in the deep shade of a grove", () => {
   const pd = pad(8), w = pd.w;

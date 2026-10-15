@@ -109,7 +109,6 @@ export class Flora implements Rider {
   private bufs: { tables: GPUBuffer; rows: GPUBuffer; coef: GPUBuffer; packed: GPUBuffer } | null = null;
   private rowWords: Uint32Array | null = null;
   private packing = false;
-  private view: { at: number; size: Float32Array } | null = null;
   private src: { count: string; file: string; grow: string; pack: string } | null = null;
   private busyMax = 1;
 
@@ -132,6 +131,9 @@ export class Flora implements Rider {
     if (p[lo] !== k) throw new Error(`object ${e} isn't a tree or bush`);
     return lo;
   }
+  // The object number of the stem the generator wrote into plant slot j, or 0 for a slot past them (the renderer's
+  // picks name the stem it drew by its slot).
+  entry(j: number) { return j >= 0 && j < this.plants.length ? this.plants[j] + 1 : 0; }
   // The GPU id of a tree's or bush's stem as the generator wrote it.
   private stem(e: number) { return idOf(this.store!.kind(PLANT).n, this.slot(e), 1); }
 
@@ -182,16 +184,6 @@ export class Flora implements Rider {
     for (const [e, h] of this.held) if (!h.v) out.add(e);
     for (const e of this.died) out.add(e);
     return [...out];
-  }
-  // The generator's arrays with every stem at the height the GPU last brought back (the gone listed apart): what the
-  // renderer draws. The sizes are a copy, brought up to date when asked after a landing.
-  drawn(): Scatter {
-    const v = (this.view ??= { at: -1, size: Float32Array.from(this.f.size) });
-    if (v.at !== this.landings) {
-      for (let j = 0; j < this.plants.length; j++) if (this.grown[j]) v.size[this.plants[j]] = Math.fround(this.grown[j] / 1000);
-      v.at = this.landings;
-    }
-    return { ...this.f, size: v.size };
   }
 
   // ---------- changing ----------
@@ -282,20 +274,33 @@ export class Flora implements Rider {
     const at = (name: string) => (1 + k.field[name]) * k.capacity;
     return { cap: k.capacity, x: at("x"), y: at("y"), what: at("what"), size: at("size"), q: at("q"), peak: at("peak"), crop: at("crop") };
   }
+  // The crown raster of the stems as they stand (wgsl/stems.ts): every live stem counted into its texel and filed in
+  // its texel's run, the counts scanned into starts. The stems' law files it first each day, and the deadwood reads the
+  // same day's lists after it (src/gpu/deadwood.ts); filed now when asked before any law has run.
+  raster(): { start: GPUBuffer; list: GPUBuffer } {
+    const s = this.store!, k = s.kind(PLANT), g = s.g, b = this.bufs!, lay = this.layout(k);
+    const src = (this.src ??= { count: stemsCount(lay), file: stemsFile(lay), grow: stemsGrow(lay), pack: stemsPack(lay) });
+    const count = s.scratch("stemcount", TEXELS + 1), cursor = s.scratch("stemcursor", TEXELS), list = s.scratch("stemlist", 3 * k.capacity);
+    if (this.filed !== s.t) {
+      this.filed = s.t;
+      s.encode((e) => { e.clearBuffer(count, 0, (TEXELS + 1) * 4); e.clearBuffer(cursor, 0, TEXELS * 4); });
+      s.run(src.count, [k.body, count], cover(g, k.capacity));
+      s.scan(count, TEXELS + 1);
+      s.run(src.file, [k.body, count, cursor, list, b.tables, b.rows], cover(g, k.capacity));
+    }
+    return { start: count, list };
+  }
+  private filed = -1;
   // A day of the stems (wgsl/stems.ts): the crown raster filed, every stem grown, crowded or starved, its seed set, and
   // every stem's height packed for the landing to bring back.
   private law(s: Store, t: number) {
     const k = s.kind(PLANT), g = s.g, b = this.bufs!, rows = this.rowWords!, day = this.driver!.day(t);
-    const lay = this.layout(k), src = (this.src ??= { count: stemsCount(lay), file: stemsFile(lay), grow: stemsGrow(lay), pack: stemsPack(lay) });
     for (let r = 0; r < ROWS; r++) rows[MAP + r * ROW_WORDS + RW.mast] = day.mast[r] ?? 0;
     g.device.queue.writeBuffer(b.rows, 0, rows);
     g.device.queue.writeBuffer(b.coef, 0, day.coef.buffer, day.coef.byteOffset, day.coef.byteLength);
-    const count = s.scratch("stemcount", TEXELS + 1), cursor = s.scratch("stemcursor", TEXELS), list = s.scratch("stemlist", 3 * k.capacity);
+    this.filed = -1;
+    const { start: count, list } = this.raster(), src = this.src!;
     const flags = s.scratch("stemflags", TEXELS + 1), busy = s.scratch("stembusy", TEXELS);
-    s.encode((e) => { e.clearBuffer(count, 0, (TEXELS + 1) * 4); e.clearBuffer(cursor, 0, TEXELS * 4); });
-    s.run(src.count, [k.body, count], cover(g, k.capacity));
-    s.scan(count, TEXELS + 1);
-    s.run(src.file, [k.body, count, cursor, list, b.tables, b.rows], cover(g, k.capacity));
     s.run(STEMS_BUSY, [count, flags], cover(g, TEXELS + 1));
     s.scan(flags, TEXELS + 1);
     s.run(STEMS_BUSY_LIST, [count, flags, busy], cover(g, TEXELS));

@@ -4,7 +4,7 @@ import { grow, fbm, noise, smooth } from "../world.js";
 import { groundClass, waterAt, riverSmooth, streamAt, flowNow, widthOf, depthOf, SEA as G_SEA, LAKE as G_LAKE, RIVER as G_RIVER, ROCKY as G_ROCKY, SIZE, TILE_M } from "../island.js";
 import { LADDER } from "./ladder.js";
 import { P, RGB as RGB_, ramp, SHADOW, GLOW, HAZE, MIST, NCOL, THEME } from "./pal.js";
-import { Buf, Spr, ObjBins, tri, strip, blit, castShadow, shadowPx, bayer, dith, h2 } from "./px.js";
+import { Buf, Spr, tri, strip, blit, castShadow, shadowPx, bayer, dith, h2 } from "./px.js";
 import * as SP from "./sprites.js";
 import { drawUI } from "./ui.js";
 

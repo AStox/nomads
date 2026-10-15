@@ -8,10 +8,10 @@ import { DAY, H, TILE_M, W, YEAR_DAYS, dryAt, type Thing, type World } from "./w
 import { treeHeight } from "../terrain/flora";
 import { keptOf, madeOf, pOf, through } from "../terrain/growth";
 import { GROWTH_C as C, SEEDLINGS, TREE_KINDS, YEARS_PACE, fitIn, openNet, seasonsHere, treeKg } from "./plants";
-import { seasonAt } from "./sky";
+import { onDay, seasonAt } from "./sky";
 import { onTile, stockedTile } from "./space";
 import { crownRadius } from "./light";
-import { onDay } from "./herds";
+import { onTile as animalsOnTile } from "./animals";
 
 // So many young of a kind (sp, the niche they grow by) on a tile, in the open or under the crowns, each m g of dry matter
 // and at most peak, come up on day born.
@@ -187,7 +187,7 @@ export function recruit(w: World, acorns: (t: Thing) => number, make: (sp: strin
     const sun = mix(here.sun), temp = mix(here.temp), water = mix(here.water), fits = new Map<string, number>();
     // a day's growth (or loss) of each: a seedling's by the plant rule, a young tree's as its mass to the 3/4 by how its
     // place does against the open on the best ground; and what the deer and rabbits on the tile take of those in reach
-    const deer = w.herds ? w.herds.deer.n[i] / TILE_KM2 : 0, rabbits = w.herds ? w.herds.rabbit.n[i] / TILE_HA : 0;
+    const deer = animalsOnTile(w, "deer", i) / TILE_KM2, rabbits = animalsOnTile(w, "rabbit", i) / TILE_HA;
     const killDeer = BROWSE_KILL * browsed(deer), killRabbits = 1 - Math.exp(-rabbits / RABBIT_R0), part = YEARS_PACE / 365.25;
     for (const c of list) {
       const light = c.open ? LIGHT.open : LIGHT.under, key = `${c.sp}|${c.open}`, k2 = SEEDLINGS[c.sp];

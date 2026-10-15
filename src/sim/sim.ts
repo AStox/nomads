@@ -13,12 +13,11 @@ import { apart, beliefKey, beliefText, cameOff, conditionWords, differed, weighs
 import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
 import { acornsUnder, burnedHomes, ecology, glean, onFireOut, onGrew, onWithered, trample, trapped, tread } from "./ecology";
 import { FAUNA, HUNTED } from "./fauna";
-import { attacked } from "./animals";
-import { herdNear } from "./herds";
+import { animalsOf, attacked, herdNear, residentAnimals } from "./animals";
 import { chooseTinker, decide, describeKind, fadeBonds, grudge, nameIt, newRel, reflect, respond, rule, sample, theorize, wonder, type Felt } from "./brain";
 import { clock as traceClock, count as bump, timed, trace, waited } from "./trace";
 import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sharedStore, snubbed, spread, standing, takeShared } from "./groups";
-import { anyAround, around, floraOf, liveThings, lookFor, nearestThing, resident, shelve, thingById } from "./space";
+import { anyAround, around, deadwoodOf, floraOf, liveThings, lookFor, nearestThing, resident, shelve, thingById } from "./space";
 import { landOf, walk } from "./walk";
 import { DARK, canSee, canopyAt, heatAt, lightOn, moveRate, restRate, skyShare, workRate } from "./light";
 import { ripening } from "./cues";
@@ -2260,14 +2259,16 @@ function agentTick(w: World, a: Agent) {
 // Each world's landing on its way (the GPU's copy for the mirror), whether it has come, and the error it ended in.
 type Landing = { done: boolean; error?: unknown; p: Promise<void> };
 const landings = new WeakMap<World, Landing>();
-// A world done with: its last landing awaited and every GPU buffer it held let go (its store's and its flora's own). A
-// process that makes world after world (probes, bench) retires each, so the GPU holds one world's stems at a time
-// (some 0.8 GB on seed 1). The world is not ticked again.
+// A world done with: its last landing awaited and every GPU buffer it held let go (its store's, its flora's and its
+// animals' own). A process that makes world after world (probes, bench) retires each, so the GPU holds one world's
+// stems at a time (some 0.8 GB on seed 1). The world is not ticked again.
 export async function retire(w: World) {
   const last = landings.get(w);
   if (last && !last.done) await last.p.catch(() => {});
   landings.delete(w);
   floraOf(w).destroy();
+  deadwoodOf(w)?.destroy();
+  animalsOf(w).destroy();
   heldStore(w)?.destroy();
   dropStore(w);
 }
@@ -2276,13 +2277,14 @@ export async function retire(w: World) {
 // into the mirror once it is done. The copy isn't waited for here: it comes back while the caller gets on with other
 // things, and the next tick waits for it only if it hasn't come yet (a page's ticks are half a second apart, and a
 // readback behind a busy GPU can take a few hundred milliseconds). The first tick a world runs puts what its ground
-// grew on the GPU (space.ts resident); each person watches the cells out to SEARCH, the farthest any lookup of theirs
-// reaches. Every caller awaits a tick, one at a time.
+// grew on the GPU (space.ts resident), and its animals after it (animals.ts residentAnimals); each person watches the
+// cells out to SEARCH, the farthest any lookup of theirs reaches. Every caller awaits a tick, one at a time.
 export async function tick(w: World) {
   const flora = floraOf(w);
   // each await only when there is something to wait for: an await yields to whatever promises are waiting (the
   // brain's), and where a tick yields changes a run
   if (!flora.store) await resident(w, stemDriver(w));
+  if (!animalsOf(w).store) await residentAnimals(w);
   const gpu = heldStore(w)!, last = landings.get(w);
   if (last && !last.done) await waited("land", () => last.p);
   landings.delete(w);

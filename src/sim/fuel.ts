@@ -196,7 +196,8 @@ export function greenOf(species: string | undefined, log = false) {
 // What a plant gives, piece by piece (sec. 27e). A trunk is as thick as a forest tree of its height (sec. 19a; a fallen log
 // is a trunk as tall as it is long), and a log is a meter of it. A stick, branch or stem is a young stem as long as it is,
 // by its species' height-to-diameter ratio, but heather's, which stays thin (sec. 19c). A tree's branch is a fifth of its
-// height, a stump's a meter, a bush's stem as long as the bush is tall.
+// height, a stump's a meter, a bush's stem as long as the bush is tall. A stick or fallen log lying on the ground is a
+// piece of its own (src/gpu/deadwood.ts) and is as thick as it is (girth, m).
 const TRUNK: Partial<Record<Wood | "generic", (H: number) => number>> = Object.fromEntries(
   (["pine", "oak", "ash", "aspen"] as const).map((sp) => [sp, (H: number) => dbhOf(sp, H) / 100]),
 );
@@ -208,13 +209,13 @@ export const LOG_LEN = 1;
 // A round piece of a species' wood, so thick and so long.
 export const roundSize = (species: Wood | "generic", d: number, len: number): Size => ({ d, len, mass: (Math.PI / 4) * d * d * len * 1000 * WOODS[species].G });
 // The piece of wood of the item a thing standing or lying in the world gives, with what it grew as: none if it gives none.
-export function pieceOf(t: { kind: string; species?: string; size: number }, item: string): { size: Size; species?: Wood } | undefined {
+export function pieceOf(t: { kind: string; species?: string; size: number; girth?: number }, item: string): { size: Size; species?: Wood } | undefined {
   const sp = t.species && t.species in WOODS ? (t.species as Wood) : "generic", grew = sp === "generic" ? {} : { species: sp };
-  const trunk = t.kind === "tree" || t.kind === "fallen_log";
-  if (item === "log" && trunk) return { size: roundSize(sp, TRUNK[sp]?.(t.size) ?? STEM[sp](t.size), LOG_LEN), ...grew };
+  const trunk = t.kind === "tree" || t.kind === "fallen_log", lying = t.kind === "fallen_log" || t.kind === "stick" ? t.girth : undefined;
+  if (item === "log" && trunk) return { size: roundSize(sp, lying ?? TRUNK[sp]?.(t.size) ?? STEM[sp](t.size), LOG_LEN), ...grew };
   if (item !== "stick" || !["tree", "fallen_log", "stump", "bush", "dead_bush", "stick"].includes(t.kind)) return undefined;
   const len = trunk ? t.size / 5 : t.kind === "stump" ? 1 : t.size;
-  return { size: roundSize(sp, STEM[sp](len), len), ...grew };
+  return { size: roundSize(sp, (t.kind === "stick" ? lying : undefined) ?? STEM[sp](len), len), ...grew };
 }
 // Splitting a piece into n along its grain: each 1/n as thick, as long, with 1/n of its mass.
 export const splitSize = (s: Size, n: number): Size => ({ d: s.d / n, len: s.len, mass: s.mass / n });

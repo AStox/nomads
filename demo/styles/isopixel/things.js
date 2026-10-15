@@ -1196,17 +1196,19 @@ function small(kind, h, seed, o, minis) {
   const S = drawObject(kind, minis * 2, seed, o), T = shrink(S, (minis * 2) / Math.max(h, 1));
   return BLOOMED.has(kind) ? bloomOver(T, S) : T;
 }
-// A tree is sprites.js tree() at any size. Fire keeps its few pixels below its smallest size: its flames are drawn on the clock.
+// A tree is sprites.js tree() at any size, its crown o.rho of its height across (atlas.js crownRatio). Fire keeps its few
+// pixels below its smallest size: its flames are drawn on the clock.
 function drawObject(kind, hpx, seed, o) {
   const sp = o.species, h = Math.max(0, hpx), minis = kind === "structure" ? 5 : kind === "boulder" ? 4.5 : 4;
-  if (kind === "tree") return SP.tree(h, TREES.includes(sp) ? sp : "oak", Math.abs(seed | 0) % 8, SP.treeTint(o.tint ?? 0.5, sp), 0, h < 30);
+  if (kind === "tree") return SP.tree(h, TREES.includes(sp) ? sp : "oak", Math.abs(seed | 0) % 8, SP.treeTint(o.tint ?? 0.5, sp), 0, h < 30, o.rho);
   if (h < minis) return kind === "fire" ? mini(kind, h, !!o.blaze) : small(kind, h, seed, o, minis);
   const r = Math.round;
   switch (kind) {
     case "sapling": return sapling(h, seed);
+    // a bush's crown is a ball as wide as it is tall (light.ts crownRadius), a metre across being 1 / 0.866 of one up
     case "bush": {
       const berries = o.berries ?? (o.n != null ? o.n > 0 : sp === "berry");
-      return SP.bush(h * 0.9, seed, sp === "heath" || sp === "heather" ? 1 : 0, berries ? 0.95 : 0);
+      return SP.bush(h * 0.9, seed, sp === "heath" || sp === "heather" ? 1 : 0, berries ? 0.95 : 0, 1 / (0.866 * 0.9));
     }
     case "dead_bush": return deadbush(h, seed);
     case "fern": return recolor(SP.fern(h * 0.9, seed), sp === "bracken" ? BRACKEN : null);
@@ -1222,6 +1224,8 @@ function drawObject(kind, hpx, seed, o) {
     case "stick": return stick(h, seed);
     case "log": case "fallen_log": return recolor(SP.log(h, Math.max(1.5, h * 0.06), o.dir ?? (rv(seed, 9) < 0.5 ? 1 : -1), seed, sp === "drift" || sp === "driftwood"), BARKS[sp]);
     case "stump": return SP.stump(Math.max(2, h * 0.6), Math.max(2, h * 0.5), seed);
+    // a dead tree still standing (src/gpu/deadwood.ts snag), h its height: a bare trunk a fortieth as wide as tall
+    case "snag": return recolor(SP.stump(Math.max(1, h * 0.025), h, seed), BARKS[sp]);
     case "burnt_stump": return burnt(h, seed);
     case "clay": return clay(h * 0.8, seed);
     case "ash": return ash(h, seed);

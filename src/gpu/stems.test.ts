@@ -11,7 +11,7 @@ import { Flora, PLANT, type StemDay, type StemDriver } from "./flora";
 import { CELLS } from "./wgsl/index";
 import { FLORA, SPECIES, TILES, TILE_M, crownShare, dbhOf, type Scatter } from "../terrain/flora";
 import { CELL, N } from "../terrain/grid";
-import { HALF_Q, HC, HQ, MAP, QSTEP, ROWS, ROW_WORDS, RW, SSTEP, T1, T2, TEXELS_SIDE, TEXEL_MM, TREE_ROWS } from "./wgsl/stems";
+import { DIED, HALF_Q, HC, HQ, MAP, QSTEP, ROWS, ROW_WORDS, RW, SSTEP, T1, T2, TEXELS_SIDE, TEXEL_MM, TREE_ROWS } from "./wgsl/stems";
 
 afterAll(releaseGpu);
 
@@ -74,7 +74,7 @@ function oracleDay(before: Uint32Array, L: Layout, tables: Uint32Array, rows: Ui
     nq = Math.max(0, Math.min(qmax, nq));
     const peak = Math.max(before[L.peak + i], nq);
     const starved = nq === 0 || nq < Math.floor(((peak >>> 8) * HALF_Q) / 256);
-    if (starved || (tree && taller > 0 && crowd + a > 65536)) { b[i] = before[i] & ~1; continue; }
+    if (starved || (tree && taller > 0 && crowd + a > 65536)) { b[i] = before[i] & ~1; b[L.crop + i] = DIED; continue; }
     b[L.q + i] = nq;
     b[L.peak + i] = peak;
     if (tree) b[L.size + i] = heightAt(tables, r, nq);

@@ -1,0 +1,491 @@
+// The objects drawn straight from the sim's GPU buffers (plan Unit 14): WGSL for webgpu.js's cull, needs and canopy
+// passes. Each drawn kind is a source: a body laid out as the store lays a kind (src/gpu/store.ts: C slot words, bit 0
+// alive, then each field's C words) and the reader below, which gives every slot as an Obj; a placed kind also brings
+// its spatial index (order and start, by the 75 m cells of src/terrain/grid.ts), so a frame culls only the cells under
+// the view. A new kind plugs in by declaring a source: which fields hold its place, kind and species codes, size and
+// variation, and how its size is held. Sources today (worker.js): the stems (store kind "plant", Unit 7's fields), the
+// generator's static dormant members (stored nowhere by the sim, so the worker lays them out once in this shape), and
+// the few things the CPU made or holds otherwise (stumps, logs a person cut, a changed tussock).
+//
+// An object's look is worked out here from its buffer every frame, as atlas.js Looks numbers it: its family (pair base
+// from the tables, then layout, tint, the forest's darkness at its foot and its crown's width for a tree; layout, moss
+// and berries for anything else) and its sprite's size at the level shown, as main.js collectLive drew it.
+import { NS, META_WORDS, M_KIND, M_BASE, M_TSP, M_WB, M_CROWN, M_LEV, HSTEPS, CODES, K_TREE, K_GRASS, K_FLAT, K_MOSSY, K_DRAWN, NB, NONE } from "../atlas.js";
+
+// A plant's pick is its slot with this bit, which the worker turns into its object number (flora.ts entry); one of the
+// CPU's records' its slot with EXTRA_PICK, which the worker turns into the thing's id; anything else's pick is its
+// object number. The page keeps the top bit for its own sprites (live.js PICK_LIVE).
+export const PICK_SLOT = 0x40000000, EXTRA_PICK = 0x20000000;
+// Any other source's objects (worker.js tagged): this bit, the source's tag in bits 24 to 27 and the slot below; a
+// member of a bin or cell has no slot of its own, so all 24 bits set.
+export const KIND_PICK = 0x10000000, NO_SLOT = 0xffffff;
+// The 75 m cells of the sim's spatial index (src/terrain/grid.ts N, CELL).
+export const CELLS_N = 256, CELL_M = 75;
+
+const f = (v) => (Number.isInteger(v) ? `${v}.0` : `${v}`);
+
+// A source's reader. spec: { cap, fields: { x, y, what, size, seed, pick?, nst? } (field numbers in the body), sizeMm
+// (size in mm as a stem's, else f32 bits), marks (a bitset hiding slots the page or the CPU's records draw instead, then
+// two bits a slot of berries: unknown, none, some), ordered (the index's order maps rows to slots; else rows are slots) }.
+// A kind laid out otherwise (an animal, a log) brings read(at): WGSL setting o.kind, o.sp, o.size, o.seed, o.pick and
+// o.nst (and o.ok, to skip it) from slot i, at(field) the word its field starts at, and decls, the WGSL that needs. A
+// source of members brings member: memberCount(i) and member(i, k) for a body's slot i (bins: a stick bin's sticks), or
+// for cells member(cell, k, ix, iy) (clasts: no body, a count each cell).
+export function sourceWGSL(spec, ORIGIN) {
+  if (spec.members === "cells") return `${spec.decls ?? ""}\n${spec.member}`;
+  const C = spec.cap, F = spec.fields, at = (name) => `${(1 + F[name]) * C}u`;
+  const hideWords = Math.ceil(C / 32);
+  const read = spec.read ? spec.read(at) : `
+  let what = body[${at("what")} + i];
+  o.kind = what & 255u;
+  o.sp = what >> 8u;
+  let sz = body[${at("size")} + i];
+  o.size = ${spec.sizeMm ? "f32(sz) * 0.001" : "bitcast<f32>(sz)"};
+  o.seed = body[${at("seed")} + i];
+  o.pick = ${F.pick !== undefined ? `body[${at("pick")} + i]` : `${PICK_SLOT}u | i`};
+  o.nst = ${F.nst !== undefined ? `body[${at("nst")} + i]` : spec.marks ? `(marks[${hideWords}u + (i >> 4u)] >> ((i & 15u) * 2u)) & 3u` : "0u"};`;
+  return `${spec.decls ?? ""}
+const CAP: u32 = ${C}u;
+fn readObj(i: u32) -> Obj {
+  var o: Obj;
+  o.ok = (body[i] & 1u) == 1u;
+  ${spec.marks ? "if (((marks[i >> 5u] >> (i & 31u)) & 1u) == 1u) { o.ok = false; }" : ""}
+  if (!o.ok) { return o; }
+  o.x = f32(body[${at("x")} + i]) * 0.001 + (${f(ORIGIN)});
+  o.z = f32(body[${at("y")} + i]) * 0.001 + (${f(ORIGIN)});${read}
+  return o;
+}
+// the cell of the sim's spatial index a slot's place is in (src/gpu/wgsl/index.ts INDEX_KEYS)
+fn cellOf(i: u32) -> u32 {
+  let cx = min(body[${at("x")} + i] / ${CELL_M * 1000}u, ${CELLS_N - 1}u);
+  let cy = min(body[${at("y")} + i] / ${CELL_M * 1000}u, ${CELLS_N - 1}u);
+  return cy * ${CELLS_N}u + cx;
+}
+${spec.member ?? ""}`;
+}
+
+// What every object pass shares: the Obj, the tables, and an object's look. g: ORIGIN; GN, WS the 12.5 m light grid
+// (grid layer 1 its hollows' share of the sky); M, FSTART, FSTEP the fine ground (layer 4 its tree cover).
+export function objectWGSL(g) {
+  return `
+struct Obj { ok: bool, x: f32, z: f32, kind: u32, sp: u32, size: f32, seed: u32, pick: u32, nst: u32 }
+struct Fam { f: u32, wb: u32, tree: bool }
+const NONE: u32 = ${NONE}u;
+const NB: u32 = ${NB}u;
+// the island's west and north edge, metres
+const ORIGIN_M: f32 = ${f(g.ORIGIN)};
+// the sprite table, after the looks' tables in the same buffer
+const TABLE0: u32 = ${META_WORDS}u;
+fn kindOf(k: u32) -> u32 { return looks[${M_KIND}u + min(k, ${CODES - 1}u)]; }
+// a layer of a grid of n texels a side, read between its texels at grid coordinates (u, v), held to [0, n - 1.001]
+fn bilin(t: texture_2d_array<f32>, L: i32, n: i32, u: f32, v: f32) -> f32 {
+  let fu = clamp(u, 0.0, f32(n) - 1.001);
+  let fv = clamp(v, 0.0, f32(n) - 1.001);
+  let i = vec2i(i32(fu), i32(fv));
+  let a = fu - f32(i.x);
+  let b = fv - f32(i.y);
+  let p = textureLoad(t, i, L, 0).x;
+  let q = textureLoad(t, i + vec2i(1, 0), L, 0).x;
+  let r = textureLoad(t, i + vec2i(0, 1), L, 0).x;
+  let s = textureLoad(t, i + vec2i(1, 1), L, 0).x;
+  return (p * (1.0 - a) + q * a) * (1.0 - b) + (r * (1.0 - a) + s * a) * b;
+}
+// the share of the sky the ground's folds hide at a point (main.js worldAO), and the trees' cover there (flora.ts fine)
+fn aoAt(x: f32, z: f32) -> f32 { return bilin(gridTex, 1, ${g.GN}, (x - (${f(g.ORIGIN)})) / ${f(g.WS)}, (z - (${f(g.ORIGIN)})) / ${f(g.WS)}); }
+fn treeAt(x: f32, z: f32) -> f32 { return bilin(fineTex, 4, ${g.M}, (x - (${f(g.FSTART)})) / ${f(g.FSTEP)}, (z - (${f(g.FSTART)})) / ${f(g.FSTEP)}); }
+// the size in meters an object is drawn at (px.js shown); grass by its width
+fn hkOf(o: Obj, kf: u32) -> f32 {
+  if ((kf & ${K_GRASS}u) != 0u || o.size >= 1.0) { return o.size; }
+  return pow(max(o.size, 0.0), 0.55);
+}
+fn hpxOf(o: Obj, kf: u32, pv: f32, pw: f32) -> f32 { return hkOf(o, kf) * select(pv, pw, (kf & ${K_GRASS}u) != 0u); }
+// the table's size index of a sprite hpx art px tall: a tree's whole pixels, anything else's half pixels under 8, then
+// whole ones (main.js collectLive's hp and hq)
+fn sizeIdx(hpx: f32, tree: bool) -> u32 {
+  var si = 0u;
+  if (tree) { si = u32(max(1.0, rnd(hpx))); } else if (hpx < 8.0) { si = u32(rnd(hpx * 2.0)); } else { si = 8u + u32(rnd(hpx)); }
+  return min(si, ${NS - 1}u);
+}
+// an object's family as drawn unshrunk (a tree's shrunk family is the next one): atlas.js Looks.key undoes it
+fn famOf(o: Obj, kf: u32) -> Fam {
+  var F: Fam;
+  F.f = NONE;
+  F.tree = (kf & ${K_TREE}u) != 0u;
+  let base = looks[${M_BASE}u + min(o.kind, ${CODES - 1}u) * ${CODES}u + min(o.sp, ${CODES - 1}u)];
+  if (base == NONE) { return F; }
+  let vr = o.seed % 8u;
+  if (F.tree) {
+    // sprites.js treeTint's steps by the seed's second byte: pine always the middle, aspen past 0.8 gold
+    let b = (o.seed >> 8u) & 255u;
+    let ts = looks[${M_TSP}u + min(o.sp, ${CODES - 1}u)];
+    var ti = 1u;
+    if (ts == 3u && b > 204u) { ti = 3u; } else if (ts != 0u) { ti = select(select(2u, 1u, b <= 170u), 0u, b <= 84u); }
+    // the forest's darkness at its foot (main.js dimAt): the hollows' share of the sky, in quarter steps
+    let q = clamp(0.05 - max(0.0, aoAt(o.x, o.z)) * 0.3, -0.75, 1.0);
+    let di = u32(clamp(-floor(q * 4.0 + 0.5), 0.0, 3.0));
+    F.wb = looks[${M_WB}u + ts * ${HSTEPS}u + min(${HSTEPS - 1}u, u32(max(o.size, 0.0) * 4.0))];
+    F.f = base + (((vr * 4u + ti) * 4u + di) * NB + F.wb) * 2u;
+    return F;
+  }
+  var moss = 0u;
+  if ((kf & ${K_MOSSY}u) != 0u && treeAt(o.x, o.z) > 0.4) { moss = 1u; }
+  F.f = base + (vr * 2u + moss) * 3u + min(o.nst, 2u);
+  return F;
+}
+// the sprite (id + 1) of family f at size index si, the nearest size made should float rounding ask for one never made;
+// 0 none, 0xFFFFFFFF made with nothing painted
+fn spriteAt(f: u32, si: u32) -> u32 {
+  if (TABLE0 + (f + 1u) * ${NS}u > arrayLength(&looks)) { return 0u; }
+  let t0 = TABLE0 + f * ${NS}u;
+  var sp = looks[t0 + si];
+  for (var dd = 1u; sp == 0u && dd < 24u; dd++) {
+    if (si >= dd) { sp = looks[t0 + si - dd]; }
+    if (sp == 0u && si + dd < ${NS}u) { sp = looks[t0 + si + dd]; }
+  }
+  return sp;
+}
+// a tree whose crown's width has grown past every sprite made takes the nearest width made
+fn spriteOf(F: Fam, f: u32, si: u32) -> u32 {
+  var sp = spriteAt(f, si);
+  if (!F.tree) { return sp; }
+  for (var d = 1u; sp == 0u && d < 4u; d++) {
+    if (F.wb >= d) { sp = spriteAt(f - 2u * d, si); }
+    if (sp == 0u && F.wb + d < NB) { sp = spriteAt(f + 2u * d, si); }
+  }
+  return sp;
+}`;
+}
+
+// ---------- cull ----------
+// Every object of a source the view can show: its look as above, drawn at a pixel or more and able to reach into the
+// view, stood on the tile map's ground with its sprite, listed for the indirect sprite draw with its shadow-casting
+// rows (a one-pixel speck as a point for the splat). An indexed source walks only the rows of cells under the view
+// (V.cx0..cx1, V.cy0..cy1), each row's run of the index split among the row's workgroups; any other walks its slots.
+// A source of bins walks its bins the same way, a workgroup's threads sharing each bin's members; a source of cells
+// takes a workgroup a cell of the view, which splits the cell's count into its 16 x 16 squares as the members' law
+// does (src/gpu/wgsl/deadwood.ts clastBody: halved 8 times, x then y, each a binhalf on (seed, stream + 1, cell, node))
+// and then gives every member its square by its place among them. A flat source (nothing of it casts) lists no rows.
+export function cullWGSL(spec, far = false) {
+  const one = `fn cullOne(k: u32) { let o = readObj(k); if (o.ok) { cullObj(o); } }`;
+  const walk = far
+    ? `${one}
+@compute @workgroup_size(64)
+fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u) {
+  let c = (V.cy0 + wid.y) * ${CELLS_N}u + V.cx0 + wid.x;
+  let a = fidx[c];
+  let b = a + fidx[${FAR_LVL}u + V.farL * ${CELLS}u + c];
+  for (var r = a + lid.x; r < b; r += 64u) { let k = flist[r]; if (k != NONE) { cullOne(k); } }
+}`
+    : spec.members === "bins"
+    ? `@compute @workgroup_size(64)
+fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u, @builtin(num_workgroups) nw: vec3u) {
+  let cy = V.cy0 + wid.y;
+  let a = start[cy * ${CELLS_N}u + V.cx0];
+  let b = start[cy * ${CELLS_N}u + V.cx1 + 1u];
+  for (var r = a + wid.x; r < b; r += nw.x) {
+    let i = order[r];
+    if ((body[i] & 1u) == 0u) { continue; }
+    let n = memberCount(i);
+    for (var k = lid.x; k < n; k += 64u) { let o = member(i, k); if (o.ok) { cullObj(o); } }
+  }
+}`
+    : spec.members === "cells"
+    ? `var<workgroup> wn: u32;
+var<workgroup> node: array<u32, 512>;
+var<workgroup> pre: array<u32, 257>;
+@compute @workgroup_size(64)
+fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u) {
+  let cell = (V.cy0 + wid.y) * ${CELLS_N}u + V.cx0 + wid.x;
+  if (lid.x == 0u) { wn = counts[cell]; node[1] = wn; }
+  let n = workgroupUniformLoad(&wn);
+  if (n == 0u) { return; }
+  for (var l = 0u; l < 8u; l++) {
+    let first = 1u << l;
+    for (var j = lid.x; j < first; j += 64u) {
+      let nd = first + j;
+      let m = node[nd];
+      rinit(CL_SEED, CL_STREAM + 1u, cell, nd);
+      let left = binhalf(m);
+      node[2u * nd] = left;
+      node[2u * nd + 1u] = m - left;
+    }
+    workgroupBarrier();
+  }
+  if (lid.x == 0u) { var s = 0u; for (var j = 0u; j < 256u; j++) { pre[j] = s; s += node[256u + j]; } pre[256] = s; }
+  workgroupBarrier();
+  for (var k = lid.x; k < n; k += 64u) {
+    var lo = 0u;
+    var hi = 255u;
+    while (lo < hi) { let mid = (lo + hi + 1u) >> 1u; if (pre[mid] <= k) { lo = mid; } else { hi = mid - 1u; } }
+    // the leaf's path from the root, its first halving the top bit: even halvings split x, odd ones y
+    var ix = 0u;
+    var iy = 0u;
+    for (var l = 0u; l < 8u; l++) {
+      let bit = (lo >> (7u - l)) & 1u;
+      if ((l & 1u) == 0u) { ix = ix * 2u + bit; } else { iy = iy * 2u + bit; }
+    }
+    let o = member(cell, k, ix, iy);
+    if (o.ok) { cullObj(o); }
+  }
+}`
+    : spec.indexed
+    ? `${one}
+@compute @workgroup_size(256)
+fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u, @builtin(num_workgroups) nw: vec3u) {
+  let cy = V.cy0 + wid.y;
+  let a = start[cy * ${CELLS_N}u + V.cx0];
+  let b = start[cy * ${CELLS_N}u + V.cx1 + 1u];
+  for (var r = a + wid.x * 256u + lid.x; r < b; r += nw.x * 256u) { cullOne(${spec.ordered ? "order[r]" : "r"}); }
+}`
+    : `${one}
+@compute @workgroup_size(256)
+fn cullMain(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw: vec3u) {
+  let k = gid.x + gid.y * nw.x * 256u;
+  if (k < CAP) { cullOne(k); }
+}`;
+  return `
+fn cullObj(o: Obj) {
+  let kf = kindOf(o.kind);
+  if ((kf & ${K_DRAWN}u) == 0u) { return; }
+  let tree = (kf & ${K_TREE}u) != 0u;
+  let hpx = hpxOf(o, kf, V.pv, V.pw);
+  if (hpx < 1.0) { return; }
+  let d = rel(o.x, o.z);
+  // within reach whatever the ground's height: as tall and as wide as it is drawn, and its shadow
+  let reach = hpx * 2.0 + 8.0 + select(0.0, hpx * 4.0, V.casting != 0u);
+  let sx = (d.x - d.y) * V.H + V.offx;
+  let base = (d.x + d.y) * V.hb + V.offy;
+  if (sx < -reach || sx > f32(V.aw) + reach || base + V.levc * V.lp < -reach || base - (V.peak - V.levc) * V.lp > f32(V.ah) + reach) { return; }
+  let g = gridUV(o.x, o.z);
+  let lev = groundLev(g.x, g.y);
+  if (lev < -1e8) { return; }
+  let s = screen(d, lev);
+  let ax = rnd(s.x);
+  let ay = rnd(s.y);
+  if (ax < -reach || ay < -reach || ax > f32(V.aw) + reach || ay - hpx * 2.0 > f32(V.ah) + reach) { return; }
+  let F = famOf(o, kf);
+  if (F.f == NONE) { return; }
+  let sp = spriteOf(F, F.f + select(0u, V.shrunk, tree), sizeIdx(hpx, tree));
+  if (sp == 0u || sp == 0xFFFFFFFFu) { return; }
+  let e0 = entries[(sp - 1u) * 2u];
+  let foot = f32(i32((e0.w >> 8u) & 255u) - 128);
+  var it: Inst;
+  it.sp = sp - 1u; it.x = i32(ax); it.y = i32(ay + foot); it.z = s.z + V.bias; it.flags = 1u | (((o.seed >> 3u) & 1u) << 4u); it.pick = o.pick; it.wx = o.x; it.wz = o.z;
+  // a speck of one pixel, as far levels draw most trees, is one point, not a quad
+  if (e0.y == 0x10001u) {
+    let ps = atomicAdd(&args.pic, 1u);
+    if (ps < V.maxinst) { inst[V.maxinst + ps] = it; }
+    return;
+  }
+  let slot = atomicAdd(&args.ic, 1u);
+  if (slot >= V.maxinst) { return; }
+  inst[slot] = it;${spec.flat ? "" : `
+  let casts = (kf & ${K_FLAT}u) == 0u && hpx >= select(3.0, 8.0, tree);
+  if (V.casting == 0u || !casts) { return; }
+  let e1 = entries[(sp - 1u) * 2u + 1u];
+  if (e1.y == 0u) { return; }
+  let r0 = atomicAdd(&args.ric, e1.y);
+  for (var r = 0u; r < e1.y; r++) { if (r0 + r < V.maxrows) { rowInst[r0 + r] = vec2u(slot, e1.x + r); } }`}
+}
+${walk}`;
+}
+export const CLAMP_WGSL = `
+@compute @workgroup_size(1)
+fn clampMain() {
+  atomicStore(&args.ic, min(atomicLoad(&args.ic), V.maxinst));
+  atomicStore(&args.ric, min(atomicLoad(&args.ric), V.maxrows));
+  atomicStore(&args.pic, min(atomicLoad(&args.pic), V.maxinst));
+  args.dx = (atomicLoad(&args.pic) + 63u) / 64u;
+}`;
+
+// ---------- the far levels' lists ----------
+// The coarser levels (those that draw trees shrunk: atlas.js levels' shrunk) show a small share of the objects, as most
+// are under a pixel there, so walking every object under the view would cost a far view most of its frame. Each indexed
+// source keeps a list for them instead: every object drawn at a pixel or more at some far level, filed by its cell, a
+// cell's objects in order of the coarsest far level that draws them, so far level L walks only the first
+// fidx[FAR_LVL + L * CELLS + c] objects of cell c from fidx[c]. An object qualifies at a level if it is drawn there at
+// FAR_MARGIN of its size, so stems that grow in the day between two lists (worker.js rebuilds them each sim day) are
+// still in them; a stem that dies is skipped by its alive bit when culled, and a stem born since is far below a pixel
+// at these levels. Built in three steps, the first and last a slice of slots at a time so no frame pays for a whole
+// pass: farCount files each slot's cell and coarsest level (fkey) and counts them, farScan lays out the cells, and
+// farFile puts every slot at its place.
+export const FAR_LVL = CELLS_N * CELLS_N + 1, CELLS = CELLS_N * CELLS_N, FAR_MARGIN = 1.1;
+export const FAR_COUNT_WGSL = `
+@compute @workgroup_size(256)
+fn farCount(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw: vec3u) {
+  let i = Fp.base + gid.x + gid.y * nw.x * 256u;
+  if (i >= min(CAP, Fp.base + Fp.n)) { return; }
+  fkey[i] = NONE;
+  let o = readObj(i);
+  if (!o.ok) { return; }
+  let kf = kindOf(o.kind);
+  if ((kf & ${K_DRAWN}u) == 0u) { return; }
+  var L = 0u;
+  loop {
+    if (L >= Fp.nf) { return; }
+    let pv = bitcast<f32>(looks[${M_LEV}u + L * 4u]) * ${FAR_MARGIN};
+    let pw = bitcast<f32>(looks[${M_LEV}u + L * 4u + 1u]) * ${FAR_MARGIN};
+    if (hpxOf(o, kf, pv, pw) >= 1.0) { break; }
+    L++;
+  }
+  let c = cellOf(i);
+  fkey[i] = c * 8u + L;
+  atomicAdd(&fcnt[c * 8u + L], 1u);
+}`;
+export const FAR_FILE_WGSL = `
+@compute @workgroup_size(256)
+fn farFile(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw: vec3u) {
+  let i = Fp.base + gid.x + gid.y * nw.x * 256u;
+  if (i >= Fp.base + Fp.n) { return; }
+  let key = fkey[i];
+  if (key == ${NONE}u) { return; }
+  flist[atomicAdd(&fcnt[key], 1u)] = i;
+}`;
+// One workgroup: each cell's count over its levels, scanned into the cells' starts (fidx[c], the total at fidx[CELLS]),
+// each far level's count per cell, and the counts turned into each (cell, level) run's first place for farFile.
+export const FAR_SCAN_WGSL = `
+var<workgroup> part: array<u32, 256>;
+@compute @workgroup_size(256)
+fn farScan(@builtin(local_invocation_id) lid: vec3u) {
+  let per = ${CELLS / 256}u;
+  let c0 = lid.x * per;
+  var sum = 0u;
+  for (var c = c0; c < c0 + per; c++) { for (var L = 0u; L < Fp.nf; L++) { sum += fcntR[c * 8u + L]; } }
+  part[lid.x] = sum;
+  workgroupBarrier();
+  if (lid.x == 0u) {
+    var run = 0u;
+    for (var t = 0u; t < 256u; t++) { let v = part[t]; part[t] = run; run += v; }
+    fidx[${CELLS}u] = run;
+  }
+  workgroupBarrier();
+  var at = part[lid.x];
+  for (var c = c0; c < c0 + per; c++) {
+    fidx[c] = at;
+    var inCell = 0u;
+    for (var L = 0u; L < 8u; L++) {
+      let n = select(0u, fcntR[c * 8u + L], L < Fp.nf);
+      fcntR[c * 8u + L] = at + inCell;
+      inCell += n;
+      if (L < Fp.nf) { fidx[${FAR_LVL}u + L * ${CELLS}u + c] = inCell; }
+    }
+    at += inCell;
+  }
+}`;
+
+// ---------- the sprites wanted ----------
+// Kp.mode 0: every kind and species pair the source holds, a bit each (CODES x CODES), so the worker can number their
+// families; mode 1: every family and size index any of the Kp.nl levels draws its objects at, a bit each (family x NS),
+// so the worker makes exactly those sprites.
+export const NEEDS_WGSL = `
+@compute @workgroup_size(256)
+fn needsMain(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw: vec3u) {
+  let i = gid.x + gid.y * nw.x * 256u;
+  if (i >= CAP) { return; }
+  let o = readObj(i);
+  if (!o.ok) { return; }
+  let kf = kindOf(o.kind);
+  if ((kf & ${K_DRAWN}u) == 0u) { return; }
+  if (Kp.mode == 0u) {
+    let p = min(o.kind, ${CODES - 1}u) * ${CODES}u + min(o.sp, ${CODES - 1}u);
+    atomicOr(&need[p >> 5u], 1u << (p & 31u));
+    return;
+  }
+  let F = famOf(o, kf);
+  if (F.f == NONE) { return; }
+  for (var L = 0u; L < Kp.nl; L++) {
+    let hpx = hpxOf(o, kf, bitcast<f32>(looks[${M_LEV}u + L * 4u]), bitcast<f32>(looks[${M_LEV}u + L * 4u + 1u]));
+    if (hpx < 1.0) { continue; }
+    let bit = (F.f + select(0u, looks[${M_LEV}u + L * 4u + 2u], F.tree)) * ${NS}u + sizeIdx(hpx, F.tree);
+    if ((bit >> 5u) < arrayLength(&need)) { atomicOr(&need[bit >> 5u], 1u << (bit & 31u)); }
+  }
+}`;
+
+// ---------- the trees' cover ----------
+// The trees' cover of the ground as the light's ambient occlusion reads it (webgpu.js can0, can3, grid layer 5): every
+// tree lays the disc its crown covers (Unit 7's crown, light.ts crownRadius), full within CORE of its radius and
+// easing out to none at EDGE, in cells of Kp.canStep metres, a crown's full weight UNIT, two cells to a word as 16-bit
+// counts; and each tree's height and a count go to the nearest cell of the 12.5 m light grid, for the trees' mean height.
+const CORE = 0.55, EDGE = 1.2, UNIT = 64;
+const CAN_COMMON = `
+fn profile(i: u32) -> u32 {
+  let r = sqrt(f32(i) / 255.0) * ${f(EDGE)};
+  let t = clamp((r - ${f(CORE)}) / ${f(EDGE - CORE)}, 0.0, 1.0);
+  return u32(rnd(${f(UNIT)} * select(1.0 - t * t * (3.0 - 2.0 * t), 1.0, r <= ${f(CORE)})));
+}`;
+export const CANOPY_WGSL = (ORIGIN) => `${CAN_COMMON}
+// a crown's radius, m, by tree species and height, between the table's quarter metres
+fn crownR(ts: u32, h: f32) -> f32 {
+  let q = clamp(h * 4.0, 0.0, ${f(HSTEPS - 1.001)});
+  let i = u32(q);
+  let a = bitcast<f32>(looks[${M_CROWN}u + ts * ${HSTEPS}u + i]);
+  let b = bitcast<f32>(looks[${M_CROWN}u + ts * ${HSTEPS}u + min(i + 1u, ${HSTEPS - 1}u)]);
+  return a + (b - a) * (q - f32(i));
+}
+@compute @workgroup_size(256)
+fn canopyMain(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw: vec3u) {
+  let k = gid.x + gid.y * nw.x * 256u;
+  if (k >= CAP) { return; }
+  let o = readObj(k);
+  if (!o.ok || (kindOf(o.kind) & ${K_TREE}u) == 0u) { return; }
+  let N = i32(Kp.canN);
+  let cx = (o.x - (${f(ORIGIN)})) / Kp.canStep;
+  let cz = (o.z - (${f(ORIGIN)})) / Kp.canStep;
+  let r = crownR(looks[${M_TSP}u + min(o.sp, ${CODES - 1}u)], o.size) * ${f(EDGE)} / Kp.canStep;
+  let r2 = r * r;
+  let i0 = max(0, i32(ceil(cx - r)));
+  let i1 = min(N - 1, i32(floor(cx + r)));
+  let j0 = max(0, i32(ceil(cz - r)));
+  let j1 = min(N - 1, i32(floor(cz + r)));
+  if (r2 > 0.0) {
+    let kk = 255.0 / r2;
+    for (var j = j0; j <= j1; j++) {
+      for (var i = i0; i <= i1; i++) {
+        let d2 = (f32(i) - cx) * (f32(i) - cx) + (f32(j) - cz) * (f32(j) - cz);
+        if (d2 < r2) {
+          let idx = u32(j * N + i);
+          atomicAdd(&canAcc[idx >> 1u], profile(min(255u, u32(d2 * kk))) << ((idx & 1u) * 16u));
+        }
+      }
+    }
+  }
+  let G = i32(Kp.gn);
+  let gi = clamp(i32(floor((o.x - (${f(ORIGIN)})) / Kp.gs + 0.5)), 0, G - 1);
+  let gj = clamp(i32(floor((o.z - (${f(ORIGIN)})) / Kp.gs + 0.5)), 0, G - 1);
+  let gc = u32(gj * G + gi);
+  atomicAdd(&canTall[gc * 2u], 1u);
+  atomicAdd(&canTall[gc * 2u + 1u], u32(max(o.size, 0.0) * 100.0 + 0.5));
+}`;
+// The cover as the GPU reads it: a byte a cell, twice the count, at most 255 (two crowns deep), in rows of Kp.rp bytes
+// for the copy into the r8uint texture; its 8 x 8 means (can3) and the trees' mean height over the 7 x 7 light-grid
+// cells round each (a cell holds a tree or two or none), where they hold half a tree or more.
+const BYTE_AT = "fn byteAt(idx: u32) -> u32 { return min(255u, ((canAccR[idx >> 1u] >> ((idx & 1u) * 16u)) & 0xFFFFu) << 1u); }";
+export const CANOPY_BYTES_WGSL = `${BYTE_AT}
+@compute @workgroup_size(64)
+fn canBytesMain(@builtin(global_invocation_id) gid: vec3u) {
+  let wpr = Kp.rp / 4u;
+  if (gid.x >= wpr || gid.y >= Kp.canN) { return; }
+  var w = 0u;
+  for (var b = 0u; b < 4u; b++) { let i = gid.x * 4u + b; if (i < Kp.canN) { w |= byteAt(gid.y * Kp.canN + i) << (b * 8u); } }
+  canBytes[gid.y * wpr + gid.x] = w;
+}`;
+export const CANOPY_WIDE_WGSL = `${BYTE_AT}
+@compute @workgroup_size(8, 8)
+fn canWideMain(@builtin(global_invocation_id) gid: vec3u) {
+  if (gid.x >= Kp.n3 || gid.y >= Kp.n3) { return; }
+  var s = 0u;
+  for (var y = 0u; y < 8u; y++) { for (var x = 0u; x < 8u; x++) { s += byteAt((gid.y * 8u + y) * Kp.canN + gid.x * 8u + x); } }
+  canWide[gid.y * Kp.rp3 + gid.x] = f32(s) / ${f(64 * 255)};
+}`;
+export const CANOPY_TALL_WGSL = `
+@compute @workgroup_size(8, 8)
+fn canTallMain(@builtin(global_invocation_id) gid: vec3u) {
+  let G = i32(Kp.gn);
+  if (i32(gid.x) >= G || i32(gid.y) >= G) { return; }
+  var w = 0u;
+  var h = 0u;
+  for (var b = max(0, i32(gid.y) - 3); b <= min(G - 1, i32(gid.y) + 3); b++) {
+    for (var a = max(0, i32(gid.x) - 3); a <= min(G - 1, i32(gid.x) + 3); a++) { let c = u32(b * G + a); w += canTallR[c * 2u]; h += canTallR[c * 2u + 1u]; }
+  }
+  canTallOut[gid.y * Kp.rpt + gid.x] = select(0.0, f32(h) / 100.0 / f32(w), w >= 1u);
+}`;

@@ -1,31 +1,33 @@
 // The render worker: owns the WebGPU device and the page's canvas (an OffscreenCanvas), grows the island's fields once,
-// runs the game's sim on the same device (play/sim.js), keeps every object of the sim on the GPU with the atlas of their
-// sprites, and draws each frame the page asks for (webgpu.js). The page (live.js) keeps the camera, the sky and the UI;
-// it sends what moves (the view, the light, the people, animals, fires and overlays), asks for each tick, and gets the
-// sim's state after it (play/remote.js).
-import { generateIsland, fineGround, rng, SIZE, TILE_M, TILES } from "../island.js";
+// runs the game's sim on the same device (play/sim.js), draws every object of the sim straight from the sim's own GPU
+// buffers with the atlas of their sprites, and draws each frame the page asks for (webgpu.js). The page (live.js) keeps
+// the camera, the sky and the UI; it sends what moves (the view, the light, the people, animals, fires and overlays),
+// asks for each tick, and gets the sim's state after it (play/remote.js).
+import { generateIsland, fineGround, rng, crownShare, SIZE, START, STEP, TILE_M, TILES } from "../island.js";
 import { P, NCOL, HAZE, GLOW, TONE, TONE_S } from "./pal.js";
-import { ObjBins } from "./px.js";
-import * as SP from "./sprites.js";
-import { Canopy, STEP as CAN_STEP, N as CAN_N } from "./canopy.js";
+import { LIVE, shown, ANIMAL_BODY, ANIMAL_DRAWN } from "./px.js";
 import { packGround } from "./ground.wgsl.js";
 import { createRenderer, NS, ATLAS } from "./webgpu.js";
-import { Families, LIVE, markNeeds, makeSprite, flat, castRows, Shelves, entryWords } from "./atlas.js";
+import { Looks, CODES, NONE, castRows, Shelves, entryWords } from "./atlas.js";
+import { PICK_SLOT, EXTRA_PICK, KIND_PICK, NO_SLOT, CELLS_N, CELL_M } from "./wgsl/objects.js";
 
 const early = [];
 onmessage = (e) => early.push(e);
-const ORIGIN = -SIZE / 2, WS = 12.5, toM = (t) => t * TILE_M + ORIGIN;
-// entries, rows and families kept for sprites made while the page runs (live sprites and objects the sim changed), and
-// the atlas layers they go in
-const DYN_ENTRIES = 32768, DYN_ROWS = 1 << 20, DYN_FAMILIES = 4096, DYN_LAYERS = 2;
-let R = null, device = null, gpuName = "", canvas = null, context = null, fields = null, TH = {};
-let fam = null, objs = null, idx = new Map(), level = null;
-let table = null, nStatic = 0, rowsStatic = 0, dyn = null, liveIds = new Map(), extrasMade = new Map();
+const ORIGIN = -SIZE / 2, WS = 12.5;
+// entries and rows kept for sprites made while the page runs (live sprites, and objects' sprites the world grew into
+// since the atlas was laid out), and the atlas layers they go in
+const DYN_ENTRIES = 32768, DYN_ROWS = 1 << 20, DYN_LAYERS = 4;
+let R = null, device = null, gpuName = "", canvas = null, context = null;
+// each sprite's foot (rows its anchor sits above the ground), by atlas id, for the checks
+let table = null, nStatic = 0, rowsStatic = 0, dyn = null, liveIds = new Map(), dynMade = new Set(), feet = new Int16Array(0);
 // the page's live sprites as they came, by its ids: placed in the dynamic layers when a frame first draws them, and again
 // after the layers are cleared
 const liveSrc = new Map();
 const post = (m, t) => postMessage(m, t ?? []);
 const say = (what, d, n) => post({ type: "progress", what, d, n });
+// when each step of the first view was reached, ms from init (reported with the objects)
+const T0 = performance.now(), timeline = {};
+const mark = (k) => { timeline[k] = Math.round(performance.now() - T0); };
 
 async function init(m) {
   const t0 = performance.now();
@@ -47,14 +49,12 @@ async function init(m) {
   const t1 = performance.now();
   say("laying out the ground", 0, 1);
   const pack = packGround(isle, g);
-  fields = { isle, g, pack, GN: pack.grid.size };
   const t2 = performance.now();
   say("building the shaders", 0, 1);
   R = await createRenderer({
     device, context, format, timing, ground: pack,
-    pal: { P, NCOL, HAZE, GLOW, TONE, TONE_S, WATER: ["w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"].map((k) => P[k]), TILE_M, ORIGIN, TILES, TRAIL_N: Math.round(SIZE / 3), GRID_STEP: WS },
+    pal: { P, NCOL, HAZE, GLOW, TONE, TONE_S, WATER: ["w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"].map((k) => P[k]), TILE_M, ORIGIN, TILES, TRAIL_N: Math.round(SIZE / 3), GRID_STEP: WS, FINE: { start: START, step: STEP } },
   });
-  TH = await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {}));
   let peak = 0;
   for (const h of isle.height) peak = Math.max(peak, h);
   // the page keeps the camera on the island's heights and the drawn ground under it: the fine heights and the cells'
@@ -62,60 +62,420 @@ async function init(m) {
   post({ type: "fields", info: adapter.info ? { vendor: adapter.info.vendor, architecture: adapter.info.architecture, description: adapter.info.description } : null, peak, h: g.h, height: isle.height, water: isle.water, ms: { grow: t1 - t0, pack: t2 - t1 } });
   await new Promise((r) => setTimeout(r, 0));
   if (R.errors.length) throw new Error(R.errors.join("\n"));
+  mark("renderer");
   post({ type: "ready", ms: performance.now() - t0 });
   if (m.sim) startSim(m.seed, m.sim).catch((err) => post({ type: "simError", error: String((err && err.stack) || err) }));
 }
 
-// ---------- fields read on the CPU: a tree's darkness and a stone's moss ----------
-const aoAt = (x, z) => {
-  const GN = fields.GN, a = fields.pack.grid.data, o = GN * GN;
-  const fx = Math.min(Math.max((x - ORIGIN) / WS, 0), GN - 1.001), fz = Math.min(Math.max((z - ORIGIN) / WS, 0), GN - 1.001), i = Math.floor(fx), j = Math.floor(fz), u = fx - i, v = fz - j, k = o + j * GN + i;
-  return (a[k] * (1 - u) + a[k + 1] * u) * (1 - v) + (a[k + GN] * (1 - u) + a[k + GN + 1] * u) * v;
-};
-const treeAt = (x, z) => fields.g.fine(fields.g.cover.tree, x, z);
-
 // ---------- objects ----------
-// The sim's objects (startSim: sim.objects()), each a GPU object in the order of the grown arrays, then the things
-// the sim made, as they come. levels: the zoom ladder's { pv, pw, shrunk }.
-async function setObjects(m) {
-  const t0 = performance.now(), o = m.objs, gr = o.grown, n = gr.n, spare = 1 << 16;
-  level = m.levels;
-  fam = new Families(SP.treeTint);
-  objs = { words: new Uint32Array((n + spare) * 4), ids: new Uint32Array(n + spare), n, grownN: n, next: n, cap: n + spare, kinds: [...o.kindNames], species: [...o.speciesNames] };
-  const W = objs.words, F = new Float32Array(W.buffer);
-  for (let k = 0; k < n; k++) {
-    objs.ids[k] = k + 1;
-    const K = objs.kinds[gr.kind[k]], x = toM(gr.px[k]), z = toM(gr.py[k]), w = fam.word(K, objs.species[gr.species[k]], x, z, gr.size[k], gr.seed[k], undefined, { aoAt, treeAt });
-    F[k * 4] = gr.px[k]; F[k * 4 + 1] = gr.py[k];
-    if (!w) continue;
-    F[k * 4 + 2] = w.hk; W[k * 4 + 3] = w.meta;
-  }
-  for (const id of o.gone) if (id >= 1 && id <= n) W[(id - 1) * 4 + 3] &= ~(1 << 24);
-  idx = new Map();
-  for (const t of o.things) upsert(t, false);
+// Every object is drawn from a GPU buffer (wgsl/objects.js): the stems from the sim's store kind "plant" itself, with
+// its spatial index; the generator's static dormant members (which the sim stores nowhere: their state is the
+// generator's) from one buffer laid out here once, by cell, in the store's shape; and the few things the CPU made or
+// holds otherwise (a stump, a cut log, a grazed tussock, a bush whose berries were picked) as records kept here as the
+// sim changes them. A grown object the page draws itself (burning, carried) or that a record stands for is hidden in
+// its buffer: a stem by a bit beside the store's body, a static member by its own slot word.
+const STEP_MM = (TILE_M * 1000) / 1e4, CELL_MM = CELL_M * 1000;
+const mmOf = (p) => Math.round(p * 1e4) * STEP_MM;
+let S = null, looks = null, level = null, spritesP = null, FLORA_N = null;
+const words32 = (n) => Math.ceil(n / 32);
+const buffer = (data, usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC) => {
+  const b = device.createBuffer({ size: Math.max(16, Math.ceil(data.byteLength / 4) * 4), usage });
+  device.queue.writeBuffer(b, 0, data);
+  return b;
+};
+
+// The world's objects as GPU sources, once its flora lives on the GPU (play/sim.js onWorld), and the sprites every
+// level draws them at made while the world warms.
+async function setupObjects(sim, w) {
+  const t0 = performance.now(), flora = sim.flora(), plant = flora.store.kind("plant"), C = plant.capacity, F = plant.field;
+  FLORA_N = sim.FLORA;
+  const marks = new Uint32Array(words32(C) + Math.ceil(C / 16));
+  S = {
+    flora, w,
+    plant: {
+      name: "plant", body: plant.body, order: plant.order, start: plant.start, marks: buffer(marks), cpu: marks,
+      spec: { cap: C, fields: { x: F.x, y: F.y, what: F.what, size: F.size, seed: F.seed }, sizeMm: true, marks: true, ordered: true, indexed: true, canopy: true },
+    },
+    statics: staticsOf(flora),
+    extras: extrasOf(1 << 14),
+    hidden: new Set(), // object numbers hidden in their buffers
+    hiddenSlots: new Map(), // plant slots hidden in marks, to the generation they were hidden at (-1 until read back)
+  };
+  await R.setSources(sources());
   const t1 = performance.now();
-  // every family and size any level draws, made by a few workers at once
-  const need = new Uint8Array((fam.keys.length + DYN_FAMILIES) * NS);
-  markNeeds(W, 0, objs.next ?? n, level, (slot) => { need[slot] = 1; });
-  const jobs = [];
-  for (let f = 0; f < fam.keys.length; f++) for (let s = 0; s < NS; s++) if (need[f * NS + s]) jobs.push([fam.keys[f], s, f * NS + s]);
-  const made = await makeAll(jobs);
-  const t2 = performance.now();
-  packAtlas(made);
-  R.setObjects(W, objs.ids, objs.next);
-  const t3 = performance.now();
-  // the trees' cover for the ambient occlusion, from the drawn things' records
-  const bins = new ObjBins({ ...o, things: [] });
-  for (const r of o.things) bins.upsert(r);
-  const c = await Canopy.build(bins, toM, { n: fields.GN, step: WS }, 1e9);
-  R.setCanopy(CAN_N, CAN_STEP, c.bytes(), c.tall);
-  canopyOf = { c, bins };
-  post({ type: "objects", n, sprites: made.length, families: fam.keys.length, ms: { words: t1 - t0, sprites: t2 - t1, pack: t3 - t2, canopy: performance.now() - t3 } });
+  looks = new Looks(sim.FLORA, sim.SPECIES, level, crownShare);
+  R.setMeta(looks.meta());
+  looks.addAll(await R.survey(0, 0, (CODES * CODES) / 32));
+  R.setMeta(looks.meta());
+  growTable();
+  const jobs = await wanted();
+  mark("survey");
+  spritesP = makeAll(jobs).then((made) => { mark("sprites"); return made; });
+  S.ms = { sources: t1 - t0, survey: performance.now() - t1 };
 }
-let canopyOf = null;
+const sources = () => [S.plant, ...(S.statics.cap ? [S.statics] : []), S.extras, ...(S.animals ? [S.animals] : []), ...(S.dead ?? [])];
+
+// The generator's objects that aren't stems (src/gpu/flora.ts: static dormant), counted into the spatial index's cells
+// and laid out cell by cell in entry order, fields as the store holds a piece's: x, y (mm), what, size (f32 bits),
+// seed, and the object number as its pick.
+function staticsOf(flora) {
+  const f = flora.f, n = f.n, plantKind = new Uint8Array(256), cells = CELLS_N * CELLS_N;
+  plantKind[FLORA_N.indexOf("tree")] = plantKind[FLORA_N.indexOf("bush")] = 1;
+  const cellOf = (k) => Math.min(CELLS_N - 1, Math.floor(mmOf(f.py[k]) / CELL_MM)) * CELLS_N + Math.min(CELLS_N - 1, Math.floor(mmOf(f.px[k]) / CELL_MM));
+  const start = new Uint32Array(cells + 1);
+  let m = 0;
+  for (let k = 0; k < n; k++) if (!plantKind[f.kind[k]]) { start[cellOf(k) + 1]++; m++; }
+  for (let c = 0; c < cells; c++) start[c + 1] += start[c];
+  const cur = start.slice(0, cells), body = new Uint32Array(7 * Math.max(1, m)), B = new Float32Array(body.buffer);
+  body.fill(1, 0, m);
+  for (let k = 0; k < n; k++) {
+    if (plantKind[f.kind[k]]) continue;
+    const s = cur[cellOf(k)]++;
+    body[m + s] = mmOf(f.px[k]); body[2 * m + s] = mmOf(f.py[k]); body[3 * m + s] = f.kind[k] + 256 * f.species[k];
+    B[4 * m + s] = f.size[k]; body[5 * m + s] = f.seed[k]; body[6 * m + s] = k + 1;
+  }
+  return {
+    name: "static", cap: m, e: body.slice(6 * m, 7 * m), cellStart: start, cellOf: (e) => cellOf(e - 1),
+    body: buffer(body), start: buffer(start),
+    spec: { cap: Math.max(1, m), fields: { x: 0, y: 1, what: 2, size: 3, seed: 4, pick: 5 }, sizeMm: false, marks: false, ordered: false, indexed: true, canopy: false },
+  };
+}
+// a static member's slot, or -1: its cell's run holds the cell's members in entry order
+function staticSlot(e) {
+  const st = S.statics, c = st.cellOf(e);
+  let lo = st.cellStart[c], hi = st.cellStart[c + 1] - 1;
+  while (lo <= hi) { const mid = (lo + hi) >> 1, v = st.e[mid]; if (v === e) return mid; if (v < e) lo = mid + 1; else hi = mid - 1; }
+  return -1;
+}
+
+// The CPU's records: a buffer in the store's shape (slot words, then x, y, what, size, seed, pick, berries) with its
+// copy here; slots reused as records go.
+function extrasOf(cap, old) {
+  const cpu = new Uint32Array(8 * cap);
+  if (old) for (let f = 0; f < 8; f++) cpu.set(old.cpu.subarray(f * old.cap, (f + 1) * old.cap), f * cap);
+  return {
+    name: "extra", cap, cpu, body: buffer(cpu), ids: old?.ids ?? [], slot: old?.slot ?? new Map(), free: old?.free ?? [], next: old?.next ?? 0,
+    spec: { cap, fields: { x: 0, y: 1, what: 2, size: 3, seed: 4, pick: 5, nst: 6 }, sizeMm: false, marks: false, ordered: false, indexed: false, canopy: true },
+  };
+}
+const nstOf = (n) => (n == null ? 0 : n > 0 ? 2 : 1);
+
+// ---------- the sim's other kinds ----------
+// The kinds the store holds in layouts of their own, drawn straight from their buffers (wgsl/objects.js sourceWGSL's
+// read and member): the animals (src/gpu/animals.ts); the logs and snags and those people touched, the sticks of every
+// stick bin and those people touched, and every cell's clasts and those moved (src/gpu/deadwood.ts, its own WGSL for
+// a piece's state and place). The deadwood is resident only after the world's first tick, so its sources come then.
+// A pick of one names its source by a tag (wgsl/objects.js KIND_PICK): tags[tag](slot) gives the thing's id, or null.
+let B = null;
+const tags = [], tagName = [];
+const pickBits = (tag, slot = NO_SLOT) => `${(KIND_PICK | (tag << 24) | slot) >>> 0}u`;
+const flt = (v) => (Number.isInteger(v) ? `${v}.0` : `${v}`);
+// a slot's word of a kind's body (bit 0 alive, then its generation), read back from the GPU
+async function slotWord(body, slot) {
+  const rb = device.createBuffer({ size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), enc = device.createCommandEncoder();
+  enc.copyBufferToBuffer(body, slot * 4, rb, 0, 4);
+  device.queue.submit([enc.finish()]);
+  await rb.mapAsync(GPUMapMode.READ);
+  const w = new Uint32Array(rb.getMappedRange().slice(0))[0];
+  rb.destroy();
+  return w;
+}
+// a source of a store kind: its buffers, and a tag naming its things by prefix and their GPU ids (store.ts idOf)
+function kindSource(k, name, spec, prefix) {
+  const tag = tags.push(prefix ? async (slot) => { const w = await slotWord(k.body, slot); return w & 1 ? `${prefix}${B.idOf(k.n, slot, w >>> 1)}` : null; } : async () => null) - 1;
+  tagName[tag] = name;
+  return { name, body: k.body, order: k.order, start: k.start, tag, spec: { cap: k.capacity, indexed: true, ordered: true, ...spec(tag) } };
+}
+// The animals: species by the sp field's low four bits (src/gpu/wgsl/animals.ts SP), drawn standing at their body's
+// size (px.js), each with variation from its slot and birth.
+function animalSource(store) {
+  const k = store.kinds.find((x) => x.name === "animal");
+  if (!k) return null;
+  const names = Object.entries(B.ANIMAL_SP).sort((a, b) => a[1] - b[1]).map(([n]) => n), n = names.length, F = k.field;
+  const kind = looks.code(looks.kinds, "animal"), sp = names.map((s) => looks.code(looks.species, s));
+  // the size whose shown size (px.js shown) is the body's drawn one
+  const size = names.map((s) => { const t = shown(ANIMAL_BODY[s] ?? 0.5) * ANIMAL_DRAWN; return t >= 1 ? t : t ** (1 / 0.55); });
+  return kindSource(k, "animal", (tag) => ({
+    fields: { x: F.x, y: F.y, sp: F.sp, born: F.born }, moves: true,
+    decls: `const A_SP = array<u32, ${n}>(${sp.map((c) => `${c}u`).join(", ")});\nconst A_SIZE = array<f32, ${n}>(${size.map(flt).join(", ")});`,
+    read: (at) => `
+  let s = min(body[${at("sp")} + i] & 15u, ${n - 1}u);
+  o.kind = ${kind}u; o.sp = A_SP[s]; o.size = A_SIZE[s];
+  var h = ((i + 1u) * 2654435761u) ^ body[${at("born")} + i];
+  h = (h ^ (h >> 15u)) * 2246822519u;
+  o.seed = h ^ (h >> 13u);
+  o.pick = ${pickBits(tag, 0)} | i; o.nst = 0u;`,
+  }), "a");
+}
+// Logs and snags as their state stands at the newest committed hour (src/gpu/wgsl/deadwood.ts LOG_STATE): a snag stands
+// as tall as its tree, a log lies as long; one rotted away is not drawn.
+function logSource(store, D, name, prefix) {
+  const k = store.kind(name), F = k.field, LOG = looks.code(looks.kinds, "fallen_log"), SNAG = looks.code(looks.kinds, "snag");
+  const s = kindSource(k, name, (tag) => ({
+    fields: { x: F.x, y: F.y, what: F.what, born: F.born, arot: F.arot, len: F.len, u: F.u, uf: F.uf, fr: F.fr },
+    binds: ["drv"],
+    decls: `${B.FIXED}\n${B.deadCommon(D.law)}\n${B.LOG_STATE}\n${B.drvAccess(D.drv.layout)}`,
+    read: (at) => `
+  let hr = drv_hour();
+  let st = log_state(body[${at("what")} + i], body[${at("born")} + i], drv_sum(CH_ROT, cell_of(body[${at("x")} + i], body[${at("y")} + i]), hr) - body[${at("arot")} + i], body[${at("u")} + i], body[${at("uf")} + i], body[${at("fr")} + i], hr);
+  o.ok = st != 0u;
+  o.kind = select(${LOG}u, ${SNAG}u, st == 1u); o.sp = min(body[${at("what")} + i], 63u);
+  o.size = f32(body[${at("len")} + i]) * 0.001; o.seed = body[${at("u")} + i];
+  o.pick = ${pickBits(tag, 0)} | i; o.nst = 0u;`,
+  }), prefix);
+  s.over = { drv: { buffer: D.drv.ring } };
+  return s;
+}
+// The sticks of every stick bin, as many as it was born with, each lying while its word outlasts the rot over its cell
+// since the bin's birth and not taken (STICK_MEMBER's stick and taken); those people moved, as kind stickup holds them.
+function stickSources(store, D, dw) {
+  const k = store.kind("stickbin"), F = k.field, STICK = looks.code(looks.kinds, "stick"), none = looks.code(looks.species, "");
+  const law = `${B.FIXED}\n${B.RAND}\n${B.deadCommon(D.law)}\n${B.drvAccess(D.drv.layout)}`;
+  const bins = kindSource(k, "stickbin", (tag) => ({
+    fields: { x: F.x, y: F.y, born: F.born, arot: F.arot, n: F.n }, members: "bins", flat: true, most: B.STICK_LEN,
+    needs: { kind: STICK, sp: none, lo: B.STICK_LEN, hi: B.STICK_LEN, mossy: false },
+    binds: ["drv", "gone"], decls: `${law}\n${B.STICK_MEMBER}`,
+    read: () => "\n  o.ok = false;",
+    member: `
+var<private> sCell: u32;
+var<private> sBorn: u32;
+var<private> sLast: u32;
+fn memberCount(i: u32) -> u32 {
+  sCell = cell_of(body[${(1 + F.x) * k.capacity}u + i], body[${(1 + F.y) * k.capacity}u + i]);
+  sBorn = body[${(1 + F.born) * k.capacity}u + i];
+  sLast = bitcast<u32>(qexp(-lam(drv_sum(CH_ROT, sCell, drv_hour()) - body[${(1 + F.arot) * k.capacity}u + i], KSTICK)));
+  return body[${(1 + F.n) * k.capacity}u + i];
+}
+fn member(i: u32, k: u32) -> Obj {
+  var o: Obj;
+  let m = stick(sCell, sBorn, k);
+  o.ok = (m.u >> 16u) < sLast && !taken(sCell, sBorn, k);
+  if (!o.ok) { return o; }
+  o.x = f32(m.x) * 0.001 + ORIGIN_M; o.z = f32(m.y) * 0.001 + ORIGIN_M;
+  o.kind = ${STICK}u; o.sp = ${none}u; o.size = ${flt(B.STICK_LEN)}; o.seed = m.u; o.pick = ${pickBits(tag)}; o.nst = 0u;
+  return o;
+}`,
+  }), null);
+  bins.dyn = () => ({ gone: { buffer: dw.drawBuffers().gone } });
+  bins.over = { drv: { buffer: D.drv.ring } };
+  const u = store.kind("stickup"), G = u.field;
+  const up = kindSource(u, "stickup", (tag) => ({
+    fields: { x: G.x, y: G.y, u: G.u }, flat: true,
+    read: (at) => `
+  o.kind = ${STICK}u; o.sp = ${none}u; o.size = ${flt(B.STICK_LEN)}; o.seed = body[${at("u")} + i]; o.pick = ${pickBits(tag, 0)} | i; o.nst = 0u;`,
+  }), null);
+  return [bins, up];
+}
+// Every cell's clasts of a class (src/gpu/wgsl/deadwood.ts clastBody: the placing that follows the halvings, taken from
+// it as written), but those moved or taken (the class's sorted gone list); those moved, as the class's kind holds them.
+function clastSources(store, c) {
+  const L = c.law, body = B.clastBody(L), place = body.slice(body.indexOf(`rinit(${L.seed >>> 0}u, ${L.stream >>> 0}u, k, cell);`));
+  const kind = looks.code(looks.kinds, c.kind), none = looks.code(looks.species, ""), mm = CELL_M * 1000;
+  const tag = tags.push(async () => null) - 1;
+  tagName[tag] = c.kind;
+  const cells = {
+    name: c.kind, tag, over: { counts: { buffer: c.counts } },
+    spec: {
+      cap: 1, members: "cells", flat: c.kind === "pebble", most: L.hi / 1000, binds: ["counts", "gone"],
+      needs: { kind, sp: none, lo: L.lo / 1000, hi: L.hi / 1000, mossy: c.kind !== "pebble" },
+      decls: `${B.FIXED}\n${B.RAND}`,
+      member: `
+const CL_SEED = ${L.seed >>> 0}u;
+const CL_STREAM = ${L.stream >>> 0}u;
+fn clastGone(cell: u32, k: u32) -> bool {
+  var lo = 0u; var hi = gone[0];
+  loop {
+    if (lo >= hi) { return false; }
+    let m = (lo + hi) / 2u; let c = gone[1u + 2u * m]; let j = gone[2u + 2u * m];
+    if (c == cell && j == k) { return true; }
+    if (c < cell || (c == cell && j < k)) { lo = m + 1u; } else { hi = m; }
+  }
+}
+fn member(cell: u32, k: u32, ix: u32, iy: u32) -> Obj {
+  var o: Obj;
+  let x0 = (cell % ${CELLS_N}u) * ${mm}u; let y0 = (cell / ${CELLS_N}u) * ${mm}u;
+  var out_x: u32; var out_y: u32; var out_dia: u32; var out_seed: u32;
+  {
+  ${place}
+  }
+  o.ok = !clastGone(cell, k);
+  o.x = f32(out_x) * 0.001 + ORIGIN_M; o.z = f32(out_y) * 0.001 + ORIGIN_M;
+  o.kind = ${kind}u; o.sp = ${none}u; o.size = f32(out_dia) * 0.001; o.seed = out_seed; o.pick = ${pickBits(tag)}; o.nst = 0u;
+  return o;
+}`,
+    },
+  };
+  const dw = deadwoodOf();
+  cells.dyn = () => ({ gone: { buffer: dw.drawBuffers().clasts.find((d) => d.kind === c.kind).gone } });
+  const m = store.kind(c.kindName), G = m.field;
+  const moved = kindSource(m, `${c.kind} moved`, (t) => ({
+    fields: { x: G.x, y: G.y, dia: G.dia, seed: G.seed }, flat: c.kind === "pebble",
+    read: (at) => `
+  o.kind = ${kind}u; o.sp = ${none}u; o.size = f32(body[${at("dia")} + i]) * 0.001; o.seed = body[${at("seed")} + i]; o.pick = ${pickBits(t, 0)} | i; o.nst = 0u;`,
+  }), null);
+  return [cells, moved];
+}
+const deadwoodOf = () => B.deadwoodOf(S.w);
+// The kinds' sources added once the store holds them: the animals at once, the deadwood once it is resident. True
+// when something was added (its kinds and species numbered, its passes made).
+async function setupKinds() {
+  const store = S.flora.store;
+  let added = false;
+  if (!S.animals && (S.animals = animalSource(store))) added = true;
+  const dw = !S.dead && deadwoodOf();
+  if (dw) {
+    const D = dw.drawBuffers();
+    // every cell's pebbles are left out: hundreds of thousands a cell, expanded every frame they cost the default view
+    // about 32 ms of cull (measured 2026-10-15), so only those moved are drawn until a cell's pebbles are expanded once
+    // and kept
+    S.dead = [logSource(store, D, "log", "l"), logSource(store, D, "logup", null), ...stickSources(store, D, dw), ...D.clasts.flatMap((c) => clastSources(store, c)).filter((s) => s.name !== "pebble")];
+    added = true;
+  }
+  if (!added) return false;
+  // the member sources' pairs, which no survey sees, then every source's
+  for (const s of sources()) if (s.spec.needs) looks.add(s.spec.needs.kind, s.spec.needs.sp);
+  R.setMeta(looks.meta());
+  await R.setSources(sources());
+  if (looks.addAll(await R.survey(0, 0, (CODES * CODES) / 32))) R.setMeta(looks.meta());
+  growTable();
+  return true;
+}
+const f32w = new Float32Array(1), u32w = new Uint32Array(f32w.buffer);
+// a thing (as the sim holds it or its clients see it) drawn from a record
+function putExtra(t) {
+  let X = S.extras;
+  const kind = looks.code(looks.kinds, t.kind), sp = looks.code(looks.species, t.species ?? "");
+  if (kind === null || sp === null) { console.warn(`no code left for ${t.kind} ${t.species}: not drawn`); return; }
+  if (looks.add(kind, sp)) { R.setMeta(looks.meta()); growTable(); }
+  let s = X.slot.get(t.id);
+  if (s === undefined) {
+    s = X.free.pop() ?? X.next++;
+    // a bigger buffer, its passes made again; the old one draws until they are ready
+    if (s >= X.cap) { X = S.extras = extrasOf(X.cap * 2, X); R.setSources(sources()).catch((err) => post({ type: "error", error: String(err) })); }
+    X.slot.set(t.id, s); X.ids[s] = t.id;
+    S.newLooks = true;
+  }
+  f32w[0] = t.size ?? 1;
+  const v = [1, Math.round(t.px * TILE_M * 1000), Math.round(t.py * TILE_M * 1000), kind + 256 * sp, u32w[0], t.seed >>> 0, EXTRA_PICK | s, nstOf(t.n)];
+  for (let f = 0; f < 8; f++) X.cpu[f * X.cap + s] = v[f];
+  device.queue.writeBuffer(X.body, s * 4, X.cpu.subarray(s, s + 1));
+  for (let f = 1; f < 8; f++) device.queue.writeBuffer(X.body, (f * X.cap + s) * 4, X.cpu.subarray(f * X.cap + s, f * X.cap + s + 1));
+  S.dirty = true;
+}
+function dropExtra(id) {
+  const X = S.extras, s = X.slot.get(id);
+  if (s === undefined) return;
+  X.slot.delete(id); X.ids[s] = undefined; X.free.push(s);
+  X.cpu[s] = 0;
+  device.queue.writeBuffer(X.body, s * 4, X.cpu.subarray(s, s + 1));
+  S.dirty = true;
+}
+// Object e of the flora shown in its buffer or not, and a stem's berries (nst) as the CPU last saw them; only a change
+// goes to the GPU.
+function showGrown(e, on, nst = 0) {
+  if (S.flora.isPlant(e)) {
+    const j = S.flora.slot(e), M = S.plant.cpu, h = j >> 5, b = words32(S.plant.spec.cap) + (j >> 4), sh = (j & 15) * 2;
+    const hv = on ? M[h] & ~(1 << (j & 31)) : M[h] | (1 << (j & 31)), bv = (M[b] & ~(3 << sh)) | (nst << sh);
+    if (hv !== M[h]) { M[h] = hv; device.queue.writeBuffer(S.plant.marks, h * 4, M.subarray(h, h + 1)); S.dirty = true; }
+    if (bv !== M[b]) { M[b] = bv; device.queue.writeBuffer(S.plant.marks, b * 4, M.subarray(b, b + 1)); }
+    // a hidden slot's generation, so the stem a later birth puts in it (store.ts) is not hidden with it
+    if (on) S.hiddenSlots.delete(j);
+    else if (!S.hiddenSlots.has(j)) { S.hiddenSlots.set(j, -1); slotWord(S.plant.body, j).then((w) => { if (S.hiddenSlots.get(j) === -1) S.hiddenSlots.set(j, w >>> 1); }); }
+    return;
+  }
+  if (on !== S.hidden.has(e)) return;
+  if (on) S.hidden.delete(e); else S.hidden.add(e);
+  const s = staticSlot(e);
+  if (s >= 0) device.queue.writeBuffer(S.statics.body, s * 4, Uint32Array.of(on ? 1 : 0));
+}
+// The hidden plant slots born again since they were hidden (their generation moved on): shown, berries unknown. Run
+// after each day's step, when the stems' births land.
+async function showReborn() {
+  const slots = [...S.hiddenSlots.keys()];
+  if (!slots.length) return;
+  const rb = device.createBuffer({ size: slots.length * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), enc = device.createCommandEncoder();
+  slots.forEach((j, i) => enc.copyBufferToBuffer(S.plant.body, j * 4, rb, i * 4, 4));
+  device.queue.submit([enc.finish()]);
+  await rb.mapAsync(GPUMapMode.READ);
+  const w = new Uint32Array(rb.getMappedRange().slice(0));
+  rb.destroy();
+  const M = S.plant.cpu, B0 = words32(S.plant.spec.cap);
+  slots.forEach((j, i) => {
+    const gen = S.hiddenSlots.get(j);
+    if (gen === undefined || gen === -1 || w[i] >>> 1 === gen) return;
+    S.hiddenSlots.delete(j);
+    const h = j >> 5, b = B0 + (j >> 4);
+    M[h] &= ~(1 << (j & 31)); M[b] &= ~(3 << ((j & 15) * 2));
+    device.queue.writeBuffer(S.plant.marks, h * 4, M.subarray(h, h + 1));
+    device.queue.writeBuffer(S.plant.marks, b * 4, M.subarray(b, b + 1));
+    S.dirty = true;
+  });
+}
+// How a thing the sim reports is drawn: by the page (live kinds, anything burning), by nobody (carried or gone), from
+// its buffer (a grown object standing as its buffer holds it), or from a record.
+const pageDraws = (t) => LIVE.has(t.kind) || !!t.bed || !!t.blaze;
+function place(t) {
+  const num = /^t\d+$/.test(t.id) ? +t.id.slice(1) : 0, e = num >= 1 && num <= S.flora.n ? num : 0;
+  if (t.contained || pageDraws(t)) {
+    if (e) showGrown(e, false);
+    dropExtra(t.id);
+    return;
+  }
+  if (e) {
+    const plant = S.flora.isPlant(e), s = plant ? S.flora.stand(e) : S.flora.written(e);
+    const asBuffer = !!s && t.kind === FLORA_N[s.kind] && (t.species ?? "") === looks.species[s.species] && t.px === s.px && t.py === s.py && t.seed === s.seed && (plant || (t.size === s.size && t.n == null));
+    if (asBuffer) { showGrown(e, true, plant ? nstOf(t.n) : 0); dropExtra(t.id); return; }
+    showGrown(e, false);
+  }
+  putExtra(t);
+}
+function gone(id) {
+  const num = /^t\d+$/.test(id) ? +id.slice(1) : 0;
+  if (num >= 1 && num <= S.flora.n) showGrown(num, false);
+  dropExtra(id);
+}
+
+// ---------- sprites ----------
+// every family and size the survey found drawn and not made yet, as [family key, size index, slot]
+const asked = new Set();
+async function wanted() {
+  const need = await R.survey(1, level.length, words32(looks.n * NS)), jobs = [];
+  // a source of members has no survey: every layout, moss and size its members' sizes reach at each level
+  const hq = (h) => (h < 8 ? Math.round(h * 2) : 8 + Math.round(h));
+  for (const s of sources()) {
+    const q = s.spec.needs, base = q && looks.base.get(q.kind * CODES + q.sp);
+    if (base === undefined || base === null) continue;
+    for (const l of level) {
+      const lo = Math.max(1, shown(q.lo) * l.pv), hi = shown(q.hi) * l.pv;
+      for (let si = hq(lo); hi >= 1 && si <= Math.min(NS - 1, hq(hi)); si++)
+        for (let vr = 0; vr < 8; vr++)
+          for (const moss of q.mossy ? [0, 1] : [0]) { const bit = (base + (vr * 2 + moss) * 3) * NS + si; if (bit >> 5 < need.length) need[bit >> 5] |= 1 << (bit & 31); }
+    }
+  }
+  for (let wi = 0; wi < need.length; wi++) {
+    let v = need[wi];
+    while (v) {
+      const b = 31 - Math.clz32(v), slot = wi * 32 + b;
+      v &= ~(1 << b);
+      if (table[slot] || asked.has(slot)) continue;
+      asked.add(slot);
+      jobs.push([looks.key(Math.floor(slot / NS)), slot % NS, slot]);
+    }
+  }
+  return jobs;
+}
+// the table of every family's sprites, grown to the families numbered so far
+function growTable() {
+  if (table && table.length >= looks.n * NS) return;
+  const t = new Uint32Array(looks.n * NS);
+  if (table) t.set(table);
+  table = t;
+  R.setTable(table);
+}
 // sprites for every [family key, size index, slot] in jobs, by as many sprite workers as the machine spares
 async function makeAll(jobs) {
-  const nw = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2)), out = [];
+  if (!jobs.length) return [];
+  const nw = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2, Math.ceil(jobs.length / 100))), out = [];
   const workers = await Promise.all(Array.from({ length: nw }, () => new Promise((ok, fail) => {
     const w = new Worker(new URL("./sprites-worker.js", import.meta.url), { type: "module" });
     w.onerror = (e) => fail(new Error(`sprite worker: ${e.message}`));
@@ -141,42 +501,38 @@ async function makeAll(jobs) {
 }
 // The made sprites into atlas layers, the tallest first along shelves, and the tables that find them.
 function packAtlas(made) {
-  const families = fam.keys.length + DYN_FAMILIES;
-  table = new Uint32Array(families * NS);
   const list = made.filter(([, s]) => s).sort((a, b) => b[1].h - a[1].h || b[1].w - a[1].w);
-  for (const [slot, s] of made) if (!s) table[slot] = 0xffffffff;
+  for (const [slot, s] of made) if (!s) table[slot] = NONE;
   const sh = new Shelves(), at = list.map(([, s]) => sh.place(s.w, s.h));
-  const layers = sh.layers, rows = [], entries = new Uint32Array((list.length + DYN_ENTRIES) * 8);
+  const layers = sh.layers, rowsN = list.reduce((a, [, s]) => a + s.rows.length, 0), entries = new Uint32Array((list.length + DYN_ENTRIES) * 8);
+  const rows = new Uint32Array(rowsN + DYN_ROWS), px = Array.from({ length: layers }, () => null);
+  let r0 = 0;
+  feet = new Int16Array(list.length + DYN_ENTRIES);
   list.forEach(([slot, s], i) => {
-    const r = castRows(s);
-    entries.set(entryWords(s, at[i], rows.length, r.length), i * 8);
-    for (const v of r) rows.push(v);
+    entries.set(entryWords(s, at[i], r0, s.rows.length), i * 8);
+    feet[i] = s.foot;
+    rows.set(s.rows, r0); r0 += s.rows.length;
     table[slot] = i + 1;
+    const p = (px[at[i].l] ??= new Uint8Array(ATLAS * ATLAS).fill(255));
+    for (let y = 0; y < s.h; y++) p.set(s.p.subarray(y * s.w, y * s.w + s.w), (at[i].y + y) * ATLAS + at[i].x);
   });
-  nStatic = list.length; rowsStatic = rows.length;
-  const rowsAll = new Uint32Array(rows.length + DYN_ROWS);
-  rowsAll.set(rows);
-  R.setAtlas({ layers: layers + DYN_LAYERS, entries, rows: rowsAll, table });
-  for (let l = 0; l < layers; l++) {
-    const px = new Uint8Array(ATLAS * ATLAS).fill(255);
-    list.forEach(([, s], i) => {
-      if (at[i].l !== l) return;
-      for (let y = 0; y < s.h; y++) px.set(s.p.subarray(y * s.w, y * s.w + s.w), (at[i].y + y) * ATLAS + at[i].x);
-    });
-    R.atlasPut(l, 0, 0, ATLAS, ATLAS, px);
-  }
+  nStatic = list.length; rowsStatic = rowsN;
+  R.setAtlas({ layers: layers + DYN_LAYERS, entries, rows, table });
+  px.forEach((p, l) => p && R.atlasPut(l, 0, 0, ATLAS, ATLAS, p));
   dyn = { shelves: new Shelves(layers, DYN_LAYERS), next: nStatic, rows: rowsStatic, layers };
-  liveIds = new Map(); extrasMade = new Map();
+  liveIds = new Map(); dynMade = new Set();
+  return { sprites: list.length, layers };
 }
 // A sprite made while the page runs, into the dynamic layers; null when they are full (dynReset clears them).
 function putDynamic(s) {
   if (dyn.next >= nStatic + DYN_ENTRIES) return null;
   const at = dyn.shelves.place(s.w, s.h);
   if (!at) return null;
-  const r = castRows(s), id = dyn.next++;
+  const r = s.rows ?? castRows(s), id = dyn.next++;
   if (dyn.rows + r.length > rowsStatic + DYN_ROWS) return null;
   R.atlasPut(at.l, at.x, at.y, s.w, s.h, s.p);
   R.entriesPut(id, Uint32Array.from(entryWords(s, at, dyn.rows, r.length)));
+  feet[id] = s.foot;
   if (r.length) R.rowsPut(dyn.rows, Uint32Array.from(r));
   dyn.rows += r.length;
   return id;
@@ -184,8 +540,8 @@ function putDynamic(s) {
 function dynReset() {
   dyn.shelves.reset(); dyn.next = nStatic; dyn.rows = rowsStatic;
   liveIds = new Map();
-  for (const slot of extrasMade.keys()) { R.tablePut(slot, 0); table[slot] = 0; }
-  extrasMade = new Map();
+  for (const slot of dynMade) { R.tablePut(slot, 0); table[slot] = 0; asked.delete(slot); }
+  dynMade = new Set();
   // the page sends a sprite once; past this many kept the page is asked for them again as it next draws them
   if (liveSrc.size > 6000) { liveSrc.clear(); post({ type: "spritesReset" }); }
 }
@@ -201,54 +557,34 @@ function liveId(id) {
   liveIds.set(id, sp);
   return sp;
 }
-// One of the sim's things (an ObjBins record: numeric id, kind and species codes, px, py, size, seed, n) put on the GPU,
-// a grown one in its own place, anything else in the next free one, with any sprite it needs that was never made.
-function upsert(r, live = true) {
-  const K = objs.kinds[r.kind], W = objs.words, F = new Float32Array(W.buffer);
-  let k = r.id >= 1 && r.id <= objs.grownN ? r.id - 1 : idx.get(r.id);
-  if (k === undefined) {
-    k = objs.next;
-    if (k >= objs.cap) return;
-    objs.next++; idx.set(r.id, k);
-  }
-  const w = K && !LIVE.has(K) ? fam.word(K, objs.species[r.sp] ?? "", toM(r.px), toM(r.py), r.size ?? 1, r.seed >>> 0, r.n, { aoAt, treeAt }) : null;
-  objs.ids[k] = r.id; F[k * 4] = r.px; F[k * 4 + 1] = r.py; F[k * 4 + 2] = w ? w.hk : 0; W[k * 4 + 3] = w ? w.meta : 0;
-  if (!live) return;
-  if (w) ensureSprites(k);
-  R.updateObjects(k, W.subarray(k * 4, k * 4 + 4), objs.ids.subarray(k, k + 1));
+// The sprites the objects want now and were never made (the stems grew into new sizes and crown widths, a record of a
+// new kind came), made off this thread and put in the dynamic layers; the GPU draws the nearest made meanwhile.
+let refreshing = null;
+function refreshSprites() {
+  if (refreshing || !dyn) return;
+  refreshing = (async () => {
+    const made = await makeAll(await wanted());
+    for (const [slot, s] of made) {
+      let id = s ? putDynamic(s) : null;
+      if (s && id === null) { dynReset(); id = putDynamic(s); }
+      table[slot] = s ? (id === null ? 0 : id + 1) : NONE;
+      if (!s || id !== null) { R.tablePut(slot, table[slot]); if (s) dynMade.add(slot); }
+      if (s && id === null) asked.delete(slot);
+    }
+  })().catch((err) => console.error("sprites", err)).finally(() => { refreshing = null; });
 }
-function drop(id) {
-  const k = id >= 1 && id <= objs.grownN ? id - 1 : idx.get(id);
-  if (k === undefined) return;
-  objs.words[k * 4 + 3] &= ~(1 << 24);
-  R.updateObjects(k, objs.words.subarray(k * 4, k * 4 + 4), objs.ids.subarray(k, k + 1));
+// The trees' cover laid again on the GPU (webgpu.js buildCanopy) once the trees have changed, at most once a second.
+let canopyAt = 0, canopyLandings = -1;
+function canopyOften() {
+  const now = performance.now();
+  if (!S || (!S.dirty && canopyLandings === S.flora.landings) || now - canopyAt < 1000) return;
+  S.dirty = false; canopyLandings = S.flora.landings; canopyAt = now;
+  R.buildCanopy();
 }
-// the sprites changed object k wants at any level, made here at once
-function ensureSprites(k) {
-  const need = new Set();
-  markNeeds(objs.words, k, k + 1, level, (slot) => need.add(slot));
-  for (const slot of need) {
-    if (slot >= table.length) continue;
-    if (table[slot]) continue;
-    const f = Math.floor(slot / NS), s = flat(makeSprite(fam.keys[f], slot % NS, SP, TH));
-    const id = s ? putDynamic(s) : null;
-    table[slot] = s ? (id === null ? 0 : id + 1) : 0xffffffff;
-    if (id !== null || !s) { R.tablePut(slot, table[slot]); if (s) extrasMade.set(slot, id); }
-  }
-}
-// The sim's changes to its objects: records gone (rm, ids) and put (up), with the tables their codes index
-function changeObjects(up, rm) {
-  if (!objs) return;
-  objs.kinds = bins.kinds; objs.species = bins.species;
-  for (const id of rm) drop(id);
-  for (const r of up) upsert(r);
-  if (canopyOf) {
-    for (const id of rm) { const old = canopyOf.bins.get(id); if (old) { canopyOf.bins.drop(id); canopyOf.c.change(old, null, objs.kinds, objs.species); } }
-    for (const r of up) { const old = canopyOf.bins.get(r.id); canopyOf.bins.kinds = objs.kinds; canopyOf.bins.species = objs.species; canopyOf.bins.upsert(r); canopyOf.c.change(old, r, objs.kinds, objs.species); }
-    const u = canopyOf.c.flush();
-    if (u) R.updateCanopy(u.x, u.y, u.w, u.h, u.bytes);
-  }
-}
+// The far levels (webgpu.js farBuild): the coarsest ones, which draw trees shrunk, at most eight; and the sim day their
+// lists were last built on.
+const farLevels = () => { const i = level.findIndex((l) => !l.shrunk); return Math.min(8, i < 0 ? level.length : i); };
+let farDay = -1;
 
 // ---------- worn paths ----------
 // The sim's 3 m wear cells, each its drawn width step (0 to 4), and in bit 7 of the texel the GPU reads whether any worn
@@ -302,13 +638,11 @@ function trailCells(cells) {
 
 // ---------- the sim ----------
 // The game's sim (play/sim.js) runs here on this worker's device, so the world's objects and the drawing share one GPU
-// and the page thread keeps only the UI. Its objects go on the GPU as they stand once it is warm, and as each tick
-// changes them; the page asks for each tick and gets the people, animals and camps after it (play/remote.js), with what
-// it asks about (want: the selection, the things window, the history).
-let sim = null, bins = null, want = { sel: null, things: null, history: false };
+// and the page thread keeps only the UI. Its objects are drawn from its buffers from the moment its flora lives on the
+// GPU, the sprites made while it warms; the page asks for each tick and gets the people, animals and camps after it
+// (play/remote.js), with what it asks about (want: the selection, the things window, the history).
+let sim = null, want = { sel: null, things: null, history: false }, ticking = null;
 const levelsIn = Promise.withResolvers();
-const isLive = (t) => ObjBins.LIVE.has(t.kind) || !!t.bed;
-const numId = (id) => +String(id).slice(1);
 const iceOf = (ice) => { const f = new Uint8Array(TILES * TILES); if (ice) for (const i of ice) f[i] = 1; return f; };
 // the sim's footpath wear, stepped into the five widths the ground draws
 const wearStep = (v) => (v < 2 ? 0 : v < 5 ? 1 : v < 12 ? 2 : v < 30 ? 3 : 4);
@@ -316,53 +650,74 @@ let trailSrc = null, trailQ = null, trailFlush = 0;
 const trailPending = new Set();
 
 async function startSim(seed, { warm = 0, jev = null }) {
-  const { useGpu } = await import("../sim.js"), { createSim } = await import("../play/sim.js");
-  useGpu({ device, adapter: gpuName });
-  sim = await createSim({ seed, warm, jev, onProgress: (d, n) => post({ type: "simProgress", d, n }) });
-  const w = sim.w, o = sim.objects();
-  bins = new ObjBins(o);
+  const bundle = await import("../sim.js"), { createSim } = await import("../play/sim.js");
+  bundle.useGpu({ device, adapter: gpuName });
+  level = await levelsIn.promise;
+  mark("simStart");
+  sim = await createSim({
+    seed, warm, jev, onProgress: (d, n) => post({ type: "simProgress", d, n }),
+    onWorld: (w) => { mark("world"); B = bundle; return setupObjects({ flora: () => bundle.floraOf(w), FLORA: bundle.FLORA, SPECIES: bundle.SPECIES }, w); },
+  });
+  mark("warm");
+  const w = sim.w, t0 = performance.now();
   // the things the page draws every frame, as a client is sent them (inspect.ts thingView), a burning one with its
-  // blaze; only a thing with a bed can be alight, so the ground's thousands of others are passed by
+  // blaze; everything else the world holds as its buffers don't show it is drawn from a record, and what is gone or
+  // stands otherwise is hidden in its buffer
   const live = [];
   for (const t of w.things) {
-    if (t.contained || !(ObjBins.LIVE.has(t.kind) || t.bed)) continue;
-    const v = sim.view(t);
-    if (ObjBins.LIVE.has(v.kind) || v.blaze) live.push(v);
+    if (!t.contained && pageDraws(t)) live.push(sim.view(t));
+    place(t);
   }
+  for (const e of S.flora.gone()) showGrown(e, false);
+  const t1 = performance.now();
   post({ type: "simReady", activities: sim.activities, day: sim.day, opening: sim.opening(), state: sim.state(), live });
   R.setIce(iceOf(w.ice));
   trailSrc = sim.trails(); trailQ = new Map();
   const all = new Uint8Array(TN * TN);
   for (const [i, v] of trailSrc.wear) { const q = wearStep(v); if (q) { trailQ.set(i, q); all[i] = q; } }
   trailsAll(all);
-  const things = [];
-  for (const t of o.things) if (!t.contained && !isLive(t)) things.push(bins.recOf(t));
-  await setObjects({ objs: { grown: o.grown, kindNames: bins.kinds, speciesNames: bins.species, gone: o.gone, things }, levels: await levelsIn.promise });
+  // the animals and the deadwood as sources, then the sprites made while the world warmed, and those it grew into
+  // since or its records and its other kinds want
+  await setupKinds();
+  const first = await spritesP, t2 = performance.now(), more = await makeAll(await wanted()), t3 = performance.now();
+  const atlas = packAtlas([...first, ...more]);
+  const t4 = performance.now();
+  R.buildCanopy();
+  canopyLandings = S.flora.landings; canopyAt = performance.now(); S.dirty = false;
+  await R.farNow(farLevels());
+  farDay = Math.floor(w.t / sim.day);
+  mark("objects");
+  const st = S.statics, n = S.plant.spec.cap + st.cap;
+  post({ type: "objects", n, plants: S.plant.spec.cap, statics: st.cap, records: S.extras.slot.size, sprites: atlas.sprites, layers: atlas.layers, families: looks.n, timeline, ms: { ...S.ms, things: t1 - t0, waitSprites: t2 - t1, moreSprites: t3 - t2, pack: t4 - t3, canopy: performance.now() - t4 } });
 }
 // One tick, its changes onto the GPU, and the state after it to the page with what changed of the things it draws every
 // frame (ch: live, those to draw as they are now; drop, the ids to draw no more).
 async function simTick() {
   const ch = { live: [], drop: [] };
+  ticking = Promise.withResolvers();
   try { simChanged(await sim.tick(), ch); } catch (err) { console.error("tick", err); }
+  ticking.resolve(); ticking = null;
   post({ type: "simState", state: sim.state(), ch, ...answers() });
 }
 function simChanged(done, ch) {
-  const up = [], rm = [];
-  const gone = (id) => { if (bins.get(id)) { bins.drop(id); rm.push(id); } };
   for (const t of done.things) {
-    const id = numId(t.id);
-    if (t.contained || isLive(t)) {
-      if (t.contained) ch.drop.push(t.id); else ch.live.push(t);
-      gone(id);
-      continue;
-    }
-    ch.drop.push(t.id);
-    const r = bins.recOf(t), old = bins.get(id);
-    if (old && old.kind === r.kind && old.sp === r.sp && old.px === r.px && old.py === r.py && old.size === r.size && old.seed === r.seed && (old.n > 0) === (r.n > 0)) continue;
-    bins.upsert(r); up.push(r);
+    if (t.contained) ch.drop.push(t.id);
+    else if (pageDraws(t)) ch.live.push(t);
+    else ch.drop.push(t.id);
+    place(t);
   }
-  for (const sid of done.removed) { ch.drop.push(sid); gone(numId(sid)); }
-  if (up.length || rm.length) changeObjects(up, rm);
+  for (const id of done.removed) { ch.drop.push(id); gone(id); }
+  canopyOften();
+  // the deadwood's sources once it is resident (after the world's first tick, with no warm), their sprites made as any
+  if (!S.dead && !S.kindsComing && deadwoodOf()) { S.kindsComing = true; setupKinds().then(() => { S.newLooks = true; }).catch((err) => post({ type: "error", error: String(err) })); }
+  // the far levels' lists again each sim day, as the stems grow by the day (wgsl/objects.js FAR_COUNT_WGSL)
+  const day = Math.floor(sim.w.t / sim.day);
+  if (day !== farDay) { farDay = day; R.farBuild(farLevels()); showReborn().catch((err) => console.error("reborn", err)); }
+  // the stems grew (their law's landing) or records came: any sprite never made is made now, at most every few seconds
+  if ((S.flora.landings !== S.spriteLandings || S.newLooks) && performance.now() - (S.spritesAt ?? 0) > 3000) {
+    S.spriteLandings = S.flora.landings; S.newLooks = false; S.spritesAt = performance.now();
+    refreshSprites();
+  }
   for (const i of done.trails) trailPending.add(i);
   // wear changes every tick; only a change of drawn width counts, put up every few seconds
   const now = performance.now();
@@ -375,8 +730,8 @@ function simChanged(done, ch) {
   }
   if (done.ice) R.setIce(iceOf(sim.w.ice));
 }
-// What the page asked about, as it stands now: the selection (play/sim.js about, and for a thing on the ground the record
-// it is drawn from), the things window, the history.
+// What the page asked about, as it stands now: the selection (play/sim.js about, with for a thing where it stands and
+// what it is), the things window, the history.
 function answers() {
   const m = {};
   if (want.sel != null) { m.sel = want.sel; m.about = aboutOf(want.sel); }
@@ -386,13 +741,62 @@ function answers() {
 }
 function aboutOf(sel) {
   try {
-    const a = sim.about(sel), r = typeof sel === "string" && sel.startsWith("t") ? bins.get(numId(sel)) : null;
-    if (r) a.mark = { px: r.px, py: r.py, size: r.size, kind: bins.kinds[r.kind], species: bins.species[r.sp] };
-    return a;
+    return sim.about(sel);
   } catch (err) {
     console.error("inspect", err);
     return { data: null };
   }
+}
+// the id of the thing an object's pick names (wgsl/objects.js PICK_SLOT, EXTRA_PICK), or null; one of another kind's
+// (KIND_PICK) needs its slot's generation from the GPU, so its id comes by kindId
+function idOfPick(p) {
+  if (p & PICK_SLOT) { const e = S.flora.entry(p & (PICK_SLOT - 1)); return e ? `t${e}` : null; }
+  if (p & EXTRA_PICK) return S.extras.ids[p & (EXTRA_PICK - 1)] ?? null;
+  if (p & KIND_PICK) return null;
+  return p ? `t${p}` : null;
+}
+const kindId = (p) => (p & KIND_PICK && !(p & (PICK_SLOT | EXTRA_PICK)) && (p & NO_SLOT) !== NO_SLOT ? tags[(p >>> 24) & 15]?.(p & NO_SLOT) ?? null : idOfPick(p));
+// the source an object's pick came from, by name
+const srcOfPick = (p) => (p & PICK_SLOT ? "plant" : p & EXTRA_PICK ? "extra" : p & KIND_PICK ? tagName[(p >>> 24) & 15] ?? null : "static");
+
+// ---------- checks ----------
+// For scripts/play/objects.ts: what view 0 drew in the next frame (each object's thing id, its anchor in art px and the
+// world point its buffer gave the cull; at most 65536 sprites and as many specks); how many it drew; the far levels'
+// lists on or off; where a thing's buffer holds it, read back from the GPU; and a thing gone from the sim at once, as a
+// tick would report it.
+async function check(m) {
+  if (m.op === "drawn") {
+    const r = await R.instances(), foot = (sp) => feet[sp] ?? 0;
+    return [...r.sprites, ...r.points].map((it) => ({ id: idOfPick(it.pick), src: srcOfPick(it.pick), x: it.x, y: it.y - foot(it.sp), wx: it.wx, wz: it.wz }));
+  }
+  if (m.op === "count") { const r = await R.instances(); return { sprites: r.counts[0], points: r.counts[1], far: R.stats.far ?? null }; }
+  if (m.op === "far") { R.setFarUse(!!m.on); return true; }
+  if (m.op === "skip") { R.setSkipped(m.names ?? []); return true; }
+  if (m.op === "where") return Promise.all(m.ids.map(whereOf));
+  if (m.op === "kill") {
+    if (ticking) await ticking.promise;
+    if (!sim.remove(m.id)) return false;
+    gone(m.id);
+    return true;
+  }
+  throw new Error(`no check ${m.op}`);
+}
+// a thing's place as its buffer holds it (world metres) and whether its slot is alive, read back from the GPU
+async function whereOf(id) {
+  const e = /^t\d+$/.test(id) ? +id.slice(1) : 0;
+  if (!e || e > S.flora.n) return null;
+  let src, slot;
+  if (S.flora.isPlant(e)) { src = S.plant; slot = S.flora.slot(e); } else { src = S.statics; slot = staticSlot(e); }
+  if (slot < 0) return null;
+  const C = src.spec.cap, F = src.spec.fields, rb = device.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), enc = device.createCommandEncoder();
+  enc.copyBufferToBuffer(src.body, slot * 4, rb, 0, 4);
+  enc.copyBufferToBuffer(src.body, ((1 + F.x) * C + slot) * 4, rb, 4, 4);
+  enc.copyBufferToBuffer(src.body, ((1 + F.y) * C + slot) * 4, rb, 8, 4);
+  device.queue.submit([enc.finish()]);
+  await rb.mapAsync(GPUMapMode.READ);
+  const a = new Uint32Array(rb.getMappedRange().slice(0));
+  rb.destroy();
+  return { id, alive: (a[0] & 1) === 1, x: Math.fround(Math.fround(a[1]) * Math.fround(0.001) + Math.fround(ORIGIN)), z: Math.fround(Math.fround(a[2]) * Math.fround(0.001) + Math.fround(ORIGIN)) };
 }
 
 // ---------- frames ----------
@@ -444,7 +848,12 @@ const handle = async (e) => {
     else if (m.type === "frame") { pending = m; render(); }
     else if (m.type === "simTick") await simTick();
     else if (m.type === "simWant") { want = m.want; post({ type: "simState", ...answers() }); }
-    else if (m.type === "pick") { const r = await R.pick(m.x, m.y); post({ type: "pick", id: m.id, r }); }
+    else if (m.type === "pick") {
+      const r = await R.pick(m.x, m.y);
+      // an object's pick names the thing it is
+      if (r && r.kind === 1 && S) r.id = await kindId(r.pick);
+      post({ type: "pick", id: m.id, r });
+    } else if (m.type === "check") post({ type: "check", id: m.id, r: await check(m.q) });
     else if (m.type === "resize") { canvas.width = m.W; canvas.height = m.H; }
   } catch (err) {
     post({ type: "error", error: String((err && err.stack) || err) });

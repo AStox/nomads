@@ -10,10 +10,19 @@
 // its Things go, to be made the same way, with the same ids, the next time anything looks. What anyone made, dropped
 // or changed stays. A grown Thing's kind, species, size or place changed, or the Thing gone, goes to its object at once
 // (leave, setKind, and wake, which every change calls through mark).
-import { DAY, H, HP, TILE_M, W, cropOf, groundOf, grown, heldStore, ringOf, storeOf, type Thing, type World } from "./world";
-import { FLORA, SPECIES, type Scatter } from "../terrain/flora";
+//
+// Sticks, fallen logs, boulders, stones and pebbles are pieces on the GPU (src/gpu/deadwood.ts), far too many to stock
+// as Things: one becomes a Thing (a view, named by its piece's id) only when a lookup asks for its kind where it lies
+// (around, nearestThing, thingById); a lookup of every kind (kinds null) makes views of the fallen logs only. A view no
+// one has changed goes again once it has rotted away, or nothing has looked at its tile for a day and no one is near
+// (shelve). One changed is touched: its piece goes active with it, and one taken is gone for good.
+import { DAY, H, HP, TILE_M, W, YEAR_DAYS, cropOf, groundOf, grown, heldStore, ringOf, storeOf, type Thing, type World } from "./world";
+import { FLORA, SPECIES, clasts } from "../terrain/flora";
 import { Flora, type Stand, type StemDriver } from "../gpu/flora";
 import { theGpu } from "../gpu/device";
+import { BOULDERS_HA, CLASTS, CLAST_DIM, Deadwood, YEAR_DAYS as DEAD_YEAR, capacities, type Piece, type PieceKind } from "../gpu/deadwood";
+import { CELL_MM } from "../gpu/wgsl/index";
+import { N } from "../terrain/grid";
 
 type Index = {
   at: Map<string, number>; tiles: Map<string, (Thing[] | undefined)[]>; live: Set<Thing>;
@@ -22,6 +31,8 @@ type Index = {
   changes: Uint32Array; // how many times anything has come onto each tile's bins or left them
   taken: Map<string, number>; // grown things gone from a stocked tile, and the tick they went
   flora: Flora; // what the ground grew, as its objects stand
+  dead: Deadwood | null; // the deadwood and clasts, once resident
+  views: Set<string>; // pieces made Things that no one has changed
   landings: number; // the flora's landings of its stems the Things have taken up
 };
 const indexes = new WeakMap<World, Index>();
@@ -57,7 +68,7 @@ export function index(w: World): Index {
   let ix = indexes.get(w);
   if (ix) return ix;
   const flora = new Flora(groundOf(w.seed).flora);
-  ix = { at: new Map(), tiles: new Map(), live: new Set(), stocked: new Uint8Array(W * H), seen: new Int32Array(W * H), changes: new Uint32Array(W * H), taken: new Map(), flora, landings: flora.landings };
+  ix = { at: new Map(), tiles: new Map(), live: new Set(), stocked: new Uint8Array(W * H), seen: new Int32Array(W * H), changes: new Uint32Array(W * H), taken: new Map(), flora, landings: flora.landings, dead: null, views: new Set() };
   // every kind the ground grows has its bins from the start, so stocking a tile mid-search never adds a list to search
   for (const k of FLORA) ix.tiles.set(k, new Array(W * H));
   for (const t of w.stocked) ix.stocked[t] = 1;
@@ -66,6 +77,7 @@ export function index(w: World): Index {
     ix.at.set(t.id, i);
     bucket(ix, t);
     if (!settled(t)) ix.live.add(t);
+    else if (PIECE_ID.test(t.id)) ix.views.add(t.id);
   }
   // the changes the world holds (a world loaded from its JSON): every object on a stocked tile as its Thing stands, or
   // gone with it; a tile not stocked holds nothing but as it grew
@@ -83,12 +95,85 @@ export const floraOf = (w: World) => index(w).flora;
 // The world's flora takes up residence on the GPU, the first time the world runs (sim.ts tick), on the store the world
 // has (one loaded with a save) or a new one, its stems growing by the world's own ground (plants.ts stemDriver).
 export async function resident(w: World, stems: StemDriver) {
-  const flora = index(w).flora;
-  if (!flora.store) flora.attach(heldStore(w) ?? storeOf(w, await theGpu()), stems);
+  const ix = index(w), flora = ix.flora;
+  if (flora.store) return;
+  const s = heldStore(w) ?? storeOf(w, await theGpu()), fresh = !s.kinds.some((k) => k.name === "log");
+  flora.attach(s, stems);
+  const g = groundOf(w.seed), [pebble, stone, boulder] = clasts(g.isle, w.seed, BOULDERS_HA, CLAST_DIM, CLASTS.map((c) => [c.lo / 1000, c.hi / 1000] as const));
+  if (DEAD_YEAR !== YEAR_DAYS) throw new Error(`the deadwood's year of ${DEAD_YEAR} days isn't the sky's ${YEAR_DAYS}`);
+  ix.dead = new Deadwood(w.seed, { pebble, stone, boulder }, capacities(g.flora));
+  ix.dead.attach(s, () => flora.raster());
+  // a world whose store is new (one read from its JSON alone): the pieces its Things were made of and changed are
+  // touched again, so none lies twice
+  if (fresh) for (const t of w.things) if (PIECE_ID.test(t.id) && !ix.views.has(t.id)) ix.dead.touch(pieceOf(t), placeOf(t));
+}
+// The world's deadwood and clasts, once resident.
+export const deadwoodOf = (w: World) => index(w).dead;
+
+// ---------- pieces ----------
+const PIECE_ID = /^[slbp][0-9]/;
+const PIECE: Record<string, true> = { stick: true, fallen_log: true, boulder: true, stone: true, pebble: true };
+const MM = TILE_M * 1000;
+// A piece as the Thing that is its view stands now (its place may have changed), and where.
+const pieceOf = (t: Thing): Piece => ({ kind: t.kind as PieceKind, id: t.id, x: Math.round(t.px * MM), y: Math.round(t.py * MM), size: t.size, girth: t.girth ?? t.size, species: SPECIES.indexOf((t.species ?? "") as (typeof SPECIES)[number]), seed: t.seed ?? 0 });
+const placeOf = (t: Thing) => ({ x: Math.round(t.px * MM), y: Math.round(t.py * MM) });
+// The view of a piece: its Thing, made now if it isn't one yet.
+function viewOf(w: World, ix: Index, p: Piece): Thing {
+  const i = ix.at.get(p.id);
+  if (i !== undefined) return w.things[i];
+  const t = grown(w, p.id, { kind: FLORA.indexOf(p.kind), species: p.species, px: p.x / MM, py: p.y / MM, size: p.size, seed: p.seed });
+  if (p.kind === "stick" || p.kind === "fallen_log") t.girth = p.girth;
+  add(w, ix, t, false);
+  ix.views.add(p.id);
+  return t;
+}
+// The pieces of a kind lying in a box of mm, as the cells' last landing has them (a cell not landed yet holds none
+// this tick and is asked for).
+function piecesIn(ix: Index, kind: PieceKind, x0: number, y0: number, x1: number, y1: number): Piece[] {
+  const d = ix.dead!, out: Piece[] = [], cx0 = Math.max(0, Math.floor(x0 / CELL_MM)), cx1 = Math.min(N - 1, Math.floor(x1 / CELL_MM));
+  const cy0 = Math.max(0, Math.floor(y0 / CELL_MM)), cy1 = Math.min(N - 1, Math.floor(y1 / CELL_MM));
+  for (let cy = cy0; cy <= cy1; cy++)
+    for (let cx = cx0; cx <= cx1; cx++) {
+      const c = cy * N + cx, list = kind === "stick" ? d.sticksIn(c, x0, y0, x1, y1) : kind === "fallen_log" ? d.logsIn(c) : d.clastsIn(kind, c, x0, y0, x1, y1);
+      if (typeof list === "symbol") continue;
+      for (const p of list) if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) out.push(p);
+    }
+  return out;
+}
+// How many pieces of a kind lie within r m of a point as they were laid or fell (their views among them; one touched is
+// a thing of its own), and how far off the nearest is (null for none), without making views of them.
+export function piecesAround(w: World, px: number, py: number, r: number, kind: PieceKind): { count: number; nearest: number } | null {
+  const ix = index(w);
+  if (!ix.dead) return null;
+  const x = px * MM, y = py * MM, rm = r * 1000;
+  let count = 0, nearest = Infinity;
+  if (kind !== "stick" && kind !== "fallen_log") {
+    const cx0 = Math.max(0, Math.floor((x - rm) / CELL_MM)), cx1 = Math.min(N - 1, Math.floor((x + rm) / CELL_MM));
+    const cy0 = Math.max(0, Math.floor((y - rm) / CELL_MM)), cy1 = Math.min(N - 1, Math.floor((y + rm) / CELL_MM));
+    for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) {
+      const n = ix.dead.clastsAround(kind, cy * N + cx, x, y, rm);
+      count += n.count; nearest = Math.min(nearest, n.nearest / 1000);
+    }
+    return count > 0 ? { count, nearest } : null;
+  }
+  for (const p of piecesIn(ix, kind, x - rm, y - rm, x + rm, y + rm)) {
+    const d = Math.hypot(p.x - x, p.y - y);
+    if (d <= rm) { count++; nearest = Math.min(nearest, d / 1000); }
+  }
+  return count ? { count, nearest } : null;
+}
+// Views made of every piece of these kinds within r m of a point (of the fallen logs only, for every kind).
+function materialize(w: World, ix: Index, px: number, py: number, r: number, kinds: readonly string[] | null) {
+  if (!ix.dead) return;
+  const x = px * MM, y = py * MM, rm = r * 1000;
+  for (const k of kinds ?? ["fallen_log"]) {
+    if (!PIECE[k]) continue;
+    for (const p of piecesIn(ix, k as PieceKind, x - rm, y - rm, x + rm, y + rm)) if (!ix.at.has(p.id) && Math.hypot(p.x - x, p.y - y) <= rm) viewOf(w, ix, p);
+  }
 }
 // The stems as the GPU last grew them: once a landing has brought them back, the trees and bushes on every stocked tile
-// take the heights they grew to, their hit points growing as much, and those the GPU starved or crowded out go [gap:
-// they go without standing on dead or falling, deadwood being Unit 9's].
+// take the heights they grew to, their hit points growing as much, and those the GPU starved or crowded out go: a dead
+// tree stands on as a snag on the GPU and falls as a log (src/gpu/deadwood.ts) [gap: a snag isn't yet a Thing].
 export function grownOn(w: World) {
   const ix = index(w), flora = ix.flora, start = flora.f.start;
   if (ix.landings === flora.landings) return;
@@ -164,6 +249,7 @@ function drop(w: World, ix: Index, t: Thing) {
 export function leave(w: World, t: Thing) {
   const ix = index(w);
   if (!drop(w, ix, t)) return;
+  if (ix.dead && PIECE_ID.test(t.id)) { ix.views.delete(t.id); ix.dead.touch(pieceOf(t), null); return; }
   const e = grownNumber(ix, t.id);
   if (e) { ix.taken.set(t.id, w.t); ix.flora.change(e, null); }
 }
@@ -173,6 +259,10 @@ export const thingById = (w: World, id?: string | null) => {
   let i = ix.at.get(id);
   if (i === undefined) {
     // a grown thing on a tile nothing has looked at yet is still there as it stands
+    if (ix.dead && PIECE_ID.test(id)) {
+      const p = ix.dead.piece(id);
+      return p && typeof p === "object" ? viewOf(w, ix, p) : undefined;
+    }
     const e = grownNumber(ix, id), t = e ? ix.flora.tileOf(e) : -1;
     if (t < 0 || ix.stocked[t]) return undefined;
     stock(w, ix, t);
@@ -183,6 +273,7 @@ export const thingById = (w: World, id?: string | null) => {
 };
 // A grown thing in the world changed: its object stands as it does now.
 function changed(ix: Index, t: Thing) {
+  if (ix.dead && PIECE_ID.test(t.id)) { ix.views.delete(t.id); ix.dead.touch(pieceOf(t), placeOf(t)); return; }
   const e = grownNumber(ix, t.id);
   if (e) ix.flora.change(e, standOf(t));
 }
@@ -241,6 +332,7 @@ export function around(w: World, px: number, py: number, r: number, kinds: reado
   const x0 = Math.max(0, Math.floor(px - rt)), x1 = Math.min(W - 1, Math.floor(px + rt));
   const y0 = Math.max(0, Math.floor(py - rt)), y1 = Math.min(H - 1, Math.floor(py + rt));
   for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) stock(w, ix, y * W + x);
+  materialize(w, ix, px, py, r, kinds);
   const lists = binsOf(ix, kinds);
   for (let y = y0; y <= y1; y++)
     for (let x = x0; x <= x1; x++)
@@ -297,6 +389,25 @@ export function nearestThing(w: World, px: number, py: number, kinds: readonly s
         }
       }
     }
+  // pieces lying nearer than that: looked for in boxes doubling from 4 m, each found made a view and tried in turn
+  const want = ix.dead ? kinds.filter((k) => PIECE[k]) : [];
+  if (!want.length) return best;
+  const x = px * MM, y = py * MM;
+  let tries = 0;
+  for (let r = 4; r < 2 * Math.min(bd, max, 2048) && tries < 32; r *= 2) {
+    const R = Math.min(r, bd, max), rm = R * 1000, found: [number, Piece][] = [];
+    for (const k of want) for (const p of piecesIn(ix, k as PieceKind, x - rm, y - rm, x + rm, y + rm)) {
+      const d = Math.hypot(p.x - x, p.y - y) / 1000;
+      if (d <= R && d < bd && !ix.at.has(p.id)) found.push([d, p]);
+    }
+    found.sort((a, b) => a[0] - b[0] || (a[1].id < b[1].id ? -1 : 1));
+    for (const [d, p] of found) {
+      if (tries++ >= 32) break;
+      const t = viewOf(w, ix, p);
+      if (ok(t)) { best = t; bd = d; break; }
+    }
+    if (best && bd <= R) break;
+  }
   return best;
 }
 // Looking out to max meters for things of these kinds when none could pass (grain out of season, say): nothing is found,
@@ -360,6 +471,14 @@ export function shelve(w: World) {
     ix.stocked[t] = 0;
   }
   w.stocked = kept;
+  // the views no one has changed: gone once their pieces have rotted away, or put back where nothing has looked for a
+  // day and no one is near
+  for (const id of [...ix.views]) {
+    const i = ix.at.get(id);
+    if (i === undefined) { ix.views.delete(id); continue; }
+    const t = w.things[i], far = !w.agents.some((a) => Math.abs(a.px - t.px) < near && Math.abs(a.py - t.py) < near);
+    if (ix.dead?.piece(id) === null || (far && w.t - ix.seen[t.y * W + t.x] >= DAY)) { drop(w, ix, t); ix.views.delete(id); }
+  }
 }
 
 // What was taken of the ground's own growth comes back where it grew: back: given one as it grew and the tick it went
@@ -378,21 +497,4 @@ export function regrow(w: World, back: (t: Thing, went: number) => boolean) {
       flora.change(e, as);
       add(w, ix, th, !settled(th));
     }
-}
-
-// Everything in the world, for drawing, in the shape of the generator's scatter so the WebGL2 page keeps drawing (px.js
-// ObjBins). The arrays are the generator's with every stem at the height the GPU last grew it to (flora.ts drawn);
-// `gone` lists the objects no longer standing there, and `things` every thing the world holds that the arrays don't
-// show as it is: what was made since, and grown things changed. Kind and species codes in the arrays index kindNames
-// and speciesNames.
-export type Objects = { grown: Scatter; kindNames: string[]; speciesNames: string[]; gone: number[]; things: Thing[] };
-export function objects(w: World): Objects {
-  const ix = index(w), flora = ix.flora, start = flora.f.start, things: Thing[] = [];
-  for (const t of w.stocked)
-    for (let e = start[t] + 1; e <= start[t + 1]; e++) {
-      const i = ix.at.get(`t${e}`), s = flora.grownStand(e);
-      if (i !== undefined && (!s || !same(w.things[i], grown(w, e, s)))) things.push(w.things[i]);
-    }
-  for (const t of w.things) if (!grownNumber(ix, t.id)) things.push(t);
-  return { grown: flora.drawn(), kindNames: [...FLORA], speciesNames: [...SPECIES], gone: flora.gone(), things };
 }

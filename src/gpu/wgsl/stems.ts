@@ -27,8 +27,8 @@
 //   growth is a gap]; alpha and beta each under 2^16, so the product with q / 32 stays inside an i32.
 // A stem whose mass falls to half the most it weighed (q under 2^(-1/4) of its peak: 55109 / 2^16) dies, as the
 // recruits rule has it. A tree's height follows its q through its kind's table; a bush keeps its size.
-// Its year's seed (crop), in a good or mast year of its kind and none in the rest: its kind's crop a stem, plus its
-// kind's crop a Q16 of texel times the share its crown holds.
+// A stem that dies keeps DIED in its crop word for the deadwood. Its year's seed (crop), in a good or mast year of its
+// kind and none in the rest: its kind's crop a stem, plus its kind's crop a Q16 of texel times the share its crown holds.
 import { CELL, N } from "../../terrain/grid";
 import { UNDER_CROWN } from "../../terrain/growth";
 
@@ -42,6 +42,9 @@ export const HQ = 4096, QSTEP = 12, HC = 1024, SSTEP = 6;
 // The rows buffer: the row of every SPECIES index (MAP words), then per row ROW_WORDS: tree (1 or 0), the most q its
 // kind grows to, its crop a stem, its crop a Q16 of texel, and this year's mast (1 or 0).
 export const MAP = 32, ROW_WORDS = 8, RW = { tree: 0, qmax: 1, each: 2, area: 3, mast: 4 } as const;
+// The crop word a stem the law starves or crowds out is left with, so its death can be told from a felling: the
+// deadwood's law (wgsl/deadwood.ts) bears its snag and consumes the mark.
+export const DIED = 0xdead0001;
 // One layer of crowns lets this Q16 share of the light through, and two layers its square (rounded).
 export const T1 = Math.round(UNDER_CROWN * 65536), T2 = Math.round((T1 * T1) / 65536);
 // A mass at half its peak: q at 2^(-1/4) of the peak's, in Q16 [derived].
@@ -258,7 +261,7 @@ fn grow(i: u32, s: u32, tree: bool, above: u32, crowd: u32, taller: u32) {
   let peak = max(b[FP + i], u32(nq));
   let starved = u32(nq) == 0u || u32(nq) < (((peak >> 8u) * ${HALF_Q}u) >> 8u);
   let crowded = tree && taller > 0u && crowd + a > 65536u;
-  if (starved || crowded) { b[i] = b[i] & ~1u; return; }
+  if (starved || crowded) { b[i] = b[i] & ~1u; b[FC + i] = ${DIED}u; return; }
   b[FQ + i] = u32(nq);
   b[FP + i] = peak;
   if (tree) { b[FS + i] = height_at(r, u32(nq)); }

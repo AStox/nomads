@@ -34,6 +34,7 @@ import { seasonAt } from "../src/sim/sky";
 import { SEASONS } from "../src/terrain/climate";
 import { YEAR_DAYS } from "../src/sim/sky";
 import { anyAround, around, put, thingById } from "../src/sim/space";
+import { cull } from "../src/sim/animals";
 import { beliefKey, fieldsOf, groundKey, ofPlace, ruledOut, type Belief } from "../src/sim/beliefs";
 import { moistureOf } from "../src/sim/wetness";
 import { PATIENCE, ahead, bedAt, seedlingFate, type Bed, type Hour } from "../src/sim/seedling";
@@ -582,8 +583,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   const w = newWorld(seed, people);
   const sowing = "plot" in v, ways = sowing ? [PLANT] : v.ways, change = sowing ? undefined : v.half;
   w.t = Math.max(w.t, sowing ? SOW_START : START);
-  w.animals = w.animals.filter((m) => m.species !== "wolf");
-  if (w.herds) w.herds.wolf.n.fill(0);
+  cull(w, "wolf");
   const [cx, cy] = openGround(w, w.agents[0].px, w.agents[0].py);
   const fresh: string[] = [];
   const truth: Record<string, string | number> = { causes: v.causes.join(" or ") || "none" };

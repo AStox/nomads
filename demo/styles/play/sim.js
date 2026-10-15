@@ -1,7 +1,7 @@
 // Runs the game's simulation in the render worker (isopixel/worker.js), on the GPU device the island is drawn with, the
 // way server.ts loop() runs it: one tick at a time, the same change sets, cleared the same way. The page thread keeps
 // only what it shows (remote.js): after each tick the worker posts it state(), and what the page has asked about.
-import { ACTIVITY, DAY, census as headcount, TILE_M, activity, brainKind, changed, changedKinds, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, objects, pathChanges, removed, thingById, thingView, tick, trailChanges, trails, useBrain } from "../sim.js";
+import { ACTIVITY, DAY, census as headcount, TILE_M, activity, brainKind, changed, changedKinds, floraOf, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, pathChanges, removeThing, removed, resident, stemDriver, thingById, thingView, tick, trailChanges, trails, useBrain } from "../sim.js";
 
 // The random brain answers through promise chains and a thinking agent skips its turn, so each warming tick waits for a
 // fresh task.
@@ -21,8 +21,13 @@ function clearChanges() {
 
 // One live sim per worker: the change sets are module globals inside the bundle. jev: the relay's token (scripts/play/serve.ts)
 // for people to think with Jev once the world is warm; without it, and while warming, they think with the random brain.
-export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } = {}) {
+// onWorld(w): called once the world's flora lives on the GPU, before it warms, so the renderer can draw from its
+// buffers (and make its sprites) while the world warms.
+export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev = null } = {}) {
   const w = newWorld(seed);
+  // as the first tick would (sim.ts tick), so the buffers are there before any tick
+  if (!floraOf(w).store) await resident(w, stemDriver(w));
+  await onWorld?.(w);
   let tickMs = 0, lastEvent = 0;
 
   const step = async () => {
@@ -105,7 +110,16 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
     w,
     activities: ACTIVITY,
     day: DAY,
-    objects: () => objects(w),
+    // what the ground grew, as its objects stand on the GPU (src/gpu/flora.ts)
+    flora: () => floraOf(w),
+    // A thing gone from the world at once (physics.ts removeThing), as a felling or a taking makes it go: what a check
+    // of the renderer does (scripts/play/objects.ts); the next tick reports it removed like any other.
+    remove(id) {
+      const t = thingById(w, id);
+      if (!t) return false;
+      removeThing(w, t);
+      return true;
+    },
     // a thing as the server sends it (inspect.ts thingView): its bed left out, its blaze in while it burns
     view: (t) => thingView(w, t),
     // Fine wear where people have walked: cell meters, n cells a side, and the wear 1..255 of each worn cell by its
@@ -139,7 +153,8 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
         t: w.t, tickMs, brain: brainKind(),
         weather: { season: w.weather.season, sky: w.weather.sky, wind: w.weather.wind },
         agents: w.agents.map((a) => ({ id: a.id, name: a.name, status: a.status, color: a.color, born: a.born, down: a.down, goal: String(a.goal?.type ?? a.goal ?? ""), px: a.px, py: a.py, act: acts.get(a.id) ?? null })),
-        animals: w.animals.map((a) => ({ id: a.id, species: a.species, state: a.state, hp: a.hp, alt: a.alt, heading: a.heading, px: a.px, py: a.py })),
+        // gpu: a view of an animal the GPU's store holds (an.obj), which the render worker draws from its buffer
+        animals: w.animals.map((a) => ({ id: a.id, species: a.species, state: a.state, hp: a.hp, alt: a.alt, heading: a.heading, px: a.px, py: a.py, gpu: a.obj != null })),
         camps: w.camps.filter((c) => !c.gone).map((c) => ({ name: c.name, members: c.members.map((id) => ({ id, name: w.people[id]?.name ?? id })) })),
       };
     },
@@ -152,6 +167,7 @@ export async function createSim({ seed = 1, warm = 0, onProgress, jev = null } =
       return {
         data: inspect(w, sel),
         pos: t ? { px: t.px, py: t.py } : null,
+        mark: t ? { px: t.px, py: t.py, size: t.size, kind: t.kind, species: t.species } : null,
         journey: w.journeys?.of[t?.kind === "grave" ? t.person : sel] ?? tracks.get(sel) ?? null,
         heading: a ? heading(w, a) : null,
       };

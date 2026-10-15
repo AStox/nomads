@@ -50,3 +50,38 @@ var<workgroup> t: array<u32, 256>;
   }
 }
 `;
+
+// The last pass of a scan whose block totals fit one block (at most 1,024 of them): each workgroup sums the totals of
+// the blocks before its own and adds that to its words, in place of scanning the totals a level up and adding them
+// back (one pass fewer); the last block also writes the whole total to tot[0]. Bindings: 0 the words, 1 the block
+// totals, 2 tot, 3 the parameters (n, the number of words; blocks, the number of totals).
+export const SCAN_TOP = /* wgsl */ `
+struct P { n: u32, blocks: u32, b: u32, c: u32 }
+@group(0) @binding(0) var<storage, read_write> v: array<u32>;
+@group(0) @binding(1) var<storage, read> sums: array<u32>;
+@group(0) @binding(2) var<storage, read_write> tot: array<u32>;
+@group(0) @binding(3) var<uniform> p: P;
+var<workgroup> t: array<u32, 256>;
+
+@compute @workgroup_size(256) fn main(@builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) l: u32) {
+  let wg = wid.x + wid.y * nwg.x;
+  if (wg * 1024u >= p.n) { return; }
+  var s = 0u;
+  for (var k = 0u; k < 4u; k++) {
+    let i = l * 4u + k;
+    if (i < wg) { s += sums[i]; }
+  }
+  t[l] = s;
+  workgroupBarrier();
+  for (var d = 128u; d > 0u; d >>= 1u) {
+    if (l < d) { t[l] += t[l + d]; }
+    workgroupBarrier();
+  }
+  let a = t[0];
+  for (var k = 0u; k < 4u; k++) {
+    let i = wg * 1024u + l * 4u + k;
+    if (i < p.n) { v[i] += a; }
+  }
+  if (wg == p.blocks - 1u && l == 0u) { tot[0] = a + sums[wg]; }
+}
+`;

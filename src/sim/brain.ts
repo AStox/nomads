@@ -3,7 +3,7 @@ import {
   BONDS, BOND_FADE, DAY, LABELS, OPINIONS, RESPONSES, YEAR_DAYS, ageOf, clock, dayOfYear, level, meters, stageOf,
   type Agent, type BondKind, type Label, type Relationship, type Response, type Thing, type World,
 } from "./world";
-import { around, thingById } from "./space";
+import { around, liveThings, piecesAround, thingById } from "./space";
 import { ablaze, fireHours, fireOutput, shelterName } from "./physics";
 import { TRAITS } from "./traits";
 import { DARK, canSee, lightOn, lightWords } from "./light";
@@ -151,10 +151,13 @@ function blazeWords(w: World, t: Thing) {
   return [...size, h >= 1 ? `wood enough for about ${hours === 1 ? "an hour" : `${hours} hours`}` : minutes >= 5 ? `wood enough for about ${minutes} minutes` : "almost out"].join(", ");
 }
 
+const PIECES: Record<string, true> = { stick: true, stone: true, boulder: true };
 export function view(w: World, a: Agent) {
   const near: Record<string, { count: number; nearest: number }> = {};
   const m = (b: { px: number; py: number }) => Math.round(meters(a, b));
   around(w, a.px, a.py, 60, null, (t, d) => {
+    // a stick, stone or boulder as it lies is counted with the pieces below
+    if (PIECES[t.kind] && !liveThings(w).has(t)) return;
     if (t.kind === "pebble" || t.kind === "grass" || (t.kind === "bush" && t.species === "berry" && (t.n ?? 0) < 1) || !canSee(w, a, t, 60)) return;
     let kind = t.kind === "item" ? `${w.kinds[t.item ?? ""]?.name ?? "something"} on the ground` : t.kind === "structure" ? (shelterName(w, t) === "fire ring" ? "ring of stones round a fire" : ["pile of stuff", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0]) : t.kind === "bush" ? `${t.species ?? "berry"} bush` : t.kind.replaceAll("_", " ");
     if (t.kind !== "fire" && ablaze(t)) kind = `burning ${kind}`;
@@ -168,6 +171,11 @@ export function view(w: World, a: Agent) {
     e.count++;
     e.nearest = Math.min(e.nearest, Math.round(d));
   });
+  // sticks, stones and boulders lying about, besides those already handled as things (space.ts pieces)
+  for (const k of Object.keys(PIECES) as ("stick" | "stone" | "boulder")[]) {
+    const n = piecesAround(w, a.px, a.py, 60, k), e = n && (near[k] ??= { count: 0, nearest: Math.round(n.nearest) });
+    if (e && n) { e.count += n.count; e.nearest = Math.min(e.nearest, Math.round(n.nearest)); }
+  }
   const nearby = Object.fromEntries(Object.entries(near).map(([k, e]) => [k, `${e.count} (nearest ${e.nearest} m)`]));
   const animals = w.animals.filter((x) => canSee(w, a, x, 300)).map((x) => `${x.species} ${m(x)} m away (${x.state})`);
   const home = thingById(w, a.home);

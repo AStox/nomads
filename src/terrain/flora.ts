@@ -223,8 +223,8 @@ export const bushHeight = (sp: string, f: number, r: number) => ((NICHE[sp].tall
 export const toMm = (m: number) => Math.max(1, Math.round(m * 1000)) / 1000;
 // The shrub share past which its crowns' Boolean cover can't be told from full, so no more are laid [design].
 const SHRUB_MOST = 0.99;
-// The widest boulder, m.
-export const BOULDER = 0.5 + 5;
+// The widest boulder, m: the clasts' power law's upper cutoff [gap] (src/gpu/deadwood.ts CLASTS).
+export const BOULDER = 5.5;
 // the plants that compete for each place, by layer and kind (the trees and shrubs niche.ts's)
 const FUNGI = ["bolete", "chanterelle", "puffball"] as const satisfies readonly Species[];
 const HERBS = ["yarrow", "sorrel", "mint"] as const satisfies readonly Species[];
@@ -254,20 +254,33 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
     return ((q ^ (q >>> 14)) >>> 0) / 4294967296;
   };
   // Nothing lies under standing water or in a stream bed, where no one could reach it and nothing would draw it. A thing
-  // stands where the game puts it, to a ten-thousandth of a tile, and it is checked there too.
+  // stands where the game puts it, to a ten-thousandth of a tile, and it is checked there too. A quad with no standing
+  // water in any cell waterAt reads for its points and no stream in any texel riverSmooth reads for them (clearAt, a
+  // metre past its edges) passes both checks at every point, so its things skip them.
   const tileAt = (m: number) => Math.fround(Math.round(((m + SIZE / 2) / TILE_M) * 1e4) / 1e4), back = (t: number) => t * TILE_M - SIZE / 2;
   const ore: Scatter["ore"] = [];
+  const clearAt = (x0: number, z0: number) => {
+    const ci = (v: number) => Math.round((v - START) / CELL), i0 = ci(x0 - 1) - 1, i1 = ci(x0 + STEP + 1) + 1, j0 = ci(z0 - 1) - 1, j1 = ci(z0 + STEP + 1) + 1;
+    if (i0 < -1 || j0 < -1 || i1 > N || j1 > N || ci(x0 - 1) < 0 || ci(z0 - 1) < 0 || ci(x0 + STEP + 1) >= N || ci(z0 + STEP + 1) >= N) return false;
+    for (let b = Math.max(0, j0); b <= Math.min(N - 1, j1); b++) for (let a = Math.max(0, i0); a <= Math.min(N - 1, i1); a++) if (isle.water[b * N + a] > 0) return false;
+    const t = SIZE / RM, ti = (v: number) => clamp(Math.floor((v + SIZE / 2) / t - 0.5), 0, RM - 1);
+    for (let b = ti(z0 - 1); b <= Math.min(RM - 1, ti(z0 + STEP + 1) + 1); b++) for (let a = ti(x0 - 1); a <= Math.min(RM - 1, ti(x0 + STEP + 1) + 1); a++) if (g.mask[b * RM + a]) return false;
+    return true;
+  };
+  let clear = false;
   // k: an index into FLORA, or -1 for a loose stone of ore
   const put = (k: number, sp: number, x: number, z: number, sz: number) => {
-    if (waterAt(isle, g, x, z) > 0.5 || riverSmooth(g, x, z) > 0.5) return;
+    if (!clear && (waterAt(isle, g, x, z) > 0.5 || riverSmooth(g, x, z) > 0.5)) return;
     const px = tileAt(x), py = tileAt(z);
-    if (waterAt(isle, g, back(px), back(py)) > 0.5 || riverSmooth(g, back(px), back(py)) > 0.5) return;
+    if (!clear && (waterAt(isle, g, back(px), back(py)) > 0.5 || riverSmooth(g, back(px), back(py)) > 0.5)) return;
     if (k < 0) { ore.push({ px, py, size: sz, seed: (r() * 4294967296) >>> 0 }); return; }
     if (n === cap) grow();
     kind[n] = k; species[n] = sp; pxs[n] = px; pys[n] = py; size[n] = sz; seeds[n] = (r() * 4294967296) >>> 0;
     n++;
   };
-  const { h, wet, moist, river, cover, fine, heightAt, slopeAt, dry, bilinear } = g;
+  const { h, wet, moist, river, cover, fine, heightAt, bilinear } = g;
+  // a clear quad (clearAt) is dry at every point: no stream in reach and no standing water to stand above
+  const dry = (x: number, z: number) => clear || g.dry(x, z);
   const cellOf = (v: number) => (v - START) / CELL;
   // Every plant's fit at every cell but for the light it gets (niche.ts), and for a green plant the share of the open
   // sky's sun it needs there to make what it burns over the year (growth.ts yearComp): the cell's sun, warmth and soil
@@ -299,8 +312,9 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
     for (let u = 0; u < M - 1; u++) {
       const i = v * M + u, x0 = START + u * STEP, z0 = START + v * STEP;
       s = (hash(u, v, seed) * 4294967296) >>> 0;
+      clear = clearAt(x0, z0);
       const spot = (): [number, number] => [x0 + r() * STEP, z0 + r() * STEP];
-      const m = moist[i], tree = cover.tree[i], shrub = cover.shrub[i], grass = cover.grass[i], marsh = cover.marsh[i], bare = cover.bare[i], sand = cover.sand[i];
+      const m = moist[i], tree = cover.tree[i], shrub = cover.shrub[i], grass = cover.grass[i], marsh = cover.marsh[i], sand = cover.sand[i];
       // The wet margins first: reeds stand in the shallows and on marsh, clay lies in the silt beside still or running water.
       if (h[i] > -0.5 && wet[i] < 0.8) {
         const edge = wet[i] > 0.05 || river[i] > 0.2 ? 1 : 0;
@@ -320,7 +334,6 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
       // grows under them in the open share of the quad and, in the rest, what one crown lets through (growth.ts through),
       // as the game has it.
       fitsAt(x0 + STEP / 2, z0 + STEP / 2);
-      const slope = slopeAt(x0, z0);
       layer(0, TREES, 1, treeF);
       const under = 1 - tree + tree * through(1);
       layer(TREES.length, SHRUBS, under, shrubF);
@@ -347,30 +360,10 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
       lay(F.tree, TREES, treeF, tree * STEP * STEP, STEP * STEP, treeHeight);
       lay(F.bush, SHRUBS, shrubF, -Math.log(1 - Math.min(shrub, SHRUB_MOST)) * STEP * STEP, Infinity, bushHeight);
       const edge = tree * (1 - tree) * 4;
-      for (let c = Math.floor(bare * 1.6 + slope * 1.5 + r() * 0.8); c > 0; c--) {
-        const [x, z] = spot();
-        if (fine(wet, x, z) < 0.3) put(F.boulder, 0, x, z, 0.5 + r() ** 3 * (BOULDER - 0.5));
-      }
-      // The small stuff, each where the ground would hold it.
-      const rv = river[i];
       // Small plants come in patches some tens of meters across rather than evenly: 0 in the gaps, up to about 1.7.
       const patch = clamp(0.35 + 1.3 * noise(x0 / 45, z0 / 45, 91), 0, 1.7);
-      for (let c = Math.floor(bare * 1.2 + sand * 0.3 + rv * 1.5 + slope * 0.6 + 0.1 + r()); c > 0; c--) {
-        const [x, z] = spot();
-        if (fine(wet, x, z) < 0.3) put(F.stone, 0, x, z, 0.1 + r() ** 2 * 0.3);
-      }
-      for (let c = Math.floor(bare * 1.2 + sand * 1.0 + rv * 2 + 0.08 + r()); c > 0; c--) {
-        const [x, z] = spot();
-        if (fine(wet, x, z) < 0.3) put(F.pebble, 0, x, z, 0.02 + r() * 0.06);
-      }
-      for (let c = Math.floor(tree * 0.7 + edge * 0.15 + 0.01 + r()); c > 0; c--) {
-        const [x, z] = spot();
-        if (dry(x, z)) put(F.stick, 0, x, z, 0.4 + r() * 1.2);
-      }
-      for (let c = Math.floor(tree * 0.12 + r()); c > 0; c--) {
-        const [x, z] = spot();
-        if (dry(x, z) && slopeAt(x, z) < 0.6) put(F.fallen_log, S[draw(TREES, treeF, r())], x, z, 2 + r() * 7);
-      }
+      // Boulders, stones, pebbles, sticks and fallen logs are pieces on the GPU, not laid here (src/gpu/deadwood.ts;
+      // the clasts' counts are clasts below).
       // The low plants: as many as the best fitted of their kind would hold, each of a kind drawn by its fit.
       const low = <T extends Species>(names: readonly T[], base: number, make: (sp: T, f: number, x: number, z: number) => void) => {
         const f = layer(PLANTS.indexOf(names[0]), names, under, lowF), best = Math.max(...f.subarray(0, names.length));
@@ -414,6 +407,47 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
 }
 
 const ramp01 = (v: number) => clamp(v / 0.3, 0, 1);
+
+// ---------- clasts ----------
+// How many boulders (2 dm and up), stones (1 to 2 dm) and pebbles (2 cm to 1 dm) lie in each of the generator's cells,
+// the GPU's clasts (src/gpu/deadwood.ts CLASTS): boulders at its drift's count a ha (BOULDERS_HA there), the smaller
+// classes as many times that as till's N(> d) ~ d^-2.9 has them, on the cell's ground out of standing water, each count
+// a Poisson draw of the cell's own stream. Nothing lies on the sea or a lake's bed.
+export function clasts(isle: Island, seed: number, perHa: readonly number[], dim: number, bounds: readonly (readonly [number, number])[]): Uint32Array[] {
+  const out = bounds.map(() => new Uint32Array(N * N)), ha = (CELL * CELL) / 1e4, lo = bounds[bounds.length - 1][0];
+  let s = 0;
+  const r = () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let q = Math.imul(s ^ (s >>> 15), 1 | s);
+    q = (q + Math.imul(q ^ (q >>> 7), 61 | q)) ^ q;
+    return ((q ^ (q >>> 14)) >>> 0) / 4294967296;
+  };
+  for (let i = 0; i < N * N; i++) {
+    if (isle.water[i] > 0 || isle.height[i] < 0) continue;
+    const boulders = perHa[isle.drift[i]] * ha;
+    if (!boulders) continue;
+    s = (hash(i % N, Math.floor(i / N), seed ^ 0xc1a5) * 4294967296) >>> 0;
+    bounds.forEach(([a, b], c) => { out[c][i] = poisson(boulders * ((a / lo) ** -dim - (b / lo) ** -dim), r); });
+  }
+  return out;
+}
+// Poisson(lam): by counting uniforms' products under e^-lam below 30, from there by Hormann's transformed rejection
+// (PTRS, "The transformed rejection method for generating Poisson random variables", 1993).
+function poisson(lam: number, r: () => number): number {
+  if (lam < 30) {
+    const L = Math.exp(-lam);
+    let k = 0, p = r();
+    while (p > L) { k++; p *= r(); }
+    return k;
+  }
+  const sl = Math.sqrt(lam), ll = Math.log(lam), b = 0.931 + 2.53 * sl, a = -0.059 + 0.02483 * b, ia = 1.1239 + 1.1328 / (b - 3.4), vr = 0.9277 - 3.6224 / (b - 2);
+  for (;;) {
+    const U = r() - 0.5, V = r(), us = 0.5 - Math.abs(U), k = Math.floor(((2 * a) / us + b) * U + lam + 0.43);
+    if (us >= 0.07 && V <= vr) return k;
+    if (k < 0 || (us < 0.013 && V > us)) continue;
+    if (Math.log(V) + Math.log(ia) - Math.log(a / (us * us) + b) <= -lam + k * ll - lnGamma(k + 1)) return k;
+  }
+}
 // The stream nearest world meters x, z within REACH meters (more than any bankfull half-width here), read off its line:
 // how far off its middle the point lies and what flows there (mean m³/s, the share from groundwater, bankfull m³/s, the
 // flow under its bed m³/s, and its bankfull width and depth, m), or null. Lines are binned once per island.

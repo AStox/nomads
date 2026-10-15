@@ -1,0 +1,873 @@
+{
+  "about": "Plan Unit 14 (every object drawn from the sim's GPU buffers). Seed 1, default warm, 1600x1000, 12 s each, headless Chrome 150 on the AMD GPU of the dev Mac, machine load 7 to 14 with peers' Bun/Dawn GPU runs on the same GPU. 'unit14' is the final build (far-level lists, 4-vertex shadow strips, animals and deadwood drawn from their buffers, pebble expansion left out); 'beforeCuts' is Unit14Draw's build measured first; 'baseline' is bench-sim-worker.json (Unit 15). gpuMs: the worker's GPU timestamps per frame (mean/p95/max/over16); dtMs: page frame gaps.",
+  "firstView": {
+    "note": "ms from page load to the first view (revealMs), with the render worker's timeline from worker start",
+    "unit14DefaultWarm": {
+      "revealMs": 100406,
+      "timeline": {
+        "renderer": 14294,
+        "simStart": 14368,
+        "world": 48672,
+        "survey": 49655,
+        "sprites": 61564,
+        "warm": 94266,
+        "objects": 100330
+      }
+    },
+    "unit14BenchReveals": {
+      "zoom": 95625,
+      "orbit": 86252,
+      "turn": 80383,
+      "pan": 81190
+    },
+    "unit14Timeline": {
+      "renderer": 17053,
+      "simStart": 17123,
+      "world": 47831,
+      "survey": 48596,
+      "sprites": 57403,
+      "warm": 78995,
+      "objects": 86156
+    },
+    "baselineBenchReveals": {
+      "zoom": 186905,
+      "orbit": 198219,
+      "turn": 189024,
+      "pan": 188734
+    }
+  },
+  "defaultZoomGpu": {
+    "note": "close level, no selection, sim paused, before the cuts: mask 3.3 to 3.9 ms for 90k to 130k shadow rows, cull 0.4 to 0.6 ms; with the deadwood drawn and pebbles expanded the cull was 34 ms (pebbles 32 ms), cut",
+    "orbitMean": 9,
+    "turnMean": 8.88
+  },
+  "farLists": {
+    "note": "cull ms walking the far lists against the whole index (median of 25 frames, same session)",
+    "island": {
+      "far": 2.43,
+      "whole": 9.44
+    },
+    "isle200": {
+      "far": 4.85,
+      "whole": 8.78
+    },
+    "isle100": {
+      "far": 4.85,
+      "whole": 6.49
+    },
+    "close": {
+      "far": 0.59,
+      "whole": 0.79
+    }
+  },
+  "benches": {
+    "zoom": {
+      "unit14": {
+        "reveal": 95625,
+        "fps": 59.8,
+        "frames": 719,
+        "gpuMs": {
+          "mean": 10.95,
+          "p95": 17.56,
+          "max": 40.37,
+          "over16": 56
+        },
+        "cpuMs": {
+          "mean": 1.28,
+          "p95": 1.9,
+          "max": 7.8,
+          "over16": 0
+        },
+        "latencyMs": {
+          "mean": 23.5,
+          "p95": 53.7,
+          "max": 104.7,
+          "over16": 386
+        },
+        "dtMs": {
+          "mean": 16.71,
+          "p95": 16.8,
+          "max": 33.4,
+          "over16": 105
+        },
+        "longTasks": [],
+        "passes": {
+          "sun": 1.442,
+          "map": 0.197,
+          "cull": 7.471,
+          "mask": 0,
+          "world": 0.852,
+          "specks": 0.655,
+          "over": 0,
+          "shade": 1.901,
+          "present": 0.197
+        },
+        "counts": {
+          "sprites": 20773,
+          "rows": 0,
+          "points": 844016,
+          "tiles": 33489
+        },
+        "timeline": {
+          "renderer": 25790,
+          "simStart": 25901,
+          "world": 60088,
+          "survey": 60730,
+          "sprites": 68759,
+          "warm": 88602,
+          "objects": 95471
+        },
+        "slow": [
+          [
+            28.1,
+            6.44,
+            2,
+            0,
+            28.1,
+            1.1,
+            7.21
+          ],
+          [
+            23.6,
+            0.8,
+            2,
+            0,
+            23.6,
+            7.8,
+            12.91
+          ],
+          [
+            22.8,
+            0.62,
+            2,
+            0,
+            22.8,
+            0.9,
+            11.8
+          ],
+          [
+            21,
+            1.62,
+            2,
+            0,
+            21,
+            0.9,
+            7.54
+          ],
+          [
+            20.7,
+            0.82,
+            2,
+            0,
+            20.7,
+            1.4,
+            13.57
+          ],
+          [
+            19.5,
+            0,
+            1,
+            0,
+            19.5,
+            1.1,
+            10.94
+          ],
+          [
+            16.6,
+            2.6,
+            2,
+            0,
+            16.6,
+            1,
+            8.65
+          ],
+          [
+            16.6,
+            0.67,
+            2,
+            0,
+            16.6,
+            1.7,
+            16.32
+          ],
+          [
+            16.1,
+            0.7,
+            2,
+            0,
+            16.1,
+            1.4,
+            16.45
+          ],
+          [
+            15.9,
+            0.62,
+            2,
+            0,
+            15.9,
+            1.6,
+            15.6
+          ],
+          [
+            15.8,
+            0.72,
+            2,
+            0,
+            15.8,
+            1.6,
+            16.45
+          ],
+          [
+            15.8,
+            0.64,
+            2,
+            0,
+            15.8,
+            2.2,
+            16.52
+          ]
+        ]
+      },
+      "beforeCuts": {
+        "gpuMs": {
+          "mean": 11.93,
+          "p95": 27.13,
+          "max": 74.65,
+          "over16": 113
+        },
+        "dtMs": {
+          "mean": 18.4,
+          "p95": 16.8,
+          "max": 699.9,
+          "over16": 220
+        },
+        "fps": 54.3,
+        "reveal": 126067,
+        "longTasks": []
+      },
+      "baseline": {
+        "gpuMs": {
+          "mean": 7.8,
+          "p95": 13.57,
+          "max": 21.21,
+          "over16": 8
+        },
+        "dtMs": {
+          "mean": 18.23,
+          "p95": 33.3,
+          "max": 100.1,
+          "over16": 279
+        },
+        "fps": 54.8,
+        "reveal": 186905,
+        "longTasks": []
+      }
+    },
+    "orbit": {
+      "unit14": {
+        "reveal": 86252,
+        "fps": 60,
+        "frames": 721,
+        "gpuMs": {
+          "mean": 9,
+          "p95": 11.67,
+          "max": 16.45,
+          "over16": 0
+        },
+        "cpuMs": {
+          "mean": 1.04,
+          "p95": 1.2,
+          "max": 8.3,
+          "over16": 0
+        },
+        "latencyMs": {
+          "mean": 15.26,
+          "p95": 25.3,
+          "max": 81.5,
+          "over16": 72
+        },
+        "dtMs": {
+          "mean": 16.67,
+          "p95": 16.7,
+          "max": 16.8,
+          "over16": 119
+        },
+        "longTasks": [],
+        "passes": {
+          "sun": 1.311,
+          "map": 0.066,
+          "cull": 1.966,
+          "mask": 3.015,
+          "world": 0.721,
+          "specks": 0,
+          "over": 0.066,
+          "shade": 1.245,
+          "present": 0.131
+        },
+        "counts": {
+          "sprites": 22735,
+          "rows": 174222,
+          "points": 1,
+          "tiles": 12100
+        },
+        "timeline": {
+          "renderer": 17053,
+          "simStart": 17123,
+          "world": 47831,
+          "survey": 48596,
+          "sprites": 57403,
+          "warm": 78995,
+          "objects": 86156
+        },
+        "slow": [
+          [
+            5.5,
+            8.27,
+            1,
+            0,
+            5.5,
+            1.1,
+            10.68
+          ],
+          [
+            4.2,
+            8.27,
+            1,
+            0,
+            4.2,
+            0.9,
+            11.67
+          ],
+          [
+            3.3,
+            8.27,
+            1,
+            0,
+            3.3,
+            1,
+            5.51
+          ],
+          [
+            2.2,
+            8.27,
+            1,
+            0,
+            2.2,
+            0.9,
+            9.7
+          ],
+          [
+            1.9,
+            8.27,
+            1,
+            0,
+            1.9,
+            1,
+            7.21
+          ],
+          [
+            1.8,
+            8.27,
+            1,
+            0,
+            1.8,
+            1.4,
+            6.62
+          ],
+          [
+            1.7,
+            8.27,
+            1,
+            0,
+            1.7,
+            1.5,
+            5.83
+          ],
+          [
+            1.7,
+            8.27,
+            1,
+            0,
+            1.7,
+            1.2,
+            10.62
+          ],
+          [
+            1.6,
+            8.27,
+            1,
+            0,
+            1.6,
+            1.1,
+            11.73
+          ],
+          [
+            1.6,
+            8.27,
+            1,
+            0,
+            1.6,
+            0.9,
+            8.98
+          ],
+          [
+            1.5,
+            8.27,
+            1,
+            0,
+            1.5,
+            1,
+            13.57
+          ],
+          [
+            1.4,
+            8.27,
+            1,
+            0,
+            1.4,
+            0.9,
+            10.55
+          ]
+        ]
+      },
+      "beforeCuts": {
+        "gpuMs": {
+          "mean": 8.43,
+          "p95": 9.7,
+          "max": 17.83,
+          "over16": 1
+        },
+        "dtMs": {
+          "mean": 16.97,
+          "p95": 16.7,
+          "max": 233.3,
+          "over16": 118
+        },
+        "fps": 58.9,
+        "reveal": 113435,
+        "longTasks": []
+      },
+      "baseline": {
+        "gpuMs": {
+          "mean": 6.59,
+          "p95": 8.67,
+          "max": 15.55,
+          "over16": 0
+        },
+        "dtMs": {
+          "mean": 17.7,
+          "p95": 16.8,
+          "max": 116.6,
+          "over16": 279
+        },
+        "fps": 56.5,
+        "reveal": 198219,
+        "longTasks": []
+      }
+    },
+    "turn": {
+      "unit14": {
+        "reveal": 80383,
+        "fps": 60,
+        "frames": 721,
+        "gpuMs": {
+          "mean": 8.88,
+          "p95": 11.14,
+          "max": 14.35,
+          "over16": 0
+        },
+        "cpuMs": {
+          "mean": 1.03,
+          "p95": 1.2,
+          "max": 10.2,
+          "over16": 0
+        },
+        "latencyMs": {
+          "mean": 14.45,
+          "p95": 20.7,
+          "max": 48.9,
+          "over16": 64
+        },
+        "dtMs": {
+          "mean": 16.67,
+          "p95": 16.7,
+          "max": 16.8,
+          "over16": 112
+        },
+        "longTasks": [],
+        "passes": {
+          "sun": 1.442,
+          "map": 0.066,
+          "cull": 2.032,
+          "mask": 2.49,
+          "world": 0.59,
+          "specks": 0.066,
+          "over": 0.066,
+          "shade": 1.442,
+          "present": 0.197
+        },
+        "counts": {
+          "sprites": 17840,
+          "rows": 196377,
+          "points": 2,
+          "tiles": 12100
+        },
+        "timeline": {
+          "renderer": 16995,
+          "simStart": 17067,
+          "world": 45392,
+          "survey": 46086,
+          "sprites": 54780,
+          "warm": 74219,
+          "objects": 80265
+        },
+        "slow": [
+          [
+            8.9,
+            8.27,
+            1,
+            0,
+            8.9,
+            0.9,
+            8.78
+          ],
+          [
+            8.1,
+            8.27,
+            1,
+            0,
+            8.1,
+            1.3,
+            8.78
+          ],
+          [
+            5.5,
+            8.27,
+            1,
+            0,
+            5.5,
+            1,
+            8.72
+          ],
+          [
+            4.3,
+            8.27,
+            1,
+            0,
+            4.3,
+            1.3,
+            8.72
+          ],
+          [
+            4.1,
+            8.27,
+            1,
+            0,
+            4.1,
+            1,
+            8.72
+          ],
+          [
+            3.3,
+            8.27,
+            1,
+            0,
+            3.3,
+            1.2,
+            8.72
+          ],
+          [
+            3.2,
+            8.27,
+            1,
+            0,
+            3.2,
+            1,
+            13.89
+          ],
+          [
+            2.4,
+            8.27,
+            1,
+            0,
+            2.4,
+            1,
+            8.91
+          ],
+          [
+            1.9,
+            8.27,
+            1,
+            0,
+            1.9,
+            1.1,
+            12.78
+          ],
+          [
+            1.8,
+            8.27,
+            1,
+            0,
+            1.8,
+            1.2,
+            9.57
+          ],
+          [
+            1.7,
+            8.27,
+            1,
+            0,
+            1.7,
+            1,
+            6.16
+          ],
+          [
+            1.6,
+            8.27,
+            1,
+            0,
+            1.6,
+            0.9,
+            4.46
+          ]
+        ]
+      },
+      "beforeCuts": {
+        "gpuMs": {
+          "mean": 8.33,
+          "p95": 9.31,
+          "max": 17.69,
+          "over16": 1
+        },
+        "dtMs": {
+          "mean": 16.97,
+          "p95": 16.7,
+          "max": 233.3,
+          "over16": 120
+        },
+        "fps": 58.9,
+        "reveal": 107388,
+        "longTasks": []
+      },
+      "baseline": {
+        "gpuMs": {
+          "mean": 7.92,
+          "p95": 10.83,
+          "max": 23.48,
+          "over16": 1
+        },
+        "dtMs": {
+          "mean": 17.93,
+          "p95": 16.8,
+          "max": 100,
+          "over16": 278
+        },
+        "fps": 55.8,
+        "reveal": 189024,
+        "longTasks": []
+      }
+    },
+    "pan": {
+      "unit14": {
+        "reveal": 81190,
+        "fps": 60,
+        "frames": 721,
+        "gpuMs": {
+          "mean": 9.82,
+          "p95": 15.34,
+          "max": 20.97,
+          "over16": 11
+        },
+        "cpuMs": {
+          "mean": 1.08,
+          "p95": 1.3,
+          "max": 9.9,
+          "over16": 0
+        },
+        "latencyMs": {
+          "mean": 19.07,
+          "p95": 25.9,
+          "max": 60.8,
+          "over16": 307
+        },
+        "dtMs": {
+          "mean": 16.67,
+          "p95": 16.7,
+          "max": 16.8,
+          "over16": 112
+        },
+        "longTasks": [],
+        "passes": {
+          "sun": 1.311,
+          "map": 0.131,
+          "cull": 2.556,
+          "mask": 2.294,
+          "world": 0.59,
+          "specks": 0,
+          "over": 0,
+          "shade": 1.573,
+          "present": 0.262
+        },
+        "counts": {
+          "sprites": 17131,
+          "rows": 167393,
+          "points": 3,
+          "tiles": 11881
+        },
+        "timeline": {
+          "renderer": 15394,
+          "simStart": 15464,
+          "world": 46121,
+          "survey": 46839,
+          "sprites": 55419,
+          "warm": 74107,
+          "objects": 81110
+        },
+        "slow": [
+          [
+            19.3,
+            0,
+            1,
+            0,
+            19.3,
+            1.1,
+            3.6
+          ],
+          [
+            19.3,
+            5.83,
+            1,
+            0,
+            19.3,
+            1.1,
+            7.67
+          ],
+          [
+            18.4,
+            0,
+            1,
+            0,
+            18.4,
+            1,
+            9.57
+          ],
+          [
+            14.5,
+            0,
+            1,
+            0,
+            14.5,
+            1,
+            9.57
+          ],
+          [
+            10.3,
+            0,
+            1,
+            0,
+            10.3,
+            1.4,
+            12.71
+          ],
+          [
+            8.5,
+            0,
+            1,
+            0,
+            8.5,
+            1,
+            7.47
+          ],
+          [
+            8.5,
+            0,
+            1,
+            0,
+            8.5,
+            0.9,
+            8
+          ],
+          [
+            8.5,
+            0,
+            1,
+            0,
+            8.5,
+            1.2,
+            7.27
+          ],
+          [
+            8.4,
+            0,
+            1,
+            0,
+            8.4,
+            1,
+            8.59
+          ],
+          [
+            8.4,
+            0,
+            1,
+            0,
+            8.4,
+            1.2,
+            11.6
+          ],
+          [
+            8.4,
+            0,
+            1,
+            0,
+            8.4,
+            0.9,
+            10.55
+          ],
+          [
+            8.3,
+            0,
+            1,
+            0,
+            8.3,
+            1.4,
+            12.71
+          ]
+        ]
+      },
+      "beforeCuts": {
+        "gpuMs": {
+          "mean": 8.32,
+          "p95": 12.12,
+          "max": 15.07,
+          "over16": 0
+        },
+        "dtMs": {
+          "mean": 16.97,
+          "p95": 16.8,
+          "max": 216.7,
+          "over16": 119
+        },
+        "fps": 58.9,
+        "reveal": 105004,
+        "longTasks": []
+      },
+      "baseline": {
+        "gpuMs": {
+          "mean": 6.69,
+          "p95": 12.5,
+          "max": 15.61,
+          "over16": 0
+        },
+        "dtMs": {
+          "mean": 18.26,
+          "p95": 33.3,
+          "max": 100,
+          "over16": 280
+        },
+        "fps": 54.8,
+        "reveal": 188734,
+        "longTasks": []
+      }
+    }
+  }
+}

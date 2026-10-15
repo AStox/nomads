@@ -8,13 +8,14 @@
 // over them, and sends each frame to the worker. Between two bearings the GPU draws the tile map of the nearer one turned
 // to the bearing shown, so the island turns as a solid thing with its trees upright.
 import { RGB, NCOL, P } from "./pal.js";
-import { Buf, ObjBins, shadowRows, h2 } from "./px.js";
+import { Buf, shown, shadowRows, h2, ANIMAL_BODY, ANIMAL_DRAWN } from "./px.js";
 import { text } from "./ui.js";
 import * as SP from "./sprites.js";
 import { LEVELS } from "./webgpu.js";
+import { crownRatio } from "./atlas.js";
 import { createGround } from "./ground.js";
 import { LADDER, levelOf } from "./ladder.js";
-import { SIZE, TILE_M } from "../island.js";
+import { SIZE, TILE_M, crownShare } from "../island.js";
 
 const SIM = TILE_M, ORIGIN = -SIZE / 2, DAY = 288, YEAR = DAY * 40, TAU = Math.PI * 2, NL = LADDER.length, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -40,8 +41,9 @@ const blazeShown = (b, sz, pv) => ({
   fl: b.flame > 0 ? Math.max(2, Math.round(Math.max(b.flame * pv, sz.fire * Math.min(1, b.flame / FLAME_M)))) : 0,
   k: Math.max(0.3, Math.min(3, Math.sqrt((b.kw + b.glow) / KW))),
 });
-// animal body size in meters: standing height, a bird's wingspan, a fish's length
-const BODY = { deer: 1.5, wolf: 0.9, fox: 0.5, rabbit: 0.35, heron: 1, gull: 1.2, crow: 0.9, eagle: 2, fish: 0.5, butterfly: 0.1 };
+// animal body size in meters: standing height, a bird's wingspan, a fish's length (px.js, which the worker draws the
+// GPU's animals at too)
+const BODY = ANIMAL_BODY;
 const FLIERS = new Set(["heron", "gull", "crow", "eagle", "butterfly"]);
 const strHash = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
 const idH = (id, k) => h2(strHash(String(id)), k, 611);
@@ -108,12 +110,14 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     } else if (m.type === "objects") { objectsReady = true; stats.objects = m; onProgress?.(1, 1, "drawing the sprites"); }
     else if (m.type === "progress") onProgress?.(m.d, m.n, m.what);
     else if (m.type === "pick") { picksWait.get(m.id)?.(m.r); picksWait.delete(m.id); }
+    else if (m.type === "check") { checksWait.get(m.id)?.(m.r); checksWait.delete(m.id); }
     else if (m.type === "spritesReset") sentSprites.clear();
     else if (m.type === "lost" || m.type === "gpuerror") { lost = m.why; console.warn(`WebGPU: ${m.why}`); }
     else if (m.type === "error") { lost = m.error; console.warn(`render worker: ${m.error}`); }
   }
   worker.onmessage = (e) => onWorker(e.data);
-  const sentAt = new Map();
+  const sentAt = new Map(), checksWait = new Map();
+  let checkNo = 0;
 
   // ---------- the ground and the levels ----------
   const G = createGround(fieldsMsg), peak = fieldsMsg.peak;
@@ -329,7 +333,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       if (!inView(toM(t.px), toM(t.py), 60)) continue;
       const a = at(toM(t.px), toM(t.py));
       if (!onScreen(a, 60)) continue;
-      const hpx = ObjBins.shown(t.size ?? 1) * pv;
+      const hpx = shown(t.size ?? 1) * pv;
       if (t.blaze) fires.push({ a, id: t.id, ...blazeShown(t.blaze, sz, pv) });
       if (hpx < 1) continue;
       const s = thingSprite(t, hpx, md.b);
@@ -337,9 +341,11 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       if (s) { s.kind ??= t.kind; add(a, s, { mirror: ((t.seed >>> 3) & 1) === 1 && !FACED.has(t.kind), bias: t.kind === "structure" ? md.hb + 4 : 2, xray: t.kind === "structure" && (t.shelter?.tier ?? 0) >= 1, pick: { kind: "thing", id: t.id } }); }
       pk(a, { kind: "thing", id: t.id, sx: a.sx, sy: a.sy - hpx / 2, h: Math.max(3, hpx), name: t.name || t.kind.replaceAll("_", " "), top: a.sy - hpx - 2 });
     }
+    // the animals the GPU's buffers hold (store kind "animal") are drawn from them by the worker; the page draws the rest
+    // (fish and butterflies, which are counts a tile, and any placed by hand)
     for (const an of W.animals || []) {
-      if (an.hp <= 0) continue;
-      const hpx = ObjBins.shown(BODY[an.species] ?? 0.5) * 1.5 * pv;
+      if (an.hp <= 0 || an.gpu) continue;
+      const hpx = shown(BODY[an.species] ?? 0.5) * ANIMAL_DRAWN * pv;
       if (hpx < 1) continue;
       const p = motion(an.id, sim);
       if (!p || !inView(p.x, p.z, 40, Math.round((an.alt || 0) * pv))) continue;
@@ -396,8 +402,10 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // by their heat to the nearest 50 K so the cache keeps a few
     const species = t.kind === "structure" ? t.shelter?.style : t.kind === "item" ? t.item : t.species;
     const coals = t.kind === "fire" && t.blaze?.glow > 0 ? Math.round(t.blaze.hot / 50) * 50 : 0;
-    const o = { species, stage: clamp(t.stage ?? 1, 0, 1), tier: t.shelter?.tier ?? 0, room: t.shelter?.room ?? 0, caught: !!t.caught, n: t.n, covered: !!t.covered, charcoal: t.charcoal > 0, dir, blaze: coals ? { kw: 0, glow: 1, flame: 0, r: 0, hot: coals } : undefined };
-    return spr(`t${t.kind}|${species}|${hq}|${seedT}|${o.stage}|${o.tier}|${o.room}|${o.caught}|${o.n > 0}|${o.covered}|${o.charcoal}|${dir}|${coals}`, () => TH.object(t.kind, hq, seedT * 131 + 7, o));
+    // a burning tree's crown as wide as the GPU's trees draw theirs (atlas.js crownRatio), to the nearest hundredth
+    const rho = t.kind === "tree" ? Math.round(crownRatio(crownShare, species, t.size ?? 1) * 100) / 100 : undefined;
+    const o = { species, stage: clamp(t.stage ?? 1, 0, 1), tier: t.shelter?.tier ?? 0, room: t.shelter?.room ?? 0, caught: !!t.caught, n: t.n, covered: !!t.covered, charcoal: t.charcoal > 0, dir, rho, blaze: coals ? { kw: 0, glow: 1, flame: 0, r: 0, hot: coals } : undefined };
+    return spr(`t${t.kind}|${species}|${hq}|${seedT}|${o.stage}|${o.tier}|${o.room}|${o.caught}|${o.n > 0}|${o.covered}|${o.charcoal}|${dir}|${coals}|${rho}`, () => TH.object(t.kind, hq, seedT * 131 + 7, o));
   }
 
   // ---------- fire, smoke ----------
@@ -603,7 +611,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       half: SIZE / 2, hmost: hz.most, htop: hz.top, hreach: hz.reach, sea: P.w1, nfires: fires.length, night: sky.night,
     };
     const n = Math.max(1, Math.ceil(cam.s - 1e-3));
-    return { U, alpha: k === 0 ? 1 : w, present: { dx: cam.dx, dy: cam.dy, sc: cam.s, nn: n, nearest: Math.abs(cam.s - n) < 1e-3 ? 1 : 0 }, live, liveRows: cast ? liveRows : null, xray, prims: prims.a, fires: FR };
+    return { U, L: cam.L, alpha: k === 0 ? 1 : w, present: { dx: cam.dx, dy: cam.dy, sc: cam.s, nn: n, nearest: Math.abs(cam.s - n) < 1e-3 ? 1 : 0 }, live, liveRows: cast ? liveRows : null, xray, prims: prims.a, fires: FR };
   }
   // the ambient occlusion's knobs: ?ao=0 draws without it, ?ao=dbg shows it alone. on: 0 turns it off.
   // k: the most of the sky's light a point can lose. ter: how strongly the ground's folds count. can, tree: how strongly
@@ -723,7 +731,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const id = ++pickId, hit = await new Promise((r) => { picksWait.set(id, r); worker.postMessage({ type: "pick", id, x: ix, y: iy }); setTimeout(() => { if (picksWait.delete(id)) r(null); }, 1000); });
     if (hit && hit.pick) {
       if (hit.pick & PICK_LIVE) { const o = (ownersOf.get(hit.frame) ?? pickOwners)[hit.pick & 0x7fffffff]; if (o) return { ...o }; }
-      else if (hit.kind === 1) return { kind: "thing", id: "t" + hit.pick };
+      else if (hit.kind === 1 && hit.id) return { kind: /^a\d+$/.test(hit.id) ? "animal" : "thing", id: hit.id };
     }
     const g = rayGround(cam, cam.gx0 + x, cam.gy0 + y), ground = { kind: "ground", px: (g.x - ORIGIN) / SIM, py: (g.z - ORIGIN) / SIM };
     let best = null, bd = Infinity;
@@ -755,7 +763,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     else {
       const r = simRef?.mark?.(sel);
       if (!r) return;
-      x = toM(r.px); z = toM(r.py); hpx = Math.max(2, ObjBins.shown(r.size) * pv); name = r.species || r.kind; tall = UPRIGHT.has(r.kind);
+      x = toM(r.px); z = toM(r.py); hpx = Math.max(2, shown(r.size) * pv); name = r.species || r.kind; tall = UPRIGHT.has(r.kind);
     }
     const p = project(cam, x, z), ox = Math.round(p.gx - cam.gx0), oy = Math.round(p.gy - cam.gy0);
     const hw = Math.ceil(Math.max(2, hpx * 0.5)) + 1, top = oy - Math.ceil(tall ? hpx : hpx * 0.7) - 2, bot = oy + 2;
@@ -837,8 +845,13 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     post: (m) => worker.postMessage(m),
     onSim: (fn) => { simTo = fn; for (const m of simEarly.splice(0)) fn(m); },
     goal: null,
-    // for the page checks (scripts/play/torture.cjs): a camera at a level and bearing, and a world point placed in one
-    debug: { camera, project: (md, x, z) => project({ md }, x, z) },
+    // for the page checks (scripts/play/torture.cjs, objects.ts): a camera at a level and bearing, a world point placed in
+    // one, and the render worker's own checks of what it drew (worker.js check)
+    debug: {
+      camera, project: (md, x, z) => project({ md }, x, z),
+      // the query goes apart from the request's id, as a query may carry an id of its own (kill's thing)
+      check: (m) => new Promise((resolve) => { const id = ++checkNo; checksWait.set(id, resolve); worker.postMessage({ type: "check", id, q: m }); }),
+    },
   };
   return api;
 }
