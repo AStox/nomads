@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { SEEDLINGS } from "./plants";
 import { DAY, H, TILE_M, W, addThing, dryAt, meters, newWorld, type Agent, type Thing, type World } from "./world";
 import { giveItems, groundWord, plant, removeThing, soilAt } from "./physics";
@@ -7,6 +7,10 @@ import { groundKey, noteTry, type Belief } from "./beliefs";
 import { plan } from "./plan";
 import { tick } from "./sim";
 import { YEAR_DAYS } from "./sky";
+import { releaseGpu } from "../gpu/device";
+
+// tick puts the world's flora on the GPU, and a live device keeps the test process from exiting
+afterAll(releaseGpu);
 
 process.env.NOMADS_BRAIN = "random";
 

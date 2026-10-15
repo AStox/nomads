@@ -10,6 +10,10 @@ import { DAMP, SOAKED, moistureOf } from "./wetness";
 import { tick } from "./sim";
 import { useBrain } from "./brain";
 import { BACKUP, migrateSave } from "./migrate";
+import { releaseGpu } from "../gpu/device";
+
+// tick puts the world's flora on the GPU, and a live device keeps the test process from exiting
+afterAll(releaseGpu);
 
 process.env.NOMADS_BRAIN = "random";
 

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { DAY, meters, newWorld, type Act, type Agent, type Stack, type Step, type World } from "./world";
 import { LEAST, advance, alight, output, radiation } from "./combustion";
 import { PHYS, pieceOf, roundSize } from "./fuel";
@@ -10,6 +10,10 @@ import { thingById } from "./space";
 import { apart, beliefKey, cameOff, chance, differed, fades, noteTry, record, refuted, rethink, suspected, teach, weighs, worseIn, type Belief } from "./beliefs";
 import { plan } from "./plan";
 import { actFromBelief, conditionsNow, doAct, tick, tinkerOptions } from "./sim";
+import { releaseGpu } from "../gpu/device";
+
+// tick puts the world's flora on the GPU, and a live device keeps the test process from exiting
+afterAll(releaseGpu);
 
 const fresh = (): [World, Agent] => { const w = newWorld(42); const a = w.agents[0]; a.inv = []; return [w, a]; };
 const K = (w: World, id: string) => w.kinds[id];

@@ -94,9 +94,9 @@ async function theAdapter() {
   return gpu;
 }
 // At most half the cores; half the machine's memory at what a run holds, a probe about 1.25 GB, a whole world of 60
-// days (or an answer key) up to 2 GB; and the GPU's memory at what a run holds on it, 256 MB a probe process and 512 MB
-// a world [design], until the world's objects live on the GPU and their buffers are measured
-// (docs/plans/2026-10-14-001-refactor-gpu-object-world-plan.md, Unit 4).
+// days (or an answer key) up to 2 GB; and the GPU's memory at what a run holds on it: a world's flora takes 77 MB
+// (54 MB of kinds and 23 MB of index scratch on seed 1, measured 2026-10-14), so 400 MB a probe process of five
+// worlds, and 512 MB a world [design] until later units' kinds are measured.
 const jobs = (gb: number, gpuGb: number, memory: number) =>
   Number(opt("jobs", String(Math.max(1, Math.min(Math.floor(cpus().length / 2), Math.floor(totalmem() / 2 / (gb * 1e9)), Math.floor(memory / (gpuGb * 1e9)))))));
 // probe runs on one island to a process: enough that growing the island is a small part of each, few enough that the
@@ -276,7 +276,7 @@ async function baselineFor(tier: Tier, kind: Pick<Entry, "tier" | "brain" | "day
 
 // ---------- probes ----------
 async function probes() {
-  const { adapter, memory } = await theAdapter(), probeJobs = jobs(1.25, 0.256, memory);
+  const { adapter, memory } = await theAdapter(), probeJobs = jobs(1.25, 0.4, memory);
   const seeds = range(Number(opt("seeds", "10"))), days = Number(opt("days", "5")), people = Number(opt("people", "6")), brain = opt("brain", "random");
   if (brain !== "random" && brain !== "jev") throw new Error(`--brain ${brain}: random or jev`);
   const only = opt("only", "").split(",").filter(Boolean);

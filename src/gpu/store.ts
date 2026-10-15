@@ -12,7 +12,8 @@
 // - alloc, 16 + C words: control words (CTL in wgsl/alloc.ts: the free list's head and length, the tail, children
 //   lost for want of capacity), then the free list.
 // - order (C words) and start (N^2 + 1 words), placed kinds only: the live slots sorted by cell, stable by slot, and
-//   where each cell's run begins (start[N^2] is the live count). Rebuilt every tick; kept so a save holds every buffer.
+//   where each cell's run begins (start[N^2] is the live count). Rebuilt every tick (a still kind's only in a tick
+//   that changed it); kept so a save holds every buffer.
 //
 // An object's id packs (kind, slot, generation) into one exact JavaScript number, kind * 2^47 + (generation mod 2^17)
 // * 2^30 + slot, so a slot given to a new object never answers to an old object's id (until the same slot has been
@@ -51,7 +52,9 @@ export const genOfId = (id: number) => Math.floor(id / IX) % GEN;
 
 // ---------- kinds ----------
 export type Field = { name: string; type: "u32" | "i32"; unit: string; scale: number };
-export type KindSpec = { name: string; capacity: number; fields: Field[]; placed?: boolean };
+// A still kind's slots and places change only by the CPU's deltas and by births, never in a law's kernel, so its dead
+// slots are reclaimed and its index rebuilt only in a tick that had some (the index costs about 65 ms per 10^7 objects).
+export type KindSpec = { name: string; capacity: number; fields: Field[]; placed?: boolean; still?: boolean };
 // The two fields every placed kind starts with.
 export const PLACE: readonly Field[] = [
   { name: "x", type: "u32", unit: "m", scale: 1000 },
@@ -66,6 +69,8 @@ export type Kind = {
   fields: readonly Field[]; field: Record<string, number>; // every field, place first, and each one's number
   body: GPUBuffer; alloc: GPUBuffer; order: GPUBuffer | null; start: GPUBuffer | null;
   peek: Peek;
+  touched: boolean; // a still kind changed since its index was last built
+  stale: boolean; // changed on the GPU since the mirror's last landing of it (a still kind's pages are kept while not)
 };
 
 // A law: kernels run in begin when due, in the order laws were added.
@@ -136,6 +141,9 @@ export class Store {
   private seq = 0;
   private prov = 0;
   private landing: Promise<void> | null = null;
+  // The last tick's landing while it is still on its way: what a caller awaits before the next begin, or before
+  // reading the mirror it brings.
+  get arriving(): Promise<void> | null { return this.landing; }
   private begun = false;
   private budget = 1 << 16;
   private readonly scratchBufs = new Map<string, GPUBuffer>();
@@ -171,10 +179,32 @@ export class Store {
       body: storage(this.g, bytes), alloc: storage(this.g, (CTL_WORDS + C) * 4),
       order: spec.placed ? storage(this.g, C * 4) : null, start: spec.placed ? storage(this.g, (CELLS + 1) * 4) : null,
       peek: { head: 0, nfree: 0, tail: 0, overflow: 0, free: new Uint32Array(0), meta: new Uint32Array(0), fresh: true },
+      touched: false, // an empty index (start all zero) is the index of no objects
+      stale: true,
     };
     this.kinds.push(k);
     this.mirror.add(k);
     return k;
+  }
+  // The first objects of a kind never born into, written straight into its buffers: n objects in slots 0 to n - 1,
+  // each of generation 1, with the fields given as one column of n words each (missing ones zero). A generator's
+  // initial objects go in this way, millions at once, rather than as spawns through the delta queue.
+  write(kind: string, n: number, columns: Record<string, Uint32Array | Int32Array>) {
+    const k = this.kind(kind);
+    if (k.peek.tail || k.peek.nfree || this.queue.some((d) => d.op === "spawn" && d.obj.kind === kind)) throw new Error(`kind ${kind}: initial objects go only into a kind never born into`);
+    if (!Number.isInteger(n) || n < 0 || n > k.capacity) throw new Error(`kind ${kind}: ${n} initial objects don't fit its capacity of ${k.capacity}`);
+    for (const name of Object.keys(columns)) if (k.field[name] === undefined) throw new Error(`kind ${kind} has no field ${name}`);
+    const q = this.g.device.queue, C = k.capacity;
+    q.writeBuffer(k.body, 0, new Uint32Array(n).fill(3)); // alive, generation 1
+    k.fields.forEach((f, i) => {
+      const col = columns[f.name];
+      if (!col) return;
+      if (col.length !== n) throw new Error(`kind ${kind}: column ${f.name} holds ${col.length} words, not ${n}`);
+      for (let c = 0; c < n * 4; c += CHUNK) q.writeBuffer(k.body, (1 + i) * C * 4 + c, col.buffer, col.byteOffset + c, Math.min(CHUNK, n * 4 - c));
+    });
+    q.writeBuffer(k.alloc, CTL.tail * 4, Uint32Array.of(n));
+    k.peek = { ...k.peek, tail: n };
+    k.touched = k.stale = true;
   }
   // The kind of a loaded store declared again by what uses it (a tier): the kind already there when its declaration
   // is the same, else a new one.
@@ -293,6 +323,7 @@ export class Store {
     this.run(src, same ? [C.body, C.alloc, kept, m, ...more] : [P.body, C.body, C.alloc, kept, m, ...more], cover(g, P.capacity), [P.capacity, this.t, P.capacity, C.capacity]);
     this.run(BIRTH_COMMIT, [C.alloc, tot], [1], [C.capacity, 0, 0, 0]);
     C.peek.fresh = false;
+    C.touched = C.stale = true;
   }
   // Children with no parent object: counts holds a u32 for each of n rows (bins of a lumped kind, requests), and the
   // children are born in row order by the same rule as births, with parent the row's number and no parent accessors.
@@ -303,6 +334,7 @@ export class Store {
     this.run(birthAssign(null, C, false, init, extra), [C.body, C.alloc, counts, m, ...(extra?.bufs.map((b) => b.buf) ?? [])], cover(g, n), [n, this.t, 0, C.capacity]);
     this.run(BIRTH_COMMIT, [C.alloc, tot], [1], [C.capacity, 0, 0, 0]);
     C.peek.fresh = false;
+    C.touched = C.stale = true;
   }
   // The fixed point where dead slots join the free list: all of them below the tail, in index order.
   reclaim(k: Kind) {
@@ -431,7 +463,7 @@ export class Store {
     this.g.device.queue.writeBuffer(buf, 0, Uint32Array.from(all));
     for (const k of this.kinds) {
       const n = recs[k.n].length;
-      if (n) this.run(DELTA_APPLY, [k.body, buf], cover(this.g, n), [n, k.capacity, k.fields.length, from[k.n]]);
+      if (n) { this.run(DELTA_APPLY, [k.body, buf], cover(this.g, n), [n, k.capacity, k.fields.length, from[k.n]]); k.touched = k.stale = true; }
     }
   }
 
@@ -444,8 +476,10 @@ export class Store {
     try {
       this.upload();
       for (const l of this.laws) if (l.due(t)) l.run(this, t);
-      for (const k of this.kinds) this.reclaim(k);
-      for (const k of this.kinds) this.index(k);
+      // a still kind untouched since its last index has no dead slot to reclaim and no object out of place
+      const due = this.kinds.filter((k) => !k.spec.still || k.touched);
+      for (const k of due) this.reclaim(k);
+      for (const k of due) { this.index(k); k.touched = false; }
     } catch (e) {
       // the failure stays with this tick: what was recorded goes out (an upload that finished has already taken its
       // deltas off the queue), and the next tick can begin
@@ -456,14 +490,24 @@ export class Store {
     }
   }
   // The windowed objects and each kind's allocation head copied back in one staging copy and merged into the mirror,
-  // the deltas queued since the upload laid over them again.
+  // the deltas queued since the upload laid over them again. When every kind is still and unchanged since its last
+  // landing, every window cell is already held and no rider reads anything, there is nothing to copy and no wait.
   land(): Promise<void> {
     if (!this.begun) throw new Error("a store tick lands only after it has begun");
     this.begun = false;
-    const g = this.g, ents = this.kinds.map((k) => this.mirror.entries(k));
+    const g = this.g;
+    // a still kind the GPU hasn't changed since its last landing keeps its pages and allocation as they are, and has
+    // only what its pages lack copied
+    const asked = this.kinds.map((k) => this.mirror.entries(k, !!k.spec.still && !k.stale));
+    const ents = asked.map((a) => a.ents), peeked = this.kinds.map((k) => !k.spec.still || k.stale), words = this.riders.map((r) => r.words());
+    if (ents.every((e) => !e.length) && !peeked.some(Boolean) && words.every((n) => !n)) {
+      // nothing to copy: the mirror stays as it is, and no wait on the GPU
+      this.riders.forEach((r) => r.land(new Uint32Array(0), 0));
+      return Promise.resolve();
+    }
     let w = 1 + this.kinds.length;
-    const at = this.kinds.map((k) => { const peek = w; w += CTL_WORDS + 2 * PEEK_SLOTS; const head = w; w += 2 * ents[k.n].length; return { peek, head }; });
-    const rat = this.riders.map((r) => { const a = w; w += r.words(); return a; });
+    const at = this.kinds.map((k) => { const peek = w; if (peeked[k.n]) w += CTL_WORDS + 2 * PEEK_SLOTS; const head = w; w += 2 * ents[k.n].length; return { peek, head }; });
+    const rat = words.map((n) => { const a = w; w += n; return a; });
     const limit = w + this.budget, out = this.scratch("out", limit), dummy = this.scratch("dummy", 1);
     const from: number[] = [], flat = new Uint32Array(ents.reduce((s, e) => { from.push(s); return s + e.length; }, 0));
     ents.forEach((e, i) => flat.set(e, from[i]));
@@ -472,7 +516,7 @@ export class Store {
     g.device.queue.writeBuffer(eb, 0, flat);
     for (const k of this.kinds) {
       const e = ents[k.n], row = 2 + k.fields.length;
-      this.run(PEEK, [k.body, k.alloc, out], cover(g, CTL_WORDS + PEEK_SLOTS), [at[k.n].peek, PEEK_SLOTS, 0, 0]);
+      if (peeked[k.n]) this.run(PEEK, [k.body, k.alloc, out], cover(g, CTL_WORDS + PEEK_SLOTS), [at[k.n].peek, PEEK_SLOTS, 0, 0]);
       if (!e.length) continue;
       this.run(GATHER_HEAD, [k.start ?? dummy, eb, out], [1], [e.length, at[k.n].head, row, limit, 1 + k.n, from[k.n], 0, 0]);
       this.run(GATHER_ROWS, [k.body, k.order ?? dummy, k.start ?? dummy, eb, out], cover(g, e.length, 1), [e.length, at[k.n].head, row, k.capacity, from[k.n], 0, 0, 0]);
@@ -485,15 +529,18 @@ export class Store {
         const o = new Uint32Array(await back);
         let need = 0;
         for (const k of this.kinds) {
-          const p = at[k.n].peek, ctl = o.subarray(p, p + CTL_WORDS), lost = ctl[CTL.overflow] - k.peek.overflow;
-          k.peek = {
-            head: ctl[CTL.head], nfree: ctl[CTL.nfree], tail: ctl[CTL.tail], overflow: ctl[CTL.overflow], fresh: true,
-            free: o.slice(p + CTL_WORDS, p + CTL_WORDS + Math.min(PEEK_SLOTS, ctl[CTL.nfree] - ctl[CTL.head])),
-            meta: o.slice(p + CTL_WORDS + PEEK_SLOTS, p + CTL_WORDS + PEEK_SLOTS + Math.min(PEEK_SLOTS, ctl[CTL.nfree] - ctl[CTL.head])),
-          };
-          if (lost) throw new Error(`kind ${k.name} is full: ${lost} children found no slot in its capacity of ${k.capacity}`);
+          if (peeked[k.n]) {
+            const p = at[k.n].peek, ctl = o.subarray(p, p + CTL_WORDS), lost = ctl[CTL.overflow] - k.peek.overflow;
+            k.peek = {
+              head: ctl[CTL.head], nfree: ctl[CTL.nfree], tail: ctl[CTL.tail], overflow: ctl[CTL.overflow], fresh: true,
+              free: o.slice(p + CTL_WORDS, p + CTL_WORDS + Math.min(PEEK_SLOTS, ctl[CTL.nfree] - ctl[CTL.head])),
+              meta: o.slice(p + CTL_WORDS + PEEK_SLOTS, p + CTL_WORDS + PEEK_SLOTS + Math.min(PEEK_SLOTS, ctl[CTL.nfree] - ctl[CTL.head])),
+            };
+            if (lost) throw new Error(`kind ${k.name} is full: ${lost} children found no slot in its capacity of ${k.capacity}`);
+          }
           need += o[1 + k.n];
-          this.mirror.land(k, ents[k.n], o, at[k.n].head);
+          this.mirror.land(k, ents[k.n], o, at[k.n].head, asked[k.n].keep);
+          k.stale = false;
         }
         this.budget = Math.max(this.budget, Math.ceil((need * 1.25) / 4096) * 4096);
         this.riders.forEach((r, i) => r.land(o, rat[i]));

@@ -96,3 +96,29 @@ test("a kill by a stale id over a recycled slot leaves the new object alone, in 
   expect(held(s.mirror.get(b.id)).v.mass).toBe(21);
   expect(s.mirror.get(old)).toBeNull();
 });
+
+test("a still kind the GPU hasn't changed keeps its pages, and copies only the cells newly watched", async () => {
+  const s = new Store(await theGpu());
+  s.declare({ ...LOG, name: "rock", still: true });
+  const page = (cx: number, cy: number): Obj[] => { const p = s.mirror.cell("rock", cx, cy); if (p === PENDING) throw new Error(`cell ${cx}, ${cy} is pending`); return p; };
+  s.mirror.watch("camp", { x0: 5, y0: 5, x1: 5, y1: 5 });
+  s.spawn("rock", { x: mm(5.5), y: mm(5.5), mass: 1 });
+  const b = s.spawn("rock", { x: mm(6.5), y: mm(5.5), mass: 2 });
+  await s.step(1);
+  const a = page(5, 5)[0];
+  expect(a.v.mass).toBe(1);
+  // nothing changed on the GPU: the same objects, nothing copied
+  await s.step(2);
+  expect(page(5, 5)[0]).toBe(a);
+  // a cell newly watched is copied, the rest kept
+  s.mirror.watch("camp", { x0: 5, y0: 5, x1: 6, y1: 5 });
+  await s.step(3);
+  expect(page(5, 5)[0]).toBe(a);
+  expect(page(6, 5).map((o) => o.v.mass)).toEqual([2]);
+  // a change makes the next landing copy everything afresh
+  s.set(b.id, "mass", 3);
+  await s.step(4);
+  expect(page(5, 5)[0]).not.toBe(a);
+  expect(page(5, 5)[0].v).toEqual(a.v);
+  expect(page(6, 5)[0].v.mass).toBe(3);
+});

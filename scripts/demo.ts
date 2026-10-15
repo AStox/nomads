@@ -7,7 +7,8 @@ const app = process.argv[2], at = process.argv.indexOf("--out");
 if (!app || at < 0) throw new Error("usage: bun scripts/demo.ts <3d|looks|styles> --out <dir>");
 const out = process.argv[at + 1], root = `${import.meta.dir}/../demo`;
 mkdirSync(out, { recursive: true });
-const built = await Bun.build({ entrypoints: [`${root}/island.ts`], outdir: out, target: "browser", minify: true });
+// The page's GPU is navigator.gpu (src/gpu/device.ts); Dawn's bindings are for Bun alone and never load in a page.
+const built = await Bun.build({ entrypoints: [`${root}/island.ts`], outdir: out, target: "browser", minify: true, external: ["webgpu"] });
 if (!built.success) throw new AggregateError(built.logs, "bundling the generator failed");
 // node:fs only writes trace logs after logTo(), which the browser never calls.
 const noFs: Bun.BunPlugin = {
@@ -21,6 +22,7 @@ const sim = await Bun.build({
   entrypoints: [`${root}/sim.ts`], outdir: out, target: "browser", minify: true, plugins: [noFs],
   // The random brain answers locally, so the browser never reaches Jev.
   define: { "process.env.NOMADS_BRAIN": '"random"' },
+  external: ["webgpu"],
 });
 if (!sim.success) throw new AggregateError(sim.logs, "bundling the simulation failed");
 cpSync(`${root}/${app}`, out, { recursive: true });

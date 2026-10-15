@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { SEEDLINGS, fitHere } from "./plants";
 import { DAY, TILE_M, addThing, isNight, newWorld, type Thing, type World } from "./world";
 import { bedAir, carriedOutput, fireOf, fireOutput, removeThing } from "./physics";
@@ -10,6 +10,10 @@ import { ctxFor, tick } from "./sim";
 import { DARK, canSee, lightAt, lightOn } from "./light";
 import { YEAR_DAYS, sunAt } from "./sky";
 import { bodyOf } from "./body";
+import { releaseGpu } from "../gpu/device";
+
+// tick puts the world's flora on the GPU, and a live device keeps the test process from exiting
+afterAll(releaseGpu);
 
 process.env.NOMADS_BRAIN = "random";
 
@@ -168,8 +172,8 @@ test("sight shrinks with the light: at night a person across the clearing can't 
 });
 
 test("whoever is out after something when the dark falls gives it up where they stand, but not in daylight, and work at camp goes on", async () => {
-  const cases = [[12, "forage", "wander", "forage"], [1, "forage", "wander", "none"], [1, "rest", "rest", "rest"]] as const;
-  for (const [hour, goal, op, kept] of cases) {
+  const cases = [[12, "forage", "wander", true], [1, "forage", "wander", false], [1, "rest", "rest", true]] as const;
+  for (const [hour, goal, op, keeps] of cases) {
     const { w, px, py } = pad(4);
     const a = w.agents[0];
     put(w, a, px, py);
@@ -178,8 +182,10 @@ test("whoever is out after something when the dark falls gives it up where they 
     bodyOf(w, a).sleep = 0.7; // a long sleep to be in the middle of
     a.goal = { type: goal, since: w.t, odds: {}, fails: 0 };
     a.plan = [{ op, arg: op === "wander" ? `${px + 40 / TILE_M},${py}` : undefined, progress: 0 }];
+    const was = a.goal;
+    // the goal given up, whatever they choose next (the tick waits on the GPU, and the brain may answer meanwhile)
     await tick(w);
-    expect(a.goal?.type ?? "none").toBe(kept);
+    expect(a.goal === was).toBe(keeps);
   }
 });
 

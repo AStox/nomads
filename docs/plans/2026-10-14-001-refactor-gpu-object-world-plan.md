@@ -169,6 +169,7 @@ There is no floor: everything is an individual. What differs by kind is only whe
 - Dormant members cost 20 to 32 bytes each (slot word, place, birth, one anchor per integrated channel): sticks at 2 x 10^8 would take about 4 GB, so Unit 9 holds sticks as dormant bins by (cell, birth week) with places by hash, one anchor per bin.
 - Event-driven kinds with daily hazards step per day (52 ms a day at 10^8); per-tick steps at 10^8 cost 5 s a day.
 - Rebuilding the spatial index costs about 65 ms per 10^7 objects, so it is rebuilt only for kinds that moved.
+- Units 5 and 6 landed with outcomes identical to before: trees and bushes are an active kind (1.36 million on seed 1), every other generated thing a static dormant member (2.14 million, 0 bytes until changed); about 77 MB of GPU memory a world. Lookups read the mirror where a person's 800 m window has landed and otherwise the generator's data plus the CPU's own changes, which equals the GPU while no GPU law changes flora; the first GPU law on flora (Unit 7) ends that second rule for the cells it touches. Bench back to back: make +20%, blame +13%, seed +2%, world +8%; the page ticks in about 9 ms. Stores of discarded worlds are not destroyed explicitly, which a probe process making many worlds must do before Unit 7.
 - Readback window shapes and sizes round people: tuned in Unit 4 against the 0.1 to 3 ms readback latencies measured.
 - Linux or GPU-less machines (lavapipe or a fail-fast notice): open; no CI exists today.
 

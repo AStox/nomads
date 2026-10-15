@@ -13,6 +13,7 @@ import { populate } from "./fauna";
 import { NIGHT_EL, NOON, YEAR_DAYS, sunAt } from "./sky";
 import { Store } from "../gpu/store";
 import type { Gpu } from "../gpu/device";
+import type { Stand } from "../gpu/flora";
 
 export const W = TILES;
 export const H = TILES;
@@ -571,11 +572,12 @@ export const HP: Record<string, (size: number) => number> = {
   tree: (s) => Math.round(30 + s * 4.5), bush: () => 20, boulder: (s) => Math.round(60 + s * 40), stone: () => 40, pebble: () => 10,
   stick: () => 8, fallen_log: (s) => Math.round(20 + s * 6), mushroom: () => 2, herb: () => 3, reeds: () => 6, fern: () => 4, flowers: () => 2, clay: () => 10, grass: () => 3,
 };
-// Entry k of what the ground grew (groundOf flora), as the thing it is before anyone touches it: thing t{k + 1}.
-export function grown(w: World, k: number): Thing {
-  const g = groundOf(w.seed), f = g.flora, kind = FLORA[f.kind[k]], px = f.px[k], py = f.py[k], size = f.size[k], seed = f.seed[k];
-  const hp = HP[kind](size), species = SPECIES[f.species[k]];
-  const t: Thing = { id: `t${k + 1}`, kind, x: Math.floor(px), y: Math.floor(py), px, py, size, seed, hp, maxHp: hp };
+// Object e of what the ground grew (src/gpu/flora.ts) as the thing t{e} it is while no one has touched it, standing
+// as given (kind and species as their codes).
+export function grown(w: World, e: number, s: Stand): Thing {
+  const g = groundOf(w.seed), kind = FLORA[s.kind], { px, py, size, seed } = s;
+  const hp = HP[kind](size), species = SPECIES[s.species];
+  const t: Thing = { id: `t${e}`, kind, x: Math.floor(px), y: Math.floor(py), px, py, size, seed, hp, maxHp: hp };
   if (species) t.species = species;
   if (kind === "bush" && species === "berry") t.n = cropOf(t);
   // Flint forms as nodules inside the rock that holds it, chalky limestone above all; ore shows as reddish stones, and

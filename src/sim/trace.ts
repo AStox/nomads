@@ -42,6 +42,11 @@ export function timed<T>(sys: string, fn: () => T): T {
   const t0 = performance.now();
   try { return fn(); } finally { tickMs[sys] = (tickMs[sys] ?? 0) * 0.95 + (performance.now() - t0) * 0.05; }
 }
+// The same for work that ends when a promise settles (the GPU's landing), timed to the end of the wait.
+export async function waited<T>(sys: string, fn: () => Promise<T>): Promise<T> {
+  const t0 = performance.now();
+  try { return await fn(); } finally { tickMs[sys] = (tickMs[sys] ?? 0) * 0.95 + (performance.now() - t0) * 0.05; }
+}
 
 export function flush() {
   if (!dir || !pending.length) return;
