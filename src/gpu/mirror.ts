@@ -112,7 +112,8 @@ export class Mirror {
     p.bySlot.set(o[w], obj);
     return obj;
   }
-  // A landed cell's page, made into objects the first time it is asked for; undefined for a cell not landed.
+  // A landed cell's page, made into objects the first time it is asked for; undefined for a cell not landed. A row of
+  // a dead slot (one a law killed in a still kind whose index wasn't rebuilt since) is no object, and its death is noted.
   private page(k: Kind, p: Pages, c: number): Obj[] | undefined {
     const made = p.cells.get(c);
     if (made) return made;
@@ -120,7 +121,11 @@ export class Mirror {
     if (!raw) return undefined;
     p.raw.delete(c);
     const [o, at, n] = raw, row = 2 + k.fields.length, page: Obj[] = [];
-    for (let r = 0; r < n; r++) page.push(this.make(k, p, o, at + r * row, c));
+    for (let r = 0; r < n; r++) {
+      const w = at + r * row;
+      if (o[w + 1] & 1) page.push(this.make(k, p, o, w, c));
+      else p.dead.set(o[w], Math.max(p.dead.get(o[w]) ?? 0, (o[w + 1] >>> 1) & 0x1ffff));
+    }
     p.cells.set(c, page);
     return page;
   }

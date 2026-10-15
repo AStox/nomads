@@ -6,22 +6,25 @@
 // People and animals answer to how bright a place looks, which is the log of its lux: they see less far, walk and work
 // slower, sleep better and keep to a fire when it is dark. The rates below are those answers.
 import { DAY, TILE_M, groundOf, hourOf, meters, perWorld, type Thing, type World } from "./world";
-import { SIZE, clamp, smooth } from "../terrain/flora";
+import { SIZE, clamp, crownShare, smooth } from "../terrain/flora";
+import { TREE_MAX } from "../terrain/niche";
 import { around, liveThings, lookAround } from "./space";
 import { ablaze, carriedOutput, fireOutput, isFlame } from "./physics";
 import { CLOUD, NIGHT_EL, SKYLIGHT, STAR_LUX, moonAt, moonLux, sunAt, sunLux } from "./sky";
 import { sieve, through } from "../terrain/growth";
 
 // ---------- crowns ----------
-// A crown's radius as a share of its tree's height, by species: the width sprites.js draws it at (oak 0.8 of its height, ash
-// 0.68, the rest 0.5, a pine's cone 0.42) over its height's 0.866 of a meter across, halved. The renderer's ambient
-// occlusion (demo/styles/isopixel/canopy.js) shades the same crowns the same way: change one, change both.
-const SHARE: Record<string, number> = { oak: 0.35, ash: 0.29, pine: 0.18 };
+// A tree's crown holds the ground its share of a closed stand holds (terrain/flora.ts crownShare: Reineke's maximum
+// density for pine and oak, Hemery et al.'s crown widths for ash and aspen), as a disc; a bush's crown a ball as wide as
+// it is tall. The GPU's stems shade one another by the same crowns (gpu/wgsl/stems.ts). The renderer still draws crowns
+// at its old widths (sprites.js, and canopy.js's ambient occlusion) until it draws from the GPU (Unit 14).
 // A crown hides all of the sky within CORE of its radius and none past EDGE, easing out between.
 const CORE = 0.55, EDGE = 1.2;
-export const CROWN_REACH = 12; // meters: no crown, of the tallest tree, reaches further from its trunk
+const TREE: Record<string, true> = { pine: true, oak: true, ash: true, aspen: true };
+export const crownRadius = (t: { species?: string; size: number }) => (TREE[t.species ?? ""] ? Math.sqrt(crownShare(t.species!, t.size) / Math.PI) : t.size / 2);
+// meters: no crown, of the tallest tree of any kind, reaches further from its trunk
+export const CROWN_REACH = EDGE * Math.max(...Object.keys(TREE_MAX).map((sp) => crownRadius({ species: sp, size: TREE_MAX[sp] })));
 // How much of the sky one tree's crown hides at d meters from its trunk: all of it near the trunk, easing to none.
-export const crownRadius = (t: { species?: string; size: number }) => (SHARE[t.species ?? ""] ?? 0.22) * t.size;
 export function crownCover(t: { species?: string; size: number }, d: number) {
   const r = crownRadius(t);
   return d > r * EDGE ? 0 : d <= r * CORE ? 1 : 1 - smooth(CORE, EDGE, d / r);
@@ -40,7 +43,7 @@ export function crownsAt(w: World, px: number, py: number): Crowns {
   let cover = 0, height = 0, ratio = 0;
   around(w, px, py, CROWN_REACH, ["tree"], (t, d) => {
     const c = crownCover(t, d);
-    cover += c; height += c * t.size; ratio += c * 2 * (SHARE[t.species ?? ""] ?? 0.22);
+    cover += c; height += c * t.size; ratio += c * Math.min(1, (2 * crownRadius(t)) / t.size);
   });
   if (!ys) {
     if (xs.size >= 4096) xs.clear();

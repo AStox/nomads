@@ -5,6 +5,7 @@
 import type { Kind, Registry } from "./materials";
 import type { Size } from "./world";
 import type { SHRUBS, TREES } from "../terrain/niche";
+import { dbhOf } from "../terrain/flora";
 
 // How something burns, if it does: what lights it, the heat its flames and its glowing char give, the char it leaves,
 // and the heat it takes to drive its gases off.
@@ -196,9 +197,9 @@ export function greenOf(species: string | undefined, log = false) {
 // is a trunk as tall as it is long), and a log is a meter of it. A stick, branch or stem is a young stem as long as it is,
 // by its species' height-to-diameter ratio, but heather's, which stays thin (sec. 19c). A tree's branch is a fifth of its
 // height, a stump's a meter, a bush's stem as long as the bush is tall.
-const TRUNK: Partial<Record<Wood | "generic", (H: number) => number>> = {
-  pine: (H) => 0.01721 * H ** 0.842, oak: (H) => 0.00489 * H ** 1.334, ash: (H) => ((100 * H) / 290) ** 1.938 / 100, aspen: (H) => 0.00343 * H ** 1.371,
-};
+const TRUNK: Partial<Record<Wood | "generic", (H: number) => number>> = Object.fromEntries(
+  (["pine", "oak", "ash", "aspen"] as const).map((sp) => [sp, (H: number) => dbhOf(sp, H) / 100]),
+);
 const STEM: Record<Wood | "generic", (len: number) => number> = {
   pine: (len) => len / 105, oak: (len) => len / 112, ash: (len) => len / 133, aspen: (len) => len / 142, hazel: (len) => len / 119, berry: (len) => len / 119,
   heather: () => 0.0035, generic: (len) => len / 123,

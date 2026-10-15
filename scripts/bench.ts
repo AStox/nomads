@@ -5,7 +5,7 @@
 //   NOMADS_BRAIN=random bun scripts/bench.ts [--only make,seed,blame,world,spread] [--days 20]
 // Profile one: NOMADS_BRAIN=random bun --cpu-prof-md --cpu-prof-dir=/tmp/prof scripts/bench.ts --only seed
 import { DAY, TILE_M, addThing, dryAt, heldStore, newWorld, type Thing, type World } from "../src/sim/world";
-import { tick } from "../src/sim/sim";
+import { retire, tick } from "../src/sim/sim";
 import { bedAir, changed, fireOf, newKinds, removeThing, removed } from "../src/sim/physics";
 import { ecology, trailChanges } from "../src/sim/ecology";
 import { advance } from "../src/sim/combustion";
@@ -45,7 +45,9 @@ const WORK: Record<string, () => Promise<string>> = {
       // as scripts/theories.ts runs a world: what people are thinking over comes to them every few ticks
       if (i % 4 === 0) await Bun.sleep(0);
     }
-    return await stateOf(w);
+    const state = await stateOf(w);
+    await retire(w);
+    return state;
   },
   // A grass fire through a field, staged as fire.test.ts stages its spread cases: open, dry ground cleared for 60 m
   // round; 60 ranks of 31 cured tussocks 1.5 m across, 1.2 m apart so they touch as standing grass does (the island's

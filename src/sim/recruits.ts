@@ -6,11 +6,10 @@
 // already does.
 import { DAY, H, TILE_M, W, YEAR_DAYS, dryAt, type Thing, type World } from "./world";
 import { treeHeight } from "../terrain/flora";
-import { keptOf, madeOf, through } from "../terrain/growth";
-import { SEEDLINGS, YEARS_PACE, fitIn, seasonsHere } from "./plants";
+import { keptOf, madeOf, pOf, through } from "../terrain/growth";
+import { GROWTH_C as C, SEEDLINGS, TREE_KINDS, YEARS_PACE, fitIn, openNet, seasonsHere, treeKg } from "./plants";
 import { seasonAt } from "./sky";
 import { onTile, stockedTile } from "./space";
-import { branchKg, stemKg, trunkOf } from "./mechanics";
 import { crownRadius } from "./light";
 import { onDay } from "./herds";
 
@@ -19,10 +18,7 @@ import { onDay } from "./herds";
 export type Cohort = { sp: string; n: number; m: number; peak: number; open: boolean; born: number };
 
 // ---------- how big a young plant is ----------
-// A young tree's mass at a height: Repola's stem and branches (mechanics.ts) on the stem the game's trees have at that
-// height (fuel.ts), kg dry; and its height at a mass, read back off that.
-const TREE_KINDS = ["pine", "oak", "ash", "aspen"] as const;
-const treeKg = (sp: string, h: number) => { const d = trunkOf({ kind: "tree", species: sp, size: h }) * 100; return stemKg(d, h) + branchKg(d, h); };
+// A young tree's mass at a height (plants.ts treeKg), g; and its height at a mass, read back off that.
 const HEIGHTS = Array.from({ length: 400 }, (_, k) => 0.05 + k * 0.1);
 const MASSES: Record<string, number[]> = Object.fromEntries(TREE_KINDS.map((sp) => [sp, HEIGHTS.map((h) => treeKg(sp, h) * 1000)]));
 const heightOf = (sp: string, m: number) => {
@@ -36,35 +32,9 @@ const heightOf = (sp: string, m: number) => {
 // A bramble crown as a bush stands (ecology.ts matured), m.
 const BUSH_H = 0.9;
 const crownArea = (sp: string, m: number) => Math.PI * crownRadius({ species: sp, size: heightOf(sp, m) }) ** 2;
-// A young tree past a seedling's size grows as its mass to the 3/4 (Niklas and Enquist, R469), dM/dt = c M^(3/4): c for
-// each kind is what takes one from a seedling come up (plants.ts SEEDLINGS) to its height in British yield tables at
-// 20 years from planting, 2 to 4 years after the seed (R470), with three added: Scots pine 7.5 m (yield class 100) and
-// oak 7.8 m (yield class 60, Bradley et al.), ash 11.4 m planted on grassland in Ireland (Wellock et al.); aspen's
-// suckers 11.4 m at 20 years old in Sweden (site index 20, Johansson) [derived]. That's in the open on ground that
-// suits it; elsewhere it grows as the plant rule's net gain there stands to that on the island's typical open ground at a
-// perfect fit (reference), which shade or a poor fit can take below nothing, starving it.
-// The open, best-fitting ground c holds for: the island's own land in its typical year, the net gain of a gram of each
-// kind there day by day over a year, averaged over the land (a sample of every 61st land tile) [derived].
-const refs = new WeakMap<World, Record<string, number>>();
-const netOn = (sp: string, here: ReturnType<typeof seasonsHere>, fit: number, light: number, t: number) => {
-  const { s, f } = seasonAt(t), mix = (a: number[]) => a[s] * (1 - f) + a[(s + 1) % 4] * f, k = SEEDLINGS[sp];
-  return fit * madeOf(k.sla, mix(here.sun) * light, mix(here.temp), mix(here.water)) - keptOf(mix(here.temp));
-};
-function reference(w: World, sp: string) {
-  let got = refs.get(w);
-  if (!got) refs.set(w, (got = {}));
-  if (got[sp] !== undefined) return got[sp];
-  let sum = 0, n = 0;
-  for (let i = 0; i < W * H; i += 61) {
-    if (!dryAt(w, (i % W) + 0.5, Math.floor(i / W) + 0.5)) continue;
-    const here = seasonsHere(w, (i % W) + 0.5, Math.floor(i / W) + 0.5);
-    for (let d = 0; d < YEAR_DAYS; d++) sum += netOn(sp, here, 1, 1, d * DAY);
-    n += YEAR_DAYS;
-  }
-  return (got[sp] = n ? sum / n : 0);
-}
-const AT: Record<string, [number, number]> = { pine: [7.5, 23], oak: [7.8, 23], ash: [11.4, 23], aspen: [11.41, 20] };
-const C: Record<string, number> = Object.fromEntries(TREE_KINDS.map((sp) => { const [h, yr] = AT[sp]; return [sp, (4 * (treeKg(sp, h) ** 0.25 - (SEEDLINGS[sp].up / 1000) ** 0.25)) / (yr - 1)]; }));
+// A young tree past a seedling's size grows as its mass to the 3/4 (plants.ts GROWTH_C), in the open on ground that
+// suits it as calibrated; elsewhere as the plant rule's net gain there stands to that on the island's typical open
+// ground at a perfect fit (plants.ts openNet), which shade or a poor fit can take below nothing, starving it.
 // Young trees stand up as trees once as tall as the ground's own of their kind there, as the generator lays them down
 // (flora.ts treeHeight by the spot's fit, its spread's middle) [derived]; brambles as bushes in their second summer, when
 // their canes first fruit (Agriculture Victoria, R466), once come up.
@@ -223,11 +193,11 @@ export function recruit(w: World, acorns: (t: Thing) => number, make: (sp: strin
       const light = c.open ? LIGHT.open : LIGHT.under, key = `${c.sp}|${c.open}`, k2 = SEEDLINGS[c.sp];
       let fit = fits.get(key);
       if (fit === undefined) fits.set(key, (fit = fitIn(w, c.sp, px, py, light)));
-      const net = fit * madeOf(k2.sla, sun * light, temp, water) - keptOf(temp);
+      const net = fit * madeOf(k2.sla, sun * light, temp, water, pOf(c.sp)) - keptOf(temp);
       if (c.m < k2.up || !C[c.sp]) c.m = Math.max(0, Math.min(C[c.sp] ? Infinity : k2.up, c.m + c.m * net * YEARS_PACE));
       else {
         // where the island's typical ground grows none of a kind, it only keeps or loses what it has
-        const ref = reference(w, c.sp), vs = ref > 0 ? net / ref : net < 0 ? -1 : 0;
+        const ref = openNet(w, c.sp), vs = ref > 0 ? net / ref : net < 0 ? -1 : 0;
         c.m = Math.max(0, c.m + C[c.sp] * (c.m / 1000) ** 0.75 * 1000 * vs * part);
       }
       c.peak = Math.max(c.peak, c.m);

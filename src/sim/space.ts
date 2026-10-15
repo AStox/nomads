@@ -1,17 +1,18 @@
 // Where every thing is: by id, by kind and tile, and which ones the world has to keep looking at. Every lookup that
 // asks what lies near a point goes through here, so dense ground never costs a scan of the whole island.
 //
-// What the ground grew (trees, grass, rocks and the rest, a few million of them) lives on the GPU as the flora's
-// objects (src/gpu/flora.ts), object number e being thing t{e}, and becomes Things only where something first looks
-// at its tile. Then the tile is stocked: each object standing there becomes a Thing like any other, read as the flora
-// answers for it (the mirror round people, else the generator's own data with the changes made since, which is what
-// the GPU holds). A stocked tile no one has looked at for a day, far from everyone, whose grown things are all still
-// exactly as they grew, is put back: its Things go, to be made the same way, with the same ids, the next time
-// anything looks. What anyone made, dropped or changed stays. A grown Thing's kind, species, size or place changed, or
-// the Thing gone, goes to its object at once (leave, setKind, and wake, which every change calls through mark).
-import { DAY, H, TILE_M, W, cropOf, groundOf, grown, heldStore, ringOf, storeOf, type Thing, type World } from "./world";
+// What the ground grew (trees, grass, rocks and the rest, millions of them) lives on the GPU as the flora's objects
+// (src/gpu/flora.ts), object number e being thing t{e}, and becomes Things only where something first looks at its
+// tile. Then the tile is stocked: each object standing there becomes a Thing like any other, read as the flora answers
+// for it (as the GPU held it after its stems last grew, with the changes made since). Once a day the stems grow, crowd
+// and starve on the GPU, and the stocked tiles' trees and bushes take their new heights or go (grownOn). A stocked tile
+// no one has looked at for a day, far from everyone, whose grown things all stand as the GPU has them, is put back:
+// its Things go, to be made the same way, with the same ids, the next time anything looks. What anyone made, dropped
+// or changed stays. A grown Thing's kind, species, size or place changed, or the Thing gone, goes to its object at once
+// (leave, setKind, and wake, which every change calls through mark).
+import { DAY, H, HP, TILE_M, W, cropOf, groundOf, grown, heldStore, ringOf, storeOf, type Thing, type World } from "./world";
 import { FLORA, SPECIES, type Scatter } from "../terrain/flora";
-import { Flora, type Stand } from "../gpu/flora";
+import { Flora, type Stand, type StemDriver } from "../gpu/flora";
 import { theGpu } from "../gpu/device";
 
 type Index = {
@@ -21,6 +22,7 @@ type Index = {
   changes: Uint32Array; // how many times anything has come onto each tile's bins or left them
   taken: Map<string, number>; // grown things gone from a stocked tile, and the tick they went
   flora: Flora; // what the ground grew, as its objects stand
+  landings: number; // the flora's landings of its stems the Things have taken up
 };
 const indexes = new WeakMap<World, Index>();
 
@@ -55,7 +57,7 @@ export function index(w: World): Index {
   let ix = indexes.get(w);
   if (ix) return ix;
   const flora = new Flora(groundOf(w.seed).flora);
-  ix = { at: new Map(), tiles: new Map(), live: new Set(), stocked: new Uint8Array(W * H), seen: new Int32Array(W * H), changes: new Uint32Array(W * H), taken: new Map(), flora };
+  ix = { at: new Map(), tiles: new Map(), live: new Set(), stocked: new Uint8Array(W * H), seen: new Int32Array(W * H), changes: new Uint32Array(W * H), taken: new Map(), flora, landings: flora.landings };
   // every kind the ground grows has its bins from the start, so stocking a tile mid-search never adds a list to search
   for (const k of FLORA) ix.tiles.set(k, new Array(W * H));
   for (const t of w.stocked) ix.stocked[t] = 1;
@@ -79,10 +81,34 @@ export function index(w: World): Index {
 // The world's flora: what the ground grew, as its objects stand.
 export const floraOf = (w: World) => index(w).flora;
 // The world's flora takes up residence on the GPU, the first time the world runs (sim.ts tick), on the store the world
-// has (one loaded with a save) or a new one.
-export async function resident(w: World) {
+// has (one loaded with a save) or a new one, its stems growing by the world's own ground (plants.ts stemDriver).
+export async function resident(w: World, stems: StemDriver) {
   const flora = index(w).flora;
-  if (!flora.store) flora.attach(heldStore(w) ?? storeOf(w, await theGpu()));
+  if (!flora.store) flora.attach(heldStore(w) ?? storeOf(w, await theGpu()), stems);
+}
+// The stems as the GPU last grew them: once a landing has brought them back, the trees and bushes on every stocked tile
+// take the heights they grew to, their hit points growing as much, and those the GPU starved or crowded out go [gap:
+// they go without standing on dead or falling, deadwood being Unit 9's].
+export function grownOn(w: World) {
+  const ix = index(w), flora = ix.flora, start = flora.f.start;
+  if (ix.landings === flora.landings) return;
+  ix.landings = flora.landings;
+  for (const t of w.stocked)
+    for (let e = start[t] + 1; e <= start[t + 1]; e++) {
+      if (!flora.isPlant(e)) continue;
+      const i = ix.at.get(`t${e}`);
+      if (i === undefined) continue;
+      const th = w.things[i], s = flora.stand(e);
+      // one turned into something else (a stump, a dead bush) is no longer a stem
+      if (th.kind !== FLORA[flora.f.kind[e - 1]]) continue;
+      if (!s) { drop(w, ix, th); continue; }
+      if (th.size === s.size) continue;
+      const hp = HP[th.kind](s.size);
+      th.hp = Math.max(1, (th.hp ?? hp) + hp - (th.maxHp ?? hp));
+      th.maxHp = hp;
+      th.size = s.size;
+      ix.changes[th.y * W + th.x]++;
+    }
 }
 
 // A grown thing as its object stands: null once it is no longer something the ground grows or lays (a felled tree's
@@ -315,18 +341,22 @@ function same(a: Thing, b: Thing) {
   return n === 0;
 }
 // Once a day: put back every stocked tile nothing has looked at for a day, with no one within a kilometer, whose grown
-// things are all still exactly as they grew. Their Things go; their objects, untouched, stay as the generator wrote them.
+// things all stand exactly as the GPU last had them (those it killed gone). Their Things go; their objects stay.
 export function shelve(w: World) {
   const ix = index(w), flora = ix.flora, start = flora.f.start, near = 1000 / TILE_M, kept: number[] = [];
   for (const t of w.stocked) {
     const x = t % W + 0.5, y = Math.floor(t / W) + 0.5;
     let asGrown = w.t - ix.seen[t] >= DAY && !w.agents.some((a) => Math.abs(a.px - x) < near && Math.abs(a.py - y) < near);
     for (let e = start[t] + 1; asGrown && e <= start[t + 1]; e++) {
-      const i = ix.at.get(`t${e}`);
-      asGrown = i !== undefined && same(w.things[i], grown(w, e, flora.written(e)));
+      const i = ix.at.get(`t${e}`), s = flora.grownStand(e);
+      asGrown = s ? i !== undefined && same(w.things[i], grown(w, e, s)) : i === undefined;
     }
     if (!asGrown) { kept.push(t); continue; }
-    for (let e = start[t] + 1; e <= start[t + 1]; e++) { drop(w, ix, w.things[ix.at.get(`t${e}`)!]); ix.taken.delete(`t${e}`); }
+    for (let e = start[t] + 1; e <= start[t + 1]; e++) {
+      const i = ix.at.get(`t${e}`);
+      if (i !== undefined) drop(w, ix, w.things[i]);
+      ix.taken.delete(`t${e}`);
+    }
     ix.stocked[t] = 0;
   }
   w.stocked = kept;
@@ -334,13 +364,14 @@ export function shelve(w: World) {
 
 // What was taken of the ground's own growth comes back where it grew: back: given one as it grew and the tick it went
 // (that of the world's loading, for one gone before), whether it's back now (ecology.ts regrowth). Its object is as the
-// generator wrote it again (the taken-tick rule; later units make regrowth the kinds' own processes).
+// generator wrote it again (the taken-tick rule; later units make regrowth the kinds' own processes). Trees and bushes
+// never come back where they stood.
 export function regrow(w: World, back: (t: Thing, went: number) => boolean) {
   const ix = index(w), flora = ix.flora, start = flora.f.start;
   for (const t of w.stocked)
     for (let e = start[t] + 1; e <= start[t + 1]; e++) {
       const id = `t${e}`;
-      if (ix.at.has(id)) continue;
+      if (ix.at.has(id) || flora.isPlant(e)) continue;
       const as = flora.written(e), th = grown(w, e, as);
       if (!back(th, ix.taken.get(id) ?? (ix.taken.set(id, w.t), w.t))) continue;
       ix.taken.delete(id);
@@ -350,18 +381,18 @@ export function regrow(w: World, back: (t: Thing, went: number) => boolean) {
 }
 
 // Everything in the world, for drawing, in the shape of the generator's scatter so the WebGL2 page keeps drawing (px.js
-// ObjBins). The generator's arrays are the flora's objects as written, shared as they are, not copied; `gone` lists
-// the objects no longer standing as written there, and `things` every thing the world holds that the arrays don't show
-// as it is: what was made since, and grown things changed. Kind and species codes in the arrays index kindNames and
-// speciesNames.
+// ObjBins). The arrays are the generator's with every stem at the height the GPU last grew it to (flora.ts drawn);
+// `gone` lists the objects no longer standing there, and `things` every thing the world holds that the arrays don't
+// show as it is: what was made since, and grown things changed. Kind and species codes in the arrays index kindNames
+// and speciesNames.
 export type Objects = { grown: Scatter; kindNames: string[]; speciesNames: string[]; gone: number[]; things: Thing[] };
 export function objects(w: World): Objects {
   const ix = index(w), flora = ix.flora, start = flora.f.start, things: Thing[] = [];
   for (const t of w.stocked)
     for (let e = start[t] + 1; e <= start[t + 1]; e++) {
-      const i = ix.at.get(`t${e}`);
-      if (i !== undefined && !same(w.things[i], grown(w, e, flora.written(e)))) things.push(w.things[i]);
+      const i = ix.at.get(`t${e}`), s = flora.grownStand(e);
+      if (i !== undefined && (!s || !same(w.things[i], grown(w, e, s)))) things.push(w.things[i]);
     }
   for (const t of w.things) if (!grownNumber(ix, t.id)) things.push(t);
-  return { grown: flora.f, kindNames: [...FLORA], speciesNames: [...SPECIES], gone: flora.gone(), things };
+  return { grown: flora.drawn(), kindNames: [...FLORA], speciesNames: [...SPECIES], gone: flora.gone(), things };
 }

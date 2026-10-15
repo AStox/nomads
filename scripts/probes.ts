@@ -19,7 +19,7 @@
 // scripts/evals.ts runs every probe over many seeds and holds each build to the last good one.
 import { readFileSync } from "node:fs";
 import { DAY, TILE_M, addThing, dryAt, isNight, newWorld, rng, type Agent, type Stack, type Thing, type World } from "../src/sim/world";
-import { conditionsNow, surroundings, tick } from "../src/sim/sim";
+import { conditionsNow, retire, surroundings, tick } from "../src/sim/sim";
 import { DURATION, STILL, changed, count, counts, emberTime, giveItems, giveStack, groundWord, layAt, newKinds, occupied, removeThing, removed, soilAt, SEED_SOIL } from "../src/sim/physics";
 import { BLOWS, SPARKS_TO_CATCH } from "../src/sim/mechanics";
 import { predict } from "../src/sim/formulas";
@@ -900,6 +900,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   Object.assign(truth, { unreachable: reach("Ceil").map((c) => c.id).join(" ") || "none", free: reach("Floor").map((c) => c.id).join(" ") || "none" });
   hooks.weather = hooks.options = undefined;
   traceListeners.splice(traceListeners.indexOf(listen), 1);
+  await retire(w);
   return { probe, variant, seed, brain, days, people: n, secs: Math.round((performance.now() - t0) / 1000), attempts: attempts.length, jev: { calls: w.jev.calls, tokens: w.jev.tokens }, truth, metrics };
 }
 

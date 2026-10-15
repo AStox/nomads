@@ -102,8 +102,11 @@ export const NICHE: Record<string, Niche> = {
   // 4.6 (R605) [derived]
   grass: { ph: herb(5.4, 4.6), table: moistF(5) },
 };
-// The tallest anything grows on the island, m.
-export const TALLEST = Math.max(...Object.values(NICHE).map((n) => n.tall ?? 0));
+// The tallest each tree grows anywhere, m: iLand's maximum heights (fire-constants R97), past PLANTATT's British heights
+// above, which stands in this island's old growth reach (plant-constants sec. 11).
+export const TREE_MAX: Record<string, number> = { pine: 42, oak: 38, ash: 42, aspen: 30 };
+// The tallest anything grows on the island, m: the tallest tree's maximum (fire-constants R97), 42 m.
+export const TALLEST = Math.max(...Object.values(NICHE).map((n) => n.tall ?? 0), ...Object.values(TREE_MAX));
 // The woody plants that compete for each place, by form, as ground.ts and flora.ts read them.
 export const TREES = ["pine", "oak", "ash", "aspen"] as const;
 export const SHRUBS = ["berry", "hazel", "heather"] as const;

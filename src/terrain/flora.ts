@@ -5,7 +5,7 @@ import { CELL, N, TILE_CELLS } from "./grid";
 import type { Island } from "./island";
 import { DRIFTS, ROCKS, type Drift, type Rock } from "./geology";
 import { WOODED, bankDepth, bankWidth, widthOf } from "./water";
-import { NICHE, SHRUBS, TREES, draw, envAt, fit, lightFit } from "./niche";
+import { NICHE, SHRUBS, TREES, TREE_MAX, draw, envAt, fit, lightFit } from "./niche";
 import { SLA, pOf, through, thrive, yearComp } from "./growth";
 import { COVER, coverClass } from "./ground";
 
@@ -168,9 +168,61 @@ export type Scatter = {
 
 const F = Object.fromEntries(FLORA.map((k, i) => [k, i])) as Record<Flora, number>;
 const S = Object.fromEntries(SPECIES.map((k, i) => [k, i])) as Record<Species, number>;
-// A tree's height, m: its kind's tallest (niche.ts) spread by how well it fits there (f) and a draw (r, 0..1), the
-// best-fitted at the top of the spread reaching the tallest [design: the old spread, scaled so nothing outgrows its kind].
-export const treeHeight = (sp: string, f: number, r: number) => (NICHE[sp].tall ?? 0) * (clamp(0.45 + 0.75 * f, 0.45, 1.2) / 1.2) * ((0.7 + 0.55 * r) / 1.25);
+// ---------- stems (docs/research/plant-constants.md sec. 11) ----------
+// A stem's diameter at breast height by its height, cm, and its height by its diameter: the stand-grown allometry
+// fuel.ts cuts its trunks by (fire-constants sec. 19: BAAD fits for pine, oak and aspen, R98; iLand's crowded bound for
+// ash, R97).
+const DBH: Record<string, [a: number, b: number]> = { pine: [1.721, 0.842], oak: [0.489, 1.334], aspen: [0.343, 1.371], ash: [(100 / 290) ** 1.938, 1.938] };
+export const dbhOf = (sp: string, h: number) => DBH[sp][0] * h ** DBH[sp][1];
+export const heightOfDbh = (sp: string, d: number) => (d / DBH[sp][0]) ** (1 / DBH[sp][1]);
+// The most stems a closed stand of quadratic mean diameter D (cm) holds, by Reineke's rule N = SDImax (25 / D)^b: Scots
+// pine SDImax 890 a ha, b 1.593; oak 733, b 1.424 (del Río et al., R650; Pretzsch and Biber, R651). A stem's crown
+// then holds 10^4 / N m2 of a closed stand at its own diameter, and stems whose shares sum to the ground close it, so
+// the stand's SDI by summation is its tree cover times SDImax [derived].
+const REINEKE: Record<string, [max: number, b: number]> = { pine: [890, 1.593], oak: [733, 1.424] };
+// Crown width by diameter, K = a + b d (m, d in m), for ash and aspen (poplar's, aspen's nearest in Hemery et al.'s
+// Table 1, R652), whose maximum stand density is not known: crowns as wide as that pack a closed stand [derived].
+const HEMERY: Record<string, [a: number, b: number]> = { ash: [0.758, 20.357], aspen: [0.801, 18.95] };
+// The ground a stem's crown holds in a closed stand, m2, by its height: a tree's by its kind's maximum density or its
+// crown width; a bush's crown a ball as wide as it is tall (fire-constants sec. 30) [derived].
+export function crownShare(sp: string, h: number): number {
+  const R = REINEKE[sp], K = HEMERY[sp];
+  if (R) return (1e4 * (dbhOf(sp, h) / 25) ** R[1]) / R[0];
+  if (K) { const k = K[0] + (K[1] * dbhOf(sp, h)) / 100; return (Math.PI * k * k) / 4; }
+  return Math.PI * (h / 2) ** 2;
+}
+// A stand's quadratic mean height at a site, m. The generator lays old-growth stands with no age of their own, at the
+// mean heights del Río et al. measured in stands about 72 years old across Europe (R650): Scots pine 10.8 to 31.2 m,
+// oak 9.1 to 32.3, the niche's fit standing in for the site index across that span [design]. Ash and aspen take the
+// same span as shares of their maximum heights, the mean of pine's and oak's (0.25 to 0.80) [gap: no stand heights read].
+const STAND: Record<string, [lo: number, hi: number]> = {
+  pine: [10.8, 31.2], oak: [9.1, 32.3],
+  ash: [0.248 * TREE_MAX.ash, 0.796 * TREE_MAX.ash], aspen: [0.248 * TREE_MAX.aspen, 0.796 * TREE_MAX.aspen],
+};
+export const standHeight = (sp: string, f: number) => STAND[sp][0] + (STAND[sp][1] - STAND[sp][0]) * clamp(f, 0, 1);
+// Stems in a stand spread as a two-parameter Weibull in diameter, shape c 2 to 3.6 in normal to dense stands
+// (Siipilehto and Mehtätalo, R653): 3.6, every stand here standing at its maximum density [design], scaled so the
+// stems' quadratic mean diameter is the stand's.
+const SHAPE = 3.6;
+const lnGamma = (z: number): number => {
+  const g = 7, c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+  let x = c[0];
+  for (let i = 1; i < g + 2; i++) x += c[i] / (z - 1 + i);
+  const t = z - 1 + g + 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z - 0.5) * Math.log(t) - t + Math.log(x);
+};
+const QUAD = Math.exp(lnGamma(1 + 2 / SHAPE) / 2);
+// A tree's height, m: the stand's at the site (fit), the stem's diameter the Weibull's quantile r (0..1) of the
+// stand's spread, and its height that diameter's, no taller than its kind grows.
+export const treeHeight = (sp: string, f: number, r: number) =>
+  Math.min(TREE_MAX[sp], heightOfDbh(sp, (dbhOf(sp, standHeight(sp, f)) / QUAD) * (-Math.log(1 - Math.min(r, 1 - 1e-12))) ** (1 / SHAPE)));
+// A bush's height, m: its kind's (niche.ts tall) spread by how well it fits there and a draw [design: the old spread; a
+// log-normal about tall is the replacement the generator notes name, its spread a gap].
+export const bushHeight = (sp: string, f: number, r: number) => ((NICHE[sp].tall ?? 1) * clamp(0.4 + 0.8 * f, 0.4, 1.2) * (0.6 + r * 0.8)) / (1.2 * 1.4);
+// Stems' sizes go down to the millimetre, as the GPU holds them (src/gpu/flora.ts).
+export const toMm = (m: number) => Math.max(1, Math.round(m * 1000)) / 1000;
+// The shrub share past which its crowns' Boolean cover can't be told from full, so no more are laid [design].
+const SHRUB_MOST = 0.99;
 // The widest boulder, m.
 export const BOULDER = 0.5 + 5;
 // the plants that compete for each place, by layer and kind (the trees and shrubs niche.ts's)
@@ -274,19 +326,27 @@ export function scatter(isle: Island, g: Fine, seed: number): Scatter {
       layer(TREES.length, SHRUBS, under, shrubF);
       // none of a layer where none of its plants can keep itself
       const any = (f: Float32Array, n: number) => { for (let k = 0; k < n; k++) if (f[k] > 0) return true; return false; };
-      for (let c = any(treeF, TREES.length) ? Math.floor(tree * 3.6 + r()) : 0; c > 0; c--) {
-        const [x, z] = spot();
-        if (!dry(x, z) || slopeAt(x, z) > 0.7) continue;
-        const sp = draw(TREES, treeF, r());
-        put(F.tree, S[sp], x, z, treeHeight(sp, treeF[TREES.indexOf(sp)], r()));
-      }
+      // Stems, as many as their crowns fill the share of the quad their form covers (ground.ts): each one's kind drawn by
+      // its fit there, its height drawn, and the ground its crown holds (crownShare) added up until it reaches the
+      // room, the last stem laid with the chance of the room it has left. Trees close their share of the quad as a stand
+      // at its maximum density, and never more than the quad holds closed but for a lone tree, as the GPU's stems crowd
+      // (src/gpu/wgsl/stems.ts); bushes stand as a Boolean cover of their crowns, whose covered share is 1 - e^(-the
+      // crowns' area over the ground's), so their crowns fill -ln(1 - shrub) of it [derived]. A stem whose spot turns
+      // out wet, or for a tree bare of soil to root in (ground.ts soil), stands nowhere.
+      const lay = (kind: number, names: readonly Species[], f: Float32Array, room: number, most: number, height: (sp: Species, f: number, r: number) => number) => {
+        if (!any(f, names.length)) return;
+        for (let used = 0; ; ) {
+          const sp = draw(names, f, r()), h = toMm(height(sp, f[names.indexOf(sp)], r())), a = crownShare(sp, h), last = used + a > room;
+          if (last && (r() * a >= room - used || (used > 0 && used + a > most))) return;
+          used += a;
+          const [x, z] = spot();
+          if (dry(x, z) && (kind !== F.tree || bilinear(isle.soil, cellOf(x), cellOf(z)) > 0)) put(kind, S[sp], x, z, h);
+          if (last) return;
+        }
+      };
+      lay(F.tree, TREES, treeF, tree * STEP * STEP, STEP * STEP, treeHeight);
+      lay(F.bush, SHRUBS, shrubF, -Math.log(1 - Math.min(shrub, SHRUB_MOST)) * STEP * STEP, Infinity, bushHeight);
       const edge = tree * (1 - tree) * 4;
-      for (let c = any(shrubF, SHRUBS.length) ? Math.floor((shrub * 5 + edge * 1.2) * 0.6 + r()) : 0; c > 0; c--) {
-        const [x, z] = spot();
-        if (!dry(x, z)) continue;
-        const sp = draw(SHRUBS, shrubF, r());
-        put(F.bush, S[sp], x, z, ((NICHE[sp].tall ?? 1) * clamp(0.4 + 0.8 * shrubF[SHRUBS.indexOf(sp)], 0.4, 1.2) * (0.6 + r() * 0.8)) / (1.2 * 1.4));
-      }
       for (let c = Math.floor(bare * 1.6 + slope * 1.5 + r() * 0.8); c > 0; c--) {
         const [x, z] = spot();
         if (fine(wet, x, z) < 0.3) put(F.boulder, 0, x, z, 0.5 + r() ** 3 * (BOULDER - 0.5));

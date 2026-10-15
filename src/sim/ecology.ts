@@ -9,7 +9,7 @@ import {
   DAY, H, HP, TILE_M, W, Tile, YEAR, addThing, cropOf, dayOfYear, groundOf, log, meters, rng, sea, seasonOf, tileAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
-import { anyAround, around, exists, liveThings, onPath, put, regrow, setKind, stockedAt } from "./space";
+import { anyAround, around, exists, grownOn, liveThings, onPath, put, regrow, setKind, stockedAt } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked } from "./animals";
 import { enrich, settle, soilWaterAt, wetHour } from "./soil";
@@ -17,7 +17,7 @@ import { SIZE, START } from "../terrain/flora";
 import { TALLEST } from "../terrain/niche";
 import { YEAR_DAYS } from "./sky";
 import { CELL } from "../terrain/grid";
-import { YEARS_PACE, fitHere, growth } from "./plants";
+import { ACORN_KG, ACORN_YEARS, YEARS_PACE, fitHere, growth } from "./plants";
 import { runoffHour } from "./streams";
 import { airAt, airOn, islandAir, islandTemp, nextAnomaly, nextSky, nextWarmth, nextWay, rainAt, sunOn, windOf } from "./air";
 import { crownRadius, skyShare } from "./light";
@@ -390,9 +390,10 @@ const BERRY_HP = 20;
 // fruit body lasts a week or two (R453), days.
 const STICK_TURNOVER = 0.2, FRUIT_DAYS = 10;
 // The acorns left on the ground under twelve Southampton oaks, kg fresh a m2 of their crowns: 0.196 in the 13 of 27 years
-// that had a crop and none in the rest (R454), a year's mean. They fall from mid September [UNVERIFIED] to the last week of
-// October, by when the trees had shed the bulk of them (R454): real days after the spring equinox.
-const ACORNS = (0.196 * 13) / 27, ACORNS_FROM = onDay(179), ACORNS_TO = onDay(218);
+// that had a crop and none in the rest (R454; plants.ts ACORN_KG), a year's mean. They fall from mid September
+// [UNVERIFIED] to the last week of October, by when the trees had shed the bulk of them (R454): real days after the
+// spring equinox.
+const ACORNS = ACORN_KG * ACORN_YEARS, ACORNS_FROM = onDay(179), ACORNS_TO = onDay(218);
 // Mice, jays and boar take what lies on the ground: 92 to 97% of fallen acorns were gone by the next spring (Kamler et
 // al., R456), some 165 days on, so 94.5% at a steady rate, a day [derived].
 const ACORN_LOSS = Math.log(1 / 0.055) / 165;
@@ -727,6 +728,8 @@ function overgrow(w: World) {
 
 export function ecology(w: World) {
   attacked.clear();
+  // the stems as the GPU last grew them, on the ground being looked at
+  grownOn(w);
   timed("weather", () => weather(w));
   // The live set as it stands, less anything an earlier step burned, ate or took away (leaving the world takes a thing out
   // of it: space.ts leave).

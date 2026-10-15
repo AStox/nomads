@@ -27,7 +27,7 @@ test("seed 1's scatter becomes the flora's objects one for one, every field as t
     const v: Record<string, number> = {};
     names.forEach((name, i) => { v[name] = body[(1 + i) * C + j]; });
     const written = fieldsOf(flora.written(e)), back = standOf(v), as = flora.written(e);
-    if (body[j] !== 3 || names.some((n) => v[n] !== written[n]) || JSON.stringify(back) !== JSON.stringify(as)) wrong++;
+    if (body[j] !== 3 || Object.keys(written).some((n) => v[n] !== written[n]) || JSON.stringify(back) !== JSON.stringify(as)) wrong++;
     add(got, v.what);
     j++;
   }

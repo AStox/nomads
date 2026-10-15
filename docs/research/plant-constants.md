@@ -179,6 +179,73 @@ Gates at c321a54: probes, against a8bf4da, fail three, the claims that have come
 - Grown plants' growth stays a 0..1 rate; the berry crop sets over half a year of the best growth (world.ts cropOf, body-constants sec. 10) [design].
 - Stumps resprouting, dead bushes returning, nut fall: old rolls, unchanged [gap].
 
+## 11. Stems (the GPU plan's Unit 7; the rule audit's substrate 11f)
+
+Every tree and bush is a stem object on the GPU (src/gpu/flora.ts, src/gpu/wgsl/stems.ts), laid by the generator at the stand's measured density (src/terrain/flora.ts) and grown, crowded and starved once a day by the rules below. The research behind the generator's rows is docs/research/generator/2026-10-14-flora.md.
+
+### 11a. What replaced what
+
+| Old rule | Now |
+|---|---|
+| Trees `floor(tree x 3.6 + r)` a 351.6 m2 quad, about 102 stems a ha at full cover | Stems laid until their crowns' shares of a closed stand fill the quad's tree cover (`crownShare`): Reineke's maximum density for pine and oak, crown packing by Hemery's crown widths for ash and aspen; never past a closed quad but for a lone tree |
+| Bushes `floor((5 shrub + 1.2 edge) x 0.6 + r)` | A Boolean cover of their crowns (a ball as wide as tall): crowns filling -ln(1 - shrub) of the quad [derived]; the edge term is gone, the understorey's light carrying the edge |
+| Tree height `tall x clamp(0.45 + 0.75 f) x (0.7 + 0.55 r)` [design] | The stand's quadratic mean height at the site (the fit standing in for site index across del Río's measured span), each stem's diameter a Weibull draw about the stand's, its height that diameter's, capped at its kind's maximum |
+| Trees skip slope > 0.7 | Trees skip ground bare of soil (ground.ts soil) [derived] |
+| light.ts `crownRadius` 0.18 to 0.35 of the height | The radius of a disc of the crown's share of a closed stand; a bush's half its height. CROWN_REACH follows the widest (ash at 42 m, 22 m) |
+| TALLEST 30 m (PLANTATT's tallest) | 42 m, iLand's tallest tree (R97) |
+| Trees once up never grew (sec. 9 gaps) | Each stem grows daily by the M^(3/4) law under its own light (11c) |
+| recruits.ts treeKg on the rounded log diameter, its own c and reference | plants.ts treeKg on flora.ts dbhOf, GROWTH_C and openNet, shared by the young trees and the stems; the plant rule there takes each kind's own FAO-56 p |
+
+### 11b. Constants
+
+| Quantity | Value | Units | Source |
+|---|---|---|---|
+| Reineke SDImax, Scots pine | 890 (395 to 1,354), b = 1.593 | stems a ha at D 25 cm | R650 Table 1, R651 [read via the generator notes] |
+| Reineke SDImax, oak | 733 (393 to 1,113), b = 1.424 | stems a ha at D 25 cm | R650, R651 |
+| Crown width by diameter | ash K = 0.758 + 20.357 d; poplar (for aspen) 0.801 + 18.950 d; oak 1.717 + 15.616 d (not used, below) | m, d in m | R652 Table 1 |
+| Stand mean height about 72 years old | pine 22.7 (10.8 to 31.2); oak 21.7 (9.1 to 32.3) | m | R650 Table 1 |
+| Ash and aspen stand heights | the same span as shares of their maximum height, 0.248 to 0.796 | - | [gap] |
+| Weibull shape of diameters | 3.6, the dense end of 2 to 3.6 | - | R653 [abs]; pick [design] |
+| Maximum heights | pine 42, oak 38, ash 42, aspen 30 | m | R97 (fire-constants) |
+| Height to diameter | pine 1.721 H^0.842, oak 0.489 H^1.334, aspen 0.343 H^1.371, ash (100 H / 290)^1.938 | cm, m | fire-constants sec. 19 (R97, R98) |
+| Crop, Scots pine | 12,000 seeds a tree in good years, 13 of 19 | seeds | R455 |
+| Crop, ash | up to 140,000 fruits a tree in a mast year, masts every 2 to 5 years (a year in 3.5) | fruits | R458 [derived] |
+| Crop, oak | 0.196 kg fresh a m2 of crown in the 13 of 27 years with a crop | kg/m2 | R454 |
+| Crop, aspen, hazel, bramble, heather | none recorded | - | [gap] |
+
+### 11c. The daily law
+
+- **The crown raster.** Every live stem is filed by its 18.75 m texel (the generator's quads, four to a cell), with its height and its crown's share of a closed stand as a Q16 share of the texel. Unit 12 reads the same lists for light, interception and the renderer's canopy.
+- **Light.** The crowns of the stems taller than it in its texel, and half of those exactly as tall, spread evenly over the texel, layer on layer, each letting 2% through (growth.ts UNDER_CROWN), no more lost past two layers (light.ts's cap, removed in Unit 12) [design: the texel is the resolution].
+- **Crowding.** In each texel the trees, tallest first, take their crowns' shares; one whose own share with those of all taller passes the texel is thinned, the smallest first, as Reineke's maximum density has it. A tree with none taller stands whatever its crown. Bushes stand as a Boolean cover and are not crowded [design].
+- **Growth.** A tree's q = M^(1/4) gains c/4 a year times its place's net gain over the reference ground's (sec. 9), the net gain from the cell's seasons drawn between their middles, the kind's fit at the cell's centre [design] and the stem's light. A bush's q changes by the plant rule's own relative rate a quarter of the mass's, never past its mass as laid [design: a grown shrub's growth is a gap; its size stays as laid].
+- **Death.** A stem whose mass falls to half the most it has weighed dies, as the young trees' rule has it [design, sec. 1]. A stem the GPU kills goes from the world; it does not stand dead or fall [gap: deadwood is Unit 9's].
+- **Seed.** Each stem's year's crop, set daily for the year it is in: pine and ash per tree in their good and mast years, oak by its crown's share, drawn per kind and year from the counter generator; recorded for Unit 8, which sheds it.
+- **Fixed point.** Heights in mm, q in 2^-20 kg^(1/4), light and shares in Q16, coefficients integers worked out on the CPU from the cell's seasons; every kernel integer, sums order-free, so the GPU's words are the same on every adapter and equal the TypeScript oracle's (src/gpu/stems.test.ts).
+- **The CPU.** One copy of every stem's height (two to a word) comes back with the landing of the tick the law ran; lookups everywhere answer from it with the CPU's own changes laid over, and stocked tiles' trees and bushes take their new heights or go (space.ts grownOn).
+
+### 11d. Checks (seed 1, 2026-10-15)
+
+Stems laid: pine 389,334, oak 500,812, ash 209,628, aspen 539,094, hazel 5,282,875, bramble 3,154,337: 10,076,080, against 1.36 million trees and bushes before. Trees hold 12,191 ha of tree cover, 134 stems a ha on the whole of it.
+
+| Kind | Stems a ha of the ground its crowns close | Quadratic mean diameter, cm | Mean height, m | Measured |
+|---|---|---|---|---|
+| pine | 730 | 28.8 | 27.2 | 802 a ha at dq 28.4 (R650); about 800 in unthinned Danish and Swedish stands |
+| oak | 325 | 45.5 | 28.4 | 823 at dq 26.4 (R650) |
+| aspen | 459 | 23.8 | 20.6 | [gap] |
+| ash | 47 | 77.1 | 25.5 | [gap] |
+| bramble | 2,140 a ha of the shrub cover | - | 0.6 | 434 to 4,085 a ha in fenced Dutch pine stands (R475) |
+
+- An open-grown stem reaches the calibrated law's heights at 10 and 30 years and its calibration point within 2 cm (stems.test.ts); a closed oak stand holds Reineke's count within one stem as it grows; a stem in deep shade loses mass daily and dies the day it falls to half its peak.
+- No two trees in a texel hold more than it after a day; 338 of 10,076,080 stems died the first day (crowns rounded past the texel's edge, and the starving).
+
+Gaps the checks show:
+- Oak stands at 40% of del Río's density: the generator's oaks stand at 28 m on average (fit as site index puts most stands near the top of the measured span) and BAAD's oaks (American and Japanese) are fat for their height, so at the same height Reineke's count is low [gap: oak's own height to diameter; stand age].
+- Ash at 47 a ha: its diameters come from iLand's crowded bound (fire-constants sec. 19, the only ash source), 77 cm at 25 m, and Hemery's crown widths at those diameters are 17 m. Hemery's widths are those of free-growing crowns: for oak they pack a closed stand at 0.55 of its Reineke count, so ash and aspen packed by them likely stand that far below their real maximum [gap: SDImax for ash and aspen].
+- Hazel at 5.3 million: the bush sizes are the old spread [design], so the Boolean count follows sizes nobody measured [gap: hazel's crown sizes and stems a ha].
+- The year's crop of aspen and the bushes, and a stem's crop by its size or light, are not known [gap].
+- Leafless broadleaves let through what they do in leaf [gap].
+
 ## References
 
 - R335 Monteith J.L. (1977), Climate and the efficiency of crop production in Britain, Phil Trans R Soc Lond B 281:277-294 (1.4 g/MJ as commonly quoted) (search excerpt)
@@ -209,3 +276,7 @@ Gates at c321a54: probes, against a8bf4da, fail three, the claims that have come
 - R473 Brooker R.W., Scott D., Palmer S.C.F., Swaine E. (2006), Transient facilitative effects of heather on Scots pine along a grazing disturbance gradient, J Ecol 94:637-645 (browsed saplings 70% and 50% dead by the final harvest, unbrowsed 20% and 15%). https://doi.org/10.1111/j.1365-2745.2006.01129.x (read 2026-10-14)
 - R474 Bakker E.S. et al. (2004), Ecological anachronisms in the recruitment of temperate light-demanding tree species in wooded pastures, J Appl Ecol 41:571-582 (11.7 rabbits a ha; oak transplant survival 26% grazed against 85% fenced). https://doi.org/10.1111/j.0021-8901.2004.00908.x (read 2026-10-14)
 - R475 Kuiters A.T., Slim P.A. (2002), Regeneration of mixed deciduous forest in a Dutch forest-heathland, following a reduction of ungulate densities, Biol Conserv 105:65-74, Table 2 (bramble in fenced Scots pine stands 434 to 4,085 shrubs a ha, 1988 to 1998; unfenced 258 to 60). https://edepot.wur.nl/26430 (read 2026-10-14)
+- R650 del Río M., Pretzsch H. et al. (2020), Eur J For Res 139:349-367, Table 1 (Scots pine SDImax 890, 395 to 1,354; oak 733, 393 to 1,113; mean heights at about 72 years pine 22.7 m, 10.8 to 31.2, oak 21.7 m, 9.1 to 32.3; dq 28.4 and 26.4 cm at 802 and 823 stems a ha). https://link.springer.com/article/10.1007/s10342-019-01233-y/tables/1 (read for the generator notes, docs/research/generator/2026-10-14-flora.md)
+- R651 Pretzsch H., Biber P. (2005), A re-evaluation of Reineke's rule and stand density index, For Sci 51:304-320 (Reineke exponents: pine 1.593, oak 1.424) [abs]. https://portal.fis.tum.de/en/publications/a-re-evaluation-of-reinekes-rule-and-stand-density-index/
+- R652 Hemery G.E., Savill P.S., Pryor S.N. (2005), For Ecol Manage 215:285-294, Table 1 (crown width K = a + b d: oak 1.717 + 15.616 d, ash 0.758 + 20.357 d, poplar 0.801 + 18.950 d). https://benfieldgroup.uk/wp-content/uploads/2021/09/Hemery_et_al_2005_kd_paper.pdf
+- R653 Siipilehto J., Mehtätalo L. (2013), Silva Fennica article 1057 (Weibull shape about 2 to 3.6 in normal to dense stands) [abs]. https://www.silvafennica.fi/article/1057

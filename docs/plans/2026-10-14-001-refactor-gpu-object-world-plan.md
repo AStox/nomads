@@ -376,7 +376,7 @@ Each unit lands one kind of object with its laws, a single-step oracle per kerne
 - Edge case: a stem in full shade loses mass and dies by the peak/2 rule; no stem exceeds SDImax crowding.
 - Integration: seed-1 island totals (stems by species) match the cited densities; playability band checked.
 
-**Verification:** No remaining `cover × constant` counts for stems.
+**Verification:** No remaining `cover × constant` counts for stems. Outcome (2026-10-15): seed 1 lays 10,076,080 stems (pine 389,334, oak 500,812, ash 209,628, aspen 539,094, hazel 5,282,875, bramble 3,154,337); pine stands at 730 a ha of closed ground against del Río's 802, oak at 325 against 823 and ash at 47 (gaps, plant-constants sec. 11d). The kernels (src/gpu/wgsl/stems.ts) equal their oracle bit for bit on both adapters. A daily step on the AMD GPU: about 38 ms of kernels, 19 ms of CPU coefficients and an 84 to 88 ms landing of the 20 MB of heights; about 0.78 GB of GPU memory with scratch. Lookups everywhere answer from that landing with the CPU's changes over it, so rule 2 is gone rather than pending; a crowded or starved stem simply goes (no deadwood until Unit 9). The renderer still draws crowns at the old sprite widths. Probes and bench retire each world's GPU buffers (sim.ts retire).
 
 - [ ] **Unit 8: Seed, seedlings and recruitment per object**
 

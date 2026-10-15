@@ -1,5 +1,5 @@
 import {
-  DAY, H, REACH, TILE_M, W, clock, dryAt, heldStore, hourOf, isNight, nearestShore, level, log, meters, perWorld, reachOf, shuffle, stageOf,
+  DAY, H, REACH, TILE_M, W, clock, dropStore, dryAt, heldStore, hourOf, isNight, nearestShore, level, log, meters, perWorld, reachOf, shuffle, stageOf,
   type Act, type Agent, type Animal, type BondKind, type Stack, type Step, type Thing, type Waiting, type World,
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
@@ -29,7 +29,7 @@ import { enrich, fertilityAt, soilWaterAt } from "./soil";
 import { DAMP, SOAKED, moistureOf, tinder, tinderOf } from "./wetness";
 import { PHYS, asFound, physOf, stackPhys } from "./fuel";
 import { LEAST, advance, alight, drowned, output, radiation, type Air as BedAir, type Bed } from "./combustion";
-import { envHere } from "./plants";
+import { envHere, stemDriver } from "./plants";
 import { PATIENCE, nicheOf, shareAt, tooDark } from "./seedling";
 import { keepsFor } from "./spoil";
 import { STILL } from "./physics";
@@ -2260,6 +2260,17 @@ function agentTick(w: World, a: Agent) {
 // Each world's landing on its way (the GPU's copy for the mirror), whether it has come, and the error it ended in.
 type Landing = { done: boolean; error?: unknown; p: Promise<void> };
 const landings = new WeakMap<World, Landing>();
+// A world done with: its last landing awaited and every GPU buffer it held let go (its store's and its flora's own). A
+// process that makes world after world (probes, bench) retires each, so the GPU holds one world's stems at a time
+// (some 0.8 GB on seed 1). The world is not ticked again.
+export async function retire(w: World) {
+  const last = landings.get(w);
+  if (last && !last.done) await last.p.catch(() => {});
+  landings.delete(w);
+  floraOf(w).destroy();
+  heldStore(w)?.destroy();
+  dropStore(w);
+}
 // One tick of the world. Async because the world's objects live on the GPU: the deltas queued last tick are uploaded
 // and the laws due set running there while the CPU's own work goes on, and the windows round people are copied back
 // into the mirror once it is done. The copy isn't waited for here: it comes back while the caller gets on with other
@@ -2271,7 +2282,7 @@ export async function tick(w: World) {
   const flora = floraOf(w);
   // each await only when there is something to wait for: an await yields to whatever promises are waiting (the
   // brain's), and where a tick yields changes a run
-  if (!flora.store) await resident(w);
+  if (!flora.store) await resident(w, stemDriver(w));
   const gpu = heldStore(w)!, last = landings.get(w);
   if (last && !last.done) await waited("land", () => last.p);
   landings.delete(w);
