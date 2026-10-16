@@ -7,8 +7,8 @@
 // animals partway along their last step.
 const BASE_MS = 500;
 
-// live: the renderer (isopixel/live.js), whose worker runs the sim. Resolves once the world is warm.
-export function connectSim(live, { onProgress } = {}) {
+// live: the renderer (isopixel/live.js), whose worker runs the sim. Resolves once the world is there, before it warms.
+export function connectSim(live) {
   // the latest state and where each person and animal stood before the last tick; the selection's answer, the things
   // window's and the history as last asked for
   let S = null, ents = new Map(), acts = new Map(), opening = null, activities = {}, DAY = 0;
@@ -42,6 +42,9 @@ export function connectSim(live, { onProgress } = {}) {
     w,
     get alpha() { return alpha; },
     get tickMs() { return S.tickMs; },
+    // the warm's ticks still to run (play/sim.js), and how many it has: asked for one a frame while any are left
+    get warming() { return S?.warming ?? 0; },
+    warmTicks: 0,
     // "relay" while people think with Jev, "random" otherwise
     get brain() { return S.brain; },
     // the things drawn every frame (fires, shelters, items and the like) as a client is sent them, by id
@@ -92,18 +95,18 @@ export function connectSim(live, { onProgress } = {}) {
     },
     // At most one tick per call: each is the worker's, and the server never bursts to catch up either. What a tick
     // changed is handed back by the first call after the worker says it ended, which may start the next; none starts
-    // while one runs.
+    // while one runs. While the world warms, one is asked for as soon as the last has landed, each drawn where it lands.
     update(now) {
       if (sim.paused) { pausedAt ??= now; return null; }
       if (pausedAt !== null) { if (last !== null) last += now - pausedAt; pausedAt = null; }
-      const iv = BASE_MS / sim.speed;
+      const iv = S.warming ? 0 : BASE_MS / sim.speed, along = (d) => (iv ? Math.min(1, Math.max(0, d / iv)) : 1);
       if (last === null) { last = now; lastIv = iv; return null; }
       if (iv !== lastIv) { last = now - alpha * iv; lastIv = iv; }
       const ready = done;
       done = null;
-      if (running || now - last < iv) { alpha = Math.min(1, Math.max(0, (now - last) / iv)); return ready; }
+      if (running || now - last < iv) { alpha = along(now - last); return ready; }
       last = now - last < 2 * iv ? last + iv : now;
-      alpha = Math.min(1, (now - last) / iv);
+      alpha = along(now - last);
       remember();
       running = true;
       live.post({ type: "simTick" });
@@ -113,12 +116,13 @@ export function connectSim(live, { onProgress } = {}) {
 
   return new Promise((ready, fail) => {
     live.onSim((m) => {
-      if (m.type === "simProgress") onProgress?.(m.d, m.n);
+      if (m.type === "simProgress") sim.warmTicks = m.n;
       // the worker's sim failing after it was ready stops the page as any other error does
       else if (m.type === "simError") { const e = new Error(m.error); if (S) reportError(e); else fail(e); }
       else if (m.type === "simReady") {
         activities = m.activities; DAY = m.day; opening = m.opening;
         take(m.state);
+        sim.warmTicks = S.warming;
         for (const t of m.live) liveThings.set(t.id, t);
         remember();
         ready(sim);

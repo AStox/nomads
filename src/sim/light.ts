@@ -1,63 +1,40 @@
 // Light is an attribute of every point of the island, as moisture is: how much of it reaches the ground there now. It is
 // the sky's (the sun's beam and glow, the moon and the stars, less cloud), less what stands in the way (hills hide the sun's
-// beam, the crowns of trees hide all of the sky), plus what fires, burning things and flames carried throw. Nothing here is
-// stored; any point is worked out from the world as it stands, so felling a wood or lighting a fire changes it at once.
+// beam, the crowns of trees hide all of the sky), plus what fires, burning things and flames carried throw. The crowns are
+// the island's crown raster (gpu/crowns.ts), made each day from the stems as the GPU holds them, so felling a wood
+// changes the light under it after the next crown pass; the sky and fires are worked out as they stand now.
 //
 // People and animals answer to how bright a place looks, which is the log of its lux: they see less far, walk and work
 // slower, sleep better and keep to a fire when it is dark. The rates below are those answers.
-import { DAY, TILE_M, groundOf, hourOf, meters, perWorld, type Thing, type World } from "./world";
+import { DAY, TILE_M, groundOf, hourOf, meters, type Thing, type World } from "./world";
 import { SIZE, clamp, crownShare, smooth } from "../terrain/flora";
-import { TREE_MAX } from "../terrain/niche";
-import { around, liveThings, lookAround } from "./space";
+import { crownsOf, liveThings } from "./space";
 import { ablaze, carriedOutput, fireOutput, isFlame } from "./physics";
 import { CLOUD, NIGHT_EL, SKYLIGHT, STAR_LUX, moonAt, moonLux, sunAt, sunLux } from "./sky";
-import { sieve, through } from "../terrain/growth";
+import { UNDER_CROWN, through } from "../terrain/growth";
 
 // ---------- crowns ----------
 // A tree's crown holds the ground its share of a closed stand holds (terrain/flora.ts crownShare: Reineke's maximum
 // density for pine and oak, Hemery et al.'s crown widths for ash and aspen), as a disc; a bush's crown a ball as wide as
-// it is tall. The GPU's stems shade one another by the same crowns (gpu/wgsl/stems.ts). The renderer still draws crowns
-// at its old widths (sprites.js, and canopy.js's ambient occlusion) until it draws from the GPU (Unit 14).
-// A crown hides all of the sky within CORE of its radius and none past EDGE, easing out between.
-const CORE = 0.55, EDGE = 1.2;
+// it is tall.
 const TREE: Record<string, true> = { pine: true, oak: true, ash: true, aspen: true };
 export const crownRadius = (t: { species?: string; size: number }) => (TREE[t.species ?? ""] ? Math.sqrt(crownShare(t.species!, t.size) / Math.PI) : t.size / 2);
-// meters: no crown, of the tallest tree of any kind, reaches further from its trunk
-export const CROWN_REACH = EDGE * Math.max(...Object.keys(TREE_MAX).map((sp) => crownRadius({ species: sp, size: TREE_MAX[sp] })));
-// How much of the sky one tree's crown hides at d meters from its trunk: all of it near the trunk, easing to none.
-export function crownCover(t: { species?: string; size: number }, d: number) {
-  const r = crownRadius(t);
-  return d > r * EDGE ? 0 : d <= r * CORE ? 1 : 1 - smooth(CORE, EDGE, d / r);
-}
-// How much of the sky the trees overhead hide, in crowns: 1 under one, more where they overlap; and the crowns' height and
-// how much of it they fill (crown ratio, a crown as deep as it is wide), weighted by what each hides. Seedlings and the air
-// under the trees ask it of the same points tick after tick, so each point's answer is kept until anything round it
-// comes, goes or changes (space.ts lookAround); the points are let go of when they pile up past a few thousand.
-type Crowns = { at: number; cover: number; height: number; ratio: number };
-const canopies = perWorld(() => new Map<number, Map<number, Crowns>>());
-export function crownsAt(w: World, px: number, py: number): Crowns {
-  const at = lookAround(w, px, py, CROWN_REACH), xs = canopies(w);
-  let ys = xs.get(px);
-  const kept = ys?.get(py);
-  if (kept?.at === at) return kept;
-  let cover = 0, height = 0, ratio = 0;
-  around(w, px, py, CROWN_REACH, ["tree"], (t, d) => {
-    const c = crownCover(t, d);
-    cover += c; height += c * t.size; ratio += c * Math.min(1, (2 * crownRadius(t)) / t.size);
-  });
-  if (!ys) {
-    if (xs.size >= 4096) xs.clear();
-    xs.set(px, (ys = new Map()));
-  }
-  const out = { at, cover, height: cover > 0 ? height / cover : 0, ratio: cover > 0 ? ratio / cover : 0 };
-  ys.set(py, out);
-  return out;
+// The trees' crowns over a point, from the crown raster (gpu/wgsl/crowns.ts): their cover in layers, the pines' and the
+// broadleaves' (one layer is a texel's ground under crowns, more where they lie deeper), and over the point's cell the
+// crowns' height, m, and how much of the space under it they fill, their crown ratio (a crown as deep as it is wide),
+// read as a pine's where pines cover more and as an oak's otherwise at that height [design: the raster keeps no ratio].
+// None before the world's crowns are on the GPU.
+const MM = TILE_M * 1000;
+export function crownsAt(w: World, px: number, py: number) {
+  const c = crownsOf(w), x = Math.max(0, px * MM), y = Math.max(0, py * MM);
+  if (!c) return { pine: 0, broad: 0, cover: 0, height: 0, ratio: 0 };
+  const { pine, broad } = c.coverAt(x, y), height = c.heightAt(x, y), species = pine > broad ? "pine" : "oak";
+  return { pine: pine / 65536, broad: broad / 65536, cover: (pine + broad) / 65536, height, ratio: height > 0 ? Math.min(1, (2 * crownRadius({ species, size: height })) / height) : 0 };
 }
 export const canopyAt = (w: World, px: number, py: number) => crownsAt(w, px, py).cover;
-// Leaves let a little through (terrain/growth.ts through): under one crown a fiftieth of the sky's glow and less of the
-// sun's beam, which crosses more of them (a 450th with the sun 53 degrees up); where two overlap, a fiftieth of that
-// again, and no more is lost past that.
-// The share of the sky's light that reaches the ground through the crowns over a point.
+// Leaves let a little through (terrain/growth.ts through): under one layer of crowns a fiftieth of the sky's glow and
+// less of the sun's beam, which crosses more of them (a 450th with the sun 53 degrees up), and as much again under each
+// layer more. The share of the sky's light that reaches the ground through the crowns over a point.
 export const skyShare = (w: World, px: number, py: number) => through(canopyAt(w, px, py));
 
 // ---------- the sky now ----------
@@ -149,8 +126,10 @@ export type Light = {
   fire: number; // lux from fires, burning things and flames carried
 };
 export function lightAt(w: World, px: number, py: number): Light {
-  const s = skyNow(w), cover = canopyAt(w, px, py), tau = sieve(cover);
-  const glow = Math.exp(-0.8 * tau), shaft = Math.exp(-tau / Math.max(0.2, Math.sin(s.el)));
+  // the beam crosses each layer slantwise, 1 / (0.8 sin el) as much leaf as the glow does on its way down (no less steep
+  // than 0.2), so a layer lets the glow's share to that power of it through
+  const s = skyNow(w), cover = canopyAt(w, px, py);
+  const glow = through(cover), shaft = through(cover, UNDER_CROWN ** (1 / (0.8 * Math.max(0.2, Math.sin(s.el)))));
   const clear = s.beam > 0 ? beamClears(w, px, py, s) : 0;
   let fire = 0;
   for (const f of glowing(w)) {

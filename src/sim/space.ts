@@ -22,6 +22,10 @@ import { Flora, type Stand, type StemDriver } from "../gpu/flora";
 import { theGpu } from "../gpu/device";
 import { BOULDERS_HA, CLASTS, CLAST_DIM, Deadwood, YEAR_DAYS as DEAD_YEAR, capacities, type Piece, type PieceKind } from "../gpu/deadwood";
 import { Seedlings, type SeedDriver } from "../gpu/seedlings";
+import { Crowns } from "../gpu/crowns";
+import { Moisture } from "../gpu/moisture";
+import { Receivers } from "../gpu/fire";
+import { moistureDriver } from "./wetness";
 import { CELL_MM } from "../gpu/wgsl/index";
 import { N } from "../terrain/grid";
 
@@ -34,6 +38,9 @@ type Index = {
   flora: Flora; // what the ground grew, as its objects stand
   dead: Deadwood | null; // the deadwood and clasts, once resident
   seeds: Seedlings | null; // the seeds and seedlings, once resident
+  crowns: Crowns | null; // the crown raster, once resident
+  moist: Moisture | null; // the water of what lies out, once resident
+  fire: Receivers | null; // what lies near a burning bed taking its heat, once resident
   views: Set<string>; // pieces made Things that no one has changed
   landings: number; // the flora's landings of its stems the Things have taken up
 };
@@ -70,7 +77,7 @@ export function index(w: World): Index {
   let ix = indexes.get(w);
   if (ix) return ix;
   const flora = new Flora(groundOf(w.seed).flora);
-  ix = { at: new Map(), tiles: new Map(), live: new Set(), stocked: new Uint8Array(W * H), seen: new Int32Array(W * H), changes: new Uint32Array(W * H), taken: new Map(), flora, landings: flora.landings, dead: null, seeds: null, views: new Set() };
+  ix = { at: new Map(), tiles: new Map(), live: new Set(), stocked: new Uint8Array(W * H), seen: new Int32Array(W * H), changes: new Uint32Array(W * H), taken: new Map(), flora, landings: flora.landings, dead: null, seeds: null, crowns: null, moist: null, fire: null, views: new Set() };
   // every kind the ground grows has its bins from the start, so stocking a tile mid-search never adds a list to search
   for (const k of FLORA) ix.tiles.set(k, new Array(W * H));
   for (const t of w.stocked) ix.stocked[t] = 1;
@@ -102,6 +109,9 @@ export async function resident(w: World, stems: StemDriver, seeds: SeedDriver) {
   if (flora.store) return;
   const s = heldStore(w) ?? storeOf(w, await theGpu()), fresh = !s.kinds.some((k) => k.name === "log");
   flora.attach(s, stems);
+  // the crowns' pass follows the stems' law each day, reading the raster it filed
+  ix.crowns = new Crowns();
+  await ix.crowns.attach(s, { raster: (now) => flora.raster(now) }, (t) => stems.due(t));
   const g = groundOf(w.seed), [pebble, stone, boulder] = clasts(g.isle, w.seed, BOULDERS_HA, CLAST_DIM, CLASTS.map((c) => [c.lo / 1000, c.hi / 1000] as const));
   if (DEAD_YEAR !== YEAR_DAYS) throw new Error(`the deadwood's year of ${DEAD_YEAR} days isn't the sky's ${YEAR_DAYS}`);
   ix.dead = new Deadwood(w.seed, { pebble, stone, boulder }, capacities(g.flora));
@@ -111,10 +121,20 @@ export async function resident(w: World, stems: StemDriver, seeds: SeedDriver) {
   if (fresh) for (const t of w.things) if (PIECE_ID.test(t.id) && !ix.views.has(t.id)) ix.dead.touch(pieceOf(t), placeOf(t));
   ix.seeds = new Seedlings();
   ix.seeds.attach(s, flora, seeds);
+  // what lies out holds its own water, stepped each hour in the island's weather (wetness.ts)
+  ix.moist = new Moisture();
+  ix.moist.attach(s, ix.crowns, ix.dead, moistureDriver(w));
+  // what lies near a burning bed takes its heat and its brands on the GPU (ecology.ts fire)
+  ix.fire = new Receivers();
+  ix.fire.attach(s);
 }
-// The world's deadwood and clasts, and its seeds and seedlings, once resident.
+// The world's deadwood and clasts, its seeds and seedlings, its crown raster, the water of what lies out and the fire's
+// receivers, once resident.
 export const deadwoodOf = (w: World) => index(w).dead;
 export const seedlingsOf = (w: World) => index(w).seeds;
+export const crownsOf = (w: World) => index(w).crowns;
+export const moistOf = (w: World) => index(w).moist;
+export const receiversOf = (w: World) => index(w).fire;
 
 // ---------- pieces ----------
 const PIECE_ID = /^[slbp][0-9]/;

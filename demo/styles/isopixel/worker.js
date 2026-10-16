@@ -45,11 +45,15 @@ async function init(m) {
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: "opaque" });
   say("growing the island", 0, 1);
-  const isle = generateIsland(rng(m.seed)), g = fineGround(isle);
+  // With a sim the island is the sim's own (world.ts groundOf, which it keeps for its world), grown once for both
+  const simB = m.sim ? await import("../sim.js") : null, simC = m.sim ? await import("../play/sim.js") : null, gr = simB?.groundOf(m.seed);
+  const isle = gr?.isle ?? generateIsland(rng(m.seed)), g = gr?.fine ?? fineGround(isle);
   const t1 = performance.now();
   say("laying out the ground", 0, 1);
   const pack = packGround(isle, g);
   const t2 = performance.now();
+  // the world takes up residence on the GPU while the shaders build; it draws once the renderer is ready
+  if (m.sim) startSim(simB, simC.createSim, m.seed, m.sim).catch((err) => post({ type: "simError", error: String((err && err.stack) || err) }));
   say("building the shaders", 0, 1);
   R = await createRenderer({
     device, context, format, timing, ground: pack,
@@ -63,8 +67,8 @@ async function init(m) {
   await new Promise((r) => setTimeout(r, 0));
   if (R.errors.length) throw new Error(R.errors.join("\n"));
   mark("renderer");
+  rendererIn.resolve();
   post({ type: "ready", ms: performance.now() - t0 });
-  if (m.sim) startSim(m.seed, m.sim).catch((err) => post({ type: "simError", error: String((err && err.stack) || err) }));
 }
 
 // ---------- objects ----------
@@ -654,23 +658,25 @@ function trailCells(cells) {
 // GPU, the sprites made while it warms; the page asks for each tick and gets the people, animals and camps after it
 // (play/remote.js), with what it asks about (want: the selection, the things window, the history).
 let sim = null, want = { sel: null, things: null, history: false }, ticking = null;
-const levelsIn = Promise.withResolvers();
+const levelsIn = Promise.withResolvers(), rendererIn = Promise.withResolvers();
 const iceOf = (ice) => { const f = new Uint8Array(TILES * TILES); if (ice) for (const i of ice) f[i] = 1; return f; };
 // the sim's footpath wear, stepped into the five widths the ground draws
 const wearStep = (v) => (v < 2 ? 0 : v < 5 ? 1 : v < 12 ? 2 : v < 30 ? 3 : 4);
 let trailSrc = null, trailQ = null, trailFlush = 0;
 const trailPending = new Set();
 
-async function startSim(seed, { warm = 0, jev = null }) {
-  const bundle = await import("../sim.js"), { createSim } = await import("../play/sim.js");
+// bundle: the sim's bundle (../sim.js), already loaded for the island it grew; createSim: play/sim.js's
+async function startSim(bundle, createSim, seed, { warm = 0, jev = null }) {
   bundle.useGpu({ device, adapter: gpuName });
-  level = await levelsIn.promise;
   mark("simStart");
+  // The world is shown before it warms: its warm's ticks are the first the page asks for, as fast as its frames allow,
+  // each drawn as it lands (simTick). The deadwood is resident after the first of them, and comes as a source then
+  // (simChanged).
   sim = await createSim({
     seed, warm, jev, onProgress: (d, n) => post({ type: "simProgress", d, n }),
-    onWorld: (w) => { mark("world"); B = bundle; return setupObjects({ flora: () => bundle.floraOf(w), FLORA: bundle.FLORA, SPECIES: bundle.SPECIES }, w); },
+    // the objects are drawn once the renderer and the page's levels are there (the world grows meanwhile)
+    onWorld: async (w) => { mark("world"); await rendererIn.promise; level = await levelsIn.promise; B = bundle; return setupObjects({ flora: () => bundle.floraOf(w), FLORA: bundle.FLORA, SPECIES: bundle.SPECIES }, w); },
   });
-  mark("warm");
   const w = sim.w, t0 = performance.now();
   // the things the page draws every frame, as a client is sent them (inspect.ts thingView), a burning one with its
   // blaze; everything else the world holds as its buffers don't show it is drawn from a record, and what is gone or
@@ -688,19 +694,27 @@ async function startSim(seed, { warm = 0, jev = null }) {
   const all = new Uint8Array(TN * TN);
   for (const [i, v] of trailSrc.wear) { const q = wearStep(v); if (q) { trailQ.set(i, q); all[i] = q; } }
   trailsAll(all);
-  // the animals and the deadwood as sources, then the sprites made while the world warmed, and those it grew into
-  // since or its records and its other kinds want
+  // The warm's first tick, in which the fish and the animals take up residence and run their days before anyone wakes
+  // (animals.ts residentAnimals), runs while the sprites are made, so its burst of work is over before the first view.
+  const firstTick = warm > 0 ? simTick() : null;
+  // the atlas, of the sprites made while the world grew; the animals and the deadwood as sources once resident, their
+  // sprites made just after the first view (refreshSprites)
+  const atlas = packAtlas(await spritesP);
+  mark("pack");
+  await firstTick;
+  mark("firstTick");
+  const t2 = performance.now();
   await setupKinds();
-  const first = await spritesP, t2 = performance.now(), more = await makeAll(await wanted()), t3 = performance.now();
-  const atlas = packAtlas([...first, ...more]);
-  const t4 = performance.now();
   R.buildCanopy();
   canopyLandings = S.flora.landings; canopyAt = performance.now(); S.dirty = false;
-  await R.farNow(farLevels());
+  // the far levels' lists are built in the frames, a slice each (the opening view is not a far level)
+  R.farBuild(farLevels());
   farDay = Math.floor(w.t / sim.day);
   mark("objects");
   const st = S.statics, n = S.plant.spec.cap + st.cap;
-  post({ type: "objects", n, plants: S.plant.spec.cap, statics: st.cap, records: S.extras.slot.size, sprites: atlas.sprites, layers: atlas.layers, families: looks.n, timeline, ms: { ...S.ms, things: t1 - t0, waitSprites: t2 - t1, moreSprites: t3 - t2, pack: t4 - t3, canopy: performance.now() - t4 } });
+  post({ type: "objects", n, plants: S.plant.spec.cap, statics: st.cap, records: S.extras.slot.size, sprites: atlas.sprites, layers: atlas.layers, families: looks.n, timeline, ms: { ...S.ms, things: t1 - t0, sprites: t2 - t1, rest: performance.now() - t2 } });
+  S.spriteLandings = S.flora.landings; S.newLooks = false; S.spritesAt = performance.now();
+  refreshSprites();
 }
 // One tick, its changes onto the GPU, and the state after it to the page with what changed of the things it draws every
 // frame (ch: live, those to draw as they are now; drop, the ids to draw no more).
@@ -774,15 +788,31 @@ const srcOfPick = (p) => (p & PICK_SLOT ? "plant" : p & EXTRA_PICK ? "extra" : p
 // ---------- checks ----------
 // For scripts/play/objects.ts: what view 0 drew in the next frame (each object's thing id, its anchor in art px and the
 // world point its buffer gave the cull; at most 65536 sprites and as many specks); how many it drew; the far levels'
-// lists on or off; where a thing's buffer holds it, read back from the GPU; and a thing gone from the sim at once, as a
-// tick would report it.
+// lists, their front lists and a cross-fade's kept view on or off; view 0's G-buffer kept and compared; a kept view
+// drawn again and compared; where a thing's buffer holds it, read back from the GPU; and a thing gone from the sim at
+// once, as a tick would report it.
+let gsnap = null;
 async function check(m) {
   if (m.op === "drawn") {
     const r = await R.instances(), foot = (sp) => feet[sp] ?? 0;
     return [...r.sprites, ...r.points].map((it) => ({ id: idOfPick(it.pick), src: srcOfPick(it.pick), x: it.x, y: it.y - foot(it.sp), wx: it.wx, wz: it.wz }));
   }
-  if (m.op === "count") { const r = await R.instances(); return { sprites: r.counts[0], points: r.counts[1], far: R.stats.far ?? null }; }
-  if (m.op === "far") { R.setFarUse(!!m.on); return true; }
+  if (m.op === "count") { const r = await R.instances(); return { sprites: r.counts[0], points: r.counts[1], far: R.stats.far ?? null, front: R.stats.front ?? null, dynamic: dyn && { entries: dyn.next - nStatic, of: DYN_ENTRIES, layers: dyn.shelves.layers, ofLayers: DYN_LAYERS } }; }
+  // the far lists on or off, and built again from the buffers as they are now (rebuild)
+  if (m.op === "far") { R.setFarUse(!!m.on); if (m.rebuild) R.farBuild(farLevels()); return true; }
+  if (m.op === "fade") { R.setFadeKeep(!!m.on); return true; }
+  if (m.op === "front") { R.setFrontUse(!!m.on); return true; }
+  // view 0's G-buffer kept (gsnap), and the next one compared with it pixel by pixel (gdiff): what each pixel shows
+  // (kind, colour, flags) and whose it is
+  if (m.op === "gsnap") { gsnap = await R.gbuffer(); return { w: gsnap.w, h: gsnap.h, level: gsnap.level }; }
+  if (m.op === "gdiff") {
+    const g = await R.gbuffer(), a = gsnap;
+    if (!a || a.w !== g.w || a.h !== g.h || a.gx0 !== g.gx0 || a.gy0 !== g.gy0) return { moved: true };
+    let shows = 0, owner = 0;
+    for (let i = 0; i < g.k.length; i += 2) { if (g.k[i] !== a.k[i]) shows++; else if (g.k[i + 1] !== a.k[i + 1]) owner++; }
+    return { level: g.level, pixels: g.w * g.h, shows, owner };
+  }
+  if (m.op === "fadecheck") return R.fadeCheck();
   if (m.op === "skip") { R.setSkipped(m.names ?? []); return true; }
   if (m.op === "where") return Promise.all(m.ids.map(whereOf));
   if (m.op === "kill") {
@@ -857,6 +887,8 @@ const handle = async (e) => {
   try {
     if (m.type === "init") await init(m);
     else if (m.type === "levels") levelsIn.resolve(m.levels);
+    // the whole island at each level and bearing that keeps front lists (live.js islandView)
+    else if (m.type === "frontViews") R.setFrontViews(m.views);
     else if (m.type === "frame") { pending = m; render(); }
     else if (m.type === "simTick") await simTick();
     else if (m.type === "simWant") { want = m.want; post({ type: "simState", ...answers() }); }

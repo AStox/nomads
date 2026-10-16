@@ -17,7 +17,7 @@ import { animalsOf, attacked, herdNear, residentAnimals } from "./animals";
 import { chooseTinker, decide, describeKind, fadeBonds, grudge, nameIt, newRel, reflect, respond, rule, sample, theorize, wonder, type Felt } from "./brain";
 import { clock as traceClock, count as bump, timed, trace, waited } from "./trace";
 import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sharedStore, snubbed, spread, standing, takeShared } from "./groups";
-import { anyAround, around, deadwoodOf, floraOf, liveThings, lookFor, nearestThing, resident, seedlingsOf, shelve, thingById } from "./space";
+import { anyAround, around, crownsOf, deadwoodOf, floraOf, liveThings, lookFor, moistOf, nearestThing, resident, seedlingsOf, shelve, thingById } from "./space";
 import { landOf, walk } from "./walk";
 import { DARK, canSee, canopyAt, heatAt, lightOn, moveRate, restRate, skyShare, workRate } from "./light";
 import { ripening } from "./cues";
@@ -2270,6 +2270,8 @@ export async function retire(w: World) {
   floraOf(w).destroy();
   deadwoodOf(w)?.destroy();
   seedlingsOf(w)?.destroy();
+  crownsOf(w)?.destroy();
+  moistOf(w)?.destroy();
   animalsOf(w).destroy();
   heldStore(w)?.destroy();
   dropStore(w);

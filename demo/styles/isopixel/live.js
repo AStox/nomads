@@ -79,6 +79,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   Object.assign(glc.style, { position: "fixed", left: "0", top: "0", width: "100vw", height: "100vh", pointerEvents: "none", imageRendering: "pixelated", visibility: "hidden" });
   canvas.after(glc);
   glc.width = canvas.width; glc.height = canvas.height;
+  let glSize = [glc.width, glc.height];
   const off = glc.transferControlToOffscreen();
   const ex = new URLSearchParams(location.search).get("exag");
   const worker = new Worker(new URL(`./worker.js${ex ? `?exag=${encodeURIComponent(ex)}` : ""}`, import.meta.url), { type: "module" });
@@ -239,11 +240,12 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     return { u, v, lev, gx: (u - v) * md.H, gy: (u + v) * md.hb - lev * md.lp, cz: 1.5 * md.H * (u + v) + lev * md.lp };
   }
   // A camera at one level and bearing: the art buffer covering the canvas at this zoom, and where its top-left pixel lands
-  // on the canvas. czc: the depth of its target, which the GPU's depths are taken from.
-  function camera(view, L, beta) {
+  // on the canvas. czc: the depth of its target, which the GPU's depths are taken from. margin: a share of the canvas the
+  // buffer reaches past it on every side (a fading level's, so the renderer can present it again a frame later).
+  function camera(view, L, beta, margin = 0) {
     const md = mdOf(L, beta), s = ppmOf(clamp(view.zoom, 0, ZMAX)) / md.p, [u, v] = md.uv(view.x, view.z), lev = (camH(view.x, view.z) + (view.up || 0)) / md.levelM;
     const W = canvas.width, H = canvas.height, gcx = (u - v) * md.H, gcy = (u + v) * md.hb - lev * md.lp;
-    const AW = Math.ceil(W / s) + 4, AH = Math.ceil(H / s) + 4, gx0 = Math.floor(gcx - AW / 2), gy0 = Math.floor(gcy - AH / 2);
+    const AW = Math.ceil((W / s) * (1 + 2 * margin)) + 4, AH = Math.ceil((H / s) * (1 + 2 * margin)) + 4, gx0 = Math.floor(gcx - AW / 2), gy0 = Math.floor(gcy - AH / 2);
     return { view, md, L, s, AW, AH, gcx, gcy, gx0, gy0, lev, czc: 1.5 * md.H * (u + v) + lev * md.lp, dx: W / 2 + (gx0 - gcx) * s, dy: H / 2 + (gy0 - gcy) * s };
   }
   // a sprite's shadow per art px of its height at the view's bearing, as the bake's V.shx, V.shy for this sun, no
@@ -573,15 +575,49 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
 
   // ---------- the frame ----------
   // What to draw: one camera at the level the zoom shows and the bearing the view faces, or two cross-fading near the
-  // end of a level's zoom range.
+  // end of a level's zoom range. The renderer draws a cross-fade's two levels one a frame in turn and presents the other
+  // from its last drawing (webgpu.js fadePlan), so each reaches FADE_MARGIN of the canvas past every side: a zoom out or
+  // a pan of that much between two drawings still finds the canvas covered [design: 5 percent, about three frames of the
+  // zoom bench's zoom out at its 1.8 percent a frame].
+  const FADE_MARGIN = 0.05;
   function plan(view) {
-    const lf = levelFor(view.zoom), beta = norm8(view.bearing ?? 0), parts = [[camera(view, lf.L, beta), 1]];
-    if (lf.L < NL - 1 && lf.t > 0.6) parts.push([camera(view, lf.L + 1, beta), smooth(0.6, 1, lf.t)]);
+    const lf = levelFor(view.zoom), beta = norm8(view.bearing ?? 0), fade = lf.L < NL - 1 && lf.t > 0.6, m = fade ? FADE_MARGIN : 0, parts = [[camera(view, lf.L, beta, m), 1]];
+    if (fade) parts.push([camera(view, lf.L + 1, beta, m), smooth(0.6, 1, lf.t)]);
     return { lf, parts, beta };
   }
+  // A camera's place on its level and bearing for the GPU (webgpu.js VU): its grid, target, art buffer and tile window
+  // (win: windowOf's).
+  function placeOf(cam, win) {
+    const md = cam.md, G0 = gridOf(cam.L, md.b).F, [i0, j0, ni, nj, top] = win;
+    return {
+      eubx: G0.eu[0], euby: G0.eu[1], evbx: G0.ev[0], evby: G0.ev[1], obx: G0.ox, obz: G0.oz,
+      eux: md.eu[0], euy: md.eu[1], evx: md.ev[0], evy: md.ev[1],
+      cx: cam.view.x, cz: cam.view.z, levc: cam.lev, offx: cam.gcx - cam.gx0, offy: cam.gcy - cam.gy0, gx0: cam.gx0, gy0: cam.gy0, aw: cam.AW, ah: cam.AH,
+      i0, j0, ni, nj, H: md.H, hb: md.hb, lp: md.lp, tileM: md.tileM, levelM: md.levelM, k: md.k, pv: md.pv, pw: md.pw, shrunk: md.shrunk ? 1 : 0, bias: md.hb + 2, peak: top, zinv: 1 / (2 * zSpan(cam, top)), mapN: LADDER[cam.L].paged ? 0 : Math.ceil((2 * (SIZE / 2) * (Math.abs(Math.cos((md.b * Math.PI) / 4)) + Math.abs(Math.sin((md.b * Math.PI) / 4)))) / md.tileM),
+    };
+  }
+  // The whole island at level L and whole bearing b, at one art px a px, as webgpu.js builds a far level's front lists
+  // from (wgsl/objects.js frontWalk): its art buffer reaches every point of the island at any height it stands at.
+  function islandView(L, b) {
+    const md = mdOf(L, b), [uc, vc] = md.uv(0, 0);
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const x of [-SIZE / 2, SIZE / 2])
+      for (const z of [-SIZE / 2, SIZE / 2]) {
+        const [u, v] = md.uv(x, z);
+        x0 = Math.min(x0, (u - v) * md.H); x1 = Math.max(x1, (u - v) * md.H);
+        y0 = Math.min(y0, (u + v) * md.hb - md.peakLev * md.lp); y1 = Math.max(y1, (u + v) * md.hb);
+      }
+    const gx0 = Math.floor(x0) - 8, gy0 = Math.floor(y0) - 8, gcx = (uc - vc) * md.H, gcy = (uc + vc) * md.hb;
+    const cam = { view: { x: 0, z: 0, up: 0 }, md, L, s: 1, AW: Math.ceil(x1) - gx0 + 8, AH: Math.ceil(y1) - gy0 + 8, gcx, gcy, gx0, gy0, lev: 0, czc: 1.5 * md.H * (uc + vc) };
+    return placeOf(cam, windowOf(cam, [0, 0]));
+  }
+  // the island levels down to FRONT_M tiles keep front lists, at every whole bearing [design: the levels whose specks
+  // outnumber their sprites in a view, measured 2026-10-15 at seed 1: island, isle200, isle100]
+  const FRONT_M = 100;
+  worker.postMessage({ type: "frontViews", views: LV.filter((l) => !LADDER[l.L].paged && l.tileM >= FRONT_M).flatMap((l) => [0, 1, 2, 3, 4, 5, 6, 7].map((b) => ({ L: l.L, b, U: islandView(l.L, b) }))) });
   // the view's uniforms for the GPU (webgpu.js VU) and what it draws over the ground
   function viewOf(cam, k, w, sim, clock, now, view) {
-    const md = cam.md, G0 = gridOf(cam.L, md.b).F, cast = sky.cast, vec = cast ? sunStep(md, cast) : [0, 0], [i0, j0, ni, nj, top] = windowOf(cam, vec);
+    const md = cam.md, cast = sky.cast, vec = cast ? sunStep(md, cast) : [0, 0], win = windowOf(cam, vec);
     const live = [], liveRows = [], xray = [], prims = new Emit(), fires = [];
     owners = [];
     const r = sim ? entities(cam, sim, now) : { out: [], fires: [], picks: [] };
@@ -599,10 +635,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const ao = AO, hz = hazeOf(cam, clock.hour ?? 8), FR = new Float32Array(fires.length * 4);
     fires.forEach((f, i) => FR.set(f, i * 4));
     const U = {
-      eubx: G0.eu[0], euby: G0.eu[1], evbx: G0.ev[0], evby: G0.ev[1], obx: G0.ox, obz: G0.oz,
-      eux: md.eu[0], euy: md.eu[1], evx: md.ev[0], evy: md.ev[1],
-      cx: view.x, cz: view.z, levc: cam.lev, offx: cam.gcx - cam.gx0, offy: cam.gcy - cam.gy0, gx0: cam.gx0, gy0: cam.gy0, aw: cam.AW, ah: cam.AH,
-      i0, j0, ni, nj, H: md.H, hb: md.hb, lp: md.lp, tileM: md.tileM, levelM: md.levelM, k: md.k, pv: md.pv, pw: md.pw, shrunk: md.shrunk ? 1 : 0, bias: md.hb + 2, peak: top, zinv: 1 / (2 * zSpan(cam, top)), mapN: LADDER[cam.L].paged ? 0 : Math.ceil((2 * (SIZE / 2) * (Math.abs(Math.cos((md.b * Math.PI) / 4)) + Math.abs(Math.sin((md.b * Math.PI) / 4)))) / md.tileM),
+      ...placeOf(cam, win),
       frame: Math.floor(now / 160) & 7, season: SEASON_I[season] ?? 0,
       casting: cast ? 1 : 0, sunx: vec[0], suny: vec[1],
       lx: sky.L[0], ly: sky.L[1], lz: sky.L[2], ar: sky.A[0], ag: sky.A[1], ab: sky.A[2], kr: sky.K[0], kg: sky.K[1], kb: sky.K[2],
@@ -611,7 +644,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       half: SIZE / 2, hmost: hz.most, htop: hz.top, hreach: hz.reach, sea: P.w1, nfires: fires.length, night: sky.night,
     };
     const n = Math.max(1, Math.ceil(cam.s - 1e-3));
-    return { U, L: cam.L, alpha: k === 0 ? 1 : w, present: { dx: cam.dx, dy: cam.dy, sc: cam.s, nn: n, nearest: Math.abs(cam.s - n) < 1e-3 ? 1 : 0 }, live, liveRows: cast ? liveRows : null, xray, prims: prims.a, fires: FR };
+    return { U, L: cam.L, beta: md.beta, alpha: k === 0 ? 1 : w, present: { dx: cam.dx, dy: cam.dy, sc: cam.s, nn: n, nearest: Math.abs(cam.s - n) < 1e-3 ? 1 : 0 }, live, liveRows: cast ? liveRows : null, xray, prims: prims.a, fires: FR };
   }
   // the ambient occlusion's knobs: ?ao=0 draws without it, ?ao=dbg shows it alone. on: 0 turns it off.
   // k: the most of the sky's light a point can lose. ter: how strongly the ground's folds count. can, tree: how strongly
@@ -619,12 +652,14 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // the cover a tree's own crown puts at its foot. key: the share of the key light the canopy shades along with the sky's.
   const AO = { on: 1, k: 0.8, ter: 0.9, can: 1.8, tree: 3.4, top: 0.45, self: 0.12, key: 0.5, dbg: 0 };
   { const a = new URLSearchParams(location.search).get("ao"); if (a === "0") AO.on = 0; else if (a === "dbg") AO.dbg = 1; }
-  let frames = 0, fpsT = performance.now(), frameNo = 0, lutSent = "", firstFrame = true, lastPick = [], pickCam = null, owners = [], pickOwners = [], shownGL = false;
+  let frames = 0, fpsT = performance.now(), frameNo = 0, lutSent = "", firstFrame = true, lastPick = [], pickCam = null, owners = [], pickOwners = [], shownGL = false, held = null;
   const ownersOf = new Map();
   function frame(view, sim, { show = true } = {}) {
-    const now = performance.now(), t0 = now;
+    // the drawing's clock (the water's frame, the fires, the smoke), held still by the page checks (debug.hold)
+    const t0 = performance.now(), now = held ?? t0;
     if (sim) simRef = sim;
-    if (glc.width !== canvas.width || glc.height !== canvas.height) { worker.postMessage({ type: "resize", W: canvas.width, H: canvas.height }); glc.width = canvas.width; glc.height = canvas.height; }
+    // the GPU's canvas belongs to the worker once transferred: its size goes there, and is kept here only to compare
+    if (glSize[0] !== canvas.width || glSize[1] !== canvas.height) { worker.postMessage({ type: "resize", W: canvas.width, H: canvas.height }); glSize = [canvas.width, canvas.height]; }
     const clock = sim?.clock?.() ?? { hour: 8, day: 1 };
     // the ground's colour follows the season
     season = clock.season ?? season;
@@ -849,6 +884,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // one, and the render worker's own checks of what it drew (worker.js check)
     debug: {
       camera, project: (md, x, z) => project({ md }, x, z),
+      // the drawing's clock held where it is (on) or let run again
+      hold: (on) => { held = on ? performance.now() : null; },
       // the query goes apart from the request's id, as a query may carry an id of its own (kill's thing)
       check: (m) => new Promise((resolve) => { const id = ++checkNo; checksWait.set(id, resolve); worker.postMessage({ type: "check", id, q: m }); }),
     },

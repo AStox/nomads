@@ -10,7 +10,7 @@
 //   NOMADS_BRAIN=random bun scripts/truth.ts --seed 3 --runs /tmp/theories/3 --days 40 --out /tmp/truth/3.json
 // --runs: a directory of scripts/theories.ts runs of this island. Their ways are what gets worked out, and the things
 // they made and the rulings they settled come too, so the same things can be made here.
-import { fishNear } from "../src/sim/fish";
+import { fishNear } from "../src/sim/waters";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { W, H, addThing, dryAt, newWorld, rng, shoreOf, stageOf, type Stack, type Thing, type World } from "../src/sim/world";
 import { forecast } from "../src/sim/ecology";
@@ -20,7 +20,8 @@ import { lightOn, workRate } from "../src/sim/light";
 import { nearestThing, put, shelve } from "../src/sim/space";
 import { fieldsOf, ofPlace } from "../src/sim/beliefs";
 import { conditionsNow } from "../src/sim/sim";
-import { deadHour, deadOf, moistureOf, pastHour, tinder, tinderOf } from "../src/sim/wetness";
+import { deadHour, deadOf, islandHour, moistureOf, tinder, tinderOf } from "../src/sim/wetness";
+import { crownsHour } from "../src/sim/rain";
 import { BURNS, PHYS, pieceOf, stackPhys } from "../src/sim/fuel";
 import { advance, alight, feed, kindle, lay } from "../src/sim/combustion";
 import { PATIENCE, ahead } from "../src/sim/seedling";
@@ -60,17 +61,16 @@ for (const file of readdirSync(runs).filter((f) => f.endsWith(".jsonl")))
 
 // The island's weather through the run's days and as long past them as anyone waits on a planting (seedling.ts
 // PATIENCE), turn by turn of the sky from how it stood at the start, drawn once (its own draws, not the world's): the sky,
-// the wind, the rain running off the land, the water in the dead stuff lying about the island, and the hours kept for
-// what fell where (wetness.ts pastHour).
+// the wind, the rain running off the land, the island's reference dead stuff and the water its crowns hold (wetness.ts
+// islandHour, deadHour; rain.ts crownsHour).
 const start = w.t, hours = forecast(w, days * 24 + PATIENCE / 12, rng(seed * 104729 + 7));
 const dead: NonNullable<typeof w.weather.dead>[] = [], pasts: NonNullable<typeof w.weather.past>[] = [];
 {
-  let d = w.weather.dead, t = Math.ceil((start + 1) / 12) * 12, past = w.weather.past && { ...w.weather.past, hours: [...w.weather.past.hours] };
+  let d = w.weather.dead, t = Math.ceil((start + 1) / 12) * 12, crowns = w.weather.past?.crowns;
   for (const h of hours) {
-    const temp = islandTemp(t, h.sky), next = deadHour(w, d, t, h.sky, h.speed, temp);
-    past = pastHour(w, past, d ?? next, t, h.sky, h.speed, temp, w.weather.wind, h.wet);
-    dead.push((d = next));
-    pasts.push({ ...past, hours: [...past.hours] });
+    const temp = islandTemp(t, h.sky), c = crownsHour(w, crowns, t, h.sky, h.speed, temp);
+    dead.push((d = deadHour(w, d, islandHour(w, t, h.sky, h.speed, temp, w.weather.wind, h.wet, c.held, c.bare))));
+    pasts.push({ crowns: (crowns = c.next), held: c.held, bare: c.bare });
     t += 12;
   }
 }
@@ -164,7 +164,7 @@ function situation(plan: Plan): Trial | string {
   const lit = own ? moistureOf(own) : f.verb === "strike" ? null : about && !about.kind ? about.m : null;
   const fire = f.verb === "heat" || (f.verb === "place" && f.at && FIRE_PLACES[f.at]) ? fireHere(f.at ?? "fire") : null;
   const reach = f.inputs.some((k) => lineLike(w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket;
-  const fish = Math.floor(fishNear(w, w.pools?.fish, stand, reach));
+  const fish = fishNear(w, stand, reach);
   const ground = f.verb === "plant" || f.verb === "pour" || f.verb === "dig";
   const r = predict(w, f, {
     tinder: lit, wind: airOn(w, stand).wind, spot: stand, ahead: ground ? ahead(w, px, py, w.t, hours.slice(i + 1, i + 1 + PATIENCE / 12)) : { soil: [], temp: [] }, fish,

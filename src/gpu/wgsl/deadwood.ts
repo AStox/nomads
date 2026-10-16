@@ -24,6 +24,7 @@ import { CELLS, CELL_MM } from "./index";
 import { FIXED } from "./fixed";
 import { RAND } from "./rand";
 import { DIED, TEXELS, TEXELS_SIDE, TEXEL_MM } from "./stems";
+import { CROWN_WORDS } from "./crowns";
 
 // What the WGSL is given of the constants (src/gpu/deadwood.ts sets them): the seed and streams, the rot's scale and
 // gain, every class's K40 and the snags' fall, by SPECIES index.
@@ -63,21 +64,20 @@ fn log_state(what: u32, born: u32, i: u32, u: u32, uf: u32, fr: u32, hour: u32) 
   return 2u;
 }`;
 
-// The cell cover and its rot, once a day from the stems' crown raster (wgsl/stems.ts: starts and the list of slot,
-// height and tree bit, crown share): every tree crown's share of each of the cell's 16 texels summed, each texel's no
-// more than whole, and the cell's the mean of its texels'. With acc set the cover is added to acc, the litterfall's
-// running sum of cover-days. Bindings: starts, list, cover, rot, acc, P (acc).
+// The cell cover and its rot, once a day from the stems' crown raster (wgsl/stems.ts: each texel's tree crowns summed
+// as the raster was filed, the pines' and the other trees'): each of the cell's 16 texels covered no more than whole,
+// and the cell's cover the mean of its texels'. With acc set the cover is added to acc, the litterfall's running sum of
+// cover-days. Bindings: crowns (the raster's sums), cover, rot, acc, P (acc).
 export function deadCover(L: DeadLaw) {
   return /* wgsl */ `
 ${FIXED}
 ${common(L)}
 struct Params { acc: u32, a: u32, b: u32, c: u32 }
-@group(0) @binding(0) var<storage, read> start: array<u32>;
-@group(0) @binding(1) var<storage, read> list: array<u32>;
-@group(0) @binding(2) var<storage, read_write> cover: array<u32>;
-@group(0) @binding(3) var<storage, read_write> rot: array<u32>;
-@group(0) @binding(4) var<storage, read_write> acc: array<u32>;
-@group(0) @binding(5) var<uniform> P: Params;
+@group(0) @binding(0) var<storage, read> crowns: array<u32>;
+@group(0) @binding(1) var<storage, read_write> cover: array<u32>;
+@group(0) @binding(2) var<storage, read_write> rot: array<u32>;
+@group(0) @binding(3) var<storage, read_write> acc: array<u32>;
+@group(0) @binding(4) var<uniform> P: Params;
 ${FLAT}
 @compute @workgroup_size(256) fn main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
   let c = flat(g, n);
@@ -87,9 +87,7 @@ ${FLAT}
   for (var j = 0u; j < 4u; j++) {
     for (var i = 0u; i < 4u; i++) {
       let t = (cy * 4u + j) * ${TEXELS_SIDE}u + cx * 4u + i;
-      var s = 0u;
-      for (var p = start[t]; p < start[t + 1u]; p++) { if ((list[3u * p + 1u] & 1u) == 1u) { s += list[3u * p + 2u]; } }
-      sum += min(s, 65536u);
+      sum += min(crowns[${CROWN_WORDS}u * t] + crowns[${CROWN_WORDS}u * t + 1u], 65536u);
     }
   }
   let cov = sum / 16u;

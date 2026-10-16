@@ -1,15 +1,17 @@
 // The world keeps moving on its own: weather, fire, plants, animals, rot, and sickness.
 import { ensure, p } from "./materials";
 import { ablaze, bedAir, dropStacks, mark, nearFire, newKinds, occupied, removeThing, residentsOf, shelterName } from "./physics";
-import { advance, alight, cooling, expose, output, setIn, type Air, type Group } from "./combustion";
+import { advance, alight, cooling, group, output, setIn, type Group } from "./combustion";
 import { PHYS, physOf } from "./fuel";
-import { BURNABLE, WIDEST, airFor, bedOf, blazeOf, fluxOn, landing, landsOn, partsOf, reach, struck, tinderIn, together, warmed, type Part } from "./spread";
+import { BURNABLE, WIDEST, bedOf, blazeOf, blazeWords, landsOn, partsOf, reach, receiverWords, struck, type Part } from "./spread";
+import { pack, receive } from "../gpu/fire";
+import { BY, LIT, LOOK_S } from "../gpu/wgsl/fire";
 import { see } from "./beliefs";
 import {
   DAY, H, HP, TILE_M, W, Tile, YEAR, addThing, cropOf, dayOfYear, groundOf, log, meters, rng, sea, seasonOf, tileAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
-import { anyAround, around, exists, grownOn, liveThings, makeStem, onPath, put, regrow, seedlingsOf, setKind, stockedAt } from "./space";
+import { anyAround, around, exists, grownOn, liveThings, makeStem, onPath, put, receiversOf, regrow, seedlingsOf, setKind, stockedAt } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked, gone, perished } from "./animals";
 import { enrich, settle, soilWaterAt, wetHour } from "./soil";
@@ -278,8 +280,8 @@ function fireOut(w: World, t: Thing) {
 }
 // Something near a fire caught: it burns as a bed of its own pieces, those that lit alight and the rest holding the heat
 // they've taken (spread.ts), lit by whoever's fire it was.
-function caught(w: World, x: Thing, h: Warm, by: Thing) {
-  x.bed = bedOf(h.parts, h.groups);
+function caught(w: World, x: Thing, parts: Part[], groups: Group[], by: Thing) {
+  x.bed = bedOf(parts, groups);
   delete x.absorbed;
   const who = by.owner ?? by.burnedBy;
   if (who) x.burnedBy = who;
@@ -289,96 +291,67 @@ function caught(w: World, x: Thing, h: Warm, by: Thing) {
   if (x.kind === "structure") log(w, "fire_spread", [x.owner ?? ""].filter(Boolean), x, "Fire caught on a shelter!");
   else if (Math.random() < 0.1) log(w, "fire_spread", [], x, `Fire spread to a ${x.kind.replace("_", " ")}.`);
 }
-// A thing near a fire: its parts as fuel, each part's heat toward lighting, and the air each takes it in.
-type Warm = { parts: Part[]; groups: Group[]; air: Air[] };
 // Every bed, a campfire's or a burning thing's own, burns on through the tick in the air where it stands (combustion.ts),
-// looked at as often as a bed steps, every ten seconds (fire-constants sec. 28). At each look what stands within a burning
-// bed's reach takes its flame's heat or its radiation, and its brands where they land (spread.ts); a part that lights
-// makes the thing a bed of its own from then on, and whatever nothing heats any more cools. A bed gone out is a campfire
-// gone, or a thing burnt out. A fire heaped over with stone keeps its flames, its heat and its brands under the stone.
-const LOOK = 10;
+// looked at as often as a bed steps, every ten seconds (fire-constants sec. 28); a bed gone out is a campfire gone, or a
+// thing burnt out. A fire heaped over with stone keeps its flames, its heat and its brands under the stone. How each
+// bed blazed at each look, and every fuel object within its reach (and anything still warm from an earlier fire), go to
+// the receivers' law on the GPU (gpu/fire.ts, wgsl/fire.ts): there each part of each takes the flames' heat and their
+// radiation look by look and the brands landing on it, and the first look one lights is the last it takes. What comes
+// back with the tick's landing settles it: a thing that lit burns as a bed of its own from then on, and the rest keep
+// the heat they hold, or are as they were once cooled right down. A world not resident on the GPU works the same law
+// out by its twin at once.
 export function fire(w: World, live: Thing[]) {
-  // each burning bed, how far it has looked for what it might heat and for what its brands might land on, and what it found
-  const beds = new Map<Thing, { heat: number; brands: number; close: Thing[]; far: Thing[] }>(), warm = new Map<Thing, Warm>();
-  const burning = (t: Thing) => beds.set(t, { heat: -1, brands: -1, close: [], far: [] });
-  const heated = (x: Thing) => {
-    let h = warm.get(x);
-    if (!h) {
-      const parts = partsOf(w, x);
-      warm.set(x, (h = { parts, groups: warmed(x, parts), air: parts.map((p) => airFor(w, x, p)) }));
-    }
-    return h;
-  };
-  const light = (x: Thing, h: Warm, by: Thing) => {
-    caught(w, x, h, by);
-    warm.delete(x);
-    burning(x);
-  };
+  // each burning bed, how far it has looked for what it might heat and for what its brands might land on
+  const beds = new Map<Thing, { heat: number; brands: number }>(), order: Thing[] = [];
+  const near = new Set<Thing>(), seen = (x: Thing) => { if (!x.bed) near.add(x); };
   for (const t of live) {
-    if (t.bed) burning(t);
+    if (t.bed) { beds.set(t, { heat: -1, brands: -1 }); order.push(t); }
     else if (t.kind === "fire") fireOut(w, t);
-    else if (t.absorbed) heated(t);
+    else if (t.absorbed) near.add(t);
   }
-  for (let s = 0; s < TICK_S; s += LOOK) {
-    // what things near a burning bed take over this look, from each bed as it stands at the look's start: the flux on
-    // each part and the bed giving the most of it; the brands landing, and the bed landing the most
-    const hot = new Map<Thing, { f: number[]; by: Thing; most: number }>(), landed = new Map<Thing, { n: number; from: Thing; most: number }>();
+  const looks: number[][][] = [];
+  for (let s = 0; s < TICK_S; s += LOOK_S) {
+    const look: number[][] = [];
+    looks.push(look);
     for (const [t, src] of beds) {
       const air = bedAir(w, t);
       if (alight(t.bed!) && !t.covered) {
         const b = blazeOf(w, t, output(t.bed!, air), air), r = reach(b);
         if (r.heat > src.heat) {
-          [src.heat, src.close] = [r.heat, []];
-          around(w, t.px, t.py, r.heat + WIDEST, BURNABLE, (x) => { if (x !== t) src.close.push(x); });
+          src.heat = r.heat;
+          around(w, t.px, t.py, r.heat + WIDEST, BURNABLE, seen);
         }
         if (r.brands > src.brands) {
-          [src.brands, src.far] = [r.brands, []];
-          around(w, t.px, t.py, r.brands + WIDEST, BURNABLE, (x) => { if (x !== t && landsOn(x)) src.far.push(x); });
+          src.brands = r.brands;
+          around(w, t.px, t.py, r.brands + WIDEST, BURNABLE, (x) => { if (landsOn(x)) seen(x); });
         }
-        for (const x of src.close) {
-          if (x.bed || !exists(w, x)) continue;
-          const f = fluxOn(b, x, heated(x).parts), sum = f.reduce((u, v) => u + v, 0), had = hot.get(x);
-          if (!had) hot.set(x, { f, by: t, most: sum });
-          else {
-            had.f = had.f.map((v, i) => v + f[i]);
-            if (sum > had.most) Object.assign(had, { by: t, most: sum });
-          }
-        }
-        for (const x of src.far) {
-          const n = x.bed ? 0 : landing(b, x, LOOK), had = landed.get(x);
-          if (n <= 0) continue;
-          if (!had) landed.set(x, { n, from: t, most: n });
-          else Object.assign(had, { n: had.n + n }, n > had.most ? { from: t, most: n } : {});
-        }
+        look.push(blazeWords(b, order.indexOf(t)));
       }
-      t.bed = advance(t.bed!, LOOK, air);
+      t.bed = advance(t.bed!, LOOK_S, air);
       if (alight(t.bed)) continue;
       beds.delete(t);
       if (t.kind === "fire") fireOut(w, t);
       else burnOut(w, t, t.burnedBy);
     }
-    for (const [x, h] of warm) {
-      if (x.bed || !exists(w, x)) { warm.delete(x); continue; }
-      const on = hot.get(x);
-      h.groups = h.groups.map((g, i) => expose(g, on?.f[i] ?? 0, LOOK, h.air[i]));
-      if (on && h.groups.some((g) => g.lit)) light(x, h, on.by);
-    }
-    // brands landing together light the driest fine fuel they land in by the NFDRS's odds (spread.ts)
-    for (const [x, l] of landed) {
-      if (x.bed || !exists(w, x) || Math.random() >= together(l.n)) continue;
-      const h = heated(x), tinder = tinderIn(w, x, h.parts);
-      if (tinder.i < 0 || Math.random() >= tinder.odds) continue;
-      h.groups[tinder.i].lit = true;
-      light(x, h, l.from);
-    }
-  }
-  // what's still warm keeps the heat it has taken, and what has cooled right down is as it was
-  for (const [x, h] of warm) {
-    const heat = h.groups.map((g) => g.heat);
-    if (heat.some((v) => v > 0)) { x.absorbed = heat; mark(w, x); }
-    else if (x.absorbed) { delete x.absorbed; mark(w, x); }
   }
   for (const t of beds.keys()) mark(w, t);
+  const taking = [...near].filter((x) => exists(w, x)).map((x) => ({ x, parts: partsOf(w, x) })).filter((r) => r.parts.length);
+  if (!taking.length) return;
+  const batch = pack(w.seed, w.t, looks, taking.map((r) => receiverWords(w, r.x, r.parts)));
+  let first = batch.nr;
+  const starts = taking.map((r) => (first += r.parts.length) - r.parts.length);
+  const settle = (out: Uint32Array) => taking.forEach(({ x, parts }, i) => {
+    if (x.bed || !exists(w, x)) return;
+    const at = starts[i], heat = parts.map((_, j) => (out[at + j] & 0x7fffffff) / 256);
+    if (out[i] & LIT) {
+      const groups = parts.map((p, j) => ({ ...group(p.phys, p.n, p.m, 0, 0, p.skin), heat: heat[j], lit: (out[at + j] & LIT) !== 0 }));
+      caught(w, x, parts, groups, order[out[i] & BY]);
+    } else if (heat.some((v) => v > 0)) { x.absorbed = heat; mark(w, x); }
+    else if (x.absorbed) { delete x.absorbed; mark(w, x); }
+  });
+  const gpu = receiversOf(w);
+  if (gpu) gpu.queue(batch, settle);
+  else settle(receive(batch));
 }
 
 // ---------- plants ----------

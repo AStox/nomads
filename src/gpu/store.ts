@@ -64,6 +64,9 @@ export const PLACE: readonly Field[] = [
 // What the last landing read back of a kind's allocation: control words, the next PEEK_SLOTS free slots and their slot
 // words. Fresh until a law runs births again.
 export const PEEK_SLOTS = 1024;
+// Words between one dispatch's params and the next in the params buffer: a uniform binding's offset is a multiple of
+// 256 bytes (WebGPU's minUniformBufferOffsetAlignment by default).
+const PARAM_WORDS = 64;
 export type Peek = { head: number; nfree: number; tail: number; overflow: number; free: Uint32Array; meta: Uint32Array; fresh: boolean };
 export type Kind = {
   n: number; name: string; capacity: number; placed: boolean; spec: KindSpec;
@@ -151,7 +154,9 @@ export class Store {
   private readonly stash = new Map<string, Stashed>();
   private enc: GPUCommandEncoder | null = null;
   private pass: GPUComputePassEncoder | null = null;
-  private readonly pool: GPUBuffer[] = [];
+  // the params of the runs recorded since the last submit, PARAM_WORDS apart in one uniform buffer, written once at the
+  // submit (words staged), and how many are in use
+  private params: { buf: GPUBuffer; words: Uint32Array } | null = null;
   private used = 0;
   private retired: GPUBuffer[] = [];
   private readonly pipes = new Map<string, Map<string, GPUComputePipeline>>(); // by source, then entry point
@@ -234,23 +239,26 @@ export class Store {
 
   // ---------- running kernels ----------
   // Kernels, clears and copies go into one command encoder, submitted by flush (begin and land flush; so do reads),
-  // since a submit costs the CPU a few tenths of a millisecond. Each dispatch's parameters get their own small
-  // uniform buffer from a pool, written before the submit. groups is the workgroup counts, or where in a buffer made
-  // with INDIRECT usage an earlier kernel wrote them.
+  // since a submit costs the CPU a few tenths of a millisecond. Each dispatch's parameters (up to 8 words) get their
+  // own 32 bytes of one uniform buffer, PARAM_WORDS apart, all written by one writeBuffer at the submit (one a dispatch
+  // cost the CPU a millisecond or more a day). groups is the workgroup counts, or where in a buffer made with INDIRECT
+  // usage an earlier kernel wrote them.
   run(src: string, bufs: GPUBuffer[], groups: [number, number?, number?] | { buffer: GPUBuffer; offset: number }, params?: number[], entry = "main") {
     const d = this.g.device;
     let byEntry = this.pipes.get(src);
     if (!byEntry) this.pipes.set(src, (byEntry = new Map()));
     let p = byEntry.get(entry);
     if (!p) byEntry.set(entry, (p = pipeline(this.g, src, entry)));
+    const entries: GPUBindGroupEntry[] = bufs.map((buffer, binding) => ({ binding, resource: { buffer } }));
     if (params) {
-      let u = this.pool[this.used];
-      if (!u) this.pool.push((u = d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })));
+      if (!this.params || (this.used + 1) * PARAM_WORDS > this.params.words.length) this.moreParams();
+      const at = this.used * PARAM_WORDS, P = this.params!;
+      P.words.fill(0, at, at + 8);
+      P.words.set(params, at);
+      entries.push({ binding: bufs.length, resource: { buffer: P.buf, offset: at * 4, size: 32 } });
       this.used++;
-      d.queue.writeBuffer(u, 0, Uint32Array.from(params));
-      bufs = [...bufs, u];
     }
-    const bind = d.createBindGroup({ layout: p.getBindGroupLayout(0), entries: bufs.map((buffer, binding) => ({ binding, resource: { buffer } })) });
+    const bind = d.createBindGroup({ layout: p.getBindGroupLayout(0), entries });
     this.pass ??= (this.enc ??= d.createCommandEncoder()).beginComputePass();
     this.pass.setPipeline(p);
     this.pass.setBindGroup(0, bind);
@@ -262,22 +270,33 @@ export class Store {
     this.pass = null;
     f((this.enc ??= this.g.device.createCommandEncoder()));
   }
-  // Submits what has been recorded.
+  // Submits what has been recorded, the runs' params written first.
   flush() {
     this.pass?.end();
     this.pass = null;
+    this.writeParams();
     if (this.enc) this.g.device.queue.submit([this.enc.finish()]);
     this.enc = null;
-    this.used = 0;
     for (const b of this.retired) b.destroy();
     this.retired = [];
+  }
+  private writeParams() {
+    if (this.used) this.g.device.queue.writeBuffer(this.params!.buf, 0, this.params!.words, 0, this.used * PARAM_WORDS);
+    this.used = 0;
+  }
+  // A params buffer twice the size, the one outgrown written as it stands and let go after the next submit.
+  private moreParams() {
+    const old = this.params, slots = Math.max(256, old ? (2 * old.words.length) / PARAM_WORDS : 0);
+    if (old) { this.writeParams(); this.retire(old.buf); }
+    this.params = { buf: this.g.device.createBuffer({ size: slots * PARAM_WORDS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }), words: new Uint32Array(slots * PARAM_WORDS) };
   }
   // Lets go of every buffer the store made (its kinds' and its scratch), once what was recorded has been submitted;
   // the store is not used after. Tiers own their buffers and let go of their own.
   destroy() {
     this.flush();
     for (const k of this.kinds) for (const [, b] of buffersOf(k)) b.destroy();
-    for (const b of [...this.scratchBufs.values(), ...this.pool]) b.destroy();
+    for (const b of [...this.scratchBufs.values(), ...(this.params ? [this.params.buf] : [])]) b.destroy();
+    this.params = null;
     this.scratchBufs.clear();
   }
   // A buffer replaced while commands recorded but not yet submitted may still use it: let go after the next submit.
@@ -492,8 +511,11 @@ export class Store {
     this.t = t;
     this.begun = true;
     try {
+      // each law's work goes to the GPU as soon as it is recorded, so the GPU runs it while the CPU works out the next
+      // law's: the queue keeps the order, and no law writes a buffer (writeBuffer) an earlier law's kernels read
       this.upload();
-      for (const l of this.laws) if (l.due(t)) l.run(this, t);
+      this.flush();
+      for (const l of this.laws) if (l.due(t)) { l.run(this, t); this.flush(); }
       // a still kind untouched since its last index has no dead slot to reclaim and no object out of place; a placed
       // kind's reclaim rides its index's scan
       const due = this.kinds.filter((k) => !k.spec.still || k.touched);

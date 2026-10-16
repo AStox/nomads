@@ -3,17 +3,6 @@
 // only what it shows (remote.js): after each tick the worker posts it state(), and what the page has asked about.
 import { ACTIVITY, DAY, census as headcount, TILE_M, activity, brainKind, changed, changedKinds, floraOf, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, pathChanges, removeThing, removed, resident, seedDriver, stemDriver, thingById, thingView, tick, trailChanges, trails, useBrain } from "../sim.js";
 
-// The random brain answers through promise chains and a thinking agent skips its turn, so each warming tick waits for a
-// fresh task.
-const port = new MessageChannel(), waiting = [];
-port.port1.onmessage = () => waiting.shift()();
-const nextTask = () => {
-  const { promise, resolve } = Promise.withResolvers();
-  waiting.push(resolve);
-  port.port2.postMessage(0);
-  return promise;
-};
-
 function clearChanges() {
   iceChanged.now = false; groupsChanged.now = false;
   changed.clear(); removed.clear(); newKinds.clear(); changedKinds.clear(); pathChanges.clear(); trailChanges.clear();
@@ -21,8 +10,8 @@ function clearChanges() {
 
 // One live sim per worker: the change sets are module globals inside the bundle. jev: the relay's token (scripts/play/serve.ts)
 // for people to think with Jev once the world is warm; without it, and while warming, they think with the random brain.
-// onWorld(w): called once the world's flora lives on the GPU, before it warms, so the renderer can draw from its
-// buffers (and make its sprites) while the world warms.
+// onWorld(w): called once the world's flora lives on the GPU, so the renderer can draw from its buffers and make its
+// sprites. Returns before the world warms: the warm's ticks are the first ticks asked for (tick, onProgress).
 export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev = null } = {}) {
   const w = newWorld(seed);
   // as the first tick would (sim.ts tick), so the buffers are there before any tick
@@ -86,19 +75,17 @@ export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev =
 
   clearChanges();
   census(); travel();
-  for (let i = 0; i < warm; i++) {
-    took(await step());
-    census(); travel();
-    clearChanges();
-    await nextTask();
-    if (onProgress && ((i + 1) % 50 === 0 || i + 1 === warm)) onProgress(i + 1, warm);
-  }
-  clearChanges();
-  // the relay says whether it would let this token through without asking Jev anything
+  // The warm: the first `warm` ticks are ticks like any other (tick), which the page asks for as fast as its frames
+  // allow once the island is shown, people thinking with the random brain until they end; then, if the relay says it
+  // would let this token through without asking Jev anything, with Jev.
+  let warmLeft = warm;
   const url = new URL("/jev", location.href).href;
-  const ok = !!jev && (await fetch(url, { headers: { "X-Nomads-Token": jev } }).then((r) => r.json()).then((r) => r.ready && r.ok).catch(() => false));
-  if (jev && !ok) console.warn("the Jev relay refused this page's token or is off; people think with the random brain");
-  useBrain(ok ? { kind: "relay", url, token: jev } : { kind: "random" });
+  const warmed = async () => {
+    const ok = !!jev && (await fetch(url, { headers: { "X-Nomads-Token": jev } }).then((r) => r.json()).then((r) => r.ready && r.ok).catch(() => false));
+    if (jev && !ok) console.warn("the Jev relay refused this page's token or is off; people think with the random brain");
+    useBrain(ok ? { kind: "relay", url, token: jev } : { kind: "random" });
+  };
+  if (!warm) await warmed();
   lastEvent = w.events.at(-1)?.id ?? 0;
   roll();
 
@@ -144,13 +131,19 @@ export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev =
       };
       clearChanges();
       took(t0);
+      if (warmLeft > 0) {
+        warmLeft--;
+        if (onProgress && ((warm - warmLeft) % 50 === 0 || !warmLeft)) onProgress(warm - warmLeft, warm);
+        if (!warmLeft) await warmed();
+      }
       return done;
     },
     // What the page draws and lists of the people and animals, sent after every tick: where each stands in tiles, what
     // people are at (sim.ts activity), the weather the light and smoke follow, the camps and who is in them.
     state() {
       return {
-        t: w.t, tickMs, brain: brainKind(),
+        // warming: the warm's ticks still to run
+        t: w.t, tickMs, brain: brainKind(), warming: warmLeft,
         weather: { season: w.weather.season, sky: w.weather.sky, wind: w.weather.wind },
         agents: w.agents.map((a) => ({ id: a.id, name: a.name, status: a.status, color: a.color, born: a.born, down: a.down, goal: String(a.goal?.type ?? a.goal ?? ""), px: a.px, py: a.py, act: acts.get(a.id) ?? null })),
         // gpu: a view of an animal the GPU's store holds (an.obj), which the render worker draws from its buffer

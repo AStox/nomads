@@ -1,6 +1,7 @@
 // The island's animals, resident on the GPU: every deer, rabbit, wolf, fox, heron, eagle, gull and crow one object of
-// store kind "animal", and the ground they eat from (the tiles' sward, browse, carrion, shore and the fish the CPU's
-// stocks hold) in buffers beside it. Plan: docs/plans/2026-10-14-001-refactor-gpu-object-world-plan.md, Unit 10;
+// store kind "animal", and the ground they eat from (the tiles' sward, browse, carrion and shore) in buffers beside it;
+// the fish they take are the fish's own objects (fish.ts), laid out by tile for each step. Plan:
+// docs/plans/2026-10-14-001-refactor-gpu-object-world-plan.md, Unit 10;
 // the law is wgsl/animals.ts, its constants and drivers src/sim/animals.ts (docs/research/animal-constants.md).
 //
 // Fields, each a u32 but e: x and y in millimetres (PLACE); sp, the kind (SP) plus 16 for a female; held, 0 while the
@@ -11,11 +12,12 @@
 // GPU's alone, so neither ever overwrites the other's).
 //
 // The law runs every hour of island time (every 12 ticks), a day at a time in the twenty years before anyone wakes.
-// What the CPU reads back each landing: how many of each kind are alive (a census, every tick) and, after a step, the
-// fish eaten from each water tile, which the CPU's stocks (fish.ts) lose.
+// What the CPU reads back each landing: how many of each kind are alive (a census, every tick). What the birds eat of
+// the fish goes to the fish on the GPU (fish.ts FishLink), never through the CPU.
 import type { Store, Kind, KindSpec, Field, Rider } from "./store";
 import { reload, savedArray, savedNumbers } from "./store";
-import { cover, readback, storage } from "./kernel";
+import { cover, storage } from "./kernel";
+import type { FishLink } from "./fish";
 import { CELLS } from "./wgsl/index";
 import {
   A_, BIRTH_HEAD, BIRTH_INIT, FIELDS, FLAG, KP_WORDS, LIVE_LAYERS, NL, NSP, PO, Q_RUNS, SATW, T, TW, W_, W_RUNS, aWords, larAt,
@@ -46,10 +48,8 @@ export type AnimalDriver = {
   consts(per: number): Uint32Array;
   // the animals as the island starts, field columns of n each
   start(): { n: number; cols: Record<string, Uint32Array> };
-  // a step ending at tick t: the drivers' day, the season's events (FLAG) and each tile's fish, g
-  step(t: number, per: number): { day: number; flags: number; fish: Uint32Array };
-  // the fish eaten from each water tile since the last step, g
-  ate(g: Uint32Array): void;
+  // a step ending at tick t: the drivers' day and the season's events (FLAG)
+  step(t: number, per: number): { day: number; flags: number };
   // the island days before anyone wakes, stepped as every hour after is, ending at tick t0
   days: number;
   t0: number;
@@ -66,10 +66,10 @@ export class Animals implements Rider {
   kind: Kind | null = null;
   private driver: AnimalDriver | null = null;
   private browse: Browse | null = null;
+  private fish: FishLink | null = null;
   private bufs: Bufs | null = null;
   private src: Record<string, string> | null = null;
   private per = 0;
-  private fishing = false;
   // the land's summed-area table still to build (a law's first step builds it; it never changes)
   private landSat = true;
   private culls: number[] = [];
@@ -79,13 +79,14 @@ export class Animals implements Rider {
   // ---------- on the GPU ----------
   // The animals take up residence on a store: kind animal declared, and, in a store that hasn't got it, the island's
   // animals laid down and run through the years before anyone wakes. A store loaded from a save has them, and its
-  // saved ground. browse: the stems the deer browse, when the world has them.
-  async attach(store: Store, driver: AnimalDriver, browse: Browse | null = null) {
+  // saved ground. browse: the stems the deer browse, when the world has them; fish: the fish the birds take, when the
+  // world has them (else each water tile's fish run of the ground stays as it is laid).
+  async attach(store: Store, driver: AnimalDriver, browse: Browse | null = null, fish: FishLink | null = null) {
     if (this.store) throw new Error("the animals already live on a store");
     const fresh = !store.kinds.some((k) => k.name === ANIMAL);
     // still between laws: the law moves them only on its own ticks and marks the kind touched then (store.ts KindSpec)
     const kind = store.adopt({ name: ANIMAL, capacity: ANIMAL_CAP, placed: true, still: true, fields: FIELD_LIST } satisfies KindSpec);
-    this.store = store; this.kind = kind; this.driver = driver; this.browse = browse;
+    this.store = store; this.kind = kind; this.driver = driver; this.browse = browse; this.fish = fish;
     const g = store.g, cap = kind.capacity;
     const W = new Uint32Array(W_RUNS * T);
     W.set(driver.tiles());
@@ -104,15 +105,12 @@ export class Animals implements Rider {
       const { n, cols } = driver.start();
       store.write(ANIMAL, n, cols);
       store.index(kind);
-      // the days before anyone wakes, each hour's fish eaten taken off the CPU's stocks before the next, as a landing
-      // would
+      // the days before anyone wakes, the birds' catch going to the fish as each hour's would
       for (let k = driver.days * 24; k >= 1; k--) {
         this.law(store, driver.t0 - k * STEP_TICKS);
         store.index(kind, true);
         store.flush();
-        driver.ate(new Uint32Array(await readback(g, this.bufs!.A, T * 4, A_.fish * 4)));
       }
-      this.fishing = false;
       this.cullNow();
       await store.refresh();
     }
@@ -133,9 +131,9 @@ export class Animals implements Rider {
   // A step of the law ending at tick t, per steps a day.
   private law(s: Store, t: number) {
     const b = this.bufs!, k = this.kind!, src = this.src!, g = s.g, cap = k.capacity, per = this.per;
-    const { day, flags, fish } = this.driver!.step(t, per);
+    const { day, flags } = this.driver!.step(t, per);
     g.device.queue.writeBuffer(b.KP, PO * 4, Uint32Array.of(t >>> 0, per, day, flags, this.driver!.seed >>> 0, (STEP_TICKS * 24) / per));
-    g.device.queue.writeBuffer(b.W, W_.fish * T * 4, fish);
+    this.fish?.feed(s, b.W, W_.fish * T);
     if (this.browse && per === 24 && this.browse.filed(t)) this.browsed(this.browse.raster(s));
     s.encode((e) => {
       e.clearBuffer(b.A, 0, A_.carr * 4);
@@ -155,12 +153,12 @@ export class Animals implements Rider {
     s.run(src.claim, [k.body, b.W, b.A, b.KP, b.Q], animals);
     s.run(src.eat, [k.body, b.W, b.A, b.KP, b.Q], animals);
     s.run(src.fate, [k.body, b.W, b.A, b.KP, b.S, b.Q, b.TERR], animals);
+    this.fish?.ate(s, b.A, A_.fish);
     // the young: the counts fate left in Q's first run, those past the room dropped
     if (flags & (FLAG.calve | FLAG.kits | FLAG.whelp | FLAG.cub | FLAG.heron | FLAG.eagle | FLAG.gull | FLAG.crow)) {
       s.births(ANIMAL, ANIMAL, b.Q, BIRTH_INIT, { bufs: [{ name: "KP", buf: b.KP }], wgsl: BIRTH_HEAD }, true);
     }
     k.touched = k.stale = true;
-    this.fishing = true;
   }
   // Every animal of a kind (SP) dies, now or, before the animals live on a store, once they do.
   cull(sp: number) {
@@ -173,21 +171,16 @@ export class Animals implements Rider {
     k.touched = k.stale = true;
   }
 
-  // ---------- riding the store: the census every tick, the fish eaten after a step; saved, the ground ----------
-  words() { return this.store ? NSP + (this.fishing ? T : 0) : 0; }
+  // ---------- riding the store: the census every tick; saved, the ground ----------
+  words() { return this.store ? NSP : 0; }
   record(out: GPUBuffer, at: number) {
     const s = this.store!, b = this.bufs!, k = this.kind!;
     s.encode((e) => e.clearBuffer(b.cen));
     s.run(this.src!.count, [k.body, b.cen], cover(s.g, k.capacity));
-    s.encode((e) => {
-      e.copyBufferToBuffer(b.cen, 0, out, at * 4, NSP * 4);
-      if (this.fishing) e.copyBufferToBuffer(b.A, A_.fish * 4, out, (at + NSP) * 4, T * 4);
-    });
+    s.encode((e) => e.copyBufferToBuffer(b.cen, 0, out, at * 4, NSP * 4));
   }
   land(o: Uint32Array, at: number) {
-    if (!o.length) return;
-    this.census.set(o.subarray(at, at + NSP));
-    if (this.fishing) { this.fishing = false; this.driver!.ate(o.subarray(at + NSP, at + NSP + T)); }
+    if (o.length) this.census.set(o.subarray(at, at + NSP));
   }
   buffers(): [string, GPUBuffer][] { return this.bufs ? [["W", this.bufs.W], ["A", this.bufs.A]] : []; }
   save() { return { census: [...this.census] }; }

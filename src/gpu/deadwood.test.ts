@@ -12,6 +12,8 @@ import { drvAccess } from "./wgsl/drivers";
 import { FIXED } from "./wgsl/fixed";
 import { CELLS, CELL_MM } from "./wgsl/index";
 import { DIED, TEXELS, TEXELS_SIDE, TEXEL_MM } from "./wgsl/stems";
+import { CROWN_WORDS } from "./wgsl/crowns";
+import type { Raster } from "./flora";
 import { common } from "./wgsl/deadwood";
 import {
   BIN_DAYS, BOULDERS_HA, CLAST_DIM, CLASTS, DAY_TICKS, Deadwood, STICK_DIA, capacities, ROT, STICKS_HA, STICK_K, YEAR_DAYS, YEAR_HOURS, clastLaw, deadLaw, fallRate, lam, lasts, leafCounts, logState, squareOf, stickOf,
@@ -33,7 +35,7 @@ const noClasts = (): Record<ClastKind, Uint32Array> => ({ pebble: new Uint32Arra
 
 // A stand of the test: the cells of a square block, every texel of them holding one tree (a plant object) whose crown
 // covers the share cover(day) of it. The raster is written as the stems' law would file it.
-type Stand = { cells: number[]; trees: number };
+type Stand = { cells: number[]; trees: number; what: number };
 function stand(s: Store, x0: number, y0: number, side: number, height: number, what: number, extra = 0): Stand {
   const cells: number[] = [];
   for (let y = y0; y < y0 + side; y++) for (let x = x0; x < x0 + side; x++) cells.push(y * N + x);
@@ -46,24 +48,33 @@ function stand(s: Store, x0: number, y0: number, side: number, height: number, w
   });
   s.declare({ name: "plant", capacity: n + extra, placed: true, still: true, fields: PLANT_FIELDS });
   s.write("plant", n, cols);
-  return { cells, trees: n };
+  return { cells, trees: n, what };
 }
-// The raster of a stand at a cover (Q16), every texel's tree filed.
+// The raster of a stand at a cover (Q16), every texel's tree filed, and its texels' tree sums (wgsl/stems.ts stemsFile).
 function raster(g: Gpu, st: Stand, height: number, cover: number) {
-  const start = new Uint32Array(TEXELS + 1), list = new Uint32Array(3 * st.trees), byTexel = new Map<number, number>();
+  const start = new Uint32Array(TEXELS + 1), list = new Uint32Array(3 * st.trees), crowns = new Uint32Array(CROWN_WORDS * TEXELS), byTexel = new Map<number, number>();
   st.cells.forEach((c, i) => { for (let j = 0; j < 16; j++) byTexel.set((Math.floor(c / N) * 4 + Math.floor(j / 4)) * TEXELS_SIDE + (c % N) * 4 + (j % 4), i * 16 + j); });
   let p = 0;
   for (let t = 0; t < TEXELS; t++) {
     start[t] = p;
     const e = byTexel.get(t);
-    if (e !== undefined) { list[3 * p] = e; list[3 * p + 1] = (height << 1) | 1; list[3 * p + 2] = cover; p++; }
+    if (e === undefined) continue;
+    list[3 * p] = e; list[3 * p + 1] = (height << 1) | 1; list[3 * p + 2] = cover; p++;
+    const k = (cover >>> 8) + 1;
+    crowns.set([st.what === PINE ? cover : 0, st.what === PINE ? 0 : cover, k, k * Math.floor(height / 100)], CROWN_WORDS * t);
   }
   start[TEXELS] = p;
-  return { start, list };
+  return { start, list, crowns };
 }
-function rasterBufs(g: Gpu, st: Stand, height: number) {
+function rasterBufs(g: Gpu, st: Stand, height: number): Raster {
   const r = raster(g, st, height, 0);
-  return { start: storage(g, r.start), list: storage(g, r.list) };
+  return { start: storage(g, r.start), list: storage(g, r.list), crowns: storage(g, r.crowns) };
+}
+// The stand's raster made over at a cover, as the stems' law files it each day.
+function refile(g: Gpu, r: Raster, st: Stand, height: number, cover: number) {
+  const v = raster(g, st, height, cover);
+  g.device.queue.writeBuffer(r.list, 0, v.list);
+  g.device.queue.writeBuffer(r.crowns, 0, v.crowns);
 }
 
 // ---------- steady state ----------
@@ -82,7 +93,7 @@ test("a closed stand at steady state holds input / rate by piece class: sticks, 
   const g = await theGpu(), s = new Store(g), H = 20_000, D = 400, DAYS = 300;
   const st = stand(s, 40, 40, 8, H, PINE, D * DAYS);
   const r = rasterBufs(g, st, H);
-  g.device.queue.writeBuffer(r.list, 0, raster(g, st, H, 65536).list);
+  refile(g, r, st, H, 65536);
   // a stand kept whole: D stems a day starved where the trees stand (their crowns kept in the raster), written into
   // fresh slots dead and marked as the stems' law marks them
   const L = fast(SEED), dw = new Deadwood(SEED, noClasts(), { logs: D * DAYS + 4096, bins: 64 * 64 * 2 }, L);
@@ -152,8 +163,8 @@ async function closing(g: Gpu): Promise<Closing> {
   const r = rasterBufs(g, st, H);
   // the canopy closes over the year: a fifth covered at first, whole at the end
   const coverOn = (d: number) => Math.round(65536 * (0.2 + (0.8 * d) / DAYS));
-  g.device.queue.writeBuffer(r.list, 0, raster(g, st, H, coverOn(0)).list);
-  s.law({ name: "canopy", due: (t) => t % DAY_TICKS === 0, run: (_, t) => g.device.queue.writeBuffer(r.list, 0, raster(g, st, H, coverOn(t / DAY_TICKS)).list) });
+  refile(g, r, st, H, coverOn(0));
+  s.law({ name: "canopy", due: (t) => t % DAY_TICKS === 0, run: (_, t) => refile(g, r, st, H, coverOn(t / DAY_TICKS)) });
   const dw = new Deadwood(SEED, noClasts(), { logs: 1 << 16, bins: 4096 });
   dw.attach(s, () => r);
   s.declare({ name: "act", capacity: 1 << 18, placed: true, fields: ACT });
@@ -216,7 +227,7 @@ test("a picked stick never comes back: it is gone from its bin for good, and new
   const g = await theGpu(), s = new Store(g), H = 15_000;
   const st = stand(s, 10, 10, 1, H, PINE);
   const r = rasterBufs(g, st, H);
-  g.device.queue.writeBuffer(r.list, 0, raster(g, st, H, 65536).list);
+  refile(g, r, st, H, 65536);
   const dw = new Deadwood(SEED, noClasts(), { logs: 1 << 12, bins: 1024 });
   dw.attach(s, () => r);
   s.mirror.watch("here", { x0: 10, y0: 10, x1: 10, y1: 10 });
@@ -254,7 +265,7 @@ test("a dead tree stands as a snag and falls as a log, its state on the GPU the 
   const g = await theGpu(), s = new Store(g), H = 24_000, n = 2000;
   const st = stand(s, 30, 30, 2, H, ASPEN, n);
   const r = rasterBufs(g, st, H);
-  g.device.queue.writeBuffer(r.list, 0, raster(g, st, H, 40000).list);
+  refile(g, r, st, H, 40000);
   const L = fast(SEED), dw = new Deadwood(SEED, noClasts(), { logs: 1 << 14, bins: 1024 }, L);
   dw.attach(s, () => r);
   s.mirror.watch("here", { x0: 30, y0: 30, x1: 31, y1: 31 });
@@ -292,7 +303,7 @@ test("a cell's clasts on the GPU are the twin's, square by square, and their siz
   counts.pebble[cell] = 6000; counts.stone[cell] = 900; counts.boulder[cell] = 120;
   s.declare({ name: "plant", capacity: 1, placed: true, still: true, fields: PLANT_FIELDS });
   const dw = new Deadwood(SEED, counts, { logs: 1 << 10, bins: 1024 });
-  const r = { start: storage(g, (TEXELS + 1) * 4), list: storage(g, 4) };
+  const r = { start: storage(g, (TEXELS + 1) * 4), list: storage(g, 4), crowns: storage(g, CROWN_WORDS * TEXELS * 4) };
   dw.attach(s, () => r);
   for (const [ci, c] of CLASTS.entries()) {
     const n = counts[c.kind][cell], out = storage(g, n * 5 * 4);

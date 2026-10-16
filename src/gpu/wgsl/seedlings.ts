@@ -23,7 +23,8 @@
 import { CELL, N } from "../../terrain/grid";
 import { FIXED } from "./fixed";
 import { RAND } from "./rand";
-import { DIED, HALF_Q, HC, HQ, LAID, MAP, QSTEP, ROW_WORDS, RW, SSTEP, T1, T2, TEXELS, TEXELS_SIDE, TEXEL_MM, TREE_ROWS } from "./stems";
+import { DIED, HALF_Q, HC, HQ, LAID, MAP, QSTEP, ROW_WORDS, RW, SSTEP, TEXELS, TEXELS_SIDE, TEXEL_MM, TREE_ROWS } from "./stems";
+import { LAYERED } from "./crowns";
 
 // The seedlings' kinds, in the stems' row order (plants.ts STEM_ROWS): their row is the stems' row.
 export const SEED_ROWS = ["pine", "oak", "ash", "aspen", "berry"] as const;
@@ -123,6 +124,7 @@ fn young_height(r: u32, q: u32) -> u32 { if (r == BERRY) { return BUSH_MM; } ret
 // The light at a height in a texel: the stems' crowns taller, and half of those as tall, from the stems' raster (bound as
 // start and list), layered as the stems' law has it.
 const LIGHT = /* wgsl */ `
+${LAYERED}
 fn light_at(t: u32, s: u32) -> u32 {
   var above = 0u;
   for (var p = start[t]; p < start[t + 1u]; p++) {
@@ -130,11 +132,7 @@ fn light_at(t: u32, s: u32) -> u32 {
     let a = list[3u * p + 2u];
     if (h > s) { above += a; } else if (h == s) { above += a >> 1u; }
   }
-  let layers = above >> 16u;
-  let f = above & 0xffffu;
-  if (layers == 0u) { return (65536u - f) + ((f * ${T1}u) >> 16u); }
-  if (layers == 1u) { return (((65536u - f) * ${T1}u) >> 16u) + ((f * ${T2}u) >> 16u); }
-  return ${T2}u;
+  return layered(above);
 }`;
 // Where a seed lands: d mm from (x0, y0) on its stream's next bearing; its texel, or NT when off the island or on
 // water (the dry bits bound in sd).

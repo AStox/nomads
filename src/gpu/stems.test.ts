@@ -11,7 +11,8 @@ import { Flora, PLANT, type StemDay, type StemDriver } from "./flora";
 import { CELLS } from "./wgsl/index";
 import { FLORA, SPECIES, TILES, TILE_M, crownShare, dbhOf, type Scatter } from "../terrain/flora";
 import { CELL, N } from "../terrain/grid";
-import { DIED, HALF_Q, HC, HQ, MAP, QSTEP, ROWS, ROW_WORDS, RW, SSTEP, T1, T2, TEXELS_SIDE, TEXEL_MM, TREE_ROWS } from "./wgsl/stems";
+import { DIED, HALF_Q, HC, HQ, MAP, QSTEP, ROWS, ROW_WORDS, RW, SSTEP, TEXELS_SIDE, TEXEL_MM, TREE_ROWS } from "./wgsl/stems";
+import { layered } from "./wgsl/crowns";
 
 afterAll(releaseGpu);
 
@@ -65,8 +66,7 @@ function oracleDay(before: Uint32Array, L: Layout, tables: Uint32Array, rows: Ui
       if (hj > s) above += aj; else if (hj === s) above += aj >>> 1;
       if (tree && tj && (hj > s || (hj === s && j < i))) { crowd += aj; taller++; }
     }
-    const layers = Math.floor(above / 65536), f = above % 65536;
-    const light = layers === 0 ? 65536 - f + Math.floor((f * T1) / 65536) : layers === 1 ? Math.floor(((65536 - f) * T1) / 65536) + Math.floor((f * T2) / 65536) : T2;
+    const light = layered(above);
     const cell = Math.min(Math.floor(before[L.y + i] / (CELL * 1000)), N - 1) * N + Math.min(Math.floor(before[L.x + i] / (CELL * 1000)), N - 1);
     const alpha = coef[(cell * ROWS + r) * 2], beta = coef[(cell * ROWS + r) * 2 + 1];
     const gain = Math.floor((alpha * light) / 65536) - beta, q = before[L.q + i], qmax = rw(rows, r, RW.qmax);

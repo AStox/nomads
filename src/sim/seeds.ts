@@ -174,10 +174,13 @@ export function seedDriver(w: World): SeedDriver {
       return young;
     },
     // The next day's after tick t, an even share of those left for each hour left before it (they depend on nothing but
-    // the day, so they are the same worked out whenever).
+    // the day, so they are the same worked out whenever): the day, and young holding its words from 0 up to hi.
     ahead(t) {
       const next = (Math.floor(t / DAY) + 1) * DAY, from = memo === next ? done : 0;
-      if (from < cells.length) work(next, Math.min(cells.length, from + Math.ceil((cells.length - from) / Math.max(1, Math.ceil((next - t) / (DAY / 24))))));
+      if (from >= cells.length) return null;
+      const to = Math.min(cells.length, from + Math.ceil((cells.length - from) / Math.max(1, Math.ceil((next - t) / (DAY / 24)))));
+      work(next, to);
+      return { t: next, young, hi: (cells[to - 1] + 1) * YOUNG_WORDS };
     },
   };
 }

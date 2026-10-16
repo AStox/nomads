@@ -22,7 +22,7 @@
 
 import { GROUND_BINDINGS, groundWGSL } from "./ground.wgsl.js";
 import { NS, ATLAS, META_WORDS } from "./atlas.js";
-import { CELLS_N, CELL_M, CELLS, FAR_LVL, objectWGSL, sourceWGSL, cullWGSL, cacheFillWGSL, CLAMP_WGSL, NEEDS_WGSL, FAR_COUNT_WGSL, FAR_FILE_WGSL, FAR_SCAN_WGSL, CANOPY_WGSL, CANOPY_BYTES_WGSL, CANOPY_WIDE_WGSL, CANOPY_TALL_WGSL } from "./wgsl/objects.js";
+import { CELLS_N, CELL_M, CELLS, FAR_LVL, objectWGSL, sourceWGSL, cullWGSL, cacheFillWGSL, CLAMP_WGSL, NEEDS_WGSL, FAR_COUNT_WGSL, FAR_FILE_WGSL, FAR_SCAN_WGSL, FRONT_SCAN_WGSL, CANOPY_WGSL, CANOPY_BYTES_WGSL, CANOPY_WIDE_WGSL, CANOPY_TALL_WGSL } from "./wgsl/objects.js";
 
 // steps of the key light in the light table, each at the fire's four levels, the palette as drawn in a last row
 export const LEVELS = 16;
@@ -81,12 +81,12 @@ const VU = struct("U", [
   ["gridN", "u"], ["gridStep", "f"], ["canN", "u"], ["canStep", "f"], ["can3", "u"], ["half", "f"],
   ["hmost", "f"], ["htop", "f"], ["hreach", "f"], ["sea", "u"], ["wlo", "u"], ["whi", "u"], ["nfires", "u"], ["night", "f"], ["ncol", "u"],
 ]);
-const TU = struct("Tr", [["n", "u"], ["step", "f"], ["exag", "f"], ["tan", "f"], ["dx", "f"], ["dz", "f"], ["row0", "u"], ["reach", "f"]]);
+const TU = struct("Tr", [["n", "u"], ["step", "f"], ["exag", "f"], ["tan", "f"], ["dx", "f"], ["dz", "f"], ["row0", "u"], ["reach", "f"], ["top", "f"]]);
 const PU = struct("Pr", [["dx", "f"], ["dy", "f"], ["sc", "f"], ["nn", "f"], ["alpha", "f"], ["aw", "u"], ["ah", "u"], ["nearest", "u"], ["sr", "f"], ["sg", "f"], ["sb", "f"]]);
 // the object passes outside a frame (wgsl/objects.js): the survey's mode and levels, and the trees' cover's grids
 const KU = struct("Ks", [["mode", "u"], ["nl", "u"], ["canN", "u"], ["canStep", "f"], ["gn", "u"], ["gs", "f"], ["rp", "u"], ["n3", "u"], ["rp3", "u"], ["rpt", "u"]]);
-// a slice of a far list's build: its first slot, how many, and how many far levels
-const FU = struct("Fs", [["base", "u"], ["n", "u"], ["nf", "u"]]);
+// a slice of a far list's build: its first slot, how many, and how many far levels; a front list's level
+const FU = struct("Fs", [["base", "u"], ["n", "u"], ["nf", "u"], ["lvl", "u"]]);
 
 // Every resource a pass may bind in group 0: its binding, kind and type. A pass names the ones it uses (":w" for
 // read-write storage); its declarations and its layout are made from the same list.
@@ -157,6 +157,12 @@ const RES = {
   ccntR: [56, "storage", "array<u32>"],
   cache: [57, "storage", "array<u32>"],
   cfill: [58, "storage", "array<u32>"],
+  // a far level's front list as it is built (wgsl/objects.js frontWalk): each pixel's nearest speck's depth key, the
+  // list, and its index laid out as a far list's
+  fkeys: [59, "storage", "array<atomic<u32>>"],
+  fkeysR: [59, "storage", "array<u32>"],
+  flistOut: [60, "storage", "array<u32>"],
+  fout: [61, "storage", "array<u32>"],
 };
 const TYPES = `
 struct Inst { sp: u32, x: i32, y: i32, z: f32, flags: u32, pick: u32, wx: f32, wz: f32 }
@@ -786,7 +792,9 @@ fn shadeFS(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 
 // ---------- the sun map and the ground's folds ----------
 // Which ground sees the sun: from each texel of the island's heights, how far the ground
-// toward the sun rises above the ray to it (the drawn, exaggerated heights), softened at the edge.
+// toward the sun rises above the ray to it (the drawn, exaggerated heights), softened at the edge. The march stops once
+// the ray stands above T.top, the island's highest drawn ground and 3.5 m more: past there every step's rise is under
+// the -3 m below which the edge's softening gives none, so the map is what the whole march gives, to the bit.
 const TRACE_WGSL = `
 fn hBil(p: vec2f) -> f32 {
   let n = f32(T.n) - 1.0;
@@ -808,7 +816,10 @@ fn sunMain(@builtin(global_invocation_id) id: vec3u) {
   let h0 = textureLoad(gGrid, vec2i(p), 0, 0).r * T.exag;
   let dir = vec2f(T.dx, T.dz);
   var ex = -1e9;
-  for (var d = T.step; d < 2400.0; d *= 1.09) { ex = max(ex, hBil(p + dir * (d / T.step)) * T.exag - (h0 + d * T.tan)); }
+  for (var d = T.step; d < 2400.0; d *= 1.09) {
+    if (h0 + d * T.tan > T.top) { break; }
+    ex = max(ex, hBil(p + dir * (d / T.step)) * T.exag - (h0 + d * T.tan));
+  }
   textureStore(sunOut, vec2i(p), vec4f(smoothstep(-3.0, 10.0, ex), 0.0, 0.0, 1.0));
 }
 // How much sky the ground's own folds hide: round the point, in 12 directions, how far the
@@ -953,9 +964,12 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     layout: groundLayout,
     entries: [fineT, isleT, gridT, riverT, trailT, iceT].map((t, i) => ({ binding: i, resource: t.createView() })).concat(groundBuffers.slice(6).map((b, k) => ({ binding: 6 + k, resource: { buffer: b } }))),
   });
-  // the gradient of the heights for the light (setHeights of old: over two steps each way), into grid layers 3 and 4
+  // the gradient of the heights for the light (setHeights of old: over two steps each way), into grid layers 3 and 4; the
+  // highest of them, under which the sun's trace stops marching
+  let gridTop = -Infinity;
   {
     const h = gp.grid.data.subarray(0, GN * GN), gx = new Float32Array(GN * GN), gz = new Float32Array(GN * GN), step = pal.GRID_STEP;
+    for (const v of h) if (v > gridTop) gridTop = v;
     const at = (i, j) => h[Math.min(GN - 1, Math.max(0, j)) * GN + Math.min(GN - 1, Math.max(0, i))];
     for (let j = 0; j < GN; j++)
       for (let i = 0; i < GN; i++) {
@@ -1005,7 +1019,8 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // the indirect draws: sprites (6 vertices), shadow rows (a strip of 4), specks (a dispatch)
   device.queue.writeBuffer(argsInit, 0, new Uint32Array([6, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0]));
   const mapB = B(MAX_TILES * 12 + 4 * 4096, GPUBufferUsage.STORAGE, "map");
-  const liveB = B(MAX_LIVE * 32, STOR, "live"), liveRowsB = B(MAX_LIVE_ROWS * 16, STOR, "liveRows"), primsB = B(MAX_PRIMS * 32, STOR, "prims");
+  // a view's own (two cross-fading views go in one submit, whose queued writes all land before it runs)
+  const liveB = [0, 1].map((k) => B(MAX_LIVE * 32, STOR, `live${k}`)), liveRowsB = [0, 1].map((k) => B(MAX_LIVE_ROWS * 16, STOR, `liveRows${k}`)), primsB = [0, 1].map((k) => B(MAX_PRIMS * 32, STOR, `prims${k}`));
   const viewU = [0, 1].map((k) => B(VU.bytes, UNI, `view${k}`)), firesU = [0, 1].map((k) => B(MAX_FIRES * 16, UNI, `fires${k}`)), presentU = [0, 1].map((k) => B(PU.bytes, UNI, `present${k}`));
   // per-frame targets, sized to the largest view
   let cap = null;
@@ -1014,8 +1029,11 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     w = Math.max(w, cap?.w ?? 0); h = Math.max(h, cap?.h ?? 0);
     cap?.list.forEach((t) => t.destroy());
     const T = (format, usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING) => device.createTexture({ size: [w, h], format, usage });
-    const c = { w, h, gK: T("rg32uint", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC), gW: T("rgba32float", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING), depth: T("depth32float", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING), keys: B(w * h * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, "keys"), mask: T("r8unorm"), maskZ: T("depth16unorm", GPUTextureUsage.RENDER_ATTACHMENT), over: T("r8uint"), xray: T("rg32uint"), art: [T("rgba8unorm"), T("rgba8unorm")], pickBuf: null };
-    c.list = [c.gK, c.gW, c.depth, c.mask, c.maskZ, c.over, c.xray, ...c.art];
+    const c = { w, h, gK: T("rg32uint", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC), gW: T("rgba32float", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING), depth: T("depth32float", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING), keys: B(w * h * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, "keys"), mask: T("r8unorm"), maskZ: T("depth16unorm", GPUTextureUsage.RENDER_ATTACHMENT), over: T("r8uint"), xray: T("rg32uint"), art: [0, 1, 2].map(() => T("rgba8unorm", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC)), pickBuf: null };
+    // what each art buffer holds: the level and bearing it was drawn at, its absolute art px origin and size, and the frame
+    // it was drawn in (frame's cross-fade presents one from these instead of drawing it again); the third is the page
+    // checks' (fadeCheck), a kept view drawn again to compare
+    c.list = [c.gK, c.gW, c.depth, c.mask, c.maskZ, c.over, c.xray, ...c.art]; c.tags = [null, null, null];
     cap = c;
   }
 
@@ -1047,9 +1065,9 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       case "rowInst": return { buffer: rowInstB };
       case "args": return { buffer: argsB };
       case "atlas": return atlasT.createView({ dimension: "2d-array" });
-      case "live": return { buffer: liveB };
-      case "liveRows": return { buffer: liveRowsB };
-      case "prims": return { buffer: primsB };
+      case "live": return { buffer: liveB[v] };
+      case "liveRows": return { buffer: liveRowsB[v] };
+      case "prims": return { buffer: primsB[v] };
       case "gK": return cap.gK.createView();
       case "gW": return cap.gW.createView();
       case "mask": return cap.mask.createView();
@@ -1091,7 +1109,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       sunJob = { az, el, exag: cast.exag, dir: cast.dir, tan: cast.tan, row: 0 };
     }
     const rows = sunShown ? Math.ceil(GN / SUN_STRIPES) : GN;
-    device.queue.writeBuffer(traceU, 0, TU.pack({ n: GN, step: pal.GRID_STEP, exag: sunJob.exag, tan: sunJob.tan, dx: sunJob.dir[0], dz: sunJob.dir[1], row0: sunJob.row, reach: TER_REACH }));
+    device.queue.writeBuffer(traceU, 0, TU.pack({ n: GN, step: pal.GRID_STEP, exag: sunJob.exag, tan: sunJob.tan, dx: sunJob.dir[0], dz: sunJob.dir[1], row0: sunJob.row, reach: TER_REACH, top: gridTop * sunJob.exag + 3.5 }));
     const pass = enc.beginComputePass(tw("sun"));
     pass.setPipeline(S.sun.p); pass.setBindGroup(0, group(S.sun, 0, { sunOut: sunMaps[1 - sunFront].createView() })); pass.setBindGroup(1, groundGroup);
     pass.dispatchWorkgroups(Math.ceil(GN / 8), Math.ceil(Math.min(rows, GN - sunJob.row) / 8));
@@ -1123,13 +1141,19 @@ export async function createRenderer({ device, context, format, pal, ground, tim
           far: slots && sp.indexed && !sp.moves ? {
             cull: pipe({ label: `cull far ${s.name}`, binds: ["V", "map", ...own, "flist", "fidx", ...out], code: `${MAP_READ}\n${src}\n${cullWGSL(sp, true)}`, compute: "cullMain" }),
             count: pipe({ label: `far count ${s.name}`, binds: ["Fp", ...own, "fkey:w", "fcnt:w", ...ground], code: `${src}\n${FAR_COUNT_WGSL}`, compute: "farCount" }),
+            // a source read from its plain fields (no reader or buffers of its own, which the keep pass has no room
+            // to bind) builds front lists
+            ...(!sp.read && !sp.binds && {
+              mark: pipe({ label: `front mark ${s.name}`, binds: ["V", "map", ...own, "flist", "fidx", "looks", "entries", "gridTex", "fineTex", "fkeys:w"], code: `${MAP_READ}\n${src}\n${cullWGSL(sp, true, "mark")}`, compute: "cullMain" }),
+              keep: pipe({ label: `front keep ${s.name}`, binds: ["V", "map", ...own, "flist", "fidx", "looks", "entries", "gridTex", "fineTex", "fkeysR", "flistOut:w", "fout:w"], code: `${MAP_READ}\n${src}\n${cullWGSL(sp, true, "keep")}`, compute: "cullMain" }),
+            }),
           } : null,
         };
       }
       const over = { body: s.body && { buffer: s.body }, order: s.order && { buffer: s.order }, start: s.start && { buffer: s.start }, marks: s.marks && { buffer: s.marks }, ...s.over };
       return { ...s, ...sp.passes, over };
     });
-    await Promise.all(made.flatMap((s) => [s.cull.ready, s.fill?.ready, s.needs?.ready, s.canopy?.ready, s.far?.cull.ready, s.far?.count.ready]));
+    await Promise.all(made.flatMap((s) => [s.cull.ready, s.fill?.ready, s.needs?.ready, s.canopy?.ready, s.far?.cull.ready, s.far?.count.ready, s.far?.mark?.ready, s.far?.keep?.ready]));
     if (errors.length) throw new Error(errors.join("\n"));
     sources = made;
   }
@@ -1240,22 +1264,23 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   const FAR_SLICE = 1 << 20, FAR_IDX = FAR_LVL + 8 * CELLS;
   const farU = B(FU.bytes, UNI, "far"), farState = new Map();
   // farUse: off for the page checks (scripts/play/objects.ts), which compare a far view drawn both ways
-  let farN = 0, farUse = true, skipped = new Set();
+  // farGens numbers every far list built, so a front list knows the far list it came from (f.gen, and f.prevGen before it)
+  let farN = 0, farUse = true, skipped = new Set(), farGens = 0;
   const farScanP = pipe({ label: "far scan", binds: ["Fp", "fcntR:w", "fidx:w"], code: FAR_SCAN_WGSL, compute: "farScan" });
   const farFileP = pipe({ label: "far file", binds: ["Fp", "fkey", "fcnt:w", "flist:w"], code: FAR_FILE_WGSL, compute: "farFile" });
   function farOf(s) {
     let f = farState.get(s.name);
     if (f && f.body === s.body) return f;
     if (f) for (const b of [f.key, f.cnt, ...f.idx, ...f.list]) b?.destroy();
-    f = { body: s.body, cap: s.spec.cap, key: B(s.spec.cap * 4, STOR, "farKey"), cnt: B(CELLS * 8 * 4, STOR, "farCnt"), idx: [0, 1].map(() => B(FAR_IDX * 4, STOR | GPUBufferUsage.COPY_SRC, "farIdx")), list: [null, null], n: [0, 0], front: -1, job: null };
+    f = { body: s.body, cap: s.spec.cap, key: B(s.spec.cap * 4, STOR, "farKey"), cnt: B(CELLS * 8 * 4, STOR, "farCnt"), idx: [0, 1].map(() => B(FAR_IDX * 4, STOR | GPUBufferUsage.COPY_SRC, "farIdx")), list: [null, null], n: [0, 0], front: -1, job: null, gen: 0 };
     farState.set(s.name, f);
     return f;
   }
-  // Every indexed source's lists built again from its buffers as they are now, nf: how many levels (the coarsest) are far;
-  // sync: by farNow, which no frame steps.
-  function farBuild(nf, sync = false) {
+  // Every indexed source's lists built again from its buffers as they are now, a slice a frame (farFrame); nf: how many
+  // levels (the coarsest) are far.
+  function farBuild(nf) {
     farN = nf;
-    for (const s of sources) if (s.far) { const f = farOf(s); f.job = { phase: "count", at: 0, sync }; }
+    for (const s of sources) if (s.far) { const f = farOf(s); f.job = { phase: "count", at: 0 }; }
   }
   // One step of a source's build into enc; after: what to run once enc is submitted.
   function farStep(enc, s, f, slice) {
@@ -1272,7 +1297,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       j.at += n;
       if (j.at < f.cap) return null;
       if (j.phase === "count") { j.phase = "scan"; return null; }
-      f.front = back; f.job = null; stats.far = { ...stats.far, [s.name]: f.n[back] };
+      f.front = back; f.job = null; f.prevGen = f.gen; f.gen = ++farGens; stats.far = { ...stats.far, [s.name]: f.n[back] };
       return null;
     }
     if (j.phase !== "scan") return null;
@@ -1291,30 +1316,107 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       if (f.job === j) { j.phase = "file"; j.at = 0; }
     });
   }
-  // in a frame: one step of the first source with a build under way
+  // in a frame: one step of the first source with a build under way; whether one is under way
   function farFrame(enc) {
     for (const s of sources) {
       const f = s.far && farState.get(s.name);
-      if (!f?.job || f.body !== s.body || f.job.sync) continue;
-      if (f.job.phase === "wait" || !farScanP.p || !farFileP.p) return;
+      if (!f?.job || f.body !== s.body) continue;
+      if (f.job.phase === "wait" || !farScanP.p || !farFileP.p) return true;
       const after = farStep(enc, s, f, FAR_SLICE);
       if (after) pendingPickReads.push(after);
-      return;
+      return true;
     }
+    return false;
   }
-  // the whole build at once, outside the frames (before the first view)
-  async function farNow(nf) {
-    await Promise.all([farScanP.ready, farFileP.ready]);
-    farBuild(nf, true);
+  // ---------- the far levels' front lists (wgsl/objects.js frontWalk) ----------
+  // Per source that builds them, level and whole bearing, by name so they outlive setSources: the list and its index,
+  // laid out as a far list's, and the far list generation it was built from. One is built at a time, FRONT_ROWS rows
+  // of cells a frame [design: a sixteenth of the island a slice, under 2 ms of a frame], from the view of the whole
+  // island at its level and bearing (frontViews, from live.js islandView): the far list's counts at the level scanned
+  // into the cells' runs, every slice marked, then every slice kept; it replaces the one it was built again for when
+  // done. A view walks a front list while its far list is the one it was built from or one a sim day newer (its objects
+  // are drawn as their buffers hold them now; one grown into a pixel since is in neither); the frame asks for the front
+  // lists of its views' bearing at every level that has them, its own level first.
+  const FRONT_ROWS = 16;
+  const frontU = B(FU.bytes, UNI, "front"), frontV = B(VU.bytes, UNI, "frontView"), frontState = new Map(), frontWant = [];
+  const frontScanP = pipe({ label: "front scan", binds: ["Fp", "fidx", "fout:w"], code: FRONT_SCAN_WGSL, compute: "frontScan" });
+  let frontViews = new Map(), frontUse = true, frontJob = null, frontKeys = null;
+  // the views of the whole island live.js laid out, [{ L, b, U }], those whose tile map fits the map buffer
+  function setFrontViews(list) { frontViews = new Map(list.filter((v) => v.U.ni * v.U.nj <= MAX_TILES && (v.U.ni + 1) * (v.U.nj + 1) <= MAX_TILES + 4096).map((v) => [`${v.L}|${v.b}`, v.U])); }
+  // the front list a view of source s draws from, if any
+  function frontOf(s, f, L, beta) {
+    if (!frontUse || !Number.isInteger(beta) || !frontViews.has(`${L}|${beta}`) || !s.far.keep) return null;
+    const key = `${s.name}|${L}|${beta}`, fr = frontState.get(key);
+    if ((!fr || fr.gen !== f.gen) && !frontWant.includes(key) && frontJob?.key !== key) frontWant.push(key);
+    return fr && (fr.gen === f.gen || fr.gen === f.prevGen) ? fr : null;
+  }
+  // the levels and bearings a frame's views ask for: each view's own first, then every other level at its bearing
+  function frontAsk(views) {
+    const at = [...frontViews.keys()].map((k) => k.split("|").map(Number));
     for (const s of sources) {
       const f = s.far && farState.get(s.name);
-      while (f?.job) {
-        const enc = device.createCommandEncoder(), after = farStep(enc, s, f, f.cap);
-        device.queue.submit([enc.finish()]);
-        if (after) await after();
-      }
+      if (!f || f.front < 0 || !s.far.keep) continue;
+      for (const v of views) for (const L of [v.L, ...at.filter(([, b]) => b === v.beta).map(([l]) => l)]) frontOf(s, f, L, v.beta);
     }
   }
+  // One step of the front list being built, into enc; after: what to run once enc is submitted.
+  function frontFrame(enc) {
+    if (!frontJob) {
+      const key = frontWant.shift();
+      if (!key) return null;
+      const [name, L, b] = key.split("|"), s = sources.find((x) => x.name === name), f = s && farState.get(name), U = frontViews.get(`${L}|${b}`);
+      if (!f || f.front < 0 || !U || !s.far.keep?.p || !s.far.mark?.p || !frontScanP.p) return null;
+      frontJob = { key, s, f, L: +L, U, gen: f.gen, phase: "scan", row: 0 };
+    }
+    const j = frontJob, f = j.f, s = j.s;
+    // a far list built again under the job, or a source made again: begun again
+    if (f.gen !== j.gen || farState.get(s.name) !== f || !sources.includes(s)) { frontRetired.push(...[j.idx, j.list].filter(Boolean)); frontWant.unshift(j.key); frontJob = null; return null; }
+    const flist = { buffer: f.list[f.front] }, fidx = { buffer: f.idx[f.front] };
+    if (j.phase === "scan") {
+      j.idx = B(FAR_IDX * 4, STOR | GPUBufferUsage.COPY_SRC, "frontIdx");
+      device.queue.writeBuffer(frontU, 0, FU.pack({ lvl: j.L }));
+      const pass = enc.beginComputePass();
+      pass.setPipeline(frontScanP.p); pass.setBindGroup(0, group(frontScanP, 0, { Fp: { buffer: frontU }, fidx, fout: { buffer: j.idx } })); pass.dispatchWorkgroups(1);
+      pass.end();
+      const rb = B(4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "frontTotal");
+      enc.copyBufferToBuffer(j.idx, CELLS * 4, rb, 0, 4);
+      j.phase = "wait";
+      return () => rb.mapAsync(GPUMapMode.READ).then(() => {
+        j.n = new Uint32Array(rb.getMappedRange())[0];
+        rb.unmap(); rb.destroy();
+        j.list = B(Math.max(16, j.n * 4), STOR, "frontList");
+        if (frontJob === j) j.phase = "mark"; else j.list.destroy();
+      });
+    }
+    if (j.phase === "wait") return null;
+    const U = j.U, words = U.aw * U.ah;
+    if (!frontKeys || frontKeys.size < words * 4) { frontKeys?.destroy(); frontKeys = B(words * 4, STOR | GPUBufferUsage.COPY_DST, "frontKeys"); }
+    if (j.phase === "mark" && j.row === 0) enc.clearBuffer(frontKeys, 0, words * 4);
+    const rows = Math.min(FRONT_ROWS, CELLS_N - j.row);
+    device.queue.writeBuffer(frontV, 0, VU.pack({ ...U, cx0: 0, cx1: CELLS_N - 1, cy0: j.row, cy1: j.row + rows - 1, farL: j.L, maxinst: MAX_INST, maxrows: MAX_ROWS, gridN: GN, gridStep: pal.GRID_STEP, canN: canopy.n, canStep: canopy.step, can3: canopy.n3, ncol: NCOL }));
+    const V = { buffer: frontV };
+    // the island's tile map at the level and bearing, as a frame lays out a view's, then the slice
+    let pass = enc.beginComputePass(tw("front"));
+    pass.setBindGroup(1, groundGroup);
+    pass.setPipeline(S.tiles.p); pass.setBindGroup(0, group(S.tiles, 0, { V })); pass.dispatchWorkgroups(Math.ceil((U.ni * U.nj) / 64));
+    pass.setPipeline(S.verts.p); pass.setBindGroup(0, group(S.verts, 0, { V })); pass.dispatchWorkgroups(Math.ceil(((U.ni + 1) * (U.nj + 1)) / 64));
+    pass.end();
+    pass = enc.beginComputePass(tw("front"));
+    pass.setBindGroup(1, groundGroup);
+    const p = j.phase === "mark" ? s.far.mark : s.far.keep, own = j.phase === "mark" ? { fkeys: { buffer: frontKeys } } : { fkeysR: { buffer: frontKeys }, flistOut: { buffer: j.list }, fout: { buffer: j.idx } };
+    pass.setPipeline(p.p); pass.setBindGroup(0, group(p, 0, { ...s.over, V, flist, fidx, ...own })); pass.dispatchWorkgroups(CELLS_N, rows);
+    pass.end();
+    j.row += rows;
+    if (j.row < CELLS_N) return null;
+    if (j.phase === "mark") { j.phase = "keep"; j.row = 0; return null; }
+    const old = frontState.get(j.key);
+    if (old) frontRetired.push(old.list, old.idx);
+    frontState.set(j.key, { list: j.list, idx: j.idx, gen: j.gen, n: j.n });
+    stats.front = { ...stats.front, [j.key]: j.n };
+    frontJob = null;
+    return null;
+  }
+  const frontRetired = [];
   // a source's slots as workgroups, 256 threads each, folded into two dimensions past the 65535 limit
   const spread = (n) => { const wg = Math.max(1, Math.ceil(n / 256)), wx = Math.min(wg, 32768); return [wx, Math.ceil(wg / wx)]; };
   // the tables looks are read by (atlas.js Looks.meta)
@@ -1423,19 +1525,30 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     if (f.lut) device.queue.writeBuffer(tablesB, LUT0 * 4, f.lut);
     const enc = device.createCommandEncoder();
     qNames = [];
+    frameNo++;
     fold(enc, f.exag);
     traceSun(enc, f.cast);
-    farFrame(enc);
+    // a front list's slice only in a frame no far list's build steps in, so a frame pays for one or the other
+    const farBusy = farFrame(enc);
+    frontAsk(views);
+    if (!farBusy) { const after = frontFrame(enc); if (after) pendingPickReads.push(after); }
+    const slots = fadePlan(views);
+    // the cells of a kept view are held too, so two fading levels drawn in turn don't evict each other's cells
     cacheFrame(enc, views);
-    views.forEach((v, k) => drawView(enc, v, k, f.id));
+    views.forEach((v, k) => { if (slots[k].draw) drawView(enc, v, k, f.id, slots[k].slot); });
+    // the page checks: a kept view drawn again into the third art buffer, both read back to compare (fadeCheck)
+    const kept = slots.findIndex((o) => !o.draw);
+    if (fadeWant.length && kept >= 0) fadeReads(enc, views[kept], kept, f.id, slots[kept].slot);
     // present every view onto the canvas
     const out = context.getCurrentTexture();
     const pass = enc.beginRenderPass({ colorAttachments: [{ view: out.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: f.seaRGB[0], g: f.seaRGB[1], b: f.seaRGB[2], a: 1 } }], ...tw("present") });
     pass.setPipeline(S.present.p);
     views.forEach((v, k) => {
-      const p = v.present;
-      device.queue.writeBuffer(presentU[k], 0, PU.pack({ dx: p.dx, dy: p.dy, sc: p.sc, nn: p.nn, alpha: v.alpha, aw: v.U.aw, ah: v.U.ah, nearest: p.nearest, sr: f.seaRGB[0], sg: f.seaRGB[1], sb: f.seaRGB[2] }));
-      pass.setBindGroup(0, group(S.present, k));
+      const p = v.present, s = slots[k], t = cap.tags[s.slot];
+      // an art buffer drawn for an earlier camera at the same level and bearing lies at its own absolute origin
+      const dx = p.dx + (t.gx0 - v.U.gx0) * p.sc, dy = p.dy + (t.gy0 - v.U.gy0) * p.sc;
+      device.queue.writeBuffer(presentU[k], 0, PU.pack({ dx, dy, sc: p.sc, nn: p.nn, alpha: v.alpha, aw: t.aw, ah: t.ah, nearest: p.nearest, sr: f.seaRGB[0], sg: f.seaRGB[1], sb: f.seaRGB[2] }));
+      pass.setBindGroup(0, group(S.present, k, { art: cap.art[s.slot].createView() }));
       pass.draw(3);
     });
     pass.end();
@@ -1445,6 +1558,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     if (qs && nq) { qr = qRead.find((r) => !r.busy); if (qr) { enc.resolveQuerySet(qs, 0, nq, qBuf, 0); enc.copyBufferToBuffer(qBuf, 0, qr.b, 0, nq * 8); } }
     device.queue.submit([enc.finish()]);
     for (const b of cacheRetired.splice(0)) b.destroy();
+    for (const b of frontRetired.splice(0)) b.destroy();
     inFlight++;
     device.queue.onSubmittedWorkDone().then(() => { inFlight--; });
     if (qr) {
@@ -1459,8 +1573,66 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     }
     for (const r of pendingPickReads.splice(0)) r();
   }
-  const pendingPickReads = [], instWant = [];
-  function drawView(enc, v, k, frameId) {
+  const pendingPickReads = [], instWant = [], fadeWant = [], gbufWant = [];
+  // an art buffer's absolute art px origin and size, and its texels read back into enc (rows of rp bytes); done(bytes)
+  // once enc is submitted and the copy mapped
+  function artRead(enc, slot) {
+    const t = cap.tags[slot], rp = Math.ceil((t.aw * 4) / 256) * 256, b = B(rp * t.ah, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "artRead");
+    enc.copyTextureToBuffer({ texture: cap.art[slot] }, { buffer: b, bytesPerRow: rp }, [t.aw, t.ah, 1]);
+    return { ...t, rp, read: () => b.mapAsync(GPUMapMode.READ).then(() => { const a = new Uint8Array(b.getMappedRange().slice(0)); b.destroy(); return a; }) };
+  }
+  // For the page checks: view k, presented from the art buffer in slot it was kept in, drawn again into the third, and
+  // every pixel both hold compared: { pixels, differ, most } (most: the largest difference of a channel), a pixel
+  // round each edge left out. The haze band is tied to the canvas, so it moves on the art as the view zooms; the new
+  // drawing takes the band where the kept art has it, so what is compared is the art's own.
+  function fadeReads(enc, v, k, frameId, slot) {
+    const want = fadeWant.splice(0), t = cap.tags[slot];
+    drawView(enc, { ...v, U: { ...v.U, htop: t.hazeTop - v.U.gy0, hreach: t.hreach } }, k, frameId, 2);
+    const a = artRead(enc, slot), b = artRead(enc, 2);
+    pendingPickReads.push(() => Promise.all([a.read(), b.read()]).then(([pa, pb]) => {
+      let pixels = 0, differ = 0, most = 0;
+      const box = [Infinity, Infinity, -Infinity, -Infinity];
+      for (let y = Math.max(a.gy0, b.gy0) + 1; y < Math.min(a.gy0 + a.ah, b.gy0 + b.ah) - 1; y++)
+        for (let x = Math.max(a.gx0, b.gx0) + 1; x < Math.min(a.gx0 + a.aw, b.gx0 + b.aw) - 1; x++) {
+          const ia = (y - a.gy0) * a.rp + (x - a.gx0) * 4, ib = (y - b.gy0) * b.rp + (x - b.gx0) * 4;
+          let d = 0;
+          for (let c = 0; c < 3; c++) d = Math.max(d, Math.abs(pa[ia + c] - pb[ib + c]));
+          pixels++;
+          if (d) { differ++; most = Math.max(most, d); box[0] = Math.min(box[0], x); box[1] = Math.min(box[1], y); box[2] = Math.max(box[2], x); box[3] = Math.max(box[3], y); }
+        }
+      // box: the differing pixels' bounds in absolute art px, against the compared span's
+      for (const r of want) r({ level: v.L, keptFrame: a.frame, frame: b.frame, moved: [b.gx0 - a.gx0, b.gy0 - a.gy0], pixels, differ, most, box: differ ? box : null, span: [Math.max(a.gx0, b.gx0), Math.max(a.gy0, b.gy0), Math.min(a.gx0 + a.aw, b.gx0 + b.aw), Math.min(a.gy0 + a.ah, b.gy0 + b.ah)] });
+    }));
+  }
+  // A cross-fade's two levels are drawn one a frame, in turn, the one drawn longer ago first: the other is presented from
+  // the art buffer it was last drawn into. Every level and whole or turning bearing lays its art px on one lattice (a
+  // point's art px less the buffer's origin gx0, gy0 is the same for every camera), so that art placed at its own origin
+  // shows each pixel where a new drawing would; it is used only when drawn at the same level and bearing and when it
+  // still covers the canvas (live.js draws a fading level with a margin for it). A single view is always drawn, and every
+  // view while fadeKeep is off (the page checks, which compare the two). Gives each view its art buffer (slot) and
+  // whether it is drawn.
+  let frameNo = 0, fadeKeep = true;
+  function fadePlan(views) {
+    const W = context.canvas.width, H = context.canvas.height, used = new Set();
+    const keep = views.map((v) => {
+      if (views.length < 2 || !fadeKeep) return -1;
+      const p = v.present, U = v.U;
+      return cap.tags.findIndex((t, i) => {
+        if (i > 1 || !t || t.L !== v.L || t.beta !== v.beta) return false;
+        // the canvas in absolute art px, a pixel round for the present's bilinear
+        const x0 = U.gx0 + Math.floor(-p.dx / p.sc) - 1, x1 = U.gx0 + Math.ceil((W - p.dx) / p.sc) + 1, y0 = U.gy0 + Math.floor(-p.dy / p.sc) - 1, y1 = U.gy0 + Math.ceil((H - p.dy) / p.sc) + 1;
+        return x0 >= t.gx0 && y0 >= t.gy0 && x1 <= t.gx0 + t.aw && y1 <= t.gy0 + t.ah;
+      });
+    });
+    // both could be kept: the one drawn longer ago is drawn again; one: the other is drawn; none: both are
+    let redraw = -1;
+    if (keep.every((s) => s >= 0)) redraw = cap.tags[keep[0]].frame <= cap.tags[keep[1]].frame ? 0 : 1;
+    const out = views.map((v, k) => ({ draw: keep[k] < 0 || k === redraw, slot: keep[k] }));
+    for (const o of out) if (o.slot >= 0) used.add(o.slot);
+    for (const o of out) if (o.slot < 0) { o.slot = [0, 1].find((s) => !used.has(s)); used.add(o.slot); }
+    return out;
+  }
+  function drawView(enc, v, k, frameId, slot) {
     const U = v.U, nTiles = U.ni * U.nj, rect = cellRect(U), objCount = sources.length;
     // a far level walks its sources' far lists where they are built (v.L: the view's level, coarsest first)
     const farL = farUse && v.L < farN ? v.L : -1;
@@ -1487,7 +1659,9 @@ export async function createRenderer({ device, context, format, pal, ground, tim
         const over = { ...s.over, ...s.dyn?.(), ...(s.fill ? cacheBinds(s) : {}) };
         const f = farL >= 0 && s.far && farState.get(s.name);
         if (f && f.front >= 0 && f.body === s.body) {
-          pass.setPipeline(s.far.cull.p); pass.setBindGroup(0, group(s.far.cull, k, { ...over, flist: { buffer: f.list[f.front] }, fidx: { buffer: f.idx[f.front] } }));
+          // a far level at a whole bearing walks its front list where one is built
+          const fr = frontOf(s, f, v.L, v.beta), lists = fr ? { flist: { buffer: fr.list }, fidx: { buffer: fr.idx } } : { flist: { buffer: f.list[f.front] }, fidx: { buffer: f.idx[f.front] } };
+          pass.setPipeline(s.far.cull.p); pass.setBindGroup(0, group(s.far.cull, k, { ...over, ...lists }));
           pass.dispatchWorkgroups(rect.cx1 - rect.cx0 + 1, rows);
           continue;
         }
@@ -1501,7 +1675,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     }
     // 3. the world
     const nLive = v.live ? v.live.byteLength / 32 : 0;
-    if (nLive) device.queue.writeBuffer(liveB, 0, v.live);
+    if (nLive) device.queue.writeBuffer(liveB[k], 0, v.live);
     let rp = enc.beginRenderPass({
       colorAttachments: [
         { view: cap.gK.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0xffffffff, g: 0, b: 0, a: 0 } },
@@ -1528,7 +1702,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     }
     // 4. the sun's mask, on the ground the world pass left uncovered (maskZ)
     const nLiveRows = v.liveRows ? v.liveRows.length / 4 : 0;
-    if (nLiveRows) device.queue.writeBuffer(liveRowsB, 0, Int32Array.from(v.liveRows));
+    if (nLiveRows) device.queue.writeBuffer(liveRowsB[k], 0, Int32Array.from(v.liveRows));
     rp = enc.beginRenderPass({
       colorAttachments: [{ view: cap.mask.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
       depthStencilAttachment: { view: cap.maskZ.createView(), depthLoadOp: "clear", depthStoreOp: "discard", depthClearValue: 1 },
@@ -1566,6 +1740,17 @@ export async function createRenderer({ device, context, format, pal, ground, tim
         for (const r of want) r(out);
       }));
     }
+    // what view 0's G-buffer holds, asked for by the page checks: each pixel's kind, colour and flags, and its pick
+    if (k === 0 && gbufWant.length) {
+      const want = gbufWant.splice(0), rp = Math.ceil((U.aw * 8) / 256) * 256, rb = B(rp * U.ah, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "gRead");
+      enc.copyTextureToBuffer({ texture: cap.gK }, { buffer: rb, bytesPerRow: rp }, [U.aw, U.ah, 1]);
+      pendingPickReads.push(() => rb.mapAsync(GPUMapMode.READ).then(() => {
+        const a = new Uint32Array(rb.getMappedRange()), out = new Uint32Array(U.aw * U.ah * 2);
+        for (let y = 0; y < U.ah; y++) out.set(a.subarray((y * rp) / 4, (y * rp) / 4 + U.aw * 2), y * U.aw * 2);
+        rb.unmap(); rb.destroy();
+        for (const r of want) r({ w: U.aw, h: U.ah, gx0: U.gx0, gy0: U.gy0, level: v.L, k: out });
+      }));
+    }
     // the picks asked for, read from view 0's G-buffer
     if (k === 0) for (const pk of picks.splice(0)) {
       const r = pickRead.find((q) => !q.busy);
@@ -1576,7 +1761,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     }
     // 5. overlays and the x-ray
     const nPrims = v.prims ? v.prims.length / 8 : 0;
-    if (nPrims) device.queue.writeBuffer(primsB, k * 0, v.prims);
+    if (nPrims) device.queue.writeBuffer(primsB[k], 0, v.prims);
     rp = enc.beginRenderPass({ colorAttachments: [{ view: cap.over.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 255, g: 0, b: 0, a: 0 } }], ...tw("over") });
     rp.setViewport(0, 0, U.aw, U.ah, 0, 1);
     if (nPrims) { rp.setPipeline(S.over.p); rp.setBindGroup(0, group(S.over, k)); rp.setBindGroup(1, groundGroup); rp.draw(6, nPrims); }
@@ -1586,22 +1771,30 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     if (v.xray && nLive) { rp.setPipeline(S.xray.p); rp.setBindGroup(0, group(S.xray, k)); for (const i of v.xray) rp.draw(6, 1, 0, i); }
     rp.end();
     // 6. shade into the view's art buffer
-    rp = enc.beginRenderPass({ colorAttachments: [{ view: cap.art[k].createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 1 } }], ...tw("shade") });
+    rp = enc.beginRenderPass({ colorAttachments: [{ view: cap.art[slot].createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 1 } }], ...tw("shade") });
     rp.setViewport(0, 0, U.aw, U.ah, 0, 1);
     rp.setPipeline(S.shade.p); rp.setBindGroup(0, group(S.shade, k)); rp.setBindGroup(1, groundGroup);
     rp.draw(3);
     rp.end();
+    cap.tags[slot] = { L: v.L, beta: v.beta, gx0: U.gx0, gy0: U.gy0, aw: U.aw, ah: U.ah, frame: frameNo, hazeTop: U.gy0 + U.htop, hreach: U.hreach };
   }
   await Promise.all(Object.values(S).map((o) => o.ready));
   return {
-    errors, stats, frame, setSources, setMeta, survey, buildCanopy, farBuild, farNow, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
+    errors, stats, frame, setSources, setMeta, survey, buildCanopy, farBuild, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
     get busy() { return inFlight; },
     setFarUse: (on) => { farUse = on; },
+    setFadeKeep: (on) => { fadeKeep = on; },
+    setFrontUse: (on) => { frontUse = on; },
+    setFrontViews,
     // sources the cull leaves out, by name (the page checks, to time each source's share)
     setSkipped: (names) => { skipped = new Set(names); },
     // what view 0 shows at art px (x, y) in the next frame: { kind, pick } (kind -1: nothing), or null
     pick: (x, y) => new Promise((resolve) => picks.push({ x, y, resolve })),
     // every object instance view 0 draws in the next frame: { sprites, points: [{ sp, x, y, pick, wx, wz }] }
     instances: () => new Promise((resolve) => instWant.push(resolve)),
+    // view 0's G-buffer as the next frame draws it: { w, h, gx0, gy0, level, k (two words a pixel) }
+    gbuffer: () => new Promise((resolve) => gbufWant.push(resolve)),
+    // the next cross-fade frame that presents a kept view, that view drawn again and compared (fadeReads)
+    fadeCheck: () => new Promise((resolve) => fadeWant.push(resolve)),
   };
 }

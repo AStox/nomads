@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, newWorld, type Agent, type Shelter, type Stack, type World } from "./world";
-import { DAMP, REF, deadAt, emc, equilibrium, splitWater, tinderOf, wetness } from "./wetness";
+import { DAMP, deadAt, emc, equilibrium, splitWater, tinderOf, wetness } from "./wetness";
+import { STICK_DIA } from "../gpu/deadwood";
 import { referenceEt, topKr, wetHour, TEW, REW } from "./soil";
 import { PHYS, WOODS } from "./fuel";
 import { airOn, vapourAt } from "./air";
@@ -167,20 +168,20 @@ test("an hour's rain on a dry log wets its skin, not its heart, and splitting it
   expect(split.skin).toBeLessThan(skin);
 });
 
-test("dead sticks lying on wet ground hold more water than the same standing clear of it, and as much on dry ground", () => {
+test("dead sticks lying on wet ground hold more water than the same standing clear of it, and as much on dry ground at night", () => {
   const [w, a] = setup();
   at(w, 13);
   Object.assign(w.weather, { sky: "clear", speed: 3 });
   w.weather.wet = 1;
   hours(w, 6);
   const on = { px: a.px, py: a.py };
-  expect(deadAt(w, on, REF[1], { lying: true })).toBeGreaterThan(deadAt(w, on, REF[1]));
-  delete w.weather.past;
+  expect(deadAt(w, on, STICK_DIA, { lying: true })).toBeGreaterThan(deadAt(w, on, STICK_DIA));
+  // from the same water, with no sun to warm either and the top soil dry, lying and standing draw toward the same air
+  delete w.weather.dead;
+  at(w, 0);
   w.weather.wet = 0;
-  hours(w, 6);
-  w.weather.wet = 0;
-  for (const h of w.weather.past!.hours) h.soil = 0;
-  expect(deadAt(w, { px: a.px + 1e-6, py: a.py }, REF[1], { lying: true })).toBeCloseTo(deadAt(w, { px: a.px + 1e-6, py: a.py }, REF[1]), 6);
+  hours(w, 3);
+  expect(deadAt(w, on, STICK_DIA, { lying: true })).toBe(deadAt(w, on, STICK_DIA));
 });
 
 test("the top soil dries at the air's pull while wet, then ever slower, and rain wets it again", () => {

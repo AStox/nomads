@@ -1,15 +1,17 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, dryAt, newWorld, rng, type Thing, type World } from "./world";
-import { ecology, fire } from "./ecology";
+import { fire } from "./ecology";
 import { bedAir, fireOf, fireOutput, removeThing } from "./physics";
-import { anyOf, around, exists, liveThings } from "./space";
+import { anyOf, around, exists, liveThings, moistOf } from "./space";
 import { advance, alight, kindle } from "./combustion";
-import { REF } from "./wetness";
+import { CLASSES, toW } from "../gpu/moisture";
 import { bedOf, partsOf, struck, warmed } from "./spread";
 import { airAt } from "./air";
 import { canopyAt } from "./light";
 import { hooks } from "./rules";
 import { traceListeners, type TraceEntry } from "./trace";
+import { retire, tick as worldTick } from "./sim";
+import { releaseGpu } from "../gpu/device";
 
 // The plan's Unit 8 cases, each with its weather fixed from docs/research/fire-constants.md before spread.ts was run
 // (sec. 30):
@@ -36,7 +38,7 @@ beforeAll(() => {
   w.animals = [];
   traceListeners.push(listen);
 }, 120_000);
-afterAll(() => { traceListeners.splice(traceListeners.indexOf(listen), 1); });
+afterAll(async () => { traceListeners.splice(traceListeners.indexOf(listen), 1); await releaseGpu(); });
 
 // A patch of open, dry ground well away from the last one, cleared of everything for 60 m round.
 let scan = 0;
@@ -55,12 +57,13 @@ function patch() {
   throw new Error("no open ground");
 }
 // The weather over a patch: a clear summer afternoon, the head-height wind there blowing east, dead stuff of every
-// thickness holding so much water (or, by thickness, the island's reference ones', wetness.ts REF), and the grass cured.
+// class holding so much water (or, class by class, gpu/moisture.ts CLASSES: lying blades, twigs and sticks, a crown's
+// dead twigs and sticks standing), and the grass cured.
 function weather(at: { px: number; py: number }, wind: number, dead: number | number[] = DRY) {
   Object.assign(w.weather, { sky: "clear", temp: 18, wind: { dx: 1, dy: 0 }, speed: 1 });
   w.t++;
   w.weather.speed = wind / airAt(w, at.px, at.py).wind;
-  const ms = typeof dead === "number" ? REF.map(() => dead) : dead;
+  const ms = typeof dead === "number" ? CLASSES.map(() => dead) : dead;
   w.weather.dead = { open: ms, shade: ms };
   delete w.weather.past;
   w.weather.gsi = { day: Math.floor(w.t / DAY), tmin: -5, vpd: 500, rain: 10, index: 0 };
@@ -154,11 +157,12 @@ test("grass at 40% moisture doesn't catch from brands that light the same grass 
 }, 60_000);
 
 test("a thing heated by a fire whose heat stops cools, and doesn't light later", () => {
-  // fallen pine logs 9 m long (an 11 cm trunk) at 50% water, lying within a campfire's base: the fire lights one on the
-  // third tick (sec. 30c)
+  // fallen pine logs 9 m long (an 11 cm trunk) at 50% water, as wet as the sticks lying there (a log thicker than the
+  // thickest class lying takes its water), the fine stuff dry, lying within a campfire's base: the fire lights one by
+  // its third tick (sec. 30c)
   const log = () => {
     const at = patch(), f = campfire(at);
-    weather(at, 0, [DRY, DRY, DRY, 0.5, 0.5]);
+    weather(at, 0, [DRY, DRY, 0.5, DRY, DRY]);
     return { f, log: addThing(w, "fallen_log", at.px + m(0.3), at.py, { size: 9, species: "pine" }) };
   };
   const kept = log(), left = log();
@@ -177,46 +181,54 @@ test("a thing heated by a fire whose heat stops cools, and doesn't light later",
   expect(exists(w, left.log) && !left.log.bed).toBe(true);
 }, 60_000);
 
-test("a seeded world run replays the same spread exactly", () => {
-  // the island's own grass, the tussock with the most grass round it of forty drawn where a campfire a metre west of it
-  // stays alight its first minute, that campfire, and a dry, cured, windy afternoon for an hour and a half
-  const run = () => seeded(7, () => {
+test("a seeded world run on the GPU replays the same spread exactly", async () => {
+  // the island's own grass, resident on the GPU with everything else: the tussock with the most grass round it of forty
+  // drawn where a campfire a metre west of it stays alight its first minute, that campfire, and a dry, cured, windy
+  // afternoon for an hour and a half, everything lying out holding DRY
+  const run = async () => {
+    const random = Math.random;
+    Math.random = rng(7);
     const isle = newWorld(5);
     isle.agents = [];
     const pin = (x: World) => {
       Object.assign(x.weather, { sky: "clear", wind: { dx: 1, dy: 0.2 }, speed: 12 });
-      x.weather.dead = { open: REF.map(() => DRY), shade: REF.map(() => DRY) };
+      x.weather.dead = { open: CLASSES.map(() => DRY), shade: CLASSES.map(() => DRY) };
       delete x.weather.past;
       x.weather.gsi = { day: Math.floor(x.t / DAY), tmin: -5, vpd: 500, rain: 10, index: 0 };
     };
-    pin(isle);
-    hooks.weather = pin;
-    const holds = (g: Thing) => {
-      const f = fireOf(isle, g.px - m(1), g.py), lit = alight(advance(f.bed!, MIN, bedAir(isle, f)));
-      removeThing(isle, f);
-      return lit;
-    };
-    let best: Thing | null = null, most = -1;
-    for (let i = 0; i < 40; i++) {
-      const g = anyOf(isle, "grass", Math.random);
-      let n = 0;
-      if (g) around(isle, g.px, g.py, 20, ["grass"], () => { n++; });
-      if (g && n > most && holds(g)) [best, most] = [g, n];
-    }
     const spread: string[] = [];
     const watch = (e: TraceEntry) => { if (e.sys === "fire" && e.kind === "spread") spread.push(`${isle.t} ${JSON.stringify(e.data)}`); };
-    traceListeners.push(watch);
     try {
+      await worldTick(isle);
+      pin(isle);
+      hooks.weather = pin;
+      const dry = { m: toW(DRY), skin: toW(DRY) };
+      await moistOf(isle)!.fill(CLASSES.map(() => dry), dry);
+      const holds = (g: Thing) => {
+        const f = fireOf(isle, g.px - m(1), g.py), lit = alight(advance(f.bed!, MIN, bedAir(isle, f)));
+        removeThing(isle, f);
+        return lit;
+      };
+      let best: Thing | null = null, most = -1;
+      for (let i = 0; i < 40; i++) {
+        const g = anyOf(isle, "grass", Math.random);
+        let n = 0;
+        if (g) around(isle, g.px, g.py, 20, ["grass"], () => { n++; });
+        if (g && n > most && holds(g)) [best, most] = [g, n];
+      }
+      traceListeners.push(watch);
       const f = fireOf(isle, best!.px - m(1), best!.py);
       f.bed = advance(f.bed!, MIN, bedAir(isle, f));
-      for (let i = 0; i < 18; i++) { isle.t++; ecology(isle); }
+      for (let i = 0; i < 18; i++) await worldTick(isle);
+      return { spread, next: Math.random() };
     } finally {
       hooks.weather = undefined;
-      traceListeners.splice(traceListeners.indexOf(watch), 1);
+      if (traceListeners.includes(watch)) traceListeners.splice(traceListeners.indexOf(watch), 1);
+      Math.random = random;
+      await retire(isle);
     }
-    return { spread, next: Math.random() };
-  });
-  const first = run(), again = run();
+  };
+  const first = await run(), again = await run();
   expect(first.spread.length).toBeGreaterThan(1);
   expect(again).toEqual(first);
-}, 120_000);
+}, 1_800_000);

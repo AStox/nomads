@@ -5,15 +5,18 @@
 // 30 says). A tree is its leaves, twigs, branches and trunk by its height and species (sec. 19); grass its living and
 // cured blades (sec. 12); a bush its stems and leaves; a shelter, a pile, a stick or a fallen log the pieces it is made of,
 // each holding the water the world has left in it (wetness.ts). Nothing here changes the world: ecology.ts fire() advances
-// the beds, heats what's near them and lights what catches, drawing brands from the world's own random stream.
-import { group, inFlame, kindle, lay, windAt, type Air, type Bed, type Group } from "./combustion";
+// the beds, and the receivers' law (gpu/wgsl/fire.ts) heats what's near them and lights what catches from the words
+// blazeWords and receiverWords lay out, drawing brands from streams keyed by what they land on.
+import { contact, exposure, flameRadiation, group, inFlame, kindle, lay, windAt, type Air, type Bed, type Group } from "./combustion";
 import { BURNS, PHYS, WOODS, greenOf, pieceOf, stackPhys, woodOf, type Phys, type Wood } from "./fuel";
-import { REF, deadAt, deadOf, grassAt, growing, leafless, moistureOf, waterOf, type Water } from "./wetness";
+import { REF, deadAt, deadOf, grassAt, growing, leafless, moistureOf, pieceWater, waterOf, type Water } from "./wetness";
+import { CROWN_TWIG as TWIG } from "../gpu/moisture";
 import { TILE_M, type Thing, type World } from "./world";
 import { airOn, rainAt, sunOn } from "./air";
 import { CROWN, rainOn } from "./rain";
 import { canopyAt } from "./light";
 import { TREES } from "../terrain/niche";
+import { B, BW, DIR_BITS, FLAME, HEAT, INTO, LOOK_S, NONE, PT, PW, R, REACH, RW } from "../gpu/wgsl/fire";
 
 const G = 9.81, RHO_AIR = 1.2; // air, kg/m3 (sec. 6)
 const CHI_R = 0.3; // the radiant share of a fire's heat (sec. 7)
@@ -29,8 +32,6 @@ const FALL = Math.sqrt((Math.PI * G * BRAND_RHO * BRAND) / (2 * 1.2 * RHO_AIR));
 // Hot brands lofted for each kg a flame burns: about a thousand to the kg burning trees lose (Adusumilli and others 2021,
 // sec. 30b)
 const BRANDS = 1000;
-// Glowing brands light fine fuel only landing several together: four did in R26's test, where one never did (sec. 6, 30b)
-export const TOGETHER = 4;
 const ONE_HOUR = REF[1]; // fine dead fuel, the NFDRS's 1-hour class, is thinner than this (sec. 5)
 
 // ---------- what a thing is, as fuel ----------
@@ -55,8 +56,7 @@ function twigShare(sp: Tree, D: number) {
 // The dead share of a crown (sec. 19b): ponderosa pine's for pine, and for the broadleaves, which have none read, the mean
 // of the four conifers' (sec. 30a).
 const DEAD: Record<Tree, number> = { pine: 0.183, oak: 0.097, ash: 0.097, aspen: 0.097 };
-// A twig: as thick as the brands burning trees shed, which are their twigs, 3 to 4 mm (sec. 6, R27; sec. 30a).
-const TWIG = 0.0035;
+// A twig: as thick as the brands burning trees shed (gpu/moisture.ts CROWN_TWIG).
 // Pine's needles hold its live foliage water (sec. 21); the broadleaves' leaves, and the live twigs and leaves of every
 // tree and shrub, the NFDRS's live woody water (sec. 12); the broadleaves stand bare out of the growing season
 // (wetness.ts leafless).
@@ -131,7 +131,7 @@ export function partsOf(w: World, t: Thing): Part[] {
   if (t.kind === "stick" || t.kind === "fallen_log") {
     const piece = pieceOf(t, t.kind === "stick" ? "stick" : "log");
     if (!piece) return [];
-    const phys = woodOf(piece.species ?? "generic", piece.size.d, piece.size.mass), water = deadOf(w, t, piece.size.d, { lying: true });
+    const phys = woodOf(piece.species ?? "generic", piece.size.d, piece.size.mass), water = pieceWater(w, t, piece.size.d);
     return [{ phys, n: t.kind === "stick" ? 1 : t.size / piece.size.len, m: water.m, ...(water.skin === water.m ? {} : { skin: water.skin }), lo: 0, hi: piece.size.d }];
   }
   if (t.kind === "structure") return made(w, t, t.size / 2);
@@ -230,33 +230,61 @@ export function fluxOn(b: Blaze, t: Thing, parts: Part[]): number[] {
   });
 }
 
-// ---------- brands ----------
-// How many brands lofted from a flaming bed over dt seconds land on a thing, on average (sec. 6, 30b): so many for each kg
-// of gas its flames burn, each rising to a height drawn evenly up to 12.2 times its flame, carried downwind while it falls
-// from there, and landing anywhere across the flame's base; one lofted higher than a brand can fall before it has burnt
-// away (Albini) lands as ash. A thing takes those landing on its footprint, a square as wide as it is; one taken at its
-// middle takes none.
-export function landing(b: Blaze, t: Thing, dt: number) {
-  const half = halfOf(t);
-  if (b.lf <= 0 || b.gas <= 0 || half <= 0 || b.rb <= 0) return 0;
-  const ex = (t.px - b.px) * TILE_M, ey = (t.py - b.py) * TILE_M, a = ex * b.dx + ey * b.dy, c = ey * b.dx - ex * b.dy;
-  const across = Math.max(0, Math.min(c + half, b.rb) - Math.max(c - half, -b.rb)) / (2 * b.rb);
-  const top = LOFT * b.lf, alive = Math.min(top, BURNOUT * BRAND);
-  // the height a brand landing x m downwind was lofted to, found by halving, as the distance grows with the height
-  const lofted = (x: number) => {
-    if (x <= 0) return 0;
-    if (flight(b, alive) <= x) return alive;
-    let lo = 0, hi = alive;
-    for (let i = 0; i < 30; i++) { const z = (lo + hi) / 2; if (flight(b, z) < x) lo = z; else hi = z; }
-    return lo;
-  };
-  return across > 0 ? (BRANDS * b.gas * dt * across * (lofted(a + half) - lofted(a - half))) / top : 0;
+// ---------- the receivers' law's words (gpu/wgsl/fire.ts) ----------
+// Brands (sec. 6, 30b): so many lofted for each kg of gas a flame burns, each rising to a height drawn evenly up to 12.2
+// times its flame, carried downwind while it falls from there, and landing anywhere across the flame's base; one lofted
+// higher than a brand can fall before it has burnt away (Albini) lands as ash. A thing takes those landing on its
+// footprint, a square as wide as it is; one taken at its middle takes none. Over a look, then, a footprint across the
+// base for a stretch of its width and lofting heights between those landing at its near and far edges takes BRANDS gas
+// LOOK_S over 2 rb times LOFT lf of every cm of width times cm of height, which is the blaze's gb.
+const cm = (m: number, most: number) => Math.min(most, Math.max(0, Math.round(m * 100)));
+const Q16 = (x: number) => Math.round(x * 65536);
+// A blaze at a look as the law reads it, lit by bed number bed (wgsl/fire.ts B).
+export function blazeWords(b: Blaze, bed: number): number[] {
+  const v: number[] = new Array(BW).fill(0), top = LOFT * b.lf, veg = b.veg;
+  v[B.x] = Math.round(b.px * TILE_M * 100); v[B.y] = Math.round(b.py * TILE_M * 100);
+  v[B.dx] = Math.round(b.dx * 2 ** DIR_BITS); v[B.dy] = Math.round(b.dy * 2 ** DIR_BITS);
+  v[B.tx] = cm(b.lf * b.sin, FLAME); v[B.tz] = cm(b.lf * b.cos, FLAME); v[B.rb] = cm(b.rb, FLAME); v[B.heap] = cm(b.heap, FLAME); v[B.lf] = cm(b.lf, FLAME);
+  v[B.qr] = Math.min(0xffffffff, Math.round((CHI_R * b.q * 1000) / (4 * Math.PI)));
+  v[B.fr] = Q16(flameRadiation(b.lf));
+  v[B.reach] = cm(reach(b).heat, REACH);
+  v[B.bed] = bed;
+  v[B.gb] = b.lf > 0 && b.gas > 0 && b.rb > 0 ? Math.min(0xffffffff, Math.round(((BRANDS * b.gas * LOOK_S) / (2 * b.rb * 100 * top * 100)) * 2 ** 32)) : 0;
+  v[B.alive] = cm(Math.min(top, BURNOUT * BRAND), FLAME * 2);
+  // the wind aloft (combustion.ts windAt) over the brand's fall: the head-height wind among trees, or the log profile
+  // over bare ground (heights over 0.5 cm) or over low plants (from their tops, over the plants' roughness)
+  v[B.k] = Q16(b.head / FALL);
+  if (veg < 2) {
+    v[B.wind] = 1;
+    if (veg <= 0) { v[B.d] = Q16(0.5); v[B.inv] = Q16(1 / Math.log(2 / 0.005)); }
+    else { v[B.v] = cm(veg, FLAME); v[B.s] = Q16(64 * veg); v[B.d] = Q16(13 * veg); v[B.inv] = Q16(1 / Math.log((2 - 0.64 * veg) / (0.13 * veg))); }
+  }
+  return v;
 }
-// The odds that TOGETHER brands or more land on a thing where on average so many do (Poisson).
-export function together(mean: number) {
-  let term = Math.exp(-mean), below = term;
-  for (let i = 1; i < TOGETHER; i++) below += term *= mean / i;
-  return Math.max(0, 1 - below);
+// A thing's identity as the brands landing on it draw by: its id hashed (FNV-1a, 32 bits) [design].
+export function keyOf(id: string) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 0x01000193);
+  return h >>> 0;
+}
+// A thing within a blaze's reach as the law reads it (wgsl/fire.ts R and PT): its place and footprint, its tinder and
+// the odds brands light it, and each part's height, a flame's contact on it, expose's law in the air the part takes heat
+// in (combustion.ts exposure) and the heat it holds. The law's units hold any of it a thing could have [design: INTO].
+export function receiverWords(w: World, t: Thing, parts: Part[]): { words: number[]; parts: number[][] } {
+  const tinder = tinderIn(w, t, parts), words: number[] = new Array(RW).fill(0);
+  words[R.x] = Math.round(t.px * TILE_M * 100); words[R.y] = Math.round(t.py * TILE_M * 100); words[R.half] = cm(halfOf(t), FLAME);
+  words[R.tinder] = tinder.i < 0 ? NONE : tinder.i; words[R.odds] = Q16(tinder.odds); words[R.key] = keyOf(t.id);
+  const groups = warmed(t, parts), q8 = (x: number) => Math.min(0xffffffff, Math.round(x * 256));
+  return {
+    words,
+    parts: parts.map((p, i) => {
+      const e = exposure(groups[i], airFor(w, t, p)), v: number[] = new Array(PW).fill(0);
+      v[PT.lo] = Math.round(p.lo * 100); v[PT.hi] = Math.round(p.hi * 100);
+      v[PT.contact] = Q16(contact(p.phys.d)); v[PT.loss] = Math.max(-(INTO - 1), Math.min(INTO - 1, Q16(e.loss)));
+      v[PT.thin] = q8(e.thin); v[PT.deep] = q8(e.deep); v[PT.ok] = e.ok ? 1 : 0; v[PT.heat] = Math.min(HEAT, q8(groups[i].heat));
+      return v;
+    }),
+  };
 }
 // The NFDRS's odds that a brand lights fine dead fuel holding m kg of water to the kg, at a fuel temperature of T C (sec. 6,
 // R30): from the heat to bring it to ignition, QIGN, cal/g.

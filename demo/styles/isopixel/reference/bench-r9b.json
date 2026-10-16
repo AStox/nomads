@@ -1,0 +1,238 @@
+{
+  "about": "RenderR9, 2026-10-16, working tree on e27740a (peers' sim changes included), seed 1, AMD RDNA-1, headless Chrome 150 at 1600x1143, each build served from its own dir. Not a quiet machine: load 8 to 18 from peers, a Unity editor, and `bun test ./src/gpu` on the same GPU for the last two hours; before 2026-10-16 05:50 an orphaned headless Chrome of RenderR9's (a killed objects.ts run) was also running the play page and its sim, so figures taken before then, PerfR9's and Main's included, carry that load. Every figure here is A/B on one machine state or a correctness check.",
+  "changes": {
+    "crossFade": "webgpu.js fadePlan: a cross-fade draws one of its two levels a frame, the one drawn longer ago, and presents the other from the art buffer it was last drawn into at its own absolute art px origin (every level and bearing lays its pixels on one lattice), when that art still covers the canvas (live.js gives a fading level a 5 percent margin [design]). A fade frame costs one view, not two. The kept view's clast cells stay held (cacheFrame takes every view).",
+    "perViewBuffers": "webgpu.js: each of two views has its own live sprites, shadow rows and overlay buffers. They were shared, and as a submit's queued writes all land before it runs, a cross-fade's first view drew the second's people, animals, smoke and labels.",
+    "frontLists": "wgsl/objects.js frontWalk, webgpu.js frontFrame, live.js islandView: at island, isle200 and isle100 (tiles of 100 m and up [design]) at a whole bearing a view walks its far list less every speck another speck of the same source hides in its pixel, built from the whole island's view at that level and bearing, 16 rows of cells a frame [design], again after each far list.",
+    "rowCells": "wgsl/objects.js rowCells: the indexed, bins and far culls walk only the cells of each row the tile window crosses.",
+    "sunTrace": "webgpu.js TRACE_WGSL: the sun's march stops once the ray is 3.5 m over the island's highest drawn ground, past which every step adds nothing (smoothstep from -3 m).",
+    "firstView": "worker.js: the island is grown once for the renderer and the sim (the sim bundle's groundOf, exported from demo/sim.ts); the world takes up residence while the shaders compile; the far lists are built in the frames (farNow removed); the world is shown before it warms (play/sim.js: the warm's ticks are the first ticks the page asks for, one as soon as the last lands, at most one a page frame; the HUD shows WARMING UP n/2016; a ?bench waits for the warm unless ?benchwarm); the warm's first tick (the fish's and animals' ten-day spin-ups) runs while the sprites are made; the deadwood's and animals' sprites are made just after the first view.",
+    "fixes": "live.js resize no longer writes the transferred canvas's size (threw once the page canvas changed size); live.debug.hold holds the drawing's clock for the checks."
+  },
+  "firstView": {
+    "note": "seconds from navigation to the first view, default warm (2016 ticks), worker timeline in ms",
+    "loadAbout9": {
+      "09a2904": {
+        "firstView": 735,
+        "timeline": {
+          "renderer": 61437,
+          "world": 159872,
+          "sprites": 203374,
+          "warm": 601182,
+          "objects": 733786
+        }
+      },
+      "e27740a": {
+        "firstView": 848,
+        "timeline": {
+          "renderer": 31212,
+          "world": 114296,
+          "sprites": 145525,
+          "warm": 754745,
+          "objects": 846630
+        }
+      },
+      "warmFirstThenCuts": {
+        "firstView": 671,
+        "timeline": {
+          "renderer": 51250,
+          "world": 67162,
+          "sprites": 93361,
+          "warm": 660785,
+          "objects": 667360
+        },
+        "note": "this build with everything but the reveal before the warm"
+      }
+    },
+    "load11to15": {
+      "e27740a": {
+        "firstView": 258.5,
+        "timeline": {
+          "renderer": 29098,
+          "world": 94205,
+          "sprites": 121617,
+          "warm": 203046,
+          "objects": 257219
+        }
+      },
+      "new": {
+        "firstView": 116.9,
+        "timeline": {
+          "simStart": 60312,
+          "renderer": 70589,
+          "world": 74879,
+          "sprites": 114338,
+          "pack": 115934,
+          "firstTick": 115934,
+          "objects": 115936
+        },
+        "warmAfterReveal": 423
+      }
+    },
+    "gap": "116.9 s under load against the 80 s asked; what remains is the island's growth (60 s here, the sim's groundOf: generateIsland, fineGround, the flora's scatter), the world's residence on the GPU (14 s) and the sprites (40 s, in workers)."
+  },
+  "benches": {
+    "note": "the page's bench motions (main.js benchRunner) run in turn on one load by a page script, sim running; worker GPU ms per frame (n: frames the worker finished) and page frame dt. The GPU was shared with `bun test ./src/gpu` throughout, so both builds draw 3 to 6 worker frames a second and neither figure says anything of R9 on a quiet machine.",
+    "e27740a": {
+      "zoom": {
+        "gpu": [
+          53.94,
+          193.79,
+          209.76,
+          26,
+          32
+        ],
+        "dtMean": 89.78
+      },
+      "orbit": {
+        "gpu": [
+          19.75,
+          120.19,
+          126.55,
+          6,
+          54
+        ],
+        "dtMean": 126.49
+      },
+      "turn": {
+        "gpu": [
+          30.16,
+          137.56,
+          156.21,
+          15,
+          55
+        ],
+        "dtMean": 98.64
+      },
+      "pan": {
+        "gpu": [
+          30.68,
+          99.89,
+          102.98,
+          21,
+          32
+        ],
+        "dtMean": 155.15
+      }
+    },
+    "newAfterWarm": {
+      "zoom": {
+        "gpu": [
+          49.47,
+          188.97,
+          207.89,
+          30,
+          39
+        ],
+        "dtMean": 110.24
+      },
+      "orbit": {
+        "gpu": [
+          51.99,
+          146.04,
+          166.15,
+          47,
+          50
+        ],
+        "dtMean": 125.17
+      },
+      "turn": {
+        "gpu": [
+          38.54,
+          138.08,
+          172.97,
+          46,
+          56
+        ],
+        "dtMean": 76.83
+      },
+      "pan": {
+        "gpu": [
+          25.68,
+          89.62,
+          114.8,
+          31,
+          70
+        ]
+      }
+    },
+    "newDuringWarm": {
+      "zoom": {
+        "gpu": [
+          34.84,
+          83.18,
+          138.99,
+          45,
+          74
+        ],
+        "dtMean": 48.07,
+        "dtP95": 166.7,
+        "dtMax": 400
+      },
+      "ticksDuringIt": 44
+    },
+    "gpuColumns": [
+      "mean",
+      "p95",
+      "max",
+      "over16.7",
+      "frames"
+    ],
+    "gap": "R9 unmeasured: no quiet machine this session. During the warm a tick (about 0.2 s here) blocks the worker between frames, so frames run at about 20 a second (dt mean 48 ms) until the warm ends; ticks can't be split from the renderer's side."
+  },
+  "frontLists": {
+    "note": "objects.ts, view 0's G-buffer drawn from the front lists against the far lists, beside two drawings from the far lists",
+    "island": {
+      "specks": [
+        108607,
+        844025
+      ],
+      "pxDiffer": 8,
+      "noise": 2,
+      "pixels": 405216
+    },
+    "isle200": {
+      "specks": [
+        194858,
+        1254559
+      ],
+      "pxDiffer": 6,
+      "noise": 2,
+      "pixels": 405216
+    },
+    "isle100": {
+      "specks": [
+        201391,
+        447478
+      ],
+      "pxDiffer": 0,
+      "noise": 1,
+      "pixels": 405216
+    }
+  },
+  "fade": {
+    "note": "objects.ts, page clock held: the kept art against the same view drawn again in the same frame",
+    "atRest": "0 px differ at every fade (island to yard)",
+    "zoomingBeforeHazeAlign": "0 to 5.0 percent differ (isle100 8620 of 170694 px), all in the haze band, which is tied to the canvas and so drifts over the art as the view zooms; the check now draws the redraw with the kept art's band"
+  },
+  "objectsCheck": {
+    "result": "all passed (load 19, first view 167 s)",
+    "anchors": "0 off at close, valley, region, island",
+    "farLists": "far lists equal the whole index at every level, after a rebuild once the page is paused (warm ticks run until the pause, and logs change by the hour)",
+    "frontLists": "island 8 px of 405216 against 3 noise, isle200 11 against 1, isle100 0",
+    "fade": "at rest 0 px differ at every fade; zooming at most 13 px of 644525 (near)",
+    "kill": "gone from the next frame"
+  },
+  "smoke": {
+    "cmd": "NOMADS_BRAIN=random bun scripts/run.ts --ticks 864 --seed 1",
+    "animals": "deer 981, rabbits 48308, wolves 14, foxes 146, fish 2509949; structures 1; fires 0",
+    "tickMs": {
+      "upload": 48.36,
+      "animals": 2.68,
+      "ecology": 3.09,
+      "agents": 3.57,
+      "land": 216.94,
+      "shelve": 4.04
+    }
+  }
+}

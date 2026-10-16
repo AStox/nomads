@@ -148,10 +148,14 @@ function crib(g: Group, u: number, rain: number, beside: boolean) {
 // Fine dead fuel, of the 1-h class as laid, too wet to carry a flame (sec. 5).
 export const drowned = (g: { phys: Phys; m: number }) => g.phys.d < ONE_HOUR && g.m > MX;
 // The heat a piece yet to light must take before it does, under a net flux q_n (R4's Eq. 7, sec. 28): heating it through,
-// with all its water; or heating its face as a thick piece does, which a skin's water slows as kρc's does (sec. 27g).
-function needs(g: Group, ta: number, qn: number) {
+// with all its water (thin, kJ/m2); or heating its face as a thick piece does, which a skin's water slows as kρc's does
+// (deep, kJ/m2 times kW/m2: the face's heat under q_n is deep / q_n) (sec. 27g).
+function depths(g: Group, ta: number) {
   const burn = g.phys.burn!, dT = burn.tig + 273.15 - ta;
-  const thin = g.phys.rho * g.phys.c * (thick(g) / 4) * dT * (1 + 5 * g.m), deep = (Math.PI / 4) * burn.krc * (1 + 8.1 * (g.skin ?? g.m)) * dT * dT;
+  return { thin: g.phys.rho * g.phys.c * (thick(g) / 4) * dT * (1 + 5 * g.m), deep: (Math.PI / 4) * burn.krc * (1 + 8.1 * (g.skin ?? g.m)) * dT * dT };
+}
+function needs(g: Group, ta: number, qn: number) {
+  const { thin, deep } = depths(g, ta);
   return qn > 0 ? (thin ** -4 + (qn / deep) ** 4) ** -0.25 : Infinity;
 }
 // What a piece yet to light nets, kW/m2, of a flux coming in: less what lighting it needs to make up, the wind and the rain.
@@ -197,8 +201,11 @@ export function output(b: Bed, air: Air) {
   const gas = b.groups.reduce((t, g, i) => t + (g.lit ? (g.n * rates[i].gas * side(g)) / 1000 : 0), 0);
   return { flaming, glowing: air.covered ? smoulder(b) : coalHeat(b, u, air.blown ?? 0), flame: lf, base: burning(b), radius: radius(b), gas, hot };
 }
-// The flux on a piece d thick inside a flame lf tall, kW/m2: the flame's contact and its radiation (sec. 2, 28).
-export const inFlame = (d: number, lf: number) => CONTACT * Math.sqrt(BLADE / d) + (1 - Math.exp(-KAPPA * lf)) * SIGMA * T_FLAME ** 4;
+// The flux on a piece d thick inside a flame lf tall, kW/m2: the flame's contact, falling as d^-1/2, and its radiation,
+// by how tall it stands (sec. 2, 28).
+export const contact = (d: number) => CONTACT * Math.sqrt(BLADE / d);
+export const flameRadiation = (lf: number) => (1 - Math.exp(-KAPPA * lf)) * SIGMA * T_FLAME ** 4;
+export const inFlame = (d: number, lf: number) => contact(d) + flameRadiation(lf);
 // how fast coals this dense lose thickness, m/s, in a wind u (Albini, sec. 6); the char air blown in at u burns, kg/s
 // (sec. 29g); and the heat a bed's coals give, kW
 const coalRate = (u: number, rho: number) => (K_CHAR * RHO_AIR * Math.max(DRAWN, u)) / rho;
@@ -363,6 +370,13 @@ export function expose(g: Group, flux: number, dt: number, air: Air): Group {
   if (g.lit) return { ...g };
   const { ta, net, ok } = alone(g, flux, air), heat = Math.max(0, g.heat + net * dt);
   return { ...g, heat, lit: ok && net > 0 && heat >= needs(g, ta, net) };
+}
+// expose's law for a law that sums the flux on a piece yet to light itself (gpu/wgsl/fire.ts): what the piece loses of
+// any flux coming in, kW/m2 (its critical flux, the wind's cooling and the rain: expose's net is the flux less this),
+// needs' thin and deep, and whether it can light at all (it isn't drowned).
+export function exposure(g: Group, air: Air) {
+  const { ta, net } = alone(g, 0, air);
+  return { loss: -net, ...depths(g, ta), ok: !drowned(g) };
 }
 export function lightsIn(g: Group, flux: number, air: Air) {
   if (g.lit) return 0;

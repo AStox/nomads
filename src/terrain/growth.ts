@@ -49,12 +49,15 @@ export const keptOf = (temp: number) => MAINT * Q10 ** ((temp - 20) / 10);
 
 // Crowns: under one closed canopy 2% of the open sky's light reaches the ground, the most of Emborg's relative light
 // in every phase of the Danish near-natural beech and ash wood at Suserup but its gaps (R633); temperate forests let
-// through under 5% (Lieffers et al., R634). Where two crowns overlap, its square, and no more is lost past that (light.ts,
-// Beer-Lambert through a crown's leaves).
+// through under 5% (Lieffers et al., R634). Crowns over crowns let through as much again of what reaches them, as many
+// layers deep as they lie, with no cap (Beer-Lambert through whole crowns): the crowns of a texel spread evenly over it,
+// cover c in layers is n whole layers and a share f of the ground under one more, so (1 - f) t^n + f t^(n + 1) of the
+// light gets through, t a layer's share (gpu/wgsl/crowns.ts layered, the integer law the GPU's laws read) [derived].
 export const UNDER_CROWN = 0.02;
-export const LEAVES = -Math.log(UNDER_CROWN) / 0.8;
-export const sieve = (cover: number) => LEAVES * Math.min(cover, 2);
-export const through = (cover: number) => Math.exp(-0.8 * sieve(cover));
+export const through = (cover: number, t = UNDER_CROWN) => {
+  const n = Math.floor(cover), f = cover - n;
+  return t ** n * (1 - f + f * t);
+};
 
 // How well a plant does in a share (light) of the open sky's sun, against how it does in all of it: nothing at or below
 // the share it needs to make what it burns (its compensation point, comp), all of it in the open. comp 1 or more: it

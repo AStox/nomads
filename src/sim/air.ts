@@ -6,7 +6,7 @@
 import { CELL } from "../terrain/grid";
 import { DIRS, POOL_C, SEASONS, SEASON_DAYS, esat } from "../terrain/climate";
 import { CLOUD, NOON, daylight, seasonAt, sunAt } from "./sky";
-import { crownsAt } from "./light";
+import { crownRadius, crownsAt } from "./light";
 import { DAY, TILE_M, groundOf, hourOf, type World } from "./world";
 
 const between = (t: number, of: (s: number) => number) => { const { s, f } = seasonAt(t); return of(s) * (1 - f) + of((s + 1) % 4) * f; };
@@ -104,6 +104,20 @@ export function headWind(w: World, px: number, py: number, way: { dx: number; dy
   if (f <= 0.05 || H <= 0) return open;
   return Math.min(open, (open * TWENTY * 0.555) / (Math.sqrt(f * H) * Math.log((20 + 0.36 * H) / (0.13 * H))));
 }
+// The same law as tables for the GPU (gpu/moisture.ts shelterQ), by the crowns' kind (0 a pine's, 1 an oak's, light.ts
+// crownsAt) and their height in dm: A, the open wind's share under them times the square root of their cover, and B,
+// the share of the space under them a whole layer of them fills, crown ratio over 3, both Q16.
+export function shelterTables() {
+  const n = 512, A = new Int32Array(2 * n), B = new Int32Array(2 * n);
+  ["pine", "oak"].forEach((species, k) => {
+    for (let h = 1; h < n; h++) {
+      const m = h / 10, ratio = Math.min(1, (2 * crownRadius({ species, size: m })) / m), H = m / FT;
+      A[k * n + h] = Math.round(((TWENTY * 0.555) / (Math.sqrt((ratio / 3) * H) * Math.log((20 + 0.36 * H) / (0.13 * H)))) * 65536);
+      B[k * n + h] = Math.round((ratio / 3) * 65536);
+    }
+  });
+  return { A, B };
+}
 // The air at a point now. sheltered: out of the wind, inside walls.
 export function airAt(w: World, px: number, py: number, sheltered = false): Air {
   const wx = w.weather;
@@ -127,14 +141,17 @@ export function placeTemp(w: World, px: number, py: number, t: number, sky: Sky,
 // what comes back as FAO-56 has the net longwave (eq. 39, R221), the sun's share of the day's possible hours taken as the
 // sky's clear share (eqs. 35 and 37).
 const POOL_MAX = 4.3, POOL_H = -1 / Math.log(1 - 1.9 / 4.3);
-function pooled(w: World, px: number, py: number, t: number, sky: Sky, speed: number) {
+function pooled(w: World, px: number, py: number, t: number, sky: Sky, speed: number, vapour = vapourAt(w, px, py, t)) {
   const day = Math.floor(t / DAY) + 1, half = daylight(day) / 2, h = hourOf(t), set = NOON + half, rise = NOON - half;
   const after = h >= set ? h - set : h < rise ? h + 24 - set : -1, calm = Math.max(0, Math.min(1, (6 - speed) / 3));
   if (after < 0 || calm <= 0) return 0;
-  const sunny = (0.25 + 0.5 * (1 - CLOUD[sky])) / 0.75, back = 1 - (0.34 - 0.14 * Math.sqrt(vapourAt(w, px, py, t))) * (1.35 * sunny - 0.35);
+  const sunny = (0.25 + 0.5 * (1 - CLOUD[sky])) / 0.75, back = 1 - (0.34 - 0.14 * Math.sqrt(vapour)) * (1.35 * sunny - 0.35);
   const still = Math.max(0, Math.min(1, (0.93 - back) / (0.93 - 0.8)));
   return POOL_MAX * (1 - Math.exp(-after / POOL_H)) * calm * still;
 }
+// The cold pooled in the deepest hollow at tick t, in the island's own air water (the GPU's hourly air reads it for
+// every hollow, each its own depth of it: gpu/moisture.ts cellAir) [design: the island's air water for each place's].
+export const islandPooled = (w: World, t: number, sky: Sky, speed: number) => pooled(w, 0, 0, t, sky, speed, islandAir(w, t, sky).vapour);
 // Where an entity stands, worked out once a tick however many questions ask.
 const memo = new WeakMap<object, { t: number; px: number; py: number; sheltered: boolean; air: Air }>();
 export function airOn(w: World, e: { px: number; py: number }, sheltered = false): Air {
@@ -208,13 +225,20 @@ export function nextSky(sky: Sky, r: number, t: number): Sky {
   for (let j = 0; j < 4; j++) if (r < (sum += CHAIN[s][i][j] * (1 - f) + CHAIN[(s + 1) % 4][i][j] * f)) return SKIES[j];
   return sky;
 }
+// The real hours a season's precipitation is spread over, a storm hour counting five rain hours.
+export function wetHours(w: World, k: number) {
+  const { hours } = meansOf(w);
+  return SEASON_DAYS * 24 * (hours[k][0] + 5 * hours[k][1]);
+}
+// The land's air water (kPa) and rain in a rain hour (mm) by season, which the island's own air is drawn between.
+export const islandMeans = (w: World) => { const m = meansOf(w); return { vapour: m.vapour, rain: m.rain }; };
 // The rain falling on open level ground at a point at tick t under a sky, mm an hour (sec. 13, 25b): the season's
 // precipitation there spread over the hours of its real days that rain, a storm hour five times a rain hour. What
 // reaches the ground under trees, behind rocks or on a slope is rain.ts's.
 export function rainWhen(w: World, px: number, py: number, t: number, sky: World["weather"]["sky"]) {
   if (sky !== "rain" && sky !== "storm") return 0;
-  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), { s, f } = seasonAt(t), { hours } = meansOf(w);
-  const rate = (k: number) => field(isle.seasons[k].precip, px, py, n) / (SEASON_DAYS * 24 * (hours[k][0] + 5 * hours[k][1]));
+  const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), { s, f } = seasonAt(t);
+  const rate = (k: number) => field(isle.seasons[k].precip, px, py, n) / wetHours(w, k);
   return (rate(s) * (1 - f) + rate((s + 1) % 4) * f) * (sky === "storm" ? 5 : 1);
 }
 // The same now.

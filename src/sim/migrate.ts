@@ -205,6 +205,13 @@ function wetness(w: World, out: string[]) {
   }
   if (read || kept) out.push(`wet: ${read} held things given water by it${kept ? `, ${kept} already holding water by the new physics kept it` : ""}`);
   const weather = w.weather as OldWeather;
+  // the island's kept hours, from before what lies out held its own water on the GPU: only the crowns' water stays
+  const past = weather.past as unknown as { crowns?: number[]; hours?: { held: number[]; bare: boolean }[] } | undefined;
+  if (past?.hours) {
+    const last = past.hours.at(-1);
+    weather.past = { crowns: past.crowns ?? [], held: last?.held ?? [], bare: last?.bare ?? false };
+    out.push("the island's kept hours of weather dropped: what lies out holds its own water on the GPU now (gpu/moisture.ts)");
+  }
   if (weather.litter === undefined) return;
   delete weather.litter;
   out.push("the old litter wetness dropped: dead stuff lying about holds the island's weather now (weather.dead)");

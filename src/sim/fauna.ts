@@ -1,6 +1,6 @@
 // Everything alive on the island that isn't a person: what each kind is like and where they start. What they do each
 // tick is in animals.ts. Speeds are meters a tick of five minutes' game time, the way a person's are.
-import { H, Tile, W, YEAR, dryAt, dryNear, sea, tileAt, type Animal, type AnimalSpecies, type World } from "./world";
+import { H, Tile, W, dryAt, dryNear, sea, tileAt, type Animal, type AnimalSpecies, type World } from "./world";
 import { put } from "./space";
 import { reveal, startPools } from "./pools";
 
@@ -57,7 +57,7 @@ export function placesOf(w: World): Places {
   places.set(w, p);
   return p;
 }
-// The animals a new world starts with, placed from the world's own stream: walkers on dry ground, fish in water.
+// The animals a new world starts with, placed from the world's own stream on dry ground.
 // How one of a herd stands when it comes into sight: rabbits grazing, fish swimming, herons wading, eagles soaring, gulls
 // on the wing, crows feeding, butterflies among the flowers.
 const POSE: Partial<Record<AnimalSpecies, [string, number, number]>> = { rabbit: ["graze", 0, 0], fish: ["swim", 0, 0], heron: ["wade", 0, 0], eagle: ["soar", 60, 60], gull: ["fly", 8, 20], crow: ["feed", 0, 0], butterfly: ["flutter", 0.5, 1] };
@@ -87,13 +87,10 @@ export function populate(w: World, rand: () => number, main: Uint8Array) {
     }
     return onGround(pick(grass));
   };
-  // The fish and the butterflies as each tile's count, and a pack of wolves denning some way off; the deer, rabbits,
-  // wolves, foxes and birds take up residence on the GPU with the world's first tick, run on twenty years of the
-  // island's own forage before anyone wakes (animals.ts); the fish within sight of anyone stand in the water from the
-  // start.
+  // The butterflies as each tile's count, and a pack of wolves denning some way off; the fish, deer, rabbits, wolves,
+  // foxes and birds take up residence on the GPU with the world's first tick, run on the island's own food before
+  // anyone wakes (waters.ts, animals.ts).
   const den = nearPeople(5, 10, (t) => w.tiles[t] !== Tile.Water);
   w.pools = startPools(w, den);
   reveal(w, (sp, px, py) => spawn(w, sp, px, py, revealed(sp, px, py)), rand);
-  // The island's fish were there long before anyone woke; this summer's butterflies are new.
-  for (const a of w.animals) if (a.species !== "butterfly") a.born = -Math.floor(rand() * 2 * YEAR);
 }

@@ -7,13 +7,12 @@
 // each texel's stems listed together in `list` from start[texel] to start[texel + 1], each entry three words: its slot,
 // its height in mm times two plus 1 for a tree, and the ground its crown holds in a closed stand (flora.ts crownShare)
 // as a Q16 share of the texel. Where in its texel's run a stem is filed depends on which invocation came first, so
-// nothing reads that order: what is read of a texel is sums over all of it. Light at any height, interception and the
-// renderer's canopy (Unit 12) read the same lists.
+// nothing reads that order: what is read of a texel is sums over all of it. Light at any height and the crown pass
+// (wgsl/crowns.ts: the ground's light, interception and the renderer's canopy) read the same lists.
 //
 // A stem's light: the crowns of the stems taller than it in its texel, and half of those exactly as tall, taken as
-// spread evenly over the texel, layer on layer, each layer letting UNDER_CROWN through (growth.ts), no more lost past
-// two layers (light.ts's cap, removed in Unit 12): with c the cover above, n its whole layers and f the rest,
-// (1 - f) T^n + f T^(n + 1).
+// spread evenly over the texel, layer on layer, each layer letting UNDER_CROWN through (growth.ts), as deep as they lie
+// (wgsl/crowns.ts layered): with c the cover above, n its whole layers and f the rest, (1 - f) T^n + f T^(n + 1).
 //
 // Crowding (trees only): the trees in a texel, the tallest first (ties by slot), each take their crown's share of a
 // closed stand; a tree whose own share, with those of all taller, passes the texel is thinned out, the smallest first,
@@ -30,7 +29,7 @@
 // A stem that dies keeps DIED in its crop word for the deadwood. Its year's seed (crop), in a good or mast year of its
 // kind and none in the rest: its kind's crop a stem, plus its kind's crop a Q16 of texel times the share its crown holds.
 import { CELL, N } from "../../terrain/grid";
-import { UNDER_CROWN } from "../../terrain/growth";
+import { CROWN_WORDS, LAYERED } from "./crowns";
 
 // Texels across the island, their side in mm and their area in cm2 (the area only as a check of the Q16 shares).
 export const TEXELS_SIDE = N * 4, TEXELS = TEXELS_SIDE * TEXELS_SIDE, TEXEL_MM = (CELL * 1000) / 4;
@@ -45,8 +44,6 @@ export const MAP = 32, ROW_WORDS = 8, RW = { tree: 0, qmax: 1, each: 2, area: 3,
 // The crop word a stem the law starves or crowds out is left with, so its death can be told from a felling: the
 // deadwood's law (wgsl/deadwood.ts) bears its snag and consumes the mark.
 export const DIED = 0xdead0001;
-// One layer of crowns lets this Q16 share of the light through, and two layers its square (rounded).
-export const T1 = Math.round(UNDER_CROWN * 65536), T2 = Math.round((T1 * T1) / 65536);
 // A mass at half its peak: q at 2^(-1/4) of the peak's, in Q16 [derived].
 export const HALF_Q = Math.round(2 ** -0.25 * 65536);
 // A bush's q as laid, and what every q holds at most: 2^24 (a mass of 65,536 kg).
@@ -148,7 +145,11 @@ ${RUNS}
 
 // The raster, step two: every live stem filed in its texel's run (the counts scanned into starts). Each lane finds its
 // run's head by a running maximum of the heads' lanes (hd), and each run's end takes the run's places in one atomic.
-// Bindings: body, starts, cursors (TEXELS, cleared), list, tables, rows.
+// The same pass sums each texel's trees (every stem with the tree bit) into crowns, as wgsl/crowns.ts reads them
+// (CROWN_WORDS a texel): the pines' and the other trees' crown shares (list word 2), the trees' weights and their
+// weighted heights. Each run's four sums are added in workgroup memory and then to its texel's by the run's end, so a
+// texel's trees are read without walking its list (u32 sums, the same in any order). Bindings: body, starts, cursors
+// (TEXELS, cleared), list, tables, rows, crowns (CROWN_WORDS TEXELS, cleared).
 export function stemsFile(k: StemLayout) {
   return /* wgsl */ `
 @group(0) @binding(0) var<storage, read> b: array<u32>;
@@ -157,14 +158,17 @@ export function stemsFile(k: StemLayout) {
 @group(0) @binding(3) var<storage, read_write> list: array<u32>;
 @group(0) @binding(4) var<storage, read> tables: array<u32>;
 @group(0) @binding(5) var<storage, read> rows: array<u32>;
+@group(0) @binding(6) var<storage, read_write> crowns: array<atomic<u32>>;
 ${common(k)}
 ${RUNS}
 var<workgroup> hd: array<u32, 256>;
 var<workgroup> base: array<u32, 256>;
+var<workgroup> sums: array<atomic<u32>, 1024>;
 @compute @workgroup_size(256) fn main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u, @builtin(local_invocation_index) l: u32) {
   let i = flat(g, n);
   let t = mine(i);
   tex[l] = t;
+  for (var w = 0u; w < 4u; w++) { atomicStore(&sums[4u * l + w], 0u); }
   workgroupBarrier();
   hd[l] = select(0u, l, is_head(l, t));
   for (var o = 1u; o < 256u; o <<= 1u) {
@@ -176,15 +180,36 @@ var<workgroup> base: array<u32, 256>;
   }
   workgroupBarrier();
   let h = hd[l];
-  if (is_end(l, t)) { base[h] = start[t] + atomicAdd(&cursor[t], l + 1u - h); }
+  var r = 0u;
+  var s = 0u;
+  var a = 0u;
+  var tree = 0u;
+  if (t != NONE) {
+    r = row_of(i);
+    s = b[FS + i];
+    a = crown_at(r, s);
+    tree = rw(r, ${RW.tree}u);
+    if (tree == 1u) {
+      let k = (a >> 8u) + 1u;
+      atomicAdd(&sums[4u * h + select(1u, 0u, r == 0u)], a);
+      atomicAdd(&sums[4u * h + 2u], k);
+      atomicAdd(&sums[4u * h + 3u], k * (((s << 1u) >> 1u) / 100u));
+    }
+  }
+  workgroupBarrier();
+  if (is_end(l, t)) {
+    base[h] = start[t] + atomicAdd(&cursor[t], l + 1u - h);
+    for (var w = 0u; w < 4u; w++) {
+      let v = atomicLoad(&sums[4u * h + w]);
+      if (v != 0u) { atomicAdd(&crowns[${CROWN_WORDS}u * t + w], v); }
+    }
+  }
   workgroupBarrier();
   if (t == NONE) { return; }
   let p = base[h] + (l - h);
-  let r = row_of(i);
-  let s = b[FS + i];
   list[3u * p] = i;
-  list[3u * p + 1u] = (s << 1u) | rw(r, ${RW.tree}u);
-  list[3u * p + 2u] = crown_at(r, s);
+  list[3u * p + 1u] = (s << 1u) | tree;
+  list[3u * p + 2u] = a;
 }`;
 }
 
@@ -275,14 +300,11 @@ var<workgroup> wn: u32;
     if (have) { grow(i, s, tree, above, crowd, taller); }
   }
 }
+${LAYERED}
 fn grow(i: u32, s: u32, tree: bool, above: u32, crowd: u32, taller: u32) {
   let r = row_of(i);
   let a = crown_at(r, s);
-  let layers = above >> 16u;
-  let f = above & 0xffffu;
-  var light = ${T2}u;
-  if (layers == 0u) { light = (65536u - f) + ((f * ${T1}u) >> 16u); }
-  else if (layers == 1u) { light = (((65536u - f) * ${T1}u) >> 16u) + ((f * ${T2}u) >> 16u); }
+  let light = layered(above);
   let cell = min(b[FY + i] / CMM, NC - 1u) * NC + min(b[FX + i] / CMM, NC - 1u);
   let alpha = coef[(cell * ROWS + r) * 2u];
   let beta = coef[(cell * ROWS + r) * 2u + 1u];
@@ -303,36 +325,52 @@ fn grow(i: u32, s: u32, tree: bool, above: u32, crowd: u32, taller: u32) {
 }`;
 }
 
-// What the CPU keeps of every stem after a day: its height in mm while it lives, 0 once dead, two slots to a word. A
-// slot of the generator's stems (below laid) holds its stem only at generation 1: one born in the slot later is another
-// stem, so the generator's stays gone. Each generator's slot that goes to 0 is listed in died (its count at word 0,
-// then up to DIED_ROOM slots in no order), so the CPU needn't compare the whole island to find them; P.x is 1 for the
-// first packing, which lists none. Bindings: body, packed (ceil(cap / 2)), died (1 + DIED_ROOM), P.
-// Room for the stems a landing lists dead [design]: past it the CPU compares every stem itself.
-export const DIED_ROOM = 1 << 16;
-export function stemsPack(k: StemLayout, laid: number) {
+// What the CPU keeps of every stem after a day, as small as it can be: a stem's height in mm (no more than 0xffff)
+// while it lives, 0 once dead. A slot of the generator's stems (below laid) holds its stem only at generation 1: one
+// born in the slot later is another stem, so the generator's stays gone. Of the generator's stems, a bush keeps the
+// height it was laid at (the law grows trees' heights only, and flora.ts lets no stem change its species), so of every
+// generator's stem only whether it stands (a height not 0) comes back, a bit each in the first part; a tree's height
+// comes back too, two to a word in the second part, in the order of the trees' slots (bound as trees); and every slot
+// beyond the generator's, two to a word in the third part. The first part's workgroups take a slot a lane, 256 slots
+// (eight words) each, so neighbouring lanes read neighbouring slots; the rest a word a lane. Bindings: body, trees
+// (their slots), out (landWords; dispatched over its threads).
+export function landWords(cap: number, laid: number, trees: number) {
+  const bits = Math.ceil(laid / 32), tw = Math.ceil(trees / 2), sw = Math.ceil((cap - laid) / 2);
+  return { bits, trees: tw, spare: sw, total: bits + tw + sw, threads: Math.ceil(bits / 8) * 256 + tw + sw };
+}
+export function stemsLand(k: StemLayout, laid: number, trees: number) {
+  const L = landWords(k.cap, laid, trees);
   return /* wgsl */ `
 @group(0) @binding(0) var<storage, read> b: array<u32>;
-@group(0) @binding(1) var<storage, read_write> packed: array<u32>;
-@group(0) @binding(2) var<storage, read_write> died: array<atomic<u32>>;
-@group(0) @binding(3) var<uniform> P: vec4u;
-const C = ${k.cap}u; const FS = ${k.size}u; const LAID = ${laid}u;
-${FLAT}
-fn kept(i: u32, was: u32) -> u32 {
+@group(0) @binding(1) var<storage, read> tree: array<u32>;
+@group(0) @binding(2) var<storage, read_write> out: array<u32>;
+const C = ${k.cap}u; const FS = ${k.size}u; const LAID = ${laid}u; const NT = ${trees}u;
+const BITS = ${L.bits}u; const TW = ${L.trees}u; const SW = ${L.spare}u; const BG = ${Math.ceil(L.bits / 8)}u;
+var<workgroup> bits: array<atomic<u32>, 8>;
+fn kept(i: u32) -> u32 {
   if (i >= C) { return 0u; }
-  let live = select((b[i] & 1u) == 1u, b[i] == 3u, i < LAID);
-  var v = 0u;
-  if (live) { v = min(b[FS + i], 0xffffu); }
-  if (P.x == 0u && i < LAID && was != 0u && v == 0u) {
-    let at = atomicAdd(&died[0], 1u);
-    if (at < ${DIED_ROOM}u) { atomicStore(&died[1u + at], i); }
-  }
-  return v;
+  if (select((b[i] & 1u) == 1u, b[i] == 3u, i < LAID)) { return min(b[FS + i], 0xffffu); }
+  return 0u;
 }
-@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
-  let w = flat(g, n);
-  if (w >= (C + 1u) / 2u) { return; }
-  let was = packed[w];
-  packed[w] = kept(2u * w, was & 0xffffu) | (kept(2u * w + 1u, was >> 16u) << 16u);
+fn tree_kept(k: u32) -> u32 { if (k >= NT) { return 0u; } return kept(tree[k]); }
+@compute @workgroup_size(256) fn main(@builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) l: u32) {
+  let wg = wid.x + wid.y * nwg.x;
+  if (wg < BG) {
+    if (l < 8u) { atomicStore(&bits[l], 0u); }
+    workgroupBarrier();
+    let i = wg * 256u + l;
+    if (i < LAID && kept(i) != 0u) { atomicOr(&bits[l / 32u], 1u << (l % 32u)); }
+    workgroupBarrier();
+    if (l < 8u && wg * 8u + l < BITS) { out[wg * 8u + l] = atomicLoad(&bits[l]); }
+    return;
+  }
+  let w = BITS + (wg - BG) * 256u + l;
+  if (w < BITS + TW) {
+    let k = 2u * (w - BITS);
+    out[w] = tree_kept(k) | (tree_kept(k + 1u) << 16u);
+  } else if (w < BITS + TW + SW) {
+    let i = LAID + 2u * (w - BITS - TW);
+    out[w] = kept(i) | (kept(i + 1u) << 16u);
+  }
 }`;
 }

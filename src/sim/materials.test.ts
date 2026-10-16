@@ -1,12 +1,19 @@
-import { expect, test } from "bun:test";
-import { DAY, H, TILE_M, Tile, W, addThing, dryAt, newWorld, rng, shoreOf, type Act, type Agent, type Thing, type World } from "./world";
+import { afterAll, expect, test } from "bun:test";
+import { DAY, TILE_M, addThing, adoptStore, dryAt, newWorld, rng, shoreOf, wetAt, type Act, type Agent, type Thing, type World } from "./world";
 import { WEATHER_NOW, bedAir, count, eat, fireOf, giveItems, giveStack, heat, join, openWater, place, removeThing, strikeTick, throwTick, wet, type Fields, type Outcome } from "./physics";
 import { COPPER, PHYS, pieceOf } from "./fuel";
 import { BLADE } from "./mechanics";
 import { advance } from "./combustion";
 import { predictMaterial } from "./formulas";
 import { addAnimal } from "./fauna";
-import { fishNear } from "./fish";
+import { fishDriver, fishOf, waterHere, watersOf } from "./waters";
+import { streamNow } from "./streams";
+import { Store } from "../gpu/store";
+import { FISH } from "../gpu/fish";
+import { FS, SUB, SUB_MM, TILE_MM } from "../gpu/wgsl/fish";
+import { releaseGpu, theGpu } from "../gpu/device";
+import { CELL, N } from "../terrain/grid";
+import { CELL_MM } from "../gpu/wgsl/index";
 import { put as moveTo, thingById } from "./space";
 import { conditionsNow } from "./sim";
 import { hooks } from "./rules";
@@ -15,6 +22,7 @@ import { ecology, forecast } from "./ecology";
 import { ahead, bedAt, seedlingFate } from "./seedling";
 import { fitHere } from "./plants";
 
+afterAll(releaseGpu);
 // A fire burning so many seconds (ten minutes unless said) from the usual lay (fireOf), under a clear sky with a breeze
 // blowing u m/s.
 const burning = (u = 2, sticks = 5, logs = 2, age = 600): [World, Agent, Thing] => {
@@ -225,34 +233,77 @@ test("felling an oak with a hafted flint blade peels the same strips of bark eve
   expect(fell("stone", 10).out.ok).toBe(false);
 });
 
-test("a line or a basket dipped where a fish swims within reach catches every time, and with none about never does: anyone dipping sees there were no fish close by, and only what's dipped in the water records it", () => {
+test("a line or a basket dipped near the shore catches a fish of the water it is dipped in, that fish and no other, and never one of other water within reach: with none of its own about it never does, and anyone dipping sees there were no fish close by", async () => {
   const [w, a] = fresh();
-  // the water's stock (fish.ts), kg a ha: thick with fish everywhere, and a shore where a basket's sweep reaches it
-  const fish = w.pools!.fish;
-  for (let i = 0; i < W * H; i++) fish[i] = w.tiles[i] === Tile.Water ? 1000 : 0;
-  const shore = shoreOf(w).find((s) => { moveTo(w, a, s.px, s.py); return openWater(w, a) && fishNear(w, fish, a, 15) >= 2; });
-  expect(shore).toBeDefined();
+  const s = new Store(await theGpu());
+  adoptStore(w, s);
+  await fishOf(w).attach(s, { ...fishDriver(w), days: 0, start: () => new Uint32Array(0) });
+  const v = watersOf(w.seed), mm = (p: number) => Math.round(p * TILE_M * 1000);
+  // a shore where they dip into one body of water and a square of another lies within a line's reach
+  let other: [number, number] | null = null, own: [number, number] | null = null;
+  for (const sp of shoreOf(w)) {
+    moveTo(w, a, sp.px, sp.py);
+    const body = waterHere(w, a);
+    if (!openWater(w, a) || body < 0) continue;
+    const cx = Math.floor((a.px * TILE_M) / CELL), cy = Math.floor((a.py * TILE_M) / CELL);
+    other = null;
+    for (let y = cy - 1; y <= cy + 1 && !other; y++) for (let x = cx - 1; x <= cx + 1 && !other; x++) {
+      const c = y * N + x;
+      if (!v.kind[c] || v.body[c] === body) continue;
+      for (let q = 0; q < SUB * SUB && !other; q++) {
+        if (!(((q < 32 ? v.m0[c] >>> q : v.m1[c] >>> (q - 32)) & 1) === 1)) continue;
+        const ox = x * CELL_MM + (q % SUB) * SUB_MM + Math.floor(SUB_MM / 2), oy = y * CELL_MM + Math.floor(q / SUB) * SUB_MM + Math.floor(SUB_MM / 2);
+        if (Math.hypot(ox - mm(a.px), oy - mm(a.py)) <= 30000) other = [ox, oy];
+      }
+    }
+    if (!other) continue;
+    // the open water of their own body they dip into, a pace or two off (waterHere's points)
+    for (let k = -1; k < 8 && !own; k++) {
+      const r = k < 0 ? 0 : 3 / TILE_M, x = a.px + Math.cos((k * Math.PI) / 4) * r, y = a.py + Math.sin((k * Math.PI) / 4) * r;
+      const c = Math.floor((y * TILE_M) / CELL) * N + Math.floor((x * TILE_M) / CELL);
+      if (v.kind[c] && v.body[c] === body && (wetAt(w, x, y) || streamNow(w, x, y)?.flowing)) own = [mm(x), mm(y)];
+    }
+    if (own) break;
+  }
+  expect(other && own).toBeTruthy();
+  s.mirror.watch("test", { x0: Math.floor((a.px * TILE_M) / CELL) - 2, y0: Math.floor((a.py * TILE_M) / CELL) - 2, x1: Math.floor((a.px * TILE_M) / CELL) + 2, y1: Math.floor((a.py * TILE_M) / CELL) + 2 });
+  const fish = (at: [number, number]) => s.spawn(FISH, { x: at[0], y: at[1], sp: FS.perch | 16, born: 0, len: 200000 });
+  const step = async () => { w.t++; if (w.t % DAY === 0) w.t++; await s.step(w.t); };
   w.kinds.line = { id: "line", name: "line", props: { long: 0.7, flexible: 0.9, binding: 0.8 } };
   w.kinds.basket = { id: "basket", name: "basket", props: { container: 0.7, fibrous: 0.8 } };
   const dip = (k: string) => { giveItems(w, a, k); return wet(w, a, { verb: "wet", items: [k], at: "water" }); };
-  for (const k of ["line", "basket", "line", "basket"]) {
-    const before = fishNear(w, fish, a, 40);
-    expect(dip(k).gives.fish).toBeGreaterThanOrEqual(1);
-    // what they lifted out came out of the water's stock
-    expect(fishNear(w, fish, a, 40)).toBeLessThan(before);
-    // the fish they lifted out was close by
-    expect(conditionsNow(w, a, "wet")).not.toContain("nofish");
-    w.t++;
-  }
-  fish.fill(0);
-  for (const k of ["line", "basket", "line", "basket"]) {
-    const out = dip(k);
-    expect(out.ok).toBe(false);
+  // a fish of other water within a line's reach: nothing bites, and no fish of theirs was close by
+  const stranger = fish(other!);
+  await step();
+  const strangerId = s.mirror.spawned(stranger.id)?.id ?? stranger.id;
+  for (const k of ["line", "basket"]) {
+    expect(dip(k).ok).toBe(false);
     expect(conditionsNow(w, a, "wet")).toContain("nofish");
-    w.t++;
+    await step();
+  }
+  // two fish of their own water by them: the line brings up the nearer, the basket then the other, and each is gone
+  const mine = [fish(own!), fish([own![0] + 500, own![1]])];
+  await step();
+  const ids = mine.map((o) => s.mirror.spawned(o.id)?.id ?? o.id), far = (id: number) => { const o = s.mirror.get(id) as { v: Record<string, number> }; return Math.hypot(o.v.x / TILE_MM - a.px, o.v.y / TILE_MM - a.py); };
+  const order = far(ids[0]) <= far(ids[1]) ? ids : [ids[1], ids[0]];
+  for (const [n, k] of ["line", "basket"].entries()) {
+    const out = dip(k);
+    expect(out.gives.fish).toBe(1);
+    expect(conditionsNow(w, a, "wet")).not.toContain("nofish");
+    expect(s.mirror.get(order[n])).toBeNull();
+    if (n === 0) expect(s.mirror.get(order[1])).not.toBeNull();
+    await step();
+  }
+  // the stranger still swims in its own water, and with none of theirs left nothing bites
+  expect(s.mirror.get(strangerId)).not.toBeNull();
+  for (const k of ["line", "basket"]) {
+    expect(dip(k).ok).toBe(false);
+    expect(conditionsNow(w, a, "wet")).toContain("nofish");
+    await step();
   }
   for (const verb of ["strike", "rub", "plant"]) expect(conditionsNow(w, a, verb)).not.toContain("nofish");
-});
+  fishOf(w).destroy(); s.destroy();
+}, 600_000);
 
 test("a stone thrown at a deer within reach hits it every time, for the same harm; at one farther off it always falls short", () => {
   const [w, a] = fresh();

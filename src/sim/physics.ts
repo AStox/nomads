@@ -1,5 +1,5 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
-import { fishNear, takeFish } from "./fish";
+import { catchFish, fishNear } from "./waters";
 import { gone } from "./animals";
 import { BASE, MADE_OF, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props, type Registry } from "./materials";
 import { BURNS, COPPER, FIRED_CLAY, LEATHER, LIVE_HERB, LOG_LEN, PHYS, POT_WALL, charSize, greenOf, mix, physOf, pieceOf, remade, splitSize, stackPhys, woodOf, type Edge, type Phys } from "./fuel";
@@ -18,7 +18,7 @@ import { streamNow } from "./streams";
 import { airOn } from "./air";
 import { rainOn } from "./rain";
 import { DARK, lightOn } from "./light";
-import { DAMP, SOAKED, deadAt, deadOf, moistureOf, sheltered, splitWater, tinder, tinderOf, waterOf } from "./wetness";
+import { DAMP, SOAKED, deadAt, deadOf, moistureOf, pieceWater, sheltered, splitWater, tinder, tinderOf, waterOf } from "./wetness";
 import { GROUND, SIZE, groundClass } from "../terrain/flora";
 import { GUT, basal, bodyOf, frameOf, ingest } from "./body";
 
@@ -371,7 +371,7 @@ export function gathered(w: World, t: Thing, k: string): Stack {
   if (piece) {
     const green = living ? greenOf(t.species, k === "log") : undefined;
     if (green !== undefined) return { ...fresh(w, k, green), ...piece, green: true as const };
-    const dead = deadOf(w, t, piece.size.d, { lying: LYING[t.kind] });
+    const dead = LYING[t.kind] ? pieceWater(w, t, piece.size.d) : deadOf(w, t, piece.size.d);
     return { ...fresh(w, k, dead.m), ...piece, ...(Math.abs(dead.skin - dead.m) > 0.0005 ? { skin: dead.skin } : {}) };
   }
   return fresh(w, k, t.kind === "reeds" ? LIVE_HERB : (physOf(w.kinds, w.kinds[k])?.green ?? 0));
@@ -1110,9 +1110,10 @@ export const RESIN_EDGE = 1.65;
 export const FISH_REACH: Record<"basket" | "line", number> = { basket: 15, line: 40 };
 // Who last lifted a fish out of the water, and when: the fish they caught was close by, though it swims there no more.
 const landed = perWorld(() => new Map<string, number>());
-// Whether a fish swims within reach of what they dip (a basket's, unless a line's) or they just lifted one out.
+// Whether a fish swims within reach of what they dip (a basket's, unless a line's), in the water they dip it in, or
+// they just lifted one out.
 export const fishClose = (w: World, a: Agent, at: { px: number; py: number } = a, reach = FISH_REACH.basket) =>
-  landed(w).get(a.id) === w.t || fishNear(w, w.pools?.fish, at, reach) >= 1;
+  landed(w).get(a.id) === w.t || fishNear(w, at, reach) >= 1;
 // A line to dangle in the water: long, limp and strong.
 export const lineLike = (k?: Kind) => p(k, "long") >= 0.5 && p(k, "flexible") >= 0.8 && p(k, "binding") >= 0.5;
 // What there is to dip something into where they stand: open water (not frozen over), how many fish swim within a
@@ -1161,22 +1162,17 @@ export function wetting(w: World, items: string[], c: WetSetting): Wetting {
   return decided({ text: `The ${x.name} got wet. Nothing else happened.`, fields });
 }
 export function wet(w: World, a: Agent, act: Act): Outcome {
-  // the fish swimming within a line's reach, and within a basket's, as the water's stock has them (fish.ts)
-  const line = Math.floor(fishNear(w, w.pools?.fish, a, FISH_REACH.line)), basket = Math.floor(fishNear(w, w.pools?.fish, a, FISH_REACH.basket));
+  // the fish swimming within a line's reach, and within a basket's, in the water they dip into (waters.ts)
+  const line = fishNear(w, a, FISH_REACH.line), basket = fishNear(w, a, FISH_REACH.basket);
   const { fishing, ...d } = wetting(w, act.items, {
     held: count(a, act.items[0]) > 0, water: openWater(w, a), fish: { basket, line },
     skill: level(a.skills.fishing ?? 0), draw: () => Math.random(),
   });
   if (fishing) {
     a.inv.find((q) => q.k === act.items[0])!.hp -= 0.03;
-    // what's caught comes out of the water's stock, the nearest of the fish standing in it first
+    // what's caught are fish of that water, the nearest of them first: their objects die
     const n = d.gives.fish ?? 0;
-    if (n) {
-      const close = w.animals.filter((m) => m.species === "fish").sort((x, y) => meters(x, a) - meters(y, a)).slice(0, n);
-      w.animals = w.animals.filter((m) => !close.includes(m));
-      takeFish(w, w.pools?.fish, a, n);
-      landed(w).set(a.id, w.t);
-    }
+    if (n && catchFish(w, a, FISH_REACH[fishing], n)) landed(w).set(a.id, w.t);
   }
   return enact(w, a, d);
 }

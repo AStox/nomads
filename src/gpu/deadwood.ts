@@ -24,6 +24,7 @@ import { SPECIES, TILES, crownShare, dbhOf, type Scatter } from "../terrain/flor
 import { cover, storage } from "./kernel";
 import { PENDING, type Obj, type Pending } from "./mirror";
 import { type Field, type Kind, type Rider, type Store, genOfId, reload, savedArray, slotOfId } from "./store";
+import type { Raster } from "./flora";
 import { binhalf, next32, rinit, unif, nlnu } from "./rand";
 import { mul64, mulhi, qdiv, qexp, qmul, qpow, round16 } from "./fixed";
 import { CELLS, CELL_MM } from "./wgsl/index";
@@ -246,7 +247,7 @@ export class Deadwood implements Rider {
   store: Store | null = null;
   drivers: Drivers | null = null;
   clasts: StaticDormant[] = [];
-  private raster: (() => { start: GPUBuffer; list: GPUBuffer }) | null = null;
+  private raster: (() => Raster) | null = null;
   private bufs: { cover: GPUBuffer; rot: GPUBuffer; acc: GPUBuffer; dbh: GPUBuffer; pool: GPUBuffer; gone: GPUBuffer; st: GPUBuffer } | null = null;
   private gone = new Set<string>(); // sticks taken, by `${cellk},${born}`
   private taken = new Map<string, Set<number>>(); // the same, the members of each bin by `${cell},${born}`
@@ -268,7 +269,7 @@ export class Deadwood implements Rider {
   // The deadwood takes up residence on a store holding the flora (attached first, so its stems' law runs ahead of
   // this one each day). A store that hasn't got the kinds yet gets the pool the world begins with, laid from the
   // stems as they stand now.
-  attach(store: Store, raster: () => { start: GPUBuffer; list: GPUBuffer }) {
+  attach(store: Store, raster: () => Raster) {
     if (this.store) throw new Error("the deadwood already lives on a store");
     const fresh = !store.kinds.some((k) => k.name === "log");
     this.store = store;
@@ -302,7 +303,7 @@ export class Deadwood implements Rider {
   // cell's standing sticks, all born now.
   private pool() {
     const s = this.store!, g = s.g, b = this.bufs!, r = this.raster!(), plant = s.kind("plant");
-    s.run(this.src("cover", () => deadCover(this.law)), [r.start, r.list, b.cover, b.rot, b.acc], cover(g, CELLS), [0, 0, 0, 0]);
+    s.run(this.src("cover", () => deadCover(this.law)), [r.crowns, b.cover, b.rot, b.acc], cover(g, CELLS), [0, 0, 0, 0]);
     const cnt = s.scratch("deadcnt", plant.capacity);
     s.encode((e) => e.clearBuffer(cnt, 0, plant.capacity * 4));
     s.run(initialLogs(this.law), [r.start, r.list, b.pool, plant.body, cnt], cover(g, plant.capacity), [0, (1 + plant.field.what) * plant.capacity, 0, 0]);
@@ -336,7 +337,7 @@ export class Deadwood implements Rider {
     s.run(this.src("stems", () => deadStems(this.law)), [plant.body, cnt], cover(g, plant.capacity), [plant.capacity, (1 + plant.field.crop) * plant.capacity, (1 + plant.field.what) * plant.capacity, 0]);
     this.bearLogs(cnt, plant, false);
     const r = this.raster!();
-    s.run(this.src("cover", () => deadCover(this.law)), [r.start, r.list, b.cover, b.rot, b.acc], cover(g, CELLS), [1, 0, 0, 0]);
+    s.run(this.src("cover", () => deadCover(this.law)), [r.crowns, b.cover, b.rot, b.acc], cover(g, CELLS), [1, 0, 0, 0]);
     if ((t / DAY_TICKS) % BIN_DAYS === 0) this.litterfall(false);
     this.sweepBins(t / DAY_TICKS);
     this.sweepLogs(true);
@@ -584,6 +585,16 @@ export class Deadwood implements Rider {
     const c = CLASTS.findIndex((x) => x.kind[0] === t);
     if (c >= 0 && parts.length === 2) return { t: "c", c, cell: parts[0], k: parts[1] };
     return null;
+  }
+  // The GPU id of the object a log piece is now (its dormant log, or the logup it became once touched), for what
+  // reads a log's own state (gpu/moisture.ts); undefined for anything else, one taken, or one whose spawn waits.
+  gpuId(id: string): number | undefined {
+    const o = this.origin(id);
+    if (o?.t !== "l") return undefined;
+    const held = this.held.get(id);
+    if (held === undefined) return o.id;
+    const n = held === null ? -1 : typeof held === "number" ? held : held.id;
+    return n >= 0 ? n : undefined;
   }
 
   // ---------- changing ----------

@@ -167,14 +167,19 @@ fn spriteOf(F: Fam, f: u32, si: u32) -> u32 {
 // The workgroup's threads take an object each a round and the round's sprites, specks and rows are given their places
 // together (emitRound): each thread's place among the workgroup's in workgroup memory, then one atomic a list for the
 // whole workgroup, rather than one a thread on the same three counters.
-export function cullWGSL(spec, far = false) {
+// front: "mark" or "keep", the two walks that build a far level's front list (FRONT_WGSL) in place of the cull's walk.
+export function cullWGSL(spec, far = false, front = null) {
   const one = (k) => `{ let o = readObj(${k}); if (o.ok) { e = cullEval(o); } }`;
   const walk = far
     ? `
 @compute @workgroup_size(64)
 fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u) {
   let c = (V.cy0 + wid.y) * ${CELLS_N}u + V.cx0 + wid.x;
-  if (lid.x == 0u) { wa = fidx[c]; wb = wa + fidx[${FAR_LVL}u + V.farL * ${CELLS}u + c]; }
+  if (lid.x == 0u) {
+    let r = rowCells(V.cy0 + wid.y);
+    let cx = V.cx0 + wid.x;
+    wa = fidx[c]; wb = select(wa, wa + fidx[${FAR_LVL}u + V.farL * ${CELLS}u + c], cx >= r.x && cx <= r.y);
+  }
   let a = workgroupUniformLoad(&wa);
   let b = workgroupUniformLoad(&wb);
   for (var r0 = a; r0 < b; r0 += 64u) {
@@ -189,7 +194,7 @@ fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid
 @compute @workgroup_size(64)
 fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u, @builtin(num_workgroups) nw: vec3u) {
   let cy = V.cy0 + wid.y;
-  if (lid.x == 0u) { wa = start[cy * ${CELLS_N}u + V.cx0]; wb = start[cy * ${CELLS_N}u + V.cx1 + 1u]; }
+  if (lid.x == 0u) { let s = rowCells(cy); wa = start[cy * ${CELLS_N}u + s.x]; wb = select(wa, start[cy * ${CELLS_N}u + s.y + 1u], s.x <= s.y); }
   let a = workgroupUniformLoad(&wa);
   let b = workgroupUniformLoad(&wb);
   for (var r = a + wid.x; r < b; r += nw.x) {
@@ -252,7 +257,7 @@ fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid
 @compute @workgroup_size(256)
 fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u, @builtin(num_workgroups) nw: vec3u) {
   let cy = V.cy0 + wid.y;
-  if (lid.x == 0u) { wa = start[cy * ${CELLS_N}u + V.cx0]; wb = start[cy * ${CELLS_N}u + V.cx1 + 1u]; }
+  if (lid.x == 0u) { let s = rowCells(cy); wa = start[cy * ${CELLS_N}u + s.x]; wb = select(wa, start[cy * ${CELLS_N}u + s.y + 1u], s.x <= s.y); }
   let a = workgroupUniformLoad(&wa);
   let b = workgroupUniformLoad(&wb);
   for (var r0 = a + wid.x * 256u; r0 < b; r0 += nw.x * 256u) {
@@ -272,6 +277,37 @@ fn cullMain(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation
 }`;
   const rows = !spec.flat;
   return `
+// The cells of row cy the view's tile window reaches, first and last (empty when the first is past the last): the
+// window (u from i0 to i0 + ni and v from j0 to j0 + nj on the grid's bearing) crossed with the row's strip of z, as the
+// hull of the x each of its bounds gives at the strip's two edges, within the cells under the window's corners. An
+// object off the window has no ground under it and is never drawn (cullEval), so a walk skips the rest of the row.
+fn rowCells(cy: u32) -> vec2u {
+  let z0 = f32(cy) * ${f(CELL_M)} + ORIGIN_M;
+  var lo = f32(V.cx0) * ${f(CELL_M)} + ORIGIN_M;
+  var hi = f32(V.cx1 + 1u) * ${f(CELL_M)} + ORIGIN_M;
+  for (var k = 0u; k < 2u; k++) {
+    let e = select(vec2f(V.evbx, V.evby), vec2f(V.eubx, V.euby), k == 0u);
+    let w0 = select(f32(V.j0), f32(V.i0), k == 0u);
+    let w1 = w0 + f32(select(V.nj, V.ni, k == 0u));
+    // a bound along x takes no x from the strip
+    if (abs(e.x) < 1e-4) { continue; }
+    var a = 1e30;
+    var b = -1e30;
+    for (var s = 0u; s < 4u; s++) {
+      let z = z0 + f32(s & 1u) * ${f(CELL_M)};
+      let w = select(w0, w1, s >= 2u);
+      let x = V.obx + (w * V.tileM - (z - V.obz) * e.y) / e.x;
+      a = min(a, x);
+      b = max(b, x);
+    }
+    lo = max(lo, a - 0.01);
+    hi = min(hi, b + 0.01);
+  }
+  if (lo > hi) { return vec2u(1u, 0u); }
+  let c0 = u32(max(0.0, floor((lo - ORIGIN_M) / ${f(CELL_M)})));
+  let c1 = u32(max(0.0, floor((hi - ORIGIN_M) / ${f(CELL_M)})));
+  return vec2u(max(c0, V.cx0), min(c1, V.cx1));
+}
 // what an object makes: nothing (what 0), a sprite (1) with rows shadow-casting rows from the sprite's row0, or a speck (2)
 struct Emit { what: u32, it: Inst, rows: u32, row0: u32 }
 fn cullEval(o: Obj) -> Emit {
@@ -311,7 +347,7 @@ fn cullEval(o: Obj) -> Emit {
 var<workgroup> wa: u32;
 var<workgroup> wb: u32;
 var<workgroup> wm: u32;
-var<workgroup> eN: array<atomic<u32>, 3>;
+${front ? frontWalk(front) : `var<workgroup> eN: array<atomic<u32>, 3>;
 var<workgroup> eB: array<u32, 3>;
 // A round's objects listed, every thread of the workgroup calling it together: sprites from args.ic, specks from
 // args.pic, and the rows of the sprites that found room from args.ric, as many as the lists hold.
@@ -339,7 +375,7 @@ fn emitRound(e: Emit, l: u32) {
   workgroupBarrier();
   for (var r = 0u; r < rn; r++) { let ri = eB[2] + rat + r; if (ri < V.maxrows) { rowInst[ri] = vec2u(slot, e.row0 + r); } }` : ""}
 }
-${walk}`;
+${walk}`}`;
 }
 
 // ---------- the cells' caches ----------
@@ -483,6 +519,73 @@ fn farScan(@builtin(local_invocation_id) lid: vec3u) {
     }
     at += inCell;
   }
+}`;
+
+// ---------- the far levels' front lists ----------
+// At the coarsest far levels nearly every object is a speck of one pixel, many to a pixel, and only the nearest of a
+// pixel's specks can show (webgpu.js splatA keeps it): a far level drawn at a whole bearing walks a front list instead
+// of its far list, the far list's objects less every speck another speck of the same source stands in front of in the
+// same pixel. Every level and whole bearing lays its art px on one lattice (webgpu.js fadePlan), so the pixel and depth
+// a speck has in a view of the whole island are those it has in any view of that level and bearing. Built a slice of
+// rows of cells at a time from such a view (live.js islandView): mark keeps in fkeys, for each pixel, the depth key of
+// its nearest speck; after every slice has marked, keep lists each cell's objects but the specks behind another, in the
+// cell's run from fout[c] (FRONT_SCAN_WGSL), their count at fout[FAR_LVL + L * CELLS + c] where a far list's index
+// holds it, so the far cull walks a front list as it walks a far list. An object that is no speck now (not drawn,
+// hidden, dead) is kept, so one that grows or shows again is drawn as before.
+function frontWalk(mode) {
+  return `${mode === "keep" ? "var<workgroup> wk: atomic<u32>;" : ""}
+// a speck's pixel in the view (its index and 1, 0 off the view) and its depth as a key that orders as the depth does,
+// nearer larger (webgpu.js speck)
+fn speckKey(e: Emit) -> vec2u {
+  let e0 = entries[e.it.sp * 2u];
+  let ax = i32(e0.z & 0xFFFFu) - 32768;
+  let ay = i32(e0.z >> 16u) - 32768;
+  let x = e.it.x - select(ax, -ax, ((e.it.flags >> 4u) & 1u) == 1u);
+  let y = e.it.y - ay;
+  if (x < 0 || y < 0 || x >= i32(V.aw) || y >= i32(V.ah)) { return vec2u(0u); }
+  let b = bitcast<u32>(e.it.z + f32(ay));
+  return vec2u(u32(y) * V.aw + u32(x) + 1u, select(b | 0x80000000u, ~b, (b & 0x80000000u) != 0u));
+}
+@compute @workgroup_size(64)
+fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u) {
+  let c = (V.cy0 + wid.y) * ${CELLS_N}u + V.cx0 + wid.x;
+  if (lid.x == 0u) { wa = fidx[c]; wb = wa + fidx[${FAR_LVL}u + V.farL * ${CELLS}u + c];${mode === "keep" ? " atomicStore(&wk, 0u);" : ""} }
+  let a = workgroupUniformLoad(&wa);
+  let b = workgroupUniformLoad(&wb);
+  for (var r = a + lid.x; r < b; r += 64u) {
+    let k = flist[r];
+    if (k == NONE) { continue; }
+    var e: Emit;
+    let o = readObj(k);
+    if (o.ok) { e = cullEval(o); }
+    var q = vec2u(0u);
+    if (e.what == 2u) { q = speckKey(e); }
+${mode === "mark" ? "    if (q.x != 0u) { atomicMax(&fkeys[q.x - 1u], q.y); }" : "    if (q.x == 0u || fkeysR[q.x - 1u] == q.y) { flistOut[fout[c] + atomicAdd(&wk, 1u)] = k; }"}
+  }${mode === "keep" ? `
+  workgroupBarrier();
+  if (lid.x == 0u) { fout[${FAR_LVL}u + V.farL * ${CELLS}u + c] = atomicLoad(&wk); }` : ""}
+}`;
+}
+// One workgroup: the far list's count of each cell at level Fp.lvl (fidx[FAR_LVL + lvl * CELLS + c]) scanned into the
+// cells' runs of a front list (fout[c], the total at fout[CELLS]).
+export const FRONT_SCAN_WGSL = `
+var<workgroup> part: array<u32, 256>;
+@compute @workgroup_size(256)
+fn frontScan(@builtin(local_invocation_id) lid: vec3u) {
+  let per = ${CELLS / 256}u;
+  let c0 = lid.x * per;
+  var sum = 0u;
+  for (var c = c0; c < c0 + per; c++) { sum += fidx[${FAR_LVL}u + Fp.lvl * ${CELLS}u + c]; }
+  part[lid.x] = sum;
+  workgroupBarrier();
+  if (lid.x == 0u) {
+    var run = 0u;
+    for (var t = 0u; t < 256u; t++) { let v = part[t]; part[t] = run; run += v; }
+    fout[${CELLS}u] = run;
+  }
+  workgroupBarrier();
+  var at = part[lid.x];
+  for (var c = c0; c < c0 + per; c++) { fout[c] = at; at += fidx[${FAR_LVL}u + Fp.lvl * ${CELLS}u + c]; }
 }`;
 
 // ---------- the sprites wanted ----------

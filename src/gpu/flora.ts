@@ -28,9 +28,10 @@
 // What the CPU reads, and why it is exact. Agent code runs synchronously inside a tick, so no lookup can wait on the
 // GPU. An object stands as the GPU held it after the last stems' law, with the CPU's changes since laid over it:
 // - Static members are the generator's: no law of the GPU changes them.
-// - A stem's height and life come back from the GPU in one copy (packed, two stems to a word) with the landing of the
-//   tick its law ran; between laws the GPU changes stems only by the CPU's own deltas, which the CPU holds. So every
-//   lookup anywhere on the island is answered as the GPU has it, never pending.
+// - A stem's height and life come back from the GPU with the landing of the tick its law ran (wgsl/stems.ts stemsLand:
+//   whether each of the generator's stems stands, the trees' heights, and every stem born since); between laws the GPU
+//   changes stems only by the CPU's own deltas, which the CPU holds. So every lookup anywhere on the island is answered
+//   as the GPU has it, never pending.
 // The mirror still copies the cells round people (watch), every field of every stem there, for CPU code that reads
 // more of a stem than how it stands.
 import { FLORA, SPECIES, TILES, type Scatter } from "../terrain/flora";
@@ -40,8 +41,9 @@ import { cover, storage } from "./kernel";
 import { type Field, type Kind, type KindSpec, type Rider, type Store, idOf, reload, savedArray, slotOfId } from "./store";
 import { CELLS } from "./wgsl/index";
 import {
-  DIED_ROOM, HQ, LAID, MAP, QSTEP, ROWS, ROW_WORDS, RW, STEMS_BUSY, STEMS_BUSY_LIST, TEXELS, TEXELS_SIDE, TEXEL_MM, type StemLayout, stemsCount, stemsFile, stemsGrow, stemsInit, stemsPack,
+  HQ, LAID, MAP, QSTEP, ROWS, ROW_WORDS, RW, STEMS_BUSY, STEMS_BUSY_LIST, TEXELS, TEXELS_SIDE, TEXEL_MM, type StemLayout, landWords, stemsCount, stemsFile, stemsGrow, stemsInit, stemsLand,
 } from "./wgsl/stems";
+import { CROWN_WORDS } from "./wgsl/crowns";
 
 // An object as it stands: kind and species as indices into FLORA and SPECIES, place in game tiles, size in metres.
 export type Stand = { kind: number; species: number; px: number; py: number; size: number; seed: number };
@@ -62,6 +64,9 @@ export type StemTables = { rows: Uint32Array; tables: Uint32Array };
 export type StemDay = { coef: Int32Array; mast: readonly number[] };
 export type StemAhead = { t: number; coef: Int32Array; hi: number };
 export type StemDriver = { due(t: number): boolean; tables(): StemTables; day(t: number): StemDay; ahead?(t: number): StemAhead | null };
+// The stems' crown raster as filed (wgsl/stems.ts stemsCount, stemsFile): starts by texel, the list of three words an
+// entry, and each texel's tree sums (CROWN_WORDS a texel).
+export type Raster = { start: GPUBuffer; list: GPUBuffer; crowns: GPUBuffer };
 
 export const PLANT = "plant", PIECE = "piece";
 const U32 = (name: string, unit: string, scale = 1): Field => ({ name, type: "u32", unit, scale });
@@ -109,18 +114,25 @@ export class Flora implements Rider {
   private readonly plants: Uint32Array; // the entries (k) of the trees and bushes, in slot order
   private readonly kinds = new Map<number, Uint32Array>(); // the object numbers each kind was written with, made when asked
   private watched = new Set<string>();
-  // Every stem's height in mm as the GPU held it after its last law (0 once the GPU had killed it), by slot (after a
-  // landing a view of the whole packed copy, the plant kind's every slot); and the stems the GPU killed, in the order
+  // The stems as the GPU held them after its last law, by slot: the generator's laid heights in mm, and from the last
+  // landing (or a save) whether each of the generator's stems stands (a bit a slot; before any landing, each that was
+  // laid with a height), the trees' heights (in the order of tree, a bit a generator's slot, with treeAt the trees in
+  // the words before), and the heights of the slots beyond the generator's; and the stems the GPU killed, in the order
   // the landings found them.
-  private grown: Uint16Array;
+  private readonly laidMM: Uint16Array;
+  private live: Uint32Array;
+  private tree: Uint32Array;
+  private treeAt: Uint32Array;
+  private treeMM: Uint16Array | null = null;
+  private spareMM: Uint16Array | null = null;
   private readonly died: number[] = [];
   // Landings that brought the stems back: anything kept of how stems stood holds until this moves.
   landings = 0;
   private driver: StemDriver | null = null;
-  private bufs: { tables: GPUBuffer; rows: GPUBuffer; coef: GPUBuffer; packed: GPUBuffer; died: GPUBuffer } | null = null;
+  private bufs: { tables: GPUBuffer; rows: GPUBuffer; coef: GPUBuffer; landed: GPUBuffer; trees: GPUBuffer } | null = null;
   private rowWords: Uint32Array | null = null;
-  private packing = false;
-  private src: { count: string; file: string; grow: string; pack: string } | null = null;
+  private landing = false;
+  private src: { count: string; file: string; grow: string; land: string } | null = null;
   private busyMax = 1;
 
   constructor(readonly f: Scatter) {
@@ -128,8 +140,23 @@ export class Flora implements Rider {
     let n = 0;
     for (let k = 0; k < f.n; k++) n += this.active[f.kind[k]];
     this.plants = new Uint32Array(n);
-    this.grown = new Uint16Array(n);
-    for (let k = 0, j = 0; k < f.n; k++) if (this.active[f.kind[k]]) { this.plants[j] = k; this.grown[j++] = Math.round(f.size[k] * 1000); }
+    this.laidMM = new Uint16Array(n);
+    this.live = new Uint32Array(Math.ceil(n / 32));
+    this.tree = new Uint32Array(this.live.length);
+    this.treeAt = new Uint32Array(this.live.length);
+    for (let k = 0, j = 0; k < f.n; k++) if (this.active[f.kind[k]]) { this.plants[j] = k; this.laidMM[j] = Math.round(f.size[k] * 1000); if (this.laidMM[j]) this.live[j >> 5] |= 1 << (j & 31); j++; }
+  }
+  // A stem's height in mm as the GPU held it after its last law (0 once dead), by slot.
+  private heightOf(j: number): number {
+    if (j >= this.plants.length) return this.spareMM?.[j - this.plants.length] ?? 0;
+    const w = j >> 5, bit = 1 << (j & 31);
+    if (!(this.live[w] & bit)) return 0;
+    if (!this.treeMM || !(this.tree[w] & bit)) return this.laidMM[j];
+    // the tree's rank among the trees: those in the words before, and the bits below its own in its word (popcount)
+    let v = this.tree[w] & (bit - 1);
+    v -= (v >>> 1) & 0x55555555;
+    v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+    return this.treeMM[this.treeAt[w] + ((Math.imul((v + (v >>> 4)) & 0x0f0f0f0f, 0x01010101) >>> 24))];
   }
   // How many objects the generator laid down: object numbers run from 1 to n.
   get n() { return this.f.n; }
@@ -159,7 +186,7 @@ export class Flora implements Rider {
   grownStand(e: number): Stand | null {
     const w = this.written(e);
     if (!this.isPlant(e)) return w;
-    const mm = this.grown[this.slot(e)];
+    const mm = this.heightOf(this.slot(e));
     return mm ? { ...w, size: Math.fround(mm / 1000) } : null;
   }
   // Object e as it stands now, or null once gone: as the GPU held it, the CPU's changes laid over. A stem's height is
@@ -246,7 +273,7 @@ export class Flora implements Rider {
       const n = m.obj === null ? -1 : typeof m.obj === "number" ? m.obj : m.obj.id;
       if (n < 0 || (m.seen && !m.mm)) continue;
       m.seen = true;
-      m.mm = this.grown[slotOfId(n)] ?? 0;
+      m.mm = this.heightOf(slotOfId(n));
     }
   }
 
@@ -262,6 +289,8 @@ export class Flora implements Rider {
       // one the GPU killed is gone already; the CPU's Thing goes when it hears (space.ts)
       if (!was) return;
       const now = next && { ...next, size: was.size };
+      // a stem's species decides whether the law grows its height, which the landing counts on (wgsl/stems.ts stemsLand)
+      if (now && now.species !== w.species) throw new Error(`object ${e}, a tree or bush, can't change its species`);
       if (same(was, now)) return;
       if (s) {
         if (!now) s.kill(this.stem(e));
@@ -305,10 +334,19 @@ export class Flora implements Rider {
     const g = store.g, t = driver?.tables();
     this.tabs = t ? t.tables : null;
     this.rowWords = t ? Uint32Array.from(t.rows) : new Uint32Array(MAP + ROWS * ROW_WORDS);
+    // the generator's trees by slot, as the rows have them (a stem's species never changes): the law grows their heights
+    const rw = this.rowWords, trees: number[] = [];
+    for (let j = 0; j < this.plants.length; j++) {
+      if (rw[MAP + rw[Math.min(this.f.species[this.plants[j]], MAP - 1)] * ROW_WORDS + RW.tree] !== 1) continue;
+      this.tree[j >> 5] |= 1 << (j & 31);
+      trees.push(j);
+    }
+    for (let w = 1, at = 0; w < this.tree.length; w++) { let v = this.tree[w - 1]; for (; v; v &= v - 1) at++; this.treeAt[w] = at; }
     this.bufs = {
-      tables: storage(g, t ? t.tables : new Uint32Array(1)), rows: storage(g, this.rowWords),
-      coef: storage(g, CELLS * ROWS * 2 * 4), packed: storage(g, Math.ceil(plant.capacity / 2) * 4), died: storage(g, (1 + DIED_ROOM) * 4),
+      tables: storage(g, t ? t.tables : new Uint32Array(1)), rows: storage(g, this.rowWords), coef: storage(g, CELLS * ROWS * 2 * 4),
+      landed: storage(g, landWords(plant.capacity, this.plants.length, trees.length).total * 4), trees: storage(g, Uint32Array.from(trees.length ? trees : [0])),
     };
+    this.nTrees = trees.length;
     // the texels holding stems as laid; stems born since may take others, each widening the look (busy)
     const marks = new Uint8Array(TEXELS);
     for (const k of this.plants) {
@@ -327,7 +365,7 @@ export class Flora implements Rider {
       }
       store.write(PLANT, n, cols);
       if (driver) store.run(stemsInit(this.layout(plant)), [plant.body, this.bufs.tables, this.bufs.rows], cover(g, plant.capacity));
-      store.run(stemsPack(this.layout(plant), this.plants.length), [plant.body, this.bufs.packed, this.bufs.died], cover(g, Math.ceil(plant.capacity / 2)), [1, 0, 0, 0]);
+      store.run(this.landSrc(plant), [plant.body, this.bufs.trees, this.bufs.landed], cover(g, landWords(plant.capacity, this.plants.length, this.nTrees).threads));
       const changes = [...this.held].sort((a, b) => a[0] - b[0]);
       this.held.clear();
       for (const [e, h] of changes) this.change(e, h.v);
@@ -341,21 +379,27 @@ export class Flora implements Rider {
     const at = (name: string) => (1 + k.field[name]) * k.capacity;
     return { cap: k.capacity, x: at("x"), y: at("y"), what: at("what"), size: at("size"), q: at("q"), peak: at("peak"), crop: at("crop") };
   }
+  private nTrees = 0;
+  private landSrc(k: Kind) { return (this.landSource ??= stemsLand(this.layout(k), this.plants.length, this.nTrees)); }
+  private landSource: string | null = null;
   // The crown raster of the stems as they stand (wgsl/stems.ts): every live stem counted into its texel and filed in
-  // its texel's run, the counts scanned into starts. The stems' law files it first each day, and the deadwood reads the
-  // same day's lists after it (src/gpu/deadwood.ts); filed now when asked before any law has run.
-  raster(): { start: GPUBuffer; list: GPUBuffer } {
+  // its texel's run, the counts scanned into starts, and each texel's trees summed into crowns (CROWN_WORDS a texel).
+  // The stems' law files it first each day, and the crowns, deadwood and seedlings read the same day's after it; filed
+  // now when asked before any law has run this tick, or when asked for as the stems stand now (now: a crown pass made
+  // between ticks, after the CPU's fellings and plantings went up, gpu/crowns.ts refresh).
+  raster(now = false): Raster {
     const s = this.store!, k = s.kind(PLANT), g = s.g, b = this.bufs!, lay = this.layout(k);
-    const src = (this.src ??= { count: stemsCount(lay), file: stemsFile(lay), grow: stemsGrow(lay), pack: stemsPack(lay, this.plants.length) });
+    const src = (this.src ??= { count: stemsCount(lay), file: stemsFile(lay), grow: stemsGrow(lay), land: this.landSrc(k) });
     const count = s.scratch("stemcount", TEXELS + 1), cursor = s.scratch("stemcursor", TEXELS), list = s.scratch("stemlist", 3 * k.capacity);
-    if (this.filed !== s.t) {
+    const crowns = s.scratch("stemcrowns", CROWN_WORDS * TEXELS);
+    if (now || this.filed !== s.t) {
       this.filed = s.t;
-      s.encode((e) => { e.clearBuffer(count, 0, (TEXELS + 1) * 4); e.clearBuffer(cursor, 0, TEXELS * 4); });
+      s.encode((e) => { e.clearBuffer(count, 0, (TEXELS + 1) * 4); e.clearBuffer(cursor, 0, TEXELS * 4); e.clearBuffer(crowns, 0, CROWN_WORDS * TEXELS * 4); });
       s.run(src.count, [k.body, count], cover(g, k.capacity));
       s.scan(count, TEXELS + 1);
-      s.run(src.file, [k.body, count, cursor, list, b.tables, b.rows], cover(g, k.capacity));
+      s.run(src.file, [k.body, count, cursor, list, b.tables, b.rows, crowns], cover(g, k.capacity));
     }
-    return { start: count, list };
+    return { start: count, list, crowns };
   }
   private filed = -1;
   // n stems born, or about to be, that may stand in texels no stem held: the stems' law looks over that many more.
@@ -375,7 +419,7 @@ export class Flora implements Rider {
     this.sent.upto = Math.max(lo, hi);
   }
   // A day of the stems (wgsl/stems.ts): the crown raster filed, every stem grown, crowded or starved, its seed set, and
-  // every stem's height packed for the landing to bring back.
+  // what the CPU keeps of the stems put by for the landing to bring back.
   private law(s: Store, t: number) {
     const k = s.kind(PLANT), g = s.g, b = this.bufs!, rows = this.rowWords!, day = this.driver!.day(t);
     for (let r = 0; r < ROWS; r++) rows[MAP + r * ROW_WORDS + RW.mast] = day.mast[r] ?? 0;
@@ -388,10 +432,9 @@ export class Flora implements Rider {
     s.scan(flags, TEXELS + 1);
     s.run(STEMS_BUSY_LIST, [count, flags, busy], cover(g, TEXELS));
     s.run(src.grow, [k.body, count, list, b.tables, b.rows, b.coef, flags, busy], cover(g, this.busyMax, 1));
-    s.encode((e) => e.clearBuffer(b.died, 0, 4));
-    s.run(src.pack, [k.body, b.packed, b.died], cover(g, Math.ceil(k.capacity / 2)), [0, 0, 0, 0]);
+    s.run(src.land, [k.body, b.trees, b.landed], cover(g, landWords(k.capacity, this.plants.length, this.nTrees).threads));
     k.stale = true;
-    this.packing = true;
+    this.landing = true;
   }
   // Every person's window of cells: out to reach metres round where each stands (px, py in game tiles), widened to
   // whole blocks of BLOCK cells so that walking brings a new row of cells only every few hundred metres (each new
@@ -410,33 +453,32 @@ export class Flora implements Rider {
     this.watched = keys;
   }
 
-  // ---------- riding the store: the stems packed after a law and the generator's stems it killed; saved, the changes, the pieces they made and the stems ----------
-  private packWords() { return Math.ceil(this.store!.kind(PLANT).capacity / 2); }
-  words() { return this.packing ? this.packWords() + 1 + DIED_ROOM : 0; }
+  // ---------- riding the store: the stems as a law left them; saved, the changes, the pieces they made and the stems ----------
+  private landed() { return landWords(this.store!.kind(PLANT).capacity, this.plants.length, this.nTrees); }
+  words() { return this.landing ? this.landed().total : 0; }
   record(out: GPUBuffer, at: number) {
-    if (!this.packing) return;
-    const b = this.bufs!, n = this.packWords();
-    this.store!.encode((e) => {
-      e.copyBufferToBuffer(b.packed, 0, out, at * 4, n * 4);
-      e.copyBufferToBuffer(b.died, 0, out, (at + n) * 4, (1 + DIED_ROOM) * 4);
-    });
+    if (!this.landing) return;
+    const b = this.bufs!, n = this.landed().total;
+    this.store!.encode((e) => e.copyBufferToBuffer(b.landed, 0, out, at * 4, n * 4));
   }
   land(o: Uint32Array, at: number) {
-    if (!this.packing) return;
-    this.packing = false;
-    const n = this.packWords(), dead = o[at + n];
-    this.took(new Uint16Array(o.buffer, o.byteOffset + at * 4, 2 * n), dead <= DIED_ROOM ? o.subarray(at + n + 1, at + n + 1 + dead) : null);
+    if (!this.landing) return;
+    this.landing = false;
+    this.took(o.subarray(at, at + this.landed().total));
     this.sawMade();
   }
-  // Stems as a landing or a save brought them back: heights by slot, 0 for the dead, kept as given (not copied); and
-  // the generator's stems gone to 0 since the last, by slot in any order, or null to find them by comparing.
-  private took(next: Uint16Array, died: Uint32Array | null) {
-    if (died) for (const j of Uint32Array.from(died).sort()) this.died.push(this.plants[j] + 1);
-    else for (let j = 0, g = this.grown; j < this.plants.length; j++) if (g[j] && !next[j]) this.died.push(this.plants[j] + 1);
-    this.grown = next;
+  // The stems as a landing or a save brought them back (wgsl/stems.ts stemsLand's words), kept as given (not copied);
+  // the generator's stems that stood before and stand no longer go into died, in slot order.
+  private took(words: Uint32Array) {
+    const L = this.landed(), live = words.subarray(0, L.bits), was = this.live;
+    for (let w = 0; w < L.bits; w++)
+      for (let gone = was[w] & ~live[w]; gone; gone &= gone - 1) this.died.push(this.plants[w * 32 + 31 - Math.clz32(gone & -gone)] + 1);
+    this.live = live;
+    this.treeMM = new Uint16Array(words.buffer, words.byteOffset + L.bits * 4, 2 * L.trees);
+    this.spareMM = new Uint16Array(words.buffer, words.byteOffset + (L.bits + L.trees) * 4, 2 * L.spare);
     this.landings++;
   }
-  buffers(): [string, GPUBuffer][] { return this.bufs ? [["packed", this.bufs.packed]] : []; }
+  buffers(): [string, GPUBuffer][] { return this.bufs ? [["landed", this.bufs.landed]] : []; }
   save() {
     return {
       held: [...this.held].map(([e, h]) => [e, h.v && [h.v.kind, h.v.species, h.v.px, h.v.py, h.v.size, h.v.seed], h.obj === null ? null : typeof h.obj === "number" ? h.obj : h.obj.id]),
@@ -459,9 +501,9 @@ export class Flora implements Rider {
       this.made.set(id, { s: { kind: v[0], species: v[1], px: v[2], py: v[3], size: v[4], seed: v[5] }, obj, seen, mm });
       this.busy(1);
     }
-    const packed = data.packed;
-    reload(this.store!.g, this.bufs!.packed, packed, "flora packed stems");
-    this.took(new Uint16Array(packed.buffer.slice(packed.byteOffset, packed.byteOffset + (packed.byteLength & ~1))), null);
+    const landed = data.landed;
+    reload(this.store!.g, this.bufs!.landed, landed, "flora landed stems");
+    this.took(new Uint32Array(landed.buffer.slice(landed.byteOffset, landed.byteOffset + landed.byteLength)));
   }
   // Lets go of the buffers the flora made (the store's own go with the store).
   destroy() {

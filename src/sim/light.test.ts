@@ -3,7 +3,7 @@ import { DAY, TILE_M, addThing, heldStore, isNight, newWorld, type Thing, type W
 import { SEEDLINGS, fitHere } from "./plants";
 import { bedAir, carriedOutput, fireOf, fireOutput, removeThing } from "./physics";
 import { advance } from "./combustion";
-import { around, put } from "./space";
+import { around, crownsOf, makeStem, put } from "./space";
 import { addAnimal } from "./fauna";
 import { cull } from "./animals";
 import { ecology } from "./ecology";
@@ -26,28 +26,43 @@ const sunsetOn = (day: number) => { let h = 13; while (sunAt(day, h).el > 0) h +
 const SUNSET = sunsetOn(SUMMER);
 
 // A world takes seconds to build, so these tests share one island with two people on it, and each works on a pad of its own:
-// nine spots 600 m apart round where the first person woke, far enough that a crown (12 m) at one is never seen from
-// another. The pad is cleared of everything within `bare` meters, and the island of every fire and everything burning,
-// whose light carries any distance, so the light there is the sky's alone.
+// nine spots 600 m apart round where the first person woke, far enough that a stand at one is never seen from another.
+// The pad is cleared of everything within `bare` meters, and the island of every fire and everything burning, whose
+// light carries any distance, so the light there is the sky's alone. The crowns over the island are the crown raster's
+// (gpu/crowns.ts), made again from the stems as they stand after a tick has taken the clearing to the GPU.
 let island: World, origin: { px: number; py: number };
-beforeAll(() => {
+beforeAll(async () => {
   island = newWorld(5);
   island.agents = island.agents.slice(0, 2);
   origin = { px: island.agents[0].px, py: island.agents[0].py };
-}, 120_000);
-function pad(n: number, bare = 60) {
+  await tick(island);
+}, 600_000);
+// The stems' changes taken to the GPU and the crowns passed over them again.
+async function settle(w: World) {
+  await tick(w);
+  await heldStore(w)?.arriving;
+  await crownsOf(w)!.refresh();
+}
+async function pad(n: number, bare = 60) {
   const w = island;
   const spot = { px: origin.px + (((n % 3) - 1) * 600) / TILE_M, py: origin.py + ((Math.floor(n / 3) - 1) * 600) / TILE_M };
   const here: Thing[] = [];
   around(w, spot.px, spot.py, bare, null, (t) => void here.push(t));
   for (const t of [...here, ...w.things.filter((t) => t.kind === "fire" || t.bed)]) removeThing(w, t);
   w.animals = [];
+  await settle(w);
   w.weather.sky = "clear";
   return { w, ...spot };
 }
-// Three oaks standing close round a point, their crowns overlapping over it.
-function grove(w: World, px: number, py: number) {
-  for (const [dx, dy] of [[0, 0], [3, 2], [-3, 2]]) addThing(w, "tree", px + dx / TILE_M, py + dy / TILE_M, { size: 14, species: "oak" });
+// A closed stand of 14 m oaks over the texel of a point (18.75 m, gpu/wgsl/crowns.ts): 49 of them, as many as their
+// crowns' shares of a closed stand fill it (flora.ts crownShare, 7.6 m2 each), each standing as a stem on the GPU as a
+// tree people raised does (space.ts makeStem), so the crown pass sees it, and the crowns passed over them.
+const TEXEL = 18.75;
+async function grove(w: World, px: number, py: number) {
+  const x0 = Math.floor((px * TILE_M) / TEXEL) * TEXEL, y0 = Math.floor((py * TILE_M) / TEXEL) * TEXEL;
+  for (let i = 0; i < 7; i++)
+    for (let j = 0; j < 7; j++) makeStem(w, addThing(w, "tree", (x0 + ((i + 0.5) * TEXEL) / 7) / TILE_M, (y0 + ((j + 0.5) * TEXEL) / 7) / TILE_M, { size: 14, species: "oak" }));
+  await settle(w);
 }
 // A fire lit from the standard lay (physics.ts fireOf) so many seconds before, with so many logs in it.
 function fire(w: World, px: number, py: number, secs = 300, logs = 2) {
@@ -71,8 +86,8 @@ test("night is the sun well under the horizon: it comes after sunset and goes be
   expect(nightOf(WINTER)).toBeGreaterThan(nightOf(SUMMER) + 6);
 });
 
-test("open ground is lit by the sky: noon far outshines sunset, sunset far outshines midnight, and cloud dims noon", () => {
-  const { w, px, py } = pad(0);
+test("open ground is lit by the sky: noon far outshines sunset, sunset far outshines midnight, and cloud dims noon", async () => {
+  const { w, px, py } = await pad(0);
   const lux = (hour: number, sky: World["weather"]["sky"] = "clear") => { w.t = at(hour); w.weather.sky = sky; return lightAt(w, px, py).lux; };
   const noon = lux(12);
   expect(noon).toBeGreaterThan(lux(SUNSET) * 50);
@@ -83,20 +98,29 @@ test("open ground is lit by the sky: noon far outshines sunset, sunset far outsh
   expect(lux(12, "storm")).toBeLessThanOrEqual(lux(12, "rain"));
 });
 
-test("a crown shades the ground under it, and felling the tree gives the light back", () => {
-  const { w, px, py } = pad(1);
+test("a closed stand shades the ground under it from the next crown pass, and felling it gives the light back at the next, not before", async () => {
+  const { w, px, py } = await pad(1);
   w.t = at(12);
   const open = lightAt(w, px, py);
-  const tree = addThing(w, "tree", px, py, { size: 14, species: "oak" });
+  await grove(w, px, py);
+  w.t = at(12);
   expect(lightAt(w, px, py).lux).toBeLessThan(open.lux * 0.2);
   expect(lightAt(w, px + 30 / TILE_M, py).canopy).toBe(0);
-  removeThing(w, tree);
+  // felled, and the fellings taken to the GPU: the stand's shade stays until the crowns pass over it again
+  const stand: Thing[] = [];
+  around(w, px, py, 30, ["tree"], (t) => void stand.push(t));
+  for (const t of stand) removeThing(w, t);
+  await tick(w);
+  await heldStore(w)?.arriving;
+  w.t = at(12);
+  expect(lightAt(w, px, py).lux).toBeLessThan(open.lux * 0.2);
+  await crownsOf(w)!.refresh();
   expect(lightAt(w, px, py).lux).toBe(open.lux);
-});
+}, 60_000);
 
-test("the forest floor goes dark in the evening while open ground is still lit", () => {
-  const { w, px, py } = pad(2);
-  grove(w, px, py);
+test("the forest floor goes dark in the evening while open ground is still lit", async () => {
+  const { w, px, py } = await pad(2);
+  await grove(w, px, py);
   const dusk = [];
   for (let h = SUNSET; h <= SUNSET + 2; h += 0.25) {
     w.t = at(h);
@@ -104,10 +128,10 @@ test("the forest floor goes dark in the evening while open ground is still lit",
   }
   expect(dusk.some((d) => d.open >= DARK && d.under < DARK)).toBe(true);
   expect(dusk.every((d) => d.under <= d.open)).toBe(true);
-});
+}, 60_000);
 
-test("a fire lights the night around it and not far off", () => {
-  const { w, px, py } = pad(3);
+test("a fire lights the night around it and not far off", async () => {
+  const { w, px, py } = await pad(3);
   w.t = at(1);
   expect(lightAt(w, px + 100 / TILE_M, py).bright).toBeLessThan(DARK);
   fire(w, px, py);
@@ -118,8 +142,8 @@ test("a fire lights the night around it and not far off", () => {
 
 // Light from flames at 0.16 lm a watt of flaming output, and from coals at a glowing body's efficacy at their heat, which
 // is far less (fire-constants secs. 9, 31).
-test("a big fire lights the dark further than coals do, and a lamp's light follows its output", () => {
-  const { w, px, py } = pad(6);
+test("a big fire lights the dark further than coals do, and a lamp's light follows its output", async () => {
+  const { w, px, py } = await pad(6);
   w.t = at(2); // an hour no other case works at, as the light of fires is kept for the tick it was worked out in
   // the farthest along a line from a fire that is still light enough to see by, m
   const reach = (f: Thing) => { w.t++; let d = 0; while (d < 400 && lightAt(w, f.px + (d + 1) / TILE_M, f.py).bright >= DARK) d++; return d; };
@@ -155,16 +179,16 @@ test("a big fire lights the dark further than coals do, and a lamp's light follo
   w.weather.speed = wind;
 });
 
-test("a bare fire thing with no bed gives no light", () => {
-  const { w, px, py } = pad(6);
+test("a bare fire thing with no bed gives no light", async () => {
+  const { w, px, py } = await pad(6);
   w.t = at(2.5);
   addThing(w, "fire", px, py);
   w.t++;
   expect(lightAt(w, px + 1 / TILE_M, py).fire).toBe(0);
 });
 
-test("sight shrinks with the light: at night a person across the clearing can't be made out, until they stand by a fire", () => {
-  const { w, px, py } = pad(5, 200);
+test("sight shrinks with the light: at night a person across the clearing can't be made out, until they stand by a fire", async () => {
+  const { w, px, py } = await pad(5, 200);
   const [a, b] = w.agents;
   put(w, a, px, py);
   put(w, b, px + 150 / TILE_M, py);
@@ -180,12 +204,15 @@ test("sight shrinks with the light: at night a person across the clearing can't 
 test("whoever is out after something when the dark falls gives it up where they stand, but not in daylight, and work at camp goes on", async () => {
   const cases = [[12, "forage", "wander", true], [1, "forage", "wander", false], [1, "rest", "rest", true]] as const;
   for (const [hour, goal, op, keeps] of cases) {
-    const { w, px, py } = pad(4);
+    const { w, px, py } = await pad(4);
     const a = w.agents[0];
     put(w, a, px, py);
     w.t = at(hour) - 1;
     a.cooldowns = {};
     bodyOf(w, a).sleep = 0.7; // a long sleep to be in the middle of
+    // as warm as a body keeps itself (body.ts CORE_N, SKIN_N), as they woke on the island: the nights the pads have
+    // ticked through leave a person out on them cold, and cold (a need under 20) ends a goal on its own (sim.ts agentTick)
+    Object.assign(bodyOf(w, a), { core: 36.8, skin: 33.7 });
     a.goal = { type: goal, since: w.t, odds: {}, fails: 0 };
     a.plan = [{ op, arg: op === "wander" ? `${px + 40 / TILE_M},${py}` : undefined, progress: 0 }];
     const was = a.goal;
@@ -195,8 +222,8 @@ test("whoever is out after something when the dark falls gives it up where they 
   }
 });
 
-test("in the dark they plan around what they can see: a bush 100 m off is no place to go, a stick at 20 m is, unless they are starving", () => {
-  const { w, px, py } = pad(4, 150);
+test("in the dark they plan around what they can see: a bush 100 m off is no place to go, a stick at 20 m is, unless they are starving", async () => {
+  const { w, px, py } = await pad(4, 150);
   const a = w.agents[0];
   put(w, a, px, py);
   addThing(w, "bush", px + 100 / TILE_M, py, { species: "berry", n: 3, hp: 20, maxHp: 20 });
@@ -217,7 +244,7 @@ test("a hungry person with a bush 100 m off goes out after food by day, but in t
   const goalsAt = async (hour: number) => {
     const seen = new Set<string>();
     for (let trial = 0; trial < 12; trial++) {
-      const { w, px, py } = pad(4, 150);
+      const { w, px, py } = await pad(4, 150);
       const a = w.agents[0];
       put(w, a, px, py);
       addThing(w, "bush", px + 100 / TILE_M, py, { species: "berry", n: 3, hp: 20, maxHp: 20 });
@@ -240,13 +267,13 @@ test("a hungry person with a bush 100 m off goes out after food by day, but in t
 
 test("a hungry wolf takes a lone person who is out in the dark, and leaves one in the light alone", async () => {
   // a dusk hour when the open is still light enough and the floor of a grove already dark
-  const probe = pad(7);
+  const probe = await pad(7);
   // the island's own deer and rabbits, GPU objects since a tick made the island resident, would stand in sight as
   // prey or a scent: gone, and a tick landed to bring that back
   cull(probe.w, "deer"); cull(probe.w, "rabbit");
   await tick(probe.w);
   await heldStore(probe.w)?.arriving;
-  grove(probe.w, probe.px, probe.py);
+  await grove(probe.w, probe.px, probe.py);
   let dusk = SUNSET;
   for (let h = SUNSET; h <= SUNSET + 2; h += 0.25) {
     probe.w.t = at(h);
@@ -254,10 +281,10 @@ test("a hungry wolf takes a lone person who is out in the dark, and leaves one i
   }
   const cases = [[12, false, "wander"], [1, false, "hunt"], [dusk, false, "wander"], [dusk, true, "hunt"]] as const;
   for (const [i, [hour, trees, state]] of cases.entries()) {
-    const { w, px, py } = pad(7);
+    const { w, px, py } = await pad(7);
     const a = w.agents[0];
     put(w, a, px, py);
-    if (trees) grove(w, px, py);
+    if (trees) await grove(w, px, py);
     const wolf = addAnimal(w, "wolf", px + 100 / TILE_M, py, { hunger: 20 });
     // Each case gets a tick of its own, since how bright it is where someone stands is worked out once a tick. None of
     // them falls on the dozen-tick turn of the weather.
@@ -267,8 +294,8 @@ test("a hungry wolf takes a lone person who is out in the dark, and leaves one i
   }
 }, 120_000);
 
-test("seedlings grow in the open and burn down in the deep shade of a grove", () => {
-  const pd = pad(8), w = pd.w;
+test("seedlings grow in the open and burn down in the deep shade of a grove", async () => {
+  const pd = await pad(8), w = pd.w;
   // the nearest point to the pad's middle where a berry's ground suits it (plants.ts fitHere), there and 40 m east,
   // cleared of anything standing within 60 m
   const suits = (x: number, y: number) => fitHere(w, "berry", x, y) > 0.5 && fitHere(w, "berry", x + 40 / TILE_M, y) > 0.5;
@@ -281,7 +308,7 @@ test("seedlings grow in the open and burn down in the deep shade of a grove", ()
     around(w, at.px, at.py, 60, null, (t) => void here.push(t));
     for (const t of here) removeThing(w, t);
   }
-  grove(w, px, py);
+  await grove(w, px, py);
   const shaded = addThing(w, "sapling", px, py + 1 / TILE_M, { stage: 0 });
   const open = addThing(w, "sapling", px + 40 / TILE_M, py, { stage: 0 });
   w.t = at(12) + 1;

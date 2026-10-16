@@ -41,9 +41,11 @@ export { BLOCK_CELLS, BLOCKS_SIDE, LAYER, ROW_OF, SEED_ROWS, YOUNG_WORDS } from 
 export type Layer = { row: number; q0: number; from: number; to: number; up: number; lag: number; parity: number };
 export type SeedLaw = SeedLawWords & { yearDays: number; layers: readonly Layer[]; browse: Uint32Array };
 // What the law reads from the sim each day (src/sim/seeds.ts seedDriver).
-// young(t): the day's coefficients by cell; ahead(t), when given, works out a share of the next day's after tick t, so
-// the day's law has fewer left to work out.
-export type SeedDriver = { law: SeedLaw; dry(): Uint32Array; stand(): Uint32Array; young(t: number): Int32Array; ahead?(t: number): void };
+// young(t): the day's coefficients by cell; ahead(t), when given, works out a share of the next day's after tick t (the
+// day, and young holding its words from 0 up to hi), so they go to the GPU before the day comes and its law has less
+// to work out and send.
+export type SeedAhead = { t: number; young: Int32Array; hi: number };
+export type SeedDriver = { law: SeedLaw; dry(): Uint32Array; stand(): Uint32Array; young(t: number): Int32Array; ahead?(t: number): SeedAhead | null };
 export type Census = { bins: number[]; members: number[]; grads: number; gradMembers: number; pend: number[] };
 
 export const SEEDLING = "seedling";
@@ -113,9 +115,18 @@ export class Seedlings implements Rider {
     };
     const law = driver.law;
     store.law({ name: "seedlings", due: (t) => t % law.dayTicks === 0, run: (s, t) => this.day(s, t) });
-    if (driver.ahead) store.law({ name: "seedlings ahead", due: (t) => t % law.dayTicks !== 0 && t % (law.dayTicks / 24) === 0, run: (_, t) => driver.ahead!(t) });
+    if (driver.ahead) store.law({ name: "seedlings ahead", due: (t) => t % law.dayTicks !== 0 && t % (law.dayTicks / 24) === 0, run: (_, t) => { const a = driver.ahead!(t); if (a) this.send(a.t, a.young, a.hi); } });
     store.law({ name: "seed shed", due: (t) => this.sheds.length > 0 && t % law.dayTicks !== 0 && t % law.dayTicks < this.slices, run: (s, t) => this.shed(s, t % law.dayTicks) });
     store.ride(this);
+  }
+  // The young words of day t on the GPU from word 0 up to upto (only the day's law reads them, so the next day's go out
+  // over the hours after it).
+  private sent = { t: -1, upto: 0 };
+  private send(t: number, young: Int32Array, hi: number) {
+    if (this.sent.t !== t) this.sent = { t, upto: 0 };
+    const lo = this.sent.upto;
+    if (hi > lo) this.store!.g.device.queue.writeBuffer(this.bufs!.sd, (SD.young + lo) * 4, young.buffer, young.byteOffset + lo * 4, (hi - lo) * 4);
+    this.sent.upto = Math.max(lo, hi);
   }
   // A felled or burned stump's suckers (mm, and an identity word): they come up at the next law day.
   sucker(x: number, y: number, id: number) {
@@ -146,7 +157,7 @@ export class Seedlings implements Rider {
     const plant = s.kind(PLANT), bins = s.kind(SEEDLING), { start, list } = flora.raster(), { tables, rows } = flora.stemBuffers();
     const day = Math.floor(t / L.dayTicks), doy = day % L.yearDays, year = Math.floor(day / L.yearDays);
     const young = this.driver!.young(t);
-    g.device.queue.writeBuffer(b.sd, SD.young * 4, young.buffer, young.byteOffset, young.byteLength);
+    this.send(t, young, young.length);
     s.encode((e) => e.clearBuffer(b.work));
     // yesterday's marked bins stand up as stems
     if (this.grads > 0) {

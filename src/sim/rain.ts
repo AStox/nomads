@@ -11,11 +11,12 @@ import { BOULDER, treeHeight } from "../terrain/flora";
 import { TALLEST, TREES } from "../terrain/niche";
 import { headWind, islandAir, rainAt, slopeAt, sunOn } from "./air";
 import { CLOUD } from "./sky";
-import { CROWN_REACH, crownCover } from "./light";
+import { crownsAt } from "./light";
+import { through as layers } from "../terrain/growth";
 import { around, lookAround } from "./space";
 import { leafless } from "./wetness";
 import { glowAway } from "./soil";
-import { TILE_M, perWorld, type Thing, type World } from "./world";
+import { TILE_M, perWorld, type World } from "./world";
 
 // ---------- drops ----------
 // The rain's water falls at the speed of its median drop by volume: Marshall and Palmer's spread of drop sizes at R mm
@@ -87,26 +88,26 @@ export function crownsHour(w: World, crowns: number[] | undefined, t: number, sk
 }
 
 // ---------- a place ----------
-// What stands round a point between it and the sky, as the rain sees it: each crown (its tree, how far east and south of
-// the point it stands in meters, the height of the middle of its crown, its kind), each boulder (where, how wide and how
-// tall), and how the ground slopes. A boulder is taken as a dome as tall as it is half wide [design]. reach: how far the
-// rain might slant, m, so how far out to look.
+// What stands round a point between it and the sky, as the rain sees it: the crowns over the island (the crown raster,
+// light.ts crownsAt), their middle at the height of the crowns over the point's cell, each boulder (where, how wide and
+// how tall), and how the ground slopes. A boulder is taken as a dome as tall as it is half wide [design]. reach: how far
+// the rain might slant, m, so how far out to look for boulders.
 export type Place = {
-  crowns: { t: Thing; x: number; y: number; z: number; k: number }[];
+  crowns: (x: number, y: number) => { pine: number; broad: number }; // the cover x m east and y m south of the point, layers
+  z: number;
   rocks: { x: number; y: number; r: number; h: number }[];
   slope: [number, number];
   reach: number;
 };
 const places = perWorld(() => new Map<string, { at: number; place: Place }>());
 export function placeOf(w: World, px: number, py: number, reach: number): Place {
-  const all = places(w), key = `${px},${py}`, at = lookAround(w, px, py, CROWN_REACH + reach), kept = all.get(key);
+  const all = places(w), key = `${px},${py}`, at = lookAround(w, px, py, reach), kept = all.get(key);
   if (kept && kept.at === at && kept.place.reach >= reach) return kept.place;
-  const place: Place = { crowns: [], rocks: [], slope: slopeAt(w, px, py), reach };
-  around(w, px, py, CROWN_REACH + reach, ["tree", "boulder"], (t) => {
-    const x = (t.px - px) * TILE_M, y = (t.py - py) * TILE_M;
-    if (t.kind === "tree") place.crowns.push({ t, x, y, z: t.size * (1 - CROWN / 2), k: crownKind(t.species) });
-    else place.rocks.push({ x, y, r: t.size / 2, h: t.size / 2 });
-  });
+  const place: Place = {
+    crowns: (x, y) => crownsAt(w, px + x / TILE_M, py + y / TILE_M), z: crownsAt(w, px, py).height * (1 - CROWN / 2),
+    rocks: [], slope: slopeAt(w, px, py), reach,
+  };
+  around(w, px, py, reach, ["boulder"], (t) => { place.rocks.push({ x: (t.px - px) * TILE_M, y: (t.py - py) * TILE_M, r: t.size / 2, h: t.size / 2 }); });
   if (all.size >= 8192) all.clear();
   all.set(key, { at, place });
   return place;
@@ -114,11 +115,15 @@ export function placeOf(w: World, px: number, py: number, reach: number): Place 
 // How far the rain falling at this rate in this head-height wind might slant past anything that stands, m: from the
 // middle of the tallest crown or the top of the biggest boulder (niche.ts TALLEST, flora.ts BOULDER).
 export const reachOf = (rain: number, head: number) => drift(Math.max(TALLEST * (1 - CROWN / 2), BOULDER / 2), head, fallSpeed(rain));
+// The broadleaves' crowns hold and let through as an oak's: oak, ash and aspen hold the same and have the same gaps (R216,
+// R217), and the raster tells pines from broadleaves only.
+const PINE = TREES.indexOf("pine"), BROAD = TREES.indexOf("oak");
 // The rain reaching the ground at a place, mm an hour, of the open ground's rain falling at this rate in a head-height
 // wind blowing this way, the crowns holding what they hold (held, by kind) and the broadleaves bare or not. The ground
 // takes more of the slanting rain where it rises into the wind and less where it falls away from it, none on a slope
-// steeper than the rain, by Sharon's reckoning (R222); none reaches it through a boulder upwind, and through each crown
-// over the drop's path the share that crown lets through where the path crosses it.
+// steeper than the rain, by Sharon's reckoning (R222); none reaches it through a boulder upwind; and the crowns over the
+// drop's path where it crosses their middle let through what each layer of them lets through, layer on layer as deep as
+// they lie there (terrain/growth.ts through), the pines' and the broadleaves' each by their own.
 export function rainThere(place: Place, rain: number, way: { dx: number; dy: number }, head: number, held: number[], bare: boolean) {
   if (rain <= 0) return 0;
   const len = Math.hypot(way.dx, way.dy) || 1, ux = way.dx / len, uy = way.dy / len, v = fallSpeed(rain);
@@ -127,10 +132,9 @@ export function rainThere(place: Place, rain: number, way: { dx: number; dy: num
     const s = Math.max(0, Math.min(-(r.x * ux + r.y * uy), drift(r.h, head, v)));
     if (Math.hypot(r.x + ux * s, r.y + uy * s) < r.r) return 0;
   }
-  for (const c of place.crowns) {
-    const s = drift(c.z, head, v), cover = crownCover(c.t, Math.hypot(c.x + ux * s, c.y + uy * s));
-    if (cover > 0) share *= 1 - cover * (1 - through(c.k, held[c.k] ?? 0, rain, bare));
-  }
+  const s = drift(place.z, head, v), c = place.crowns(-ux * s, -uy * s);
+  if (c.pine > 0) share *= layers(c.pine, through(PINE, held[PINE] ?? 0, rain, bare));
+  if (c.broad > 0) share *= layers(c.broad, through(BROAD, held[BROAD] ?? 0, rain, bare));
   return rain * share;
 }
 // The rain reaching the ground at a point now, mm an hour: no roof's doing (wetness.ts sheltered), only what stands.
@@ -142,8 +146,8 @@ export function rainOn(w: World, px: number, py: number) {
   if (rain <= 0) return 0;
   const wx = w.weather, all = nows(w), key = `${px},${py}`, at = `${w.t},${rain},${wx.speed},${wx.wind.dx},${wx.wind.dy}`, kept = all.get(key);
   if (kept?.at === at) return kept.rain;
-  const last = wx.past?.hours.at(-1), head = headWind(w, px, py, wx.wind, wx.speed);
-  const on = rainThere(placeOf(w, px, py, reachOf(rain, head)), rain, wx.wind, head, last?.held ?? [], last?.bare ?? leafless(w));
+  const head = headWind(w, px, py, wx.wind, wx.speed);
+  const on = rainThere(placeOf(w, px, py, reachOf(rain, head)), rain, wx.wind, head, wx.past?.held ?? [], wx.past?.bare ?? leafless(w));
   if (all.size >= 8192) all.clear();
   all.set(key, { at, rain: on });
   return on;

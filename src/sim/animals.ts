@@ -4,7 +4,7 @@
 // (docs/research/animal-constants.md sec. 12). This module states the law's constants with their sources, lays out
 // what the law reads of the ground, and is the CPU's side of the animals: those people can see are views of their
 // objects (sync), moved here each tick the way people move, and what happens to them here (killed, fed, trapped) goes
-// to their objects. The fish (fish.ts) and the butterflies are still each tile's count (Units 11 and 12b).
+// to their objects. The fish are objects of their own (waters.ts) and the butterflies still each tile's count (Unit 12b).
 //
 // What the animals do each tick within sight: graze, wander, flee, hunt, swim, fly, perch and feed. Speeds are meters a
 // tick of five minutes' game time, the way a person's are; what each kind is like is in fauna.ts.
@@ -25,7 +25,7 @@ import { dropPile, mark, removeThing } from "./physics";
 import { see } from "./beliefs";
 import { trace } from "./trace";
 import { FAUNA, revealed, spawn } from "./fauna";
-import { FISH_KG, fishCount, stepFish, takeFish } from "./fish";
+import { fishCount, fishDriver, fishKg, fishOf, showFish } from "./waters";
 import { reveal, startPools, tileOf, type Pools } from "./pools";
 import { FOOD_KJ, PHYS } from "./fuel";
 import { DARK, lightOn } from "./light";
@@ -414,17 +414,19 @@ function butterflies(w: World, p: Pools) {
 const hosts = new WeakMap<World, Animals>();
 export const animalsOf = (w: World) => { let a = hosts.get(w); if (!a) hosts.set(w, (a = new Animals())); return a; };
 const SPECIES_OF = HERDED;
-// The first tick a world runs: its animals take up residence on its store (sim.ts tick), after the flora, whose stems
-// are the deer's browse. A new island's animals are laid down at their starting densities and run through twenty
-// island years before anyone wakes (sec. 8); then any put down by hand before now (fauna.ts addAnimal) get objects.
+// The first tick a world runs: its fish and then its animals take up residence on its store (sim.ts tick), after the
+// flora, whose stems are the deer's browse. A new island's animals are laid down at their starting densities and run
+// through twenty island years before anyone wakes (sec. 8), the birds taking the fish's own; then any put down by
+// hand before now (fauna.ts addAnimal) get objects.
 export async function residentAnimals(w: World) {
   const host = animalsOf(w), store = heldStore(w);
   if (host.store || !store) return;
-  const flora = floraOf(w);
+  const flora = floraOf(w), fish = fishOf(w);
+  if (!fish.store) await fish.attach(store, fishDriver(w));
   await host.attach(store, animalDriver(w), {
     raster: (s) => { const r = flora.raster(), k = s.kind(PLANT); return { ...r, body: k.body, cap: k.capacity, what: k.field.what, side: TEXELS_SIDE }; },
     filed: (t) => t % DAY === 0,
-  });
+  }, fish);
   for (const an of w.animals) if (herded(an.species) && an.obj === undefined) backed(w, an);
 }
 // The island days run before anyone wakes, for the animals' reserves and places to settle from where they're laid
@@ -432,7 +434,6 @@ export async function residentAnimals(w: World) {
 const SPIN_DAYS = 10;
 export function animalDriver(w: World): AnimalDriver {
   const gr = groundFor(w), p = (w.pools ??= startPools(w, [W / 2, H / 2])), island = { landKm2: gr.land.length * TILE_KM2, shoreHa: gr.shoreHa };
-  const fishG = new Uint32Array(T);
   return {
     seed: w.seed, days: SPIN_DAYS, t0: w.t,
     tiles: () => gr.tiles,
@@ -448,23 +449,11 @@ export function animalDriver(w: World): AnimalDriver {
     consts: (per) => lawConsts(per, island),
     start: () => startAnimals(w, gr, p.den, w.t - SPIN_DAYS * DAY),
     step(t, per) {
-      // the years before anyone wakes run at ticks below nothing: their season is their day of the year's
-      const days = YEARS_PACE / per, { s, f } = seasonAt(((t % YEAR) + YEAR) % YEAR);
-      stepFish(w, p.fish, p.fishEaten, days, s, f);
-      for (let i = 0; i < T; i++) fishG[i] = p.fish[i] > 0 ? Math.round(p.fish[i] * TILE_HA * 1000) >>> 0 : 0;
       const now = dayOf(t), before = dayOf(t - DAY / per), on = (at: number) => crossed(before, now, at);
       const kits = KITS_FROM > KITS_TO ? now >= KITS_FROM || now < KITS_TO : now >= KITS_FROM && now < KITS_TO;
       const flags = (on(RUT) ? FLAG.rut : 0) | (on(CALVING) ? FLAG.calve : 0) | (on(WHELPING) ? FLAG.whelp : 0) | (on(CUBBING) ? FLAG.cub : 0) | (kits ? FLAG.kits : 0)
         | (on(HERON_FLEDGE) ? FLAG.heron : 0) | (on(EAGLE_FLEDGE) ? FLAG.eagle : 0) | (on(GULL_FLEDGE) ? FLAG.gull : 0) | (on(CROW_FLEDGE) ? FLAG.crow : 0);
-      return { day: Math.floor(now), flags, fish: fishG };
-    },
-    ate(g) {
-      for (let i = 0; i < T; i++) {
-        if (!g[i]) continue;
-        const kgHa = g[i] / 1000 / TILE_HA;
-        p.fish[i] = Math.max(0, p.fish[i] - kgHa);
-        p.fishEaten[i] += kgHa;
-      }
+      return { day: Math.floor(now), flags };
     },
   };
 }
@@ -579,7 +568,6 @@ export const perished = (w: World, an: Animal) => an.obj !== undefined && an.obj
 // One no longer about: killed, eaten, starved where it stood. Its object dies with it.
 export function gone(w: World, an: Animal) {
   w.animals = w.animals.filter((x) => x !== an);
-  if (an.species === "fish") takeFish(w, w.pools?.fish, an, 1);
   if (an.species === "butterfly" && w.pools) { const i = tileOf(an); w.pools.butterfly[i] = Math.max(0, w.pools.butterfly[i] - 1); }
   const s = animalsOf(w).store;
   if (an.obj !== undefined && s && !perished(w, an)) s.kill(an.obj);
@@ -632,12 +620,13 @@ export function onTile(w: World, sp: Herded, tile: number) {
   for (let q = 0; q < 4; q++) n += inCell(w, sp, 2 * tx + (q & 1), 2 * ty + (q >> 1)).length;
   return n;
 }
-// How many of each kind are alive: the GPU's census, the fish's and butterflies' counts, and the rest one by one.
+// How many of each kind are alive: the GPU's censuses, the butterflies' counts, and the rest one by one.
 export function census(w: World) {
   const count: Record<string, number> = {}, host = animalsOf(w);
-  for (const a of w.animals) if (a.hp > 0 && a.obj === undefined && a.species !== "butterfly" && !(a.species === "fish" && w.pools)) count[a.species] = (count[a.species] ?? 0) + 1;
+  for (const a of w.animals) if (a.hp > 0 && a.obj === undefined && a.species !== "butterfly") count[a.species] = (count[a.species] ?? 0) + 1;
   if (host.store) HERDED.forEach((sp, s) => { count[sp] = host.census[s]; });
-  if (w.pools) { count.butterfly = Math.round(w.pools.butterfly.reduce((s, x) => s + x, 0)); count.fish = Math.round(fishCount(w.pools.fish)); }
+  if (fishOf(w).store) count.fish = fishCount(w);
+  if (w.pools) count.butterfly = Math.round(w.pools.butterfly.reduce((s, x) => s + x, 0));
   return count;
 }
 // A cut of meat lying about, to a wolf that eats it, kJ (fuel.ts).
@@ -822,9 +811,9 @@ function rabbit(w: World, r: Animal, n: Near) {
   roam(w, r, 25, 2, 0.12);
 }
 
+// A fish seen swims where its object is (waters.ts showFish); the GPU moves it once a day.
 function fish(w: World, f: Animal) {
   setState(w, f, "swim");
-  roam(w, f, 25, Math.random() < 0.05 ? FAUNA.fish.run : FAUNA.fish.walk, 0.6);
 }
 
 // A random point along the water's edge within r meters of a place.
@@ -981,8 +970,9 @@ function eagle(w: World, e: Animal, n: Near) {
     lift(e, 0, 15);
     goTo(w, e, prey.px, prey.py, FAUNA.eagle.fly!);
     if (e.alt < 2 && d < 3) {
+      const kj = prey.species === "fish" ? mealOf(fishKg(w, prey)) : meal(prey.species as "rabbit");
       gone(w, prey);
-      fed(w, e, prey.species === "fish" ? mealOf(FISH_KG) : meal(prey.species as "rabbit"));
+      fed(w, e, kj);
       e.target = undefined;
       setState(w, e, "feed");
     } else if (inState(w, e) > 12) { e.target = undefined; setState(w, e, "soar"); }
@@ -1063,8 +1053,8 @@ export function animals(w: World) {
   for (const an of w.animals) if (!herded(an.species) && an.hunger <= 0) an.hp -= 0.05;
   for (const an of w.animals.filter((a) => a.hp <= 0)) { gone(w, an); log(w, "death", [], an, an.hunger <= 0 ? `A ${an.species} starved.` : `A ${an.species} went through the ice and drowned.`); }
   // An hour of the butterflies, and the butterflies and fish stood within people's sight.
-  if (w.pools && w.t % 12 === 0) {
-    butterflies(w, w.pools);
-    reveal(w, (sp, px, py) => spawn(w, sp, px, py, revealed(sp, px, py)));
+  if (w.t % 12 === 0) {
+    if (w.pools) { butterflies(w, w.pools); reveal(w, (sp, px, py) => spawn(w, sp, px, py, revealed(sp, px, py))); }
+    showFish(w, (px, py, id) => spawn(w, "fish", px, py, { ...revealed("fish", px, py), id: `a${id}`, obj: id }));
   }
 }

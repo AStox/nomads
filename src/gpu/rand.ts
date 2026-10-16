@@ -65,7 +65,7 @@ export function nlnu(u: number): U64 {
 // Exp(1).
 export const qexpo = () => round16(nlnu(next32()));
 // The integer square root of a 64-bit number, floored.
-function isqrt64(s: U64): number {
+export function isqrt64(s: U64): number {
   let r = 0;
   for (let bit = 1 << 30; bit !== 0; bit >>>= 1) { const c = (r | bit) >>> 0; if (!lt64(s, mul64(c, c))) r = c; }
   return r;

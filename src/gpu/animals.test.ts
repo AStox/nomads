@@ -463,16 +463,18 @@ function oracleStep(st: State) {
 }
 
 // ---------- a little island to run them on ----------
-// Land on tiles 40 to 59 each way, water round it; a sward of 0.6 of each tile, all of it warren to half, and the
-// drivers of a mild day every day of the year.
+// Land on tiles 40 to 59 each way, water round it holding 60 kg of fish a tile (laid into the ground's fish run, which
+// no fish of the store's change here); a sward of 0.6 of each tile, all of it warren to half, and the drivers of a mild
+// day every day of the year.
 const LAND = (i: number) => { const x = i % TW, y = Math.floor(i / TW); return x >= 40 && x < 60 && y >= 40 && y < 60; };
 const q16 = (x: number) => Math.round(x * 65536);
+const ISLET_FISH = Uint32Array.from({ length: T }, (_, i) => (LAND(i) ? 0 : 60000));
 function islet(animals: { n: number; cols: Record<string, Uint32Array> }, consts: (per: number) => Uint32Array = (per) => lawConsts(per, { landKm2: 400 * 0.0225, shoreHa: 76 * 2.25 })): AnimalDriver {
-  const tiles = new Uint32Array(STATIC_RUNS * T), pools = new Uint32Array((W_.wasbare - W_.fg + 1) * T), drivers = new Uint32Array(40 * DRIVERS * T), fish = new Uint32Array(T);
+  const tiles = new Uint32Array(STATIC_RUNS * T), pools = new Uint32Array((W_.wasbare - W_.fg + 1) * T), drivers = new Uint32Array(40 * DRIVERS * T);
   for (let i = 0; i < T; i++) {
     for (let m = 0; m < 4; m++) tiles[(W_.sw + m) * T + i] = NONE;
     for (let d = 0; d < 40; d++) drivers[d * DRIVERS * T + DR.temp * T + i] = q16(10);
-    if (!LAND(i)) { fish[i] = 60000; continue; }
+    if (!LAND(i)) continue;
     const g = q16(0.6);
     tiles[W_.land * T + i] = 1; tiles[W_.grass * T + i] = g; tiles[W_.lit * T + i] = q16(0.8); tiles[W_.warren * T + i] = q16(0.5);
     tiles[W_.garea * T + i] = Math.round((g * 22500 * 1000) / 65536);
@@ -487,7 +489,7 @@ function islet(animals: { n: number; cols: Record<string, Uint32Array> }, consts
   }
   return {
     seed: 7, days: 0, t0: 0, tiles: () => tiles, pools: () => pools, drivers: () => drivers, consts, start: () => animals,
-    step: (t) => ({ day: Math.floor(t / 288) % 40, flags: 0, fish }), ate: () => {},
+    step: (t) => ({ day: Math.floor(t / 288) % 40, flags: 0 }),
   };
 }
 // Animals laid out as columns: [species, female, tile x, tile y, reserve share, grp].
@@ -507,6 +509,7 @@ async function run(g: Gpu, driver: AnimalDriver, ticks: number[], prep?: (g: Gpu
   const s = new Store(g), host = new Animals();
   await host.attach(s, driver);
   const k = s.kind(ANIMAL), bufs = host.buffersForTest!, out: { b: Uint32Array; W: Uint32Array; A: Uint32Array }[] = [];
+  g.device.queue.writeBuffer(bufs.W, W_.fish * T * 4, ISLET_FISH);
   prep?.(g, bufs.W);
   const start = { b: await s.read(ANIMAL, "body"), W: new Uint32Array(await readback(g, bufs.W)), A: new Uint32Array(await readback(g, bufs.A)), KP: new Uint32Array(await readback(g, bufs.KP)), D: new Uint32Array(await readback(g, bufs.D)) };
   for (const t of ticks) {
@@ -520,9 +523,8 @@ function oracleRun(start: { b: Uint32Array; W: Uint32Array; A: Uint32Array; KP: 
   const st: State = { cap, b: start.b.slice(), W: start.W.slice(), A: start.A.slice(), KP: start.KP.slice(), D: start.D };
   const outs: { b: Uint32Array; W: Uint32Array; A: Uint32Array }[] = [];
   for (const t of ticks) {
-    const { day, flags, fish } = driver.step(t, 24);
+    const { day, flags } = driver.step(t, 24);
     st.KP.set([t >>> 0, 24, day, flags, driver.seed, 12], PO);
-    st.W.set(fish, W_.fish * T);
     oracleStep(st);
     outs.push({ b: st.b.slice(), W: st.W.slice(), A: st.A.slice() });
   }

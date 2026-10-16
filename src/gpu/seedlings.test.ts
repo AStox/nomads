@@ -18,7 +18,8 @@ import { FLORA, SPECIES, TILES, TILE_M, type Scatter } from "../terrain/flora";
 import { CELL, N } from "../terrain/grid";
 import { CELLS } from "./wgsl/index";
 import { CTL_WORDS } from "./wgsl/alloc";
-import { DIED, HALF_Q, HC, HQ, LAID, MAP, QSTEP, ROWS, ROW_WORDS, RW, SSTEP, T1, T2, TEXELS, TEXELS_SIDE, TEXEL_MM, TREE_ROWS } from "./wgsl/stems";
+import { DIED, HALF_Q, HC, HQ, LAID, MAP, QSTEP, ROWS, ROW_WORDS, RW, SSTEP, TEXELS, TEXELS_SIDE, TEXEL_MM, TREE_ROWS } from "./wgsl/stems";
+import { layered } from "./wgsl/crowns";
 import {
   BERRY, BLOCKS, BLOCKS_SIDE, BLOCK_CELLS, COS, GMIX, GRAD, LAYER, LAYERS, MODE, ON_TREE, PI_Q16, SD, STREAM, YOUNG_WORDS,
   seedLandings, seedStep, type PlantLayout,
@@ -71,8 +72,7 @@ function rasterOf(b: Uint32Array, P: PlantLayout) {
 function lightAt(raster: Map<number, [number, number][]>, t: number, s: number) {
   let above = 0;
   for (const [h, a] of raster.get(t) ?? []) if (h > s) above += a; else if (h === s) above += a >>> 1;
-  const layers = Math.floor(above / 65536), f = above % 65536;
-  return layers === 0 ? 65536 - f + Math.floor((f * T1) / 65536) : layers === 1 ? Math.floor(((65536 - f) * T1) / 65536) + Math.floor((f * T2) / 65536) : T2;
+  return layered(above);
 }
 // wgsl/seedlings.ts landing and reach
 function landing(dry: Uint32Array, x0: number, y0: number, d: number) {

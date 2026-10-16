@@ -1,27 +1,33 @@
 // How wet everything is. Every material thing holds water, kg of it to each kg of the dry stuff (fuel.ts), and draws
 // toward what its surroundings would leave in it, the faster the thinner it is: toward all it can hold in rain or
 // standing water, and otherwise toward the equilibrium of the air at its own warmth, which the sun on it, a fire by it or
-// the body it's carried against raises (docs/research/fire-constants.md sections 5, 10, 11, 18, 20 and 27f). The rain on
-// anything is what reaches the ground where it is, through the trees and past the rocks (rain.ts); roofs and bags keep
-// it off altogether. The grass, fern and dead wood lying about the island hold what the weather of the last few days
-// left in dead stuff of their thickness where they lie (deadAt) until somebody picks them up. What it comes to decides
-// whether a spark or an ember catches in tinder (physics.ts), and how cold the wet-through feel (sim.ts needs).
+// the body it's carried against raises (docs/research/fire-constants.md sections 5, 10, 11, 18, 20, 27f and 35). The rain
+// on anything is what reaches the ground where it is, through the trees and past the rocks (rain.ts); roofs and bags
+// keep it off altogether. Everything lying out on the island (logs, snags, sticks, litter and cured grass, and dead
+// stuff standing) holds its own water on the GPU, stepped every hour in the air, rain and shade where it lies
+// (gpu/moisture.ts), and the CPU reads it there (deadOf). What people hold, wear, lay or build holds its own here. What
+// it comes to decides whether a spark or an ember catches in tinder (physics.ts), and how cold the wet-through feel
+// (sim.ts needs).
 import { GREEN_UP } from "../terrain/growth";
-import { DAY, YEAR_DAYS, hourOf, perWorld, wetAt, type Agent, type Dead, type Stack, type Thing, type Weather, type World } from "./world";
-import { anyAround, liveThings, lookAround, nearestThing } from "./space";
-import { airAt, airOn, headWind, humidity, islandAir, rainWhen, snowAt, sunOn, vapourAt } from "./air";
-import { CROWN_REACH, canopyAt, heatAt } from "./light";
-import { crownGap, crownKind, crownsHour, placeOf, rainOn, rainThere, reachOf, through } from "./rain";
+import { DAY, TILE_M, YEAR_DAYS, groundOf, wetAt, type Agent, type Dead, type Stack, type Thing, type Weather, type World } from "./world";
+import { anyAround, deadwoodOf, liveThings, moistOf as gpuMoisture, nearestThing } from "./space";
+import { airAt, airOn, humidity, islandAir, islandMeans, islandPooled, shelterTables, snowAt, sunOn, vapourAt, wetHours } from "./air";
+import { canopyAt, heatAt } from "./light";
+import { crownKind, crownsHour, fallSpeed, rainOn, through } from "./rain";
 import { topKr } from "./soil";
-import { daylight, sunAt } from "./sky";
+import { daylight, seasonAt } from "./sky";
 import { p, type Kind } from "./materials";
-import { PHYS, stackPhys, type Phys } from "./fuel";
-import { SEASON_DAYS, esat } from "../terrain/climate";
+import { stackPhys, type Phys } from "./fuel";
+import { DIRS, POOL_C, SEASONS, SEASON_DAYS, esat } from "../terrain/climate";
+import { CELL, N } from "../terrain/grid";
+import { TREES } from "../terrain/niche";
+import {
+  CELL_WORDS, CLASSES, FSP, GROUND, HEART, SKIN, TAU_HERB, cellAir, envQ, fromW, tau, tauGreen, texelHour, toW,
+  type Hour, type MoistureDriver, type Shelter,
+} from "../gpu/moisture";
 
 // A struck spark catches in tinder this wet or drier, an ember blown into it in tinder this wet or drier (sec. 10).
 export const DAMP = 0.1, SOAKED = 0.13;
-// Wood holds no free water below this (sec. 5).
-const FSP = 0.3;
 export const raining = (w: World) => w.weather.sky === "rain" || w.weather.sky === "storm";
 // Under a roof: a shelter of their own or anyone's close enough to be under.
 export function sheltered(w: World, a: { px: number; py: number }) {
@@ -45,23 +51,16 @@ export function equilibrium(temp: number, vapour: number, shine = 0, wind = 0) {
 }
 // Against the body, in clothes or a bag, the air is the body's: 32 C and half a kPa damper than outside (sec. 18).
 const body = (vapour: number) => equilibrium(32, vapour + 0.5);
-// The wind at the tops of short grass against the wind at head height (sec. 14): what reaches dead stuff on the ground.
-const GROUND = Math.log(0.36 / 0.13) / Math.log((2 - 0.064) / 0.013);
 // What fires throw on something near them, kW/m2: the radiant heat light.ts heatAt has them throw on anyone (sec. 31).
 const fireFlux = (w: World, at: { px: number; py: number }) => heatAt(w, at.px, at.py).q;
 
-// How long something takes to come 63% of the way to new surroundings, hours (sec. 5, 20, 27f): as the square of its
-// thickness from the 10-hour stick; green wood above fibre saturation slower, as its thickness to the 1.5; herbaceous
-// stuff, behind its waxy skin, as slowly as R34's weathered fine fuel, though rain soaks it as fast as it soaks wood as thin.
-const tau = (d: number) => 10 * (d / 0.0127) ** 2;
-const tauGreen = (d: number) => 500 * (d / 0.025) ** 1.5;
-const TAU_HERB = 2.2;
+// How long something takes to come 63% of the way to new surroundings (gpu/moisture.ts tau, tauGreen, TAU_HERB).
 // A piece's water lies in two halves of it: its skin, the outer half (a round piece beyond 0.707 of its radius), and its
 // heart, the inner half. Water passes between the skin and the air across the skin's half-thickness, and between skin
 // and heart between their middles, both by diffusion, so the skin answers in 0.211 of the piece's time and the heart
 // takes 0.782 of it to answer the skin, and the piece as a whole still comes 63% of the way to new surroundings in 1.05 of
 // its time [derived: the first mode of diffusion in a cylinder, sec. 27g].
-const SKIN = 0.211, HEART = 0.782;
+// (gpu/moisture.ts SKIN and HEART.)
 export type Water = { m: number; skin: number };
 export const waterOf = (s?: { m?: number; skin?: number }): Water => ({ m: s?.m ?? 0, skin: s?.skin ?? s?.m ?? 0 });
 // The two halves an hour on toward water `to` for a piece whose time is t hours: the pair's linear exchange, solved exactly.
@@ -117,86 +116,116 @@ const lying = (air: number, temp: number, vapour: number, wet: number) => {
 };
 
 // ---------- the island's dead stuff ----------
-// The thicknesses the island's dead stuff is reckoned at: a blade of grass (the NFDRS herbaceous class), and the bounds of
-// the 1-, 10-, 100- and 1000-hour classes of dead wood (sec. 5, 22e).
+// The thicknesses of the NFDRS's dead fuel classes: a blade of grass (the herbaceous class), and the bounds of the 1-,
+// 10-, 100- and 1000-hour classes of dead wood (sec. 5, 22e).
 export const REF = [0.00061, 0.00635, 0.0254, 0.0762, 0.2032];
-const REF_PHYS = REF.map((d, i) => ({ ...(i ? PHYS.stick : PHYS.fiber), d }));
-type Past = NonNullable<World["weather"]["past"]>;
-// The island's dead stuff an hour on from tick t under a sky, a wind over the open sea and a warmth: in the open, under
-// the sun and in the wind at the grass tops (open ground takes 0.6 of the sea's wind), and in the shade, the island's
-// rain on both alike. With none yet, it starts as the shade would leave it. It's what places start from before the hours
-// kept for them (deadAt).
-export function deadHour(w: World, dead: Dead | undefined, t: number, sky: World["weather"]["sky"], speed: number, temp: number): Dead {
-  const { vapour, rain } = islandAir(w, t, sky), shade = equilibrium(temp, vapour), open = equilibrium(temp, vapour, sunOn(t, sky), speed * 0.6 * GROUND);
-  const from = dead ?? { open: REF.map(() => shade), shade: REF.map(() => shade) };
-  const on = (ms: number[], skins: number[] | undefined, eq: number) => ms.map((m, i) => hour({ m, skin: skins?.[i] ?? m }, REF_PHYS[i], rain, eq, 0, false));
-  const o = on(from.open, from.skin?.open, open), s = on(from.shade, from.skin?.shade, shade);
-  return { open: o.map((x) => x.m), shade: s.map((x) => x.m), skin: { open: o.map((x) => x.skin), shade: s.map((x) => x.skin) } };
+const Q = (x: number) => Math.round(x * 65536);
+// The island's hour as the GPU's water law reads it (gpu/moisture.ts Hour): the time of year, the island's air and
+// pooled cold, a wet sky (1 rain, 5 a storm, 0 dry), the wind's speed over the open sea, its bearing and way, the island
+// rain's fall speed, the sun on open ground, the top soil's stage-2 reduction, and the share of the rain a layer of
+// pines' and of broadleaves' crowns lets through as the hour's rain begins on what they hold (rain.ts through).
+export function islandHour(w: World, t: number, sky: Weather["sky"], speed: number, temp: number, wind: Weather["wind"], soil: number, held: number[], bare: boolean): Hour {
+  const { s, f } = seasonAt(t), { rain } = islandAir(w, t, sky), len = Math.hypot(wind.dx, wind.dy) || 1;
+  const a = Math.atan2(wind.dy, wind.dx), k = ((Math.round((a / (2 * Math.PI)) * DIRS) % DIRS) + DIRS) % DIRS;
+  const share = (kind: number) => Math.min(65535, rain > 0 ? Q(through(kind, held[kind] ?? 0, rain, bare)) : 65535);
+  return {
+    hour: Math.floor(t / 12), s, f: Q(f), temp: Q(temp), pooled: Q(islandPooled(w, t, sky, speed)), wet: sky === "storm" ? 5 : sky === "rain" ? 1 : 0,
+    speed: Q(speed), k, ux: Q(wind.dx / len), uy: Q(wind.dy / len), v: rain > 0 ? Q(fallSpeed(rain)) : 0, sun: Q(sunOn(t, sky)), kr: Q(topKr(soil)),
+    tp: share(TREES.indexOf("pine")), tb: share(crownKind("oak")),
+  };
 }
-// The hours of the island's weather kept for the places it fell on: five days, by which time dead stuff as thick as a
-// kindling stick (the 10-hour class's top, 25.4 mm, coming 63% of the way to new surroundings in 40 h) holds little of
-// what came before them [design]. Thicker wood holds more of what the island's open or shade left in it before.
-const KEEP = 120;
-// The island's weather an hour on from tick t under a sky, a wind (its speed over the open sea and the way it blows), a
-// warmth and the top soil's wetness: the hour kept with what the crowns hold as its rain begins (rain.ts), the oldest let
-// go of into the dead stuff the kept hours start from, and the crowns topped up by the hour's rain. before: the dead
-// stuff as it stood before the hour, which the first hour kept starts from.
-export function pastHour(w: World, past: Past | undefined, before: Dead, t: number, sky: Weather["sky"], speed: number, temp: number, wind: Weather["wind"], soil: number): Past {
-  const { held, bare, next } = crownsHour(w, past?.crowns, t, sky, speed, temp), out = past ?? { base: before, hours: [], crowns: next };
-  out.hours.push({ t, sky, temp, speed, wind: { dx: wind.dx, dy: wind.dy }, held, bare, soil });
-  while (out.hours.length > KEEP) {
-    const h = out.hours.shift()!;
-    out.base = deadHour(w, out.base, h.t, h.sky, h.speed, h.temp);
-  }
-  out.crowns = next;
-  return out;
+// The island's own reference dead stuff of each class (gpu/moisture.ts CLASSES) an hour on: in the open, in the island's
+// air (a cell of the land's season means, level, its ground leaving 0.6 of the sea's wind, as open ground does) and its
+// sun; and in the shade, under a whole layer of broadleaves. The GPU's law stepped in that cell's air, so a piece lying
+// in the open where the air is the island's holds exactly what the open reference does. With none yet, both start as
+// their equilibrium would leave them.
+let shelters: Shelter | null = null;
+const shelter = () => (shelters ??= shelterTables());
+export const OPEN_LEE = 60;
+export function islandCell(w: World): { cells: Int32Array; lee: Uint8Array } {
+  const { vapour, rain } = islandMeans(w), cells = new Int32Array(CELL_WORDS);
+  for (let k = 0; k < 4; k++) { cells[4 + k] = Q(vapour[k]); cells[8 + k] = Q(rain[k]); }
+  cells[15] = 1;
+  return { cells, lee: new Uint8Array(DIRS).fill(OPEN_LEE) };
 }
-// How dead stuff lies: on the ground (lying), standing clear of it, or among a tree's branches (crown, the tree's kind).
+export function deadHour(w: World, dead: Dead | undefined, H: Hour): Dead {
+  const isle = islandCell(w), air = cellAir(isle.cells, isle.lee, 0, H)!;
+  const open = envQ(air, 0, 0, 0, H, shelter()), shade = envQ(air, 0, 65536, 0, H, shelter());
+  const at = (ms: number[] | undefined, skins: number[] | undefined, e: typeof open) => {
+    const from = CLASSES.map((c, i) => ({ m: toW(ms?.[i] ?? 0), skin: toW(skins?.[i] ?? ms?.[i] ?? 0) }));
+    if (!ms) from.forEach((x, i) => { x.m = x.skin = CLASSES[i].lying ? e.lying : e.aloft; });
+    return texelHour(from, e);
+  };
+  const o = at(dead?.open, dead?.skin?.open, open), s = at(dead?.shade, dead?.skin?.shade, shade);
+  return { open: o.map((x) => fromW(x.m)), shade: s.map((x) => fromW(x.m)), skin: { open: o.map((x) => fromW(x.skin)), shade: s.map((x) => fromW(x.skin)) } };
+}
+// What the GPU's water law reads from the world (gpu/moisture.ts MoistureDriver): each cell's season fields at its
+// middle (air.ts placeTemp, vapourAt, rainWhen, slopeAt, the generator's lee), and the island's reference now.
+export function moistureDriver(w: World): MoistureDriver {
+  return {
+    cells() {
+      const { isle } = groundOf(w.seed), n = Math.round(Math.sqrt(isle.height.length)), out = new Int32Array(N * N * CELL_WORDS);
+      if (n !== N) throw new Error(`the island's fields are ${n} cells a side, not ${N}`);
+      for (let c = 0; c < N * N; c++) {
+        if (isle.height[c] <= 0) continue;
+        const b = c * CELL_WORDS, x = c % N, y = Math.floor(c / N), pool = isle.pool[c];
+        for (let k = 0; k < 4; k++) {
+          const S = isle.seasons[k];
+          out[b + k] = Q(S.temp[c] - SEASONS[k].t + POOL_C[k] * pool);
+          out[b + 4 + k] = Q(S.humid[c] * esat(S.temp[c]));
+          out[b + 8 + k] = Q(S.precip[c] / wetHours(w, k));
+        }
+        const h = (i: number, j: number) => isle.height[Math.min(N - 1, Math.max(0, j)) * N + Math.min(N - 1, Math.max(0, i))];
+        out[b + 12] = Q(pool);
+        out[b + 13] = Q((h(x + 1, y) - h(x - 1, y)) / (2 * CELL));
+        out[b + 14] = Q((h(x, y + 1) - h(x, y - 1)) / (2 * CELL));
+        out[b + 15] = 1;
+      }
+      return out;
+    },
+    lee: () => groundOf(w.seed).isle.lee,
+    shelter,
+    start() {
+      const d = w.weather.dead;
+      return CLASSES.map((c, i) => ({ m: toW(d?.open[i] ?? FSP / 2), skin: toW(d?.skin?.open[i] ?? d?.open[i] ?? FSP / 2) }));
+    },
+  };
+}
+// How dead stuff lies: on the ground (lying), or standing clear of it (a crown's dead twigs, crown its tree's kind; a dead
+// bush's stems; what a shelter is built of).
 export type Lie = { lying?: boolean; crown?: string };
-// The water in dead stuff d thick at a point now, the whole and its skin, read between the two thicknesses reckoned
-// either side of it by their logs (deadHere).
+// Each class's water at a point now: its texel's on the GPU, as the last landing brought it; until its cell has come
+// back, the island's reference, as deep in the shade as the crowns over it.
+function classesAt(w: World, at: { px: number; py: number }): Water[] {
+  const held = gpuMoisture(w)?.texelAt(Math.max(0, at.px * TILE_M * 1000), Math.max(0, at.py * TILE_M * 1000), w.t);
+  if (held) return CLASSES.map((_, i) => ({ m: fromW(held[2 * i]), skin: fromW(held[2 * i + 1]) }));
+  const wx = w.weather, dead = wx.dead ?? { open: CLASSES.map(() => FSP / 2), shade: CLASSES.map(() => FSP / 2) }, c = Math.min(1, canopyAt(w, at.px, at.py));
+  return CLASSES.map((_, i) => {
+    const o = { m: dead.open[i], skin: dead.skin?.open[i] ?? dead.open[i] }, s = { m: dead.shade[i], skin: dead.skin?.shade[i] ?? dead.shade[i] };
+    return { m: o.m * (1 - c) + s.m * c, skin: o.skin * (1 - c) + s.skin * c };
+  });
+}
+// The water in dead stuff d thick at a point now, the whole and its skin: the classes lying as it lies, read between the
+// two either side of it by their thicknesses' logs, and as the nearest past the thinnest or the thickest.
 export function deadOf(w: World, at: { px: number; py: number }, d: number, lie: Lie = {}): Water {
-  const ms = deadHere(w, at, lie), l = Math.log(Math.min(Math.max(d, REF[0]), REF[REF.length - 1]));
-  let i = 0;
-  while (i < REF.length - 2 && l > Math.log(REF[i + 1])) i++;
-  const f = (l - Math.log(REF[i])) / (Math.log(REF[i + 1]) - Math.log(REF[i]));
-  return { m: ms[i].m * (1 - f) + ms[i + 1].m * f, skin: ms[i].skin * (1 - f) + ms[i + 1].skin * f };
+  const ms = classesAt(w, at), lying = !!lie.lying && lie.crown === undefined;
+  const idx = CLASSES.map((_, i) => i).filter((i) => CLASSES[i].lying === lying).sort((a, b) => CLASSES[a].d - CLASSES[b].d);
+  const l = Math.log(d);
+  if (l <= Math.log(CLASSES[idx[0]].d)) return ms[idx[0]];
+  for (let j = 0; j + 1 < idx.length; j++) {
+    const a = idx[j], b = idx[j + 1], la = Math.log(CLASSES[a].d), lb = Math.log(CLASSES[b].d);
+    if (l > lb) continue;
+    const f = (l - la) / (lb - la);
+    return { m: ms[a].m * (1 - f) + ms[b].m * f, skin: ms[a].skin * (1 - f) + ms[b].skin * f };
+  }
+  return ms[idx[idx.length - 1]];
 }
 export function deadAt(w: World, at: { px: number; py: number }, d: number, lie: Lie = {}) { return deadOf(w, at, d, lie).m; }
-// The dead stuff of each reckoned thickness at a point now: what the island's open and shade left in it before the kept
-// hours, as deep in the shade as the canopy over it, then each kept hour as it came to the point itself: the rain that
-// reached it there (rain.ts) and the sun and the wind at the grass tops the crowns let through, and lying on the ground
-// the damp of the top soil under it. A crown's dead twigs sit among the branches whose leaves shaded them dead: the rain
-// reaches them only through that crown's gaps and past what it holds, and the sun through its gaps as the rain falls
-// through them (rain.ts crownGap), in the head-height wind under the crowns [design: the wind among the branches]. Kept for
-// each point until another hour is kept or anything round it changes.
-const heres = perWorld(() => new Map<string, { t: number; reach: number; around: number; ms: Water[] }>());
-function deadHere(w: World, at: { px: number; py: number }, lie: Lie): Water[] {
-  const wx = w.weather, past = wx.past, cover = Math.min(1, canopyAt(w, at.px, at.py)), crown = lie.crown;
-  const start = (dead: Dead): Water[] => REF.map((_, i) => {
-    const o = { m: dead.open[i], skin: dead.skin?.open[i] ?? dead.open[i] }, s = { m: dead.shade[i], skin: dead.skin?.shade[i] ?? dead.shade[i] };
-    return crown ? s : { m: o.m * (1 - cover) + s.m * cover, skin: o.skin * (1 - cover) + s.skin * cover };
-  });
-  if (!past?.hours.length) return start(wx.dead ?? deadHour(w, undefined, w.t, wx.sky, wx.speed, wx.temp));
-  const k = crown === undefined ? -1 : crownKind(crown), last = past.hours[past.hours.length - 1].t;
-  const all = heres(w), key = `${at.px},${at.py},${k},${lie.lying ? 1 : 0}`, kept = all.get(key);
-  const round = (reach: number) => lookAround(w, at.px, at.py, CROWN_REACH + reach);
-  if (kept && kept.t === last && kept.around === round(kept.reach)) return kept.ms;
-  const rains = past.hours.map((h) => rainWhen(w, at.px, at.py, h.t, h.sky));
-  const heads = past.hours.map((h) => headWind(w, at.px, at.py, h.wind, h.speed));
-  const reach = k < 0 ? rains.reduce((r, rain, i) => (rain > 0 ? Math.max(r, reachOf(rain, heads[i])) : r), 0) : 0;
-  const place = k < 0 ? placeOf(w, at.px, at.py, reach) : undefined;
-  let ms = start(past.base);
-  past.hours.forEach((h, i) => {
-    const { vapour } = islandAir(w, h.t, h.sky), rain = rains[i], sun = sunOn(h.t, h.sky);
-    const on = rain <= 0 ? 0 : place ? rainThere(place, rain, h.wind, heads[i], h.held, h.bare) : rain * through(k, h.held[k] ?? 0, rain, h.bare);
-    const air = place ? equilibrium(h.temp, vapour, sun * (1 - cover), h.speed * 0.6 * GROUND * (1 - cover)) : equilibrium(h.temp, vapour, sun * crownGap(k, h.bare), heads[i]);
-    const eq = lie.lying ? lying(air, h.temp, vapour, h.soil ?? wx.wet) : air;
-    ms = ms.map((x, j) => hour(x, REF_PHYS[j], on, eq, 0, false));
-  });
-  if (all.size >= 8192) all.clear();
-  all.set(key, { t: last, reach, around: round(reach), ms });
-  return ms;
+// A piece lying out as its own object holds: a fallen log or snag its own (gpu/moisture.ts), as the last landing
+// brought it, its thickness's dead stuff lying there until it has come back; a stick its texel's sticks'.
+export function pieceWater(w: World, t: Thing, d: number): Water {
+  const id = t.kind === "fallen_log" ? deadwoodOf(w)?.gpuId(t.id) : undefined, held = id === undefined ? undefined : gpuMoisture(w)?.logAt(id, w.t);
+  return held ? { m: fromW(held.m), skin: fromW(held.skin) } : deadOf(w, t, d, { lying: true });
 }
 
 // ---------- the island's grass and leaves ----------
@@ -237,16 +266,24 @@ export const leafless = (w: World) => growing(w).index < GREEN_UP;
 // blade thick lies there.
 export function grassAt(w: World, at: { px: number; py: number }) {
   const { herb, cured } = growing(w);
-  return { herb, cured, dead: deadAt(w, at, REF[0]) };
+  return { herb, cured, dead: deadAt(w, at, REF[0], { lying: true }) };
 }
 
 // ---------- every hour ----------
+// The island's hour: its reference dead stuff, the water its crowns hold (rain.ts crownsHour: what they held as the
+// hour's rain began, kept for the rain through them, and what they hold after it), and its growing season; the hour
+// queued for the GPU's water law (gpu/moisture.ts), which steps everything lying out at the next tick's laws, and the
+// cells round people asked of; then what people hold, lay and store.
 export function wetness(w: World) {
   if (w.t % 12) return;
-  const wx = w.weather, before = wx.dead;
-  wx.dead = deadHour(w, before, w.t, wx.sky, wx.speed, wx.temp);
-  wx.past = pastHour(w, wx.past, before ?? wx.dead, w.t, wx.sky, wx.speed, wx.temp, wx.wind, wx.wet);
+  const wx = w.weather, crowns = crownsHour(w, wx.past?.crowns, w.t, wx.sky, wx.speed, wx.temp);
+  const H = islandHour(w, w.t, wx.sky, wx.speed, wx.temp, wx.wind, wx.wet, crowns.held, crowns.bare);
+  wx.dead = deadHour(w, wx.dead, H);
+  wx.past = { crowns: crowns.next, held: crowns.held, bare: crowns.bare };
   wx.gsi = gsiHour(w, wx.gsi, w.t, wx.sky, wx.temp);
+  const gpu = gpuMoisture(w);
+  gpu?.queue(H);
+  gpu?.watch(w.agents, TILE_M * 1000, w.t);
   for (const a of w.agents) carried(w, a);
   for (const t of liveThings(w)) {
     if (t.kind === "item") laid(w, t, true);
@@ -299,5 +336,5 @@ export function tinderOf(w: World, a: Agent, k?: string): { kind?: Kind; name: s
   if (k) return null;
   const buried = snowAt(w, a.px, a.py) > 0.5;
   const t = nearestThing(w, a.px, a.py, buried ? ["dead_bush"] : Object.keys(GROUND_TINDER), () => true, 2);
-  return t ? { name: GROUND_TINDER[t.kind], m: deadAt(w, t, t.kind === "dead_bush" ? REF[1] : REF[0]) } : null;
+  return t ? { name: GROUND_TINDER[t.kind], m: t.kind === "dead_bush" ? deadAt(w, t, REF[1]) : deadAt(w, t, REF[0], { lying: true }) } : null;
 }

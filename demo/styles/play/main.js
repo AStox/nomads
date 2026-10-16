@@ -43,9 +43,9 @@ function paintBuf(cv, B) {
 
 async function main() {
   const t0 = performance.now();
-  // one line of progress in the game's own font until the opening view is complete
-  const steps = { renderer: ["growing the island", 0], sim: ["warming the world", 0] };
-  const say = () => { const r = steps.renderer, w = steps.sim; loadingScreen(canvas, `${r[0]}  ${w[1] < 1 && withSim ? "/ " + w[0] : ""}`.trim(), (r[1] + (withSim ? w[1] : 1)) / 2); };
+  // one line of progress in the game's own font until the opening view is complete (the world warms after it)
+  let step = ["growing the island", 0];
+  const say = () => loadingScreen(canvas, step[0], step[1]);
   say();
   // the renderer's worker grows the island, then warms the world on the same GPU
   // ?jev=<token> lets the people think with Jev through this server's relay, and is remembered on this browser;
@@ -55,9 +55,8 @@ async function main() {
   const jev = jevQ === "off" ? null : localStorage.getItem("nomads-jev");
   // the token is kept, not shown: a copied link doesn't carry it
   if (jevQ) { Q.delete("jev"); history.replaceState(null, "", `${location.pathname}${Q.size ? `?${Q}` : ""}`); }
-  const live = await createLive({ seed, canvas, sim: withSim ? { warm, jev } : null, onProgress: (d, n, what) => { steps.renderer = [what, 0.5 * (what === "drawing the sprites" ? 1 : 0) + (0.5 * d) / n]; say(); } });
-  const sim = withSim ? await connectSim(live, { onProgress: (d, n) => { steps.sim = ["warming the world", d / n]; say(); } }) : null;
-  if (sim?.brain === "relay") { document.title = "Nomads: live, thinking with Jev"; hint.textContent += " · thinking with Jev"; }
+  const live = await createLive({ seed, canvas, sim: withSim ? { warm, jev } : null, onProgress: (d, n, what) => { step = [what, 0.5 * (what === "drawing the sprites" ? 1 : 0) + (0.5 * d) / n]; say(); } });
+  const sim = withSim ? await connectSim(live) : null;
   // ?hour= pins the hour the island is drawn at, its light and sun, while the sim runs on; ?speed= starts it faster
   // (a tick each frame at most, so 32 runs a day in about five seconds), for timelapses
   if (sim) { sim.hour = num("hour", null, 0, 24); sim.speed = num("speed", 1, 0.25, 32); }
@@ -309,8 +308,9 @@ async function main() {
 
   // ---------- pause and speed: a small marker in the corner while either is off the usual ----------
   let paceKey = "";
+  // paused, warming up (the world's first days run at once after the first view: ticks done of all), or the speed
   function paintPace() {
-    const key = !sim ? "" : sim.paused ? "PAUSED" : sim.speed !== 1 ? `X${sim.speed}` : "";
+    const key = !sim ? "" : sim.paused ? "PAUSED" : sim.warming ? `WARMING UP ${sim.warmTicks - sim.warming}/${sim.warmTicks}` : sim.speed !== 1 ? `X${sim.speed}` : "";
     if (key === paceKey) return;
     paceKey = key;
     pace.hidden = !key;
@@ -552,7 +552,7 @@ async function main() {
   statsEl.hidden = !showStats;
   let lastStats = 0, readyMarked = false, lastNow = performance.now();
   const bench = benchKind ? benchRunner(benchKind, live, view) : null;
-  let revealed = false;
+  let revealed = false, relayShown = false;
   function loop(now) {
     const dt = Math.min(100, now - lastNow);
     lastNow = now;
@@ -560,8 +560,10 @@ async function main() {
     if (sim && revealed) {
       const ch = sim.update(now);
       if (ch) { wantWorld(); if (view.selected) inspect(); if (wui.open) paintWorld(); }
+      if (sim.brain === "relay" && !relayShown) { relayShown = true; document.title = "Nomads: live, thinking with Jev"; hint.textContent += " · thinking with Jev"; }
     }
-    if (revealed && bench) bench.step(now);
+    // a bench runs once the world has warmed, or during the warm with ?benchwarm
+    if (revealed && bench && (!sim?.warming || Q.has("benchwarm"))) bench.step(now);
     camera.step(dt, now);
     if (follow && sim) followStep(now, dt);
     else live.prefetch(null);

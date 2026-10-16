@@ -18,7 +18,7 @@ import type { Stand } from "../gpu/flora";
 export const W = TILES;
 export const H = TILES;
 export { DAY, YEAR_DAYS }; // the sky's: ticks a day (5 minutes each) and days a year, the sun's round
-export const VERSION = 28; // 28: the seeds and seedlings are GPU objects (src/gpu/seedlings.ts), not w.recruits
+export const VERSION = 29; // 29: the fish are GPU objects (src/gpu/fish.ts), not w.pools stocks; the crown raster and what lies out's water ride the store (gpu/crowns.ts, gpu/moisture.ts), weather.past keeps the crowns' water only
 export { TILE_M }; // meters per tile
 export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
@@ -100,24 +100,17 @@ export type Weather = {
   wet: number; // 0..1 how much of the water the top soil can lose to the air it holds (soil.ts wetHour)
   runoff?: number; // mm of the island's rain still to come down the streams (streams.ts runoffHour)
   ice?: number; // m of ice on the island's fresh still water (ecology.ts ice)
-  // the water in dead wood and litter lying about the island, kg to the kg, at wetness.ts REF thicknesses, in the open
-  // and in the shade; skin, the same in their outer halves, where it isn't the whole's
+  // the island's reference dead stuff, kg to the kg, by gpu/moisture.ts CLASSES, in the open and in the shade
+  // (wetness.ts deadHour); skin, the same in their outer halves. What lies out holds its own on the GPU.
   dead?: Dead;
   // the island's living plants coming green (wetness.ts growing): the day's coldest air, C, and its largest vapour
   // pressure deficit, Pa, so far, the rain of the last few days, mm, and the growing season index
   gsi?: { day: number; tmin: number; vpd: number; rain: number; index: number };
-  // the island's last few days of weather, kept for what fell where (wetness.ts deadAt): the dead stuff as it stood before
-  // them (as in dead), each hour's sky, warmth, wind and the water each kind of crown held as its rain began (rain.ts),
-  // and the water the crowns hold now
-  past?: { base: Dead; hours: PastHour[]; crowns: number[] };
+  // the water each kind of crown (flora.ts TREES) holds now, mm, what it held as the last hour's rain began, and
+  // whether the broadleaves stood bare then (rain.ts crownsHour)
+  past?: { crowns: number[]; held: number[]; bare: boolean };
 };
 export type Dead = { open: number[]; shade: number[]; skin?: { open: number[]; shade: number[] } };
-export type PastHour = {
-  t: number; sky: Weather["sky"]; temp: number; speed: number; wind: { dx: number; dy: number };
-  held: number[]; // mm on each kind of crown (flora.ts TREES) as the hour's rain began
-  bare: boolean; // the broadleaves out of leaf
-  soil?: number; // the top soil's wetness (Weather.wet) that hour
-};
 // result: what it gives, builds or does, as the outcome that first showed it (physics.ts Fields)
 export type Law = { id: string; key: string; text: string; verb: string; source: "physics" | "jev"; by: string; t: number; result?: { gives: string[]; builds?: string; effect?: string; target?: string } };
 
@@ -292,7 +285,7 @@ export type World = {
   fert: Record<number, number>; // what has fed the soil or drawn it down since it grew, by soil.ts cell
   agents: Agent[];
   animals: Animal[];
-  pools?: Pools; // the fish's stocks and the butterflies, each a tile's count (pools.ts)
+  pools?: Pools; // the butterflies, each a tile's count (pools.ts)
   events: Event[];
   nextId: number;
   jev: { calls: number; tokens: number; rulings: number };
