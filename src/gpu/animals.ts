@@ -1,7 +1,8 @@
 // The island's animals, resident on the GPU: every deer, rabbit, wolf, fox, heron, eagle, gull and crow one object of
-// store kind "animal", and the ground they eat from (the tiles' sward, browse, carrion and shore) in buffers beside it;
-// the fish they take are the fish's own objects (fish.ts), laid out by tile for each step. Plan:
-// docs/plans/2026-10-14-001-refactor-gpu-object-world-plan.md, Unit 10;
+// store kind "animal", and the ground they eat from (the tiles' sward, browse, carrion, shore and invertebrates) in
+// buffers beside it; the fish they take are the fish's own objects (fish.ts), laid out by tile for each step, and where
+// the world has the lumped kinds (smalls.ts), the sward and the invertebrates are theirs, through the link below
+// (Ground). Plan: docs/plans/2026-10-14-001-refactor-gpu-object-world-plan.md, Units 10 and 12b;
 // the law is wgsl/animals.ts, its constants and drivers src/sim/animals.ts (docs/research/animal-constants.md).
 //
 // Fields, each a u32 but e: x and y in millimetres (PLACE); sp, the kind (SP) plus 16 for a female; held, 0 while the
@@ -13,14 +14,16 @@
 //
 // The law runs every hour of island time (every 12 ticks), a day at a time in the twenty years before anyone wakes.
 // What the CPU reads back each landing: how many of each kind are alive (a census, every tick). What the birds eat of
-// the fish goes to the fish on the GPU (fish.ts FishLink), never through the CPU.
+// the fish goes to the fish on the GPU (fish.ts FishLink), and what the crows, gulls and foxes eat of the
+// invertebrates, and the members people see them single out, to the lumped kinds on the GPU (Ground), never through
+// the CPU.
 import type { Store, Kind, KindSpec, Field, Rider } from "./store";
 import { reload, savedArray, savedNumbers } from "./store";
 import { cover, storage } from "./kernel";
 import type { FishLink } from "./fish";
 import { CELLS } from "./wgsl/index";
 import {
-  A_, BIRTH_HEAD, BIRTH_INIT, FIELDS, FLAG, KP_WORDS, LIVE_LAYERS, NL, NSP, PO, Q_RUNS, SATW, T, TW, W_, W_RUNS, aWords, larAt,
+  A_, BIRTH_HEAD, BIRTH_INIT, FIELDS, FLAG, G, GK, KP_WORDS, LIVE_LAYERS, NL, NONE, NSP, PO, Q_RUNS, SATW, T, TW, W_, W_RUNS, aWords, larAt,
   animalsAct, animalsBrowse, animalsCensus, animalsClaim, animalsEat, animalsFate, animalsFront, animalsSatCols, animalsSatRows,
 } from "./wgsl/animals";
 
@@ -57,8 +60,22 @@ export type AnimalDriver = {
 // The stems' crown raster as their law last filed it (src/gpu/flora.ts raster).
 export type Raster = { body: GPUBuffer; cap: number; what: number; start: GPUBuffer; list: GPUBuffer; side: number };
 export type Browse = { raster(s: Store): Raster; filed(t: number): boolean };
+// The ground layer and the invertebrates from the lumped kinds (src/gpu/smalls.ts), when the world has them.
+export type Ground = {
+  // The link writes the day's pools into W (W_.fg, W_.fd: Q16 g/m2 of the tile's ground-layer area, as now;
+  // W_.icrow, W_.igull, W_.ifox: mg of invertebrate prey a tile; W_.tcrow, W_.tgull, W_.tfox: the lumped bin key,
+  // cell << 16 | state, a held predator of that class singles a member out of, NONE for none) now and at each day it
+  // steps, and reads back how much of each pool was eaten since. RQ is one word an animal slot (NONE for none): a
+  // held animal's request to single out a member, which the link takes and sets back to NONE at each day it steps.
+  bind(s: Store, link: { W: GPUBuffer; RQ: GPUBuffer; cap: number }): void;
+  // A day of the lumped kinds at tick t (t % DAY === 0), called by the animals' spin-up loop before its law at that
+  // tick; after attach the lumped kinds' own midnight law (registered earlier on the store) runs before the animals'.
+  spin(s: Store, t: number): void;
+};
 
-type Bufs = { W: GPUBuffer; D: GPUBuffer; KP: GPUBuffer; A: GPUBuffer; S: GPUBuffer; I: GPUBuffer; Q: GPUBuffer; TERR: GPUBuffer; N: GPUBuffer; cen: GPUBuffer };
+type Bufs = {
+  W: GPUBuffer; D: GPUBuffer; KP: GPUBuffer; A: GPUBuffer; S: GPUBuffer; I: GPUBuffer; Q: GPUBuffer; TERR: GPUBuffer; N: GPUBuffer; cen: GPUBuffer; RQ: GPUBuffer;
+};
 
 export class Animals implements Rider {
   readonly name = "animals";
@@ -67,6 +84,7 @@ export class Animals implements Rider {
   private driver: AnimalDriver | null = null;
   private browse: Browse | null = null;
   private fish: FishLink | null = null;
+  private ground: Ground | null = null;
   private bufs: Bufs | null = null;
   private src: Record<string, string> | null = null;
   private per = 0;
@@ -80,34 +98,43 @@ export class Animals implements Rider {
   // The animals take up residence on a store: kind animal declared, and, in a store that hasn't got it, the island's
   // animals laid down and run through the years before anyone wakes. A store loaded from a save has them, and its
   // saved ground. browse: the stems the deer browse, when the world has them; fish: the fish the birds take, when the
-  // world has them (else each water tile's fish run of the ground stays as it is laid).
-  async attach(store: Store, driver: AnimalDriver, browse: Browse | null = null, fish: FishLink | null = null) {
+  // world has them (else each water tile's fish run of the ground stays as it is laid); ground: the lumped kinds'
+  // ground layer and invertebrates, when the world has them (else the ground layer grows by the forage rule and the
+  // crows' worms stand at their density, wgsl/animals.ts G.lumped).
+  async attach(store: Store, driver: AnimalDriver, browse: Browse | null = null, fish: FishLink | null = null, ground: Ground | null = null) {
     if (this.store) throw new Error("the animals already live on a store");
     const fresh = !store.kinds.some((k) => k.name === ANIMAL);
     // still between laws: the law moves them only on its own ticks and marks the kind touched then (store.ts KindSpec)
     const kind = store.adopt({ name: ANIMAL, capacity: ANIMAL_CAP, placed: true, still: true, fields: FIELD_LIST } satisfies KindSpec);
-    this.store = store; this.kind = kind; this.driver = driver; this.browse = browse; this.fish = fish;
+    this.store = store; this.kind = kind; this.driver = driver; this.browse = browse; this.fish = fish; this.ground = ground;
     const g = store.g, cap = kind.capacity;
     const W = new Uint32Array(W_RUNS * T);
     W.set(driver.tiles());
     W.set(driver.pools(), W_.fg * T);
+    // no bin to single a member out of until a link sets one
+    W.fill(NONE, W_.tcrow * T, (W_.tfox + 1) * T);
     this.bufs = {
       W: storage(g, W), D: storage(g, driver.drivers()), KP: storage(g, KP_WORDS * 4), A: storage(g, aWords(cap) * 4), S: storage(g, NL * SATW * 4),
       I: storage(g, (CELLS + 1 + cap) * 4), Q: storage(g, Q_RUNS * cap * 4), TERR: storage(g, 3 * cap * 4), N: storage(g, 3 * 4, GPUBufferUsage.INDIRECT), cen: storage(g, NSP * 4),
+      RQ: storage(g, new Uint32Array(cap).fill(NONE)),
     };
     this.src = {
       front: animalsFront(cap), rows: animalsSatRows(cap), cols: animalsSatCols(cap, LIVE_LAYERS), colsAll: animalsSatCols(cap, NL), count: animalsCensus(cap, 0),
       act: animalsAct(cap), claim: animalsClaim(cap), eat: animalsEat(cap), fate: animalsFate(cap),
     };
     this.mode(24);
+    ground?.bind(store, { W: this.bufs.W, RQ: this.bufs.RQ, cap });
     if (fresh) {
       if (browse) this.browsed(browse.raster(store));
       const { n, cols } = driver.start();
       store.write(ANIMAL, n, cols);
       store.index(kind);
-      // the days before anyone wakes, the birds' catch going to the fish as each hour's would
+      // the days before anyone wakes, the birds' catch going to the fish as each hour's would, and each day of the
+      // lumped kinds stepped at the midnight the hour crosses, before the hour (the start need not fall on an hour)
       for (let k = driver.days * 24; k >= 1; k--) {
-        this.law(store, driver.t0 - k * STEP_TICKS);
+        const t = driver.t0 - k * STEP_TICKS, midnight = Math.floor(t / DAY) * DAY;
+        if (ground && midnight > t - STEP_TICKS) ground.spin(store, midnight);
+        this.law(store, t);
         store.index(kind, true);
         store.flush();
       }
@@ -117,11 +144,13 @@ export class Animals implements Rider {
     store.law({ name: "animals", due: (t) => t % STEP_TICKS === 0, run: (s, t) => this.law(s, t) });
     store.ride(this);
   }
-  // The constants for so many steps a day.
+  // The constants for so many steps a day, and whether the lumped kinds keep the ground (G.lumped).
   private mode(per: number) {
     if (this.per === per) return;
     this.per = per;
-    this.store!.g.device.queue.writeBuffer(this.bufs!.KP, 0, this.driver!.consts(per));
+    const q = this.store!.g.device.queue, KP = this.bufs!.KP;
+    q.writeBuffer(KP, 0, this.driver!.consts(per));
+    q.writeBuffer(KP, (GK + G.lumped) * 4, Uint32Array.of(this.ground ? 1 : 0));
   }
   // Each tile's browse from the stems' crown raster.
   private browsed(r: Raster) {
@@ -151,7 +180,7 @@ export class Animals implements Rider {
     s.run(src.act, [k.body, b.W, b.A, b.KP, b.S, b.I, b.Q, b.TERR], animals);
     if (flags & (FLAG.heron | FLAG.eagle | FLAG.crow)) s.scan(b.TERR, 3 * cap);
     s.run(src.claim, [k.body, b.W, b.A, b.KP, b.Q], animals);
-    s.run(src.eat, [k.body, b.W, b.A, b.KP, b.Q], animals);
+    s.run(src.eat, [k.body, b.W, b.A, b.KP, b.Q, b.RQ], animals);
     s.run(src.fate, [k.body, b.W, b.A, b.KP, b.S, b.Q, b.TERR], animals);
     this.fish?.ate(s, b.A, A_.fish);
     // the young: the counts fate left in Q's first run, those past the room dropped
@@ -171,7 +200,7 @@ export class Animals implements Rider {
     k.touched = k.stale = true;
   }
 
-  // ---------- riding the store: the census every tick; saved, the ground ----------
+  // ---------- riding the store: the census every tick; saved, the ground and the requests ----------
   words() { return this.store ? NSP : 0; }
   record(out: GPUBuffer, at: number) {
     const s = this.store!, b = this.bufs!, k = this.kind!;
@@ -182,12 +211,13 @@ export class Animals implements Rider {
   land(o: Uint32Array, at: number) {
     if (o.length) this.census.set(o.subarray(at, at + NSP));
   }
-  buffers(): [string, GPUBuffer][] { return this.bufs ? [["W", this.bufs.W], ["A", this.bufs.A]] : []; }
+  buffers(): [string, GPUBuffer][] { return this.bufs ? [["W", this.bufs.W], ["A", this.bufs.A], ["RQ", this.bufs.RQ]] : []; }
   save() { return { census: [...this.census] }; }
   restore(state: unknown, data: Record<string, Uint8Array> = {}) {
     const b = this.bufs!;
     reload(this.store!.g, b.W, data.W, "animals' ground");
     reload(this.store!.g, b.A, data.A, "animals' carrion and counts");
+    reload(this.store!.g, b.RQ, data.RQ, "animals' requests to the lumped kinds");
     this.census.set(savedNumbers(savedArray(state, "census", "animals"), "animals' census"));
   }
   // Lets go of the buffers the animals made (the kind's own go with the store).
@@ -200,8 +230,9 @@ export class Animals implements Rider {
   get buffersForTest() { return this.bufs; }
 }
 
-// Time: a step is an hour of island time [design: the herds stepped hourly].
+// Time: a step is an hour of island time [design: the herds stepped hourly], an island day 24 of them (sky.ts DAY).
 export const STEP_TICKS = 12;
+const DAY = 24 * STEP_TICKS;
 
 // Every animal of one kind killed. Bindings: body.
 const CULL = (cap: number, sp: number) => /* wgsl */ `

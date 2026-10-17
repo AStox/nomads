@@ -1,6 +1,8 @@
 // The one hard-coded layer: how materials respond to being struck, rubbed, joined, heated, wetted, shaped, and placed.
-import { catchFish, fishNear } from "./waters";
-import { gone } from "./animals";
+import { meeting, takeFish } from "./waters";
+import { gone, herded, type Herded } from "./animals";
+import { GROWN_THROWER, animalBody, basketOf, bowKE, carcassOf, caught, fatOf, flightTo, handKE, hideOf, massOf, missileOf, throwAt, throwRange, releaseAt, throwsInTick, tipOf, woundOf, type Gear, type Meeting, type Throw, type Thrower } from "./hunt";
+import { TICK_S } from "./sky";
 import { BASE, MADE_OF, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props, type Registry } from "./materials";
 import { BURNS, COPPER, FIRED_CLAY, LEATHER, LIVE_HERB, LOG_LEN, PHYS, POT_WALL, charSize, greenOf, mix, physOf, pieceOf, remade, splitSize, stackPhys, woodOf, type Edge, type Phys } from "./fuel";
 import {
@@ -9,7 +11,8 @@ import {
 } from "./mechanics";
 import { BLOWN, LEAST, advance, alight, feed, feeding, fluxIn, group, heats, inFlame, kindle, lasts, lay, lighting, lightsIn, output, plumeRise, radiation, setIn, setUp, smokes, type Air as BedAir, type Bed, type Group, type Laid, type Ring } from "./combustion";
 import { CELL } from "../terrain/grid";
-import { DAY, REACH, TILE_M, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, isNight, level, log, meters, nearWater, perWorld, reachOf, wetAt, type Act, type Agent, type Shelter, type Size, type Stack, type Thing, type World } from "./world";
+import { DAY, TILE_M, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, isNight, level, log, meters, nearWater, perWorld, wetAt, type Act, type Agent, type Animal, type Shelter, type Size, type Stack, type Thing, type World } from "./world";
+import { armOf, canHold, holdsOf, overheadOf, radiusOf, reachOf } from "./gait";
 import { anyAround, leave, liveThings, nearestThing, setKind, thingById, wake } from "./space";
 import { clock, trace } from "./trace";
 import { see } from "./beliefs";
@@ -107,7 +110,7 @@ export function breeze() {
 // A flame carried in hand: held about a meter up (fire-constants sec. 32); a lamp's, as tall as a candle's of the same heat, 42
 // mm (R10, sec. 14b); a wick burns 8 g of fat an hour (sec. 22b).
 const HELD = 1, LAMP_FLAME = 0.042, WICK = 0.008 / 3600;
-const TICK_S = 86400 / DAY, DAY_S = 86400;
+const DAY_S = 86400;
 export const isFlame = (k?: Kind) => !!k?.id.startsWith("burning:");
 export const isLamp = (k?: Kind) => isFlame(k) && p(k, "container") >= 0.5;
 // The air round something carried: where they stand, out of the rain and wind under a roof, at the height it's held.
@@ -208,7 +211,6 @@ export function layAt(w: World, a: { px: number; py: number; heading?: number })
   return { px, py, air: bedAir(w, { px, py }) };
 }
 
-export const CARRY = 16;
 export type Fields = { verb: string; inputs: string[]; tool?: string | null; target?: string; at?: string | null; gives: string[]; builds?: string; effect?: string; shape?: string };
 export type Outcome = {
   ok: boolean; text: string;
@@ -238,13 +240,12 @@ export function takeStack(a: Agent, k: string): Stack | undefined {
 }
 export const takeStacks = (a: Agent, k: string, n: number) => Array.from({ length: n }, () => takeStack(a, k)).filter((s): s is Stack => !!s);
 const young = (a: Agent) => clock.t - a.born < YEAR;
-// What someone can carry: a child half what a grown body can, and anyone more with a bag or basket to put things in,
-// the roomier the more (the best one counts; a second only weighs them down).
-export const carryOf = (w: World, a: Agent) =>
-  (young(a) ? 8 : CARRY) + Math.max(0, ...a.inv.map((s) => { const k = w.kinds[s.k]; return p(k, "container") >= 0.6 && p(k, "flexible") >= 0.4 ? Math.round(p(k, "container") * 10) : 0; }));
-// Something put into their hands as it is; with their hands full, it goes down beside them instead. Whether they hold it.
+// Something put into their hands as it is. With their hands too full for its mass or bulk (gait.ts canHold), they set
+// down what they can spare for it; what they could never hold, or can't make room for, goes down beside them instead.
+// Whether they hold it.
 export function giveStack(w: World, a: Agent, s: Stack) {
-  if (a.inv.length >= carryOf(w, a) && !makeRoom(w, a, s.k)) { dropStacks(w, a.px, a.py, [s]); return false; }
+  const fits = canHold(w, { ...a, inv: a.inv.filter((x) => holdsOf(w, x) > 0) }, s);
+  while (!canHold(w, a, s)) if (!fits || !makeRoom(w, a, s.k)) { dropStacks(w, a.px, a.py, [s]); return false; }
   a.inv.push(s);
   return true;
 }
@@ -378,8 +379,9 @@ export function gathered(w: World, t: Thing, k: string): Stack {
 }
 
 // ---------- strike ----------
-// A blow at an animal, or in a fight, by the old reckoning: weight and reach behind an edge, less what it shrugs off. It
-// stays only for them, whose hurts belong with the wounds (matter-constants sec. 12).
+// A blow in a fight, or at reeds, by the old reckoning: weight and reach behind an edge, less what it shrugs off. It stays
+// only for them; animals are wounded by their bodies (hunt.ts), people's hurts belong with the wounds (matter-constants
+// sec. 12).
 export function force(tool: Kind, a?: Agent) {
   const skill = a ? level(a.skills.toolwork ?? 0) * 0.04 : 0;
   return (0.25 + p(tool, "heavy") * 0.8 + p(tool, "long") * 0.35) * (1 + skill) * (a && young(a) ? 0.5 : 1);
@@ -442,15 +444,16 @@ const withWhat = (tool: Kind) => (tool.id === "hands" ? "bare hands" : `the ${to
 // Things into their hands while there's room, the rest down beside them.
 function stow(w: World, a: Agent, stacks: Stack[]) {
   const over: Stack[] = [];
-  for (const s of stacks) (a.inv.length < carryOf(w, a) ? a.inv : over).push(s);
+  for (const s of stacks) (canHold(w, a, s) ? a.inv : over).push(s);
   if (over.length) dropStacks(w, a.px, a.py, over);
 }
 
 // ---------- what a struck thing in the world takes, and gives (matter-constants secs. 3, 5 and 10) ----------
-// The world things struck by these rules; animals and reeds keep THING_MATERIAL's (the wounds' and the plants' passes).
+// The world things struck by these rules; reeds keep THING_MATERIAL's (the plants' pass), animals are wounded by their
+// bodies (hunt.ts).
 export const STRUCK = ["tree", "bush", "dead_bush", "stump", "fallen_log", "boulder"];
 // Whether a kind is something in the world to strike: a stem, a boulder, reeds or an animal.
-export const inWorld = (kind: string) => STRUCK.includes(kind) || kind in THING_MATERIAL;
+export const inWorld = (kind: string) => STRUCK.includes(kind) || kind in THING_MATERIAL || herded(kind as Animal["species"]);
 // A felled tree's stump keeps its trunk's width; one from before keeps a girth of 20 cm [design].
 const STUMP_D = 0.2;
 // What a stem to cut through is: how thick, its wood's crushing strength as wet as it is, its effective mass (a rooted
@@ -498,6 +501,8 @@ export function breaksOf(kind: string): Record<string, number> {
   // a boulder: the stones a tick's blows of a stone in the fist break off it
   if (kind === "boulder") return { stone: Math.max(1, Math.floor((BLOWS * blowEnergy({ mass: PHYS.stone.mass })) / (bond(TYPICAL.boulder, PHYS.stone.d) * PHYS.stone.mass))) };
   if (TYPICAL[kind]) return Object.fromEntries(Object.entries(yieldOf({ kind: kind as Thing["kind"], size: TYPICAL[kind] })).filter(([, v]) => v > 0));
+  // an animal: its carcass at a full fat reserve (hunt.ts)
+  if (herded(kind as Animal["species"])) return carcassOf(kind as Herded);
   return THING_MATERIAL[kind]?.breaks ?? {};
 }
 
@@ -552,17 +557,41 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
   // Striking something in the world: a tree, a boulder, an animal.
   const target = act.target.thing ? thingById(w, act.target.thing) : w.animals.find((x) => x.id === act.target!.animal);
   if (!target) return { done: true, damage: 0, out: outcome({ text: "The target was gone.", fields }) };
-  const long = p(tool, "long") >= 0.6 ? 1 : 0;
-  const far = "alt" in target ? target.alt > 2 || meters(a, target) > REACH + 0.5 + long : meters(a, target) > reachOf(target) + long;
+  // within an arm and what's swung's length of its edge (gait.ts), or for an animal of its middle with half a metre of it
+  // on the near side [design], and none flying over their reach overhead
+  const long = hold.swung.lever ?? 0, arm = armOf(w, a);
+  const far = "alt" in target ? target.alt > overheadOf(w, a) + long || meters(a, target) > arm + 0.5 + long : meters(a, target) > reachOf(target, arm) + long;
   if (far) return { done: false, damage: 0 };
   if ("kind" in target && STRUCK.includes(target.kind)) return worldTick(w, a, act, target, tool, hold, who, st, fields);
+  // An animal (people-constants sec. 9.7): each blow lands where it is aimed, on the chest at arm's length [design], with
+  // the energy the body and the swing give it (mechanics.ts), through the tool's point or its blunt end (hunt.ts
+  // woundOf). A blow that reaches the vitals, or a blunt one that kills, brings it down; a tick holds BLOWS of them.
+  if ("alt" in target) {
+    // a fish or a butterfly has no body here to strike (people-constants sec. 9.11)
+    if (!herded(target.species)) return { done: true, damage: 0, out: outcome({ text: `The ${target.species} slipped away.`, fields }) };
+    const E = blowEnergy(hold.swung, who), t = hold.soft ? { d: 0 } : tipOf(w.kinds, tool, held), body = animalBody(massOf(target));
+    const ms = { tip: t.tip, tipD: t.d, point: !!t.tip, d: t.tip ? t.d : 2 * hold.edge.r };
+    let r = woundOf(E, ms, body, true, Math.random());
+    for (let i = 1; i < BLOWS && r.wound !== "kill"; i++) r = woundOf(E, ms, body, true, Math.random());
+    st.progress++;
+    trace("physics", "strike", { tool: tool.id, target: target.species, energy: E, ...r }, a.id);
+    if (r.wound === "kill") {
+      const gives = butcher(w, a, target);
+      fields.gives = Object.keys(gives);
+      return { done: true, damage: 1, out: outcome({ ok: true, text: `They killed the ${target.species} and butchered it into ${list(w, gives)}.`, gives, fields, numbers: { energy: E } }) };
+    }
+    if (r.wound === "none") return { done: true, damage: 0, out: outcome({ text: `Striking the ${target.species} with ${withWhat(tool)} barely left a mark.`, fields, numbers: { energy: E } }) };
+    // hurt, it is the weaker for it [design]: half itself
+    target.hp = Math.min(target.hp, target.maxHp / 2);
+    return { done: false, damage: 1 };
+  }
   const mat = THING_MATERIAL[act.target.kind ?? ""];
   if (!mat?.hp) return { done: true, damage: 0, out: outcome({ text: "The target was gone.", fields }) };
   const dmg = strikeDamage(tool, mat.toughness ?? 0, a);
   if (!act.tool) bruise(a, mat.toughness ?? 0);
   target.hp = (target.hp ?? mat.hp) - dmg;
-  if ("maxHp" in target && target.maxHp === undefined) target.maxHp = mat.hp;
-  if ("kind" in target) mark(w, target);
+  target.maxHp ??= mat.hp;
+  mark(w, target);
   st.progress++;
   trace("physics", "strike", { tool: tool.id, target: act.target.kind, force: force(tool, a), focus: focus(tool), dmg, hp: target.hp }, a.id);
   const rate = dmg, ticksNeeded = rate > 0 ? Math.ceil(mat.hp / rate) : Infinity;
@@ -573,14 +602,8 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
   }
   const gives = { ...mat.breaks };
   fields.gives = Object.keys(gives);
-  if ("alt" in target) {
-    gone(w, target);
-    for (const [k, n] of Object.entries(gives)) giveItems(w, a, k, n, physOf(w.kinds, w.kinds[k])?.green ?? 0);
-    return { done: true, damage: dmg, out: outcome({ ok: true, text: `They killed the ${target.species} and butchered it into ${list(w, gives)}.`, gives, fields, numbers: { rate, ticksNeeded } }) };
-  }
-  const t = target as Thing;
-  const pieces = Object.entries(gives).flatMap(([k, n]) => Array.from({ length: n }, () => gathered(w, t, k)));
-  removeThing(w, t);
+  const pieces = Object.entries(gives).flatMap(([k, n]) => Array.from({ length: n }, () => gathered(w, target, k)));
+  removeThing(w, target);
   stow(w, a, pieces);
   return { done: true, damage: dmg, out: outcome({ ok: true, text: `Striking it with ${withWhat(tool)} broke up the ${act.target.kind}, leaving ${list(w, gives)}.`, gives, fields, numbers: { rate, ticksNeeded } }) };
 }
@@ -630,7 +653,7 @@ function worldTick(w: World, a: Agent, act: Act, t: Thing, tool: Kind, hold: Hol
       t.bark = (t.bark ?? 0) + peeled;
       // bark peeled off a living tree holds what its sapwood does (fire-constants sec. 27f)
       dropStacks(w, t.px, t.py, Array.from({ length: peeled }, () => ({ ...fresh(w, "bark", t.kind === "tree" ? greenOf(t.species) : deadAt(w, t, PHYS.bark.d)), ...(t.species ? { species: t.species } : {}) })));
-      see(w, t, "bark", "A sharp edge struck into a tree peels off strips of bark.", 60);
+      see(w, t, "bark", "A sharp edge struck into a tree peels off strips of bark.", stem.D);
     }
   }
   const numbers = { rate: BLOWS / c.blows, ticksNeeded: Math.ceil(c.blows / BLOWS) };
@@ -1102,27 +1125,25 @@ export function leather(w: World, hide: Kind) {
 }
 
 // ---------- wet ----------
-// How far from where they stand a fish is in reach: of a basket swept through the water, and of a line dangled in it,
-// which a fish swims to from farther off. A try that comes to nothing had no fish close by (sim.ts CONDITIONS nofish).
 // What a pine's wound gives, g a cm of its edge (time-constants sec. 8): unstimulated, 1.6 g from a 12 by 2.5 cm groove's
 // 29 cm and 1.7 g from a 1.5 cm punched hole's 4.7 cm (Lema et al. 2024, R450).
 export const RESIN_EDGE = 1.65;
-export const FISH_REACH: Record<"basket" | "line", number> = { basket: 15, line: 40 };
-// Who last lifted a fish out of the water, and when: the fish they caught was close by, though it swims there no more.
+// Who last lifted a fish out of the water, and when: the fish they caught was there, though it swims there no more.
 const landed = perWorld(() => new Map<string, number>());
-// Whether a fish swims within reach of what they dip (a basket's, unless a line's), in the water they dip it in, or
-// they just lifted one out.
-export const fishClose = (w: World, a: Agent, at: { px: number; py: number } = a, reach = FISH_REACH.basket) =>
-  landed(w).get(a.id) === w.t || fishNear(w, at, reach) >= 1;
+// Whether a fish of the water they dip into ranges where their gear can meet it (waters.ts meeting), or they just lifted
+// one out. A try that comes to nothing with none there had no fish close by (sim.ts CONDITIONS nofish).
+export const fishClose = (w: World, a: Agent, at: { px: number; py: number } = a) => landed(w).get(a.id) === w.t || meeting(w, at).fish.length > 0;
 // A line to dangle in the water: long, limp and strong.
 export const lineLike = (k?: Kind) => p(k, "long") >= 0.5 && p(k, "flexible") >= 0.8 && p(k, "binding") >= 0.5;
-// What there is to dip something into where they stand: open water (not frozen over), how many fish swim within a
-// basket's and a line's reach (FISH_REACH), how practised a hand at fishing they are, and a draw of chance, taken only
-// when a basket might bring up two.
-export type WetSetting = { held: boolean; water: boolean; fish: Record<keyof typeof FISH_REACH, number>; skill: number; draw: () => number };
-// fishing: what it fishes with, when it does: the basket or line wears in the water, and what it brings up comes out of
-// the water from within its reach.
-export type Wetting = Decision & { fishing?: keyof typeof FISH_REACH };
+// How long a dip lasts, s: the act's ticks (DURATION) at the tick's length.
+const DIP_S = DURATION.wet * TICK_S;
+// What there is to dip something into where they stand: open water (not frozen over), the fish of that water a gear can
+// meet (waters.ts meeting), the basal rate of whoever sweeps a basket, W, whose arms keep up chopping's power (hunt.ts
+// basketOf), and draws of chance (hunt.ts caught).
+export type WetSetting = { held: boolean; water: boolean; meet: Meeting; basal: number; draw: () => number };
+// fishing: what it fishes with, when it does: the basket or line wears in the water; caught: the fish it brings up,
+// their objects' ids.
+export type Wetting = Decision & { fishing?: "basket" | "line"; caught?: number[] };
 export function wetting(w: World, items: string[], c: WetSetting): Wetting {
   const x = kind(w, items[0]);
   const fields: Fields = { verb: "wet", inputs: items.slice(0, 1), at: "water", gives: [] };
@@ -1145,34 +1166,23 @@ export function wetting(w: World, items: string[], c: WetSetting): Wetting {
       id, make: () => ({ name: `${short(x)} of water`, props: { ...x.props, heavy: Math.min(1, p(x, "heavy") + 0.3) }, parts: [x.id], verb: "wet" }), quiet: true,
     } });
   }
-  // A basket woven loose enough to let the water through, swept along where fish are swimming, scoops one or two up.
-  if (p(x, "container") >= 0.6 && p(x, "container") < 0.85 && p(x, "fibrous") >= 0.6) {
-    if (!c.fish.basket) return { ok: false, text: `They swept the ${x.name} through the water, and it came up empty.`, uses: {}, gives: {}, fields, fishing: "basket" };
-    // how many it brings up is chance: two now and then where two or more are swimming, more often for a practised hand
-    const n = c.fish.basket >= 2 && c.draw() < 0.4 + c.skill * 0.05 ? 2 : 1;
-    fields.gives = ["fish"];
-    return { ok: true, text: `They swept the ${x.name} through the water and lifted it out with ${n > 1 ? "two fish" : "a fish"} flapping in it.`, uses: {}, gives: { fish: n }, fields, fishing: "basket" };
-  }
-  if (lineLike(x)) {
-    // A fish swimming within a stone's throw of the line comes to it and bites.
-    if (!c.fish.line) return { ok: false, text: `They dangled the ${x.name} in the water, and nothing bit.`, uses: {}, gives: {}, fields, fishing: "line" };
-    fields.gives = ["fish"];
-    return { ok: true, text: `They dangled the ${x.name} in the water and something bit. A fish!`, uses: {}, gives: { fish: 1 }, fields, fishing: "line" };
-  }
-  return decided({ text: `The ${x.name} got wet. Nothing else happened.`, fields });
+  // A basket woven loose enough to let the water through, swept along through the water: whatever fish swim into its
+  // mouth come up in it (hunt.ts).
+  const gear: Gear | null = p(x, "container") >= 0.6 && p(x, "container") < 0.85 && p(x, "fibrous") >= 0.6 ? { line: false, ...basketOf(physOf(w.kinds, x) ?? PHYS.fiber, c.basal) } : lineLike(x) ? { line: true } : null;
+  if (!gear) return decided({ text: `The ${x.name} got wet. Nothing else happened.`, fields });
+  const got = caught(gear, c.meet, DIP_S, c.draw), fishing = gear.line ? "line" : "basket";
+  if (!got.length) return { ok: false, text: gear.line ? `They dangled the ${x.name} in the water, and nothing bit.` : `They swept the ${x.name} through the water, and it came up empty.`, uses: {}, gives: {}, fields, fishing, caught: [] };
+  fields.gives = ["fish"];
+  const n = got.length, text = gear.line ? `They dangled the ${x.name} in the water and something bit. A fish!` : `They swept the ${x.name} through the water and lifted it out with ${n > 1 ? `${n} fish` : "a fish"} flapping in it.`;
+  return { ok: true, text, uses: {}, gives: { fish: n }, fields, fishing, caught: got };
 }
 export function wet(w: World, a: Agent, act: Act): Outcome {
-  // the fish swimming within a line's reach, and within a basket's, in the water they dip into (waters.ts)
-  const line = fishNear(w, a, FISH_REACH.line), basket = fishNear(w, a, FISH_REACH.basket);
-  const { fishing, ...d } = wetting(w, act.items, {
-    held: count(a, act.items[0]) > 0, water: openWater(w, a), fish: { basket, line },
-    skill: level(a.skills.fishing ?? 0), draw: () => Math.random(),
-  });
+  // the fish of the water they dip into that their gear can meet (waters.ts)
+  const { fishing, caught: got, ...d } = wetting(w, act.items, { held: count(a, act.items[0]) > 0, water: openWater(w, a), meet: meeting(w, a), basal: striker(w, a).basal, draw: () => Math.random() });
   if (fishing) {
     a.inv.find((q) => q.k === act.items[0])!.hp -= 0.03;
-    // what's caught are fish of that water, the nearest of them first: their objects die
-    const n = d.gives.fish ?? 0;
-    if (n && catchFish(w, a, FISH_REACH[fishing], n)) landed(w).set(a.id, w.t);
+    // what's caught are fish of that water: their objects die
+    if (got?.length) { takeFish(w, got); landed(w).set(a.id, w.t); }
   }
   return enact(w, a, d);
 }
@@ -1187,7 +1197,7 @@ export function pour(w: World, a: Agent, act: Act): Outcome {
   takeItems(a, x.id);
   giveItems(w, a, x.parts![0]);
   const t = act.target?.thing ? thingById(w, act.target.thing) : null;
-  if (!t || meters(a, t) > reachOf(t) + 1) {
+  if (!t || meters(a, t) > reachOf(t, armOf(w, a)) + 1) {
     delete fields.target;
     return outcome({ text: `They poured the water out of the ${short(kind(w, x.parts![0])!)}. It soaked into the ground.`, uses: { [x.id]: 1 }, fields });
   }
@@ -1213,49 +1223,70 @@ export const arrowy = (k?: Kind) => !!k && p(k, "long") >= 0.5 && p(k, "heavy") 
 export const stave = (k?: Kind) => isBow(k) && p(k, "hard") >= 0.2;
 // Whether this throw is a shot: an arrow-like thing loosed from a bow they are holding.
 export const shooting = (w: World, a: Agent, act: Act) => !!act.tool && stave(kind(w, act.tool)) && count(a, act.tool) > 0 && arrowy(kind(w, act.items[0]));
-// How far a throw flies true, and as close as anyone stalks an animal before throwing at it (sim.ts doAct): a bow
-// carries twice as far as an arm.
-export const throwReach = (w: World, a: Agent, act: Act) => (shooting(w, a, act) ? 40 : 20);
-// What a throw that hits does, a shot from a bow far more: weight and edge driven home, less what the animal shrugs off.
-export const throwDamage = (k: Kind, toughness: number, shot: boolean) => 5 * Math.max(0, (0.25 + p(k, "heavy") * 0.8) * (0.3 + p(k, "sharp") * 1.2) * (shot ? 5.5 : 2.2) - toughness * 0.3);
-// Throwing trades leverage for range: only weight and edge count. Whatever is within the throw's reach is hit; what is
-// farther off, it falls short of.
-export function throwTick(w: World, a: Agent, act: Act, st: { progress: number; tries?: number }): { done: boolean; out?: Outcome } {
+// Who throws, as the launch sees them (hunt.ts): their lean mass and basal rate as their body is now, and their stature;
+// nobody in particular, a grown body.
+export const thrower = (w: World, a?: Agent): Thrower => (a ? { ...striker(w, a), m: frameOf(w, a).m } : GROWN_THROWER);
+// A throw's missile and the energy it leaves with: shot from the bow they hold, or thrown by hand (hunt.ts).
+export function launchOf(w: World, a: Agent | undefined, act: Pick<Act, "items" | "tool">, shot: boolean) {
+  const k = kind(w, act.items[0]), ms = k && missileOf(w.kinds, k, a?.inv.find((q) => q.k === k.id));
+  if (!ms) return undefined;
+  const who = thrower(w, a), bow = shot ? kind(w, act.tool) : undefined;
+  return { ms, who, KE: bow ? bowKE(w.kinds, bow, who) : handKE(ms.m, who) };
+}
+// How far off a throw still reaches the animal's chest, m: as close as anyone stalks it before throwing (sim.ts doAct).
+export function throwReach(w: World, a: Agent, act: Act, prey: Animal) {
+  const l = herded(prey.species) ? launchOf(w, a, act, shooting(w, a, act)) : undefined;
+  return l ? throwRange(l.ms, Math.sqrt((2 * l.KE) / l.ms.m), releaseAt(l.who), animalBody(massOf(prey)).chest) : 0;
+}
+// What a kill gives whoever made it (hunt.ts): its meat, fat and bone by its mass and the fat it carried, and its skin
+// as one piece of its own size.
+function butcher(w: World, a: Agent, an: Animal) {
+  const sp = an.species as Herded, kg = massOf(an), gives = carcassOf(sp, fatOf(sp, an.hunger));
+  gone(w, an);
+  for (const [k, n] of Object.entries(gives)) if (k !== "hide") giveItems(w, a, k, n, physOf(w.kinds, w.kinds[k])?.green ?? 0);
+  giveStack(w, a, { ...fresh(w, "hide", PHYS.hide.green), size: hideOf(kg) });
+  return gives;
+}
+// Throwing (people-constants sec. 9): each throw flies by its launch and the air, lands about the point aimed at by the
+// spread of aim, and does what its energy does to the animal's body where it strikes (hunt.ts). They throw what they hold
+// at it, one aimed throw after another (hunt.ts SHOT_S), until it is down, they have nothing left, or a hit sends it off.
+export function throwTick(w: World, a: Agent, act: Act, st: { progress: number; tries?: number; hits?: number }): { done: boolean; out?: Outcome } {
   const k = kind(w, act.items[0]);
   const fields: Fields = { verb: "throw", inputs: act.items.slice(0, 1), target: act.target?.kind, gives: [] };
   const prey = w.animals.find((m) => m.id === act.target?.animal);
   if (!k || !count(a, k.id)) return { done: true, out: outcome({ text: "They had nothing left to throw.", fields }) };
-  if (!prey) return { done: true, out: outcome({ text: "The animal was gone.", fields }) };
-  if (++st.progress % 3) return { done: false };
-  const d = meters(a, prey);
-  // Shot from a bow, a light, sharp shaft flies far straighter and hits far harder than a hand could throw it.
+  if (!prey || !herded(prey.species)) return { done: true, out: outcome({ text: "The animal was gone.", fields }) };
   const shot = shooting(w, a, act);
   if (shot) fields.tool = act.tool;
-  const hit = d <= throwReach(w, a, act);
-  const mat = THING_MATERIAL[prey.species];
-  const thrown = takeStack(a, k.id)!;
-  // where a throw that falls short lands, a pace or more short of the animal, is chance
-  const fall = hit ? 0 : (1 + Math.random() * 3) / TILE_M, dir = Math.atan2(prey.py - a.py, prey.px - a.px);
-  dropStacks(w, prey.px - Math.cos(dir) * fall, prey.py - Math.sin(dir) * fall, [thrown]);
-  const dmg = hit ? throwDamage(k, mat.toughness ?? 0, shot) : 0;
-  prey.hp -= dmg;
-  if (prey.species === "deer") prey.state = "flee";
-  else prey.target = a.id;
-  trace("physics", "throw", { item: k.id, at: prey.species, dist: d, hit, dmg, hp: prey.hp }, a.id);
-  st.tries = (st.tries ?? 0) + 1;
-  if (prey.hp <= 0) {
-    gone(w, prey);
-    const gives = { ...mat.breaks };
-    for (const [kk, n] of Object.entries(gives)) giveItems(w, a, kk, n, physOf(w.kinds, w.kinds[kk])?.green ?? 0);
-    fields.gives = Object.keys(gives);
-    return { done: true, out: outcome({ ok: true, text: `A ${shot ? "shot" : "thrown"} ${k.name} brought down the ${prey.species}. They butchered it into ${list(w, gives)}.`, uses: { [k.id]: 1 }, gives, fields, numbers: { rate: dmg } }) };
+  st.progress++;
+  // its flight there, as the first of what they throw flies (a kind's pieces fly alike)
+  const d = meters(a, prey), bearing = Math.atan2(prey.py - a.py, prey.px - a.px), l = launchOf(w, a, act, shot)!, f = flightTo(l.ms, l.KE, l.who, prey, d);
+  let last: Throw | undefined, thrown = 0;
+  for (let i = 0; i < throwsInTick() && count(a, k.id); i++) {
+    const s = takeStack(a, k.id)!;
+    const r = throwAt(l.ms, prey, d, bearing, [Math.random(), Math.random(), Math.random(), Math.random(), Math.random()], f);
+    thrown++;
+    st.tries = (st.tries ?? 0) + 1;
+    // where it comes down: in the animal, or past it, short of it or wide of it along its flight
+    const along = r.hit ? 0 : r.along, across = r.hit ? 0 : r.across;
+    dropStacks(w, prey.px + (Math.cos(bearing) * along - Math.sin(bearing) * across) / TILE_M, prey.py + (Math.sin(bearing) * along + Math.cos(bearing) * across) / TILE_M, [s]);
+    trace("physics", "throw", { item: k.id, at: prey.species, dist: d, energy: l.KE, ...r }, a.id);
+    last = r;
+    if (!r.hit) continue;
+    if (r.wound === "kill") {
+      const gives = butcher(w, a, prey);
+      fields.gives = Object.keys(gives);
+      return { done: true, out: outcome({ ok: true, text: `A ${shot ? "shot" : "thrown"} ${k.name} brought down the ${prey.species}. They butchered it into ${list(w, gives)}.`, uses: { [k.id]: thrown }, gives, fields, numbers: { rate: r.E } }) };
+    }
+    // struck, it bolts; hurt, it is the weaker for it [design]: half itself
+    prey.state = "flee";
+    if (r.wound === "wound") { st.hits = (st.hits ?? 0) + 1; prey.hp = Math.min(prey.hp, prey.maxHp / 2); }
+    break;
   }
-  if (st.tries >= 6 || !count(a, k.id)) {
-    fields.effect = dmg > 0 || st.progress > 3 ? "wounded" : undefined;
-    const how = !hit ? `, but the ${k.name} fell short` : dmg > 0 ? " and hit it, but it got away hurt" : `, but the ${k.name} glanced off it`;
-    return { done: true, out: outcome({ text: `They ${shot ? "shot" : "threw"} ${an(k.name)} at the ${prey.species}${how}.`, effect: fields.effect, fields, numbers: { rate: dmg } }) };
-  }
-  return { done: false };
+  if (count(a, k.id)) return { done: false };
+  fields.effect = st.hits ? "wounded" : undefined;
+  const how = !last?.hit ? (last && last.along < 0 ? `, but the ${k.name} fell short` : `, but the ${k.name} missed`) : last.wound === "wound" ? " and hit it, but it got away hurt" : `, but the ${k.name} glanced off it`;
+  return { done: true, out: outcome({ text: `They ${shot ? "shot" : "threw"} ${an(k.name)} at the ${prey.species}${how}.`, uses: { [k.id]: thrown }, effect: fields.effect, fields, numbers: { rate: last?.hit && last.wound !== "none" ? last.E : 0 } }) };
 }
 const an = (s: string) => (/^[aeiou]/.test(s) ? `an ${s}` : `a ${s}`);
 
@@ -1280,11 +1311,11 @@ export function groundWord(w: World, px: number, py: number) {
   ys.set(py, word);
   return word;
 }
-// What can stand on a spot, and how far its own footprint reaches: a trunk, a bush's stems, a stone, a wall, a fire, a
-// hole. Anything else (another plant's leaves, its roots, its shade) is no bar to pushing a seed in beside it.
+// What can stand on a spot, and how far its own footprint reaches (gait.ts radiusOf): a trunk's width, a fire's heap, the
+// width of a bush, a stone, a wall or a hole, and a fallen log the round it could lie across [gap: which way a log lies is
+// not kept]. Anything else (another plant's leaves, its roots, its shade) is no bar to pushing a seed in beside it.
 const SOLID = ["tree", "stump", "burnt_stump", "bush", "dead_bush", "sapling", "boulder", "fallen_log", "structure", "fire", "pit", "trap", "well", "grave"];
-const FOOT: Record<string, number> = { tree: 0.5, stump: 0.4, burnt_stump: 0.4, sapling: 0.15, fallen_log: 0.5, fire: 0.8, pit: 0.8, trap: 0.8, well: 0.8 };
-export const occupied = (w: World, px: number, py: number) => !!anyAround(w, px, py, 6, SOLID, (t) => meters({ px, py }, t) < (FOOT[t.kind] ?? t.size / 2));
+export const occupied = (w: World, px: number, py: number) => !!anyAround(w, px, py, 6, SOLID, (t) => meters({ px, py }, t) < radiusOf(t));
 // A pit goes into a spade's depth of soil or more, on dry ground nothing stands on, clear of a tree's roots.
 export function diggable(w: World, px: number, py: number) {
   return soilAt(w, px, py) >= PIT_SOIL && dryAt(w, px, py) && !occupied(w, px, py) && !anyAround(w, px, py, 1.5, ["tree", "stump", "burnt_stump"]);
@@ -1461,7 +1492,7 @@ export function placing(w: World, items: string[], c: PlaceSetting): Placing {
     const forge = coal > 0 && !!fire!.contained, { lights, survives } = feeding(burns, pieces, air, after), ok = lights && survives;
     fields.at = forge ? "hearth" : "fire";
     if (ok) fields.builds = forge ? "forge" : "fed_fire";
-    const text = !ok ? `They laid ${list(w, uses)} on the fire.` : forge ? `The ${list(w, uses)} caught inside the ring and glowed white-hot.` : `Feeding ${list(w, uses)} to the fire built it up.`;
+    const text = !ok ? `They laid ${list(w, uses)} on the fire.` : forge ? `The ${list(w, uses)} caught inside the ring and glowed.` : `Feeding ${list(w, uses)} to the fire built it up.`;
     return { ok, text, uses, gives: {}, builds: fields.builds, fields, work: { does: "feed", pieces, charcoal: coal } };
   }
   // Stone or clay set round a fire stands round it, side by side (fire-constants sec. 29g); heaped over a fire that's
@@ -1600,15 +1631,24 @@ export function leaveHome(w: World, a: Agent, home: Thing) {
   mark(w, home);
 }
 
-// Putting things away inside a home keeps them out of your hands and out of the weather.
-export function stash(w: World, a: Agent, keepFood = 3, home = homeOf(w, a)) {
+// What a day of someone's life costs them, kJ: their basal rate (body.ts, Schofield) times the middle of FAO's active
+// lifestyles, a PAL of 1.70 to 1.99 (people-constants sec. 12, R273).
+export const dayNeed = (w: World, a: Agent) => (basal(frameOf(w, a)) * 86400 * 1.85) / 1000;
+// How many of a kind cover a day's need of theirs, eaten (one, of what isn't food).
+export function enough(w: World, a: Agent, k: string) {
+  const kj = meal(w, { k, hp: 1, born: w.t }).kj;
+  return kj > 0 ? Math.ceil(dayNeed(w, a) / kj) : 1;
+}
+// Putting things away inside a home keeps them out of your hands and out of the weather. They keep back the food that
+// covers keepKj of eating, a day's need unless they say.
+export function stash(w: World, a: Agent, keepKj = dayNeed(w, a), home = homeOf(w, a)) {
   if (!home || !reaches(a, home)) return 0;
   home.store ??= [];
-  let food = 0, moved = 0;
+  let kept = 0, moved = 0;
   for (const s of [...a.inv]) {
-    const k = w.kinds[s.k];
+    const k = w.kinds[s.k], kj = meal(w, s).kj;
     if (isToolish(k)) continue;
-    if (p(k, "edible") >= 0.1 && food++ < keepFood) continue;
+    if (kj > 0 && kept < keepKj) { kept += kj; continue; }
     a.inv.splice(a.inv.indexOf(s), 1);
     home.store.push(s);
     moved++;
@@ -1619,7 +1659,7 @@ export function stash(w: World, a: Agent, keepFood = 3, home = homeOf(w, a)) {
 export function unstash(w: World, a: Agent, home: Thing, k: string, n: number) {
   let got = 0;
   for (const s of [...(home.store ?? [])]) {
-    if (s.k !== k || got >= n || a.inv.length >= carryOf(w, a)) continue;
+    if (s.k !== k || got >= n || !canHold(w, a, s)) continue;
     home.store!.splice(home.store!.indexOf(s), 1);
     a.inv.push(s);
     got++;

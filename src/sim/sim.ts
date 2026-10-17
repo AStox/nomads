@@ -1,11 +1,11 @@
 import {
-  DAY, H, REACH, TILE_M, W, clock, dropStore, dryAt, heldStore, hourOf, isNight, nearestShore, level, log, meters, perWorld, reachOf, shuffle, stageOf,
+  DAY, H, TILE_M, W, clock, dropStore, dryAt, heldStore, hourOf, isNight, nearestShore, level, log, meters, perWorld, shuffle, stageOf,
   type Act, type Agent, type Animal, type BondKind, type Stack, type Step, type Thing, type Waiting, type World,
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
 import {
-  DURATION, ablaze, airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, FISH_REACH, force, gathered, giveItems, giveStack, greasy, hand, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
-  STRUCK, breaksOf, inWorld, fireHours, fireOutput, groundWord, hoursToDawn, leaveHome, pour, reaches, removeThing, residentsOf, rubTick, shape, shelterName, stash, strikeDamage, strikeTick, takeFromPile, takeItems, throwReach, throwTick, unstash, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
+  DURATION, ablaze, airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, force, gathered, giveItems, giveStack, greasy, hand, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
+  STRUCK, breaksOf, inWorld, fireHours, fireOutput, groundWord, hoursToDawn, leaveHome, pour, reaches, removeThing, residentsOf, rubTick, shape, shelterName, stash, strikeDamage, strikeTick, takeFromPile, takeItems, throwReach, throwTick, unstash, enough, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
   bedAir, breeze, carry, fan, firstHeld, isFlame, isLamp, rubbing, sizeOf, tooThick,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
@@ -13,16 +13,18 @@ import { apart, beliefKey, beliefText, cameOff, conditionWords, differed, weighs
 import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
 import { acornsUnder, burnedHomes, ecology, glean, onFireOut, onGrew, onWithered, trample, trapped, tread } from "./ecology";
 import { FAUNA, HUNTED } from "./fauna";
-import { animalsOf, attacked, herdNear, residentAnimals } from "./animals";
+import { animalsOf, attacked, herdNear, herded, residentAnimals } from "./animals";
 import { chooseTinker, decide, describeKind, fadeBonds, grudge, nameIt, newRel, reflect, respond, rule, sample, theorize, wonder, type Felt } from "./brain";
 import { clock as traceClock, count as bump, timed, trace, waited } from "./trace";
 import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sharedStore, snubbed, spread, standing, takeShared } from "./groups";
-import { anyAround, around, crownsOf, deadwoodOf, floraOf, liveThings, lookFor, moistOf, nearestThing, resident, seedlingsOf, shelve, thingById } from "./space";
+import { anyAround, around, crownsOf, deadwoodOf, floraOf, liveThings, lookFor, moistOf, nearestThing, resident, seedlingsOf, shelve, smallsOf, thingById } from "./space";
 import { landOf, walk } from "./walk";
-import { DARK, canSee, canopyAt, heatAt, lightOn, moveRate, restRate, skyShare, workRate } from "./light";
+import { armOf, canHold, capacityOf, fullness, gaitOf, massOf, overheadOf, reachOf, stride, type Stride } from "./gait";
+import { DARK, canopyAt, heatAt, lightOn, restRate, skyShare, workRate } from "./light";
+import { hears, personSize, seesAnimal, seesHands, seesPerson, seesThing } from "./senses";
 import { ripening } from "./cues";
 import { airAt, airOn, sunOn, vapourAt } from "./air";
-import { CLOUD, sunAt } from "./sky";
+import { CLOUD, TICK_S, sunAt } from "./sky";
 import { DOWN_HOT, basal, bodyOf, fate, feed, feels, fireGain, frameOf, hc, insulation, openRadiant, pressure, rested, skyTemp, sleepy, sunGain, warm, type Around } from "./body";
 import { enrich, fertilityAt, soilWaterAt } from "./soil";
 import { DAMP, SOAKED, moistureOf, tinder, tinderOf } from "./wetness";
@@ -32,13 +34,11 @@ import { envHere, stemDriver } from "./plants";
 import { seedDriver } from "./seeds";
 import { PATIENCE, nicheOf, shareAt, tooDark } from "./seedling";
 import { keepsFor } from "./spoil";
-import { STILL } from "./physics";
+import { STILL, holdOf } from "./physics";
 import type { Env } from "../terrain/niche";
 import { travel } from "./journeys";
 import { RULES, hooks } from "./rules";
 
-const VISION = 300; // meters: how far off someone notices another person
-const WALK = 2, RUN = 6; // meters a tick for an adult
 const SEARCH = 800; // meters: the farthest anyone goes looking for something to gather or work
 const nm = (w: World, k: string) => w.kinds[k]?.name ?? k.replaceAll("_", " ");
 const an = (s: string) => (s.includes("'s ") ? s : /^[aeiou]/.test(s) ? `an ${s}` : `a ${s}`);
@@ -165,7 +165,7 @@ function nearest<T extends { px: number; py: number }>(a: { px: number; py: numb
 }
 // On ground the agent could walk to from where they are.
 const reachable = (w: World, a: Agent, x: number, y: number) => { const land = landOf(w); return land[y * W + x] > 0 && land[y * W + x] === land[a.y * W + a.x]; };
-const thingSpot = (t: Thing | null): Spot | null => t && { px: t.px, py: t.py, reach: reachOf(t), thing: t };
+const thingSpot = (t: Thing | null, arm: number): Spot | null => t && { px: t.px, py: t.py, reach: reachOf(t, arm), thing: t };
 // Someone without a home settles beside the home of whoever they like most, if anyone they like has one.
 // A lean-to far from a close friend isn't worth staying in either.
 function homesite(w: World, a: Agent): Spot | null {
@@ -190,26 +190,27 @@ function someLive(w: World, f: Place) {
   return false;
 }
 function spot(w: World, a: Agent, kind: string): Spot | null {
-  if (kind === "home") { const h = homeOf(w, a); return h && { px: h.px, py: h.py, reach: reachOf(h) + 0.5, thing: h }; }
+  const arm = armOf(w, a);
+  if (kind === "home") { const h = homeOf(w, a); return h && { px: h.px, py: h.py, reach: reachOf(h, arm) + 0.5, thing: h }; }
   if (kind === "homesite") return homesite(w, a);
-  if (kind === "store") return thingSpot(sharedStore(w, a));
+  if (kind === "store") return thingSpot(sharedStore(w, a), arm);
   if (kind === "agent") { const b = agentById(w, a.goal?.target); return b ? { px: b.px, py: b.py, reach: 2, agent: b } : null; }
   if (kind === "water") {
     const s = nearestShore(w, a.px, a.py, (p) => reachable(w, a, Math.floor(p.px), Math.floor(p.py)));
     const well = nearestThing(w, a.px, a.py, ["well"], (t) => reachable(w, a, t.x, t.y), s ? meters(a, s) : SEARCH);
-    return well ? thingSpot(well) : s && { ...s, reach: 1 };
+    return well ? thingSpot(well, arm) : s && { ...s, reach: 1 };
   }
-  if ((HUNTED as readonly string[]).includes(kind)) { const x = nearest(a, w.animals, (m) => m.species === kind); return x && { px: x.px, py: x.py, reach: REACH + 0.5, animal: x }; }
+  if ((HUNTED as readonly string[]).includes(kind)) { const x = nearest(a, w.animals, (m) => m.species === kind); return x && { px: x.px, py: x.py, reach: arm + 0.5, animal: x }; }
   const ok = (t: Thing) => reachable(w, a, t.x, t.y);
-  if (kind.startsWith("item:")) { const k = kind.slice(5); return thingSpot(nearestThing(w, a.px, a.py, ["item"], (t) => t.item === k && ok(t), SEARCH)); }
-  if (kind === "fire") return thingSpot(nearest(a, liveThings(w), (t) => ablaze(t) && meters(a, t) <= SEARCH && ok(t)));
+  if (kind.startsWith("item:")) { const k = kind.slice(5); return thingSpot(nearestThing(w, a.px, a.py, ["item"], (t) => t.item === k && ok(t), SEARCH), arm); }
+  if (kind === "fire") return thingSpot(nearest(a, liveThings(w), (t) => ablaze(t) && meters(a, t) <= SEARCH && ok(t)), arm);
   const g = groundOfKey(kind);
   if (g) return groundsNear(w, a, g).get(g) ?? null;
   const f = THING_PLACES[kind];
   if (!f) return null;
   // None to be had: they look about all the same, and see none.
   if ((f.when && !f.when(w)) || (f.changed && !someLive(w, f))) { lookFor(w, a.px, a.py, f.kinds, SEARCH); return null; }
-  return thingSpot(nearestThing(w, a.px, a.py, f.kinds, (t) => (!f.ok || f.ok(t, w)) && ok(t), SEARCH));
+  return thingSpot(nearestThing(w, a.px, a.py, f.kinds, (t) => (!f.ok || f.ok(t, w)) && ok(t), SEARCH), arm);
 }
 // The ground round about they could walk to and work, by what it looks like underfoot, looking out in rings to 100 m,
 // clear of whatever else about a spot they've come to think gets in the way (shade, dry ground, crowding: a theory of
@@ -233,20 +234,28 @@ function groundsNear(w: World, a: Agent, word?: string) {
 const within = (w: World, a: Agent, kind: string, slack = 0) => { const s = spot(w, a, kind); return s && meters(a, s) <= s.reach + slack ? s : null; };
 
 // ---------- movement ----------
-const speedOf = (w: World, a: Agent, run: boolean) =>
-  (run ? RUN : WALK) * (stageOf(w, a) === "child" ? 0.6 : 1) * (w.paths[a.y * W + a.x] >= 5 ? 1.4 : 1) * moveRate(lightOn(w, a).bright);
-// Walk (or run) toward a point in tiles until within reach meters of it.
+// What walking took of someone in the tick they walked: the energy, J, and the seconds (gait.ts), read by their body the
+// tick after (metOf).
+const walked = perWorld(() => new Map<string, { t: number; J: number; s: number }>());
+// Walk (or run) toward a point in tiles until within reach meters of it, for as long as a tick lasts, as fast as their
+// body, their load, the ground and the light let them (gait.ts).
 function stepToward(w: World, a: Agent, tx: number, ty: number, reach: number, run = false): "arrived" | "moved" | "stuck" {
-  const x0 = a.px, y0 = a.py;
-  const r = walk(w, a, tx, ty, speedOf(w, a, run), reach);
-  const walked = Math.hypot(a.px - x0, a.py - y0) * TILE_M;
-  if (!walked) return r;
-  trample(w, a, walked);
+  const x0 = a.px, y0 = a.py, g = gaitOf(w, a, run, lightOn(w, a).lux);
+  let J = 0, last: Stride | null = null;
+  const { r, s } = walk(w, a, tx, ty, {
+    speed: (px, py, qx, qy) => (last = stride(w, g, px, py, qx, qy)).v,
+    went: (_px, _py, _qx, _qy, dt) => { J += last!.watts * dt; },
+  }, TICK_S, reach);
+  const was = walked(w).get(a.id);
+  walked(w).set(a.id, was?.t === w.t ? { t: w.t, J: was.J + J, s: was.s + s } : { t: w.t, J, s });
+  const went = Math.hypot(a.px - x0, a.py - y0) * TILE_M;
+  if (!went) return r;
+  trample(w, a, went);
   tread(w, x0, y0, a.px, a.py);
   const fell = trapped(w, a, x0, y0);
   if (fell && typeof fell === "object") {
     const text = `${a.name} fell into a pit ${fell.name} had hidden.`;
-    incident(w, { act: "trapped", by: fell, against: a, at: a, text, value: 0.25, seenBy: [a, ...w.agents.filter((b) => b !== fell && canSee(w, b, a, 30))] });
+    incident(w, { act: "trapped", by: fell, against: a, at: a, text, value: 0.25, seenBy: [a, ...w.agents.filter((b) => b !== fell && seesPerson(w, b, a, "recognise"))] });
     reflect(w, a, fell, text, { feel: -1 }).then((r) => { if (r.bond !== "none") log(w, "bond", [a.id], a, `${a.name} will remember this about ${fell.name}: ${r.bond.replaceAll("_", " ")}.`); }).catch(() => {});
   }
   return fell ? "stuck" : r;
@@ -268,9 +277,11 @@ export function ctxFor(w: World, a: Agent): Ctx {
   // A home more than half a day's walk off is no place to go for the night or to warm up: they make do where they are.
   for (const k of [...Object.keys(THING_PLACES), "water", "home", "homesite", "store", ...HUNTED]) {
     const s = spot(w, a, k);
-    if (s && (k !== "pit" || s.thing?.owner === a.id) && (k !== "home" || meters(a, s) <= HOME_NEAR) && (!blind || KNOWN[k] || canSee(w, a, s, SEARCH))) d[k] = meters(a, s) / STEP_M;
+    // in the dark they go only where they can still make out what they would go to (senses.ts)
+    const seen = s && (s.thing ? seesThing(w, a, s.thing, "recognise") : s.animal ? seesAnimal(w, a, s.animal, "recognise") : !!s.agent && seesPerson(w, a, s.agent, "notice"));
+    if (s && (k !== "pit" || s.thing?.owner === a.id) && (k !== "home" || meters(a, s) <= HOME_NEAR) && (!blind || KNOWN[k] || seen)) d[k] = meters(a, s) / STEP_M;
   }
-  around(w, a.px, a.py, 600, ["item"], (t, m) => { if (t.item && reachable(w, a, t.x, t.y) && (!blind || canSee(w, a, t, SEARCH))) d[`item:${t.item}`] = Math.min(d[`item:${t.item}`] ?? 99, m / STEP_M); });
+  around(w, a.px, a.py, 600, ["item"], (t, m) => { if (t.item && reachable(w, a, t.x, t.y) && (!blind || seesThing(w, a, t, "recognise"))) d[`item:${t.item}`] = Math.min(d[`item:${t.item}`] ?? 99, m / STEP_M); });
   const target = agentById(w, a.goal?.target);
   if (target) d.agent = meters(a, target) / STEP_M;
   // for someone who knows something to do to the ground, every kind of ground nearby: where they'd do it
@@ -283,7 +294,8 @@ export function ctxFor(w: World, a: Agent): Ctx {
   const shared: Record<string, number> = {};
   const camp = sharedStore(w, a);
   if (camp && camp !== home) for (const s of camp.store ?? []) shared[s.k] = (shared[s.k] ?? 0) + 1;
-  return { dist: d, beliefs: Object.values(a.beliefs), facts: a.facts, kinds: w.kinds, toxic, store, shared, now: conditionsNow(w, a) };
+  const carry = capacityOf(w, a).kg - (a.wearing ? massOf(w, a.wearing) : 0);
+  return { dist: d, beliefs: Object.values(a.beliefs), facts: a.facts, kinds: w.kinds, toxic, store, shared, now: conditionsNow(w, a), carry };
 }
 function pstate(w: World, a: Agent): PState {
   const fire = nearFire(w, a);
@@ -433,8 +445,8 @@ export function feasible(w: World, a: Agent) {
   const fire = spot(w, a, "fire");
   // In the dark nobody sets out to forage, explore or hunt; they rest, mend the fire and keep to it.
   const dark = lightOn(w, a).bright < DARK;
-  const people = w.agents.filter((b) => b !== a && b.down <= w.t && meters(a, b) <= 600 && (a.rel[b.id] || canSee(w, a, b, VISION)));
-  const fallen = w.agents.filter((b) => b !== a && b.down > w.t && canSee(w, a, b, VISION));
+  const people = w.agents.filter((b) => b !== a && b.down <= w.t && meters(a, b) <= 600 && (a.rel[b.id] || seesPerson(w, a, b, "notice")));
+  const fallen = w.agents.filter((b) => b !== a && b.down > w.t && seesPerson(w, a, b, "notice"));
   const holding = a.inv.length > 0;
   const home = homeOf(w, a);
   const can = (type: string) => {
@@ -506,15 +518,16 @@ export function feasible(w: World, a: Agent) {
   add("put_on", !a.wearing && builds("worn") && can("put_on"));
   add("dig_pit", builds("pit") && !anyAround(w, a.px, a.py, SEARCH, ["pit"], (t) => t.owner === a.id) && can("dig_pit"));
   add("set_trap", builds("trap") && can("set_trap"));
-  const foodHeld = a.inv.filter((s) => p(w.kinds[s.k], "edible") >= 0.1).length;
-  add("store_food", !!home && (home.shelter?.tier ?? 0) >= 1 && meters(a, home) <= 300 && (foodHeld > 3 || a.inv.length > 12));
+  // hands as full as twelve of the sixteen things anyone used to hold, by mass or bulk (gait.ts fullness) [design]
+  const foodHeld = a.inv.filter((s) => p(w.kinds[s.k], "edible") >= 0.1).length, laden = fullness(w, a);
+  add("store_food", !!home && (home.shelter?.tier ?? 0) >= 1 && meters(a, home) <= 300 && (foodHeld > 3 || laden > 12 / 16));
   // Laying by food that keeps, while there's room at home and something ripe to lay by.
   add("stock_up", !dark && !!home && (home.shelter?.tier ?? 0) >= 1 && (home.store?.length ?? 0) < 24 && can("stock_up"));
   const store = sharedStore(w, a);
-  add("share_store", !!campOf(w, a.id) && (foodHeld > 3 || a.inv.length > 10) && ((!!store && meters(a, store) <= 400) || (!!home && meters(a, home) <= 300)));
+  add("share_store", !!campOf(w, a.id) && (foodHeld > 3 || laden > 10 / 16) && ((!!store && meters(a, store) <= 400) || (!!home && meters(a, home) <= 300)));
   const products = new Set(believes.filter((b) => b.wins > 0 || (b.rate ?? 0) > 0).flatMap((b) => [...Object.keys(b.out), ...(b.fields.target && a.facts[`breaks:${b.fields.target}`] ? Object.keys(breaksOf(b.fields.target)) : [])]));
   for (const k of products) {
-    if (Object.keys(FAUNA).some((s) => THING_MATERIAL[s]?.breaks[k])) continue;
+    if (Object.keys(FAUNA).some((s) => breaksOf(s)[k])) continue;
     const kind = w.kinds[k];
     if (count(a, k) >= (isTool(kind) ? 1 : 4)) continue;
     // Nobody keeps making a thing they've never found a use for.
@@ -681,7 +694,7 @@ const laying = (w: World, a: Agent, s: Step) => (items: string[]) => {
 export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
   const act = s.act!;
   if (act.verb === "strike") {
-    const long = p(w.kinds[act.tool ?? ""], "long") >= 0.6 ? 1 : 0;
+    const long = holdOf(w, w.kinds[act.tool ?? ""] ?? null, act.tool ? a.inv.find((x) => x.k === act.tool) : undefined).swung.lever ?? 0, arm = armOf(w, a);
     if (act.target && !act.target.thing && !act.target.animal && inWorld(act.target.kind ?? "")) {
       const kind = act.target.kind!;
       if (kind in FAUNA) {
@@ -696,23 +709,21 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
     }
     if (act.target?.thing) {
       const t = thingById(w, act.target.thing);
-      if (t && meters(a, t) > reachOf(t) + long) {
+      if (t && meters(a, t) > reachOf(t, arm) + long) {
         a.status = `Walking over to the ${nm(w, t.kind)}`;
         if ((s.tries = (s.tries ?? 0) + 1) > 40) return `couldn't get to the ${nm(w, t.kind)}`;
-        return stepToward(w, a, t.px, t.py, reachOf(t)) === "stuck" ? `couldn't get to the ${nm(w, t.kind)}` : "wait";
+        return stepToward(w, a, t.px, t.py, reachOf(t, arm)) === "stuck" ? `couldn't get to the ${nm(w, t.kind)}` : "wait";
       }
     }
     if (act.target?.animal) {
       const prey = w.animals.find((m) => m.id === act.target!.animal);
       if (!prey) return "the animal was gone";
-      if (prey.alt > 2 || meters(a, prey) > REACH + 0.5 + long) {
+      if (prey.alt > overheadOf(w, a) + long || meters(a, prey) > arm + 0.5 + long) {
         a.status = `Chasing the ${prey.species}`;
-        if ((s.tries = (s.tries ?? 0) + 1) > 60 || prey.alt > 2) return `the ${prey.species} got away`;
+        if ((s.tries = (s.tries ?? 0) + 1) > 60 || prey.alt > overheadOf(w, a) + long) return `the ${prey.species} got away`;
         // Catching up and swinging happen in the same moment, or a fleeing animal is always a stride ahead.
-        if (stepToward(w, a, prey.px, prey.py, REACH + long, true) !== "arrived") return "wait";
+        if (stepToward(w, a, prey.px, prey.py, arm + long, true) !== "arrived") return "wait";
       }
-      if (prey.species === "deer") prey.state = "flee";
-      if (prey.species === "wolf") prey.target = a.id;
     }
     if (fumbles(w, a)) return "wait";
     a.status = actText(w, act);
@@ -736,12 +747,12 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
     const prey = w.animals.find((m) => m.id === act.target?.animal) ?? nearest(a, w.animals, (m) => m.species === act.target?.kind && m.alt < 2);
     if (!prey || meters(a, prey) > 250) return `the ${act.target?.kind} got away`;
     act.target = { ...act.target, animal: prey.id };
-    // close enough for the throw to fly true: a bow carries twice as far as an arm
-    const range = throwReach(w, a, act);
+    // close enough for the throw to reach its chest (physics.ts throwReach, by the missile, the launch and the air)
+    const range = throwReach(w, a, act, prey);
     if (meters(a, prey) > range) {
       a.status = `Stalking the ${prey.species}`;
       if ((s.tries = (s.tries ?? 0) + 1) > 80) return `the ${prey.species} got away`;
-      stepToward(w, a, prey.px, prey.py, range * 0.8);
+      stepToward(w, a, prey.px, prey.py, range);
       return "wait";
     }
     if (fumbles(w, a)) return "wait";
@@ -754,10 +765,10 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
     act.target.thing ??= nearestThing(w, a.px, a.py, [act.target.kind], (x) => reachable(w, a, x.x, x.y), 25)?.id;
     const t = thingById(w, act.target.thing);
     if (!t) return "the young plant was gone";
-    if (meters(a, t) > reachOf(t) + 0.5) {
+    if (meters(a, t) > reachOf(t, armOf(w, a)) + 0.5) {
       a.status = "Walking over to the young plant";
       if ((s.tries = (s.tries ?? 0) + 1) > 40) return "couldn't get to the young plant";
-      return stepToward(w, a, t.px, t.py, reachOf(t)) === "stuck" ? "couldn't get to the young plant" : "wait";
+      return stepToward(w, a, t.px, t.py, reachOf(t, armOf(w, a))) === "stuck" ? "couldn't get to the young plant" : "wait";
     }
   }
   if (act.at && act.at !== "home" && !(act.at === "water" ? openWater(w, a) : within(w, a, act.at, 1))) return `not at the ${act.at}`;
@@ -855,7 +866,7 @@ const CONDITIONS: Record<string, Condition> = {
   },
   small: { now: (x) => { const f = x.fire(); return !!f?.bed && radiation(f.bed, f.air, PHYS.log) < LEAST; }, words: "The fire was small", verbs: AT_FIRE, on: "a small fire", off: "a big fire" },
   coals: { now: (x) => { const f = x.fire(); return !!f?.bed && alight(f.bed) && output(f.bed, f.air).flaming <= 0; }, words: "Nothing was left of the fire but coals", verbs: AT_FIRE, on: "only coals", off: "flaming" },
-  nofish: { now: (x) => !fishClose(x.w, x.a, x.at, x.items.some((k) => lineLike(x.w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket), words: "No fish were swimming close by", verbs: ["wet"] },
+  nofish: { now: (x) => !fishClose(x.w, x.a, x.at), words: "No fish were swimming close by", verbs: ["wet"] },
   shade: { now: (x) => x.spot().light < 0.5, words: "It was in the shade of trees", place: true },
   // too dark for the seed going in to come up there in as long as anyone waits on one, in the light the crowns overhead
   // and the plants close round it leave it (seedling.ts tooDark)
@@ -872,7 +883,6 @@ const CONDITIONS: Record<string, Condition> = {
   salty: { now: (x) => x.spot().env.salt > 0.3, words: "Salt spray reached the spot", place: true },
 };
 const GROUND_VERBS: Record<string, true> = { plant: true, dig: true, pour: true };
-const TICK_S = 86400 / DAY;
 // verb: what they did, which brings in the spot (at: where it was done, if not where they stand) for what's done to the
 // ground, and what bears only on that verb; without one, everything they could see. items: what they did it with. For a
 // fire act, lay: the things they hold that they lay (one for each of items; by default those they'd choose), and after:
@@ -1162,11 +1172,11 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
   if (act.verb === "strike") gain(w, a, "toolwork", 1);
   if (out.ok && act.verb === "strike" && act.target?.kind && inWorld(act.target.kind)) {
     const breaks = breaksOf(act.target.kind);
-    see(w, a, `breaks:${act.target.kind}`, `A ${act.target.kind} breaks down into ${Object.keys(breaks).map((k) => nm(w, k)).join(", ")}.`);
+    see(w, a, `breaks:${act.target.kind}`, `A ${act.target.kind} breaks down into ${Object.keys(breaks).map((k) => nm(w, k)).join(", ")}.`, personSize(w, a));
   }
   // Bringing down the last deer anywhere near is something the neighbors notice.
   if (out.ok && act.target?.kind === "deer" && herdNear(w, "deer", a, 500) < 1)
-    incident(w, { act: "last_deer", by: a, at: a, text: `${a.name} killed the last deer anywhere near.`, value: 0.6, seenBy: w.agents.filter((b) => canSee(w, b, a, VISION)) });
+    incident(w, { act: "last_deer", by: a, at: a, text: `${a.name} killed the last deer anywhere near.`, value: 0.6, seenBy: w.agents.filter((b) => seesPerson(w, b, a, "recognise")) });
   if (out.ok) for (const k of new Set([act.tool, ...act.items].filter(Boolean) as string[])) noteUse(w, k, act, out);
   for (const k of Object.keys(out.gives)) {
     const kind = w.kinds[k];
@@ -1276,10 +1286,10 @@ export function tinkerOptions(w: World, a: Agent, aim?: string): Option[] {
   // What's lying or growing within a stone's throw that they could walk over to and strike.
   const targets: string[] = [];
   around(w, a.px, a.py, 20, STRIKEABLE, (t) => { if (!ablaze(t)) targets.push(t.kind); });
-  const animalsNear = w.animals.filter((m) => meters(a, m) <= 60 && m.alt < 2 && THING_MATERIAL[m.species]).map((m) => m.species);
+  const animalsNear = w.animals.filter((m) => meters(a, m) <= 60 && m.alt < 2 && herded(m.species)).map((m) => m.species);
   for (const kind of new Set([...targets, ...animalsNear])) for (const tool of tools) push({ verb: "strike", items: [], tool, target: { kind } });
   const bows = held.filter((k) => stave(w.kinds[k]));
-  for (const sp of new Set(w.animals.filter((m) => meters(a, m) <= 120 && m.alt < 2 && THING_MATERIAL[m.species]).map((m) => m.species)))
+  for (const sp of new Set(w.animals.filter((m) => meters(a, m) <= 120 && m.alt < 2 && herded(m.species)).map((m) => m.species)))
     for (const x of held) {
       if (p(w.kinds[x], "heavy") >= 0.3 || p(w.kinds[x], "sharp") >= 0.4) push({ verb: "throw", items: [x], target: { kind: sp } });
       if (arrowy(w.kinds[x])) for (const bow of bows) if (bow !== x) push({ verb: "throw", items: [x], tool: bow, target: { kind: sp } });
@@ -1410,7 +1420,7 @@ function run(w: World, a: Agent): boolean | string {
     case "take_stored": {
       const home = homeOf(w, a);
       if (!home || !reaches(a, home)) return "wasn't home";
-      const n = unstash(w, a, home, s.arg!, 3);
+      const n = unstash(w, a, home, s.arg!, enough(w, a, s.arg!));
       return n ? true : "it wasn't there anymore";
     }
     case "share": {
@@ -1425,11 +1435,11 @@ function run(w: World, a: Agent): boolean | string {
       const home = thingById(w, s.arg);
       if (!home?.store?.length) return "there was nothing there";
       const owner = agentById(w, home.owner);
-      if (!reaches(a, home)) { a.status = "Creeping toward someone's home"; return stepToward(w, a, home.px, home.py, reachOf(home)) === "stuck" ? "no path" : false; }
+      if (!reaches(a, home)) { a.status = "Creeping toward someone's home"; return stepToward(w, a, home.px, home.py, reachOf(home, armOf(w, a))) === "stuck" ? "no path" : false; }
       const took: string[] = [];
-      for (let i = 0; i < 3 && home.store.length && a.inv.length < 16; i++) { const st = home.store.pop()!; a.inv.push(st); took.push(st.k); }
+      for (let i = 0; i < 3 && home.store.length && canHold(w, a, home.store[home.store.length - 1]); i++) { const st = home.store.pop()!; a.inv.push(st); took.push(st.k); }
       mark(w, home);
-      const seen = w.agents.filter((b) => b !== a && canSee(w, b, a, 30));
+      const seen = w.agents.filter((b) => b !== a && seesHands(w, b, a, "recognise"));
       const text = `${a.name} took ${took.map((k) => nm(w, k)).join(", ")} from ${owner ? `${owner.name}'s` : "an empty"} home.`;
       if (!seen.length) { log(w, "steal", [a.id], a, `${text} No one saw.`); return true; }
       log(w, "steal", [a.id, ...seen.map((b) => b.id)], a, `${text} ${seen.map((b) => b.name).join(" and ")} saw it happen.`);
@@ -1445,13 +1455,13 @@ function run(w: World, a: Agent): boolean | string {
         if (s.progress > 5) {
           const text = `${a.name} stayed with ${b.name} while they lay collapsed, and kept them alive.`;
           log(w, "help", [a.id, b.id], a, text);
-          incident(w, { act: "tend", by: a, against: b, at: b, text, value: 0.5, seenBy: [b, ...w.agents.filter((c) => c !== a && canSee(w, c, a, VISION))] });
+          incident(w, { act: "tend", by: a, against: b, at: b, text, value: 0.5, seenBy: [b, ...w.agents.filter((c) => c !== a && seesPerson(w, c, a, "recognise"))] });
           reflect(w, b, a, text, { feel: 2, bond: "saved_my_life" }).then((r) => { if (r.bond !== "none") log(w, "bond", [b.id], b, `${b.name} will remember this about ${a.name}: ${r.bond.replaceAll("_", " ")}.`); }).catch(() => {});
         }
         return true;
       }
       // Lying against them, their body keeps some of the cold off (surroundings: contact); someone out cold can't eat.
-      if (meters(a, b) > REACH) { stepToward(w, a, b.px, b.py, 1); return false; }
+      if (meters(a, b) > armOf(w, a)) { stepToward(w, a, b.px, b.py, 1); return false; }
       a.status = `Looking after ${b.name}`;
       return false;
     }
@@ -1500,7 +1510,7 @@ function run(w: World, a: Agent): boolean | string {
       s.act = { verb: "eat", items: [k] };
       const out = eat(w, a, k);
       if (!out.uses[k]) return "they couldn't eat any more";
-      if (out.effect) { finishAct(w, a, s, out, false); if (out.effect === "sick") see(w, a, `sick:${k}`, `${cap(nm(w, k))} can make you sick.`, 50); }
+      if (out.effect) { finishAct(w, a, s, out, false); if (out.effect === "sick") see(w, a, `sick:${k}`, `Someone fell sick after eating ${nm(w, k)}.`, personSize(w, a)); }
       else log(w, "eat", [a.id], a, `${a.name} ate ${an(nm(w, k))}.`);
       return true;
     }
@@ -1686,7 +1696,7 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
   const rebuffed = () => { felt.a = { feel: -1, bond: "refused_me" }; };
   const reply = (situation: string, opts: Record<string, string>) => respond(w, b, a, situation, opts);
   const trait = (x: Agent, t: string) => x.traits[t] ?? 0;
-  const bystanders = () => w.agents.filter((c) => c !== a && c !== b && c.down <= w.t && canSee(w, c, a, 30));
+  const bystanders = () => w.agents.filter((c) => c !== a && c !== b && c.down <= w.t && seesPerson(w, c, a, "recognise"));
   switch (kind) {
     case "talk": {
       const r = await reply(`${a.name} walks up to ${b.name} to talk.`, { welcome: "Chat warmly", brush_off: "Brush them off" });
@@ -2009,7 +2019,7 @@ function burned(w: World) {
     if (!owner || !lighter || owner === lighter) continue;
     const text = `${lighter.name}'s fire spread and burned down ${owner.name}'s home.`;
     log(w, "burned", [owner.id, lighter.id], owner, text);
-    incident(w, { act: "burned_home", by: lighter, against: owner, at: owner, text, value: 1, seenBy: [owner, ...w.agents.filter((b) => canSee(w, b, owner, VISION))] });
+    incident(w, { act: "burned_home", by: lighter, against: owner, at: owner, text, value: 1, seenBy: [owner, ...w.agents.filter((b) => seesPerson(w, b, owner, "recognise"))] });
     reflect(w, owner, lighter, text, { feel: -2, bond: "destroyed_my_home" }).then((r) => {
       if (r.bond !== "none") log(w, "bond", [owner.id], owner, `${owner.name} will remember this about ${lighter.name}: ${r.bond.replaceAll("_", " ")}.`);
     }).catch(() => {});
@@ -2061,7 +2071,7 @@ export function surroundings(w: World, a: Agent): { e: Around; q: number } {
   // a garment covers as much of them as it is wide (its dry mass over its thickness and density), insulating by its
   // thickness and its hair
   const x = a.wearing ? stackPhys(w.kinds, a.wearing) : undefined, water = a.wearing ? moistureOf(a.wearing) : 0;
-  const touching = w.agents.filter((b) => b !== a && meters(a, b) <= REACH && ((lying(w, a) && (lying(w, b) || tends(b, a))) || (tends(a, b) && lying(w, b)))).length;
+  const touching = w.agents.filter((b) => b !== a && meters(a, b) <= armOf(w, a) && ((lying(w, a) && (lying(w, b) || tends(b, a))) || (tends(a, b) && lying(w, b)))).length;
   return {
     e: {
       air: temp, wind: air.wind, vapour: vapourAt(w, a.px, a.py, w.t), radiant, gain,
@@ -2072,17 +2082,20 @@ export function surroundings(w: World, a: Agent): { e: Around; q: number } {
   };
 }
 // What someone is doing, as a multiple of their basal rate (body-constants sec. 8): the Compendium's MET for each, taken
-// as FAO's activity ratios are, and walking for whatever takes them somewhere.
+// as FAO's activity ratios are. Walking and running cost what Pandolf's equation, the wading measurements and Minetti's
+// running cost give for the ground they went over (gait.ts, people-constants sec. 6f), over the seconds they went in the
+// tick before; the rest of the tick goes at what they are doing.
 const MET: Record<Activity, number> = {
   sleep: 1, faint: 1, talk: 1.3, give: 1.3, angry: 1.3, steal: 2.5, think: 1.3, warm: 1.3, eat: 1.5, flee: 8.3, fight: 6, hunt: 6, tend: 1.3,
   store: 3.3, tinker: 3, chop: 8, build: 4, plant: 4.1, dig: 5, fire: 2.5, craft: 3, forage: 3.5, collect: 3.3, explore: 3.5, help: 3.5, sick: 1.3,
 };
-const STANDING = 1.3, WALKING = 3.5;
-function metOf(w: World, a: Agent) {
-  const op = a.plan[0]?.op;
-  if (a.down <= w.t && !a.engaged && !a.thinking && (op === "goto" || op === "wander")) return WALKING;
-  const act = activity(w, a);
-  return act ? MET[act] : STANDING;
+const STANDING = 1.3;
+function metOf(w: World, a: Agent, basalW: number) {
+  const op = a.plan[0]?.op, act = activity(w, a), still = a.down <= w.t && !a.engaged && !a.thinking && (op === "goto" || op === "wander") ? STANDING : act ? MET[act] : STANDING;
+  const went = walked(w).get(a.id);
+  if (!went || went.t !== w.t - 1) return still;
+  const s = Math.min(TICK_S, went.s);
+  return (went.J + still * basalW * (TICK_S - s)) / (TICK_S * basalW);
 }
 // A tick of someone's body where they are (body.ts): its heat, its stores and its want of sleep, and the needs the rest of
 // the sim reads off it. Their health is their wounds': it heals while they are well, warm and not out of glycogen
@@ -2090,9 +2103,10 @@ function metOf(w: World, a: Agent) {
 export function needs(w: World, a: Agent) {
   const n = a.needs;
   if (a.struggles) for (const k of Object.keys(a.struggles) as Need[]) if (n[k] > 60) delete a.struggles[k];
-  n.social = Math.max(0, n.social - 0.05);
+  // [design: the old 0.05 points a five-minute tick, as a rate]
+  n.social = Math.max(0, n.social - (14.4 / 86400) * TICK_S);
   const b = bodyOf(w, a), f = frameOf(w, a), { e, q } = surroundings(w, a), rest = basal(f) / f.area;
-  const out = warm(b, f, rest * metOf(w, a), rest, e, TICK_S);
+  const out = warm(b, f, rest * metOf(w, a, basal(f)), rest, e, TICK_S);
   b.dry = out.dry;
   feed(b, f, out.spent, TICK_S);
   const asleep = a.down > w.t || (!!b.asleep && a.plan[0]?.op === "rest");
@@ -2111,14 +2125,16 @@ export function needs(w: World, a: Agent) {
 // Whether a tick where they are would warm them: their body gaining heat, tried on a copy of it.
 export function warmsThem(w: World, a: Agent) {
   const b = { ...bodyOf(w, a) }, f = frameOf(w, a), rest = basal(f) / f.area;
-  return warm(b, f, rest * metOf(w, a), rest, surroundings(w, a).e, TICK_S).store > 0;
+  return warm(b, f, rest * metOf(w, a, basal(f)), rest, surroundings(w, a).e, TICK_S).store > 0;
 }
 
 function perceive(w: World, a: Agent) {
   for (const b of w.agents) {
-    if (b === a || !canSee(w, a, b, VISION)) continue;
-    if (meters(a, b) <= 30) a.near[b.id] = (a.near[b.id] ?? 0) + 1;
-    if (!a.seen[b.id] || w.t - a.seen[b.id] > 150) {
+    if (b === a || !seesPerson(w, a, b, "notice")) continue;
+    // in each other's company: where they could follow each other talking (senses.ts)
+    if (hears(w, b, a)) a.near[b.id] = (a.near[b.id] ?? 0) + 1;
+    // half a day out of sight and someone is news again [design]
+    if (!a.seen[b.id] || (w.t - a.seen[b.id]) * TICK_S > 12.5 * 3600) {
       if (!a.rel[b.id]) log(w, "notice", [a.id], a, `${a.name} spotted a stranger: ${b.name}.`);
       a.nextDecide = Math.min(a.nextDecide, w.t);
       if (a.goal && w.t - a.goal.since > 5 && !a.engaged && !tinkerWait(w).has(a.id) && !["flee", "fight", "defend"].includes(a.goal.type)) { a.goal = null; a.plan = []; }
@@ -2152,7 +2168,7 @@ function perceive(w: World, a: Agent) {
   if (heat.q >= BEARABLE && !busy) {
     a.goal = { type: "flee", since: w.t, odds: {}, fails: 0 };
     a.plan = [{ op: "flee", progress: 0 }];
-    if (heat.from && heat.from.kind !== "fire") see(w, a, "fire_spreads", "Fire spreads to anything dry and wooden nearby.", 60);
+    if (heat.from && heat.from.kind !== "fire") see(w, a, "fire_spreads", "Fire spreads to anything dry and wooden nearby.", heat.from.size);
   }
 }
 
@@ -2199,7 +2215,7 @@ function agentTick(w: World, a: Agent) {
     if (a.down <= w.t) {
       a.goal = null; a.plan = [];
       log(w, "collapse", [a.id], a, `${a.name} collapsed from ${b.core > DOWN_HOT ? "the heat" : "cold"}.`);
-      for (const c of w.agents) if (c !== a && canSee(w, c, a, VISION) && !c.engaged && !c.thinking) { c.nextDecide = w.t; if (c.goal && !["flee", "fight", "defend"].includes(c.goal.type)) { c.goal = null; c.plan = []; } }
+      for (const c of w.agents) if (c !== a && seesPerson(w, c, a, "notice") && !c.engaged && !c.thinking) { c.nextDecide = w.t; if (c.goal && !["flee", "fight", "defend"].includes(c.goal.type)) { c.goal = null; c.plan = []; } }
     }
     // down through their next tick, until their core comes back
     a.down = w.t + 2;
@@ -2308,6 +2324,7 @@ export async function tick(w: World) {
   } finally {
     // even when the CPU's work fails, so the store's next tick can begin
     flora.watch(w.agents, SEARCH);
+    smallsOf(w).watch(w.agents, TILE_M * 1000);
     const l: Landing = { done: false, p: Promise.resolve() };
     l.p = gpu.land().then(() => { l.done = true; }, (e: unknown) => { l.done = true; l.error = e; });
     landings.set(w, l);

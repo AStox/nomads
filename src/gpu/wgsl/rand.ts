@@ -329,9 +329,11 @@ fn binom(n: u32, K: u32) -> u32 {
   }
   return hit;
 }
+// A fixed trip count, broken off at m: Metal on AMD gave wrong outcomes for a loop bounded by an m the compiler could
+// fold to 1 (Unit 12b, measured on the dev machine's AMD adapter; the Intel one was right).
 fn outcome(t: array<u32, 15>, m: u32, v: u32) -> u32 {
   var T = t; var o = 0u;
-  for (var j = 0u; j < m; j++) { if (T[j] <= v) { o++; } }
+  for (var j = 0u; j < 15u; j++) { if (j >= m) { break; } if (T[j] <= v) { o++; } }
   return o;
 }
 fn multinom(n: u32, t: array<u32, 15>, m: u32) -> array<u32, 16> {

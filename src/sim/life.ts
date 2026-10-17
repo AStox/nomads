@@ -5,6 +5,7 @@ import { dropStacks, leaveHome, mark } from "./physics";
 import { liveThings } from "./space";
 import { newRel } from "./brain";
 import { see } from "./beliefs";
+import { personSize } from "./senses";
 import { trace } from "./trace";
 
 const MAX_PEOPLE = 12;
@@ -18,7 +19,7 @@ export function die(w: World, a: Agent, cause: string) {
   for (const t of liveThings(w)) if (t.owner === a.id && t.kind === "structure") leaveHome(w, a, t);
   log(w, "died", [a.id], a, `${a.name} died of ${cause}, aged ${Math.floor(ageOf(w, a))}.${Object.keys(a.beliefs).length ? ` What they knew went with them, unless they taught it.` : ""}`, `${a.name} died`);
   trace("world", "died", { id: a.id, cause, age: ageOf(w, a), beliefs: Object.keys(a.beliefs).length });
-  see(w, a, "death", "People can die, and what they know dies with them unless they pass it on.", 300);
+  see(w, a, "death", "People can die, and what they know dies with them unless they pass it on.", personSize(w, a));
   for (const b of w.agents) {
     if (b.engaged === a.id) b.engaged = null;
     if (b.goal?.target === a.id) { b.goal = null; b.plan = []; }
@@ -106,7 +107,7 @@ export function life(w: World) {
       w.agents.push(kid);
       w.people[kid.id] = { id: kid.id, name: kid.name, color: kid.color, alive: true };
       log(w, "born", [kid.id, a.id, ...(father ? [father.id] : [])], a, `${a.name}${father ? ` and ${father.name}` : ""} had a child: ${kid.name}.`, `${kid.name} born`);
-      see(w, a, "birth", "Couples who live together and eat well have children.", 300);
+      see(w, a, "birth", "Couples who live together and eat well have children.", personSize(w, kid));
       trace("world", "born", { id: kid.id, parents: kid.parents, traits: kid.traits });
     }
   }

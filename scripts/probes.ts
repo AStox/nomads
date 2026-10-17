@@ -448,7 +448,7 @@ function ticksOf(w: World, key: string) {
 function lightsNow(w: World, a: Agent, key: string, handed: number) {
   const f = fieldsOf(key), held = a.inv.find((s) => s.k === "fiber"), m = held ? moistureOf(held) : handed;
   const pieces: Stack[] = [{ k: "fiber", hp: 1, born: w.t, m }, ...[0, 1, 2].map(() => piece(w, TWIG))];
-  const r = predict(w, f, { tinder: m, wind: airOn(w, a).wind, spot: a, ahead: { soil: [], temp: [] }, fish: 0, pieces, air: layAt(w, a).air, fire: null });
+  const r = predict(w, f, { tinder: m, wind: airOn(w, a).wind, spot: a, ahead: { soil: [], temp: [] }, fish: { fish: [], area: 0 }, pieces, air: layAt(w, a).air, fire: null });
   return "ok" in r && r.ok && r.builds === "fire";
 }
 // The conditions that settle a try, from the cases met: those every case it holds in mostly fails, none implied by

@@ -6,7 +6,9 @@ import {
 import { around, liveThings, piecesAround, thingById } from "./space";
 import { ablaze, fireHours, fireOutput, shelterName } from "./physics";
 import { TRAITS } from "./traits";
-import { DARK, canSee, lightOn, lightWords } from "./light";
+import { DARK, lightOn, lightWords } from "./light";
+import { seesAnimal, seesHands, seesPerson, seesThing } from "./senses";
+import { PHYS } from "./fuel";
 import { airOn, airWords } from "./air";
 import { ripening } from "./cues";
 import { PROPS, THING_MATERIAL, type Kind, type Props } from "./materials";
@@ -152,19 +154,26 @@ function blazeWords(w: World, t: Thing) {
 }
 
 const PIECES: Record<string, true> = { stick: true, stone: true, boulder: true };
+// What they're told of as lying about them: within NEARBY m [design: a person's surroundings as a prompt holds them; what
+// of it they make out is sight's, senses.ts].
+const NEARBY = 60;
 export function view(w: World, a: Agent) {
   const near: Record<string, { count: number; nearest: number }> = {};
   const m = (b: { px: number; py: number }) => Math.round(meters(a, b));
-  around(w, a.px, a.py, 60, null, (t, d) => {
+  around(w, a.px, a.py, NEARBY, null, (t, d) => {
     // a stick, stone or boulder as it lies is counted with the pieces below
     if (PIECES[t.kind] && !liveThings(w).has(t)) return;
-    if (t.kind === "pebble" || t.kind === "grass" || (t.kind === "bush" && t.species === "berry" && (t.n ?? 0) < 1) || !canSee(w, a, t, 60)) return;
-    let kind = t.kind === "item" ? `${w.kinds[t.item ?? ""]?.name ?? "something"} on the ground` : t.kind === "structure" ? (shelterName(w, t) === "fire ring" ? "ring of stones round a fire" : ["pile of stuff", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0]) : t.kind === "bush" ? `${t.species ?? "berry"} bush` : t.kind.replaceAll("_", " ");
+    // what they tell a thing by is its shape, recognised at its size (senses.ts)
+    if (!seesThing(w, a, t, "recognise")) return;
+    // a bush's berries show as berries do, each noticed at its own size (fuel.ts PHYS.berry)
+    const fruit = t.kind === "bush" && (t.n ?? 0) >= 1 && seesThing(w, a, { px: t.px, py: t.py, size: PHYS.berry.d }, "notice");
+    let kind = t.kind === "item" ? `${w.kinds[t.item ?? ""]?.name ?? "something"} on the ground` : t.kind === "structure" ? (shelterName(w, t) === "fire ring" ? "ring of stones round a fire" : ["pile of stuff", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0]) : t.kind === "bush" ? `${t.species ?? "berry"} bush${fruit ? " with berries on it" : ""}` : t.kind.replaceAll("_", " ");
     if (t.kind !== "fire" && ablaze(t)) kind = `burning ${kind}`;
-    if (t.kind === "fire") kind = t.covered ? "fire heaped over with stone" : t.contained && (t.charcoal ?? 0) > 0 ? "ringed fire glowing white-hot with charcoal" : t.contained ? "ringed fire" : "fire";
+    if (t.kind === "fire") kind = t.covered ? "fire heaped over with stone" : t.contained && (t.charcoal ?? 0) > 0 ? "ringed fire of charcoal" : t.contained ? "ringed fire" : "fire";
     if (ablaze(t)) kind = `${kind}, ${blazeWords(w, t)}`;
     if ((t.resin ?? 0) >= 1) kind = `${kind} beaded with resin`;
-    if (t.kind === "boulder" && t.inside?.flint) kind = "boulder studded with dark nodules";
+    // flint in a boulder shows where a nodule of it does, noticed at its own size (fuel.ts PHYS.flint)
+    if (t.kind === "boulder" && t.inside?.flint && seesThing(w, a, { px: t.px, py: t.py, size: PHYS.flint.d }, "notice")) kind = "boulder studded with dark nodules";
     if (t.shared) kind = `${kind} kept as the camp's store`;
     const label = t.owner && t.kind !== "fire" && t.kind !== "sapling" ? (t.owner === a.id ? `your ${kind}` : `${w.agents.find((x) => x.id === t.owner)?.name}'s ${kind}`) : kind;
     const e = (near[label] ??= { count: 0, nearest: Math.round(d) });
@@ -173,19 +182,21 @@ export function view(w: World, a: Agent) {
   });
   // sticks, stones and boulders lying about, besides those already handled as things (space.ts pieces)
   for (const k of Object.keys(PIECES) as ("stick" | "stone" | "boulder")[]) {
-    const n = piecesAround(w, a.px, a.py, 60, k), e = n && (near[k] ??= { count: 0, nearest: Math.round(n.nearest) });
+    const n = piecesAround(w, a.px, a.py, NEARBY, k), e = n && (near[k] ??= { count: 0, nearest: Math.round(n.nearest) });
     if (e && n) { e.count += n.count; e.nearest = Math.min(e.nearest, Math.round(n.nearest)); }
   }
   const nearby = Object.fromEntries(Object.entries(near).map(([k, e]) => [k, `${e.count} (nearest ${e.nearest} m)`]));
-  const animals = w.animals.filter((x) => canSee(w, a, x, 300)).map((x) => `${x.species} ${m(x)} m away (${x.state})`);
+  // an animal is told by its kind, recognised at its size; a person noticed at theirs, what they're doing recognised, and
+  // what they carry recognised in their hands (senses.ts)
+  const animals = w.animals.filter((x) => seesAnimal(w, a, x, "recognise")).map((x) => `${x.species} ${m(x)} m away (${x.state})`);
   const home = thingById(w, a.home);
   const people = w.agents
-    .filter((b) => b.id !== a.id && (a.rel[b.id] || canSee(w, a, b, 300)))
+    .filter((b) => b.id !== a.id && (a.rel[b.id] || seesPerson(w, a, b, "notice")))
     .map((b) => ({
       name: b.name,
       distance: `${m(b)} m`,
-      doing: canSee(w, a, b, 300) ? b.status : "out of sight",
-      carrying: canSee(w, a, b, 30) ? inventoryText(w, b) : undefined,
+      doing: seesPerson(w, a, b, "recognise") ? b.status : "out of sight",
+      carrying: seesHands(w, a, b, "recognise") ? inventoryText(w, b) : undefined,
       camp: campTag(w, a, b),
       home: (() => { const h = thingById(w, b.home); return h ? `${m(h)} m from you${home ? `, ${Math.round(meters(home, h))} m from your home` : ""}` : undefined; })(),
       ...describeRel(w, a, b),

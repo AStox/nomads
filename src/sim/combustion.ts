@@ -99,7 +99,7 @@ const half = (v: number) => Math.cbrt((3 * v) / (2 * Math.PI * PACK));
 const coalSolid = (b: Bed) => b.coals.reduce((t, c) => t + c.kg / c.rho, 0);
 // pieces at the heap's packing round coals at their own
 const heap = (pieces: number, coals: number) => Math.cbrt((3 * (pieces / PACK + coals / COAL_PACK)) / (2 * Math.PI));
-const radius = (b: Bed) => heap(b.groups.reduce((t, g) => t + solid(g), 0), coalSolid(b));
+export const radius = (b: Bed) => heap(b.groups.reduce((t, g) => t + solid(g), 0), coalSolid(b));
 // the flaming part, which coals glowing don't widen
 const burning = (b: Bed) => half(b.groups.reduce((t, g) => t + (g.lit ? solid(g) : 0), 0));
 const coalSide = (b: Bed) => b.coals.reduce((t, c) => t + (4 * c.kg) / (c.rho * c.d), 0);

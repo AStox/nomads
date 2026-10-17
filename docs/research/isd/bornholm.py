@@ -407,6 +407,15 @@ def upper():
     print("mean of the two: wet-hour wind", r(np.mean(both["u"], axis=0), 2), "RH", r(np.mean(both["rh"], axis=0)), "rose16 wet", r(np.mean(both["rose"], axis=0), 4))
 
 
+def vis():
+    """Hammer Odde's horizontal visibility by sky state: the median, and Koschmieder's extinction 3.912 / V averaged over
+    the hours (the mean of what thins a contrast over a metre)."""
+    x = load("hammer")
+    s = classify(x)
+    for q in STATES:
+        v = x.vis[(s == q) & x.vis.notna() & (x.vis > 0)]
+        print(f"{q}: hours {len(v)}, median visibility {float(v.median()):.0f} m, mean extinction {float((3.912 / v).mean()) * 1000:.4f} per km (as V {3.912 / float((3.912 / v).mean()):.0f} m), quartiles {[float(v.quantile(p)) for p in (0.25, 0.75)]}")
+
 
 if __name__ == "__main__":
     what = sys.argv[1] if len(sys.argv) > 1 else "all"
@@ -420,3 +429,5 @@ if __name__ == "__main__":
         dmi()
     if what in ("upper", "all"):
         upper()
+    if what == "vis":
+        vis()

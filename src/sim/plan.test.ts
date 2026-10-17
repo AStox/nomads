@@ -103,8 +103,13 @@ test("sticks leaned together shelter someone; enough logs make it a sturdier hut
   expect(lean.builds).toBe("shelter");
   const home = thingById(w, a.home)!;
   const before = home.shelter!;
-  giveItems(w, a, "log", 6);
-  place(w, a, { verb: "place", items: Array(6).fill("log") });
+  // six logs, brought a load at a time, as many as a body carries (gait.ts canHold)
+  for (let left = 6; left > 0; ) {
+    const n = giveItems(w, a, "log", left);
+    expect(n).toBeGreaterThan(0);
+    place(w, a, { verb: "place", items: Array(n).fill("log") });
+    left -= n;
+  }
   expect(home.shelter!.tier).toBeGreaterThanOrEqual(before.tier);
   expect(home.shelter!.sturdy).toBeGreaterThan(before.sturdy);
 });

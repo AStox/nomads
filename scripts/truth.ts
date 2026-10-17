@@ -10,11 +10,11 @@
 //   NOMADS_BRAIN=random bun scripts/truth.ts --seed 3 --runs /tmp/theories/3 --days 40 --out /tmp/truth/3.json
 // --runs: a directory of scripts/theories.ts runs of this island. Their ways are what gets worked out, and the things
 // they made and the rulings they settled come too, so the same things can be made here.
-import { fishNear } from "../src/sim/waters";
+import { meeting } from "../src/sim/waters";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { W, H, addThing, dryAt, newWorld, rng, shoreOf, stageOf, type Stack, type Thing, type World } from "../src/sim/world";
 import { forecast } from "../src/sim/ecology";
-import { FISH_REACH, bedAir, firstHeld, gathered, giveItems, giveStack, layAt, lineLike, openWater, removeThing, usual, type Fields, type Fire } from "../src/sim/physics";
+import { bedAir, firstHeld, gathered, giveItems, giveStack, layAt, openWater, removeThing, usual, type Fields, type Fire } from "../src/sim/physics";
 import { airOn, islandTemp } from "../src/sim/air";
 import { lightOn, workRate } from "../src/sim/light";
 import { nearestThing, put, shelve } from "../src/sim/space";
@@ -163,8 +163,7 @@ function situation(plan: Plan): Trial | string {
   const own = pieces.find((s) => tinder(w.kinds[s.k])), about = own ? null : tinderOf(w, stand);
   const lit = own ? moistureOf(own) : f.verb === "strike" ? null : about && !about.kind ? about.m : null;
   const fire = f.verb === "heat" || (f.verb === "place" && f.at && FIRE_PLACES[f.at]) ? fireHere(f.at ?? "fire") : null;
-  const reach = f.inputs.some((k) => lineLike(w.kinds[k])) ? FISH_REACH.line : FISH_REACH.basket;
-  const fish = fishNear(w, stand, reach);
+  const fish = meeting(w, stand);
   const ground = f.verb === "plant" || f.verb === "pour" || f.verb === "dig";
   const r = predict(w, f, {
     tinder: lit, wind: airOn(w, stand).wind, spot: stand, ahead: ground ? ahead(w, px, py, w.t, hours.slice(i + 1, i + 1 + PATIENCE / 12)) : { soil: [], temp: [] }, fish,

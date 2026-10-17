@@ -1,14 +1,15 @@
 // The animals' law (wgsl/animals.ts, driven by animals.ts): a TypeScript oracle of every kernel of a step, the old
 // herds' rules now each animal's own, and the plan's checks (Unit 10): a lone deer's energy over a day equals the
 // oracle's bit for bit, and two wolves claiming one deer resolve the same way every run, on the high-performance and
-// the low-power adapter alike.
+// the low-power adapter alike. The oracle follows both sides of G.lumped: the forage rule and the crows' worms
+// without a ground link, as every test but one runs, and the pools a link lays (a stand-in for src/gpu/smalls.ts) with.
 import "../sim/world";
 import { lawConsts } from "../sim/animals";
 import { afterAll, expect, test } from "bun:test";
 import { openGpu, releaseGpu, theGpu, type Gpu } from "./device";
 import { readback } from "./kernel";
 import { Store } from "./store";
-import { ANIMAL, Animals, type AnimalDriver } from "./animals";
+import { ANIMAL, Animals, type AnimalDriver, type Ground } from "./animals";
 import { N } from "../terrain/grid";
 import { divw, mul64, qexp, qmul } from "./fixed";
 import { next32, rinit, unif } from "./rand";
@@ -32,9 +33,9 @@ const bern16 = (p: number) => { const r = next32(); return p >= 65536 || r < u(p
 const i32 = (x: number) => x | 0;
 
 // A step's state, as the buffers hold it.
-type State = { cap: number; b: Uint32Array; W: Uint32Array; A: Uint32Array; KP: Uint32Array; D: Uint32Array };
+type State = { cap: number; b: Uint32Array; W: Uint32Array; A: Uint32Array; KP: Uint32Array; D: Uint32Array; RQ: Uint32Array };
 function oracleStep(st: State) {
-  const { cap, b, W, A, KP, D } = st, fo = (f: number) => (f + 1) * cap;
+  const { cap, b, W, A, KP, D, RQ } = st, fo = (f: number) => (f + 1) * cap;
   const kk = (s: number, w: number) => KP[s * KW + w], kg = (w: number) => KP[GK + w], pp = (w: number) => KP[PO + w];
   const fe = (i: number) => i32(b[fo(F.e) + i]);
   if (pp(P.flags) & (FLAG.calve | FLAG.kits | FLAG.whelp | FLAG.cub | FLAG.heron | FLAG.eagle | FLAG.gull | FLAG.crow)) throw new Error("the oracle steps no births");
@@ -64,11 +65,14 @@ function oracleStep(st: State) {
     set(W_.layer + L.land, t, 1);
     const grown = Math.floor(D[d0 + DR.grow * T + t] / per);
     const dies = u(65536 - qexp(-i32(Math.floor(D[d0 + DR.leafk * T + t] / per)))), keep = u(65536 - dies);
-    const rots = kg(G.rots), most = kg(G.most), fg = w(W_.fg, t), fd = w(W_.fd, t);
-    const room = 65536 - i32(Math.floor(u(fg + fd) / most));
-    const fpos = Math.max(0, i32(fg) + qmul(qmul(i32(grown), i32(w(W_.lit, t))), room));
-    const fg2 = mulq(fpos, keep), fd2 = mulq(u(fd + mulq(fpos, dies)), rots);
-    set(W_.fg, t, fg2); set(W_.fd, t, fd2);
+    const rots = kg(G.rots), most = kg(G.most), lumped = kg(G.lumped) === 1;
+    let fg2 = w(W_.fg, t), fd2 = w(W_.fd, t);
+    if (!lumped) {
+      const fg = fg2, fd = fd2, room = 65536 - i32(Math.floor(u(fg + fd) / most));
+      const fpos = Math.max(0, i32(fg) + qmul(qmul(i32(grown), i32(w(W_.lit, t))), room));
+      fg2 = mulq(fpos, keep); fd2 = mulq(u(fd + mulq(fpos, dies)), rots);
+      set(W_.fg, t, fg2); set(W_.fd, t, fd2);
+    }
     const bg = w(W_.bg, t), bd = w(W_.bd, t), broom = 65536 - i32(Math.floor(u(bg + bd) / most));
     const bpos = Math.max(0, i32(bg) + qmul(i32(grown), broom)), bare = D[d0 + DR.bare * T + t];
     let fall = dies;
@@ -121,8 +125,10 @@ function oracleStep(st: State) {
       pr = mulq(w(W_.warren, t), u(mulq(gr, me) + mulq(mulq(u(65536 - gr), resp(fd2, half)), med)));
     }
     set(W_.pdeer, t, pd); set(W_.prabbit, t, pr);
-    set(W_.layer + L.carr, t, Math.floor(carr / 10)); set(W_.layer + L.strip, t, Math.floor(stripg / 10)); set(W_.layer + L.shore, t, Math.floor(shoreg / 10));
-    if (temp > 0) set(W_.layer + L.worms, t, Math.floor(smul(kg(G.worms), mulq(kg(G.m2), ga)) / 10));
+    if (!lumped) { set(W_.icrow, t, temp > 0 ? smul(smul(kg(G.worms), mulq(kg(G.m2), ga)), 1000) : 0); set(W_.igull, t, 0); set(W_.ifox, t, 0); }
+    set(W_.layer + L.carr, t, Math.floor(carr / 10)); set(W_.layer + L.strip, t, Math.floor(stripg / 10));
+    set(W_.layer + L.shore, t, Math.floor(shoreg / 10) + Math.floor(w(W_.igull, t) / 10000));
+    set(W_.layer + L.worms, t, Math.floor(w(W_.icrow, t) / 10000)); set(W_.layer + L.finv, t, Math.floor(w(W_.ifox, t) / 10000));
   }
   // cells
   for (let t = 0; t < T; t++) {
@@ -230,9 +236,8 @@ function oracleStep(st: State) {
       continue;
     }
     if (s === SP.fox) {
-      if (held !== 0) continue;
       const land = box(L.land, x0, y0, x1, y1), nr = box(L.rabbit, x0, y0, x1, y1);
-      if (hungry && nr > 0) {
+      if (held === 0 && hungry && nr > 0) {
         const a = smul(nr, 100), bb = smul(land, kk(s, K.half));
         let rs: number;
         if (a >= bb) { const x = muldiv(bb, 65536, a); rs = muldiv(65536, 65536, u(65536 + mulq(x, x))); }
@@ -244,14 +249,15 @@ function oracleStep(st: State) {
           continue;
         }
       }
-      const c = box(L.carr, x0, y0, x1, y1);
-      if (hungry && c > 0) {
-        const a = mulq(muldiv(want, 1000, flesh), resp(c, smul(land, kk(s, K.half2))));
-        const t = pick(L.carr, 1, L.carr, 0, x0, y0, x1, y1, unif(c))[0];
-        askAdd(PO_.carr, t, a); q(Q_.a0, a); q(Q_.pick, t);
+      const wc = held !== 0 ? 0 : 1, tot = bw(L.carr, wc, L.finv, 1, x0, y0, x1, y1);
+      if (hungry && tot > 0) {
+        const a = mulq(muldiv(want, 1000, flesh), resp(tot, smul(land, kk(s, K.half2))));
+        const t = pick(L.carr, wc, L.finv, 1, x0, y0, x1, y1, unif(tot))[0];
+        const lc = wc * w(W_.layer + L.carr, t), li = w(W_.layer + L.finv, t), ac = muldiv(a, lc, u(lc + li));
+        askAdd(PO_.carr, t, ac); askAdd(PO_.foxi, t, a - ac); q(Q_.a0, ac); q(Q_.a0 + 1, a - ac); q(Q_.pick, t);
         continue;
       }
-      q(Q_.pick, anyland(bx));
+      if (held === 0) q(Q_.pick, anyland(bx));
       continue;
     }
     const half = smul(u((x1 - x0 + 1) * (y1 - y0 + 1)), kk(s, K.half));
@@ -279,7 +285,13 @@ function oracleStep(st: State) {
     if (tot === 0 || a === 0) continue;
     const t = pick(L.carr, 1, lb, 1, x0, y0, x1, y1, unif(tot))[0], lc = w(W_.layer + L.carr, t), lo = w(W_.layer + lb, t), ac = muldiv(a, lc, u(lc + lo));
     askAdd(PO_.carr, t, ac);
-    if (s === SP.gull) askAdd(PO_.shore, t, a - ac);
+    if (s === SP.gull) {
+      const ao = muldiv(a - ac, Math.floor(w(W_.shoreg, t) / 10), lo);
+      askAdd(PO_.shore, t, ao); askAdd(PO_.gulli, t, a - ac - ao);
+      q(Q_.a0, ac); q(Q_.a0 + 1, ao); q(Q_.a0 + 2, a - ac - ao); q(Q_.pick, t);
+      continue;
+    }
+    askAdd(PO_.crowi, t, a - ac);
     q(Q_.a0, ac); q(Q_.a0 + 1, a - ac); q(Q_.pick, t);
   }
   // resolve
@@ -321,6 +333,9 @@ function oracleStep(st: State) {
     set(W_.share + PO_.strip, t, part(askOf(PO_.strip, t), smul(w(W_.stripg, t), 1000)));
     set(W_.share + PO_.shore, t, part(askOf(PO_.shore, t), smul(w(W_.shoreg, t), 1000)));
     set(W_.share + PO_.carr, t, part(askOf(PO_.carr, t), smul(w(W_.carr, t), 1000)));
+    set(W_.share + PO_.crowi, t, part(askOf(PO_.crowi, t), w(W_.icrow, t)));
+    set(W_.share + PO_.gulli, t, part(askOf(PO_.gulli, t), w(W_.igull, t)));
+    set(W_.share + PO_.foxi, t, part(askOf(PO_.foxi, t), w(W_.ifox, t)));
   }
   // eat
   const ate = (p: number, t: number, v: number) => { A[A_.eat + p * T + t] = u(A[A_.eat + p * T + t] + v); };
@@ -329,7 +344,7 @@ function oracleStep(st: State) {
     const t = Q[Q_.pick * cap + i];
     if (t === NONE || Q[Q_.tgt * cap + i] !== NONE) continue;
     const s = b[fo(F.sp) + i] & 15, me = kg(G.me), med = kg(G.med), flesh = kg(G.flesh), a = [0, 1, 2, 3, 4].map((k) => Q[(Q_.a0 + k) * cap + i]), sh = (p: number) => w(W_.share + p, t);
-    let j = 0;
+    let j = 0, inv = 0, key = NONE;
     if (s === SP.deer) {
       const gg = mulq(a[0], sh(PO_.dg)), gd = mulq(a[1], sh(PO_.dd)), bg = mulq(a[2], sh(PO_.dbg)), bd = mulq(a[3], sh(PO_.dbd)), tw = mulq(a[4], sh(PO_.dtw));
       ate(PO_.dg, t, gg); ate(PO_.dd, t, gd); ate(PO_.dbg, t, bg); ate(PO_.dbd, t, bd); ate(PO_.dtw, t, tw);
@@ -338,17 +353,21 @@ function oracleStep(st: State) {
       const gg = mulq(a[0], sh(PO_.rg)), gd = mulq(a[1], sh(PO_.rd));
       ate(PO_.rg, t, gg); ate(PO_.rd, t, gd);
       j = u(muldiv(gg, me, 1000) + muldiv(gd, med, 1000));
-    } else if (s === SP.fox || s === SP.eagle || s === SP.heron) {
-      const p = s === SP.fox ? PO_.carr : s === SP.eagle ? PO_.water : PO_.strip, g = mulq(a[0], sh(p));
+    } else if (s === SP.eagle || s === SP.heron) {
+      const p = s === SP.eagle ? PO_.water : PO_.strip, g = mulq(a[0], sh(p));
       ate(p, t, g); j = muldiv(g, flesh, 1000);
+    } else if (s === SP.fox) {
+      const c = mulq(a[0], sh(PO_.carr)), v = mulq(a[1], sh(PO_.foxi));
+      ate(PO_.carr, t, c); ate(PO_.foxi, t, v); j = muldiv(u(c + v), flesh, 1000); inv = v; key = w(W_.tfox, t);
     } else if (s === SP.gull) {
-      const c = mulq(a[0], sh(PO_.carr)), o = mulq(a[1], sh(PO_.shore));
-      ate(PO_.carr, t, c); ate(PO_.shore, t, o); j = muldiv(u(c + o), flesh, 1000);
+      const c = mulq(a[0], sh(PO_.carr)), o = mulq(a[1], sh(PO_.shore)), v = mulq(a[2], sh(PO_.gulli));
+      ate(PO_.carr, t, c); ate(PO_.shore, t, o); ate(PO_.gulli, t, v); j = muldiv(u(c + o + v), flesh, 1000); inv = v; key = w(W_.tgull, t);
     } else if (s === SP.crow) {
-      const c = mulq(a[0], sh(PO_.carr));
-      ate(PO_.carr, t, c); j = muldiv(u(c + a[1]), flesh, 1000);
+      const c = mulq(a[0], sh(PO_.carr)), v = mulq(a[1], sh(PO_.crowi));
+      ate(PO_.carr, t, c); ate(PO_.crowi, t, v); j = muldiv(u(c + v), flesh, 1000); inv = v; key = w(W_.tcrow, t);
     }
     b[fo(F.e) + i] = u(fe(i) + i32(j));
+    if (inv > 0 && key !== NONE && b[fo(F.held) + i] === 1 && RQ[i] === NONE) RQ[i] = key;
   }
   // the packs
   for (let i = 0; i < cap; i++) {
@@ -386,6 +405,7 @@ function oracleStep(st: State) {
     const ta = w(W_.tarea, t);
     if (ta > 0) set(W_.tw, t, satSub(w(W_.tw, t), muldiv(eat(PO_.dtw, t), 65536, ta)));
     set(W_.carr, t, satSub(w(W_.carr, t), Math.floor(u(eat(PO_.carr, t) + 999) / 1000)));
+    set(W_.icrow, t, satSub(w(W_.icrow, t), eat(PO_.crowi, t))); set(W_.igull, t, satSub(w(W_.igull, t), eat(PO_.gulli, t))); set(W_.ifox, t, satSub(w(W_.ifox, t), eat(PO_.foxi, t)));
     const m2 = w(W_.stripm2, t);
     if (m2 > 0) set(W_.shore, t, satSub(w(W_.shore, t), muldiv(muldiv(eat(PO_.shore, t), kg(G.flesh), kg(G.shorej)), 65536, smul(m2, 1000))));
     const fg = Math.floor(eat(PO_.strip, t) / 1000), sg = w(W_.stripg, t);
@@ -503,30 +523,32 @@ function laid(list: [number, number, number, number, number, number][]) {
   }
   return { n: list.length, cols: Object.fromEntries(Object.entries(cols).map(([k, v]) => [k, Uint32Array.from(v)])) };
 }
-// Steps the law on a GPU through the given ticks, reading back every body and the tiles after each; and the oracle
-// from the same start.
-async function run(g: Gpu, driver: AnimalDriver, ticks: number[], prep?: (g: Gpu, W: GPUBuffer) => void) {
+// Steps the law on a GPU through the given ticks, reading back every body, the tiles and the requests after each; and
+// the oracle from the same start.
+type Out = { b: Uint32Array; W: Uint32Array; A: Uint32Array; RQ: Uint32Array };
+async function run(g: Gpu, driver: AnimalDriver, ticks: number[], prep?: (g: Gpu, W: GPUBuffer) => void, ground: Ground | null = null) {
   const s = new Store(g), host = new Animals();
-  await host.attach(s, driver);
-  const k = s.kind(ANIMAL), bufs = host.buffersForTest!, out: { b: Uint32Array; W: Uint32Array; A: Uint32Array }[] = [];
+  await host.attach(s, driver, null, null, ground);
+  const k = s.kind(ANIMAL), bufs = host.buffersForTest!, out: Out[] = [];
   g.device.queue.writeBuffer(bufs.W, W_.fish * T * 4, ISLET_FISH);
   prep?.(g, bufs.W);
-  const start = { b: await s.read(ANIMAL, "body"), W: new Uint32Array(await readback(g, bufs.W)), A: new Uint32Array(await readback(g, bufs.A)), KP: new Uint32Array(await readback(g, bufs.KP)), D: new Uint32Array(await readback(g, bufs.D)) };
+  const back = async (buf: GPUBuffer) => new Uint32Array(await readback(g, buf));
+  const start = { b: await s.read(ANIMAL, "body"), W: await back(bufs.W), A: await back(bufs.A), KP: await back(bufs.KP), D: await back(bufs.D), RQ: await back(bufs.RQ) };
   for (const t of ticks) {
     await s.step(t);
-    out.push({ b: await s.read(ANIMAL, "body"), W: new Uint32Array(await readback(g, bufs.W)), A: new Uint32Array(await readback(g, bufs.A)) });
+    out.push({ b: await s.read(ANIMAL, "body"), W: await back(bufs.W), A: await back(bufs.A), RQ: await back(bufs.RQ) });
   }
   host.destroy(); s.destroy();
   return { start, out, cap: k.capacity };
 }
-function oracleRun(start: { b: Uint32Array; W: Uint32Array; A: Uint32Array; KP: Uint32Array; D: Uint32Array }, cap: number, ticks: number[], driver: AnimalDriver) {
-  const st: State = { cap, b: start.b.slice(), W: start.W.slice(), A: start.A.slice(), KP: start.KP.slice(), D: start.D };
-  const outs: { b: Uint32Array; W: Uint32Array; A: Uint32Array }[] = [];
+function oracleRun(start: Omit<State, "cap">, cap: number, ticks: number[], driver: AnimalDriver) {
+  const st: State = { cap, b: start.b.slice(), W: start.W.slice(), A: start.A.slice(), KP: start.KP.slice(), D: start.D, RQ: start.RQ.slice() };
+  const outs: Out[] = [];
   for (const t of ticks) {
     const { day, flags } = driver.step(t, 24);
     st.KP.set([t >>> 0, 24, day, flags, driver.seed, 12], PO);
     oracleStep(st);
-    outs.push({ b: st.b.slice(), W: st.W.slice(), A: st.A.slice() });
+    outs.push({ b: st.b.slice(), W: st.W.slice(), A: st.A.slice(), RQ: st.RQ.slice() });
   }
   return outs;
 }
@@ -649,8 +671,72 @@ test("every kind together for a few hours: grazing, hunting, scavenging, fishing
     expect(hi.out[k].b).toEqual(oracle[k].b);
     expect(hi.out[k].W).toEqual(oracle[k].W);
     expect(hi.out[k].A).toEqual(oracle[k].A);
+    expect(hi.out[k].RQ).toEqual(oracle[k].RQ);
     expect(lo.out[k].b).toEqual(hi.out[k].b);
   }
+}, 600_000);
+
+test("with a ground link: the sward and the invertebrates as the link lays them, eaten by crows, gulls and foxes, and the held ones' requests, bit for bit with the oracle on both adapters", async () => {
+  // The link lays 120 g/m2 green and 40 dead on every land tile, 50 g of the crows' invertebrates a tile, 100 g of the
+  // gulls' on the shore's tiles, 200 g of the foxes', and a bin key of each (the tile and the class standing in for
+  // cell and state); it is never asked to spin (no days before anyone wakes). 3 kg of carrion lie round (46, 46).
+  const ground: Ground = {
+    bind(s, link) {
+      const sward = new Uint32Array(2 * T), inv = new Uint32Array((W_.tfox - W_.icrow + 1) * T);
+      for (let i = 0; i < T; i++) {
+        if (!LAND(i)) continue;
+        const x = i % TW, y = Math.floor(i / TW), at = (run: number) => (run - W_.icrow) * T + i;
+        sward[i] = q16(120); sward[T + i] = q16(40);
+        inv[at(W_.icrow)] = 50_000; inv[at(W_.ifox)] = 200_000;
+        if (x === 40 || x === 59 || y === 40 || y === 59) inv[at(W_.igull)] = 100_000;
+        inv[at(W_.tcrow)] = ((i << 16) | 3) >>> 0; inv[at(W_.tgull)] = ((i << 16) | 4) >>> 0; inv[at(W_.tfox)] = ((i << 16) | 5) >>> 0;
+      }
+      s.g.device.queue.writeBuffer(link.W, W_.fg * T * 4, sward);
+      s.g.device.queue.writeBuffer(link.W, W_.icrow * T * 4, inv);
+    },
+    spin() { throw new Error("the islet has no days before anyone wakes"); },
+  };
+  const prep = (g: Gpu, W: GPUBuffer) => {
+    const carr = new Uint32Array(T);
+    for (let y = 45; y <= 47; y++) for (let x = 45; x <= 47; x++) carr[y * TW + x] = 3000;
+    g.device.queue.writeBuffer(W, W_.carr * T * 4, carr);
+  };
+  // crows, gulls and foxes, the last of each held by people (slots 6, 11 and 14)
+  const kinds: [number, number, number, number, number, number][] = [];
+  for (let k = 0; k < 6; k++) kinds.push([SP.crow, k & 1, 42 + k, 45, 0.4, 0]);
+  kinds.push([SP.crow, 1, 50, 50, 0.4, 0]);
+  for (let k = 0; k < 4; k++) kinds.push([SP.gull, k & 1, 40, 42 + k, 0.4, 0]);
+  kinds.push([SP.gull, 0, 59, 50, 0.4, 0], [SP.fox, 0, 46, 46, 0.3, 0], [SP.fox, 1, 52, 52, 0.3, 0], [SP.fox, 0, 55, 45, 0.3, 0]);
+  const HELD = { crow: 6, gull: 11, fox: 14 };
+  const animals = () => { const a = laid(kinds), held = new Uint32Array(a.n); for (const i of Object.values(HELD)) held[i] = 1; a.cols.held = held; return a; };
+  const ticks = [300, 312, 324, 336];
+  const hi = await run(await theGpu(), islet(animals()), ticks, prep, ground), oracle = oracleRun(hi.start, hi.cap, ticks, islet(animals()));
+  const low = await openGpu("low-power"), lo = await run(low, islet(animals()), ticks, prep, ground);
+  low.device.destroy();
+  expect(hi.start.KP[GK + G.lumped]).toBe(1);
+  for (let k = 0; k < ticks.length; k++) {
+    expect(hi.out[k].b).toEqual(oracle[k].b);
+    expect(hi.out[k].W).toEqual(oracle[k].W);
+    expect(hi.out[k].A).toEqual(oracle[k].A);
+    expect(hi.out[k].RQ).toEqual(oracle[k].RQ);
+    expect(lo.out[k].b).toEqual(hi.out[k].b);
+    expect(lo.out[k].W).toEqual(hi.out[k].W);
+    expect(lo.out[k].RQ).toEqual(hi.out[k].RQ);
+  }
+  const sum = (W: Uint32Array, run: number) => W.subarray(run * T, (run + 1) * T).reduce((a, x) => a + x, 0);
+  const last = hi.out[ticks.length - 1];
+  // no grazer here and the forage rule off: the sward stands as the link laid it
+  expect(last.W.subarray(W_.fg * T, (W_.fd + 1) * T)).toEqual(hi.start.W.subarray(W_.fg * T, (W_.fd + 1) * T));
+  // the crows' and the foxes' invertebrates were eaten down
+  expect(sum(last.W, W_.icrow)).toBeLessThan(sum(hi.start.W, W_.icrow));
+  expect(sum(last.W, W_.ifox)).toBeLessThan(sum(hi.start.W, W_.ifox));
+  // the held crow and fox asked for a member of their class on a land tile; no free animal asked
+  for (const [slot, state] of [[HELD.crow, 3], [HELD.fox, 5]]) {
+    expect(last.RQ[slot] & 0xffff).toBe(state);
+    expect(LAND(last.RQ[slot] >>> 16)).toBe(true);
+  }
+  if (last.RQ[HELD.gull] !== NONE) expect(last.RQ[HELD.gull] & 0xffff).toBe(4);
+  for (let i = 0; i < kinds.length; i++) if (!Object.values(HELD).includes(i)) expect(last.RQ[i]).toBe(NONE);
 }, 600_000);
 
 test("the constants: every species' reserve, rate and step deaths are set, and no step's burn passes a full reserve", () => {

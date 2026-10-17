@@ -304,7 +304,7 @@ export class Deadwood implements Rider {
   private pool() {
     const s = this.store!, g = s.g, b = this.bufs!, r = this.raster!(), plant = s.kind("plant");
     s.run(this.src("cover", () => deadCover(this.law)), [r.crowns, b.cover, b.rot, b.acc], cover(g, CELLS), [0, 0, 0, 0]);
-    const cnt = s.scratch("deadcnt", plant.capacity);
+    const cnt = s.scratch("counts", plant.capacity);
     s.encode((e) => e.clearBuffer(cnt, 0, plant.capacity * 4));
     s.run(initialLogs(this.law), [r.start, r.list, b.pool, plant.body, cnt], cover(g, plant.capacity), [0, (1 + plant.field.what) * plant.capacity, 0, 0]);
     this.bearLogs(cnt, plant, true);
@@ -333,7 +333,7 @@ export class Deadwood implements Rider {
     d.write(ROT_WRITE, [b.rot]);
     d.advance();
     if (t % DAY_TICKS !== 0) return;
-    const plant = s.kind("plant"), cnt = s.scratch("deadcnt", plant.capacity);
+    const plant = s.kind("plant"), cnt = s.scratch("counts", plant.capacity);
     s.run(this.src("stems", () => deadStems(this.law)), [plant.body, cnt], cover(g, plant.capacity), [plant.capacity, (1 + plant.field.crop) * plant.capacity, (1 + plant.field.what) * plant.capacity, 0]);
     this.bearLogs(cnt, plant, false);
     const r = this.raster!();

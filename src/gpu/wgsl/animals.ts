@@ -10,20 +10,25 @@
 // writes, so it is the same as running them one by one.
 // - front: grow (tiles): the carrion laid down last step joins the tile's dead; the ground layer and the browse grow,
 //   die and rot by the day's drivers; the dead rot by the air's warmth; the shore's animals regrow; and what every
-//   forager reads of the tile is set out (densities, shares, what the pickers weigh). Cells (tiles): the deer and
-//   rabbits a predator could take on each tile, counted from the store's index. Census (animals): how many of each
-//   kind are alive.
+//   forager reads of the tile is set out (densities, shares, what the pickers weigh). Where the world has the lumped
+//   kinds (src/gpu/smalls.ts), the ground layer and the invertebrates the crows, gulls and foxes eat are theirs, set
+//   each island day by the link (src/gpu/animals.ts Ground) and lowered by what is eaten, and grow leaves them be
+//   (G.lumped); else the ground layer grows by the forage rule and the crows' worms stand at their pasture's density
+//   each step. Cells (tiles): the deer and rabbits a predator could take on each tile, counted from the store's
+//   index. Census (animals): how many of each kind are alive.
 // - satRows, satCols: a summed-area table of each layer, so any box of tiles sums in four reads (the land's, which
 //   never changes, only in a law's first step). satRows also sets how many workgroups the passes over the animals
 //   take: those up to the kind's tail (no slot past it was ever born) or the tiles, whichever reach further.
 // - act (animals): every animal pays its hour's field metabolic rate and takes in what people fed it; grazers ask the
 //   sward and the browse for their intake; wolves and foxes on the hunt pick a prey by its biomass in their range and
-//   claim it; scavengers and birds pick a tile of their range by its food and ask it for theirs.
+//   claim it; scavengers and birds pick a tile of their range by its food (the dead, the shore's animals, the
+//   invertebrates) and ask it for theirs.
 // - claim: share (tiles): what each pool holds against what was asked of it. Resolve (animals): each claimed prey
 //   goes to the claimant with the lowest key (a hashed priority and the slot), and dies; a wolf's kill goes into its
 //   pack's pot, a fox's or an eagle's into itself, what is left lying as carrion.
-// - eat (animals): each forager gets its ask times its pool's share; then a pack's wolves share its pot by what each
-//   lacks.
+// - eat (animals): each forager gets its ask times its pool's share; a held animal that ate invertebrates asks the
+//   lumped kinds to single one of them out (RQ, which the link takes each island day); then a pack's wolves share its
+//   pot by what each lacks.
 // - fate: settle (tiles): the pools lose what was eaten; the fish eaten are counted for the CPU's stocks. Leftover
 //   (pack slots): what a pack left of its kills lies as carrion. Fate (animals): starvation and the year's other
 //   deaths, moving, leaving home at maturity, and the young.
@@ -45,26 +50,31 @@ export const F = { x: 0, y: 1, sp: 2, held: 3, e: 4, born: 5, preg: 6, grp: 7, h
 // the grow pass sets out for the foragers, the grazers' pulls, the fish (from the CPU each step), the layers the
 // pickers weigh, the pools' shares, and the broadleaves' current-year twigs: their share of the tile within a deer's
 // reach and its area (daily, from the stems), the twigs standing (g/m2 of that area, Q16), and what the deer read of
-// them (g/m2 over their pools, Q16).
+// them (g/m2 over their pools, Q16); then the invertebrates the crows, gulls and foxes eat (mg a tile, state) and the
+// lumped bin key a held crow, gull or fox singles a member out of (cell << 16 | state, NONE for none), both set by the
+// lumped kinds when the world has them (src/gpu/animals.ts Ground).
 export const W_ = {
   land: 0, grass: 1, lit: 2, warren: 3, garea: 4, lake: 5, sw: 6, sa: 10,
   woody: 14, ever: 15, summer: 16, winter: 17, barea: 18,
   fg: 19, fd: 20, bg: 21, bd: 22, carr: 23, shore: 24, wasbare: 25,
   dgreen: 26, ddead: 27, gshg: 28, gshd: 29, bq: 30, stripg: 31, hresp: 32, shoreg: 33, open: 34, stripm2: 35,
-  pdeer: 36, prabbit: 37, fish: 38, layer: 39, share: 47,
-  twoody: 58, tarea: 59, tw: 60, dtw: 61,
+  pdeer: 36, prabbit: 37, fish: 38, layer: 39, share: 48,
+  twoody: 62, tarea: 63, tw: 64, dtw: 65,
+  icrow: 66, igull: 67, ifox: 68, tcrow: 69, tgull: 70, tfox: 71,
 } as const;
-export const W_RUNS = 62;
+export const W_RUNS = 72;
 export const STATIC_RUNS = 14;
 // The layers a picker weighs, in decagrams (10 g) of food a tile, but for the deer and rabbits (heads) and the land
-// (1 a land tile).
-export const L = { deer: 0, rabbit: 1, carr: 2, strip: 3, fish: 4, shore: 5, worms: 6, land: 7 } as const;
-export const NL = 8, SATW = (TW + 1) * (TW + 1);
+// (1 a land tile): the shore's are its animals and the gulls' invertebrates, the worms the crows', finv the foxes'.
+export const L = { deer: 0, rabbit: 1, carr: 2, strip: 3, fish: 4, shore: 5, worms: 6, finv: 7, land: 8 } as const;
+export const NL = 9, SATW = (TW + 1) * (TW + 1);
 // The pools asked of, shared and eaten from: the rabbits' and the deer's ground-layer green and dead, the deer's browse
 // green and dead, the shallows' fish a heron wades, the open water's fish an eagle takes, the shore's animals, carrion,
-// and the broadleaves' current-year twigs a deer browses while they stand bare.
-export const PO_ = { rg: 0, rd: 1, dg: 2, dd: 3, dbg: 4, dbd: 5, strip: 6, water: 7, shore: 8, carr: 9, dtw: 10 } as const;
-export const NPOOL = 11;
+// the broadleaves' current-year twigs a deer browses while they stand bare, and the invertebrates of the crows, the
+// gulls and the foxes.
+export const PO_ = { rg: 0, rd: 1, dg: 2, dd: 3, dbg: 4, dbd: 5, strip: 6, water: 7, shore: 8, carr: 9, dtw: 10, crowi: 11, gulli: 12, foxi: 13 } as const;
+export const NPOOL = 14;
+if (W_.layer + NL !== W_.share || W_.share + NPOOL !== W_.twoody || W_.tfox + 1 !== W_RUNS) throw new Error("the tile buffer's runs overlap");
 // The atomic buffer: asks, eaten, the fish eaten by water tile (g), carrion laid down this step (g), the census, the
 // lowest-slot grown she-wolf whose pack has no grown male (her slot inverted), the claims by prey slot, and eight runs
 // by pack (pot J, want J, eaten J, kill tile + 1, the breeder's slot inverted, wolves, grown males, grown females),
@@ -89,9 +99,11 @@ export const K = {
   kg: 0, full: 1, fmr: 2, die: 3, capg: 4, capf: 5, half: 6, mature: 7, reach: 8, rate: 9, newe: 10, litter: 11,
   young: 12, move: 13, disp: 14, dreach: 15, chase: 16, prey: 17, terr: 18, half2: 19,
 } as const;
+// The global words; lumped is 1 while the lumped kinds keep the ground layer and the invertebrates (src/gpu/animals.ts
+// writes it, not the driver's constants), 0 otherwise.
 export const G = {
   me: 0, med: 1, rots: 2, shrate: 3, shmost: 4, daysq: 5, rotdd: 6, flesh: 7, shorej: 8, ravens: 9, worms: 10, m2: 11,
-  hhalf: 12, kitp: 13, rutlo: 14, rutsl: 15, rutmax: 16, kitfit: 17, most: 18, twig: 19, twme: 20, twndf: 21,
+  hhalf: 12, kitp: 13, rutlo: 14, rutsl: 15, rutmax: 16, kitfit: 17, most: 18, twig: 19, twme: 20, twndf: 21, lumped: 22,
 } as const;
 export const P = { tick: 0, per: 1, day: 2, flags: 3, seed: 4, tps: 5 } as const;
 export const FLAG = { rut: 1, calve: 2, whelp: 4, cub: 8, kits: 16, heron: 32, eagle: 64, gull: 128, crow: 256 } as const;
@@ -193,18 +205,22 @@ ${PARTS([["grow", "T", /* wgsl */ `
     return;
   }
   ${w(W_.layer + L.land)} = 1u;
-  // the ground layer and the browse
+  // the ground layer and the browse; the ground layer as the lumped kinds last set it, when the world has them
   let grown = D[d0 + ${DR.grow}u * T + t] / per;
   let dies = u32(65536i - qexp(-bitcast<i32>(D[d0 + ${DR.leafk}u * T + t] / per)));
   let keep = 65536u - dies;
   let rots = kg(${G.rots}u); let most = kg(${G.most}u);
-  let fg = ${w(W_.fg)}; let fd = ${w(W_.fd)};
-  let room = 65536i - bitcast<i32>((fg + fd) / most);
-  let fnew = max(0i, bitcast<i32>(fg) + qmul(qmul(bitcast<i32>(grown), bitcast<i32>(${w(W_.lit)})), room));
-  let fpos = u32(fnew);
-  let fg2 = mulq(fpos, keep);
-  let fd2 = mulq(fd + mulq(fpos, dies), rots);
-  ${w(W_.fg)} = fg2; ${w(W_.fd)} = fd2;
+  let lumped = kg(${G.lumped}u) == 1u;
+  var fg2 = ${w(W_.fg)}; var fd2 = ${w(W_.fd)};
+  if (!lumped) {
+    let fg = fg2; let fd = fd2;
+    let room = 65536i - bitcast<i32>((fg + fd) / most);
+    let fnew = max(0i, bitcast<i32>(fg) + qmul(qmul(bitcast<i32>(grown), bitcast<i32>(${w(W_.lit)})), room));
+    let fpos = u32(fnew);
+    fg2 = mulq(fpos, keep);
+    fd2 = mulq(fd + mulq(fpos, dies), rots);
+    ${w(W_.fg)} = fg2; ${w(W_.fd)} = fd2;
+  }
   let bg = ${w(W_.bg)}; let bd = ${w(W_.bd)};
   let broom = 65536i - bitcast<i32>((bg + bd) / most);
   let bpos = u32(max(0i, bitcast<i32>(bg) + qmul(bitcast<i32>(grown), broom)));
@@ -277,11 +293,20 @@ ${PARTS([["grow", "T", /* wgsl */ `
     pr = mulq(${w(W_.warren)}, mulq(gr, me) + mulq(mulq(65536u - gr, resp(fd2, half)), med));
   }
   ${w(W_.pdeer)} = pd; ${w(W_.prabbit)} = pr;
+  // the invertebrates, mg a tile: the lumped kinds' as the link set them and eating left them, or else the crows'
+  // worms under the open ground layer, none frozen or under deep snow, standing at their density each step, and no
+  // wrack fauna for the gulls or invertebrates for the foxes
+  if (!lumped) {
+    var worms = 0u;
+    if (temp > 0i) { worms = smul(smul(kg(${G.worms}u), mulq(kg(${G.m2}u), ga)), 1000u); }
+    ${w(W_.icrow)} = worms; ${w(W_.igull)} = 0u; ${w(W_.ifox)} = 0u;
+  }
   // the pickers' layers
   ${w(W_.layer + L.carr)} = carr / 10u;
   ${w(W_.layer + L.strip)} = stripg / 10u;
-  ${w(W_.layer + L.shore)} = shoreg / 10u;
-  if (temp > 0i) { ${w(W_.layer + L.worms)} = smul(kg(${G.worms}u), mulq(kg(${G.m2}u), ga)) / 10u; }
+  ${w(W_.layer + L.shore)} = shoreg / 10u + ${w(W_.igull)} / 10000u;
+  ${w(W_.layer + L.worms)} = ${w(W_.icrow)} / 10000u;
+  ${w(W_.layer + L.finv)} = ${w(W_.ifox)} / 10000u;
 `], ["cells", "T", /* wgsl */ `
   // the deer and rabbits a predator could take, after grow has cleared the layers
   let t = i;
@@ -496,10 +521,9 @@ ${MAIN("CAP", /* wgsl */ `
     return;
   }
   if (s == ${SP.fox}u) {
-    if (held != 0u) { return; }
     let land = box(${L.land}u, bx.x, bx.y, bx.z, bx.w);
     let nr = box(${L.rabbit}u, bx.x, bx.y, bx.z, bx.w);
-    if (hungry && nr > 0u) {
+    if (held == 0u && hungry && nr > 0u) {
       // Pech's type III on rabbits a ha: N^2 / (N^2 + I^2), as a over b with a = 100 rabbits and b = 297 land tiles
       let a = smul(nr, 100u); let bb = smul(land, kk(s, ${K.half}u));
       var rs = 0u;
@@ -513,16 +537,22 @@ ${MAIN("CAP", /* wgsl */ `
         return;
       }
     }
-    // what the rabbits leave it short it makes up from the dead on its range
-    let c = box(${L.carr}u, bx.x, bx.y, bx.z, bx.w);
-    if (hungry && c > 0u) {
-      let a = mulq(muldiv(want, 1000u, flesh), resp(c, smul(land, kk(s, ${K.half2}u))));
-      let t = pick(${L.carr}u, 1u, ${L.carr}u, 0u, bx.x, bx.y, bx.z, bx.w, unif(c)).x;
-      ${ask(PO_.carr, "t", "a")}
-      ${q(Q_.a0)} = a; ${q(Q_.pick)} = t;
+    // what the rabbits leave it short it makes up from the dead and the invertebrates on its range, each as it stands
+    // on the tile it picks (as a crow does); a fox people hold neither hunts nor scavenges (the CPU has it), but may
+    // forage invertebrates, the beetles and worms of summer (R980)
+    var wc = 1u;
+    if (held != 0u) { wc = 0u; }
+    let tot = bw(${L.carr}u, wc, ${L.finv}u, 1u, bx.x, bx.y, bx.z, bx.w);
+    if (hungry && tot > 0u) {
+      let a = mulq(muldiv(want, 1000u, flesh), resp(tot, smul(land, kk(s, ${K.half2}u))));
+      let t = pick(${L.carr}u, wc, ${L.finv}u, 1u, bx.x, bx.y, bx.z, bx.w, unif(tot)).x;
+      let lc = wc * lay(${L.carr}u, t); let li = lay(${L.finv}u, t);
+      let ac = muldiv(a, lc, lc + li);
+      ${ask(PO_.carr, "t", "ac")} ${ask(PO_.foxi, "t", "a - ac")}
+      ${q(Q_.a0)} = ac; ${q(Q_.a0 + 1)} = a - ac; ${q(Q_.pick)} = t;
       return;
     }
-    ${q(Q_.pick)} = anyland(bx);
+    if (held == 0u) { ${q(Q_.pick)} = anyland(bx); }
     return;
   }
   let nc = cells(bx);
@@ -553,7 +583,8 @@ ${MAIN("CAP", /* wgsl */ `
     ${q(Q_.a0)} = a; ${q(Q_.pick)} = t;
     return;
   }
-  // gulls: the shore's animals and the dead; crows: the dead and the worms
+  // gulls: the dead, the shore's animals and the wrack's invertebrates (R979); crows: the dead and the worms and other
+  // invertebrates of the ground, shared and thinned as they are eaten
   var lb = ${L.shore}u;
   if (s == ${SP.crow}u) { lb = ${L.worms}u; }
   let tot = bw(${L.carr}u, 1u, lb, 1u, bx.x, bx.y, bx.z, bx.w);
@@ -563,7 +594,14 @@ ${MAIN("CAP", /* wgsl */ `
   let lc = lay(${L.carr}u, t); let lo = lay(lb, t);
   let ac = muldiv(a, lc, lc + lo);
   ${ask(PO_.carr, "t", "ac")}
-  if (s == ${SP.gull}u) { ${ask(PO_.shore, "t", "a - ac")} }
+  if (s == ${SP.gull}u) {
+    // what is not the dead, from the shore's animals and the wrack's as each stands in the tile's layer
+    let ao = muldiv(a - ac, ${w(W_.shoreg)} / 10u, lo);
+    ${ask(PO_.shore, "t", "ao")} ${ask(PO_.gulli, "t", "a - ac - ao")}
+    ${q(Q_.a0)} = ac; ${q(Q_.a0 + 1)} = ao; ${q(Q_.a0 + 2)} = a - ac - ao; ${q(Q_.pick)} = t;
+    return;
+  }
+  ${ask(PO_.crowi, "t", "a - ac")}
   ${q(Q_.a0)} = ac; ${q(Q_.a0 + 1)} = a - ac; ${q(Q_.pick)} = t;
 `)}`;
 }
@@ -632,19 +670,24 @@ ${PARTS([["resolve", "CAP", /* wgsl */ `
   ${w(W_.share + PO_.strip)} = part(${askOf(PO_.strip)}, smul(${w(W_.stripg)}, 1000u));
   ${w(W_.share + PO_.shore)} = part(${askOf(PO_.shore)}, smul(${w(W_.shoreg)}, 1000u));
   ${w(W_.share + PO_.carr)} = part(${askOf(PO_.carr)}, smul(${w(W_.carr)}, 1000u));
+  ${w(W_.share + PO_.crowi)} = part(${askOf(PO_.crowi)}, ${w(W_.icrow)});
+  ${w(W_.share + PO_.gulli)} = part(${askOf(PO_.gulli)}, ${w(W_.igull)});
+  ${w(W_.share + PO_.foxi)} = part(${askOf(PO_.foxi)}, ${w(W_.ifox)});
 `]])}`;
 }
 
 // ---------- eat (animals), then the packs ----------
-// Each forager gets its ask times its pool's share; then each wolf takes from its pack's kills, this step's and what
-// the larder keeps of earlier ones, its share of what the pack lacks (a wolf's eat part changes nothing of it).
-// Bindings: b, W, A, KP, Q. Dispatched as satRows set out.
+// Each forager gets its ask times its pool's share; a held crow, gull or fox that ate invertebrates asks the lumped
+// kinds, in its word of RQ, to single one out of the bin it ate from, unless it asked already since the link last took
+// the requests; then each wolf takes from its pack's kills, this step's and what the larder keeps of earlier ones, its
+// share of what the pack lacks (a wolf's eat part changes nothing of it).
+// Bindings: b, W, A, KP, Q, RQ (a word an animal slot). Dispatched as satRows set out.
 export function animalsEat(cap: number) {
   const q = (run: number) => `Q[${run}u * CAP + i]`;
   const sh = (p: number) => `W[(${W_.share}u + ${p}u) * T + t]`;
   const ate = (p: number, v: string) => `atomicAdd(&A[${A_.eat}u + ${p}u * T + t], ${v});`;
   const pk = (run: number, g: string) => `A[${A_.claim}u + CAP * ${1 + run}u + ${g}]`;
-  return `${HEAD(cap)}${decl([["b", "rw"], ["W", "r"], ["A", "a"], ["KP", "r"], ["Q", "r"]])}
+  return `${HEAD(cap)}${decl([["b", "rw"], ["W", "r"], ["A", "a"], ["KP", "r"], ["Q", "r"], ["RQ", "rw"]])}
 ${KREAD}${BODY}
 ${PARTS([["eat", "CAP", /* wgsl */ `
   if ((b[i] & 1u) == 0u || b[fo(3u) + i] == 2u) { return; }
@@ -653,7 +696,7 @@ ${PARTS([["eat", "CAP", /* wgsl */ `
   let s = b[fo(2u) + i] & 15u;
   let me = kg(${G.me}u); let med = kg(${G.med}u); let flesh = kg(${G.flesh}u);
   let a0 = ${q(Q_.a0)}; let a1 = ${q(Q_.a0 + 1)}; let a2 = ${q(Q_.a0 + 2)}; let a3 = ${q(Q_.a0 + 3)};
-  var j = 0u;
+  var j = 0u; var inv = 0u; var key = NONE;
   if (s == ${SP.deer}u) {
     let gg = mulq(a0, ${sh(PO_.dg)}); let gd = mulq(a1, ${sh(PO_.dd)}); let bg = mulq(a2, ${sh(PO_.dbg)}); let bd = mulq(a3, ${sh(PO_.dbd)});
     let tw = mulq(${q(Q_.a0 + 4)}, ${sh(PO_.dtw)});
@@ -664,21 +707,24 @@ ${PARTS([["eat", "CAP", /* wgsl */ `
     ${ate(PO_.rg, "gg")} ${ate(PO_.rd, "gd")}
     j = muldiv(gg, me, 1000u) + muldiv(gd, med, 1000u);
   } else if (s == ${SP.fox}u) {
-    let g = mulq(a0, ${sh(PO_.carr)}); ${ate(PO_.carr, "g")} j = muldiv(g, flesh, 1000u);
+    let c = mulq(a0, ${sh(PO_.carr)}); let v = mulq(a1, ${sh(PO_.foxi)});
+    ${ate(PO_.carr, "c")} ${ate(PO_.foxi, "v")}
+    j = muldiv(c + v, flesh, 1000u); inv = v; key = W[${W_.tfox}u * T + t];
   } else if (s == ${SP.eagle}u) {
     let g = mulq(a0, ${sh(PO_.water)}); ${ate(PO_.water, "g")} j = muldiv(g, flesh, 1000u);
   } else if (s == ${SP.heron}u) {
     let g = mulq(a0, ${sh(PO_.strip)}); ${ate(PO_.strip, "g")} j = muldiv(g, flesh, 1000u);
   } else if (s == ${SP.gull}u) {
-    let c = mulq(a0, ${sh(PO_.carr)}); let o = mulq(a1, ${sh(PO_.shore)});
-    ${ate(PO_.carr, "c")} ${ate(PO_.shore, "o")}
-    j = muldiv(c + o, flesh, 1000u);
+    let c = mulq(a0, ${sh(PO_.carr)}); let o = mulq(a1, ${sh(PO_.shore)}); let v = mulq(a2, ${sh(PO_.gulli)});
+    ${ate(PO_.carr, "c")} ${ate(PO_.shore, "o")} ${ate(PO_.gulli, "v")}
+    j = muldiv(c + o + v, flesh, 1000u); inv = v; key = W[${W_.tgull}u * T + t];
   } else if (s == ${SP.crow}u) {
-    // the worms it takes are too few to thin the worms
-    let c = mulq(a0, ${sh(PO_.carr)}); ${ate(PO_.carr, "c")}
-    j = muldiv(c + a1, flesh, 1000u);
+    let c = mulq(a0, ${sh(PO_.carr)}); let v = mulq(a1, ${sh(PO_.crowi)});
+    ${ate(PO_.carr, "c")} ${ate(PO_.crowi, "v")}
+    j = muldiv(c + v, flesh, 1000u); inv = v; key = W[${W_.tcrow}u * T + t];
   }
   b[fo(4u) + i] = bitcast<u32>(fe(i) + bitcast<i32>(j));
+  if (inv > 0u && key != NONE && b[fo(3u) + i] == 1u && RQ[i] == NONE) { RQ[i] = key; }
 `], ["pack", "CAP", /* wgsl */ `
   if ((b[i] & 1u) == 0u || b[fo(3u) + i] == 2u || (b[fo(2u) + i] & 15u) != ${SP.wolf}u) { return; }
   let grp = b[fo(7u) + i];
@@ -716,6 +762,10 @@ function settle() {
   let ta = ${w(W_.tarea)};
   if (ta > 0u) { ${w(W_.tw)} = sat_sub(${w(W_.tw)}, muldiv(${eat(PO_.dtw)}, 65536u, ta)); }
   ${w(W_.carr)} = sat_sub(${w(W_.carr)}, (${eat(PO_.carr)} + 999u) / 1000u);
+  // the invertebrates eaten, mg
+  ${w(W_.icrow)} = sat_sub(${w(W_.icrow)}, ${eat(PO_.crowi)});
+  ${w(W_.igull)} = sat_sub(${w(W_.igull)}, ${eat(PO_.gulli)});
+  ${w(W_.ifox)} = sat_sub(${w(W_.ifox)}, ${eat(PO_.foxi)});
   let m2 = ${w(W_.stripm2)};
   if (m2 > 0u) {
     let afdw = muldiv(${eat(PO_.shore)}, kg(${G.flesh}u), kg(${G.shorej}u));

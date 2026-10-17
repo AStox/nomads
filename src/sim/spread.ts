@@ -12,6 +12,8 @@ import { BURNS, PHYS, WOODS, greenOf, pieceOf, stackPhys, woodOf, type Phys, typ
 import { REF, deadAt, deadOf, grassAt, growing, leafless, moistureOf, pieceWater, waterOf, type Water } from "./wetness";
 import { CROWN_TWIG as TWIG } from "../gpu/moisture";
 import { TILE_M, type Thing, type World } from "./world";
+import { smallsOf } from "./space";
+import { CELL, N } from "../terrain/grid";
 import { airOn, rainAt, sunOn } from "./air";
 import { CROWN, rainOn } from "./rain";
 import { canopyAt } from "./light";
@@ -82,11 +84,15 @@ const DEAD_TWIGS = 2;
 
 // Grass: a tussock as wide as its patch and as tall as tall grass, 0.5 m (sec. 14a), holding tall grass's load of blades,
 // 0.675 kg/m2 (Anderson's fuel model 3, R32; sec. 30a), a blade thick (sec. 22e), its living blades at the island's living
-// grass water and its cured ones at dead stuff's (sec. 12).
+// grass water and its cured ones at dead stuff's (sec. 12). The cured share is the grass's own where the smallest things
+// are resident (gpu/smalls.ts): its cell's standing dead blades against them and its green lamina, the litter and tiller
+// kinds' census (Unit 12b); else the season's curing.
 const GRASS_H = 0.5, GRASS_LOAD = 0.675;
 function grass(w: World, t: Thing): Part[] {
   const blade = { ...PHYS.fiber, mass: (Math.PI / 4) * PHYS.fiber.d ** 2 * GRASS_H * PHYS.fiber.rho };
-  const kg = GRASS_LOAD * Math.PI * (t.size / 2) ** 2, { herb, cured, dead } = grassAt(w, t);
+  const kg = GRASS_LOAD * Math.PI * (t.size / 2) ** 2, at = grassAt(w, t), { herb, dead } = at;
+  const cell = Math.min(N - 1, Math.floor((t.py * TILE_M) / CELL)) * N + Math.min(N - 1, Math.floor((t.px * TILE_M) / CELL));
+  const lit = smallsOf(w).litterAt(cell), cured = lit && lit.green + lit.dead > 0 ? lit.dead / (lit.green + lit.dead) : at.cured;
   return [
     { phys: blade, n: (kg * (1 - cured)) / blade.mass, m: herb, lo: 0, hi: GRASS_H },
     { phys: { ...blade }, n: (kg * cured) / blade.mass, m: dead, lo: 0, hi: GRASS_H },

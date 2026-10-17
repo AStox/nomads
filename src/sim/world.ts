@@ -12,6 +12,7 @@ import { enter, put } from "./space";
 import { populate } from "./fauna";
 import { DAY, NIGHT_EL, NOON, YEAR_DAYS, sunAt } from "./sky";
 import { Store } from "../gpu/store";
+import { philox } from "../gpu/rand";
 import type { Gpu } from "../gpu/device";
 import type { Stand } from "../gpu/flora";
 
@@ -20,7 +21,6 @@ export const H = TILES;
 export { DAY, YEAR_DAYS }; // the sky's: ticks a day (5 minutes each) and days a year, the sun's round
 export const VERSION = 29; // 29: the fish are GPU objects (src/gpu/fish.ts), not w.pools stocks; the crown raster and what lies out's water ride the store (gpu/crowns.ts, gpu/moisture.ts), weather.past keeps the crowns' water only
 export { TILE_M }; // meters per tile
-export const REACH = 1.5; // meters: close enough to touch, pick up, strike or tend
 export const YEAR = DAY * YEAR_DAYS;
 
 export enum Tile {
@@ -397,9 +397,11 @@ export function sea(w: World) {
   }
   return salt;
 }
-// Where anyone arriving by sea comes ashore: in from a random point off the coast, the first dry ground of the mainland.
+// Where anyone arriving by sea comes ashore: in from a point off the coast on a bearing drawn from the world's own stream
+// for that tick (gpu/rand.ts philox, keyed by the seed), the first dry ground of the mainland.
+const LANDING_STREAM = 0x6c616e64; // "land"
 export function landing(w: World) {
-  const main = mainland(w), a = Math.random() * Math.PI * 2;
+  const main = mainland(w), a = (philox([0, w.t >>> 0, 0, 0], [w.seed >>> 0, LANDING_STREAM])[0] / 2 ** 32) * Math.PI * 2;
   for (let d = Math.hypot(W, H) / 2; d > 0; d -= 0.1) {
     const px = W / 2 + Math.cos(a) * d, py = H / 2 + Math.sin(a) * d, x = Math.floor(px), y = Math.floor(py);
     if (x >= 0 && y >= 0 && x < W && y < H && main[y * W + x] && dryAt(w, px, py)) return { x, y, px, py };
@@ -420,9 +422,6 @@ export const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =
   Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
 // Straight-line meters between two things that stand somewhere.
 export const meters = (a: { px: number; py: number }, b: { px: number; py: number }) => Math.hypot(a.px - b.px, a.py - b.py) * TILE_M;
-// How near someone has to stand to work on a thing: arm's length from its edge, or from a tree's trunk.
-export const reachOf = (t: { kind: string; size: number }) => REACH + (t.kind === "tree" || t.kind === "stump" || t.kind === "burnt_stump" || t.kind === "sapling" ? 0.3 : Math.min(3, t.size / 2));
-
 export const level = (xp: number) => Math.min(10, Math.floor(Math.sqrt(xp / 10)));
 
 export const NAMES = ["Aldric", "Mara", "Osric", "Tamsin", "Brenna", "Wulf", "Edda", "Rowan", "Isolde", "Cedric", "Hild", "Bran", "Ysolt", "Gareth", "Sabine", "Anselm", "Elowen", "Tobin", "Maud", "Corwin", "Ailsa", "Fenwick", "Gwen", "Leof", "Rhosyn", "Odo", "Nell", "Piers"];

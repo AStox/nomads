@@ -40,7 +40,7 @@ function layOf(w: World, a: Agent, r: () => number, tinderToo = true): string[] 
   return items.sort();
 }
 const situation = (w: World, a: Agent, pieces: Stack[], tinder: number | null, fire: Situation["fire"] = null): Situation => ({
-  tinder, wind: airOn(w, a).wind, spot: a, ahead: { soil: [], temp: [] }, fish: 0, pieces, air: fire ? bedAir(w, fire as never) : layAt(w, a).air, fire,
+  tinder, wind: airOn(w, a).wind, spot: a, ahead: { soil: [], temp: [] }, fish: { fish: [], area: 0 }, pieces, air: fire ? bedAir(w, fire as never) : layAt(w, a).air, fire,
 });
 const said = (p: ReturnType<typeof predict>) => {
   if ("why" in p || "ask" in p) throw new Error(`predict couldn't say: ${JSON.stringify(p)}`);

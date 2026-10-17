@@ -345,17 +345,22 @@ function startFish(v: Waters) {
 }
 
 // ---------- the fish people see and catch ----------
-// The body of water someone dips into from where they stand: the first of the points a couple of paces round them
+// The cell of water someone dips into from where they stand: the first of the points a couple of paces round them
 // (physics.ts openWater) that is open water of a cell the fish live in; -1 for none.
-export function waterHere(w: World, at: { px: number; py: number }) {
+function dipCell(w: World, at: { px: number; py: number }) {
   const v = watersOf(w.seed);
   for (let k = -1; k < 8; k++) {
     const r = k < 0 ? 0 : 3 / TILE_M, x = at.px + Math.cos((k * Math.PI) / 4) * r, y = at.py + Math.sin((k * Math.PI) / 4) * r;
     const c = Math.min(N - 1, Math.max(0, Math.floor((y * TILE_M) / CELL))) * N + Math.min(N - 1, Math.max(0, Math.floor((x * TILE_M) / CELL)));
     if (!v.kind[c]) continue;
-    if ((wetAt(w, x, y) && !iceAt(w, Math.floor(x), Math.floor(y))) || streamNow(w, x, y)?.flowing) return v.body[c];
+    if ((wetAt(w, x, y) && !iceAt(w, Math.floor(x), Math.floor(y))) || streamNow(w, x, y)?.flowing) return c;
   }
   return -1;
+}
+// The body of water dipped into there; -1 for none.
+export function waterHere(w: World, at: { px: number; py: number }) {
+  const c = dipCell(w, at);
+  return c < 0 ? -1 : watersOf(w.seed).body[c];
 }
 // The fish of one body of water within m metres of a place, nearest first, as the landings round people hold them.
 function fishWithin(w: World, at: { px: number; py: number }, m: number, body: number): Obj[] {
@@ -372,16 +377,23 @@ function fishWithin(w: World, at: { px: number; py: number }, m: number, body: n
   }
   return near.sort((a, b) => a[1] - b[1] || a[0].id - b[0].id).map(([o]) => o);
 }
-// How many fish swim within m metres of a place in the water dipped into there.
-export const fishNear = (w: World, at: { px: number; py: number }, m: number) => fishWithin(w, at, m, waterHere(w, at)).length;
-// The n fish nearest a place in the water dipped into there, taken out of it: their objects die and their views go.
-export function catchFish(w: World, at: { px: number; py: number }, m: number, n: number) {
-  const got = fishWithin(w, at, m, waterHere(w, at)).slice(0, n), s = heldStore(w);
-  if (!got.length || !s) return 0;
-  const ids = new Set(got.map((o) => o.id));
+// What a gear dipped there can meet (people-constants sec. 9.9): the fish of the cell of water it is dipped in, which
+// range over that cell's water in a day (the GPU moves them once a day), each with its length, cm, and the cell's
+// water now, m2.
+export function meeting(w: World, at: { px: number; py: number }): { fish: { id: number; cm: number }[]; area: number } {
+  const s = heldStore(w), c = dipCell(w, at);
+  if (!s || c < 0 || !s.kinds.some((k) => k.name === FISH)) return { fish: [], area: 0 };
+  const objs = s.mirror.landed(FISH, c % N, Math.floor(c / N));
+  const fish = Array.isArray(objs) ? objs.map((o) => ({ id: o.id, cm: o.v.len / 1e4 })).sort((a, b) => a.id - b.id) : [];
+  return { fish, area: areaNow(watersOf(w.seed), c, quickAt(w, w.t)) };
+}
+// Fish lifted out of the water: their objects die and their views go.
+export function takeFish(w: World, ids: number[]) {
+  const s = heldStore(w);
+  if (!s || !ids.length) return;
   for (const id of ids) s.kill(id);
-  w.animals = w.animals.filter((an) => an.obj === undefined || !ids.has(an.obj));
-  return got.length;
+  const out = new Set(ids);
+  w.animals = w.animals.filter((an) => an.obj === undefined || !out.has(an.obj));
 }
 // A fish's weight, kg, as its object has it (its kind's length-weight, sec. 13); none for one no longer there.
 export function fishKg(w: World, an: Animal) {
@@ -389,7 +401,7 @@ export function fishKg(w: World, an: Animal) {
   if (!o || typeof o !== "object") return 0;
   return mass(KINDS[o.v.sp & 15], o.v.len / 1e4) / 1000;
 }
-// The fish people see stand in the shallows within a basket's sweep of them (physics.ts FISH_REACH) [design]: views of
+// The fish people see stand in the shallows within a basket's sweep of them [design]: views of
 // their objects (an id of the object's, so one seen again is the same fish), gone once no one sees them or their
 // object is gone; spawn: how one is put down.
 const SHALLOWS = 15;

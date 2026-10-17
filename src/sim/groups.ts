@@ -1,13 +1,15 @@
 // Camps notice themselves from who lives near whom. Their customs are only what they actually did the last time.
 import {
   DAY, H, RESPONSES, Tile, W, clock, dist, log, meters, perWorld, stageOf, tileAt,
-  type Agent, type Camp, type Custom, type Incident, type Precedent, type Response, type Thing, type World,
+  type Agent, type Camp, type Custom, type Incident, type Precedent, type Response, type Stack, type Thing, type World,
 } from "./world";
-import { p } from "./materials";
-import { hand, homeOf, leaveHome, mark as touch, nearFire, reaches, stash, unstash } from "./physics";
+import { dayNeed, enough, hand, homeOf, leaveHome, mark as touch, meal, reaches, stash, unstash } from "./physics";
 import { thingById } from "./space";
 import { describeRel, judge, nameCamp } from "./brain";
-import { canSee } from "./light";
+import { hears, seesHands } from "./senses";
+import { lightOn } from "./light";
+import { NIGHT_EL, sunLux } from "./sky";
+import { bodyOf } from "./body";
 import { trace } from "./trace";
 
 const LINK = 200; // meters: homes this close, between people who don't dislike each other, make neighbors
@@ -158,7 +160,8 @@ export type Deed = { act: string; by: Agent; against?: Agent | null; at: { x: nu
 const kinOf = (a: Agent, b: Agent) =>
   a.parents.includes(b.id) || b.parents.includes(a.id) || a.parents.some((x) => b.parents.includes(x)) || a.rel[b.id]?.label === "kin";
 const needOf = (a: Agent) => Math.max(0, (45 - a.needs.food) / 45, (45 - a.needs.warmth) / 45);
-const scarcity = (w: World) => (w.agents.reduce((t, a) => t + Math.max(0, 1 - a.needs.food / 70), 0) / Math.max(1, w.agents.length)) + (w.weather.season === "winter" ? 0.15 : 0);
+// how short of food people are, on the whole: winter shows in it as the food it leaves them, not as a season's name
+const scarcity = (w: World) => w.agents.reduce((t, a) => t + Math.max(0, 1 - a.needs.food / 70), 0) / Math.max(1, w.agents.length);
 
 // Something one person did that landed on another. Code records what it was like; the camp decides what it meant.
 export function incident(w: World, d: Deed): Incident | null {
@@ -254,9 +257,10 @@ function ruled(w: World, campAtAsk: Camp, inc: Incident, who: Agent, r: { respon
   const dn = doer?.name ?? nameOf(w, inc.by);
   let what = "let it go";
   if (r.response === "let_go" && victim && HARM[inc.act] && camp.members.includes(victim.id)) p.open = w.t + WATCH;
+  // A ruling is words: what it costs the one ruled against is whatever company and goods it then costs them, no more.
   if (r.response === "scold") {
     what = `scolded ${dn} in front of everyone`;
-    if (doer) { doer.needs.social = Math.max(0, doer.needs.social - 10); p.open = w.t + WATCH; }
+    if (doer) p.open = w.t + WATCH;
   }
   if (r.response === "repay") {
     what = `told ${dn} to make it right`;
@@ -268,7 +272,7 @@ function ruled(w: World, campAtAsk: Camp, inc: Incident, who: Agent, r: { respon
   }
   if (r.response === "shun") {
     what = `had the camp shun ${dn} for a few days`;
-    if (doer) { camp.shunned[doer.id] = { until: w.t + WATCH, precedent: p.id }; doer.needs.social = Math.max(0, doer.needs.social - 15); p.open = w.t + WATCH; }
+    if (doer) { camp.shunned[doer.id] = { until: w.t + WATCH, precedent: p.id }; p.open = w.t + WATCH; }
   }
   if (r.response === "drive_out") {
     what = `drove ${dn} out of ${camp.name}`;
@@ -283,14 +287,21 @@ function ruled(w: World, campAtAsk: Camp, inc: Incident, who: Agent, r: { respon
   leaders(w, camp);
   groupsChanged.now = true;
 }
-// Give back what was taken, twice over if they have it; failing that, something of their own.
+// Give back what was taken, as much as was, of what they carry; failing that, food of their own that feeds as much as what
+// was taken would have (its energy, physics.ts meal). Goods that aren't food have no measure of worth here, so nothing of
+// theirs stands in for them [gap].
 function repay(w: World, inc: Incident, doer: Agent, to: Agent) {
   const [from, dest] = HARM[inc.act] ? [doer, to] : [to, doer];
   let moved = 0;
-  for (const k of inc.items ?? []) moved += hand(w, from, dest, k, 2);
-  if (!moved && HARM[inc.act]) {
-    const k = [...new Set(from.inv.map((s) => s.k))].sort((x, y) => p(w.kinds[y], "edible") - p(w.kinds[x], "edible"))[0];
-    if (k) moved += hand(w, from, dest, k);
+  for (const k of inc.items ?? []) moved += hand(w, from, dest, k, 1);
+  if (moved || !HARM[inc.act]) return moved > 0;
+  let owed = (inc.items ?? []).reduce((t, k) => t + meal(w, { k, hp: 1, born: w.t }).kj, 0);
+  for (const s of [...from.inv]) {
+    const kj = meal(w, s).kj;
+    if (owed <= 0) break;
+    if (kj <= 0) continue;
+    moved += hand(w, from, dest, s.k, 1);
+    owed -= kj;
   }
   return moved > 0;
 }
@@ -301,7 +312,6 @@ function exile(w: World, camp: Camp, doer: Agent, p: Precedent) {
   if (camp.leader === doer.id) camp.leader = null;
   const home = homeOf(w, doer);
   if (home && meters(home, camp) <= LINK + 30) leaveHome(w, doer, home);
-  doer.needs.social = Math.max(0, doer.needs.social - 25);
   doer.goal = null; doer.plan = [];
   p.open = w.t + WATCH;
 }
@@ -455,24 +465,26 @@ function customsAfter(w: World, camp: Camp, p: Precedent) {
     }
   }
 }
-// In the evening, someone by the fire may put a pattern that has always gone the same way into words.
+// When the day's light is gone and people sit up together, the one who carries most weight among those someone can hear
+// puts a pattern that has always gone the same way into words, the first such evening after it settles [design].
 function speak(w: World) {
-  const h = ((w.t % DAY) / DAY) * 24;
-  if (h < 18 || h >= 22) return;
+  // dark: the sky's own light down to civil twilight's end, after which outdoor work needs other light (light.ts DARK)
+  const dusk = sunLux(NIGHT_EL).lux;
   for (const camp of liveCamps(w)) {
     // Leaving kindness alone goes without saying; only a response worth remarking on becomes a custom.
     const pat = patterns(camp).find((x) => x.n >= 3 && Object.keys(x.counts).length === 1 && (HARM[x.act] || !x.counts.let_go) && !camp.customs.some((c) => !c.faded && c.key === x.key));
-    if (!pat || Math.random() > 0.5) continue;
-    const members = camp.members.map((id) => agentOf(w, id)).filter((a): a is Agent => !!a && a.down <= w.t && stageOf(w, a) !== "child");
-    const company = (a: Agent, r: number) => members.filter((b) => b !== a && meters(a, b) <= r).length;
-    const speakers = members.filter((a) => (nearFire(w, a, 4) && company(a, 30) >= 1) || company(a, 25) >= 2);
+    if (!pat) continue;
+    const members = camp.members.map((id) => agentOf(w, id)).filter((a): a is Agent => !!a && a.down <= w.t && !bodyOf(w, a).asleep && stageOf(w, a) !== "child");
+    const speakers = members.filter((a) => lightOn(w, a).sky < dusk && members.some((b) => b !== a && hears(w, a, b)));
     const s = speakers.sort((x, y) => standing(camp, y.id).score - standing(camp, x.id).score)[0];
     if (!s) continue;
     const response = Object.keys(pat.counts)[0] as Response;
     const c: Custom = { id: `K${w.nextId++}`, key: pat.key, text: `Here, anyone who ${doing(pat, 1)} ${DONE[response][1]}.`, response, spokenBy: s.id, t: w.t, held: pat.n, broken: 0 };
     camp.customs.push(c);
-    for (const b of w.agents) if (meters(b, s) <= 40) b.customs[c.id] = w.t;
-    log(w, "custom", [s.id, ...camp.members.filter((id) => id !== s.id)], s, `${s.name} said${nearFire(w, s, 4) ? " by the fire" : ""}: "${c.text}" It has become a custom of ${camp.name}.`, `${doing(pat, 0)}: ${DONE[response][0]}`);
+    for (const b of w.agents) if (b === s || (b.down <= w.t && hears(w, s, b))) b.customs[c.id] = w.t;
+    // by the fire: where most of the light on them is the fire's (light.ts lightWords)
+    const lit = lightOn(w, s);
+    log(w, "custom", [s.id, ...camp.members.filter((id) => id !== s.id)], s, `${s.name} said${lit.fire > lit.lux * 0.5 ? " by the fire" : ""}: "${c.text}" It has become a custom of ${camp.name}.`, `${doing(pat, 0)}: ${DONE[response][0]}`);
     trace("group", "custom", { camp: camp.id, custom: c, by: s.id }, s.id);
     groupsChanged.now = true;
   }
@@ -493,13 +505,16 @@ export function sharedStore(w: World, a: Agent) {
   const t = thingById(w, c?.store);
   return (c && t?.kind === "structure" && t.shared === c.id && t) || null;
 }
-// Setting food or goods into a shelter as the camp's makes it the camp's store.
+// The food energy in some stacks, kJ (physics.ts meal).
+const energy = (w: World, ss: Stack[] = []) => ss.reduce((t, s) => t + meal(w, s).kj, 0);
+// Setting food or goods into a shelter as the camp's makes it the camp's store. They keep back a day's food (physics.ts
+// stash), and what they gave is worth what it would feed, as a share of a day of their own need.
 export function share(w: World, a: Agent) {
   const camp = campOf(w, a.id);
   const store = sharedStore(w, a), home = homeOf(w, a);
   const at = store && reaches(a, store) ? store : home && reaches(a, home) ? home : null;
   if (!camp || !at) return 0;
-  const n = stash(w, a, 2, at);
+  const held = energy(w, a.inv), n = stash(w, a, undefined, at);
   if (!n) return 0;
   at.shared = camp.id; camp.store = at.id;
   at.given ??= {};
@@ -507,20 +522,24 @@ export function share(w: World, a: Agent) {
   groupsChanged.now = true;
   const text = `${a.name} set ${n} things into ${at.owner === a.id ? "their home" : `${nameOf(w, at.owner)}'s home`} for all of ${camp.name} to share.`;
   log(w, "shared_store", [a.id], at, text);
-  incident(w, { act: "share", by: a, at, text, value: Math.min(1, n / 8), seenBy: w.agents.filter((b) => canSee(w, b, a, 30)) });
+  // seen by whoever can tell what goes from their hands into it
+  incident(w, { act: "share", by: a, at, text, value: (held - energy(w, a.inv)) / dayNeed(w, a), seenBy: w.agents.filter((b) => b.down <= w.t && seesHands(w, b, a, "recognise")) });
   return n;
 }
+// Taking from the camp's store: as much of it as feeds them a day (physics.ts enough), as they can carry. What it cost the
+// camp is the share of the store's food energy it took, or of its pieces where it held no food [gap: no worth for goods].
 export function takeShared(w: World, a: Agent, k: string) {
   const store = sharedStore(w, a);
   if (!store || !reaches(a, store)) return 0;
-  const before = store.store?.length ?? 0;
-  const got = unstash(w, a, store, k, 3);
+  const pieces = store.store?.length ?? 0, kj = energy(w, store.store);
+  const got = unstash(w, a, store, k, enough(w, a, k));
   if (!got) return 0;
   store.given ??= {};
   const net = (store.given[a.id] ?? 0) - got;
   store.given[a.id] = net;
   const text = `${a.name} took ${got} ${w.kinds[k]?.name ?? k} from the camp's store${net < 0 ? `, having put in less than they took` : ""}.`;
-  incident(w, { act: "took_from_store", by: a, against: agentOf(w, store.owner) ?? null, at: store, text, value: got / Math.max(1, before), seenBy: w.agents.filter((b) => b !== a && canSee(w, b, a, 30)), items: Array(got).fill(k) });
+  const value = kj > 0 ? (kj - energy(w, store.store)) / kj : got / Math.max(1, pieces);
+  incident(w, { act: "took_from_store", by: a, against: agentOf(w, store.owner) ?? null, at: store, text, value, seenBy: w.agents.filter((b) => b !== a && b.down <= w.t && seesHands(w, b, a, "recognise")), items: Array(got).fill(k) });
   return got;
 }
 

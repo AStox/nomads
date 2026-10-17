@@ -7,6 +7,7 @@ import { BURNABLE, WIDEST, bedOf, blazeOf, blazeWords, landsOn, partsOf, reach, 
 import { pack, receive } from "../gpu/fire";
 import { BY, LIT, LOOK_S } from "../gpu/wgsl/fire";
 import { see } from "./beliefs";
+import { personSize } from "./senses";
 import {
   DAY, H, HP, TILE_M, W, Tile, YEAR, addThing, cropOf, dayOfYear, groundOf, log, meters, rng, sea, seasonOf, tileAt, dryNear, wetAt,
   type Agent, type Thing, type World,
@@ -117,7 +118,7 @@ function weather(w: World) {
         t.bed = bed;
         delete t.absorbed;
         log(w, "lightning", [], t, "Lightning struck a tree and set it burning.");
-        see(w, t, "lightning", "Lightning can set a tree on fire, and fire eats wood.", 1000);
+        see(w, t, "lightning", "Lightning can set a tree on fire, and fire eats wood.", t.size);
       } else log(w, "lightning", [], t, "Lightning struck a tree.");
       mark(w, t);
     }
@@ -182,7 +183,7 @@ function ice(w: World) {
       if (a.wearing && worn) a.wearing.m = a.wearing.skin = worn.mmax;
       b.skin = Math.min(b.skin, 5);
       log(w, "hazard", [a.id], a, `The ice gave way under ${a.name}. They crawled out soaked and freezing.`);
-      see(w, a, "thin_ice", "Ice melts when it warms up. Don't be standing on it.", 80);
+      see(w, a, "thin_ice", "Ice melts when it warms up. Don't be standing on it.", personSize(w, a));
       // They crawl out to the nearest dry ground once the ice is gone.
       const out = dryNear({ ...w, ice: [] }, a.px, a.py);
       if (out) put(w, a, ...out);
@@ -208,7 +209,7 @@ function holes(w: World, live: Thing[]) {
     if (t.kind === "pit" && tableAt(w, t.px, t.py) < PIT_DEPTH) {
       setKind(w, t, "well"); mark(w, t);
       log(w, "dig", t.owner ? [t.owner] : [], t, "Water seeped into a pit and stood in it. A well.");
-      see(w, t, "well", "A pit dug near water fills up with water.", 80);
+      see(w, t, "well", "A pit dug near water fills up with water.", t.size);
     }
     if (t.kind === "trap" && t.caught) {
       // A pit with steep walls as deep as someone stands in holds what falls in (docs/research/time-constants.md sec. 7):
@@ -491,7 +492,7 @@ function matured(w: World, t: Thing) {
     makeStem(w, t);
     if (from && t.owner) {
       log(w, "grow", [t.owner], t, `The ${w.kinds[from]?.name ?? from} ${w.agents.find((a) => a.id === t.owner)?.name} pushed into the ground grew into a young tree.`);
-      see(w, t, `grows:${from}`, `A ${w.kinds[from]?.name ?? from} in the ground can grow into a tree.`, 80);
+      see(w, t, `grows:${from}`, `A ${w.kinds[from]?.name ?? from} in the ground can grow into a tree.`, t.size);
     }
     grewFor(w, t, "tree");
     return;
@@ -503,7 +504,7 @@ function matured(w: World, t: Thing) {
     mark(w, t);
     if (t.owner) {
       log(w, "grow", [t.owner], t, `The grain ${w.agents.find((a) => a.id === t.owner)?.name} sowed came up as grass.`);
-      see(w, t, "grows:grain", "Grain pushed into the ground comes up as grass that bears more grain.", 80);
+      see(w, t, "grows:grain", "Grain pushed into the ground comes up as grass that bears more grain.", t.size);
     }
     grewFor(w, t, "grass");
     return;
@@ -512,7 +513,7 @@ function matured(w: World, t: Thing) {
   mark(w, t);
   makeStem(w, t);
   log(w, "grow", t.owner ? [t.owner] : [], t, t.owner ? `The ${w.kinds[from]?.name ?? from} ${w.agents.find((a) => a.id === t.owner)?.name} pushed into the ground grew into a berry bush.` : "A new berry bush sprang up.");
-  see(w, t, `grows:${from}`, `A ${w.kinds[from]?.name ?? from} in the ground can grow into a berry bush.`, 80);
+  see(w, t, `grows:${from}`, `A ${w.kinds[from]?.name ?? from} in the ground can grow into a berry bush.`, t.size);
   grewFor(w, t, "bush");
 }
 // What came of a seedling, for whoever is waiting to see (sim.ts): it came up as a bush, a tree or grass, or it withered.
@@ -644,7 +645,7 @@ function disease(w: World) {
       if (b === a || b.sickness || meters(a, b) > 10 || Math.random() > 0.003 * s.severity) continue;
       b.sickness = { until: w.t + Math.round(DAY * (0.5 + s.severity)), severity: s.severity * 0.8 };
       log(w, "sick", [b.id, a.id], b, `${b.name} caught ${a.name}'s sickness.`);
-      see(w, b, "contagion", "Sickness spreads between people who stay close.", 40);
+      see(w, b, "contagion", "Sickness spreads between people who stay close.", personSize(w, b));
     }
   }
 }

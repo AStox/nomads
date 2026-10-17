@@ -169,6 +169,20 @@ export function snowAt(w: World, px: number, py: number) {
   const pack = field(isle.seasons[s].snowpack, px, py, n) * (1 - f) + field(isle.seasons[(s + 1) % 4].snowpack, px, py, n) * f;
   return 0.95 * Math.tanh(0.1 * Math.max(0, pack));
 }
+// Snow under the ground layer (the forage rule's, animals.ts and smalls.ts): a season's snowpack (climate.ts, mm of
+// water) stands as deep as Sturm et al.'s maritime snow is dense on the
+// season's middle day of the year, (0.5979 - 0.2578)(1 - e^(-0.0010 h - 0.0038 doy)) + 0.2578 g/cm3, h in cm and doy from
+// 1 January (R409); summer's at its most. Red deer herds start to leave once it lies 20 to 30 cm deep (R410), and 60 to
+// 70 cm stops them (R413): the ground layer under it goes out of reach of deer and rabbits alike from 25 cm to 65
+// [derived]; the browse stands above it. The crowns hold up to 60% of the snow off the ground under a forest (R412), as
+// the tile's trees cover it [derived].
+export const SNOW_DOY = [105, NaN, -77, 15], SNOW_REACH = [0.25, 0.65], INTERCEPT_SNOW = 0.6;
+export function snowDepth(swe: number, doy: number) {
+  if (swe <= 0) return 0;
+  let h = swe / 10 / 0.3;
+  for (let k = 0; k < 6; k++) { const rho = Number.isNaN(doy) ? 0.5979 : (0.5979 - 0.2578) * (1 - Math.exp(-0.001 * h - 0.0038 * doy)) + 0.2578; h = swe / 10 / rho; }
+  return h / 100;
+}
 // The water in the air at a point at tick t, kPa: the place's season humidity at its season's warmth (climate.ts fields),
 // drawn between the seasons' middles as its warmth is, so air holding the same water is damper the colder it is.
 export function vapourAt(w: World, px: number, py: number, t: number) {

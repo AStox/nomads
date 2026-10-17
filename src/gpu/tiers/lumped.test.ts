@@ -1,9 +1,10 @@
 import { afterAll, expect, test } from "bun:test";
 import { type Gpu, openGpu, releaseGpu, theGpu } from "../device";
-import { multinom, rinit } from "../rand";
+import { multinom, philox, rinit } from "../rand";
+import { storage } from "../kernel";
 import { Store, loadStore } from "../store";
 import { HOUR } from "./drivers";
-import { type Bin, DEATH, type Fate, Lumped, PROMOTED, type Split, keyOf } from "./lumped";
+import { type Bin, DEATH, EATEN, FATE, type Fate, Lumped, PROMOTED, REQ_MAX, type Split, TAKEN, keyOf, lstream } from "./lumped";
 
 let low: Gpu | null = null;
 afterAll(async () => { low?.device.destroy(); await releaseGpu(); });
@@ -253,3 +254,183 @@ test("the fate log keeps at most its history of steps and none older than the ol
   expect(gone.logged).toBe(0);
   s.destroy(); t.destroy();
 });
+
+// ---------- merging kinds: one bin a key, births on the GPU, takes with fates, the GPU's requests, wide counts ----------
+// The flies again, merging: adults also die eaten by predator class 1 (1% a day), and adults that live the day bear 0,
+// 3 or 6 eggs (70%, 20%, 10%).
+const MLAW = `
+fn law(cell: u32, state: u32, tick: u32) -> Split {
+  var sp: Split;
+  let extra = inp[cell % 4u];
+  sp.m = 2u;
+  if (state == 0u) { sp.t[0] = ${P(0.02)}u + extra; sp.t[1] = ${P(0.12)}u; sp.s[0] = DEATH; sp.s[1] = 1u; sp.s[2] = 0u; }
+  else if (state == 1u) { sp.t[0] = ${P(0.03)}u + extra; sp.t[1] = ${P(0.11)}u; sp.s[0] = DEATH; sp.s[1] = 2u; sp.s[2] = 1u; }
+  else if (state == 2u) { sp.t[0] = ${P(0.84)}u + extra; sp.t[1] = ${P(0.85)}u + extra; sp.s[0] = 2u; sp.s[1] = DEATH; sp.s[2] = 3u; }
+  else {
+    sp.t[0] = ${P(0.06)}u + extra; sp.t[1] = ${P(0.07)}u + extra; sp.s[0] = DEATH; sp.s[1] = ${EATEN(1)}u; sp.s[2] = 3u;
+    sp.bm = 2u; sp.bt[0] = ${P(0.7)}u; sp.bt[1] = ${P(0.9)}u; sp.bo = 4u; sp.bs = 0u; sp.bk = 3u;
+  }
+  return sp;
+}`;
+const mlaw = (cell: number, state: number, tick: number, inp: Uint32Array): Split => {
+  if (state !== 3) return law(cell, state, tick, inp);
+  const x = inp[cell % 4];
+  return { t: [P(0.06) + x, P(0.07) + x], s: [DEATH, EATEN(1), 3], b: { t: [P(0.7), P(0.9)], k: 3, mask: 4, state: 0 } };
+};
+const NONE = 0xffffffff;
+// The merging oracle: every member a token in rank order, each step's takes, splits, births and merge done member by
+// member in the order the tier gives them.
+type MBin = { key: number; e: number; part: number; members: number[] };
+class MOracle {
+  table: MBin[] = [];
+  // every token's departures in order: a member that moves on goes on as a member of the bin it reached
+  fates = new Map<number, (Fate & {})[]>();
+  fate(token: number, after: number) { return (this.fates.get(token) ?? []).find((f) => f.t > after) ?? null; }
+  left(token: number, f: Fate & {}) { this.fates.set(token, [...(this.fates.get(token) ?? []), f]); }
+  next = 0;
+  promoted: { token: number; key: number; e: number; T: number; rank: number; state: number }[] = [];
+  constructor(readonly L: Lumped, readonly tw: typeof mlaw) {}
+  step(t: number, takes: number[], gkeys: number[], births: number[], gbirths: number[], inp: Uint32Array) {
+    const take = (key: number, e: number, count: number, code: number) => {
+      const b = this.table.find((x) => x.key === key && (e === NONE || x.e === e) && x.members.length);
+      if (!b) return;
+      const T = b.members.length;
+      b.members.splice(0, Math.min(count, T)).forEach((token, i) => {
+        this.left(token, { t, state: code });
+        if (code === PROMOTED) this.promoted.push({ token, key: b.key, e: b.e, T, rank: i, state: b.key & 0xffff });
+      });
+    };
+    for (let q = 0; q < takes.length; q += 4) take(takes[q], takes[q + 1], takes[q + 2], takes[q + 3]);
+    let g = 0;
+    for (const key of gkeys) { if (key === NONE) continue; if (g >= REQ_MAX) break; take(key, NONE, 1, PROMOTED); g++; }
+    const moves: { key: number; toks: number[] }[] = [];
+    for (const b of this.table) {
+      if (!b.members.length) continue;
+      const state = b.key & 0xffff, sp = this.tw(b.key >>> 16, state, t, inp);
+      rinit(this.L.seed, lstream(b.e, b.part), b.key, t);
+      const c = multinom(b.members.length, sp.t), born = Lumped.born(sp, c);
+      let at = 0;
+      for (let j = 0; j < c.length; j++) {
+        if (sp.s[j] === state) continue;
+        const went = b.members.slice(at, at + c[j]);
+        at += c[j];
+        for (const m of went) this.left(m, { t, state: sp.s[j] });
+        if (sp.s[j] < FATE && went.length) moves.push({ key: ((b.key & 0xffff0000) | sp.s[j]) >>> 0, toks: went });
+      }
+      if (born) moves.push({ key: ((b.key & 0xffff0000) | sp.b!.state) >>> 0, toks: Array.from({ length: born }, () => this.next++) });
+      b.members = b.members.slice(at);
+    }
+    const contrib = [
+      ...this.table.filter((b) => b.members.length).map((b) => ({ key: b.key, toks: b.members })), ...moves,
+      ...[...births, ...gbirths].flatMap((x, i, a) => (i % 2 === 0 && a[i + 1] > 0 ? [{ key: x, toks: Array.from({ length: a[i + 1] }, () => this.next++) }] : [])),
+    ];
+    const keys = [...new Set(contrib.map((x) => x.key))].sort((a, b) => a - b);
+    this.table = keys.map((key) => ({ key, e: t, part: 0, members: contrib.filter((x) => x.key === key).flatMap((x) => x.toks) }));
+  }
+  bins(): Bin[] { return this.table.map((b) => ({ key: b.key, e: b.e, T: b.members.length, out: 0, dense: false })); }
+}
+
+async function merging(g: Gpu, days: number) {
+  const s = new Store(g);
+  s.declare({ name: "flyup", capacity: 64, placed: true, fields: ["lkey", "le", "lsig", "lstate"].map((name) => ({ name, type: "u32" as const, unit: "", scale: 1 })) });
+  const fly = new Lumped(s, { name: "fly", capacity: 4096, members: 1, seed: 0x5eed, stream: 5, law: MLAW, ts: mlaw, active: "flyup", promote: "", merge: true });
+  fly.inputs(INP);
+  fly.watch([10, 40]);
+  s.law({ name: "flies", due: (t) => t % DAY === 0, run: (_, t) => fly.step(t) });
+  const O = new MOracle(fly, mlaw), gb = storage(g, 64), gq = storage(g, 4 * 8);
+  const tables: Bin[][] = [], tracked: { bin: Bin; rank: number; token: number; fate: Fate; seen: number }[] = [];
+  for (let d = 1; d <= days; d++) {
+    const t = d * DAY, births: number[] = [], takes: number[] = [];
+    if (d === 1) SIZES.forEach((n, c) => { fly.add(10 + c, 0, n); births.push(keyOf(10 + c, 0), n); });
+    if (d === 2) { fly.add(40, 3, 5000); births.push(keyOf(40, 3), 5000); }
+    // the GPU's births every third day, zeros among them
+    const gbirths = d % 3 === 0 ? [keyOf(5, 0), 160, keyOf(6, 1), 0, keyOf(5, 0), 7, keyOf(41, 2), 90] : [];
+    if (gbirths.length) { g.device.queue.writeBuffer(gb, 0, Uint32Array.from(gbirths)); fly.bornFrom(gb, gbirths.length / 2); }
+    // the GPU's requests on days 4 and 7: adults of cell 40, a key with none, and larvae of cell 18
+    const gkeys = d === 4 || d === 7 ? [keyOf(40, 3), NONE, keyOf(99, 3), keyOf(18, 1), NONE, keyOf(40, 3), NONE, NONE] : [];
+    if (gkeys.length) { g.device.queue.writeBuffer(gq, 0, Uint32Array.from(gkeys)); fly.requests(gq, gkeys.length); }
+    // the CPU's takes on day 5: two promoted from the biggest bin, people take 10 eggs of cell 10
+    if (d === 5) {
+      const now = await fly.read(), big = now.reduce((a, b) => (b.T > a.T ? b : a)), eggs = now.find((b) => b.key === keyOf(10, 0));
+      fly.take(big.key, big.e, 2, PROMOTED); takes.push(big.key, big.e, 2, PROMOTED);
+      if (eggs) { fly.take(eggs.key, eggs.e, 10, TAKEN); takes.push(eggs.key, eggs.e, 10, TAKEN); }
+    }
+    O.step(t, takes, gkeys, births, gbirths, INP);
+    await s.step(t);
+    const got = await fly.read();
+    expect(got).toEqual(O.bins());
+    tables.push(got);
+    // members of a watched cell followed: their fates replayed through the merged bins as the oracle saw them
+    if (d === 3 || d === 6) for (const b of got.filter((x) => x.key >>> 16 === 10 || x.key >>> 16 === 40)) {
+      const ob = O.table.find((x) => x.key === b.key)!;
+      for (const rank of [0, b.T >> 1, b.T - 1]) tracked.push({ bin: b, rank, token: ob.members[rank], fate: null, seen: 0 });
+    }
+    for (const tr of tracked) {
+      const now = fly.fate(tr.bin, tr.rank), want = O.fate(tr.token, tr.bin.e);
+      expect(now).toEqual(want);
+      if (now) tr.seen++;
+    }
+  }
+  const up = await s.read("flyup", "body");
+  s.destroy(); gb.destroy(); gq.destroy();
+  return { fly, O, tables, tracked, up };
+}
+
+test("a merging kind: one bin a key, stayers first; births of its law and of the GPU; takes with fates and the GPU's requests; fates replayed in watched cells; the same on both adapters", async () => {
+  const a = await merging(await theGpu(), 12);
+  // a key's bin entered at the last step, the stayers' link kept by the oracle's tokens
+  for (const tb of a.tables) for (const b of tb) expect(new Set(tb.map((x) => x.key)).size).toBe(tb.length);
+  // eaten and promoted fates seen, births of the law seen (eggs in cell 40 from adults laid there on day 2)
+  const fates = [...a.O.fates.values()].flat().map((f) => f.state);
+  expect(fates).toContain(EATEN(1));
+  expect(fates).toContain(PROMOTED);
+  expect(fates).toContain(TAKEN);
+  expect(a.tables.some((tb) => tb.some((b) => b.key === keyOf(40, 0)))).toBe(true);
+  expect(a.tracked.some((t) => t.seen > 0)).toBe(true);
+  // the promoted: their identity in the bin they left, their state then, and their steps after under the same law
+  const C = 64, fields = ["lkey", "le", "lsig", "lstate"], at = (n: string) => (fields.indexOf(n) + 3) * C;
+  const up = Array.from({ length: C }, (_, i) => ({ live: a.up[i] & 1, key: a.up[at("lkey") + i], e: a.up[at("le") + i], sig: a.up[at("lsig") + i], state: a.up[at("lstate") + i] }));
+  expect(a.O.promoted.length).toBeGreaterThan(2);
+  for (const p of a.O.promoted) {
+    const sig = a.fly.identity({ key: p.key, e: p.e, T: p.T }, p.rank);
+    // the individual's own steps, from the step it was taken at (takes come first in a step, then the individuals')
+    let state = p.state, alive = true;
+    for (let t = a.O.fate(p.token, p.e)!.t; t <= 12 * DAY && alive; t += DAY) {
+      const sp = mlaw(p.key >>> 16, state, t, INP), u = philox([p.key, sig, p.e, t >>> 0], [a.fly.seed, 0x80000001])[0];
+      const s = sp.s[sp.t.filter((b) => b <= u).length];
+      if (s >>> 0 >= FATE) alive = false; else state = s;
+    }
+    const mine = up.filter((x) => x.live === 1 && x.key === p.key && x.e === p.e && x.sig === sig);
+    expect(mine.map((x) => x.state)).toEqual(alive ? [state] : []);
+  }
+  low ??= await openGpu("low-power");
+  const b = await merging(low, 12);
+  expect(b.tables).toEqual(a.tables);
+}, 600_000);
+
+test("a wide kind holds a key's members past 2^31 as parts: their sum the count, each part split on its own stream", async () => {
+  const s = new Store(await theGpu());
+  s.declare({ name: "grainup", capacity: 8, placed: true, fields: ["lkey", "le", "lsig"].map((name) => ({ name, type: "u32" as const, unit: "", scale: 1 })) });
+  const HALF = `fn law(cell: u32, state: u32, tick: u32) -> Split { var sp: Split; sp.m = 1u; sp.t[0] = ${P(0.25)}u; sp.s[0] = DEATH; sp.s[1] = state; _ = &inp; return sp; }`;
+  const half = (): Split => ({ t: [P(0.25)], s: [DEATH, 1] });
+  const sand = new Lumped(s, { name: "sand", capacity: 64, members: 1, seed: 3, stream: 9, law: HALF, ts: half, active: "grainup", promote: "", merge: true, wide: true });
+  s.law({ name: "sand", due: (t) => t % DAY === 0, run: (_, t) => sand.step(t) });
+  const N0 = 3_000_000_000;
+  sand.add(7, 1, N0); sand.add(7, 1, N0); sand.add(8, 1, 1000);
+  await s.step(DAY);
+  const first = (await sand.read()).filter((b) => b.key === keyOf(7, 1));
+  expect(first.reduce((a, b) => a + b.T, 0)).toBe(2 * N0);
+  for (const b of first) expect(b.T).toBeLessThanOrEqual(0x7fffffff);
+  expect(first.map((b) => b.part)).toEqual(first.map((_, i) => i));
+  // the next step: each part keeps three quarters on its own stream, the stayers packed again in part order
+  await s.step(2 * DAY);
+  const stay = first.map((b) => { rinit(sand.seed, lstream(b.e, b.part!), b.key, 2 * DAY); return multinom(b.T, [P(0.25)])[1]; });
+  const packed: number[] = [];
+  let acc = 0;
+  for (const c of stay) { if (acc > 0 && acc > 0x7fffffff - c) { packed.push(acc); acc = c; } else acc += c; }
+  packed.push(acc);
+  const second = (await sand.read()).filter((b) => b.key === keyOf(7, 1));
+  expect(second.map((b) => b.T)).toEqual(packed);
+  expect(second.reduce((a, b) => a + b.T, 0)).toBe(stay.reduce((a, b) => a + b, 0));
+  s.destroy();
+}, 120_000);

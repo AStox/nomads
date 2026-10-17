@@ -6,7 +6,7 @@
 //
 // People and animals answer to how bright a place looks, which is the log of its lux: they see less far, walk and work
 // slower, sleep better and keep to a fire when it is dark. The rates below are those answers.
-import { DAY, TILE_M, groundOf, hourOf, meters, type Thing, type World } from "./world";
+import { DAY, TILE_M, groundOf, hourOf, type Thing, type World } from "./world";
 import { SIZE, clamp, crownShare, smooth } from "../terrain/flora";
 import { crownsOf, liveThings } from "./space";
 import { ablaze, carriedOutput, fireOutput, isFlame } from "./physics";
@@ -157,21 +157,10 @@ const brightOf = (lux: number) => clamp((Math.log10(Math.max(lux, 1e-6)) + 2) / 
 // light under a clear sky at the end of civil twilight, after which, as the US Naval Observatory has it, light other than
 // the sky's is normally needed to carry on ordinary outdoor work (fire-constants sec. 33, R483): some 3 lux.
 export const DARK = brightOf(sunLux(NIGHT_EL).lux);
-// Work goes at this share of its pace, and walking at this share of its speed.
+// Work goes at this share of its pace (walking's pace is gait.ts's).
 export const workRate = (b: number) => clamp(0.15 + 1.1 * b, 0.2, 1);
-export const moveRate = (b: number) => clamp(0.55 + 0.7 * b, 0.55, 1);
 // Rest is full in the dark and slows to a little over half in bright light.
 export const restRate = (b: number) => 0.55 + 0.45 * (1 - clamp((b - 0.25) / 0.55, 0, 1));
-
-// Whether one can make out another within `range` meters, the distance in full light. Someone is seen by how bright it is
-// where they stand, down to a tenth of the range in the dark, and 0.7 as far by a viewer standing in a glare much brighter
-// than the other's surroundings.
-export function canSee(w: World, from: { px: number; py: number }, target: { px: number; py: number }, range: number) {
-  const d = meters(from, target);
-  if (d > range) return false;
-  const b = lightOn(w, target).bright;
-  return d <= range * clamp((b - 0.05) / 0.6, 0.1, 1) * (lightOn(w, from).bright - b > 0.2 ? 0.7 : 1);
-}
 
 // What it is like, in a few words for whoever reads the inspector or answers for a person.
 export function lightWords(l: Light) {

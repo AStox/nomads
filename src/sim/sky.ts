@@ -16,6 +16,7 @@ const DEG = Math.PI / 180;
 // a 6.9 hour day). The moon crosses the same sky phase x 24 hours behind the sun as it waxes over LUNAR days, as far south of
 // the equator when full as the sun is north, so a summer full moon rides low and a winter one high.
 export const DAY = 288; // ticks per in-game day, 5 minutes each (here, not in world.ts, so the sky needs nothing of the world's at load)
+export const TICK_S = 86400 / DAY; // seconds a tick lasts: every speed, rate and duration in seconds becomes ticks through this alone
 export const YEAR_DAYS = 40;
 export const NOON = 13; // the sun crosses the south
 // Where tick t falls between the middles of two seasons: the earlier's index and how far toward the next. A day's air is

@@ -1,9 +1,9 @@
 // GOAP over what each agent believes. Agents can only plan with things they've seen work.
 import { chance, ofPlace, ruledOut, type Belief } from "./beliefs";
-import { THING_MATERIAL, p, type Registry } from "./materials";
+import { p, type Registry } from "./materials";
 import { breaksOf } from "./physics";
 import { HUNTED } from "./fauna";
-import { PHYS, asFound } from "./fuel";
+import { PHYS, asFound, physOf } from "./fuel";
 import { DAY } from "./world";
 
 export type PState = { inv: Record<string, number>; at: string | null; flags: string[] };
@@ -17,12 +17,24 @@ export type Ctx = {
   shared?: Record<string, number>; // what's in their camp's shared store
   now?: string[]; // the conditions they're in (rain, dark, cold, wind, the ground underfoot), for what they believe won't work in them
   testing?: string; // a belief whose theories they're setting aside, to see whether they hold
+  carry?: number; // kg they can hold besides what they wear (gait.ts capacityOf); none: as much as they like
 };
 export type PlanStep = { op: string; arg?: string; key?: string };
 type Op = PlanStep & { cost: number; needs: string[]; makes: string[]; pre: (s: PState) => boolean; eff: (s: PState) => PState };
 
 const n = (s: PState, k: string) => s.inv[k] ?? 0;
-const add = (s: PState, k: string, d: number): PState => ({ ...s, inv: { ...s.inv, [k]: Math.max(0, Math.min(24, n(s, k) + d)) } });
+// One of a kind as found, kg (fuel.ts asFound), by its matter; nothing for a kind of no known matter.
+const kgOf = (ctx: Ctx, k: string) => { const x = physOf(ctx.kinds, ctx.kinds[k]); return x ? asFound(x) : 0; };
+// d more of a kind in hand, or fewer: no more than the mass they can carry takes (gait.ts), the rest left where it was.
+function add(ctx: Ctx, s: PState, k: string, d: number): PState {
+  let want = Math.max(0, n(s, k) + d);
+  const one = kgOf(ctx, k);
+  if (d > 0 && ctx.carry !== undefined && one > 0) {
+    const held = Object.entries(s.inv).reduce((t, [x, c]) => t + c * kgOf(ctx, x), 0);
+    want = Math.min(want, n(s, k) + Math.max(0, Math.floor((ctx.carry - held) / one)));
+  }
+  return { ...s, inv: { ...s.inv, [k]: want } };
+}
 const flag = (s: PState, f: string): PState => (s.flags.includes(f) ? s : { ...s, flags: [...s.flags, f].sort() });
 const at = (s: PState, place: string | null): PState => ({ ...s, at: place });
 // A hearth is still a fire; a kiln or a charcoal forge is still a ringed hearth.
@@ -107,8 +119,8 @@ function beliefOps(b: Belief, ctx: Ctx): Op[] {
       pre: (s) => Object.entries(req).every(([k, v]) => n(s, k) >= v) && (!place || atPlace(s, place)) && !(builds === "fire" && atPlace(s, "fire")),
       eff: (s) => {
         let o = s;
-        for (const [k, v] of Object.entries(b.uses)) o = add(o, k, -v);
-        for (const [k, v] of Object.entries(out)) o = add(o, k, v);
+        for (const [k, v] of Object.entries(b.uses)) o = add(ctx, o, k, -v);
+        for (const [k, v] of Object.entries(out)) o = add(ctx, o, k, v);
         if (builds) o = flag(o, builds);
         if (prey) o = flag(o, prey);
         if (testing) o = flag(o, `tried:${b.key}`);
@@ -136,34 +148,34 @@ function ops(ctx: Ctx): Op[] {
     op: "goto", arg: place, cost: 1 + d / 4, needs: [], makes: [`place:${place}`], pre: (s) => s.at !== place, eff: (s) => at(s, place),
   }));
   for (const [op, g] of Object.entries(GATHER))
-    list.push({ op, cost: 1.5, needs: [`place:${g.place}`], makes: [g.item], pre: (s) => s.at === g.place, eff: (s) => at(add(s, g.item, g.n), g.keep ? g.place : null) });
+    list.push({ op, cost: 1.5, needs: [`place:${g.place}`], makes: [g.item], pre: (s) => s.at === g.place, eff: (s) => at(add(ctx, s, g.item, g.n), g.keep ? g.place : null) });
   for (const place of Object.keys(ctx.dist).filter((x) => x.startsWith("item:"))) {
     const k = place.slice(5);
-    list.push({ op: "pick_up", arg: k, cost: 1, needs: [`place:${place}`], makes: [k], pre: (s) => s.at === place, eff: (s) => at(add(s, k, 1), null) });
+    list.push({ op: "pick_up", arg: k, cost: 1, needs: [`place:${place}`], makes: [k], pre: (s) => s.at === place, eff: (s) => at(add(ctx, s, k, 1), null) });
   }
   for (const b of ctx.beliefs) list.push(...beliefOps(b, ctx));
   // Anyone can put things away at home and take them back out.
   if ("home" in ctx.dist) {
     list.push({ op: "stash", cost: 1, needs: ["place:home"], makes: ["stashed"], pre: (s) => s.at === "home", eff: (s) => flag(s, "stashed") });
     for (const [k, v] of Object.entries(ctx.store ?? {}))
-      if (v > 0) list.push({ op: "take_stored", arg: k, cost: 1, needs: ["place:home"], makes: [k], pre: (s) => s.at === "home", eff: (s) => add(s, k, Math.min(v, 3)) });
+      if (v > 0) list.push({ op: "take_stored", arg: k, cost: 1, needs: ["place:home"], makes: [k], pre: (s) => s.at === "home", eff: (s) => add(ctx, s, k, Math.min(v, 3)) });
   }
   // A camp's shared store is open to its members.
   if ("store" in ctx.dist)
     for (const [k, v] of Object.entries(ctx.shared ?? {}))
-      if (v > 0) list.push({ op: "take_shared", arg: k, cost: 1.5, needs: ["place:store"], makes: [k], pre: (s) => s.at === "store", eff: (s) => add(s, k, Math.min(v, 3)) });
+      if (v > 0) list.push({ op: "take_shared", arg: k, cost: 1.5, needs: ["place:store"], makes: [k], pre: (s) => s.at === "store", eff: (s) => add(ctx, s, k, Math.min(v, 3)) });
   // Anyone who has seen what an animal is inside can try to kill one with whatever they hold.
   for (const sp of HUNTED) {
     if (!ctx.facts[`breaks:${sp}`] || !(sp in ctx.dist)) continue;
-    const out = THING_MATERIAL[sp].breaks;
+    const out = breaksOf(sp);
     list.push({
       op: "hunt", arg: sp, cost: 12, needs: [`place:${sp}`], makes: [`hunted:${sp}`, ...Object.keys(out)],
-      pre: (s) => s.at === sp, eff: (s) => { let o = flag(at(s, null), `hunted:${sp}`); for (const [k, v] of Object.entries(out)) o = add(o, k, v); return o; },
+      pre: (s) => s.at === sp, eff: (s) => { let o = flag(at(s, null), `hunted:${sp}`); for (const [k, v] of Object.entries(out)) o = add(ctx, o, k, v); return o; },
     });
   }
   const edible = edibleKinds(ctx);
   list.push(
-    { op: "eat", cost: 1, needs: edible, makes: ["ate"], pre: (s) => edible.some((k) => n(s, k) > 0), eff: (s) => flag(add(s, edible.find((k) => n(s, k) > 0)!, -1), "ate") },
+    { op: "eat", cost: 1, needs: edible, makes: ["ate"], pre: (s) => edible.some((k) => n(s, k) > 0), eff: (s) => flag(add(ctx, s, edible.find((k) => n(s, k) > 0)!, -1), "ate") },
     { op: "rest", cost: 4, needs: [], makes: ["rested"], pre: (s) => s.at !== "home", eff: (s) => flag(s, "rested") },
     { op: "rest", cost: 1, needs: ["place:home"], makes: ["rested"], pre: (s) => s.at === "home", eff: (s) => flag(s, "rested") },
     { op: "warm_up", cost: 1, needs: ["place:fire"], makes: ["warm"], pre: (s) => atPlace(s, "fire") || s.at === "home", eff: (s) => flag(s, "warm") },

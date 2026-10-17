@@ -2,18 +2,20 @@
 // turns only on the materials and the place they're worked at, the decision the act itself comes to (physics.ts), asked
 // of that place as it most plainly is, with the things in hand and nothing done; for the rest, the same formulas the
 // acts run, given what decides them where and when it's done (Situation): how wet the tinder is, the wind, the spot,
-// the weather ahead for what's done to the ground, the fish in reach, and for what's done with fire the pieces laid, the
+// the weather ahead for what's done to the ground, the fish a gear could meet, and for what's done with fire the pieces laid, the
 // air a fire stands in and the fire itself. The answer key (scripts/truth.ts) computes every way by it.
-import type { Act, Stack, Thing, World } from "./world";
+import type { Act, Animal, Stack, Thing, World } from "./world";
 import { THING_MATERIAL, depth, p } from "./materials";
 import {
   DURATION, EMBER_GIVE_UP, HAND, PIT_SOIL, SEED_SOIL, STILL, STRUCK, airy, arrowy, breaking, breaksOf, cutting, digPower, eating, emberCatches, emberTime, forging as drawing, heating,
-  RED, TYPICAL, heldStrike, holdOf, joining, laidOf, leatherOf, placing, rubbedOf, rubbing, shaping, shelterOf, sparkCatches, spotNear, stemOf, stave, strikeDamage,
-  throwDamage, throwsSparks, usual, wearing, wetting, yieldOf, type Decision, type Fields, type Fire,
+  RED, TYPICAL, heldStrike, holdOf, joining, laidOf, launchOf, leatherOf, placing, rubbedOf, rubbing, shaping, shelterOf, sparkCatches, spotNear, stemOf, stave, strikeDamage,
+  throwsSparks, usual, wearing, wetting, yieldOf, type Decision, type Fields, type Fire,
 } from "./physics";
+import { SHOT_S, STALK, animalBody, killChance, throwRange, releaseAt, tipOf, woundOf, type Meeting } from "./hunt";
+import { SPEC, herded, type Herded } from "./animals";
 import { advance, feed, kindle, lay, lighting, setIn, type Air, type Bed } from "./combustion";
 import { BURNS, PHYS, physOf } from "./fuel";
-import { BLOWS, DAY_WORK, GROWN, SPARKS_TO_CATCH, TICK_S, blowEnergy, flakeEnergy, isBlade, splitEnergy } from "./mechanics";
+import { BLOWS, CADENCE, DAY_WORK, GROWN, SPARKS_TO_CATCH, TICK_S, blowEnergy, flakeEnergy, isBlade, splitEnergy } from "./mechanics";
 import { rulingKey } from "./sim";
 import { tinder } from "./wetness";
 import { bedAt, nicheOf, seedlingFate, treeOf, type Ahead } from "./seedling";
@@ -24,12 +26,12 @@ import { bedAt, nicheOf, seedlingFate, treeOf, type Ahead } from "./seedling";
 export type Prediction = { ok: boolean; gives: string[]; builds?: string; effect?: string; at: string | null; ticks: number; spot?: readonly [number, number] };
 // Where and when it's done, for what turns on more than the materials: how wet the tinder they'd light a fire with is
 // (wetness.ts tinderOf; null for none), the wind at head height, the spot and, for what's done to the ground, the weather
-// of the hours ahead there (seedling.ts ahead), and the fish swimming within reach of the water. For what's done with
+// of the hours ahead there (seedling.ts ahead), and the fish of the water there a gear could meet (waters.ts meeting). For what's done with
 // fire (fire-constants sec. 32): the pieces they'd lay or hold as they hold them (for a rub, those after the two rubbed),
 // the air a fire stands in there (the one they're at, or one they'd light, physics.ts layAt), and the fire they're at as
 // it burns then, with its setup (none for none).
 export type Situation = {
-  tinder: number | null; wind: number; spot: { px: number; py: number; heading?: number }; ahead: Ahead; fish: number;
+  tinder: number | null; wind: number; spot: { px: number; py: number; heading?: number }; ahead: Ahead; fish: Meeting;
   pieces: Stack[]; air: Air; fire: Fire | null;
   rubbed?: Stack[]; // for a rub, the two rubbed together as held (as their kinds are, if not said)
 };
@@ -56,8 +58,8 @@ const LEAN_TO: Record<string, number> = { stick: 4 };
 // The stones round a fire, by how much stone stands round it.
 const rings = (f: Fire | null) => Math.round((f?.walls?.width ?? 0) / PHYS.stone.d);
 
-// fish: how many swim within reach of the water, none unless said; here: the fire it's done at, if not a staged one.
-export function predictMaterial(w: World, f: Fields, fish = 0, here?: Here): Prediction | { ask: string } | { why: string } {
+// fish: the fish a gear dipped there could meet, none unless said; here: the fire it's done at, if not a staged one.
+export function predictMaterial(w: World, f: Fields, fish: Meeting = { fish: [], area: 0 }, here?: Here): Prediction | { ask: string } | { why: string } {
   const unknown = [...f.inputs, f.tool].find((k) => k && !w.kinds[k]);
   if (unknown) return { why: `no ${unknown} has been made` };
   const at = f.at ?? null;
@@ -76,8 +78,8 @@ export function predictMaterial(w: World, f: Fields, fish = 0, here?: Here): Pre
       if (items.some((k) => depth(w.kinds, w.kinds[k]) >= 2)) return { ok: false, gives: [], at, ticks };
       return { ask: rulingKey({ verb: f.verb, items, tool: f.tool ?? null, shape: f.shape as Act["shape"], at, ...(f.target ? { target: { kind: f.target } } : {}) }) };
     }
-    // one fish or two, a basket brings up fish
-    case "wet": return predicted(wetting(w, items, { held, water: at === "water", fish: { basket: fish, line: fish }, skill: 0, draw: () => 1 }));
+    // the fish of that water a gear could meet, each taken at the middle of its chance (hunt.ts caught)
+    case "wet": return predicted(wetting(w, items, { held, water: at === "water", meet: fish, basal: GROWN.basal, draw: () => 0.5 }));
     case "shape": return predicted(shaping(w, items, f.shape, { held }));
     case "place": return predicted(placing(w, items, { held, fire, ring: rings(fire), pit: at === "pit", own: at === "home" ? { parts: LEAN_TO, shelter: shelterOf(w, LEAN_TO) } : null, empty: false, stacks, air }));
     case "wear": return predicted(wearing(w, items, { held }));
@@ -107,7 +109,14 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
         const c = cutting(stemOf(w, t)!, hold, GROWN);
         return c.blows <= DAY_WORK ? out(true, Math.ceil(c.blows / BLOWS), { gives: Object.keys(yieldOf(t)).filter((k) => yieldOf(t)[k] > 0) }) : out(false, 1);
       }
-      // an animal or reeds, by the old reckoning: blow after blow until it's down, or barely a mark after five
+      // an animal (hunt.ts): a blow on its chest at a full fat reserve, of the energy a grown body's swing gives it,
+      // through the tool's point or its blunt end, at the middle of a blunt blow's chance; and reeds, by the old
+      // reckoning, blow after blow until they're down, or barely a mark after five
+      if (herded(f.target as Animal["species"])) {
+        const t = hold.soft ? { d: 0 } : tipOf(w.kinds, tool), E = blowEnergy(hold.swung, GROWN);
+        const r = woundOf(E, { tip: t.tip, tipD: t.d, point: !!t.tip, d: t.tip ? t.d : 2 * hold.edge.r }, animalBody(SPEC[f.target as Herded].kg), true, 0.5);
+        return r.wound === "kill" ? out(true, 1, { gives: Object.keys(breaksOf(f.target)) }) : out(false, 1);
+      }
       const mat = THING_MATERIAL[f.target];
       if (mat?.hp) {
         const dmg = strikeDamage(tool, mat.toughness ?? 0);
@@ -178,11 +187,17 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
       return out(up, ticks, { spot, ...(up ? { builds: tree ? "tree" : niche === "grass" ? "grass" : "bush" } : {}) });
     }
     case "throw": {
-      // thrown, or shot from a bow, every three ticks, six at most: down once what each does adds up to the animal
-      const mat = THING_MATERIAL[f.target ?? ""], item = w.kinds[f.inputs[0]];
-      if (!mat?.hp) return { why: `nothing to throw at` };
-      const dmg = throwDamage(item, mat.toughness ?? 0, !!f.tool && stave(w.kinds[f.tool]) && arrowy(item)), throws = dmg > 0 ? Math.ceil(mat.hp / dmg) : Infinity;
-      return throws <= 6 ? out(true, 3 * throws, { gives: Object.keys(mat.breaks) }) : out(false, 18);
+      // thrown, or shot from a bow (hunt.ts), at an animal of the kind standing broadside with a full fat reserve, as close
+      // as hunters throw from, 5 to 10 m (the ethnographic review Milks et al. cite, people-constants R1031), or as far as
+      // the throw reaches if less: down once enough throws for an even chance of a kill are thrown, one aimed throw after
+      // another, unless that is past a day's work
+      if (!f.target || !herded(f.target as Animal["species"])) return { why: `nothing to throw at` };
+      const shot = !!f.tool && stave(w.kinds[f.tool]) && arrowy(w.kinds[f.inputs[0]]), l = launchOf(w, undefined, { items: f.inputs, tool: f.tool ?? undefined }, shot);
+      if (!l) return { why: `nothing to throw` };
+      const an = { species: f.target, hunger: 100, heading: 0, state: "graze" } as Animal, chest = animalBody(SPEC[f.target as Herded].kg).chest;
+      const d = Math.min(STALK, throwRange(l.ms, Math.sqrt((2 * l.KE) / l.ms.m), releaseAt(l.who), chest));
+      const pk = d > 0 ? killChance(l.ms, l.KE, l.who, an, d) : 0, n = pk >= 1 ? 1 : pk > 0 ? Math.ceil(Math.log(0.5) / Math.log(1 - pk)) : Infinity;
+      return n * SHOT_S <= DAY_WORK / CADENCE ? out(true, Math.ceil((n * SHOT_S) / TICK_S), { gives: Object.keys(breaksOf(f.target)) }) : out(false, 1);
     }
   }
   return predictMaterial(w, f, s.fish, { fire: s.fire, air: s.air, stacks: s.pieces });

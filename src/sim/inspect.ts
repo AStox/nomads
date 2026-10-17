@@ -5,6 +5,8 @@ import { BASE, THING_MATERIAL, MADE_OF, PROPS, p, type Kind } from "./materials"
 import { BONDS, DAY, H, LABELS, QUIET, TILE_M, Tile, W, ageOf, clock, colorIndex, groundOf, iceAt, level, meters, spriteSeed, stageOf, tileAt, type Agent, type Animal, type Thing, type World } from "./world";
 import { thingById } from "./space";
 import { ablaze, breaksOf, fireHours, fireKind, fireOutput, inWorld, shelterName } from "./physics";
+import { herded } from "./animals";
+import { carcassOf, fatOf, massOf } from "./hunt";
 import { activity, agentDetail, goalText, heading, type Activity } from "./sim";
 import { beliefText, conditionWords, groundOfKey, type Belief } from "./beliefs";
 import { campOf, knownCustoms, sharedStore, standing } from "./groups";
@@ -219,8 +221,7 @@ function animal(w: World, a: Animal): Inspected {
   const kin = w.animals.filter((x) => x !== a && x.species === a.species && a.home && x.home && x.home[0] === a.home[0] && x.home[1] === a.home[1]);
   const sections: Section[] = [{ tab: "animal", rows }];
   if (kin.length) sections.push({ tab: "animal", title: `${a.species === "wolf" ? "pack" : a.species === "deer" ? "herd" : "group"} of ${kin.length + 1}`, rows: kin.slice(0, 30).map((x) => ({ label: x.species, value: words(x.state), link: x.id })) });
-  const mat = THING_MATERIAL[a.species];
-  if (mat) sections.push({ tab: "animal", title: "butchers into", rows: [{ label: "toughness", value: mat.toughness }], bag: bagOf(w, mat.breaks) });
+  if (herded(a.species)) sections.push({ tab: "animal", title: "butchers into", rows: [{ label: "live mass", value: `${r(massOf(a), 1)} kg` }], bag: bagOf(w, carcassOf(a.species, fatOf(a.species, a.hunger))) });
   const bars: Inspected["bars"] = [["hp", r(Math.max(0, a.hp)), a.maxHp], ["fed", r(Math.max(0, a.hunger)), 100]];
   return { id: a.id, kind: "animal", name: a.species, species: a.species, px: a.px, py: a.py, facts: [a.species, words(a.state)], bars, sections, seed: spriteSeed(a), state: a.state, alt: a.alt };
 }

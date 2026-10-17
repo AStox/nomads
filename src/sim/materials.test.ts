@@ -1,12 +1,13 @@
 import { afterAll, expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, adoptStore, dryAt, newWorld, rng, shoreOf, wetAt, type Act, type Agent, type Thing, type World } from "./world";
-import { WEATHER_NOW, bedAir, count, eat, fireOf, giveItems, giveStack, heat, join, openWater, place, removeThing, strikeTick, throwTick, wet, type Fields, type Outcome } from "./physics";
+import { WEATHER_NOW, bedAir, count, eat, fireOf, giveItems, giveStack, heat, join, openWater, place, removeThing, strikeTick, throwReach, throwTick, wet, type Fields, type Outcome } from "./physics";
 import { COPPER, PHYS, pieceOf } from "./fuel";
-import { BLADE } from "./mechanics";
+import { BLADE, GROWN } from "./mechanics";
+import { basketOf, catchChances } from "./hunt";
 import { advance } from "./combustion";
 import { predictMaterial } from "./formulas";
 import { addAnimal } from "./fauna";
-import { fishDriver, fishOf, waterHere, watersOf } from "./waters";
+import { fishDriver, fishOf, meeting, takeFish, waterHere, watersOf } from "./waters";
 import { streamNow } from "./streams";
 import { Store } from "../gpu/store";
 import { FISH } from "../gpu/fish";
@@ -141,24 +142,27 @@ test("hammering copper red hot at a charcoal fire draws its edge out into a blad
   expect(edge(hot)).toBeLessThanOrEqual(BLADE * 1.001);
 });
 
-test("hands full of tools still make room for food", () => {
+// Fill someone's hands with one kind until the next one won't go (gait.ts canHold, by mass and bulk): how many they hold.
+const fill = (w: World, a: Agent, k: string) => { while (giveItems(w, a, k) === 1); return count(a, k); };
+test("hands full of stone still make room for food", () => {
   const [w, a] = fresh();
   a.born = w.t - 1e6;
-  giveItems(w, a, "sharp_stone", 11);
-  for (const k of ["stick", "clay", "stone", "fiber", "bone"]) giveItems(w, a, k);
-  expect(a.inv.length).toBe(16);
-  expect(giveItems(w, a, "berry", 3)).toBe(3);
-  expect(count(a, "berry")).toBe(3);
-  expect(count(a, "sharp_stone")).toBe(8);
+  for (const k of ["stick", "clay", "fiber", "bone"]) giveItems(w, a, k);
+  const stones = fill(w, a, "stone");
+  expect(stones).toBeGreaterThan(1);
+  // three kilograms of berries as picked, more than the stone that wouldn't go weighs
+  expect(giveItems(w, a, "berry", 12, PHYS.berry.green)).toBe(12);
+  expect(count(a, "berry")).toBe(12);
+  expect(count(a, "stone")).toBeLessThan(stones);
 });
 
 test("hands full of food still make room for a stick", () => {
   const [w, a] = fresh();
   a.born = w.t - 1e6;
-  giveItems(w, a, "grain", 16);
+  const grain = fill(w, a, "grain");
   expect(giveItems(w, a, "stick")).toBe(1);
   expect(count(a, "stick")).toBe(1);
-  expect(count(a, "grain")).toBe(15);
+  expect(count(a, "grain")).toBeLessThan(grain);
 });
 
 // Whether a try comes off follows from what anyone trying could notice: the same things in hand, weather and spot give
@@ -233,7 +237,7 @@ test("felling an oak with a hafted flint blade peels the same strips of bark eve
   expect(fell("stone", 10).out.ok).toBe(false);
 });
 
-test("a line or a basket dipped near the shore catches a fish of the water it is dipped in, that fish and no other, and never one of other water within reach: with none of its own about it never does, and anyone dipping sees there were no fish close by", async () => {
+test("a line or a basket dipped near the shore catches only fish of the water it is dipped in, never one of other water close by: with none of its own about it never does, and anyone dipping sees there were no fish close by", async () => {
   const [w, a] = fresh();
   const s = new Store(await theGpu());
   adoptStore(w, s);
@@ -271,7 +275,7 @@ test("a line or a basket dipped near the shore catches a fish of the water it is
   const step = async () => { w.t++; if (w.t % DAY === 0) w.t++; await s.step(w.t); };
   w.kinds.line = { id: "line", name: "line", props: { long: 0.7, flexible: 0.9, binding: 0.8 } };
   w.kinds.basket = { id: "basket", name: "basket", props: { container: 0.7, fibrous: 0.8 } };
-  const dip = (k: string) => { giveItems(w, a, k); return wet(w, a, { verb: "wet", items: [k], at: "water" }); };
+  const dip = (k: string) => { if (!count(a, k)) giveItems(w, a, k); return wet(w, a, { verb: "wet", items: [k], at: "water" }); };
   // a fish of other water within a line's reach: nothing bites, and no fish of theirs was close by
   const stranger = fish(other!);
   await step();
@@ -281,20 +285,26 @@ test("a line or a basket dipped near the shore catches a fish of the water it is
     expect(conditionsNow(w, a, "wet")).toContain("nofish");
     await step();
   }
-  // two fish of their own water by them: the line brings up the nearer, the basket then the other, and each is gone
-  const mine = [fish(own!), fish([own![0] + 500, own![1]])];
+  // two fish of their own water in the cell they dip into: a gear can meet them both, and not the stranger
+  const mine = [fish(own!), fish(own!)];
   await step();
-  const ids = mine.map((o) => s.mirror.spawned(o.id)?.id ?? o.id), far = (id: number) => { const o = s.mirror.get(id) as { v: Record<string, number> }; return Math.hypot(o.v.x / TILE_MM - a.px, o.v.y / TILE_MM - a.py); };
-  const order = far(ids[0]) <= far(ids[1]) ? ids : [ids[1], ids[0]];
-  for (const [n, k] of ["line", "basket"].entries()) {
-    const out = dip(k);
-    expect(out.gives.fish).toBe(1);
-    expect(conditionsNow(w, a, "wet")).not.toContain("nofish");
-    expect(s.mirror.get(order[n])).toBeNull();
-    if (n === 0) expect(s.mirror.get(order[1])).not.toBeNull();
+  const ids = mine.map((o) => s.mirror.spawned(o.id)?.id ?? o.id);
+  expect(meeting(w, a).fish.map((f) => f.id).sort()).toEqual([...ids].sort());
+  expect(conditionsNow(w, a, "wet")).not.toContain("nofish");
+  // dipped until something comes up (each fish meets the gear at its own rate): only theirs ever do, and each caught is
+  // gone from the water
+  for (const k of ["line", "basket"]) {
+    let out: Outcome | undefined;
+    for (let i = 0; i < 400 && !out?.ok; i++) out = dip(k);
+    expect(out?.ok).toBe(true);
     await step();
+    expect(ids.some((id) => s.mirror.get(id) === null)).toBe(true);
+    expect(s.mirror.get(strangerId)).not.toBeNull();
+    if (ids.every((id) => s.mirror.get(id) === null)) break;
   }
-  // the stranger still swims in its own water, and with none of theirs left nothing bites
+  // the stranger still swims in its own water, and with none of theirs left nothing comes up
+  takeFish(w, ids.filter((id) => s.mirror.get(id) !== null));
+  await step();
   expect(s.mirror.get(strangerId)).not.toBeNull();
   for (const k of ["line", "basket"]) {
     expect(dip(k).ok).toBe(false);
@@ -305,26 +315,39 @@ test("a line or a basket dipped near the shore catches a fish of the water it is
   fishOf(w).destroy(); s.destroy();
 }, 600_000);
 
-test("a stone thrown at a deer within reach hits it every time, for the same harm; at one farther off it always falls short", () => {
+test("a fish meets a gear the more often the longer it is and the smaller the water it ranges over", () => {
+  const basket = basketOf(PHYS.fiber, GROWN.basal);
+  for (const gear of [{ line: true } as const, { line: false, ...basket } as const]) {
+    const [small, big] = catchChances(gear, { fish: [{ id: 1, cm: 15 }, { id: 2, cm: 40 }], area: 5625 }, 3000);
+    expect(big).toBeGreaterThan(small);
+    const [narrow] = catchChances(gear, { fish: [{ id: 1, cm: 15 }], area: 500 }, 3000);
+    expect(narrow).toBeGreaterThan(small);
+  }
+});
+
+test("a throw falls short of an animal beyond its reach and comes down short of it; within reach a stone can hit a deer, but only bruises it", () => {
   const [w, a] = fresh();
   w.animals = [];
-  const deer = addAnimal(w, "deer", a.px + 8 / TILE_M, a.py);
-  const toss = () => {
-    giveItems(w, a, "stone");
-    const st = { progress: 0 };
-    let r;
-    do r = throwTick(w, a, { verb: "throw", items: ["stone"], target: { kind: "deer", animal: deer.id } }, st); while (!r.done);
-    return r.out!;
-  };
-  const harm = Array.from({ length: 3 }, () => { const hp = deer.hp; toss(); return hp - deer.hp; });
-  expect(harm[0]).toBeGreaterThan(0);
-  for (const h of harm) expect(h).toBeCloseTo(harm[0]);
-  moveTo(w, deer, a.px + 30 / TILE_M, a.py);
-  for (let i = 0; i < 3; i++) {
-    const hp = deer.hp, out = toss();
-    expect(deer.hp).toBe(hp);
+  const deer = addAnimal(w, "deer", a.px + 3 / TILE_M, a.py);
+  const act: Act = { verb: "throw", items: ["stone"], target: { kind: "deer", animal: deer.id } };
+  const reach = throwReach(w, a, act, deer);
+  expect(reach).toBeGreaterThan(3);
+  const toss = () => { giveItems(w, a, "stone"); const st = { progress: 0 }; let r; do r = throwTick(w, a, act, st); while (!r.done); return r.out!; };
+  moveTo(w, deer, a.px + (reach + 5) / TILE_M, a.py);
+  for (let i = 0; i < 3; i++) expect(toss().text).toContain("fell short");
+  const lying = w.things.filter((t) => t.kind === "item" && t.item === "stone");
+  expect(lying.length).toBeGreaterThan(0);
+  for (const t of lying) expect(t.px).toBeLessThan(deer.px);
+  // within reach: some stones strike it, none brings it down (a blow short of serious injury by the blunt criterion)
+  moveTo(w, deer, a.px + 3 / TILE_M, a.py);
+  let struck = 0;
+  for (let i = 0; i < 40; i++) {
+    deer.state = "graze";
+    const out = toss();
     expect(out.ok).toBe(false);
+    if (out.text.includes("glanced")) struck++;
   }
+  expect(struck).toBeGreaterThan(0);
 });
 
 test("raw meat makes whoever eats it sick every time; raw fish and cooked meat never do", () => {

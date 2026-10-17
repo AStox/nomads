@@ -69,33 +69,13 @@ export const BASE: Record<string, Omit<Kind, "id">> = {
   grain: { name: "grain", props: { edible: 0.1, seed: 0.9, hard: 0.35, toughness: 0.05 }, spoils: "grain" },
 };
 
-// What a carcass gives (body-constants sec. 10): its meat, the dressed carcass (its live mass's dressing share) less its
-// bone and its own fat, in cuts as meat comes (fuel.ts PHYS); and its fat, the carcass's own and what lies about its gut
-// and kidneys, the means of winter's and summer's, in lumps. A deer's shares are measured, a rabbit's bone and fat too;
-// the rest are taken as a deer's [design].
-const DEER = { dressed: 0.55, bone: 0.22, fat: 0.0517 }, GUT_FAT = 0.0314;
-const carcass = (live: number, rest: Record<string, number>, c = DEER) => {
-  const out: Record<string, number> = {}, dressed = live * c.dressed;
-  const meat = Math.round((dressed * (1 - c.bone - c.fat)) / asFound(PHYS.meat)), fat = Math.round((dressed * c.fat + live * GUT_FAT) / asFound(PHYS.fat));
-  if (meat > 0) out.meat = meat;
-  if (fat > 0) out.fat = fat;
-  return { ...out, ...rest };
-};
-// What animals and reeds take and give, by the old reckoning: their hit points, how much of a blow they shrug off, and
-// what they break into. Animals' carcasses are by their live mass; their hurts belong with the wounds, and reeds' with
-// the plants (matter-constants sec. 12). Trees, bushes, stumps, logs and boulders take and give by physics.ts STRUCK.
+// What reeds take and give, by the old reckoning: their hit points, how much of a blow they shrug off, and what they
+// break into; their hurts belong with the plants (matter-constants sec. 12). Trees, bushes, stumps, logs and boulders
+// take and give by physics.ts STRUCK; animals are wounded and butchered by their bodies (hunt.ts).
 export const THING_MATERIAL: Record<string, { toughness?: number; hp?: number; breaks: Record<string, number> }> = {
   reeds: { toughness: 0.05, hp: 6, breaks: { fiber: 2 } },
-  // live masses, kg: a red deer's (the mean of stags' and hinds'), wolves', a rabbit's and the birds' measured
-  deer: { toughness: 0.1, hp: 30, breaks: carcass(116, { hide: 1, bone: 2 }) },
-  wolf: { toughness: 0.15, hp: 35, breaks: carcass(41.5, { hide: 1, bone: 1 }) },
-  fox: { toughness: 0.08, hp: 12, breaks: carcass(6, { hide: 1, bone: 1 }) },
-  rabbit: { toughness: 0.05, hp: 6, breaks: carcass(1.6, { hide: 1 }, { dressed: 0.555, bone: 0.13, fat: 0.035 }) },
-  heron: { toughness: 0.05, hp: 8, breaks: carcass(1.5, { bone: 1 }) },
-  gull: { toughness: 0.05, hp: 5, breaks: carcass(0.97, { bone: 1 }) },
-  crow: { toughness: 0.05, hp: 4, breaks: carcass(0.51, {}) },
-  eagle: { toughness: 0.08, hp: 12, breaks: carcass(4.38, { bone: 1 }) },
-  fish: { toughness: 0.02, hp: 3, breaks: { fish: 1 } },
+  // a fish is lifted out whole: one fish, whatever it weighs [gap] (people-constants sec. 9.9)
+  fish: { breaks: { fish: 1 } },
 };
 // What each kind of thing in the world is made of, as a kind in the registry, for anyone asking what it's like.
 export const MADE_OF: Record<string, string> = {

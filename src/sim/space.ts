@@ -26,6 +26,8 @@ import { Crowns } from "../gpu/crowns";
 import { Moisture } from "../gpu/moisture";
 import { Receivers } from "../gpu/fire";
 import { moistureDriver } from "./wetness";
+import { Smalls } from "../gpu/smalls";
+import { smallsDriver } from "./smalls";
 import { CELL_MM } from "../gpu/wgsl/index";
 import { N } from "../terrain/grid";
 
@@ -41,6 +43,7 @@ type Index = {
   crowns: Crowns | null; // the crown raster, once resident
   moist: Moisture | null; // the water of what lies out, once resident
   fire: Receivers | null; // what lies near a burning bed taking its heat, once resident
+  smalls: Smalls; // grass tillers, fine litter, invertebrates and soil fauna, moved sand (lumped), resident with the flora
   views: Set<string>; // pieces made Things that no one has changed
   landings: number; // the flora's landings of its stems the Things have taken up
 };
@@ -77,7 +80,7 @@ export function index(w: World): Index {
   let ix = indexes.get(w);
   if (ix) return ix;
   const flora = new Flora(groundOf(w.seed).flora);
-  ix = { at: new Map(), tiles: new Map(), live: new Set(), stocked: new Uint8Array(W * H), seen: new Int32Array(W * H), changes: new Uint32Array(W * H), taken: new Map(), flora, landings: flora.landings, dead: null, seeds: null, crowns: null, moist: null, fire: null, views: new Set() };
+  ix = { at: new Map(), tiles: new Map(), live: new Set(), stocked: new Uint8Array(W * H), seen: new Int32Array(W * H), changes: new Uint32Array(W * H), taken: new Map(), flora, landings: flora.landings, dead: null, seeds: null, crowns: null, moist: null, fire: null, smalls: new Smalls(), views: new Set() };
   // every kind the ground grows has its bins from the start, so stocking a tile mid-search never adds a list to search
   for (const k of FLORA) ix.tiles.set(k, new Array(W * H));
   for (const t of w.stocked) ix.stocked[t] = 1;
@@ -127,6 +130,8 @@ export async function resident(w: World, stems: StemDriver, seeds: SeedDriver) {
   // what lies near a burning bed takes its heat and its brands on the GPU (ecology.ts fire)
   ix.fire = new Receivers();
   ix.fire.attach(s);
+  // the smallest things, lumped: their law each midnight after the moisture's, before the animals', who graze them
+  ix.smalls.attach(s, smallsDriver(w), ix.crowns, w.t);
 }
 // The world's deadwood and clasts, its seeds and seedlings, its crown raster, the water of what lies out and the fire's
 // receivers, once resident.
@@ -135,6 +140,7 @@ export const seedlingsOf = (w: World) => index(w).seeds;
 export const crownsOf = (w: World) => index(w).crowns;
 export const moistOf = (w: World) => index(w).moist;
 export const receiversOf = (w: World) => index(w).fire;
+export const smallsOf = (w: World) => index(w).smalls;
 
 // ---------- pieces ----------
 const PIECE_ID = /^[slbp][0-9]/;
@@ -466,8 +472,9 @@ export function lookFor(w: World, px: number, py: number, kinds: readonly string
   for (let R = 0; R < Math.max(W, H) && (R - 1) * TILE_M <= max; R++)
     for (const i of ringOf(Math.floor(px), Math.floor(py), R)) if (fromTile(i, px, py) <= max * SLACK) stock(w, ix, i);
 }
-// A thing of this kind picked at random over the island, or null when there are none.
-export function anyOf(w: World, kind: string, rand = Math.random): Thing | null {
+// A thing of this kind picked at random over the island, or null when there are none, by the caller's own seeded stream
+// (no default: an unseeded draw would make the run unrepeatable).
+export function anyOf(w: World, kind: string, rand: () => number): Thing | null {
   const code = FLORA.indexOf(kind as (typeof FLORA)[number]), list = code < 0 ? new Uint32Array(0) : index(w).flora.writtenOf(code);
   for (let tries = 0; tries < 16 && list.length; tries++) {
     const t = thingById(w, `t${list[Math.floor(rand() * list.length)]}`);

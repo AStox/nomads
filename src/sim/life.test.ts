@@ -40,24 +40,25 @@ test("a dug pit covered with sticks traps the next deer that walks onto it", () 
   expect(trap.caught).toBe("deer");
 });
 
-test("a thrown heavy stone can kill a deer at range and the meat ends up with the thrower", () => {
+test("a thrown stone that kills a rabbit leaves the thrower its meat and its skin", () => {
   const w = newWorld(4);
   const a = w.agents[0];
   a.inv = [];
-  giveItems(w, a, "stone", 16);
   w.animals = [];
-  const deer = addAnimal(w, "deer", a.px + 8 / TILE_M, a.py);
+  const rabbit = addAnimal(w, "rabbit", a.px + 2 / TILE_M, a.py);
   let out;
   for (let i = 0; i < 400 && !out?.ok; i++) {
     if (!a.inv.some((s) => s.k === "stone")) giveItems(w, a, "stone", 8);
     const st = { progress: 0 };
     let r;
-    do r = throwTick(w, a, { verb: "throw", items: ["stone"], target: { kind: "deer", animal: deer.id } }, st); while (!r.done);
+    do r = throwTick(w, a, { verb: "throw", items: ["stone"], target: { kind: "rabbit", animal: rabbit.id } }, st); while (!r.done && rabbit.state !== "flee");
     out = r.out;
-    put(w, deer, a.px + 8 / TILE_M, a.py);
+    put(w, rabbit, a.px + 2 / TILE_M, a.py);
+    rabbit.state = "graze";
   }
   expect(out?.ok).toBe(true);
   expect(a.inv.some((s) => s.k === "meat")).toBe(true);
+  expect(a.inv.find((s) => s.k === "hide")?.size?.mass).toBeGreaterThan(0);
 });
 
 test("sweethearts with a home and full bellies have a child who inherits from them and knows them as kin", () => {

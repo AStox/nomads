@@ -8,7 +8,7 @@
 //
 // What the animals do each tick within sight: graze, wander, flee, hunt, swim, fly, perch and feed. Speeds are meters a
 // tick of five minutes' game time, the way a person's are; what each kind is like is in fauna.ts.
-import { THING_MATERIAL } from "./materials";
+import { carcassOf, fatOf } from "./hunt";
 import {
   DAY, H, TILE_M, Tile, W, YEAR, dryAt, groundOf, heldStore, isNight, log, meters, sea, shoreByTile, shoreOf, tileAt, walkable, wetAt,
   type Agent, type Animal, type AnimalSpecies, type Thing, type World,
@@ -17,12 +17,13 @@ import { SIZE, START } from "../terrain/flora";
 import { CELL, N } from "../terrain/grid";
 import { GREEN_UP, RUE, warmEnough, watered } from "../terrain/growth";
 import { SHRUBS, TREES, envAt, fit } from "../terrain/niche";
-import { snowAt } from "./air";
+import { INTERCEPT_SNOW, SNOW_DOY, SNOW_REACH, snowAt, snowDepth } from "./air";
 import { coldBite, warmRate } from "./cues";
-import { floraOf, liveThings, nearestThing, onPath, put, thingById } from "./space";
+import { floraOf, liveThings, nearestThing, onPath, put, smallsOf, thingById } from "./space";
 import { steer } from "./walk";
 import { dropPile, mark, removeThing } from "./physics";
 import { see } from "./beliefs";
+import { animalSize } from "./senses";
 import { trace } from "./trace";
 import { FAUNA, revealed, spawn } from "./fauna";
 import { fishCount, fishDriver, fishKg, fishOf, showFish } from "./waters";
@@ -142,19 +143,6 @@ const RUMEN = 0.012, RABBIT_DM = 0.0725 * 1.6;
 // table and the bedrock deep enough for the tunnels, which lie 0.3 to 0.75 m down in heavy soils (R407) with nearly all
 // the chambers within 0.55 m (R408), from none at 0.3 m to all of it at 0.55 [derived].
 const WARREN = [0.3, 0.55];
-// Snow: a season's snowpack (climate.ts, mm of water) stands as deep as Sturm et al.'s maritime snow is dense on the
-// season's middle day of the year, (0.5979 - 0.2578)(1 - e^(-0.0010 h - 0.0038 doy)) + 0.2578 g/cm3, h in cm and doy from
-// 1 January (R409); summer's at its most. Red deer herds start to leave once it lies 20 to 30 cm deep (R410), and 60 to
-// 70 cm stops them (R413): the ground layer under it goes out of reach of deer and rabbits alike from 25 cm to 65
-// [derived]; the browse stands above it. The crowns hold up to 60% of the snow off the ground under a forest (R412), as
-// the tile's trees cover it [derived].
-const SNOW_DOY = [105, NaN, -77, 15], SNOW_REACH = [0.25, 0.65], INTERCEPT_SNOW = 0.6;
-function snowDepth(swe: number, doy: number) {
-  if (swe <= 0) return 0;
-  let h = swe / 10 / 0.3;
-  for (let k = 0; k < 6; k++) { const rho = Number.isNaN(doy) ? 0.5979 : (0.5979 - 0.2578) * (1 - Math.exp(-0.001 * h - 0.0038 * doy)) + 0.2578; h = swe / 10 / rho; }
-  return h / 100;
-}
 // What a gram of each woody plant's green browse is worth, kJ, in the growing season and out of it, at 0.16 MJ/kg a point
 // of digestibility (R394): deciduous leaves as green grass's, and any still green after leaf fall as dead stuff (R396);
 // heather's shoots 55.9% digestible in July and 41.9% in March (R397); pine's 56%, low in every season (R396); bramble's
@@ -222,7 +210,8 @@ const WADE = 0.4;
 // carnivore keeps of flesh [derived].
 const SHORE_MOST = 27, SHORE_PB = 0.44, SHORE_KJ = 23 * 0.79;
 // Earthworms in a permanent pasture, 71 to 100 g a m2 fresh (R437), taken as 85 under the open ground layer and none
-// where the ground is frozen or the snow lies too deep to dig [derived].
+// where the ground is frozen or the snow lies too deep to dig [derived]: the crows' worms where the world has no
+// lumped kinds (wgsl/animals.ts G.lumped), which else hold the island's own.
 const WORMS = 85;
 // The dead rot as the air is warm: a carcass on the ground is down to bone in 2,440 degree-days over 0 C (R436).
 const ROT_ADD = 2440;
@@ -415,18 +404,19 @@ const hosts = new WeakMap<World, Animals>();
 export const animalsOf = (w: World) => { let a = hosts.get(w); if (!a) hosts.set(w, (a = new Animals())); return a; };
 const SPECIES_OF = HERDED;
 // The first tick a world runs: its fish and then its animals take up residence on its store (sim.ts tick), after the
-// flora, whose stems are the deer's browse. A new island's animals are laid down at their starting densities and run
-// through twenty island years before anyone wakes (sec. 8), the birds taking the fish's own; then any put down by
-// hand before now (fauna.ts addAnimal) get objects.
+// flora, whose stems are the deer's browse, and after the lumped kinds, whose ground layer and invertebrates they eat
+// when they are resident. A new island's animals are laid down at their starting densities and run through twenty
+// island years before anyone wakes (sec. 8), the birds taking the fish's own; then any put down by hand before now
+// (fauna.ts addAnimal) get objects.
 export async function residentAnimals(w: World) {
   const host = animalsOf(w), store = heldStore(w);
   if (host.store || !store) return;
-  const flora = floraOf(w), fish = fishOf(w);
+  const flora = floraOf(w), fish = fishOf(w), smalls = smallsOf(w);
   if (!fish.store) await fish.attach(store, fishDriver(w));
   await host.attach(store, animalDriver(w), {
     raster: (s) => { const r = flora.raster(), k = s.kind(PLANT); return { ...r, body: k.body, cap: k.capacity, what: k.field.what, side: TEXELS_SIDE }; },
     filed: (t) => t % DAY === 0,
-  }, fish);
+  }, fish, smalls.store ? smalls : null);
   for (const an of w.animals) if (herded(an.species) && an.obj === undefined) backed(w, an);
 }
 // The island days run before anyone wakes, for the animals' reserves and places to settle from where they're laid
@@ -670,7 +660,7 @@ function roam(w: World, an: Animal, r: number, speed: number, odds = 0.35) {
 }
 function carcass(w: World, an: Animal) {
   gone(w, an);
-  for (const [k, n] of Object.entries(THING_MATERIAL[an.species]?.breaks ?? {})) dropPile(w, an.px, an.py, k, n);
+  for (const [k, n] of Object.entries(herded(an.species) ? carcassOf(an.species, fatOf(an.species, an.hunger)) : {})) dropPile(w, an.px, an.py, k, n);
 }
 const lift = (an: Animal, to: number, rate: number) => { an.alt = Math.round((an.alt + Math.max(-rate, Math.min(rate, to - an.alt))) * 10) / 10; };
 
@@ -775,7 +765,7 @@ function wolf(w: World, wf: Animal, n: Near) {
       carcass(w, target);
       fed(w, wf, meal(target.species as "deer" | "rabbit"));
       log(w, "death", [], target, `Wolves brought down a ${target.species}.`);
-      if (target.species === "deer") see(w, target, "breaks:deer", "A deer can be killed. It's all meat, hide, and bone inside.", 90);
+      if (target.species === "deer") see(w, target, "breaks:deer", "A deer can be killed. It's all meat, hide, and bone inside.", animalSize(SPEC.deer.kg));
     }
   } else {
     target.needs.health = Math.max(0, target.needs.health - 5);
@@ -1017,7 +1007,7 @@ function caught(w: World, an: Animal, x0: number, y0: number) {
   if (an.obj !== undefined && s) s.set(an.obj, "held", 2);
   const owner = w.agents.find((a) => a.id === trap.owner);
   log(w, "trap", owner ? [owner.id] : [], trap, `A ${an.species} fell into ${owner ? `${owner.name}'s` : "a"} hidden pit and couldn't get out.`);
-  see(w, trap, "trap_works", "An animal that walks over a hidden pit falls in and is stuck.", 100);
+  see(w, trap, "trap_works", "An animal that walks over a hidden pit falls in and is stuck.", trap.size);
 }
 
 export function animals(w: World) {

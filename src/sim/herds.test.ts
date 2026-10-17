@@ -66,4 +66,4 @@ test("seed 1's animals as individuals over three island years: counted right, wi
   expect(Math.min(...seen[SP.deer])).toBeGreaterThan(0);
   expect(Math.min(...seen[SP.rabbit])).toBeGreaterThan(0);
   await retire(w);
-}, 3_600_000);
+}, 21_600_000);

@@ -8,7 +8,8 @@ import { addAnimal } from "./fauna";
 import { cull } from "./animals";
 import { ecology } from "./ecology";
 import { ctxFor, tick } from "./sim";
-import { DARK, canSee, lightAt, lightOn } from "./light";
+import { DARK, lightAt, lightOn } from "./light";
+import { seesPerson } from "./senses";
 import { YEAR_DAYS, sunAt } from "./sky";
 import { bodyOf } from "./body";
 import { releaseGpu } from "../gpu/device";
@@ -193,12 +194,12 @@ test("sight shrinks with the light: at night a person across the clearing can't 
   put(w, a, px, py);
   put(w, b, px + 150 / TILE_M, py);
   w.t = at(12);
-  expect(canSee(w, a, b, 300)).toBe(true);
+  expect(seesPerson(w, a, b, "notice")).toBe(true);
   w.t = at(1);
-  expect(canSee(w, a, b, 300)).toBe(false);
+  expect(seesPerson(w, a, b, "notice")).toBe(false);
   fire(w, b.px + 1 / TILE_M, b.py);
   w.t = at(1) + 1;
-  expect(canSee(w, a, b, 300)).toBe(true);
+  expect(seesPerson(w, a, b, "notice")).toBe(true);
 });
 
 test("whoever is out after something when the dark falls gives it up where they stand, but not in daylight, and work at camp goes on", async () => {

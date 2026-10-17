@@ -1,8 +1,10 @@
 // What each agent thinks happens when they do something, and the laws of the world those beliefs come from.
 import type { Fields, Outcome } from "./physics";
-import { DAY, log, meters, stageOf, type Agent, type World } from "./world";
+import { DAY, log, stageOf, type Agent, type World } from "./world";
+import { TICK_S } from "./sky";
 import { plural } from "./materials";
-import { canSee } from "./light";
+import { physOf } from "./fuel";
+import { seesHands, witnesses } from "./senses";
 import { trace } from "./trace";
 import { RULES } from "./rules";
 
@@ -301,21 +303,22 @@ const laid = (w: World, ks: string[]) => {
 // How long after, in words: a seed takes days to come up.
 const laterWords = (t: number) => (t < DAY / 2 ? "some hours later" : t < DAY * 1.5 ? "about a day later" : `about ${Math.round(t / DAY)} days later`);
 const THING_WORD: Record<string, string> = { sapling: "young plant" };
+const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
 // later: how long after the result shows, for what they've seen come of it in time
 export function sentence(w: World, f: Fields, ticks?: number, later?: number): string {
-  const time = ticks && ticks > 12 ? ` (about ${Math.max(1, Math.round((ticks * 5) / 60))} hours)` : "";
+  const hours = ticks ? (ticks * TICK_S) / 3600 : 0, time = hours > 1 ? ` (about ${Math.round(hours)} hours)` : "";
   const ins = f.inputs.map((k) => nm(w, k));
   const fireWord = ({ hearth: "a ringed fire", kiln: "a ringed fire heaped over with stone", forge: "a ringed charcoal fire" } as Record<string, string>)[f.at ?? ""] ?? "a fire";
   switch (f.verb) {
     case "strike":
-      if (f.builds === "fire") return `Striking ${an(nm(w, f.target ?? "stone"))} ${with_(w, f.tool)} over a lay of ${laid(w, f.inputs.filter((_, i) => i !== f.inputs.indexOf(f.target ?? "")))} can throw a spark that lights a fire.`;
+      if (f.builds === "fire") return `Striking ${an(nm(w, f.target ?? "stone"))} ${with_(w, f.tool)} over a lay of ${laid(w, f.inputs.filter((_, i) => i !== f.inputs.indexOf(f.target ?? "")))} threw a spark that lit a fire.`;
       if (f.effect === "dented") return `Hammering cold ${ins[0]} only dents it.`;
       if (f.at === "forge" && f.gives.length) return `Hammering ${an(ins[0])} ${with_(w, f.tool)} at ${fireWord} draws it out into ${an(gives(w, f))}.`;
       if (f.target && !f.inputs.length)
         return f.gives.length ? `Striking ${an(f.target)} ${with_(w, f.tool)} breaks it into ${gives(w, f)}${time}.` : `Striking ${an(f.target)} ${with_(w, f.tool)} barely marks it.`;
-      return f.gives.length ? `Striking ${an(ins[0])} ${with_(w, f.tool)} can break off ${gives(w, f)}.` : `Striking ${an(ins[0])} ${with_(w, f.tool)} does nothing much.`;
+      return f.gives.length ? `Striking ${an(ins[0])} ${with_(w, f.tool)} broke off ${gives(w, f)}.` : `Striking ${an(ins[0])} ${with_(w, f.tool)} did nothing much.`;
     case "rub":
-      if (f.builds === "fire") return `Rubbing ${ins.filter((x, i) => i < 2).map(an).join(" against ")} gets hot enough to light ${f.inputs.length > 2 ? `a lay of ${laid(w, f.inputs.slice(2))}` : "tinder"}. Fire.`;
+      if (f.builds === "fire") return `Rubbing ${ins.filter((x, i) => i < 2).map(an).join(" against ")} got hot enough to light ${f.inputs.length > 2 ? `a lay of ${laid(w, f.inputs.slice(2))}` : "tinder"}. Fire.`;
       if (f.effect === "heat") return `Rubbing ${an(ins[0])} against ${an(ins[1] ?? ins[0])} makes them hot.`;
       return f.gives.length ? `Rubbing ${an(ins[0])} on ${an(ins[1] ?? ins[0])} makes ${an(gives(w, f))}.` : `Rubbing ${ins.join(" on ")} does nothing much.`;
     case "join":
@@ -328,11 +331,11 @@ export function sentence(w: World, f: Fields, ticks?: number, later?: number): s
     case "wet":
       if (f.effect === "nibble") return `Something in the water tugs at ${an(ins[0])} dangled in it.`;
       if (f.gives[0]?.startsWith("full:")) return `Dipping ${an(ins[0])} in the water fills it.`;
-      return f.gives.length ? `Dipping ${an(ins[0])} in the water ${f.gives.includes("fish") ? "can catch a fish" : `gives ${gives(w, f)}`}.` : `Water does nothing to ${ins[0]}.`;
+      return f.gives.length ? `Dipping ${an(ins[0])} in the water ${f.gives.includes("fish") ? "caught a fish" : `gave ${gives(w, f)}`}.` : `Water did nothing to ${ins[0]}.`;
     case "pour": {
       if (!f.target) return `Pouring out ${an(ins[0])} soaks the ground.`;
       const onto = an(THING_WORD[f.target] ?? f.target.replaceAll("_", " "));
-      return later ? `Pouring ${an(ins[0])} over ${onto} helps it grow.` : `Pouring ${an(ins[0])} over ${onto} soaks the ground round it.`;
+      return later ? `After ${an(ins[0])} was poured over ${onto}, it came up, ${laterWords(later)}.` : `Pouring ${an(ins[0])} over ${onto} soaked the ground round it.`;
     }
     case "shape":
       return `Pressing ${ins[0]} into a ${f.shape} makes ${an(gives(w, f))}.`;
@@ -342,25 +345,28 @@ export function sentence(w: World, f: Fields, ticks?: number, later?: number): s
         const flame = f.inputs.find((k) => k.startsWith("burning:")) ?? f.inputs[0];
         return `Setting ${an(nm(w, flame))} into ${laid(w, f.inputs.filter((_, i) => i !== f.inputs.indexOf(flame))) || "a fire"} starts a campfire.`;
       }
-      if (f.builds === "fed_fire") return `Feeding ${laid(w, f.inputs)} to a fire keeps it going.`;
-      if (f.builds === "hearth") return `Ringing a fire with ${ins.join(" and ")} keeps it contained and burning steady.`;
-      if (f.builds === "kiln") return `Heaping ${ins.join(" and ")} over a ringed fire closes it in to smolder.`;
-      if (f.builds === "forge") return `Feeding ${ins.join(" and ")} to a ringed fire makes it burn white-hot.`;
-      if (f.builds === "shelter") return f.at === "home" ? `Building ${ins.join(", ")} into the shelter they have makes it bigger or better.` : `Leaning and stacking ${ins.join(", ")} makes a shelter.`;
+      if (f.builds === "fed_fire") return `${cap(laid(w, f.inputs))} laid on a fire burned in it.`;
+      if (f.builds === "hearth") return `A fire ringed with ${ins.join(" and ")} kept within the ring.`;
+      if (f.builds === "kiln") return `Heaped over with ${ins.join(" and ")}, a ringed fire smoldered under it.`;
+      if (f.builds === "forge") return `${cap(ins.join(" and "))} fed to a ringed fire glowed in it as coals.`;
+      if (f.builds === "shelter") return f.at === "home" ? `${cap(ins.join(", "))} built into the shelter they had made it bigger or better.` : `Leaning and stacking ${ins.join(", ")} made a shelter.`;
       return `Stacking ${ins.join(", ")} makes a pile.`;
     case "plant":
-      return f.builds ? `${an(ins[0])[0].toUpperCase() + an(ins[0]).slice(1)} pushed into the ground grows into ${f.builds === "grass" ? "grass that bears grain" : `a ${f.builds}`}${later ? `, ${laterWords(later)}` : ""}.` : `They pushed ${an(ins[0])} into the ground.`;
+      return f.builds ? `${cap(an(ins[0]))} pushed into the ground grows into ${f.builds === "grass" ? "grass that bears grain" : `a ${f.builds}`}${later ? `, ${laterWords(later)}` : ""}.` : `They pushed ${an(ins[0])} into the ground.`;
     case "eat":
-      if (f.effect === "sick") return `Eating ${ins[0]} can make you sick.`;
-      if (f.effect === "cure") return `Eating ${ins[0]} helps when you're sick.`;
-      return `${ins[0]} is good to eat.`;
-    case "wear":
-      return `Wearing ${ins[0]} keeps the cold out.`;
+      if (f.effect === "sick") return `After eating ${ins[0]}, they fell sick.`;
+      if (f.effect === "cure") return `Sick, they ate ${ins[0]} and their sickness eased.`;
+      return `They ate ${ins[0]} and it fed them.`;
+    case "wear": {
+      // what anyone wearing it can tell of it: how thick it stands off the skin (body.ts insulation reads the same)
+      const x = physOf(w.kinds, w.kinds[f.inputs[0]]), cm = x ? Math.round((x.d + (x.pile ?? 0)) * 1000) / 10 : 0;
+      return `Wrapped in ${ins[0]}${cm ? `, ${cm} cm of it,` : ""} they lost less warmth to the cold.`;
+    }
     case "dig":
       return `Digging ${with_(w, f.tool)} makes a deep pit.`;
     case "throw": {
       const how = f.tool ? `Shooting ${an(ins[0])} from ${an(nm(w, f.tool))}` : `Throwing ${an(ins[0])}`;
-      return f.gives.length ? `${how} at ${an(f.target ?? "animal")} can bring it down.` : `${how} at ${an(f.target ?? "animal")} can wound it.`;
+      return f.gives.length ? `${how} at ${an(f.target ?? "animal")} brought it down.` : `${how} at ${an(f.target ?? "animal")} wounded it.`;
     }
   }
   return `${f.verb} ${ins.join(", ")}`;
@@ -443,7 +449,8 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number, now
   if (!useful(out)) return seen;
   const key = beliefKey(out.fields);
   for (const b of w.agents) {
-    if (b === doer || b.down > w.t || !canSee(w, b, doer, 25)) continue;
+    // to take it in they must tell one way of working from another in the doer's hands (senses.ts: identify)
+    if (b === doer || b.down > w.t || !seesHands(w, b, doer, "identify")) continue;
     const mine = b.beliefs[key];
     if (mine) {
       // A skeptic who sees it work without the charm drops the charm.
@@ -489,10 +496,11 @@ export function teach(w: World, teacher: Agent, learner: Agent, key: string) {
   if (b.unless?.length) trace("theory", "taught", { key, conds: b.unless }, learner.id);
 }
 
-// Things seen about the world that aren't someone's action: what trees break into, which berries grow. radius in meters.
-export function see(w: World, center: { px: number; py: number }, key: string, text: string, radius = 70) {
-  for (const a of w.agents) {
-    if (a.down > w.t || meters(a, center) > radius || a.facts[key]) continue;
+// Things seen about the world that aren't someone's action: what trees break into, which berries grow. size: how big what
+// shows it is, m, for whoever is awake to make out (senses.ts witnesses).
+export function see(w: World, center: { px: number; py: number }, key: string, text: string, size: number) {
+  for (const a of witnesses(w, center, size)) {
+    if (a.facts[key]) continue;
     a.facts[key] = text;
     trace("belief", "saw", { key, text }, a.id);
   }
