@@ -4,7 +4,9 @@ import {
 } from "./art.js";
 
 const $ = (s) => document.querySelector(s);
-const DAY = 288;
+// The sim's clock as the server posts it (init): ticks a day, seconds a tick, and the pace it has always run at in sim
+// seconds a wall second, which the speed button counts in multiples of.
+let DAY = 0, TICK_S = 0, PACE = 0;
 const NEEDS = ["food", "energy", "warmth", "social", "health"];
 const GOLD = new Set(["invent", "law", "burned", "named", "arrive", "born", "died", "camp", "custom", "leader", "driven_out"]);
 const NOTABLE = new Set(["discover", "learn", "teach", "attack", "wolf", "defend", "hazard", "ruin", "hunt", "sick", "collapse", "build", "bond", "steal", "lie", "take", "insult", "break", "lightning", "death", "mistaken", "pregnant", "trap", "claim", "throw", "grief", "dig", "judged", "camp_change", "camp_named", "custom_faded", "shared_store", "beg"]);
@@ -17,7 +19,7 @@ const S = {
 };
 const cam = { x: 32, y: 32, s: 10 };
 // picked: a non-person the focus card is showing, { type: "animal" | "grave", id }.
-let selected = null, picked = null, hoverGrave = null, follow = false, filter = null, tickMs = 500, lastTickAt = performance.now(), flash = null;
+let selected = null, picked = null, hoverGrave = null, follow = false, filter = null, tickMs = 0, lastTickAt = performance.now(), flash = null;
 const calm = matchMedia("(prefers-reduced-motion: reduce)");
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const human = (s) => (s ?? "").replaceAll("_", " ");
@@ -1015,13 +1017,14 @@ async function control(body) {
   applyControl(await r.json());
 }
 function applyControl(c) {
-  S.control = c; tickMs = 500 / c.speed;
+  S.control = c; tickMs = (TICK_S * 1000) / c.speed;
   $("#play").innerHTML = c.paused ? ICON.play : ICON.pause;
   $("#play").setAttribute("aria-label", c.paused ? "Play" : "Pause");
-  $("#speed").textContent = `${c.speed}×`;
+  $("#speed").textContent = `${c.speed / PACE}×`;
 }
 $("#play").onclick = () => control({ paused: !S.control.paused });
-$("#speed").onclick = () => control({ speed: { 1: 2, 2: 4, 4: 8, 8: 1 }[S.control.speed] });
+// twice as fast each press, up to eight times the usual pace, then back to it
+$("#speed").onclick = () => control({ speed: S.control.speed >= 8 * PACE ? PACE : S.control.speed * 2 });
 $("#fit").onclick = fit;
 
 const COMPASS = ["east", "southeast", "south", "southwest", "west", "northwest", "north", "northeast"];
@@ -1097,6 +1100,7 @@ function connect() {
   src.onmessage = async (m) => {
     const msg = JSON.parse(m.data);
     if (msg.type === "init") {
+      DAY = msg.day; TICK_S = msg.tickS; PACE = msg.pace;
       S.W = Math.round(Math.sqrt(msg.tiles.length)); S.H = msg.tiles.length / S.W; S.tiles = msg.tiles; S.heights = msg.heights; S.land = readTerrain(msg.terrain); S.t = msg.t; S.jev = msg.jev;
       S.kinds = { ...(msg.kinds ?? {}) }; S.weather = msg.weather ?? null; S.groups = msg.groups ?? [];
       S.paths = parsePaths(msg.paths, S.W * S.H);

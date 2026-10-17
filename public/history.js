@@ -1,6 +1,7 @@
 // The whole history of the world, one row per kind of happening.
 const $ = (s) => document.querySelector(s);
-const DAY = 288;
+// ticks a sim day, as api/history gives it with the rest
+let DAY = 0;
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const hhmm = (t) => {
   const mins = Math.floor(((t % DAY) / DAY) * 24 * 60);
@@ -49,7 +50,7 @@ async function load() {
     if (data && d.t === data.t) return;
     // Follow the present unless someone went back to an older day.
     const atEnd = !data || sel === data.days - 1;
-    data = d;
+    data = d; DAY = d.day;
     if (atEnd) sel = data.days - 1;
     render();
   } catch (e) {

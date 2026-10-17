@@ -1,11 +1,12 @@
-const DAY = 288;
+// ticks a sim day, as the server's stats give it (read once before the first tab is shown)
+let DAY = 0;
 const POLL_MS = 3000;
 const TABS = ["stats", "jev", "trace", "laws", "kinds"];
 const SYS_COLOR = {
   physics: "#8a5a2b", plan: "#3f6a8a", brain: "#7a3f7a", belief: "#a8321f", ecology: "#5a7a3a",
   weather: "#4f7f86", fire: "#c0621a", animal: "#7a6a3a", social: "#a0476a", world: "#33251a",
 };
-const STATS_KNOWN = new Set(["t", "clock", "weather", "population", "things", "fires", "structures", "laws", "kinds", "jev", "tickMs", "counters"]);
+const STATS_KNOWN = new Set(["t", "clock", "weather", "population", "things", "fires", "structures", "laws", "kinds", "jev", "tickMs", "counters", "day"]);
 
 const $ = (s) => document.querySelector(s);
 const enc = encodeURIComponent;
@@ -525,4 +526,4 @@ $("#k-made").addEventListener("click", (e) => {
 
 syncButtons();
 loadPeople();
-setTab(location.hash.slice(1));
+fetch("api/debug/stats", { cache: "no-store" }).then((r) => r.json()).then((d) => { DAY = d.day; }).catch(() => {}).finally(() => setTab(location.hash.slice(1)));
