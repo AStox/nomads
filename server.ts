@@ -1,17 +1,18 @@
 import { mkdirSync, renameSync } from "node:fs";
-import { DAY, QUIET, VERSION, YEAR_DAYS, adoptStore, clock, heldStore, newWorld, type World } from "./src/sim/world";
+import { QUIET, VERSION, YEAR_DAYS, adoptStore, clock, heldStore, newWorld, type World } from "./src/sim/world";
+import { DAY, HOUR, TICK_S } from "./src/sim/ticks";
 import { agentDetail, changedKinds, summary, tick } from "./src/sim/sim";
 import { changed, newKinds, removed } from "./src/sim/physics";
 import { iceChanged, pathChanges, trailChanges } from "./src/sim/ecology";
 import { stageOf } from "./src/sim/world";
 import { beliefText } from "./src/sim/beliefs";
-import { counters, flush, jevCalls, logTo, tickMs, traces } from "./src/sim/trace";
+import { counters, flush, hourMs, jevCalls, logTo, tickMs, traces } from "./src/sim/trace";
 import { campSummary, groupsChanged, groupsDetail, liveCamps, standing } from "./src/sim/groups";
 import { thingById } from "./src/sim/space";
 import { thingView } from "./src/sim/inspect";
-import { migrateSave } from "./src/sim/migrate";
 import { theGpu } from "./src/gpu/device";
 import { loadStore, savedHeader } from "./src/gpu/store";
+import { jevMeter } from "./src/sim/brain";
 
 const PORT = Number(process.env.PORT ?? 8095);
 // NOMADS_DATA lets a second, offline copy run beside the live world without touching its save.
@@ -19,7 +20,12 @@ const DATA = process.env.NOMADS_DATA ?? `${import.meta.dir}/data`;
 const SAVE = `${DATA}/world.json`;
 // The GPU's objects, every buffer of every kind (src/gpu/store.ts dump), saved beside the JSON at the same tick.
 const GPU_SAVE = `${DATA}/world.gpu`;
-const BASE_MS = 500;
+// The pace a watcher sees, in sim seconds a wall second: 600 is the pace the world has always run at, a 300 s tick each
+// 500 ms [design], and the speeds a watcher can pick are twice, four, eight and sixteen times it.
+const PACE = 600, SPEEDS = [1, 2, 4, 8, 16].map((k) => k * PACE);
+// A save once this long has passed on the wall clock, at the next sim hour's turn [design: 25 s is the old 50 ticks at
+// the old pace].
+const SAVE_MS = 25_000;
 if (!process.env.TYPESAFE_API_KEY && !process.env.SUBQ_API_KEY && process.env.NOMADS_BRAIN !== "random") throw new Error("missing TYPESAFE_API_KEY or SUBQ_API_KEY");
 logTo(`${DATA}/logs`);
 
@@ -28,9 +34,6 @@ async function load(): Promise<World> {
   if (await f.exists()) {
     const w = (await f.json()) as World;
     if (w.version === VERSION) {
-      // the save kept as it was before its first migration, once, then what's still in the shape a save had before fire
-      // was a bed of pieces read into the new physics (migrate.ts)
-      for (const line of migrateSave(SAVE, w)) console.log("migrate:", line);
       for (const a of w.agents) {
         a.near ??= {};
         a.thinking = false;
@@ -71,31 +74,50 @@ const animalView = () => w.animals.map((a) => ({ id: a.id, species: a.species, x
 const clients = new Set<ReadableStreamDefaultController>();
 const enc = new TextEncoder();
 const send = (c: ReadableStreamDefaultController, data: unknown) => c.enqueue(enc.encode(`data: ${JSON.stringify(data)}\n\n`));
-const control = { paused: false, speed: 1 };
+const control = { paused: false, speed: PACE };
 let lastEvent = w.events.at(-1)?.id ?? 0;
 
-// ponytail: the world only advances while someone is watching, so Jev isn't billed for an empty room.
-// One tick at a time: the next is set going only once this one is done.
-async function loop() {
-  if (clients.size && !control.paused) {
-    try { await tick(w); } catch (e) { console.error("tick", e); }
-    const events = w.events.filter((e) => e.id > lastEvent);
-    lastEvent = w.events.at(-1)?.id ?? lastEvent;
-    const msg = {
-      type: "tick", t: w.t, jev: w.jev, weather: w.weather, agents: w.agents.map((a) => summary(w, a)), animals: animalView(), events,
-      things: [...changed].flatMap((id) => { const t = thingById(w, id); return t ? [thingView(w, t)] : []; }), removed: [...removed].filter((id) => !thingById(w, id)),
-      kinds: kindsById([...newKinds, ...changedKinds]),
-      paths: [...pathChanges].map((i) => ({ i, v: w.paths[i] })),
-      ...(iceChanged.now ? { ice: w.ice } : {}),
-      ...(groupsChanged.now ? { groups: campSummary(w) } : {}),
-    };
-    iceChanged.now = false; groupsChanged.now = false;
-    changed.clear(); removed.clear(); newKinds.clear(); changedKinds.clear(); pathChanges.clear(); trailChanges.clear();
-    for (const c of clients) send(c, msg);
-    flush();
-    if (w.t % 50 === 0) try { await save(); } catch (e) { console.error("save", e); }
+// One tick, handed to every watcher, and the world saved when it's due.
+let savedAt = performance.now();
+async function step() {
+  try { await tick(w); } catch (e) { console.error("tick", e); }
+  const events = w.events.filter((e) => e.id > lastEvent);
+  lastEvent = w.events.at(-1)?.id ?? lastEvent;
+  const msg = {
+    type: "tick", t: w.t, jev: w.jev, weather: w.weather, agents: w.agents.map((a) => summary(w, a)), animals: animalView(), events,
+    things: [...changed].flatMap((id) => { const t = thingById(w, id); return t ? [thingView(w, t)] : []; }), removed: [...removed].filter((id) => !thingById(w, id)),
+    kinds: kindsById([...newKinds, ...changedKinds]),
+    paths: [...pathChanges].map((i) => ({ i, v: w.paths[i] })),
+    ...(iceChanged.now ? { ice: w.ice } : {}),
+    ...(groupsChanged.now ? { groups: campSummary(w) } : {}),
+  };
+  iceChanged.now = false; groupsChanged.now = false;
+  changed.clear(); removed.clear(); newKinds.clear(); changedKinds.clear(); pathChanges.clear(); trailChanges.clear();
+  for (const c of clients) send(c, msg);
+  flush();
+  if (w.t % HOUR === 0 && performance.now() - savedAt >= SAVE_MS) {
+    savedAt = performance.now();
+    try { await save(); } catch (e) { console.error("save", e); }
   }
-  setTimeout(loop, BASE_MS / control.speed);
+}
+
+// ponytail: the world only advances while someone is watching, so Jev isn't billed for an empty room.
+// The ticks due by the wall clock since the pace was set (since), as many as are due, one after another, each awaited.
+// Behind by more than a wall second's worth (ticks slower than the pace asks for), the clock slips: what is owed is let
+// go, and the next tick is the one due now. Paused or unwatched, the clock starts again from when it goes on.
+let since = performance.now(), ran = 0;
+const restart = () => { since = performance.now(); ran = 0; };
+async function loop() {
+  if (!clients.size || control.paused) { restart(); setTimeout(loop, 100); return; }
+  for (;;) {
+    if (!clients.size || control.paused) break;
+    const tickWall = (TICK_S * 1000) / control.speed, due = Math.floor((performance.now() - since) / tickWall);
+    if (due <= ran) break;
+    if (due - ran > control.speed / TICK_S) { since = performance.now() - tickWall; ran = 0; }
+    ran++;
+    await step();
+  }
+  setTimeout(loop, Math.max(0, since + ((ran + 1) * TICK_S * 1000) / control.speed - performance.now()));
 }
 loop();
 for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { save().catch((e) => console.error("save", e)).finally(() => { flush(); setTimeout(() => process.exit(0), 200); }); });
@@ -110,8 +132,9 @@ function stats() {
       dead: Object.values(w.people).filter((x) => !x.alive).length, pregnant: w.agents.filter((a) => a.pregnant).length, deer: w.animals.filter((a) => a.species === "deer").length, wolf: w.animals.filter((a) => a.species === "wolf").length },
     things, fires: things.fire ?? 0, structures: things.structure ?? 0,
     laws: Object.keys(w.laws).length, kinds: Object.keys(w.kinds).length, madeKinds: Object.values(w.kinds).filter((k) => k.made).length,
-    jev: { calls: w.jev.calls, tokens: w.jev.tokens, cost: (w.jev.tokens * 0.042) / 1e6, rulings: w.jev.rulings, costPerDay: w.t > DAY ? ((w.jev.tokens * 0.042) / 1e6) / (w.t / DAY) : null },
-    tickMs, counters,
+    // the meter (brain.ts jevMeter): calls a sim hour and a wall minute against the relay's 300 a minute, and latency
+    jev: { calls: w.jev.calls, tokens: w.jev.tokens, cost: (w.jev.tokens * 0.042) / 1e6, rulings: w.jev.rulings, costPerDay: w.t > DAY ? ((w.jev.tokens * 0.042) / 1e6) / (w.t / DAY) : null, meter: jevMeter(w) },
+    tickMs, hourMs: hourMs(), day: DAY, counters,
     agents: w.agents.map((a) => ({ id: a.id, status: a.status, goal: a.goal?.type, beliefs: Object.keys(a.beliefs).length, inv: a.inv.length, needs: a.needs, sick: !!a.sickness })),
     groups: {
       camps: liveCamps(w).map((c) => ({
@@ -143,7 +166,7 @@ Bun.serve({
           ctl = c;
           clients.add(c);
           send(c, {
-            type: "init", t: w.t, jev: w.jev, control, tiles: w.tiles.join(""), heights: w.heights, terrain: w.terrain, things: w.things.map((t) => thingView(w, t)),
+            type: "init", t: w.t, day: DAY, tickS: TICK_S, pace: PACE, jev: w.jev, control, tiles: w.tiles.join(""), heights: w.heights, terrain: w.terrain, things: w.things.map((t) => thingView(w, t)),
             agents: w.agents.map((a) => summary(w, a)), animals: animalView(), events: w.events.slice(-300),
             kinds: w.kinds, weather: w.weather, paths: w.paths.join(""),
             ice: w.tiles.map((_, i) => (w.ice.includes(i) ? "1" : "0")).join(""),
@@ -175,7 +198,7 @@ Bun.serve({
         (counts[e.kind] ??= new Array(days).fill(0))[Math.floor(e.t / DAY)]++;
         if (!QUIET[e.kind]) events.push({ t: e.t, kind: e.kind, who: e.who, text: e.text, ...(e.tag ? { tag: e.tag } : {}) });
       }
-      return json({ t: w.t, days, yearDays: YEAR_DAYS, since: w.events[0]?.t ?? 0, counts, events, people: Object.values(w.people) });
+      return json({ t: w.t, day: DAY, days, yearDays: YEAR_DAYS, since: w.events[0]?.t ?? 0, counts, events, people: Object.values(w.people) });
     }
     if (p === "/api/groups") return json(groupsDetail(w));
     if (p === "/api/events") {
@@ -185,7 +208,7 @@ Bun.serve({
     if (p === "/api/control" && req.method === "POST") {
       const body = (await req.json()) as Partial<typeof control>;
       if (typeof body.paused === "boolean") control.paused = body.paused;
-      if (body.speed && [1, 2, 4, 8, 16].includes(body.speed)) control.speed = body.speed;
+      if (body.speed && SPEEDS.includes(body.speed) && body.speed !== control.speed) { control.speed = body.speed; restart(); }
       for (const c of clients) send(c, { type: "control", control });
       return json(control);
     }
