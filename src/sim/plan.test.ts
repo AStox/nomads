@@ -597,6 +597,14 @@ test("what anyone sees of a lay: tinder soaked through is soaked (and so damp), 
   expect(conditionsNow(w, a, "strike", a, lay)).toEqual(expect.arrayContaining(["wind", "breezy"]));
 });
 
+test("a stone laid with a flame is no wet kindling: what can't burn can't be too wet to burn", () => {
+  const [w, a] = fresh();
+  still(w);
+  const lamp = lampKind(w);
+  hold(w, a, lamp.id, 1, 0); giveItems(w, a, "stone");
+  expect(conditionsNow(w, a, "place", a, [lamp.id, "stone"])).not.toContain("sodden");
+});
+
 test("experimenting with only tinder and logs lights no fire, until they hold something thinner", () => {
   const [w, a] = fresh();
   still(w);

@@ -942,7 +942,7 @@ const CONDITIONS: Record<string, Condition> = {
   soaked: { now: (x) => (x.fire()?.tinder ?? 0) > SOAKED, words: "Their tinder was soaked through", verbs: ["strike", "rub"], piece: true, on: "soaked", off: "not soaked" },
   thick: { now: (x) => !!x.fire()?.pieces.some((s) => tooThick(stackPhys(x.w.kinds, s))), words: "Some of the wood they laid was thick", verbs: LAYING, piece: true, on: "laying thick wood", off: "laying thin wood" },
   sodden: {
-    now: (x) => !!x.fire()?.pieces.some((s) => { const phys = stackPhys(x.w.kinds, s); return !!phys && !tinder(x.w.kinds[s.k]) && drowned({ phys, m: moistureOf(s) }); }),
+    now: (x) => !!x.fire()?.pieces.some((s) => { const phys = stackPhys(x.w.kinds, s); return !!phys?.burn && !tinder(x.w.kinds[s.k]) && drowned({ phys, m: moistureOf(s) }); }),
     words: "Their kindling was wet", verbs: LAYING, piece: true, on: "laying wet kindling", off: "laying dry kindling",
   },
   small: { now: (x) => { const f = x.fire(); return !!f?.bed && radiation(f.bed, f.air, PHYS.log) < LEAST; }, words: "The fire was small", verbs: AT_FIRE, on: "a small fire", off: "a big fire" },
