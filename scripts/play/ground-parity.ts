@@ -206,7 +206,15 @@ const buf = (data: ArrayBufferView, usage = B.STORAGE) => {
   return b;
 };
 t = performance.now();
-const ground = [arrayTex(pk.fine), arrayTex(pk.isle), arrayTex(pk.grid), byteTex(pk.fine.size && Math.sqrt(pk.river.length), pk.river), byteTex(TN, trailTex)];
+// bit 7 of a texel as the page's worker sets it (worker.js trailsAll): a worn cell lies within three cells of it, which
+// is all g_trailNear reads, so without it the GPU paints no path at all
+const trailBits = new Uint8Array(trailTex);
+for (const k of trail.keys()) {
+  if (!trailTex[k]) continue;
+  const i = k % TN, j = Math.floor(k / TN);
+  for (let b = Math.max(0, j - 3); b <= Math.min(TN - 1, j + 3); b++) for (let a = Math.max(0, i - 3); a <= Math.min(TN - 1, i + 3); a++) trailBits[b * TN + a] |= 128;
+}
+const ground = [arrayTex(pk.fine), arrayTex(pk.isle), arrayTex(pk.grid), byteTex(pk.fine.size && Math.sqrt(pk.river.length), pk.river), byteTex(TN, trailBits)];
 const iceViews = [byteTex(TILES, new Uint8Array(TILES * TILES)), byteTex(TILES, ice)];
 const stores = [buf(pk.dq), buf(pk.grad), buf(pk.streams), buf(pk.streamBins)];
 const vis = GPUShaderStage.COMPUTE;
