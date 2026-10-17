@@ -140,11 +140,12 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
       if (hold.soft || how === "nothing") return out(false, 1);
       const x = physOf(w.kinds, tk)!, E = blowEnergy(hold.swung);
       if (how === "forge") {
-        // red hot at a fire that holds the metal so where it sits, or cold; drawn out a tick's blows' worth
+        // red hot at a fire that holds the metal so where it sits, or cold; drawn out a try's blows' worth, over the
+        // ticks those blows take
         const cold = (tk.hotAbove && tk.parts?.[0] && w.kinds[tk.parts[0]]) || tk, hot = !!tk.hotAbove && !!s.fire?.bed && setIn(s.fire.bed, s.air, x.d) >= tk.hotAbove;
         const fg = drawing(x, E, hot), e0 = x.edge ? Math.log(x.d / (2 * x.edge.r)) : 0;
         if (fg.strain <= e0 + 1e-9) return out(false, 1, { at: hot ? "forge" : null });
-        return out(true, 1, { gives: [`forge:${cold.id.replace(/^forge:([^:]+):\d+$/, "$1")}:${Math.round(fg.edge * 1e6)}`], at: hot ? "forge" : null });
+        return out(true, Math.ceil(fg.blows / BLOWS), { gives: [`forge:${cold.id.replace(/^forge:([^:]+):\d+$/, "$1")}:${Math.round(fg.edge * 1e6)}`], at: hot ? "forge" : null });
       }
       if (how === "knap") {
         const fk = Object.keys(tk.breaks!)[0], flake = physOf(w.kinds, w.kinds[fk])!;

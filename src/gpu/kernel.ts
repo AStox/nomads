@@ -83,29 +83,41 @@ export function cover(g: Gpu, n: number, size = 256): [number, number] {
 }
 
 // ---------- reading back ----------
-type Slot = { buf: GPUBuffer; size: number; busy: boolean };
-const rings = new WeakMap<GPUDevice, Slot[]>();
+type Slot = { buf: GPUBuffer; size: number; busy: boolean; last: number };
+type Ring = { slots: Slot[]; reads: number };
+const rings = new WeakMap<GPUDevice, Ring>();
+// The largest staging buffer the ring keeps once read [design: a landing's copy, some 10 MB on seed 1, read every
+// landing]; a larger one (a save's or a hash's chunks of 64 MB) is let go as soon as it is read, and one no read has
+// used in the last RING_AGE [design] is let go too, so the CPU's copies don't stay on the GPU.
+const RING_KEEP = 16 << 20, RING_AGE = 64;
 
 // A copy of bytes [offset, offset + bytes) of a buffer, read back through the next free staging buffer of the ring.
-export async function readback(g: Gpu, src: GPUBuffer, bytes = src.size, offset = 0): Promise<ArrayBuffer> {
+// keep, given the bytes as mapped, says how many of them the copy needs (a landing's: as far as its gather wrote), so
+// the rest is not copied out of the mapping.
+export async function readback(g: Gpu, src: GPUBuffer, bytes = src.size, offset = 0, keep?: (mapped: ArrayBuffer) => number): Promise<ArrayBuffer> {
   let ring = rings.get(g.device);
-  if (!ring) rings.set(g.device, (ring = []));
-  const size = Math.ceil(bytes / 4) * 4;
-  let slot = ring.find((s) => !s.busy && s.size >= size);
+  if (!ring) rings.set(g.device, (ring = { slots: [], reads: 0 }));
+  const size = Math.ceil(bytes / 4) * 4, slots = ring.slots;
+  let slot = slots.find((s) => !s.busy && s.size >= size);
   if (!slot) {
-    slot = { buf: g.device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), size, busy: false };
-    ring.push(slot);
+    slot = { buf: g.device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), size, busy: false, last: 0 };
+    slots.push(slot);
   }
   slot.busy = true;
+  slot.last = ++ring.reads;
   const enc = g.device.createCommandEncoder();
   enc.copyBufferToBuffer(src, offset, slot.buf, 0, size);
   g.device.queue.submit([enc.finish()]);
   try {
     await slot.buf.mapAsync(GPUMapMode.READ, 0, size);
-    const out = slot.buf.getMappedRange(0, size).slice(0, bytes);
+    const mapped = slot.buf.getMappedRange(0, size), out = mapped.slice(0, keep ? Math.min(bytes, keep(mapped)) : bytes);
     slot.buf.unmap();
     return out;
   } finally {
     slot.busy = false;
+    for (const s of slots.filter((x) => !x.busy && (x.size > RING_KEEP || ring.reads - x.last > RING_AGE))) {
+      slots.splice(slots.indexOf(s), 1);
+      s.buf.destroy();
+    }
   }
 }

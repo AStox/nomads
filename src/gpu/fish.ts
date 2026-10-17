@@ -18,9 +18,15 @@ import { CELLS } from "./wgsl/index";
 import { DAY } from "../sim/ticks";
 
 export const FISH = "fish";
-// Room for this many fish at once [design]: about 300 MB of the GPU's memory with its index and the young's counts;
+// The island's fish as laid are thinned to at most this many [design: 2^22, half the room the fish first had, the
+// rest for the young] (src/sim/waters.ts startFish).
+export const FISH_LAY = 1 << 22;
+// The fish's first room: the lay and a quarter more [derived: from the lay through three island years of seed 1 stepped
+// day by day, no fish took a slot past the lay's 4,194,381 and at most 2,849,734 lived at once, the young filling the
+// slots of the dead], 168 MB with its allocation and index. A law that finds the slots in use (as the last landing read
+// them back) past seven eighths of the room first grows it by half [design: the lay fills four fifths of it];
 // young past the room are not born (wgsl/fish.ts births).
-export const FISH_CAP = 1 << 23;
+export const FISH_CAP = 5 << 20;
 const UNITS: Record<(typeof FIELDS)[number], [string, number]> = { sp: ["kind", 1], born: ["tick", 1], len: ["m", 1e6] };
 const FIELD_LIST: Field[] = FIELDS.map((name) => ({ name, type: "u32", unit: UNITS[name][0], scale: UNITS[name][1] }));
 
@@ -44,7 +50,7 @@ export type FishDriver = {
 // tile buffer at a word, and take what the birds ate from the animals' atomic buffer at a word.
 export type FishLink = { feed(s: Store, W: GPUBuffer, at: number): void; ate(s: Store, A: GPUBuffer, at: number): void };
 
-type Bufs = { CT: GPUBuffer; FOOD: GPUBuffer; KP: GPUBuffer; S: GPUBuffer; FT: GPUBuffer; EAT: GPUBuffer; Q: GPUBuffer };
+type Bufs = { CT: GPUBuffer; FOOD: GPUBuffer; KP: GPUBuffer; S: GPUBuffer; FT: GPUBuffer; EAT: GPUBuffer };
 
 export class Fish implements Rider, FishLink {
   readonly name = "fish";
@@ -69,7 +75,7 @@ export class Fish implements Rider, FishLink {
     KP.set(driver.consts());
     this.bufs = {
       CT: storage(g, driver.cells()), FOOD: storage(g, CELLS * 4), KP: storage(g, KP), S: storage(g, S_WORDS * 4),
-      FT: storage(g, T * 4), EAT: storage(g, T * 4), Q: storage(g, cap * 4),
+      FT: storage(g, T * 4), EAT: storage(g, T * 4),
     };
     this.src = { front: fishFront(cap), fate: fishFate(cap) };
     if (fresh) {
@@ -81,10 +87,11 @@ export class Fish implements Rider, FishLink {
         store.retire(rows);
         store.flush();
       }
+      // a day on the GPU at a time (store.ts drain)
       for (let k = driver.days; k >= 1; k--) {
         this.law(store, driver.t0 - k * DAY);
         store.index(kind, true);
-        store.flush();
+        await store.drain();
       }
       store.index(kind);
       store.flush();
@@ -93,16 +100,23 @@ export class Fish implements Rider, FishLink {
     store.law({ name: "fish", due: (t) => t % DAY === 0, run: (s, t) => this.law(s, t) });
     store.ride(this);
   }
-  // A day of the law ending at tick t.
+  // A day of the law ending at tick t, the room grown first when the slots in use near it; each fish's young counted
+  // into a buffer borrowed for the law.
   private law(s: Store, t: number) {
-    const b = this.bufs!, k = this.kind!, src = this.src!, g = s.g, cap = k.capacity, d = this.driver!;
+    const b = this.bufs!, k = this.kind!, g = s.g, d = this.driver!;
+    if (k.peek.tail * 8 > k.capacity * 7) {
+      s.grow(k, Math.ceil((k.capacity * 3) / 2048) * 1024);
+      this.src = { front: fishFront(k.capacity), fate: fishFate(k.capacity) };
+    }
+    const src = this.src!, cap = k.capacity, Q = s.borrow(cap);
     const { flags, food } = d.step(t);
     g.device.queue.writeBuffer(b.KP, PO * 4, Uint32Array.of(t >>> 0, d.seed >>> 0, flags));
     g.device.queue.writeBuffer(b.FOOD, 0, food);
     s.encode((e) => e.clearBuffer(b.S));
     s.run(src.front, [k.body, b.CT, b.KP, b.S, b.FT, b.EAT], cover(g, cap));
-    s.run(src.fate, [k.body, b.CT, b.FOOD, b.KP, b.S, b.FT, b.EAT, b.Q], cover(g, cap));
-    if (flags & 1) s.births(FISH, FISH, b.Q, BIRTH_INIT, { bufs: [{ name: "KP", buf: b.KP }, { name: "CT", buf: b.CT }], wgsl: birthHead(cap) }, true);
+    s.run(src.fate, [k.body, b.CT, b.FOOD, b.KP, b.S, b.FT, b.EAT, Q], cover(g, cap));
+    if (flags & 1) s.births(FISH, FISH, Q, BIRTH_INIT, { bufs: [{ name: "KP", buf: b.KP }, { name: "CT", buf: b.CT }], wgsl: birthHead(cap) }, true);
+    s.giveBack(Q);
     // the day's fish by tile for the birds, and the catch begun again
     s.encode((e) => {
       e.copyBufferToBuffer(b.S, S_.ftn * 4, b.FT, 0, T * 4);

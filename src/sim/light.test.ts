@@ -11,6 +11,8 @@ import { ctxFor, tick } from "./sim";
 import { DARK, lightAt, lightOn } from "./light";
 import { JOHNSON, seesPerson, sightRange } from "./senses";
 import { YEAR_DAYS, sunAt } from "./sky";
+import { ticksOf } from "./ticks";
+import { LAND_S, due } from "./lanes";
 import { bodyOf } from "./body";
 import { releaseGpu } from "../gpu/device";
 
@@ -38,9 +40,14 @@ beforeAll(async () => {
   origin = { px: island.agents[0].px, py: island.agents[0].py };
   await tick(island);
 }, 600_000);
+// Ticks up to and through the next one that lands the store on the GPU (lanes.ts LAND_S), as every tick did when these
+// cases were written.
+async function landed(w: World) {
+  do await tick(w); while (!due(w.t, LAND_S));
+}
 // The stems' changes taken to the GPU and the crowns passed over them again.
 async function settle(w: World) {
-  await tick(w);
+  await landed(w);
   await heldStore(w)?.arriving;
   await crownsOf(w)!.refresh();
 }
@@ -111,7 +118,7 @@ test("a closed stand shades the ground under it from the next crown pass, and fe
   const stand: Thing[] = [];
   around(w, px, py, 30, ["tree"], (t) => void stand.push(t));
   for (const t of stand) removeThing(w, t);
-  await tick(w);
+  await landed(w);
   await heldStore(w)?.arriving;
   w.t = at(12);
   expect(lightAt(w, px, py).lux).toBeLessThan(open.lux * 0.2);
@@ -286,7 +293,7 @@ test("a hungry wolf takes a lone person who is out in the dark, and leaves one i
   // the island's own deer and rabbits, GPU objects since a tick made the island resident, would stand in sight as
   // prey or a scent: gone, and a tick landed to bring that back
   cull(probe.w, "deer"); cull(probe.w, "rabbit");
-  await tick(probe.w);
+  await landed(probe.w);
   await heldStore(probe.w)?.arriving;
   await grove(probe.w, probe.px, probe.py);
   let dusk = SUNSET;
@@ -328,8 +335,9 @@ test("seedlings grow in the open and burn down in the deep shade of a grove", as
   const shaded = addThing(w, "sapling", px, py + 1 / TILE_M, { stage: 0 });
   const open = addThing(w, "sapling", px + 40 / TILE_M, py, { stage: 0 });
   w.t = at(12) + 1;
-  // seedlings are tended as the sky turns, once an hour
-  for (let i = 0; i < 50; i++) { w.t++; ecology(w); }
+  // seedlings are tended as the sky turns, once an hour: the 50 ticks of five minutes this was written for, about four
+  // hours and four tendings, run second by second
+  for (let i = 0; i < ticksOf(50 * 300); i++) { w.t++; ecology(w); }
   expect(open.stage).toBeGreaterThan(0);
   expect(shaded.dry!).toBeLessThan(SEEDLINGS.berry.seed);
 });

@@ -38,20 +38,30 @@ export function jevLog(e: Omit<JevEntry, "id" | "t">) {
   if (dir) pending.push({ file: "jev.jsonl", line: JSON.stringify(full) });
 }
 
-// Rolling average cost of each system per tick.
+// Rolling average cost of each system a run (a tick, or a run of its lane, lanes.ts), and the whole of its cost since
+// the first run timed with the tick it came at.
+const spent: Record<string, number> = {};
+let firstT: number | null = null;
+function spend(sys: string, ms: number) {
+  tickMs[sys] = (tickMs[sys] ?? 0) * 0.95 + ms * 0.05;
+  spent[sys] = (spent[sys] ?? 0) + ms;
+  firstT ??= clock.t;
+}
 export function timed<T>(sys: string, fn: () => T): T {
   const t0 = performance.now();
-  try { return fn(); } finally { tickMs[sys] = (tickMs[sys] ?? 0) * 0.95 + (performance.now() - t0) * 0.05; }
+  try { return fn(); } finally { spend(sys, performance.now() - t0); }
 }
 // The same for work that ends when a promise settles (the GPU's landing), timed to the end of the wait.
 export async function waited<T>(sys: string, fn: () => Promise<T>): Promise<T> {
   const t0 = performance.now();
-  try { return await fn(); } finally { tickMs[sys] = (tickMs[sys] ?? 0) * 0.95 + (performance.now() - t0) * 0.05; }
+  try { return await fn(); } finally { spend(sys, performance.now() - t0); }
 }
-// What each system costs a sim hour at that rate: a tick's cost times the ticks in an hour, so costs read the same
-// whatever a tick lasts.
-export const hourMs = (): Record<string, number> => Object.fromEntries(Object.entries(tickMs).map(([k, v]) => [k, v * HOUR]));
-
+// What each system has cost a sim hour on average since it was first timed: its whole cost over the hours gone by, so a
+// lane that runs every tenth tick or a law that runs once an hour reads the same whatever a tick lasts.
+export function hourMs(): Record<string, number> {
+  const hours = firstT === null ? 0 : (clock.t - firstT + 1) / HOUR;
+  return hours > 0 ? Object.fromEntries(Object.entries(spent).map(([k, v]) => [k, v / hours])) : {};
+}
 export function flush() {
   if (!dir || !pending.length) return;
   const byFile: Record<string, string[]> = {};

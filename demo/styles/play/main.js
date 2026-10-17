@@ -15,9 +15,11 @@ const num = (k, def, lo = -Infinity, hi = Infinity) => {
   const s = Q.get(k), v = s == null || s.trim() === "" ? NaN : Number(s);
   return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : def;
 };
-// ?warm: sim days the world runs before it is live [design: 7, a week, as it has been; at most 140 days, about the
-// 40,000 ticks of 300 s it has always been held to]
-const seed = Math.trunc(num("seed", 1)), warm = num("warm", 7, 0, 140), withSim = Q.get("sim") !== "0";
+// ?warm: sim days the world runs before it is live [design: one, a day and a night, so everyone has woken, worked and
+// slept once and every daily law has run once before the world is live; the week it was before ticks were seconds took
+// about 9 minutes on the dev machine (real-time tick plan, Unit 11 outcome); at most 140 days, about the 40,000 ticks of
+// 300 s it has always been held to]
+const seed = Math.trunc(num("seed", 1)), warm = num("warm", 1, 0, 140), withSim = Q.get("sim") !== "0";
 // ?bench=zoom, or several in turn on one load (?bench=zoom,orbit,turn,pan), each from the view the first began at
 const benchKinds = (Q.get("bench") ?? "").split(",").filter((k) => ["zoom", "orbit", "turn", "pan"].includes(k));
 const canvas = document.getElementById("view"), hint = document.getElementById("hint"), statsEl = document.getElementById("stats"), pace = document.getElementById("pace"), renderEl = document.getElementById("render"), clockEl = document.getElementById("clock");

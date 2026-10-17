@@ -708,6 +708,19 @@ const laying = (w: World, a: Agent, s: Step) => (items: string[]) => {
   if (lay) seenAt.set(s, conditionsNow(w, a, verb, a, items, lay, 0));
   return lay;
 };
+// A chase or a stalk as it stood after their last step: where the animal was and how far off.
+const pursuit = new WeakMap<Step, { px: number; py: number; gap: number }>();
+// One step of following an animal (stepToward, running for a chase), and whether it got away: they lose it once they can
+// no longer make it out (senses.ts), or as soon as it draws away from them faster than they go, the gap opening over a
+// tick in which it went farther than they did (fauna.ts speeds against gait.ts). One that is caught up with, tires or
+// stops is followed on.
+function follow(w: World, a: Agent, s: Step, prey: Animal, reach: number, run: boolean) {
+  const was = pursuit.get(s), x0 = a.px, y0 = a.py, r = stepToward(w, a, prey.px, prey.py, reach, run), gap = meters(a, prey);
+  pursuit.set(s, { px: prey.px, py: prey.py, gap });
+  const fled = was ? Math.hypot(prey.px - was.px, prey.py - was.py) * TILE_M : 0, went = Math.hypot(a.px - x0, a.py - y0) * TILE_M;
+  const away = !seesAnimal(w, a, prey, "notice") || (!!was && gap > was.gap && fled > went);
+  return { r, away };
+}
 // Run one tick of an act. Returns the outcome when it resolves, "wait" while working, or a reason string if it can't happen.
 export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
   const act = s.act!;
@@ -739,10 +752,11 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
       if (!prey) return "the animal was gone";
       if (prey.alt > overheadOf(w, a) + long || meters(a, prey) > arm + 0.5 + long) {
         a.status = `Chasing the ${prey.species}`;
-        // [design: today's 60 ticks of chasing]
-        if ((s.tries = (s.tries ?? 0) + 1) > ticksOf(18000) || prey.alt > overheadOf(w, a) + long) return `the ${prey.species} got away`;
+        if (prey.alt > overheadOf(w, a) + long) return `the ${prey.species} got away`;
         // Catching up and swinging happen in the same moment, or a fleeing animal is always a stride ahead.
-        if (stepToward(w, a, prey.px, prey.py, arm + long, true) !== "arrived") return "wait";
+        const f = follow(w, a, s, prey, arm + long, true);
+        if (f.away) return `the ${prey.species} got away`;
+        if (f.r !== "arrived") return "wait";
       }
     }
     if (fumbles(w, a)) return "wait";
@@ -771,10 +785,7 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
     const range = throwReach(w, a, act, prey);
     if (meters(a, prey) > range) {
       a.status = `Stalking the ${prey.species}`;
-      // [design: today's 80 ticks of stalking]
-      if ((s.tries = (s.tries ?? 0) + 1) > ticksOf(24000)) return `the ${prey.species} got away`;
-      stepToward(w, a, prey.px, prey.py, range);
-      return "wait";
+      return follow(w, a, s, prey, range, false).away ? `the ${prey.species} got away` : "wait";
     }
     if (fumbles(w, a)) return "wait";
     a.status = actText(w, act);
@@ -2338,10 +2349,11 @@ export async function retire(w: World) {
   dropStore(w);
 }
 // A caller with other work to do between the parts of a tick (the play page's render worker draws its frames there)
-// sets fn, awaited after the upload, after each law the GPU is given, and after the ecology. Nothing else changes the
-// world meanwhile, and nothing the brain started is waiting then (what it starts, from the groups on, settles within
-// the tick that started it, which from there runs in one piece as before), so a run is the same with it as without.
-// Null: the tick runs in one piece but for its landing.
+// sets fn, awaited after the upload, after each law the GPU is given, and after the ecology on a landing tick, where the
+// hourly and daily work falls (lanes.ts LAND_S divides the hour); a tick between landings is a fraction of a millisecond
+// and runs in one piece. Nothing else changes the world meanwhile, and nothing the brain started is waiting then (what
+// it starts, from the groups on, settles within the tick that started it, which from there runs in one piece as
+// before), so a run is the same with it as without. Null: the tick runs in one piece but for its landing.
 export const tickPause: { fn: (() => Promise<void>) | null } = { fn: null };
 // The fastest anyone runs, m/s: on the level over bare rock (gait.ts ground coefficient 1), unladen, at the twenties'
 // VO2max (gait.ts runSpeed), about 3.8 m/s. Between two landings someone can go this far beyond what a tick takes them,
@@ -2376,7 +2388,7 @@ export async function tick(w: World) {
   }
   try {
     timed("ecology", () => ecology(w));
-    if (pause) await pause();
+    if (pause && landing) await pause();
     timed("life", () => life(w));
     burned(w);
     timed("groups", () => groups(w));

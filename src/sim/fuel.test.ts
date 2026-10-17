@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { BASE, ensure } from "./materials";
 import { BURNS, COPPER, FIRED_CLAY, LEATHER, PHYS, POT_WALL, WOODS, mix, physOf, woodOf, type Burn, type Phys, type Row, type Wood } from "./fuel";
 import { addThing, newWorld, type Agent, type Stack, type Thing, type World } from "./world";
+import { TICK_S } from "./ticks";
 import { applyRuling, bedAir, dropStacks, fireOf, giveItems, giveStack, hand, heat, join, place, removeThing, shape, strikeTick, takeFromPile, type Outcome } from "./physics";
 import { capacityOf, loadOf } from "./gait";
 import { advance } from "./combustion";
@@ -150,7 +151,9 @@ test("felling a 15 m oak gives logs as thick as an oak's trunk, and branches thi
   // a flint blade hafted on a stick (physics.ts holdOf), kept sharp as it's used
   w.kinds.axe = { id: "axe", name: "axe", props: { sharp: 0.9, heavy: 0.8, hard: 0.9, long: 0.8, toughness: 1 }, parts: ["flint_blade", "stick"], verb: "join" };
   giveItems(w, a, "axe");
-  const fell = (t: Thing) => { const st = { progress: 0 }; for (let i = 0; i < 500; i++) { for (const s of a.inv) if (s.k === "axe") s.hp = 1; if (strikeTick(w, a, { verb: "strike", items: [], tool: "axe", target: { kind: t.kind, thing: t.id } }, st).done) break; } };
+  // a tick's blows at a time, for at most FELL_S of sim time [design: the 500 five-minute ticks it was held to]
+  const FELL_S = 500 * 300;
+  const fell = (t: Thing) => { const st = { progress: 0 }; for (let at = 0; at < FELL_S; at += TICK_S) { for (const s of a.inv) if (s.k === "axe") s.hp = 1; if (strikeTick(w, a, { verb: "strike", items: [], tool: "axe", target: { kind: t.kind, thing: t.id } }, st).done) break; } };
   // what came of a felling, of a kind: what they hold of it, and what went down beside them, as heavy as it is, once
   // their hands were full by mass or bulk (gait.ts canHold); the piles taken up so the next felling starts bare
   const got = (k: string) => {

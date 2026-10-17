@@ -2,7 +2,7 @@
 // each timed, each ending in a checksum of what came of it (the world, or a probe's numbers, and the next draw of the
 // seeded random stream, which any change in what was decided would move). Same checksum before and after a change:
 // the same world, only quicker.
-//   NOMADS_BRAIN=random bun scripts/bench.ts [--only make,seed,blame,world,spread] [--days 20]
+//   NOMADS_BRAIN=random bun scripts/bench.ts [--only make,seed,blame,world,spread] [--days 2]
 // Profile one: NOMADS_BRAIN=random bun --cpu-prof-md --cpu-prof-dir=/tmp/prof scripts/bench.ts --only seed
 import { TILE_M, addThing, dryAt, heldStore, newWorld, type Thing, type World } from "../src/sim/world";
 import { retire, tick } from "../src/sim/sim";
@@ -20,7 +20,10 @@ import { exit, holdGpu, seedRandom } from "./seeded";
 import { DAY, HOUR } from "../src/sim/ticks";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
-const only = arg("only", "make,blame,seed,world,spread").split(","), days = Number(arg("days", "20"));
+// The world workload's sim days [design: a sim day of 1 s ticks costs about 30 s on the dev machine (real-time tick
+// plan, Unit 8), so two run in about two minutes with the GPU's spin-up, where the twenty of the 300 s tick would take
+// ten].
+const only = arg("only", "make,blame,seed,world,spread").split(","), days = Number(arg("days", "2"));
 const hash = (s: string) => Bun.hash(s).toString(36);
 // What a world came to: its clock, its people (where they are, what they need and hold, what they know and think), what
 // stands on it and roams it, and a hash of every buffer of its objects on the GPU once it has any.

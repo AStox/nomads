@@ -64,7 +64,7 @@ function stand(s: Store, x0: number, y0: number, side: number) {
     sums.set([rows[Math.min(sp, 31)] === 0 ? a : 0, rows[Math.min(sp, 31)] === 0 ? 0 : a, k, k * Math.floor(h / 100)], CROWN_WORDS * t);
   }
   start[TEXELS] = p;
-  return { start: storage(s.g, start), list: storage(s.g, list), crowns: storage(s.g, sums) };
+  return { start: storage(s.g, start), list: storage(s.g, list), crowns: storage(s.g, sums), release: () => {} };
 }
 
 // Land cells round the stand, their season fields drawn from a seeded stream (or all the island cell's, uniform).

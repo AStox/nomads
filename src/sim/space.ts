@@ -129,7 +129,9 @@ export async function resident(w: World, stems: StemDriver, seeds: SeedDriver) {
   // what lies near a burning bed takes its heat and its brands on the GPU (ecology.ts fire)
   ix.fire = new Receivers();
   ix.fire.attach(s);
-  // the smallest things, lumped: their law each midnight after the moisture's, before the animals', who graze them
+  // the smallest things, lumped: their law each midnight after the moisture's, before the animals', who graze them; the
+  // crown raster the crowns and deadwood read is let go first, so their first days borrow its memory
+  flora.release();
   ix.smalls.attach(s, smallsDriver(w), ix.crowns, w.t);
 }
 // The world's deadwood and clasts, its seeds and seedlings, its crown raster, the water of what lies out and the fire's

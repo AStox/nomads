@@ -6,7 +6,7 @@ import { CELL_MM } from "../wgsl/index";
 import { N } from "../../terrain/grid";
 import { type Field, Store, loadStore } from "../store";
 import { Drivers } from "./drivers";
-import { DAY, HOUR } from "../../sim/ticks";
+import { DAY, HOUR, ticksOf } from "../../sim/ticks";
 import { Events, NEVER, UNDRAWN } from "./events";
 import { access } from "../wgsl/alloc";
 import { drvAccess } from "../wgsl/drivers";
@@ -17,6 +17,9 @@ let low: Gpu | null = null;
 afterAll(async () => { low?.device.destroy(); await releaseGpu(); });
 
 const YEAR = 365, SEED = 0x5eed, STREAM = 9, VOLES = 1 << 16;
+// The step the voles' law is stepped on: five minutes, the tick it was written for, so its hazard stays a chance a step
+// [design: the 300 s tick of these cases].
+const STEP = ticksOf(300);
 // Air in hundredths of a degree: a year's cold and warm (coldest on day 0) and noise by cell and hour.
 const WEATHER = `
 let r = philox(vec4u(cell, hour, 0u, 0u), vec2u(91u, 2u));
@@ -26,7 +29,7 @@ const airAt = (cell: number, hour: number) => {
   const r = philox([cell, hour, 0, 0], [91, 2])[0], day = Math.floor(hour / 24) % 365;
   return 1800 - 20 * Math.abs(day - 182) + (r % 600) - 300;
 };
-// The chance of dying a tick, times 2^32: a floor, and more the colder the hour.
+// The chance of dying a step, times 2^32: a floor, and more the colder the hour.
 const HAZARD = `
 let air = drv_at(CH_AIR, cell_of(self_x(slot), self_y(slot)), c / ${HOUR}u);
 return 16000u + u32(max(-air, 0i)) * 40u;`;
@@ -36,8 +39,8 @@ const FIELDS: Field[] = [{ name: "next", type: "u32", unit: "tick", scale: 1 }, 
 const placeOf = (i: number) => ({ x: (i % 8) * CELL_MM + 1000, y: ((i >> 3) % 8) * CELL_MM + 1000 });
 const cellOfVole = (i: number) => ((i >> 3) % 8) * N + (i % 8);
 
-// The same law stepped every tick: each live vole draws its own word each tick of the day and dies when it falls
-// under the hazard.
+// The same law stepped every step: each live vole draws its own word each step of the day and dies when it falls under
+// the hazard.
 const PER_TICK = (fields: readonly Field[], d: Drivers) => `
 ${FIXED}
 ${RAND}
@@ -53,7 +56,7 @@ ${HAZARD}
 @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) g: vec3u) {
   let slot = g.x;
   if (slot >= P.cap || !self_alive(slot)) { return; }
-  for (var c = P.d0; c < P.d1; c++) {
+  for (var c = P.d0; c < P.d1; c += ${STEP}u) {
     rinit(${SEED}u, 77u, slot, c);
     if (next32() < hazard(slot, c)) { self_set_died(slot, c); self_kill(slot); return; }
   }
@@ -76,7 +79,7 @@ async function year(g: Gpu, ticks: boolean) {
   const d = new Drivers(s, { channels: [{ name: "air", unit: "degC", scale: 100, bound: 10_000 }], hours: 48 });
   s.declare({ name: "vole", capacity: VOLES, placed: true, fields: FIELDS });
   if (ticks) s.declare({ name: "tvole", capacity: VOLES, placed: true, fields: FIELDS });
-  const E = new Events(s, { kind: "vole", seed: SEED, stream: STREAM, hazard: HAZARD, event: DIE, drivers: d });
+  const E = new Events(s, { kind: "vole", seed: SEED, stream: STREAM, step: STEP, hazard: HAZARD, event: DIE, drivers: d });
   const per = ticks ? PER_TICK(s.kind("tvole").fields, d) : "";
   s.law({ name: "day", due: (t) => t % DAY === 0, run: (st, t) => {
     for (let h = 0; h < 24; h++) { d.write(WEATHER); d.advance(); }
@@ -105,7 +108,7 @@ test("an event-driven population's deaths over a year match per-tick stepping wi
   expect(Math.abs((total(ev) - total(tk)) / Math.sqrt(total(ev) + total(tk)))).toBeLessThan(4.5);
   expect(total(ev)).toBeGreaterThan(C / 4);
   // the kernel's twin, vole by vole: the same deaths at the same ticks
-  const pmax = 2 ** 24, end = YEAR * DAY, later = (c: number, w: number) => (w >= NEVER - c ? NEVER : c + w + 1);
+  const pmax = 2 ** 24, end = YEAR * DAY, later = (c: number, w: number) => (w >= Math.floor((NEVER - c) / STEP) ? NEVER : c + STEP * (w + 1));
   for (let i = 0; i < 400; i++) {
     const key = (STREAM << 17) | 1;
     rinit(SEED, key, i, 0);
@@ -120,7 +123,7 @@ test("an event-driven population's deaths over a year match per-tick stepping wi
     expect(dead < 0 ? a.body[i] & 1 : a.body[4 * C + i]).toBe(dead < 0 ? 1 : dead);
     if (dead < 0) expect(a.body[3 * C + i]).toBe(nx);
   }
-  // a day's candidates come to about one each (2^-8 a tick), so most individuals are due every day
+  // a day's candidates come to about one each (2^-8 a step), so most individuals are due every day
   expect(a.most).toBeGreaterThan(C / 4);
   low = await openGpu("low-power");
   const b = await year(low, false);

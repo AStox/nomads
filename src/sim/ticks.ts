@@ -34,6 +34,6 @@ export function clockOf(tickS: number) {
 
 // Days in the island's year (sky.ts: the first ten spring, the year's pace in onDay).
 export const YEAR_DAYS = 40;
-// Five minutes a tick [design: the world's step since its first version; the real-time tick plan,
-// docs/plans/2026-10-16-001-refactor-real-time-tick-plan.md, shortens it in its Phase C].
-export const { TICK_S, HOUR, DAY, YEAR, every, chance, rate, ticksOf } = clockOf(300);
+// A second a tick [design: the real-time tick plan, docs/plans/2026-10-16-001-refactor-real-time-tick-plan.md, Unit 8:
+// the step for anything people chase or flee, where a deer fleeing at 8 m/s moves under half a hand throw's reach].
+export const { TICK_S, HOUR, DAY, YEAR, every, chance, rate, ticksOf } = clockOf(1);

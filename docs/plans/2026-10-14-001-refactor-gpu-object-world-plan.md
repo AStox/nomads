@@ -564,6 +564,36 @@ Memory by owner (2026-10-16, seed 1, dev GPU): the GPU world laid out and steppe
 
 The smallest things hold 337 MB of it (their tables, their scratch, their own buffers and declarations). The total is 845 MB over the 1.5 GB budget, and 508 MB over it without them: the stems at their measured densities (490 MB), the fish's room (269 MB), the seedlings' and the stick bins' rooms (294 MB together), and the store's shared scratch (744 MB, the index's six buffers sized by the largest kind, the stems, and the stems' list) [gap: the budget is missed before this unit's share; not tuned].
 
+Memory brought under the budget (2026-10-17, result-identical cuts; seed 1 run from newWorld through 864 ticks, three island days, every GPU buffer counted as made and destroyed): 1,473.4 MB live at the end and 1,484.3 MB at the most (was 2,300.7 MB live on the same run at bf7b503). The identity hash after 300 ticks of seed 1 with the random brain is unchanged (t 386, events 83bbfb3a8037687c, people 6da24eabc439304f, things 3197e788f8be8d91, census 229090d88cae167d, agents a0ac81ad0fa84e47), and so is the 864-tick one. What changed: the store lends its large scratch from one pool (store.ts borrow, giveBack), each pass borrowing what it needs while it is recorded, so the index, births, the stems' raster, the deadwood's and seedlings' counts, the fish's young and the lumped step share memory by lifetime; the index sorts through the kind's order and three borrowed buffers, not four; the lumped step gives back its outcome counts once emitted and puts each bin's place in the spent sort ids, and keeps one bin table (the next borrowed and copied back); the deer's browse moved to its own law before the smallest things' day (it writes only W's woody runs, which nothing between reads), so the raster is given back before the step that borrows the most; the stem list is sized by the stems standing, not the room. Rooms: the fish's lay is thinned to FISH_LAY (2^22, as before) and their room is the lay and a quarter more (three island years from the lay never used a slot past it); the seedlings' bins start at 4,096 and grow before each emergence by a texel's worth for every layer coming up; stick bins start at two litterfalls (one bin a cell each) and grow before each litterfall; both through store.ts grow, the fish's too past seven eighths. The readback ring lets go of staging buffers over 16 MB and of any not used in its last 64 reads.
+
+| Owner (seed 1, 864 ticks) | MB |
+|---|---|
+| plant, stems (room 11,124,656) | 489.7 |
+| store pool: lumped step (ck, sort, bins), raster, index, births | 353.8 |
+| fish (room 5,242,880) | 168.0 |
+| lumped tables, one a kind | 80.0 |
+| moisture | 70.3 |
+| seedlings' own (seed in the soil, parent lists, drivers) | 65.0 |
+| smalls' own | 47.3 |
+| log (room 726,074) | 38.0 |
+| store scratch by name (out, births queue, flags, small) | 37.8 |
+| animals' own | 33.8 |
+| flora's own | 17.5 |
+| crowns | 13.4 |
+| lumped and active kinds' declarations and control | 11.1 |
+| readback staging (at the most) | 10.8 |
+| piece | 9.7 |
+| deadwood's own | 8.4 |
+| animal (room 131,072) | 8.1 |
+| pebble, stone, boulder | 7.9 |
+| logup, stickup | 6.8 |
+| stickbin (room 131,072, 30,344 in use) | 4.5 |
+| fish's own | 2.1 |
+| seedling (room 4,096, none in use) | 0.1 |
+| all, live / at the most | 1,473.4 / 1,484.3 |
+
+Not within the budget beyond these days [gap]: the rooms that grow do so as the world ages, the stick bins toward some 3.5 million (about 150 MB with their allocation and index) and the seedlings to 2^20 or more on the first day a layer comes up (37.7 MB each 2^20, its thinning list borrowed besides); the margin left is 16 MB. The stems' fields, the fish's and the seedlings' are still a word each (packing what and size, sp and len, would save 42 and 21 MB) [gap]. Oracle tests run on both adapters after the cuts: store (births, breeding, index, save and load, spawns, generations, deltas), mirror, stems' day, crown pass, flora changes, deadwood (dormant stick, picked stick, snag twin, clasts), moisture hour, seedlings (law day, emergence rules, standing up, streamed evaluation), fish's four days, the six animal oracles, smalls and lumped (all); not run: the seed-1 year and multi-year tests (seedlings' seven years, deadwood's seed 1, fish's year, herds).
+
 Saving and loading (2026-10-16): a world saved with its GPU objects loaded with the animals' ground (W) overwritten. The animals bound the lumped kinds' link before restoring W, and the link's pools, encoded at the bind, ran after the restore's writes; a loaded world's ground was the day's pools again rather than what the animals had eaten of them since. The link now writes its pools at the bind only where the animals or the lumped kinds are fresh (gpu/animals.ts Ground.bind saved), and src/sim/space.test.ts's save and load hash equal.
 
 Not run in this pass: the herds' three-year rerun (src/sim/herds.test.ts, some 2.5 hours) against the medians before Unit 12b (deer 1.66 a km2, rabbits 0.79 a ha, wolves 13, foxes 0.30 a km2), so whether the grazers now persist on the regrowing tillers is not yet shown [gap].

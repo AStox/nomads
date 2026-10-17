@@ -266,8 +266,10 @@ test("four days of the fish: the catch, deaths, growth, a reach running dry, the
   // after the smolts' day every trout of a smolt's length that began in the stream has left it (they may wander back
   // from the lake later, as their home allows)
   const sb = hi.out[2].b, smoltSame = (i: number) => (sb[i] & 1) === 1 && sb[i] >>> 1 === hi.start.b[i] >>> 1;
-  const inStream = (i: number) => Math.floor(sb[(F.y + 1) * cap + i] / CELL_MM) === 105 && Math.floor(sb[(F.x + 1) * cap + i] / CELL_MM) >= 110;
-  for (let i = 0; i < n0; i++) if (smoltSame(i) && (sb[(F.sp + 1) * cap + i] & 15) === FS.trout && sb[(F.len + 1) * cap + i] >= 120000 && home[i] === 0) expect(inStream(i)).toBe(false);
+  const inStream = (b: Uint32Array, i: number) => Math.floor(b[(F.y + 1) * cap + i] / CELL_MM) === 105 && Math.floor(b[(F.x + 1) * cap + i] / CELL_MM) >= 110;
+  // only those in the stream as the smolts' day began (the day before's end): a lake trout wandering in that day is not
+  // one that stayed
+  for (let i = 0; i < n0; i++) if (smoltSame(i) && inStream(hi.out[1].b, i) && (sb[(F.sp + 1) * cap + i] & 15) === FS.trout && sb[(F.len + 1) * cap + i] >= 120000 && home[i] === 0) expect(inStream(sb, i)).toBe(false);
 }, 600_000);
 
 // ---------- the island's fish over a year ----------

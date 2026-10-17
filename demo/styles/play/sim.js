@@ -24,19 +24,13 @@ export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev =
   const step = async () => {
     const t0 = performance.now();
     try { await tick(w); } catch (e) { console.error("tick", e); }
-    // The server's save() trims the chronicle like this every 50 ticks.
-    if (w.t % 50 === 0 && w.events.length > 50_000) w.events = w.events.slice(-50_000);
+    // The server's save() trims the chronicle like this, at most once a sim hour.
+    if (w.t % HOUR === 0 && w.events.length > 50_000) w.events = w.events.slice(-50_000);
     return t0;
   };
   const took = (t0) => {
     const ms = performance.now() - t0;
     tickMs = tickMs ? tickMs * 0.95 + ms * 0.05 : ms;
-  };
-  // what each person is at, for the icon over their head, worked out once a tick
-  const acts = new Map();
-  const roll = () => {
-    acts.clear();
-    for (const a of w.agents) acts.set(a.id, activity(w, a));
   };
   // How many people and animals of each kind were alive, each sim hour from the start; past MAX samples every other one
   // is dropped and the spacing doubles, so a long run keeps its whole history in a bounded list.
@@ -90,7 +84,6 @@ export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev =
   };
   if (!warmTicks) await warmed();
   lastEvent = w.events.at(-1)?.id ?? 0;
-  roll();
 
   // a thing's label in the world window: a shelter by its tier, an item by its kind's name, else its species or kind
   const words = (x) => String(x).replaceAll("_", " ");
@@ -100,6 +93,8 @@ export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev =
     w,
     activities: ACTIVITY,
     day: DAY, tickS: TICK_S, yearDays: YEAR_DAYS,
+    // the warm's ticks still to run
+    get warming() { return warmLeft; },
     // what the ground grew, as its objects stand on the GPU (src/gpu/flora.ts)
     flora: () => floraOf(w),
     // A thing gone from the world at once (physics.ts removeThing), as a felling or a taking makes it go: what a check
@@ -119,7 +114,6 @@ export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev =
     // starts while one runs; one that fails is logged.
     async tick() {
       const t0 = await step();
-      roll();
       census(); travel();
       const things = [...changed].map((id) => thingById(w, id)).filter(Boolean).map((t) => thingView(w, t));
       const done = {
@@ -136,19 +130,20 @@ export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev =
       took(t0);
       if (warmLeft > 0) {
         warmLeft--;
-        if (onProgress && ((warmTicks - warmLeft) % 50 === 0 || !warmLeft)) onProgress(warmTicks - warmLeft, warmTicks);
+        if (onProgress && (w.t % HOUR === 0 || !warmLeft)) onProgress(warmTicks - warmLeft, warmTicks);
         if (!warmLeft) await warmed();
       }
       return done;
     },
-    // What the page draws and lists of the people and animals, sent after every tick: where each stands in tiles, what
-    // people are at (sim.ts activity), the weather the light and smoke follow, the camps and who is in them.
+    // What the page draws and lists of the people and animals, sent after every frame's ticks: where each stands in
+    // tiles, what people are at (sim.ts activity, worked out as it is sent), the weather the light and smoke follow, the
+    // camps and who is in them.
     state() {
       return {
         // warming: the warm's ticks still to run
         t: w.t, tickMs, brain: brainKind(), warming: warmLeft,
         weather: { season: w.weather.season, sky: w.weather.sky, wind: w.weather.wind },
-        agents: w.agents.map((a) => ({ id: a.id, name: a.name, status: a.status, color: a.color, born: a.born, down: a.down, goal: String(a.goal?.type ?? a.goal ?? ""), px: a.px, py: a.py, act: acts.get(a.id) ?? null })),
+        agents: w.agents.map((a) => ({ id: a.id, name: a.name, status: a.status, color: a.color, born: a.born, down: a.down, goal: String(a.goal?.type ?? a.goal ?? ""), px: a.px, py: a.py, act: activity(w, a) })),
         // gpu: a view of an animal the GPU's store holds (an.obj), which the render worker draws from its buffer
         animals: w.animals.map((a) => ({ id: a.id, species: a.species, state: a.state, hp: a.hp, alt: a.alt, heading: a.heading, px: a.px, py: a.py, gpu: a.obj != null })),
         camps: w.camps.filter((c) => !c.gone).map((c) => ({ name: c.name, members: c.members.map((id) => ({ id, name: w.people[id]?.name ?? id })) })),

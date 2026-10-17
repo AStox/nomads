@@ -156,6 +156,9 @@ export class Store {
   private begun = false;
   private budget = 1 << 16;
   private readonly scratchBufs = new Map<string, GPUBuffer>();
+  // the pool's buffers (borrow), and those of them not lent now
+  private readonly pooled = new Set<GPUBuffer>();
+  private readonly idle: GPUBuffer[] = [];
   private readonly stash = new Map<string, Stashed>();
   private enc: GPUCommandEncoder | null = null;
   private pass: GPUComputePassEncoder | null = null;
@@ -229,12 +232,32 @@ export class Store {
     k.peek = { ...k.peek, tail: n };
     k.touched = k.stale = true;
   }
+  // A kind's room made larger: its body, allocation and order made again at the new capacity, every column of the body
+  // (the slot words and each field), the allocation's control words and free list and the order copied over in the
+  // commands recorded, and the old buffers let go after the next submit. Slots past the old room start never born, as
+  // a new kind's do. Whatever its owner built on the old room (kernels holding it, buffers sized by it) the owner makes
+  // again; the store's own kernels take the room with each run.
+  grow(k: Kind, capacity: number) {
+    if (!Number.isInteger(capacity) || capacity <= k.capacity || capacity > IX) throw new Error(`kind ${k.name}: room ${capacity} must be more than ${k.capacity} and at most 2^30`);
+    const C = k.capacity, D = capacity, F = k.fields.length, most = this.g.device.limits.maxStorageBufferBindingSize;
+    if ((1 + F) * D * 4 > most) throw new Error(`kind ${k.name}: a body of ${(1 + F) * D * 4} bytes is past the GPU's ${most}-byte binding limit`);
+    const was = { body: k.body, alloc: k.alloc, order: k.order };
+    const body = storage(this.g, (1 + F) * D * 4), alloc = storage(this.g, (CTL_WORDS + D) * 4), order = was.order ? storage(this.g, D * 4) : null;
+    this.encode((e) => {
+      for (let f = 0; f <= F; f++) e.copyBufferToBuffer(was.body, f * C * 4, body, f * D * 4, C * 4);
+      e.copyBufferToBuffer(was.alloc, 0, alloc, 0, (CTL_WORDS + C) * 4);
+      if (was.order && order) e.copyBufferToBuffer(was.order, 0, order, 0, C * 4);
+    });
+    for (const b of [was.body, was.alloc, ...(was.order ? [was.order] : [])]) this.retire(b);
+    k.body = body; k.alloc = alloc; k.order = order;
+    k.capacity = k.spec.capacity = D;
+  }
   // The kind of a loaded store declared again by what uses it (a tier): the kind already there when its declaration
-  // is the same, else a new one.
+  // is the same but for a room the kind has since grown past (grow), else a new one.
   adopt(spec: KindSpec): Kind {
     const k = this.kinds.find((x) => x.name === spec.name);
     if (!k) return this.declare(spec);
-    if (JSON.stringify(k.spec) !== JSON.stringify(spec)) throw new Error(`kind ${spec.name} is already declared otherwise`);
+    if (JSON.stringify({ ...k.spec, capacity: 0 }) !== JSON.stringify({ ...spec, capacity: 0 }) || k.capacity < spec.capacity) throw new Error(`kind ${spec.name} is already declared otherwise`);
     return k;
   }
   kind(name: string): Kind {
@@ -242,7 +265,12 @@ export class Store {
     if (!k) throw new Error(`no kind ${name} in the store`);
     return k;
   }
-  law(l: Law) { this.laws.push(l); }
+  // A law, run after those added before it, or just before the law named before when there is one.
+  law(l: Law, before?: string) {
+    const at = before === undefined ? -1 : this.laws.findIndex((x) => x.name === before);
+    if (at < 0) this.laws.push(l);
+    else this.laws.splice(at, 0, l);
+  }
   ride(r: Rider) {
     if (r.name !== undefined && this.riders.some((x) => x.name === r.name)) throw new Error(`a rider named ${r.name} already rides this store`);
     this.riders.push(r);
@@ -319,6 +347,14 @@ export class Store {
     for (const b of this.retired) b.destroy();
     this.retired = [];
   }
+  // Submits what has been recorded and waits until the GPU has run it. A long run of steps recorded at once (the days a
+  // spin-up runs before anyone wakes) goes to the queue a step at a time this way: the browser's GPU process waits on
+  // each submit until the GPU takes it up, so a backlog of seconds held there holds every other user of that process
+  // too, the page's own thread among them.
+  async drain() {
+    this.flush();
+    await this.g.device.queue.onSubmittedWorkDone();
+  }
   // The ops held, recorded in their order; one whose pipeline is still being made (none, once caughtUp has waited for
   // them all) holds it and those after it again.
   private replay() {
@@ -355,9 +391,11 @@ export class Store {
   destroy() {
     this.flush();
     for (const k of this.kinds) for (const [, b] of buffersOf(k)) b.destroy();
-    for (const b of [...this.scratchBufs.values(), ...(this.params ? [this.params.buf] : [])]) b.destroy();
+    for (const b of [...this.scratchBufs.values(), ...this.pooled, ...(this.params ? [this.params.buf] : [])]) b.destroy();
     this.params = null;
     this.scratchBufs.clear();
+    this.pooled.clear();
+    this.idle.length = 0;
   }
   // A buffer replaced while commands recorded but not yet submitted may still use it: let go after the next submit.
   retire(b: GPUBuffer) { this.retired.push(b); }
@@ -371,6 +409,37 @@ export class Store {
       this.scratchBufs.set(name, b);
     }
     return b;
+  }
+  // A scratch buffer of at least so many words from the store's one pool, lent until it is given back: the large
+  // buffers a pass needs only while it runs (the index's, the births', a law's own) are borrowed when the pass is
+  // recorded and given back when it is done, so passes that never run at once share the memory, the pool holding as
+  // much as the most any passes hold at once rather than each its own. A buffer comes as its last borrower left it;
+  // the CPU never writes one (writeBuffer goes ahead of commands recorded but not yet submitted, which may be a
+  // borrower's before it). The smallest idle buffer that holds the words is lent, else the largest idle one is made
+  // again at the words asked for (let go after the next submit), else a new one.
+  borrow(words: number): GPUBuffer {
+    const bytes = Math.max(words, 1) * 4;
+    let fit = -1, big = -1;
+    this.idle.forEach((b, i) => {
+      if (b.size >= bytes && (fit < 0 || b.size < this.idle[fit].size)) fit = i;
+      if (big < 0 || b.size > this.idle[big].size) big = i;
+    });
+    if (fit >= 0) return this.idle.splice(fit, 1)[0];
+    if (big >= 0) {
+      const old = this.idle.splice(big, 1)[0];
+      this.pooled.delete(old);
+      this.retire(old);
+    }
+    const b = storage(this.g, bytes);
+    this.pooled.add(b);
+    return b;
+  }
+  // Buffers borrowed, given back once every command that uses them is recorded.
+  giveBack(...bufs: GPUBuffer[]) {
+    for (const b of bufs) {
+      if (!this.pooled.has(b) || this.idle.includes(b)) throw new Error("a buffer given back to the pool must be one it lent");
+      this.idle.push(b);
+    }
   }
   // An exclusive prefix sum of the first n words of buf, in place; the buffer returned holds the total at word 0. Each
   // level scans blocks of 1,024 words and keeps their totals; once the totals fit one block, each block sums those
@@ -406,12 +475,13 @@ export class Store {
   // whose young past its room are simply not born.
   births(parent: string, child: string, counts: GPUBuffer, init: string, extra?: Extra, drop = false) {
     const P = this.kind(parent), C = this.kind(child), same = P === C, g = this.g;
-    const m = this.scratch("m", P.capacity), kept = this.scratch("kept", P.capacity);
+    const m = this.borrow(P.capacity), kept = this.borrow(P.capacity);
     this.run(BIRTH_MASK, [P.body, P.alloc, counts, m, kept], cover(g, P.capacity), [P.capacity, 0, 0, 0]);
     const tot = this.scan(m, P.capacity);
     const src = this.birthKernel(parent, child, init, extra), more = extra?.bufs.map((b) => b.buf) ?? [];
     this.run(src, same ? [C.body, C.alloc, kept, m, ...more] : [P.body, C.body, C.alloc, kept, m, ...more], cover(g, P.capacity), [P.capacity, this.t, P.capacity, C.capacity]);
     this.run(BIRTH_COMMIT, [C.alloc, tot], [1], [C.capacity, drop ? 1 : 0, 0, 0]);
+    this.giveBack(m, kept);
     C.peek.fresh = false;
     C.touched = C.stale = true;
   }
@@ -419,11 +489,12 @@ export class Store {
   // children are born in row order by the same rule as births, with parent the row's number and no parent accessors;
   // drop as for births.
   bear(child: string, counts: GPUBuffer, n: number, init: string, extra?: Extra, drop = false) {
-    const C = this.kind(child), m = this.scratch("m", n), g = this.g;
+    const C = this.kind(child), m = this.borrow(n), g = this.g;
     this.encode((e) => e.copyBufferToBuffer(counts, 0, m, 0, n * 4));
     const tot = this.scan(m, n);
     this.run(this.birthKernel(null, child, init, extra), [C.body, C.alloc, counts, m, ...(extra?.bufs.map((b) => b.buf) ?? [])], cover(g, n), [n, this.t, 0, C.capacity]);
     this.run(BIRTH_COMMIT, [C.alloc, tot], [1], [C.capacity, drop ? 1 : 0, 0, 0]);
+    this.giveBack(m);
     C.peek.fresh = false;
     C.touched = C.stale = true;
   }
@@ -435,21 +506,22 @@ export class Store {
   }
   // The fixed point where dead slots join the free list: all of them below the tail, in index order.
   reclaim(k: Kind) {
-    const f = this.scratch("flag", k.capacity), g = this.g;
+    const f = this.borrow(k.capacity), g = this.g;
     this.run(RECLAIM_FLAG, [k.body, k.alloc, f], cover(g, k.capacity), [k.capacity, 0, 0, 0]);
     const tot = this.scan(f, k.capacity);
     this.run(RECLAIM_SCATTER, [k.body, k.alloc, f], cover(g, k.capacity), [k.capacity, 0, 0, 0]);
     this.run(RECLAIM_CTL, [k.alloc, tot], [1]);
+    this.giveBack(f);
   }
 
   // ---------- the spatial index ----------
   // With reclaim, the kind's dead slots join its free list too, from the same scan of its live flags (the same free
-  // list as reclaim makes, without a scan of its own).
+  // list as reclaim makes, without a scan of its own). The live slots and their cells are compacted into order (whose
+  // old contents no pass of the index reads) and cells, so the sort needs three borrowed buffers of the room, not four.
   index(k: Kind, reclaim = false) {
     if (!k.placed) return;
     const C = k.capacity, g = this.g, tiles = Math.ceil(C / 1024), order = k.order!, start = k.start!;
-    const key = this.scratch("key", C), flag = this.scratch("flag", C), ids = this.scratch("ids", C), cells = this.scratch("cells", C);
-    const len = this.scratch("len", 1), hist = this.scratch("hist", 256 * tiles);
+    const key = this.borrow(C), flag = this.borrow(C), cells = this.borrow(C), hist = this.borrow(256 * tiles), len = this.scratch("len", 1);
     this.encode((e) => e.clearBuffer(start));
     this.run(INDEX_KEYS, [k.body, k.alloc, key, flag, start], cover(g, C), [C, k.field.x, k.field.y, 0]);
     const live = this.scan(flag, C);
@@ -458,15 +530,16 @@ export class Store {
       this.run(RECLAIM_CTL_LIVE, [k.alloc, live], [1]);
     }
     this.encode((e) => e.copyBufferToBuffer(live, 0, len, 0, 4));
-    this.run(INDEX_COMPACT, [k.body, k.alloc, flag, key, ids, cells], cover(g, C), [C, 0, 0, 0]);
-    // (slots, cells) from ids and cells into flag and key, and back into order and cells
+    this.run(INDEX_COMPACT, [k.body, k.alloc, flag, key, order, cells], cover(g, C), [C, 0, 0, 0]);
+    // (slots, cells) from order and cells into flag and key, and back into order and cells
     const pass = (src: GPUBuffer, kin: GPUBuffer, dst: GPUBuffer, kout: GPUBuffer, shift: number) => {
       this.run(RADIX_HIST, [kin, len, hist], cover(g, tiles, 1), [shift, tiles, 0, 0]);
       this.scan(hist, 256 * tiles);
       this.run(RADIX_SCATTER, [kin, src, len, hist, dst, kout], cover(g, tiles, 1), [shift, tiles, 0, 0]);
     };
-    pass(ids, cells, flag, key, 0);
+    pass(order, cells, flag, key, 0);
     pass(flag, key, order, cells, 8);
+    this.giveBack(key, flag, cells, hist);
     const total = this.scan(start, CELLS);
     this.encode((e) => e.copyBufferToBuffer(total, 0, start, CELLS * 4, 4));
   }
@@ -662,9 +735,10 @@ export class Store {
       this.run(GATHER_ROWS, [k.body, k.order ?? dummy, k.start ?? dummy, eb, out], cover(g, e.length, 1), [e.length, at[k.n].head, row, k.capacity, from[k.n], 0, 0, 0]);
     }
     this.riders.forEach((r, i) => r.record(out, rat[i]));
-    // with kernels held for their pipelines, the copy back goes in its place after them once they are made
+    // with kernels held for their pipelines, the copy back goes in its place after them once they are made; of the
+    // gather's room only as far as it wrote is copied out (its first word, GATHER_HEAD)
     const copied = Promise.withResolvers<ArrayBuffer>();
-    const copy = () => { this.flush(); copied.resolve(readback(g, out, limit * 4)); };
+    const copy = () => { this.flush(); copied.resolve(readback(g, out, limit * 4, 0, (m) => new Uint32Array(m, 0, 1)[0] * 4)); };
     if (this.held) {
       this.held.push(copy);
       this.caughtUp().catch(copied.reject);

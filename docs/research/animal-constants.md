@@ -299,6 +299,12 @@ Moved sand: seven half-phi classes from 0.5 to 3.75 phi, entrained where the hou
 
 Gaps: mosquitoes, spiders, slugs, harvestmen; winter moth's budburst mismatch (R970); earthworms' aestivation, pH shape (R986) and organic matter (+14% per 10%, R982); the share of worms on the surface a night; inland crow, gull and summer fox diets (the shares are their asks', not cited); the meadow brown butterflies of pools.ts are not yet the fauna's adults; beach fauna and every sand input (the wind's u*, wetness, feet, swash).
 
+## 15. Speeds near people at the 1 s tick (real-time tick plan, Unit 10)
+
+src/sim/fauna.ts. A ground mammal's run is its fastest sprint on record (R1104): red deer 72 km/h, grey wolf 64, red fox 72 (Garland's Vulpes fulva), European rabbit 56. A wolf travels at a trot of 8 to 9 km/h for hours (R1105), a fox at 6 to 13 km/h (R1106), each taken at the middle as its walk. Birds fly at their cruising airspeeds by tracking radar (R1107): grey heron 12.5 m/s, herring gull 12.8, carrion crow 13.5, white-tailed eagle 13.6. A chase ends by these speeds against a person's (gait.ts) and by sight (senses.ts), not by a count of ticks (sim.ts follow).
+
+Gaps: how long each sprints and how far it flees once alarmed (a deer still bolts 20 minutes and then trots at 2 m each 300 s, and flees only from people within 30 m [design]); the deer's and rabbit's walk, the birds' walk and run, fish and butterflies (today's metres a five-minute tick).
+
 ## References
 
 - R361 Nagy K.A., Girard I.A., Brown T.K. (1999), Energetics of free-ranging mammals, reptiles, and birds, Annu Rev Nutr 19:247-277; as summarised in Nagy K.A. (2005), Field metabolic rate and body size, J Exp Biol 208:1621 (mammals: FMR = 4.82 M^0.734). https://journals.biologists.com/jeb/article/208/9/1621/9364/Field-metabolic-rate-and-body-size (search excerpt)
@@ -447,3 +453,7 @@ Gaps: mosquitoes, spiders, slugs, harvestmen; winter moth's budburst mismatch (R
 - R994 Blott S.J., Pye K. (2001), GRADISTAT: a grain size distribution and statistics package for the analysis of unconsolidated sediments, Earth Surface Processes and Landforms 26:1237-1248, doi:10.1002/esp.261. https://onlinelibrary.wiley.com/doi/abs/10.1002/esp.261 ([read] via a reposted copy)
 - R995 Sherman D.J., Nordstrom K.F., Jackson N.L., Allen J.R. (1994), Sediment mixing-depths on a low-energy reflective beach, Journal of Coastal Research 10(2):297-305. https://researchwith.njit.edu/en/publications/sediment-mixing-depths-on-a-low-energy-reflective-beach/ ([abstract])
 - R996 Lundström J.O., Schäfer M.L., Petersson E., Persson Vinnersten T.Z., Landin J., Brodin Y. (2010), Production of wetland Chironomidae (Diptera) and the effects of using Bacillus thuringiensis israelensis for mosquito control, Bulletin of Entomological Research 100:117-125, doi:10.1017/S0007485309990137. https://www.diva-portal.org/smash/get/diva2:285920/FULLTEXT01.pdf ([read])
+- R1104 Garland T. Jr (1983), The relation between maximal running speed and body mass in terrestrial mammals, J Zool 199:157-170, its data as kept in the R package rpanel (mammal_speed). https://cran.r-project.org/package=rpanel ([read] the data)
+- R1105 Mech L.D., Boitani L. (2003), Wolves: Behavior, Ecology, and Conservation, p. 32 (a trot of 8 to 9 km/h kept up for hours), as cited by Wikipedia, Hunting behavior of gray wolves. https://en.wikipedia.org/wiki/Hunting_behavior_of_gray_wolves (search excerpt)
+- R1106 Wikipedia, Red fox (trots at 6 to 13 km/h, runs at most 50 km/h). https://en.wikipedia.org/wiki/Red_fox (search excerpt)
+- R1107 Alerstam T., Rosén M., Bäckman J., Ericson P.G.P., Hellgren O. (2007), Flight speeds among bird species: allometric and phylogenetic effects, PLoS Biol 5(8):e197, Protocol S1. https://journals.plos.org/plosbiology/article?id=10.1371/journal.pbio.0050197 ([read])

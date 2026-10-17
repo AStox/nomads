@@ -126,8 +126,8 @@ export class Lumped implements Rider {
   // From the last landing: the bins, and the contributions its step made.
   bins = 0;
   made = 0;
-  private tables: [GPUBuffer, GPUBuffer];
-  private cur = 0;
+  // The bins' table; a step writes the next one into a buffer borrowed from the store's pool and copies it back.
+  private tab: GPUBuffer;
   private readonly ctl: GPUBuffer;
   private readonly wlog: GPUBuffer | null;
   private inp: GPUBuffer;
@@ -167,23 +167,23 @@ export class Lumped implements Rider {
     this.history = spec.history ?? (this.merge ? 40 : 400);
     if (!(Number.isInteger(this.history) && this.history >= 1)) throw new Error(`lumped ${spec.name}: a fate log of ${this.history} steps`);
     const row = this.wide ? 20 : 16;
-    this.tables = [storage(store.g, row * this.cap), storage(store.g, row * this.cap)];
+    this.tab = storage(store.g, row * this.cap);
     this.ctl = storage(store.g, CTL_WORDS * 4);
     this.wlog = this.merge ? storage(store.g, WLOG * 4) : null;
     this.inp = storage(store.g, 4);
     store.ride(this);
   }
   destroy() {
-    for (const b of [...this.tables, this.ctl]) b.destroy();
+    for (const b of [this.tab, this.ctl]) b.destroy();
     this.wlog?.destroy();
     this.cellBuf?.destroy();
     if (this.own) this.inp.destroy();
   }
-  // ---------- saving: both bin tables (and which is current), the control words, the watch log, the inputs, the
-  // births and takes queued for the next step and the log of steps that fates replay (the members held as individuals
-  // are objects of the store's own kinds; inputs written on the GPU are their writer's to save) ----------
+  // ---------- saving: the bin table, the control words, the watch log, the inputs, the births and takes queued for the
+  // next step and the log of steps that fates replay (the members held as individuals are objects of the store's own
+  // kinds; inputs written on the GPU are their writer's to save) ----------
   buffers(): [string, GPUBuffer][] {
-    const out: [string, GPUBuffer][] = [["a", this.tables[0]], ["b", this.tables[1]], ["ctl", this.ctl]];
+    const out: [string, GPUBuffer][] = [["a", this.tab], ["ctl", this.ctl]];
     if (this.own) out.push(["inp", this.inp]);
     if (this.wlog) out.push(["wlog", this.wlog]);
     return out;
@@ -191,7 +191,7 @@ export class Lumped implements Rider {
   save() {
     return {
       cap: this.cap, ccap: this.ccap,
-      cur: this.cur, dense: this.dense, lump: this.lump, bins: this.bins, inp: this.inpWords ? [...this.inpWords] : null, births: this.births, takes: this.takes,
+      dense: this.dense, lump: this.lump, bins: this.bins, inp: this.inpWords ? [...this.inpWords] : null, births: this.births, takes: this.takes,
       dropped: this.dropped, pending: this.pending, cells: this.cells,
       log: this.log.map((l) => ({
         t: l.t, takes: l.takes, inp: l.inp ? [...l.inp] : null, g: l.g.map((x) => [x.key, x.e, x.part, x.first, x.code, x.k]),
@@ -202,17 +202,16 @@ export class Lumped implements Rider {
   restore(state: unknown, data: Record<string, Uint8Array>) {
     const g = this.store.g, n = (key: string) => savedNumber(state, key, this.name), what = this.name;
     if (n("cap") !== this.cap) {
-      for (const b of this.tables) b.destroy();
+      this.tab.destroy();
       this.cap = n("cap");
-      this.tables = [storage(g, (this.wide ? 20 : 16) * this.cap), storage(g, (this.wide ? 20 : 16) * this.cap)];
+      this.tab = storage(g, (this.wide ? 20 : 16) * this.cap);
     }
     this.ccap = n("ccap");
-    reload(g, this.tables[0], data.a, `${what} table a`);
-    reload(g, this.tables[1], data.b, `${what} table b`);
+    reload(g, this.tab, data.a, `${what} table`);
     reload(g, this.ctl, data.ctl, `${what} ctl`);
     if (this.wlog) reload(g, this.wlog, data.wlog, `${what} watch log`);
     if (data.inp) { if (this.own) this.inp.destroy(); this.inp = storage(g, data.inp); this.own = true; }
-    [this.cur, this.dense, this.lump, this.bins, this.dropped, this.pending] = [n("cur"), n("dense"), n("lump"), n("bins"), n("dropped"), n("pending")];
+    [this.dense, this.lump, this.bins, this.dropped, this.pending] = [n("dense"), n("lump"), n("bins"), n("dropped"), n("pending")];
     const s = state as Record<string, unknown>;
     this.inpWords = s.inp === null ? null : Uint32Array.from(savedNumbers(savedArray(state, "inp", what), `${what} inputs`));
     this.births = savedNumbers(savedArray(state, "births", what), `${what} births`);
@@ -230,7 +229,7 @@ export class Lumped implements Rider {
     });
   }
   bytes(): number {
-    return this.tables[0].size + this.tables[1].size + this.ctl.size + (this.wlog?.size ?? 0);
+    return this.tab.size + this.ctl.size + (this.wlog?.size ?? 0);
   }
   // The input buffer the law reads (inp), from the next step on: words written by the CPU (kept in the log for fates)...
   inputs(words: Uint32Array) {
@@ -245,7 +244,7 @@ export class Lumped implements Rider {
     this.inp = buf; this.own = false; this.inpWords = null;
   }
   // The bins' table as the last step left it, and the control words (word 0 the bins).
-  get table(): GPUBuffer { return this.tables[this.cur]; }
+  get table(): GPUBuffer { return this.tab; }
   get control(): GPUBuffer { return this.ctl; }
   // Members born into (cell, state) at the next step (a wide kind's count past a part goes as several).
   add(cell: number, state: number, count: number) {
@@ -290,17 +289,18 @@ export class Lumped implements Rider {
     return this.store.scratch(`lumped:${name}`, words);
   }
   // Room for more bins and contributions: where the last landing found the table, or the step's contributions, over
-  // three quarters of their room, that room grows by half before the step, the current table copied field by field
-  // [design: a kind's bins rise by less than a quarter a step, so none outgrows its room]. A step's draws are keyed by
-  // bin and tick, not by room, so the results are the same whatever the room.
+  // three quarters of their room, that room grows by half before the step, the table copied field by field [design: a
+  // kind's bins rise by less than a quarter a step, so none outgrows its room]. A step's draws are keyed by bin and
+  // tick, not by room, so the results are the same whatever the room.
   private room() {
     if (this.made * 4 > this.ccap * 3) this.ccap = Math.ceil((this.ccap * 3) / 2);
     if (this.bins * 4 <= this.cap * 3) return;
-    const s = this.store, rows = this.wide ? 5 : 4, to = Math.ceil((this.cap * 3) / 2048) * 1024, cur = this.tables[this.cur];
-    const next: [GPUBuffer, GPUBuffer] = [storage(s.g, rows * 4 * to), storage(s.g, rows * 4 * to)];
-    s.encode((e) => { for (let f = 0; f < rows; f++) e.copyBufferToBuffer(cur, f * this.cap * 4, next[this.cur], f * to * 4, this.cap * 4); });
-    for (const b of this.tables) s.retire(b);
-    this.tables = next;
+    const s = this.store, rows = this.wide ? 5 : 4, to = Math.ceil((this.cap * 3) / 2048) * 1024, was = this.tab;
+    const next = storage(s.g, rows * 4 * to);
+    const from = this.cap;
+    s.encode((e) => { for (let f = 0; f < rows; f++) e.copyBufferToBuffer(was, f * from * 4, next, f * to * 4, from * 4); });
+    s.retire(was);
+    this.tab = next;
     this.ccap = Math.max(this.ccap, Math.ceil((this.ccap * to) / this.cap));
     this.cap = to;
   }
@@ -314,7 +314,7 @@ export class Lumped implements Rider {
   }
   step(t: number) {
     this.room();
-    const s = this.store, g = s.g, cap = this.cap, ccap = this.ccap, A = this.tables[this.cur], B = this.tables[1 - this.cur], merge = this.merge;
+    const s = this.store, g = s.g, cap = this.cap, ccap = this.ccap, rows = this.wide ? 5 : 4, A = this.tab, B = s.borrow(rows * cap), merge = this.merge;
     const L = { seed: this.seed, law: this.spec.law, wide: this.wide, outs: this.spec.outcomes }, core = lumpedCore(L), BC = `const BCAP = ${cap}u;\nconst DENSE = ${DENSE}u;`;
     // takes first: they take the next ranks before the split
     // the CPU's writes below go to scratch every lumped kind shares: what an earlier kind recorded goes first
@@ -346,14 +346,19 @@ ${this.spec.promote}`, { bufs: [{ name: "lbins", buf: A }, { name: "linfo", buf:
       act.touched = true;
     }
     // the split, and each bin's departures and the births into contributions
-    // The step's large scratch goes under names other riders' calls use too (store.ts index: key, flag, ids, cells,
-    // hist; deadwood: counts), none of whose contents outlasts the call that wrote it, so they share the memory; ck
-    // and req take the CPU's writes and keep their own.
-    const cnt = s.scratch("counts", (this.spec.outcomes ?? OUTCOMES) * cap), nc = this.sc("nc", cap + 1), keep = this.sc("keep", cap + 1);
+    // The step's large scratch is borrowed from the store's pool (store.ts borrow) and given back when the step is
+    // recorded; the births the CPU queued go into a small buffer of their own and are copied into place, since the CPU
+    // never writes a borrowed buffer.
+    const cnt = s.borrow((this.spec.outcomes ?? OUTCOMES) * cap), nc = s.borrow(cap + 1), keep = s.borrow(cap + 1), lent = [cnt, nc, keep];
     s.run(lumpSplit(L), [A, this.ctl, cnt, nc, keep, this.inp], cover(g, cap), [cap, t, 0, 0]);
     this.spec.onSplit?.(s, A, cnt, t);
-    const nb = this.births.length / 2, gn = this.gbirths?.n ?? 0, ck = this.sc("ck", 2 * ccap + Math.max(2 * (nb + gn), 1)), len = this.sc("len", 1);
-    if (nb) g.device.queue.writeBuffer(ck, 2 * ccap * 4, Uint32Array.from(this.births));
+    const nb = this.births.length / 2, gn = this.gbirths?.n ?? 0, ck = s.borrow(2 * ccap + Math.max(2 * (nb + gn), 1)), len = this.sc("len", 1);
+    lent.push(ck);
+    if (nb) {
+      const queued = this.sc("births", 2 * nb);
+      g.device.queue.writeBuffer(queued, 0, Uint32Array.from(this.births));
+      s.encode((e) => e.copyBufferToBuffer(queued, 0, ck, 2 * ccap * 4, 2 * nb * 4));
+    }
     const tot = s.scan(nc, cap);
     s.encode((e) => e.copyBufferToBuffer(tot, 0, this.ctl, C.dep * 4, 4));
     const kept = s.scan(keep, cap);
@@ -365,8 +370,13 @@ ${this.spec.promote}`, { bufs: [{ name: "lbins", buf: A }, { name: "linfo", buf:
       s.run(LUMP_GBPUT, [this.gbirths!.buf, flags, gt, ck, this.ctl], cover(g, gn), [gn, ccap, nb, 0]);
     } else s.encode((e) => e.clearBuffer(this.ctl, C.gb * 4, 4));
     s.run(lumpEmit(L), [A, this.ctl, nc, keep, cnt, ck, len, this.inp], cover(g, Math.max(cap, nb + gn)), [cap, t, nb, ccap, merge ? 1 : 0, gn, 0, 0]);
+    // the outcome counts and departures are spent once emitted (a merging kind's stayers too), so the sort borrows
+    // their memory
+    lent.splice(0, 3, ...(merge ? [] : [keep]));
+    s.giveBack(cnt, nc, ...(merge ? [keep] : []));
     // contributions sorted by key, stable, in four 8-bit passes
-    const tiles = Math.ceil(ccap / 1024), ids0 = s.scratch("ids", ccap), ids1 = s.scratch("cells", ccap + 1), keys1 = s.scratch("key", ccap + 1), hist = s.scratch("hist", 256 * tiles);
+    const tiles = Math.ceil(ccap / 1024), ids0 = s.borrow(ccap + 2), ids1 = s.borrow(ccap + 1), keys1 = s.borrow(ccap + 1), hist = s.borrow(256 * tiles);
+    lent.push(ids0, ids1, keys1);
     s.run(LUMP_IOTA, [ids0, len], cover(g, ccap));
     const pass = (ki: GPUBuffer, ii: GPUBuffer, ko: GPUBuffer, io: GPUBuffer, shift: number) => {
       s.run(RADIX_HIST, [ki, len, hist], cover(g, tiles, 1), [shift, tiles, 0, 0]);
@@ -377,16 +387,20 @@ ${this.spec.promote}`, { bufs: [{ name: "lbins", buf: A }, { name: "linfo", buf:
     pass(keys1, ids1, ck, ids0, 8);
     pass(ck, ids0, keys1, ids1, 16);
     pass(keys1, ids1, ck, ids0, 24);
+    s.giveBack(hist);
     // one new bin for each key (a wide kind's key, as many as its parts take): where its run starts and the running
-    // totals of the counts, in the sort's spent keys1 and ids1
-    const head = keys1, pc = ids1, hpos = s.scratch("flag", ccap + 2);
+    // totals of the counts, in the sort's spent keys1 and ids1, and where each new bin goes in ids0 once the heads have
+    // read it
+    const head = keys1, pc = ids1, hpos = ids0;
     s.run(LUMP_HEADS, [ck, ids0, ck, len, head, pc], cover(g, ccap + 1), [ccap + 1, ccap, 0, 0]);
     const heads = s.scan(head, ccap + 1);
     s.run(LUMP_HPOS, [ck, len, head, heads, hpos, this.ctl], cover(g, ccap));
-    const dn = this.sc("dn", cap);
+    const dn = s.borrow(cap), remap = merge ? null : s.borrow(cap);
+    lent.push(dn, ...(remap ? [remap] : []));
     s.encode((e) => e.clearBuffer(dn, 0, cap * 4));
     if (this.wide) {
-      const wn = this.sc("wn", ccap + 2);
+      const wn = s.borrow(ccap + 2);
+      lent.push(wn);
       s.encode((e) => e.clearBuffer(wn, 0, (ccap + 2) * 4));
       s.run(LUMP_NOKEEP, [this.ctl], [1]);
       s.run(LUMP_WIDE, [ck, hpos, pc, this.ctl, wn, B], cover(g, ccap), [cap, t, 0, 0]);
@@ -396,14 +410,14 @@ ${this.spec.promote}`, { bufs: [{ name: "lbins", buf: A }, { name: "linfo", buf:
       s.scan(pc, ccap + 1);
       // the new table: bins left in their order (none for a merging kind), then the new ones; densify and lump
       if (merge) s.run(LUMP_NOKEEP, [this.ctl], [1]);
-      else s.run(LUMP_KEEP, [A, B, this.ctl, keep, this.sc("remap", cap), dn], cover(g, cap), [cap, this.dense, this.lump, 0]);
+      else s.run(LUMP_KEEP, [A, B, this.ctl, keep, remap!, dn], cover(g, cap), [cap, this.dense, this.lump, 0]);
       s.run(LUMP_NEW, [ck, hpos, pc, this.ctl, B, dn], cover(g, ccap), [cap, t, this.dense, 0]);
     }
     s.run(LUMP_COUNT, [this.ctl], [1], [cap, this.wide ? 1 : 0, 0, 0]);
     if (!merge) {
       // the individuals: those whose ranks went die, the rest follow their bins; newly dense bins' members are born
       const k = s.kind(this.spec.name), K = k.capacity;
-      s.run(LUMP_SWEEP, [k.body, k.alloc, this.sc("remap", cap), B], cover(g, K), [K, cap, (k.field.bin + 1) * K, (k.field.rank + 1) * K]);
+      s.run(LUMP_SWEEP, [k.body, k.alloc, remap!, B], cover(g, K), [K, cap, (k.field.bin + 1) * K, (k.field.rank + 1) * K]);
       s.bear(this.spec.name, dn, cap, `
 let key = lbins[parent]; let e = lbins[BCAP + parent]; let T = lbins[2u * BCAP + parent] & ~DENSE;
 let rank = lbins[3u * BCAP + parent] + k;
@@ -416,7 +430,9 @@ child_set_key(slot, key); child_set_e(slot, e); child_set_tt(slot, T); child_set
       s.run(LUMP_WATCH, [B, A, this.ctl, info, this.cellBuf ?? this.sc("nocells", 1), this.inp, this.wlog!], [1], [cap, t, R, this.cells.length, ins ? cw : 0, ins?.base ?? 0, WLOG, this.wide ? 1 : 0]);
       this.pending++;
     }
-    this.cur = 1 - this.cur;
+    // the new table in place of the old
+    s.encode((e) => e.copyBufferToBuffer(B, 0, A, 0, rows * cap * 4));
+    s.giveBack(B, ...lent);
     this.log.push({ t, takes: this.takes, inp: this.inpWords, g: [], watched: null });
     if (this.log.length > this.history) this.dropped = this.log.shift()!.t;
     this.births = [];
@@ -428,7 +444,7 @@ child_set_key(slot, key); child_set_e(slot, e); child_set_tt(slot, T); child_set
   // ---------- observing ----------
   async read(): Promise<Bin[]> {
     this.store.flush();
-    const ctl = new Uint32Array(await readback(this.store.g, this.ctl)), w = new Uint32Array(await readback(this.store.g, this.tables[this.cur])), cap = this.cap;
+    const ctl = new Uint32Array(await readback(this.store.g, this.ctl)), w = new Uint32Array(await readback(this.store.g, this.tab)), cap = this.cap;
     return Array.from({ length: ctl[0] }, (_, i) => ({
       key: w[i], e: w[cap + i], T: (w[2 * cap + i] & ~DENSE) >>> 0, out: w[3 * cap + i], dense: (w[2 * cap + i] & DENSE) !== 0, ...(this.wide ? { part: w[4 * cap + i] } : {}),
     }));
@@ -514,9 +530,10 @@ child_set_key(slot, key); child_set_e(slot, e); child_set_tt(slot, T); child_set
   record(out: GPUBuffer, at: number) {
     const span = this.span();
     this.copied = span;
+    const tab = this.tab, cap = this.cap;
     this.store.encode((e) => {
       e.copyBufferToBuffer(this.ctl, 0, out, at * 4, 32);
-      e.copyBufferToBuffer(this.tables[this.cur], this.cap * 4, out, (at + 8) * 4, 4);
+      e.copyBufferToBuffer(tab, cap * 4, out, (at + 8) * 4, 4);
       if (span) { e.copyBufferToBuffer(this.wlog!, 0, out, (at + 9) * 4, span * 4); e.clearBuffer(this.wlog!, 0, 4); }
     });
     this.pending = 0;

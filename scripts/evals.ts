@@ -62,7 +62,10 @@ import { bootstrap, mean } from "./stats";
 // withers, so a planter counts one given up on after a growing season as not having worked; the planting probes sow
 // from the first day of spring, see over the summer and autumn what never came up, and sow again the next spring, under
 // the island's own cloud; deep shade, the crowns' or the plants' crowded round, is their one cause.
-const VERSION: Record<string, number> = { probes: 7, worlds: 6, live: 6 };
+// probes 8, worlds 7, live 7: a tick is a second (docs/plans/2026-10-16-001-refactor-real-time-tick-plan.md, Unit 8),
+// so people walk, run and act at real speed while the hourly and daily laws keep their hours and days; every seeded
+// stream is drawn on another tick and every ledger starts again.
+const VERSION: Record<string, number> = { probes: 8, worlds: 7, live: 7 };
 const ROOT = join(import.meta.dir, ".."), DATA = join(ROOT, "data/evals");
 type Numbers = Record<string, number | null>;
 // what a tier measured: by variant ("blame/real", "seen"...), by seed, its numbers

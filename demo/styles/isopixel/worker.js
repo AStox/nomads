@@ -39,6 +39,10 @@ const PART_MS = 4;
 // the most of a frame the sim's due ticks run in before their state goes to the page; the rest wait for the next frame
 // [design: half a 60 Hz frame, until the renderer's share of a worker frame is measured (real-time tick plan, Unit 8)]
 const SIM_BUDGET_MS = 8;
+// the same while the world warms, when nothing on the page waits for the ticks but the warm's count: they run on between
+// the frames, which are drawn between ticks all the same (nextTask), and their state goes to the page ten times a
+// second [design]
+const WARM_BUDGET_MS = 100;
 
 async function init(m) {
   const t0 = performance.now();
@@ -737,19 +741,19 @@ async function startSim(bundle, createSim, seed, { warm = 0, jev = null }) {
   S.spriteLandings = S.flora.landings; S.newLooks = false; S.spritesAt = performance.now();
   refreshSprites();
 }
-// The ticks the page says are due (n), one after another while the frame's sim budget lasts (at least one), each
-// awaited and each in its own task (napkin: ticks run back to back in one task leave every agent thinking), their
-// changes onto the GPU; then the state after them to the page once, with how many ran and what changed of the things it
-// draws every frame (ch: live, those to draw as they are now; drop, the ids to draw no more).
+// The ticks the page says are due (n), one after another while the frame's sim budget lasts (the warm's while it warms;
+// at least one), each awaited and each in its own task (napkin: ticks run back to back in one task leave every agent
+// thinking), their changes onto the GPU; then the state after them to the page once, with how many ran and what changed
+// of the things it draws every frame (ch: live, those to draw as they are now; drop, the ids to draw no more).
 async function simTick(n = 1) {
-  const ch = { live: new Map(), drop: new Set() }, t0 = performance.now();
+  const ch = { live: new Map(), drop: new Set() }, t0 = performance.now(), budget = sim.warming ? WARM_BUDGET_MS : SIM_BUDGET_MS;
   ticking = Promise.withResolvers();
   let ran = 0;
   do {
     if (ran) await nextTask();
     try { simChanged(await sim.tick(), ch); } catch (err) { console.error("tick", err); }
     ran++;
-  } while (ran < n && performance.now() - t0 < SIM_BUDGET_MS);
+  } while (ran < n && performance.now() - t0 < budget);
   ticking.resolve(); ticking = null;
   post({ type: "simState", state: sim.state(), ch: { live: [...ch.live.values()], drop: [...ch.drop] }, ran, ...answers() });
 }

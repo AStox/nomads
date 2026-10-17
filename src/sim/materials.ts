@@ -21,7 +21,7 @@ export type Kind = {
   shelf?: number; // days food keeps at 0 C (spoil.ts; none for grain, whose keeping goes by its warmth and water)
   spoils?: Spoils; // how it spoils (spoil.ts)
   breaks?: Record<string, number>; // what it turns into when it fails
-  fuel?: number; // ticks of fire it feeds, legacy: counted in FUEL_TICK_S ticks, kept so for old saves (migrate.ts charcoalIn)
+  fuel?: number; // ticks of fire it feeds, legacy: counted in FUEL_TICK_S ticks of five minutes, read only by the inspector
   burns?: number; // how much hotter than wood it burns
   hotAbove?: number; // K: a hot thing is what heat made it only while it stays this warm (ecology.ts cool)
   phys?: Phys; // what a made kind is made of, physically (fuel.ts; a raw material's is fuel.ts PHYS)

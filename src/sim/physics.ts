@@ -2,7 +2,7 @@
 import { meeting, takeFish } from "./waters";
 import { gone, herded, type Herded } from "./animals";
 import { GROWN_THROWER, animalBody, basketOf, bowKE, carcassOf, caught, fatOf, flightTo, handKE, hideOf, massOf, missileOf, throwAt, throwRange, releaseAt, throwsInTick, tipOf, woundOf, type Gear, type Meeting, type Throw, type Thrower } from "./hunt";
-import { HOUR, TICK_S, rate, ticksOf } from "./ticks";
+import { HOUR, TICK_S, every, rate, ticksOf } from "./ticks";
 import { BASE, MADE_OF, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props, type Registry } from "./materials";
 import { BURNS, COPPER, FIRED_CLAY, LEATHER, LIVE_HERB, LOG_LEN, PHYS, POT_WALL, charSize, greenOf, mix, physOf, pieceOf, remade, splitSize, stackPhys, woodOf, type Edge, type Phys } from "./fuel";
 import {
@@ -26,6 +26,9 @@ import { DAMP, SOAKED, deadAt, deadOf, moistureOf, pieceWater, rainUnder, shelte
 import { GROUND, SIZE, groundClass } from "../terrain/flora";
 import { GUT, basal, bodyOf, frameOf, ingest } from "./body";
 
+// How often an act's progress goes into the trace while it goes on: a sim minute [design: at a tick of a second a trace
+// a tick would fill the trace's 30,000 entries with one person's digging in eight hours].
+const PROGRESS_TRACE_S = 60;
 // Kinds of stuff the rules below care about, by what they're like rather than what they're called.
 export const greasy = (k?: Kind) => !!k && p(k, "edible") >= 0.1 && p(k, "flammable") >= 0.7;
 export const airy = (k?: Kind) => !!k && p(k, "flexible") >= 0.5 && p(k, "container") >= 0.5; // can pump or fan air
@@ -531,7 +534,7 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
       return { done: true, damage: 0, out: outcome({ text: `Striking the ${tk.name} with bare hands only hurt.`, fields }) };
     }
     const E = blowEnergy(hold.swung, who), piece = a.inv.find((x) => x.k === tk.id)!, x = stackPhys(w.kinds, piece)!;
-    if (how === "forge") return forgeTick(w, a, tool, tk, piece, x, E, fields);
+    if (how === "forge") return forgeTick(w, a, tool, tk, piece, x, E, fields, st);
     if (how === "knap") {
       // a flake comes off at a blow that carries its two new faces' energy, and the core is the less by it
       const [fk] = Object.keys(tk.breaks!), flake = physOf(w.kinds, w.kinds[fk] ?? kind(w, fk))!, left = x.mass * piece.hp;
@@ -676,22 +679,28 @@ function worldTick(w: World, a: Agent, act: Act, t: Thing, tool: Kind, hold: Hol
   return { done: true, broke, damage: 1, out: outcome({ ok: true, text: `Striking it with ${withWhat(tool)} ${verb}, leaving ${list(w, gives)}.`, gives, fields, numbers }) };
 }
 
-// Hammering metal (matter-constants sec. 9): a tick's blows draw its edge out, red hot worked soft at every blow, cold
+// Hammering metal (matter-constants sec. 9): a try's blows draw its edge out, red hot worked soft at every blow, cold
 // hardening until it won't draw out further; the edge comes to the thickness its strain leaves, and a blade if that is
 // thinner than BLADE.
-export function forging(x: Phys, E: number, hot: boolean, blows = BLOWS) {
+// A try at drawing metal out is five minutes' hammering, s [design: the blows a tick held when a tick was 300 s].
+const FORGE_S = 300;
+const FORGE_BLOWS = CADENCE * FORGE_S;
+export function forging(x: Phys, E: number, hot: boolean, blows = FORGE_BLOWS) {
   const flow = x.mech!.flow!, d = x.d, width = Math.sqrt(x.mass / x.rho / d), V = WORKED * width * d;
   const e0 = x.edge ? Math.log(d / (2 * x.edge.r)) : 0, goal = Math.log(d / BLADE), stop = hot ? goal : Math.min(goal, COLD_SPLITS);
   const reached = Math.min(stop, drawnTo(flow.K, flow.n, e0, (blows * E) / V, hot));
   const blowsTo = (drawWork(flow.K, flow.n, e0, reached, hot) * V) / E;
   return { strain: reached, edge: d * Math.exp(-reached), blows: blowsTo, hardened: !hot && reached >= COLD_SPLITS };
 }
-function forgeTick(w: World, a: Agent, tool: Kind, tk: Kind, piece: Stack, x: Phys, E: number, fields: Fields) {
+// A tick of hammering metal: the tick's blows are added to the try's until it has had the blows that draw it as far as
+// it goes or a try's worth, and then the try comes to what all of them drew it to.
+function forgeTick(w: World, a: Agent, tool: Kind, tk: Kind, piece: Stack, x: Phys, E: number, fields: Fields, st: { progress: number }) {
   const cold = (tk.hotAbove && kind(w, tk.parts?.[0])) || tk, fire = nearFire(w, a), hot = !!tk.hotAbove && redHot(w, fire, x.d);
   fields.at = hot ? "forge" : null;
-  const f = forging(x, E, hot), t = f.edge, blade = t <= BLADE * 1.0001;
+  const f = forging(x, E, hot), t = f.edge, blade = t <= BLADE * 1.0001, moves = f.strain > (x.edge ? Math.log(x.d / (2 * x.edge.r)) : 0) + 1e-9;
+  if (moves && (st.progress += BLOWS) < f.blows) return { done: false, damage: 1 };
   trace("physics", "forge", { tool: tool.id, target: tk.id, hot, energy: E, ...f }, a.id);
-  if (f.strain <= (x.edge ? Math.log(x.d / (2 * x.edge.r)) : 0) + 1e-9) return { done: true, damage: 0, out: outcome({ text: `Hammering the ${tk.name} with ${withWhat(tool)} wouldn't draw it out any further.`, fields }) };
+  if (!moves) return { done: true, damage: 0, out: outcome({ text: `Hammering the ${tk.name} with ${withWhat(tool)} wouldn't draw it out any further.`, fields }) };
   const um = Math.round(t * 1e6), base = physOf(w.kinds, cold) ?? COPPER;
   const [k, isNew] = ensure(w.kinds, `forge:${cold.id.replace(/^forge:([^:]+):\d+$/, "$1")}:${um}`, () => ({
     name: blade ? "metal blade" : "hammered metal",
@@ -841,7 +850,7 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
   if (r.does === "friction") {
     const { bow, spindle } = r, secs = emberTime(w, a.inv.find((s) => s.k === spindle.id), spindle, bow, airOn(w, a).temp);
     st.heat = (st.heat ?? 0) + TICK_S;
-    trace("physics", "friction", { a: ia, b: ib, bow, secs, rubbed: st.heat }, a.id);
+    if (every(w.t, PROGRESS_TRACE_S)) trace("physics", "friction", { a: ia, b: ib, bow, secs, rubbed: st.heat }, a.id);
     const hot = st.heat >= secs, chosen = hot ? choose(act.items) : undefined, lay = chosen?.slice(2) ?? [];
     // the ember goes into the lay's tinder, or failing that what lies about their feet
     const own = lay.find((s) => tinder(w.kinds[s.k])), about = own ? null : tinderOf(w, a);
@@ -1361,7 +1370,7 @@ export function digTick(w: World, a: Agent, act: Act, st: { progress: number; at
   st.progress += power * (1 + level(a.skills.digging ?? 0) * 0.1);
   // bare hands are skinned by it [design: today's per-tick value]
   if (!act.tool) a.needs.health = Math.max(0, a.needs.health - rate(0.05, 300));
-  trace("physics", "dig", { tool: tool.id, power, progress: st.progress }, a.id);
+  if (every(w.t, PROGRESS_TRACE_S)) trace("physics", "dig", { tool: tool.id, power, progress: st.progress }, a.id);
   if (st.progress < ticksOf(DIG_S)) return { done: false };
   mark(w, addThing(w, "pit", px, py, { owner: a.id, born: w.t }));
   fields.builds = "pit";

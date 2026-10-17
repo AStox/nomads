@@ -68,7 +68,7 @@ function raster(g: Gpu, st: Stand, height: number, cover: number) {
 }
 function rasterBufs(g: Gpu, st: Stand, height: number): Raster {
   const r = raster(g, st, height, 0);
-  return { start: storage(g, r.start), list: storage(g, r.list), crowns: storage(g, r.crowns) };
+  return { start: storage(g, r.start), list: storage(g, r.list), crowns: storage(g, r.crowns), release: () => {} };
 }
 // The stand's raster made over at a cover, as the stems' law files it each day.
 function refile(g: Gpu, r: Raster, st: Stand, height: number, cover: number) {
@@ -303,7 +303,7 @@ test("a cell's clasts on the GPU are the twin's, square by square, and their siz
   counts.pebble[cell] = 6000; counts.stone[cell] = 900; counts.boulder[cell] = 120;
   s.declare({ name: "plant", capacity: 1, placed: true, still: true, fields: PLANT_FIELDS });
   const dw = new Deadwood(SEED, counts, { logs: 1 << 10, bins: 1024 });
-  const r = { start: storage(g, (TEXELS + 1) * 4), list: storage(g, 4), crowns: storage(g, CROWN_WORDS * TEXELS * 4) };
+  const r = { start: storage(g, (TEXELS + 1) * 4), list: storage(g, 4), crowns: storage(g, CROWN_WORDS * TEXELS * 4), release: () => {} };
   dw.attach(s, () => r);
   for (const [ci, c] of CLASTS.entries()) {
     const n = counts[c.kind][cell], out = storage(g, n * 5 * 4);

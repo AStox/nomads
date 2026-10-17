@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
-import { H, TILE_M, Tile, W, heldStore, newWorld, tileAt } from "./world";
-import { HERDED, animalsOf, residentAnimals } from "./animals";
+import { DAY, H, TILE_M, Tile, W, dryAt, heldStore, meters, newWorld, tileAt, walkable, type Step } from "./world";
+import { HERDED, animals, animalsOf, residentAnimals } from "./animals";
 import { resident } from "./space";
 import { stemDriver } from "./plants";
 import { seedDriver } from "./seeds";
-import { retire } from "./sim";
+import { doAct, retire } from "./sim";
 import { YEAR_DAYS, seasonAt } from "./sky";
-import { HOUR } from "./ticks";
+import { HOUR, TICK_S, ticksOf } from "./ticks";
+import { FAUNA, addAnimal } from "./fauna";
+import { armOf } from "./gait";
 import { ANIMAL } from "../gpu/animals";
 import { F, SP } from "../gpu/wgsl/animals";
 
@@ -68,3 +70,45 @@ test("seed 1's animals as individuals over three island years: counted right, wi
   expect(Math.min(...seen[SP.rabbit])).toBeGreaterThan(0);
   await retire(w);
 }, 21_600_000);
+
+// Animals near people at real speed (real-time tick plan, Unit 10): a deer bolting from someone chasing it on foot goes at
+// its sprint (fauna.ts, Garland's 72 km/h), draws away faster than anyone runs, and the chase ends then; a deer winded
+// past its bolt, trotting, is run down. A noon in clear weather on open ground with nothing in the way for 300 m east.
+test("a deer bolting from a runner draws away at its sprint and the chase ends; one winded past its bolt is caught up with", () => {
+  const w = newWorld(1), a = w.agents[0];
+  w.agents = [a];
+  w.animals = [];
+  w.t = DAY + DAY / 2;
+  w.weather.sky = "clear";
+  const open = (px: number, py: number) => { for (let m = -20; m <= 300; m += 5) { const x = px + m / TILE_M; if (!dryAt(w, x, py) || !walkable(w, Math.floor(x), Math.floor(py))) return false; } return true; };
+  let at: [number, number] | null = null;
+  for (let k = 0; k < 4000 && !at; k++) { const px = a.px - 10 + (k % 64) * 0.33, py = a.py - 10 + Math.floor(k / 64) * 0.33; if (open(px, py)) at = [px, py]; }
+  expect(at).not.toBeNull();
+  const chase = (winded: boolean) => {
+    w.animals = [];
+    [a.px, a.py] = at!;
+    a.goal = null; a.plan = []; a.inv = []; a.down = 0;
+    const deer = addAnimal(w, "deer", a.px + 10 / TILE_M, a.py);
+    if (winded) { deer.state = "flee"; deer.since = w.t - ticksOf(1200) - 1; }
+    const s: Step = { op: "act", progress: 0, act: { verb: "strike", items: [], tool: null, target: { kind: "deer", animal: deer.id } } };
+    let r: unknown = "wait", ticks = 0, first = 0, closest = Infinity;
+    for (; ticks < ticksOf(120) && r === "wait"; ticks++) {
+      const x0 = deer.px;
+      w.t++;
+      animals(w);
+      if (!ticks) first = (deer.px - x0) * TILE_M;
+      r = doAct(w, a, s);
+      closest = Math.min(closest, meters(a, deer));
+    }
+    return { r, ticks, first, closest };
+  };
+  const bolt = chase(false);
+  // it bolted at its sprint, and the chase was over within seconds
+  expect(bolt.first).toBeGreaterThan(0.9 * FAUNA.deer.run);
+  expect(bolt.r).toBe("the deer got away");
+  expect(bolt.ticks * TICK_S).toBeLessThan(10);
+  const tired = chase(true);
+  // the winded deer was reached, and the chase went on to the blow
+  expect(tired.r).not.toBe("the deer got away");
+  expect(tired.closest).toBeLessThan(armOf(w, a) + 0.5);
+}, 120_000);

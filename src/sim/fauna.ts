@@ -1,22 +1,35 @@
 // Everything alive on the island that isn't a person: what each kind is like and where they start. What they do each
-// tick is in animals.ts. Speeds are meters a tick (animals.ts, walk.ts steer), each written as the meters it goes in
-// five minutes and taken a tick's share of [design: today's meters a five-minute tick; gap: uncited]. They stay meters
-// in five minutes rather than m/s because a speed over 300 and back is not always the same number (0.4 / 300 * 300).
+// tick is in animals.ts. Speeds are meters a tick (animals.ts, walk.ts steer), each written in m/s, or as the meters it
+// goes in five minutes, and taken a tick's share of. Cited (docs/research/animal-constants.md sec. 15): a ground
+// mammal's run is its fastest sprint on record (Garland 1983, R1104), a wolf's and a fox's walk the trot they travel at
+// (R1105, R1106), and a bird's flight its cruising airspeed tracked by radar (Alerstam et al. 2007, R1107). The rest are
+// the meters a five-minute tick the world was written at [design: today's meters a five-minute tick; gap: uncited],
+// kept in five minutes rather than m/s because a speed over 300 and back is not always the same number (0.4 / 300 * 300).
 import { H, Tile, W, dryAt, dryNear, sea, tileAt, type Animal, type AnimalSpecies, type World } from "./world";
 import { put } from "./space";
 import { reveal, startPools } from "./pools";
 import { rate } from "./ticks";
 
+// A tick's share of a speed in m/s.
+const perSecond = (v: number) => rate(v, 1);
+// km/h as m/s.
+const kmh = (v: number) => v / 3.6;
 type Kind = { hp: number; walk: number; run: number; fly?: number; ground: boolean };
 export const FAUNA: Record<AnimalSpecies, Kind> = {
-  deer: { hp: 30, walk: rate(1.5, 300), run: rate(8, 300), ground: true },
-  wolf: { hp: 35, walk: rate(1.5, 300), run: rate(8, 300), ground: true },
-  fox: { hp: 12, walk: rate(1.2, 300), run: rate(7, 300), ground: true },
-  rabbit: { hp: 6, walk: rate(0.6, 300), run: rate(5, 300), ground: true },
-  heron: { hp: 8, walk: rate(0.4, 300), run: rate(1, 300), fly: rate(12, 300), ground: false },
-  gull: { hp: 5, walk: rate(0.5, 300), run: rate(1, 300), fly: rate(14, 300), ground: false },
-  crow: { hp: 4, walk: rate(0.5, 300), run: rate(1.5, 300), fly: rate(12, 300), ground: false },
-  eagle: { hp: 12, walk: rate(0.3, 300), run: rate(1, 300), fly: rate(18, 300), ground: false },
+  // Cervus elaphus 72 km/h (R1104)
+  deer: { hp: 30, walk: rate(1.5, 300), run: perSecond(kmh(72)), ground: true },
+  // Canis lupus 64 km/h (R1104); trots 8 to 9 km/h for hours (R1105)
+  wolf: { hp: 35, walk: perSecond(kmh(8.5)), run: perSecond(kmh(64)), ground: true },
+  // Vulpes 72 km/h (R1104, Garland's red fox as Vulpes fulva); trots 6 to 13 km/h (R1106)
+  fox: { hp: 12, walk: perSecond(kmh(9.5)), run: perSecond(kmh(72)), ground: true },
+  // Oryctolagus cuniculus 56 km/h (R1104)
+  rabbit: { hp: 6, walk: rate(0.6, 300), run: perSecond(kmh(56)), ground: true },
+  // cruising airspeeds (R1107): Ardea cinerea 12.5 m/s, Larus argentatus 12.8, Corvus corone 13.5, Haliaeetus albicilla
+  // 13.6
+  heron: { hp: 8, walk: rate(0.4, 300), run: rate(1, 300), fly: perSecond(12.5), ground: false },
+  gull: { hp: 5, walk: rate(0.5, 300), run: rate(1, 300), fly: perSecond(12.8), ground: false },
+  crow: { hp: 4, walk: rate(0.5, 300), run: rate(1.5, 300), fly: perSecond(13.5), ground: false },
+  eagle: { hp: 12, walk: rate(0.3, 300), run: rate(1, 300), fly: perSecond(13.6), ground: false },
   fish: { hp: 3, walk: rate(1, 300), run: rate(3, 300), ground: false },
   butterfly: { hp: 1, walk: rate(1, 300), run: rate(2.5, 300), fly: rate(2.5, 300), ground: false },
 };

@@ -65,8 +65,9 @@ export type StemDay = { coef: Int32Array; mast: readonly number[] };
 export type StemAhead = { t: number; coef: Int32Array; hi: number };
 export type StemDriver = { due(t: number): boolean; tables(): StemTables; day(t: number): StemDay; ahead?(t: number): StemAhead | null };
 // The stems' crown raster as filed (wgsl/stems.ts stemsCount, stemsFile): starts by texel, the list of three words an
-// entry, and each texel's tree sums (CROWN_WORDS a texel).
-export type Raster = { start: GPUBuffer; list: GPUBuffer; crowns: GPUBuffer };
+// entry, and each texel's tree sums (CROWN_WORDS a texel); release gives its buffers back to the store's pool once its
+// last reader of the day has recorded its reads (Flora.raster).
+export type Raster = { start: GPUBuffer; list: GPUBuffer; crowns: GPUBuffer; release(): void };
 
 export const PLANT = "plant", PIECE = "piece";
 const U32 = (name: string, unit: string, scale = 1): Field => ({ name, type: "u32", unit, scale });
@@ -386,20 +387,34 @@ export class Flora implements Rider {
   // its texel's run, the counts scanned into starts, and each texel's trees summed into crowns (CROWN_WORDS a texel).
   // The stems' law files it first each day, and the crowns, deadwood and seedlings read the same day's after it; filed
   // now when asked before any law has run this tick, or when asked for as the stems stand now (now: a crown pass made
-  // between ticks, after the CPU's fellings and plantings went up, gpu/crowns.ts refresh).
+  // between ticks, after the CPU's fellings and plantings went up, gpu/crowns.ts refresh). Its buffers are borrowed
+  // from the store's pool and held until its last reader of the day lets them go (release: the deer's browse, before
+  // the smallest things' step borrows the most); asked for again after that, it is filed again.
   raster(now = false): Raster {
     const s = this.store!, k = s.kind(PLANT), g = s.g, b = this.bufs!, src = this.lawSources();
-    const count = s.scratch("stemcount", TEXELS + 1), cursor = s.scratch("stemcursor", TEXELS), list = s.scratch("stemlist", 3 * k.capacity);
-    const crowns = s.scratch("stemcrowns", CROWN_WORDS * TEXELS);
-    if (now || this.filed !== s.t) {
+    if (now || this.filed !== s.t || !this.rbufs) {
+      // the list holds the live stems, all below the tail (the last landing's, exact while no births have run since)
+      const words = 3 * (k.peek.fresh ? k.peek.tail : k.capacity);
+      if (this.rbufs && this.rbufs.list.size < words * 4) this.release();
+      const r = (this.rbufs ??= { start: s.borrow(TEXELS + 1), cursor: s.borrow(TEXELS), list: s.borrow(words), crowns: s.borrow(CROWN_WORDS * TEXELS) });
       this.filed = s.t;
-      s.encode((e) => { e.clearBuffer(count, 0, (TEXELS + 1) * 4); e.clearBuffer(cursor, 0, TEXELS * 4); e.clearBuffer(crowns, 0, CROWN_WORDS * TEXELS * 4); });
-      s.run(src.count, [k.body, count], cover(g, k.capacity));
-      s.scan(count, TEXELS + 1);
-      s.run(src.file, [k.body, count, cursor, list, b.tables, b.rows, crowns], cover(g, k.capacity));
+      s.encode((e) => { e.clearBuffer(r.start, 0, (TEXELS + 1) * 4); e.clearBuffer(r.cursor, 0, TEXELS * 4); e.clearBuffer(r.crowns, 0, CROWN_WORDS * TEXELS * 4); });
+      s.run(src.count, [k.body, r.start], cover(g, k.capacity));
+      s.scan(r.start, TEXELS + 1);
+      s.run(src.file, [k.body, r.start, r.cursor, r.list, b.tables, b.rows, r.crowns], cover(g, k.capacity));
     }
-    return { start: count, list, crowns };
+    const r = this.rbufs;
+    return { start: r.start, list: r.list, crowns: r.crowns, release: () => this.release() };
   }
+  // The raster's buffers given back to the store's pool once its day's readers have recorded their reads.
+  release() {
+    if (!this.rbufs) return;
+    const r = this.rbufs;
+    this.store!.giveBack(r.start, r.cursor, r.list, r.crowns);
+    this.rbufs = null;
+    this.filed = -1;
+  }
+  private rbufs: { start: GPUBuffer; cursor: GPUBuffer; list: GPUBuffer; crowns: GPUBuffer } | null = null;
   // the stems' law's own kernels, made once
   private lawSources() {
     const k = this.store!.kind(PLANT), lay = this.layout(k);

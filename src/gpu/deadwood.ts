@@ -204,27 +204,19 @@ export function tables() {
 
 // ---------- capacities ----------
 // Room for the island's pieces [design: the expected count with a margin]: logs, the pool the world begins with (each
-// tree's expected share) and a tenth of its trees dying since; bins, the bins expected to stand at once at the stands'
-// cover (each lasts until its last stick rots: about H(n) mean lives, n its sticks) and one a cell for the pool.
+// tree's expected share) and a tenth of its trees dying since. Stick bins start with room for two litterfalls [derived:
+// a litterfall bears at most a bin a cell (wgsl/deadwood.ts litter); seed 1's pool bore 30,344] and grow before any
+// litterfall could pass their room (Deadwood.litterfall); the bins standing once a stand's sticks come and go evenly,
+// each bin lasting until its last stick rots (about H(n) mean lives, n its sticks), are some 3.5 million on seed 1.
 export function capacities(f: Scatter) {
-  const covered = new Float64Array(CELLS);
   let logs = 0, trees = 0;
-  const STEP_TILE = TILES / N;
   for (let k = 0; k < f.n; k++) {
     if (f.kind[k] !== 0) continue;
     const sp = SPECIES[f.species[k]], h = f.size[k], a = crownShare(sp, h), d = dbhOf(sp, h) / 100;
     logs += (((LOGS_HA + SNAGS_HA) / 1e4) * a) / ((Math.PI / 4) * d * d * h);
     trees++;
-    const cx = Math.min(N - 1, Math.floor(f.px[k] / STEP_TILE)), cy = Math.min(N - 1, Math.floor(f.py[k] / STEP_TILE));
-    covered[cy * N + cx] += a;
   }
-  let bins = 0;
-  const perBin = (STICK_K * STICKS_HA * CELL_HA * BIN_DAYS) / YEAR_DAYS;
-  for (let c = 0; c < CELLS; c++) {
-    const lam = Math.min(1, covered[c] / (CELL * CELL)) * perBin;
-    if (lam > 0) bins += (YEAR_DAYS / BIN_DAYS / STICK_K) * (lam >= 1 ? Math.log(lam) + 0.5772 : lam);
-  }
-  return { logs: Math.ceil(1.3 * logs + 0.1 * trees) + 4096, bins: Math.ceil(1.25 * bins) + CELLS + 4096 };
+  return { logs: Math.ceil(1.3 * logs + 0.1 * trees) + 4096, bins: 2 * CELLS };
 }
 
 // ---------- the kinds ----------
@@ -306,10 +298,11 @@ export class Deadwood implements Rider {
   private pool() {
     const s = this.store!, g = s.g, b = this.bufs!, r = this.raster!(), plant = s.kind("plant");
     s.run(this.src("cover", () => deadCover(this.law)), [r.crowns, b.cover, b.rot, b.acc], cover(g, CELLS), [0, 0, 0, 0]);
-    const cnt = s.scratch("counts", plant.capacity);
+    const cnt = s.borrow(plant.capacity);
     s.encode((e) => e.clearBuffer(cnt, 0, plant.capacity * 4));
     s.run(initialLogs(this.law), [r.start, r.list, b.pool, plant.body, cnt], cover(g, plant.capacity), [0, (1 + plant.field.what) * plant.capacity, 0, 0]);
     this.bearLogs(cnt, plant, true);
+    s.giveBack(cnt);
     this.litterfall(true);
   }
   private bearLogs(cnt: GPUBuffer, plant: Kind, initial: boolean) {
@@ -325,9 +318,24 @@ export class Deadwood implements Rider {
   }
   private litterfall(pool: boolean) {
     const s = this.store!, g = s.g, b = this.bufs!, d = this.drivers!;
+    this.roomForBins(s);
     const nn = s.scratch("deadnn", CELLS), cnt = s.scratch("deadbins", CELLS);
     s.run(this.src("litter", () => litter(this.law)), [b.acc, b.cover, b.rot, nn, cnt], cover(g, CELLS), [pool ? 1 : 0, d.hour, 0, 0]);
     s.bear("stickbin", cnt, CELLS, ...this.binBorn(nn));
+  }
+  // Room for a litterfall's bins, at most one a cell, past the slots in use (the tail the last landing read back, with
+  // every litterfall since at its most): the room grown to that or by half (the lumped kinds' rule, tiers/lumped.ts),
+  // whichever is more, and the sweep built on the old room made again.
+  private standing = 0;
+  private roomForBins(s: Store) {
+    const k = s.kind("stickbin");
+    if (k.peek.fresh) this.standing = k.peek.tail;
+    const need = this.standing + CELLS;
+    if (need > k.capacity) {
+      s.grow(k, Math.max(need, Math.ceil((k.capacity * 3) / 2048) * 1024));
+      this.sources.delete("bins");
+    }
+    this.standing = need;
   }
   // what bear runs for a stick bin born, and what it binds
   private binBorn(nn: GPUBuffer): [string, Extra] {
@@ -350,9 +358,10 @@ export class Deadwood implements Rider {
     d.write(ROT_WRITE, [b.rot]);
     d.advance();
     if (t % DAY !== 0) return;
-    const plant = s.kind("plant"), cnt = s.scratch("counts", plant.capacity);
+    const plant = s.kind("plant"), cnt = s.borrow(plant.capacity);
     s.run(this.src("stems", () => deadStems(this.law)), [plant.body, cnt], cover(g, plant.capacity), [plant.capacity, (1 + plant.field.crop) * plant.capacity, (1 + plant.field.what) * plant.capacity, 0]);
     this.bearLogs(cnt, plant, false);
+    s.giveBack(cnt);
     const r = this.raster!();
     s.run(this.src("cover", () => deadCover(this.law)), [r.crowns, b.cover, b.rot, b.acc], cover(g, CELLS), [1, 0, 0, 0]);
     if ((t / DAY) % BIN_DAYS === 0) this.litterfall(false);

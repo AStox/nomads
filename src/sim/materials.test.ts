@@ -1,6 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, adoptStore, dryAt, newWorld, rng, shoreOf, wetAt, type Act, type Agent, type Thing, type World } from "./world";
-import { HOUR } from "./ticks";
+import { HOUR, ticksOf } from "./ticks";
 import { WEATHER_NOW, bedAir, count, eat, fireOf, giveItems, giveStack, heat, join, openWater, place, removeThing, strikeTick, throwReach, throwTick, wet, type Fields, type Outcome } from "./physics";
 import { BURNS, COPPER, PHYS, pieceOf } from "./fuel";
 import { BLADE, GROWN } from "./mechanics";
@@ -36,6 +36,9 @@ const burning = (u = 2, sticks = 5, logs = 2, age = 600): [World, Agent, Thing] 
   return [w, a, fire];
 };
 const fresh = (): [World, Agent] => { const w = newWorld(42); const a = w.agents[0]; a.inv = []; return [w, a]; };
+// Born long ago: the million five-minute ticks these cases first set a person's birth back by [design: the age they
+// were written for, which a million 1 s ticks would make a child].
+const LONG_AGO = ticksOf(1e6 * 300);
 const heated = (w: World, a: Agent, act: Omit<Act, "verb">): Outcome => {
   const r = heat(w, a, { verb: "heat", ...act });
   if (r === "ask") throw new Error("the heat rules should cover this");
@@ -155,7 +158,7 @@ test("hammering copper red hot at a charcoal fire draws its edge out into a blad
 const fill = (w: World, a: Agent, k: string) => { while (giveItems(w, a, k) === 1); return count(a, k); };
 test("hands full of stone still make room for food", () => {
   const [w, a] = fresh();
-  a.born = w.t - 1e6;
+  a.born = w.t - LONG_AGO;
   for (const k of ["stick", "clay", "fiber", "bone"]) giveItems(w, a, k);
   const stones = fill(w, a, "stone");
   expect(stones).toBeGreaterThan(1);
@@ -167,7 +170,7 @@ test("hands full of stone still make room for food", () => {
 
 test("hands full of food still make room for a stick", () => {
   const [w, a] = fresh();
-  a.born = w.t - 1e6;
+  a.born = w.t - LONG_AGO;
   const grain = fill(w, a, "grain");
   expect(giveItems(w, a, "stick")).toBe(1);
   expect(count(a, "stick")).toBe(1);
@@ -208,7 +211,7 @@ test("struck over fiber laid with twigs, pyrite shaved by flint or a plain stone
 
 test("a stone struck with a stone or a stick knocks off a sharp stone at every blow until the core is spent; bare hands knock off nothing", () => {
   const [w, a] = fresh();
-  a.born = w.t - 1e6;
+  a.born = w.t - LONG_AGO;
   giveItems(w, a, "stone", 2); giveItems(w, a, "stick");
   const flakes = (PHYS.stone.mass / PHYS.sharp_stone.mass) | 0;
   let n = 0;
@@ -222,7 +225,7 @@ test("a stone struck with a stone or a stick knocks off a sharp stone at every b
 
 test("felling an oak with a hafted flint blade peels the same strips of bark every time, and the oak gives logs and sticks; a stone in the fist never cuts it", () => {
   const [w, a] = fresh();
-  a.born = w.t - 1e6;
+  a.born = w.t - LONG_AGO;
   w.kinds.axe = { id: "axe", name: "flint axe", props: { sharp: 0.9 }, parts: ["flint_blade", "stick"], verb: "join" };
   // tree: an oak this tall; sharp: the axe kept sharp, as if resharpened whenever it dulled
   const fell = (tool: string, size: number, sharp = false) => {

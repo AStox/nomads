@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, dryAt, newWorld, rng, type Thing, type World } from "./world";
-import { HOUR } from "./ticks";
+import { HOUR, ticksOf } from "./ticks";
 import { fire } from "./ecology";
 import { bedAir, fireOf, fireOutput, removeThing, shelterOf } from "./physics";
 import { anyOf, around, exists, liveThings, moistOf } from "./space";
@@ -69,8 +69,10 @@ function weather(at: { px: number; py: number }, wind: number, dead: number | nu
   delete w.weather.past;
   w.weather.gsi = { day: Math.floor(w.t / DAY), tmin: -5, vpd: 500, rain: 10, index: 0 };
 }
-// A tick of fire, drawing brands from a seeded stream.
-const tick = () => { w.t++; fire(w, [...liveThings(w)]); };
+// A step of fire, drawing brands from a seeded stream: the lane run for five minutes and landed, as a tick of fire was
+// when these cases were written [design: the 300 s tick the cases' counts of steps were set against].
+const STEP = 300;
+const tick = () => { w.t += ticksOf(STEP); fire(w, [...liveThings(w)], STEP, true); };
 function seeded<T>(seed: number, fn: () => T): T {
   const random = Math.random;
   Math.random = rng(seed);
@@ -136,10 +138,10 @@ test("a lightning-struck tree in dry weather burns as a bed and leaves a burnt s
   const tree = addThing(w, "tree", at.px, at.py, { size: 15, species: "oak" });
   tree.bed = struck(w, tree);
   expect(tree.bed).toBeDefined();
-  let ticks = 0;
-  for (; ticks < DAY && tree.bed; ticks++) seeded(300 + ticks, tick);
+  let steps = 0;
+  for (; steps < DAY / ticksOf(STEP) && tree.bed; steps++) seeded(300 + steps, tick);
   // more than its twigs' flare: it burned on for an hour or more
-  expect(ticks).toBeGreaterThan(HOUR);
+  expect(steps).toBeGreaterThan(HOUR / ticksOf(STEP));
   expect(tree.kind).toBe("burnt_stump");
   expect(exists(w, tree)).toBe(true);
 }, 60_000);
@@ -238,7 +240,7 @@ test("a seeded world run on the GPU replays the same spread exactly", async () =
       traceListeners.push(watch);
       const f = fireOf(isle, best!.px - m(1), best!.py);
       f.bed = advance(f.bed!, MIN, bedAir(isle, f));
-      for (let i = 0; i < 18; i++) await worldTick(isle);
+      for (let i = 0; i < ticksOf(5400); i++) await worldTick(isle);
       return { spread, next: Math.random() };
     } finally {
       hooks.weather = undefined;

@@ -10,16 +10,19 @@ import { tick } from "./sim";
 import { stemDriver } from "./plants";
 import { seedDriver } from "./seeds";
 import { animalsOf, residentAnimals } from "./animals";
+import { LAND_S, due } from "./lanes";
 
 afterAll(releaseGpu);
 
 let w: World;
+// Ticks up to and through the next one that lands the store (lanes.ts LAND_S), as every tick did when these were written.
+const landed = async () => { do await tick(w); while (!due(w.t, LAND_S)); };
 beforeAll(async () => {
   w = newWorld(1);
-  // the first tick puts the flora on the GPU and lands the windows round people, as many cells as the first copy
+  // the first landing puts the flora on the GPU and lands the windows round people, as many cells as the first copy
   // has room for; the second, sized by the first, lands the rest
-  await tick(w);
-  await tick(w);
+  await landed();
+  await landed();
   await heldStore(w)!.arriving;
 });
 
@@ -41,7 +44,7 @@ test("felling a tree near a person kills its GPU object: gone from the mirror, f
   expect(found).toBe(false);
   expect(flora.gone()).toContain(e);
   expect(w.things).toContain(tree);
-  await tick(w);
+  await landed();
   expect((await s.read(PLANT, "body"))[flora.slot(e)] & 1).toBe(0);
 });
 

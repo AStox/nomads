@@ -14,7 +14,7 @@ import { quickNow, streamNow } from "./streams";
 import { flowNow, widthOf } from "../terrain/water";
 import { SIZE, waterAt } from "../terrain/flora";
 import { CELL, N } from "../terrain/grid";
-import { FISH, FISH_CAP, Fish, type FishDriver } from "../gpu/fish";
+import { FISH, FISH_LAY, Fish, type FishDriver } from "../gpu/fish";
 import { BODIES, CT_, CT_RUNS, FS, G, GK, K, KIND, KW, NFS, NONE, PO, SUB, TILE_MM, FLAG } from "../gpu/wgsl/fish";
 import { CELLS } from "../gpu/wgsl/index";
 import type { Obj } from "../gpu/mirror";
@@ -309,7 +309,7 @@ export function fishDriver(w: World): FishDriver {
 }
 // The island's first fish [design]: in each cell of water, each kind its share of what the water feeds over a year
 // over Lorenzen's mortality at its weight at maturity, so about the stock its water would carry, in fish at the mean
-// weight of the ages laid, all of it thinned evenly where that many would fill more than half the room
+// weight of the ages laid, all of it thinned evenly where that many would pass FISH_LAY
 // (src/gpu/fish.ts); the GPU lays each (wgsl/fish.ts START_INIT) in its second year or older, one more year with a
 // chance of a half, at its kind's length for that age in that water.
 const START_SHARE: Record<number, number[]> = {
@@ -340,7 +340,7 @@ function startFish(v: Waters) {
       fish += want[k * NFS + s];
     }
   }
-  const thin = Math.min(1, FISH_CAP / 2 / fish);
+  const thin = Math.min(1, FISH_LAY / fish);
   return Uint32Array.from(want, (n) => Math.round(n * thin));
 }
 

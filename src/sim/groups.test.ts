@@ -5,6 +5,7 @@ import { put } from "./space";
 import { newRel } from "./brain";
 import { cluster, friendly, groups, incident, patterns, patternText, snubbed, standing } from "./groups";
 import { jevCalls } from "./trace";
+import { ticksOf } from "./ticks";
 
 process.env.NOMADS_BRAIN = "random";
 
@@ -50,7 +51,8 @@ test("each judged incident becomes a precedent, and the next judgment sees the s
   cluster(w);
   const camp = w.camps[0];
   for (let i = 0; i < 3; i++) {
-    w.t += 40;
+    // incidents 200 minutes apart, the forty ticks of five minutes this was written for
+    w.t += ticksOf(40 * 300);
     incident(w, { act: "steal", by: b, against: a, at: a, text: `${b.name} stole a berry from ${a.name}.`, value: 0.2, seenBy: [a, c], items: ["berry"] });
     await Bun.sleep(0); // flushes the random brain's already-resolved judgment chain; no real waiting
   }

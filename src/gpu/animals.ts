@@ -59,8 +59,8 @@ export type AnimalDriver = {
   days: number;
   t0: number;
 };
-// The stems' crown raster as their law last filed it (src/gpu/flora.ts raster).
-export type Raster = { body: GPUBuffer; cap: number; what: number; start: GPUBuffer; list: GPUBuffer; side: number };
+// The stems' crown raster as their law last filed it (src/gpu/flora.ts raster); release lets its buffers go once read.
+export type Raster = { body: GPUBuffer; cap: number; what: number; start: GPUBuffer; list: GPUBuffer; side: number; release(): void };
 export type Browse = { raster(s: Store): Raster; filed(t: number): boolean };
 // The ground layer and the invertebrates from the lumped kinds (src/gpu/smalls.ts), when the world has them.
 export type Ground = {
@@ -86,7 +86,6 @@ export class Animals implements Rider {
   store: Store | null = null;
   kind: Kind | null = null;
   private driver: AnimalDriver | null = null;
-  private browse: Browse | null = null;
   private fish: FishLink | null = null;
   private ground: Ground | null = null;
   private bufs: Bufs | null = null;
@@ -110,7 +109,7 @@ export class Animals implements Rider {
     const fresh = !store.kinds.some((k) => k.name === ANIMAL);
     // still between laws: the law moves them only on its own ticks and marks the kind touched then (store.ts KindSpec)
     const kind = store.adopt({ name: ANIMAL, capacity: ANIMAL_CAP, placed: true, still: true, fields: FIELD_LIST } satisfies KindSpec);
-    this.store = store; this.kind = kind; this.driver = driver; this.browse = browse; this.fish = fish; this.ground = ground;
+    this.store = store; this.kind = kind; this.driver = driver; this.fish = fish; this.ground = ground;
     const g = store.g, cap = kind.capacity;
     const W = new Uint32Array(W_RUNS * T);
     W.set(driver.tiles());
@@ -134,17 +133,23 @@ export class Animals implements Rider {
       store.write(ANIMAL, n, cols);
       store.index(kind);
       // the days before anyone wakes, the birds' catch going to the fish as each hour's would, and each day of the
-      // lumped kinds stepped at the midnight the hour crosses, before the hour (the start need not fall on an hour)
+      // lumped kinds stepped at the midnight the hour crosses, before the hour (the start need not fall on an hour);
+      // an hour on the GPU at a time (store.ts drain)
       for (let k = driver.days * 24; k >= 1; k--) {
         const t = driver.t0 - k * HOUR, midnight = Math.floor(t / DAY) * DAY;
         if (ground && midnight > t - HOUR) ground.spin(store, midnight);
+        if (browse?.filed(t)) this.browsed(browse.raster(store));
         this.law(store, t);
         store.index(kind, true);
-        store.flush();
+        await store.drain();
       }
       this.cullNow();
       await store.refresh();
     }
+    // the day's browse is taken from the raster before the smallest things' day (the raster's last reader, so the step
+    // that borrows the most finds its buffers given back): only the woody runs of W it writes, which nothing between
+    // reads, and the stems it reads stand as they will at the animals' law
+    if (browse) store.law({ name: "browse", due: (t) => t % HOUR === 0 && browse.filed(t), run: (s) => this.browsed(browse.raster(s)) }, "smalls");
     store.law({ name: "animals", due: (t) => t % HOUR === 0, run: (s, t) => this.law(s, t) });
     store.ride(this);
   }
@@ -156,10 +161,11 @@ export class Animals implements Rider {
     q.writeBuffer(KP, 0, this.driver!.consts(per));
     q.writeBuffer(KP, (GK + G.lumped) * 4, Uint32Array.of(this.ground ? 1 : 0));
   }
-  // Each tile's browse from the stems' crown raster.
+  // Each tile's browse from the stems' crown raster, the raster let go after.
   private browsed(r: Raster) {
     const s = this.store!, b = this.bufs!;
     s.run(animalsBrowse(r.cap, r.what, r.side), [r.body, r.start, r.list, b.W, b.KP], cover(s.g, T, 64) as [number, number]);
+    r.release();
   }
   // A step of the law ending at tick t, per steps a day.
   private law(s: Store, t: number) {
@@ -167,7 +173,6 @@ export class Animals implements Rider {
     const { day, flags } = this.driver!.step(t, per);
     g.device.queue.writeBuffer(b.KP, PO * 4, Uint32Array.of(t >>> 0, per, day, flags, this.driver!.seed >>> 0, DAY / per));
     this.fish?.feed(s, b.W, W_.fish * T);
-    if (this.browse && per === 24 && this.browse.filed(t)) this.browsed(this.browse.raster(s));
     s.encode((e) => {
       e.clearBuffer(b.A, 0, A_.carr * 4);
       // the census, the claims and the packs' runs, but not the packs' larders, which carry from step to step

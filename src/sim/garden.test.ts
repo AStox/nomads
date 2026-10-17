@@ -7,7 +7,7 @@ import { groundKey, noteTry, type Belief } from "./beliefs";
 import { plan } from "./plan";
 import { tick } from "./sim";
 import { YEAR_DAYS } from "./sky";
-import { HOUR } from "./ticks";
+import { HOUR, ticksOf } from "./ticks";
 import { releaseGpu } from "../gpu/device";
 
 // tick puts the world's flora on the GPU, and a live device keeps the test process from exiting
@@ -36,9 +36,10 @@ const clear = (r: number) => {
   w.animals = [];
 };
 const ring = (m: number, k: number) => [a.px + (Math.cos((k * Math.PI) / 4) * m) / TILE_M, a.py + (Math.sin((k * Math.PI) / 4) * m) / TILE_M] as const;
-// ticks until done, the random brain answering within a few turns of the microtask queue
+// ticks through so many spans of five minutes (the ticks these cases were written in) until done, the random brain
+// answering within a few turns of the microtask queue
 const run = async (n: number, done: () => boolean) => {
-  for (let i = 0; i < n && !done(); i++) { await tick(w); for (let k = 0; k < 20; k++) await Promise.resolve(); }
+  for (let i = 0; i < ticksOf(n * 300) && !done(); i++) { await tick(w); for (let k = 0; k < 20; k++) await Promise.resolve(); }
 };
 // a berry pushed into the ground where they started, once they've finished whatever they were thinking
 const sow = async () => {

@@ -7,8 +7,8 @@
 // The ticks' timing stays here, as it was when the sim ran on this thread, so a frame between two ticks draws people and
 // animals partway along their last step.
 
-// The pace the world runs at unless the page asks otherwise, in sim seconds a wall second: a 300 s tick each 500 ms, the
-// pace it has always had [design].
+// The pace the world runs at unless the page asks otherwise, in sim seconds a wall second: a day each 144 wall seconds,
+// the pace it has always had [design].
 export const PACE = 600;
 // Behind the clock by more than this when ticks come due (ticks slower than the pace), the clock slips back to this far
 // behind and the rest of what is owed is let go [design: two 60 Hz frames].
@@ -52,7 +52,8 @@ export function connectSim(live) {
     w,
     get alpha() { return alpha; },
     get tickMs() { return S.tickMs; },
-    // the warm's ticks still to run (play/sim.js), and how many it has: asked for one at a time while any are left
+    // the warm's ticks still to run (play/sim.js), and how many it has: all those left asked for at once while any are
+    // left, the worker running as many as its frame's sim budget allows
     get warming() { return S?.warming ?? 0; },
     warmTicks: 0,
     // the sim's clock as the worker posts it: ticks a day, seconds a tick, days a year
@@ -114,8 +115,8 @@ export function connectSim(live) {
     // The ticks due by the page's clock (floor of speed times the wall time since its start over a tick's seconds), asked
     // of the worker together, which runs them while the frame's sim budget lasts and hands back how many it ran. What
     // they changed is handed back by the first call after the worker says they ended, which may ask for the next; none
-    // is asked for while some run. At 300 s a tick and 600 sim seconds a wall second this is a tick each 500 ms. While
-    // the world warms, one tick is asked for as soon as the last has landed, each drawn where it lands.
+    // is asked for while some run. While the world warms, every warm tick left is asked for as soon as the last ran,
+    // the worker running what its frame's sim budget allows, each drawn where it lands.
     update(now) {
       if (sim.paused) { pausedAt ??= now; return null; }
       if (pausedAt !== null) { if (since !== null) since += now - pausedAt; pausedAt = null; }
@@ -128,7 +129,7 @@ export function connectSim(live) {
       const at = (now - since) / wall;
       alpha = S.warming ? 1 : Math.min(1, Math.max(0, (at - shownFrom) / shownK));
       if (running) return ready;
-      let n = S.warming ? 1 : Math.floor(at) - base;
+      let n = S.warming ? S.warming : Math.floor(at) - base;
       if (n <= 0) return ready;
       // behind by more than two frames' worth, the clock slips back to two frames behind
       if (!S.warming && (at - base - 1) * wall > SLIP_MS) { since = now - (base + 1) * wall - SLIP_MS; n = Math.floor((now - since) / wall) - base; }

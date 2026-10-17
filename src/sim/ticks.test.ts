@@ -2,29 +2,33 @@ import { expect, test } from "bun:test";
 import { DAY, HOUR, TICK_S, YEAR, YEAR_DAYS, chance, clockOf, every, rate, ticksOf } from "./ticks";
 import { rng } from "./world";
 
-// The clock's hours, days and years nest, at today's 5-minute tick and at a 1 s one.
+// The clock's hours, days and years nest, at the old 5-minute tick and at the world's 1 s one.
 test("an hour is a day's 24th and a year is YEAR_DAYS days, at 300 s and at 1 s", () => {
   for (const c of [clockOf(300), clockOf(1)]) {
     expect(c.HOUR * 24).toBe(c.DAY);
     expect(c.DAY * YEAR_DAYS).toBe(c.YEAR);
     expect(c.ticksOf(3600)).toBe(c.HOUR);
   }
-  expect(TICK_S).toBe(300);
+  expect(TICK_S).toBe(1);
   expect(HOUR * 24).toBe(DAY);
   expect(DAY * YEAR_DAYS).toBe(YEAR);
   expect(() => clockOf(7)).toThrow();
 });
 
-// At today's tick a chance or an amount stated over a tick comes back as the very number it was, so nothing written per
-// tick moves when it is stated through the clock.
+// At a tick as long as a chance's or an amount's span it comes back as the very number it was, so what was written per
+// 5-minute tick ran unchanged at that tick when it was stated through the clock.
 test("chance and rate over 300 s give back the number itself at a 300 s tick", () => {
+  const old = clockOf(300);
   for (const p of [0, 0.002, 0.003 * 0.4, 0.02, 0.3, 0.35, 0.9, 1, 0.1 + 0.2]) {
-    expect(chance(p, 300)).toBe(p);
-    expect(rate(p, 300)).toBe(p);
+    expect(old.chance(p, 300)).toBe(p);
+    expect(old.rate(p, 300)).toBe(p);
+    expect(chance(p, 1)).toBe(p);
+    expect(rate(p, 1)).toBe(p);
   }
-  for (const x of [6, 0.05, 0.06 * 0.8, 0.0005 * 0.4, 4 / 3, 15]) expect(rate(x, 300)).toBe(x);
-  expect(ticksOf(1200)).toBe(4);
-  expect(ticksOf(18000)).toBe(60);
+  for (const x of [6, 0.05, 0.06 * 0.8, 0.0005 * 0.4, 4 / 3, 15]) expect(old.rate(x, 300)).toBe(x);
+  expect(old.ticksOf(1200)).toBe(4);
+  expect(old.ticksOf(18000)).toBe(60);
+  expect(ticksOf(1200)).toBe(1200);
 });
 
 // A chance over a span, taken each second of it, comes out to the same chance over the whole span; an amount over a span,
@@ -38,11 +42,16 @@ test("at a 1 s tick a chance compounds, and an amount adds up, to its own over i
 });
 
 test("every falls on its period's ticks, and on every tick for a period no longer than a tick", () => {
-  for (let t = 0; t < 3 * DAY; t++) {
+  for (let t = 0; t < 3 * DAY; t += 7) {
     expect(every(t, 3600)).toBe(t % HOUR === 0);
     expect(every(t, 86400)).toBe(t % DAY === 0);
-    expect(every(t, 300)).toBe(true);
-    expect(every(t, 10)).toBe(true);
+    expect(every(t, 300)).toBe(t % 300 === 0);
+    expect(every(t, 1)).toBe(true);
+  }
+  const old = clockOf(300);
+  for (let t = 0; t < 3 * old.DAY; t++) {
+    expect(old.every(t, 300)).toBe(true);
+    expect(old.every(t, 10)).toBe(true);
   }
   const ten = clockOf(10);
   for (let t = 0; t < 2 * ten.HOUR; t++) {

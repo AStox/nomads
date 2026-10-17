@@ -611,7 +611,8 @@ test("two wolves of two packs claiming one deer: one gets it, the same one every
   // wolves sure to hunt (a rate past any prey's mass), hungry, beside the island's only deer
   const consts = (per: number) => { const c = lawConsts(per, { landKm2: 9, shoreHa: 171 }); c[SP.wolf * KW + K.rate] = NONE; return c; };
   const animals = () => laid([[SP.deer, 1, 50, 50, 0.5, 0], [SP.wolf, 0, 49, 50, 0.2, 2], [SP.wolf, 1, 51, 50, 0.2, 3]]);
-  const ticks = [300];
+  // the law steps on the hour: the 25th, as tick 300 was at five minutes a tick
+  const ticks = [25 * HOUR];
   const runs: Uint32Array[] = [];
   for (let k = 0; k < 3; k++) runs.push((await run(await theGpu(), islet(animals(), consts), ticks)).out[0].b);
   const low = await openGpu("low-power"), lo = await run(low, islet(animals(), consts), ticks);
@@ -636,7 +637,7 @@ test("a pack keeps what it leaves of a kill and comes back to it, and a lone mal
   // grown male apart, each the only wolf of its pack, full so they don't hunt
   const consts = (per: number) => { const c = lawConsts(per, { landKm2: 9, shoreHa: 171 }); c[SP.wolf * KW + K.rate] = NONE; return c; };
   const animals = () => laid([[SP.deer, 1, 50, 50, 0.5, 0], [SP.wolf, 0, 49, 50, 0.2, 2], [SP.wolf, 1, 51, 50, 0.2, 2], [SP.wolf, 1, 45, 45, 1, 4], [SP.wolf, 0, 55, 55, 1, 5]]);
-  const ticks = [300, 312, 324, 336];
+  const ticks = [25, 26, 27, 28].map((h) => h * HOUR);
   const hi = await run(await theGpu(), islet(animals(), consts), ticks), oracle = oracleRun(hi.start, hi.cap, ticks, islet(animals(), consts));
   const low = await openGpu("low-power"), lo = await run(low, islet(animals(), consts), ticks);
   low.device.destroy();
@@ -664,7 +665,7 @@ test("every kind together for a few hours: grazing, hunting, scavenging, fishing
     kinds.push([SP.gull, k & 1, 40, 40 + k, 0.5, 0], [SP.crow, k & 1, 42 + k, 42, 0.5, 0], [SP.heron, 1, 59, 50 + k, 0.5, 0]);
   }
   kinds.push([SP.fox, 0, 46, 46, 0.3, 0], [SP.fox, 1, 47, 45, 0.2, 0], [SP.eagle, 1, 50, 50, 0.2, 0], [SP.wolf, 1, 50, 45, 0.3, 4], [SP.wolf, 0, 51, 45, 0.3, 4]);
-  const ticks = [300, 312, 324, 336];
+  const ticks = [25, 26, 27, 28].map((h) => h * HOUR);
   const hi = await run(await theGpu(), islet(laid(kinds)), ticks), oracle = oracleRun(hi.start, hi.cap, ticks, islet(laid(kinds)));
   const low = await openGpu("low-power"), lo = await run(low, islet(laid(kinds)), ticks);
   low.device.destroy();
@@ -710,7 +711,7 @@ test("with a ground link: the sward and the invertebrates as the link lays them,
   kinds.push([SP.gull, 0, 59, 50, 0.4, 0], [SP.fox, 0, 46, 46, 0.3, 0], [SP.fox, 1, 52, 52, 0.3, 0], [SP.fox, 0, 55, 45, 0.3, 0]);
   const HELD = { crow: 6, gull: 11, fox: 14 };
   const animals = () => { const a = laid(kinds), held = new Uint32Array(a.n); for (const i of Object.values(HELD)) held[i] = 1; a.cols.held = held; return a; };
-  const ticks = [300, 312, 324, 336];
+  const ticks = [25, 26, 27, 28].map((h) => h * HOUR);
   const hi = await run(await theGpu(), islet(animals()), ticks, prep, ground), oracle = oracleRun(hi.start, hi.cap, ticks, islet(animals()));
   const low = await openGpu("low-power"), lo = await run(low, islet(animals()), ticks, prep, ground);
   low.device.destroy();

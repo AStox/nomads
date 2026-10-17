@@ -20,7 +20,7 @@ import type { Stand } from "../gpu/flora";
 export const W = TILES;
 export const H = TILES;
 export { DAY, YEAR, YEAR_DAYS }; // the clock's (ticks.ts): ticks a day and a year, and days a year, the sun's round
-export const VERSION = 29; // 29: the fish are GPU objects (src/gpu/fish.ts), not w.pools stocks; the crown raster and what lies out's water ride the store (gpu/crowns.ts, gpu/moisture.ts), weather.past keeps the crowns' water only
+export const VERSION = 30; // 30: a tick is a second (ticks.ts), so every persisted tick (instants, beliefs' ticks, the GPU's born words and event waits) counts seconds
 export { TILE_M }; // meters per tile
 
 export enum Tile {

@@ -25,19 +25,20 @@ const setup = (): [World, Agent] => {
 const SKY: World["weather"]["sky"][] = ["clear", "clear", "cloudy", "rain", "storm"];
 const blow = (w: World, u: number, r: () => number) => { Object.assign(w.weather, { sky: pick(r, SKY), speed: u }); w.t++; };
 const pick = <T,>(r: () => number, xs: T[]) => xs[Math.floor(r() * xs.length)];
-// A lay drawn: maybe tinder, maybe twigs, sticks and a log, each lot as wet as drawn, never more than a hand holds with
-// two things more; in the order beliefs list them, as acts lay them.
+// A lay drawn: maybe tinder, maybe twigs, sticks and a log, each lot as wet as drawn; in the order beliefs list them, as
+// acts lay them. Hands too full for a piece set down what they can spare for it, or the piece itself (physics.ts
+// giveStack), so the lay is what they still hold of what was given.
 function layOf(w: World, a: Agent, r: () => number, tinderToo = true): string[] {
-  const items: string[] = [];
+  const given: Stack[] = [];
   const add = (k: string, n: number, piece: Partial<Stack>) => {
     const m = pick(r, WATER);
-    for (let i = 0; i < n; i++) if (giveStack(w, a, { k, hp: 1, born: w.t, m, ...piece })) items.push(k);
+    for (let i = 0; i < n; i++) { const s = { k, hp: 1, born: w.t, m, ...piece }; giveStack(w, a, s); given.push(s); }
   };
   if (tinderToo && r() < 0.85) add("fiber", 1, {});
   add("stick", pick(r, [0, 3, 10]), TWIG);
   add("stick", pick(r, [0, 0, 2]), STICK);
   if (r() < 0.3) add("log", 1, LOG);
-  return items.sort();
+  return given.filter((s) => a.inv.includes(s)).map((s) => s.k).sort();
 }
 const situation = (w: World, a: Agent, pieces: Stack[], tinder: number | null, fire: Situation["fire"] = null): Situation => ({
   tinder, wind: airOn(w, a).wind, spot: a, ahead: { soil: [], temp: [] }, fish: { fish: [], area: 0 }, pieces, air: fire ? bedAir(w, fire as never) : layAt(w, a).air, fire,
@@ -76,7 +77,11 @@ test("rubbing two sticks for an ember blown into a lay, or into what lies about 
     blow(w, pick(r, WIND), r);
     a.inv = [];
     for (let i = 0; i < 2; i++) giveStack(w, a, { k: "stick", hp: 1, born: w.t, m: 0.12, size: STICK.size, species: "hazel" });
-    const lay = layOf(w, a, r), items = ["stick", "stick", ...lay];
+    // a rubbing stick set down to make room for the lay leaves one of the lay's sticks to rub with
+    const lay = layOf(w, a, r), sticks = a.inv.filter((s) => s.k === "stick").length;
+    if (sticks < 2) continue;
+    for (let short = lay.filter((k) => k === "stick").length + 2 - sticks; short > 0; short--) lay.splice(lay.indexOf("stick"), 1);
+    const items = ["stick", "stick", ...lay];
     const chosen = firstHeld(a.inv)(items)!, pieces = chosen.slice(2), own = pieces.find((s) => tinder(w.kinds[s.k]));
     const about = own ? null : tinderOf(w, a), m = own ? own.m ?? 0 : about && !about.kind ? about.m : null;
     const f: Fields = { verb: "rub", inputs: ["stick", "stick", ...[...lay].sort()], gives: [] };

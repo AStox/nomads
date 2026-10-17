@@ -252,22 +252,21 @@ test("rain that starts after they planned a fire stops them rubbing sticks, if t
   expect(count(a, "fiber")).toBe(1);
 });
 
-test("a join takes eight ticks at 300 s, as before, and fewer for a practised hand", () => {
-  // ticks of work until the act's time is done: a fight's work is never lost to poor light (sim.ts fumbles)
-  const ticks = (xp: number) => {
+test("a join takes the work of eight ticks of 300 s, as before, and less for a practised hand", () => {
+  // seconds of work until the act's time is done: a fight's work is never lost to poor light (sim.ts fumbles)
+  const secs = (xp: number) => {
     const [w, a] = fresh();
     a.skills.crafting = xp;
     a.goal = { type: "fight", since: w.t, odds: {}, fails: 0 };
     giveItems(w, a, "fiber", 2);
     const s: Step = { op: "act", act: { verb: "join", items: ["fiber", "fiber"] }, progress: 0 };
     let n = 0;
-    while (s.progress < ticksOf(DURATION.join) && n < 100) { doAct(w, a, s); n++; }
-    return n;
+    while (s.progress < ticksOf(DURATION.join) && n < ticksOf(100 * 300)) { doAct(w, a, s); n++; }
+    return n * TICK_S;
   };
-  expect(TICK_S).toBe(300);
-  expect(ticks(0)).toBe(8);
-  // level 5 (world.ts level): a tick's work and half again
-  expect(ticks(250)).toBe(6);
+  expect(secs(0)).toBe(8 * 300);
+  // level 5 (world.ts level): a tick's work and half again, so the eight ticks' work in the whole ticks that hold it
+  expect(secs(250)).toBe(Math.ceil(ticksOf(8 * 300) / 1.5) * TICK_S);
 });
 
 test("someone who collapses stays down through the next tick", async () => {
@@ -523,8 +522,8 @@ test("a burning brand set into fiber and twigs lights them; a brand carried too 
   still(v);
   brandKind(v);
   giveStack(v, b, { ...brand }); hold(v, b, "fiber", 1, KEPT); hold(v, b, "stick", 8, DRY, TWIG);
-  // two ticks, ten minutes, in hand
-  carry(v, b); carry(v, b);
+  // ten minutes in hand, two ticks of 300 s when this was written
+  for (let i = 0; i < ticksOf(600); i++) carry(v, b);
   expect(count(b, "burning:stick")).toBe(0);
   const late = place(v, b, { verb: "place", items: ["burning:stick", "fiber", ...sticks(8)] });
   expect(late.builds).toBeUndefined();

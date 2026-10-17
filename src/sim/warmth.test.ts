@@ -7,6 +7,8 @@ import { heatAt } from "./light";
 import { feasible, needs } from "./sim";
 import { YEAR_DAYS } from "./sky";
 import { bodyOf } from "./body";
+import { ticksOf } from "./ticks";
+import { BODY_S, secs } from "./lanes";
 
 process.env.NOMADS_BRAIN = "random";
 
@@ -107,11 +109,12 @@ test("someone standing where a blaze throws 3 kW/m2 is hurt within the tick, whi
   expect(a.needs.health).toBeLessThan(95);
   expect(a.needs.health).toBeGreaterThan(50);
 
-  // someone lying collapsed there can't step back, and takes the whole tick's dose, past the third-degree one
+  // someone lying collapsed there can't step back, and takes the whole dose of the five minutes they lie there (a tick,
+  // when this was written), past the third-degree one, run by run of their body
   ({ w, a } = cold());
   fireAt(w, a, lo, 6);
-  a.down = w.t + 60;
-  needs(w, a);
+  a.down = w.t + ticksOf(600);
+  for (let s = 0; s < 300; s += secs(BODY_S), w.t += ticksOf(secs(BODY_S))) needs(w, a);
   expect(a.needs.health).toBeLessThanOrEqual(0);
 
   // two metres off the standard lay, where people stand to tend it (world.ts reachOf)

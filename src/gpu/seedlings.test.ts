@@ -7,7 +7,7 @@ import { afterAll, expect, test } from "bun:test";
 import { openGpu, releaseGpu, theGpu, type Gpu } from "./device";
 import { Store, type Kind } from "./store";
 import { Flora, PLANT, type StemDay, type StemDriver } from "./flora";
-import { BIN_CAP, SEEDLING, Seedlings, type SeedDriver, type SeedLaw } from "./seedlings";
+import { SEEDLING, Seedlings, type SeedDriver, type SeedLaw } from "./seedlings";
 import { cover, readback, storage } from "./kernel";
 import { stemDriver, stemTables } from "../sim/plants";
 import { seedDriver, seedLaw } from "../sim/seeds";
@@ -296,14 +296,24 @@ async function oracleRun(g: Gpu) {
   };
   const animals: [number, number, number][] = [];
   for (let k = 0; k < 30; k++) animals.push([Math.round((x0 + rand() * 300) * 1000), Math.round((x0 + rand() * 300) * 1000), k % 3]);
-  const { s, flora, seeds, driver, P, B } = await staged(g, { stems, xWet: x0 + 100, young, animals, stand: () => 0 });
-  const bodies: Uint32Array[] = [];
+  const { s, flora, seeds, driver, P } = await staged(g, { stems, xWet: x0 + 100, young, animals, stand: () => 0 });
+  let B = binLayout(s.kind(SEEDLING));
+  const bodies: Uint32Array[] = [], all: number[][] = [];
   const days = [...Array.from({ length: 9 }, (_, k) => 6 + k), 25, 26, 27, 28, 29, 30];
   for (const day of days) {
-    const pre = await s.read(PLANT, "body"), bins = await s.read(SEEDLING, "body"), alloc = await s.read(SEEDLING, "alloc"), pend = await pendOf(g, seeds);
+    const pre = await s.read(PLANT, "body"), pend = await pendOf(g, seeds);
+    let bins = await s.read(SEEDLING, "body"), alloc = await s.read(SEEDLING, "alloc");
     const requests = day === 10 ? [Math.round((x0 + 50) * 1000), Math.round((x0 + 60) * 1000), 0xabcdef] : [];
     if (requests.length) seeds.sucker(requests[0], requests[1], requests[2]);
     await s.step(day);
+    // a room the law grew before its day: the bins and allocation as they were, laid out in it (store.ts grow)
+    const now = binLayout(s.kind(SEEDLING));
+    if (now.cap !== B.cap) {
+      const cols = bins.length / B.cap, to = new Uint32Array(cols * now.cap), al = new Uint32Array(CTL_WORDS + now.cap);
+      for (let c = 0; c < cols; c++) to.set(bins.subarray(c * B.cap, (c + 1) * B.cap), c * now.cap);
+      al.set(alloc);
+      [bins, alloc, B] = [to, al, now];
+    }
     const post = await s.read(PLANT, "body"), sd = await sdOf(g, driver, day);
     const want = oracleDay(P, B, { day, pre, post, bins, alloc, pend, sd, animals, requests });
     const got = await s.read(SEEDLING, "body");
@@ -318,8 +328,8 @@ async function oracleRun(g: Gpu) {
       expect(c.members[r]).toBe(live.reduce((a, v) => a + v[4], 0));
     }
     bodies.push(got);
+    all.push(...liveBins(got, B));
   }
-  const all = bodies.flatMap((b) => liveBins(b, B));
   seeds.destroy(); flora.destroy(); s.destroy();
   return { bodies, all };
 }
@@ -437,7 +447,7 @@ test("seed on water or under full crowns follows the emergence rules, and a pare
   for (let k = 0; k < 64; k++) stems.push([K("tree"), S("oak"), x0 - 20 + (k % 8) * 5, x0 + 280 + Math.floor(k / 8) * 5, 30]);
   // three pines just east of the oaks' texels, whose seed blows in under them
   for (let k = 0; k < 3; k++) stems.push([K("tree"), S("pine"), x0 + 25 + k * 5, x0 + 303, 20]);
-  const { s, seeds, flora, B } = await staged(g, { stems, xWet: x0 + 100 });
+  const { s, seeds, flora } = await staged(g, { stems, xWet: x0 + 100 });
   const ly = LAW.layers[LAYER.pine];
   for (let day = ly.from; day < ly.to; day++) await s.step(day);
   const pend = await pendOf(g, seeds), raster = rasterOf(await s.read(PLANT, "body"), plantLayout(s.kind(PLANT)));
@@ -465,7 +475,7 @@ test("seed on water or under full crowns follows the emergence rules, and a pare
   console.log(`the shore pine's seed: ${lost} lived but fell on the water`);
   expect(shaded).toBeGreaterThan(0);
   await s.step(ly.up);
-  const bins = liveBins(await s.read(SEEDLING, "body"), B);
+  const bins = liveBins(await s.read(SEEDLING, "body"), binLayout(s.kind(SEEDLING)));
   const pineBins = bins.filter((v) => (v[2] & 255) === 0);
   expect(pineBins.length).toBeGreaterThan(0);
   for (const v of pineBins) expect(lightAt(raster, v[1], 0)).toBeGreaterThanOrEqual(LAW.pineLight);
@@ -481,7 +491,7 @@ test("seed on water or under full crowns follows the emergence rules, and a pare
   const araster = rasterOf(await ash.s.read(PLANT, "body"), plantLayout(ash.s.kind(PLANT)));
   for (let t = 0; t < NT; t++) if (ashPend[LAYER.ash0 * NT + t] && lightAt(araster, t, 0) < 0.1 * 65536) under += ashPend[LAYER.ash0 * NT + t];
   await ash.s.step(2 * LAW.yearDays + al.up);
-  const ashBins = liveBins(await ash.s.read(SEEDLING, "body"), ash.B).filter((v) => (v[2] & 255) === 2 && lightAt(araster, v[1], 0) < 0.1 * 65536);
+  const ashBins = liveBins(await ash.s.read(SEEDLING, "body"), binLayout(ash.s.kind(SEEDLING))).filter((v) => (v[2] & 255) === 2 && lightAt(araster, v[1], 0) < 0.1 * 65536);
   console.log(`ash: ${under} fruits live to come up under crowns letting through under 10%; ${ashBins.length} bins of them come up two springs on`);
   expect(under).toBeGreaterThan(0);
   expect(ashBins.length).toBeGreaterThan(0);
@@ -496,14 +506,14 @@ test("young trees as tall as their stand stand up as stems the next day, each wh
     for (let c = 0; c < N * N; c++) for (let r = 0; r < 5; r++) { y[c * YOUNG_WORDS + r * 4] = 30000; y[c * YOUNG_WORDS + r * 4 + 2] = 30000; }
     return y;
   };
-  const { s, seeds, flora, P, B } = await staged(g, { stems: [[K("tree"), S("pine"), x0, x0, 20]], young, stand: (_, r) => (r === 0 ? 50 : 0) });
+  const { s, seeds, flora, P } = await staged(g, { stems: [[K("tree"), S("pine"), x0, x0, 20]], young, stand: (_, r) => (r === 0 ? 50 : 0) });
   const ly = LAW.layers[LAYER.pine];
   for (let day = ly.from; day <= ly.up; day++) await s.step(day);
-  let bins = liveBins(await s.read(SEEDLING, "body"), B);
+  let bins = liveBins(await s.read(SEEDLING, "body"), binLayout(s.kind(SEEDLING)));
   const before = (await s.read(PLANT, "body")).reduce((n, w, i) => n + (i < P.cap ? w & 1 : 0), 0);
   // grow until marked, then one more day
   let day = ly.up + 1;
-  for (; day < ly.up + 60 && !bins.some((v) => v[2] & GRAD); day++) { await s.step(day); bins = liveBins(await s.read(SEEDLING, "body"), B); }
+  for (; day < ly.up + 60 && !bins.some((v) => v[2] & GRAD); day++) { await s.step(day); bins = liveBins(await s.read(SEEDLING, "body"), binLayout(s.kind(SEEDLING))); }
   const marked = bins.filter((v) => v[2] & GRAD), members = marked.reduce((a, v) => a + v[4], 0);
   expect(marked.length).toBeGreaterThan(0);
   await s.step(day);
@@ -535,12 +545,12 @@ test("seed 1's seedlings over seven island years: pine within 50 m of its wood, 
   await resident(w, stemDriver(w), seedDriver(w));
   await residentAnimals(w);
   const s = heldStore(w)!, seeds = seedlingsOf(w)!, dry = seedDriver(w).dry(), years = 7;
-  const t0 = Math.ceil(w.t / DAY) * DAY, ms: number[] = [], P = plantLayout(s.kind(PLANT)), B = binLayout(s.kind(SEEDLING));
+  const t0 = Math.ceil(w.t / DAY) * DAY, ms: number[] = [], P = plantLayout(s.kind(PLANT));
   const ha = (TEXEL_M * TEXEL_M) / 1e4;
   // seedlings a ha of a kind in the open (the crowns leaving 60% of the light) or under crowns, in texels within dm
   // metres of a stem of a kind (centre to stem), from the stems and bins as they stand
   const measure = async (label: string) => {
-    const plant = await s.read(PLANT, "body"), bins = await s.read(SEEDLING, "body"), raster = rasterOf(plant, P);
+    const plant = await s.read(PLANT, "body"), bins = await s.read(SEEDLING, "body"), raster = rasterOf(plant, P), B = binLayout(s.kind(SEEDLING));
     const byKind = [new Float64Array(NT), new Float64Array(NT)];
     for (let i = 0; i < B.cap; i++) if (bins[i] & 1 && (bins[B.what + i] & 255) <= 1) byKind[bins[B.what + i] & 255][bins[B.texel + i]] += bins[B.n + i];
     const near = (sp: "pine" | "oak", dm: number) => {
@@ -583,5 +593,5 @@ test("seed 1's seedlings over seven island years: pine within 50 m of its wood, 
   const q = (a: number[], p: number) => { const v = [...a].sort((x, y) => x - y); return v.length ? v[Math.min(v.length - 1, Math.floor(v.length * p))].toFixed(0) : "-"; };
   console.log(`seedlings: bins ${(bins / MB).toFixed(0)} MB, seed in the soil, drivers and parents ${(own / MB).toFixed(0)} MB, scratch ${(scratch / MB).toFixed(0)} MB, total ${((bins + own + scratch) / MB).toFixed(0)} MB`);
   console.log(`a law day (the stems', the seedlings', the hour's deadwood and animals): p50 ${q(ms, 0.5)} ms, p95 ${q(ms, 0.95)}, max ${q(ms, 1)}; a shed slice tick p50 ${q(slice, 0.5)}, max ${q(slice, 1)} over ${slice.length}`);
-  expect(seeds.census!.bins.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(BIN_CAP);
+  expect(seeds.census!.bins.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(kind.capacity);
 }, 3_600_000);
