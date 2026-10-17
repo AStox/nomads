@@ -1,0 +1,387 @@
+{
+ "about": "ZoomFrames on the new machine, 2026-10-17 (ET), seed 1, Apple M3 Pro (Metal-3, unified memory), macOS 15.8, headless Chrome 155.0.8059.85 at window 1600x1143 (a 1600x1000 view), tree 5949021 (the page measured before any code change; the later sodden fix touches no page code), the default load (warm of one sim day, speed 600), ?bench=zoom,orbit,turn,pan on one load, one 12 s run per bench after the warm. Baseline: bench-sim-worker.json (AMD Radeon Pro 5500M). The Mac was on battery at 20% with Low Power Mode on for every run here (pmset: 'Battery Power', lowpowermode 1) and could not be plugged in or changed from here; the figures are a floor on this machine, not a reading of the renderer alone.",
+ "changes": "none: a measurement of 5949021 with a scratch rAF logger injected at load (not committed). The same session found and fixed one sim crash (the sodden condition, commit 1cc7cb5), unrelated to the page.",
+ "afterWarm": {
+  "zoom": {
+   "fps": 60,
+   "frames": 721,
+   "listsWaitMs": 2317,
+   "twoSlotFrames": 258,
+   "workerGpuMs": {
+    "mean": 6.6,
+    "p95": 11.63,
+    "max": 25.7,
+    "over16": 6
+   },
+   "workerCpuMs": {
+    "mean": 0.91,
+    "p95": 2.7,
+    "max": 5.2,
+    "over16": 0
+   },
+   "workerLatencyMs": {
+    "mean": 11.76,
+    "p95": 20.8,
+    "max": 58.6,
+    "over16": 64
+   },
+   "workerGapMs": {
+    "mean": 16.68,
+    "p95": 23.3,
+    "max": 63.9,
+    "over16": 342
+   },
+   "pageDtMs": {
+    "mean": 16.67,
+    "p95": 16.8,
+    "max": 16.8,
+    "over16": 204
+   },
+   "longTasks": [],
+   "heapMB": 25,
+   "slowestWorkerFrames": [
+    [
+     25.7,
+     2.68,
+     2
+    ],
+    [
+     19.8,
+     2.96,
+     2
+    ],
+    [
+     18.4,
+     0.95,
+     2
+    ],
+    [
+     18.35,
+     0.67,
+     2
+    ]
+   ]
+  },
+  "orbit": {
+   "fps": 30,
+   "frames": 361,
+   "listsWaitMs": 2033,
+   "twoSlotFrames": 0,
+   "workerGpuMs": {
+    "mean": 6.92,
+    "p95": 8.64,
+    "max": 16.22,
+    "over16": 0
+   },
+   "workerCpuMs": {
+    "mean": 1.12,
+    "p95": 1.9,
+    "max": 9.2,
+    "over16": 0
+   },
+   "workerLatencyMs": {
+    "mean": 12.26,
+    "p95": 17.2,
+    "max": 38.2,
+    "over16": 24
+   },
+   "workerGapMs": {
+    "mean": 33.33,
+    "p95": 37.7,
+    "max": 62.9,
+    "over16": 357
+   },
+   "pageDtMs": {
+    "mean": 33.33,
+    "p95": 33.4,
+    "max": 33.5,
+    "over16": 361
+   },
+   "longTasks": [],
+   "heapMB": 33,
+   "slowestWorkerFrames": [
+    [
+     16.22,
+     8.27,
+     1
+    ],
+    [
+     15.7,
+     8.27,
+     1
+    ],
+    [
+     12.25,
+     8.27,
+     1
+    ],
+    [
+     11.56,
+     8.27,
+     1
+    ]
+   ]
+  },
+  "turn": {
+   "fps": 30,
+   "frames": 361,
+   "listsWaitMs": 2000,
+   "twoSlotFrames": 0,
+   "workerGpuMs": {
+    "mean": 6.57,
+    "p95": 7.14,
+    "max": 31.12,
+    "over16": 1
+   },
+   "workerCpuMs": {
+    "mean": 0.74,
+    "p95": 1.1,
+    "max": 8.1,
+    "over16": 0
+   },
+   "workerLatencyMs": {
+    "mean": 10.2,
+    "p95": 11.7,
+    "max": 37.3,
+    "over16": 3
+   },
+   "workerGapMs": {
+    "mean": 33.34,
+    "p95": 35.2,
+    "max": 61.8,
+    "over16": 359
+   },
+   "pageDtMs": {
+    "mean": 33.33,
+    "p95": 33.4,
+    "max": 33.5,
+    "over16": 361
+   },
+   "longTasks": [],
+   "heapMB": 26,
+   "slowestWorkerFrames": [
+    [
+     31.12,
+     8.27,
+     1
+    ],
+    [
+     9.49,
+     8.27,
+     1
+    ],
+    [
+     8.62,
+     8.27,
+     1
+    ],
+    [
+     8.05,
+     8.27,
+     1
+    ]
+   ]
+  },
+  "pan": {
+   "fps": 30,
+   "frames": 361,
+   "listsWaitMs": 2033,
+   "twoSlotFrames": 0,
+   "workerGpuMs": {
+    "mean": 7.87,
+    "p95": 12.04,
+    "max": 33.22,
+    "over16": 2
+   },
+   "workerCpuMs": {
+    "mean": 1.16,
+    "p95": 1.9,
+    "max": 14.8,
+    "over16": 0
+   },
+   "workerLatencyMs": {
+    "mean": 14.53,
+    "p95": 18.1,
+    "max": 60.6,
+    "over16": 55
+   },
+   "workerGapMs": {
+    "mean": 33.33,
+    "p95": 37.3,
+    "max": 69.6,
+    "over16": 355
+   },
+   "pageDtMs": {
+    "mean": 33.33,
+    "p95": 33.4,
+    "max": 33.5,
+    "over16": 361
+   },
+   "longTasks": [],
+   "heapMB": 27,
+   "slowestWorkerFrames": [
+    [
+     33.22,
+     8.27,
+     1
+    ],
+    [
+     23.87,
+     3.83,
+     1
+    ],
+    [
+     13.63,
+     3.83,
+     1
+    ],
+    [
+     13.61,
+     3.83,
+     1
+    ]
+   ]
+  }
+ },
+ "baselineBenchSimWorker": {
+  "zoom": {
+   "fps": 54.8,
+   "workerGpuMs": {
+    "mean": 7.8,
+    "p95": 13.57,
+    "max": 21.21,
+    "over16": 8
+   }
+  },
+  "orbit": {
+   "fps": 56.5,
+   "workerGpuMs": {
+    "mean": 6.59,
+    "p95": 8.67,
+    "max": 15.55,
+    "over16": 0
+   }
+  },
+  "turn": {
+   "fps": 55.8,
+   "workerGpuMs": {
+    "mean": 7.92,
+    "p95": 10.83,
+    "max": 23.48,
+    "over16": 1
+   }
+  },
+  "pan": {
+   "fps": 54.8,
+   "workerGpuMs": {
+    "mean": 6.69,
+    "p95": 12.5,
+    "max": 15.61,
+    "over16": 0
+   }
+  }
+ },
+ "simOff": {
+  "note": "?sim=0&bench=orbit,zoom, no sim on the GPU or in the worker: orbit and zoom both 60 fps, every frame one vsync (dt max 16.8), worker GPU mean 2.78 and 3.17 ms, frame latency mean 6.4 ms.",
+  "orbit": {
+   "fps": 60,
+   "frames": 721,
+   "workerGpuMs": {
+    "mean": 2.78,
+    "p95": 2.96,
+    "max": 30.17,
+    "over16": 1
+   },
+   "workerLatencyMs": {
+    "mean": 6.42,
+    "p95": 6.9,
+    "max": 51.2
+   }
+  },
+  "zoom": {
+   "fps": 60,
+   "frames": 721,
+   "workerGpuMs": {
+    "mean": 3.17,
+    "p95": 5.4,
+    "max": 12.51,
+    "over16": 0
+   },
+   "workerLatencyMs": {
+    "mean": 6.29,
+    "p95": 8.5,
+    "max": 19.4
+   }
+  }
+ },
+ "bareChrome": "an empty page's rAF in this Chrome: 59.7 fps over 230 frames (57.9 with --disable-frame-rate-limit --disable-gpu-vsync), so the machine and this Chrome hold 60 fps; the 30 fps below is the page with the sim running.",
+ "firstViewAndWarm": {
+  "note": "page time from navigation start, the default load with the rAF logger (so a little slower than bare); the page's own revealMs from the zoom bench",
+  "firstViewMs": 23119,
+  "warmStartMs": 10559,
+  "warmEndMs": 38091,
+  "warmWallMs": 27532,
+  "warmTicks": 86400,
+  "before": "bench-unit14.json, the AMD Mac: body.ready about 62 s, the warm 46 s more (napkin, 2026-10-17). Here the first view is at 23 s and the warm over at 38 s.",
+  "ticksPerWallSecondInWarm": 3138
+ },
+ "midnight": {
+  "note": "rAF gaps over 40 ms from 15 s before the warm's last tick (the sim reaching t 86400, the first midnight and the daily smalls step) to 20 s after",
+  "windowFrames": 1961,
+  "longestGapMs": 33.5,
+  "gapsOver40": [],
+  "before": "bench-r9e.json: longest 50 ms on the AMD Mac (2,850 ms before the sliced step)"
+ },
+ "spinUpStall": {
+  "note": "the whole warm, rAF gaps from the page thread: in the first 12 s after the sim exists (the first tick, whose spin-up sends each lumped split as one dispatch, smalls.ts spin and day with bins Infinity) 23 gaps over 100 ms, longest 683 ms, about one every 0.55 s, all before the first view; none in the last 15 s of the warm. No hang and no page error. The handoff's slicing remedy (SPLIT_BINS slices, unpaced) was not applied: it asked for it only if the page or GPU hangs.",
+  "gapsOver100": 23,
+  "longestMs": 683.4,
+  "afterWhichNoneOver40": true
+ },
+ "dailyStep": {
+  "note": "scripts/_r9f2.ts (scratch, not committed): seed 1, random brain, ticks run as the page's worker runs them (sim.ts tickPause awaiting the GPU idle after each upload, slice and law), 4 sim days; the time of each stretch of recording plus GPU between two yields, by the tick's class. Budget 50 ms.",
+  "day": {
+   "n": 942,
+   "median": 6.3,
+   "p95": 11.6,
+   "p99": 21.4,
+   "max": 48.5,
+   "over50": 0
+  },
+  "hour": {
+   "n": 492,
+   "median": 0.3,
+   "p95": 3.7,
+   "max": 11.7,
+   "over50": 0
+  },
+  "other": {
+   "n": 15205,
+   "median": 0.5,
+   "p95": 4,
+   "p99": 4.9,
+   "max": 107.6,
+   "over50": 1
+  },
+  "over50": "t 25,980 (7.2 h in), 107.6 ms and 40.4 ms: the first landing after the first fire, the bed kernel's first compile (fire-constants gap)",
+  "unpaced": "the same day ticks with no yields (bun, begin in one piece): the whole tick 1,435 to 1,901 ms at days 1 to 10, rising slowly; one 13.0 s tick at t 25,921 (the bed kernel compiling cold, 24 to 38 s on the AMD Mac).",
+  "before": "bench-r9.json dailyStep: the day 51 to 71 ms on AMD after, 71 to 89 ms before"
+ },
+ "gpuMemory": {
+  "note": "scripts/_r9f.ts (scratch): seed 1, random brain, device.createBuffer and destroy wrapped, every buffer counted as made and destroyed (textures not counted), MiB as the plan counts them, at each sim day's midnight; the budget is 1.5 GB [design]",
+  "liveMB": {
+   "day1": 1422.4,
+   "day2": 1433,
+   "day3": 1435.2,
+   "day4": 1446,
+   "day5": 1460.8,
+   "day8": 1460.8,
+   "day9": 1496.7,
+   "day10": 1496.7
+  },
+  "endLiveMB": 1461.7,
+  "mostMB": 1496.7,
+  "note2": "within 1.5 GiB (1,536 MiB) by 39 MiB at day 10 and growing in steps (day 4, 5, 9: lumped tables and the fish rooms taking their next size); the plan's own run at bf7b503 was 1,473.4 live and 1,484.3 most over three days. Over 1.5 decimal GB (1,430 MiB) from day 5."
+ },
+ "verdict": "Midnight: no rAF gap over 40 ms around the warm's end (longest 33.5 ms), so the 2.85 s stall stays gone on this machine. Daily GPU step: the longest stretch between yields is 48.5 ms, under the 50 ms budget (the AMD Mac needed 51 to 71). First view 23 s, warm one day in 27.5 s. Memory: 1,497 MiB at the most over 10 days, inside 1.5 GiB by 39 MiB and creeping up. Benches: zoom 60 fps with worker GPU mean 6.60 ms (baseline 7.80), p95 11.63 (13.57), 6 frames over 16.7 ms (8). Orbit, turn and pan ran at exactly 30 fps with the sim on (every page frame two vsyncs, worker GPU mean 6.92, 6.57, 7.87 ms, frames over 16.7 ms 0, 1 and 2, frame latency mean 10 to 15 ms) and at 60 fps with the sim off, so R9 is not met on this load, but the machine was on battery at 20% in Low Power Mode, and zoom, the first bench, ran at 60 fps: re-run plugged in before reading the 30 as the renderer's. Page timestamps from Apple Metal are not trustworthy per pass (a pass's time was negative in some slowest frames, e.g. mask -1347 ms), so the passes' split is not recorded here; the frame's first-to-last timestamp span (gpuMs) is. The spin-up stall (23 gaps to 683 ms in the load's first 12 s) is open: it is the first tick's unpaced whole-split dispatches, harmless to the warm and the first view but a janky loading screen."
+}
