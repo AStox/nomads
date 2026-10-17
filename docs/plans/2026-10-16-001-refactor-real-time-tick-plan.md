@@ -512,6 +512,8 @@ Measured, default load of the play page (no `?warm`), seed 1, headless Chrome on
 
 Gaps: the smalls' daily step (2.9 s of GPU in one landing) still stops the page's frames once a sim day, and the first tick's spin-up still takes about 30 s of the load, ten lumped days at about that each; `createLive` holds the page thread 140 ms once while the page loads; zoom's first bench frame 450 ms; a warm of a week still takes minutes.
 
+**Re-measured (2026-10-17, Apple M3 Pro, `bench-r9f.json`): still not taken, and the unit's own gate is not met.** R7: the smalls' daily step goes out in slices (`store.ts` `beginPaced`), and over four sim days of seed 1 the longest stretch of recording plus GPU between two yields to the frames is 48.5 ms against the 50 ms budget, so the 2.9 s landing is gone; no rAF gap over 40 ms from 15 s before the warm's last tick to 20 s after. The warm of one day takes 27.5 s (3,100 ticks a wall second, 0.32 ms a tick). In a seed-1 run of 860,000 ticks the median tick off a landing costs 0.1 ms and the 95th percentile 0.5 ms, so the at most 28,800 quiet ticks of a day cost about 3 s, a tenth of that warm; the landings and the first tick's spin-up are the rest. R8 can't be measured while the gates are suspended. If they are resumed and miss it, this is the unit to take, and before it every per-tick process, each of the sim's draws from `Math.random` and every counter-keyed draw included, has to be shown to draw nothing in the seconds skipped.
+
 ## System-Wide Impact
 
 - **Interaction graph:** every `w.t` reader; `space.ts` windows and `shelve`; `store.ts` laws; the renderer's clock, ages and interpolation; `server.ts` saves, history and cost; the answer key and theory report.
