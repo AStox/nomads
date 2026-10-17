@@ -338,5 +338,104 @@
   "spinUpGapsOver100": 23,
   "spinUpLongestMs": 683.4
  },
- "verdict": "R9 on this machine, plugged in: all four benches hold 60 fps (59.9, 60, 59.9, 60; baseline zoom 54.8). Worker GPU mean 5.02, 5.2, 4.72, 5.93 ms against 7.8, 6.59, 7.92, 6.69; p95 9.05, 7.28, 7.56, 9.29 against 13.57, 8.67, 10.83, 12.5; frames over 16.7 ms 5, 1, 1, 0 against 8, 0, 1, 0. Not clean: one worker frame of 33.93 ms in orbit (baseline max 15.55) and 24.14 ms in zoom (21.21), and one 33.3 ms page frame in each of zoom and turn; no long tasks. Midnight: no rAF gap over 40 ms from 10 s before the warm's last tick to 20 s after (longest 33.4 ms), so the 2.85 s stall stays gone. Daily GPU step: the longest stretch between yields is 48.6 ms, under the 50 ms budget (the AMD Mac needed 51 to 71). First view 21 s, warm of one day 24.5 s (the AMD Mac: 62 s and 46 s more). Memory: 1,497 MiB at the most over 10 days, inside 1.5 GiB by 39 MiB and growing in steps. Open: 22 page rAF gaps of 117 to 567 ms in the load's first 12.5 s (the spin-up's unpaced whole-split dispatches, before the first view); the bed kernel's first compile (94 ms chunk at the first fire). Per-pass timestamps from Metal are not trustworthy (a pass's time was negative in some slowest frames), so the passes' split is not recorded; the frame's first-to-last span (gpuMs) is."
+ "verdict": "R9 on this machine, plugged in: all four benches hold 60 fps (59.9, 60, 59.9, 60; baseline zoom 54.8). Worker GPU mean 5.02, 5.2, 4.72, 5.93 ms against 7.8, 6.59, 7.92, 6.69; p95 9.05, 7.28, 7.56, 9.29 against 13.57, 8.67, 10.83, 12.5; frames over 16.7 ms 5, 1, 1, 0 against 8, 0, 1, 0. Not clean: one worker frame of 33.93 ms in orbit (baseline max 15.55) and 24.14 ms in zoom (21.21), and one 33.3 ms page frame in each of zoom and turn; no long tasks. Midnight: no rAF gap over 40 ms from 10 s before the warm's last tick to 20 s after (longest 33.4 ms), so the 2.85 s stall stays gone. Daily GPU step: the longest stretch between yields is 48.6 ms, under the 50 ms budget (the AMD Mac needed 51 to 71). First view 21 s, warm of one day 24.5 s (the AMD Mac: 62 s and 46 s more). Memory: 1,497 MiB at the most over 10 days, inside 1.5 GiB by 39 MiB and growing in steps. Open: 22 page rAF gaps of 117 to 567 ms in the load's first 12.5 s (the spin-up's unpaced whole-split dispatches, before the first view); the bed kernel's first compile (94 ms chunk at the first fire). Per-pass timestamps from Metal are not trustworthy (a pass's time was negative in some slowest frames), so the passes' split is not recorded; the frame's first-to-last span (gpuMs) is. After the timestamp fix a second run held 60 fps in all four benches with no page frame over 16.8 ms in 2,884, worker GPU mean 5.80, 5.16, 4.96 and 5.49 ms; the worker's maxima (15 to 33 ms) are Metal timestamp noise, not frames the page dropped (napkin, renderer rule).",
+ "afterTimestampFix": {
+  "note": "a second AC-power run of the same load after webgpu.js left backwards and over-a-second timestamp pairs out of a frame's span (Metal gave pairs hours apart, which read as frames of 30 ms or more beside passes of 8). Not the same frames as afterWarm, so its worker maxima differ.",
+  "perBench": {
+   "zoom": {
+    "fps": 60,
+    "frames": 721,
+    "pageDtMs": {
+     "mean": 16.67,
+     "p95": 16.8,
+     "max": 16.8,
+     "over16": 193
+    },
+    "workerGpuMs": {
+     "mean": 5.8,
+     "p95": 9.85,
+     "max": 15.49,
+     "over16": 0
+    },
+    "workerLatencyMs": {
+     "mean": 10.02,
+     "p95": 14.8,
+     "max": 35.3,
+     "over16": 20
+    },
+    "longTasks": []
+   },
+   "orbit": {
+    "fps": 60,
+    "frames": 721,
+    "pageDtMs": {
+     "mean": 16.67,
+     "p95": 16.8,
+     "max": 16.8,
+     "over16": 201
+    },
+    "workerGpuMs": {
+     "mean": 5.16,
+     "p95": 7.14,
+     "max": 23.15,
+     "over16": 2
+    },
+    "workerLatencyMs": {
+     "mean": 8.48,
+     "p95": 11,
+     "max": 38.5,
+     "over16": 9
+    },
+    "longTasks": []
+   },
+   "turn": {
+    "fps": 60,
+    "frames": 721,
+    "pageDtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 132
+    },
+    "workerGpuMs": {
+     "mean": 4.96,
+     "p95": 7.9,
+     "max": 18.75,
+     "over16": 1
+    },
+    "workerLatencyMs": {
+     "mean": 8.12,
+     "p95": 11.3,
+     "max": 25,
+     "over16": 4
+    },
+    "longTasks": []
+   },
+   "pan": {
+    "fps": 60,
+    "frames": 721,
+    "pageDtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 109
+    },
+    "workerGpuMs": {
+     "mean": 5.49,
+     "p95": 7.95,
+     "max": 32.56,
+     "over16": 2
+    },
+    "workerLatencyMs": {
+     "mean": 9.39,
+     "p95": 12.3,
+     "max": 52.6,
+     "over16": 8
+    },
+    "longTasks": []
+   }
+  },
+  "droppedPageFrames": 0,
+  "reading": "page frames: 2,884 across the four benches and not one over 16.8 ms (afterWarm had one 33.3 ms frame in each of zoom and turn). Worker maxima of 15 to 33 ms remain in frames whose valid passes sum to under 11 ms, with the page showing no hitch: Metal's pass timestamps are noise at the maxima, so judge the means, p95 and the page's dt."
+ }
 }

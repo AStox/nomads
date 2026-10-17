@@ -1594,9 +1594,17 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       qr.busy = true;
       qr.b.mapAsync(GPUMapMode.READ).then(() => {
         const t = new BigUint64Array(qr.b.getMappedRange(), 0, nq), parts = {};
-        let lo = t[0], hi = t[1];
-        names.forEach((n, i) => { const a = t[2 * i], b = t[2 * i + 1]; if (a < lo) lo = a; if (b > hi) hi = b; parts[n] = +((parts[n] ?? 0) + Number(b - a) / 1e6).toFixed(3); });
-        stats.gpuMs = Number(hi - lo) / 1e6; stats.passes = parts;
+        // On Metal a pass's pair can run backwards or for hours, and one such pair made a frame's span read 34 ms for
+        // passes that took 8. A pair that reads so (not backwards, under a second) is left out of the span and the parts.
+        let lo = null, hi = null;
+        names.forEach((n, i) => {
+          const a = t[2 * i], b = t[2 * i + 1];
+          if (b < a || b - a > 1000000000n) return;
+          if (lo === null || a < lo) lo = a;
+          if (hi === null || b > hi) hi = b;
+          parts[n] = +((parts[n] ?? 0) + Number(b - a) / 1e6).toFixed(3);
+        });
+        stats.gpuMs = lo === null ? 0 : Number(hi - lo) / 1e6; stats.passes = parts;
         qr.b.unmap(); qr.busy = false;
       }).catch(() => { qr.busy = false; });
     }
