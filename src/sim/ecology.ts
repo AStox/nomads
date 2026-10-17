@@ -30,10 +30,11 @@ import { hooks } from "./rules";
 import { growing, wetness } from "./wetness";
 import { GREEN_UP } from "../terrain/growth";
 import { rotPerHour } from "./spoil";
-import { bodyOf } from "./body";
+import { bodyOf, frameOf } from "./body";
+import { PIT_DEPTH } from "./shelter";
 
 // Seconds a tick lasts (world.ts DAY: five minutes each).
-const TICK_S = 86400 / DAY;
+const TICK_S = 86400 / DAY, G = 9.81; // m/s2
 
 export const pathChanges = new Set<number>();
 export const iceChanged = { now: false };
@@ -196,10 +197,9 @@ function ice(w: World) {
 }
 
 // ---------- pits, traps, wells ----------
-// A pit is dug as deep as someone stands in it, PIT_DEPTH [design]; where the water table lies above its floor (water.ts
-// table, the generator's depth to it there), the groundwater seeps in and stands in it: a well
-// (docs/research/time-constants.md sec. 5) [gap: how long the seeping takes].
-export const PIT_DEPTH = 1.5;
+// A pit is dug as deep as shelter.ts PIT_DEPTH; where the water table lies above its floor (water.ts table, the
+// generator's depth to it there), the groundwater seeps in and stands in it: a well (docs/research/time-constants.md
+// sec. 5) [gap: how long the seeping takes].
 const tableAt = (w: World, px: number, py: number) => {
   const { isle, fine } = groundOf(w.seed);
   return fine.bilinear(isle.table, (px * TILE_M - SIZE / 2 - START) / CELL, (py * TILE_M - SIZE / 2 - START) / CELL);
@@ -226,11 +226,11 @@ function holes(w: World, live: Thing[]) {
     }
   }
 }
-// A hidden pit catches people too, unless they know it's there.
+// A hidden pit catches people too, unless they know it's there or its cover holds their weight (people-constants sec. 8).
 export function trapped(w: World, a: Agent, x0: number, y0: number) {
-  const trap = onPath(w, x0, y0, a.px, a.py, 0.8, ["trap"], (t) => t.owner !== a.id && !t.caught && !a.facts[`trap:${t.id}`]);
+  const trap = onPath(w, x0, y0, a.px, a.py, 0.8, ["trap"], (t) => t.owner !== a.id && !t.caught && !a.facts[`trap:${t.id}`] && frameOf(w, a).kg * G > (t.holds ?? 0));
   if (!trap) return false;
-  setKind(w, trap, "pit"); mark(w, trap);
+  setKind(w, trap, "pit"); delete trap.holds; mark(w, trap);
   put(w, a, trap.px, trap.py);
   a.needs.health = Math.max(0, a.needs.health - 10);
   const owner = w.agents.find((x) => x.id === trap.owner);
@@ -601,15 +601,9 @@ function decay(w: World, live: Thing[]) {
       if (s.k.startsWith("rotten:")) { t.store!.splice(t.store!.indexOf(s), 1); continue; }
       s.k = rot(s.k); s.born = w.t; delete s.rot;
     }
-    if (t.kind === "structure" && t.shelter) {
-      const sky = w.weather.sky;
-      // Loose piles that aren't ringing a fire scatter within a few days. Weather tells on a flimsy shelter far more than
-      // a sturdy one: sticks and grass are down after a few days of rain, walls of stone or logs stand for a season.
-      const pile = t.shelter.tier === 0 && !anyAround(w, t.px, t.py, 1, ["fire"]);
-      const weather = 0.03 + (sky === "rain" ? 0.1 : sky === "storm" ? 0.5 : 0);
-      t.hp = (t.hp ?? 100) - (pile ? 0.5 * (1.2 - t.shelter.sturdy) : 0) - weather * Math.max(0.02, 1.4 * (1 - t.shelter.sturdy) ** 2);
-      if (t.hp <= 0) fallApart(w, t);
-    }
+    // A shelter stands until a wind blows that breaks its rafters, and a heap until one moves its lightest piece
+    // (shelter.ts); snow on a roof is left out [gap].
+    if (t.kind === "structure" && t.shelter && airAt(w, t.px, t.py).wind > t.shelter.wind) fallApart(w, t);
   }
 }
 // A shelter fallen apart in the weather: half of each thing it was built of falls where it stood, its pieces of wood as

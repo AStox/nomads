@@ -49,10 +49,10 @@ export type Crowned = { buf: GPUBuffer | null; held(): Uint32Array | null };
 export const SMALL_KINDS = ["tiller", "litter", "fauna", "sand"] as const;
 export type SmallKind = (typeof SMALL_KINDS)[number];
 const ACTIVE: Record<SmallKind, string> = { tiller: "tuft", litter: "leaf", fauna: "bug", sand: "grain" };
-// Room for bins, a kind [design: seed 1's measured bins two days in, 178,000 tillers, 729,000 litter and 783,000 fauna,
-// with room for the reed's spring cohort, the year's mass classes of litter and the summer's broods; the plan's Unit
-// 12b outcome].
-export const CAPS: Record<SmallKind, number> = { tiller: 1 << 20, litter: 3 << 19, fauna: 3 << 19, sand: 1 << 14 };
+// Room for bins, a kind [design: seed 1's most bins in its first island year, 695,278 tillers, 1,581,621 litter and
+// 1,340,045 fauna, none of sand, with a third more, so a landing finds no kind over the three quarters that grows its
+// room (tiers/lumped.ts room); the plan's Unit 12b outcome].
+export const CAPS: Record<SmallKind, number> = { tiller: 15 << 16, litter: 33 << 16, fauna: 28 << 16, sand: 1 << 14 };
 // Contributions a step can hold, a bin: its stayers, departures and births [design: a litter bin's piece passes up to
 // three mass classes and falls in a day, a tiller moves a class, dies or bears; seed 1 found two and a half a bin too few for the litter on a day of leaf fall and three too few for the tillers].
 const CONTRIBS: Record<SmallKind, number> = { tiller: 6, litter: 5, fauna: 4, sand: 3 };
@@ -82,6 +82,8 @@ export class Smalls implements Rider, Ground {
   caps: Record<SmallKind, number> = { ...CAPS };
   last = -1;
   private summary = false;
+  // whether the kinds came from a save (the store had them before attach)
+  private loaded = false;
   private copied = false;
   // the summary as the CPU last landed it
   held: Uint32Array | null = null;
@@ -93,6 +95,7 @@ export class Smalls implements Rider, Ground {
   attach(store: Store, driver: SmallsDriver, crowns: Crowned | null = null, t0 = store.t, caps: Partial<Record<SmallKind, number>> = {}) {
     if (this.store) throw new Error("the smallest things already live on a store");
     const fresh = !store.kinds.some((k) => k.name === "tuft");
+    this.loaded = !fresh;
     const u = (name: string) => ({ name, type: "u32" as const, unit: "", scale: 1 });
     for (const k of SMALL_KINDS) store.adopt({ name: ACTIVE[k], capacity: ACTIVE_CAP, placed: true, fields: ["lkey", "le", "lsig", "lstate"].map(u) });
     this.store = store; this.driver = driver; this.crowns = crowns; this.caps = { ...CAPS, ...caps };
@@ -188,9 +191,9 @@ export class Smalls implements Rider, Ground {
   }
 
   // ---------- the animals' Ground ----------
-  bind(s: Store, link: { W: GPUBuffer; RQ: GPUBuffer; cap: number }) {
+  bind(s: Store, link: { W: GPUBuffer; RQ: GPUBuffer; cap: number }, saved: boolean) {
     this.link = link;
-    s.run(SMALLS_POOLS, [link.W, this.b!.wrote, this.b!.cen, this.b!.st], cover(s.g, TILES));
+    if (!(saved && this.loaded)) s.run(SMALLS_POOLS, [link.W, this.b!.wrote, this.b!.cen, this.b!.st], cover(s.g, TILES));
   }
   spin(_s: Store, t: number) {
     if (t > this.last) this.day(t);

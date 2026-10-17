@@ -96,22 +96,23 @@ test("rubbing a stick with a bow over tinder laid with twigs makes a fire; with 
   expect([count(a, bowId), count(a, "stick"), count(a, "fiber")]).toEqual([1, 1, 0]);
 });
 
-test("sticks leaned together shelter someone; enough logs make it a sturdier hut", () => {
+test("three sticks leaned together under two hides make a hut; logs walled round its foot make it a cabin the wind tips less easily", () => {
   const [w, a] = fresh();
-  giveItems(w, a, "stick", 6); giveItems(w, a, "fiber", 3);
-  const lean = place(w, a, { verb: "place", items: ["stick", "stick", "stick", "stick", "stick", "fiber", "fiber", "fiber"] });
-  expect(lean.builds).toBe("shelter");
+  giveItems(w, a, "stick", 3); giveItems(w, a, "hide", 2);
+  const hut = place(w, a, { verb: "place", items: ["stick", "stick", "stick", "hide", "hide"] });
+  expect(hut.builds).toBe("shelter");
   const home = thingById(w, a.home)!;
   const before = home.shelter!;
-  // six logs, brought a load at a time, as many as a body carries (gait.ts canHold)
+  expect(before.tier).toBe(2);
+  // six logs, brought a load at a time, as many as a body carries (gait.ts canHold): a course round the hut's foot
   for (let left = 6; left > 0; ) {
     const n = giveItems(w, a, "log", left);
     expect(n).toBeGreaterThan(0);
     place(w, a, { verb: "place", items: Array(n).fill("log") });
     left -= n;
   }
-  expect(home.shelter!.tier).toBeGreaterThanOrEqual(before.tier);
-  expect(home.shelter!.sturdy).toBeGreaterThan(before.sturdy);
+  expect(home.shelter!.tier).toBe(3);
+  expect(home.shelter!.wind).toBeGreaterThan(before.wind);
 });
 
 test("cooking in a fired bowl makes a stew and keeps the bowl", () => {

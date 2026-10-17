@@ -46,6 +46,10 @@ const empty = (dead = new Map<number, number>(), wantCells = new Set<number>(), 
 export class Mirror {
   private readonly pages: Pages[] = [];
   private readonly rects = new Map<string, Rect>();
+  // every cell some window holds, as a mask and in order, made again only once a window changed (cells, inWindow and
+  // entries for every kind read them)
+  private winMask: Uint8Array | null = null;
+  private winCells: Uint32Array | null = null;
   private readonly prov = new Map<number, Obj>(); // spawns not yet uploaded, by provisional id
   private fresh = new Map<number, Obj>(); // spawns the last upload placed, by the provisional id they had
   private last = new Map<number, Obj>(); // and the upload before
@@ -58,13 +62,27 @@ export class Mirror {
 
   // ---------- windows and lookups ----------
   watch(key: string, rect: Rect | null) {
-    if (rect) this.rects.set(key, rect);
-    else this.rects.delete(key);
+    const was = this.rects.get(key);
+    if (rect) {
+      if (was && was.x0 === rect.x0 && was.y0 === rect.y0 && was.x1 === rect.x1 && was.y1 === rect.y1) return;
+      this.rects.set(key, rect);
+    } else if (!this.rects.delete(key)) return;
+    this.winMask = this.winCells = null;
+  }
+  private windows(): Uint8Array {
+    if (this.winMask) return this.winMask;
+    const m = new Uint8Array(N * N);
+    let n = 0;
+    for (const r of this.rects.values())
+      for (let y = Math.max(0, r.y0); y <= Math.min(N - 1, r.y1); y++)
+        for (let x = Math.max(0, r.x0); x <= Math.min(N - 1, r.x1); x++) if (!m[y * N + x]) { m[y * N + x] = 1; n++; }
+    const cells = new Uint32Array(n);
+    for (let c = 0, i = 0; i < n; c++) if (m[c]) cells[i++] = c;
+    this.winCells = cells;
+    return (this.winMask = m);
   }
   private inWindow(c: number) {
-    const cx = c % N, cy = Math.floor(c / N);
-    for (const r of this.rects.values()) if (cx >= r.x0 && cx <= r.x1 && cy >= r.y0 && cy <= r.y1) return true;
-    return false;
+    return this.windows()[c] === 1;
   }
   // The live objects of a placed kind in a cell, in slot order (spawns not yet uploaded last), or PENDING.
   cell(kind: string, cx: number, cy: number): Obj[] | Pending {
@@ -153,11 +171,20 @@ export class Mirror {
   // stays as it is and only what they lack is copied; unless they have come to hold more than twice the cells now
   // wanted, when everything wanted is copied again and the rest let go. Says whether it keeps.
   entries(k: Kind, keep = false): { ents: Uint32Array; keep: boolean } {
-    const p = this.pages[k.n], cells = new Set<number>(k.placed ? p.wantCells : []);
-    if (k.placed) for (const r of this.rects.values()) for (let y = Math.max(0, r.y0); y <= Math.min(N - 1, r.y1); y++) for (let x = Math.max(0, r.x0); x <= Math.min(N - 1, r.x1); x++) cells.add(y * N + x);
-    keep &&= p.raw.size + p.cells.size <= 2 * cells.size + 64;
-    const c = [...cells].filter((c) => !keep || (!p.raw.has(c) && !p.cells.has(c))), s = [...p.wantSlots].filter((s) => !keep || (!p.bySlot.has(s) && !p.alone.has(s)));
-    const ents = Uint32Array.from([...c.sort((a, b) => a - b), ...s.sort((a, b) => a - b).map((s) => (SLOT | s) >>> 0)]);
+    const p = this.pages[k.n], mask = this.windows(), win = k.placed ? this.winCells! : new Uint32Array(0);
+    // the cells asked for outside every window, then all wanted in order
+    const extra = k.placed ? [...p.wantCells].filter((c) => !mask[c]).sort((a, b) => a - b) : [];
+    let all: ArrayLike<number> = win;
+    if (extra.length) {
+      const m = new Uint32Array(win.length + extra.length);
+      for (let i = 0, j = 0, o = 0; o < m.length; o++) m[o] = j >= extra.length || (i < win.length && win[i] < extra[j]) ? win[i++] : extra[j++];
+      all = m;
+    }
+    keep &&= p.raw.size + p.cells.size <= 2 * all.length + 64;
+    const c = keep ? Array.prototype.filter.call(all, (c: number) => !p.raw.has(c) && !p.cells.has(c)) as number[] : all, s = [...p.wantSlots].filter((s) => !keep || (!p.bySlot.has(s) && !p.alone.has(s)));
+    const ents = new Uint32Array(c.length + s.length);
+    ents.set(c);
+    ents.set(s.sort((a, b) => a - b).map((s) => (SLOT | s) >>> 0), c.length);
     p.wantCells.clear();
     p.wantSlots.clear();
     return { ents, keep };

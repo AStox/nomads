@@ -4,7 +4,7 @@ import {
   type Agent, type BondKind, type Label, type Relationship, type Response, type Thing, type World,
 } from "./world";
 import { around, liveThings, piecesAround, thingById } from "./space";
-import { ablaze, fireHours, fireOutput, shelterName } from "./physics";
+import { ablaze, bedAir, fireHours, fireKind, fireOutput, shelterName } from "./physics";
 import { TRAITS } from "./traits";
 import { DARK, lightOn, lightWords } from "./light";
 import { seesAnimal, seesHands, seesPerson, seesThing } from "./senses";
@@ -169,7 +169,7 @@ export function view(w: World, a: Agent) {
     const fruit = t.kind === "bush" && (t.n ?? 0) >= 1 && seesThing(w, a, { px: t.px, py: t.py, size: PHYS.berry.d }, "notice");
     let kind = t.kind === "item" ? `${w.kinds[t.item ?? ""]?.name ?? "something"} on the ground` : t.kind === "structure" ? (shelterName(w, t) === "fire ring" ? "ring of stones round a fire" : ["pile of stuff", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0]) : t.kind === "bush" ? `${t.species ?? "berry"} bush${fruit ? " with berries on it" : ""}` : t.kind.replaceAll("_", " ");
     if (t.kind !== "fire" && ablaze(t)) kind = `burning ${kind}`;
-    if (t.kind === "fire") kind = t.covered ? "fire heaped over with stone" : t.contained && (t.charcoal ?? 0) > 0 ? "ringed fire of charcoal" : t.contained ? "ringed fire" : "fire";
+    if (t.kind === "fire") kind = ({ fire: "fire", hearth: "ringed fire", kiln: "fire heaped over with stone", forge: "ringed fire glowing red" } as Record<string, string>)[fireKind(t, bedAir(w, t))];
     if (ablaze(t)) kind = `${kind}, ${blazeWords(w, t)}`;
     if ((t.resin ?? 0) >= 1) kind = `${kind} beaded with resin`;
     // flint in a boulder shows where a nodule of it does, noticed at its own size (fuel.ts PHYS.flint)

@@ -7,8 +7,9 @@ onmessage = (e) => {
   const { id, jobs } = e.data, out = [], moved = [];
   for (const [key, idx, slot] of jobs) {
     const s = flat(makeSprite(key, idx, SP, TH));
+    // the pixels and cast rows moved, not copied: the render worker takes them between its frames
+    if (s) { s.rows = Uint32Array.from(s.rows); moved.push(s.p.buffer, s.rows.buffer); }
     out.push([slot, s]);
-    if (s) moved.push(s.p.buffer);
   }
   postMessage({ id, out }, moved);
 };

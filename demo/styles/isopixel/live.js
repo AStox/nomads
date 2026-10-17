@@ -106,7 +106,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts;
       const sent = sentAt.get(m.id);
       sentAt.delete(m.id);
-      if (sent != null) frameMs.push({ id: m.id, latency: performance.now() - sent, gpu: m.gpuMs, cpu: m.cpuMs });
+      if (sent != null) frameMs.push({ id: m.id, latency: performance.now() - sent, gpu: m.gpuMs, cpu: m.cpuMs, at: performance.now(), passes: m.passes });
       if (frameMs.length > 4000) frameMs.splice(0, 2000);
     } else if (m.type === "objects") { objectsReady = true; stats.objects = m; onProgress?.(1, 1, "drawing the sprites"); }
     else if (m.type === "progress") onProgress?.(m.d, m.n, m.what);
@@ -873,7 +873,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the last frame's sky (skyFor): sun and moon ({ dir, el in radians; the moon's phase and lit share }), e: the sun's
     // elevation in degrees, cloud: the cover it is lit under, 0 to 1
     sky: () => sky,
-    // the frames the worker finished since the last call: { id, latency (ms from sent to done), gpu, cpu (ms) }
+    // the frames the worker finished since the last call: { id, latency (ms from sent to done), gpu, cpu (ms), at (when
+    // the page heard it was done), passes (each pass's GPU ms) }
     frameTimes: () => frameMs.splice(0),
     frame, pick, where, stats, lastMs: 0, lastHoles: true, level: null, lastParts: [],
     // the sim's side of the worker (play/remote.js): send it a message, and take what it posts of the sim

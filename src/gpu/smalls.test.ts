@@ -114,7 +114,7 @@ test("a beetle a held fox singles out keeps the identity and state it had as a m
   const g = await theGpu(), s = new Store(g), sm = new Smalls(), drv = sward({ fauna: true });
   sm.attach(s, drv, null, 40 * DAY, CAPS);
   const cap = 256, W = storage(g, W_RUNS * TILES * 4), RQ = storage(g, new Uint32Array(cap).fill(NONE));
-  sm.bind(s, { W, RQ, cap });
+  sm.bind(s, { W, RQ, cap }, false);
   sm.kinds!.fauna.watch([CELL]);
   const F = sm.kinds!.fauna;
   await s.step(41 * DAY);
@@ -159,7 +159,7 @@ test("what the grazers eat of a cell's green is what its tillers lose over the d
   const Wi = new Uint32Array(W_RUNS * TILES);
   Wi[W_.land * TILES + tile] = 1; Wi[W_.garea * TILES + tile] = garea;
   const W = storage(g, Wi), RQ = storage(g, new Uint32Array(8).fill(NONE));
-  sm.bind(s, { W, RQ, cap: 8 });
+  sm.bind(s, { W, RQ, cap: 8 }, false);
   let eaten = 0, lost = 0, credit = 0;
   for (let d = 41; d <= 80; d++) {
     await s.step(d * DAY);

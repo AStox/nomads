@@ -28,6 +28,14 @@ const say = (what, d, n) => post({ type: "progress", what, d, n });
 // when each step of the first view was reached, ms from init (reported with the objects)
 const T0 = performance.now(), timeline = {};
 const mark = (k) => { timeline[k] = Math.round(performance.now() - T0); };
+// A task boundary: a frame the page sent meanwhile is drawn before the work goes on (a message port's task, as a
+// timer's would be held to a few ms once nested). Long work here (the sim's tick, the sprites put in the atlas) awaits
+// it between its parts, so no part holds a frame back long.
+const turn = new MessageChannel(), turnWaiting = [];
+turn.port1.onmessage = () => turnWaiting.shift()();
+const nextTask = () => new Promise((ok) => { turnWaiting.push(ok); turn.port2.postMessage(0); });
+// the most a part of such work runs before it lets a frame in [design: a quarter of a 60 Hz frame]
+const PART_MS = 4;
 
 async function init(m) {
   const t0 = performance.now();
@@ -488,8 +496,13 @@ function growTable() {
   table = t;
   R.setTable(table);
 }
-// sprites for every [family key, size index, slot] in jobs, by as many sprite workers as the machine spares
-async function makeAll(jobs) {
+// the sprites a sprite worker sends at once while the page runs [design: a message of them taken in well within a
+// frame's PART_MS, against 200 for the first view]
+const REFRESH_CHUNK = 16;
+// sprites for every [family key, size index, slot] in jobs, by as many sprite workers as the machine spares, chunk to a
+// message (each message's sprites are taken in as one task here); the page's loading line is told how far they are
+// only for the first view (report)
+async function makeAll(jobs, { chunk = 200, report = true } = {}) {
   if (!jobs.length) return [];
   const nw = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2, Math.ceil(jobs.length / 100))), out = [];
   const workers = await Promise.all(Array.from({ length: nw }, () => new Promise((ok, fail) => {
@@ -503,14 +516,14 @@ async function makeAll(jobs) {
   jobs.forEach((j, i) => lists[i % nw].push(j));
   let done = 0;
   await Promise.all(workers.map((w, i) => new Promise((ok) => {
-    const list = lists[i], CH = 200;
+    const list = lists[i], CH = chunk;
     let at = 0;
     const next = () => {
       if (at >= list.length) { w.terminate(); ok(); return; }
       w.postMessage({ id: at, jobs: list.slice(at, at + CH) });
       at += CH;
     };
-    w.onmessage = (e) => { for (const r of e.data.out) out.push(r); done += e.data.out.length; say("drawing the sprites", done, jobs.length); next(); };
+    w.onmessage = (e) => { for (const r of e.data.out) out.push(r); done += e.data.out.length; if (report) say("drawing the sprites", done, jobs.length); next(); };
     next();
   })));
   return out;
@@ -574,13 +587,16 @@ function liveId(id) {
   return sp;
 }
 // The sprites the objects want now and were never made (the stems grew into new sizes and crown widths, a record of a
-// new kind came), made off this thread and put in the dynamic layers; the GPU draws the nearest made meanwhile.
+// new kind came), made off this thread and put in the dynamic layers a part at a time between frames (PART_MS); the
+// GPU draws the nearest made meanwhile.
 let refreshing = null;
 function refreshSprites() {
   if (refreshing || !dyn) return;
   refreshing = (async () => {
-    const made = await makeAll(await wanted());
+    const made = await makeAll(await wanted(), { chunk: REFRESH_CHUNK, report: false });
+    let t = performance.now();
     for (const [slot, s] of made) {
+      if (performance.now() - t > PART_MS) { await nextTask(); t = performance.now(); }
       let id = s ? putDynamic(s) : null;
       if (s && id === null) { dynReset(); id = putDynamic(s); }
       table[slot] = s ? (id === null ? 0 : id + 1) : NONE;
@@ -668,6 +684,8 @@ const trailPending = new Set();
 // bundle: the sim's bundle (../sim.js), already loaded for the island it grew; createSim: play/sim.js's
 async function startSim(bundle, createSim, seed, { warm = 0, jev = null }) {
   bundle.useGpu({ device, adapter: gpuName });
+  // a tick's parts with the frames drawn between them (sim.ts tickPause), the run the same as in one piece
+  bundle.tickPause.fn = nextTask;
   mark("simStart");
   // The world is shown before it warms: its warm's ticks are the first the page asks for, as fast as its frames allow,
   // each drawn as it lands (simTick). The deadwood is resident after the first of them, and comes as a source then
@@ -891,7 +909,8 @@ const handle = async (e) => {
     else if (m.type === "frontViews") R.setFrontViews(m.views);
     else if (m.type === "frame") { pending = m; render(); }
     else if (m.type === "simTick") await simTick();
-    else if (m.type === "simWant") { want = m.want; post({ type: "simState", ...answers() }); }
+    // asked in a tick's pause (sim.ts tickPause), answered with the state after it, as the world stands between ticks
+    else if (m.type === "simWant") { want = m.want; if (!ticking) post({ type: "simState", ...answers() }); }
     else if (m.type === "pick") {
       const r = await R.pick(m.x, m.y);
       // an object's pick names the thing it is

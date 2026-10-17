@@ -4,7 +4,7 @@
 // acts run, given what decides them where and when it's done (Situation): how wet the tinder is, the wind, the spot,
 // the weather ahead for what's done to the ground, the fish a gear could meet, and for what's done with fire the pieces laid, the
 // air a fire stands in and the fire itself. The answer key (scripts/truth.ts) computes every way by it.
-import type { Act, Animal, Stack, Thing, World } from "./world";
+import { MADE_SIZE, type Act, type Animal, type Stack, type Thing, type World } from "./world";
 import { THING_MATERIAL, depth, p } from "./materials";
 import {
   DURATION, EMBER_GIVE_UP, HAND, PIT_SOIL, SEED_SOIL, STILL, STRUCK, airy, arrowy, breaking, breaksOf, cutting, digPower, eating, emberCatches, emberTime, forging as drawing, heating,
@@ -13,7 +13,8 @@ import {
 } from "./physics";
 import { SHOT_S, STALK, animalBody, killChance, throwRange, releaseAt, tipOf, woundOf, type Meeting } from "./hunt";
 import { SPEC, herded, type Herded } from "./animals";
-import { advance, feed, kindle, lay, lighting, setIn, type Air, type Bed } from "./combustion";
+import { advance, feed, kindle, lay, lighting, radius, setIn, type Air, type Bed } from "./combustion";
+import { mouthOf } from "./shelter";
 import { BURNS, PHYS, physOf } from "./fuel";
 import { BLOWS, CADENCE, DAY_WORK, GROWN, SPARKS_TO_CATCH, TICK_S, blowEnergy, flakeEnergy, isBlade, splitEnergy } from "./mechanics";
 import { rulingKey } from "./sim";
@@ -40,23 +41,22 @@ export type Situation = {
 type Here = { fire: Fire | null; air: Air; stacks: Stack[] };
 
 // The places a way is done at, as they most plainly are: a fire as fireKind tells them apart, staged as the usual lay lit
-// and burning ten minutes in still air (physics.ts STILL), ringed by three stones for a hearth, heaped over as well for a
-// kiln, and fed the charcoal a log smothers into for a forge (fire-constants sec. 29g) [design]; a pit, their own lean-to
-// of four sticks, open water. A way done at none of them is done with nothing near. These stage the answer key.
+// and burning ten minutes in still air (physics.ts STILL), ringed by stone laid round its bed for a hearth, heaped over its
+// ring's mouth as well for a kiln, and fed the charcoal a log smothers into for a forge (fire-constants sec. 29g)
+// [design]; a pit as wide as one is dug, their own lean-to of four sticks, open water. A way done at none of them is done
+// with nothing near. These stage the answer key.
 const PLACES: Record<string, true> = { fire: true, hearth: true, kiln: true, forge: true, pit: true, home: true, water: true };
-const RING = 3, LIT = 600;
+const LIT = 600;
 let burning: Bed | undefined, forging: Bed | undefined;
 function staged(at: string | null): Fire | null {
   if (at !== "fire" && at !== "hearth" && at !== "kiln" && at !== "forge") return null;
   burning ??= advance(kindle(lay(usual())!), LIT, STILL);
   const log = PHYS.log, coal = { ...PHYS.charcoal, d: log.d, mass: log.mass * BURNS.softwood.charYield };
   forging ??= advance(feed(burning, [{ phys: coal, n: 1, m: 0 }]), LIT, STILL);
-  const ringed = at !== "fire", stone = PHYS.stone.d;
-  return { kind: "fire", bed: at === "forge" ? forging : burning, contained: ringed, ...(ringed ? { walls: { tall: stone, width: RING * stone } } : {}), covered: at === "kiln", charcoal: at === "forge" ? 1 : 0 };
+  const bed = at === "forge" ? forging : burning, ringed = at !== "fire", width = 2 * Math.PI * radius(bed);
+  return { kind: "fire", bed, contained: ringed, ...(ringed ? { walls: { tall: PHYS.stone.d, width } } : {}), covered: at === "kiln", ...(at === "kiln" ? { lid: mouthOf(width) } : {}) };
 }
 const LEAN_TO: Record<string, number> = { stick: 4 };
-// The stones round a fire, by how much stone stands round it.
-const rings = (f: Fire | null) => Math.round((f?.walls?.width ?? 0) / PHYS.stone.d);
 
 // fish: the fish a gear dipped there could meet, none unless said; here: the fire it's done at, if not a staged one.
 export function predictMaterial(w: World, f: Fields, fish: Meeting = { fish: [], area: 0 }, here?: Here): Prediction | { ask: string } | { why: string } {
@@ -81,7 +81,7 @@ export function predictMaterial(w: World, f: Fields, fish: Meeting = { fish: [],
     // the fish of that water a gear could meet, each taken at the middle of its chance (hunt.ts caught)
     case "wet": return predicted(wetting(w, items, { held, water: at === "water", meet: fish, basal: GROWN.basal, draw: () => 0.5 }));
     case "shape": return predicted(shaping(w, items, f.shape, { held }));
-    case "place": return predicted(placing(w, items, { held, fire, ring: rings(fire), pit: at === "pit", own: at === "home" ? { parts: LEAN_TO, shelter: shelterOf(w, LEAN_TO) } : null, empty: false, stacks, air }));
+    case "place": return predicted(placing(w, items, { held, fire, pit: at === "pit" ? MADE_SIZE.pit! : 0, own: at === "home" ? { parts: LEAN_TO, shelter: shelterOf(w, LEAN_TO) } : null, empty: false, stacks, air }));
     case "wear": return predicted(wearing(w, items, { held }));
     case "eat": return predicted(eating(w, items[0], { held, sick: false }));
   }

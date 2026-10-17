@@ -4,7 +4,7 @@
 import { BASE, THING_MATERIAL, MADE_OF, PROPS, p, type Kind } from "./materials";
 import { BONDS, DAY, H, LABELS, QUIET, TILE_M, Tile, W, ageOf, clock, colorIndex, groundOf, iceAt, level, meters, spriteSeed, stageOf, tileAt, type Agent, type Animal, type Thing, type World } from "./world";
 import { thingById } from "./space";
-import { ablaze, breaksOf, fireHours, fireKind, fireOutput, inWorld, shelterName } from "./physics";
+import { ablaze, bedAir, breaksOf, fireHours, fireKind, fireOutput, inWorld, shelterName } from "./physics";
 import { herded } from "./animals";
 import { carcassOf, fatOf, massOf } from "./hunt";
 import { activity, agentDetail, goalText, heading, type Activity } from "./sim";
@@ -150,7 +150,7 @@ function thing(w: World, t: Thing): Inspected {
     // what burns in it, as anyone by it could see and judge (physics.ts fireOutput and fireHours, fire-constants sec. 31)
     const coals = t.bed.coals.reduce((s, c) => s + c.kg, 0);
     rows.push({ label: "output", value: `${blaze.kw} kW flaming, ${blaze.glow} kW glowing` }, { label: "flame", value: `${blaze.flame} m high` });
-    if (t.kind === "fire") rows.push({ label: "setup", value: fireKind(t) });
+    if (t.kind === "fire") rows.push({ label: "setup", value: fireKind(t, bedAir(w, t)) });
     rows.push({ label: "hours left", value: r(fireHours(w, t), 2) });
     // a group the flame has reached in part lies as two, the part alight and the rest: shown together by size and state
     const laid = new Map<string, { d: number; lit: boolean; n: number; kg: number; was: number }>();
@@ -174,7 +174,7 @@ function thing(w: World, t: Thing): Inspected {
   if (t.bark) rows.push({ label: "bark peeled", value: t.bark });
   if (t.caught) rows.push({ label: "caught", value: t.caught });
   if (t.shared) rows.push({ label: "shared by", value: w.camps.find((c) => c.id === t.shared)?.name ?? t.shared });
-  if (t.kind === "fire" && t.charcoal) rows.push({ label: "charcoal", value: r(t.charcoal) });
+  if (t.kind === "trap") rows.push({ label: "cover holds", value: `${r((t.holds ?? 0) / 9.81)} kg` });
   if (t.kind === "sapling") {
     // what it lives on where it stands: the same the sim weighs (ecology.ts seedlings)
     rows.push({ label: "doing", value: (t.hp ?? 5) < (t.maxHp ?? 5) * 0.8 ? "wilting" : "thriving" });
@@ -193,7 +193,8 @@ function thing(w: World, t: Thing): Inspected {
     sections.push({ tab: "thing", title: "shelter", rows: [
       { label: "style", value: t.shelter.style }, { label: "sleeps", value: `${living.length} of ${t.shelter.room ?? 1}` },
       ...living.map((x) => ({ label: "lives here", value: x.name, link: x.id })),
-      { label: "cover", bar: [r(t.shelter.cover, 2), 1] }, { label: "insulation", bar: [r(t.shelter.insul, 2), 1] }, { label: "sturdiness", bar: [r(t.shelter.sturdy, 2), 1] },
+      { label: "across", value: `${r(2 * t.shelter.r, 1)} m` }, { label: "roof closed", bar: [r(t.shelter.closed, 2), 1] },
+      { label: "roof resists", value: `${r(t.shelter.rRoof, 2)} m2K/W` }, { label: "stands up to", value: `${r(t.shelter.wind, 1)} m/s of wind` },
     ] });
     sections.push({ tab: "thing", title: "built from", bag: bagOf(w, t.parts ?? {}), none: "nothing" });
   }

@@ -9,7 +9,8 @@ import {
   BLADE, BLOWS, CADENCE, COLD_SPLITS, DAY_WORK, FSP, GROWN, emberSeconds, SPARKS_TO_CATCH, WORKED, blowEnergy, blowsThrough, blunt, bond, boulderKg, branchKg, crushOf, cutDepth, deadKg, drawWork, drawnTo,
   flakeEnergy, intoCut, isBlade, isWood, landsWith, sparks, splitEnergy, stemEffective, stemKg, trunkOf, wearOf, woodH, woodKind, type Striker, type Swung,
 } from "./mechanics";
-import { BLOWN, LEAST, advance, alight, feed, feeding, fluxIn, group, heats, inFlame, kindle, lasts, lay, lighting, lightsIn, output, plumeRise, radiation, setIn, setUp, smokes, type Air as BedAir, type Bed, type Group, type Laid, type Ring } from "./combustion";
+import { BLOWN, LEAST, advance, alight, feed, feeding, fluxIn, group, heats, inFlame, kindle, lasts, lay, lighting, lightsIn, output, plumeRise, radiation, radius, setIn, setUp, smokes, type Air as BedAir, type Bed, type Group, type Laid, type Ring } from "./combustion";
+import { coverHolds, insideAir, lidOf, membersOf, mouthOf, roleOf, shelterOf as standing } from "./shelter";
 import { CELL } from "../terrain/grid";
 import { DAY, TILE_M, YEAR, groundOf, addThing, dryAt, dryNear, iceAt, isNight, level, log, meters, nearWater, perWorld, wetAt, type Act, type Agent, type Animal, type Shelter, type Size, type Stack, type Thing, type World } from "./world";
 import { armOf, canHold, holdsOf, overheadOf, radiusOf, reachOf } from "./gait";
@@ -21,7 +22,7 @@ import { streamNow } from "./streams";
 import { airOn } from "./air";
 import { rainOn } from "./rain";
 import { DARK, lightOn } from "./light";
-import { DAMP, SOAKED, deadAt, deadOf, moistureOf, pieceWater, sheltered, splitWater, tinder, tinderOf, waterOf } from "./wetness";
+import { DAMP, SOAKED, deadAt, deadOf, moistureOf, pieceWater, rainUnder, sheltered, splitWater, tinder, tinderOf, waterOf } from "./wetness";
 import { GROUND, SIZE, groundClass } from "../terrain/flora";
 import { GUT, basal, bodyOf, frameOf, ingest } from "./body";
 
@@ -33,11 +34,12 @@ const sticky = (k?: Kind) => !!k && p(k, "binding") >= 0.5 && p(k, "flammable") 
 const short = (k: Kind) => (k.parts ? (k.named ? k.name : noun(k)) : k.name);
 
 // A fire as what it burns at turns on: what it is (a campfire, or something else alight), its bed, and whether it's ringed
-// in (and with how much stone), heaped over, fed charcoal or has air blown into it.
-export type Fire = Pick<Thing, "kind" | "bed" | "contained" | "walls" | "covered" | "charcoal" | "air">;
-// What people would call the fire they're standing at, most specific first.
-export const fireKind = (f: Fire) =>
-  f.kind !== "fire" || !f.contained ? "fire" : (f.charcoal ?? 0) > 0 ? "forge" : f.covered ? "kiln" : "hearth";
+// in (and with how much stone), heaped over or has air blown into it.
+export type Fire = Pick<Thing, "kind" | "bed" | "contained" | "walls" | "covered" | "lid" | "charcoal" | "air">;
+// What people would call the fire they're standing at in the air it burns in, most specific first: ringed in, heaped
+// over, or holding metal at red heat (redHot), which is a forge, whatever burns in it.
+export const fireKind = (f: Fire, air: BedAir) =>
+  f.kind !== "fire" || !f.contained ? "fire" : f.covered ? "kiln" : f.bed && setIn(f.bed, air, COPPER.d) >= RED ? "forge" : "hearth";
 // The air a bed feels (combustion.ts): the air where it stands and its wind at head height (air.ts, under any canopy), the
 // rain reaching the ground there (rain.ts), on the short grass most ground grows, as wetness.ts takes things lying on the
 // ground (fire-constants sec. 14a); and its setup.
@@ -115,8 +117,8 @@ export const isFlame = (k?: Kind) => !!k?.id.startsWith("burning:");
 export const isLamp = (k?: Kind) => isFlame(k) && p(k, "container") >= 0.5;
 // The air round something carried: where they stand, out of the rain and wind under a roof, at the height it's held.
 function carriedAir(w: World, at: { px: number; py: number }): BedAir {
-  const roof = sheltered(w, at), air = airOn(w, at, roof);
-  return { temp: air.temp, wind: air.wind, rain: roof ? 0 : rainOn(w, at.px, at.py), veg: 0.1, held: HELD };
+  const roof = !!sheltered(w, at), air = airOn(w, at, roof);
+  return { temp: air.temp, wind: air.wind, rain: rainUnder(w, at), veg: 0.1, held: HELD };
 }
 // A brand as the bed sees it (fire-constants sec. 27e: a brand lit from a piece is that piece still): the piece, alight,
 // with as much of it left as hasn't burnt (its hp, the share of its mass).
@@ -742,7 +744,7 @@ function sparkTick(w: World, a: Agent, act: Act, tool: Kind, tk: Kind, st: { pro
 export const isBow = (k?: Kind) => !!k && p(k, "flexible") >= 0.8 && p(k, "long") >= 0.5 && p(k, "binding") >= 0.5;
 // The weather and light anyone can see they're working in (sim.ts CONDITIONS gives them words).
 export const WEATHER_NOW: Record<string, (w: World, a: Agent) => boolean> = {
-  rain: (w, a) => !sheltered(w, a) && rainOn(w, a.px, a.py) > 0,
+  rain: (w, a) => rainUnder(w, a) > 0,
   dark: (w, a) => lightOn(w, a).bright < DARK,
   cold: (w, a) => airOn(w, a).feels < 0,
   wind: (w, a) => airOn(w, a).wind > GALE,
@@ -980,7 +982,7 @@ export function heating(w: World, items: string[], c: HeatSetting): Decision | "
   const fire = c.fire, bed = fire?.bed;
   if (!fire || !bed || !alight(bed)) return decided({ text: "The fire had gone out.", fields });
   if (c.fan) fields.tool = c.fan;
-  fields.at = fireKind(fire);
+  fields.at = fireKind(fire, c.air ?? setUp(fire, STILL, 0));
   // the air at the fire, blown into while they fan it; how long they hold things there; each thing as they hold it, and
   // how warm its core gets in the fire where it comes toward T
   const air: BedAir = { ...(c.air ?? setUp(fire, STILL, 0)), ...(c.fan && !fire.covered ? { blown: BLOWN } : {}) };
@@ -1100,7 +1102,7 @@ export function heat(w: World, a: Agent, act: Act, choose: Chooser = firstHeld(a
   // Something soft and hollow squeezed or flapped at the fire drives air into it.
   const tool = kind(w, act.tool), fan = fire && tool && airy(tool) && count(a, tool.id) ? tool.id : undefined;
   const d = heating(w, act.items, { held, fire, air: fire ? bedAir(w, fire) : undefined, fan, stacks: held ? choose(act.items) : undefined });
-  if (fire) trace("physics", "heat", { items: act.items, fire: fireKind(fire), fan }, a.id);
+  if (fire) trace("physics", "heat", { items: act.items, fire: fireKind(fire, bedAir(w, fire)), fan }, a.id);
   return d === "ask" ? d : enact(w, a, d);
 }
 // Fanning a fire while they heat things in it blows air into its base through its next tick (sec. 29g): the fire burns at
@@ -1384,48 +1386,29 @@ export function shape(w: World, a: Agent, act: Act): Outcome {
 }
 
 // ---------- place: fires, hearths, shelters ----------
+// What a shelter looks built of, by what most of its pieces are [design: the look the renderer draws].
 const STYLE: [string, (k: Kind) => boolean][] = [
   ["brick", (k) => k.id.startsWith("fired:shape:block")], ["planks", (k) => k.base === "plank"], ["logs", (k) => k.base === "log"],
   ["stone", (k) => k.base === "stone"], ["hide", (k) => k.base === "hide"], ["reeds", (k) => p(k, "fibrous") >= 0.6],
   ["clay", (k) => p(k, "plastic") > 0.5 || k.id.includes("clay")], ["sticks", (k) => p(k, "long") >= 0.5],
 ];
-// Anything you can shelter in stands on a frame: three or more long, stiff pieces leaned together, or walls of ten or
-// more solid stones, logs, planks or blocks. Short of that, whatever is heaped up is only a pile, however much it
-// covers. A hut wants six frame pieces or a dozen solid ones; a cabin both, and sixteen pieces in all.
-const framing = (k: Kind) => p(k, "long") >= 0.5 && p(k, "hard") >= 0.25;
-const walling = (k: Kind) => p(k, "heavy") >= 0.4 && p(k, "hard") >= 0.5;
-export function shelterOf(w: World, parts: Record<string, number>): Shelter {
-  let cover = 0, insul = 0, sturdy = 0, flam = 0, n = 0, frame = 0, walls = 0;
+// A shelter as what it is built of stands (shelter.ts): the pieces kept as they were laid, the rest as their kind comes.
+export function shelterOf(w: World, parts: Record<string, number>, pieces?: Stack[]): Shelter {
   const byStyle: Record<string, number> = {};
   for (const [id, c] of Object.entries(parts)) {
-    const k = w.kinds[id];
-    if (!k) continue;
-    n += c;
-    const block = walling(k) ? 0.5 : 0;
-    if (framing(k)) frame += c;
-    if (walling(k)) walls += c;
-    cover += c * (p(k, "long") * 0.55 + p(k, "fibrous") * 0.3 + p(k, "insulating") * 0.4 + block);
-    insul += c * (p(k, "insulating") + p(k, "fibrous") * 0.4 + p(k, "heavy") * 0.4);
-    sturdy += c * p(k, "hard") * (0.5 + p(k, "toughness"));
-    flam += c * p(k, "flammable");
-    const style = STYLE.find(([, f]) => f(k))?.[0] ?? "mixed";
+    const k = w.kinds[id], style = (k && STYLE.find(([, f]) => f(k))?.[0]) ?? "mixed";
     byStyle[style] = (byStyle[style] ?? 0) + c;
   }
-  const coverS = clamp01(cover / 6), insulS = n ? clamp01(insul / n) : 0, sturdyS = n ? clamp01(sturdy / n) : 0;
-  const stands = frame >= 3 || walls >= 10;
-  const tier = coverS < 0.25 || !stands ? 0
-    : coverS >= 0.95 && sturdyS >= 0.45 && n >= 16 && frame >= 6 && walls >= 12 ? 3
-      : coverS >= 0.7 && sturdyS >= 0.3 && (frame >= 6 || walls >= 12) ? 2 : 1;
-  const style = Object.entries(byStyle).sort((x, y) => y[1] - x[1])[0]?.[0] ?? "mixed";
-  // How many it sleeps: the more that goes into it, the more floor it closes in. A lean-to's one slope covers two at
-  // most and a round hut's poles span four; only a framed and walled lodge can be drawn out longer for as many again.
-  const room = tier === 0 ? 0 : tier === 1 ? Math.min(2, 1 + Math.floor(n / 10)) : tier === 2 ? Math.min(4, 2 + Math.floor(Math.max(0, n - 12) / 8)) : 3 + Math.floor(Math.max(0, n - 16) / 8);
-  return { tier: tier as Shelter["tier"], style, cover: coverS, insul: insulS, sturdy: sturdyS, flam: n ? flam / n : 0, room };
+  return standing(membersOf(w.kinds, parts, pieces), Object.entries(byStyle).sort((x, y) => y[1] - x[1])[0]?.[0] ?? "mixed");
 }
 export const homeOf = (w: World, a: Agent) => { const h = thingById(w, a.home); return h?.kind === "structure" ? h : null; };
 const TIER = ["a pile", "a lean-to", "a hut", "a cabin"];
-const GAIN_WORDS: Record<"sturdy" | "insul" | "cover", string> = { sturdy: "sturdier", insul: "warmer", cover: "better at keeping the rain off" };
-const WIDTH = [1.2, 2.2, 3, 4.5]; // meters across, by tier
+// What its builders can tell got better besides its form and its room: it now stands up to a gale (sim.ts CONDITIONS), or
+// someone resting in it alone on a still night at freezing is a degree warmer [design: the least they would feel].
+const FELT = 1;
+const restingIn = (sh: Shelter) => insideAir(sh, 0, 0, GROWN.basal);
+const gainOf = (sh: Shelter, was: Shelter) =>
+  was.wind < GALE && sh.wind >= GALE ? "sturdier" : sh.tier && was.tier && restingIn(sh) - restingIn(was) >= FELT ? "warmer" : undefined;
 // Close enough to set something into it or take something out: within reach of its walls.
 export const reaches = (a: { px: number; py: number }, t: Thing) => meters(a, t) <= reachOf(t) + 1;
 // A stone ring is the structure around a fire, where the fire stands.
@@ -1435,23 +1418,25 @@ export const shelterName = (w: World, t: Thing) =>
   (t.shelter?.tier ?? 0) === 0 && nearestThing(w, t.px, t.py, ["fire"], () => true, 1) ? "fire ring"
     : (t.shelter?.tier ?? 0) === 3 && (t.shelter?.room ?? 0) >= 6 ? "longhouse" : ["pile", "lean-to", "hut", "cabin"][t.shelter?.tier ?? 0];
 
-// What there is to place things at, within reach: the fire (and how many pieces already ring it in), a pit, the shelter
+// What there is to place things at, within reach: the fire, a pit (how wide its mouth is, m, none for no pit), the shelter
 // they'd build onto (their own, one they live in, or an empty one they'd move into), and whether there's an empty one to
 // move into, they having no home of their own. stacks: which of what they hold they'd lay, one for each named (by default
 // one of each kind as it first comes, dry and whole); air: the air at the fire, or where a fire they light would stand
 // (by default the still air of fire-constants sec. 32); after: how long the act takes, s, which a feeding is judged over and a
 // lamp's flame is held to a lay for (by default a place act's).
 export type PlaceSetting = {
-  held: boolean; fire: Fire | null; ring: number; pit: boolean; own: Pick<Thing, "parts" | "shelter"> | null; empty: boolean;
+  held: boolean; fire: Fire | null; pit: number; own: Pick<Thing, "parts" | "pieces" | "shelter"> | null; empty: boolean;
   stacks?: Stack[]; air?: BedAir; after?: number;
 };
 // What placing them does besides taking them from their hands: lights a fire from a lay (the bed it lit, none for a flare),
-// feeds the fire, rings it in, hides the pit, stores them at home, or builds a shelter or a pile.
+// feeds the fire, rings it in or heaps it over, covers the pit (the weight its cover holds, N), stores them at home, or
+// builds a shelter or a pile.
 type PlaceWork =
   | { does: "light"; bed?: Bed }
-  | { does: "feed"; pieces: Laid[]; charcoal: number }
-  | { does: "ring"; contained: boolean; covered: boolean; walls: Ring }
-  | { does: "trap" | "store" }
+  | { does: "feed"; pieces: Laid[] }
+  | { does: "ring"; contained: boolean; covered: boolean; walls: Ring; lid: number }
+  | { does: "trap"; holds: number }
+  | { does: "store" }
   | { does: "build"; shelter: Shelter; better: boolean; roomier: boolean };
 // claims: they move into the empty shelter within reach, and make it theirs.
 export type Placing = Decision & { claims?: boolean; work?: PlaceWork };
@@ -1485,34 +1470,44 @@ export function placing(w: World, items: string[], c: PlaceSetting): Placing {
   }
   if (flame && burns && fuels.length === 0) return decided({ text: `They held the ${flame.name} to the fire.`, fields });
   // Wood laid on a burning fire (a brand as what's left of its piece): whether it catches before the act is done, and the
-  // fire still burns, by the bed (combustion.ts feeding). Laid on it either way.
+  // fire still burns, by the bed (combustion.ts feeding). Laid on it either way. Fed inside a ring until it holds metal at
+  // red heat (redHot), it is a forge.
   if (burns && fuels.length && parts.every((k) => fuels.includes(k) || k === lamp)) {
     const fed = of((k) => w.kinds[k] !== lamp), uses = tally(fed.map((s) => s.k)), pieces = laidOf(w, fed);
-    const coal = fuels.filter((k) => (k.burns ?? 1) > 1.2).reduce((t, k) => t + (k.fuel ?? 20), 0);
-    const forge = coal > 0 && !!fire!.contained, { lights, survives } = feeding(burns, pieces, air, after), ok = lights && survives;
-    fields.at = forge ? "hearth" : "fire";
+    const { bed, lights, survives } = feeding(burns, pieces, air, after), ok = lights && survives;
+    const forge = ok && !!fire!.contained && !fire!.covered && setIn(bed, air, COPPER.d) >= RED;
+    fields.at = fire!.contained ? "hearth" : "fire";
     if (ok) fields.builds = forge ? "forge" : "fed_fire";
-    const text = !ok ? `They laid ${list(w, uses)} on the fire.` : forge ? `The ${list(w, uses)} caught inside the ring and glowed.` : `Feeding ${list(w, uses)} to the fire built it up.`;
-    return { ok, text, uses, gives: {}, builds: fields.builds, fields, work: { does: "feed", pieces, charcoal: coal } };
+    const text = !ok ? `They laid ${list(w, uses)} on the fire.` : forge ? `The ${list(w, uses)} caught inside the ring and glowed red.` : `Feeding ${list(w, uses)} to the fire built it up.`;
+    return { ok, text, uses, gives: {}, builds: fields.builds, fields, work: { does: "feed", pieces } };
   }
-  // Stone or clay set round a fire stands round it, side by side (fire-constants sec. 29g); heaped over a fire that's
-  // already ringed, it closes it off to smoulder. Three ring a fire, and six or any clay cover it: the act's own counts.
+  // Stone or clay set round a fire stands round it, side by side (fire-constants sec. 29g); heaped over a fire already
+  // ringed, it lies over the ring's mouth (shelter.ts lidOf). A ring holds the fire in once it closes round its bed, the
+  // wind reaching what lies below its top only as its lee lets it (combustion.ts, sec. 29a); a heap closes it in once it
+  // covers the ring's mouth, starving it to a smoulder (sec. 29e).
   if (fire && parts.every((k) => (p(k, "hard") >= 0.5 && p(k, "flammable") < 0.2) || p(k, "plastic") >= 0.6)) {
-    const walls = c.ring + items.length, laid = items.map((k, i) => stackPhys(w.kinds, stacks[i])?.d ?? 0);
+    const laid = items.map((k, i) => stackPhys(w.kinds, stacks[i])), plastic = items.map((k) => p(w.kinds[k], "plastic") >= 0.6);
     const was = { contained: !!fire.contained, covered: !!fire.covered };
-    const contained = walls >= 3, covered = was.covered || (was.contained && (walls >= 6 || parts.some((k) => p(k, "plastic") >= 0.6)));
-    const ring = { tall: Math.max(fire.walls?.tall ?? 0, ...laid), width: (fire.walls?.width ?? 0) + laid.reduce((t, d) => t + d, 0) };
+    const ring = was.contained ? (fire.walls ?? { tall: 0, width: 0 }) : { tall: Math.max(fire.walls?.tall ?? 0, ...laid.map((x) => x?.d ?? 0)), width: (fire.walls?.width ?? 0) + laid.reduce((t, x) => t + (x?.d ?? 0), 0) };
+    const lid = (fire.lid ?? 0) + (was.contained ? laid.reduce((t, x, i) => t + (x ? lidOf(x, plastic[i]) : 0), 0) : 0);
+    const contained = was.contained || ring.width >= 2 * Math.PI * (fire.bed ? radius(fire.bed) : 0), covered = was.covered || (was.contained && lid >= mouthOf(ring.width));
     fields.at = was.contained ? "hearth" : "fire";
     fields.builds = covered ? "kiln" : contained ? "hearth" : "ring";
     const text = covered && !was.covered ? `Heaping ${list(w, need)} over the ringed fire closed it in. It smoldered low and smoky under the cover.`
-      : contained && !was.contained ? `Ringing the fire with ${list(w, need)} closed it in. The flames stayed put and burned steady.` : `They set ${list(w, need)} beside the fire.`;
-    return { ok: (contained && !was.contained) || (covered && !was.covered), text, uses: need, gives: {}, builds: fields.builds, fields, work: { does: "ring", contained, covered, walls: ring } };
+      : contained && !was.contained ? `Ringing the fire with ${list(w, need)} closed it in. The flames stayed put and burned steady.`
+        : was.contained ? `They heaped ${list(w, need)} over the ringed fire.` : `They set ${list(w, need)} beside the fire.`;
+    return { ok: (contained && !was.contained) || (covered && !was.covered), text, uses: need, gives: {}, builds: fields.builds, fields, work: { does: "ring", contained, covered, walls: ring, lid } };
   }
-  const cover = parts.filter((k) => p(k, "long") >= 0.5 || p(k, "fibrous") >= 0.6);
-  if (c.pit && cover.length >= 2 && cover.length === parts.length) {
+  // Wood laid across a pit, and whatever is laid on it, covers it over: wood long enough to span its mouth carries what it
+  // breaks under at its middle, and the cover gives way under anything heavier (shelter.ts coverHolds).
+  const across = c.pit ? membersOf(w.kinds, need, stacks) : [];
+  const holds = c.pit ? coverHolds(across, c.pit) : undefined;
+  const covers = across.length > 0 && across.every((m) => isWood(m.x) || roleOf(m) !== "solid");
+  if (holds !== undefined && covers) {
     fields.at = "pit"; fields.builds = "trap";
-    return { ok: true, text: `Laying ${list(w, need)} over the pit hid it from view.`, uses: need, gives: {}, builds: "trap", fields, work: { does: "trap" } };
+    return { ok: true, text: `Laying ${list(w, need)} across the pit covered it over.`, uses: need, gives: {}, builds: "trap", fields, work: { does: "trap", holds } };
   }
+  if (!c.own && covers && across.every((m) => isWood(m.x))) { fields.at = "pit"; return decided({ text: `The ${list(w, need)} were too short to reach across the pit.`, fields }); }
   const own = c.own, claims = c.empty;
   // Food set down inside a home is kept, not built into the walls, and so is a pot or basket to keep it in.
   if (own && (own.shelter?.tier ?? 0) >= 1 && parts.every((k) => p(k, "edible") >= 0.1 || p(k, "container") >= 0.6)) {
@@ -1523,10 +1518,10 @@ export function placing(w: World, items: string[], c: PlaceSetting): Placing {
   const built: Record<string, number> = { ...own?.parts };
   for (const [k, n] of Object.entries(need)) built[k] = (built[k] ?? 0) + n;
   const was = own?.shelter, before = was?.tier ?? 0, roomBefore = was?.room ?? 0;
-  const sh = shelterOf(w, built);
+  const sh = shelterOf(w, built, [...(own?.pieces ?? []), ...stacks.filter((s) => s.size)]);
   const grew = sh.tier > before, roomier = sh.room > roomBefore;
-  // what else its builders can tell got better: it stands firmer, keeps the cold out, or keeps the rain off
-  const gain = was && (["sturdy", "insul", "cover"] as const).find((q) => sh[q] > was[q] + 0.03);
+  // what else its builders can tell got better: it stands up to a gale now, or it is warmer to rest in
+  const gain = was && gainOf(sh, was);
   fields.builds = sh.tier >= 1 ? "shelter" : "pile";
   // Built onto the shelter they have, what they learn is about building it up: three stones that made a lean-to sturdier
   // are no shelter on their own.
@@ -1535,10 +1530,10 @@ export function placing(w: World, items: string[], c: PlaceSetting): Placing {
   const text = own
     ? grew ? `Adding ${list(w, need)} turned their ${TIER[before].slice(2)} into ${TIER[sh.tier]}.`
       : roomier ? `Adding ${list(w, need)} made their ${named} big enough for ${sh.room}.`
-        : gain ? `Adding ${list(w, need)} made their ${named} ${GAIN_WORDS[gain]}.` : `They added ${list(w, need)} to their ${named}.`
+        : gain ? `Adding ${list(w, need)} made their ${named} ${gain}.` : `They added ${list(w, need)} to their ${named}.`
     : sh.tier >= 1 ? `Leaning and stacking ${list(w, need)} together made ${TIER[sh.tier]} they could shelter in.` : `They stacked ${list(w, need)} into a small pile.`;
   return {
-    ok: sh.tier >= 1, text, uses: need, gives: {}, builds: fields.builds, fields, numbers: { cover: sh.cover, insul: sh.insul, tier: sh.tier, room: sh.room },
+    ok: sh.tier >= 1, text, uses: need, gives: {}, builds: fields.builds, fields, numbers: { closed: sh.closed, wind: sh.wind, tier: sh.tier, room: sh.room },
     claims, work: { does: "build", shelter: sh, better: grew || !!gain, roomier },
   };
 }
@@ -1553,7 +1548,7 @@ export function place(w: World, a: Agent, act: Act, choose: Chooser = firstHeld(
   const stacks = choose(act.items), lights = !(fire && ablaze(fire)) && act.items.some((k) => isFlame(w.kinds[k]));
   const spot = lights ? layAt(w, a) : null, air = fire && ablaze(fire) ? bedAir(w, fire) : spot?.air;
   const { claims, work, ...d } = placing(w, act.items, {
-    held: !!stacks, fire, ring: ring ? Object.values(ring.parts!).reduce((t, n) => t + n, 0) : 0, pit: !!pit, own, empty: !!empty, stacks, air,
+    held: !!stacks, fire, pit: pit?.size ?? 0, own, empty: !!empty, stacks, air,
   });
   if (claims && empty) {
     empty.owner = a.id;
@@ -1568,23 +1563,25 @@ export function place(w: World, a: Agent, act: Act, choose: Chooser = firstHeld(
     case "feed": {
       const f = fire!;
       f.bed = feed(f.bed!, work.pieces);
-      f.charcoal = (f.charcoal ?? 0) + work.charcoal;
       mark(w, f);
       break;
     }
+    // the ring's stone stands round the fire as wide across as it is laid round (fire-constants sec. 29g)
     case "ring": {
-      const f = fire!, r = ring ?? addThing(w, "structure", f.px, f.py, { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t, size: 1.6 });
+      const f = fire!, r = ring ?? addThing(w, "structure", f.px, f.py, { owner: a.id, parts: {}, born: w.t });
       for (const [k, n] of Object.entries(d.uses)) r.parts![k] = (r.parts![k] ?? 0) + n;
       if (taken.some(isPiece)) r.pieces = [...(r.pieces ?? []), ...taken.filter(isPiece)];
-      r.shelter = { ...shelterOf(w, r.parts!), tier: 0 };
+      r.shelter = shelterOf(w, r.parts!, r.pieces);
+      r.size = work.walls.width / Math.PI;
       f.contained = work.contained;
       f.covered = work.covered;
       f.walls = work.walls;
+      f.lid = work.lid;
       mark(w, r); mark(w, f);
       break;
     }
     case "trap":
-      setKind(w, pit!, "trap"); pit!.owner = a.id;
+      setKind(w, pit!, "trap"); pit!.owner = a.id; pit!.holds = work.holds;
       mark(w, pit!);
       break;
     case "store": {
@@ -1595,13 +1592,12 @@ export function place(w: World, a: Agent, act: Act, choose: Chooser = firstHeld(
       break;
     }
     case "build": {
-      const s = own ?? addThing(w, "structure", ...beside(w, a, 1.5), { owner: a.id, parts: {}, hp: 100, maxHp: 100, born: w.t });
+      const s = own ?? addThing(w, "structure", ...beside(w, a, 1.5), { owner: a.id, parts: {}, born: w.t });
       for (const [k, n] of Object.entries(d.uses)) s.parts![k] = (s.parts![k] ?? 0) + n;
       if (taken.some(isPiece)) s.pieces = [...(s.pieces ?? []), ...taken.filter(isPiece)];
       const roomBefore = own?.shelter?.room ?? 0;
       s.shelter = work.shelter;
-      s.size = sizeOf(work.shelter);
-      s.hp = Math.min(s.maxHp!, (s.hp ?? 100) + 20);
+      s.size = 2 * work.shelter.r;
       // Another load that made it neither a better shelter nor room for someone who needed it is something its builders
       // notice: more space than the people in it is no gain.
       if (own) s.stale = work.better || (work.roomier && residentsOf(w, s).length >= roomBefore) ? 0 : (s.stale ?? 0) + 1;
@@ -1618,8 +1614,6 @@ export function place(w: World, a: Agent, act: Act, choose: Chooser = firstHeld(
   }
   return outcome(d);
 }
-// Footprint in meters, by tier, and for a lodge drawn out longer, a pace and a half for each more it sleeps.
-export const sizeOf = (sh: Shelter) => WIDTH[sh.tier] + (sh.tier === 3 ? 1.6 * Math.max(0, sh.room - 3) : 0);
 // Who lives in a shelter: whoever calls it home.
 export const residentsOf = (w: World, t: Thing) => w.agents.filter((x) => x.home === t.id);
 // Someone moving out leaves the place to whoever still lives there, or empty for anyone to take.

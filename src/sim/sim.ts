@@ -6,7 +6,7 @@ import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
 import {
   DURATION, ablaze, airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, force, gathered, giveItems, giveStack, greasy, hand, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
   STRUCK, breaksOf, inWorld, fireHours, fireOutput, groundWord, hoursToDawn, leaveHome, pour, reaches, removeThing, residentsOf, rubTick, shape, shelterName, stash, strikeDamage, strikeTick, takeFromPile, takeItems, throwReach, throwTick, unstash, enough, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
-  bedAir, breeze, carry, fan, firstHeld, isFlame, isLamp, rubbing, sizeOf, tooThick,
+  bedAir, breeze, carry, fan, firstHeld, isFlame, isLamp, redHot, rubbing, tooThick,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
 import { apart, beliefKey, beliefText, cameOff, conditionWords, differed, weighs, fieldsOf, found, groundKey, groundOfKey, holds, mixOf, odds, fades, noteTry, ofSpot, partsOf, record, refine, refuted, restsOn, rethink, see, sentence, suspected, teach, testOf, watchers, type Belief } from "./beliefs";
@@ -17,17 +17,18 @@ import { animalsOf, attacked, herdNear, herded, residentAnimals } from "./animal
 import { chooseTinker, decide, describeKind, fadeBonds, grudge, nameIt, newRel, reflect, respond, rule, sample, theorize, wonder, type Felt } from "./brain";
 import { clock as traceClock, count as bump, timed, trace, waited } from "./trace";
 import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sharedStore, snubbed, spread, standing, takeShared } from "./groups";
-import { anyAround, around, crownsOf, deadwoodOf, floraOf, liveThings, lookFor, moistOf, nearestThing, resident, seedlingsOf, shelve, smallsOf, thingById } from "./space";
+import { anyAround, around, crownsOf, deadwoodOf, floraOf, liveThings, lookFor, moistOf, nearestThing, put, resident, seedlingsOf, shelve, smallsOf, thingById } from "./space";
 import { landOf, walk } from "./walk";
 import { armOf, canHold, capacityOf, fullness, gaitOf, massOf, overheadOf, reachOf, stride, type Stride } from "./gait";
-import { DARK, canopyAt, heatAt, lightOn, restRate, skyShare, workRate } from "./light";
+import { CHI_R, DARK, canopyAt, heatAt, lightOn, restRate, skyShare, workRate } from "./light";
 import { hears, personSize, seesAnimal, seesHands, seesPerson, seesThing } from "./senses";
 import { ripening } from "./cues";
 import { airAt, airOn, sunOn, vapourAt } from "./air";
 import { CLOUD, TICK_S, sunAt } from "./sky";
 import { DOWN_HOT, basal, bodyOf, fate, feed, feels, fireGain, frameOf, hc, insulation, openRadiant, pressure, rested, skyTemp, sleepy, sunGain, warm, type Around } from "./body";
 import { enrich, fertilityAt, soilWaterAt } from "./soil";
-import { DAMP, SOAKED, moistureOf, tinder, tinderOf } from "./wetness";
+import { DAMP, SOAKED, moistureOf, sheltered, tinder, tinderOf } from "./wetness";
+import { insideAir } from "./shelter";
 import { PHYS, asFound, physOf, stackPhys } from "./fuel";
 import { LEAST, advance, alight, drowned, output, radiation, type Air as BedAir, type Bed } from "./combustion";
 import { envHere, stemDriver } from "./plants";
@@ -142,7 +143,7 @@ const THING_PLACES: Record<string, Place> = {
   pit: { kinds: ["pit"] },
   hearth: { kinds: ["fire"], ok: (t) => !!t.contained },
   kiln: { kinds: ["fire"], ok: (t) => !!t.contained && !!t.covered },
-  forge: { kinds: ["fire"], ok: (t) => !!t.contained && (t.charcoal ?? 0) > 0 },
+  forge: { kinds: ["fire"], ok: (t, w) => !!t.contained && !t.covered && redHot(w, t) },
   // the acorns lying under an oak in the fall (ecology.ts acornsUnder)
   nuts: { kinds: ["tree"], ok: (t, w) => !ablaze(t) && acornsUnder(w, t) >= 1 },
   // a pine cut into beads with resin over the next days (ecology.ts plants)
@@ -299,7 +300,7 @@ export function ctxFor(w: World, a: Agent): Ctx {
 }
 function pstate(w: World, a: Agent): PState {
   const fire = nearFire(w, a);
-  return { inv: counts(a), at: fire ? fireKind(fire) : within(w, a, "home") ? "home" : null, flags: [] };
+  return { inv: counts(a), at: fire ? fireKind(fire, bedAir(w, fire)) : within(w, a, "home") ? "home" : null, flags: [] };
 }
 // How far someone will walk to try things at a fire: sixty meters, a couple of hours at a walk.
 const FIRESIDE = 60;
@@ -431,11 +432,11 @@ function endGoal(w: World, a: Agent, ok: boolean, why?: string) {
 }
 
 // ---------- deciding ----------
-// Whether working on a shelter still seems worth it to them: there's none close by to sleep in, theirs needs mending,
-// there are more people living in it than it sleeps, or what they last added still made it better. Two loads in a row
-// that changed nothing tell them they're only burying the walls.
+// Whether working on a shelter still seems worth it to them: there's none close by to sleep in, its roof still lets the
+// rain in, there are more people living in it than it sleeps, or what they last added still made it better. Two loads in
+// a row that changed nothing tell them they're only burying the walls.
 function shelterWork(w: World, a: Agent, home: Thing | null) {
-  if (!home || meters(a, home) > HOME_NEAR || (home.hp ?? 100) < (home.maxHp ?? 100) * 0.7) return true;
+  if (!home || meters(a, home) > HOME_NEAR || (home.shelter?.closed ?? 0) < 1) return true;
   return residentsOf(w, home).length > (home.shelter?.room ?? 1) || (home.stale ?? 0) < 2;
 }
 const canCache = perWorld(() => new Map<string, Record<string, { t: number; ok: boolean }>>());
@@ -1487,6 +1488,7 @@ function run(w: World, a: Agent): boolean | string {
     case "rest": {
       const home = within(w, a, "home")?.thing, body = bodyOf(w, a), hour = hourOf(w.t);
       const kind = home ? ["pile", "lean-to", "hut", "cabin"][home.shelter?.tier ?? 0] : null;
+      if (home) goIn(w, a, home);
       // Sleep comes once their want of it reaches the clock's upper threshold, and ends at its lower (body.ts).
       if (!body.asleep && body.sleep >= sleepy(hour)) body.asleep = true;
       if (body.asleep && body.sleep <= rested(hour)) delete body.asleep;
@@ -1497,7 +1499,9 @@ function run(w: World, a: Agent): boolean | string {
     }
     case "warm_up": {
       a.status = "Warming up";
-      if (!within(w, a, "fire", 1) && !within(w, a, "home")) return "the warmth was gone";
+      const home = within(w, a, "home")?.thing;
+      if (!within(w, a, "fire", 1) && !home) return "the warmth was gone";
+      if (home && !within(w, a, "fire", 1)) goIn(w, a, home);
       // Their warmth comes of where they are (needs): somewhere that no longer warms them is no place to warm up. Warm and
       // by the fire at night, there is nowhere better to be: they stay a while.
       if (a.needs.warmth < 95) return warmsThem(w, a) ? false : "the warmth was gone";
@@ -2031,25 +2035,23 @@ function burned(w: World) {
 // pains at PAIN and burns through the skin at THIRD (sec. 7).
 const BEARABLE = 2.5, PAIN = 1.33, THIRD = 16.67;
 const TICK_MIN = TICK_S / 60;
-// The walls round someone: their own home, or any lean-to or better they're within reach of, whoever put it up.
-function roofOf(w: World, a: Agent) {
-  const own = homeOf(w, a), sheltering = (t: Thing) => (t.shelter?.tier ?? 0) >= 1 && reaches(a, t);
-  return own && sheltering(own) ? own : nearestThing(w, a.px, a.py, ["structure"], sheltering, 6);
-}
-// The air inside a shelter (body-constants sec. 5): its walls are a dome as wide as it is (physics.ts sizeOf), the solid of
-// its parts spread over the dome, each conducting as it does, between still air's film inside and the wind's outside; what
-// the skins of those in it give off warms it until its walls lose as much. Air leaking through gaps is left out [gap].
+// The air inside a shelter (shelter.ts insideAir, people-constants sec. 8): what the skins of those in it give off, and
+// the radiant share of what any fire on its floor gives off (light.ts CHI_R), its walls and roof taking that in while the
+// rest goes up through the smoke hole [design], warms it until its roof and walls lose as much in the wind outside.
 function shelterAir(w: World, roof: Thing, outside: number) {
-  const r = sizeOf(roof.shelter!) / 2, area = 2 * Math.PI * r * r;
-  const film = (wind: number) => 1 / (hc(wind) + 4 * 0.95 * 5.67e-8 * (outside + 273.15) ** 3);
-  let R = film(0) + film(airAt(w, roof.px, roof.py).wind);
-  for (const [k, n] of Object.entries(roof.parts ?? {})) {
-    const x = physOf(w.kinds, w.kinds[k]);
-    if (x) R += (n * x.mass) / x.rho / area / x.k;
-  }
+  const sh = roof.shelter!;
   let heat = 0;
-  for (const b of w.agents) if (b.body?.dry && roofOf(w, b) === roof) heat += b.body.dry * frameOf(w, b).area;
-  return outside + (heat * R) / area;
+  for (const b of w.agents) if (b.body?.dry && sheltered(w, b) === roof) heat += b.body.dry * frameOf(w, b).area;
+  around(w, roof.px, roof.py, sh.r, ["fire"], (f) => { if (ablaze(f)) { const o = fireOutput(w, f); heat += CHI_R * (o.flaming + o.glowing) * 1000; } });
+  return insideAir(sh, outside, airAt(w, roof.px, roof.py).wind, heat);
+}
+// Someone at their home goes in under its roof to rest or warm up, onto its floor halfway out from its middle, each of
+// those living there at their own place round it [design].
+function goIn(w: World, a: Agent, home: Thing) {
+  const sh = home.shelter;
+  if (!sh?.tier || sheltered(w, a) === home) return;
+  const all = residentsOf(w, home), i = Math.max(0, all.indexOf(a)), turn = (2 * Math.PI * i) / Math.max(1, all.length), d = sh.r / 2 / TILE_M;
+  put(w, a, home.px + Math.cos(turn) * d, home.py + Math.sin(turn) * d);
 }
 // The share of someone's skin against another body lying beside them, each of up to two [design: no measure of people's
 // contact was found; body-constants sec. 6].
@@ -2060,7 +2062,7 @@ const tends = (b: Agent, a: Agent) => b.plan[0]?.op === "tend" && b.plan[0].arg 
 // ground and crowns they see, or the walls; the fires' radiation on them and, out in the open, the sun's beam; what they
 // wear and how wet it and their skin are; and who lies against them. And the radiant heat on them, kW/m2.
 export function surroundings(w: World, a: Agent): { e: Around; q: number } {
-  const roof = roofOf(w, a), air = airOn(w, a, !!roof), fire = heatAt(w, a.px, a.py), f = frameOf(w, a);
+  const roof = sheltered(w, a), air = airOn(w, a, !!roof), fire = heatAt(w, a.px, a.py), f = frameOf(w, a);
   let temp = air.temp, radiant = air.temp, gain = fireGain(fire.q);
   if (roof) radiant = temp = shelterAir(w, roof, air.temp);
   else {
@@ -2292,6 +2294,12 @@ export async function retire(w: World) {
   heldStore(w)?.destroy();
   dropStore(w);
 }
+// A caller with other work to do between the parts of a tick (the play page's render worker draws its frames there)
+// sets fn, awaited after the upload, after each law the GPU is given, and after the ecology. Nothing else changes the
+// world meanwhile, and nothing the brain started is waiting then (what it starts, from the groups on, settles within
+// the tick that started it, which from there runs in one piece as before), so a run is the same with it as without.
+// Null: the tick runs in one piece but for its landing.
+export const tickPause: { fn: (() => Promise<void>) | null } = { fn: null };
 // One tick of the world. Async because the world's objects live on the GPU: the deltas queued last tick are uploaded
 // and the laws due set running there while the CPU's own work goes on, and the windows round people are copied back
 // into the mirror once it is done. The copy isn't waited for here: it comes back while the caller gets on with other
@@ -2311,9 +2319,12 @@ export async function tick(w: World) {
   if (last?.error) throw last.error;
   w.t++;
   traceClock.t = w.t;
-  timed("upload", () => gpu.begin(w.t));
+  const pause = tickPause.fn;
+  if (pause) await waited("upload", () => gpu.beginPaced(w.t, pause));
+  else timed("upload", () => gpu.begin(w.t));
   try {
     timed("ecology", () => ecology(w));
+    if (pause) await pause();
     timed("life", () => life(w));
     burned(w);
     timed("groups", () => groups(w));

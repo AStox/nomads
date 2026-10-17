@@ -308,7 +308,7 @@ const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
 export function sentence(w: World, f: Fields, ticks?: number, later?: number): string {
   const hours = ticks ? (ticks * TICK_S) / 3600 : 0, time = hours > 1 ? ` (about ${Math.round(hours)} hours)` : "";
   const ins = f.inputs.map((k) => nm(w, k));
-  const fireWord = ({ hearth: "a ringed fire", kiln: "a ringed fire heaped over with stone", forge: "a ringed charcoal fire" } as Record<string, string>)[f.at ?? ""] ?? "a fire";
+  const fireWord = ({ hearth: "a ringed fire", kiln: "a ringed fire heaped over with stone", forge: "a ringed fire glowing red" } as Record<string, string>)[f.at ?? ""] ?? "a fire";
   switch (f.verb) {
     case "strike":
       if (f.builds === "fire") return `Striking ${an(nm(w, f.target ?? "stone"))} ${with_(w, f.tool)} over a lay of ${laid(w, f.inputs.filter((_, i) => i !== f.inputs.indexOf(f.target ?? "")))} threw a spark that lit a fire.`;
@@ -348,7 +348,7 @@ export function sentence(w: World, f: Fields, ticks?: number, later?: number): s
       if (f.builds === "fed_fire") return `${cap(laid(w, f.inputs))} laid on a fire burned in it.`;
       if (f.builds === "hearth") return `A fire ringed with ${ins.join(" and ")} kept within the ring.`;
       if (f.builds === "kiln") return `Heaped over with ${ins.join(" and ")}, a ringed fire smoldered under it.`;
-      if (f.builds === "forge") return `${cap(ins.join(" and "))} fed to a ringed fire glowed in it as coals.`;
+      if (f.builds === "forge") return `${cap(ins.join(" and "))} fed to a ringed fire made it glow red.`;
       if (f.builds === "shelter") return f.at === "home" ? `${cap(ins.join(", "))} built into the shelter they had made it bigger or better.` : `Leaning and stacking ${ins.join(", ")} made a shelter.`;
       return `Stacking ${ins.join(", ")} makes a pile.`;
     case "plant":

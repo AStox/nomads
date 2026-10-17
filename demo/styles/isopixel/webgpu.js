@@ -28,8 +28,10 @@ import { CELLS_N, CELL_M, CELLS, FAR_LVL, objectWGSL, sourceWGSL, cullWGSL, cach
 export const LEVELS = 16;
 const ROWS = LEVELS * 4 + 1;
 export { NS, ATLAS };
-// the sun map is traced again once the sun has moved this far (radians), over SUN_STRIPES frames
-const SUN_MOVE = 0.004, SUN_STRIPES = 6;
+// the sun map is traced again once the sun has moved this far (radians), over SUN_STRIPES frames [design: a stripe
+// about 0.6 ms of a frame on AMD RDNA-1, measured 2026-10-16 at 1.0 to 1.4 ms for six stripes; a tick's move of the sun
+// is traced in a fifth of a second at 60 Hz]
+const SUN_MOVE = 0.004, SUN_STRIPES = 12;
 // how far from each cell of the island's heights the ground's folds are looked over for the sky they hide (meters)
 const TER_REACH = 450;
 // the most objects one view draws, their shadow rows, and tiles under a view
@@ -1289,7 +1291,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       const n = Math.min(slice, f.cap - j.at);
       device.queue.writeBuffer(farU, 0, FU.pack({ base: j.at, n, nf: farN }));
       if (j.phase === "count" && j.at === 0) enc.clearBuffer(f.cnt);
-      const pass = enc.beginComputePass();
+      const pass = enc.beginComputePass(tw("far"));
       if (j.phase === "count") { pass.setPipeline(s.far.count.p); pass.setBindGroup(0, group(s.far.count, 0, { ...s.over, fkey: { buffer: f.key }, fcnt: { buffer: f.cnt } })); pass.setBindGroup(1, groundGroup); }
       else { pass.setPipeline(farFileP.p); pass.setBindGroup(0, group(farFileP, 0, { fkey: { buffer: f.key }, fcnt: { buffer: f.cnt }, flist: { buffer: f.list[back] } })); }
       pass.dispatchWorkgroups(...spread(n));
@@ -1331,13 +1333,14 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // ---------- the far levels' front lists (wgsl/objects.js frontWalk) ----------
   // Per source that builds them, level and whole bearing, by name so they outlive setSources: the list and its index,
   // laid out as a far list's, and the far list generation it was built from. One is built at a time, FRONT_ROWS rows
-  // of cells a frame [design: a sixteenth of the island a slice, under 2 ms of a frame], from the view of the whole
+  // of cells a frame [design: a thirty-second of the island a slice, under 2 ms of a frame; sixteen rows measured 0.3 to
+  // 5.3 ms on AMD RDNA-1 2026-10-16], from the view of the whole
   // island at its level and bearing (frontViews, from live.js islandView): the far list's counts at the level scanned
   // into the cells' runs, every slice marked, then every slice kept; it replaces the one it was built again for when
   // done. A view walks a front list while its far list is the one it was built from or one a sim day newer (its objects
   // are drawn as their buffers hold them now; one grown into a pixel since is in neither); the frame asks for the front
   // lists of its views' bearing at every level that has them, its own level first.
-  const FRONT_ROWS = 16;
+  const FRONT_ROWS = 8;
   const frontU = B(FU.bytes, UNI, "front"), frontV = B(VU.bytes, UNI, "frontView"), frontState = new Map(), frontWant = [];
   const frontScanP = pipe({ label: "front scan", binds: ["Fp", "fidx", "fout:w"], code: FRONT_SCAN_WGSL, compute: "frontScan" });
   let frontViews = new Map(), frontUse = true, frontJob = null, frontKeys = null;

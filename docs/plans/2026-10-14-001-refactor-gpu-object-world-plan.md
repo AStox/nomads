@@ -530,6 +530,44 @@ Not done or not run: grazers' intake from tillers against the old pools by seaso
 
 The grazed sward, traced (2026-10-16, seed 1, each day: the most-bitten cells' tillers by lamina class, green g/m2, bite chance, growth, bitten lamina, and the next step's expected bites, deaths and births). Under the first law the hardest-grazed open cells went from 5,000 tillers of 32 mg to 5,195 of 3.9 mg by day 3, with a bite chance of 1.0 (every tiller bitten every day), and were empty by day 8. Four faults compounded. A bitten class-0 tiller died, and growth went up only a class a day in proportion to lamina, so a grazed tiller could not regrow. The animals' ten spin-up days never stepped the ground (gpu/animals.ts spun it only at a tick divisible by the day, and the start is not on an hour), so they grazed pools that never regrew, and the rabbits fell from the start's count to 1,321, with all ten days' eating owed at once. Finally, the pools and the bite chance read a cell's lamina through a saturating u32 of 1/8 mg (95 g/m2 of a cell), and a negative credit added to the saturated value wrapped to nearly nothing. Fixed: the regrowth law (plant-constants sec. 14a: a bite takes half the lamina above the grazing height and leaves the tiller, class 0 is a tiller with no lamina above it, each tiller grows a full leaf's lamina a phyllochron (R953, R997, R950) or its share of the layer's growth where less (R1100: reserves), and senesces exponentially; bites kill only elongating tillers); the spin-up stepping the ground at each midnight crossed; the pools and the bite chance in 64 bits. Under the new law the same cells keep 90 to 145 g/m2 of lamina at a bite chance of 0.05 to 0.4 and 4,200 to 5,100 tillers a m2, and the rabbits leave the spin-up at 15,146. The sward test now settles at LAI 3.978 against 3.988, with 4,959 tillers at 30.4 mg, inside R951's band. Memory: the tier's sort, heads and positions now share the store index's scratch (key, flag, ids, cells, hist), and its outcome counts share deadwood's (counts) at each kind's own outcome words (tiller 11, litter 10, fauna 8, sand 3, against 16). A kind's room for bins and contributions grows by half before a step when the last landing found it over three quarters full, its table copied, results unchanged. The herds rerun, intake by season against the old pools (scripts run with UNBOUND, the animals off the Ground link) and the year's memory peaks were still running when this was written; see the Unit 12b fix report.
 
+Memory by owner (2026-10-16, seed 1, dev GPU): the GPU world laid out and stepped hourly for forty island days, one island year, from waking, without people (as src/sim/herds.test.ts steps it), every buffer counted as made and destroyed by the module that made it. The most bins each kind held over the year: 695,278 tillers, 1,581,621 litter, 1,340,045 fauna, no sand; a step's most contributions 2,644,352, 5,866,348 and 2,381,452. Under the rooms the kinds had (tillers 2^20, litter and fauna 3 x 2^19), the litter and fauna outgrew three quarters of theirs and were copied to half as much again, both tables alive at once: 2,399 MB live at the year's end and 2,653 MB at the most. Their first rooms are now sized from these peaks with a third more (gpu/smalls.ts CAPS: tillers 15 x 2^16, litter 33 x 2^16, fauna 28 x 2^16, sand 2^14 as before), so no kind's room grew in the rerun and its contributions stayed under three quarters of theirs: 2,345 MB live at the end, 2,368 MB at the most.
+
+| Owner (seed 1, day 40) | MB |
+|---|---|
+| plant, stems (room 11,124,656) | 489.7 |
+| fish (room 8,388,608) | 268.7 |
+| seedling (room 4,194,304) | 151.0 |
+| stickbin (room 4,454,833) | 142.8 |
+| log (room 726,074) | 38.0 |
+| piece | 9.7 |
+| animal (room 131,072) | 8.1 |
+| pebble, stone, boulder | 7.8 |
+| tuft, leaf, bug, grain and the lumped kinds' declarations | 2.8 |
+| store scratch: the index's key, flag, ids, cells, m and kept (44.5 each) and hist | 278.1 |
+| store scratch: the stems' list, crowns, counts, flags, cursor and busy | 167.1 |
+| store scratch: the outcome counts deadwood and the lumped kinds share | 86.5 |
+| store scratch: the seedlings' list, counts, cursor and uploads | 62.9 |
+| store scratch: deadwood's | 21.3 |
+| store scratch: the lumped kinds' (contributions 91.0, the rest 27.9) | 118.9 |
+| store scratch: out | 8.9 |
+| the store's readback ring and small buffers | 22.7 |
+| lumped tables: tillers 33.6, litter 71.3, fauna 60.8, sand 2.8 | 168.5 |
+| smalls' own: inputs, day words, census, credits, births, summary | 47.3 |
+| moisture | 70.3 |
+| seedlings' own | 65.0 |
+| fish's own | 35.6 |
+| animals' own | 33.8 |
+| flora's own | 17.5 |
+| crowns | 13.4 |
+| drivers, deadwood, dormant | 8.4 |
+| all | 2,344.7 |
+
+The smallest things hold 337 MB of it (their tables, their scratch, their own buffers and declarations). The total is 845 MB over the 1.5 GB budget, and 508 MB over it without them: the stems at their measured densities (490 MB), the fish's room (269 MB), the seedlings' and the stick bins' rooms (294 MB together), and the store's shared scratch (744 MB, the index's six buffers sized by the largest kind, the stems, and the stems' list) [gap: the budget is missed before this unit's share; not tuned].
+
+Saving and loading (2026-10-16): a world saved with its GPU objects loaded with the animals' ground (W) overwritten. The animals bound the lumped kinds' link before restoring W, and the link's pools, encoded at the bind, ran after the restore's writes; a loaded world's ground was the day's pools again rather than what the animals had eaten of them since. The link now writes its pools at the bind only where the animals or the lumped kinds are fresh (gpu/animals.ts Ground.bind saved), and src/sim/space.test.ts's save and load hash equal.
+
+Not run in this pass: the herds' three-year rerun (src/sim/herds.test.ts, some 2.5 hours) against the medians before Unit 12b (deer 1.66 a km2, rabbits 0.79 a ha, wolves 13, foxes 0.30 a km2), so whether the grazers now persist on the regrowing tillers is not yet shown [gap].
+
 ### Phase D: Renderer on WebGPU
 
 - [ ] **Unit 13: WebGPU renderer in a worker, pixel parity**

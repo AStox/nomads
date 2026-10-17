@@ -6,9 +6,9 @@
 // so a second migration finds nothing to do. The save as it was is kept beside it first (migrateSave), so the change can
 // be rolled back.
 import { copyFileSync, existsSync } from "node:fs";
-import { DAY, meters, type Stack, type Thing, type World } from "./world";
+import { DAY, meters, type Shelter, type Stack, type Thing, type World } from "./world";
 import { advance, alight, expose, kindle, lasts, lay, lightsIn, output, type Bed, type Coals, type Ring } from "./combustion";
-import { STILL, bedAir, isBow, mark, rubbing, usual, type Fields } from "./physics";
+import { STILL, bedAir, isBow, mark, rubbing, shelterOf, usual, type Fields } from "./physics";
 import { PHYS, physOf, stackPhys } from "./fuel";
 import { BASE, p } from "./materials";
 import { WIDEST, airFor, bedOf, blazeOf, fluxOn, partsOf, reach, warmed } from "./spread";
@@ -323,6 +323,23 @@ function lighting(w: World, out: string[]) {
   for (const [k, n] of what) out.push(`${k} is now ${moved.get(k)}: ${Object.entries(n).map(([x, c]) => `${c} ${x}${c === 1 ? "" : "s"}`).join(", ")}`);
 }
 
+// ---------- shelters ----------
+// A shelter saved as scores and a tier (people-constants sec. 8) is what its parts and kept pieces make (physics.ts
+// shelterOf), as wide as its floor, a fire's ring as wide as its stone is laid round; its hit points are gone.
+function shelters(w: World, out: string[]) {
+  for (const t of w.things) {
+    const old = t.shelter as Partial<Shelter> | undefined;
+    if (t.kind !== "structure" || !old || old.r !== undefined) continue;
+    const was = old.tier;
+    t.shelter = shelterOf(w, t.parts ?? {}, t.pieces);
+    const fire = nearestThing(w, t.px, t.py, ["fire"], () => true, 1);
+    t.size = fire?.walls ? fire.walls.width / Math.PI : 2 * t.shelter.r;
+    delete t.hp; delete t.maxHp;
+    if (t.shelter.tier !== was) out.push(`structure ${t.id} was tier ${was}, its pieces stand as tier ${t.shelter.tier}`);
+    mark(w, t);
+  }
+}
+
 // Reads an old save's world into the new physics, in place; what it changed, and what it couldn't match, for the log.
 export function migrate(w: World): string[] {
   const out: string[] = [];
@@ -332,6 +349,7 @@ export function migrate(w: World): string[] {
   wetness(w, out);
   kinds(w, out);
   lighting(w, out);
+  shelters(w, out);
   return out;
 }
 

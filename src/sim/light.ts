@@ -72,7 +72,8 @@ function beamClears(w: World, px: number, py: number, s: Sky) {
 // gives off (sec. 7). Both fall off as from a disc of the fire's own heap seen on its axis, I / (d^2 + r^2): the point
 // source's inverse square a few fire-widths off, and finite at the fire. A flame carried is held HELD m from what its
 // holder sees and works by (R122's lamp). A cover of stone over a fire hides it, its light and its heat alike.
-const FLAME_LM = 0.16, CHI_R = 0.3, HELD = 0.4;
+const FLAME_LM = 0.16, HELD = 0.4;
+export const CHI_R = 0.3;
 // cd and radiant kW of a source, and its r^2, m2
 type Source = { px: number; py: number; cd: number; kw: number; r2: number; thing?: Thing };
 const sources = new WeakMap<World, { t: number; list: Source[] }>();

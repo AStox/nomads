@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
-import { DAY, TILE_M, addThing, newWorld, type Agent, type Shelter, type Stack, type World } from "./world";
+import { DAY, TILE_M, addThing, newWorld, type Agent, type Stack, type World } from "./world";
 import { DAMP, deadAt, emc, equilibrium, splitWater, tinderOf, wetness } from "./wetness";
 import { STICK_DIA } from "../gpu/deadwood";
 import { referenceEt, topKr, wetHour, TEW, REW } from "./soil";
 import { PHYS, WOODS } from "./fuel";
 import { airOn, vapourAt } from "./air";
-import { dropStacks, fireOf, giveItems, giveStack, sparkCatches, strikeTick } from "./physics";
+import { dropStacks, fireOf, giveItems, giveStack, shelterOf, sparkCatches, strikeTick } from "./physics";
 import { nearestThing, put } from "./space";
 import { canopyAt } from "./light";
 import { needs } from "./sim";
@@ -25,13 +25,14 @@ const at = (w: World, hour: number) => { w.t = (Math.floor(w.t / DAY) + 1) * DAY
 const hours = (w: World, n: number) => { for (let i = 0; i < n; i++) { w.t = (Math.floor(w.t / 12) + 1) * 12; wetness(w); } };
 const held = (a: Agent, k: string) => a.inv.find((s) => s.k === k)!;
 const round = (k: string, d: number, m: number, extra: Partial<Stack> = {}): Stack => ({ k, hp: 1, born: 0, m, size: { d, len: 1, mass: (Math.PI / 4) * d * d * 450 }, ...extra });
-const HUT: Shelter = { tier: 1, style: "sticks", cover: 0.6, insul: 0.3, sturdy: 0.4, flam: 0.6, room: 1 };
+// a hut: three sticks leaned together under two hides (physics.ts shelterOf)
+const HUT = { stick: 3, hide: 2 };
 // someone else, 60 m off, under a roof of their own, by a fire if asked
 function apart(w: World, a: Agent, i: number, fire = false) {
   const b = w.agents[i];
   b.inv = []; b.wearing = null;
   put(w, b, a.px + (60 * i) / TILE_M, a.py);
-  addThing(w, "structure", b.px, b.py, { shelter: HUT, parts: { stick: 6 } });
+  addThing(w, "structure", b.px, b.py, { shelter: shelterOf(w, HUT), parts: HUT });
   if (fire) fireOf(w, b.px + 1 / TILE_M, b.py);
   return b;
 }
@@ -56,7 +57,7 @@ test("out of the rain thin fuel dries within hours while a log takes days, and a
   let open = { px: a.px, py: a.py };
   for (let r = 0; canopyAt(w, open.px, open.py) > 0.01 && r < 2000; r += 5) open = { px: a.px + r / TILE_M, py: a.py };
   const shade = { px: open.px, py: open.py + 8 / TILE_M };
-  addThing(w, "structure", shade.px, shade.py, { shelter: HUT, parts: { stick: 6 } });
+  addThing(w, "structure", shade.px, shade.py, { shelter: shelterOf(w, HUT), parts: HUT });
   dropStacks(w, open.px, open.py, [round("stick", 0.025, 0.5)]);
   dropStacks(w, shade.px, shade.py, [round("stick", 0.025, 0.5)]);
   const lying = (at: { px: number; py: number }) => nearestThing(w, at.px, at.py, ["item"], (t) => t.item === "stick", 2)!.pieces![0];

@@ -506,6 +506,14 @@ export class Store {
 
   // ---------- a tick ----------
   begin(t: number) {
+    for (const _ of this.beginSteps(t));
+  }
+  // begin as a caller that has other work between the laws runs it (the play page's render worker draws its frames
+  // there): the same work in the same order, pause awaited after the upload and after each law due.
+  async beginPaced(t: number, pause: () => Promise<void>) {
+    for (const _ of this.beginSteps(t)) await pause();
+  }
+  private *beginSteps(t: number) {
     if (this.begun || this.landing) throw new Error("a store tick begins only once the last one has landed");
     this.flush();
     this.t = t;
@@ -515,7 +523,8 @@ export class Store {
       // law's: the queue keeps the order, and no law writes a buffer (writeBuffer) an earlier law's kernels read
       this.upload();
       this.flush();
-      for (const l of this.laws) if (l.due(t)) { l.run(this, t); this.flush(); }
+      yield;
+      for (const l of this.laws) if (l.due(t)) { l.run(this, t); this.flush(); yield; }
       // a still kind untouched since its last index has no dead slot to reclaim and no object out of place; a placed
       // kind's reclaim rides its index's scan
       const due = this.kinds.filter((k) => !k.spec.still || k.touched);

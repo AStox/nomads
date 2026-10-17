@@ -92,7 +92,7 @@ Gap: a sprout draws on its roots' stores and grows far faster than a seedling; h
 
 | Old rule | Now |
 |---|---|
-| Whatever fell into a hidden pit broke out half a day later | A pit with steep walls as deep as someone stands in (PIT_DEPTH 1.5 m) holds what falls in: trapping pits for elk, reindeer and wolves were up to about 2 m deep and steep-sided so that nothing could climb or jump out (R451). It stays until it's killed (wolves take one in a pit as readily as any) or starves: it burns its field metabolic rate from its own reserve with nothing to eat (herds.ts fasting), a deer from full in about a game day and a half at the herds' pace, and lies there as carrion. A pit with nothing left in it is an open pit again |
+| Whatever fell into a hidden pit broke out half a day later | A pit with steep walls 2 m deep, as trapping pits for elk, reindeer and wolves were, steep-sided so that nothing could climb or jump out (R451; shelter.ts PIT_DEPTH, people-constants sec. 8, which since 2026-10-16 also lets out whatever can leap that depth), holds what falls in. It stays until it's killed (wolves take one in a pit as readily as any) or starves: it burns its field metabolic rate from its own reserve with nothing to eat (herds.ts fasting), a deer from full in about a game day and a half at the herds' pace, and lies there as carrion. A pit with nothing left in it is an open pit again |
 
 Gaps: rabbits and foxes dig, and could dig out [gap: no digging rate found]; thirst would kill before hunger [gap: no measure of how long a deer lasts without water found].
 

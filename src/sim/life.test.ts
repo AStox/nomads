@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { DAY, TILE_M, Tile, addThing, newWorld, tileAt, type Agent, type World } from "./world";
-import { beside, diggable, digTick, giveItems, place, throwTick } from "./physics";
+import { beside, diggable, digTick, giveItems, giveStack, place, shelterOf, throwTick } from "./physics";
+import { roundSize } from "./fuel";
 import { addAnimal } from "./fauna";
 import { put } from "./space";
 import { ecology } from "./ecology";
@@ -19,7 +20,7 @@ const grassSpot = (w: World, a: Agent) => {
   throw new Error("no grass");
 };
 
-test("a dug pit covered with sticks traps the next deer that walks onto it", () => {
+test("a dug pit covered with sticks long enough to span it traps the next deer that walks onto it", () => {
   const w = newWorld(3);
   const a = w.agents[0];
   grassSpot(w, a);
@@ -29,7 +30,8 @@ test("a dug pit covered with sticks traps the next deer that walks onto it", () 
   let r;
   do r = digTick(w, a, { verb: "dig", items: [], tool: "sharp_stone" }, st); while (!r.done);
   expect(r.out!.builds).toBe("pit");
-  giveItems(w, a, "stick", 3);
+  // three 2 m sticks, each breaking under about 200 N at its middle: a deer's 1.1 kN breaks them (shelter.ts coverHolds)
+  for (let i = 0; i < 3; i++) giveStack(w, a, { k: "stick", hp: 1, born: w.t, size: roundSize("generic", 0.025, 2) });
   expect(place(w, a, { verb: "place", items: ["stick", "stick", "stick"] }).builds).toBe("trap");
   const trap = w.things.find((t) => t.kind === "trap")!;
   w.animals = [];
@@ -67,7 +69,7 @@ test("sweethearts with a home and full bellies have a child who inherits from th
   w.agents = [a, b];
   put(w, b, a.px, a.py);
   for (const [x, y] of [[a, b], [b, a]]) x.rel[y.id] = { ...newRel(0), affinity: 0.8, trust: 0.8, label: "sweetheart" };
-  addThing(w, "structure", a.px, a.py, { owner: a.id, shelter: { tier: 1, style: "sticks", cover: 0.5, insul: 0.3, sturdy: 0.3, flam: 0.5, room: 1 } });
+  addThing(w, "structure", a.px, a.py, { owner: a.id, parts: { stick: 3, hide: 2 }, shelter: shelterOf(w, { stick: 3, hide: 2 }) });
   for (const x of [a, b]) { x.needs.food = 90; x.needs.health = 100; }
   let tries = 0;
   while (!a.pregnant && !b.pregnant && tries++ < 50) { w.t = DAY * tries + Math.round(DAY * 0.88); life(w); }

@@ -34,8 +34,17 @@ export type ThingKind =
   | "tree" | "stump" | "burnt_stump" | "bush" | "dead_bush" | "sapling" | "mushroom" | "herb"
   | "stick" | "stone" | "pebble" | "boulder" | "fallen_log" | "reeds" | "fern" | "flowers" | "grass" | "clay" | "fire" | "structure" | "item" | "ash"
   | "pit" | "trap" | "well" | "grave";
-// room: how many people can sleep inside it
-export type Shelter = { tier: 0 | 1 | 2 | 3; style: string; cover: number; insul: number; sturdy: number; flam: number; room: number };
+// A shelter as its pieces stand (shelter.ts, people-constants sec. 8). tier: the form they take, 0 a pile (no frame that
+// stands, or a roof over less than one sleeper's floor), 1 a lean-to (a roof over part of it), 2 a hut (a roof all
+// round), 3 a cabin (a roof all round on walls); style: what it looks built of; r: the radius of the floor its roof
+// stands over, m; top and eaves: how
+// high its peak and the walls under its roof stand, m; roof: the roof's area, m2, closed: the share of it its cover
+// closes, rRoof: that cover's resistance to heat, m2K/W; wall and rWall: its walls' area and resistance; wind: the wind
+// it stands up to, m/s; room: how many people can sleep inside it.
+export type Shelter = {
+  tier: 0 | 1 | 2 | 3; style: string; r: number; top: number; eaves: number; roof: number; closed: number; rRoof: number;
+  wall: number; rWall: number; wind: number; room: number;
+};
 // px, py: where it stands, in tiles (150 m each); x, y are always their floor, the tile it's on.
 export type Thing = {
   id: string; kind: ThingKind; x: number; y: number; px: number; py: number;
@@ -56,8 +65,10 @@ export type Thing = {
   rot?: number; // how far food lying here has gone toward spoiled, 0..1 (spoil.ts)
   dry?: number; peak?: number; // a seedling's dry mass and the most it has weighed, g (seedling.ts)
   scarred?: number; resin?: number; bark?: number; // when a tree was last cut into, resin beaded on it, bark peeled off it
-  // fires: the stone ringed round it, closed over, charcoal fed it, air blown into it until
-  walls?: Ring; covered?: boolean; charcoal?: number; air?: number;
+  // fires: the stone ringed round it, heaped over it (and how much of the ring's mouth the heap closes, m2), charcoal fed
+  // it in saves before fires were judged by their warmth, air blown into it until
+  walls?: Ring; covered?: boolean; lid?: number; charcoal?: number; air?: number;
+  holds?: number; // a trap's: the weight its cover takes before it gives way, N
   // the heat each of its parts has taken toward lighting from a fire near it, kJ/m2, in the order spread.ts lays them;
   // gone once it has cooled (ecology.ts fire)
   absorbed?: number[];
@@ -642,8 +653,9 @@ export function newWorld(seed: number, agentCount = 5): World {
   return w;
 }
 
-// How big a thing made or dropped in the world starts out, in meters, when whoever makes it doesn't say.
-const MADE_SIZE: Partial<Record<ThingKind, number>> = {
+// How big a thing made or dropped in the world starts out, in meters, when whoever makes it doesn't say: a pit's mouth
+// 1.5 m across [design].
+export const MADE_SIZE: Partial<Record<ThingKind, number>> = {
   fire: 1, structure: 2, item: 0.3, ash: 1.2, pit: 1.5, trap: 1.5, well: 1.5, grave: 2, sapling: 0.3, stump: 0.6, burnt_stump: 0.6,
   dead_bush: 1, stick: 1, stone: 0.2, mushroom: 0.1, herb: 0.3, reeds: 1.5, clay: 1,
 };

@@ -9,7 +9,7 @@ import { cull } from "./animals";
 import { ecology } from "./ecology";
 import { ctxFor, tick } from "./sim";
 import { DARK, lightAt, lightOn } from "./light";
-import { seesPerson } from "./senses";
+import { JOHNSON, seesPerson, sightRange } from "./senses";
 import { YEAR_DAYS, sunAt } from "./sky";
 import { bodyOf } from "./body";
 import { releaseGpu } from "../gpu/device";
@@ -117,7 +117,7 @@ test("a closed stand shades the ground under it from the next crown pass, and fe
   expect(lightAt(w, px, py).lux).toBeLessThan(open.lux * 0.2);
   await crownsOf(w)!.refresh();
   expect(lightAt(w, px, py).lux).toBe(open.lux);
-}, 60_000);
+});
 
 test("the forest floor goes dark in the evening while open ground is still lit", async () => {
   const { w, px, py } = await pad(2);
@@ -129,7 +129,7 @@ test("the forest floor goes dark in the evening while open ground is still lit",
   }
   expect(dusk.some((d) => d.open >= DARK && d.under < DARK)).toBe(true);
   expect(dusk.every((d) => d.under <= d.open)).toBe(true);
-}, 60_000);
+});
 
 test("a fire lights the night around it and not far off", async () => {
   const { w, px, py } = await pad(3);
@@ -215,7 +215,9 @@ test("whoever is out after something when the dark falls gives it up where they 
     // ticked through leave a person out on them cold, and cold (a need under 20) ends a goal on its own (sim.ts agentTick)
     Object.assign(bodyOf(w, a), { core: 36.8, skin: 33.7 });
     a.goal = { type: goal, since: w.t, odds: {}, fails: 0 };
-    a.plan = [{ op, arg: op === "wander" ? `${px + 40 / TILE_M},${py}` : undefined, progress: 0 }];
+    // out after something on the next pad east, 600 m off, further than a tick's walk (TICK_S at gait.ts FASTEST, some
+    // 500 m), so a tick in daylight ends with them still on their way
+    a.plan = [{ op, arg: op === "wander" ? `${px + 600 / TILE_M},${py}` : undefined, progress: 0 }];
     const was = a.goal;
     // the goal given up, whatever they choose next (the tick waits on the GPU, and the brain may answer meanwhile)
     await tick(w);
@@ -223,12 +225,16 @@ test("whoever is out after something when the dark falls gives it up where they 
   }
 });
 
-test("in the dark they plan around what they can see: a bush 100 m off is no place to go, a stick at 20 m is, unless they are starving", async () => {
+test("in the dark they plan around what they can see: a bush 100 m off is no place to go, a stick close by is, unless they are starving", async () => {
   const { w, px, py } = await pad(4, 150);
   const a = w.agents[0];
   put(w, a, px, py);
   addThing(w, "bush", px + 100 / TILE_M, py, { species: "berry", n: 3, hp: 20, maxHp: 20 });
-  addThing(w, "stick", px + 20 / TILE_M, py);
+  // a stick a meter long at half the farthest it is told for what it is by the night's light at 1 am (senses.ts:
+  // Johnson's recognition, its length over twice the cycles across it), a few meters by starlight
+  w.t = at(1);
+  const near = sightRange(1 / (2 * JOHNSON.recognise), lightOn(w, a).lux, w.weather.sky) / 2;
+  addThing(w, "stick", px + near / TILE_M, py, { size: 1 });
   Object.assign(a.needs, { food: 60, warmth: 90 });
   w.t = at(12);
   expect(ctxFor(w, a).dist.bush).toBeDefined();
@@ -261,10 +267,18 @@ test("a hungry person with a bush 100 m off goes out after food by day, but in t
     }
     return [...seen];
   };
-  expect(await goalsAt(1)).toEqual(["rest"]);
-  const day = await goalsAt(12);
-  expect(day.includes("eat") || day.includes("forage")).toBe(true);
-}, 60_000);
+  // alone: the island's other person, who walks about it, would bring the goals one has with someone in reach (talk,
+  // help, stay close), which the dark doesn't stop
+  const both = island.agents;
+  island.agents = both.slice(0, 1);
+  try {
+    expect(await goalsAt(1)).toEqual(["rest"]);
+    const day = await goalsAt(12);
+    expect(day.includes("eat") || day.includes("forage")).toBe(true);
+  } finally {
+    island.agents = both;
+  }
+});
 
 test("a hungry wolf takes a lone person who is out in the dark, and leaves one in the light alone", async () => {
   // a dusk hour when the open is still light enough and the floor of a grove already dark
@@ -284,8 +298,9 @@ test("a hungry wolf takes a lone person who is out in the dark, and leaves one i
   for (const [i, [hour, trees, state]] of cases.entries()) {
     const { w, px, py } = await pad(7);
     const a = w.agents[0];
-    put(w, a, px, py);
+    // the grove's tick lets them walk off after what they were about: they are put in place after it
     if (trees) await grove(w, px, py);
+    put(w, a, px, py);
     const wolf = addAnimal(w, "wolf", px + 100 / TILE_M, py, { hunger: 20 });
     // Each case gets a tick of its own, since how bright it is where someone stands is worked out once a tick. None of
     // them falls on the dozen-tick turn of the weather.
@@ -293,7 +308,7 @@ test("a hungry wolf takes a lone person who is out in the dark, and leaves one i
     ecology(w);
     expect(wolf.state).toBe(state);
   }
-}, 120_000);
+});
 
 test("seedlings grow in the open and burn down in the deep shade of a grove", async () => {
   const pd = await pad(8), w = pd.w;

@@ -16,7 +16,8 @@ const num = (k, def, lo = -Infinity, hi = Infinity) => {
   return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : def;
 };
 const seed = Math.trunc(num("seed", 1)), warm = Math.trunc(num("warm", 2016, 0, 40000)), withSim = Q.get("sim") !== "0";
-const benchKind = ["zoom", "orbit", "turn", "pan"].includes(Q.get("bench")) ? Q.get("bench") : null;
+// ?bench=zoom, or several in turn on one load (?bench=zoom,orbit,turn,pan), each from the view the first began at
+const benchKinds = (Q.get("bench") ?? "").split(",").filter((k) => ["zoom", "orbit", "turn", "pan"].includes(k));
 const canvas = document.getElementById("view"), hint = document.getElementById("hint"), statsEl = document.getElementById("stats"), pace = document.getElementById("pace"), renderEl = document.getElementById("render"), clockEl = document.getElementById("clock");
 // a touch screen: buttons stand in for the keys, and the hint speaks of fingers (?pad=1 or 0 to choose)
 const pad = document.getElementById("pad"), touchy = Q.get("pad") === "1" || (Q.get("pad") !== "0" && matchMedia("(pointer: coarse)").matches);
@@ -551,7 +552,7 @@ async function main() {
   const showStats = Q.get("stats") === "1";
   statsEl.hidden = !showStats;
   let lastStats = 0, readyMarked = false, lastNow = performance.now();
-  const bench = benchKind ? benchRunner(benchKind, live, view) : null;
+  const bench = benchKinds.length ? benchSeq(benchKinds) : null;
   let revealed = false, relayShown = false;
   function loop(now) {
     const dt = Math.min(100, now - lastNow);
@@ -611,10 +612,35 @@ async function main() {
   }
   requestAnimationFrame(loop);
 
-  // ?bench=zoom | orbit | turn | pan: drive the camera and record frame rate and frame cost, for the report.
-  function benchRunner(kind, live, view) {
+  // ?bench=zoom | orbit | turn | pan: drive the camera and record frame rate and frame cost, for the report. Several run
+  // in turn, each from the view the first began at, after a settling pause of SETTLE_MS [design]; their results are
+  // kept by kind.
+  function benchSeq(kinds) {
+    const SETTLE_MS = 2000, results = {};
+    let i = 0, cur = null, home = null, wait = 0;
+    const done = (out) => {
+      results[out.kind] = out;
+      cur = null;
+      if (++i < kinds.length) { wait = 0; return; }
+      document.body.dataset.bench = JSON.stringify(kinds.length > 1 ? results : out);
+      document.body.classList.add("ready");
+    };
+    return {
+      step(now) {
+        if (i >= kinds.length) return;
+        if (!home) home = { x: view.x, z: view.z, bearing: view.bearing, zoom: view.zoom };
+        if (!cur) {
+          if (!wait) { wait = now; if (i) { camera.setZoom(home.zoom); Object.assign(view, { x: home.x, z: home.z, bearing: home.bearing }); } }
+          if (i && now - wait < SETTLE_MS) return;
+          cur = benchRunner(kinds[i], live, view, done);
+        }
+        cur.step(now);
+      },
+    };
+  }
+  function benchRunner(kind, live, view, onDone) {
     const secs = num("benchs", 12, 1, 600), out = { kind, samples: [] }, gpu = [];
-    let start = 0, done = false, base = null, lastT = 0, k = 0;
+    let start = 0, done = false, base = null, lastT = 0, k = 0, warmingAt = false;
     // the page thread's long tasks (over 50 ms) while the bench runs, in ms
     const long = [], watch = new PerformanceObserver((l) => { if (start && !done) for (const e of l.getEntries()) long.push(Math.round(e.duration)); });
     watch.observe({ type: "longtask" });
@@ -630,26 +656,28 @@ async function main() {
       out.reveal = metrics.revealMs;
       out.slow = [...out.samples].sort((a, b) => b.ms - a.ms).slice(0, 12).map((s) => [+s.ms.toFixed(1), s.z, s.slots, s.holes ? 1 : 0, ...(s.parts || [])]);
       out.slowGaps = [...out.samples].sort((a, b) => b.dt - a.dt).slice(0, 6).map((s) => [Math.round(s.dt), +s.ms.toFixed(1), s.z]);
-      // the render worker's frames: the GPU's own time for each (timestamps), the worker's time to record it, and the
-      // time from the page sending a frame to the GPU finishing it
+      // the render worker's frames: the GPU's own time for each (timestamps), the worker's time to record it, the time
+      // from the page sending a frame to the GPU finishing it, and the time between two finished frames (what is seen)
       const st = (xs) => { const v = [...xs].sort((a, b) => a - b); return v.length ? { mean: +(v.reduce((a, b) => a + b, 0) / v.length).toFixed(2), p95: +v[Math.floor(v.length * 0.95)].toFixed(2), max: +v.at(-1).toFixed(2), over16: v.filter((x) => x > 16.7).length } : null; };
-      out.worker = { frames: gpu.length, gpuMs: st(gpu.map((f) => f.gpu)), cpuMs: st(gpu.map((f) => f.cpu)), latencyMs: st(gpu.map((f) => f.latency)) };
+      out.worker = { frames: gpu.length, gpuMs: st(gpu.map((f) => f.gpu)), cpuMs: st(gpu.map((f) => f.cpu)), latencyMs: st(gpu.map((f) => f.latency)), gapMs: st(gpu.slice(1).map((f, j) => f.at - gpu[j].at)) };
+      // the worker's dearest frames: GPU ms, the zoom and views when the page heard of it, and each pass's GPU ms
+      out.worker.slow = [...gpu].sort((a, b) => b.gpu - a.gpu).slice(0, 12).map((f) => [+(f.gpu ?? 0).toFixed(2), f.z, f.slots, f.passes]);
+      out.warming = warmingAt;
       out.dtMs = st(out.samples.map((s) => s.dt));
       for (const e of watch.takeRecords()) long.push(Math.round(e.duration));
       watch.disconnect();
       out.longTasks = long.sort((a, b) => b - a);
       delete out.samples;
-      document.body.dataset.bench = JSON.stringify(out);
-      document.body.classList.add("ready");
       done = true;
+      onDone(out);
     };
     return {
       step(now) {
         if (done) return;
-        if (!start) { start = now; base = { x: view.x, z: view.z, bearing: view.bearing }; lastT = now; live.frameTimes(); }
+        if (!start) { start = now; base = { x: view.x, z: view.z, bearing: view.bearing }; lastT = now; live.frameTimes(); warmingAt = !!sim?.warming; }
         const t = (now - start) / 1000, f = Math.min(1, t / secs);
         if (lastT !== now) out.samples.push({ dt: now - lastT, ms: live.lastMs, holes: live.lastHoles, slots: live.stats.slots, z: +view.zoom.toFixed(2), parts: live.lastParts });
-        for (const f of live.frameTimes()) gpu.push(f);
+        for (const f of live.frameTimes()) gpu.push({ ...f, z: +view.zoom.toFixed(2), slots: live.stats.slots });
         lastT = now;
         if (kind === "zoom") camera.setZoom(live.zmax * (f < 0.5 ? f * 2 : 2 - f * 2));
         else if (kind === "orbit") view.bearing = norm8(base.bearing + 8 * f);

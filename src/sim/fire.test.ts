@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, dryAt, newWorld, rng, type Thing, type World } from "./world";
 import { fire } from "./ecology";
-import { bedAir, fireOf, fireOutput, removeThing } from "./physics";
+import { bedAir, fireOf, fireOutput, removeThing, shelterOf } from "./physics";
 import { anyOf, around, exists, liveThings, moistOf } from "./space";
 import { advance, alight, kindle } from "./combustion";
 import { CLASSES, toW } from "../gpu/moisture";
@@ -114,9 +114,9 @@ test("in a strong wind, cured grass downwind of a campfire catches from its flam
 test("a burning shelter lights a dry shelter 3 m downwind, and not one 3 m upwind", () => {
   const at = patch();
   weather(at, MEDIAN);
-  // lean-tos of ten sticks and six handfuls of fibre, 2.2 m across (physics.ts WIDTH)
+  // structures of ten sticks and six handfuls of fibre (a heap, by shelter.ts), 2.2 m across
   const hut = (dx: number) => addThing(w, "structure", at.px + m(dx), at.py, {
-    parts: { fiber: 6, stick: 10 }, shelter: { tier: 1, style: "sticks", cover: 0.5, insul: 0.3, sturdy: 0.3, flam: 0.5, room: 1 }, size: 2.2, hp: 100, maxHp: 100,
+    parts: { fiber: 6, stick: 10 }, shelter: shelterOf(w, { fiber: 6, stick: 10 }), size: 2.2,
   });
   const burning = hut(0), down = hut(3), up = hut(-3), parts = partsOf(w, burning);
   burning.bed = kindle(bedOf(parts, warmed(burning, parts))!);

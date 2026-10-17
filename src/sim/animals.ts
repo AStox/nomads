@@ -8,7 +8,8 @@
 //
 // What the animals do each tick within sight: graze, wander, flee, hunt, swim, fly, perch and feed. Speeds are meters a
 // tick of five minutes' game time, the way a person's are; what each kind is like is in fauna.ts.
-import { carcassOf, fatOf } from "./hunt";
+import { carcassOf, fatOf, massOf } from "./hunt";
+import { LEAP, PIT_DEPTH } from "./shelter";
 import {
   DAY, H, TILE_M, Tile, W, YEAR, dryAt, groundOf, heldStore, isNight, log, meters, sea, shoreByTile, shoreOf, tileAt, walkable, wetAt,
   type Agent, type Animal, type AnimalSpecies, type Thing, type World,
@@ -19,7 +20,7 @@ import { GREEN_UP, RUE, warmEnough, watered } from "../terrain/growth";
 import { SHRUBS, TREES, envAt, fit } from "../terrain/niche";
 import { INTERCEPT_SNOW, SNOW_DOY, SNOW_REACH, snowAt, snowDepth } from "./air";
 import { coldBite, warmRate } from "./cues";
-import { floraOf, liveThings, nearestThing, onPath, put, smallsOf, thingById } from "./space";
+import { floraOf, liveThings, nearestThing, onPath, put, setKind, smallsOf, thingById } from "./space";
 import { steer } from "./walk";
 import { dropPile, mark, removeThing } from "./physics";
 import { see } from "./beliefs";
@@ -893,7 +894,7 @@ function gull(w: World, g: Animal) {
 // What a bird can sit on, and how high its top is in meters.
 const PERCH: Record<string, (t: Thing) => number> = {
   tree: (t) => t.size, stump: (t) => t.size, burnt_stump: (t) => t.size, boulder: (t) => t.size * 0.8, fallen_log: () => 0.5,
-  structure: (t) => [0.5, 1.8, 2.5, 3.2][t.shelter?.tier ?? 0],
+  structure: (t) => t.shelter?.top ?? 0,
 };
 const perchHeight = (t?: Thing) => (t && PERCH[t.kind] ? Math.round(PERCH[t.kind](t) * 10) / 10 : 0);
 // A perched bird sits on its perch's top, or on the ground if it has none; if the perch was cut, burned or taken away it
@@ -998,14 +999,20 @@ function butterfly(w: World, b: Animal, warm: boolean) {
   roam(w, b, 30, FAUNA.butterfly.fly! * (0.4 + Math.random() * 0.6), 0.9);
 }
 
-// An animal that walks over a hidden pit falls in and stays there.
+// An animal heavier than a pit's cover holds falls through it, and stays there if the pit is deeper than it can leap
+// (shelter.ts LEAP, people-constants sec. 8); one that leaps out leaves the pit open, its cover broken in the bottom.
 function caught(w: World, an: Animal, x0: number, y0: number) {
-  const trap = onPath(w, x0, y0, an.px, an.py, 1, ["trap"], (t) => !t.caught);
+  const trap = onPath(w, x0, y0, an.px, an.py, 1, ["trap"], (t) => !t.caught && massOf(an) * 9.81 > (t.holds ?? 0));
   if (!trap) return;
+  const owner = w.agents.find((a) => a.id === trap.owner);
+  if ((LEAP[an.species] ?? 0) >= PIT_DEPTH) {
+    setKind(w, trap, "pit"); delete trap.holds; mark(w, trap);
+    log(w, "trap", owner ? [owner.id] : [], trap, `A ${an.species} broke through ${owner ? `${owner.name}'s` : "a"} pit cover and leapt out.`);
+    return;
+  }
   an.state = "trapped"; put(w, an, trap.px, trap.py); trap.caught = an.species; trap.until = w.t; mark(w, trap);
   const s = animalsOf(w).store;
   if (an.obj !== undefined && s) s.set(an.obj, "held", 2);
-  const owner = w.agents.find((a) => a.id === trap.owner);
   log(w, "trap", owner ? [owner.id] : [], trap, `A ${an.species} fell into ${owner ? `${owner.name}'s` : "a"} hidden pit and couldn't get out.`);
   see(w, trap, "trap_works", "An animal that walks over a hidden pit falls in and is stuck.", trap.size);
 }

@@ -2,18 +2,20 @@
 // toward what its surroundings would leave in it, the faster the thinner it is: toward all it can hold in rain or
 // standing water, and otherwise toward the equilibrium of the air at its own warmth, which the sun on it, a fire by it or
 // the body it's carried against raises (docs/research/fire-constants.md sections 5, 10, 11, 18, 20, 27f and 35). The rain
-// on anything is what reaches the ground where it is, through the trees and past the rocks (rain.ts); roofs and bags
-// keep it off altogether. Everything lying out on the island (logs, snags, sticks, litter and cured grass, and dead
-// stuff standing) holds its own water on the GPU, stepped every hour in the air, rain and shade where it lies
-// (gpu/moisture.ts), and the CPU reads it there (deadOf). What people hold, wear, lay or build holds its own here. What
+// on anything is what reaches the ground where it is, through the trees and past the rocks (rain.ts), less what a roof's
+// cover keeps off along the rain's slant (rainUnder); bags keep it off altogether. Everything lying out on the island
+// (logs, snags, sticks, litter and cured grass, and dead stuff standing) holds its own water on the GPU, stepped every
+// hour in the air, rain and shade where it lies (gpu/moisture.ts), and the CPU reads it there (deadOf). What people hold,
+// wear, lay or build holds its own here. What
 // it comes to decides whether a spark or an ember catches in tinder (physics.ts), and how cold the wet-through feel
 // (sim.ts needs).
 import { GREEN_UP } from "../terrain/growth";
 import { DAY, TILE_M, YEAR_DAYS, groundOf, wetAt, type Agent, type Dead, type Stack, type Thing, type Weather, type World } from "./world";
-import { anyAround, deadwoodOf, liveThings, moistOf as gpuMoisture, nearestThing } from "./space";
-import { airAt, airOn, humidity, islandAir, islandMeans, islandPooled, shelterTables, snowAt, sunOn, vapourAt, wetHours } from "./air";
+import { anyAround, around, deadwoodOf, liveThings, moistOf as gpuMoisture, nearestThing } from "./space";
+import { airAt, airOn, headWind, humidity, islandAir, islandMeans, islandPooled, shelterTables, snowAt, sunOn, vapourAt, wetHours } from "./air";
 import { canopyAt, heatAt } from "./light";
-import { crownKind, crownsHour, fallSpeed, rainOn, through } from "./rain";
+import { crownKind, crownsHour, drift, fallSpeed, rainOn, through } from "./rain";
+import { WIDEST, within } from "./shelter";
 import { topKr } from "./soil";
 import { daylight, seasonAt } from "./sky";
 import { p, type Kind } from "./materials";
@@ -29,9 +31,29 @@ import {
 // A struck spark catches in tinder this wet or drier, an ember blown into it in tinder this wet or drier (sec. 10).
 export const DAMP = 0.1, SOAKED = 0.13;
 export const raining = (w: World) => w.weather.sky === "rain" || w.weather.sky === "storm";
-// Under a roof: a shelter of their own or anyone's close enough to be under.
+// Under a roof: the shelter whose floor they stand on (shelter.ts), none out in the open.
 export function sheltered(w: World, a: { px: number; py: number }) {
-  return !!anyAround(w, a.px, a.py, 4, ["structure"], (t) => (t.shelter?.tier ?? 0) >= 1);
+  return anyAround(w, a.px, a.py, WIDEST, ["structure"], (t) => !!t.shelter?.tier && Math.hypot(a.px - t.px, a.py - t.py) * TILE_M <= t.shelter.r);
+}
+// The rain reaching a point under the roofs round it, mm an hour: what reaches the ground there (rain.ts), less what a
+// roof's cover keeps off wherever a drop's slanting path back up into the wind (rain.ts drift) passes through a roof or
+// its walls. A roof lets through the share of it its cover leaves open.
+export function rainUnder(w: World, a: { px: number; py: number }) {
+  const rain = rainOn(w, a.px, a.py);
+  if (rain <= 0) return 0;
+  const wx = w.weather, head = headWind(w, a.px, a.py, wx.wind, wx.speed), v = fallSpeed(rain);
+  const len = Math.hypot(wx.wind.dx, wx.wind.dy) || 1, ux = wx.wind.dx / len, uy = wx.wind.dy / len;
+  let share = 1;
+  around(w, a.px, a.py, WIDEST + drift(2 * WIDEST, head, v), ["structure"], (t) => {
+    const sh = t.shelter;
+    if (!sh?.tier) return;
+    const x = (a.px - t.px) * TILE_M, y = (a.py - t.py) * TILE_M;
+    for (let i = 0; i <= 8; i++) {
+      const z = (sh.top * i) / 8, s = drift(z, head, v);
+      if (within(sh, x - ux * s, y - uy * s, z)) { share *= 1 - sh.closed; return; }
+    }
+  });
+  return rain * share;
 }
 // Tinder: fine, dry, stringy stuff an ember or a spark can catch in, as fiber and bark are.
 export const tinder = (k?: Kind) => !!k && !k.parts?.length && p(k, "fibrous") >= 0.6 && p(k, "flammable") >= 0.7;
@@ -294,8 +316,8 @@ export function wetness(w: World) {
 // in a bag or under a roof; held against the body, in clothes or a bag, it sits in the body's own air, and otherwise in
 // the air about them, with the sun the crowns let through on it and a fire's warmth by one.
 function carried(w: World, a: Agent) {
-  const roof = sheltered(w, a), bag = a.inv.some((s) => p(w.kinds[s.k], "container") >= 0.6), air = airOn(w, a, roof);
-  const vapour = vapourAt(w, a.px, a.py, w.t), rain = roof ? 0 : rainOn(w, a.px, a.py), fire = fireFlux(w, a);
+  const roof = !!sheltered(w, a), bag = a.inv.some((s) => p(w.kinds[s.k], "container") >= 0.6), air = airOn(w, a, roof);
+  const vapour = vapourAt(w, a.px, a.py, w.t), rain = rainUnder(w, a), fire = fireFlux(w, a);
   const open = equilibrium(air.temp, vapour, (roof ? 0 : sunOn(w.t, w.weather.sky) * (1 - Math.min(1, canopyAt(w, a.px, a.py)))) + fire * 1000, air.wind);
   const against = !!a.wearing || bag;
   for (const s of a.inv) soak(w, s, bag ? 0 : rain, against ? body(vapour) : open, against ? 0 : fire);
@@ -308,8 +330,8 @@ function carried(w: World, a: Agent) {
 // the rain reaching the ground there and the sun the crowns let through, and the wind at the ground; a pile takes the
 // damp of the top soil under it as dead stuff lying there does, the island's top soil even under a roof [gap].
 function laid(w: World, t: Thing, pile: boolean) {
-  const roof = pile && sheltered(w, t), air = airAt(w, t.px, t.py, roof), vapour = vapourAt(w, t.px, t.py, w.t), fire = fireFlux(w, t);
-  const rain = pile && wetAt(w, t.px, t.py) ? Infinity : roof ? 0 : rainOn(w, t.px, t.py);
+  const roof = pile && !!sheltered(w, t), air = airAt(w, t.px, t.py, roof), vapour = vapourAt(w, t.px, t.py, w.t), fire = fireFlux(w, t);
+  const rain = pile && wetAt(w, t.px, t.py) ? Infinity : pile ? rainUnder(w, t) : rainOn(w, t.px, t.py);
   const own = equilibrium(air.temp, vapour, (roof ? 0 : sunOn(w.t, w.weather.sky) * (1 - Math.min(1, canopyAt(w, t.px, t.py)))) + fire * 1000, air.wind * GROUND);
   const eq = pile ? lying(own, air.temp, vapour, w.weather.wet) : own;
   if (pile && t.item && (t.n ?? 1) > (t.pieces?.length ?? 0)) {

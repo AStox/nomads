@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, adoptStore, dryAt, newWorld, rng, shoreOf, wetAt, type Act, type Agent, type Thing, type World } from "./world";
 import { WEATHER_NOW, bedAir, count, eat, fireOf, giveItems, giveStack, heat, join, openWater, place, removeThing, strikeTick, throwReach, throwTick, wet, type Fields, type Outcome } from "./physics";
-import { COPPER, PHYS, pieceOf } from "./fuel";
+import { BURNS, COPPER, PHYS, pieceOf } from "./fuel";
 import { BLADE, GROWN } from "./mechanics";
 import { basketOf, catchChances } from "./hunt";
 import { advance } from "./combustion";
@@ -41,6 +41,10 @@ const heated = (w: World, a: Agent, act: Omit<Act, "verb">): Outcome => {
   return r;
 };
 const put = (w: World, a: Agent, k: string, n: number) => { giveItems(w, a, k, n); return place(w, a, { verb: "place", items: Array(n).fill(k) }); };
+// Stone laid round a fire three at a time until it closes round its bed, a hearth (physics.ts placing); then heaped on
+// until it covers the ring's mouth, a kiln (shelter.ts lidOf): what the last of it came to.
+const ringed = (w: World, a: Agent, fire: Thing) => { let r: Outcome | undefined; for (let i = 0; i < 100 && !fire.contained; i++) r = put(w, a, "stone", 3); return r; };
+const heaped = (w: World, a: Agent, fire: Thing) => { let r = ringed(w, a, fire); for (let i = 0; i < 200 && !fire.covered; i++) r = put(w, a, "stone", 3); return r; };
 // One try of striking something held, blow by blow until it comes to something; lay: what it's struck over, if anything
 const hammer = (w: World, a: Agent, tool: string, target: string, lay: string[] = []) => {
   const st = { progress: 0 };
@@ -77,8 +81,7 @@ test("a stick set in an open fire catches and is carried off alight; under stone
   const [w, a, fire] = burning();
   giveItems(w, a, "stick");
   expect(Object.keys(heated(w, a, { items: ["stick"] }).gives)[0]).toBe("burning:stick");
-  put(w, a, "stone", 3);
-  expect(put(w, a, "stone", 3).builds).toBe("kiln");
+  expect(heaped(w, a, fire)!.builds).toBe("kiln");
   expect(fire.covered).toBe(true);
   giveItems(w, a, "stick");
   expect(heated(w, a, { items: ["stick"] }).gives).toEqual({ charcoal: 1 });
@@ -92,16 +95,16 @@ test("meat set in a small fire of twigs and sticks cooks through; under a cover 
   giveItems(w, a, "meat");
   expect(Object.keys(heated(w, a, { items: ["meat"] }).gives)[0]).toBe("cooked:meat");
   const [v, b] = burning();
-  put(v, b, "stone", 3); put(v, b, "stone", 3);
+  heaped(v, b, v.things.find((t) => t.kind === "fire")!);
   giveItems(v, b, "meat");
   expect(Object.keys(heated(v, b, { items: ["meat"] }).gives)[0]).toBe("smoked:meat");
 });
 
 test("a hide hung over an open fire scorches, and over the same fire heaped over it cures in the smoke", () => {
-  const [w, a] = burning();
+  const [w, a, fire] = burning();
   giveItems(w, a, "hide");
   expect(heated(w, a, { items: ["hide"] }).effect).toBe("scorched");
-  put(w, a, "stone", 3); put(w, a, "stone", 3);
+  heaped(w, a, fire);
   const cured = heated(w, a, { items: ["hide"] });
   expect(cured.ok).toBe(true);
   expect(Object.keys(cured.gives)[0]).toBe("leather:hide");
@@ -110,9 +113,14 @@ test("a hide hung over an open fire scorches, and over the same fire heaped over
 test("the staged fire, hearth, kiln and forge the answer key asks give what acts at fires laid and set up the same way give", () => {
   for (const at of ["fire", "hearth", "kiln", "forge"] as const) {
     const [w, a, fire] = burning(0);
-    if (at !== "fire") put(w, a, "stone", 3);
-    if (at === "kiln") put(w, a, "stone", 3);
-    if (at === "forge") fire.charcoal = 1;
+    if (at !== "fire") ringed(w, a, fire);
+    if (at === "kiln") heaped(w, a, fire);
+    // fed the charcoal a log smothers into and burnt ten minutes on, as the answer key stages a forge (formulas.ts)
+    if (at === "forge") {
+      giveStack(w, a, { k: "charcoal", hp: 1, born: w.t, size: { d: PHYS.log.d, len: 1, mass: PHYS.log.mass * BURNS.softwood.charYield } });
+      place(w, a, { verb: "place", items: ["charcoal"] });
+      fire.bed = advance(fire.bed!, 600, bedAir(w, fire));
+    }
     giveItems(w, a, "fiber", 3);
     const mat = join(w, a, { verb: "join", items: ["fiber", "fiber", "fiber"] });
     if (mat === "ask") throw new Error();
@@ -127,8 +135,8 @@ test("the staged fire, hearth, kiln and forge the answer key asks give what acts
 });
 
 test("hammering copper red hot at a charcoal fire draws its edge out into a blade; cold, it hardens before the edge is thin enough for one", () => {
-  const [w, a] = burning();
-  put(w, a, "stone", 3);
+  const [w, a, fire] = burning();
+  ringed(w, a, fire);
   put(w, a, "charcoal", 3);
   w.kinds.lump = { id: "lump", name: "metal lump", props: { hard: 0.8, heavy: 0.85, metal: 1, toughness: 0.85 }, parts: ["ore"], verb: "heat", phys: COPPER };
   giveItems(w, a, "stone", 2); giveItems(w, a, "lump", 2);

@@ -67,7 +67,9 @@ export type Ground = {
   // cell << 16 | state, a held predator of that class singles a member out of, NONE for none) now and at each day it
   // steps, and reads back how much of each pool was eaten since. RQ is one word an animal slot (NONE for none): a
   // held animal's request to single out a member, which the link takes and sets back to NONE at each day it steps.
-  bind(s: Store, link: { W: GPUBuffer; RQ: GPUBuffer; cap: number }): void;
+  // saved: W comes from a save, which the animals restore after binding; where the lumped kinds come from the same
+  // save, its pools are W's as saved (what was eaten of them since the day's pools went in) and are not written now.
+  bind(s: Store, link: { W: GPUBuffer; RQ: GPUBuffer; cap: number }, saved: boolean): void;
   // A day of the lumped kinds at tick t (t % DAY === 0), called by the animals' spin-up loop before its law at that
   // tick; after attach the lumped kinds' own midnight law (registered earlier on the store) runs before the animals'.
   spin(s: Store, t: number): void;
@@ -123,7 +125,7 @@ export class Animals implements Rider {
       act: animalsAct(cap), claim: animalsClaim(cap), eat: animalsEat(cap), fate: animalsFate(cap),
     };
     this.mode(24);
-    ground?.bind(store, { W: this.bufs.W, RQ: this.bufs.RQ, cap });
+    ground?.bind(store, { W: this.bufs.W, RQ: this.bufs.RQ, cap }, !fresh);
     if (fresh) {
       if (browse) this.browsed(browse.raster(store));
       const { n, cols } = driver.start();

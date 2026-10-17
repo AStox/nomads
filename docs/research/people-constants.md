@@ -1,6 +1,6 @@
-# The people's constants: walking and carrying, throwing and hunting, perception (2026-10-16)
+# The people's constants: walking and carrying, shelters, throwing and hunting, perception (2026-10-16)
 
-Research for the rule audit's substrates 6, 9 and 12 (docs/research/rule-audit.md). R-numbers R1000 to R1029 are walking and carrying's, R1030 to R1059 throwing, hunting and fishing's, R1060 to R1099 perception's. References cited from the other research pages keep their numbers there (R90, R221, R273 and R479 here).
+Research for the rule audit's substrates 6, 8, 9 and 12 (docs/research/rule-audit.md). R-numbers R1000 to R1029 are walking and carrying's, R1101 to R1149 shelters', R1030 to R1059 throwing, hunting and fishing's, R1060 to R1099 perception's. References cited from the other research pages keep their numbers there (R90, R221, R273, R317, R451 and R479 here).
 
 ## 6. Walking and carrying (R1000-R1029)
 
@@ -145,6 +145,98 @@ Speeds are real now and a tick still lasts 300 s, so a grown walker goes some 40
 - R1011 Kesler A., Leibovich G., Herman T., Gruendlinger L., Giladi N., Hausdorff J.M. (2005), Shedding light on walking in the dark, J. NeuroEng. Rehabil. 2:27. https://pmc.ncbi.nlm.nih.gov/articles/PMC1236955 (read 2026-10-16)
 - R1012 Knapik J.J., Reynolds K.L., Harman E. (2004), Soldier load carriage: historical, physiological, biomechanical, and medical aspects, Mil. Med. 169:45-56 (FM 21-18, 1990). https://pubmed.ncbi.nlm.nih.gov/14964502 (abstract read 2026-10-16; the 30 and 45% as the load literature quotes FM 21-18)
 - R1013 Scott G.D., Kilgour D.M. (1969), The density of random close packing of spheres, J. Phys. D 2:863-866 [ex].
+
+## 8. Shelters (R1100-R1149)
+
+R1100 is plant-constants' (Meuriot 2018), so this section's own run from R1101. Code: src/sim/shelter.ts (new: what a shelter's pieces make of it, the air inside it, a fire's ring and lid, a pit's cover and depth, the leaps), physics.ts shelterOf, placing's ring, heap, feeding, trap and build branches, place, fireKind, gainOf; wetness.ts sheltered and rainUnder; sim.ts shelterAir, goIn, shelterWork, rest and warm_up, THING_PLACES forge; ecology.ts trapped and the structures' weather; animals.ts caught and PERCH; migrate.ts shelters; formulas.ts staged; inspect.ts, brain.ts and beliefs.ts words; light.ts CHI_R exported; world.ts Shelter, Thing.lid and Thing.holds.
+
+### 8a. Constants
+
+| Quantity | Value | Units | Conditions | Source |
+|---|---|---|---|---|
+| Thatch's least pitch | 45 (standard 50 to 55) | deg | reed thatch | R1101 [read] |
+| Thatch as laid | 150 | kg/m3 | in the coat, ventilated | R1101 [read] |
+| Thatch's conductivity | 0.07 (dry 0.04, wet 0.1) | W/mK | reed board of 250 kg/m3, at its average damp | R1101 [read] |
+| Thatch deep enough to keep the rain out | 0.30 | m | the West's standard coat, 28 to 30 cm (Irbis lays 35) | R1101 [read] |
+| Rafters apart under thatch | 1 at most | m | thatch of 45 to 75 kg/m2 | R1101 [read] |
+| Wood's modulus of rupture, green | 109,600 G^1.01 softwood, 118,700 G^1.16 hardwood | kPa | | R317 (matter-constants sec. 2) [read] |
+| Drag | sphere 0.47, disk 1.17 | - | subcritical | R1034 (sec. 9) [sec] |
+| Friction, wood on wood | 0.25 | - | | matter-constants MU_WOOD [analogue] |
+| A heap's solid share | 0.1 | - | a fire's heap | fire-constants sec. 17 [analogue] |
+| A sleeper's floor | stature x 0.259 stature: 0.745 for the grown 1.696 m | m2 | lying on their back | R1062 shares (sec. 12) [derived] |
+| Covered living space | 3.5, 4.5 in cold climates | m2 a person | humanitarian minimum to live in | R1103 [read, search excerpt]; not used, see 8b |
+| The least fence a kind clears | red deer 1.8 to 2.0, fallow 1.5, roe 1.2 to 1.5, rabbit 0.9 | m | the Forestry Commission's minimum heights | R1102 Table 4 [read] |
+| Trapping pits | up to about 2 m deep, 4 to 7 m across, narrowing to a slot | m | elk, reindeer and wolves | R451 (time-constants sec. 7) [read] |
+| Films on a wall | hc(u) = max(3.4, 10.4 u^0.56) and 4 x 0.95 sigma T^3 | W/m2K | still air inside, the wind outside | body-constants sec. 5 |
+| A fire's radiant share | 0.3 | - | | fire-constants sec. 7 (light.ts CHI_R) |
+| A pole, a sheet | at least 10, at least 100 times as long as thick | - | | [design: where a piece stops leaning as a rafter, or lies flat over one] |
+| A pit's mouth | 1.5 | m | | [design] |
+
+### 8b. What the pieces make
+
+Each piece laid into a shelter is a pole (wood at least ten times as long as it is thick), a sheet (anything else at least a hundred times as long, as a round piece of its mass would be, as it is thick: hide, leather, bark), thatch (fine plant stuff: fibre, fern, grass) or a solid (stone, logs, clay, blocks). The poles lean together at thatch's least pitch, 45 degrees, into a cone whose slant L is the third longest pole: three set it up and the rest lean on them. Its floor is a circle of radius L cos 45, its roof a cone of area pi r L. The solids stand as a wall round its foot, as high as their volume over the ring's length and their mean thickness, if that closes at least one course round it. The sheets cover their own area of the roof, the thatch its volume over 0.30 m, but only where rafters stand within a metre of each other at the eaves (R1101). The share of the roof they close is its cover.
+
+How many it sleeps is the floor under that cover over a sleeper's floor, the body's own footprint lying down; Sphere's 3.5 to 4.5 m2 a person is what people live in, not what one sleeps on. With three poles that carry the cover over at least one sleeper's floor it is a lean-to (the cover closes part of the roof), a hut (all of it) or a cabin (all of it, on walls); short of that it is a heap, as wide as a half sphere holding its solid at a heap's packing.
+
+### 8c. Heat
+
+The air inside (insideAir) comes to the outside air's plus the heat given off inside over what the roof and walls lose for each degree: the closed share of the roof through still air's film inside, its layers (each piece's volume spread over the closed roof, over its conductivity; thatch at 0.07 W/mK and its laid volume) and the wind's film outside; the open share through the two films only; the walls through their thickness over their stone's or wood's conductivity. The heat given off inside is what the skins of the people on its floor gave off the tick before (body.ts dry) and the radiant share of what any fire on its floor gives off, the rest taken to go up through the smoke hole [design]. body.ts takes that air as the air and the radiant temperature of whoever is on the floor. Someone at home goes in onto the floor to rest or warm up, each of the household at their own place halfway out from its middle [design].
+
+### 8d. Rain and who is under the roof
+
+Under a roof is on its floor, within r of its middle (sheltered): no wind there and no sun. The rain on a point (rainUnder) is what reaches the ground there (rain.ts) less what roofs keep off: a drop's slanting path traced back up into the wind (rain.ts drift, at the drop's fall speed) that passes through a roof's cone or its walls brings only the share of the rain the roof's cover leaves open. So the lee of a hut is dry in a wind and the floor of a half-covered lean-to gets half the rain.
+
+### 8e. Strength
+
+A rafter breaks under 8 MOR S / L spread along it, S = pi d^3 / 32, MOR the Wood Handbook's green modulus of rupture for its wood's density. A shelter's rafters together carry its cover's weight across them (its weight times cos 45); what they carry beyond that against the wind's push on its profile (1/2 rho u^2 x 0.47 x r times its rise, and 2r times its walls' height), and its whole weight about its downwind foot against that push tipping it at the height it acts at, set the wind it stands up to: the less of the two. A heap holds until the wind slides its stoutest piece broadside along the ground (disk drag on d x L against 0.25 of its weight). A structure falls apart in a wind at its point (air.ts headWind) stronger than that; nothing tops it up and it keeps no hit points.
+
+### 8f. Fire setups
+
+Stone laid round a fire stands side by side as wide as each piece (fire-constants sec. 29g); the ring holds the fire in, a hearth, once its stone reaches round the bed's rim (2 pi times combustion.ts radius), the wind then reaching what lies below its top only as its lee lets it (sec. 29a). Stone or clay laid on a ringed fire lies over its mouth, a stone as a disc its thickness across, clay as a layer its own thickness deep [design]; once that covers the ring's mouth (its width squared over 4 pi) the fire is closed in, a kiln, and smoulders (sec. 29e). A ringed fire, fed or not, is a forge when it holds 1 cm of copper at red heat where it sits (redHot, setIn), whatever burns in it; feeding it is judged by the bed it comes to.
+
+### 8g. Pits and traps
+
+A pit is dug 2 m deep, as the trapping pits were (R451); its mouth is 1.5 m across [design]. Wood laid across it at least as long as its mouth spans it: each piece breaks at its middle under 4 MOR S / mouth, and the cover holds their sum (coverHolds); anything else laid on it carries nothing, and wood too short to reach across covers nothing. An animal or a person heavier than that falls through. An animal that can leap the pit's depth (LEAP: the least fence that keeps its kind in, R1102) leaps out and leaves the pit open; anything that can't stays there (time-constants sec. 7).
+
+### 8h. Checks
+
+- Three one-metre sticks and two hides (3.0 m2 of hide over a 2.2 m2 cone): a hut 1.4 m across that sleeps two.
+- Six 2.5 m poles and three hides: a lean-to 3.5 m across, its roof a third closed, sleeping four, standing to 19 m/s; one sleeper's 80 W warms its air 1.5 K on a still night at freezing, the open share losing almost all of it. Thirty pieces of bark close a quarter of the same roof.
+- Ten sticks and six handfuls of fibre, the old 2.2 m lean-to: a heap 0.6 m across. Six handfuls of fibre at 150 kg/m3 and 0.30 m deep close 27 cm2; three hundred fronds of fern close 1.7% of a 3 m cone's roof.
+- Six logs walled round the three-stick hut: a course 0.18 m high, a cabin, harder for the wind to tip.
+- Three 2 m sticks of generic wood (G 0.45, 25 mm) across a 1.5 m pit: each breaks under 200 N at its middle, 600 N in all; a red deer's 1,138 N falls through and its 1.8 m leap does not clear 2 m; a rabbit's 16 N does not break them.
+
+### 8i. What replaced what
+
+- shelterOf's hand-weighted cover, insulation and sturdiness scores, the tier ladder over piece counts (3, 6, 10, 12, 16) and rooms by tier: the cone, walls and cover the pieces make, its form read off them, and the sleepers its covered floor holds.
+- WIDTH's 1.2, 2.2, 3 and 4.5 m by tier and 1.6 m more a sleeper for a lodge: the floor's own width; a fire ring as wide as its stone is laid round.
+- Hit points of 100 topped up 20 a load, worn down by a pile rate and a weather rate by sturdiness: the wind each structure stands up to.
+- A roof sheltering anyone within 4 m of a lean-to or better: the floor under the roof, and the roof's rain shadow along the rain's slant.
+- The dome as wide as the tier's width with every part's solid spread over it: the cone's roof and walls, closed and open, with thatch at its laid density and conductivity, and fires on the floor.
+- A hearth at 3 stones and a kiln at 6 or any clay: a ring that reaches round the bed and a heap that covers its mouth.
+- A forge as a ringed fire fed anything burning above 1.2 (fuel ?? 20), counted as charcoal: a ringed fire that holds copper at red heat.
+- A trap as two or more long or fibrous things over a pit: wood that spans it, holding what it breaks under; the pit's 1.5 m depth (design) is 2 m (R451); what falls in stays if it can't leap out.
+- A trap catching any person not in the know: anyone heavier than the cover holds.
+- A home's mending at 70% of its hit points: its roof still letting the rain in. The gain words "sturdier", "warmer" and "better at keeping the rain off" by a 0.03 score: standing a gale now (GALE), or a degree warmer for one resting in it at freezing [design], the roof's closing told by its form and its room.
+- Perches on a structure at 0.5, 1.8, 2.5 or 3.2 m by tier: its own top.
+
+### 8j. Gaps
+
+- Every shelter is a cone at the least pitch; a ridge lean-to's geometry, and which way its open side faces, are not kept: the floor of a part-covered one is taken out of the wind like a closed one's.
+- Air leaking through the cover and loss through the floor are left out; wet thatch's 0.1 W/mK and weight, rain held in the cover, and snow on a roof are not followed.
+- Members do not rot, so a shelter stands until a wind beats it; pegs and lashings are not modelled, only the weight holds a hut down; what blows off a heap is not taken from it.
+- The low edge of a cone counts as floor.
+- Fibre, fern and grass thatch need 45 kg of it to each m2 of roof (R1101): a hand-gathered roof of them is out of reach, and hides and bark are what closes one. The planner still reaches for what people learnt worked before.
+- Wolves and foxes take the red deer's 1.8 m leap (no fence height for them was found); a fence's height is what an animal clears with a run, more than it could from a pit's floor. A pit's narrowing slot is not modelled; rabbits and foxes could dig out (time-constants sec. 7).
+- How stone and clay lie on a ring's mouth [design]; a hearth is judged against the bed as it is when the stone goes down.
+- The fall into a pit still costs a person 10 health (substrate 1), and digging one still counts 12 units (substrate 7).
+- What a shelter looks built of, the renderer's style, is still read off props [design]; moving home still compares forms and the 60 m and 150 m distances.
+
+### References (8)
+
+- R1101 Irbis Thatching, Thatch: design guidelines for architects (thermal conductivity of reed thatch, the coat's density and depth, pitch, rafter spacing and weight). http://thatching.pl/information/for-architect.html (read 2026-10-16)
+- R1102 Trout R.C., Pepper H.W. (2006), Forest fencing, Forestry Commission Technical Guide FCTG002, Table 4 (minimum fence heights) and Figure 13. https://cdn.forestresearch.gov.uk/2006/03/fctg002.pdf (read 2026-10-16)
+- R1103 The Sphere standards' covered living area, 3.5 m2 a person in hot climates and 4.5 in cold, as UNHCR's Shelter and Sustainability overview (2021) gives it. https://emergency.unhcr.org/sites/default/files/2024-01/UNHCR%20shelter%20and%20sustainability%20overview%20April%202021.pdf (search excerpt read 2026-10-16)
 
 ## 9. Throwing, hunting and fishing (R1030-R1059)
 
