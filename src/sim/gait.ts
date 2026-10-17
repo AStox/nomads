@@ -6,7 +6,7 @@ import { GROUND, SIZE, TILE_M, TILES, groundClass } from "../terrain/flora";
 import { CELL, N } from "../terrain/grid";
 import { INTERCEPT_SNOW, SNOW_DOY, snowAt, snowDepth } from "./air";
 import { radius, type Bed } from "./combustion";
-import { frameOf, grown, realAge } from "./body";
+import { O2_J, REST_O2, frameOf, grown, realAge, vo2max } from "./body";
 import { physOf, stackPhys } from "./fuel";
 import { trunkOf } from "./mechanics";
 import { p } from "./materials";
@@ -131,17 +131,12 @@ export function darkPace(lux: number) {
 
 // ---------- running (sec. 6g) ----------
 // Minetti et al.'s net cost of running (R1008), J/kg/m on a gradient i from -0.45 to 0.45: 155.4 i^5 - 30.4 i^4 - 43.3 i^3
-// + 46.3 i^2 + 19.5 i + 3.6, oxygen at their 20.9 J/ml.
+// + 46.3 i^2 + 19.5 i + 3.6, oxygen at their 20.9 J/ml (body.ts O2_J).
 export function runCost(i: number) {
   const x = Math.max(-0.45, Math.min(0.45, i));
   return 155.4 * x ** 5 - 30.4 * x ** 4 - 43.3 * x ** 3 + 46.3 * x * x + 19.5 * x + 3.6;
 }
-const O2_J = 20.9;
-// The FRIEND registry's median VO2max (R1009), ml/kg/min, the mean of its men and women: 42.8 in their twenties, falling
-// 9.75% a decade (the men's 9.2, the women's 10.3); anyone younger than twenty at the twenties' [gap: no children's data].
-export const vo2max = (age: number) => 42.8 * 0.9025 ** (Math.max(0, age - 25) / 10);
-// One MET, 3.5 ml/kg/min (R1010): what resting takes of it.
-const REST_O2 = 3.5;
+// VO2max is the FRIEND registry's (R1009) and one MET 3.5 ml/kg/min (R1010), body.ts vo2max and REST_O2.
 // Someone runs as fast as their aerobic power less resting carries them and their load, Minetti et al.'s v = E / Cr, on
 // ground of coefficient eta as walking's [derived], and no faster downhill than on the level: Minetti et al.'s downhill
 // racers ran a third as fast as their aerobic power allowed (R1008) [design].
@@ -203,6 +198,8 @@ export const legTime = (w: World, a: number, b: number, d: number, dh: number) =
   (d * TILE_M) / (tobler(dh / d) * slowing(1, 0, (tileEta(w, a) + tileEta(w, b)) / 2));
 // The fastest anyone of grown size goes, m/s: down Tobler's best slope on blacktop, which no route beats.
 export const FASTEST = tobler(-0.05);
+// The grown, unladen walker's speed on level grassland, m/s: what the planner reckons a trip's seconds by (plan.ts).
+export const LEVEL_WALK = tobler(0) * slowing(1, 0, ETA.grassland);
 
 // ---------- carrying (sec. 6i) ----------
 // A stack's mass as it is, kg: its dry mass and the water in it (wetness.ts); and its bulk, m3, its dry stuff at its own

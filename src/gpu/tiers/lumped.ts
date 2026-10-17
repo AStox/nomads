@@ -111,6 +111,10 @@ export const WATCH_CELLS = 64;
 const WATCH_BINS = 8192;
 // The watch log's words on the GPU [design: some ten steps of records before a landing].
 const WLOG = 1 << 19;
+// Bins a slice of the split takes, the split's dispatch going to the GPU one slice at a time (steps) [design: about a
+// frame of GPU time at most; the smalls' fauna split ran 1.3 s over 1.8M bins of room in one dispatch on AMD RDNA-1
+// (Radeon Pro 5500M), its slices at most 84 ms at 2^16 bins and 44 ms at 2^15, measured 2026-10-17].
+export const SPLIT_BINS = 1 << 14;
 
 export class Lumped implements Rider {
   readonly name: string;
@@ -313,6 +317,13 @@ export class Lumped implements Rider {
     ];
   }
   step(t: number) {
+    for (const _ of this.steps(t, Infinity));
+  }
+  // The step, given in slices: it yields after each slice of the split (bins bins, SPLIT_BINS unless asked otherwise),
+  // so a caller with other work on the GPU (the play page's frames) can send each on its own; the same kernels in the
+  // same order whatever is done between. step sends the split in one dispatch (Infinity), as anything with no frames to
+  // let between does: a slice costs a dispatch and, sent on its own, a submit.
+  *steps(t: number, bins = SPLIT_BINS): Generator<void> {
     this.room();
     const s = this.store, g = s.g, cap = this.cap, ccap = this.ccap, rows = this.wide ? 5 : 4, A = this.tab, B = s.borrow(rows * cap), merge = this.merge;
     const L = { seed: this.seed, law: this.spec.law, wide: this.wide, outs: this.spec.outcomes }, core = lumpedCore(L), BC = `const BCAP = ${cap}u;\nconst DENSE = ${DENSE}u;`;
@@ -350,7 +361,11 @@ ${this.spec.promote}`, { bufs: [{ name: "lbins", buf: A }, { name: "linfo", buf:
     // recorded; the births the CPU queued go into a small buffer of their own and are copied into place, since the CPU
     // never writes a borrowed buffer.
     const cnt = s.borrow((this.spec.outcomes ?? OUTCOMES) * cap), nc = s.borrow(cap + 1), keep = s.borrow(cap + 1), lent = [cnt, nc, keep];
-    s.run(lumpSplit(L), [A, this.ctl, cnt, nc, keep, this.inp], cover(g, cap), [cap, t, 0, 0]);
+    for (let from = 0; from < cap; from += bins) {
+      const to = Math.min(cap, from + bins);
+      s.run(lumpSplit(L), [A, this.ctl, cnt, nc, keep, this.inp], cover(g, to - from), [cap, t, from, to]);
+      yield;
+    }
     this.spec.onSplit?.(s, A, cnt, t);
     const nb = this.births.length / 2, gn = this.gbirths?.n ?? 0, ck = s.borrow(2 * ccap + Math.max(2 * (nb + gn), 1)), len = this.sc("len", 1);
     lent.push(ck);

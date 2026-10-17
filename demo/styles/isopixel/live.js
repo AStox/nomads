@@ -88,6 +88,9 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   let simTo = null;
   const simEarly = [];
   const frameMs = [];
+  // the levels and whole bearings ("L|b") whose front lists the worker has built (webgpu.js frontsReady), and those the
+  // page asks it to build first (prefetch)
+  let fronts = new Set(), ahead = [];
   await new Promise((done, fail) => {
     worker.onerror = (e) => fail(new Error(`render worker: ${e.message}`));
     worker.onmessage = (e) => {
@@ -104,6 +107,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     if (m.type.startsWith("sim")) { if (simTo) simTo(m); else simEarly.push(m); }
     else if (m.type === "frameDone") {
       lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts;
+      if (m.fronts !== undefined) fronts = new Set(m.fronts ? m.fronts.split(",") : []);
       const sent = sentAt.get(m.id);
       sentAt.delete(m.id);
       if (sent != null) frameMs.push({ id: m.id, latency: performance.now() - sent, gpu: m.gpuMs, cpu: m.cpuMs, at: performance.now(), passes: m.passes });
@@ -614,8 +618,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   }
   // the island levels down to FRONT_M tiles keep front lists, at every whole bearing [design: the levels whose specks
   // outnumber their sprites in a view, measured 2026-10-15 at seed 1: island, isle200, isle100]
-  const FRONT_M = 100;
-  worker.postMessage({ type: "frontViews", views: LV.filter((l) => !LADDER[l.L].paged && l.tileM >= FRONT_M).flatMap((l) => [0, 1, 2, 3, 4, 5, 6, 7].map((b) => ({ L: l.L, b, U: islandView(l.L, b) }))) });
+  const FRONT_M = 100, frontLevels = new Set(LV.filter((l) => !LADDER[l.L].paged && l.tileM >= FRONT_M).map((l) => l.L));
+  worker.postMessage({ type: "frontViews", views: [...frontLevels].flatMap((L) => [0, 1, 2, 3, 4, 5, 6, 7].map((b) => ({ L, b, U: islandView(L, b) }))) });
   // the view's uniforms for the GPU (webgpu.js VU) and what it draws over the ground
   function viewOf(cam, k, w, sim, clock, now, view) {
     const md = cam.md, cast = sky.cast, vec = cast ? sunStep(md, cast) : [0, 0], win = windowOf(cam, vec);
@@ -668,7 +672,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const pl = plan(view), T = tablesFor(sky);
     frameSprites = [];
     const views = pl.parts.map(([cam, w], k) => viewOf(cam, k, w, sim, clock, now, view));
-    const id = ++frameNo, msg = { type: "frame", id, views, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), exag: EXAG, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG } };
+    const id = ++frameNo, msg = { type: "frame", id, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), exag: EXAG, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG } };
     if (lutSent !== sky.id) { msg.lut = T.gpu.slice(); lutSent = sky.id; }
     ownersOf.set(id, pickOwners);
     if (ownersOf.size > 30) ownersOf.delete(ownersOf.keys().next().value);
@@ -865,7 +869,12 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // every view is drawn whole on the GPU each frame; only the first, while the objects' sprites are still being made,
     // waits for them
     readiness: () => { const ready = objectsReady || !simOpts; return { done: ready ? 1 : 0, all: 1, ready }; },
-    prefetch: () => {}, centreOn, camH, screenOf, solveTarget, groundUnder,
+    // the views shown next (a follow's destination, a zoom's first level), whose levels' lists the worker builds first
+    prefetch: (vs) => { ahead = (vs ?? []).filter((v) => Number.isFinite(v?.zoom)).map((v) => ({ L: levelFor(v.zoom).L, b: norm8(v.bearing ?? 0) })); },
+    // whether a view's level draws from lists built for it: a level that keeps front lists (the island levels, at a
+    // whole bearing) only once the worker has built them; any other at once
+    listsReady: (v) => { const L = levelFor(v.zoom).L, b = norm8(v.bearing ?? 0); return !frontLevels.has(L) || !Number.isInteger(b) || fronts.has(`${L}|${b}`); },
+    centreOn, camH, screenOf, solveTarget, groundUnder,
     // what draws the frames: WebGPU in a worker, on which GPU
     renderer: () => ({ gpu: !lost, name: [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(" "), why: lost ?? "" }),
     picks: () => lastPick.map((p) => ({ kind: p.kind, id: p.id, sx: p.sx, sy: p.sy })),
@@ -881,7 +890,6 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the sim's side of the worker (play/remote.js): send it a message, and take what it posts of the sim
     post: (m) => worker.postMessage(m),
     onSim: (fn) => { simTo = fn; for (const m of simEarly.splice(0)) fn(m); },
-    goal: null,
     // for the page checks (scripts/play/torture.cjs, objects.ts): a camera at a level and bearing, a world point placed in
     // one, and the render worker's own checks of what it drew (worker.js check)
     debug: {

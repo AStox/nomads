@@ -1,7 +1,6 @@
 // What each agent thinks happens when they do something, and the laws of the world those beliefs come from.
 import type { Fields, Outcome } from "./physics";
 import { DAY, log, stageOf, type Agent, type World } from "./world";
-import { TICK_S } from "./ticks";
 import { plural } from "./materials";
 import { physOf } from "./fuel";
 import { seesHands, witnesses } from "./senses";
@@ -13,7 +12,7 @@ export type Belief = {
   fields: Fields;
   uses: Record<string, number>; // what it used up
   out: Record<string, number>; // what it produced
-  ticks: number; // how long it tends to take to do
+  secs: number; // how long it tends to take to do, s: its work over the power they put in (work.ts), as it has gone for them
   later?: number; // how long after doing it the result shows, once they've seen it come: a seed takes days to come up
   rate?: number; // damage per blow, for strikes
   tries: number;
@@ -304,10 +303,10 @@ const laid = (w: World, ks: string[]) => {
 const laterWords = (t: number) => (t < DAY / 2 ? "some hours later" : t < DAY * 1.5 ? "about a day later" : `about ${Math.round(t / DAY)} days later`);
 const THING_WORD: Record<string, string> = { sapling: "young plant" };
 const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
-// ticks: how long it takes, told from its seconds in hours, past the first (Belief.ticks keeps its ticks in a save);
-// later: how long after the result shows, for what they've seen come of it in time
-export function sentence(w: World, f: Fields, ticks?: number, later?: number): string {
-  const hours = ticks ? (ticks * TICK_S) / 3600 : 0, time = hours > 1 ? ` (about ${Math.round(hours)} hours)` : "";
+// secs: how long it takes, told in hours, past the first; later: how long after the result shows, for what they've seen
+// come of it in time
+export function sentence(w: World, f: Fields, secs?: number, later?: number): string {
+  const hours = secs ? secs / 3600 : 0, time = hours > 1 ? ` (about ${Math.round(hours)} hours)` : "";
   const ins = f.inputs.map((k) => nm(w, k));
   const fireWord = ({ hearth: "a ringed fire", kiln: "a ringed fire heaped over with stone", forge: "a ringed fire glowing red" } as Record<string, string>)[f.at ?? ""] ?? "a fire";
   switch (f.verb) {
@@ -373,7 +372,7 @@ export function sentence(w: World, f: Fields, ticks?: number, later?: number): s
   return `${f.verb} ${ins.join(", ")}`;
 }
 export const beliefText = (w: World, b: Belief) =>
-  sentence(w, b.fields, b.ticks, b.later) + (b.spurious ? ` They're convinced it only works if they hold ${an(nm(w, b.spurious))}.` : "")
+  sentence(w, b.fields, b.secs, b.later) + (b.spurious ? ` They're convinced it only works if they hold ${an(nm(w, b.spurious))}.` : "")
   + (b.unless?.length ? ` They think it won't work ${b.unless.map(conditionWords).join(" or ")}.` : "");
 
 // Useful enough to remember: it made something, built something, or had a clear effect.
@@ -383,16 +382,16 @@ const BUILT: Record<string, string> = { bush: "planting", worn: "clothing", cure
 // What a new law was about, in a word or two: what it built, else what it gave.
 const lawTag = (w: World, f: Fields) => (f.builds ? BUILT[f.builds] ?? f.builds.replaceAll("_", " ") : "") || (f.gives[0] ? nm(w, f.gives[0]) : undefined);
 // A law of the world, the first time anyone sees it hold. later: for what only shows in time, how long it took.
-export function found(w: World, a: Agent, f: Fields, ticks: number, ruled = false, newKinds: string[] = [], later?: number) {
+export function found(w: World, a: Agent, f: Fields, secs: number, ruled = false, newKinds: string[] = [], later?: number) {
   const key = beliefKey(f);
-  const law = (w.laws[key] = { id: `L${Object.keys(w.laws).length + 1}`, key, text: sentence(w, f, ticks, later), verb: f.verb, source: ruled ? "jev" : "physics", by: a.id, t: w.t, result: { gives: f.gives, builds: f.builds, effect: f.effect, target: f.target } });
+  const law = (w.laws[key] = { id: `L${Object.keys(w.laws).length + 1}`, key, text: sentence(w, f, secs, later), verb: f.verb, source: ruled ? "jev" : "physics", by: a.id, t: w.t, result: { gives: f.gives, builds: f.builds, effect: f.effect, target: f.target } });
   // An invention already has its own milestone, and a second way to make the same thing isn't a new one.
   const tag = newKinds.length ? undefined : lawTag(w, f);
   log(w, "law", [a.id], a, `${a.name} found out something new about the world: ${law.text}`, tag && !w.events.some((e) => e.kind === "law" && e.tag === tag) ? tag : undefined);
   return law;
 }
 
-export function record(w: World, a: Agent, out: Outcome, ticks: number, how: Belief["how"] = "discovered", from?: Agent) {
+export function record(w: World, a: Agent, out: Outcome, secs: number, how: Belief["how"] = "discovered", from?: Agent) {
   const f = out.fields;
   const key = beliefKey(f);
   if (!useful(out)) {
@@ -406,10 +405,10 @@ export function record(w: World, a: Agent, out: Outcome, ticks: number, how: Bel
   // working or not when the result shows (sim.ts came), not before.
   const pending = !!out.later;
   let law = w.laws[key];
-  if (!law && out.ok && !pending) law = found(w, a, f, ticks, out.ruled, out.newKinds);
+  if (!law && out.ok && !pending) law = found(w, a, f, secs, out.ruled, out.newKinds);
   let b = a.beliefs[key];
   const isNew = !b;
-  b ??= a.beliefs[key] = { key, fields: f, uses: out.uses, out: out.gives, ticks, tries: 0, wins: 0, how, from: from?.id, t: w.t };
+  b ??= a.beliefs[key] = { key, fields: f, uses: out.uses, out: out.gives, secs, tries: 0, wins: 0, how, from: from?.id, t: w.t };
   // known from the start (the ceiling a world is measured against): what truly hurts it comes with it
   if (isNew && RULES.learning === "known" && RULES.truth[key]?.length) b.unless = [...RULES.truth[key]];
   // An attempt that showed nothing new doesn't unlearn what it was seen to give or build before: a seed pushed into the
@@ -421,10 +420,10 @@ export function record(w: World, a: Agent, out: Outcome, ticks: number, how: Bel
   if (out.ok && !pending) b.wins++;
   // how long it takes them: the average of their tries, the latest counting most once there are twenty or so, so one try
   // that dragged on doesn't make it look slow for good, and as they get handier it comes to look quicker
-  b.ticks = b.tries === 1 ? ticks : b.ticks + (ticks - b.ticks) / Math.min(b.tries, 20);
+  b.secs = b.tries === 1 ? secs : b.secs + (secs - b.secs) / Math.min(b.tries, 20);
   if (out.numbers?.rate) b.rate = out.numbers.rate;
   if (law) b.law = law.id;
-  if (isNew && how === "discovered" && law && law.by !== a.id) log(w, "discover", [a.id], a, `${a.name} worked out on their own: ${sentence(w, f, ticks)}`);
+  if (isNew && how === "discovered" && law && law.by !== a.id) log(w, "discover", [a.id], a, `${a.name} worked out on their own: ${sentence(w, f, secs)}`);
   if (isNew && !pending) superstition(w, a, b);
   trace("belief", isNew ? "learned" : "reinforced", { key, how, tries: b.tries, wins: b.wins, spurious: b.spurious }, a.id);
   return b;
@@ -445,7 +444,7 @@ function superstition(w: World, a: Agent, b: Belief) {
 // already knew how, the theories of theirs it was seen to work in spite of (sim.ts weighs them as it does a try of
 // their own); what only shows later (a seed going into the sand) shows nothing yet, and theories never had or known from
 // the start aren't weighed.
-export function watchers(w: World, doer: Agent, out: Outcome, ticks: number, now: string[] = []) {
+export function watchers(w: World, doer: Agent, out: Outcome, secs: number, now: string[] = []) {
   const seen: { who: Agent; b: Belief; theories: string[] }[] = [];
   if (!useful(out)) return seen;
   const key = beliefKey(out.fields);
@@ -469,8 +468,8 @@ export function watchers(w: World, doer: Agent, out: Outcome, ticks: number, now
     trace("belief", "watching", { key, progress: b.watching[key], doer: doer.id }, b.id);
     if (b.watching[key] < 1) continue;
     delete b.watching[key];
-    const got = record(w, b, out, ticks, "watched", doer);
-    if (got) log(w, "learn", [b.id, doer.id], b, `${b.name} learned by watching ${doer.name}: ${sentence(w, out.fields, ticks)}`);
+    const got = record(w, b, out, secs, "watched", doer);
+    if (got) log(w, "learn", [b.id, doer.id], b, `${b.name} learned by watching ${doer.name}: ${sentence(w, out.fields, secs)}`);
   }
   return seen;
 }

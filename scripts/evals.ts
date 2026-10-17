@@ -65,7 +65,9 @@ import { bootstrap, mean } from "./stats";
 // probes 8, worlds 7, live 7: a tick is a second (docs/plans/2026-10-16-001-refactor-real-time-tick-plan.md, Unit 8),
 // so people walk, run and act at real speed while the hourly and daily laws keep their hours and days; every seeded
 // stream is drawn on another tick and every ledger starts again.
-const VERSION: Record<string, number> = { probes: 8, worlds: 7, live: 7 };
+// probes 9, worlds 8, live 8: acts are work delivered at a power (the tick plan's Unit 9, people-constants sec. 7), so
+// every act's time, a gathering's yield and the planner's costs change, and the ledgers' times are seconds.
+const VERSION: Record<string, number> = { probes: 9, worlds: 8, live: 8 };
 const ROOT = join(import.meta.dir, ".."), DATA = join(ROOT, "data/evals");
 type Numbers = Record<string, number | null>;
 // what a tier measured: by variant ("blame/real", "seen"...), by seed, its numbers
@@ -320,8 +322,8 @@ const KPIS: Record<string, Metric> = {
   wasted: { better: "lower", tol: 0.03, text: "share of their tries, plantings as they went in among them, made in a condition that truly hurts" },
   right: { better: "higher", tol: 0.1, text: "true theories held per person-day, of what someone on the island had seen" },
   wrong: { better: "lower", tol: 0.1, text: "false theories held per person-day" },
-  regret: { better: "lower", tol: 2, text: "ticks lost per try to a slower way they knew" },
-  discovery: { better: "lower", tol: 2, text: "ticks lost per try to a faster way the world allows" },
+  regret: { better: "lower", tol: 2, text: "seconds lost per try to a slower way they knew" },
+  discovery: { better: "lower", tol: 2, text: "seconds lost per try to a faster way the world allows" },
   churn: { better: "lower", tol: 0.05, text: "share of theories formed that had been formed and dropped before" },
   coverage: { better: "higher", tol: 0.1, text: "share of tries the answer key could judge" },
 };

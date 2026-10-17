@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { DAY, H, TILE_M, Tile, W, dryAt, heldStore, meters, newWorld, tileAt, walkable, type Step } from "./world";
+import { DAY, H, TILE_M, Tile, W, dryAt, heldStore, meters, newWorld, shoreOf, tileAt, walkable, type Step } from "./world";
 import { HERDED, animals, animalsOf, residentAnimals } from "./animals";
 import { resident } from "./space";
 import { stemDriver } from "./plants";
@@ -7,8 +7,7 @@ import { seedDriver } from "./seeds";
 import { doAct, retire } from "./sim";
 import { YEAR_DAYS, seasonAt } from "./sky";
 import { HOUR, TICK_S, ticksOf } from "./ticks";
-import { FAUNA, addAnimal } from "./fauna";
-import { armOf } from "./gait";
+import { FAUNA, FID, addAnimal } from "./fauna";
 import { ANIMAL } from "../gpu/animals";
 import { F, SP } from "../gpu/wgsl/animals";
 
@@ -72,9 +71,10 @@ test("seed 1's animals as individuals over three island years: counted right, wi
 }, 21_600_000);
 
 // Animals near people at real speed (real-time tick plan, Unit 10): a deer bolting from someone chasing it on foot goes at
-// its sprint (fauna.ts, Garland's 72 km/h), draws away faster than anyone runs, and the chase ends then; a deer winded
-// past its bolt, trotting, is run down. A noon in clear weather on open ground with nothing in the way for 300 m east.
-test("a deer bolting from a runner draws away at its sprint and the chase ends; one winded past its bolt is caught up with", () => {
+// its sprint (fauna.ts, Garland's 72 km/h), draws away faster than anyone runs, and the chase ends then; one standing
+// beyond its flight initiation distance (fauna.ts FID, Meisingset et al.'s 57 m) stays as the runner closes and bolts
+// once they are within it. A noon in clear weather on open ground with nothing in the way for 300 m east.
+test("a deer bolting from a runner draws away at its sprint and the chase ends; one beyond its flight initiation distance bolts once the runner is within it", () => {
   const w = newWorld(1), a = w.agents[0];
   w.agents = [a];
   w.animals = [];
@@ -84,31 +84,55 @@ test("a deer bolting from a runner draws away at its sprint and the chase ends; 
   let at: [number, number] | null = null;
   for (let k = 0; k < 4000 && !at; k++) { const px = a.px - 10 + (k % 64) * 0.33, py = a.py - 10 + Math.floor(k / 64) * 0.33; if (open(px, py)) at = [px, py]; }
   expect(at).not.toBeNull();
-  const chase = (winded: boolean) => {
+  const chase = (gap: number) => {
     w.animals = [];
     [a.px, a.py] = at!;
     a.goal = null; a.plan = []; a.inv = []; a.down = 0;
-    const deer = addAnimal(w, "deer", a.px + 10 / TILE_M, a.py);
-    if (winded) { deer.state = "flee"; deer.since = w.t - ticksOf(1200) - 1; }
+    const deer = addAnimal(w, "deer", a.px + gap / TILE_M, a.py);
     const s: Step = { op: "act", progress: 0, act: { verb: "strike", items: [], tool: null, target: { kind: "deer", animal: deer.id } } };
-    let r: unknown = "wait", ticks = 0, first = 0, closest = Infinity;
+    let r: unknown = "wait", ticks = 0, first = 0, flushed = Infinity;
     for (; ticks < ticksOf(120) && r === "wait"; ticks++) {
-      const x0 = deer.px;
+      const x0 = deer.px, before = meters(a, deer);
       w.t++;
       animals(w);
       if (!ticks) first = (deer.px - x0) * TILE_M;
+      if (deer.state === "flee" && flushed === Infinity) flushed = before;
       r = doAct(w, a, s);
-      closest = Math.min(closest, meters(a, deer));
     }
-    return { r, ticks, first, closest };
+    return { r, ticks, first, flushed };
   };
-  const bolt = chase(false);
+  const bolt = chase(10);
   // it bolted at its sprint, and the chase was over within seconds
   expect(bolt.first).toBeGreaterThan(0.9 * FAUNA.deer.run);
   expect(bolt.r).toBe("the deer got away");
   expect(bolt.ticks * TICK_S).toBeLessThan(10);
-  const tired = chase(true);
-  // the winded deer was reached, and the chase went on to the blow
-  expect(tired.r).not.toBe("the deer got away");
-  expect(tired.closest).toBeLessThan(armOf(w, a) + 0.5);
+  const far = chase(FID.deer.person + 20);
+  // the runner closed on it until within its flight initiation distance, a running stride inside it at most, and it got away
+  expect(far.flushed).toBeLessThanOrEqual(FID.deer.person);
+  expect(far.flushed).toBeGreaterThan(FID.deer.person - 5);
+  expect(far.r).toBe("the deer got away");
+}, 120_000);
+
+// Flight initiation distances (fauna.ts FID): a red deer (Meisingset et al., 57 m), a rabbit (Huang et al., 31.7 m) and a
+// grey heron (Díaz et al., 62.08 m) each stay with a person a meter beyond theirs and flee, or take wing, with one a meter
+// within it. A noon in clear weather; the deer and the rabbit where the first person woke, the heron on the shore.
+test("deer, rabbits and herons flee a person at their flight initiation distances", () => {
+  const w = newWorld(1), a = w.agents[0];
+  w.agents = [a];
+  w.t = DAY + DAY / 2;
+  w.weather.sky = "clear";
+  const land: [number, number] = [a.px, a.py], shore = shoreOf(w)[0];
+  const cases = [["deer", FID.deer.person, "flee"], ["rabbit", FID.rabbit.person, "flee"], ["heron", FID.heron.person, "fly"]] as const;
+  for (const [sp, fid, fled] of cases)
+    for (const off of [1, -1]) {
+      w.animals = [];
+      const [x, y] = sp === "heron" ? [shore.px, shore.py] : land;
+      const an = addAnimal(w, sp, x, y);
+      [a.px, a.py] = [x + (fid + off) / TILE_M, y];
+      a.down = 0;
+      w.t++;
+      animals(w);
+      if (off > 0) expect(an.state, `${sp} with a person ${fid + off} m off`).not.toBe(fled);
+      else expect(an.state, `${sp} with a person ${fid + off} m off`).toBe(fled);
+    }
 }, 120_000);

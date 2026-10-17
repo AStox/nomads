@@ -20,7 +20,7 @@ import type { Stand } from "../gpu/flora";
 export const W = TILES;
 export const H = TILES;
 export { DAY, YEAR, YEAR_DAYS }; // the clock's (ticks.ts): ticks a day and a year, and days a year, the sun's round
-export const VERSION = 30; // 30: a tick is a second (ticks.ts), so every persisted tick (instants, beliefs' ticks, the GPU's born words and event waits) counts seconds
+export const VERSION = 31; // 31: acts are work at a power (work.ts): beliefs keep seconds (Belief.secs) and a step's progress is joules; 30: a tick is a second (ticks.ts), so every persisted tick (instants, beliefs' ticks, the GPU's born words and event waits) counts seconds
 export { TILE_M }; // meters per tile
 
 export enum Tile {
@@ -187,7 +187,12 @@ export type Act = {
   shape?: "bowl" | "block";
   at?: string | null; // place the act needs: fire, water, home
 };
-export type Step = { op: string; arg?: string; progress: number; label?: string; act?: Act; heat?: number; tries?: number; key?: string; started?: number };
+// progress: what is done of the step, for an act that is work the joules put into it (work.ts) out of its work, J;
+// a gathering's got of the want it set out to pick; dim: the share of a tick's blows poor light has left owing.
+export type Step = {
+  op: string; arg?: string; progress: number; label?: string; act?: Act; heat?: number; tries?: number; key?: string; started?: number;
+  work?: number; got?: number; want?: number; dim?: number;
+};
 export type Goal = { type: string; target?: string; since: number; odds: Record<string, number>; fails: number; stages?: number };
 
 export type Needs = { food: number; energy: number; warmth: number; health: number; social: number };

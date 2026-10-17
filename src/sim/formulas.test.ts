@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
-import { newWorld, rng, type Agent, type Stack, type World } from "./world";
-import { bedAir, fireOf, firstHeld, giveItems, giveStack, heat, join, layAt, place, removeThing, rubTick, strikeTick, type Fields } from "./physics";
+import { newWorld, rng, type Agent, type Stack, type Step, type World } from "./world";
+import { bedAir, digShare, digTick, fireOf, firstHeld, giveItems, giveStack, heat, join, layAt, pitWork, place, removeThing, rubTick, strikeTick, type Fields } from "./physics";
 import { advance } from "./combustion";
 import { PHYS, pieceOf } from "./fuel";
 import { airOn } from "./air";
 import { tinder, tinderOf } from "./wetness";
 import { predict, type Prediction, type Situation } from "./formulas";
+import { doAct } from "./sim";
+import { REF_W } from "./work";
 
 // predict comes to what the acts come to (fire plan unit 10), as round five's check did for materials: across lays of the
 // island's pieces as wet as anything gets, struck and rubbed in winds from still to a gale, and fires of every age fed
@@ -124,4 +126,20 @@ test("laying wood on a fire of any age comes to what predict says, and so does h
       a.inv = a.inv.filter((s) => s.k === bag);
     }
   }
+});
+
+test("the answer key's time for an act that is work is the work the act needs over a rested grown novice's power", () => {
+  const [w, a] = setup();
+  const s = situation(w, a, [], null);
+  // a berry pushed into the ground: the act's work (work.ts ACT_WORK) as doAct sets it
+  giveItems(w, a, "berry");
+  const sowing: Step = { op: "act", act: { verb: "plant", items: ["berry"] }, progress: 0 };
+  doAct(w, a, sowing);
+  expect(said(predict(w, { verb: "plant", inputs: ["berry"], gives: [] }, s)).secs).toBeCloseTo(sowing.work! / REF_W, 9);
+  // a pit dug with a sharp stone: its ground's work at the share of the power the stone puts into it
+  giveItems(w, a, "sharp_stone");
+  const st: { progress: number; work?: number } = { progress: 0 };
+  digTick(w, a, { verb: "dig", items: [], tool: "sharp_stone" }, st);
+  expect(st.work).toBe(pitWork());
+  expect(said(predict(w, { verb: "dig", inputs: [], tool: "sharp_stone", gives: [] }, s)).secs).toBeCloseTo(st.work! / (REF_W * digShare(w.kinds.sharp_stone)), 6);
 });

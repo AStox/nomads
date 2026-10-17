@@ -572,12 +572,11 @@ async function main() {
     if (revealed && bench && (!sim?.warming || Q.has("benchwarm"))) bench.step(now);
     camera.step(dt, now);
     if (follow && sim) followStep(now, dt);
-    else live.prefetch(null);
+    // a zoom's destination, or a bench's first view, has its level's lists built first
+    else { const goal = camera.goalView(); live.prefetch(bench?.ahead() ?? (goal ? [goal] : null)); }
     // the ground under the opening shot is only exact once its chunks are in, so keep it centred until then
     if (!revealed && opening) camera.lookAt(live.where(opening, sim, view));
     camera.guard();
-    // a zoom's destination bakes first, so a quick zoom across several levels lands on baked ground
-    live.goal = camera.goalView();
     const r = live.frame(view, sim, { show: revealed });
     if (!revealed) {
       // every bearing of the opening view, so the first turns land on baked ground; the load can take its time. With
@@ -619,17 +618,21 @@ async function main() {
 
   // ?bench=zoom | orbit | turn | pan: drive the camera and record frame rate and frame cost, for the report. Several run
   // in turn, each from the view the first began at, after a settling pause of SETTLE_MS [design]; their results are
-  // kept by kind.
+  // kept by kind. Each begins once the lists its first view draws from are built (live.listsReady: a zoom's first frame
+  // is the whole island), as a camera that goes there by any other way finds them, or after LISTS_MS [design: the
+  // island levels' front lists of one bearing take about a second each to build].
   function benchSeq(kinds) {
-    const SETTLE_MS = 2000, results = {};
-    let i = 0, cur = null, home = null, wait = 0;
+    const SETTLE_MS = 2000, LISTS_MS = 20000, results = {};
+    let i = 0, cur = null, home = null, wait = 0, waited = 0;
     const done = (out) => {
-      results[out.kind] = out;
+      results[out.kind] = { ...out, listsWaitMs: waited };
       cur = null;
       if (++i < kinds.length) { wait = 0; return; }
-      document.body.dataset.bench = JSON.stringify(kinds.length > 1 ? results : out);
+      document.body.dataset.bench = JSON.stringify(kinds.length > 1 ? results : results[out.kind]);
       document.body.classList.add("ready");
     };
+    // the view a kind's first frame shows (benchRunner)
+    const first = (kind) => ({ ...home, zoom: kind === "zoom" ? 0 : kind === "pan" ? live.named[names[0]] : home.zoom });
     return {
       step(now) {
         if (i >= kinds.length) return;
@@ -637,10 +640,14 @@ async function main() {
         if (!cur) {
           if (!wait) { wait = now; if (i) { camera.setZoom(home.zoom); Object.assign(view, { x: home.x, z: home.z, bearing: home.bearing }); } }
           if (i && now - wait < SETTLE_MS) return;
+          if (!live.listsReady(first(kinds[i])) && now - wait < LISTS_MS) return;
+          waited = Math.round(now - wait);
           cur = benchRunner(kinds[i], live, view, done);
         }
         cur.step(now);
       },
+      // the view the next kind begins at, while it waits to begin
+      ahead: () => (home && !cur && i < kinds.length ? [first(kinds[i])] : null),
     };
   }
   function benchRunner(kind, live, view, onDone) {

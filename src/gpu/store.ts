@@ -79,8 +79,10 @@ export type Kind = {
   stale: boolean; // changed on the GPU since the mirror's last landing of it (a still kind's pages are kept while not)
 };
 
-// A law: kernels run in begin when due, in the order laws were added.
-export type Law = { name: string; due: (t: number) => boolean; run: (s: Store, t: number) => void };
+// A law: kernels run in begin when due, in the order laws were added. A law whose work is long on the GPU gives it in
+// slices: run returns an iterable whose every step records the next slice, each sent to the GPU on its own (beginPaced
+// paces them, so the frames between are drawn).
+export type Law = { name: string; due: (t: number) => boolean; run: (s: Store, t: number) => void | Iterable<void> };
 
 // Something read back with every landing: it asks for so many words of the staging copy, records its copies into
 // them (at word at of out) after the kinds' gathers, and reads them when the tick lands. A rider with a name is part
@@ -177,6 +179,8 @@ export class Store {
   private paced = false;
   private held: (() => void)[] | null = null;
   private waits: Promise<unknown>[] = [];
+  // the GPU's work sent up to the last pace, run (pace)
+  private paceDone: Promise<void> | undefined;
   // whether the store's own kernels, and which riders' kernels, are made ahead (makeAhead)
   private ownAhead = false;
   private readonly ahead = new Set<Rider>();
@@ -354,6 +358,15 @@ export class Store {
   async drain() {
     this.flush();
     await this.g.device.queue.onSubmittedWorkDone();
+  }
+  // Submits what has been recorded and waits until the GPU has run what went before the last pace: a slice at a time
+  // on the GPU with the next queued behind it, so the GPU never waits on the wait's own round trip, and whatever else
+  // shares the queue (the play page's frames) waits behind two slices at most.
+  async pace() {
+    this.flush();
+    const before = this.paceDone;
+    this.paceDone = this.g.device.queue.onSubmittedWorkDone();
+    await before;
   }
   // The ops held, recorded in their order; one whose pipeline is still being made (none, once caughtUp has waited for
   // them all) holds it and those after it again.
@@ -649,14 +662,15 @@ export class Store {
     for (const _ of this.beginSteps(t));
   }
   // begin as a caller that has other work between the laws runs it (the play page's render worker draws its frames
-  // there): the same work in the same order, pause awaited after the upload and after each law due, and the kernels of
-  // each held until their pipelines are made (paced).
+  // there): the same work in the same order, pause awaited after the upload, after each slice of a law given in slices
+  // (paced, pace) and after each law due, and the kernels of each held until their pipelines are made (paced).
   async beginPaced(t: number, pause: () => Promise<void>) {
     this.paced = true;
     this.makeAhead();
     if (this.held) await this.caughtUp();
-    for (const _ of this.beginSteps(t)) {
+    for (const slice of this.beginSteps(t)) {
       if (this.held) await this.caughtUp();
+      if (slice) await this.pace();
       await pause();
     }
   }
@@ -674,7 +688,8 @@ export class Store {
     for (const r of this.riders) if (!this.ahead.has(r)) { this.ahead.add(r); srcs.push(...(r.kernelSources?.() ?? [])); }
     for (const src of srcs) void pipelineSoon(this.g, src);
   }
-  private *beginSteps(t: number) {
+  // yields after the upload, after each slice of a law given in slices (true) and after each law
+  private *beginSteps(t: number): Generator<boolean> {
     if (this.begun || this.landing) throw new Error("a store tick begins only once the last one has landed");
     this.flush();
     this.t = t;
@@ -685,14 +700,20 @@ export class Store {
       // held for its pipelines goes once they are made (beginPaced), before the next law runs
       this.upload();
       if (!this.held) this.flush();
-      yield;
-      for (const l of this.laws) if (l.due(t)) { l.run(this, t); if (!this.held) this.flush(); yield; }
+      yield false;
+      for (const l of this.laws) {
+        if (!l.due(t)) continue;
+        const slices = l.run(this, t);
+        if (slices) for (const _ of slices) { if (!this.held) this.flush(); yield true; }
+        if (!this.held) this.flush();
+        yield false;
+      }
       // a still kind untouched since its last index has no dead slot to reclaim and no object out of place; a placed
       // kind's reclaim rides its index's scan
       const due = this.kinds.filter((k) => !k.spec.still || k.touched);
       for (const k of due) if (!k.placed) this.reclaim(k);
       for (const k of due) { this.index(k, true); k.touched = false; }
-      if (this.held) yield;
+      if (this.held) yield false;
     } catch (e) {
       // the failure stays with this tick: what was recorded goes out (an upload that finished has already taken its
       // deltas off the queue), and the next tick can begin

@@ -17,7 +17,7 @@
 import type { Store, Rider } from "./store";
 import { reload, savedArray, savedNumber, savedNumbers } from "./store";
 import { cover, readback, storage } from "./kernel";
-import { Lumped, PROMOTED, type Split } from "./tiers/lumped";
+import { Lumped, PROMOTED, SPLIT_BINS, type Split } from "./tiers/lumped";
 import type { Ground } from "./animals";
 import { T as TILES } from "./wgsl/animals";
 import { FIXED } from "./wgsl/fixed";
@@ -140,7 +140,7 @@ export class Smalls implements Rider, Ground {
       summary: SUMMARY,
     };
     store.ride(this);
-    store.law({ name: "smalls", due: (t) => t % this.dayTicks === 0 && t !== this.last, run: (_, t) => this.day(t) });
+    store.law({ name: "smalls", due: (t) => t % this.dayTicks === 0 && t !== this.last, run: (_, t) => this.slices(t) });
     if (fresh) {
       const t = Math.floor((t0 - this.dayTicks * 40) / this.dayTicks) * this.dayTicks;
       const st = driver.start(Math.floor(t / this.dayTicks) % 40, pine, broad);
@@ -172,23 +172,31 @@ export class Smalls implements Rider, Ground {
 
   // A day at tick t (midnight): see wgsl/smalls.ts for the passes.
   day(t: number) {
+    for (const _ of this.slices(t, Infinity));
+  }
+  // The day in slices: each lumped kind's split goes a slice at a time (tiers/lumped.ts steps), yielding between them,
+  // so the store's law sends each to the GPU on its own and the play page's frames go between (store.ts beginPaced);
+  // the same kernels in the same order however it is sent. day, and the animals' spin-up before anyone wakes, send each
+  // split whole (bins Infinity): with no frames to let between, the slices' dispatches cost the play page's first
+  // tick 10 s.
+  *slices(t: number, bins = SPLIT_BINS): Generator<void> {
     const s = this.store!, g = s.g, b = this.b!, k = this.kinds!, src = this.src, d = Math.floor(t / this.dayTicks) % 40;
     if (this.link) s.run(src.eaten, [this.link.W, b.wrote, b.cen, b.eat], cover(g, TILES));
     g.device.queue.writeBuffer(b.dayw, 0, this.driver!.day(d));
     s.run(src.inputs, [b.inp, b.dayw, b.cen, b.eat, b.st, this.crowns?.buf ?? b.zero, b.tb, b.lb], cover(g, CELLS), [t >>> 0, this.crowns?.buf ? 1 : 0, 0, 0]);
     s.encode((e) => e.clearBuffer(b.cen));
     k.tiller.bornFrom(b.tb, CELLS * TB);
-    k.tiller.step(t);
+    yield* k.tiller.steps(t, bins);
     s.run(src.c0, [k.tiller.table, k.tiller.control, b.inp, b.cen], cover(g, k.tiller.cap), [k.tiller.cap, t >>> 0, 0, 0]);
     s.run(src.litterBirths, [b.cen, b.st, b.lb], cover(g, CELLS));
     k.litter.bornFrom(b.lb, CELLS * LB);
-    k.litter.step(t);
+    yield* k.litter.steps(t, bins);
     s.run(src.c1, [k.litter.table, k.litter.control, b.inp, b.cen], cover(g, k.litter.cap), [k.litter.cap, t >>> 0, 0, 0]);
     if (this.link) k.fauna.requests(this.link.RQ, this.link.cap, PROMOTED);
-    k.fauna.step(t);
+    yield* k.fauna.steps(t, bins);
     if (this.link) s.run(SMALLS_NONE, [this.link.RQ], cover(g, this.link.cap), [this.link.cap, 0, 0, 0]);
     s.run(src.c2, [k.fauna.table, k.fauna.control, b.inp, b.cen], cover(g, k.fauna.cap), [k.fauna.cap, t >>> 0, 0, 0]);
-    if (k.sand.bins > 0) k.sand.step(t);
+    if (k.sand.bins > 0) yield* k.sand.steps(t, bins);
     s.run(SMALLS_SETTLE, [b.cen, b.st], cover(g, CELLS));
     if (this.link) s.run(SMALLS_POOLS, [this.link.W, b.wrote, b.cen, b.st], cover(g, TILES));
     s.run(src.summary, [b.cen, b.inp, b.sum], cover(g, CELLS));
@@ -201,8 +209,8 @@ export class Smalls implements Rider, Ground {
     this.link = link;
     if (!(saved && this.loaded)) s.run(SMALLS_POOLS, [link.W, this.b!.wrote, this.b!.cen, this.b!.st], cover(s.g, TILES));
   }
-  spin(_s: Store, t: number) {
-    if (t > this.last) this.day(t);
+  spin(_s: Store, t: number): Iterable<void> {
+    return t > this.last ? this.slices(t, Infinity) : [];
   }
 
   // ---------- people ----------

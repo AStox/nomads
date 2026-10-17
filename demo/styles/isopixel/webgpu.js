@@ -1143,9 +1143,9 @@ export async function createRenderer({ device, context, format, pal, ground, tim
           far: slots && sp.indexed && !sp.moves ? {
             cull: pipe({ label: `cull far ${s.name}`, binds: ["V", "map", ...own, "flist", "fidx", ...out], code: `${MAP_READ}\n${src}\n${cullWGSL(sp, true)}`, compute: "cullMain" }),
             count: pipe({ label: `far count ${s.name}`, binds: ["Fp", ...own, "fkey:w", "fcnt:w", ...ground], code: `${src}\n${FAR_COUNT_WGSL}`, compute: "farCount" }),
-            // a source read from its plain fields (no reader or buffers of its own, which the keep pass has no room
-            // to bind) builds front lists
-            ...(!sp.read && !sp.binds && {
+            // a source builds front lists when its keep pass's storage buffers fit the device's limit (a log's reader
+            // and its driver ring do, ten of ten on AMD RDNA-1 2026-10-17), its own buffers all given once (over)
+            ...(!s.dyn && ["map", ...own, "flist", "fidx", "looks", "entries", "fkeysR", "flistOut", "fout"].filter((n) => RES[n][1] === "storage").length <= device.limits.maxStorageBuffersPerShaderStage && {
               mark: pipe({ label: `front mark ${s.name}`, binds: ["V", "map", ...own, "flist", "fidx", "looks", "entries", "gridTex", "fineTex", "fkeys:w"], code: `${MAP_READ}\n${src}\n${cullWGSL(sp, true, "mark")}`, compute: "cullMain" }),
               keep: pipe({ label: `front keep ${s.name}`, binds: ["V", "map", ...own, "flist", "fidx", "looks", "entries", "gridTex", "fineTex", "fkeysR", "flistOut:w", "fout:w"], code: `${MAP_READ}\n${src}\n${cullWGSL(sp, true, "keep")}`, compute: "cullMain" }),
             }),
@@ -1353,20 +1353,34 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     if ((!fr || fr.gen !== f.gen) && !frontWant.includes(key) && frontJob?.key !== key) frontWant.push(key);
     return fr && (fr.gen === f.gen || fr.gen === f.prevGen) ? fr : null;
   }
-  // the levels and bearings a frame's views ask for: each view's own first, then every other level at its bearing, the
+  // the levels and bearings a frame's views ask for: those the page says it will show next first (ahead: [{ L, b }], a
+  // zoom's first level before its first frame), then each view's own, then every other level at its bearing, the
   // nearest levels first (those a zoom's cross-fade reaches next), so a level is seldom first drawn walking its far list
-  function frontAsk(views) {
+  function frontAsk(views, ahead = []) {
     const at = [...frontViews.keys()].map((k) => k.split("|").map(Number));
     for (const s of sources) {
       const f = s.far && farState.get(s.name);
       if (!f || f.front < 0 || !s.far.keep) continue;
+      for (const a of ahead) frontOf(s, f, a.L, a.b);
       for (const v of views) for (const L of [v.L, ...at.filter(([, b]) => b === v.beta).map(([l]) => l)]) frontOf(s, f, L, v.beta);
     }
     const rank = (key) => {
       const [, L, b] = key.split("|").map(Number);
+      if (ahead.some((a) => a.L === L && a.b === b)) return -1;
       return Math.min(...views.map((v) => (b === v.beta ? Math.abs(L - v.L) : Infinity)));
     };
     if (frontWant.length > 1) frontWant.sort((a, b) => rank(a) - rank(b));
+  }
+  // The levels and whole bearings ("L|b") whose front lists are all built for the far lists drawn now, so a view there
+  // walks no far list; none before the far lists are.
+  function frontsReady() {
+    const keep = sources.filter((s) => s.far?.keep);
+    const fars = keep.map((s) => farState.get(s.name));
+    if (!keep.length || fars.some((f) => !f || f.front < 0)) return [];
+    return [...frontViews.keys()].filter((v) => keep.every((s, i) => {
+      const fr = frontState.get(`${s.name}|${v}`), f = fars[i];
+      return fr && (fr.gen === f.gen || fr.gen === f.prevGen);
+    }));
   }
   // One step of the front list being built, into enc; after: what to run once enc is submitted.
   function frontFrame(enc) {
@@ -1394,7 +1408,10 @@ export async function createRenderer({ device, context, format, pal, ground, tim
         j.n = new Uint32Array(rb.getMappedRange())[0];
         rb.unmap(); rb.destroy();
         j.list = B(Math.max(16, j.n * 4), STOR, "frontList");
-        if (frontJob === j) j.phase = "mark"; else j.list.destroy();
+        if (frontJob !== j) j.list.destroy();
+        // nothing at this level to mark or keep: done (drawView walks no empty list)
+        else if (!j.n) frontDone(j);
+        else j.phase = "mark";
       });
     }
     if (j.phase === "wait") return null;
@@ -1418,12 +1435,15 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     j.row += rows;
     if (j.row < CELLS_N) return null;
     if (j.phase === "mark") { j.phase = "keep"; j.row = 0; return null; }
+    frontDone(j);
+    return null;
+  }
+  function frontDone(j) {
     const old = frontState.get(j.key);
     if (old) frontRetired.push(old.list, old.idx);
     frontState.set(j.key, { list: j.list, idx: j.idx, gen: j.gen, n: j.n });
     stats.front = { ...stats.front, [j.key]: j.n };
     frontJob = null;
-    return null;
   }
   const frontRetired = [];
   // a source's slots as workgroups, 256 threads each, folded into two dimensions past the 65535 limit
@@ -1527,7 +1547,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   const countRead = [0, 1, 2].map(() => ({ b: B(48, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "counts"), busy: false }));
   let inFlight = 0;
 
-  // f: worker.js's frame: { views: [{ U (VU fields), alpha, present: { dx, dy, sc, nn, nearest }, live, liveRows, prims, fires, xray }], lut, out, sea, cast, exag }
+  // f: worker.js's frame: { views: [{ U (VU fields), alpha, present: { dx, dy, sc, nn, nearest }, live, liveRows, prims, fires, xray }], lut, out, sea, cast, exag, ahead (frontAsk) }
   function frame(f) {
     const views = f.views;
     ensure(Math.max(...views.map((v) => v.U.aw)), Math.max(...views.map((v) => v.U.ah)));
@@ -1539,7 +1559,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     traceSun(enc, f.cast);
     // a front list's slice only in a frame no far list's build steps in, so a frame pays for one or the other
     const farBusy = farFrame(enc);
-    frontAsk(views);
+    frontAsk(views, f.ahead);
     if (!farBusy) { const after = frontFrame(enc); if (after) pendingPickReads.push(after); }
     const slots = fadePlan(views);
     // the cells of a kept view are held too, so two fading levels drawn in turn don't evict each other's cells
@@ -1668,8 +1688,12 @@ export async function createRenderer({ device, context, format, pal, ground, tim
         const over = { ...s.over, ...s.dyn?.(), ...(s.fill ? cacheBinds(s) : {}) };
         const f = farL >= 0 && s.far && farState.get(s.name);
         if (f && f.front >= 0 && f.body === s.body) {
-          // a far level at a whole bearing walks its front list where one is built
-          const fr = frontOf(s, f, v.L, v.beta), lists = fr ? { flist: { buffer: fr.list }, fidx: { buffer: fr.idx } } : { flist: { buffer: f.list[f.front] }, fidx: { buffer: f.idx[f.front] } };
+          // a far level at a whole bearing walks its front list where one is built; a list with nothing in it is not
+          // walked (a workgroup a cell of the island costs some 0.6 ms at the island levels even when every cell's run
+          // is empty, measured on AMD RDNA-1 2026-10-17)
+          const fr = frontOf(s, f, v.L, v.beta);
+          if ((fr ? fr.n : f.n[f.front]) === 0) continue;
+          const lists = fr ? { flist: { buffer: fr.list }, fidx: { buffer: fr.idx } } : { flist: { buffer: f.list[f.front] }, fidx: { buffer: f.idx[f.front] } };
           pass.setPipeline(s.far.cull.p); pass.setBindGroup(0, group(s.far.cull, k, { ...over, ...lists }));
           pass.dispatchWorkgroups(rect.cx1 - rect.cx0 + 1, rows);
           continue;
@@ -1794,7 +1818,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     setFarUse: (on) => { farUse = on; },
     setFadeKeep: (on) => { fadeKeep = on; },
     setFrontUse: (on) => { frontUse = on; },
-    setFrontViews,
+    setFrontViews, frontsReady,
     // sources the cull leaves out, by name (the page checks, to time each source's share)
     setSkipped: (names) => { skipped = new Set(names); },
     // what view 0 shows at art px (x, y) in the next frame: { kind, pick } (kind -1: nothing), or null

@@ -12,7 +12,7 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { DAY, TICK_S } from "../src/sim/ticks";
 import { holds } from "../src/sim/beliefs";
-import { expectedTicks, loadKey, verdict } from "./answer-key";
+import { expectedSecs, loadKey, verdict } from "./answer-key";
 import type { Tally, Verdict, Way } from "./answer-key";
 
 type Line = {
@@ -41,7 +41,7 @@ function judged(key: string): Way | undefined {
   const w = answers.ways[key];
   return w && !w.why && w.all.n > 0 && Object.keys(w.conds).length ? w : undefined;
 }
-// The odds of a way working in these conditions by the key, weighed as expectedTicks weighs them: by the worst of the
+// The odds of a way working in these conditions by the key, weighed as expectedSecs weighs them: by the worst of the
 // conditions it was tried in that hold, and by all its tries where none do.
 function oddsIn(way: Way, now: string[]) {
   const tried = now.map((c) => way.conds[c]?.in).filter((t): t is Tally => !!t && t.n > 0);
@@ -54,7 +54,7 @@ for (const key of Object.keys(answers.ways)) {
   const w = judged(key);
   if (w?.aim) (island.get(`${w.aim}|${w.at}`) ?? island.set(`${w.aim}|${w.at}`, []).get(`${w.aim}|${w.at}`)!).push(w);
 }
-// How many ticks the quickest way to the same end, at the same place, would have saved over the one chosen, in the
+// How many seconds the quickest way to the same end, at the same place, would have saved over the one chosen, in the
 // conditions it was chosen in, trying again until it worked: of the other ways they knew (choice; best when within a
 // tenth of the quickest), and of every way the key knows, whether they knew it or not (discovery). Building onto their
 // home isn't the same as putting up a new pile, so only ways done at the same place count. A way that would take more
@@ -63,9 +63,9 @@ for (const key of Object.keys(answers.ways)) {
 function regrets(l: Line) {
   const mine = judged(l.key!), now = l.now ?? [];
   if (!mine) return null;
-  const ticks = (way: Way) => Math.min(expectedTicks(way, now), DAY), e = ticks(mine), where = l.key!.split("|")[4];
-  const known = (l.alts ?? []).filter((k) => k !== l.key && k.split("|")[4] === where).map(judged).filter((w): w is Way => !!w).map(ticks);
-  const least = Math.min(e, ...known), found = Math.min(e, ...(island.get(`${mine.aim}|${mine.at}`) ?? []).map(ticks));
+  const secs = (way: Way) => Math.min(expectedSecs(way, now), DAY * TICK_S), e = secs(mine), where = l.key!.split("|")[4];
+  const known = (l.alts ?? []).filter((k) => k !== l.key && k.split("|")[4] === where).map(judged).filter((w): w is Way => !!w).map(secs);
+  const least = Math.min(e, ...known), found = Math.min(e, ...(island.get(`${mine.aim}|${mine.at}`) ?? []).map(secs));
   return { choice: known.length ? { regret: e - least, best: e <= least * 1.1 } : null, discovery: e - found };
 }
 
@@ -90,15 +90,15 @@ const dayIn = (start: number, t: number) => Math.max(1, Math.ceil((t - start) / 
 const bucket = (day: number) => Math.floor((day - 1) / BUCKET);
 type Row = {
   // what shows at once (everything but planting and watering), tests left out: attempts, how many worked, how many were
-  // done in a condition that truly hurts them, and the ticks they took (of those that noted it)
+  // done in a condition that truly hurts them, and the seconds they took (of those that noted it)
   attempts: number; wins: number; wasted: number; took: number; timed: number; agentDays: number;
   // tries made to see whether a theory holds, all of them, planting too
   tests: number;
   held: Record<Verdict, number>; formed: Record<Verdict, number>; dropped: Record<Verdict, number>;
   reformed: number; // theories formed again by someone who had dropped them
   offered: number; tested: number;
-  // attempts (tests left out) at something they knew another way to: how many used the quickest, and the ticks they
-  // gave up against it, summed; and the ticks given up against the quickest way on the island, over attempts at a way
+  // attempts (tests left out) at something they knew another way to: how many used the quickest, and the seconds they
+  // gave up against it, summed; and the seconds given up against the quickest way on the island, over attempts at a way
   // the key judged
   chose: number; best: number; regret: number; found: number; discovery: number;
   // plantings: how many showed, how many came up, and the odds of the spots chosen by the key, summed
@@ -277,9 +277,9 @@ for (const r of runs) {
 // ---------- tell ----------
 const pct = (a: number, b: number) => (b ? `${Math.round((100 * a) / b)}%` : "-");
 const per = (a: number, b: number, digits = 0) => (b ? (a / b).toFixed(digits) : "-");
-// a sum of ticks over a count, as minutes each: the text report's clock (the numbers --json gives scripts/evals.ts stay
-// in ticks, as its ledgers hold them, until evals' VERSION moves with the tick)
-const mins = (ticks: number, b: number) => (b ? ((ticks * TICK_S) / 60 / b).toFixed(0) : "-");
+// a sum of seconds over a count, as minutes each: the text report's clock (the numbers --json gives scripts/evals.ts
+// stay in seconds, as its ledgers hold them)
+const mins = (secs: number, b: number) => (b ? (secs / 60 / b).toFixed(0) : "-");
 const days = (b: number) => `${String(b * BUCKET + 1).padStart(3)}-${String((b + 1) * BUCKET).padEnd(4)}`;
 console.log(`${runs.length} runs, ${attemptsAll} attempts at ${seenWays.size} ways of doing things, ${pct(attemptsJudged, attemptsAll)} of them at a way the key judged`);
 console.log(`answer key: seed ${answers.seed}, ${answers.days} days, ${answers.trials} trials, ${Object.keys(answers.ways).length} ways (${Object.keys(answers.ways).filter((k) => judged(k)).length} judged)`);

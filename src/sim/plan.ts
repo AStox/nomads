@@ -1,11 +1,11 @@
 // GOAP over what each agent believes. Agents can only plan with things they've seen work.
 import { chance, ofPlace, ruledOut, type Belief } from "./beliefs";
 import { p, type Registry } from "./materials";
-import { DURATION, breaksOf } from "./physics";
+import { PIT_SOIL, breaksOf } from "./physics";
 import { HUNTED } from "./fauna";
 import { PHYS, asFound, physOf } from "./fuel";
-import { DAY } from "./world";
-import { ticksOf } from "./ticks";
+import { LEVEL_WALK } from "./gait";
+import { LUMP_M3, REF_W, digWork } from "./work";
 
 export type PState = { inv: Record<string, number>; at: string | null; flags: string[] };
 export type Ctx = {
@@ -21,7 +21,15 @@ export type Ctx = {
   carry?: number; // kg they can hold besides what they wear (gait.ts capacityOf); none: as much as they like
 };
 export type PlanStep = { op: string; arg?: string; key?: string };
+// cost: what an op is expected to take, s.
 type Op = PlanStep & { cost: number; needs: string[]; makes: string[]; pre: (s: PState) => boolean; eff: (s: PState) => PState };
+
+// The planner weighs trips in steps of fifteen meters (ctx.dist), about what one step used to be worth, walked at a grown
+// walker's speed on level grass (gait.ts LEVEL_WALK); and what has no time of its own (putting away, taking out, eating,
+// resting, warming up, meeting someone, hunting, and each op's own start) in units of four steps' walk, as it was weighed
+// against walking before [design: the old costs].
+export const STEP_M = 15;
+const STEP_S = STEP_M / LEVEL_WALK, UNIT = 4 * STEP_S;
 
 const n = (s: PState, k: string) => s.inv[k] ?? 0;
 // One of a kind as found, kg (fuel.ts asFound), by its matter; nothing for a kind of no known matter.
@@ -49,24 +57,28 @@ export const SOCIAL_ITEM_NEEDS: Record<string, (s: PState, kinds: Registry) => b
   trade: (s) => Object.values(s.inv).some((v) => v > 0),
 };
 
-// What anyone can do from birth. A gathering takes PICK seconds of work at full pace (sim.ts) and comes away with so many
-// of a thing, or, for food, what a picker takes in that time at a measured rate, kg an hour as picked: blackberries by
-// hand, and wild grass seed stripped by hand and cleaned (body-constants sec. 10). [design: today's 2.5 ticks at five
-// minutes a tick]
+// What anyone can do from birth. A gathering picks so many of a thing, or as many as are there if fewer (sim.ts), each
+// one taking so much work, J. Food picked at a measured rate, kg an hour as picked (blackberries by hand, and wild grass
+// seed stripped by hand and cleaned; body-constants sec. 10): what an hour of the reference power picks of it (work.ts
+// REF_W) [derived], as many as are picked in PICK seconds. Clay: digging a lump out of its deposit and lifting it from half a
+// spade's depth (work.ts digWork, physics.ts PIT_SOIL) [derived]. Anything else: PICK seconds of work at the reference power
+// for the gathering [derived; gap: no measured rate].
+// [design: PICK, today's 2.5 ticks at five minutes a tick]
 export const PICK = 750;
-const pickedIn = (rate: number, item: string) => Math.round((rate * ticksOf(PICK) * 24) / DAY / asFound(PHYS[item]));
-export const GATHER: Record<string, { place: string; item: string; n: number; rate?: number; keep?: boolean }> = {
-  pick_berries: { place: "bush", item: "berry", rate: 5.1, n: pickedIn(5.1, "berry"), keep: true },
-  pick_mushroom: { place: "mushroom", item: "mushroom", n: 1 },
-  pick_herb: { place: "herb", item: "herb", n: 1 },
+const picked = (rate: number, item: string) => ({ rate, n: Math.round((rate * PICK) / 3600 / asFound(PHYS[item])), work: (asFound(PHYS[item]) / rate) * 3600 * REF_W });
+const each = (n: number) => ({ n, work: (PICK * REF_W) / n });
+export const GATHER: Record<string, { place: string; item: string; n: number; work: number; rate?: number; keep?: boolean }> = {
+  pick_berries: { place: "bush", item: "berry", ...picked(5.1, "berry"), keep: true },
+  pick_mushroom: { place: "mushroom", item: "mushroom", ...each(1) },
+  pick_herb: { place: "herb", item: "herb", ...each(1) },
   // a handful of acorns off the ground under an oak [design: as a mushroom or herb; gap: a measured collecting rate]
-  gather_nuts: { place: "nuts", item: "nut", n: 1 },
-  pick_stick: { place: "stick", item: "stick", n: 1 },
-  pick_stone: { place: "stone", item: "stone", n: 1 },
-  pull_reeds: { place: "reeds", item: "fiber", n: 2 },
-  dig_clay: { place: "clay", item: "clay", n: 2, keep: true },
-  scrape_resin: { place: "resin", item: "resin", n: 1 },
-  strip_grain: { place: "grain", item: "grain", rate: 1, n: pickedIn(1, "grain") },
+  gather_nuts: { place: "nuts", item: "nut", ...each(1) },
+  pick_stick: { place: "stick", item: "stick", ...each(1) },
+  pick_stone: { place: "stone", item: "stone", ...each(1) },
+  pull_reeds: { place: "reeds", item: "fiber", ...each(2) },
+  dig_clay: { place: "clay", item: "clay", n: 2, work: digWork(LUMP_M3, PIT_SOIL / 2), keep: true },
+  scrape_resin: { place: "resin", item: "resin", ...each(1) },
+  strip_grain: { place: "grain", item: "grain", ...picked(1, "grain") },
 };
 
 export const edibleKinds = (ctx: Ctx) => Object.keys(ctx.kinds).filter((k) => p(ctx.kinds[k], "edible") >= 0.1 && !ctx.toxic.includes(k));
@@ -115,8 +127,8 @@ function beliefOps(b: Belief, ctx: Ctx): Op[] {
     const wr = Math.max(0.05, chance);
     return {
       op: "act", key: b.key, arg: b.key,
-      // a join's time is a unit of cost (physics.ts DURATION), as a walk's is its distance (ops goto)
-      cost: 1 + b.ticks / ticksOf(DURATION.join) / wr + (b.later ? 3 * (1 / wr - 1) : 0),
+      // what it has taken them, s, over its odds, as a walk's cost is its seconds (ops goto)
+      cost: UNIT + b.secs / wr + (b.later ? 3 * UNIT * (1 / wr - 1) : 0),
       needs: [...Object.keys(req), ...(place ? [`place:${place}`] : [])],
       makes,
       pre: (s) => Object.entries(req).every(([k, v]) => n(s, k) >= v) && (!place || atPlace(s, place)) && !(builds === "fire" && atPlace(s, "fire")),
@@ -148,45 +160,46 @@ function beliefOps(b: Belief, ctx: Ctx): Op[] {
 
 function ops(ctx: Ctx): Op[] {
   const list: Op[] = Object.entries(ctx.dist).map(([place, d]) => ({
-    op: "goto", arg: place, cost: 1 + d / 4, needs: [], makes: [`place:${place}`], pre: (s) => s.at !== place, eff: (s) => at(s, place),
+    op: "goto", arg: place, cost: UNIT + d * STEP_S, needs: [], makes: [`place:${place}`], pre: (s) => s.at !== place, eff: (s) => at(s, place),
   }));
+  // a gathering's expected seconds: its work at the reference power
   for (const [op, g] of Object.entries(GATHER))
-    list.push({ op, cost: 1.5, needs: [`place:${g.place}`], makes: [g.item], pre: (s) => s.at === g.place, eff: (s) => at(add(ctx, s, g.item, g.n), g.keep ? g.place : null) });
+    list.push({ op, cost: UNIT + (g.n * g.work) / REF_W, needs: [`place:${g.place}`], makes: [g.item], pre: (s) => s.at === g.place, eff: (s) => at(add(ctx, s, g.item, g.n), g.keep ? g.place : null) });
   for (const place of Object.keys(ctx.dist).filter((x) => x.startsWith("item:"))) {
     const k = place.slice(5);
-    list.push({ op: "pick_up", arg: k, cost: 1, needs: [`place:${place}`], makes: [k], pre: (s) => s.at === place, eff: (s) => at(add(ctx, s, k, 1), null) });
+    list.push({ op: "pick_up", arg: k, cost: UNIT, needs: [`place:${place}`], makes: [k], pre: (s) => s.at === place, eff: (s) => at(add(ctx, s, k, 1), null) });
   }
   for (const b of ctx.beliefs) list.push(...beliefOps(b, ctx));
   // Anyone can put things away at home and take them back out.
   if ("home" in ctx.dist) {
-    list.push({ op: "stash", cost: 1, needs: ["place:home"], makes: ["stashed"], pre: (s) => s.at === "home", eff: (s) => flag(s, "stashed") });
+    list.push({ op: "stash", cost: UNIT, needs: ["place:home"], makes: ["stashed"], pre: (s) => s.at === "home", eff: (s) => flag(s, "stashed") });
     for (const [k, v] of Object.entries(ctx.store ?? {}))
-      if (v > 0) list.push({ op: "take_stored", arg: k, cost: 1, needs: ["place:home"], makes: [k], pre: (s) => s.at === "home", eff: (s) => add(ctx, s, k, Math.min(v, 3)) });
+      if (v > 0) list.push({ op: "take_stored", arg: k, cost: UNIT, needs: ["place:home"], makes: [k], pre: (s) => s.at === "home", eff: (s) => add(ctx, s, k, Math.min(v, 3)) });
   }
   // A camp's shared store is open to its members.
   if ("store" in ctx.dist)
     for (const [k, v] of Object.entries(ctx.shared ?? {}))
-      if (v > 0) list.push({ op: "take_shared", arg: k, cost: 1.5, needs: ["place:store"], makes: [k], pre: (s) => s.at === "store", eff: (s) => add(ctx, s, k, Math.min(v, 3)) });
+      if (v > 0) list.push({ op: "take_shared", arg: k, cost: 1.5 * UNIT, needs: ["place:store"], makes: [k], pre: (s) => s.at === "store", eff: (s) => add(ctx, s, k, Math.min(v, 3)) });
   // Anyone who has seen what an animal is inside can try to kill one with whatever they hold.
   for (const sp of HUNTED) {
     if (!ctx.facts[`breaks:${sp}`] || !(sp in ctx.dist)) continue;
     const out = breaksOf(sp);
     list.push({
-      op: "hunt", arg: sp, cost: 12, needs: [`place:${sp}`], makes: [`hunted:${sp}`, ...Object.keys(out)],
+      op: "hunt", arg: sp, cost: 12 * UNIT, needs: [`place:${sp}`], makes: [`hunted:${sp}`, ...Object.keys(out)],
       pre: (s) => s.at === sp, eff: (s) => { let o = flag(at(s, null), `hunted:${sp}`); for (const [k, v] of Object.entries(out)) o = add(ctx, o, k, v); return o; },
     });
   }
   const edible = edibleKinds(ctx);
   list.push(
-    { op: "eat", cost: 1, needs: edible, makes: ["ate"], pre: (s) => edible.some((k) => n(s, k) > 0), eff: (s) => flag(add(ctx, s, edible.find((k) => n(s, k) > 0)!, -1), "ate") },
-    { op: "rest", cost: 4, needs: [], makes: ["rested"], pre: (s) => s.at !== "home", eff: (s) => flag(s, "rested") },
-    { op: "rest", cost: 1, needs: ["place:home"], makes: ["rested"], pre: (s) => s.at === "home", eff: (s) => flag(s, "rested") },
-    { op: "warm_up", cost: 1, needs: ["place:fire"], makes: ["warm"], pre: (s) => atPlace(s, "fire") || s.at === "home", eff: (s) => flag(s, "warm") },
-    { op: "warm_up", cost: 1, needs: ["place:home"], makes: ["warm"], pre: (s) => s.at === "home", eff: (s) => flag(s, "warm") },
+    { op: "eat", cost: UNIT, needs: edible, makes: ["ate"], pre: (s) => edible.some((k) => n(s, k) > 0), eff: (s) => flag(add(ctx, s, edible.find((k) => n(s, k) > 0)!, -1), "ate") },
+    { op: "rest", cost: 4 * UNIT, needs: [], makes: ["rested"], pre: (s) => s.at !== "home", eff: (s) => flag(s, "rested") },
+    { op: "rest", cost: UNIT, needs: ["place:home"], makes: ["rested"], pre: (s) => s.at === "home", eff: (s) => flag(s, "rested") },
+    { op: "warm_up", cost: UNIT, needs: ["place:fire"], makes: ["warm"], pre: (s) => atPlace(s, "fire") || s.at === "home", eff: (s) => flag(s, "warm") },
+    { op: "warm_up", cost: UNIT, needs: ["place:home"], makes: ["warm"], pre: (s) => s.at === "home", eff: (s) => flag(s, "warm") },
   );
   for (const k of SOCIAL)
     list.push({
-      op: "social", arg: k, cost: 1, needs: ["place:agent"], makes: [`did_${k}`],
+      op: "social", arg: k, cost: UNIT, needs: ["place:agent"], makes: [`did_${k}`],
       pre: (s) => s.at === "agent" && (SOCIAL_ITEM_NEEDS[k]?.(s, ctx.kinds) ?? true), eff: (s) => flag(s, `did_${k}`),
     });
   return list;

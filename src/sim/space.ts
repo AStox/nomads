@@ -24,7 +24,7 @@ import { BOULDERS_HA, CLASTS, CLAST_DIM, Deadwood, capacities, type Piece, type 
 import { Seedlings, type SeedDriver } from "../gpu/seedlings";
 import { Crowns } from "../gpu/crowns";
 import { Moisture } from "../gpu/moisture";
-import { Receivers } from "../gpu/fire";
+import { Fire } from "../gpu/fire";
 import { moistureDriver } from "./wetness";
 import { Smalls } from "../gpu/smalls";
 import { smallsDriver } from "./smalls";
@@ -42,7 +42,7 @@ type Index = {
   seeds: Seedlings | null; // the seeds and seedlings, once resident
   crowns: Crowns | null; // the crown raster, once resident
   moist: Moisture | null; // the water of what lies out, once resident
-  fire: Receivers | null; // what lies near a burning bed taking its heat, once resident
+  fire: Fire | null; // the beds burning, and what lies near them taking their heat, once resident
   smalls: Smalls; // grass tillers, fine litter, invertebrates and soil fauna, moved sand (lumped), resident with the flora
   views: Set<string>; // pieces made Things that no one has changed
   landings: number; // the flora's landings of its stems the Things have taken up
@@ -126,8 +126,8 @@ export async function resident(w: World, stems: StemDriver, seeds: SeedDriver) {
   // what lies out holds its own water, stepped each hour in the island's weather (wetness.ts)
   ix.moist = new Moisture();
   ix.moist.attach(s, ix.crowns, ix.dead, moistureDriver(w));
-  // what lies near a burning bed takes its heat and its brands on the GPU (ecology.ts fire)
-  ix.fire = new Receivers();
+  // the beds burn on the GPU, and what lies near them takes their heat and their brands there (ecology.ts fire)
+  ix.fire = new Fire();
   ix.fire.attach(s);
   // the smallest things, lumped: their law each midnight after the moisture's, before the animals', who graze them; the
   // crown raster the crowns and deadwood read is let go first, so their first days borrow its memory
@@ -140,7 +140,7 @@ export const deadwoodOf = (w: World) => index(w).dead;
 export const seedlingsOf = (w: World) => index(w).seeds;
 export const crownsOf = (w: World) => index(w).crowns;
 export const moistOf = (w: World) => index(w).moist;
-export const receiversOf = (w: World) => index(w).fire;
+export const firesOf = (w: World) => index(w).fire;
 export const smallsOf = (w: World) => index(w).smalls;
 
 // ---------- pieces ----------

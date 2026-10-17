@@ -4,13 +4,13 @@ import {
 } from "./world";
 import { THING_MATERIAL, depth, noun, p, plural, type Kind } from "./materials";
 import {
-  DURATION, ablaze, airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, force, gathered, giveItems, giveStack, greasy, hand, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
+  ablaze, airy, applyRuling, arrowy, beside, count, counts, stave, digTick, diggable, eat, fireKind, fishClose, force, gathered, giveItems, giveStack, greasy, hand, heat, homeOf, join, lineLike, mark, nearFire, openWater, place as placeItems, plant,
   STRUCK, breaksOf, inWorld, fireHours, fireOutput, groundWord, hoursToDawn, leaveHome, pour, reaches, removeThing, residentsOf, rubTick, shape, shelterName, stash, strikeDamage, strikeTick, takeFromPile, takeItems, throwReach, throwTick, unstash, enough, wearIt, wet, WEATHER_NOW, type Fields, type Outcome,
-  bedAir, breeze, carry, fan, firstHeld, isFlame, isLamp, redHot, rubbing, tooThick,
+  PIT_SOIL, bedAir, breeze, carry, fan, firstHeld, isFlame, isLamp, redHot, rubbing, tooThick,
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
 import { apart, beliefKey, beliefText, cameOff, conditionWords, differed, weighs, fieldsOf, found, groundKey, groundOfKey, holds, mixOf, odds, fades, noteTry, ofSpot, partsOf, record, refine, refuted, restsOn, rethink, see, sentence, suspected, teach, testOf, watchers, type Belief } from "./beliefs";
-import { COLLECT, GATHER, PICK, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
+import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, STEP_M, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
 import { acornsUnder, burnedHomes, ecology, glean, onFireOut, onGrew, onWithered, trample, trapped, tread } from "./ecology";
 import { FAUNA, HUNTED } from "./fauna";
 import { animalsOf, attacked, herdNear, herded, residentAnimals } from "./animals";
@@ -41,6 +41,8 @@ import { STILL, holdOf } from "./physics";
 import type { Env } from "../terrain/niche";
 import { travel } from "./journeys";
 import { RULES, hooks } from "./rules";
+import { ACT_WORK, LUMP_M3, OTHER_WORK, REF_W, powerOf } from "./work";
+import { NET_EFF } from "./mechanics";
 
 const SEARCH = 800; // meters: the farthest anyone goes looking for something to gather or work
 const nm = (w: World, k: string) => w.kinds[k]?.name ?? k.replaceAll("_", " ");
@@ -128,6 +130,24 @@ const valueOf = (w: World, k: string) => { const x = w.kinds[k]; return isTool(x
 // The handfuls of seed a grass tuft gives a stripping: it bears 75 g for each m2 it covers, half of it to each of the two
 // strippings it takes (body-constants sec. 10).
 const seedOn = (t: Thing) => Math.floor((0.075 * Math.PI * (t.size / 2) ** 2) / 2 / asFound(PHYS.grain));
+// The lumps of clay a deposit holds as it lies: a disc as wide as it is and a spade's depth (physics.ts PIT_SOIL) deep
+// [design: how deep a deposit goes], each lump as dug (work.ts LUMP_M3).
+const clayIn = (t: Thing) => Math.floor((Math.PI * (t.size / 2) ** 2 * PIT_SOIL) / LUMP_M3);
+// A reed bed's hit points, and what each handful of fibre pulled from it takes of them [design: the old picking's 3 for
+// two handfuls, of 6].
+const REED_HP = 6, REED_HP_EACH = 1.5;
+// How many of what a gathering takes are there now: ripe portions on a bush, handfuls of fibre in a reed bed's hit
+// points, acorns lying under an oak, beads of resin on a wounded tree, a grass tuft's seed at a stripping, the lumps a clay
+// deposit holds; anything else is the one thing.
+function stockOf(w: World, t: Thing, place: string) {
+  if (t.kind === "bush") return Math.floor(t.n ?? 0);
+  if (t.kind === "reeds") return Math.ceil((t.hp ?? REED_HP) / REED_HP_EACH);
+  if (place === "nuts") return acornsUnder(w, t);
+  if (place === "resin") return Math.floor(t.resin ?? 1);
+  if (place === "grain") return seedOn(t);
+  if (t.kind === "clay") return (t.n ??= clayIn(t));
+  return 1;
+}
 // ---------- places ----------
 // when: whether there can be one at all now; changed: only a thing changed from how it grew can be one, and the world
 // keeps an eye on every such thing (space.ts liveThings), so where none of those is one there's none to find.
@@ -242,6 +262,22 @@ const within = (w: World, a: Agent, kind: string, slack = 0) => { const s = spot
 const walked = perWorld(() => new Map<string, { at: number; J: number; s: number }>());
 // Ticks from one run of the body to the next.
 const BODY_TICKS = ticksOf(secs(BODY_S));
+// What the work of their acts took of someone since their body last ran: the energy above resting it cost, J, and the
+// seconds they were at it, read by their body when it next runs, at tick `at` (metOf).
+const worked = perWorld(() => new Map<string, { at: number; J: number; s: number }>());
+// Work J put into an act this tick: what it cost their body, at the arms' net efficiency (mechanics.ts NET_EFF).
+function labour(w: World, a: Agent, J: number) {
+  const was = worked(w).get(a.id), at = (Math.floor(w.t / BODY_TICKS) + 1) * BODY_TICKS, cost = J / NET_EFF;
+  worked(w).set(a.id, was?.at === at ? { at, J: was.J + cost, s: was.s + TICK_S } : { at, J: cost, s: TICK_S });
+}
+// A tick of someone's help with another's step: where what the other is at is work (work.ts), the helper's power goes
+// into it, a novice's at it in the light they have [design: a helper's own practice at what another does is not known].
+export function lend(w: World, a: Agent, theirs: Step) {
+  if (theirs.work === undefined || theirs.progress >= theirs.work) return;
+  const J = powerOf(w, a, 0, lit(w, a)) * TICK_S;
+  theirs.progress += J;
+  labour(w, a, J);
+}
 // Walk (or run) toward a point in tiles until within reach meters of it, for as long as a tick lasts, as fast as their
 // body, their load, the ground and the light let them (gait.ts).
 function stepToward(w: World, a: Agent, tx: number, ty: number, reach: number, run = false): "arrived" | "moved" | "stuck" {
@@ -271,8 +307,6 @@ function stepAway(w: World, a: Agent, from: { px: number; py: number }, run = tr
 }
 
 // ---------- planning glue ----------
-// The planner weighs trips in steps of fifteen meters, about what one step used to be worth.
-const STEP_M = 15;
 // Half a day's walk: as far off as a home can be and still be where someone goes to sleep or get warm.
 const HOME_NEAR = 150;
 export function ctxFor(w: World, a: Agent): Ctx {
@@ -690,13 +724,19 @@ const pendingRulings = perWorld(() => new Set<string>());
 const namingNow = perWorld(() => new Set<string>());
 export const rulingKey = (act: Act) => `rule|${actSig(act)}`;
 
-// In poor light a tick's work is sometimes lost to groping about, though not in a fight, which is quick and close.
-function fumbles(w: World, a: Agent) {
-  if (a.goal?.type === "fight" || a.goal?.type === "defend") return false;
-  const b = lightOn(w, a).bright;
-  if (Math.random() < workRate(b)) return false;
-  a.status = b < DARK ? "Fumbling in the dark" : "Working in poor light";
-  return true;
+// The share of its pace work goes at in the light they have (light.ts workRate), though not in a fight, which is quick and
+// close: the power they put into an act that is work is the less by it (work.ts powerOf), and an act that goes stroke by
+// stroke gets its strokes in that share of its ticks (stroke).
+function lit(w: World, a: Agent) {
+  return a.goal?.type === "fight" || a.goal?.type === "defend" ? 1 : workRate(lightOn(w, a).bright);
+}
+// Whether a tick of strokes, aims or rubbing comes to anything in the light they have: the shares of a tick the light
+// leaves them carried over from tick to tick, and a tick's worth done each time they come to one.
+function stroke(w: World, a: Agent, s: Step) {
+  s.dim = (s.dim ?? 0) + lit(w, a);
+  if (s.dim >= 1) { s.dim -= 1; return true; }
+  a.status = lightOn(w, a).bright < DARK ? "Fumbling in the dark" : "Working in poor light";
+  return false;
 }
 
 // What they could see as they laid a fire's pieces or held things in it, for whatever follows from the act (finishAct,
@@ -759,22 +799,23 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
         if (f.r !== "arrived") return "wait";
       }
     }
-    if (fumbles(w, a)) return "wait";
+    if (!stroke(w, a, s)) return "wait";
     a.status = actText(w, act);
-    const r = strikeTick(w, a, act, s, laying(w, a, s));
+    const r = strikeTick(w, a, act, s, laying(w, a, s), powerOf(w, a));
     if (r.broke) log(w, "break", [a.id], a, `${a.name}: ${r.broke}`);
     return r.done ? r.out! : "wait";
   }
   if (act.verb === "rub") {
-    if (fumbles(w, a)) return "wait";
+    if (!stroke(w, a, s)) return "wait";
     a.status = actText(w, act);
-    const r = rubTick(w, a, act, s, laying(w, a, s));
+    const was = s.progress, r = rubTick(w, a, act, s, laying(w, a, s), powerOf(w, a, a.skills[SKILL.rub(act, w)]));
+    labour(w, a, s.progress - was);
     return r.done ? r.out! : "wait";
   }
   if (act.verb === "dig") {
-    if (fumbles(w, a)) return "wait";
     a.status = actText(w, act);
-    const r = digTick(w, a, act, s);
+    const was = s.progress, r = digTick(w, a, act, s, powerOf(w, a, a.skills.digging, lit(w, a)));
+    labour(w, a, s.progress - was);
     return r.done ? r.out! : "wait";
   }
   if (act.verb === "throw") {
@@ -787,7 +828,7 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
       a.status = `Stalking the ${prey.species}`;
       return follow(w, a, s, prey, range, false).away ? `the ${prey.species} got away` : "wait";
     }
-    if (fumbles(w, a)) return "wait";
+    if (!stroke(w, a, s)) return "wait";
     a.status = actText(w, act);
     const r = throwTick(w, a, act, s);
     return r.done ? r.out! : "wait";
@@ -805,12 +846,17 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
     }
   }
   if (act.at && act.at !== "home" && !(act.at === "water" ? openWater(w, a) : within(w, a, act.at, 1))) return `not at the ${act.at}`;
-  if (act.verb !== "eat" && fumbles(w, a)) return "wait";
   a.status = actText(w, act);
   fan(w, a, act);
-  // a tick's work and a practised hand's share, against the act's seconds (physics.ts DURATION; any other act takes
-  // 1200 s [design: today's 4 ticks])
-  if ((s.progress += 1 + level(a.skills[SKILL[act.verb](act, w)] ?? 0) * 0.1) < ticksOf(DURATION[act.verb] ?? 1200)) return "wait";
+  // the act's work (work.ts ACT_WORK, any other act's OTHER_WORK), and what they put into it this tick at their power,
+  // practised at it, in the light they have (eating needs none)
+  s.work ??= ACT_WORK[act.verb] ?? OTHER_WORK;
+  if (s.progress < s.work) {
+    const J = powerOf(w, a, a.skills[SKILL[act.verb](act, w)], act.verb === "eat" ? 1 : lit(w, a)) * TICK_S;
+    s.progress += J;
+    labour(w, a, J);
+    if (s.progress < s.work) return "wait";
+  }
   switch (act.verb) {
     case "join": case "heat": {
       if (act.verb === "heat") seenAt.set(s, conditionsNow(w, a, "heat", a, act.items, undefined, 0));
@@ -923,7 +969,7 @@ const GROUND_VERBS: Record<string, true> = { plant: true, dig: true, pour: true 
 // fire act, lay: the things they hold that they lay (one for each of items; by default those they'd choose), and after:
 // how long until the act is done, s (by default all of it), which the fire it's laid on or held in is seen as it will be
 // by then.
-export function conditionsNow(w: World, a: Agent, verb?: string, at: Pos = a, items: string[] = [], lay?: Stack[], after = DURATION[verb ?? ""] ?? 0) {
+export function conditionsNow(w: World, a: Agent, verb?: string, at: Pos = a, items: string[] = [], lay?: Stack[], after = (ACT_WORK[verb ?? ""] ?? 0) / REF_W) {
   const ground = !verb || GROUND_VERBS[verb];
   let seen: Ground | undefined, fire: Firing | null | undefined;
   const spot = () => (seen ??= { env: envHere(w, at.px, at.py), light: skyShare(w, at.px, at.py), water: soilWaterAt(w, at.px, at.py), fert: fertilityAt(w, at.px, at.py), share: shareAt(w, at.px, at.py) });
@@ -1039,7 +1085,7 @@ function judged(w: World, a: Agent, b: Belief, worked: boolean, now: string[], d
   const aimOf = (o: Belief) => o.fields.builds ?? Object.keys(o.out).sort().join("+"), aim = aimOf(b);
   const alts = aim ? Object.values(a.beliefs).filter((o) => o !== b && aimOf(o) === aim).map((o) => o.key) : [];
   const testing = !!testingNow(a, b, now);
-  trace("theory", "attempt", { key: b.key, verb: b.fields.verb, now, worked, done, took, testing, ticks: b.ticks, aim, alts }, a.id);
+  trace("theory", "attempt", { key: b.key, verb: b.fields.verb, now, worked, done, took, testing, secs: b.secs, aim, alts }, a.id);
   // with learning off, or every theory known from the start, nothing they see makes or unmakes one
   if (RULES.learning !== "seen") return;
   const hold = b.unless?.filter((t) => holds(t, now)) ?? [], faded = hold.filter((t) => fades(b, t));
@@ -1146,7 +1192,7 @@ function came(w: World, a: Agent, e: Waiting, at: Thing, builds: string) {
   b.later = first ? took : Math.round(b.later! * 0.7 + took * 0.3);
   b.wins++;
   judged(w, a, b, true, e.now, e.t);
-  b.law ??= (w.laws[b.key] ?? found(w, a, b.fields, b.ticks, false, [], b.later)).id;
+  b.law ??= (w.laws[b.key] ?? found(w, a, b.fields, b.secs, false, [], b.later)).id;
   const days = took < DAY * 1.5 ? "a day" : `${Math.round(took / DAY)} days`;
   if (first) log(w, "discover", [a.id], at, b.fields.verb === "plant"
     ? `${a.name} realized the ${nm(w, b.fields.inputs[0])} they pushed into the ground ${days} ago has come up as ${builds === "grass" ? "grass" : an(builds)}.`
@@ -1184,23 +1230,24 @@ onFireOut((w, t) => {
 // Everything that follows from an act finishing: beliefs, watchers, the chronicle, skills, names.
 function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean) {
   const act = s.act!;
-  const ticks = Math.max(1, w.t - (s.started ?? w.t));
-  trace("physics", "outcome", { act: actSig(act), ok: out.ok, text: out.text, uses: out.uses, gives: out.gives, builds: out.builds, effect: out.effect, numbers: out.numbers, ticks }, a.id);
+  // how long the doing took them, s
+  const took = Math.max(1, w.t - (s.started ?? w.t)) * TICK_S;
+  trace("physics", "outcome", { act: actSig(act), ok: out.ok, text: out.text, uses: out.uses, gives: out.gives, builds: out.builds, effect: out.effect, numbers: out.numbers, secs: took }, a.id);
   const knew = !!a.beliefs[beliefKey(out.fields)];
-  const b = record(w, a, out, ticks);
+  const b = record(w, a, out, took);
   // done, with the result to show later: they'll know whether it worked when it does
   if (b && out.ok && out.later) (a.waiting ??= []).push({ key: b.key, thing: out.later, t: w.t, now: conditionsNow(w, a, act.verb, thingById(w, out.later) ?? a, act.items) });
   // Whoever lights a fire from a lay watches the wood laid with the tinder catch and burn: wood feeds a fire.
   if (out.builds === "fire")
     for (const k of Object.keys(out.uses).filter((x) => !tinder(w.kinds[x]) && !isFlame(w.kinds[x]) && stackPhys(w.kinds, { k: x })?.burn)) {
       const fed: Fields = { verb: "place", inputs: [k], at: "fire", builds: "fed_fire", gives: [] };
-      if (!a.beliefs[beliefKey(fed)]) record(w, a, { ok: true, text: "", uses: { [k]: 1 }, gives: {}, builds: "fed_fire", fields: fed, newKinds: [] }, 1, "seen");
+      if (!a.beliefs[beliefKey(fed)]) record(w, a, { ok: true, text: "", uses: { [k]: 1 }, gives: {}, builds: "fed_fire", fields: fed, newKinds: [] }, TICK_S, "seen");
     }
   // an experiment that came to nothing, or only to what it showed before, is one less thing to try
   if (tinkering && (!b || (!out.ok && knew))) a.tried[actSig(act)] = (a.tried[actSig(act)] ?? 0) + 1;
   // what bears on what they did, as anyone doing it would note it, for those watching who had thought it couldn't be done
   const seenNow = seenAt.get(s) ?? conditionsNow(w, a, act.verb, a, act.items);
-  for (const x of watchers(w, a, out, ticks, seenNow)) for (const t of x.theories) surprised(w, x.who, x.b, t, seenNow, a);
+  for (const x of watchers(w, a, out, took, seenNow)) for (const t of x.theories) surprised(w, x.who, x.b, t, seenNow, a);
   const kind = out.builds === "fire" ? "fire" : out.builds === "shelter" || out.builds === "hearth" ? "build" : act.target?.animal && out.ok ? "hunt" : out.ok ? "craft" : "tinker";
   log(w, kind, [a.id], a, `${a.name}: ${out.text}`);
   if (out.ok) gain(w, a, SKILL[act.verb](act, w), tinkering ? 3 : 5);
@@ -1223,7 +1270,7 @@ function finishAct(w: World, a: Agent, s: Step, out: Outcome, tinkering: boolean
       // What people actually do with it matters more to what they call it than what it's made of.
       const uses = [...new Set(w.agents.flatMap((x) => Object.values(x.beliefs))
         .filter((b) => b.fields.tool === k || b.fields.inputs.includes(k))
-        .map((b) => sentence(w, b.fields, b.ticks)))].slice(0, 6);
+        .map((b) => sentence(w, b.fields, b.secs)))].slice(0, 6);
       nameIt(w, a, kind, uses).then((word) => {
         kind.named = true;
         // Two different things can share a word; tell them apart by what they're made of.
@@ -1573,9 +1620,7 @@ function run(w: World, a: Agent): boolean | string {
       // [design: today's 30 ticks]
       if (!b || !b.goal || s.progress++ > ticksOf(9000)) return true;
       a.status = `Helping ${b.name}`;
-      const theirs = b.plan[0];
-      // a tick of their help is a tick of the other's work
-      if (stepToward(w, a, b.px, b.py, 3) === "arrived" && theirs && (theirs.op === "act" || GATHER[theirs.op])) theirs.progress += 1;
+      if (stepToward(w, a, b.px, b.py, 3) === "arrived" && b.plan[0]) lend(w, a, b.plan[0]);
       return false;
     }
     case "act": {
@@ -1594,7 +1639,7 @@ function run(w: World, a: Agent): boolean | string {
       if (r === "wait") return false;
       if (typeof r === "string") return r;
       finishAct(w, a, s, r, false);
-      attempted(w, a, b, r, Math.max(1, w.t - (s.started ?? w.t)), seenAt.get(s));
+      attempted(w, a, b, r, Math.max(1, w.t - (s.started ?? w.t)) * TICK_S, seenAt.get(s));
       return r.ok ? true : r.text;
     }
     case "tinker": {
@@ -1642,40 +1687,39 @@ function run(w: World, a: Agent): boolean | string {
   }
   const g = GATHER[s.op];
   if (!g) return true;
-  const b = lightOn(w, a).bright;
-  a.status = GATHER_STATUS[s.op] + (b < DARK ? " in the dark" : "");
-  if ((s.progress += (1 + level(a.skills.foraging ?? 0) * 0.1) * workRate(b)) < ticksOf(PICK)) return false;
   const t = within(w, a, g.place, 0.5)?.thing;
   if (!t) return `the ${g.place} was gone`;
-  let n = g.n;
-  if (t.kind === "bush") {
-    // as many portions as they pick in the time, of those ripe on it
-    n = Math.min(Math.floor(t.n ?? 0), g.n);
-    if (n <= 0) return "the berries were gone";
-    t.n = (t.n ?? 0) - n;
-    t.hp = (t.hp ?? 20) - 3;
-    mark(w, t);
-  } else if (t.kind === "reeds") {
-    t.hp = (t.hp ?? 6) - 3;
-    if (t.hp <= 0) removeThing(w, t); else mark(w, t);
-  } else if (g.place === "nuts") {
-    n = Math.min(g.n, acornsUnder(w, t));
-    if (n <= 0) return "the acorns were gone";
-    glean(w, t, n);
-  } else if (g.place === "resin") {
-    t.resin = Math.max(0, (t.resin ?? 1) - 1);
-    mark(w, t);
-  } else if (t.kind === "clay") {
-    if (Math.random() < 0.25) removeThing(w, t);
-  } else if (g.place === "grain") {
-    // stripping the heads leaves the tuft standing
-    n = Math.min(g.n, seedOn(t));
-    t.hp = (t.hp ?? 3) - 1;
-    mark(w, t);
-    if (n <= 0) return "there was too little seed on it";
-  } else removeThing(w, t);
-  // a stick picked up off the ground is as thick as a stem of its length, a berry as wet as it grew (physics.ts gathered)
-  for (let i = 0; i < n; i++) giveStack(w, a, gathered(w, t, g.item));
+  // as many as they set out to pick, of those there now
+  s.want ??= Math.min(g.n, stockOf(w, t, g.place));
+  if (s.want <= 0) return g.place === "bush" ? "the berries were gone" : g.place === "nuts" ? "the acorns were gone" : g.place === "grain" ? "there was too little seed on it" : `the ${g.place} was gone`;
+  const b = lightOn(w, a).bright;
+  a.status = GATHER_STATUS[s.op] + (b < DARK ? " in the dark" : "");
+  // one comes away each time the work put in comes to what picking one takes (plan.ts GATHER), at their power, practised
+  // at foraging, in the light they have
+  s.work = g.work;
+  const J = powerOf(w, a, a.skills.foraging, workRate(b)) * TICK_S;
+  s.progress += J;
+  labour(w, a, J);
+  for (; s.progress >= g.work && (s.got ?? 0) < s.want; s.progress -= g.work, s.got = (s.got ?? 0) + 1) {
+    // a stick picked up off the ground is as thick as a stem of its length, a berry as wet as it grew (physics.ts gathered)
+    giveStack(w, a, gathered(w, t, g.item));
+    // what is taken is no longer there: a portion off a bush, a stem's worth of a reed bed's hit points, a nut gleaned, a
+    // bead of resin, a lump out of a deposit; a grass tuft's seed is its stripping's, and anything else is the thing itself
+    if (t.kind === "bush") t.n = (t.n ?? 0) - 1;
+    else if (t.kind === "reeds") t.hp = (t.hp ?? REED_HP) - REED_HP_EACH;
+    else if (g.place === "nuts") glean(w, t, 1);
+    else if (g.place === "resin") t.resin = Math.max(0, (t.resin ?? 1) - 1);
+    else if (t.kind === "clay") t.n = (t.n ?? clayIn(t)) - 1;
+    else if (g.place !== "grain") { removeThing(w, t); continue; }
+    if ((t.kind === "reeds" && t.hp! <= 0) || (t.kind === "clay" && t.n! <= 0)) removeThing(w, t);
+    else mark(w, t);
+  }
+  if ((s.got ?? 0) < s.want) return false;
+  const n = s.want;
+  // a picking takes 3 of a bush's hit points, a stripping 1 of a grass tuft's and leaves it standing [design: the old
+  // harvests; gap: what a plant loses as the biomass taken off it]
+  if (t.kind === "bush") { t.hp = (t.hp ?? 20) - 3; mark(w, t); }
+  if (g.place === "grain") { t.hp = (t.hp ?? 3) - 1; mark(w, t); }
   // what is carried off a plant is taken from the soil it grew on
   if (t.kind === "bush" || t.kind === "mushroom" || t.kind === "herb" || t.kind === "reeds") enrich(w, t.px, t.py, -0.004 * n);
   if (t.kind === "bush" || t.kind === "mushroom" || t.kind === "herb") gain(w, a, "foraging", 2);
@@ -2134,10 +2178,12 @@ const MET: Record<Activity, number> = {
 const STANDING = 1.3;
 function metOf(w: World, a: Agent, basalW: number, dt: number) {
   const op = a.plan[0]?.op, act = activity(w, a), still = a.down <= w.t && !a.engaged && !a.thinking && (op === "goto" || op === "wander") ? STANDING : act ? MET[act] : STANDING;
-  const went = walked(w).get(a.id);
-  if (!went || went.at !== w.t) return still;
-  const s = Math.min(dt, went.s);
-  return (went.J + still * basalW * (dt - s)) / (dt * basalW);
+  // the seconds walked and worked since their body last ran, and what those cost: walking its own (gait.ts), work its
+  // cost above resting on top of resting (labour)
+  const went = walked(w).get(a.id), did = worked(w).get(a.id);
+  const walkS = went?.at === w.t ? Math.min(dt, went.s) : 0, workS = did?.at === w.t ? Math.min(dt - walkS, did.s) : 0;
+  if (!walkS && !workS) return still;
+  return ((walkS ? went!.J : 0) + (workS ? did!.J + basalW * workS : 0) + still * basalW * (dt - walkS - workS)) / (dt * basalW);
 }
 // A run of someone's body where they are (body.ts), over the body lane's dt seconds (lanes.ts BODY_S): its heat, its
 // stores and its want of sleep, and the needs the rest of the sim reads off it. Their health is their wounds': it heals

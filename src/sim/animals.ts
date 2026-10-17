@@ -7,7 +7,7 @@
 // to their objects. The fish are objects of their own (waters.ts) and the butterflies still each tile's count (Unit 12b).
 //
 // What the animals do each tick within sight: graze, wander, flee, hunt, swim, fly, perch and feed. Speeds are meters a
-// tick, stated as so many meters over five minutes (fauna.ts), the way a person's are; what each kind is like is in fauna.ts.
+// tick, each written in m/s (fauna.ts), the way a person's are; what each kind is like is in fauna.ts.
 import { carcassOf, fatOf, massOf } from "./hunt";
 import { LEAP, PIT_DEPTH } from "./shelter";
 import {
@@ -26,7 +26,7 @@ import { dropPile, mark, removeThing } from "./physics";
 import { see } from "./beliefs";
 import { animalSize } from "./senses";
 import { trace } from "./trace";
-import { FAUNA, revealed, spawn } from "./fauna";
+import { ESCAPE_M, FAUNA, FID, revealed, spawn, type Kind } from "./fauna";
 import { fishCount, fishDriver, fishKg, fishOf, showFish } from "./waters";
 import { reveal, startPools, tileOf, type Pools } from "./pools";
 import { FOOD_KJ, PHYS } from "./fuel";
@@ -641,8 +641,9 @@ export function census(w: World) {
 const MEAT_KJ = PHYS.meat.mass * PHYS.meat.kj!;
 
 // ---------- what they do within sight ----------
-// Every chance, step, bite and timer below was written for a tick of five minutes, so each is stated over 300 s through
-// ticks.ts chance, rate and ticksOf [design: today's per-tick values], the same numbers at that tick.
+// The chances, bites and timers below were written for a tick of five minutes, so each is stated over 300 s through
+// ticks.ts chance, rate and ticksOf [design: today's per-tick values], the same numbers at that tick. Speeds, flight
+// initiation distances and the deer's moves are cited (fauna.ts).
 // Agents being attacked this tick, agent id -> wolf id.
 export const attacked = new Map<string, string>();
 
@@ -684,11 +685,12 @@ function carcass(w: World, an: Animal) {
   gone(w, an);
   for (const [k, n] of Object.entries(herded(an.species) ? carcassOf(an.species, fatOf(an.species, an.hunger)) : {})) dropPile(w, an.px, an.py, k, n);
 }
-// Climb or sink toward a height, by at most climb meters over 300 s.
+// Climb or sink toward a height, by at most climb meters a tick.
 const lift = (an: Animal, to: number, climb: number) => {
-  const step = rate(climb, 300);
-  an.alt = Math.round((an.alt + Math.max(-step, Math.min(step, to - an.alt))) * 10) / 10;
+  an.alt = Math.round((an.alt + Math.max(-climb, Math.min(climb, to - an.alt))) * 10) / 10;
 };
+// How fast a bird or a butterfly climbs, meters a tick (fauna.ts).
+const climbOf = (an: Animal) => (FAUNA[an.species] as Kind).climb!;
 
 // Grazing crops the grass tufts close by, down to a stub that grows back in its own time, a bite with a chance of 0.02
 // over 300 s.
@@ -721,23 +723,33 @@ function pasture(w: World, an: Animal, r: number): [number, number] | null {
 
 // What a deer, a rabbit or a wolf eats and burns, and the young they bear, are its object's (src/gpu/animals.ts): here,
 // only what each one standing in sight of people does.
+// A deer grazing undisturbed goes 308 m between a GPS collar's two-hourly fixes (Sibbald et al., R1110): at its walk, on
+// the move that share of its seconds [derived], one in 38.
+const DEER_AFOOT = rate(308, 7200) / FAUNA.deer.walk;
 function deer(w: World, d: Animal, n: Near) {
-  const threat = closest(d, n.wolves, 60) ?? closest(d, n.awake, 30);
-  if (threat || d.hp < d.maxHp * 0.6) {
-    setState(w, d, "flee");
-    // A deer bolts only a few ticks (20 minutes) before it has to slow to a trot of 2 m each 300 s.
-    if (threat) away(w, d, threat, inState(w, d) > ticksOf(1200) ? rate(2, 300) : FAUNA.deer.run);
-    else roam(w, d, 40, FAUNA.deer.walk);
-  } else {
-    const food = d.hunger < 90 ? forage(w, d) : 0, grass = food > 0.25;
-    setState(w, d, grass ? "graze" : "wander");
-    if (grass) nibble(w, d);
-    // Where the grass is poor, a hungry deer moves on to better and keeps to it.
-    if (!grass && d.hunger < 85 && Math.random() < chance(0.05, 300)) { const better = pasture(w, d, 400); if (better) { d.home = better; d.aim = better; } }
-    const mate = closest(d, n.deer, 200);
-    if (mate && meters(d, mate) > 25 && Math.random() < chance(0.3, 300)) goTo(w, d, mate.px, mate.py, FAUNA.deer.walk);
-    else if (!grass || Math.random() < chance(0.15, 300)) roam(w, d, 60, FAUNA.deer.walk);
+  // Flushed by a wolf or a person within its flight initiation distance, it bolts at its sprint.
+  const threat = closest(d, n.wolves, FID.deer.wolf) ?? closest(d, n.awake, FID.deer.person);
+  if (threat) { setState(w, d, "flee"); away(w, d, threat, FAUNA.deer.run); return; }
+  // Out of that reach, it trots on away from what it fled, or straight on with none in sight, for as long as its trot
+  // takes to cover the mean escape (fauna.ts ESCAPE_M) [derived], and then settles.
+  if (d.state === "flee" && inState(w, d) < ESCAPE_M / FAUNA.deer.trot) {
+    const wolf = closest(d, n.wolves, Infinity), person = closest(d, n.awake, Infinity);
+    const from = wolf && person ? (meters(d, wolf) <= meters(d, person) ? wolf : person) : wolf ?? person;
+    if (from) away(w, d, from, FAUNA.deer.trot);
+    else goTo(w, d, d.px + Math.cos(d.heading) * 0.2, d.py + Math.sin(d.heading) * 0.2, FAUNA.deer.trot);
+    return;
   }
+  if (d.hp < d.maxHp * 0.6) { setState(w, d, "flee"); roam(w, d, 40, FAUNA.deer.walk); return; }
+  const food = d.hunger < 90 ? forage(w, d) : 0, grass = food > 0.25;
+  setState(w, d, grass ? "graze" : "wander");
+  if (grass) nibble(w, d);
+  // Where the grass is poor, a hungry deer moves on to better and keeps to it.
+  if (!grass && d.hunger < 85 && Math.random() < chance(0.05, 300)) { const better = pasture(w, d, 400); if (better) { d.home = better; d.aim = better; } }
+  if (Math.random() >= DEER_AFOOT) return;
+  // On the move, toward the nearest of the herd if it has strayed more than 25 m from it [design], about its ground if not.
+  const mate = closest(d, n.deer, 200);
+  if (mate && meters(d, mate) > 25) goTo(w, d, mate.px, mate.py, FAUNA.deer.walk);
+  else roam(w, d, 60, FAUNA.deer.walk, 1);
 }
 
 // A wolf eats its fill at a kill and goes days before it needs another; a pack takes a deer every few days.
@@ -808,7 +820,7 @@ function wolf(w: World, wf: Animal, n: Near) {
 
 // A fox keeps clear of people and wolves, and when hungry runs down the nearest rabbit and eats it where it falls.
 function fox(w: World, f: Animal, n: Near) {
-  const threat = closest(f, n.awake, 40) ?? closest(f, n.wolves, 80);
+  const threat = closest(f, n.awake, FID.fox.person) ?? closest(f, n.wolves, FID.fox.wolf);
   if (threat) { setState(w, f, "flee"); away(w, f, threat, FAUNA.fox.run); return; }
   const prey = f.hunger < 70 ? closest(f, n.rabbits, 100) : null;
   if (!prey) { setState(w, f, "wander"); roam(w, f, 150, FAUNA.fox.walk); return; }
@@ -821,14 +833,14 @@ function fox(w: World, f: Animal, n: Near) {
 }
 
 function rabbit(w: World, r: Animal, n: Near) {
-  const diving = n.eagles.find((e) => e.state === "dive" && meters(e, r) < 30);
-  const threat = closest(r, n.awake, 15) ?? closest(r, n.wolves, 40) ?? closest(r, n.foxes, 30) ?? diving ?? null;
-  // A rabbit bolts a few ticks (15 minutes), then freezes flat and hopes not to be seen.
-  if (threat) { setState(w, r, "flee"); if (inState(w, r) <= ticksOf(900)) away(w, r, threat, FAUNA.rabbit.run); return; }
+  const diving = n.eagles.find((e) => e.state === "dive" && meters(e, r) < FID.rabbit.eagle);
+  const threat = closest(r, n.awake, FID.rabbit.person) ?? closest(r, n.wolves, FID.rabbit.wolf) ?? closest(r, n.foxes, FID.rabbit.fox) ?? diving ?? null;
+  // A rabbit bolts at its sprint from whatever comes within its flight initiation distance, and settles once out of it.
+  if (threat) { setState(w, r, "flee"); away(w, r, threat, FAUNA.rabbit.run); return; }
   setState(w, r, forage(w, r) > 0.25 ? "graze" : "wander");
   if (r.state === "graze") nibble(w, r);
-  // Grazing rabbits sit still, then hop a couple of meters, 2 m each 300 s.
-  roam(w, r, 25, rate(2, 300), 0.12);
+  // Grazing rabbits sit still, then hop a few meters.
+  roam(w, r, 25, FAUNA.rabbit.walk, 0.12);
 }
 
 // A fish seen swims where its object is (waters.ts showFish); the GPU moves it once a day.
@@ -849,9 +861,9 @@ function shoreNear(w: World, from: [number, number], r: number): [number, number
 function flight(w: World, an: Animal, cruise: number, land = 0) {
   if (!an.aim) return false;
   const d = Math.hypot(an.aim[0] - an.px, an.aim[1] - an.py) * TILE_M;
-  if (d > 30) lift(an, cruise, 4);
-  else lift(an, land, 3);
-  if (d > 0.5) goTo(w, an, an.aim[0], an.aim[1], FAUNA[an.species].fly! * (an.alt > 2 ? 1 : 0.3));
+  lift(an, d > 30 ? cruise : land, climbOf(an));
+  // [design: three tenths of its airspeed taking off, under 2 m, as before]
+  if (d > 0.5) goTo(w, an, an.aim[0], an.aim[1], (FAUNA[an.species] as Kind).fly! * (an.alt > 2 ? 1 : 0.3));
   return d > 0.5 || Math.abs(an.alt - land) > 0.05;
 }
 
@@ -873,7 +885,7 @@ function heron(w: World, h: Animal, n: Near) {
     if (!flight(w, h, 15)) { h.alt = 0; setState(w, h, atEdge(w, h.px, h.py) ? "wade" : "wander"); }
     return;
   }
-  if (closest(h, n.awake, 30)) {
+  if (closest(h, n.awake, FID.heron.person)) {
     h.aim = shoreNear(w, h.home ?? [h.px, h.py], 500) ?? h.aim;
     setState(w, h, "fly");
     return;
@@ -909,14 +921,14 @@ function gull(w: World, g: Animal) {
     return;
   }
   if (g.state === "feed") {
-    lift(g, 0.5, 4);
+    lift(g, 0.5, climbOf(g));
     if (inState(w, g) > ticksOf(1500)) setState(w, g, "fly");
     return;
   }
   if (isNight(w.t) || Math.random() < chance(0.003, 300)) { g.aim = shoreNear(w, home, 400) ?? onMap(g.px, g.py); setState(w, g, "land"); return; }
   if (Math.random() < chance(0.01, 300) && wetAt(w, g.px, g.py)) { setState(w, g, "feed"); return; }
   setState(w, g, "fly");
-  lift(g, 10 + quirk(g, 20), 2);
+  lift(g, 10 + quirk(g, 20), climbOf(g));
   roam(w, g, 400, FAUNA.gull.fly!, 1);
 }
 
@@ -963,7 +975,7 @@ function crow(w: World, c: Animal, n: Near) {
     }
     return;
   }
-  if (closest(c, n.awake, 15) || isNight(w.t)) { if (!perch()) roam(w, c, 30, FAUNA.crow.run); return; }
+  if (closest(c, n.awake, FID.crow.person) || isNight(w.t)) { if (!perch()) roam(w, c, 30, FAUNA.crow.run); return; }
   // Crows pick at anything dead that's left lying about.
   const meat = nearestThing(w, c.px, c.py, ["item"], (t) => t.item === "meat" || !!t.item?.startsWith("rotten:"), 60);
   if (meat && meters(c, meat) > 1) { c.aim = [meat.px, meat.py]; c.target = undefined; setState(w, c, "fly"); return; }
@@ -976,7 +988,7 @@ function crow(w: World, c: Animal, n: Near) {
 
 function eagle(w: World, e: Animal, n: Near) {
   const home = e.home ?? [e.px, e.py];
-  if (e.state === "feed") { lift(e, 0, 5); if (inState(w, e) > ticksOf(6000)) setState(w, e, "soar"); return; }
+  if (e.state === "feed") { lift(e, 0, climbOf(e)); if (inState(w, e) > ticksOf(6000)) setState(w, e, "soar"); return; }
   if (e.state === "perch") { if (holdPerch(w, e) && !isNight(w.t)) { e.target = undefined; setState(w, e, "soar"); } return; }
   if (isNight(w.t)) {
     const tree = nearestThing(w, home[0], home[1], ["tree"], (t) => t.size > 12, 300);
@@ -988,7 +1000,8 @@ function eagle(w: World, e: Animal, n: Near) {
     const prey = w.animals.find((r) => r.id === e.target);
     if (!prey) { e.target = undefined; setState(w, e, "soar"); return; }
     const d = meters(e, prey);
-    lift(e, 0, 15);
+    // stooping at five times its climb [design: the old stoop's 15 m against a climb of 3 m each 300 s]
+    lift(e, 0, 5 * climbOf(e));
     goTo(w, e, prey.px, prey.py, FAUNA.eagle.fly!);
     if (e.alt < 2 && d < 3) {
       const kj = prey.species === "fish" ? mealOf(fishKg(w, prey)) : meal(prey.species as "rabbit");
@@ -1004,29 +1017,29 @@ function eagle(w: World, e: Animal, n: Near) {
   const prey = e.hunger < 50 ? closest(e, n.rabbits, 400, (r) => r.state !== "flee") ?? closest(e, n.fish, 400) : null;
   if (prey) { e.target = prey.id; setState(w, e, "dive"); return; }
   const far = e.hunger < 50 ? closest(e, [...n.rabbits, ...n.fish], Infinity) : null;
-  if (far) { lift(e, 60, 3); goTo(w, e, far.px, far.py, FAUNA.eagle.fly!); return; }
+  if (far) { lift(e, 60, climbOf(e)); goTo(w, e, far.px, far.py, FAUNA.eagle.fly!); return; }
   // Soaring: wide circles over home, turning 0.12 radians each 300 s, drifting higher and lower on the air.
-  lift(e, 60 + quirk(e, 60), 3);
+  lift(e, 60 + quirk(e, 60), climbOf(e));
   e.heading += rate(0.12, 300);
   const r = 200 / TILE_M, ax = home[0] + Math.cos(e.heading) * r, ay = home[1] + Math.sin(e.heading) * r;
   goTo(w, e, ax, ay, FAUNA.eagle.fly!);
 }
 
 function butterfly(w: World, b: Animal, warm: boolean) {
-  if (!warm || isNight(w.t)) { setState(w, b, "rest"); lift(b, 0.2, 0.5); return; }
+  if (!warm || isNight(w.t)) { setState(w, b, "rest"); lift(b, 0.2, climbOf(b)); return; }
   // a feeding butterfly sits 25 to 95 minutes, by its quirk in 5-minute steps
   if (b.state === "feed") { if (inState(w, b) > ticksOf((5 + quirk(b, 15)) * 300)) setState(w, b, "flutter"); return; }
   const flower = thingById(w, b.target);
   if (flower) {
     goTo(w, b, flower.px, flower.py, FAUNA.butterfly.fly!);
-    lift(b, flower.size * 0.6, 0.5);
+    lift(b, flower.size * 0.6, climbOf(b));
     if (meters(b, flower) < 0.3) { b.target = undefined; setState(w, b, "feed"); }
     return;
   }
   b.target = undefined;
   if (Math.random() < chance(0.03, 300)) { b.target = nearestThing(w, b.px, b.py, ["flowers"], () => true, 8)?.id; if (b.target) return; }
   setState(w, b, "flutter");
-  lift(b, 0.4 + Math.random() * 1.6, 0.6);
+  lift(b, 0.4 + Math.random() * 1.6, climbOf(b));
   roam(w, b, 30, FAUNA.butterfly.fly! * (0.4 + Math.random() * 0.6), 0.9);
 }
 

@@ -1,18 +1,19 @@
 import { afterAll, expect, test } from "bun:test";
-import { DAY, meters, newWorld, type Act, type Agent, type Stack, type Step, type World } from "./world";
+import { DAY, YEAR, meters, newWorld, type Act, type Agent, type Stack, type Step, type World } from "./world";
 import { LEAST, advance, alight, output, radiation } from "./combustion";
 import { PHYS, pieceOf, roundSize } from "./fuel";
 import { ensure } from "./materials";
-import { DURATION, GALE, ablaze, bedAir, breeze, carry, count, cutting, fireHours, fireOf, giveItems, giveStack, heat, holdOf, join, place, removeThing, rubTick, stemOf, strikeTick, type Fields, type Outcome } from "./physics";
+import { GALE, ablaze, bedAir, breeze, carry, count, cutting, digShare, digTick, fireHours, fireOf, giveItems, giveStack, heat, holdOf, join, pitWork, place, removeThing, rubTick, stemOf, strikeTick, type Fields, type Outcome } from "./physics";
 import { GROWN } from "./mechanics";
 import { DAMP, SOAKED } from "./wetness";
 import { thingById } from "./space";
 import { apart, beliefKey, cameOff, chance, differed, fades, noteTry, record, refuted, rethink, suspected, teach, weighs, worseIn, type Belief } from "./beliefs";
 import { plan } from "./plan";
-import { actFromBelief, conditionsNow, doAct, tick, tinkerOptions } from "./sim";
+import { actFromBelief, conditionsNow, doAct, lend, tick, tinkerOptions } from "./sim";
 import { releaseGpu } from "../gpu/device";
 import { bodyOf } from "./body";
 import { HOUR, TICK_S, ticksOf } from "./ticks";
+import { ACT_WORK, REF_W, powerOf } from "./work";
 
 // tick puts the world's flora on the GPU, and a live device keeps the test process from exiting
 afterAll(releaseGpu);
@@ -194,7 +195,7 @@ test("someone who has seen wood laid on a fire plans to keep it going with what 
 // told and in the rain.
 const fireBelief = (tinder: string, tries: number, wins: number, rain: { tries: number; wins: number }): Belief => ({
   key: `rub|stick+stick+${tinder}|-|-|-|-`, fields: { verb: "rub", inputs: ["stick", "stick", tinder], gives: [], builds: "fire" },
-  uses: { [tinder]: 1 }, out: {}, ticks: 20, tries, wins, tally: { tries, wins }, how: "discovered", t: 0, when: { rain },
+  uses: { [tinder]: 1 }, out: {}, secs: 6000, tries, wins, tally: { tries, wins }, how: "discovered", t: 0, when: { rain },
 });
 
 test("knowing two ways to light a fire, they use whichever has worked best for them in the conditions they're in", () => {
@@ -220,7 +221,7 @@ test("striking pyrite over a lay whose tinder is damp only throws sparks that wo
   still(w);
   const b: Belief = {
     key: "strike|fiber+pyrite+stick+stick+stick|stone|pyrite|-|-", fields: { verb: "strike", inputs: ["fiber", "pyrite", "stick", "stick", "stick"], tool: "stone", target: "pyrite", gives: [], builds: "fire" },
-    uses: { fiber: 1, stick: 3 }, out: {}, ticks: 3, tries: 1, wins: 1, how: "discovered", t: 0,
+    uses: { fiber: 1, stick: 3 }, out: {}, secs: 900, tries: 1, wins: 1, how: "discovered", t: 0,
   };
   // what they believe lights a fire is striking the pyrite over the fiber laid with three sticks
   const act = actFromBelief(b);
@@ -252,21 +253,49 @@ test("rain that starts after they planned a fire stops them rubbing sticks, if t
   expect(count(a, "fiber")).toBe(1);
 });
 
-test("a join takes the work of eight ticks of 300 s, as before, and less for a practised hand", () => {
-  // seconds of work until the act's time is done: a fight's work is never lost to poor light (sim.ts fumbles)
-  const secs = (xp: number) => {
+test("a join takes its work over the power put into it: less for a practised hand, more for a child, half with a helper", () => {
+  // ticks of work until the act's work is in: a fight's power is never lessened by poor light (sim.ts lit)
+  const ticksTo = (xp: number, child = false, helped = false) => {
     const [w, a] = fresh();
+    if (child) a.born = w.t - 0.4 * YEAR;
     a.skills.crafting = xp;
     a.goal = { type: "fight", since: w.t, odds: {}, fails: 0 };
+    const helper = w.agents[1];
+    helper.goal = { type: "fight", since: w.t, odds: {}, fails: 0 };
     giveItems(w, a, "fiber", 2);
     const s: Step = { op: "act", act: { verb: "join", items: ["fiber", "fiber"] }, progress: 0 };
     let n = 0;
-    while (s.progress < ticksOf(DURATION.join) && n < ticksOf(100 * 300)) { doAct(w, a, s); n++; }
-    return n * TICK_S;
+    while (s.progress < ACT_WORK.join && n < ticksOf(100 * 300)) { if (helped) lend(w, helper, s); doAct(w, a, s); n++; }
+    return { n, P: powerOf(w, a, xp), H: helped ? powerOf(w, helper) : 0 };
   };
-  expect(secs(0)).toBe(8 * 300);
-  // level 5 (world.ts level): a tick's work and half again, so the eight ticks' work in the whole ticks that hold it
-  expect(secs(250)).toBe(Math.ceil(ticksOf(8 * 300) / 1.5) * TICK_S);
+  const novice = ticksTo(0);
+  expect(novice.n).toBe(Math.ceil(ACT_WORK.join / (novice.P * TICK_S)));
+  // a rested grown novice's 2400 s (work.ts), by the doer's own power
+  expect(ACT_WORK.join / REF_W).toBeCloseTo(2400, 6);
+  // Wright's 80% curve: 50 tries before (250 xp) put in 51^0.322 as much
+  const practised = ticksTo(250);
+  expect(practised.P / novice.P).toBeCloseTo(51 ** 0.322, 2);
+  expect(practised.n).toBe(Math.ceil(ACT_WORK.join / (practised.P * TICK_S)));
+  // a child of seven at their smaller body's power takes longer
+  expect(ticksTo(0, true).n).toBeGreaterThan(novice.n * 1.5);
+  // a helper's power goes in as well
+  const helped = ticksTo(0, false, true);
+  expect(helped.n).toBe(Math.ceil(ACT_WORK.join / ((helped.P + helped.H) * TICK_S)));
+});
+
+test("a pit takes its ground's work over the digger's power: its volume at ILO's day's digging of firm ground, and the lift", () => {
+  const [w, a] = fresh();
+  giveItems(w, a, "sharp_stone");
+  const tool = w.kinds.sharp_stone, P = powerOf(w, a, 0), share = digShare(tool);
+  // a 1.5 m mouth 2 m deep holds 3.53 m3; ILO's medium ground, 3.5 m3 a worker's eight-hour day, with the lift on top
+  const m3 = Math.PI * 0.75 ** 2 * 2, day = (m3 / 3.5) * 8 * 3600;
+  expect(pitWork() / REF_W).toBeGreaterThan(day);
+  expect(pitWork() / REF_W).toBeLessThan(day * 1.1);
+  const st = { progress: 0 };
+  let n = 0, r;
+  do { r = digTick(w, a, { verb: "dig", items: [], tool: "sharp_stone" }, st, P); n++; } while (!r.done);
+  expect(r.out!.builds).toBe("pit");
+  expect(n).toBe(Math.ceil(pitWork() / (P * share * TICK_S)));
 });
 
 test("someone who collapses stays down through the next tick", async () => {
@@ -283,7 +312,7 @@ test("someone who collapses stays down through the next tick", async () => {
 test("a condition is only suspected when it has done worse there by more than chance: a couple of berries lost in the dark among many aren't enough, a run of them in the shade is", () => {
   const berries = (when: Belief["when"], tries: number, wins: number): Belief => ({
     key: "plant|berry|-|-|-|-", fields: { verb: "plant", inputs: ["berry"], gives: [], builds: "bush" }, uses: { berry: 1 }, out: {},
-    ticks: 3, tries, wins, tally: { tries, wins }, how: "discovered", t: 0, when,
+    secs: 900, tries, wins, tally: { tries, wins }, how: "discovered", t: 0, when,
   });
   // 3 of 5 in the dark against 6 of 9 out of it: no worse than luck
   expect(worseIn(berries({ dark: { tries: 5, wins: 3 } }, 14, 9), "dark")).toBe(false);
@@ -296,7 +325,7 @@ test("a condition is only suspected when it has done worse there by more than ch
 test("a theory that it won't work in the rain stands while it has never once worked there, however rarely it works anywhere; it fades once it works there about as often as not", () => {
   const sparks = (rain: { tries: number; wins: number }, tries: number, wins: number): Belief => ({
     key: "strike|fiber+stone|stone|stone|-|-", fields: { verb: "strike", inputs: ["fiber", "stone"], tool: "stone", target: "stone", gives: [], builds: "fire" },
-    uses: { fiber: 1 }, out: {}, ticks: 3, tries, wins, tally: { tries, wins }, how: "discovered", t: 0, when: { rain }, unless: ["rain"],
+    uses: { fiber: 1 }, out: {}, secs: 900, tries, wins, tally: { tries, wins }, how: "discovered", t: 0, when: { rain }, unless: ["rain"],
   });
   // never in 6 strikes in the rain, 2 of 12 out of it
   expect(fades(sparks({ tries: 6, wins: 0 }, 18, 2), "rain")).toBe(false);
@@ -308,7 +337,7 @@ test("a theory that it won't work in the rain stands while it has never once wor
 // n tries in what they could see (now), every other one catching (from the first) or none.
 const striking = (): Belief => ({
   key: "strike|fiber+stone|stone|stone|-|-", fields: { verb: "strike", inputs: ["fiber", "stone"], tool: "stone", target: "stone", gives: [], builds: "fire" },
-  uses: { fiber: 1 }, out: {}, ticks: 3, tries: 1, wins: 1, how: "discovered", t: 0,
+  uses: { fiber: 1 }, out: {}, secs: 900, tries: 1, wins: 1, how: "discovered", t: 0,
 });
 const tries = (b: Belief, now: string[], n: number, catches: boolean) => { for (let i = 0; i < n; i++) noteTry(b, catches && i % 2 === 0, now); };
 
@@ -370,7 +399,7 @@ test("an exception they believe in goes once it has failed as often as it worked
 // Planting berries, as someone who has seen one come up would know it, on grassland (GRASS) or in the shade there (SHADE).
 const planting = (): Belief => ({
   key: "plant|berry|-|-|-|-", fields: { verb: "plant", inputs: ["berry"], gives: [], builds: "bush" }, uses: { berry: 1 }, out: {},
-  ticks: 3, tries: 1, wins: 1, tally: { tries: 1, wins: 1 }, how: "discovered", t: 0,
+  secs: 900, tries: 1, wins: 1, tally: { tries: 1, wins: 1 }, how: "discovered", t: 0,
 });
 const GRASS = ["ground:grassland"], SHADE = ["shade", "ground:grassland"];
 
@@ -497,7 +526,7 @@ test("someone who thinks thick wood won't take on a small fire lays their thinne
     dying(w, a);
     hold(w, a, "stick", 1, DRY, { size: thick }); hold(w, a, "stick", 1, DRY, STICK);
     const fields: Fields = { verb: "place", inputs: ["stick"], at: "fire", builds: "fed_fire", gives: [] };
-    const b: Belief = { key: beliefKey(fields), fields, uses: { stick: 1 }, out: {}, ticks: 3, tries: 4, wins: 2, how: "discovered", t: 0, ...(theory ? { unless: ["small+thick"] } : {}) };
+    const b: Belief = { key: beliefKey(fields), fields, uses: { stick: 1 }, out: {}, secs: 900, tries: 4, wins: 2, how: "discovered", t: 0, ...(theory ? { unless: ["small+thick"] } : {}) };
     a.beliefs = { [b.key]: b };
     const s: Step = { op: "act", key: b.key, act: actFromBelief(b), progress: 0 };
     let r;
@@ -586,7 +615,7 @@ test("the make_fire plan gathers the sticks the only lay they know needs", () =>
   const [w] = fresh();
   const way: Belief = {
     key: "strike|fiber+stick+stick+stone|stone|stone|-|-", fields: { verb: "strike", inputs: ["fiber", "stick", "stick", "stone"], tool: "stone", target: "stone", gives: [], builds: "fire" },
-    uses: { fiber: 1, stick: 2 }, out: {}, ticks: 3, tries: 2, wins: 2, how: "discovered", t: 0,
+    uses: { fiber: 1, stick: 2 }, out: {}, secs: 900, tries: 2, wins: 2, how: "discovered", t: 0,
   };
   const steps = plan({ inv: { fiber: 1, stone: 2 }, at: null, flags: [] }, "make_fire", { dist: { stick: 2, reeds: 3, stone: 2 }, beliefs: [way], facts: {}, kinds: w.kinds, toxic: [] })!;
   expect(steps.filter((s) => s.op === "pick_stick").length).toBe(2);

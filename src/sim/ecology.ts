@@ -1,10 +1,10 @@
 // The world keeps moving on its own: weather, fire, plants, animals, rot, and sickness.
 import { ensure, p } from "./materials";
 import { ablaze, bedAir, dropStacks, mark, nearFire, newKinds, occupied, removeThing, residentsOf, shelterName } from "./physics";
-import { advance, alight, cooling, group, output, setIn, type Group } from "./combustion";
+import { advance, alight, cooling, group, output, setIn, type Bed, type Group } from "./combustion";
 import { PHYS, physOf } from "./fuel";
-import { BURNABLE, WIDEST, bedOf, blazeOf, blazeWords, landsOn, partsOf, reach, receiverWords, struck, type Part } from "./spread";
-import { pack, receive } from "../gpu/fire";
+import { BURNABLE, WIDEST, bedOf, blazeOf, blazeWords, landsOn, partsOf, placeWords, reach, receiverWords, struck, type Part } from "./spread";
+import { NO_BLAZE, airWords, pack, receive } from "../gpu/fire";
 import { BY, LIT, LOOK_S } from "../gpu/wgsl/fire";
 import { see } from "./beliefs";
 import { personSize } from "./senses";
@@ -12,7 +12,7 @@ import {
   DAY, H, HP, TILE_M, W, Tile, YEAR, addThing, cropOf, dayOfYear, groundOf, log, meters, rng, sea, seasonOf, tileAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
-import { anyAround, around, exists, grownOn, liveThings, makeStem, onPath, put, receiversOf, regrow, seedlingsOf, setKind, stockedAt } from "./space";
+import { anyAround, around, exists, firesOf, grownOn, liveThings, makeStem, onPath, put, regrow, seedlingsOf, setKind, stockedAt } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked, gone, perished } from "./animals";
 import { enrich, settle, soilWaterAt, wetHour } from "./soil";
@@ -302,51 +302,73 @@ function caught(w: World, x: Thing, parts: Part[], groups: Group[], by: Thing) {
 // landing's tick to the receivers' law on the GPU (gpu/fire.ts, wgsl/fire.ts): there each part of each takes the
 // flames' heat and their radiation look by look and the brands landing on it, and the first look one lights is the last
 // it takes. What comes back with the landing settles it: a thing that lit burns as a bed of its own from then on, and
-// the rest keep the heat they hold, or are as they were once cooled right down. A world not resident on the GPU works
-// the same law out by its twin at once.
-type Gathered = { looks: number[][][]; order: Thing[]; at: Map<Thing, number>; near: Set<Thing> };
+// the rest keep the heat they hold, or are as they were once cooled right down.
+// On a world resident on the GPU the beds burn there too (wgsl/beds.ts, fire-constants sec. 37): each run notes only
+// the air at each bed for the look, and the landing takes every bed's looks to the GPU, its blazes going straight to
+// the receivers' law; each bed comes back with the landing as it stands after them, and is the bed everyone reads
+// (what its flame stands, what heat it gives, what coals it holds) until the next. What might take a bed's heat is
+// looked for as far as the bed reaches as it stands at the landing, or reached at any look of the last. A world not
+// resident on the GPU burns its beds look by look here and works the receivers' law out by its twin at once.
+type Gathered = { looks: number; blazes: number[][][]; order: Thing[]; at: Map<Thing, number>; near: Set<Thing>; airs: Map<Thing, (Uint32Array | null)[]> };
 const gathered = new WeakMap<World, Gathered>();
+// Each bed as the GPU last handed it back, and how far its heat and its brands reached at that landing's looks, cm.
+const handed = new WeakMap<Thing, { bed: Bed; reach: number; far: number }>();
+const ended = (w: World, t: Thing) => (t.kind === "fire" ? fireOut(w, t) : burnOut(w, t, t.burnedBy));
 export function fire(w: World, live: Thing[], dt = secs(FIRE_S), landing = due(w.t, LAND_S)) {
   // each burning bed, how far it has looked for what it might heat and for what its brands might land on; each bed's
   // place in the batch's order, and what might take their heat, kept from the runs since the last landing
-  const beds = new Map<Thing, { heat: number; brands: number }>();
-  const g = gathered.get(w) ?? { looks: [], order: [], at: new Map<Thing, number>(), near: new Set<Thing>() }, { order, at, near } = g;
+  const gpu = firesOf(w), beds = new Map<Thing, { heat: number; brands: number }>();
+  const g: Gathered = gathered.get(w) ?? { looks: 0, blazes: [], order: [], at: new Map(), near: new Set(), airs: new Map() }, { order, at, near } = g;
   const seen = (x: Thing) => { if (!x.bed) near.add(x); };
+  const gather = (t: Thing, src: { heat: number; brands: number }, heat: number, brands: number) => {
+    if (heat > src.heat) {
+      src.heat = heat;
+      around(w, t.px, t.py, heat + WIDEST, BURNABLE, seen);
+    }
+    if (brands > src.brands) {
+      src.brands = brands;
+      around(w, t.px, t.py, brands + WIDEST, BURNABLE, (x) => { if (landsOn(x)) seen(x); });
+    }
+  };
   for (const t of live) {
     if (t.bed) { beds.set(t, { heat: -1, brands: -1 }); if (!at.has(t)) at.set(t, order.push(t) - 1); }
     else if (t.kind === "fire") fireOut(w, t);
     else if (t.absorbed) near.add(t);
   }
-  for (let k = 0; k < dt; k += LOOK_S) {
+  for (let k = 0; k < dt; k += LOOK_S, g.looks++) {
     const look: number[][] = [];
-    g.looks.push(look);
+    g.blazes.push(look);
     for (const [t, src] of beds) {
       const air = bedAir(w, t);
-      if (alight(t.bed!) && !t.covered) {
+      if (gpu) {
+        const { dx, dy } = w.weather.wind, len = Math.hypot(dx, dy) || 1, airs = g.airs.get(t) ?? [];
+        airs[g.looks] = airWords(air, placeWords({ px: t.px, py: t.py, dx: dx / len, dy: dy / len }));
+        g.airs.set(t, airs);
+        continue;
+      }
+      if (alight(t.bed!) && !air.covered) {
         const b = blazeOf(w, t, output(t.bed!, air), air), r = reach(b);
-        if (r.heat > src.heat) {
-          src.heat = r.heat;
-          around(w, t.px, t.py, r.heat + WIDEST, BURNABLE, seen);
-        }
-        if (r.brands > src.brands) {
-          src.brands = r.brands;
-          around(w, t.px, t.py, r.brands + WIDEST, BURNABLE, (x) => { if (landsOn(x)) seen(x); });
-        }
+        gather(t, src, r.heat, r.brands);
         look.push(blazeWords(b, at.get(t)!));
       }
       t.bed = advance(t.bed!, LOOK_S, air);
       if (alight(t.bed)) continue;
       beds.delete(t);
-      if (t.kind === "fire") fireOut(w, t);
-      else burnOut(w, t, t.burnedBy);
+      ended(w, t);
     }
   }
   for (const t of beds.keys()) mark(w, t);
   if (!landing) { gathered.set(w, g); return; }
   gathered.delete(w);
+  const list = gpu ? order.filter((t) => exists(w, t) && t.bed) : order;
+  if (gpu) for (const t of list) {
+    const air = bedAir(w, t), last = handed.get(t), r = alight(t.bed!) && !air.covered ? reach(blazeOf(w, t, output(t.bed!, air), air)) : { heat: 0, brands: 0 };
+    gather(t, beds.get(t) ?? { heat: -1, brands: -1 }, Math.max(r.heat, (last?.reach ?? 0) / 100), Math.max(r.brands, (last?.far ?? 0) / 100));
+  }
   const taking = [...near].filter((x) => exists(w, x)).map((x) => ({ x, parts: partsOf(w, x) })).filter((r) => r.parts.length);
-  if (!taking.length) return;
-  const batch = pack(w.seed, w.t, g.looks, taking.map((r) => receiverWords(w, r.x, r.parts)));
+  if (!list.length && !taking.length) { gpu?.keep(new Set()); return; }
+  const looks = gpu ? Array.from({ length: g.looks }, () => list.map(() => [...NO_BLAZE])) : g.blazes;
+  const batch = pack(w.seed, w.t, looks, taking.map((r) => receiverWords(w, r.x, r.parts)));
   let first = batch.nr;
   const starts = taking.map((r) => (first += r.parts.length) - r.parts.length);
   const settle = (out: Uint32Array) => taking.forEach(({ x, parts }, i) => {
@@ -354,13 +376,24 @@ export function fire(w: World, live: Thing[], dt = secs(FIRE_S), landing = due(w
     const at = starts[i], heat = parts.map((_, j) => (out[at + j] & 0x7fffffff) / 256);
     if (out[i] & LIT) {
       const groups = parts.map((p, j) => ({ ...group(p.phys, p.n, p.m, 0, 0, p.skin), heat: heat[j], lit: (out[at + j] & LIT) !== 0 }));
-      caught(w, x, parts, groups, order[out[i] & BY]);
+      caught(w, x, parts, groups, list[out[i] & BY]);
     } else if (heat.some((v) => v > 0)) { x.absorbed = heat; mark(w, x); }
     else if (x.absorbed) { delete x.absorbed; mark(w, x); }
   });
-  const gpu = receiversOf(w);
-  if (gpu) gpu.queue(batch, settle);
-  else settle(receive(batch));
+  if (!gpu) return settle(receive(batch));
+  const jobs = list.map((t) => ({ slot: gpu.slotOf(t), bed: t.bed!, fresh: handed.get(t)?.bed !== t.bed, airs: Array.from({ length: g.looks }, (_, k) => g.airs.get(t)?.[k] ?? null) }));
+  gpu.keep(new Set(list));
+  gpu.queue({ looks: g.looks, beds: jobs, batch }, (got) => {
+    got.beds.forEach((r, j) => {
+      const t = list[j];
+      if (!exists(w, t) || !t.bed) return;
+      t.bed = r.bed;
+      handed.set(t, r);
+      if (r.gone) ended(w, t);
+      else mark(w, t);
+    });
+    settle(got.receivers);
+  });
 }
 
 // ---------- plants ----------

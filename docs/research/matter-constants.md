@@ -183,7 +183,7 @@ Worked out with src/sim/mechanics.ts on the constants above (2026-10-11), for th
 - Pyrite's shares by rock are [design]; its properties and every Mohs value are [UNVERIFIED].
 - Cold copper's cracking strain and the worked volume are [design].
 - Wounds: animals, and people fighting, still lose hit points by the old rule (physics.ts throwDamage, sim.ts fights); they belong with people's wounds.
-- Digging (physics.ts digPower) and the work durations (DURATION) are untouched.
+- Digging and the work durations, untouched here, became work over a power in substrate 7 (people-constants sec. 7).
 - Joining still writes its products' props by arithmetic; they are only what people see of them, and no outcome reads them. Jev's rulings likewise.
 
 ## References

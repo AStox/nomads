@@ -7,7 +7,8 @@
 // each holding the water the world has left in it (wetness.ts). Nothing here changes the world: ecology.ts fire() advances
 // the beds, and the receivers' law (gpu/wgsl/fire.ts) heats what's near them and lights what catches from the words
 // blazeWords and receiverWords lay out, drawing brands from streams keyed by what they land on.
-import { contact, exposure, flameRadiation, group, inFlame, kindle, lay, windAt, type Air, type Bed, type Group } from "./combustion";
+import { contact, exposure, flameRadiation, group, inFlame, kindle, lawAir, lay, windAt, type Air, type Bed, type Group, type LawAir } from "./combustion";
+import { T, add as A, cbrt, div as D, ln, mul as M, pow, sq, sqrt, sub as S, whole } from "../gpu/real";
 import { BURNS, PHYS, WOODS, greenOf, pieceOf, stackPhys, woodOf, type Phys, type Wood } from "./fuel";
 import { REF, deadAt, deadOf, grassAt, growing, leafless, moistureOf, pieceWater, waterOf, type Water } from "./wetness";
 import { CROWN_TWIG as TWIG } from "../gpu/moisture";
@@ -18,7 +19,7 @@ import { airOn, rainAt, sunOn } from "./air";
 import { CROWN, rainOn } from "./rain";
 import { canopyAt } from "./light";
 import { TREES } from "../terrain/niche";
-import { B, BW, DIR_BITS, FLAME, HEAT, INTO, LOOK_S, NONE, PT, PW, R, REACH, RW } from "../gpu/wgsl/fire";
+import { B, BW, DIR_BITS, FLAME, HEAT, INTO, LIM, LOOK_S, NONE, PT, PW, R, REACH, RW } from "../gpu/wgsl/fire";
 
 const G = 9.81, RHO_AIR = 1.2; // air, kg/m3 (sec. 6)
 const CHI_R = 0.3; // the radiant share of a fire's heat (sec. 7)
@@ -155,12 +156,13 @@ export const WIDEST = 3;
 
 // A thing's parts as groups yet to light, each holding the heat it has taken toward lighting.
 export const warmed = (t: Thing, parts: Part[]): Group[] => parts.map((p, i) => ({ ...group(p.phys, p.n, p.m, 0, 0, p.skin), heat: t.absorbed?.[i] ?? 0 }));
-// A thing's parts laid as its bed, each group with the heat its part has taken and alight if it is (from warmed).
+// A thing's parts laid as its bed, each group with the heat its part has taken (a real, as the beds' law holds it) and
+// alight if it is (from warmed).
 export function bedOf(parts: Part[], groups: Group[]): Bed | undefined {
   const bed = lay(parts);
   for (const g of bed?.groups ?? []) {
     const from = groups[parts.findIndex((p) => p.phys === g.phys)];
-    Object.assign(g, from.lit ? { lit: true, heat: 0, warm: 0, cover: 0, inside: 1 } : { heat: from.heat, warm: from.heat });
+    Object.assign(g, from.lit ? { lit: true, heat: 0, warm: 0, cover: 0, inside: 1 } : { heat: T(from.heat), warm: T(from.heat) });
   }
   return bed;
 }
@@ -184,29 +186,35 @@ export function struck(w: World, t: Thing): Bed | undefined {
 // Where a bed burns, what it gives off, kW, its flame, m tall over a base rb m across the middle, its heap's radius, m, the
 // gas its flames burn, kg/s, how far the flame leans from upright in the wind (Thomas, sec. 4: cos = 0.7 u*^-0.49, u* the
 // wind at the flame's mid-height over (g m'' D / ρa)^1/3, m'' its gas over its base), the way the wind blows (a unit vector)
-// and the head-height wind and plants, for the wind aloft.
+// and the head-height wind and plants, for the wind aloft. Everything but the place and the wind's way is a real
+// (gpu/real.ts), worked out as the GPU's beds work it out (wgsl/beds.ts).
 export type Blaze = {
   px: number; py: number; q: number; lf: number; rb: number; heap: number; gas: number;
   cos: number; sin: number; dx: number; dy: number; head: number; veg: number;
 };
-export function blazeOf(w: World, t: Thing, o: { flaming: number; glowing: number; flame: number; base: number; radius: number; gas: number }, air: Air): Blaze {
+type Output = { flaming: number; glowing: number; flame: number; base: number; radius: number; gas: number };
+// The blaze's constants as reals (wgsl/beds.ts reads these same words), and the integer words that need no law.
+export const BLAZE = {
+  G: T(G), RHO_AIR: T(RHO_AIR), CHI_R: T(CHI_R), FOUR_PI: T(4 * Math.PI), HEATS: T(4 * Math.PI * NOTHING), LOFT: T(LOFT), ALIVE: T(BURNOUT * BRAND),
+  FALL: T(FALL), BRANDS: T(BRANDS), LOOK: T(LOOK_S), C07: T(0.7), C049: T(-0.49), C64: T(64), C13: T(13), Z_MIN: T(0.05), HALF: T(0.5), ONE: T(1),
+  TWO: T(2), HUNDRED: T(100), THOUSAND: T(1000), V64: T(0.64), V13: T(0.13), PI: T(Math.PI), BARE_D: 32768, BARE_INV: Math.round(65536 / Math.log(2 / 0.005)),
+};
+export function blazeOf(w: World, t: Thing, o: Output, air: Air): Blaze {
   const { dx, dy } = w.weather.wind, len = Math.hypot(dx, dy) || 1;
-  const u = windAt(air.wind, Math.max(0.05, o.flame / 2), air.veg), m = o.base > 0 ? o.gas / (Math.PI * o.base ** 2) : 0;
-  const us = m > 0 ? u / Math.cbrt((G * m * 2 * o.base) / RHO_AIR) : 0, cos = us > 0 ? Math.min(1, 0.7 * us ** -0.49) : 1;
-  return {
-    px: t.px, py: t.py, q: o.flaming + o.glowing, lf: o.flame, rb: o.base, heap: o.radius, gas: o.gas,
-    cos, sin: Math.sqrt(1 - cos * cos), dx: dx / len, dy: dy / len, head: air.wind, veg: air.veg ?? 0,
-  };
+  return { px: t.px, py: t.py, ...blazing(o, lawAir(air)), dx: dx / len, dy: dy / len };
+}
+export function blazing(o: Output, a: LawAir) {
+  const k = BLAZE, u = windAt(a.wind, Math.max(k.Z_MIN, M(o.flame, k.HALF)), a.veg), m = o.base > 0 ? D(o.gas, M(k.PI, sq(o.base))) : 0;
+  const us = m > 0 ? D(u, cbrt(D(M(M(M(k.G, m), k.TWO), o.base), k.RHO_AIR))) : 0, cos = us > 0 ? Math.min(k.ONE, M(k.C07, pow(us, k.C049))) : k.ONE;
+  return { q: A(o.flaming, o.glowing), lf: o.flame, rb: o.base, heap: o.radius, gas: o.gas, cos, sin: sqrt(S(k.ONE, sq(cos))), head: a.wind, veg: a.veg };
 }
 // How far downwind a brand lofted so high lands, m: carried by the wind at that height while it falls.
-function flight(b: Blaze, z: number) {
-  return (windAt(b.head, Math.max(0.05, z), b.veg) * z) / FALL;
-}
+const flight = (b: Blaze, z: number) => D(M(windAt(b.head, Math.max(BLAZE.Z_MIN, z), b.veg), z), BLAZE.FALL);
 // How far from a bed things near it could take its heat, m, as far as its flame reaches or its radiation stays above what
 // heats nothing; and how far downwind its brands land.
 export function reach(b: Blaze) {
-  const rad = b.lf / 2 + Math.sqrt((CHI_R * b.q) / (4 * Math.PI * NOTHING));
-  return { heat: Math.max(b.rb + b.lf, rad), brands: b.rb + flight(b, Math.min(LOFT * b.lf, BURNOUT * BRAND)) };
+  const k = BLAZE, rad = A(M(b.lf, k.HALF), sqrt(D(M(k.CHI_R, b.q), k.HEATS)));
+  return { heat: Math.max(A(b.rb, b.lf), rad), brands: A(b.rb, flight(b, Math.min(M(k.LOFT, b.lf), k.ALIVE))) };
 }
 // Whether brands can land on a thing: it has a footprint (one taken at its middle has none).
 export const landsOn = (t: Thing) => halfOf(t) > 0;
@@ -243,27 +251,34 @@ export function fluxOn(b: Blaze, t: Thing, parts: Part[]): number[] {
 // footprint, a square as wide as it is; one taken at its middle takes none. Over a look, then, a footprint across the
 // base for a stretch of its width and lofting heights between those landing at its near and far edges takes BRANDS gas
 // LOOK_S over 2 rb times LOFT lf of every cm of width times cm of height, which is the blaze's gb.
-const cm = (m: number, most: number) => Math.min(most, Math.max(0, Math.round(m * 100)));
+const cm = (m: number, most: number) => whole(M(m, BLAZE.HUNDRED), most);
 const Q16 = (x: number) => Math.round(x * 65536);
-// A blaze at a look as the law reads it, lit by bed number bed (wgsl/fire.ts B).
-export function blazeWords(b: Blaze, bed: number): number[] {
-  const v: number[] = new Array(BW).fill(0), top = LOFT * b.lf, veg = b.veg;
-  v[B.x] = Math.round(b.px * TILE_M * 100); v[B.y] = Math.round(b.py * TILE_M * 100);
-  v[B.dx] = Math.round(b.dx * 2 ** DIR_BITS); v[B.dy] = Math.round(b.dy * 2 ** DIR_BITS);
-  v[B.tx] = cm(b.lf * b.sin, FLAME); v[B.tz] = cm(b.lf * b.cos, FLAME); v[B.rb] = cm(b.rb, FLAME); v[B.heap] = cm(b.heap, FLAME); v[B.lf] = cm(b.lf, FLAME);
-  v[B.qr] = Math.min(0xffffffff, Math.round((CHI_R * b.q * 1000) / (4 * Math.PI)));
-  v[B.fr] = Q16(flameRadiation(b.lf));
-  v[B.reach] = cm(reach(b).heat, REACH);
+// A blaze's place and the wind's way as its words hold them: cm east and south, and Q13.
+export const placeWords = (b: { px: number; py: number; dx: number; dy: number }) =>
+  ({ x: Math.round(b.px * TILE_M * 100), y: Math.round(b.py * TILE_M * 100), dx: Math.round(b.dx * 2 ** DIR_BITS), dy: Math.round(b.dy * 2 ** DIR_BITS) });
+// A blaze at a look as the law reads it, lit by bed number bed (wgsl/fire.ts B): a twin of the GPU's beds' blaze
+// (wgsl/beds.ts), word for word, its place and the wind's way handed to the GPU as words.
+export function blazeWords(b: Blaze, bed: number, place = placeWords(b)): number[] {
+  const k = BLAZE, v: number[] = new Array(BW).fill(0), top = M(k.LOFT, b.lf), veg = b.veg, r = reach(b);
+  v[B.x] = place.x; v[B.y] = place.y; v[B.dx] = place.dx; v[B.dy] = place.dy;
+  v[B.tx] = cm(M(b.lf, b.sin), FLAME); v[B.tz] = cm(M(b.lf, b.cos), FLAME); v[B.rb] = cm(b.rb, FLAME); v[B.heap] = cm(b.heap, FLAME); v[B.lf] = cm(b.lf, FLAME);
+  v[B.qr] = whole(D(M(M(k.CHI_R, b.q), k.THOUSAND), k.FOUR_PI), 0xffffffff);
+  v[B.fr] = whole(flameRadiation(b.lf), 0x7fffffff, 16);
+  v[B.reach] = cm(r.heat, REACH);
+  v[B.far] = cm(r.brands, LIM);
   v[B.bed] = bed;
-  v[B.gb] = b.lf > 0 && b.gas > 0 && b.rb > 0 ? Math.min(0xffffffff, Math.round(((BRANDS * b.gas * LOOK_S) / (2 * b.rb * 100 * top * 100)) * 2 ** 32)) : 0;
-  v[B.alive] = cm(Math.min(top, BURNOUT * BRAND), FLAME * 2);
+  v[B.gb] = b.lf > 0 && b.gas > 0 && b.rb > 0 ? whole(D(M(M(k.BRANDS, b.gas), k.LOOK), M(M(M(M(k.TWO, b.rb), k.HUNDRED), top), k.HUNDRED)), 0xffffffff, 32) : 0;
+  v[B.alive] = cm(Math.min(top, k.ALIVE), FLAME * 2);
   // the wind aloft (combustion.ts windAt) over the brand's fall: the head-height wind among trees, or the log profile
   // over bare ground (heights over 0.5 cm) or over low plants (from their tops, over the plants' roughness)
-  v[B.k] = Q16(b.head / FALL);
-  if (veg < 2) {
+  v[B.k] = whole(D(b.head, k.FALL), 0x7fffffff, 16);
+  if (veg < k.TWO) {
     v[B.wind] = 1;
-    if (veg <= 0) { v[B.d] = Q16(0.5); v[B.inv] = Q16(1 / Math.log(2 / 0.005)); }
-    else { v[B.v] = cm(veg, FLAME); v[B.s] = Q16(64 * veg); v[B.d] = Q16(13 * veg); v[B.inv] = Q16(1 / Math.log((2 - 0.64 * veg) / (0.13 * veg))); }
+    if (veg <= 0) { v[B.d] = k.BARE_D; v[B.inv] = k.BARE_INV; }
+    else {
+      v[B.v] = cm(veg, FLAME); v[B.s] = whole(M(k.C64, veg), 0x7fffffff, 16); v[B.d] = whole(M(k.C13, veg), 0x7fffffff, 16);
+      v[B.inv] = whole(D(k.ONE, ln(D(S(k.TWO, M(k.V64, veg)), M(k.V13, veg)))), 0x7fffffff, 16);
+    }
   }
   return v;
 }

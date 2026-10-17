@@ -20,7 +20,8 @@
 import { readFileSync } from "node:fs";
 import { TILE_M, addThing, dryAt, isNight, newWorld, rng, type Agent, type Stack, type Thing, type World } from "../src/sim/world";
 import { conditionsNow, retire, surroundings, tick } from "../src/sim/sim";
-import { DURATION, STILL, changed, count, counts, emberTime, giveItems, giveStack, groundWord, layAt, newKinds, occupied, removeThing, removed, soilAt, SEED_SOIL } from "../src/sim/physics";
+import { STILL, changed, count, counts, emberTime, giveItems, giveStack, groundWord, layAt, newKinds, occupied, removeThing, removed, soilAt, SEED_SOIL } from "../src/sim/physics";
+import { ACT_WORK, REF_W } from "../src/sim/work";
 import { BLOWS, SPARKS_TO_CATCH } from "../src/sim/mechanics";
 import { predict } from "../src/sim/formulas";
 import { pieceOf, roundSize, stackPhys } from "../src/sim/fuel";
@@ -32,7 +33,7 @@ import { DARK, lightOn, skyShare } from "../src/sim/light";
 import { airOn, islandTemp } from "../src/sim/air";
 import { seasonAt } from "../src/sim/sky";
 import { SEASONS } from "../src/terrain/climate";
-import { DAY, HOUR, TICK_S, YEAR_DAYS, ticksOf } from "../src/sim/ticks";
+import { DAY, HOUR, TICK_S, YEAR_DAYS } from "../src/sim/ticks";
 import { anyAround, around, put, thingById } from "../src/sim/space";
 import { cull } from "../src/sim/animals";
 import { beliefKey, fieldsOf, groundKey, ofPlace, ruledOut, type Belief } from "../src/sim/beliefs";
@@ -176,7 +177,7 @@ export const PROBES: Record<string, Probe> = {
     metrics: {
       best: { better: "higher", tol: 0.1, text: "share of their last third of tries made the faster way" },
       first: { better: "higher", tol: 0.1, text: "share of each person's first five tries made the faster way" },
-      regret: { better: "lower", tol: 1, text: "ticks lost per try to choosing the slower way, against the faster" },
+      regret: { better: "lower", tol: 1, text: "seconds lost per try to choosing the slower way, against the faster" },
     },
     claims: [
       { id: "learn", text: "they use the faster way more once they've learned than in their first tries", gap: ["best", "first"], value: 0 },
@@ -426,21 +427,21 @@ function judge(bs: Belief[], cases: Case[]): Judged {
 // Whether any of their theories names a condition, as one that has to hold for it.
 const names = (bs: Belief[], c: string) => bs.some((b) => b.unless?.some((t) => t.split("+").includes(c)));
 
-// A way they know that has worked for them, as if they'd done it once and it took the ticks given: lit a fire, or pushed
-// a berry into the ground and seen it come up some days later.
-const knownWay = (key: string, t: number, ticks: number): Belief => {
+// A way they know that has worked for them, as if they'd done it once and it took the seconds given: lit a fire, or
+// pushed a berry into the ground and seen it come up some days later.
+const knownWay = (key: string, t: number, secs: number): Belief => {
   const f = fieldsOf(key), plant = f.verb === "plant";
   const uses: Record<string, number> = plant ? { berry: 1 } : { fiber: 1, stick: 3 };
   return {
-    key, fields: { ...f, builds: plant ? "bush" : "fire" }, uses, out: {}, ticks, ...(plant ? { later: 3 * DAY } : {}),
+    key, fields: { ...f, builds: plant ? "bush" : "fire" }, uses, out: {}, secs, ...(plant ? { later: 3 * DAY } : {}),
     tries: 1, wins: 1, tally: { tries: 1, wins: 1 }, how: "discovered", t,
   };
 };
-// The ticks a way takes to a fire in daylight, by the formulas: strokes until a spark catches (mechanics.ts
-// SPARKS_TO_CATCH), or rubbing until the dust lights (physics.ts emberTime), the sticks rubbed as they're kept.
-function wayTicks(w: World, key: string) {
+// The seconds a way takes to a fire in daylight, by the formulas, in whole ticks: strokes until a spark catches
+// (mechanics.ts SPARKS_TO_CATCH), or rubbing until the dust lights (physics.ts emberTime), the sticks rubbed as they're kept.
+function waySecs(w: World, key: string) {
   const f = fieldsOf(key);
-  return f.verb === "rub" ? Math.ceil(emberTime(w, { k: f.inputs[0], hp: 1, born: w.t, m: KEPT }, w.kinds[f.inputs[0]], false, STILL.temp) / TICK_S) : Math.ceil(SPARKS_TO_CATCH / BLOWS);
+  return TICK_S * (f.verb === "rub" ? Math.ceil(emberTime(w, { k: f.inputs[0], hp: 1, born: w.t, m: KEPT }, w.kinds[f.inputs[0]], false, STILL.temp) / TICK_S) : Math.ceil(SPARKS_TO_CATCH / BLOWS));
 }
 // Whether a try of a way would come off for someone now, by the formulas the act runs (formulas.ts predict): a spark or
 // an ember caught in their tinder as wet as they hold it (as they'd be handed it, holding none), and the lay of it and
@@ -598,7 +599,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
       put(w, a, ps[i].px, ps[i].py);
       a.heading = 0; a.home = null; a.goal = null; a.plan = []; a.inv = [];
       const start = v.starts?.[i] ?? [];
-      a.beliefs = { [PLANT]: { ...knownWay(PLANT, w.t, ticksOf(DURATION.plant)), when: { [groundKey(groundWord(w, a.px, a.py))]: { tries: 1, wins: 1 } }, ...(start.length ? { unless: [...start] } : {}) } };
+      a.beliefs = { [PLANT]: { ...knownWay(PLANT, w.t, ACT_WORK.plant / REF_W), when: { [groundKey(groundWord(w, a.px, a.py))]: { tries: 1, wins: 1 } }, ...(start.length ? { unless: [...start] } : {}) } };
     });
     Object.assign(truth, { grounds: groundsSeen(w, ps).size });
   } else {
@@ -606,7 +607,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     // ways that look alike they plan the first they know (plan.ts search), and a try that takes longer than they thought
     // makes it look slower, where one that took as long as they thought would leave the two alike for good
     if (v.ways.includes(SPINDLES)) w.kinds.spindle ??= { ...w.kinds.stick, id: "spindle" };
-    const quick = Math.min(...v.ways.map((k) => wayTicks(w, k)));
+    const quick = Math.min(...v.ways.map((k) => waySecs(w, k)));
     w.agents.forEach((a, i) => {
       put(w, a, cx + (Math.cos(i) * 2) / TILE_M, cy + (Math.sin(i) * 2) / TILE_M);
       a.home = null; a.goal = null; a.plan = [];
@@ -616,9 +617,9 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     });
   }
   // which way is truly faster, by the formulas
-  const ticks: Record<string, number> = probe === "choose" ? Object.fromEntries(ways.map((k) => [k, wayTicks(w, k)])) : {};
-  const best = probe === "choose" ? ways.reduce((x, y) => (ticks[y] < ticks[x] ? y : x)) : "";
-  if (best) Object.assign(truth, { best, ...Object.fromEntries(ways.map((k) => [`ticks:${k}`, ticks[k]])) });
+  const secs: Record<string, number> = probe === "choose" ? Object.fromEntries(ways.map((k) => [k, waySecs(w, k)])) : {};
+  const best = probe === "choose" ? ways.reduce((x, y) => (secs[y] < secs[x] ? y : x)) : "";
+  if (best) Object.assign(truth, { best, ...Object.fromEntries(ways.map((k) => [`secs:${k}`, secs[k]])) });
 
   const begin = w.t, end = begin + days * DAY, half = begin + Math.floor((days * DAY) / 2);
   // planting, berries come only while sown seed could come up, each spring, and what's judged is what's done then
@@ -777,7 +778,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   const all = cases.flatMap((m) => [...m.values()]), sum = all.reduce((s, c) => s + c.n, 0);
   if (sum) Object.assign(truth, { pure: Math.round((all.reduce((s, c) => s + Math.max(c.ok, c.n - c.ok), 0) / sum) * 1000) / 1000, fails: Math.round((all.reduce((s, c) => s + c.n - c.ok, 0) / sum) * 100) / 100 });
   if (probe === "choose") {
-    const worse = Math.max(...ways.map((k) => ticks[k])), lost = (x: Attempt) => Math.min(ticks[x.key], worse) - ticks[best];
+    const worse = Math.max(...ways.map((k) => secs[k])), lost = (x: Attempt) => Math.min(secs[x.key], worse) - secs[best];
     Object.assign(metrics, {
       best: share(third(2), (x) => x.key === best),
       first: share(w.agents.flatMap((a) => tries.filter((x) => x.agent === a.id).slice(0, 5)), (x) => x.key === best),
@@ -797,7 +798,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     if (!sowing) Object.assign(truth, { derived: derived.causes.join(" or ") || "none", covered: derived.covered ? 1 : 0 });
     // what someone learning nothing would come to (knowing the ways, holding no theory) and someone holding the true one
     // (the ways ruled out wherever a cause holds), on the same cases: each judged number's floor and ceiling
-    const nothing = ways.map((k) => knownWay(k, begin, 1)), truly = nothing.map((b) => ({ ...b, unless: [...causes] }));
+    const nothing = ways.map((k) => knownWay(k, begin, TICK_S)), truly = nothing.map((b) => ({ ...b, unless: [...causes] }));
     const bounds = (js: Judged[]) => ({
       acc: avg(js.flatMap((j) => (j ? [j.acc] : []))),
       right: failing ? js.filter(knows).length / n : null,

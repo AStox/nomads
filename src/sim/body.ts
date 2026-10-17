@@ -244,6 +244,22 @@ export function pressure(b: Body, asleep: boolean, rate: number, dt: number) {
   b.sleep = asleep ? b.sleep * Math.exp((-hours * rate) / CHI_S) : 1 - (1 - b.sleep) * Math.exp(-hours / CHI_W);
 }
 
+// ---------- work (people-constants sec. 7) ----------
+// The FRIEND registry's median VO2max (people-constants R1009), ml/kg/min, the mean of its men and women: 42.8 in their
+// twenties, falling 9.75% a decade (the men's 9.2, the women's 10.3); anyone younger than twenty at the twenties' [gap:
+// no children's data]. One MET, 3.5 ml/kg/min (R1010), and oxygen's 20.9 J/ml.
+export const vo2max = (age: number) => 42.8 * 0.9025 ** (Math.max(0, age - 25) / 10);
+export const REST_O2 = 3.5, O2_J = 20.9;
+// Bonjer's acceptable load through an eight-hour working day, 33% of VO2max (R1150); and Craven et al.'s loss of about
+// 0.4% of physical performance for every hour awake before the task (R1151).
+const BONJER = 0.33, AWAKE_LOSS = 0.004;
+// The hours someone has been awake, as their pressure to sleep tells it: the waking it takes S to climb to where it
+// stands from the lower threshold, where sleep ends [derived].
+export const awake = (b: Body) => Math.max(0, -CHI_W * Math.log((1 - b.sleep) / (1 - LOWER)));
+// What a body puts into work and keeps up through a working day, W of metabolism above resting: Bonjer's share of their
+// VO2max less resting, for their mass, less for every hour they have been awake [derived].
+export const workWatts = (b: Body, f: Frame) => Math.max(0, (((BONJER * vo2max(f.age) - REST_O2) * O2_J) / 60) * f.kg * (1 - AWAKE_LOSS * awake(b)));
+
 // ---------- how it feels, and how it ends (secs. 7, 8) ----------
 // The three bars the rest of the sim reads, 0 to 100: food, how full their glycogen and stomach are; warmth, the colder
 // of their skin between where cold hurts (15 C) and the edge of cool discomfort (32.6 C) and their core between the

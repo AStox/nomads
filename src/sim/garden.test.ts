@@ -127,7 +127,7 @@ test("what's planted is judged when it comes up: the planter waits, learns how l
 test("someone whose berries came up on grassland walks to grassland to plant, and someone who thinks they won't come up on sand plants none on sand", () => {
   const b: Belief = {
     key: "plant|berry|-|-|-|-", fields: { verb: "plant", inputs: ["berry"], gives: [], builds: "bush", effect: "buried" }, uses: { berry: 1 }, out: {},
-    ticks: 3, later: DAY * 3, tries: 3, wins: 2, how: "discovered", t: 0,
+    secs: 900, later: DAY * 3, tries: 3, wins: 2, how: "discovered", t: 0,
     when: { "ground:grassland": { tries: 2, wins: 2 }, "ground:sand": { tries: 1, wins: 0 } }, unless: ["ground:sand"],
   };
   const ctx = (dist: Record<string, number>) => ({ dist, beliefs: [b], facts: {}, kinds: w.kinds, toxic: [], now: ["ground:sand"] });
@@ -140,7 +140,7 @@ test("someone whose berries came up on grassland walks to grassland to plant, an
 test("berries that come up only now and then on their own ground send them to try new ground nearby, and back again once the new ground does worse", () => {
   const b: Belief = {
     key: "plant|berry|-|-|-|-", fields: { verb: "plant", inputs: ["berry"], gives: [], builds: "bush", effect: "buried" }, uses: { berry: 1 }, out: {},
-    ticks: 3, later: DAY * 3, tries: 8, wins: 4, how: "discovered", t: 0, tally: { tries: 8, wins: 4 },
+    secs: 900, later: DAY * 3, tries: 8, wins: 4, how: "discovered", t: 0, tally: { tries: 8, wins: 4 },
     when: { "ground:forest_floor": { tries: 8, wins: 4 } },
   };
   const ctx = { dist: { "ground:forest_floor": 0.5, "ground:grassland": 2 }, beliefs: [b], facts: {}, kinds: w.kinds, toxic: [], now: ["ground:forest_floor"] };
@@ -179,13 +179,13 @@ test("standing in the rain, someone with a theory about each of two ways is offe
   // rubbing two sticks for an ember to blow into fiber, which they think won't work in the rain after ten tries died in it
   const rub: Belief = {
     key: "rub|stick+stick+fiber|-|-|-|-", fields: { verb: "rub", inputs: ["stick", "stick", "fiber"], gives: [], builds: "fire" }, uses: { fiber: 1 }, out: {},
-    ticks: 20, tries: 20, wins: 10, how: "discovered", t: 0, unless: ["rain"],
+    secs: 6000, tries: 20, wins: 10, how: "discovered", t: 0, unless: ["rain"],
   };
   for (let i = 0; i < 10; i++) { noteTry(rub, true, []); noteTry(rub, false, ["rain"]); }
   // digging with an antler they no longer have, which they think won't work in the rain after one try there
   const dig: Belief = {
     key: "dig|-|antler|-|-|-", fields: { verb: "dig", inputs: [], tool: "antler", gives: [], builds: "pit" }, uses: {}, out: {},
-    ticks: 30, tries: 2, wins: 1, how: "discovered", t: 0, unless: ["rain"],
+    secs: 9000, tries: 2, wins: 1, how: "discovered", t: 0, unless: ["rain"],
   };
   noteTry(dig, true, [ground]);
   noteTry(dig, false, ["rain", ground]);

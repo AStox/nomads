@@ -73,8 +73,9 @@ export type Ground = {
   // save, its pools are W's as saved (what was eaten of them since the day's pools went in) and are not written now.
   bind(s: Store, link: { W: GPUBuffer; RQ: GPUBuffer; cap: number }, saved: boolean): void;
   // A day of the lumped kinds at tick t (t % DAY === 0), called by the animals' spin-up loop before its law at that
-  // tick; after attach the lumped kinds' own midnight law (registered earlier on the store) runs before the animals'.
-  spin(s: Store, t: number): void;
+  // tick, in slices it sends to the GPU one at a time (smalls.ts slices); after attach the lumped kinds' own midnight
+  // law (registered earlier on the store) runs before the animals'.
+  spin(s: Store, t: number): Iterable<void>;
 };
 
 type Bufs = {
@@ -134,10 +135,12 @@ export class Animals implements Rider {
       store.index(kind);
       // the days before anyone wakes, the birds' catch going to the fish as each hour's would, and each day of the
       // lumped kinds stepped at the midnight the hour crosses, before the hour (the start need not fall on an hour);
-      // an hour on the GPU at a time (store.ts drain)
+      // an hour on the GPU at a time (store.ts drain), the lumped kinds' day sent with its hour rather than a slice at a
+      // time: before the first view nothing waits on the queue between slices, and waiting for each took the play
+      // page's first tick 10 s more than the hour's drain alone
       for (let k = driver.days * 24; k >= 1; k--) {
         const t = driver.t0 - k * HOUR, midnight = Math.floor(t / DAY) * DAY;
-        if (ground && midnight > t - HOUR) ground.spin(store, midnight);
+        if (ground && midnight > t - HOUR) for (const _ of ground.spin(store, midnight));
         if (browse?.filed(t)) this.browsed(browse.raster(store));
         this.law(store, t);
         store.index(kind, true);

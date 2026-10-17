@@ -1,9 +1,9 @@
 // What lies near a burning bed taking its heat and its brands, a tick at a time on the GPU (src/gpu/fire.ts drives it;
 // plan docs/plans/2026-10-14-001-refactor-gpu-object-world-plan.md, Unit 12; docs/research/fire-constants.md secs. 4,
-// 6, 7, 28, 30 and 36). The beds burn on the CPU (src/sim/combustion.ts) and say, at each of a tick's looks, how each
-// of them blazes (src/sim/spread.ts blazeWords); every fuel object within a blaze's reach is a receiver (spread.ts
-// receiverWords), its parts each holding the heat it has taken toward lighting. A lane a receiver goes through the
-// tick's looks in order:
+// 6, 7, 28, 30, 36 and 37). The beds say, at each of a landing's looks, how each of them blazes: on the GPU the beds'
+// law (wgsl/beds.ts) writes it here just before this law runs, and off it the CPU does (src/sim/spread.ts
+// blazeWords); every fuel object within a blaze's reach is a receiver (spread.ts receiverWords), its parts each holding
+// the heat it has taken toward lighting. A lane a receiver goes through the looks in order:
 // - each part takes the flame's own flux where the flame, leaning in the wind, stands over it, and elsewhere the
 //   radiant share of what the bed gives off from the middle of its flame, no nearer than the heap's edge (spread.ts
 //   fluxOn);
@@ -43,6 +43,9 @@ export const LEAST_Q = 12 << 16;
 export const PARTS = 32;
 // A receiver's status word: lit in bit 31, the look in bits 24 to 30, the bed's index in bits 0 to 23.
 export const LIT = 0x80000000, BY = 0xffffff;
+// A blaze's place where a bed doesn't blaze at a look (the beds' law, wgsl/beds.ts): so far west that no receiver is
+// within LIM of it.
+export const NOWHERE = 0xc0000000;
 
 // A blaze at a look, BW words: its place (cm east and south), the wind's way (Q13), its flame's lean along the wind and
 // height up (cm), the flame's base's radius and the heap's (cm), the flame's height (cm), the radiant share of what it
@@ -50,9 +53,10 @@ export const LIT = 0x80000000, BY = 0xffffff;
 // landing for each cm2 of footprint across the base times cm of lofting (Q32), the highest a brand lands from alive
 // (cm), and the wind aloft (wind: 0 for the head-height wind at every height, 1 for the log profile; K the head-height
 // wind over the brand's fall speed, Q16; the plants' height V, cm; the profile's displacement S and roughness D, Q16 cm;
-// one over the profile's log at head height, Q16).
-export const B = { x: 0, y: 1, dx: 2, dy: 3, tx: 4, tz: 5, rb: 6, heap: 7, lf: 8, qr: 9, fr: 10, reach: 11, bed: 12, gb: 13, alive: 14, wind: 15, k: 16, v: 17, s: 18, d: 19, inv: 20 } as const;
-export const BW = 21;
+// one over the profile's log at head height, Q16); and how far downwind its brands land (cm), which this law doesn't read
+// (the CPU looks that far for what they might land on).
+export const B = { x: 0, y: 1, dx: 2, dy: 3, tx: 4, tz: 5, rb: 6, heap: 7, lf: 8, qr: 9, fr: 10, reach: 11, bed: 12, gb: 13, alive: 14, wind: 15, k: 16, v: 17, s: 18, d: 19, inv: 20, far: 21 } as const;
+export const BW = 22;
 // A receiver, RW words: its place (cm), half its width (cm), where its parts start and how many, its tinder's part (or
 // NONE) and the odds brands light it (Q16), and its identity (src/sim/spread.ts keyOf).
 export const R = { x: 0, y: 1, half: 2, p0: 3, np: 4, tinder: 5, odds: 6, key: 7 } as const;

@@ -1,6 +1,6 @@
-# The people's constants: walking and carrying, shelters, throwing and hunting, perception (2026-10-16)
+# The people's constants: walking and carrying, work, shelters, throwing and hunting, perception (2026-10-16)
 
-Research for the rule audit's substrates 6, 8, 9 and 12 (docs/research/rule-audit.md). R-numbers R1000 to R1029 are walking and carrying's, R1101 to R1149 shelters', R1030 to R1059 throwing, hunting and fishing's, R1060 to R1099 perception's. References cited from the other research pages keep their numbers there (R90, R221, R273, R317, R451 and R479 here).
+Research for the rule audit's substrates 6, 7, 8, 9 and 12 (docs/research/rule-audit.md). R-numbers R1000 to R1029 are walking and carrying's, R1150 to R1199 work's, R1101 to R1149 shelters', R1030 to R1059 throwing, hunting and fishing's, R1060 to R1099 perception's. References cited from the other research pages keep their numbers there (R90, R221, R273, R317, R451 and R479 here).
 
 ## 6. Walking and carrying (R1000-R1029)
 
@@ -146,6 +146,86 @@ Speeds are real now and a tick still lasts 300 s, so a grown walker goes some 40
 - R1012 Knapik J.J., Reynolds K.L., Harman E. (2004), Soldier load carriage: historical, physiological, biomechanical, and medical aspects, Mil. Med. 169:45-56 (FM 21-18, 1990). https://pubmed.ncbi.nlm.nih.gov/14964502 (abstract read 2026-10-16; the 30 and 45% as the load literature quotes FM 21-18)
 - R1013 Scott G.D., Kilgour D.M. (1969), The density of random close packing of spheres, J. Phys. D 2:863-866 [ex].
 
+## 7. Work (R1150-R1199)
+
+Code: src/sim/work.ts (new: the reference power, practice, the acts with no measured work, digging), body.ts workWatts and awake (vo2max, REST_O2 and O2_J moved there from gait.ts), sim.ts doAct, lit, stroke, labour, lend, run's gathering and assist, metOf and finishAct, physics.ts rubbing's work and rubTick, pitWork, digShare and digTick, strikeTick's old reckoning (RECKONED_S, MARK_S), heating's, dipping's and placing's seconds, plan.ts GATHER and the planner's costs (STEP_M), gait.ts LEVEL_WALK, formulas.ts Prediction.secs, beliefs.ts Belief.secs, world.ts Step's work, got, want and dim and VERSION 31, and scripts/truth.ts, answer-key.ts, theory-report.ts, probes.ts and evals.ts in seconds (evals' VERSION probes 9, worlds 8, live 8). Every act with a duration is work, J, delivered at a power, W; its time is its work over its power. Ticks come in only as the seconds a tick holds (ticks.ts TICK_S).
+
+### 7a. Constants
+
+| Quantity | Value | Units | Conditions | Source |
+|---|---|---|---|---|
+| Acceptable energy expenditure through an eight-hour shift | 33% of VO2max | - | Bonjer; still accepted by work physiologists | R1150 [read, as quoted] |
+| Physical performance after sleep loss | -7.56% (95% CI -11.9 to -3.13); about -0.4% for each hour awake before the task | - | 227 outcomes in 69 publications, deprivation and late restriction | R1151 [read, abstract] |
+| The learning curve | each doubling of the units done takes 80% of the time (slope -0.322); assembling 75%, welding 85%, machining 95% | - | | R1152 [read, as tabulated] |
+| Excavation by hand, recommended | soft 5.0, medium 3.5, hard 3.0, very hard 2.0, rock 0.8 (country medians 5.0, 3.5, 2.75, 2.0, 0.75) | m3 in place a worker-day | an eight-hour day, the right hand tools, well organised; blunt or worn tools up to 25% less, poor tools half | R1153 Tables 10, 20 [read] |
+| ILO's soil classes | soft, medium, hard, very hard: BS 5930's soft, firm, stiff and very stiff cohesive soils | - | | R1153 Table 2 [read] |
+| Undrained shear strength by consistency | very soft under 20, soft 20 to 40, firm 40 to 75, stiff 75 to 150, very stiff over 150 (hard over 300) | kPa | BS 5930:1999 | R1154 [read, as charted] |
+| VO2max, one MET, oxygen | FRIEND's 42.8 ml/kg/min falling 9.75% a decade; 3.5 ml/kg/min; 20.9 J/ml | | | R1009, R1010, R1008 (sec. 6) |
+| The arms' net efficiency | 13.5% (arm cranking's 10 to 17%) | - | | matter-constants sec. 1 (mechanics.ts NET_EFF) |
+| Picking rates as picked | blackberries by hand 5.1; wild grass seed stripped by hand and cleaned 1 | kg/h | | body-constants sec. 10 |
+
+### 7b. Power
+
+**Pick.** What a body keeps up through a working day is Bonjer's 33% of its VO2max less resting, for its mass: (0.33 VO2max(age) - 3.5) ml/kg/min at 20.9 J/ml, W of metabolism above resting [derived], less 0.4% for every hour they have been awake (R1151), the hours read off Borbely's pressure S as the waking it takes S to climb from the lower threshold, 0.17, to where it stands [derived] (body.ts workWatts, awake). What goes into the work is that at the arms' net efficiency, 13.5% [analogue: arm cranking for all handwork] (work.ts powerOf). A rested grown body (18, 61.7 kg) spends 228 W above resting at it, 4.1 MET over Schofield's 73 W, and puts 30.8 W into the work: the reference power every act's work is reckoned against (work.ts REF_W). At 30 a body puts in 0.93 of that, at 45 0.75, at 60 0.60, at 70 0.51; a child of seven 0.38, of three 0.23 (VO2max held at the twenties', sec. 6g [gap]); after 16.8 hours awake (S at 0.67) 0.93. The rule audit's uncited 75 to 100 W is not used.
+
+### 7c. Practice
+
+**Pick.** Wright's 80% curve (R1152): a practised hand puts (n + 1)^0.322 of a first try's power into the work, n the times they have done it before, counted as the 5 xp a success brings (sim.ts gain) up to a skill's top level, 1000 xp [design] (work.ts practised): 1.25 after one, 2.16 after ten, 3.55 after fifty, 5.51 at the top (was a tenth faster a level, twice as fast at level 10). Cutting keeps Putz's tenth fewer blows a level (matter-constants sec. 3) and a blow's force its own 0.04 a level (physics.ts force).
+
+### 7d. Light
+
+**Pick.** Work goes at light.ts workRate's share of its pace in poor light (0.15 + 1.1 of the brightness, between 0.2 and 1) [design: the old odds of not fumbling, as a share]: an act that is work gets that share of their power, and an act that goes stroke by stroke (striking, rubbing, throwing) gets a tick's strokes each time the shares carried from tick to tick come to one (sim.ts lit, stroke) (was: a tick's work lost on a coin flip). A fight is quick and close and eating needs no light. Walking keeps darkPace (sec. 6h).
+
+### 7e. What each act takes
+
+**Pick.**
+- Digging: a m3 of ground of shear strength tau takes a working day at the reference power over what ILO's norm has a worker dig of it in a day, the norms set at the middles of BS 5930's classes ILO names its soils by (30, 57.5, 112.5 and 225 kPa) and a straight line between them [derived], and its weight raised from its mean depth, at clay's 1608 kg/m3 [analogue] [derived] (work.ts digWork). The island's ground is firm, 57.5 kPa [gap: no shear strength by spot]: 254 kJ a m3. A pit 1.5 m across and 2 m deep (sec. 8g), 3.53 m3 lifted from 1 m, takes 952 kJ, 8.6 hours of a rested grown novice with a proper tool (physics.ts pitWork) (was 3600 s at the tool's power, about an hour). The share of their power a tool puts into the ground is the old digging power, at most 1 [design] (physics.ts digShare): bare hands 0.15, 57 hours.
+- Clay: a lump as dug (0.2 kg dry with its 27.5% water, 0.18 l) is that much firm ground lifted from half a spade's depth, 0.1 m: 46 J, 1.5 s. A deposit holds the lumps a disc as wide as it is and a spade's depth deep holds (physics.ts PIT_SOIL, 0.2 m) [design: how deep a deposit goes], 875 in a deposit a metre across, and is gone when they are (was two lumps a gathering and a deposit gone on a 25% roll).
+- Gathering: food with a measured picking rate takes the reference power over the rate for each one as found [derived]: a portion of berries 176 s, a handful of grass seed 180 s, four of each set out for in a gathering (PICK, 750 s at the rate [design]). Anything with no measured rate takes 750 s of work at the reference power a gathering [derived; gap]: a mushroom, a herb, a handful of acorns, a stick, a stone or a bead of resin each 750 s, a handful of reeds' fibre 375 s of two. What comes away is what is there: as many as the gathering set out to pick, or as many as the bush's ripe portions, the acorns under an oak, a grass tuft's stripping, the beads of resin, the reed bed's hit points (1.5 a handful [design: the old 3 for two]) or the deposit's lumps if fewer, one each time its work is put in (was a fixed 2.5-tick quantum and fixed yields).
+- Joining, heating, wetting, shaping, placing, planting, pouring and wearing; fat rubbed into a hide, grinding, rubbing to a point and rubbing to nothing; and any other act: what each took a novice in full light at five minutes a tick, at the reference power [derived; gap: each act's own physics]: join and heat 74 kJ (2400 s), wet 92.5 kJ, shape 55.5 kJ, place and plant 27.7 kJ, pour and wear 18.5 kJ, leather and a point 92.5 kJ, grinding 111 kJ, nothing 55.5 kJ, anything else 37 kJ (work.ts ACT_WORK, OTHER_WORK, physics.ts rubbing).
+- Reeds struck, which go by the old reckoning of hit points, lose a strike's damage for each 300 s of work put in at the reference power [derived; gap] (physics.ts RECKONED_S).
+- Cutting, splitting, flaking, breaking boulders, drawing copper out, striking sparks, throwing and friction fire go blow by blow and stroke by stroke at their cadence and their energies (matter-constants), as before; a blow's energy is already what the body keeps up at chopping (mechanics.ts blowEnergy).
+
+### 7f. Helpers and the body
+
+**Pick.** A helper's power goes into whatever the other is at that is work, a novice's in the light they have [design: a helper's own practice at what another does is not known] (sim.ts lend): two finish in half the time (was one tick's progress a tick). What an act's work costs, its joules over the arms' efficiency, goes into the body on top of resting for the seconds they work, as walking's does (sim.ts labour, metOf); the rest of the body's run goes at the activity's MET.
+
+### 7g. Time
+
+**Pick.**
+- The planner's costs are seconds (plan.ts): a trip its 15 m steps at a grown walker's 1.28 m/s on level grass (gait.ts LEVEL_WALK); a way they know, what it has taken them (Belief.secs) over its odds; a gathering its work at the reference power; and what has no time of its own (putting away, taking out, eating, resting, warming up, meeting someone, hunting, and each op's start) in units of four steps' walk, 47 s, as it was weighed against walking [design: the old costs] (was a join's time the unit of an act's cost, against 60 m of walking).
+- The look-ahead to an act's end (sim.ts conditionsNow), the answer key (formulas.ts Prediction.secs, scripts/truth.ts, with poor light as its share of pace) and the seconds a fire's heat, a dip and a feed are reckoned over (physics.ts) take an act's work over the reference power.
+- A belief keeps the seconds a way has taken them (Belief.secs, was ticks); world.ts VERSION 31 starts a new world.
+
+### 7h. Checks
+
+| | Value |
+|---|---|
+| Reference power, rested grown body | 30.8 W of work, 228 W above resting, 4.1 MET |
+| A join, a rested grown novice in full light | 2400 s; after fifty tries 3.55 times the power |
+| A pit, the same with a proper tool | 30,890 s (8.6 h); ILO's medium 3.5 m3 a day gives 8.1 h for its 3.53 m3, the lift 6% on top |
+| Two lumps of clay | 3 s |
+| Four portions of berries, four handfuls of seed | 706 s, 720 s |
+| plan.test.ts | a join takes its work over the doer's power, a practised hand's by Wright's curve, a child's longer, a helper's added; a pit its ILO work over the digger's power at the tool's share |
+| formulas.test.ts | the answer key's seconds for planting and digging are the work the act needs over the reference power |
+
+### 7i. Gaps
+
+- The acts with no measured work are their old durations at the reference power; sewing, scraping, joining and fire-hardening have no mechanics of their own, and acorns, mushrooms, herbs, sticks, stones, reeds and resin no measured collecting rate.
+- No shear strength by spot: all ground is firm, at clay's density; the lift is added on top of ILO's norms, which include throwing the spoil out; a clay deposit's depth is a design.
+- A bush loses 3 hit points a picking and a grass tuft 1 a stripping [design]: what a plant loses should be the biomass taken off it.
+- Fatigue is the hours awake only, not the work done since waking or glycogen spent; children's VO2max is the twenties'.
+- Practice counts a try as 5 xp, so a gathering's 2 xp is two fifths of one; a helper adds a novice's power, and strikes and throws are not helped.
+- The heat of a fire held in, a dip and a feed are reckoned over the act's reference seconds, not the time this doer takes.
+
+### References
+
+- R1150 Bonjer F.H. (1962), Actual energy expenditure in relation to the physical working capacity, Ergonomics 5:29-31; the 33% for an eight-hour shift as Bagherifard F., Daneshmandi H., Ziaei M. et al. (2022), Comparison of physical workload and physical work capacity among municipality cleaners in Shiraz, BMC Sports Sci. Med. Rehabil. 14:85, give it. https://link.springer.com/article/10.1186/s13102-022-00476-4 (read 2026-10-17)
+- R1151 Craven J., McCartney D., Desbrow B., Sabapathy S., Bellinger P., Roberts L., Irwin C. (2022), Effects of acute sleep loss on physical performance: a systematic and meta-analytical review, Sports Med. 52:2669-2690. https://pubmed.ncbi.nlm.nih.gov/35708888 (abstract read 2026-10-17)
+- R1152 Wright T.P. (1936), Factors affecting the cost of airplanes, J. Aeronaut. Sci. 3:122-128; the curve's slopes by kind of work as Kender's lecture on learning curves (Wright State University, HFE 307) tabulates them. http://cecs.wright.edu/~dkender/hfe307/lect9d.pdf (read 2026-10-17)
+- R1153 Stiedl D. (1998), Productivity norms for labour-based construction, ILO ASIST Technical Brief No. 2, Tables 2, 9, 10 and 20 and sec. 4.3. https://www.ilo.org/sites/default/files/wcmsp5/groups/public/@ed_emp/@emp_policy/@invest/documents/instructionalmaterial/wcms_asist_6655.pdf (read 2026-10-17)
+- R1154 BS 5930:1999, Code of practice for site investigations, the strength of clays as Groundforce's soils description chart gives it. https://www.vpgroundforce.com/Groundforce/media/Groundforce/Files/GF-Soil-Description-Chart.pdf (read 2026-10-17)
+
 ## 8. Shelters (R1100-R1149)
 
 R1100 is plant-constants' (Meuriot 2018), so this section's own run from R1101. Code: src/sim/shelter.ts (new: what a shelter's pieces make of it, the air inside it, a fire's ring and lid, a pit's cover and depth, the leaps), physics.ts shelterOf, placing's ring, heap, feeding, trap and build branches, place, fireKind, gainOf; wetness.ts sheltered and rainUnder; sim.ts shelterAir, goIn, shelterWork, rest and warm_up, THING_PLACES forge; ecology.ts trapped and the structures' weather; animals.ts caught and PERCH; migrate.ts shelters; formulas.ts staged; inspect.ts, brain.ts and beliefs.ts words; light.ts CHI_R exported; world.ts Shelter, Thing.lid and Thing.holds.
@@ -229,7 +309,7 @@ A pit is dug 2 m deep, as the trapping pits were (R451); its mouth is 1.5 m acro
 - Fibre, fern and grass thatch need 45 kg of it to each m2 of roof (R1101): a hand-gathered roof of them is out of reach, and hides and bark are what closes one. The planner still reaches for what people learnt worked before.
 - Wolves and foxes take the red deer's 1.8 m leap (no fence height for them was found); a fence's height is what an animal clears with a run, more than it could from a pit's floor. A pit's narrowing slot is not modelled; rabbits and foxes could dig out (time-constants sec. 7).
 - How stone and clay lie on a ring's mouth [design]; a hearth is judged against the bed as it is when the stone goes down.
-- The fall into a pit still costs a person 10 health (substrate 1), and digging one still counts 12 units (substrate 7).
+- The fall into a pit still costs a person 10 health (substrate 1); digging one is work (sec. 7).
 - What a shelter looks built of, the renderer's style, is still read off props [design]; moving home still compares forms and the 60 m and 150 m distances.
 
 ### References (8)
@@ -335,7 +415,7 @@ A blow at an animal within reach (strikeTick) lands where it is aimed, on the ch
 | Cruising speed | about 1 body length a second | | | R1043 [UNVERIFIED] |
 | Reaction distance to a bait | about 2 body lengths | | drift-feeding grayling | R1044 [UNVERIFIED] |
 
-**Pick.** The fish a gear can meet are the fish of the cell of water it is dipped in, which range over that cell's water in a day (the GPU moves them once a day) [derived]; the cell's water now is waters.ts's area. Each fish meets a line at 2 x (2 L) x L / A, L its length, and a basket at 2 r sqrt(u^2 + (L/s)^2) / A [derived], over the dip's DURATION.wet x TICK_S seconds; its chance is 1 - e^(-rate t). A line brings up the first fish to bite, if any; a basket every fish it meets [design: none escape; a fish that meets the bait takes it]. A basket is a hemisphere of its own wall (mass over density and thickness), swept by the arms at chopping's kept power (mechanics.ts) against water's drag on its mouth, a disk's Cd 1.17 [derived]. Reach no longer comes from a table by gear: within the 75 m cell a line's length and an arm's reach decide nothing; the gear's physics decides its meeting radius and speed.
+**Pick.** The fish a gear can meet are the fish of the cell of water it is dipped in, which range over that cell's water in a day (the GPU moves them once a day) [derived]; the cell's water now is waters.ts's area. Each fish meets a line at 2 x (2 L) x L / A, L its length, and a basket at 2 r sqrt(u^2 + (L/s)^2) / A [derived], over the dip's seconds, a wetting's work over the reference power (sec. 7); its chance is 1 - e^(-rate t). A line brings up the first fish to bite, if any; a basket every fish it meets [design: none escape; a fish that meets the bait takes it]. A basket is a hemisphere of its own wall (mass over density and thickness), swept by the arms at chopping's kept power (mechanics.ts) against water's drag on its mouth, a disk's Cd 1.17 [derived]. Reach no longer comes from a table by gear: within the 75 m cell a line's length and an arm's reach decide nothing; the gear's physics decides its meeting radius and speed.
 
 Checks [derived]: a basket of fibre is 0.10 m across the mouth, swept at 1.5 m/s; in a 75 m sea cell over 50 minutes a 20 cm perch comes to it 15% of the time, to a line 8%, a 40 cm one 16% and 29%.
 

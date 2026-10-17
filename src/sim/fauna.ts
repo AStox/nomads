@@ -1,38 +1,75 @@
 // Everything alive on the island that isn't a person: what each kind is like and where they start. What they do each
-// tick is in animals.ts. Speeds are meters a tick (animals.ts, walk.ts steer), each written in m/s, or as the meters it
-// goes in five minutes, and taken a tick's share of. Cited (docs/research/animal-constants.md sec. 15): a ground
-// mammal's run is its fastest sprint on record (Garland 1983, R1104), a wolf's and a fox's walk the trot they travel at
-// (R1105, R1106), and a bird's flight its cruising airspeed tracked by radar (Alerstam et al. 2007, R1107). The rest are
-// the meters a five-minute tick the world was written at [design: today's meters a five-minute tick; gap: uncited],
-// kept in five minutes rather than m/s because a speed over 300 and back is not always the same number (0.4 / 300 * 300).
+// tick is in animals.ts. Speeds are meters a tick (animals.ts, walk.ts steer), each written in m/s and taken a tick's
+// share of. Cited (docs/research/animal-constants.md sec. 15): a ground mammal's run is its fastest sprint on record
+// (Garland 1983, R1104), a wolf's and a fox's walk the trot they travel at (R1105, R1106), a deer's trot and a rabbit's
+// hop Heglund and Taylor's treadmill speeds (R1108), a deer's walk a person's at the same Froude number, a heron's
+// wading a foraging crane's walk, a bird's flight its cruising airspeed tracked by radar (Alerstam et al. 2007, R1107)
+// and its climb Hedenström and Alerstam's (R1113). A crow's walk and run and a butterfly's flight are uncited [gap].
 import { H, Tile, W, dryAt, dryNear, sea, tileAt, type Animal, type AnimalSpecies, type World } from "./world";
 import { put } from "./space";
 import { reveal, startPools } from "./pools";
 import { rate } from "./ticks";
+import { tobler } from "./gait";
+import { grown } from "./body";
 
 // A tick's share of a speed in m/s.
 const perSecond = (v: number) => rate(v, 1);
 // km/h as m/s.
 const kmh = (v: number) => v / 3.6;
-type Kind = { hp: number; walk: number; run: number; fly?: number; ground: boolean };
-export const FAUNA: Record<AnimalSpecies, Kind> = {
-  // Cervus elaphus 72 km/h (R1104)
-  deer: { hp: 30, walk: rate(1.5, 300), run: perSecond(kmh(72)), ground: true },
+// Heglund and Taylor's equivalent speeds of 16 quadrupeds from mice to horses on treadmills, m/s, M in kg (R1108, Table
+// 2): the least speed each trots at, 0.593 M^0.249, and the trot it prefers, 1.09 M^0.222.
+const leastTrot = (kg: number) => 0.593 * kg ** 0.249;
+const trot = (kg: number) => 1.09 * kg ** 0.222;
+// A walker goes as a person does at the same Froude number v^2 / gL (Alexander and Jayes, R1002): Tobler's speed on the
+// level (R1000) for a grown body's leg, its hip 0.530 of its stature (Drillis and Contini, R1062), times the square root
+// of the animal's leg over that [derived].
+const walkOf = (leg: number) => tobler(0) * Math.sqrt(leg / (0.53 * grown(99).m));
+// Hedenström and Alerstam's radar-tracked migrants climbed under power at 1.63 m/s, the dunlin's, down to 0.32 m/s, the
+// mute swan's (R1113) [UNVERIFIED: the dunlin taken at 50 g, the swan at 10 kg]; a bird between them by the log of its
+// mass [derived].
+const climbOf = (kg: number) => 1.63 * (kg / 0.05) ** (Math.log(0.32 / 1.63) / Math.log(10 / 0.05));
+// walk, trot, run, fly: meters a tick on foot and on the wing; climb, meters a tick up or down.
+export type Kind = { hp: number; walk?: number; trot?: number; run?: number; fly?: number; climb?: number; ground: boolean };
+export const FAUNA = {
+  // Cervus elaphus 72 km/h (R1104); its trot at 116 kg (animals.ts SPEC), 3.1 m/s; its walk on legs as long as it is
+  // tall at the shoulder, 1.07 to 1.37 m (R304) taken at the middle [derived], 1.6 m/s
+  deer: { hp: 30, walk: perSecond(walkOf(1.22)), trot: perSecond(trot(116)), run: perSecond(kmh(72)), ground: true },
   // Canis lupus 64 km/h (R1104); trots 8 to 9 km/h for hours (R1105)
   wolf: { hp: 35, walk: perSecond(kmh(8.5)), run: perSecond(kmh(64)), ground: true },
   // Vulpes 72 km/h (R1104, Garland's red fox as Vulpes fulva); trots 6 to 13 km/h (R1106)
   fox: { hp: 12, walk: perSecond(kmh(9.5)), run: perSecond(kmh(72)), ground: true },
-  // Oryctolagus cuniculus 56 km/h (R1104)
-  rabbit: { hp: 6, walk: rate(0.6, 300), run: perSecond(kmh(56)), ground: true },
+  // Oryctolagus cuniculus 56 km/h (R1104); hopping about as it grazes at the least speed a 1.6 kg quadruped trots, 0.67
+  // m/s [analogue: a rabbit hops]
+  rabbit: { hp: 6, walk: perSecond(leastTrot(1.6)), run: perSecond(kmh(56)), ground: true },
   // cruising airspeeds (R1107): Ardea cinerea 12.5 m/s, Larus argentatus 12.8, Corvus corone 13.5, Haliaeetus albicilla
-  // 13.6
-  heron: { hp: 8, walk: rate(0.4, 300), run: rate(1, 300), fly: perSecond(12.5), ground: false },
-  gull: { hp: 5, walk: rate(0.5, 300), run: rate(1, 300), fly: perSecond(12.8), ground: false },
-  crow: { hp: 4, walk: rate(0.5, 300), run: rate(1.5, 300), fly: perSecond(13.5), ground: false },
-  eagle: { hp: 12, walk: rate(0.3, 300), run: rate(1, 300), fly: perSecond(13.6), ground: false },
-  fish: { hp: 3, walk: rate(1, 300), run: rate(3, 300), ground: false },
-  butterfly: { hp: 1, walk: rate(1, 300), run: rate(2.5, 300), fly: rate(2.5, 300), ground: false },
+  // 13.6; each climbing at its mass (animals.ts SPEC: 1.5, 0.97, 0.51 and 4.38 kg). A heron wades at the slowest walk of
+  // whooping cranes filmed walking to food, 0.30 m/s (Kinloch et al., R1114) [analogue: a crane for a heron].
+  heron: { hp: 8, walk: perSecond(0.3), fly: perSecond(12.5), climb: perSecond(climbOf(1.5)), ground: false },
+  gull: { hp: 5, fly: perSecond(12.8), climb: perSecond(climbOf(0.97)), ground: false },
+  // a crow's walk and run the meters a step it took a five-minute tick, as meters a second [gap: no crow's walking speed]
+  crow: { hp: 4, walk: perSecond(0.5), run: perSecond(1.5), fly: perSecond(13.5), climb: perSecond(climbOf(0.51)), ground: false },
+  eagle: { hp: 12, fly: perSecond(13.6), climb: perSecond(climbOf(4.38)), ground: false },
+  // a fish seen is stood where its object is (waters.ts showFish) and never moved here
+  fish: { hp: 3, ground: false },
+  // a butterfly's flight the meters it went a five-minute tick, as meters a second [gap: no temperate butterfly's
+  // airspeed]; it rises and falls at 16% of its airspeed, the mean of Dudley's neotropical butterflies' (R1115)
+  butterfly: { hp: 1, fly: perSecond(2.5), climb: perSecond(0.16 * 2.5), ground: false },
+} satisfies Record<AnimalSpecies, Kind>;
+// How near each lets a threat come before it flees, m: its flight initiation distance, walked up to by one person.
+export const FID = {
+  // red deer in Norway, 57 m on average (Meisingset et al., R1109); from wolves [gap: today's 60 m]
+  deer: { person: 57, wolf: 60 },
+  // rabbits in Bristol's fields (Huang et al., R1111, Fig. 4): 31.7 m from a person, 30.0 from a fox drawn up on a trolley
+  // (and a wolf as a fox [analogue]), 20.4 from a live buzzard (an eagle as a buzzard [analogue])
+  rabbit: { person: 31.7, fox: 30, wolf: 30, eagle: 20.4 },
+  // rural Danish grey herons 62.08 m, rural French carrion crows 20.41 m (Díaz et al., R1112, Table S1)
+  heron: { person: 62.08 },
+  crow: { person: 20.41 },
+  // [gap: no fox's flight initiation distance; today's 40 m from people and 80 m from wolves]
+  fox: { person: 40, wolf: 80 },
 };
+// How far a red deer runs once flushed: Meisingset et al.'s ran 2036 m on average before stopping for 20 minutes (R1109).
+export const ESCAPE_M = 2036;
 // People can walk up to and trap what lives on the ground; hunting works on the bigger of those.
 export const HUNTED = ["deer", "wolf", "fox", "rabbit"] as const;
 

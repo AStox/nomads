@@ -4,7 +4,7 @@
 // rules.ts RULES.learning) gives everyone its conditions that hurt.
 import { readFileSync } from "node:fs";
 
-export type Tally = { n: number; wins: number; ticks: number }; // trials, how many worked, ticks they took all told
+export type Tally = { n: number; wins: number; secs: number }; // trials, how many worked, seconds they took all told
 export type Verdict = "hurts" | "no effect" | "unclear";
 export type Cond = { in: Tally; out: Tally; verdict: Verdict };
 export type Way = {
@@ -37,14 +37,14 @@ export function hurting(k: AnswerKey): Record<string, string[]> {
   return out;
 }
 
-// The ticks it takes, on average, to get what a way is for in these conditions, trying again until it works: how long
+// The seconds it takes, on average, to get what a way is for in these conditions, trying again until it works: how long
 // one try takes over the odds of a try working. As people weigh their own records (beliefs.ts chance), a way goes by
 // the worst of the conditions it was tried in that hold, and by all its tries where none do; a try that never worked
 // counts as working one time in fifty.
-export function expectedTicks(way: Way, now: string[]): number {
+export function expectedSecs(way: Way, now: string[]): number {
   const tried = now.map((c) => way.conds[c]?.in).filter((t): t is Tally => !!t && t.n > 0);
-  const odds = (t: Tally) => t.wins / t.n, ticks = (t: Tally) => t.ticks / t.n;
+  const odds = (t: Tally) => t.wins / t.n, secs = (t: Tally) => t.secs / t.n;
   const p = tried.length ? Math.min(...tried.map(odds)) : way.all.n ? odds(way.all) : 0;
-  const t = tried.length ? Math.max(...tried.map(ticks)) : way.all.n ? ticks(way.all) : 0;
+  const t = tried.length ? Math.max(...tried.map(secs)) : way.all.n ? secs(way.all) : 0;
   return t / Math.max(p, 0.02);
 }

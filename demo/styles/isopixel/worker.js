@@ -877,7 +877,7 @@ async function whereOf(id) {
 // ---------- frames ----------
 // The page's frame: views with their uniforms and live sprites by the page's sprite ids, which go into the dynamic
 // layers the first time they come.
-let pending = null, rendering = false, frames = 0;
+let pending = null, rendering = false, frames = 0, frontsSent = "";
 const tmp = new ArrayBuffer(32 * 16384);
 function liveInstances(list) {
   const n = list.length / 8, U = new Uint32Array(tmp, 0, n * 8), I = new Int32Array(tmp, 0, n * 8), F = new Float32Array(tmp, 0, n * 8);
@@ -910,7 +910,10 @@ function render() {
   const ms = performance.now() - t0;
   rendering = false;
   device.queue.onSubmittedWorkDone().then(() => {
-    post({ type: "frameDone", id: f.id, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0 });
+    // the levels and bearings whose front lists are built, when they change (live.js listsReady)
+    const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
+    frontsSent = fr;
+    post({ type: "frameDone", id: f.id, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts });
     if (pending) render();
   });
 }

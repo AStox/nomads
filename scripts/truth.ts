@@ -3,10 +3,10 @@
 // in each of many situations the island gives over the run's days: a random dry spot (by the water, for what needs
 // water), a random hour, the island's weather then as its own weather, drawn on from the start, would bring it, and what
 // they use as wet as dead stuff its thickness lying there. Each is noted with the conditions anyone there could see
-// (sim.ts conditionsNow), whether the way would come off for what it's for, and the ticks it would take a hand practised
-// at nothing (more in poor light, where work goes slower). Then, for each condition, whether it truly hurts the way, like
-// for like (stats.ts judge). scripts/answer-key.ts has the key's shape, and scripts/theory-report.ts scores people's
-// theories and choices against it.
+// (sim.ts conditionsNow), whether the way would come off for what it's for, and the seconds it would take a rested grown
+// body practised at nothing: its work over their power, the more in poor light, where work goes slower (sim.ts lit).
+// Then, for each condition, whether it truly hurts the way, like for like (stats.ts judge). scripts/answer-key.ts has the
+// key's shape, and scripts/theory-report.ts scores people's theories and choices against it.
 //   NOMADS_BRAIN=random bun scripts/truth.ts --seed 3 --runs /tmp/theories/3 --days 40 --out /tmp/truth/3.json
 // --runs: a directory of scripts/theories.ts runs of this island. Their ways are what gets worked out, and the things
 // they made and the rulings they settled come too, so the same things can be made here.
@@ -28,6 +28,7 @@ import { PATIENCE, ahead } from "../src/sim/seedling";
 import { predict, type Prediction } from "../src/sim/formulas";
 import { seedRandom } from "./seeded";
 import { HOUR } from "../src/sim/ticks";
+import { ACT_WORK, OTHER_WORK, REF_W } from "../src/sim/work";
 import { judge } from "./stats";
 import type { AnswerKey, Cond, Tally, Verdict, Way } from "./answer-key";
 
@@ -147,7 +148,7 @@ function fireHere(at: string): Thing {
 // A situation for a way: where (the water's edge for what needs water), when, and what they hold: the way's things as the
 // island gives them, and for a way done at a fire, a fire as people keep one. What the formulas make of it there, and
 // what anyone could see.
-type Trial = { now: string[]; worked: boolean; ticks: number };
+type Trial = { now: string[]; worked: boolean; secs: number };
 function situation(plan: Plan): Trial | string {
   const f = plan.fields, water = f.at === "water" || f.verb === "wet";
   const i = Math.floor(Math.random() * days * 24);
@@ -175,15 +176,15 @@ function situation(plan: Plan): Trial | string {
     if ("why" in r) return r.why;
     // a ruling settled in the runs is the law for it; one never settled leaves it unsaid
     const ruled = "ask" in r ? w.rulings[r.ask] : undefined;
-    const done: Prediction | null = "ask" in r ? (ruled ? { ok: ruled.useful, gives: ruled.useful ? [`law:${r.ask}`] : [], at: f.at ?? null, ticks: 8 } : null) : r;
+    const done: Prediction | null = "ask" in r ? (ruled ? { ok: ruled.useful, gives: ruled.useful ? [`law:${r.ask}`] : [], at: f.at ?? null, secs: (ACT_WORK[f.verb] ?? OTHER_WORK) / REF_W } : null) : r;
     if (!done) return "no ruling was settled for it";
-    return { now: seen(done), worked: meant(plan, done), ticks: done.ticks / (f.verb === "eat" ? 1 : workRate(lightOn(w, stand).bright)) };
+    return { now: seen(done), worked: meant(plan, done), secs: done.secs / (f.verb === "eat" ? 1 : workRate(lightOn(w, stand).bright)) };
   } finally {
     if (fire) removeThing(w, fire);
   }
 }
 
-const tally = (ts: Trial[]): Tally => ({ n: ts.length, wins: ts.filter((t) => t.worked).length, ticks: ts.reduce((s, t) => s + t.ticks, 0) });
+const tally = (ts: Trial[]): Tally => ({ n: ts.length, wins: ts.filter((t) => t.worked).length, secs: ts.reduce((s, t) => s + t.secs, 0) });
 // What judging a condition like for like sets aside: what comes of it rather than with it (rain soaks the tinder and the
 // kindling, so the damp it leaves takes none of the rain's blame, and a breeze blows a fire down to coals and a small
 // fire), and the coarser level of one cut finer (soaked is damp, and deep shade is shade, so neither is set against the

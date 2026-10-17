@@ -148,12 +148,13 @@ fn take(key: u32, e: u32, count: u32, code: u32, r: u32) {
 // The split, per bin: the law's outcome intervals for the bin's state, the multinomial of its members over them on
 // the stream of (seed, e, key, t); departures (outcomes to another state, or fates) take the next ranks in outcome
 // order; cnt gets every outcome's count and, for a law that bears, the births in its last word; nc the contributions
-// to other states (and the births'), keep 1 while members are left. Bindings: bins, ctl, cnt, nc, keep, inp, P (cap,
-// t).
+// to other states (and the births'), keep 1 while members are left. Each bin's work is its own, so the bins can go in
+// slices of a dispatch each, bins lo to hi (hi at most cap). Bindings: bins, ctl, cnt, nc, keep, inp, P (cap, t, lo,
+// hi).
 export function lumpSplit(l: LumpedLayout): string {
   return /* wgsl */ `
 ${lumpedCore(l)}
-struct Params { cap: u32, t: u32, a: u32, b: u32 }
+struct Params { cap: u32, t: u32, lo: u32, hi: u32 }
 @group(0) @binding(0) var<storage, read_write> bins: array<u32>;
 @group(0) @binding(1) var<storage, read> ctl: array<u32>;
 @group(0) @binding(2) var<storage, read_write> cnt: array<u32>;
@@ -164,8 +165,8 @@ struct Params { cap: u32, t: u32, a: u32, b: u32 }
 ${rows("bins", l.wide)}
 ${FLAT}
 @compute @workgroup_size(256) fn main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
-  let i = flat(g, n);
-  if (i >= P.cap) { return; }
+  let i = P.lo + flat(g, n);
+  if (i >= P.hi) { return; }
   _ = &inp;
   nc[i] = 0u; keep[i] = 0u;
   if (i >= ctl[0]) { return; }

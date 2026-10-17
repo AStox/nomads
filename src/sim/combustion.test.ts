@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { BLOWN, advance, alight, feed, feeding, group, heats, kindle, lay, lighting, lightsIn, expose, output, plumeRise, setIn, type Air, type Bed, type Laid, type Ring } from "./combustion";
 import { PHYS, WOODS, pieceOf, woodOf, type Wood } from "./fuel";
-import { CURES, DURATION, MELTS, RED, usual } from "./physics";
+import { CURES, MELTS, RED, usual } from "./physics";
+import { ACT_WORK, REF_W } from "./work";
 
 // The ladder of the fire plan's Unit 5, each case with its pieces, counts, wind and rain fixed from
 // docs/research/fire-constants.md before combustion.ts was written:
@@ -30,17 +31,17 @@ const STILL: Air = { temp: 10, wind: 0, rain: 0, veg: 0.1 };
 const BREEZE: Air = { ...STILL, wind: 4.2 };
 const GALE: Air = { ...STILL, wind: 10 };
 const STORM: Air = { ...STILL, rain: 7.8 };
-// A feed begun on a bed is done this long after, s (sim.ts DURATION).
-const AFTER = DURATION.place;
+// A feed begun on a bed is done this long after, s: a placing's work at the reference power (work.ts).
+const AFTER = ACT_WORK.place / REF_W;
 const MIN = 60, HOUR = 3600;
 
 const of = (phys: typeof TINDER, n: number, m = DRY): Laid => ({ phys, n, m });
 const start = () => [of(TINDER, 1), of(TWIG, 10), of(STICK, 5)];
 // what's left of pieces of a kind, kg, however the flame has split them; whether any of them burns; whether they've burnt
-// at all, of so many laid
+// at all, of so many laid (each laid at its mass as the law's reals hold it)
 const left = (b: Bed, phys: typeof TINDER) => b.groups.reduce((t, g) => t + (g.phys === phys ? g.n * g.mass : 0), 0);
 const lit = (b: Bed, phys: typeof TINDER) => b.groups.some((g) => g.phys === phys && g.lit);
-const burnt = (b: Bed, phys: typeof TINDER, n: number) => left(b, phys) < n * phys.mass * (1 - 1e-9);
+const burnt = (b: Bed, phys: typeof TINDER, n: number) => left(b, phys) < n * group(phys, 1, 0).mass * (1 - 1e-9);
 // all a bed holds, its pieces and its coals, kg
 const mass = (b: Bed) => b.groups.reduce((t, g) => t + g.n * g.mass, 0) + b.coals.reduce((t, c) => t + c.kg, 0);
 // The bed second by second for so long, and the tallest its flame stood.
@@ -195,7 +196,7 @@ describe("setups", () => {
   test("clay set in a fire in a breeze comes to red heat if it's held there through the act, and not if it's taken out in five minutes", () => {
     const T = setIn(burning(10 * MIN), BREEZE, PHYS.clay.d), ta = STILL.temp + 273.15;
     expect(heats(PHYS.clay, PHYS.clay.green!, T, 5 * MIN, ta)).toBeLessThan(RED);
-    expect(heats(PHYS.clay, PHYS.clay.green!, T, DURATION.heat, ta)).toBeGreaterThanOrEqual(RED);
+    expect(heats(PHYS.clay, PHYS.clay.green!, T, ACT_WORK.heat / REF_W, ta)).toBeGreaterThanOrEqual(RED);
   });
 
   test("a hide hung 1.5 m over the usual lay heaped over stays at 50 C or under, and over the same fire open the plume is far hotter", () => {

@@ -301,9 +301,33 @@ Gaps: mosquitoes, spiders, slugs, harvestmen; winter moth's budburst mismatch (R
 
 ## 15. Speeds near people at the 1 s tick (real-time tick plan, Unit 10)
 
-src/sim/fauna.ts. A ground mammal's run is its fastest sprint on record (R1104): red deer 72 km/h, grey wolf 64, red fox 72 (Garland's Vulpes fulva), European rabbit 56. A wolf travels at a trot of 8 to 9 km/h for hours (R1105), a fox at 6 to 13 km/h (R1106), each taken at the middle as its walk. Birds fly at their cruising airspeeds by tracking radar (R1107): grey heron 12.5 m/s, herring gull 12.8, carrion crow 13.5, white-tailed eagle 13.6. A chase ends by these speeds against a person's (gait.ts) and by sight (senses.ts), not by a count of ticks (sim.ts follow).
+src/sim/fauna.ts; what each does with them, src/sim/animals.ts. Every speed is in m/s and taken a tick's share of.
 
-Gaps: how long each sprints and how far it flees once alarmed (a deer still bolts 20 minutes and then trots at 2 m each 300 s, and flees only from people within 30 m [design]); the deer's and rabbit's walk, the birds' walk and run, fish and butterflies (today's metres a five-minute tick).
+| Quantity | Value | Source |
+|---|---|---|
+| Sprint | red deer 72 km/h, grey wolf 64, red fox 72 (Garland's Vulpes fulva), European rabbit 56 | R1104 [read the data] |
+| Wolf's and fox's travelling trot, taken as their walk | 8 to 9 km/h, 6 to 13 km/h, each at the middle | R1105, R1106 (search excerpts) |
+| Quadrupeds' equivalent speeds, M in kg | least trot 0.593 M^0.249, preferred trot 1.09 M^0.222, trot to gallop 1.54 M^0.216 m/s; 16 species, 30 g mice to horses, on treadmills | R1108 Table 2 [read] |
+| Red deer walking up to by one person | flight initiation distance 57 ± 48 m (4 to 365); then ran 2036 ± 1877 m (63 to 9453) in 43 min on average before stopping for 20 min; 28 GPS-collared deer in Norway | R1109 [read] |
+| Red deer grazing | stags moved 308 m between two-hourly GPS fixes on quiet days, 365 on busy | R1110 [abstract] |
+| European rabbits walked up to | flight initiation distance from a person 31.7 m, from a fox model 30.0, from a live buzzard 20.4 (read off Fig. 4); fled from people at 3.16 m/s on average, 4.40 flagging their tails | R1111 [read] |
+| Rural birds walked up to | grey heron 62.08 ± 45.08 m (Denmark, N 13); carrion crow 20.41 ± 11.09 m (France, N 35); herring gull 50.09 ± 23.39 m (Denmark, N 35) | R1112 Table S1 [read] |
+| Migrants' sustained climb | 1.63 m/s (dunlin) down to 0.32 m/s (mute swan); 15 species, 10 g to 10 kg | R1113 [abstract] |
+| Whooping cranes walking to food | 0.30 to 2.64 m/s, the head held still 79% of the time at the slowest | R1114 [abstract] |
+| Butterflies' vertical speed | the centre of mass's mean vertical speed 16% of the forward airspeed (10 to 30%) | R1115 (search excerpt) |
+
+**Pick.**
+- Runs are the sprints; a wolf's and a fox's walk their trots (as before). Birds fly at their cruising airspeeds by tracking radar (R1107): grey heron 12.5 m/s, herring gull 12.8, carrion crow 13.5, white-tailed eagle 13.6.
+- A red deer trots at its preferred trot at 116 kg, 3.13 m/s; walks as a person does at the same Froude number (people-constants R1002): Tobler's 1.40 m/s on the level (R1000) for a grown body's leg, its hip at 0.530 of 1.6964 m (R1062), times the square root of the deer's leg, its 1.07 to 1.37 m at the shoulder (body-constants R304) at the middle, over that: 1.63 m/s [derived]. Grazing undisturbed, it is on the move the share of its seconds that walk makes Sibbald et al.'s 308 m in two hours, one in 38 [derived]; on the move, toward the nearest of the herd if more than 25 m off it [design], about its ground if not (was a step of 1.5 m each 300 s with chances of 0.3, 0.15 and 0.35 over 300 s).
+- A deer flees a person within 57 m (was 30 m) and a wolf within 60 m [gap: no deer's flight initiation distance from wolves]; it bolts at its sprint while either is within it, then trots on away from the nearer, or straight on with none in sight, for as long as its trot takes to cover the mean 2036 m escape, 650 s [derived], and then grazes again (was a 20-minute bolt and then a trot of 2 m each 300 s, a deer winded past it run down).
+- A rabbit hops about as it grazes at the least speed a 1.6 kg quadruped trots, 0.67 m/s [analogue: a rabbit hops], its hops' chance 0.12 over 300 s as before [design]; it bolts at its sprint from a person within 31.7 m (was 15), a fox or a wolf within 30.0 (was 30 and 40; a wolf as a fox [analogue]) and a stooping eagle within 20.4 (was 30; an eagle as a buzzard [analogue]), and settles once out of reach (was a 15-minute bolt and then lying flat).
+- A grey heron takes wing from a person within 62.08 m (was 30), a crow from one within 20.41 m (was 15): the rural populations, the island having no towns [derived]. A heron wades at a foraging crane's slowest walk, 0.30 m/s [analogue], and walks back to the water at twice that [design: as before].
+- Each bird climbs and sinks at Hedenström and Alerstam's sustained climb by the log of its mass between the dunlin's and the swan's [derived; UNVERIFIED: the dunlin taken at 50 g, the swan at 10 kg]: heron 0.57 m/s, gull 0.66, crow 0.80, eagle 0.41 (was 2 to 5 m each 300 s); an eagle stoops at five times its climb [design: the old 15 m against 3]. A butterfly rises and falls at 16% of its airspeed, 0.40 m/s.
+- Gulls, eagles, fish and butterflies had walks and runs nothing used; they are gone. A fish seen stands where its object is (waters.ts) and is not moved here.
+
+A chase ends by these speeds against a person's (gait.ts) and by sight (senses.ts), not by a count of ticks (sim.ts follow). Checks (src/sim/herds.test.ts): a deer 10 m from a runner bolts at its sprint and the chase ends within 10 s; one 77 m off stays until the runner is within 57 m and bolts no more than 5 m inside it; a deer, a rabbit and a heron each stay with a person a metre beyond their flight initiation distance and flee, or take wing, a metre within it. Both pass.
+
+Gaps: how long each sprints (a deer bolts whenever a threat is within its distance, however long the chase); the spread of flight initiation distances among individuals (a deer's 4 to 365 m) and their lengthening in the hunting season and with repeated approaches (R1109); the deer's from wolves and the fox's from people (40 m) and wolves (80 m) [design]; a crow's walk 0.5 m/s and run 1.5 m/s, and a butterfly's flight 2.5 m/s (the metres a five-minute tick, as metres a second) [design]; gulls and eagles flee no one; the take-off at three tenths of the airspeed under 2 m [design].
 
 ## References
 
@@ -457,3 +481,11 @@ Gaps: how long each sprints and how far it flees once alarmed (a deer still bolt
 - R1105 Mech L.D., Boitani L. (2003), Wolves: Behavior, Ecology, and Conservation, p. 32 (a trot of 8 to 9 km/h kept up for hours), as cited by Wikipedia, Hunting behavior of gray wolves. https://en.wikipedia.org/wiki/Hunting_behavior_of_gray_wolves (search excerpt)
 - R1106 Wikipedia, Red fox (trots at 6 to 13 km/h, runs at most 50 km/h). https://en.wikipedia.org/wiki/Red_fox (search excerpt)
 - R1107 Alerstam T., Rosén M., Bäckman J., Ericson P.G.P., Hellgren O. (2007), Flight speeds among bird species: allometric and phylogenetic effects, PLoS Biol 5(8):e197, Protocol S1. https://journals.plos.org/plosbiology/article?id=10.1371/journal.pbio.0050197 ([read])
+- R1108 Heglund N.C., Taylor C.R. (1988), Speed, stride frequency and energy cost per stride: how do they change with body size and gait?, J Exp Biol 138:301-318, Table 2. https://pubmed.ncbi.nlm.nih.gov/3193059 ([read] the PDF by OCR)
+- R1109 Meisingset E.L., Gusevik J., Skjørestad A., Brekkum Ø., Mysterud A., Rosell F. (2022), Impacts of human disturbance on flight response and habitat use of red deer, Ecosphere 13(11):e4281. https://doi.org/10.1002/ecs2.4281 ([read])
+- R1110 Sibbald A.M., Hooper R.J., McLeod J.E., Gordon I.J. (2011), Responses of red deer (Cervus elaphus) to regular disturbance by hill walkers, Eur J Wildl Res 57:817-825. https://doi.org/10.1007/s10344-011-0493-2 ([abstract])
+- R1111 Huang Y., Sparke R.E., Caro T. (2025), The adaptive significance of tail-flagging: a test in European rabbits (Oryctolagus cuniculus), Ecology and Evolution 15(6):e71632. https://pmc.ncbi.nlm.nih.gov/articles/PMC12181754 ([read]; FIDs read off Fig. 4)
+- R1112 Díaz M., Møller A.P., Flensted-Jensen E. et al. (2013), The geography of fear: a latitudinal gradient in anti-predator escape distances of birds across Europe, PLoS ONE 8(5):e64634, Table S1. https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0064634 ([read] the table)
+- R1113 Hedenström A., Alerstam T. (1992), Climbing performance of migrating birds as a basis for estimating limits for fuel-carrying capacity and muscle work, J Exp Biol 164:19-38. https://doi.org/10.1242/jeb.164.1.19 ([abstract])
+- R1114 Kinloch M.R., Cronin T.W., Olsen G.H. (2005), Head stabilization in whooping cranes, University of Nebraska, Lincoln (DigitalCommons). ([abstract] via OpenAlex)
+- R1115 Dudley R. (1991), Biomechanics of flight in neotropical butterflies: aerodynamics and mechanical power requirements, J Exp Biol 159:335-357. (search excerpt)

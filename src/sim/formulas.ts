@@ -7,7 +7,7 @@
 import { MADE_SIZE, type Act, type Animal, type Stack, type Thing, type World } from "./world";
 import { THING_MATERIAL, depth, p } from "./materials";
 import {
-  DIG_S, DURATION, EMBER_GIVE_UP, HAND, PIT_SOIL, SEED_SOIL, STILL, STRUCK, airy, arrowy, breaking, breaksOf, cutting, digPower, eating, emberCatches, emberTime, forging as drawing, heating,
+  EMBER_GIVE_UP, HAND, MARK_S, PIT_SOIL, RECKONED_S, SEED_SOIL, STILL, STRUCK, airy, arrowy, breaking, breaksOf, cutting, digShare, eating, emberCatches, emberTime, forging as drawing, heating, pitWork,
   RED, TYPICAL, heldStrike, holdOf, joining, laidOf, launchOf, leatherOf, placing, rubbedOf, rubbing, shaping, shelterOf, sparkCatches, spotNear, stemOf, stave, strikeDamage,
   throwsSparks, usual, wearing, wetting, yieldOf, type Decision, type Fields, type Fire,
 } from "./physics";
@@ -17,15 +17,16 @@ import { advance, feed, kindle, lay, lighting, radius, setIn, type Air, type Bed
 import { mouthOf } from "./shelter";
 import { BURNS, PHYS, physOf } from "./fuel";
 import { BLOWS, CADENCE, DAY_WORK, GROWN, SPARKS_TO_CATCH, blowEnergy, flakeEnergy, isBlade, splitEnergy } from "./mechanics";
-import { TICK_S, ticksOf } from "./ticks";
+import { TICK_S } from "./ticks";
+import { ACT_WORK, OTHER_WORK, REF_W } from "./work";
 import { rulingKey } from "./sim";
 import { tinder } from "./wetness";
 import { bedAt, nicheOf, seedlingFate, treeOf, type Ahead } from "./seedling";
 
 // What a way comes to: whether it works, the kinds it gives, what it builds or does, where it says it was done (clay
-// fired at a hearth) and, for what's done to the ground, the spot it went into, and the ticks it takes a hand practised
-// at nothing, in full light.
-export type Prediction = { ok: boolean; gives: string[]; builds?: string; effect?: string; at: string | null; ticks: number; spot?: readonly [number, number] };
+// fired at a hearth) and, for what's done to the ground, the spot it went into, and the seconds it takes a rested grown
+// body practised at nothing, in full light: its work over their power (work.ts REF_W), or its strokes at their pace.
+export type Prediction = { ok: boolean; gives: string[]; builds?: string; effect?: string; at: string | null; secs: number; spot?: readonly [number, number] };
 // Where and when it's done, for what turns on more than the materials: how wet the tinder they'd light a fire with is
 // (wetness.ts tinderOf; null for none), the wind at head height, the spot and, for what's done to the ground, the weather
 // of the hours ahead there (seedling.ts ahead), and the fish of the water there a gear could meet (waters.ts meeting). For what's done with
@@ -65,19 +66,19 @@ export function predictMaterial(w: World, f: Fields, fish: Meeting = { fish: [],
   if (unknown) return { why: `no ${unknown} has been made` };
   const at = f.at ?? null;
   if (at && !PLACES[at]) return { why: `there's no setting it up at a ${at}` };
-  // the act's seconds (physics.ts DURATION; any other act 1200 s, as sim.ts doAct) in ticks
-  const held = true, items = f.inputs, ticks = ticksOf(DURATION[f.verb] ?? 1200);
+  // the act's work (work.ts ACT_WORK; any other act's OTHER_WORK, as sim.ts doAct) over the reference power
+  const held = true, items = f.inputs, secs = (ACT_WORK[f.verb] ?? OTHER_WORK) / REF_W;
   // a fan they hold blows air into the fire while they heat things in it
   const fan = f.tool && airy(w.kinds[f.tool]) ? f.tool : undefined;
   const fire = here ? here.fire : staged(at), air = here?.air, stacks = here?.stacks;
-  const predicted = (d: Decision): Prediction => ({ ok: d.ok, gives: d.fields.gives, builds: d.builds, effect: d.effect, at: d.fields.at ?? null, ticks });
+  const predicted = (d: Decision): Prediction => ({ ok: d.ok, gives: d.fields.gives, builds: d.builds, effect: d.effect, at: d.fields.at ?? null, secs });
   switch (f.verb) {
     case "join": case "heat": {
       const d = f.verb === "join" ? joining(w, items, { held }) : heating(w, items, { held, fire, fan, air, stacks });
       if (d !== "ask") return predicted(d);
       // what doAct makes of it (sim.ts): anything tied twice over already is no use, unasked; anything else, what a
       // ruling settles, kept in w.rulings under this key
-      if (items.some((k) => depth(w.kinds, w.kinds[k]) >= 2)) return { ok: false, gives: [], at, ticks };
+      if (items.some((k) => depth(w.kinds, w.kinds[k]) >= 2)) return { ok: false, gives: [], at, secs };
       return { ask: rulingKey({ verb: f.verb, items, tool: f.tool ?? null, shape: f.shape as Act["shape"], at, ...(f.target ? { target: { kind: f.target } } : {}) }) };
     }
     // the fish of that water a gear could meet, each taken at the middle of its chance (hunt.ts caught)
@@ -95,7 +96,9 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
   const unknown = [...f.inputs, f.tool].find((k) => k && !w.kinds[k]);
   if (unknown) return { why: `no ${unknown} has been made` };
   const at = f.at ?? null, tool = f.tool ? w.kinds[f.tool] : HAND;
-  const out = (ok: boolean, ticks: number, more: Partial<Prediction> = {}): Prediction => ({ ok, gives: [], at, ticks, ...more });
+  // the seconds the strokes of an act that goes stroke by stroke take: so many ticks of them
+  const out = (ok: boolean, secs: number, more: Partial<Prediction> = {}): Prediction => ({ ok, gives: [], at, secs, ...more });
+  const ticks = (n: number) => n * TICK_S;
   switch (f.verb) {
     case "strike": {
       if (!f.target) return { why: "nothing to strike" };
@@ -106,10 +109,10 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
         const t = { kind: f.target as Thing["kind"], size: TYPICAL[f.target], px: s.spot.px, py: s.spot.py };
         if (f.target === "boulder") {
           const b = breaking(t, hold, GROWN);
-          return b.per <= DAY_WORK ? out(true, Math.ceil(b.per / BLOWS), { gives: Object.keys(breaksOf("boulder")) }) : out(false, 1);
+          return b.per <= DAY_WORK ? out(true, ticks(Math.ceil(b.per / BLOWS)), { gives: Object.keys(breaksOf("boulder")) }) : out(false, TICK_S);
         }
         const c = cutting(stemOf(w, t)!, hold, GROWN);
-        return c.blows <= DAY_WORK ? out(true, Math.ceil(c.blows / BLOWS), { gives: Object.keys(yieldOf(t)).filter((k) => yieldOf(t)[k] > 0) }) : out(false, 1);
+        return c.blows <= DAY_WORK ? out(true, ticks(Math.ceil(c.blows / BLOWS)), { gives: Object.keys(yieldOf(t)).filter((k) => yieldOf(t)[k] > 0) }) : out(false, TICK_S);
       }
       // an animal (hunt.ts): a blow on its chest at a full fat reserve, of the energy a grown body's swing gives it,
       // through the tool's point or its blunt end, at the middle of a blunt blow's chance; and reeds, by the old
@@ -117,12 +120,14 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
       if (herded(f.target as Animal["species"])) {
         const t = hold.soft ? { d: 0 } : tipOf(w.kinds, tool), E = blowEnergy(hold.swung, GROWN);
         const r = woundOf(E, { tip: t.tip, tipD: t.d, point: !!t.tip, d: t.tip ? t.d : 2 * hold.edge.r }, animalBody(SPEC[f.target as Herded].kg), true, 0.5);
-        return r.wound === "kill" ? out(true, 1, { gives: Object.keys(breaksOf(f.target)) }) : out(false, 1);
+        return r.wound === "kill" ? out(true, TICK_S, { gives: Object.keys(breaksOf(f.target)) }) : out(false, TICK_S);
       }
+      // what goes by the old reckoning (reeds): its hit points at so much a strike for each RECKONED_S of work at the
+      // reference power (physics.ts strikeTick), or given up after barely a mark
       const mat = THING_MATERIAL[f.target];
       if (mat?.hp) {
         const dmg = strikeDamage(tool, mat.toughness ?? 0);
-        return dmg > 0.01 ? out(true, Math.ceil(mat.hp / dmg), { gives: Object.keys(mat.breaks) }) : out(false, 5);
+        return dmg > 0.01 ? out(true, (mat.hp / dmg) * RECKONED_S, { gives: Object.keys(mat.breaks) }) : out(false, MARK_S);
       }
       const tk = w.kinds[f.target];
       if (!tk) return { why: `no ${f.target} has been made` };
@@ -131,63 +136,64 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
       const over = rest.find((k) => tinder(w.kinds[k])) ?? rest[0];
       const how = heldStrike(w, tk, !!over);
       if (how === "sparks") {
-        if (!throwsSparks(w, tool, tk)) return out(false, 1);
+        if (!throwsSparks(w, tool, tk)) return out(false, TICK_S);
         // a spark caught in the lay's tinder, and the lay followed where the fire would stand (combustion.ts lighting)
-        const ticks = Math.ceil(SPARKS_TO_CATCH / BLOWS);
-        if (!tinder(w.kinds[over]) || !sparkCatches(s.tinder ?? 0, s.wind)) return out(false, ticks);
-        return lighting(laidOf(w, s.pieces), s.air).lasts ? out(true, ticks, { builds: "fire" }) : out(false, ticks);
+        const secs = ticks(Math.ceil(SPARKS_TO_CATCH / BLOWS));
+        if (!tinder(w.kinds[over]) || !sparkCatches(s.tinder ?? 0, s.wind)) return out(false, secs);
+        return lighting(laidOf(w, s.pieces), s.air).lasts ? out(true, secs, { builds: "fire" }) : out(false, secs);
       }
-      if (hold.soft || how === "nothing") return out(false, 1);
+      if (hold.soft || how === "nothing") return out(false, TICK_S);
       const x = physOf(w.kinds, tk)!, E = blowEnergy(hold.swung);
       if (how === "forge") {
         // red hot at a fire that holds the metal so where it sits, or cold; drawn out a try's blows' worth, over the
         // ticks those blows take
         const cold = (tk.hotAbove && tk.parts?.[0] && w.kinds[tk.parts[0]]) || tk, hot = !!tk.hotAbove && !!s.fire?.bed && setIn(s.fire.bed, s.air, x.d) >= tk.hotAbove;
         const fg = drawing(x, E, hot), e0 = x.edge ? Math.log(x.d / (2 * x.edge.r)) : 0;
-        if (fg.strain <= e0 + 1e-9) return out(false, 1, { at: hot ? "forge" : null });
-        return out(true, Math.ceil(fg.blows / BLOWS), { gives: [`forge:${cold.id.replace(/^forge:([^:]+):\d+$/, "$1")}:${Math.round(fg.edge * 1e6)}`], at: hot ? "forge" : null });
+        if (fg.strain <= e0 + 1e-9) return out(false, TICK_S, { at: hot ? "forge" : null });
+        return out(true, ticks(Math.ceil(fg.blows / BLOWS)), { gives: [`forge:${cold.id.replace(/^forge:([^:]+):\d+$/, "$1")}:${Math.round(fg.edge * 1e6)}`], at: hot ? "forge" : null });
       }
       if (how === "knap") {
         const fk = Object.keys(tk.breaks!)[0], flake = physOf(w.kinds, w.kinds[fk])!;
-        return x.mass >= flake.mass && E >= flakeEnergy(flake) ? out(true, 1, { gives: [fk] }) : out(false, 1);
+        return x.mass >= flake.mass && E >= flakeEnergy(flake) ? out(true, TICK_S, { gives: [fk] }) : out(false, TICK_S);
       }
       // splitting: only a blade drives it
-      if (!isBlade(hold.edge)) return out(false, 1);
+      if (!isBlade(hold.edge)) return out(false, TICK_S);
       const n = Object.values(tk.breaks!).reduce((t, v) => t + v, 0), blows = splitEnergy(x.d, x.mass / ((x.rho * Math.PI * x.d * x.d) / 4), n, hold.edge.angle) / E;
-      return blows <= DAY_WORK ? out(true, Math.ceil(blows / BLOWS), { gives: Object.keys(tk.breaks!) }) : out(false, 1);
+      return blows <= DAY_WORK ? out(true, ticks(Math.ceil(blows / BLOWS)), { gives: Object.keys(tk.breaks!) }) : out(false, TICK_S);
     }
     case "rub": {
       // the first two rubbed together, the tinder after them, if they held any
       const A = w.kinds[f.inputs[0]], B = w.kinds[f.inputs[1] ?? f.inputs[0]];
       const r = rubbing(A, B, w.kinds);
-      if (r.does === "leather") return out(true, ticksOf(r.secs), { gives: [leatherOf(w.kinds, r.hide).id] });
+      if (r.does === "leather") return out(true, r.work / REF_W, { gives: [leatherOf(w.kinds, r.hide).id] });
       if (r.does === "friction") {
         // rubbed until the dust lights (or given up as past a day's work); the ember goes into the lay's tinder, or what
         // lies about their feet, a handful of fine blades; then the lay is followed where the fire would stand, as a
         // spark's is
         const spindle = s.rubbed?.[[A, B].indexOf(r.spindle)], secs = emberTime(w, spindle, r.spindle, r.bow, s.air.temp);
-        const ticks = secs > EMBER_GIVE_UP ? 1 : Math.max(1, Math.ceil(secs / TICK_S));
-        if (secs > EMBER_GIVE_UP || s.tinder === null || !emberCatches(s.tinder)) return out(false, ticks, { effect: "heat" });
+        const took = secs > EMBER_GIVE_UP ? TICK_S : ticks(Math.max(1, Math.ceil(secs / TICK_S)));
+        if (secs > EMBER_GIVE_UP || s.tinder === null || !emberCatches(s.tinder)) return out(false, took, { effect: "heat" });
         const own = s.pieces.some((x) => tinder(w.kinds[x.k])), laid = laidOf(w, s.pieces);
-        return lighting(own ? laid : [{ phys: PHYS.fiber, n: 1, m: s.tinder }, ...laid], s.air).lasts ? out(true, ticks, { builds: "fire" }) : out(false, ticks);
+        return lighting(own ? laid : [{ phys: PHYS.fiber, n: 1, m: s.tinder }, ...laid], s.air).lasts ? out(true, took, { builds: "fire" }) : out(false, took);
       }
-      if (r.does === "nothing") return out(false, ticksOf(r.secs));
-      return out(true, ticksOf(r.secs), { gives: [rubbedOf(r)] });
+      if (r.does === "nothing") return out(false, r.work / REF_W);
+      return out(true, r.work / REF_W, { gives: [rubbedOf(r)] });
     }
     case "dig": {
+      // a pit's work, at the share of the reference power their tool puts into the ground
       const spot = spotNear(w, s.spot, PIT_SOIL, true);
-      return spot ? out(true, Math.ceil(ticksOf(DIG_S) / digPower(tool)), { builds: "pit", spot }) : out(false, 1);
+      return spot ? out(true, pitWork() / (REF_W * digShare(tool)), { builds: "pit", spot }) : out(false, TICK_S);
     }
     case "plant": case "pour": {
       // a seed pushed into the ground, or a young plant watered: whatever it comes up as, if it comes up in the hours
       // ahead (seedling.ts)
-      const ticks = ticksOf(DURATION[f.verb]);
-      if (f.verb === "plant" && p(w.kinds[f.inputs[0]], "seed") < 0.4) return out(false, ticks, { effect: "buried" });
+      const secs = ACT_WORK[f.verb] / REF_W;
+      if (f.verb === "plant" && p(w.kinds[f.inputs[0]], "seed") < 0.4) return out(false, secs, { effect: "buried" });
       const spot = f.verb === "plant" ? spotNear(w, s.spot, SEED_SOIL, false) : ([s.spot.px, s.spot.py] as const);
-      if (!spot) return out(false, ticks);
+      if (!spot) return out(false, secs);
       const seed = f.verb === "plant" ? { item: f.inputs[0] } : { item: "berry" }, niche = nicheOf(seed), tree = treeOf(seed);
       const up = seedlingFate(bedAt(w, spot[0], spot[1], niche), s.ahead, f.verb === "pour" ? 0.5 : 0)?.up === true;
-      return out(up, ticks, { spot, ...(up ? { builds: tree ? "tree" : niche === "grass" ? "grass" : "bush" } : {}) });
+      return out(up, secs, { spot, ...(up ? { builds: tree ? "tree" : niche === "grass" ? "grass" : "bush" } : {}) });
     }
     case "throw": {
       // thrown, or shot from a bow (hunt.ts), at an animal of the kind standing broadside with a full fat reserve, as close
@@ -200,7 +206,7 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
       const an = { species: f.target, hunger: 100, heading: 0, state: "graze" } as Animal, chest = animalBody(SPEC[f.target as Herded].kg).chest;
       const d = Math.min(STALK, throwRange(l.ms, Math.sqrt((2 * l.KE) / l.ms.m), releaseAt(l.who), chest));
       const pk = d > 0 ? killChance(l.ms, l.KE, l.who, an, d) : 0, n = pk >= 1 ? 1 : pk > 0 ? Math.ceil(Math.log(0.5) / Math.log(1 - pk)) : Infinity;
-      return n * SHOT_S <= DAY_WORK / CADENCE ? out(true, Math.ceil((n * SHOT_S) / TICK_S), { gives: Object.keys(breaksOf(f.target)) }) : out(false, 1);
+      return n * SHOT_S <= DAY_WORK / CADENCE ? out(true, ticks(Math.ceil((n * SHOT_S) / TICK_S)), { gives: Object.keys(breaksOf(f.target)) }) : out(false, TICK_S);
     }
   }
   return predictMaterial(w, f, s.fish, { fire: s.fire, air: s.air, stacks: s.pieces });

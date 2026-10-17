@@ -1,0 +1,1284 @@
+{
+ "about": "ZoomFrames, 2026-10-17, seed 1, AMD Radeon Pro 5500M (4 GB VRAM), the harness's headless Chrome at 1280x800, each build served from its own dir and port, the default load (warm of one sim day, speed 600), ?bench=zoom,orbit,turn,pan on one load, one 12 s run per bench after the warm. base: fa2974a plus the peers' uncommitted sim edits in the tree at 03:31 (src/sim only). new: the tree at 04:40 with this change (and the peers' sim edits since). Not a quiet machine: peers' runs between and maybe during the runs. Frames over 20 ms are counted (16.7 ms counts vsync jitter, Page1s): page dt from the bench's six slowest gaps, worker GPU from its twelve slowest frames.",
+ "changes": {
+  "smallsSlices": "src/gpu/tiers/lumped.ts steps(t): a lumped kind's step given in slices, the split dispatched SPLIT_BINS (2^14) bins at a time (wgsl/lumped.ts lumpSplit over bins lo to hi), yielding after each; step(t) runs them all. src/gpu/smalls.ts slices(t): the day as those slices (day(t) runs them all); its law returns them. src/gpu/store.ts: a Law's run may return an iterable of slices; beginSteps flushes after each and beginPaced paces them (pace: submit, then wait for the GPU to finish what went before the last pace, so one slice runs while the next is queued and the frames go between). src/gpu/animals.ts: the spin-up paces each slice of the smalls' days before anyone wakes.",
+  "firstLevelLists": "webgpu.js frontAsk(views, ahead): the levels and bearings the page says it shows next are built first; frontsReady() lists the island levels and bearings whose front lists are all built, posted with frameDone when it changes (worker.js). live.js prefetch(views) (was a no-op) and listsReady(view). play/main.js: a zoom's goal (camera.goalView) is prefetched (live.goal, unused, removed); each bench waits until its first view's lists are built (the zoom's first frame is the whole island at zoom 0), at most LISTS_MS 20 s, and records listsWaitMs.",
+  "isleGpu": "webgpu.js drawView: a far or front list with nothing in it is not walked (five empty far sources and the empty static front list each cost about 0.6 ms at the island levels, a workgroup a cell); an empty front list is done as soon as its count is read. setSources: a source builds front lists whenever its keep pass's storage buffers fit the device's limit, so the logs (reader and driver ring, ten of ten) walk front lists instead of their far list."
+ },
+ "identity": "Store hash of seed 1 (src/gpu/store.ts hash, random brain, a worktree at fa2974a, scratch script): after the first tick 68aece9e4ab7ffb7 and after the first midnight's landing (t 86461) c66f2aff2d719599, equal before and after the change (the spin-up's ten smalls days and the midnight law both run sliced).",
+ "smallsDay": "bun, seed 1, GPU timestamps per dispatch, after the first tick: the smalls' day is 2.8 to 3.0 s of GPU time, of it the three lumped splits (tiller 0.26 to 0.35 s, litter 1.1 to 1.2 s, fauna 1.3 s; per-bin compute, the same on a second day); the eaten kernel 2 to 16 ms. Sliced at 2^16 bins the slices took at most 84 ms, at 2^15 44 ms; the sum stays 2.8 to 2.9 s.",
+ "isleLevels": {
+  "note": "the warm=0 page, seed 1, bearing 0, a still view, median worker GPU ms and cull ms over about 90 frames; 'only' is the cull with every other source skipped; before: the base renderer (gpu and cull from the base build; the per-source split from a build with only the smalls and lists-first changes, the same renderer passes)",
+  "before": {
+   "0": {
+    "gpu": 11.08,
+    "cull": 8.39,
+    "only": {
+     "plant": 1.77,
+     "static": 0.59,
+     "log": 3.15,
+     "logup": 0.59,
+     "stickup": 0.59,
+     "pebble moved": 0.59,
+     "stone moved": 0.59,
+     "boulder moved": 0.59
+    }
+   },
+   "1": {
+    "gpu": 11.4,
+    "cull": 8.19
+   },
+   "2": {
+    "gpu": 11.01,
+    "cull": 4.98
+   }
+  },
+  "after": {
+   "0": {
+    "gpu": 3.8,
+    "cull": 2.03,
+    "only": {
+     "plant": 1.31,
+     "static": 0,
+     "log": 0.79,
+     "logup": 0
+    }
+   },
+   "1": {
+    "gpu": 4.98,
+    "cull": 2.23
+   },
+   "2": {
+    "gpu": 6.29,
+    "cull": 2.1
+   }
+  },
+  "sameImage": "G-buffer with front lists against the far walk (debug check gsnap/gdiff, clock held): 3+4 pixels of 260,176 differ at the island level, 5+2 at isle200, 0 at isle100 (the same view drawn twice differs by up to 31, moving animals)."
+ },
+ "afterWarm": {
+  "base": {
+   "zoom": {
+    "warming": false,
+    "fps": 59.8,
+    "frames": 714,
+    "gpuMs": {
+     "mean": 7.06,
+     "p95": 13.04,
+     "max": 23.2,
+     "over16": 6
+    },
+    "gpuOver20": 2,
+    "dtMs": {
+     "mean": 16.74,
+     "p95": 16.8,
+     "max": 33.4,
+     "over16": 152
+    },
+    "dtOver20": 3,
+    "workerGapMs": {
+     "mean": 16.77,
+     "p95": 24.9,
+     "max": 93.5,
+     "over16": 338
+    },
+    "longTasks": [],
+    "slowDt": [
+     {
+      "dt": 33,
+      "pageMs": 43.9,
+      "zoom": 6.44
+     },
+     {
+      "dt": 33,
+      "pageMs": 4.9,
+      "zoom": 2.73
+     },
+     {
+      "dt": 33,
+      "pageMs": 2.9,
+      "zoom": 6.49
+     },
+     {
+      "dt": 17,
+      "pageMs": 7.1,
+      "zoom": 1.68
+     }
+    ],
+    "slowGpu": [
+     {
+      "gpu": 23.2,
+      "zoom": 0.7,
+      "slots": 2,
+      "passes": {
+       "map": 0.59,
+       "cull": 16.974,
+       "world": 1.114,
+       "specks": 0.263,
+       "mask": 0,
+       "over": 0,
+       "shade": 2.556,
+       "present": 0.262
+      }
+     },
+     {
+      "gpu": 20.32,
+      "zoom": 0.93,
+      "slots": 2,
+      "passes": {
+       "sun": 0.721,
+       "map": 0.459,
+       "cull": 14.614,
+       "world": 0.852,
+       "specks": 0.262,
+       "mask": 0.066,
+       "over": 0,
+       "shade": 1.9,
+       "present": 0.262
+      }
+     },
+     {
+      "gpu": 19.79,
+      "zoom": 1.96,
+      "slots": 2,
+      "passes": {
+       "sun": 0.655,
+       "map": 0.59,
+       "cull": 12.583,
+       "world": 2.49,
+       "specks": 0.262,
+       "mask": 0.066,
+       "over": 0.066,
+       "shade": 1.704,
+       "present": 0.262
+      }
+     }
+    ]
+   },
+   "orbit": {
+    "warming": false,
+    "fps": 60,
+    "frames": 721,
+    "gpuMs": {
+     "mean": 6.56,
+     "p95": 7.54,
+     "max": 9.83,
+     "over16": 0
+    },
+    "gpuOver20": 0,
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.8,
+     "max": 16.8,
+     "over16": 280
+    },
+    "dtOver20": 0,
+    "workerGapMs": {
+     "mean": 16.66,
+     "p95": 19.6,
+     "max": 36.2,
+     "over16": 348
+    },
+    "longTasks": [],
+    "slowDt": [
+     {
+      "dt": 17,
+      "pageMs": 1,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.6,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 1.3,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 1.3,
+      "zoom": 8.27
+     }
+    ],
+    "slowGpu": [
+     {
+      "gpu": 9.83,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.655,
+       "front": 1.77,
+       "map": 0.131,
+       "cull": 2.425,
+       "world": 1.114,
+       "specks": 0.459,
+       "mask": 0.066,
+       "over": 0,
+       "shade": 1.638,
+       "present": 0.131
+      }
+     },
+     {
+      "gpu": 9.5,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.655,
+       "front": 1.18,
+       "map": 0.131,
+       "cull": 2.294,
+       "world": 0.786,
+       "specks": 0.131,
+       "mask": 0.197,
+       "over": 0,
+       "shade": 1.901,
+       "present": 0.459
+      }
+     },
+     {
+      "gpu": 9.04,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.655,
+       "front": 0.394,
+       "map": 0.131,
+       "cull": 2.359,
+       "world": 0.918,
+       "specks": 0.131,
+       "mask": 0.131,
+       "over": 0,
+       "shade": 1.966,
+       "present": 0.459
+      }
+     }
+    ]
+   },
+   "turn": {
+    "warming": false,
+    "fps": 60,
+    "frames": 721,
+    "gpuMs": {
+     "mean": 5.95,
+     "p95": 6.82,
+     "max": 8.45,
+     "over16": 0
+    },
+    "gpuOver20": 0,
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 275
+    },
+    "dtOver20": 0,
+    "workerGapMs": {
+     "mean": 16.67,
+     "p95": 19.6,
+     "max": 32.2,
+     "over16": 346
+    },
+    "longTasks": [],
+    "slowDt": [
+     {
+      "dt": 17,
+      "pageMs": 0.5,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 1.2,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.5,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.6,
+      "zoom": 8.27
+     }
+    ],
+    "slowGpu": [
+     {
+      "gpu": 8.45,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.59,
+       "map": 0.131,
+       "cull": 2.359,
+       "world": 0.655,
+       "specks": 0.131,
+       "mask": 0.197,
+       "over": 0,
+       "shade": 1.901,
+       "present": 0.524
+      }
+     },
+     {
+      "gpu": 8.45,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.721,
+       "map": 0.131,
+       "cull": 2.228,
+       "world": 0.786,
+       "specks": 0.131,
+       "mask": 0.197,
+       "over": 0,
+       "shade": 1.901,
+       "present": 0.59
+      }
+     },
+     {
+      "gpu": 8.32,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.59,
+       "map": 0.131,
+       "cull": 2.228,
+       "world": 0.786,
+       "specks": 0.131,
+       "mask": 0.197,
+       "over": 0,
+       "shade": 1.966,
+       "present": 0.459
+      }
+     }
+    ]
+   },
+   "pan": {
+    "warming": false,
+    "fps": 60,
+    "frames": 721,
+    "gpuMs": {
+     "mean": 7.69,
+     "p95": 11.99,
+     "max": 12.85,
+     "over16": 0
+    },
+    "gpuOver20": 0,
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 276
+    },
+    "dtOver20": 0,
+    "workerGapMs": {
+     "mean": 16.65,
+     "p95": 21.2,
+     "max": 34,
+     "over16": 347
+    },
+    "longTasks": [],
+    "slowDt": [
+     {
+      "dt": 17,
+      "pageMs": 5.3,
+      "zoom": 0
+     },
+     {
+      "dt": 17,
+      "pageMs": 3.5,
+      "zoom": 0
+     },
+     {
+      "dt": 17,
+      "pageMs": 3.7,
+      "zoom": 0
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.8,
+      "zoom": 8.27
+     }
+    ],
+    "slowGpu": [
+     {
+      "gpu": 12.85,
+      "zoom": 0,
+      "slots": 1,
+      "passes": {
+       "sun": 0.59,
+       "front": 0.197,
+       "map": 0.197,
+       "cull": 8.782,
+       "world": 0.524,
+       "specks": 0.066,
+       "mask": 0.066,
+       "over": 0,
+       "shade": 1.573,
+       "present": 0.131
+      }
+     },
+     {
+      "gpu": 12.85,
+      "zoom": 0,
+      "slots": 1,
+      "passes": {
+       "sun": 0.459,
+       "front": 0.263,
+       "map": 0.197,
+       "cull": 8.847,
+       "world": 0.524,
+       "specks": 0.066,
+       "mask": 0.066,
+       "over": 0,
+       "shade": 1.573,
+       "present": 0.131
+      }
+     },
+     {
+      "gpu": 12.85,
+      "zoom": 0,
+      "slots": 1,
+      "passes": {
+       "sun": 0.59,
+       "map": 0.197,
+       "cull": 8.847,
+       "world": 0.524,
+       "specks": 0.066,
+       "mask": 0.066,
+       "over": 0,
+       "shade": 1.573,
+       "present": 0.197
+      }
+     }
+    ]
+   }
+  },
+  "new": {
+   "zoom": {
+    "listsWaitMs": 0,
+    "warming": false,
+    "fps": 58.8,
+    "frames": 701,
+    "gpuMs": {
+     "mean": 6.34,
+     "p95": 11.21,
+     "max": 30.15,
+     "over16": 5
+    },
+    "gpuOver20": 1,
+    "dtMs": {
+     "mean": 17.02,
+     "p95": 16.8,
+     "max": 133.3,
+     "over16": 277
+    },
+    "dtOver20": 6,
+    "workerGapMs": {
+     "mean": 17.12,
+     "p95": 26,
+     "max": 247.6,
+     "over16": 311
+    },
+    "longTasks": [
+     53
+    ],
+    "slowDt": [
+     {
+      "dt": 133,
+      "pageMs": 6.5,
+      "zoom": 2.73
+     },
+     {
+      "dt": 50,
+      "pageMs": 53.6,
+      "zoom": 6.44
+     },
+     {
+      "dt": 33,
+      "pageMs": 2.7,
+      "zoom": 3.07
+     },
+     {
+      "dt": 33,
+      "pageMs": 2.2,
+      "zoom": 3.25
+     }
+    ],
+    "slowGpu": [
+     {
+      "gpu": 30.15,
+      "zoom": 0.7,
+      "slots": 2,
+      "passes": {
+       "map": 0.59,
+       "cull": 16.712,
+       "world": 1.769,
+       "specks": 0.263,
+       "mask": 0,
+       "over": 0,
+       "shade": 3.081,
+       "present": 0.328
+      }
+     },
+     {
+      "gpu": 19.79,
+      "zoom": 2.91,
+      "slots": 2,
+      "passes": {
+       "sun": 3.277,
+       "fill": 0.262,
+       "map": 0.524,
+       "cull": 11.206,
+       "world": 1.508,
+       "specks": 0.132,
+       "mask": 0.524,
+       "over": 0,
+       "shade": 1.049,
+       "present": 0.262
+      }
+     },
+     {
+      "gpu": 19.2,
+      "zoom": 0.05,
+      "slots": 1,
+      "passes": {
+       "map": 0.328,
+       "cull": 10.945,
+       "world": 0.459,
+       "specks": 0.262,
+       "mask": 0,
+       "over": 0.066,
+       "shade": 5.505,
+       "present": 0.131
+      }
+     }
+    ]
+   },
+   "orbit": {
+    "listsWaitMs": 2017,
+    "warming": false,
+    "fps": 60,
+    "frames": 721,
+    "gpuMs": {
+     "mean": 6.29,
+     "p95": 7.21,
+     "max": 9.63,
+     "over16": 0
+    },
+    "gpuOver20": 0,
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 284
+    },
+    "dtOver20": 0,
+    "workerGapMs": {
+     "mean": 16.67,
+     "p95": 20.4,
+     "max": 34.9,
+     "over16": 353
+    },
+    "longTasks": [],
+    "slowDt": [
+     {
+      "dt": 17,
+      "pageMs": 1.4,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 1.3,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.9,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.8,
+      "zoom": 8.27
+     }
+    ],
+    "slowGpu": [
+     {
+      "gpu": 9.63,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.786,
+       "map": 0.197,
+       "cull": 2.621,
+       "world": 1.245,
+       "specks": 0.131,
+       "mask": 0.262,
+       "over": 0,
+       "shade": 1.966,
+       "present": 0.524
+      }
+     },
+     {
+      "gpu": 9.5,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.655,
+       "map": 0.197,
+       "cull": 2.621,
+       "world": 1.311,
+       "specks": 0.131,
+       "mask": 0.262,
+       "over": 0,
+       "shade": 1.966,
+       "present": 0.459
+      }
+     },
+     {
+      "gpu": 9.37,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.59,
+       "map": 0.197,
+       "cull": 2.49,
+       "world": 1.311,
+       "specks": 0.131,
+       "mask": 0.197,
+       "over": 0,
+       "shade": 1.966,
+       "present": 0.459
+      }
+     }
+    ]
+   },
+   "turn": {
+    "listsWaitMs": 2017,
+    "warming": false,
+    "fps": 59.9,
+    "frames": 721,
+    "gpuMs": {
+     "mean": 6.44,
+     "p95": 7.73,
+     "max": 10.29,
+     "over16": 0
+    },
+    "gpuOver20": 0,
+    "dtMs": {
+     "mean": 16.69,
+     "p95": 16.8,
+     "max": 33.3,
+     "over16": 280
+    },
+    "dtOver20": 1,
+    "workerGapMs": {
+     "mean": 16.68,
+     "p95": 19,
+     "max": 50,
+     "over16": 302
+    },
+    "longTasks": [],
+    "slowDt": [
+     {
+      "dt": 33,
+      "pageMs": 0.7,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.7,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.7,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.8,
+      "zoom": 8.27
+     }
+    ],
+    "slowGpu": [
+     {
+      "gpu": 10.29,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.655,
+       "front": 1.639,
+       "map": 0.131,
+       "cull": 2.359,
+       "world": 0.721,
+       "specks": 0.131,
+       "mask": 0.197,
+       "over": 0,
+       "shade": 2.032,
+       "present": 0.524
+      }
+     },
+     {
+      "gpu": 10.03,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.655,
+       "front": 1.18,
+       "map": 0.131,
+       "cull": 2.425,
+       "world": 0.852,
+       "specks": 0.131,
+       "mask": 0.197,
+       "over": 0,
+       "shade": 1.966,
+       "present": 0.59
+      }
+     },
+     {
+      "gpu": 9.9,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.59,
+       "front": 1.18,
+       "map": 0.131,
+       "cull": 2.49,
+       "world": 0.852,
+       "specks": 0.131,
+       "mask": 0.197,
+       "over": 0,
+       "shade": 1.966,
+       "present": 0.459
+      }
+     }
+    ]
+   },
+   "pan": {
+    "listsWaitMs": 2017,
+    "warming": false,
+    "fps": 59.5,
+    "frames": 713,
+    "gpuMs": {
+     "mean": 7.13,
+     "p95": 9.37,
+     "max": 14.02,
+     "over16": 0
+    },
+    "gpuOver20": 0,
+    "dtMs": {
+     "mean": 16.81,
+     "p95": 16.7,
+     "max": 100,
+     "over16": 280
+    },
+    "dtOver20": 2,
+    "workerGapMs": {
+     "mean": 16.83,
+     "p95": 20.3,
+     "max": 168.7,
+     "over16": 324
+    },
+    "longTasks": [],
+    "slowDt": [
+     {
+      "dt": 100,
+      "pageMs": 6.7,
+      "zoom": 0
+     },
+     {
+      "dt": 33,
+      "pageMs": 0.8,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 7,
+      "zoom": 0
+     },
+     {
+      "dt": 17,
+      "pageMs": 6.6,
+      "zoom": 0
+     }
+    ],
+    "slowGpu": [
+     {
+      "gpu": 14.02,
+      "zoom": 0,
+      "slots": 1,
+      "passes": {
+       "sun": 0.786,
+       "map": 0.328,
+       "cull": 8.585,
+       "world": 0.393,
+       "specks": 0.066,
+       "mask": 0,
+       "over": 0.066,
+       "shade": 1.114,
+       "present": 0.066
+      }
+     },
+     {
+      "gpu": 12.06,
+      "zoom": 3.83,
+      "slots": 1,
+      "passes": {
+       "sun": 0.655,
+       "front": 0.917,
+       "map": 0.197,
+       "cull": 3.408,
+       "world": 1.245,
+       "specks": 0.066,
+       "mask": 0.983,
+       "over": 0.066,
+       "shade": 2.228,
+       "present": 0.524
+      }
+     },
+     {
+      "gpu": 11.67,
+      "zoom": 0,
+      "slots": 1,
+      "passes": {
+       "sun": 0.59,
+       "map": 0.197,
+       "cull": 5.308,
+       "world": 0.524,
+       "specks": 0.131,
+       "mask": 0,
+       "over": 0,
+       "shade": 1.507,
+       "present": 0.131
+      }
+     }
+    ]
+   }
+  },
+  "newRepeat": {
+   "zoom": {
+    "listsWaitMs": 0,
+    "warming": false,
+    "fps": 59.3,
+    "frames": 708,
+    "gpuMs": {
+     "mean": 6.9,
+     "p95": 11.53,
+     "max": 163.38,
+     "over16": 9
+    },
+    "gpuOver20": 3,
+    "dtMs": {
+     "mean": 16.85,
+     "p95": 16.8,
+     "max": 116.7,
+     "over16": 278
+    },
+    "dtOver20": 3,
+    "workerGapMs": {
+     "mean": 16.91,
+     "p95": 25.5,
+     "max": 184.7,
+     "over16": 330
+    },
+    "longTasks": [],
+    "slowDt": [
+     {
+      "dt": 117,
+      "pageMs": 14.2,
+      "zoom": 0.72
+     },
+     {
+      "dt": 33,
+      "pageMs": 4.9,
+      "zoom": 2.71
+     },
+     {
+      "dt": 33,
+      "pageMs": 4.5,
+      "zoom": 2.81
+     },
+     {
+      "dt": 17,
+      "pageMs": 13.3,
+      "zoom": 0.95
+     }
+    ],
+    "slowGpu": [
+     {
+      "gpu": 163.38,
+      "zoom": 0.9,
+      "slots": 2,
+      "passes": {
+       "map": 0.328,
+       "cull": 6.685,
+       "world": 1.77,
+       "specks": 0.328,
+       "mask": 0,
+       "over": 0,
+       "shade": 1.966,
+       "present": 0.262
+      }
+     },
+     {
+      "gpu": 21.43,
+      "zoom": 1.93,
+      "slots": 2,
+      "passes": {
+       "sun": 0.721,
+       "map": 0.59,
+       "cull": 7.668,
+       "world": 6.554,
+       "specks": 0.328,
+       "mask": 1.507,
+       "over": 0,
+       "shade": 1.9,
+       "present": 0.328
+      }
+     },
+     {
+      "gpu": 20.12,
+      "zoom": 2.91,
+      "slots": 2,
+      "passes": {
+       "sun": 0.918,
+       "fill": 0.262,
+       "map": 0.525,
+       "cull": 4.719,
+       "world": 5.374,
+       "specks": 0.132,
+       "mask": 3.801,
+       "over": 0,
+       "shade": 2.031,
+       "present": 0.524
+      }
+     }
+    ]
+   },
+   "orbit": {
+    "listsWaitMs": 2000,
+    "warming": false,
+    "fps": 60,
+    "frames": 721,
+    "gpuMs": {
+     "mean": 7.07,
+     "p95": 7.8,
+     "max": 10.16,
+     "over16": 0
+    },
+    "gpuOver20": 0,
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 289
+    },
+    "dtOver20": 0,
+    "workerGapMs": {
+     "mean": 16.66,
+     "p95": 19.4,
+     "max": 50.4,
+     "over16": 330
+    },
+    "longTasks": [],
+    "slowDt": [
+     {
+      "dt": 17,
+      "pageMs": 1,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 1.1,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.7,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.5,
+      "zoom": 8.27
+     }
+    ],
+    "slowGpu": [
+     {
+      "gpu": 10.16,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.721,
+       "map": 0.197,
+       "cull": 3.604,
+       "world": 1.18,
+       "specks": 0,
+       "mask": 0.197,
+       "over": 0,
+       "shade": 1.901,
+       "present": 0.459
+      }
+     },
+     {
+      "gpu": 9.96,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.655,
+       "map": 0.197,
+       "cull": 3.604,
+       "world": 1.114,
+       "specks": 0.066,
+       "mask": 0.131,
+       "over": 0,
+       "shade": 1.901,
+       "present": 0.524
+      }
+     },
+     {
+      "gpu": 9.9,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.721,
+       "map": 0.197,
+       "cull": 3.67,
+       "world": 1.18,
+       "specks": 0,
+       "mask": 0.197,
+       "over": 0,
+       "shade": 2.163,
+       "present": 0.131
+      }
+     }
+    ]
+   },
+   "turn": {
+    "listsWaitMs": 2017,
+    "warming": false,
+    "fps": 59.9,
+    "frames": 720,
+    "gpuMs": {
+     "mean": 7.39,
+     "p95": 8.85,
+     "max": 11.6,
+     "over16": 0
+    },
+    "gpuOver20": 0,
+    "dtMs": {
+     "mean": 16.69,
+     "p95": 16.7,
+     "max": 33.4,
+     "over16": 280
+    },
+    "dtOver20": 1,
+    "workerGapMs": {
+     "mean": 16.69,
+     "p95": 19.3,
+     "max": 46.2,
+     "over16": 354
+    },
+    "longTasks": [],
+    "slowDt": [
+     {
+      "dt": 33,
+      "pageMs": 0.4,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.6,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.7,
+      "zoom": 8.27
+     },
+     {
+      "dt": 17,
+      "pageMs": 0.6,
+      "zoom": 8.27
+     }
+    ],
+    "slowGpu": [
+     {
+      "gpu": 11.6,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.524,
+       "front": 1.835,
+       "map": 0.066,
+       "cull": 3.736,
+       "world": 0.852,
+       "specks": 0,
+       "mask": 0.197,
+       "over": 0,
+       "shade": 1.901,
+       "present": 0.459
+      }
+     },
+     {
+      "gpu": 11.14,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.524,
+       "front": 1.769,
+       "map": 0.131,
+       "cull": 3.473,
+       "world": 0.721,
+       "specks": 0,
+       "mask": 0.262,
+       "over": 0,
+       "shade": 1.835,
+       "present": 0.524
+      }
+     },
+     {
+      "gpu": 10.94,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.59,
+       "front": 1.573,
+       "map": 0.066,
+       "cull": 3.408,
+       "world": 0.852,
+       "specks": 0.066,
+       "mask": 0.131,
+       "over": 0,
+       "shade": 1.901,
+       "present": 0.459
+      }
+     }
+    ]
+   },
+   "pan": {
+    "listsWaitMs": 2017,
+    "warming": false,
+    "fps": 60,
+    "frames": 720,
+    "gpuMs": {
+     "mean": 7.57,
+     "p95": 9.11,
+     "max": 12.39,
+     "over16": 0
+    },
+    "gpuOver20": 0,
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.8,
+     "max": 16.8,
+     "over16": 278
+    },
+    "dtOver20": 0,
+    "workerGapMs": {
+     "mean": 16.67,
+     "p95": 19.3,
+     "max": 52.9,
+     "over16": 353
+    },
+    "longTasks": [],
+    "slowDt": [
+     {
+      "dt": 17,
+      "pageMs": 6.9,
+      "zoom": 0
+     },
+     {
+      "dt": 17,
+      "pageMs": 10.2,
+      "zoom": 0
+     },
+     {
+      "dt": 17,
+      "pageMs": 10.1,
+      "zoom": 0
+     },
+     {
+      "dt": 17,
+      "pageMs": 6.6,
+      "zoom": 0
+     }
+    ],
+    "slowGpu": [
+     {
+      "gpu": 12.39,
+      "zoom": 8.27,
+      "slots": 1,
+      "passes": {
+       "sun": 0.524,
+       "fill": 3.408,
+       "map": 0.131,
+       "cull": 4.456,
+       "world": 0.721,
+       "specks": 0.066,
+       "mask": 1.311,
+       "over": 0,
+       "shade": 0.918,
+       "present": 0.131
+      }
+     },
+     {
+      "gpu": 10.42,
+      "zoom": 3.83,
+      "slots": 1,
+      "passes": {
+       "sun": 0.59,
+       "map": 0.131,
+       "cull": 1.049,
+       "world": 1.18,
+       "specks": 0,
+       "mask": 3.08,
+       "over": 0,
+       "shade": 1.311,
+       "present": 0.131
+      }
+     },
+     {
+      "gpu": 10.35,
+      "zoom": 3.83,
+      "slots": 1,
+      "passes": {
+       "sun": 0.59,
+       "map": 0.131,
+       "cull": 1.049,
+       "world": 1.442,
+       "specks": 0.066,
+       "mask": 2.425,
+       "over": 0,
+       "shade": 1.376,
+       "present": 0.131
+      }
+     }
+    ]
+   }
+  }
+ },
+ "midnight": {
+  "base": {
+   "reachedAtMs": 111026,
+   "longestRafGapMs": 2850,
+   "gapsOver40": [
+    2850,
+    67
+   ],
+   "secondsSimTimeStoodAt86400": 3
+  },
+  "new": {
+   "reachedAtMs": 115041,
+   "longestRafGapMs": 50,
+   "gapsOver40": [
+    50
+   ],
+   "secondsSimTimeStoodAt86400": 0
+  },
+  "note": "rAF gaps over 40 ms from 15 s before the sim reached t 86400 to 20 s after; the base's sim stood at 86400 three seconds"
+ },
+ "verdict": "Midnight: the 2.85 s rAF gap is gone (longest 50 ms; the sim no longer stands still at midnight). Isle levels: a still island view's GPU time fell from 11 to 4-6 ms (cull 8.4 to 2.0 ms). Zoom after the warm: worker GPU mean 7.06 to 6.34 ms, p95 13.04 to 11.21, frames over 16.7 ms 6 to 5, over 20 ms 2 to 1 (max 30.2 at zoom 0.7, a cross-fade frame with cull 16.7 ms, about what walking the far lists costs at the island level; not confirmed), against bench-sim-worker.json's 8 over 16.7. The bench's first frame waited 0 ms for its lists (they were built). Not met: the page's rAF had 6 gaps over 20 ms in the new zoom run (133 ms at zoom 2.73 two seconds after the warm ended, with no long task and worker GPU frames under 31 ms; 50 ms at zoom 6.44, a page frame of 53.6 ms (the run's one long task, 53 ms), as the base's 33 ms gap there came of a 43.9 ms page frame; four of 33 ms), against 3 of 33 ms in the base; pan had one of 100 ms at zoom 0. The repeat run (newRepeat) had the same kind of stall (163 ms of GPU span, 117 ms rAF) a second after the warm ended; Page1s's 450 ms first frame was the same moment. Its source is not found: not a page long task, not this renderer's passes."
+}
