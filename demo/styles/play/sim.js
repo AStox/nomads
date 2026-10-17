@@ -1,7 +1,8 @@
 // Runs the game's simulation in the render worker (isopixel/worker.js), on the GPU device the island is drawn with, the
 // way server.ts loop() runs it: one tick at a time, the same change sets, cleared the same way. The page thread keeps
-// only what it shows (remote.js): after each tick the worker posts it state(), and what the page has asked about.
-import { ACTIVITY, DAY, census as headcount, TILE_M, activity, brainKind, changed, changedKinds, floraOf, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, pathChanges, removeThing, removed, resident, seedDriver, stemDriver, thingById, thingView, tick, trailChanges, trails, useBrain } from "../sim.js";
+// only what it shows (remote.js): after the ticks a frame ran the worker posts it state(), and what the page has asked
+// about.
+import { ACTIVITY, DAY, HOUR, TICK_S, YEAR_DAYS, census as headcount, TILE_M, activity, brainKind, changed, changedKinds, floraOf, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, pathChanges, removeThing, removed, resident, seedDriver, stemDriver, thingById, thingView, tick, trailChanges, trails, useBrain } from "../sim.js";
 
 function clearChanges() {
   iceChanged.now = false; groupsChanged.now = false;
@@ -10,8 +11,9 @@ function clearChanges() {
 
 // One live sim per worker: the change sets are module globals inside the bundle. jev: the relay's token (scripts/play/serve.ts)
 // for people to think with Jev once the world is warm; without it, and while warming, they think with the random brain.
-// onWorld(w): called once the world's flora lives on the GPU, so the renderer can draw from its buffers and make its
-// sprites. Returns before the world warms: the warm's ticks are the first ticks asked for (tick, onProgress).
+// warm: sim days to run before the world is live. onWorld(w): called once the world's flora lives on the GPU, so the
+// renderer can draw from its buffers and make its sprites. Returns before the world warms: the warm's ticks are the
+// first ticks asked for (tick, onProgress).
 export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev = null } = {}) {
   const w = newWorld(seed);
   // as the first tick would (sim.ts tick), so the buffers are there before any tick
@@ -36,9 +38,9 @@ export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev =
     acts.clear();
     for (const a of w.agents) acts.set(a.id, activity(w, a));
   };
-  // How many people and animals of each kind were alive, every SAMPLE ticks from the start; past MAX samples every
-  // other one is dropped and the spacing doubles, so a long run keeps its whole history in a bounded list.
-  const SAMPLE = 12, MAX = 600, history = { every: SAMPLE, t: [], people: [], animals: {} };
+  // How many people and animals of each kind were alive, each sim hour from the start; past MAX samples every other one
+  // is dropped and the spacing doubles, so a long run keeps its whole history in a bounded list.
+  const SAMPLE = HOUR, MAX = 600, history = { every: SAMPLE, t: [], people: [], animals: {} };
   const census = () => {
     if (w.t % history.every) return;
     const n = history.t.length, count = headcount(w);
@@ -75,17 +77,18 @@ export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev =
 
   clearChanges();
   census(); travel();
-  // The warm: the first `warm` ticks are ticks like any other (tick), which the page asks for as fast as its frames
-  // allow once the island is shown, people thinking with the random brain until they end; then, if the relay says it
-  // would let this token through without asking Jev anything, with Jev.
-  let warmLeft = warm;
+  // The warm: the first `warm` days' ticks are ticks like any other (tick), which the page asks for one at a time, each
+  // its own task, as fast as its frames allow once the island is shown, people thinking with the random brain until they
+  // end; then, if the relay says it would let this token through without asking Jev anything, with Jev.
+  const warmTicks = Math.round(warm * DAY);
+  let warmLeft = warmTicks;
   const url = new URL("/jev", location.href).href;
   const warmed = async () => {
     const ok = !!jev && (await fetch(url, { headers: { "X-Nomads-Token": jev } }).then((r) => r.json()).then((r) => r.ready && r.ok).catch(() => false));
     if (jev && !ok) console.warn("the Jev relay refused this page's token or is off; people think with the random brain");
     useBrain(ok ? { kind: "relay", url, token: jev } : { kind: "random" });
   };
-  if (!warm) await warmed();
+  if (!warmTicks) await warmed();
   lastEvent = w.events.at(-1)?.id ?? 0;
   roll();
 
@@ -96,7 +99,7 @@ export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev =
   return {
     w,
     activities: ACTIVITY,
-    day: DAY,
+    day: DAY, tickS: TICK_S, yearDays: YEAR_DAYS,
     // what the ground grew, as its objects stand on the GPU (src/gpu/flora.ts)
     flora: () => floraOf(w),
     // A thing gone from the world at once (physics.ts removeThing), as a felling or a taking makes it go: what a check
@@ -133,7 +136,7 @@ export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev =
       took(t0);
       if (warmLeft > 0) {
         warmLeft--;
-        if (onProgress && ((warm - warmLeft) % 50 === 0 || !warmLeft)) onProgress(warm - warmLeft, warm);
+        if (onProgress && ((warmTicks - warmLeft) % 50 === 0 || !warmLeft)) onProgress(warmTicks - warmLeft, warmTicks);
         if (!warmLeft) await warmed();
       }
       return done;

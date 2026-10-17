@@ -211,7 +211,9 @@ A tick: advance `w.t`; run each lane whose period divides the new time, handing 
 
 ### Phase A: One clock (TICK_S stays 300; result-identical)
 
-- [ ] **Unit 1: A leaf clock module, every hour and day derived from it**
+**Phase A identity (2026-10-17).** The operator suspended the gates and limited every run to 5 minutes, so `bench.ts` checksums and the gate ledgers were replaced by a hash: sha256 of `w.events`, `w.people`, `w.things`, `census(w)` and `w.agents` after 300 ticks of seed 1 with the random brain. Before Units 1 to 4 (a86c200, run twice): t 386, events 83bbfb3a8037687c, people 6da24eabc439304f, things 3197e788f8be8d91, census 229090d88cae167d, agents a0ac81ad0fa84e47. After: the same five hashes. The smoke run (`--ticks 864 --seed 1`) ends with the counts it had before (deer 975, rabbits 14,828, wolves 14, foxes 159, fish 2,502,963, one structure, no fires). Not run under the 5-minute rule: `bench.ts`, the probes and worlds gates, `?bench=` against `bench-unit14.json`, `src/sim/herds.test.ts` (three island years) and the full suites.
+
+- [x] **Unit 1: A leaf clock module, every hour and day derived from it**
 
 **Goal:** One definition of time read by the CPU sim, the GPU laws, the harness and the page.
 
@@ -237,7 +239,9 @@ A tick: advance `w.t`; run each lane whose period divides the new time, handing 
 
 **Verification:** bench checksums identical before and after; `bun test ./src --timeout 120000` passes.
 
-- [ ] **Unit 2: Durations, cooldowns, give-ups and speeds in seconds**
+**Outcome (2026-10-17):** `src/sim/ticks.ts` builds the clock with `clockOf(tickS)` and exports the one at 300 s (`TICK_S`, `HOUR`, `DAY`, `YEAR_DAYS`, `YEAR`, `every`, `chance`, `rate`, `ticksOf`); tests read `clockOf(1)` and `clockOf(10)`. The check at load is that the tick divides 3600 and nests with 10 s and 60 s (one divides the other), since 300 s is a multiple of both rather than a divisor. `sky.ts` and `world.ts` re-export it. The GPU twins are gone: `drivers.ts` `HOUR`, `animals.ts` `STEP_TICKS` and its `DAY`, `fish.ts` and `deadwood.ts` `DAY_TICKS` (and deadwood's own `YEAR_DAYS`), `moisture.ts` `HOUR_TICKS` and `KEEP_TICKS`, `seedlings.ts` `dayTicks / 24`, `tiers/events.ts` `24 * HOUR`, and the tests' local `DAY`s. Every hour and day literal in `src/sim` is `HOUR` or `DAY` (ecology's sky, ice, rain tally, saplings, decay, spin-up and forecast; wetness; groups; animals' hourly views; seeds; seedling; smalls' `YEAR_DAYS`). `migrate.ts` and `migrate.test.ts` pin their own 300 s. The page reads `day`, `tickS` and `yearDays` from the worker (`live.js` ages from them, `main.js` replaces its three 288s) and `public/*.js` from the server's `day`. `src/sim/ticks.test.ts` (5 pass) and `dormant.test.ts` (an hour is 3600 s, 24 of them a day) pass. The grep for `% 12`, `/ 12`, `* 12`, `288` and `2016` over src, scripts, server and the page leaves no tick count: what is left is radians per clock hour (`π / 12`), a twelfth of a year's deaths, 12 directions, tree heights, 288.15 K, the probes' 1-in-12 gust, and statistics. Counts of 24 hours a day and 40 days a year (not ticks) stay where they were.
+
+- [x] **Unit 2: Durations, cooldowns, give-ups and speeds in seconds**
 
 **Goal:** Every time the people's side counts in ticks is stated in seconds with today's value.
 
@@ -261,7 +265,9 @@ A tick: advance `w.t`; run each lane whose period divides the new time, handing 
 
 **Verification:** bench checksums identical; probes and worlds gate ledgers unchanged on a `--against` rerun.
 
-- [ ] **Unit 3: Per-tick chances and increments as rates over time**
+**Outcome (2026-10-17):** `physics.ts` `DURATION` is seconds (join 2400 through wear 600, any other act 1200) and every reader goes through `ticksOf` (doAct, `formulas.ts`, `plan.ts` costs as a join's ticks, `conditionsNow`, the dip, heating and placing spans that were `DURATION.x * TICK_S`). `PICK` is 750 s, rubbing's `secs` 3000, 3600 and 1800, digging `DIG_S` 3600 s, a barely marking strike gives up at `MARK_S` 1500 s; the throw cadence was already `hunt.ts` `SHOT_S`. In `sim.ts` every cooldown, backoff and give-up is `ticksOf` of today's seconds, marked [design: today's N ticks]; "the next tick" (`+ 1`), the collapse's `down = w.t + 2` (through the next tick) and the fan's `air = w.t + 2` stay structural; a helper's tick of help stays a tick of the other's work. `life.ts` newborn 1500 s; `brain.ts` fadeBonds reads `near` through `ticksOf`. `inspect.ts` says minutes and hours. Two items differ from the plan: `fauna.ts` speeds are `rate(x, 300)` (metres over five minutes a tick's share), because `x / 300 * 300` does not give back 0.4, 0.8 or 0.2 and plain m/s would break identity; `Kind.fuel` stays in five-minute ticks behind `materials.ts` `FUEL_TICK_S = 300`, because migrate's charcoal ratio reads old saves in that unit. New tests in `plan.test.ts` (a join takes eight ticks at 300 s and six at crafting level 5; a collapse holds `down` through the next tick) and all 34 of its cases pass; `combustion.test.ts` 20 pass; the touched `materials.test.ts` cases pass.
+
+- [x] **Unit 3: Per-tick chances and increments as rates over time**
 
 **Goal:** Nothing changes faster or slower per sim second when the tick changes.
 
@@ -282,7 +288,9 @@ A tick: advance `w.t`; run each lane whose period divides the new time, handing 
 
 **Verification:** bench checksums identical.
 
-- [ ] **Unit 4: Harness, server and page in sim seconds and days**
+**Outcome (2026-10-17):** `ecology.ts`: lightning `poisson(stormFlashes / HOUR)`, bush hp `rate(0.02, 300)`, sickness `rate(0.06 * severity, 300)` and `rate(0.0005 * severity, 300)`, contagion `chance(0.003 * severity, 300)`; resin, the berry crop and ash rain already went through `DAY` and `YEAR` and stay. `sim.ts`: health `rate(0.1, 300)` (social was already a rate through `TICK_S`), `near` still counts ticks and is read through `ticksOf`. `physics.ts` bare-hand digging `rate(0.05, 300)`. `animals.ts` CPU views: every chance through `chance(p, 300)` with the same `p` and the same draws in the same order, `lift()` climbs, bites (6 hp of an animal, 5 of a person), the wolf's and crow's meal (`rate(1, 300)` for the count and the kJ), starving, the eagle's turn and the bare 2 m steps through `rate(x, 300)`, the state timers through `ticksOf` (the quirk timers as `(n + quirk) * 300` s, exact integers). `ticks.test.ts` checks a contagion chance over an hour at 300 s against 10 s over 10^5 seeded trials (within 4.5 sd) and that `chance` and `rate` at 300 s hand back their argument. `fire.test.ts` (lightning-struck), `wetness.test.ts` (12 pass) and `garden.test.ts` (standing in the rain) pass; `herds.test.ts` not run (three years, over 5 minutes).
+
+- [x] **Unit 4: Harness, server and page in sim seconds and days**
 
 **Goal:** Every workload and pace is stated in sim time; the page and server run as many ticks as are due a frame.
 
@@ -304,9 +312,13 @@ A tick: advance `w.t`; run each lane whose period divides the new time, handing 
 
 **Verification:** bench checksums identical; `?bench=` figures within noise of `bench-unit14.json`; evals ledger `VERSION` unchanged.
 
+**Outcome (2026-10-17):** `run.ts` takes `--days` and `--hours` (then `--ticks`), waits on `asking()` after a `Bun.sleep(0)` instead of a fixed 20 ms, and prints `hourMs` (`trace.ts`: ms a sim hour). `probes.ts`, `truth.ts`, `bench.ts`, `theories.ts`, `tech.ts`, `evals.ts` and `theory-report.ts` count in `HOUR` and `DAY` from `ticks.ts` (probes' local `TICK_S` gone; its `ticksOf(w, key)` renamed `wayTicks`); evals `VERSION` unchanged. `answer-key.ts` stays in ticks, since its `expectedTicks` feeds KPIs the ledgers hold in ticks; `theory-report.ts` shows minutes in its text table only. `server.ts` paces at `PACE = 600` sim seconds a wall second (ladder 1, 2, 4, 8, 16 times that), runs the ticks due each awaited, slips when more than a wall second behind, saves at a sim-hour boundary once 25 wall seconds have passed, and posts `day`, `tickS` and `pace`. The page: `remote.js` asks for the ticks due (`floor(speed * wall / TICK_S)` less those run), slips to two frames behind, and interpolates over the last batch; `worker.js` runs them while `SIM_BUDGET_MS = 8` lasts, each in its own task, and posts state once a batch; `main.js` `?warm` is days (default 7, cap 140) and `?speed` sim seconds a wall second (default 600); `sim.js` samples the census each sim hour. The warm still asks one tick at a time, each in its own task (napkin item 9). Checks: the page built to its own dir and served on its own port reached `body.ready` 39 s after load with the default warm, the warm ended at 205 s, then ran 20 ticks in 10 s at the default speed (the clock moved 1.67 h, 600 sim s a wall second as before) with every agent busy at something (none `thinking`); `run.ts --hours 6` stops after 72 ticks.
+
 ### Phase B: Many rates (TICK_S still 300; result-identical)
 
-- [ ] **Unit 5: Lanes, each process on its own period**
+**Phase B identity (2026-10-17).** Checked the way Phase A was (the gates suspended, every run under 5 minutes): the hash after 300 ticks of seed 1 with the random brain is the same before and after Units 5 to 7: t 386, events 83bbfb3a8037687c, people 6da24eabc439304f, things 3197e788f8be8d91, census 229090d88cae167d, agents a0ac81ad0fa84e47. The smoke run (`--ticks 864 --seed 1`) ends with the counts it had before (deer 975, rabbits 14,828, wolves 14, foxes 159, fish 2,502,963, one structure, no fires), in 75 s. The page built from the tree reaches `body.ready`, warms its seven days and then runs at about 600 sim seconds a wall second with no page errors. Every step of the three units is identical at `TICK_S = 300` by construction: each lane is due every tick and handed 300 s, and every landing is a tick. Not run: `bench.ts`, the gates, the Baseline re-measure on an idle machine that the plan asked for at the start of Phase B, and the full suites.
+
+- [x] **Unit 5: Lanes, each process on its own period**
 
 **Goal:** Processes run at their own periods with the seconds since their last run.
 
@@ -331,7 +343,9 @@ A tick: advance `w.t`; run each lane whose period divides the new time, handing 
 
 **Verification:** bench checksums identical.
 
-- [ ] **Unit 6: GPU begin and landing on their own cadence**
+**Outcome (2026-10-17):** `src/sim/lanes.ts` holds the periods, `FAST_S` 1, `FIRE_S` 10 (`wgsl/fire.ts` `LOOK_S`), `SENSES_S` 10, `BODY_S` 60 and `LAND_S` 60, and `lanesOf(clock)` gives `due(t, period)` (the clock's `every`), `secs(period)`, `max(period, TICK_S)`, and `landing`, the ticks between landings. Lanes fall on fixed boundaries and no tick is skipped, so the seconds since a lane last ran are always `secs(period)` and a lane keeps no state. `ticks.ts` `chance` and `rate` take an optional span of seconds (a tick by default) for lanes longer than a tick. `ecology.ts`: fire runs on its lane and steps every bed one look for each 10 s it is handed (the sub-10 s bug is gone); its looks, bed order and receivers are gathered across runs and packed into one batch on the landing tick (Unit 6); `cool` and `disease` run on the senses lane over its seconds; crowding stays daily. `animals.ts`: `sync` on the senses lane, the views every tick. `sim.ts` `agentTick`: `carry` and `fate` every tick; `needs` on the body lane, handing its seconds to `warm`, `feed` and `pressure`, social, healing and burns; perception split into `notice` (strangers, company, `near` growing by the lane's ticks) on the senses lane and `glance` (a wolf on them, heat past bearable) every tick; walking's energy adds up until the next run of the body (`walked` keyed by that run's tick), so `metOf` reads all the walking since the body last ran; `travel` on the senses lane. Tests: `lanes.test.ts` (new, 4 pass: at 300 s every lane runs every tick with 300 s; at 1 s the runs a day are 86,400, 8,640, 8,640, 1,440 and 1,440, each handed a day's seconds, with 24 hourly and one daily law on landings; a landing tick is a fire tick; a threat is glanced at on the tick it comes); `fire.test.ts` (a campfire stepped in thirty runs of 10 s equals one stepped 300 s at a time, bed for bed, and goes out on the same tick); `warmth.test.ts` (the body on its 60 s lane against 1 s steps over four hours of a cold night: core within 0.05 C at every tick, while the skin falls more than 1 C; 5 pass).
+
+- [x] **Unit 6: GPU begin and landing on their own cadence**
 
 **Goal:** The store begins and lands every `LAND_S` sim seconds; hourly and daily laws fall on begins.
 
@@ -354,7 +368,9 @@ A tick: advance `w.t`; run each lane whose period divides the new time, handing 
 
 **Verification:** bench checksums identical; landings a sim day and their mean cost recorded here.
 
-- [ ] **Unit 7: Brains on events, and a Jev meter**
+**Outcome (2026-10-17):** `sim.ts` `tick` begins the store and lands it only when `due(t, LAND_S)`, every tick at 300 s; the flora and smalls windows are set at landings, and the previous landing is still awaited at the start of the next tick, so the mirror changes only between ticks and runs stay deterministic. The flora window reaches `SEARCH + OUTRUN`, where `OUTRUN` is the fastest run (`gait.ts` `runSpeed` on the level, unladen, over bare rock, at the twenties' VO2max: about 3.8 m/s) times `secs(LAND_S) - TICK_S` [derived]: 0 at 300 s, about 224 m at 1 s with 60 s landings (the plan's 360 m took the old `RUN` of 6 m/s; substrate 6's runner is slower). `lanes.ts` throws unless `LAND_S` divides the hour and is a multiple of fire's look, so the hourly and daily laws fall on begins and a landing tick is a fire tick. `seedlings.ts` sheds a day's seed a slice a landing (`(t % dayTicks) / LANDING`, at most `dayTicks / LANDING` slices); the crowns' slices already ride the landing; stems ahead and seedlings ahead were already set by the hours left. The fire's batch carries every look since the last landing; the animal views' positions go to their objects at each landing (and before each sighting, so a view let go keeps its place) rather than as a delta a move. `mirror.ts`, `store.ts`, `crowns.ts` and `fire.ts` say landing where they said tick. Tests: `seedlings.test.ts` "a law day of seeds" and "a parent's death stops its shed" pass. Not done: landings a sim day and their mean cost (one a tick until `TICK_S` is shorter than `LAND_S`, Unit 8), and the GPU tests at 1 s (six looks a batch, the hourly laws over a day, a runner never meeting a pending cell), which need the module clock at 1 s or a store driven on its own cadence; the clock-level counts are in `lanes.test.ts`.
+
+- [x] **Unit 7: Brains on events, and a Jev meter**
 
 **Goal:** Decisions come of events and an idle fallback; Jev calls are counted against sim time and wall time.
 
@@ -375,6 +391,8 @@ A tick: advance `w.t`; run each lane whose period divides the new time, handing 
 - Edge case: a failed plan backs off by its seconds at any `TICK_S`, never one tick.
 
 **Verification:** bench checksums identical; the meter's figures recorded.
+
+**Outcome (2026-10-17):** `sim.ts` names the triggers in one place (deciding): someone with no goal thinks when `nextDecide` falls due, brought on by events (a goal ended, the next tick; a collapse seen or a stranger noticed, now; an interrupt takes their goal, so they decide once their last decision's time is past) and by two fallbacks in seconds, `IDLE_S` 600 after a decision that came to nothing they could plan and `LOST_S` 3000 after a brain that failed to answer [design: today's 2 and 10 ticks]; nothing thinks once a tick. `brain.ts` `jevMeter(w)` counts every question put to the brain (the random brain's too, and failed Jev calls): calls and tokens in all, a sim hour on average, in the last sim hour and in the last wall minute, latency p50 and p90, in flight now and the most at once. `server.ts` `/api/debug/stats` shows it as `jev.meter`, and `run.ts` prints it. The smoke run: 109 calls over 864 ticks, 1.52 a sim hour for the world. Tests: `brain.test.ts` (new, 2 pass, the random brain). Decisions a sim day equal today's through the identity hash, whose agents carry every decision. Not done: latency in a relay session of the page (no relay session with a key was run; the random brain's p50 is 0 ms), and a test that a failed plan backs off by its seconds at another `TICK_S`, which needs the module clock at another tick.
 
 ### Phase C: Real time (TICK_S = 1; each unit re-baselines)
 

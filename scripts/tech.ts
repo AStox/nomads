@@ -4,7 +4,8 @@
 // Many seeds at once: for s in 1 2 3 4; do NOMADS_BRAIN=random bun scripts/tech.ts --seed $s --days 120 & done; wait
 // With Jev (TYPESAFE_API_KEY in .env), each tick waits for every question it asked, so the world runs as if Jev answered
 // at once: bun scripts/tech.ts --seed 7 --days 10
-import { DAY, newWorld, type World } from "../src/sim/world";
+import { newWorld, type World } from "../src/sim/world";
+import { DAY } from "../src/sim/ticks";
 import { tick } from "../src/sim/sim";
 import { changed, newKinds, removed } from "../src/sim/physics";
 import { trailChanges } from "../src/sim/ecology";

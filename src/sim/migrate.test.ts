@@ -25,7 +25,8 @@ type Old = Thing & { burning?: number; scorch?: number; heat?: number };
 const OLD = "strike|fiber+stone|stone|stone|-|-";
 const NEW = `strike|fiber+${Array<string>(10).fill("stick").join("+")}+stone|stone|stone|-|-`;
 const RUB = "rub|stick+stick|-|-|-|-", RUB_LAY = "rub|stick+stick+fiber+stick+stick|-|-|-|-";
-const TICK_H = 300 / 3600;
+// Old saves' 5-minute ticks (migrate.ts), however long the world's tick is now: a tick in hours, and ticks in an hour.
+const TICK_H = 300 / 3600, OLD_HOUR = 3600 / 300;
 
 let w: World, a: Agent, dir: string, save: string, report: string[], saved: string;
 let ringed: Old, open: Old, kiln: Old, oak: Old, near: Old, far: Old, wet: Stack[];
@@ -89,10 +90,11 @@ test("an old fire is the usual lay as far burnt as its hours left, walled by its
   expect(ringed.bed!.coals.some((c) => c.d === PHYS.charcoal.d && Math.abs(c.kg - PHYS.charcoal.mass / 2) < 1e-12)).toBe(true);
   // within a tick of their old hours, unreported: the open fire's 14 hit points, an hour and ten minutes, and the kiln's
   // 30, eight and a third hours under its cover
-  expect(Math.abs(fireHours(w, open) - 14 / 12)).toBeLessThanOrEqual(TICK_H);
-  expect(Math.abs(fireHours(w, kiln) - 30 / 0.3 / 12)).toBeLessThanOrEqual(TICK_H);
+  expect(Math.abs(fireHours(w, open) - 14 / OLD_HOUR)).toBeLessThanOrEqual(TICK_H);
+  expect(Math.abs(fireHours(w, kiln) - 30 / 0.3 / OLD_HOUR)).toBeLessThanOrEqual(TICK_H);
   expect(report.some((l) => l.includes(open.id) || l.includes(kiln.id))).toBe(false);
-  // a bed lasts as long as its slowest piece, a 17 cm log, about an hour and a quarter: far short of 200 / 0.5 / 12
+  // a bed lasts as long as its slowest piece, a 17 cm log, about an hour and a quarter: far short of the old 200 / 0.5
+  // ticks, 33.33 hours
   expect(fireHours(w, ringed)).toBeGreaterThan(1);
   expect(fireHours(w, ringed)).toBeLessThan(1.5);
   expect(report.find((l) => l.includes(ringed.id))).toContain("33.33 h");

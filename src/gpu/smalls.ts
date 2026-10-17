@@ -74,6 +74,8 @@ export class Smalls implements Rider, Ground {
   kinds: Record<SmallKind, Lumped> | null = null;
   private b: Record<"inp" | "dayw" | "cen" | "st" | "eat" | "tb" | "lb" | "wrote" | "sum" | "zero", GPUBuffer> | null = null;
   private src: Record<string, string> = {};
+  // each lumped kind's split (sand has none)
+  private splits: string[] = [];
   private crowns: Crowned | null = null;
   private link: { W: GPUBuffer; RQ: GPUBuffer; cap: number } | null = null;
   // ticks an island day (the driver's, sky.ts DAY)
@@ -118,6 +120,7 @@ export class Smalls implements Rider, Ground {
     const inputs = { base: BASE, cellWords: CW, tables: driver.tables };
     const make = (k: SmallKind, i: number) => {
       const split = k === "sand" ? "" : smallsSplit(laws[k], i, { pieceUg: driver.pieceUg.slice(8 * 4, 8 * 4 + 16), outs: OUTS[k] });
+      if (split) this.splits.push(split);
       const L: Lumped = new Lumped(store, {
         name: k, capacity: cap[k], contribs: Math.ceil(cap[k] * CONTRIBS[k]), members: 1, seed: driver.seed, stream: 0x5a11 + i, law: laws[k], ts: driver.twins[k], outcomes: OUTS[k],
         active: ACTIVE[k], promote: "", merge: true, wide: k === "sand", inputs,
@@ -148,6 +151,9 @@ export class Smalls implements Rider, Ground {
       this.day(t);
       store.flush();
     }
+  }
+  kernelSources(): string[] {
+    return [...Object.values(this.src), ...this.splits, SMALLS_NONE, SMALLS_SETTLE, SMALLS_POOLS];
   }
   // Each cell's share of closed pine and broadleaf canopy, from the crowns as the CPU holds them (none without).
   private shares() {

@@ -5,7 +5,8 @@
 // a basket swept or a line dangled by how often each fish of that water meets it.
 import { SPEC, herded, type Herded } from "./animals";
 import { FOOD_KJ, PHYS, asFound, physOf, stackPhys, type Edge, type Phys } from "./fuel";
-import { CHOP_MET, GROWN, NET_EFF, TICK_S, isWood, type Striker } from "./mechanics";
+import { CHOP_MET, GROWN, NET_EFF, isWood, type Striker } from "./mechanics";
+import { TICK_S } from "./ticks";
 import { frame, newBody } from "./body";
 import type { Kind, Registry } from "./materials";
 import type { Animal, Stack } from "./world";

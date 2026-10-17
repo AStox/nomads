@@ -15,6 +15,7 @@ import { PROPS, THING_MATERIAL, type Kind, type Props } from "./materials";
 import { beliefText, restsOn, testOf, weighs } from "./beliefs";
 import { campTag, campView } from "./groups";
 import { jevLog } from "./trace";
+import { HOUR, ticksOf } from "./ticks";
 import LEXICON from "./lexicon.json";
 import PLACES from "./places.json";
 
@@ -34,6 +35,39 @@ export const brainKind = () => brain.kind;
 // Jev calls not yet answered: a headless run can wait for them each tick, so the world moves as if Jev answered at once.
 let inflight = 0;
 export const asking = () => inflight;
+
+// ---------- the meter ----------
+// Every question put to the brain (the random brain's too, as the calls Jev would have had), against sim time and wall
+// time: the relay takes 300 calls a wall minute and 16 at once (the real-time tick plan, Unit 7), and the bill is per
+// sim day. A call is kept while it is within the last sim hour or the last wall minute.
+type Call = { t: number; wall: number; ms: number; tokens: number };
+type Meter = { from: number; calls: number; tokens: number; most: number; recent: Call[] };
+const meterOf = new WeakMap<World, Meter>();
+function metered(w: World, t0: number, tokens: number) {
+  const m = meterOf.get(w) ?? { from: w.t, calls: 0, tokens: 0, most: 0, recent: [] }, now = performance.now();
+  meterOf.set(w, m);
+  m.calls++;
+  m.tokens += tokens;
+  m.most = Math.max(m.most, inflight);
+  m.recent.push({ t: w.t, wall: now, ms: now - t0, tokens });
+  let old = 0;
+  while (old < m.recent.length && w.t - m.recent[old].t >= HOUR && now - m.recent[old].wall >= 60_000) old++;
+  if (old) m.recent.splice(0, old);
+}
+// What the meter shows: calls and tokens in all, a sim hour on average since the first call, in the last sim hour and
+// in the last wall minute; how long the answers kept took to come, ms, at the median and the ninetieth percentile; the
+// calls out now and the most ever out at once.
+export function jevMeter(w: World, now = performance.now()) {
+  const m = meterOf.get(w) ?? { from: w.t, calls: 0, tokens: 0, most: 0, recent: [] };
+  const window = (keep: (c: Call) => boolean) => { const cs = m.recent.filter(keep); return { calls: cs.length, tokens: cs.reduce((s, c) => s + c.tokens, 0) }; };
+  const ms = m.recent.map((c) => c.ms).sort((a, b) => a - b), at = (q: number) => (ms.length ? Math.round(ms[Math.min(ms.length - 1, Math.floor(q * ms.length))]) : null);
+  const hours = (w.t - m.from) / HOUR;
+  return {
+    calls: m.calls, tokens: m.tokens, perSimHour: hours > 0 ? m.calls / hours : null,
+    simHour: window((c) => w.t - c.t < HOUR), wallMinute: window((c) => now - c.wall < 60_000),
+    p50: at(0.5), p90: at(0.9), inflight, most: m.most,
+  };
+}
 
 type Answer = { type: string; choice?: string; probabilities?: Record<string, number>; confidence?: number; noul?: number; score?: number };
 type Question = { type: "choice" | "noul" | "score"; instructions: unknown; criteria?: unknown };
@@ -63,6 +97,7 @@ async function ask(w: World, purpose: string, agent: string | undefined, state: 
   if (brain.kind === "random") {
     const answers = Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, randomAnswer(q, leans[k])]));
     jevLog({ agent, purpose, ms: 0, tokens: 0, state, questions, answers });
+    metered(w, t0, 0);
     return answers;
   }
   // a choice of one has its answer already, and SubQ won't take one
@@ -75,6 +110,7 @@ async function ask(w: World, purpose: string, agent: string | undefined, state: 
   }
   if (!Object.keys(asked).length) return given;
   inflight++;
+  let tokens = 0;
   try {
     const relay = brain.kind === "relay" ? brain : null, d = decider();
     const res = await fetch(relay ? relay.url : d.endpoint, {
@@ -85,7 +121,7 @@ async function ask(w: World, purpose: string, agent: string | undefined, state: 
     });
     if (!res.ok) throw new Error(`${relay ? "relay" : d.model} ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const body = (await res.json()) as { answers: Record<string, Answer>; usage?: { input_tokens: number } };
-    const tokens = body.usage?.input_tokens ?? 0;
+    tokens = body.usage?.input_tokens ?? 0;
     w.jev.calls++;
     w.jev.tokens += tokens;
     jevLog({ agent, purpose, ms: Math.round(performance.now() - t0), tokens, state, questions, answers: { ...given, ...body.answers } });
@@ -94,6 +130,8 @@ async function ask(w: World, purpose: string, agent: string | undefined, state: 
     jevLog({ agent, purpose, ms: Math.round(performance.now() - t0), tokens: 0, state, questions, error: String(e) });
     throw e;
   } finally {
+    // a call that failed still took its place among the relay's
+    metered(w, t0, tokens);
     inflight--;
   }
 }
@@ -445,8 +483,10 @@ export function fadeBonds(a: Agent) {
     if ((r.label === "enemy" && r.affinity > -0.3) || (["friend", "confidant", "sweetheart"].includes(r.label) && r.affinity < 0.15)) r.label = "acquaintance";
     else if (r.label !== "kin") r.affinity *= 0.99;
     r.trust += (0.3 - r.trust) * 0.03;
+    // ticks spent in each other's company (sim.ts perceive): over 12,000 s of it warms them, by up to 0.06 a day at a
+    // rate of one for every 900,000 s [design: today's 40 and 3000 ticks]
     const together = a.near[id] ?? 0;
-    if (together > 40) r.affinity = Math.min(1, r.affinity + Math.min(0.06, together / 3000));
+    if (together > ticksOf(12000)) r.affinity = Math.min(1, r.affinity + Math.min(0.06, together / ticksOf(900000)));
   }
   a.near = {};
 }

@@ -6,7 +6,7 @@
 // so a second migration finds nothing to do. The save as it was is kept beside it first (migrateSave), so the change can
 // be rolled back.
 import { copyFileSync, existsSync } from "node:fs";
-import { DAY, meters, type Shelter, type Stack, type Thing, type World } from "./world";
+import { meters, type Shelter, type Stack, type Thing, type World } from "./world";
 import { advance, alight, expose, kindle, lasts, lay, lightsIn, output, type Bed, type Coals, type Ring } from "./combustion";
 import { STILL, bedAir, isBow, mark, rubbing, shelterOf, usual, type Fields } from "./physics";
 import { PHYS, physOf, stackPhys } from "./fuel";
@@ -22,9 +22,11 @@ type Old = Thing & { burning?: number; scorch?: number; heat?: number };
 type OldStack = Stack & { wet?: number };
 type OldWeather = World["weather"] & { litter?: number };
 
-const TICK_S = 86400 / DAY, HOUR = 3600;
-// An old fire's hours left are matched to within a tick, the world's own step: it burnt down a tick at a time, and how
-// long a bed has left can't be told apart any finer than the world looks at it.
+// Old saves were written at 5-minute ticks, whatever the world's tick is now (ticks.ts TICK_S): their fires burnt down
+// and were looked at 300 s at a time, so what is read from them is read at that tick and not the world's own.
+const TICK_S = 300, HOUR = 3600, DAY = 86400 / TICK_S;
+// An old fire's hours left are matched to within a tick, the old world's step: it burnt down a tick at a time, and how
+// long a bed has left can't be told apart any finer than the world looked at it.
 const WITHIN = TICK_S / HOUR;
 
 // ---------- fires ----------

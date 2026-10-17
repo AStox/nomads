@@ -29,9 +29,11 @@ import { binhalf, next32, rinit, unif, nlnu } from "./rand";
 import { mul64, mulhi, qdiv, qexp, qmul, qpow, round16 } from "./fixed";
 import { CELLS, CELL_MM } from "./wgsl/index";
 import { TEXEL_MM } from "./wgsl/stems";
-import { Drivers, HOUR } from "./tiers/drivers";
+import { Drivers } from "./tiers/drivers";
+import { DAY, HOUR, YEAR_DAYS } from "../sim/ticks";
 import { StaticDormant, cellAt as cellOf } from "./tiers/dormant";
 import { dormantAnchors } from "./wgsl/dormant";
+import type { Extra } from "./wgsl/alloc";
 import { drvAccess } from "./wgsl/drivers";
 import { FIXED } from "./wgsl/fixed";
 import { RAND } from "./wgsl/rand";
@@ -41,8 +43,8 @@ import {
 } from "./wgsl/deadwood";
 
 // ---------- constants (plant-constants sec. 12) ----------
-// A game year is 40 days (src/sim/sky.ts YEAR_DAYS, which the test holds equal; imported it would pull the sim in).
-export const YEAR_DAYS = 40, YEAR_HOURS = YEAR_DAYS * 24, DAY_TICKS = 24 * HOUR;
+// A game year's hours (YEAR_DAYS days, src/sim/ticks.ts).
+export const YEAR_HOURS = YEAR_DAYS * 24;
 // The rot of an hour under a closed canopy, in units [design: the resolution of the canopy's effect], and how much
 // faster wood rots in the open: about 10% more mass lost in canopy gaps than under the canopy, across leaf litter, stakes
 // and logs over three to fourteen years (Forrester et al., R751) [derived: as a rate].
@@ -311,19 +313,34 @@ export class Deadwood implements Rider {
     this.litterfall(true);
   }
   private bearLogs(cnt: GPUBuffer, plant: Kind, initial: boolean) {
-    const d = this.drivers!, b = this.bufs!;
-    this.store!.bear("log", cnt, plant.capacity, `${logBirth(this.law, this.plantAt(), initial)}\n${dormantAnchors(["rot"])}`, {
+    this.store!.bear("log", cnt, plant.capacity, ...this.logBorn(initial));
+  }
+  // what bear runs for a log born (initial: of the pool the world begins with), and what it binds
+  private logBorn(initial: boolean): [string, Extra] {
+    const d = this.drivers!, b = this.bufs!, plant = this.store!.kind("plant");
+    return [`${logBirth(this.law, this.plantAt(), initial)}\n${dormantAnchors(["rot"])}`, {
       bufs: [{ name: "pl", buf: plant.body }, { name: "dbh", buf: b.dbh }, { name: "drv", buf: d.ring }],
       wgsl: `${FIXED}\n${RAND}\n${common(this.law)}\n${drvAccess(d.layout)}`,
-    });
+    }];
   }
   private litterfall(pool: boolean) {
     const s = this.store!, g = s.g, b = this.bufs!, d = this.drivers!;
     const nn = s.scratch("deadnn", CELLS), cnt = s.scratch("deadbins", CELLS);
     s.run(this.src("litter", () => litter(this.law)), [b.acc, b.cover, b.rot, nn, cnt], cover(g, CELLS), [pool ? 1 : 0, d.hour, 0, 0]);
-    s.bear("stickbin", cnt, CELLS, `${BIN_BIRTH}\n${dormantAnchors(["rot"])}`, {
-      bufs: [{ name: "nn", buf: nn }, { name: "drv", buf: d.ring }], wgsl: drvAccess(d.layout),
-    });
+    s.bear("stickbin", cnt, CELLS, ...this.binBorn(nn));
+  }
+  // what bear runs for a stick bin born, and what it binds
+  private binBorn(nn: GPUBuffer): [string, Extra] {
+    const d = this.drivers!;
+    return [`${BIN_BIRTH}\n${dormantAnchors(["rot"])}`, { bufs: [{ name: "nn", buf: nn }, { name: "drv", buf: d.ring }], wgsl: drvAccess(d.layout) }];
+  }
+  kernelSources(): string[] {
+    const s = this.store!, d = this.drivers!, law = this.law;
+    return [
+      d.writer(ROT_WRITE, 1), this.src("stems", () => deadStems(law)), s.birthKernel(null, "log", ...this.logBorn(false)),
+      this.src("cover", () => deadCover(law)), this.src("litter", () => litter(law)), s.birthKernel(null, "stickbin", ...this.binBorn(s.scratch("deadnn", CELLS))),
+      this.src("bins", () => binSweep(law, s.kind("stickbin"), d.layout)), this.src("logs", () => logSweep(law, s.kind("log"), d.layout)), this.src("gather", () => rotGather(d.layout)),
+    ];
   }
   // An hour of the deadwood: the hour's rot recorded and committed; on a day, after the stems' law, a snag born of every
   // stem it killed, the cover and rot from its raster, a litterfall every BIN_DAYS days, and the pieces rotted away
@@ -332,14 +349,14 @@ export class Deadwood implements Rider {
     const s = this.store!, g = s.g, b = this.bufs!, d = this.drivers!;
     d.write(ROT_WRITE, [b.rot]);
     d.advance();
-    if (t % DAY_TICKS !== 0) return;
+    if (t % DAY !== 0) return;
     const plant = s.kind("plant"), cnt = s.scratch("counts", plant.capacity);
     s.run(this.src("stems", () => deadStems(this.law)), [plant.body, cnt], cover(g, plant.capacity), [plant.capacity, (1 + plant.field.crop) * plant.capacity, (1 + plant.field.what) * plant.capacity, 0]);
     this.bearLogs(cnt, plant, false);
     const r = this.raster!();
     s.run(this.src("cover", () => deadCover(this.law)), [r.crowns, b.cover, b.rot, b.acc], cover(g, CELLS), [1, 0, 0, 0]);
-    if ((t / DAY_TICKS) % BIN_DAYS === 0) this.litterfall(false);
-    this.sweepBins(t / DAY_TICKS);
+    if ((t / DAY) % BIN_DAYS === 0) this.litterfall(false);
+    this.sweepBins(t / DAY);
     this.sweepLogs(true);
     this.sync = true;
   }

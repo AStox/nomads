@@ -5,14 +5,14 @@ import { type Gpu, releaseGpu, theGpu } from "../device";
 import { readback, storage } from "../kernel";
 import { CTL } from "../wgsl/alloc";
 import { type Kind, Store } from "../store";
-import { Drivers, HOUR } from "./drivers";
+import { Drivers } from "./drivers";
+import { DAY } from "../../sim/ticks";
 import { Dormant } from "./dormant";
 import { Events } from "./events";
 import { Lumped, DEATH } from "./lumped";
 
 afterAll(releaseGpu);
 
-const DAY = 24 * HOUR;
 const ms = async (g: Gpu, f: () => void) => {
   await g.device.queue.onSubmittedWorkDone();
   const t0 = performance.now();

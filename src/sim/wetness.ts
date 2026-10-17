@@ -11,6 +11,7 @@
 // (sim.ts needs).
 import { GREEN_UP } from "../terrain/growth";
 import { DAY, TILE_M, YEAR_DAYS, groundOf, wetAt, type Agent, type Dead, type Stack, type Thing, type Weather, type World } from "./world";
+import { HOUR } from "./ticks";
 import { anyAround, around, deadwoodOf, liveThings, moistOf as gpuMoisture, nearestThing } from "./space";
 import { airAt, airOn, headWind, humidity, islandAir, islandMeans, islandPooled, shelterTables, snowAt, sunOn, vapourAt, wetHours } from "./air";
 import { canopyAt, heatAt } from "./light";
@@ -151,7 +152,7 @@ export function islandHour(w: World, t: number, sky: Weather["sky"], speed: numb
   const a = Math.atan2(wind.dy, wind.dx), k = ((Math.round((a / (2 * Math.PI)) * DIRS) % DIRS) + DIRS) % DIRS;
   const share = (kind: number) => Math.min(65535, rain > 0 ? Q(through(kind, held[kind] ?? 0, rain, bare)) : 65535);
   return {
-    hour: Math.floor(t / 12), s, f: Q(f), temp: Q(temp), pooled: Q(islandPooled(w, t, sky, speed)), wet: sky === "storm" ? 5 : sky === "rain" ? 1 : 0,
+    hour: Math.floor(t / HOUR), s, f: Q(f), temp: Q(temp), pooled: Q(islandPooled(w, t, sky, speed)), wet: sky === "storm" ? 5 : sky === "rain" ? 1 : 0,
     speed: Q(speed), k, ux: Q(wind.dx / len), uy: Q(wind.dy / len), v: rain > 0 ? Q(fallSpeed(rain)) : 0, sun: Q(sunOn(t, sky)), kr: Q(topKr(soil)),
     tp: share(TREES.indexOf("pine")), tb: share(crownKind("oak")),
   };
@@ -297,7 +298,7 @@ export function grassAt(w: World, at: { px: number; py: number }) {
 // queued for the GPU's water law (gpu/moisture.ts), which steps everything lying out at the next tick's laws, and the
 // cells round people asked of; then what people hold, lay and store.
 export function wetness(w: World) {
-  if (w.t % 12) return;
+  if (w.t % HOUR) return;
   const wx = w.weather, crowns = crownsHour(w, wx.past?.crowns, w.t, wx.sky, wx.speed, wx.temp);
   const H = islandHour(w, w.t, wx.sky, wx.speed, wx.temp, wx.wind, wx.wet, crowns.held, crowns.bare);
   wx.dead = deadHour(w, wx.dead, H);

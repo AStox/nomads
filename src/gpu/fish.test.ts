@@ -17,7 +17,7 @@ import {
 } from "./wgsl/fish";
 import { N } from "../terrain/grid";
 import { fishConsts, fishDriver, watersOf, fishOf } from "../sim/waters";
-import { DAY, YEAR_DAYS } from "../sim/sky";
+import { DAY, YEAR_DAYS } from "../sim/ticks";
 import { newWorld } from "../sim/world";
 
 afterAll(releaseGpu);
@@ -203,7 +203,7 @@ function laid() {
 }
 // The days run: an ordinary one, a dry one, a smolts' one and the recruits' day, at ticks a day apart.
 const DAYS: { t: number; flags: number; dry: boolean }[] = [
-  { t: 288 * 10, flags: 0, dry: false }, { t: 288 * 11, flags: 0, dry: true }, { t: 288 * 12, flags: FLAG.smolt, dry: false }, { t: 288 * 13, flags: FLAG.recruit, dry: false },
+  { t: DAY * 10, flags: 0, dry: false }, { t: DAY * 11, flags: 0, dry: true }, { t: DAY * 12, flags: FLAG.smolt, dry: false }, { t: DAY * 13, flags: FLAG.recruit, dry: false },
 ];
 const driver = (): FishDriver => ({
   seed: 11, days: 0, t0: 0, cells, consts: fishConsts, start: () => new Uint32Array(0),

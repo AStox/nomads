@@ -4,12 +4,19 @@
 import type { Gpu } from "./device";
 
 const pipelines = new WeakMap<GPUDevice, Map<string, GPUComputePipeline>>();
-
-// The compute pipeline for an entry point of a WGSL source on a device, compiled the first time it is asked for.
-export function pipeline(g: Gpu, wgsl: string, entry = "main"): GPUComputePipeline {
+const making = new WeakMap<GPUDevice, Map<string, Promise<GPUComputePipeline>>>();
+function made(g: Gpu): Map<string, GPUComputePipeline> {
   let byKey = pipelines.get(g.device);
   if (!byKey) pipelines.set(g.device, (byKey = new Map()));
-  const key = `${entry}\u0000${wgsl}`;
+  return byKey;
+}
+
+// The compute pipeline for an entry point of a WGSL source on a device, compiled the first time it is asked for. The
+// browser's GPU process compiles it before it runs any other command of any queue, every frame waiting meanwhile
+// (a large kernel takes it 100 to 300 ms: bench-r9c.json compileStalls), so the play page makes its kernels with
+// pipelineSoon instead.
+export function pipeline(g: Gpu, wgsl: string, entry = "main"): GPUComputePipeline {
+  const byKey = made(g), key = `${entry}\u0000${wgsl}`;
   let p = byKey.get(key);
   if (!p) {
     const module = g.device.createShaderModule({ code: wgsl });
@@ -17,6 +24,30 @@ export function pipeline(g: Gpu, wgsl: string, entry = "main"): GPUComputePipeli
     byKey.set(key, p);
   }
   return p;
+}
+
+// The same pipeline made asynchronously (createComputePipelineAsync), which the GPU process compiles on threads of its
+// own while the queues go on: the pipeline when it is made, else the promise of it. A source the browser refuses is
+// made as pipeline makes it, so it fails the same way.
+export function pipelineSoon(g: Gpu, wgsl: string, entry = "main"): GPUComputePipeline | Promise<GPUComputePipeline> {
+  const byKey = made(g), key = `${entry}\u0000${wgsl}`, p = byKey.get(key);
+  if (p) return p;
+  const soon = making.get(g.device) ?? new Map<string, Promise<GPUComputePipeline>>();
+  making.set(g.device, soon);
+  let q = soon.get(key);
+  if (!q) {
+    const module = g.device.createShaderModule({ code: wgsl });
+    q = g.device.createComputePipelineAsync({ layout: "auto", compute: { module, entryPoint: entry } }).then(
+      (ready) => {
+        if (!byKey.has(key)) byKey.set(key, ready);
+        return byKey.get(key)!;
+      },
+      () => pipeline(g, wgsl, entry),
+    );
+    soon.set(key, q);
+    void q.then(() => soon.delete(key));
+  }
+  return q;
 }
 
 // A storage buffer of so many bytes (rounded up to 4), or holding a copy of the data given.

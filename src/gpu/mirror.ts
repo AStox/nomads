@@ -1,18 +1,19 @@
-// The CPU's view of the GPU's objects: the cells round people, copied back once a tick (store.ts land), and single
-// objects asked for by id. What CPU code changes goes through the store's delta queue and shows here at once, laid
-// over each landing again until the GPU has it, so an agent and the next frame see their own felling.
+// The CPU's view of the GPU's objects: the cells round people, copied back at each landing (store.ts land, every
+// LAND_S of sim time, src/sim/lanes.ts), and single objects asked for by id. What CPU code changes goes through the
+// store's delta queue and shows here at once, laid over each landing again until the GPU has it, so an agent and the
+// next frame see their own felling.
 //
-// Windows are rectangles of cells, kept under a key (a person's id, the view) until changed or dropped; each tick the
+// Windows are rectangles of cells, kept under a key (a person's id, the view) until changed or dropped; each landing's
 // gather copies the union of them, for every placed kind. A lookup of a cell outside every window, or of an id whose
-// slot isn't here, answers PENDING and asks for it in the next landing, which comes at the end of the same tick, so it
-// is answered the next tick; a cell or slot asked for again in a tick stays in the copy for the next.
+// slot isn't here, answers PENDING and asks for it in the next landing, so it is answered on the tick after that
+// landing; a cell or slot asked for again before a landing stays in the copy for the next.
 //
 // A landing keeps the copied words as they came; a cell's objects are made from them the first time the cell (or one
 // of its objects) is asked for, so a tick costs the CPU what it looks at, not what the windows hold. Objects are made
-// again after every landing: hold ids across ticks, not objects. An object read here is at most one tick old, apart
-// from the deltas CPU code has queued since, which are already in it. A still kind (store.ts) the GPU hasn't changed
-// since its last landing keeps its pages, objects and all, and has only the cells newly wanted copied: what it holds
-// is then exactly the GPU's state however old the copy, and a cell held that has left every window still answers.
+// again after every landing: hold ids across ticks, not objects. An object read here is at most one landing old,
+// apart from the deltas CPU code has queued since, which are already in it. A still kind (store.ts) the GPU hasn't
+// changed since its last landing keeps its pages, objects and all, and has only the cells newly wanted copied: what it
+// holds is then exactly the GPU's state however old the copy, and a cell held that has left every window still answers.
 import { N } from "../terrain/grid";
 import { CELL_MM } from "./wgsl/index";
 import { genOfId, idOf, kindOfId, slotOfId, type Delta, type Kind, type Store } from "./store";

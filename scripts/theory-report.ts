@@ -10,7 +10,7 @@
 // --evidence: the runs whose tries say what could be learned on the island (below), when not the runs scored: the real
 // people's, for a world where everyone knew from the start.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { DAY } from "../src/sim/world";
+import { DAY, TICK_S } from "../src/sim/ticks";
 import { holds } from "../src/sim/beliefs";
 import { expectedTicks, loadKey, verdict } from "./answer-key";
 import type { Tally, Verdict, Way } from "./answer-key";
@@ -277,24 +277,27 @@ for (const r of runs) {
 // ---------- tell ----------
 const pct = (a: number, b: number) => (b ? `${Math.round((100 * a) / b)}%` : "-");
 const per = (a: number, b: number, digits = 0) => (b ? (a / b).toFixed(digits) : "-");
+// a sum of ticks over a count, as minutes each: the text report's clock (the numbers --json gives scripts/evals.ts stay
+// in ticks, as its ledgers hold them, until evals' VERSION moves with the tick)
+const mins = (ticks: number, b: number) => (b ? ((ticks * TICK_S) / 60 / b).toFixed(0) : "-");
 const days = (b: number) => `${String(b * BUCKET + 1).padStart(3)}-${String((b + 1) * BUCKET).padEnd(4)}`;
 console.log(`${runs.length} runs, ${attemptsAll} attempts at ${seenWays.size} ways of doing things, ${pct(attemptsJudged, attemptsAll)} of them at a way the key judged`);
 console.log(`answer key: seed ${answers.seed}, ${answers.days} days, ${answers.trials} trials, ${Object.keys(answers.ways).length} ways (${Object.keys(answers.ways).filter((k) => judged(k)).length} judged)`);
-console.log("\nattempts, took, worked and wasted: what shows at once, tests left out; tests: tries made to see whether a theory holds");
+console.log("\nattempts, took (minutes each), worked and wasted: what shows at once, tests left out; tests: tries made to see whether a theory holds");
 console.log("again: theories formed that had been dropped by the same person before; best, regret: of the ways they knew to that end, how often they took");
-console.log("the quickest, and the ticks given up against it; island: the ticks given up against the quickest way the key knows, known or not");
+console.log("the quickest, and the minutes given up against it; island: the minutes given up against the quickest way the key knows, known or not");
 console.log("planted and came: plantings by when they went in, through the run's last 30 days (later ones haven't all shown); spot: their odds by the key");
 console.log("days     attempts took worked wasted tests | theories/person right wrong unclear | formed r/w/u again | dropped r/w/u | tests offered/taken | best (of n) regret island | planted came spot");
 rows.forEach((x, b) => {
   if (!x) return;
   const held = x.held.hurts + x.held["no effect"] + x.held.unclear, formed = x.formed.hurts + x.formed["no effect"] + x.formed.unclear;
   console.log([
-    `${days(b)} ${String(x.attempts).padStart(8)} ${per(x.took, x.timed, 1).padStart(4)} ${pct(x.wins, x.attempts).padStart(6)} ${pct(x.wasted, x.attempts).padStart(6)} ${String(x.tests).padStart(5)}`,
+    `${days(b)} ${String(x.attempts).padStart(8)} ${mins(x.took, x.timed).padStart(4)} ${pct(x.wins, x.attempts).padStart(6)} ${pct(x.wasted, x.attempts).padStart(6)} ${String(x.tests).padStart(5)}`,
     `${per(held, x.agentDays, 2).padStart(15)} ${pct(x.held.hurts, held).padStart(5)} ${pct(x.held["no effect"], held).padStart(5)} ${pct(x.held.unclear, held).padStart(7)}`,
     `${`${x.formed.hurts}/${x.formed["no effect"]}/${x.formed.unclear}`.padStart(12)} ${pct(x.reformed, formed).padStart(5)}`,
     `${`${x.dropped.hurts}/${x.dropped["no effect"]}/${x.dropped.unclear}`.padStart(13)}`,
     `${`${x.offered}/${x.tested}`.padStart(19)}`,
-    `${`${pct(x.best, x.chose)} (${x.chose})`.padStart(11)} ${per(x.regret, x.chose).padStart(6)} ${per(x.discovery, x.found).padStart(6)}`,
+    `${`${pct(x.best, x.chose)} (${x.chose})`.padStart(11)} ${mins(x.regret, x.chose).padStart(6)} ${mins(x.discovery, x.found).padStart(6)}`,
     `${String(x.planted).padStart(7)} ${pct(x.came, x.planted).padStart(4)} ${pct(x.spot, x.planted).padStart(4)}`,
   ].join(" | "));
 });

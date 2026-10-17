@@ -72,6 +72,27 @@ test("someone cold 1.5 m from a fire warms back up, more by a bigger fire, and t
   expect(Math.abs(at(3) / at(6) - 4) / 4).toBeLessThan(0.05);
 });
 
+test("the body run on its 60 s lane over four hours of a cold night keeps its core within 0.05 C of the same body run every second", () => {
+  const { w, a } = cold(), t0 = w.t, body = structuredClone(bodyOf(w, a)), had = { ...a.needs };
+  // the core and skin at the end of each tick (300 s), the body run every `secs` seconds through it
+  const night = (secs: number) => {
+    w.t = t0;
+    a.body = structuredClone(body);
+    Object.assign(a.needs, had);
+    const cores: number[] = [], skins: number[] = [];
+    for (let i = 0; i < 48; i++, w.t++) {
+      for (let s = 0; s < 300; s += secs) needs(w, a, secs);
+      cores.push(bodyOf(w, a).core);
+      skins.push(bodyOf(w, a).skin);
+    }
+    return { cores, skins };
+  };
+  const lane = night(60), second = night(1);
+  // cold enough to tell: their skin goes on cooling through the night
+  expect(body.skin - second.skins.at(-1)!).toBeGreaterThan(1);
+  for (let i = 0; i < lane.cores.length; i++) expect(Math.abs(lane.cores[i] - second.cores[i])).toBeLessThan(0.05);
+}, 120_000);
+
 test("someone standing where a blaze throws 3 kW/m2 is hurt within the tick, which outlasts the dose that pains, while someone at a campfire's side isn't", () => {
   // where the six-log blaze throws 3 kW/m2: the pain dose, 1.33 (kW/m2)^(4/3) min, comes in 18 s there
   let { w, a } = cold();

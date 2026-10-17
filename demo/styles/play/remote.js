@@ -1,20 +1,30 @@
 // The page's side of the sim, which runs in the render worker (isopixel/worker.js, play/sim.js) on the GPU device the
 // island is drawn with, so the page thread keeps only the UI. This keeps the face the page and the renderer read (w,
-// pos, alpha, inspect, journey, update and the rest) from what the worker posts: after each tick, the people, animals,
-// camps and weather and the things drawn every frame that changed; and whenever the page asks (want), the selection's
-// inspector, path and heading, the world window's things and the population history, which come again after every tick.
+// pos, alpha, inspect, journey, update and the rest) from what the worker posts: after the ticks of a frame, the people,
+// animals, camps and weather and the things drawn every frame that changed; and whenever the page asks (want), the
+// selection's inspector, path and heading, the world window's things and the population history, which come again
+// after every frame's ticks.
 // The ticks' timing stays here, as it was when the sim ran on this thread, so a frame between two ticks draws people and
 // animals partway along their last step.
-const BASE_MS = 500;
+
+// The pace the world runs at unless the page asks otherwise, in sim seconds a wall second: a 300 s tick each 500 ms, the
+// pace it has always had [design].
+export const PACE = 600;
+// Behind the clock by more than this when ticks come due (ticks slower than the pace), the clock slips back to this far
+// behind and the rest of what is owed is let go [design: two 60 Hz frames].
+const SLIP_MS = 2000 / 60;
 
 // live: the renderer (isopixel/live.js), whose worker runs the sim. Resolves once the world is there, before it warms.
 export function connectSim(live) {
   // the latest state and where each person and animal stood before the last tick; the selection's answer, the things
   // window's and the history as last asked for
-  let S = null, ents = new Map(), acts = new Map(), opening = null, activities = {}, DAY = 0;
+  let S = null, ents = new Map(), acts = new Map(), opening = null, activities = {}, DAY = 0, TICK_S = 0, YEAR_DAYS = 0;
   const prev = new Map(), liveThings = new Map();
   let want = { sel: null, things: null, history: false }, about = null, things = null, history = null;
-  let alpha = 0, last = null, pausedAt = null, lastIv = 0, running = false, done = null;
+  // The page's clock: since, the wall ms its tick 0 fell at, at the wall ms a tick lasts at the pace when it was last
+  // looked at (wallWas); base, the ticks the worker has run for it; asked, base when the ticks in hand were asked for;
+  // the last ticks shown, shownK of them from tick shownFrom of the clock, drawn as far as alpha has come.
+  let alpha = 0, since = null, wallWas = 0, pausedAt = null, base = 0, asked = 0, shownFrom = 0, shownK = 1, running = false, done = null;
   const sameSel = (a, b) => a === b || (!!a && !!b && typeof a === "object" && typeof b === "object" && a.px === b.px && a.py === b.py);
   const w = {
     get t() { return S.t; }, get agents() { return S.agents; }, get animals() { return S.animals; },
@@ -42,16 +52,23 @@ export function connectSim(live) {
     w,
     get alpha() { return alpha; },
     get tickMs() { return S.tickMs; },
-    // the warm's ticks still to run (play/sim.js), and how many it has: asked for one a frame while any are left
+    // the warm's ticks still to run (play/sim.js), and how many it has: asked for one at a time while any are left
     get warming() { return S?.warming ?? 0; },
     warmTicks: 0,
+    // the sim's clock as the worker posts it: ticks a day, seconds a tick, days a year
+    get day() { return DAY; },
+    get tickS() { return TICK_S; },
+    get yearDays() { return YEAR_DAYS; },
+    // the wall ms the last ticks shown are drawn over at this pace, from where they stood to where they stand
+    get stepMs() { return (shownK * TICK_S * 1000) / sim.speed; },
     // "relay" while people think with Jev, "random" otherwise
     get brain() { return S.brain; },
     // the things drawn every frame (fires, shelters, items and the like) as a client is sent them, by id
     liveThings,
     // who to open on (play/sim.js opening): { id, px, py }, or null
     get opening() { return opening; },
-    speed: 1,
+    // sim seconds a wall second
+    speed: PACE,
     paused: false,
     // called when an answer to what the page asked comes in between ticks
     onAnswer: null,
@@ -90,26 +107,34 @@ export function connectSim(live) {
     // the hour the page is drawn at: null follows the sim, a number pins it there (?hour=, or from the console)
     hour: null,
     clock() {
-      const ft = S.t + alpha, h = sim.hour ?? ((ft % DAY) / DAY) * 24;
+      // the time drawn: within the last ticks shown, as far as alpha has come
+      const ft = S.t + 1 - shownK + alpha * shownK, h = sim.hour ?? ((ft % DAY) / DAY) * 24;
       return { hour: h, day: Math.floor(ft / DAY) + 1, season: S.weather.season };
     },
-    // At most one tick per call: each is the worker's, and the server never bursts to catch up either. What a tick
-    // changed is handed back by the first call after the worker says it ended, which may start the next; none starts
-    // while one runs. While the world warms, one is asked for as soon as the last has landed, each drawn where it lands.
+    // The ticks due by the page's clock (floor of speed times the wall time since its start over a tick's seconds), asked
+    // of the worker together, which runs them while the frame's sim budget lasts and hands back how many it ran. What
+    // they changed is handed back by the first call after the worker says they ended, which may ask for the next; none
+    // is asked for while some run. At 300 s a tick and 600 sim seconds a wall second this is a tick each 500 ms. While
+    // the world warms, one tick is asked for as soon as the last has landed, each drawn where it lands.
     update(now) {
       if (sim.paused) { pausedAt ??= now; return null; }
-      if (pausedAt !== null) { if (last !== null) last += now - pausedAt; pausedAt = null; }
-      const iv = S.warming ? 0 : BASE_MS / sim.speed, along = (d) => (iv ? Math.min(1, Math.max(0, d / iv)) : 1);
-      if (last === null) { last = now; lastIv = iv; return null; }
-      if (iv !== lastIv) { last = now - alpha * iv; lastIv = iv; }
+      if (pausedAt !== null) { if (since !== null) since += now - pausedAt; pausedAt = null; }
+      const wall = (TICK_S * 1000) / sim.speed;
+      if (since === null) { since = now - base * wall; wallWas = wall; return null; }
+      // a new speed keeps the clock where it stands, in ticks
+      if (wall !== wallWas) { since = now - ((now - since) / wallWas) * wall; wallWas = wall; }
       const ready = done;
       done = null;
-      if (running || now - last < iv) { alpha = along(now - last); return ready; }
-      last = now - last < 2 * iv ? last + iv : now;
-      alpha = along(now - last);
+      const at = (now - since) / wall;
+      alpha = S.warming ? 1 : Math.min(1, Math.max(0, (at - shownFrom) / shownK));
+      if (running) return ready;
+      let n = S.warming ? 1 : Math.floor(at) - base;
+      if (n <= 0) return ready;
+      // behind by more than two frames' worth, the clock slips back to two frames behind
+      if (!S.warming && (at - base - 1) * wall > SLIP_MS) { since = now - (base + 1) * wall - SLIP_MS; n = Math.floor((now - since) / wall) - base; }
       remember();
-      running = true;
-      live.post({ type: "simTick" });
+      running = true; asked = base;
+      live.post({ type: "simTick", n });
       return ready;
     },
   };
@@ -120,19 +145,23 @@ export function connectSim(live) {
       // the worker's sim failing after it was ready stops the page as any other error does
       else if (m.type === "simError") { const e = new Error(m.error); if (S) reportError(e); else fail(e); }
       else if (m.type === "simReady") {
-        activities = m.activities; DAY = m.day; opening = m.opening;
+        activities = m.activities; DAY = m.day; TICK_S = m.tickS; YEAR_DAYS = m.yearDays; opening = m.opening;
         take(m.state);
         sim.warmTicks = S.warming;
         for (const t of m.live) liveThings.set(t.id, t);
         remember();
         ready(sim);
       } else if (m.type === "simState") {
+        const warmed = !!S?.warming;
         if (m.state) take(m.state);
         answers(m);
         if (m.ch) {
           for (const t of m.ch.live) liveThings.set(t.id, t);
           for (const id of m.ch.drop) liveThings.delete(id);
           done = m.ch; running = false;
+          base += m.ran; shownFrom = asked + 1; shownK = m.ran;
+          // the warm over, the clock starts with this tick shown whole and the next due a tick's wall time on
+          if (warmed && !S.warming && since !== null) { since = performance.now() - base * wallWas; shownFrom = base - 1; shownK = 1; }
         } else sim.onAnswer?.();
       }
     });

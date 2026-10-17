@@ -12,7 +12,8 @@
 // have given it so far, counting up, and fseen, how far of that the GPU has taken in (fed is the CPU's alone, fseen the
 // GPU's alone, so neither ever overwrites the other's).
 //
-// The law runs every hour of island time (every 12 ticks), a day at a time in the twenty years before anyone wakes.
+// The law runs every hour of island time (every HOUR ticks, ticks.ts) [design: the herds stepped hourly], 24 steps an
+// island day (DAY ticks), a day at a time in the twenty years before anyone wakes.
 // What the CPU reads back each landing: how many of each kind are alive (a census, every tick). What the birds eat of
 // the fish goes to the fish on the GPU (fish.ts FishLink), and what the crows, gulls and foxes eat of the
 // invertebrates, and the members people see them single out, to the lumped kinds on the GPU (Ground), never through
@@ -22,6 +23,7 @@ import { reload, savedArray, savedNumbers } from "./store";
 import { cover, storage } from "./kernel";
 import type { FishLink } from "./fish";
 import { CELLS } from "./wgsl/index";
+import { DAY, HOUR } from "../sim/ticks";
 import {
   A_, BIRTH_HEAD, BIRTH_INIT, FIELDS, FLAG, G, GK, KP_WORDS, LIVE_LAYERS, NL, NONE, NSP, PO, Q_RUNS, SATW, T, TW, W_, W_RUNS, aWords, larAt,
   animalsAct, animalsBrowse, animalsCensus, animalsClaim, animalsEat, animalsFate, animalsFront, animalsSatCols, animalsSatRows,
@@ -134,8 +136,8 @@ export class Animals implements Rider {
       // the days before anyone wakes, the birds' catch going to the fish as each hour's would, and each day of the
       // lumped kinds stepped at the midnight the hour crosses, before the hour (the start need not fall on an hour)
       for (let k = driver.days * 24; k >= 1; k--) {
-        const t = driver.t0 - k * STEP_TICKS, midnight = Math.floor(t / DAY) * DAY;
-        if (ground && midnight > t - STEP_TICKS) ground.spin(store, midnight);
+        const t = driver.t0 - k * HOUR, midnight = Math.floor(t / DAY) * DAY;
+        if (ground && midnight > t - HOUR) ground.spin(store, midnight);
         this.law(store, t);
         store.index(kind, true);
         store.flush();
@@ -143,7 +145,7 @@ export class Animals implements Rider {
       this.cullNow();
       await store.refresh();
     }
-    store.law({ name: "animals", due: (t) => t % STEP_TICKS === 0, run: (s, t) => this.law(s, t) });
+    store.law({ name: "animals", due: (t) => t % HOUR === 0, run: (s, t) => this.law(s, t) });
     store.ride(this);
   }
   // The constants for so many steps a day, and whether the lumped kinds keep the ground (G.lumped).
@@ -163,7 +165,7 @@ export class Animals implements Rider {
   private law(s: Store, t: number) {
     const b = this.bufs!, k = this.kind!, src = this.src!, g = s.g, cap = k.capacity, per = this.per;
     const { day, flags } = this.driver!.step(t, per);
-    g.device.queue.writeBuffer(b.KP, PO * 4, Uint32Array.of(t >>> 0, per, day, flags, this.driver!.seed >>> 0, (STEP_TICKS * 24) / per));
+    g.device.queue.writeBuffer(b.KP, PO * 4, Uint32Array.of(t >>> 0, per, day, flags, this.driver!.seed >>> 0, DAY / per));
     this.fish?.feed(s, b.W, W_.fish * T);
     if (this.browse && per === 24 && this.browse.filed(t)) this.browsed(this.browse.raster(s));
     s.encode((e) => {
@@ -190,6 +192,9 @@ export class Animals implements Rider {
       s.births(ANIMAL, ANIMAL, b.Q, BIRTH_INIT, { bufs: [{ name: "KP", buf: b.KP }], wgsl: BIRTH_HEAD }, true);
     }
     k.touched = k.stale = true;
+  }
+  kernelSources(): string[] {
+    return [...Object.values(this.src!), this.store!.birthKernel(ANIMAL, ANIMAL, BIRTH_INIT, { bufs: [{ name: "KP", buf: this.bufs!.KP }], wgsl: BIRTH_HEAD })];
   }
   // Every animal of a kind (SP) dies, now or, before the animals live on a store, once they do.
   cull(sp: number) {
@@ -231,10 +236,6 @@ export class Animals implements Rider {
   // The GPU buffers, for tests reading the ground and the counts back.
   get buffersForTest() { return this.bufs; }
 }
-
-// Time: a step is an hour of island time [design: the herds stepped hourly], an island day 24 of them (sky.ts DAY).
-export const STEP_TICKS = 12;
-const DAY = 24 * STEP_TICKS;
 
 // Every animal of one kind killed. Bindings: body.
 const CULL = (cap: number, sp: number) => /* wgsl */ `

@@ -2,7 +2,7 @@
 // on both of the dev machine's adapters, and the plan's checks (Unit 7): a closed oak stand holds Reineke's count, an
 // open-grown stem reaches the calibrated heights, a stem in full shade starves by the peak/2 rule, no tree passes its
 // stand's maximum crowding, and seed 1's stems by kind against the measured densities.
-import { DAY, groundOf, newWorld } from "../sim/world";
+import { DAY, YEAR_DAYS, groundOf, newWorld } from "../sim/world";
 import { GROWTH_C, TREE_KINDS, YEARS_PACE, calibratedHeight, stemDriver, stemTables, treeKg } from "../sim/plants";
 import { afterAll, expect, test } from "bun:test";
 import { openGpu, releaseGpu, theGpu, type Gpu } from "./device";
@@ -202,9 +202,8 @@ test("an open-grown stem reaches the calibrated law's heights at 10 and 30 years
   const stems: [number, number, number, number, number][] = TREE_KINDS.map((sp, r) => [K("tree"), S(sp), 150 * CELL + r * 3 * TEXEL_M + 1, 150 * CELL + 1, calibratedHeight(sp, 5)]);
   const { s, flora, L } = await staged(await theGpu(), stems, () => openDay((r) => dayGain(TREE_KINDS[r])));
   const heights = async () => { const b = await s.read(PLANT, "body"); return TREE_KINDS.map((_, j) => b[L.size + j] / 1000); };
-  const DAYS = 40;
   let t = 0;
-  const grow = async (years: number) => { for (let k = 0; k < years * DAYS; k++) await s.step(++t); };
+  const grow = async (years: number) => { for (let k = 0; k < years * YEAR_DAYS; k++) await s.step(++t); };
   await grow(5);
   const at10 = await heights();
   await grow(10);

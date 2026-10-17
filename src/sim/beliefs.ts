@@ -1,7 +1,7 @@
 // What each agent thinks happens when they do something, and the laws of the world those beliefs come from.
 import type { Fields, Outcome } from "./physics";
 import { DAY, log, stageOf, type Agent, type World } from "./world";
-import { TICK_S } from "./sky";
+import { TICK_S } from "./ticks";
 import { plural } from "./materials";
 import { physOf } from "./fuel";
 import { seesHands, witnesses } from "./senses";
@@ -304,6 +304,7 @@ const laid = (w: World, ks: string[]) => {
 const laterWords = (t: number) => (t < DAY / 2 ? "some hours later" : t < DAY * 1.5 ? "about a day later" : `about ${Math.round(t / DAY)} days later`);
 const THING_WORD: Record<string, string> = { sapling: "young plant" };
 const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
+// ticks: how long it takes, told from its seconds in hours, past the first (Belief.ticks keeps its ticks in a save);
 // later: how long after the result shows, for what they've seen come of it in time
 export function sentence(w: World, f: Fields, ticks?: number, later?: number): string {
   const hours = ticks ? (ticks * TICK_S) / 3600 : 0, time = hours > 1 ? ` (about ${Math.round(hours)} hours)` : "";

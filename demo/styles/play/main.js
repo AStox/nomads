@@ -1,7 +1,7 @@
 // The live page: the game's sim running in the render worker beside the isopixel renderer (play/remote.js), drawn with a
 // pan, zoom and orbit camera; this thread keeps the camera, the input and the windows.
 import { createLive, hasWebGPU, loadingScreen } from "../isopixel/live.js";
-import { connectSim } from "./remote.js";
+import { PACE, connectSim } from "./remote.js";
 import { drawInspector, drawPanel } from "../isopixel/inspect.js";
 import { RGB, P } from "../isopixel/pal.js";
 import { Buf } from "../isopixel/px.js";
@@ -15,14 +15,17 @@ const num = (k, def, lo = -Infinity, hi = Infinity) => {
   const s = Q.get(k), v = s == null || s.trim() === "" ? NaN : Number(s);
   return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : def;
 };
-const seed = Math.trunc(num("seed", 1)), warm = Math.trunc(num("warm", 2016, 0, 40000)), withSim = Q.get("sim") !== "0";
+// ?warm: sim days the world runs before it is live [design: 7, a week, as it has been; at most 140 days, about the
+// 40,000 ticks of 300 s it has always been held to]
+const seed = Math.trunc(num("seed", 1)), warm = num("warm", 7, 0, 140), withSim = Q.get("sim") !== "0";
 // ?bench=zoom, or several in turn on one load (?bench=zoom,orbit,turn,pan), each from the view the first began at
 const benchKinds = (Q.get("bench") ?? "").split(",").filter((k) => ["zoom", "orbit", "turn", "pan"].includes(k));
 const canvas = document.getElementById("view"), hint = document.getElementById("hint"), statsEl = document.getElementById("stats"), pace = document.getElementById("pace"), renderEl = document.getElementById("render"), clockEl = document.getElementById("clock");
 // a touch screen: buttons stand in for the keys, and the hint speaks of fingers (?pad=1 or 0 to choose)
 const pad = document.getElementById("pad"), touchy = Q.get("pad") === "1" || (Q.get("pad") !== "0" && matchMedia("(pointer: coarse)").matches);
 if (touchy) hint.textContent = "drag to pan · pinch to zoom · twist two fingers to turn · tap anyone or anything to inspect it, people and animals to follow · tap it again to let go · the tabs at the top list everyone and everything";
-const SPEEDS = [0.25, 0.5, 1, 2, 4, 8], DBL_MS = 300;
+// the speeds the page steps through, in sim seconds a wall second: a quarter of the usual pace to eight times it
+const SPEEDS = [0.25, 0.5, 1, 2, 4, 8].map((k) => k * PACE), DBL_MS = 300;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const toM = (t) => t * TILE_M - SIZE / 2;
 
@@ -58,9 +61,9 @@ async function main() {
   if (jevQ) { Q.delete("jev"); history.replaceState(null, "", `${location.pathname}${Q.size ? `?${Q}` : ""}`); }
   const live = await createLive({ seed, canvas, sim: withSim ? { warm, jev } : null, onProgress: (d, n, what) => { step = [what, 0.5 * (what === "drawing the sprites" ? 1 : 0) + (0.5 * d) / n]; say(); } });
   const sim = withSim ? await connectSim(live) : null;
-  // ?hour= pins the hour the island is drawn at, its light and sun, while the sim runs on; ?speed= starts it faster
-  // (a tick each frame at most, so 32 runs a day in about five seconds), for timelapses
-  if (sim) { sim.hour = num("hour", null, 0, 24); sim.speed = num("speed", 1, 0.25, 32); }
+  // ?hour= pins the hour the island is drawn at, its light and sun, while the sim runs on; ?speed= starts it faster, in
+  // sim seconds a wall second (600 the usual pace, 19200 runs a day in about four and a half seconds), for timelapses
+  if (sim) { sim.hour = num("hour", null, 0, 24); sim.speed = num("speed", PACE, PACE / 4, 32 * PACE); }
   const ready = performance.now() - t0;
   // ?zoom= takes a name, the old 0..3 index, or a number of zoom steps; ?bearing= one of the 8 whole bearings
   const zq = Q.get("zoom"), names = ["island", "region", "valley", "close"];
@@ -219,7 +222,7 @@ async function main() {
       const h = sim.history();
       if (!h) out.push({ tab: "graphs", none: "counting" });
       else {
-        const span = h.t.length > 1 ? (h.t.at(-1) - h.t[0]) / 288 : 0;
+        const span = h.t.length > 1 ? (h.t.at(-1) - h.t[0]) / sim.day : 0;
         out.push({ tab: "graphs", title: `people, last ${span.toFixed(1)} days`, rows: [{ label: "people", spark: h.people, h: 44, color: P.f1 }] });
         out.push({ tab: "graphs", title: "animals", rows: Object.entries(h.animals).sort((a, b) => (b[1].at(-1) ?? 0) - (a[1].at(-1) ?? 0)).map(([sp, xs]) => ({ label: sp, spark: xs, h: 26, color: SPECIES_C[sp] ?? P.w3, link: `@animals|${sp}` })) });
       }
@@ -270,7 +273,7 @@ async function main() {
   // ---------- a tooltip in the game's font: what a person or animal under the pointer is at, or the event a path's flag
   // stands for ----------
   const tipEl = document.getElementById("tip");
-  const when = (t) => { const h = ((t % 288) / 288) * 24; return `DAY ${Math.floor(t / 288) + 1} ${String(Math.floor(h)).padStart(2, "0")}:${String(Math.floor((h % 1) * 60)).padStart(2, "0")}`; };
+  const when = (t) => { const D = sim.day, h = ((t % D) / D) * 24; return `DAY ${Math.floor(t / D) + 1} ${String(Math.floor(h)).padStart(2, "0")}:${String(Math.floor((h % 1) * 60)).padStart(2, "0")}`; };
   let tipAt = 0, tipKey = "";
   async function tip(sx, sy) {
     let lines = null;
@@ -311,7 +314,7 @@ async function main() {
   let paceKey = "";
   // paused, warming up (the world's first days run at once after the first view: ticks done of all), or the speed
   function paintPace() {
-    const key = !sim ? "" : sim.paused ? "PAUSED" : sim.warming ? `WARMING UP ${sim.warmTicks - sim.warming}/${sim.warmTicks}` : sim.speed !== 1 ? `X${sim.speed}` : "";
+    const key = !sim ? "" : sim.paused ? "PAUSED" : sim.warming ? `WARMING UP ${sim.warmTicks - sim.warming}/${sim.warmTicks}` : sim.speed !== PACE ? `X${sim.speed / PACE}` : "";
     if (key === paceKey) return;
     paceKey = key;
     pace.hidden = !key;
@@ -510,7 +513,7 @@ async function main() {
   let padKey = "";
   function paintPad() {
     if (pad.hidden) return;
-    const on = { pause: !!sim?.paused, slower: !!sim && sim.speed < 1, faster: !!sim && sim.speed > 1, paths: view.path === false };
+    const on = { pause: !!sim?.paused, slower: !!sim && sim.speed < PACE, faster: !!sim && sim.speed > PACE, paths: view.path === false };
     const key = JSON.stringify(on);
     if (key === padKey) return;
     padKey = key;
@@ -532,7 +535,7 @@ async function main() {
     if (!p) { if (sim.inspect(follow) !== undefined) select(null); live.prefetch(null); return; }
     const upOf = (q) => q.y - live.camH(q.x, q.z), ahead = p.dx || p.dz ? [{ ...view, x: p.x + p.dx, z: p.z + p.dz, up: upOf(p), later: true }] : [];
     if (camera.offCentre(p) <= canvas.width * 0.35) {
-      const iv = sim.paused || sim.alpha >= 1 ? Infinity : 500 / sim.speed;
+      const iv = sim.paused || sim.alpha >= 1 ? Infinity : sim.stepMs;
       camera.follow(p, dt, (p.dx || 0) / iv, (p.dz || 0) / iv);
       farSince = 0;
       live.prefetch(ahead);
@@ -605,7 +608,7 @@ async function main() {
         `gpu ${(s.gpuMs ?? 0).toFixed(1)} ms  worker ${(s.workerMs ?? 0).toFixed(1)} ms  sprites ${s.counts?.sprites ?? 0}  specks ${s.counts?.points ?? 0}`,
         `heap ${s.memMB} MB  objects ${s.objects?.n ?? 0}  atlas ${s.objects?.sprites ?? 0} sprites`,
         `zoom ${view.zoom.toFixed(2)} ${live.levels[lf?.L ?? 0].name} x${(lf?.s ?? 0).toFixed(2)}  bearing ${view.bearing.toFixed(2)}`,
-        sim ? `day ${c.day} ${String(Math.floor(c.hour)).padStart(2, "0")}:${String(Math.floor((c.hour % 1) * 60)).padStart(2, "0")}  x${sim.speed}${sim.paused ? " paused" : ""}  tick ${sim.tickMs.toFixed(1)} ms` : "no sim",
+        sim ? `day ${c.day} ${String(Math.floor(c.hour)).padStart(2, "0")}:${String(Math.floor((c.hour % 1) * 60)).padStart(2, "0")}  x${sim.speed / PACE}${sim.paused ? " paused" : ""}  tick ${sim.tickMs.toFixed(1)} ms` : "no sim",
       ].join("\n");
     }
     requestAnimationFrame(loop);

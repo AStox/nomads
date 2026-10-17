@@ -18,7 +18,7 @@
 //   once however many of them are on it
 // scripts/evals.ts runs every probe over many seeds and holds each build to the last good one.
 import { readFileSync } from "node:fs";
-import { DAY, TILE_M, addThing, dryAt, isNight, newWorld, rng, type Agent, type Stack, type Thing, type World } from "../src/sim/world";
+import { TILE_M, addThing, dryAt, isNight, newWorld, rng, type Agent, type Stack, type Thing, type World } from "../src/sim/world";
 import { conditionsNow, retire, surroundings, tick } from "../src/sim/sim";
 import { DURATION, STILL, changed, count, counts, emberTime, giveItems, giveStack, groundWord, layAt, newKinds, occupied, removeThing, removed, soilAt, SEED_SOIL } from "../src/sim/physics";
 import { BLOWS, SPARKS_TO_CATCH } from "../src/sim/mechanics";
@@ -32,7 +32,7 @@ import { DARK, lightOn, skyShare } from "../src/sim/light";
 import { airOn, islandTemp } from "../src/sim/air";
 import { seasonAt } from "../src/sim/sky";
 import { SEASONS } from "../src/terrain/climate";
-import { YEAR_DAYS } from "../src/sim/sky";
+import { DAY, HOUR, TICK_S, YEAR_DAYS, ticksOf } from "../src/sim/ticks";
 import { anyAround, around, put, thingById } from "../src/sim/space";
 import { cull } from "../src/sim/animals";
 import { beliefKey, fieldsOf, groundKey, ofPlace, ruledOut, type Belief } from "../src/sim/beliefs";
@@ -401,7 +401,7 @@ export const PROBES: Record<string, Probe> = {
 // Fires in summer, a little after sunrise: no frost at night to muddy what they see. Planting from the first day of
 // spring, for as long as seed sown in the open would still come up within a planter's patience (sowingEnds), and again
 // the next spring.
-const START = 12 * DAY + 6 * 12, SOW_START = 1 * DAY + 6 * 12;
+const START = 12 * DAY + 6 * HOUR, SOW_START = 1 * DAY + 6 * HOUR;
 type Attempt = { agent: string; key: string; t: number; now: string[]; worked: boolean; testing: boolean };
 // What holds in an hour (and, planting, at a spot): how often it came, and how often a try there would have come off by
 // the formulas. A case fails where most tries would.
@@ -438,7 +438,7 @@ const knownWay = (key: string, t: number, ticks: number): Belief => {
 };
 // The ticks a way takes to a fire in daylight, by the formulas: strokes until a spark catches (mechanics.ts
 // SPARKS_TO_CATCH), or rubbing until the dust lights (physics.ts emberTime), the sticks rubbed as they're kept.
-function ticksOf(w: World, key: string) {
+function wayTicks(w: World, key: string) {
   const f = fieldsOf(key);
   return f.verb === "rub" ? Math.ceil(emberTime(w, { k: f.inputs[0], hp: 1, born: w.t, m: KEPT }, w.kinds[f.inputs[0]], false, STILL.temp) / TICK_S) : Math.ceil(SPARKS_TO_CATCH / BLOWS);
 }
@@ -490,12 +490,12 @@ function groundsSeen(w: World, ps: Pos[]) {
 }
 // The weather of the hours ahead under the probe's sky, from how wet the top soil is now, drawn with r (its
 // own draws, not the world's): K stretches of it, for working out what a seed put in now would come to.
-const K = 6, AHEAD = PATIENCE / 12;
+const K = 6, AHEAD = PATIENCE / HOUR;
 function skies(w: World, sky: Sky, r: () => number): Hour[][] {
   return Array.from({ length: K }, () => {
-    let wet = w.weather.wet, t = Math.ceil((w.t + 1) / 12) * 12;
+    let wet = w.weather.wet, t = Math.ceil((w.t + 1) / HOUR) * HOUR;
     const hours: Hour[] = [];
-    for (let i = 0; i < AHEAD; i++, t += 12) {
+    for (let i = 0; i < AHEAD; i++, t += HOUR) {
       const s = sky(isNight(t), t), kind = skyOf(s, r()), speed = r() < s.wind ? 18 : 2;
       wet = wetHour(w, wet, t, kind, speed, islandTemp(t, kind));
       hours.push({ sky: kind, speed, wet });
@@ -555,10 +555,9 @@ function plots(w: World, at: Pos, n: number, plot: Plot, sky: Sky, r: () => numb
   return ps;
 }
 
-// Where a body reads half warm (body.ts feels: skin between cold pain at 15 C and cool's edge at 32.6 C), and a tick's
-// seconds. Someone pinned by a probe has their skin set to what this tick's air on them, as they're dressed, takes down
-// or up to that.
-const HALF = 15 + 0.5 * (32.6 - 15), TICK_S = 86400 / DAY;
+// Where a body reads half warm (body.ts feels: skin between cold pain at 15 C and cool's edge at 32.6 C). Someone pinned
+// by a probe has their skin set to what this tick's air on them, as they're dressed, takes down or up to that.
+const HALF = 15 + 0.5 * (32.6 - 15);
 function pin(w: World, a: Agent) {
   const b = bodyOf(w, a), f = frameOf(w, a), rest = basal(f) / f.area, e = surroundings(w, a).e;
   b.gly = Math.max(b.gly, 0.8 * glyMax(f)); b.sleep = Math.min(b.sleep, 0.1); b.core = Math.max(b.core, 36.8);
@@ -599,7 +598,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
       put(w, a, ps[i].px, ps[i].py);
       a.heading = 0; a.home = null; a.goal = null; a.plan = []; a.inv = [];
       const start = v.starts?.[i] ?? [];
-      a.beliefs = { [PLANT]: { ...knownWay(PLANT, w.t, DURATION.plant), when: { [groundKey(groundWord(w, a.px, a.py))]: { tries: 1, wins: 1 } }, ...(start.length ? { unless: [...start] } : {}) } };
+      a.beliefs = { [PLANT]: { ...knownWay(PLANT, w.t, ticksOf(DURATION.plant)), when: { [groundKey(groundWord(w, a.px, a.py))]: { tries: 1, wins: 1 } }, ...(start.length ? { unless: [...start] } : {}) } };
     });
     Object.assign(truth, { grounds: groundsSeen(w, ps).size });
   } else {
@@ -607,7 +606,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     // ways that look alike they plan the first they know (plan.ts search), and a try that takes longer than they thought
     // makes it look slower, where one that took as long as they thought would leave the two alike for good
     if (v.ways.includes(SPINDLES)) w.kinds.spindle ??= { ...w.kinds.stick, id: "spindle" };
-    const quick = Math.min(...v.ways.map((k) => ticksOf(w, k)));
+    const quick = Math.min(...v.ways.map((k) => wayTicks(w, k)));
     w.agents.forEach((a, i) => {
       put(w, a, cx + (Math.cos(i) * 2) / TILE_M, cy + (Math.sin(i) * 2) / TILE_M);
       a.home = null; a.goal = null; a.plan = [];
@@ -617,7 +616,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
     });
   }
   // which way is truly faster, by the formulas
-  const ticks: Record<string, number> = probe === "choose" ? Object.fromEntries(ways.map((k) => [k, ticksOf(w, k)])) : {};
+  const ticks: Record<string, number> = probe === "choose" ? Object.fromEntries(ways.map((k) => [k, wayTicks(w, k)])) : {};
   const best = probe === "choose" ? ways.reduce((x, y) => (ticks[y] < ticks[x] ? y : x)) : "";
   if (best) Object.assign(truth, { best, ...Object.fromEntries(ways.map((k) => [`ticks:${k}`, ticks[k]])) });
 
@@ -742,12 +741,12 @@ export async function runProbe(probe: string, variant: string, seed: number, day
         sown.push({ agent: a.id, key: e.key, t: e.t, now: e.now, worked: up, testing: testing.includes(a.id) });
       }
     });
-    if (!sowing && v.sticks !== "mixed" && w.t % 12 === 6) w.agents.forEach((a, i) => {
+    if (!sowing && v.sticks !== "mixed" && w.t % HOUR === HOUR / 2) w.agents.forEach((a, i) => {
       const now = conditionsNow(w, a, way.verb, a, way.inputs), ok = lightsNow(w, a, ways[0], KEPT_TINDER);
       bump(cases[i], now, ok);
       if (change && w.t >= half) bump(after[i], now, ok);
     });
-    if (sowing && sowingNow(w.t) && w.t % 48 === 6) {
+    if (sowing && sowingNow(w.t) && w.t % (4 * HOUR) === HOUR / 2) {
       const weathers = skies(w, v.sky, draws);
       w.agents.forEach((a, i) => {
         const spots = plotSpots[i].filter((s) => !occupied(w, s.px, s.py)), up = comingUp(w, ps[i], spots.map((s) => bedAt(w, s.px, s.py, "berry")), weathers);

@@ -1,21 +1,24 @@
 // Everything alive on the island that isn't a person: what each kind is like and where they start. What they do each
-// tick is in animals.ts. Speeds are meters a tick of five minutes' game time, the way a person's are.
+// tick is in animals.ts. Speeds are meters a tick (animals.ts, walk.ts steer), each written as the meters it goes in
+// five minutes and taken a tick's share of [design: today's meters a five-minute tick; gap: uncited]. They stay meters
+// in five minutes rather than m/s because a speed over 300 and back is not always the same number (0.4 / 300 * 300).
 import { H, Tile, W, dryAt, dryNear, sea, tileAt, type Animal, type AnimalSpecies, type World } from "./world";
 import { put } from "./space";
 import { reveal, startPools } from "./pools";
+import { rate } from "./ticks";
 
 type Kind = { hp: number; walk: number; run: number; fly?: number; ground: boolean };
 export const FAUNA: Record<AnimalSpecies, Kind> = {
-  deer: { hp: 30, walk: 1.5, run: 8, ground: true },
-  wolf: { hp: 35, walk: 1.5, run: 8, ground: true },
-  fox: { hp: 12, walk: 1.2, run: 7, ground: true },
-  rabbit: { hp: 6, walk: 0.6, run: 5, ground: true },
-  heron: { hp: 8, walk: 0.4, run: 1, fly: 12, ground: false },
-  gull: { hp: 5, walk: 0.5, run: 1, fly: 14, ground: false },
-  crow: { hp: 4, walk: 0.5, run: 1.5, fly: 12, ground: false },
-  eagle: { hp: 12, walk: 0.3, run: 1, fly: 18, ground: false },
-  fish: { hp: 3, walk: 1, run: 3, ground: false },
-  butterfly: { hp: 1, walk: 1, run: 2.5, fly: 2.5, ground: false },
+  deer: { hp: 30, walk: rate(1.5, 300), run: rate(8, 300), ground: true },
+  wolf: { hp: 35, walk: rate(1.5, 300), run: rate(8, 300), ground: true },
+  fox: { hp: 12, walk: rate(1.2, 300), run: rate(7, 300), ground: true },
+  rabbit: { hp: 6, walk: rate(0.6, 300), run: rate(5, 300), ground: true },
+  heron: { hp: 8, walk: rate(0.4, 300), run: rate(1, 300), fly: rate(12, 300), ground: false },
+  gull: { hp: 5, walk: rate(0.5, 300), run: rate(1, 300), fly: rate(14, 300), ground: false },
+  crow: { hp: 4, walk: rate(0.5, 300), run: rate(1.5, 300), fly: rate(12, 300), ground: false },
+  eagle: { hp: 12, walk: rate(0.3, 300), run: rate(1, 300), fly: rate(18, 300), ground: false },
+  fish: { hp: 3, walk: rate(1, 300), run: rate(3, 300), ground: false },
+  butterfly: { hp: 1, walk: rate(1, 300), run: rate(2.5, 300), fly: rate(2.5, 300), ground: false },
 };
 // People can walk up to and trap what lives on the ground; hunting works on the bigger of those.
 export const HUNTED = ["deer", "wolf", "fox", "rabbit"] as const;

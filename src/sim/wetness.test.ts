@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, newWorld, type Agent, type Stack, type World } from "./world";
+import { HOUR } from "./ticks";
 import { DAMP, deadAt, emc, equilibrium, splitWater, tinderOf, wetness } from "./wetness";
 import { STICK_DIA } from "../gpu/deadwood";
 import { referenceEt, topKr, wetHour, TEW, REW } from "./soil";
@@ -21,8 +22,8 @@ const setup = (): [World, Agent] => {
   return [w, a];
 };
 // The next day at an hour, and hours on from now, the water in everything moving each hour.
-const at = (w: World, hour: number) => { w.t = (Math.floor(w.t / DAY) + 1) * DAY + hour * 12; };
-const hours = (w: World, n: number) => { for (let i = 0; i < n; i++) { w.t = (Math.floor(w.t / 12) + 1) * 12; wetness(w); } };
+const at = (w: World, hour: number) => { w.t = (Math.floor(w.t / DAY) + 1) * DAY + hour * HOUR; };
+const hours = (w: World, n: number) => { for (let i = 0; i < n; i++) { w.t = (Math.floor(w.t / HOUR) + 1) * HOUR; wetness(w); } };
 const held = (a: Agent, k: string) => a.inv.find((s) => s.k === k)!;
 const round = (k: string, d: number, m: number, extra: Partial<Stack> = {}): Stack => ({ k, hp: 1, born: 0, m, size: { d, len: 1, mass: (Math.PI / 4) * d * d * 450 }, ...extra });
 // a hut: three sticks leaned together under two hides (physics.ts shelterOf)
@@ -194,7 +195,7 @@ test("the top soil dries at the air's pull while wet, then ever slower, and rain
   expect(topKr(1 - REW / TEW - 0.1)).toBeLessThan(1);
   let wet = 1, t = w.t;
   const first = 1 - wetHour(w, wet, t, "clear", 3, 22);
-  for (let i = 0; i < 240; i++, t += 12) wet = wetHour(w, wet, t, "clear", 3, 22);
+  for (let i = 0; i < 240; i++, t += HOUR) wet = wetHour(w, wet, t, "clear", 3, 22);
   expect(wet).toBeLessThan(1 - REW / TEW);
   const later = wet - wetHour(w, wet, t, "clear", 3, 22);
   expect(wet).toBeLessThan(1);

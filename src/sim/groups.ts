@@ -3,6 +3,7 @@ import {
   DAY, H, RESPONSES, Tile, W, clock, dist, log, meters, perWorld, stageOf, tileAt,
   type Agent, type Camp, type Custom, type Incident, type Precedent, type Response, type Stack, type Thing, type World,
 } from "./world";
+import { HOUR, ticksOf } from "./ticks";
 import { dayNeed, enough, hand, homeOf, leaveHome, mark as touch, meal, reaches, stash, unstash } from "./physics";
 import { thingById } from "./space";
 import { describeRel, judge, nameCamp } from "./brain";
@@ -189,11 +190,12 @@ const pending = perWorld(() => new Map<string, number>());
 const judgedIn = perWorld(() => new Map<number, number>());
 function judgeLater(w: World, camp: Camp, inc: Incident) {
   const who = decider(w, camp, inc);
-  const hour = Math.floor(w.t / 12);
+  const hour = Math.floor(w.t / HOUR);
   const skip = (why: string) => trace("group", "unjudged", { id: inc.id, camp: camp.id, why }, inc.by);
   if (!who) return skip("no one to decide");
-  // The same thing between the same two people moments ago: that answer covers this one too.
-  if (w.incidents.some((i) => i !== inc && i.group === camp.id && i.act === inc.act && i.by === inc.by && i.against === inc.against && inc.t - i.t < 24)) return skip("just answered");
+  // The same thing between the same two people moments ago, within two hours [design: today's 24 ticks]: that answer
+  // covers this one too.
+  if (w.incidents.some((i) => i !== inc && i.group === camp.id && i.act === inc.act && i.by === inc.by && i.against === inc.against && inc.t - i.t < ticksOf(7200))) return skip("just answered");
   const waiting = pending(w), hours = judgedIn(w);
   if ((hours.get(hour) ?? 0) >= 4 || (waiting.get(camp.id) ?? 0) >= 2) return skip("busy");
   hours.set(hour, (hours.get(hour) ?? 0) + 1);
@@ -597,5 +599,5 @@ export function groupsDetail(w: World) {
 
 export function groups(w: World) {
   if (w.t % DAY === Math.round(DAY * 0.25)) cluster(w);
-  if (w.t % 12 === 0) { closeWatches(w); speak(w); }
+  if (w.t % HOUR === 0) { closeWatches(w); speak(w); }
 }

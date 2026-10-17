@@ -1,5 +1,6 @@
 // Everything the simulation decides is recorded here: in memory for the debug API, and as JSONL on disk.
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { HOUR } from "./ticks";
 
 export type TraceEntry = { id: number; t: number; sys: string; kind: string; agent?: string; data: unknown };
 export type JevEntry = {
@@ -47,6 +48,9 @@ export async function waited<T>(sys: string, fn: () => Promise<T>): Promise<T> {
   const t0 = performance.now();
   try { return await fn(); } finally { tickMs[sys] = (tickMs[sys] ?? 0) * 0.95 + (performance.now() - t0) * 0.05; }
 }
+// What each system costs a sim hour at that rate: a tick's cost times the ticks in an hour, so costs read the same
+// whatever a tick lasts.
+export const hourMs = (): Record<string, number> => Object.fromEntries(Object.entries(tickMs).map(([k, v]) => [k, v * HOUR]));
 
 export function flush() {
   if (!dir || !pending.length) return;

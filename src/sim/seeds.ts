@@ -5,6 +5,7 @@
 // seedlings held by (texel, kind, day come up): every one of a group shares every input of the law, so each day's
 // fates are drawn exactly for the group, each member keeping its own identity.
 import { DAY, YEAR_DAYS, groundOf, wetAt, type World } from "./world";
+import { HOUR } from "./ticks";
 import { onDay, seasonAt } from "./sky";
 import { GROWTH_C, SEEDLINGS, TREE_KINDS, YEARS_PACE, openNet } from "./plants";
 import { envAt, fit } from "../terrain/niche";
@@ -178,7 +179,7 @@ export function seedDriver(w: World): SeedDriver {
     ahead(t) {
       const next = (Math.floor(t / DAY) + 1) * DAY, from = memo === next ? done : 0;
       if (from >= cells.length) return null;
-      const to = Math.min(cells.length, from + Math.ceil((cells.length - from) / Math.max(1, Math.ceil((next - t) / (DAY / 24)))));
+      const to = Math.min(cells.length, from + Math.ceil((cells.length - from) / Math.max(1, Math.ceil((next - t) / HOUR))));
       work(next, to);
       return { t: next, young, hi: (cells[to - 1] + 1) * YOUNG_WORDS };
     },

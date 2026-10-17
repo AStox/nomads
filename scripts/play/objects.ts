@@ -8,7 +8,7 @@
 //   3. cross-fades: a level presented from the art it was last drawn into shows what drawing it again shows;
 //   4. a kill: a drawn stem removed from the sim (check "kill") is gone from the next frame drawn.
 // Headless Chrome with WebGPU on the machine's GPU; the page served from a built site (scripts/demo.ts styles):
-//   bun scripts/play/objects.ts [--url http://127.0.0.1:8197/play/] [--chrome <path>] [--n 300] [--warm 2016]
+//   bun scripts/play/objects.ts [--url http://127.0.0.1:8197/play/] [--chrome <path>] [--n 300] [--warm 7]   (warm: sim days, the page's ?warm)
 // Exits 1 on any failure, printing what failed.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

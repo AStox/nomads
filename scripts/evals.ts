@@ -25,7 +25,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { cpus, totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { DAY } from "../src/sim/world";
+import { DAY } from "../src/sim/ticks";
 import { releaseGpu, theGpu } from "../src/gpu/device";
 import { PROBES, type Claim, type Metric, type ProbeRun, type ProbeSpec } from "./probes";
 import { bootstrap, mean } from "./stats";

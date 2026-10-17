@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { BLOWN, advance, alight, feed, feeding, group, heats, kindle, lay, lighting, lightsIn, expose, output, plumeRise, setIn, type Air, type Bed, type Laid, type Ring } from "./combustion";
 import { PHYS, WOODS, pieceOf, woodOf, type Wood } from "./fuel";
 import { CURES, DURATION, MELTS, RED, usual } from "./physics";
-import { DAY } from "./world";
 
 // The ladder of the fire plan's Unit 5, each case with its pieces, counts, wind and rain fixed from
 // docs/research/fire-constants.md before combustion.ts was written:
@@ -31,8 +30,8 @@ const STILL: Air = { temp: 10, wind: 0, rain: 0, veg: 0.1 };
 const BREEZE: Air = { ...STILL, wind: 4.2 };
 const GALE: Air = { ...STILL, wind: 10 };
 const STORM: Air = { ...STILL, rain: 7.8 };
-// A feed begun on a bed is done this long after (sim.ts DURATION, five minutes a tick).
-const AFTER = DURATION.place * (86400 / DAY);
+// A feed begun on a bed is done this long after, s (sim.ts DURATION).
+const AFTER = DURATION.place;
 const MIN = 60, HOUR = 3600;
 
 const of = (phys: typeof TINDER, n: number, m = DRY): Laid => ({ phys, n, m });
@@ -196,7 +195,7 @@ describe("setups", () => {
   test("clay set in a fire in a breeze comes to red heat if it's held there through the act, and not if it's taken out in five minutes", () => {
     const T = setIn(burning(10 * MIN), BREEZE, PHYS.clay.d), ta = STILL.temp + 273.15;
     expect(heats(PHYS.clay, PHYS.clay.green!, T, 5 * MIN, ta)).toBeLessThan(RED);
-    expect(heats(PHYS.clay, PHYS.clay.green!, T, DURATION.heat * (86400 / DAY), ta)).toBeGreaterThanOrEqual(RED);
+    expect(heats(PHYS.clay, PHYS.clay.green!, T, DURATION.heat, ta)).toBeGreaterThanOrEqual(RED);
   });
 
   test("a hide hung 1.5 m over the usual lay heaped over stays at 50 C or under, and over the same fire open the plume is far hotter", () => {

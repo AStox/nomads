@@ -4,7 +4,7 @@
 // the same world, only quicker.
 //   NOMADS_BRAIN=random bun scripts/bench.ts [--only make,seed,blame,world,spread] [--days 20]
 // Profile one: NOMADS_BRAIN=random bun --cpu-prof-md --cpu-prof-dir=/tmp/prof scripts/bench.ts --only seed
-import { DAY, TILE_M, addThing, dryAt, heldStore, newWorld, type Thing, type World } from "../src/sim/world";
+import { TILE_M, addThing, dryAt, heldStore, newWorld, type Thing, type World } from "../src/sim/world";
 import { retire, tick } from "../src/sim/sim";
 import { bedAir, changed, fireOf, newKinds, removeThing, removed } from "../src/sim/physics";
 import { ecology, trailChanges } from "../src/sim/ecology";
@@ -17,6 +17,7 @@ import { hooks } from "../src/sim/rules";
 import { traceListeners, type TraceEntry } from "../src/sim/trace";
 import { runProbe } from "./probes";
 import { exit, holdGpu, seedRandom } from "./seeded";
+import { DAY, HOUR } from "../src/sim/ticks";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 const only = arg("only", "make,blame,seed,world,spread").split(","), days = Number(arg("days", "20"));
@@ -87,7 +88,7 @@ const WORK: Record<string, () => Promise<string>> = {
     const watch = (e: TraceEntry) => { if (e.sys === "fire" && e.kind === "spread") spread++; };
     traceListeners.push(watch);
     try {
-      for (let i = 0; i < 12; i++) { w.t++; ecology(w); changed.clear(); removed.clear(); trailChanges.clear(); }
+      for (let i = 0; i < HOUR; i++) { w.t++; ecology(w); changed.clear(); removed.clear(); trailChanges.clear(); }
     } finally {
       hooks.weather = undefined;
       traceListeners.splice(traceListeners.indexOf(watch), 1);

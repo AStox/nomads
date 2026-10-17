@@ -1,11 +1,11 @@
-import { DAY, groundOf, newWorld } from "../sim/world";
+import { groundOf, newWorld } from "../sim/world";
+import { DAY, HOUR, YEAR_DAYS } from "../sim/ticks";
 import { stemDriver } from "../sim/plants";
 import { afterAll, expect, test } from "bun:test";
 import { type Gpu, openGpu, releaseGpu, theGpu } from "./device";
 import { readback, storage } from "./kernel";
 import { type Field, Store, idOf } from "./store";
 import { PENDING } from "./mirror";
-import { HOUR } from "./tiers/drivers";
 import { cellAt } from "./tiers/dormant";
 import { access } from "./wgsl/alloc";
 import { drvAccess } from "./wgsl/drivers";
@@ -16,7 +16,7 @@ import { CROWN_WORDS } from "./wgsl/crowns";
 import type { Raster } from "./flora";
 import { common } from "./wgsl/deadwood";
 import {
-  BIN_DAYS, BOULDERS_HA, CLAST_DIM, CLASTS, DAY_TICKS, Deadwood, STICK_DIA, capacities, ROT, STICKS_HA, STICK_K, YEAR_DAYS, YEAR_HOURS, clastLaw, deadLaw, fallRate, lam, lasts, leafCounts, logState, squareOf, stickOf,
+  BIN_DAYS, BOULDERS_HA, CLAST_DIM, CLASTS, Deadwood, STICK_DIA, capacities, ROT, STICKS_HA, STICK_K, YEAR_HOURS, clastLaw, deadLaw, fallRate, lam, lasts, leafCounts, logState, squareOf, stickOf,
   type ClastKind,
 } from "./deadwood";
 import type { DeadLaw } from "./wgsl/deadwood";
@@ -98,7 +98,7 @@ test("a closed stand at steady state holds input / rate by piece class: sticks, 
   // fresh slots dead and marked as the stems' law marks them
   const L = fast(SEED), dw = new Deadwood(SEED, noClasts(), { logs: D * DAYS + 4096, bins: 64 * 64 * 2 }, L);
   let next = st.trees;
-  s.law({ name: "deaths", due: (t) => t % DAY_TICKS === 0, run: (st2) => {
+  s.law({ name: "deaths", due: (t) => t % DAY === 0, run: (st2) => {
     const k = st2.kind("plant"), xs = new Uint32Array(D).fill(40 * CELL_MM + 1000);
     const at = (f: string) => (1 + k.field[f]) * k.capacity * 4;
     const slots = Array.from({ length: D }, (_, i) => next + i);
@@ -164,7 +164,7 @@ async function closing(g: Gpu): Promise<Closing> {
   // the canopy closes over the year: a fifth covered at first, whole at the end
   const coverOn = (d: number) => Math.round(65536 * (0.2 + (0.8 * d) / DAYS));
   refile(g, r, st, H, coverOn(0));
-  s.law({ name: "canopy", due: (t) => t % DAY_TICKS === 0, run: (_, t) => refile(g, r, st, H, coverOn(t / DAY_TICKS)) });
+  s.law({ name: "canopy", due: (t) => t % DAY === 0, run: (_, t) => refile(g, r, st, H, coverOn(t / DAY)) });
   const dw = new Deadwood(SEED, noClasts(), { logs: 1 << 16, bins: 4096 });
   dw.attach(s, () => r);
   s.declare({ name: "act", capacity: 1 << 18, placed: true, fields: ACT });
@@ -369,14 +369,14 @@ test("seed 1's deadwood and clasts: counts and volumes against the cited reserve
   for (const c of cover) coverHa += (c / 65536) * 0.5625;
   // a day of the stems' law and the deadwood's after it: the snags of the trees it killed
   const logs0 = pool.snags + pool.logs;
-  for (let h = 1; h <= 24; h++) await s.step(h * (DAY / 24));
+  for (let h = 1; h <= 24; h++) await s.step(h * HOUR);
   const day = await measure();
   // what the deadwood's kernels cost on the GPU: the bins' and the logs' sweeps, an hour's rot, and a day's law with the
   // stems' (the second day, its kernels compiled)
   const gpuMs = async (f: () => void) => { await g.device.queue.onSubmittedWorkDone(); const t = performance.now(); f(); s.flush(); await g.device.queue.onSubmittedWorkDone(); return Math.round(performance.now() - t); };
   const binsMs = await gpuMs(() => dw.sweepBins(null)), logsMs = await gpuMs(() => dw.sweepLogs(false));
-  for (let h = 25; h < 47; h++) await s.step(h * (DAY / 24));
-  const hourMs = await gpuMs(() => s.begin(47 * (DAY / 24)));
+  for (let h = 25; h < 47; h++) await s.step(h * HOUR);
+  const hourMs = await gpuMs(() => s.begin(47 * HOUR));
   await s.land();
   const dayMs = await gpuMs(() => s.begin(2 * DAY));
   await s.land();

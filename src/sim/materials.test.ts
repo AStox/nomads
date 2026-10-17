@@ -1,5 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, adoptStore, dryAt, newWorld, rng, shoreOf, wetAt, type Act, type Agent, type Thing, type World } from "./world";
+import { HOUR } from "./ticks";
 import { WEATHER_NOW, bedAir, count, eat, fireOf, giveItems, giveStack, heat, join, openWater, place, removeThing, strikeTick, throwReach, throwTick, wet, type Fields, type Outcome } from "./physics";
 import { BURNS, COPPER, PHYS, pieceOf } from "./fuel";
 import { BLADE, GROWN } from "./mechanics";
@@ -388,9 +389,9 @@ test("a seedling's hours ahead come to what ecology makes of the same weather, h
   const hours = forecast(w, 30 * 24, rng(7));
   const fate = seedlingFate(bedAt(w, spot.px, spot.py, "berry"), ahead(w, spot.px, spot.py, w.t, hours));
   const t = addThing(w, "sapling", spot.px, spot.py, { stage: 0, item: "berry", born: w.t, hp: 5, maxHp: 5 });
-  const first = Math.ceil((w.t + 1) / 12) * 12, end = w.t + 30 * DAY;
+  const first = Math.ceil((w.t + 1) / HOUR) * HOUR, end = w.t + 30 * DAY;
   // all of it: the sky, the wind and how far the day's air stands from its time of year's (forecast's warm)
-  hooks.weather = (w) => { const h = hours[(w.t - first) / 12]; Object.assign(w.weather, { sky: h.sky, speed: h.speed, warm: h.warm }); };
+  hooks.weather = (w) => { const h = hours[(w.t - first) / HOUR]; Object.assign(w.weather, { sky: h.sky, speed: h.speed, warm: h.warm }); };
   try {
     while (w.t < end && thingById(w, t.id)?.kind === "sapling") { w.t++; ecology(w); }
   } finally {
@@ -398,5 +399,5 @@ test("a seedling's hours ahead come to what ecology makes of the same weather, h
   }
   // the hour it came up or withered, counted from the first it was tended; none if it did neither
   const now = thingById(w, t.id)?.kind;
-  expect(now === "bush" ? { up: true, hours: (w.t - first) / 12 } : now === undefined ? { up: false, hours: (w.t - first) / 12 } : null).toEqual(fate);
+  expect(now === "bush" ? { up: true, hours: (w.t - first) / HOUR } : now === undefined ? { up: false, hours: (w.t - first) / HOUR } : null).toEqual(fate);
 });

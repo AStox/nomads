@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { DAY, TILE_M, addThing, dryAt, newWorld, rng, type Thing, type World } from "./world";
+import { HOUR } from "./ticks";
 import { fire } from "./ecology";
 import { bedAir, fireOf, fireOutput, removeThing, shelterOf } from "./physics";
 import { anyOf, around, exists, liveThings, moistOf } from "./space";
@@ -68,7 +69,7 @@ function weather(at: { px: number; py: number }, wind: number, dead: number | nu
   delete w.weather.past;
   w.weather.gsi = { day: Math.floor(w.t / DAY), tmin: -5, vpd: 500, rain: 10, index: 0 };
 }
-// Five minutes of fire, drawing brands from a seeded stream.
+// A tick of fire, drawing brands from a seeded stream.
 const tick = () => { w.t++; fire(w, [...liveThings(w)]); };
 function seeded<T>(seed: number, fn: () => T): T {
   const random = Math.random;
@@ -136,9 +137,9 @@ test("a lightning-struck tree in dry weather burns as a bed and leaves a burnt s
   tree.bed = struck(w, tree);
   expect(tree.bed).toBeDefined();
   let ticks = 0;
-  for (; ticks < 24 * 12 && tree.bed; ticks++) seeded(300 + ticks, tick);
+  for (; ticks < DAY && tree.bed; ticks++) seeded(300 + ticks, tick);
   // more than its twigs' flare: it burned on for an hour or more
-  expect(ticks).toBeGreaterThan(12);
+  expect(ticks).toBeGreaterThan(HOUR);
   expect(tree.kind).toBe("burnt_stump");
   expect(exists(w, tree)).toBe(true);
 }, 60_000);
@@ -179,6 +180,24 @@ test("a thing heated by a fire whose heat stops cools, and doesn't light later",
   expect(caught.has(kept.log.id)).toBe(true);
   expect(caught.has(left.log.id)).toBe(false);
   expect(exists(w, left.log) && !left.log.bed).toBe(true);
+}, 60_000);
+
+test("a campfire stepped on its 10 s lane, as at a tick of 1 s, burns look for look as one stepped 300 s at a time, and goes out on the same tick", () => {
+  const at = patch();
+  // each tick's bed, stepped in runs of 300 / runs seconds, the last landing the tick's looks (ecology.ts fire)
+  const burn = (runs: number) => {
+    const t0 = w.t, f = campfire(at), beds: unknown[] = [];
+    while (exists(w, f) && beds.length < 200) {
+      w.t++;
+      for (let k = 0; k < runs; k++) fire(w, exists(w, f) ? [f] : [], 300 / runs, k === runs - 1);
+      beds.push(structuredClone(f.bed));
+    }
+    w.t = t0;
+    return beds;
+  };
+  const once = burn(1), looked = burn(30);
+  expect(once.length).toBeGreaterThan(3);
+  expect(looked).toEqual(once);
 }, 60_000);
 
 test("a seeded world run on the GPU replays the same spread exactly", async () => {

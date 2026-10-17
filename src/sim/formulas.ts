@@ -7,7 +7,7 @@
 import { MADE_SIZE, type Act, type Animal, type Stack, type Thing, type World } from "./world";
 import { THING_MATERIAL, depth, p } from "./materials";
 import {
-  DURATION, EMBER_GIVE_UP, HAND, PIT_SOIL, SEED_SOIL, STILL, STRUCK, airy, arrowy, breaking, breaksOf, cutting, digPower, eating, emberCatches, emberTime, forging as drawing, heating,
+  DIG_S, DURATION, EMBER_GIVE_UP, HAND, PIT_SOIL, SEED_SOIL, STILL, STRUCK, airy, arrowy, breaking, breaksOf, cutting, digPower, eating, emberCatches, emberTime, forging as drawing, heating,
   RED, TYPICAL, heldStrike, holdOf, joining, laidOf, launchOf, leatherOf, placing, rubbedOf, rubbing, shaping, shelterOf, sparkCatches, spotNear, stemOf, stave, strikeDamage,
   throwsSparks, usual, wearing, wetting, yieldOf, type Decision, type Fields, type Fire,
 } from "./physics";
@@ -16,7 +16,8 @@ import { SPEC, herded, type Herded } from "./animals";
 import { advance, feed, kindle, lay, lighting, radius, setIn, type Air, type Bed } from "./combustion";
 import { mouthOf } from "./shelter";
 import { BURNS, PHYS, physOf } from "./fuel";
-import { BLOWS, CADENCE, DAY_WORK, GROWN, SPARKS_TO_CATCH, TICK_S, blowEnergy, flakeEnergy, isBlade, splitEnergy } from "./mechanics";
+import { BLOWS, CADENCE, DAY_WORK, GROWN, SPARKS_TO_CATCH, blowEnergy, flakeEnergy, isBlade, splitEnergy } from "./mechanics";
+import { TICK_S, ticksOf } from "./ticks";
 import { rulingKey } from "./sim";
 import { tinder } from "./wetness";
 import { bedAt, nicheOf, seedlingFate, treeOf, type Ahead } from "./seedling";
@@ -64,7 +65,8 @@ export function predictMaterial(w: World, f: Fields, fish: Meeting = { fish: [],
   if (unknown) return { why: `no ${unknown} has been made` };
   const at = f.at ?? null;
   if (at && !PLACES[at]) return { why: `there's no setting it up at a ${at}` };
-  const held = true, items = f.inputs, ticks = DURATION[f.verb] ?? 4;
+  // the act's seconds (physics.ts DURATION; any other act 1200 s, as sim.ts doAct) in ticks
+  const held = true, items = f.inputs, ticks = ticksOf(DURATION[f.verb] ?? 1200);
   // a fan they hold blows air into the fire while they heat things in it
   const fan = f.tool && airy(w.kinds[f.tool]) ? f.tool : undefined;
   const fire = here ? here.fire : staged(at), air = here?.air, stacks = here?.stacks;
@@ -157,7 +159,7 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
       // the first two rubbed together, the tinder after them, if they held any
       const A = w.kinds[f.inputs[0]], B = w.kinds[f.inputs[1] ?? f.inputs[0]];
       const r = rubbing(A, B, w.kinds);
-      if (r.does === "leather") return out(true, r.ticks, { gives: [leatherOf(w.kinds, r.hide).id] });
+      if (r.does === "leather") return out(true, ticksOf(r.secs), { gives: [leatherOf(w.kinds, r.hide).id] });
       if (r.does === "friction") {
         // rubbed until the dust lights (or given up as past a day's work); the ember goes into the lay's tinder, or what
         // lies about their feet, a handful of fine blades; then the lay is followed where the fire would stand, as a
@@ -168,17 +170,17 @@ export function predict(w: World, f: Fields, s: Situation): Prediction | { ask: 
         const own = s.pieces.some((x) => tinder(w.kinds[x.k])), laid = laidOf(w, s.pieces);
         return lighting(own ? laid : [{ phys: PHYS.fiber, n: 1, m: s.tinder }, ...laid], s.air).lasts ? out(true, ticks, { builds: "fire" }) : out(false, ticks);
       }
-      if (r.does === "nothing") return out(false, r.ticks);
-      return out(true, r.ticks, { gives: [rubbedOf(r)] });
+      if (r.does === "nothing") return out(false, ticksOf(r.secs));
+      return out(true, ticksOf(r.secs), { gives: [rubbedOf(r)] });
     }
     case "dig": {
       const spot = spotNear(w, s.spot, PIT_SOIL, true);
-      return spot ? out(true, Math.ceil(12 / digPower(tool)), { builds: "pit", spot }) : out(false, 1);
+      return spot ? out(true, Math.ceil(ticksOf(DIG_S) / digPower(tool)), { builds: "pit", spot }) : out(false, 1);
     }
     case "plant": case "pour": {
       // a seed pushed into the ground, or a young plant watered: whatever it comes up as, if it comes up in the hours
       // ahead (seedling.ts)
-      const ticks = DURATION[f.verb];
+      const ticks = ticksOf(DURATION[f.verb]);
       if (f.verb === "plant" && p(w.kinds[f.inputs[0]], "seed") < 0.4) return out(false, ticks, { effect: "buried" });
       const spot = f.verb === "plant" ? spotNear(w, s.spot, SEED_SOIL, false) : ([s.spot.px, s.spot.py] as const);
       if (!spot) return out(false, ticks);

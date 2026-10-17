@@ -1,10 +1,11 @@
 // GOAP over what each agent believes. Agents can only plan with things they've seen work.
 import { chance, ofPlace, ruledOut, type Belief } from "./beliefs";
 import { p, type Registry } from "./materials";
-import { breaksOf } from "./physics";
+import { DURATION, breaksOf } from "./physics";
 import { HUNTED } from "./fauna";
 import { PHYS, asFound, physOf } from "./fuel";
 import { DAY } from "./world";
+import { ticksOf } from "./ticks";
 
 export type PState = { inv: Record<string, number>; at: string | null; flags: string[] };
 export type Ctx = {
@@ -48,11 +49,12 @@ export const SOCIAL_ITEM_NEEDS: Record<string, (s: PState, kinds: Registry) => b
   trade: (s) => Object.values(s.inv).some((v) => v > 0),
 };
 
-// What anyone can do from birth. A gathering takes PICK ticks of work at full pace (sim.ts) and comes away with so many of
-// a thing, or, for food, what a picker takes in that time at a measured rate, kg an hour as picked: blackberries by
-// hand, and wild grass seed stripped by hand and cleaned (body-constants sec. 10).
-export const PICK = 2.5;
-const pickedIn = (rate: number, item: string) => Math.round((rate * PICK * 24) / DAY / asFound(PHYS[item]));
+// What anyone can do from birth. A gathering takes PICK seconds of work at full pace (sim.ts) and comes away with so many
+// of a thing, or, for food, what a picker takes in that time at a measured rate, kg an hour as picked: blackberries by
+// hand, and wild grass seed stripped by hand and cleaned (body-constants sec. 10). [design: today's 2.5 ticks at five
+// minutes a tick]
+export const PICK = 750;
+const pickedIn = (rate: number, item: string) => Math.round((rate * ticksOf(PICK) * 24) / DAY / asFound(PHYS[item]));
 export const GATHER: Record<string, { place: string; item: string; n: number; rate?: number; keep?: boolean }> = {
   pick_berries: { place: "bush", item: "berry", rate: 5.1, n: pickedIn(5.1, "berry"), keep: true },
   pick_mushroom: { place: "mushroom", item: "mushroom", n: 1 },
@@ -113,7 +115,8 @@ function beliefOps(b: Belief, ctx: Ctx): Op[] {
     const wr = Math.max(0.05, chance);
     return {
       op: "act", key: b.key, arg: b.key,
-      cost: 1 + b.ticks / 8 / wr + (b.later ? 3 * (1 / wr - 1) : 0),
+      // a join's time is a unit of cost (physics.ts DURATION), as a walk's is its distance (ops goto)
+      cost: 1 + b.ticks / ticksOf(DURATION.join) / wr + (b.later ? 3 * (1 / wr - 1) : 0),
       needs: [...Object.keys(req), ...(place ? [`place:${place}`] : [])],
       makes,
       pre: (s) => Object.entries(req).every(([k, v]) => n(s, k) >= v) && (!place || atPlace(s, place)) && !(builds === "fire" && atPlace(s, "fire")),

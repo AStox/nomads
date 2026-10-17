@@ -32,9 +32,10 @@ import { GREEN_UP } from "../terrain/growth";
 import { rotPerHour } from "./spoil";
 import { bodyOf, frameOf } from "./body";
 import { PIT_DEPTH } from "./shelter";
+import { HOUR, chance, rate } from "./ticks";
+import { FIRE_S, LAND_S, SENSES_S, due, secs } from "./lanes";
 
-// Seconds a tick lasts (world.ts DAY: five minutes each).
-const TICK_S = 86400 / DAY, G = 9.81; // m/s2
+const G = 9.81; // m/s2
 
 export const pathChanges = new Set<number>();
 export const iceChanged = { now: false };
@@ -49,9 +50,9 @@ const normal = (r1: number, r2: number) => Math.sqrt(-2 * Math.log(1 - r1)) * Ma
 // The island's weather at the next n turns of the sky after now, from how it stands, drawn with r (a seeded draw of the
 // caller's own, so nothing here moves the world's): what the coming days might bring (seedling.ts seedlingFate).
 export function forecast(w: World, n: number, r: () => number): Hour[] {
-  let { sky, speed, wet, anomaly, warm } = w.weather, t = Math.ceil((w.t + 1) / 12) * 12;
+  let { sky, speed, wet, anomaly, warm } = w.weather, t = Math.ceil((w.t + 1) / HOUR) * HOUR;
   const out: Hour[] = [];
-  for (let i = 0; i < n; i++, t += 12) {
+  for (let i = 0; i < n; i++, t += HOUR) {
     sky = nextSky(sky, r(), t);
     anomaly = nextAnomaly(anomaly, normal(r(), r()));
     warm = nextWarmth(warm, normal(r(), r()));
@@ -69,8 +70,8 @@ function weather(w: World) {
     log(w, "season", [], { x: W / 2, y: H / 2 }, `${season[0].toUpperCase() + season.slice(1)} arrived.`);
   }
   wx.dayOfYear = dayOfYear(w.t);
-  wx.year = Math.floor(w.t / DAY / 40) + 1;
-  if (w.t % 12 === 0) {
+  wx.year = Math.floor(w.t / DAY / YEAR_DAYS) + 1;
+  if (w.t % HOUR === 0) {
     const before = wx.sky;
     wx.sky = nextSky(wx.sky, Math.random(), w.t);
     // The wind wanders, but keeps coming back to blow the way it prevails, the way that laid the island's rain.
@@ -92,10 +93,10 @@ function weather(w: World) {
   }
   wx.temp = islandTemp(w.t, wx.sky, wx.warm);
   wetness(w);
-  if (w.t % 12 === 0) ice(w);
+  if (w.t % HOUR === 0) ice(w);
   // A drought, as Met Éireann and the Met Office count an absolute one: fifteen days or more on end, none with 0.2 mm of
   // rain (fire-constants sec. 33, R477); the island's own rain an hour, summed over each day.
-  if (w.t % 12 === 0) wx.today += rainy(wx.sky) ? islandAir(w, w.t, wx.sky).rain : 0;
+  if (w.t % HOUR === 0) wx.today += rainy(wx.sky) ? islandAir(w, w.t, wx.sky).rain : 0;
   if (w.t % DAY === DAY - 1) {
     wx.dryDays = wx.today < 0.2 ? wx.dryDays + 1 : 0;
     wx.today = 0;
@@ -103,11 +104,11 @@ function weather(w: World) {
     if (drought && !wx.drought) log(w, "weather", [], { x: W / 2, y: H / 2 }, "It hasn't rained in over two weeks.");
     wx.drought = drought;
   }
-  // Flashes come down in a storm as often as the island's thunder days bring them over its land (stormFlashes), each at
-  // a spot anywhere on it and onto the tallest tree that stands within three of its heights of the spot, as a structure
-  // draws a flash from that far round (docs/research/time-constants.md sec. 4); one landing where no tree does strikes the
-  // ground.
-  for (let n = wx.sky === "storm" ? poisson(stormFlashes(w) / 12) : 0; n > 0; n--) {
+  // Flashes come down in a storm as often as the island's thunder days bring them over its land (stormFlashes, flashes
+  // an hour), a tick's share of the hour's each tick, each at a spot anywhere on it and onto the tallest tree that stands
+  // within three of its heights of the spot, as a structure draws a flash from that far round
+  // (docs/research/time-constants.md sec. 4); one landing where no tree does strikes the ground.
+  for (let n = wx.sky === "storm" ? poisson(stormFlashes(w) / HOUR) : 0; n > 0; n--) {
     const land = landTiles(w), i = land[Math.floor(Math.random() * land.length)], px = (i % W) + Math.random(), py = Math.floor(i / W) + Math.random();
     const hit: { t: Thing | null } = { t: null };
     around(w, px, py, 3 * TALLEST, ["tree"], (x, d) => { if (d <= 3 * x.size && (!hit.t || x.size > hit.t.size)) hit.t = x; });
@@ -147,7 +148,7 @@ function stormFlashes(w: World) {
   const r = rng(w.seed * 7919 + 101), years = 20;
   let sky: World["weather"]["sky"] = "clear", hours = 0, days = 0, lastDay = -1;
   for (let h = 0; h < years * YEAR_DAYS * 24; h++) {
-    const t = h * 12;
+    const t = h * HOUR;
     sky = nextSky(sky, r(), t);
     if (sky !== "storm") continue;
     hours++;
@@ -164,6 +165,7 @@ function stormFlashes(w: World) {
 // ice does (docs/research/time-constants.md sec. 3). Salt water holds out. Anyone can walk on it once it is as thick as
 // new clear ice should be to walk on; once it thins under that, anyone standing on it goes through.
 export const STEFAN = 0.033, MELT = 0.0043, WALK_ICE = 0.1; // m per (C day)^0.5; m per C day; m
+// Called once an hour as the sky turns (weather), so each call is an hour, a day's 1/24, of frost or thaw.
 function ice(w: World) {
   const wx = w.weather, t = wx.temp, was = wx.ice ?? 0, day = 1 / 24;
   const h = t < 0 ? Math.sqrt(was * was + STEFAN * STEFAN * -t * day) : Math.max(0, was - MELT * t * day);
@@ -292,28 +294,32 @@ function caught(w: World, x: Thing, parts: Part[], groups: Group[], by: Thing) {
   if (x.kind === "structure") log(w, "fire_spread", [x.owner ?? ""].filter(Boolean), x, "Fire caught on a shelter!");
   else if (Math.random() < 0.1) log(w, "fire_spread", [], x, `Fire spread to a ${x.kind.replace("_", " ")}.`);
 }
-// Every bed, a campfire's or a burning thing's own, burns on through the tick in the air where it stands (combustion.ts),
-// looked at as often as a bed steps, every ten seconds (fire-constants sec. 28); a bed gone out is a campfire gone, or a
-// thing burnt out. A fire heaped over with stone keeps its flames, its heat and its brands under the stone. How each
-// bed blazed at each look, and every fuel object within its reach (and anything still warm from an earlier fire), go to
-// the receivers' law on the GPU (gpu/fire.ts, wgsl/fire.ts): there each part of each takes the flames' heat and their
-// radiation look by look and the brands landing on it, and the first look one lights is the last it takes. What comes
-// back with the tick's landing settles it: a thing that lit burns as a bed of its own from then on, and the rest keep
-// the heat they hold, or are as they were once cooled right down. A world not resident on the GPU works the same law
-// out by its twin at once.
-export function fire(w: World, live: Thing[]) {
-  // each burning bed, how far it has looked for what it might heat and for what its brands might land on
-  const beds = new Map<Thing, { heat: number; brands: number }>(), order: Thing[] = [];
-  const near = new Set<Thing>(), seen = (x: Thing) => { if (!x.bed) near.add(x); };
+// Every bed, a campfire's or a burning thing's own, burns on through the fire lane's seconds in the air where it stands
+// (combustion.ts), looked at as often as a bed steps, every ten seconds (fire-constants sec. 28), one look for each ten
+// seconds owed; a bed gone out is a campfire gone, or a thing burnt out. A fire heaped over with stone keeps its flames,
+// its heat and its brands under the stone. How each bed blazed at each look, and every fuel object within its reach (and
+// anything still warm from an earlier fire), are gathered over the runs since the last landing and go with the
+// landing's tick to the receivers' law on the GPU (gpu/fire.ts, wgsl/fire.ts): there each part of each takes the
+// flames' heat and their radiation look by look and the brands landing on it, and the first look one lights is the last
+// it takes. What comes back with the landing settles it: a thing that lit burns as a bed of its own from then on, and
+// the rest keep the heat they hold, or are as they were once cooled right down. A world not resident on the GPU works
+// the same law out by its twin at once.
+type Gathered = { looks: number[][][]; order: Thing[]; at: Map<Thing, number>; near: Set<Thing> };
+const gathered = new WeakMap<World, Gathered>();
+export function fire(w: World, live: Thing[], dt = secs(FIRE_S), landing = due(w.t, LAND_S)) {
+  // each burning bed, how far it has looked for what it might heat and for what its brands might land on; each bed's
+  // place in the batch's order, and what might take their heat, kept from the runs since the last landing
+  const beds = new Map<Thing, { heat: number; brands: number }>();
+  const g = gathered.get(w) ?? { looks: [], order: [], at: new Map<Thing, number>(), near: new Set<Thing>() }, { order, at, near } = g;
+  const seen = (x: Thing) => { if (!x.bed) near.add(x); };
   for (const t of live) {
-    if (t.bed) { beds.set(t, { heat: -1, brands: -1 }); order.push(t); }
+    if (t.bed) { beds.set(t, { heat: -1, brands: -1 }); if (!at.has(t)) at.set(t, order.push(t) - 1); }
     else if (t.kind === "fire") fireOut(w, t);
     else if (t.absorbed) near.add(t);
   }
-  const looks: number[][][] = [];
-  for (let s = 0; s < TICK_S; s += LOOK_S) {
+  for (let k = 0; k < dt; k += LOOK_S) {
     const look: number[][] = [];
-    looks.push(look);
+    g.looks.push(look);
     for (const [t, src] of beds) {
       const air = bedAir(w, t);
       if (alight(t.bed!) && !t.covered) {
@@ -326,7 +332,7 @@ export function fire(w: World, live: Thing[]) {
           src.brands = r.brands;
           around(w, t.px, t.py, r.brands + WIDEST, BURNABLE, (x) => { if (landsOn(x)) seen(x); });
         }
-        look.push(blazeWords(b, order.indexOf(t)));
+        look.push(blazeWords(b, at.get(t)!));
       }
       t.bed = advance(t.bed!, LOOK_S, air);
       if (alight(t.bed)) continue;
@@ -336,9 +342,11 @@ export function fire(w: World, live: Thing[]) {
     }
   }
   for (const t of beds.keys()) mark(w, t);
+  if (!landing) { gathered.set(w, g); return; }
+  gathered.delete(w);
   const taking = [...near].filter((x) => exists(w, x)).map((x) => ({ x, parts: partsOf(w, x) })).filter((r) => r.parts.length);
   if (!taking.length) return;
-  const batch = pack(w.seed, w.t, looks, taking.map((r) => receiverWords(w, r.x, r.parts)));
+  const batch = pack(w.seed, w.t, g.looks, taking.map((r) => receiverWords(w, r.x, r.parts)));
   let first = batch.nr;
   const starts = taking.map((r) => (first += r.parts.length) - r.parts.length);
   const settle = (out: Uint32Array) => taking.forEach(({ x, parts }, i) => {
@@ -413,13 +421,14 @@ function plants(w: World, live: Thing[]) {
       if (Math.floor(t.resin) !== was) mark(w, t);
     }
     if (t.kind === "bush") {
-      // the crop sets as the bush grows, a year's over half a year of the best growth (plants.ts growth) [design]
+      // the crop sets as the bush grows, a year's over half a year of the best growth (plants.ts growth) [design]; its
+      // picked hit points come back 0.02 a tick [design: today's per-tick value]
       const full = cropOf(t), was = t.n ?? 0;
       if (t.species === "berry" && was < full) {
         t.n = Math.min(full, was + (full * growth(w, t.px, t.py)) / (YEAR / 2));
         if (Math.floor(t.n) !== Math.floor(was) || t.n === full) mark(w, t);
       }
-      if ((t.hp ?? BERRY_HP) < (t.maxHp ?? BERRY_HP)) t.hp = Math.min(t.maxHp ?? BERRY_HP, (t.hp ?? BERRY_HP) + 0.02);
+      if ((t.hp ?? BERRY_HP) < (t.maxHp ?? BERRY_HP)) t.hp = Math.min(t.maxHp ?? BERRY_HP, (t.hp ?? BERRY_HP) + rate(0.02, 300));
       if ((t.hp ?? BERRY_HP) <= 0) { setKind(w, t, "dead_bush"); t.n = 0; mark(w, t); log(w, "grow", [], t, "A berry bush was picked to death."); }
     } else if ((t.kind === "dead_bush" || t.kind === "stump" || t.kind === "burnt_stump") && greening && sprouts(t)) {
       // Broadleaves and brambles put up a new stem from the old roots once the growing season comes round; a pine's stump
@@ -441,7 +450,7 @@ function plants(w: World, live: Thing[]) {
     } else if (t.kind === "sapling") {
       // tended once an hour as the sky turns (seedling.ts), by the spot's fit as it was the first time and the share of
       // it the plants round it leave it now, in the sun on the open ground and the share the crowns let through
-      if (w.t % 12) continue;
+      if (w.t % HOUR) continue;
       t.fit ??= fitHere(w, nicheOf(t), t.px, t.py);
       if (t.share === undefined || stockedAt(w, t.px, t.py)) t.share = shareAt(w, t.px, t.py, t.stage ?? 0, t);
       const was = t.stage ?? 0;
@@ -451,7 +460,8 @@ function plants(w: World, live: Thing[]) {
       if (fate === "up") matured(w, t);
     } else if (t.kind === "ash") {
       // the rain beats it down and washes it into the soil: after a grassland fire, little of the ash went in the first
-      // 10 mm, most of it with the next 81 and all but traces by 120 mm (Pereira et al., time-constants sec. 8)
+      // 10 mm, most of it with the next 81 and all but traces by 120 mm (Pereira et al., time-constants sec. 8); the rain
+      // falls in mm an hour, a day's 24 of them spread over the day's ticks
       t.rained = (t.rained ?? 0) + (rainAt(w, t.px, t.py) * 24) / DAY;
       if (t.rained >= ASH_RAIN) removeThing(w, t);
     }
@@ -526,11 +536,11 @@ export let fireOutFor: (w: World, t: Thing, rained: boolean) => void = () => {};
 export const onFireOut = (fn: typeof fireOutFor) => (fireOutFor = fn);
 
 // ---------- heat leaving things ----------
-// Each tick, what heat made of a thing (hot metal soft enough to work, physics.ts heating) lasts only while it stays
-// warm enough (Kind.hotAbove): held at a fire that keeps it that warm it takes the fire's warmth there (combustion.ts
-// setIn); anywhere else it cools in the air where it is (combustion.ts cooling), and once under that warmth it is what it
-// was (docs/research/time-constants.md sec. 2).
-function cool(w: World, live: Thing[]) {
+// Each run of the senses lane, what heat made of a thing (hot metal soft enough to work, physics.ts heating) lasts only
+// while it stays warm enough (Kind.hotAbove): held at a fire that keeps it that warm it takes the fire's warmth there
+// (combustion.ts setIn); anywhere else it cools in the air where it is over the lane's seconds (combustion.ts cooling),
+// and once under that warmth it is what it was (docs/research/time-constants.md sec. 2).
+function cool(w: World, live: Thing[], dt: number) {
   const tick = (s: { k: string; T?: number }, at: { px: number; py: number }, f: Thing | null) => {
     const k = w.kinds[s.k], phys = k && physOf(w.kinds, k);
     if (!k?.hotAbove || !phys || !k.parts?.[0]) return false;
@@ -539,7 +549,7 @@ function cool(w: World, live: Thing[]) {
       if (T >= k.hotAbove) { s.T = T; return false; }
     }
     const air = airOn(w, at);
-    s.T = cooling(phys, s.T ?? k.hotAbove, air.temp + 273.15, air.wind, TICK_S);
+    s.T = cooling(phys, s.T ?? k.hotAbove, air.temp + 273.15, air.wind, dt);
     if (s.T >= k.hotAbove) return false;
     s.k = k.parts[0];
     delete s.T;
@@ -555,7 +565,7 @@ function cool(w: World, live: Thing[]) {
 
 // ---------- rot, wear, weathering ----------
 function decay(w: World, live: Thing[]) {
-  if (w.t % 12) return;
+  if (w.t % HOUR) return;
   const rot = (k: string) => {
     const [kind, isNew] = ensure(w.kinds, `rotten:${k}`, () => ({
       name: `rotten ${w.kinds[k]?.name ?? k}`, props: { edible: 0.05, toxic: 0.85, seed: p(w.kinds[k], "seed") }, parts: [k], shelf: 3, spoils: "chill",
@@ -621,22 +631,25 @@ export function fallApart(w: World, t: Thing) {
 }
 
 // ---------- sickness ----------
-function disease(w: World) {
+// A sickness takes 0.06 of health and adds 0.0005 to the want of sleep each 300 s at its severity, and passes to
+// someone within 10 m with a chance of 0.003 each 300 s at its severity [design: today's per-tick values], over the
+// senses lane's dt seconds.
+function disease(w: World, dt: number) {
   for (const a of w.agents) {
     const s = a.sickness;
     if (!s) continue;
-    a.needs.health = Math.max(0, a.needs.health - 0.06 * s.severity);
+    a.needs.health = Math.max(0, a.needs.health - rate(0.06 * s.severity, 300, dt));
     a.hurt = "sickness";
     // and wears them out, adding to their want of sleep (body.ts) [design]
     const b = bodyOf(w, a);
-    b.sleep = Math.min(1, b.sleep + 0.0005 * s.severity);
+    b.sleep = Math.min(1, b.sleep + rate(0.0005 * s.severity, 300, dt));
     if (w.t >= s.until) {
       a.sickness = null;
       log(w, "recover", [a.id], a, `${a.name} got over their sickness.`);
       continue;
     }
     for (const b of w.agents) {
-      if (b === a || b.sickness || meters(a, b) > 10 || Math.random() > 0.003 * s.severity) continue;
+      if (b === a || b.sickness || meters(a, b) > 10 || Math.random() > chance(0.003 * s.severity, 300, dt)) continue;
       b.sickness = { until: w.t + Math.round(DAY * (0.5 + s.severity)), severity: s.severity * 0.8 };
       log(w, "sick", [b.id, a.id], b, `${b.name} caught ${a.name}'s sickness.`);
       see(w, b, "contagion", "Sickness spreads between people who stay close.", personSize(w, b));
@@ -690,6 +703,9 @@ function overgrow(w: World) {
   }
 }
 
+// A tick of the world's own processes, each on its lane (lanes.ts) in the order they have always run: fire's looks owed,
+// the animals (their sighting on the senses lane, the ones in sight each tick), hot things cooling and sickness on the
+// senses lane, and the hourly and daily ones on their own clocks.
 export function ecology(w: World) {
   attacked.clear();
   // the stems as the GPU last grew them, on the ground being looked at
@@ -697,14 +713,14 @@ export function ecology(w: World) {
   timed("weather", () => weather(w));
   // The live set as it stands, less anything an earlier step burned, ate or took away (leaving the world takes a thing out
   // of it: space.ts leave).
-  const live = () => [...liveThings(w)];
-  timed("fire", () => fire(w, live()));
+  const live = () => [...liveThings(w)], senses = due(w.t, SENSES_S);
+  if (due(w.t, FIRE_S)) timed("fire", () => fire(w, live()));
   timed("plants", () => plants(w, live()));
   timed("holes", () => holes(w, live()));
   timed("animals", () => animals(w));
-  timed("cool", () => cool(w, live()));
+  if (senses) timed("cool", () => cool(w, live(), secs(SENSES_S)));
   timed("decay", () => decay(w, live()));
-  timed("disease", () => { disease(w); crowding(w); });
+  timed("disease", () => { if (senses) disease(w, secs(SENSES_S)); crowding(w); });
   paths(w);
   overgrow(w);
   settle(w);

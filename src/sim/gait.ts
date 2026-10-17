@@ -1,7 +1,7 @@
 // How people get about and what they carry, by the physics of walking and load carriage (docs/research/people-constants.md
 // sec. 6). How fast someone walks or runs over the ground at a point and what it costs their body, how long each tile's
 // ground takes to cross for the least-time way over the island, how far they reach, and how much mass and bulk they can
-// hold. Speeds are m/s and costs W; ticks come in only through sky.ts TICK_S, where walk.ts spends them.
+// hold. Speeds are m/s and costs W; ticks come in only through ticks.ts TICK_S, where walk.ts spends them.
 import { GROUND, SIZE, TILE_M, TILES, groundClass } from "../terrain/flora";
 import { CELL, N } from "../terrain/grid";
 import { INTERCEPT_SNOW, SNOW_DOY, snowAt, snowDepth } from "./air";

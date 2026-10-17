@@ -1,5 +1,6 @@
 // The island's fish, resident on the GPU: every trout, stickleback, perch, roach, pike and eel in the island's water
-// one object of store kind "fish", stepped once an island day by the law in wgsl/fish.ts, its constants and the
+// one object of store kind "fish", stepped once an island day (DAY ticks, src/sim/ticks.ts) [design: growth, deaths and
+// moving are the fish's slow laws] by the law in wgsl/fish.ts, its constants and the
 // water it lives in from src/sim/waters.ts (docs/research/animal-constants.md sec. 13). Plan:
 // docs/plans/2026-10-14-001-refactor-gpu-object-world-plan.md, Unit 11.
 //
@@ -14,6 +15,7 @@ import { reload, savedArray, savedNumbers } from "./store";
 import { cover, storage } from "./kernel";
 import { BIRTH_INIT, CEN_WORDS, FIELDS, KP_WORDS, PO, START_INIT, S_, S_WORDS, T, birthHead, fishAte, fishFate, fishFeed, fishFront } from "./wgsl/fish";
 import { CELLS } from "./wgsl/index";
+import { DAY } from "../sim/ticks";
 
 export const FISH = "fish";
 // Room for this many fish at once [design]: about 300 MB of the GPU's memory with its index and the young's counts;
@@ -71,7 +73,7 @@ export class Fish implements Rider, FishLink {
     };
     this.src = { front: fishFront(cap), fate: fishFate(cap) };
     if (fresh) {
-      const counts = driver.start(), t = driver.t0 - driver.days * DAY_TICKS;
+      const counts = driver.start(), t = driver.t0 - driver.days * DAY;
       if (counts.some((n) => n > 0)) {
         const rows = storage(g, counts);
         g.device.queue.writeBuffer(this.bufs.KP, PO * 4, Uint32Array.of(t >>> 0, driver.seed >>> 0, 0));
@@ -80,7 +82,7 @@ export class Fish implements Rider, FishLink {
         store.flush();
       }
       for (let k = driver.days; k >= 1; k--) {
-        this.law(store, driver.t0 - k * DAY_TICKS);
+        this.law(store, driver.t0 - k * DAY);
         store.index(kind, true);
         store.flush();
       }
@@ -88,7 +90,7 @@ export class Fish implements Rider, FishLink {
       store.flush();
       await store.refresh();
     }
-    store.law({ name: "fish", due: (t) => t % DAY_TICKS === 0, run: (s, t) => this.law(s, t) });
+    store.law({ name: "fish", due: (t) => t % DAY === 0, run: (s, t) => this.law(s, t) });
     store.ride(this);
   }
   // A day of the law ending at tick t.
@@ -107,6 +109,10 @@ export class Fish implements Rider, FishLink {
       e.clearBuffer(b.EAT);
     });
     k.touched = k.stale = true;
+  }
+  kernelSources(): string[] {
+    const b = this.bufs!, s = this.store!;
+    return [this.src!.front, this.src!.fate, s.birthKernel(FISH, FISH, BIRTH_INIT, { bufs: [{ name: "KP", buf: b.KP }, { name: "CT", buf: b.CT }], wgsl: birthHead(this.kind!.capacity) })];
   }
 
   // ---------- the birds' side (FishLink) ----------
@@ -145,6 +151,3 @@ export class Fish implements Rider, FishLink {
   // The GPU buffers, for tests.
   get buffersForTest() { return this.bufs; }
 }
-
-// Time: a step is an island day (sky.ts DAY ticks) [design: growth, deaths and moving are the fish's slow laws].
-export const DAY_TICKS = 288;

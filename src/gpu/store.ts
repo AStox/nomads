@@ -26,17 +26,19 @@
 // a tick only ever take slots that were free when it began. Integer scans in a fixed order throughout, so the same ids
 // come out every run on any GPU.
 //
-// A tick: begin(t) uploads the deltas queued since the last tick and applies them, runs the laws due, reclaims dead
-// slots and rebuilds the index, all in one submit; the CPU does its own work while that runs; land() copies the
-// windows round people into one staging buffer, awaits it and keeps it for the mirror. Spawns the CPU queues get their
-// slots at the upload, placed from the free list's head the last landing read back, the same rule the GPU follows.
-// Kernels recorded outside a tick (births, reclaim, index called directly) go to the GPU at flush().
+// A landing (every LAND_S of sim time, src/sim/lanes.ts; at a tick that long or longer, every tick): begin(t) uploads
+// the deltas queued since the last landing and applies them, runs the laws due (an hourly or daily law falls on a begin,
+// since LAND_S divides the hour), reclaims dead slots and rebuilds the index, all in one submit; the CPU does its own
+// ticks' work while that runs; land() copies the windows round people into one staging buffer, awaits it and keeps it
+// for the mirror. Spawns the CPU queues get their slots at the upload, placed from the free list's head the last
+// landing read back, the same rule the GPU follows. Kernels recorded outside a landing (births, reclaim, index called
+// directly) go to the GPU at flush().
 //
 // Representation tiers (src/gpu/tiers: recorded drivers, dormant, event-driven and lumped kinds) run their kernels
-// through run, scan and births from inside laws, and ride the landing: a rider gets words of the tick's one staging
-// copy, records its own copies into them and reads them back when the tick lands.
+// through run, scan and births from inside laws, and ride the landing: a rider gets words of the landing's one staging
+// copy, records its own copies into them and reads them back when it lands.
 import type { Gpu } from "./device";
-import { cover, pipeline, readback, storage } from "./kernel";
+import { cover, pipeline, pipelineSoon, readback, storage } from "./kernel";
 import { SCAN, SCAN_TOP } from "./wgsl/scan";
 import { BIRTH_COMMIT, BIRTH_MASK, CTL, CTL_WORDS, DELTA_APPLY, type Extra, OP, PEEK, RECLAIM_CTL, RECLAIM_CTL_LIVE, RECLAIM_FLAG, RECLAIM_SCATTER, RECLAIM_SCATTER_LIVE, birthAssign } from "./wgsl/alloc";
 import { CELLS, GATHER_HEAD, GATHER_ROWS, INDEX_COMPACT, INDEX_KEYS, RADIX_HIST, RADIX_SCATTER } from "./wgsl/index";
@@ -83,10 +85,13 @@ export type Law = { name: string; due: (t: number) => boolean; run: (s: Store, t
 // Something read back with every landing: it asks for so many words of the staging copy, records its copies into
 // them (at word at of out) after the kinds' gathers, and reads them when the tick lands. A rider with a name is part
 // of the store's state: its buffers and what save returns (JSON) go into hash and dump, and a store loaded from a
-// dump hands them to restore when a rider of that name rides it again.
+// dump hands them to restore when a rider of that name rides it again. kernelSources names the WGSL source (entry
+// point main) of every kernel the rider's laws and copies run that it knows by then, made ahead of their first run
+// (beginPaced).
 export type Rider = {
   words(): number; record(out: GPUBuffer, at: number): void; land(o: Uint32Array, at: number): void;
   name?: string; buffers?(): [string, GPUBuffer][]; save?(): unknown; restore?(state: unknown, data: Record<string, Uint8Array>): void;
+  kernelSources?(): string[];
 };
 // A rider's state as a dump holds it, waiting for the rider to ride the loaded store.
 type Stashed = { state: unknown; data: Record<string, Uint8Array> };
@@ -160,6 +165,18 @@ export class Store {
   private used = 0;
   private retired: GPUBuffer[] = [];
   private readonly pipes = new Map<string, Map<string, GPUComputePipeline>>(); // by source, then entry point
+  // A store ticked with beginPaced (the play page's) makes each kernel's pipeline asynchronously the first time it runs
+  // (kernel.ts pipelineSoon), since one made as it is asked for stops every queue of the browser's GPU process, the
+  // frames' too, while it compiles (16 of the laws' kernels first run on one tick stopped the frames 2961 ms:
+  // bench-r9c.json compileStalls). From a kernel whose pipeline is still being made, what is recorded is held, in its
+  // order, until the pipelines are made (caughtUp, which beginPaced and land await); a flush meanwhile makes them as
+  // pipeline does and sends everything at once.
+  private paced = false;
+  private held: (() => void)[] | null = null;
+  private waits: Promise<unknown>[] = [];
+  // whether the store's own kernels, and which riders' kernels, are made ahead (makeAhead)
+  private ownAhead = false;
+  private readonly ahead = new Set<Rider>();
 
   constructor(readonly g: Gpu) {
     this.mirror = new Mirror(this);
@@ -248,7 +265,22 @@ export class Store {
     let byEntry = this.pipes.get(src);
     if (!byEntry) this.pipes.set(src, (byEntry = new Map()));
     let p = byEntry.get(entry);
-    if (!p) byEntry.set(entry, (p = pipeline(this.g, src, entry)));
+    if (this.held) {
+      // each kernel held is compiled meanwhile, all at once
+      const soon = p ?? pipelineSoon(this.g, src, entry);
+      if (soon instanceof Promise) this.waits.push(soon);
+      this.held.push(() => this.run(src, bufs, groups, params, entry));
+      return;
+    }
+    if (!p) {
+      const soon = this.paced ? pipelineSoon(this.g, src, entry) : pipeline(this.g, src, entry);
+      if (soon instanceof Promise) {
+        this.waits.push(soon);
+        this.held = [() => this.run(src, bufs, groups, params, entry)];
+        return;
+      }
+      byEntry.set(entry, (p = soon));
+    }
     const entries: GPUBindGroupEntry[] = bufs.map((buffer, binding) => ({ binding, resource: { buffer } }));
     if (params) {
       if (!this.params || (this.used + 1) * PARAM_WORDS > this.params.words.length) this.moreParams();
@@ -266,12 +298,19 @@ export class Store {
     else this.pass.dispatchWorkgroupsIndirect(groups.buffer, groups.offset);
   }
   encode(f: (e: GPUCommandEncoder) => void) {
+    if (this.held) { this.held.push(() => this.encode(f)); return; }
     this.pass?.end();
     this.pass = null;
     f((this.enc ??= this.g.device.createCommandEncoder()));
   }
-  // Submits what has been recorded, the runs' params written first.
+  // Submits what has been recorded, the runs' params written first; anything held for its pipelines first recorded,
+  // those pipelines made at once.
   flush() {
+    if (this.held) {
+      this.paced = false;
+      this.replay();
+      this.paced = true;
+    }
     this.pass?.end();
     this.pass = null;
     this.writeParams();
@@ -279,6 +318,27 @@ export class Store {
     this.enc = null;
     for (const b of this.retired) b.destroy();
     this.retired = [];
+  }
+  // The ops held, recorded in their order; one whose pipeline is still being made (none, once caughtUp has waited for
+  // them all) holds it and those after it again.
+  private replay() {
+    const ops = this.held ?? [];
+    this.held = null;
+    this.waits = [];
+    for (const op of ops) {
+      // an op recorded may have held again (the compiler's type check can't see it)
+      const again = this.held as (() => void)[] | null;
+      if (again) again.push(op);
+      else op();
+    }
+  }
+  // Once every pipeline held for is made, the ops held recorded and sent; at once when none are held.
+  private async caughtUp() {
+    while (this.held) {
+      await Promise.all(this.waits);
+      this.replay();
+    }
+    this.flush();
   }
   private writeParams() {
     if (this.used) this.g.device.queue.writeBuffer(this.params!.buf, 0, this.params!.words, 0, this.used * PARAM_WORDS);
@@ -349,7 +409,7 @@ export class Store {
     const m = this.scratch("m", P.capacity), kept = this.scratch("kept", P.capacity);
     this.run(BIRTH_MASK, [P.body, P.alloc, counts, m, kept], cover(g, P.capacity), [P.capacity, 0, 0, 0]);
     const tot = this.scan(m, P.capacity);
-    const src = birthAssign(P, C, same, init, extra), more = extra?.bufs.map((b) => b.buf) ?? [];
+    const src = this.birthKernel(parent, child, init, extra), more = extra?.bufs.map((b) => b.buf) ?? [];
     this.run(src, same ? [C.body, C.alloc, kept, m, ...more] : [P.body, C.body, C.alloc, kept, m, ...more], cover(g, P.capacity), [P.capacity, this.t, P.capacity, C.capacity]);
     this.run(BIRTH_COMMIT, [C.alloc, tot], [1], [C.capacity, drop ? 1 : 0, 0, 0]);
     C.peek.fresh = false;
@@ -362,10 +422,16 @@ export class Store {
     const C = this.kind(child), m = this.scratch("m", n), g = this.g;
     this.encode((e) => e.copyBufferToBuffer(counts, 0, m, 0, n * 4));
     const tot = this.scan(m, n);
-    this.run(birthAssign(null, C, false, init, extra), [C.body, C.alloc, counts, m, ...(extra?.bufs.map((b) => b.buf) ?? [])], cover(g, n), [n, this.t, 0, C.capacity]);
+    this.run(this.birthKernel(null, child, init, extra), [C.body, C.alloc, counts, m, ...(extra?.bufs.map((b) => b.buf) ?? [])], cover(g, n), [n, this.t, 0, C.capacity]);
     this.run(BIRTH_COMMIT, [C.alloc, tot], [1], [C.capacity, drop ? 1 : 0, 0, 0]);
     C.peek.fresh = false;
     C.touched = C.stale = true;
+  }
+  // The source of the kernel that gives births (a parent kind) or bear (none) of child with init and extra their
+  // fields, for a rider's kernels.
+  birthKernel(parent: string | null, child: string, init: string, extra?: Extra): string {
+    const P = parent === null ? null : this.kind(parent), C = this.kind(child);
+    return birthAssign(P, C, P === C, init, extra);
   }
   // The fixed point where dead slots join the free list: all of them below the tail, in index order.
   reclaim(k: Kind) {
@@ -506,12 +572,34 @@ export class Store {
 
   // ---------- a tick ----------
   begin(t: number) {
+    this.paced = false;
     for (const _ of this.beginSteps(t));
   }
   // begin as a caller that has other work between the laws runs it (the play page's render worker draws its frames
-  // there): the same work in the same order, pause awaited after the upload and after each law due.
+  // there): the same work in the same order, pause awaited after the upload and after each law due, and the kernels of
+  // each held until their pipelines are made (paced).
   async beginPaced(t: number, pause: () => Promise<void>) {
-    for (const _ of this.beginSteps(t)) await pause();
+    this.paced = true;
+    this.makeAhead();
+    if (this.held) await this.caughtUp();
+    for (const _ of this.beginSteps(t)) {
+      if (this.held) await this.caughtUp();
+      await pause();
+    }
+  }
+  // The store's own kernels and every kernel a rider names, set compiling (pipelineSoon) the first paced tick it rides:
+  // the GPU process makes them on its own threads while the ticks and the frames go on, so a law's first run (a day's
+  // or an hour's, many ticks in) finds its pipelines made.
+  private makeAhead() {
+    const srcs: string[] = [];
+    if (!this.ownAhead) {
+      this.ownAhead = true;
+      void pipelineSoon(this.g, SCAN, "blocks");
+      void pipelineSoon(this.g, SCAN, "add");
+      srcs.push(SCAN_TOP, BIRTH_MASK, BIRTH_COMMIT, RECLAIM_FLAG, RECLAIM_SCATTER, RECLAIM_CTL, RECLAIM_SCATTER_LIVE, RECLAIM_CTL_LIVE, INDEX_KEYS, INDEX_COMPACT, RADIX_HIST, RADIX_SCATTER, DELTA_APPLY, PEEK, GATHER_HEAD, GATHER_ROWS);
+    }
+    for (const r of this.riders) if (!this.ahead.has(r)) { this.ahead.add(r); srcs.push(...(r.kernelSources?.() ?? [])); }
+    for (const src of srcs) void pipelineSoon(this.g, src);
   }
   private *beginSteps(t: number) {
     if (this.begun || this.landing) throw new Error("a store tick begins only once the last one has landed");
@@ -520,16 +608,18 @@ export class Store {
     this.begun = true;
     try {
       // each law's work goes to the GPU as soon as it is recorded, so the GPU runs it while the CPU works out the next
-      // law's: the queue keeps the order, and no law writes a buffer (writeBuffer) an earlier law's kernels read
+      // law's: the queue keeps the order, and no law writes a buffer (writeBuffer) an earlier law's kernels read; work
+      // held for its pipelines goes once they are made (beginPaced), before the next law runs
       this.upload();
-      this.flush();
+      if (!this.held) this.flush();
       yield;
-      for (const l of this.laws) if (l.due(t)) { l.run(this, t); this.flush(); yield; }
+      for (const l of this.laws) if (l.due(t)) { l.run(this, t); if (!this.held) this.flush(); yield; }
       // a still kind untouched since its last index has no dead slot to reclaim and no object out of place; a placed
       // kind's reclaim rides its index's scan
       const due = this.kinds.filter((k) => !k.spec.still || k.touched);
       for (const k of due) if (!k.placed) this.reclaim(k);
       for (const k of due) { this.index(k, true); k.touched = false; }
+      if (this.held) yield;
     } catch (e) {
       // the failure stays with this tick: what was recorded goes out (an upload that finished has already taken its
       // deltas off the queue), and the next tick can begin
@@ -572,8 +662,14 @@ export class Store {
       this.run(GATHER_ROWS, [k.body, k.order ?? dummy, k.start ?? dummy, eb, out], cover(g, e.length, 1), [e.length, at[k.n].head, row, k.capacity, from[k.n], 0, 0, 0]);
     }
     this.riders.forEach((r, i) => r.record(out, rat[i]));
-    this.flush();
-    const back = readback(g, out, limit * 4);
+    // with kernels held for their pipelines, the copy back goes in its place after them once they are made
+    const copied = Promise.withResolvers<ArrayBuffer>();
+    const copy = () => { this.flush(); copied.resolve(readback(g, out, limit * 4)); };
+    if (this.held) {
+      this.held.push(copy);
+      this.caughtUp().catch(copied.reject);
+    } else copy();
+    const back = copied.promise;
     this.landing = (async () => {
       try {
         const o = new Uint32Array(await back);

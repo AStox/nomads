@@ -5,10 +5,10 @@ import { mul64, qexp } from "../fixed";
 import { next32 } from "../rand";
 import { CELLS, CELL_MM } from "../wgsl/index";
 import { N } from "../../terrain/grid";
-import { DAY } from "../../sim/world";
+import { DAY, HOUR, TICK_S } from "../../sim/ticks";
 import { type Field, Store, idOf, loadStore, slotOfId } from "../store";
 import { type Obj, type Pending, PENDING } from "../mirror";
-import { Drivers, HOUR } from "./drivers";
+import { Drivers } from "./drivers";
 import { Dormant, type DormantInput, StaticDormant, cellAt } from "./dormant";
 import { drvAccess } from "../wgsl/drivers";
 import { access } from "../wgsl/alloc";
@@ -19,7 +19,8 @@ afterAll(async () => { low?.device.destroy(); await releaseGpu(); });
 
 const held = (o: Obj | null | Pending): Obj => { if (!o || o === PENDING) throw new Error(`the mirror holds ${String(o)}`); return o; };
 
-test("an hour is twelve of the world's ticks", () => {
+test("an hour is 3600 s of the world's ticks and a day 24 of them", () => {
+  expect(HOUR * TICK_S).toBe(3600);
   expect(HOUR * 24).toBe(DAY);
 });
 

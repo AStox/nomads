@@ -10,11 +10,12 @@ import { BASE, CELLS, CEN, CENW, CW, DAYW, ST, STATIC_WORDS, STW, SPC, TS, X, fa
 import {
   BLADE_UNITS, PACE, PIECE_UG, REED_EMERGE, REED_LEAVES, REED_UNDER, SLA_GRASS, TAXA, faunaTwin, foxSummer, lamina, litterTwin, sandTwin, smallsLaw, smallsTables, tillerTwin,
 } from "../sim/smalls";
+import { DAY } from "../sim/ticks";
 
 let low: Gpu | null = null;
 afterAll(async () => { low?.device.destroy(); await releaseGpu(); });
 
-const DAY = 288, M2 = 75 * 75, Q16 = (x: number) => Math.round(x * 65536);
+const M2 = 75 * 75, Q16 = (x: number) => Math.round(x * 65536);
 // One cell of open sward under steady drivers (note sec. 7.7): 15 C, the forage rule's summer sun (18 MJ/m2 a day
 // [design: a Danish summer day's mean]) at fertility 0.5, leaf appearance held on its after-10-June branch, the summer's
 // deaths all year, and no calendar: no vernalisation, elongation or flowering.

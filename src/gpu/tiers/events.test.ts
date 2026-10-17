@@ -5,7 +5,8 @@ import { CTL } from "../wgsl/alloc";
 import { CELL_MM } from "../wgsl/index";
 import { N } from "../../terrain/grid";
 import { type Field, Store, loadStore } from "../store";
-import { Drivers, HOUR } from "./drivers";
+import { Drivers } from "./drivers";
+import { DAY, HOUR } from "../../sim/ticks";
 import { Events, NEVER, UNDRAWN } from "./events";
 import { access } from "../wgsl/alloc";
 import { drvAccess } from "../wgsl/drivers";
@@ -15,7 +16,7 @@ import { RAND } from "../wgsl/rand";
 let low: Gpu | null = null;
 afterAll(async () => { low?.device.destroy(); await releaseGpu(); });
 
-const DAY = 24 * HOUR, YEAR = 365, SEED = 0x5eed, STREAM = 9, VOLES = 1 << 16;
+const YEAR = 365, SEED = 0x5eed, STREAM = 9, VOLES = 1 << 16;
 // Air in hundredths of a degree: a year's cold and warm (coldest on day 0) and noise by cell and hour.
 const WEATHER = `
 let r = philox(vec4u(cell, hour, 0u, 0u), vec2u(91u, 2u));

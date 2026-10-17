@@ -1,19 +1,22 @@
-// Run a world headless and print what happened.
-//   NOMADS_BRAIN=random bun scripts/run.ts --ticks 20000 --seed 7     (no Jev, fast)
-//   bun scripts/run.ts --ticks 2000                                    (real Jev, needs TYPESAFE_API_KEY)
+// Run a world headless and print what happened. How long: --days of sim time, else --hours, else --ticks.
+//   NOMADS_BRAIN=random bun scripts/run.ts --days 70 --seed 7         (no Jev, fast)
+//   bun scripts/run.ts --hours 6                                       (real Jev, needs TYPESAFE_API_KEY)
 //   NOMADS_BRAIN=random bun scripts/run.ts --minutes 60 --ticks 1e9    (stop on wall-clock time, with a progress line each day)
-import { DAY, newWorld, clock } from "../src/sim/world";
+import { newWorld, clock } from "../src/sim/world";
+import { DAY, HOUR } from "../src/sim/ticks";
 import { census } from "../src/sim/animals";
 import { tick } from "../src/sim/sim";
 import { changed, newKinds, removed } from "../src/sim/physics";
 import { beliefText } from "../src/sim/beliefs";
 import { trailChanges } from "../src/sim/ecology";
-import { counters, logTo, flush, tickMs } from "../src/sim/trace";
+import { counters, logTo, flush, hourMs, tickMs } from "../src/sim/trace";
 import { patterns, patternText, standing } from "../src/sim/groups";
 import { exit, holdGpu, seedRandom } from "./seeded";
+import { asking, jevMeter } from "../src/sim/brain";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
-const ticks = Number(arg("ticks", "5000")), minutes = Number(arg("minutes", "0")), seed = Number(arg("seed", String(Math.floor(Math.random() * 1e9))));
+const minutes = Number(arg("minutes", "0")), seed = Number(arg("seed", String(Math.floor(Math.random() * 1e9))));
+const ticks = process.argv.includes("--days") ? Number(arg("days", "0")) * DAY : process.argv.includes("--hours") ? Number(arg("hours", "0")) * HOUR : Number(arg("ticks", "5000"));
 // the run's own draws, the island's seed unless told otherwise: the same seed runs the same world again
 seedRandom(Number(arg("rng", String(seed))));
 console.log(`gpu: ${await holdGpu()}`);
@@ -31,7 +34,10 @@ for (let i = 0; i < ticks; i++, ran++) {
   }
   changed.clear(); removed.clear(); newKinds.clear(); trailChanges.clear();
   if (logs) flush();
-  await Bun.sleep(process.env.NOMADS_BRAIN === "random" ? 0 : 20);
+  // the random brain answers through promise chains: let them settle; with Jev, wait while a question is out, so the world
+  // moves as if Jev answered at once
+  await Bun.sleep(0);
+  while (asking()) await Bun.sleep(20);
 }
 const kinds: Record<string, number> = {};
 for (const e of w.events) kinds[e.kind] = (kinds[e.kind] ?? 0) + 1;
@@ -62,5 +68,7 @@ for (const a of w.agents) {
 }
 console.log(`\nanimals: deer ${census(w).deer ?? 0}, rabbits ${census(w).rabbit ?? 0}, wolves ${census(w).wolf ?? 0}, foxes ${census(w).fox ?? 0}, fish ${census(w).fish ?? 0}; structures ${w.things.filter((t) => t.kind === "structure").length}; fires ${w.things.filter((t) => t.kind === "fire").length}`);
 console.log("tickMs", JSON.stringify(Object.fromEntries(Object.entries(tickMs).map(([k, v]) => [k, Math.round(v * 100) / 100]))));
+console.log("hourMs", JSON.stringify(Object.fromEntries(Object.entries(hourMs()).map(([k, v]) => [k, Math.round(v * 10) / 10]))));
 console.log("jev", JSON.stringify(w.jev), "counters", JSON.stringify(Object.fromEntries(Object.entries(counters).filter(([k]) => !k.startsWith("belief")))));
+console.log("meter", JSON.stringify(jevMeter(w)));
 await exit();

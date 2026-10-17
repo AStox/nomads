@@ -1,6 +1,8 @@
 // The game's simulation, bundled for the browser so a page can run a live world: with the random brain, or with Jev
 // through a relay that holds the key (useBrain).
-export { DAY, H, TILE_M, Tile, W, YEAR_DAYS, clock, colorIndex, dayOfYear, dryAt, groundOf, isNight, newWorld, seasonOf, spriteSeed, wetAt } from "../src/sim/world";
+export { H, TILE_M, Tile, W, clock, colorIndex, dayOfYear, dryAt, groundOf, isNight, newWorld, seasonOf, spriteSeed, wetAt } from "../src/sim/world";
+// the island's clock, which the page and the renderer read from here rather than keeping their own
+export { DAY, HOUR, TICK_S, YEAR_DAYS } from "../src/sim/ticks";
 export { ACTIVITY, activity, changedKinds, heading, summary, tick, tickPause } from "../src/sim/sim";
 export { brainKind, useBrain } from "../src/sim/brain";
 export { changed, newKinds, removeThing, removed } from "../src/sim/physics";

@@ -105,6 +105,7 @@ export class Dormant implements Rider {
     this.forward = objects(this.store, this.spec.active, savedArray(state, "forward", this.name), this.name);
   }
   destroy() { this.past.destroy(); }
+  kernelSources(): string[] { return [dormantEval(this.layout, this.drivers.layout)]; }
 
   // The state of a member at the newest committed hour, by the twin, from its record and its cell's sums; a member
   // past its life throws.
@@ -208,6 +209,7 @@ export class StaticDormant implements Rider {
     return this.counts.size + this.goneBuf.size;
   }
   destroy() { this.counts.destroy(); this.goneBuf.destroy(); }
+  kernelSources(): string[] { return [staticMembers({ attrs: this.spec.attrs, body: this.spec.wgsl, seed: this.spec.seed, stream: this.spec.stream })]; }
   // The sorted list of members gone as the GPU reads it (staticMembers' gone): a new buffer after every lift.
   get goneList(): GPUBuffer { return this.goneBuf; }
   // Whether member k of a cell was moved or taken.

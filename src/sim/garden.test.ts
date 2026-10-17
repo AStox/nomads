@@ -7,6 +7,7 @@ import { groundKey, noteTry, type Belief } from "./beliefs";
 import { plan } from "./plan";
 import { tick } from "./sim";
 import { YEAR_DAYS } from "./sky";
+import { HOUR } from "./ticks";
 import { releaseGpu } from "../gpu/device";
 
 // tick puts the world's flora on the GPU, and a live device keeps the test process from exiting
@@ -190,8 +191,8 @@ test("standing in the rain, someone with a theory about each of two ways is offe
   a.beliefs = { [rub.key]: rub, [dig.key]: dig };
   giveItems(w, a, "stick", 2);
   giveItems(w, a, "fiber");
-  // the sky only turns on the twelfth tick
-  w.t = Math.ceil(w.t / 12) * 12 + 1;
+  // the sky only turns on the hour
+  w.t = Math.ceil(w.t / HOUR) * HOUR + 1;
   w.weather.sky = "rain";
   const before = a.lastDecision;
   a.goal = null;

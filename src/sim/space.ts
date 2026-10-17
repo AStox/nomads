@@ -16,11 +16,11 @@
 // (around, nearestThing, thingById); a lookup of every kind (kinds null) makes views of the fallen logs only. A view no
 // one has changed goes again once it has rotted away, or nothing has looked at its tile for a day and no one is near
 // (shelve). One changed is touched: its piece goes active with it, and one taken is gone for good.
-import { DAY, H, HP, TILE_M, W, YEAR_DAYS, cropOf, groundOf, grown, heldStore, ringOf, storeOf, type Thing, type World } from "./world";
+import { DAY, H, HP, TILE_M, W, cropOf, groundOf, grown, heldStore, ringOf, storeOf, type Thing, type World } from "./world";
 import { FLORA, SPECIES, clasts } from "../terrain/flora";
 import { Flora, type Stand, type StemDriver } from "../gpu/flora";
 import { theGpu } from "../gpu/device";
-import { BOULDERS_HA, CLASTS, CLAST_DIM, Deadwood, YEAR_DAYS as DEAD_YEAR, capacities, type Piece, type PieceKind } from "../gpu/deadwood";
+import { BOULDERS_HA, CLASTS, CLAST_DIM, Deadwood, capacities, type Piece, type PieceKind } from "../gpu/deadwood";
 import { Seedlings, type SeedDriver } from "../gpu/seedlings";
 import { Crowns } from "../gpu/crowns";
 import { Moisture } from "../gpu/moisture";
@@ -116,7 +116,6 @@ export async function resident(w: World, stems: StemDriver, seeds: SeedDriver) {
   ix.crowns = new Crowns();
   await ix.crowns.attach(s, { raster: (now) => flora.raster(now) }, (t) => stems.due(t));
   const g = groundOf(w.seed), [pebble, stone, boulder] = clasts(g.isle, w.seed, BOULDERS_HA, CLAST_DIM, CLASTS.map((c) => [c.lo / 1000, c.hi / 1000] as const));
-  if (DEAD_YEAR !== YEAR_DAYS) throw new Error(`the deadwood's year of ${DEAD_YEAR} days isn't the sky's ${YEAR_DAYS}`);
   ix.dead = new Deadwood(w.seed, { pebble, stone, boulder }, capacities(g.flora));
   ix.dead.attach(s, () => flora.raster());
   // a world whose store is new (one read from its JSON alone): the pieces its Things were made of and changed are

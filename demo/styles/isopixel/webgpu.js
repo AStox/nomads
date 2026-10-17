@@ -1353,7 +1353,8 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     if ((!fr || fr.gen !== f.gen) && !frontWant.includes(key) && frontJob?.key !== key) frontWant.push(key);
     return fr && (fr.gen === f.gen || fr.gen === f.prevGen) ? fr : null;
   }
-  // the levels and bearings a frame's views ask for: each view's own first, then every other level at its bearing
+  // the levels and bearings a frame's views ask for: each view's own first, then every other level at its bearing, the
+  // nearest levels first (those a zoom's cross-fade reaches next), so a level is seldom first drawn walking its far list
   function frontAsk(views) {
     const at = [...frontViews.keys()].map((k) => k.split("|").map(Number));
     for (const s of sources) {
@@ -1361,6 +1362,11 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       if (!f || f.front < 0 || !s.far.keep) continue;
       for (const v of views) for (const L of [v.L, ...at.filter(([, b]) => b === v.beta).map(([l]) => l)]) frontOf(s, f, L, v.beta);
     }
+    const rank = (key) => {
+      const [, L, b] = key.split("|").map(Number);
+      return Math.min(...views.map((v) => (b === v.beta ? Math.abs(L - v.L) : Infinity)));
+    };
+    if (frontWant.length > 1) frontWant.sort((a, b) => rank(a) - rank(b));
   }
   // One step of the front list being built, into enc; after: what to run once enc is submitted.
   function frontFrame(enc) {

@@ -304,6 +304,14 @@ export class Lumped implements Rider {
     this.ccap = Math.max(this.ccap, Math.ceil((this.ccap * to) / this.cap));
     this.cap = to;
   }
+  // the step's kernels but the births, whose sources hold the table's room as it grows
+  kernelSources(): string[] {
+    const L = { seed: this.seed, law: this.spec.law, wide: this.wide, outs: this.spec.outcomes };
+    return [
+      lumpTake(this.wide), lumpActive(L), lumpSplit(L), LUMP_GBFLAG, LUMP_GBPUT, lumpEmit(L), LUMP_IOTA, RADIX_HIST, RADIX_SCATTER, LUMP_HEADS, LUMP_HPOS,
+      LUMP_NOKEEP, LUMP_WIDE, LUMP_KEEP, LUMP_NEW, LUMP_COUNT, LUMP_SWEEP, LUMP_WATCH,
+    ];
+  }
   step(t: number) {
     this.room();
     const s = this.store, g = s.g, cap = this.cap, ccap = this.ccap, A = this.tables[this.cur], B = this.tables[1 - this.cur], merge = this.merge;

@@ -26,6 +26,7 @@ import { type Rider, type Store, genOfId, kindOfId, reload, savedArray, savedNum
 import type { Crowns } from "./crowns";
 import { layered, layeredBy, SIDE, TEXELS, TEXEL_MM } from "./wgsl/crowns";
 import { moistureCells, moistureGather, moistureLogs, moistureTexels, type MoistureLayout } from "./wgsl/moisture";
+import { DAY, HOUR } from "../sim/ticks";
 
 // ---------- the law's constants ----------
 // How long a piece takes to come 63% of the way to new surroundings, hours (sec. 5, 20, 27f): as the square of its
@@ -216,12 +217,6 @@ export function logLaw(rows: Int32Array, ex: Int32Array, what: number, dia: numb
 export const CELL_WORDS = 16;
 export type MoistureDriver = { cells(): Int32Array; lee(): Uint8Array; shelter(): Shelter; start(): Water[] };
 
-// Ticks in an hour (src/sim/world.ts; tiers/drivers.ts holds the same).
-const HOUR_TICKS = 12;
-// Cells round each person whose water comes back every hour: a 3 x 3 block of 75 m cells [design: a person's reach
-// for tinder and pieces], and cells asked of by any lookup, kept for a day after the last ask.
-const KEEP_TICKS = 288;
-
 export class Moisture implements Rider {
   readonly name = "moisture";
   store: Store | null = null;
@@ -270,7 +265,7 @@ export class Moisture implements Rider {
       const all = new Int32Array(TEXELS * TEXEL_WORDS);
       for (let t2 = 0; t2 < TEXELS; t2++) all.set(one, t2 * TEXEL_WORDS);
       for (let c = 0; c < all.byteLength; c += 64 << 20) g.device.queue.writeBuffer(this.states, c, all.buffer, all.byteOffset + c, Math.min(64 << 20, all.byteLength - c));
-      this.first = Math.floor(store.t / HOUR_TICKS);
+      this.first = Math.floor(store.t / HOUR);
     }
     store.law({ name: "moisture", due: () => this.queued !== null, run: () => this.law() });
   }
@@ -278,6 +273,7 @@ export class Moisture implements Rider {
 
   // The island's hour (wetness.ts), stepped on the GPU at the next tick's laws.
   queue(h: Hour) { this.queued = h; }
+  kernelSources(): string[] { return Object.values(this.src); }
   private law() {
     const s = this.store!, g = s.g, b = this.bufs!, h = this.queued!, crowns = this.crowns!.buf!;
     this.queued = null;
@@ -307,7 +303,9 @@ export class Moisture implements Rider {
     const v = this.heldLogs.get(id);
     return v && ((v[2] & 0x7fffffff) >>> 1) === genOfId(id) ? { m: v[0], skin: v[1] } : undefined;
   }
-  // The cells round people, asked every tick.
+  // The cells round people, asked every tick: a 3 x 3 block of 75 m cells round each person, whose water comes back
+  // every hour [design: a person's reach for tinder and pieces], and cells asked of by any lookup, kept for a day (DAY
+  // ticks) after the last ask.
   watch(people: readonly { px: number; py: number }[], tileMm: number, t: number) {
     for (const p of people) {
       const cx = Math.floor((p.px * tileMm) / (TEXEL_MM * 4)), cy = Math.floor((p.py * tileMm) / (TEXEL_MM * 4));
@@ -318,8 +316,8 @@ export class Moisture implements Rider {
           this.askedCells.set(c, t);
         }
     }
-    for (const [c, at] of this.askedCells) if (t - at > KEEP_TICKS) { this.askedCells.delete(c); this.heldCells.delete(c); }
-    for (const [id, at] of this.askedLogs) if (t - at > KEEP_TICKS) { this.askedLogs.delete(id); this.heldLogs.delete(id); }
+    for (const [c, at] of this.askedCells) if (t - at > DAY) { this.askedCells.delete(c); this.heldCells.delete(c); }
+    for (const [id, at] of this.askedLogs) if (t - at > DAY) { this.askedLogs.delete(id); this.heldLogs.delete(id); }
   }
   // Every texel and log set to the same water (a test's fixed weather: fire.test.ts's dry afternoons); each log takes
   // its class's most at most.

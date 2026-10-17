@@ -3,7 +3,7 @@ import { DAY, meters, newWorld, type Act, type Agent, type Stack, type Step, typ
 import { LEAST, advance, alight, output, radiation } from "./combustion";
 import { PHYS, pieceOf, roundSize } from "./fuel";
 import { ensure } from "./materials";
-import { GALE, ablaze, bedAir, breeze, carry, count, cutting, fireHours, fireOf, giveItems, giveStack, heat, holdOf, join, place, removeThing, rubTick, stemOf, strikeTick, type Fields, type Outcome } from "./physics";
+import { DURATION, GALE, ablaze, bedAir, breeze, carry, count, cutting, fireHours, fireOf, giveItems, giveStack, heat, holdOf, join, place, removeThing, rubTick, stemOf, strikeTick, type Fields, type Outcome } from "./physics";
 import { GROWN } from "./mechanics";
 import { DAMP, SOAKED } from "./wetness";
 import { thingById } from "./space";
@@ -11,6 +11,8 @@ import { apart, beliefKey, cameOff, chance, differed, fades, noteTry, record, re
 import { plan } from "./plan";
 import { actFromBelief, conditionsNow, doAct, tick, tinkerOptions } from "./sim";
 import { releaseGpu } from "../gpu/device";
+import { bodyOf } from "./body";
+import { HOUR, TICK_S, ticksOf } from "./ticks";
 
 // tick puts the world's flora on the GPU, and a live device keeps the test process from exiting
 afterAll(releaseGpu);
@@ -241,13 +243,42 @@ test("rain that starts after they planned a fire stops them rubbing sticks, if t
   a.nextDecide = w.t + DAY;
   a.goal = { type: "make_fire", since: w.t, odds: {}, fails: 0 };
   a.plan = [{ op: "act", key: b.key, arg: b.key, progress: 0 }];
-  // the sky only turns on the twelfth tick: this one keeps the rain
-  w.t = Math.ceil(w.t / 12) * 12 + 1;
+  // the sky only turns on the hour: this tick keeps the rain
+  w.t = Math.ceil(w.t / HOUR) * HOUR + 1;
   w.weather.sky = "rain";
   await tick(w);
   expect(b.tally).toEqual({ tries: 10, wins: 9 });
   expect(a.goal?.type).not.toBe("make_fire");
   expect(count(a, "fiber")).toBe(1);
+});
+
+test("a join takes eight ticks at 300 s, as before, and fewer for a practised hand", () => {
+  // ticks of work until the act's time is done: a fight's work is never lost to poor light (sim.ts fumbles)
+  const ticks = (xp: number) => {
+    const [w, a] = fresh();
+    a.skills.crafting = xp;
+    a.goal = { type: "fight", since: w.t, odds: {}, fails: 0 };
+    giveItems(w, a, "fiber", 2);
+    const s: Step = { op: "act", act: { verb: "join", items: ["fiber", "fiber"] }, progress: 0 };
+    let n = 0;
+    while (s.progress < ticksOf(DURATION.join) && n < 100) { doAct(w, a, s); n++; }
+    return n;
+  };
+  expect(TICK_S).toBe(300);
+  expect(ticks(0)).toBe(8);
+  // level 5 (world.ts level): a tick's work and half again
+  expect(ticks(250)).toBe(6);
+});
+
+test("someone who collapses stays down through the next tick", async () => {
+  const [w, a] = fresh();
+  w.agents = [a];
+  a.needs = { food: 100, energy: 100, warmth: 100, health: 100, social: 100 };
+  bodyOf(w, a).core = 28;
+  await tick(w);
+  expect(a.status).toBe("Unconscious");
+  expect(a.down).toBe(w.t + 2);
+  expect(a.down > w.t + 1).toBe(true);
 });
 
 test("a condition is only suspected when it has done worse there by more than chance: a couple of berries lost in the dark among many aren't enough, a run of them in the shade is", () => {

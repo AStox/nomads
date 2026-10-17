@@ -149,9 +149,10 @@ export function receive(b: Batch): Uint32Array {
 }
 
 // ---------- the GPU ----------
-// The receivers riding a world's store: a batch queued in a tick goes to the GPU with that tick's landing, and what
-// comes back is handed to the batch's done. A batch still queued when the next is (a caller stepping fire without
-// ticking the store between) is worked out by the twin first, which gives the same words.
+// The receivers riding a world's store: a batch queued on a landing tick (the looks of the fire's runs since the last
+// landing, src/sim/ecology.ts fire) goes to the GPU with that landing, and what comes back is handed to the batch's
+// done. A batch still queued when the next is (a caller stepping fire without landing the store between) is worked out
+// by the twin first, which gives the same words.
 type Queued = { b: Batch; done: (out: Uint32Array) => void };
 export class Receivers implements Rider {
   store: Store | null = null;
@@ -165,6 +166,7 @@ export class Receivers implements Rider {
     this.src = fireReceive();
     store.ride(this);
   }
+  kernelSources(): string[] { return [this.src]; }
   queue(b: Batch, done: (out: Uint32Array) => void) {
     const was = this.queued;
     this.queued = { b, done };

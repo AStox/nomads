@@ -36,6 +36,9 @@ turn.port1.onmessage = () => turnWaiting.shift()();
 const nextTask = () => new Promise((ok) => { turnWaiting.push(ok); turn.port2.postMessage(0); });
 // the most a part of such work runs before it lets a frame in [design: a quarter of a 60 Hz frame]
 const PART_MS = 4;
+// the most of a frame the sim's due ticks run in before their state goes to the page; the rest wait for the next frame
+// [design: half a 60 Hz frame, until the renderer's share of a worker frame is measured (real-time tick plan, Unit 8)]
+const SIM_BUDGET_MS = 8;
 
 async function init(m) {
   const t0 = performance.now();
@@ -706,7 +709,7 @@ async function startSim(bundle, createSim, seed, { warm = 0, jev = null }) {
   }
   for (const e of S.flora.gone()) showGrown(e, false);
   const t1 = performance.now();
-  post({ type: "simReady", activities: sim.activities, day: sim.day, opening: sim.opening(), state: sim.state(), live });
+  post({ type: "simReady", activities: sim.activities, day: sim.day, tickS: sim.tickS, yearDays: sim.yearDays, opening: sim.opening(), state: sim.state(), live });
   R.setIce(iceOf(w.ice));
   trailSrc = sim.trails(); trailQ = new Map();
   const all = new Uint8Array(TN * TN);
@@ -734,23 +737,31 @@ async function startSim(bundle, createSim, seed, { warm = 0, jev = null }) {
   S.spriteLandings = S.flora.landings; S.newLooks = false; S.spritesAt = performance.now();
   refreshSprites();
 }
-// One tick, its changes onto the GPU, and the state after it to the page with what changed of the things it draws every
-// frame (ch: live, those to draw as they are now; drop, the ids to draw no more).
-async function simTick() {
-  const ch = { live: [], drop: [] };
+// The ticks the page says are due (n), one after another while the frame's sim budget lasts (at least one), each
+// awaited and each in its own task (napkin: ticks run back to back in one task leave every agent thinking), their
+// changes onto the GPU; then the state after them to the page once, with how many ran and what changed of the things it
+// draws every frame (ch: live, those to draw as they are now; drop, the ids to draw no more).
+async function simTick(n = 1) {
+  const ch = { live: new Map(), drop: new Set() }, t0 = performance.now();
   ticking = Promise.withResolvers();
-  try { simChanged(await sim.tick(), ch); } catch (err) { console.error("tick", err); }
+  let ran = 0;
+  do {
+    if (ran) await nextTask();
+    try { simChanged(await sim.tick(), ch); } catch (err) { console.error("tick", err); }
+    ran++;
+  } while (ran < n && performance.now() - t0 < SIM_BUDGET_MS);
   ticking.resolve(); ticking = null;
-  post({ type: "simState", state: sim.state(), ch, ...answers() });
+  post({ type: "simState", state: sim.state(), ch: { live: [...ch.live.values()], drop: [...ch.drop] }, ran, ...answers() });
 }
+// a thing to draw no more, whatever an earlier tick of the frame said of it
+const chDrop = (ch, id) => { ch.drop.add(id); ch.live.delete(id); };
 function simChanged(done, ch) {
   for (const t of done.things) {
-    if (t.contained) ch.drop.push(t.id);
-    else if (pageDraws(t)) ch.live.push(t);
-    else ch.drop.push(t.id);
+    if (t.contained || !pageDraws(t)) chDrop(ch, t.id);
+    else { ch.live.set(t.id, t); ch.drop.delete(t.id); }
     place(t);
   }
-  for (const id of done.removed) { ch.drop.push(id); gone(id); }
+  for (const id of done.removed) { chDrop(ch, id); gone(id); }
   canopyOften();
   // the deadwood's sources once it is resident (after the world's first tick, with no warm), their sprites made as any
   if (!S.dead && !S.kindsComing && deadwoodOf()) { S.kindsComing = true; setupKinds().then(() => { S.newLooks = true; }).catch((err) => post({ type: "error", error: String(err) })); }
@@ -908,7 +919,7 @@ const handle = async (e) => {
     // the whole island at each level and bearing that keeps front lists (live.js islandView)
     else if (m.type === "frontViews") R.setFrontViews(m.views);
     else if (m.type === "frame") { pending = m; render(); }
-    else if (m.type === "simTick") await simTick();
+    else if (m.type === "simTick") await simTick(m.n);
     // asked in a tick's pause (sim.ts tickPause), answered with the state after it, as the world stands between ticks
     else if (m.type === "simWant") { want = m.want; if (!ticking) post({ type: "simState", ...answers() }); }
     else if (m.type === "pick") {

@@ -6,6 +6,7 @@
 // Light is counted in lux, the way it is measured, because eyes meet it on a log scale: a day is a hundred thousand of them
 // and a clear night under a full moon a quarter of one, and people work comfortably across almost all of that range.
 import type { World } from "./world";
+import { DAY, TICK_S, YEAR_DAYS } from "./ticks";
 
 const DEG = Math.PI / 180;
 
@@ -15,9 +16,9 @@ const DEG = Math.PI / 180;
 // highest in the middle of summer (58 degrees at noon, a 17.1 hour day) and lowest in the middle of winter (11.5 degrees,
 // a 6.9 hour day). The moon crosses the same sky phase x 24 hours behind the sun as it waxes over LUNAR days, as far south of
 // the equator when full as the sun is north, so a summer full moon rides low and a winter one high.
-export const DAY = 288; // ticks per in-game day, 5 minutes each (here, not in world.ts, so the sky needs nothing of the world's at load)
-export const TICK_S = 86400 / DAY; // seconds a tick lasts: every speed, rate and duration in seconds becomes ticks through this alone
-export const YEAR_DAYS = 40;
+// The clock (ticks.ts), kept here too for the modules that have long read it off the sky: ticks a day, seconds a tick,
+// days a year. Every speed, rate and duration in seconds becomes ticks through TICK_S alone.
+export { DAY, TICK_S, YEAR_DAYS };
 export const NOON = 13; // the sun crosses the south
 // Where tick t falls between the middles of two seasons: the earlier's index and how far toward the next. A day's air is
 // drawn straight between the seasons' means, as the island's fields are.

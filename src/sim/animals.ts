@@ -7,7 +7,7 @@
 // to their objects. The fish are objects of their own (waters.ts) and the butterflies still each tile's count (Unit 12b).
 //
 // What the animals do each tick within sight: graze, wander, flee, hunt, swim, fly, perch and feed. Speeds are meters a
-// tick of five minutes' game time, the way a person's are; what each kind is like is in fauna.ts.
+// tick, stated as so many meters over five minutes (fauna.ts), the way a person's are; what each kind is like is in fauna.ts.
 import { carcassOf, fatOf, massOf } from "./hunt";
 import { LEAP, PIT_DEPTH } from "./shelter";
 import {
@@ -37,6 +37,8 @@ import { PLANT } from "../gpu/flora";
 import { ANIMAL, Animals, type AnimalDriver } from "../gpu/animals";
 import { CLS, DR, DRIVERS, DT, DTAB, FLAG, G, GK, K, KW, NSP, PO, SP, STATIC_RUNS, STREAM, T, TILE_MM, W_, WTAB, WTN } from "../gpu/wgsl/animals";
 import { TEXELS_SIDE } from "../gpu/wgsl/stems";
+import { HOUR, chance, rate, ticksOf } from "./ticks";
+import { LAND_S, SENSES_S, due } from "./lanes";
 import { next32, rinit, unif } from "../gpu/rand";
 
 // A herd animal's day is the year's 365.25 / YEAR_DAYS days of eating and burning, as a plant's is of growing
@@ -509,9 +511,10 @@ export function backed(w: World, an: Animal) {
     e: Math.round((Math.max(0, Math.min(100, an.hunger)) / 100) * k.full * 1000),
   }).id;
 }
-// Each tick: the animals within sight of anyone awake stand on the ground as views of their objects, the CPU moving
-// them while they're seen; those no one sees any longer go back to the GPU's moving; those the GPU found dead (starved,
-// killed, or the year's other deaths) are gone. A view's id is its object's, so one seen again is the same animal.
+// Each run of the senses lane: the animals within sight of anyone awake stand on the ground as views of their objects,
+// the CPU moving them while they're seen; those no one sees any longer go back to the GPU's moving; those the GPU found
+// dead (starved, killed, or the year's other deaths) are gone. A view's id is its object's, so one seen again is the
+// same animal.
 function sync(w: World) {
   const s = animalsOf(w).store;
   if (!s) return;
@@ -571,17 +574,31 @@ function fed(w: World, an: Animal, kj: number) {
   if (!o || typeof o !== "object") return;
   s.set(an.obj, "fed", (o.v.fed + Math.round(kj * 1000)) >>> 0);
 }
-// One the CPU moved: its object stands where it does.
+// One the CPU moved: its object will stand where it does once the landing writes it back (writeBack).
+const moving = new WeakMap<World, Set<Animal>>();
 function moved(w: World, an: Animal, x0: number, y0: number) {
   if (an.species === "butterfly" && w.pools) {
     const from = tileOf({ px: x0, py: y0 }), to = tileOf(an);
     if (from !== to) { const n = w.pools.butterfly, m = Math.min(1, n[from]); n[from] -= m; n[to] += m; }
     return;
   }
-  const s = animalsOf(w).store;
-  if (an.obj === undefined || !s || (an.px === x0 && an.py === y0)) return;
-  s.set(an.obj, "x", toMm(an.px));
-  s.set(an.obj, "y", toMm(an.py));
+  if (an.obj === undefined || !animalsOf(w).store || (an.px === x0 && an.py === y0)) return;
+  const set = moving.get(w) ?? new Set<Animal>();
+  set.add(an);
+  moving.set(w, set);
+}
+// At a landing the views the CPU moved since the last one write where they stand to their objects, in the order they
+// first moved, those gone since left out (their objects die with them).
+function writeBack(w: World) {
+  const set = moving.get(w), s = animalsOf(w).store;
+  moving.delete(w);
+  if (!set || !s) return;
+  const about = new Set(w.animals);
+  for (const an of set) {
+    if (an.obj === undefined || !about.has(an)) continue;
+    s.set(an.obj, "x", toMm(an.px));
+    s.set(an.obj, "y", toMm(an.py));
+  }
 }
 // Every animal of a kind gone from the island (a probe's world with no wolves): the CPU's views now, their objects at
 // the GPU's next submit (or once the animals live on the GPU).
@@ -624,6 +641,8 @@ export function census(w: World) {
 const MEAT_KJ = PHYS.meat.mass * PHYS.meat.kj!;
 
 // ---------- what they do within sight ----------
+// Every chance, step, bite and timer below was written for a tick of five minutes, so each is stated over 300 s through
+// ticks.ts chance, rate and ticksOf [design: today's per-tick values], the same numbers at that tick.
 // Agents being attacked this tick, agent id -> wolf id.
 export const attacked = new Map<string, string>();
 
@@ -640,6 +659,7 @@ const passOf = (sp: AnimalSpecies) => (FAUNA[sp].ground ? ground : air);
 const pointOf = (sp: AnimalSpecies) => (sp === "fish" ? wetAt : FAUNA[sp].ground ? dryAt : air);
 function face(an: Animal) { an.dx = Math.round(Math.cos(an.heading)); an.dy = Math.round(Math.sin(an.heading)); }
 function setState(w: World, an: Animal, s: string) { if (an.state !== s) { an.state = s; an.since = w.t; } }
+// Ticks an animal has been in its state; compared against ticksOf(seconds).
 const inState = (w: World, an: Animal) => w.t - (an.since ?? w.t);
 // A fixed per-animal number below n, so a flock doesn't fly at one height or wake all at once.
 const quirk = (an: Animal, n: number) => (Math.imul(Number(an.id.slice(1)) || 1, 2654435761) >>> 0) % n;
@@ -650,24 +670,30 @@ function away(w: World, an: Animal, from: { px: number; py: number }, speed: num
 }
 // A point pulled back inside the map, so nothing heads for somewhere it can never reach.
 const onMap = (x: number, y: number): [number, number] => [Math.max(0.05, Math.min(W - 0.05, x)), Math.max(0.05, Math.min(W - 0.05, y))];
-// Amble about near home, keeping one heading for a while.
+// Amble about near home, keeping one heading for a while: a new heading with a chance of 0.02, and a step taken with a
+// chance of odds, each over 300 s.
 function roam(w: World, an: Animal, r: number, speed: number, odds = 0.35) {
   const home = an.home ?? [an.px, an.py];
-  if (!an.aim || Math.hypot(an.aim[0] - an.px, an.aim[1] - an.py) * TILE_M < 1 || Math.random() < 0.02) {
+  if (!an.aim || Math.hypot(an.aim[0] - an.px, an.aim[1] - an.py) * TILE_M < 1 || Math.random() < chance(0.02, 300)) {
     const a = Math.random() * Math.PI * 2, d = (Math.random() * r) / TILE_M;
     an.aim = onMap(home[0] + Math.cos(a) * d, home[1] + Math.sin(a) * d);
   }
-  if (Math.random() < odds) goTo(w, an, an.aim[0], an.aim[1], speed);
+  if (Math.random() < chance(odds, 300)) goTo(w, an, an.aim[0], an.aim[1], speed);
 }
 function carcass(w: World, an: Animal) {
   gone(w, an);
   for (const [k, n] of Object.entries(herded(an.species) ? carcassOf(an.species, fatOf(an.species, an.hunger)) : {})) dropPile(w, an.px, an.py, k, n);
 }
-const lift = (an: Animal, to: number, rate: number) => { an.alt = Math.round((an.alt + Math.max(-rate, Math.min(rate, to - an.alt))) * 10) / 10; };
+// Climb or sink toward a height, by at most climb meters over 300 s.
+const lift = (an: Animal, to: number, climb: number) => {
+  const step = rate(climb, 300);
+  an.alt = Math.round((an.alt + Math.max(-step, Math.min(step, to - an.alt))) * 10) / 10;
+};
 
-// Grazing crops the grass tufts close by, down to a stub that grows back in its own time.
+// Grazing crops the grass tufts close by, down to a stub that grows back in its own time, a bite with a chance of 0.02
+// over 300 s.
 function nibble(w: World, an: Animal) {
-  if (Math.random() > 0.02) return;
+  if (Math.random() > chance(0.02, 300)) return;
   const t = nearestThing(w, an.px, an.py, ["grass"], (g) => (g.hp ?? 0) > 1, 2);
   if (!t) return;
   t.hp = (t.hp ?? 3) - 1; t.size = Math.round(t.size * 80) / 100; mark(w, t);
@@ -699,18 +725,18 @@ function deer(w: World, d: Animal, n: Near) {
   const threat = closest(d, n.wolves, 60) ?? closest(d, n.awake, 30);
   if (threat || d.hp < d.maxHp * 0.6) {
     setState(w, d, "flee");
-    // A deer bolts only a few ticks before it has to slow to a trot.
-    if (threat) away(w, d, threat, inState(w, d) > 4 ? 2 : FAUNA.deer.run);
+    // A deer bolts only a few ticks (20 minutes) before it has to slow to a trot of 2 m each 300 s.
+    if (threat) away(w, d, threat, inState(w, d) > ticksOf(1200) ? rate(2, 300) : FAUNA.deer.run);
     else roam(w, d, 40, FAUNA.deer.walk);
   } else {
     const food = d.hunger < 90 ? forage(w, d) : 0, grass = food > 0.25;
     setState(w, d, grass ? "graze" : "wander");
     if (grass) nibble(w, d);
     // Where the grass is poor, a hungry deer moves on to better and keeps to it.
-    if (!grass && d.hunger < 85 && Math.random() < 0.05) { const better = pasture(w, d, 400); if (better) { d.home = better; d.aim = better; } }
+    if (!grass && d.hunger < 85 && Math.random() < chance(0.05, 300)) { const better = pasture(w, d, 400); if (better) { d.home = better; d.aim = better; } }
     const mate = closest(d, n.deer, 200);
-    if (mate && meters(d, mate) > 25 && Math.random() < 0.3) goTo(w, d, mate.px, mate.py, FAUNA.deer.walk);
-    else if (!grass || Math.random() < 0.15) roam(w, d, 60, FAUNA.deer.walk);
+    if (mate && meters(d, mate) > 25 && Math.random() < chance(0.3, 300)) goTo(w, d, mate.px, mate.py, FAUNA.deer.walk);
+    else if (!grass || Math.random() < chance(0.15, 300)) roam(w, d, 60, FAUNA.deer.walk);
   }
 }
 
@@ -728,8 +754,10 @@ function wolf(w: World, wf: Animal, n: Near) {
   const meat = wf.hunger < 70 ? nearestThing(w, wf.px, wf.py, ["item"], (t) => t.item === "meat" || !!t.item?.startsWith("rotten:meat"), 80) : null;
   if (meat) {
     setState(w, wf, "eat");
+    // a cut of meat eaten each 300 s
     if (meters(wf, meat) <= 1.5) {
-      meat.n = (meat.n ?? 1) - 1; fed(w, wf, MEAT_KJ); mark(w, meat);
+      const bite = rate(1, 300);
+      meat.n = (meat.n ?? 1) - bite; fed(w, wf, MEAT_KJ * bite); mark(w, meat);
       if (meat.n <= 0) removeThing(w, meat);
     } else goTo(w, wf, meat.px, meat.py, FAUNA.wolf.walk * 2);
     return;
@@ -753,7 +781,7 @@ function wolf(w: World, wf: Animal, n: Near) {
   if (!target) {
     setState(w, wf, "wander"); wf.target = undefined;
     const pack = closest(wf, n.wolves, 300);
-    if (pack && meters(wf, pack) > 30 && Math.random() < 0.3) goTo(w, wf, pack.px, pack.py, FAUNA.wolf.walk);
+    if (pack && meters(wf, pack) > 30 && Math.random() < chance(0.3, 300)) goTo(w, wf, pack.px, pack.py, FAUNA.wolf.walk);
     else roam(w, wf, 150, FAUNA.wolf.walk);
     return;
   }
@@ -761,7 +789,8 @@ function wolf(w: World, wf: Animal, n: Near) {
   if (meters(wf, target) > 2) { goTo(w, wf, target.px, target.py, FAUNA.wolf.run); return; }
   setState(w, wf, "attack");
   if ("species" in target) {
-    target.hp -= 6;
+    // a pack's bites take 6 hit points of an animal and 5 of a person's health over 300 s
+    target.hp -= rate(6, 300);
     if (target.hp <= 0) {
       carcass(w, target);
       fed(w, wf, meal(target.species as "deer" | "rabbit"));
@@ -769,7 +798,7 @@ function wolf(w: World, wf: Animal, n: Near) {
       if (target.species === "deer") see(w, target, "breaks:deer", "A deer can be killed. It's all meat, hide, and bone inside.", animalSize(SPEC.deer.kg));
     }
   } else {
-    target.needs.health = Math.max(0, target.needs.health - 5);
+    target.needs.health = Math.max(0, target.needs.health - rate(5, 300));
     if (wf.target !== target.id) log(w, "wolf", [target.id], target, `A wolf attacked ${target.name}!`);
     wf.target = target.id;
     attacked.set(target.id, wf.id);
@@ -794,12 +823,12 @@ function fox(w: World, f: Animal, n: Near) {
 function rabbit(w: World, r: Animal, n: Near) {
   const diving = n.eagles.find((e) => e.state === "dive" && meters(e, r) < 30);
   const threat = closest(r, n.awake, 15) ?? closest(r, n.wolves, 40) ?? closest(r, n.foxes, 30) ?? diving ?? null;
-  // A rabbit bolts a few ticks, then freezes flat and hopes not to be seen.
-  if (threat) { setState(w, r, "flee"); if (inState(w, r) <= 3) away(w, r, threat, FAUNA.rabbit.run); return; }
+  // A rabbit bolts a few ticks (15 minutes), then freezes flat and hopes not to be seen.
+  if (threat) { setState(w, r, "flee"); if (inState(w, r) <= ticksOf(900)) away(w, r, threat, FAUNA.rabbit.run); return; }
   setState(w, r, forage(w, r) > 0.25 ? "graze" : "wander");
   if (r.state === "graze") nibble(w, r);
-  // Grazing rabbits sit still, then hop a couple of meters.
-  roam(w, r, 25, 2, 0.12);
+  // Grazing rabbits sit still, then hop a couple of meters, 2 m each 300 s.
+  roam(w, r, 25, rate(2, 300), 0.12);
 }
 
 // A fish seen swims where its object is (waters.ts showFish); the GPU moves it once a day.
@@ -859,10 +888,10 @@ function heron(w: World, h: Animal, n: Near) {
     steer(w, h, edge[0], edge[1], FAUNA.heron.walk * 2, () => true, dryAt);
     return;
   }
-  if (h.state === "feed" && inState(w, h) < 6) return;
-  setState(w, h, Math.random() < 0.02 ? "feed" : "wade");
+  if (h.state === "feed" && inState(w, h) < ticksOf(1800)) return;
+  setState(w, h, Math.random() < chance(0.02, 300) ? "feed" : "wade");
   // Stalking along the shallows, one slow step at a time, never leaving the edge.
-  if (Math.random() < 0.2) {
+  if (Math.random() < chance(0.2, 300)) {
     const a = h.heading + (Math.random() - 0.5) * 1.5;
     if (!steer(w, h, h.px + Math.cos(a) / TILE_M, h.py + Math.sin(a) / TILE_M, FAUNA.heron.walk, () => true, atEdge)) h.heading += Math.PI;
   }
@@ -871,21 +900,21 @@ function heron(w: World, h: Animal, n: Near) {
 function gull(w: World, g: Animal) {
   const home = g.home ?? [g.px, g.py];
   if (g.state === "rest") {
-    if ((!isNight(w.t) && inState(w, g) > 40) || Math.random() < 0.002) setState(w, g, "fly");
+    if ((!isNight(w.t) && inState(w, g) > ticksOf(12000)) || Math.random() < chance(0.002, 300)) setState(w, g, "fly");
     return;
   }
   if (g.state === "land") {
     // Settle wherever it is if the shore it wanted takes too long to reach: on the water or the beach alike.
-    if (!flight(w, g, 12) || inState(w, g) > 40) { g.alt = 0; setState(w, g, "rest"); }
+    if (!flight(w, g, 12) || inState(w, g) > ticksOf(12000)) { g.alt = 0; setState(w, g, "rest"); }
     return;
   }
   if (g.state === "feed") {
     lift(g, 0.5, 4);
-    if (inState(w, g) > 5) setState(w, g, "fly");
+    if (inState(w, g) > ticksOf(1500)) setState(w, g, "fly");
     return;
   }
-  if (isNight(w.t) || Math.random() < 0.003) { g.aim = shoreNear(w, home, 400) ?? onMap(g.px, g.py); setState(w, g, "land"); return; }
-  if (Math.random() < 0.01 && wetAt(w, g.px, g.py)) { setState(w, g, "feed"); return; }
+  if (isNight(w.t) || Math.random() < chance(0.003, 300)) { g.aim = shoreNear(w, home, 400) ?? onMap(g.px, g.py); setState(w, g, "land"); return; }
+  if (Math.random() < chance(0.01, 300) && wetAt(w, g.px, g.py)) { setState(w, g, "feed"); return; }
   setState(w, g, "fly");
   lift(g, 10 + quirk(g, 20), 2);
   roam(w, g, 400, FAUNA.gull.fly!, 1);
@@ -926,7 +955,8 @@ function crow(w: World, c: Animal, n: Near) {
   }
   if (c.state === "perch") {
     if (!holdPerch(w, c)) return;
-    if (!isNight(w.t) && (inState(w, c) > 30 + quirk(c, 70) || Math.random() < 0.005)) {
+    // a perched crow sits 150 to 495 minutes, by its quirk in 5-minute steps
+    if (!isNight(w.t) && (inState(w, c) > ticksOf((30 + quirk(c, 70)) * 300) || Math.random() < chance(0.005, 300))) {
       const a = Math.random() * Math.PI * 2, d = (Math.random() * 60) / TILE_M;
       c.aim = [home[0] + Math.cos(a) * d, home[1] + Math.sin(a) * d]; c.target = undefined;
       if (walkable(w, Math.floor(c.aim[0]), Math.floor(c.aim[1]))) setState(w, c, "fly");
@@ -938,15 +968,15 @@ function crow(w: World, c: Animal, n: Near) {
   const meat = nearestThing(w, c.px, c.py, ["item"], (t) => t.item === "meat" || !!t.item?.startsWith("rotten:"), 60);
   if (meat && meters(c, meat) > 1) { c.aim = [meat.px, meat.py]; c.target = undefined; setState(w, c, "fly"); return; }
   setState(w, c, "feed");
-  // and eats while it has room for it
-  if (meat && c.hunger < 100) { meat.n = (meat.n ?? 1) - 1; mark(w, meat); if (meat.n <= 0) removeThing(w, meat); fed(w, c, MEAT_KJ); }
-  if (Math.random() < 0.004) { perch(); return; }
+  // and eats while it has room for it, a cut of meat each 300 s
+  if (meat && c.hunger < 100) { const bite = rate(1, 300); meat.n = (meat.n ?? 1) - bite; mark(w, meat); if (meat.n <= 0) removeThing(w, meat); fed(w, c, MEAT_KJ * bite); }
+  if (Math.random() < chance(0.004, 300)) { perch(); return; }
   roam(w, c, 40, FAUNA.crow.walk, 0.3);
 }
 
 function eagle(w: World, e: Animal, n: Near) {
   const home = e.home ?? [e.px, e.py];
-  if (e.state === "feed") { lift(e, 0, 5); if (inState(w, e) > 20) setState(w, e, "soar"); return; }
+  if (e.state === "feed") { lift(e, 0, 5); if (inState(w, e) > ticksOf(6000)) setState(w, e, "soar"); return; }
   if (e.state === "perch") { if (holdPerch(w, e) && !isNight(w.t)) { e.target = undefined; setState(w, e, "soar"); } return; }
   if (isNight(w.t)) {
     const tree = nearestThing(w, home[0], home[1], ["tree"], (t) => t.size > 12, 300);
@@ -966,7 +996,7 @@ function eagle(w: World, e: Animal, n: Near) {
       fed(w, e, kj);
       e.target = undefined;
       setState(w, e, "feed");
-    } else if (inState(w, e) > 12) { e.target = undefined; setState(w, e, "soar"); }
+    } else if (inState(w, e) > ticksOf(3600)) { e.target = undefined; setState(w, e, "soar"); }
     return;
   }
   setState(w, e, "soar");
@@ -975,16 +1005,17 @@ function eagle(w: World, e: Animal, n: Near) {
   if (prey) { e.target = prey.id; setState(w, e, "dive"); return; }
   const far = e.hunger < 50 ? closest(e, [...n.rabbits, ...n.fish], Infinity) : null;
   if (far) { lift(e, 60, 3); goTo(w, e, far.px, far.py, FAUNA.eagle.fly!); return; }
-  // Soaring: wide circles over home, drifting higher and lower on the air.
+  // Soaring: wide circles over home, turning 0.12 radians each 300 s, drifting higher and lower on the air.
   lift(e, 60 + quirk(e, 60), 3);
-  e.heading += 0.12;
+  e.heading += rate(0.12, 300);
   const r = 200 / TILE_M, ax = home[0] + Math.cos(e.heading) * r, ay = home[1] + Math.sin(e.heading) * r;
   goTo(w, e, ax, ay, FAUNA.eagle.fly!);
 }
 
 function butterfly(w: World, b: Animal, warm: boolean) {
   if (!warm || isNight(w.t)) { setState(w, b, "rest"); lift(b, 0.2, 0.5); return; }
-  if (b.state === "feed") { if (inState(w, b) > 5 + quirk(b, 15)) setState(w, b, "flutter"); return; }
+  // a feeding butterfly sits 25 to 95 minutes, by its quirk in 5-minute steps
+  if (b.state === "feed") { if (inState(w, b) > ticksOf((5 + quirk(b, 15)) * 300)) setState(w, b, "flutter"); return; }
   const flower = thingById(w, b.target);
   if (flower) {
     goTo(w, b, flower.px, flower.py, FAUNA.butterfly.fly!);
@@ -993,7 +1024,7 @@ function butterfly(w: World, b: Animal, warm: boolean) {
     return;
   }
   b.target = undefined;
-  if (Math.random() < 0.03) { b.target = nearestThing(w, b.px, b.py, ["flowers"], () => true, 8)?.id; if (b.target) return; }
+  if (Math.random() < chance(0.03, 300)) { b.target = nearestThing(w, b.px, b.py, ["flowers"], () => true, 8)?.id; if (b.target) return; }
   setState(w, b, "flutter");
   lift(b, 0.4 + Math.random() * 1.6, 0.6);
   roam(w, b, 30, FAUNA.butterfly.fly! * (0.4 + Math.random() * 0.6), 0.9);
@@ -1017,8 +1048,10 @@ function caught(w: World, an: Animal, x0: number, y0: number) {
   see(w, trap, "trap_works", "An animal that walks over a hidden pit falls in and is stuck.", trap.size);
 }
 
+// A tick of the animals people can see: sighted on the senses lane (sync), moved each tick (lanes.ts FAST_S), their
+// objects told where they stand at each landing.
 export function animals(w: World) {
-  sync(w);
+  if (due(w.t, SENSES_S)) { writeBack(w); sync(w); }
   const awake = w.agents.filter((a) => a.down <= w.t);
   const of = (s: AnimalSpecies) => w.animals.filter((a) => a.species === s);
   const fires = [...liveThings(w)].filter((t) => t.kind === "fire");
@@ -1046,11 +1079,13 @@ export function animals(w: World) {
     if (FAUNA[an.species].ground && still(an)) caught(w, an, x0, y0);
     if (still(an)) moved(w, an, x0, y0);
   }
-  // Anything else left without food weakens and dies (the GPU's animals starve as their objects do).
-  for (const an of w.animals) if (!herded(an.species) && an.hunger <= 0) an.hp -= 0.05;
+  if (due(w.t, LAND_S)) writeBack(w);
+  // Anything else left without food weakens and dies, 0.05 of its hit points each 300 s (the GPU's animals starve as
+  // their objects do).
+  for (const an of w.animals) if (!herded(an.species) && an.hunger <= 0) an.hp -= rate(0.05, 300);
   for (const an of w.animals.filter((a) => a.hp <= 0)) { gone(w, an); log(w, "death", [], an, an.hunger <= 0 ? `A ${an.species} starved.` : `A ${an.species} went through the ice and drowned.`); }
   // An hour of the butterflies, and the butterflies and fish stood within people's sight.
-  if (w.t % 12 === 0) {
+  if (w.t % HOUR === 0) {
     if (w.pools) { butterflies(w, w.pools); reveal(w, (sp, px, py) => spawn(w, sp, px, py, revealed(sp, px, py))); }
     showFish(w, (px, py, id) => spawn(w, "fish", px, py, { ...revealed("fish", px, py), id: `a${id}`, obj: id }));
   }

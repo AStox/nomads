@@ -6,6 +6,7 @@ import { stemDriver } from "./plants";
 import { seedDriver } from "./seeds";
 import { retire } from "./sim";
 import { YEAR_DAYS, seasonAt } from "./sky";
+import { HOUR } from "./ticks";
 import { ANIMAL } from "../gpu/animals";
 import { F, SP } from "../gpu/wgsl/animals";
 
@@ -34,9 +35,9 @@ test("seed 1's animals as individuals over three island years: counted right, wi
   const km2 = (land * TILE_M * TILE_M) / 1e6, seen: number[][] = HERDED.map(() => []);
   const height = (x: number, y: number) => { const c = (a: number, b: number) => w.heights[b * (W + 1) + a]; return (TILE_M * (c(x, y) + c(x + 1, y) + c(x, y + 1) + c(x + 1, y + 1))) / 4; };
   const deerUp: number[][] = [[], [], [], []];
-  let t = Math.ceil(w.t / 12) * 12;
+  let t = Math.ceil(w.t / HOUR) * HOUR;
   for (let d = 0; d < YEARS * YEAR_DAYS; d++) {
-    for (let h = 0; h < 24; h++) { t += 12; await s.step(t); }
+    for (let h = 0; h < 24; h++) { t += HOUR; await s.step(t); }
     HERDED.forEach((_, i) => seen[i].push(host.census[i]));
     // every fourth day: the census is the objects alive, and the deer's mean height for the season
     if (d % 4 === 0) {

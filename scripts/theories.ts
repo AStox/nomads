@@ -8,7 +8,8 @@
 // --learning off: nobody ever forms a theory (the floor a world is measured against); --learning known --key key.json:
 // everyone knows from the start what truly hurts each way they learn (the ceiling). --rng: the run's own draws, when
 // they should differ from the island's seed.
-import { DAY, newWorld } from "../src/sim/world";
+import { newWorld } from "../src/sim/world";
+import { DAY } from "../src/sim/ticks";
 import { tick } from "../src/sim/sim";
 import { changed, newKinds, removed } from "../src/sim/physics";
 import { trailChanges } from "../src/sim/ecology";

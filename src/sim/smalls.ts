@@ -550,9 +550,9 @@ class Build {
   put(p: number, s: number) { this.cum = (this.cum + p) >>> 0; this.t.push(this.cum); this.s.push(s >>> 0); }
   rest(s: number): Split { this.s.push(s >>> 0); return { t: this.t, s: this.s, ...(this.b ? { b: this.b } : {}) }; }
 }
-const tday = (tick: number, c: SmallsConsts) => Math.floor(tick / c.dayTicks) % 40;
+const tday = (tick: number, c: SmallsConsts) => Math.floor(tick / c.dayTicks) % YEAR_DAYS;
 const inwin = (d: number, from: number, to: number) => (from <= to ? d >= from && d < to : d >= from || d < to);
-const leftin = (d: number, to: number) => ((to + 39 - d) % 40) + 1;
+const leftin = (d: number, to: number) => ((to + YEAR_DAYS - 1 - d) % YEAR_DAYS) + 1;
 function pq(h: number): number {
   if (h === 0) return 0;
   const e = qexp(-Math.min(h, 0x7fffffff));

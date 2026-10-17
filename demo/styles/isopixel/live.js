@@ -17,7 +17,7 @@ import { createGround } from "./ground.js";
 import { LADDER, levelOf } from "./ladder.js";
 import { SIZE, TILE_M, crownShare } from "../island.js";
 
-const SIM = TILE_M, ORIGIN = -SIZE / 2, DAY = 288, YEAR = DAY * 40, TAU = Math.PI * 2, NL = LADDER.length, NB = 8;
+const SIM = TILE_M, ORIGIN = -SIZE / 2, TAU = Math.PI * 2, NL = LADDER.length, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const norm8 = (b) => { const r = ((b % NB) + NB) % NB; return r >= NB ? 0 : r; };
@@ -64,8 +64,8 @@ function frameOf(b) {
 // The WebGPU renderer wants a browser that offers it; createLive throws { cause: "nogpu" } where none does.
 export const hasWebGPU = () => typeof navigator !== "undefined" && !!navigator.gpu;
 
-// sim: { warm, jev } runs the game's sim in the render worker (play/remote.js connectSim reads it); null draws the island
-// alone.
+// sim: { warm (sim days), jev } runs the game's sim in the render worker (play/remote.js connectSim reads it); null
+// draws the island alone.
 export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = null } = {}) {
   if (!hasWebGPU()) throw new Error("this browser does not offer WebGPU", { cause: "nogpu" });
   const TH = await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {}));
@@ -368,7 +368,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       if (!p || !inView(p.x, p.z, 40)) continue;
       const a = at(p.x, p.z);
       if (!onScreen(a)) continue;
-      const stage = (W.t - ag.born) / YEAR < 1 ? "child" : (W.t - ag.born) / YEAR < 5 ? "adult" : "elder";
+      // years of age by the sim's own clock as the worker posts it (remote.js day, yearDays)
+      const year = sim.day * sim.yearDays, stage = (W.t - ag.born) / year < 1 ? "child" : (W.t - ag.born) / year < 5 ? "adult" : "elder";
       // by meters like everything else, a little larger than life, and never below three pixels so a nomad is findable
       const hp = Math.max(3, Math.round(1.7 * 1.6 * pv * (stage === "child" ? 0.7 : 1))), cloth = clothOf(ag.color), seedA = strHash(ag.id) % 997;
       const down = ag.down > W.t;

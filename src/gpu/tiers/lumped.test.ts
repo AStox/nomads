@@ -3,13 +3,13 @@ import { type Gpu, openGpu, releaseGpu, theGpu } from "../device";
 import { multinom, philox, rinit } from "../rand";
 import { storage } from "../kernel";
 import { Store, loadStore } from "../store";
-import { HOUR } from "./drivers";
+import { DAY } from "../../sim/ticks";
 import { type Bin, DEATH, EATEN, FATE, type Fate, Lumped, PROMOTED, REQ_MAX, type Split, TAKEN, keyOf, lstream } from "./lumped";
 
 let low: Gpu | null = null;
 afterAll(async () => { low?.device.destroy(); await releaseGpu(); });
 
-const DAY = 24 * HOUR, P = (x: number) => Math.floor(x * 2 ** 32);
+const P = (x: number) => Math.floor(x * 2 ** 32);
 // Flies: egg 0, larva 1, pupa 2, adult 3. A day's chances: eggs die 2% and hatch 10%; larvae die 3% and pupate 8%;
 // pupae stay 84%, die 1% and emerge 15% (the stay listed first); adults die 6%. Each cell's input adds to the first
 // boundary and so to the first outcome's chance.

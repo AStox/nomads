@@ -5,16 +5,16 @@
 // same device, and the CPU's light, rain and wind read as a copy (src/sim/light.ts).
 //
 // What the CPU holds: the words of the last pass whose copy has come back whole. A pass's 4.25 MB come back a slice a
-// tick with the tick's landing (SLICES ticks, under three game hours) rather than at once, so no day's landing waits
-// on them [design: R9, no tick stalls the page]; until the last slice lands the CPU keeps the pass before, which the
-// GPU keeps too (prev) so a save holds exactly what the CPU reads. The first pass, when the crowns take up residence,
-// is read back whole before the first tick goes on.
+// landing (SLICES landings; under three game hours at a landing every five minutes) rather than at once, so no day's
+// landing waits on them [design: R9, no tick stalls the page]; until the last slice lands the CPU keeps the pass
+// before, which the GPU keeps too (prev) so a save holds exactly what the CPU reads. The first pass, when the crowns
+// take up residence, is read back whole before the first tick goes on.
 import { cover, readback, storage } from "./kernel";
 import { type Rider, type Store, reload, savedNumber } from "./store";
 import type { Raster } from "./flora";
 import { CELLS, CELL_AT, QSHIFT, WORDS, cellAt, crownPass, texelAt } from "./wgsl/crowns";
 
-// Ticks a pass's copy is spread over [design].
+// Landings a pass's copy is spread over [design].
 export const SLICES = 32;
 const SLICE = Math.ceil(WORDS / SLICES);
 
@@ -100,6 +100,7 @@ export class Crowns implements Rider {
   }
   // The words as the CPU holds them.
   held(): Uint32Array | null { return this.now; }
+  kernelSources(): string[] { return [this.src]; }
 
   // ---------- riding the store ----------
   words(): number {

@@ -18,7 +18,8 @@
 import { type Rider, type Store, reload, savedNumber } from "../store";
 import { cover, storage } from "../kernel";
 import { EVENT_CHUNK, EVENT_COMPACT, EVENT_DUE, eventKernel } from "../wgsl/events";
-import { type Drivers, HOUR } from "./drivers";
+import type { Drivers } from "./drivers";
+import { DAY, HOUR } from "../../sim/ticks";
 
 export { NEVER, UNDRAWN } from "../wgsl/events";
 
@@ -64,6 +65,7 @@ export class Events implements Rider {
   }
 
   destroy() { this.ctl.destroy(); this.args.destroy(); if (!this.spec.inputs) this.inp.destroy(); }
+  kernelSources(): string[] { return [EVENT_DUE, EVENT_COMPACT, this.src]; }
   // ---------- saving: the control words and how far candidates have run (next is in the kind itself) ----------
   buffers(): [string, GPUBuffer][] { return [["ctl", this.ctl]]; }
   save() { return { end: this.end, due: this.due, overruns: this.overruns }; }
@@ -95,7 +97,7 @@ export class Events implements Rider {
   }
   // The day d: every candidate before its last tick.
   day(d: number) {
-    this.run((d + 1) * 24 * HOUR);
+    this.run((d + 1) * DAY);
   }
 
   words() { return 2; }

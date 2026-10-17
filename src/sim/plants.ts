@@ -15,7 +15,7 @@ import { seasonAt } from "./sky";
 import { branchKg, stemKg } from "./mechanics";
 import { PHYS } from "./fuel";
 import { rinit, next32 } from "../gpu/rand";
-import { HOUR } from "../gpu/tiers/drivers";
+import { HOUR } from "./ticks";
 import type { StemDriver } from "../gpu/flora";
 import { HC, HQ, LAID, MAP, QSTEP, QTOP, ROWS, ROW_WORDS, RW, SSTEP, TEXEL_MM, TREE_ROWS } from "../gpu/wgsl/stems";
 

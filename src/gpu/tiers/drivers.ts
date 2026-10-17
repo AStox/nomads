@@ -23,10 +23,6 @@ import { CELLS } from "../wgsl/index";
 import { PENDING, type Pending } from "../mirror";
 import { type DriverLayout, driverAdvance, driverGather, driverRecord } from "../wgsl/drivers";
 
-// Ticks in an hour: the world's ticks are five minutes (src/sim/world.ts DAY, 288 a day; the tests hold them equal).
-// Imported from there it would pull the whole sim into every GPU kernel module.
-export const HOUR = 12;
-
 export type Channel = { name: string; unit: string; scale: number; bound: number };
 // name tells one history apart from another riding the same store (its state is saved under it); "drivers" if none.
 export type DriversSpec = { channels: Channel[]; hours: number; name?: string };
@@ -88,10 +84,17 @@ export class Drivers implements Rider {
   // Runs a writer over every cell for the hour about to be committed (wgsl/drivers.ts driverRecord), with the
   // buffers given bound as in0, in1...
   write(body: string, inputs: GPUBuffer[] = []) {
-    const key = `${inputs.length}:${body}`;
+    this.store.run(this.writer(body, inputs.length), [this.cur, this.ring, ...inputs], cover(this.store.g, CELLS), [this.hour, 0, 0, 0]);
+  }
+  // The source of a writer with body over n inputs, made once.
+  writer(body: string, n: number): string {
+    const key = `${n}:${body}`;
     let src = this.writers.get(key);
-    if (src === undefined) this.writers.set(key, (src = driverRecord(this.layout, inputs.length, body)));
-    this.store.run(src, [this.cur, this.ring, ...inputs], cover(this.store.g, CELLS), [this.hour, 0, 0, 0]);
+    if (src === undefined) this.writers.set(key, (src = driverRecord(this.layout, n, body)));
+    return src;
+  }
+  kernelSources(): string[] {
+    return [...this.writers.values(), driverAdvance(this.layout), driverGather(this.layout)];
   }
   // Commits the current values as hour `hour`.
   advance() {

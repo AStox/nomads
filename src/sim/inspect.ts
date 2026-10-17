@@ -1,9 +1,10 @@
 // What anyone pointing at the world gets told: the real fields of a thing, an animal or a person, or the facts of the
 // ground at a point, laid out as tabs of titled sections. A section holds rows, a bag of items, or both; a row can name
 // an id to go to (link), an icon, a bar, and lines that open under it (more). bars are the vital few shown above the tabs.
-import { BASE, THING_MATERIAL, MADE_OF, PROPS, p, type Kind } from "./materials";
+import { BASE, FUEL_TICK_S, THING_MATERIAL, MADE_OF, PROPS, p, type Kind } from "./materials";
 import { BONDS, DAY, H, LABELS, QUIET, TILE_M, Tile, W, ageOf, clock, colorIndex, groundOf, iceAt, level, meters, spriteSeed, stageOf, tileAt, type Agent, type Animal, type Thing, type World } from "./world";
 import { thingById } from "./space";
+import { TICK_S } from "./ticks";
 import { ablaze, bedAir, breaksOf, fireHours, fireKind, fireOutput, inWorld, shelterName } from "./physics";
 import { herded } from "./animals";
 import { carcassOf, fatOf, massOf } from "./hunt";
@@ -64,6 +65,8 @@ export function thingView(w: World, t: Thing) {
 }
 const lux = (l: Light) => `${l.lux >= 100 ? Math.round(l.lux).toLocaleString("en-US") : r(l.lux, l.lux < 1 ? 2 : 1)} lux`;
 const days = (w: World, t: number) => `${r((w.t - t) / DAY)} days ago`;
+// so many seconds, in minutes under an hour and in hours past it
+const span = (s: number) => (s < 3600 ? `${Math.round(s / 60)} minutes` : `${r(s / 3600)} hours`);
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 // a direction across the map, x east and y south
 const compass = (dx: number, dy: number) => ["E", "SE", "S", "SW", "W", "NW", "N", "NE"][(Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) + 8) % 8];
@@ -112,7 +115,7 @@ function itemLines(w: World, k: Kind | undefined): Line[] {
   const uses = Object.entries(k.uses ?? {}).sort((x, y) => y[1] - x[1]).slice(0, 3);
   if (uses.length) out.push(`used for ${uses.map(([u, n]) => `${u} (${n})`).join(", ")}`);
   if (k.spoils) out.push(`keeps ${keepWords(keepsFor(w.kinds, k, w.weather.temp))} as warm as it is now`);
-  if (k.fuel) out.push(`burns ${k.fuel} ticks`);
+  if (k.fuel) out.push(`burns ${span(k.fuel * FUEL_TICK_S)}`);
   return out;
 }
 function bag(w: World, ks: Iterable<string>): Bag[] {
@@ -130,7 +133,7 @@ function material(w: World, id: string | undefined): Section | null {
   if (!k) return null;
   const rows: Row[] = [{ label: "made of", value: k.name, icon: `item:${lookOf(k)}` }];
   for (const prop of PROPS) if (p(k, prop) > 0) rows.push({ label: PROP_WORDS[prop], bar: [r(p(k, prop), 2), 1] });
-  if (k.fuel) rows.push({ label: "burns for", value: `${k.fuel} ticks` });
+  if (k.fuel) rows.push({ label: "burns for", value: span(k.fuel * FUEL_TICK_S) });
   if (k.spoils) rows.push({ label: "keeps", value: keepWords(keepsFor(w.kinds, k, w.weather.temp)) });
   return { tab: "material", rows };
 }
@@ -260,7 +263,7 @@ function person(w: World, a: Agent): Inspected {
   now.push({ label: "light", value: lightWords(lightOn(w, a)), more: [lux(lightOn(w, a))] });
   if (a.sickness) now.push({ label: "sick", value: `until ${clock(a.sickness.until)}` });
   if (a.pregnant) now.push({ label: "expecting", value: `in ${r((a.pregnant.due - w.t) / DAY)} days`, more: [who(w, a.pregnant.father, `father: ${nameOf(w, a.pregnant.father)}`)] });
-  if (a.down > w.t) now.push({ label: "out cold", value: `for ${a.down - w.t} ticks` });
+  if (a.down > w.t) now.push({ label: "out cold", value: `for ${span((a.down - w.t) * TICK_S)}` });
   const sections: Section[] = [{ tab: "now", rows: now }];
   if (d.plan.length) sections.push({ tab: "now", title: "plan", rows: d.plan.map((s, i) => ({ label: `${i + 1}. ${s.label}`, hot: i === 0 })) });
 

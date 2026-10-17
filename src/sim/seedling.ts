@@ -7,6 +7,7 @@
 // it ahead on one not yet in the ground, over the weather the coming days might bring, for what the world's own formulas
 // say comes of planting there (scripts/probes.ts, scripts/truth.ts).
 import { DAY, type Thing, type World } from "./world";
+import { HOUR } from "./ticks";
 import { YEAR_DAYS } from "./sky";
 import { TREES } from "../terrain/niche";
 import { around } from "./space";
@@ -83,12 +84,12 @@ export function seedlingHour(s: Sprout, k: Seedling, fit: number, share: number,
 export type Ahead = { soil: number[]; temp: number[]; sun?: number[] };
 export function ahead(w: World, px: number, py: number, at: number, hours: Hour[]): Ahead {
   const soil: number[] = [], temp: number[] = [], sun: number[] = [];
-  let t = Math.ceil((at + 1) / 12) * 12;
+  let t = Math.ceil((at + 1) / HOUR) * HOUR;
   for (const h of hours) {
     soil.push(soilWater(w, px, py, t, h.wet));
     temp.push(islandTemp(t, h.sky, h.warm) + placeTemp(w, px, py, t, h.sky, h.speed));
     sun.push(sunOn(t, h.sky));
-    t += 12;
+    t += HOUR;
   }
   return { soil, temp, sun };
 }

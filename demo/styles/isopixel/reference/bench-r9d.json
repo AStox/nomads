@@ -1,0 +1,1302 @@
+{
+ "about": "RenderStalls, 2026-10-17, seed 1, AMD Radeon Pro 5500M (4 GB VRAM), headless Chrome --headless=new at 1600x1143, fresh profile per run, each build served from its own dir and port, one 12 s run per bench, ?bench=zoom,orbit,turn,pan on one load. base: a86c200. new: a86c200 with this change only (src/gpu/kernel.ts, store.ts, the riders' kernelSources, webgpu.js frontAsk). Not a quiet machine: Unity Editor open, Paseo, and peers' GPU runs (TickB's sim hashes and a page check) between and during some runs; the one run that was plainly swung (every pass of every bench about twice base, new3 after-warm) is kept below and was repeated.",
+ "changes": {
+  "asyncPipelines": "src/gpu/kernel.ts pipelineSoon: a kernel's pipeline made with createComputePipelineAsync. src/gpu/store.ts: a store ticked with beginPaced (the play page's worker) holds what is recorded from a kernel whose pipeline is still compiling, in order, until it is made (caughtUp, awaited at each paced step and by land before its copy back); a flush meanwhile makes the pipeline synchronously as before. Server, tests and scripts (begin) are unchanged.",
+  "madeAhead": "src/gpu/store.ts makeAhead: on its first paced tick a store sets compiling its own kernels and every kernel its riders name (Rider.kernelSources, added to flora, deadwood, drivers, moisture, seedlings, fish, animals, smalls, lumped, events, dormant, static dormant, crowns, fire; births via Store.birthKernel shared with births and bear).",
+  "frontOrder": "webgpu.js frontAsk: front lists waiting to be built are taken nearest level to the views' first (the level a zoom's cross-fade reaches next), not in the order first asked."
+ },
+ "identity": "seed-1 world, 300 ticks, plain (begin) and paced (tickPause setImmediate, so holds and the made-ahead kernels run): t 386, events 83bbfb3a8037687c, people 6da24eabc439304f, things 3197e788f8be8d91, census 229090d88cae167d, agents a0ac81ad0fa84e47, both modes, equal to TickA's baseline for a86c200.",
+ "compile": "Worker log (debug build of new, warm 300): every sim pipeline after the first view made ahead; no kernel held after the first tick (tick 87: 40 held, caught up in 57 ms, before the first view) and no synchronous compile after the first view. At base the first day's laws compile 16 pipelines synchronously at tick 288 (bench-r9c.json compileStalls).",
+ "benchwarm": {
+  "note": "?warm=300&benchwarm=1, A/B back to back",
+  "new": {
+   "firstViewMs": 65709,
+   "at": "2026-10-17T04:21:43.787Z",
+   "url": "http://127.0.0.1:8312/play/?seed=1&warm=300&bench=zoom,orbit,turn,pan&benchwarm=1",
+   "zoom": {
+    "warming": true,
+    "frames": 698,
+    "gpuMs": {
+     "mean": 5.48,
+     "p95": 10.93,
+     "max": 23.5,
+     "over16": 4
+    },
+    "gapMs": {
+     "mean": 16.68,
+     "p95": 24.4,
+     "max": 70.8,
+     "over16": 319
+    },
+    "dtMs": {
+     "mean": 17.09,
+     "p95": 16.8,
+     "max": 200,
+     "over16": 117
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      23.5,
+      2.68,
+      2,
+      {
+       "front": 3.254,
+       "map": 0.488,
+       "cull": 11.8,
+       "world": 2.684,
+       "specks": 0.36,
+       "mask": 0,
+       "over": 0.011,
+       "shade": 2.358,
+       "present": 0.392
+      }
+     ],
+     [
+      21.93,
+      0.7,
+      2,
+      {
+       "far": 0.774,
+       "map": 0.346,
+       "cull": 11.43,
+       "world": 1.03,
+       "specks": 1.434,
+       "mask": 0.001,
+       "over": 0.02,
+       "shade": 2.519,
+       "present": 0.392
+      }
+     ],
+     [
+      20,
+      1.67,
+      2,
+      {
+       "front": 1.14,
+       "map": 0.819,
+       "cull": 5.757,
+       "world": 5.114,
+       "specks": 0.702,
+       "mask": 0.001,
+       "over": 0.013,
+       "shade": 4.557,
+       "present": 0.841
+      }
+     ]
+    ]
+   },
+   "orbit": {
+    "warming": true,
+    "frames": 721,
+    "gpuMs": {
+     "mean": 3.72,
+     "p95": 3.76,
+     "max": 7,
+     "over16": 0
+    },
+    "gapMs": {
+     "mean": 16.67,
+     "p95": 17.8,
+     "max": 49.5,
+     "over16": 340
+    },
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 105
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      7,
+      8.27,
+      1,
+      {
+       "map": 0.138,
+       "cull": 0.139,
+       "world": 0.8,
+       "specks": 0.028,
+       "mask": 0.001,
+       "over": 0.018,
+       "shade": 2.556,
+       "present": 0.716
+      }
+     ],
+     [
+      6.97,
+      8.27,
+      1,
+      {
+       "map": 0.133,
+       "cull": 0.141,
+       "world": 0.77,
+       "specks": 0.029,
+       "mask": 0.001,
+       "over": 0.017,
+       "shade": 2.595,
+       "present": 0.763
+      }
+     ],
+     [
+      6.85,
+      8.27,
+      1,
+      {
+       "map": 0.022,
+       "cull": 0.123,
+       "world": 0.792,
+       "specks": 0.024,
+       "mask": 0.001,
+       "over": 0.017,
+       "shade": 2.563,
+       "present": 0.745
+      }
+     ]
+    ]
+   },
+   "turn": {
+    "warming": true,
+    "frames": 533,
+    "gpuMs": {
+     "mean": 5.67,
+     "p95": 9.23,
+     "max": 20.88,
+     "over16": 1
+    },
+    "gapMs": {
+     "mean": 17.38,
+     "p95": 25.5,
+     "max": 170.8,
+     "over16": 248
+    },
+    "dtMs": {
+     "mean": 21.77,
+     "p95": 16.8,
+     "max": 2849.9,
+     "over16": 85
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      20.88,
+      8.27,
+      1,
+      {
+       "sun": 8.529,
+       "front": 0.298,
+       "fill": 1.738,
+       "map": 0.424,
+       "cull": 4.241,
+       "world": 2.701,
+       "specks": 0.02,
+       "mask": 0.071,
+       "over": 0.012,
+       "shade": 1.832,
+       "present": 0.155
+      }
+     ],
+     [
+      15.65,
+      8.27,
+      1,
+      {
+       "sun": 0.815,
+       "front": 0.308,
+       "map": 0.424,
+       "cull": 4.184,
+       "world": 3.624,
+       "specks": 0.032,
+       "mask": 0.292,
+       "over": 0.016,
+       "shade": 2.688,
+       "present": 0.705
+      }
+     ],
+     [
+      14.83,
+      8.27,
+      1,
+      {
+       "sun": 0.801,
+       "front": 0.315,
+       "map": 0.419,
+       "cull": 4.121,
+       "world": 3.607,
+       "specks": 0.028,
+       "mask": 0.288,
+       "over": 0.017,
+       "shade": 2.896,
+       "present": 0.217
+      }
+     ]
+    ]
+   },
+   "pan": {
+    "warming": true,
+    "frames": 715,
+    "gpuMs": {
+     "mean": 9.24,
+     "p95": 13.83,
+     "max": 17.94,
+     "over16": 4
+    },
+    "gapMs": {
+     "mean": 16.81,
+     "p95": 21.7,
+     "max": 81.1,
+     "over16": 327
+    },
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 112
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      17.94,
+      0,
+      1,
+      {
+       "sun": 0.792,
+       "front": 1.926,
+       "map": 0.352,
+       "cull": 12.598,
+       "world": 0.321,
+       "specks": 0.06,
+       "mask": 0.038,
+       "over": 0.006,
+       "shade": 1.145,
+       "present": 0.084
+      }
+     ],
+     [
+      17.75,
+      0,
+      1,
+      {
+       "front": 1.852,
+       "map": 0.341,
+       "cull": 11.468,
+       "world": 0.307,
+       "specks": 0.304,
+       "mask": 0,
+       "over": 0.01,
+       "shade": 1.426,
+       "present": 0.08
+      }
+     ],
+     [
+      17.64,
+      0,
+      1,
+      {
+       "front": 1.354,
+       "map": 0.244,
+       "cull": 11.352,
+       "world": 0.308,
+       "specks": 0.27,
+       "mask": 0,
+       "over": 0.01,
+       "shade": 2.195,
+       "present": 0.081
+      }
+     ]
+    ]
+   }
+  },
+  "base": {
+   "firstViewMs": 57106,
+   "at": "2026-10-17T04:23:39.528Z",
+   "url": "http://127.0.0.1:8311/play/?seed=1&warm=300&bench=zoom,orbit,turn,pan&benchwarm=1",
+   "zoom": {
+    "warming": true,
+    "frames": 489,
+    "gpuMs": {
+     "mean": 8.45,
+     "p95": 17.23,
+     "max": 34.52,
+     "over16": 26
+    },
+    "gapMs": {
+     "mean": 23.87,
+     "p95": 36.6,
+     "max": 3025.3,
+     "over16": 229
+    },
+    "dtMs": {
+     "mean": 22.84,
+     "p95": 16.8,
+     "max": 2899.9,
+     "over16": 128
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      34.52,
+      2.7,
+      2,
+      {
+       "sun": 1.368,
+       "front": 3.254,
+       "fill": 0.46,
+       "map": 0.725,
+       "cull": 10.755,
+       "world": 4.636,
+       "specks": 1.798,
+       "mask": 1.71,
+       "over": 0.058,
+       "shade": 4.709,
+       "present": 0.365
+      }
+     ],
+     [
+      26.65,
+      5.05,
+      1,
+      {
+       "sun": 0.491,
+       "map": 0.104,
+       "cull": 0.798,
+       "world": 1.024,
+       "specks": 0.078,
+       "mask": 0.511,
+       "over": 0.01,
+       "shade": 1.653,
+       "present": 0.711
+      }
+     ],
+     [
+      24.39,
+      3.58,
+      2,
+      {
+       "sun": 0.646,
+       "front": 0.775,
+       "map": 0.338,
+       "cull": 8.446,
+       "world": 4.07,
+       "specks": 0.06,
+       "mask": 5.212,
+       "over": 0.009,
+       "shade": 2.379,
+       "present": 0.485
+      }
+     ]
+    ]
+   },
+   "orbit": {
+    "warming": false,
+    "frames": 722,
+    "gpuMs": {
+     "mean": 8.67,
+     "p95": 10.46,
+     "max": 11.5,
+     "over16": 0
+    },
+    "gapMs": {
+     "mean": 16.66,
+     "p95": 20,
+     "max": 27.9,
+     "over16": 336
+    },
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 116
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      11.5,
+      8.27,
+      1,
+      {
+       "sun": 0.689,
+       "map": 0.144,
+       "cull": 3.683,
+       "world": 1.291,
+       "specks": 0.021,
+       "mask": 0.285,
+       "over": 0.001,
+       "shade": 2.962,
+       "present": 0.198
+      }
+     ],
+     [
+      11.27,
+      8.27,
+      1,
+      {
+       "sun": 0.757,
+       "map": 0.232,
+       "cull": 3.592,
+       "world": 1.381,
+       "specks": 0.016,
+       "mask": 0.298,
+       "over": 0.001,
+       "shade": 1.818,
+       "present": 0.149
+      }
+     ],
+     [
+      11.02,
+      8.27,
+      1,
+      {
+       "sun": 0.691,
+       "front": 0.803,
+       "map": 0.245,
+       "cull": 3.81,
+       "world": 1.619,
+       "specks": 0.018,
+       "mask": 0.37,
+       "over": 0.001,
+       "shade": 2.305,
+       "present": 0.199
+      }
+     ]
+    ]
+   },
+   "turn": {
+    "warming": false,
+    "frames": 720,
+    "gpuMs": {
+     "mean": 8.33,
+     "p95": 8.9,
+     "max": 11.89,
+     "over16": 0
+    },
+    "gapMs": {
+     "mean": 16.69,
+     "p95": 18.8,
+     "max": 48.2,
+     "over16": 326
+    },
+    "dtMs": {
+     "mean": 16.69,
+     "p95": 16.8,
+     "max": 33.3,
+     "over16": 128
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      11.89,
+      8.27,
+      1,
+      {
+       "sun": 0.637,
+       "front": 0.329,
+       "map": 0.128,
+       "cull": 3.429,
+       "world": 1.084,
+       "specks": 0.029,
+       "mask": 0.276,
+       "over": 0.001,
+       "shade": 2.749,
+       "present": 0.715
+      }
+     ],
+     [
+      10.96,
+      8.27,
+      1,
+      {
+       "sun": 0.52,
+       "front": 0.324,
+       "map": 0.094,
+       "cull": 3.068,
+       "world": 0.939,
+       "specks": 0.013,
+       "mask": 0.27,
+       "over": 0,
+       "shade": 2.269,
+       "present": 0.888
+      }
+     ],
+     [
+      10.15,
+      8.27,
+      1,
+      {
+       "sun": 0.536,
+       "map": 0.091,
+       "cull": 3.134,
+       "world": 0.396,
+       "specks": 0.018,
+       "mask": 0.181,
+       "over": 0.001,
+       "shade": 2.33,
+       "present": 0.221
+      }
+     ]
+    ]
+   },
+   "pan": {
+    "warming": false,
+    "frames": 721,
+    "gpuMs": {
+     "mean": 9.56,
+     "p95": 12.53,
+     "max": 20.48,
+     "over16": 1
+    },
+    "gapMs": {
+     "mean": 16.62,
+     "p95": 19.7,
+     "max": 42.7,
+     "over16": 344
+    },
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 114
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      20.48,
+      0,
+      1,
+      {
+       "sun": 0.526,
+       "front": 0.265,
+       "map": 0.209,
+       "cull": 9.292,
+       "world": 0.948,
+       "specks": 0.75,
+       "mask": 0.27,
+       "over": 0.018,
+       "shade": 5.895,
+       "present": 0.156
+      }
+     ],
+     [
+      13.49,
+      0,
+      1,
+      {
+       "sun": 0.534,
+       "front": 0.749,
+       "map": 0.208,
+       "cull": 8.028,
+       "world": 0.932,
+       "specks": 0.178,
+       "mask": 0.06,
+       "over": 0.014,
+       "shade": 1.74,
+       "present": 0.205
+      }
+     ],
+     [
+      13.49,
+      0,
+      1,
+      {
+       "sun": 0.561,
+       "front": 0.739,
+       "map": 0.204,
+       "cull": 7.975,
+       "world": 0.928,
+       "specks": 0.173,
+       "mask": 0.059,
+       "over": 0.013,
+       "shade": 1.767,
+       "present": 0.216
+      }
+     ]
+    ]
+   }
+  },
+  "maxGapMs": {
+   "new": {
+    "zoom": 70.8,
+    "orbit": 49.5,
+    "turn": 170.8,
+    "pan": 81.1
+   },
+   "base": {
+    "zoom": 3025.3,
+    "orbit": 27.9,
+    "turn": 48.2,
+    "pan": 42.7
+   },
+   "newDebug": {
+    "zoom": 3153.4,
+    "orbit": 49.7,
+    "turn": 73.4,
+    "pan": 45.1
+   },
+   "newHoldsOnly": {
+    "zoom": 3403.9,
+    "orbit": 40.9,
+    "turn": 66.5,
+    "pan": 31.5
+   },
+   "baseEarlier": {
+    "zoom": 3172.7,
+    "orbit": 2643.8,
+    "turn": 2849.6,
+    "pan": 3311.2
+   }
+  }
+ },
+ "afterWarm": {
+  "note": "?warm=300, after the warm",
+  "new": {
+   "firstViewMs": 47033,
+   "at": "2026-10-17T04:40:21.406Z",
+   "url": "http://127.0.0.1:8312/play/?seed=1&warm=300&bench=zoom,orbit,turn,pan",
+   "zoom": {
+    "warming": false,
+    "frames": 716,
+    "gpuMs": {
+     "mean": 9.11,
+     "p95": 16.67,
+     "max": 32.66,
+     "over16": 35
+    },
+    "gapMs": {
+     "mean": 16.74,
+     "p95": 27.2,
+     "max": 66,
+     "over16": 324
+    },
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 181
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      32.66,
+      2.73,
+      2,
+      {
+       "sun": 13.048,
+       "front": 0.456,
+       "fill": 0.165,
+       "map": 0.346,
+       "cull": 6.095,
+       "world": 4.12,
+       "specks": 0.26,
+       "mask": 3.972,
+       "over": 0.01,
+       "shade": 2.056,
+       "present": 0.371
+      }
+     ],
+     [
+      31.88,
+      1.7,
+      2,
+      {
+       "sun": 0.752,
+       "front": 0.369,
+       "map": 0.523,
+       "cull": 8.736,
+       "world": 8.499,
+       "specks": 2.011,
+       "mask": 2.206,
+       "over": 0.01,
+       "shade": 6.765,
+       "present": 0.426
+      }
+     ],
+     [
+      27.57,
+      0.7,
+      2,
+      {
+       "sun": 0.768,
+       "front": 0.679,
+       "map": 0.581,
+       "cull": 15.508,
+       "world": 2.978,
+       "specks": 0.914,
+       "mask": 0.087,
+       "over": 0.019,
+       "shade": 3.202,
+       "present": 0.392
+      }
+     ]
+    ]
+   },
+   "orbit": {
+    "warming": false,
+    "frames": 722,
+    "gpuMs": {
+     "mean": 7.7,
+     "p95": 8.04,
+     "max": 11.29,
+     "over16": 0
+    },
+    "gapMs": {
+     "mean": 16.66,
+     "p95": 19.5,
+     "max": 28.2,
+     "over16": 338
+    },
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 101
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      11.29,
+      8.27,
+      1,
+      {
+       "sun": 0.59,
+       "map": 0.112,
+       "cull": 3.047,
+       "world": 1.106,
+       "specks": 0.016,
+       "mask": 0.311,
+       "over": 0.001,
+       "shade": 2.385,
+       "present": 0.863
+      }
+     ],
+     [
+      11.12,
+      8.27,
+      1,
+      {
+       "sun": 0.614,
+       "map": 0.124,
+       "cull": 3.099,
+       "world": 0.976,
+       "specks": 0.028,
+       "mask": 0.297,
+       "over": 0.001,
+       "shade": 2.766,
+       "present": 0.775
+      }
+     ],
+     [
+      8.33,
+      8.27,
+      1,
+      {
+       "sun": 0.538,
+       "map": 0.124,
+       "cull": 3.062,
+       "world": 0.598,
+       "specks": 0.018,
+       "mask": 0.066,
+       "over": 0.001,
+       "shade": 2.652,
+       "present": 0.219
+      }
+     ]
+    ]
+   },
+   "turn": {
+    "warming": false,
+    "frames": 721,
+    "gpuMs": {
+     "mean": 8.24,
+     "p95": 8.85,
+     "max": 13.34,
+     "over16": 0
+    },
+    "gapMs": {
+     "mean": 16.67,
+     "p95": 19.7,
+     "max": 33.1,
+     "over16": 359
+    },
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 113
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      13.34,
+      8.27,
+      1,
+      {
+       "sun": 0.6,
+       "front": 1.735,
+       "map": 0.129,
+       "cull": 3.317,
+       "world": 1.201,
+       "specks": 0.029,
+       "mask": 0.279,
+       "over": 0.001,
+       "shade": 2.726,
+       "present": 0.603
+      }
+     ],
+     [
+      12.74,
+      8.27,
+      1,
+      {
+       "sun": 0.583,
+       "front": 1.146,
+       "map": 0.116,
+       "cull": 3.275,
+       "world": 0.975,
+       "specks": 0.028,
+       "mask": 0.362,
+       "over": 0.001,
+       "shade": 2.736,
+       "present": 0.872
+      }
+     ],
+     [
+      10.34,
+      8.27,
+      1,
+      {
+       "sun": 0.6,
+       "front": 1.063,
+       "map": 0.113,
+       "cull": 3.196,
+       "world": 0.918,
+       "specks": 0.017,
+       "mask": 0.155,
+       "over": 0.001,
+       "shade": 2.138,
+       "present": 0.183
+      }
+     ]
+    ]
+   },
+   "pan": {
+    "warming": false,
+    "frames": 720,
+    "gpuMs": {
+     "mean": 10.18,
+     "p95": 12.58,
+     "max": 14.81,
+     "over16": 0
+    },
+    "gapMs": {
+     "mean": 16.65,
+     "p95": 21.8,
+     "max": 29.9,
+     "over16": 330
+    },
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 119
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      14.81,
+      0,
+      1,
+      {
+       "sun": 0.609,
+       "map": 0.546,
+       "cull": 7.687,
+       "world": 0.962,
+       "specks": 0.176,
+       "mask": 0.058,
+       "over": 0.013,
+       "shade": 1.66,
+       "present": 0.183
+      }
+     ],
+     [
+      14.01,
+      3.83,
+      1,
+      {
+       "sun": 0.598,
+       "front": 0.241,
+       "map": 0.231,
+       "cull": 2.183,
+       "world": 1.948,
+       "specks": 0.142,
+       "mask": 5.359,
+       "over": 0.01,
+       "shade": 1.794,
+       "present": 0.216
+      }
+     ],
+     [
+      13.76,
+      3.83,
+      1,
+      {
+       "sun": 0.602,
+       "map": 0.24,
+       "cull": 2.169,
+       "world": 2.04,
+       "specks": 0.044,
+       "mask": 5.405,
+       "over": 0.01,
+       "shade": 1.69,
+       "present": 0.191
+      }
+     ]
+    ]
+   }
+  },
+  "base": {
+   "firstViewMs": 44914,
+   "at": "2026-10-17T04:45:01.591Z",
+   "url": "http://127.0.0.1:8311/play/?seed=1&warm=300&bench=zoom,orbit,turn,pan",
+   "zoom": {
+    "warming": false,
+    "frames": 720,
+    "gpuMs": {
+     "mean": 9.16,
+     "p95": 16.79,
+     "max": 33.41,
+     "over16": 36
+    },
+    "gapMs": {
+     "mean": 16.68,
+     "p95": 26.5,
+     "max": 56,
+     "over16": 353
+    },
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 206
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      33.41,
+      2.7,
+      2,
+      {
+       "sun": 14.002,
+       "front": 0.455,
+       "fill": 0.166,
+       "map": 0.347,
+       "cull": 6.065,
+       "world": 4.112,
+       "specks": 0.262,
+       "mask": 3.973,
+       "over": 0.008,
+       "shade": 2.038,
+       "present": 0.38
+      }
+     ],
+     [
+      24.65,
+      1.67,
+      2,
+      {
+       "sun": 0.658,
+       "front": 0.366,
+       "map": 0.516,
+       "cull": 8.672,
+       "world": 8.347,
+       "specks": 0.244,
+       "mask": 2.141,
+       "over": 0.008,
+       "shade": 2.253,
+       "present": 0.422
+      }
+     ],
+     [
+      24.58,
+      3.55,
+      2,
+      {
+       "sun": 0.661,
+       "front": 0.657,
+       "map": 0.354,
+       "cull": 3.228,
+       "world": 3.347,
+       "specks": 0.082,
+       "mask": 8.374,
+       "over": 0.014,
+       "shade": 4.787,
+       "present": 1.491
+      }
+     ]
+    ]
+   },
+   "orbit": {
+    "warming": false,
+    "frames": 721,
+    "gpuMs": {
+     "mean": 7.67,
+     "p95": 8,
+     "max": 11.59,
+     "over16": 0
+    },
+    "gapMs": {
+     "mean": 16.67,
+     "p95": 19,
+     "max": 31.3,
+     "over16": 332
+    },
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 126
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      11.59,
+      8.27,
+      1,
+      {
+       "sun": 0.641,
+       "map": 0.124,
+       "cull": 3.409,
+       "world": 1.012,
+       "specks": 0.03,
+       "mask": 0.469,
+       "over": 0.001,
+       "shade": 2.671,
+       "present": 0.746
+      }
+     ],
+     [
+      11.01,
+      8.27,
+      1,
+      {
+       "sun": 0.592,
+       "map": 0.125,
+       "cull": 3.259,
+       "world": 1.037,
+       "specks": 0.017,
+       "mask": 0.28,
+       "over": 0.001,
+       "shade": 2.321,
+       "present": 0.862
+      }
+     ],
+     [
+      9.03,
+      8.27,
+      1,
+      {
+       "sun": 0.512,
+       "map": 0.106,
+       "cull": 3.008,
+       "world": 0.531,
+       "specks": 0.018,
+       "mask": 0.069,
+       "over": 0.001,
+       "shade": 2.793,
+       "present": 0.744
+      }
+     ]
+    ]
+   },
+   "turn": {
+    "warming": false,
+    "frames": 721,
+    "gpuMs": {
+     "mean": 8.09,
+     "p95": 8.73,
+     "max": 11.74,
+     "over16": 0
+    },
+    "gapMs": {
+     "mean": 16.67,
+     "p95": 18.7,
+     "max": 35.5,
+     "over16": 332
+    },
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 115
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      11.74,
+      8.27,
+      1,
+      {
+       "sun": 0.492,
+       "front": 0.636,
+       "map": 0.093,
+       "cull": 3.242,
+       "world": 1.007,
+       "specks": 0.021,
+       "mask": 0.273,
+       "over": 0.001,
+       "shade": 2.649,
+       "present": 0.751
+      }
+     ],
+     [
+      10.21,
+      8.27,
+      1,
+      {
+       "sun": 0.554,
+       "map": 0.112,
+       "cull": 3.034,
+       "world": 0.559,
+       "specks": 0.018,
+       "mask": 0.066,
+       "over": 0.001,
+       "shade": 2.341,
+       "present": 0.221
+      }
+     ],
+     [
+      9.94,
+      8.27,
+      1,
+      {
+       "sun": 0.517,
+       "map": 0.111,
+       "cull": 3.012,
+       "world": 0.546,
+       "specks": 0.018,
+       "mask": 0.065,
+       "over": 0.001,
+       "shade": 2.351,
+       "present": 0.219
+      }
+     ]
+    ]
+   },
+   "pan": {
+    "warming": false,
+    "frames": 721,
+    "gpuMs": {
+     "mean": 10.3,
+     "p95": 12.65,
+     "max": 14.25,
+     "over16": 0
+    },
+    "gapMs": {
+     "mean": 16.65,
+     "p95": 20.9,
+     "max": 27.1,
+     "over16": 349
+    },
+    "dtMs": {
+     "mean": 16.67,
+     "p95": 16.7,
+     "max": 16.8,
+     "over16": 116
+    },
+    "longTasks": [],
+    "slow": [
+     [
+      14.25,
+      8.27,
+      1,
+      {
+       "sun": 0.651,
+       "fill": 3.014,
+       "map": 0.234,
+       "cull": 4.253,
+       "world": 1.604,
+       "specks": 0.038,
+       "mask": 1.735,
+       "over": 0.001,
+       "shade": 1.402,
+       "present": 0.172
+      }
+     ],
+     [
+      14.23,
+      3.83,
+      1,
+      {
+       "sun": 0.4,
+       "front": 0.266,
+       "map": 0.228,
+       "cull": 2.077,
+       "world": 2.253,
+       "specks": 0.045,
+       "mask": 6.766,
+       "over": 0.001,
+       "shade": 1.068,
+       "present": 0.14
+      }
+     ],
+     [
+      13.52,
+      0,
+      1,
+      {
+       "sun": 0.541,
+       "map": 0.215,
+       "cull": 7.555,
+       "world": 0.825,
+       "specks": 0.137,
+       "mask": 0.044,
+       "over": 0.01,
+       "shade": 1.283,
+       "present": 0.149
+      }
+     ]
+    ]
+   }
+  },
+  "over16": {
+   "new": {
+    "zoom": 35,
+    "orbit": 0,
+    "turn": 0,
+    "pan": 0
+   },
+   "base": {
+    "zoom": 36,
+    "orbit": 0,
+    "turn": 0,
+    "pan": 0
+   },
+   "baseEarlier": {
+    "zoom": 27,
+    "orbit": 0,
+    "turn": 0,
+    "pan": 0
+   },
+   "newSwung": {
+    "zoom": 118,
+    "orbit": 185,
+    "turn": 236,
+    "pan": 66
+   },
+   "newDebug": {
+    "zoom": 35,
+    "orbit": 0,
+    "turn": 0,
+    "pan": 0
+   },
+   "simWorker": {
+    "zoom": 8,
+    "orbit": 0,
+    "turn": 0,
+    "pan": 0
+   }
+  }
+ },
+ "dayStall": "The stall left during the warm is not a compile: at the first day tick (worker tick 288) a frame takes 3.1 to 3.2 s to finish and the next tick 3.2 to 3.3 s, with no kernel held. In bun (seed 1, each law's GPU work awaited) the day tick's laws take about 3 s (the smalls law 2.9 s, its eaten kernel and a lumped split 1.3 to 1.6 s each; day 2 about 8 s with fish), and which law pays moves between runs and with other GPU load. The sim holds 2.2 GB of storage buffers (plant body 400 MB, fish 200 MB, index scratch 178 MB, stem raster 142 MB, lumped tables and scratch ~350 MB); ioreg on the 5500M showed vramFreeBytes falling to 10 to 60 MB with vramEvictionWaitTime samples of 90 to 465 ms during a day tick: the daily laws' buffers are evicted from VRAM between days and paged back in on the day, and the one queue waits. Not fixed here.",
+ "verdict": "Compile stalls gone (no pipeline compiled mid-play, results identical). Not met: a stall over 100 ms during the warm remains (the first day tick's VRAM paging, about 3 s, in new as in base); after the warm zoom has 35 frames over 16.7 ms (base 36 and 27, bench-sim-worker 8), pan 0 (met, base 0). The zoom's dearest frames are cross-fade frames at levels 3 to 6 (isle50 to valley), which keep no front list (FRONT_M 100 [design]) and walk their far list (cull 8 to 17 ms) plus world, mask and shade; at the zoom's start the island to isle100 front lists were still being rebuilt after the day's far build (front lists used: plant and static only)."
+}

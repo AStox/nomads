@@ -27,6 +27,7 @@ import { advance, alight, feed, kindle, lay } from "../src/sim/combustion";
 import { PATIENCE, ahead } from "../src/sim/seedling";
 import { predict, type Prediction } from "../src/sim/formulas";
 import { seedRandom } from "./seeded";
+import { HOUR } from "../src/sim/ticks";
 import { judge } from "./stats";
 import type { AnswerKey, Cond, Tally, Verdict, Way } from "./answer-key";
 
@@ -63,22 +64,22 @@ for (const file of readdirSync(runs).filter((f) => f.endsWith(".jsonl")))
 // PATIENCE), turn by turn of the sky from how it stood at the start, drawn once (its own draws, not the world's): the sky,
 // the wind, the rain running off the land, the island's reference dead stuff and the water its crowns hold (wetness.ts
 // islandHour, deadHour; rain.ts crownsHour).
-const start = w.t, hours = forecast(w, days * 24 + PATIENCE / 12, rng(seed * 104729 + 7));
+const start = w.t, hours = forecast(w, days * 24 + PATIENCE / HOUR, rng(seed * 104729 + 7));
 const dead: NonNullable<typeof w.weather.dead>[] = [], pasts: NonNullable<typeof w.weather.past>[] = [];
 {
-  let d = w.weather.dead, t = Math.ceil((start + 1) / 12) * 12, crowns = w.weather.past?.crowns;
+  let d = w.weather.dead, t = Math.ceil((start + 1) / HOUR) * HOUR, crowns = w.weather.past?.crowns;
   for (const h of hours) {
     const temp = islandTemp(t, h.sky), c = crownsHour(w, crowns, t, h.sky, h.speed, temp);
     dead.push((d = deadHour(w, d, islandHour(w, t, h.sky, h.speed, temp, w.weather.wind, h.wet, c.held, c.bare))));
     pasts.push({ crowns: (crowns = c.next), held: c.held, bare: c.bare });
-    t += 12;
+    t += HOUR;
   }
 }
-const first = Math.ceil((start + 1) / 12) * 12;
+const first = Math.ceil((start + 1) / HOUR) * HOUR;
 // Set the world to an hour of the run (i) and a tick in it, as the weather had it then.
 function setHour(i: number, tick: number) {
   const h = hours[i];
-  w.t = first + i * 12 + tick;
+  w.t = first + i * HOUR + tick;
   Object.assign(w.weather, { sky: h.sky, speed: h.speed, wet: h.wet, dead: dead[i], past: pasts[i], temp: islandTemp(w.t, h.sky) });
 }
 
@@ -150,7 +151,7 @@ type Trial = { now: string[]; worked: boolean; ticks: number };
 function situation(plan: Plan): Trial | string {
   const f = plan.fields, water = f.at === "water" || f.verb === "wet";
   const i = Math.floor(Math.random() * days * 24);
-  setHour(i, Math.floor(Math.random() * 12));
+  setHour(i, Math.floor(Math.random() * HOUR));
   const edge = water ? shore[Math.floor(Math.random() * shore.length)] : null, [px, py] = edge ? [edge.px, edge.py] : drySpot();
   put(w, stand, px, py);
   stand.heading = Math.random() * Math.PI * 2;
@@ -166,7 +167,7 @@ function situation(plan: Plan): Trial | string {
   const fish = meeting(w, stand);
   const ground = f.verb === "plant" || f.verb === "pour" || f.verb === "dig";
   const r = predict(w, f, {
-    tinder: lit, wind: airOn(w, stand).wind, spot: stand, ahead: ground ? ahead(w, px, py, w.t, hours.slice(i + 1, i + 1 + PATIENCE / 12)) : { soil: [], temp: [] }, fish,
+    tinder: lit, wind: airOn(w, stand).wind, spot: stand, ahead: ground ? ahead(w, px, py, w.t, hours.slice(i + 1, i + 1 + PATIENCE / HOUR)) : { soil: [], temp: [] }, fish,
     pieces, air: fire ? bedAir(w, fire) : layAt(w, stand).air, fire,
   });
   const seen = (done: Prediction) => conditionsNow(w, stand, f.verb, done.spot ? { px: done.spot[0], py: done.spot[1] } : stand, f.inputs);

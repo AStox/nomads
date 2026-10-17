@@ -21,7 +21,7 @@ export type Kind = {
   shelf?: number; // days food keeps at 0 C (spoil.ts; none for grain, whose keeping goes by its warmth and water)
   spoils?: Spoils; // how it spoils (spoil.ts)
   breaks?: Record<string, number>; // what it turns into when it fails
-  fuel?: number; // ticks of fire it feeds
+  fuel?: number; // ticks of fire it feeds, legacy: counted in FUEL_TICK_S ticks, kept so for old saves (migrate.ts charcoalIn)
   burns?: number; // how much hotter than wood it burns
   hotAbove?: number; // K: a hot thing is what heat made it only while it stays this warm (ecology.ts cool)
   phys?: Phys; // what a made kind is made of, physically (fuel.ts; a raw material's is fuel.ts PHYS)
@@ -31,6 +31,9 @@ export type Kind = {
   desc?: string; // what it physically is, e.g. "sharp stone lashed to a stick"
   uses?: Record<string, number>; // what people have done with it, e.g. "felling trees" -> 4
 };
+// The tick the legacy fuel counts are in: five minutes [design: the tick they were written at; fires now burn by
+// combustion.ts in seconds, and only old saves and the inspector read them].
+export const FUEL_TICK_S = 300;
 
 // Raw materials. Everything else is made from these. Food keeps at 0 C (docs/research/time-constants.md sec. 1): a
 // blackberry 2 to 14 days, a mushroom 7 to 9, mint 2 to 3 weeks, the middles taken (USDA Handbook 66); a salmonid 11.8

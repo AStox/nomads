@@ -27,6 +27,8 @@ import { cover, storage } from "./kernel";
 import type { Flora } from "./flora";
 import { PLANT } from "./flora";
 import { TEXELS } from "./wgsl/stems";
+import { HOUR } from "../sim/ticks";
+import { LANDING } from "../sim/lanes";
 import {
   CENSUS, CENSUS_WORDS, LAYER, LAYERS, MODE, SD, SD_WORDS, SEED_ROWS, WORK, WORK_WORDS, emergeInit, gradExtra, GRAD_INIT,
   seedBlocks, seedCensus, seedCount, seedEmerge, seedFile, seedFlag, seedGradCount, seedGradKill, seedGrow, seedList, seedShed, seedSuckers, seedThin,
@@ -59,8 +61,8 @@ const BIN_FIELDS: Field[] = [
   { name: "q", type: "u32", unit: "kg^(1/4)", scale: 2 ** 20 }, { name: "peak", type: "u32", unit: "kg^(1/4)", scale: 2 ** 20 },
 ];
 const SHED_MODE = [MODE.seeds, MODE.seeds, MODE.seeds, MODE.seeds, MODE.berry, MODE.daughter];
-// A day's seed is shed over this many ticks, the first ones of the day [design: the seed of a mast year, billions, a
-// tick's share of it at a time], or over the day's one tick when a day is one.
+// A day's seed is shed over this many landings, the first ones of the day [design: the seed of a mast year, billions, a
+// landing's share of it at a time], or over as many as the day has when it has fewer.
 const SLICES = 32;
 // A shed under way: its layer, kind, year, its day in the window and the window's length, and the list it reads.
 type Shed = { layer: number; row: number; year: number; dd: number; S: number; list: number };
@@ -108,15 +110,16 @@ export class Seedlings implements Rider {
     for (let k = 0; k < f.n; k++) if (FLORA[f.kind[k]] === "tree" || FLORA[f.kind[k]] === "bush") { laid++; by.set(f.species[k], (by.get(f.species[k]) ?? 0) + 1); }
     const most = (sps: readonly string[]) => Math.max(0, ...sps.map((sp) => by.get(SPECIES.indexOf(sp as (typeof SPECIES)[number])) ?? 0)) + plantK.capacity - laid;
     this.room = [most(["pine", "oak", "ash"]), most(["pine", "oak", "ash"]), most(["berry"])];
-    this.slices = Math.min(SLICES, driver.law.dayTicks);
+    this.slices = Math.min(SLICES, Math.max(1, Math.floor(driver.law.dayTicks / LANDING)));
     this.bufs = {
       sd: storage(g, sd), pend: storage(g, LAYERS * TEXELS * 4), work: storage(g, WORK_WORDS * 4),
       plists: this.room.map((r) => storage(g, (1 + r) * 4)), args: this.room.map(() => storage(g, 16, GPUBufferUsage.INDIRECT)), req: storage(g, (1 + 3 * REQUESTS) * 4),
     };
     const law = driver.law;
     store.law({ name: "seedlings", due: (t) => t % law.dayTicks === 0, run: (s, t) => this.day(s, t) });
-    if (driver.ahead) store.law({ name: "seedlings ahead", due: (t) => t % law.dayTicks !== 0 && t % (law.dayTicks / 24) === 0, run: (_, t) => { const a = driver.ahead!(t); if (a) this.send(a.t, a.young, a.hi); } });
-    store.law({ name: "seed shed", due: (t) => this.sheds.length > 0 && t % law.dayTicks !== 0 && t % law.dayTicks < this.slices, run: (s, t) => this.shed(s, t % law.dayTicks) });
+    // the next day's words worked out a share at a time, on each hour of the day but midnight
+    if (driver.ahead) store.law({ name: "seedlings ahead", due: (t) => t % law.dayTicks !== 0 && t % HOUR === 0, run: (_, t) => { const a = driver.ahead!(t); if (a) this.send(a.t, a.young, a.hi); } });
+    store.law({ name: "seed shed", due: (t) => this.sheds.length > 0 && t % law.dayTicks !== 0 && t % LANDING === 0 && (t % law.dayTicks) / LANDING < this.slices, run: (s, t) => this.shed(s, (t % law.dayTicks) / LANDING) });
     store.ride(this);
   }
   // The young words of day t on the GPU from word 0 up to upto (only the day's law reads them, so the next day's go out
@@ -150,6 +153,15 @@ export class Seedlings implements Rider {
     };
     return this.src;
   }
+  kernelSources(): string[] {
+    const s = this.store!, L = this.driver!.law, { gextra, ...src } = this.kernels(s), animal = s.kinds.find((k) => k.name === "animal");
+    const { tables } = this.flora!.stemBuffers(), pend = this.bufs!.pend;
+    return [
+      ...Object.values(src), s.birthKernel(SEEDLING, PLANT, GRAD_INIT, { bufs: [{ name: "tables", buf: tables }], wgsl: gextra }),
+      ...(animal ? [seedBlocks({ cap: animal.capacity, x: at(animal, "x"), y: at(animal, "y"), sp: at(animal, "sp") })] : []),
+      ...L.layers.map((ly, layer) => s.birthKernel(null, SEEDLING, emergeInit(layer, ly.row, ly.q0, L.dayTicks), { bufs: [{ name: "pend", buf: pend }], wgsl: "" })),
+    ];
+  }
 
   // ---------- a day ----------
   private day(s: Store, t: number) {
@@ -175,7 +187,7 @@ export class Seedlings implements Rider {
     }
     s.run(src.grow, [bins.body, start, list, tables, rows, b.sd, b.work], cover(g, bins.capacity), [day, 0, 0, 0]);
     // the day's sheds: each kind's shedding parents listed, the brambles' shed at once, the trees' seed over the day's
-    // first ticks
+    // first landings
     let lists = 0;
     L.layers.forEach((ly, layer) => {
       if (layer === LAYER.sucker || doy < ly.from || doy >= ly.to || (ly.parity >= 0 && (year & 1) !== ly.parity)) return;
@@ -220,7 +232,7 @@ export class Seedlings implements Rider {
     for (const h of this.sheds) s.run(src.shed, [plant.body, b.plists[h.list], b.sd, b.pend], { buffer: b.args[h.list], offset: 0 }, [h.row, h.layer, h.year, h.dd, h.S, MODE.seeds, j, this.slices]);
     if (j === this.slices - 1) this.sheds = [];
   }
-  // Whether today's seed is still being shed (over the day's first ticks).
+  // Whether today's seed is still being shed (over the day's first landings).
   get shedding() { return this.sheds.length > 0; }
 
   // The GPU memory the seedlings' own buffers take (the bins' kind and the store's scratch besides), bytes.

@@ -388,8 +388,7 @@ export class Flora implements Rider {
   // now when asked before any law has run this tick, or when asked for as the stems stand now (now: a crown pass made
   // between ticks, after the CPU's fellings and plantings went up, gpu/crowns.ts refresh).
   raster(now = false): Raster {
-    const s = this.store!, k = s.kind(PLANT), g = s.g, b = this.bufs!, lay = this.layout(k);
-    const src = (this.src ??= { count: stemsCount(lay), file: stemsFile(lay), grow: stemsGrow(lay), land: this.landSrc(k) });
+    const s = this.store!, k = s.kind(PLANT), g = s.g, b = this.bufs!, src = this.lawSources();
     const count = s.scratch("stemcount", TEXELS + 1), cursor = s.scratch("stemcursor", TEXELS), list = s.scratch("stemlist", 3 * k.capacity);
     const crowns = s.scratch("stemcrowns", CROWN_WORDS * TEXELS);
     if (now || this.filed !== s.t) {
@@ -400,6 +399,15 @@ export class Flora implements Rider {
       s.run(src.file, [k.body, count, cursor, list, b.tables, b.rows, crowns], cover(g, k.capacity));
     }
     return { start: count, list, crowns };
+  }
+  // the stems' law's own kernels, made once
+  private lawSources() {
+    const k = this.store!.kind(PLANT), lay = this.layout(k);
+    return (this.src ??= { count: stemsCount(lay), file: stemsFile(lay), grow: stemsGrow(lay), land: this.landSrc(k) });
+  }
+  kernelSources(): string[] {
+    const src = this.lawSources();
+    return [src.count, src.file, STEMS_BUSY, STEMS_BUSY_LIST, src.grow, src.land];
   }
   private filed = -1;
   // n stems born, or about to be, that may stand in texels no stem held: the stems' law looks over that many more.

@@ -3,8 +3,7 @@
 // out. Every number is docs/research/matter-constants.md's, by its section; what a material is made of comes from fuel.ts.
 import { BURNS, WOODS, pieceOf, type Edge, type Phys, type Wood } from "./fuel";
 import { basal, frame, newBody } from "./body";
-import { TICK_S } from "./sky";
-export { TICK_S };
+import { TICK_S } from "./ticks";
 
 // ---------- a blow (sec. 1) ----------
 // Chopping: 8.0 MET at 35 blows a minute (Compendium 11262); the arms' net efficiency, arm cranking's 10 to 17%; a swing's

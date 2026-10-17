@@ -2,7 +2,7 @@
 import { meeting, takeFish } from "./waters";
 import { gone, herded, type Herded } from "./animals";
 import { GROWN_THROWER, animalBody, basketOf, bowKE, carcassOf, caught, fatOf, flightTo, handKE, hideOf, massOf, missileOf, throwAt, throwRange, releaseAt, throwsInTick, tipOf, woundOf, type Gear, type Meeting, type Throw, type Thrower } from "./hunt";
-import { TICK_S } from "./sky";
+import { HOUR, TICK_S, rate, ticksOf } from "./ticks";
 import { BASE, MADE_OF, THING_MATERIAL, clamp01, compoundName, depth, ensure, noun, p, plural, type Kind, type Props, type Registry } from "./materials";
 import { BURNS, COPPER, FIRED_CLAY, LEATHER, LIVE_HERB, LOG_LEN, PHYS, POT_WALL, charSize, greenOf, mix, physOf, pieceOf, remade, splitSize, stackPhys, woodOf, type Edge, type Phys } from "./fuel";
 import {
@@ -183,7 +183,7 @@ function takeChosen(a: Agent, chosen: Stack[], uses: Record<string, number>) {
 // Hours until the night ends, if it's night: how long a fire has to last to see them through it.
 export function hoursToDawn(t: number) {
   let h = 0;
-  while (isNight(t + h * 12) && h < 18) h += 0.5;
+  while (isNight(t + h * HOUR) && h < 18) h += 0.5;
   return h;
 }
 // The fire within r meters giving off the most heat, flaming and glowing: a campfire, or anything burning.
@@ -224,9 +224,11 @@ export type Outcome = {
   ruled?: boolean; // decided by a Jev ruling, not the physics rules
   later?: string; // a thing whose result is still to come: a seed now in the ground, a seedling just watered
 };
-// How many ticks the acts that take a set time take, before a practised hand's share (sim.ts doAct): what a decision
-// that looks ahead to the act's end looks ahead by. Striking, rubbing, throwing and digging go blow by blow until done.
-export const DURATION: Record<string, number> = { join: 8, heat: 8, wet: 10, shape: 6, place: 3, plant: 3, pour: 2, wear: 2 };
+// How long the acts that take a set time take, s, before a practised hand's share (sim.ts doAct): what a decision that
+// looks ahead to the act's end looks ahead by. Striking, rubbing, throwing and digging go blow by blow until done.
+// [design: today's tick counts at five minutes a tick, join and heat 8, wet 10, shape 6, place and plant 3, pour and
+// wear 2]
+export const DURATION: Record<string, number> = { join: 2400, heat: 2400, wet: 3000, shape: 1800, place: 900, plant: 900, pour: 600, wear: 600 };
 
 // ---------- inventory ----------
 export const count = (a: Agent, k: string) => a.inv.reduce((n, s) => n + (s.k === k ? 1 : 0), 0);
@@ -508,6 +510,9 @@ export function breaksOf(kind: string): Record<string, number> {
   return THING_MATERIAL[kind]?.breaks ?? {};
 }
 
+// How long they keep striking what their blows barely mark before they give it up, s [design: today's five ticks at
+// five minutes a tick].
+const MARK_S = 1500;
 // One tick of striking. The runner calls this every tick until it reports done. choose: which of what they hold they'd
 // lay over (sim.ts by their theories; the first of each kind they hold, by default).
 export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number; tries?: number; strain?: number }, choose: Chooser = firstHeld(a.inv)): { done: boolean; out?: Outcome; broke?: string; damage: number } {
@@ -598,7 +603,7 @@ export function strikeTick(w: World, a: Agent, act: Act, st: { progress: number;
   trace("physics", "strike", { tool: tool.id, target: act.target.kind, force: force(tool, a), focus: focus(tool), dmg, hp: target.hp }, a.id);
   const rate = dmg, ticksNeeded = rate > 0 ? Math.ceil(mat.hp / rate) : Infinity;
   if (target.hp! > 0) {
-    if (dmg <= 0.01 && st.progress >= 5)
+    if (dmg <= 0.01 && st.progress >= ticksOf(MARK_S))
       return { done: true, damage: 0, out: outcome({ text: `Striking the ${act.target.kind} with ${withWhat(tool)} barely left a mark.`, fields, numbers: { rate: 0 } }) };
     return { done: false, damage: dmg };
   }
@@ -763,25 +768,26 @@ export const emberCatches = (m: number) => m <= SOAKED;
 // small hard seeds ground between a stone and something harder still crush to a meal that cooks into far better food;
 // the softer, if long, ground to a point on something much harder; or, wood worked against wood, two firm long pieces
 // one spun or sawn against the other or a cord drawn back and forth round one, friction heat (a limp handful of fiber
-// against a stick just slides); or nothing much. ticks: how long each takes to come to it (friction: until hot enough).
+// against a stick just slides); or nothing much. secs: how long each takes to come to it, s (friction: until hot enough).
+// [design: today's tick counts at five minutes a tick, leather and a point 10, grinding 12, nothing much 6]
 export type Rubbing =
-  | { does: "leather"; fat: Kind; hide: Kind; ticks: number }
-  | { does: "grind" | "point"; soft: Kind; harder: Kind; ticks: number }
+  | { does: "leather"; fat: Kind; hide: Kind; secs: number }
+  | { does: "grind" | "point"; soft: Kind; harder: Kind; secs: number }
   | { does: "friction"; bow: boolean; spindle: Kind }
-  | { does: "nothing"; ticks: number };
+  | { does: "nothing"; secs: number };
 // reg: the kinds there are, for what made things are made of.
 export function rubbing(A: Kind, B: Kind, reg: Registry): Rubbing {
   const fat = greasy(A) ? A : greasy(B) ? B : null, hide = skin(A) ? A : skin(B) ? B : null;
-  if (fat && hide && fat !== hide) return { does: "leather", fat, hide, ticks: 10 };
+  if (fat && hide && fat !== hide) return { does: "leather", fat, hide, secs: 3000 };
   const soft = p(A, "hard") <= p(B, "hard") ? A : B, harder = soft === A ? B : A;
-  if (p(soft, "seed") >= 0.5 && p(soft, "hard") >= 0.25 && p(soft, "edible") > 0 && p(soft, "long") < 0.3 && p(harder, "hard") >= 0.8 && soft !== harder) return { does: "grind", soft, harder, ticks: 12 };
-  if (p(harder, "hard") - p(soft, "hard") >= 0.35 && p(soft, "long") >= 0.5 && p(soft, "sharp") < 0.5 && soft.verb !== "rub") return { does: "point", soft, harder, ticks: 10 };
+  if (p(soft, "seed") >= 0.5 && p(soft, "hard") >= 0.25 && p(soft, "edible") > 0 && p(soft, "long") < 0.3 && p(harder, "hard") >= 0.8 && soft !== harder) return { does: "grind", soft, harder, secs: 3600 };
+  if (p(harder, "hard") - p(soft, "hard") >= 0.35 && p(soft, "long") >= 0.5 && p(soft, "sharp") < 0.5 && soft.verb !== "rub") return { does: "point", soft, harder, secs: 3000 };
   // a stick of wood long enough to drill or saw with
   const firm = (k: Kind) => { const x = physOf(reg, k); return !!x && isWood(x) && x.mass / ((x.rho * Math.PI * x.d * x.d) / 4) >= LONG; };
   if (isBow(A) && firm(B)) return { does: "friction", bow: true, spindle: B };
   if (isBow(B) && firm(A)) return { does: "friction", bow: true, spindle: A };
   if (firm(A) && firm(B)) return { does: "friction", bow: false, spindle: A };
-  return { does: "nothing", ticks: 6 };
+  return { does: "nothing", secs: 1800 };
 }
 // What rubbing makes of the softer of two: ground to a meal, or to a point.
 export const rubbedOf = (r: { does: "grind" | "point"; soft: Kind }) => `rub:${r.soft.id}`;
@@ -798,7 +804,7 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
   const r = rubbing(A, B, w.kinds);
   if (r.does === "leather") {
     const { fat, hide } = r;
-    if (st.progress < r.ticks) return { done: false };
+    if (st.progress < ticksOf(r.secs)) return { done: false };
     const [k, isNew] = leather(w, hide);
     takeItems(a, fat.id); takeItems(a, hide.id);
     giveItems(w, a, k.id);
@@ -809,7 +815,7 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
   }
   if (r.does === "grind") {
     const { soft, harder } = r;
-    if (st.progress < r.ticks) return { done: false };
+    if (st.progress < ticksOf(r.secs)) return { done: false };
     const [k, isNew] = ensure(w.kinds, rubbedOf(r), () => ({
       name: `ground ${soft.name}`, props: { edible: clamp01(p(soft, "edible") * 1.4), toughness: 0.01 }, parts: [soft.id], verb: "rub", ...(soft.spoils ? { spoils: soft.spoils, ...(soft.shelf ? { shelf: soft.shelf / 2 } : {}) } : {}),
     }));
@@ -822,7 +828,7 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
   }
   if (r.does === "point") {
     const { soft, harder } = r;
-    if (st.progress < r.ticks) return { done: false };
+    if (st.progress < ticksOf(r.secs)) return { done: false };
     const [k, isNew] = ensure(w.kinds, rubbedOf(r), () => ({
       name: `pointed ${soft.name}`, props: { ...soft.props, sharp: clamp01(p(soft, "sharp") + 0.4), long: p(soft, "long") * 0.95 }, parts: [soft.id], verb: "rub", fuel: soft.fuel,
     }));
@@ -861,7 +867,7 @@ export function rubTick(w: World, a: Agent, act: Act, st: { progress: number; he
     }
     return { done: false };
   }
-  if (st.progress < r.ticks) return { done: false };
+  if (st.progress < ticksOf(r.secs)) return { done: false };
   return { done: true, out: outcome({ text: `Rubbing the ${A.name} on the ${B.name} did nothing much.`, fields }) };
 }
 
@@ -986,7 +992,7 @@ export function heating(w: World, items: string[], c: HeatSetting): Decision | "
   // the air at the fire, blown into while they fan it; how long they hold things there; each thing as they hold it, and
   // how warm its core gets in the fire where it comes toward T
   const air: BedAir = { ...(c.air ?? setUp(fire, STILL, 0)), ...(c.fan && !fire.covered ? { blown: BLOWN } : {}) };
-  const s = DURATION.heat * TICK_S, ta = air.temp + K0;
+  const s = DURATION.heat, ta = air.temp + K0;
   const held = (i: number) => {
     const st = c.stacks?.[i], phys = st ? stackPhys(w.kinds, st) : physOf(w.kinds, w.kinds[items[i]]);
     return { phys, m: st ? moistureOf(st) : (phys?.green ?? 0) };
@@ -1137,8 +1143,8 @@ const landed = perWorld(() => new Map<string, number>());
 export const fishClose = (w: World, a: Agent, at: { px: number; py: number } = a) => landed(w).get(a.id) === w.t || meeting(w, at).fish.length > 0;
 // A line to dangle in the water: long, limp and strong.
 export const lineLike = (k?: Kind) => p(k, "long") >= 0.5 && p(k, "flexible") >= 0.8 && p(k, "binding") >= 0.5;
-// How long a dip lasts, s: the act's ticks (DURATION) at the tick's length.
-const DIP_S = DURATION.wet * TICK_S;
+// How long a dip lasts, s (DURATION).
+const DIP_S = DURATION.wet;
 // What there is to dip something into where they stand: open water (not frozen over), the fish of that water a gear can
 // meet (waters.ts meeting), the basal rate of whoever sweeps a basket, W, whose arms keep up chopping's power (hunt.ts
 // basketOf), and draws of chance (hunt.ts caught).
@@ -1338,7 +1344,9 @@ export function spotNear(w: World, a: { px: number; py: number; heading?: number
 }
 // How deep the soil has to be: a spade's depth for a pit, and a little for a seed.
 export const PIT_SOIL = 0.2, SEED_SOIL = 0.03;
-// How much of a pit a tick's digging makes, with a tool or bare hands, before a practised hand's share: a pit is done at 12.
+// How much of a pit a tick's digging makes, with a tool or bare hands, before a practised hand's share: a pit is done at
+// DIG_S seconds' digging at a power of 1 [design: today's 12 units at five minutes a tick].
+export const DIG_S = 3600;
 export const digPower = (tool: Kind) => 0.15 + p(tool, "hard") * 0.4 + p(tool, "sharp") * 0.3 + p(tool, "long") * 0.3;
 
 // ---------- dig ----------
@@ -1351,9 +1359,10 @@ export function digTick(w: World, a: Agent, act: Act, st: { progress: number; at
   const [px, py] = (st.at = where);
   const power = digPower(tool);
   st.progress += power * (1 + level(a.skills.digging ?? 0) * 0.1);
-  if (!act.tool) a.needs.health = Math.max(0, a.needs.health - 0.05);
+  // bare hands are skinned by it [design: today's per-tick value]
+  if (!act.tool) a.needs.health = Math.max(0, a.needs.health - rate(0.05, 300));
   trace("physics", "dig", { tool: tool.id, power, progress: st.progress }, a.id);
-  if (st.progress < 12) return { done: false };
+  if (st.progress < ticksOf(DIG_S)) return { done: false };
   mark(w, addThing(w, "pit", px, py, { owner: a.id, born: w.t }));
   fields.builds = "pit";
   return { done: true, out: outcome({ ok: true, text: `Digging with ${act.tool ? `the ${tool.name}` : "bare hands"} made a deep pit.`, builds: "pit", fields }) };
@@ -1446,7 +1455,7 @@ export function placing(w: World, items: string[], c: PlaceSetting): Placing {
   const fields: Fields = { verb: "place", inputs: [...items].sort(), gives: [] };
   if (!parts.length || !c.held) return decided({ text: "They didn't have those things to hand.", fields });
   const fire = c.fire, burns = fire?.bed && alight(fire.bed) ? fire.bed : undefined;
-  const stacks = c.stacks ?? items.map((k): Stack => ({ k, hp: 1, born: 0 })), air = c.air ?? STILL, after = c.after ?? DURATION.place * TICK_S;
+  const stacks = c.stacks ?? items.map((k): Stack => ({ k, hp: 1, born: 0 })), air = c.air ?? STILL, after = c.after ?? DURATION.place;
   // a flame carried in hand (a brand, a lit lamp), and everything else that burns; a lamp keeps its own flame
   const flame = parts.find(isFlame), lamp = isLamp(flame) ? flame : undefined;
   const fuels = parts.filter((k) => p(k, "flammable") >= 0.5 && k !== lamp);

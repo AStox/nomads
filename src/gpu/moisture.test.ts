@@ -18,6 +18,7 @@ import { DIRS } from "../terrain/climate";
 import { SPECIES } from "../terrain/flora";
 import { stemTables } from "../sim/plants";
 import { shelterTables } from "../sim/air";
+import { HOUR } from "../sim/ticks";
 import { deadHour, islandCell } from "../sim/wetness";
 import { newWorld, type Dead } from "../sim/world";
 
@@ -150,7 +151,7 @@ async function run(g: Gpu) {
   const { s, crowns, dead, moist, driver } = await staged(g, null), hs = hours(40);
   s.flush();
   const words = new Uint32Array(await readback(g, crowns.buf!));
-  for (const [i, H] of hs.entries()) { moist.queue(H); await s.step((i + 1) * 12); }
+  for (const [i, H] of hs.entries()) { moist.queue(H); await s.step((i + 1) * HOUR); }
   s.flush();
   const states = new Int32Array(await readback(g, moist.states!));
   const lk = s.kind("log"), uk = s.kind("logup");
@@ -187,7 +188,7 @@ test("a lying stick's water equals the island's reference for its thickness unde
   const bare = (99 * 4) * SIDE + 99 * 4 + 1, STICK = CLASSES.findIndex((c) => c.name === "stick");
   for (const [i, H] of hours(30).entries()) {
     moist.queue(H);
-    await s.step((i + 1) * 12);
+    await s.step((i + 1) * HOUR);
     ref = deadHour(w, ref, H);
     s.flush();
     const st = new Int32Array(await readback(s.g, moist.states!, TEXEL_WORDS * 4, bare * TEXEL_WORDS * 4));

@@ -4,6 +4,7 @@
 // the low-power adapter alike. The oracle follows both sides of G.lumped: the forage rule and the crows' worms
 // without a ground link, as every test but one runs, and the pools a link lays (a stand-in for src/gpu/smalls.ts) with.
 import "../sim/world";
+import { DAY, HOUR, YEAR } from "../sim/ticks";
 import { lawConsts } from "../sim/animals";
 import { afterAll, expect, test } from "bun:test";
 import { openGpu, releaseGpu, theGpu, type Gpu } from "./device";
@@ -509,7 +510,7 @@ function islet(animals: { n: number; cols: Record<string, Uint32Array> }, consts
   }
   return {
     seed: 7, days: 0, t0: 0, tiles: () => tiles, pools: () => pools, drivers: () => drivers, consts, start: () => animals,
-    step: (t) => ({ day: Math.floor(t / 288) % 40, flags: 0 }),
+    step: (t) => ({ day: Math.floor(t / DAY) % 40, flags: 0 }),
   };
 }
 // Animals laid out as columns: [species, female, tile x, tile y, reserve share, grp].
@@ -519,7 +520,7 @@ function laid(list: [number, number, number, number, number, number][]) {
   for (const [s, f, tx, ty, share, grp] of list) {
     const x = tx * TILE_MM + 75000, y = ty * TILE_MM + 75000;
     cols.x.push(x); cols.y.push(y); cols.hx.push(x); cols.hy.push(y); cols.sp.push(s | (f << 4));
-    cols.e.push(Math.round(full[s * KW + K.full] * share) >>> 0); cols.born.push((-5 * 11520) >>> 0); cols.grp.push(grp);
+    cols.e.push(Math.round(full[s * KW + K.full] * share) >>> 0); cols.born.push((-5 * YEAR) >>> 0); cols.grp.push(grp);
   }
   return { n: list.length, cols: Object.fromEntries(Object.entries(cols).map(([k, v]) => [k, Uint32Array.from(v)])) };
 }
@@ -546,13 +547,13 @@ function oracleRun(start: Omit<State, "cap">, cap: number, ticks: number[], driv
   const outs: Out[] = [];
   for (const t of ticks) {
     const { day, flags } = driver.step(t, 24);
-    st.KP.set([t >>> 0, 24, day, flags, driver.seed, 12], PO);
+    st.KP.set([t >>> 0, 24, day, flags, driver.seed, HOUR], PO);
     oracleStep(st);
     outs.push({ b: st.b.slice(), W: st.W.slice(), A: st.A.slice(), RQ: st.RQ.slice() });
   }
   return outs;
 }
-const DAY_STEPS = Array.from({ length: 24 }, (_, k) => 288 + 12 * (k + 1));
+const DAY_STEPS = Array.from({ length: 24 }, (_, k) => DAY + HOUR * (k + 1));
 const reserveOf = (b: Uint32Array, cap: number, i: number) => b[(F.e + 1) * cap + i] | 0;
 
 test("a lone deer's day: its reserve, its place and its tile's sward each step equal the oracle's bit for bit, on both adapters", async () => {

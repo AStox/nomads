@@ -10,7 +10,7 @@ import {
 } from "./physics";
 import { die, life, lifeSummary } from "./life";
 import { apart, beliefKey, beliefText, cameOff, conditionWords, differed, weighs, fieldsOf, found, groundKey, groundOfKey, holds, mixOf, odds, fades, noteTry, ofSpot, partsOf, record, refine, refuted, restsOn, rethink, see, sentence, suspected, teach, testOf, watchers, type Belief } from "./beliefs";
-import { COLLECT, GATHER, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
+import { COLLECT, GATHER, PICK, SOCIAL, SOCIAL_ITEM_NEEDS, edibleKinds, foodIn, plan, type Ctx, type PState, type PlanStep } from "./plan";
 import { acornsUnder, burnedHomes, ecology, glean, onFireOut, onGrew, onWithered, trample, trapped, tread } from "./ecology";
 import { FAUNA, HUNTED } from "./fauna";
 import { animalsOf, attacked, herdNear, herded, residentAnimals } from "./animals";
@@ -19,12 +19,14 @@ import { clock as traceClock, count as bump, timed, trace, waited } from "./trac
 import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sharedStore, snubbed, spread, standing, takeShared } from "./groups";
 import { anyAround, around, crownsOf, deadwoodOf, floraOf, liveThings, lookFor, moistOf, nearestThing, put, resident, seedlingsOf, shelve, smallsOf, thingById } from "./space";
 import { landOf, walk } from "./walk";
-import { armOf, canHold, capacityOf, fullness, gaitOf, massOf, overheadOf, reachOf, stride, type Stride } from "./gait";
+import { armOf, canHold, capacityOf, fullness, gaitOf, massOf, overheadOf, reachOf, runSpeed, stride, type Stride } from "./gait";
 import { CHI_R, DARK, canopyAt, heatAt, lightOn, restRate, skyShare, workRate } from "./light";
 import { hears, personSize, seesAnimal, seesHands, seesPerson, seesThing } from "./senses";
 import { ripening } from "./cues";
 import { airAt, airOn, sunOn, vapourAt } from "./air";
-import { CLOUD, TICK_S, sunAt } from "./sky";
+import { CLOUD, sunAt } from "./sky";
+import { HOUR, TICK_S, rate, ticksOf } from "./ticks";
+import { BODY_S, LAND_S, SENSES_S, due, secs } from "./lanes";
 import { DOWN_HOT, basal, bodyOf, fate, feed, feels, fireGain, frameOf, hc, insulation, openRadiant, pressure, rested, skyTemp, sleepy, sunGain, warm, type Around } from "./body";
 import { enrich, fertilityAt, soilWaterAt } from "./soil";
 import { DAMP, SOAKED, moistureOf, sheltered, tinder, tinderOf } from "./wetness";
@@ -235,9 +237,11 @@ function groundsNear(w: World, a: Agent, word?: string) {
 const within = (w: World, a: Agent, kind: string, slack = 0) => { const s = spot(w, a, kind); return s && meters(a, s) <= s.reach + slack ? s : null; };
 
 // ---------- movement ----------
-// What walking took of someone in the tick they walked: the energy, J, and the seconds (gait.ts), read by their body the
-// tick after (metOf).
-const walked = perWorld(() => new Map<string, { t: number; J: number; s: number }>());
+// What walking took of someone since their body last ran (the body lane, lanes.ts BODY_S): the energy, J, and the
+// seconds (gait.ts), read by their body when it next runs, at tick `at` (metOf).
+const walked = perWorld(() => new Map<string, { at: number; J: number; s: number }>());
+// Ticks from one run of the body to the next.
+const BODY_TICKS = ticksOf(secs(BODY_S));
 // Walk (or run) toward a point in tiles until within reach meters of it, for as long as a tick lasts, as fast as their
 // body, their load, the ground and the light let them (gait.ts).
 function stepToward(w: World, a: Agent, tx: number, ty: number, reach: number, run = false): "arrived" | "moved" | "stuck" {
@@ -247,8 +251,8 @@ function stepToward(w: World, a: Agent, tx: number, ty: number, reach: number, r
     speed: (px, py, qx, qy) => (last = stride(w, g, px, py, qx, qy)).v,
     went: (_px, _py, _qx, _qy, dt) => { J += last!.watts * dt; },
   }, TICK_S, reach);
-  const was = walked(w).get(a.id);
-  walked(w).set(a.id, was?.t === w.t ? { t: w.t, J: was.J + J, s: was.s + s } : { t: w.t, J, s });
+  const was = walked(w).get(a.id), at = (Math.floor(w.t / BODY_TICKS) + 1) * BODY_TICKS;
+  walked(w).set(a.id, was?.at === at ? { at, J: was.J + J, s: was.s + s } : { at, J, s });
   const went = Math.hypot(a.px - x0, a.py - y0) * TILE_M;
   if (!went) return r;
   trample(w, a, went);
@@ -397,8 +401,8 @@ function setGoal(w: World, a: Agent, type: string, odds: Record<string, number>,
     log(w, "stuck", [a.id], a, `${a.name} wanted to ${lower(goalText(w, type, target))}${who} but couldn't work out how.`);
     struggled(a, type, w);
     trace("plan", "no_plan", { type, target }, a.id);
-    a.cooldowns[type] = w.t + 60;
-    a.nextDecide = w.t + 2;
+    a.cooldowns[type] = w.t + ticksOf(18000); // [design: today's 60 ticks]
+    a.nextDecide = w.t + ticksOf(IDLE_S);
     return;
   }
   a.goal = { type, target, since: w.t, odds, fails: 0 };
@@ -423,15 +427,28 @@ function endGoal(w: World, a: Agent, ok: boolean, why?: string) {
   if (!ok && a.goal) struggled(a, a.goal.type, w);
   if (!ok && a.goal) {
     log(w, "fail", [a.id], a, `${a.name} gave up trying to ${lower(goalText(w, a.goal.type, a.goal.target))}${why ? `: ${why}` : ""}.`);
-    a.cooldowns[a.goal.type] = w.t + 30;
+    a.cooldowns[a.goal.type] = w.t + ticksOf(9000); // [design: today's 30 ticks]
   }
   trace("plan", "end", { type: a.goal?.type, ok, why }, a.id);
   a.goal = null;
   a.plan = [];
+  // an event: they decide again on the next tick
   a.nextDecide = w.t + 1;
 }
 
 // ---------- deciding ----------
+// Brains decide on events, never once a tick (the real-time tick plan, Unit 7): someone with no goal thinks when their
+// next decision falls due (a.nextDecide), and what happens to them brings it on: a goal ended, done or given up (endGoal,
+// the next tick); a collapse they saw or a stranger seen (notice), now; an interrupt (a need gone critical, the dark, a
+// wolf, heat, a probe's plan.interrupt) takes their goal from them, so they decide once their last decision's time is
+// past. The only timed ones are the fallbacks: after a decision that came to nothing they could plan, IDLE_S; after a
+// brain that failed to answer, LOST_S. Whatever the tick, these are seconds; brain.ts jevMeter counts the calls a sim
+// hour and a wall minute.
+// [design: today's 2 ticks]
+const IDLE_S = 600;
+// [design: today's 10 ticks]
+const LOST_S = 3000;
+
 // Whether working on a shelter still seems worth it to them: there's none close by to sleep in, its roof still lets the
 // rain in, there are more people living in it than it sleeps, or what they last added still made it better. Two loads in
 // a row that changed nothing tell them they're only burying the walls.
@@ -453,7 +470,7 @@ export function feasible(w: World, a: Agent) {
   const can = (type: string) => {
     if (a.cooldowns[type] > w.t) return false;
     const mine = canCache(w).get(a.id) ?? canCache(w).set(a.id, {}).get(a.id)!, hit = mine[type];
-    if (hit && w.t - hit.t < 40) return hit.ok;
+    if (hit && w.t - hit.t < ticksOf(12000)) return hit.ok; // [design: today's 40 ticks]
     const ok = !!planGoal(w, a, type, undefined, ctx);
     mine[type] = { t: w.t, ok };
     return ok;
@@ -601,7 +618,7 @@ async function think(w: World, a: Agent) {
     trace("brain", "error", { error: String(e) }, a.id);
     a.thinking = false;
     a.status = "Lost in thought";
-    a.nextDecide = w.t + 10;
+    a.nextDecide = w.t + ticksOf(LOST_S);
   }
 }
 
@@ -712,7 +729,8 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
       const t = thingById(w, act.target.thing);
       if (t && meters(a, t) > reachOf(t, arm) + long) {
         a.status = `Walking over to the ${nm(w, t.kind)}`;
-        if ((s.tries = (s.tries ?? 0) + 1) > 40) return `couldn't get to the ${nm(w, t.kind)}`;
+        // [design: today's 40 ticks of walking]
+        if ((s.tries = (s.tries ?? 0) + 1) > ticksOf(12000)) return `couldn't get to the ${nm(w, t.kind)}`;
         return stepToward(w, a, t.px, t.py, reachOf(t, arm)) === "stuck" ? `couldn't get to the ${nm(w, t.kind)}` : "wait";
       }
     }
@@ -721,7 +739,8 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
       if (!prey) return "the animal was gone";
       if (prey.alt > overheadOf(w, a) + long || meters(a, prey) > arm + 0.5 + long) {
         a.status = `Chasing the ${prey.species}`;
-        if ((s.tries = (s.tries ?? 0) + 1) > 60 || prey.alt > overheadOf(w, a) + long) return `the ${prey.species} got away`;
+        // [design: today's 60 ticks of chasing]
+        if ((s.tries = (s.tries ?? 0) + 1) > ticksOf(18000) || prey.alt > overheadOf(w, a) + long) return `the ${prey.species} got away`;
         // Catching up and swinging happen in the same moment, or a fleeing animal is always a stride ahead.
         if (stepToward(w, a, prey.px, prey.py, arm + long, true) !== "arrived") return "wait";
       }
@@ -752,7 +771,8 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
     const range = throwReach(w, a, act, prey);
     if (meters(a, prey) > range) {
       a.status = `Stalking the ${prey.species}`;
-      if ((s.tries = (s.tries ?? 0) + 1) > 80) return `the ${prey.species} got away`;
+      // [design: today's 80 ticks of stalking]
+      if ((s.tries = (s.tries ?? 0) + 1) > ticksOf(24000)) return `the ${prey.species} got away`;
       stepToward(w, a, prey.px, prey.py, range);
       return "wait";
     }
@@ -768,7 +788,8 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
     if (!t) return "the young plant was gone";
     if (meters(a, t) > reachOf(t, armOf(w, a)) + 0.5) {
       a.status = "Walking over to the young plant";
-      if ((s.tries = (s.tries ?? 0) + 1) > 40) return "couldn't get to the young plant";
+      // [design: today's 40 ticks of walking]
+      if ((s.tries = (s.tries ?? 0) + 1) > ticksOf(12000)) return "couldn't get to the young plant";
       return stepToward(w, a, t.px, t.py, reachOf(t, armOf(w, a))) === "stuck" ? "couldn't get to the young plant" : "wait";
     }
   }
@@ -776,7 +797,9 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
   if (act.verb !== "eat" && fumbles(w, a)) return "wait";
   a.status = actText(w, act);
   fan(w, a, act);
-  if ((s.progress += 1 + level(a.skills[SKILL[act.verb](act, w)] ?? 0) * 0.1) < (DURATION[act.verb] ?? 4)) return "wait";
+  // a tick's work and a practised hand's share, against the act's seconds (physics.ts DURATION; any other act takes
+  // 1200 s [design: today's 4 ticks])
+  if ((s.progress += 1 + level(a.skills[SKILL[act.verb](act, w)] ?? 0) * 0.1) < ticksOf(DURATION[act.verb] ?? 1200)) return "wait";
   switch (act.verb) {
     case "join": case "heat": {
       if (act.verb === "heat") seenAt.set(s, conditionsNow(w, a, "heat", a, act.items, undefined, 0));
@@ -788,8 +811,8 @@ export function doAct(w: World, a: Agent, s: Step): Outcome | "wait" | string {
       if (cached) return applyRuling(w, a, act, key, cached);
       const waiting = pendingRulings(w), hours = rulingsAt(w);
       if (waiting.has(key)) return "wait";
-      const hourly = w.jev.rulings - (hours.get(Math.floor(w.t / 12)) ?? w.jev.rulings);
-      if (!hours.has(Math.floor(w.t / 12))) hours.set(Math.floor(w.t / 12), w.jev.rulings);
+      const hourly = w.jev.rulings - (hours.get(Math.floor(w.t / HOUR)) ?? w.jev.rulings);
+      if (!hours.has(Math.floor(w.t / HOUR))) hours.set(Math.floor(w.t / HOUR), w.jev.rulings);
       if (hourly >= 6) return applyRuling(w, a, act, key, { useful: false, name: "", props: {} });
       waiting.add(key);
       const parts = act.items.map((k) => w.kinds[k]).filter(Boolean);
@@ -889,7 +912,7 @@ const GROUND_VERBS: Record<string, true> = { plant: true, dig: true, pour: true 
 // fire act, lay: the things they hold that they lay (one for each of items; by default those they'd choose), and after:
 // how long until the act is done, s (by default all of it), which the fire it's laid on or held in is seen as it will be
 // by then.
-export function conditionsNow(w: World, a: Agent, verb?: string, at: Pos = a, items: string[] = [], lay?: Stack[], after = (DURATION[verb ?? ""] ?? 0) * TICK_S) {
+export function conditionsNow(w: World, a: Agent, verb?: string, at: Pos = a, items: string[] = [], lay?: Stack[], after = DURATION[verb ?? ""] ?? 0) {
   const ground = !verb || GROUND_VERBS[verb];
   let seen: Ground | undefined, fire: Firing | null | undefined;
   const spot = () => (seen ??= { env: envHere(w, at.px, at.py), light: skyShare(w, at.px, at.py), water: soilWaterAt(w, at.px, at.py), fert: fertilityAt(w, at.px, at.py), share: shareAt(w, at.px, at.py) });
@@ -1381,7 +1404,8 @@ function run(w: World, a: Agent): boolean | string {
     }
     case "avoid": {
       const b = agentById(w, s.arg);
-      if (!b || meters(a, b) >= 100 || s.progress++ > 40) return true;
+      // [design: today's 40 ticks]
+      if (!b || meters(a, b) >= 100 || s.progress++ > ticksOf(12000)) return true;
       a.status = `Keeping away from ${b.name}${shunReason(a, b)}`;
       // they walk off from someone they'd rather not meet, and run only from someone they fear
       stepAway(w, a, b, a.goal?.type === "flee" || (a.rel[b.id]?.beliefs.dangerous ?? 0) > 0.7);
@@ -1392,7 +1416,8 @@ function run(w: World, a: Agent): boolean | string {
       // the fire throwing the most on them, while the heat there passes what bare skin bears
       const heat = heatAt(w, a.px, a.py), burning = heat.q >= BEARABLE ? heat.from : null;
       const danger = wolf && meters(a, wolf) < 40 ? wolf : burning;
-      if (!danger || s.progress++ > 20) return true;
+      // [design: today's 20 ticks]
+      if (!danger || s.progress++ > ticksOf(6000)) return true;
       a.status = wolf === danger ? "Running from a wolf" : "Running from the fire";
       const safe = nearest(a, w.agents, (b) => b !== a && b.down <= w.t) ?? nearest(a, liveThings(w), (t) => t.kind === "fire");
       if (wolf === danger && safe && meters(a, safe) < 100) stepToward(w, a, safe.px, safe.py, 2, true);
@@ -1401,7 +1426,8 @@ function run(w: World, a: Agent): boolean | string {
     }
     case "fight": {
       const wolf = w.animals.find((m) => m.species === "wolf" && (m.target === (s.arg ?? a.id) || meters(m, a) <= 20));
-      if (!wolf || s.progress++ > 40 || a.needs.health < 20) {
+      // [design: today's 40 ticks]
+      if (!wolf || s.progress++ > ticksOf(12000) || a.needs.health < 20) {
         if (s.arg && s.arg !== a.id && !wolf) defended(w, a, s.arg);
         return true;
       }
@@ -1452,8 +1478,9 @@ function run(w: World, a: Agent): boolean | string {
     case "tend": {
       const b = agentById(w, s.arg);
       if (!b) return "they were gone";
-      if (b.down <= w.t || s.progress++ > 60) {
-        if (s.progress > 5) {
+      // [design: today's 60 ticks at most, and 5 to count as having kept them alive]
+      if (b.down <= w.t || s.progress++ > ticksOf(18000)) {
+        if (s.progress > ticksOf(1500)) {
           const text = `${a.name} stayed with ${b.name} while they lay collapsed, and kept them alive.`;
           log(w, "help", [a.id, b.id], a, text);
           incident(w, { act: "tend", by: a, against: b, at: b, text, value: 0.5, seenBy: [b, ...w.agents.filter((c) => c !== a && seesPerson(w, c, a, "recognise"))] });
@@ -1468,7 +1495,8 @@ function run(w: World, a: Agent): boolean | string {
     }
     case "follow": {
       const b = agentById(w, s.arg);
-      if (!b || s.progress++ > 40) return true;
+      // [design: today's 40 ticks]
+      if (!b || s.progress++ > ticksOf(12000)) return true;
       a.status = `Staying close to ${b.name}`;
       // close enough to lie against when they rest (surroundings: contact)
       stepToward(w, a, b.px, b.py, 1.5);
@@ -1495,7 +1523,7 @@ function run(w: World, a: Agent): boolean | string {
       if (body.asleep) { a.status = kind ? `Sleeping in the ${kind}` : "Sleeping on the ground"; return false; }
       // Awake with nothing to sleep off, they lie or sit an hour out, rather than start over every tick.
       a.status = lightOn(w, a).bright < DARK ? (nearFire(w, a, 12) ? "Sitting by the fire" : "Waiting out the dark") : kind ? `Resting in the ${kind}` : "Resting";
-      return s.progress++ >= 12;
+      return s.progress++ >= HOUR;
     }
     case "warm_up": {
       a.status = "Warming up";
@@ -1505,7 +1533,7 @@ function run(w: World, a: Agent): boolean | string {
       // Their warmth comes of where they are (needs): somewhere that no longer warms them is no place to warm up. Warm and
       // by the fire at night, there is nowhere better to be: they stay a while.
       if (a.needs.warmth < 95) return warmsThem(w, a) ? false : "the warmth was gone";
-      if (isNight(w.t) && s.progress++ < 12) { a.status = "Sitting by the fire"; return false; }
+      if (isNight(w.t) && s.progress++ < HOUR) { a.status = "Sitting by the fire"; return false; }
       return true;
     }
     case "eat": {
@@ -1531,9 +1559,11 @@ function run(w: World, a: Agent): boolean | string {
     }
     case "assist": {
       const b = agentById(w, s.arg);
-      if (!b || !b.goal || s.progress++ > 30) return true;
+      // [design: today's 30 ticks]
+      if (!b || !b.goal || s.progress++ > ticksOf(9000)) return true;
       a.status = `Helping ${b.name}`;
       const theirs = b.plan[0];
+      // a tick of their help is a tick of the other's work
       if (stepToward(w, a, b.px, b.py, 3) === "arrived" && theirs && (theirs.op === "act" || GATHER[theirs.op])) theirs.progress += 1;
       return false;
     }
@@ -1603,7 +1633,7 @@ function run(w: World, a: Agent): boolean | string {
   if (!g) return true;
   const b = lightOn(w, a).bright;
   a.status = GATHER_STATUS[s.op] + (b < DARK ? " in the dark" : "");
-  if ((s.progress += (1 + level(a.skills.foraging ?? 0) * 0.1) * workRate(b)) < 2.5) return false;
+  if ((s.progress += (1 + level(a.skills.foraging ?? 0) * 0.1) * workRate(b)) < ticksOf(PICK)) return false;
   const t = within(w, a, g.place, 0.5)?.thing;
   if (!t) return `the ${g.place} was gone`;
   let n = g.n;
@@ -2003,7 +2033,7 @@ async function interact(w: World, a: Agent, b: Agent, kind: string) {
       return;
   }
   if (HOSTILE.includes(kind)) a.cooldowns[`hostile:${b.id}`] = w.t + DAY / 2;
-  a.cooldowns[`social:${b.id}`] = w.t + 40;
+  a.cooldowns[`social:${b.id}`] = w.t + ticksOf(12000); // [design: today's 40 ticks]
   log(w, kind, [a.id, b.id], a, text);
   trace("social", kind, { with: b.id, text }, a.id);
   if (warm) friendly(w, a, b);
@@ -2034,7 +2064,6 @@ function burned(w: World) {
 // Bare skin bears radiant heat up to BEARABLE kW/m2. Past it, it burns by Purser's dose, q^(4/3) for each minute, which
 // pains at PAIN and burns through the skin at THIRD (sec. 7).
 const BEARABLE = 2.5, PAIN = 1.33, THIRD = 16.67;
-const TICK_MIN = TICK_S / 60;
 // The air inside a shelter (shelter.ts insideAir, people-constants sec. 8): what the skins of those in it give off, and
 // the radiant share of what any fire on its floor gives off (light.ts CHI_R), its walls and roof taking that in while the
 // rest goes up through the smoke hole [design], warms it until its roof and walls lose as much in the wind outside.
@@ -2085,64 +2114,74 @@ export function surroundings(w: World, a: Agent): { e: Around; q: number } {
 }
 // What someone is doing, as a multiple of their basal rate (body-constants sec. 8): the Compendium's MET for each, taken
 // as FAO's activity ratios are. Walking and running cost what Pandolf's equation, the wading measurements and Minetti's
-// running cost give for the ground they went over (gait.ts, people-constants sec. 6f), over the seconds they went in the
-// tick before; the rest of the tick goes at what they are doing.
+// running cost give for the ground they went over (gait.ts, people-constants sec. 6f), over the seconds they went since
+// their body last ran; the rest of the dt seconds the body is handed goes at what they are doing.
 const MET: Record<Activity, number> = {
   sleep: 1, faint: 1, talk: 1.3, give: 1.3, angry: 1.3, steal: 2.5, think: 1.3, warm: 1.3, eat: 1.5, flee: 8.3, fight: 6, hunt: 6, tend: 1.3,
   store: 3.3, tinker: 3, chop: 8, build: 4, plant: 4.1, dig: 5, fire: 2.5, craft: 3, forage: 3.5, collect: 3.3, explore: 3.5, help: 3.5, sick: 1.3,
 };
 const STANDING = 1.3;
-function metOf(w: World, a: Agent, basalW: number) {
+function metOf(w: World, a: Agent, basalW: number, dt: number) {
   const op = a.plan[0]?.op, act = activity(w, a), still = a.down <= w.t && !a.engaged && !a.thinking && (op === "goto" || op === "wander") ? STANDING : act ? MET[act] : STANDING;
   const went = walked(w).get(a.id);
-  if (!went || went.t !== w.t - 1) return still;
-  const s = Math.min(TICK_S, went.s);
-  return (went.J + still * basalW * (TICK_S - s)) / (TICK_S * basalW);
+  if (!went || went.at !== w.t) return still;
+  const s = Math.min(dt, went.s);
+  return (went.J + still * basalW * (dt - s)) / (dt * basalW);
 }
-// A tick of someone's body where they are (body.ts): its heat, its stores and its want of sleep, and the needs the rest of
-// the sim reads off it. Their health is their wounds': it heals while they are well, warm and not out of glycogen
-// [design: no cited rate], and radiant heat past what bare skin bears burns it.
-export function needs(w: World, a: Agent) {
+// A run of someone's body where they are (body.ts), over the body lane's dt seconds (lanes.ts BODY_S): its heat, its
+// stores and its want of sleep, and the needs the rest of the sim reads off it. Their health is their wounds': it heals
+// while they are well, warm and not out of glycogen [design: no cited rate], and radiant heat past what bare skin bears
+// burns it.
+export function needs(w: World, a: Agent, dt = secs(BODY_S)) {
   const n = a.needs;
   if (a.struggles) for (const k of Object.keys(a.struggles) as Need[]) if (n[k] > 60) delete a.struggles[k];
   // [design: the old 0.05 points a five-minute tick, as a rate]
-  n.social = Math.max(0, n.social - (14.4 / 86400) * TICK_S);
+  n.social = Math.max(0, n.social - (14.4 / 86400) * dt);
   const b = bodyOf(w, a), f = frameOf(w, a), { e, q } = surroundings(w, a), rest = basal(f) / f.area;
-  const out = warm(b, f, rest * metOf(w, a, basal(f)), rest, e, TICK_S);
+  const out = warm(b, f, rest * metOf(w, a, basal(f), dt), rest, e, dt);
   b.dry = out.dry;
-  feed(b, f, out.spent, TICK_S);
+  feed(b, f, out.spent, dt);
   const asleep = a.down > w.t || (!!b.asleep && a.plan[0]?.op === "rest");
   if (!asleep) delete b.asleep;
-  pressure(b, asleep, restRate(lightOn(w, a).bright), TICK_S);
+  pressure(b, asleep, restRate(lightOn(w, a).bright), dt);
   Object.assign(n, feels(b, frameOf(w, a)));
-  if (!a.sickness && b.core >= 35 && b.gly > 0) n.health = Math.min(100, n.health + 0.1);
-  // Whoever can move takes the dose until it pains them and steps back, whoever lies collapsed takes the whole tick's; a
+  // [design: today's per-tick value, 0.1 each 300 s]
+  if (!a.sickness && b.core >= 35 && b.gly > 0) n.health = Math.min(100, n.health + rate(0.1, 300, dt));
+  // Whoever can move takes the dose until it pains them and steps back, whoever lies collapsed takes the whole run's; a
   // dose that burns through the skin takes all their health (sec. 31).
   if (q > BEARABLE) {
-    const dose = q ** (4 / 3) * TICK_MIN;
+    const dose = q ** (4 / 3) * (dt / 60);
     n.health -= (100 * (a.down > w.t ? dose : Math.min(dose, PAIN))) / THIRD;
     a.hurt = "burns";
   }
 }
-// Whether a tick where they are would warm them: their body gaining heat, tried on a copy of it.
+// Whether a run of their body where they are would warm them: their body gaining heat, tried on a copy of it.
 export function warmsThem(w: World, a: Agent) {
-  const b = { ...bodyOf(w, a) }, f = frameOf(w, a), rest = basal(f) / f.area;
-  return warm(b, f, rest * metOf(w, a, basal(f)), rest, surroundings(w, a).e, TICK_S).store > 0;
+  const b = { ...bodyOf(w, a) }, f = frameOf(w, a), rest = basal(f) / f.area, dt = secs(BODY_S);
+  return warm(b, f, rest * metOf(w, a, basal(f), dt), rest, surroundings(w, a).e, dt).store > 0;
 }
 
-function perceive(w: World, a: Agent) {
+// Who they see about them, on the senses lane (lanes.ts SENSES_S): those in each other's company and strangers new to
+// them.
+function notice(w: World, a: Agent) {
+  const span = ticksOf(secs(SENSES_S));
   for (const b of w.agents) {
     if (b === a || !seesPerson(w, a, b, "notice")) continue;
-    // in each other's company: where they could follow each other talking (senses.ts)
-    if (hears(w, b, a)) a.near[b.id] = (a.near[b.id] ?? 0) + 1;
+    // in each other's company: where they could follow each other talking (senses.ts), counted in ticks over the lane's
+    // run (brain.ts fadeBonds reads it through ticksOf)
+    if (hears(w, b, a)) a.near[b.id] = (a.near[b.id] ?? 0) + span;
     // half a day out of sight and someone is news again [design]
     if (!a.seen[b.id] || (w.t - a.seen[b.id]) * TICK_S > 12.5 * 3600) {
       if (!a.rel[b.id]) log(w, "notice", [a.id], a, `${a.name} spotted a stranger: ${b.name}.`);
       a.nextDecide = Math.min(a.nextDecide, w.t);
-      if (a.goal && w.t - a.goal.since > 5 && !a.engaged && !tinkerWait(w).has(a.id) && !["flee", "fight", "defend"].includes(a.goal.type)) { a.goal = null; a.plan = []; }
+      // a goal of theirs older than 1500 s gives way to the news [design: today's 5 ticks]
+      if (a.goal && w.t - a.goal.since > ticksOf(1500) && !a.engaged && !tinkerWait(w).has(a.id) && !["flee", "fight", "defend"].includes(a.goal.type)) { a.goal = null; a.plan = []; }
     }
     a.seen[b.id] = w.t;
   }
+}
+// A glance each tick for what they must answer at once: a wolf on them, or heat past what bare skin bears.
+function glance(w: World, a: Agent) {
   if (a.engaged || a.thinking) return;
   const wolfId = attacked.get(a.id);
   const busy = a.goal && ["flee", "fight", "defend"].includes(a.goal.type);
@@ -2196,7 +2235,7 @@ function reflex(w: World, a: Agent) {
     struggled(a, "warm_up", w);
     const b = nearest(a, w.agents, (x) => x !== a && x.down <= w.t);
     if (b && meters(a, b) < 400) {
-      a.cooldowns.huddle = w.t + 30;
+      a.cooldowns.huddle = w.t + ticksOf(9000); // [design: today's 30 ticks]
       a.goal = { type: "stay_close", target: b.id, since: w.t, odds: {}, fails: 0 };
       a.plan = [{ op: "follow", arg: b.id, progress: 0 }];
       return true;
@@ -2205,9 +2244,11 @@ function reflex(w: World, a: Agent) {
   return false;
 }
 
+// A tick of one person, each part on its lane (lanes.ts): the body on the body lane, who is about on the senses lane, and
+// every tick their glance for danger, the needs that cannot wait, and the step of their plan.
 function agentTick(w: World, a: Agent) {
   carry(w, a);
-  needs(w, a);
+  if (due(w.t, BODY_S)) needs(w, a);
   const n = a.needs, b = bodyOf(w, a), end = fate(b, frameOf(w, a));
   // Death and collapse come of the body (body.ts fate): a core too cold or too hot, a body wasted past living, or wounds
   // that have taken all their health.
@@ -2219,24 +2260,25 @@ function agentTick(w: World, a: Agent) {
       log(w, "collapse", [a.id], a, `${a.name} collapsed from ${b.core > DOWN_HOT ? "the heat" : "cold"}.`);
       for (const c of w.agents) if (c !== a && seesPerson(w, c, a, "notice") && !c.engaged && !c.thinking) { c.nextDecide = w.t; if (c.goal && !["flee", "fight", "defend"].includes(c.goal.type)) { c.goal = null; c.plan = []; } }
     }
-    // down through their next tick, until their core comes back
+    // down through their next tick (two ticks on, whatever a tick lasts), until their core comes back
     a.down = w.t + 2;
     a.status = "Unconscious";
     return;
   }
   if (a.down > w.t) a.down = w.t;
-  perceive(w, a);
+  if (due(w.t, SENSES_S)) notice(w, a);
+  glance(w, a);
   if (a.thinking || a.engaged) return;
   const critical = (["food", "energy", "warmth"] as const).find((k) => n[k] < 20);
   if (a.goal && critical && !NEED_FIX[critical](a.goal.type, w) && !["flee", "fight", "defend"].includes(a.goal.type) && !(a.cooldowns.interrupt > w.t)) {
-    a.cooldowns.interrupt = w.t + 40;
+    a.cooldowns.interrupt = w.t + ticksOf(12000); // [design: today's 40 ticks]
     trace("plan", "interrupt", { reason: critical, was: a.goal.type }, a.id);
     a.goal = null; a.plan = [];
   }
   // Dark falls on whoever is out, or about to go out, after something they would have to see (gathering, exploring, hunting):
   // they give it up where they stand, unless a fire lights it or they are too cold or hungry to stop.
   if (a.goal && !(a.cooldowns.interrupt > w.t) && a.plan.some(foray) && n.food >= 15 && n.warmth >= 15 && lightOn(w, a).bright < DARK && !nearFire(w, a, 12)) {
-    a.cooldowns.interrupt = w.t + 40;
+    a.cooldowns.interrupt = w.t + ticksOf(12000); // [design: today's 40 ticks]
     trace("plan", "interrupt", { reason: "dark", was: a.goal.type }, a.id);
     a.goal = null; a.plan = [];
   }
@@ -2244,6 +2286,7 @@ function agentTick(w: World, a: Agent) {
   if (a.goal && w.t - a.goal.since > (a.goal.type.startsWith("make:") || a.goal.type === "build_shelter" || a.goal.type === "move_home" ? DAY * 3 : DAY)) endGoal(w, a, false, "took too long");
   if (!a.goal && reflex(w, a)) return;
   if (!a.goal) {
+    // their next decision is due (see deciding, above): an event has come, or the fallback's seconds have passed
     if (w.t >= a.nextDecide) void think(w, a);
     else a.status = "Idle";
     return;
@@ -2300,13 +2343,20 @@ export async function retire(w: World) {
 // the tick that started it, which from there runs in one piece as before), so a run is the same with it as without.
 // Null: the tick runs in one piece but for its landing.
 export const tickPause: { fn: (() => Promise<void>) | null } = { fn: null };
-// One tick of the world. Async because the world's objects live on the GPU: the deltas queued last tick are uploaded
-// and the laws due set running there while the CPU's own work goes on, and the windows round people are copied back
-// into the mirror once it is done. The copy isn't waited for here: it comes back while the caller gets on with other
-// things, and the next tick waits for it only if it hasn't come yet (a page's ticks are half a second apart, and a
+// The fastest anyone runs, m/s: on the level over bare rock (gait.ts ground coefficient 1), unladen, at the twenties'
+// VO2max (gait.ts runSpeed), about 3.8 m/s. Between two landings someone can go this far beyond what a tick takes them,
+// so the windows round people reach that much past SEARCH and no lookup of theirs meets a cell not yet copied back
+// [derived]; nothing at a tick as long as a landing's span.
+const OUTRUN = runSpeed(1, 0, 25, 0, 1) * (secs(LAND_S) - TICK_S);
+// One tick of the world, each process on its lane (lanes.ts) in the order the tick has always run them. Async because
+// the world's objects live on the GPU: on a landing tick (every LAND_S) the deltas queued since the last are uploaded and
+// the laws due set running there while the CPU's own work goes on, and the windows round people are copied back into
+// the mirror once it is done. The copy isn't waited for there: it comes back while the caller gets on with other
+// things, and the next tick waits for it only if it hasn't come yet (a page's landings are half a second apart, and a
 // readback behind a busy GPU can take a few hundred milliseconds). The first tick a world runs puts what its ground
 // grew on the GPU (space.ts resident), and its animals after it (animals.ts residentAnimals); each person watches the
-// cells out to SEARCH, the farthest any lookup of theirs reaches. Every caller awaits a tick, one at a time.
+// cells out to SEARCH and what they might run before the next landing, the farthest any lookup of theirs reaches.
+// Every caller awaits a tick, one at a time.
 export async function tick(w: World) {
   const flora = floraOf(w);
   // each await only when there is something to wait for: an await yields to whatever promises are waiting (the
@@ -2319,9 +2369,11 @@ export async function tick(w: World) {
   if (last?.error) throw last.error;
   w.t++;
   traceClock.t = w.t;
-  const pause = tickPause.fn;
-  if (pause) await waited("upload", () => gpu.beginPaced(w.t, pause));
-  else timed("upload", () => gpu.begin(w.t));
+  const pause = tickPause.fn, landing = due(w.t, LAND_S);
+  if (landing) {
+    if (pause) await waited("upload", () => gpu.beginPaced(w.t, pause));
+    else timed("upload", () => gpu.begin(w.t));
+  }
   try {
     timed("ecology", () => ecology(w));
     if (pause) await pause();
@@ -2331,14 +2383,16 @@ export async function tick(w: World) {
     if (w.t % DAY === 0) for (const a of w.agents) fadeBonds(a);
     if (w.t % DAY === DAY / 2) { timed("shelve", () => shelve(w)); giveUpWaiting(w); }
     timed("agents", () => { for (const a of [...w.agents]) if (w.agents.includes(a)) agentTick(w, a); });
-    timed("journeys", () => travel(w));
+    if (due(w.t, SENSES_S)) timed("journeys", () => travel(w));
   } finally {
-    // even when the CPU's work fails, so the store's next tick can begin
-    flora.watch(w.agents, SEARCH);
-    smallsOf(w).watch(w.agents, TILE_M * 1000);
-    const l: Landing = { done: false, p: Promise.resolve() };
-    l.p = gpu.land().then(() => { l.done = true; }, (e: unknown) => { l.done = true; l.error = e; });
-    landings.set(w, l);
+    // even when the CPU's work fails, so the store's next landing can begin
+    if (landing) {
+      flora.watch(w.agents, SEARCH + OUTRUN);
+      smallsOf(w).watch(w.agents, TILE_M * 1000);
+      const l: Landing = { done: false, p: Promise.resolve() };
+      l.p = gpu.land().then(() => { l.done = true; }, (e: unknown) => { l.done = true; l.error = e; });
+      landings.set(w, l);
+    }
   }
   bump("ticks");
 }

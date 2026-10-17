@@ -10,7 +10,8 @@ import type { Body } from "./body";
 import type { Bed, Ring } from "./combustion";
 import { enter, put } from "./space";
 import { populate } from "./fauna";
-import { DAY, NIGHT_EL, NOON, YEAR_DAYS, sunAt } from "./sky";
+import { NIGHT_EL, NOON, sunAt } from "./sky";
+import { DAY, YEAR, YEAR_DAYS } from "./ticks";
 import { Store } from "../gpu/store";
 import { philox } from "../gpu/rand";
 import type { Gpu } from "../gpu/device";
@@ -18,10 +19,9 @@ import type { Stand } from "../gpu/flora";
 
 export const W = TILES;
 export const H = TILES;
-export { DAY, YEAR_DAYS }; // the sky's: ticks a day (5 minutes each) and days a year, the sun's round
+export { DAY, YEAR, YEAR_DAYS }; // the clock's (ticks.ts): ticks a day and a year, and days a year, the sun's round
 export const VERSION = 29; // 29: the fish are GPU objects (src/gpu/fish.ts), not w.pools stocks; the crown raster and what lies out's water ride the store (gpu/crowns.ts, gpu/moisture.ts), weather.past keeps the crowns' water only
 export { TILE_M }; // meters per tile
-export const YEAR = DAY * YEAR_DAYS;
 
 export enum Tile {
   Grass = 0,
