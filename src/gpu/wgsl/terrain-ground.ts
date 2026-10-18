@@ -26,6 +26,7 @@ import {
 } from "../../terrain/ground";
 import { GROWTH_RESP, LMF, MAINT, Q10, ROOTS, RUE, SLA, UNDER_CROWN, pOf } from "../../terrain/growth";
 import { NICHE, SHRUBS, TREES, fit } from "../../terrain/niche";
+import { DAYS_OF_YEAR, EVERGREEN, HALF_RANGE, STEPS, TMIN_HI, TMIN_LO, VPD_HI, VPD_LO } from "./terrain-phenology";
 import { FIXED } from "./fixed";
 
 const LEN = N * N;
@@ -48,6 +49,7 @@ export const INPUTS = [
   "pet0", "pet1", "pet2", "pet3", // Q16 mm
   "sun0", "sun1", "sun2", "sun3", // Q16 MJ/m2 a day
   "temp0", "temp1", "temp2", "temp3", // Q16 C
+  "humid0", "humid1", "humid2", "humid3", // Q16, 0 to 1
 ] as const;
 // Output fields, i32, LEN each: the Ground's, each with the divisor that turns it back into the CPU's unit.
 export const OUTPUTS = [
@@ -55,6 +57,7 @@ export const OUTPUTS = [
   ["nitrogen", 65536], ["ph", 65536], ["fertility", 2 ** 24], ["moist", 2 ** 24],
   ["soilWater0", 2 ** 24], ["soilWater1", 2 ** 24], ["soilWater2", 2 ** 24], ["soilWater3", 2 ** 24],
   ["tree", 2 ** 24], ["shrub", 2 ** 24], ["grass", 2 ** 24], ["marsh", 2 ** 24], ["bare", 2 ** 24], ["field", 2 ** 24], ["fieldLight", 2 ** 24],
+  ["leaf0", 2 ** 24], ["leaf1", 2 ** 24], ["leaf2", 2 ** 24], ["leaf3", 2 ** 24], // each season's leaf display (terrain-phenology.ts), for the test
 ] as const;
 
 const at = (name: (typeof INPUTS)[number]) => INPUTS.indexOf(name);
@@ -84,6 +87,26 @@ const PS = [...new Set(SPECIES.map(pOf))];
 const PCLASS = SPECIES.map((n) => PS.indexOf(pOf(n)));
 // A plant's made-per-gram constant, (1 - growth respiration) RUE leaf-mass-fraction SLA, in Q32 (under 0.02).
 const MADE = SPECIES.map((n) => Q((1 - GROWTH_RESP) * RUE * LMF * SLA[n], 32));
+// Which plants keep their leaves all year: their carbon takes growth.ts's warmth ramp; the rest take the growing season
+// index's leaf display (terrain-phenology.ts).
+const EVER = SPECIES.map((n) => (EVERGREEN.includes(n) ? 1 : 0));
+// The year's days (terrain-phenology.ts DAYS_OF_YEAR): the season each day's mean air is drawn from and the next, how far
+// between them (Q24), the daylight ramp (Q24), the day's share of its season's sun (Q24), and each season's half range of
+// the day's air (Q16).
+const DAY_FROM = DAYS_OF_YEAR.map((d) => d.from);
+const DAY_TOWARD = DAYS_OF_YEAR.map((d) => Q(d.toward, 24));
+const DAY_PHOTO = DAYS_OF_YEAR.map((d) => Q(d.photo, 24));
+const DAY_WEIGHT = DAYS_OF_YEAR.map((d) => Q(d.weight, 24));
+const HALF_Q16 = HALF_RANGE.map((h) => Q(h, 16));
+// A plant's year of dry matter, by p class: the leaf display's for those that lose their leaves, the warmth ramp's for the
+// evergreens.
+const DM = (s: string) => `select(mpD[SPEC_P[${s}]], mp[SPEC_P[${s}]], SPEC_EVER[${s}] != 0u)`;
+// What a woody plant's carbon becomes: of a temperate humid deciduous forest's net primary production the foliage makes
+// 235 g C/m2 a year, the wood 329 and the roots 207 (Luyssaert et al., R1281, Table 3), so foliage and roots, which fall
+// on and into the soil, are 442 of the 771, and the wood, which stays standing and then lies on the floor outside the
+// mineral topsoil RothC counts, the rest [derived; the one forest class for every tree and shrub, analogue; the
+// roots' coarse share is not split out there, gap]. The herbaceous plants hold no wood and all of theirs turns over.
+export const SOIL_SHARE = (235 + 207) / (235 + 329 + 207);
 // Its table (water table depth) curve, Q16 m, and its pH fit at each of the three mineral pHs, Q24 (the pH curve is
 // evaluated by niche.ts fit itself, once, as the three pHs are all a cell can have).
 const DEEP_Q = 2 * 65536;
@@ -135,6 +158,12 @@ const SPEC_P = ${ARR(PCLASS, "u32")};
 const SPEC_TABLE = ${ARR(TABLE, "i32")};
 const SPEC_PH = ${ARR(PHFIT, "i32")};
 const SPEC_TALL = ${ARR(TALL, "i32")};
+const SPEC_EVER = ${ARR(EVER, "u32")};
+const DAY_FROM = ${ARR(DAY_FROM, "u32")};
+const DAY_TOWARD = ${ARR(DAY_TOWARD, "i32")};
+const DAY_PHOTO = ${ARR(DAY_PHOTO, "i32")};
+const DAY_WEIGHT = ${ARR(DAY_WEIGHT, "i32")};
+const HALF = ${ARR(HALF_Q16, "i32")};
 const INV_P = ${ARR(PS.map((p) => Q(1 / (1 - p), 24)), "i32")};
 const DR_SAND = ${DR((d) => d.sand)};
 const DR_CLAY = ${DR((d) => d.clay)};
@@ -167,6 +196,11 @@ fn qd(a: i32, b: i32, sh: u32) -> i32 {
 }
 fn mq(a: i32, b: i32) -> i32 { return qm(a, b, 24u); }
 fn qq(a: i32, b: i32) -> i32 { return qm(a, b, 16u); }
+// Saturation vapour pressure of the air at a temperature, kPa: Tetens' 0.6108 e^(17.27 t / (t + 237.3)) (FAO-56 eq. 11,
+// R221; climate.ts esat), t in Q16 C.
+fn esatQ(t: i32) -> i32 {
+  return qq(${q16(0.6108)}, qexp(qd(qq(${q16(17.27)}, t), t + ${q16(237.3)}, 16u)));
+}
 
 // ---------- the nearest channel's power ----------
 fn nearStep(i: u32, x: u32, y: u32) {
@@ -343,6 +377,28 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var sw: array<i32, 4>;
   var kept = 0i;
   var warmthB = 0i;
+  // The leaf display of the plants that lose their leaves (terrain-phenology.ts): each day's index, the product of the
+  // coldest air's ramp, the daylight's and the driest air's, summed over the season with each day's share of its sun.
+  var Tk: array<i32, 4>;
+  var Ek: array<i32, 4>;
+  for (var k = 0u; k < 4u; k++) {
+    Tk[k] = inp(I_temp0 + k, i);
+    Ek[k] = qq(min(O16, inp(I_humid0 + k, i)), esatQ(Tk[k]));
+  }
+  var leaf: array<i32, 4>;
+  for (var j = 0u; j < ${4 * STEPS}u; j++) {
+    let a = DAY_FROM[j]; let b = (a + 1u) & 3u; let f = DAY_TOWARD[j];
+    let T = Tk[a] + qm(Tk[b] - Tk[a], f, 24u);
+    let swing = HALF[a] + qm(HALF[b] - HALF[a], f, 24u);
+    var g = mq(clamp(qd(T - swing + ${q16(-TMIN_LO)}, ${q16(TMIN_HI - TMIN_LO)}, 24u), 0i, O24), DAY_PHOTO[j]);
+    if (g > 0i) {
+      let vpd = esatQ(T + swing) - (Ek[a] + qm(Ek[b] - Ek[a], f, 24u));
+      g = mq(g, O24 - clamp(qd(vpd * 1000i - ${q16(VPD_LO)}, ${q16(VPD_HI - VPD_LO)}, 24u), 0i, O24));
+    }
+    leaf[j / ${STEPS}u] += mq(DAY_WEIGHT[j], g);
+  }
+  var swD: array<i32, 4>;
+  for (var k = 0u; k < 4u; k++) { swD[k] = mq(inp(I_sun0 + k, i) << 8u, leaf[k]); }
   let clay = qm(cl, 100i * O16, 24u);
   let mostMag = 20i * O16 + (clay * 13i + 5i) / 10i - (qq(clay, clay) + 50i) / 100i;
   var deficit = 0i;
@@ -404,12 +460,21 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
     if (want > 0i) { moist = O24 - qd(short, want, 24u); } else { moist = O24; }
 
-    // Each p class's year of light made into dry matter: the sum over the seasons of sun x warmth x watered.
+    // Each p class's year of light made into dry matter: the sum over the seasons of sun x warmth x watered, for the
+    // plants that keep their leaves (and for every plant's compensation point), and x leaf display for the carbon the
+    // rest of the plants make (mpD).
     var mp: array<i32, ${PS.length}>;
+    var mpD: array<i32, ${PS.length}>;
     for (var c = 0u; c < ${PS.length}u; c++) {
       var sum = 0i;
-      for (var k = 0u; k < 4u; k++) { sum += mq(sw[k], min(O24, mq(shw[k], INV_P[c]))); }
+      var sumD = 0i;
+      for (var k = 0u; k < 4u; k++) {
+        let wet = min(O24, mq(shw[k], INV_P[c]));
+        sum += mq(sw[k], wet);
+        sumD += mq(swD[k], wet);
+      }
       mp[c] = sum;
+      mpD[c] = sumD;
     }
     // Every plant's compensation point at this place, Q28: kept / (made x fit), over the year.
     var comp: array<u32, ${NS}>;
@@ -453,17 +518,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     veg = tree + shrub + marsh + grass;
     morShare = select(0i, tree, tI == ${PINE}u) + select(0i, shrub, shI == ${HEATHER}u);
 
-    // The year's carbon from the plants, each form at its own drought tolerance in the light it stands in.
+    // The year's carbon from the plants that reaches the soil, each form at its own drought tolerance in the light it
+    // stands in; of a tree's or shrub's, only its foliage and roots (SOIL_SHARE), the wood staying in the stand.
     var acc = 0i;
-    if (tree > 0i) { acc += mq(tree, mp[SPEC_P[tI]]); }
-    if (oSh > 0i) { acc += mq(oSh, mp[SPEC_P[shI]]); }
-    if (oRe > 0i) { acc += mq(oRe, mp[SPEC_P[${RE}]]); }
-    if (grass > 0i) { acc += mq(grass, mp[SPEC_P[${G}]]); }
-    if (gSh > 0i) { acc += mq(mq(gSh, ${q24(GAP_LIGHT)}), mp[SPEC_P[shI]]); }
-    if (gRe > 0i) { acc += mq(mq(gRe, ${q24(GAP_LIGHT)}), mp[SPEC_P[${RE}]]); }
-    if (field > 0i) { acc += mq(mq(field, fieldLight), mp[SPEC_P[fI]]); }
-    let npp = mq(mq(mq(acc, ${q24(1 - UNDER_CROWN)}), ${q24(DAYS * RUE * (CARBON / 100))}), fert);
-    nitrogen = i32(mulhi(u32(npp), u32(turnover) * 1000u));
+    if (tree > 0i) { acc += mq(tree, mq(${q24(SOIL_SHARE)}, ${DM("tI")})); }
+    if (oSh > 0i) { acc += mq(oSh, mq(${q24(SOIL_SHARE)}, ${DM("shI")})); }
+    if (oRe > 0i) { acc += mq(oRe, ${DM(String(RE))}); }
+    if (grass > 0i) { acc += mq(grass, ${DM(String(G))}); }
+    if (gSh > 0i) { acc += mq(mq(gSh, ${q24(GAP_LIGHT)}), mq(${q24(SOIL_SHARE)}, ${DM("shI")})); }
+    if (gRe > 0i) { acc += mq(mq(gRe, ${q24(GAP_LIGHT)}), ${DM(String(RE))}); }
+    if (field > 0i) { acc += mq(mq(field, fieldLight), ${DM("fI")}); }
+    let input = mq(mq(mq(acc, ${q24(1 - UNDER_CROWN)}), ${q24(DAYS * RUE * (CARBON / 100))}), fert);
+    nitrogen = i32(mulhi(u32(input), u32(turnover) * 1000u));
 
     // RothC's steady state; peat is all organic at the bog's density.
     if (peaty) {
@@ -479,7 +545,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let W = mq(f, ${q24(1 / K_DPM)}) + mq(O24 - f, ${q24(1 / K_RPM)}) + mq(invx, ${q24(0.46 / K_BIO + 0.54 / K_HUM)});
       var act = 0i;
       if (m > 0i) {
-        let prod = mul64(u32(npp), u32(W));
+        let prod = mul64(u32(input), u32(W));
         let hi = prod.y >> 8u; let lo = (prod.x >> 8u) | (prod.y << 24u);
         if (hi < u32(m)) { act = i32(min(divw(hi, lo, u32(m)).x, 0x7fffffffu)); } else { act = FX_MAX; }
       }
@@ -519,5 +585,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   for (var k = 0u; k < 4u; k++) { put(O_soilWater0 + k, i, shw[k]); }
   put(O_tree, i, tree); put(O_shrub, i, shrub); put(O_grass, i, grass); put(O_marsh, i, marsh); put(O_bare, i, bare);
   put(O_field, i, field); put(O_fieldLight, i, fieldLight);
+  for (var k = 0u; k < 4u; k++) { put(O_leaf0 + k, i, leaf[k]); }
 }
 `;
