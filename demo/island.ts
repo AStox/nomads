@@ -2,8 +2,9 @@
 // browser so the demo grows the same islands the game does.
 export { generateIsland } from "../src/gpu/terrain/island";
 export { theGpu } from "../src/gpu/device";
+export { fineGroundGpu, sceneryGpu } from "../src/gpu/terrain/scenery";
 export { CELL, N } from "../src/terrain/grid";
-export { COVERS, FLORA, GROUND, K, LAKE, M, RIVER, RM, ROCKY, SEA, SIZE, SPECIES, START, STEP, TILES, TILE_M, clamp, crownShare, fbm, fineGround, groundClass, hash, noise, riverSmooth, scatter, smooth, streamAt, waterAt, worldSlope } from "../src/terrain/flora";
+export { COVERS, FLORA, GROUND, K, LAKE, M, RIVER, RM, ROCKY, SEA, SIZE, SPECIES, START, STEP, TILES, TILE_M, clamp, crownShare, fbm, groundClass, hash, noise, riverSmooth, smooth, streamAt, waterAt, worldSlope } from "../src/terrain/flora";
 export { LEPTOSOL, SC } from "../src/terrain/ground";
 export { depthOf, flowNow, widthOf } from "../src/terrain/water";
 export { COLORS, NAMES, rng } from "../src/sim/world";

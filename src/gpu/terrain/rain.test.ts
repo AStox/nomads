@@ -10,10 +10,10 @@
 // 3. The delays follow the phase of the water.
 import { afterAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
-import { upstream } from "../../terrain/island";
 import { COARSE, DIRS, GAMMA_RATIO, H_W, M, NC, N_M, P_BG, R_V, ROSE, SEASONS, SEASON_DAYS, WET_ROSE, esat, meanWay, turned } from "../../terrain/climate";
 import { CELL, N } from "../../terrain/grid";
 import { rng } from "../../sim/world";
+import { upstreamGpu } from "./upstream";
 import { ICE_SHARE, ISLAND_DELAYS, TAU_C_ICE, TAU_C_WARM, TAU_F_RAIN, V_SNOW, cloudDelays, rainGpu, tableMargin, type Delays } from "./rain";
 
 afterAll(releaseGpu);
@@ -23,8 +23,8 @@ const TAU = 1000;
 
 // The heights climate is given (the island's ground, never under the sea's level) and the wet rose built from the
 // generator's first draw after the upstream stages, the prevailing wind (src/gpu/terrain/island.ts climateGpu).
-function inputs(seed: number) {
-  const rand = rng(seed), { height } = upstream(rand);
+async function inputs(seed: number) {
+  const rand = rng(seed), { height } = await upstreamGpu(await theGpu(), rand);
   const z = Float32Array.from(height, (h) => Math.max(0, h));
   const wetRose = turned(WET_ROSE, rand() * Math.PI * 2 - meanWay(ROSE));
   return { z, wetRose };
@@ -122,7 +122,7 @@ const PAPER_DELAYS: Delays[] = SEASONS.map(() => ({ tauC: TAU, tauF: TAU }));
 // commit message saying why, whenever the model changes (the rain's constants, the island's delays, the upstream stages
 // that make the heights). The float theory above says the rain is right; this says it has not moved.
 const golden = (seasons: Float32Array[]) => Bun.hash(Buffer.concat(seasons.map((s) => Buffer.from(s.buffer, s.byteOffset, s.byteLength)))).toString(16);
-const GOLDEN: Record<number, string> = { 1: "5b1fc99190a7c43c", 2: "e5b63757cd81377d", 3: "b18bf219d79dc870" };
+const GOLDEN: Record<number, string> = { 1: "85733137493d8fe", 2: "2b90c285cab3f13c", 3: "8dc61ee9c1eb98a5" };
 
 // Tolerance in mm over a season, which rains 80 to 370 mm. Seeds 1 to 3 give a largest error of 0.0043 mm (1.2e-5 of the
 // wettest cell's season) and a mean of 0.0004 mm in every season: the roundings of the constants (Q26 against the
@@ -139,7 +139,7 @@ function worst(got: Float32Array[], want: ArrayLike<number>[]) {
 }
 
 async function check(seed: number) {
-  const { z, wetRose } = inputs(seed);
+  const { z, wetRose } = await inputs(seed);
   const g = await theGpu();
   const t0 = performance.now();
   const island = await rainGpu(g, z, wetRose);

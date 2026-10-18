@@ -1,8 +1,9 @@
 import type { Island } from "../terrain/island";
 import { generateIsland } from "../gpu/terrain/island";
+import { sceneryGpu } from "../gpu/terrain/scenery";
 import type { Pools } from "./pools";
 import { lay, type Lay, type Terrain } from "../terrain/land";
-import { FLORA, SIZE, SPECIES, TILES, TILE_M, driftAt, fineGround, rockAt, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
+import { FLORA, SIZE, SPECIES, TILES, TILE_M, driftAt, rockAt, waterAt, type Fine, type Scatter } from "../terrain/flora";
 import { TRAITS } from "./traits";
 import { baseRegistry, type Registry } from "./materials";
 import { PHYS, asFound } from "./fuel";
@@ -21,7 +22,7 @@ import type { Stand } from "../gpu/flora";
 export const W = TILES;
 export const H = TILES;
 export { DAY, YEAR, YEAR_DAYS }; // the clock's (ticks.ts): ticks a day and a year, and days a year, the sun's round
-export const VERSION = 32; // 32: the island's climate, water and ground are GPU kernels with new laws (rain's cloud delays, groundwater evapotranspiration, a soil-carbon leaf season, joint valleys draining out of both ends), so every seed makes a different island; 31: acts are work at a power (work.ts): beliefs keep seconds (Belief.secs) and a step's progress is joules; 30: a tick is a second (ticks.ts), so every persisted tick (instants, beliefs' ticks, the GPU's born words and event waits) counts seconds
+export const VERSION = 33; // 33: the whole generator runs on the GPU (upstream, scenery), so every seed makes a new island with new objects; 32: the island's climate, water and ground are GPU kernels with new laws (rain's cloud delays, groundwater evapotranspiration, a soil-carbon leaf season, joint valleys draining out of both ends), so every seed makes a different island; 31: acts are work at a power (work.ts): beliefs keep seconds (Belief.secs) and a step's progress is joules; 30: a tick is a second (ticks.ts), so every persisted tick (instants, beliefs' ticks, the GPU's born words and event waits) counts seconds
 export { TILE_M }; // meters per tile
 
 export enum Tile {
@@ -484,7 +485,7 @@ export function perWorld<T>(make: () => T): (w: World) => T {
 }
 
 // Growing an island and everything on it depends only on the seed, so tests that rebuild the same world, and a batch of
-// probe runs on one island, reuse it. The generator's climate, water and ground run on the GPU, whose answers come back
+// probe runs on one island, reuse it. The generator's climate, water and ground, the 3 m ground and every object on it run on the GPU, whose answers come back
 // asynchronously, so an island is made by `await islandOf(seed)` once (a game, a script, a test's first line) and
 // groundOf then reads it, synchronously, wherever the sim asks. Callers get their own copies of anything the game might
 // change.
@@ -495,13 +496,13 @@ export function islandOf(seed: number): Promise<Ground> {
   let p = making.get(seed);
   if (!p) {
     p = (async () => {
-      const isle = await generateIsland(rng(seed), await theGpu()), fine = fineGround(isle), dry = new Uint8Array(W * H);
+      const gpu = await theGpu(), isle = await generateIsland(rng(seed), gpu), { fine, flora } = await sceneryGpu(gpu, isle, seed), dry = new Uint8Array(W * H);
       for (let t = 0; t < W * H; t++)
         for (let k = 0; k < 36 && !dry[t]; k++) {
           const x = (t % W) + ((k % 6) + 0.5) / 6, y = Math.floor(t / W) + (Math.floor(k / 6) + 0.5) / 6;
           if (waterAt(isle, fine, x * TILE_M - SIZE / 2, y * TILE_M - SIZE / 2) <= 0.5) dry[t] = 1;
         }
-      const g: Ground = { land: lay(isle), isle, fine, flora: scatter(isle, fine, seed), dry };
+      const g: Ground = { land: lay(isle), isle, fine, flora, dry };
       grounds.set(seed, g);
       return g;
     })();

@@ -21,7 +21,8 @@ import {
 } from "./deadwood";
 import type { DeadLaw } from "./wgsl/deadwood";
 import { N } from "../terrain/grid";
-import { SPECIES, clasts, dbhOf } from "../terrain/flora";
+import { SPECIES, dbhOf } from "../terrain/flora";
+import { clasts } from "./terrain/scenery";
 import { Flora } from "./flora";
 
 await islandOf(1);
@@ -344,7 +345,7 @@ test("a cell's clasts on the GPU are the twin's, square by square, and their siz
 test("seed 1's deadwood and clasts: counts and volumes against the cited reserves, and the memory they take", async () => {
   const w = newWorld(1, 0), g = await theGpu(), s = new Store(g), ground = groundOf(1), flora = new Flora(ground.flora);
   flora.attach(s, stemDriver(w));
-  const [pebble, stone, boulder] = clasts(ground.isle, 1, BOULDERS_HA, CLAST_DIM, CLASTS.map((c) => [c.lo / 1000, c.hi / 1000] as const));
+  const [pebble, stone, boulder] = await clasts(g, ground.isle, 1, BOULDERS_HA, CLAST_DIM, CLASTS.map((c) => [c.lo / 1000, c.hi / 1000] as const));
   const room = capacities(ground.flora), dw = new Deadwood(1, { pebble, stone, boulder }, room);
   dw.attach(s, () => flora.raster());
   const t0 = performance.now();

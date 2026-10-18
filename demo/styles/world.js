@@ -1,7 +1,7 @@
 // The island every style mock draws, as plain data with no renderer: the generator's fields, the finer ground under
 // them, streams, every tree, shrub and rock, and a camp. Styles differ in everything they draw; the world is the same.
 // The fine ground and everything growing on it come from the game's own flora.ts, so the mocks and the game agree.
-import { CELL, COVERS, FLORA, N, SIZE, SPECIES, START, STEP, K, M, TILE_M, clamp, fbm, fineGround, generateIsland, hash, noise, rng, scatter, smooth, theGpu } from "./island.js";
+import { CELL, COVERS, FLORA, N, SIZE, SPECIES, START, STEP, K, M, TILE_M, clamp, fbm, generateIsland, hash, noise, rng, sceneryGpu, smooth, theGpu } from "./island.js";
 
 export { COVERS, clamp, fbm, hash, noise, smooth };
 
@@ -9,8 +9,8 @@ export { COVERS, clamp, fbm, hash, noise, smooth };
 const HEATH = { berry: 0.1, hazel: 0.25, heather: 0.9 };
 
 export async function grow(seed = 1) {
-  const isle = await generateIsland(rng(seed), await theGpu()), rand = rng(seed ^ 0x51f15e);
-  const g = fineGround(isle);
+  const gpu = await theGpu(), isle = await generateIsland(rng(seed), gpu), rand = rng(seed ^ 0x51f15e);
+  const { fine: g, flora } = await sceneryGpu(gpu, isle, seed);
   const { h, cover, wet, river, moist, at, bilinear, bicubic, fine, heightAt, slopeAt, dry, riverAt, rivers, riverWidth } = g;
   const Hc = isle.height, wetC = Float32Array.from(isle.water, (w) => (w > 0 ? 1 : 0));
 
@@ -70,10 +70,11 @@ export async function grow(seed = 1) {
   // The game's own objects, minus the ground people have cleared around the mock camp, thinning out toward its edge.
   // Built on first use: pages that draw the game's objects straight from the sim never pay for these lists.
   const cleared = (x, z, r0, r1) => { const d = Math.hypot(x - camp.x, z - camp.z); return d < r0 || (d < r1 && hash(Math.round(x * 10), Math.round(z * 10), 5) < (r1 - d) / (r1 - r0)); };
-  let flora = null;
+  let made = null;
   const lists = () => {
-    if (flora) return flora;
-    const s = scatter(isle, g, seed), trees = [], shrubs = [], rocks = [];
+    if (made) return made;
+    const s = flora;
+    const trees = [], shrubs = [], rocks = [];
     for (let i = 0; i < s.n; i++) {
       const kind = FLORA[s.kind[i]], x = s.px[i] * TILE_M - SIZE / 2, z = s.py[i] * TILE_M - SIZE / 2, seedI = s.seed[i];
       const yaw = ((seedI & 0xffff) / 65536) * 6.283, tint = (seedI >>> 16) / 65536, sp = SPECIES[s.species[i]];
@@ -81,7 +82,7 @@ export async function grow(seed = 1) {
       else if (kind === "bush" && !cleared(x, z, 14, 26)) shrubs.push({ x, y: heightAt(x, z), z, tall: s.size[i], heath: HEATH[sp] ?? 0.3, species: sp, yaw, tint });
       else if (kind === "boulder" && !cleared(x, z, 12, 20)) rocks.push({ x, y: heightAt(x, z), z, size: s.size[i], yaw, tint });
     }
-    return (flora = { trees, shrubs, rocks });
+    return (made = { trees, shrubs, rocks });
   };
 
   // Near the camp, the small stuff only a close look can see: grass tufts, flowers, pebbles, fallen wood. Nothing grows

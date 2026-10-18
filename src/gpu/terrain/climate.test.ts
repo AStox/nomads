@@ -12,9 +12,9 @@ import { afterAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
 import { rng } from "../../sim/world";
 import { LEN } from "../../terrain/grid";
-import { upstream } from "../../terrain/island";
 import { FOG, FOG_Z, ROSE, SEASONS, WET_ROSE, esat, meanWay, pressure, turned } from "../../terrain/climate";
 import { rainGpu } from "./rain";
+import { upstreamGpu } from "./upstream";
 import { climateRestGpu, tableMargin, type ClimateRest, type ClimateRestInput } from "./climate";
 
 afterAll(releaseGpu);
@@ -23,7 +23,7 @@ afterAll(releaseGpu);
 // the hollows deep enough to hold a lake), the prevailing wind, which is the generator's first draw after them, and the
 // rain of each season (rainGpu's, as src/gpu/terrain/island.ts climateGpu brings it).
 async function site(seed: number): Promise<ClimateRestInput> {
-  const rand = rng(seed), { height, open } = upstream(rand);
+  const rand = rng(seed), { height, open } = await upstreamGpu(await theGpu(), rand);
   const angle = rand() * Math.PI * 2;
   const z = Float32Array.from(height, (h) => Math.max(0, h));
   return { height, open, precip: await rainGpu(await theGpu(), z, turned(WET_ROSE, angle - meanWay(ROSE))), angle };
@@ -42,7 +42,7 @@ const golden = (c: ClimateRest) => Bun.hash(Buffer.concat(fields(c).map(([, f]) 
 // The pinned output of each seed's island: Bun.hash over every field in the order above, as the bytes the stage returns.
 // It pins the integer arithmetic bit for bit, so it is re-recorded deliberately, with the commit message saying why,
 // whenever the model changes (the climate's constants, the rain it is given, the upstream stages that make the heights).
-const GOLDEN: Record<number, string> = { 1: "a71edd5d22b6ca67", 2: "aa26617299778dcd", 3: "3a18e2b4211bf5e3" };
+const GOLDEN: Record<number, string> = { 1: "dd28ea58948ae69b", 2: "e3fe1db4be668788", 3: "e5fbb59e5ca89ffa" };
 
 const mean = (f: ArrayLike<number>, at: number[]) => at.reduce((s, i) => s + f[i], 0) / at.length;
 // The cited cloud table read at a height, as a season's share of hours inside cloud (FOG, linear between the heights, the

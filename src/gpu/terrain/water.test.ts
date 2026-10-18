@@ -16,12 +16,12 @@ import { rng } from "../../sim/world";
 import { CELL, LEN, N } from "../../terrain/grid";
 import { DRIFTS, ROCKS } from "../../terrain/geology";
 import { ROOTS } from "../../terrain/growth";
-import { upstream } from "../../terrain/island";
 import { NICHE } from "../../terrain/niche";
 import { BANKFULL, FALL, RHO, G, YEAR_S, bankWidth, type Hydro } from "../../terrain/water";
 import { releaseGpu, theGpu } from "../device";
 import { KC_WET, SHAH_GRASS, SUMMER, textureClass } from "../wgsl/terrain-water";
 import { climateGpu } from "./island";
+import { upstreamGpu } from "./upstream";
 import { hydrologyGpu, hydrologyRaw, type HydroInput } from "./water";
 
 afterAll(releaseGpu);
@@ -30,12 +30,12 @@ afterAll(releaseGpu);
 // It pins the kernels' integer arithmetic and the CPU polylines made from it bit for bit, so any change to the water
 // model or its constants moves it. When the model changes on purpose, re-record these from the failure message, and say
 // in the commit message why they moved.
-const GOLDEN: Record<number, string> = { 1: "82ef6d33794cb751", 2: "8f11b1a86018c761", 3: "51c56265234b3bf6" };
+const GOLDEN: Record<number, string> = { 1: "1456e5487361e378", 2: "b82e86c570fc740c", 3: "116cf847c3c043b0" };
 
 // What the generator hands the hydrology: the upstream stages and the climate, the same draws in the same order.
 async function inputOf(seed: number): Promise<HydroInput> {
   const rand = rng(seed);
-  const { height, filled, to, basin, rock, drift, driftDepth, open } = upstream(rand);
+  const { height, filled, to, basin, rock, drift, driftDepth, open } = await upstreamGpu(await theGpu(), rand);
   const air = await climateGpu(await theGpu(), height, open, rand);
   return { h: height, filled, to, basin, rock, drift, driftDepth, air };
 }

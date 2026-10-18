@@ -3,8 +3,8 @@
 //   bun scripts/water-gaps.ts [--seeds 3] [--from 1]
 import { climateGpu } from "../src/gpu/terrain/island";
 import { hydrologyGpu } from "../src/gpu/terrain/water";
+import { upstreamGpu } from "../src/gpu/terrain/upstream";
 import { rng } from "../src/sim/world";
-import { upstream } from "../src/terrain/island";
 import { CELL, LEN, N } from "../src/terrain/grid";
 import { exit, holdGpu } from "./seeded";
 import { theGpu } from "../src/gpu/device";
@@ -16,7 +16,7 @@ const g = await theGpu();
 const median = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : NaN; };
 for (let seed = from; seed < from + count; seed++) {
   const rand = rng(seed);
-  const up = upstream(rand);
+  const up = await upstreamGpu(g, rand);
   const air = await climateGpu(g, up.height, up.open, rand);
   const t0 = performance.now();
   const hy = await hydrologyGpu(g, { h: up.height, filled: up.filled, to: up.to, basin: up.basin, rock: up.rock, drift: up.drift, driftDepth: up.driftDepth, air });

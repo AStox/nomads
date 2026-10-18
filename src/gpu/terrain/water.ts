@@ -1,6 +1,6 @@
 // The island's water on the GPU: the hydrology as the kernels of wgsl/terrain-water.ts, integer arithmetic throughout (the
-// model's constants and the Hydro type are src/terrain/water.ts). It takes the flood, receivers and drainage order from the
-// CPU's upstream stages and returns a Hydro. Every field is one i32 word a cell, in the unit and scale the kernel's
+// model's constants and the Hydro type are src/terrain/water.ts). It takes the flood and the receivers from the upstream
+// stages (upstream.ts) and returns a Hydro. Every field is one i32 word a cell, in the unit and scale the kernel's
 // header gives (INPUTS and OUTPUTS there); converted here at the edges only:
 // - inputs: heights, depths and drift thickness are Q12.20 metres (|z| under 1024 m); rain and PET are Q16 millimetres;
 //   the receivers, the rock and drift classes and the basin flags are integers.

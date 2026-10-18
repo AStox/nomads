@@ -4,8 +4,8 @@
 //   bun scripts/lake-gaps.ts [--seeds 3] [--from 1]
 import { climateGpu } from "../src/gpu/terrain/island";
 import { hydrologyGpu } from "../src/gpu/terrain/water";
+import { upstreamGpu } from "../src/gpu/terrain/upstream";
 import { rng } from "../src/sim/world";
-import { upstream } from "../src/terrain/island";
 import { CELL, LEN } from "../src/terrain/grid";
 import { exit, holdGpu } from "./seeded";
 import { theGpu } from "../src/gpu/device";
@@ -21,7 +21,7 @@ type Hollow = { cells: number; deepest: number; scoured: number; basin: boolean;
 for (let seed = from; seed < from + count; seed++) {
   const rand = rng(seed);
   let scour = new Float32Array(LEN);
-  const up = upstream(rand, (s) => { if (s.stage === "ice") scour = Float32Array.from(s.scour); });
+  const up = await upstreamGpu(g, rand, (s) => { if (s.stage === "ice") scour = Float32Array.from(s.scour); });
   const air = await climateGpu(g, up.height, up.open, rand);
   const hy = await hydrologyGpu(g, { h: up.height, filled: up.filled, to: up.to, basin: up.basin, rock: up.rock, drift: up.drift, driftDepth: up.driftDepth, air });
   const hollows = new Map<number, Hollow>();

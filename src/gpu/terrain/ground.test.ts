@@ -31,7 +31,7 @@ afterAll(releaseGpu);
 // case. It pins the kernels' integer arithmetic bit for bit, so any change to the ground model or its constants moves it.
 // When the model changes on purpose, re-record these from the failure message, and say in the commit message why they
 // moved.
-const GOLDEN: Record<string, string> = { "island 1": "42044b61e2b8acf8", "island 2": "430c115e5e504e36", "island 3": "6ac9b4f7c5a68445", "rearranged rock": "cda85f1e59ddddb3" };
+const GOLDEN: Record<string, string> = { "island 1": "8f1c7a4b7b625a7b", "island 2": "4d2b1ed687c1121a", "island 3": "de04b717fff3d82b", "rearranged rock": "ddf7b7690883fea" };
 
 // The leaf display's own error: Q16 inputs and Q24 sums over 364 days, against the float law.
 const LEAF_TOL = 5e-4;

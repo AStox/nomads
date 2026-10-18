@@ -1,0 +1,186 @@
+// The island's 3 m ground and its objects on the GPU (wgsl/terrain-scenery.ts holds the formats and the laws): the stream
+// mask and the fine field (fineGroundGpu), every tree, bush and low plant the ground carries (sceneryGpu), and the
+// clasts' counts (clasts). The functions take and return what src/terrain/flora.ts's CPU functions did: a Fine and a
+// Scatter in the CPU's units, read back from the GPU's integers at these edges only.
+import { CELL } from "../../terrain/grid";
+import { COVERS, M, RM, SIZE, fineRivers, fineView, type Fine, type FineParts, type FineRiver, type Scatter } from "../../terrain/flora";
+import type { Island } from "../../terrain/island";
+import type { Gpu } from "../device";
+import { dispatch, pipeline, readback, storage } from "../kernel";
+import { BIN, CHUNK, COUNT, FINE, FINE_AT, FINE_WORDS, FINE_KERNEL, GRADIENTS, IDX, ISLE, ISLE_WORDS, LEN, MV, NQ, NS, ORE_CAP, RASTER, RMW, T, TAB_AT, TABLE, WRITE, clastKernel } from "../wgsl/terrain-scenery";
+
+// The fields of the island the scenery reads.
+export type SceneryIsland = Pick<Island, "height" | "water" | "moist" | "tree" | "shrub" | "grass" | "marsh" | "bare" | "sand" | "soil" | "silt" | "clayey" | "ph" | "winterTable" | "soilWater" | "rivers"> & {
+  seasons: { sun: Float32Array; temp: Float32Array }[];
+};
+
+const Q16 = 65536, Q24 = 16777216;
+const FIELD: Record<(typeof ISLE)[number], (isle: SceneryIsland) => ArrayLike<number>> = {
+  height: (i) => i.height, water: (i) => i.water, moist: (i) => i.moist, tree: (i) => i.tree, shrub: (i) => i.shrub, grass: (i) => i.grass,
+  marsh: (i) => i.marsh, bare: (i) => i.bare, sand: (i) => i.sand, soil: (i) => i.soil, silt: (i) => i.silt, clayey: (i) => i.clayey, ph: (i) => i.ph, winter: (i) => i.winterTable,
+  sun0: (i) => i.seasons[0].sun, sun1: (i) => i.seasons[1].sun, sun2: (i) => i.seasons[2].sun, sun3: (i) => i.seasons[3].sun,
+  temp0: (i) => i.seasons[0].temp, temp1: (i) => i.seasons[1].temp, temp2: (i) => i.seasons[2].temp, temp3: (i) => i.seasons[3].temp,
+  sw0: (i) => i.soilWater[0], sw1: (i) => i.soilWater[1], sw2: (i) => i.soilWater[2], sw3: (i) => i.soilWater[3],
+};
+const SCALE: Record<(typeof ISLE)[number], number> = {
+  height: Q16, water: Q16, moist: Q24, tree: Q24, shrub: Q24, grass: Q24, marsh: Q24, bare: Q24, sand: Q24, soil: Q16, silt: Q24, clayey: Q24, ph: Q16, winter: Q16,
+  sun0: Q16, sun1: Q16, sun2: Q16, sun3: Q16, temp0: Q16, temp1: Q16, temp2: Q16, temp3: Q16, sw0: Q24, sw1: Q24, sw2: Q24, sw3: Q24,
+};
+// The island's fields as the kernels hold them, and the gradient table of flora.ts noise after the tables the table
+// kernel fills.
+export function packIsle(isle: SceneryIsland): Int32Array {
+  const out = new Int32Array(ISLE_WORDS);
+  ISLE.forEach((name, f) => {
+    const src = FIELD[name](isle), s = SCALE[name], at = f * LEN;
+    for (let i = 0; i < LEN; i++) out[at + i] = Math.round(src[i] * s);
+  });
+  out.set(GRADIENTS, ISLE_WORDS - GRADIENTS.length);
+  return out;
+}
+
+// The streams as segments (the two ends and half the stroke's width in Q16 texels, and the bed's depth in cm), binned
+// BIN texels square in segment order (flora.ts's stack of strokes), as the raster kernel reads them.
+function segments(rivers: FineRiver[][]) {
+  const px = (x: number) => ((x + SIZE / 2) / SIZE) * RM, bins = RM / BIN, lists: number[][] = Array.from({ length: bins * bins }, () => []);
+  const seg: number[] = [];
+  let n = 0;
+  for (const line of rivers)
+    for (let k = 1; k < line.length; k++) {
+      const half = ((((line[k - 1][7] + line[k][7]) / 2) * RM) / SIZE + 1) / 2, deep = Math.min(255, Math.round(((line[k - 1][8] + line[k][8]) / 2) * 100));
+      const ax = px(line[k - 1][0]), ay = px(line[k - 1][1]), bx = px(line[k][0]), by = px(line[k][1]);
+      seg.push(Math.round(ax * Q16), Math.round(ay * Q16), Math.round(bx * Q16), Math.round(by * Q16), Math.round(half * Q16), deep, 0, 0);
+      const i0 = Math.max(0, Math.floor(Math.min(ax, bx) - half - 1)), i1 = Math.min(RM - 1, Math.ceil(Math.max(ax, bx) + half + 1));
+      const j0 = Math.max(0, Math.floor(Math.min(ay, by) - half - 1)), j1 = Math.min(RM - 1, Math.ceil(Math.max(ay, by) + half + 1));
+      for (let b = Math.floor(j0 / BIN); b <= Math.floor(j1 / BIN); b++) for (let a = Math.floor(i0 / BIN); a <= Math.floor(i1 / BIN); a++) lists[b * bins + a].push(n);
+      n++;
+    }
+  const table = new Uint32Array(bins * bins + 1 + lists.reduce((t, l) => t + l.length, 0));
+  let at = bins * bins + 1;
+  lists.forEach((l, b) => { table[b] = at - (bins * bins + 1); table.set(l, at); at += l.length; });
+  table[bins * bins] = at - (bins * bins + 1);
+  return { seg: Int32Array.from(seg.length ? seg : [0, 0, 0, 0, 0, 0, 0, 0]), table };
+}
+
+type FineOnGpu = { fine: Fine; isle: GPUBuffer; field: GPUBuffer };
+// The fine field and the stream mask (flora.ts's fineGround). Its packed island and fine buffers are let go.
+export async function fineGroundGpu(g: Gpu, isle: SceneryIsland): Promise<Fine> {
+  const { fine, isle: packed, field } = await fineOnGpu(g, isle);
+  packed.destroy(); field.destroy();
+  return fine;
+}
+// The same, with the island's packed fields and the fine buffer returned too, on the GPU, for the scatter after (the
+// caller destroys them).
+async function fineOnGpu(g: Gpu, isle: SceneryIsland): Promise<FineOnGpu> {
+  const rivers = fineRivers(isle), { seg, table } = segments(rivers);
+  const segs = storage(g, seg), bins = storage(g, table), field = storage(g, FINE_WORDS * 4), packed = storage(g, packIsle(isle));
+  dispatch(g, pipeline(g, RASTER, "raster"), [segs, bins, field], [Math.ceil(RMW / 256)]);
+  dispatch(g, pipeline(g, FINE_KERNEL, "fine"), [packed, field], [Math.ceil(MV / 256)]);
+  const [words, raw] = await Promise.all([readback(g, field, RMW * 4), readback(g, field, FINE.length * MV * 4, FINE_AT * 4)]);
+  segs.destroy(); bins.destroy();
+  const mask = new Uint8Array(words), v = new Int32Array(raw);
+  const out = (k: number, scale: number) => {
+    const f = new Float32Array(MV), at = k * MV;
+    for (let i = 0; i < MV; i++) f[i] = v[at + i] / scale;
+    return f;
+  };
+  const river = new Float32Array(MV);
+  // a vertex's stream texel is the one 8 + 4 u across (the vertex's meters over the texel's 4.6875, exact)
+  for (let v = 0, i = 0; v < M; v++) for (let u = 0; u < M; u++, i++) river[i] = mask[(8 + 4 * v) * RM + 8 + 4 * u] / 255;
+  const parts: FineParts = {
+    h: out(0, Q16), wet: out(1, Q24), river, moist: out(2, Q24),
+    cover: Object.fromEntries(COVERS.map((c, k) => [c, out(3 + k, Q24)])) as FineParts["cover"], rivers, mask,
+  };
+  return { fine: fineView(isle, parts), isle: packed, field };
+}
+
+// A dispatch with its buffers bound where the entry point uses them (an entry that reads only some of a module's
+// bindings has a layout of just those).
+function run(g: Gpu, p: GPUComputePipeline, binds: [number, GPUBuffer][], groups: [number, number?, number?]) {
+  const bind = g.device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: binds.map(([binding, buffer]) => ({ binding, resource: { buffer } })) });
+  const enc = g.device.createCommandEncoder(), pass = enc.beginComputePass();
+  pass.setPipeline(p);
+  pass.setBindGroup(0, bind);
+  pass.dispatchWorkgroups(groups[0], groups[1] ?? 1, groups[2] ?? 1);
+  pass.end();
+  g.device.queue.submit([enc.finish()]);
+}
+
+// The island's fine field and every object on it (flora.ts's fineGround and scatter): the Fine and the Scatter the sim
+// and the page read, in the CPU's units. The objects of seed `seed` depend on nothing but it and the island.
+export async function sceneryGpu(g: Gpu, isle: SceneryIsland, seed: number): Promise<{ fine: Fine; flora: Scatter }> {
+  const { fine, isle: packed, field } = await fineOnGpu(g, isle);
+  run(g, pipeline(g, TABLE, "table"), [[0, packed]], [Math.ceil(LEN / 64)]);
+  const idx = storage(g, IDX.words * 4);
+  g.device.queue.writeBuffer(idx, IDX.seed * 4, new Uint32Array([seed >>> 0]));
+  const base: [number, GPUBuffer][] = [[0, packed], [1, field], [2, idx]], count = pipeline(g, COUNT, "count");
+  run(g, count, base, [Math.ceil(NQ / 64)]);
+  run(g, pipeline(g, COUNT, "rank"), [[2, idx]], [Math.ceil(T / 64)]);
+  run(g, pipeline(g, COUNT, "rows"), [[2, idx]], [Math.ceil(Math.sqrt(NQ) / 64)]);
+  run(g, pipeline(g, COUNT, "scan"), [[2, idx]], [1]);
+  const meta = new Uint32Array(await readback(g, idx, (IDX.start + T + 1 - IDX.seed) * 4, IDX.seed * 4));
+  if (meta[IDX.flag - IDX.seed] !== 0) throw new Error("a quad's entries have no place in any tile's run");
+  const start = Int32Array.from(meta.subarray(IDX.start - IDX.seed, IDX.start - IDX.seed + T + 1)), n = start[T], oreN = meta[IDX.oreTotal - IDX.seed];
+  if (oreN > ORE_CAP) throw new Error(`${oreN} loose stones of ore, room for ${ORE_CAP}`);
+  const out = ["px", "py", "size", "seed", "ks"].map(() => storage(g, Math.max(1, n) * 4));
+  run(g, pipeline(g, WRITE, "write"), [...base, ...out.map((b, k): [number, GPUBuffer] => [3 + k, b])], [Math.ceil(NQ / 64)]);
+  const word = async (b: GPUBuffer) => { const raw = await readback(g, b); b.destroy(); return raw; };
+  const [pxRaw, pyRaw, szRaw, sdRaw, ksRaw] = [await word(out[0]), await word(out[1]), await word(out[2]), await word(out[3]), await word(out[4])];
+  const tail = new Uint32Array(await readback(g, idx, (IDX.flag - IDX.seed + 1) * 4, IDX.seed * 4)), oreRaw = new Uint32Array(await readback(g, idx, 4 * Math.max(1, oreN) * 4, IDX.ore * 4));
+  if (tail[IDX.flag - IDX.seed] !== 0) throw new Error("the second pass drew other entries than the first counted");
+  idx.destroy(); packed.destroy(); field.destroy();
+  // the game's tile coordinate and the size, from their integers, in place (the same float32 a CPU division stores)
+  const pxU = new Uint32Array(pxRaw), pyU = new Uint32Array(pyRaw), szU = new Uint32Array(szRaw), ks = new Uint32Array(ksRaw);
+  const px = new Float32Array(pxRaw), py = new Float32Array(pyRaw), size = new Float32Array(szRaw), kind = new Uint8Array(n), species = new Uint8Array(n);
+  for (let i = 0; i < n; i++) { px[i] = pxU[i] / 1e4; py[i] = pyU[i] / 1e4; size[i] = szU[i] / 1e6; kind[i] = ks[i] & 255; species[i] = ks[i] >>> 8; }
+  const ore: Scatter["ore"] = [];
+  for (let k = 0; k < oreN; k++) ore.push({ px: Math.fround(oreRaw[4 * k] / 1e4), py: Math.fround(oreRaw[4 * k + 1] / 1e4), size: oreRaw[4 * k + 2] / 1e6, seed: oreRaw[4 * k + 3] });
+  return { fine, flora: { n, start, kind, species, px, py, size, seed: new Uint32Array(sdRaw), ore } };
+}
+
+// The per-cell tables alone: each plant's fit (Q24) and compensation point (Q23) at every cell, cell-major, as floats. For
+// the test.
+export async function tablesGpu(g: Gpu, isle: SceneryIsland): Promise<{ fit: Float32Array; comp: Float32Array }> {
+  const packed = storage(g, packIsle(isle));
+  run(g, pipeline(g, TABLE, "table"), [[0, packed]], [Math.ceil(LEN / 64)]);
+  const raw = new Int32Array(await readback(g, packed, 2 * NS * LEN * 4, TAB_AT * 4));
+  packed.destroy();
+  const fit = new Float32Array(NS * LEN), comp = new Float32Array(NS * LEN);
+  for (let i = 0; i < NS * LEN; i++) { fit[i] = raw[i] / 2 ** 24; comp[i] = raw[NS * LEN + i] / 2 ** 23; }
+  return { fit, comp };
+}
+
+// The laws on inputs, eight words each (the operation, three arguments, the answer), as wgsl/terrain-scenery.ts probe
+// reads them: 0 treeMm(plant, fit Q24, word), 1 crownOf(plant, mm), 2 bushMm(plant, fit Q24, word), 3 noise(seed, x, y in Q20),
+// 4 fbm of three octaves at a 240 m scale (seed, x, y in quarter meters). The answers are Q24, Q16 or mm as the law has them.
+export async function lawsGpu(g: Gpu, rows: readonly (readonly number[])[]): Promise<Uint32Array> {
+  const idx = storage(g, IDX.words * 4), isle = storage(g, new Int32Array(ISLE_WORDS).fill(0).map((_, k) => (k >= ISLE_WORDS - GRADIENTS.length ? GRADIENTS[k - (ISLE_WORDS - GRADIENTS.length)] : 0)));
+  const inp = new Uint32Array(rows.length * 8);
+  rows.forEach((r, k) => inp.set(r.map((x) => x >>> 0), k * 8));
+  g.device.queue.writeBuffer(idx, IDX.base * 4, inp);
+  run(g, pipeline(g, COUNT, "probe"), [[0, isle], [2, idx]], [Math.ceil(rows.length / 64)]);
+  const out = new Uint32Array(await readback(g, idx, inp.byteLength, IDX.base * 4));
+  idx.destroy(); isle.destroy();
+  return Uint32Array.from({ length: rows.length }, (_, k) => out[k * 8 + 4]);
+}
+
+// How many boulders (2 dm and up), stones (1 to 2 dm) and pebbles (2 cm to 1 dm) lie in each of the generator's cells,
+// the GPU's clasts (src/gpu/deadwood.ts CLASTS): boulders at its drift's count a ha, the smaller classes as many times
+// that as till's N(> d) ~ d^-2.9 has them, on the cell's ground out of standing water. Nothing lies on the sea or a
+// lake's bed. perHa is by drift kind, dim the power law's exponent, bounds each class's diameters in m (the last class
+// is the boulders').
+export async function clasts(g: Gpu, isle: Pick<Island, "water" | "height" | "drift">, seed: number, perHa: readonly number[], dim: number, bounds: readonly (readonly [number, number])[]): Promise<Uint32Array[]> {
+  const ha = (CELL * CELL) / 1e4, lo = bounds[bounds.length - 1][0], nc = bounds.length, nd = perHa.length;
+  const inp = new Int32Array(3 * LEN + 2 * nc * nd + 1);
+  for (let i = 0; i < LEN; i++) { inp[i] = Math.round(isle.water[i] * 65536); inp[LEN + i] = Math.round(isle.height[i] * 65536); inp[2 * LEN + i] = isle.drift[i]; }
+  bounds.forEach(([a, b], c) => perHa.forEach((per, d) => {
+    const lam = per * ha * ((a / lo) ** -dim - (b / lo) ** -dim), whole = Math.floor(lam / CHUNK);
+    inp[3 * LEN + 2 * (c * nd + d)] = whole;
+    inp[3 * LEN + 2 * (c * nd + d) + 1] = Math.round((lam - whole * CHUNK) * 65536);
+  }));
+  inp[3 * LEN + 2 * nc * nd] = seed >>> 0;
+  const input = storage(g, inp), output = storage(g, nc * LEN * 4);
+  dispatch(g, pipeline(g, clastKernel(nc, nd), "clasts"), [input, output], [Math.ceil(LEN / 64)]);
+  const raw = new Uint32Array(await readback(g, output));
+  input.destroy(); output.destroy();
+  return bounds.map((_, c) => raw.slice(c * LEN, (c + 1) * LEN));
+}
