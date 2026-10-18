@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { SEEDLINGS, fitHere } from "./plants";
-import { DAY, H, TILE_M, W, addThing, dryAt, islandOf, meters, newWorld, type Agent, type Thing, type World } from "./world";
+import { DAY, TILE_M, addThing, dryAt, groundOf, islandOf, meters, newWorld, type Agent, type Thing, type World } from "./world";
 import { giveItems, groundWord, plant, removeThing, soilAt } from "./physics";
+import { CELL, N } from "../terrain/grid";
 import { around, put, thingById } from "./space";
 import { groundKey, noteTry, type Belief } from "./beliefs";
 import { plan } from "./plan";
@@ -78,19 +79,22 @@ test("a seed goes into the ground right beside a bush, and bare rock takes none"
   expect(out.ok).toBe(true);
   const seedling = thingById(w, out.later!)!;
   expect(Math.min(...bushes.map((b) => meters(seedling, b)))).toBeLessThan(1);
-  // a stretch of rock with no soil on it anywhere within reach, the first found scanning the island
-  let rock: [number, number] | null = null;
-  for (let y = 0.5; y < H && !rock; y += 0.25)
-    for (let x = 0.5; x < W && !rock; x += 0.25) {
-      const all = [[x, y], ...[1, 2, 3].flatMap((m) => [0, 1, 2, 3, 4, 5, 6, 7].map((k) => [x + (Math.cos((k * Math.PI) / 4) * m) / TILE_M, y + (Math.sin((k * Math.PI) / 4) * m) / TILE_M]))];
-      if (all.every(([px, py]) => dryAt(w, px, py) && soilAt(w, px, py) < 0.03)) rock = [x, y];
-    }
-  expect(rock).not.toBeNull();
-  put(w, a, rock![0], rock![1]);
-  giveItems(w, a, "berry");
-  const none = plant(w, a, { verb: "plant", items: ["berry"] });
-  expect(none.ok).toBe(false);
-  expect(none.later).toBeUndefined();
+  // bare rock: the soil taken off the dry ground a few paces off, nine cells of it so that no point the soil is read at
+  // there has any, and put back after (the island is shared with the tests that follow)
+  const { isle } = groundOf(w.seed), kept = isle.soil.slice();
+  const [rx, ry] = ring(6, 0), cx = Math.floor((rx * TILE_M) / CELL), cy = Math.floor((ry * TILE_M) / CELL);
+  expect(dryAt(w, rx, ry)).toBe(true);
+  try {
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) isle.soil[(cy + dy) * N + cx + dx] = 0;
+    expect(soilAt(w, rx, ry)).toBe(0);
+    put(w, a, rx, ry);
+    giveItems(w, a, "berry");
+    const none = plant(w, a, { verb: "plant", items: ["berry"] });
+    expect(none.ok).toBe(false);
+    expect(none.later).toBeUndefined();
+  } finally {
+    isle.soil.set(kept);
+  }
 });
 
 test("what's planted is judged when it comes up: the planter waits, learns how long it took and what ground it came up on, and counts one that withers against that ground", async () => {

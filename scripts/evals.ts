@@ -67,7 +67,8 @@ import { bootstrap, mean } from "./stats";
 // stream is drawn on another tick and every ledger starts again.
 // probes 9, worlds 8, live 8: acts are work delivered at a power (the tick plan's Unit 9, people-constants sec. 7), so
 // every act's time, a gathering's yield and the planner's costs change, and the ledgers' times are seconds.
-const VERSION: Record<string, number> = { probes: 9, worlds: 8, live: 8 };
+// 10, 9, 9: every seed's island is different since the generator's climate, water and ground became GPU kernels with new laws
+const VERSION: Record<string, number> = { probes: 10, worlds: 9, live: 9 };
 const ROOT = join(import.meta.dir, ".."), DATA = join(ROOT, "data/evals");
 type Numbers = Record<string, number | null>;
 // what a tier measured: by variant ("blame/real", "seen"...), by seed, its numbers

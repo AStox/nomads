@@ -7,7 +7,7 @@ import { exit, holdGpu } from "../seeded";
 import { theGpu } from "../../src/gpu/device";
 import { readback } from "../../src/gpu/kernel";
 import { rng } from "../../src/sim/world";
-import { generateIsland } from "../../src/terrain/island";
+import { generateIsland } from "../../src/gpu/terrain/island";
 import { CELL, N } from "../../src/terrain/grid";
 import { M, SIZE, START, STEP, TILES, TILE_M, fineGround, groundClass, noise, riverSmooth, waterAt, worldSlope } from "../../src/terrain/flora";
 
@@ -38,7 +38,7 @@ const ms = (t: number) => `${(performance.now() - t).toFixed(0)} ms`;
 
 // ---------- the island and its packing ----------
 let t = performance.now();
-const isle = generateIsland(rng(1)), g = fineGround(isle);
+const isle = await generateIsland(rng(1), await theGpu()), g = fineGround(isle);
 const w = { ...g, isle, N, CELL, SIZE, START, M, STEP };
 console.log(`island ${ms(t)} on ${adapter}`);
 t = performance.now();

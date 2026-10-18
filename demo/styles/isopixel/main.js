@@ -2302,7 +2302,7 @@ async function main() {
   const CW = window.innerWidth || 1280, CH = window.innerHeight || 720;
   cv.width = CW; cv.height = CH;
   const cfg = scaled(CFG[VIEW]), AW = Math.ceil(CW / cfg.S), AH = Math.ceil(CH / cfg.S);
-  const w = grow(SEED);
+  const w = await grow(SEED);
   LIFE = await import("./life.js").catch((e) => (console.warn(`life.js not loaded: ${e.message}`), {}));
   const V = makeView(w, cfg, AW, AH);
   let M = buildMap(w, V);

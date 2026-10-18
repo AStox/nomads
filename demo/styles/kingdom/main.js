@@ -14,7 +14,7 @@ try {
   const q = new URLSearchParams(location.search);
   const view = ["island", "valley", "camp"].includes(q.get("view")) ? q.get("view") : "valley";
   const seed = Number(q.get("seed")) || 1;
-  const frame = render(grow(seed), view, COLORS, seed);
+  const frame = render(await grow(seed), view, COLORS, seed);
   const low = Object.assign(document.createElement("canvas"), { width: WIDTH, height: HEIGHT });
   low.getContext("2d").putImageData(new ImageData(toRGBA(frame), WIDTH, HEIGHT), 0, 0);
   const canvas = document.getElementById("view"), g = canvas.getContext("2d");

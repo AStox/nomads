@@ -1,15 +1,14 @@
-// The rest of the island's climate on the GPU (kernels: wgsl/terrain-climate.ts; reference: src/terrain/climate.ts, every
-// function there but `orographic`, whose rain the caller brings): the wind and the salt, the horizons and the sky left
-// open, the sun through the cloud, warmth, damp air and the pool of cold air, the snow years, and Penman's evaporation.
-// Inputs as climate() takes them (the heights, open water, the prevailing wind's angle) with the rain of each season
-// beside them (rainGpu's output, or the CPU's own); outputs the Climate's fields in its units.
+// The rest of the island's climate on the GPU (kernels: wgsl/terrain-climate.ts): the wind and the salt, the horizons and
+// the sky left open, the sun through the cloud, warmth, damp air and the pool of cold air, the snow years, and Penman's
+// evaporation. The inputs are the heights, open water and the prevailing wind's angle, with the rain of each season
+// beside them (rainGpu's output); the outputs are the Climate's fields in its units.
 //
 // Fixed point (Qn: a value x held as round(x * 2^n)); the arena's sections and their scales are in SECTIONS of the
 // kernels' file. Converted at these edges only: inputs and the tables' constants are rounded once on the host, and
 // everything between a buffer's read and its write is integer.
 //
-// What is random in the CPU stage: its one draw, the prevailing wind's angle (an input here), and snowYear's weather,
-// a mulberry sequence seeded 0x5eed that is the same for every island, so it is a table of 4,015 days, not a draw.
+// What is random in the stage: the prevailing wind's angle (an input here), and the snow years' weather, a mulberry
+// sequence seeded 0x5eed that is the same for every island, so it is a table of 4,015 days, not a draw.
 import { CELL, LEN, N } from "../../terrain/grid";
 import {
   DAY_KEEPS, DAY_SPREAD, DIRS, FOG, FOG_Z, IN_CLOUD, POOL_C, ROSE, SEASONS, SEASON_DAYS, SNOW_HALF, SNOW_SPREAD, STEP,
@@ -33,9 +32,9 @@ export type ClimateRestInput = {
   height: Float32Array;
   // 1 over the sea and lakes
   open: Uint8Array;
-  // each season's rain in mm over the season, N x N (rainGpu's, or climate()'s own seasons[s].precip)
+  // each season's rain in mm over the season, N x N (rainGpu's)
   precip: Float32Array[];
-  // the way the prevailing wind blows, in radians: the one random draw climate() makes, times 2 pi
+  // the way the prevailing wind blows, in radians: the generator's one random draw for the climate, times 2 pi
   angle: number;
 };
 export type ClimateRest = {
@@ -65,7 +64,7 @@ function rq(x: number, n: number) {
   return Math.round(v);
 }
 const rq16 = (x: number) => rq(x, 16), rq24 = (x: number) => rq(x, 24);
-// The same for a value the CPU keeps as a float32: the float32 rounding is the step an engine's error could move, and the
+// The same for a value the model keeps as a float32: the float32 rounding is the step an engine's error could move, and the
 // scaled word is then exact in it.
 function r32(x: number, n: number) {
   if (x === 0) return 0;
@@ -74,8 +73,8 @@ function r32(x: number, n: number) {
   return Math.round(Math.fround(x) * 2 ** n);
 }
 
-// The year's days of weather (climate.ts snowYear): each day's standing from its time of year, as the CPU draws it (the
-// same sequence for every island), before the CPU keeps it as a float32.
+// The year's days of weather: each day's standing from its time of year, from a mulberry sequence that is the same for
+// every island, before the float32 rounding of the weather it makes.
 function anomalies() {
   const out = new Float64Array(DAYS), draw = mulberry(0x5eed);
   let zd = 0;
@@ -87,7 +86,7 @@ function anomalies() {
   return out;
 }
 
-// Season si's middle day through the hours a quarter at a time, as climate.ts sunlight works its table out: the header
+// Season si's middle day through the hours a quarter at a time: the header
 // and one eight-word row for each hour the sun stands up, scaled as the kernel reads them (wgsl sunWgsl).
 function sunRows(si: number) {
   const S0 = 1361, DT = 900, { beam: tb, glow: tg } = SEASONS[si], MJ = DT / 1e6;
@@ -203,8 +202,8 @@ let code: Sources | null = null;
 // ---------- the run ----------
 export type Arena = { words: GPUBuffer; destroy: () => void };
 
-// Runs every kernel, in one submission, and leaves the arena (the sections of SECTIONS) in a buffer: for the function
-// below, and for tests that compare a stage against the float code.
+// Runs every kernel, in one submission, and leaves the arena (the sections of SECTIONS) in a buffer for the function
+// below.
 export function runClimate(g: Gpu, input: ClimateRestInput): Arena {
   const { height, open, precip, angle } = input;
   if (height.length !== LEN || open.length !== LEN || precip.length !== NS || precip.some((p) => p.length !== LEN)) throw new Error("climateRestGpu: inputs of the wrong size");
@@ -255,7 +254,7 @@ export function runClimate(g: Gpu, input: ClimateRestInput): Arena {
   return { words: W, destroy: () => { W.destroy(); TAB.destroy(); CUR.destroy(); } };
 }
 
-// climate.ts's results but the rain it was given (precip stays the caller's), on the GPU.
+// The climate's fields but the rain it was given (precip stays the caller's), on the GPU.
 export async function climateRestGpu(g: Gpu, input: ClimateRestInput): Promise<ClimateRest> {
   const arena = runClimate(g, input);
   const words = new Int32Array(await readback(g, arena.words, (SEC.z - SEC.windShare) * 4, SEC.windShare * 4));

@@ -52,7 +52,7 @@ main().catch(fail);
 
 async function main() {
   softerShadows(12);
-  const w = grow(SEED);
+  const w = await grow(SEED);
   const V = VIEWS[VIEW], camp = w.camp, C = camp.at, dio = V.dio;
   for (const k of ["frame", "elev", "ahead", "turn", "fov", "dist", "lead"]) if (query.has(k)) V[k] = Number(query.get(k));
   if (query.has("dof")) V.dof.k = Number(query.get("dof"));

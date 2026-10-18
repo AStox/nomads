@@ -272,6 +272,27 @@ The herds, with each grazer eating at its response to the forage standing on the
 7. Carried: granite's soil production; the density ratio; peat's density, start and bog stage; the fine alluvium's texture; the Danish to USDA silt conversion; peat's water retention and mineralising; the capillary fringe; Kc by cover; p's demand adjustment; broadleaf trees' p (an orchard's) and reeds'; groundwater evaporation in the steady solve; Ellenberg F as a guide to the water table; wind (no DAMS conversion), salt (no chloride), ash's shallow-soil limit; fungi's niches; pine's own status on Bornholm.
 8. Tests (2026-10-15): world.test.ts, light.test.ts and herds.test.ts run together pass 13 and fail 4: world's `starts on the mainland` runs past its 120 s limit (158 s on its own), and herds' three as in 12f. light.test.ts run on its own fails at load, as `sim/plants.ts` imported before `sim/world.ts` meets the sky module's YEAR_DAYS uninitialised; the tree at 73d320f does the same, so it predates this change.
 
+### 12h. Update (2026-10-18): the stages are GPU kernels, and the six Bornholm gaps taken one at a time
+
+The island's climate, water and ground are integer GPU kernels now (`src/gpu/terrain/{rain,climate,water,ground}.ts`, WGSL in `src/gpu/wgsl/terrain-*.ts`, assembled by the async `generateIsland` in `src/gpu/terrain/island.ts`; the crust, erosion, ice and hollows stay on the CPU in `island.ts` `upstream`). The CPU functions this document names, `climate()`, `orographic`, `airflow`, `horizons`, `sunlight`, `snowYear`, `penman`, `hydrology()`, `aquifer()` and `ground()`, are deleted; each kernel was checked against its function to the tolerances recorded in its stage's commit and test before the fixes below changed it, and is now held by invariants and a pinned hash of its output. A world is made by `await islandOf(seed)` (`sim/world.ts`). `bun scripts/island-gaps.ts --seeds 24` measures the gaps below in about 40 s; medians over 24 seeds, before the fixes and after:
+
+| | Before | After | Bornholm | Note |
+|---|---|---|---|---|
+| Land mean rain, mm a year | 850 | 745 | 672 | `2026-10-18-rain.md` |
+| Within 1 km of the sea; 2 km or more inland | 758; 945 | 693; 774 | 634; 701 | |
+| Inland minus coast | +193 | +79 | +67 | |
+| Lakes of 5 ha or more; lake area, % of ground | 28; 1.68 | 11; 0.45 | 18; 0.45 | `2026-10-18-lakes.md` |
+| Median water table depth, m; table under 1 cm, % of land | 1.44; 20.5 | 1.02; 11.0 | a few metres in the basement | `2026-10-18-water-table.md` |
+| Winter table under 0.2 m, % of land | 34.0 | 17.3 | | |
+| Trees; open land (all but trees), % of land | 50.7; 49.5 | 62.1; 38.0 | 81 to 92; 8.4 to 19.4 before farming | |
+| Marsh, % of land | 30.1 | 17.6 | 1.3 now | |
+| Peat over 0.5 m, % of land | 26.5 | 12.5 | bog 0.3 | |
+| Organic carbon off peat, 0 to 23 cm, median t/ha | 164 | 84 | 72 in 0 to 30 cm | `2026-10-18-soil-carbon.md` |
+
+Each gap was taken as a model fix with its sources, none retuned (the notes in `docs/research/generator/2026-10-18-*.md` carry the sources read, R1250 to R1356, and what each leaves open): groundwater evapotranspiration in the steady aquifer (MODFLOW's EVT form with Shah, Nachabe and Ross's extinction curves) took the table from 1.44 to 1.70 m and peat from 26.5 to 10.2% on its own; the rain's cloud delays follow each season's ice share (Barstad and Smith 2005, Roe 2005) after the port was shown to reproduce Smith and Barstad's published tables; a leaf season from the Growing Season Index and the foliage-and-roots share of a tree's carbon (Luyssaert 2007) halve the soil carbon; the ice-scoured joint valleys drain out of both ends. The lake fix is the one to read twice: it matches Bornholm's lake area only through a bound whose one free input (a 300 km ice-margin distance, [UNVERIFIED]) was settled after a sweep, and the valleys it opens were the basement's only deep drains, so the water table (1.72 to 1.02 m), peat (8.9 to 12.5%), marsh (13 to 18%) and stream density (0.76 to 0.45 km a km2, Bornholm 0.71) got worse in the same step: open as gaps 1 and the streams. What still blocks the water table, per the water-table note: the basement's transmissivity (a recharge the cited conductivity cannot carry over 375 m slopes; no source found for the weathered basement's near-surface conductivity), the winter-table cut that sets the tree share to zero where the table is under 0.2 m, and the rain; open land and peat are partly closed, not closed.
+
+Gap 5 above (carbon) is partly closed: the median is at Denmark's 72 but closed canopy (tree share over 0.8, a third of the land) holds about 130, twice Danish and German forest soils (62 to 70); the note records why (a soil input 1.3 times the measured forest NPP, a crop's radiation-use efficiency). Gap 1 (the fens follow the water table, and it is too high) is partly closed as above. Gaps 3, 4 and 6 are untouched.
+
 ## 13. Niches
 
 Substrate 11e: `src/terrain/niche.ts`, with its readers (`flora.ts`, `ground.ts`, `sim/herds.ts`, `sim/plants.ts`, `sim/sim.ts` CONDITIONS, `scripts/probes.ts`). The research is `docs/research/generator/2026-10-14-niche.md`.

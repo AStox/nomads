@@ -1,5 +1,5 @@
-// The rest of the island's climate in WGSL (src/gpu/terrain/climate.ts drives it; src/terrain/climate.ts is the float
-// reference and its comments give the physics): the heights blurred to the ground "around", the wind and salt each of 16
+// The rest of the island's climate in WGSL (src/gpu/terrain/climate.ts drives it; the comments on the constants in
+// src/terrain/climate.ts give the physics): the heights blurred to the ground "around", the wind and salt each of 16
 // directions bring (a wavefront over the cells), the horizons and normals, the sun through the season's cloud, warmth and
 // damp air, the snow years (one thread a game tile, a sequential daily loop over eleven years) and Penman's evaporation.
 // All of it integer, and each invocation writes only its own words, so every GPU gives the same words.
@@ -13,7 +13,7 @@
 // are small and need many digits (the tangent of a horizon, a cloud's share, Penman's slope of the saturation curve).
 import { CELL, LEN, N } from "../../terrain/grid";
 import {
-  DIRS, FAR, FAR_M, FOG_Z, HALF_LENGTH, LAPSE, PARTS, SEA_WIND, SEASONS, SEASON_DAYS, SPRAY_M, STEP, TAYLOR_LEE,
+  DIRS, FAR, FAR_M, FOG_Z, HALF_LENGTH, LAPSE, PARTS, SEA_WIND, SEASON_DAYS, SPRAY_M, STEP, TAYLOR_LEE,
   WAKE, WAKE_X, FRESH, OLD, C_H, FUSION, CP, VAPORIZE, SIGMA, K0, YEARS,
 } from "../../terrain/climate";
 import { FIXED } from "./fixed";
@@ -406,7 +406,7 @@ ${COMMON}
 }`;
 
 // ---------- snow ----------
-// Each game tile (two cells a side) runs the snow years on its land cells' means, as the float code does.
+// Each game tile (two cells a side) runs the snow years on its land cells' means.
 const NEG_LIMIT = -40 * 65536, POS_LIMIT = 30 * 65536;
 export const snowWgsl = (ranges: { coldest: number; warmest: number }) => /* wgsl */ `
 ${COMMON}

@@ -8,9 +8,9 @@ const fail = (e) => { document.body.dataset.error = String((e && e.stack) || e);
 addEventListener("error", (e) => fail(e.error || e.message));
 addEventListener("unhandledrejection", (e) => fail(e.reason));
 
-function main() {
+async function main() {
   const q = new URLSearchParams(location.search), view = ["island", "valley", "camp"].includes(q.get("view")) ? q.get("view") : "valley";
-  const w = grow(Number(q.get("seed")) || 1);
+  const w = await grow(Number(q.get("seed")) || 1);
   const r = render(w, view, COLORS);
   const canvas = document.getElementById("view");
   canvas.width = r.width; canvas.height = r.height;
@@ -18,4 +18,4 @@ function main() {
   console.info("stitch", view, "ms", r.times.join(" "));
 }
 
-try { main(); document.body.classList.add("ready"); } catch (e) { fail(e); }
+main().then(() => document.body.classList.add("ready"), fail);

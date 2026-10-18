@@ -49,7 +49,7 @@ main().catch(fail);
 
 async function main() {
   softerShadows();
-  const w = grow(SEED);
+  const w = await grow(SEED);
   const V = VIEWS[VIEW], camp = w.camp, C = camp.at;
   // Framing overrides for tuning a shot: ?frame=&elev=&ahead=&turn=&fov=&dist=&dof=
   for (const k of ["frame", "elev", "ahead", "turn", "fov", "dist"]) if (query.has(k)) V[k] = Number(query.get(k));

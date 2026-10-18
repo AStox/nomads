@@ -20,7 +20,7 @@ export async function run() {
   const canvas = document.getElementById("view"), g = canvas.getContext("2d");
   g.imageSmoothingEnabled = false;
   const fontsP = loadFonts();
-  const W = grow(seed), F = await fontsP;
+  const W = await grow(seed), F = await fontsP;
   const camp = W.camp, paths = campPaths(W);
   if (view === "island") { drawWorldMap(g, F, W, paths, seed); return; }
 

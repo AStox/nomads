@@ -1,5 +1,5 @@
-// Smith and Barstad's orographic rain in WGSL (src/gpu/terrain/rain.ts drives it; src/terrain/climate.ts orographic is
-// the float reference and its comments give the theory). Six passes, all integer, each invocation writing only its own
+// Smith and Barstad's orographic rain in WGSL (src/gpu/terrain/rain.ts drives it; the rain comment in
+// src/terrain/climate.ts gives the theory). Six passes, all integer, each invocation writing only its own
 // words, so every GPU gives the same words:
 //   coarse    the 16 fine cells of each 4x4 block summed (exactly the coarse height, in Q20 m)
 //   rows      the Fourier transform along x of the 64 coarse rows, 256 frequencies each
@@ -13,7 +13,7 @@
 // so a transform's error does not depend on a scaling schedule or on growth between stages. An FFT would need far fewer
 // products (about 1e9 64-bit products here for the 64 inverses against some 3e7 butterflies) but also a per-stage
 // shift and rounding in 32-bit words, whose headroom the island's spectrum would have to be checked against; it was
-// not built, because the sums already take 20 ms for the whole island against the float code's 190 ms. The measured
+// not built, because the sums already take 20 ms for the whole island (a float FFT took 190 ms). The measured
 // headroom of the words (seeds 1 to 3): the spectrum and the transfer's output stay under 2^28 of 2^31, and the sums
 // of the inverses' terms under 2^31 of 2^35.
 import { N } from "../../terrain/grid";
@@ -42,7 +42,7 @@ const DIRS = ${DIRS}u;
 const NS = ${SEASONS.length}u;
 const DIR_AT = NS * 8u;
 const SHARE_AT = DIR_AT + 2u * DIRS;
-// the CPU clamps the coarse index to NC - 1.001, which leaves the last cell's fraction at 0.999
+// the coarse index is clamped to NC - 1.001, which leaves the last cell's fraction at 0.999
 const FX_TOP = ${Math.round((NC - 1.001 - (NC - 2)) * 65536)}u;
 
 // the signed 64-bit product, as two's complement words
@@ -87,7 +87,7 @@ fn lag(y0: i32, q: i32) -> vec2i {
   let u = divw(1u << 14u, 0u, d).x;
   return vec2i(i32(u), -mulq(x, i32(u), 22u));
 }
-// a pixel's coarse neighbour and fraction (Q16) along one axis, as the CPU's clamp((c + 0.5) / 4 - 0.5, 0, NC - 1.001)
+// a pixel's coarse neighbour and fraction (Q16) along one axis: clamp((c + 0.5) / 4 - 0.5, 0, NC - 1.001)
 fn axis(c: u32) -> vec2u {
   let t = 2i * i32(c) - 3i;
   if (t <= 0i) { return vec2u(0u, 0u); }

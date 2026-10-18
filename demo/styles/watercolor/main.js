@@ -515,7 +515,7 @@ async function main() {
   const seed = Number(q.get("seed")) || 1;
   const view = document.getElementById("view");
   const W = (view.width = innerWidth || 1280), H = (view.height = innerHeight || 720);
-  const w = grow(seed), water = waterSampler(w), g = view.getContext("2d");
+  const w = await grow(seed), water = waterSampler(w), g = view.getContext("2d");
   if (kind === "island") {
     // The page, with a painted inset of the camp's bay on a card tipped onto its right side.
     const card = [W - 384, 60, W - 60, 452];

@@ -1,7 +1,8 @@
-// The island's climate, water and ground made on the GPU (src/gpu/terrain/rain.ts, climate.ts, water.ts, ground.ts), after
-// the crust, its erosion, the ice's scour and till and the hollows (src/terrain/island.ts upstream). The stages run in the
-// order the generator has always had them and take each other's fields as the generator's own Float32Arrays, so what comes
-// out is an Island as every reader of one expects.
+// The island generator: the crust, its erosion, the ice's scour and till and the hollows (src/terrain/island.ts upstream,
+// on the CPU until it too moves), then the climate, the water and the ground, which are GPU kernels (rain.ts, climate.ts,
+// water.ts, ground.ts in this directory). The stages run in the order the generator has always had them and take each
+// other's fields as Float32Arrays, so what comes out is an Island as every reader of one expects. The GPU's answers come
+// back asynchronously, so an island is made with await (world.ts islandOf is the game's way to it).
 import type { Gpu } from "../device";
 import { PEAT } from "../../terrain/geology";
 import { LEN } from "../../terrain/grid";
@@ -12,8 +13,8 @@ import { climateRestGpu } from "./climate";
 import { hydrologyGpu } from "./water";
 import { groundGpu } from "./ground";
 
-// Weather, sun and the hills' shade over a height field (src/terrain/climate.ts climate): the one draw is the way the wind
-// prevails, as the generator has always made it; the rain is rainGpu's and the rest climateRestGpu's.
+// Weather, sun and the hills' shade over a height field: the one draw is the way the wind prevails; the rain is rainGpu's
+// and the rest climateRestGpu's.
 export async function climateGpu(g: Gpu, height: Float32Array, open: Uint8Array, rand: () => number): Promise<Climate> {
   const prevailing = rand() * Math.PI * 2, shift = prevailing - meanWay(ROSE), wetRose = turned(WET_ROSE, shift);
   const z = new Float32Array(LEN);
@@ -26,7 +27,7 @@ export async function climateGpu(g: Gpu, height: Float32Array, open: Uint8Array,
   return { ...year, precip, seasons: seasons.map((s, si) => ({ precip: rain[si], ...s })) };
 }
 
-export async function generateIslandGpu(rand: () => number, g: Gpu, watch?: Watch): Promise<Island> {
+export async function generateIsland(rand: () => number, g: Gpu, watch?: Watch): Promise<Island> {
   const { land, rock, height, drift, driftDepth, filled, to, basin, hollow, open } = upstream(rand, watch);
   const air = await climateGpu(g, height, open, rand);
   watch?.({ stage: "climate", height, precip: air.precip, temp: air.temp, snow: air.snowCover, wind: air.wind });

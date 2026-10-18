@@ -1,7 +1,7 @@
-// The island's ground on the GPU: src/terrain/ground.ts ground() run as two kernels (wgsl/terrain-ground.ts), integer
-// arithmetic throughout. It takes the Site the CPU builds in island.ts and returns the same Ground, so the wiring can
-// drop it in; the fixed-point form of each field is the one the kernel holds (INPUTS and OUTPUTS there), converted at
-// these edges only:
+// The island's ground on the GPU: two kernels (wgsl/terrain-ground.ts), integer arithmetic throughout (the model's
+// constants and the Ground and Site types are src/terrain/ground.ts). It takes the Site the generator builds from the
+// climate and water stages and returns the Ground; the fixed-point form of each field is the one the kernel holds
+// (INPUTS and OUTPUTS there), converted at these edges only:
 // - inputs: heights, depths, tables, precipitation and PET (mm), sun (MJ/m2 a day), temperature (C) and relative
 //   humidity (0 to 1) are Q16 (x * 2^16 rounded); open, channel, drift and rock are integers; valley is Q16 and read by its sign.
 // - outputs: soil, peat (m), carbon (t a ha), organic (%), nitrogen (kg a ha a year) and pH are Q16; texture,

@@ -56,7 +56,7 @@ function softTex(W, H, paint) {
 export async function run() {
   const q = new URLSearchParams(location.search), name = VIEWS[q.get("view")] ? q.get("view") : "valley", seed = Number(q.get("seed") || 1);
   const V = { ...VIEWS[name] };
-  const t0 = performance.now(), w = grow(seed), log = (s) => console.log(`[hd2d] ${s} ${Math.round(performance.now() - t0)} ms`);
+  const t0 = performance.now(), w = await grow(seed), log = (s) => console.log(`[hd2d] ${s} ${Math.round(performance.now() - t0)} ms`);
   log("grow");
   const camp = w.camp, fire = camp.fire, rnd = mulberry(seed * 7919 + name.length);
   fire.y = w.heightAt(fire.x, fire.z) * V.vex;

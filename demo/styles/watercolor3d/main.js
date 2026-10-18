@@ -64,7 +64,7 @@ async function main() {
   const canvas = document.getElementById("view"), W = innerWidth, H = innerHeight;
   canvas.width = W;
   canvas.height = H;
-  const w = grow(SEED);
+  const w = await grow(SEED);
 
   const renderer = new THREE.WebGLRenderer({ canvas, preserveDrawingBuffer: true, antialias: false });
   renderer.setPixelRatio(1);

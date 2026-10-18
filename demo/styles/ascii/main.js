@@ -57,7 +57,7 @@ const fmt = (n) => Math.round(n).toLocaleString("en-US");
 async function main() {
   const [bios, vga] = await Promise.all([loadFace("oldschool-bios-8x8", 8), loadFace("oldschool-vga-8x16", 16)]);
   defineGlyphs(bios);
-  const w = grow(SEED);
+  const w = await grow(SEED);
   const scr = new Screen();
   const camp = w.camp, fire = camp.fire;
   const colors = COLORS.slice(0, 5), names = NAMES.slice(0, 5);

@@ -1,30 +1,32 @@
 // The orographic rain on the GPU (rain.ts, wgsl/terrain-rain.ts), tested three ways. Run one case at a time:
 //   bun test ./src/gpu/terrain/rain.test.ts -t "seed 1" --timeout 300000
-// 1. Against the float function it ports (climate.ts orographic) on seeds 1 to 3, with that function's own cloud delays
-//    (1000 s all year), which is what the island's delays change and nothing else: each season's rain within a recorded
-//    tolerance, and the same words on a second run. The CPU function is deleted at the cutover; case 2 outlives it.
-// 2. Against Smith and Barstad's theory written again in float64 from the paper (R1320 eqs. 12 and 49) below, which first
-//    reproduces numbers the paper publishes (case "the float theory"), then the island's rain with the seasons' delays.
-// 3. Against what the theory says of any hill: no rain is taken below none, a flat island gets the background, a hill
+// 1. Against Smith and Barstad's theory written again in float64 from the paper (R1320 eqs. 12 and 49) below, which first
+//    reproduces numbers the paper publishes (case "the float theory"), then the island's rain with the seasons' delays on
+//    seeds 1 to 3: each season within a recorded tolerance, the same words on a second run, and a golden hash of the
+//    words. The hash is the pin against a change that is still inside the tolerance.
+// 2. Against what the theory says of any hill: no rain is taken below none, a flat island gets the background, a hill
 //    symmetric across the wind rains symmetrically, the hill's windward side is wetter than the background and its lee
 //    drier, and longer cloud delays carry the rain farther downwind and so leave the hill with less of it.
+// 3. The delays follow the phase of the water.
 import { afterAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
-import { generateIsland } from "../../terrain/island";
-import { COARSE, DIRS, GAMMA_RATIO, H_W, M, NC, N_M, P_BG, R_V, ROSE, SEASONS, SEASON_DAYS, TAU_C, TAU_F, WET_ROSE, esat, meanWay, orographic, turned } from "../../terrain/climate";
+import { upstream } from "../../terrain/island";
+import { COARSE, DIRS, GAMMA_RATIO, H_W, M, NC, N_M, P_BG, R_V, ROSE, SEASONS, SEASON_DAYS, WET_ROSE, esat, meanWay, turned } from "../../terrain/climate";
 import { CELL, N } from "../../terrain/grid";
 import { rng } from "../../sim/world";
 import { ICE_SHARE, ISLAND_DELAYS, TAU_C_ICE, TAU_C_WARM, TAU_F_RAIN, V_SNOW, cloudDelays, rainGpu, tableMargin, type Delays } from "./rain";
 
 afterAll(releaseGpu);
 
-// The heights climate() is given (the island's ground, never under the sea's level) and the wet rose it builds from its
-// first random draw, the prevailing wind, which the Stage event reports as `wind`.
+// Smith and Barstad's own cloud delays, s (R487).
+const TAU = 1000;
+
+// The heights climate is given (the island's ground, never under the sea's level) and the wet rose built from the
+// generator's first draw after the upstream stages, the prevailing wind (src/gpu/terrain/island.ts climateGpu).
 function inputs(seed: number) {
-  let wind: [number, number] = [1, 0], height: Float32Array = new Float32Array(0);
-  generateIsland(rng(seed), (s) => { if (s.stage === "climate") { height = s.height; wind = s.wind; } });
+  const rand = rng(seed), { height } = upstream(rand);
   const z = Float32Array.from(height, (h) => Math.max(0, h));
-  const wetRose = turned(WET_ROSE, Math.atan2(wind[1], wind[0]) - meanWay(ROSE));
+  const wetRose = turned(WET_ROSE, rand() * Math.PI * 2 - meanWay(ROSE));
   return { z, wetRose };
 }
 
@@ -84,7 +86,7 @@ function transfer(h: Float64Array, nx: number, ny: number, dx: number, dy: numbe
   fft2(pr, pi, nx, ny, true);
   return pr.map((v) => v * 3600);
 }
-// A season's rain in mm over the season, as climate.ts orographic has it, by the float theory above.
+// A season's rain in mm over the season, by the float theory above.
 function theory(z: Float32Array, wetRose: number[], delays: Delays[]) {
   const h = new Float64Array(M * M);
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) h[Math.floor(y / COARSE) * M + Math.floor(x / COARSE)] += z[y * N + x] / (COARSE * COARSE);
@@ -113,7 +115,14 @@ const dome = (a: number, r: number) => Float32Array.from({ length: N * N }, (_, 
   const d = Math.hypot((i % N) - (N - 1) / 2, Math.floor(i / N) - (N - 1) / 2) * CELL;
   return d < r ? a * 0.5 * (1 + Math.cos((Math.PI * d) / r)) : 0;
 });
-const CPU_DELAYS: Delays[] = SEASONS.map(() => ({ tauC: TAU_C, tauF: TAU_F }));
+const PAPER_DELAYS: Delays[] = SEASONS.map(() => ({ tauC: TAU, tauF: TAU }));
+
+// The pinned output of each seed's island: Bun.hash over the four seasons' rain, in season order, as the bytes of the
+// float32 arrays rainGpu returns. It pins the integer arithmetic bit for bit, so it is re-recorded deliberately, with the
+// commit message saying why, whenever the model changes (the rain's constants, the island's delays, the upstream stages
+// that make the heights). The float theory above says the rain is right; this says it has not moved.
+const golden = (seasons: Float32Array[]) => Bun.hash(Buffer.concat(seasons.map((s) => Buffer.from(s.buffer, s.byteOffset, s.byteLength)))).toString(16);
+const GOLDEN: Record<number, string> = { 1: "5b1fc99190a7c43c", 2: "e5b63757cd81377d", 3: "b18bf219d79dc870" };
 
 // Tolerance in mm over a season, which rains 80 to 370 mm. Seeds 1 to 3 give a largest error of 0.0043 mm (1.2e-5 of the
 // wettest cell's season) and a mean of 0.0004 mm in every season: the roundings of the constants (Q26 against the
@@ -132,30 +141,20 @@ function worst(got: Float32Array[], want: ArrayLike<number>[]) {
 async function check(seed: number) {
   const { z, wetRose } = inputs(seed);
   const g = await theGpu();
-  // 1. the float function's own delays: nothing the island's delays change is in play
-  const cpu = orographic(z, wetRose);
   const t0 = performance.now();
-  const first = await rainGpu(g, z, wetRose, CPU_DELAYS);
+  const island = await rainGpu(g, z, wetRose);
   const cold = performance.now() - t0;
   const t1 = performance.now();
-  const second = await rainGpu(g, z, wetRose, CPU_DELAYS);
-  const warm = performance.now() - t1;
-  worst(first, cpu).forEach((w, si) => {
-    console.log(`seed ${seed} season ${si} against climate.ts: max abs ${w.max.toFixed(4)} mm, mean abs ${w.mean.toFixed(5)} mm, rain up to ${w.peak.toFixed(1)} mm`);
-    expect(w.max).toBeLessThan(MAX_ERR);
-    expect(w.mean).toBeLessThan(MEAN_ERR);
-  });
-  second.forEach((s, si) => expect(Buffer.from(s.buffer).equals(Buffer.from(first[si].buffer))).toBe(true));
-  // 2. the island's delays against the float theory written from the paper, and the same words on a second run
-  const island = await rainGpu(g, z, wetRose);
   const again = await rainGpu(g, z, wetRose);
+  const warm = performance.now() - t1;
   worst(island, theory(z, wetRose, ISLAND_DELAYS)).forEach((w, si) => {
-    console.log(`seed ${seed} season ${si} island delays against the float theory: max abs ${w.max.toFixed(4)} mm, mean abs ${w.mean.toFixed(5)} mm`);
+    console.log(`seed ${seed} season ${si} against the float theory: max abs ${w.max.toFixed(4)} mm, mean abs ${w.mean.toFixed(5)} mm`);
     expect(w.max).toBeLessThan(MAX_ERR);
     expect(w.mean).toBeLessThan(MEAN_ERR);
   });
   again.forEach((s, si) => expect(Buffer.from(s.buffer).equals(Buffer.from(island[si].buffer))).toBe(true));
-  console.log(`seed ${seed}: rainGpu ${warm.toFixed(0)} ms warm, ${cold.toFixed(0)} ms first call (pipelines compiled), on ${g.adapter}`);
+  console.log(`seed ${seed}: rainGpu ${warm.toFixed(0)} ms warm, ${cold.toFixed(0)} ms first call (pipelines compiled), on ${g.adapter}, golden ${golden(island)}`);
+  expect(golden(island)).toBe(GOLDEN[seed]);
 }
 
 test("the tables' roundings are well clear of ties, so an engine's last-place cosine cannot change a word", () => {
@@ -215,7 +214,7 @@ test("no direction takes the rain below none, and a hill symmetric across the wi
 test("the hill's windward side is wetter than the background and its lee drier, and longer delays leave it less", async () => {
   const g = await theGpu(), z = dome(150, 5000), c = (N - 1) / 2;
   const at = (s: Float32Array, dx: number) => s[Math.round(c) * N + Math.round(c + dx / CELL)];
-  const near = await rainGpu(g, z, only(0), CPU_DELAYS), far = await rainGpu(g, z, only(0), SEASONS.map(() => ({ tauC: 3 * TAU_C, tauF: 3 * TAU_F })));
+  const near = await rainGpu(g, z, only(0), PAPER_DELAYS), far = await rainGpu(g, z, only(0), SEASONS.map(() => ({ tauC: 3 * TAU, tauF: 3 * TAU })));
   SEASONS.forEach(({ wet }, si) => {
     const bg = P_BG * wet;
     const windward = at(near[si], -3000), crest = at(near[si], 0), lee = at(near[si], 7000);

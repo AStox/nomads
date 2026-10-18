@@ -1,6 +1,6 @@
-// The island's water on the GPU: src/terrain/water.ts hydrology() run as the kernels of wgsl/terrain-water.ts, integer
-// arithmetic throughout. It takes what the CPU function takes (the flood, receivers and drainage order stay on the CPU
-// and feed it) and returns the same Hydro. Every field is one i32 word a cell, in the unit and scale the kernel's
+// The island's water on the GPU: the hydrology as the kernels of wgsl/terrain-water.ts, integer arithmetic throughout (the
+// model's constants and the Hydro type are src/terrain/water.ts). It takes the flood, receivers and drainage order from the
+// CPU's upstream stages and returns a Hydro. Every field is one i32 word a cell, in the unit and scale the kernel's
 // header gives (INPUTS and OUTPUTS there); converted here at the edges only:
 // - inputs: heights, depths and drift thickness are Q12.20 metres (|z| under 1024 m); rain and PET are Q16 millimetres;
 //   the receivers, the rock and drift classes and the basin flags are integers.
@@ -24,7 +24,7 @@ export type HydroInput = {
 };
 
 const S = 4;
-// The first solve's sweeps at most, and the second's (water.ts 283 and 333).
+// The first solve's sweeps at most, and the second's.
 const FIRST_SWEEPS = 150, SECOND_SWEEPS = 1500;
 // Heads and heights are held Q12.20 and offset by 2^30 inside a sweep, so none may reach 1024 m.
 const MOST_Z = 1024;

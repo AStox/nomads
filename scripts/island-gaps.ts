@@ -1,7 +1,7 @@
 // The six gaps the island generator is measured against Bornholm by (docs/research/terrain-constants.md secs. 9 to 12 and
 // fire-constants.md sec. 34), over many seeds, on the GPU chain. Land is the ground above the sea outside the lakes.
 //   bun scripts/island-gaps.ts --seeds 24 [--from 1]
-import { generateIslandGpu } from "../src/gpu/terrain/island";
+import { generateIsland } from "../src/gpu/terrain/island";
 import { rng } from "../src/sim/world";
 import { CELL, LEN, N } from "../src/terrain/grid";
 import { exit, holdGpu } from "./seeded";
@@ -28,7 +28,7 @@ type Row = Record<string, number>;
 const rows: Row[] = [];
 for (let seed = from; seed < from + count; seed++) {
   const t0 = performance.now();
-  const s = (await generateIslandGpu(rng(seed), g)) as unknown as Record<string, Float32Array>;
+  const s = (await generateIsland(rng(seed), g)) as unknown as Record<string, Float32Array>;
   const dist = seaDistance(s as { height: Float32Array; water: Float32Array });
   const land: number[] = [], ground: number[] = [];
   for (let i = 0; i < LEN; i++) { if (s.height[i] > 0) ground.push(i); if (s.height[i] > 0 && !(s.water[i] > 0)) land.push(i); }

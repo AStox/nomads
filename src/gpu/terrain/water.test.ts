@@ -1,80 +1,44 @@
-// The hydrology on the GPU against src/terrain/water.ts hydrology(), the float stage that has no groundwater
-// evapotranspiration, on the inputs islands 1 to 3 give it (taken from the generator's own call, so they are exactly what
-// the CPU saw). The GPU stage differs from the CPU's in one law, the groundwater's evapotranspiration in the aquifer and in
-// the seasons' draw (wgsl/terrain-water.ts), which acts only where the soil's bucket leaves demand unmet. So the test asks:
-// 1. with no unmet demand anywhere (the rain raised to the potential evaporation where it falls short, on the same
-//    island), every output field is within a stated tolerance of the CPU's, because the law then does nothing;
-// 2. on the island itself, the one field the law cannot reach (the ground's fall to the receiver) is within tolerance, and
-//    the changed ones obey the law: the head is its fixed point (the cell's balance with the sink closes, to the 2 mm the
-//    sweeps stop at), the sink is between 0 and the unmet demand and nothing where there is none, the budget the kernel
-//    keeps for each cell is the law's, the table is no shallower and the flow to the sea no larger than the CPU's, by
-//    about the water the sink takes;
-// 3. the same words on a second run, and one island's time.
+// The hydrology kernels (wgsl/terrain-water.ts) on the inputs islands 1 to 3 give them: the island's own upstream stages
+// and its climate, run as the generator runs them. The kernels are the one implementation of the stage, so the test asks
+// what any correct run must show, and pins what this one does:
+// 1. the head is the law's fixed point: each cell's balance (the four faces, its recharge, less the groundwater's sink)
+//    closes to the 2 mm the sweeps stop at, the sink is between 0 and the unmet demand and the wet ground's extra, and
+//    the budget the kernel keeps for each cell is the law's;
+// 2. the outputs agree with one another and with the laws that define them: the slope is the fall to the receiver, the
+//    flow is the seasons' mean, the bankfull flow and the stream power follow from it, nothing under open water has a
+//    table, a spring or a channel, the seasons' tables stay inside their bounds, and the spring list is the spring field's
+//    local maxima;
+// 3. the same words on a second run, and one island's time;
+// 4. a golden hash of every output (see GOLDEN).
 // One case a seed (the island takes some 10 s to make).
-import { afterAll, expect, mock, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
+import { rng } from "../../sim/world";
 import { CELL, LEN, N } from "../../terrain/grid";
 import { DRIFTS, ROCKS } from "../../terrain/geology";
 import { ROOTS } from "../../terrain/growth";
+import { upstream } from "../../terrain/island";
 import { NICHE } from "../../terrain/niche";
-import { YEAR_S, type Hydro } from "../../terrain/water";
+import { BANKFULL, FALL, RHO, G, YEAR_S, bankWidth, type Hydro } from "../../terrain/water";
 import { releaseGpu, theGpu } from "../device";
 import { KC_WET, SHAH_GRASS, SUMMER, textureClass } from "../wgsl/terrain-water";
-import type { HydroInput } from "./water";
+import { climateGpu } from "./island";
+import { hydrologyGpu, hydrologyRaw, type HydroInput } from "./water";
 
 afterAll(releaseGpu);
 
-// The generator calls hydrology once; this keeps what it was given (the drift is changed after the call, so copies) and
-// the CPU's answer and time.
-type Call = { input: HydroInput; order: Int32Array; cpu: Hydro; cpuMs: number };
-const calls = new Map<number, Call>();
-let seed = 0;
-// the mock has to stand before the generator is loaded, so these are imported here, not at the top
-const real = await import("../../terrain/water");
-// the namespace follows the mock, so what the mock calls is taken before it stands
-const cpuHydrology = real.hydrology, exports = { ...real };
-mock.module("../../terrain/water", () => ({
-  ...exports,
-  hydrology: (...args: Parameters<typeof cpuHydrology>) => {
-    const [h, filled, order, to, basin, air, rock, drift, driftDepth] = args;
-    const t0 = performance.now();
-    const cpu = cpuHydrology(...args);
-    const cpuMs = performance.now() - t0;
-    const seasons = air.seasons.map((s) => ({ precip: s.precip.slice(), pet: s.pet.slice() })) as unknown as typeof air.seasons;
-    calls.set(seed, { input: { h: h.slice(), filled: filled.slice(), to: to.slice(), basin: basin.slice(), rock: rock.slice(), drift: drift.slice(), driftDepth: driftDepth.slice(), air: { seasons } }, order: order.slice(), cpu, cpuMs });
-    return cpu;
-  },
-}));
-const { generateIsland } = await import("../../terrain/island");
-const { rng } = await import("../../sim/world");
-const { hydrologyGpu, hydrologyRaw } = await import("./water");
+// The hash (Bun.hash, hex) of every output's bytes in the order words() gives them, then the lists as JSON, per island.
+// It pins the kernels' integer arithmetic and the CPU polylines made from it bit for bit, so any change to the water
+// model or its constants moves it. When the model changes on purpose, re-record these from the failure message, and say
+// in the commit message why they moved.
+const GOLDEN: Record<number, string> = { 1: "82ef6d33794cb751", 2: "8f11b1a86018c761", 3: "51c56265234b3bf6" };
 
-// Each field's tolerance (max abs error against the CPU's float32 stage) and why it is enough. The reasons, in order:
-// - water is Q12.20 (half a step 4.8e-7), spring Q6.26 (half a step 7e-9);
-// - the flows follow the water table: a table off by 1e-4 m moves the groundwater a cell gives by 1e-4 m times its
-//   transmissivity, and the sum of what comes out upstream of a cell by some 1e-6 m3/s of a flow of up to 1;
-// - the water table, season tables and the deepest table (m) follow the aquifer's heads. The aquifer takes the CPU's own
-//   number of sweeps and stops at its 2 mm change, and the heads agree to 1e-4 m after 150 to 500 sweeps (a rounding
-//   in Q12.20 every update, which the over-relaxation amplifies). The CPU stage itself is float32: it stands 5.7e-5 m
-//   from its own float64 version. The ground stage reads these tables against 0.2 m, 0.3 m and the roots' 1 m, so cells
-//   within 3e-4 m of a threshold may fall on the other side, a few in 10,000;
-// - base is a share of a flow and moves with it, most where the flow is tiny; qbf is 15 times the flow;
-// - the slope's float32 steps near 0.6 are 6e-8; the power is up to 3,000 W/m2 and its error is where a flow is tiny.
-// - valley and channel are decided by comparisons of integers made from the same inputs, and match cell for cell.
-const TOL: Record<string, number> = {
-  water: 1e-6, flow: 4e-6, seasonFlow: 1.2e-5, table: 3e-4, seasonTable: 3e-4, winterTable: 3e-4, dryTable: 4e-4, spring: 1e-7, base: 2e-3,
-  valley: 0, channel: 0, qbf: 5e-5, slope: 1.2e-7, power: 0.02,
-};
-const QUICK_TOL = 1e-5, RIVER_XY_TOL = 2e-4, RIVER_UNDER_TOL = 1e-7;
-
-const stats = (a: ArrayLike<number>, b: ArrayLike<number>) => {
-  let max = 0, sum = 0;
-  for (let i = 0; i < a.length; i++) {
-    const d = Math.abs(a[i] - b[i]);
-    sum += d;
-    if (d > max) max = d;
-  }
-  return { max, mean: sum / a.length };
-};
+// What the generator hands the hydrology: the upstream stages and the climate, the same draws in the same order.
+async function inputOf(seed: number): Promise<HydroInput> {
+  const rand = rng(seed);
+  const { height, filled, to, basin, rock, drift, driftDepth, open } = upstream(rand);
+  const air = await climateGpu(await theGpu(), height, open, rand);
+  return { h: height, filled, to, basin, rock, drift, driftDepth, air };
+}
 
 const FLOATS = ["water", "flow", "table", "winterTable", "dryTable", "spring", "base", "valley", "qbf", "slope", "power"] as const;
 
@@ -86,59 +50,13 @@ function words(h: Hydro) {
   return out;
 }
 
-// Every output against the CPU's, within TOL; the lines for the log.
-function agree(label: string, a: Hydro, cpu: Hydro, springFloor = 0) {
-  const lines: string[] = [];
-  const tol = (name: string) => TOL[name.replace(/\d$/, "")];
-  const ref = new Map(words(cpu));
-  for (const [name, f] of words(a)) {
-    const { max, mean } = stats(f as unknown as ArrayLike<number>, ref.get(name) as unknown as ArrayLike<number>);
-    lines.push(`${name} max ${max.toExponential(2)} mean ${mean.toExponential(2)} (tolerance ${tol(name)})`);
-    expect(max, `${label} ${name}`).toBeLessThanOrEqual(tol(name));
-  }
-  const q = a.quick.map((v, k) => Math.abs(v - cpu.quick[k]));
-  lines.push(`quick max ${Math.max(...q).toExponential(2)} (tolerance ${QUICK_TOL})`);
-  expect(Math.max(...q), `${label} quick`).toBeLessThanOrEqual(QUICK_TOL);
-  expect(a.lakes, `${label} lakes`).toBe(cpu.lakes);
-  expect(a.winterTable).toBe(a.seasonTable[3]);
-
-  // the springs are where groundwater leaves a cell faster than a pool of it evaporates, a comparison that one cell in a
-  // hundred or two can fall either side of; where the rain is raised and summer's evaporation is nothing the pool's
-  // shortage is nothing, so any flow above nothing is a spring and the near-zero ones decide: those under 0.2 l/s are left
-  // out of that comparison
-  const has = new Map(cpu.springs.filter((p) => p[2] >= springFloor).map((p) => [p[1] * N + p[0], p[2]]));
-  const gpu = new Map(a.springs.filter((p) => p[2] >= springFloor).map((p) => [p[1] * N + p[0], p[2]]));
-  const extra = [...gpu.keys()].filter((k) => !has.has(k)).length, missing = [...has.keys()].filter((k) => !gpu.has(k)).length;
-  const sv = Math.max(0, ...[...gpu].filter(([k]) => has.has(k)).map(([k, v]) => Math.abs(v - has.get(k)!)));
-  lines.push(`springs of ${springFloor} m3/s or more ${gpu.size} against ${has.size}: ${extra} extra, ${missing} missing, value max ${sv.toExponential(2)}`);
-  const slack = Math.max(1, Math.ceil(has.size / 150));
-  expect(extra, `${label} springs extra`).toBeLessThanOrEqual(slack);
-  expect(missing, `${label} springs missing`).toBeLessThanOrEqual(slack);
-  expect(sv, `${label} spring values`).toBeLessThanOrEqual(1e-4 + 1e-9);
-
-  // the rivers: the same lines through the same cells, each point where the CPU puts it
-  expect(a.rivers.length, `${label} river lines`).toBe(cpu.rivers.length);
-  const rm = [0, 0, 0, 0, 0, 0, 0];
-  let points = 0;
-  a.rivers.forEach((line, r) => {
-    expect(line.length, `${label} river ${r} points`).toBe(cpu.rivers[r].length);
-    line.forEach((p, k) => {
-      points++;
-      for (let c = 0; c < 7; c++) rm[c] = Math.max(rm[c], Math.abs(p[c] - cpu.rivers[r][k][c]));
-    });
-  });
-  lines.push(`rivers ${a.rivers.length} lines, ${points} points; max over points of x ${rm[0].toExponential(2)} y ${rm[1].toExponential(2)} flow ${rm[2].toExponential(2)} base ${rm[3].toExponential(2)} qbf ${rm[4].toExponential(2)} slope ${rm[5].toExponential(2)} under ${rm[6].toExponential(2)}`);
-  expect(Math.max(rm[0], rm[1]), `${label} river place`).toBeLessThanOrEqual(RIVER_XY_TOL);
-  expect(rm[2], `${label} river flow`).toBeLessThanOrEqual(TOL.flow);
-  expect(rm[3], `${label} river base`).toBeLessThanOrEqual(TOL.base);
-  expect(rm[4], `${label} river qbf`).toBeLessThanOrEqual(TOL.qbf);
-  expect(rm[5], `${label} river slope`).toBeLessThanOrEqual(TOL.slope);
-  expect(rm[6], `${label} river fill`).toBeLessThanOrEqual(RIVER_UNDER_TOL);
-  return lines;
+function digest(h: Hydro): string {
+  const parts = words(h).map(([, f]) => Buffer.from(f.buffer, f.byteOffset, f.byteLength));
+  parts.push(Buffer.from(JSON.stringify([h.quick, h.lakes, h.springs, h.rivers])));
+  return Bun.hash(Buffer.concat(parts)).toString(16);
 }
 
-// The soil's bucket as the stages keep it (water.ts 211 to 218): the year's unmet demand U and potential evaporation PET
-// over each season, mm.
+// The soil's bucket as the stages keep it: the year's unmet demand U and potential evaporation PET over each season, mm.
 function demand(air: HydroInput["air"]) {
   const unmet = air.seasons.map(() => new Float64Array(LEN)), pet = air.seasons.map((s) => Float64Array.from(s.pet));
   for (let i = 0; i < LEN; i++) {
@@ -164,16 +82,17 @@ function fall(drift: number, rock: number, depth: number) {
   return (d: number) => (d <= p[0] ? 1 : Math.max(0, (Math.exp(-p[1] * (d - p[0])) - p[2]) * p[3]));
 }
 
+const maxOf = (n: number, f: (i: number) => number) => { let m = 0; for (let i = 0; i < n; i++) m = Math.max(m, f(i)); return m; };
+
 test.each([1, 2, 3])("water seed %i", async (s) => {
-  seed = s;
-  generateIsland(rng(s));
-  const { input, order, cpu, cpuMs } = calls.get(s)!;
+  const input = await inputOf(s);
   const g = await theGpu();
   await hydrologyGpu(g, input); // the pipelines compile on first use
   const t0 = performance.now();
   const a = await hydrologyGpu(g, input);
   const ms = performance.now() - t0;
   const b = await hydrologyGpu(g, input);
+  const lines: string[] = [];
 
   // the same words on a second run
   const bw = new Map(words(b));
@@ -182,19 +101,6 @@ test.each([1, 2, 3])("water seed %i", async (s) => {
     expect(Buffer.from(f.buffer, f.byteOffset, f.byteLength).equals(Buffer.from(o.buffer, o.byteOffset, o.byteLength)), `seed ${s} ${name} run to run`).toBe(true);
   }
   expect(JSON.stringify([a.quick, a.lakes, a.springs, a.rivers]), `seed ${s} lists run to run`).toBe(JSON.stringify([b.quick, b.lakes, b.springs, b.rivers]));
-
-  // 1. no unmet demand and no wet ground's extra evaporation: the same island with the rain raised to the potential
-  // evaporation where it falls short and summer's potential evaporation nothing. The law does nothing, so the GPU is the
-  // CPU's stage.
-  const wetter: HydroInput = { ...input, air: { seasons: input.air.seasons.map((x, k) => ({ ...x, precip: Float32Array.from(x.precip, (p, i) => Math.max(p, x.pet[i])), pet: k === SUMMER ? new Float32Array(LEN) : x.pet })) as unknown as HydroInput["air"]["seasons"] } };
-  expect(demand(wetter.air).unmet.every((u) => u.every((v) => v === 0)), `seed ${s} the raised rain leaves no demand unmet`).toBe(true);
-  const cpuWet = cpuHydrology(input.h, input.filled, order, input.to, input.basin, wetter.air as never, input.rock, input.drift, input.driftDepth);
-  const lines = agree(`seed ${s} (no unmet demand)`, await hydrologyGpu(g, wetter), cpuWet, 2e-4).map((l) => `no demand: ${l}`);
-
-  // 2. the island itself. The fall to the receiver does not follow the head.
-  const slope = stats(a.slope, cpu.slope);
-  lines.push(`slope max ${slope.max.toExponential(2)} (tolerance ${TOL.slope})`);
-  expect(slope.max, `seed ${s} slope`).toBeLessThanOrEqual(TOL.slope);
 
   // the head is the law's fixed point: each cell's balance (the four faces, its recharge, less the sink) closes where the
   // head is below the ground, and leaves water to seep out where it stands at the ground
@@ -237,27 +143,77 @@ test.each([1, 2, 3])("water seed %i", async (s) => {
   expect(outOff, `seed ${s} kernel budget against the law`).toBeLessThanOrEqual(1);
   expect(sinkCells, `seed ${s} the sink acts`).toBeGreaterThan(1000);
 
-  // the response against the CPU's stage on the same island: the table is deeper (the sink takes water the CPU keeps), the
-  // share of the land with the table at the ground is smaller, and the flow to the sea is smaller by about the water taken
-  const land: number[] = [];
-  for (let i = 0; i < LEN; i++) if (input.h[i] > 0 && !(cpu.water[i] > 0) && !(a.water[i] > 0)) land.push(i);
-  const median = (v: Float32Array) => Float32Array.from(land, (i) => v[i]).sort()[land.length >> 1];
-  const atGround = (v: Float32Array) => land.filter((i) => v[i] < 0.01).length / land.length;
-  const sea = (h: Hydro) => { let q = 0; for (let i = 0; i < LEN; i++) if (input.h[i] > 0 && input.filled[i] >= 0 && input.filled[input.to[i]] < 0) q += h.flow[i]; return q; };
-  const dq = sea(cpu) - sea(a), taken = eTotal / YEAR_S;
-  lines.push(`response: median table ${median(cpu.table).toFixed(2)} to ${median(a.table).toFixed(2)} m; table under 1 cm ${(100 * atGround(cpu.table)).toFixed(1)} to ${(100 * atGround(a.table)).toFixed(1)}% of land; flow to the sea ${sea(cpu).toFixed(4)} to ${sea(a).toFixed(4)} m3/s, less ${dq.toFixed(4)} against ${taken.toFixed(4)} m3/s the sink takes`);
-  expect(median(a.table), `seed ${s} median table`).toBeGreaterThan(median(cpu.table));
-  expect(atGround(a.table), `seed ${s} table at the ground`).toBeLessThan(atGround(cpu.table));
-  expect(dq, `seed ${s} flow to the sea`).toBeGreaterThan(0);
-  expect(Math.abs(dq - taken) / taken, `seed ${s} the sea's loss is the sink's take`).toBeLessThan(0.25);
+  // the fall to the receiver, on the filled ground and to the sea's level at a mouth, in float64
+  const slopeErr = maxOf(LEN, (i) => {
+    const j = input.to[i];
+    if (input.filled[i] < 0 || j === i) return Math.abs(a.slope[i]);
+    const reach = Math.hypot((j % N) - (i % N), Math.floor(j / N) - Math.floor(i / N)) * CELL;
+    return Math.abs(a.slope[i] - Math.max(FALL, input.filled[i] - Math.max(0, input.filled[j])) / reach);
+  });
+  lines.push(`slope against the fall to the receiver, max error ${slopeErr.toExponential(2)}`);
+  expect(slopeErr, `seed ${s} slope`).toBeLessThanOrEqual(1.2e-7);
+
+  // the flow is the seasons' mean, the bankfull flow is its fixed multiple, and a channel's power is the bankfull flow's
+  // specific power on wooded banks
+  const meanErr = maxOf(LEN, (i) => Math.abs(a.flow[i] - a.seasonFlow.reduce((t, q) => t + q[i], 0) / 4));
+  const qbfErr = maxOf(LEN, (i) => (input.filled[i] < 0 ? Math.abs(a.qbf[i]) : Math.abs(a.qbf[i] - BANKFULL * a.flow[i])));
+  const powerErr = maxOf(LEN, (i) => {
+    if (!a.channel[i]) return Math.abs(a.power[i]);
+    const want = a.qbf[i] > 0 ? (RHO * G * a.qbf[i] * a.slope[i]) / bankWidth(a.qbf[i], true) : 0;
+    return Math.abs(a.power[i] - want) / Math.max(1, want);
+  });
+  lines.push(`flow against the seasons' mean ${meanErr.toExponential(2)}, qbf against ${BANKFULL.toFixed(2)} times the flow ${qbfErr.toExponential(2)}, power against the law (relative) ${powerErr.toExponential(2)}`);
+  expect(meanErr, `seed ${s} flow is the seasons' mean`).toBeLessThanOrEqual(1e-6);
+  expect(qbfErr, `seed ${s} bankfull flow`).toBeLessThanOrEqual(5e-5);
+  expect(powerErr, `seed ${s} stream power`).toBeLessThanOrEqual(1e-3);
+
+  // the sea is its depth, and nothing under open water has a table, a spring or a channel
+  let channels = 0, lakeCells = 0;
+  for (let i = 0; i < LEN; i++) {
+    if (input.filled[i] < 0) expect(a.water[i], `seed ${s} sea at cell ${i}`).toBeCloseTo(-input.h[i], 5);
+    if (a.channel[i]) channels++;
+    if (!(a.water[i] > 0)) continue;
+    if (input.filled[i] >= 0) lakeCells++;
+    expect(a.table[i] + a.spring[i] + a.dryTable[i] + a.channel[i] + a.seasonTable.reduce((t, q) => t + q[i], 0), `seed ${s} cell ${i} under open water`).toBe(0);
+  }
+  expect(channels, `seed ${s} channels`).toBeGreaterThan(100);
+  expect(a.lakes > 0 && lakeCells > 0, `seed ${s} lakes`).toBe(true);
+  expect(a.base.every((v) => v >= 0 && v <= 1), `seed ${s} groundwater share in 0 to 1`).toBe(true);
+  expect(a.valley.every((v) => v === 0 || v === 1), `seed ${s} valley is 0 or 1`).toBe(true);
+  expect(Math.abs(a.quick.reduce((t, v) => t + v, 0) / 4 - 1), `seed ${s} the seasons' runoff averages its mean`).toBeLessThan(1e-6);
+
+  // the seasons' tables and the winter's
+  expect(a.winterTable).toBe(a.seasonTable[3]);
   for (let k = 0; k < 4; k++) expect(a.seasonTable[k].every((v, i) => v >= 0 && v <= Math.max(a.table[i], ROOTS) + 1e-6), `seed ${s} season ${k} table within its bounds`).toBe(true);
   expect(a.dryTable.every((v, i) => v >= a.seasonTable.reduce((m, t) => Math.max(m, t[i]), 0) - 1e-6), `seed ${s} dry table is the deepest`).toBe(true);
 
-  // 3. sweeps taken by the two solves, and the time without the CPU's rivers
+  // a spring is a local maximum of the spring field, listed at the field's value to the list's 0.1 ml/s
+  let springErr = 0, springsAt = 0;
+  for (const [x, y, v] of a.springs) {
+    const i = y * N + x;
+    springErr = Math.max(springErr, Math.abs(v - a.spring[i]));
+    expect(a.spring[i], `seed ${s} spring at ${x},${y} has flow`).toBeGreaterThan(0);
+    for (let d = 0; d < 8; d++) {
+      const nx = x + [1, 1, 0, -1, -1, -1, 0, 1][d], ny = y + [0, 1, 1, 1, 0, -1, -1, -1][d];
+      if (nx >= 0 && ny >= 0 && nx < N && ny < N) expect(a.spring[ny * N + nx], `seed ${s} spring at ${x},${y} is the local maximum`).toBeLessThanOrEqual(a.spring[i]);
+    }
+    springsAt++;
+  }
+  lines.push(`springs ${springsAt}, listed value against the field ${springErr.toExponential(2)}; ${a.rivers.length} river lines, ${a.lakes} lakes`);
+  expect(springsAt, `seed ${s} springs`).toBeGreaterThan(0);
+  expect(springErr, `seed ${s} spring values`).toBeLessThanOrEqual(5e-5 + 1e-9);
+  expect(a.rivers.length, `seed ${s} river lines`).toBeGreaterThan(0);
+  expect(a.rivers.every((line) => line.length > 1 && line.every((p) => p.every(Number.isFinite) && p[0] >= 0 && p[0] < N && p[1] >= 0 && p[1] < N)), `seed ${s} rivers`).toBe(true);
+
+  // the golden
+  const hash = digest(a);
+  expect(hash, `seed ${s} golden, re-record deliberately`).toBe(GOLDEN[s]);
+
+  // the kernels' time and the sweeps taken by the two solves
   const raw0 = await hydrologyRaw(g, input, []);
   const t1 = performance.now();
   await hydrologyRaw(g, input, []);
   const kernelMs = performance.now() - t1;
   expect(raw0.flags).toBe(0);
-  console.log(`seed ${s}: ${ms.toFixed(1)} ms for hydrologyGpu (kernels and read-back ${kernelMs.toFixed(1)}), the CPU's hydrology ${cpuMs.toFixed(1)} ms; ${raw0.lakes} lakes, sweeps ${raw0.misc[2]} and ${raw0.misc[3]}, ${LEN} cells\n  ${lines.join("\n  ")}`);
+  console.log(`seed ${s}: ${ms.toFixed(1)} ms for hydrologyGpu (kernels and read-back ${kernelMs.toFixed(1)}); ${raw0.lakes} lakes, sweeps ${raw0.misc[2]} and ${raw0.misc[3]}, ${LEN} cells; golden ${hash}\n  ${lines.join("\n  ")}`);
 }, 300_000);

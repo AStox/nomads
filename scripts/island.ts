@@ -4,7 +4,9 @@ import { deflateSync } from "node:zlib";
 import { mkdirSync } from "node:fs";
 import { rng } from "../src/sim/world";
 import { CELL, LEN, N } from "../src/terrain/grid";
-import { generateIsland } from "../src/terrain/island";
+import { generateIsland } from "../src/gpu/terrain/island";
+import { theGpu } from "../src/gpu/device";
+import { exit, holdGpu } from "./seeded";
 
 type RGB = [number, number, number];
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
@@ -29,7 +31,8 @@ function png(w: number, h: number, rgb: Uint8Array) {
 const mix = (a: number[], b: number[], t: number) => a.map((v, k) => v + (b[k] - v) * Math.max(0, Math.min(1, t))) as RGB;
 
 const t0 = performance.now();
-const isle = generateIsland(rng(seed));
+await holdGpu();
+const isle = await generateIsland(rng(seed), await theGpu());
 const ms = Math.round(performance.now() - t0);
 const { height: h, water } = isle;
 const river = new Float32Array(LEN);
@@ -82,3 +85,4 @@ save("dominant", (i) => {
   return kinds.reduce((a, b) => (b[0] > a[0] ? b : a))[1];
 }, false);
 save("moist", (i) => mix([200, 120, 60], [60, 140, 90], isle.moist[i]), false);
+await exit();

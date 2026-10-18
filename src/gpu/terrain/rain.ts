@@ -1,10 +1,8 @@
-// The island's orographic rain on the GPU (kernels: wgsl/terrain-rain.ts; reference: src/terrain/climate.ts orographic).
-// Same inputs and output shapes as the float function: the heights in metres (N x N, as climate() makes them: the
-// ground, never under the sea's level) and the wet rose (DIRS shares), and the rain each season brings, in mm over the
-// season, N x N, the background rain included (climate() sums the seasons into precip). It differs from the float
-// function in one input only: the cloud delays (tau_c, tau_f) are each season's own, from the phase of the water in the
-// moist layer, where the float function takes the paper's 1000 s in every season (see below and
-// docs/research/generator/2026-10-18-rain.md).
+// The island's orographic rain on the GPU (kernels: wgsl/terrain-rain.ts). The inputs are the heights in metres (N x N: the
+// ground, never under the sea's level) and the wet rose (DIRS shares); the output is the rain each season brings, in mm
+// over the season, N x N, the background rain included (the climate sums the seasons into precip). The cloud delays
+// (tau_c, tau_f) are each season's own, from the phase of the water in the moist layer, where the paper takes 1000 s in
+// every season (see below and docs/research/generator/2026-10-18-rain.md).
 //
 // Fixed point, field by field (a value x is held as the integer round(x * 2^n), Qn):
 // - z, the heights: Q16 m (an i32 holds up to 32,767 m);
@@ -92,8 +90,8 @@ export function tableMargin(): number {
   return least;
 }
 
-// The parameter words (layout in wgsl/terrain-rain.ts rainTransfer): from each season's constants, as climate.ts
-// orographic works them out, the seasons' cloud delays and the wet rose.
+// The parameter words (layout in wgsl/terrain-rain.ts rainTransfer): from each season's constants, the seasons' cloud
+// delays and the wet rose.
 export function rainParams(wetRose: number[], delays: Delays[] = ISLAND_DELAYS): Int32Array {
   const par = new Int32Array(PAR_WORDS), dk = (2 * Math.PI) / (M * COARSE * CELL);
   SEASONS.forEach(({ t, wet, rains, rainWind, rainHumid }, si) => {
@@ -115,8 +113,8 @@ export function rainParams(wetRose: number[], delays: Delays[] = ISLAND_DELAYS):
 
 const kernels = { coarse: rainCoarse(), rows: rainRows(), cols: rainCols(), transfer: rainTransfer(), invA: rainInvA(), invB: rainInvB(), fine: rainFine() };
 
-// The rain of each season, mm over the season, by cell: climate.ts orographic(z, wetRose) on the GPU, with the seasons'
-// cloud delays (the float function's are 1000 s all year: pass those to compare). Throws where the heights' total passes
+// The rain of each season, mm over the season, by cell, with the seasons' cloud delays (the paper's are 1000 s all year:
+// pass those to compare). Throws where the heights' total passes
 // what the transforms' words hold (2e6 m of coarse height, a mean of 490 m over the island).
 export async function rainGpu(g: Gpu, z: Float32Array, wetRose: number[], delays: Delays[] = ISLAND_DELAYS): Promise<Float32Array[]> {
   if (z.length !== N * N) throw new Error(`rainGpu: ${z.length} heights, wanted ${N * N}`);

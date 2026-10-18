@@ -42,7 +42,7 @@ export async function run() {
   if (q.has("az")) V.moon.az = Number(q.get("az"));
   if (q.has("el")) V.moon.el = Number(q.get("el"));
   const t0 = performance.now(), log = (s) => console.log(`[krz] ${s} ${Math.round(performance.now() - t0)} ms`);
-  const w = grow(seed);
+  const w = await grow(seed);
   log("grow");
   const rand = mulberry(seed * 977 + name.length * 31);
   const camp = w.camp, cc = camp.at, fire = camp.fire;

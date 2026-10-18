@@ -1,15 +1,15 @@
 // The island every style mock draws, as plain data with no renderer: the generator's fields, the finer ground under
 // them, streams, every tree, shrub and rock, and a camp. Styles differ in everything they draw; the world is the same.
 // The fine ground and everything growing on it come from the game's own flora.ts, so the mocks and the game agree.
-import { CELL, COVERS, FLORA, N, SIZE, SPECIES, START, STEP, K, M, TILE_M, clamp, fbm, fineGround, generateIsland, hash, noise, rng, scatter, smooth } from "./island.js";
+import { CELL, COVERS, FLORA, N, SIZE, SPECIES, START, STEP, K, M, TILE_M, clamp, fbm, fineGround, generateIsland, hash, noise, rng, scatter, smooth, theGpu } from "./island.js";
 
 export { COVERS, clamp, fbm, hash, noise, smooth };
 
 // How heathy each kind of shrub looks, 0 leafy to 1 heather.
 const HEATH = { berry: 0.1, hazel: 0.25, heather: 0.9 };
 
-export function grow(seed = 1) {
-  const isle = generateIsland(rng(seed)), rand = rng(seed ^ 0x51f15e);
+export async function grow(seed = 1) {
+  const isle = await generateIsland(rng(seed), await theGpu()), rand = rng(seed ^ 0x51f15e);
   const g = fineGround(isle);
   const { h, cover, wet, river, moist, at, bilinear, bicubic, fine, heightAt, slopeAt, dry, riverAt, rivers, riverWidth } = g;
   const Hc = isle.height, wetC = Float32Array.from(isle.water, (w) => (w > 0 ? 1 : 0));
@@ -36,7 +36,8 @@ export function grow(seed = 1) {
   for (let cy = 12; cy < N - 12; cy++)
     for (let cx = 12; cx < N - 12; cx++) {
       const k = cy * N + cx;
-      if (isle.grass[k] < 0.35 || isle.water[k] > 0 || Hc[k] < 3) continue;
+      // open dry ground (neither trees nor marsh): grass cover alone is a share of a percent of the land now, so no cell had 0.35
+      if (1 - isle.tree[k] - isle.marsh[k] < 0.35 || isle.water[k] > 0 || Hc[k] < 3) continue;
       const x = START + cx * CELL, z = START + cy * CELL;
       if (slopeAt(x, z) > 0.12) continue;
       let woods = 0, water = 99, rise = 0;

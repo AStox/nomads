@@ -1,7 +1,7 @@
 // Fly around a generated island at true scale, lit like a tabletop miniature. Orbit it, follow someone, or walk it.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { CELL, COLORS, N, NAMES, generateIsland, rng } from "./island.js";
+import { CELL, COLORS, N, NAMES, generateIsland, rng, theGpu } from "./island.js";
 import { daylight, lens, skyMaterial, time } from "./look.js";
 import { buildWorld } from "./world.js";
 
@@ -11,7 +11,7 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 // Let the loading screen paint before the generator takes the thread.
 await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 30)));
-const isle = generateIsland(rng(seed));
+const isle = await generateIsland(rng(seed), await theGpu());
 const renderer = new THREE.WebGLRenderer({ canvas: $("#view"), antialias: false, powerPreference: "high-performance" });
 renderer.toneMapping = THREE.NeutralToneMapping;
 renderer.toneMappingExposure = 1.15;

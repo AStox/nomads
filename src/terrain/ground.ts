@@ -2,12 +2,8 @@
 // left, how wet it stays, how sour it is, what its organic matter feeds, and which plants keep themselves there and
 // shade out the rest. There are no biomes here, only plants that cope or don't; forest, heath, meadow and bog are where
 // they win. Every number is in docs/research/terrain-constants.md secs. 12 and 13.
-import { clamp } from "math";
-import { CELL, LEN, N, distance } from "./grid";
-import { DRIFTS, LIMESTONE, MUDSTONE, DOLERITE, MELTWATER, PEAT, ROCKS, TILL_CLAY, CREEP, crystalline } from "./geology";
 import type { Season } from "./climate";
-import { ROOTS, RUE, SLA, UNDER_CROWN, closes, pOf, warmEnough, watered, yearComp } from "./growth";
-import { NICHE, SHRUBS, TREES, fit, type Env } from "./niche";
+import { ROOTS } from "./growth";
 
 export type Ground = {
   soil: Float32Array; // regolith depth, m: the drift and what has weathered from the rock under it
@@ -114,14 +110,6 @@ export function holds(soil: number, sand: number, clay: number, organic: number)
   const theta1500 = wp + 0.14 * wp - 0.02, theta33 = fc + 1.283 * fc * fc - 0.374 * fc - 0.015;
   return 1000 * Math.max(0, theta33 - theta1500) * Math.min(soil, ROOTS);
 }
-// Bulk density of the soil, g/cm3, by Saxton and Rawls (R597 eqs. 3, 5, 6).
-function density(sand: number, clay: number, organic: number) {
-  const om = Math.min(organic, 8);
-  const fc = -0.251 * sand + 0.195 * clay + 0.011 * om + 0.006 * sand * om - 0.027 * clay * om + 0.452 * sand * clay + 0.299;
-  const s33t = 0.278 * sand + 0.034 * clay + 0.022 * om - 0.018 * sand * om - 0.027 * clay * om - 0.584 * sand * clay + 0.078;
-  const sat = fc + 1.283 * fc * fc - 0.374 * fc - 0.015 + s33t + 0.636 * s33t - 0.107 - 0.097 * sand + 0.043;
-  return (1 - sat) * 2.65;
-}
 
 // The label a patch of ground goes by, as an index into flora.ts GROUND, from its cover shares in COVER's order: the
 // largest share (no weights, P39). Ground past the critical slope (R592) is bare rock, and so is bare ground with less
@@ -135,168 +123,4 @@ export function coverClass(share: ArrayLike<number>, soil: number, slope: number
   if (slope >= SC) return BARE_ROCK;
   if (soil >= LEPTOSOL) return best;
   return best === 4 ? BARE_ROCK : best === 0 || best === 2 ? OUTCROPS : best;
-}
-
-export function ground(s: Site): Ground {
-  const h = s.height;
-  const soil = new Float32Array(LEN), silt = new Float32Array(LEN), sand = new Float32Array(LEN), peat = new Float32Array(LEN), moist = new Float32Array(LEN);
-  const soilWater = [0, 1, 2, 3].map(() => new Float32Array(LEN));
-  const sandy = new Float32Array(LEN), clayey = new Float32Array(LEN), carbon = new Float32Array(LEN), organic = new Float32Array(LEN), nitrogen = new Float32Array(LEN);
-  const ph = new Float32Array(LEN), fertility = new Float32Array(LEN);
-  const tree = new Float32Array(LEN), shrub = new Float32Array(LEN), grass = new Float32Array(LEN), marsh = new Float32Array(LEN), bare = new Float32Array(LEN), field = new Float32Array(LEN), fieldLight = new Float32Array(LEN);
-
-  // How fast creep lowers each cell, m a year: the divergence of the slope flux D S / (1 - (S / Sc)^2) across its four
-  // faces, with the sea level as the ground's floor at the coast.
-  const z = (i: number) => Math.max(0, h[i]);
-  const flux = (a: number, b: number) => { const S = (z(b) - z(a)) / CELL, r = Math.min(0.99, Math.abs(S) / SC); return (-CREEP * S) / (1 - r * r); };
-  const lowers = new Float32Array(LEN);
-  for (let i = 0; i < LEN; i++) {
-    const x = i % N, y = (i - x) / N;
-    let out = 0;
-    if (x < N - 1) out += flux(i, i + 1); if (x > 0) out += flux(i, i - 1);
-    if (y < N - 1) out += flux(i, i + N); if (y > 0) out += flux(i, i - N);
-    lowers[i] = out / CELL;
-  }
-  // Where the sea lies, for the beaches, and the power of the stream nearest each cell, for its floodplain's alluvium:
-  // carried out from the channels in two sweeps, as grid.ts distance carries distance.
-  const sea = new Uint8Array(LEN);
-  for (let i = 0; i < LEN; i++) sea[i] = s.open[i] && h[i] < 0 ? 1 : 0;
-  const toSea = distance(sea);
-  const near = new Float32Array(LEN).fill(Infinity), reach = new Float32Array(LEN).fill(Infinity);
-  for (let i = 0; i < LEN; i++) if (s.channel[i]) { near[i] = s.power[i]; reach[i] = 0; }
-  for (const [from, to, step] of [[0, LEN, 1], [LEN - 1, -1, -1]]) {
-    for (let i = from; i !== to; i += step) {
-      const x = i % N, y = (i - x) / N;
-      for (const j of [x > 0 ? i - 1 : -1, x < N - 1 ? i + 1 : -1, y > 0 ? i - N : -1, y < N - 1 ? i + N : -1])
-        if (j >= 0 && reach[j] + 1 < reach[i]) { reach[i] = reach[j] + 1; near[i] = near[j]; }
-    }
-  }
-
-  const sun = new Float32Array(4), temp = new Float32Array(4), water = new Float32Array(4);
-  const a0 = DENSITY * W0;
-  for (let i = 0; i < LEN; i++) {
-    if (s.open[i]) { bare[i] = 1; for (const sw of soilWater) sw[i] = 1; continue; }
-    const d0 = s.driftDepth[i], E = lowers[i], R = ROCKS[s.rock[i]], kind = s.drift[i];
-    // The soil since the ice: dh/dt = a0 e^(-h/h*) - E integrates in u = e^(h/h*), which follows du/dt = (a0 - E u) / h*,
-    // from the drift the ice left. Where creep takes more than the rock can make, the soil wears down to bare rock.
-    const u0 = Math.exp(d0 / H_STAR);
-    const u = Math.abs(E) < 1e-12 ? u0 + (a0 * AGE) / H_STAR : a0 / E + (u0 - a0 / E) * Math.exp((-E * AGE) / H_STAR);
-    soil[i] = u > 1 ? H_STAR * Math.log(u) : 0;
-    // Beach sand on sediment coasts, below the storm waves' reach.
-    sand[i] = toSea[i] <= CELL && h[i] <= RUNUP && !crystalline(s.rock[i]) ? 1 : 0;
-    // Fine alluvium on floodplains whose stream is too weak to carry sand.
-    const flood = s.valley[i] > 0 && near[i] < Infinity;
-    silt[i] = flood && near[i] < COHESIVE ? 1 : 0;
-    // Peat where the water table stays in the acrotelm the year round: its deepest within 0.3 m.
-    const wet = s.dryTable[i] <= ACROTELM;
-    peat[i] = wet && !sand[i] ? (PEAT_P / PEAT_A) * (1 - Math.exp(-PEAT_A * AGE)) / 1000 / PEAT_RHO : 0;
-    // Texture: beach sand, alluvium, or the drift over the rock in the root zone.
-    const inDrift = Math.min(1, d0 / ROOTS), D = DRIFTS[kind];
-    let sa = D.sand * inDrift + R.sand * (1 - inDrift), cl = D.clay * inDrift + R.clay * (1 - inDrift);
-    if (flood) { const fine = silt[i]; sa = fine ? SILT_SAND : DRIFTS[MELTWATER].sand; cl = fine ? SILT_CLAY : DRIFTS[MELTWATER].clay; }
-    if (sand[i]) { sa = DRIFTS[MELTWATER].sand; cl = DRIFTS[MELTWATER].clay; }
-    sandy[i] = sa; clayey[i] = cl;
-    // pH of the mineral soil by what it formed in: the drift where it fills most of the root zone, else the rock (and the
-    // rock under a fen's peat).
-    const parent = inDrift >= 0.5 && kind !== PEAT ? kind : -1;
-    const carbonate = parent < 0 && s.rock[i] === LIMESTONE;
-    const rich = flood || parent === TILL_CLAY || (parent < 0 && (s.rock[i] === MUDSTONE || s.rock[i] === DOLERITE));
-    const mineral = carbonate ? CARBONATE : rich ? SILICATE : EXCHANGER;
-    ph[i] = mineral;
-    // The niches read the winter table, the one the forestry site classification's moisture regimes are defined on.
-    const env: Env = { ph: mineral, table: s.winterTable[i], light: NaN, wind: s.windShare[i], salt: s.salt[i], soil: soil[i] };
-    for (let k = 0; k < 4; k++) { sun[k] = s.seasons[k].sun[i]; temp[k] = s.seasons[k].temp[i]; }
-
-    // Two passes [design]: the cover's organic matter changes what the soil holds, and so the cover.
-    let om = 0, veg = 0, npp = 0, morShare = 0, wTree = 0, wOpen = 0;
-    for (let pass = 0; pass < 2; pass++) {
-      // A soil bucket through the seasons: spring rain tops it up and summer drinks it down; two years for it to settle.
-      // Roots that reach the season's water table don't go short that season, and it fills the root zone back up from
-      // below (FAO-56's root zone, R221; the capillary fringe above it [gap]).
-      const cap = holds(soil[i], sa, cl, om);
-      let store = cap, short = 0, want = 0;
-      for (let year = 0; year < 2; year++)
-        for (let k = 0; k < 4; k++) {
-          const { precip, pet } = s.seasons[k], fed = s.seasonTable[k][i] <= ROOTS, have = store + precip[i], used = fed ? pet[i] : Math.min(pet[i], have);
-          store = fed ? cap : Math.min(cap, have - used);
-          if (year) { short += pet[i] - used; want += pet[i]; water[k] = cap > 0 ? store / cap : fed ? 1 : 0; }
-        }
-      moist[i] = want > 0 ? 1 - short / want : 1;
-      // Each form's best kind: the one that keeps itself on the least of the open sky's sun over the year (growth.ts),
-      // as the ground suits it (niche.ts). Where trees keep themselves they close a canopy (growth.ts closes), but for the
-      // gaps their fallen trees leave; under the canopy and in its gaps only what keeps itself on the light there grows,
-      // in the gaps the young trees first. On the open ground the taller forms take the light first, each lower one in
-      // what the higher leave. Grass and herbs in shade are the field layer, which only the herds see; the sward is the
-      // open ground's. Nothing grows on the beach sand.
-      const best = (names: readonly string[]) => {
-        let comp = Infinity, name = names[0];
-        for (const n of names) { const c = yearComp(SLA[n], sun, temp, water, fit(n, env), pOf(n)); if (c < comp) { comp = c; name = n; } }
-        return { comp, name };
-      };
-      const T = best(TREES), Sh = best(SHRUBS), Re = best(["reeds"]), G = best(["grass"]), F = best(FIELD);
-      const ground = 1 - sand[i], forest = ground * closes(T.comp), canopy = forest * (1 - GAP), gap = forest * GAP;
-      const young = gap * closes(T.comp / GAP_LIGHT);
-      tree[i] = canopy + young;
-      // shrubs and reeds take the open ground and the gaps' floor by height, then the sward the open ground
-      const [hi, lo] = (NICHE[Sh.name].tall ?? 0) >= (NICHE.reeds.tall ?? 0) ? [Sh, Re] : [Re, Sh];
-      const layers = (room: number, light: number) => { const a = room * closes(hi.comp / light), b = (room - a) * closes(lo.comp / light); return hi === Sh ? [a, b] : [b, a]; };
-      const [oSh, oRe] = layers(ground - forest, 1), [gSh, gRe] = layers(gap - young, GAP_LIGHT);
-      shrub[i] = oSh + gSh; marsh[i] = oRe + gRe;
-      grass[i] = (ground - forest - oSh - oRe) * closes(G.comp);
-      const fieldGap = (gap - young - gSh - gRe) * closes(F.comp / GAP_LIGHT), fieldUnder = canopy * closes(F.comp / UNDER_CROWN);
-      field[i] = fieldGap + fieldUnder;
-      fieldLight[i] = field[i] > 0 ? (fieldGap * GAP_LIGHT + fieldUnder * UNDER_CROWN) / field[i] : 0;
-      bare[i] = Math.max(0, 1 - tree[i] - shrub[i] - marsh[i] - grass[i] - sand[i]);
-      veg = tree[i] + shrub[i] + marsh[i] + grass[i];
-      morShare = (T.name === "pine" ? tree[i] : 0) + (Sh.name === "heather" ? shrub[i] : 0);
-      wTree = tree[i]; wOpen = veg - tree[i];
-      // Nitrogen: the biomass and humus turning over pass e / (1 - e) of the plants' input through them at steady state
-      // (x, e by clay below), against what growth takes up of that input's dry matter; the input cancels, so fertility
-      // is the ground's own, even where nothing grows yet.
-      const clay = cl * 100, x = 1.67 * (1.85 + 1.6 * Math.exp(-0.0786 * clay)), e = 1 / (1 + x);
-      const turnover = (e / (1 - e)) * (0.46 / CN_BIO + 0.54 / CN_HUM);
-      fertility[i] = clamp((turnover * CARBON) / N_PLANT, 0, 1);
-      // The year's carbon from the plants, t a ha: each form's at its own drought tolerance in the light it stands in,
-      // what it stops of that light being what a closed canopy stops, as far as that nitrogen lets it grow (as herds.ts
-      // grows its grass) [derived].
-      npp = 0;
-      for (const [share, light, name] of [[tree[i], 1, T.name], [oSh, 1, Sh.name], [oRe, 1, "reeds"], [grass[i], 1, "grass"], [gSh, GAP_LIGHT, Sh.name], [gRe, GAP_LIGHT, "reeds"], [field[i], fieldLight[i], F.name]] as const) {
-        if (share <= 0) continue;
-        let dm = 0;
-        for (let k = 0; k < 4; k++) dm += DAYS * RUE * sun[k] * warmEnough(temp[k]) * watered(water[k], pOf(name));
-        npp += share * light * (1 - UNDER_CROWN) * dm;
-      }
-      npp *= (CARBON / 100) * fertility[i];
-      nitrogen[i] = 1000 * npp * turnover;
-      // RothC's steady state. Decomposition answers to warmth (a), the topsoil's dryness (b, its deficit reaching the
-      // most a soil of this clay holds back, 20 + 1.3 clay% - 0.01 clay%^2 mm over 23 cm, then slowing) and cover (c,
-      // 0.6 under plants, 1 bare).
-      const most = -(20 + 1.3 * clay - 0.01 * clay * clay);
-      let deficit = 0, m = 0;
-      for (let year = 0; year < 2; year++)
-        for (let k = 0; k < 4; k++) {
-          const { precip, pet } = s.seasons[k];
-          deficit = clamp(deficit + precip[i] - pet[i], most, 0);
-          if (!year) continue;
-          const warmth = 47.91 / (1 + Math.exp(106.06 / (temp[k] + 18.27)));
-          const b = deficit > 0.444 * most ? 1 : 0.2 + (0.8 * (most - deficit)) / (most - 0.444 * most);
-          m += (warmth * b * (0.6 * veg + (1 - veg))) / 4;
-        }
-      const ratio = veg > 0 ? (wTree * DPM_RPM.tree + wOpen * DPM_RPM.open) / veg : DPM_RPM.open, f = ratio / (1 + ratio);
-      // Peat is all organic, its top 23 cm at the bog's density [design]; RothC is not for waterlogged ground (R596).
-      if (peat[i] > 0) { carbon[i] = (PEAT_RHO * Math.min(TOPSOIL, peat[i]) * 10 * CARBON); om = 100; continue; }
-      const active = m > 0 ? npp * (f / (K_DPM * m) + (1 - f) / (K_RPM * m) + (e / (1 - e)) * (0.46 / K_BIO + 0.54 / K_HUM) / m) : 0;
-      let toc = active;
-      for (let n = 0; n < 20; n++) toc = active + 0.049 * toc ** 1.139;
-      carbon[i] = toc;
-      // Organic matter as a share of the topsoil's mass, its density by Saxton and Rawls (settled in a few steps).
-      const depth = Math.min(TOPSOIL, soil[i]);
-      for (let n = 0; n < 4; n++) om = depth > 0 ? Math.min(100, (100 * OM_C * toc) / (density(sa, cl, om) * depth * 1e4)) : 0;
-    }
-    organic[i] = om;
-    for (let k = 0; k < 4; k++) soilWater[k][i] = water[k];
-    // The mor pine and heather lay down sours base-poor ground.
-    if (mineral === EXCHANGER && veg > 0) ph[i] = mineral + (MOR - mineral) * (morShare / veg);
-  }
-  return { soil, silt, sand, peat, sandy, clayey, carbon, organic, nitrogen, ph, fertility, moist, soilWater, tree, shrub, grass, marsh, bare, field, fieldLight };
 }

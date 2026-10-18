@@ -1,5 +1,5 @@
 import type { Island } from "../terrain/island";
-import { generateIslandGpu } from "../gpu/terrain/island";
+import { generateIsland } from "../gpu/terrain/island";
 import type { Pools } from "./pools";
 import { lay, type Lay, type Terrain } from "../terrain/land";
 import { FLORA, SIZE, SPECIES, TILES, TILE_M, driftAt, fineGround, rockAt, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
@@ -21,7 +21,7 @@ import type { Stand } from "../gpu/flora";
 export const W = TILES;
 export const H = TILES;
 export { DAY, YEAR, YEAR_DAYS }; // the clock's (ticks.ts): ticks a day and a year, and days a year, the sun's round
-export const VERSION = 31; // 31: acts are work at a power (work.ts): beliefs keep seconds (Belief.secs) and a step's progress is joules; 30: a tick is a second (ticks.ts), so every persisted tick (instants, beliefs' ticks, the GPU's born words and event waits) counts seconds
+export const VERSION = 32; // 32: the island's climate, water and ground are GPU kernels with new laws (rain's cloud delays, groundwater evapotranspiration, a soil-carbon leaf season, joint valleys draining out of both ends), so every seed makes a different island; 31: acts are work at a power (work.ts): beliefs keep seconds (Belief.secs) and a step's progress is joules; 30: a tick is a second (ticks.ts), so every persisted tick (instants, beliefs' ticks, the GPU's born words and event waits) counts seconds
 export { TILE_M }; // meters per tile
 
 export enum Tile {
@@ -495,7 +495,7 @@ export function islandOf(seed: number): Promise<Ground> {
   let p = making.get(seed);
   if (!p) {
     p = (async () => {
-      const isle = await generateIslandGpu(rng(seed), await theGpu()), fine = fineGround(isle), dry = new Uint8Array(W * H);
+      const isle = await generateIsland(rng(seed), await theGpu()), fine = fineGround(isle), dry = new Uint8Array(W * H);
       for (let t = 0; t < W * H; t++)
         for (let k = 0; k < 36 && !dry[t]; k++) {
           const x = (t % W) + ((k % 6) + 0.5) / 6, y = Math.floor(t / W) + (Math.floor(k / 6) + 0.5) / 6;

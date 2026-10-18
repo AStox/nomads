@@ -80,7 +80,7 @@ const VIEWS = {
 export async function run() {
   const q = new URLSearchParams(location.search), view = VIEWS[q.get("view")] ? q.get("view") : "valley", seed = Number(q.get("seed")) || 1;
   const W = innerWidth || 1280, H = innerHeight || 720;
-  const w = grow(seed), V = VIEWS[view](w), camp = w.camp;
+  const w = await grow(seed), V = VIEWS[view](w), camp = w.camp;
   const cam = camera(V.eye, V.target, V.fov, W, H, V.vex, V.near);
   V.light = norm([-0.8 * cam.r[0] - 0.2 * cam.fh[0], 0.85, -0.8 * cam.r[2] - 0.2 * cam.fh[1]]);
   const beam = new Beam(W, H, seed * 7 + 1), items = [];
