@@ -186,7 +186,13 @@ export type Stage =
   | { stage: "cover"; height: Float32Array; water: Float32Array; tree: Float32Array; shrub: Float32Array; grass: Float32Array; marsh: Float32Array; bare: Float32Array; sand: Float32Array };
 export type Watch = (s: Stage) => void;
 
-export function generateIsland(rand: () => number, watch?: Watch): Island {
+// Everything before the climate: the crust, its erosion, the ice's scour and till, and the hollows that may hold lakes.
+export type Upstream = {
+  land: Uint8Array; rock: Uint8Array; height: Float32Array; drift: Uint8Array; driftDepth: Float32Array;
+  filled: Float32Array; order: Int32Array; to: Int32Array; basin: Uint8Array; hollow: Int32Array;
+  open: Uint8Array; // 1 over the sea and the hollows deep enough to hold a lake
+};
+export function upstream(rand: () => number, watch?: Watch): Upstream {
   const { land, rock, U, sea, along } = structure(rand);
   watch?.({ stage: "rock", rock, lift: Float32Array.from(U, (v) => v / U0) });
   const bed = erode(land, rock, U, sea, watch);
@@ -244,6 +250,11 @@ export function generateIsland(rand: () => number, watch?: Watch): Island {
     if (deepest > WATER_TABLE) for (const i of cells) basin[i] = 1;
   }
   for (let i = 0; i < LEN; i++) open[i] = filled[i] < 0 || basin[i] ? 1 : 0;
+  return { land, rock, height, drift, driftDepth, filled, order, to, basin, hollow, open };
+}
+
+export function generateIsland(rand: () => number, watch?: Watch): Island {
+  const { land, rock, height, drift, driftDepth, filled, order, to, basin, hollow, open } = upstream(rand, watch);
   const air = climate(height, open, rand);
   watch?.({ stage: "climate", height, precip: air.precip, temp: air.temp, snow: air.snowCover, wind: air.wind });
   const hy = hydrology(height, filled, order, to, basin, air, rock, drift, driftDepth);
