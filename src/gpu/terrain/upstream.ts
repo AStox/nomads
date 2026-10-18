@@ -241,7 +241,7 @@ const ROUNDS = 192, MOST_ROUNDS = 6144;
 const FATAL: [number, string][] = [
   [FLAG.chain, "a receiver chain does not end at a root"], [FLAG.depth, `a flow path is longer than the counting sort's ${MAXD} cells`],
   [FLAG.valleys, `more than ${VMAX} valleys`], [FLAG.draws, `more than ${DRN} draws`], [FLAG.dykes, "more dykes than the kernel holds"],
-  [FLAG.hollow, "the hollows' labels did not settle"], [FLAG.tall, "a height reaches 340 m, which the blur's sums cannot hold"],
+  [FLAG.hollow, "the hollows' labels did not settle"], [FLAG.tall, "a height reaches 1900 m, which the kernel cannot hold"],
 ];
 
 // A run from a plan, with the named internal fields' words returned beside the Upstream.

@@ -16,7 +16,10 @@ export const DEG = Math.PI / 180;
 // islands, and gave 12.7, 12.1 and 11.8 on the CPU's they replaced, run at U / K = 35 m), so Rytterknægten's 162 to 165 m
 // (R528) gives 0.95 m a million years, inside the 0.8 to 7.7 m that Fennoscandian granite surfaces are measured to lower
 // by (R531) [derived, inverted from Bornholm's relief].
-export const U0 = (163.5 * ROCKS[GRANITE].erode) / 12.2;
+// The highest summit the uplift is set to give, m. Bornholm's 163.5 is the default; a taller island is a [design] choice
+// (scripts/island-relief.ts sweeps it through NOMADS_SUMMIT, which only that script and a test set).
+export const SUMMIT_M = typeof process !== "undefined" && process.env.NOMADS_SUMMIT ? Number(process.env.NOMADS_SUMMIT) : 163.5;
+export const U0 = (SUMMIT_M * ROCKS[GRANITE].erode) / 12.2;
 // The share of the land on the crystalline horst: Bornholm's basement is about 400 of its 588 km2 (R528).
 export const CRYSTALLINE = 400 / 588;
 // How steeply the basement dips south under the sediments (R528, R529 for the dip) [design].

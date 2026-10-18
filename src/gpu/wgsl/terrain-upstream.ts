@@ -149,7 +149,7 @@ const SILL2 = ${q(2 * SILL, 32)}u;
 const SCOUR_Z = ${z(SCOUR)}u;
 const TILL_Z = ${z(TILL_MAX)}u;
 const BOFF = ${z(128)}i;
-const TALL = ${z(340)}i;
+const TALL = ${z(1900)}i;
 const WT_Z = ${z(WATER_TABLE)}i;
 const HOLLOW_MIN = ${Math.ceil(0.01 * ZS)}i;
 const RISE_Q16 = ${Math.round(ERODE.rise * CELL * 16 * 65536)}u;
@@ -207,17 +207,20 @@ const P_ADV = ${PAR.adverse}u;
 `;
 
 // The blur's six passes, three of box means of nine cells along x then y with the edge repeated: (sum + 4) / 9 of the
-// heights offset by 128 m so the nine sum in a u32.
+// heights offset by 128 m. The nine would overflow a u32 above 340 m, so the sum is kept as high and low 10-bit parts and
+// divided exactly: with shi = 9a + r, floor((1024 shi + slo + 4) / 9) = 1024 a + floor((1024 r + slo + 4) / 9).
 const blurPass = (name: string, src: string, dst: string, across: boolean) => /* wgsl */ `
 @compute @workgroup_size(256)
 fn ${name}(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x; let x = i32(i & 255u); let y = i32(i >> 8u);
-  var s = 0u;
+  var shi = 0u; var slo = 0u;
   for (var k = -4i; k <= 4i; k++) {
     let xx = ${across ? "clamp(x + k, 0i, 255i)" : "x"}; let yy = ${across ? "y" : "clamp(y + k, 0i, 255i)"};
-    s += u32(gi(${src}, u32(yy) * 256u + u32(xx)) + BOFF);
+    let v = u32(gi(${src}, u32(yy) * 256u + u32(xx)) + BOFF);
+    shi += v >> 10u; slo += v & 1023u;
   }
-  wi(${dst}, i, i32((s + 4u) / 9u) - BOFF);
+  let a = shi / 9u; let r = shi - a * 9u;
+  wi(${dst}, i, i32((a << 10u) + (r * 1024u + slo + 4u) / 9u) - BOFF);
 }`;
 
 const wgsl = /* wgsl */ `
