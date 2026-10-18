@@ -42,7 +42,7 @@ export type Site = {
 // beyond being slower [gap]; the density ratio 2 [UNVERIFIED]. Creep runs at geology.ts CREEP and steepens toward the
 // critical slope 1.25 (Roering et al.'s nonlinear flux, R592). The ice left the island 18 to 19 ka ago on the newer
 // production rate (Anjar et al., R593): 18,500 years.
-const H_STAR = 0.5, W0 = Math.sqrt(0.026e-3 * 0.096e-3), DENSITY = 2, AGE = 18500;
+export const H_STAR = 0.5, W0 = Math.sqrt(0.026e-3 * 0.096e-3), DENSITY = 2, AGE = 18500;
 export const SC = 1.25;
 
 // ---------- peat ----------
@@ -51,14 +51,14 @@ export const SC = 1.25;
 // p 50 g a m2 a year, a 1e-4 a year (R594), from the ice's going [design], at 0.1 g a cm3 [UNVERIFIED]. Blanket peat
 // wants 1,000 mm of rain a year or more on 160 wet days or more (R595); the wet days are not known here, so it is left out
 // [gap] (Bornholm's 550 to 650 mm fails it, the ground notes).
-const ACROTELM = 0.3, PEAT_P = 50, PEAT_A = 1e-4, PEAT_RHO = 100;
+export const ACROTELM = 0.3, PEAT_P = 50, PEAT_A = 1e-4, PEAT_RHO = 100;
 
 // ---------- beach sand ----------
 // Storm waves run up 1.6 m above the still water: Stockdon's R2 (R604) for storm waves of 4 m (Arkona's storm maxima,
 // R601) and 8 s on a 0.08 beach [derived; the period and beach slope UNVERIFIED]; storm surge [gap]. Sand lies on the
 // shore below that where the coast is sediment rather than the crystalline basement, as Bornholm's sand shores are in
 // the south-west and its granite shores in the north-east (R613) [design: the sand's supply].
-const RUNUP = 1.6;
+export const RUNUP = 1.6;
 
 // ---------- texture ----------
 // What each drift is is geology.ts DRIFTS; beach sand is JB1 to 2 (R524), as meltwater sand. Floodplain alluvium is fine
@@ -66,7 +66,7 @@ const RUNUP = 1.6;
 // alluvium's texture is not known (0.2 sand, 0.3 clay stand in) [gap]. The root zone (growth.ts ROOTS) takes the drift's
 // texture over as much of it as the drift fills and the rock's below [design]. Danish texture classes count silt from 2
 // to 20 µm, Saxton and Rawls from 2 to 50, and the 20 to 50 µm share is not known: the Danish sand stands in [gap].
-const COHESIVE = 10, SILT_SAND = 0.2, SILT_CLAY = 0.3;
+export const COHESIVE = 10, SILT_SAND = 0.2, SILT_CLAY = 0.3;
 
 // ---------- pH ----------
 // Topsoil pH by what the soil formed in, at the middle of each buffer range (Ulrich, R599; SLU, R600): carbonate 7.8 to
@@ -76,34 +76,34 @@ const COHESIVE = 10, SILT_SAND = 0.2, SILT_CLAY = 0.3;
 // water) on loamy till under beech, about 3 in the top of sandy soils under spruce and pine (R620). Peat here grows only
 // where groundwater stands at the surface, a fen, so it takes the pH of the ground the water comes through [derived];
 // whether a fen has grown up into a rain-fed bog, sourer, is a [gap].
-const CARBONATE = 8.3, SILICATE = 5.6, EXCHANGER = 5.3, MOR = 4;
+export const CARBONATE = 8.3, SILICATE = 5.6, EXCHANGER = 5.3, MOR = 4;
 
 // ---------- organic matter (RothC-26.3, R596) ----------
 // Decomposition rates a year of the decomposable and resistant plant matter, the microbial biomass and humus; the share of
 // each loss kept as biomass and humus by clay (x), split 46:54; the input's decomposable to resistant ratio, deciduous
 // woodland 0.25 and unimproved grassland and scrub 0.67; inert matter 0.049 TOC^1.139; the topsoil 23 cm. Monthly in
 // RothC, by the game's four seasons here [design].
-const K_DPM = 10, K_RPM = 0.3, K_BIO = 0.66, K_HUM = 0.02, TOPSOIL = 0.23, DPM_RPM = { tree: 0.25, open: 0.67 };
+export const K_DPM = 10, K_RPM = 0.3, K_BIO = 0.66, K_HUM = 0.02, TOPSOIL = 0.23, DPM_RPM = { tree: 0.25, open: 0.67 };
 // The plants' carbon: dry matter at Monteith's 1.4 g a MJ the leaves intercept (growth.ts RUE), a stand intercepting what
 // a closed canopy stops (growth.ts UNDER_CROWN) of the light it stands in, 0.47 of it carbon (IPCC, R617). Organic
 // matter twice the carbon (Pribyl, R602).
-const CARBON = 0.47, OM_C = 2;
+export const CARBON = 0.47, OM_C = 2;
 // The nitrogen it releases: what the biomass and humus give back as they turn over, at the microbial biomass's C:N, 60:7
 // by atoms, and the soil's, 186:13 (Cleveland and Liptzin, R615), so 7.3 and 12.3 by mass [derived; the ground notes'
 // rule, which leaves out what litter releases before it becomes biomass or humus, gap]; against what the year's growth
 // takes up, at the 2.4% nitrogen of unfertilised Irish grass swards (185 kg of N in 7,682 kg of dry matter a ha, R616)
 // [derived].
-const CN_BIO = (60 * 12) / (7 * 14), CN_HUM = (186 * 12) / (13 * 14), N_PLANT = 185 / 7682;
+export const CN_BIO = (60 * 12) / (7 * 14), CN_HUM = (186 * 12) / (13 * 14), N_PLANT = 185 / 7682;
 
-const DAYS = 365.25 / 4;
+export const DAYS = 365.25 / 4;
 // The grazed field layer: the sward and the herbs and flowers flora.ts lays under and between the woody plants.
-const FIELD = ["grass", "yarrow", "sorrel", "mint", "buttercup", "daisy", "clover", "harebell", "poppy"];
+export const FIELD = ["grass", "yarrow", "sorrel", "mint", "buttercup", "daisy", "clover", "harebell", "poppy"];
 // The natural forest's gaps: 11.75% of its ground, the median of the gap fractions measured in primeval and old-growth
 // beech forests, gaps whose regrowth stands under half to two thirds of the canopy (Drössler and von Lüpke 16 and 14.6%,
 // Feldmann et al. 13.6 and 8.2%, Rugani et al. 3.9 and 9.9% over their periods; R635, R636, R637) [derived]; Drössler's
 // 0.387 to 0.529% of the forest opened a year over the some 35 years a fallen canopy tree takes to rot gives 14 to 19%.
 // Light in them, about 10% of the open sky's, as in the gaps of the Danish near-natural wood at Suserup (R633).
-const GAP = (9.9 + 13.6) / 2 / 100, GAP_LIGHT = 0.1;
+export const GAP = (9.9 + 13.6) / 2 / 100, GAP_LIGHT = 0.1;
 
 // What the root zone holds for plants, mm: field capacity less wilting point by Saxton and Rawls (R597 eqs. 1, 2), sand
 // and clay shares by mass, organic matter %, over the root zone or the soil if it is shallower (FAO-56 eq. 82, R221).
