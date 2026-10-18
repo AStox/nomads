@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { BASE, ensure } from "./materials";
 import { BURNS, COPPER, FIRED_CLAY, LEATHER, PHYS, POT_WALL, WOODS, mix, physOf, woodOf, type Burn, type Phys, type Row, type Wood } from "./fuel";
-import { addThing, newWorld, type Agent, type Stack, type Thing, type World } from "./world";
+import { addThing, islandOf, newWorld, type Agent, type Stack, type Thing, type World } from "./world";
 import { TICK_S } from "./ticks";
 import { applyRuling, bedAir, dropStacks, fireOf, giveItems, giveStack, hand, heat, join, place, removeThing, shape, strikeTick, takeFromPile, type Outcome } from "./physics";
 import { capacityOf, loadOf } from "./gait";
@@ -10,6 +10,8 @@ import { advance } from "./combustion";
 import { around, nearestThing, thingById } from "./space";
 import { die } from "./life";
 import { fallApart } from "./ecology";
+
+await islandOf(42);
 
 // The tables of docs/research/fire-constants.md section 27, row by row, cells trimmed.
 const DOC = readFileSync(new URL("../../docs/research/fire-constants.md", import.meta.url), "utf8").split("\n");

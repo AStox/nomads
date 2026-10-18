@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
-import { newWorld } from "./world";
+import { islandOf, newWorld } from "./world";
 import { record, watchers } from "./beliefs";
 import type { Outcome } from "./physics";
+
+await islandOf(3);
 
 test("a child who learns a new thing by watching isn't credited with inventing it", () => {
   const w = newWorld(3);

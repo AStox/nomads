@@ -1,4 +1,4 @@
-import { groundOf, newWorld } from "../sim/world";
+import { groundOf, islandOf, newWorld } from "../sim/world";
 import { DAY, HOUR, YEAR_DAYS } from "../sim/ticks";
 import { stemDriver } from "../sim/plants";
 import { afterAll, expect, test } from "bun:test";
@@ -23,6 +23,8 @@ import type { DeadLaw } from "./wgsl/deadwood";
 import { N } from "../terrain/grid";
 import { SPECIES, clasts, dbhOf } from "../terrain/flora";
 import { Flora } from "./flora";
+
+await islandOf(1);
 
 let low: Gpu | null = null;
 afterAll(async () => { low?.device.destroy(); await releaseGpu(); });

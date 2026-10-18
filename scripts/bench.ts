@@ -4,7 +4,7 @@
 // the same world, only quicker.
 //   NOMADS_BRAIN=random bun scripts/bench.ts [--only make,seed,blame,world,spread] [--days 2]
 // Profile one: NOMADS_BRAIN=random bun --cpu-prof-md --cpu-prof-dir=/tmp/prof scripts/bench.ts --only seed
-import { TILE_M, addThing, dryAt, heldStore, newWorld, type Thing, type World } from "../src/sim/world";
+import { TILE_M, addThing, dryAt, heldStore, islandOf, newWorld, type Thing, type World } from "../src/sim/world";
 import { retire, tick } from "../src/sim/sim";
 import { bedAir, changed, fireOf, newKinds, removeThing, removed } from "../src/sim/physics";
 import { trailChanges } from "../src/sim/ecology";
@@ -38,11 +38,12 @@ const stateOf = async (w: World) => {
   }));
 };
 const WORK: Record<string, () => Promise<string>> = {
-  make: async () => hash(JSON.stringify(newWorld(1, 6))),
+  make: async () => { await islandOf(1); return hash(JSON.stringify(newWorld(1, 6))); },
   blame: async () => hash(JSON.stringify((await runProbe("blame", "real", 1, 5, 6, "random")).metrics)),
   seed: async () => hash(JSON.stringify((await runProbe("seed", "real", 1, 5, 6, "random")).metrics)),
   world: async () => {
     seedRandom(1);
+    await islandOf(1);
     const w = newWorld(1);
     for (let i = 0; i < days * DAY; i++) {
       await tick(w);
@@ -61,6 +62,7 @@ const WORK: Record<string, () => Promise<string>> = {
   // head height (fire-constants sec. 25), blowing east and a little across, for an hour.
   spread: async () => {
     seedRandom(7);
+    await islandOf(5);
     const w = newWorld(5);
     w.agents = [];
     const m = (meters: number) => meters / TILE_M;

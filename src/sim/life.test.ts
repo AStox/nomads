@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { DAY, TILE_M, Tile, addThing, newWorld, tileAt, type Agent, type World } from "./world";
+import { DAY, TILE_M, Tile, addThing, islandOf, newWorld, tileAt, type Agent, type World } from "./world";
 import { beside, diggable, digTick, giveItems, giveStack, place, shelterOf, throwTick } from "./physics";
 import { roundSize } from "./fuel";
 import { addAnimal } from "./fauna";
@@ -7,6 +7,8 @@ import { put } from "./space";
 import { ecology } from "./ecology";
 import { die, life } from "./life";
 import { newRel } from "./brain";
+
+await Promise.all([3, 4, 5, 6].map(islandOf));
 
 // Stand someone on open grass with room in front of them to dig.
 const grassSpot = (w: World, a: Agent) => {

@@ -11,7 +11,7 @@ import { SEEDLING, Seedlings, type SeedDriver, type SeedLaw } from "./seedlings"
 import { cover, readback, storage } from "./kernel";
 import { stemDriver, stemTables } from "../sim/plants";
 import { seedDriver, seedLaw } from "../sim/seeds";
-import { DAY, YEAR_DAYS, heldStore, newWorld } from "../sim/world";
+import { DAY, YEAR_DAYS, heldStore, islandOf, newWorld } from "../sim/world";
 import { resident, seedlingsOf } from "../sim/space";
 import { residentAnimals } from "../sim/animals";
 import { FLORA, SPECIES, TILES, TILE_M, type Scatter } from "../terrain/flora";
@@ -26,6 +26,8 @@ import {
 } from "./wgsl/seedlings";
 import { binom, feistel, fkeys, next32, philox, qexpo, qgammav, qlognormal, qpoisson, rinit, unif } from "./rand";
 import { type U64, mul64, mulhi64, qmul, qpow } from "./fixed";
+
+await islandOf(1);
 
 afterAll(releaseGpu);
 

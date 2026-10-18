@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { SEEDLINGS, fitHere } from "./plants";
-import { DAY, H, TILE_M, W, addThing, dryAt, meters, newWorld, type Agent, type Thing, type World } from "./world";
+import { DAY, H, TILE_M, W, addThing, dryAt, islandOf, meters, newWorld, type Agent, type Thing, type World } from "./world";
 import { giveItems, groundWord, plant, removeThing, soilAt } from "./physics";
 import { around, put, thingById } from "./space";
 import { groundKey, noteTry, type Belief } from "./beliefs";
@@ -9,6 +9,8 @@ import { tick } from "./sim";
 import { YEAR_DAYS } from "./sky";
 import { HOUR, ticksOf } from "./ticks";
 import { releaseGpu } from "../gpu/device";
+
+await islandOf(5);
 
 // tick puts the world's flora on the GPU, and a live device keeps the test process from exiting
 afterAll(releaseGpu);

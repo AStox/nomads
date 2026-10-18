@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { TILE_M, addThing, dryAt, heldStore, newWorld, type Thing, type World } from "./world";
+import { TILE_M, addThing, dryAt, heldStore, islandOf, newWorld, type Thing, type World } from "./world";
 import { removeThing } from "./physics";
 import { around, crownsOf, makeStem } from "./space";
 import { airAt, rainAt } from "./air";
@@ -9,6 +9,8 @@ import { through as layers } from "../terrain/growth";
 import { tick } from "./sim";
 import { releaseGpu } from "../gpu/device";
 import { afterAll } from "bun:test";
+
+await islandOf(42);
 
 afterAll(releaseGpu);
 

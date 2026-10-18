@@ -1,5 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
-import { DAY, TILE_M, addThing, isNight, newWorld, type Agent, type World } from "./world";
+import { DAY, TILE_M, addThing, isNight, islandOf, newWorld, type Agent, type World } from "./world";
 import { bedAir, fireHours, fireOf, fireOutput, hoursToDawn, removeThing } from "./physics";
 import { advance } from "./combustion";
 import { airAt } from "./air";
@@ -9,6 +9,8 @@ import { YEAR_DAYS } from "./sky";
 import { bodyOf } from "./body";
 import { ticksOf } from "./ticks";
 import { BODY_S, secs } from "./lanes";
+
+await islandOf(5);
 
 process.env.NOMADS_BRAIN = "random";
 

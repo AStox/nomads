@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { DAY, TILE_M, addThing, newWorld, type Agent, type Stack, type World } from "./world";
+import { DAY, TILE_M, addThing, islandOf, newWorld, type Agent, type Stack, type World } from "./world";
 import { HOUR } from "./ticks";
 import { DAMP, deadAt, emc, equilibrium, splitWater, tinderOf, wetness } from "./wetness";
 import { STICK_DIA } from "../gpu/deadwood";
@@ -11,6 +11,8 @@ import { nearestThing, put } from "./space";
 import { canopyAt } from "./light";
 import { needs } from "./sim";
 import { bodyOf } from "./body";
+
+await islandOf(42);
 
 // Before Unit 4 (materials.test.ts, as it stood): fiber held in the rain soaked past SOAKED, 0.6 of a wetness running 0
 // to 1, within the hour; eight clear hours on it was drier than DAMP, 0.3; in a bag it stayed drier than DAMP through

@@ -18,7 +18,9 @@ import {
 import { N } from "../terrain/grid";
 import { fishConsts, fishDriver, watersOf, fishOf } from "../sim/waters";
 import { DAY, YEAR_DAYS } from "../sim/ticks";
-import { newWorld } from "../sim/world";
+import { islandOf, newWorld } from "../sim/world";
+
+await islandOf(1);
 
 afterAll(releaseGpu);
 

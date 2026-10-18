@@ -12,7 +12,7 @@
 // they made and the rulings they settled come too, so the same things can be made here.
 import { meeting } from "../src/sim/waters";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { W, H, addThing, dryAt, newWorld, rng, shoreOf, stageOf, type Stack, type Thing, type World } from "../src/sim/world";
+import { W, H, addThing, dryAt, islandOf, newWorld, rng, shoreOf, stageOf, type Stack, type Thing, type World } from "../src/sim/world";
 import { forecast } from "../src/sim/ecology";
 import { bedAir, firstHeld, gathered, giveItems, giveStack, layAt, openWater, removeThing, usual, type Fields, type Fire } from "../src/sim/physics";
 import { airOn, islandTemp } from "../src/sim/air";
@@ -37,6 +37,7 @@ const seed = Number(arg("seed", "1")), days = Number(arg("days", "40")), samples
 const runs = arg("runs", ""), out = arg("out", `/tmp/truth/${seed}.json`);
 if (!runs) throw new Error("--runs: a directory of scripts/theories.ts runs of this island");
 seedRandom(seed);
+await islandOf(seed);
 const w = newWorld(seed);
 // one of the island's grown people, taken out of the world to stand where each situation is, knowing nothing and
 // practised at nothing, so neither a theory of theirs nor a skill tips what the formulas make of it

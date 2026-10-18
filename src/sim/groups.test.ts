@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
-import { DAY, TILE_M, addThing, newWorld, type Agent, type Incident, type Precedent, type World } from "./world";
+import { DAY, TILE_M, addThing, islandOf, newWorld, type Agent, type Incident, type Precedent, type World } from "./world";
 import { homeOf, shelterOf } from "./physics";
 import { put } from "./space";
 import { newRel } from "./brain";
 import { cluster, friendly, groups, incident, patterns, patternText, snubbed, standing } from "./groups";
 import { jevCalls } from "./trace";
 import { ticksOf } from "./ticks";
+
+await islandOf(11);
 
 process.env.NOMADS_BRAIN = "random";
 

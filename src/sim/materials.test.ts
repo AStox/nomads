@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { DAY, TILE_M, addThing, adoptStore, dryAt, newWorld, rng, shoreOf, wetAt, type Act, type Agent, type Thing, type World } from "./world";
+import { DAY, TILE_M, addThing, adoptStore, dryAt, islandOf, newWorld, rng, shoreOf, wetAt, type Act, type Agent, type Thing, type World } from "./world";
 import { HOUR, ticksOf } from "./ticks";
 import { WEATHER_NOW, bedAir, count, eat, fireOf, giveItems, giveStack, heat, join, openWater, place, removeThing, strikeTick, throwReach, throwTick, wet, type Fields, type Outcome } from "./physics";
 import { BURNS, COPPER, PHYS, pieceOf } from "./fuel";
@@ -23,6 +23,8 @@ import { DAMP } from "./wetness";
 import { ecology, forecast } from "./ecology";
 import { ahead, bedAt, seedlingFate } from "./seedling";
 import { fitHere } from "./plants";
+
+await islandOf(42);
 
 afterAll(releaseGpu);
 // A fire burning so many seconds (ten minutes unless said) from the usual lay (fireOf), under a clear sky with a breeze

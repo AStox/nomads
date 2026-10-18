@@ -2,7 +2,7 @@
 // way server.ts loop() runs it: one tick at a time, the same change sets, cleared the same way. The page thread keeps
 // only what it shows (remote.js): after the ticks a frame ran the worker posts it state(), and what the page has asked
 // about.
-import { ACTIVITY, DAY, HOUR, TICK_S, YEAR_DAYS, census as headcount, TILE_M, activity, brainKind, changed, changedKinds, floraOf, groupsChanged, heading, iceChanged, inspect, inspectGround, newKinds, newWorld, pathChanges, removeThing, removed, resident, seedDriver, stemDriver, thingById, thingView, tick, trailChanges, trails, useBrain } from "../sim.js";
+import { ACTIVITY, DAY, HOUR, TICK_S, YEAR_DAYS, census as headcount, TILE_M, activity, brainKind, changed, changedKinds, floraOf, groupsChanged, heading, iceChanged, inspect, inspectGround, islandOf, newKinds, newWorld, pathChanges, removeThing, removed, resident, seedDriver, stemDriver, thingById, thingView, tick, trailChanges, trails, useBrain } from "../sim.js";
 
 function clearChanges() {
   iceChanged.now = false; groupsChanged.now = false;
@@ -15,6 +15,7 @@ function clearChanges() {
 // renderer can draw from its buffers and make its sprites. Returns before the world warms: the warm's ticks are the
 // first ticks asked for (tick, onProgress).
 export async function createSim({ seed = 1, warm = 0, onProgress, onWorld, jev = null } = {}) {
+  await islandOf(seed);
   const w = newWorld(seed);
   // as the first tick would (sim.ts tick), so the buffers are there before any tick
   if (!floraOf(w).store) await resident(w, stemDriver(w), seedDriver(w));

@@ -2,7 +2,7 @@
 // on both of the dev machine's adapters, and the plan's checks (Unit 7): a closed oak stand holds Reineke's count, an
 // open-grown stem reaches the calibrated heights, a stem in full shade starves by the peak/2 rule, no tree passes its
 // stand's maximum crowding, and seed 1's stems by kind against the measured densities.
-import { DAY, YEAR_DAYS, groundOf, newWorld } from "../sim/world";
+import { DAY, YEAR_DAYS, groundOf, islandOf, newWorld } from "../sim/world";
 import { GROWTH_C, TREE_KINDS, YEARS_PACE, calibratedHeight, stemDriver, stemTables, treeKg } from "../sim/plants";
 import { afterAll, expect, test } from "bun:test";
 import { openGpu, releaseGpu, theGpu, type Gpu } from "./device";
@@ -13,6 +13,8 @@ import { FLORA, SPECIES, TILES, TILE_M, crownShare, dbhOf, type Scatter } from "
 import { CELL, N } from "../terrain/grid";
 import { DIED, HALF_Q, HC, HQ, MAP, QSTEP, ROWS, ROW_WORDS, RW, SSTEP, TEXELS_SIDE, TEXEL_MM, TREE_ROWS } from "./wgsl/stems";
 import { layered } from "./wgsl/crowns";
+
+await islandOf(1);
 
 afterAll(releaseGpu);
 

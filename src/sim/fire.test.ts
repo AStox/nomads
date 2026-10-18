@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { DAY, TILE_M, addThing, dryAt, heldStore, newWorld, rng, type Thing, type World } from "./world";
+import { DAY, TILE_M, addThing, dryAt, heldStore, islandOf, newWorld, rng, type Thing, type World } from "./world";
 import { HOUR, ticksOf } from "./ticks";
 import { fire } from "./ecology";
 import { bedAir, fireOf, fireOutput, removeThing, shelterOf } from "./physics";
@@ -15,6 +15,8 @@ import { retire, tick as worldTick } from "./sim";
 import { releaseGpu } from "../gpu/device";
 import { LOOK_S } from "../gpu/wgsl/fire";
 import { LAND_S } from "./lanes";
+
+await Promise.all([42, 5].map(islandOf));
 
 // The plan's Unit 8 cases, each with its weather fixed from docs/research/fire-constants.md before spread.ts was run
 // (sec. 30), on a world resident on the GPU, its beds burning there as they do in play:

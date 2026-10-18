@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
-import { W, landing, mainland, newWorld } from "./world";
+import { W, islandOf, landing, mainland, newWorld } from "./world";
 import { FAUNA } from "./fauna";
+
+await islandOf(10);
 
 // The Bornholm generator makes one stretch of ground; seed 10's has a tile of it cut off from the rest, which is where no
 // one may start or land. One island is the claim's whole test, and growing it is most of the test's time.

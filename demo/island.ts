@@ -1,6 +1,7 @@
 // The game's island generator, its fine ground and everything on it, and the seeded random stream, bundled for the
 // browser so the demo grows the same islands the game does.
 export { generateIsland } from "../src/terrain/island";
+export { generateIslandGpu } from "../src/gpu/terrain/island";
 export { CELL, N } from "../src/terrain/grid";
 export { COVERS, FLORA, GROUND, K, LAKE, M, RIVER, RM, ROCKY, SEA, SIZE, SPECIES, START, STEP, TILES, TILE_M, clamp, crownShare, fbm, fineGround, groundClass, hash, noise, riverSmooth, scatter, smooth, streamAt, waterAt, worldSlope } from "../src/terrain/flora";
 export { LEPTOSOL, SC } from "../src/terrain/ground";

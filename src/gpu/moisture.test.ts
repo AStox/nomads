@@ -20,7 +20,9 @@ import { stemTables } from "../sim/plants";
 import { shelterTables } from "../sim/air";
 import { HOUR } from "../sim/ticks";
 import { deadHour, islandCell } from "../sim/wetness";
-import { newWorld, type Dead } from "../sim/world";
+import { islandOf, newWorld, type Dead } from "../sim/world";
+
+await islandOf(1);
 
 let low: Gpu | null = null;
 afterAll(async () => { low?.device.destroy(); await releaseGpu(); });

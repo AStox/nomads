@@ -1,9 +1,11 @@
-import { groundOf } from "../sim/world";
+import { groundOf, islandOf } from "../sim/world";
 import { afterAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "./device";
 import { Store, idOf, loadStore } from "./store";
 import { Flora, PIECE, PLANT, fieldsOf, standOf } from "./flora";
 import { FLORA, SPECIES, TILES, type Scatter } from "../terrain/flora";
+
+await islandOf(1);
 
 afterAll(releaseGpu);
 

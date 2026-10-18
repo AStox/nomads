@@ -1,5 +1,5 @@
 import { mkdirSync, renameSync } from "node:fs";
-import { QUIET, VERSION, YEAR_DAYS, adoptStore, clock, heldStore, newWorld, type World } from "./src/sim/world";
+import { QUIET, VERSION, YEAR_DAYS, adoptStore, clock, heldStore, islandOf, newWorld, type World } from "./src/sim/world";
 import { DAY, HOUR, TICK_S } from "./src/sim/ticks";
 import { agentDetail, changedKinds, summary, tick } from "./src/sim/sim";
 import { changed, newKinds, removed } from "./src/sim/physics";
@@ -34,6 +34,7 @@ async function load(): Promise<World> {
   if (await f.exists()) {
     const w = (await f.json()) as World;
     if (w.version === VERSION) {
+      await islandOf(w.seed);
       for (const a of w.agents) {
         a.near ??= {};
         a.thinking = false;
@@ -51,7 +52,9 @@ async function load(): Promise<World> {
     }
     renameSync(SAVE, `${SAVE}.v${w.version ?? 2}.bak`);
   }
-  return newWorld(Math.floor(Math.random() * 1e9));
+  const seed = Math.floor(Math.random() * 1e9);
+  await islandOf(seed);
+  return newWorld(seed);
 }
 const w = await load();
 // The JSON, and then, when the world holds objects on the GPU, their buffers read back, each written and then moved

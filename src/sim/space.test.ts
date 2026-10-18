@@ -1,4 +1,4 @@
-import { DAY, H, W, adoptStore, heldStore, newWorld, type World } from "./world";
+import { DAY, H, W, adoptStore, heldStore, islandOf, newWorld, type World } from "./world";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../gpu/device";
 import { idOf, loadStore } from "../gpu/store";
@@ -11,6 +11,8 @@ import { stemDriver } from "./plants";
 import { seedDriver } from "./seeds";
 import { animalsOf, residentAnimals } from "./animals";
 import { LAND_S, due } from "./lanes";
+
+await islandOf(1);
 
 afterAll(releaseGpu);
 

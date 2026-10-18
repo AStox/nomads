@@ -3,7 +3,7 @@
 // buffers with the atlas of their sprites, and draws each frame the page asks for (webgpu.js). The page (live.js) keeps
 // the camera, the sky and the UI; it sends what moves (the view, the light, the people, animals, fires and overlays),
 // asks for each tick, and gets the sim's state after it (play/remote.js).
-import { generateIsland, fineGround, rng, crownShare, SIZE, START, STEP, TILE_M, TILES } from "../island.js";
+import { generateIslandGpu, fineGround, rng, crownShare, SIZE, START, STEP, TILE_M, TILES } from "../island.js";
 import { P, NCOL, HAZE, GLOW, TONE, TONE_S } from "./pal.js";
 import { LIVE, shown, ANIMAL_BODY, ANIMAL_DRAWN } from "./px.js";
 import { packGround } from "./ground.wgsl.js";
@@ -60,9 +60,12 @@ async function init(m) {
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: "opaque" });
   say("growing the island", 0, 1);
-  // With a sim the island is the sim's own (world.ts groundOf, which it keeps for its world), grown once for both
-  const simB = m.sim ? await import("../sim.js") : null, simC = m.sim ? await import("../play/sim.js") : null, gr = simB?.groundOf(m.seed);
-  const isle = gr?.isle ?? generateIsland(rng(m.seed)), g = gr?.fine ?? fineGround(isle);
+  // With a sim the island is the sim's own (world.ts islandOf, which it keeps for its world), grown once for both, on this
+  // device: the page holds one, so the sim is handed it before the island is grown.
+  const simB = m.sim ? await import("../sim.js") : null, simC = m.sim ? await import("../play/sim.js") : null;
+  if (simB) { simB.useGpu({ device, adapter: gpuName }); await simB.islandOf(m.seed); }
+  const gr = simB?.groundOf(m.seed);
+  const isle = gr?.isle ?? (await generateIslandGpu(rng(m.seed), { device, adapter: gpuName })), g = gr?.fine ?? fineGround(isle);
   const t1 = performance.now();
   say("laying out the ground", 0, 1);
   const pack = packGround(isle, g);
@@ -690,7 +693,6 @@ const trailPending = new Set();
 
 // bundle: the sim's bundle (../sim.js), already loaded for the island it grew; createSim: play/sim.js's
 async function startSim(bundle, createSim, seed, { warm = 0, jev = null }) {
-  bundle.useGpu({ device, adapter: gpuName });
   // a tick's parts with the frames drawn between them (sim.ts tickPause), the run the same as in one piece
   bundle.tickPause.fn = nextTask;
   mark("simStart");

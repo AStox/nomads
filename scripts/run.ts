@@ -2,7 +2,7 @@
 //   NOMADS_BRAIN=random bun scripts/run.ts --days 70 --seed 7         (no Jev, fast)
 //   bun scripts/run.ts --hours 6                                       (real Jev, needs TYPESAFE_API_KEY)
 //   NOMADS_BRAIN=random bun scripts/run.ts --minutes 60 --ticks 1e9    (stop on wall-clock time, with a progress line each day)
-import { newWorld, clock } from "../src/sim/world";
+import { islandOf, newWorld, clock } from "../src/sim/world";
 import { DAY, HOUR } from "../src/sim/ticks";
 import { census } from "../src/sim/animals";
 import { tick } from "../src/sim/sim";
@@ -22,6 +22,7 @@ seedRandom(Number(arg("rng", String(seed))));
 console.log(`gpu: ${await holdGpu()}`);
 const logs = arg("logs", "");
 if (logs) logTo(logs);
+await islandOf(seed);
 const w = newWorld(seed);
 const t0 = performance.now();
 let ran = 0;

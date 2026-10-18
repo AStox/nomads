@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { DAY, H, TILE_M, Tile, W, dryAt, heldStore, meters, newWorld, shoreOf, tileAt, walkable, type Step } from "./world";
+import { DAY, H, TILE_M, Tile, W, dryAt, heldStore, islandOf, meters, newWorld, shoreOf, tileAt, walkable, type Step } from "./world";
 import { HERDED, animals, animalsOf, residentAnimals } from "./animals";
 import { resident } from "./space";
 import { stemDriver } from "./plants";
@@ -10,6 +10,8 @@ import { HOUR, TICK_S, ticksOf } from "./ticks";
 import { FAUNA, FID, addAnimal } from "./fauna";
 import { ANIMAL } from "../gpu/animals";
 import { F, SP } from "../gpu/wgsl/animals";
+
+await islandOf(1);
 
 // The island's deer, rabbits, wolves, foxes, herons, eagles, gulls and crows as individuals on the GPU
 // (docs/research/animal-constants.md sec. 12): seed 1, the play page's island, from its start through three island

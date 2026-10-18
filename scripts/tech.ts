@@ -4,7 +4,7 @@
 // Many seeds at once: for s in 1 2 3 4; do NOMADS_BRAIN=random bun scripts/tech.ts --seed $s --days 120 & done; wait
 // With Jev (TYPESAFE_API_KEY in .env), each tick waits for every question it asked, so the world runs as if Jev answered
 // at once: bun scripts/tech.ts --seed 7 --days 10
-import { newWorld, type World } from "../src/sim/world";
+import { islandOf, newWorld, type World } from "../src/sim/world";
 import { DAY } from "../src/sim/ticks";
 import { tick } from "../src/sim/sim";
 import { changed, newKinds, removed } from "../src/sim/physics";
@@ -19,6 +19,7 @@ const seed = Number(arg("seed", "1")), days = Number(arg("days", "120"));
 // the run's own draws, the island's seed unless told otherwise: the same seed runs the same world again
 seedRandom(Number(arg("rng", String(seed))));
 await holdGpu();
+await islandOf(seed);
 const w = newWorld(seed);
 
 const laws = (w: World) => Object.values(w.laws);

@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { DAY, YEAR, meters, newWorld, type Act, type Agent, type Stack, type Step, type World } from "./world";
+import { DAY, YEAR, islandOf, meters, newWorld, type Act, type Agent, type Stack, type Step, type World } from "./world";
 import { LEAST, advance, alight, output, radiation } from "./combustion";
 import { PHYS, pieceOf, roundSize } from "./fuel";
 import { ensure } from "./materials";
@@ -14,6 +14,8 @@ import { releaseGpu } from "../gpu/device";
 import { bodyOf } from "./body";
 import { HOUR, TICK_S, ticksOf } from "./ticks";
 import { ACT_WORK, REF_W, powerOf } from "./work";
+
+await islandOf(42);
 
 // tick puts the world's flora on the GPU, and a live device keeps the test process from exiting
 afterAll(releaseGpu);

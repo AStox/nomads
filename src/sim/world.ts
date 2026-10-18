@@ -1,4 +1,5 @@
-import { generateIsland, type Island } from "../terrain/island";
+import type { Island } from "../terrain/island";
+import { generateIslandGpu } from "../gpu/terrain/island";
 import type { Pools } from "./pools";
 import { lay, type Lay, type Terrain } from "../terrain/land";
 import { FLORA, SIZE, SPECIES, TILES, TILE_M, driftAt, fineGround, rockAt, scatter, waterAt, type Fine, type Scatter } from "../terrain/flora";
@@ -14,7 +15,7 @@ import { NIGHT_EL, NOON, sunAt } from "./sky";
 import { DAY, YEAR, YEAR_DAYS } from "./ticks";
 import { Store } from "../gpu/store";
 import { philox } from "../gpu/rand";
-import type { Gpu } from "../gpu/device";
+import { theGpu, type Gpu } from "../gpu/device";
 import type { Stand } from "../gpu/flora";
 
 export const W = TILES;
@@ -482,25 +483,37 @@ export function perWorld<T>(make: () => T): (w: World) => T {
   };
 }
 
-// Growing an island and everything on it takes about nine seconds and depends only on the seed, so tests that rebuild the
-// same world, and a batch of probe runs on one island, reuse it. Callers get their own copies of anything the game might
+// Growing an island and everything on it depends only on the seed, so tests that rebuild the same world, and a batch of
+// probe runs on one island, reuse it. The generator's climate, water and ground run on the GPU, whose answers come back
+// asynchronously, so an island is made by `await islandOf(seed)` once (a game, a script, a test's first line) and
+// groundOf then reads it, synchronously, wherever the sim asks. Callers get their own copies of anything the game might
 // change.
 export type Ground = { land: Lay; isle: Island; fine: Fine; flora: Scatter; dry: Uint8Array; shore?: { px: number; py: number }[] }; // dry: 1 per tile with dry ground in it
-const grounds = new Map<number, Ground>();
+const grounds = new Map<number, Ground>(), making = new Map<number, Promise<Ground>>();
 let lastSeed = NaN, last: Ground | null = null;
+export function islandOf(seed: number): Promise<Ground> {
+  let p = making.get(seed);
+  if (!p) {
+    p = (async () => {
+      const isle = await generateIslandGpu(rng(seed), await theGpu()), fine = fineGround(isle), dry = new Uint8Array(W * H);
+      for (let t = 0; t < W * H; t++)
+        for (let k = 0; k < 36 && !dry[t]; k++) {
+          const x = (t % W) + ((k % 6) + 0.5) / 6, y = Math.floor(t / W) + (Math.floor(k / 6) + 0.5) / 6;
+          if (waterAt(isle, fine, x * TILE_M - SIZE / 2, y * TILE_M - SIZE / 2) <= 0.5) dry[t] = 1;
+        }
+      const g: Ground = { land: lay(isle), isle, fine, flora: scatter(isle, fine, seed), dry };
+      grounds.set(seed, g);
+      return g;
+    })();
+    making.set(seed, p);
+    p.catch(() => making.delete(seed));
+  }
+  return p;
+}
 export function groundOf(seed: number): Ground {
   if (seed === lastSeed && last) return last;
-  let g = grounds.get(seed);
-  if (!g) {
-    const isle = generateIsland(rng(seed)), fine = fineGround(isle), dry = new Uint8Array(W * H);
-    for (let t = 0; t < W * H; t++)
-      for (let k = 0; k < 36 && !dry[t]; k++) {
-        const x = (t % W) + ((k % 6) + 0.5) / 6, y = Math.floor(t / W) + (Math.floor(k / 6) + 0.5) / 6;
-        if (waterAt(isle, fine, x * TILE_M - SIZE / 2, y * TILE_M - SIZE / 2) <= 0.5) dry[t] = 1;
-      }
-    g = { land: lay(isle), isle, fine, flora: scatter(isle, fine, seed), dry };
-    grounds.set(seed, g);
-  }
+  const g = grounds.get(seed);
+  if (!g) throw new Error(`the island of seed ${seed} is not made: await islandOf(${seed}) first`);
   lastSeed = seed; last = g;
   return g;
 }

@@ -18,7 +18,7 @@
 //   once however many of them are on it
 // scripts/evals.ts runs every probe over many seeds and holds each build to the last good one.
 import { readFileSync } from "node:fs";
-import { TILE_M, addThing, dryAt, isNight, newWorld, rng, type Agent, type Stack, type Thing, type World } from "../src/sim/world";
+import { TILE_M, addThing, dryAt, isNight, islandOf, newWorld, rng, type Agent, type Stack, type Thing, type World } from "../src/sim/world";
 import { conditionsNow, retire, surroundings, tick } from "../src/sim/sim";
 import { STILL, changed, count, counts, emberTime, giveItems, giveStack, groundWord, layAt, newKinds, occupied, removeThing, removed, soilAt, SEED_SOIL } from "../src/sim/physics";
 import { ACT_WORK, REF_W } from "../src/sim/work";
@@ -580,6 +580,7 @@ export async function runProbe(probe: string, variant: string, seed: number, day
   // the probe's own draws, for the weather it looks ahead to, which never move the world's
   const draws = rng(seed * 7919 + 13);
   const t0 = performance.now();
+  await islandOf(seed);
   const w = newWorld(seed, people);
   const sowing = "plot" in v, ways = sowing ? [PLANT] : v.ways, change = sowing ? undefined : v.half;
   w.t = Math.max(w.t, sowing ? SOW_START : START);

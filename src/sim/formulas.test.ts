@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { newWorld, rng, type Agent, type Stack, type Step, type World } from "./world";
+import { islandOf, newWorld, rng, type Agent, type Stack, type Step, type World } from "./world";
 import { bedAir, digShare, digTick, fireOf, firstHeld, giveItems, giveStack, heat, join, layAt, pitWork, place, removeThing, rubTick, strikeTick, type Fields } from "./physics";
 import { advance } from "./combustion";
 import { PHYS, pieceOf } from "./fuel";
@@ -8,6 +8,8 @@ import { tinder, tinderOf } from "./wetness";
 import { predict, type Prediction, type Situation } from "./formulas";
 import { doAct } from "./sim";
 import { REF_W } from "./work";
+
+await islandOf(11);
 
 // predict comes to what the acts come to (fire plan unit 10), as round five's check did for materials: across lays of the
 // island's pieces as wet as anything gets, struck and rubbed in winds from still to a gale, and fires of every age fed
