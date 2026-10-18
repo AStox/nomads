@@ -7,12 +7,17 @@
 //   neighbours that drain into it, so no atomics touch a sum and every sum is exact;
 // - the aquifer: the CPU's over-relaxation at 1.6 with its row-by-row sweep, run along the anti-diagonals, which moves
 //   every cell after the same neighbours as the row sweep does, so it takes the same number of sweeps and stops at the
-//   same 2 mm change; the 256 columns are the 256 threads of one workgroup;
+//   same 2 mm change; the 256 columns are the 256 threads of one workgroup. It differs from the CPU's in one law: the
+//   plants draw groundwater from the aquifer (the sink below: Shah et al.'s fall of the ground's lift with the water table
+//   in MODFLOW's EVT form), which the CPU's steady solve lacks. The sink is solved in the sweep as a lagged diagonal: each
+//   cell's balance is taken at the sink the cell's own head gave the last sweep, with a share of the cell's own head (the
+//   sink's steepest fall) held in the weights, so the sweeps' count rule stands and the arithmetic stays integer;
 // - the lakes: components of the hollows by minimum-label propagation, then each basin cell as a candidate level
 //   against every cell of its hollow.
 import { CELL, LEN, N } from "../../terrain/grid";
 import { BARE, DRIFTS, ROCKS } from "../../terrain/geology";
 import { ROOTS } from "../../terrain/growth";
+import { NICHE } from "../../terrain/niche";
 import { AT_D, BANKFULL, BUCKET, CONFINED, FALL, FLOOD, HEAD_C, KC_DEEP, KC_SHALLOW, RHO, G, SEASON_S, SHIELDS, SUBMERGED, SY_DRIFT, SY_ROCK, T_FILL, WIDE_WOOD, YEAR_S } from "../../terrain/water";
 import { FIXED } from "./fixed";
 
@@ -34,7 +39,7 @@ const INPUTS = ["sea", "h", "hlo", "filled", "flo", "to", "basin", "rock", "drif
 const INTERNAL = [
   "fall", "su0", "su1", "su2", "su3", "sh0", "sh1", "sh2", "sh3", "wet", "rr", "bedT", "drK", "tt", "head", "depth", "hol", "spl", "isf", "fxv",
   "dep", "lvl", "lvs", "blist", "ua", "ub", "da", "db",
-  "ce", "cs", "ww", "we", "wn", "ws", "sso", "out",
+  "ce", "cs", "ww", "we", "wn", "ws", "wd", "sso", "out", "evd", "evb", "eve", "evs", "evk", "eaf", "evu", "evw",
   "gw", "bk", "ln", "qk0", "qk1", "qk2", "qk3", "wt0", "wt1", "wt2", "wt3", "wt4",
   "ga0l", "ga0h", "ga1l", "ga1h", "ga2l", "ga2h", "ga3l", "ga3h", "ga4l", "ga4h",
   "inl", "inh", "rk", "lv", "tgt", "dbf", "misc",
@@ -61,7 +66,68 @@ const BD0 = (Math.log2(0.201) + 0.025 * Math.log2(SUBMERGED * SHIELDS)) / 1.025,
 const BD0W = two(BigInt(Math.round(BD0 * 2 ** 32)));
 const D04 = BANKFULL ** -AT_D; // depthOf at the mean flow against the bankfull one
 const SPRING_K = (CELL * CELL / 1000) * 2 ** 26 / YEAR_S / 65536; // MM in, FQ out: a spring's flow that evaporates (mm over a year)
-const SECONDS_UP_MM = (SEASON_S / (CELL * CELL)) * 1000 * 2 ** 16 / 2 ** 26; // FQ to the metres a season of it rises over a cell, as MM per FQ unit
+
+// ---------- groundwater evapotranspiration ----------
+// What the plants draw from the water table, per cell and year: for each season the least of the demand the soil's bucket
+// left unmet (the shortfall: the potential evaporation less what the soil gave, which the ground takes the soil's water
+// from only where the table is within reach) and what the ground can lift (potential evaporation times f(d)), d the depth
+// of the head below the ground. This is MODFLOW's EVT package (a head-dependent flux out of the aquifer at the ground,
+// falling to nothing at an extinction depth; Harbaugh 2005, the USGS online guide to EVT) with the fall of Shah, Nachabe
+// and Ross (2007; Shah's 2007 dissertation, ch. 3, tables 3.1 and 3.3), who ran variably saturated flow under drying soil
+// for twelve USDA textures: groundwater supplies all the demand to the decoupling depth d'' (27 to 78 cm for a grass
+// cover of 1.0 m roots, which is this model's ROOTS, growth.ts) and beyond it falls off exponentially, e^(-b (d - d'')), to
+// the extinction depth (1.45 to 7.15 m). The curve is rescaled to reach 0 exactly at the table's extinction depth:
+// f(d) = (e^(-b (d - d'')) - e0) / (1 - e0), e0 = e^(-b (d_ext - d'')) [design: Shah's fit has a small offset y0 instead,
+// which reaches 0 at about the table's depth, within 10% in the rows checked, and never for the clays]. The form of Shah's
+// eq. 3.17 was not recoverable from the text (the equation was lost in the PDF's extraction): y0 + e^(-b (d - d'')) is
+// [INFERENCE], checked against table 3.1's extinction depths for sand (258 cm against 250), sandy loam (232 against 230)
+// and loam (370 against 370). The grass column stands for every cover, as the cover is made after the water (the forest
+// column, 2.0 m roots, would reach deeper) [gap].
+// [d'' cm, b per cm, extinction depth cm], grassland (Shah's tables 3.3 and 3.1)
+export const SHAH_GRASS: Record<string, [number, number, number]> = {
+  "sand": [27, 0.036, 145], "loamy sand": [29, 0.031, 170], "sandy loam": [35, 0.022, 230], "sandy clay loam": [31, 0.020, 300],
+  "sandy clay": [35, 0.028, 310], "loam": [39, 0.015, 370], "silty clay": [78, 0.020, 430], "clay loam": [35, 0.014, 505],
+  "silt loam": [40, 0.011, 515], "silt": [49, 0.021, 530], "silty clay loam": [49, 0.017, 550], "clay": [70, 0.017, 715],
+};
+// The USDA texture class of a soil of this sand and clay share (0 to 1; the silt is what is left): the standard triangle
+// (Soil Survey Manual, ch. 3, fig. 3-7; its edges were not read, and the ten materials here lie off them but for
+// mudstone's clay of 20% and dolerite's silt of 40%) [UNVERIFIED].
+export function textureClass(sand: number, clay: number): string {
+  const s = sand * 100, c = clay * 100, z = 100 - s - c;
+  if (c >= 40) return s > 45 ? "sandy clay" : z >= 40 ? "silty clay" : "clay";
+  if (c >= 35 && s > 45) return "sandy clay";
+  if (c >= 27) return s > 45 ? "sandy clay loam" : s > 20 ? "clay loam" : "silty clay loam";
+  if (c >= 20 && z < 28 && s > 45) return "sandy clay loam";
+  if (z >= 80 && c < 12) return "silt";
+  if (z >= 50) return "silt loam";
+  if (c >= 7 && z >= 28 && s < 52) return "loam";
+  if (z + 1.5 * c < 15) return "sand";
+  if (z + 1.5 * c < 30 && z + 2 * c >= 15) return "loamy sand";
+  return "sandy loam";
+}
+// The fall's four numbers for a material of this texture, in the kernel's units: d'' in Z, b per metre in Q16, and e0 and
+// the rescaling 1 / (1 - e0) in Q16.
+const gwet = (sand: number, clay: number) => {
+  const [d, b, ext] = SHAH_GRASS[textureClass(sand, clay)], e0 = Math.exp(-b * (ext - d));
+  return [Math.round((d / 100) * ZS), Math.round(b * 100 * 65536), Math.round(e0 * 65536), Math.round(65536 / (1 - e0))];
+};
+const gwRock = ROCKS.flatMap((r) => gwet(r.sand, r.clay)).map((v) => `${v}i`).join(", ");
+const gwDrift = DRIFTS.flatMap((d) => gwet(d.sand, d.clay)).map((v) => `${v}i`).join(", ");
+// 2^-x for x in 0 to 1 in steps of 1/256, Q30
+const exp2Tab = Array.from({ length: 257 }, (_, k) => `${Math.round(2 ** 30 * 2 ** (-k / 256))}u`).join(", ");
+const KD_K = Math.round(((CELL * CELL) / 1000) * TS); // a cell's area in m2 over 1000 mm a m, in T's scale: mm a year per metre of depth (Q16) to m2 a year (T)
+// Wet ground evaporates more than the reference grass the soil's bucket stands for: where the water table is within the
+// reeds' niche (very wet, under 0.2 m, falling to nothing at 0.4 m: ESC's regimes, niche.ts reeds, R606) the plants are
+// reed swamp, whose crop coefficient is 1.2 in mid season (FAO-56 Table 12, reed swamp, standing water 1.0 / 1.2 / 1.0
+// and moist soil 0.9 / 1.2 / 0.7 for the start, middle and end of the growing season; R559, read 2026-10-18). The game's
+// summer stands for the mid season and the other seasons for its start and end, whose coefficients do not pass the
+// reference's 1.0 [design: the seasons are 92 days against the table's stages of 10, 30, 80 and 20 days for temperate
+// wetlands]. The water the ground gives such plants in summer is that 0.2 of the potential evaporation, as far as the
+// niche's fit goes, on top of what the bucket left unmet. The cover is made after the water, so the niche's own rule
+// that nothing else stands on such ground stands in for it [design].
+const REED_FULL = Math.round(NICHE.reeds.table![2] * ZS), REED_NONE = Math.round(NICHE.reeds.table![3] * ZS);
+export const KC_WET = 1.2;
+export const SUMMER = 1;
 
 const rockTab = ROCKS.map((r) => `${Math.round(r.ksat * r.thick * YEAR_S * TS)}u`).join(", ");
 const rockCap = ROCKS.map((r) => (Number.isFinite(r.cap) ? `${Math.round(r.cap * 65536)}i` : "2147483647i")).join(", ");
@@ -109,7 +175,16 @@ const WOOD_W = ${q16(WIDE_WOOD)}i;
 const CONFINED_Q16 = ${q16(CONFINED)}i;
 const TFILL = ${Math.round(T_FILL * 2 ** 32)}u;
 const SPRING_K = ${Math.round(SPRING_K * 2 ** 32)}u;
-const UP_K = ${Math.round(SECONDS_UP_MM * 65536)}u;
+const GW_ROCK = array<i32, ${ROCKS.length * 4}>(${gwRock});
+const GW_DRIFT = array<i32, ${DRIFTS.length * 4}>(${gwDrift});
+const EXP2 = array<u32, 257>(${exp2Tab});
+const KD_K = ${KD_K}u;
+const LOG2E_Q16 = 94548u;
+const REED_FULL = ${REED_FULL}i;
+const REED_NONE = ${REED_NONE}i;
+const REED_SLOPE = ${Math.round(65536 / (NICHE.reeds.table![3] - NICHE.reeds.table![2]))}i;
+const KC_X = ${q16(KC_WET - 1)}i;
+const SUMMER = ${SUMMER}u;
 const RISE_Z = ${Math.round(0.016 * 2 ** 32)}u;
 const SWEEP_TOL = ${SWEEP_TOLERANCE_Z + 1}u;
 const HEAD_NUM = ${Math.round(CELL / HEAD_C)}u;
@@ -216,6 +291,10 @@ fn prep(@builtin(global_invocation_id) g: vec3u) {
     rr = min(qmul(DRIFT_SHARE[drift * 3u + band], wet), ROCK_CAP[rock]);
   }
   wi(f_wet, i, wet); wi(f_rr, i, rr);
+  // the groundwater evapotranspiration's fall (above): the drift's texture over as much of the roots' metre as the drift
+  // fills and the rock's below, as ground.ts takes the soil's texture [design]
+  let fill = i32(min(65536u, div64(mul64(u32(max(dd, 0i)), 65536u), u32(ROOTS_Z)).x));
+  for (var k = 0u; k < 4u; k++) { F[f_evd + k * LEN + i] = qmul(GW_DRIFT[drift * 4u + k], fill) + qmul(GW_ROCK[rock * 4u + k], 65536i - fill); }
   let bed = ROCK_T[rock]; let dk = DRIFT_K[drift];
   wu(f_bedT, i, bed); wu(f_drK, i, dk);
   let p = add64(mul64(dk, u32(dd)), vec2u(1u << 19u, 0u));
@@ -477,6 +556,44 @@ fn harm(a: u32, b: u32) -> u32 {
   let p2 = add64(vec2u(p.x << 1u, (p.y << 1u) | (p.x >> 31u)), vec2u(s >> 1u, 0u));
   return divw(p2.y, p2.x, s).x;
 }
+// ---------- groundwater evapotranspiration (the law is above the module's constants: SHAH_GRASS and the wet ground's Kc) ----------
+// 2^-x for x in Q16, in Q30
+fn exp2n(x: u32) -> u32 {
+  let k = x >> 16u;
+  if (k >= 30u) { return 0u; }
+  let fr = x & 0xffffu;
+  let idx = fr >> 8u; let lo = fr & 255u;
+  let a = EXP2[idx]; let b = EXP2[idx + 1u];
+  return (a - (((a - b) * lo) >> 8u)) >> k;
+}
+// f(d): the share of the potential evaporation the ground lifts to the roots from a water table d below the ground (Z), Q16
+fn gw_frac(i: u32, d: i32) -> i32 {
+  let dpp = gi(f_evd, i);
+  if (d <= dpp) { return 65536i; }
+  let p = mul64(u32(d - dpp), u32(gi(f_evb, i))); // Q36
+  if (p.y >= (1u << 20u)) { return 0i; }
+  let x = (p.x >> 20u) | (p.y << 12u); // b (d - d'') in Q16
+  let e = i32(exp2n(mulshr(x, LOG2E_Q16, 16u)) >> 14u);
+  return min(65536i, max(0i, qmul(e - gi(f_eve, i), gi(f_evs, i))));
+}
+// the reeds' niche fit at a water table d below the ground (Z): 1 to REED_FULL, then falling to 0 at REED_NONE, Q16
+fn reed_fit(d: i32) -> i32 {
+  if (d <= REED_FULL) { return 65536i; }
+  if (d >= REED_NONE) { return 0i; }
+  return i32(mulshr(u32(REED_NONE - d), u32(REED_SLOPE), 20u));
+}
+// the wet ground's evaporation beyond the reference, in summer, mm Q16 (evw holds its most: Kc - 1 of summer's potential)
+fn wet_extra(i: u32, d: i32) -> i32 { return qmul(reed_fit(d), gi(f_evw, i)); }
+// what the ground gives the plants over the year, mm Q16: each season the least of the soil's unmet demand and what the
+// water table lifts, and in summer the wet ground's evaporation beyond the reference
+fn gw_et(i: u32, d: i32) -> i32 {
+  var e = wet_extra(i, d);
+  if (gi(f_evu, i) > 0i) {
+    let f = gw_frac(i, d);
+    for (var s = 0u; s < 4u; s++) { e += min(gs(f_sh0, s, i), qmul(f, gs(f_pe0, s, i))); }
+  }
+  return e;
+}
 @compute @workgroup_size(256)
 fn aqprep(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x;
@@ -493,18 +610,34 @@ fn aqw(@builtin(global_invocation_id) g: vec3u) {
   let x = i & 255u; let y = i >> 8u;
   if (x < 1u || x > 254u || y < 1u || y > 254u) { return; }
   let cw = gu(f_ce, i - 1u); let ce = gu(f_ce, i); let cn = gu(f_cs, i - 256u); let cs = gu(f_cs, i);
-  let sum = cw + ce + cn + cs;
-  if (sum == 0u) { return; }
+  let sum0 = cw + ce + cn + cs;
+  if (sum0 == 0u) { return; }
+  // The sink's steepest fall in head, as the transmissivity that would carry it: b (U + PET e0 / (1 - e0)) times the cell's
+  // area, the bound on how fast the evapotranspiration rises with the head. The sweep holds it as a share of the cell's
+  // own head (a lagged diagonal), so it converges whatever the fall's steepness [design].
+  var kd = 0u;
+  var unmet = 0i; var pet = 0i;
+  for (var s = 0u; s < 4u; s++) { unmet += gs(f_sh0, s, i); pet += gs(f_pe0, s, i); }
+  let ps = gs(f_pe0, SUMMER, i);
+  if ((unmet > 0i || ps > 0i) && gi(f_isf, i) == 0i) {
+    let lq = qmul(unmet + qmul(pet, qmul(gi(f_eve, i), gi(f_evs, i))), gi(f_evb, i)) + qmul(qmul(KC_X, ps), REED_SLOPE);
+    kd = max(1u, mulshr(u32(lq), KD_K, 16u));
+  }
+  wi(f_evu, i, unmet);
+  wi(f_evw, i, qmul(KC_X, ps));
+  let sum = sum0 + kd;
   var w = vec4u(weight_of(cw, sum), weight_of(ce, sum), weight_of(cn, sum), weight_of(cs, sum));
+  let wdd = weight_of(kd, sum);
   // the rounding left over goes to the heaviest face, so the weights sum to one exactly
-  let rem = 0x80000000u - (w.x + w.y + w.z + w.w);
+  let rem = 0x80000000u - (w.x + w.y + w.z + w.w + wdd);
   if (cw >= ce && cw >= cn && cw >= cs) { w.x += rem; }
   else if (ce >= cn && ce >= cs) { w.y += rem; }
   else if (cn >= cs) { w.z += rem; }
   else { w.w += rem; }
-  wu(f_ww, i, w.x); wu(f_we, i, w.y); wu(f_wn, i, w.z); wu(f_ws, i, w.w);
+  wu(f_ww, i, w.x); wu(f_we, i, w.y); wu(f_wn, i, w.z); wu(f_ws, i, w.w); wu(f_wd, i, wdd); wu(f_evk, i, kd);
   let ra = add64(mul64(u32(select(gi(f_rr, i), 0i, gi(f_open, i) != 0i)), RA_K), vec2u(sum >> 1u, 0u)); // R A in Q33 m3 a year, to round
   wi(f_sso, i, i32(divw(ra.y, ra.x, sum).x));
+  wu(f_eaf, i, select(0u, divw(RA_K, 0u, sum).x, kd != 0u)); // A / 1000 m a mm, over the transmissivity, 2^32 of it: a sink in mm Q16 to head in Z
 }
 var<workgroup> wch: atomic<u32>;
 // The CPU sweeps the cells in row order, each seeing its west and north neighbours already moved. A sweep along the
@@ -527,8 +660,11 @@ fn aquifer(@builtin(local_invocation_index) t: u32) {
           acc = add64(acc, mul64(bitcast<u32>(F[f_head + i + 1u] + OFF), gu(f_we, i)));
           acc = add64(acc, mul64(bitcast<u32>(F[f_head + i - 256u] + OFF), gu(f_wn, i)));
           acc = add64(acc, mul64(bitcast<u32>(F[f_head + i + 256u] + OFF), gu(f_ws, i)));
+          let kd = gu(f_evk, i);
+          if (kd != 0u) { acc = add64(acc, mul64(bitcast<u32>(F[f_head + i] + OFF), gu(f_wd, i))); }
           acc = add64(acc, vec2u(0x40000000u, 0u));
-          let want = bitcast<i32>((acc.x >> 31u) | (acc.y << 1u)) - OFF + gi(f_sso, i);
+          var want = bitcast<i32>((acc.x >> 31u) | (acc.y << 1u)) - OFF + gi(f_sso, i);
+          if (kd != 0u) { want -= i32(mul64(u32(gw_et(i, gi(f_h, i) - F[f_head + i])), gu(f_eaf, i)).y); }
           let hc = F[f_head + i];
           let d = want - hc;
           let v = min(gi(f_h, i), hc + d + (3i * d + select(-2i, 2i, d >= 0i)) / 5i);
@@ -555,6 +691,7 @@ fn outflux(@builtin(global_invocation_id) g: vec3u) {
   if (x < 1u || x > 254u || y < 1u || y > 254u) { return; }
   let hc = gi(f_head, i);
   var s = mul64(u32(select(gi(f_rr, i), 0i, gi(f_open, i) != 0i)), RA_K);
+  if (gu(f_evk, i) != 0u) { s = sub64(s, mul64(u32(gw_et(i, gi(f_h, i) - hc)), RA_K)); }
   s = add64(s, smul64(gi(f_head, i - 1u) - hc, gu(f_ce, i - 1u)));
   s = add64(s, smul64(gi(f_head, i + 1u) - hc, gu(f_ce, i)));
   s = add64(s, smul64(gi(f_head, i - 256u) - hc, gu(f_cs, i - 256u)));
@@ -737,7 +874,9 @@ fn tables(@builtin(global_invocation_id) g: vec3u) {
   wu(f_spring, i, select(0u, usat32(mulhi64(s64(gw), C_YEAR)), gw > 0i));
 }
 // The table in the middle of each season and the deepest it falls (water.ts 349 to 366): each season's net water the
-// ground holds over the year's mean, over its specific yield. mm Q16 throughout until the rise, which is Z.
+// ground holds over the year's mean, over its specific yield. The plants draw each season what the aquifer's sink gives
+// them at the year's mean table (gw_et's own terms by season, not the CPU's whole shortfall less the springs'). mm Q16
+// throughout until the rise, which is Z.
 @compute @workgroup_size(256)
 fn seasons(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x;
@@ -746,7 +885,8 @@ fn seasons(@builtin(global_invocation_id) g: vec3u) {
   let sy = select(DRIFT_SY[drift], ROCK_SY[gu(f_rock, i)], drift == ${BARE}u);
   let tab = gi(f_tab, i);
   let floor = max(tab, ROOTS_Z);
-  let up = i32(min(mulshr(gu(f_spring, i), UP_K, 16u), 0x7fffffffu));
+  let fr = gw_frac(i, tab);
+  let extra = wet_extra(i, tab);
   let wet = gi(f_wet, i); let rr = gi(f_rr, i);
   var net = array<i32, 4>(0i, 0i, 0i, 0i);
   var mean = 0i;
@@ -754,7 +894,7 @@ fn seasons(@builtin(global_invocation_id) g: vec3u) {
     // rr x surplus / wet in 64 bits: their product in mm2 passes what a Q16 word holds
     let p = add64(mul64(u32(rr), u32(gs(f_su0, s, i))), vec2u(u32(wet) >> 1u, 0u));
     let into = select(rr / 4i, i32(divw(p.y, p.x, max(u32(wet), 1u)).x), wet > 0i);
-    let drawn = select(0i, max(0i, gs(f_sh0, s, i) - up), tab <= ROOTS_Z);
+    let drawn = min(gs(f_sh0, s, i), qmul(fr, gs(f_pe0, s, i))) + select(0i, extra, s == SUMMER);
     net[s] = into - drawn;
     mean += net[s];
   }
