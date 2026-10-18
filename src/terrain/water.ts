@@ -13,52 +13,52 @@ import { BARE, DOLERITE, DRIFTS, GRANITE, LIMESTONE, MELTWATER, MUDSTONE, PEAT, 
 import { ROOTS } from "./growth";
 import type { Climate } from "./climate";
 
-const YEAR_S = 31_557_600, SEASON_S = YEAR_S / 4;
+export const YEAR_S = 31_557_600, SEASON_S = YEAR_S / 4;
 // The share of its volume a deposit gives up as the water table falls through it (specific yield): Johnson's fine sand
 // 0.21 for the meltwater sand, Morris and Johnson's sandy till 0.16 and silty till 0.06 for the two tills, and hemic peat
 // 0.15 to 0.42 (Boelter), so 0.285, for a fen's decomposed peat [derived]; where the rock is bare, its own: siltstone
 // 0.12 for mudstone, fine sandstone 0.21, limestone 0.14, and the 0 of hard rock for granite and dolerite (R629, R630,
 // R631). GEUS's national model takes 0.15 to 0.25 for its open aquifers (R632).
-const SY_DRIFT: Record<number, number> = { [TILL_CLAY]: 0.06, [TILL_SAND]: 0.16, [MELTWATER]: 0.21, [PEAT]: 0.285 };
-const SY_ROCK: Record<number, number> = { [MUDSTONE]: 0.12, [SANDSTONE]: 0.21, [LIMESTONE]: 0.14, [GRANITE]: 0, [DOLERITE]: 0 };
+export const SY_DRIFT: Record<number, number> = { [TILL_CLAY]: 0.06, [TILL_SAND]: 0.16, [MELTWATER]: 0.21, [PEAT]: 0.285 };
+export const SY_ROCK: Record<number, number> = { [MUDSTONE]: 0.12, [SANDSTONE]: 0.21, [LIMESTONE]: 0.14, [GRANITE]: 0, [DOLERITE]: 0 };
 // mm of rain the soil holds for plants to drink between rains [gap]: FAO-56's TAW from ground.ts's texture (R221) would
 // replace it, but the soil is made after the water
-const BUCKET = 100;
-const RHO = 1000, G = 9.81; // water's density, kg/m3, and gravity, m/s2
+export const BUCKET = 100;
+export const RHO = 1000, G = 9.81; // water's density, kg/m3, and gravity, m/s2
 // A channel begins where the drainage area per metre of contour a and the slope S reach a S^2 = C (Montgomery and
 // Dietrich, R555), C 25 to 200 m in the field. Inverted from Bornholm's 0.71 km of designated stream to the km2 (R534)
 // over seeds 1 to 3 it is 24 m (26.2, 20.9, 25.5), just under the field's range, so the range's floor (sec. 11)
 // [derived, inverted from Bornholm's drainage density].
-const HEAD_C = 25;
+export const HEAD_C = 25;
 // Bankfull discharge against the mean: Bornholm's median annual maximum, 0.10 to 0.14 m3/s a km2 (R558), the bankfull
 // flood's 1 to 2 years (R557), over its mean runoff, 7.9 l/s a km2 (R558), so 15.0 times the mean [derived].
-const BANKFULL = Math.sqrt(0.1 * 0.14) / 0.0079;
+export const BANKFULL = Math.sqrt(0.1 * 0.14) / 0.0079;
 // Bankfull width w = alpha Qbf^0.5, alpha 2.48 where trees or shrubs hold 5% or more of the banks, 3.75 under grass
 // (Soar and Thorne, R556).
-const WIDE_WOOD = 2.48, WIDE_GRASS = 3.75;
+export const WIDE_WOOD = 2.48, WIDE_GRASS = 3.75;
 export const WOODED = 0.05;
 // Bankfull depth d = 0.201 Qbf^0.336 D50^-0.025 S^-0.060 (Lee and Julien, R557), with the bed's grain the largest the
 // bankfull flow moves, D50 = d S / (1.65 tau*), tau* 0.03 to 0.058 (Andrews, R557), its middle on a log scale [derived].
-const SHIELDS = Math.sqrt(0.03 * 0.058), SUBMERGED = 1.65;
+export const SHIELDS = Math.sqrt(0.03 * 0.058), SUBMERGED = 1.65;
 // How a stream's width and depth follow its flow at one place: w ~ Q^0.26, d ~ Q^0.40 (Leopold and Maddock, R557).
-const AT_W = 0.26, AT_D = 0.4;
+export const AT_W = 0.26, AT_D = 0.4;
 // Open water's crop coefficient: 1.05 under 2 m deep; over 5 m, 0.65 while the water stores heat (spring and summer)
 // and 1.25 while it gives it back (autumn and winter) (FAO-56 Table 12, R559); linear between [design].
-const KC_SHALLOW = 1.05, KC_DEEP = [0.65, 0.65, 1.25, 1.25];
+export const KC_SHALLOW = 1.05, KC_DEEP = [0.65, 0.65, 1.25, 1.25];
 // Transmissivity of a valley's fill, m2/s: Bornholm's fault-valley wells, 6e-5 to 2e-3, the middle on a log scale
 // (R522) [derived]. A stream whose flow falls below what this carries under its bed runs dry.
-const T_FILL = Math.sqrt(6e-5 * 2e-3);
+export const T_FILL = Math.sqrt(6e-5 * 2e-3);
 // Bankfull specific stream power, W/m2: over 300 a stream is confined and keeps no floodplain; 10 to 300 it moves its
 // banks and meanders; under 10 its banks stand still (Nanson and Croke, R562).
-const CONFINED = 300, STABLE = 10;
+export const CONFINED = 300, STABLE = 10;
 // The flood that sets the floodplain against the bankfull one [gap]: Bornholm's T-year floods (R558's Bilag 8) were not
 // read, and twice the bankfull flow stands in.
-const FLOOD = 2;
+export const FLOOD = 2;
 // Meanders: wavelength 11.0 w^1.01 (Leopold and Wolman, R560) and belt 3.7 w^1.12 in feet (Williams, R561), so
 // 4.27 w^1.12 in meters, w the bankfull width.
 const WAVE = 11, BELT = 3.7 * 0.3048 ** -0.12;
 // The priority flood's step, m (island.ts): the least fall from one cell to the next.
-const FALL = 1e-4;
+export const FALL = 1e-4;
 
 // A stream's bankfull width, m, at bankfull discharge qbf, m3/s, with trees or shrubs on its banks or not.
 export const bankWidth = (qbf: number, wooded: boolean) => (wooded ? WIDE_WOOD : WIDE_GRASS) * Math.sqrt(qbf);
@@ -431,7 +431,7 @@ const chaikin = (p: River[]): River[] => [p[0], ...p.slice(0, -1).flatMap((a, i)
 // wavelength and belt of its bankfull width (R560, R561), wooded banks taken as the island's commonest. A meander
 // shorter than four steps of the line cannot be drawn, and its swing is evened out over a cell [design]. A line joins
 // the one it flows into exactly where that one now lies.
-function shape(lines: River[][]): River[][] {
+export function shape(lines: River[][]): River[][] {
   const STEP = 0.08, ROUND = Math.round(1 / STEP), placed = new Map<number, [number, number]>(), out: River[][] = [];
   for (const [n, raw] of lines.entries()) {
     const end = raw.at(-1)!, endKey = Math.round(end[1]) * N + Math.round(end[0]), joins = placed.get(endKey);
