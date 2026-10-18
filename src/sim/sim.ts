@@ -17,7 +17,7 @@ import { animalsOf, attacked, herdNear, herded, residentAnimals } from "./animal
 import { chooseTinker, decide, describeKind, fadeBonds, grudge, nameIt, newRel, reflect, respond, rule, sample, theorize, wonder, type Felt } from "./brain";
 import { clock as traceClock, count as bump, timed, trace, waited } from "./trace";
 import { campOf, friendly, groups, incident, knownCustoms, liveCamps, share, sharedStore, snubbed, spread, standing, takeShared } from "./groups";
-import { anyAround, around, crownsOf, deadwoodOf, floraOf, liveThings, lookFor, moistOf, nearestThing, put, resident, seedlingsOf, shelve, smallsOf, thingById } from "./space";
+import { anyAround, around, crownsOf, deadwoodOf, firesOf, floraOf, liveThings, lookFor, moistOf, nearestThing, put, resident, seedlingsOf, shelve, smallsOf, thingById } from "./space";
 import { landOf, walk } from "./walk";
 import { armOf, canHold, capacityOf, fullness, gaitOf, massOf, overheadOf, reachOf, runSpeed, stride, type Stride } from "./gait";
 import { CHI_R, DARK, canopyAt, heatAt, lightOn, restRate, skyShare, workRate } from "./light";
@@ -2382,11 +2382,13 @@ const landings = new WeakMap<World, Landing>();
 // animals' own). A process that makes world after world (probes, bench) retires each, so the GPU holds one world's
 // stems at a time (some 0.8 GB on seed 1). The world is not ticked again.
 export async function retire(w: World) {
-  const last = landings.get(w);
+  const last = landings.get(w), fires = firesOf(w);
   if (last && !last.done) await last.p.catch(() => {});
   landings.delete(w);
+  await fires?.arrive().catch(() => {});
   floraOf(w).destroy();
   deadwoodOf(w)?.destroy();
+  fires?.destroy();
   seedlingsOf(w)?.destroy();
   crownsOf(w)?.destroy();
   moistOf(w)?.destroy();
@@ -2421,10 +2423,13 @@ export async function tick(w: World) {
   // brain's), and where a tick yields changes a run
   if (!flora.store) await resident(w, stemDriver(w), seedDriver(w));
   if (!animalsOf(w).store) await residentAnimals(w);
-  const gpu = heldStore(w)!, last = landings.get(w);
+  const gpu = heldStore(w)!, last = landings.get(w), fires = firesOf(w);
   if (last && !last.done) await waited("land", () => last.p);
   landings.delete(w);
   if (last?.error) throw last.error;
+  // the beds' last look comes back before anything of the world runs, at a tick's start, so the beds everyone reads are
+  // the same ones every run
+  if (fires?.flying) await waited("fire", () => fires.arrive());
   w.t++;
   traceClock.t = w.t;
   const pause = tickPause.fn, landing = due(w.t, LAND_S);

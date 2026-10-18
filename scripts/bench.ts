@@ -7,12 +7,13 @@
 import { TILE_M, addThing, dryAt, heldStore, newWorld, type Thing, type World } from "../src/sim/world";
 import { retire, tick } from "../src/sim/sim";
 import { bedAir, changed, fireOf, newKinds, removeThing, removed } from "../src/sim/physics";
-import { ecology, trailChanges } from "../src/sim/ecology";
+import { trailChanges } from "../src/sim/ecology";
 import { advance } from "../src/sim/combustion";
 import { REF } from "../src/sim/wetness";
 import { airAt } from "../src/sim/air";
 import { canopyAt } from "../src/sim/light";
-import { around, liveThings } from "../src/sim/space";
+import { around, liveThings, moistOf } from "../src/sim/space";
+import { toW } from "../src/gpu/moisture";
 import { hooks } from "../src/sim/rules";
 import { traceListeners, type TraceEntry } from "../src/sim/trace";
 import { runProbe } from "./probes";
@@ -71,6 +72,9 @@ const WORK: Record<string, () => Promise<string>> = {
       x.weather.gsi = { day: Math.floor(x.t / DAY), tmin: -5, vpd: 500, rain: 10, index: 0 };
     };
     pin(w);
+    await tick(w);
+    const dry = { m: toW(0.1), skin: toW(0.1) };
+    await moistOf(w)!.fill(REF.map(() => dry), dry);
     let at: { px: number; py: number } | undefined;
     for (let k = 0; k < 400 && !at; k++) {
       const px = 40.5 + 3 * (k % 20), py = 40.5 + 3 * Math.floor(k / 20);
@@ -91,12 +95,14 @@ const WORK: Record<string, () => Promise<string>> = {
     const watch = (e: TraceEntry) => { if (e.sys === "fire" && e.kind === "spread") spread++; };
     traceListeners.push(watch);
     try {
-      for (let i = 0; i < HOUR; i++) { w.t++; ecology(w); changed.clear(); removed.clear(); trailChanges.clear(); }
+      for (let i = 0; i < HOUR; i++) { await tick(w); changed.clear(); removed.clear(); trailChanges.clear(); }
     } finally {
       hooks.weather = undefined;
       traceListeners.splice(traceListeners.indexOf(watch), 1);
     }
-    return hash(JSON.stringify({ spread, burning: [...liveThings(w)].filter((t) => !!t.bed).length, world: await stateOf(w) }));
+    const sum = hash(JSON.stringify({ spread, burning: [...liveThings(w)].filter((t) => !!t.bed).length, world: await stateOf(w) }));
+    await retire(w);
+    return sum;
   },
 };
 console.error(`gpu: ${await holdGpu()}`);

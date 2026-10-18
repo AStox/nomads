@@ -2,17 +2,15 @@
 // (law: wgsl/fire.ts); plan docs/plans/2026-10-14-001-refactor-gpu-object-world-plan.md, Unit 12;
 // docs/research/fire-constants.md secs. 36 and 37.
 // Every bed the world has burning holds a slot of the beds' state on the GPU. Each run of the fire lane
-// src/sim/ecology.ts fire notes the air at each bed for the look; at a landing it packs every bed (its state only where
-// the GPU doesn't hold it as the CPU has it: a bed new, fed or kindled since), the air at each of its looks, and every
-// fuel object within reach of one (src/sim/spread.ts receiverWords) into a piece of work that goes to the GPU with the
-// landing. There each bed burns its looks and writes its blaze at each, and the receivers take those blazes' heat and
-// brands; each bed's state, the look it went out at and how far it reached, the blazes and the receivers' heat and
-// lighting come back with the landing, and the CPU takes each bed's state as the bed it reads (what its flame stands,
-// what heat it gives, what coals it holds) until the next, and makes each thing that lit a bed of its own.
-// The twins are the laws' TypeScript oracles, word for word: receive the receivers', and burnBeds the beds' (by
-// src/sim/combustion.ts burnFor and spread.ts blazing and blazeWords, the same laws a world not resident on the GPU
-// burns its beds by).
-import { cover, pipelineSoon } from "./kernel";
+// src/sim/ecology.ts fire gives every bed one look on the GPU, in the air it stands in (a submit of its own, read back
+// at the start of the next tick): each bed's state comes back as the bed everyone reads (what its flame stands, what
+// heat it gives, what coals it holds), with the blaze it gave and how far its heat and its brands reached. At a landing
+// the blazes of the looks since the last, every fuel object within reach of one (src/sim/spread.ts receiverWords) and its
+// parts go to the GPU with the store's landing, where the receivers take those blazes' heat and brands; each receiver's
+// heat and lighting come back with it, and the CPU makes each thing that lit a bed of its own.
+// The twins are the laws' TypeScript oracles for the tests, word for word: receive the receivers', and burnBeds the beds'
+// (by src/sim/combustion.ts burnFor and spread.ts blazing and blazeWords); no world runs by them.
+import { cover, dispatch, pipelineSoon, readback, storage, uniform } from "./kernel";
 import { divw, mul64, qadd, qdiv, qln, qmul } from "./fixed";
 import { isqrt64, qpoisson, qunif, rinit } from "./rand";
 import { T, bits, real } from "./real";
@@ -213,24 +211,21 @@ const airFrom = (w: Uint32Array): LawAir => ({
   covered: w[AF.covered] !== 0, held: real(w[AF.held]), ...(w[AF.ringed] ? { ring: { tall: real(w[AF.tall]), width: real(w[AF.width]) } } : {}),
 });
 
-// ---------- a landing's work ----------
-// A bed's part in a landing's work: its slot, the bed as the CPU has it, whether the CPU changed it since the GPU last
-// had it, and the air at each of the work's looks (null for a look it doesn't take: one before it was lit).
+// ---------- a run of looks ----------
+// A bed's part in a run of looks: its slot, the bed as the CPU has it, whether the CPU changed it since the GPU last had
+// it, and the air at each of the run's looks (null for a look it doesn't take: one before it was lit).
 export type BedJob = { slot: number; bed: Bed; fresh: boolean; airs: (Uint32Array | null)[] };
-// A landing's work: so many looks, the beds, and the receivers' batch, whose blazes the beds write (looks of one blaze
-// for each bed, in the beds' order).
-export type Work = { looks: number; beds: BedJob[]; batch: Batch };
-// What comes back: each bed as it stands after its looks, the look it went out at (0 for none, else one more than the
-// look), the farthest its heat and its brands reached (cm); every blaze (BW words each, look by look); and the
-// receivers' words (receive's).
-export type Landed = { beds: { bed: Bed; gone: number; reach: number; far: number }[]; blazes: Uint32Array; receivers: Uint32Array };
+// What comes back of a run: each bed as it stands after its looks, the look it went out at (0 for none, else one more
+// than the look), the farthest its heat and its brands reached (cm); and every blaze (BW words each, look by look, a
+// look's beds in the beds' order).
+export type Burned = { beds: { bed: Bed; gone: number; reach: number; far: number }[]; blazes: Uint32Array };
 // A blaze's words where a bed doesn't blaze at a look.
 export const NO_BLAZE: readonly number[] = Array.from({ length: BW }, (_, f) => (f === B.x ? NOWHERE : 0));
 
-// The beds' twin: each bed through its looks as wgsl/beds.ts takes it, then the receivers' twin on the blazes.
-export function burnBeds(work: Work): Landed {
-  const { looks, beds, batch } = work, nb = beds.length, blazes = new Uint32Array(looks * nb * BW);
-  const out = beds.map((job, j) => {
+// The beds' twin: each bed through its looks as wgsl/beds.ts takes it, the test's oracle for the kernel.
+export function burnBeds(jobs: BedJob[], looks: number): Burned {
+  const nb = jobs.length, blazes = new Uint32Array(looks * nb * BW);
+  const beds = jobs.map((job, j) => {
     const bed = copyBed(job.bed), s = { bed, gone: 0, reach: 0, far: 0 };
     for (let k = 0; k < looks; k++) {
       const at = (k * nb + j) * BW, a = job.airs[k];
@@ -248,32 +243,36 @@ export function burnBeds(work: Work): Landed {
     }
     return s;
   });
-  const words = batch.words.slice();
-  words.set(blazes, batch.offB);
-  return { beds: out, blazes, receivers: receive({ ...batch, words }) };
+  return { beds, blazes };
 }
 const STEP_S = T(LOOK_S);
 
 // ---------- the GPU ----------
-// The fire riding a world's store: work queued on a landing tick goes to the GPU with that landing, and what comes back
-// is handed to the work's done. The beds' state stays on the GPU between landings, a slot a bed (slotOf, keep); a bed's
-// state goes up only where the GPU doesn't hold it as the CPU has it. Work still queued when the next is (a caller
-// stepping fire without landing the store between) is worked out by the twins first, which give the same words, and its
-// beds go up again with the next.
+// The fire riding a world's store, in two parts.
+// The beds burn on their own submit: each run of the fire lane (every look, ten seconds) gives look the beds, each with
+// the air it stands in, and the beds' kernel runs their look on the GPU and reads each bed's state, the blaze it gave and
+// how far it reached back, small enough (a few kilobytes a bed) to be read at the start of the next tick (arrive), so what
+// anyone reads of a bed is at most a look old. The beds' state stays on the GPU between runs, a slot a bed (slotOf, keep);
+// a bed's state goes up only where the GPU doesn't hold it as the CPU has it (new, fed or kindled since).
+// The receivers take the blazes of the looks since the last landing with the store's landing: work queued on a landing
+// tick goes to the GPU with it, and what comes back is handed to the work's done. Work still queued when the next is
+// queued is a caller's mistake (the store lands between two).
 // The beds' kernel is the largest the world has (its first compile takes Chrome 38 s and Bun's Dawn 24 s on the AMD
-// adapter, fire-constants sec. 37), so it isn't made ahead with the rest: it is set compiling (pipelineSoon) the first
-// landing that has a bed, and until it is made each landing's work is worked out by the twins, which give the same words,
-// and handed back as the landing lands. Whichever does the work, a world runs the same.
-type Queued = { work: Work; done: (got: Landed) => void };
+// adapter, fire-constants sec. 37), so it is named in kernelSources like the rest and set compiling with them by the first
+// paced begin; a look that reaches it before it is made waits for it (a tick waits at arrive), as the browser's frames go
+// on.
+type Queued = { batch: Batch; done: (receivers: Uint32Array) => void };
+type Flight = { got: Promise<Burned>; done: (got: Burned) => void };
 export class Fire implements Rider {
   store: Store | null = null;
   private srcBeds = "";
   private srcRecv = "";
   private queued: Queued | null = null;
   private sent: Queued | null = null;
-  private twinned: Queued | null = null;
-  private made = false;
+  private flight: Flight | null = null;
+  // the beds' state, and the scratch of a run of looks (each grown as a run needs)
   private state: GPUBuffer | null = null;
+  private readonly bufs = new Map<string, GPUBuffer>();
   // the slots held, by what holds them; slots let go; the slots whose state the GPU holds as the CPU last had it, and
   // the records the words of each slot's state number
   private readonly slots = new Map<object, number>();
@@ -288,21 +287,7 @@ export class Fire implements Rider {
     this.srcRecv = fireReceive();
     store.ride(this);
   }
-  kernelSources(): string[] { return [this.srcRecv]; }
-  // Whether the beds' kernel is made, set compiling if it isn't yet.
-  private bedsMade(): boolean {
-    if (!this.made) {
-      const p = pipelineSoon(this.store!.g, this.srcBeds);
-      if (p instanceof Promise) void p.then(() => { this.made = true; });
-      else this.made = true;
-    }
-    return this.made;
-  }
-  // The beds' kernel made, for a caller that wants the beds on the GPU from its first landing (a test).
-  async ready() {
-    await pipelineSoon(this.store!.g, this.srcBeds);
-    this.made = true;
-  }
+  kernelSources(): string[] { return [this.srcRecv, this.srcBeds]; }
   // The slot a bed holds, by what holds it (a burning thing).
   slotOf(key: object): number {
     let s = this.slots.get(key);
@@ -313,73 +298,101 @@ export class Fire implements Rider {
   keep(keys: Set<object>) {
     for (const [k, s] of this.slots) if (!keys.has(k)) { this.slots.delete(k); this.free.push(s); this.held.delete(s); this.phys.delete(s); }
   }
-  queue(work: Work, done: (got: Landed) => void) {
-    const was = this.queued;
-    this.queued = { work, done };
-    if (!was) return;
-    for (const b of was.work.beds) this.held.delete(b.slot);
-    was.done(burnBeds(was.work));
+  // A buffer of at least so many words, kept and grown as runs need.
+  private scratch(name: string, words: number): GPUBuffer {
+    let b = this.bufs.get(name);
+    if (!b || b.size < words * 4) {
+      b?.destroy();
+      b = storage(this.store!.g, Math.max(words, 1) * 4);
+      this.bufs.set(name, b);
+    }
+    return b;
+  }
+  // Lets go of every buffer the fire held; the store's own are the store's.
+  destroy() {
+    this.state?.destroy();
+    for (const b of this.bufs.values()) b.destroy();
+    this.state = null;
+    this.bufs.clear();
+    this.held.clear();
   }
 
-  // ---------- riding the store ----------
+  // ---------- the beds ----------
+  // Sets so many looks of these beds running, one on the GPU at a time; done is handed what comes back by arrive.
+  look(jobs: BedJob[], looks: number, done: (got: Burned) => void) {
+    if (this.flight) throw new Error("the beds' last looks have not been taken yet");
+    this.flight = { got: this.burn(jobs, looks), done };
+  }
+  // Whether looks are on their way.
+  get flying(): boolean { return this.flight !== null; }
+  // Waits for the looks on their way and hands what they bring to the done they were set with: the one place a bed
+  // changes by the GPU's work, at the start of a tick.
+  async arrive() {
+    const f = this.flight;
+    if (!f) return;
+    this.flight = null;
+    f.done(await f.got);
+  }
+  // So many looks of these beds, run on the GPU in a submit of their own and read back. Whatever the GPU did, the
+  // CPU's copy of a bed is only changed by the one who takes the result.
+  async burn(jobs: BedJob[], looks: number): Promise<Burned> {
+    const g = this.store!.g, nb = jobs.length, soon = pipelineSoon(g, this.srcBeds), pipe = soon instanceof Promise ? await soon : soon;
+    const slots = Math.max(64, ...jobs.map((b) => b.slot + 1));
+    // a state buffer made again holds nothing yet
+    if (!this.state || this.state.size < slots * BEDW * 4) {
+      this.state?.destroy();
+      this.state = storage(g, slots * BEDW * 4);
+      this.held.clear();
+    }
+    for (const b of jobs) {
+      if (!b.fresh && this.held.has(b.slot)) continue;
+      const phys: Phys[] = [];
+      g.device.queue.writeBuffer(this.state, b.slot * BEDW * 4, bedWords(b.bed, phys));
+      this.phys.set(b.slot, phys);
+    }
+    const phys = jobs.map((b) => this.phys.get(b.slot)!);
+    const job = new Uint32Array(nb + looks * nb * AW);
+    jobs.forEach((b, j) => {
+      job[j] = b.slot;
+      for (let k = 0; k < looks; k++) { const a = b.airs[k]; if (a) job.set(a, nb + (k * nb + j) * AW); }
+    });
+    const jb = this.scratch("job", job.length), fin = this.scratch("blazes", looks * nb * BW), words = nb * (SW + BEDW + looks * BW), out = this.scratch("out", words);
+    g.device.queue.writeBuffer(jb, 0, job);
+    const params = uniform(g, Uint32Array.from([0, nb, looks, 0, nb, 32, 0, 0]));
+    dispatch(g, pipe, [this.state, jb, fin, out, params], cover(g, nb, 64));
+    const o = new Uint32Array(await readback(g, out, words * 4)), ob = nb * (SW + BEDW);
+    params.destroy();
+    return {
+      beds: jobs.map((b, j) => {
+        const s = j * SW, w = o.subarray(nb * SW + j * BEDW, nb * SW + (j + 1) * BEDW);
+        this.held.add(b.slot);
+        return { bed: bedFrom(w, phys[j]), gone: o[s + SF.gone], reach: o[s + SF.reach], far: o[s + SF.far] };
+      }),
+      blazes: o.slice(ob, ob + looks * nb * BW),
+    };
+  }
+
+  // ---------- the receivers, riding the store ----------
+  queue(batch: Batch, done: (receivers: Uint32Array) => void) {
+    if (this.queued) throw new Error("the fire has work queued already: the store lands between two");
+    this.queued = { batch, done };
+  }
   words(): number {
     this.sent = this.queued;
     this.queued = null;
-    if (!this.sent) return 0;
-    const { looks, beds, batch } = this.sent.work;
-    if (beds.length && !this.bedsMade()) { this.twinned = this.sent; this.sent = null; return 0; }
-    return beds.length * (SW + BEDW + looks * BW) + batch.nr + batch.np;
+    return this.sent ? this.sent.batch.nr + this.sent.batch.np : 0;
   }
   record(out: GPUBuffer, at: number) {
     const q = this.sent;
-    if (!q) return;
-    const s = this.store!, g = s.g, { looks, beds, batch } = q.work, nb = beds.length, fin = s.scratch("fireinput", batch.words.length);
-    g.device.queue.writeBuffer(fin, 0, batch.words);
-    if (nb) {
-      const slots = Math.max(64, ...beds.map((b) => b.slot + 1)), state = s.scratch("firebeds", slots * BEDW);
-      // a state buffer made again holds nothing yet
-      if (state !== this.state) { this.state = state; this.held.clear(); }
-      for (const b of beds) {
-        if (!b.fresh && this.held.has(b.slot)) continue;
-        const phys: Phys[] = [];
-        g.device.queue.writeBuffer(state, b.slot * BEDW * 4, bedWords(b.bed, phys));
-        this.phys.set(b.slot, phys);
-      }
-      const job = new Uint32Array(nb + looks * nb * AW);
-      beds.forEach((b, j) => {
-        job[j] = b.slot;
-        for (let k = 0; k < looks; k++) { const a = b.airs[k]; if (a) job.set(a, nb + (k * nb + j) * AW); }
-      });
-      const jb = s.scratch("firejob", job.length);
-      g.device.queue.writeBuffer(jb, 0, job);
-      s.run(this.srcBeds, [state, jb, fin, out], cover(g, nb, 64), [at, nb, looks, batch.offB, nb, 32, 0, 0]);
-    }
-    if (batch.nr) {
-      const acc = s.scratch("fireacc", batch.np);
-      s.run(this.srcRecv, [fin, acc, out], cover(g, batch.nr, 64), [at + nb * (SW + BEDW + looks * BW), batch.nr, batch.looks, batch.tick, batch.seed, batch.offB, batch.offR, batch.offP]);
-    }
+    if (!q || !q.batch.nr) return;
+    const s = this.store!, b = q.batch, fin = s.scratch("fireinput", b.words.length), acc = s.scratch("fireacc", b.np);
+    s.g.device.queue.writeBuffer(fin, 0, b.words);
+    s.run(this.srcRecv, [fin, acc, out], cover(s.g, b.nr, 64), [at, b.nr, b.looks, b.tick, b.seed, b.offB, b.offR, b.offP]);
   }
   land(o: Uint32Array, at: number) {
-    const t = this.twinned;
-    if (t) {
-      this.twinned = null;
-      for (const b of t.work.beds) this.held.delete(b.slot);
-      t.done(burnBeds(t.work));
-      return;
-    }
     const q = this.sent;
     if (!q) return;
     this.sent = null;
-    const { looks, beds, batch } = q.work, nb = beds.length, ob = at + nb * (SW + BEDW);
-    const got: Landed = {
-      beds: beds.map((b, j) => {
-        const s = at + j * SW, w = o.subarray(at + nb * SW + j * BEDW, at + nb * SW + (j + 1) * BEDW);
-        this.held.add(b.slot);
-        return { bed: bedFrom(w, this.phys.get(b.slot)!), gone: o[s + SF.gone], reach: o[s + SF.reach], far: o[s + SF.far] };
-      }),
-      blazes: o.slice(ob, ob + looks * nb * BW),
-      receivers: o.slice(ob + looks * nb * BW, ob + looks * nb * BW + batch.nr + batch.np),
-    };
-    q.done(got);
+    q.done(o.slice(at, at + q.batch.nr + q.batch.np));
   }
 }

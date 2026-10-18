@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { DAY, TILE_M, addThing, dryAt, newWorld, rng, type Thing, type World } from "./world";
+import { DAY, TILE_M, addThing, dryAt, heldStore, newWorld, rng, type Thing, type World } from "./world";
 import { HOUR, ticksOf } from "./ticks";
 import { fire } from "./ecology";
 import { bedAir, fireOf, fireOutput, removeThing, shelterOf } from "./physics";
-import { anyOf, around, exists, liveThings, moistOf } from "./space";
+import { anyOf, around, exists, firesOf, liveThings, moistOf } from "./space";
 import { advance, alight, kindle } from "./combustion";
 import { CLASSES, toW } from "../gpu/moisture";
 import { bedOf, partsOf, struck, warmed } from "./spread";
@@ -13,9 +13,11 @@ import { hooks } from "./rules";
 import { traceListeners, type TraceEntry } from "./trace";
 import { retire, tick as worldTick } from "./sim";
 import { releaseGpu } from "../gpu/device";
+import { LOOK_S } from "../gpu/wgsl/fire";
+import { LAND_S } from "./lanes";
 
 // The plan's Unit 8 cases, each with its weather fixed from docs/research/fire-constants.md before spread.ts was run
-// (sec. 30):
+// (sec. 30), on a world resident on the GPU, its beds burning there as they do in play:
 // - the air is a summer afternoon's, 18 C (sec. 25), under a clear sky;
 // - dry is 10% in dead stuff of every thickness, the most a struck spark catches in (sec. 10); the grass is cured, the
 //   growing season index under its green-up threshold (sec. 12);
@@ -33,13 +35,14 @@ const listen = (e: TraceEntry) => {
   const d = e.data;
   if (e.sys === "fire" && e.kind === "spread" && d && typeof d === "object" && "to" in d && typeof d.to === "string") caught.add(d.to);
 };
-beforeAll(() => {
+beforeAll(async () => {
   w = newWorld(42);
   w.agents = [];
   w.animals = [];
   traceListeners.push(listen);
-}, 120_000);
-afterAll(async () => { traceListeners.splice(traceListeners.indexOf(listen), 1); await releaseGpu(); });
+  await worldTick(w);
+}, 600_000);
+afterAll(async () => { traceListeners.splice(traceListeners.indexOf(listen), 1); await retire(w); await releaseGpu(); });
 
 // A patch of open, dry ground well away from the last one, cleared of everything for 60 m round.
 let scan = 0;
@@ -59,8 +62,8 @@ function patch() {
 }
 // The weather over a patch: a clear summer afternoon, the head-height wind there blowing east, dead stuff of every
 // class holding so much water (or, class by class, gpu/moisture.ts CLASSES: lying blades, twigs and sticks, a crown's
-// dead twigs and sticks standing), and the grass cured.
-function weather(at: { px: number; py: number }, wind: number, dead: number | number[] = DRY) {
+// dead twigs and sticks standing), on the GPU's texels and logs as in the island's reference, and the grass cured.
+async function weather(at: { px: number; py: number }, wind: number, dead: number | number[] = DRY) {
   Object.assign(w.weather, { sky: "clear", temp: 18, wind: { dx: 1, dy: 0 }, speed: 1 });
   w.t++;
   w.weather.speed = wind / airAt(w, at.px, at.py).wind;
@@ -68,139 +71,157 @@ function weather(at: { px: number; py: number }, wind: number, dead: number | nu
   w.weather.dead = { open: ms, shade: ms };
   delete w.weather.past;
   w.weather.gsi = { day: Math.floor(w.t / DAY), tmin: -5, vpd: 500, rain: 10, index: 0 };
+  await moistOf(w)!.fill(ms.map((x) => ({ m: toW(x), skin: toW(x) })), { m: toW(ms[2]), skin: toW(ms[2]) });
 }
-// A step of fire, drawing brands from a seeded stream: the lane run for five minutes and landed, as a tick of fire was
-// when these cases were written [design: the 300 s tick the cases' counts of steps were set against].
+// The fire lane for so many seconds: a run each look, a landing each minute, and the beds' looks taken at the start of the
+// next tick as sim.ts takes them, the whole run of the world's tick but for everything else the world does.
+let runs = 0;
+async function lane(seconds: number, things: () => Thing[] = () => [...liveThings(w)]) {
+  const store = heldStore(w)!, beds = firesOf(w)!;
+  for (let i = 0; i < seconds / LOOK_S; i++) {
+    w.t += ticksOf(LOOK_S);
+    const landing = ++runs % (LAND_S / LOOK_S) === 0;
+    if (landing) store.begin(w.t);
+    fire(w, things(), LOOK_S, landing);
+    if (landing) await store.land();
+    await beds.arrive();
+  }
+}
+// A step of fire of five minutes, as a tick of fire was when these cases were written [design: the 300 s tick the cases'
+// counts of steps were set against].
 const STEP = 300;
-const tick = () => { w.t += ticksOf(STEP); fire(w, [...liveThings(w)], STEP, true); };
-function seeded<T>(seed: number, fn: () => T): T {
+const tick = () => lane(STEP);
+async function seeded<T>(seed: number, fn: () => Promise<T>): Promise<T> {
   const random = Math.random;
   Math.random = rng(seed);
-  try { return fn(); } finally { Math.random = random; }
+  try { return await fn(); } finally { Math.random = random; }
 }
 // A campfire lit in still air, burning two minutes.
-function campfire(at: { px: number; py: number }) {
-  weather(at, 0);
+async function campfire(at: { px: number; py: number }) {
+  await weather(at, 0);
   const f = fireOf(w, at.px, at.py);
   f.bed = advance(f.bed!, 2 * MIN, bedAir(w, f));
   return f;
 }
 
-test("in still air a campfire never lights grass 2 m away, and grass touching its flames lights", () => {
+test("in still air a campfire never lights grass 2 m away, and grass touching its flames lights", async () => {
   const at = patch();
-  weather(at, 0);
+  await weather(at, 0);
   const f = fireOf(w, at.px, at.py);
   // tussocks 0.8 m across: one reaching to within 0.4 m of the fire's heart, under its base, and one 2 m off
   const touching = addThing(w, "grass", at.px + m(0.8), at.py, { size: 0.8 }), off = addThing(w, "grass", at.px - m(2.4), at.py, { size: 0.8 });
   let most = 0;
-  for (let i = 0; i < 12 && exists(w, f); i++) { most = Math.max(most, fireOutput(w, f).flaming); seeded(i, tick); }
+  for (let i = 0; i < 12 && exists(w, f); i++) { most = Math.max(most, fireOutput(w, f).flaming); await seeded(i, tick); }
   expect(most).toBeGreaterThan(10);
   expect(caught.has(touching.id)).toBe(true);
   expect(caught.has(off.id)).toBe(false);
   expect(exists(w, off) && !off.bed).toBe(true);
-}, 60_000);
+}, 300_000);
 
-test("in a strong wind, cured grass downwind of a campfire catches from its flames or brands, and the same grass upwind doesn't", () => {
+test("in a strong wind, cured grass downwind of a campfire catches from its flames or brands, and the same grass upwind doesn't", async () => {
   const at = patch();
-  campfire(at);
-  weather(at, STRONG);
+  await campfire(at);
+  await weather(at, STRONG);
   // tussocks 1.5 m across, either side: near ones 1.5 m off, in reach of the flame as it leans, and far ones 5 m off
   const [near, far] = [1.5, 5].map((d) => addThing(w, "grass", at.px + m(d), at.py, { size: 1.5 }));
   const [nearUp, farUp] = [1.5, 5].map((d) => addThing(w, "grass", at.px - m(d), at.py, { size: 1.5 }));
-  for (let i = 0; i < 6; i++) seeded(100 + i, tick);
+  for (let i = 0; i < 6; i++) await seeded(100 + i, tick);
   expect(caught.has(near.id)).toBe(true);
   expect(caught.has(far.id)).toBe(true);
   expect(caught.has(nearUp.id)).toBe(false);
   expect(caught.has(farUp.id)).toBe(false);
-}, 60_000);
+}, 300_000);
 
-test("a burning shelter lights a dry shelter 3 m downwind, and not one 3 m upwind", () => {
+test("a burning shelter lights a dry shelter 3 m downwind, and not one 3 m upwind", async () => {
   const at = patch();
-  weather(at, MEDIAN);
+  await weather(at, MEDIAN);
   // structures of ten sticks and six handfuls of fibre (a heap, by shelter.ts), 2.2 m across
   const hut = (dx: number) => addThing(w, "structure", at.px + m(dx), at.py, {
     parts: { fiber: 6, stick: 10 }, shelter: shelterOf(w, { fiber: 6, stick: 10 }), size: 2.2,
   });
   const burning = hut(0), down = hut(3), up = hut(-3), parts = partsOf(w, burning);
   burning.bed = kindle(bedOf(parts, warmed(burning, parts))!);
-  for (let i = 0; i < 6; i++) seeded(200 + i, tick);
+  for (let i = 0; i < 6; i++) await seeded(200 + i, tick);
   expect(caught.has(down.id)).toBe(true);
   expect(caught.has(up.id)).toBe(false);
-}, 60_000);
+}, 300_000);
 
-test("a lightning-struck tree in dry weather burns as a bed and leaves a burnt stump; in wet weather it doesn't light", () => {
+test("a lightning-struck tree in dry weather burns as a bed and leaves a burnt stump; in wet weather it doesn't light", async () => {
   const at = patch();
-  weather(at, 0, 0.35);
+  await weather(at, 0, 0.35);
   // a felled oak's height (sec. 19a), its dead twigs too wet to carry a flame
   const wet = addThing(w, "tree", at.px + m(20), at.py, { size: 15, species: "oak" });
   expect(struck(w, wet)).toBeUndefined();
-  weather(at, 0);
+  await weather(at, 0);
   const tree = addThing(w, "tree", at.px, at.py, { size: 15, species: "oak" });
   tree.bed = struck(w, tree);
   expect(tree.bed).toBeDefined();
   let steps = 0;
-  for (; steps < DAY / ticksOf(STEP) && tree.bed; steps++) seeded(300 + steps, tick);
+  for (; steps < DAY / ticksOf(STEP) && tree.bed; steps++) await seeded(300 + steps, tick);
   // more than its twigs' flare: it burned on for an hour or more
   expect(steps).toBeGreaterThan(HOUR / ticksOf(STEP));
   expect(tree.kind).toBe("burnt_stump");
   expect(exists(w, tree)).toBe(true);
-}, 60_000);
+}, 300_000);
 
-test("grass at 40% moisture doesn't catch from brands that light the same grass dry", () => {
-  const brands = (dead: number) => {
-    const at = patch(), f = campfire(at);
-    weather(at, STRONG, dead);
+test("grass at 40% moisture doesn't catch from brands that light the same grass dry", async () => {
+  const brands = async (dead: number) => {
+    const at = patch(), f = await campfire(at);
+    await weather(at, STRONG, dead);
     // 5 m downwind: past the flame's reach, under its brands (sec. 30c)
     const grass = addThing(w, "grass", at.px + m(5), at.py, { size: 1.5 });
-    for (let i = 0; i < 6 && exists(w, f); i++) seeded(400 + i, tick);
+    for (let i = 0; i < 6 && exists(w, f); i++) await seeded(400 + i, tick);
     return caught.has(grass.id);
   };
-  expect(brands(0.4)).toBe(false);
-  expect(brands(DRY)).toBe(true);
-}, 60_000);
+  expect(await brands(0.4)).toBe(false);
+  expect(await brands(DRY)).toBe(true);
+}, 300_000);
 
-test("a thing heated by a fire whose heat stops cools, and doesn't light later", () => {
+test("a thing heated by a fire whose heat stops cools, and doesn't light later", async () => {
   // fallen pine logs 9 m long (an 11 cm trunk) at 50% water, as wet as the sticks lying there (a log thicker than the
   // thickest class lying takes its water), the fine stuff dry, lying within a campfire's base: the fire lights one by
   // its third tick (sec. 30c)
-  const log = () => {
-    const at = patch(), f = campfire(at);
-    weather(at, 0, [DRY, DRY, 0.5, DRY, DRY]);
+  const log = async () => {
+    const at = patch(), f = await campfire(at);
+    await weather(at, 0, [DRY, DRY, 0.5, DRY, DRY]);
     return { f, log: addThing(w, "fallen_log", at.px + m(0.3), at.py, { size: 9, species: "pine" }) };
   };
-  const kept = log(), left = log();
-  for (let i = 0; i < 2; i++) seeded(500 + i, tick);
+  const kept = await log(), left = await log();
+  for (let i = 0; i < 2; i++) await seeded(500 + i, tick);
   expect(left.log.absorbed?.[0]).toBeGreaterThan(0);
   expect(left.log.bed).toBeUndefined();
   // the second fire is put out, and its log left: it loses its heat as fast as its critical flux and the air take it,
   // and is cold within the half hour
   removeThing(w, left.f);
   let cold = 0;
-  for (; cold < 6 && left.log.absorbed; cold++) seeded(502 + cold, tick);
+  for (; cold < 6 && left.log.absorbed; cold++) await seeded(502 + cold, tick);
   expect(left.log.absorbed).toBeUndefined();
-  for (let i = 0; i < 12; i++) seeded(510 + i, tick);
+  for (let i = 0; i < 12; i++) await seeded(510 + i, tick);
   expect(caught.has(kept.log.id)).toBe(true);
   expect(caught.has(left.log.id)).toBe(false);
   expect(exists(w, left.log) && !left.log.bed).toBe(true);
-}, 60_000);
+}, 300_000);
 
-test("a campfire stepped on its 10 s lane, as at a tick of 1 s, burns look for look as one stepped 300 s at a time, and goes out on the same tick", () => {
+test("a campfire stepped on its 10 s lane, as at a tick of 1 s, burns look for look as one stepped 300 s at a time, and goes out on the same tick", async () => {
   const at = patch();
-  // each tick's bed, stepped in runs of 300 / runs seconds, the last landing the tick's looks (ecology.ts fire)
-  const burn = (runs: number) => {
-    const t0 = w.t, f = campfire(at), beds: unknown[] = [];
+  // each step's bed, the fire lane run once for the step's 300 s, or a run for each look
+  const burn = async (perRun: number) => {
+    const t0 = w.t, f = await campfire(at), beds: unknown[] = [], fires = firesOf(w)!;
     while (exists(w, f) && beds.length < 200) {
-      w.t++;
-      for (let k = 0; k < runs; k++) fire(w, exists(w, f) ? [f] : [], 300 / runs, k === runs - 1);
+      for (let k = 0; k < STEP / perRun; k++) {
+        w.t += ticksOf(perRun);
+        fire(w, exists(w, f) ? [f] : [], perRun, false);
+        await fires.arrive();
+      }
       beds.push(structuredClone(f.bed));
     }
     w.t = t0;
     return beds;
   };
-  const once = burn(1), looked = burn(30);
+  const once = await burn(STEP), looked = await burn(LOOK_S);
   expect(once.length).toBeGreaterThan(3);
   expect(looked).toEqual(once);
-}, 60_000);
+}, 300_000);
 
 test("a seeded world run on the GPU replays the same spread exactly", async () => {
   // the island's own grass, resident on the GPU with everything else: the tussock with the most grass round it of forty
