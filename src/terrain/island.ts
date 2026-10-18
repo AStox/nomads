@@ -47,8 +47,16 @@ const DYKES = 250 / 400e6, DYKE_LEN = 1000;
 // dykes (NNE) and one across them [design], about 1.5 km apart and 2 to 5 km long [design]. The ice cleared out their
 // crushed rock to as much as 50 m (areal scour's shallower class, R531; each valley's depth drawn in that range
 // [design]), leaving a sill at the middle of each long valley, its watershed (R528), 15% of its length to either side
-// [design].
+// [design]. Each half then drains out of its end (R528: the streams of the basement follow these valleys, and a valley
+// system crossing the granite holds two streams flowing the two ways from the sill), so a valley's floor falls to its
+// ends and rises toward one only as far as the ice itself can have scoured an adverse slope: at most 1.5 times the
+// ice sheet's surface slope (R1351). That slope is Nye's plastic profile's at Bornholm's distance from the margin,
+// sqrt(tau / (2 rho g x)) (R1352): a basal shear stress of 90 kPa (R1352), ice at 917 kg/m3 [UNVERIFIED: the textbook
+// value, not read], and the margin 300 km away, the 2.7 degrees of latitude from Bornholm to the Oder lobe's maximum
+// Weichselian limit at Frankfurt (R532) [UNVERIFIED: the limit's place is from memory, the distance [derived]].
 const JOINTS = [20 * DEG, 110 * DEG], JOINT_GAP = 1500, SCOUR = 50, SILL = 0.15;
+const ICE_SHEAR = 90e3, ICE_DENSITY = 917, GRAVITY = 9.81, ICE_MARGIN = 300e3;
+export const ADVERSE = 1.5 * Math.sqrt(ICE_SHEAR / (2 * ICE_DENSITY * GRAVITY * ICE_MARGIN));
 // The water table lies a few metres below the ground in the basement (R522, R530): 3 m.
 const WATER_TABLE = 3;
 
@@ -186,6 +194,45 @@ export type Stage =
   | { stage: "cover"; height: Float32Array; water: Float32Array; tree: Float32Array; shrub: Float32Array; grass: Float32Array; marsh: Float32Array; bare: Float32Array; sand: Float32Array };
 export type Watch = (s: Stage) => void;
 
+// A joint valley's floor once it drains out of both ends. floor is the rock floor the ice cleared, ground the surface
+// beside it, both in m along the valley's cells, gap the distance in m from each cell to the one before it, sill the
+// cell at the watershed and slope how steeply, m per m, the floor may rise toward an end (the adverse slope the ice could
+// scour). The floor comes out at the ground at each end, and no cell lies lower than the floor beyond it toward an end less
+// slope times the distance to it, so the valley holds no closed hollow deeper than the ice could make one. The floor is
+// never below the one the ice cleared, so it is only ever raised, and the sill takes the higher of its two halves'.
+function drainedFloor(floor: Float64Array, ground: Float64Array, gap: Float64Array, sill: number, slope: number) {
+  const n = floor.length, drained = Float64Array.from(floor);
+  let low = ground[0];
+  for (let k = 0; k <= sill; k++) { low = Math.max(floor[k], low - slope * gap[k]); drained[k] = low; }
+  low = ground[n - 1];
+  for (let k = n - 1; k >= sill; k--) {
+    if (k < n - 1) low -= slope * gap[k + 1];
+    low = Math.max(floor[k], low);
+    drained[k] = k === sill ? Math.max(drained[k], low) : low;
+  }
+  return drained;
+}
+
+// Scour one joint valley, len m long, into scour (m below the bed): cells are its cells in order, each with its place
+// along it, 0..1, at; deep is how far the ice cleared it, falling to nothing at the sill in the middle, and only the
+// cuttable cells (the basement) are cut. The ice's floor is then drained out of its ends (drainedFloor).
+export function scourValley(scour: Float32Array, bed: Float32Array, cuttable: Uint8Array, cells: number[], at: number[], len: number, deep: number, slope: number) {
+  const n = cells.length, floor = new Float64Array(n), ground = new Float64Array(n), gap = new Float64Array(n);
+  let sill = 0;
+  for (let k = 0; k < n; k++) {
+    const i = cells[k];
+    ground[k] = bed[i];
+    floor[k] = bed[i] - (cuttable[i] ? deep * Math.min(1, Math.abs(at[k] - 0.5) / SILL) : 0);
+    if (k) gap[k] = (at[k] - at[k - 1]) * len;
+    if (Math.abs(at[k] - 0.5) < Math.abs(at[sill] - 0.5)) sill = k;
+  }
+  const drained = drainedFloor(floor, ground, gap, sill, slope);
+  for (let k = 0; k < n; k++) {
+    const i = cells[k], cut = bed[i] - drained[k];
+    if (cuttable[i] && cut > scour[i]) scour[i] = cut;
+  }
+}
+
 // Everything before the climate: the crust, its erosion, the ice's scour and till, and the hollows that may hold lakes.
 export type Upstream = {
   land: Uint8Array; rock: Uint8Array; height: Float32Array; drift: Uint8Array; driftDepth: Float32Array;
@@ -201,18 +248,17 @@ export function upstream(rand: () => number, watch?: Watch): Upstream {
   // basement that thins to nothing on the knolls it scraped bare, and thickest, with its meltwater's sand, in the joint
   // valleys (R528, R529, R530). On the basement the till lies up to 6 m thick where the ground lies 5 m or more below
   // the ground within 300 m of it, thinning to none, bare rock, 5 m above it [design].
-  const scour = new Float32Array(LEN);
+  const scour = new Float32Array(LEN), cuttable = new Uint8Array(LEN);
+  for (let i = 0; i < LEN; i++) cuttable[i] = land[i] && crystalline(rock[i]) ? 1 : 0;
   for (const az of JOINTS) {
     const dx = Math.sin(az), dy = -Math.cos(az), reach = N * CELL * 0.75, mid = (N * CELL) / 2;
     for (let o = -reach; o < reach; o += JOINT_GAP * (0.5 + rand())) {
       const bx = mid + Math.cos(az) * o, by = mid + Math.sin(az) * o;
       for (let s = -reach; s < reach; ) {
         const len = 2000 + 3000 * rand(), deep = SCOUR * rand();
-        along(bx + dx * s, by + dy * s, az, len, (i, t) => {
-          if (!land[i] || !crystalline(rock[i])) return;
-          const cut = deep * Math.min(1, Math.abs(t - 0.5) / SILL);
-          if (cut > scour[i]) scour[i] = cut;
-        });
+        const cells: number[] = [], at: number[] = [];
+        along(bx + dx * s, by + dy * s, az, len, (i, t) => { if (cells[cells.length - 1] !== i) { cells.push(i); at.push(t); } });
+        scourValley(scour, bed, cuttable, cells, at, len, deep, ADVERSE);
         s += len + 500 + 1500 * rand();
       }
     }
