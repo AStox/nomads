@@ -74,9 +74,13 @@ fn sqrt64(n: vec2u, top: u32) -> u32 {
 fn cmul30(a: vec2i, b: vec2i) -> vec2i {
   return vec2i(mulq(a.x, b.x, 30u) - mulq(a.y, b.y, 30u), mulq(a.x, b.y, 30u) + mulq(a.y, b.x, 30u));
 }
-// 1 / (1 + i x) for x = y0 q (y0 Q26, q Q22), as (re, im) in Q30: (1 - i x) / (1 + x^2)
+// 1 / (1 + i x) for x = y0 q (y0 Q26, q Q22), as (re, im) in Q30: (1 - i x) / (1 + x^2). The word 1 + x^2 holds x up to
+// 255 (Q16 in a u32), so a larger x is held at 254: there the factor is under 0.4% in size (1.6e-5 real, 3.9e-3
+// imaginary) and the two delays together under 2e-5 of a wave's amplitude, and only waves near the coarse grid's own
+// 600 m wavelength reach it (x = sigma tau: the longest delay, 2100 s, on the fastest wind), which the 4 x 4 block means
+// carry least. The delays of 1000 s never reach it (x tops out at 200).
 fn lag(y0: i32, q: i32) -> vec2i {
-  let x = mulq(y0, q, 26u);
+  let x = clamp(mulq(y0, q, 26u), -0x3f800000i, 0x3f800000i);
   let xa = mag(x);
   let p = add64(mul64(xa, xa), vec2u(1u << 27u, 0u));
   let d = 65536u + ((p.x >> 28u) | (p.y << 4u));
