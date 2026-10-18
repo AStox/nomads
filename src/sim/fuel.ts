@@ -211,7 +211,7 @@ export const roundSize = (species: Wood | "generic", d: number, len: number): Si
 // The piece of wood of the item a thing standing or lying in the world gives, with what it grew as: none if it gives none.
 export function pieceOf(t: { kind: string; species?: string; size: number; girth?: number }, item: string): { size: Size; species?: Wood } | undefined {
   const sp = t.species && t.species in WOODS ? (t.species as Wood) : "generic", grew = sp === "generic" ? {} : { species: sp };
-  const trunk = t.kind === "tree" || t.kind === "fallen_log", lying = t.kind === "fallen_log" || t.kind === "stick" ? t.girth : undefined;
+  const trunk = t.kind === "tree" || t.kind === "fallen_log" || t.kind === "snag", lying = t.kind === "fallen_log" || t.kind === "snag" || t.kind === "stick" ? t.girth : undefined;
   if (item === "log" && trunk) return { size: roundSize(sp, lying ?? TRUNK[sp]?.(t.size) ?? STEM[sp](t.size), LOG_LEN), ...grew };
   if (item !== "stick" || !["tree", "fallen_log", "stump", "bush", "dead_bush", "stick"].includes(t.kind)) return undefined;
   const len = trunk ? t.size / 5 : t.kind === "stump" ? 1 : t.size;

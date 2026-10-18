@@ -131,22 +131,24 @@ function made(w: World, t: Thing, hi?: number): Part[] {
 
 // What a thing in the world is, as fuel, in an order its kind keeps: none if nothing of it burns. Living herbaceous
 // plants and seedlings are left out: they hold their green water, more than fine fuel carries a flame at (sec. 5, 30a).
+// A snag, a dead tree standing, is its trunk as a fallen log's is (a log a metre of it, the wood's own species and
+// thickness) but upright over its whole height, as a living tree's trunk stands; its crown is not laid (sec. 37).
 export function partsOf(w: World, t: Thing): Part[] {
   if (t.kind === "tree") return tree(w, t);
   if (t.kind === "grass") return grass(w, t);
   if (t.kind === "bush" || t.kind === "dead_bush") return bush(w, t, t.kind === "dead_bush");
-  if (t.kind === "stick" || t.kind === "fallen_log") {
+  if (t.kind === "stick" || t.kind === "fallen_log" || t.kind === "snag") {
     const piece = pieceOf(t, t.kind === "stick" ? "stick" : "log");
     if (!piece) return [];
     const phys = woodOf(piece.species ?? "generic", piece.size.d, piece.size.mass), water = pieceWater(w, t, piece.size.d);
-    return [{ phys, n: t.kind === "stick" ? 1 : t.size / piece.size.len, m: water.m, ...(water.skin === water.m ? {} : { skin: water.skin }), lo: 0, hi: piece.size.d }];
+    return [{ phys, n: t.kind === "stick" ? 1 : t.size / piece.size.len, m: water.m, ...(water.skin === water.m ? {} : { skin: water.skin }), lo: 0, hi: t.kind === "snag" ? t.size : piece.size.d }];
   }
   if (t.kind === "structure") return made(w, t, t.size / 2);
   if (t.kind === "item") return made(w, t);
   return [];
 }
 // The kinds of things partsOf lays.
-export const BURNABLE = ["tree", "grass", "bush", "dead_bush", "stick", "fallen_log", "structure", "item"];
+export const BURNABLE = ["tree", "grass", "bush", "dead_bush", "stick", "fallen_log", "snag", "structure", "item"];
 // How far a thing spreads either side of where it stands, m: a patch, a bush or a shelter half its width; anything else
 // at its middle.
 const halfOf = (t: Thing) => (t.kind === "grass" || t.kind === "bush" || t.kind === "dead_bush" || t.kind === "structure" ? t.size / 2 : 0);

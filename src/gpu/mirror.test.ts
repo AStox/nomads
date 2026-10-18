@@ -122,3 +122,28 @@ test("a still kind the GPU hasn't changed keeps its pages, and copies only the c
   expect(page(5, 5)[0].v).toEqual(a.v);
   expect(page(6, 5)[0].v.mass).toBe(3);
 });
+
+test("a window for some kinds alone holds those kinds' cells and no others, and lets go of them with its key", async () => {
+  const s = new Store(await theGpu());
+  s.declare(LOG);
+  s.declare({ ...LOG, name: "rock" });
+  s.spawn("log", { x: mm(20.5), y: mm(20.5), mass: 4 });
+  s.spawn("rock", { x: mm(20.5), y: mm(20.5), mass: 9 });
+  s.mirror.watch("bed", { x0: 20, y0: 20, x1: 20, y1: 20 }, ["log"]);
+  await s.step(1);
+  // the log's cell is landed; the rock's, in no window, is pending (and asked for)
+  expect(s.mirror.cell("log", 20, 20)).not.toBe(PENDING);
+  expect(s.mirror.landed("rock", 20, 20)).toBeUndefined();
+  expect(s.mirror.cell("rock", 20, 20)).toBe(PENDING);
+  // a window for every kind adds the rock's cell, the bed's keeping the log's
+  s.mirror.watch("camp", { x0: 20, y0: 20, x1: 20, y1: 20 });
+  await s.step(2);
+  expect(s.mirror.landed("rock", 20, 20)?.map((o) => o.v.mass)).toEqual([9]);
+  s.mirror.watch("camp", null);
+  await s.step(3);
+  expect(s.mirror.landed("log", 20, 20)?.map((o) => o.v.mass)).toEqual([4]);
+  // the bed's window let go, nothing keeps either
+  s.mirror.watch("bed", null);
+  await s.step(4);
+  expect(s.mirror.landed("log", 20, 20)).toBeUndefined();
+});

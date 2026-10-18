@@ -22,7 +22,7 @@
 import { CELL, N } from "../terrain/grid";
 import { SPECIES, TILES, crownShare, dbhOf, type Scatter } from "../terrain/flora";
 import { cover, storage } from "./kernel";
-import { PENDING, type Obj, type Pending } from "./mirror";
+import { PENDING, type Obj, type Pending, type Rect } from "./mirror";
 import { type Field, type Kind, type Rider, type Store, genOfId, reload, savedArray, slotOfId } from "./store";
 import type { Raster } from "./flora";
 import { binhalf, next32, rinit, unif, nlnu } from "./rand";
@@ -230,7 +230,9 @@ const STICKUP_FIELDS: Field[] = [U("born", "hour"), U("arot", "rot running sum a
 
 // A piece as the CPU sees it: what it is, its identity (a string the world names it by), place in mm, size and
 // thickness in m, its tree's SPECIES index (0 for none) and a word of variation.
-export type PieceKind = "stick" | "fallen_log" | ClastKind;
+export type PieceKind = "stick" | "fallen_log" | "snag" | ClastKind;
+// The store kinds the deadwood's pieces are held in, placed by cell (a window of a burning bed holds these alone).
+export const DEAD_KINDS: readonly string[] = ["log", "logup", "stickbin", "stickup"];
 export type Piece = { kind: PieceKind; id: string; x: number; y: number; size: number; girth: number; species: number; seed: number };
 // Where a piece came from, to find it again: a stick by (cell, born, k), a log by its dormant id, a clast by (cell, k).
 type Origin = { t: "s"; cell: number; born: number; k: number } | { t: "l"; id: number } | { t: "c"; c: number; cell: number; k: number };
@@ -474,6 +476,13 @@ export class Deadwood implements Rider {
     for (const c of this.clasts) c.destroy();
   }
 
+  // ---------- windows ----------
+  // A window of cells of the deadwood's kinds alone, kept under a key until changed or let go (null): what a burning bed
+  // keeps landed round it, for the receivers to read. The people's windows (flora.ts watch) hold every kind.
+  watch(key: string, rect: Rect | null) {
+    this.store!.mirror.watch(key, rect, DEAD_KINDS);
+  }
+
   // ---------- reading on the CPU ----------
   // The hours committed so far.
   get hourNow() { return this.drivers?.hour ?? 0; }
@@ -508,18 +517,19 @@ export class Deadwood implements Rider {
     }
     return out;
   }
-  // The fallen logs lying in a cell at the newest hour (snags stand apart: not yet things anyone sees [gap]).
-  logsIn(cell: number): Piece[] | Pending {
+  // The fallen logs lying in a cell at the newest hour, or its snags, the dead trees standing there (state 1).
+  logsIn(cell: number, state: 1 | 2 = 2): Piece[] | Pending {
     const rot = this.rotAt(cell);
     if (rot === PENDING) return PENDING;
     const page = this.store!.mirror.cell("log", cell % N, Math.floor(cell / N));
     if (page === PENDING) return PENDING;
     const out: Piece[] = [];
-    for (const o of page) if (logState(this.law, o.v, rot, this.hourNow) === 2) out.push(this.logPiece(o));
+    for (const o of page) if (logState(this.law, o.v, rot, this.hourNow) === state) out.push(this.logPiece(o, state));
     return out;
   }
-  private logPiece(o: Obj): Piece {
-    return { kind: "fallen_log", id: `l${o.id}`, x: o.v.x, y: o.v.y, size: o.v.len / 1000, girth: o.v.dia / 1000, species: o.v.what, seed: o.v.u };
+  // A dormant log as its piece: its size its length, or a standing snag's height, and its girth its diameter.
+  private logPiece(o: Obj, state: 1 | 2): Piece {
+    return { kind: state === 1 ? "snag" : "fallen_log", id: `l${o.id}`, x: o.v.x, y: o.v.y, size: o.v.len / 1000, girth: o.v.dia / 1000, species: o.v.what, seed: o.v.u };
   }
   // A class's clasts lying in a cell within a box of mm (inclusive), square by square.
   clastsIn(kind: ClastKind, cell: number, x0: number, y0: number, x1: number, y1: number): Piece[] {
@@ -602,7 +612,8 @@ export class Deadwood implements Rider {
     const obj = this.store!.mirror.get(o.id), rot = obj && obj !== PENDING ? this.rotAt(cellOf(obj.v.x, obj.v.y)) : PENDING;
     if (obj === null) return null;
     if (obj === PENDING || rot === PENDING) return PENDING;
-    return logState(this.law, obj.v, rot, this.hourNow) === 2 ? this.logPiece(obj) : null;
+    const state = logState(this.law, obj.v, rot, this.hourNow);
+    return state === 0 ? null : this.logPiece(obj, state);
   }
   private origin(id: string): Origin | null {
     const t = id[0], parts = id.slice(1).split(".").map(Number);

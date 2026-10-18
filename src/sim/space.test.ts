@@ -1,4 +1,4 @@
-import { DAY, H, W, adoptStore, heldStore, islandOf, newWorld, type World } from "./world";
+import { DAY, H, TILE_M, W, adoptStore, heldStore, islandOf, newWorld, type Thing, type World } from "./world";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../gpu/device";
 import { idOf, loadStore } from "../gpu/store";
@@ -11,6 +11,12 @@ import { stemDriver } from "./plants";
 import { seedDriver } from "./seeds";
 import { animalsOf, residentAnimals } from "./animals";
 import { LAND_S, due } from "./lanes";
+import { HOUR } from "./ticks";
+import { SPECIES } from "../terrain/flora";
+import { CELL_MM } from "../gpu/wgsl/index";
+import { N } from "../terrain/grid";
+import { PENDING } from "../gpu/mirror";
+import { partsOf } from "./spread";
 
 await islandOf(1);
 
@@ -101,4 +107,32 @@ test("a world saved with its GPU objects loads with them, and one saved without 
   deadwoodOf(loaded)!.destroy();
   heldStore(bare)!.destroy();
   deadwoodOf(bare)!.destroy();
+});
+
+test("a dead tree standing is a snag with its trunk's wood, upright over its height, and a view of it that has fallen since is made again as a fallen log", async () => {
+  const a = w.agents[0], s = heldStore(w)!, dw = deadwoodOf(w)!, x = Math.round(a.px * TILE_M * 1000), y = Math.round(a.py * TILE_M * 1000);
+  const rot = dw.rotAt(Math.floor(y / CELL_MM) * N + Math.floor(x / CELL_MM));
+  if (rot === PENDING) throw new Error("the rot sums haven't landed");
+  // a pine 9 m tall and 11 cm through, dead, standing for as long as it has had no hour: its fall word the highest and its
+  // fall rate the greatest there are, so the first hour brings it down
+  const pine = SPECIES.indexOf("pine" as never);
+  const tree = s.spawn("log", { x: x + 2000, y, born: dw.hourNow, arot: rot, what: pine, len: 9000, dia: 110, u: 0, uf: 0xffffffff, fr: 0xffffffff });
+  s.begin(w.t + 1);
+  await s.land();
+  const found = (kind: string) => { const out: Thing[] = []; around(w, a.px, a.py, 5, [kind], (t) => { out.push(t); }); return out.filter((t) => t.id === `l${tree.id}`); };
+  const [snag] = found("snag");
+  expect(snag).toMatchObject({ kind: "snag", species: "pine", size: 9, girth: 0.11 });
+  expect(found("fallen_log")).toEqual([]);
+  // its trunk laid as a log's is, a metre of it each, nine of them, upright over its whole height
+  const [trunk] = partsOf(w, snag);
+  expect(trunk.n).toBeCloseTo(9);
+  expect(trunk.phys.d).toBeCloseTo(0.11);
+  expect([trunk.lo, trunk.hi]).toEqual([0, 9]);
+  // an hour on its fall word has run out: the dead tree lies, and the view of it standing is gone with its kind
+  s.begin(Math.ceil((w.t + 2) / HOUR) * HOUR);
+  await s.land();
+  const [log] = found("fallen_log");
+  expect(log).toMatchObject({ kind: "fallen_log", size: 9, girth: 0.11 });
+  expect(w.things).not.toContain(snag);
+  expect(found("snag")).toEqual([]);
 });

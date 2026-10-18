@@ -4,7 +4,8 @@
 // next frame see their own felling.
 //
 // Windows are rectangles of cells, kept under a key (a person's id, the view) until changed or dropped; each landing's
-// gather copies the union of them, for every placed kind. A lookup of a cell outside every window, or of an id whose
+// gather copies the union of them, for every placed kind, or for the kinds a window names (a burning bed's holds the
+// deadwood's, and no others). A lookup of a cell outside every window of its kind, or of an id whose
 // slot isn't here, answers PENDING and asks for it in the next landing, so it is answered on the tick after that
 // landing; a cell or slot asked for again before a landing stays in the copy for the next.
 //
@@ -47,10 +48,14 @@ const empty = (dead = new Map<number, number>(), wantCells = new Set<number>(), 
 export class Mirror {
   private readonly pages: Pages[] = [];
   private readonly rects = new Map<string, Rect>();
-  // every cell some window holds, as a mask and in order, made again only once a window changed (cells, inWindow and
-  // entries for every kind read them)
-  private winMask: Uint8Array | null = null;
-  private winCells: Uint32Array | null = null;
+  // the kinds a window is for, where it is for some only (a bed's window holds the deadwood's kinds, not every stem), and
+  // the kinds any such window names
+  private readonly only = new Map<string, readonly string[]>();
+  private named = new Set<string>();
+  // every cell some window holds for a kind, as a mask and in order, made again only once a window changed (cells,
+  // inWindow and entries for every kind read them); the kinds some window is only for have their own, every other kind
+  // shares the first
+  private wins = new Map<string, { mask: Uint8Array; cells: Uint32Array }>();
   private readonly prov = new Map<number, Obj>(); // spawns not yet uploaded, by provisional id
   private fresh = new Map<number, Obj>(); // spawns the last upload placed, by the provisional id they had
   private last = new Map<number, Obj>(); // and the upload before
@@ -62,28 +67,38 @@ export class Mirror {
   }
 
   // ---------- windows and lookups ----------
-  watch(key: string, rect: Rect | null) {
+  // kinds names the kinds the window holds cells of; none names every kind.
+  watch(key: string, rect: Rect | null, kinds?: readonly string[]) {
     const was = this.rects.get(key);
     if (rect) {
-      if (was && was.x0 === rect.x0 && was.y0 === rect.y0 && was.x1 === rect.x1 && was.y1 === rect.y1) return;
+      if (was && was.x0 === rect.x0 && was.y0 === rect.y0 && was.x1 === rect.x1 && was.y1 === rect.y1 && this.only.get(key) === kinds) return;
       this.rects.set(key, rect);
-    } else if (!this.rects.delete(key)) return;
-    this.winMask = this.winCells = null;
+      if (kinds) this.only.set(key, kinds); else this.only.delete(key);
+    } else if (this.rects.delete(key)) this.only.delete(key);
+    else return;
+    this.named = new Set([...this.only.values()].flat());
+    this.wins.clear();
   }
-  private windows(): Uint8Array {
-    if (this.winMask) return this.winMask;
+  private windows(kind: string): { mask: Uint8Array; cells: Uint32Array } {
+    const name = this.named.has(kind) ? kind : "";
+    const made = this.wins.get(name);
+    if (made) return made;
     const m = new Uint8Array(N * N);
     let n = 0;
-    for (const r of this.rects.values())
+    for (const [key, r] of this.rects) {
+      const ks = this.only.get(key);
+      if (ks && !ks.includes(kind)) continue;
       for (let y = Math.max(0, r.y0); y <= Math.min(N - 1, r.y1); y++)
         for (let x = Math.max(0, r.x0); x <= Math.min(N - 1, r.x1); x++) if (!m[y * N + x]) { m[y * N + x] = 1; n++; }
+    }
     const cells = new Uint32Array(n);
     for (let c = 0, i = 0; i < n; c++) if (m[c]) cells[i++] = c;
-    this.winCells = cells;
-    return (this.winMask = m);
+    const win = { mask: m, cells };
+    this.wins.set(name, win);
+    return win;
   }
-  private inWindow(c: number) {
-    return this.windows()[c] === 1;
+  private inWindow(kind: string, c: number) {
+    return this.windows(kind).mask[c] === 1;
   }
   // The live objects of a placed kind in a cell, in slot order (spawns not yet uploaded last), or PENDING.
   cell(kind: string, cx: number, cy: number): Obj[] | Pending {
@@ -91,7 +106,7 @@ export class Mirror {
     if (!k.placed) throw new Error(`kind ${kind} isn't placed, so it has no cells`);
     if (cx < 0 || cy < 0 || cx >= N || cy >= N) return [];
     const p = this.pages[k.n], c = cy * N + cx;
-    if (!this.inWindow(c)) p.wantCells.add(c);
+    if (!this.inWindow(kind, c)) p.wantCells.add(c);
     return this.page(k, p, c) ?? PENDING;
   }
   // The live objects of a placed kind in a cell, as cell gives them, when the last landing brought the cell; undefined,
@@ -172,7 +187,7 @@ export class Mirror {
   // stays as it is and only what they lack is copied; unless they have come to hold more than twice the cells now
   // wanted, when everything wanted is copied again and the rest let go. Says whether it keeps.
   entries(k: Kind, keep = false): { ents: Uint32Array; keep: boolean } {
-    const p = this.pages[k.n], mask = this.windows(), win = k.placed ? this.winCells! : new Uint32Array(0);
+    const p = this.pages[k.n], { mask, cells } = this.windows(k.name), win = k.placed ? cells : new Uint32Array(0);
     // the cells asked for outside every window, then all wanted in order
     const extra = k.placed ? [...p.wantCells].filter((c) => !mask[c]).sort((a, b) => a - b) : [];
     let all: ArrayLike<number> = win;

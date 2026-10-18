@@ -3,7 +3,7 @@ import { DAY, TILE_M, addThing, dryAt, heldStore, islandOf, newWorld, rng, type 
 import { HOUR, ticksOf } from "./ticks";
 import { fire } from "./ecology";
 import { bedAir, fireOf, fireOutput, removeThing, shelterOf } from "./physics";
-import { anyOf, around, exists, firesOf, liveThings, moistOf } from "./space";
+import { anyOf, around, deadwoodOf, exists, firesOf, liveThings, moistOf } from "./space";
 import { advance, alight, kindle } from "./combustion";
 import { CLASSES, toW } from "../gpu/moisture";
 import { bedOf, partsOf, struck, warmed } from "./spread";
@@ -15,6 +15,11 @@ import { retire, tick as worldTick } from "./sim";
 import { releaseGpu } from "../gpu/device";
 import { LOOK_S } from "../gpu/wgsl/fire";
 import { LAND_S } from "./lanes";
+import { SPECIES } from "../terrain/flora";
+import { CELL, N } from "../terrain/grid";
+import { fallRate, stickOf } from "../gpu/deadwood";
+import { PENDING } from "../gpu/mirror";
+import { CELL_MM } from "../gpu/wgsl/index";
 
 await Promise.all([42, 5].map(islandOf));
 
@@ -105,6 +110,85 @@ async function campfire(at: { px: number; py: number }) {
   f.bed = advance(f.bed!, 2 * MIN, bedAir(w, f));
   return f;
 }
+
+// ---------- deadwood where no one stands ----------
+// The dead wood lies on the GPU (src/gpu/deadwood.ts), and the CPU reads the cells round people and the beds. These cases
+// lay some where no window holds it, as the deadwood's own births would: a litterfall's bin of sticks in a cell, and dead
+// pines 9 m long and 11 cm through, one lying and one standing.
+const mm = (tiles: number) => Math.round(tiles * TILE_M * 1000);
+const PINE = SPECIES.indexOf("pine" as never);
+const BIN = 3000;
+async function land() {
+  const store = heldStore(w)!;
+  store.begin(w.t);
+  await store.land();
+}
+// The runs of the fire lane up to the next landing.
+async function aligned() { while (runs % (LAND_S / LOOK_S)) await lane(LOOK_S); }
+// A bin of sticks laid in a cell, and the one of them lying nearest a point (mm): its id and place.
+function sticksNear(cx: number, cy: number, x: number, y: number) {
+  const dw = deadwoodOf(w)!, cell = cy * N + cx, born = dw.hourNow, arot = dw.rotAt(cell);
+  if (arot === PENDING) throw new Error("the rot sums haven't landed");
+  heldStore(w)!.spawn("stickbin", { x: cx * CELL_MM + CELL_MM / 2, y: cy * CELL_MM + CELL_MM / 2, born, arot, n: BIN });
+  let best = { k: 0, d: Infinity, x: 0, y: 0 };
+  for (let k = 0; k < BIN; k++) {
+    const s = stickOf(dw.law.seed, cell, born, k), d = Math.hypot(s.x - x, s.y - y);
+    if (d < best.d) best = { k, d, x: s.x, y: s.y };
+  }
+  return { id: `s${cell}.${born}.${best.k}`, x: best.x, y: best.y };
+}
+// A dead pine of the cell's rot as it is now, lying or standing, at a place (mm); its id is the GPU's once uploaded.
+function pineAt(x: number, y: number, standing: boolean) {
+  const dw = deadwoodOf(w)!, cell = Math.floor(y / CELL_MM) * N + Math.floor(x / CELL_MM), arot = dw.rotAt(cell);
+  if (arot === PENDING) throw new Error("the rot sums haven't landed");
+  return heldStore(w)!.spawn("log", { x, y, born: dw.hourNow, arot, what: PINE, len: 9000, dia: 110, u: 0, uf: 0, fr: standing ? fallRate(dw.law, PINE, 110) : 0 });
+}
+const cellOf = (at: { px: number; py: number }) => ({ cx: Math.floor((at.px * TILE_M) / CELL), cy: Math.floor((at.py * TILE_M) / CELL) });
+
+test("a bed where no one stands lights the sticks, the fallen log and the snag lying within its flames, and keeps the cells round it landed for what it lights next", async () => {
+  const at = patch(), { cx, cy } = cellOf(at), store = heldStore(w)!;
+  await weather(at, 0);
+  await land();
+  const stick = sticksNear(cx, cy, mm(at.px), mm(at.py)), log = pineAt(stick.x + 300, stick.y, false), snag = pineAt(stick.x - 300, stick.y, true);
+  // no window holds the cell, and nothing has asked for it
+  expect(store.mirror.landed("log", cx, cy)).toBeUndefined();
+  expect(store.mirror.landed("stickbin", cx + 2, cy)).toBeUndefined();
+  await aligned();
+  fireOf(w, stick.x / (TILE_M * 1000), stick.y / (TILE_M * 1000));
+  await seeded(600, () => lane(MIN));
+  // the bed's window has brought the cells two away, which no lookup of anyone's asked for
+  expect(store.mirror.landed("stickbin", cx + 2, cy)).toBeDefined();
+  expect(store.mirror.landed("log", cx - 2, cy - 2)).toBeDefined();
+  // and the water of what lies there: the texels of those cells came back with them
+  expect(moistOf(w)!.texelAt((cx + 2) * CELL_MM + 1000, cy * CELL_MM + 1000, w.t)).toBeDefined();
+  for (let i = 1; i < 12; i++) await seeded(600 + i, () => lane(MIN));
+  expect(caught.has(stick.id)).toBe(true);
+  expect(caught.has(`l${log.id}`)).toBe(true);
+  expect(caught.has(`l${snag.id}`)).toBe(true);
+  // every bed put out: the windows stay one landing, for the heat the last minute gave, and are let go at the next
+  const windows = () => [...store.mirror["rects"].keys()].filter((k) => k.startsWith("fire:"));
+  expect(windows().length).toBeGreaterThan(0);
+  for (const t of [...liveThings(w)]) if (t.bed) removeThing(w, t);
+  await seeded(650, () => lane(MIN));
+  expect(windows().length).toBeGreaterThan(0);
+  await seeded(651, () => lane(MIN));
+  expect(windows()).toEqual([]);
+}, 300_000);
+
+test("a bed lit beside a burning one finds the sticks round it at its first look, in the minute it is lit", async () => {
+  const at = patch(), { cx, cy } = cellOf(at);
+  await weather(at, 0);
+  await land();
+  // the first bed burns a minute; sticks lie in the next cell east, 75 to 150 m from it, outside its own reach
+  const next = sticksNear(cx + 1, cy, mm(at.px) + CELL_MM, mm(at.py));
+  await aligned();
+  fireOf(w, at.px, at.py);
+  await seeded(700, () => lane(MIN));
+  const second = fireOf(w, next.x / (TILE_M * 1000), next.y / (TILE_M * 1000));
+  expect(exists(w, second)).toBe(true);
+  await seeded(701, () => lane(MIN));
+  expect(caught.has(next.id)).toBe(true);
+}, 300_000);
 
 test("in still air a campfire never lights grass 2 m away, and grass touching its flames lights", async () => {
   const at = patch();
@@ -225,6 +309,67 @@ test("a campfire stepped on its 10 s lane, as at a tick of 1 s, burns look for l
   expect(looked).toEqual(once);
 }, 300_000);
 
+// What the windows of the beds cost a landing, printed and not asserted: the deadwood cells and words each landing copies
+// (every kind it copies, by name) and the time it and the fire's work take, in a wood, with no bed burning, one, and five.
+test("what a landing copies and costs with one bed burning and with five in a wood (printed)", async () => {
+  const store = heldStore(w)!, mirror = store.mirror;
+  for (const t of [...liveThings(w)]) if (t.bed) removeThing(w, t);
+  let wood: { px: number; py: number } | null = null;
+  for (let i = 0; i < 4096 && !wood; i++) {
+    const px = 8.5 + 2 * (i % 64), py = 8.5 + 2 * Math.floor(i / 64);
+    w.weather.speed = 5;
+    w.t++;
+    if (canopyAt(w, px, py) > 0.85 && airAt(w, px, py).wind > 0.8) wood = { px, py };
+  }
+  if (!wood) throw new Error("no wood");
+  await weather(wood, 1);
+  const kinds: Record<string, { cells: number; words: number }> = {};
+  const land = mirror.land.bind(store.mirror);
+  mirror.land = (k, ents, o, head, keep) => {
+    const row = 2 + k.fields.length, got = (kinds[k.name] ??= { cells: 0, words: 0 });
+    for (let e = 0; e < ents.length; e++) if ((ents[e] & 0x80000000) === 0 && o[head + 2 * e + 1] !== 0xffffffff) { got.cells++; got.words += o[head + 2 * e + 1] * row; }
+    land(k, ents, o, head, keep);
+  };
+  const out = () => (store["scratchBufs"].get("out")?.size ?? 0) / 2 ** 20;
+  const rows: Record<string, unknown>[] = [];
+  const landing = async (label: string) => {
+    await aligned();
+    for (const k of Object.keys(kinds)) delete kinds[k];
+    let beds = 0, fireMs = 0, landMs = 0;
+    for (let i = 0; i < LAND_S / LOOK_S; i++) {
+      w.t += ticksOf(LOOK_S);
+      const last = i === LAND_S / LOOK_S - 1;
+      runs++;
+      if (last) store.begin(w.t);
+      const t0 = performance.now();
+      const things = [...liveThings(w)];
+      beds = things.filter((t) => t.bed).length;
+      await seeded(900 + runs, async () => fire(w, things, LOOK_S, last));
+      fireMs += performance.now() - t0;
+      if (last) { const t1 = performance.now(); await store.land(); landMs = performance.now() - t1; }
+      await firesOf(w)!.arrive();
+    }
+    const dead = ["log", "logup", "stickbin", "stickup"].reduce((s, n) => ({ cells: s.cells + (kinds[n]?.cells ?? 0), words: s.words + (kinds[n]?.words ?? 0) }), { cells: 0, words: 0 });
+    const every = Object.values(kinds).reduce((s, x) => ({ cells: s.cells + x.cells, words: s.words + x.words }), { cells: 0, words: 0 });
+    rows.push({ label, beds, deadwoodCells: dead.cells, deadwoodKiB: Math.round((dead.words * 4) / 1024), allKindsCells: every.cells, allKindsKiB: Math.round((every.words * 4) / 1024), minuteFireMs: Math.round(fireMs), landMs: Math.round(landMs), outMiB: +out().toFixed(2), things: w.things.length });
+  };
+  await landing("none");
+  const trees: Thing[] = [];
+  const light = (n: number) => {
+    for (let i = trees.length; i < n; i++) {
+      const tree = addThing(w, "tree", wood!.px + m(14 * i), wood!.py, { size: 15, species: "oak" });
+      tree.bed = struck(w, tree);
+      if (!tree.bed) throw new Error("the tree didn't light");
+      trees.push(tree);
+    }
+  };
+  light(1);
+  for (let i = 0; i < 3; i++) await landing(`one, minute ${i + 1}`);
+  light(5);
+  for (let i = 0; i < 3; i++) await landing(`five, minute ${i + 1}`);
+  mirror.land = land;
+  console.log(JSON.stringify(rows));
+}, 300_000);
 test("a seeded world run on the GPU replays the same spread exactly", async () => {
   // the island's own grass, resident on the GPU with everything else: the tussock with the most grass round it of forty
   // drawn where a campfire a metre west of it stays alight its first minute, that campfire, and a dry, cured, windy

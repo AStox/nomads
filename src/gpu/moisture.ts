@@ -309,15 +309,21 @@ export class Moisture implements Rider {
   watch(people: readonly { px: number; py: number }[], tileMm: number, t: number) {
     for (const p of people) {
       const cx = Math.floor((p.px * tileMm) / (TEXEL_MM * 4)), cy = Math.floor((p.py * tileMm) / (TEXEL_MM * 4));
+      const cells: number[] = [];
       for (let y = Math.max(0, cy - 1); y <= Math.min(N - 1, cy + 1); y++)
-        for (let x = Math.max(0, cx - 1); x <= Math.min(N - 1, cx + 1); x++) {
-          const c = y * N + x;
-          if (!this.askedCells.has(c)) this.dirty = true;
-          this.askedCells.set(c, t);
-        }
+        for (let x = Math.max(0, cx - 1); x <= Math.min(N - 1, cx + 1); x++) cells.push(y * N + x);
+      this.ask(cells, t);
     }
     for (const [c, at] of this.askedCells) if (t - at > DAY) { this.askedCells.delete(c); this.heldCells.delete(c); }
     for (const [id, at] of this.askedLogs) if (t - at > DAY) { this.askedLogs.delete(id); this.heldLogs.delete(id); }
+  }
+  // Cells (75 m, as the mirror's) asked of at tick t: their texels' water comes back from the next landing on, and the ask
+  // is kept for a day (what a burning bed keeps asking of the cells round it).
+  ask(cells: Iterable<number>, t: number) {
+    for (const c of cells) {
+      if (!this.askedCells.has(c)) this.dirty = true;
+      this.askedCells.set(c, t);
+    }
   }
   // Every texel and log set to the same water (a test's fixed weather: fire.test.ts's dry afternoons); each log takes
   // its class's most at most.

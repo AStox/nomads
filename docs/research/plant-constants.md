@@ -312,7 +312,7 @@ Gaps the checks show:
 - Logs stand 8% above the reserves' mean: the pool is laid by each tree's crown share of its texel, and crowns overfill some texels (lone trees, rounding), so the pool per ha of capped cover runs over [derived; not retuned].
 - The crowns' cover (7,102 ha) is under the generator's tree cover (12,191 ha), so the island holds sticks and logs on less ground than the quads' cover says (sec. 11d's gaps on crown sizes carry over).
 - The island holds reserve levels of deadwood, twenty times Denmark's managed forests (R758): right for a never-logged island, as the generator notes chose.
-- A bush that dies leaves no piece; snags are not yet things people see; the renderer draws pieces only once they are Things (Unit 14).
+- A bush that dies leaves no piece; a snag is a Thing (kind snag) only where a lookup asks for one, which only a fire's reach does (fire-constants sec. 37), so people see none; the renderer draws pieces only once they are Things (Unit 14).
 - Bins every 10 game days keep the deadwood at 194 MB, room for the bins' steady state included (each bin lasts until its last stick rots); bins ten times as often (a game day each, a tenth as big) would take about 6.6 times the bins' 142 MB, as H(48) / H(478) x 10 [derived].
 
 ## 13. Seeds and seedlings (the GPU plan's Unit 8)

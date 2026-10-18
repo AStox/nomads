@@ -244,11 +244,11 @@ export function deadOf(w: World, at: { px: number; py: number }, d: number, lie:
   return ms[idx[idx.length - 1]];
 }
 export function deadAt(w: World, at: { px: number; py: number }, d: number, lie: Lie = {}) { return deadOf(w, at, d, lie).m; }
-// A piece lying out as its own object holds: a fallen log or snag its own (gpu/moisture.ts), as the last landing
-// brought it, its thickness's dead stuff lying there until it has come back; a stick its texel's sticks'.
+// A piece lying or standing out as its own object holds: a fallen log or snag its own (gpu/moisture.ts), as the last landing
+// brought it, its thickness's dead stuff lying (a snag's, standing) there until it has come back; a stick its texel's sticks'.
 export function pieceWater(w: World, t: Thing, d: number): Water {
-  const id = t.kind === "fallen_log" ? deadwoodOf(w)?.gpuId(t.id) : undefined, held = id === undefined ? undefined : gpuMoisture(w)?.logAt(id, w.t);
-  return held ? { m: fromW(held.m), skin: fromW(held.skin) } : deadOf(w, t, d, { lying: true });
+  const id = t.kind === "fallen_log" || t.kind === "snag" ? deadwoodOf(w)?.gpuId(t.id) : undefined, held = id === undefined ? undefined : gpuMoisture(w)?.logAt(id, w.t);
+  return held ? { m: fromW(held.m), skin: fromW(held.skin) } : deadOf(w, t, d, { lying: t.kind !== "snag" });
 }
 
 // ---------- the island's grass and leaves ----------

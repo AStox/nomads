@@ -33,7 +33,7 @@ export enum Tile {
 
 export type ThingKind =
   | "tree" | "stump" | "burnt_stump" | "bush" | "dead_bush" | "sapling" | "mushroom" | "herb"
-  | "stick" | "stone" | "pebble" | "boulder" | "fallen_log" | "reeds" | "fern" | "flowers" | "grass" | "clay" | "fire" | "structure" | "item" | "ash"
+  | "stick" | "stone" | "pebble" | "boulder" | "fallen_log" | "snag" | "reeds" | "fern" | "flowers" | "grass" | "clay" | "fire" | "structure" | "item" | "ash"
   | "pit" | "trap" | "well" | "grave";
 // A shelter as its pieces stand (shelter.ts, people-constants sec. 8). tier: the form they take, 0 a pile (no frame that
 // stands, or a roof over less than one sleeper's floor), 1 a lean-to (a roof over part of it), 2 a hut (a roof all

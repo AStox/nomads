@@ -5,14 +5,14 @@ import { cooling, group, setIn, type Bed, type Group } from "./combustion";
 import { PHYS, physOf } from "./fuel";
 import { BURNABLE, WIDEST, bedOf, landsOn, partsOf, placeWords, receiverWords, struck, type Part } from "./spread";
 import { airWords, pack } from "../gpu/fire";
-import { B, BW, BY, LIT, LOOK_S, NOWHERE } from "../gpu/wgsl/fire";
+import { B, BW, BY, LIT, LOOK_S, NOWHERE, REACH } from "../gpu/wgsl/fire";
 import { see } from "./beliefs";
 import { personSize } from "./senses";
 import {
   DAY, H, HP, TILE_M, W, Tile, YEAR, addThing, cropOf, dayOfYear, groundOf, log, meters, rng, sea, seasonOf, tileAt, dryNear, wetAt,
   type Agent, type Thing, type World,
 } from "./world";
-import { anyAround, around, exists, firesOf, grownOn, liveThings, makeStem, onPath, put, regrow, seedlingsOf, setKind, stockedAt } from "./space";
+import { anyAround, around, exists, firesOf, grownOn, liveThings, makeStem, onPath, put, regrow, seedlingsOf, setKind, stockedAt, watchBeds } from "./space";
 import { FAUNA } from "./fauna";
 import { animals, attacked, gone, perished } from "./animals";
 import { enrich, settle, soilWaterAt, wetHour } from "./soil";
@@ -323,10 +323,13 @@ const gatheredOf = (w: World): Gathered => {
   if (!g) gathered.set(w, (g = { looks: [], order: [], at: new Map(), near: new Set(), reached: new Map() }));
   return g;
 };
-// What might take a bed's heat within m of it, and what might take its brands within far m, joins what is gathered.
+// What might take a bed's heat within m of it, and what might take its brands within far m, joins what is gathered; and
+// how far it has looked is kept for as long as it burns, for the window it keeps landed (fire).
+const looked = new WeakMap<Thing, number>();
 function gather(w: World, t: Thing, heat: number, brands: number) {
   const { near, reached } = gatheredOf(w), src = reached.get(t) ?? { heat: -1, brands: -1 }, seen = (x: Thing) => { if (!x.bed) near.add(x); };
   reached.set(t, src);
+  looked.set(t, Math.max(heat, brands));
   if (heat > src.heat) {
     src.heat = heat;
     around(w, t.px, t.py, heat + WIDEST, BURNABLE, seen);
@@ -347,6 +350,11 @@ export function fire(w: World, live: Thing[], dt = secs(FIRE_S), landing = due(w
   }
   for (const t of list) mark(w, t);
   gpu.keep(new Set(list));
+  // Each burning bed keeps the deadwood within its reach landed, and the reach of whatever it lights next (a bed lit by this
+  // one lies within its reach, and its own heat reaches at most REACH, wgsl/fire.ts [design: the law's bound]), so a
+  // fire running through ground no one stands near finds its sticks, logs and snags and their water at its first look.
+  // The windows change at landings alone.
+  if (landing) watchBeds(w, list.flatMap((t) => (looked.has(t) ? [{ id: t.id, px: t.px, py: t.py, r: looked.get(t)! + WIDEST + REACH / 100 }] : [])));
   if (!list.length) g.looks.push(...Array.from({ length: Math.max(1, Math.round(dt / LOOK_S)) }, () => []));
   else {
     // each bed's looks: those it is owed, then the run's, in the air where it stands now; a bed with fewer than the most
