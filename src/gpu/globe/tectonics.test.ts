@@ -7,8 +7,9 @@ import { afterAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
 import { FACES, cellId, fieldWords, fromLatLon, latLon, wordAt, type Tables, type V3 } from "./grid";
 import {
-  ARC, BOUNDARY, DEFAULTS, RANGE_Z_M, DEFAULT_SWEEPS, FLD, FLUX, HOT_FLUX_HI, HOT_FLUX_LO, LITH, PHYS, SPEED_HI_MM, SPEED_LO_MM, Tectonics, Twin, cellVectors, classifyBoundaries, derive, distanceFrom, extTables,
-  makeArcs, makeHotspots, makePlates, makeSetup, measure, rotation, runPlanet, startingState, stateFrom, thermalTable, totals, unpad, type Column, type Plate, type Setup,
+  ARC, BOUNDARY, DEFAULTS, RANGE_Z_M, DEFAULT_SWEEPS, FLD, FLOW, FLUX, GPE_RESISTANCE_N_PER_M, HOT_FLUX_HI, HOT_FLUX_LO, LITH, PHYS, SPEED_HI_MM, SPEED_LO_MM, Tectonics, Twin, cellAreas, cellVectors,
+  classifyBoundaries, components, derive, distanceFrom, extTables, gravitationalPotentialEnergy, makeArcs, makeHotspots, makePlates, makeSetup, measure, neighbours, rangeMeasures, regionalField, rotation,
+  runPlanet, startingState, stateFrom, thermalTable, thicknessForForce, totals, unpad, type Column, type Plate, type Setup,
 } from "./tectonics";
 
 afterAll(releaseGpu);
@@ -293,7 +294,7 @@ test("a continent rides over ocean floor: the sediment is scraped on, the arc ri
 
 // ---- the kernels against their twins ----
 test("the GPU kernels equal their twins bit for bit over steps, with arcs, a hot spot and crust over the limit", async () => {
-  const sweeps = { gap: 4, smooth: 2, dist: 12, topple: 4 }, set = makeSetup({ seed: 2 }, sweeps), e = ext(), gpu = await theGpu(), start = startingState(set, e.tab);
+  const sweeps = { gap: 4, smooth: 2, dist: 12, flow: 4, regional: 3, wedge: 4, load: 3 }, set = makeSetup({ seed: 2 }, sweeps), e = ext(), gpu = await theGpu(), start = startingState(set, e.tab);
   // pile 120 km of granitoid on a patch of cells so that the flow and the cut have something to do
   const g = set.grid, fw = fieldWords(g), S0 = start.S.slice();
   for (let Y = 100; Y < 108; Y++)
@@ -311,17 +312,19 @@ test("the GPU kernels equal their twins bit for bit over steps, with arcs, a hot
     expect(bad).toBe(0);
   }
   expect(fg).toEqual(twin.flux);
-  // every kind of flux was exercised
-  for (const k of [FLUX.NEW, FLUX.SUB, FLUX.ARC, FLUX.HOT, FLUX.PEL, FLUX.TRIM]) expect(fg[k]).toBeGreaterThan(0n);
+  // every kind of flux was exercised, the wedge's stacking among them
+  for (const k of [FLUX.NEW, FLUX.SUB, FLUX.ARC, FLUX.HOT, FLUX.PEL, FLUX.TRIM, FLUX.STACK]) expect(fg[k]).toBeGreaterThan(0n);
   tec.release();
 }, 280_000);
 
 // ---- runs ----
-// Pinned by a deliberate re-record (the sha256 of the five volumes, both age sums and the plate field after 100 steps of 2 My).
+// Pinned by a deliberate re-record (the sha256 of the five volumes, both age sums and the plate field after 100 steps of 2 My). Re-recorded (second pass) because the crust an overlap
+// stacks is now spread over the plate as a wedge (54 sweeps) and the channel is driven by the regional thickness (32 sweeps), so the flow no longer smooths a column's departure from its
+// region. First pass: 3bece6bc..., 21dbc9b0..., c9c8736e... (regional ranking, channel flow on each column's thickness, foundering at 65.5 km); before it: f51e247a..., 11d5563f..., 8e7b482e....
 const GOLDEN: Record<number, string> = {
-  1: "f51e247aa6b638584c467081f3415c9c5495caa13c440415ce07491e9215df5d",
-  2: "11d5563f17a77e0435bdca36d6c96d5b2baec06e5b4a31b29cd6b9bd6f1a2aa0",
-  3: "8e7b482e906db36ca57041caeeadbeb3d468e33ffc56abeef369adb54bf88e5c",
+  1: "d7bb0eb8e06d5cd5db2a076bf25e1b8d512f5875a83dd1827e2256fd436bd102",
+  2: "3421c0b2a634dc9d031d87f9410c0831b966b122acb15cd7cf3dffe7614c84a9",
+  3: "4743f5de2acc972c7076f3f7e08f11099512b2d00c777d301c12e4d5ec607054",
 };
 
 test("a run is the same twice, and its hash is pinned for seeds 1 to 3", async () => {
@@ -406,3 +409,230 @@ test("seeds 1 to 8: books balance, thickness stays inside the physical bounds, l
   }
   console.log(rows.join("\n"));
 }, 290_000);
+
+// ---- the regional height that ranks the columns in an overlap ----
+test("the regional height: the kernel equals its twin, a flat plate stays flat, and nothing leaks across a plate boundary", async () => {
+  const gpu = await theGpu(), e = ext(), sweeps = { ...DEFAULT_SWEEPS, regional: 4 };
+  // two plates, each of identical columns (granitoid, and young sea floor): every column of a plate has one height, so its regional height is that height exactly
+  const set = makeSetup({ seed: 1, plates: 2, hotspots: 0 }, sweeps, { plates: closing(0.01), hotspots: [] }), vec = cellVectors(set.grid), g = set.grid, fw = fieldWords(g);
+  const flat = stateFrom(set, e.tab, (i) => (vec[3 * i + 1] <= 0 ? { granitoid: 40_000, plate: 0 } : { basalt: 6_000, ageMy: 50, plate: 1 }));
+  const tec = new Tectonics(gpu, set, e, flat);
+  tec.piece("elev");
+  const out = await tec.read(), field = regionalField(sweeps.regional);
+  let bad = 0;
+  for (let k = 0; k < fw; k++) if (out[field * fw + k] !== out[FLD.Z * fw + k]) bad++;
+  expect(bad).toBe(0);
+  tec.release();
+  // a planet with relief and many plates: the sweeps against the twin, word for word
+  const set2 = makeSetup({ seed: 2 }, sweeps), start = startingState(set2, e.tab), tec2 = new Tectonics(gpu, set2, e, start.S), twin = new Twin(set2, e, start.S);
+  tec2.piece("elev");
+  const G = await tec2.read();
+  twin.elev();
+  for (let s = 0; s < sweeps.regional; s++) twin.regional(s === 0 ? FLD.Z : s % 2 === 1 ? FLD.ZR : FLD.ZR2, s % 2 === 0 ? FLD.ZR : FLD.ZR2);
+  bad = 0;
+  for (let k = 0; k < fw; k++) if (G[field * fw + k] !== twin.S[field * fw + k]) bad++;
+  expect(bad).toBe(0);
+  // it is an average of the plate's own columns: inside the range of the heights it was made from
+  let lo = Infinity, hi = -Infinity;
+  for (let k = 0; k < fw; k++) { lo = Math.min(lo, G[FLD.Z * fw + k]); hi = Math.max(hi, G[FLD.Z * fw + k]); }
+  for (let k = 0; k < fw; k++) if (G[FLD.PL * fw + k] !== 0 || G[FLD.VB * fw + k] !== 0) { expect(G[field * fw + k]).toBeGreaterThanOrEqual(lo); expect(G[field * fw + k]).toBeLessThanOrEqual(hi); }
+  tec2.release();
+}, 120_000);
+
+test("the plate map keeps its pieces: ranking an overlap by the regional height ends the cell-by-cell lottery of plate ownership in collisions", async () => {
+  // Measured cause of the boundary growth (1.7% of the cells at the start, 9% after 200 My): where two continents met, the plate that rode over was decided by each cell's own height,
+  // a lottery that cut the plates into islands (96 pieces under 200 cells at 100 My, 7 in 10 of them continental). Ranked by the regional height the pieces fall by two thirds.
+  const gpu = await theGpu(), pieces: Record<number, number> = {};
+  for (const regional of [0, 32]) {
+    const set = makeSetup({ seed: 1 }, { ...DEFAULT_SWEEPS, regional }), e = extTables(set.grid), start = startingState(set, e.tab), tec = new Tectonics(gpu, set, e, start.S);
+    for (let s = 0; s < 50; s++) tec.step();
+    tec.elevate();
+    const d = derive(set, e.tab, await tec.read());
+    let n = 0;
+    for (let p = 0; p < set.plates.length; p++) n += components(set.grid, d.plate.map((x) => (x === p ? 1 : 0))).cells.filter((c) => c < 200).length;
+    pieces[regional] = n;
+    tec.release();
+  }
+  console.log("plate pieces under 200 cells at 100 My, seed 1:", JSON.stringify(pieces));
+  expect(pieces[32]).toBeLessThan(pieces[0] / 2);
+}, 120_000);
+
+// ---- gravity-driven flow and the foundering depth ----
+test("flow of thick crust: Poiseuille channel flow as diffusion, by the cited viscosities, into continental crust only, every pool conserved", () => {
+  const e = ext(), eta = 1e19, g = tierGridOf(), nbs = neighbours(g);
+  const set = makeSetup({ seed: 1, plates: 1, hotspots: 0, flowEta: eta }, { ...DEFAULT_SWEEPS, flow: 320 }, { plates: [{ seed: [1, 0, 0], pole: [0, 0, 1], speedMmYr: 0, rate: 0 }], hotspots: [] });
+  // the diffusion number against the law written out in other units: D_h = (1 - rho_c / rho_m) H^3 rho_c g / (12 eta) in m2 a year, a step of 2 My over 320 sweeps, dx^2 the mean cell
+  const etaYr = eta / 3.15576e7, dh = (1 - 2800 / PHYS.RHO_M) * (FLOW.channelM ** 3 * 2800 * PHYS.G) / (12 * etaYr), dx2 = (4 * Math.PI * (2000e3) ** 2) / (6 * 256 * 256);
+  expect(Math.abs(set.flow.idealW / ((dh * 2e6) / (320 * dx2)) - 1)).toBeLessThan(1e-9);
+  expect(set.flow.share).toBe(1);
+  expect(set.flow.foW).toBeLessThanOrEqual(FLOW.foMax);
+  // the cold margin's viscosity is 100 times the weak channel's: a hundredth of the flow
+  expect(Math.abs(set.flow.foC / set.flow.foW - eta / FLOW.etaCold)).toBeLessThan(1e-3);
+  // fewer sweeps cannot integrate the law: the number is capped at its stability and the share falls
+  const few = makeSetup({ seed: 1, plates: 1, hotspots: 0 }, { ...DEFAULT_SWEEPS, flow: 40 }, { plates: set.plates, hotspots: [] });
+  expect(few.flow.foW).toBe(FLOW.foMax);
+  expect(few.flow.share).toBeCloseTo(FLOW.foMax / few.flow.idealW, 9);
+  // one sweep on a staged planet: a tower of 100 km in the middle of a face; east a weak neighbour of 62 km, north a cold continental one of 40 km, west 6 km of sea floor, south 62 km
+  const c0 = cellId(g, 0, 100, 100), n = [0, 1, 2, 3].map((d) => nbs[4 * c0 + d]);
+  const S0 = stateFrom(set, e.tab, (i) => {
+    if (i === c0) return { granitoid: 100_000, plate: 0 };
+    if (i === n[0] || i === n[3]) return { granitoid: 62_000, plate: 0 };
+    if (i === n[1]) return { granitoid: 40_000, plate: 0 };
+    if (i === n[2]) return { basalt: 6_000, ageMy: 20, plate: 0 };
+    return { granitoid: 35_000, plate: 0 };
+  });
+  // the regional volume with no sweeps is the column's own, so the shares below are the law's for the columns' thicknesses
+  const twin = new Twin(set, e, S0), cell = (i: number) => ({ face: Math.floor(i / 65536), X: i % 256, Y: Math.floor((i % 65536) / 256) });
+  twin.loadInit(); twin.loadVol(FLD.ZR);
+  const share = [0, 1, 2, 3].map((d) => twin.shareTo(FLD.VB, FLD.VR, cell(c0), d));
+  const foW = set.layout.foW / 65536, foC = set.layout.foC / 65536;
+  expect(Math.abs(share[0] / 65536 - (foW * (100_000 - 62_000)) / 100_000)).toBeLessThan(2e-5);
+  expect(Math.abs(share[3] / 65536 - (foW * (100_000 - 62_000)) / 100_000)).toBeLessThan(2e-5);
+  expect(Math.abs(share[1] / 65536 - (foC * (100_000 - 40_000)) / 100_000)).toBeLessThan(2e-5);
+  expect(share[2]).toBe(0);
+  // a thin cell sends nothing up the slope to the tower (west of the east neighbour), and the sea floor sends nothing anywhere
+  expect(twin.shareTo(FLD.VB, FLD.VR, cell(n[0]), 2)).toBe(0);
+  for (const d of [0, 1, 2, 3]) expect(twin.shareTo(FLD.VB, FLD.VR, cell(n[2]), d)).toBe(0);
+  // a sweep conserves each of the seven fields to the unit
+  const sum = (S: Int32Array, base: number) => { const fw = S.length / FLD.COUNT, out: bigint[] = []; for (let f = 0; f < 7; f++) { let t = 0n; for (let k = 0; k < fw; k++) t += BigInt(S[(base + f) * fw + k] >>> 0); out.push(t); } return out; };
+  const before = sum(twin.S, FLD.VB);
+  twin.crustflow(FLD.VB, FLD.E2, FLD.VR, FLD.VR2);
+  expect(sum(twin.S, FLD.E2)).toEqual(before);
+});
+
+test("the channel feels the regional load and the wedge spreads a step's stacked crust: a column's departure from its region is left alone, the stack spreads over its own plate only", () => {
+  const e = ext(), g = tierGridOf(), fw = fieldWords(g), vec = cellVectors(g), areas = cellAreas(g);
+  const one = { plates: [{ seed: [1, 0, 0] as V3, pole: [0, 0, 1] as V3, speedMmYr: 0, rate: 0 }], hotspots: [] };
+  const word = (f: number, i: number) => (f * fw + wordAt(g, Math.floor(i / 65536), i % 256, Math.floor((i % 65536) / 256)));
+  const vol = (S: Int32Array, base: number, i: number) => [0, 1, 2, 3, 4].reduce((s, j) => s + (S[word(base + j, i)] >>> 0), 0);
+  // a weak plateau on face 0 whose crust thickens eastward from 62 to 72 km, one column carved 8 km below its neighbours, 35 km of crust elsewhere
+  const set = makeSetup({ seed: 1, plates: 1, hotspots: 0 }, { ...DEFAULT_SWEEPS, load: 8 }, one), c1 = cellId(g, 0, 128, 128);
+  const S0 = stateFrom(set, e.tab, (i) => (Math.floor(i / 65536) !== 0 ? { granitoid: 35_000, plate: 0 } : { granitoid: 62_000 + (10_000 * (i % 256)) / 256 - (i === c1 ? 8_000 : 0), plate: 0 }));
+  const twin = new Twin(set, e, S0);
+  twin.loadInit();
+  for (let s = 0; s < 8; s++) twin.loadSweep(s % 2 === 0 ? FLD.ZR : FLD.ZR2, s % 2 === 0 ? FLD.ZR2 : FLD.ZR);
+  twin.loadVol(FLD.ZR);
+  const N = 6 * 65536, dep = new Float64Array(N);
+  for (let i = 0; i < N; i++) dep[i] = vol(twin.S, FLD.VB, i) - (twin.S[word(FLD.VR, i)] >>> 0);
+  // the carved column stands 8 km below its region (its regional thickness is its neighbours' less a ninth of the cut and more, after the sweeps)
+  expect(dep[c1]).toBeLessThan(0);
+  twin.crustflow(FLD.VB, FLD.E2, FLD.VR, FLD.VR2);
+  let moved = 0, kept = 0;
+  for (let i = 0; i < N; i++) {
+    if (vol(twin.S, FLD.E2, i) !== vol(twin.S, FLD.VB, i)) moved++;
+    if (vol(twin.S, FLD.E2, i) - (twin.S[word(FLD.VR2, i)] >>> 0) === dep[i]) kept++;
+  }
+  expect(moved).toBeGreaterThan(1000);
+  expect(kept).toBe(N);
+
+  // the wedge: two plates of 35 km of granitoid split at X = 128 on face 0, a stack of 20 km on a cell 28 cells from the boundary and one on the boundary
+  const two = makeSetup({ seed: 1, plates: 2, hotspots: 0 }, DEFAULT_SWEEPS, { plates: [one.plates[0], one.plates[0]], hotspots: [] });
+  const far = cellId(g, 0, 100, 60), edge = cellId(g, 0, 127, 190), plateOf = (i: number) => (Math.floor(i / 65536) === 0 && i % 256 >= 128 ? 1 : 0);
+  const W0 = stateFrom(two, e.tab, (i) => ({ granitoid: 35_000 + (i === far || i === edge ? 20_000 : 0), plate: plateOf(i) }));
+  const w = new Twin(two, e, W0);
+  for (const i of [far, edge]) w.S[word(FLD.VR, i)] = Math.floor((20_000 * e.tab.words[(i % 65536)]) / 16);
+  const before = [0, 1, 2, 3, 4, 5, 6].map((j) => { let t = 0; for (let i = 0; i < N; i++) t += w.S[word(FLD.VB + j, i)] >>> 0; return t; });
+  for (let s = 0; s < two.sweeps.wedge; s++) w.crustflow(s % 2 === 0 ? FLD.VB : FLD.E2, s % 2 === 0 ? FLD.E2 : FLD.VB, s % 2 === 0 ? FLD.VR : FLD.VR2, s % 2 === 0 ? FLD.VR2 : FLD.VR, true);
+  const after = [0, 1, 2, 3, 4, 5, 6].map((j) => { let t = 0; for (let i = 0; i < N; i++) t += w.S[word(FLD.VB + j, i)] >>> 0; return t; });
+  expect(after).toEqual(before);
+  // nothing crosses to the other plate
+  let leaked = 0;
+  for (let i = 0; i < N; i++) if (plateOf(i) === 1 && vol(w.S, FLD.VB, i) !== vol(W0, FLD.VB, i)) leaked++;
+  expect(leaked).toBe(0);
+  // the far stack spreads as a Gaussian of sigma dx (0.4 x 54)^(1/2) = 57 km: the second moment of the stack's crust (the column less the 35 km beneath it), over cells within 300 km
+  const R = 2000, cf = [vec[3 * far], vec[3 * far + 1], vec[3 * far + 2]], base = (i: number) => Math.floor((35_000 * e.tab.words[i % 65536]) / 16);
+  let m0 = 0, m2 = 0;
+  for (let i = 0; i < N; i++) {
+    const dKm = R * Math.acos(Math.min(1, dot3(cf, [vec[3 * i], vec[3 * i + 1], vec[3 * i + 2]])));
+    if (dKm > 300) continue;
+    const gain = ((vol(w.S, FLD.VB, i) - base(i)) * areas[i]) / e.tab.words[i % 65536];
+    m0 += gain; m2 += gain * dKm * dKm;
+  }
+  const sigma = Math.sqrt(m2 / m0 / 2);
+  console.log(`wedge: sigma ${sigma.toFixed(1)} km, the stack's own cell keeps ${((vol(w.S, FLD.VB, far) / e.tab.words[far % 65536]) * 16 - 35_000).toFixed(0)} m of 20,000`);
+  expect(sigma).toBeGreaterThan(57 * 0.85); expect(sigma).toBeLessThan(57 * 1.15);
+});
+
+test("the foundering depth and the force that bounds a plateau: 1.8 GPa over rho g, the potential energy of the column, the cited resistance of Tibet", () => {
+  // the depth is the pressure of the eclogite boundary over the crust's weight, to 100 m
+  expect(Math.abs(PHYS.H_MAX - 1.8e9 / (2800 * PHYS.G))).toBeLessThan(100);
+  // the potential energy contrast of a column of crust against the 35 km column, by integrating the weight's moment of both columns to a compensation depth of 300 km
+  const integral = (h: number) => {
+    const e = (h - PHYS.H0) * (1 - 2800 / PHYS.RHO_M), step = 10, L = 300_000;
+    let u = 0;
+    for (let z = -L; z < e; z += step) { const mid = z + step / 2, rho = mid > e - h ? 2800 : PHYS.RHO_M; u += rho * PHYS.G * mid * step; }
+    return u;
+  };
+  const ref = integral(PHYS.H0);
+  for (const h of [45_000, 52_000, 65_500, 70_000]) expect(Math.abs((integral(h) - ref) / gravitationalPotentialEnergy(h) - 1)).toBeLessThan(2e-3);
+  expect(gravitationalPotentialEnergy(PHYS.H0)).toBe(0);
+  // the cited range of the resistance of Tibet's potential energy, 3e12 to 8e12 N/m, is 52 to 71 km of crust, and the foundering depth lies between
+  expect(thicknessForForce(GPE_RESISTANCE_N_PER_M.tibetLo)).toBeGreaterThan(51_000); expect(thicknessForForce(GPE_RESISTANCE_N_PER_M.tibetLo)).toBeLessThan(52_500);
+  expect(thicknessForForce(GPE_RESISTANCE_N_PER_M.tibetHi)).toBeGreaterThan(70_500); expect(thicknessForForce(GPE_RESISTANCE_N_PER_M.tibetHi)).toBeLessThan(72_000);
+  expect(PHYS.H_MAX).toBeGreaterThan(thicknessForForce(GPE_RESISTANCE_N_PER_M.tibetLo)); expect(PHYS.H_MAX).toBeLessThan(thicknessForForce(GPE_RESISTANCE_N_PER_M.tibetHi));
+  expect(Math.abs(thicknessForForce(gravitationalPotentialEnergy(58_000)) - 58_000)).toBeLessThan(1e-6);
+});
+
+test("a collision's thickening: the crust of the closing area is all kept at first and spread as pure shear over the cited 50 to 200 km, the orogen widens, and the rest founders", async () => {
+  // Two continents (35 km of granitoid on both plates) close at 20 mm/yr along a meridian. Pure shear gives dh/dt = h v / W for the width W the shortening is spread over; a step that
+  // piled the whole closure into the strip it closes (v dt = 40 km) would thicken by a factor of two at once. The wedge spreads what the overlap stacks over the plate, so the front of
+  // the first step thickens by the closure over a width inside the cited 50 to 200 km (R1413): 1,400 km2 over 200 to 50 km is 7 to 28 km.
+  const rate = 0.005, vKmMy = 2 * rate * 2000, gpu = await theGpu(), e = ext();
+  const set = makeSetup({ seed: 1, plates: 2, hotspots: 0, spanMy: 40 }, DEFAULT_SWEEPS, { plates: closing(rate), hotspots: [] }), vec = cellVectors(set.grid), areas = cellAreas(set.grid);
+  const S0 = stateFrom(set, e.tab, (i) => ({ granitoid: 35_000, plate: vec[3 * i + 1] <= 0 ? 0 : 1, orogenyMy: 200 }));
+  const tec = new Tectonics(gpu, set, e, S0), rows: string[] = [];
+  const strip = (d: ReturnType<typeof derive>) => {
+    // the strip |z| < 0.03 on the closing meridian's side: crust over 35 km per km of the boundary (km2), the width over 45 km (km), the peak (m)
+    const stripKm = 2 * 0.03 * 2000, R2 = 2000 * 2000;
+    let excess = 0, wide = 0, peak = 0;
+    for (let i = 0; i < d.n; i++) {
+      if (Math.abs(vec[3 * i + 2]) > 0.03 || vec[3 * i] <= 0) continue;
+      const a = (areas[i] * R2) / stripKm;
+      excess += (Math.max(0, d.thickness[i] - 35_000) / 1000) * a; peak = Math.max(peak, d.thickness[i]);
+      if (d.thickness[i] > 45_000) wide += a;
+    }
+    return { excess, wide, peak };
+  };
+  const at: Record<number, ReturnType<typeof strip>> = {};
+  for (let s = 1; s <= 20; s++) {
+    tec.step();
+    if (![1, 5, 10, 20].includes(s)) continue;
+    tec.elevate();
+    at[s] = strip(derive(set, e.tab, await tec.read()));
+    rows.push(`t=${2 * s} My: peak ${(at[s].peak / 1000).toFixed(1)} km, ${at[s].wide.toFixed(0)} km wide over 45 km, ${at[s].excess.toFixed(0)} km2 of crust over 35 km (closed: ${(vKmMy * 2 * s * 35).toFixed(0)} km2)`);
+  }
+  console.log(rows.join("\n"));
+  // the first step keeps all of the closed crust (to 10%), and its front thickens by the closure spread over 50 to 200 km (measured 17.4 km: 80 km of width), not by the whole column
+  expect(Math.abs(at[1].excess / (vKmMy * 2 * 35) - 1)).toBeLessThan(0.1);
+  const closed = vKmMy * 2 * 35;
+  expect(at[1].peak - 35_000).toBeGreaterThan((closed / 200) * 1000); expect(at[1].peak - 35_000).toBeLessThan((closed / 50) * 1000);
+  // the wedge and the channel have widened the thick crust: 50 to 300 km after 20 My
+  expect(at[10].wide).toBeGreaterThan(50); expect(at[10].wide).toBeLessThan(300);
+  expect(at[20].wide).toBeGreaterThan(at[5].wide);
+  // what the foundering takes is the closed crust less what stands: the crust kept falls short of the law's closure (the plateau is held at the foundering depth)
+  expect(at[20].excess).toBeLessThan(vKmMy * 40 * 35);
+  expect(at[20].peak).toBeLessThanOrEqual(PHYS.H_MAX + 50);
+  tec.release();
+}, 120_000);
+
+test("what the ranges are: the measures read the plateau, the relief at the cell size and the height-area curve's modes", () => {
+  // a planet of 70 km tables on 0.6 of a face and sea floor elsewhere: every measure is known from the construction
+  const set = makeSetup({ seed: 1 }), e = ext(), g = set.grid;
+  const S = stateFrom(set, e.tab, (i) => (Math.floor(i / 65536) === 0 && i % 256 < 150 ? { granitoid: 70_000, plate: 0 } : { basalt: 6_000, ageMy: 50, plate: 0 }));
+  // heights from the twin's elevation
+  const twin = new Twin(set, e, S);
+  twin.elev();
+  const d = derive(set, e.tab, twin.S), m = rangeMeasures(set, e.tab, d), areas = cellAreas(g);
+  let want = 0;
+  for (let i = 0; i < 65536; i++) if (i % 256 < 150) want += areas[i];
+  expect(Math.abs(m.over2km - want / (4 * Math.PI))).toBeLessThan(1e-12);
+  expect(m.over5km).toBeCloseTo(m.over2km, 9);
+  expect(m.over4km).toBeCloseTo(m.over2km, 9);
+  expect(m.plateauShare).toBeCloseTo(m.over2km, 9);
+  // a plateau's interior has no relief, its edge has 5 km and more: the median over the cells above 2 km is 0, and the land mode is the table's 500 m band
+  expect(m.reliefM).toBe(0);
+  expect(m.landModeM).toBe(5250);
+  expect(m.seaModeM).toBeLessThan(-3000);
+});
+
+function tierGridOf() { return makeSetup().grid; }

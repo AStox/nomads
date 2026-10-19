@@ -7,7 +7,8 @@
 // The model in a paragraph. Erosion runs on tectonics' own state: the five rock volumes of every column. A substep reads the
 // isostatic height of each column, floods the depressions (priority flood from the ocean inward), drains every land cell to its
 // steepest neighbour on the flooded surface (a forest rooted at the ocean), sums the discharge (cell area times rain) down the
-// forest, cuts each cell by the implicit stream power law with the erodibility of the rock in the top of its column, takes that
+// forest, cuts each cell by the implicit stream power law with the erodibility of the rock in the top of its column (and, where the
+// relief over its lowest neighbour is more than the river's slope shows, by the landscape-scale law of local relief), takes that
 // rock off the top of the column, sheds a dissolved share of it, and carries the rest down the forest: lakes fill, a share
 // settles along the way, and what reaches the coast spreads outward over the shelf by rings. Hillslopes creep and the sea
 // floor's sediment diffuses by the grid's conservative stencil. Rock removed from a column lowers the surface by only a sixth
@@ -35,6 +36,7 @@ export interface ErosionParams {
   creepSea: number; // m2/yr
   shelfSlope: number;
   ringMax: number;
+  relief: boolean; // landscape-scale denudation by local relief (MONTGOMERY_BRANDON), on or off
 }
 
 // Erodibility for the stream power law at m = 1/2, n = 1, drainage area in m2 (K in 1/yr), as terrain/geology.ts holds it [cited R523: Stock
@@ -66,6 +68,16 @@ export const DEPOSITION_G = 1;
 // Hillslope creep's diffusivity, m2/yr, one for the planet as the island has it [cited R527, terrain/geology.ts: 4.4e-4 to 3.6e-2, the middle; Roering et al. 1999
 // give 3.2e-3 for one site]. At 12 km cells it moves almost nothing: sqrt(D t) over 1 My is 63 m.
 export const CREEP_LAND = CREEP;
+// Landscape-scale erosion rate against mean local relief R within a 10 km window: E = E0 + K R / (1 - (R / Rc)^2), the limiting relief Rc = 1,500 m, E0 = 0.01 mm/yr (the chemical
+// denudation of the 35 largest basins), K = 2.5e-4 mm/yr per m [cited R1689: Montgomery and Brandon 2002, EPSL 201: 481 to 489, fig. 4 and eqs. 1 and 2, read]. Their data: tectonically
+// active mountain belts have mean local relief of 1,000 to 2,000 m whatever the climate, under 2% of the land has more than 1,500 m, rates above 10 mm/yr are rare. The relief here is
+// the height of a cell over its lowest axis neighbour (12 km), and R is held under 15/16 of Rc where the law is singular [design]: E then tops out at 2.9 mm/yr.
+export const MONTGOMERY_BRANDON = { e0MmYr: 0.01, rcM: 1500, kMmYrPerM: 2.5e-4, cap: 15 / 16, subIntervals: 8 };
+// The law itself, mm/yr for a relief in m, held under the cap (the kernel's `relief` integrates it over a substep).
+export const denudationFromRelief = (reliefM: number) => {
+  const mb = MONTGOMERY_BRANDON, r = Math.min(reliefM, mb.cap * mb.rcM);
+  return mb.e0MmYr + (mb.kMmYrPerM * r) / (1 - (r / mb.rcM) ** 2);
+};
 // The sea floor's sediment diffusivity, m2/yr: stratigraphic models use 1e2 to 1e4 for shelf and slope sediment [UNVERIFIED: remembered from
 // Kenyon and Turcotte 1985 and Granjeon and Joseph 1999, search snippets only]; the low end is taken, as the rings below do the spreading.
 export const CREEP_SEA = 100;
@@ -80,7 +92,7 @@ export const SUBSTEP_YR = 5e5;
 export const defaultParams = (over: Partial<ErosionParams> = {}): ErosionParams => ({
   dtYr: SUBSTEP_YR, n: 1,
   K: [K_GRANITE, K_SANDSTONE, K_GRANITE, K_GRANITE, K_VOLCANIC],
-  refRainMmYr: REF_RAIN_MMYR, skinM: SKIN_M, dissolved: DISSOLVED, G: DEPOSITION_G, creepLand: CREEP_LAND, creepSea: CREEP_SEA, shelfSlope: SHELF_SLOPE, ringMax: RING_MAX,
+  refRainMmYr: REF_RAIN_MMYR, skinM: SKIN_M, dissolved: DISSOLVED, G: DEPOSITION_G, creepLand: CREEP_LAND, creepSea: CREEP_SEA, shelfSlope: SHELF_SLOPE, ringMax: RING_MAX, relief: true,
   ...over,
 });
 
@@ -92,6 +104,10 @@ export function erosionWords(g: Grid, set: Setup, p: ErosionParams): Uint32Array
   w[PR.sea16] = sea >>> 0; w[PR.eps] = 1; w[PR.ringMax] = p.ringMax; w[PR.diss16] = Math.round(p.dissolved * 65536); w[PR.g8] = Math.round(p.G * 256);
   w[PR.nExp] = p.n; w[PR.skin] = p.skinM; w[PR.shelf] = Math.round(p.shelfSlope * Math.sqrt(a0) * 256);
   for (let k = 0; k < 5; k++) w[PR.kc + k] = kWord(g, p, p.K[k]);
+  if (p.relief) {
+    const mb = MONTGOMERY_BRANDON, sub = (p.dtYr * 1) / mb.subIntervals;
+    w[PR.rc] = Math.round(mb.rcM * 256); w[PR.kdt] = Math.round(((mb.kMmYrPerM * 1e-3) * sub) * 65536); w[PR.e0] = Math.round(mb.e0MmYr * 1e-3 * sub * 256);
+  }
   return w;
 }
 // One erodibility as the kernels' word.
@@ -247,7 +263,7 @@ export class Erosion {
   // The stream power step and what follows it, to the books: erodibility, incision, removal, the sediment down the tree, the sea's rings, apply.
   erode() {
     this.begin();
-    this.rec("kappa"); this.rec("incise", {}, 1); this.rec("removal"); this.rec("route", {}, 1);
+    this.rec("kappa"); this.rec("relief"); this.rec("incise", {}, 1); this.rec("waste"); this.rec("removal"); this.rec("route", {}, 1);
     this.rec("cdinit");
     for (let r = 0; r < this.p.ringMax; r++) this.rec(r % 2 === 0 ? "cda" : "cdb");
     for (let c = 1; c <= this.p.ringMax; c++) this.rec("ring", { [PR.ring]: c });
@@ -255,6 +271,8 @@ export class Erosion {
     this.submit();
   }
   apply() { this.begin(); this.rec("apply"); this.submit(); }
+  // The relief law alone on the heights in E (loadHeights): the thickness it takes from each cell in a substep, 1/256 m, in EF.WL.
+  reliefOnly() { this.begin(); this.rec("relief"); this.submit(); }
   // Add the removal, deposit and dissolved volumes of the last erosion to the ledger's accumulators.
   tally() { this.begin(); this.rec("ledger"); this.submit(); }
   async ledger(clear = true): Promise<Ledger> {
@@ -331,6 +349,7 @@ const imax = (a: number, b: number) => (a > b ? a : b);
 export interface TwinResult {
   H: Int32Array; W: Uint32Array; flooded: Int32Array; to: Uint32Array; rd: Uint32Array; depth: Int32Array; acc: Uint32Array; kc: Uint32Array; er: Int32Array;
   rv: Uint32Array; ds: Uint32Array; ps: Uint32Array; ad: Uint32Array; ql: Uint32Array; qh: Uint32Array; cd: Int32Array;
+  wl: Int32Array; extra: Int32Array; // the relief law's thickness for each cell, and what it added to the incision (1/256 m)
 }
 
 // The twin of one substep's flow and erosion on a copy of the state S (the tectonics fields in the padded layout, changed in place), for
@@ -445,6 +464,23 @@ export class Twin {
       for (const pl of ORDER) { const t = Math.min(this.thickM(this.get(S, pl, k), this.area[k]), rem); rem -= t; den += t; num += BigInt(t) * BigInt(w[PR.kc + pl]); }
       if (den > 0) kc[k] = Number(num / BigInt(den));
     }
+    // landscape-scale denudation by relief, from the heights before the incision
+    const wl = new Int32Array(N);
+    if (w[PR.rc] > 0) {
+      const rc = w[PR.rc], rcap = (rc * 15) >> 4;
+      for (let k = 0; k < N; k++) {
+        if (H[k] <= 0) continue;
+        let low = H[k];
+        for (let d = 0; d < 4; d++) { const j = this.nb[k * 8 + d]; if (j !== NONE) low = Math.min(low, Math.max(H[j], 0)); }
+        let r = H[k] - Math.max(low, 0), tot = 0;
+        for (let s = 0; s < 8; s++) {
+          const rr = Math.min(r, rcap), q = Number((BigInt(rr) << 16n) / BigInt(rc)), den = 65536 - ((q * q) >>> 16);
+          const dh = Math.min(Number((BigInt(rr) * BigInt(w[PR.kdt])) / BigInt(den)) + w[PR.e0], r);
+          r -= dh; tot += dh;
+        }
+        wl[k] = tot;
+      }
+    }
     // the implicit step, shallowest first
     const er = new Int32Array(N), Hn = Int32Array.from(H);
     for (let q = 0; q < N; q++) {
@@ -470,6 +506,14 @@ export class Twin {
       const nh = Math.max(hj + x, 1);
       if (nh < hk) { er[k] = hk - nh; Hn[k] = nh; }
     }
+    // what the relief law takes beyond the incision (not in lakes: the flooded surface above the floor)
+    const added = new Int32Array(N);
+    if (w[PR.rc] > 0)
+      for (let k = 0; k < N; k++) {
+        if (Hn[k] <= 0 || flooded[k] > Hn[k] + er[k]) continue;
+        const extra = Math.min(Math.max(wl[k] - er[k], 0), Hn[k] - 1);
+        if (extra > 0) { added[k] = extra; er[k] += extra; Hn[k] -= extra; }
+      }
     // what was taken, and the dissolved share
     const rv = new Uint32Array(N), ds = new Uint32Array(N), ps = new Uint32Array(N), ad = new Uint32Array(N), ql = new Uint32Array(N), qh = new Uint32Array(N);
     for (let k = 0; k < N; k++) {
@@ -496,7 +540,7 @@ export class Twin {
         const gw = g8 * BigInt(W[k]), den = gw + (BigInt(acc[k]) << 8n);
         let sh = 0n;
         if (den >> 32n !== 0n) sh = BigInt((den >> 32n).toString(2).length) + 1n;
-        const dd = den >> sh, yy = gw >> sh, lam = (yy << 16n) / dd;
+        const dd = den >> sh, yy = gw >> sh, lam = dd > 0n ? (yy << 16n) / dd : 65536n;
         dep = (avail * lam) >> 16n;
       }
       out[k] = avail - (avail < dep ? avail : dep);
@@ -538,7 +582,7 @@ export class Twin {
     }
     for (let k = 0; k < N; k++) { ql[k] = Number(BigInt.asUintN(64, out[k]) & M32); qh[k] = Number(BigInt.asUintN(64, out[k]) >> 32n); }
     this.apply(S, rv, ad, carry);
-    return { H: Hn, W, flooded, to, rd, depth, acc, kc, er, rv, ds, ps, ad, ql, qh, cd };
+    return { H: Hn, W, flooded, to, rd, depth, acc, kc, er, rv, ds, ps, ad, ql, qh, cd, wl, extra: added };
   }
   // The sediment that fills a gap g (1/256 m) of cell k's surface, in volume units, with the subsidence the load makes (the kernels' fill_cap).
   fillCap(g: number, k: number): bigint {

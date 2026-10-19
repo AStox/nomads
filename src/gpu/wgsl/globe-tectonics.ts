@@ -16,25 +16,31 @@
 // the point it lands on found by integer search of the face's tangent nodes, and its volumes are shared among the four
 // cells nearest the point by bilinear (cloud in cell) weights that sum to exactly 2^16, each pool's rounding remainder
 // going to the nearest cell, so every pool's total is conserved exactly and no cell is a hole. Where plates leave a gap
-// the gap is new basalt; where they overlap the lower-ranked plate's basalt goes under and its other rock is scraped on.
+// the gap is new basalt; where they overlap the plate whose regional height (the plate's own columns averaged over a few cells) is
+// lower has its basalt go under and its other rock scraped on. The crust an overlap stacks is spread over the plate as a wedge, thick crust
+// then flows sideways by the load its region puts on the channel, and the root past the eclogite depth is cut.
 //
 // Parameters (P, u32): 0 to 15 are the grid's (0 tiles, 1 cells a side, 2 tiles in all); 16 and 17 a sweep's source and
-// destination field bases; 18 the gap fill's sweep number;
-// 19 the step in age units; 20 the pelagic sediment of a step in m; 21 the step's number.
+// destination field bases; 18 the gap fill's sweep number; 22 the field that holds the regional height (claim);
+// 19 the step in age units; 20 the pelagic sediment of a step in m; 21 the step's number; for the flow, 18 and 19 the
+// source and destination of the regional volume (or of the stacked crust) and 20 the mode (0 the channel, 1 the wedge).
 import { globeWgsl } from "./globe-grid";
 
 // Fields of S, in the padded layout, one i32 a cell.
-export const FLD = { VB: 0, VS: 1, VM: 2, VG: 3, VV: 4, AGB: 5, ORG: 6, PL: 7, Z: 8, SUB: 9, DIST: 10, DIST2: 11, PL2: 12, E2: 13, COUNT: 20 } as const;
+export const FLD = { VB: 0, VS: 1, VM: 2, VG: 3, VV: 4, AGB: 5, ORG: 6, PL: 7, Z: 8, SUB: 9, DIST: 10, DIST2: 11, PL2: 12, E2: 13, ZR: 20, ZR2: 21, VR: 22, VR2: 23, COUNT: 24 } as const;
 // Fields of A (the atomic accumulators): coverage, the two rank keys, the winner plate's coverage, then the winner plate's and the other plates' seven
-// extensive sums. The flux counters follow the fields (24 words: six fluxes of four 8-bit limbs).
+// extensive sums. The flux counters follow the fields (28 words: seven fluxes of four 8-bit limbs). STACK is no source or sink: the crust an
+// overlap stacked on the winner's columns, which the wedge then spreads.
 export const ACCF = { COV: 0, KR: 1, KC: 2, COVW: 3, W: 4, L: 11, COUNT: 18 } as const;
-export const FLUX = { NEW: 0, SUB: 1, ARC: 2, HOT: 3, PEL: 4, TRIM: 5, COUNT: 6 } as const;
+export const FLUX = { NEW: 0, SUB: 1, ARC: 2, HOT: 3, PEL: 4, TRIM: 5, STACK: 6, COUNT: 7 } as const;
 export const NEXT = 7; // extensive fields: the five volumes, AGB, ORG
 
 // ---- constants (each tagged: [cited R-number], [derived], [design], [gap], [UNVERIFIED], [analogue]) ----
 export const PHYS = {
   // Densities, kg/m3 [cited R1411 sec. 2.2]: mantle 3300, water 1000, oceanic crust 2900, continental crust 2800, a mean of 2750 also used, sediment 2500.
   RHO_M: 3300, RHO_W: 1000,
+  // Gravity, m/s2 [design: the operator's decision of 2026-10-19, as for the atmosphere]
+  G: 9.81,
   // The five rocks' densities in the order basalt, sediment, metasediment, granitoid, volcanic. Basalt is the oceanic crust's 2900; sediment 2500 [cited R1411
   // eq. 2.10]; granitoid, metasediment and volcanic rock the continental crust's 2800 (the reference column's, so a granitoid column of 35 km stands at
   // z = 0; the mean of 2750 R1411 also uses would lift it 0.5 km) [analogue: no density read for the three].
@@ -43,8 +49,9 @@ export const PHYS = {
   H0: 35_000,
   // Oceanic crust 6 km thick [cited R1411 sec. 1.1].
   H_OC: 6_000,
-  // A column the crust may not exceed: lateral flow of thick crust sets in [design]. Tibet's 70 km [UNVERIFIED: remembered], Fiordland's 60 to 80 km [cited R1415].
-  H_MAX: 70_000,
+  // The depth the crust may not pass: below the isobar where lower crust turns to eclogite and founders into the mantle, 1.8 GPa [cited R1688: Chapman et al. 2017,
+  // Cordillera Zealandia arc crust at least 65 km, 1.8 GPa]; over rho g = 2800 x 9.81 that is 65.5 km [derived], rounded to 65,500 m.
+  H_MAX: 65_500,
   // The age unit, My [design: coarse steps are 2 My]; the ages' ceiling in units, 400 My [design: the oldest sea floor is some 200 My, R1411 sec. 1.1, twice that is a bound no cell reaches]; the divisor that
   // keeps the age sums in 32 bits [derived: a column of 70 km has V under 2^28, so V >> 10 is under 2^18 and times 800 under 2^28, and the sum of a few parcels' shares stays under 2^32].
   AGE_UNIT_MY: 0.5, AGE_MAX: 800, AGE_SHIFT: 10,
@@ -60,6 +67,9 @@ export const PHYS = {
   PLUTON_PER_VOLCANIC: 30,
   // Rank of a parcel: its elevation plus this, in m, clamped to 16 bits [design].
   RANK_BIAS: 8192,
+  // The diffusion number of a sweep of the wedge's spreading, Q16: 0.2 [design: the explicit stencil's stable range, as FLOW.foMax]; the number of sweeps sets the
+  // width the step's shortening is spread over (Setup.sweeps.wedge).
+  WEDGE_FO: 13107,
 } as const;
 
 export interface TectonicsLayout {
@@ -73,6 +83,10 @@ export interface TectonicsLayout {
   arc: number;
   hot: number;
   words: number;
+  hmax: number; // the foundering depth, m
+  hweak: number; // the thickness from which the lower crust flows, m
+  foW: number; // the diffusion number of one flow sweep for a link of two weak columns, Q16
+  foC: number; // and for a link to a cold column
 }
 
 export function tectonicsWgsl(edges: readonly (readonly { face: number; side: number; flip: boolean }[])[], L: TectonicsLayout, frames: readonly { n: readonly number[]; ex: readonly number[]; ey: readonly number[] }[]): string {
@@ -105,7 +119,10 @@ const EY_SG = array<i32, 6>(${arr((f) => sign(f.ey))});
 const DR = array<i32, 5>(${R.join(", ")});
 const PHI0 = ${phi0}i;
 const HOC = ${PHYS.H_OC}u;
-const HMAX = ${PHYS.H_MAX}u;
+const HMAX = ${L.hmax}u;
+const HWEAK = ${L.hweak}u;
+const FO_W = ${L.foW}u;
+const FO_C = ${L.foC}u;
 const AGE_MAX = ${PHYS.AGE_MAX}u;
 const ASHIFT = ${PHYS.AGE_SHIFT}u;
 const CLAIM_MIN = ${PHYS.CLAIM_MIN}u;
@@ -122,10 +139,10 @@ const PLUTONS = ${PHYS.PLUTON_PER_VOLCANIC + 1}u;
 const NONE = 255u;
 
 const F_VB = ${FLD.VB}u; const F_AGB = ${FLD.AGB}u; const F_ORG = ${FLD.ORG}u; const F_PL = ${FLD.PL}u; const F_Z = ${FLD.Z}u;
-const F_SUB = ${FLD.SUB}u; const F_DIST = ${FLD.DIST}u; const F_DIST2 = ${FLD.DIST2}u; const F_PL2 = ${FLD.PL2}u; const F_E2 = ${FLD.E2}u;
+const F_ZR = ${FLD.ZR}u; const F_SUB = ${FLD.SUB}u; const F_DIST = ${FLD.DIST}u; const F_DIST2 = ${FLD.DIST2}u; const F_PL2 = ${FLD.PL2}u; const F_E2 = ${FLD.E2}u; const F_VR = ${FLD.VR}u;
 const ACC_COVW = ${ACCF.COVW}u; const ACC_COV = ${ACCF.COV}u; const ACC_KR = ${ACCF.KR}u; const ACC_KC = ${ACCF.KC}u; const ACC_W = ${ACCF.W}u; const ACC_L = ${ACCF.L}u;
 const ACC_COUNT = ${ACCF.COUNT}u;
-const FLUX_TRIM = ${FLUX.TRIM}u; const FLUX_NEW = ${FLUX.NEW}u; const FLUX_SUB = ${FLUX.SUB}u; const FLUX_ARC = ${FLUX.ARC}u; const FLUX_HOT = ${FLUX.HOT}u; const FLUX_PEL = ${FLUX.PEL}u;
+const FLUX_TRIM = ${FLUX.TRIM}u; const FLUX_NEW = ${FLUX.NEW}u; const FLUX_SUB = ${FLUX.SUB}u; const FLUX_ARC = ${FLUX.ARC}u; const FLUX_HOT = ${FLUX.HOT}u; const FLUX_PEL = ${FLUX.PEL}u; const FLUX_STACK = ${FLUX.STACK}u;
 
 fn touch() {
   _ = S[0]; _ = T[0]; _ = P[0]; _ = Q[0]; _ = atomicLoad(&A[0]);
@@ -184,6 +201,27 @@ fn elev(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   let c = srcOf(idx); let a = areaOf(c);
   let z = elevOf(rs(F_VB, c), rs(F_VB + 1u, c), rs(F_VB + 2u, c), rs(F_VB + 3u, c), rs(F_VB + 4u, c), rs(F_AGB, c), a);
   S[wordOf(F_Z, c)] = z;
+}
+
+// The height that ranks a plate's columns in an overlap is the regional one: each column's height averaged over the same plate's
+// cells in the 3 by 3 around it, sweep after sweep, so a few tens of km of the plate's own buoyancy stand in for the flexure of its
+// lithosphere (the elastic plate carries a narrow load over its flexural scale). P16 and P17 are the source and destination fields.
+@compute @workgroup_size(256)
+fn regional(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let idx = flatIndex(gid, nwg);
+  if (idx >= cnt()) { return; }
+  let c = srcOf(idx);
+  let own = rs(F_PL, c);
+  var sum = 0; var n = 0;
+  for (var k = 0u; k < 9u; k++) {
+    let nb = source(c.face, i32(c.x) + i32(k % 3u) - 1, i32(c.y) + i32(k / 3u) - 1);
+    if (!nb.ok) { continue; }
+    if (rs(F_PL, nb) != own) { continue; }
+    sum = sum + S[wordOf(P[16], nb)];
+    n = n + 1;
+  }
+  S[wordOf(P[17], c)] = sum / max(n, 1);
 }
 
 // ---- the move: where a parcel lands and how it is shared ----
@@ -264,7 +302,7 @@ fn claim(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   let p = rs(F_PL, c);
   if (p >= NP) { return; }
   let a = areaOf(c);
-  let rank = u32(clamp(S[wordOf(F_Z, c)] + RANK_BIAS, 0, 65534)) + 1u;
+  let rank = u32(clamp(S[wordOf(P[22], c)] + RANK_BIAS, 0, 65534)) + 1u;
   stencil(idx, c, p);
   for (var k = 0u; k < 4u; k++) {
     let w = hw[k];
@@ -340,7 +378,7 @@ fn resolve(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) n
   let gap = cov * 16u < a * ${PHYS.GAP_NUM}u;
   let wp = winnerOf(c, a, cov);
   var nv = array<u32, 7>(0u, 0u, 0u, 0u, 0u, 0u, 0u);
-  var lost = 0u;
+  var lost = 0u; var stacked = 0u;
   for (var j = 0u; j < 7u; j++) {
     nv[j] = atomicLoad(&A[wordOf(ACC_W + j, c)]) + atomicLoad(&A[wordOf(ACC_L + j, c)]);
   }
@@ -355,7 +393,7 @@ fn resolve(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) n
       l[j] = atomicLoad(&A[wordOf(ACC_L + j, c)]);
       u[j] = part(l[j], q);
     }
-    lost = u[0];
+    lost = u[0]; stacked = u[1] + u[2] + u[3] + u[4];
     // under the winner: basalt goes down, sediment and the other rock are scraped on (sediment becomes metasediment); the rest of them stays
     nv[0] = nv[0] - u[0];
     nv[1] = nv[1] - u[1];
@@ -373,8 +411,10 @@ fn resolve(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) n
   if (cov == 0u) { plate = NONE; }
   ws(F_PL, c, plate);
   ws(F_SUB, c, lost);
+  ws(F_VR, c, stacked);
   addFlux(FLUX_NEW, fresh);
   addFlux(FLUX_SUB, lost);
+  addFlux(FLUX_STACK, stacked);
 }
 
 // ---- plates for the cells no parcel owned ----
@@ -518,49 +558,108 @@ fn magma(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   addFlux(FLUX_ARC, arcAdd); addFlux(FLUX_HOT, hotAdd); addFlux(FLUX_PEL, pelAdd);
 }
 
-// ---- lateral flow of crust thicker than the limit ----
-fn capOf(base: u32, c: Src) -> u32 {
-  let vt = vtotAt(base, c); let cp = (HMAX * areaOf(c)) >> 4u;
-  return select(0u, cp - vt, vt < cp);
+// ---- gravity-driven flow of thick crust ----
+// Crust thick enough to be hot at its base (HWEAK) flows sideways in a weak lower-crustal channel (Poiseuille flow between
+// stationary boundaries: the flux is H^3 rho g / (12 eta) times the gradient of the load on the channel [cited R1684]), into
+// continental neighbours only. The load the channel feels is the column's weight as the strong upper crust over it passes it on: a
+// load narrower than the plate's flexural scale (a valley, a pile at the front) is held by the plate's bending, so the pressure in the
+// channel follows the regional thickness, the thickness averaged over the plate's continental cells (Sweeps.load) [INFERENCE R1695].
+// In regional thickness the law is diffusion, d hr / d t = D (laplacian of hr), so one sweep sends
+// Fo (hr - hr_n) of thickness from a column to a neighbour n of lower hr, Fo the diffusion number of the sweep (FO_W for a link
+// of two weak columns, FO_C for a link to a cold one: the margin's viscosity decides the flux); the sender's composition goes
+// with it, and the regional volume (VR) moves by the same amount, so a column's departure from its region (h - hr) is what the
+// flow leaves alone.
+fn thickAt(base: u32, c: Src) -> u32 { return thick(vtotAt(base, c), areaOf(c)); }
+fn contAt(base: u32, c: Src) -> bool { return rs(base + 2u, c) + rs(base + 3u, c) + rs(base + 4u, c) > rs(base, c); }
+// The regional thickness: a column's thickness (loadInit), averaged over the same plate's continental cells in the 3 by 3 around
+// it sweep after sweep (loadSweep, P16 to P17; a cell of ocean floor keeps its own), then turned back into a volume on the
+// column's area (loadVol, from P16 into VR).
+@compute @workgroup_size(256)
+fn loadInit(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let idx = flatIndex(gid, nwg);
+  if (idx >= cnt()) { return; }
+  let c = srcOf(idx);
+  ws(F_ZR, c, thickAt(F_VB, c));
 }
-// The share (Q16) of the column's volume that leaves: the excess over the limit.
+@compute @workgroup_size(256)
+fn loadSweep(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let idx = flatIndex(gid, nwg);
+  if (idx >= cnt()) { return; }
+  let c = srcOf(idx);
+  if (!contAt(F_VB, c)) { ws(P[17], c, rs(P[16], c)); return; }
+  let own = rs(F_PL, c);
+  var sum = 0u; var n = 0u;
+  for (var k = 0u; k < 9u; k++) {
+    let nb = source(c.face, i32(c.x) + i32(k % 3u) - 1, i32(c.y) + i32(k / 3u) - 1);
+    if (!nb.ok) { continue; }
+    if (rs(F_PL, nb) != own || !contAt(F_VB, nb)) { continue; }
+    sum = sum + rs(P[16], nb);
+    n = n + 1u;
+  }
+  ws(P[17], c, sum / n);
+}
+@compute @workgroup_size(256)
+fn loadVol(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let idx = flatIndex(gid, nwg);
+  if (idx >= cnt()) { return; }
+  let c = srcOf(idx);
+  var v = vtotAt(F_VB, c);
+  if (contAt(F_VB, c)) { let p = mul64(rs(P[16], c), areaOf(c)); v = (p.x >> 4u) | (p.y << 28u); }
+  ws(F_VR, c, v);
+}
+// The share (Q16) of the column's volume that leaves: the excess over the foundering depth. The column's own thickness sets the
+// pressure at its base, as the heights' isostasy is local.
 fn outFrac(base: u32, c: Src) -> u32 {
   let vt = vtotAt(base, c); let cp = (HMAX * areaOf(c)) >> 4u;
   if (vt <= cp) { return 0u; }
   let ex = vt - cp;
   return divw(ex >> 16u, ex << 16u, vt).x;
 }
-// The share (Q16) of cell j's column that goes to its neighbour in direction d: the excess divided among the four
-// neighbours by their room under the limit (equally when none has any).
-fn shareTo(base: u32, j: Src, d: u32) -> u32 {
-  let f = outFrac(base, j);
-  if (f == 0u) { return 0u; }
-  var room = 0u; var mine = 0u;
-  for (var e = 0u; e < 4u; e++) {
-    let r = capOf(base, nbr(j, e));
-    room = room + r;
-    if (e == d) { mine = r; }
+// The share (Q16) of cell j's column that goes to its neighbour in direction d, at most a quarter so that four links never take
+// more than the column holds. The channel (P20 = 0): Fo (hr_j - hr_n) of thickness over the column's own thickness. The wedge
+// (P20 = 1): the crust a step stacked in an overlap (r) spreads over the same plate's continental cells by a diffusion of
+// number WEDGE_FO, Fo (r_j - r_n) of volume over the column's own: pure shear spreads a shortening over the orogen's width
+// [cited R1413 through R1672; the width, Sweeps.wedge, R1696].
+fn shareTo(base: u32, r: u32, j: Src, d: u32) -> u32 {
+  if (!contAt(base, j)) { return 0u; }
+  let n = nbr(j, d);
+  if (!contAt(base, n)) { return 0u; }
+  if (P[20] == 1u) {
+    if (rs(F_PL, n) != rs(F_PL, j)) { return 0u; }
+    let rj = rs(r, j); let rn = rs(r, n);
+    if (rn >= rj) { return 0u; }
+    let m = part(rj - rn, ${PHYS.WEDGE_FO}u);
+    return min(divw(m >> 16u, m << 16u, max(vtotAt(base, j), 1u)).x, 16384u);
   }
-  if (room == 0u) { return f >> 2u; }
-  let pr = mul64(f, mine);
-  return divw(pr.y, pr.x, room).x;
+  let hj = thick(rs(r, j), areaOf(j));
+  if (hj < HWEAK) { return 0u; }
+  let hn = thick(rs(r, n), areaOf(n));
+  if (hn >= hj) { return 0u; }
+  var fo = FO_C;
+  if (hn >= HWEAK) { fo = FO_W; }
+  let own = max(thickAt(base, j), 1u);
+  return min((fo * (hj - hn)) / own, 16384u);
 }
 @compute @workgroup_size(256)
-fn topple(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+fn crustflow(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
   let idx = flatIndex(gid, nwg);
   if (idx >= cnt()) { return; }
   let c = srcOf(idx);
-  let fa = P[16]; let fb = P[17];
+  let fa = P[16]; let fb = P[17]; let ra = P[18]; let rb = P[19];
   var outS = array<u32, 4>(0u, 0u, 0u, 0u);
   var inS = array<u32, 4>(0u, 0u, 0u, 0u);
   var inN = array<Src, 4>(c, c, c, c);
   for (var d = 0u; d < 4u; d++) {
-    outS[d] = shareTo(fa, c, d);
+    outS[d] = shareTo(fa, ra, c, d);
     let nb = nbr(c, d);
     inN[d] = nb;
-    inS[d] = shareTo(fa, nb, (d + 2u + nb.rot) & 3u);
+    inS[d] = shareTo(fa, ra, nb, (d + 2u + nb.rot) & 3u);
   }
+  var vo = 0u; var vi = 0u;
   for (var j = 0u; j < 7u; j++) {
     let v = rs(fa + j, c);
     var o = 0u; var i = 0u;
@@ -569,11 +668,13 @@ fn topple(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw
       i = i + part(rs(fa + j, inN[d]), inS[d]);
     }
     ws(fb + j, c, v - o + i);
+    if (j < 5u) { vo = vo + o; vi = vi + i; }
   }
+  ws(rb, c, rs(ra, c) - vo + vi);
 }
 
-// What the flow could not carry away is cut at the limit: the column keeps its limit's volume, the rest is the flux TRIM
-// (delamination of the dense root and denudation, lost to the model's crust).
+// What is left past the foundering depth is cut: the column keeps its depth's volume, the rest is the flux TRIM (the eclogite root
+// that sinks into the mantle).
 @compute @workgroup_size(256)
 fn trim(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();

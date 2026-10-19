@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { releaseGpu, theGpu } from "../src/gpu/device";
 import { climateGpu } from "../src/gpu/globe/atmosphere";
 import { type Grid, cellId, locate, meanAreaM2, tierGrid } from "../src/gpu/globe/grid";
-import { DEFAULTS, cellAreas, derive, extTables, landFraction, makeSetup, unpad, FLD, type Derived, type Setup } from "../src/gpu/globe/tectonics";
+import { DEFAULTS, cellAreas, derive, extTables, landFraction, makeSetup, rangeMeasures, unpad, FLD, type Derived, type RangeMeasures, type Setup } from "../src/gpu/globe/tectonics";
 import { accToM2, defaultParams, hypsometry, kForN2, neighbourTables, rivers, runChain, type ChainResult } from "../src/gpu/globe/erosion";
 import { classColor, heightColor, mix, png, ramp, tectonicLayers, writeLayers, type Layer, type RGB } from "./globe-maps";
 
@@ -38,6 +38,7 @@ export interface Summary {
   hypsometry: { edgeM: number; share: number }[];
   ledger: { removed: number; deposited: number; dissolved: number; carry: number }; // volume units
   removedKm3: number; meanDenudationMPerMy: number; seconds: number;
+  ranges: RangeMeasures; // the share over 2, 4 and 5 km, the continents, the height-area curve's modes, the relief at the cell size (tectonics.ts rangeMeasures)
 }
 
 // spanMy: the My erosion ran (tectonics' span and any erosion after it).
@@ -57,6 +58,7 @@ export function summarise(set: Setup, d: Derived, res: ChainResult, spanMy: numb
     hypsometry: hy.share.map((share, b) => ({ edgeM: hy.edges[b], share })),
     ledger: { removed: num(res.ledger.removed), deposited: num(res.ledger.deposited), dissolved: num(res.ledger.dissolved), carry: num(res.carry) },
     removedKm3: (num(res.ledger.removed) * unitM3) / 1e9, meanDenudationMPerMy: landM2 > 0 && spanMy > 0 ? (num(res.ledger.removed) * unitM3) / landM2 / spanMy : 0, seconds: res.seconds,
+    ranges: rangeMeasures(set, extTables(set.grid).tab, d),
   };
 }
 

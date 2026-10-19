@@ -10,9 +10,13 @@
 // conservative, a diffusion of 1/6 cell^2 a step in each axis when the shift is uniform in its fraction). Where plates part,
 // the bare area becomes new basalt (a ridge); where they overlap, the plate that stands higher rides over, the other's
 // basalt goes under (a trench) and its sediment and other rock are scraped on (a wedge, a terrane, a collision), the
-// crust thickening by that sum. Arcs are added over the slab at their distance from the trench, hot spots under their
-// fixed points, pelagic sediment on the sea floor; crust past the thickness limit flows sideways. Height is isostasy: a
-// column's buoyancy against the mantle's, with the thermal buoyancy of young ocean floor.
+// crust thickening by that sum; which plate rides over is decided by the regional height (a column's height averaged over
+// its plate's cells), not by each column's own. Arcs are added over the slab at their distance from the trench, hot spots
+// under their fixed points, pelagic sediment on the sea floor; the crust an overlap stacks is spread over the plate as a wedge
+// (pure shear over the orogen's width), crust of 60 km or more flows sideways by channel flow driven by its region's thickness into
+// continental neighbours, and what stands past the eclogite depth (65.5 km) founders into the mantle. Height is isostasy: a
+// column's buoyancy against the mantle's, with the thermal buoyancy of young ocean floor. The laws and what they changed:
+// docs/research/globe/2026-10-19-ranges-impl.md.
 import { type Gpu } from "../device";
 import { cover, pipeline, readback, storage } from "../kernel";
 import { divw, mul64 } from "../fixed";
@@ -36,8 +40,10 @@ export interface Params {
   hotspots: number; // [analogue: Earth has some 40; a planet a tenth of the area gets about 5]
   speedScale: number; // plate speeds as a share of the cited ones; 1 keeps Earth's, the default scales them by radius over Earth's (the research note's fallback: no source gives the scaling) [design, gap]
   radius: number; // m [design: the operator's decision of 2026-10-19]
+  hMax: number; // the crust thickness at which the eclogitised root founders, m [cited R1688, derived]
+  flowEta: number; // the viscosity of the weak lower-crustal channel, Pa s [cited R1685, R1686]
 }
-export const DEFAULTS: Params = { seed: 1, plates: 10, spanMy: 200, stepMy: 2, seaLevel: 0, continentShare: 0.39, hotspots: 5, speedScale: RADIUS_M / 6_371_000, radius: RADIUS_M };
+export const DEFAULTS: Params = { seed: 1, plates: 10, spanMy: 200, stepMy: 2, seaLevel: 0, continentShare: 0.39, hotspots: 5, speedScale: RADIUS_M / 6_371_000, radius: RADIUS_M, hMax: PHYS.H_MAX, flowEta: 1e19 };
 
 // Plate speed (the speed at 90 degrees from the pole), km a My = mm a year: drawn log-uniformly between the slowest and
 // fastest spreading rates DeMets et al. measured, 9.7 and 154.4 mm/yr, cut at Cortial et al.'s cap of 100 mm/yr [cited
@@ -46,6 +52,16 @@ export const DEFAULTS: Params = { seed: 1, plates: 10, spanMy: 200, stepMy: 2, s
 export const SPEED_LO_MM = 10, SPEED_HI_MM = 100;
 // A hot spot's output, km3 a year: 0.01 to 0.1 [UNVERIFIED: Hawaii's order of 0.1 is remembered, not read], over a footprint of radius 100 km [UNVERIFIED].
 export const HOT_FLUX_LO = 0.01, HOT_FLUX_HI = 0.1, HOT_RADIUS_KM = 100;
+// Gravity-driven flow of thick crust (R1684 to R1687). The weak channel of a plateau: Poiseuille flow between stationary boundaries in a layer of thickness H, the
+// flux per unit width q = H^3 rho g / (12 eta) times the surface slope [cited R1685: Clark and Royden 2000 as summarised in Klemperer 2006, a 15 km channel, viscosities 1e16 under
+// the plateau, 1e18 under its gentle margins and 1e21 under the steep ones; Beaumont et al. 2004, as summarised there: a channel reaches 1e19 Pa s where the crust is at 700 to 750 C].
+// The crust is hot enough to flow where its Moho is near 700 C, which standard geotherms put at 60 km of crust [cited R1686: Wang 2001 as summarised in Klemperer 2006]. The
+// weak viscosity is 1e19 Pa s [cited R1685]; a link to crust that is not weak takes 1e21 [cited R1685: the steep margins], so a plateau keeps a steep edge. The flow goes into continental
+// crust only [design: a continental margin is not a channel into the ocean floor]. The diffusion number of a sweep may not pass FLOW.foMax [design: the explicit stencil's stability is 1/4].
+// The slope that drives it is that of the regional thickness (Sweeps.load): the upper crust carries a load narrower than its flexural scale [INFERENCE R1695].
+export const FLOW = { channelM: 15_000, etaCold: 1e21, hWeakM: 60_000, foMax: 0.2 };
+const SECONDS_PER_MY = 3.15576e13;
+
 // Arc magmatism: a background of 14 km3 a My for each km of arc and flare-ups of 75 to 150 lasting 5 to 20 My every 30 to
 // 70 My [cited R1415]; the clock's phase and the draw within those ranges are the seed's [design]; half the magma is new
 // crust [cited R1415: a crustal half and a mantle half]; the arc 50 km wide [cited R1415]. [gap] the flux is a Cordilleran
@@ -72,6 +88,20 @@ export const LITH = { basalt: 0, sediment: 1, metasediment: 2, granitoid: 3, vol
 export const LITH_NAMES = ["basalt", "sediment", "metasediment", "granitoid", "volcanic"] as const;
 // The rock that shows at the surface: a cover of sediment or of volcanic rock if it is 1 km thick or more [design: a mappable cover; the pelagic sediment of the sea floor is at most 1 km], else the thickest of basalt, metasediment, granitoid.
 export const COVER_MIN_M = 1000;
+
+// Gravitational collapse bounds the height of a plateau (Molnar and Lyon-Caen 1988; England and Houseman 1989): a column of crust stands only while the lithosphere can carry
+// its gravitational potential energy (GPE) contrast, the vertical integral of its weight's moment, against the lowlands. For Airy isostasy the contrast of crust of thickness h over the
+// reference column of H0 = 35 km, with d = h - H0, is GPE = (1/2) g rho_c (1 - rho_c / rho_m) d (d + 2 H0), N/m [derived here, checked by integrating the columns in tectonics.test.ts]:
+// 3.1e12 N/m for 52 km, 6.4e12 for 65.5 km, 7.6e12 for 70 km. The resistance of the Himalaya and Tibetan Plateau's GPE is 3e12 to 8e12 N/m, a ridge push about 3e12 and a slab pull about
+// 1e13 N/m, the slab absent below a collision [cited R1687: Nature Communications 2024, "Cenozoic India-Asia collision driven by mantle dragging the cratonic root", read]. That range puts
+// the thickness a collision can hold at 52 to 71 km, which brackets the foundering depth below. The model carries no force balance (the plates' poles are fixed), so this is a check, not a law the run applies.
+export const GPE_RESISTANCE_N_PER_M = { ridgePush: 3e12, tibetLo: 3e12, tibetHi: 8e12 };
+export const gravitationalPotentialEnergy = (hM: number) => {
+  const d = hM - PHYS.H0;
+  return 0.5 * PHYS.G * 2800 * (1 - 2800 / PHYS.RHO_M) * d * (d + 2 * PHYS.H0);
+};
+// The thickness of crust whose GPE contrast is the force given, m: the root of d (d + 2 H0) = F / k.
+export const thicknessForForce = (newtonsPerM: number) => Math.sqrt(PHYS.H0 * PHYS.H0 + newtonsPerM / (0.5 * PHYS.G * 2800 * (1 - 2800 / PHYS.RHO_M)));
 
 // ---------- 2. plates, hot spots, arcs: what the seed decides ----------
 export interface Plate { seed: V3; pole: V3; speedMmYr: number; rate: number } // rate: rad a My
@@ -129,7 +159,7 @@ export function rotation(e: V3, angle: number): number[] {
 }
 
 // ---------- 3. the setup: everything the kernels read besides the fields ----------
-export interface Sweeps { gap: number; smooth: number; dist: number; topple: number }
+export interface Sweeps { gap: number; smooth: number; dist: number; flow: number; regional: number; wedge: number; load: number }
 export interface Setup {
   params: Params;
   grid: Grid;
@@ -140,10 +170,20 @@ export interface Setup {
   layout: TectonicsLayout;
   Q: Int32Array;
   // Sweeps of the relaxations that each step runs (all even, so the double buffers end where they began): the plate of bare cells
-  // spreads from its neighbours, the plate map's smoothing, the trench distance, the flow of overthick crust [design: numerical convergence, not a law].
+  // spreads from its neighbours, the plate map's smoothing, the trench distance, the flow of thick crust (the explicit stencil's sweeps: their number sets how far a step's flow is integrated,
+  // see `flow`), the regional height [design: numerical convergence, not a law].
   sweeps: Sweeps;
+  // What the flow's physical constants come to on this grid for a step cut into `sweeps.flow` sweeps: the diffusion number of one sweep for a link of two weak columns and for a link to a cold one,
+  // the ideal (before the stability cap) and the share of the ideal the cap lets through (1: the flow is integrated as the cited law has it).
+  flow: { foW: number; foC: number; idealW: number; share: number };
 }
-export const DEFAULT_SWEEPS: Sweeps = { gap: 16, smooth: 2, dist: 16, topple: 32 };
+// The wedge: 54 sweeps of diffusion number 0.2 spread a step's stacked crust as a Gaussian of sigma = dx (0.4 x 54)^(1/2) = 57 km for the mean cell (51.5 km measured on face 0,
+// tectonics.test.ts), a full width at half maximum of 120 to 134 km, inside the cited orogen widths of 50 to 200 km [cited R1413 through R1672; the width chosen inside the range, design].
+// The load the channel feels: the thickness averaged over the plate's continental cells by the same 32 sweeps as the regional height (sigma 57 km, the flexural scale of R1680) [design:
+// one flexural scale for the plate; the elastic thickness of a plateau's upper crust over its channel is not read].
+export const DEFAULT_SWEEPS: Sweeps = { gap: 16, smooth: 2, dist: 16, flow: 320, regional: 32, wedge: 54, load: 32 };
+// The field the regional height ends in after `n` sweeps: Z to ZR, ZR to ZR2, and so on (n even ends in ZR2; none leaves the column's own Z).
+export const regionalField = (n: number) => (n === 0 ? FLD.Z : n % 2 === 1 ? FLD.ZR : FLD.ZR2);
 
 // The ocean floor's thermal buoyancy by age (units of 0.5 My), kg/m2 per the isostasy in wgsl/globe-tectonics.ts: the
 // reference column's buoyancy less what a floor of that depth takes (water against mantle) less the 6 km of basalt's own.
@@ -173,7 +213,13 @@ export function makeSetup(over: Partial<Params> = {}, sweeps: Sweeps = DEFAULT_S
     Q[hot + i * 6] = Math.round(h.dir[0] * Q30); Q[hot + i * 6 + 1] = Math.round(h.dir[1] * Q30); Q[hot + i * 6 + 2] = Math.round(h.dir[2] * Q30);
     Q[hot + i * 6 + 3] = Math.round(Math.cos((h.radiusKm * 1000) / params.radius) * Q30); Q[hot + i * 6 + 4] = h.peakM;
   });
-  return { params, grid, plates, hotspots, steps, arcM, layout: { fn, plates: NP, hotspots: NH, steps, rot, node, phith, arc, hot, words }, Q, sweeps };
+  // Thickness diffusivity of the channel flow: D_h = (1 - rho_c / rho_m) H^3 rho_c g / (12 eta), m2 a My; the number of one sweep is D_h dt / (sweeps dx^2), dx the mean cell's width.
+  const dx2 = (4 * Math.PI * params.radius * params.radius) / (6 * fn * fn);
+  const dh = (eta: number) => (((PHYS.RHO_M - 2800) / PHYS.RHO_M) * FLOW.channelM ** 3 * 2800 * PHYS.G * SECONDS_PER_MY) / (12 * eta);
+  const idealW = (dh(params.flowEta) * params.stepMy) / (sweeps.flow * dx2), idealC = (dh(FLOW.etaCold) * params.stepMy) / (sweeps.flow * dx2);
+  const foW = Math.min(idealW, FLOW.foMax), foC = Math.min(idealC, FLOW.foMax);
+  const layout = { fn, plates: NP, hotspots: NH, steps, rot, node, phith, arc, hot, words, hmax: params.hMax, hweak: FLOW.hWeakM, foW: Math.round(foW * 65536), foC: Math.round(foC * 65536) };
+  return { params, grid, plates, hotspots, steps, arcM, layout, Q, sweeps, flow: { foW, foC, idealW, share: foW / idealW } };
 }
 
 // The grid's tables with the cell centres (a unit vector in Q30, three fields) appended, which the kernels read.
@@ -467,14 +513,30 @@ export class Twin {
     return { w: [65536 - w1 - w2 - w3, w1, w2, w3], c: [own, pick(nx, Y), pick(X, ny), pick(nx, ny)] };
   }
   private accAt(f: number, c: Cell) { return f * this.fw + wordAt(this.g, c.face, c.X, c.Y); }
-  claim() {
+  // The regional height: each column's height averaged over the same plate's cells in the 3 by 3 around it.
+  regional(src: number, dst: number) {
+    for (let idx = 0; idx < this.cells(); idx++) {
+      const c = this.cell(idx), own = this.rs(FLD.PL, c);
+      let sum = 0, n = 0;
+      for (let k = 0; k < 9; k++) {
+        const s = haloSource(this.g, c.face, c.X + (k % 3) - 1, c.Y + Math.floor(k / 3) - 1);
+        if (!s) continue;
+        const nb = { face: s.face, X: s.X, Y: s.Y };
+        if (this.rs(FLD.PL, nb) !== own) continue;
+        sum += this.S[this.at(src, nb)];
+        n++;
+      }
+      this.S[this.at(dst, c)] = Math.trunc(sum / Math.max(n, 1));
+    }
+  }
+  claim(rankField: number = regionalField(this.set.sweeps.regional)) {
     const A = this.A;
     for (let idx = 0; idx < this.cells(); idx++) {
       const c = this.cell(idx);
       if (this.vtot(FLD.VB, c) === 0) continue;
       const p = this.rs(FLD.PL, c);
       if (p >= this.set.layout.plates) continue;
-      const a = this.area(c), rank = Math.min(Math.max(this.S[this.at(FLD.Z, c)] + PHYS.RANK_BIAS, 0), 65534) + 1;
+      const a = this.area(c), rank = Math.min(Math.max(this.S[this.at(rankField, c)] + PHYS.RANK_BIAS, 0), 65534) + 1;
       const { w, c: hc } = this.stencil(idx, c, p);
       for (let k = 0; k < 4; k++) {
         if (w[k] === 0) continue;
@@ -521,13 +583,13 @@ export class Twin {
       const W = (j: number) => A[this.accAt(ACCF.W + j, c)], L = (j: number) => A[this.accAt(ACCF.L + j, c)];
       const nv: number[] = [];
       for (let j = 0; j < NEXT; j++) nv.push((W(j) + L(j)) >>> 0);
-      let lost = 0;
+      let lost = 0, stacked = 0;
       if (over) {
         const covL = cov - A[this.accAt(ACCF.COVW, c)];
         let q = 0;
         if (covL > 0) { const x = Math.min(cov - a, covL); q = divw(x >>> 16, (x << 16) >>> 0, covL)[0]; }
         const u = nv.map((_, j) => { const p = mul64(L(j), q); return ((p[0] >>> 16) | (p[1] << 16)) >>> 0; });
-        lost = u[0];
+        lost = u[0]; stacked = (u[1] + u[2] + u[3] + u[4]) >>> 0;
         nv[0] = (nv[0] - u[0]) >>> 0; nv[1] = (nv[1] - u[1]) >>> 0; nv[2] = (nv[2] + u[1]) >>> 0; nv[5] = (nv[5] - u[5]) >>> 0; nv[6] = 0;
       }
       let fresh = 0;
@@ -535,7 +597,8 @@ export class Twin {
       for (let j = 0; j < NEXT; j++) this.ws(FLD.VB + j, c, nv[j]);
       this.ws(FLD.PL, c, cov === 0 ? 255 : wp);
       this.ws(FLD.SUB, c, lost);
-      this.flux[FLUX.NEW] += BigInt(fresh); this.flux[FLUX.SUB] += BigInt(lost);
+      this.ws(FLD.VR, c, stacked);
+      this.flux[FLUX.NEW] += BigInt(fresh); this.flux[FLUX.SUB] += BigInt(lost); this.flux[FLUX.STACK] += BigInt(stacked);
     }
   }
   gapfill(src: number, dst: number, sweep: number) {
@@ -626,38 +689,79 @@ export class Twin {
       this.flux[FLUX.ARC] += BigInt(arcAdd); this.flux[FLUX.HOT] += BigInt(hotAdd); this.flux[FLUX.PEL] += BigInt(pelAdd);
     }
   }
-  private capOf(base: number, c: Cell) { const vt = this.vtot(base, c), cp = Math.floor((PHYS.H_MAX * this.area(c)) / 16); return vt < cp ? cp - vt : 0; }
+  private thickAt(base: number, c: Cell) { return this.thick(this.vtot(base, c), this.area(c)); }
+  private contAt(base: number, c: Cell) { return ((this.rs(base + 2, c) + this.rs(base + 3, c) + this.rs(base + 4, c)) >>> 0) > this.rs(base, c); }
   private outFrac(base: number, c: Cell) {
-    const vt = this.vtot(base, c), cp = Math.floor((PHYS.H_MAX * this.area(c)) / 16);
+    const vt = this.vtot(base, c), cp = Math.floor((this.set.layout.hmax * this.area(c)) / 16);
     if (vt <= cp) return 0;
     const ex = vt - cp;
     return divw(ex >>> 16, (ex << 16) >>> 0, vt)[0];
   }
-  private shareTo(base: number, j: Cell, d: number) {
-    const f = this.outFrac(base, j);
-    if (f === 0) return 0;
-    let room = 0, mine = 0;
-    for (let e = 0; e < 4; e++) { const r = this.capOf(base, this.nbr(j, e).cell); room += r; if (e === d) mine = r; }
-    if (room === 0) return f >>> 2;
-    const pr = mul64(f, mine);
-    return divw(pr[1], pr[0], room)[0];
+  // The regional thickness the channel feels: thickness, averaged over the same plate's continental cells, then a volume (VR).
+  loadInit() { for (let idx = 0; idx < this.cells(); idx++) { const c = this.cell(idx); this.ws(FLD.ZR, c, this.thickAt(FLD.VB, c)); } }
+  loadSweep(src: number, dst: number) {
+    for (let idx = 0; idx < this.cells(); idx++) {
+      const c = this.cell(idx);
+      if (!this.contAt(FLD.VB, c)) { this.ws(dst, c, this.rs(src, c)); continue; }
+      const own = this.rs(FLD.PL, c);
+      let sum = 0, n = 0;
+      for (let k = 0; k < 9; k++) {
+        const s = haloSource(this.g, c.face, c.X + (k % 3) - 1, c.Y + Math.floor(k / 3) - 1);
+        if (!s) continue;
+        const nb = { face: s.face, X: s.X, Y: s.Y };
+        if (this.rs(FLD.PL, nb) !== own || !this.contAt(FLD.VB, nb)) continue;
+        sum += this.rs(src, nb);
+        n++;
+      }
+      this.ws(dst, c, Math.floor(sum / n));
+    }
   }
-  topple(fa: number, fb: number) {
+  loadVol(src: number) {
+    for (let idx = 0; idx < this.cells(); idx++) {
+      const c = this.cell(idx);
+      let v = this.vtot(FLD.VB, c);
+      if (this.contAt(FLD.VB, c)) { const p = mul64(this.rs(src, c), this.area(c)); v = ((p[0] >>> 4) | (p[1] << 28)) >>> 0; }
+      this.ws(FLD.VR, c, v);
+    }
+  }
+  // The share (Q16) of cell j's column that goes to its neighbour in direction d in one sweep: the channel's from the regional volumes in r,
+  // or (wedge) the spreading of the stacked crust in r over the same plate.
+  shareTo(base: number, r: number, j: Cell, d: number, wedge = false) {
+    if (!this.contAt(base, j)) return 0;
+    const n = this.nbr(j, d).cell;
+    if (!this.contAt(base, n)) return 0;
+    if (wedge) {
+      if (this.rs(FLD.PL, n) !== this.rs(FLD.PL, j)) return 0;
+      const rj = this.rs(r, j), rn = this.rs(r, n);
+      if (rn >= rj) return 0;
+      const p = mul64(rj - rn, PHYS.WEDGE_FO), m = ((p[0] >>> 16) | (p[1] << 16)) >>> 0;
+      return Math.min(divw(m >>> 16, (m << 16) >>> 0, Math.max(this.vtot(base, j), 1))[0], 16384);
+    }
+    const L = this.set.layout, hj = this.thick(this.rs(r, j), this.area(j));
+    if (hj < L.hweak) return 0;
+    const hn = this.thick(this.rs(r, n), this.area(n));
+    if (hn >= hj) return 0;
+    return Math.min(Math.floor(((hn >= L.hweak ? L.foW : L.foC) * (hj - hn)) / Math.max(this.thickAt(base, j), 1)), 16384);
+  }
+  crustflow(fa: number, fb: number, ra: number, rb: number, wedge = false) {
     const part = (v: number, w: number) => { const p = mul64(v, w); return ((p[0] >>> 16) | (p[1] << 16)) >>> 0; };
     for (let idx = 0; idx < this.cells(); idx++) {
       const c = this.cell(idx), outS: number[] = [], inS: number[] = [], inN: Cell[] = [];
       for (let d = 0; d < 4; d++) {
-        outS.push(this.shareTo(fa, c, d));
+        outS.push(this.shareTo(fa, ra, c, d, wedge));
         const nb = this.nbr(c, d);
         inN.push(nb.cell);
-        inS.push(this.shareTo(fa, nb.cell, (d + 2 + nb.rot) & 3));
+        inS.push(this.shareTo(fa, ra, nb.cell, (d + 2 + nb.rot) & 3, wedge));
       }
+      let vo = 0, vi = 0;
       for (let j = 0; j < NEXT; j++) {
         const v = this.rs(fa + j, c);
         let o = 0, i = 0;
         for (let d = 0; d < 4; d++) { o = (o + part(v, outS[d])) >>> 0; i = (i + part(this.rs(fa + j, inN[d]), inS[d])) >>> 0; }
         this.ws(fb + j, c, (v - o + i) >>> 0);
+        if (j < 5) { vo = (vo + o) >>> 0; vi = (vi + i) >>> 0; }
       }
+      this.ws(rb, c, (this.rs(ra, c) - vo + vi) >>> 0);
     }
   }
   trim(base: number) {
@@ -674,18 +778,29 @@ export class Twin {
       this.flux[FLUX.TRIM] += BigInt(cut);
     }
   }
+  // The spreading of a step's stacked crust, the regional thickness, the channel's sweeps, the foundering.
+  flowStep() {
+    const sw = this.set.sweeps;
+    for (let s = 0; s < sw.wedge; s++) this.crustflow(s % 2 === 0 ? FLD.VB : FLD.E2, s % 2 === 0 ? FLD.E2 : FLD.VB, s % 2 === 0 ? FLD.VR : FLD.VR2, s % 2 === 0 ? FLD.VR2 : FLD.VR, true);
+    this.loadInit();
+    for (let s = 0; s < sw.load; s++) this.loadSweep(s % 2 === 0 ? FLD.ZR : FLD.ZR2, s % 2 === 0 ? FLD.ZR2 : FLD.ZR);
+    this.loadVol(sw.load % 2 === 0 ? FLD.ZR : FLD.ZR2);
+    for (let s = 0; s < sw.flow; s++) this.crustflow(s % 2 === 0 ? FLD.VB : FLD.E2, s % 2 === 0 ? FLD.E2 : FLD.VB, s % 2 === 0 ? FLD.VR : FLD.VR2, s % 2 === 0 ? FLD.VR2 : FLD.VR);
+    this.trim(FLD.VB);
+  }
   // One step of everything, as the driver runs it.
   step(stepNo: number) {
     const sw = this.set.sweeps, dtUnits = Math.round(this.set.params.stepMy / PHYS.AGE_UNIT_MY), pelM = Math.round(PELAGIC_M_PER_MY * this.set.params.stepMy);
     this.A.fill(0);
-    this.elev(); this.claim(); this.deposit(); this.resolve();
+    this.elev();
+    for (let s = 0; s < sw.regional; s++) this.regional(s === 0 ? FLD.Z : s % 2 === 1 ? FLD.ZR : FLD.ZR2, s % 2 === 0 ? FLD.ZR : FLD.ZR2);
+    this.claim(); this.deposit(); this.resolve();
     for (let s = 0; s < sw.gap; s++) this.gapfill(s % 2 === 0 ? FLD.PL : FLD.PL2, s % 2 === 0 ? FLD.PL2 : FLD.PL, s);
     for (let s = 0; s < sw.smooth; s++) this.smooth(s % 2 === 0 ? FLD.PL : FLD.PL2, s % 2 === 0 ? FLD.PL2 : FLD.PL);
     this.distInit();
     for (let s = 0; s < sw.dist; s++) this.distSweep(s % 2 === 0 ? FLD.DIST : FLD.DIST2, s % 2 === 0 ? FLD.DIST2 : FLD.DIST);
     this.magma(stepNo, dtUnits, pelM);
-    for (let s = 0; s < sw.topple; s++) this.topple(s % 2 === 0 ? FLD.VB : FLD.E2, s % 2 === 0 ? FLD.E2 : FLD.VB);
-    this.trim(FLD.VB);
+    this.flowStep();
   }
 }
 
@@ -699,7 +814,7 @@ function wgslOf(set: Setup): string {
 }
 
 // The planet on a device: its fields, the tables, and the kernels' dispatches recorded into one command buffer for each
-// step (a step is some 200 dispatches).
+// step (a step is some 490 dispatches: 320 of them the channel's sweeps, 54 the wedge's, 32 the load's).
 export class Tectonics {
   readonly S: GPUBuffer;
   private readonly T: GPUBuffer;
@@ -742,11 +857,17 @@ export class Tectonics {
   private begin() { this.enc = this.gpu.device.createCommandEncoder(); }
   private submit() { this.gpu.device.queue.submit([this.enc!.finish()]); this.enc = null; }
   // The kernels of one named piece of a step, for the tests that compare a piece against its twin.
+  // "elev" is the elevation and the regional height sweeps that rank the columns in the overlaps.
   piece(name: "elev" | "claim" | "deposit" | "resolve", par: Record<number, number> = {}) {
+    const n = tileCount(this.g) * 65536, sw = this.set.sweeps;
     this.begin();
     if (name === "claim") this.enc!.clearBuffer(this.A, 0, ACCF.COUNT * this.fw * 4);
-    this.rec(name, par, tileCount(this.g) * 65536);
+    this.rec(name, name === "claim" ? { 22: regionalField(sw.regional), ...par } : par, n);
+    if (name === "elev") this.regionalSweeps(n);
     this.submit();
+  }
+  private regionalSweeps(n: number) {
+    for (let s = 0; s < this.set.sweeps.regional; s++) this.rec("regional", { 16: s === 0 ? FLD.Z : s % 2 === 1 ? FLD.ZR : FLD.ZR2, 17: s % 2 === 0 ? FLD.ZR : FLD.ZR2 }, n);
   }
   clearAccumulators() { this.begin(); this.enc!.clearBuffer(this.A, 0, ACCF.COUNT * this.fw * 4); this.submit(); }
   // One step of everything.
@@ -754,13 +875,21 @@ export class Tectonics {
     const sw = this.set.sweeps, n = tileCount(this.g) * 65536, dtUnits = Math.round(this.set.params.stepMy / PHYS.AGE_UNIT_MY), pelM = Math.round(PELAGIC_M_PER_MY * this.set.params.stepMy);
     this.begin();
     this.enc!.clearBuffer(this.A, 0, ACCF.COUNT * this.fw * 4);
-    for (const e of ["elev", "claim", "deposit", "resolve"]) this.rec(e, {}, n);
+    this.rec("elev", {}, n);
+    this.regionalSweeps(n);
+    this.rec("claim", { 22: regionalField(sw.regional) }, n);
+    this.rec("deposit", {}, n);
+    this.rec("resolve", {}, n);
     for (let s = 0; s < sw.gap; s++) this.rec("gapfill", { 16: s % 2 === 0 ? FLD.PL : FLD.PL2, 17: s % 2 === 0 ? FLD.PL2 : FLD.PL, 18: s }, n);
     for (let s = 0; s < sw.smooth; s++) this.rec("plateSmooth", { 16: s % 2 === 0 ? FLD.PL : FLD.PL2, 17: s % 2 === 0 ? FLD.PL2 : FLD.PL }, n);
     this.rec("distInit", {}, n);
     for (let s = 0; s < sw.dist; s++) this.rec("distSweep", { 16: s % 2 === 0 ? FLD.DIST : FLD.DIST2, 17: s % 2 === 0 ? FLD.DIST2 : FLD.DIST }, n);
     this.rec("magma", { 19: dtUnits, 20: pelM, 21: this.stepNo }, n);
-    for (let s = 0; s < sw.topple; s++) this.rec("topple", { 16: s % 2 === 0 ? FLD.VB : FLD.E2, 17: s % 2 === 0 ? FLD.E2 : FLD.VB }, n);
+    for (let s = 0; s < sw.wedge; s++) this.rec("crustflow", { 16: s % 2 === 0 ? FLD.VB : FLD.E2, 17: s % 2 === 0 ? FLD.E2 : FLD.VB, 18: s % 2 === 0 ? FLD.VR : FLD.VR2, 19: s % 2 === 0 ? FLD.VR2 : FLD.VR, 20: 1 }, n);
+    this.rec("loadInit", {}, n);
+    for (let s = 0; s < sw.load; s++) this.rec("loadSweep", { 16: s % 2 === 0 ? FLD.ZR : FLD.ZR2, 17: s % 2 === 0 ? FLD.ZR2 : FLD.ZR }, n);
+    this.rec("loadVol", { 16: sw.load % 2 === 0 ? FLD.ZR : FLD.ZR2 }, n);
+    for (let s = 0; s < sw.flow; s++) this.rec("crustflow", { 16: s % 2 === 0 ? FLD.VB : FLD.E2, 17: s % 2 === 0 ? FLD.E2 : FLD.VB, 18: s % 2 === 0 ? FLD.VR : FLD.VR2, 19: s % 2 === 0 ? FLD.VR2 : FLD.VR }, n);
     this.rec("trim", { 16: FLD.VB }, n);
     this.submit();
     this.stepNo++;
@@ -917,6 +1046,55 @@ export function distanceFrom(g: Grid, mask: ArrayLike<number>, limit: number): I
     for (let d = 0; d < 4; d++) { const j = nb[4 * i + d]; if (dist[j] < 0) { dist[j] = dist[i] + 1; queue.push(j); } }
   }
   return dist;
+}
+
+// ---------- 10b. what the ranges are ----------
+export interface RangeMeasures {
+  over2km: number; over4km: number; over5km: number; // shares of the planet's area above sea level by that much
+  land: number; continents: number;
+  landModeM: number; seaModeM: number; // the fullest 500 m band of the land and of the sea floor in the height-area curve
+  plateauShare: number; // share of the planet in the 5 to 6 km band: the flat table at the thickness limit
+  atLimit: number; // share of the planet whose crust is within 500 m of the thickness limit
+  reliefM: number; reliefOver1kmM: number; // the median over cells above 2 km (above 1 km) of the height range in the 3 by 3 cells around them (36 km), m
+  slopeM: number; // the median over cells above 2 km of the mean absolute height difference to the four neighbours, m (cells are 12.3 km apart)
+  reliefP90M: number; // the 90th percentile of the same 3 by 3 relief over the cells above 2 km, m: the dissected rims
+  dissectedShare: number; // the share of the cells above 2 km whose 3 by 3 relief is 1,000 m or more (the cited mean local relief of tectonically active belts is 1,000 to 2,000 m over a 10 km window, R1689)
+  tableShare: number; // the share of the cells above 2 km whose 3 by 3 relief is under 200 m: the flat tops
+}
+// The ranges: how much of the planet is high, the height-area curve's modes, and how rough the high ground is at the cell size.
+export function rangeMeasures(set: Setup, _tab: Tables, d: Derived): RangeMeasures {
+  const g = set.grid, N = d.n, areas = cellAreas(g), nb = neighbours(g), total = 4 * Math.PI;
+  const bands = 32, hist = new Float64Array(bands);
+  let o2 = 0, o4 = 0, o5 = 0, plateau = 0, atLimit = 0;
+  const relief: number[] = [], relief1: number[] = [], slope: number[] = [];
+  for (let i = 0; i < N; i++) {
+    const h = d.height[i], a = areas[i];
+    if (h > 2000) o2 += a;
+    if (h > 4000) o4 += a;
+    if (h > 5000) o5 += a;
+    if (h > 5000 && h <= 6000) plateau += a;
+    if (d.thickness[i] > set.params.hMax - 500) atLimit += a;
+    hist[Math.min(bands - 1, Math.max(0, Math.floor((h + 8000) / 500)))] += a;
+    if (h <= 1000) continue;
+    let lo = h, hi = h, sum = 0;
+    for (let k = 0; k < 8; k++) {
+      const j4 = nb[4 * i + (k & 3)], j = k < 4 ? j4 : nb[4 * j4 + ((k + 1) & 3)], hj = d.height[j];
+      lo = Math.min(lo, hj); hi = Math.max(hi, hj);
+      if (k < 4) sum += Math.abs(hj - h);
+    }
+    relief1.push(hi - lo);
+    if (h > 2000) { relief.push(hi - lo); slope.push(sum / 4); }
+  }
+  relief.sort((x, y) => x - y);
+  const median = (a: number[]) => (a.length === 0 ? 0 : a.sort((x, y) => x - y)[Math.floor(a.length / 2)]);
+  const mode = (from: number, to: number) => { let b = from; for (let k = from; k < to; k++) if (hist[k] > hist[b]) b = k; return -8000 + 500 * b + 250; };
+  return {
+    over2km: o2 / total, over4km: o4 / total, over5km: o5 / total, land: landFraction(g, d), continents: continentCount(g, d), landModeM: mode(16, bands), seaModeM: mode(0, 16),
+    plateauShare: plateau / total, atLimit: atLimit / total, reliefM: median(relief), reliefOver1kmM: median(relief1), slopeM: median(slope),
+    reliefP90M: relief.length === 0 ? 0 : relief[Math.floor(relief.length * 0.9)],
+    dissectedShare: relief.length === 0 ? 0 : relief.filter((r) => r >= 1000).length / relief.length,
+    tableShare: relief.length === 0 ? 0 : relief.filter((r) => r < 200).length / relief.length,
+  };
 }
 
 // ---------- 11. a whole run, and the checks ----------

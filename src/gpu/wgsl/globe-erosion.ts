@@ -16,7 +16,9 @@
 //            at ocean cells (a strictly lower f at every step, no cycle);
 //   tree     depth by pointer jumping, the cells filed by depth (a counting sort), the discharge area gathered deepest first;
 //   kappa    each land cell's erodibility from the rock in the top skin of its column;
+//   relief   the thickness the landscape-scale law of local relief (Montgomery and Brandon 2002) takes from each cell, from the heights before incision;
 //   incise   the implicit stream power step (Braun and Willett 2013) in order of depth, receivers first;
+//   waste    what the relief law takes beyond the river's incision (the larger of the two lowers the cell);
 //   removal  the volume the incision took from each column and the dissolved share of it;
 //   route    the sediment carried down the tree, deposited in lakes and (by Davy and Lague's deposition term) along the way;
 //   ring     what reaches the sea spreads outward from the coast by rings (cells of equal distance), filling a graded shelf;
@@ -32,7 +34,7 @@ import { PHYS } from "./globe-tectonics";
 // Fields of E (flat cells).
 export const EF = {
   H: 0, RHO: 1, W: 2, TO: 3, RD: 4, UA: 5, UB: 6, DA: 7, DB: 8, DP: 9, LVS: 10, ORD: 11, ACC: 12, KC: 13, ER: 14, RV: 15, DS: 16, PS: 17, AD: 18, QL: 19, QH: 20,
-  CD: 21, CD2: 22, DV: 23, CL: 24, CH: 25, XL: 26, XH: 27, COUNT: 28,
+  CD: 21, CD2: 22, DV: 23, CL: 24, CH: 25, XL: 26, XH: 27, WL: 28, COUNT: 29,
 } as const;
 // AT regions: three of the cell count's words (the flooded surface, the depth histogram, its cursors), then 16 counters and the ledger.
 export const CNT = { flags: 0, top: 1, changed: 2, spare: 3, COUNT: 16 } as const;
@@ -42,7 +44,7 @@ export const MAXD = 16382; // the deepest flow path the counting sort holds, in 
 
 // Parameter words (P, u32).
 export const PR = {
-  sea16: 16, eps: 17, ringMax: 18, ring: 19, diss16: 20, g8: 21, upl: 22, kconst: 23, shelf: 24, nExp: 25, foLand: 26, foSea: 27, skin: 28, kc: 30, // five words from kc
+  sea16: 16, eps: 17, ringMax: 18, ring: 19, diss16: 20, g8: 21, upl: 22, kconst: 23, shelf: 24, nExp: 25, foLand: 26, foSea: 27, skin: 28, kc: 30, rc: 36, kdt: 37, e0: 38, // kc: five words from kc; rc, kdt, e0: the relief law (see `relief`)
 } as const;
 
 // A layer of sediment laid on the water-loaded crust raises the surface by (rho_m - rho_s) / (rho_m - rho_w) of its thickness, 800 / 2300 [derived,
@@ -76,7 +78,7 @@ const VOL_MAX = ${2 ** 28}u;
 const CAPF = ${CAP_FACTOR_Q16}u;
 const P_SEA = ${PR.sea16}u; const P_EPS = ${PR.eps}u; const P_RINGMAX = ${PR.ringMax}u; const P_RING = ${PR.ring}u; const P_DISS = ${PR.diss16}u; const P_G = ${PR.g8}u;
 const P_UPL = ${PR.upl}u; const P_KCONST = ${PR.kconst}u; const P_SHELF = ${PR.shelf}u; const P_NEXP = ${PR.nExp}u; const P_FOL = ${PR.foLand}u; const P_FOS = ${PR.foSea}u;
-const P_SKIN = ${PR.skin}u; const P_KC = ${PR.kc}u;
+const P_SKIN = ${PR.skin}u; const P_KC = ${PR.kc}u; const P_RC = ${PR.rc}u; const P_KDT = ${PR.kdt}u; const P_E0 = ${PR.e0}u;
 
 fn touch() {
   _ = S[0]; _ = T[0]; _ = P[0]; _ = E[0]; _ = atomicLoad(&AT[0]); _ = X[0]; _ = G[0];
@@ -412,6 +414,51 @@ fn incise(@builtin(local_invocation_index) t: u32) {
   }
 }
 
+// ---- landscape-scale denudation by relief (Montgomery and Brandon 2002) ----
+// A 12 km cell cannot hold a valley, so the stream power law sees only the slope between cell means and misses the denudation of the relief inside
+// the cell. Landscape-scale erosion rate follows local relief R as E = E0 + K R / (1 - (R / Rc)^2), with R measured here from a cell to its lowest axis
+// neighbour (12 km, the width of a 10 km window) over the sea level at the least. R is integrated in eight sub-intervals so that a steep scarp loses
+// height as its relief falls; the relief is held under 15/16 of Rc, where the law becomes singular. P_RC is Rc in 1/256 m, P_KDT is K dt / 8 in Q16
+// and P_E0 is E0 dt / 8 in 1/256 m (all 0 when the law is off). WL holds the thickness the law takes from a cell in the substep, from the heights before incision.
+@compute @workgroup_size(256)
+fn relief(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = flatIndex(gid, nwg);
+  if (k >= cnt()) { return; }
+  var tot = 0u;
+  let hk = e_get(E_H, k);
+  if (hk > 0i && P[P_RC] > 0u) {
+    var low = hk;
+    for (var d = 0u; d < 4u; d++) {
+      let j = nbr8(k, d);
+      if (j != NONE) { low = min(low, max(e_get(E_H, j), 0i)); }
+    }
+    var r = u32(hk - max(low, 0i));
+    let rcap = (P[P_RC] * 15u) >> 4u;
+    for (var s = 0u; s < 8u; s++) {
+      let rr = min(r, rcap);
+      let q = divw(rr >> 16u, rr << 16u, P[P_RC]).x;
+      let den = 65536u - ((q * q) >> 16u);
+      let t = mul64(rr, P[P_KDT]);
+      let dh = min(divw(t.y, t.x, den).x + P[P_E0], r);
+      r -= dh; tot += dh;
+    }
+  }
+  e_set(E_WL, k, i32(tot));
+}
+
+// What the law takes beyond what the incision did: the larger of the two is the lowering of the cell, so the river's part is not counted twice.
+@compute @workgroup_size(256)
+fn waste(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = flatIndex(gid, nwg);
+  if (k >= cnt()) { return; }
+  let hk = e_get(E_H, k);
+  if (hk <= 0i || at_load(A_FL, k) > hk + e_get(E_ER, k)) { return; }
+  let extra = min(max(e_get(E_WL, k) - e_get(E_ER, k), 0i), hk - 1i);
+  if (extra > 0i) { e_set(E_ER, k, e_get(E_ER, k) + extra); e_set(E_H, k, hk - extra); }
+}
+
 // ---- what the incision took from each column ----
 @compute @workgroup_size(256)
 fn removal(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
@@ -473,7 +520,9 @@ fn route(@builtin(local_invocation_index) t: u32) {
         if (den.y != 0u) { sh = 33u - countLeadingZeros(den.y); }
         let dd = shr64(den, sh).x;
         let yy = gw >> sh;
-        let lam = divw(yy >> 16u, yy << 16u, dd).x;
+        // a cell with no water (no rain, no discharge) has nothing to carry what the relief law takes from it: the debris stays where it fell
+        var lam = 65536u;
+        if (dd > 0u) { lam = divw(yy >> 16u, yy << 16u, dd).x; }
         dep = mulshr16(avail, lam);
       }
       // the regular flux goes on less what it deposited (a deposit beyond it came from the carried part)

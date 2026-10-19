@@ -7,11 +7,11 @@ import { afterAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
 import { storage } from "../kernel";
 import { buildGeometry, climateGpu } from "./atmosphere";
-import { FACES, fieldWords, fromLatLon, meanAreaM2, tierGrid } from "./grid";
-import { Tectonics, cellAreas, cellVectors, extTables, makeSetup, startingState, stateFrom, totals, FLD, type Column } from "./tectonics";
+import { FACES, cellId, fieldWords, fromLatLon, meanAreaM2, tierGrid } from "./grid";
+import { Tectonics, cellAreas, cellVectors, extTables, makeSetup, neighbours, startingState, stateFrom, totals, FLD, type Column } from "./tectonics";
 import { ridgePlanet } from "./synthetic";
 import {
-  EF, K_GRANITE, K_SANDSTONE, K_VOLCANIC, N2_REF, NONE, REF_RAIN_MMYR, Erosion, Twin, accToM2, creepIterations, defaultParams, erosionWords, kForN2, kWord, neighbourTables,
+  EF, K_GRANITE, K_SANDSTONE, K_VOLCANIC, MONTGOMERY_BRANDON, N2_REF, NONE, REF_RAIN_MMYR, Erosion, Twin, accToM2, creepIterations, defaultParams, denudationFromRelief, erosionWords, kForN2, kWord, neighbourTables,
   rainWord, rivers,
 } from "./erosion";
 
@@ -126,6 +126,7 @@ test("the kernels equal their TypeScript twins over three substeps, word for wor
   const rain = Float32Array.from({ length: N }, (_, i) => 200 + ((i * 7919) % 1800)); // 200 to 2,000 mm/yr, scattered
   er.setRain(rain);
   const rho = Uint32Array.from(rain, (v) => rainWord(v, er.p.refRainMmYr)), carry = new BigUint64Array(N), St = Int32Array.from(S);
+  let extraCells = 0;
   for (let step = 0; step < 3; step++) {
     er.heights(); await er.flow(); er.erode(); er.apply();
     const r = tw.erode(St, rho, carry);
@@ -137,7 +138,8 @@ test("the kernels equal their TypeScript twins over three substeps, word for wor
     };
     await same("H", EF.H, r.H); await same("W", EF.W, r.W); await same("TO", EF.TO, r.to); await same("RD", EF.RD, r.rd); await same("depth", EF.DP, r.depth); await same("ACC", EF.ACC, r.acc);
     await same("KC", EF.KC, r.kc); await same("ER", EF.ER, r.er); await same("RV", EF.RV, r.rv); await same("DS", EF.DS, r.ds); await same("PS", EF.PS, r.ps); await same("AD", EF.AD, r.ad);
-    await same("QL", EF.QL, r.ql); await same("QH", EF.QH, r.qh); await same("CD", EF.CD, r.cd);
+    await same("QL", EF.QL, r.ql); await same("QH", EF.QH, r.qh); await same("CD", EF.CD, r.cd); await same("WL", EF.WL, r.wl);
+    extraCells += r.extra.reduce((n, v) => n + (v > 0 ? 1 : 0), 0);
     await same("CL", EF.CL, Uint32Array.from(carry, (v) => Number(v & 0xffffffffn))); await same("CH", EF.CH, Uint32Array.from(carry, (v) => Number(v >> 32n)));
     const fl = await er.readFlooded();
     expect(fl.every((v, i) => v === r.flooded[i])).toBe(true);
@@ -145,6 +147,8 @@ test("the kernels equal their TypeScript twins over three substeps, word for wor
     for (let i = 0; i < 7 * fw; i++) if (Sg[i] !== St[i]) { expect(`state word ${i}`).toBe("equal"); break; }
     expect(await er.flags()).toBe(0);
   }
+  // the relief law was at work in this planet (cells it lowered beyond the river's incision), so the comparison covers it
+  expect(extraCells).toBeGreaterThan(50);
   er.release(); tec.release();
 });
 
@@ -260,7 +264,8 @@ test("a rain shadow: the windward flank of a ridge in the westerlies erodes more
   const Sinit = stateFrom(set, e.tab, column), S = storage(gpu, Sinit);
   const clim = await climateGpu(gpu, g0, height, { seaLevel: 0 }), rain = new Float32Array(height.length);
   for (const s of clim.seasons) for (let i = 0; i < rain.length; i++) rain[i] += s.rain[i];
-  const er = new Erosion(gpu, set, e, S, { dtYr: 1e6 });
+  // the rain's own effect: the relief law (the same on both flanks) is left out of this case
+  const er = new Erosion(gpu, set, e, S, { dtYr: 1e6, relief: false });
   er.setRain(rain);
   const N = er.N, vec = cellVectors(g0), crest = fromLatLon((60 * Math.PI) / 180, (90 * Math.PI) / 180);
   er.heights(); const h0 = Int32Array.from(await er.readE(EF.H));
@@ -306,4 +311,63 @@ test("a run is the same twice, and the pinned hash of the columns after four sub
   expect(hashes[0].slice(0, 64)).toBe(PINNED);
 });
 
-const PINNED = "b97b4ef3026a12fc3db567aa495480e5288b45b738e25976ec18bb2821a34c1a";
+// Re-recorded deliberately (the sha256 of the five volumes, both age sums, the plates and the plate-relative fields, then the heights): the planet it starts from now spreads a step's stacked
+// crust as a wedge and drives the channel by the regional thickness (second pass of the ranges unit). First pass (regional ranking, channel flow on each column, foundering at 65.5 km, the relief
+// law): e6b26d2806174e70b80e83c4f351aab097f4942cba9900db67174d176b470b3b; before it: b97b4ef3026a12fc3db567aa495480e5288b45b738e25976ec18bb2821a34c1a.
+const PINNED = "54cf848b33511b6ebf7f1e2a67cd5427cb863b9c11ee0e48f3fdfac4c38c7f19";
+
+
+// ---- landscape-scale denudation by relief ----
+test("relief denudation (Montgomery and Brandon 2002): E = E0 + K R / (1 - (R / Rc)^2) at its published points, integrated over a substep by the kernel, held under 15/16 of Rc", async () => {
+  // the law at the cited points: 0.01 mm/yr at no relief, K R over 1 - (R / Rc)^2 at 1,000 m (0.46 mm/yr) and at 1,400 m
+  const mb = MONTGOMERY_BRANDON;
+  expect(denudationFromRelief(0)).toBeCloseTo(mb.e0MmYr, 12);
+  expect(denudationFromRelief(1000)).toBeCloseTo(0.01 + (2.5e-4 * 1000) / (1 - (1000 / 1500) ** 2), 9);
+  expect(denudationFromRelief(1000)).toBeGreaterThan(0.45); expect(denudationFromRelief(1000)).toBeLessThan(0.47);
+  // held under the cap: a scarp of 6 km erodes at the cap's rate, 2.9 mm/yr
+  expect(denudationFromRelief(6000)).toBe(denudationFromRelief(0.9375 * 1500));
+  expect(denudationFromRelief(6000)).toBeGreaterThan(2.8); expect(denudationFromRelief(6000)).toBeLessThan(3.0);
+  // the kernel on staged heights: probe cells standing R above four neighbours at 3,000 m, on land; its integral over a substep of 0.5 My against the same law in float (eight sub-intervals)
+  const gpu = await theGpu(), set = makeSetup(), e = ext(), er = new Erosion(gpu, set, e, storage(gpu, FLD.COUNT * fieldWords(g0) * 4)), N = er.N, nbs = neighbours(g0);
+  const H = new Int32Array(N).fill(3000 * 256), probes: [number, number][] = [[50, 100], [150, 800], [100, 1500], [100, 2200], [60, 3000], [40, 6000], [30, 0]];
+  const cells = probes.map(([x, R], k) => ({ i: cellId(g0, 0, 20 + 20 * k, 128), R: R === 800 ? 800 : R }));
+  const reliefs = [100, 500, 1000, 1400, 3000, 6000, 0];
+  cells.forEach((c, k) => { c.R = reliefs[k]; H[c.i] = Math.round((3000 + reliefs[k]) * 256); });
+  er.loadHeights(H);
+  er.reliefOnly();
+  const WL = await er.readE(EF.WL), dt = er.p.dtYr;
+  const reference = (R: number) => {
+    let r = R, tot = 0;
+    for (let s = 0; s < mb.subIntervals; s++) { const dh = Math.min((denudationFromRelief(r) * 1e-3 * dt) / mb.subIntervals, r); r -= dh; tot += dh; }
+    return tot;
+  };
+  for (const c of cells) {
+    expect(Math.abs(WL[c.i] / 256 - reference(c.R))).toBeLessThan(0.1 + 2e-3 * reference(c.R));
+    // the neighbours stand no higher than their own neighbours' lowest: their relief is the probe's neighbour drop at most, a few m of E0 at most
+    for (let d = 0; d < 4; d++) expect(WL[nbs[4 * c.i + d]] / 256).toBeLessThan(reference(c.R) + 1);
+  }
+  // monotone in the relief up to the cap, and a scarp of 3 or 6 km loses what the cap allows, 1.46 km in a substep of 0.5 My
+  for (let k = 1; k < 5; k++) expect(WL[cells[k].i]).toBeGreaterThan(WL[cells[k - 1].i]);
+  expect(WL[cells[5].i]).toBe(WL[cells[4].i]); // 3 km and 6 km are both over the cap: the same rate
+  expect(WL[cells[5].i] / 256).toBeGreaterThan(1300); expect(WL[cells[5].i] / 256).toBeLessThan(1500);
+  expect(WL[cells[6].i]).toBe(0);
+  // the law is off when asked: the words are zero
+  expect(erosionWords(g0, set, defaultParams({ relief: false }))[36]).toBe(0);
+  er.release();
+});
+
+test("the relief law in a dry land: with no rain there is no river to carry the debris, it stays where it fell, and the books balance", async () => {
+  // The atmosphere's dry belts have no rain at all. The stream power law takes nothing from a cell with no discharge, but the relief law does, and Davy and Lague's share G w / (G w + A) is
+  // 0 / 0 there: the first version of the chain flagged a pile-up at step 0. The debris of a cell with no water is laid down in that cell.
+  const { set, e, gpu, tec, S } = await planet(), er = new Erosion(gpu, set, e, tec.S);
+  er.setRain(0);
+  const before = totals(g0, S);
+  let removed = 0n, deposited = 0n, dissolved = 0n;
+  for (let q = 0; q < 3; q++) { const r = await er.substep(true); removed += r.ledger!.removed; deposited += r.ledger!.deposited; dissolved += r.ledger!.dissolved; expect(await er.flags()).toBe(0); }
+  const after = totals(g0, await er.readState()), sum = (a: bigint[]) => a.reduce((s, x) => s + x, 0n), transit = await er.carry();
+  expect(removed).toBeGreaterThan(0n);
+  expect(deposited).toBeGreaterThan(0n);
+  expect(removed).toBe(deposited + dissolved + transit);
+  expect(sum(after) - sum(before)).toBe(-(dissolved + transit));
+  er.release(); tec.release();
+});
