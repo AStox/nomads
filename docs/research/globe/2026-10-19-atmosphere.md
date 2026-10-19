@@ -13,7 +13,7 @@ Question: from latitude, tilt, rotation rate and the planet's size, what zonal-m
 - **R1434** Trenberth K.E. (1998), Atmospheric moisture residence times and cycling: implications for rainfall rates and climate change, Climatic Change 39: 667 to 694 (author's PDF, abstract and secs. 1 to 3 read). Used: residence time 8 days; global means.
 - **R1435** van der Ent R.J., Savenije H.H.G. (2011), Length and time scales of atmospheric moisture recycling, Atmos. Chem. Phys. 11: 1853 (read abstract, secs. 1 to 3). Used: the recycling law and its length scales.
 - **R1436** Held I.M., Soden B.J. (2006), Robust responses of the hydrological cycle to global warming, J. Climate 19: 5686 (read the Clausius-Clapeyron passage only). Used: 7% per K.
-- **R1437** North G.R., Cahalan R.F., Coakley J.A. (1981), Energy balance climate models, Rev. Geophys. Space Phys. 19: 91 (NTNU copy; read secs. 2 to 4 and the symbol list). Used: the constants in the table below.
+- **R1437** North G.R., Cahalan R.F., Coakley J.A. (1981), Energy balance climate models, Rev. Geophys. Space Phys. 19: 91 (NTNU copy; read secs. 2 to 4 and the symbol list). Used: the constants of section 2 (A, B, D, heat capacities, ice line, co-albedos, T2).
 - **R1438** Kostadinov T.S., Gilb R. (2014), Earth Orbit v2.1, Geosci. Model Dev. 7: 1051 (read secs. 1 and 2). Used: insolation geometry (eqs. 5 to 7), solar constant 1366 W/m^2 (1361 in Kopp and Lean 2011), orbital periods.
 - **R1439** Shepherd J.M. et al. (2004), Chapter 2.4, the global distribution of precipitation and clouds, for the WMO aerosol-precipitation assessment (NTRS 20040171853, read whole; second hand for Adler et al. 2003, J. Hydrometeor. 4: 1147, GPCP, not read). Used: precipitation geography.
 - **R1440** is R1451 of the ocean file (Price J.F. (2021), A Coriolis tutorial, part 4, WHOI); quoted here only for the largest mean surface stress, 0.25 Pa (QuikSCAT, Southern Ocean).
@@ -97,6 +97,6 @@ Per cell and month (12 steps a year): temperature at sea level (Q8 K or Q16 C), 
 
 1. The size of the eddy-limited edge and of the equator-pole contrast on a planet of 2,000 km; the polar front; the steadiness of trades; the seasonal shift of the wet belt (phi_0). No figure read gives a number.
 2. The planet's gravity (above); with g = 9.81 the atmosphere is unphysical on a body this size.
-3. Surface drag C_D, evaporation bulk coefficient, ice-albedo constants and the large-scale ascent (from the Ekman flux) are not read; precipitation efficiency of large-scale rain is not read.
+3. Surface drag C_D, the evaporation bulk coefficient and the precipitation efficiency of large-scale rain are not read; the large-scale ascent comes from the Ekman flux by a [design] closure; the albedo law is the ice line only (R1437), with no cloud feedback.
 4. Rain delays against gauges (rain note open 1 to 7) are unchanged; the orographic stage is validated on Bornholm, not on a Cascadia-scale range.
 5. The effect of land on the planet's circulation (stationary waves, monsoon): out of scope, as Seager et al. show the west-coast warmth depends on them (ocean file).
