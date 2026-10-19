@@ -16,37 +16,43 @@ import { DRIFTS, ROCKS } from "../../terrain/geology";
 import { BANKFULL, shape, YEAR_S, type Hydro, type River } from "../../terrain/water";
 import type { Gpu } from "../device";
 import { dispatch, pipeline, readback, storage } from "../kernel";
-import { AT_OF, AT_REGIONS, ENTRIES, FIELD, FIELDS, MISC, OUTPUTS, TS, WATER_WGSL, ZS } from "../wgsl/terrain-water";
+import { AT_OF, AT_REGIONS, ISLAND_WATER, MISC, OUTPUTS, TS, layoutOf, waterWgsl, type WaterFormat, ENTRIES } from "../wgsl/terrain-water";
+import { SEASON_S } from "../../terrain/water";
 
+// Water that enters the map from beyond its edge (a window's rivers): the cell it comes in at, the drainage area it brings in
+// cells, and each season's mean flow, m3/s.
+export type Inflow = { at: number; cells: number; m3s: readonly number[] };
 export type HydroInput = {
   h: Float32Array; filled: Float32Array; to: Int32Array; basin: Uint8Array; rock: Uint8Array; drift: Uint8Array; driftDepth: Float32Array;
   air: Pick<Climate, "seasons">;
+  inflow?: readonly Inflow[]; // a window's only (WINDOW_WATER)
 };
 
 const S = 4;
 // The first solve's sweeps at most, and the second's.
 const FIRST_SWEEPS = 150, SECOND_SWEEPS = 1500;
-// Heads and heights are held Q12.20 and offset by 2^30 inside a sweep, so none may reach 1024 m.
-const MOST_Z = 1024;
+// Heads and heights are held in Z and offset by 2^30 inside a sweep, so none may reach 2^(30 - zb) m (1,024 m in the island's).
+const mostZ = (fmt: WaterFormat) => 2 ** (30 - fmt.zb);
 // A sweep sums the four faces of a cell, each at most its own transmissivity, in a u32.
 const MOST_T = 2 ** 32 / (4 * TS);
 
-const toZ = (x: number) => Math.round(x * ZS);
 const toQ16 = (x: number) => Math.round(x * 65536);
-// What a height keeps below toZ's last place, in units of 2^-31 of it (a float32 holds all of it): the kernel takes the fall
-// between two cells from both words.
-const lowZ = (x: number) => Math.round((x * ZS - toZ(x)) * 2 ** 31);
 
-function pack(input: HydroInput): Int32Array {
-  const { h, filled, to, basin, rock, drift, driftDepth, air } = input;
+function pack(input: HydroInput, fmt: WaterFormat): Int32Array {
+  const { h, filled, to, basin, rock, drift, driftDepth, air } = input, { FIELDS, FIELD } = layoutOf(fmt), ZS = 2 ** fmt.zb, most = mostZ(fmt);
+  const toZ = (x: number) => Math.round(x * ZS);
+  // What a height keeps below toZ's last place, in units of 2^-31 of it (a float32 holds all of it): the kernel takes the fall
+  // between two cells from both words.
+  const lowZ = (x: number) => Math.round((x * ZS - toZ(x)) * 2 ** 31);
   if (air.seasons.length !== S) throw new Error(`hydrologyGpu: ${air.seasons.length} seasons, wanted ${S}`);
+  if (input.inflow?.length && !fmt.window) throw new Error("hydrologyGpu: water from beyond the edge needs a window's format");
   const words = new Int32Array(FIELDS.length * LEN);
   const put = (name: string, f: (i: number) => number) => {
     const at = FIELD[name] * LEN;
     for (let i = 0; i < LEN; i++) words[at + i] = f(i);
   };
   for (let i = 0; i < LEN; i++) {
-    if (Math.abs(h[i]) >= MOST_Z || Math.abs(filled[i]) >= MOST_Z) throw new Error("hydrologyGpu: a height reaches 1024 m");
+    if (Math.abs(h[i]) >= most || Math.abs(filled[i]) >= most) throw new Error(`hydrologyGpu: a height reaches ${most} m`);
     const t = ROCKS[rock[i]].ksat * ROCKS[rock[i]].thick * YEAR_S + DRIFTS[drift[i]].ksat * YEAR_S * driftDepth[i];
     if (t >= MOST_T) throw new Error("hydrologyGpu: a cell's transmissivity passes what a sweep's sum of four faces holds");
   }
@@ -64,25 +70,40 @@ function pack(input: HydroInput): Int32Array {
     put(`pr${k}`, (i) => toQ16(s.precip[i]));
     put(`pe${k}`, (i) => toQ16(s.pet[i]));
   });
+  // the inflow's words: the area in cells, and the water as Q6 m3 a year and a season, each a 64-bit pair
+  const pair = (name: string, at: number, v: number) => {
+    const u = BigInt.asUintN(64, BigInt(Math.round(v)));
+    words[FIELD[`${name}l`] * LEN + at] += Number(u & 0xffffffffn) | 0;
+    words[FIELD[`${name}h`] * LEN + at] += Number(u >> 32n) | 0;
+  };
+  for (const f of input.inflow ?? []) {
+    pair("ia0", f.at, f.cells);
+    pair("iy0", f.at, ((f.m3s[0] + f.m3s[1] + f.m3s[2] + f.m3s[3]) / 4) * YEAR_S * 64);
+    f.m3s.forEach((q, s) => pair(`is${s}`, f.at, q * SEASON_S * 64));
+  }
   return words;
 }
 
-type Run = { g: Gpu; F: GPUBuffer; AT: GPUBuffer; owned: GPUBuffer[] };
+type Run = { g: Gpu; F: GPUBuffer; AT: GPUBuffer; owned: GPUBuffer[]; fmt: WaterFormat; src: string; FIELD: Record<string, number> };
 
 function step(run: Run, entry: (typeof ENTRIES)[number], params: number[] = [], groups = LEN / 256) {
   const P = storage(run.g, Uint32Array.from([...params, 0, 0, 0, 0]));
   run.owned.push(P);
-  dispatch(run.g, pipeline(run.g, WATER_WGSL, entry), [run.F, run.AT, P], [groups]);
+  dispatch(run.g, pipeline(run.g, run.src, entry), [run.F, run.AT, P], [groups]);
 }
 
+// A gather's words: its count of weights, where they are and where the sums go, and in a window where the inflow of the
+// same kind is and how many of the weights it adds to.
+const gatherOf = (run: Run, nc: number, inflow: string, nIn: number) =>
+  [nc, run.FIELD.wt0 * LEN, run.FIELD.ga0l * LEN, ...(run.fmt.window ? [run.FIELD[inflow] * LEN, nIn] : [])];
 // weights 0: one a cell, so the gather is the drainage area in cells; 1: the year's surplus over each cell
 const areas = (run: Run) => {
   step(run, "weights", [0]);
-  step(run, "gather", [1, FIELD.wt0 * LEN, FIELD.ga0l * LEN], 1);
+  step(run, "gather", gatherOf(run, 1, "ia0l", 1), 1);
 };
 const routes = (run: Run) => {
   step(run, "routeprep");
-  step(run, "gather", [5, FIELD.wt0 * LEN, FIELD.ga0l * LEN], 1);
+  step(run, "gather", gatherOf(run, 5, "is0l", 4), 1);
   step(run, "routefin");
 };
 const solve = (run: Run, most: number, sweepsAt: number) => {
@@ -99,7 +120,7 @@ function sequence(run: Run) {
   areas(run);
   step(run, "channels", [], 1);
   step(run, "weights", [1]);
-  step(run, "gather", [1, FIELD.wt0 * LEN, FIELD.ga0l * LEN], 1);
+  step(run, "gather", gatherOf(run, 1, "iy0l", 1), 1);
   step(run, "flow0");
   step(run, "fixedset", [0]);
   solve(run, FIRST_SWEEPS, MISC.sweeps1);
@@ -128,9 +149,10 @@ function sequence(run: Run) {
 // What a run leaves: the named fields' words (the outputs when none are named), the misc words and the atomic counters.
 export type Raw = { fields: Record<string, Int32Array>; misc: Int32Array; lakes: number; basins: number; flags: number };
 
-export async function hydrologyRaw(g: Gpu, input: HydroInput, names: readonly string[] = OUTPUTS): Promise<Raw> {
-  const F = storage(g, pack(input)), AT = storage(g, AT_REGIONS.length * LEN * 4);
-  const run: Run = { g, F, AT, owned: [] };
+export async function hydrologyRaw(g: Gpu, input: HydroInput, names: readonly string[] = OUTPUTS, fmt: WaterFormat = ISLAND_WATER): Promise<Raw> {
+  const { FIELD } = layoutOf(fmt);
+  const F = storage(g, pack(input, fmt)), AT = storage(g, AT_REGIONS.length * LEN * 4);
+  const run: Run = { g, F, AT, owned: [], fmt, src: waterWgsl(fmt), FIELD };
   sequence(run);
   const fields: Record<string, Int32Array> = {};
   for (const name of names) fields[name] = new Int32Array(await readback(g, F, LEN * 4, FIELD[name] * LEN * 4));
@@ -141,14 +163,14 @@ export async function hydrologyRaw(g: Gpu, input: HydroInput, names: readonly st
 }
 
 const asFloat = (w: Int32Array, scale: number) => Float32Array.from(w, (v) => v / scale);
-const FQ = 2 ** 26, S30 = 2 ** 30;
+const S30 = 2 ** 30;
 
-export async function hydrologyGpu(g: Gpu, input: HydroInput): Promise<Hydro> {
-  const raw = await hydrologyRaw(g, input);
+export async function hydrologyGpu(g: Gpu, input: HydroInput, fmt: WaterFormat = ISLAND_WATER): Promise<Hydro> {
+  const raw = await hydrologyRaw(g, input, OUTPUTS, fmt), FQ = 2 ** fmt.qb, ZS = 2 ** fmt.zb;
   if (raw.flags & 1) throw new Error("hydrologyGpu: a receiver chain does not end at a root");
   if (raw.flags & 2) throw new Error("hydrologyGpu: a flow path is longer than the counting sort holds");
   const f = raw.fields;
-  for (let i = 0; i < LEN; i++) if ((f.flow[i] >>> 0) * BANKFULL >= 2 ** 32) throw new Error("hydrologyGpu: a flow passes 4 m3 a second, which the bankfull flow's word cannot hold");
+  for (let i = 0; i < LEN; i++) if ((f.flow[i] >>> 0) * BANKFULL >= 2 ** 32) throw new Error(`hydrologyGpu: a flow passes ${(2 ** 32 / BANKFULL / FQ).toFixed(1)} m3 a second, which the bankfull flow's word cannot hold`);
   const fq = (name: string) => asFloat(f[name], FQ);
   const season = (stem: string, scale: number) => Array.from({ length: S }, (_, s) => asFloat(f[`${stem}${s}`], scale));
   const channel = Uint8Array.from(f.chn), open = f.open;

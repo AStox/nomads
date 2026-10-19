@@ -50,6 +50,21 @@ const INTERNAL = [
 export const OUTPUTS = ["water", "flow", "sf0", "sf1", "sf2", "sf3", "tab", "stb0", "stb1", "stb2", "stb3", "dry", "spring", "base", "valley", "chn", "open", "qbf", "slope", "pwr", "rtl", "rth", "spf"];
 export const FIELDS: readonly string[] = [...INPUTS, ...INTERNAL, ...OUTPUTS];
 export const FIELD = Object.fromEntries(FIELDS.map((n, k) => [n, k])) as Record<string, number>;
+
+// The formats a run's kernels are generated in: the island's (heights Q12.20 m under 1,024 m, flows Q6.26 m3/s under 4.3 with
+// their bankfull 15 times that), and a window's, whose ground stands kilometres high and whose rivers carry hundreds of cubic metres
+// a second: heights Q15.17 m (under 8,192 m with a sweep's offset of 2^30), flows Q16.16 m3/s (bankfull under 65,536, the mean
+// under 4,369) [design]. A window's rivers from beyond its edge come in at their cells as drainage area (cells) and as water (m3
+// a year and a season, Q6, 64 bits), added to the gathers of each.
+export interface WaterFormat { zb: number; qb: number; window: boolean }
+export const ISLAND_WATER: WaterFormat = { zb: 20, qb: 26, window: false };
+export const WINDOW_WATER: WaterFormat = { zb: 17, qb: 16, window: true };
+// the inflow's words, each a low and a high word: the area, the year's water and each season's
+export const INFLOW = ["ia0l", "ia0h", "iy0l", "iy0h", "is0l", "is0h", "is1l", "is1h", "is2l", "is2h", "is3l", "is3h"];
+export const layoutOf = (fmt: WaterFormat) => {
+  const fields: readonly string[] = fmt.window ? [...INPUTS, ...INFLOW, ...INTERNAL, ...OUTPUTS] : FIELDS;
+  return { FIELDS: fields, FIELD: Object.fromEntries(fields.map((n, k) => [n, k])) as Record<string, number> };
+};
 // Atomic words (AT): each region is LEN words.
 export const AT_REGIONS = ["lab", "hist", "cur", "lbest", "lsp", "plc", "cnt"];
 export const AT_OF = Object.fromEntries(AT_REGIONS.map((n, k) => [n, k])) as Record<string, number>;
@@ -65,7 +80,7 @@ const two = (v: bigint) => { const u = BigInt.asUintN(64, v); return [Number(u &
 const BD0 = (Math.log2(0.201) + 0.025 * Math.log2(SUBMERGED * SHIELDS)) / 1.025, BD1 = 0.336 / 1.025, BD2 = 0.085 / 1.025;
 const BD0W = two(BigInt(Math.round(BD0 * 2 ** 32)));
 const D04 = BANKFULL ** -AT_D; // depthOf at the mean flow against the bankfull one
-const SPRING_K = (CELL * CELL / 1000) * 2 ** 26 / YEAR_S / 65536; // MM in, FQ out: a spring's flow that evaporates (mm over a year)
+const springK = (qb: number) => (CELL * CELL / 1000) * 2 ** qb / YEAR_S / 65536; // MM in, FQ out: a spring's flow that evaporates (mm over a year)
 
 // ---------- groundwater evapotranspiration ----------
 // What the plants draw from the water table, per cell and year: for each season the least of the demand the soil's bucket
@@ -107,12 +122,12 @@ export function textureClass(sand: number, clay: number): string {
 }
 // The fall's four numbers for a material of this texture, in the kernel's units: d'' in Z, b per metre in Q16, and e0 and
 // the rescaling 1 / (1 - e0) in Q16.
-const gwet = (sand: number, clay: number) => {
+const gwet = (sand: number, clay: number, zs: number) => {
   const [d, b, ext] = SHAH_GRASS[textureClass(sand, clay)], e0 = Math.exp(-b * (ext - d));
-  return [Math.round((d / 100) * ZS), Math.round(b * 100 * 65536), Math.round(e0 * 65536), Math.round(65536 / (1 - e0))];
+  return [Math.round((d / 100) * zs), Math.round(b * 100 * 65536), Math.round(e0 * 65536), Math.round(65536 / (1 - e0))];
 };
-const gwRock = ROCKS.flatMap((r) => gwet(r.sand, r.clay)).map((v) => `${v}i`).join(", ");
-const gwDrift = DRIFTS.flatMap((d) => gwet(d.sand, d.clay)).map((v) => `${v}i`).join(", ");
+const gwRock = (zs: number) => ROCKS.flatMap((r) => gwet(r.sand, r.clay, zs)).map((v) => `${v}i`).join(", ");
+const gwDrift = (zs: number) => DRIFTS.flatMap((d) => gwet(d.sand, d.clay, zs)).map((v) => `${v}i`).join(", ");
 // 2^-x for x in 0 to 1 in steps of 1/256, Q30
 const exp2Tab = Array.from({ length: 257 }, (_, k) => `${Math.round(2 ** 30 * 2 ** (-k / 256))}u`).join(", ");
 const KD_K = Math.round(((CELL * CELL) / 1000) * TS); // a cell's area in m2 over 1000 mm a m, in T's scale: mm a year per metre of depth (Q16) to m2 a year (T)
@@ -125,7 +140,7 @@ const KD_K = Math.round(((CELL * CELL) / 1000) * TS); // a cell's area in m2 ove
 // wetlands]. The water the ground gives such plants in summer is that 0.2 of the potential evaporation, as far as the
 // niche's fit goes, on top of what the bucket left unmet. The cover is made after the water, so the niche's own rule
 // that nothing else stands on such ground stands in for it [design].
-const REED_FULL = Math.round(NICHE.reeds.table![2] * ZS), REED_NONE = Math.round(NICHE.reeds.table![3] * ZS);
+const reedZ = (zs: number) => [Math.round(NICHE.reeds.table![2] * zs), Math.round(NICHE.reeds.table![3] * zs)];
 export const KC_WET = 1.2;
 export const SUMMER = 1;
 
@@ -136,7 +151,9 @@ const driftK = DRIFTS.map((d) => `${Math.round(d.ksat * YEAR_S * TS)}u`).join(",
 const driftShare = DRIFTS.flatMap((d) => d.recharge.map((r) => `${q16(r)}i`)).join(", ");
 const driftSy = DRIFTS.map((_, k) => `${q16(SY_DRIFT[k] ?? 0)}i`).join(", ");
 
-const consts = /* wgsl */ `
+const constsOf = (fmt: WaterFormat, FIELDS: readonly string[]) => {
+  const ZS = 2 ** fmt.zb, [REED_FULL, REED_NONE] = reedZ(ZS), W = fmt.window;
+  return /* wgsl */ `
 const N = ${N}u;
 const LEN = ${LEN}u;
 ${FIELDS.map((n, k) => `const f_${n}: u32 = ${k * LEN}u;`).join("\n")}
@@ -153,17 +170,17 @@ const KC_DEEP = array<i32, 4>(${KC_DEEP.map(q16).join(", ")});
 const DX = array<i32, 8>(1, 1, 0, -1, -1, -1, 0, 1);
 const DY = array<i32, 8>(0, 1, 1, 1, 0, -1, -1, -1);
 const BUCKET_Q16 = ${q16(BUCKET)}i;
-const FALL_F = vec2u(${two(BigInt(Math.round(FALL * 2 ** 51))).join("u, ")}u);
+const FALL_F = vec2u(${two(BigInt(Math.round(FALL * 2 ** (fmt.zb + 31)))).join("u, ")}u);
 const REACH_ORTH = ${q16(CELL)}u;
 const REACH_DIAG = ${q16(Math.hypot(1, 1) * CELL)}u;
 const ONE_Z = ${ZS}i;
 const ROOTS_Z = ${Math.round(ROOTS * ZS)}i;
 const KCS = ${q16(KC_SHALLOW)}i;
-const RA_K = ${Math.round((CELL * CELL * 2 ** 33) / 65536 / 1000)}u;
+const RA_K = ${Math.round((CELL * CELL * 2 ** (fmt.zb + 13)) / 65536 / 1000)}u;
 const MMV = ${(CELL * CELL) / 1000 * 64}u;
-const C_YEAR = ${Math.round(2 ** 32 * ZS / YEAR_S)}u;
-const C_SEASON = ${Math.round(2 ** 32 * ZS / SEASON_S)}u;
-const K_YEAR = ${Math.round((YEAR_S / ZS) * 65536)}u;
+const C_YEAR = ${Math.round(2 ** 32 * 2 ** (fmt.qb - 6) / YEAR_S)}u;
+const C_SEASON = ${Math.round(2 ** 32 * 2 ** (fmt.qb - 6) / SEASON_S)}u;
+const K_YEAR = ${Math.round((YEAR_S / 2 ** (fmt.qb - 6)) * 65536)}u;
 const BANKFULL_Q16 = ${q16(BANKFULL)}u;
 const ONE_MINUS_D04 = ${q16(1 - D04)}i;
 const RISE_Q16 = ${q16(FLOOD ** AT_D - 1)}i;
@@ -174,9 +191,9 @@ const POWER_K = ${q16((RHO * G) / WIDE_WOOD)}i;
 const WOOD_W = ${q16(WIDE_WOOD)}i;
 const CONFINED_Q16 = ${q16(CONFINED)}i;
 const TFILL = ${Math.round(T_FILL * 2 ** 32)}u;
-const SPRING_K = ${Math.round(SPRING_K * 2 ** 32)}u;
-const GW_ROCK = array<i32, ${ROCKS.length * 4}>(${gwRock});
-const GW_DRIFT = array<i32, ${DRIFTS.length * 4}>(${gwDrift});
+const SPRING_K = ${Math.round(springK(fmt.qb) * 2 ** 32)}u;
+const GW_ROCK = array<i32, ${ROCKS.length * 4}>(${gwRock(ZS)});
+const GW_DRIFT = array<i32, ${DRIFTS.length * 4}>(${gwDrift(ZS)});
 const EXP2 = array<u32, 257>(${exp2Tab});
 const KD_K = ${KD_K}u;
 const LOG2E_Q16 = 94548u;
@@ -185,13 +202,18 @@ const REED_NONE = ${REED_NONE}i;
 const REED_SLOPE = ${Math.round(65536 / (NICHE.reeds.table![3] - NICHE.reeds.table![2]))}i;
 const KC_X = ${q16(KC_WET - 1)}i;
 const SUMMER = ${SUMMER}u;
-const RISE_Z = ${Math.round(0.016 * 2 ** 32)}u;
-const SWEEP_TOL = ${SWEEP_TOLERANCE_Z + 1}u;
+const RISE_Z = ${Math.round((W ? 2 ** fmt.zb / 65536 / 1000 : 0.016) * 2 ** 32)}u;
+const SWEEP_TOL = ${(W ? Math.round(0.002 * ZS) : SWEEP_TOLERANCE_Z) + 1}u;
 const HEAD_NUM = ${Math.round(CELL / HEAD_C)}u;
 const OFF = 1073741824i;
 `;
+};
 
-const wgsl = /* wgsl */ `
+const kernelsOf = (fmt: WaterFormat) => {
+  // the units the format's words imply: the shift that takes a height in Z to whole units of its scale, the slope35 fall's
+  // units (2^-(zb + 15)) to Q30, and the log2 of a flow's scale over Q16's
+  const zb = fmt.zb, s30 = zb - 15, W = fmt.window;
+  return /* wgsl */ `
 @group(0) @binding(0) var<storage, read_write> F: array<i32>;
 @group(0) @binding(1) var<storage, read_write> AT: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read> P: array<u32>;
@@ -253,8 +275,8 @@ fn slope35(i: u32) -> vec2u {
 }
 // units of 2^-35 to Q30, rounded, saturating
 fn s30_of(v: vec2u) -> u32 {
-  let r = add64(v, vec2u(16u, 0u));
-  return select((r.x >> 5u) | (r.y << 27u), 0xffffffffu, (r.y >> 5u) != 0u);
+  let r = add64(v, vec2u(${1 << (s30 - 1)}u, 0u));
+  return select((r.x >> ${s30}u) | (r.y << ${32 - s30}u), 0xffffffffu, (r.y >> ${s30}u) != 0u);
 }
 @compute @workgroup_size(256)
 fn prep(@builtin(global_invocation_id) g: vec3u) {
@@ -297,8 +319,8 @@ fn prep(@builtin(global_invocation_id) g: vec3u) {
   for (var k = 0u; k < 4u; k++) { F[f_evd + k * LEN + i] = qmul(GW_DRIFT[drift * 4u + k], fill) + qmul(GW_ROCK[rock * 4u + k], 65536i - fill); }
   let bed = ROCK_T[rock]; let dk = DRIFT_K[drift];
   wu(f_bedT, i, bed); wu(f_drK, i, dk);
-  let p = add64(mul64(dk, u32(dd)), vec2u(1u << 19u, 0u));
-  wu(f_tt, i, bed + ((p.x >> 20u) | (p.y << 12u)));
+  let p = add64(mul64(dk, u32(dd)), vec2u(1u << ${zb - 1}u, 0u));
+  wu(f_tt, i, bed + ((p.x >> ${zb}u) | (p.y << ${32 - zb}u)));
   wi(f_head, i, hq - 3i * ONE_Z);
   let basin = gi(f_basin, i) != 0i;
   wi(f_open, i, select(0i, 1i, sea || basin));
@@ -413,7 +435,7 @@ fn gather_cell(i: u32, nc: u32, wbase: u32, obase: u32) {
   let x = i32(i & 255u); let y = i32(i >> 8u);
   let hi = gi(f_hol, i);
   for (var c = 0u; c < nc; c++) {
-    var acc = s64(F[wbase + c * LEN + i]);
+    var acc = s64(F[wbase + c * LEN + i]);${W ? "\n    if (c < P[4]) { acc = add64(acc, ld64(P[3] + 2u * c * LEN, i)); }" : ""}
     for (var d = 0u; d < 8u; d++) {
       let nx = x + DX[d]; let ny = y + DY[d];
       if (nx < 0i || ny < 0i || nx > 255i || ny > 255i) { continue; }
@@ -500,9 +522,9 @@ fn lg64(v: vec2u) -> vec2u {
 }
 // the bankfull depth in Q12.20 m, from the bankfull flow (Q26 m3 a second) and the slope (units of 2^-35)
 fn bank_depth_z(qq26: u32, s35: vec2u) -> i32 {
-  let l2q = sub64(lg32(qq26), vec2u(0u, 10u));
-  let l2s = sub64(lg64(s35), vec2u(0u, 35u));
-  return exp2q(add64(add64(BD0V, vec2u(0u, 4u)), sub64(smulhi64(l2q, BD1U), smulhi64(l2s, BD2U))));
+  let l2q = sub64(lg32(qq26), vec2u(0u, ${fmt.qb - 16}u));
+  let l2s = sub64(lg64(s35), vec2u(0u, ${zb + 15}u));
+  return exp2q(add64(add64(BD0V, vec2u(0u, ${zb - 16}u)), sub64(smulhi64(l2q, BD1U), smulhi64(l2s, BD2U))));
 }
 // floor(sqrt(n)) of a 64-bit n
 fn sqrt64(n: vec2u) -> u32 {
@@ -513,8 +535,9 @@ fn sqrt64(n: vec2u) -> u32 {
   }
   return r;
 }
-// the square root of a flow in Q26, as Q28
-fn sqrt_q28(q: u32) -> u32 { return sqrt64(vec2u(q << 30u, q >> 2u)); }
+${W ? `// the square root of a flow in Q16, as Q20
+fn sqrt_q28(q: u32) -> u32 { return sqrt64(vec2u(q << 24u, q >> 8u)); }` : `// the square root of a flow in Q26, as Q28
+fn sqrt_q28(q: u32) -> u32 { return sqrt64(vec2u(q << 30u, q >> 2u)); }`}
 fn bank_flow(i: u32) -> u32 { return mulshr(gu(f_flow, i), BANKFULL_Q16, 16u); }
 struct Stage { ok: bool, z: i32 }
 fn stage_of(i: u32) -> Stage {
@@ -539,8 +562,8 @@ fn fixedset(@builtin(global_invocation_id) g: vec3u) {
   } else {
     let dd = gi(f_dd, i);
     let sat = clamp(gi(f_head, i) - (gi(f_h, i) - dd), 0i, dd);
-    let p = add64(mul64(gu(f_drK, i), u32(sat)), vec2u(1u << 19u, 0u));
-    wu(f_tt, i, gu(f_bedT, i) + ((p.x >> 20u) | (p.y << 12u)));
+    let p = add64(mul64(gu(f_drK, i), u32(sat)), vec2u(1u << ${zb - 1}u, 0u));
+    wu(f_tt, i, gu(f_bedT, i) + ((p.x >> ${zb}u) | (p.y << ${32 - zb}u)));
     if (gi(f_open, i) != 0i) { isf = 1i; fxv = select(gi(f_h, i) + gi(f_water, i), 0i, sea); }
     else if (gi(f_chn, i) != 0i) { let s = stage_of(i); if (s.ok) { isf = 1i; fxv = s.z; } }
   }
@@ -571,8 +594,8 @@ fn gw_frac(i: u32, d: i32) -> i32 {
   let dpp = gi(f_evd, i);
   if (d <= dpp) { return 65536i; }
   let p = mul64(u32(d - dpp), u32(gi(f_evb, i))); // Q36
-  if (p.y >= (1u << 20u)) { return 0i; }
-  let x = (p.x >> 20u) | (p.y << 12u); // b (d - d'') in Q16
+  if (p.y >= (1u << ${zb}u)) { return 0i; }
+  let x = (p.x >> ${zb}u) | (p.y << ${32 - zb}u); // b (d - d'') in Q16
   let e = i32(exp2n(mulshr(x, LOG2E_Q16, 16u)) >> 14u);
   return min(65536i, max(0i, qmul(e - gi(f_eve, i), gi(f_evs, i))));
 }
@@ -580,7 +603,7 @@ fn gw_frac(i: u32, d: i32) -> i32 {
 fn reed_fit(d: i32) -> i32 {
   if (d <= REED_FULL) { return 65536i; }
   if (d >= REED_NONE) { return 0i; }
-  return i32(mulshr(u32(REED_NONE - d), u32(REED_SLOPE), 20u));
+  return i32(mulshr(u32(REED_NONE - d), u32(REED_SLOPE), ${zb}u));
 }
 // the wet ground's evaporation beyond the reference, in summer, mm Q16 (evw holds its most: Kc - 1 of summer's potential)
 fn wet_extra(i: u32, d: i32) -> i32 { return qmul(reed_fit(d), gi(f_evw, i)); }
@@ -696,12 +719,12 @@ fn outflux(@builtin(global_invocation_id) g: vec3u) {
   s = add64(s, smul64(gi(f_head, i + 1u) - hc, gu(f_ce, i)));
   s = add64(s, smul64(gi(f_head, i - 256u) - hc, gu(f_cs, i - 256u)));
   s = add64(s, smul64(gi(f_head, i + 256u) - hc, gu(f_cs, i)));
-  wi(f_out, i, sat32(rsar64(s, 27u)));
+  wi(f_out, i, sat32(rsar64(s, ${zb + 7}u)));
 }
 
 // ---------- the open water's evaporation over a year, mm Q16 summed over the seasons, at a depth (water.ts openKc) ----------
 fn lake_mm(depth: i32, i: u32) -> i32 {
-  let t = clamp(((depth - 2i * ONE_Z) / 3i) >> 4u, 0i, 65536i);
+  let t = clamp(((depth - 2i * ONE_Z) / 3i) >> ${zb - 16}u, 0i, 65536i);
   var sum = 0i;
   for (var s = 0u; s < 4u; s++) {
     let kc = KCS + qmul(KC_DEEP[s] - KCS, t);
@@ -931,8 +954,9 @@ fn banks(@builtin(global_invocation_id) g: vec3u) {
   let s = gu(f_slope, i);
   if (gi(f_chn, i) != 0i && q > 0u) {
     let p = mul64(sqrt_q28(q), s);
-    let w = add64(mul64((p.x >> 30u) | (p.y << 2u), u32(POWER_K)), vec2u(1u << 27u, 0u));
-    wi(f_pwr, i, bitcast<i32>((w.x >> 28u) | (w.y << 4u)));
+${W ? `    let w = add64(mul64((p.x >> 30u) | (p.y << 2u), u32(POWER_K)), vec2u(1u << 19u, 0u));
+    wi(f_pwr, i, bitcast<i32>((w.x >> 20u) | (w.y << 12u)));` : `    let w = add64(mul64((p.x >> 30u) | (p.y << 2u), u32(POWER_K)), vec2u(1u << 27u, 0u));
+    wi(f_pwr, i, bitcast<i32>((w.x >> 28u) | (w.y << 4u)));`}
     if (gu(f_to, i) != i) { wi(f_dbf, i, bank_depth_z(q, slope35(i))); }
   }
 }
@@ -973,7 +997,8 @@ fn under(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x;
   if (gi(f_chn, i) == 0i || gi(f_sea, i) != 0i) { return; }
   let q = gu(f_qbf, i);
-  let bw = add64(mul64(sqrt_q28(q), u32(WOOD_W)), vec2u(0u, 2u)).y >> 2u;
+${W ? `  let bq = add64(mul64(sqrt_q28(q), u32(WOOD_W)), vec2u(1u << 25u, 0u));
+  let bw = (bq.x >> 26u) | (bq.y << 6u);` : `  let bw = add64(mul64(sqrt_q28(q), u32(WOOD_W)), vec2u(0u, 2u)).y >> 2u;`}
   let j = gu(f_to, i);
   let diag = ((j & 255u) != (i & 255u)) && ((j >> 8u) != (i >> 8u));
   let plain = atomicLoad(&AT[a_plc + i]) * select(${CELL * 1024}u, ${Math.round((CELL / Math.SQRT2) * 1024)}u, diag);
@@ -999,10 +1024,12 @@ fn springs(@builtin(global_invocation_id) g: vec3u) {
   wi(f_spf, i, 1i);
 }
 `;
+};
 
-export const WATER_WGSL = (FIXED + consts + `
+export const waterWgsl = (fmt: WaterFormat) => (FIXED + constsOf(fmt, layoutOf(fmt).FIELDS) + `
 const MISC_MAXD = ${MISC.maxd}u;
 const MISC_ROUNDS = ${MISC.rounds}u;
 const MISC_QUICK = ${MISC.quick}u;
-` + wgsl).replace(/(@compute @workgroup_size\(256\)\nfn \w+\(.*\) \{)/g, "$1\n  touch();");
+` + kernelsOf(fmt)).replace(/(@compute @workgroup_size\(256\)\nfn \w+\(.*\) \{)/g, "$1\n  touch();");
+export const WATER_WGSL = waterWgsl(ISLAND_WATER);
 export const ENTRIES = ["prep", "hollows", "levels", "weights", "gather", "flow0", "channels", "fixedset", "aqprep", "aqw", "aquifer", "outflux", "routeprep", "routefin", "quicksum", "lakeprep", "lakecand", "lakelevel", "lakewater", "afterlake", "tables", "seasons", "banks", "reach", "valley", "under", "springs"] as const;

@@ -74,8 +74,23 @@ export const PAR = {
   creep: 1567, // the creep's share a substep, Q32
   ka: 1568, // five rocks' K dt, Q16
   adverse: 1573, // the slope the ice could scour up toward a valley's end, Q30
+  // a window's only (WINDOW_FORMAT): the deepest a joint valley is scoured, the till's greatest thickness (Z), and the height the
+  // heights are lowered by before the hollows (Z, two's complement): from the lowstand's sea, which the erosion ran to, to the present one
+  scour: 1580, till: 1581, shift: 1582,
   size: 1600,
 };
+
+// The formats a run's kernels are generated in: the island's, and a window's, whose heights reach kilometres above and below the
+// sea. A window's words are Q16 m (32 km in an i32; the blur's offset of 8 km keeps a sea floor to 8 km deep positive and its
+// sum of nine words of 10-bit parts in a u32 to 57 km). Its map edge is no outlet: water leaves the map only where the planet's
+// rivers leave it (`sea`, which a window does not use for the sea floor, marks those cells, which are held: the flood starts
+// from them and from the sea, and they drain nowhere) and into its sea; every other cell of the edge is relaxed and eroded as
+// the inside is. Rivers from beyond the edge add their area at the cell they enter (`dep`, which the window does not use for the
+// basement's depth), the ice's scour and till are parameters, and a kernel lowers the heights to the present sea before the
+// hollows [design].
+export interface UpstreamFormat { zs: number; window: boolean }
+export const ISLAND_FORMAT: UpstreamFormat = { zs: ZS, window: false };
+export const WINDOW_FORMAT: UpstreamFormat = { zs: 2 ** 16, window: true };
 
 const q = (x: number, bits: number) => Math.round(x * 2 ** bits);
 const F2 = 0.5 * (Math.sqrt(3) - 1), G2 = (3 - Math.sqrt(3)) / 6;
@@ -83,14 +98,16 @@ const F2 = 0.5 * (Math.sqrt(3) - 1), G2 = (3 - Math.sqrt(3)) / 6;
 const GRAD_X = [1, -1, 1, -1, 1, -1, 1, -1, 0, 0, 0, 0], GRAD_Y = [1, 1, -1, -1, 0, 0, 0, 0, 1, -1, 1, -1];
 const cum = STACK.reduce<number[]>((a, [, m]) => [...a, (a[a.length - 1] ?? 0) + m], []);
 const m15 = (m: number) => Math.round(m * 2 ** 15);
-const z = (m: number) => Math.round(m * ZS);
-const profile = (p: number[]) => p.map((v) => `${z(v)}i`).join(", ");
 // 1 / K per rock, years, Q6: the response time's sum is of far / (K sqrt(area)); K as the CPU holds it, a float32
 const invK = ROCKS.map((r) => Math.round(64 / Math.fround(r.erode)));
 // the flood's step above a neighbour, Z: the erosion's, then the island's
-export const EPS_ERODE = Math.max(1, z(FLOOD_EPS.erode)), EPS_ISLAND = Math.max(1, z(FLOOD_EPS.island));
+const epsOf = (zs: number) => [Math.max(1, Math.round(FLOOD_EPS.erode * zs)), Math.max(1, Math.round(FLOOD_EPS.island * zs))];
+export const [EPS_ERODE, EPS_ISLAND] = epsOf(ZS);
 
-const consts = /* wgsl */ `
+const constsOf = (fmt: UpstreamFormat) => {
+  const ZS = fmt.zs, z = (m: number) => Math.round(m * ZS), profile = (p: number[]) => p.map((v) => `${z(v)}i`).join(", ");
+  const [EPS_ERODE, EPS_ISLAND] = epsOf(ZS);
+  return /* wgsl */ `
 const N = ${N}u;
 const LEN = ${LEN}u;
 ${FIELDS.map((n, k) => `const f_${n}: u32 = ${k * LEN}u;`).join("\n")}
@@ -148,11 +165,11 @@ const LINE_SPAN = ${m15(JOINT_GAP)}u;
 const SILL2 = ${q(2 * SILL, 32)}u;
 const SCOUR_Z = ${z(SCOUR)}u;
 const TILL_Z = ${z(TILL_MAX)}u;
-const BOFF = ${z(128)}i;
-const TALL = ${z(1900)}i;
+const BOFF = ${z(fmt.window ? 8192 : 128)}i;
+const TALL = ${z(fmt.window ? 20000 : 1900)}i;
 const WT_Z = ${z(WATER_TABLE)}i;
 const HOLLOW_MIN = ${Math.ceil(0.01 * ZS)}i;
-const RISE_Q16 = ${Math.round(ERODE.rise * CELL * 16 * 65536)}u;
+const RISE_Q16 = ${Math.round(ERODE.rise * CELL * ZS)}u;
 const EPS_ERODE = ${EPS_ERODE}i;
 const EPS_ISLAND = ${EPS_ISLAND}i;
 const INFZ = 0x7fffffffi;
@@ -204,7 +221,8 @@ const P_UDT = ${PAR.udt}u;
 const P_CREEP = ${PAR.creep}u;
 const P_KA = ${PAR.ka}u;
 const P_ADV = ${PAR.adverse}u;
-`;
+${fmt.window ? `const P_SCOUR = ${PAR.scour}u;\nconst P_TILL = ${PAR.till}u;\nconst P_SHIFT = ${PAR.shift}u;\n` : ""}`;
+};
 
 // The blur's six passes, three of box means of nine cells along x then y with the edge repeated: (sum + 4) / 9 of the
 // heights offset by 128 m. The nine would overflow a u32 above 340 m, so the sum is kept as high and low 10-bit parts and
@@ -223,7 +241,7 @@ fn ${name}(@builtin(global_invocation_id) g: vec3u) {
   wi(${dst}, i, i32((a << 10u) + (r * 1024u + slo + 4u) / 9u) - BOFF);
 }`;
 
-const wgsl = /* wgsl */ `
+const kernelsOf = (fmt: UpstreamFormat) => /* wgsl */ `
 @group(0) @binding(0) var<storage, read_write> F: array<i32>;
 @group(0) @binding(1) var<storage, read_write> AT: array<atomic<i32>>;
 @group(0) @binding(2) var<storage, read> P: array<u32>;
@@ -538,7 +556,21 @@ fn hinit(@builtin(global_invocation_id) g: vec3u) {
 fn epse() { wi(f_misc, MISC_EPS, EPS_ERODE); }
 @compute @workgroup_size(1)
 fn epsf() { wi(f_misc, MISC_EPS, EPS_ISLAND); }
+${fmt.window ? `fn seed(i: u32) -> bool { return gi(f_sea, i) != 0i || gi(f_land, i) == 0i; }
 @compute @workgroup_size(256)
+fn flinit(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  atomicStore(&AT[a_fl + i], select(INFZ, gi(f_h, i), seed(i)));
+}
+fn flround(i: u32) -> bool {
+  let x = i32(i & 255u); let y = i32(i >> 8u);
+  if (seed(i)) { return false; }
+  var m = INFZ;
+  for (var d = 0u; d < 8u; d++) {
+    let nx = x + DX[d]; let ny = y + DY[d];
+    if (nx < 0i || ny < 0i || nx > 255i || ny > 255i) { continue; }
+    m = min(m, al(a_fl, u32(ny * 256i + nx)));
+  }` : `@compute @workgroup_size(256)
 fn flinit(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x; let x = i & 255u; let y = i >> 8u;
   let edge = x == 0u || y == 0u || x == 255u || y == 255u;
@@ -548,7 +580,7 @@ fn flround(i: u32) -> bool {
   let x = i32(i & 255u); let y = i32(i >> 8u);
   if (x == 0i || y == 0i || x == 255i || y == 255i) { return false; }
   var m = INFZ;
-  for (var d = 0u; d < 8u; d++) { m = min(m, al(a_fl, u32((y + DY[d]) * 256i + x + DX[d]))); }
+  for (var d = 0u; d < 8u; d++) { m = min(m, al(a_fl, u32((y + DY[d]) * 256i + x + DX[d]))); }`}
   if (m == INFZ) { return false; }
   let cand = max(gi(f_h, i), m + gi(f_misc, MISC_EPS));
   if (cand >= al(a_fl, i)) { return false; }
@@ -568,7 +600,7 @@ fn recv(@builtin(global_invocation_id) g: vec3u) {
   let f = al(a_fl, i);
   wi(f_fl, i, f);
   var to = i; var diag = 0i; var best = vec2u(0u, 0u);
-  if (f >= 0i) {
+  if (f >= 0i${fmt.window ? " && gi(f_sea, i) == 0i" : ""}) {
     for (var d = 0u; d < 8u; d++) {
       let nx = x + DX[d]; let ny = y + DY[d];
       if (nx < 0i || ny < 0i || nx > 255i || ny > 255i) { continue; }
@@ -659,7 +691,7 @@ fn area(@builtin(local_invocation_index) t: u32) {
     for (var p = lo + t; p < hi; p += 256u) {
       let i = gu(f_ub, p);
       let x = i32(i & 255u); let y = i32(i >> 8u);
-      var a = 1i;
+      var a = ${fmt.window ? "1i + gi(f_dep, i)" : "1i"};
       for (var e = 0u; e < 8u; e++) {
         let nx = x + DX[e]; let ny = y + DY[e];
         if (nx < 0i || ny < 0i || nx > 255i || ny > 255i) { continue; }
@@ -798,7 +830,7 @@ fn joints() {
         if (n + 3u > DRN) { flag(FLAG_DRAWS); break; }
         if (nv >= VMAX) { flag(FLAG_VALLEYS); break; }
         let len = LEN_MIN + i32(mulhi(dw(n), LEN_SPAN));
-        let deep = i32(mulhi(dw(n + 1u), SCOUR_Z));
+        let deep = i32(mulhi(dw(n + 1u), ${fmt.window ? "P[P_SCOUR]" : "SCOUR_Z"}));
         let gap = GAP_MIN + i32(mulhi(dw(n + 2u), GAP_SPAN));
         n += 3u;
         let e = VT + STRIDE * nv;
@@ -821,7 +853,7 @@ fn joints() {
 // deeper than the ice could make one. The floor is never below the one the ice cleared, so it is only ever raised, and
 // the sill takes the higher of its two halves'. Each valley is walked by one thread over its cells in order, cuts only
 // the cuttable cells (the basement), and the scour of a cell is the greatest of the valleys that cross it.
-fn rise(gap: i32) -> i32 { return i32(umulsh(P[P_ADV], u32(gap), 25u)); }
+fn rise(gap: i32) -> i32 { return i32(umulsh(P[P_ADV], u32(gap), ${45 - Math.log2(fmt.zs)}u)); }
 @compute @workgroup_size(256)
 fn valleys(@builtin(global_invocation_id) g: vec3u) {
   let e = g.x;
@@ -891,12 +923,12 @@ fn till(@builtin(global_invocation_id) g: vec3u) {
   if (bed > TALL) { flag(FLAG_TALL); }
   if (gi(f_land, i) == 0i) { wi(f_drift, i, 0i); wi(f_dd, i, 0i); return; }
   let scour = al(a_sc, i);
-  var kind = TILL_CLAY; var thick = i32(TILL_Z);
+  var kind = TILL_CLAY; var thick = i32(${fmt.window ? "P[P_TILL]" : "TILL_Z"});
   if (scour > 0i) { kind = MELTWATER; }
   else if (crystalline(gi(f_rock, i))) {
     // TILL_MAX clamp(0.5 - (bed - around) / 10, 0, 1): 5 m under the ground around gives all of it, 5 m over none
-    let arg = clamp((1i << 23u) - ((bed - gi(f_ar, i)) * 8i) / 5i, 0i, 1i << 24u);
-    thick = i32(umulsh(TILL_Z, u32(arg), 24u));
+    let arg = clamp((1i << 23u) - (${fmt.window ? `clamp(bed - gi(f_ar, i), ${-16 * fmt.zs}i, ${16 * fmt.zs}i) * ${(2 ** 24 * 5) / (10 * fmt.zs)}i` : "(bed - gi(f_ar, i)) * 8i"}) / 5i, 0i, 1i << 24u);
+    thick = i32(umulsh(${fmt.window ? "P[P_TILL]" : "TILL_Z"}, u32(arg), 24u));
     kind = select(BARE, TILL_SAND, thick > 0i);
   }
   wi(f_drift, i, kind); wi(f_dd, i, thick);
@@ -980,10 +1012,21 @@ fn sortorder(@builtin(local_invocation_index) t: u32) {
   }
   for (var i = t; i < LEN; i += 256u) { wi(f_lvl, i, i32(gu(f_key, i) & 0xffffu)); }
 }
-`;
+${fmt.window ? `
+// ---------- a window's heights lowered to the present sea (its erosion ran to the lowstand's), and its land is what stands above it ----------
+@compute @workgroup_size(256)
+fn wshift(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  let h = gi(f_h, i) - bitcast<i32>(P[P_SHIFT]);
+  wi(f_h, i, h);
+  wi(f_land, i, select(0i, 1i, h > 0i));
+}
+` : ""}`;
 
-export const UPSTREAM_WGSL = FIXED + consts + wgsl;
+export const upstreamWgsl = (fmt: UpstreamFormat) => FIXED + constsOf(fmt) + kernelsOf(fmt);
+export const UPSTREAM_WGSL = upstreamWgsl(ISLAND_FORMAT);
 export const ENTRIES = [
   "draws", "shape", "hinge", "rocks", "dykes", "rockfin", "shore1", "shore2", "seafl", "hinit", "epse", "epsf", "flinit", "flood", "floodlast", "recv", "lvinit", "jumpa", "jumpb", "lvhist", "lvscan", "lvscatter", "area",
   "clock", "uplift", "implicit", "crpin", "crpab", "crpba", "crpouta", "crpoutb", "joints", "valleys", "blur0", "blur1", "blur2", "blur3", "blur4", "blur5", "till", "hollow", "sortorder", "noise", "trig",
 ] as const;
+export const WINDOW_ENTRIES = [...ENTRIES, "wshift"] as const;

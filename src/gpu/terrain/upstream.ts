@@ -21,7 +21,9 @@ import { CREEP, GRANITE, ROCKS } from "../../terrain/geology";
 import { ADVERSE, ERODE, U0, type Upstream, type Watch } from "../../terrain/island";
 import type { Gpu } from "../device";
 import { readback, storage } from "../kernel";
-import { AT_OF, AT_REGIONS, CNT, DRN, ENTRIES, FIELD, FIELDS, FLAG, MAXD, MISC, OUTPUTS, PAR, UPSTREAM_WGSL, VMAX, VT, ZS } from "../wgsl/terrain-upstream";
+import {
+  AT_OF, AT_REGIONS, CNT, DRN, ENTRIES, FIELD, FIELDS, FLAG, ISLAND_FORMAT, MAXD, MISC, OUTPUTS, PAR, VMAX, VT, WINDOW_ENTRIES, WINDOW_FORMAT, ZS, upstreamWgsl, type UpstreamFormat,
+} from "../wgsl/terrain-upstream";
 
 // What the generator draws first, in its order: the three permutation tables (the warp's, the coast's and the bend's), the
 // oval's tilt and stretch, the three faults, and the key of the stream the rest read.
@@ -63,34 +65,36 @@ function parameters(p?: Plan): Uint32Array {
   return w;
 }
 
-type Entry = (typeof ENTRIES)[number];
+type Entry = (typeof WINDOW_ENTRIES)[number];
 type Kernels = { bgl: GPUBindGroupLayout; ps: Record<string, GPUComputePipeline> };
 type Run = { g: Gpu; F: GPUBuffer; AT: GPUBuffer; P: GPUBuffer; ps: Record<string, GPUComputePipeline>; bind: GPUBindGroup; enc: GPUCommandEncoder; pass: GPUComputePassEncoder };
 const CELLS = LEN / 256;
 
 // Every entry point on one explicit layout (the fields, the atomics, the parameters) so that one bind group serves them all,
-// compiled together on the GPU process's own threads, once for a device.
-const kernels = new WeakMap<GPUDevice, Promise<Kernels>>();
-function kernelsOf(g: Gpu): Promise<Kernels> {
-  let k = kernels.get(g.device);
+// compiled together on the GPU process's own threads, once for a device and a format.
+const kernels = new WeakMap<GPUDevice, Map<UpstreamFormat, Promise<Kernels>>>();
+function kernelsOf(g: Gpu, fmt: UpstreamFormat = ISLAND_FORMAT): Promise<Kernels> {
+  let byFormat = kernels.get(g.device);
+  if (!byFormat) kernels.set(g.device, (byFormat = new Map()));
+  let k = byFormat.get(fmt);
   if (!k) {
-    const device = g.device, COMPUTE = 4;
+    const device = g.device, COMPUTE = 4, entries: readonly string[] = fmt.window ? WINDOW_ENTRIES : ENTRIES;
     const bgl = device.createBindGroupLayout({ entries: [
       { binding: 0, visibility: COMPUTE, buffer: { type: "storage" } },
       { binding: 1, visibility: COMPUTE, buffer: { type: "storage" } },
       { binding: 2, visibility: COMPUTE, buffer: { type: "read-only-storage" } },
     ] });
-    const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] }), module = device.createShaderModule({ code: UPSTREAM_WGSL });
-    k = Promise.all(ENTRIES.map((e) => device.createComputePipelineAsync({ layout, compute: { module, entryPoint: e } })))
-      .then((list) => ({ bgl, ps: Object.fromEntries(ENTRIES.map((e, i) => [e, list[i]])) }));
-    kernels.set(device, k);
+    const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] }), module = device.createShaderModule({ code: upstreamWgsl(fmt) });
+    k = Promise.all(entries.map((e) => device.createComputePipelineAsync({ layout, compute: { module, entryPoint: e } })))
+      .then((list) => ({ bgl, ps: Object.fromEntries(entries.map((e, i) => [e, list[i]])) }));
+    byFormat.set(fmt, k);
   }
   return k;
 }
 
-async function makeRun(g: Gpu, params: Uint32Array): Promise<Run> {
+async function makeRun(g: Gpu, params: Uint32Array, fmt: UpstreamFormat = ISLAND_FORMAT): Promise<Run> {
   const F = storage(g, FIELDS.length * LEN * 4), AT = storage(g, AT_REGIONS.length * LEN * 4), P = storage(g, params);
-  const { bgl, ps } = await kernelsOf(g);
+  const { bgl, ps } = await kernelsOf(g, fmt);
   const bind = g.device.createBindGroup({ layout: bgl, entries: [F, AT, P].map((buffer, binding) => ({ binding, resource: { buffer } })) });
   return { g, F, AT, P, ps, bind, enc: undefined as never, pass: undefined as never };
 }
@@ -147,13 +151,13 @@ function lay(run: Run, rounds: number) {
 }
 
 // The steps' numbers from the response time tau, years: the creep's substeps, then the words written to P from udt on
-// (the horst's uplift a step in Z, the creep's share a substep in Q32, each rock's K dt in Q16).
-function erosionOf(tau: number) {
+// (the uplift a step in Z, the creep's share a substep in Q32, each rock's K dt in Q16), for an uplift of u m a year.
+function erosionOf(tau: number, u = U0, zs = ZS) {
   const dt = (ERODE.times * tau) / ERODE.steps, subs = Math.ceil((CREEP * dt) / (ERODE.stable * CELL * CELL));
   const creep = (CREEP * dt) / subs / (CELL * CELL);
   const ka = ROCKS.map((r) => Math.fround(r.erode) * dt * 65536);
   if (ka.some((v) => v >= 2 ** 30)) throw new Error("upstreamGpu: a rock's K dt passes what Q16 holds");
-  const words = Uint32Array.from([Math.round(U0 * dt * ZS), Math.round(creep * 2 ** 32), ...ka.map(Math.round)]);
+  const words = Uint32Array.from([Math.round(u * dt * zs), Math.round(creep * 2 ** 32), ...ka.map(Math.round)]);
   return { subs, words };
 }
 
@@ -331,4 +335,69 @@ export async function trigGpu(g: Gpu, fractions: ArrayLike<number>): Promise<[nu
   const sn = await field(run, "da"), cs = await field(run, "db");
   finish(run);
   return Array.from({ length: fractions.length }, (_, i): [number, number] => [sn[i] / 2 ** 30, cs[i] / 2 ** 30]);
+}
+
+// ---------- a window: the island's erosion, ice and hollows on ground the planet lays ----------
+// What a window lays in place of the island's crust (gpu/globe/window.ts makes it from the planet), N x N each.
+export type WindowLay = {
+  height: Float32Array; // m above the lowstand's sea: the erosion's start, and the sea floor and the outlets, which it holds
+  land: Uint8Array; // 1 where the ground stands above the lowstand's sea
+  rock: Uint8Array; // geology.ts ROCKS
+  lift: Float32Array; // 0 to 1, the uplift's share: none on the outlets, which are held, nor on the sea
+  outlet: Uint8Array; // 1 where water leaves the map over its edge (the rest of the edge is no outlet)
+  inflow: Float32Array; // the drainage area, cells, that enters from beyond the map's edge at a cell of it
+  upliftMYr: number; // m a year
+  scourM: number; // the deepest a joint valley is scoured (0 where no ice overrode the place)
+  tillM: number; // the till's greatest thickness, m
+  shiftM: number; // how far the present sea stands above the lowstand's, m
+  key: [number, number]; // the Philox key of the joint valleys' draws
+};
+const WZ = WINDOW_FORMAT.zs;
+// One run: the first flood and the response time, the erosion's steps, and (whole) the ice, the heights lowered to the present
+// sea and the hollows. Without `whole` only the heights (m above the lowstand's sea) and the receivers mean anything.
+async function windowAttempt(g: Gpu, lay: WindowLay, whole: boolean, rounds: number): Promise<{ up: Upstream; tau: number; flags: number }> {
+  const params = parameters();
+  params[PAR.key0] = lay.key[0]; params[PAR.key1] = lay.key[1];
+  params[PAR.scour] = Math.round(lay.scourM * WZ); params[PAR.till] = Math.round(lay.tillM * WZ); params[PAR.shift] = Math.round(lay.shiftM * WZ) >>> 0;
+  const run = await makeRun(g, params, WINDOW_FORMAT);
+  put(run, "h", lay.height, WZ); put(run, "land", lay.land, 1); put(run, "rock", lay.rock, 1); put(run, "lift", lay.lift, 2 ** 24); put(run, "dep", lay.inflow, 1); put(run, "sea", lay.outlet, 1);
+  open(run);
+  d(run, "draws", DRN / 256);
+  flood(run, false, rounds);
+  tree(run);
+  d(run, "area", 1);
+  d(run, "clock", 1);
+  submit(run);
+  const early = await words(g, run.F, FIELD.misc * LEN, 16);
+  const tau = ((early[MISC.tauHi] >>> 0) * 2 ** 32 + (early[MISC.tauLo] >>> 0)) / 64;
+  const { subs, words: step } = erosionOf(tau, lay.upliftMYr, WZ);
+  g.device.queue.writeBuffer(run.P, PAR.udt * 4, step);
+  open(run);
+  for (let s = 0; s < ERODE.steps; s++) erodeStep(run, subs, rounds);
+  if (whole) { ice(run); d(run, "wshift"); hollows(run, rounds); }
+  submit(run);
+  const out = new Int32Array(await readback(g, run.F, OUTPUTS.length * LEN * 4, FIELD[OUTPUTS[0]] * LEN * 4));
+  const of = (name: (typeof OUTPUTS)[number]) => out.subarray(OUTPUTS.indexOf(name) * LEN, (OUTPUTS.indexOf(name) + 1) * LEN);
+  const m = (w: Int32Array) => Float32Array.from(w, (v) => v / WZ);
+  const flags = (await words(g, run.AT, AT_OF.cnt * LEN + CNT.flags, 1))[0];
+  const up: Upstream = {
+    land: Uint8Array.from(of("land")), rock: Uint8Array.from(of("rock")), height: m(of("h")), drift: Uint8Array.from(of("drift")),
+    driftDepth: m(of("dd")), filled: m(of("fl")), order: Int32Array.from(of("lvl")), to: Int32Array.from(of("to")),
+    basin: Uint8Array.from(of("basin")), hollow: Int32Array.from(of("hol")), open: Uint8Array.from(of("open")),
+  };
+  finish(run);
+  return { up, tau, flags };
+}
+// A window's crust worn by the island's laws: erosion to the steady state of the uplift given, then (whole) the ice's scour and
+// till and the hollows. The response time comes back with it.
+export async function windowUpstreamGpu(g: Gpu, lay: WindowLay, whole = true): Promise<{ up: Upstream; tau: number }> {
+  for (let rounds = ROUNDS; ; rounds *= 2) {
+    const r = await windowAttempt(g, lay, whole, rounds);
+    if (r.flags & (FLAG.floodErode | FLAG.floodFinal)) {
+      if (rounds >= MOST_ROUNDS) throw new Error(`windowUpstreamGpu: a priority flood has not settled in ${rounds} rounds`);
+      continue;
+    }
+    for (const [flag, why] of FATAL) if (r.flags & flag) throw new Error(`windowUpstreamGpu: ${why}`);
+    return { up: r.up, tau: r.tau };
+  }
 }

@@ -408,7 +408,9 @@ ${COMMON}
 // ---------- snow ----------
 // Each game tile (two cells a side) runs the snow years on its land cells' means.
 const NEG_LIMIT = -40 * 65536, POS_LIMIT = 30 * 65536;
-export const snowWgsl = (ranges: { coldest: number; warmest: number }) => /* wgsl */ `
+// shift: bits the sums of a day's rain and snow over the years are shifted down by (their ratio is the snow's share), for a place
+// whose year of rain passes what the words hold unshifted (3,000 mm)
+export const snowWgsl = (ranges: { coldest: number; warmest: number }, shift = 0) => /* wgsl */ `
 ${COMMON}
 const DAYS_ALL = ${DAYS}u;
 fn tile_mean(base: u32, cells: array<u32, 4>, n: u32, sh: u32) -> i32 {
@@ -455,7 +457,7 @@ fn tile_mean(base: u32, cells: array<u32, 4>, n: u32, sh: u32) -> i32 {
     dew[s] = qdiv(qmul(${q(237.3)}, gg), ${q(17.27)} - gg);
     back[s] = ONE - qmul(${q(0.34)} - qmul(${q(0.14)}, qsqrt(E[s])), qmul(${q(1.35)}, F[s]) - ${q(0.35)});
     warm[s] = TAB[r + ${SEAS.warm}u]; inv[s] = TAB[r + ${SEAS.inv}u];
-    wet += u32(P[s]) * u32(TAB[r + ${SEAS.days}u]) * ${YEARS}u;
+    wet += u32(${shift ? `P[s] >> ${shift}u` : "P[s]"}) * u32(TAB[r + ${SEAS.days}u]) * ${YEARS}u;
   }
   let u = max(${q(0.5)}, tile_mean(O_breeze, cells, n, 0u));
   let pk = qmul(${q(101.3)}, pressure_q(tile_mean(O_z, cells, n, 0u)));
@@ -496,7 +498,7 @@ fn tile_mean(base: u32, cells: array<u32, 4>, n: u32, sh: u32) -> i32 {
       let Q = qmul(ONE - alpha, R[si]) + lw + turb;
       pack = max(0i, pack - qdiv(max(0i, Q), ${q(FUSION)}));
       if (y == 0u) { continue; }
-      fell += u32(flakes);
+      fell += u32(${shift ? `flakes >> ${shift}u` : "flakes"});
       if (pack == 0i) { continue; }
       var q100 = 6000i * ONE;
       if (pack < 60i * ONE) { q100 = pack * 100i; }

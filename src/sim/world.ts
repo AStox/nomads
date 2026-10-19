@@ -1,6 +1,7 @@
 import type { Island } from "../terrain/island";
 import { generateIsland } from "../gpu/terrain/island";
 import { sceneryGpu } from "../gpu/terrain/scenery";
+import { windowOf, type Planet } from "../gpu/globe/window";
 import type { Pools } from "./pools";
 import { lay, type Lay, type Terrain } from "../terrain/land";
 import { FLORA, SIZE, SPECIES, TILES, TILE_M, driftAt, rockAt, waterAt, type Fine, type Scatter } from "../terrain/flora";
@@ -492,23 +493,43 @@ export function perWorld<T>(make: () => T): (w: World) => T {
 export type Ground = { land: Lay; isle: Island; fine: Fine; flora: Scatter; dry: Uint8Array; shore?: { px: number; py: number }[] }; // dry: 1 per tile with dry ground in it
 const grounds = new Map<number, Ground>(), making = new Map<number, Promise<Ground>>();
 let lastSeed = NaN, last: Ground | null = null;
+// The 3 m ground and its objects on an island's fields, and the tiles with dry ground.
+async function groundFrom(gpu: Gpu, isle: Island, seed: number): Promise<Ground> {
+  const { fine, flora } = await sceneryGpu(gpu, isle, seed), dry = new Uint8Array(W * H);
+  for (let t = 0; t < W * H; t++)
+    for (let k = 0; k < 36 && !dry[t]; k++) {
+      const x = (t % W) + ((k % 6) + 0.5) / 6, y = Math.floor(t / W) + (Math.floor(k / 6) + 0.5) / 6;
+      if (waterAt(isle, fine, x * TILE_M - SIZE / 2, y * TILE_M - SIZE / 2) <= 0.5) dry[t] = 1;
+    }
+  return { land: lay(isle), isle, fine, flora, dry };
+}
 export function islandOf(seed: number): Promise<Ground> {
   let p = making.get(seed);
   if (!p) {
     p = (async () => {
-      const gpu = await theGpu(), isle = await generateIsland(rng(seed), gpu), { fine, flora } = await sceneryGpu(gpu, isle, seed), dry = new Uint8Array(W * H);
-      for (let t = 0; t < W * H; t++)
-        for (let k = 0; k < 36 && !dry[t]; k++) {
-          const x = (t % W) + ((k % 6) + 0.5) / 6, y = Math.floor(t / W) + (Math.floor(k / 6) + 0.5) / 6;
-          if (waterAt(isle, fine, x * TILE_M - SIZE / 2, y * TILE_M - SIZE / 2) <= 0.5) dry[t] = 1;
-        }
-      const g: Ground = { land: lay(isle), isle, fine, flora, dry };
+      const gpu = await theGpu(), g = await groundFrom(gpu, await generateIsland(rng(seed), gpu), seed);
       grounds.set(seed, g);
       return g;
     })();
     making.set(seed, p);
     p.catch(() => making.delete(seed));
   }
+  return p;
+}
+// The ground of a window of the planet at a place (gpu/globe/window.ts windowOf) in place of the island, under the seed's number
+// so that groundOf(seed) reads it as it reads an island; a seed holds one ground. The sim's sky and weather stay the island's
+// (sky.ts at 55.1 degrees north, terrain/climate.ts SEASONS): the window's own sky is window.sky [gap: plan Unit 8's world
+// that stores its place].
+export function windowIslandOf(seed: number, latDeg: number, lonDeg: number, planet: Planet): Promise<Ground> {
+  if (making.has(seed) || grounds.has(seed)) throw new Error(`a ground of seed ${seed} is already made`);
+  const p = (async () => {
+    const gpu = await theGpu(), w = await windowOf(gpu, planet, latDeg, lonDeg);
+    const g = await groundFrom(gpu, w.isle, seed);
+    grounds.set(seed, g);
+    return g;
+  })();
+  making.set(seed, p);
+  p.catch(() => making.delete(seed));
   return p;
 }
 export function groundOf(seed: number): Ground {

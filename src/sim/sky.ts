@@ -51,9 +51,9 @@ export function daylight(day: number) {
 
 // dir: toward it across the ground (x east, z south), el: its elevation in radians, tan: of the angle its beam makes
 type Body = { dir: [number, number]; el: number; tan: number };
-function bodyAt(H: number, dec: number): Body {
-  const e = -Math.cos(dec) * Math.sin(H), n = Math.cos(LAT) * Math.sin(dec) - Math.sin(LAT) * Math.cos(dec) * Math.cos(H);
-  const u = Math.sin(LAT) * Math.sin(dec) + Math.cos(LAT) * Math.cos(dec) * Math.cos(H), h = Math.hypot(e, n);
+function bodyAt(H: number, dec: number, lat = LAT): Body {
+  const e = -Math.cos(dec) * Math.sin(H), n = Math.cos(lat) * Math.sin(dec) - Math.sin(lat) * Math.cos(dec) * Math.cos(H);
+  const u = Math.sin(lat) * Math.sin(dec) + Math.cos(lat) * Math.cos(dec) * Math.cos(H), h = Math.hypot(e, n);
   return { dir: [e / h, -n / h], el: Math.asin(Math.max(-1, Math.min(1, u))), tan: u / h };
 }
 // day counts from 1, as the clock's does
@@ -61,6 +61,26 @@ export const sunAt = (day: number, hour: number): Body => bodyAt(hourAngle(hour,
 export function moonAt(day: number, hour: number): Body & { phase: number; lit: number } {
   const phase = ((day - 1 + hour / 24) / LUNAR + 0.35) % 1, w = 2 * Math.PI * phase;
   return { ...bodyAt(hourAngle(hour, NOON + phase * 24), declination(day, hour) * Math.cos(w)), phase, lit: (1 - Math.cos(w)) / 2 };
+}
+// The same sky over a ground at another latitude (degrees, south negative): a window of the planet (gpu/globe/window.ts). The
+// world's own sky above is the island's at 55.1 degrees north; the tilt, the year and the clock are the same [gap: Earth's tilt,
+// 23.44 degrees, where the planet's is 23.4].
+export type Sky = { latDeg: number; sunAt: typeof sunAt; moonAt: typeof moonAt; daylight: typeof daylight };
+export function skyAt(latDeg: number): Sky {
+  const lat = latDeg * DEG, memo = new Map<number, number>();
+  return {
+    latDeg,
+    sunAt: (day, hour) => bodyAt(hourAngle(hour, NOON), declination(day, hour), lat),
+    moonAt: (day, hour) => {
+      const phase = ((day - 1 + hour / 24) / LUNAR + 0.35) % 1, w = 2 * Math.PI * phase;
+      return { ...bodyAt(hourAngle(hour, NOON + phase * 24), declination(day, hour) * Math.cos(w), lat), phase, lit: (1 - Math.cos(w)) / 2 };
+    },
+    daylight: (day) => {
+      let h = memo.get(day);
+      if (h === undefined) memo.set(day, (h = (Math.acos(Math.max(-1, Math.min(1, -Math.tan(lat) * Math.tan(declination(day, NOON))))) * 24) / Math.PI));
+      return h;
+    },
+  };
 }
 
 // The light a body leaves on bare ground under a clear sky at an elevation, as the US Naval Observatory reckons it (Circular

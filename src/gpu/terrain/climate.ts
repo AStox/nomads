@@ -14,7 +14,7 @@ import {
   DAY_KEEPS, DAY_SPREAD, DIRS, FOG, FOG_Z, IN_CLOUD, POOL_C, ROSE, SEASONS, SEASON_DAYS, SNOW_HALF, SNOW_SPREAD, STEP,
   esat, meanWay, midSeason, mulberry, turned,
 } from "../../terrain/climate";
-import { sunAt } from "../../sim/sky";
+import { skyAt } from "../../sim/sky";
 import type { Gpu } from "../device";
 import { cover, pipeline, readback, storage } from "../kernel";
 import {
@@ -27,6 +27,17 @@ const NS = SEASONS.length;
 // as Q16 a day, over ten years in 32 bits).
 const MOST_HEIGHT_M = 32000, MOST_RAIN_MM = 3000;
 
+// What the stage takes of a place: each season's air at sea level (t), the sea's warmth (sea), the air's water against
+// saturation (humid0) and the sun's beam and the sky's glow through the season's cloud against a clear sky's; the latitude
+// the sun is reckoned at (degrees north); the wind rose's shape (shares from north clockwise), which the prevailing wind's
+// angle turns; and how many bits the snow years' sums of rain are shifted down by, so that a wetter place than the island
+// fits their words. The island's are Bornholm's (terrain/climate.ts SEASONS, ROSE; sky.ts's 55.1 degrees).
+export type ClimatePlace = {
+  seasons: readonly { t: number; sea: number; humid0: number; beam: number; glow: number }[];
+  latDeg: number; rose: readonly number[]; snowShift: number;
+};
+export const ISLAND_PLACE: ClimatePlace = { seasons: SEASONS, latDeg: 55.1, rose: ROSE, snowShift: 0 };
+
 export type ClimateRestInput = {
   // the ground as the generator's height field has it (the sea's depth negative), N x N
   height: Float32Array;
@@ -36,6 +47,7 @@ export type ClimateRestInput = {
   precip: Float32Array[];
   // the way the prevailing wind blows, in radians: the generator's one random draw for the climate, times 2 pi
   angle: number;
+  place?: ClimatePlace;
 };
 export type ClimateRest = {
   wind: [number, number];
@@ -88,12 +100,12 @@ function anomalies() {
 
 // Season si's middle day through the hours a quarter at a time: the header
 // and one eight-word row for each hour the sun stands up, scaled as the kernel reads them (wgsl sunWgsl).
-function sunRows(si: number) {
-  const S0 = 1361, DT = 900, { beam: tb, glow: tg } = SEASONS[si], MJ = DT / 1e6;
+function sunRows(si: number, place: ClimatePlace) {
+  const S0 = 1361, DT = 900, { beam: tb, glow: tg } = place.seasons[si], MJ = DT / 1e6, sky = skyAt(place.latDeg);
   const rows: number[][] = [];
   let glow = 0, levelBeam = 0;
   for (let hour = 0; hour < 24; hour += DT / 3600) {
-    const b = sunAt(midSeason(si), hour), sinEl = Math.sin(b.el);
+    const b = sky.sunAt(midSeason(si), hour), sinEl = Math.sin(b.el);
     if (sinEl <= 0.005) continue;
     const am = 1 / (sinEl + 0.50572 * (b.el / (Math.PI / 180) + 6.07995) ** -1.6364), bn = S0 * 0.7 ** (am ** 0.678), cosEl = Math.cos(b.el);
     const kf = (((Math.atan2(b.dir[1], b.dir[0]) / (Math.PI * 2)) * DIRS) % DIRS + DIRS) % DIRS, k0 = Math.floor(kf);
@@ -108,7 +120,7 @@ function sunRows(si: number) {
 }
 
 type Tables = { tab: Int32Array; flatYear: number; coldest: number; warmest: number };
-function tables(): Tables {
+function tables(place: ClimatePlace): Tables {
   const tab = new Int32Array(TAB_WORDS), at = (name: string, i: number, v: number) => { tab[TABO[name] + i] = v; };
   const cs = Array.from({ length: DIRS }, (_, k) => [Math.cos((k / DIRS) * Math.PI * 2), Math.sin((k / DIRS) * Math.PI * 2)]);
   cs.forEach(([c, s], k) => {
@@ -121,8 +133,8 @@ function tables(): Tables {
   let flatYear = 0;
   const days = [0, 0, 0, 0], warm = SNOW_SPREAD.map((s) => SNOW_HALF + 7.6 * s);
   for (let d = 0; d < 365; d++) days[Math.min(3, Math.floor(d / SEASON_DAYS))]++;
-  SEASONS.forEach(({ t, sea, humid0, beam, glow }, si) => {
-    const sun = sunRows(si), row = (n: number) => TABO.seas + si * 16 + n;
+  place.seasons.forEach(({ t, sea, humid0, beam, glow }, si) => {
+    const sun = sunRows(si, place), row = (n: number) => TABO.seas + si * 16 + n;
     tab[row(SEAS.t)] = rq16(t); tab[row(SEAS.sea)] = rq16(sea); tab[row(SEAS.e0)] = rq16(humid0 * esat(t)); tab[row(SEAS.poolc)] = rq24(POOL_C[si]);
     tab[row(SEAS.flat)] = rq24(sun.flat); tab[row(SEAS.warm)] = rq16(warm[si]); tab[row(SEAS.inv)] = rq24(1 / SNOW_SPREAD[si]); tab[row(SEAS.days)] = days[si];
     tab[row(SEAS.tb)] = rq16(beam); tab[row(SEAS.tg)] = rq16(glow);
@@ -144,8 +156,18 @@ function tables(): Tables {
   FOG.forEach((row, si) => row.forEach((v, n) => at("fogrows", si * FOG_Z.length + n, rq24(v))));
   return { tab, flatYear: rq16(flatYear), coldest: rq16(coldest), warmest: rq16(Math.max(...warm)) };
 }
-let built: Tables | null = null;
-const theTables = () => (built ??= tables());
+// The tables and the kernels' sources of each place, made once each (the island's is the one place the game has had).
+const built = new Map<ClimatePlace, { t: Tables; s: Sources }>();
+function placed(place: ClimatePlace) {
+  let b = built.get(place);
+  if (!b) {
+    const t = tables(place), { flatYear, coldest, warmest } = t;
+    b = { t, s: { prep: prepWgsl(), air: airWgsl(), shape: shapeWgsl(), sun: sunWgsl(), warm: warmWgsl(), snow: snowWgsl({ coldest, warmest }, place.snowShift), pet: petWgsl(flatYear) } };
+    built.set(place, b);
+  }
+  return b;
+}
+const theTables = () => placed(ISLAND_PLACE).t;
 
 // How far, in units of the last place of a word, the closest of the tables' exact values lies from a rounding tie: an
 // engine whose Math.exp, cos, tanh or log is off by a unit in the last place of a double rounds the same words while
@@ -193,11 +215,6 @@ function schedule() {
 }
 
 type Sources = Record<"prep" | "air" | "shape" | "sun" | "warm" | "snow" | "pet", string>;
-const sources = (): Sources => {
-  const { flatYear, coldest, warmest } = theTables();
-  return { prep: prepWgsl(), air: airWgsl(), shape: shapeWgsl(), sun: sunWgsl(), warm: warmWgsl(), snow: snowWgsl({ coldest, warmest }), pet: petWgsl(flatYear) };
-};
-let code: Sources | null = null;
 
 // ---------- the run ----------
 export type Arena = { words: GPUBuffer; destroy: () => void };
@@ -205,7 +222,7 @@ export type Arena = { words: GPUBuffer; destroy: () => void };
 // Runs every kernel, in one submission, and leaves the arena (the sections of SECTIONS) in a buffer for the function
 // below.
 export function runClimate(g: Gpu, input: ClimateRestInput): Arena {
-  const { height, open, precip, angle } = input;
+  const { height, open, precip, angle } = input, place = input.place ?? ISLAND_PLACE;
   if (height.length !== LEN || open.length !== LEN || precip.length !== NS || precip.some((p) => p.length !== LEN)) throw new Error("climateRestGpu: inputs of the wrong size");
   let tallest = 0, wettest = 0;
   for (let i = 0; i < LEN; i++) {
@@ -213,10 +230,10 @@ export function runClimate(g: Gpu, input: ClimateRestInput): Arena {
     wettest = Math.max(wettest, precip[0][i] + precip[1][i] + precip[2][i] + precip[3][i]);
   }
   if (tallest > MOST_HEIGHT_M) throw new Error(`climateRestGpu: a height of ${tallest} m is past what the words hold`);
-  if (wettest > MOST_RAIN_MM) throw new Error(`climateRestGpu: a year's rain of ${wettest} mm is past what the snow years' words hold`);
-  const src = (code ??= sources()), sched = schedule();
-  const rose = turned(ROSE, angle - meanWay(ROSE));
-  const tab = theTables().tab.slice();
+  if (wettest > MOST_RAIN_MM * 2 ** place.snowShift) throw new Error(`climateRestGpu: a year's rain of ${wettest} mm is past what the snow years' words hold`);
+  const { t: tabs, s: src } = placed(place), sched = schedule();
+  const rose = turned(place.rose as number[], angle - meanWay(place.rose as number[]));
+  const tab = tabs.tab.slice();
   rose.forEach((share, k) => { tab[TABO.dirs + 4 * k + 2] = Math.round(share * 2 ** 32) | 0; });
   tab.set(sched.sched, TABO.sched);
   tab.set(sched.list, TABO.lst);

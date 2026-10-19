@@ -28,7 +28,7 @@ const NS = SEASONS.length;
 // Words of the parameter buffer: a season's eight, a direction's two, the wet rose's share of each (season, direction).
 export const SEASON_AT = 0, DIR_AT = NS * 8, SHARE_AT = DIR_AT + 2 * DIRS, PAR_WORDS = SHARE_AT + BATCH;
 // Tallest total height the transforms' words hold: the coarse cells' sum of heights in m.
-const MOST_TOTAL_M = 2e6;
+export const MOST_TOTAL_M = 2e6;
 
 const Q = (x: number, n: number) => Math.round(x * 2 ** n);
 
@@ -90,12 +90,18 @@ export function tableMargin(): number {
   return least;
 }
 
+// What the rain stage reads of each season: the air's sea-level warmth (C), the season's background rain (mm over it), the share
+// of its hours that rain, the moist layer's wind and humidity in them, and the wet rose (DIRS shares). The island's are
+// Bornholm's (SEASONS and P_BG) with one rose; a window's come from the planet (gpu/globe/window.ts).
+export type RainSeason = { t: number; mm: number; rains: number; rainWind: number; rainHumid: number; rose: number[] };
+export const islandRain = (wetRose: number[]): RainSeason[] => SEASONS.map(({ t, wet, rains, rainWind, rainHumid }) => ({ t, mm: P_BG * wet, rains, rainWind, rainHumid, rose: wetRose }));
+
 // The parameter words (layout in wgsl/terrain-rain.ts rainTransfer): from each season's constants, the seasons' cloud
-// delays and the wet rose.
-export function rainParams(wetRose: number[], delays: Delays[] = ISLAND_DELAYS): Int32Array {
+// delays and the wet roses.
+export function rainParams(wetRose: number[], delays: Delays[] = ISLAND_DELAYS, seasons: RainSeason[] = islandRain(wetRose)): Int32Array {
   const par = new Int32Array(PAR_WORDS), dk = (2 * Math.PI) / (M * COARSE * CELL);
-  SEASONS.forEach(({ t, wet, rains, rainWind, rainHumid }, si) => {
-    const hours = SEASON_DAYS * 24 * rains, bg = (P_BG * wet) / hours;
+  seasons.forEach(({ t, mm, rains, rainWind, rainHumid, rose }, si) => {
+    const hours = SEASON_DAYS * 24 * rains, bg = mm / hours;
     const Cw = ((rainHumid * esat(t) * 1000) / (R_V * (t + 273.15))) * GAMMA_RATIO;
     par.set([
       Q(Cw * 3600 * rainWind * dk, 26), // B: C_w in mm an hour for each m, times sigma / q
@@ -105,7 +111,7 @@ export function rainParams(wetRose: number[], delays: Delays[] = ISLAND_DELAYS):
       Q(rainWind * dk * delays[si].tauF, 26),
       Q(bg, 24),
     ], SEASON_AT + si * 8);
-    for (let d = 0; d < DIRS; d++) par[SHARE_AT + si * DIRS + d] = wetRose[d] > 0 ? Q(wetRose[d] * hours, 20) : 0;
+    for (let d = 0; d < DIRS; d++) par[SHARE_AT + si * DIRS + d] = rose[d] > 0 ? Q(rose[d] * hours, 20) : 0;
   });
   par.set(windTable(), DIR_AT);
   return par;
@@ -116,7 +122,7 @@ const kernels = { coarse: rainCoarse(), rows: rainRows(), cols: rainCols(), tran
 // The rain of each season, mm over the season, by cell, with the seasons' cloud delays (the paper's are 1000 s all year:
 // pass those to compare). Throws where the heights' total passes
 // what the transforms' words hold (2e6 m of coarse height, a mean of 490 m over the island).
-export async function rainGpu(g: Gpu, z: Float32Array, wetRose: number[], delays: Delays[] = ISLAND_DELAYS): Promise<Float32Array[]> {
+export async function rainGpu(g: Gpu, z: Float32Array, wetRose: number[], delays: Delays[] = ISLAND_DELAYS, seasons?: RainSeason[]): Promise<Float32Array[]> {
   if (z.length !== N * N) throw new Error(`rainGpu: ${z.length} heights, wanted ${N * N}`);
   if (wetRose.length !== DIRS) throw new Error(`rainGpu: ${wetRose.length} directions in the wet rose, wanted ${DIRS}`);
   const zq = new Int32Array(z.length);
@@ -124,7 +130,7 @@ export async function rainGpu(g: Gpu, z: Float32Array, wetRose: number[], delays
   for (let i = 0; i < z.length; i++) { zq[i] = Math.round(z[i] * 65536); total += Math.abs(zq[i]); }
   if (total / 65536 / (COARSE * COARSE) > MOST_TOTAL_M) throw new Error("rainGpu: the heights' total passes the transforms' range");
 
-  const zB = storage(g, zq), twB = storage(g, twiddles()), parB = storage(g, rainParams(wetRose, delays));
+  const zB = storage(g, zq), twB = storage(g, twiddles()), parB = storage(g, rainParams(wetRose, delays, seasons));
   const hc = storage(g, NC * NC * 4), r = storage(g, NC * M * 8), hh = storage(g, M * M * 8);
   const s = storage(g, BATCH * M * M * 8), a = storage(g, BATCH * NC * M * 8), p = storage(g, BATCH * NC * NC * 4);
   const out = storage(g, NS * N * N * 4);
