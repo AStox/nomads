@@ -1,19 +1,22 @@
 // The globe's atmosphere (plan Unit 4, with the minimum of Unit 5): from a height field on the sphere grid, a sea level and the
 // planet's radius, tilt, rotation and solar constant, the four seasons' insolation, near-surface temperature, prevailing
-// surface wind, sea-surface temperature, sea ice, precipitation (rain and snow), evaporation and runoff. The laws, the sources
-// and every place the planet's smallness changes an answer: docs/research/globe/2026-10-19-atmosphere-impl.md (laws chosen in
-// docs/research/globe/2026-10-19-atmosphere.md and 2026-10-19-ocean.md). Kernels: wgsl/globe-atmosphere.ts. References R1530
-// to R1559 are this file's; R1430 to R1459 are the research notes'.
+// surface wind, sea-surface temperature, sea ice, precipitation (rain and snow), evaporation, runoff and the soil's storage. The
+// laws, the sources and every place the planet's smallness changes an answer: docs/research/globe/2026-10-19-atmosphere-impl.md
+// (laws chosen in docs/research/globe/2026-10-19-atmosphere.md and 2026-10-19-ocean.md). Kernels: wgsl/globe-atmosphere.ts.
+// References R1530 to R1559 are this file's and R1600 to R1629 those of its fixes (the rain, the poles, the land's evaporation);
+// R1430 to R1459 are the research notes'.
 //
 // What is a cited law and what a [design] simplification, in one place:
-// - cited law: the daily-mean insolation (R1438), the Budyko-Sellers energy balance with North et al.'s constants, ice line
-//   and heat capacities (R1437), Tetens' saturation vapour pressure (R221) which gives Clausius-Clapeyron's 7% a kelvin
-//   (R1436), the lapse rate (R494), the Held-Hou equal-area edge of the Hadley cell (R1433), the surface torque balance
-//   (R1431), the Ekman turning of the surface wind (R1451's relation, used in the air), the rain stage's cloud delays (R1320 to
-//   R1323) and Stefan's ice law (R1411).
-// - [design]: the zonal-mean circulation's wind profile (lobes), the eddy diffusivity's scaling with the radius, the
-//   column's budget scheme and the upwind advection of vapour, cloud and temperature, the land's bucket (none stored), the
-//   terrain's blocking, the sea's coast by the air's adjustment length, and every number tagged so below.
+// - cited law: the daily-mean insolation (R1438), the Budyko-Sellers energy balance with North et al.'s constants, observed
+//   co-albedo, ice line and heat capacities (R1437), the radius scaling of the transport (Kaspi and Showman's figure, R1606),
+//   Tetens' saturation vapour pressure (R221) which gives Clausius-Clapeyron's 7% a kelvin (R1436), the lapse rate (R494), the
+//   Held-Hou equal-area edge of the Hadley cell (R1433), the surface torque balance (R1431), the Ekman turning of the surface
+//   wind (R1451's relation, used in the air), the rain stage's cloud delays (R1320 to R1323), the simplified Betts-Miller
+//   adjustment (R1600), Priestley and Taylor's evaporation with FAO-56's net radiation (R1602, R1603), Manabe's soil bucket
+//   (R1604), the temperature-dependent ice albedo (R1605) and Stefan's ice law (R1411).
+// - [design]: the zonal-mean circulation's wind profile (lobes), the column's budget scheme and the upwind advection of vapour,
+//   cloud and temperature, the terrain's blocking, the sea's coast by the air's adjustment length, the albedo step's
+//   interpolation in latitude, the bucket's solution by rounds, and every number tagged so below.
 // - Smith and Barstad's transfer is NOT used: its tangent-plane windows would need 64 x 64 cells of 12 km with a halo from
 //   neighbouring faces, and its validity (hills over 20 km) is two cells here; the moisture budget the research note
 //   recommends in its place runs on the sphere grid directly (see the impl note, sec. 6).
@@ -58,12 +61,32 @@ export const SEASONS = ["spring", "summer", "autumn", "winter"] as const;
 const EARTH_R = 6.371e6, EARTH_OMEGA = 7.292e-5;
 
 // North, Cahalan and Coakley (R1437): A 203.3 W/m2 and B 2.09 W/m2/K of the outgoing radiation A + B T (T in C), D 0.649
-// W/m2/K the diffusion fitted to the observed second mode, the co-albedos 0.70 (ice free) and 0.38 (ice covered), the ice
-// line at the -10 C isotherm, heat capacities per area 0.16 B years (land) and 4.7 B years (a 75 m mixed layer) [cited].
+// W/m2/K the diffusion fitted to the observed second mode, the co-albedos 0.70 (ice free) and 0.38 (ice covered) of the zero
+// dimensional models, the ice line at the -10 C isotherm, heat capacities per area 0.16 B years (land) and 4.7 B years (a 75 m
+// mixed layer) [cited]. CO_FREE less CO_ICE, 0.32, is the change of the co-albedo where the surface turns to ice at low latitudes.
 export const EBM = { A: 203.3, B: 2.09, D_EARTH: 0.649, CO_FREE: 0.7, CO_ICE: 0.38, ICE_LINE: -10, CL_YR: 0.16, CW_YR: 4.7 };
 // The ice line in the local balance is a ramp 4 K wide, so that a column marched in time does not flip between two albedos
 // each step [design: numerical smoothing of the cited step].
 export const ICE_RAMP = 4;
+// The co-albedo's latitude dependence and the ice-albedo feedback (R1605). R1437 gives Earth's observed annual zonal co-albedo
+// as a(x) = 0.681 - 0.202 P2(x), x = sin(latitude) (eq. 18), which with D 0.649 and the observed second mode of the temperature
+// (T0 14.97 C, T2 -28.0 C) closes the budget (H2 -0.500: reproduced by the test); the change of the co-albedo where the
+// surface turns to ice is large at low latitudes and small at high ones because the ice-free surface's reflectivity rises with
+// the zenith angle (Lian and Cess 1977 as R1437 describes it): 0.32 where the sun is high (Budyko's 0.62 and 0.32 albedos
+// give 0.30 and North's 0.70 and 0.38 co-albedos 0.32) and 0.15 at the ice line (Coakley 1979, as R1437 quotes it), which
+// is at x_s 0.95 now (R1437 sec. 2) [cited]; the step falls linearly in x between them [design]. The ice-free co-albedo
+// a_f(x) is the observed one with the ice that the observed temperature carries taken out, so that Earth's own observed
+// temperature gives back its observed co-albedo (Sellers' use of Lian and Cess: the surface term is fitted to Earth, the
+// feedback is what the planet's own temperature does with it) [derived].
+export const ALBEDO = { A0: 0.681, A2: -0.202, STEP_ICE: 0.15, X_ICE: 0.95, T0: 14.97, T2: -28.0 };
+// The eddy diffusivity on a smaller planet (R1606). North's D is a transport (W/m2/K) whose second mode obeys T2 = H2 / (B + 6 D)
+// (R1437); Kaspi and Showman (2015, R1432) find the equator-to-pole surface temperature difference of a rocky planet of Earth's
+// density and rotation to rise as a power of the radius: read off their figure 20b, 22.5, 28.0, 33.0, 39.3, 46.0, 49.2 K at
+// 1,000, 2,000, 3,000, 5,000, 8,000 and 10,000 km, which is 22.5 K (a / 1,000 km)^0.34 to within 1 K, and 42.7 K at Earth's
+// radius [cited from a figure: UNVERIFIED digitization]. The planet's contrast over Earth's is then (a / a_Earth)^0.34, and
+// as T2 is the contrast's measure D follows from (B + 6 D) = (B + 6 D_Earth) / ratio [derived: the second mode's relation;
+// their planets' gravity changes with the radius, ours does not: a gap]. 1.13 W/m2/K at 2,000 km.
+export const D_RADIUS_EXPONENT = 0.34;
 // Moist-adiabatic lifting and the environment's lapse rate are both the standard atmosphere's (R494; climate.ts LAPSE) [cited;
 // the two differ by under 1 K/km, atmosphere note sec. 2, and one value stands for both: design].
 export const GAMMA = LAPSE;
@@ -81,6 +104,38 @@ export const FIRST_SHARE = 0.6;
 // 2003 named and not read in the atmosphere note]; the evaporation rate of a cell is C_E |U| (q_sat - q) / H_w for a column
 // of saturation q_sat and water q, so C_E / H_w per m of wind. The least wind the exchange sees is 2 m/s [design: gustiness].
 export const C_EVAP = 1.2e-3, GUST = 2;
+// The bulk law reads the mean of the wind's speed, not the speed of its mean: the evaporation takes the zonal table's scalar
+// wind (the speed the surface stress is made of), where the advection takes the prevailing wind, the vector mean (R1601)
+// [derived: a mean of a speed exceeds the speed of the mean by the scatter, 1.9 times in the westerlies of this planet].
+// The layer's convective adjustment (R1600): vapour above the share RH_REF of saturation relaxes to it with the time scale
+// TAU_SBM and falls out at once, the simplified Betts-Miller scheme [cited: Betts and Miller 1986, QJRMS 112: 693 (named, not
+// read); Frierson 2007, J. Atmos. Sci. 64: 1959, read secs. 2 and 3: the reference relative humidity 0.7 and the time scale
+// 2 h of its control run, and its finding that the large-scale condensation alone (saturation only) leaves much of the tropics
+// and subtropics without rain; Kaspi and Showman 2015 use the same two numbers]. It acts at any temperature: the lifting
+// condition of a convective parcel is not modelled (the layer is one box) [gap]. The saturation condensation stays, with the
+// rain stage's delays (Smith and Barstad's orographic rain, R1320 to R1323).
+export const RH_REF = 0.7, TAU_SBM = 7200;
+// The land's potential evaporation, Priestley and Taylor (1972, Mon. Wea. Rev. 100: 81, R1602): E = alpha Delta / (Delta +
+// gamma) Rn / lambda, alpha 1.26 of a wet surface (the value as FAO and the later papers quote it: the paper was not read),
+// Delta = 4098 e_s / (T + 237.3)^2 kPa/K the slope of Tetens' curve (FAO-56 eq. 13), gamma = 0.665e-3 P = 0.0674 kPa/K at
+// 101.3 kPa (eq. 8) and lambda 2.45 MJ/kg [cited: FAO-56, R221]. The net radiation Rn is FAO-56's (R1603): Rs = (0.25 + 0.5 n/N)
+// Ra (eq. 35, Angstrom's), absorbed with the reference grass's albedo 0.23 (eq. 38), less the net long wave loss sigma T^4
+// (0.34 - 0.14 sqrt(e_a)) (1.35 Rs / Rso - 0.35) (eq. 39) with the clear-sky Rso = 0.75 Ra (eq. 37); Ra is the day's mean
+// insolation of the cell. The air's vapour pressure e_a is RH_REF of saturation (the adjustment holds the air there)
+// [derived], and the share of the day's sun n/N is 0.58, which makes Rs 0.54 of Ra as Earth's global mean surface downward
+// shortwave is of the insolation (184 of 341 W/m2, Trenberth et al. 2009, recalled: [analogue, UNVERIFIED]); no cloud field.
+export const PT = { ALPHA: 1.26, GAMMA: 0.665e-3 * 101.3, LAMBDA: 2.45e6 };
+export const NETRAD = { AS: 0.25, BS: 0.5, SUNSHINE: 0.58, ALBEDO: 0.23, SIGMA: 5.670374e-8, CLEAR: 0.75 };
+// Soil water limits it by Manabe's (1969, Mon. Wea. Rev. 97: 739) bucket (R1604): a single layer holding at most a field
+// capacity of 0.15 m, filled by the rain (and the snow, the snowmelt being at once: no snowpack), emptied by evaporation at
+// the potential rate times the efficiency beta = W / (0.75 W_c) when under three quarters full and 1 above, the rest running
+// off [cited: the GFDL and CSU models' documentation in the AMIP record, 0.15 m, 75 percent and the overflow; the paper not
+// read]. A season marched for 32 days is no place to fill or empty a 150 mm store, so the bucket is solved on the host over
+// the year (daily steps through the four seasons' mean rain and potential evaporation, to the periodic state), its efficiency
+// of each season is handed to the kernel as a field, and the marches are repeated (SOIL_ROUNDS) with the rain of the last
+// as the next bucket's: the first march has dry soil. The store is the only memory between seasons, so summer evaporation
+// can come from winter's rain. Where the air is dry and rains nothing a dry soil evaporates nothing (a desert stays one).
+export const SOIL = { CAPACITY: 150, CRITICAL: 0.75, ROUNDS: 3, SUBSTEPS: 92 };
 // The air above a surface adjusts to it in rho c_p H / h seconds, H 1 km of the lowest layer, h 15 W/m2/K of exchange, rho 1.2
 // and c_p 1005 [INFERENCE: the ocean note sec. "A minimal law", h, H and the form are not from a source read]: 0.93 days, so an
 // e-fold length of U times that, 560 km at 7 m/s. Not fitted to the validation facts.
@@ -139,23 +194,39 @@ export interface Ebm {
   balance: number; // the year's mean net flux into the surface columns, W/m2 (zero at the periodic state)
   drift: number; // the largest change of any column over the last year, K
 }
-const coAlbedo = (t: number) => EBM.CO_FREE - (EBM.CO_FREE - EBM.CO_ICE) * Math.min(1, Math.max(0, (EBM.ICE_LINE + ICE_RAMP / 2 - t) / ICE_RAMP));
+const P2 = (x: number) => 0.5 * (3 * x * x - 1);
+// The share of a surface that is ice at temperature t: the ice line's ramp.
+export const iceShare = (t: number) => Math.min(1, Math.max(0, (EBM.ICE_LINE + ICE_RAMP / 2 - t) / ICE_RAMP));
+// The fall of the co-albedo where a surface at x = sin(latitude) turns to ice: 0.32 at the equator to 0.15 at the ice line.
+export const albedoStep = (x: number) => {
+  const s = Math.min(1, Math.abs(x) / ALBEDO.X_ICE);
+  return (EBM.CO_FREE - EBM.CO_ICE) * (1 - s) + ALBEDO.STEP_ICE * s;
+};
+// Earth's observed annual zonal co-albedo (R1437 eq. 18), the ice-free co-albedo that goes with it, and the co-albedo of a
+// surface at temperature t (R1605, see ALBEDO).
+export const observedCoAlbedo = (x: number) => ALBEDO.A0 + ALBEDO.A2 * P2(x);
+export const iceFreeCoAlbedo = (x: number) => observedCoAlbedo(x) + albedoStep(x) * iceShare(ALBEDO.T0 + ALBEDO.T2 * P2(x));
+export const coAlbedo = (x: number, t: number) => iceFreeCoAlbedo(x) - albedoStep(x) * iceShare(t);
+// The diffusion of a planet of this radius (R1606, see D_RADIUS_EXPONENT).
+export const diffusionFor = (radius: number) => ((EBM.B + 6 * EBM.D_EARTH) / (radius / EARTH_R) ** D_RADIUS_EXPONENT - EBM.B) / 6;
 
 // Budyko-Sellers' balance on latitude bands, with a land and an ocean column in each (the zonal mean's land fraction), one
 // atmosphere between them: C dT/dt = Q (1 - alpha) - (A + B T) + H, H = D d/dx[(1 - x^2) dT/dx] the transport by the zonal-mean air
 // temperature, x = sin phi, the same H on both columns (R1437; two columns after North and Coakley 1979, analogue, not read).
-// The diffusion is Earth's D scaled by (Earth's radius / the planet's), i.e. an eddy diffusivity proportional to the radius:
-// 2.07 W/m2/K at 2,000 km [design, a gap: the research note's range runs from 0.65 to 6.6 and the one cited run suggests
-// under two-fold less contrast on a smaller planet]. Backward Euler in time (the sum of a column's response and the diffusion is
-// stiff), 96 steps a year, 200 years to the periodic state (the ice line's ramp makes the approach slow in places: the drift over
-// the last year is returned); the diffusion is solved implicitly with the columns eliminated.
-export function solveEbm(p: PlanetParams, landFraction: ArrayLike<number>, years = 200): Ebm {
+// The co-albedo is the latitude-dependent, temperature-dependent law above; `feedback` false holds it at its ice-free value
+// (the test of the feedback's sign). The diffusion is diffusionFor(radius) unless the planet gives one. Backward Euler in time
+// (the sum of a column's response and the diffusion is stiff), 96 steps a year, 200 years to the periodic state (the ice
+// line's ramp makes the approach slow in places: the drift over the last year is returned); the diffusion is solved implicitly
+// with the columns eliminated.
+export function solveEbm(p: PlanetParams, landFraction: ArrayLike<number>, years = 200, feedback = true): Ebm {
   const NB = BANDS, steps = 96, dt = YEAR_S / steps;
-  const D = p.diffusion ?? (EBM.D_EARTH * EARTH_R) / p.radius;
+  const D = p.diffusion ?? diffusionFor(p.radius);
   const CL = EBM.CL_YR * EBM.B * YEAR_S, CW = EBM.CW_YR * EBM.B * YEAR_S;
   const phi = new Float64Array(NB), sinC = new Float64Array(NB), sinE = new Float64Array(NB + 1), dx = new Float64Array(NB), w = new Float64Array(NB), fl = new Float64Array(NB);
   for (let k = 0; k <= NB; k++) sinE[k] = Math.sin((-90 + k) * DEG);
   for (let k = 0; k < NB; k++) { phi[k] = (-89.5 + k) * DEG; sinC[k] = Math.sin(phi[k]); dx[k] = sinE[k + 1] - sinE[k]; w[k] = dx[k] / 2; fl[k] = landFraction[k]; }
+  const aFree = new Float64Array(NB), aStep = new Float64Array(NB);
+  for (let k = 0; k < NB; k++) { aFree[k] = iceFreeCoAlbedo(sinC[k]); aStep[k] = feedback ? albedoStep(sinC[k]) : 0; }
   // c[k]: the conductance across the edge between band k - 1 and k: (1 - x^2) at the edge over the distance in x between centres
   const c = new Float64Array(NB + 1);
   for (let k = 1; k < NB; k++) c[k] = (1 - sinE[k] * sinE[k]) / (sinC[k] - sinC[k - 1]);
@@ -178,7 +249,7 @@ export function solveEbm(p: PlanetParams, landFraction: ArrayLike<number>, years
     for (let t = 0; t < steps; t++) {
       const q = qs[t];
       for (let k = 0; k < NB; k++) {
-        forceL[k] = q[k] * coAlbedo(TL[k]) - EBM.A; forceW[k] = q[k] * coAlbedo(TW[k]) - EBM.A;
+        forceL[k] = q[k] * (aFree[k] - aStep[k] * iceShare(TL[k])) - EBM.A; forceW[k] = q[k] * (aFree[k] - aStep[k] * iceShare(TW[k])) - EBM.A;
         aL[k] = ((CL / dt) * TL[k] + forceL[k]) * bL;
         aW[k] = ((CW / dt) * TW[k] + forceW[k]) * bW;
       }
@@ -274,8 +345,8 @@ export function circulationOf(p: PlanetParams): Circulation {
 // the equator: the lobes in phi' = phi - phi0 cos phi (which keeps the poles fixed and the map monotone for |phi0| under 1
 // radian) [design], and the meridional part turned from the zonal by the surface's Ekman balance v = r f u / (f^2 + f_min^2)
 // with f_min the Coriolis parameter at 5 degrees so that the flow crosses the equator smoothly [design].
-export function windTable(p: PlanetParams, c: Circulation, phi0: number): { u: Float64Array; v: Float64Array } {
-  const u = new Float64Array(NODES), v = new Float64Array(NODES);
+export function windTable(p: PlanetParams, c: Circulation, phi0: number): { u: Float64Array; v: Float64Array; s: Float64Array } {
+  const u = new Float64Array(NODES), v = new Float64Array(NODES), s = new Float64Array(NODES);
   const shift = Math.max(-0.6, Math.min(0.6, phi0)), fMin = 2 * c.omega * Math.sin(WIND.fMinDeg * DEG);
   for (let j = 0; j < NODES; j++) {
     const phi = (-90 + j * NODE_DEG) * DEG, t = Math.abs(phi - shift * Math.cos(phi));
@@ -285,10 +356,10 @@ export function windTable(p: PlanetParams, c: Circulation, phi0: number): { u: F
     else { uz = -c.uPolar * Math.sin((Math.PI * (t - c.polarFront)) / (Math.PI / 2 - c.polarFront)); steadiness = WIND.steadyPolar; }
     // the friction acts on the scalar wind, the mean flow is its vector mean
     const f = 2 * c.omega * Math.sin(phi), r = (DRAG.cd * Math.abs(uz)) / DRAG.depth, um = steadiness * uz;
-    u[j] = um;
+    u[j] = um; s[j] = Math.abs(uz);
     v[j] = (r * f * um) / (f * f + fMin * fMin);
   }
-  return { u, v };
+  return { u, v, s };
 }
 
 // ---------- 5. the constants of the kernels ----------
@@ -308,6 +379,9 @@ export function kernelConstants(): Kq {
     snowHi: Q(SNOW_HI, 16),
     snowInv: Q(1 / (SNOW_HI - SNOW_LO), 16),
     tauCIce: TAU_C_ICE, tauCWarm: TAU_C_WARM, tauFRain: TAU_F_RAIN, tauFSnow: Math.round(H_WATER / V_SNOW),
+    rhRef: Q(RH_REF, 16),
+    ksbm: Q(1 / TAU_SBM, 30),
+    epC1: Q((1 - NETRAD.ALBEDO) * (NETRAD.AS + NETRAD.BS * NETRAD.SUNSHINE), 16),
   };
 }
 
@@ -327,6 +401,21 @@ export function saturationTable(): Int32Array {
 }
 let capCache: Int32Array | undefined;
 export const capTable = () => (capCache ??= saturationTable());
+
+// The land's two evaporation columns on the saturation table's temperature grid (R1602, R1603), float64 rounded to the kernel's
+// integers as the energy balance's tables are (so one engine's: the sqrt is exact, the exponential is not): the potential
+// evaporation per unit of net radiation alpha Delta / (Delta + gamma) / lambda in mm/s per W/m2 (Q44), and the net long wave
+// loss of the surface W/m2 (Q8), with the air at RH_REF of saturation and the cloud factor of the share of the day's sun.
+export function landTables(): { epw: Int32Array; rnl: Int32Array } {
+  const epw = new Int32Array(NCAP), rnl = new Int32Array(NCAP);
+  const cloud = (1.35 * (NETRAD.AS + NETRAD.BS * NETRAD.SUNSHINE)) / NETRAD.CLEAR - 0.35;
+  for (let i = 0; i < NCAP; i++) {
+    const t = CAP_FROM + i / CAP_PER_K, es = TETENS.E0 * Math.exp((TETENS.A * t) / (t + TETENS.B)), delta = (4098 * es) / (t + TETENS.B) ** 2;
+    epw[i] = Q((PT.ALPHA * delta) / (delta + PT.GAMMA) / PT.LAMBDA, 44);
+    rnl[i] = Q(NETRAD.SIGMA * (t + 273.15) ** 4 * Math.max(0, 0.34 - 0.14 * Math.sqrt(RH_REF * es)) * cloud, 8);
+  }
+  return { epw, rnl };
+}
 
 // ---------- 6. the grid's static geometry ----------
 export interface Geometry {
@@ -438,17 +527,19 @@ function interp(c: Ctx, col: number, i: number, frac: number): number {
   const a = c.T[TAB.LT + col * NODES + i], b = c.T[TAB.LT + col * NODES + i + 1];
   return (a + mulShr(b - a, frac, 16)) | 0;
 }
-export function capAt(c: Ctx, t: number): number {
-  const x = Math.max(0, Math.min((NCAP - 1) * 4096 - 1, t - CAP_FROM * 65536)), i = x >> 12, f = x & 4095;
+// A table on the saturation grid (base 0 the column, TAB.EPW and TAB.RNL the land's), read between entries.
+export function tabAt(c: Ctx, base: number, t: number): number {
+  const x = Math.max(0, Math.min((NCAP - 1) * 4096 - 1, t - CAP_FROM * 65536)), i = base + (x >> 12), f = x & 4095;
   const a = c.T[i], b = c.T[i + 1];
   return (a + mulShr(b - a, f, 12)) | 0;
 }
+export const capAt = (c: Ctx, t: number) => tabAt(c, 0, t);
 // The surface kernel's twin for cell idx: writes the cell's words of S.
 export function prepTwin(c: Ctx, idx: number) {
   const { S, G, k } = c, n = c.n;
   const land = S[at(c, FIELD.LAND, idx)] !== 0, li = G[GEO.LAT * n + idx], lf = G[GEO.FRAC * n + idx];
   const ins = interp(c, TAB.INS, li, lf), tl = interp(c, TAB.TL, li, lf), tw = interp(c, TAB.TW, li, lf);
-  const u0 = interp(c, TAB.U, li, lf), v0 = interp(c, TAB.V, li, lf);
+  const u0 = interp(c, TAB.U, li, lf), v0 = interp(c, TAB.V, li, lf), us0 = interp(c, TAB.US, li, lf);
   let u = u0, v = v0;
   const gE = S[at(c, FIELD.SLX, idx)], gN = S[at(c, FIELD.SLY, idx)];
   const gm = qsqrt((qmul(gE, gE) + qmul(gN, gN)) | 0), sp = qsqrt((qmul(u, u) + qmul(v, v)) | 0);
@@ -462,6 +553,7 @@ export function prepTwin(c: Ctx, idx: number) {
     }
   }
   const sp2 = qsqrt((qmul(u, u) + qmul(v, v)) | 0), elev = S[at(c, FIELD.ELEV, idx)], lap = mulShr(elev, k.gammaQ22, 12);
+  const us = sp > 0 ? qmul(us0, qdiv(sp2, sp)) : us0;
   const ts = land ? tl : tw, tsurf = (ts - lap) | 0;
   let sst = 0, ice = 0, msat = 0;
   if (!land) {
@@ -469,8 +561,13 @@ export function prepTwin(c: Ctx, idx: number) {
     if (tw < k.tf) ice = qsqrt(qmul((k.tf - tw) | 0, k.kice));
     msat = capAt(c, sst);
   }
-  let fe = mulShr(Math.max(sp2, k.gust), k.ke, 30);
+  let fe = mulShr(Math.max(us, k.gust), k.ke, 30);
   if (ice > 0) fe = 0;
+  let ep = 0;
+  if (land) {
+    const rn = Math.max(0, (mulShr(ins, k.epC1, 16) - tabAt(c, TAB.RNL, tsurf)) | 0);
+    ep = mulShr(rn, tabAt(c, TAB.EPW, tsurf), 12);
+  }
   const f = tsurf > 0 ? qexp(-qdiv(tsurf, k.ghw)) : 65536;
   const tauc = (f * k.tauCIce + (65536 - f) * k.tauCWarm + 32768) >> 16, tauf = ((65536 - f) * k.tauFRain + f * k.tauFSnow + 32768) >> 16;
   S[at(c, FIELD.U, idx)] = u; S[at(c, FIELD.V, idx)] = v;
@@ -482,7 +579,7 @@ export function prepTwin(c: Ctx, idx: number) {
   S[at(c, FIELD.ST, idx)] = ts;
   S[at(c, FIELD.ST + 1, idx)] = mulShr(capAt(c, tsurf), k.rh0, 16);
   for (let q = 2; q < 5; q++) S[at(c, FIELD.ST + q, idx)] = 0;
-  S[at(c, FIELD.PACC, idx)] = 0; S[at(c, FIELD.EACC, idx)] = 0; S[at(c, FIELD.RACC, idx)] = 0;
+  S[at(c, FIELD.PACC, idx)] = 0; S[at(c, FIELD.EACC, idx)] = 0; S[at(c, FIELD.RACC, idx)] = 0; S[at(c, FIELD.EP, idx)] = ep;
 }
 export function edgesTwin(c: Ctx, idx: number) {
   const { S, G } = c, n = c.n, dix = (S[at(c, FIELD.U, idx)] - S[at(c, FIELD.U0, idx)]) | 0, diy = (S[at(c, FIELD.V, idx)] - S[at(c, FIELD.V0, idx)]) | 0;
@@ -512,13 +609,21 @@ export function stepTwin(c: Ctx, idx: number) {
   }
   let mn = (m - mulShr(m, fo, 30) + inM) | 0, cn = (cl - mulShr(cl, fo, 30) + inC) | 0, hn = (h - mulShr(h, fo, 30) + inH) | 0;
   const cap = capAt(c, (ta - S[at(c, FIELD.LAP, idx)]) | 0), fe = Math.imul(S[at(c, FIELD.FE, idx)], dt), land = S[at(c, FIELD.LAND, idx)] !== 0;
-  const e = land ? Math.min(mulShr(Math.max(0, cap - mn), fe, 30), pp) : mulShr(Math.max(0, S[at(c, FIELD.MSAT, idx)] - mn), fe, 30);
+  let e = 0;
+  if (land) {
+    const epdt = mulShr(S[at(c, FIELD.EP, idx)], dt, 20);
+    e = Math.min(mulShr(epdt, S[at(c, FIELD.BETA, idx)], 16), Math.max(0, cap - mn));
+  } else e = mulShr(Math.max(0, S[at(c, FIELD.MSAT, idx)] - mn), fe, 30);
   mn = (mn + e) | 0;
   if (mn > cap) { cn = (cn + mn - cap) | 0; mn = cap; }
+  let sb = 0;
+  const adj = mulShr(cap, k.rhRef, 16);
+  if (mn > adj) { sb = mulShr((mn - adj) | 0, Math.imul(k.ksbm, dt), 30); mn = (mn - sb) | 0; }
   const q = mulShr(cn, Math.imul(S[at(c, FIELD.FC, idx)], dt), 30);
   cn = (cn - q) | 0; hn = (hn + q) | 0;
-  const p = mulShr(hn, Math.imul(S[at(c, FIELD.FF, idx)], dt), 30);
+  let p = mulShr(hn, Math.imul(S[at(c, FIELD.FF, idx)], dt), 30);
   hn = (hn - p) | 0;
+  p = (p + sb) | 0;
   const tn = (ta + dT + mulShr((S[at(c, FIELD.TS, idx)] - ta) | 0, Math.imul(k.ft, dt), 30)) | 0;
   S[at(c, fb, idx)] = tn; S[at(c, fb + 1, idx)] = mn; S[at(c, fb + 2, idx)] = cn; S[at(c, fb + 3, idx)] = hn; S[at(c, fb + 4, idx)] = p;
   if (c.acc) {
@@ -543,7 +648,9 @@ export interface SeasonClimate {
   ice: Float32Array; // m, the sea ice's thickness
   rain: Float32Array; snow: Float32Array; // mm of water over the season
   evaporation: Float32Array; // mm over the season
-  runoff: Float32Array; // mm over the season: the land's rain less what it gave back
+  potential: Float32Array; // mm over the season: the land's potential evaporation (Priestley and Taylor), 0 on the sea
+  runoff: Float32Array; // mm over the season: what the soil bucket overflows (0 where it is not full)
+  storage: Float32Array; // mm over the season: the change of the soil's water, so that rain = evaporation + runoff + storage
   column: Float32Array; // mm of vapour in the column at the end
   dt: number; spinSteps: number; windowSteps: number;
   // The water over the window, in m3 over the whole planet: evaporated, rained, held at the window's start and end.
@@ -556,10 +663,48 @@ export interface Climate {
   circulation: Circulation;
   ebm: Ebm;
   seasons: SeasonClimate[];
+  // the soil's rounds of marching, and how far the last march's evaporation was from what the bucket gives for its rain
+  // (the sum of the differences over the sum of the evaporation, over land)
+  soil: { rounds: number; residual: number };
 }
 export interface ClimateOptions {
   spinDays?: number; // the days a season's moist air is marched before the window (30)
   windowDays?: number; // the days of the window the rain and evaporation are summed over (2)
+  soilRounds?: number; // the times the four seasons are marched with the bucket's efficiency updated (SOIL.ROUNDS)
+}
+// Manabe's bucket (R1604) over the year, per land cell: from each season's rain and potential evaporation (mm over the season)
+// the periodic state of a store holding up to SOIL.CAPACITY, in daily steps. The efficiency of a season is its evaporation over
+// its potential (or, where the potential is nil, the efficiency the store's mean water gives).
+export interface Soil { beta: Float32Array[]; evaporation: Float32Array[]; runoff: Float32Array[]; storage: Float32Array[] }
+export function solveSoil(rain: ArrayLike<number>[], potential: ArrayLike<number>[], land: Uint8Array): Soil {
+  const n = land.length, mk = () => [0, 1, 2, 3].map(() => new Float32Array(n));
+  const out: Soil = { beta: mk(), evaporation: mk(), runoff: mk(), storage: mk() };
+  const days = SEASON_S / 86400, h = days / SOIL.SUBSTEPS, wc = SOIL.CAPACITY, wk = SOIL.CRITICAL * wc;
+  const p = new Float64Array(4), ep = new Float64Array(4), e = new Float64Array(4), r = new Float64Array(4), w0 = new Float64Array(4), w1 = new Float64Array(4), wm = new Float64Array(4);
+  for (let i = 0; i < n; i++) {
+    if (!land[i]) continue;
+    for (let s = 0; s < 4; s++) { p[s] = rain[s][i] / days; ep[s] = potential[s][i] / days; }
+    let w = wc;
+    for (let year = 0; year < 40; year++) {
+      const start = w;
+      for (let s = 0; s < 4; s++) {
+        w0[s] = w; e[s] = 0; r[s] = 0; let sum = 0;
+        for (let k = 0; k < SOIL.SUBSTEPS; k++) {
+          const take = Math.min(ep[s] * Math.min(1, w / wk) * h, w + p[s] * h);
+          w += p[s] * h - take; e[s] += take;
+          if (w > wc) { r[s] += w - wc; w = wc; }
+          sum += w;
+        }
+        w1[s] = w; wm[s] = sum / SOIL.SUBSTEPS;
+      }
+      if (Math.abs(w - start) < 0.01) break;
+    }
+    for (let s = 0; s < 4; s++) {
+      out.evaporation[s][i] = e[s]; out.runoff[s][i] = r[s]; out.storage[s][i] = w1[s] - w0[s];
+      out.beta[s][i] = potential[s][i] > 0 ? Math.min(1, e[s] / potential[s][i]) : Math.min(1, wm[s] / wk);
+    }
+  }
+  return out;
 }
 const OUT = 1 << 30;
 
@@ -617,7 +762,8 @@ export class AtmosphereGpu {
     const put = (f: number, a: Int32Array) => dev.queue.writeBuffer(this.S, f * n * 4, a.buffer, a.byteOffset, a.byteLength);
     put(FIELD.ELEV, Int32Array.from(elev, (v) => Math.round(v * 64)));
     put(FIELD.SLX, slopes.slx); put(FIELD.SLY, slopes.sly); put(FIELD.LAND, Int32Array.from(land));
-    this.tables.set(capTable(), 0);
+    const evap = landTables();
+    this.tables.set(capTable(), TAB.CAP); this.tables.set(evap.epw, TAB.EPW); this.tables.set(evap.rnl, TAB.RNL);
     const wgsl = atmosphereWgsl(this.k);
     this.pipes = { prep: pipeline(gpu, wgsl, "prep"), edges: pipeline(gpu, wgsl, "edges"), step: pipeline(gpu, wgsl, "step"), finish: pipeline(gpu, wgsl, "finish") };
     this.groups = cover(gpu, n);
@@ -634,12 +780,18 @@ export class AtmosphereGpu {
   // Put a season's zonal tables (insolation, the land's and the sea's temperatures, the wind) where the kernels read them.
   loadSeason(s: number) {
     const { ebm, p, circulation } = this, wt = windTable(p, circulation, ebm.phi0[s]);
-    const cols: [number, Float64Array, number][] = [[TAB.INS, toNodes(ebm.insolation[s]), 8], [TAB.TL, toNodes(ebm.land[s]), 16], [TAB.TW, toNodes(ebm.sea[s]), 16], [TAB.U, wt.u, 16], [TAB.V, wt.v, 16]];
+    const cols: [number, Float64Array, number][] = [[TAB.INS, toNodes(ebm.insolation[s]), 8], [TAB.TL, toNodes(ebm.land[s]), 16], [TAB.TW, toNodes(ebm.sea[s]), 16], [TAB.U, wt.u, 16], [TAB.V, wt.v, 16], [TAB.US, wt.s, 16]];
     for (const [col, vals, q] of cols) for (let j = 0; j < NODES; j++) this.tables[TAB.LT + col * NODES + j] = Q(vals[j], q);
     this.gpu.device.queue.writeBuffer(this.Tb, 0, this.tables.buffer, this.tables.byteOffset, this.tables.byteLength);
     this.dt = 1; this.writePars();
   }
   setStep(dt: number) { this.dt = dt; this.writePars(); }
+  // The land's evaporation efficiency for the next season (Q16 of the bucket's beta, 0 for dry soil: none given).
+  setSoil(beta?: Float32Array) {
+    const q = new Int32Array(this.n);
+    if (beta) for (let i = 0; i < this.n; i++) if (this.land[i]) q[i] = Math.max(0, Math.min(65536, Math.round(beta[i] * 65536)));
+    this.gpu.device.queue.writeBuffer(this.S, FIELD.BETA * this.n * 4, q.buffer, q.byteOffset, q.byteLength);
+  }
   // Dispatch an entry point `times` times, the step kernel alternating its state sets from par.
   run(name: "prep" | "edges" | "step" | "finish", par = 0, acc = 0, times = 1) {
     const dev = this.gpu.device, pipe = this.pipes[name];
@@ -698,7 +850,7 @@ export class AtmosphereGpu {
     return {
       insolation: conv(await read(FIELD.INS), 8), temperature: conv(await read(FIELD.TN), 16), seaLevelTemperature: conv(await read(FIELD.ST + 5 * par1), 16),
       windE: conv(await read(FIELD.U), 16), windN: conv(await read(FIELD.V), 16), sst: conv(await read(FIELD.SST), 16), ice: conv(await read(FIELD.ICE), 16),
-      rain: scale(pacc), snow: scale(snow), evaporation: scale(eacc), runoff: scale(racc), column: conv(end.m, 20),
+      rain: scale(pacc), snow: scale(snow), evaporation: scale(eacc), potential: Float32Array.from(await read(FIELD.EP), (v) => (v * SEASON_S) / 2 ** 40), runoff: scale(racc), storage: new Float32Array(n), column: conv(end.m, 20),
       dt, spinSteps: spin, windowSteps: win,
       budget: { evaporated: evap / 2 ** 20 / 1000, rained: rain / 2 ** 20 / 1000, held0, held1: end.sum },
     };
@@ -710,9 +862,20 @@ export class AtmosphereGpu {
 export async function climateGpu(gpu: Gpu, g: Grid, height: Float32Array, planet: Partial<PlanetParams> = {}, opts: ClimateOptions = {}): Promise<Climate> {
   const a = await AtmosphereGpu.make(gpu, g, height, planet);
   try {
-    const seasons: SeasonClimate[] = [];
-    for (let s = 0; s < 4; s++) seasons.push(await a.season(s, opts));
-    return { planet: a.p, geo: a.geo, land: a.land, circulation: a.circulation, ebm: a.ebm, seasons };
+    const hasLand = a.land.includes(1), rounds = hasLand ? opts.soilRounds ?? SOIL.ROUNDS : 1;
+    let seasons: SeasonClimate[] = [], beta: Float32Array[] | undefined, residual = 0;
+    for (let round = 0; round < rounds; round++) {
+      seasons = [];
+      for (let s = 0; s < 4; s++) { a.setSoil(beta?.[s]); seasons.push(await a.season(s, opts)); }
+      if (!hasLand) break;
+      const soil = solveSoil(seasons.map((q) => q.rain), seasons.map((q) => q.potential), a.land);
+      let off = 0, tot = 0;
+      for (let s = 0; s < 4; s++) for (let i = 0; i < a.n; i++) if (a.land[i]) { off += Math.abs(soil.evaporation[s][i] - seasons[s].evaporation[i]); tot += seasons[s].evaporation[i]; }
+      residual = tot > 0 ? off / tot : 0;
+      beta = soil.beta;
+      if (round === rounds - 1) for (let s = 0; s < 4; s++) { seasons[s].runoff = soil.runoff[s]; seasons[s].storage = soil.storage[s]; }
+    }
+    return { planet: a.p, geo: a.geo, land: a.land, circulation: a.circulation, ebm: a.ebm, seasons, soil: { rounds, residual } };
   } finally { a.release(); }
 }
 

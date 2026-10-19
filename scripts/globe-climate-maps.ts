@@ -3,15 +3,17 @@
 // and prints the zonal means.
 //   bun scripts/globe-climate-maps.ts --planet ridge --out /tmp/globe-climate/ridge
 //   bun scripts/globe-climate-maps.ts --height /path/heights.f32 --sea 0 --out /tmp/globe-climate/real
-// Planets: ocean, ridge, continents (a polar and an equatorial one), west (a box continent in the westerlies). --height reads
+// Planets: ocean, ridge, continents (a polar and an equatorial one), west (a box continent in the westerlies), earth (four
+// continents on 29% land with a range on two west and east coasts). --height reads
 // a raw little-endian float32 file of 6 * 256 * 256 heights in metres, in cell-id order ((face * 256 + Y) * 256 + X, the faces
-// and axes of src/gpu/globe/grid.ts). Options: --tilt degrees (23.4), --day hours (24), --radius m, --spin days (30).
+// and axes of src/gpu/globe/grid.ts). Options: --tilt degrees (23.4), --day hours (24), --radius m, --spin days (30),
+// --solar W/m2 (1366). Also writes zonal.json: the 10 degree bands' annual rain, evaporation and temperature, for comparing two builds.
 import { deflateSync } from "node:zlib";
 import { mkdirSync, readFileSync } from "node:fs";
 import { theGpu } from "../src/gpu/device";
 import { RADIUS_M, locate, cellId, tierGrid } from "../src/gpu/globe/grid";
 import { SEASONS, buildGeometry, climateGpu, type Climate, type SeasonClimate } from "../src/gpu/globe/atmosphere";
-import { oceanPlanet, ridgePlanet, twoContinents, westerlyContinent } from "../src/gpu/globe/synthetic";
+import { earthlikePlanet, oceanPlanet, ridgePlanet, twoContinents, westerlyContinent } from "../src/gpu/globe/synthetic";
 import { exit, holdGpu } from "./seeded";
 
 type RGB = [number, number, number];
@@ -43,7 +45,7 @@ const g = tierGrid(0, Number(arg("radius", String(RADIUS_M)))), geo = buildGeome
 const sea = Number(arg("sea", "0"));
 const height = arg("height", "")
   ? new Float32Array(readFileSync(arg("height", "")).buffer.slice(0))
-  : { ocean: oceanPlanet, ridge: ridgePlanet, continents: twoContinents, west: westerlyContinent }[planetName]!(geo);
+  : { ocean: oceanPlanet, ridge: ridgePlanet, continents: twoContinents, west: westerlyContinent, earth: earthlikePlanet }[planetName]!(geo);
 // the cell under each pixel
 const cellAt = new Int32Array(W * H);
 for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
@@ -53,7 +55,7 @@ for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
 
 const t0 = performance.now();
 await holdGpu();
-const c: Climate = await climateGpu(await theGpu(), g, height, { tiltDeg: Number(arg("tilt", "23.4")), dayS: Number(arg("day", "24")) * 3600, seaLevel: sea, radius: g.radius }, { spinDays: Number(arg("spin", "30")) });
+const c: Climate = await climateGpu(await theGpu(), g, height, { tiltDeg: Number(arg("tilt", "23.4")), dayS: Number(arg("day", "24")) * 3600, solar: Number(arg("solar", "1366")), seaLevel: sea, radius: g.radius }, { spinDays: Number(arg("spin", "30")), soilRounds: Number(arg("soil-rounds", "3")) });
 const circ = c.circulation;
 console.log(`${planetName}: ${Math.round(performance.now() - t0)} ms, land ${((c.land.reduce((a, v) => a + v, 0) / c.land.length) * 100).toFixed(1)}% of cells`);
 console.log(`energy balance: diffusion ${c.ebm.diffusion.toFixed(2)} W/m2/K, drift over the last year ${c.ebm.drift.toExponential(1)} K, net flux ${c.ebm.balance.toFixed(4)} W/m2`);
@@ -96,6 +98,8 @@ save("rain-annual", (i) => wet(c.seasons.reduce((a, s) => a + s.rain[i], 0) / 30
 save("temperature-annual", (i) => heat((c.seasons.reduce((a, s) => a + s.temperature[i], 0) / 4 + 40) / 80));
 save("evaporation-annual", (i) => wet(c.seasons.reduce((a, s) => a + s.evaporation[i], 0) / 2500));
 save("runoff-annual", (i) => (c.land[i] ? wet(c.seasons.reduce((a, s) => a + s.runoff[i], 0) / 2000) : [90, 110, 150]));
+save("potential-annual", (i) => (c.land[i] ? wet(c.seasons.reduce((a, s) => a + (s.potential?.[i] ?? 0), 0) / 2500) : [90, 110, 150]));
+save("evaporation-share-annual", (i) => (c.land[i] ? wet(c.seasons.reduce((a, s) => a + s.evaporation[i], 0) / Math.max(1, c.seasons.reduce((a, s) => a + s.rain[i], 0)) / 1.2) : [90, 110, 150]));
 
 // zonal means, 10 degree bands: area-weighted annual rain, evaporation and temperature, the zonal wind and the seasons' temperatures
 const bands = 18, acc = (f: (i: number) => number) => { const s = new Float64Array(bands), w = new Float64Array(bands); for (let i = 0; i < geo.n; i++) { const b = Math.min(bands - 1, Math.floor(((geo.lat[i] * 180) / Math.PI + 90) / 10)); s[b] += geo.area[i] * f(i); w[b] += geo.area[i]; } return s.map((v, b) => v / w[b]); };
@@ -110,4 +114,21 @@ const total = geo.area.reduce((a, v) => a + v, 0), mean = (f: (i: number) => num
 const gP = mean((i) => c.seasons.reduce((a, s) => a + s.rain[i], 0) / 365.25), gE = mean((i) => c.seasons.reduce((a, s) => a + s.evaporation[i], 0) / 365.25), gW = mean((i) => c.seasons.reduce((a, s) => a + s.column[i], 0) / 4);
 console.log(`global means: rain ${gP.toFixed(2)} mm/day, evaporation ${gE.toFixed(2)} mm/day, vapour in the layer ${gW.toFixed(1)} mm, residence ${(gW / gP).toFixed(1)} days (Earth: 2.69, 2.78, 24.6, 8)`);
 console.log(`maps in ${out}`);
+// the planet's poles and its land: the annual contrast, whether ice and snow form, and the land's water
+const bandMean = (f: (i: number) => number, lo: number, hi: number, keep: (i: number) => boolean = () => true) => { let s = 0, w = 0; for (let i = 0; i < geo.n; i++) { const la = (geo.lat[i] * 180) / Math.PI; if (la >= lo && la < hi && keep(i)) { s += geo.area[i] * f(i); w += geo.area[i]; } } return w > 0 ? s / w : NaN; };
+const ann = (f: (s: SeasonClimate, i: number) => number) => (i: number) => c.seasons.reduce((a, s) => a + f(s, i), 0) / 4;
+const tA = ann((s, i) => s.temperature[i]);
+const north = bandMean(tA, 80, 90), south = bandMean(tA, -90, -80), eq = bandMean(tA, -10, 10);
+console.log(`temperature: equator (10 S to 10 N) ${eq.toFixed(1)} C, poles ${north.toFixed(1)} N and ${south.toFixed(1)} S, equator to pole ${(eq - (north + south) / 2).toFixed(1)} K (Earth about 40); coldest season at the poles ${Math.min(...c.seasons.map((s) => bandMean((i) => s.temperature[i], 80, 90))).toFixed(1)} C`);
+const iceMax = Math.max(...c.seasons.flatMap((s) => [bandMean((i) => s.ice[i], 60, 90), bandMean((i) => s.ice[i], -90, -60)]));
+const snowShare = bandMean((i) => c.seasons.reduce((a, s) => a + s.snow[i], 0), 70, 90) / Math.max(1e-9, bandMean((i) => c.seasons.reduce((a, s) => a + s.rain[i], 0), 70, 90));
+const seaIce = c.seasons.map((s) => { let a = 0, tot = 0; for (let i = 0; i < geo.n; i++) if (!c.land[i] && Math.abs(geo.lat[i]) > 0.8) { tot += geo.area[i]; if (s.ice[i] > 0.05) a += geo.area[i]; } return a / tot; });
+console.log(`polar ice: mean sea ice thickness poleward of 60 degrees at its thickest ${iceMax.toFixed(2)} m; sea ice covers ${seaIce.map((v) => (v * 100).toFixed(0)).join(", ")}% of the sea poleward of 46 degrees by season; snow is ${(snowShare * 100).toFixed(0)}% of the precipitation at 70 to 90 degrees`);
+const landArea = geo.area.reduce((a, v, i) => a + (c.land[i] ? v : 0), 0);
+if (landArea > 0) {
+  const lm = (f: (s: SeasonClimate, i: number) => number) => { let s = 0; for (let i = 0; i < geo.n; i++) if (c.land[i]) s += geo.area[i] * c.seasons.reduce((a, q) => a + f(q, i), 0); return s; };
+  const lr = lm((s, i) => s.rain[i]), le = lm((s, i) => s.evaporation[i]), lo = lm((s, i) => s.runoff[i]), lp = lm((s, i) => s.potential?.[i] ?? 0), ls = lm((s, i) => s.storage?.[i] ?? 0);
+  console.log(`land: ${((landArea / total) * 100).toFixed(1)}% of the planet; rain ${(lr / landArea / 365.25).toFixed(2)} mm/day, evaporation ${(le / landArea / 365.25).toFixed(2)}, runoff ${(lo / landArea / 365.25).toFixed(2)}, potential ${(lp / landArea / 365.25).toFixed(2)}, soil storage over the year ${((ls / lr) * 100).toFixed(2)}% of the rain; evaporation is ${((le / lr) * 100).toFixed(0)}% of the land's rain (Earth 65% by the rivers' 35%), runoff ${((lo / lr) * 100).toFixed(0)}%; soil rounds ${c.soil?.rounds ?? 1}, last march ${((c.soil?.residual ?? 0) * 100).toFixed(1)}% from the bucket's`);
+}
+await Bun.write(`${out}/zonal.json`, JSON.stringify({ planet: planetName, bands: Array.from({ length: bands }, (_, b) => b * 10 - 90), rain: Array.from(rainA), evaporation: Array.from(evapA), temperature: Array.from(tAnn) }));
 await exit();

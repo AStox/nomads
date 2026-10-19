@@ -49,3 +49,38 @@ export function westerlyContinent(geo: Geometry) {
   }
   return out;
 }
+
+// Four continents on a sea of 29% land, as a rough stand-in for the real thing in the tests and maps of the water cycle: a
+// northern one in the westerlies (48 N, 1,400 km across the cap), a southern one in the trades (20 S), a small equatorial
+// island land and a polar one in the south, each with a coast made irregular by two harmonics of the bearing from its centre,
+// 150 to 600 m over most of it and a range 150 km across on the west coast of the northern one (3 km) and the east coast of the
+// southern one (2.5 km). Nothing about it is Earth's map: it is for a check of the water cycle's laws, not a place.
+const CONTINENTS = [
+  { lat: 48, lon: 55, km: 1400, a: [0.22, 0.12], p: [0.3, 1.1] },
+  { lat: -20, lon: 300, km: 1200, a: [0.18, 0.15], p: [2.0, 0.4] },
+  { lat: 8, lon: 170, km: 700, a: [0.25, 0.1], p: [1.3, 2.6] },
+  { lat: -62, lon: 120, km: 800, a: [0.2, 0.1], p: [0.8, 1.9] },
+];
+export function earthlikePlanet(geo: Geometry) {
+  const R = geo.g.radius, out = new Float32Array(geo.n).fill(FLOOR), inland = new Float32Array(geo.n);
+  for (let i = 0; i < geo.n; i++) {
+    const la = geo.lat[i], lo = geo.lon[i];
+    let h = FLOOR;
+    for (const c of CONTINENTS) {
+      const p0 = c.lat * DEG, dl = lo - c.lon * DEG;
+      const d = Math.acos(Math.max(-1, Math.min(1, Math.sin(la) * Math.sin(p0) + Math.cos(la) * Math.cos(p0) * Math.cos(dl))));
+      const th = Math.atan2(Math.sin(dl) * Math.cos(la), Math.cos(p0) * Math.sin(la) - Math.sin(p0) * Math.cos(la) * Math.cos(dl));
+      const rho = (c.km * 1000 * (1 + c.a[0] * Math.sin(2 * th + c.p[0]) + c.a[1] * Math.sin(3 * th + c.p[1]))) / R;
+      if (d < rho) { h = Math.max(h, 150 + 450 * smooth((1 - d / rho) * 2)); inland[i] = Math.max(inland[i], ((rho - d) * R) / 1000); }
+    }
+    out[i] = h;
+  }
+  // a range's height falls to nothing toward the coast over 300 km of land (a cliff of 3 km from the sea is a different case)
+  const range = (lat0: number, lat1: number, lon0: number, peak: number) => {
+    const ridge = ridgePlanet(geo, { lat0, lat1, lon0, halfKm: 150, peak });
+    for (let i = 0; i < geo.n; i++) if (out[i] > 0 && ridge[i] > 0) out[i] = Math.max(out[i], ridge[i] * smooth(inland[i] / 300));
+  };
+  range(36, 62, 10, 3000);
+  range(-40, 0, 333, 2500);
+  return out;
+}

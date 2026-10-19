@@ -7,7 +7,8 @@
 // neighbours (0 east, 1 north, 2 west, 3 south in the face's own axes): the neighbour's id, the link's length over the cell's
 // area (Q28, 1 / m), and the unit normal of the shared edge (pointing to the neighbour) in the cell's own east and north and in
 // the neighbour's (Q14), then each cell's latitude as an index into the 721 latitude nodes (0.25 degree) and its fraction (Q16).
-// The tables T hold the saturation column at 1/16 K steps and the season's zonal tables on the 721 nodes.
+// The tables T hold the saturation column and the land's two evaporation columns at 1/16 K steps and the season's zonal tables
+// (insolation, the land's and the sea's temperature, wind east and north, and the scalar wind) on the 3,601 latitude nodes.
 //
 // Fixed point (a value x is held as round(x * 2^n), Qn; the formats are [design] choices, sized by the ranges [derived]):
 // - heights above the sea, ELEV: Q6 m (an i32 holds 33,000 km); slopes, SLX and SLY: Q16 m/m;
@@ -20,6 +21,8 @@
 // - rates: a link's rate (edge wind times length over the cell's area, 1/s), the evaporation, conversion and fall rates and the
 //   air's adjustment to the ground below it: Q30 1/s; a rate times the step's seconds is the fraction a step moves, Q30 (the
 //   host's step keeps the sum of a cell's four link fractions under 0.8, so no word passes 2^30);
+// - the land's potential evaporation EP: Q40 mm/s (8 mm a day is 4.2e7; a step's worth, EP times the seconds shifted down by 20,
+//   is Q20 mm); its efficiency BETA from the host's soil bucket: Q16;
 // - the sea ice's thickness: Q16 m.
 // A product of two words goes through a 64-bit intermediate (mulShr: a * b / 2^s rounded half away from zero) so no word holds
 // less than it could.
@@ -32,7 +35,9 @@ export const FIELD = {
   ST: 19, // two sets of five state fields (TA, M, C, H, PP), ST .. ST + 4 and ST + 5 .. ST + 9
   PACC: 29, EACC: 30, RACC: 31, TN: 32, SNOW: 33,
   U0: 34, V0: 35, // the zonal table's wind at the cell, before the terrain's blocking
-  COUNT: 36,
+  EP: 36, // the land's potential evaporation, mm/s, Q40 (0 on the sea)
+  BETA: 37, // the land's evaporation efficiency of the season, Q16, set by the host from its soil bucket (0 on the sea)
+  COUNT: 38,
 } as const;
 export const STATE = { TA: 0, M: 1, C: 2, H: 3, PP: 4 } as const;
 
@@ -41,12 +46,14 @@ export const STATE = { TA: 0, M: 1, C: 2, H: 3, PP: 4 } as const;
 // fraction, and for each link its midpoint's latitude node and fraction and the normal on the east and north of the midpoint
 // (four words a link).
 export const GEO = { NBR: 0, LC: 4, NRM: 8, LAT: 24, FRAC: 25, EDGE: 26, UNITS: 42 } as const;
-// The tables: the saturation column (Q20 mm) at 1/16 K from CAP_FROM degrees; the season's zonal tables, node after node.
+// The tables: the saturation column (Q20 mm) at 1/16 K from CAP_FROM degrees; the two land-evaporation columns on the same
+// temperature grid (the potential evaporation per unit of net radiation, mm/s per W/m2 in Q44, and the net long-wave loss,
+// W/m2 in Q8); the season's zonal tables, node after node.
 export const CAP_FROM = -120, CAP_TO = 90, CAP_PER_K = 16, NCAP = (CAP_TO - CAP_FROM) * CAP_PER_K + 1;
 // The zonal tables' nodes are every 0.05 degrees (1.7 km, a seventh of a cell): between nodes the tables are read linearly, so the
 // divergence of a smooth wind is off by (the wind's second derivative) x (half a node), 1e-8 /s against a 1e-6 signal.
 export const NODE_DEG = 0.05, NODES = 3601;
-export const TAB = { CAP: 0, LT: 3392, INS: 0, TL: 1, TW: 2, U: 3, V: 4, COLS: 5 } as const;
+export const TAB = { CAP: 0, EPW: 3392, RNL: 6784, LT: 10176, INS: 0, TL: 1, TW: 2, U: 3, V: 4, US: 5, COLS: 6 } as const;
 export const TABLE_WORDS = TAB.LT + TAB.COLS * NODES;
 export const PARAM = { N: 0, DT: 1, ACC: 2, PAR: 3, BLOCK_L: 4, WORDS: 8 } as const;
 
@@ -64,6 +71,9 @@ export interface Kq {
   snowHi: number; // the temperature above which all precipitation is rain, Q16 C
   snowInv: number; // 1 / (the width of the mixed range), Q16 per K
   tauCIce: number; tauCWarm: number; tauFRain: number; tauFSnow: number; // the rain stage's cloud delays, s
+  rhRef: number; // the relative humidity the convective adjustment relaxes the layer to, Q16
+  ksbm: number; // the adjustment's rate, 1 / its time scale, Q30 1/s
+  epC1: number; // the share of the day's mean insolation the land's surface absorbs, Q16
 }
 
 export function atmosphereWgsl(k: Kq): string {
@@ -82,6 +92,7 @@ const F_ICE = ${FIELD.ICE}u; const F_R = ${FIELD.R}u; const F_ST = ${FIELD.ST}u;
 const F_PACC = ${FIELD.PACC}u; const F_EACC = ${FIELD.EACC}u; const F_RACC = ${FIELD.RACC}u; const F_TN = ${FIELD.TN}u; const F_SNOW = ${FIELD.SNOW}u;
 const F_U0 = ${FIELD.U0}u; const F_V0 = ${FIELD.V0}u;
 const LT = ${TAB.LT}u;
+const F_EP = ${FIELD.EP}u; const F_BETA = ${FIELD.BETA}u;
 const CAP_BASE = ${capBase}i; const CAP_MAXX = ${capMax}i;
 
 fn touch() { _ = S[0]; _ = G[0]; _ = T[0]; _ = P[0]; }
@@ -100,13 +111,15 @@ fn interp(col: u32, i: u32, frac: i32) -> i32 {
   let a = T[LT + col * ${NODES}u + i]; let b = T[LT + col * ${NODES}u + i + 1u];
   return a + mulShr(b - a, frac, 16u);
 }
-// The column's saturation, mm (Q20), at a temperature (Q16 C): the host's table at 1/${CAP_PER_K} K read between its entries.
-fn capAt(t: i32) -> i32 {
+// A table on the host's temperature grid (the saturation column at base 0, the land's two evaporation columns after it), at
+// a temperature (Q16 C): 1/${CAP_PER_K} K steps read between entries.
+fn tabAt(base: u32, t: i32) -> i32 {
   let x = clamp(t + CAP_BASE, 0i, CAP_MAXX);
-  let i = u32(x >> 12u); let f = x & 4095i;
+  let i = base + u32(x >> 12u); let f = x & 4095i;
   let a = T[i]; let b = T[i + 1u];
   return a + mulShr(b - a, f, 12u);
 }
+fn capAt(t: i32) -> i32 { return tabAt(0u, t); }
 
 // One thread a cell: the season's surface. The prevailing wind from the zonal table, with the part of it that runs into a
 // slope steep enough to block it taken out; the ground's sea-level temperature (the land's or the sea's column), the sea
@@ -121,7 +134,7 @@ fn prep(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   let li = u32(G[GEO_LAT * n + idx]); let lf = G[GEO_FRAC * n + idx];
   let ins = interp(${TAB.INS}u, li, lf);
   let tl = interp(${TAB.TL}u, li, lf); let tw = interp(${TAB.TW}u, li, lf);
-  let u0 = interp(${TAB.U}u, li, lf); let v0 = interp(${TAB.V}u, li, lf);
+  let u0 = interp(${TAB.U}u, li, lf); let v0 = interp(${TAB.V}u, li, lf); let us0 = interp(${TAB.US}u, li, lf);
   var u = u0; var v = v0;
   let gE = S[F_SLX * n + idx]; let gN = S[F_SLY * n + idx];
   let gm = qsqrt(qmul(gE, gE) + qmul(gN, gN));
@@ -138,6 +151,10 @@ fn prep(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
     }
   }
   let sp2 = qsqrt(qmul(u, u) + qmul(v, v));
+  // the bulk law reads the mean of the speed, not the speed of the mean: the table's scalar wind, cut by the share of the
+  // prevailing wind the terrain's blocking leaves
+  var us = us0;
+  if (sp > 0i) { us = qmul(us0, qdiv(sp2, sp)); }
   let elev = S[F_ELEV * n + idx];
   let lap = mulShr(elev, ${k.gammaQ22}i, 12u);
   var ts = tw; if (land) { ts = tl; }
@@ -148,8 +165,13 @@ fn prep(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
     if (tw < ${k.tf}i) { ice = qsqrt(qmul(${k.tf}i - tw, ${k.kice}i)); }
     msat = capAt(sst);
   }
-  var fe = mulShr(max(sp2, ${k.gust}i), ${k.ke}i, 30u);
+  var fe = mulShr(max(us, ${k.gust}i), ${k.ke}i, 30u);
   if (ice > 0i) { fe = 0i; }
+  var ep = 0i;
+  if (land) {
+    let rn = max(0i, mulShr(ins, ${k.epC1}i, 16u) - tabAt(${TAB.RNL}u, tsurf));
+    ep = mulShr(rn, tabAt(${TAB.EPW}u, tsurf), 12u);
+  }
   var f = 65536i;
   if (tsurf > 0i) { f = qexp(-qdiv(tsurf, ${k.ghw}i)); }
   let tauc = (f * ${k.tauCIce}i + (65536i - f) * ${k.tauCWarm}i + 32768i) >> 16u;
@@ -163,7 +185,7 @@ fn prep(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   S[F_ST * n + idx] = ts;
   S[(F_ST + 1u) * n + idx] = mulShr(capAt(tsurf), ${k.rh0}i, 16u);
   S[(F_ST + 2u) * n + idx] = 0i; S[(F_ST + 3u) * n + idx] = 0i; S[(F_ST + 4u) * n + idx] = 0i;
-  S[F_PACC * n + idx] = 0i; S[F_EACC * n + idx] = 0i; S[F_RACC * n + idx] = 0i;
+  S[F_PACC * n + idx] = 0i; S[F_EACC * n + idx] = 0i; S[F_RACC * n + idx] = 0i; S[F_EP * n + idx] = ep;
 }
 
 // One thread a cell: the four links' rates. The wind through the edge (positive out of the cell) is the zonal table's wind at the
@@ -193,9 +215,11 @@ fn edges(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
 // One time step of the moist air, one thread a cell, from the state set P[3] to the other. Upwind: a cell's vapour, cloud water
 // and falling hydrometeors leave through the links whose rate is positive and arrive through the neighbours' whose rate is
 // negative; the air's sea-level temperature moves the same way (the advective form: only what arrives, as a difference);
-// the sea gives vapour at a bulk rate to its surface's saturation, the land at the same rate to what the rain it just had
-// leaves it, none stored; what the column holds above its saturation (at the air's temperature less the height's lapse)
-// becomes cloud water, which becomes hydrometeors and these fall, each at its own delay.
+// the sea gives vapour at a bulk rate to its surface's saturation, the land at its potential rate (Priestley and Taylor, made
+// in prep) times the soil's efficiency (the host's bucket), none stored; what the column holds above its
+// saturation (at the air's temperature less the height's lapse) becomes cloud water, which becomes hydrometeors and these
+// fall, each at its own delay; what it holds above the reference share of saturation relaxes to it and falls out at once
+// (the simplified Betts-Miller adjustment).
 @compute @workgroup_size(256)
 fn step(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
@@ -223,14 +247,20 @@ fn step(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   let fe = S[F_FE * n + idx] * dt;
   let land = S[F_LAND * n + idx] != 0i;
   var e = 0i;
-  if (land) { e = min(mulShr(max(0i, cap - mn), fe, 30u), pp); }
-  else { e = mulShr(max(0i, S[F_MSAT * n + idx] - mn), fe, 30u); }
+  if (land) {
+    let epdt = mulShr(S[F_EP * n + idx], dt, 20u);
+    e = min(mulShr(epdt, S[F_BETA * n + idx], 16u), max(0i, cap - mn));
+  } else { e = mulShr(max(0i, S[F_MSAT * n + idx] - mn), fe, 30u); }
   mn += e;
   if (mn > cap) { cn += mn - cap; mn = cap; }
+  var sb = 0i;
+  let adj = mulShr(cap, ${k.rhRef}i, 16u);
+  if (mn > adj) { sb = mulShr(mn - adj, ${k.ksbm}i * dt, 30u); mn -= sb; }
   let q = mulShr(cn, S[F_FC * n + idx] * dt, 30u);
   cn -= q; hn += q;
-  let p = mulShr(hn, S[F_FF * n + idx] * dt, 30u);
+  var p = mulShr(hn, S[F_FF * n + idx] * dt, 30u);
   hn -= p;
+  p += sb;
   let tn = ta + dT + mulShr(S[F_TS * n + idx] - ta, ${k.ft}i * dt, 30u);
   S[fb * n + idx] = tn; S[(fb + 1u) * n + idx] = mn; S[(fb + 2u) * n + idx] = cn; S[(fb + 3u) * n + idx] = hn; S[(fb + 4u) * n + idx] = p;
   if (P[${PARAM.ACC}u] != 0u) {

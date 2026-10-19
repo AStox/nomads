@@ -9,12 +9,13 @@
 import { afterAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
 import { locate, tierGrid, cellId } from "./grid";
-import { NODE_DEG } from "../wgsl/globe-atmosphere";
+import { GEO, NODES, NODE_DEG, TAB, TABLE_WORDS } from "../wgsl/globe-atmosphere";
 import {
-  AtmosphereGpu, BANDS, EBM, FIELD, GAMMA, ICE_K, ICE_L, ICE_RHO, SEASON_S, SEASONS, T_FREEZE, buildGeometry, capAt, capTable, circulationOf, climateGpu, edgesTwin, declination, finishTwin, heldHouEdge,
-  insolation, mulShr, planetOf, prepTwin, solveEbm, stepTwin, windTable, type Climate, type Ctx, type PlanetParams, type ClimateOptions,
+  ALBEDO, AtmosphereGpu, BANDS, D_RADIUS_EXPONENT, EBM, FIELD, GAMMA, ICE_K, ICE_L, ICE_RHO, NETRAD, PT, RH_REF, SEASON_S, SEASONS, SOIL, T_FREEZE, albedoStep, buildGeometry, capAt, capTable,
+  circulationOf, climateGpu, coAlbedo, declination, diffusionFor, edgesTwin, finishTwin, heldHouEdge, iceFreeCoAlbedo, iceShare, insolation, kernelConstants, landTables, mulShr, observedCoAlbedo, planetOf,
+  prepTwin, solveEbm, solveSoil, stepTwin, windTable, type Climate, type ClimateOptions, type Ctx, type Ebm, type PlanetParams, type Soil,
 } from "./atmosphere";
-import { oceanPlanet, ridgePlanet, twoContinents, westerlyContinent } from "./synthetic";
+import { earthlikePlanet, oceanPlanet, ridgePlanet, twoContinents, westerlyContinent } from "./synthetic";
 
 afterAll(releaseGpu);
 
@@ -32,6 +33,7 @@ const ocean = () => climateOf("ocean", () => oceanPlanet(geo));
 const ridge = () => climateOf("ridge", () => ridgePlanet(geo));
 const continents = () => climateOf("continents", () => twoContinents(geo));
 const westerly = () => climateOf("westerly", () => westerlyContinent(geo));
+const earth = () => climateOf("earth", () => earthlikePlanet(geo));
 
 // The area-weighted mean of a field over the cells whose latitude lies in [lo, hi) degrees.
 function band(f: ArrayLike<number>, lo: number, hi: number, keep: (i: number) => boolean = () => true) {
@@ -45,7 +47,7 @@ function band(f: ArrayLike<number>, lo: number, hi: number, keep: (i: number) =>
 const annual = (c: Climate, f: (s: Climate["seasons"][number]) => ArrayLike<number>) => Float32Array.from({ length: geo.n }, (_, i) => c.seasons.reduce((a, s) => a + f(s)[i], 0) / 4);
 const cellAtLatLon = (lat: number, lon: number) => { const p = locate(grid, lat * DEG, lon * DEG); return cellId(grid, p.face, p.X, p.Y); };
 const bytes = (f: Float32Array) => Buffer.from(f.buffer, f.byteOffset, f.byteLength);
-const golden = (c: Climate) => Bun.hash(Buffer.concat(c.seasons.flatMap((s) => [s.insolation, s.temperature, s.windE, s.windN, s.sst, s.ice, s.rain, s.snow, s.evaporation, s.runoff, s.column].map(bytes)))).toString(16);
+const golden = (c: Climate) => Bun.hash(Buffer.concat(c.seasons.flatMap((s) => [s.insolation, s.temperature, s.windE, s.windN, s.sst, s.ice, s.rain, s.snow, s.evaporation, s.potential, s.runoff, s.storage, s.column].map(bytes)))).toString(16);
 
 // ---- insolation ----
 test("insolation: the sphere's mean is S0 over 4, tilt 0 is S0 cos(phi) over pi, polar night is dark, and the annual mean has Earth's P2 term", () => {
@@ -77,26 +79,85 @@ test("insolation: the sphere's mean is S0 over 4, tilt 0 is S0 cos(phi) over pi,
 
 // ---- the energy balance ----
 // A planet of Earth's size with a bright sun (no ice anywhere), no land: the annual mean of a linear balance has the exact
-// modes T0 = (co-albedo S0/4 - A) / B and T_n = H_n / (B + n (n + 1) D) (North et al. 1981, R1437): the implicit tridiagonal
-// solve and the band operator against the analytic answer.
+// modes T0 = (F0 - A) / B and T_n = F_n / (B + n (n + 1) D), F the annual insolation times the ice-free co-albedo (North et al.
+// 1981, R1437): the implicit tridiagonal solve and the band operator against the analytic answer, with the co-albedo's latitude
+// term in it.
+const modes = (ebm: Ebm) => {
+  const x = Array.from(ebm.phi, (v) => Math.sin(v)), w = ebm.weight;
+  const avg = (a: Float64Array[]) => a.reduce((s, t) => s.map((v, k) => v + t[k] / 4), new Float64Array(BANDS));
+  const proj = (f: ArrayLike<number>, n: number) => { let s = 0; for (let k = 0; k < BANDS; k++) s += w[k] * f[k] * (n === 0 ? 1 : 0.5 * (3 * x[k] * x[k] - 1)); return s * (n === 0 ? 1 : 5); };
+  const q = avg(ebm.insolation), t = avg(ebm.mean), absorbed = q.map((v, k) => v * iceFreeCoAlbedo(x[k]));
+  return { T0: proj(t, 0), T2: proj(t, 2), F0: proj(absorbed, 0), F2: proj(absorbed, 2), Q0: proj(q, 0) };
+};
 test("energy balance: the annual mean has North's modes T0 and T2 to a percent, the global balance closes and the periodic state is reached", () => {
   const p = planetOf({ radius: 6.371e6, solar: 2000 });
   const ebm = solveEbm(p, new Float64Array(BANDS));
   expect(ebm.diffusion).toBeCloseTo(EBM.D_EARTH, 12);
-  const x = Array.from(ebm.phi, (v) => Math.sin(v)), w = ebm.weight;
-  const mean = ebm.mean.reduce((a, s) => a.map((v, k) => v + s[k] / 4), new Float64Array(BANDS)), q = ebm.insolation.reduce((a, s) => a.map((v, k) => v + s[k] / 4), new Float64Array(BANDS));
-  const proj = (f: ArrayLike<number>, n: number) => { let s = 0; for (let k = 0; k < BANDS; k++) s += w[k] * f[k] * (n === 0 ? 1 : 0.5 * (3 * x[k] * x[k] - 1)); return s * (n === 0 ? 1 : 5); };
-  const T0 = proj(mean, 0), T2 = proj(mean, 2), Q0 = proj(q, 0), Q2 = proj(q, 2);
-  expect(Q0).toBeGreaterThan(1999 / 4);
-  expect(Q0).toBeLessThan(2001 / 4);
-  expect(Math.abs(T0 - (EBM.CO_FREE * Q0 - EBM.A) / EBM.B)).toBeLessThan(0.05);
-  const T2exact = (EBM.CO_FREE * Q2) / (EBM.B + 6 * EBM.D_EARTH);
-  expect(Math.abs(T2 / T2exact - 1)).toBeLessThan(0.02);
+  const m = modes(ebm);
+  expect(m.Q0).toBeGreaterThan(1999 / 4);
+  expect(m.Q0).toBeLessThan(2001 / 4);
+  expect(Math.abs(m.T0 - (m.F0 - EBM.A) / EBM.B)).toBeLessThan(0.05);
+  expect(Math.abs(m.T2 / (m.F2 / (EBM.B + 6 * EBM.D_EARTH)) - 1)).toBeLessThan(0.02);
   // the year's net flux into the surface columns and the drift over the last year, at the planet's own D
   const planet = solveEbm(planetOf(), new Float64Array(BANDS));
-  expect(planet.diffusion).toBeCloseTo((EBM.D_EARTH * 6.371e6) / 2e6, 9);
+  expect(planet.diffusion).toBeCloseTo(diffusionFor(2e6), 9);
   expect(Math.abs(planet.balance)).toBeLessThan(0.02);
   expect(planet.drift).toBeLessThan(1e-3);
+});
+
+test("albedo: Earth's observed co-albedo comes back at Earth's temperature, the step runs from 0.32 to 0.15, and the co-albedo falls as the surface cools", () => {
+  const P2 = (x: number) => 0.5 * (3 * x * x - 1);
+  for (let x = 0; x <= 1.0001; x += 0.05) expect(Math.abs(coAlbedo(x, ALBEDO.T0 + ALBEDO.T2 * P2(x)) - observedCoAlbedo(x))).toBeLessThan(1e-12);
+  expect(albedoStep(0)).toBeCloseTo(EBM.CO_FREE - EBM.CO_ICE, 12);
+  expect(albedoStep(ALBEDO.X_ICE)).toBeCloseTo(ALBEDO.STEP_ICE, 12);
+  expect(albedoStep(1)).toBeCloseTo(ALBEDO.STEP_ICE, 12);
+  // the observed co-albedo's own numbers (R1437: 0.681 and -0.202): 0.782 at the equator and 0.479 at the pole (albedo 0.22 and 0.52)
+  expect(observedCoAlbedo(0)).toBeCloseTo(0.782, 3);
+  expect(observedCoAlbedo(1)).toBeCloseTo(0.479, 3);
+  // ice-free it is the observed one where the observed temperature has no ice, and 0.15 higher where it has
+  expect(iceFreeCoAlbedo(0.5)).toBeCloseTo(observedCoAlbedo(0.5), 12);
+  expect(iceFreeCoAlbedo(1) - observedCoAlbedo(1)).toBeCloseTo(ALBEDO.STEP_ICE, 12);
+  for (const x of [0, 0.3, 0.6, 0.95, 1]) {
+    expect(coAlbedo(x, 30)).toBeCloseTo(iceFreeCoAlbedo(x), 12);
+    let last = Infinity;
+    for (let t = 30; t >= -40; t -= 1) { const a = coAlbedo(x, t); expect(a).toBeLessThanOrEqual(last + 1e-15); last = a; }
+    expect(coAlbedo(x, -40)).toBeCloseTo(iceFreeCoAlbedo(x) - albedoStep(x), 12);
+  }
+  expect(iceShare(EBM.ICE_LINE)).toBeCloseTo(0.5, 12);
+});
+
+test("energy balance: Earth's size, North's solar constant and D reproduce his T0 14.97 C and T2 -28 C, and the planet's contrast follows the cited scaling with the radius", () => {
+  // Q = 335 W/m2 of his section 2 (S0 1340): the observed co-albedo and D 0.649 give back the observed annual mean and second mode
+  const earth = modes(solveEbm(planetOf({ radius: 6.371e6, solar: 1340 }), new Float64Array(BANDS)));
+  console.log(`Earth's radius, S0 1340: T0 ${earth.T0.toFixed(2)} C (14.97), T2 ${earth.T2.toFixed(2)} C (-28.0)`);
+  expect(Math.abs(earth.T0 - 14.97)).toBeLessThan(0.4);
+  expect(Math.abs(earth.T2 + 28.0)).toBeLessThan(1.5);
+  // the radius law (R1606): the planet's contrast over Earth's is (a / a_Earth)^0.34, through T2 = F2 / (B + 6 D)
+  expect(diffusionFor(6.371e6)).toBeCloseTo(EBM.D_EARTH, 12);
+  const D = diffusionFor(2e6), ratio = (EBM.B + 6 * EBM.D_EARTH) / (EBM.B + 6 * D);
+  expect(ratio).toBeCloseTo((2e6 / 6.371e6) ** D_RADIUS_EXPONENT, 12);
+  const bright = (r: number) => modes(solveEbm(planetOf({ radius: r, solar: 2000 }), new Float64Array(BANDS)));
+  const t2 = bright(2e6).T2 / bright(6.371e6).T2;
+  console.log(`D at 2,000 km ${D.toFixed(3)} W/m2/K (Earth ${EBM.D_EARTH}); T2 ratio ${t2.toFixed(3)} against (a/aE)^0.34 ${ratio.toFixed(3)}`);
+  expect(Math.abs(t2 / ratio - 1)).toBeLessThan(0.02);
+  expect(D).toBeGreaterThan(EBM.D_EARTH);
+  expect(diffusionFor(1e6)).toBeGreaterThan(D);
+});
+
+test("energy balance: the ice-albedo feedback has the right sign, and the planet's temperature rises with the solar constant", () => {
+  const global = (e: Ebm) => { let s = 0; for (let k = 0; k < BANDS; k++) s += e.weight[k] * e.mean.reduce((a, t) => a + t[k] / 4, 0); return s; };
+  const frac = new Float64Array(BANDS).fill(0.3);
+  const at = (f: number, feedback: boolean) => global(solveEbm(planetOf({ solar: 1366 * f }), frac, 200, feedback));
+  const warm = [0.8, 0.85, 0.9, 0.95, 1, 1.05, 1.1].map((f) => at(f, true));
+  console.log(`global mean temperature at 0.80 to 1.10 of the solar constant, with the feedback: ${warm.map((t) => t.toFixed(1)).join(" ")} C`);
+  for (let k = 0; k + 1 < warm.length; k++) expect(warm[k + 1]).toBeGreaterThan(warm[k]);
+  // cooling the sun by 10% cools it more with the ice's albedo than with it held at its ice-free value: the feedback amplifies
+  const drop = (feedback: boolean) => at(1, feedback) - at(0.9, feedback);
+  console.log(`a 10% dimmer sun cools the planet by ${drop(true).toFixed(2)} K with the feedback and ${drop(false).toFixed(2)} K without`);
+  expect(drop(false)).toBeGreaterThan(0);
+  expect(drop(true)).toBeGreaterThan(drop(false) + 0.05);
+  // and the amplification is the larger the more ice: a 20% dimmer sun
+  expect(at(1, true) - at(0.8, true) - (at(1, false) - at(0.8, false))).toBeGreaterThan(drop(true) - drop(false));
 });
 
 test("energy balance: land swings far more than the sea, the zonal mean falls poleward, and no seasons at tilt 0", () => {
@@ -203,7 +264,8 @@ test("geometry: neighbours are mutual, link normals are unit and opposite, and a
 // ---- the kernels against their twins ----
 test("kernels: prep, edges, step (twice, then with the accumulators) and finish equal their twins bit for bit", async () => {
   const g = await theGpu();
-  const a = await AtmosphereGpu.make(g, grid, ridgePlanet(geo), {});
+  const a = await AtmosphereGpu.make(g, grid, earthlikePlanet(geo), {});
+  a.setSoil(Float32Array.from({ length: a.n }, (_, i) => 0.3 + 0.7 * ((i % 97) / 97)));
   try {
     const n = a.n, pick = new Set<number>();
     for (let i = 0; i < n; i += 13) pick.add(i);
@@ -219,7 +281,7 @@ test("kernels: prep, edges, step (twice, then with the accumulators) and finish 
     a.run("prep");
     const afterPrep = await a.snapshot(0);
     for (const id of ids) prepTwin(t0, id);
-    same(afterPrep, t0.S, [FIELD.U, FIELD.V, FIELD.U0, FIELD.V0, FIELD.TS, FIELD.SST, FIELD.INS, FIELD.LAP, FIELD.FE, FIELD.MSAT, FIELD.FC, FIELD.FF, FIELD.ICE, ...[0, 1, 2, 3, 4].map((q) => FIELD.ST + q), FIELD.PACC], "prep");
+    same(afterPrep, t0.S, [FIELD.U, FIELD.V, FIELD.U0, FIELD.V0, FIELD.TS, FIELD.SST, FIELD.INS, FIELD.LAP, FIELD.FE, FIELD.MSAT, FIELD.FC, FIELD.FF, FIELD.ICE, FIELD.EP, ...[0, 1, 2, 3, 4].map((q) => FIELD.ST + q), FIELD.PACC], "prep");
     // edges: from the kernel's winds (all cells' winds are read, a neighbour's too)
     const t1 = { ...afterPrep, S: Int32Array.from(afterPrep.S) };
     a.run("edges");
@@ -227,9 +289,14 @@ test("kernels: prep, edges, step (twice, then with the accumulators) and finish 
     for (const id of ids) edgesTwin(t1, id);
     same(afterEdges, t1.S, [0, 1, 2, 3].map((d) => FIELD.R + d), "edges");
     const dt = await a.chooseStep();
+    // three and a half days of marching first, so that the convective adjustment, the saturation condensation and the land's
+    // evaporation all act in the steps compared (the first state is at 0.6 of saturation, under the adjustment's 0.7)
+    a.run("step", 0, 0, 600);
     // step, from the kernel's rates; the twin reads the state set the kernel read
     let prev = await a.snapshot(0);
     prev.dt = dt;
+    let raining = 0;
+    for (let id = 0; id < n; id++) if (prev.S[(FIELD.ST + 4) * n + id] > 0) raining++;
     for (let s = 0; s < 3; s++) {
       const par = s & 1, acc = s === 2;
       a.run("step", par, acc ? 1 : 0, 1);
@@ -246,6 +313,11 @@ test("kernels: prep, edges, step (twice, then with the accumulators) and finish 
     for (const id of ids) finishTwin(tf, id);
     same(done, tf.S, [FIELD.TN, FIELD.SNOW], "finish");
     expect(ids.length).toBeGreaterThan(30000);
+    // the paths compared were taken: rain falling in many cells, and the land giving vapour back
+    let landE = 0;
+    for (let id = 0; id < n; id++) if (a.land[id]) landE += done.S[FIELD.EACC * n + id];
+    expect(raining).toBeGreaterThan(5000);
+    expect(landE).toBeGreaterThan(0);
   } finally { a.release(); }
 });
 
@@ -306,8 +378,10 @@ test("ridge: rain on the windward slope, a rain shadow in the lee, water conserv
     console.log(`ridge rain mm/season, km east of the crest at 60 N: ${row.join(" ")}`);
     const upwind = mean(out.rain, -500, -300), windward = mean(out.rain, -150, -50), crest = mean(out.rain, -12, 12), lee = mean(out.rain, 50, 150), farLee = mean(out.rain, 300, 500);
     console.log(`ridge: upwind ${upwind.toFixed(0)}, windward ${windward.toFixed(0)}, crest ${crest.toFixed(0)}, lee ${lee.toFixed(0)}, far lee ${farLee.toFixed(0)}; shadow ratio lee/windward ${(lee / windward).toFixed(3)}`);
-    // the ridge is a 3 km barrier, so the air that arrives at 40% of saturation (see the impl note) is lifted past it: rain
-    // above 100 mm a season on its windward slope against none upwind, a shadow behind it [validation F2: the lee under half]
+    // the ridge is a 3 km barrier at 56 to 64 degrees, and its upwind ocean lies in the narrow strip at the Hadley edge where the
+    // mean surface divergence keeps the layer under the adjustment's 0.7 of saturation (the ocean planet's rain is zero in the 2
+    // degree bins at 56 to 60): the air is lifted past the ridge, rain above 100 mm a season on its windward slope against none
+    // upwind, a shadow behind it [validation F2: the lee under half]
     expect(upwind).toBeLessThan(1);
     expect(windward).toBeGreaterThan(100);
     expect(lee).toBeLessThan(0.5 * windward);
@@ -512,23 +586,214 @@ test("snow: all of a winter's precipitation on the ridge's crest falls as snow a
   for (let i = 0; i < geo.n; i += 5) expect(w.snow[i]).toBeLessThanOrEqual(w.rain[i] * 1.0001 + 1e-3);
 });
 
-test("land water: where nothing is stored, the rain that falls on land goes back to the air or runs off", async () => {
-  const c = await westerly();
-  for (const s of c.seasons) {
-    let rain = 0, back = 0, off = 0;
-    for (let i = 0; i < geo.n; i++) if (c.land[i]) { rain += geo.area[i] * s.rain[i]; back += geo.area[i] * s.evaporation[i]; off += geo.area[i] * s.runoff[i]; }
-    console.log(`${SEASONS[c.seasons.indexOf(s)]}: land rain ${(rain / 1e12).toExponential(3)} (mm km2 order), evaporated back ${((back / rain) * 100).toFixed(1)}%, runoff ${((off / rain) * 100).toFixed(1)}%`);
-    expect(Math.abs(rain - back - off) / rain).toBeLessThan(0.01);
-    expect(back).toBeGreaterThan(0);
-    expect(off).toBeGreaterThan(back);
+// ---- the water cycle: the convective adjustment, the land's evaporation and the soil bucket ----
+// One cell with no neighbours (every link rate 0) for the step twin, and one land cell for the prep twin: the laws' algebra
+// without a grid.
+function lone(land: boolean): Ctx {
+  const S = new Int32Array(FIELD.COUNT), T = new Int32Array(TABLE_WORDS), lt = landTables();
+  T.set(capTable(), TAB.CAP); T.set(lt.epw, TAB.EPW); T.set(lt.rnl, TAB.RNL);
+  S[FIELD.LAND] = land ? 1 : 0;
+  return { n: 1, S, G: new Int32Array(GEO.UNITS), T, k: kernelConstants(), blockL: 0, dt: 500, par: 0, acc: true };
+}
+test("convective adjustment: vapour above 0.7 of saturation relaxes to it at dt over 2 h and falls out at once; below it nothing falls; the saturation condensation stays", () => {
+  const c = lone(false), t15 = 15 * 65536, cap = capAt(c, t15), fb = FIELD.ST + 5;
+  const step = (m: number) => {
+    c.S[FIELD.ST] = t15; c.S[FIELD.ST + 1] = m; for (let q = 2; q < 5; q++) c.S[FIELD.ST + q] = 0;
+    stepTwin(c, 0);
+    return { m: c.S[fb + 1], cloud: c.S[fb + 2], rain: c.S[fb + 4] };
+  };
+  const frac = c.dt / 7200;
+  const above = step(Math.round(0.9 * cap));
+  expect(Math.abs(above.rain / ((0.9 - RH_REF) * cap) - frac)).toBeLessThan(1e-4);
+  expect(above.m).toBe(Math.round(0.9 * cap) - above.rain);
+  expect(above.cloud).toBe(0);
+  const under = step(Math.round(0.65 * cap));
+  expect(under.rain).toBe(0);
+  expect(under.m).toBe(Math.round(0.65 * cap));
+  // a layer pushed past saturation: the excess goes to cloud water, then the adjustment takes its share of what is left
+  const over = step(Math.round(1.2 * cap));
+  expect(Math.abs(over.cloud / (0.2 * cap) - 1)).toBeLessThan(1e-4);
+  expect(Math.abs(over.rain / ((1 - RH_REF) * cap) - frac)).toBeLessThan(1e-4);
+  expect(over.m).toBe(cap - over.rain);
+});
+test("Priestley and Taylor: the table is alpha Delta / (Delta + gamma) / lambda, and a land cell's potential evaporation is FAO-56's net radiation times it", () => {
+  const lt = landTables(), grid16 = (t: number) => (t - -120) * 16;
+  const slope = (t: number) => (4098 * 0.6108 * Math.exp((17.27 * t) / (t + 237.3))) / (t + 237.3) ** 2;
+  expect(slope(20)).toBeCloseTo(0.145, 3); // FAO-56 table 2.4: 0.145 kPa/K at 20 C
+  for (const t of [-10, 0, 10, 20, 30]) {
+    const want = (PT.ALPHA * slope(t)) / (slope(t) + PT.GAMMA) / PT.LAMBDA;
+    expect(Math.abs(lt.epw[grid16(t)] / 2 ** 44 / want - 1)).toBeLessThan(1e-6);
+  }
+  expect(PT.GAMMA).toBeCloseTo(0.0674, 4);
+  // a land cell at 25 C under a day-mean insolation of 400 W/m2, no slope and no height
+  const c = lone(true), node = (col: number, v: number) => { for (let j = 0; j < 2; j++) c.T[TAB.LT + col * NODES + j] = v; };
+  node(TAB.INS, 400 * 256); node(TAB.TL, 25 * 65536); node(TAB.TW, 25 * 65536);
+  prepTwin(c, 0);
+  const mmDay = (c.S[FIELD.EP] / 2 ** 40) * 86400;
+  const es = 0.6108 * Math.exp((17.27 * 25) / (25 + 237.3)), rs = (NETRAD.AS + NETRAD.BS * NETRAD.SUNSHINE) * 400;
+  const rnl = NETRAD.SIGMA * (25 + 273.15) ** 4 * (0.34 - 0.14 * Math.sqrt(RH_REF * es)) * ((1.35 * rs) / (NETRAD.CLEAR * 400) - 0.35);
+  const want = (((PT.ALPHA * slope(25)) / (slope(25) + PT.GAMMA)) * ((1 - NETRAD.ALBEDO) * rs - rnl) * 86400) / PT.LAMBDA;
+  console.log(`a land cell at 25 C and 400 W/m2: potential evaporation ${mmDay.toFixed(2)} mm/day (the formula in floats ${want.toFixed(2)})`);
+  expect(Math.abs(mmDay / want - 1)).toBeLessThan(0.01);
+  expect(mmDay).toBeGreaterThan(3.5);
+  expect(mmDay).toBeLessThan(5.5);
+  // polar night and a frozen surface: no net radiation, no evaporation
+  node(TAB.INS, 0); node(TAB.TL, -30 * 65536);
+  prepTwin(c, 0);
+  expect(c.S[FIELD.EP]).toBe(0);
+});
+test("soil bucket: wet climates evaporate at the potential rate and run the rest off, dry ones give all the rain back, winter's rain feeds summer, and the year closes", () => {
+  const land = Uint8Array.of(1);
+  const run = (rain: number[], pot: number[]): Soil => solveSoil(rain.map((v) => [v]), pot.map((v) => [v]), land);
+  const wet = run([600, 600, 600, 600], [300, 300, 300, 300]);
+  for (let s = 0; s < 4; s++) {
+    expect(wet.beta[s][0]).toBeCloseTo(1, 6);
+    expect(wet.evaporation[s][0]).toBeCloseTo(300, 3);
+    expect(wet.runoff[s][0]).toBeCloseTo(300, 3);
+    expect(Math.abs(wet.storage[s][0])).toBeLessThan(1e-3);
+  }
+  const dry = run([20, 20, 20, 20], [400, 400, 400, 400]);
+  for (let s = 0; s < 4; s++) { expect(Math.abs(dry.evaporation[s][0] - 20)).toBeLessThan(0.5); expect(dry.runoff[s][0]).toBe(0); expect(dry.beta[s][0]).toBeLessThan(0.06); }
+  // all the rain in winter, a hot dry summer: the soil is drawn down from spring on, and refilled in winter
+  const carry = run([0, 0, 0, 600], [250, 400, 250, 50]);
+  console.log(`winter rain only: evaporation by season ${[0, 1, 2, 3].map((s) => carry.evaporation[s][0].toFixed(0)).join(" ")} mm, storage ${[0, 1, 2, 3].map((s) => carry.storage[s][0].toFixed(0)).join(" ")}`);
+  expect(carry.evaporation[0][0]).toBeGreaterThan(100);
+  expect(carry.storage[0][0]).toBeLessThan(-50);
+  expect(carry.storage[3][0]).toBeGreaterThan(50);
+  expect(carry.runoff[3][0]).toBeGreaterThan(300);
+  // closure: each season rain = evaporation + runoff + storage, the year's storage is nil, evaporation never over the potential
+  for (const [rain, pot] of [[[100, 300, 500, 20], [200, 500, 300, 40]], [[10, 10, 900, 400], [600, 800, 100, 300]], [[0, 0, 0, 0], [100, 100, 100, 100]]]) {
+    const q = run(rain, pot);
+    let net = 0;
+    for (let s = 0; s < 4; s++) {
+      expect(Math.abs(rain[s] - q.evaporation[s][0] - q.runoff[s][0] - q.storage[s][0])).toBeLessThan(1e-3);
+      expect(q.evaporation[s][0]).toBeLessThanOrEqual(pot[s] * (1 + 1e-6));
+      expect(q.beta[s][0]).toBeGreaterThanOrEqual(0);
+      expect(q.beta[s][0]).toBeLessThanOrEqual(1);
+      net += q.storage[s][0];
+    }
+    expect(Math.abs(net)).toBeLessThan(0.05);
   }
 });
+test("land evaporation: the water the sea and the land give equals what falls plus what the air gains, the land gives no more than its efficiency of the potential, and dry soil gives none", async () => {
+  const g = await theGpu();
+  const a = await AtmosphereGpu.make(g, grid, westerlyContinent(geo), {});
+  try {
+    a.setSoil(Float32Array.from({ length: a.n }, () => 0.6));
+    const out = await a.season(1, { spinDays: 20 });
+    const b = out.budget;
+    let landE = 0, worst = 0, ratios: number[] = [];
+    for (let i = 0; i < a.n; i++) if (a.land[i]) {
+      landE += geo.area[i] * out.evaporation[i];
+      worst = Math.max(worst, out.evaporation[i] - 0.6 * out.potential[i] * 1.002 - 1e-3);
+      if (out.potential[i] > 50) ratios.push(out.evaporation[i] / out.potential[i]);
+    }
+    ratios.sort((x, y) => x - y);
+    console.log(`land evaporation, soil at 0.6: ${(landE / 1e9).toExponential(3)} (mm km2); share of the potential, median ${ratios[ratios.length >> 1].toFixed(3)}; budget: evaporated ${b.evaporated.toExponential(4)}, rained ${b.rained.toExponential(4)}, held ${b.held0.toExponential(4)} to ${b.held1.toExponential(4)}`);
+    expect(landE).toBeGreaterThan(0);
+    expect(worst).toBeLessThanOrEqual(0);
+    expect(ratios[ratios.length >> 1]).toBeGreaterThan(0.5);
+    expect(Math.abs(b.evaporated - b.rained - (b.held1 - b.held0)) / b.evaporated).toBeLessThan(0.005);
+    a.setSoil();
+    const dryRun = await a.season(1, { spinDays: 5, windowDays: 0.5 });
+    for (let i = 0; i < a.n; i++) if (a.land[i]) expect(dryRun.evaporation[i]).toBe(0);
+  } finally { a.release(); }
+});
+test("soil rounds: a continent's water closes through the bucket over the year and the marches settle", async () => {
+  const c = await westerly();
+  console.log(`soil: ${c.soil.rounds} rounds, the last march's evaporation ${(c.soil.residual * 100).toFixed(1)}% from the bucket's`);
+  expect(c.soil.rounds).toBe(SOIL.ROUNDS);
+  expect(c.soil.residual).toBeLessThan(0.15);
+  let rain = 0, evap = 0, off = 0, store = 0, annual = 0;
+  for (let i = 0; i < geo.n; i++) if (c.land[i]) {
+    let cell = 0;
+    for (const s of c.seasons) { rain += geo.area[i] * s.rain[i]; evap += geo.area[i] * s.evaporation[i]; off += geo.area[i] * s.runoff[i]; store += geo.area[i] * s.storage[i]; cell += s.storage[i]; expect(s.evaporation[i]).toBeLessThanOrEqual(s.potential[i] * 1.002 + 1e-3); expect(s.runoff[i]).toBeGreaterThanOrEqual(0); }
+    annual = Math.max(annual, Math.abs(cell));
+  }
+  console.log(`land, year: rain ${(rain / 1e12).toExponential(3)} (mm km2 order), evaporation ${((evap / rain) * 100).toFixed(1)}%, runoff ${((off / rain) * 100).toFixed(1)}%, storage ${((store / rain) * 100).toFixed(2)}%; largest cell's annual storage ${annual.toFixed(3)} mm`);
+  // rain = evaporation + runoff + storage by the bucket; the march's evaporation differs from the bucket's by the residual
+  expect(Math.abs(rain - evap - off - store)).toBeLessThan((c.soil.residual + 0.01) * evap);
+  expect(annual).toBeLessThan(0.05);
+  expect(evap).toBeGreaterThan(0);
+  expect(off).toBeGreaterThan(0);
+});
+test("earth-like planet: land gives back a third of its rain where the humidity-deficit term gave under 3%, the water closes, and the recycling is reported", async () => {
+  const c = await earth();
+  let area = 0, landArea = 0, rain = 0, evap = 0, off = 0, pot = 0, gRain = 0, gEvap = 0;
+  for (let i = 0; i < geo.n; i++) {
+    area += geo.area[i];
+    for (const s of c.seasons) { gRain += geo.area[i] * s.rain[i]; gEvap += geo.area[i] * s.evaporation[i]; }
+    if (!c.land[i]) continue;
+    landArea += geo.area[i];
+    for (const s of c.seasons) { rain += geo.area[i] * s.rain[i]; evap += geo.area[i] * s.evaporation[i]; off += geo.area[i] * s.runoff[i]; pot += geo.area[i] * s.potential[i]; }
+  }
+  console.log(`earth-like: land ${((landArea / area) * 100).toFixed(1)}%; land rain ${(rain / landArea / 365.25).toFixed(2)} mm/day, evaporation ${(evap / landArea / 365.25).toFixed(2)} (${((evap / rain) * 100).toFixed(0)}% of the rain; Earth 65% by the rivers' 35%), potential ${(pot / landArea / 365.25).toFixed(2)}, runoff ${((off / rain) * 100).toFixed(0)}%; the planet's rain ${(gRain / area / 365.25).toFixed(2)} and evaporation ${(gEvap / area / 365.25).toFixed(2)} mm/day; soil residual ${(c.soil.residual * 100).toFixed(1)}%`);
+  expect(landArea / area).toBeGreaterThan(0.24);
+  expect(landArea / area).toBeLessThan(0.33);
+  expect(evap / rain).toBeGreaterThan(0.2);
+  expect(evap / rain).toBeLessThan(0.9);
+  expect(Math.abs(gRain - gEvap) / gRain).toBeLessThan(0.03);
+});
+test("water cycle: a raining column sits just above 0.7 of saturation, the zonal rain has a tropical peak, a subtropical minimum that is not zero and a storm-track peak, and the air turns over in under half the old 45 days", async () => {
+  const c = await ocean(), circ = c.circulation, edge = circ.hadley / DEG;
+  const rain = annual(c, (s) => s.rain), mmDay = (v: number) => (v / 365.25) * 4;
+  const prof: number[] = [];
+  for (let la = 0; la < 90; la += 10) prof.push(mmDay(band(rain, la, la + 10)));
+  const peak = Math.max(...prof.slice(0, 3)), minimum = Math.min(...prof.slice(1, 7)), storm = Math.max(...prof.slice(5));
+  console.log(`rain by 10 degrees from the equator, mm/day: ${prof.map((v) => v.toFixed(2)).join(" ")}; tropical peak ${peak.toFixed(2)}, subtropical minimum ${minimum.toFixed(2)}, storm track ${storm.toFixed(2)}`);
+  expect(prof.indexOf(peak)).toBeLessThan(2);
+  expect(minimum).toBeGreaterThan(0.05);
+  expect(minimum).toBeLessThan(0.3 * peak);
+  expect(storm).toBeGreaterThan(2 * minimum);
+  // the minimum lies in the belt of descent (0.6 to 1.15 of the Hadley edge) and the storm track poleward of the cell's edge
+  const dryBand = prof.indexOf(minimum) * 10 + 5;
+  expect(dryBand).toBeGreaterThan(0.5 * edge);
+  expect(prof.indexOf(storm) * 10 + 5).toBeGreaterThan(edge);
+  // the global water: the rain, the layer and the turnover, against the cited 2.69 mm/day scaled by 2% a kelvin of the planet's
+  // own mean temperature (Held and Soden's energy constraint on the hydrologic cycle, R1436)
+  const total = geo.area.reduce((a, v) => a + v, 0);
+  const global = (f: Float32Array) => { let s = 0; for (let i = 0; i < geo.n; i++) s += geo.area[i] * f[i]; return s / total; };
+  const gP = global(annual(c, (s) => s.rain)) * 4 / 365.25, gW = global(annual(c, (s) => s.column)), gT = global(annual(c, (s) => s.temperature));
+  const target = 2.69 * (1 + 0.02 * (gT - 14.97)), residence = gW / gP;
+  console.log(`global: rain ${gP.toFixed(2)} mm/day against the target ${target.toFixed(2)} (2.69 scaled to ${gT.toFixed(1)} C), layer ${gW.toFixed(1)} mm, residence ${residence.toFixed(1)} days (Earth 8; 45 before the adjustment)`);
+  expect(gP).toBeGreaterThan(0.5 * target);
+  expect(residence).toBeLessThan(22);
+  // a raining column sits just above the reference share of saturation: the excess over it is what a time scale of 2 h rains out
+  const g = await theGpu();
+  const a = await AtmosphereGpu.make(g, grid, oceanPlanet(geo), {});
+  try {
+    const out = await a.season(1, { spinDays: 12, windowDays: 1 });
+    const par = (out.spinSteps + out.windowSteps) & 1, fin = await a.snapshot(par), shares: number[] = [];
+    for (let i = 0; i < a.n; i += 7) if (out.rain[i] > (0.5 * SEASON_S) / 86400) shares.push(fin.S[(FIELD.ST + 5 * par + 1) * a.n + i] / capAt(fin, fin.S[(FIELD.ST + 5 * par) * a.n + i]));
+    shares.sort((x, y) => x - y);
+    console.log(`${shares.length} raining samples (over 0.5 mm/day): the layer holds ${shares[shares.length >> 4].toFixed(3)} (6th percentile), ${shares[shares.length >> 1].toFixed(3)} (median) and ${shares[shares.length - 1 - (shares.length >> 4)].toFixed(3)} (94th) of saturation`);
+    expect(shares.length).toBeGreaterThan(2000);
+    expect(shares[shares.length >> 1]).toBeGreaterThan(RH_REF - 0.01);
+    expect(shares[shares.length >> 1]).toBeLessThan(RH_REF + 0.05);
+  } finally { a.release(); }
+});
+test("poles: the equator-to-pole contrast follows the cited radius scaling, and sea ice and polar snow form in the cold season", async () => {
+  const c = await ocean(), tn = annual(c, (s) => s.temperature);
+  const eq = band(tn, -10, 10), pole = (band(tn, 80, 90) + band(tn, -90, -80)) / 2, contrast = eq - pole;
+  const iceMax = Math.max(...c.seasons.map((s) => Math.max(...s.ice)));
+  const snowShare = band(annual(c, (s) => s.snow), 70, 90) / band(annual(c, (s) => s.rain), 70, 90);
+  const coldest = Math.min(...c.seasons.map((s) => band(s.temperature, 80, 90)));
+  console.log(`ocean planet: equator ${eq.toFixed(1)} C, poles ${pole.toFixed(1)} C, contrast ${contrast.toFixed(1)} K (the cited scaling gives ${(0.674 * 42.7).toFixed(1)} K between the second mode's ends, Earth about 40); coldest polar season ${coldest.toFixed(1)} C; thickest sea ice ${iceMax.toFixed(2)} m; snow ${(snowShare * 100).toFixed(1)}% of the rain at 70 to 90 degrees`);
+  expect(contrast).toBeGreaterThan(22);
+  expect(contrast).toBeLessThan(32);
+  expect(iceMax).toBeGreaterThan(0.05);
+  expect(snowShare).toBeGreaterThan(0.01);
+  expect(snowShare).toBeLessThan(1);
+});
 
-// The pinned output of the ridge planet over a short run (3 days of spin-up, a half-day window): Bun.hash over the four seasons'
-// fields, as the bytes of each field in the order of `golden`. Re-record deliberately when a law or a constant changes. The
-// energy balance and the circulation's tables are made in float64 and rounded to the kernels' integers, so the hash is one
-// engine's (Bun, JavaScriptCore) as the grid's tables are (grid.md, gap 3).
-const RIDGE_HASH = "3e6df7dbcb2e883a";
+// The pinned output of the ridge planet over a short run (3 days of spin-up, a half-day window, three soil rounds): Bun.hash over
+// the four seasons' fields, as the bytes of each field in the order of `golden`. Re-record deliberately when a law or a constant
+// changes. Re-recorded for the fixes of the rain (convective adjustment, scalar wind in the bulk law), the poles (the
+// co-albedo's latitude and temperature law, D by the radius scaling) and the land (Priestley and Taylor with Manabe's bucket,
+// two new fields in the hash: potential evaporation and soil storage); the old value was 3e6df7dbcb2e883a. The energy balance's,
+// the circulation's and the land's tables are made in float64 and rounded to the kernels' integers, so the hash is one engine's
+// (Bun, JavaScriptCore) as the grid's tables are (grid.md, gap 3).
+const RIDGE_HASH = "3f2c1001defc62a1";
 test("determinism: the same planet twice gives the same bytes, pinned to a hash", async () => {
   const short = { spinDays: 3, windowDays: 0.5 };
   const g = await theGpu();
