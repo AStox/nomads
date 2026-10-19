@@ -360,6 +360,28 @@ export function remap(r: Remap, field: ArrayLike<number>): Float32Array {
   const shift = coarseMean(r, field) - mean / LEN;
   return Float32Array.from(out, (v) => v + shift);
 }
+// The coarse field just beyond each edge cell of the window, smoothed as the remap smooths it (the box one coarse cell wide
+// one cell out along the edge's outward normal; at a corner the lower of the two) and shifted as the remapped field at the
+// edge cell is, NaN off the edge. `remapped` is remap(r, field).
+export function beyondEdge(r: Remap, field: ArrayLike<number>, remapped: Float32Array): Float32Array {
+  const { m, pad, box } = r, h = (box - 1) / 2, out = new Float32Array(LEN).fill(NaN);
+  const boxMean = (x: number, y: number) => {
+    let s = 0;
+    for (let j = pad + y - h; j <= pad + y + h; j++) for (let i = pad + x - h; i <= pad + x + h; i++) s += field[r.ids[j * m + i]];
+    return s / (box * box);
+  };
+  for (let i = 0; i < LEN; i++) {
+    const x = i % N, y = Math.floor(i / N);
+    if (x !== 0 && y !== 0 && x !== N - 1 && y !== N - 1) continue;
+    let low = Infinity;
+    if (x === 0) low = Math.min(low, boxMean(-1, y));
+    if (x === N - 1) low = Math.min(low, boxMean(N, y));
+    if (y === 0) low = Math.min(low, boxMean(x, -1));
+    if (y === N - 1) low = Math.min(low, boxMean(x, N));
+    out[i] = low + remapped[i] - boxMean(x, y);
+  }
+  return out;
+}
 
 // ---------- the window's parameters ----------
 // The rock of the island's table each class of the planet's stands for (tectonics LITH order: basalt, sediment,
@@ -390,6 +412,7 @@ export interface WindowParams {
   scourM: number; tillM: number; shiftM: number; // the joint valleys' greatest scour, the till's thickness, the present sea over the lowstand's
   rain: RainSeason[]; delays: Delays[]; place: ClimatePlace; angle: number;
   inflow: (Inflow & { areaKm2: number; x: number; y: number })[];
+  openEdge: number; // the edge cells water and rock leave over to the planet's surface beyond (R1717)
 }
 export interface Window {
   seed: number; latDeg: number; lonDeg: number;
@@ -397,8 +420,9 @@ export interface Window {
   coarse: { heightM: number; rainMm: number[]; surface: Float32Array }; // the overlap-weighted means of the planet's height and each season's rain over the window, and its smooth surface (m)
 }
 
-// The window's root of each land cell's receiver chain: the height its base level holds, the sea's (0) or the held map edge's.
-function bases(up: { height: Float32Array; to: Int32Array; land: Uint8Array }): Float64Array {
+// The window's root of each land cell's receiver chain: the height its base level holds, the sea's (0), the held outlet's or an
+// open edge's base level beyond the edge (`edgeBase`, NaN off the open edge).
+function bases(up: { height: Float32Array; to: Int32Array; land: Uint8Array }, edgeBase: Float32Array): Float64Array {
   const out = new Float64Array(LEN).fill(NaN), path: number[] = [];
   for (let i = 0; i < LEN; i++) {
     if (!up.land[i] || !Number.isNaN(out[i])) continue;
@@ -407,7 +431,7 @@ function bases(up: { height: Float32Array; to: Int32Array; land: Uint8Array }): 
       if (!Number.isNaN(out[j])) { v = out[j]; break; }
       path.push(j);
       const k = up.to[j];
-      if (k === j) { v = up.height[j]; break; }
+      if (k === j) { v = Number.isNaN(edgeBase[j]) ? up.height[j] : edgeBase[j]; break; }
       if (!up.land[k]) { v = 0; break; }
       j = k;
     }
@@ -459,10 +483,12 @@ export function upstreamOf(planet: Planet) {
   return s;
 }
 // The window of a planet at a place: the coarse fields remapped, then the island's stages run under them. Erosion runs to the
-// steady state of an uplift at the lowstand's sea, the water leaving only where the planet's rivers leave the window and into
-// its sea, three times: twice to find the uplift whose steady state has the planet's mean height (the steady state is the base
-// levels' heights plus the uplift times a field the rock and the network set, R1702), the second with the rock by depth below the
-// planet's surface, then the whole run.
+// steady state of an uplift at the lowstand's sea, every step ending with the threshold hillslopes' landslides (R1714), the
+// water leaving where the planet's rivers leave the window, into its sea and over the edge where the planet's surface falls away
+// beyond it (R1717): a first run at a small uplift, whose steady state is the base levels' heights plus the uplift times a field
+// the rock and the network set (R1702), gives the uplift that would hold the planet's mean height and the rock by depth below
+// the planet's surface; up to MEAN_RUNS more correct the uplift where the landslides make the mean grow more slowly than it;
+// then the whole run.
 export async function windowOf(gpu: Gpu, planet: Planet, latDeg: number, lonDeg: number): Promise<Window> {
   const f = frameAt(latDeg, lonDeg), r = remapOf(f), centre = coarseAt(f.c);
   const surface = remap(r, planet.height), pools = planet.pools.map((p) => remap(r, p));
@@ -507,12 +533,16 @@ export async function windowOf(gpu: Gpu, planet: Planet, latDeg: number, lonDeg:
   const inflowCells = new Float32Array(LEN);
   for (const v of inflow) inflowCells[v.at] += v.cells;
 
-  // the erosion (R1706): at the lowstand's sea, water leaving only by the outlets and the sea, uniform uplift on the rest of the land
+  // the erosion (R1706): at the lowstand's sea, water leaving by the outlets, the sea and the open edge, uniform uplift on the rest of the land
   const h0 = Float32Array.from(surface, (v) => v + shiftM), land = Uint8Array.from(h0, (v) => (v > 0 ? 1 : 0));
   const outlet = new Uint8Array(LEN);
   for (const k of outletAt) if (land[k]) outlet[k] = 1;
-  if (!outlet.includes(1) && land.every((v) => v === 1)) {
-    // a window with no sea that the planet's rivers do not leave: its lowest edge cell [design]
+  // the open edge (R1717): where the planet's surface falls away beyond an edge cell, water and rock leave over it to a base
+  // level at that surface (the sea's, where it lies under the lowstand's sea) [derived]; the rest of the edge is closed
+  const beyond = beyondEdge(r, planet.height, surface);
+  const edgeBase = Float32Array.from(beyond, (b, i) => (land[i] && !outlet[i] && b < surface[i] ? Math.max(0, b + shiftM) : NaN));
+  if (!outlet.includes(1) && land.every((v) => v === 1) && edgeBase.every(Number.isNaN)) {
+    // a window with no sea, no open edge and no planet's river leaving it: its lowest edge cell [design]
     let low = 0;
     for (let i = 0; i < LEN; i++) if (edge(i) && h0[i] < h0[low]) low = i;
     outlet[low] = 1;
@@ -521,10 +551,10 @@ export async function windowOf(gpu: Gpu, planet: Planet, latDeg: number, lonDeg:
   const key = philox([Math.round(latDeg * 1e6) >>> 0, Math.round(lonDeg * 1e6) >>> 0, 0, 0], [planet.seed >>> 0, WINDOW_STREAM]);
   const poolsAt = (i: number) => pools.map((p) => p[i]);
   const rockTop = Uint8Array.from({ length: LEN }, (_, i) => rockAtDepth(poolsAt(i), 0));
-  const lay = (rock: Uint8Array, u: number): WindowLay => ({ height: h0, land, rock, lift, outlet, inflow: inflowCells, upliftMYr: u, scourM, tillM, shiftM, key: [key[0], key[1]] });
+  const lay = (rock: Uint8Array, u: number): WindowLay => ({ height: h0, land, rock, lift, outlet, base: edgeBase, inflow: inflowCells, upliftMYr: u, scourM, tillM, shiftM, key: [key[0], key[1]] });
   const target = landMean(land, (i) => h0[i]), probe: number[] = [];
   const solve = async (rock: Uint8Array, u: number) => {
-    const { up } = await windowUpstreamGpu(gpu, lay(rock, u), false), base = bases({ height: up.height, to: up.to, land });
+    const { up } = await windowUpstreamGpu(gpu, lay(rock, u), false), base = bases({ height: up.height, to: up.to, land }, edgeBase);
     const b = landMean(land, (i) => base[i]), g = landMean(land, (i) => up.height[i] - base[i]);
     probe.push(landMean(land, (i) => up.height[i]));
     return { up, base, u: g > 0 ? Math.max(0, (u * (target - b)) / g) : 0 };
@@ -532,13 +562,16 @@ export async function windowOf(gpu: Gpu, planet: Planet, latDeg: number, lonDeg:
   const first = await solve(rockTop, PROBE_UPLIFT);
   const k1 = first.u / PROBE_UPLIFT;
   const rock = Uint8Array.from({ length: LEN }, (_, i) => rockAtDepth(poolsAt(i), Math.max(0, h0[i] - (first.base[i] + k1 * (first.up.height[i] - first.base[i])))));
-  // with the rock so laid the network still moves a little with the uplift: the uplift is corrected until the land's mean is
-  // the planet's to MEAN_TOLERANCE, at most MEAN_RUNS runs [design]
-  let u = first.u;
+  // with the rock so laid the network still moves with the uplift, and where the landslides hold the slopes the land's mean no
+  // longer grows in proportion to it: the uplift is corrected, first in proportion, then by the secant through the last two runs
+  // (the mean grows with the uplift), until the land's mean is the planet's to MEAN_TOLERANCE, at most MEAN_RUNS runs [design]
+  let u = first.u, last: [number, number] | null = null;
   for (let run = 0; run < MEAN_RUNS; run++) {
-    const next = await solve(rock, u);
-    if (Math.abs(probe[probe.length - 1] - target) <= MEAN_TOLERANCE * Math.max(1, target)) break;
-    u = next.u;
+    const next = await solve(rock, u), m = probe[probe.length - 1];
+    if (Math.abs(m - target) <= MEAN_TOLERANCE * Math.max(1, target)) break;
+    const secant = last && m !== last[1] ? u + ((target - m) * (u - last[0])) / (m - last[1]) : NaN;
+    last = [u, m];
+    u = secant > 0 ? secant : next.u;
   }
   const { up } = await windowUpstreamGpu(gpu, lay(rock, u), true);
   probe.push(target);
@@ -586,7 +619,10 @@ export async function windowOf(gpu: Gpu, planet: Planet, latDeg: number, lonDeg:
   const rainZ = Float32Array.from(detail, (z) => z / down);
   const stages: WindowStages = { rainZ, rain: rain.map((s) => ({ ...s, mm: s.mm / down })), delays, scaleRain, place, angle, inflow: inflow.filter((v) => up.land[v.at]) };
   const isle = await generateWindow(gpu, up, stages);
-  const params: WindowParams = { upliftMYr: u, probeMeanM: probe, scourM, tillM, shiftM, rain, delays, place: place(isle.seasons.map((s) => s.precip)), angle, inflow };
+  const params: WindowParams = {
+    upliftMYr: u, probeMeanM: probe, scourM, tillM, shiftM, rain, delays, place: place(isle.seasons.map((s) => s.precip)), angle, inflow,
+    openEdge: edgeBase.reduce((n, b) => n + (Number.isNaN(b) ? 0 : 1), 0),
+  };
   return { seed: planet.seed, latDeg, lonDeg, isle, sky: skyAt(latDeg), params, coarse: { heightM: mean(planet.height), rainMm, surface } };
 }
 // The fields a window's identity is pinned by (its tests' and its script's hash): the heights, the rock, the drift, the rain, the

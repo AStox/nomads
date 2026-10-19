@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { releaseGpu, theGpu } from "../src/gpu/device";
 import { STAGES, buildStage, landingCounts, landingsOf, readPlanet, windowBytes, windowOf, type Landing, type PlanetStore, type Stage, type Window } from "../src/gpu/globe/window";
-import { LEN, N } from "../src/terrain/grid";
+import { CELL, LEN, N } from "../src/terrain/grid";
 import { heightColor, mix, png, type RGB } from "./globe-maps";
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 
@@ -80,21 +80,24 @@ function coverMap(w: Window): Buffer {
   });
 }
 
-// A window's numbers: its means against the planet's, its land, height, water and rivers.
+// A window's numbers: its means against the planet's, its land, height, slope, water, rivers, channels and cover. The drainage
+// density counts a cell's side of channel a channel cell; peat is ground under 0.4 m of it or more (a Histosol, WRB 2022).
 function summary(w: Window) {
   const s = w.isle, sum = (a: ArrayLike<number>) => { let t = 0; for (let i = 0; i < a.length; i++) t += a[i]; return t; };
-  let land = 0, top = -Infinity, lake = 0, flow = 0, chan = 0, river = 0;
+  let land = 0, top = -Infinity, low = Infinity, lake = 0, flow = 0, chan = 0, river = 0, peat = 0;
   const slopes: number[] = [], cover = { tree: 0, shrub: 0, grass: 0, marsh: 0, bare: 0, sand: 0 };
   for (let i = 0; i < LEN; i++) {
     top = Math.max(top, s.height[i]);
     flow = Math.max(flow, s.flow[i]);
     if (s.height[i] <= 0) continue;
     land++;
+    low = Math.min(low, s.height[i]);
     if (s.water[i] > 0) { lake++; continue; }
+    const x = i % N, y = Math.floor(i / N);
     if (s.channel[i]) chan++;
     if (s.flow[i] > RIVER_M3S) river++;
+    if (s.peat[i] >= 0.4) peat++;
     for (const k of Object.keys(cover) as (keyof typeof cover)[]) cover[k] += s[k][i];
-    const x = i % N, y = Math.floor(i / N);
     if (x > 0 && y > 0 && x < N - 1 && y < N - 1) slopes.push((Math.atan(Math.hypot(s.height[i + 1] - s.height[i - 1], s.height[i + N] - s.height[i - N]) / 150) * 180) / Math.PI);
   }
   slopes.sort((a, b) => a - b);
@@ -104,10 +107,10 @@ function summary(w: Window) {
   return {
     at: `${w.latDeg.toFixed(2)}, ${w.lonDeg.toFixed(2)}`, meanHeightM: sum(s.height) / LEN, coarseHeightM: w.coarse.heightM, landMeanM: landSum / land,
     rainMm: w.isle.seasons.map((x) => sum(x.precip) / LEN), coarseRainMm: w.coarse.rainMm,
-    landShare: land / LEN, topM: top, slopeDeg: { p10: q(0.1), p50: q(0.5), p90: q(0.9), p99: q(0.99) },
-    lakeCells: lake, lakes: s.lakes, biggestFlowM3s: flow, riverCells: river, channelShare: chan / dry,
-    cover: Object.fromEntries(Object.entries(cover).map(([k, v]) => [k, Math.round((v / dry) * 1000) / 1000])),
-    upliftMmYr: w.params.upliftMYr * 1000, probeMeanM: w.params.probeMeanM, inflow: w.params.inflow.map((v) => ({ x: v.x, y: v.y, areaKm2: v.areaKm2, m3s: v.m3s })),
+    landShare: land / LEN, topM: top, reliefM: top - low, slopeDeg: { p10: q(0.1), p50: q(0.5), p90: q(0.9), p95: q(0.95), p99: q(0.99) },
+    lakeCells: lake, lakes: s.lakes, biggestFlowM3s: flow, riverCells: river, channelShare: chan / dry, drainageKmPerKm2: (chan * CELL) / 1000 / ((dry * CELL * CELL) / 1e6),
+    cover: Object.fromEntries(Object.entries(cover).map(([k, v]) => [k, Math.round((v / dry) * 1000) / 1000])), peatShare: peat / dry,
+    upliftMmYr: w.params.upliftMYr * 1000, probeMeanM: w.params.probeMeanM, openEdge: w.params.openEdge, inflow: w.params.inflow.map((v) => ({ x: v.x, y: v.y, areaKm2: v.areaKm2, m3s: v.m3s })),
     tC: w.isle.seasons.map((x) => sum(x.temp) / LEN), angleDeg: (w.params.angle * 180) / Math.PI, snowShift: w.params.place.snowShift,
   };
 }

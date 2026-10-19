@@ -8,7 +8,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
 import { ISLAND_PLACE, climateRestGpu } from "../terrain/climate";
-import { LEN, N } from "../../terrain/grid";
+import { CELL, LEN, N } from "../../terrain/grid";
+import { GRANITE, SANDSTONE, THRESHOLD_DEG } from "../../terrain/geology";
+import { windowUpstreamGpu, type WindowLay } from "../terrain/upstream";
 import { declination, skyAt, sunAt } from "../../sim/sky";
 import { midSeason } from "../../terrain/climate";
 import { RADIUS_M, tierGrid } from "./grid";
@@ -118,6 +120,72 @@ describe("the window", () => {
     expect(most).toBeGreaterThanOrEqual(Math.max(...w.params.inflow.map((v) => v.m3s.reduce((a, b) => a + b, 0) / 4)) * (1 - 1e-3));
   });
 
+  test("the landslides hold every slope to its rock's threshold, and water and rock leave over the open edge", async () => {
+    // a ramp of granite rising 0.1 m a m east from a sea along the west edge, uplifted far faster than the rivers can cut it, its
+    // east edge open to a base level 100 m under it; a hundredth of the ground is sandstone, in a band
+    const lay = (): WindowLay => {
+      const height = new Float32Array(LEN), land = new Uint8Array(LEN), rock = new Uint8Array(LEN).fill(GRANITE), base = new Float32Array(LEN).fill(NaN);
+      for (let i = 0; i < LEN; i++) {
+        const x = i % N, y = Math.floor(i / N);
+        height[i] = x < 20 ? -100 : (x - 19) * CELL * 0.1;
+        land[i] = x < 20 ? 0 : 1;
+        if (y >= 120 && y < 123) rock[i] = SANDSTONE;
+        if (x === N - 1) base[i] = height[i] - 100;
+      }
+      return { height, land, rock, lift: Float32Array.from(land), outlet: new Uint8Array(LEN), base, inflow: new Float32Array(LEN), upliftMYr: 5e-4, scourM: 0, tillM: 0, shiftM: 0, key: [1, 2] };
+    };
+    const g = await theGpu(), l = lay(), { up } = await windowUpstreamGpu(g, l, false), { up: again } = await windowUpstreamGpu(g, lay(), false);
+    const h = up.height, fall = (r: number) => Math.tan((THRESHOLD_DEG[r] * Math.PI) / 180) * CELL;
+    let worst = -Infinity, atThreshold = 0, land = 0, out = 0;
+    for (let i = 0; i < LEN; i++) {
+      if (!l.land[i]) continue;
+      land++;
+      const x = i % N, y = Math.floor(i / N), most = fall(up.rock[i]);
+      let steepest = Number.isNaN(l.base[i]) ? -Infinity : (h[i] - l.base[i]) / most;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const X = x + dx, Y = y + dy;
+        if ((!dx && !dy) || X < 0 || Y < 0 || X >= N || Y >= N) continue;
+        const j = Y * N + X, below = l.land[j] ? h[j] : Math.max(0, h[j]);
+        steepest = Math.max(steepest, (h[i] - below) / (most * Math.hypot(dx, dy)));
+      }
+      worst = Math.max(worst, steepest);
+      if (steepest > 0.99) atThreshold++;
+      if (x === N - 1 && up.to[i] === i && h[i] > l.base[i]) out++;
+    }
+    console.log(`threshold ramp: the steepest fall ${worst.toFixed(5)} of the threshold's, ${((100 * atThreshold) / land).toFixed(1)}% of the land at it, ${out} edge cells draining out, height ${Math.max(...h).toFixed(0)} m`);
+    // no fall is steeper than the threshold, beyond the rounding of the heights to float32 (half a unit in the last place of each,
+    // 2.4e-4 m at 4 km, over a fall of 54 m), and the law binds
+    expect(worst).toBeLessThan(1 + 1e-5);
+    expect(atThreshold).toBeGreaterThan(land / 10);
+    // the east edge drains out over its base level: every cell of it that stands above the base is a root
+    expect(out).toBeGreaterThan(N / 2);
+    // the same bytes twice, pinned
+    const hash = Bun.hash(Buffer.from(h.buffer)).toString(16);
+    expect(Bun.hash(Buffer.from(again.height.buffer)).toString(16)).toBe(hash);
+    expect(hash).toBe(RAMP_HASH);
+  });
+
+  test("a window's channels drain the ground water and leave it where it lies below their beds", async () => {
+    const { w } = await stagedWindow(), s = w.isle;
+    let chan = 0, under = 0, fed = 0, wet = 0, dry = 0;
+    for (let i = 0; i < LEN; i++) {
+      if (s.height[i] <= 0 || s.water[i] > 0) continue;
+      dry++;
+      if (s.table[i] < 0.25) wet++;
+      if (!s.channel[i]) continue;
+      chan++;
+      if (s.table[i] > 1) under++;
+      if (s.base[i] > 0 && s.table[i] < 1) fed++;
+    }
+    console.log(`staged window: channels ${((100 * chan) / dry).toFixed(1)}% of the dry land, ${((100 * under) / chan).toFixed(1)}% of them over a table more than 1 m down, ${fed} fed by the ground water at their stage; the table within 25 cm of the ground on ${((100 * wet) / dry).toFixed(1)}% of it`);
+    // a channel no longer holds the table at its stage where the ground water lies lower: some lie over a table well down
+    expect(under).toBeGreaterThan(0);
+    // and the ground water still comes out into the channels it reaches
+    expect(fed).toBeGreaterThan(0);
+    // so the table stands at the ground on less of the land than the channels cover
+    expect(wet).toBeLessThan(chan);
+  });
+
   test("the latitude moves the sun", async () => {
     // the island's sky is skyAt(55.1), word for word
     const island = skyAt(55.1);
@@ -166,6 +234,11 @@ describe("the window", () => {
 });
 
 // Bun.hash of windowBytes, recorded on the M3 Pro (one adapter: no second to compare against) [design: the pin's own record].
-const STAGED_HASH = "64d8306f54100bd";
-// Seed 1's planet (Bun.hash of its height and rock pools) and its first landing's window, recorded together.
-const SEED1 = { planet: "59280bbfdd111472", window: "a706caeaf5b5f4a7" };
+// Re-recorded when the window's erosion gained the threshold hillslopes and the open edge and its channels became drains.
+const STAGED_HASH = "39e4d2f8d7203637";
+// Bun.hash of the threshold ramp's heights, recorded on the M3 Pro [design: the pin's own record].
+const RAMP_HASH = "a2c97891ca1953ec";
+// Seed 1's planet (Bun.hash of its height and rock pools) and its first landing's window, recorded together. The planet rebuilt
+// on the committed ranges is the same bytes as the one the first pin was recorded on; the window was re-recorded for the same
+// change as the staged one.
+const SEED1 = { planet: "59280bbfdd111472", window: "596470d88bb2e5c4" };

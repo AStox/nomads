@@ -18,7 +18,7 @@ import { CELL, LEN, N } from "../../terrain/grid";
 import { BARE, DRIFTS, ROCKS } from "../../terrain/geology";
 import { ROOTS } from "../../terrain/growth";
 import { NICHE } from "../../terrain/niche";
-import { AT_D, BANKFULL, BUCKET, CONFINED, FALL, FLOOD, HEAD_C, KC_DEEP, KC_SHALLOW, RHO, G, SEASON_S, SHIELDS, SUBMERGED, SY_DRIFT, SY_ROCK, T_FILL, WIDE_WOOD, YEAR_S } from "../../terrain/water";
+import { AT_D, BANKFULL, BUCKET, CONFINED, FALL, FLOOD, HEAD_C, KC_DEEP, KC_SHALLOW, RHO, G, SEASON_S, SHIELDS, SUBMERGED, SY_DRIFT, SY_ROCK, T_FILL, WIDE_WOOD, WINDOW_HEAD_C, YEAR_S } from "../../terrain/water";
 import { FIXED } from "./fixed";
 
 // ---------- units ----------
@@ -204,11 +204,16 @@ const KC_X = ${q16(KC_WET - 1)}i;
 const SUMMER = ${SUMMER}u;
 const RISE_Z = ${Math.round((W ? 2 ** fmt.zb / 65536 / 1000 : 0.016) * 2 ** 32)}u;
 const SWEEP_TOL = ${(W ? Math.round(0.002 * ZS) : SWEEP_TOLERANCE_Z) + 1}u;
-const HEAD_NUM = ${Math.round(CELL / HEAD_C)}u;
+${W ? headWords() : `const HEAD_NUM = ${Math.round(CELL / HEAD_C)}u;`}
 const OFF = 1073741824i;
 `;
 };
 
+// A window's channel head: cells * fall^2 against (C / CELL) 2^60 as two words, low and high, C its own (WINDOW_HEAD_C).
+const headWords = () => {
+  const t = BigInt(Math.round((WINDOW_HEAD_C / CELL) * 2 ** 52)) << 8n;
+  return `const HEAD_T0 = ${t & 0xffffffffn}u;\nconst HEAD_T1 = ${t >> 32n}u;`;
+};
 const kernelsOf = (fmt: WaterFormat) => {
   // the units the format's words imply: the shift that takes a height in Z to whole units of its scale, the slope35 fall's
   // units (2^-(zb + 15)) to Q30, and the log2 of a flow's scale over Q16's
@@ -475,13 +480,19 @@ fn flow0(@builtin(global_invocation_id) g: vec3u) {
 
 // ---------- where a channel begins and every cell below one (water.ts channelOf) ----------
 fn nonspill(i: u32) -> bool { let h = gi(f_hol, i); return h >= 0i && gi(f_spl, u32(h)) == 0i; }
-// 3 * cells * fall^2 >= 2^60, which is (area / CELL) fall^2 >= HEAD_C with the area gathered as cells
+${W ? `// cells * fall^2 >= (C / CELL) 2^60, which is (area / CELL) fall^2 >= C with the area gathered as cells
+fn begins(cells: u32, fall: u32) -> bool {
+  let f2 = mul64(fall, fall);
+  let p0 = mul64(f2.x, cells); let p1 = mul64(f2.y, cells);
+  let w1 = p0.y + p1.x; let w2 = p1.y + select(0u, 1u, w1 < p0.y);
+  return w2 != 0u || w1 > HEAD_T1 || (w1 == HEAD_T1 && p0.x >= HEAD_T0);
+}` : `// 3 * cells * fall^2 >= 2^60, which is (area / CELL) fall^2 >= HEAD_C with the area gathered as cells
 fn begins(cells: u32, fall: u32) -> bool {
   let f2 = mul64(fall, fall); let m = HEAD_NUM * cells;
   let p0 = mul64(f2.x, m); let p1 = mul64(f2.y, m);
   let w1 = p0.y + p1.x; let w2 = p1.y + select(0u, 1u, w1 < p0.y);
   return w2 != 0u || w1 >= (1u << 28u);
-}
+}`}
 fn channel_cell(i: u32) {
   let valid = gi(f_sea, i) == 0i && !nonspill(i);
   var c = 0i;
@@ -549,7 +560,10 @@ fn stage_of(i: u32) -> Stage {
   return Stage(true, zh - sat32(rsar64(smul64(d, u32(ONE_MINUS_D04)), 16u)));
 }
 
-// the fixed heads (the sea, lakes, channels), and for the second solve the transmissivity from the first one's head
+${W ? `// A window's channels are drains (MODFLOW's DRN with a free conductance, R1715): a channel holds the head at its stage only
+// where the ground water would stand above it and runs out into the channel (isf 2: the head is capped at fxv, as the ground
+// caps any other cell's), and leaves it alone where the table lies below the bed, as a dry or losing channel does.
+` : ""}// the fixed heads (the sea, lakes, channels), and for the second solve the transmissivity from the first one's head
 @compute @workgroup_size(256)
 fn fixedset(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x;
@@ -558,14 +572,14 @@ fn fixedset(@builtin(global_invocation_id) g: vec3u) {
   if (P[0] == 0u) {
     if (sea) { isf = 1i; fxv = 0i; }
     else if (gi(f_basin, i) != 0i) { isf = 1i; fxv = gi(f_filled, i); }
-    else if (gi(f_chn, i) != 0i) { let s = stage_of(i); if (s.ok) { isf = 1i; fxv = s.z; } }
+    else if (gi(f_chn, i) != 0i) { let s = stage_of(i); if (s.ok) { isf = ${W ? "2i" : "1i"}; fxv = s.z; } }
   } else {
     let dd = gi(f_dd, i);
     let sat = clamp(gi(f_head, i) - (gi(f_h, i) - dd), 0i, dd);
     let p = add64(mul64(gu(f_drK, i), u32(sat)), vec2u(1u << ${zb - 1}u, 0u));
     wu(f_tt, i, gu(f_bedT, i) + ((p.x >> ${zb}u) | (p.y << ${32 - zb}u)));
     if (gi(f_open, i) != 0i) { isf = 1i; fxv = select(gi(f_h, i) + gi(f_water, i), 0i, sea); }
-    else if (gi(f_chn, i) != 0i) { let s = stage_of(i); if (s.ok) { isf = 1i; fxv = s.z; } }
+    else if (gi(f_chn, i) != 0i) { let s = stage_of(i); if (s.ok) { isf = ${W ? "2i" : "1i"}; fxv = s.z; } }
   }
   wi(f_isf, i, isf); wi(f_fxv, i, fxv);
 }
@@ -620,7 +634,7 @@ fn gw_et(i: u32, d: i32) -> i32 {
 @compute @workgroup_size(256)
 fn aqprep(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x;
-  if (gi(f_isf, i) != 0i) { wi(f_head, i, gi(f_fxv, i)); }
+  ${W ? "if (gi(f_isf, i) == 1i) { wi(f_head, i, gi(f_fxv, i)); } else if (gi(f_isf, i) == 2i) { wi(f_head, i, min(gi(f_head, i), gi(f_fxv, i))); }" : "if (gi(f_isf, i) != 0i) { wi(f_head, i, gi(f_fxv, i)); }"}
   let x = i & 255u;
   let tt = gu(f_tt, i);
   wu(f_ce, i, select(0u, harm(tt, gu(f_tt, min(i + 1u, LEN - 1u))), x < 255u));
@@ -642,7 +656,7 @@ fn aqw(@builtin(global_invocation_id) g: vec3u) {
   var unmet = 0i; var pet = 0i;
   for (var s = 0u; s < 4u; s++) { unmet += gs(f_sh0, s, i); pet += gs(f_pe0, s, i); }
   let ps = gs(f_pe0, SUMMER, i);
-  if ((unmet > 0i || ps > 0i) && gi(f_isf, i) == 0i) {
+  if ((unmet > 0i || ps > 0i) && gi(f_isf, i) ${W ? "!= 1i" : "== 0i"}) {
     let lq = qmul(unmet + qmul(pet, qmul(gi(f_eve, i), gi(f_evs, i))), gi(f_evb, i)) + qmul(qmul(KC_X, ps), REED_SLOPE);
     kd = max(1u, mulshr(u32(lq), KD_K, 16u));
   }
@@ -678,7 +692,7 @@ fn aquifer(@builtin(local_invocation_index) t: u32) {
       let y = dg - t;
       if (t >= 1u && t <= 254u && dg > t && y <= 254u) {
         let i = y * 256u + t;
-        if (F[f_isf + i] == 0i) {
+        if (F[f_isf + i] ${W ? "!= 1i" : "== 0i"}) {
           var acc = mul64(bitcast<u32>(F[f_head + i - 1u] + OFF), gu(f_ww, i));
           acc = add64(acc, mul64(bitcast<u32>(F[f_head + i + 1u] + OFF), gu(f_we, i)));
           acc = add64(acc, mul64(bitcast<u32>(F[f_head + i - 256u] + OFF), gu(f_wn, i)));
@@ -690,7 +704,7 @@ fn aquifer(@builtin(local_invocation_index) t: u32) {
           if (kd != 0u) { want -= i32(mul64(u32(gw_et(i, gi(f_h, i) - F[f_head + i])), gu(f_eaf, i)).y); }
           let hc = F[f_head + i];
           let d = want - hc;
-          let v = min(gi(f_h, i), hc + d + (3i * d + select(-2i, 2i, d >= 0i)) / 5i);
+          let v = min(${W ? "select(gi(f_h, i), F[f_fxv + i], F[f_isf + i] == 2i)" : "gi(f_h, i)"}, hc + d + (3i * d + select(-2i, 2i, d >= 0i)) / 5i);
           mine = max(mine, u32(abs(v - hc)));
           F[f_head + i] = v;
         }
@@ -745,8 +759,8 @@ fn routeprep(@builtin(global_invocation_id) g: vec3u) {
   if (!sea) {
     if (open) { ln = mm_v(lake_mm(gi(f_depth, i), i)); }
     let o = gi(f_out, i);
-    if (gi(f_isf, i) != 0i) { gw = o; }
-    else if (!(gi(f_head, i) < gi(f_h, i)) && o > 0i) { bk = min(mm_v(rs), o); gw = o - bk; }
+    if (gi(f_isf, i) ${W ? "== 1i" : "!= 0i"}) { gw = o; }
+    else if (!(gi(f_head, i) < ${W ? "select(gi(f_h, i), gi(f_fxv, i), gi(f_isf, i) == 2i)" : "gi(f_h, i)"}) && o > 0i) { bk = min(mm_v(rs), o); gw = o - bk; }
   }
   wi(f_gw, i, gw); wi(f_bk, i, bk); wi(f_ln, i, ln);
   let wet = gi(f_wet, i);

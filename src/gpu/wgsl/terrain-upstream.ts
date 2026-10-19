@@ -22,7 +22,7 @@
 // n of one Philox4x32-10 stream keyed by the island's key, and the layout kernel reads them in that order, so which valley
 // a draw belongs to is fixed by its place in the order and by nothing the threads do.
 import { CELL, LEN, N } from "../../terrain/grid";
-import { BARE, DOLERITE, GRANITE, MELTWATER, ROCKS, SANDSTONE, TILL_CLAY, TILL_MAX, TILL_SAND } from "../../terrain/geology";
+import { BARE, DOLERITE, GRANITE, MELTWATER, ROCKS, SANDSTONE, THRESHOLD_DEG, TILL_CLAY, TILL_MAX, TILL_SAND } from "../../terrain/geology";
 import {
   DEG, DIP, DYKE_LEN, ERODE, FLOOD_EPS, JOINT_GAP, JOINT_REACH, JOINTS, OFF_GRANITE, OFF_SEDIMENT, SCOUR, SHORE, SILL, STACK, STACK_TOP, VALLEY_GAP, VALLEY_LEN, WATER_TABLE,
 } from "../../terrain/island";
@@ -60,7 +60,7 @@ export const AT_OF = Object.fromEntries(AT_REGIONS.map((n, k) => [n, k])) as Rec
 // The counters: the basement's cells, the flags below, and the deepest depth a sort found.
 export const CNT = { basement: 0, flags: 1, top: 2 };
 // Flags a run can raise (the flags counter), which the host turns into errors or a rerun with more rounds.
-export const FLAG = { chain: 1, depth: 2, floodErode: 4, floodFinal: 8, valleys: 16, draws: 32, dykes: 64, hollow: 128, tall: 256 };
+export const FLAG = { chain: 1, depth: 2, floodErode: 4, floodFinal: 8, valleys: 16, draws: 32, dykes: 64, hollow: 128, tall: 256, slide: 512 };
 // misc words
 export const MISC = { nland: 0, hinge: 1, nvalley: 2, ndyke: 3, maxd: 4, tauLo: 5, tauHi: 6, eps: 7 };
 
@@ -82,12 +82,14 @@ export const PAR = {
 
 // The formats a run's kernels are generated in: the island's, and a window's, whose heights reach kilometres above and below the
 // sea. A window's words are Q16 m (32 km in an i32; the blur's offset of 8 km keeps a sea floor to 8 km deep positive and its
-// sum of nine words of 10-bit parts in a u32 to 57 km). Its map edge is no outlet: water leaves the map only where the planet's
-// rivers leave it (`sea`, which a window does not use for the sea floor, marks those cells, which are held: the flood starts
-// from them and from the sea, and they drain nowhere) and into its sea; every other cell of the edge is relaxed and eroded as
-// the inside is. Rivers from beyond the edge add their area at the cell they enter (`dep`, which the window does not use for the
-// basement's depth), the ice's scour and till are parameters, and a kernel lowers the heights to the present sea before the
-// hollows [design].
+// sum of nine words of 10-bit parts in a u32 to 57 km). Water leaves a window's map where the planet's rivers leave it (`sea`,
+// which a window does not use for the sea floor, marks those cells, which are held: the flood starts from them and from the
+// sea, and they drain nowhere), into its sea, and over the edge where the planet's surface falls away beyond it: such an open
+// edge cell (`bl`, the shore distance's word, which a window does not use, holds its base level beyond the edge in Z, INFZ
+// where the edge is closed) is uplifted and eroded as the inside is, and drains out when the fall to that base level is its
+// steepest. Rivers from beyond the edge add their area at the cell they enter (`dep`, which the window does not use for the
+// basement's depth), the ice's scour and till are parameters, every step ends with the threshold hillslopes' landslides, and a
+// kernel lowers the heights to the present sea before the hollows [design].
 export interface UpstreamFormat { zs: number; window: boolean }
 export const ISLAND_FORMAT: UpstreamFormat = { zs: ZS, window: false };
 export const WINDOW_FORMAT: UpstreamFormat = { zs: 2 ** 16, window: true };
@@ -104,6 +106,15 @@ const invK = ROCKS.map((r) => Math.round(64 / Math.fround(r.erode)));
 const epsOf = (zs: number) => [Math.max(1, Math.round(FLOOD_EPS.erode * zs)), Math.max(1, Math.round(FLOOD_EPS.island * zs))];
 export const [EPS_ERODE, EPS_ISLAND] = epsOf(ZS);
 
+// A window's own words: the open edge's field, the landslides' flag and each rock's threshold fall over one cell's reach, Z.
+const windowConsts = (fmt: UpstreamFormat) => {
+  const fall = (d: number) => THRESHOLD_DEG.map((deg) => `${Math.round(Math.tan(deg * DEG) * CELL * d * fmt.zs)}i`).join(", ");
+  return `const f_bl = f_sh;
+const FLAG_SLIDE = ${FLAG.slide}i;
+const SLIDE_ORTH = array<i32, ${ROCKS.length}>(${fall(1)});
+const SLIDE_DIAG = array<i32, ${ROCKS.length}>(${fall(Math.SQRT2)});
+`;
+};
 const constsOf = (fmt: UpstreamFormat) => {
   const ZS = fmt.zs, z = (m: number) => Math.round(m * ZS), profile = (p: number[]) => p.map((v) => `${z(v)}i`).join(", ");
   const [EPS_ERODE, EPS_ISLAND] = epsOf(ZS);
@@ -221,7 +232,7 @@ const P_UDT = ${PAR.udt}u;
 const P_CREEP = ${PAR.creep}u;
 const P_KA = ${PAR.ka}u;
 const P_ADV = ${PAR.adverse}u;
-${fmt.window ? `const P_SCOUR = ${PAR.scour}u;\nconst P_TILL = ${PAR.till}u;\nconst P_SHIFT = ${PAR.shift}u;\n` : ""}`;
+${fmt.window ? `const P_SCOUR = ${PAR.scour}u;\nconst P_TILL = ${PAR.till}u;\nconst P_SHIFT = ${PAR.shift}u;\n${windowConsts(fmt)}` : ""}`;
 };
 
 // The blur's six passes, three of box means of nine cells along x then y with the edge repeated: (sum + 4) / 9 of the
@@ -557,10 +568,13 @@ fn epse() { wi(f_misc, MISC_EPS, EPS_ERODE); }
 @compute @workgroup_size(1)
 fn epsf() { wi(f_misc, MISC_EPS, EPS_ISLAND); }
 ${fmt.window ? `fn seed(i: u32) -> bool { return gi(f_sea, i) != 0i || gi(f_land, i) == 0i; }
+// an open edge cell starts at the way out over the edge, its base level beyond it plus the step, and relaxes as the inside does
 @compute @workgroup_size(256)
 fn flinit(@builtin(global_invocation_id) g: vec3u) {
-  let i = g.x;
-  atomicStore(&AT[a_fl + i], select(INFZ, gi(f_h, i), seed(i)));
+  let i = g.x; let b = gi(f_bl, i);
+  var v = select(INFZ, gi(f_h, i), seed(i));
+  if (!seed(i) && b != INFZ) { v = max(gi(f_h, i), b + gi(f_misc, MISC_EPS)); }
+  atomicStore(&AT[a_fl + i], v);
 }
 fn flround(i: u32) -> bool {
   let x = i32(i & 255u); let y = i32(i >> 8u);
@@ -610,7 +624,13 @@ fn recv(@builtin(global_invocation_id) g: vec3u) {
       let odd = (d & 1u) == 1u;
       let key = mul64(u32(dz), select(SLOPE_ORTH, SLOPE_DIAG, odd));
       if (lt64(best, key)) { best = key; to = j; diag = select(0i, 1i, odd); }
-    }
+    }${fmt.window ? `
+    // an open edge cell drains out of the map where the fall to its base level beyond the edge is the steepest: it is a root
+    let b = gi(f_bl, i);
+    if (b != INFZ && f > b) {
+      let key = mul64(u32(f - b), SLOPE_ORTH);
+      if (lt64(best, key)) { best = key; to = i; diag = 0i; }
+    }` : ""}
   }
   wu(f_to, i, to);
   wi(f_far, i, diag);
@@ -722,12 +742,12 @@ fn clock(@builtin(local_invocation_index) t: u32) {
     for (var p = lo + t; p < hi; p += 256u) {
       let i = gu(f_ub, p); let j = gu(f_to, i);
       var tm = vec2u(0u, 0u);
-      if (gi(f_land, i) != 0i && j != i) {
+      if (gi(f_land, i) != 0i && ${fmt.window ? "(j != i || gi(f_bl, i) != INFZ)" : "j != i"}) {
         // far / (K sqrt(A)) with far in Q16 and sqrt(A) in Q16 cells: 1 / K in Q6 years times far over sqrt(A)
         let s = sqrt64(vec2u(0u, u32(gi(f_area, i))));
         let far = select(ORTH, DIAG, gi(f_far, i) != 0i);
         let n = mul64(INV_K[u32(gi(f_rock, i))], far);
-        tm = add64(ld(f_tml, j), vec2u(divw(n.y, n.x, s).x, 0u));
+        tm = add64(${fmt.window ? "select(ld(f_tml, j), vec2u(0u, 0u), j == i)" : "ld(f_tml, j)"}, vec2u(divw(n.y, n.x, s).x, 0u));
       }
       wu(f_tml, i, tm.x); wu(f_tmh, i, tm.y);
     }
@@ -771,7 +791,7 @@ fn implicit(@builtin(local_invocation_index) t: u32) {
       let i = gu(f_ub, p);
       if (gi(f_land, i) == 0i) { continue; }
       let j = gu(f_to, i);
-      let hj = select(0i, gi(f_h, j), gi(f_land, j) != 0i);
+      let hj = ${fmt.window ? "select(select(0i, gi(f_h, j), gi(f_land, j) != 0i), gi(f_bl, i), j == i && gi(f_bl, i) != INFZ)" : "select(0i, gi(f_h, j), gi(f_land, j) != 0i)"};
       let hi_ = gi(f_h, i);
       if (hj >= hi_) { continue; }
       // f in Q16 (the product of K dt in Q16 and sqrt(A) / far in Q16), then 1 / (1 + f) in Q32; a larger f in Q8
@@ -795,8 +815,10 @@ fn creep_step(src: u32, dst: u32, i: u32) {
   let s = gi(src, i - 1u) + gi(src, i + 1u) + gi(src, i - 256u) + gi(src, i + 256u) - 4i * gi(src, i);
   wi(dst, i, gi(src, i) + mulq32(s, P[P_CREEP]));
 }
+${fmt.window ? `// a window's rim is land: its cells hold their own heights beside the creeping ones (the sea its level, zero), in both buffers
 @compute @workgroup_size(256)
-fn crpin(@builtin(global_invocation_id) g: vec3u) { if (inland(g.x)) { wi(f_zc, g.x, gi(f_h, g.x)); } }
+fn crpin(@builtin(global_invocation_id) g: vec3u) { let v = select(0i, gi(f_h, g.x), gi(f_land, g.x) != 0i); wi(f_zc, g.x, v); wi(f_zw, g.x, v); }` : `@compute @workgroup_size(256)
+fn crpin(@builtin(global_invocation_id) g: vec3u) { if (inland(g.x)) { wi(f_zc, g.x, gi(f_h, g.x)); } }`}
 @compute @workgroup_size(256)
 fn crpab(@builtin(global_invocation_id) g: vec3u) { creep_step(f_zc, f_zw, g.x); }
 @compute @workgroup_size(256)
@@ -1020,7 +1042,41 @@ fn wshift(@builtin(global_invocation_id) g: vec3u) {
   let h = gi(f_h, i) - bitcast<i32>(P[P_SHIFT]);
   wi(f_h, i, h);
   wi(f_land, i, select(0i, 1i, h > 0i));
+  let b = gi(f_bl, i);
+  if (b != INFZ) { wi(f_bl, i, b - bitcast<i32>(P[P_SHIFT])); }
 }
+
+// ---------- threshold hillslopes: no slope stands steeper than its rock's threshold, landslides taking what would ----------
+// Hillslopes in rapidly eroding ranges stand at a threshold angle set by the rock mass's strength, and a faster incision
+// is met by more frequent landsliding, not by steeper slopes (Burbank et al. 1996; Montgomery 2001; Binnie et al. 2007,
+// R1714). After each step every land cell is lowered to the least over its eight neighbours (and an open edge's base level
+// beyond it) of that height plus the threshold's fall over the distance; the sea stands at zero beside the coast. The
+// result is the greatest surface under the heights with no fall steeper than the threshold, the one fixed point of the
+// relaxation, so it is found by atomicMin rounds until a round changes nothing and comes out the same in any thread order;
+// what the landslides take leaves the map, as the incision's does.
+@compute @workgroup_size(256)
+fn slinit(@builtin(global_invocation_id) g: vec3u) { let h = gi(f_h, g.x); atomicStore(&AT[a_fl + g.x], select(max(0i, h), h, gi(f_land, g.x) != 0i)); }
+fn slround(i: u32) -> bool {
+  if (gi(f_land, i) == 0i || gi(f_sea, i) != 0i) { return false; }
+  let x = i32(i & 255u); let y = i32(i >> 8u); let r = u32(gi(f_rock, i));
+  var m = INFZ;
+  let b = gi(f_bl, i);
+  if (b != INFZ) { m = b + SLIDE_ORTH[r]; }
+  for (var d = 0u; d < 8u; d++) {
+    let nx = x + DX[d]; let ny = y + DY[d];
+    if (nx < 0i || ny < 0i || nx > 255i || ny > 255i) { continue; }
+    m = min(m, al(a_fl, u32(ny * 256i + nx)) + select(SLIDE_ORTH[r], SLIDE_DIAG[r], (d & 1u) == 1u));
+  }
+  if (m >= al(a_fl, i)) { return false; }
+  atomicMin(&AT[a_fl + i], m);
+  return true;
+}
+@compute @workgroup_size(256)
+fn slide(@builtin(global_invocation_id) g: vec3u) { _ = slround(g.x); }
+@compute @workgroup_size(256)
+fn slidelast(@builtin(global_invocation_id) g: vec3u) { if (slround(g.x)) { flag(FLAG_SLIDE); } }
+@compute @workgroup_size(256)
+fn slout(@builtin(global_invocation_id) g: vec3u) { if (gi(f_land, g.x) != 0i && gi(f_sea, g.x) == 0i) { wi(f_h, g.x, al(a_fl, g.x)); } }
 ` : ""}`;
 
 export const upstreamWgsl = (fmt: UpstreamFormat) => FIXED + constsOf(fmt) + kernelsOf(fmt);
@@ -1029,4 +1085,4 @@ export const ENTRIES = [
   "draws", "shape", "hinge", "rocks", "dykes", "rockfin", "shore1", "shore2", "seafl", "hinit", "epse", "epsf", "flinit", "flood", "floodlast", "recv", "lvinit", "jumpa", "jumpb", "lvhist", "lvscan", "lvscatter", "area",
   "clock", "uplift", "implicit", "crpin", "crpab", "crpba", "crpouta", "crpoutb", "joints", "valleys", "blur0", "blur1", "blur2", "blur3", "blur4", "blur5", "till", "hollow", "sortorder", "noise", "trig",
 ] as const;
-export const WINDOW_ENTRIES = [...ENTRIES, "wshift"] as const;
+export const WINDOW_ENTRIES = [...ENTRIES, "wshift", "slinit", "slide", "slidelast", "slout"] as const;

@@ -27,6 +27,9 @@ export const RHO = 1000, G = 9.81; // water's density, kg/m3, and gravity, m/s2
 // over seeds 1 to 3 it is 24 m (26.2, 20.9, 25.5), just under the field's range, so the range's floor (sec. 11)
 // [derived, inverted from Bornholm's drainage density].
 export const HEAD_C = 25;
+// A window has no drainage density of its own to invert C from: it takes the field range's middle on a log scale, 70.7 m
+// (geology.ts's rule for a value whose source gives only its bounds) [derived, R555, R1716].
+export const WINDOW_HEAD_C = Math.sqrt(25 * 200);
 // Bankfull discharge against the mean: Bornholm's median annual maximum, 0.10 to 0.14 m3/s a km2 (R558), the bankfull
 // flood's 1 to 2 years (R557), over its mean runoff, 7.9 l/s a km2 (R558), so 15.0 times the mean [derived].
 export const BANKFULL = Math.sqrt(0.1 * 0.14) / 0.0079;

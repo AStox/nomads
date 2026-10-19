@@ -151,12 +151,14 @@ function lay(run: Run, rounds: number) {
 }
 
 // The steps' numbers from the response time tau, years: the creep's substeps, then the words written to P from udt on
-// (the uplift a step in Z, the creep's share a substep in Q32, each rock's K dt in Q16), for an uplift of u m a year.
-function erosionOf(tau: number, u = U0, zs = ZS) {
-  const dt = (ERODE.times * tau) / ERODE.steps, subs = Math.ceil((CREEP * dt) / (ERODE.stable * CELL * CELL));
+// (the uplift a step in Z, the creep's share a substep in Q32, each rock's K dt in Q16), for an uplift of u m a year over
+// `steps` steps.
+function erosionOf(tau: number, u = U0, zs = ZS, steps = ERODE.steps) {
+  const dt = (ERODE.times * tau) / steps, subs = Math.ceil((CREEP * dt) / (ERODE.stable * CELL * CELL));
   const creep = (CREEP * dt) / subs / (CELL * CELL);
   const ka = ROCKS.map((r) => Math.fround(r.erode) * dt * 65536);
   if (ka.some((v) => v >= 2 ** 30)) throw new Error("upstreamGpu: a rock's K dt passes what Q16 holds");
+  if (u * dt * zs >= 2 ** 32) throw new Error("upstreamGpu: a step's uplift passes what its word holds");
   const words = Uint32Array.from([Math.round(u * dt * zs), Math.round(creep * 2 ** 32), ...ka.map(Math.round)]);
   return { subs, words };
 }
@@ -344,7 +346,8 @@ export type WindowLay = {
   land: Uint8Array; // 1 where the ground stands above the lowstand's sea
   rock: Uint8Array; // geology.ts ROCKS
   lift: Float32Array; // 0 to 1, the uplift's share: none on the outlets, which are held, nor on the sea
-  outlet: Uint8Array; // 1 where water leaves the map over its edge (the rest of the edge is no outlet)
+  outlet: Uint8Array; // 1 where a planet's river leaves the map over its edge: held, as the sea is
+  base: Float32Array; // an open edge cell's base level beyond the edge, m above the lowstand's sea; NaN where the edge is closed and inside
   inflow: Float32Array; // the drainage area, cells, that enters from beyond the map's edge at a cell of it
   upliftMYr: number; // m a year
   scourM: number; // the deepest a joint valley is scoured (0 where no ice overrode the place)
@@ -353,6 +356,12 @@ export type WindowLay = {
   key: [number, number]; // the Philox key of the joint valleys' draws
 };
 const WZ = WINDOW_FORMAT.zs;
+// The most a window's step lifts the land, m: the island's 60 steps over three response times lift a window's kilometre-scale
+// relief by up to 2.4 km a step, and the landscape is then the step's (seed 1's first landing at 60, 240, 480 and 960 steps:
+// 91, 343, 378 and 554 cells of river, the mean held from 240 on, the lakes' cells 8,344, 4,535, 2,765 and 1,370), so a window
+// takes as many more steps as keep each step's uplift under this [design: 480 steps there, 40 s a window; the lakes still
+// halve with the step, a gap].
+export const WINDOW_STEP_RISE_M = 300;
 // One run: the first flood and the response time, the erosion's steps, and (whole) the ice, the heights lowered to the present
 // sea and the hollows. Without `whole` only the heights (m above the lowstand's sea) and the receivers mean anything.
 async function windowAttempt(g: Gpu, lay: WindowLay, whole: boolean, rounds: number): Promise<{ up: Upstream; tau: number; flags: number }> {
@@ -361,6 +370,7 @@ async function windowAttempt(g: Gpu, lay: WindowLay, whole: boolean, rounds: num
   params[PAR.scour] = Math.round(lay.scourM * WZ); params[PAR.till] = Math.round(lay.tillM * WZ); params[PAR.shift] = Math.round(lay.shiftM * WZ) >>> 0;
   const run = await makeRun(g, params, WINDOW_FORMAT);
   put(run, "h", lay.height, WZ); put(run, "land", lay.land, 1); put(run, "rock", lay.rock, 1); put(run, "lift", lay.lift, 2 ** 24); put(run, "dep", lay.inflow, 1); put(run, "sea", lay.outlet, 1);
+  run.g.device.queue.writeBuffer(run.F, FIELD.sh * LEN * 4, Int32Array.from(lay.base, (b) => (Number.isNaN(b) ? 0x7fffffff : Math.round(b * WZ))));
   open(run);
   d(run, "draws", DRN / 256);
   flood(run, false, rounds);
@@ -370,10 +380,17 @@ async function windowAttempt(g: Gpu, lay: WindowLay, whole: boolean, rounds: num
   submit(run);
   const early = await words(g, run.F, FIELD.misc * LEN, 16);
   const tau = ((early[MISC.tauHi] >>> 0) * 2 ** 32 + (early[MISC.tauLo] >>> 0)) / 64;
-  const { subs, words: step } = erosionOf(tau, lay.upliftMYr, WZ);
+  const steps = Math.max(ERODE.steps, Math.ceil((ERODE.times * tau * lay.upliftMYr) / WINDOW_STEP_RISE_M));
+  const { subs, words: step } = erosionOf(tau, lay.upliftMYr, WZ, steps);
   g.device.queue.writeBuffer(run.P, PAR.udt * 4, step);
   open(run);
-  for (let s = 0; s < ERODE.steps; s++) erodeStep(run, subs, rounds);
+  for (let s = 0; s < steps; s++) {
+    erodeStep(run, subs, rounds);
+    d(run, "slinit");
+    for (let k = 1; k < rounds; k++) d(run, "slide");
+    d(run, "slidelast");
+    d(run, "slout");
+  }
   if (whole) { ice(run); d(run, "wshift"); hollows(run, rounds); }
   submit(run);
   const out = new Int32Array(await readback(g, run.F, OUTPUTS.length * LEN * 4, FIELD[OUTPUTS[0]] * LEN * 4));
@@ -393,8 +410,8 @@ async function windowAttempt(g: Gpu, lay: WindowLay, whole: boolean, rounds: num
 export async function windowUpstreamGpu(g: Gpu, lay: WindowLay, whole = true): Promise<{ up: Upstream; tau: number }> {
   for (let rounds = ROUNDS; ; rounds *= 2) {
     const r = await windowAttempt(g, lay, whole, rounds);
-    if (r.flags & (FLAG.floodErode | FLAG.floodFinal)) {
-      if (rounds >= MOST_ROUNDS) throw new Error(`windowUpstreamGpu: a priority flood has not settled in ${rounds} rounds`);
+    if (r.flags & (FLAG.floodErode | FLAG.floodFinal | FLAG.slide)) {
+      if (rounds >= MOST_ROUNDS) throw new Error(`windowUpstreamGpu: a priority flood or the landslides have not settled in ${rounds} rounds`);
       continue;
     }
     for (const [flag, why] of FATAL) if (r.flags & flag) throw new Error(`windowUpstreamGpu: ${why}`);

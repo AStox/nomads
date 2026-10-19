@@ -44,6 +44,15 @@ export const crystalline = (r: number) => r === GRANITE || r === DOLERITE;
 // more than to the rock (R527).
 export const CREEP = mid(4.4e-4, 3.6e-2);
 
+// The threshold angle each rock's hillslopes stand at where rivers cut faster than creep can follow, degrees: landsliding
+// then keeps the slopes there, and a faster incision brings more landslides, not steeper slopes (Burbank et al. 1996, as
+// Montgomery 2001 and Binnie et al. 2007 give it). Granitic basins at the threshold average 36 degrees (30.7 to 38.0;
+// Binnie et al. 2007, San Bernardino Mountains, 10 m DEM), taken for the crystalline rocks; the Olympic Mountains' core,
+// sandstone and mudstone [INFERENCE: the lithology], holds 28 to 32 degrees whatever its erodibility (Montgomery 2001), the
+// middle taken for sandstone; mudstone and limestone take sandstone's [gap] (R1714). The island's relief never reaches them; a
+// window's does (gpu/globe/window.ts).
+export const THRESHOLD_DEG = [30, 30, 30, 36, 36];
+
 // What lies on the bedrock: what the ice and its meltwater left, or nothing where it scraped the rock bare. Till is
 // clayey over the soft sediments and sandy over the basement; meltwater sand fills the joint valleys; peat stands for
 // whatever 11d grows in the wet hollows (a placeholder until it does). The sim reads flint here: the island's own
