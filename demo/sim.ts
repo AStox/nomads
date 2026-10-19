@@ -1,6 +1,8 @@
 // The game's simulation, bundled for the browser so a page can run a live world: with the random brain, or with Jev
 // through a relay that holds the key (useBrain).
-export { H, TILE_M, Tile, W, clock, colorIndex, dayOfYear, dryAt, groundOf, isNight, islandOf, newWorld, seasonOf, spriteSeed, wetAt } from "../src/sim/world";
+export { H, TILE_M, Tile, W, clock, colorIndex, dayOfYear, dryAt, groundOf, isNight, islandOf, newWorld, seasonOf, spriteSeed, wetAt, windowIslandOf } from "../src/sim/world";
+// the baked planet a landing's window is refined from (play/globe.js, scripts/globe-bake.ts)
+export { planetFromBytes } from "../src/gpu/globe/bake";
 // the island's clock, which the page and the renderer read from here rather than keeping their own
 export { DAY, HOUR, TICK_S, YEAR_DAYS } from "../src/sim/ticks";
 export { ACTIVITY, activity, changedKinds, heading, summary, tick, tickPause } from "../src/sim/sim";

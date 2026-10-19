@@ -2,6 +2,7 @@
 //   bun scripts/demo.ts 3d --out /root/goldclaw/www/nomads-3d
 //   bun scripts/demo.ts styles --out /root/goldclaw/www/nomads-styles
 import { cpSync, mkdirSync } from "node:fs";
+import { copyGlobes } from "./globe-bake";
 
 const app = process.argv[2], at = process.argv.indexOf("--out");
 if (!app || at < 0) throw new Error("usage: bun scripts/demo.ts <3d|looks|styles> --out <dir>");
@@ -26,4 +27,11 @@ const sim = await Bun.build({
 });
 if (!sim.success) throw new AggregateError(sim.logs, "bundling the simulation failed");
 cpSync(`${root}/${app}`, out, { recursive: true });
+if (app === "styles") {
+  // the play page's globe (play/globe.js) and the baked planets it reads (scripts/globe-bake.ts)
+  const globe = await Bun.build({ entrypoints: [`${root}/globe.ts`], outdir: out, target: "browser", minify: true, external: ["webgpu"] });
+  if (!globe.success) throw new AggregateError(globe.logs, "bundling the globe failed");
+  const seeds = copyGlobes(out);
+  console.log(seeds.length ? `globe of seed ${seeds.join(", ")} in ${out}/planets` : "no planet baked: run bun scripts/globe-bake.ts --seed 1 until it says baked, then build again");
+}
 console.log(`${app} demo in ${out}`);

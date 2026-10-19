@@ -44,6 +44,24 @@ const SIM_BUDGET_MS = 8;
 // second [design]
 const WARM_BUDGET_MS = 100;
 
+// The ground of the seed's planet at a place: the baked planet (scripts/globe-bake.ts), kept in the browser's cache under
+// its name, which carries the planet's key, so a kept copy is never another planet's.
+async function landAt(simB, seed, { lat, lon }) {
+  const manifest = await fetch(new URL(`../planets/${seed}.json`, import.meta.url));
+  if (!manifest.ok) throw new Error(`no planet is baked for seed ${seed}`);
+  const url = new URL(`../planets/${(await manifest.json()).planet}`, import.meta.url).href;
+  const cache = await caches.open("nomads-planets");
+  let res = await cache.match(url);
+  if (!res) {
+    res = await fetch(url);
+    if (!res.ok) throw new Error(`the planet of seed ${seed} did not load (${res.status})`);
+    for (const k of await cache.keys()) if (k.url.includes(`/planet-${seed}-`)) await cache.delete(k);
+    await cache.put(url, res.clone());
+  }
+  const bytes = new Uint8Array(await new Response(res.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+  await simB.windowIslandOf(seed, lat, lon, simB.planetFromBytes(bytes));
+}
+
 async function init(m) {
   const t0 = performance.now();
   if (!navigator.gpu) throw new Error("this browser gives no WebGPU");
@@ -59,11 +77,12 @@ async function init(m) {
   context = canvas.getContext("webgpu");
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: "opaque" });
-  say("growing the island", 0, 1);
+  say(m.at ? "refining the ground from the planet" : "growing the island", 0, 1);
   // With a sim the island is the sim's own (world.ts islandOf, which it keeps for its world), grown once for both, on this
-  // device: the page holds one, so the sim is handed it before the island is grown.
-  const simB = m.sim ? await import("../sim.js") : null, simC = m.sim ? await import("../play/sim.js") : null;
-  if (simB) { simB.useGpu({ device, adapter: gpuName }); await simB.islandOf(m.seed); }
+  // device: the page holds one, so the sim is handed it before the island is grown. A landing (play/globe.js) makes the
+  // ground of the planet's window at its place instead (world.ts windowIslandOf).
+  const simB = m.sim || m.at ? await import("../sim.js") : null, simC = m.sim ? await import("../play/sim.js") : null;
+  if (simB) { simB.useGpu({ device, adapter: gpuName }); await (m.at ? landAt(simB, m.seed, m.at) : simB.islandOf(m.seed)); }
   const gr = simB?.groundOf(m.seed);
   const gpu = { device, adapter: gpuName }, isle = gr?.isle ?? (await generateIsland(rng(m.seed), gpu)), g = gr?.fine ?? (await fineGroundGpu(gpu, isle));
   const t1 = performance.now();

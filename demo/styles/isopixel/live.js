@@ -65,8 +65,8 @@ function frameOf(b) {
 export const hasWebGPU = () => typeof navigator !== "undefined" && !!navigator.gpu;
 
 // sim: { warm (sim days), jev } runs the game's sim in the render worker (play/remote.js connectSim reads it); null
-// draws the island alone.
-export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = null } = {}) {
+// draws the island alone. at: { lat, lon } in degrees draws the ground of the seed's planet there (play/globe.js).
+export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = null, at = null } = {}) {
   if (!hasWebGPU()) throw new Error("this browser does not offer WebGPU", { cause: "nogpu" });
   const TH = await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {}));
   const tStart = performance.now();
@@ -101,7 +101,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       else if (m.type === "error") fail(new Error(m.error));
       else onWorker(m);
     };
-    worker.postMessage({ type: "init", seed, canvas: off, sim: simOpts }, [off]);
+    worker.postMessage({ type: "init", seed, canvas: off, sim: simOpts, at }, [off]);
   });
   function onWorker(m) {
     if (m.type.startsWith("sim")) { if (simTo) simTo(m); else simEarly.push(m); }
