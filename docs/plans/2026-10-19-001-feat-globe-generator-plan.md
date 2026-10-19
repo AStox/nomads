@@ -42,9 +42,9 @@ Decisions taken with the operator (2026-10-19): the globe is the generator, not 
 ## Implementation Units
 
 - [x] **Unit 1: The sphere grid.** Outcome (2026-10-19): equiangular cube-sphere (Ronchi, Iacono and Paolucci), cell area ratio max/min 1.41 (the plain gnomonic map is 5.16), tier-0 cells 12.27 km on a 2,000 km radius, halo exchange across tile and face edges, gradient and conservative diffusion, all integer on the GPU and bit-for-bit with their twins (`src/gpu/globe`); open: a bounded non-converging diffusion error in the one-cell strip along face edges (a two-cell halo would fix it), tables are whole-tier only, and the 75 m window is not a whole tier (tier 7 is 95.9 m, tier 8 47.9 m), so Unit 8 resamples. Cube-sphere tiles, halo exchange across tile and face edges, cell areas and metric, a conservation test (a tracer diffused across a face edge and a cube corner conserves its total; a uniform field stays uniform; areas sum to 4 pi R squared).
-- [ ] **Unit 2: Plate tectonics.** Seeded plates, velocities, boundary classes, crust thickness, isostatic elevation, terrane accretion, volcanic arcs, rock type by origin; run over about 200 Myr in coarse steps; output height and a lithology field. Check: ranges at convergent margins, rifts and ocean basins at divergent ones, continental shelves and a believable land fraction.
-- [ ] **Unit 3: Erosion on the sphere.** Flow routing across tile and face edges (priority flood on a sphere), stream power and hillslope creep, sediment to the shelf; sea level as a parameter.
-- [ ] **Unit 4: Atmosphere.** Insolation and seasons, zonal circulation and prevailing winds, moisture advection with depletion, orographic rain from the terrain, temperature with latitude and height, continentality.
+- [x] **Unit 2: Plate tectonics.** Done 2026-10-19 (d615183); open: ranges are flat tables at the 70 km cut, 11 to 18% over 2 km. Seeded plates, velocities, boundary classes, crust thickness, isostatic elevation, terrane accretion, volcanic arcs, rock type by origin; run over about 200 Myr in coarse steps; output height and a lithology field. Check: ranges at convergent margins, rifts and ocean basins at divergent ones, continental shelves and a believable land fraction.
+- [x] **Unit 3: Erosion on the sphere.** Done 2026-10-19 (a9465f2); open: cannot dissect the ranges while tectonics re-cuts them. Flow routing across tile and face edges (priority flood on a sphere), stream power and hillslope creep, sediment to the shelf; sea level as a parameter.
+- [x] **Unit 4: Atmosphere.** Done 2026-10-19 (00aa4d5, e43a6e8); open: rain 59% of target, no permanent polar ice. Insolation and seasons, zonal circulation and prevailing winds, moisture advection with depletion, orographic rain from the terrain, temperature with latitude and height, continentality.
 - [ ] **Unit 5: Ocean.** Wind-driven gyres, sea-surface temperature, the mild-west-coast effect; sea ice.
 - [ ] **Unit 6: Ice ages and sea level.** Orbital forcing, ELA and ice flux, glacial erosion, lowstand carving and the sea's rise (fjords, drowned valleys, islands).
 - [ ] **Unit 7: Validation against Earth-like facts** (R6), as a script with measured statistics over many seeds, and the gap list.
@@ -60,3 +60,10 @@ Decisions taken with the operator (2026-10-19): the globe is the generator, not 
 | Refinement from coarse to 75 m contradicts the coarse | Coarse fields are constraints; the window's stages run under them; a test that the window's mean equals the tile's |
 | Scope | Each unit is a viewable result and stops cleanly; the island generator keeps working throughout |
 | Sub-agent rate limits | At most two agents at once, notes kept, verify each before the next |
+
+## Resume point (2026-10-19, session stopped for a harness restart)
+
+Two agents were stopped mid-work and their output is UNVERIFIED and uncommitted, left in the working tree and also saved in ~/nomads-wip (ranges-tracked.patch, ice-ranges-untracked.tgz):
+- Range fix (the flat-table problem): edits to tectonics.ts, erosion.ts, their kernels and tests, docs/research/globe/2026-10-19-ranges-impl.md, scripts/globe-ranges.ts. Read the impl note for how far it got; run tectonics and erosion tests in groups under 5 minutes before committing.
+- Unit 6 ice ages and sea level: src/gpu/globe/ice.ts, wgsl/globe-ice.ts, ice.test.ts, scripts/globe-ice-maps.ts, docs/research/globe/2026-10-19-ice-impl.md; scripts/_scratch-ice.ts is scratch to delete.
+Remaining after those: Unit 5 ocean (partly inside the atmosphere), Unit 7 validation script, Unit 8 the window (`windowOf`), Unit 9 soil and plants.
