@@ -15,7 +15,8 @@ import type { Gpu } from "../device";
 import type { PassApi } from "../terrain/water";
 import { hydrologyPass } from "../terrain/water";
 import { planetWater, sweepTol } from "../wgsl/terrain-water";
-import { GFIELDS } from "../wgsl/globe-aquifer";
+import { A_PLANES, B_PLANES } from "../wgsl/globe-aquifer";
+import { ROOTS } from "../../terrain/growth";
 import { GlobalAquifer } from "./aquifer";
 import { dischargeOf, forestOf, readDischarge, signedGatherOf, valueAt } from "./discharge";
 import { FACES, tierGrid } from "./grid";
@@ -24,7 +25,7 @@ import { runTiles, type Ctx, type Field, type TileStage } from "./stages";
 import { at, mapped, patchInput, waterFiles, waterOutputs, lastRun, unmap, type WaterConfig } from "./water";
 
 export const GHALO = 2;
-export const COEF = GFIELDS.filter((n) => n !== "col");
+export { A_PLANES, B_PLANES };
 const g = (tier: number, s: string) => `t${tier}-g-${s}`;
 const gaNames = (tag: number) => [0, 1, 2, 3, 4].flatMap((c) => [`ga${c}l@${tag}`, `ga${c}h@${tag}`]);
 const gaFile = (tier: number, tag: number, name: string) => { const c = name[2], half = name[3] === "l" ? "lo" : "hi"; return `${g(tier, `r${tag}-ga${c}`)}-${half}.i32`; };
@@ -74,15 +75,30 @@ function passStage(tier: number, cfg: WaterConfig, name: string, outputs: string
   };
 }
 const asI32 = (files: string[], names: readonly string[]) => (_c: Ctx, _p: Patch, f: Record<string, Int32Array>) => Object.fromEntries(files.map((file, k) => [file, f[names[k]]]));
-const coefFiles = (tier: number, tag: "a" | "c") => COEF.map((n) => g(tier, `${tag}-${n}.i32`));
+// the packed planes of a relaxation's state (the heights are the tier's own file): files, the hydrology's fields they are made of, and the make
+export const PLANES = [...A_PLANES.filter((n) => n !== "ht"), ...B_PLANES];
+const coefFiles = (tier: number, tag: "a" | "c") => PLANES.map((n) => g(tier, `${tag}-${n}.i32`));
+const COEF_NAMES = ["head", "fxv", "sso", "eaf", "isf", "rock", "drift", "dd", "ww", "we", "wn", "ws", "pe0", "pe1", "pe2", "pe3", "sh0", "sh1", "sh2", "sh3"];
+const ROOTS_Z = Math.round(ROOTS * 2 ** 17), tenth = (v: number) => Math.floor((Math.max(v, 0) * 10 + 32768) / 65536);
+const planes = (tier: number, tag: "a" | "c") => (_c: Ctx, patch: Patch, f: Record<string, Int32Array>): Record<string, Field> => {
+  const n = patch.ids.length, meta = new Int32Array(n), pe01 = new Int32Array(n), pe23 = new Int32Array(n), sh01 = new Int32Array(n), sh23 = new Int32Array(n);
+  for (let k = 0; k < n; k++) {
+    const fill = Math.min(65536, Math.floor((Math.max(f.dd[k], 0) * 65536) / ROOTS_Z));
+    meta[k] = f.isf[k] | (f.rock[k] << 2) | (f.drift[k] << 5) | (fill << 10);
+    pe01[k] = tenth(f.pe0[k]) | (tenth(f.pe1[k]) << 16); pe23[k] = tenth(f.pe2[k]) | (tenth(f.pe3[k]) << 16);
+    sh01[k] = tenth(f.sh0[k]) | (tenth(f.sh1[k]) << 16); sh23[k] = tenth(f.sh2[k]) | (tenth(f.sh3[k]) << 16);
+  }
+  const by: Record<string, Int32Array> = { head: f.head, fxv: f.fxv, sso: f.sso, eaf: f.eaf, meta, ww: f.ww, we: f.we, wn: f.wn, ws: f.ws, pe01, pe23, sh01, sh23 };
+  return Object.fromEntries(PLANES.map((p) => [g(tier, `${tag}-${p}.i32`), by[p]]));
+};
 const routeFiles = (tier: number, r: number) => [0, 1, 2, 3, 4].map((c) => g(tier, `w${r}${c}.i32`));
 const WT = ["wt0", "wt1", "wt2", "wt3", "wt4"];
 const CHN_LOADS = ["chn"], HEAD1 = ["head@1"];
 
 export const beginsStage = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "begins", [g(tier, "begins.u32")], [], ["wt0"], (a) => { base(a); a.areas(); a.step("beginsw"); }, (_c, _p, f) => ({ [g(tier, "begins.u32")]: new Uint32Array(f.wt0.buffer, f.wt0.byteOffset, f.wt0.length) }));
-export const coef1Stage = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "coef1", coefFiles(tier, "a"), CHN_LOADS, COEF, coef1, asI32(coefFiles(tier, "a"), COEF));
+export const coef1Stage = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "coef1", coefFiles(tier, "a"), CHN_LOADS, COEF_NAMES, coef1, planes(tier, "a"));
 export const route1Stage = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "route1", routeFiles(tier, 1), [...CHN_LOADS, ...HEAD1], WT, route(coef1, "head@1"), asI32(routeFiles(tier, 1), WT));
-export const coef2Stage = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "coef2", coefFiles(tier, "c"), [...CHN_LOADS, ...HEAD1, ...gaNames(1)], COEF, coef2, asI32(coefFiles(tier, "c"), COEF));
+export const coef2Stage = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "coef2", coefFiles(tier, "c"), [...CHN_LOADS, ...HEAD1, ...gaNames(1)], COEF_NAMES, coef2, planes(tier, "c"));
 export const route2Stage = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "route2", routeFiles(tier, 2), [...CHN_LOADS, ...HEAD1, "head@2", ...gaNames(1)], WT, route(coef2, "head@2"), asI32(routeFiles(tier, 2), WT));
 const FA = ["chn", "open", "pwr", "dbf"], faFiles = (tier: number) => FA.map((n) => g(tier, `fa-${n}.i32`));
 export const banksStage = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "banks", faFiles(tier), [...CHN_LOADS, ...HEAD1, "head@2", ...gaNames(1), ...gaNames(2)], FA, banks, asI32(faFiles(tier), FA));
@@ -118,14 +134,13 @@ export interface SolveResult { sweeps: number; change: number; seconds: number; 
 // sweeps is the whole state's step, so the bytes do not depend on where the calls split); settled when the greatest change of a head in a sweep is under the format's tolerance.
 export async function solveOf(ctx: Ctx, phase: 1 | 2, most: number, log: (s: string) => void, o: { reverse?: boolean; out?: string; budgetS?: number } = {}): Promise<SolveResult> {
   const t = ctx.tier, out = o.out ?? `${g(t, `head${phase}`)}.i32`, part = `${g(t, `head${phase}`)}-part.i32`, meta = `g-solve${phase}`, t0 = performance.now(), tol = sweepTol(planetWater(256));
-  const fields: Record<string, Int32Array> = {};
-  for (const n of COEF) fields[n] = new Int32Array(ctx.dir.raw(g(t, `${phase === 1 ? "a" : "c"}-${n}.i32`)));
+  const tag = phase === 1 ? "a" : "c", resume = ctx.dir.has(part);
+  const load = (plane: string): Int32Array => (plane === "ht" ? new Int32Array(ctx.dir.raw(`t${t}-height.i32`)) : new Int32Array(ctx.dir.raw(plane === "head" && resume ? part : g(t, `${tag}-${plane}.i32`))));
   const before = ctx.dir.json<{ sweeps: number; seconds: number }>(`${g(t, meta)}`) ?? { sweeps: 0, seconds: 0 };
-  if (ctx.dir.has(part)) fields.head = new Int32Array(ctx.dir.raw(part));
-  const a = new GlobalAquifer(ctx.gpu, t, fields, o.reverse);
+  const a = new GlobalAquifer(ctx.gpu, t, load, o.reverse);
   try {
     const r = await a.relax(Math.max(64, most - before.sweeps), tol, o.budgetS);
-    const head = await a.field("head"), seconds = (performance.now() - t0) / 1000, settled = r.shallow < tol, total = { sweeps: before.sweeps + r.sweeps, seconds: before.seconds + seconds };
+    const head = await a.head(), seconds = (performance.now() - t0) / 1000, settled = r.shallow < tol, total = { sweeps: before.sweeps + r.sweeps, seconds: before.seconds + seconds };
     if (settled || total.sweeps >= most) { ctx.dir.write(out, head); ctx.dir.remove(part); } else ctx.dir.write(part, head);
     ctx.dir.putJson(g(t, meta), total);
     log(`solve ${phase}: ${total.sweeps} sweeps (${r.sweeps} this call), last shallow change ${r.shallow}, all ${r.change} (of ${tol}), ${total.seconds.toFixed(1)} s in all`);

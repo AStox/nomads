@@ -73,7 +73,7 @@ function pack(input: HydroInput, fmt: WaterFormat): Int32Array {
   put("dd", (i) => toZ(driftDepth[i]));
   air.seasons.forEach((s, k) => {
     put(`pr${k}`, (i) => toQ16(s.precip[i]));
-    put(`pe${k}`, (i) => toQ16(s.pet[i]));
+    put(`pe${k}`, (i) => (fmt.planet ? Math.floor((Math.round(s.pet[i] * 10) * 65536 + 5) / 10) : toQ16(s.pet[i])));
   });
   // the inflow's words: the area in cells, and the water as Q6 m3 a year and a season, each a 64-bit pair
   const pair = (name: string, at: number, v: number) => {

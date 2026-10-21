@@ -260,6 +260,12 @@ fn mulshr(a: u32, b: u32, s: u32) -> u32 { let p = mul64(a, b); return (p.x >> s
 fn sscale(x: i32, c: u32) -> i32 { let r = bitcast<i32>(mul64(mag(x), c).y); return select(r, -r, x < 0i); }
 // millimetres Q16 to cubic metres a cell Q6
 fn mm_v(mm: i32) -> i32 { return sat32(rsar64(smul64(mm, MMV), 16u)); }
+// the plants' draw's four constants of a cell (d'', b, e0 and its rescaling) from its rock, its drift and the share of the roots' metre the drift fills (Q16)
+fn gw_params(rock: u32, drift: u32, fill: i32, k: u32) -> i32 { return qmul(GW_DRIFT[drift * 4u + k], fill) + qmul(GW_ROCK[rock * 4u + k], 65536i - fill); }
+${planet ? `// a planet's potential evaporation and the demand the soil leaves unmet are held to 0.1 mm (u16 words: the air stage's own unit for the potential evaporation), so the global relaxation keeps
+// them in two words of four; the Q16 value of a word is (t * 65536 + 5) / 10, the word of a Q16 value its rounding to a tenth [design: the draw changes by under 0.05 mm a season]
+fn tenth_q16(t: u32) -> i32 { return i32((t * 65536u + 5u) / 10u); }
+fn q16_tenth(v: i32) -> u32 { return (u32(max(v, 0i)) * 10u + 32768u) >> 16u; }` : ""}
 fn ld64(f: u32, i: u32) -> vec2u { return vec2u(gu(f, i), gu(f + LEN, i)); }
 
 // ---------- the ground's fall, the bucket, the rain's share, the first transmissivity ----------
@@ -321,7 +327,7 @@ fn prep(@builtin(global_invocation_id) g: vec3u) {
         store = left - over;
         if (year == 1u) {
           F[f_su0 + s * LEN + i] = over;
-          F[f_sh0 + s * LEN + i] = pe - used;
+          F[f_sh0 + s * LEN + i] = ${planet ? "tenth_q16(q16_tenth(pe - used))" : "pe - used"};
           wet += over;
         }
       }
@@ -333,7 +339,7 @@ fn prep(@builtin(global_invocation_id) g: vec3u) {
   // the groundwater evapotranspiration's fall (above): the drift's texture over as much of the roots' metre as the drift
   // fills and the rock's below, as ground.ts takes the soil's texture [design]
   let fill = i32(min(65536u, div64(mul64(u32(max(dd, 0i)), 65536u), u32(ROOTS_Z)).x));
-  for (var k = 0u; k < 4u; k++) { F[f_evd + k * LEN + i] = qmul(GW_DRIFT[drift * 4u + k], fill) + qmul(GW_ROCK[rock * 4u + k], 65536i - fill); }
+  for (var k = 0u; k < 4u; k++) { F[f_evd + k * LEN + i] = gw_params(rock, drift, fill, k); }
   var bed = ROCK_T[rock]; var dk = DRIFT_K[drift];${planet ? "\n  if (gi(f_voidc, i) != 0i) { bed = 0u; dk = 0u; }" : ""}
   wu(f_bedT, i, bed); wu(f_drK, i, dk);
   let p = add64(mul64(dk, u32(dd)), vec2u(1u << ${zb - 1}u, 0u));
