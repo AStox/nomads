@@ -205,7 +205,7 @@ describe("the planet's water stage", () => {
     for (const f of waterFiles(4)) expect(hash(b[f])).toBe(hash(a[f]));
     const all = Bun.hash(Buffer.concat(waterFiles(4).map((f) => Buffer.from(a[f].buffer, a[f].byteOffset, a[f].byteLength)))).toString(16);
     console.log(`water: real tile 458 at halo ${WATER_HALO}: ${seconds.toFixed(1)} s, aquifer sweeps ${sweeps}, ${lastRun.inflows} inflows, hash ${all}`);
-    expect(all).toBe("UNPINNED: record after the planet-wide surplus, discharge and basin of key 883a8d9387df");
+    expect(all).toBe("6ed275953ead9106");
     unmap();
   });
 });
