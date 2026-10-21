@@ -27,6 +27,7 @@ import {
   GRADIENTS, ISLE, RASTER, countKernel, fineKernel, layoutOf, tableKernel, tileScenery, writeKernel, type SceneryLayout,
 } from "../wgsl/terrain-scenery";
 import { TABLE_UNIT, mappedField } from "./ground";
+import { GROUNDTILE_FIELDS } from "./bake";
 import { localOf, patchOf, tileAt } from "./patch";
 import type { Ctx, Field } from "./stages";
 
@@ -37,21 +38,33 @@ export const RIVER_HALO = 8;
 export const TILE_QUADS = 1024 * 1024;
 export const keyOf = (tile: number) => tile * TILE_QUADS;
 
-// ---------- the files the scatter reads ----------
-export const SCATTER_IN = {
-  height: "t4-height.i32", water: "t4-water.u16", moist: "t4-moist.u8", covers: ["t4-tree.u8", "t4-shr.u8", "t4-grs.u8", "t4-mar.u8", "t4-bare.u8"], flags: "t4-sflag.u8", soil: "t4-soil.u16",
-  clayey: "t4-clayey.u8", ph: "t4-ph.u8", winter: "t4-stb3.u16", sun: [0, 1, 2, 3].map((k) => `t4-sun${k}.u16`), temp: [0, 1, 2, 3].map((k) => `t4-tmp${k}.i16`), sw: [0, 1, 2, 3].map((k) => `t4-sw${k}.u8`),
-  to: "t4-to.u32", chn: "t4-chn.u8", flow: "t4-flow.u32",
-};
-export const SCATTER_FILES = Object.values(SCATTER_IN).flat();
-
-const share24 = Int32Array.from({ length: 256 }, (_, v) => Math.round((v * Q24) / 255));
-const ph16 = Int32Array.from({ length: 256 }, (_, v) => Math.round((v * Q16) / 30));
+// ---------- where the fields come from ----------
+// A tile's fields by their ground-tile names (bake.ts GROUNDTILE_FIELDS), each over the tile's patch of `halo` cells round it, side * side words in the stage files' units; and each cell's receiver as
+// the patch's own index of the cell it drains to (-1 for none or one outside the patch).
+export interface TileSource { plane<A extends Field>(name: string, halo: number): A; recv(halo: number): Int32Array }
 const at = <A extends Field>(f: Field, ids: Int32Array): A => {
   const out = new (f.constructor as new (n: number) => A)(ids.length);
   for (let k = 0; k < ids.length; k++) out[k] = f[ids[k]];
   return out;
 };
+// The stage files' fields, mapped.
+export function stageSource(ctx: Pick<Ctx, "dir" | "tier">, tile: number): TileSource {
+  const { face, tx, ty } = tileAt(ctx.tier, tile), patchAtHalo = (h: number) => patchOf(ctx.tier, face, tx, ty, h);
+  return {
+    plane<A extends Field>(name: string, halo: number) {
+      const f = GROUNDTILE_FIELDS.find((g) => g.name === name);
+      if (!f) throw new Error(`scatter: no field ${name}`);
+      return at<A>(mappedField(ctx, f.file), patchAtHalo(halo).ids);
+    },
+    recv(halo: number) {
+      const p = patchAtHalo(halo), local = localOf(p), to = at<Uint32Array>(mappedField(ctx, "t4-to.u32"), p.ids);
+      return Int32Array.from(to, (r) => local(r));
+    },
+  };
+}
+
+const share24 = Int32Array.from({ length: 256 }, (_, v) => Math.round((v * Q24) / 255));
+const ph16 = Int32Array.from({ length: 256 }, (_, v) => Math.round((v * Q16) / 30));
 
 // The kernels' texts by layout, made once.
 const kernels = new Map<number, { L: SceneryLayout; K: SceneryKernels }>();
@@ -66,25 +79,25 @@ function kernelsOf(halo: number) {
 }
 
 // The tile's fields as the kernels hold them (wgsl/terrain-scenery.ts ISLE, in a field of the tile's cells and a halo of `halo`), from the stored words by integer arithmetic alone.
-export function packTile(ctx: Ctx, tile: number, halo = SCATTER_HALO): Int32Array {
-  const { face, tx, ty } = tileAt(ctx.tier, tile), patch = patchOf(ctx.tier, face, tx, ty, halo), { L } = kernelsOf(halo), n = patch.ids.length, out = new Int32Array(L.ISLE_WORDS);
-  const get = <A extends Field>(file: string) => at<A>(mappedField(ctx, file), patch.ids);
+export function packTile(source: TileSource, tile: number, halo = SCATTER_HALO, tier = 4): Int32Array {
+  const { face, tx, ty } = tileAt(tier, tile), { L } = kernelsOf(halo), n = (256 + 2 * halo) ** 2, out = new Int32Array(L.ISLE_WORDS);
+  const get = <A extends Field>(name: string) => source.plane<A>(name, halo);
   const put = (name: (typeof ISLE)[number], fill: (i: number) => number) => { const o = L.IF[name]; for (let i = 0; i < n; i++) out[o + i] = fill(i); };
-  const height = get<Int32Array>(SCATTER_IN.height), water = get<Uint16Array>(SCATTER_IN.water), flags = get<Uint8Array>(SCATTER_IN.flags), soil = get<Uint16Array>(SCATTER_IN.soil);
+  const height = get<Int32Array>("height"), water = get<Uint16Array>("water"), flags = get<Uint8Array>("flags"), soil = get<Uint16Array>("soil");
   put("height", (i) => height[i] * 256);
   put("water", (i) => Math.round((water[i] * Q16) / 100));
-  const moist = get<Uint8Array>(SCATTER_IN.moist);
+  const moist = get<Uint8Array>("moist");
   put("moist", (i) => share24[moist[i]]);
-  (["tree", "shrub", "grass", "marsh", "bare"] as const).forEach((name, k) => { const c = get<Uint8Array>(SCATTER_IN.covers[k]); put(name, (i) => share24[c[i]]); });
+  (["tree", "shrub", "grass", "marsh", "bare"] as const).forEach((name) => { const c = get<Uint8Array>(name); put(name, (i) => share24[c[i]]); });
   put("sand", (i) => (flags[i] & 2 ? Q24 : 0));
   put("silt", (i) => (flags[i] & 1 ? Q24 : 0));
   put("soil", (i) => soil[i] * 64);
-  const clay = get<Uint8Array>(SCATTER_IN.clayey), ph = get<Uint8Array>(SCATTER_IN.ph), stb = get<Uint16Array>(SCATTER_IN.winter);
+  const clay = get<Uint8Array>("clayey"), ph = get<Uint8Array>("ph"), stb = get<Uint16Array>("winter");
   put("clayey", (i) => share24[clay[i]]);
   put("ph", (i) => ph16[ph[i]]);
   put("winter", (i) => stb[i] * (Q16 / TABLE_UNIT));
   for (let k = 0; k < 4; k++) {
-    const sun = get<Uint16Array>(SCATTER_IN.sun[k]), tmp = get<Int16Array>(SCATTER_IN.temp[k]), sw = get<Uint8Array>(SCATTER_IN.sw[k]);
+    const sun = get<Uint16Array>(`sun${k}`), tmp = get<Int16Array>(`tmp${k}`), sw = get<Uint8Array>(`sw${k}`);
     put(`sun${k}` as (typeof ISLE)[number], (i) => sun[i] * 64);
     put(`temp${k}` as (typeof ISLE)[number], (i) => tmp[i] * 256);
     put(`sw${k}` as (typeof ISLE)[number], (i) => share24[sw[i]]);
@@ -96,15 +109,14 @@ export function packTile(ctx: Ctx, tile: number, halo = SCATTER_HALO): Int32Arra
 }
 
 // The streams of the tile and of the 8 cells round it: a segment from each channel cell to its receiver, in the island's frame (metres from the area's centre, as `segments` takes them).
-export function riversOf(ctx: Ctx, tile: number): FineRiver[][] {
-  const { face, tx, ty } = tileAt(ctx.tier, tile), p = patchOf(ctx.tier, face, tx, ty, RIVER_HALO), S = p.side, local = localOf(p), n = p.ids.length;
-  const get = <A extends Field>(file: string) => at<A>(mappedField(ctx, file), p.ids);
-  const height = get<Int32Array>(SCATTER_IN.height), to = get<Uint32Array>(SCATTER_IN.to), chn = get<Uint8Array>(SCATTER_IN.chn), flow = get<Uint32Array>(SCATTER_IN.flow);
-  const tree = get<Uint8Array>(SCATTER_IN.covers[0]), shrub = get<Uint8Array>(SCATTER_IN.covers[1]), lines: FineRiver[][] = [];
+export function riversOf(source: TileSource, tile: number, tier = 4): FineRiver[][] {
+  const { face, tx, ty } = tileAt(tier, tile), p = patchOf(tier, face, tx, ty, RIVER_HALO), S = p.side, n = p.ids.length;
+  const height = source.plane<Int32Array>("height", RIVER_HALO), to = source.recv(RIVER_HALO), chn = source.plane<Uint8Array>("chn", RIVER_HALO), flow = source.plane<Uint32Array>("flow", RIVER_HALO);
+  const tree = source.plane<Uint8Array>("tree", RIVER_HALO), shrub = source.plane<Uint8Array>("shrub", RIVER_HALO), lines: FineRiver[][] = [];
   const x = (i: number) => (((i % S) - RIVER_HALO) * CELL + CELL / 2) - SIZE / 2, z = (i: number) => ((Math.floor(i / S) - RIVER_HALO) * CELL + CELL / 2) - SIZE / 2;
   for (let i = 0; i < n; i++) {
     if (!chn[i] || p.missing[i] || !flow[i]) continue;
-    const j = local(to[i] >>> 0);
+    const j = to[i];
     if (j < 0 || j === i) continue;
     const q = flow[i] / Q16, qbf = q * BANKFULL, wooded = (tree[i] + shrub[i]) / 255 >= WOODED;
     const run = Math.hypot(x(j) - x(i), z(j) - z(i)), s = Math.max((height[i] - height[j]) / 256 / run, 1e-4 / CELL);
@@ -117,9 +129,10 @@ export function riversOf(ctx: Ctx, tile: number): FineRiver[][] {
 // `fine` (when asked for): the fine field's heights over the 1,025 by 1,025 vertices, m, and the stream mask (RM by RM texels, 0 to 255).
 export interface TileScatter { flora: Scatter; tile: number; segments: number; fine?: { h: Float32Array; mask: Uint8Array } }
 // Every object on tile `tile` of the tier for world seed `seed`: `flora.px` and `py` are in game tiles (150 m) from the tile's north-west corner, `start` runs over its 128 by 128 game tiles.
-export async function scatterTile(ctx: Ctx, tile: number, seed: number, halo = SCATTER_HALO, keepFine = false): Promise<TileScatter> {
-  const g = ctx.gpu, { L, K } = kernelsOf(halo), rivers = riversOf(ctx, tile), { seg, table } = segments(rivers);
-  const segs = storage(g, seg), bins = storage(g, table), field = storage(g, L.FINE_WORDS * 4), packed = storage(g, packTile(ctx, tile, halo));
+// `source` is the stage files by default; the ground tile's planes (groundtile.ts) give the same objects.
+export async function scatterTile(ctx: Pick<Ctx, "gpu" | "dir" | "tier">, tile: number, seed: number, halo = SCATTER_HALO, keepFine = false, source: TileSource = stageSource(ctx, tile)): Promise<TileScatter> {
+  const g = ctx.gpu, { L, K } = kernelsOf(halo), rivers = riversOf(source, tile, ctx.tier), { seg, table } = segments(rivers);
+  const segs = storage(g, seg), bins = storage(g, table), field = storage(g, L.FINE_WORDS * 4), packed = storage(g, packTile(source, tile, halo, ctx.tier));
   dispatch(g, pipeline(g, RASTER, "raster"), [segs, bins, field], [Math.ceil(L.RMW / 256)]);
   run(g, pipeline(g, K.fine, "fine"), [[0, packed], [1, field]], [Math.ceil(L.MV / 256)]);
   let fine: TileScatter["fine"];

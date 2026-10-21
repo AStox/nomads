@@ -13,7 +13,7 @@ import { runTiles, type Ctx, type Field, type TileStage } from "./stages";
 import { readPlanet, type Planet } from "./window";
 import { diskStore } from "../../../scripts/globe-window";
 
-export const KEY = "c418e5fe9b5e", BAKE = `/tmp/planet-75m/1-${KEY}`, STOREDIR = "/tmp/planet-small/store", SCRATCH = "/tmp/planet-75m/ground-scratch/bake", TIER = 4, FN = 4096;
+export const KEY = "883a8d9387df", BAKE = `/tmp/planet-75m/1-${KEY}`, STOREDIR = "/tmp/planet-small/store", SCRATCH = "/tmp/planet-75m/ground-scratch/bake", TIER = 4, FN = 4096;
 export const REAL = existsSync(`${BAKE}/t4-height.i32`) && existsSync(`${BAKE}/t4-acc.u32`) && existsSync(`${STOREDIR}/1-${KEY}`);
 
 // The tiles whose cells a patch of the given tiles covers.
@@ -27,12 +27,12 @@ export function tilesCovering(tiles: number[], halo: number): number[] {
 }
 
 export const standInWater: TileStage = {
-  name: "synwater-3", halo: 32, inputs: [],
-  outputs: ["t4-water.u16", "t4-chn.u8", "t4-valley.u8", "t4-pwr.u16", "t4-stb0.u16", "t4-stb1.u16", "t4-stb2.u16", "t4-stb3.u16", "t4-dry.u16", "t4-flow.u32"],
+  name: "synwater-4", halo: 32, inputs: [],
+  outputs: ["t4-water.u16", "t4-chn.u8", "t4-valley.u8", "t4-pwr.u16", "t4-stb0.u16", "t4-stb1.u16", "t4-stb2.u16", "t4-stb3.u16", "t4-dry.u16", "t4-flow.u32", "t4-base.u16", "t4-tab.u16", "t4-under.u16"],
   async run(ctx, patch) {
     const n = patch.ids.length, S = patch.side, at = (f: string) => { const m = mappedField(ctx, f), o = new (m.constructor as new (n: number) => Field)(n); for (let i = 0; i < n; i++) o[i] = m[patch.ids[i]]; return o; };
     const h = at("t4-height.i32") as Int32Array, fl = at("t4-flooded.i32") as Int32Array, acc = at("t4-acc.u32") as Uint32Array;
-    const chn = new Uint8Array(n), valley = new Uint8Array(n), water = new Uint16Array(n), pwr = new Uint16Array(n), flow = new Uint32Array(n), d = new Int32Array(n).fill(1e6);
+    const chn = new Uint8Array(n), valley = new Uint8Array(n), water = new Uint16Array(n), pwr = new Uint16Array(n), flow = new Uint32Array(n), base = new Uint16Array(n), tab = new Uint16Array(n), under = new Uint16Array(n), d = new Int32Array(n).fill(1e6);
     for (let i = 0; i < n; i++) { chn[i] = h[i] > 0 && acc[i] >= 20000 && !patch.missing[i] ? 1 : 0; if (chn[i]) d[i] = 0; }
     for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) { const i = y * S + x; if (x) d[i] = Math.min(d[i], d[i - 1] + 1); if (y) d[i] = Math.min(d[i], d[i - S] + 1); }
     for (let y = S - 1; y >= 0; y--) for (let x = S - 1; x >= 0; x--) { const i = y * S + x; if (x < S - 1) d[i] = Math.min(d[i], d[i + 1] + 1); if (y < S - 1) d[i] = Math.min(d[i], d[i + S] + 1); }
@@ -45,8 +45,9 @@ export const standInWater: TileStage = {
       const depth = 0.2 + 3000 / (acc[i] + 100);
       for (let k = 0; k < 4; k++) stb[k][i] = Math.min(65535, Math.round(depth * (0.4 + 0.1 * k) * TABLE_UNIT));
       dry[i] = Math.min(65535, Math.round(depth * TABLE_UNIT));
+      base[i] = chn[i] ? 32768 : 0; tab[i] = Math.min(65535, Math.round(depth * 0.55 * TABLE_UNIT)); under[i] = chn[i] ? 41 : 0;
     }
-    return { "t4-water.u16": water, "t4-chn.u8": chn, "t4-valley.u8": valley, "t4-pwr.u16": pwr, "t4-stb0.u16": stb[0], "t4-stb1.u16": stb[1], "t4-stb2.u16": stb[2], "t4-stb3.u16": stb[3], "t4-dry.u16": dry, "t4-flow.u32": flow };
+    return { "t4-water.u16": water, "t4-chn.u8": chn, "t4-valley.u8": valley, "t4-pwr.u16": pwr, "t4-stb0.u16": stb[0], "t4-stb1.u16": stb[1], "t4-stb2.u16": stb[2], "t4-stb3.u16": stb[3], "t4-dry.u16": dry, "t4-flow.u32": flow, "t4-base.u16": base, "t4-tab.u16": tab, "t4-under.u16": under };
   },
 };
 
@@ -59,7 +60,7 @@ export async function scratchBake(tiles: number[], halo: number, ground = true):
   // what was made in the scratch bake belongs to the heights it was made from: the real bake's change when the tiers are baked again, and then every stage's tiles are made again
   const stamp = String(statSync(`${BAKE}/t4-height.i32`).mtimeMs), stampFile = `${SCRATCH}/from.txt`;
   if (!existsSync(stampFile) || readFileSync(stampFile, "utf8") !== stamp) {
-    for (const f of ["air", "synwater-3", "ground"]) rmSync(`${SCRATCH}/${f}-done.u8`, { force: true });
+    for (const f of ["air", "synwater-4", "ground"]) rmSync(`${SCRATCH}/${f}-done.u8`, { force: true });
     writeFileSync(stampFile, stamp);
   }
   planet ??= await readPlanet(1, diskStore(STOREDIR, KEY));

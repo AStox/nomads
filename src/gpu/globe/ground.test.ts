@@ -16,6 +16,7 @@ import { groundWords, pack } from "../terrain/ground";
 import { INPUTS, ISLAND_GROUND, OUTPUTS } from "../wgsl/terrain-ground";
 import type { Site } from "../../terrain/ground";
 import type { BakeDir } from "./bakedir";
+import { precipWord } from "./air";
 import { GROUND_HALO, GROUND_OUT, GROUND_OUTPUTS, TABLE_UNIT, compactGround, fieldsAt, groundFormat, groundStage, groundTile, wordsOf, type GroundFields } from "./ground";
 import { FN, REAL, TIER, scratchBake } from "./ground-staged";
 import { cellAcross, localOf, patchAt, patchOf, tileAt, type Patch } from "./patch";
@@ -49,7 +50,7 @@ describe("the patch format on the island's site", () => {
     const f: GroundFields = {
       height: Int32Array.from(s.height, (h) => Math.round(h * 256)), water: u16(Array.from(s.open, (o) => o * 100), 1), rock: s.rock, drift: s.drift, dd: u16(s.driftDepth, 1024),
       chn: s.channel, valley: Uint8Array.from(s.valley, (v) => (v > 0 ? 1 : 0)), pwr: u16(s.power, 16), stb: s.seasonTable.map((t) => u16(t, TABLE_UNIT)), dry: u16(s.dryTable, TABLE_UNIT),
-      pr: s.seasons.map((x) => u16(x.precip, 10)), pe: s.seasons.map((x) => u16(x.pet, 10)), sun: s.seasons.map((x) => u16(x.sun, 1024)),
+      pr: s.seasons.map((x) => Uint16Array.from(x.precip, (mm) => Math.min(65535, precipWord(mm)))), pe: s.seasons.map((x) => u16(x.pet, 10)), sun: s.seasons.map((x) => u16(x.sun, 1024)),
       tmp: s.seasons.map((x) => Int16Array.from(x.temp, (t) => Math.round(t * 256))), hum: s.seasons.map((x) => Uint8Array.from(x.humid, (h) => Math.round(h * 255))),
     };
     // the island's own sea has its heights at or under 0 and its lakes' water; the stored water is open or not, which is all the kernel reads
@@ -77,7 +78,7 @@ describe("the patch format on the island's site", () => {
 // ---------- the real planet ----------
 const real = REAL ? test : test.skip;
 const scratch = (tiles: number[], halo: number) => scratchBake(tiles, halo, false);
-const PIN = { tile458: "cd6f5602733af733" };
+const PIN = { tile458: "988394b1689bb6fe" };
 const tileOf = (k: number) => tileAt(TIER, k);
 const readTile = (dir: BakeDir, file: string, k: number): Field => {
   const { face, tx, ty } = tileOf(k), K = file.endsWith("u8") ? Uint8Array : Uint16Array, fd = openSync(dir.path(file), "r"), out = new K(256 * 256);

@@ -6,7 +6,7 @@
 //   t4-height.i32 (1/256 m above the present sea), t4-water.u16 (cm over the ground: the sea's and a lake's; open water is water over 0 or a height at or under 0)   the water stage
 //   t4-rock.u8, t4-drift.u8, t4-dd.u16 (1/1024 m)                                                                                                       the terrain stage
 //   t4-chn.u8, t4-valley.u8, t4-pwr.u16 (1/16 W/m2), t4-stb0..3.u16 and t4-dry.u16 (1/256 m, held at 255.99 m)                                         the water stage
-//   t4-pr0..3.u16 and t4-pe0..3.u16 (0.1 mm over the season), t4-sun0..3.u16 (1/1024 MJ/m2 a day), t4-tmp0..3.i16 (1/256 C), t4-hum0..3.u8 (1/255)     the air stage
+//   t4-pr0..3.u16 (sqrt(mm) * 360 over the season), t4-pe0..3.u16 (0.1 mm over the season), t4-sun0..3.u16 (1/1024 MJ/m2 a day), t4-tmp0..3.i16 (1/256 C), t4-hum0..3.u8 (1/255)     the air stage
 // Their words are turned to the kernel's own (Q16, terrain-ground.ts INPUTS) by integer arithmetic alone, so the stage is a function of the files' words.
 //
 // Outputs (global files of the tier, cell order; `GROUND_OUT` is the table, 23 bytes a cell, 2.3 GB). A share or fraction is a u8 of 1/255 of its Q24 value, rounded:
@@ -30,6 +30,7 @@
 import type { Gpu } from "../device";
 import { INPUTS, OUTPUTS, type GroundFormat } from "../wgsl/terrain-ground";
 import { groundWords } from "../terrain/ground";
+import { PR_K } from "./air";
 import type { Patch } from "./patch";
 import { KINDS, typeOf, type Ctx, type Field, type TileStage } from "./stages";
 
@@ -49,7 +50,7 @@ export const GROUND_INPUTS = Object.values(GROUND_IN).flat();
 
 // The stored words of a field of the tier, mapped: a tile touches the pages of its patch's cells only.
 const maps = new Map<string, Field>();
-export function mappedField(ctx: Ctx, file: string): Field {
+export function mappedField(ctx: Pick<Ctx, "dir">, file: string): Field {
   const key = `${ctx.dir.dir}/${file}`;
   let f = maps.get(key);
   if (!f) {
@@ -81,8 +82,9 @@ export function fieldsAt(ctx: Ctx, patch: Patch): GroundFields {
 
 // ---------- stored words to the kernel's ----------
 const O16 = 65536;
-// 0.1 mm to Q16 mm, 1/255 to Q16: round half up in integers.
+// 0.1 mm to Q16 mm, 1/255 to Q16: round half up in integers. The rain's word is the air stage's companded one, mm = (word / 360)^2 (air.ts PR_K), in integers: round(word^2 * 2^16 / 360^2).
 const mmQ16 = (v: number) => Math.floor((v * O16 + 5) / 10);
+const rainQ16 = (v: number) => Math.floor((v * v * O16 + (PR_K * PR_K) / 2) / (PR_K * PR_K));
 const HUM_Q16 = Int32Array.from({ length: 256 }, (_, v) => Math.floor((v * O16 + 127) / 255));
 export function wordsOf(f: GroundFields, patch: Patch): Int32Array {
   const n = patch.ids.length, w = new Int32Array(INPUTS.length * n), at = (name: (typeof INPUTS)[number]) => INPUTS.indexOf(name) * n;
@@ -98,7 +100,7 @@ export function wordsOf(f: GroundFields, patch: Patch): Int32Array {
   put("winterTable", (i) => f.stb[3][i] * (O16 / TABLE_UNIT)); put("dryTable", (i) => f.dry[i] * (O16 / TABLE_UNIT));
   for (let k = 0; k < 4; k++) {
     put(`seasonTable${k}` as (typeof INPUTS)[number], (i) => f.stb[k][i] * (O16 / TABLE_UNIT));
-    put(`precip${k}` as (typeof INPUTS)[number], (i) => mmQ16(f.pr[k][i]));
+    put(`precip${k}` as (typeof INPUTS)[number], (i) => rainQ16(f.pr[k][i]));
     put(`pet${k}` as (typeof INPUTS)[number], (i) => mmQ16(f.pe[k][i]));
     put(`sun${k}` as (typeof INPUTS)[number], (i) => f.sun[k][i] * 64);
     put(`temp${k}` as (typeof INPUTS)[number], (i) => f.tmp[k][i] * 256);
