@@ -43,10 +43,13 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
 - The play area stays 19.2 km. People do not travel out of it (the 2026-10-19 decision stands); the camera does.
 - The planet's laws are Earth's, scaled by dynamic similarity (operator, 2026-10-20, after Unit 4 measured a calm, dry
   planet: mean wind under 0.1 m/s, 94% of land under 250 mm a year, ranges ten times too narrow). The dimensionless
-  numbers that set Earth's circulation and relief are kept, not the dimensional constants: the spin is set by Earth's
-  thermal Rossby number (about a 44 minute rotation at 195.6 km) [derived], and lengths set in km in tectonics, erosion
-  and ice scale with the radius. The game keeps its own 24 hour day and sky (sky.ts); the planet's spin is a scaled
-  climate parameter, not the people's day [design].
+  numbers that set Earth's circulation are kept, not the dimensional constants: the spin is set by Earth's thermal
+  Rossby number (about a 44 minute rotation at 195.6 km) [derived]. Amended 2026-10-21 after the 75 m bake: only a
+  constant whose number holds the planet's radius or spin scales (the circulation, the ocean, plate count against the
+  sphere). Lithosphere, rock, hillslope, river and glacier lengths (orogen and wedge widths, flexure, arcs, hot spot
+  footprints, creep, sediment reach, shelf slope) are set by rock and gravity, not by the planet's size, so they stay
+  Earth's: Unit 4b scaled them by 0.03 and made 6 km ranges 3 km wide, ridges of planar faces with straight rivers. The
+  game keeps its own 24 hour day and sky (sky.ts); the planet's spin is a climate parameter, not the people's day [design].
 
 ## Key decisions
 
@@ -145,6 +148,15 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   Tile independence: word for word for terrain and ground; not for the rain (lee waves reach past any halo: rms 6.7 mm of a
   849 mm p99), the deep water table near a patch's edge, and the sun across a face's edge (12% in the low-sun season): gaps.
   Still open: part-full lakes, meltwater valleys, river meanders, Unit 4b's rain budget.
+- [ ] **Unit 4c: Earth's lengths for rock and rivers.** Undo Unit 4b's scaling of every lithosphere, hillslope, river and
+  glacier length (the amended scope above), keeping the atmosphere's. Find and remove the tier-0 structure that leaks
+  into the fine tiers as 16-cell grid lines. Check on seeds 1 to 3: range widths and relief against Earth's ranges in km,
+  the Earth-like facts table, land share; maps.
+- [ ] **Unit 5b: The 75 m tier as one solve, and landforms that read as eroded.** Rain and the water table as global
+  solves (sweeps with halo exchange between tiles until converged, so a cell's answer does not depend on the tiling); no
+  cap on rain concentration without a citation; tier-4 erosion run to its response time, so valleys dissect the ranges and
+  rivers bend with the ground rather than running straight down planar faces. Check: two tilings give the same bytes; a
+  tile PNG of a range and a coast judged against the island's look; then the full rebake on Unit 4c's planet.
 - [ ] **Unit 6: Cutover.** The page streams the pyramid at every zoom and the play area's Ground is cut from the planet's
   tiles (no `windowOf`, no `islandOf` generation); the lattice, windows, `windowOf` and Unit 1's sub-cell decoration are
   deleted; the island's Bornholm path goes with them, every caller migrated. VERSION bumped.
