@@ -11,11 +11,11 @@ import { LEN } from "../../terrain/grid";
 import type { Ground, Site } from "../../terrain/ground";
 import type { Gpu } from "../device";
 import { cover, dispatch, pipeline, readback, storage } from "../kernel";
-import { GROUND, INPUTS, OUTPUTS } from "../wgsl/terrain-ground";
+import { INPUTS, ISLAND_GROUND, OUTPUTS, groundWgsl, type GroundFormat } from "../wgsl/terrain-ground";
 
 const toQ16 = (x: number) => Math.max(-0x7fffffff, Math.min(0x7fffffff, Math.round(x * 65536)));
 
-function pack(s: Site): Int32Array {
+export function pack(s: Site): Int32Array {
   const inp = new Int32Array(INPUTS.length * LEN);
   const fields: Record<(typeof INPUTS)[number], ArrayLike<number>> = {
     height: s.height, open: s.open, drift: s.drift, rock: s.rock, driftDepth: s.driftDepth, valley: s.valley, channel: s.channel, power: s.power,
@@ -36,14 +36,23 @@ function pack(s: Site): Int32Array {
   return inp;
 }
 
+// The kernels on packed inputs (INPUTS, LEN of the format's side each) of an island or, with another format, of a patch of the planet's 75 m tier (globe/ground.ts): the outputs
+// (OUTPUTS, the same length each) as the kernel's words.
+export async function groundWords(g: Gpu, words: Int32Array, fmt: GroundFormat = ISLAND_GROUND): Promise<Int32Array> {
+  const cells = fmt.n * fmt.n, wgsl = groundWgsl(fmt);
+  if (words.length !== INPUTS.length * cells) throw new Error(`ground: ${words.length} input words for a grid of ${fmt.n} by ${fmt.n} (${INPUTS.length * cells})`);
+  const input = storage(g, words), near = storage(g, 2 * cells * 4), output = storage(g, OUTPUTS.length * cells * 4);
+  dispatch(g, pipeline(g, wgsl, "near"), [input, near], [1]);
+  dispatch(g, pipeline(g, wgsl, "main"), [input, near, output], cover(g, cells, 64));
+  const raw = new Int32Array(await readback(g, output));
+  input.destroy(); near.destroy(); output.destroy();
+  return raw;
+}
+
 // The ground, and with it each season's leaf display (terrain-phenology.ts leafFactors) that its carbon was made with,
 // which the test checks against the float law.
 export async function groundAndLeaf(g: Gpu, s: Site): Promise<{ ground: Ground; leaf: Float32Array[] }> {
-  const input = storage(g, pack(s)), near = storage(g, 2 * LEN * 4), output = storage(g, OUTPUTS.length * LEN * 4);
-  dispatch(g, pipeline(g, GROUND, "near"), [input, near], [1]);
-  dispatch(g, pipeline(g, GROUND, "main"), [input, near, output], cover(g, LEN, 64));
-  const raw = new Int32Array(await readback(g, output));
-  input.destroy(); near.destroy(); output.destroy();
+  const raw = await groundWords(g, pack(s));
   const field = (name: (typeof OUTPUTS)[number][0]) => {
     const k = OUTPUTS.findIndex((o) => o[0] === name), div = OUTPUTS[k][1], f = new Float32Array(LEN);
     for (let i = 0; i < LEN; i++) f[i] = raw[k * LEN + i] / div;

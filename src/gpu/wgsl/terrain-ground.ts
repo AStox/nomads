@@ -137,10 +137,65 @@ const ARR = (v: number[], t: string) => `array<${t}, ${v.length}>(${v.map((x) =>
 const DR = (f: (d: (typeof DRIFTS)[number]) => number) => ARR(DRIFTS.map((d) => Q(f(d), 24)), "i32");
 const RK = (f: (r: (typeof ROCKS)[number]) => number) => ARR(ROCKS.map((r) => Q(f(r), 24)), "i32");
 
-export const GROUND = /* wgsl */ `
+// The kernels for a grid of side `n`. The island's (`patch` false) is 256 by 256, the sweep one anti-diagonal at a time with a thread to a column; a patch of the planet's 75 m
+// tier (globe/ground.ts) is any side, its sweep with each thread taking every 256th column, and carries a channel's power no further than `reach` cells (a cell with no channel
+// within it has none), so that a cell's answer depends on the cells within `reach` of it alone [design: R1860]. The island's text, and so its words, are unchanged.
+export interface GroundFormat { n: number; patch: boolean; reach: number }
+export const ISLAND_GROUND: GroundFormat = { n: N, patch: false, reach: 0 };
+const nearIsland = /* wgsl */ `@compute @workgroup_size(256)
+fn near(@builtin(local_invocation_id) lid: vec3u) {
+  let t = lid.x;
+  for (var k = 0u; k < NSIDE; k++) {
+    let i = t + NSIDE * k;
+    let ch = inp(I_channel, i) != 0i;
+    NR[i] = select(INFN, inp(I_power, i), ch);
+    NR[LEN + i] = select(INFR, 0i, ch);
+  }
+  storageBarrier(); workgroupBarrier();
+  for (var d = 0u; d < 2u * NSIDE - 1u; d++) {
+    if (d >= t && d - t < NSIDE) { nearStep((d - t) * NSIDE + t, t, d - t); }
+    storageBarrier(); workgroupBarrier();
+  }
+  for (var e = 0u; e < 2u * NSIDE - 1u; e++) {
+    let d = 2u * NSIDE - 2u - e;
+    if (d >= t && d - t < NSIDE) { nearStep((d - t) * NSIDE + t, t, d - t); }
+    storageBarrier(); workgroupBarrier();
+  }
+}`;
+const nearPatch = /* wgsl */ `@compute @workgroup_size(256)
+fn near(@builtin(local_invocation_id) lid: vec3u) {
+  let t = lid.x;
+  for (var i = t; i < LEN; i += 256u) {
+    let ch = inp(I_channel, i) != 0i;
+    NR[i] = select(INFN, inp(I_power, i), ch);
+    NR[LEN + i] = select(INFR, 0i, ch);
+  }
+  storageBarrier(); workgroupBarrier();
+  for (var d = 0u; d < 2u * NSIDE - 1u; d++) {
+    for (var x = t; x < NSIDE; x += 256u) {
+      if (x <= d && d - x < NSIDE) { nearStep((d - x) * NSIDE + x, x, d - x); }
+    }
+    storageBarrier(); workgroupBarrier();
+  }
+  for (var e = 0u; e < 2u * NSIDE - 1u; e++) {
+    let d = 2u * NSIDE - 2u - e;
+    for (var x = t; x < NSIDE; x += 256u) {
+      if (x <= d && d - x < NSIDE) { nearStep((d - x) * NSIDE + x, x, d - x); }
+    }
+    storageBarrier(); workgroupBarrier();
+  }
+}`;
+const nearEntry = (fmt: GroundFormat) => {
+  if (!fmt.patch && fmt.n !== 256) throw new Error("the island's sweep is one workgroup of 256 columns");
+  return fmt.patch ? nearPatch : nearIsland;
+};
+
+export const groundWgsl = (fmt: GroundFormat): string => {
+const SIDE = fmt.n, CELLS = SIDE * SIDE, lim = fmt.patch ? ` && r <= ${fmt.reach}i` : "";
+return /* wgsl */ `
 ${FIXED}
-const LEN = ${LEN}u;
-const NSIDE = ${N}u;
+const LEN = ${CELLS}u;
+const NSIDE = ${SIDE}u;
 const O16 = 65536i;
 const O24 = 16777216i;
 const ONE28 = 268435456u;
@@ -206,33 +261,14 @@ fn esatQ(t: i32) -> i32 {
 fn nearStep(i: u32, x: u32, y: u32) {
   var best = NR[i];
   var reach = NR[LEN + i];
-  if (x > 0u) { let r = NR[LEN + i - 1u] + 1i; if (r < reach) { reach = r; best = NR[i - 1u]; } }
-  if (x < NSIDE - 1u) { let r = NR[LEN + i + 1u] + 1i; if (r < reach) { reach = r; best = NR[i + 1u]; } }
-  if (y > 0u) { let r = NR[LEN + i - NSIDE] + 1i; if (r < reach) { reach = r; best = NR[i - NSIDE]; } }
-  if (y < NSIDE - 1u) { let r = NR[LEN + i + NSIDE] + 1i; if (r < reach) { reach = r; best = NR[i + NSIDE]; } }
+  if (x > 0u) { let r = NR[LEN + i - 1u] + 1i; if (r < reach${lim}) { reach = r; best = NR[i - 1u]; } }
+  if (x < NSIDE - 1u) { let r = NR[LEN + i + 1u] + 1i; if (r < reach${lim}) { reach = r; best = NR[i + 1u]; } }
+  if (y > 0u) { let r = NR[LEN + i - NSIDE] + 1i; if (r < reach${lim}) { reach = r; best = NR[i - NSIDE]; } }
+  if (y < NSIDE - 1u) { let r = NR[LEN + i + NSIDE] + 1i; if (r < reach${lim}) { reach = r; best = NR[i + NSIDE]; } }
   NR[i] = best;
   NR[LEN + i] = reach;
 }
-@compute @workgroup_size(256)
-fn near(@builtin(local_invocation_id) lid: vec3u) {
-  let t = lid.x;
-  for (var k = 0u; k < NSIDE; k++) {
-    let i = t + NSIDE * k;
-    let ch = inp(I_channel, i) != 0i;
-    NR[i] = select(INFN, inp(I_power, i), ch);
-    NR[LEN + i] = select(INFR, 0i, ch);
-  }
-  storageBarrier(); workgroupBarrier();
-  for (var d = 0u; d < 2u * NSIDE - 1u; d++) {
-    if (d >= t && d - t < NSIDE) { nearStep((d - t) * NSIDE + t, t, d - t); }
-    storageBarrier(); workgroupBarrier();
-  }
-  for (var e = 0u; e < 2u * NSIDE - 1u; e++) {
-    let d = 2u * NSIDE - 2u - e;
-    if (d >= t && d - t < NSIDE) { nearStep((d - t) * NSIDE + t, t, d - t); }
-    storageBarrier(); workgroupBarrier();
-  }
-}
+${nearEntry(fmt)}
 
 // ---------- soil depth ----------
 // S / (1 - r^2) across the face from cell a to its neighbour b (r = min(0.99, |S| / Sc), S = the fall of the ground's
@@ -588,3 +624,5 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   for (var k = 0u; k < 4u; k++) { put(O_leaf0 + k, i, leaf[k]); }
 }
 `;
+};
+export const GROUND = groundWgsl(ISLAND_GROUND);
