@@ -101,7 +101,8 @@ export function realStages(c: Cfg): Stage[] {
   // from STREAM_TIER; below it by the GPU (globe-water.ts): a GPU stage under the lock, the streamed ones without.
   const fine = (T2: number, p: string): Stage[] => {
     const G = filesAt(T2), s2 = (file: string) => sizedAt(T2, file), top = p === "", streamed = T2 >= STREAM_TIER, flow = p ? [`${p}flow`] : [], work = (n: string) => `${n}-stream-t${T2}.work`;
-    const airBlock = (1 << T2) % AIR_BLOCK === 0 ? ["--block", AIR_BLOCK] : [];
+    // a block of 4 by 4 tiles spans 689 bands of latitude at tier 3 (the climate holds 400) and fits at the planet's own tier
+    const airBlock = T2 >= PLANET_TIER && (1 << T2) % AIR_BLOCK === 0 ? ["--block", AIR_BLOCK] : [];
     return [
       { name: `${p}terrain`, kind: "GPU", command: stageCmd(T2, "terrain"), tierFlag: "scripts/globe-stage.ts", needs: ["tiers"], inputs: [G.height], outputs: [...G.terrain, markerOf(T2, "terrain"), ...(top ? ["terrain-done.u8"] : [])], measure: done(T2, "terrain"), watch: [], whole: [], spent: [] },
       { name: `${p}air`, kind: "GPU", command: stageCmd(T2, "air", ...airBlock), tierFlag: "scripts/globe-stage.ts", needs: ["tiers", ...flow], inputs: [G.height, G.flooded], outputs: [...G.air, markerOf(T2, "air"), ...(top ? ["air-done.u8"] : [])], measure: done(T2, "air"), watch: [], whole: [], spent: [] },
