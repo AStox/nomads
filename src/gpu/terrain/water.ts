@@ -94,7 +94,7 @@ function pack(input: HydroInput, fmt: WaterFormat): Int32Array {
   return words;
 }
 
-type Run = { g: Gpu; F: GPUBuffer; AT: GPUBuffer; owned: GPUBuffer[]; fmt: WaterFormat; src: string; FIELD: Record<string, number>; len: number; sweeps: readonly [number, number] };
+type Run = { g: Gpu; F: GPUBuffer; AT: GPUBuffer; owned: GPUBuffer[]; fmt: WaterFormat; src: string; FIELD: Record<string, number>; len: number; sweeps: readonly [number, number]; settle: Settle[] };
 
 function step(run: Run, entry: (typeof ENTRIES)[number], params: number[] = [], groups = run.len / 256) {
   const P = storage(run.g, Uint32Array.from([...params, 0, 0, 0, 0]));
@@ -123,7 +123,7 @@ async function relax(run: Run, most: number, sweepsAt: number) {
   const { g, F, AT, FIELD, len } = run, P = [[0, 0], [1, 0], [0, 1], [1, 1]].map((w) => storage(g, Uint32Array.from([...w, 0, 0]))), p = pipeline(g, run.src, "aqrb"), word = AT_OF.cnt * len + 3, tol = sweepTol(run.fmt);
   const binds = P.map((buffer) => g.device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [F, AT, buffer].map((b, binding) => ({ binding, resource: { buffer: b } })) }));
   run.owned.push(...P);
-  let sweeps = 0, change = 0;
+  let sweeps = 0, change = 0, before = 0;
   do {
     g.device.queue.writeBuffer(AT, word * 4, new Uint32Array(1));
     const enc = g.device.createCommandEncoder(), pass = enc.beginComputePass();
@@ -132,8 +132,12 @@ async function relax(run: Run, most: number, sweepsAt: number) {
     pass.end();
     g.device.queue.submit([enc.finish()]);
     sweeps += CHUNK;
+    before = change;
     change = new Uint32Array(await readback(g, AT, 4, word * 4))[0];
   } while (change >= tol && sweeps < most);
+  // where it did not settle: the metres the head may still be out by, the change a sweep over one less the per-sweep ratio the last two chunks fell by (a geometric tail)
+  const rho = before > change && before > 0 ? (change / before) ** (1 / CHUNK) : 1, error = change >= tol ? (rho < 1 ? (change * rho) / (1 - rho) : change * most) / 2 ** run.fmt.zb : 0;
+  run.settle.push({ sweeps, change, errorM: error });
   g.device.queue.writeBuffer(F, (FIELD.misc * len + sweepsAt) * 4, Int32Array.of(sweeps));
 }
 const solve = async (run: Run, most: number, sweepsAt: number) => {
@@ -182,19 +186,20 @@ async function sequence(run: Run) {
 }
 
 // What a run leaves: the named fields' words (the outputs when none are named), the misc words and the atomic counters.
-export type Raw = { fields: Record<string, Int32Array>; misc: Int32Array; lakes: number; basins: number; flags: number };
+export type Settle = { sweeps: number; change: number; errorM: number };
+export type Raw = { fields: Record<string, Int32Array>; misc: Int32Array; lakes: number; basins: number; flags: number; settle: Settle[] };
 
 export async function hydrologyRaw(g: Gpu, input: HydroInput, names: readonly string[] = OUTPUTS, fmt: WaterFormat = ISLAND_WATER, sweeps: readonly [number, number] = [FIRST_SWEEPS, SECOND_SWEEPS]): Promise<Raw> {
   const { FIELD } = layoutOf(fmt), len = sideOf(fmt) ** 2;
   const F = storage(g, pack(input, fmt)), AT = storage(g, AT_REGIONS.length * len * 4);
-  const run: Run = { g, F, AT, owned: [], fmt, src: waterWgsl(fmt), FIELD, len, sweeps };
+  const run: Run = { g, F, AT, owned: [], fmt, src: waterWgsl(fmt), FIELD, len, sweeps, settle: [] };
   await sequence(run);
   const fields: Record<string, Int32Array> = {};
   for (const name of names) fields[name] = new Int32Array(await readback(g, F, len * 4, FIELD[name] * len * 4));
   const misc = new Int32Array(await readback(g, F, 64 * 4, FIELD.misc * len * 4));
   const counters = new Uint32Array(await readback(g, AT, 12, AT_OF.cnt * len * 4));
   for (const b of [F, AT, ...run.owned]) b.destroy();
-  return { fields, misc, basins: counters[0], flags: counters[1], lakes: counters[2] };
+  return { fields, misc, basins: counters[0], flags: counters[1], lakes: counters[2], settle: run.settle };
 }
 
 // Each season's surplus over every cell as the water's own volume, Q6 m3 over the season: the bucket of `prep` and nothing after (a planet's format), the weights of the planet's global
@@ -202,11 +207,11 @@ export async function hydrologyRaw(g: Gpu, input: HydroInput, names: readonly st
 export async function surplusRaw(g: Gpu, input: HydroInput, fmt: WaterFormat): Promise<Int32Array[]> {
   const { FIELD } = layoutOf(fmt), len = sideOf(fmt) ** 2;
   const F = storage(g, pack(input, fmt)), AT = storage(g, AT_REGIONS.length * len * 4);
-  const run: Run = { g, F, AT, owned: [], fmt, src: waterWgsl(fmt), FIELD, len, sweeps: [0, 0] };
+  const run: Run = { g, F, AT, owned: [], fmt, src: waterWgsl(fmt), FIELD, len, sweeps: [0, 0], settle: [] };
   step(run, "prep");
   step(run, "surplusw");
   const out: Int32Array[] = [];
-  for (let s = 0; s < S; s++) out.push(new Int32Array(await readback(g, F, len * 4, (FIELD.wt0 + s) * len * 4)));
+  for (let s = 0; s <= S; s++) out.push(new Int32Array(await readback(g, F, len * 4, (FIELD.wt0 + s) * len * 4)));
   for (const b of [F, AT, ...run.owned]) b.destroy();
   return out;
 }

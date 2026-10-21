@@ -6,7 +6,7 @@ import { releaseGpu, theGpu } from "../src/gpu/device";
 import { dischargeOf } from "../src/gpu/globe/discharge";
 import { SMALL_RADIUS_M } from "../src/gpu/globe/grid";
 import { forget, runTiles } from "../src/gpu/globe/stages";
-import { climateFiles, dischargeFields, lastRun, planetRain, surplusFiles, surplusStage, unmap, waterStage } from "../src/gpu/globe/water";
+import { basinOf, climateFiles, dischargeFields, lastRun, planetRain, surplusFiles, surplusStage, unmap, waterStage } from "../src/gpu/globe/water";
 import { readPlanet } from "../src/gpu/globe/window";
 import { STORE } from "./globe-planet";
 import { bakeDir } from "./globe-tiers";
@@ -25,14 +25,16 @@ if (import.meta.main) {
     if (name === "discharge") {
       const p = await dischargeOf(gpu, dir, tier, dischargeFields(tier), budget, log);
       console.log(`discharge: ${p.done ? "done" : "run this again"}, ${p.made.length} fields this call, ${p.seconds.toFixed(0)} s`);
-      if (p.done) for (const f of surplusFiles(tier)) if (arg("keep", "") !== "1") dir.remove(f);
+      if (p.done) for (const f of surplusFiles(tier)) if (arg("keep", "1") !== "1") dir.remove(f);
+    } else if (name === "basin") {
+      console.log(`lakes decided over the tier (needs surplus and discharge): ${JSON.stringify(basinOf(ctx))}`);
     } else if (name === "surplus" || name === "water") {
       const stage = name === "surplus" ? surplusStage(climate, tier) : waterStage({ climate, tier, halo });
       const p = await runTiles(ctx, stage, budget, log, only);
       const mean = p.tileS.length ? p.tileS.reduce((a, b) => a + b, 0) / p.tileS.length : 0;
       console.log(`${name}: ${p.tiles} of ${p.of} tiles made${p.done ? ", done" : ": run this again"}; this call ${p.tileS.length} tiles, mean ${mean.toFixed(2)} s, ${((performance.now() - t0) / 1000).toFixed(0)} s`);
-      if (name === "water") console.log(`last tile: sweeps ${lastRun.sweeps.join(" and ")}, inflows ${lastRun.inflows}, inputs ${lastRun.seconds.inputs.toFixed(2)} s, gpu ${lastRun.seconds.gpu.toFixed(2)} s`);
-    } else throw new Error(`stage "${name}": surplus, discharge or water`);
+      if (name === "water") console.log(`last tile: sweeps ${lastRun.sweeps.join(" and ")}, settle ${JSON.stringify(lastRun.settle)}, inflows ${lastRun.inflows}, inputs ${lastRun.seconds.inputs.toFixed(2)} s, gpu ${lastRun.seconds.gpu.toFixed(2)} s`);
+    } else throw new Error(`stage "${name}": surplus, discharge, basin or water`);
     forget(); unmap();
   } finally { await releaseGpu(); }
   process.exit(0);

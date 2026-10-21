@@ -69,10 +69,10 @@ export async function stagedPlanet(gpu: Gpu, dir: BakeDir, log: (s: string) => v
     dd[i] = drift[i] === 0 ? 0 : 4096;
   }
   dir.write("t2-rock.u8", rock); dir.write("t2-drift.u8", drift); dir.write("t2-dd.u16", dd);
-  basinOf(ctx);
   const p = await runTiles(ctx, surplusStage(stagedClimate, STAGED_TIER), 250, log);
   if (!p.done) throw new Error("staged: the surplus tiles did not finish");
   const d = await dischargeOf(gpu, dir, STAGED_TIER, dischargeFields(STAGED_TIER), 250, log);
+  log(`staged lakes: ${JSON.stringify(basinOf(ctx))}`);
   if (!d.done) throw new Error("staged: the discharge did not finish");
   return ctx;
 }

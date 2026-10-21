@@ -591,14 +591,14 @@ fn fixedset(@builtin(global_invocation_id) g: vec3u) {
   let sea = gi(f_sea, i) != 0i;
   if (P[0] == 0u) {
     if (sea) { isf = 1i; fxv = 0i; }
-    else if (gi(f_basin, i) != 0i) { isf = 1i; fxv = gi(f_filled, i); }
+    else if (gi(f_basin, i) != 0i) { isf = ${planet ? "2i" : "1i"}; fxv = gi(f_filled, i); }
     else if (gi(f_chn, i) != 0i) { let s = stage_of(i); if (s.ok) { isf = ${W ? "2i" : "1i"}; fxv = s.z; } }
   } else {
     let dd = gi(f_dd, i);
     let sat = clamp(gi(f_head, i) - (gi(f_h, i) - dd), 0i, dd);
     let p = add64(mul64(gu(f_drK, i), u32(sat)), vec2u(1u << ${zb - 1}u, 0u));
     wu(f_tt, i, gu(f_bedT, i) + ((p.x >> ${zb}u) | (p.y << ${32 - zb}u)));
-    if (gi(f_open, i) != 0i) { isf = 1i; fxv = select(gi(f_h, i) + gi(f_water, i), 0i, sea); }
+    if (gi(f_open, i) != 0i) { isf = ${planet ? "select(2i, 1i, sea)" : "1i"}; fxv = select(gi(f_h, i) + gi(f_water, i), 0i, sea); }
     else if (gi(f_chn, i) != 0i) { let s = stage_of(i); if (s.ok) { isf = ${W ? "2i" : "1i"}; fxv = s.z; } }
   }
   wi(f_isf, i, isf); wi(f_fxv, i, fxv);
@@ -940,6 +940,9 @@ fn lakefill(@builtin(global_invocation_id) g: vec3u) {
 fn surplusw(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x;
   for (var s = 0u; s < 4u; s++) { F[f_wt0 + s * LEN + i] = mm_v(gs(f_su0, s, i)); }
+  // and a lake's net water over the year at the cell's flooded depth (rain on it less its evaporation, Q6 m3 a year): the term of the island's lake balance that the global balance sums
+  let depth = gi(f_filled, i) - gi(f_h, i);
+  F[f_wt0 + 4u * LEN + i] = select(0i, mm_v(lake_mm(depth, i)), gi(f_sea, i) == 0i && depth > 0i);
 }` : ""}
 @compute @workgroup_size(256)
 fn afterlake(@builtin(global_invocation_id) g: vec3u) {

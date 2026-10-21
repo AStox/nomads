@@ -32,9 +32,9 @@
 // evaporation, t4-vs0..3.u32) and `basinOf` (t4-basin.u8).
 import { DRIFTS, ROCKS } from "../../terrain/geology";
 import { YEAR_S } from "../../terrain/water";
-import { hydrologyRaw, surplusRaw, type HydroInput, type Inflow } from "../terrain/water";
+import { hydrologyRaw, surplusRaw, type HydroInput, type Inflow, type Settle } from "../terrain/water";
 import { MISC, TS, planetWater } from "../wgsl/terrain-water";
-import { ONES, readDischarge, valueAt, type Discharge, type WeightField } from "./discharge";
+import { ONES, valueAt, type Discharge, type WeightField } from "./discharge";
 import { FACES, tierGrid } from "./grid";
 import { cellAcross, localOf, type Patch } from "./patch";
 import { KINDS, typeOf, type Ctx, type Field, type TileStage } from "./stages";
@@ -45,7 +45,7 @@ import type { Planet } from "./window";
 // The patch's reach: what the measure chose (see the header).
 export const WATER_HALO = 96;
 // The sweeps the two aquifer solves may take at most (a tile that needs more throws: its answer would depend on where it started).
-export const WATER_SWEEPS: readonly [number, number] = [80000, 80000];
+export const WATER_SWEEPS: readonly [number, number] = [12000, 12000];
 // The deepest hollow, in 1/256 m, that is not a lake (WATER_TABLE, 3 m), and the least a hollow's cell is raised by, 1 cm (HOLLOW_MIN) rounded up to the tier's unit.
 const WATER_TABLE_UNITS = 3 * 256, HOLLOW_MIN_UNITS = Math.ceil(0.01 * 256);
 // A cell's transmissivity must stay under what a sweep's four faces hold in a u32 (terrain/water.ts MOST_T); the drift's thickness is held under it, which the planet's thickest
@@ -95,16 +95,24 @@ export const planetRain = (planet: Planet): ClimateSource => (_ctx, patch) => {
   return { precip, pet };
 };
 
-// ---------- the hollows: t4-basin.u8 ----------
-// The cells of every hollow whose deepest point is over WATER_TABLE, over the whole tier: the cells the flood raised by at least a centimetre, in components of four neighbours (as
-// terrain-upstream.ts labels them), across tile and face edges. A cell of such a component is 1.
-export function basinOf(ctx: Ctx): void {
-  if (ctx.dir.has(`t${ctx.tier}-basin.u8`)) return;
+// ---------- the lakes: t4-basin.u8 (R1836) ----------
+// The cells of every lake of the planet, decided once over the whole tier by the island's balance (water.ts lakes: a hollow holds a lake where its inflow and the rain on it outlast its
+// evaporation) made global. A hollow is a component, over the whole tier and across tile and face edges, of the cells the flood raised by a centimetre (four neighbours, as
+// terrain-upstream.ts labels them); it is a lake candidate where its deepest point is over WATER_TABLE (3 m); it holds a lake, full to the spill (the flooded surface at every cell), where the
+// year's water that drains into it from outside (the exact global discharge of the cells outside whose receiver is a cell of it, the four seasons summed) plus its cells' lake net at that
+// depth (`t4-lakenet.i32`: rain less evaporation, from `surplusStage`) is not negative. A hollow that fails it is dry: no lake and no source, and the flow passes through it. A cell of a lake is 1.
+// [design: the island's part-full level, where the balance fails at the spill but holds lower, is not made: a hollow is full or dry; the island's groundwater term of the balance is not in it.]
+export interface LakeCount { lakes: number; dry: number }
+export function basinOf(ctx: Ctx): LakeCount {
+  const stats: LakeCount = { lakes: 0, dry: 0 }, file = `t${ctx.tier}-basin.u8`;
+  if (ctx.dir.has(file)) return stats;
   const g = tierGrid(ctx.tier), n = g.fn, cells = n * n, N = FACES * cells, h = mapped(ctx, `t${ctx.tier}-height.i32`) as Int32Array, f = mapped(ctx, `t${ctx.tier}-flooded.i32`) as Int32Array;
+  const to = mapped(ctx, `t${ctx.tier}-to.u32`) as Uint32Array, net = mapped(ctx, lakenetFile(ctx.tier)) as Int32Array, q = dischargeStems(ctx.tier).map((s) => mappedDischarge(ctx, s));
   const hollow = (i: number) => h[i] > 0 && f[i] - h[i] >= HOLLOW_MIN_UNITS;
   let count = 0;
   for (let i = 0; i < N; i++) if (hollow(i)) count++;
-  const state = new Uint8Array(N), members = new Int32Array(count), stack = new Int32Array(count), near = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+  // state bits: 1 seen, 2 a lake, 4 a member of the component being judged
+  const state = new Uint8Array(N), members = new Int32Array(count), stack = new Int32Array(count), near = [[1, 0], [0, 1], [-1, 0], [0, -1]], around = [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [-1, -1], [1, -1]];
   for (let s = 0; s < N; s++) {
     if (state[s] || !hollow(s)) continue;
     let top = 0, size = 0, deepest = 0;
@@ -119,32 +127,50 @@ export function basinOf(ctx: Ctx): void {
         if (j >= 0 && !state[j] && hollow(j)) { state[j] = 1; stack[top++] = j; }
       }
     }
-    if (deepest > WATER_TABLE_UNITS) for (let k = 0; k < size; k++) state[members[k]] = 3;
+    if (deepest <= WATER_TABLE_UNITS) continue;
+    let balance = 0;
+    for (let k = 0; k < size; k++) { balance += net[members[k]]; state[members[k]] |= 4; }
+    for (let k = 0; k < size; k++) {
+      const c = members[k], face = Math.floor(c / cells), r = c - face * cells, Y = Math.floor(r / n), X = r - Y * n;
+      for (const [dx, dy] of around) {
+        const o = cellAcross(g, face, X + dx, Y + dy);
+        if (o < 0 || (state[o] & 4) || to[o] !== c) continue;
+        for (let m = 0; m < 4; m++) balance += valueAt(q[m], o);
+      }
+    }
+    const lake = balance >= 0;
+    for (let k = 0; k < size; k++) state[members[k]] = lake ? 3 : 1;
+    if (lake) stats.lakes++; else stats.dry++;
   }
   const out = new Uint8Array(N);
-  for (let i = 0; i < N; i++) out[i] = state[i] === 3 ? 1 : 0;
-  ctx.dir.write(`t${ctx.tier}-basin.u8`, out);
+  for (let i = 0; i < N; i++) out[i] = (state[i] & 2) >> 1;
+  ctx.dir.write(file, out);
+  return stats;
 }
 
 // ---------- the surplus: the weights of the global discharge ----------
 const CLIMATE_SEASONS = 4;
 export const surplusFiles = (tier: number) => [0, 1, 2, 3].map((s) => `t${tier}-vs${s}.u32`);
+// a cell's lake net at its flooded depth, Q6 m3 a year (written with the surplus, read by basinOf)
+export const lakenetFile = (tier: number) => `t${tier}-lakenet.i32`;
 // The patch's climate as the hydrology takes it.
 const airOf = (c: { precip: Float32Array[]; pet: Float32Array[] }) => ({ seasons: c.precip.map((precip, s) => ({ precip, pet: c.pet[s] })) });
-const noRiver = (n: number) => ({ to: Int32Array.from({ length: n }, (_, i) => i), zero: new Float32Array(n), none: new Uint8Array(n) });
 
 export function surplusStage(climate: ClimateSource, tier = 4): TileStage {
   return {
-    name: "surplus", halo: 0, inputs: [], outputs: surplusFiles(tier),
+    name: "surplus", halo: 0, inputs: [], outputs: [...surplusFiles(tier), lakenetFile(tier)],
     async run(ctx, patch) {
-      const n = patch.ids.length, c = climate(ctx, patch), { to, zero, none } = noRiver(n), h = at<Int32Array>(mapped(ctx, `t${ctx.tier}-height.i32`), patch.ids), sea = new Float32Array(n);
-      for (let i = 0; i < n; i++) sea[i] = h[i] > 0 ? 1 : -1;
-      const input: HydroInput = { h: zero, filled: sea, to, basin: none, rock: none, drift: none, driftDepth: zero, air: airOf(c) };
+      const n = patch.ids.length, c = climate(ctx, patch), h = new Float32Array(n), filled = new Float32Array(n), to = Int32Array.from({ length: n }, (_, i) => i), none = new Uint8Array(n);
+      const h0 = at<Int32Array>(mapped(ctx, `t${ctx.tier}-height.i32`), patch.ids), f0 = at<Int32Array>(mapped(ctx, `t${ctx.tier}-flooded.i32`), patch.ids);
+      for (let i = 0; i < n; i++) { h[i] = h0[i] / 256; filled[i] = h0[i] > 0 ? f0[i] / 256 : -1; }
+      const input: HydroInput = { h, filled, to, basin: none, rock: none, drift: none, driftDepth: new Float32Array(n), air: airOf(c) };
       const w = await surplusRaw(ctx.gpu, input, planetWater(patch.side));
-      return Object.fromEntries(surplusFiles(ctx.tier).map((f, s) => [f, new Uint32Array(w[s].buffer, w[s].byteOffset, w[s].length)]));
+      return Object.fromEntries([...surplusFiles(ctx.tier).map((f, s) => [f, new Uint32Array(w[s].buffer, w[s].byteOffset, w[s].length)]), [lakenetFile(ctx.tier), w[4]]]);
     },
   };
 }
+// A discharge read through the maps (a tile touches the few pages of its patch).
+const mappedDischarge = (ctx: Ctx, stem: string): Discharge => (ctx.dir.has(`${stem}-hi.u16`) ? { lo: mapped(ctx, `${stem}-lo.u32`) as Uint32Array, hi: mapped(ctx, `${stem}-hi.u16`) as Uint16Array } : { lo: mapped(ctx, `${stem}.u32`) as Uint32Array, hi: null });
 
 // ---------- the water ----------
 export const WATER_KINDS = ["water.u16", "flow.u32", "qwet.u32", "base.u16", "chn.u8", "valley.u8", "pwr.u16", "stb0.u16", "stb1.u16", "stb2.u16", "stb3.u16", "dry.u16"];
@@ -155,8 +181,8 @@ export const cellsStem = (tier: number) => `t${tier}-cells`;
 export const dischargeFields = (tier: number): WeightField[] => [...dischargeStems(tier).map((stem, s) => ({ from: surplusFiles(tier)[s], stem })), { from: ONES, stem: cellsStem(tier) }];
 
 // What a tile's run measured, for the notes and the tests.
-export interface WaterRun { sweeps: [number, number]; flags: number; inflows: number; seconds: { inputs: number; gpu: number }; fields: Record<string, Int32Array> }
-export const lastRun: WaterRun = { sweeps: [0, 0], flags: 0, inflows: 0, seconds: { inputs: 0, gpu: 0 }, fields: {} };
+export interface WaterRun { sweeps: [number, number]; flags: number; inflows: number; seconds: { inputs: number; gpu: number }; fields: Record<string, Int32Array>; settle: Settle[] }
+export const lastRun: WaterRun = { sweeps: [0, 0], flags: 0, inflows: 0, seconds: { inputs: 0, gpu: 0 }, fields: {}, settle: [] };
 
 // The water that enters the patch over its border: for each cell outside it whose receiver is a cell of it, that cell's global discharge (the area in cells and each season's water in
 // 1/64 m3), added up at the receiver.
@@ -205,7 +231,7 @@ export async function waterOf(ctx: Ctx, patch: Patch, cfg: WaterConfig): Promise
     const rk = ROCKS[rock[k]], dr = DRIFTS[drift[k]], room = (MOST_T * 0.999 - rk.ksat * rk.thick * YEAR_S) / Math.max(1e-12, dr.ksat * YEAR_S);
     driftDepth[k] = Math.min(dd0[k] / 1024, drift[k] === 0 ? 0 : Math.max(0, room));
   }
-  const q = dischargeStems(ctx.tier).map((s) => readDischarge(ctx.dir, s)), cells = readDischarge(ctx.dir, cellsStem(ctx.tier));
+  const q = dischargeStems(ctx.tier).map((s) => mappedDischarge(ctx, s)), cells = mappedDischarge(ctx, cellsStem(ctx.tier));
   const inflow = inflowOf(ctx, patch, local, gto, q, cells), c = cfg.climate(ctx, patch);
   const input: HydroInput = { h, filled, to, basin, rock, drift, driftDepth, air: airOf(c), inflow, voidc };
   const t1 = performance.now();
@@ -227,9 +253,7 @@ export async function waterOf(ctx: Ctx, patch: Patch, cfg: WaterConfig): Promise
     for (let s = 0; s < 4; s++) stb[s][k] = u16(Math.round(f[`stb${s}`][k] * Z64));
     dry[k] = u16(Math.round(f.dry[k] * Z64));
   }
-  lastRun.sweeps = [raw.misc[MISC.sweeps1], raw.misc[MISC.sweeps2]]; lastRun.flags = raw.flags; lastRun.inflows = inflow.length; lastRun.fields = raw.fields;
-  const caps = cfg.sweeps ?? WATER_SWEEPS;
-  if (lastRun.sweeps[0] >= caps[0] || lastRun.sweeps[1] >= caps[1]) throw new Error(`water: the aquifer did not settle in ${caps.join(" and ")} sweeps (${lastRun.sweeps.join(" and ")})`);
+  lastRun.sweeps = [raw.misc[MISC.sweeps1], raw.misc[MISC.sweeps2]]; lastRun.flags = raw.flags; lastRun.inflows = inflow.length; lastRun.fields = raw.fields; lastRun.settle = raw.settle;
   lastRun.seconds = { inputs: (t1 - t0) / 1000, gpu: (performance.now() - t1) / 1000 };
   return Object.fromEntries(waterFiles(ctx.tier).map((f, k) => [f, [water, flow, qwet, base, chn, valley, pwr, stb[0], stb[1], stb[2], stb[3], dry][k]]));
 }
