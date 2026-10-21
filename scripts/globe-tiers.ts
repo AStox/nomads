@@ -3,7 +3,7 @@
 //   bun scripts/globe-tiers.ts --seed 1 --last 4
 //   bun scripts/globe-tiers.ts --seed 1 --last 2 --key 4c2a2cb36ba6      # a planet the globe's sources made before they changed
 import { releaseGpu, theGpu } from "../src/gpu/device";
-import { SMALL_RADIUS_M } from "../src/gpu/globe/grid";
+import { PLANET_RADIUS_M, PLANET_TIER } from "../src/gpu/globe/grid";
 import { BAKE, bakeDir } from "../src/gpu/globe/bakedir";
 import { tiersOf } from "../src/gpu/globe/tiers";
 import { readPlanet } from "../src/gpu/globe/window";
@@ -14,7 +14,7 @@ export { BAKE, bakeDir };
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 
 if (import.meta.main) {
-  const seed = Number(arg("seed", "1")), key = arg("key", "") || sourceKey(undefined, SMALL_RADIUS_M), last = Number(arg("last", "4")), budget = Number(arg("budget", "270"));
+  const seed = Number(arg("seed", "1")), key = arg("key", "") || sourceKey(undefined, PLANET_RADIUS_M), last = Number(arg("last", String(PLANET_TIER))), budget = Number(arg("budget", "270"));
   const t0 = performance.now();
   try {
     const planet = await readPlanet(seed, diskStore(STORE, key));

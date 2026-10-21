@@ -3,7 +3,7 @@
 import { expect, test } from "bun:test";
 import { EBM, HELD_HOU, capTable, C_EVAP, H_WATER, circulationOf, diffusionFor, kernelConstants, planetOf, solveEbm, windTable, ADJUST_S, DRAG } from "./atmosphere";
 import { erosionFor } from "./erosion";
-import { RADIUS_M, SMALL_RADIUS_M, tierGrid } from "./grid";
+import { PLANET_FN, PLANET_RADIUS_M, PLANET_TIER, RADIUS_M, SMALL_RADIUS_M, tierGrid } from "./grid";
 import { EARTH_OMEGA, EARTH_R, similarityOf } from "./similarity";
 import { ARC_KM, EARTH_HOTSPOTS, hotspotsOf, makeHotspots, makeSetup, sweepsFor, DEFAULTS } from "./tectonics";
 
@@ -96,4 +96,20 @@ test("erosion: creep, the shelf's slope and the sediment's reach are Earth's (th
   expect(p.shelfSlope).toBeUndefined();
   // 96 rings of 12.27 km is 1,178 km: the same length over a cell of this planet
   expect(p.ringMax).toBe(Math.round((96 * 12.272) / ((SMALL_RADIUS_M * tierGrid(0, SMALL_RADIUS_M).width) / 1000)));
+});
+
+test("the planet: 8,192 cells of 75 m a face is 391.1 km, 256 cells a face at tier 0 are 2.4 km, and the same rules give its sweeps and its spin", () => {
+  expect(PLANET_RADIUS_M / 1000).toBeCloseTo(391.14, 2);
+  expect(PLANET_TIER).toBe(5);
+  expect(256 * 2 ** PLANET_TIER).toBe(PLANET_FN);
+  const g = tierGrid(0, PLANET_RADIUS_M), sim = similarityOf(PLANET_RADIUS_M);
+  expect((PLANET_RADIUS_M * g.width) / 1000).toBeCloseTo(2.4, 1);
+  expect(sim.cells).toBeCloseTo(RADIUS_M / PLANET_RADIUS_M, 9);
+  // Earth's 57 km (wedge) and 174 km (arc band) in this planet's cells: the same lengths as on the other planets
+  const dx = (PLANET_RADIUS_M * g.width) / 1000, sw = sweepsFor(PLANET_RADIUS_M), set = makeSetup({ radius: PLANET_RADIUS_M });
+  expect(Math.abs(dx * Math.sqrt(0.4 * sw.wedge) / 57 - 1)).toBeLessThan(0.05);
+  expect(sw.dist).toBeGreaterThan(set.layout.arcHi / 5);
+  expect(set.hotspots.length).toBe(1);
+  // the spin: Omega a is Earth's
+  expect(planetOf({ radius: PLANET_RADIUS_M }).dayS / 60).toBeCloseTo(88.4, 0);
 });

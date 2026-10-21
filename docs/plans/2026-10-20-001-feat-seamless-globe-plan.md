@@ -166,10 +166,17 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   cap on rain concentration without a citation; tier-4 erosion run to its response time, so valleys dissect the ranges and
   rivers bend with the ground rather than running straight down planar faces. Check: two tilings give the same bytes; a
   tile PNG of a range and a coast judged against the island's look; then the full rebake on Unit 4c's planet.
-- [ ] **Unit 7a: The planet at 391.1 km.** The coarse tiers rerun at the new radius under Unit 4c's rule (only radius and
+- [x] **Unit 7a: The planet at 391.1 km.** The coarse tiers rerun at the new radius under Unit 4c's rule (only radius and
   spin numbers scale); seeds 1 to 3 measured against the Earth-like facts; the plateau's cause checked (the founder trim
   that may throw crust away, rivers too small to incise) and fixed where it is a bug, written as a gap where it is the
   planet's size.
+  Done 2026-10-21 (`docs/research/globe/2026-10-20-small-planet-impl.md`, Unit 7a; planet key `5a2d733bdf9d`): `PLANET_RADIUS_M`,
+  `PLANET_TIER` and `PLANET_FN` in grid.ts, every globe script takes them; seeds 1 to 3 through every stage. Atmosphere: step 10 s,
+  a call 95 to 98 s, settled (spin doubled: land mean 598.8 and 598.3 mm), budget 2e-5. Seeds: land 0.36 to 0.41, mean land height
+  2.2 to 2.5 km, 17 to 21% of the planet over 2 km, longest ranges 145 to 257 km wide (Earth's 172 to 240) with 4.6 to 5.6 km summits,
+  largest basins 24,000 to 81,000 km2. The plateau is not a bug: the founder trim (cited law) cuts 89% of the stacked crust (55% on the
+  2,000 km planet), the notes already call the ranges flat tables at the limit, and incision is real metres but starved by basins 9 to
+  16 times short in sqrt(area): gaps. Facts: winds and west coast pass; rain belts, rain shadow, polar ice and range summits fail.
 - [ ] **Unit 7b: Solves that stream from disk.** Tiers 1 to 5 and the fine stages as global solves over tiles kept on
   disk, with halo exchange each sweep, inside 18 GB of memory and the GPU's buffer limits; the bake as resumable calls
   under 5 minutes each, driven in order; Unit 5b's one-solve rain and water table and response-time erosion carried over.
