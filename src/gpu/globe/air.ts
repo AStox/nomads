@@ -163,7 +163,10 @@ export async function rainOf(ctx: Ctx, patch: Patch, height: Float32Array, geo: 
   while (detail / down / 16 > 0.9 * MOST_TOTAL_M) down *= 2;
   const z = Float32Array.from(height, (h, i) => (Math.max(0, h) - Math.max(0, planet.surface[i])) / down);
   const t0 = planet.t.map((v) => v[centre]), delays = t0.map((t) => cloudDelays(Math.exp(-Math.max(0, t) / LAPSE / H_W), s));
-  const seasons = SEASONS.map((c, k) => ({ t: t0[k], mm: 0, rains: c.rains, rainWind: c.rainWind, rainHumid: c.rainHumid, rose: patchRose(WET_ROSE) }));
+  // the moist layer's wind is the planet's surface wind at the patch's centre by season, never under the atmosphere's 2 m/s gust floor [design: the atmosphere's own rain
+  // drifts by the planet's wind, so a delay of 31 to 83 s is 2 to 5 cells of 75 m at the land's median 4.7 m/s; Bornholm's 12 to 13.6 m/s at 850 hPa made it 5 to 14 cells a delay]
+  const wind = planet.windE.map((e, k) => Math.max(2, Math.hypot(e[centre], planet.windN[k][centre])));
+  const seasons = SEASONS.map((c, k) => ({ t: t0[k], mm: 0, rains: c.rains, rainWind: wind[k], rainHumid: c.rainHumid, rose: patchRose(WET_ROSE) }));
   const par = rainParams(patchRose(WET_ROSE), delays, seasons, fmt), cell = new Int32Array(2 * NS * n);
   const parent = Int32Array.from(patch.ids, parentOf);
   for (let k = 0; k < NS; k++) {
