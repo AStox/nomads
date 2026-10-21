@@ -20,9 +20,10 @@ import { COARSE, H_W, LAPSE, ROSE, SEASONS, WET_ROSE, meanWay, turned } from "..
 import { YEAR_S } from "../../terrain/water";
 import { skyAt, type Sky } from "../../sim/sky";
 import { SEASON_S as SEASON_S_PLANET, climateGpu, type Climate as GlobeClimate } from "./atmosphere";
-import { runChain, type ChainState } from "./erosion";
+import { erosionFor, runChain, type ChainState } from "./erosion";
+import { similarityOf } from "./similarity";
 import { FACES, RADIUS_M, areaSr, cellId, eastNorth, fromLatLon, locateVec, meanAreaM2, tierGrid, type V3 } from "./grid";
-import { IF, IceGpu, defaultLaw, forcingTable, lgmForcing, orbitOf, runIce, seaState } from "./ice";
+import { IF, IceGpu, RELAXATION_YR, defaultLaw, forcingTable, lgmForcing, orbitOf, runIce, seaState } from "./ice";
 import { DEFAULTS, cellAreas, cellVectors, derive, extTables, makeSetup, neighbours } from "./tectonics";
 
 // ---------- the planet ----------
@@ -99,16 +100,13 @@ export function unpackRecord(bytes: Uint8Array): { meta: Record<string, any>; ar
   return { meta: head.meta, arrays };
 }
 
-// The days a season's moist air is marched before its window. The step is set by the cells' size (the least that keeps the upwind scheme stable: 52 s on the 195.6 km
-// planet's 1.2 km cells, 500 s on the 2,000 km planet's 12 km cells), so the default 30 days took 249 s a call on the small planet; the rain after 5 and after 10 days
-// differs by 0.1% on the synthetic two-continent planet (80.4 and 80.3 mm a year, the held water's drift over the window 0.3%), and 10 is taken [design, measured].
-export const spinDaysFor = (radius: number) => (radius < RADIUS_M ? 10 : 30);
 // The atmosphere's four seasons on a height field; its 2 day window is halved where the rain passes its accumulator, as the
 // erosion unit's script does (the rain is scaled to the season by the window's length, so a shorter one is a snapshot of the same state).
 async function climateOf(gpu: Gpu, height: Float32Array, radius: number): Promise<GlobeClimate> {
-  for (let windowDays = 2; ; windowDays /= 2) {
-    try { return await climateGpu(gpu, tierGrid(0, radius), height, { seaLevel: 0 }, { windowDays, spinDays: spinDaysFor(radius) }); }
-    catch (e) { if (windowDays <= 0.25 || !String(e).includes("accumulator")) throw e; }
+  const s = similarityOf(radius).s;
+  for (let windowDays = 2 * s; ; windowDays /= 2) {
+    try { return await climateGpu(gpu, tierGrid(0, radius), height, { seaLevel: 0 }, { windowDays }); }
+    catch (e) { if (windowDays <= 0.25 * s || !String(e).includes("accumulator")) throw e; }
   }
 }
 const annualRain = async (gpu: Gpu, height: Float32Array, radius: number) => {
@@ -127,7 +125,7 @@ async function chainStage(gpu: Gpu, seed: number, radius: number, store: PlanetS
     resume = { S: a.S as Int32Array, carryLo: a.carryLo as Int32Array, carryHi: a.carryHi as Int32Array, rain: a.rain as Float32Array, nextRain: meta.nextRain, step: meta.step, quiet: meta.quiet, rounds: meta.rounds, ledger: meta.ledger };
     before = meta.seconds;
   }
-  const res = await runChain(gpu, set, { rain: (h) => annualRain(gpu, h, radius), rainEveryMy: CHAIN.rainEveryMy, substeps: CHAIN.substeps, afterMy: CHAIN.afterMy, resume, budgetS });
+  const res = await runChain(gpu, set, { rain: (h) => annualRain(gpu, h, radius), rainEveryMy: CHAIN.rainEveryMy, substeps: CHAIN.substeps, afterMy: CHAIN.afterMy, resume, budgetS, params: erosionFor(radius) });
   const seconds = before + res.seconds;
   if (res.stopped) {
     const s = res.stopped;
@@ -156,7 +154,8 @@ async function iceStage(gpu: Gpu, seed: number, store: PlanetStore, budgetS: num
   const chain = unpackRecord((await store.get(seed, "chain"))!), clim = unpackRecord((await store.get(seed, "climate0"))!);
   const g = tierGrid(0, radius), ext = extTables(g), N = FACES * g.fn * g.fn;
   const inp = { bed: chain.arrays.height as Float32Array, ts: [0, 1, 2, 3].map((k) => clim.arrays[`t${k}`]), precip: [0, 1, 2, 3].map((k) => clim.arrays[`rain${k}`]) };
-  const ice = new IceGpu(gpu, ext.tab, inp, defaultLaw());
+  // the bed's relaxation time goes as 1 / (the load's width) (4 pi mu / (rho g lambda), R1641), and an ice sheet's width as s (R1779)
+  const ice = new IceGpu(gpu, ext.tab, inp, defaultLaw({ relaxYr: RELAXATION_YR / similarityOf(radius).length }));
   try {
     const o = orbitOf(seed), f = lgmForcing(o, ICE_CYCLE.cycleYr, ICE_CYCLE.outerYr);
     const part = await store.get(seed, "ice-part");

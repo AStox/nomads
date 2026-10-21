@@ -20,6 +20,7 @@ import { CAP_FACTOR, EF, CNT, FLAG, LED, PR, erosionWgsl } from "../wgsl/globe-e
 import { FLD, PHYS } from "../wgsl/globe-tectonics";
 import { EDGES, FACES, GlobeGpu, centre, cellId, fieldWords, haloSource, haloTwin, meanAreaM2, tileCount, wordAt, type Grid, type Tables } from "./grid";
 import { Tectonics, cellAreas, extTables, startingState, type Setup } from "./tectonics";
+import { similarityOf } from "./similarity";
 
 export { CAP_FACTOR, EF, FLAG, PR };
 
@@ -89,6 +90,15 @@ export const RING_MAX = 96;
 // pattern may change inside one.
 export const SUBSTEP_YR = 5e5;
 
+// The erosion's lengths on a similar planet (similarity.ts): the creep's and the sea floor's diffusivities are L^2 over a time (the tectonic clock is not scaled), so Earth's times s^2
+// (R1776: D t / L^2 is Earth's); the shelf's slope is a depth over a width, so over s (a shelf's 130 m over 100 km, 1.3e-3, over 3 km: R1777); the sediment's reach is the 96 rings of the
+// reference planet's 12.27 km cells, 1,178 km, times s in cells (R1778). The stream power law's K carries no length (E = K A^(1/2) S is invariant when A goes as s^2 and S as 1 / s), the relief
+// law's window (10 km, R1689) is left as it is: a gap.
+export function erosionFor(radius: number): Partial<ErosionParams> {
+  const sim = similarityOf(radius);
+  if (!sim.similar) return {};
+  return { creepLand: CREEP_LAND * sim.length ** 2, creepSea: CREEP_SEA * sim.length ** 2, shelfSlope: SHELF_SLOPE / sim.length, ringMax: Math.max(1, Math.round(RING_MAX * sim.cells)) };
+}
 export const defaultParams = (over: Partial<ErosionParams> = {}): ErosionParams => ({
   dtYr: SUBSTEP_YR, n: 1,
   K: [K_GRANITE, K_SANDSTONE, K_GRANITE, K_GRANITE, K_VOLCANIC],

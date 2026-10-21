@@ -28,6 +28,7 @@ import {
 import { ACCF, FLD, FLUX, NEXT, PHYS, tectonicsWgsl, type TectonicsLayout } from "../wgsl/globe-tectonics";
 
 export { ACCF, FLD, FLUX, PHYS };
+import { similarityOf } from "./similarity";
 
 // ---------- 1. parameters ----------
 export interface Params {
@@ -129,9 +130,9 @@ export function makePlates(p: Params): Plate[] {
 }
 export function makeHotspots(p: Params): Hotspot[] {
   const out: Hotspot[] = [];
-  // The footprint and the flux are set for the 2,000 km planet: on another radius the footprint keeps its angle (its radius scales with the planet's) and the flux its
-  // peak height (it scales with the footprint's area), so a hot spot builds the same cone on a smaller sphere [design: a similarity of the horizontal lengths; heights stay]
-  const s = p.radius / RADIUS_M, footKm = HOT_RADIUS_KM * s, area = Math.PI * footKm ** 2 / 3; // km2: a cone's volume is a third of base times height
+  // The footprint is Earth's 100 km [UNVERIFIED] times the similarity's length ratio and the flux, a volume a year, its area's (R1769): a hot spot builds Earth's cone, with
+  // the footprint's angle in proportion to the radius. The reference planet's is Earth's own.
+  const s = similarityOf(p.radius).length, footKm = HOT_RADIUS_KM * s, area = Math.PI * footKm ** 2 / 3; // km2: a cone's volume is a third of base times height
   for (let h = 0; h < p.hotspots; h++) {
     const u = draws(p.seed, 4, h);
     const dir = sphere(u(), u()), fluxKm3Yr = HOT_FLUX_LO * (HOT_FLUX_HI / HOT_FLUX_LO) ** u() * s * s;
@@ -184,6 +185,15 @@ export interface Setup {
 // The load the channel feels: the thickness averaged over the plate's continental cells by the same 32 sweeps as the regional height (sigma 57 km, the flexural scale of R1680) [design:
 // one flexural scale for the plate; the elastic thickness of a plateau's upper crust over its channel is not read].
 export const DEFAULT_SWEEPS: Sweeps = { gap: 16, smooth: 2, dist: 16, flow: 320, regional: 32, wedge: 54, load: 32 };
+// The sweeps of a planet of this radius. The wedge's and the load's spreading are lengths (a Gaussian of sigma = dx (0.4 n)^(1/2) cells: Earth's 57 km orogen and flexural scales),
+// so on a similar planet n goes as the square of the cells a length is worth (R1771: sigma stays Earth's 57 km times s); the others are numerical convergence. Even, and at least 2.
+export function sweepsFor(radius: number): Sweeps {
+  const c = similarityOf(radius).cells, even = (n: number) => Math.max(2, 2 * Math.round(n / 2));
+  return { ...DEFAULT_SWEEPS, wedge: even(DEFAULT_SWEEPS.wedge * c * c), load: even(DEFAULT_SWEEPS.load * c * c) };
+}
+// Earth's hot spots [analogue: some 40, the comment of `hotspots` above, UNVERIFIED], the volcanic arc's line and band over the slab in km (R1411 sec. 1.4: the line 125 km over a slab dipping
+// 40 degrees is 149 km, the arc 50 km wide, R1415): the band's two edges, which the reference planet's 12.27 km cells held as chamfer distances of 50 and 70 (R1772).
+export const EARTH_HOTSPOTS = 40, ARC_KM = { lo: 124, hi: 174 };
 // The field the regional height ends in after `n` sweeps: Z to ZR, ZR to ZR2, and so on (n even ends in ZR2; none leaves the column's own Z).
 export const regionalField = (n: number) => (n === 0 ? FLD.Z : n % 2 === 1 ? FLD.ZR : FLD.ZR2);
 
@@ -200,8 +210,11 @@ export function thermalTable(): Int32Array {
 
 const Q30 = 2 ** 30;
 // parts: plates, hot spots or arcs to use in place of the seed's (the tests stage a collision with plates of their own).
-export function makeSetup(over: Partial<Params> = {}, sweeps: Sweeps = DEFAULT_SWEEPS, parts: { plates?: Plate[]; hotspots?: Hotspot[]; arcM?: Int32Array } = {}): Setup {
-  const params = { ...DEFAULTS, speedScale: (over.radius ?? DEFAULTS.radius) / 6_371_000, ...over };
+export function makeSetup(over: Partial<Params> = {}, sweeps: Sweeps = sweepsFor(over.radius ?? DEFAULTS.radius), parts: { plates?: Plate[]; hotspots?: Hotspot[]; arcM?: Int32Array } = {}): Setup {
+  const sim = similarityOf(over.radius ?? DEFAULTS.radius);
+  // Plate speeds are Earth's times radius over Earth's (angular rates are Earth's, R1767); on a similar planet Earth has some 40 hot spots, not the reference planet's 5 (R1769), and the weak channel's
+  // viscosity keeps the number D_h t / L^2 of the flow against the tectonic clock (D_h goes as 1 / eta and L as s, so eta as 1 / s^2: R1770).
+  const params = { ...DEFAULTS, speedScale: (over.radius ?? DEFAULTS.radius) / 6_371_000, hotspots: sim.similar ? EARTH_HOTSPOTS : DEFAULTS.hotspots, flowEta: DEFAULTS.flowEta / sim.length ** 2, ...over };
   const grid = tierGrid(0, params.radius), steps = Math.round(params.spanMy / params.stepMy);
   const plates = parts.plates ?? makePlates(params), hotspots = parts.hotspots ?? makeHotspots(params), arcM = parts.arcM ?? makeArcs({ ...params, plates: plates.length }, steps);
   const NP = plates.length, NH = hotspots.length, fn = grid.fn;
@@ -218,9 +231,10 @@ export function makeSetup(over: Partial<Params> = {}, sweeps: Sweeps = DEFAULT_S
   // Thickness diffusivity of the channel flow: D_h = (1 - rho_c / rho_m) H^3 rho_c g / (12 eta), m2 a My; the number of one sweep is D_h dt / (sweeps dx^2), dx the mean cell's width.
   const dx2 = (4 * Math.PI * params.radius * params.radius) / (6 * fn * fn);
   const dh = (eta: number) => (((PHYS.RHO_M - 2800) / PHYS.RHO_M) * FLOW.channelM ** 3 * 2800 * PHYS.G * SECONDS_PER_MY) / (12 * eta);
-  const idealW = (dh(params.flowEta) * params.stepMy) / (sweeps.flow * dx2), idealC = (dh(FLOW.etaCold) * params.stepMy) / (sweeps.flow * dx2);
+  const idealW = (dh(params.flowEta) * params.stepMy) / (sweeps.flow * dx2), idealC = (dh(FLOW.etaCold / sim.length ** 2) * params.stepMy) / (sweeps.flow * dx2);
   const foW = Math.min(idealW, FLOW.foMax), foC = Math.min(idealC, FLOW.foMax);
-  const layout = { fn, plates: NP, hotspots: NH, steps, rot, node, phith, arc, hot, words, hmax: params.hMax, hweak: FLOW.hWeakM, foW: Math.round(foW * 65536), foC: Math.round(foC * 65536) };
+  const cellKm = (params.radius * grid.width) / 1000, arcAt = (km: number, own: number) => (sim.similar ? Math.round((PHYS.CHAMFER_AXIS * km * sim.length) / cellKm) : own);
+  const layout = { fn, plates: NP, hotspots: NH, steps, rot, node, phith, arc, hot, words, hmax: params.hMax, hweak: FLOW.hWeakM, foW: Math.round(foW * 65536), foC: Math.round(foC * 65536), arcLo: arcAt(ARC_KM.lo, PHYS.ARC_LO), arcHi: arcAt(ARC_KM.hi, PHYS.ARC_HI) };
   return { params, grid, plates, hotspots, steps, arcM, layout, Q, sweeps, flow: { foW, foC, idealW, share: foW / idealW } };
 }
 
@@ -371,7 +385,7 @@ export interface Start {
 // from the coast inward; ocean floor aged by its distance from the nearest divergent boundary at the plates' half spreading
 // rate there; pelagic sediment from that age.
 export function startingState(set: Setup, tab: Tables): Start {
-  const g = set.grid, N = FACES * g.fn * g.fn, vec = cellVectors(g), areas = cellAreas(g), p = set.params, radiusKm = g.radius / 1000;
+  const g = set.grid, N = FACES * g.fn * g.fn, vec = cellVectors(g), areas = cellAreas(g), p = set.params, radiusKm = g.radius / 1000, cf = similarityOf(g.radius).cells;
   const plate = new Uint8Array(N);
   for (let i = 0; i < N; i++) {
     const x = vecOf(vec, i);
@@ -397,7 +411,7 @@ export function startingState(set: Setup, tab: Tables): Start {
   const edge: number[] = [];
   for (let i = 0; i < N; i++) if ([0, 1, 2, 3].some((d) => plate[nb[4 * i + d]] !== plate[i])) edge.push(i);
   const fromEdge = bfs(g, edge).dist;
-  const order = Array.from({ length: N }, (_, i) => i).filter((i) => fromEdge[i] >= START.boundaryGap).sort((a, b) => field[b] - field[a] || a - b);
+  const order = Array.from({ length: N }, (_, i) => i).filter((i) => fromEdge[i] >= START.boundaryGap * cf).sort((a, b) => field[b] - field[a] || a - b);
   const continental = new Uint8Array(N);
   let acc = 0;
   for (const i of order) { if (acc >= p.continentShare * 4 * Math.PI) break; continental[i] = 1; acc += areas[i]; }
@@ -419,7 +433,7 @@ export function startingState(set: Setup, tab: Tables): Start {
   }
   const S = stateFrom(set, tab, (i) => {
     if (continental[i]) {
-      const d = inland[i], taper = Math.min(1, d / START.taperCells), h = (START.coastKm + (START.coreKm - START.coastKm) * taper) * 1000, cover = START.coverM * (1 - Math.min(1, d / START.coverCells));
+      const d = inland[i], taper = Math.min(1, d / (START.taperCells * cf)), h = (START.coastKm + (START.coreKm - START.coastKm) * taper) * 1000, cover = START.coverM * (1 - Math.min(1, d / (START.coverCells * cf)));
       return { sediment: cover, granitoid: h - cover, plate: plate[i] };
     }
     return { basalt: PHYS.H_OC, sediment: Math.min(1000, PELAGIC_M_PER_MY * ageMy[i]), ageMy: ageMy[i], plate: plate[i] };
@@ -665,7 +679,7 @@ export class Twin {
       let vb = this.rs(FLD.VB, c), vs = this.rs(FLD.VB + 1, c), vm = this.rs(FLD.VB + 2, c), vg = this.rs(FLD.VB + 3, c), vv = this.rs(FLD.VB + 4, c), agb = this.rs(FLD.AGB, c), org = this.rs(FLD.ORG, c);
       const pl = this.rs(FLD.PL, c), d = this.rs(FLD.DIST, c);
       let event = false, arcAdd = 0, hotAdd = 0, pelAdd = 0;
-      if (d >= PHYS.ARC_LO && d <= PHYS.ARC_HI && pl < L.plates) {
+      if (d >= L.arcLo && d <= L.arcHi && pl < L.plates) {
         const dh = Math.max(Q[L.arc + pl * (L.steps + 1) + stepNo], 0);
         arcAdd = Math.floor((dh * a) / 16);
         const vol = Math.floor(arcAdd / (PHYS.PLUTON_PER_VOLCANIC + 1));

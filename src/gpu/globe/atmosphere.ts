@@ -33,6 +33,8 @@ import {
   vertex, wordAt, type Grid, type Tables,
 } from "./grid";
 
+import { similarityOf } from "./similarity";
+
 export { FIELD, NODES };
 
 // ---------- 1. planet and constants ----------
@@ -49,7 +51,9 @@ export interface PlanetParams {
 // 1366 W/m2 (Kostadinov and Gilb, R1438: 1361 in Kopp and Lean 2011) [cited]; gravity stays 9.81 so every law the game holds
 // stays true [design: the planet is then unphysical, 17.6 g/cm3, the atmosphere note sec. 4].
 export const DEFAULT_PLANET: PlanetParams = { radius: RADIUS_M, tiltDeg: 23.4, dayS: 86_400, solar: 1366, seaLevel: 0, gravity: 9.81 };
-export const planetOf = (p: Partial<PlanetParams> = {}): PlanetParams => ({ ...DEFAULT_PLANET, ...p });
+// On a similar planet (similarity.ts) the day is Earth's times s: the spin that holds Earth's thermal Rossby number g H Dh / (Omega a)^2 of the circulation's edge, 44 minutes at
+// 195.6 km (R1768) [derived: Held and Hou, R1433]. The game's own 24 hour day is the sim's (sim/sky.ts), not this.
+export const planetOf = (p: Partial<PlanetParams> = {}): PlanetParams => ({ ...DEFAULT_PLANET, dayS: DEFAULT_PLANET.dayS * similarityOf(p.radius ?? DEFAULT_PLANET.radius).s, ...p });
 
 const DEG = Math.PI / 180;
 // A year of 365.25 days of 86,400 s, as the island generator's seasons (water.ts YEAR_S): only the heat capacities and the
@@ -220,7 +224,9 @@ export const diffusionFor = (radius: number) => ((EBM.B + 6 * EBM.D_EARTH) / (ra
 // with the columns eliminated.
 export function solveEbm(p: PlanetParams, landFraction: ArrayLike<number>, years = 200, feedback = true): Ebm {
   const NB = BANDS, steps = 96, dt = YEAR_S / steps;
-  const D = p.diffusion ?? diffusionFor(p.radius);
+  // The energy balance's number is D / B, the transport's damping of the second mode against the radiation's (R1437): on a similar planet it is Earth's, D = 0.649 W/m2/K, so
+  // Earth's equator-to-pole contrast is kept (R1773) [derived]; Kaspi and Showman's radius law (R1606) is for Earth's rotation and the reference planet.
+  const D = p.diffusion ?? (similarityOf(p.radius).similar ? EBM.D_EARTH : diffusionFor(p.radius));
   const CL = EBM.CL_YR * EBM.B * YEAR_S, CW = EBM.CW_YR * EBM.B * YEAR_S;
   const phi = new Float64Array(NB), sinC = new Float64Array(NB), sinE = new Float64Array(NB + 1), dx = new Float64Array(NB), w = new Float64Array(NB), fl = new Float64Array(NB);
   for (let k = 0; k <= NB; k++) sinE[k] = Math.sin((-90 + k) * DEG);
@@ -355,7 +361,7 @@ export function windTable(p: PlanetParams, c: Circulation, phi0: number): { u: F
     else if (t < c.polarFront) { uz = c.uWest * Math.sin((Math.PI * (t - c.hadley)) / (c.polarFront - c.hadley)); steadiness = WIND.steadyWest; }
     else { uz = -c.uPolar * Math.sin((Math.PI * (t - c.polarFront)) / (Math.PI / 2 - c.polarFront)); steadiness = WIND.steadyPolar; }
     // the friction acts on the scalar wind, the mean flow is its vector mean
-    const f = 2 * c.omega * Math.sin(phi), r = (DRAG.cd * Math.abs(uz)) / DRAG.depth, um = steadiness * uz;
+    const f = 2 * c.omega * Math.sin(phi), r = (DRAG.cd * Math.abs(uz)) / (DRAG.depth * similarityOf(p.radius).s), um = steadiness * uz;
     u[j] = um; s[j] = Math.abs(uz);
     v[j] = (r * f * um) / (f * f + fMin * fMin);
   }
@@ -364,23 +370,29 @@ export function windTable(p: PlanetParams, c: Circulation, phi0: number): { u: F
 
 // ---------- 5. the constants of the kernels ----------
 const Q = (x: number, n: number) => Math.round(x * 2 ** n);
-export function kernelConstants(): Kq {
+// The constants of the kernels on a planet whose times are Earth's times s (R1774): the air's adjustment to the surface (U times it is a length of Earth's 0.088 radii), the convective
+// adjustment (U tau / a), and the rain stage's cloud conversion and fall delays (U tau over the width of a range, which is Earth's times s) keep their numbers by going as s; the boundary
+// layer's depth goes as s with them (the Ekman number C_D U / (H f) and the adjustment's heat capacity, R1775) [derived]. So does the vapour column's depth H_w, the water the air holds
+// for the evaporation that fills it (R1781): the evaporation is a flux per area (energy limited, Earth's) and the vapour's residence against the advective time, Lambda = (column / E) U / a
+// (about 0.85 on Earth, 9 days of residence against 10 days to cross the planet), is Earth's only if the column goes as s; then U q / L, the vapour a range lifts, is a flux per area
+// of Earth's size too. The saturation column and C_E / H_w go with it (flux C_E U rho_vs (1 - RH) is the same); the lapse rate times H_w, a ratio of heights, does not.
+export function kernelConstants(s = 1): Kq {
   const iceFreeze = (2 * ICE_K * SEASON_S) / (ICE_RHO * ICE_L);
   return {
     gammaQ22: Q(GAMMA, 22),
     blockN: Q(N_M * 1000, 16),
     gust: Q(GUST, 16),
-    ke: Q(C_EVAP / H_WATER, 44),
+    ke: Q(C_EVAP / (H_WATER * s), 44),
     ghw: Q(GAMMA * H_WATER, 16),
     tf: Q(T_FREEZE, 16),
     kice: Q(iceFreeze, 16),
     rh0: Q(FIRST_SHARE, 16),
-    ft: Q(1 / ADJUST_S, 30),
+    ft: Q(1 / (ADJUST_S * s), 30),
     snowHi: Q(SNOW_HI, 16),
     snowInv: Q(1 / (SNOW_HI - SNOW_LO), 16),
-    tauCIce: TAU_C_ICE, tauCWarm: TAU_C_WARM, tauFRain: TAU_F_RAIN, tauFSnow: Math.round(H_WATER / V_SNOW),
+    tauCIce: s === 1 ? TAU_C_ICE : Math.round(TAU_C_ICE * s), tauCWarm: s === 1 ? TAU_C_WARM : Math.round(TAU_C_WARM * s), tauFRain: s === 1 ? TAU_F_RAIN : Math.round(TAU_F_RAIN * s), tauFSnow: Math.round((H_WATER / V_SNOW) * s),
     rhRef: Q(RH_REF, 16),
-    ksbm: Q(1 / TAU_SBM, 30),
+    ksbm: Q(1 / (TAU_SBM * s), 30),
     epC1: Q((1 - NETRAD.ALBEDO) * (NETRAD.AS + NETRAD.BS * NETRAD.SUNSHINE), 16),
   };
 }
@@ -389,8 +401,8 @@ export function kernelConstants(): Kq {
 // division (so no word depends on the engine's Math.exp): e_s by Tetens in Q16 kPa, then 5,417 e_s / T. The integer exponential
 // gives zero below about -53 C (e_s under half a Q16 step; the true column there is under 0.02 mm). Where e_s sits on one Q16
 // step for several entries the 1/T would lower the column with warmth; the table is held at its running maximum [design].
-export function saturationTable(): Int32Array {
-  const out = new Int32Array(NCAP), e0 = Q(TETENS.E0, 16), a = Q(TETENS.A, 16), b = Q(TETENS.B, 16), k0 = Q(273.15, 16), kw = BigInt(Math.round(COLUMN * 16));
+export function saturationTable(s = 1): Int32Array {
+  const out = new Int32Array(NCAP), e0 = Q(TETENS.E0, 16), a = Q(TETENS.A, 16), b = Q(TETENS.B, 16), k0 = Q(273.15, 16), kw = BigInt(Math.round(COLUMN * s * 16));
   for (let i = 0; i < NCAP; i++) {
     const t = (CAP_FROM * CAP_PER_K + i) * (65536 / CAP_PER_K);
     const es = qmul(e0, qexp(qdiv(qmul(a, t), t + b)));
@@ -399,8 +411,8 @@ export function saturationTable(): Int32Array {
   }
   return out;
 }
-let capCache: Int32Array | undefined;
-export const capTable = () => (capCache ??= saturationTable());
+const capCache = new Map<number, Int32Array>();
+export const capTable = (s = 1) => { let t = capCache.get(s); if (!t) capCache.set(s, (t = saturationTable(s))); return t; };
 
 // The land's two evaporation columns on the saturation table's temperature grid (R1602, R1603), float64 rounded to the kernel's
 // integers as the energy balance's tables are (so one engine's: the sqrt is exact, the exponential is not): the potential
@@ -668,8 +680,8 @@ export interface Climate {
   soil: { rounds: number; residual: number };
 }
 export interface ClimateOptions {
-  spinDays?: number; // the days a season's moist air is marched before the window (30)
-  windowDays?: number; // the days of the window the rain and evaporation are summed over (2)
+  spinDays?: number; // the days a season's moist air is marched before the window (30 times s: the settling takes the same number of crossings of the planet)
+  windowDays?: number; // the days of the window the rain and evaporation are summed over (2 times s)
   soilRounds?: number; // the times the four seasons are marched with the bucket's efficiency updated (SOIL.ROUNDS)
 }
 // Manabe's bucket (R1604) over the year, per land cell: from each season's rain and potential evaporation (mm over the season)
@@ -737,7 +749,7 @@ export class AtmosphereGpu {
   readonly land: Uint8Array;
   readonly ebm: Ebm;
   readonly circulation: Circulation;
-  readonly k = kernelConstants();
+  readonly k: Kq;
   readonly tables = new Int32Array(TABLE_WORDS);
   readonly blockL: number;
   private readonly S: GPUBuffer;
@@ -753,7 +765,10 @@ export class AtmosphereGpu {
     this.geo = geo; this.n = geo.n; this.land = land;
     this.ebm = solveEbm(this.p, landFractionOf(geo, land));
     this.circulation = circulationOf(this.p);
-    this.blockL = Math.round(((BLOCK_CELLS * cellWidthM(g)) / 1000) * 65536);
+    const sim = similarityOf(this.p.radius);
+    this.k = kernelConstants(sim.s);
+    // the barrier the Froude number reads the rise over: four of the reference planet's cells, Earth's 49 km, times s (the cells factor keeps the product exact on the reference planet)
+    this.blockL = Math.round(((BLOCK_CELLS * sim.cells * cellWidthM(g)) / 1000) * 65536);
     const n = this.n, dev = gpu.device;
     this.S = storage(gpu, n * FIELD.COUNT * 4);
     this.Gb = storage(gpu, geo.gdata);
@@ -763,7 +778,7 @@ export class AtmosphereGpu {
     put(FIELD.ELEV, Int32Array.from(elev, (v) => Math.round(v * 64)));
     put(FIELD.SLX, slopes.slx); put(FIELD.SLY, slopes.sly); put(FIELD.LAND, Int32Array.from(land));
     const evap = landTables();
-    this.tables.set(capTable(), TAB.CAP); this.tables.set(evap.epw, TAB.EPW); this.tables.set(evap.rnl, TAB.RNL);
+    this.tables.set(capTable(sim.s), TAB.CAP); this.tables.set(evap.epw, TAB.EPW); this.tables.set(evap.rnl, TAB.RNL);
     const wgsl = atmosphereWgsl(this.k);
     this.pipes = { prep: pipeline(gpu, wgsl, "prep"), edges: pipeline(gpu, wgsl, "edges"), step: pipeline(gpu, wgsl, "step"), finish: pipeline(gpu, wgsl, "finish") };
     this.groups = cover(gpu, n);
@@ -819,7 +834,7 @@ export class AtmosphereGpu {
     const n = this.n, rates = await this.read(FIELD.R, 4);
     let most = 0;
     for (let i = 0; i < n; i++) most = Math.max(most, Math.abs(rates[i]) + Math.abs(rates[n + i]) + Math.abs(rates[2 * n + i]) + Math.abs(rates[3 * n + i]));
-    const dt = Math.max(1, Math.min(500, Math.floor((0.8 * OUT) / Math.max(1, most))));
+    const dt = Math.max(1, Math.min(Math.max(1, Math.round(500 * similarityOf(this.p.radius).s)), Math.floor((0.8 * OUT) / Math.max(1, most))));
     this.setStep(dt);
     return dt;
   }
@@ -830,7 +845,7 @@ export class AtmosphereGpu {
     this.loadSeason(s);
     this.run("prep"); this.run("edges");
     const dt = await this.chooseStep();
-    const spin = Math.ceil(((opts.spinDays ?? 30) * 86400) / dt), win = Math.ceil(((opts.windowDays ?? 2) * 86400) / dt);
+    const sc = similarityOf(this.p.radius).s, spin = Math.ceil(((opts.spinDays ?? 30 * sc) * 86400) / dt), win = Math.ceil(((opts.windowDays ?? 2 * sc) * 86400) / dt);
     this.run("step", 0, 0, spin);
     const par0 = spin & 1, par1 = (spin + win) & 1, held = async (par: number) => {
       const [m, c, h] = [await read(FIELD.ST + 5 * par + 1), await read(FIELD.ST + 5 * par + 2), await read(FIELD.ST + 5 * par + 3)];

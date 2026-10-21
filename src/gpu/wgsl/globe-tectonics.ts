@@ -87,6 +87,7 @@ export interface TectonicsLayout {
   hweak: number; // the thickness from which the lower crust flows, m
   foW: number; // the diffusion number of one flow sweep for a link of two weak columns, Q16
   foC: number; // and for a link to a cold column
+  arcLo: number; arcHi: number; // the arc's band over the slab, in chamfer units of 5 a cell (R1772)
 }
 
 export function tectonicsWgsl(edges: readonly (readonly { face: number; side: number; flip: boolean }[])[], L: TectonicsLayout, frames: readonly { n: readonly number[]; ex: readonly number[]; ey: readonly number[] }[]): string {
@@ -130,8 +131,8 @@ const SMOOTH_SAME = ${PHYS.SMOOTH_SAME}u;
 const SMOOTH_VOTES = ${PHYS.SMOOTH_VOTES}u;
 const RANK_MIN = ${PHYS.RANK_MIN}u;
 const RANK_BIAS = ${PHYS.RANK_BIAS}i;
-const ARC_LO = ${PHYS.ARC_LO}u;
-const ARC_HI = ${PHYS.ARC_HI}u;
+const ARC_LO = ${L.arcLo}u;
+const ARC_HI = ${L.arcHi}u;
 const DIST_INF = ${PHYS.DIST_INF}u;
 const CH_AX = ${PHYS.CHAMFER_AXIS}u;
 const CH_DG = ${PHYS.CHAMFER_DIAG}u;

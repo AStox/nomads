@@ -116,11 +116,19 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   planet with the longest rivers), one erosion step 19.9 s (24.5 s), deepest flow path 3,854 of 16,382 cells; tier 3 is 4.2
   s. Recommendation: **4,096 a face**; open for Unit 5: the island's other fine stages at 100 million cells and the disk a
   bake needs between stages are not measured.
-- [ ] **Unit 4b: Earth's similarity on the small planet.** Every dimensional constant in the coarse tiers that depends on
+- [x] **Unit 4b: Earth's similarity on the small planet.** Every dimensional constant in the coarse tiers that depends on
   planet scale (rotation, Coriolis, the circulation's widths, plate and orogen widths, flexural lengths, hot spot spacing,
   ice sheet lengths) is re-derived from the dimensionless number it carries on Earth, each cited and tagged; nothing tuned
   to a picture. Check on seeds 1 to 3: trade winds and westerlies, dry belts and wet belts, rain shadows, a wet mild west
   coast at mid latitude, polar ice, ranges as wide as Earth's in proportion; the misses written as gaps.
+  Done 2026-10-21 (`docs/research/globe/2026-10-20-small-planet-impl.md`, R1768 to R1782, `src/gpu/globe/similarity.ts`):
+  s = radius / Earth's = 0.0307; the spin is Earth's thermal Rossby number's (44.2 minutes), hot spots, the arc band, the
+  wedge's sweeps, the channel's viscosity, creep, the shelf, the isostatic relaxation, the air's adjustment, the convective
+  and cloud delays, the boundary layer and the vapour column each rederived from the number they carry on Earth; the
+  2,000 km planet is the reference and scaled by nothing (every pin holds). Seeds 1 to 3: trades -4 to -5 and westerlies
+  +6 m/s, Hadley edge 28.9 degrees, dry belt at 30 (395 mm against 4,000 at the equator and 1,000 at mid latitudes), rain
+  shadows 0.68 to 0.72, wet mild west coasts, a 40 K equator to pole contrast. Misses written as gaps: polar ice (4 to 18%
+  of polar land), range widths read over plateaus, tropics twice Earth's and dry interiors, aspect ratio, gravity.
 - [ ] **Unit 5: The 75 m tier over the whole planet.** The island's fine stages (erosion, hydrology, rain, climate, soil,
   ground) run as global solves at tier 4, coarse to fine, across tile and face edges, baked by stages into the tile
   pyramid. The scatter as a pure function of a tile's fields. Check: one drainage network (every river reaches the sea or
