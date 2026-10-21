@@ -141,7 +141,7 @@ describe("the air stage on a staged planet", () => {
 });
 
 // ---------- the real planet ----------
-const KEY = "c418e5fe9b5e", BAKE = `/tmp/planet-75m/1-${KEY}`, STOREDIR = "/tmp/planet-small/store";
+const KEY = "883a8d9387df", BAKE = `/tmp/planet-75m/1-${KEY}`, STOREDIR = "/tmp/planet-small/store";
 const REAL = existsSync(`${BAKE}/t4-height.i32`) && existsSync(`${BAKE}/t4-flooded.i32`) && existsSync(`${STOREDIR}/1-${KEY}`);
 const real = REAL ? test : test.skip;
 let planet: Planet | null = null;
@@ -162,7 +162,7 @@ const gatherFile = (file: string, p: Patch) => {
 };
 const heightsAt = async (_: Ctx, p: Patch) => ({ h: gatherFile(`${BAKE}/t4-height.i32`, p), f: gatherFile(`${BAKE}/t4-flooded.i32`, p) });
 // The pinned hash of tile 458's stored words (this planet's and this engine's: re-record when the air stage, the planet or the bake changes, and say so)
-const PIN = { tile458: "9a283abb8e7c719" };
+const PIN = { tile458: "cce96bfdfcff1a51" };
 
 describe("the air stage on the real planet (seed 1)", () => {
   real("tile 458 (face 1, a range with land and sea): the same twice, the stored words pinned, rain kept by block, and the stored files' sizes", async () => {
