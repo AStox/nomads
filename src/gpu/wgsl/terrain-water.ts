@@ -14,7 +14,7 @@
 //   sink's steepest fall) held in the weights, so the sweeps' count rule stands and the arithmetic stays integer;
 // - the lakes: components of the hollows by minimum-label propagation, then each basin cell as a candidate level
 //   against every cell of its hollow.
-import { CELL, LEN, N } from "../../terrain/grid";
+import { CELL, N } from "../../terrain/grid";
 import { BARE, DRIFTS, ROCKS } from "../../terrain/geology";
 import { ROOTS } from "../../terrain/growth";
 import { NICHE } from "../../terrain/niche";
@@ -56,13 +56,21 @@ export const FIELD = Object.fromEntries(FIELDS.map((n, k) => [n, k])) as Record<
 // a second: heights Q15.17 m (under 8,192 m with a sweep's offset of 2^30), flows Q16.16 m3/s (bankfull under 65,536, the mean
 // under 4,369) [design]. A window's rivers from beyond its edge come in at their cells as drainage area (cells) and as water (m3
 // a year and a season, Q6, 64 bits), added to the gathers of each.
-export interface WaterFormat { zb: number; qb: number; window: boolean }
+// `side` is the grid's side in cells (the island's 256 by default; a patch of the planet's tier is 256 plus its halo twice). `planet` is the format of a patch of the whole planet
+// (always a window's): a cell may be `void` (a repeat at a cube's corner: it carries no water and no flux), and a hollow's lake stands at the flooded surface the planet's flood
+// gave it (the hollows are the planet's, so none is cut by the grid's edge and no lake's level is a window's) [design].
+export interface WaterFormat { zb: number; qb: number; window: boolean; side?: number; planet?: boolean }
 export const ISLAND_WATER: WaterFormat = { zb: 20, qb: 26, window: false };
 export const WINDOW_WATER: WaterFormat = { zb: 17, qb: 16, window: true };
+export const planetWater = (side: number): WaterFormat => ({ zb: 17, qb: 16, window: true, side, planet: true });
+export const sideOf = (fmt: WaterFormat) => fmt.side ?? N;
+// The change in a head (Z) under which a sweep stops the relaxation: the CPU's 2 mm in the island's and a window's formats, half a millimetre in a planet's (a planet's is relaxed in two colours
+// at 1.9, and a tighter change than that is under the noise of the integer arithmetic: the sums of the head and the flow agreed to 1e-6 between half and a quarter of a millimetre) [design].
+export const sweepTol = (fmt: WaterFormat) => (fmt.planet ? Math.round(0.0005 * 2 ** fmt.zb) : fmt.window ? Math.round(0.002 * 2 ** fmt.zb) : SWEEP_TOLERANCE_Z) + 1;
 // the inflow's words, each a low and a high word: the area, the year's water and each season's
 export const INFLOW = ["ia0l", "ia0h", "iy0l", "iy0h", "is0l", "is0h", "is1l", "is1h", "is2l", "is2h", "is3l", "is3h"];
 export const layoutOf = (fmt: WaterFormat) => {
-  const fields: readonly string[] = fmt.window ? [...INPUTS, ...INFLOW, ...INTERNAL, ...OUTPUTS] : FIELDS;
+  const fields: readonly string[] = fmt.window ? [...INPUTS, ...INFLOW, ...(fmt.planet ? ["voidc"] : []), ...INTERNAL, ...OUTPUTS] : FIELDS;
   return { FIELDS: fields, FIELD: Object.fromEntries(fields.map((n, k) => [n, k])) as Record<string, number> };
 };
 // Atomic words (AT): each region is LEN words.
@@ -152,9 +160,10 @@ const driftShare = DRIFTS.flatMap((d) => d.recharge.map((r) => `${q16(r)}i`)).jo
 const driftSy = DRIFTS.map((_, k) => `${q16(SY_DRIFT[k] ?? 0)}i`).join(", ");
 
 const constsOf = (fmt: WaterFormat, FIELDS: readonly string[]) => {
-  const ZS = 2 ** fmt.zb, [REED_FULL, REED_NONE] = reedZ(ZS), W = fmt.window;
+  const ZS = 2 ** fmt.zb, [REED_FULL, REED_NONE] = reedZ(ZS), W = fmt.window, LEN = sideOf(fmt) ** 2;
   return /* wgsl */ `
-const N = ${N}u;
+const SIDE = ${sideOf(fmt)}u;
+const SIDEI = ${sideOf(fmt)}i;
 const LEN = ${LEN}u;
 ${FIELDS.map((n, k) => `const f_${n}: u32 = ${k * LEN}u;`).join("\n")}
 ${AT_REGIONS.map((n, k) => `const a_${n}: u32 = ${k * LEN}u;`).join("\n")}
@@ -203,7 +212,7 @@ const REED_SLOPE = ${Math.round(65536 / (NICHE.reeds.table![3] - NICHE.reeds.tab
 const KC_X = ${q16(KC_WET - 1)}i;
 const SUMMER = ${SUMMER}u;
 const RISE_Z = ${Math.round((W ? 2 ** fmt.zb / 65536 / 1000 : 0.016) * 2 ** 32)}u;
-const SWEEP_TOL = ${(W ? Math.round(0.002 * ZS) : SWEEP_TOLERANCE_Z) + 1}u;
+const SWEEP_TOL = ${sweepTol(fmt)}u;
 ${W ? headWords() : `const HEAD_NUM = ${Math.round(CELL / HEAD_C)}u;`}
 const OFF = 1073741824i;
 `;
@@ -217,13 +226,16 @@ const headWords = () => {
 const kernelsOf = (fmt: WaterFormat) => {
   // the units the format's words imply: the shift that takes a height in Z to whole units of its scale, the slope35 fall's
   // units (2^-(zb + 15)) to Q30, and the log2 of a flow's scale over Q16's
-  const zb = fmt.zb, s30 = zb - 15, W = fmt.window;
+  const zb = fmt.zb, s30 = zb - 15, W = fmt.window, side = sideOf(fmt), pow2 = (side & (side - 1)) === 0, planet = fmt.planet === true;
   return /* wgsl */ `
 @group(0) @binding(0) var<storage, read_write> F: array<i32>;
 @group(0) @binding(1) var<storage, read_write> AT: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read> P: array<u32>;
 // every entry point touches all three bindings, so that one bind group fits each of the auto layouts
 fn touch() { _ = arrayLength(&F); _ = arrayLength(&AT); _ = arrayLength(&P); }
+// a cell's column and row on the grid (x east, y north), whatever the side
+fn cx(i: u32) -> u32 { return ${pow2 ? `i & ${side - 1}u` : "i % SIDE"}; }
+fn cy(i: u32) -> u32 { return ${pow2 ? `i >> ${Math.log2(side)}u` : "i / SIDE"}; }
 
 fn gi(f: u32, i: u32) -> i32 { return F[f + i]; }
 fn gu(f: u32, i: u32) -> u32 { return bitcast<u32>(F[f + i]); }
@@ -271,7 +283,7 @@ fn div64(n: vec2u, d: u32) -> vec2u {
 }
 fn reach_of(i: u32) -> u32 {
   let j = gu(f_to, i);
-  return select(REACH_ORTH, REACH_DIAG, ((j & 255u) != (i & 255u)) && ((j >> 8u) != (i >> 8u)));
+  return select(REACH_ORTH, REACH_DIAG, (cx(j) != cx(i)) && (cy(j) != cy(i)));
 }
 // a cell's slope to the sea's level or the ground of its receiver, in units of 2^-35: the fall in 2^-51 m over the reach in
 // 2^-16 m (a flat's 1e-4 m step over 75 m is 1.3e-6, which a Q30 slope holds to 7e-4 and this to 2e-5)
@@ -322,7 +334,7 @@ fn prep(@builtin(global_invocation_id) g: vec3u) {
   // fills and the rock's below, as ground.ts takes the soil's texture [design]
   let fill = i32(min(65536u, div64(mul64(u32(max(dd, 0i)), 65536u), u32(ROOTS_Z)).x));
   for (var k = 0u; k < 4u; k++) { F[f_evd + k * LEN + i] = qmul(GW_DRIFT[drift * 4u + k], fill) + qmul(GW_ROCK[rock * 4u + k], 65536i - fill); }
-  let bed = ROCK_T[rock]; let dk = DRIFT_K[drift];
+  var bed = ROCK_T[rock]; var dk = DRIFT_K[drift];${planet ? "\n  if (gi(f_voidc, i) != 0i) { bed = 0u; dk = 0u; }" : ""}
   wu(f_bedT, i, bed); wu(f_drK, i, dk);
   let p = add64(mul64(dk, u32(dd)), vec2u(1u << ${zb - 1}u, 0u));
   wu(f_tt, i, bed + ((p.x >> ${zb}u) | (p.y << ${32 - zb}u)));
@@ -351,11 +363,11 @@ fn hollows(@builtin(local_invocation_index) t: u32) {
       let own = lab(i);
       if (own == 0xffffffffu) { continue; }
       var m = min(own, lab(own));
-      let x = i32(i & 255u); let y = i32(i >> 8u);
+      let x = i32(cx(i)); let y = i32(cy(i));
       for (var d = 0u; d < 8u; d++) {
         let nx = x + DX[d]; let ny = y + DY[d];
-        if (nx < 0i || ny < 0i || nx > 255i || ny > 255i) { continue; }
-        m = min(m, lab(u32(ny) * 256u + u32(nx)));
+        if (nx < 0i || ny < 0i || nx >= SIDEI || ny >= SIDEI) { continue; }
+        m = min(m, lab(u32(ny) * SIDE + u32(nx)));
       }
       if (m < own) { atomicMin(&AT[a_lab + i], m); atomicOr(&wflag, 1u); }
     }
@@ -375,6 +387,14 @@ fn hollows(@builtin(local_invocation_index) t: u32) {
     wu(f_blist, n, i);
   }
 }
+${planet ? `// a planet's hollows are whole (the flood that made them ran over the planet), so each is its own label and every one spills: its lake stands at the flooded surface
+@compute @workgroup_size(256)
+fn hollowset(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  let inb = gi(f_basin, i) != 0i && gi(f_sea, i) == 0i;
+  wi(f_hol, i, select(-1i, i32(i), inb));
+  wi(f_spl, i, select(0i, 1i, inb));
+}` : ""}
 
 // ---------- the tree: depth by pointer jumping, then the cells filed by depth ----------
 @compute @workgroup_size(256)
@@ -437,14 +457,14 @@ fn weights(@builtin(global_invocation_id) g: vec3u) {
 // goes, out of one that spills never less than nothing.
 var<workgroup> wmax: u32;
 fn gather_cell(i: u32, nc: u32, wbase: u32, obase: u32) {
-  let x = i32(i & 255u); let y = i32(i >> 8u);
+  let x = i32(cx(i)); let y = i32(cy(i));
   let hi = gi(f_hol, i);
   for (var c = 0u; c < nc; c++) {
     var acc = s64(F[wbase + c * LEN + i]);${W ? "\n    if (c < P[4]) { acc = add64(acc, ld64(P[3] + 2u * c * LEN, i)); }" : ""}
     for (var d = 0u; d < 8u; d++) {
       let nx = x + DX[d]; let ny = y + DY[d];
-      if (nx < 0i || ny < 0i || nx > 255i || ny > 255i) { continue; }
-      let k = u32(ny) * 256u + u32(nx);
+      if (nx < 0i || ny < 0i || nx >= SIDEI || ny >= SIDEI) { continue; }
+      let k = u32(ny) * SIDE + u32(nx);
       if (gu(f_to, k) != i) { continue; }
       let a = ld64(obase + 2u * c * LEN, k);
       let hk = gi(f_hol, k);
@@ -498,11 +518,11 @@ fn channel_cell(i: u32) {
   var c = 0i;
   if (valid) {
     if (begins(gu(f_ga0l, i), gu(f_fall, i))) { c = 1i; }
-    let x = i32(i & 255u); let y = i32(i >> 8u);
+    let x = i32(cx(i)); let y = i32(cy(i));
     for (var d = 0u; d < 8u; d++) {
       let nx = x + DX[d]; let ny = y + DY[d];
-      if (nx < 0i || ny < 0i || nx > 255i || ny > 255i) { continue; }
-      let k = u32(ny) * 256u + u32(nx);
+      if (nx < 0i || ny < 0i || nx >= SIDEI || ny >= SIDEI) { continue; }
+      let k = u32(ny) * SIDE + u32(nx);
       if (gu(f_to, k) == i && gi(f_chn, k) != 0i) { c = 1i; }
     }
   }
@@ -635,18 +655,21 @@ fn gw_et(i: u32, d: i32) -> i32 {
 fn aqprep(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x;
   ${W ? "if (gi(f_isf, i) == 1i) { wi(f_head, i, gi(f_fxv, i)); } else if (gi(f_isf, i) == 2i) { wi(f_head, i, min(gi(f_head, i), gi(f_fxv, i))); }" : "if (gi(f_isf, i) != 0i) { wi(f_head, i, gi(f_fxv, i)); }"}
-  let x = i & 255u;
+  let x = cx(i);${planet ? "\n  let y = cy(i);" : ""}
   let tt = gu(f_tt, i);
-  wu(f_ce, i, select(0u, harm(tt, gu(f_tt, min(i + 1u, LEN - 1u))), x < 255u));
-  wu(f_cs, i, select(0u, harm(tt, gu(f_tt, min(i + 256u, LEN - 1u))), i + 256u < LEN));
+${planet ? `  // a planet's patch holds no head at its edge (the island's ring held at the ground less 3 m would feed water into the ground from outside the patch): the faces of the outer ring carry nothing
+  let inner = x >= 1u && x <= SIDE - 2u && y >= 1u && y <= SIDE - 2u;
+  wu(f_ce, i, select(0u, harm(tt, gu(f_tt, min(i + 1u, LEN - 1u))), inner && x + 1u <= SIDE - 2u));
+  wu(f_cs, i, select(0u, harm(tt, gu(f_tt, min(i + SIDE, LEN - 1u))), inner && y + 1u <= SIDE - 2u));` : `  wu(f_ce, i, select(0u, harm(tt, gu(f_tt, min(i + 1u, LEN - 1u))), x < SIDE - 1u));
+  wu(f_cs, i, select(0u, harm(tt, gu(f_tt, min(i + SIDE, LEN - 1u))), i + SIDE < LEN));`}
 }
 fn weight_of(c: u32, sum: u32) -> u32 { return divw(c >> 1u, c << 31u, sum).x; }
 @compute @workgroup_size(256)
 fn aqw(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x;
-  let x = i & 255u; let y = i >> 8u;
-  if (x < 1u || x > 254u || y < 1u || y > 254u) { return; }
-  let cw = gu(f_ce, i - 1u); let ce = gu(f_ce, i); let cn = gu(f_cs, i - 256u); let cs = gu(f_cs, i);
+  let x = cx(i); let y = cy(i);
+  if (x < 1u || x > SIDE - 2u || y < 1u || y > SIDE - 2u) { return; }
+  let cw = gu(f_ce, i - 1u); let ce = gu(f_ce, i); let cn = gu(f_cs, i - SIDE); let cs = gu(f_cs, i);
   let sum0 = cw + ce + cn + cs;
   if (sum0 == 0u) { return; }
   // The sink's steepest fall in head, as the transmissivity that would carry it: b (U + PET e0 / (1 - e0)) times the cell's
@@ -677,9 +700,28 @@ fn aqw(@builtin(global_invocation_id) g: vec3u) {
   wu(f_eaf, i, select(0u, divw(RA_K, 0u, sum).x, kd != 0u)); // A / 1000 m a mm, over the transmissivity, 2^32 of it: a sink in mm Q16 to head in Z
 }
 var<workgroup> wch: atomic<u32>;
+// One cell's relaxation step (the one law of the sweep, whatever the order the sweep visits the cells in): its head moves to where its neighbours, its recharge and the plants' draw would
+// put it, over-relaxed, and never above the ground (or its channel's stage); the change in the head, 0 for a fixed cell.
+fn aq_cell(i: u32) -> u32 {
+  if (F[f_isf + i] ${W ? "== 1i" : "!= 0i"}) { return 0u; }
+  var acc = mul64(bitcast<u32>(F[f_head + i - 1u] + OFF), gu(f_ww, i));
+  acc = add64(acc, mul64(bitcast<u32>(F[f_head + i + 1u] + OFF), gu(f_we, i)));
+  acc = add64(acc, mul64(bitcast<u32>(F[f_head + i - SIDE] + OFF), gu(f_wn, i)));
+  acc = add64(acc, mul64(bitcast<u32>(F[f_head + i + SIDE] + OFF), gu(f_ws, i)));
+  let kd = gu(f_evk, i);
+  if (kd != 0u) { acc = add64(acc, mul64(bitcast<u32>(F[f_head + i] + OFF), gu(f_wd, i))); }
+  acc = add64(acc, vec2u(0x40000000u, 0u));
+  var want = bitcast<i32>((acc.x >> 31u) | (acc.y << 1u)) - OFF + gi(f_sso, i);
+  if (kd != 0u) { want -= i32(mul64(u32(gw_et(i, gi(f_h, i) - F[f_head + i])), gu(f_eaf, i)).y); }
+  let hc = F[f_head + i];
+  let d = want - hc;
+  let v = min(${W ? "select(gi(f_h, i), F[f_fxv + i], F[f_isf + i] == 2i)" : "gi(f_h, i)"}, ${planet ? "hc + 2i * d - (d + select(-5i, 5i, d >= 0i)) / 10i" : "hc + d + (3i * d + select(-2i, 2i, d >= 0i)) / 5i"});
+  F[f_head + i] = v;
+  return u32(abs(v - hc));
+}
 // The CPU sweeps the cells in row order, each seeing its west and north neighbours already moved. A sweep along the
 // anti-diagonals x + y = const moves every cell after the same neighbours and before the same ones, so it gives the
-// same heads as the row sweep (the cells of one diagonal do not touch each other); thread t is the column x = t.
+// same heads as the row sweep (the cells of one diagonal do not touch each other); thread t takes the columns x = t, t + 256, ...
 @compute @workgroup_size(256)
 fn aquifer(@builtin(local_invocation_index) t: u32) {
   let most = P[0];
@@ -688,26 +730,10 @@ fn aquifer(@builtin(local_invocation_index) t: u32) {
     if (t == 0u) { atomicStore(&wch, 0u); }
     storageBarrier(); workgroupBarrier();
     var mine = 0u;
-    for (var dg = 2u; dg <= 508u; dg++) {
-      let y = dg - t;
-      if (t >= 1u && t <= 254u && dg > t && y <= 254u) {
-        let i = y * 256u + t;
-        if (F[f_isf + i] ${W ? "!= 1i" : "== 0i"}) {
-          var acc = mul64(bitcast<u32>(F[f_head + i - 1u] + OFF), gu(f_ww, i));
-          acc = add64(acc, mul64(bitcast<u32>(F[f_head + i + 1u] + OFF), gu(f_we, i)));
-          acc = add64(acc, mul64(bitcast<u32>(F[f_head + i - 256u] + OFF), gu(f_wn, i)));
-          acc = add64(acc, mul64(bitcast<u32>(F[f_head + i + 256u] + OFF), gu(f_ws, i)));
-          let kd = gu(f_evk, i);
-          if (kd != 0u) { acc = add64(acc, mul64(bitcast<u32>(F[f_head + i] + OFF), gu(f_wd, i))); }
-          acc = add64(acc, vec2u(0x40000000u, 0u));
-          var want = bitcast<i32>((acc.x >> 31u) | (acc.y << 1u)) - OFF + gi(f_sso, i);
-          if (kd != 0u) { want -= i32(mul64(u32(gw_et(i, gi(f_h, i) - F[f_head + i])), gu(f_eaf, i)).y); }
-          let hc = F[f_head + i];
-          let d = want - hc;
-          let v = min(${W ? "select(gi(f_h, i), F[f_fxv + i], F[f_isf + i] == 2i)" : "gi(f_h, i)"}, hc + d + (3i * d + select(-2i, 2i, d >= 0i)) / 5i);
-          mine = max(mine, u32(abs(v - hc)));
-          F[f_head + i] = v;
-        }
+    for (var dg = 2u; dg <= 2u * SIDE - 4u; dg++) {
+      for (var x = t; x <= SIDE - 2u; x += 256u) {
+      let y = dg - x;
+      if (x >= 1u && dg > x && y <= SIDE - 2u) { mine = max(mine, aq_cell(y * SIDE + x)); }
       }
       storageBarrier(); workgroupBarrier();
     }
@@ -720,19 +746,29 @@ fn aquifer(@builtin(local_invocation_index) t: u32) {
   }
   if (t == 0u) { wi(f_misc, P[1], i32(sweeps)); }
 }
+${planet ? `// A planet's patch is relaxed in two colours (the cells whose x + y is even, then those whose is odd: a cell's four neighbours are the other colour, so every cell of a colour moves at
+// once, across all the workgroups of the grid): P[0] is the colour, P[1] 1 where the change is to be kept in the counters' fourth word.
+@compute @workgroup_size(256)
+fn aqrb(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  let x = cx(i); let y = cy(i);
+  if (x < 1u || x > SIDE - 2u || y < 1u || y > SIDE - 2u || ((x + y) & 1u) != P[0]) { return; }
+  let c = aq_cell(i);
+  if (P[1] != 0u) { atomicMax(&AT[a_cnt + 3u], c); }
+}` : ""}
 // what comes out of the ground in each cell, m3 a year Q6
 @compute @workgroup_size(256)
 fn outflux(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x;
-  let x = i & 255u; let y = i >> 8u;
-  if (x < 1u || x > 254u || y < 1u || y > 254u) { return; }
+  let x = cx(i); let y = cy(i);
+  if (x < 1u || x > SIDE - 2u || y < 1u || y > SIDE - 2u) { return; }
   let hc = gi(f_head, i);
   var s = mul64(u32(select(gi(f_rr, i), 0i, gi(f_open, i) != 0i)), RA_K);
   if (gu(f_evk, i) != 0u) { s = sub64(s, mul64(u32(gw_et(i, gi(f_h, i) - hc)), RA_K)); }
   s = add64(s, smul64(gi(f_head, i - 1u) - hc, gu(f_ce, i - 1u)));
   s = add64(s, smul64(gi(f_head, i + 1u) - hc, gu(f_ce, i)));
-  s = add64(s, smul64(gi(f_head, i - 256u) - hc, gu(f_cs, i - 256u)));
-  s = add64(s, smul64(gi(f_head, i + 256u) - hc, gu(f_cs, i)));
+  s = add64(s, smul64(gi(f_head, i - SIDE) - hc, gu(f_cs, i - SIDE)));
+  s = add64(s, smul64(gi(f_head, i + SIDE) - hc, gu(f_cs, i)));
   wi(f_out, i, sat32(rsar64(s, ${zb + 7}u)));
 }
 
@@ -820,12 +856,12 @@ fn lakeprep(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x;
   let hi = gi(f_hol, i);
   if (hi < 0i) { return; }
-  let x = i32(i & 255u); let y = i32(i >> 8u);
+  let x = i32(cx(i)); let y = i32(cy(i));
   var acc = vec2u(0u);
   for (var d = 0u; d < 8u; d++) {
     let nx = x + DX[d]; let ny = y + DY[d];
-    if (nx < 0i || ny < 0i || nx > 255i || ny > 255i) { continue; }
-    let k = u32(ny) * 256u + u32(nx);
+    if (nx < 0i || ny < 0i || nx >= SIDEI || ny >= SIDEI) { continue; }
+    let k = u32(ny) * SIDE + u32(nx);
     if (gu(f_to, k) != i || gi(f_hol, k) == hi) { continue; }
     acc = add64(acc, sar64(mul64(gu(f_flow, k), K_YEAR), 16u));
   }
@@ -892,6 +928,19 @@ fn lakewater(@builtin(global_invocation_id) g: vec3u) {
     if (has) { atomicAdd(&AT[a_cnt + 2u], 1u); }
   }
 }
+${planet ? `// a planet's lake stands at the flooded surface the planet's flood gave the cell (a hollow's cells stand the flood's own step apart, 1/256 m a cell)
+@compute @workgroup_size(256)
+fn lakefill(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  let inb = gi(f_basin, i) != 0i && gi(f_sea, i) == 0i;
+  wi(f_water, i, select(0i, max(0i, gi(f_filled, i) - gi(f_h, i)), inb));
+}
+// each season's surplus over the cell as the water's own volume, Q6 m3 a season, the weights of the planet's global discharge (after prep)
+@compute @workgroup_size(256)
+fn surplusw(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  for (var s = 0u; s < 4u; s++) { F[f_wt0 + s * LEN + i] = mm_v(gs(f_su0, s, i)); }
+}` : ""}
 @compute @workgroup_size(256)
 fn afterlake(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x;
@@ -1014,7 +1063,7 @@ fn under(@builtin(global_invocation_id) g: vec3u) {
 ${W ? `  let bq = add64(mul64(sqrt_q28(q), u32(WOOD_W)), vec2u(1u << 25u, 0u));
   let bw = (bq.x >> 26u) | (bq.y << 6u);` : `  let bw = add64(mul64(sqrt_q28(q), u32(WOOD_W)), vec2u(0u, 2u)).y >> 2u;`}
   let j = gu(f_to, i);
-  let diag = ((j & 255u) != (i & 255u)) && ((j >> 8u) != (i >> 8u));
+  let diag = (cx(j) != cx(i)) && (cy(j) != cy(i));
   let plain = atomicLoad(&AT[a_plc + i]) * select(${CELL * 1024}u, ${Math.round((CELL / Math.SQRT2) * 1024)}u, diag);
   let w = max(bw, plain);
   let r = mulhi64(mul64(gu(f_slope, i), w), TFILL);
@@ -1029,11 +1078,11 @@ fn springs(@builtin(global_invocation_id) g: vec3u) {
   var short = 0i;
   for (var s = 0u; s < 4u; s++) { short += max(0i, qmul(KCS, gs(f_pe0, s, i)) - gs(f_pr0, s, i)); }
   if (sp < mul64(u32(short), SPRING_K).y) { return; }
-  let x = i32(i & 255u); let y = i32(i >> 8u);
+  let x = i32(cx(i)); let y = i32(cy(i));
   for (var d = 0u; d < 8u; d++) {
     let nx = x + DX[d]; let ny = y + DY[d];
-    if (nx < 0i || ny < 0i || nx > 255i || ny > 255i) { continue; }
-    if (gu(f_spring, u32(ny) * 256u + u32(nx)) > sp) { return; }
+    if (nx < 0i || ny < 0i || nx >= SIDEI || ny >= SIDEI) { continue; }
+    if (gu(f_spring, u32(ny) * SIDE + u32(nx)) > sp) { return; }
   }
   wi(f_spf, i, 1i);
 }
@@ -1046,4 +1095,4 @@ const MISC_ROUNDS = ${MISC.rounds}u;
 const MISC_QUICK = ${MISC.quick}u;
 ` + kernelsOf(fmt)).replace(/(@compute @workgroup_size\(256\)\nfn \w+\(.*\) \{)/g, "$1\n  touch();");
 export const WATER_WGSL = waterWgsl(ISLAND_WATER);
-export const ENTRIES = ["prep", "hollows", "levels", "weights", "gather", "flow0", "channels", "fixedset", "aqprep", "aqw", "aquifer", "outflux", "routeprep", "routefin", "quicksum", "lakeprep", "lakecand", "lakelevel", "lakewater", "afterlake", "tables", "seasons", "banks", "reach", "valley", "under", "springs"] as const;
+export const ENTRIES = ["prep", "hollows", "hollowset", "levels", "weights", "gather", "flow0", "channels", "fixedset", "aqprep", "aqw", "aquifer", "aqrb", "outflux", "routeprep", "routefin", "quicksum", "lakeprep", "lakecand", "lakelevel", "lakewater", "lakefill", "surplusw", "afterlake", "tables", "seasons", "banks", "reach", "valley", "under", "springs"] as const;
