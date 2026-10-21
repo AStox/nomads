@@ -11,7 +11,7 @@ import { philox } from "../rand";
 import { MOST_TOTAL_M, cloudDelays, type Delays, type RainSeason } from "../terrain/rain";
 import type { ClimatePlace } from "../terrain/climate";
 import { generateWindow, type WindowStages } from "../terrain/island";
-import { windowUpstreamGpu, type WindowLay } from "../terrain/upstream";
+import { windowUpstreamGpu, type Rounds, type WindowLay } from "../terrain/upstream";
 import type { Inflow } from "../terrain/water";
 import { CELL, LEN, N } from "../../terrain/grid";
 import { DOLERITE, GRANITE, SANDSTONE, TILL_MAX } from "../../terrain/geology";
@@ -232,17 +232,25 @@ const DEG = Math.PI / 180;
 export const WINDOW_M = N * CELL;
 // The tangent plane at the window's centre: x east, y north in m; a point of the plane goes to the sphere by the gnomonic map
 // (19.2 km on a radius of 2,000 km is 4.8 milliradians of arc: the map's stretch over it is under 6e-6) [derived].
-export interface Frame { c: V3; e: V3; n: V3; latDeg: number; lonDeg: number }
-export function frameAt(latDeg: number, lonDeg: number): Frame {
-  const c = fromLatLon(latDeg * DEG, lonDeg * DEG), [e, n] = eastNorth(c);
-  return { c, e, n, latDeg, lonDeg };
+export interface Frame { c: V3; e: V3; n: V3; latDeg: number; lonDeg: number; turn: number }
+// The frame at a point with its north axis turned: `turn` is the bearing of the frame's y axis from true north, toward the east,
+// in radians; frameAt is the east and north frame (turn 0). A lattice window's axes are the lattice's (lattice.ts), so its y axis
+// is not north.
+export function frameAt(latDeg: number, lonDeg: number, turn = 0): Frame {
+  const c = fromLatLon(latDeg * DEG, lonDeg * DEG), [east, north] = eastNorth(c);
+  if (turn === 0) return { c, e: east, n: north, latDeg, lonDeg, turn };
+  const s = Math.sin(turn), k = Math.cos(turn);
+  // y' = north cos + east sin, x' = east cos - north sin: right-handed about the outward axis as east and north are
+  const e: V3 = [east[0] * k - north[0] * s, east[1] * k - north[1] * s, east[2] * k - north[2] * s];
+  const n: V3 = [north[0] * k + east[0] * s, north[1] * k + east[1] * s, north[2] * k + east[2] * s];
+  return { c, e, n, latDeg, lonDeg, turn };
 }
-const onSphere = (f: Frame, x: number, y: number): V3 => {
+export const onSphere = (f: Frame, x: number, y: number): V3 => {
   const p = [f.c[0] + (x * f.e[0] + y * f.n[0]) / RADIUS_M, f.c[1] + (x * f.e[1] + y * f.n[1]) / RADIUS_M, f.c[2] + (x * f.e[2] + y * f.n[2]) / RADIUS_M], r = Math.hypot(p[0], p[1], p[2]);
   return [p[0] / r, p[1] / r, p[2] / r];
 };
-// A point of the sphere (unit vector) on the plane, m east and north.
-const onPlane = (f: Frame, p: ArrayLike<number>): [number, number] => {
+// A point of the sphere (unit vector) on the plane, m along the frame's x and y.
+export const onPlane = (f: Frame, p: ArrayLike<number>): [number, number] => {
   const d = p[0] * f.c[0] + p[1] * f.c[1] + p[2] * f.c[2];
   return [(RADIUS_M * (p[0] * f.e[0] + p[1] * f.e[1] + p[2] * f.e[2])) / d, (RADIUS_M * (p[0] * f.n[0] + p[1] * f.n[1] + p[2] * f.n[2])) / d];
 };
@@ -401,6 +409,10 @@ export const rockAtDepth = (pools: readonly number[], depth: number) => {
 // 14 m, times chi under a hundred on the window) [design: the steady state is linear in the uplift, R1702].
 export const PROBE_UPLIFT = 1e-6;
 export const MEAN_TOLERANCE = 0.005, MEAN_RUNS = 4;
+// The rounds a window's first erosion run gives the flood and the landslides [measured, R1753: a flood needed 384 rounds on four of
+// five windows of seed 1 and 768 on the fifth (the island's 192 failed on all five, and a failed run is made again from the start),
+// the landslides 48 to 96 on the one tried; every start that settles gives the same bytes]. Each later run starts where the last settled.
+export const WINDOW_ROUNDS: Rounds = { flood: 384, slide: 96 };
 // The till's greatest thickness the hydrology's transmissivity word holds over the meltwater sand of a scoured valley, m:
 // 2^32 / (4 2^13) m2 a year over the sand's 3,156 m a year less the granite's, about 40 m; 30 m is taken [design: a format's
 // bound, R1703].
@@ -416,8 +428,12 @@ export interface WindowParams {
 }
 export interface Window {
   seed: number; latDeg: number; lonDeg: number;
+  turn: number; // the bearing of the window's y axis from true north, toward the east, radians (0 for a window at a place; a lattice window's is the lattice's)
   isle: Island; sky: Sky; params: WindowParams;
   coarse: { heightM: number; rainMm: number[]; surface: Float32Array }; // the overlap-weighted means of the planet's height and each season's rain over the window, and its smooth surface (m)
+  // seconds in each part of the making: the CPU's remap and rivers, each erosion run of the uplift's search (the last is the whole run), the climate, the water and the ground
+  // the rounds [flood, landslides] each of those runs settled in (a run is made again at twice the rounds of whichever has not settled)
+  seconds: { setup: number; runs: number[]; rounds: [number, number][]; rain: number; water: number; ground: number; total: number };
 }
 
 // The window's root of each land cell's receiver chain: the height its base level holds, the sea's (0), the held outlet's or an
@@ -489,8 +505,9 @@ export function upstreamOf(planet: Planet) {
 // the rock and the network set (R1702), gives the uplift that would hold the planet's mean height and the rock by depth below
 // the planet's surface; up to MEAN_RUNS more correct the uplift where the landslides make the mean grow more slowly than it;
 // then the whole run.
-export async function windowOf(gpu: Gpu, planet: Planet, latDeg: number, lonDeg: number): Promise<Window> {
-  const f = frameAt(latDeg, lonDeg), r = remapOf(f), centre = coarseAt(f.c);
+export async function windowOf(gpu: Gpu, planet: Planet, latDeg: number, lonDeg: number, frame?: Frame, firstRounds: Rounds = WINDOW_ROUNDS): Promise<Window> {
+  const t0 = performance.now(), seconds: Window["seconds"] = { setup: 0, runs: [], rounds: [], rain: 0, water: 0, ground: 0, total: 0 };
+  const f = frame ?? frameAt(latDeg, lonDeg), r = remapOf(f), centre = coarseAt(f.c);
   const surface = remap(r, planet.height), pools = planet.pools.map((p) => remap(r, p));
   const shiftM = Math.max(0, planet.sea.nowM - planet.sea.lowM);
   const mean = (field: ArrayLike<number>) => coarseMean(r, field);
@@ -553,8 +570,13 @@ export async function windowOf(gpu: Gpu, planet: Planet, latDeg: number, lonDeg:
   const rockTop = Uint8Array.from({ length: LEN }, (_, i) => rockAtDepth(poolsAt(i), 0));
   const lay = (rock: Uint8Array, u: number): WindowLay => ({ height: h0, land, rock, lift, outlet, base: edgeBase, inflow: inflowCells, upliftMYr: u, scourM, tillM, shiftM, key: [key[0], key[1]] });
   const target = landMean(land, (i) => h0[i]), probe: number[] = [];
+  seconds.setup = (performance.now() - t0) / 1000;
+  const timed = async <T extends { rounds: Rounds }>(run: () => Promise<T>) => { const t = performance.now(), v = await run(); seconds.runs.push((performance.now() - t) / 1000); seconds.rounds.push([v.rounds.flood, v.rounds.slide]); return v; };
+  // each run starts at the rounds the last one settled in (a run that did not settle is made again at twice them, so the bytes do not depend on where it starts)
+  let rounds = firstRounds;
   const solve = async (rock: Uint8Array, u: number) => {
-    const { up } = await windowUpstreamGpu(gpu, lay(rock, u), false), base = bases({ height: up.height, to: up.to, land }, edgeBase);
+    const r = await timed(() => windowUpstreamGpu(gpu, lay(rock, u), false, rounds)), { up } = r, base = bases({ height: up.height, to: up.to, land }, edgeBase);
+    rounds = r.rounds;
     const b = landMean(land, (i) => base[i]), g = landMean(land, (i) => up.height[i] - base[i]);
     probe.push(landMean(land, (i) => up.height[i]));
     return { up, base, u: g > 0 ? Math.max(0, (u * (target - b)) / g) : 0 };
@@ -573,14 +595,16 @@ export async function windowOf(gpu: Gpu, planet: Planet, latDeg: number, lonDeg:
     last = [u, m];
     u = secant > 0 ? secant : next.u;
   }
-  const { up } = await windowUpstreamGpu(gpu, lay(rock, u), true);
+  const { up } = await timed(() => windowUpstreamGpu(gpu, lay(rock, u), true, rounds));
   probe.push(target);
 
   // the climate: each season's air, sea and wind from the planet; what the planet does not give, Bornholm's (terrain/climate.ts SEASONS)
   const ts = planet.seasons.map((s) => mean(s.t));
   const seaCells = (field: ArrayLike<number>) => { let s = 0, n = 0; for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { const k = r.ids[(y + r.pad) * r.m + x + r.pad]; if (planet.height[k] <= 0) { s += field[k]; n++; } } return n ? s / n : NaN; };
   const sst = planet.seasons.map((s, k) => { const v = seaCells(s.sst); return Number.isNaN(v) ? ts[k] : v; });
-  const wind = planet.seasons.map((s) => [mean(s.windE), mean(s.windN)]);
+  // the planet's wind is east and north: in the window's axes where they are turned from them
+  const sT = Math.sin(f.turn), kT = Math.cos(f.turn);
+  const wind = planet.seasons.map((s) => { const e = mean(s.windE), n = mean(s.windN); return f.turn === 0 ? [e, n] : [e * kT - n * sT, e * sT + n * kT]; });
   // the way the wind blows in the code's bearings (x east, y south)
   const way = (e: number, n: number) => Math.atan2(-n, e);
   const angle = way(wind.reduce((a, w) => a + w[0], 0), wind.reduce((a, w) => a + w[1], 0));
@@ -607,7 +631,7 @@ export async function windowOf(gpu: Gpu, planet: Planet, latDeg: number, lonDeg:
     for (let i = 0; i < LEN; i++) most = Math.max(most, made[0][i] + made[1][i] + made[2][i] + made[3][i]);
     return {
       seasons: SEASONS.map((s, k) => ({ t: ts[k], sea: sst[k], humid0: s.humid0, beam: s.beam, glow: s.glow })),
-      latDeg, rose: ROSE, snowShift: Math.max(0, Math.ceil(Math.log2(most / 3000))),
+      latDeg, turn: f.turn, rose: ROSE, snowShift: Math.max(0, Math.ceil(Math.log2(most / 3000))),
     };
   };
   // the orographic rain is linear in the heights and the background (Smith and Barstad, R487), so a relief whose total passes the
@@ -618,12 +642,19 @@ export async function windowOf(gpu: Gpu, planet: Planet, latDeg: number, lonDeg:
   const down = 2 ** Math.max(0, Math.ceil(Math.log2(total / (COARSE * COARSE * MOST_TOTAL_M) + 1e-12)));
   const rainZ = Float32Array.from(detail, (z) => z / down);
   const stages: WindowStages = { rainZ, rain: rain.map((s) => ({ ...s, mm: s.mm / down })), delays, scaleRain, place, angle, inflow: inflow.filter((v) => up.land[v.at]) };
-  const isle = await generateWindow(gpu, up, stages);
+  let mark = performance.now();
+  const stamp = (s: { stage: string }) => {
+    const now = performance.now(), dt = (now - mark) / 1000;
+    mark = now;
+    if (s.stage === "climate") seconds.rain = dt; else if (s.stage === "water") seconds.water = dt; else seconds.ground += dt;
+  };
+  const isle = await generateWindow(gpu, up, stages, stamp);
   const params: WindowParams = {
     upliftMYr: u, probeMeanM: probe, scourM, tillM, shiftM, rain, delays, place: place(isle.seasons.map((s) => s.precip)), angle, inflow,
     openEdge: edgeBase.reduce((n, b) => n + (Number.isNaN(b) ? 0 : 1), 0),
   };
-  return { seed: planet.seed, latDeg, lonDeg, isle, sky: skyAt(latDeg), params, coarse: { heightM: mean(planet.height), rainMm, surface } };
+  seconds.total = (performance.now() - t0) / 1000;
+  return { seed: planet.seed, latDeg, lonDeg, turn: f.turn, isle, sky: skyAt(latDeg, f.turn), params, coarse: { heightM: mean(planet.height), rainMm, surface }, seconds };
 }
 // The fields a window's identity is pinned by (its tests' and its script's hash): the heights, the rock, the drift, the rain, the
 // temperature, the water, the flow, the cover and the soil, as their bytes.

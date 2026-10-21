@@ -243,7 +243,7 @@ async function attempt(g: Gpu, p: Plan, rounds: number, watch: Watch | undefined
 
 // The rounds of relaxation a flood is first given: the kernels flag a flood that has not settled, and the run is made again
 // with twice the rounds.
-const ROUNDS = 192, MOST_ROUNDS = 6144;
+export const ROUNDS = 192, MOST_ROUNDS = 6144;
 const FATAL: [number, string][] = [
   [FLAG.chain, "a receiver chain does not end at a root"], [FLAG.depth, `a flow path is longer than the counting sort's ${MAXD} cells`],
   [FLAG.valleys, `more than ${VMAX} valleys`], [FLAG.draws, `more than ${DRN} draws`], [FLAG.dykes, "more dykes than the kernel holds"],
@@ -363,8 +363,9 @@ const WZ = WINDOW_FORMAT.zs;
 // halve with the step, a gap].
 export const WINDOW_STEP_RISE_M = 300;
 // One run: the first flood and the response time, the erosion's steps, and (whole) the ice, the heights lowered to the present
-// sea and the hollows. Without `whole` only the heights (m above the lowstand's sea) and the receivers mean anything.
-async function windowAttempt(g: Gpu, lay: WindowLay, whole: boolean, rounds: number): Promise<{ up: Upstream; tau: number; flags: number }> {
+// sea and the hollows. Without `whole` only the heights (m above the lowstand's sea) and the receivers mean anything. The flood's
+// relaxation and the hollows' labelling are given `rounds` each, the landslides' relaxation after every step `slides`.
+async function windowAttempt(g: Gpu, lay: WindowLay, whole: boolean, rounds: number, slides: number): Promise<{ up: Upstream; tau: number; flags: number }> {
   const params = parameters();
   params[PAR.key0] = lay.key[0]; params[PAR.key1] = lay.key[1];
   params[PAR.scour] = Math.round(lay.scourM * WZ); params[PAR.till] = Math.round(lay.tillM * WZ); params[PAR.shift] = Math.round(lay.shiftM * WZ) >>> 0;
@@ -387,7 +388,7 @@ async function windowAttempt(g: Gpu, lay: WindowLay, whole: boolean, rounds: num
   for (let s = 0; s < steps; s++) {
     erodeStep(run, subs, rounds);
     d(run, "slinit");
-    for (let k = 1; k < rounds; k++) d(run, "slide");
+    for (let k = 1; k < slides; k++) d(run, "slide");
     d(run, "slidelast");
     d(run, "slout");
   }
@@ -405,16 +406,24 @@ async function windowAttempt(g: Gpu, lay: WindowLay, whole: boolean, rounds: num
   finish(run);
   return { up, tau, flags };
 }
+// The rounds a window's flood and landslides have settled in.
+export interface Rounds { flood: number; slide: number }
 // A window's crust worn by the island's laws: erosion to the steady state of the uplift given, then (whole) the ice's scour and
-// till and the hollows. The response time comes back with it.
-export async function windowUpstreamGpu(g: Gpu, lay: WindowLay, whole = true): Promise<{ up: Upstream; tau: number }> {
-  for (let rounds = ROUNDS; ; rounds *= 2) {
-    const r = await windowAttempt(g, lay, whole, rounds);
-    if (r.flags & (FLAG.floodErode | FLAG.floodFinal | FLAG.slide)) {
-      if (rounds >= MOST_ROUNDS) throw new Error(`windowUpstreamGpu: a priority flood or the landslides have not settled in ${rounds} rounds`);
+// till and the hollows. The response time comes back with it, and the rounds the flood and the landslides settled in: a run is
+// made again with twice the rounds of whichever did not settle (the flood first, since a flood that has not settled leaves the
+// landslides wrong receivers), and only then, so any `first` that settles gives the same bytes as any other.
+export async function windowUpstreamGpu(g: Gpu, lay: WindowLay, whole = true, first: Rounds = { flood: ROUNDS, slide: ROUNDS }): Promise<{ up: Upstream; tau: number; rounds: Rounds }> {
+  const rounds = { ...first };
+  for (;;) {
+    const r = await windowAttempt(g, lay, whole, rounds.flood, rounds.slide);
+    const flood = r.flags & (FLAG.floodErode | FLAG.floodFinal | FLAG.hollow), slide = r.flags & FLAG.slide;
+    if (flood || slide) {
+      const which = flood ? "flood" : "slide";
+      if (rounds[which] >= MOST_ROUNDS) throw new Error(`windowUpstreamGpu: a priority flood or the landslides have not settled in ${rounds[which]} rounds`);
+      rounds[which] *= 2;
       continue;
     }
     for (const [flag, why] of FATAL) if (r.flags & flag) throw new Error(`windowUpstreamGpu: ${why}`);
-    return { up: r.up, tau: r.tau };
+    return { up: r.up, tau: r.tau, rounds };
   }
 }

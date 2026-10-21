@@ -70,11 +70,19 @@ navigates to `?at=lat,lon`, builds one window in about 23 s, and starts the game
   Still off: below 12 km the picture is noise on the cells, not terrain (Unit 4); the planet's rain is 0 on three quarters
   of the land, so most of it reads as desert and bare ground; the hillshade below the 12 km cells is invented relief
   scaled by the cell's own ruggedness.
-- [ ] **Unit 2: The window lattice and streaming.** `src/gpu/globe` (a lattice module beside `window.ts`), worker-side
+- [x] **Unit 2: The window lattice and streaming.** `src/gpu/globe` (a lattice module beside `window.ts`), worker-side
   making and keeping. Lattice cells on the cube-sphere, `windowOf` at a cell, neighbours across face edges, the shared
   margin and its blend, a cache by (seed, key, cell), the time per window measured and the order windows are made in
   under a moving camera. Check: two neighbouring windows' shared edge (height difference along it, rivers that cross it),
   any-order identity, timings.
+  Done 2026-10-20 (`docs/research/globe/2026-10-20-lattice-impl.md`): `lattice.ts` has 222 by 222 cells a face with a pitch
+  of 10 to 14.2 km, not 19.2 km squares (windows must overlap to blend, and the cells shear to 60 degrees at the cube's
+  corners); `windows.ts` has `windowAtCell`, the window's bytes, the `Windows` cache and queue and `wanted`; `windowOf` takes
+  a frame (the window's axes are the cell's, its sun and wind turned) and a window of a cell is the same bytes in any visit
+  order. A window went from 17 to 45 s to 7 to 16 s (every erosion run was made twice: the island's 192 flood rounds never
+  settle a window, 384 do; same bytes). Seams measured on four pairs, two across a face edge: 63 to 809 m rms along the
+  shared edge, rivers 1.4 to 11.5 km apart where they cross, written as gaps and not tuned. Open: no window poleward of 64.1
+  degrees or at a river over 4,369 m3/s, and the remap's per-window shift (3 to 65 m of the seam).
 - [ ] **Unit 3: One camera from orbit to close.** After 1 and 2. The page's camera (`demo/styles/play/camera.js`,
   `main.js`, `live.js`, `worker.js`): altitude continuous; the sphere's projection eases into the ladder's isometric
   bearing below the `island` level's altitude; the planet drawn under the window tiles while they are made, each fading

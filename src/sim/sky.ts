@@ -64,16 +64,20 @@ export function moonAt(day: number, hour: number): Body & { phase: number; lit: 
 }
 // The same sky over a ground at another latitude (degrees, south negative): a window of the planet (gpu/globe/window.ts). The
 // world's own sky above is the island's at 55.1 degrees north; the tilt, the year and the clock are the same [gap: Earth's tilt,
-// 23.44 degrees, where the planet's is 23.4].
-export type Sky = { latDeg: number; sunAt: typeof sunAt; moonAt: typeof moonAt; daylight: typeof daylight };
-export function skyAt(latDeg: number): Sky {
-  const lat = latDeg * DEG, memo = new Map<number, number>();
+// 23.44 degrees, where the planet's is 23.4]. `turn` is the bearing of the ground's y axis (the island's north) from true north,
+// toward the east, in radians: a lattice window's axes are the cube-sphere's (gpu/globe/lattice.ts), so its sun's direction is
+// the true one turned by it.
+export type Sky = { latDeg: number; turn: number; sunAt: typeof sunAt; moonAt: typeof moonAt; daylight: typeof daylight };
+export function skyAt(latDeg: number, turn = 0): Sky {
+  const lat = latDeg * DEG, memo = new Map<number, number>(), s = Math.sin(turn), k = Math.cos(turn);
+  // dir is (east, south): the window's x is east cos - north sin, its north is north cos + east sin
+  const turned = <T extends Body>(b: T): T => (turn === 0 ? b : { ...b, dir: [b.dir[0] * k + b.dir[1] * s, -(b.dir[0] * s - b.dir[1] * k)] as [number, number] });
   return {
-    latDeg,
-    sunAt: (day, hour) => bodyAt(hourAngle(hour, NOON), declination(day, hour), lat),
+    latDeg, turn,
+    sunAt: (day, hour) => turned(bodyAt(hourAngle(hour, NOON), declination(day, hour), lat)),
     moonAt: (day, hour) => {
       const phase = ((day - 1 + hour / 24) / LUNAR + 0.35) % 1, w = 2 * Math.PI * phase;
-      return { ...bodyAt(hourAngle(hour, NOON + phase * 24), declination(day, hour) * Math.cos(w), lat), phase, lit: (1 - Math.cos(w)) / 2 };
+      return { ...turned(bodyAt(hourAngle(hour, NOON + phase * 24), declination(day, hour) * Math.cos(w), lat)), phase, lit: (1 - Math.cos(w)) / 2 };
     },
     daylight: (day) => {
       let h = memo.get(day);

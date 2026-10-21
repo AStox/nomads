@@ -35,6 +35,7 @@ const MOST_HEIGHT_M = 32000, MOST_RAIN_MM = 3000;
 export type ClimatePlace = {
   seasons: readonly { t: number; sea: number; humid0: number; beam: number; glow: number }[];
   latDeg: number; rose: readonly number[]; snowShift: number;
+  turn?: number; // the bearing of the ground's y axis from true north, toward the east, radians (sky.ts skyAt); 0 where absent
 };
 export const ISLAND_PLACE: ClimatePlace = { seasons: SEASONS, latDeg: 55.1, rose: ROSE, snowShift: 0 };
 
@@ -101,7 +102,7 @@ function anomalies() {
 // Season si's middle day through the hours a quarter at a time: the header
 // and one eight-word row for each hour the sun stands up, scaled as the kernel reads them (wgsl sunWgsl).
 function sunRows(si: number, place: ClimatePlace) {
-  const S0 = 1361, DT = 900, { beam: tb, glow: tg } = place.seasons[si], MJ = DT / 1e6, sky = skyAt(place.latDeg);
+  const S0 = 1361, DT = 900, { beam: tb, glow: tg } = place.seasons[si], MJ = DT / 1e6, sky = skyAt(place.latDeg, place.turn ?? 0);
   const rows: number[][] = [];
   let glow = 0, levelBeam = 0;
   for (let hour = 0; hour < 24; hour += DT / 3600) {
