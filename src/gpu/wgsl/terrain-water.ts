@@ -70,7 +70,7 @@ export const sweepTol = (fmt: WaterFormat) => (fmt.planet ? Math.round(0.0005 * 
 // the inflow's words, each a low and a high word: the area, the year's water and each season's
 export const INFLOW = ["ia0l", "ia0h", "iy0l", "iy0h", "is0l", "is0h", "is1l", "is1h", "is2l", "is2h", "is3l", "is3h"];
 export const layoutOf = (fmt: WaterFormat) => {
-  const fields: readonly string[] = fmt.window ? [...INPUTS, ...INFLOW, ...(fmt.planet ? ["voidc"] : []), ...INTERNAL, ...OUTPUTS] : FIELDS;
+  const fields: readonly string[] = fmt.window ? [...INPUTS, ...INFLOW, ...(fmt.planet ? ["voidc", "tch", "tpw", "tdb", "tht", "plcf"] : []), ...INTERNAL, ...OUTPUTS] : FIELDS;
   return { FIELDS: fields, FIELD: Object.fromEntries(fields.map((n, k) => [n, k])) as Record<string, number> };
 };
 // Atomic words (AT): each region is LEN words.
@@ -1066,6 +1066,17 @@ fn valley(@builtin(global_invocation_id) g: vec3u) {
   wi(f_valley, i, 1i);
   atomicAdd(&AT[a_plc + t], 1u);
 }
+${planet ? `// a planet's valley: the target of each cell (the nearest channel or open water down the forest: f_tgt, 0 where there is one, -1 where not) and its words (tch its channel flag, tpw its power,
+// tdb its bankfull depth, tht its height) are the planet's global files at the cell, as the target may lie anywhere on the planet; the count of valley cells at each channel is a global gather
+@compute @workgroup_size(256)
+fn valleyg(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  if (gi(f_tgt, i) < 0i) { return; }
+  if (gi(f_tch, i) == 0i || gi(f_open, i) != 0i || gi(f_tpw, i) > CONFINED_Q16) { return; }
+  let rise = sat32(rsar64(smul64(gi(f_tdb, i), u32(RISE_Q16)), 16u));
+  if (gi(f_h, i) - gi(f_tht, i) > rise) { return; }
+  wi(f_valley, i, 1i);
+}` : ""}
 // what a stream's valley fill carries under its bed: T_FILL S W, W the wider of the channel and its floodplain over the reach
 @compute @workgroup_size(256)
 fn under(@builtin(global_invocation_id) g: vec3u) {
@@ -1076,7 +1087,7 @@ ${W ? `  let bq = add64(mul64(sqrt_q28(q), u32(WOOD_W)), vec2u(1u << 25u, 0u));
   let bw = (bq.x >> 26u) | (bq.y << 6u);` : `  let bw = add64(mul64(sqrt_q28(q), u32(WOOD_W)), vec2u(0u, 2u)).y >> 2u;`}
   let j = gu(f_to, i);
   let diag = (cx(j) != cx(i)) && (cy(j) != cy(i));
-  let plain = atomicLoad(&AT[a_plc + i]) * select(${CELL * 1024}u, ${Math.round((CELL / Math.SQRT2) * 1024)}u, diag);
+  let plain = ${planet ? "gu(f_plcf, i)" : "atomicLoad(&AT[a_plc + i])"} * select(${CELL * 1024}u, ${Math.round((CELL / Math.SQRT2) * 1024)}u, diag);
   let w = max(bw, plain);
   let r = mulhi64(mul64(gu(f_slope, i), w), TFILL);
   wu(f_rtl, i, r.x); wu(f_rth, i, r.y);
@@ -1107,4 +1118,4 @@ const MISC_ROUNDS = ${MISC.rounds}u;
 const MISC_QUICK = ${MISC.quick}u;
 ` + kernelsOf(fmt)).replace(/(@compute @workgroup_size\(256\)\nfn \w+\(.*\) \{)/g, "$1\n  touch();");
 export const WATER_WGSL = waterWgsl(ISLAND_WATER);
-export const ENTRIES = ["prep", "hollows", "hollowset", "beginsw", "levels", "weights", "gather", "flow0", "channels", "fixedset", "aqprep", "aqw", "aquifer", "aqrb", "outflux", "routeprep", "routefin", "quicksum", "lakeprep", "lakecand", "lakelevel", "lakewater", "lakefill", "surplusw", "afterlake", "tables", "seasons", "banks", "reach", "valley", "under", "springs"] as const;
+export const ENTRIES = ["prep", "hollows", "hollowset", "beginsw", "levels", "weights", "gather", "flow0", "channels", "fixedset", "aqprep", "aqw", "aquifer", "aqrb", "outflux", "routeprep", "routefin", "quicksum", "lakeprep", "lakecand", "lakelevel", "lakewater", "lakefill", "surplusw", "afterlake", "tables", "seasons", "banks", "reach", "valley", "valleyg", "under", "springs"] as const;

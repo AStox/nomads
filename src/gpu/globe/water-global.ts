@@ -35,22 +35,30 @@ const coef1 = (a: PassApi) => { base(a); a.areas(); a.load(["chn"]); a.yearGathe
 const coef2 = (a: PassApi) => { base(a); a.load(["chn", "head@1", ...gaNames(1)]); a.step("routefin"); a.step("lakefill"); a.step("afterlake"); a.step("fixedset", [1]); a.step("aqprep"); a.step("aqw"); };
 const route = (coef: (a: PassApi) => void, head: string) => (a: PassApi) => { coef(a); a.load([head]); a.step("outflux"); a.routePrep(); };
 const FINAL_NAMES = ["water", "flow", "sf0", "sf1", "sf2", "sf3", "base", "chn", "valley", "pwr", "stb0", "stb1", "stb2", "stb3", "dry", "tab", "rtl", "rth", "qk0", "qk1", "qk2", "qk3"];
-const final = (a: PassApi) => {
+// the flows, tables and banks of the final state (the valley and the stream under its bed need the planet's targets and counts, so they come after)
+const banks = (a: PassApi) => {
   route(coef2, "head@2")(a);
   a.load(gaNames(2));
   a.step("routefin");
   for (const e of ["tables", "seasons", "banks"] as const) a.step(e);
-  a.step("reach", [], 1);
-  for (const e of ["valley", "under"] as const) a.step(e);
 };
+const final = (a: PassApi) => { banks(a); a.load(["valley@g", "plcf"]); a.step("under"); };
 
-// The global files a pass loads, as the patch's words.
+// The global files a pass loads, as the patch's words. A cell's target (the nearest channel or open water down its receivers) and the target's words come from the files of the pass before.
 function setOf(ctx: Ctx, patch: Patch, names: readonly string[]): Record<string, Int32Array> {
-  const t = ctx.tier, out: Record<string, Int32Array> = {};
-  for (const n of names) {
-    const [field, tag] = n.split("@");
-    const file = field === "chn" ? `${g(t, "chn")}.i32` : field === "head" ? `${g(t, `head${tag}`)}.i32` : gaFile(t, Number(tag), field);
-    out[n] = at<Int32Array>(mapped(ctx, file), patch.ids);
+  const t = ctx.tier, out: Record<string, Int32Array> = {}, n = patch.ids.length;
+  for (const name of names) {
+    const [field, tag] = name.split("@");
+    if (["tgt", "tch", "tpw", "tdb", "tht"].includes(field)) {
+      const tgt = at<Uint32Array>(mapped(ctx, `${g(t, "tgt")}.u32`), patch.ids), chn = mapped(ctx, `${g(t, "fa-chn")}.i32`) as Int32Array, pwr = mapped(ctx, `${g(t, "fa-pwr")}.i32`) as Int32Array;
+      const dbf = mapped(ctx, `${g(t, "fa-dbf")}.i32`) as Int32Array, h = mapped(ctx, `t${t}-height.i32`) as Int32Array, v = new Int32Array(n);
+      // the planet's heights are 1/256 m and the kernel's are Z = 2^-17 m: a factor of 512
+      for (let k = 0; k < n; k++) { const j = tgt[k]; v[k] = j === 0xffffffff ? (field === "tgt" ? -1 : 0) : field === "tgt" ? 0 : field === "tch" ? chn[j] : field === "tpw" ? pwr[j] : field === "tdb" ? dbf[j] : h[j] * 512; }
+      out[name] = v;
+      continue;
+    }
+    const file = field === "chn" ? `${g(t, "chn")}.i32` : field === "head" ? `${g(t, `head${tag}`)}.i32` : field === "open" ? `${g(t, "fa-open")}.i32` : field === "valley" ? `${g(t, "valley")}.i32` : field === "plcf" ? `${g(t, "plc")}-lo.i32` : gaFile(t, Number(tag), field);
+    out[name] = at<Int32Array>(mapped(ctx, file), patch.ids);
   }
   return out;
 }
@@ -76,7 +84,11 @@ export const coef1Stage = (tier: number, cfg: WaterConfig) => passStage(tier, cf
 export const route1Stage = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "route1", routeFiles(tier, 1), [...CHN_LOADS, ...HEAD1], WT, route(coef1, "head@1"), asI32(routeFiles(tier, 1), WT));
 export const coef2Stage = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "coef2", coefFiles(tier, "c"), [...CHN_LOADS, ...HEAD1, ...gaNames(1)], COEF, coef2, asI32(coefFiles(tier, "c"), COEF));
 export const route2Stage = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "route2", routeFiles(tier, 2), [...CHN_LOADS, ...HEAD1, "head@2", ...gaNames(1)], WT, route(coef2, "head@2"), asI32(routeFiles(tier, 2), WT));
-export const finalPass = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "final", waterFiles(tier), [...CHN_LOADS, ...HEAD1, "head@2", ...gaNames(1), ...gaNames(2)], FINAL_NAMES, final, (ctx, patch, f) => waterOutputs(ctx, patch, f, patch.ids.length));
+const FA = ["chn", "open", "pwr", "dbf"], faFiles = (tier: number) => FA.map((n) => g(tier, `fa-${n}.i32`));
+export const banksStage = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "banks", faFiles(tier), [...CHN_LOADS, ...HEAD1, "head@2", ...gaNames(1), ...gaNames(2)], FA, banks, asI32(faFiles(tier), FA));
+const TGT_LOADS = ["tgt", "tch", "tpw", "tdb", "tht"];
+export const valleyStage = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "valley", [g(tier, "valley.i32")], ["open@fa", ...TGT_LOADS], ["valley"], (a) => { a.load(["open@fa", ...TGT_LOADS]); a.step("valleyg"); }, asI32([g(tier, "valley.i32")], ["valley"]));
+export const finalPass = (tier: number, cfg: WaterConfig) => passStage(tier, cfg, "final", waterFiles(tier), [...CHN_LOADS, ...HEAD1, "head@2", ...gaNames(1), ...gaNames(2), "valley@g", "plcf"], FINAL_NAMES, final, (ctx, patch, f) => waterOutputs(ctx, patch, f, patch.ids.length));
 export function finalStage(tier: number, cfg: WaterConfig): TileStage {
   const s = finalPass(tier, cfg);
   return {
@@ -133,6 +145,26 @@ export async function globalWater(ctx: Ctx, cfg: WaterConfig, budgetS: number, l
   if (!has(`${g(t, "r1-ga4")}-hi.i32`)) { if (!(await tiles(route1Stage(t, cfg)))) return stop("route1"); await routeGatherOf(ctx, 1, log); unmap(); }
   if (!has(`${g(t, "head2")}.i32`)) { if (!(await tiles(coef2Stage(t, cfg)))) return stop("coef2"); await solveOf(ctx, 2, most, log); unmap(); }
   if (!has(`${g(t, "r2-ga4")}-hi.i32`)) { if (!(await tiles(route2Stage(t, cfg)))) return stop("route2"); await routeGatherOf(ctx, 2, log); unmap(); }
+  if (!has(`${g(t, "tgt")}.u32`)) { if (!(await tiles(banksStage(t, cfg)))) return stop("banks"); await tgtOf(ctx, log); unmap(); }
+  if (!has(`${g(t, "plc")}-lo.i32`)) { if (!(await tiles(valleyStage(t, cfg)))) return stop("valley"); await plcOf(ctx, log); unmap(); }
   if (!(await tiles(finalStage(t, cfg)))) return stop("final");
   return { done: true, at: "final", seconds: (performance.now() - t0) / 1000 };
+}
+
+// ---------- the target of each cell and the count of valley cells at each channel ----------
+export async function tgtOf(ctx: Ctx, log: (s: string) => void): Promise<void> {
+  const t = ctx.tier, file = `${g(t, "tgt")}.u32`;
+  if (ctx.dir.has(file)) return;
+  const chn = mapped(ctx, `${g(t, "fa-chn")}.i32`) as Int32Array, open = mapped(ctx, `${g(t, "fa-open")}.i32`) as Int32Array, flags = new Uint32Array(chn.length);
+  for (let i = 0; i < flags.length; i++) flags[i] = chn[i] || open[i] ? 1 : 0;
+  const forest = await forestOf(ctx.gpu, ctx.dir, t), t0 = performance.now();
+  try { ctx.dir.write(file, await forest.reach(flags)); log(`reach: the target of every cell ${((performance.now() - t0) / 1000).toFixed(1)} s`); } finally { forest.release(); }
+}
+export async function plcOf(ctx: Ctx, log: (s: string) => void): Promise<void> {
+  const t = ctx.tier, stem = g(t, "plc");
+  if (ctx.dir.has(`${stem}-lo.i32`)) return;
+  const chn = mapped(ctx, `${g(t, "fa-chn")}.i32`) as Int32Array, open = mapped(ctx, `${g(t, "fa-open")}.i32`) as Int32Array, mask = new Uint32Array(chn.length);
+  for (let i = 0; i < mask.length; i++) mask[i] = chn[i] || open[i] ? 2 : 0;
+  const forest = await forestOf(ctx.gpu, ctx.dir, t);
+  try { await signedGatherOf(forest, ctx.dir, [g(t, "valley.i32")], [stem], mask, log); } finally { forest.release(); }
 }

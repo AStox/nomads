@@ -9,7 +9,7 @@ import { patchAt, type Patch } from "./patch";
 import { TILE } from "./grid";
 import type { Ctx } from "./stages";
 import { STAGED_TIER, stagedClimate, stagedPlanet } from "./water-staged";
-import { beginsStage, coef1Stage, coef2Stage, finalPass, globalWater, GHALO, route1Stage, route2Stage, solveOf } from "./water-global";
+import { banksStage, beginsStage, coef1Stage, coef2Stage, finalPass, globalWater, GHALO, route1Stage, route2Stage, solveOf, valleyStage } from "./water-global";
 import { mapped, unmap, waterFiles } from "./water";
 
 afterAll(releaseGpu);
@@ -35,7 +35,7 @@ describe("the water as one solve", () => {
   });
 
   test("every piece of the chain is the same cell by cell on patches that are not the tiles", async () => {
-    const ctx = await ready(), stages = [beginsStage(T, cfg), coef1Stage(T, cfg), route1Stage(T, cfg), coef2Stage(T, cfg), route2Stage(T, cfg), finalPass(T, cfg)];
+    const ctx = await ready(), stages = [beginsStage(T, cfg), coef1Stage(T, cfg), route1Stage(T, cfg), coef2Stage(T, cfg), route2Stage(T, cfg), banksStage(T, cfg), valleyStage(T, cfg), finalPass(T, cfg)];
     // a patch across the pits at tile edges, one across the face's edge between faces 0 and 1 (x = 1024), one on the other face, one on the pole's face, each at an offset of 100 or so cells from a tile, its interior inside its face (a tile is never across a face edge)
     const patches: Patch[] = [patchAt(T, 0, 700, 300, GHALO), patchAt(T, 0, 768, 450, GHALO), patchAt(T, 1, 37, 290, GHALO), patchAt(T, 4, 611, 700, GHALO)];
     let compared = 0;
