@@ -28,7 +28,7 @@ export interface TileStage {
 
 const loaded = new Map<string, Field>();
 // A global field file, mapped for the process: a tile touches the pages of its patch's cells only, so a 1.6 GB plane of the 75 m tier at planet size is never held whole.
-export function globalField(ctx: Ctx, file: string): Field {
+export function globalField(ctx: Pick<Ctx, "dir">, file: string): Field {
   const key = `${ctx.dir.dir}/${file}`;
   let f = loaded.get(key);
   if (!f) {
