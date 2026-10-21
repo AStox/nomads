@@ -28,7 +28,7 @@ const sim = await Bun.build({
 if (!sim.success) throw new AggregateError(sim.logs, "bundling the simulation failed");
 cpSync(`${root}/${app}`, out, { recursive: true });
 if (app === "styles") {
-  // the play page's globe (play/globe.js) and the baked planets it reads (scripts/globe-bake.ts)
+  // the planet layer's share of the generator (isopixel/planet.js) and the baked planets it reads (scripts/globe-bake.ts)
   const globe = await Bun.build({ entrypoints: [`${root}/globe.ts`], outdir: out, target: "browser", minify: true, external: ["webgpu"] });
   if (!globe.success) throw new AggregateError(globe.logs, "bundling the globe failed");
   const seeds = copyGlobes(out);

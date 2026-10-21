@@ -79,6 +79,22 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   the baked planet's tiles; the sim stays in its play area. Cutover: `?globe`, `?at`, the GLOBE button and G removed.
   Check: a recorded zoom from the whole planet to `close` and a long pan, no page error, frame times within the ladder's
   budget.
+  Built 2026-10-20, frame times not yet measured on a quiet GPU: one zoom runs from the whole planet (zoom -7.2 at 2,000 km, from
+  the radius in `place`) to `close`. The planet (`isopixel/planet.js`, camera `planet-cam.js`) is drawn in the render worker under
+  the ladder's views (`webgpu.js` frame `under`); its camera eases from straight down with a 45 degree field to the ladder's look
+  (60 degrees off vertical, the bearing turns it, a 3 degree field so the sphere reads as the ladder's parallel projection)
+  between the whole planet and zoom -1.5, and agrees with the ladder's screen mapping to 0.2 to 0.7% there; the ladder fades in over
+  zoom -1.5 to -0.5 and the play area's ground fades into the planet over 1.2 km at its edge (shade alpha). The camera holds
+  `view.x, z` (the play area's metres) and `view.geo` (lat, lon) equal, whichever moved last; pans and zoom anchors under the cursor
+  work in both (a cursor's ground stays put through the regime change). Close ground: `isopixel/ground-at.js` `closeGround` is the
+  one interface (the island the generator makes, set down at the first ranked landing, north up); the pyramid's tiles replace the
+  island there and nowhere else. Away from the play area a zoom in stops at the island level (no close ground there). Cutover done:
+  `?globe`, `?at`, the GLOBE button, G, `play/globe.js` and the landing flow are gone; `?planet=0` draws the island alone for the
+  renderer's own checks. Loaded to `body.ready` with no page error (default, `?planet=0`, `?sim=0`, `?seed=2`); a scripted zoom
+  from the whole planet to close and back and a 15 s pan at `valley` recorded in `/tmp/globe-seamless/`. Still seams: the island is
+  not the planet's land at its place (another coast and relief), so the play area shows as a diamond stamp over the planet from zoom
+  -1.5 to about 1, with a dithered blue halo from its deep sea; the planet's sun is the island's held 25 degrees up; the island level
+  at zoom -1 to 0 draws a larger art buffer than at 0 and costs more.
 - [ ] **Unit 4: The planet at 195.6 km.** The generator's coarse tiers at the new radius: tectonics, atmosphere, ice and
   sea level rerun, the planet store and bake keyed by it. Measure what it makes (land share, ranges, rain belts, ice) and
   write the gaps the small radius opens. Measure the cost of the 75 m tier before building it: cells, bytes per field,

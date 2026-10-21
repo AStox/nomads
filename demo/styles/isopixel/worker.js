@@ -4,12 +4,16 @@
 // the camera, the sky and the UI; it sends what moves (the view, the light, the people, animals, fires and overlays),
 // asks for each tick, and gets the sim's state after it (play/remote.js).
 import { generateIsland, fineGroundGpu, rng, crownShare, SIZE, START, STEP, TILE_M, TILES } from "../island.js";
+import * as PAL from "./pal.js";
 import { P, NCOL, HAZE, GLOW, TONE, TONE_S } from "./pal.js";
+import { createPlanet } from "./planet.js";
+import { planetCam } from "./planet-cam.js";
 import { LIVE, shown, ANIMAL_BODY, ANIMAL_DRAWN } from "./px.js";
 import { packGround } from "./ground.wgsl.js";
 import { createRenderer, NS, ATLAS } from "./webgpu.js";
 import { Looks, CODES, NONE, castRows, Shelves, entryWords } from "./atlas.js";
 import { PICK_SLOT, EXTRA_PICK, KIND_PICK, NO_SLOT, CELLS_N, CELL_M } from "./wgsl/objects.js";
+import { closeGround } from "./ground-at.js";
 
 const early = [];
 onmessage = (e) => early.push(e);
@@ -17,7 +21,7 @@ const ORIGIN = -SIZE / 2, WS = 12.5;
 // entries and rows kept for sprites made while the page runs (live sprites, and objects' sprites the world grew into
 // since the atlas was laid out), and the atlas layers they go in
 const DYN_ENTRIES = 32768, DYN_ROWS = 1 << 20, DYN_LAYERS = 4;
-let R = null, device = null, gpuName = "", canvas = null, context = null;
+let R = null, device = null, gpuName = "", canvas = null, context = null, planet = null, planetLayer = null;
 // each sprite's foot (rows its anchor sits above the ground), by atlas id, for the checks
 let table = null, nStatic = 0, rowsStatic = 0, dyn = null, liveIds = new Map(), dynMade = new Set(), feet = new Int16Array(0);
 // the page's live sprites as they came, by its ids: placed in the dynamic layers when a frame first draws them, and again
@@ -44,22 +48,21 @@ const SIM_BUDGET_MS = 8;
 // second [design]
 const WARM_BUDGET_MS = 100;
 
-// The ground of the seed's planet at a place: the baked planet (scripts/globe-bake.ts), kept in the browser's cache under
-// its name, which carries the planet's key, so a kept copy is never another planet's.
-async function landAt(simB, seed, { lat, lon }) {
+// The seed's baked planet (scripts/globe-bake.ts), if one is: its view file, kept in the browser's cache under a name that
+// carries the planet's key, so a kept copy is never another planet's.
+async function openPlanet(seed) {
   const manifest = await fetch(new URL(`../planets/${seed}.json`, import.meta.url));
-  if (!manifest.ok) throw new Error(`no planet is baked for seed ${seed}`);
-  const url = new URL(`../planets/${(await manifest.json()).planet}`, import.meta.url).href;
-  const cache = await caches.open("nomads-planets");
+  if (!manifest.ok) return null;
+  const url = new URL(`../planets/${(await manifest.json()).view}`, import.meta.url).href, cache = await caches.open("nomads-planets");
   let res = await cache.match(url);
   if (!res) {
     res = await fetch(url);
     if (!res.ok) throw new Error(`the planet of seed ${seed} did not load (${res.status})`);
-    for (const k of await cache.keys()) if (k.url.includes(`/planet-${seed}-`)) await cache.delete(k);
+    for (const k of await cache.keys()) if (k.url.includes(`/view-${seed}-`)) await cache.delete(k);
     await cache.put(url, res.clone());
   }
-  const bytes = new Uint8Array(await new Response(res.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
-  await simB.windowIslandOf(seed, lat, lon, simB.planetFromBytes(bytes));
+  const G = await import("../globe.js"), viewBytes = new Uint8Array(await new Response(res.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+  return { G, viewBytes, view: G.viewFromBytes(viewBytes) };
 }
 
 async function init(m) {
@@ -77,14 +80,13 @@ async function init(m) {
   context = canvas.getContext("webgpu");
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: "opaque" });
-  say(m.at ? "refining the ground from the planet" : "growing the island", 0, 1);
-  // With a sim the island is the sim's own (world.ts islandOf, which it keeps for its world), grown once for both, on this
-  // device: the page holds one, so the sim is handed it before the island is grown. A landing (play/globe.js) makes the
-  // ground of the planet's window at its place instead (world.ts windowIslandOf).
-  const simB = m.sim || m.at ? await import("../sim.js") : null, simC = m.sim ? await import("../play/sim.js") : null;
-  if (simB) { simB.useGpu({ device, adapter: gpuName }); await (m.at ? landAt(simB, m.seed, m.at) : simB.islandOf(m.seed)); }
-  const gr = simB?.groundOf(m.seed);
-  const gpu = { device, adapter: gpuName }, isle = gr?.isle ?? (await generateIsland(rng(m.seed), gpu)), g = gr?.fine ?? (await fineGroundGpu(gpu, isle));
+  say("growing the island", 0, 1);
+  const simB = m.sim ? await import("../sim.js") : null, simC = m.sim ? await import("../play/sim.js") : null;
+  const gpu = { device, adapter: gpuName };
+  if (simB) simB.useGpu(gpu);
+  planet = m.planet ? await openPlanet(m.seed) : null;
+  const ground = await closeGround(simB, m.seed, gpu, planet);
+  const { isle, fine: g } = ground;
   const t1 = performance.now();
   say("laying out the ground", 0, 1);
   const pack = packGround(isle, g);
@@ -96,11 +98,12 @@ async function init(m) {
     device, context, format, timing, ground: pack,
     pal: { P, NCOL, HAZE, GLOW, TONE, TONE_S, WATER: ["w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"].map((k) => P[k]), TILE_M, ORIGIN, TILES, TRAIL_N: Math.round(SIZE / 3), GRID_STEP: WS, FINE: { start: START, step: STEP } },
   });
+  if (planet && ground.place) planetLayer = Object.assign(await createPlanet({ device, format, G: planet.G, viewBytes: planet.viewBytes, pal: PAL, radiusM: ground.place.radiusM }), { radiusM: ground.place.radiusM });
   let peak = 0;
   for (const h of isle.height) peak = Math.max(peak, h);
   // the page keeps the camera on the island's heights and the drawn ground under it: the fine heights and the cells'
   // water, from which live.js (ground.js) works out every level's tile map as the GPU does
-  post({ type: "fields", info: adapter.info ? { vendor: adapter.info.vendor, architecture: adapter.info.architecture, description: adapter.info.description } : null, peak, h: g.h, height: isle.height, water: isle.water, ms: { grow: t1 - t0, pack: t2 - t1 } });
+  post({ type: "fields", info: adapter.info ? { vendor: adapter.info.vendor, architecture: adapter.info.architecture, description: adapter.info.description } : null, peak, h: g.h, height: isle.height, water: isle.water, ms: { grow: t1 - t0, pack: t2 - t1 }, place: ground.place });
   await new Promise((r) => setTimeout(r, 0));
   if (R.errors.length) throw new Error(R.errors.join("\n"));
   mark("renderer");
@@ -926,7 +929,12 @@ function render() {
     if (prims) for (let i = 0; i < prims.length; i += 8) if (prims[i] === 0) { const sp = liveId(prims[i + 3]); prims[i + 3] = sp ?? 0; if (sp === undefined) { prims[i] = 2; prims[i + 4] = 255; } }
     return { ...v, U: { ...v.U, gflags: trailQ?.size ? 1 : 0 }, live: v.live?.length ? liveInstances(v.live) : null, prims };
   });
-  R.frame({ ...f, views });
+  // the planet under the ladder's views, from the camera the page chose (live.js planetParams)
+  const under = f.planet && planetLayer && ((enc, target) => {
+    const cam = planetCam({ ...f.planet, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM });
+    planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, sun: f.planet.sun, exag: f.exag, riverCut: f.planet.riverCut });
+  });
+  R.frame({ ...f, views, under });
   frames++;
   const ms = performance.now() - t0;
   rendering = false;

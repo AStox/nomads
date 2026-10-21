@@ -37,10 +37,6 @@
   body.narrow canvas#render { display: none; }
   body.narrow canvas#pace { display: none; }
   body.narrow #hint { left: 8px; right: 8px; bottom: auto; top: calc(124px + env(safe-area-inset-top)); }
-  /* the way back to the planet, to land somewhere else (play/globe.js) */
-  #toGlobe { position: fixed; left: 12px; bottom: 64px; z-index: 4; height: 30px; padding: 0 9px; font: bold 12px/1 ui-monospace, Menlo, Consolas, monospace; color: #eef2f6; background: rgba(36, 32, 52, 0.86); border: 2px solid #0d0b14; border-radius: 0; box-shadow: inset 2px 2px #4a4566, inset -2px -2px #16131f; cursor: pointer; }
-  #toGlobe[hidden] { display: none; }
-  body.narrow #toGlobe { left: auto; right: 8px; bottom: auto; top: calc(46px + env(safe-area-inset-top)); }
 </style>
 </head>
 <body>
@@ -48,7 +44,7 @@
 <canvas id="inspector" hidden aria-label="What is selected, from the sim"></canvas>
 <canvas id="world" hidden aria-label="Everyone and everything in the world, population over time, and the key to the markers"></canvas>
 <canvas id="tip" hidden></canvas>
-<div id="hint">drag to pan &middot; scroll or double-click to zoom &middot; Q/E or right-drag to turn &middot; click anything to inspect it, people and animals to follow &middot; Tab for the next person &middot; the window at top right lists everyone and everything &middot; H hides paths &middot; Esc or click it again to let go &middot; space pauses &middot; [ ] speed</div>
+<div id="hint">drag to pan &middot; scroll or double-click to zoom, out to the whole planet &middot; Q/E or right-drag to turn &middot; click anything to inspect it, people and animals to follow &middot; Tab for the next person &middot; the window at top right lists everyone and everything &middot; H hides paths &middot; Esc or click it again to let go &middot; space pauses &middot; [ ] speed</div>
 <div id="pad" hidden>
   <button data-act="left" aria-label="Turn left">&#8634;</button><button data-act="right" aria-label="Turn right">&#8635;</button>
   <button data-act="out" aria-label="Zoom out">&minus;</button><button data-act="in" aria-label="Zoom in">+</button>
@@ -59,7 +55,6 @@
 <canvas id="render" hidden aria-label="What draws the frames: the GPU through WebGL2, or the CPU and why"></canvas>
 <canvas id="clock" hidden aria-label="The hour, the light it should show, and where that light comes from"></canvas>
 <div id="stats" hidden></div>
-<button id="toGlobe" title="Back to the planet, to land somewhere else (G)">GLOBE</button>
 <script type="module" src="./main.js"></script>
 </body>
 </html>

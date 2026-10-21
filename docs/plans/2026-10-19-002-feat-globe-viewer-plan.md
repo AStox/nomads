@@ -1,11 +1,16 @@
 ---
 title: "feat: a globe to turn and zoom, and a landing that makes the game's ground where it is clicked"
 type: feat
-status: active
+status: superseded
 date: 2026-10-19
 ---
 
 # feat: the globe viewer and the landing
+
+> Superseded 2026-10-20 by docs/plans/2026-10-20-001-feat-seamless-globe-plan.md: the globe is no longer a mode of the page.
+> `?globe`, `?at`, the GLOBE button, G and the click that landed a window are gone; the planet is the base layer of the one
+> view (`demo/styles/isopixel/planet.js`, drawn in the render worker under the ladder) and the camera runs from the whole
+> planet to `close`. What follows is the viewer as first built.
 
 The operator: a globe to turn, coarse detail far out and more as it comes near; nearer still the cursor shows the game's
 square, and a click makes that square the game screen; back on the globe another click makes another.

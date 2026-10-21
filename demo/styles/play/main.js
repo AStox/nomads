@@ -8,7 +8,6 @@ import { Buf } from "../isopixel/px.js";
 import { text } from "../isopixel/ui.js";
 import { createCamera, norm8 } from "./camera.js";
 import { SIZE, TILE_M } from "../island.js";
-import { KEPT, runGlobe, toGlobe } from "./globe.js";
 
 const Q = new URLSearchParams(location.search);
 // every URL parameter is checked, so a bad one falls back to its default instead of stopping the page
@@ -21,8 +20,8 @@ const num = (k, def, lo = -Infinity, hi = Infinity) => {
 // about 9 minutes on the dev machine (real-time tick plan, Unit 11 outcome); at most 140 days, about the 40,000 ticks of
 // 300 s it has always been held to]
 const seed = Math.trunc(num("seed", 1)), warm = num("warm", 1, 0, 140), withSim = Q.get("sim") !== "0";
-// ?at=<lat>,<lon>: the game on the ground of the seed's planet there, as the globe (?globe) lands it
-const atQ = (Q.get("at") ?? "").split(",").map(Number), at = atQ.length === 2 && atQ.every(Number.isFinite) && Math.abs(atQ[0]) <= 85 ? { lat: atQ[0], lon: atQ[1] } : null;
+// ?planet=0: the island the generator made instead of the seed's planet (for the renderer's own checks, which stand on it)
+const planet = Q.get("planet") !== "0";
 // ?bench=zoom, or several in turn on one load (?bench=zoom,orbit,turn,pan), each from the view the first began at
 const benchKinds = (Q.get("bench") ?? "").split(",").filter((k) => ["zoom", "orbit", "turn", "pan"].includes(k));
 const canvas = document.getElementById("view"), hint = document.getElementById("hint"), statsEl = document.getElementById("stats"), pace = document.getElementById("pace"), renderEl = document.getElementById("render"), clockEl = document.getElementById("clock");
@@ -64,7 +63,7 @@ async function main() {
   const jev = jevQ === "off" ? null : localStorage.getItem("nomads-jev");
   // the token is kept, not shown: a copied link doesn't carry it
   if (jevQ) { Q.delete("jev"); history.replaceState(null, "", `${location.pathname}${Q.size ? `?${Q}` : ""}`); }
-  const live = await createLive({ seed, canvas, at, sim: withSim ? { warm, jev } : null, onProgress: (d, n, what) => { step = [what, 0.5 * (what === "drawing the sprites" ? 1 : 0) + (0.5 * d) / n]; say(); } });
+  const live = await createLive({ seed, canvas, planet, sim: withSim ? { warm, jev } : null, onProgress: (d, n, what) => { step = [what, 0.5 * (what === "drawing the sprites" ? 1 : 0) + (0.5 * d) / n]; say(); } });
   const sim = withSim ? await connectSim(live) : null;
   // ?hour= pins the hour the island is drawn at, its light and sun, while the sim runs on; ?speed= starts it faster, in
   // sim seconds a wall second (600 the usual pace, 19200 runs a day in about four and a half seconds), for timelapses
@@ -512,7 +511,6 @@ async function main() {
     else if (e.key === "h" || e.key === "H") ACT.paths();
     else if (e.key === "q" || e.key === "Q") ACT.left();
     else if (e.key === "e" || e.key === "E") ACT.right();
-    else if (e.key === "g" || e.key === "G") toGlobe();
   });
   for (const b of pad.querySelectorAll("button")) b.addEventListener("click", () => { ACT[b.dataset.act]?.(); paintPad(); });
   // the buttons light for what they hold: paused, a speed off the usual, paths hidden
@@ -606,8 +604,6 @@ async function main() {
     paintRender();
     if (!readyMarked && revealed && !bench) {
       readyMarked = true; document.body.dataset.firstFrame = String(Math.round(performance.now() - t0)); document.body.classList.add("ready");
-      const clicked = Number(sessionStorage.getItem(KEPT.clickedAt));
-      if (at && clicked) { document.body.dataset.landingMs = String(Date.now() - clicked); sessionStorage.removeItem(KEPT.clickedAt); }
     }
     if (showStats && now - lastStats > 250) {
       lastStats = now;
@@ -717,16 +713,8 @@ async function main() {
   }
 }
 
-// ?globe: the planet to choose a place on (play/globe.js); the game's GLOBE button and G go there
-const globeButton = document.getElementById("toGlobe");
-globeButton.addEventListener("click", toGlobe);
-if (at) hint.textContent = `the ground of the planet at ${Math.abs(at.lat).toFixed(2)} ${at.lat >= 0 ? "N" : "S"}, ${Math.abs(at.lon).toFixed(2)} ${at.lon >= 0 ? "E" : "W"} \u00b7 G or GLOBE goes back to the planet \u00b7 ${hint.textContent}`;
 // The page draws with WebGPU only: where the browser offers none, a plain notice says so and nothing else runs.
-if (hasWebGPU() && Q.has("globe")) {
-  globeButton.hidden = true;
-  loadingScreen(canvas, "loading the planet", 0);
-  runGlobe({ seed, hint }).then(() => { canvas.hidden = true; }).catch(fail);
-} else if (hasWebGPU()) main().catch(fail);
+if (hasWebGPU()) main().catch(fail);
 else {
   const note = document.createElement("p");
   note.textContent = "This page draws the island with WebGPU, which this browser does not offer. Open it in Chrome or Edge 113 or later, or Safari 26.";

@@ -1,5 +1,7 @@
-// The globe's one pass (play/globe.js): each art pixel's ray meets the unit sphere, the hit is put on its cube face as the grid
-// does (src/gpu/globe/grid.ts locateVec: the face whose normal is nearest, then the equiangular coordinates), and the tier-0
+// The planet layer's picture (planet.js): each art pixel's ray crosses the shell between the unit sphere and the highest
+// relief (land stands exag times its height above the sphere, the sea is the sphere) and is marched to the surface, so a
+// tilted view shifts a high point on the screen as the ladder's does. The hit is put on its cube face as the grid does
+// (src/gpu/globe/grid.ts locateVec: the face whose normal is nearest, then the equiangular coordinates), and the tier-0
 // fields are read there from face textures that carry an apron of the neighbouring faces' cells, so no read crosses an
 // edge. The height is a cubic B-spline of the cells, so its slope is smooth at any zoom; the climate is bilinear.
 //
@@ -16,12 +18,7 @@ export function globeWgsl({ FRAMES, FN, APRON, P, RGB, NCOL, TONE_S }) {
   const ramp = (...n) => `array<u32, ${n.length}>(${n.map(u).join(", ")})`;
   const rgb = (c) => v3(c.map((x) => x / 255));
   const c255 = (c) => v3(c);
-  const side = FN + 2 * APRON;
   return /* wgsl */ `
-const PI = 3.14159265358979;
-const FN = ${FN.toFixed(1)};
-const APRON = ${APRON.toFixed(1)};
-const SIDE = ${side.toFixed(1)};
 var<private> FACE_N: array<vec3f, 6> = array(${FRAMES.map((f) => v3(f.n)).join(", ")});
 var<private> FACE_X: array<vec3f, 6> = array(${FRAMES.map((f) => v3(f.ex)).join(", ")});
 var<private> FACE_Y: array<vec3f, 6> = array(${FRAMES.map((f) => v3(f.ey)).join(", ")});
@@ -45,12 +42,15 @@ const g_AIR = ${ramp("ink", "w0", "w1", "w2", "w3", "w4", "w5")};
 const BARE_ROCK = array<vec3f, 5>(${[[118, 104, 92], [176, 140, 96], [204, 196, 176], [164, 144, 138], [92, 88, 84]].map(c255).join(", ")});
 
 struct U {
-  o: vec3f, alt: f32,       // the camera, in radii from the centre, and its height above the sphere in radii
-  fwd: vec3f, tanH: f32,    // where it looks, and the tangent of half the vertical field of view
-  right: vec3f, aspect: f32,
-  up: vec3f, relief: f32,   // the relief's exaggeration for the light
+  o: vec3f, tanH: f32,      // the camera's place (the target plus off) in radii from the centre, and the tangent of half the vertical field of view
+  fwd: vec3f, aspect: f32,
+  right: vec3f, relief: f32, // the relief's exaggeration for the light
+  up: vec3f, exag: f32,     // and for the displaced ground
   sun: vec3f, radiusM: f32, // the light that gives the planet its form
-  size: vec2f, art: f32, pad: f32, // the canvas in device pixels, and the art pixel in device pixels
+  T: vec3f, hmaxR: f32,     // the camera's target on the sphere, and the highest relief above the sphere in radii (exag * hmax / radius)
+  off: vec3f, art: f32,     // the camera less its target, and the art pixel in device pixels
+  size: vec2f, zNear: f32, zFar: f32, // the canvas in device pixels, and the depth range along the view in radii
+  cut: f32, airK: f32, aw: f32, ah: f32, // the river cut (m3/s), how much of the air's haze a camera this high shows, and the art-pixel target's size
 }
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var heightT: texture_2d_array<f32>; // m, r32float
@@ -58,10 +58,21 @@ struct U {
 @group(0) @binding(3) var samp: sampler;
 @group(0) @binding(4) var<storage, read> tables: array<u32>;
 @group(0) @binding(5) var<storage, read> dqT: array<u32>; // ground.wgsl.js dqBuild
+@group(0) @binding(6) var fineT: texture_2d_array<f32>;   // heights at a quarter cell, filtered (fineWgsl)
+@group(0) @binding(7) var<storage, read> segs: array<vec4f>; // the rivers: a point and its flow, then the receiver's point, per segment, strongest first
+@group(0) @binding(8) var artT: texture_2d<f32>;          // the picture at an art pixel, for the blit that shows it by whole pixels
+const RIVER_SUB = ${RIVER_SUB}u;
+const RIVER_CORNER = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
+const g_RIV = ${ramp("w5", "w4", "w3")};
 
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
   let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
   return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+// the art-pixel picture shown by whole pixels, nearest
+@fragment fn bfs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+  let at = min(vec2i(floor(pos.xy / u.art)), vec2i(i32(u.aw) - 1, i32(u.ah) - 1));
+  return textureLoad(artT, at, 0);
 }
 
 // ---------- px.js: the art pixel's dither and hash ----------
@@ -116,44 +127,30 @@ fn toned(c: u32, s: f32) -> u32 {
 }
 fn mixc(a: vec3f, b: vec3f, t: f32) -> vec3f { return a + (b - a) * clamp(t, 0.0, 1.0); }
 
-// the cubic B-spline's weights for the taps at -1, 0, 1, 2 of a fraction t, and their derivatives
-fn bs(t: f32) -> vec4f {
-  let s = 1.0 - t;
-  return vec4f(s * s * s, 3.0 * t * t * t - 6.0 * t * t + 4.0, -3.0 * t * t * t + 3.0 * t * t + 3.0 * t + 1.0, t * t * t) / 6.0;
-}
-fn dbs(t: f32) -> vec4f {
-  let s = 1.0 - t;
-  return vec4f(-s * s, 3.0 * t * t - 4.0 * t, -3.0 * t * t + 2.0 * t + 1.0, t * t) * 0.5;
-}
-// the height at face coordinates (sx, sy) in cells, and its slope along each, m a cell
-fn heightAt(f: i32, sx: f32, sy: f32) -> vec3f {
-  let tx = sx + APRON - 0.5;
-  let ty = sy + APRON - 0.5;
-  let ix = i32(floor(tx));
-  let iy = i32(floor(ty));
-  let wx = bs(tx - floor(tx));
-  let wy = bs(ty - floor(ty));
-  let dx = dbs(tx - floor(tx));
-  let dy = dbs(ty - floor(ty));
-  var r = vec3f(0.0);
-  for (var j = 0; j < 4; j++) {
-    for (var i = 0; i < 4; i++) {
-      let at = clamp(vec2i(ix - 1 + i, iy - 1 + j), vec2i(0), vec2i(i32(SIDE) - 1));
-      let h = textureLoad(heightT, at, f, 0).r;
-      r += h * vec3f(wx[i] * wy[j], dx[i] * wy[j], wx[i] * dy[j]);
-    }
-  }
-  return r;
+${splineWgsl({ FN, APRON })}
+// the cube face under a unit point, and the equiangular coordinates in it, in cells (src/gpu/globe/grid.ts locateVec)
+struct FaceAt { f: i32, sx: f32, sy: f32, ua: f32, vb: f32 }
+fn faceOf(p: vec3f) -> FaceAt {
+  var f = 0;
+  var best = dot(p, FACE_N[0]);
+  for (var k = 1; k < 6; k++) { let d = dot(p, FACE_N[k]); if (d > best) { best = d; f = k; } }
+  let ua = dot(p, FACE_X[f]) / best;
+  let vb = dot(p, FACE_Y[f]) / best;
+  return FaceAt(f, (atan(ua) / (PI / 2.0) + 0.5) * FN, (atan(vb) / (PI / 2.0) + 0.5) * FN, ua, vb);
 }
 
 // ---------- space: the air's rim in the palette's blue ramp, dithered ----------
 fn spaceIdx(rd: vec3f, b: f32) -> u32 {
-  if (b > 0.0) { return ${u("ink")}; }
-  let d = sqrt(max(dot(u.o, u.o) - b * b, 1.0));
+  let o = u.T + u.off;
+  let oo = dot(o, o);
+  // rays that look away from the planet keep the rim's glow and lose it by their angle above the horizon, so a camera near the
+  // ground has its sky and no hard edge where the ray stops meeting the planet
+  let d = select(sqrt(max(oo - b * b, 1.0)), sqrt(oo), b > 0.0);
   // an art pixel in radii at the limb, so the rim is never thinner than two of them
-  let px = u.art * 2.0 * u.tanH / u.size.y * sqrt(max(dot(u.o, u.o) - 1.0, 1e-6));
-  let glow = exp(-(d - 1.0) / max(0.012, 2.0 * px));
-  let lit = max(0.25, dot(normalize(u.o + rd * -b), u.sun) * 0.5 + 0.5);
+  let px = u.art * 2.0 * u.tanH / u.size.y * sqrt(max(oo - 1.0, 1e-6));
+  var glow = exp(-(d - 1.0) / max(0.012, 2.0 * px));
+  if (b > 0.0) { glow *= exp(-asin(min(b / sqrt(oo), 1.0)) / 0.05); }
+  let lit = max(0.25, dot(normalize(select(o + rd * -b, o, b > 0.0)), u.sun) * 0.5 + 0.5);
   return g_AIR[dithIndex(glow * lit * 6.5, 7)];
 }
 
@@ -259,36 +256,94 @@ fn landIdx(h: f32, gl: f32, tC0: f32, rain0: f32, ice: f32, rk: i32, sl0: f32) -
   return toned(idx, sl + gForm);
 }
 
-@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+// ---------- the relief: land stands exag times its height above the unit sphere, and the ray marches that shell ----------
+// |T + w| - 1 for a camera-relative step w, with no cancellation however near the ground the camera is
+fn radial(w: vec3f) -> f32 {
+  let s = 2.0 * dot(u.T, w) + dot(w, w);
+  return s / (1.0 + sqrt(max(1.0 + s, 0.0)));
+}
+// the fine height field (the cells' B-spline at a quarter cell, filtered): m
+fn fineH(p: vec3f) -> f32 {
+  let c = faceOf(p);
+  return textureSampleLevel(fineT, samp, vec2f((c.sx + APRON) / SIDE, (c.sy + APRON) / SIDE), c.f, 0.0).r;
+}
+// the surface's height above the sphere, in radii, under unit point p: the sea is the sphere
+fn lift(p: vec3f) -> f32 { return max(fineH(p), 0.0) * u.exag / u.radiusM; }
+fn below(t: f32, rd: vec3f) -> bool {
+  let w = u.off + t * rd;
+  return radial(w) <= lift(normalize(u.T + w));
+}
+
+struct Out {
+  @location(0) color: vec4f,
+  @builtin(frag_depth) depth: f32,
+}
+fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0, 1.0); }
+
+@fragment fn fs(@builtin(position) pos: vec4f) -> Out {
   let a = u.art;
-  gX = i32(floor(pos.x / a));
-  gY = i32(floor(pos.y / a));
+  gX = i32(floor(pos.x));
+  gY = i32(floor(pos.y));
   let at = (vec2f(f32(gX), f32(gY)) + 0.5) * a;
   let ndc = vec2f(at.x / u.size.x * 2.0 - 1.0, 1.0 - at.y / u.size.y * 2.0);
   let rd = normalize(u.fwd + ndc.x * u.tanH * u.aspect * u.right + ndc.y * u.tanH * u.up);
-  let b = dot(u.o, rd);
-  let disc = b * b - u.alt * (2.0 + u.alt);
-  var t = -b - sqrt(max(disc, 0.0));
-  if (disc < 0.0 || t < 0.0) { return vec4f(PAL[spaceIdx(rd, b)], 1.0); }
-  let p = normalize(u.o + t * rd);
+  let o = u.T + u.off;
+  let b = dot(o, rd);
+  // the shell between the sphere and the highest relief; c is |o|^2 - r^2 in the small numbers
+  let s0 = 2.0 * dot(u.T, u.off) + dot(u.off, u.off);
+  let c1 = s0 - u.hmaxR * (2.0 + u.hmaxR);
+  let d1 = b * b - c1;
+  var o_: Out;
+  o_.depth = 1.0;
+  if (d1 < 0.0 || (b > 0.0 && c1 > 0.0)) { o_.color = vec4f(PAL[spaceIdx(rd, b)], 1.0); return o_; }
+  let tOut = -b + sqrt(d1);
+  let tIn = max(c1 / tOut, 0.0);
+  let d0 = b * b - s0;
+  let sea = d0 >= 0.0 && b < 0.0;
+  var tEnd = tOut;
+  if (sea) { tEnd = s0 / (-b + sqrt(d0)); }
+  // steps: one per 2.5 art pixels the shell's path covers on the screen, at least 2
+  let pxPerR = u.size.y / (2.0 * u.tanH * max(tIn, 1e-6)) / a;
+  let reach = (tEnd - tIn) * length(cross(rd, normalize(u.T + u.off + tIn * rd))) * pxPerR;
+  let n = clamp(i32(ceil(reach / 2.5)) + 2, 2, 40);
+  var tHit = tEnd;
+  var hit = sea;
+  var tp = tIn;
+  for (var k = 1; k <= n; k++) {
+    let t = mix(tIn, tEnd, f32(k) / f32(n));
+    if (below(t, rd)) {
+      var lo = tp;
+      var hi = t;
+      for (var j = 0; j < 6; j++) {
+        let m = 0.5 * (lo + hi);
+        if (below(m, rd)) { hi = m; } else { lo = m; }
+      }
+      tHit = hi;
+      hit = true;
+      break;
+    }
+    tp = t;
+  }
+  if (!hit) { o_.color = vec4f(PAL[spaceIdx(rd, b)], 1.0); return o_; }
+  let p = normalize(u.T + u.off + tHit * rd);
   gQ = p * u.radiusM;
-  gMpp = a * 2.0 * u.tanH / u.size.y * t * u.radiusM;
+  gMpp = a * 2.0 * u.tanH / u.size.y * tHit * u.radiusM;
+  o_.depth = depthOf(tHit * dot(rd, u.fwd));
 
-  var f = 0;
-  var best = dot(p, FACE_N[0]);
-  for (var k = 1; k < 6; k++) { let d = dot(p, FACE_N[k]); if (d > best) { best = d; f = k; } }
-  let n = FACE_N[f];
+  let fc = faceOf(p);
+  let f = fc.f;
+  let n3 = FACE_N[f];
   let ex = FACE_X[f];
   let ey = FACE_Y[f];
-  let ua = dot(p, ex) / best;
-  let vb = dot(p, ey) / best;
-  let sx = (atan(ua) / (PI / 2.0) + 0.5) * FN;
-  let sy = (atan(vb) / (PI / 2.0) + 0.5) * FN;
+  let ua = fc.ua;
+  let vb = fc.vb;
+  let sx = fc.sx;
+  let sy = fc.sy;
 
   // the surface's tangents along the face's coordinates, in metres a cell, and from them the slope as a vector
   let hd = heightAt(f, sx, sy);
   let h = hd.x;
-  let ql = length(n + ua * ex + vb * ey);
+  let ql = length(n3 + ua * ex + vb * ey);
   let da = (PI / 2.0) / FN;
   let Tx = u.radiusM * da * (1.0 + ua * ua) * (ex - p * dot(p, ex)) / ql;
   let Ty = u.radiusM * da * (1.0 + vb * vb) * (ey - p * dot(p, ey)) / ql;
@@ -321,14 +376,156 @@ fn landIdx(h: f32, gl: f32, tC0: f32, rain0: f32, ice: f32, rk: i32, sl0: f32) -
 
   var idx: u32;
   if (h < 0.0) { idx = seaIdx(h, gl, ice); } else { idx = landIdx(h, gl, tC, rain, ice, rk, sl); }
-  // past the terminator the night's shadow tones, then the air's haze toward the limb, each dithered
+  // past the terminator the night's shadow tones, then the air's haze toward the limb (seen from a height, not from the
+  // ground), each dithered
   let night = sm(0.0, -0.5, sd);
   if (bayer(gX, gY) < night) { idx = tables[T_SHADOW + idx]; }
   let mu = max(dot(p, -rd), 0.0);
-  let air = pow(1.0 - mu, 5.0) * 0.9;
+  let air = pow(1.0 - mu, 5.0) * 0.9 * u.airK;
   if (bayer(gX, gY) < air) { idx = tables[idx]; }
   if (bayer(gX + 2, gY + 1) < air * air) { idx = tables[idx]; }
-  return vec4f(PAL[idx], 1.0);
+  o_.color = vec4f(PAL[idx], 1.0);
+  return o_;
+}
+
+// ---------- the rivers: art pixel lines on the island's water ramp, the surface they lie on hiding them ----------
+struct RV {
+  @builtin(position) pos: vec4f,
+  @location(0) @interpolate(flat) a: vec2f, // the line's ends, in art pixels
+  @location(1) @interpolate(flat) b: vec2f,
+  @location(2) @interpolate(flat) wc: vec2f, // the ramp's step: 0 to 2, which is the width less one and the colour
+}
+// a unit point lifted to the surface, on the screen in art pixels, with its depth along the view in radii and 1 if it is in front
+fn rscreen(p: vec3f) -> vec4f {
+  let n = normalize(p);
+  let v = n * (1.0 + lift(n)) - (u.T + u.off);
+  let z = dot(v, u.fwd);
+  let x = dot(v, u.right) / (z * u.tanH * u.aspect);
+  let y = dot(v, u.up) / (z * u.tanH);
+  return vec4f((x * 0.5 + 0.5) * u.size.x / u.art, (0.5 - y * 0.5) * u.size.y / u.art, z, select(0.0, 1.0, z > 1e-6));
+}
+@vertex fn rvs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> RV {
+  let seg = ii / RIVER_SUB;
+  let piece = ii % RIVER_SUB;
+  let A = segs[2u * seg];
+  let B = segs[2u * seg + 1u];
+  let pa = rscreen(mix(A.xyz, B.xyz, f32(piece) / f32(RIVER_SUB)));
+  let pb = rscreen(mix(A.xyz, B.xyz, f32(piece + 1u) / f32(RIVER_SUB)));
+  var r: RV;
+  r.pos = vec4f(2.0, 2.0, 2.0, 1.0);
+  if (pa.w < 0.5 || pb.w < 0.5) { return r; }
+  let step = u32(clamp(floor(log2(A.w / u.cut) * 0.5), 0.0, 2.0));
+  let width = f32(step + 1u);
+  let d = pb.xy - pa.xy;
+  let len = length(d);
+  var dir = vec2f(1.0, 0.0);
+  if (len > 1e-4) { dir = d / len; }
+  let perp = vec2f(-dir.y, dir.x);
+  let half = width * 0.5 + 1.5;
+  let corner = RIVER_CORNER[vi];
+  let atB = (corner & 1u) == 1u;
+  let side = select(-1.0, 1.0, (corner >> 1u) == 1u);
+  let base = select(pa, pb, atB);
+  let xy = base.xy + dir * half * select(-1.0, 1.0, atB) + perp * half * side;
+  // a few art pixels toward the camera, more where the ground leans from the view, so a river never z-fights its own ground
+  let zc = select(pa.z, pb.z, atB);
+  let bias = 6.0 * u.art * 2.0 * u.tanH / u.size.y * zc;
+  r.pos = vec4f(xy.x / u.aw * 2.0 - 1.0, 1.0 - xy.y / u.ah * 2.0, depthOf(zc - bias), 1.0);
+  r.a = pa.xy;
+  r.b = pb.xy;
+  r.wc = vec2f(width, f32(step));
+  return r;
+}
+@fragment fn rfs(in: RV) -> @location(0) vec4f {
+  let ax = i32(floor(in.pos.x));
+  let ay = i32(floor(in.pos.y));
+  let t = i32(in.wc.x);
+  let lo = t >> 1u;
+  let hi = t - 1 - lo;
+  let A = vec2i(floor(in.a));
+  let B = vec2i(floor(in.b));
+  let d = B - A;
+  let mx = abs(d.x) >= abs(d.y);
+  // the line's cells run one a step of the major axis, the brush t wide on both axes, as Bresenham's line is laid
+  let cm = select(ay, ax, mx);
+  let cn = select(ax, ay, mx);
+  let am = select(A.y, A.x, mx);
+  let an = select(A.x, A.y, mx);
+  let bm = select(B.y, B.x, mx);
+  let bn = select(B.x, B.y, mx);
+  let dm = bm - am;
+  let dn = bn - an;
+  var hitc = false;
+  for (var x = cm - hi; x <= cm + lo; x++) {
+    if (x < min(am, bm) || x > max(am, bm)) { continue; }
+    var row = an;
+    if (dm != 0) { row = an + i32(floor(f32((x - am) * dn) / f32(dm) + 0.5)); }
+    let off = cn - row;
+    if (off >= -lo && off <= hi) { hitc = true; }
+  }
+  if (!hitc) { discard; }
+  let k = u32(in.wc.y);
+  return vec4f(PAL[g_RIV[k]], 1.0);
 }
 `;
 }
+
+// the cells' height as a cubic B-spline, one place for the fine map's build and the picture's own reading
+export function splineWgsl({ FN, APRON }) {
+  return /* wgsl */ `
+const PI = 3.14159265358979;
+const FN = ${FN.toFixed(1)};
+const APRON = ${APRON.toFixed(1)};
+const SIDE = ${(FN + 2 * APRON).toFixed(1)};
+// the cubic B-spline's weights for the taps at -1, 0, 1, 2 of a fraction t, and their derivatives
+fn bs(t: f32) -> vec4f {
+  let s = 1.0 - t;
+  return vec4f(s * s * s, 3.0 * t * t * t - 6.0 * t * t + 4.0, -3.0 * t * t * t + 3.0 * t * t + 3.0 * t + 1.0, t * t * t) / 6.0;
+}
+fn dbs(t: f32) -> vec4f {
+  let s = 1.0 - t;
+  return vec4f(-s * s, 3.0 * t * t - 4.0 * t, -3.0 * t * t + 2.0 * t + 1.0, t * t) * 0.5;
+}
+// the height at face coordinates (sx, sy) in cells, and its slope along each, m a cell
+fn heightAt(f: i32, sx: f32, sy: f32) -> vec3f {
+  let tx = sx + APRON - 0.5;
+  let ty = sy + APRON - 0.5;
+  let ix = i32(floor(tx));
+  let iy = i32(floor(ty));
+  let wx = bs(tx - floor(tx));
+  let wy = bs(ty - floor(ty));
+  let dx = dbs(tx - floor(tx));
+  let dy = dbs(ty - floor(ty));
+  var r = vec3f(0.0);
+  for (var j = 0; j < 4; j++) {
+    for (var i = 0; i < 4; i++) {
+      let at = clamp(vec2i(ix - 1 + i, iy - 1 + j), vec2i(0), vec2i(i32(SIDE) - 1));
+      let h = textureLoad(heightT, at, f, 0).r;
+      r += h * vec3f(wx[i] * wy[j], dx[i] * wy[j], wx[i] * dy[j]);
+    }
+  }
+  return r;
+}
+`;
+}
+
+// the fine height map: the spline above sampled SS times a cell, stored half precision so one filtered read gives the
+// relief march a smooth surface
+export function fineWgsl({ FN, APRON, SS }) {
+  return /* wgsl */ `
+@group(0) @binding(0) var heightT: texture_2d_array<f32>;
+@group(0) @binding(1) var fineW: texture_storage_2d_array<rgba16float, write>;
+${splineWgsl({ FN, APRON })}
+const SS = ${SS.toFixed(1)};
+@compute @workgroup_size(8, 8, 1) fn main(@builtin(global_invocation_id) id: vec3u) {
+  let n = u32(SS * SIDE);
+  if (id.x >= n || id.y >= n) { return; }
+  let sx = (f32(id.x) + 0.5) / SS - APRON;
+  let sy = (f32(id.y) + 0.5) / SS - APRON;
+  textureStore(fineW, vec2i(id.xy), i32(id.z), vec4f(heightAt(i32(id.z), sx, sy).x, 0.0, 0.0, 0.0));
+}
+`;
+}
+
+// pieces a river segment is cut into, so its line follows the relief it lies on
+export const RIVER_SUB = 8;

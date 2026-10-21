@@ -16,6 +16,7 @@ import { crownRatio } from "./atlas.js";
 import { createGround } from "./ground.js";
 import { LADDER, levelOf } from "./ladder.js";
 import { SIZE, TILE_M, crownShare } from "../island.js";
+import { planetCam } from "./planet-cam.js";
 
 const SIM = TILE_M, ORIGIN = -SIZE / 2, TAU = Math.PI * 2, NL = LADDER.length, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -65,8 +66,8 @@ function frameOf(b) {
 export const hasWebGPU = () => typeof navigator !== "undefined" && !!navigator.gpu;
 
 // sim: { warm (sim days), jev } runs the game's sim in the render worker (play/remote.js connectSim reads it); null
-// draws the island alone. at: { lat, lon } in degrees draws the ground of the seed's planet there (play/globe.js).
-export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = null, at = null } = {}) {
+// draws the island alone. planet: the worker opens the seed's baked planet, if there is one, and the game's ground is its home window.
+export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = null, planet = true } = {}) {
   if (!hasWebGPU()) throw new Error("this browser does not offer WebGPU", { cause: "nogpu" });
   const TH = await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {}));
   const tStart = performance.now();
@@ -101,7 +102,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       else if (m.type === "error") fail(new Error(m.error));
       else onWorker(m);
     };
-    worker.postMessage({ type: "init", seed, canvas: off, sim: simOpts, at }, [off]);
+    worker.postMessage({ type: "init", seed, canvas: off, sim: simOpts, planet }, [off]);
   });
   function onWorker(m) {
     if (m.type.startsWith("sim")) { if (simTo) simTo(m); else simEarly.push(m); }
@@ -201,9 +202,82 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // zoom: log2 of screen px per meter over the island seen at 2 screen px per art px
   const PPM0 = 2 * PL[0], ppmOf = (z) => PPM0 * 2 ** z, ZMAX = Math.log2((4 * PL[NL - 1]) / PPM0);
   const named = Object.fromEntries(["island", "region", "valley", "close"].map((k) => [k, Math.log2((2 * PL[levelOf(k)]) / PPM0)]));
+
+  // ---------- the planet under the ladder ----------
+  // The ladder draws the play area; the planet (isopixel/planet.js, in the worker) lies under it at every zoom and is the only
+  // picture from ZLAD out. One zoom runs from the whole planet to close: below the island level it is the planet's camera easing
+  // from straight down to the ladder's own look (60 degrees from the vertical, bearing b turning it b * 45 degrees; a narrow field
+  // of view at the end, so the sphere reads as the ladder's parallel projection). view.geo (lat, lon) is the target on the planet
+  // and view.x, view.z the same place in the play area's metres; whichever moved last is kept (syncGeo).
+  const PLACE = fieldsMsg.place ?? null, PR = PLACE?.radiusM, D2R = Math.PI / 180, ISO_TILT = Math.PI / 3;
+  // the zoom the ladder is first drawn at (faded in over the next step), and the play area's edge fade [design]
+  const ZLAD = -1.5, PLAY_EDGE_M = 1200;
+  // the whole planet fits the canvas at its smallest zoom: 0.4 of the canvas height across a radius
+  const zminNow = () => (PLACE ? Math.min(ZLAD - 0.5, Math.log2((0.4 * canvas.height) / (Math.SQRT2 * PR * PPM0))) : 0);
+  const clampZ = (z) => clamp(z, zminNow(), ZMAX);
+  const dotv = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const vecOf = (g) => { const la = g.lat * D2R, lo = g.lon * D2R, c = Math.cos(la); return [c * Math.cos(lo), c * Math.sin(lo), Math.sin(la)]; };
+  const geoOfVec = (p) => { const l = Math.hypot(p[0], p[1], p[2]); return { lat: Math.asin(p[2] / l) / D2R, lon: Math.atan2(p[1], p[0]) / D2R }; };
+  // the play area's plane (x east, z south of the place, ground.js place) and the sphere, gnomonic about the place
+  const geoOf = (x, z) => geoOfVec([0, 1, 2].map((i) => PLACE.c[i] + (x * PLACE.e[i] - z * PLACE.n[i]) / PR));
+  const planeOf = (g) => { const v = vecOf(g), d = dotv(v, PLACE.c); return d > 0.1 ? { x: (PR * dotv(v, PLACE.e)) / d, z: (-PR * dotv(v, PLACE.n)) / d } : null; };
+  function syncGeo(view) {
+    if (!PLACE) return;
+    const s = view.synced, g = view.geo;
+    if (!g || !s || view.x !== s.x || view.z !== s.z) view.geo = geoOf(view.x, view.z);
+    else if (g.lat !== s.lat || g.lon !== s.lon) { const q = planeOf(g); if (q) { view.x = q.x; view.z = q.z; } }
+    view.synced = { x: view.x, z: view.z, lat: view.geo.lat, lon: view.geo.lon };
+  }
+  // a target the camera solved for (solveTarget): its plane place, and its planet place when it came from the planet
+  function setTarget(view, T) {
+    view.x = T.x; view.z = T.z;
+    if (T.geo) { view.geo = T.geo; view.synced = { x: view.x, z: view.z, lat: T.geo.lat, lon: T.geo.lon }; }
+  }
+  const planetMode = (view) => !!PLACE && view.zoom < ZLAD;
+  // the planet camera's look at a zoom: u runs from the whole planet (0) to the ladder's first zoom (1)
+  function planetParams(view) {
+    const zw = zminNow(), u = clamp((view.zoom - zw) / (ZLAD - zw), 0, 1), k = smooth(0.25, 0.9, u), tanH = 0.414 * (0.05 / 0.414) ** smooth(0.2, 0.9, u);
+    // the ladder's screen x runs along (1, -1) of the plane, root 2 px a metre per px a metre of its world axes
+    const ppm = ppmOf(clampZ(view.zoom)), dist = canvas.height / (2 * Math.SQRT2 * ppm * tanH);
+    // screen up on the ground at bearing b is the plane's (-1, -1) turned b * 45 degrees; the whole planet is north up
+    let iso = (-45 + 45 * (view.bearing ?? 0)) * D2R;
+    iso = ((((iso + Math.PI) % TAU) + TAU) % TAU) - Math.PI;
+    // the light is the sky's sun at the play area, held up to 25 degrees so the planet is never dark
+    const sun = sky?.sun, el = Math.max(sun?.el ?? 0.8, 25 * D2R), dir = sun?.dir ?? [0.6, 0.8], dl = Math.hypot(dir[0], dir[1]) || 1;
+    const light = [0, 1, 2].map((i) => PLACE.c[i] * Math.sin(el) + Math.cos(el) * ((PLACE.e[i] * dir[0]) / dl - (PLACE.n[i] * dir[1]) / dl));
+    return { lat: view.geo.lat, lon: view.geo.lon, dist, tilt: ISO_TILT * k, heading: iso * k, tanH, sun: light, riverCut: clamp((720 * (canvas.height / ppm)) / PR, 20, 3000) };
+  }
+  const planetCamOf = (view) => { const p = planetParams(view); return planetCam({ ...p, w: canvas.width, h: canvas.height, radiusM: PR }); };
+  const planetScreen = (view, geo) => planetCamOf(view).project(vecOf(geo)) ?? [-1e9, -1e9];
+  function planetUnder(view, sx, sy) {
+    syncGeo(view);
+    const P = planetCamOf(view).pick(sx, sy);
+    if (!P) return null;
+    const geo = geoOfVec(P), q = planeOf(geo);
+    return { x: q?.x ?? 0, z: q?.z ?? 0, y: 0, geo };
+  }
+  // the target, as a planet place, that shows planet place geo at (ox, oy) px off centre: the target is turned until the point
+  // under that spot is geo
+  function planetSolve(view, geo, ox, oy) {
+    syncGeo(view);
+    const P = vecOf(geo), sx = canvas.width / 2 + ox, sy = canvas.height / 2 + oy;
+    let g = { ...view.geo };
+    for (let k = 0; k < 10; k++) {
+      const Q = planetCamOf({ ...view, geo: g }).pick(sx, sy);
+      if (!Q) return null;
+      const ax = [Q[1] * P[2] - Q[2] * P[1], Q[2] * P[0] - Q[0] * P[2], Q[0] * P[1] - Q[1] * P[0]], s = Math.hypot(ax[0], ax[1], ax[2]);
+      if (s < 1e-12) break;
+      const ang = Math.atan2(s, dotv(Q, P)), n = ax.map((v) => v / s), T = vecOf(g), c = Math.cos(ang), sn = Math.sin(ang), nt = dotv(n, T);
+      const nxT = [n[1] * T[2] - n[2] * T[1], n[2] * T[0] - n[0] * T[2], n[0] * T[1] - n[1] * T[0]];
+      g = geoOfVec([0, 1, 2].map((i) => T[i] * c + nxT[i] * sn + n[i] * nt * (1 - c)));
+      if (ang < 1e-10) break;
+    }
+    const q = planeOf(g);
+    return { x: q?.x ?? view.x, z: q?.z ?? view.z, geo: g };
+  }
   // the level drawn at a zoom: the coarsest one still at 2 screen px or more per art px, and how far along its range
   function levelFor(zoom) {
-    const ppm = ppmOf(clamp(zoom, 0, ZMAX));
+    const ppm = ppmOf(clampZ(zoom));
     let L = 0;
     while (L < NL - 1 && 2 * PL[L + 1] <= ppm * 1.000001) L++;
     const s = ppm / PL[L], t = L < NL - 1 ? Math.log(s / 2) / Math.log(PL[L + 1] / PL[L]) : 0;
@@ -247,7 +321,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // on the canvas. czc: the depth of its target, which the GPU's depths are taken from. margin: a share of the canvas the
   // buffer reaches past it on every side (a fading level's, so the renderer can present it again a frame later).
   function camera(view, L, beta, margin = 0) {
-    const md = mdOf(L, beta), s = ppmOf(clamp(view.zoom, 0, ZMAX)) / md.p, [u, v] = md.uv(view.x, view.z), lev = (camH(view.x, view.z) + (view.up || 0)) / md.levelM;
+    const md = mdOf(L, beta), s = ppmOf(clampZ(view.zoom)) / md.p, [u, v] = md.uv(view.x, view.z), lev = (camH(view.x, view.z) + (view.up || 0)) / md.levelM;
     const W = canvas.width, H = canvas.height, gcx = (u - v) * md.H, gcy = (u + v) * md.hb - lev * md.lp;
     const AW = Math.ceil((W / s) * (1 + 2 * margin)) + 4, AH = Math.ceil((H / s) * (1 + 2 * margin)) + 4, gx0 = Math.floor(gcx - AW / 2), gy0 = Math.floor(gcy - AH / 2);
     return { view, md, L, s, AW, AH, gcx, gcy, gx0, gy0, lev, czc: 1.5 * md.H * (u + v) + lev * md.lp, dx: W / 2 + (gx0 - gcx) * s, dy: H / 2 + (gy0 - gcy) * s };
@@ -585,8 +659,20 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // a pan of that much between two drawings still finds the canvas covered [design: 5 percent, about three frames of the
   // zoom bench's zoom out at its 1.8 percent a frame].
   const FADE_MARGIN = 0.05;
+  // whether the play area, faded edge and all, fills the canvas, so the planet under it cannot show: the canvas's farthest ground, at
+  // most (0.71 W / 2 + 1.41 H / 2) / ppm of the target along each axis (the ladder's basis, inverted), a quarter more for the relief's lift
+  const playAreaCovers = (view) => view.zoom >= 0 && Math.max(Math.abs(view.x), Math.abs(view.z)) + (1.25 * (0.71 * canvas.width + 1.41 * canvas.height)) / (2 * ppmOf(clampZ(view.zoom))) < SIZE / 2 - PLAY_EDGE_M;
+  // whether any of the play area (and its fade) can be in the canvas, by the corners' screen box a quarter canvas wider on every side
+  function playAreaShown(view) {
+    const h = SIZE / 2 + PLAY_EDGE_M, y = camH(view.x, view.z) + (view.up || 0), W = canvas.width, H = canvas.height;
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const [sx, sz] of [[-h, -h], [h, -h], [h, h], [-h, h]]) { const s = screenOf(view, sx, sz, y); x0 = Math.min(x0, s[0]); x1 = Math.max(x1, s[0]); y0 = Math.min(y0, s[1]); y1 = Math.max(y1, s[1]); }
+    return x1 > -W / 4 && x0 < W * 1.25 && y1 > -H / 4 && y0 < H * 1.25;
+  }
   function plan(view) {
-    const lf = levelFor(view.zoom), beta = norm8(view.bearing ?? 0), fade = lf.L < NL - 1 && lf.t > 0.6, m = fade ? FADE_MARGIN : 0, parts = [[camera(view, lf.L, beta, m), 1]];
+    const lf = levelFor(view.zoom), beta = norm8(view.bearing ?? 0), a = PLACE ? smooth(ZLAD, ZLAD + 1, view.zoom) : 1;
+    if (a <= 0 || (PLACE && !playAreaShown(view))) return { lf, parts: [], beta };
+    const fade = lf.L < NL - 1 && lf.t > 0.6, m = fade ? FADE_MARGIN : 0, parts = [[camera(view, lf.L, beta, m), a]];
     if (fade) parts.push([camera(view, lf.L + 1, beta, m), smooth(0.6, 1, lf.t)]);
     return { lf, parts, beta };
   }
@@ -646,10 +732,10 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       lx: sky.L[0], ly: sky.L[1], lz: sky.L[2], ar: sky.A[0], ag: sky.A[1], ab: sky.A[2], kr: sky.K[0], kg: sky.K[1], kb: sky.K[2],
       sunK: cast ? cast.k : 0, flat: sky.flat, relief: sky.relief, spr: spriteLight(view.bearing), toneK: sky.toneK,
       aoK: ao.on ? ao.k : 0, aoTer: ao.ter, aoCan: ao.can, aoTree: ao.tree, aoTop: ao.top, aoSelf: ao.self, aoKey: ao.key, aoDbg: ao.dbg,
-      half: SIZE / 2, hmost: hz.most, htop: hz.top, hreach: hz.reach, sea: P.w1, nfires: fires.length, night: sky.night,
+      half: SIZE / 2, edge: PLACE ? PLAY_EDGE_M : 0, hmost: hz.most, htop: hz.top, hreach: hz.reach, sea: P.w1, nfires: fires.length, night: sky.night,
     };
     const n = Math.max(1, Math.ceil(cam.s - 1e-3));
-    return { U, L: cam.L, beta: md.beta, alpha: k === 0 ? 1 : w, present: { dx: cam.dx, dy: cam.dy, sc: cam.s, nn: n, nearest: Math.abs(cam.s - n) < 1e-3 ? 1 : 0 }, live, liveRows: cast ? liveRows : null, xray, prims: prims.a, fires: FR };
+    return { U, L: cam.L, beta: md.beta, alpha: w, present: { dx: cam.dx, dy: cam.dy, sc: cam.s, nn: n, nearest: Math.abs(cam.s - n) < 1e-3 ? 1 : 0 }, live, liveRows: cast ? liveRows : null, xray, prims: prims.a, fires: FR };
   }
   // the ambient occlusion's knobs: ?ao=0 draws without it, ?ao=dbg shows it alone. on: 0 turns it off.
   // k: the most of the sky's light a point can lose. ter: how strongly the ground's folds count. can, tree: how strongly
@@ -669,10 +755,11 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the ground's colour follows the season
     season = clock.season ?? season;
     sky = skyFor(clock, now);
+    syncGeo(view);
     const pl = plan(view), T = tablesFor(sky);
     frameSprites = [];
     const views = pl.parts.map(([cam, w], k) => viewOf(cam, k, w, sim, clock, now, view));
-    const id = ++frameNo, msg = { type: "frame", id, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), exag: EXAG, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG } };
+    const id = ++frameNo, msg = { type: "frame", id, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), exag: EXAG, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG }, planet: PLACE && !playAreaCovers(view) ? planetParams(view) : null };
     if (lutSent !== sky.id) { msg.lut = T.gpu.slice(); lutSent = sky.id; }
     ownersOf.set(id, pickOwners);
     if (ownersOf.size > 30) ownersOf.delete(ownersOf.keys().next().value);
@@ -738,19 +825,22 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     return { x, z, y: lev * md.levelM, u, v };
   }
   function groundUnder(view, sx, sy) {
+    if (planetMode(view)) return planetUnder(view, sx, sy);
     const cam = mainCam(view), g = rayGround(cam, cam.gx0 + (sx - cam.dx) / cam.s, cam.gy0 + (sy - cam.dy) / cam.s);
     return { x: g.x, z: g.z, y: g.y };
   }
   const drawnY = (view, x, z) => mainCam(view).md.groundAt(x, z) * LV[levelFor(view.zoom).L].levelM;
   // G maps a ground offset to canvas px per ppm (rows eu - ev, (eu + ev) / 2); camera() matches it at every level
   const basis = (bearing) => { const a = (norm8(bearing) * Math.PI) / 4, c = Math.cos(a), s = Math.sin(a); return [c + s, s - c, (c - s) / 2, (s + c) / 2]; };
-  function screenOf(view, x, z, y) {
-    const [g00, g01, g10, g11] = basis(view.bearing ?? 0), ppm = ppmOf(clamp(view.zoom, 0, ZMAX)), dx = x - view.x, dz = z - view.z;
+  function screenOf(view, x, z, y, geo) {
+    if (planetMode(view)) return planetScreen(view, geo ?? geoOf(x, z));
+    const [g00, g01, g10, g11] = basis(view.bearing ?? 0), ppm = ppmOf(clampZ(view.zoom)), dx = x - view.x, dz = z - view.z;
     return [canvas.width / 2 + ppm * (g00 * dx + g01 * dz), canvas.height / 2 + ppm * (g10 * dx + g11 * dz - VK * (y - camH(view.x, view.z) - (view.up || 0)))];
   }
   // the target showing (x, z, y) at (ox, oy) px off centre: G inverted exactly, Newton for the height it rides
-  function solveTarget(view, x, z, y, ox, oy) {
-    const [g00, g01, g10, g11] = basis(view.bearing ?? 0), ppm = ppmOf(clamp(view.zoom, 0, ZMAX)), r0 = ox / ppm, r1 = oy / ppm, up = view.up || 0;
+  function solveTarget(view, x, z, y, ox, oy, geo) {
+    if (planetMode(view)) return planetSolve(view, geo ?? geoOf(x, z), ox, oy);
+    const [g00, g01, g10, g11] = basis(view.bearing ?? 0), ppm = ppmOf(clampZ(view.zoom)), r0 = ox / ppm, r1 = oy / ppm, up = view.up || 0;
     let q0 = g11 * r0 - g01 * r1, q1 = g00 * r1 - g10 * r0, err = Infinity;
     for (let k = 0; k < 30 && err > 1e-9; k++) {
       const [h, hx, hz] = camHg(x - q0, z - q1), f0 = g00 * q0 + g01 * q1 - r0, f1 = g10 * q0 + g11 * q1 + VK * (h + up - y) - r1;
@@ -765,6 +855,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // By what is drawn: the GPU's own pixel there in the next frame (a live sprite's owner, or an object), then a near
   // miss (people first), then the ground. A promise.
   async function pick(sx, sy, view) {
+    if (planetMode(view)) return null;
     const cam = pickCam ?? mainCam(view);
     if (!cam) return null;
     const x = (sx - cam.dx) / cam.s, y = (sy - cam.dy) / cam.s, ix = Math.floor(x), iy = Math.floor(y);
@@ -863,7 +954,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   const levels = PL.map((p, L) => ({ name: LV[L].name, tileM: LV[L].tileM, p, zoom: Math.log2((2 * p) / PPM0) }));
   stats.readyMs = Math.round(performance.now() - tStart);
   const api = {
-    zmax: ZMAX, named, levels, ppm: (z) => ppmOf(clamp(z, 0, ZMAX)), levelFor,
+    zmax: ZMAX, get zmin() { return zminNow(); }, named, levels, ppm: (z) => ppmOf(clampZ(z)), levelFor, setTarget,
     // the island: its side in meters, centred on 0, and a game tile's side, for turning sim tiles into meters
     size: SIZE, tileM: TILE_M,
     // every view is drawn whole on the GPU each frame; only the first, while the objects' sprites are still being made,
@@ -894,6 +985,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // one, and the render worker's own checks of what it drew (worker.js check)
     debug: {
       camera, project: (md, x, z) => project({ md }, x, z),
+      // the planet camera's own screen place of a play-area point, to set against the ladder's screenOf where both draw (the page checks)
+      planetScreen: (view, x, z) => (PLACE ? planetCamOf(view).project(vecOf(geoOf(x, z))) : null),
       // the drawing's clock held where it is (on) or let run again
       hold: (on) => { held = on ? performance.now() : null; },
       // the query goes apart from the request's id, as a query may carry an id of its own (kill's thing)

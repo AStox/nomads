@@ -81,7 +81,7 @@ const VU = struct("U", [
   ["sunK", "f"], ["flat", "f"], ["relief", "f"], ["spr", "f"], ["toneK", "f"], ["toneLo", "f"], ["toneHi", "f"], ["toneN", "u"],
   ["aoK", "f"], ["aoTer", "f"], ["aoCan", "f"], ["aoTree", "f"], ["aoTop", "f"], ["aoSelf", "f"], ["aoKey", "f"], ["aoDbg", "f"],
   ["gridN", "u"], ["gridStep", "f"], ["canN", "u"], ["canStep", "f"], ["can3", "u"], ["half", "f"],
-  ["hmost", "f"], ["htop", "f"], ["hreach", "f"], ["sea", "u"], ["wlo", "u"], ["whi", "u"], ["nfires", "u"], ["night", "f"], ["ncol", "u"],
+  ["hmost", "f"], ["htop", "f"], ["hreach", "f"], ["sea", "u"], ["wlo", "u"], ["whi", "u"], ["nfires", "u"], ["night", "f"], ["ncol", "u"], ["edge", "f"],
 ]);
 const TU = struct("Tr", [["n", "u"], ["step", "f"], ["exag", "f"], ["tan", "f"], ["dx", "f"], ["dz", "f"], ["row0", "u"], ["reach", "f"], ["top", "f"]]);
 const PU = struct("Pr", [["dx", "f"], ["dy", "f"], ["sc", "f"], ["nn", "f"], ["alpha", "f"], ["aw", "u"], ["ah", "u"], ["nearest", "u"], ["sr", "f"], ["sg", "f"], ["sb", "f"]]);
@@ -773,6 +773,7 @@ fn shadeFS(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   }
   var row = 0u;
   var ao = 0u;
+  var pw = w.xy;
   if (emits) { row = EMISSIVE; }
   else if (empty) {
     // the open sea at sea level under the pixel, lit as the bake's deep sea was
@@ -781,6 +782,7 @@ fn shadeFS(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     let du = (a + b) * 0.5;
     let dv = (b - a) * 0.5;
     let wp = vec2f(V.cx, V.cz) + (du * vec2f(V.eux, V.euy) + dv * vec2f(V.evx, V.evy)) * V.tileM;
+    pw = wp;
     let L = lightAt(q, 0u, false, c, wp, 0.0);
     row = L.row * 4u + fire;
   }
@@ -789,7 +791,10 @@ fn shadeFS(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   if (ov != 255u) { c = ov; row = lvl(V.flat, vec2i(X, Y)) * 4u + fire; ao = 0u; }
   let rgba = unpack4x8unorm(tables[${LUT0}u + row * V.ncol + hazed(c, q)]);
   if (V.aoDbg > 0.5) { return vec4f(vec3f(1.0 - f32(ao & 7u) / 7.0), 1.0); }
-  return vec4f(rgba.rgb * aoMul(ao, row), 1.0);
+  // where a planet shows under the ladder the play area's ground fades into it over V.edge metres at its sides
+  var am = 1.0;
+  if (V.edge > 0.0) { am = smoothstep(0.0, V.edge, V.half - max(abs(pw.x), abs(pw.y))); }
+  return vec4f(rgba.rgb * aoMul(ao, row), am);
 }`;
 
 // ---------- the sun map and the ground's folds ----------
@@ -857,7 +862,7 @@ fn presentFS(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   let pc = pos.xy;
   let a = (pc - vec2f(P.dx, P.dy)) / P.sc;
   var c: vec4f;
-  if (a.x < 0.0 || a.y < 0.0 || a.x >= f32(P.aw) || a.y >= f32(P.ah)) { if (P.alpha < 1.0) { discard; } c = vec4f(P.sr, P.sg, P.sb, 1.0); }
+  if (a.x < 0.0 || a.y < 0.0 || a.x >= f32(P.aw) || a.y >= f32(P.ah)) { discard; }
   else if (P.nearest == 1u) { c = textureLoad(art, vec2i(floor(a)), 0); }
   else {
     let m = (pc - vec2f(P.dx, P.dy)) * P.nn / P.sc - 0.5;
@@ -865,7 +870,7 @@ fn presentFS(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     let f = m - m0;
     c = mix(mix(artAt(m0), artAt(m0 + vec2f(1.0, 0.0)), f.x), mix(artAt(m0 + vec2f(0.0, 1.0)), artAt(m0 + vec2f(1.0, 1.0)), f.x), f.y);
   }
-  return vec4f(c.rgb * P.alpha, P.alpha);
+  return vec4f(c.rgb * c.a * P.alpha, c.a * P.alpha);
 }`;
 
 const GLYPHS = {
@@ -1550,7 +1555,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // f: worker.js's frame: { views: [{ U (VU fields), alpha, present: { dx, dy, sc, nn, nearest }, live, liveRows, prims, fires, xray }], lut, out, sea, cast, exag, ahead (frontAsk) }
   function frame(f) {
     const views = f.views;
-    ensure(Math.max(...views.map((v) => v.U.aw)), Math.max(...views.map((v) => v.U.ah)));
+    if (views.length) ensure(Math.max(...views.map((v) => v.U.aw)), Math.max(...views.map((v) => v.U.ah)));
     if (f.lut) device.queue.writeBuffer(tablesB, LUT0 * 4, f.lut);
     const enc = device.createCommandEncoder();
     qNames = [];
@@ -1568,9 +1573,10 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     // the page checks: a kept view drawn again into the third art buffer, both read back to compare (fadeCheck)
     const kept = slots.findIndex((o) => !o.draw);
     if (fadeWant.length && kept >= 0) fadeReads(enc, views[kept], kept, f.id, slots[kept].slot);
-    // present every view onto the canvas
+    // present every view onto the canvas, over what f.under draws first (the planet, its own pass) or the sea
     const out = context.getCurrentTexture();
-    const pass = enc.beginRenderPass({ colorAttachments: [{ view: out.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: f.seaRGB[0], g: f.seaRGB[1], b: f.seaRGB[2], a: 1 } }], ...tw("present") });
+    f.under?.(enc, out.createView());
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: out.createView(), loadOp: f.under ? "load" : "clear", storeOp: "store", clearValue: { r: f.seaRGB[0], g: f.seaRGB[1], b: f.seaRGB[2], a: 1 } }], ...tw("present") });
     pass.setPipeline(S.present.p);
     views.forEach((v, k) => {
       const p = v.present, s = slots[k], t = cap.tags[s.slot];
@@ -1663,7 +1669,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     });
     // both could be kept: the one drawn longer ago is drawn again; one: the other is drawn; none: both are
     let redraw = -1;
-    if (keep.every((s) => s >= 0)) redraw = cap.tags[keep[0]].frame <= cap.tags[keep[1]].frame ? 0 : 1;
+    if (views.length && keep.every((s) => s >= 0)) redraw = cap.tags[keep[0]].frame <= cap.tags[keep[1]].frame ? 0 : 1;
     const out = views.map((v, k) => ({ draw: keep[k] < 0 || k === redraw, slot: keep[k] }));
     for (const o of out) if (o.slot >= 0) used.add(o.slot);
     for (const o of out) if (o.slot < 0) { o.slot = [0, 1].find((s) => !used.has(s)); used.add(o.slot); }
