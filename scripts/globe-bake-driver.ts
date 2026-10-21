@@ -106,7 +106,7 @@ export function realStages(c: Cfg): Stage[] {
     return [
       { name: `${p}terrain`, kind: "GPU", command: stageCmd(T2, "terrain"), tierFlag: "scripts/globe-stage.ts", needs: ["tiers"], inputs: [G.height], outputs: [...G.terrain, markerOf(T2, "terrain"), ...(top ? ["terrain-done.u8"] : [])], measure: done(T2, "terrain"), watch: [], whole: [], spent: [] },
       { name: `${p}air`, kind: "GPU", command: stageCmd(T2, "air", ...airBlock), tierFlag: "scripts/globe-stage.ts", needs: ["tiers", ...flow], inputs: [G.height, G.flooded], outputs: [...G.air, markerOf(T2, "air"), ...(top ? ["air-done.u8"] : [])], measure: done(T2, "air"), watch: [], whole: [], spent: [] },
-      { name: `${p}surplus`, kind: "GPU", command: waterCmd(T2, "surplus"), tierFlag: "scripts/globe-water.ts", needs: ["tiers", `${p}air`, ...flow], inputs: [G.height, G.flooded, ...G.climate], outputs: [...G.vs, G.lakenet, markerOf(T2, "surplus"), ...(top ? ["surplus-done.u8"] : [])],
+      { name: `${p}surplus`, kind: "GPU", command: waterCmd(T2, "surplus"), tierFlag: "scripts/globe-water.ts", needs: ["tiers", p ? `${p}pool` : "air", ...flow], inputs: [G.height, G.flooded, ...G.climate], outputs: [...G.vs, G.lakenet, markerOf(T2, "surplus"), ...(top ? ["surplus-done.u8"] : [])],
         measure: done(T2, "surplus"), watch: [], whole: [], spent: [] },
       { name: `${p}discharge`, kind: streamed ? "CPU" : "GPU", command: streamed ? streamCmd(T2, "discharge") : waterCmd(T2, "discharge"), tierFlag: streamed ? "scripts/globe-water-stream.ts" : "scripts/globe-water.ts", needs: ["tiers", `${p}surplus`, ...flow],
         inputs: [G.to, ...G.vs], outputs: [...G.discharge, ...(streamed ? [work("discharge")] : [])], measure: { files: G.discharge.map(s2) }, watch: [`${G.f("q")}*`, G.cells, ...(streamed ? [work("discharge")] : [])], whole: G.discharge.map(s2),
@@ -120,13 +120,18 @@ export function realStages(c: Cfg): Stage[] {
     const skip = coarse ? undefined : `the tier is not finer than the coarse tier ${COARSE_TIER}`, p = `t${COARSE_TIER}-`, c3 = (n: string) => `t${COARSE_TIER}-${n}`;
     const flow: Stage = { name: `${p}flow`, kind: "GPU", command: waterCmd(COARSE_TIER, "flow"), tierFlag: "scripts/globe-water.ts", needs: ["tiers"], inputs: [C.height], outputs: [C.to, C.flooded], measure: { files: [sizedAt(COARSE_TIER, C.to), sizedAt(COARSE_TIER, C.flooded)] },
       watch: [], whole: [sizedAt(COARSE_TIER, C.to), sizedAt(COARSE_TIER, C.flooded)], spent: [] };
-    const stages = [flow, ...fine(COARSE_TIER, p)];
+    // the coarse tier's terrain and climate are not made by the stages (a tier-3 tile spans more than the 400 bands of latitude the rain's halo holds): they are pooled from the tier-T files by a CPU stage, the
+    // 11 files the water reads (rock, drift, dd, pr0..3, pe0..3: pool.ts POOL), exact integer means; globe-pool.ts takes --from and --to, not --tier
+    const pooled = [...C.terrain, ...C.climate];
+    const pool: Stage = { name: `${p}pool`, kind: "CPU", command: sc("globe-pool.ts", ...who, "--from", T, "--to", COARSE_TIER, "--budget", c.budget), needs: ["tiers", "terrain", "air"], inputs: [...F.terrain, ...F.climate],
+      outputs: [...pooled, markerOf(COARSE_TIER, "pool")], measure: { tiles: [markerOf(COARSE_TIER, "pool")], of: tileCount(COARSE_TIER) }, watch: [], whole: [], spent: [] };
+    const stages = [flow, pool, ...fine(COARSE_TIER, p).filter((s) => !s.name.endsWith("terrain") && !s.name.endsWith("air"))];
     const last: Stage = { name: "coarse", kind: "GPU", command: sc("globe-water.ts", "--stage", "coarse", ...who, "--tier", COARSE_TIER, "--budget", Math.min(c.budget, COARSE_BUDGET)), tierFlag: "scripts/globe-water.ts",
       needs: ["tiers", ...stages.map((s) => s.name)],
       inputs: [C.to, C.flooded, C.height, C.basin, ...C.discharge, ...C.terrain, ...C.climate], outputs: [...C.head, `${c3("g-")}*`, "g-*"], measure: { files: C.head.map((n) => sizedAt(COARSE_TIER, n)) }, watch: [`${c3("g-")}*`, "g-*"], whole: C.head.map((n) => sizedAt(COARSE_TIER, n)),
       // every tier-5 water tile reads the two heads; everything else of the tier and the cascade's scratch is spent (its work files, `-part` heads, `casc` marks and the passes' planes are in the family)
       spent: [
-        ...[[C.height, "tiers"], [C.to, `${p}flow`], [C.flooded, `${p}flow`], ...C.terrain.map((n) => [n, `${p}terrain`]), ...C.air.map((n) => [n, `${p}air`]), ...C.discharge.map((n) => [n, `${p}discharge`]), [C.basin, `${p}basin`]].map(([n, from]): Spent => csz(n, from)),
+        ...[[C.height, "tiers"], [C.to, `${p}flow`], [C.flooded, `${p}flow`], ...[...C.terrain, ...C.climate].map((n) => [n, `${p}pool`]), ...C.discharge.map((n) => [n, `${p}discharge`]), [C.basin, `${p}basin`]].map(([n, from]): Spent => csz(n, from)),
         { name: `${c3("g-")}*`, from: "coarse", except: C.head }, { name: "g-*", from: "coarse" },
       ] };
     return [...stages, last].map((s) => ({ ...s, skip }));
@@ -137,8 +142,9 @@ export function realStages(c: Cfg): Stage[] {
       outputs: [...Array.from({ length: T }, (_, i) => tierFile(i + 1, "height.i32")), F.to, F.acc, F.flooded, ...Array.from({ length: T }, (_, i) => `t${i + 1}-run.json`), "stream-t*"],
       measure: { files: [sz(F.height), sz(F.to), sz(F.acc), sz(F.flooded), { name: `t${T}-run.json` }] }, watch: ["stream-t*"],
       whole: [...Array.from({ length: T }, (_, i) => sizedAt(T, tierFile(i + 1, "height.i32"), i + 1)), sz(F.to), sz(F.acc), sz(F.flooded)], spent: [...lower, { name: "stream-t*", from: "tiers" }] },
+    ...fine(T, "").slice(0, 2), // terrain, air: the coarse tier's terrain and climate are pooled from these
     ...coarseTable(),
-    ...fine(T, ""),
+    ...fine(T, "").slice(2),
     { name: "water", kind: "GPU", command: waterCmd(T, "water", ...(coarse ? ["--coarse", COARSE_TIER] : [])), tierFlag: "scripts/globe-water.ts", needs: ["tiers", "terrain", "air", "discharge", "basin", ...(coarse ? ["coarse"] : [])],
       inputs: [F.to, F.flooded, F.height, F.basin, ...F.discharge, ...F.terrain, ...F.climate, ...(coarse ? C.head : [])], outputs: [...water, markerOf(T, "water"), "water-done.u8"], measure: done(T, "water"), watch: [], whole: [], spent: qSpent },
     { name: "ground", kind: "GPU", command: stageCmd(T, "ground"), tierFlag: "scripts/globe-stage.ts", needs: ["terrain", "air", "water"], inputs: groundIn, outputs: [...ground, markerOf(T, "ground"), "ground-done.u8"], measure: done(T, "ground"), watch: [], whole: [], spent: [] },

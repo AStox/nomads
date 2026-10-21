@@ -358,12 +358,12 @@ describe("the pieces", () => {
 
 const KEY = "883a8d9387df", REAL = `/tmp/planet-75m/1-${KEY}`;
 const cfgOf = (tier: number): Cfg => ({ seed: 1, key: KEY, tier, budget: 240, dir: REAL, lock: "/tmp/nomads-gpu.lock" });
-const T3 = ["t3-flow", "t3-terrain", "t3-air", "t3-surplus", "t3-discharge", "t3-basin", "coarse"];
+const T3 = ["t3-flow", "t3-pool", "t3-surplus", "t3-discharge", "t3-basin", "coarse"];
 
 describe("the real stage table", () => {
   const stages = realStages(cfgOf(PLANET_TIER)), index = new Map(stages.map((s, i) => [s.name, i])), by = (name: string, all: Stage[] = stages) => all.find((s) => s.name === name)!;
   test("order, needs, kinds, commands and the sizes at tier 5", () => {
-    expect(stages.map((s) => s.name)).toEqual(["tiers", ...T3, "terrain", "air", "surplus", "discharge", "basin", "water", "ground", "groundtiles", "pyramid", "maps"]);
+    expect(stages.map((s) => s.name)).toEqual(["tiers", "terrain", "air", ...T3, "surplus", "discharge", "basin", "water", "ground", "groundtiles", "pyramid", "maps"]);
     for (const s of stages) for (const n of s.needs) expect(index.get(n)!).toBeLessThan(index.get(s.name)!);
     expect(cellsOf(5)).toBe(402_653_184);
     const spent = stages.flatMap((s) => s.spent.map((x) => [x.name, x.bytes] as const));
@@ -375,7 +375,7 @@ describe("the real stage table", () => {
     expect(by("pyramid").measure).toMatchObject({ count: "pyramid", of: 8190 });
     expect(by("groundtiles").measure).toMatchObject({ of: 6144 });
     expect(by("terrain").measure).toEqual({ tiles: [doneFileOf(5, "terrain")], of: 6144, legacy: ["terrain-done.u8"] });
-    expect(by("t3-air").measure).toEqual({ tiles: [doneFileOf(3, "air")], of: 384, legacy: ["air-done.u8"] });
+    expect(by("t3-surplus").measure).toEqual({ tiles: [doneFileOf(3, "surplus")], of: 384, legacy: ["surplus-done.u8"] });
     expect(realStages(cfgOf(4)).find((s) => s.name === "pyramid")!.measure).toMatchObject({ of: 2046 });
     expect(stages.filter((s) => s.skip)).toEqual([]);
     expect(realStages(cfgOf(3)).filter((s) => s.skip).map((s) => s.name)).toEqual(T3);
@@ -395,11 +395,28 @@ describe("the real stage table", () => {
     expect(realStages(cfgOf(4)).find((s) => s.name === "discharge")!.kind).toBe("GPU");
     expect(by("t3-flow").command!.join(" ")).toContain("globe-water.ts --stage flow --seed 1 --key 883a8d9387df --tier 3");
     expect(by("coarse").command!.join(" ")).toContain("globe-water.ts --stage coarse --seed 1 --key 883a8d9387df --tier 3 --budget 230");
-    expect(by("t3-air").command!.join(" ")).toContain("--stage air --seed 1 --key 883a8d9387df --tier 3 --budget 240 --block 4");
+    expect(by("t3-pool").command!.slice(1).join(" ")).toBe("scripts/globe-pool.ts --seed 1 --key 883a8d9387df --from 5 --to 3 --budget 240");
     expect(by("air").command!.join(" ")).toContain("--tier 5 --budget 240 --block 4");
     expect(by("water").command!.join(" ")).toContain("--stage water --seed 1 --key 883a8d9387df --tier 5 --budget 240 --coarse 3");
-    expect(by("t3-air").needs).toContain("t3-flow");
+    expect(by("t3-pool").kind).toBe("CPU");
+    expect(by("t3-pool").needs).toEqual(["tiers", "terrain", "air"]);
+    expect(by("t3-pool").inputs).toEqual(["t5-rock.u8", "t5-drift.u8", "t5-dd.u16", ...[0, 1, 2, 3].map((k) => `t5-pr${k}.u16`), ...[0, 1, 2, 3].map((k) => `t5-pe${k}.u16`)]);
+    expect(by("t3-pool").outputs).toHaveLength(12); // the 11 pooled files and the marker
+    expect(by("t3-pool").spent).toEqual([]);
+    expect(by("t3-pool").measure).toEqual({ tiles: ["t3-pool-done.u8"], of: 384 });
+    expect(by("t3-surplus").needs).toEqual(["tiers", "t3-pool", "t3-flow"]);
+    expect(by("t3-surplus").inputs).toEqual(["t3-height.i32", "t3-flooded.i32", ...[0, 1, 2, 3].map((k) => `t3-pr${k}.u16`), ...[0, 1, 2, 3].map((k) => `t3-pe${k}.u16`)]);
     expect(by("coarse").needs).toEqual(["tiers", ...T3.slice(0, -1)]);
+    // the tier-3 terrain and air stages are gone; the tier-5 terrain and air stay and come before the tier-3 flow and pool
+    expect(index.has("t3-terrain") || index.has("t3-air")).toBe(false);
+    expect(index.get("air")!).toBeLessThan(index.get("t3-flow")!);
+    expect(index.get("t3-flow")!).toBeLessThan(index.get("t3-pool")!);
+    expect(index.get("coarse")!).toBeLessThan(index.get("surplus")!);
+    // only the 11 pooled files of tier 3 are named as made by the pool; none of the 47 air files, and no tier-5 terrain or air file is ever spent
+    const pooled = by("coarse").spent.filter((x) => x.from === "t3-pool").map((x) => x.name);
+    expect(pooled).toEqual(["t3-rock.u8", "t3-drift.u8", "t3-dd.u16", ...[0, 1, 2, 3].map((k) => `t3-pr${k}.u16`), ...[0, 1, 2, 3].map((k) => `t3-pe${k}.u16`)]);
+    expect(by("coarse").spent.map((x) => x.name)).not.toContain("t3-sun0.u16");
+    expect(spent.map((s) => s[0])).not.toContain("t5-rock.u8");
   });
 
   test("the table's marker, stream tier and coarse tier are the sources'", () => {
