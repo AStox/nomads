@@ -7,7 +7,7 @@ const CORNER_BESIDE = [[0, 1, 3], [2, 1, 5], [6, 3, 7], [8, 5, 7]] as const;
 
 // For each cell id of `tier`, the interpolated value of each field (tier-0 cell order) at the cell.
 export function sampleCoarse(tier: number, ids: ArrayLike<number>, fields: ArrayLike<number>[]): Float32Array[] {
-  const g0 = tierGrid(0), g = tierGrid(tier), n0 = g0.fn, fn = g.fn, cells = fn * fn, B = 1 << tier, out = fields.map(() => new Float32Array(ids.length));
+  const g0 = tierGrid(0), g = tierGrid(tier), n0 = g0.fn, fn = g.fn, cells = fn * fn, B = 2 ** tier, result = fields.map(() => new Float32Array(ids.length));
   const nb = new Int32Array(9), val = new Float64Array(9 * fields.length), cache = new Map<number, Int32Array>();
   for (let k = 0; k < ids.length; k++) {
     const id = ids[k], f = Math.floor(id / cells), r = id - f * cells, Y = Math.floor(r / fn), X = r - Y * fn, px = X >> tier, py = Y >> tier, pid = (f * n0 + py) * n0 + px;
@@ -31,8 +31,8 @@ export function sampleCoarse(tier: number, ids: ArrayLike<number>, fields: Array
       for (let c = 0; c < 9; c++) if (nb[c] >= 0) val[o + c] = fm[nb[c]];
       for (const [c, a, b] of CORNER_BESIDE) if (nb[c] < 0) val[o + c] = (val[o + a] + val[o + b]) / 2;
       const c0 = o + cy * 3 + cx;
-      out[m][k] = wly * (wlx * val[c0] + whx * val[c0 + 1]) + why * (wlx * val[c0 + 3] + whx * val[c0 + 4]);
+      result[m][k] = wly * (wlx * val[c0] + whx * val[c0 + 1]) + why * (wlx * val[c0 + 3] + whx * val[c0 + 4]);
     }
   }
-  return out;
+  return result;
 }

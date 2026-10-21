@@ -64,6 +64,7 @@ export async function runTiles(ctx: Ctx, stage: TileStage, budgetS: number, log:
   let made = 0, worst = 0;
   try {
     for (const k of only ?? Array.from({ length: of }, (_, i) => i)) {
+      if (!Number.isInteger(k) || k < 0 || k >= of) throw new Error(`${stage.name}: tile ${k} is not one of the tier's ${of}`);
       if (done[k]) continue;
       if (spent() + worst * 1.3 > budgetS) break;
       const s0 = performance.now(), { face, tx, ty } = tileAt(ctx.tier, k), patch = patchOf(ctx.tier, face, tx, ty, stage.halo);
