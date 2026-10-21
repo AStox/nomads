@@ -75,3 +75,28 @@ export function viewFromBytes(bytes: Uint8Array): View {
     rock: new Uint8Array(b("rock")), river: new Uint8Array(b("river")), segments: a.segments as Uint32Array,
   };
 }
+
+// ---------- the 75 m pyramid ----------
+// The planet at its 75 m tier (docs/research/globe/2026-10-21-planet-75m-impl.md), baked for the page to stream as tiles. A tier t holds 6 * 4^t tiles of 256 by 256 cells (tier 4: 1,536
+// tiles of 75 m cells, 2,046 over tiers 0 to 4); tier t - 1's cell is the 2 by 2 of tier t's (a box mean, or for a class the commonest and for a river the greatest). One tile is
+// one gzipped file, `pyramid/t<tier>/f<face>/<ty>-<tx>.tile.gz` under the planet's directory: [u32 little-endian header length][header JSON][the planes in field order, each
+// 256 * 256 words of its type, little-endian, row y (north) by row, x (east) along it, the face's own axes]. The header is {version, seed, key, tier, face, tx, ty, size: 256, fields: [{name,
+// type, step, unit}]}; a value is the integer times `step`. `pyramid.json` beside `t0` names the tiers, the fields and the planet's key. A tile is 1.05 MB raw (16 bytes a cell).
+export const PYRAMID_VERSION = 1;
+export const PYRAMID_FIELDS = [
+  { name: "height", type: "i16", step: 0.25, unit: "m above the present sea; the sea floor is negative", pool: "mean" },
+  { name: "rock", type: "u8", step: 1, unit: "the island's rock class at the surface (terrain/geology.ts ROCKS)", pool: "mode" },
+  { name: "drift", type: "u8", step: 1, unit: "the island's drift class on it (terrain/geology.ts DRIFTS)", pool: "mode" },
+  { name: "driftDepth", type: "u8", step: 0.125, unit: "m of drift, at most 30", pool: "mean" },
+  { name: "temp", type: "i8", step: 0.5, unit: "C, the year's mean air at the ground", pool: "mean" },
+  { name: "rain", type: "u16", step: 1, unit: "mm of rain and snow water a year", pool: "mean" },
+  { name: "water", type: "u8", step: 0.5, unit: "m of standing water over the ground (a lake's depth; the sea is height under 0)", pool: "max" },
+  { name: "river", type: "u8", step: 1, unit: "q = 16 log2(1 + Q), Q the year's mean discharge in m3/s", pool: "max" },
+  { name: "tree", type: "u8", step: 1 / 255, unit: "share of the ground the cover takes", pool: "mean" },
+  { name: "shrub", type: "u8", step: 1 / 255, unit: "share of the ground the cover takes", pool: "mean" },
+  { name: "grass", type: "u8", step: 1 / 255, unit: "share of the ground the cover takes", pool: "mean" },
+  { name: "marsh", type: "u8", step: 1 / 255, unit: "share of the ground the cover takes", pool: "mean" },
+  { name: "bare", type: "u8", step: 1 / 255, unit: "share of the ground the cover takes", pool: "mean" },
+  { name: "soil", type: "u8", step: 0.025, unit: "m of soil over the rock, at most 6.4", pool: "mean" },
+] as const;
+export type PyramidField = (typeof PYRAMID_FIELDS)[number];
