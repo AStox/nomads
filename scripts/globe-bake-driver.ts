@@ -2,7 +2,7 @@
 // ground tiles, pyramid, maps) run in order as separate subprocess calls of at most --budget seconds each (a GPU stage's call under `lockf /tmp/nomads-gpu.lock`, taken for the call and never
 // held between calls; the CPU stages without it), each stage called again until its done marker on disk says it is done. State is the disk's, never the driver's memory: kill the driver or a child at any
 // moment and run it again. Notes: docs/research/globe/2026-10-22-planet-bake-driver.md.
-//   bun scripts/globe-bake-driver.ts --seed 1 --key <planet key> [--tier 5] [--budget 240] [--from <stage>] [--stop-after <stage>] [--max-calls N] [--water global|patch]
+//   bun scripts/globe-bake-driver.ts --seed 1 --key <planet key> [--tier 5] [--budget 240] [--from <stage>] [--stop-after <stage>] [--max-calls N]
 //        [--status | --dry-run] [--keep-all] [--min-free-gb 20] [--max-gb 100] [--stages-file <json>]
 // Exit: 0 everything done, 1 failure (a stage with no progress in 3 calls, a missing script, a second driver, bad arguments), 2 stopped (--stop-after, --max-calls, SIGINT, SIGTERM, SIGHUP), 3 hard stop (disk).
 // Files in the bake dir: bake-progress.json (per stage state, calls, seconds, tiles, peak RSS, bytes), bake.log (appended), bake-driver.lock (pid of the running driver).
@@ -28,10 +28,10 @@ export const PLANET_STAGES = ["chain", "ice", "climate1"];
 
 // ---------- the stage table's types ----------
 export interface Sized { name: string; bytes?: number }
-export interface Spent extends Sized { from?: string }
+export interface Spent extends Sized { from?: string; except?: string[] } // `except`: names of a family that stay
 // What done means, read from the files of the bake dir. A name ending in `*` is a family of files (every file of the dir that starts with the rest).
 export type Measure =
-  | { tiles: string[]; of: number } // `<stage>-done.u8` files, a byte a tile, 1 = made (stages.ts runTiles); several are added
+  | { tiles: string[]; of: number; legacy?: string[] } // `t<tier>-<stage>-done.u8` files (stages.ts doneFileOf), a byte a tile, 1 = made; several are added; `legacy`: the old name without the tier, taken when it holds `of` bytes
   | { files: Sized[] } // whole files, each there at its size
   | { count: string; ext: string; of: number; also?: string[] } // files with an extension under a directory, and these files too
   | { marker: string }; // a file the driver writes after the stage's clean exit, for a script with no marker of its own
@@ -50,63 +50,102 @@ export interface Stage {
   skip?: string; // why the stage is not in this bake
   external?: string[]; // files outside the bake dir that the stage reads and does not make (the planet's coarse stages in its store)
 }
-export interface Cfg { seed: number; key: string; tier: number; budget: number; dir: string; lock: string; water: "global" | "patch" }
+export interface Cfg { seed: number; key: string; tier: number; budget: number; dir: string; lock: string }
 
 // ---------- the real table ----------
 const WIDTH: Record<string, number> = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4 };
 export const cellsOf = (tier: number) => 6 * (TILE << tier) ** 2;
 export const sizedAt = (tier: number, file: string, bytesTier = tier): Sized => { const w = WIDTH[file.slice(file.lastIndexOf(".") + 1)]; return { name: file, bytes: w ? cellsOf(bytesTier) * w : undefined }; };
 
+// [design: water notes section 13] the tier of the global cascade the fine tiers' water is seeded from (water.ts WATER_SEEDED.coarse), the tier from which the discharge and the lakes are made out of core
+// (globe-water.ts STREAM_TIER) and the block of tiles a streamed call makes at once; the budget of a cascade call (the note's 230 s).
+export const COARSE_TIER = 3, STREAM_TIER = 5, STREAM_BLOCK = 4, COARSE_BUDGET = 230;
+// 4 by 4 tiles a patch: the halo (400 cells) is shared by 16 tiles, 4.6 times faster at tier 5 and the same bytes (tier5.test.ts); a patch of 1,824 cells holds 2.1 GB
+const AIR_BLOCK = 4;
+// the marker of a tile stage at a tier (stages.ts doneFileOf), and the one of the first bakes
+export const markerOf = (tier: number, stage: string) => `t${tier}-${stage}-done.u8`;
+
+// The files of a tier's stages, by the names the stage sources give them.
+function filesAt(T: number) {
+  const f = (n: string) => tierFile(T, n), season = (stem: string, type: string) => [0, 1, 2, 3].map((k) => f(`${stem}${k}.${type}`));
+  const q = [0, 1, 2, 3].flatMap((s) => [f(`q${s}-lo.u32`), f(`q${s}-hi.u16`)]), cells = f("cells.u32");
+  return {
+    f, season, height: f("height.i32"), flooded: f("flooded.i32"), to: f("to.u32"), acc: f("acc.u32"), terrain: [f("rock.u8"), f("drift.u8"), f("dd.u16")],
+    air: [...season("pr", "u16"), ...season("pe", "u16"), ...season("sun", "u16"), ...season("tmp", "i16"), ...season("hum", "u8"), f("snow.u8"), f("wsh.u8"), f("fog.u8"), ...season("snp", "u16")],
+    vs: season("vs", "u32"), lakenet: f("lakenet.i32"), q, cells, discharge: [...q, cells], basin: f("basin.u8"), climate: [...season("pr", "u16"), ...season("pe", "u16")],
+    head: [f("g-head1.i32"), f("g-head2.i32")],
+  };
+}
+
 export function realStages(c: Cfg): Stage[] {
-  const T = c.tier, f = (n: string) => tierFile(T, n), sz = (file: string): Sized => sizedAt(T, file), tiles = tileCount(T);
-  const season = (stem: string, type: string) => [0, 1, 2, 3].map((k) => f(`${stem}${k}.${type}`));
-  const HEIGHT = f("height.i32"), FLOODED = f("flooded.i32"), TO = f("to.u32"), ACC = f("acc.u32");
-  const terrain = [f("rock.u8"), f("drift.u8"), f("dd.u16")];
-  const air = [...season("pr", "u16"), ...season("pe", "u16"), ...season("sun", "u16"), ...season("tmp", "i16"), ...season("hum", "u8"), f("snow.u8"), f("wsh.u8"), f("fog.u8"), ...season("snp", "u16")];
-  const surplus = [...season("vs", "u32"), f("lakenet.i32")];
-  const q = [0, 1, 2, 3].flatMap((s) => [f(`q${s}-lo.u32`), f(`q${s}-hi.u16`)]), cells = f("cells.u32"), discharge = [...q, cells];
-  const BASIN = f("basin.u8");
+  const T = c.tier, F = filesAt(T), f = F.f, sz = (file: string): Sized => sizedAt(T, file), tiles = tileCount(T), season = F.season;
   const waterMade = ["water.u16", "flow.u32", "qwet.u32", "base.u16", "chn.u8", "valley.u8", "pwr.u16", "stb0.u16", "stb1.u16", "stb2.u16", "stb3.u16", "dry.u16", "tab.u16", "under.u16"].map(f);
   const water = [...waterMade, f("quick.json")];
   const ground = ["tree.u8", "shr.u8", "grs.u8", "mar.u8", "bare.u8", "soil.u16", "sflag.u8", "sandy.u8", "clayey.u8", "fert.u8", "moist.u8", "sw0.u8", "sw1.u8", "sw2.u8", "sw3.u8", "ph.u8", "org.u8", "carb.u16", "nit.u16"].map(f);
-  const groundIn = [HEIGHT, f("water.u16"), ...terrain, f("chn.u8"), f("valley.u8"), f("pwr.u16"), ...season("stb", "u16"), f("dry.u16"), ...season("pr", "u16"), ...season("pe", "u16"), ...season("sun", "u16"), ...season("tmp", "i16"), ...season("hum", "u8")];
-  const climate = [...season("pr", "u16"), ...season("pe", "u16")];
-  const groundTileIn = [HEIGHT, f("water.u16"), f("rock.u8"), f("moist.u8"), f("tree.u8"), f("shr.u8"), f("grs.u8"), f("mar.u8"), f("bare.u8"), f("sflag.u8"), f("soil.u16"), f("clayey.u8"), f("ph.u8"), f("stb3.u16"), f("tab.u16"),
-    ...season("sun", "u16"), ...season("tmp", "i16"), ...season("sw", "u8"), f("pr1.u16"), f("pe1.u16"), f("wsh.u8"), f("fog.u8"), ...season("snp", "u16"), TO, f("chn.u8"), f("flow.u32"), f("base.u16"), f("under.u16")];
-  const pyramidIn = [HEIGHT, f("rock.u8"), f("drift.u8"), f("dd.u16"), ...season("tmp", "i16"), ...season("pr", "u16"), f("water.u16"), f("flow.u32"), f("tree.u8"), f("shr.u8"), f("grs.u8"), f("mar.u8"), f("bare.u8"), f("soil.u16")];
-  const lower = Array.from({ length: T - 1 }, (_, i): Spent => ({ ...sizedAt(T, tierFile(i + 1, "height.i32"), i + 1), from: "tiers" }));
-  // 4 by 4 tiles a patch: the halo (400 cells) is shared by 16 tiles, 4.6 times faster at tier 5 and the same bytes (tier5.test.ts); a patch of 1,824 cells holds 2.1 GB
-  const AIR_BLOCK = 4;
-  const done = (stage: string) => ({ tiles: [`${stage}-done.u8`], of: tiles });
+  const groundIn = [F.height, f("water.u16"), ...F.terrain, f("chn.u8"), f("valley.u8"), f("pwr.u16"), ...season("stb", "u16"), f("dry.u16"), ...season("pr", "u16"), ...season("pe", "u16"), ...season("sun", "u16"), ...season("tmp", "i16"), ...season("hum", "u8")];
+  const groundTileIn = [F.height, f("water.u16"), f("rock.u8"), f("moist.u8"), f("tree.u8"), f("shr.u8"), f("grs.u8"), f("mar.u8"), f("bare.u8"), f("sflag.u8"), f("soil.u16"), f("clayey.u8"), f("ph.u8"), f("stb3.u16"), f("tab.u16"),
+    ...season("sun", "u16"), ...season("tmp", "i16"), ...season("sw", "u8"), f("pr1.u16"), f("pe1.u16"), f("wsh.u8"), f("fog.u8"), ...season("snp", "u16"), F.to, f("chn.u8"), f("flow.u32"), f("base.u16"), f("under.u16")];
+  const pyramidIn = [F.height, f("rock.u8"), f("drift.u8"), f("dd.u16"), ...season("tmp", "i16"), ...season("pr", "u16"), f("water.u16"), f("flow.u32"), f("tree.u8"), f("shr.u8"), f("grs.u8"), f("mar.u8"), f("bare.u8"), f("soil.u16")];
+  const coarse = T > COARSE_TIER, C = filesAt(COARSE_TIER), csz = (file: string, from?: string): Spent => ({ ...sizedAt(COARSE_TIER, file), from });
+  // tier COARSE_TIER's own heights are read by `flow` and `coarse`, so they are spent by `coarse`, not by `tiers`
+  const lower = Array.from({ length: T - 1 }, (_, i) => i + 1).filter((k) => !(coarse && k === COARSE_TIER)).map((k): Spent => ({ ...sizedAt(T, tierFile(k, "height.i32"), k), from: "tiers" }));
+  const done = (T2: number, stage: string): Measure => ({ tiles: [markerOf(T2, stage)], of: tileCount(T2), legacy: [`${stage}-done.u8`] });
   const sc = (file: string, ...a: (string | number)[]) => ["bun", `scripts/${file}`, ...a.map(String)];
-  const who = ["--seed", c.seed, "--key", c.key], tb = ["--tier", c.tier, "--budget", c.budget];
-  const stage = (s: string, ...a: (string | number)[]) => sc("globe-stage.ts", "--stage", s, ...who, ...tb, ...a);
-  const waterCmd = (s: string) => sc("globe-water.ts", "--stage", s, ...who, ...tb);
-  const gFamily = `${tierFile(T, "g-")}*`, qSpent = discharge.map((n): Spent => ({ ...sz(n), from: "discharge" }));
-  const waterNeeds = ["tiers", "terrain", "air", "discharge", "basin"], waterIn = [TO, FLOODED, HEIGHT, BASIN, ...discharge, ...terrain, ...climate];
-  const stored = ["tiers", "terrain", "air", "global", "water"];
+  const who = ["--seed", c.seed, "--key", c.key];
+  const stageCmd = (T2: number, s: string, ...a: (string | number)[]) => sc("globe-stage.ts", "--stage", s, ...who, "--tier", T2, "--budget", c.budget, ...a);
+  const waterCmd = (T2: number, s: string, ...a: (string | number)[]) => sc("globe-water.ts", "--stage", s, ...who, "--tier", T2, "--budget", c.budget, ...a);
+  const streamCmd = (T2: number, s: string) => sc("globe-water-stream.ts", "--stage", s, ...who, "--tier", T2, "--block", STREAM_BLOCK, "--budget", c.budget);
+  const qSpent = F.discharge.map((n): Spent => ({ ...sz(n), from: "discharge" }));
+
+  // terrain, air, surplus, discharge and basin of one tier, their names prefixed with `p` ("" for the finest tier, "t3-" for the coarse one). The discharge and the lakes are made out of core, on the CPU,
+  // from STREAM_TIER; below it by the GPU (globe-water.ts): a GPU stage under the lock, the streamed ones without.
+  const fine = (T2: number, p: string): Stage[] => {
+    const G = filesAt(T2), s2 = (file: string) => sizedAt(T2, file), top = p === "", streamed = T2 >= STREAM_TIER, flow = p ? [`${p}flow`] : [], work = (n: string) => `${n}-stream-t${T2}.work`;
+    const airBlock = (1 << T2) % AIR_BLOCK === 0 ? ["--block", AIR_BLOCK] : [];
+    return [
+      { name: `${p}terrain`, kind: "GPU", command: stageCmd(T2, "terrain"), tierFlag: "scripts/globe-stage.ts", needs: ["tiers"], inputs: [G.height], outputs: [...G.terrain, markerOf(T2, "terrain"), ...(top ? ["terrain-done.u8"] : [])], measure: done(T2, "terrain"), watch: [], whole: [], spent: [] },
+      { name: `${p}air`, kind: "GPU", command: stageCmd(T2, "air", ...airBlock), tierFlag: "scripts/globe-stage.ts", needs: ["tiers", ...flow], inputs: [G.height, G.flooded], outputs: [...G.air, markerOf(T2, "air"), ...(top ? ["air-done.u8"] : [])], measure: done(T2, "air"), watch: [], whole: [], spent: [] },
+      { name: `${p}surplus`, kind: "GPU", command: waterCmd(T2, "surplus"), tierFlag: "scripts/globe-water.ts", needs: ["tiers", `${p}air`, ...flow], inputs: [G.height, G.flooded, ...G.climate], outputs: [...G.vs, G.lakenet, markerOf(T2, "surplus"), ...(top ? ["surplus-done.u8"] : [])],
+        measure: done(T2, "surplus"), watch: [], whole: [], spent: [] },
+      { name: `${p}discharge`, kind: streamed ? "CPU" : "GPU", command: streamed ? streamCmd(T2, "discharge") : waterCmd(T2, "discharge"), tierFlag: streamed ? "scripts/globe-water-stream.ts" : "scripts/globe-water.ts", needs: ["tiers", `${p}surplus`, ...flow],
+        inputs: [G.to, ...G.vs], outputs: [...G.discharge, ...(streamed ? [work("discharge")] : [])], measure: { files: G.discharge.map(s2) }, watch: [`${G.f("q")}*`, G.cells, ...(streamed ? [work("discharge")] : [])], whole: G.discharge.map(s2),
+        spent: [...G.vs.map((n): Spent => ({ ...s2(n), from: `${p}surplus` })), ...(streamed ? [{ name: work("discharge"), from: `${p}discharge` }] : [])] },
+      { name: `${p}basin`, kind: streamed ? "CPU" : "GPU", command: streamed ? streamCmd(T2, "basin") : waterCmd(T2, "basin"), tierFlag: streamed ? "scripts/globe-water-stream.ts" : "scripts/globe-water.ts", needs: ["tiers", `${p}surplus`, `${p}discharge`, ...flow],
+        inputs: [G.height, G.flooded, G.to, G.lakenet, ...G.discharge], outputs: [G.basin, ...(streamed ? [work("basin")] : [])], measure: { files: [s2(G.basin)] }, watch: streamed ? [work("basin"), `${G.basin}.part`] : [], whole: [s2(G.basin)],
+        spent: [{ ...s2(G.lakenet), from: `${p}surplus` }, ...(streamed ? [{ name: work("basin"), from: `${p}basin` }] : [])] },
+    ];
+  };
+  const coarseTable = (): Stage[] => {
+    const skip = coarse ? undefined : `the tier is not finer than the coarse tier ${COARSE_TIER}`, p = `t${COARSE_TIER}-`, c3 = (n: string) => `t${COARSE_TIER}-${n}`;
+    const flow: Stage = { name: `${p}flow`, kind: "GPU", command: waterCmd(COARSE_TIER, "flow"), tierFlag: "scripts/globe-water.ts", needs: ["tiers"], inputs: [C.height], outputs: [C.to, C.flooded], measure: { files: [sizedAt(COARSE_TIER, C.to), sizedAt(COARSE_TIER, C.flooded)] },
+      watch: [], whole: [sizedAt(COARSE_TIER, C.to), sizedAt(COARSE_TIER, C.flooded)], spent: [] };
+    const stages = [flow, ...fine(COARSE_TIER, p)];
+    const last: Stage = { name: "coarse", kind: "GPU", command: sc("globe-water.ts", "--stage", "coarse", ...who, "--tier", COARSE_TIER, "--budget", Math.min(c.budget, COARSE_BUDGET)), tierFlag: "scripts/globe-water.ts",
+      needs: ["tiers", ...stages.map((s) => s.name)],
+      inputs: [C.to, C.flooded, C.height, C.basin, ...C.discharge, ...C.terrain, ...C.climate], outputs: [...C.head, `${c3("g-")}*`, "g-*"], measure: { files: C.head.map((n) => sizedAt(COARSE_TIER, n)) }, watch: [`${c3("g-")}*`, "g-*"], whole: C.head.map((n) => sizedAt(COARSE_TIER, n)),
+      // every tier-5 water tile reads the two heads; everything else of the tier and the cascade's scratch is spent (its work files, `-part` heads, `casc` marks and the passes' planes are in the family)
+      spent: [
+        ...[[C.height, "tiers"], [C.to, `${p}flow`], [C.flooded, `${p}flow`], ...C.terrain.map((n) => [n, `${p}terrain`]), ...C.air.map((n) => [n, `${p}air`]), ...C.discharge.map((n) => [n, `${p}discharge`]), [C.basin, `${p}basin`]].map(([n, from]): Spent => csz(n, from)),
+        { name: `${c3("g-")}*`, from: "coarse", except: C.head }, { name: "g-*", from: "coarse" },
+      ] };
+    return [...stages, last].map((s) => ({ ...s, skip }));
+  };
+
   const table: Stage[] = [
     { name: "tiers", kind: "GPU", command: sc("globe-tiers-stream.ts", ...who, "--last", c.tier, "--budget", c.budget), needs: [], inputs: [], external: PLANET_STAGES.map((n) => join(PLANET_STORE, `${c.seed}-${c.key}`, `${n}.bin`)),
-      outputs: [...Array.from({ length: T }, (_, i) => tierFile(i + 1, "height.i32")), TO, ACC, FLOODED, ...Array.from({ length: T }, (_, i) => `t${i + 1}-run.json`), "stream-t*"],
-      measure: { files: [sz(HEIGHT), sz(TO), sz(ACC), sz(FLOODED), { name: `t${T}-run.json` }] }, watch: ["stream-t*"],
-      whole: [...Array.from({ length: T }, (_, i) => sizedAt(T, tierFile(i + 1, "height.i32"), i + 1)), sz(TO), sz(ACC), sz(FLOODED)], spent: [...lower, { name: "stream-t*", from: "tiers" }] },
-    { name: "terrain", kind: "GPU", command: stage("terrain"), tierFlag: "scripts/globe-stage.ts", needs: ["tiers"], inputs: [HEIGHT], outputs: [...terrain, "terrain-done.u8"], measure: done("terrain"), watch: [], whole: [], spent: [] },
-    { name: "air", kind: "GPU", command: stage("air", "--block", AIR_BLOCK), tierFlag: "scripts/globe-stage.ts", needs: ["tiers"], inputs: [HEIGHT, FLOODED], outputs: [...air, "air-done.u8"], measure: done("air"), watch: [], whole: [], spent: [] },
-    { name: "surplus", kind: "GPU", command: waterCmd("surplus"), tierFlag: "scripts/globe-water.ts", needs: ["tiers", "air"], inputs: [HEIGHT, FLOODED, ...climate], outputs: [...surplus, "surplus-done.u8"], measure: done("surplus"), watch: [], whole: [], spent: [] },
-    { name: "discharge", kind: "GPU", command: waterCmd("discharge"), tierFlag: "scripts/globe-water.ts", needs: ["tiers", "surplus"], inputs: [TO, ...season("vs", "u32")], outputs: discharge,
-      measure: { files: discharge.map(sz) }, watch: [`${f("q")}*`, cells], whole: discharge.map(sz), spent: season("vs", "u32").map((n): Spent => ({ ...sz(n), from: "surplus" })) },
-    { name: "basin", kind: "GPU", command: waterCmd("basin"), tierFlag: "scripts/globe-water.ts", needs: ["tiers", "surplus", "discharge"], inputs: [HEIGHT, FLOODED, TO, f("lakenet.i32"), ...discharge], outputs: [BASIN],
-      measure: { files: [sz(BASIN)] }, watch: [], whole: [sz(BASIN)], spent: [{ ...sz(f("lakenet.i32")), from: "surplus" }] },
-    { name: "global", kind: "GPU", command: waterCmd("global"), tierFlag: "scripts/globe-water.ts", needs: waterNeeds, inputs: waterIn, outputs: [...water, gFamily, "g-*"], measure: { tiles: ["g-final-done.u8"], of: tiles },
-      watch: [gFamily, "g-*"], whole: [], spent: [...qSpent, { name: gFamily, from: "global" }], skip: c.water === "global" ? undefined : "the water is made on patches (--water patch)" },
-    { name: "water", kind: "GPU", command: waterCmd("water"), tierFlag: "scripts/globe-water.ts", needs: waterNeeds, inputs: waterIn, outputs: [...water, "water-done.u8"], measure: done("water"), watch: [], whole: [], spent: qSpent,
-      skip: c.water === "patch" ? undefined : "the water is made as one solve (--water global)" },
-    { name: "ground", kind: "GPU", command: stage("ground"), tierFlag: "scripts/globe-stage.ts", needs: ["terrain", "air", "global", "water"], inputs: groundIn, outputs: [...ground, "ground-done.u8"], measure: done("ground"), watch: [], whole: [], spent: [] },
-    { name: "groundtiles", kind: "CPU", command: sc("globe-groundtiles.ts", ...who, ...tb), tierFlag: "scripts/globe-groundtiles.ts", needs: [...stored, "ground"], inputs: groundTileIn, outputs: ["groundtiles"],
+      outputs: [...Array.from({ length: T }, (_, i) => tierFile(i + 1, "height.i32")), F.to, F.acc, F.flooded, ...Array.from({ length: T }, (_, i) => `t${i + 1}-run.json`), "stream-t*"],
+      measure: { files: [sz(F.height), sz(F.to), sz(F.acc), sz(F.flooded), { name: `t${T}-run.json` }] }, watch: ["stream-t*"],
+      whole: [...Array.from({ length: T }, (_, i) => sizedAt(T, tierFile(i + 1, "height.i32"), i + 1)), sz(F.to), sz(F.acc), sz(F.flooded)], spent: [...lower, { name: "stream-t*", from: "tiers" }] },
+    ...coarseTable(),
+    ...fine(T, ""),
+    { name: "water", kind: "GPU", command: waterCmd(T, "water", ...(coarse ? ["--coarse", COARSE_TIER] : [])), tierFlag: "scripts/globe-water.ts", needs: ["tiers", "terrain", "air", "discharge", "basin", ...(coarse ? ["coarse"] : [])],
+      inputs: [F.to, F.flooded, F.height, F.basin, ...F.discharge, ...F.terrain, ...F.climate, ...(coarse ? C.head : [])], outputs: [...water, markerOf(T, "water"), "water-done.u8"], measure: done(T, "water"), watch: [], whole: [], spent: qSpent },
+    { name: "ground", kind: "GPU", command: stageCmd(T, "ground"), tierFlag: "scripts/globe-stage.ts", needs: ["terrain", "air", "water"], inputs: groundIn, outputs: [...ground, markerOf(T, "ground"), "ground-done.u8"], measure: done(T, "ground"), watch: [], whole: [], spent: [] },
+    { name: "groundtiles", kind: "CPU", command: sc("globe-groundtiles.ts", ...who, "--tier", T, "--budget", c.budget), tierFlag: "scripts/globe-groundtiles.ts", needs: ["tiers", "terrain", "air", "water", "ground"], inputs: groundTileIn, outputs: ["groundtiles"],
       measure: { count: "groundtiles", ext: ".gt.gz", of: tiles }, watch: [], whole: [], spent: [] },
-    { name: "pyramid", kind: "CPU", command: sc("globe-pyramid.ts", ...who, ...tb), tierFlag: "scripts/globe-pyramid.ts", needs: [...stored, "ground"], inputs: pyramidIn, outputs: ["pyramid", "pyramid.json"],
+    { name: "pyramid", kind: "CPU", command: sc("globe-pyramid.ts", ...who, "--tier", T, "--budget", c.budget), tierFlag: "scripts/globe-pyramid.ts", needs: ["tiers", "terrain", "air", "water", "ground"], inputs: pyramidIn, outputs: ["pyramid", "pyramid.json"],
       measure: { count: "pyramid", ext: ".tile.gz", of: 2 * (4 ** (T + 1) - 1), also: ["pyramid.json"] }, watch: [], whole: [], spent: [] }, // 6 4^k tiles a tier k, tiers 0 to T
-    { name: "maps", kind: "CPU", command: sc("globe-maps75.ts", ...who, "--tier", c.tier), tierFlag: "scripts/globe-maps75.ts", needs: [...stored, "ground"], inputs: [HEIGHT, ACC, FLOODED], outputs: ["maps-done.json"],
+    { name: "maps", kind: "CPU", command: sc("globe-maps75.ts", ...who, "--tier", T), tierFlag: "scripts/globe-maps75.ts", needs: ["tiers", "terrain", "air", "water", "ground"], inputs: [F.height, F.acc, F.flooded], outputs: ["maps-done.json"],
       measure: { marker: "maps-done.json" }, watch: [], whole: [], spent: [] },
   ];
   return table;
@@ -148,7 +187,13 @@ export interface Have { have: number; of: number; done: boolean }
 export function measure(dir: string, m: Measure): Have {
   if ("tiles" in m) {
     let have = 0;
-    for (const f of m.tiles) { try { for (const b of readFileSync(join(dir, f))) if (b === 1) have++; } catch { /* not made yet */ } }
+    m.tiles.forEach((f, i) => {
+      const legacy = m.legacy?.[i], tryRead = (name: string) => { try { return readFileSync(join(dir, name)); } catch { return null; } };
+      let b = tryRead(f);
+      // a marker of the first bakes had no tier in its name; stages.ts takes one that holds this tier's tile count as the tier's
+      if (!b && legacy) { const old = tryRead(legacy); if (old && old.length === m.of / m.tiles.length) b = old; }
+      if (b) for (const x of b) if (x === 1) have++;
+    });
     return { have, of: m.of, done: have === m.of };
   }
   if ("files" in m) {
@@ -284,10 +329,10 @@ export function statusTable(stages: Stage[], dir: string, p: Progress, running: 
 
 // ---------- the options ----------
 export interface Opts {
-  seed: number; key: string; tier: number; budget: number; stopAfter?: string; from?: string; maxCalls: number; stagesFile?: string; water: "global" | "patch"; status: boolean; dryRun: boolean; keepAll: boolean;
+  seed: number; key: string; tier: number; budget: number; stopAfter?: string; from?: string; maxCalls: number; stagesFile?: string; status: boolean; dryRun: boolean; keepAll: boolean;
   minFreeGB: number; maxGB: number; grace: number; sampleMs: number; lockFile: string;
 }
-const VALUES = ["seed", "key", "tier", "budget", "stop-after", "from", "max-calls", "stages-file", "water", "min-free-gb", "max-gb", "grace", "sample-ms", "lock-file"];
+const VALUES = ["seed", "key", "tier", "budget", "stop-after", "from", "max-calls", "stages-file", "min-free-gb", "max-gb", "grace", "sample-ms", "lock-file"];
 const FLAGS = ["status", "dry-run", "keep-all", "help"];
 export function parseOpts(argv: string[], env: Record<string, string | undefined> = process.env): Opts {
   const v = new Map<string, string>(), f = new Set<string>();
@@ -302,20 +347,18 @@ export function parseOpts(argv: string[], env: Record<string, string | undefined
   if (f.has("help")) throw new Error("");
   const key = v.get("key") ?? env.NOMADS_PLANET_KEY ?? "";
   if (!key) throw new Error("name the planet's key: --key <hash> (the bake dir is <seed>-<key> under the bake root)");
-  const water = v.get("water") ?? "global";
-  if (water !== "global" && water !== "patch") throw new Error("--water is global or patch");
   return {
     seed: num("seed", 1), key, tier: num("tier", PLANET_TIER), budget: num("budget", 240), stopAfter: v.get("stop-after"), from: v.get("from"), maxCalls: num("max-calls", Infinity), stagesFile: v.get("stages-file") ?? env.NOMADS_BAKE_STAGES,
-    water, status: f.has("status"), dryRun: f.has("dry-run"), keepAll: f.has("keep-all"),
+    status: f.has("status"), dryRun: f.has("dry-run"), keepAll: f.has("keep-all"),
     // [design: the operator's rules: 20 GB free on the volume, 100 GB under the bake root; a call under 5 minutes is the budget 240 and 45 s of grace; ps every 2 s]
     minFreeGB: num("min-free-gb", 20), maxGB: num("max-gb", 100), grace: num("grace", 45), sampleMs: num("sample-ms", 2000), lockFile: v.get("lock-file") ?? "/tmp/nomads-gpu.lock",
   };
 }
-const USAGE = "usage: bun scripts/globe-bake-driver.ts --seed 1 --key <key> [--tier 5] [--budget 240] [--from <stage>] [--stop-after <stage>] [--max-calls N] [--water global|patch] [--status | --dry-run] [--keep-all]\n"
+const USAGE = "usage: bun scripts/globe-bake-driver.ts --seed 1 --key <key> [--tier 5] [--budget 240] [--from <stage>] [--stop-after <stage>] [--max-calls N] [--status | --dry-run] [--keep-all]\n"
   + "       [--min-free-gb 20] [--max-gb 100] [--grace 45] [--sample-ms 2000] [--lock-file /tmp/nomads-gpu.lock] [--stages-file <json> (or NOMADS_BAKE_STAGES)]   (GB = 2^30 bytes)";
 
 export function tableOf(o: Opts): { cfg: Cfg; stages: Stage[] } {
-  const cfg: Cfg = { seed: o.seed, key: o.key, tier: o.tier, budget: o.budget, dir: join(BAKE, `${o.seed}-${o.key}`), lock: o.lockFile, water: o.water };
+  const cfg: Cfg = { seed: o.seed, key: o.key, tier: o.tier, budget: o.budget, dir: join(BAKE, `${o.seed}-${o.key}`), lock: o.lockFile };
   const stages = o.stagesFile ? loadStages(o.stagesFile, cfg) : realStages(cfg);
   const seen = new Set<string>();
   for (const s of stages) {
@@ -338,7 +381,10 @@ export function describePlan(stages: Stage[], c: Cfg, o: Opts): string {
     if (s.skip) continue;
     out.push(s.command ? `  $ ${commandLine(s, c).map((a) => a.replace(ROOT, ".")).join(" ").replace(process.execPath, "bun")}` : "  no script: a gap (the stage is `missing`)");
     if (s.command && s.tierFlag && c.tier !== PLANET_TIER && !takesTier(readFileSync(join(ROOT, s.tierFlag), "utf8"))) out.push(`  BLOCKED at tier ${c.tier}: ${s.tierFlag} does not take --tier`);
-    if (s.spent.length) out.push(`  spent once done: ${s.spent.map((x) => `${x.name}${x.bytes ? ` ${gb(x.bytes)} GB` : ""}`).join(", ")}${o.keepAll ? " (kept: --keep-all)" : ""}`);
+    if (s.spent.length) {
+      const shown = s.spent.slice(0, 6).map((x) => `${x.name}${x.bytes ? ` ${gb(x.bytes)} GB` : ""}${x.except ? ` (not ${x.except.join(", ")})` : ""}`), total = s.spent.reduce((a, x) => a + (x.bytes ?? 0), 0);
+      out.push(`  spent once done: ${shown.join(", ")}${s.spent.length > 6 ? `, and ${s.spent.length - 6} more` : ""} (${gb(total)} GB named)${o.keepAll ? " (kept: --keep-all)" : ""}`);
+    }
   }
   return out.join("\n");
 }
@@ -382,7 +428,7 @@ class Run {
   // Delete the files a done stage was the last reader of. Only by the names of its own list, and never with --keep-all.
   cleanSpent(st: Stage) {
     if (this.o.keepAll) return;
-    for (const s of st.spent) for (const name of expand(this.c.dir, s.name)) {
+    for (const s of st.spent) for (const name of expand(this.c.dir, s.name).filter((n) => !(s.except ?? []).includes(n))) {
       const path = join(this.c.dir, name), bytes = diskBytes(path);
       rmSync(path, { recursive: true, force: true });
       this.log(st.name, `spent: deleted ${name} (${gb(bytes)} GB, made by ${s.from ?? "an earlier stage"}, last read by ${st.name})`);
