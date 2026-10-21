@@ -132,8 +132,20 @@ describe("the regional tier", () => {
     expect(hash(b.height)).toBe(hash(a.height));
     expect(hash(resumed.height)).toBe(hash(a.height));
     expect(Array.from(resumed.carry)).toEqual(Array.from(a.carry));
-    console.log(`regional step hash ${hash(a.height)}, ${lowered} cells lowered, ${raised} raised`);
-    expect(hash(a.height)).toBe("e7ca2d8125bb8a49");
+    // the uplift is a smooth field: the step across the edge between two tier-0 cells is no more than a third over a step inside one (a constant to a block made it 3 to 4 times)
+    let edge = 0, inner = 0, ne = 0, ni = 0;
+    const fn = g1.fn, B = 1 << TIER;
+    for (let f = 0; f < FACES; f++)
+      for (let Y = 0; Y < fn; Y++)
+        for (let X = 0; X < fn - 1; X++) {
+          const i = (f * fn + Y) * fn + X;
+          if (a.height[i] <= 0 || a.height[i + 1] <= 0) continue;
+          const d = Math.abs(a.height[i + 1] - a.height[i]);
+          if (X % B === B - 1) { edge += d; ne++; } else { inner += d; ni++; }
+        }
+    console.log(`regional step hash ${hash(a.height)}, ${lowered} cells lowered, ${raised} raised, block edge ${(edge / ne / 256).toFixed(3)} m inside ${(inner / ni / 256).toFixed(3)} m`);
+    expect(edge / ne).toBeLessThan((inner / ni) * 1.34);
+    expect(hash(a.height)).toBe("5d66e2532e436644");
   });
 });
 

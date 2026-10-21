@@ -177,7 +177,7 @@ export function tierTable(planet: Planet, tier: number, p: ErosionParams): Uint3
 }
 
 // ---------- 4. the kernels on a device ----------
-export interface TierState { height: Int32Array; carry: Uint32Array; steps: number }
+export interface TierState { height: Int32Array; carry: Int32Array; steps: number }
 export interface TierFlow { to: Uint32Array; acc: Uint32Array; rounds: number }
 const readU32 = async (gpu: Gpu, b: GPUBuffer, words: number, at: number) => new Uint32Array(await readback(gpu, b, words * 4, at * 4));
 
@@ -216,7 +216,7 @@ export class Regional {
     this.atCarry = this.atCnt + 16 + 2 * CELLS0;
     this.E = storage(gpu, SPLIT * this.N * 4);
     this.E2 = storage(gpu, (RF.COUNT - SPLIT) * this.N * 4);
-    this.AT = storage(gpu, (this.atCarry + CELLS0) * 4);
+    this.AT = storage(gpu, (this.atCarry + 3 * CELLS0) * 4);
     this.P = storage(gpu, new Uint32Array([1, 0, 0, 0]));
     this.X = storage(gpu, table);
     this.wgsl = regionalWgsl(EDGES, this.fn);
@@ -303,12 +303,12 @@ export class Regional {
       }
     });
     this.lastSlide = slide - chunk;
-    await this.lap("lift", () => this.submit((p) => { this.run(p, "pzero", CELLS0); this.run(p, "tally", N); this.run(p, "lift", N); this.run(p, "carry", CELLS0); }));
+    await this.lap("lift", () => this.submit((p) => { this.run(p, "pzero", CELLS0); this.run(p, "tally", N); this.run(p, "pmean", CELLS0); this.run(p, "lift", N); this.run(p, "pres", CELLS0); this.run(p, "lift", N); this.run(p, "pfin", CELLS0); this.run(p, "spread", N); }));
     return rounds;
   }
   async readH(): Promise<Int32Array> { return this.readField("H"); }
   async readField(f: keyof typeof RF): Promise<Int32Array> { return new Int32Array(await this.read(f)); }
-  async readCarry(): Promise<Uint32Array> { return readU32(this.gpu, this.AT, CELLS0, this.atCarry); }
+  async readCarry(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, CELLS0 * 4, this.atCarry * 4)); }
   // The depth of the deepest flow path of the last flow, in cells (the counting sort holds MAXD).
   async deepest(): Promise<number> { return (await readU32(this.gpu, this.AT, 1, this.atCnt + CNT.top))[0]; }
   async readFlooded(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, this.N * 4, 0)); }
@@ -325,6 +325,27 @@ export class Regional {
     this.submit((p) => this.run(p, "area", 0));
     if ((await this.flags()) & FLAG.area) throw new Error("regional: a basin's sum passed 32 bits");
     return new Uint32Array(await this.read("ACC"));
+  }
+  // The forest of receivers given (a settled tier's `to`: a land cell's receiver, a sea cell itself), without the flood: the depth sort and its checks, ready for gather64.
+  async forest(to: Uint32Array): Promise<void> {
+    if (to.length !== this.N) throw new Error(`regional: tier ${this.tier} holds ${this.N} cells, got ${to.length} receivers`);
+    this.write("TO", to);
+    this.clear(this.atCnt + CNT.flags, 1);
+    this.submit((p) => {
+      this.run(p, "lvinit", this.N);
+      for (let r = 0; r < 7; r++) { this.run(p, "jumpa", this.N); this.run(p, "jumpb", this.N); }
+      this.run(p, "lvhist", this.N); this.run(p, "lvscan", 0); this.run(p, "lvscatter", this.N);
+    });
+    const flags = await this.flags();
+    if (flags & (FLAG.chain | FLAG.depth)) throw new Error(`regional: the receivers' chains do not end at the sea (flags ${flags})`);
+  }
+  // The sum of the weights given (u32 a cell) down the forest of the last flow or forest, exact in 64 bits: each cell's own weight and every cell that drains to it, anywhere on
+  // the planet, across tile and face edges. The words come back apart (low u32, high u32); ER (the high words) is free between steps, so call it before a step's flow.
+  async gather64(weights: Uint32Array): Promise<{ lo: Uint32Array; hi: Uint32Array }> {
+    this.write("W", weights);
+    this.submit((p) => this.run(p, "area64", 0));
+    const [lo, hi] = await Promise.all([this.read("ACC"), this.read("ER")]);
+    return { lo: new Uint32Array(lo), hi: new Uint32Array(hi) };
   }
 }
 
@@ -347,7 +368,7 @@ export function unpackTier(bytes: Uint8Array): Tier {
 const packState = (key: string, s: TierState) => packRecord({ key, steps: s.steps }, { height: s.height, carry: s.carry });
 const unpackState = (bytes: Uint8Array, key: string): TierState | null => {
   const { meta, arrays: a } = unpackRecord(bytes);
-  return meta.key === key ? { height: a.height as Int32Array, carry: a.carry as Uint32Array, steps: meta.steps } : null;
+  return meta.key === key ? { height: a.height as Int32Array, carry: a.carry as Int32Array, steps: meta.steps } : null;
 };
 
 // The inputs of a tier from a planet: the tier-0 table, the remapped heights and the rain words.

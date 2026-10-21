@@ -46,7 +46,7 @@ const DXY = array<vec2i, 8>(vec2i(1, 0), vec2i(0, 1), vec2i(-1, 0), vec2i(0, -1)
 
 ${fields}
 const MAXD = ${MAXD}u; const SPLIT = ${SPLIT}u;
-const A_HIST = N; const A_CUR = N + ${HIST}u; const A_LVS = N + ${2 * HIST}u; const A_CNT = N + ${3 * HIST}u; const A_PS = A_CNT + 16u; const A_PC = A_PS + NP; const A_CARRY = A_PC + NP;
+const A_HIST = N; const A_CUR = N + ${HIST}u; const A_LVS = N + ${2 * HIST}u; const A_CNT = N + ${3 * HIST}u; const A_PS = A_CNT + 16u; const A_PC = A_PS + NP; const A_CARRY = A_PC + NP; const A_PM = A_CARRY + NP; const A_PL = A_PM + NP;
 const INF = 0x7fffffffi;
 const NONE = 0xffffffffu;
 const CNT_FLAGS = ${CNT.flags}u; const CNT_TOP = ${CNT.top}u; const CNT_CHANGED = ${CNT.changed}u;
@@ -256,6 +256,29 @@ fn area(@builtin(local_invocation_index) t: u32) {
   }
 }
 
+// the same gather exact in 64 bits: each cell's weight and everything that drains into it, the low word in ACC and the high word in ER (free between steps), no overflow
+// (the planet's whole weight must stay under 2^64, which any u32 weights over 2^28 cells do)
+@compute @workgroup_size(256)
+fn area64(@builtin(local_invocation_index) t: u32) {
+  touch();
+  let top = top_depth(t);
+  for (var s = 0u; s <= top; s++) {
+    let d = top - s;
+    let lo = level_lo(d); let hi = level_hi(d, top);
+    for (var p = lo + t; p < hi; p += 256u) {
+      let k = u32(e_get(E_ORD, p));
+      var a = vec2u(e_getu(E_W, k), 0u);
+      for (var e = 0u; e < 8u; e++) {
+        let j = nbr(k, e);
+        if (j != NONE && j != k && e_getu(E_TO, j) == k) { a = add64(a, vec2u(e_getu(E_ACC, j), e_getu(E_ER, j))); }
+      }
+      e_setu(E_ACC, k, a.x);
+      e_setu(E_ER, k, a.y);
+    }
+    storageBarrier(); workgroupBarrier();
+  }
+}
+
 // ---- the implicit stream power step, shallowest depth first ----
 // n = 1 (m = 1/2): h' = h_r + (h - h_r) / (1 + f), f = K dt sqrt(A) / d, Braun and Willett 2013. A is the discharge area at the reference rain.
 @compute @workgroup_size(256)
@@ -331,7 +354,12 @@ fn slide(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   }
 }
 
-// ---- every land cell of a tier-0 cell rises by the mean of what its land cells lost (the tier-0 cell's total height is kept) ----
+// ---- the uplift: what each tier-0 cell's land cells lost comes back as a smooth field, the tier-0 cell's total height kept ----
+// Every land cell of a tier-0 cell rises by the mean height that cell's land cells lost, so the cell's total is the planet's [design, R1762]; the mean is read at each
+// land cell by the bilinear interpolation, in the face's index space, of the means of the four tier-0 cells round it (the weights regional.ts remap uses), not as one
+// constant to a block, whose edges stood as steps of 3 to 4 times the slope inside a block [measured, tiers 2 to 4]. The interpolated rises add up to a little more or less
+// than the cell's loss: the difference is returned once more the same way, then spread evenly (a constant of the difference over the land cells it leaves, which is small)
+// and the rest, under one unit a cell, or a deficit the next steps pay (a cell is never lowered by it), is carried. Total height plus carry of every tier-0 cell is kept exactly.
 @compute @workgroup_size(256)
 fn pzero(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
@@ -339,6 +367,7 @@ fn pzero(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   if (p >= NP) { return; }
   atomicStore(&AT[A_PS + p], 0i);
   atomicStore(&AT[A_PC + p], 0i);
+  atomicStore(&AT[A_PL + p], 0i);
 }
 @compute @workgroup_size(256)
 fn tally(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
@@ -351,26 +380,113 @@ fn tally(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   let er = e_get(E_ER, k);
   if (er > 0i) { atomicAdd(&AT[A_PS + p], er); }
 }
+// the tier-0 cell next to p in direction d (0 east, 1 north, 2 west, 3 south, 4 NE, 5 NW, 6 SW, 7 SE), across a face's edge where it is one; NONE at a cube's corner's missing diagonal
+fn pnbr(p: u32, d: u32) -> u32 {
+  let f = p / 65536u; let r = p - f * 65536u; let y = i32(r / 256u); let x = i32(r - u32(y) * 256u);
+  let o = DXY[d]; let nx = x + o.x; let ny = y + o.y;
+  let xo = nx < 0 || nx >= 256; let yo = ny < 0 || ny >= 256;
+  if (!xo && !yo) { return u32(i32(p) + o.y * 256 + o.x); }
+  if (xo && yo) { return NONE; }
+  var s = 1u; var along = nx;
+  if (xo) { s = select(0u, 2u, nx < 0); along = ny; } else { s = select(1u, 3u, ny < 0); }
+  let e = f * 4u + s;
+  let gs = EDGE_SIDE[e];
+  let a = select(along, 255 - along, EDGE_FLIP[e] == 1u);
+  var gx = a; var gy = a;
+  if (gs == 0u) { gx = 255; } else if (gs == 1u) { gy = 255; } else if (gs == 2u) { gx = 0; } else { gy = 0; }
+  return EDGE_FACE[e] * 65536u + u32(gy) * 256u + u32(gx);
+}
+// the signed 64-bit n over a positive u32 d, rounded toward zero, for a quotient that fits 31 bits
+fn sdiv(neg: bool, n: vec2u, d: u32) -> i32 {
+  let qh = n.y / d;
+  let q = i32(divw(n.y - qh * d, n.x, d).x);
+  return select(q, -q, neg);
+}
+// a mean loss, Q8, of the tier-0 cell p: (loss + carry) * 256 / the land cells, or 0 where it has no land or owes nothing
+fn mean_q8(p: u32, extra: i32) -> i32 {
+  let c = fl(A_PC + p);
+  if (c == 0i) { return 0i; }
+  let tot = extra;
+  if (tot <= 0i) { return 0i; }
+  return sdiv(false, mul64(u32(tot), 256u), u32(c));
+}
+@compute @workgroup_size(256)
+fn pmean(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let p = gk(gid, nwg);
+  if (p >= NP) { return; }
+  atomicStore(&AT[A_PM + p], mean_q8(p, fl(A_PS + p) + fl(A_CARRY + p)));
+}
+// what the tier-0 cell's land is still owed after the rises so far
+@compute @workgroup_size(256)
+fn pres(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let p = gk(gid, nwg);
+  if (p >= NP) { return; }
+  atomicStore(&AT[A_PM + p], mean_q8(p, fl(A_PS + p) + fl(A_CARRY + p) - fl(A_PL + p)));
+}
+// the interpolated mean at a land cell, Q8: the four tier-0 cells round it weighted by the child's place (weights Q16, the neighbour's |2i + 1 - B| / 2B along each axis), those with no land left out
+fn interp(k: u32) -> i32 {
+  let f = k / CELLS; let r = k - f * CELLS; let Y = r / FN; let X = r - Y * FN;
+  let ix = i32(X % FACT); let iy = i32(Y % FACT); let B = i32(FACT);
+  let ax = u32(abs(2 * ix + 1 - B)); let ay = u32(abs(2 * iy + 1 - B));
+  let wxn = ax * (32768u / FACT); let wyn = ay * (32768u / FACT);
+  let wxc = 65536u - wxn; let wyc = 65536u - wyn;
+  let p = pid(k);
+  let dxs = select(0u, 2u, 2 * ix + 1 < B);
+  let dys = select(1u, 3u, 2 * iy + 1 < B);
+  var dd = 4u;
+  if (dxs == 2u && dys == 1u) { dd = 5u; } else if (dxs == 2u && dys == 3u) { dd = 6u; } else if (dxs == 0u && dys == 3u) { dd = 7u; }
+  let px = pnbr(p, dxs); let py = pnbr(p, dys); let pd = pnbr(p, dd);
+  var w = array<u32, 4>(shr64(mul64(wxc, wyc), 16u).x, 0u, 0u, 0u);
+  w[1] = select(0u, shr64(mul64(wxn, wyc), 16u).x, px != NONE);
+  w[2] = select(0u, shr64(mul64(wxc, wyn), 16u).x, py != NONE);
+  w[3] = select(0u, shr64(mul64(wxn, wyn), 16u).x, pd != NONE);
+  if (px != NONE && fl(A_PC + px) == 0i) { w[1] = 0u; }
+  if (py != NONE && fl(A_PC + py) == 0i) { w[2] = 0u; }
+  if (pd != NONE && fl(A_PC + pd) == 0i) { w[3] = 0u; }
+  var m = array<i32, 4>(fl(A_PM + p), 0i, 0i, 0i);
+  if (px != NONE) { m[1] = fl(A_PM + px); }
+  if (py != NONE) { m[2] = fl(A_PM + py); }
+  if (pd != NONE) { m[3] = fl(A_PM + pd); }
+  var wsum = 0u; var acc = vec2u(0u, 0u);
+  for (var j = 0u; j < 4u; j++) { wsum += w[j]; acc = add64(acc, mul64(u32(m[j]), w[j])); }
+  return sdiv(false, add64(acc, vec2u(wsum >> 1u, 0u)), wsum);
+}
+// every land cell of the tier-0 cell rises by the interpolated mean of its neighbourhood (this is the first pass, of the means; the second of the leftover)
+fn raise(k: u32) {
+  if (!is_land(k)) { return; }
+  let up = interp(k) >> 8u;
+  e_set(E_H, k, e_get(E_H, k) + up);
+  atomicAdd(&AT[A_PL + pid(k)], up);
+}
 @compute @workgroup_size(256)
 fn lift(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
   let k = gk(gid, nwg);
   if (k >= N) { return; }
-  if (!is_land(k)) { return; }
-  let p = pid(k);
-  let c = fl(A_PC + p);
-  let tot = fl(A_PS + p) + fl(A_CARRY + p);
-  e_set(E_H, k, e_get(E_H, k) + tot / c);
+  raise(k);
 }
+// what is still owed after both passes: a share of it to every land cell, and the remainder (or a deficit, which no cell is lowered by) carried
 @compute @workgroup_size(256)
-fn carry(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+fn pfin(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
   let p = gk(gid, nwg);
   if (p >= NP) { return; }
   let c = fl(A_PC + p);
   if (c == 0i) { return; }
-  let tot = fl(A_PS + p) + fl(A_CARRY + p);
-  atomicStore(&AT[A_CARRY + p], tot - c * (tot / c));
+  let r = fl(A_PS + p) + fl(A_CARRY + p) - fl(A_PL + p);
+  let each = select(0i, r / c, r > 0i);
+  atomicStore(&AT[A_PM + p], each);
+  atomicStore(&AT[A_CARRY + p], r - c * each);
+}
+@compute @workgroup_size(256)
+fn spread(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  if (!is_land(k)) { return; }
+  e_set(E_H, k, e_get(E_H, k) + fl(A_PM + pid(k)));
 }
 `;
 }

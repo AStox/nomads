@@ -3,33 +3,14 @@
 // the parent's height to the unit: remapInts) and is eroded for TIER_STEPS of them under the planet's rain and rock, the total height of every tier-0 cell held. The
 // bytes of a tier do not depend on where the calls that make it were split (a state is the heights and the carries). What is kept goes in a BakeDir (raw typed arrays
 // in files: a tier-4 field is 403 MB and is never copied more than the one read).
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import type { Gpu } from "../device";
+import { BakeDir } from "./bakedir";
 import { defaultParams } from "./erosion";
 import { Regional, annualRain, rainWords, refineInts, remapAmounts, remapHeights, tierTable } from "./regional";
 import type { Planet } from "./window";
 
 type I32 = Int32Array | Uint32Array;
-
-// A directory of named raw arrays: `<name>.i32`, `<name>.u32`, `<name>.f32`, `<name>.u16`, `<name>.u8` and `<name>.json`.
-export class BakeDir {
-  constructor(readonly dir: string) { mkdirSync(dir, { recursive: true }); }
-  path(name: string) { return join(this.dir, name); }
-  has(name: string) { return existsSync(this.path(name)); }
-  bytes(name: string) { return statSync(this.path(name)).size; }
-  write(name: string, a: ArrayBufferView) { writeFileSync(this.path(name), new Uint8Array(a.buffer, a.byteOffset, a.byteLength)); }
-  raw(name: string): ArrayBuffer {
-    const b = readFileSync(this.path(name));
-    return b.byteOffset === 0 && b.byteLength === b.buffer.byteLength ? (b.buffer as ArrayBuffer) : (b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
-  }
-  i32(name: string) { return new Int32Array(this.raw(`${name}.i32`)); }
-  u32(name: string) { return new Uint32Array(this.raw(`${name}.u32`)); }
-  f32(name: string) { return new Float32Array(this.raw(`${name}.f32`)); }
-  json<T>(name: string): T | null { return this.has(`${name}.json`) ? (JSON.parse(readFileSync(this.path(`${name}.json`), "utf8")) as T) : null; }
-  putJson(name: string, v: unknown) { writeFileSync(this.path(`${name}.json`), JSON.stringify(v)); }
-  remove(name: string) { rmSync(this.path(name), { force: true }); }
-}
+export { BakeDir };
 // The steps a tier is eroded for [design: R1763's 40 at the tiers whose steps cost 0.1 to 4 s; the 75 m tier starts from tier 3's settled network and a step costs 20 s].
 export const TIER_STEPS = [0, 40, 40, 40, 12];
 // What a call keeps back from its budget for the end of a tier (the settled flow and the readbacks) and for saving a state, s.
@@ -55,7 +36,7 @@ export async function tiersOf(gpu: Gpu, planet: Planet, dir: BakeDir, budgetS = 
     try {
       let made = 0;
       const kept = resuming ? dir.json<{ steps: number }>(`t${t}-state`) : null;
-      if (kept) { r.load({ height: dir.i32(`t${t}-state`), carry: dir.u32(`t${t}-carry`), steps: kept.steps }); made = kept.steps; }
+      if (kept) { r.load({ height: dir.i32(`t${t}-state`), carry: dir.i32(`t${t}-carry`), steps: kept.steps }); made = kept.steps; }
       log(`tier ${t}: ${n} cells, inputs ${(spent() - c0).toFixed(1)} s, ${made} of ${steps[t]} steps kept`);
       let last1 = 0;
       while (made < steps[t]) {
@@ -70,7 +51,7 @@ export async function tiersOf(gpu: Gpu, planet: Planet, dir: BakeDir, budgetS = 
       run.steps = made;
       if (made < steps[t]) {
         const s = await r.state(made);
-        dir.write(`t${t}-state.i32`, s.height); dir.write(`t${t}-carry.u32`, s.carry);
+        dir.write(`t${t}-state.i32`, s.height); dir.write(`t${t}-carry.i32`, s.carry);
         dir.putJson(`t${t}-state`, { steps: made });
         run.calls++; run.callS.push(spent() - c0);
         dir.putJson(`t${t}-partial`, run);
@@ -84,7 +65,7 @@ export async function tiersOf(gpu: Gpu, planet: Planet, dir: BakeDir, budgetS = 
       dir.write(`t${t}-height.i32`, await r.readH());
       run.calls++; run.callS.push(spent() - c0);
       dir.putJson(`t${t}-run`, run);
-      for (const f of [`t${t}-state.i32`, `t${t}-carry.u32`, `t${t}-state.json`, `t${t}-partial.json`]) dir.remove(f);
+      for (const f of [`t${t}-state.i32`, `t${t}-carry.i32`, `t${t}-state.json`, `t${t}-partial.json`]) dir.remove(f);
       runs.push(run);
       log(`tier ${t} finished at ${spent().toFixed(1)} s`);
     } finally { r.release(); }
