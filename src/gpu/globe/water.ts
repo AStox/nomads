@@ -26,7 +26,11 @@
 //   t4-pwr.u16     the stream's power a metre of its width, 1/16 W/m2, held at 65535 (Hydro.power; ground.ts reads it against CONFINED, 300)
 //   t4-stb0.u16 .. t4-stb3.u16   the water table's depth below the ground in the middle of each season, 1/256 m, held at 65535 = 255.99 m (Hydro.seasonTable; winterTable is stb3)
 //   t4-dry.u16     the deepest the table falls in any season, 1/256 m, held at 65535 (Hydro.dryTable)
-// Not kept: the year's table (the seasons' mean), the springs, the stream's flow under its bed and the slope (the slope is the fall to the receiver over the reach, from the heights).
+//   t4-tab.u16     the year's water table, depth below the ground, 1/256 m, held at 65535 (Hydro.table; the kernel's `tab`)
+//   t4-under.u16   the flow of the stream's valley fill under its bed, 1/4096 m3/s, held at 65535 (16 m3/s), 0 off channel cells (Hydro under(i))
+//   t4-quick.json  tile index (face * 256 + ty * 16 + tx) -> [4 numbers]: each season's quick runoff summed over the tile's own 256 x 256 interior cells over the mean of the four seasons'
+//                  sums, as the island's misc.quick (Hydro.quick), 0s where the tile sheds no runoff
+// Not kept: the springs and the slope (the slope is the fall to the receiver over the reach, from the heights).
 //
 // Also here: `surplusStage` (the weights of the global discharge: each season's surplus over the cell as 1/64 m3, the bucket of the hydrology's `prep` over the planet's rain and potential
 // evaporation, t4-vs0..3.u32) and `basinOf` (t4-basin.u8).
@@ -35,7 +39,7 @@ import { YEAR_S } from "../../terrain/water";
 import { hydrologyRaw, surplusRaw, type HydroInput, type Inflow, type Settle } from "../terrain/water";
 import { MISC, TS, planetWater } from "../wgsl/terrain-water";
 import { ONES, valueAt, type Discharge, type WeightField } from "./discharge";
-import { FACES, tierGrid } from "./grid";
+import { FACES, TILE, tierGrid } from "./grid";
 import { cellAcross, localOf, type Patch } from "./patch";
 import { KINDS, typeOf, type Ctx, type Field, type TileStage } from "./stages";
 import { sampleCoarse } from "./sample";
@@ -173,7 +177,7 @@ export function surplusStage(climate: ClimateSource, tier = 4): TileStage {
 const mappedDischarge = (ctx: Ctx, stem: string): Discharge => (ctx.dir.has(`${stem}-hi.u16`) ? { lo: mapped(ctx, `${stem}-lo.u32`) as Uint32Array, hi: mapped(ctx, `${stem}-hi.u16`) as Uint16Array } : { lo: mapped(ctx, `${stem}.u32`) as Uint32Array, hi: null });
 
 // ---------- the water ----------
-export const WATER_KINDS = ["water.u16", "flow.u32", "qwet.u32", "base.u16", "chn.u8", "valley.u8", "pwr.u16", "stb0.u16", "stb1.u16", "stb2.u16", "stb3.u16", "dry.u16"];
+export const WATER_KINDS = ["water.u16", "flow.u32", "qwet.u32", "base.u16", "chn.u8", "valley.u8", "pwr.u16", "stb0.u16", "stb1.u16", "stb2.u16", "stb3.u16", "dry.u16", "tab.u16", "under.u16"];
 export const waterFiles = (tier: number) => WATER_KINDS.map((k) => `t${tier}-${k}`);
 export const dischargeStems = (tier: number) => [0, 1, 2, 3].map((s) => `t${tier}-q${s}`);
 export const cellsStem = (tier: number) => `t${tier}-cells`;
@@ -181,8 +185,8 @@ export const cellsStem = (tier: number) => `t${tier}-cells`;
 export const dischargeFields = (tier: number): WeightField[] => [...dischargeStems(tier).map((stem, s) => ({ from: surplusFiles(tier)[s], stem })), { from: ONES, stem: cellsStem(tier) }];
 
 // What a tile's run measured, for the notes and the tests.
-export interface WaterRun { sweeps: [number, number]; flags: number; inflows: number; seconds: { inputs: number; gpu: number }; fields: Record<string, Int32Array>; settle: Settle[] }
-export const lastRun: WaterRun = { sweeps: [0, 0], flags: 0, inflows: 0, seconds: { inputs: 0, gpu: 0 }, fields: {}, settle: [] };
+export interface WaterRun { sweeps: [number, number]; flags: number; inflows: number; seconds: { inputs: number; gpu: number }; fields: Record<string, Int32Array>; settle: Settle[]; quick: number[] }
+export const lastRun: WaterRun = { sweeps: [0, 0], flags: 0, inflows: 0, seconds: { inputs: 0, gpu: 0 }, fields: {}, settle: [], quick: [0, 0, 0, 0] };
 
 // The water that enters the patch over its border: for each cell outside it whose receiver is a cell of it, that cell's global discharge (the area in cells and each season's water in
 // 1/64 m3), added up at the receiver.
@@ -235,13 +239,13 @@ export async function waterOf(ctx: Ctx, patch: Patch, cfg: WaterConfig): Promise
   const inflow = inflowOf(ctx, patch, local, gto, q, cells), c = cfg.climate(ctx, patch);
   const input: HydroInput = { h, filled, to, basin, rock, drift, driftDepth, air: airOf(c), inflow, voidc };
   const t1 = performance.now();
-  const raw = await hydrologyRaw(ctx.gpu, input, ["water", "flow", "sf0", "sf1", "sf2", "sf3", "base", "chn", "valley", "pwr", "stb0", "stb1", "stb2", "stb3", "dry", ...(cfg.extra ?? [])], planetWater(patch.side), cfg.sweeps ?? WATER_SWEEPS);
+  const raw = await hydrologyRaw(ctx.gpu, input, ["water", "flow", "sf0", "sf1", "sf2", "sf3", "base", "chn", "valley", "pwr", "stb0", "stb1", "stb2", "stb3", "dry", "tab", "rtl", "rth", "qk0", "qk1", "qk2", "qk3", ...(cfg.extra ?? [])], planetWater(patch.side), cfg.sweeps ?? WATER_SWEEPS);
   if (raw.flags & 1) throw new Error("water: a receiver chain of the patch does not end at a root");
   if (raw.flags & 2) throw new Error("water: a flow path of the patch is longer than the counting sort holds");
   const f = raw.fields, u16 = (v: number) => Math.min(65535, Math.max(0, v));
   const water = new Uint16Array(nn), flow = new Uint32Array(nn), qwet = new Uint32Array(nn), base = new Uint16Array(nn), chn = new Uint8Array(nn), valley = new Uint8Array(nn), pwr = new Uint16Array(nn), dry = new Uint16Array(nn);
   const stb = [0, 1, 2, 3].map(() => new Uint16Array(nn));
-  const Zcm = 100 / 2 ** 17, Z256 = 256 / 2 ** 17;
+  const Zcm = 100 / 2 ** 17, Z256 = 256 / 2 ** 17, tab = new Uint16Array(nn), under = new Uint16Array(nn);
   for (let k = 0; k < nn; k++) {
     water[k] = u16(Math.round(f.water[k] * Zcm));
     flow[k] = f.flow[k] >>> 0;
@@ -252,16 +256,27 @@ export async function waterOf(ctx: Ctx, patch: Patch, cfg: WaterConfig): Promise
     pwr[k] = u16(Math.round(f.pwr[k] / 4096));
     for (let s = 0; s < 4; s++) stb[s][k] = u16(Math.round(f[`stb${s}`][k] * Z256));
     dry[k] = u16(Math.round(f.dry[k] * Z256));
+    tab[k] = u16(Math.round(f.tab[k] * Z256));
+    under[k] = f.chn[k] ? u16(Math.round(((f.rtl[k] >>> 0) + (f.rth[k] >>> 0) * 2 ** 32) / 2 ** 40 * 4096)) : 0;
   }
+  const qs = [0, 0, 0, 0];
+  for (let y = 0; y < TILE; y++) for (let x = 0; x < TILE; x++) { const k = (y + patch.halo) * patch.side + x + patch.halo; for (let s = 0; s < 4; s++) qs[s] += f[`qk${s}`][k]; }
+  const mean = (qs[0] + qs[1] + qs[2] + qs[3]) / 4;
+  lastRun.quick = qs.map((v) => (mean > 0 ? v / mean : 0));
   lastRun.sweeps = [raw.misc[MISC.sweeps1], raw.misc[MISC.sweeps2]]; lastRun.flags = raw.flags; lastRun.inflows = inflow.length; lastRun.fields = raw.fields; lastRun.settle = raw.settle;
   lastRun.seconds = { inputs: (t1 - t0) / 1000, gpu: (performance.now() - t1) / 1000 };
-  return Object.fromEntries(waterFiles(ctx.tier).map((f, k) => [f, [water, flow, qwet, base, chn, valley, pwr, stb[0], stb[1], stb[2], stb[3], dry][k]]));
+  return Object.fromEntries(waterFiles(ctx.tier).map((f, k) => [f, [water, flow, qwet, base, chn, valley, pwr, stb[0], stb[1], stb[2], stb[3], dry, tab, under][k]]));
 }
 
 export function waterStage(cfg: WaterConfig): TileStage {
   return {
     name: "water", halo: cfg.halo ?? WATER_HALO, inputs: [], outputs: waterFiles(cfg.tier ?? 4),
     async prepare(ctx) { basinOf(ctx); },
-    run: (ctx, patch) => waterOf(ctx, patch, cfg),
+    async run(ctx, patch) {
+      const out = await waterOf(ctx, patch, cfg), file = `t${ctx.tier}-quick`, T = 1 << ctx.tier, quick = ctx.dir.json<Record<string, number[]>>(file) ?? {};
+      quick[String(patch.face * T * T + patch.ty * T + patch.tx)] = lastRun.quick;
+      ctx.dir.putJson(file, quick);
+      return out;
+    },
   };
 }

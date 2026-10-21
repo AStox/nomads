@@ -160,12 +160,12 @@ describe("the planet's water stage", () => {
       if (!existsSync(other.path(f))) symlinkSync(ctx.dir.path(f), other.path(f));
     const stage = waterStage({ climate: stagedClimate, tier: T }), tiles = [7, 11];
     for (const f of waterFiles(T)) other.remove(f);
-    other.remove("water-done.u8");
+    other.remove("water-done.u8"); other.remove(`${p}quick.json`);
     const made = new BakeDir(`${SCRATCH}/stage-t${T}-c`);
     for (const f of [`${p}height.i32`, `${p}flooded.i32`, `${p}to.u32`, `${p}rock.u8`, `${p}drift.u8`, `${p}dd.u16`, `${p}basin.u8`, `${p}cells.u32`, ...[0, 1, 2, 3].flatMap((s) => [`${p}q${s}-lo.u32`, `${p}q${s}-hi.u16`])])
       if (!existsSync(made.path(f))) symlinkSync(ctx.dir.path(f), made.path(f));
     for (const f of waterFiles(T)) made.remove(f);
-    made.remove("water-done.u8");
+    made.remove("water-done.u8"); made.remove(`${p}quick.json`);
     const a: Ctx = { ...ctx, dir: other }, b: Ctx = { ...ctx, dir: made };
     const one = await runTiles(a, stage, 250, () => {}, tiles);
     expect(one.done).toBe(true);
@@ -174,6 +174,18 @@ describe("the planet's water stage", () => {
     expect(second.tileS.length).toBe(1);
     expect(second.done).toBe(true);
     for (const f of waterFiles(T)) expect(hash(new Uint8Array(made.raw(f)))).toBe(hash(new Uint8Array(other.raw(f))));
+    // the quick runoff of each tile made: four seasons over their mean, the same from one call or two, and the seasons average to 1
+    const qa = other.json<Record<string, number[]>>(`${p}quick`)!, qb = made.json<Record<string, number[]>>(`${p}quick`)!;
+    expect(qb).toEqual(qa);
+    expect(Object.keys(qa).sort()).toEqual(["11", "7"]);
+    for (const k of Object.keys(qa)) { expect(qa[k].length).toBe(4); expect(qa[k].reduce((x, y) => x + y, 0) / 4).toBeCloseTo(1, 6); }
+    // the new outputs: the stream under its bed is only where a channel runs, and the year's table is made
+    const tab = new Uint16Array(other.raw(`${p}tab.u16`)), under = new Uint16Array(other.raw(`${p}under.u16`)), chn = new Uint8Array(other.raw(`${p}chn.u8`));
+    let under0 = 0, off = 0, tabs = 0;
+    for (let i = 0; i < chn.length; i++) { if (under[i] > 0) { under0++; if (!chn[i]) off++; } if (tab[i] > 0) tabs++; }
+    expect(off).toBe(0);
+    expect(under0).toBeGreaterThan(100);
+    expect(tabs).toBeGreaterThan(1000);
     // the tile made is what a patch of its own gives: tile 7's cells in the file are waterOf's interior
     const { face, tx, ty } = tileAt(T, 7), patch = patchOf(T, face, tx, ty, WATER_HALO), r = await waterOf(ctx, patch, { climate: stagedClimate, tier: T }), file = new Uint32Array(other.raw(`${p}flow.u32`));
     let wrong = 0, wet = 0;
