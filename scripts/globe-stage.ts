@@ -4,13 +4,14 @@
 import { releaseGpu, theGpu } from "../src/gpu/device";
 import { SMALL_RADIUS_M } from "../src/gpu/globe/grid";
 import { runTiles, forget, type TileStage } from "../src/gpu/globe/stages";
+import { airStage } from "../src/gpu/globe/air";
 import { terrainStage } from "../src/gpu/globe/terrain";
 import { readPlanet } from "../src/gpu/globe/window";
 import { STORE } from "./globe-planet";
 import { bakeDir } from "./globe-tiers";
 import { diskStore, sourceKey } from "./globe-window";
 
-export const STAGES: Record<string, () => Promise<TileStage>> = { terrain: async () => terrainStage };
+export const STAGES: Record<string, () => Promise<TileStage>> = { terrain: async () => terrainStage, air: async () => airStage };
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 
 if (import.meta.main) {
