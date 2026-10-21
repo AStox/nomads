@@ -49,7 +49,8 @@ function extentKm(vec: Float64Array, list: number[], radiusKm: number): number {
 //  3 rain shadow: over land above 1 km with a km of relief in its 3 by 3 cells, the rain two cells downwind over the rain two cells upwind is under 0.8 (Earth: well under 1);
 //  4 west coast: at 40 to 60 degrees, land with the sea to its west is wetter than land with the sea to its east, by a fifth, and has the smaller seasonal range of air (Earth: Vancouver Island and Norway against Newfoundland and Labrador);
 //  5 polar ice: over half of the land poleward of 70 degrees under ice now, and the equator to pole contrast of the year's sea-level air at least 35 K (Earth: Greenland 80%, Antarctica 98%, 50 K);
-//  6 ranges: the mean width (area over length) of the five longest ranges over 2 km is 0.03 to 0.06 radii (the Alps, the Himalaya and the Andes are 200 to 400 km wide on a radius of 6,371 km).
+//  6 ranges (amended by Unit 4c: rock sets a range's width, not the radius): the mean width (area over length) of the five longest ranges over 2 km is 150 to 400 km [cited: the Himalaya 200 to 400 km
+//    (Britannica), 250 to 350 km (ETH Zurich structural geology notes, files.ethz.ch/structuralgeology), 595,000 km2 over 2,500 km is 238; the Alps 207,000 km2 over 1,200 km is 172 km (Britannica)], and the highest summit of each is over 4 km.
 export function facts(p: Planet) {
   const g = tierGrid(0, p.radius), N = p.n, areas = cellAreas(g), vec = cellVectors(g), nb = neighbours(g), h = p.height, R = p.radius / 1000;
   const lat = Float64Array.from({ length: N }, (_, i) => (Math.asin(vec[3 * i + 2]) * 180) / Math.PI);
@@ -99,7 +100,7 @@ export function facts(p: Planet) {
   const airT = mean4((s) => s.t), eq = band(airT, 0, 10), pole = band(airT, 80, 90);
   // 6
   const high = Uint8Array.from(h, (z) => (z > RANGE_Z_M ? 1 : 0)), hc = components(g, high);
-  const ranges = hc.cells.map((c) => ({ km: extentKm(vec, c, R), a: c.reduce((s, i) => s + areas[i], 0) * R * R })).filter((r) => r.km > 0).sort((a, b) => b.km - a.km).slice(0, 5);
+  const ranges = hc.cells.map((c) => ({ km: extentKm(vec, c, R), a: c.reduce((s, i) => s + areas[i], 0) * R * R, top: c.reduce((m, i) => Math.max(m, h[i]), 0) })).filter((r) => r.km > 0).sort((a, b) => b.km - a.km).slice(0, 5);
   const widths = ranges.map((r) => r.a / r.km / R);
   const c = circulationOf(planetOf({ radius: p.radius }));
   return {
@@ -109,7 +110,7 @@ export function facts(p: Planet) {
     rainShadow: { leeOverWindward: +(lee / wind).toFixed(2), cells: sample, pass: lee / wind < 0.8 },
     westCoast: { cellsWestSea: westRain.length, cellsEastSea: eastRain.length, rainWestMm: Math.round(avg(westRain)), rainEastMm: Math.round(avg(eastRain)), rangeWestK: +avg(westRange).toFixed(1), rangeEastK: +avg(eastRange).toFixed(1), pass: avg(westRain) > 1.2 * avg(eastRain) && avg(westRange) < avg(eastRange) },
     polarIce: { polarLandUnderIce: +(polarIce / Math.max(1e-12, polarLand)).toFixed(2), equatorToPoleK: +(eq - pole).toFixed(1), pass: polarIce / Math.max(1e-12, polarLand) > 0.5 && eq - pole >= 35 },
-    ranges: { longestKm: ranges.map((r) => Math.round(r.km)), meanWidthInRadii: widths.map((w) => +w.toFixed(3)), pass: widths.length > 0 && widths.every((w) => w >= 0.03 && w <= 0.06) },
+    ranges: { longestKm: ranges.map((r) => Math.round(r.km)), meanWidthKm: widths.map((w) => Math.round(w * R)), highestM: ranges.map((r) => Math.round(r.top)), pass: widths.length > 0 && widths.every((w) => w * R >= 150 && w * R <= 400) && ranges.every((r) => r.top > 4000) },
   };
 }
 

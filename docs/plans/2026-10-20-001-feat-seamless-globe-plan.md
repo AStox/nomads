@@ -148,10 +148,17 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   Tile independence: word for word for terrain and ground; not for the rain (lee waves reach past any halo: rms 6.7 mm of a
   849 mm p99), the deep water table near a patch's edge, and the sun across a face's edge (12% in the low-sun season): gaps.
   Still open: part-full lakes, meltwater valleys, river meanders, Unit 4b's rain budget.
-- [ ] **Unit 4c: Earth's lengths for rock and rivers.** Undo Unit 4b's scaling of every lithosphere, hillslope, river and
+- [x] **Unit 4c: Earth's lengths for rock and rivers.** Undo Unit 4b's scaling of every lithosphere, hillslope, river and
   glacier length (the amended scope above), keeping the atmosphere's. Find and remove the tier-0 structure that leaks
   into the fine tiers as 16-cell grid lines. Check on seeds 1 to 3: range widths and relief against Earth's ranges in km,
   the Earth-like facts table, land share; maps.
+  Done 2026-10-21 (`docs/research/globe/2026-10-20-small-planet-impl.md`, Unit 4c; planet key `5905ad0148e6`): `similarityOf` keeps
+  only `s` (spin, atmosphere, vapour, eddies, plate angular rate, hot spot count by area) and `cells`; hot spot footprint and flux,
+  channel viscosity, wedge and flexure widths (5,648 and 3,346 sweeps), arc band, creep, shelf, sediment reach (980 rings), bed
+  relaxation and the start's margins are Earth's. Ranges 2 to 8 times wider (15 to 119 km by the 2 km contour, Earth's 170 to 240)
+  but the continents became plateaus (half the land over 2 km at 4.6 to 5 km, mean 2.3 km): the planet's rivers drain 5,700 to
+  7,600 km2 at most, so Earth's incision law removes crust 30 times too slowly; rain shadow, rain belts and land rain fail
+  (gaps in the note). Grid lines: the leaks are in regional.ts (Unit 5's files).
 - [ ] **Unit 5b: The 75 m tier as one solve, and landforms that read as eroded.** Rain and the water table as global
   solves (sweeps with halo exchange between tiles until converged, so a cell's answer does not depend on the tiling); no
   cap on rain concentration without a citation; tier-4 erosion run to its response time, so valleys dissect the ranges and

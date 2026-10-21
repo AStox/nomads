@@ -23,7 +23,7 @@ import { SEASON_S as SEASON_S_PLANET, climateGpu, type Climate as GlobeClimate }
 import { erosionFor, runChain, type ChainState } from "./erosion";
 import { similarityOf } from "./similarity";
 import { FACES, RADIUS_M, areaSr, cellId, eastNorth, fromLatLon, locateVec, meanAreaM2, tierGrid, type V3 } from "./grid";
-import { IF, IceGpu, RELAXATION_YR, defaultLaw, forcingTable, lgmForcing, orbitOf, runIce, seaState } from "./ice";
+import { IF, IceGpu, defaultLaw, forcingTable, lgmForcing, orbitOf, runIce, seaState } from "./ice";
 import { DEFAULTS, cellAreas, cellVectors, derive, extTables, makeSetup, neighbours } from "./tectonics";
 
 // ---------- the planet ----------
@@ -154,8 +154,7 @@ async function iceStage(gpu: Gpu, seed: number, store: PlanetStore, budgetS: num
   const chain = unpackRecord((await store.get(seed, "chain"))!), clim = unpackRecord((await store.get(seed, "climate0"))!);
   const g = tierGrid(0, radius), ext = extTables(g), N = FACES * g.fn * g.fn;
   const inp = { bed: chain.arrays.height as Float32Array, ts: [0, 1, 2, 3].map((k) => clim.arrays[`t${k}`]), precip: [0, 1, 2, 3].map((k) => clim.arrays[`rain${k}`]) };
-  // the bed's relaxation time goes as 1 / (the load's width) (4 pi mu / (rho g lambda), R1641), and an ice sheet's width as s (R1779)
-  const ice = new IceGpu(gpu, ext.tab, inp, defaultLaw({ relaxYr: RELAXATION_YR / similarityOf(radius).length }));
+  const ice = new IceGpu(gpu, ext.tab, inp, defaultLaw());
   try {
     const o = orbitOf(seed), f = lgmForcing(o, ICE_CYCLE.cycleYr, ICE_CYCLE.outerYr);
     const part = await store.get(seed, "ice-part");

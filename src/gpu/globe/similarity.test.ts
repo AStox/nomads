@@ -2,15 +2,15 @@
 // unchanged. CPU only. Run with: bun test ./src/gpu/globe/similarity.test.ts
 import { expect, test } from "bun:test";
 import { EBM, HELD_HOU, capTable, C_EVAP, H_WATER, circulationOf, diffusionFor, kernelConstants, planetOf, solveEbm, windTable, ADJUST_S, DRAG } from "./atmosphere";
-import { erosionFor, defaultParams } from "./erosion";
+import { erosionFor } from "./erosion";
 import { RADIUS_M, SMALL_RADIUS_M, tierGrid } from "./grid";
 import { EARTH_OMEGA, EARTH_R, similarityOf } from "./similarity";
-import { ARC_KM, EARTH_HOTSPOTS, makeHotspots, makeSetup, sweepsFor, DEFAULTS } from "./tectonics";
+import { ARC_KM, EARTH_HOTSPOTS, hotspotsOf, makeHotspots, makeSetup, sweepsFor, DEFAULTS } from "./tectonics";
 
 const earth = circulationOf(planetOf({ radius: EARTH_R })), small = circulationOf(planetOf({ radius: SMALL_RADIUS_M }));
 
 test("the reference planet is scaled by nothing", () => {
-  expect(similarityOf(RADIUS_M)).toEqual({ similar: false, s: 1, length: 1, cells: 1 });
+  expect(similarityOf(RADIUS_M)).toEqual({ similar: false, s: 1, cells: 1 });
   expect(planetOf().dayS).toBe(86_400);
   expect(sweepsFor(RADIUS_M)).toEqual({ gap: 16, smooth: 2, dist: 16, flow: 320, regional: 32, wedge: 54, load: 32 });
   expect(erosionFor(RADIUS_M)).toEqual({});
@@ -64,32 +64,36 @@ test("the energy balance keeps Earth's D, so Earth's second mode of temperature,
   expect(diffusionFor(SMALL_RADIUS_M)).toBeGreaterThan(2 * EBM.D_EARTH);
 });
 
-test("tectonics: Earth's lengths times s, in cells where the grid holds them, and Earth's heights and counts", () => {
-  const set = makeSetup({ radius: SMALL_RADIUS_M }), s = similarityOf(SMALL_RADIUS_M), ref = makeHotspots({ ...DEFAULTS, hotspots: 5 }), hs = set.hotspots;
-  expect(hs.length).toBe(EARTH_HOTSPOTS);
-  // the footprint keeps Earth's angle (100 km on 6,371 km) and the cone Earth's height, flux for flux
-  const angle = (h: { radiusKm: number }, radius: number) => h.radiusKm / (radius / 1000);
-  expect(angle(hs[0], SMALL_RADIUS_M) / angle(ref[0], RADIUS_M) / (RADIUS_M / EARTH_R)).toBeCloseTo(1, 6);
-  for (let k = 0; k < 5; k++) expect(Math.abs(hs[k].peakM - ref[k].peakM)).toBeLessThanOrEqual(1);
-  // the arc's band over the slab: 124 and 174 km times s in chamfer units of 5 a cell
+test("tectonics: Earth's lengths in cells of this planet (rock sets them, not the radius), Earth's heights, rates by the sphere", () => {
+  const set = makeSetup({ radius: SMALL_RADIUS_M }), sim = similarityOf(SMALL_RADIUS_M), ref = makeHotspots({ ...DEFAULTS, hotspots: 5 }), hs = set.hotspots;
+  // the hot spots are Earth's 40 over the sphere's area: 0.04, so the one the planet is given; each keeps Earth's footprint (100 km) and flux, so Earth's cone
+  expect(hs.length).toBe(1);
+  expect(hotspotsOf(RADIUS_M)).toBe(5);
+  expect(hotspotsOf(EARTH_R)).toBe(EARTH_HOTSPOTS);
+  expect(hs[0].radiusKm).toBe(ref[0].radiusKm);
+  expect(Math.abs(hs[0].peakM - ref[0].peakM)).toBeLessThanOrEqual(1);
+  // the arc's band over the slab: Earth's 124 and 174 km in chamfer units of 5 a cell
   const cellKm = (SMALL_RADIUS_M * tierGrid(0, SMALL_RADIUS_M).width) / 1000;
-  expect(set.layout.arcLo).toBe(Math.round((5 * ARC_KM.lo * s.length) / cellKm));
-  expect(set.layout.arcHi).toBe(Math.round((5 * ARC_KM.hi * s.length) / cellKm));
-  // the wedge's spreading: sigma = dx (0.4 n)^(1/2) is Earth's 57 km times s to 15%
+  expect(set.layout.arcLo).toBe(Math.round((5 * ARC_KM.lo) / cellKm));
+  expect(set.layout.arcHi).toBe(Math.round((5 * ARC_KM.hi) / cellKm));
+  // the wedge's spreading: sigma = dx (0.4 n)^(1/2) is Earth's 57 km, the trench distance reaches the arc band's far edge
   const dx = cellKm, sigma = (n: number) => dx * Math.sqrt(0.4 * n), sw = sweepsFor(SMALL_RADIUS_M);
-  expect(Math.abs(sigma(sw.wedge) / (57 * s.length) - 1)).toBeLessThan(0.15);
+  expect(Math.abs(sigma(sw.wedge) / 57 - 1)).toBeLessThan(0.05);
+  expect(Math.abs(sigma(sw.load) / (57 * Math.sqrt(32 / 54)) - 1)).toBeLessThan(0.05);
+  expect(sw.dist).toBeGreaterThan(set.layout.arcHi / 5);
   expect(sw.wedge % 2).toBe(0);
   expect(sw.load % 2).toBe(0);
-  // the weak channel's viscosity: D_h t / L^2 is Earth's, so eta goes as 1 / s^2; plates cross Earth's angle in Earth's time
-  expect(set.params.flowEta / DEFAULTS.flowEta).toBeCloseTo(1 / s.length ** 2, 6);
+  // the weak channel's viscosity is rock's; plates cross Earth's angle in Earth's time (the sphere's own rate)
+  expect(set.params.flowEta).toBe(DEFAULTS.flowEta);
   expect(set.params.speedScale).toBeCloseTo(SMALL_RADIUS_M / EARTH_R, 9);
+  expect(sim.cells).toBeCloseTo(RADIUS_M / SMALL_RADIUS_M, 9);
 });
 
-test("erosion: the creep as s^2, the shelf's slope over s, the sediment's reach in the cells Earth's length is worth", () => {
-  const p = erosionFor(SMALL_RADIUS_M), s = similarityOf(SMALL_RADIUS_M).length, d = defaultParams();
-  expect(p.creepLand! / d.creepLand).toBeCloseTo(s * s, 9);
-  expect(p.creepSea! / d.creepSea).toBeCloseTo(s * s, 9);
-  expect(p.shelfSlope! / d.shelfSlope).toBeCloseTo(1 / s, 9);
-  // 96 rings of 12.27 km is 1,178 km: times s over a cell of this planet
-  expect(p.ringMax).toBe(Math.round((96 * 12.272 * s) / ((SMALL_RADIUS_M * tierGrid(0, SMALL_RADIUS_M).width) / 1000)));
+test("erosion: creep, the shelf's slope and the sediment's reach are Earth's (the reach in the cells it takes here)", () => {
+  const p = erosionFor(SMALL_RADIUS_M);
+  expect(p.creepLand).toBeUndefined();
+  expect(p.creepSea).toBeUndefined();
+  expect(p.shelfSlope).toBeUndefined();
+  // 96 rings of 12.27 km is 1,178 km: the same length over a cell of this planet
+  expect(p.ringMax).toBe(Math.round((96 * 12.272) / ((SMALL_RADIUS_M * tierGrid(0, SMALL_RADIUS_M).width) / 1000)));
 });
