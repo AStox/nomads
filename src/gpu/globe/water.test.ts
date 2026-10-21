@@ -51,9 +51,9 @@ describe("the planet's water stage", () => {
     for (const f of ["water.u16", "chn.u8", "valley.u8"]) expect(worst(out(f, ra), out(f, rb), pairs), f).toBe(0);
     const flow = worst(out("flow.u32", ra), out("flow.u32", rb), pairs), table = Math.max(...["stb0", "stb1", "stb2", "stb3", "dry"].map((s) => worst(out(`${s}.u16`, ra), out(`${s}.u16`, rb), pairs)));
     const power = worst(out("pwr.u16", ra), out("pwr.u16", rb), pairs);
-    console.log(`water: two patches of halo ${WATER_HALO} over ${pairs.length} shared cells: flow differs by at most ${flow} of 65536 m3/s, the table by ${table} of 64 per m, the power by ${power} of 16 per W/m2`);
+    console.log(`water: two patches of halo ${WATER_HALO} over ${pairs.length} shared cells: flow differs by at most ${flow} of 65536 m3/s, the table by ${table} of 256 per m, the power by ${power} of 16 per W/m2`);
     expect(flow).toBeLessThanOrEqual(2);
-    expect(table).toBeLessThanOrEqual(16); // a quarter metre: lakes drain the ground and hold no head, so a patch's water table has fewer anchors and settles to a few centimetres less
+    expect(table).toBeLessThanOrEqual(64); // a quarter metre (1/256 m units): lakes drain the ground and hold no head, so a patch's water table has fewer anchors and settles to a few centimetres less
     expect(power).toBeLessThanOrEqual(4);
   });
 
@@ -193,7 +193,7 @@ describe("the planet's water stage", () => {
     for (const f of waterFiles(4)) expect(hash(b[f])).toBe(hash(a[f]));
     const all = Bun.hash(Buffer.concat(waterFiles(4).map((f) => Buffer.from(a[f].buffer, a[f].byteOffset, a[f].byteLength)))).toString(16);
     console.log(`water: real tile 458 at halo ${WATER_HALO}: ${seconds.toFixed(1)} s, aquifer sweeps ${sweeps}, ${lastRun.inflows} inflows, hash ${all}`);
-    expect(all).toBe("35755d4d6cc0b657");
+    expect(all).toBe("f2b155709d059583");
     unmap();
   });
 });

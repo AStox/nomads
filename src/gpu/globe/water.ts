@@ -24,8 +24,8 @@
 //   t4-chn.u8      1 where a channel runs (Hydro.channel)
 //   t4-valley.u8   1 where the floodplain of a channel lies (Hydro.valley)
 //   t4-pwr.u16     the stream's power a metre of its width, 1/16 W/m2, held at 65535 (Hydro.power; ground.ts reads it against CONFINED, 300)
-//   t4-stb0.u16 .. t4-stb3.u16   the water table's depth below the ground in the middle of each season, 1/64 m, held at 65535 (Hydro.seasonTable; winterTable is stb3)
-//   t4-dry.u16     the deepest the table falls in any season, 1/64 m (Hydro.dryTable)
+//   t4-stb0.u16 .. t4-stb3.u16   the water table's depth below the ground in the middle of each season, 1/256 m, held at 65535 = 255.99 m (Hydro.seasonTable; winterTable is stb3)
+//   t4-dry.u16     the deepest the table falls in any season, 1/256 m, held at 65535 (Hydro.dryTable)
 // Not kept: the year's table (the seasons' mean), the springs, the stream's flow under its bed and the slope (the slope is the fall to the receiver over the reach, from the heights).
 //
 // Also here: `surplusStage` (the weights of the global discharge: each season's surplus over the cell as 1/64 m3, the bucket of the hydrology's `prep` over the planet's rain and potential
@@ -241,7 +241,7 @@ export async function waterOf(ctx: Ctx, patch: Patch, cfg: WaterConfig): Promise
   const f = raw.fields, u16 = (v: number) => Math.min(65535, Math.max(0, v));
   const water = new Uint16Array(nn), flow = new Uint32Array(nn), qwet = new Uint32Array(nn), base = new Uint16Array(nn), chn = new Uint8Array(nn), valley = new Uint8Array(nn), pwr = new Uint16Array(nn), dry = new Uint16Array(nn);
   const stb = [0, 1, 2, 3].map(() => new Uint16Array(nn));
-  const Zcm = 100 / 2 ** 17, Z64 = 64 / 2 ** 17;
+  const Zcm = 100 / 2 ** 17, Z256 = 256 / 2 ** 17;
   for (let k = 0; k < nn; k++) {
     water[k] = u16(Math.round(f.water[k] * Zcm));
     flow[k] = f.flow[k] >>> 0;
@@ -250,8 +250,8 @@ export async function waterOf(ctx: Ctx, patch: Patch, cfg: WaterConfig): Promise
     base[k] = u16(f.base[k]);
     chn[k] = f.chn[k]; valley[k] = f.valley[k];
     pwr[k] = u16(Math.round(f.pwr[k] / 4096));
-    for (let s = 0; s < 4; s++) stb[s][k] = u16(Math.round(f[`stb${s}`][k] * Z64));
-    dry[k] = u16(Math.round(f.dry[k] * Z64));
+    for (let s = 0; s < 4; s++) stb[s][k] = u16(Math.round(f[`stb${s}`][k] * Z256));
+    dry[k] = u16(Math.round(f.dry[k] * Z256));
   }
   lastRun.sweeps = [raw.misc[MISC.sweeps1], raw.misc[MISC.sweeps2]]; lastRun.flags = raw.flags; lastRun.inflows = inflow.length; lastRun.fields = raw.fields; lastRun.settle = raw.settle;
   lastRun.seconds = { inputs: (t1 - t0) / 1000, gpu: (performance.now() - t1) / 1000 };
