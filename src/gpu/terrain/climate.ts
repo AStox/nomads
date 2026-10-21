@@ -46,11 +46,11 @@ export type PatchInput = {
   tS: Int32Array[]; seaS: Int32Array[]; e0S: Int32Array[]; // by season, Q16: the air's sea-level warmth, the sea's, the air's water at sea level
   wturn: Int32Array; // Q16 bearings, mod 16: the cell's wind direction less the rose's own mean, in the patch's axes
   band: Int32Array; // the cell's band of latitude, an index into bandsDeg
-  cps: Int32Array; sps: Int32Array; psi: Int32Array; // the grid's x axis against east toward north: cosine, sine Q16, and the angle in Q16 bearings
   bandsDeg: number[]; // the latitude each band's sun table is made for
+  gm: Int32Array; // 4 words a cell, Q16: the lattice's differences to (east, north) gradients, in units of a cell's width (the inverse transpose of the lattice's steps in metres times CELL)
+  dsea: Int32Array; // Q12 m: the distance over land to the sea (a global field of the planet)
   groups: Int32Array; // the snow years' groups of four cells, four indices each (-1: none)
   rose: readonly number[]; // the wind rose as measured, shares in the patch's bearings (patchRose)
-  shore?: Int32Array; // 16 bearings x n x n, Q16 m: how far over land the air upwind of the patch's edge has come (0 where absent)
 };
 // A measured rose in the bearings of a patch's axes: those run counterclockwise seen from outside (x east, y north), where the island's run toward south, so the
 // measured rose is read the other way round and keeps the sense it was measured in [design: the northern hemisphere's, at every latitude: gap].
@@ -327,11 +327,11 @@ export function runClimate(g: Gpu, input: ClimateRestInput): Arena {
   }
   if (patch) {
     for (let s = 0; s < NS; s++) { inp.set(patch.tS[s], SEC.tS + s * len); inp.set(patch.seaS[s], SEC.seaS + s * len); inp.set(patch.e0S[s], SEC.e0S + s * len); }
-    inp.set(patch.wturn, SEC.wturn); inp.set(patch.band, SEC.band); inp.set(patch.cps, SEC.cps); inp.set(patch.sps, SEC.sps); inp.set(patch.psi, SEC.psi);
+    inp.set(patch.wturn, SEC.wturn); inp.set(patch.band, SEC.band); inp.set(patch.gm, SEC.gm); inp.set(patch.dsea, SEC.dsea);
   }
   const W = storage(g, l.ARENA_WORDS * 4), TAB = storage(g, tab), CUR = storage(g, 16);
   g.device.queue.writeBuffer(W, 0, inp);
-  if (patch?.shore) g.device.queue.writeBuffer(W, SEC.shore * 4, patch.shore);
+
 
   const enc = g.device.createCommandEncoder(), pass = enc.beginComputePass(), bound = new Map<GPUComputePipeline, GPUBindGroup>();
   const run = (source: string, entry: string, x: number, y = 1) => {

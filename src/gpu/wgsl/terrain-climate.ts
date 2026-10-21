@@ -32,7 +32,9 @@ export interface ClimateFormat { n: number; patch?: boolean }
 export const ISLAND_CLIMATE: ClimateFormat = { n: N };
 // The width of a band of latitude a patch's sun table is made for, degrees [design: 0.1 degree is 0.12% of the day's length at
 // 60 degrees and 195.6 km of radius, so the step between two bands of the table is under the stage's own roundings].
-export const BAND_DEG = 0.1, BANDS_MAX = 200;
+export const BAND_DEG = 0.1, BANDS_MAX = 400;
+// How far a break's wake and the spray's distance over land are followed on a patch, cells [design: below the halo's 128 by the horizon's slack, see gpu/globe/air.ts]
+export const WAKE_REACH = 240;
 
 // One arena holds every field, in sections of one word a cell (N x N) in the order below; a section named `lee` takes four
 // words a cell (16 bytes, one a bearing), `vk` sixteen, and so on. Each field's unit and scale is written beside it.
@@ -47,8 +49,9 @@ const sectionsOf = (patch: boolean): [string, number][] => [
     ["e0S", 4], // Q16 kPa: the air's water at sea level
     ["wturn", 1], // Q16 bearings (mod 16): the cell's wind direction less the rose's own mean
     ["band", 1], // the cell's band of latitude in the sun table, counted from the patch's first
-    ["cps", 1], ["sps", 1], // Q16: cosine and sine of the grid's x axis against east, toward north
-    ["psi", 1], // Q16 bearings (mod 16): the same angle
+    ["gm", 4], // Q16: the cell's lattice-to-(east, north) gradient map in units of the cell's width (the inverse transpose of its steps in metres, times CELL)
+    // (the lattice offsets of a compass step are gm's: gm is the lattice's inverse steps times CELL, transposed)
+    ["dsea", 1], // Q12 m: the distance over land to the sea, a global field of the planet (gpu/globe/air.ts)
   ] as [string, number][]) : []),
   ["windShare", 1], // Q16
   ["breeze", 1], // Q16 m/s
@@ -272,6 +275,10 @@ ${wakeFn()}
 const STEPM = ${STEPM}i;${f.patch ? `
 // a patch's air has come over land for tens of kilometres: the shore's distance is held in Q12 m (to 524 km), and how far behind a break a cell stands saturates
 const STEPS = ${STEPM >> 4}i;
+// A break shelters the air behind it for 30 of its heights at most (the wake curve's own end), and here for no more than WAKE_REACH cells of the lattice [design: a patch's halo
+// is finite, and a function of a cell that reaches past it cannot be the same under every tiling]; the air's distance over land counts for the spray only that far (the spray is gone after 3 km)
+const XMAXQ = ${Math.round(WAKE_REACH * CELL * 65536)}i;
+const SHCAP = ${Math.round(WAKE_REACH * CELL * 4096)}i;
 fn sadd(a: i32, b: i32) -> i32 { return select(a + b, 0x7fffffffi, a > 0x7fffffffi - b); }` : ""}
 const PARTS_Q = ${Math.round(PARTS * STEP * CELL * 65536)}i;
 @compute @workgroup_size(64) fn air_step(@builtin(global_invocation_id) g: vec3u) {
@@ -288,15 +295,15 @@ const PARTS_Q = ${Math.round(PARTS * STEP * CELL * 65536)}i;
   let b = k * LEN;
   let isopen = W[O_open + i] != 0i;
   var T = NEG; var X = 0i; var v = ONE; var sh = 0i;
-${f.patch ? "  // upwind of the patch's edge the air has come over land for as far as the host seeded it (the cell's word in `shore`, 0 where it did not)\n  if (off) { sh = W[O_shore + b + i]; }\n" : ""}  if (!off) {
+  if (!off) {
     let x0 = min(${n - 2}i, ux >> 16u); let y0 = min(${n - 2}i, uy >> 16u);
     let fx = ux - (x0 << 16u); let fy = uy - (y0 << 16u);
     let j = u32(y0 * ${n}i + x0);
     let up = bil(O_z, j, fx, fy);
-    if (!isopen) { sh = ${f.patch ? "sadd(bil(O_shore + b, j, fx, fy), STEPS)" : "bil(O_shore + b, j, fx, fy) + STEPM"}; }
+    if (!isopen) { sh = ${f.patch ? "min(sadd(bil(O_shore + b, j, fx, fy), STEPS), SHCAP)" : "bil(O_shore + b, j, fx, fy) + STEPM"}; }
     // the break the nearest upwind cell carries, or the ground just upwind if it falls away steeply enough to part the flow
     let nj = j + select(0u, 1u, fx >= 32768i) + select(0u, ${n}u, fy >= 32768i);
-    T = W[O_top + b + nj]; X = ${f.patch ? "sadd(W[O_since + b + nj], STEPM)" : "W[O_since + b + nj] + STEPM"};
+    T = W[O_top + b + nj]; X = ${f.patch ? "sadd(W[O_since + b + nj], STEPM)" : "W[O_since + b + nj] + STEPM"};${f.patch ? "\n    if (X > XMAXQ) { T = NEG; X = 0i; }" : ""}
     if (T > zi) { v = wake_q(qdiv(X, T - zi)); }
     if (up - zi > PARTS_Q) {
       let w = wake_q(qdiv(STEPM, up - zi));
@@ -309,7 +316,7 @@ ${f.patch ? "  // upwind of the patch's edge the air has come over land for as f
   else { v = qmul(v, ONE + mulr(max(0i, zi - W[O_around + i]), ${Q32(TAYLOR_LEE / HALF_LENGTH)}i, 32u)); }
   W[O_vk + b + i] = v;
   let e1 = qexp(-qdiv(sh, ${Math.round(SPRAY_M * SHS)}i));
-  let e2 = qexp(-qdiv(sh, ${Math.round(FAR_M * SHS)}i));
+  let e2 = qexp(-qdiv(${f.patch ? "W[O_dsea + i]" : "sh"}, ${Math.round(FAR_M * SHS)}i));
   W[O_sk + b + i] = qmul(${q(1 - FAR)}, e1) + qmul(${q(FAR)}, e2);
 }
 @compute @workgroup_size(1) fn air_advance() { touch(); CUR[0] = CUR[0] + 1u; }
@@ -355,8 +362,11 @@ fn zsample(px: i32, py: i32) -> i32 {
   let i = flat(g, n);
   if (i >= LEN) { return; }
   let x = ${colOf(n, "i")}; let y = ${rowOf(n, "i")};
-  let gx = qdiv(zat(x + 1i, y) - zat(x - 1i, y), ${q(2 * CELL)});
-  let gy = qdiv(zat(x, y + 1i) - zat(x, y - 1i), ${q(2 * CELL)});
+${f.patch ? `  // the gradient by the cell's own metric: the lattice's differences turned to (east, north) by W[O_gm] (the inverse transpose of the lattice's steps in metres, in units of a cell)
+  let zx = zat(x + 1i, y) - zat(x - 1i, y); let zy = zat(x, y + 1i) - zat(x, y - 1i);
+  let gx = qdiv(mulr(W[O_gm + 4u * i], zx, 16u) + mulr(W[O_gm + 4u * i + 1u], zy, 16u), ${q(2 * CELL)});
+  let gy = qdiv(mulr(W[O_gm + 4u * i + 2u], zx, 16u) + mulr(W[O_gm + 4u * i + 3u], zy, 16u), ${q(2 * CELL)});` : `  let gx = qdiv(zat(x + 1i, y) - zat(x - 1i, y), ${q(2 * CELL)});
+  let gy = qdiv(zat(x, y + 1i) - zat(x, y - 1i), ${q(2 * CELL)});`}
   let g2 = qmul(gx, gx) + qmul(gy, gy);
   let gg = qsqrt(g2 + ONE);
   W[O_nx + i] = qdiv(-gx, gg); W[O_ny + i] = qdiv(-gy, gg); W[O_nz + i] = qdiv(ONE, gg);
@@ -366,11 +376,13 @@ fn zsample(px: i32, py: i32) -> i32 {
     let zi = W[O_z + i];
     var open2 = 0i;
     for (var k = 0u; k < ${DIRS}u; k++) {
-      let c = TAB[T_cs16 + 2u * k]; let s = TAB[T_cs16 + 2u * k + 1u];
+      let c = TAB[T_cs16 + 2u * k]; let s = TAB[T_cs16 + 2u * k + 1u];${f.patch ? `
+      // the lattice offset of a step of one cell's width toward the compass bearing: the inverse of the lattice's steps in metres (gm's entries, times CELL) on (cos, sin)
+      let sx = mulr(W[O_gm + 4u * i], c, 16u) + mulr(W[O_gm + 4u * i + 2u], s, 16u); let sy = mulr(W[O_gm + 4u * i + 1u], c, 16u) + mulr(W[O_gm + 4u * i + 3u], s, 16u);` : ""}
       var top = 0i;
       for (var r = 0u; r < ${REACH_N}u; r++) {
         let d = TAB[T_reach + 2u * r];
-        let px = (x << 16u) + qmul(c, d); let py = (y << 16u) + qmul(s, d);
+        ${f.patch ? "let px = (x << 16u) + mulr(sx, d, 16u); let py = (y << 16u) + mulr(sy, d, 16u);" : "let px = (x << 16u) + qmul(c, d); let py = (y << 16u) + qmul(s, d);"}
         if (px < 0i || py < 0i || px > LIM || py > LIM) { break; }
         let diff = zsample(px, py) - zi;
         if (diff > 0i) { top = max(top, mulr(diff, TAB[T_reach + 2u * r + 1u], 28u)); }
@@ -407,9 +419,8 @@ fn fog_q24(s: u32, z: i32) -> i32 {
   let lit = W[O_hq + i] > ${q(-2)};
   let z = W[O_z + i]; let sky = W[O_sky + i];
   let nx = W[O_nx + i]; let ny = W[O_ny + i]; let nz = W[O_nz + i];
-${f.patch ? `  // the table's rows are in the compass's axes (east, north): the normal turned to them, and the horizon's bearing in the grid's axes
-  let ce = qmul(nx, W[O_cps + i]) - qmul(ny, W[O_sps + i]); let cn = qmul(nx, W[O_sps + i]) + qmul(ny, W[O_cps + i]);
-  let band = u32(W[O_band + i]); let psi = W[O_psi + i];
+${f.patch ? `  // the table's rows, the normal and the horizons are in the compass's bearings (east, north), each cell's lattice turned to them by its own metric (shapeWgsl)
+  let band = u32(W[O_band + i]);
 ` : ""}  for (var s = 0u; s < 4u; s++) {
     let sb = ${f.patch ? `T_sunb + (band * 4u + s) * ${l.SUN_STRIDE}u` : `T_sun + s * ${l.SUN_STRIDE}u`};
     let cnt = u32(TAB[sb]); let tb = TAB[sb + 1u]; let gl = TAB[sb + 2u]; let lv = TAB[sb + 3u]; let cl = TAB[sb + 4u]; let icl = TAB[sb + 5u]; let tgl = TAB[sb + 6u];
@@ -423,14 +434,11 @@ ${f.patch ? `  // the table's rows are in the compass's axes (east, north): the 
       var b = 0i;
       for (var q = 0u; q < cnt; q++) {
         let o = sb + 8u + q * 8u;
-        ${f.patch ? "let face = qmul(ce, TAB[o]) + qmul(cn, TAB[o + 1u]) + qmul(nz, TAB[o + 2u]);" : "let face = qmul(nx, TAB[o]) + qmul(ny, TAB[o + 1u]) + qmul(nz, TAB[o + 2u]);"}
+        let face = qmul(nx, TAB[o]) + qmul(ny, TAB[o + 1u]) + qmul(nz, TAB[o + 2u]);
         if (face > 0i) {
-${f.patch ? `          let kq = ((TAB[o + 5u] << 16u) + TAB[o + 6u] - psi) & 0xfffff;
-          let k0 = u32(kq) >> 16u; let k1 = (k0 + 1u) & 15u; let fr = kq & 65535i;
+          let k0 = u32(TAB[o + 5u]); let k1 = (k0 + 1u) & 15u;
           let h0 = W[O_hz + i * ${DIRS}u + k0]; let h1 = W[O_hz + i * ${DIRS}u + k1];
-          if (TAB[o + 3u] > h0 + mulr(h1 - h0, fr, 16u)) { b += mulr(face, TAB[o + 4u], 16u); }` : `          let k0 = u32(TAB[o + 5u]); let k1 = (k0 + 1u) & 15u;
-          let h0 = W[O_hz + i * ${DIRS}u + k0]; let h1 = W[O_hz + i * ${DIRS}u + k1];
-          if (TAB[o + 3u] > h0 + mulr(h1 - h0, TAB[o + 6u], 16u)) { b += mulr(face, TAB[o + 4u], 16u); }`}
+          if (TAB[o + 3u] > h0 + mulr(h1 - h0, TAB[o + 6u], 16u)) { b += mulr(face, TAB[o + 4u], 16u); }
         }
       }
       out = mulr(np, mulr(tb, b, 16u) + mulr(tgl, sky, 16u), 24u) + mulr(p, mulr(icl, sky, 16u), 24u);

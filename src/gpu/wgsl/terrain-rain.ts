@@ -30,8 +30,8 @@ export const ISLAND_RAIN: RainFormat = { n: N, coarse: COARSE };
 export const rainDims = (f: RainFormat) => { const nc = f.n / f.coarse; return { nc, m: 4 * nc }; };
 // The thread's index: the global id's x where one row of workgroups covers the passes; a `wide` format may need more than the dispatch limit (65,535 groups of 256) and
 // reads the rows too (src/gpu/kernel.ts cover splits it so).
-const thread = (f: RainFormat) => (f.wide
-  ? { sig: "@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) nw: vec3u", idx: "g.x + g.y * nw.x * 256u" }
+const thread = (f: RainFormat, group = 256) => (f.wide
+  ? { sig: "@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) nw: vec3u", idx: `g.x + g.y * nw.x * ${group}u` }
   : { sig: "@builtin(global_invocation_id) g: vec3u", idx: "g.x" });
 
 // Q formats (a number x held as the integer round(x * 2^n)):
@@ -267,10 +267,37 @@ fn main(${thread(f).sig}) {
   p[n] = shr64(sum, 28u);
 }`;
 
-// Bindings: p, par, out (out: season x cells, Q16 mm); with `cells` also, before out, cell: each season's background rain of
-// every cell (Q24 mm an hour) then each season's turn of the wet rose at every cell (Q16 bearings: the cell's wind direction less
-// the rose's own mean, in steps of 2 pi / DIRS), and par's shares are the season's rose as measured (Q20 times its rain hours,
-// bearing k of the island's code) which the cell's turn reads between two of [design: climate.ts turned, here per cell].
+// The orographic waves as a convolution with a finite response (the unit's one solve: a cell's rain is a function of the relief within `radius` coarse cells of it, under any
+// tiling). Bindings: hc (the coarse heights, Q20 m), tab (the response of each (season, direction): 2 radius + 1 squared words, the rain of a rain hour that a 1,024 m impulse of
+// one coarse cell makes at that offset, Q24 mm an hour: the impulse's coarse word is 2^30), p (out: BATCH x NC x NC, Q24 mm an hour, as rainInvB's). Cells past the patch's edge count as none.
+export const rainConv = (f: RainFormat, radius: number) => /* wgsl */ `${common(f)}
+${bind([{ n: "hc" }, { n: "tab" }, { n: "p", rw: true }])}
+const RAD = ${radius}i;
+const WID = ${2 * radius + 1}u;
+@compute @workgroup_size(64)
+fn main(${thread(f, 64).sig}) {
+  let n = ${thread(f, 64).idx};
+  if (n >= SD * NC * NC) { return; }
+  let x = i32(n % NC); let y = i32((n / NC) % NC); let sd = n / (NC * NC);
+  let t0 = sd * WID * WID;
+  var acc = vec2u(0u);
+  for (var dy = -RAD; dy <= RAD; dy++) {
+    let yy = y - dy;
+    if (yy < 0i || yy >= i32(NC)) { continue; }
+    for (var dx = -RAD; dx <= RAD; dx++) {
+      let xx = x - dx;
+      if (xx < 0i || xx >= i32(NC)) { continue; }
+      acc = add64(acc, smul64(hc[u32(yy) * NC + u32(xx)], tab[t0 + u32(dy + RAD) * WID + u32(dx + RAD)]));
+    }
+  }
+  p[n] = shr64(acc, 30u);
+}`;
+
+// Bindings: p, par, cw, out (out: season x cells, Q16 mm): the orographic rain that a cell's waves add to its own background, summed over the directions by the wet rose as measured
+// (par's shares: Q20 times the season's rain hours, bearing k of the island's code, read between two of them at the cell's turn): the sum over the directions of the share times
+// (max(0, background + gain times the wave's rate) - background), the theory's cut at none (Smith and Barstad's eq. 40) per direction. cw holds, for each season in turn and then
+// cell by cell: the background rain of an hour (Q20 mm, which holds 2,047 mm an hour), the turn of the rose (Q16 bearings), the gain (Q16: the cell's wind and humid air against the reference the table was
+// made for, times the height scale of the coarse heights) [design: gpu/globe/air.ts].
 export const rainFine = (f = ISLAND_RAIN) => /* wgsl */ `${common(f)}
 ${bind(f.cells ? [{ n: "p" }, { n: "par" }, { n: "cw" }, { n: "out", rw: true }] : [{ n: "p" }, { n: "par" }, { n: "out", rw: true }])}
 @compute @workgroup_size(256)
@@ -281,7 +308,7 @@ fn main(${thread(f).sig}) {
   let ax = axis(cell % N); let ay = axis(cell / N);
   let wx = i32(ax.y); let wy = i32(ay.y);
   var acc = 0i;
-${f.cells ? `  let bg = cw[id]; let turn = cw[NS * CELLS + id];
+${f.cells ? `  let bg = cw[id]; let turn = cw[NS * CELLS + id]; let gain = cw[2u * NS * CELLS + id];
   for (var d = 0u; d < DIRS; d++) {
     let sd = season * DIRS + d;
     let u = u32((i32(d << 16u) - turn) & 0xfffff);
@@ -291,8 +318,8 @@ ${f.cells ? `  let bg = cw[id]; let turn = cw[NS * CELLS + id];
     let b = sd * NC * NC + ay.x * NC + ax.x;
     let top = mulq(p[b], 65536i - wx, 16u) + mulq(p[b + 1u], wx, 16u);
     let bot = mulq(p[b + NC], 65536i - wx, 16u) + mulq(p[b + NC + 1u], wx, 16u);
-    let v = bg + mulq(top, 65536i - wy, 16u) + mulq(bot, wy, 16u);
-    if (v > 0i) { acc += mulq(v, share, 28u); }
+    let wave = mulq(mulq(top, 65536i - wy, 16u) + mulq(bot, wy, 16u), gain, 20u);
+    acc += mulq(max(-bg, wave), share, 24u);
   }` : `  for (var d = 0u; d < DIRS; d++) {
     let sd = season * DIRS + d;
     let share = par[SHARE_AT + sd];

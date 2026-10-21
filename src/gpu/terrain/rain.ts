@@ -22,7 +22,7 @@ import { cover, dispatch, pipeline, readback, storage } from "../kernel";
 import { e2f, tolog2 } from "../fixed";
 import { N, CELL } from "../../terrain/grid";
 import { DIRS, GAMMA_RATIO, H_W, M, N_M, P_BG, R_V, SEASONS, SEASON_DAYS } from "../../terrain/climate";
-import { BATCH, ISLAND_RAIN, rainCoarse, rainCols, rainDims, rainFine, rainInvA, rainInvB, rainRows, rainTransfer, type RainFormat } from "../wgsl/terrain-rain";
+import { BATCH, ISLAND_RAIN, rainCoarse, rainConv, rainCols, rainDims, rainFine, rainInvA, rainInvB, rainRows, rainTransfer, type RainFormat } from "../wgsl/terrain-rain";
 
 const NS = SEASONS.length;
 // Words of the parameter buffer: a season's eight, a direction's two, the wet rose's share of each (season, direction).
@@ -66,7 +66,7 @@ export const ISLAND_DELAYS: Delays[] = ICE_SHARE.map((ice) => cloudDelays(ice));
 
 // FAO-56's saturation vapour pressure, kPa (climate.ts esat), with the exponential taken by the world's integer exp
 // (fixed.ts: 2^f from a table and a series, good to 2^-30) so that no word here depends on the engine's Math.exp.
-function esat(t: number) {
+export function esat(t: number) {
   const x = Math.round(((17.27 * t) / (t + 237.3)) * 2 ** 32);
   const [lo, hi] = tolog2([x >>> 0, Math.floor(x / 2 ** 32)]);
   return 0.6108 * (e2f(lo) / 2 ** 31) * 2 ** (hi | 0);
@@ -156,6 +156,45 @@ export async function rainWords(g: Gpu, fmt: RainFormat, zq: Int32Array, par: In
   dispatch(g, pipeline(g, k.fine), cellB ? [p, parB, cellB, out] : [p, parB, out], groups(NS * n * n));
   const words = new Int32Array(await readback(g, out));
   for (const b of [zB, twB, parB, hc, r, hh, s, a, p, out, ...(cellB ? [cellB] : [])]) b.destroy();
+  return words;
+}
+
+// The waves alone: the rain of a rain hour that the transfer gives each (season, direction) of the batch (BATCH x nc x nc words, Q24 mm an hour), the passes up to the inverse transform.
+export async function rainWaves(g: Gpu, fmt: RainFormat, zq: Int32Array, par: Int32Array): Promise<Int32Array> {
+  const { nc, m } = rainDims(fmt), n = fmt.n, k = kernelsOf(fmt);
+  if (zq.length !== n * n) throw new Error(`rainWaves: ${zq.length} heights, wanted ${n * n}`);
+  const zB = storage(g, zq), twB = storage(g, twiddles(m)), parB = storage(g, par);
+  const hc = storage(g, nc * nc * 4), r = storage(g, nc * m * 8), hh = storage(g, m * m * 8);
+  const s = storage(g, BATCH * m * m * 8), a = storage(g, BATCH * nc * m * 8), p = storage(g, BATCH * nc * nc * 4);
+  const groups = (c: number) => cover(g, c);
+  dispatch(g, pipeline(g, k.coarse), [zB, hc], groups(nc * nc));
+  dispatch(g, pipeline(g, k.rows), [hc, twB, r], groups(nc * m));
+  dispatch(g, pipeline(g, k.cols), [r, twB, hh], groups(m * m));
+  dispatch(g, pipeline(g, k.transfer), [hh, parB, s], groups(BATCH * m * m));
+  dispatch(g, pipeline(g, k.invA), [s, twB, a], [BATCH * nc]);
+  dispatch(g, pipeline(g, k.invB), [a, twB, p], groups(BATCH * nc * nc));
+  const words = new Int32Array(await readback(g, p));
+  for (const b of [zB, twB, parB, hc, r, hh, s, a, p]) b.destroy();
+  return words;
+}
+
+const convSets = new Map<string, { coarse: string; conv: string; fine: string }>();
+// The convolved rain: the coarse heights, the waves as a sum over the response `tab` (BATCH x (2 radius + 1)^2 words) of the coarse cells within `radius`, then the fine pass
+// (cells format) to the orographic rain of each cell, Q16 mm over the season (rainFine's cell words in `cell`).
+export async function rainConvolved(g: Gpu, fmt: RainFormat, radius: number, zq: Int32Array, par: Int32Array, tab: Int32Array, cell: Int32Array): Promise<Int32Array> {
+  const { nc } = rainDims(fmt), n = fmt.n, key = `${fmt.n}:${fmt.coarse}:${radius}`;
+  let k = convSets.get(key);
+  if (!k) convSets.set(key, (k = { coarse: rainCoarse(fmt), conv: rainConv(fmt, radius), fine: rainFine(fmt) }));
+  if (!fmt.cells || !fmt.wide) throw new Error("rainConvolved: a patch's format has per-cell words and wide dispatch");
+  if (zq.length !== n * n) throw new Error(`rainConvolved: ${zq.length} heights, wanted ${n * n}`);
+  const zB = storage(g, zq), parB = storage(g, par), tabB = storage(g, tab), cellB = storage(g, cell);
+  const hc = storage(g, nc * nc * 4), p = storage(g, BATCH * nc * nc * 4), out = storage(g, NS * n * n * 4);
+  const groups = (c: number, size = 256) => cover(g, c, size);
+  dispatch(g, pipeline(g, k.coarse), [zB, hc], groups(nc * nc));
+  dispatch(g, pipeline(g, k.conv), [hc, tabB, p], groups(BATCH * nc * nc, 64));
+  dispatch(g, pipeline(g, k.fine), [p, parB, cellB, out], groups(NS * n * n));
+  const words = new Int32Array(await readback(g, out));
+  for (const b of [zB, parB, tabB, cellB, hc, p, out]) b.destroy();
   return words;
 }
 

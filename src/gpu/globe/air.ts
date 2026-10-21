@@ -1,32 +1,38 @@
 // The `air` tile stage: the island's rain and the rest of its climate (src/gpu/terrain/{rain,climate}.ts) on a patch of the 75 m tier, fed by the planet's fields the way
-// window.ts windowOf feeds a window, but each cell by its own place and the rain's totals by tier-0 block (a block is the 16 by 16 cells of one tier-0 cell). The planet's air
-// (sea-level warmth by season, the sea's surface, the wind, the rain) is read by sampleCoarse; the tier's heights and its flooded surface say where open water lies.
+// window.ts windowOf feeds a window, but each cell by its own place. Unit 5b: every stored word of a cell is a pure function of the cells within a stated reach of it, so the
+// same cell has the same bytes under any tiling (air.test.ts proves it by running patches that overlap at other offsets and other halos). A tiling starts on a multiple of 4
+// cells (the rain's coarse cells); a tile does.
 //
-// What a cell takes of its place (each a window's one value on the island and in window.ts):
-//   sea-level air, the sea's surface and the air's water by season   the planet's, at the cell; the sea's surface from the sea cells of tier 0 alone (normalised sample)
-//   wind direction                                                     the planet's year-mean wind at the cell (the rain's each season's) in the patch's axes; the roses keep their shapes
-//   the sun's table                                                    the cell's band of latitude (0.1 degree), in the compass's axes, the cell's grid turned to them
-//   the rain's background                                              the tier-0 cell's own rain (piecewise constant over a block), on which the orographic detail is added
-//   the rain's cloud delays and its C_w                                the patch's centre's sea-level air by season (the one value the transfer takes: the measured step between two tiles' centres is in the notes)
-//   Bornholm's, kept [gap]                                             cloud, beam and glow through the cloud, humidity at sea level against saturation, the wet hours' wind and humidity, fog,
-//                                                                      the pool of cold air's cooling, the snow years' weather and spread, the sea wind's speed
+// What a cell takes of its place:
+//   sea-level air, the sea's surface and the air's water by season   the planet's at the cell (sampleCoarse); the sea's surface from the sea cells of tier 0 alone
+//   wind direction                                                     the planet's year-mean wind at the cell (the rain's each season's), the roses keeping their shapes
+//   the sun                                                            the cell's band of latitude (0.1 degree) in the compass's bearings, the cell's normal and horizons by its lattice's own metric
+//   the rain's background                                              the planet's rain made mean-keeping at tier 0 (bgField), read between tier-0 centres
+//   the far salt                                                       the planet's distance over land to the sea (a global field, seaDistance)
+//   Bornholm's, kept [gap]                                             cloud, beam and glow through the cloud, humidity at sea level against saturation, the wet hours' humidity and rains,
+//                                                                      fog, the pool of cold air's cooling, the snow years' weather and spread, the sea wind's speed
 //
-// Rain (R1800 to R1829). The theory (Smith and Barstad, R487) is run on the detail relief: the tier's height less the planet's tier-0 surface sampled to the cell (window.ts
-// rainZ), over the patch (rain.ts RainFormat {coarse 4, cells, wide}; M = 4 NC), with the cloud delays scaled by the planet's s (similarity.ts: Earth's times s, as the
-// atmosphere scales them, so a drift of U tau is Earth's times s: 0.4 to 1 km, not 13 km). Its background is the tier-0 cell's own rain (so a block's cells add to the same
-// number whatever their neighbours'); each cell's rain is the planet's (sampled) times the theory's field over its block's mean, then the block is scaled so its mean is the
-// tier-0 cell's own: out(c) = shape(c) made(c) / mean_block(made), times P0 / mean_block(that). A block is whole in the patch because the halo is a whole number of blocks
-// (16 cells) and a tile starts on one: the means are then those of whole blocks wherever the patch is cut.
+// Rain (R1800 to R1829). Smith and Barstad's transfer (R487) is linear in the relief, so the orographic part of a season's rain of a wind direction is a convolution of the
+// coarse relief (the detail: the tier's height less the planet's tier-0 surface at the cell, in 4 by 4 means of 300 m) with a response. The response is the transfer's own, got once
+// by the integer transform kernels (rain.ts) from a 1,024 m impulse in a domain a hundred coarse cells wide, truncated at RAIN_R coarse cells and kept as integers (rainTable);
+// the kernel sums it directly (terrain-rain.ts rainConv). It is the planet's: per season and direction at the planet's land-mean wind and sea-level air (the delays are the
+// atmosphere's, similarity.ts), and the cell's own gain follows its wind and warmth (the transfer's amplitude is its humid air's vapour times the wind): gain = Cw(t) U / Cw(tRef) U_ref.
+// The truncation is the model's [design]: the response's waves decay slowly (90% of its energy lies within 15 coarse cells, 99% within 55), so the truncated sum differs from the
+// untruncated by 3 to 10% of the waves' rms at 56 and 18 to 25% at 24 (notes).
+// The rain of a cell is its background plus its orographic part less the mean of that part, cut at none, where the mean is read between the centres of the tier-0 blocks (a block is
+// the 16 by 16 cells of one tier-0 cell; a constant to each would step at every edge); the cut adds rain where the part is large against the background, so a block's mean is then
+// brought back to its background's by a scale at most 1, read between the blocks' centres (a block with no background keeps none). No cell's share of its tier-0 cell's rain is capped.
+// Reach of a cell's rain: rainReach (the waves, then the means, the passes that make them smooth, the scale).
 //
-// Halo (AIR_HALO = 128, a patch of 512 by 512, four times the tile's cells). Each kernel's reach in cells of 75 m: the blur three passes of 8 (24); the normal 1; the pool's around
-// and slope (25); the horizons 95 (the table's 26 distances 1.2^n below 110), the longest and the only one that makes the halo's size (a multiple of 16 over it: 96); the snow
-// years' group 2. Past any halo: the wind's wake (a break of height H shelters 30 H downwind: kilometres behind a range), the salt's far fall-off (31 km, 414 cells; the host seeds
-// the edge with the planet's distance to the sea, a floor of how far the air has come) and the rain's lee waves (the theory's mountain waves of 17 km are damped by the cloud
-// delays alone, which on this planet are s times Earth's, so they travel the patch). 128 keeps the wake's first 30 H of a 100 m ridge, the salt's near fall-off and the
-// rain's first drift whole; what it cuts is measured in the notes (docs/research/globe/2026-10-21-planet-75m-air.md) and by air.test.ts.
+// Reach of every other stored word, cells of the lattice (the halo is AIR_HALO): temperature, humidity, pet: their own sun, pool, breeze and the planet's air (local) ->
+// the sun 123 (a horizon sample 94.4 cells of 75 m out, a lattice step to 1.16 per metre and 1.13 of a cell's width); pool: the blurred ground 24 and the wind; breeze and wind
+// share: the wake of a break, followed WAKE_REACH = 240 cells then ended [design: the wake curve ends at 30 heights; a break taller than 600 m is followed only that far, and
+// the wind there is the open's past it]; salt: the spray's distance over land 240 (it is gone at 3 km), the far salt the global distance to the sea; snow years, snowpack, fog,
+// sky: local after the sun and rain. Tier-0 fields are read at the cell, the nearest four centres: local.
 import { SEASONS, SEASON_DAYS, H_W, LAPSE, ROSE, WET_ROSE, esat } from "../../terrain/climate";
+import { CELL } from "../../terrain/grid";
 import { eastNorth, haloSource, pointOf, tierGrid } from "./grid";
-import { MOST_TOTAL_M, cloudDelays, rainHeights, rainParams, rainWords } from "../terrain/rain";
+import { cloudDelays, rainConvolved, rainParams, rainWaves } from "../terrain/rain";
 import { patchMeanWay, patchRose, runClimate, type PatchInput } from "../terrain/climate";
 import { BAND_DEG } from "../wgsl/terrain-climate";
 import type { RainFormat } from "../wgsl/terrain-rain";
@@ -37,51 +43,56 @@ import { sampleCoarse } from "./sample";
 import { similarityOf } from "./similarity";
 import type { Ctx, Field, TileStage } from "./stages";
 
-const NS = SEASONS.length, DEG = Math.PI / 180;
-export const AIR_HALO = 128;
-// The orographic rain is reckoned on the detail relief over this: the transforms' words hold a coarse sum of 2e6 m of height, which 122 m of mean detail over a 512-cell patch
-// passes [derived: rain.ts MOST_TOTAL_M], so the heights and the background are taken at a sixteenth and the theory (linear in both, R1708) is read back at sixteen times. The
-// detail is under the planet's highest ground (6.5 km) in size, so its mean under 400 m at this scale: the check cannot fail.
+const NS = SEASONS.length;
+// The rain's reach, cells: the waves (radius coarse cells of 4, the cell's own coarse cell and its bilinear read: 4 radius + 8), the block means a cell's smooth mean reads (the blocks
+// either side of its own: 31 cells), each Jacobi pass of the means (a block more: 16) and the scale that keeps a block's mean (the blocks either side again: 31). The halo is that rounded up to a block of tier 0.
+export const rainReach = (radius: number, passes: number) => 4 * radius + 8 + 31 + 16 * passes + 31;
+// Passes that bring the smooth mean's own block means to the orographic part's [design: set from the error left, measured in the notes].
+export const MEAN_PASSES = 1;
+// The detail relief is reckoned at a sixteenth (the words of the transforms hold a coarse height to 2,047 m) and the waves read back at sixteen times by the gain [derived].
 export const RAIN_DOWN = 16;
-// No cell's rain is more than this many times its block's mean [design: orographic rain over a face of a mountain is a few times the air's own rain around it: Bornholm's
-// gauges rise 17% of the island's rain for each 100 m of height (R1327, r 0.82), 2.7 times over a kilometre, and the theory's gain over them is 3.5 (the rain note, finding 5);
-// a cell of 75 m on the wettest face of a block of 1.2 km is given 4 against the block's mean] and, whatever the block's, no more than the words downstream hold of a season's
-// rain: Q16 in an i32 is 32,767 mm [derived], held at 32,000.
-export const RAIN_CAP = 4, WORD_MAX_MM = 32_000;
-// Passes of the block-mean scale: each reads the scale between the blocks' centres and corrects the blocks' means by what is left [design: measured, the error after 8 is in the notes].
-export const SCALE_PASSES = 8;
-const BLOCK = 16;
+// The response is kept to this many coarse cells (300 m) from the impulse [design: set from the response's decay and the error it leaves, measured in the notes].
+export const RAIN_R = 56;
+export const AIR_HALO = 16 * Math.ceil(rainReach(RAIN_R, MEAN_PASSES) / 16);
+// The most rain a stored word holds in a season, mm [derived: the words downstream, Q16 in an i32, hold 32,767 mm].
+export const WORD_MAX_MM = 32_000;
 
 // ---------- the patch's place on the sphere ----------
 export interface Geometry {
   lat: Float64Array; // degrees
-  psi: Float64Array; // radians, the grid's x axis counterclockwise from east, at each cell
-  widthM: Float64Array; // the cell's width along x, m
-  skewDeg: Float64Array; // how far the grid's y axis stands from a right angle to its x axis, degrees (zero where the grid is square)
+  psi: Float64Array; // radians, the lattice's x axis counterclockwise from east, at each cell
+  gm: Int32Array; // 4 a cell, Q16: the lattice's differences to (east, north) gradients (climate.ts PatchInput)
+  skewDeg: Float64Array; // how far the lattice's y axis stands from a right angle to its x axis, degrees
 }
+// Each cell's lattice by its neighbours' unit vectors (the steps to x +- 1 and y +- 1, at the patch's edge the one step): the steps in metres along east and north, J, and from it
+// the gradient map (J^-T times CELL) and the lattice offset of a compass step (J^-1 times the step).
 export function geometryOf(patch: Patch, radius: number): Geometry {
   const g = tierGrid(patch.tier), S = patch.side, n = S * S, fn = g.fn, cells = fn * fn, pos = new Float64Array(3 * n);
   for (let i = 0; i < n; i++) {
     const id = patch.ids[i], f = Math.floor(id / cells), r = id - f * cells, Y = Math.floor(r / fn), X = r - Y * fn, p = pointOf(f, g.mid[X], g.mid[Y]);
     pos[3 * i] = p[0]; pos[3 * i + 1] = p[1]; pos[3 * i + 2] = p[2];
   }
-  const lat = new Float64Array(n), psi = new Float64Array(n), widthM = new Float64Array(n), skewDeg = new Float64Array(n);
+  const lat = new Float64Array(n), psi = new Float64Array(n), skewDeg = new Float64Array(n), gm = new Int32Array(4 * n);
+  const DEG = Math.PI / 180;
   for (let y = 0; y < S; y++)
     for (let x = 0; x < S; x++) {
-      const i = y * S + x, a = y * S + Math.max(0, x - 1), b = y * S + Math.min(S - 1, x + 1), c = Math.max(0, y - 1) * S + x, d = Math.min(S - 1, y + 1) * S + x;
+      const i = y * S + x, xa = Math.max(0, x - 1), xb = Math.min(S - 1, x + 1), ya = Math.max(0, y - 1), yb = Math.min(S - 1, y + 1);
+      const a = y * S + xa, b = y * S + xb, c = ya * S + x, d = yb * S + x, stepX = xb - xa, stepY = yb - ya;
       const p: [number, number, number] = [pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]], [e, nn] = eastNorth(p);
-      const tx = [pos[3 * b] - pos[3 * a], pos[3 * b + 1] - pos[3 * a + 1], pos[3 * b + 2] - pos[3 * a + 2]], ty = [pos[3 * d] - pos[3 * c], pos[3 * d + 1] - pos[3 * c + 1], pos[3 * d + 2] - pos[3 * c + 2]];
-      const dot = (u: number[], v: readonly number[]) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2], lx = Math.hypot(tx[0], tx[1], tx[2]), ly = Math.hypot(ty[0], ty[1], ty[2]);
+      const tx = [0, 1, 2].map((m) => (pos[3 * b + m] - pos[3 * a + m]) / stepX), ty = [0, 1, 2].map((m) => (pos[3 * d + m] - pos[3 * c + m]) / stepY);
+      const dot = (u: number[], v: readonly number[]) => (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) * radius;
+      const txe = dot(tx, e), txn = dot(tx, nn), tye = dot(ty, e), tyn = dot(ty, nn), det = txe * tyn - tye * txn;
       lat[i] = Math.asin(Math.max(-1, Math.min(1, p[2]))) / DEG;
-      psi[i] = lx > 0 ? Math.atan2(dot(tx, nn), dot(tx, e)) : 0;
-      widthM[i] = (lx * radius) / (x === 0 || x === S - 1 ? 1 : 2);
-      skewDeg[i] = lx > 0 && ly > 0 ? Math.acos(Math.max(-1, Math.min(1, dot(tx, ty) / (lx * ly)))) / DEG - 90 : 0;
+      psi[i] = Math.atan2(txn, txe);
+      skewDeg[i] = Math.acos(Math.max(-1, Math.min(1, (txe * tye + txn * tyn) / (Math.hypot(txe, txn) * Math.hypot(tye, tyn))))) / DEG - 90;
+      gm[4 * i] = Math.round((CELL * tyn * 65536) / det); gm[4 * i + 1] = Math.round((-CELL * txn * 65536) / det);
+      gm[4 * i + 2] = Math.round((-CELL * tye * 65536) / det); gm[4 * i + 3] = Math.round((CELL * txe * 65536) / det);
     }
-  return { lat, psi, widthM, skewDeg };
+  return { lat, psi, gm, skewDeg };
 }
 
-// ---------- the planet's fields at the patch ----------
-// The distance over the land from each tier-0 cell to the nearest sea cell, m: Dijkstra over the cells' eight neighbours (across face edges) by the chord between their centres.
+// ---------- the planet's fields, made once for a planet ----------
+// The distance over land from each tier-0 cell to the nearest sea cell, m: Dijkstra over the cells' eight neighbours (across face edges) by the chord between their centres.
 export function seaDistance(pl: Planet): Float32Array {
   const g = tierGrid(0), fn = g.fn, cells = fn * fn, total = 6 * cells, pos = new Float64Array(3 * total), dist = new Float64Array(total).fill(Infinity);
   for (let id = 0; id < total; id++) { const f = Math.floor(id / cells), r = id - f * cells, Y = Math.floor(r / fn), p = pointOf(f, g.mid[r - Y * fn], g.mid[Y]); pos.set(p, 3 * id); }
@@ -109,119 +120,193 @@ export function seaDistance(pl: Planet): Float32Array {
   }
   return Float32Array.from(dist, (v) => (Number.isFinite(v) ? v : 1e6));
 }
-interface Planetary { fields: Float32Array[]; }
-const planetary = new WeakMap<object, Planetary>();
-// The planet's tier-0 fields the stage samples, in the order of `Sampled`: the surface, the sea-level air, the sea's surface (sea cells only, with the sea's share beside it), the rain, the wind.
-function planetFields(ctx: Ctx): Planetary {
-  let p = planetary.get(ctx.planet);
-  if (!p) {
-    const pl = ctx.planet, sea = Float32Array.from(pl.height, (h) => (h <= 0 ? 1 : 0));
-    planetary.set(ctx.planet, (p = { fields: [pl.height, ...pl.seasons.map((s) => s.t), ...pl.seasons.map((s) => s.sst), sea, ...pl.seasons.map((s) => s.rain), ...pl.seasons.map((s) => s.windE), ...pl.seasons.map((s) => s.windN), seaDistance(pl)] }));
+
+// A tier-0 field, changed least so that the tier-0 cells' own values are the means of what sampleCoarse gives their children (the 16 by 16 cells): the children's mean of the
+// bilinear read is 1/8, 3/4, 1/8 of a cell and its neighbours along each axis [derived], so Q solves S Q = P0 for that operator, by Jacobi passes (the operator's symbol is at
+// least a quarter, so the error falls by 3/4 a pass) held at none. A pure function of the planet's tier-0 field: the one background every tiling shares.
+export const BG_PASSES = 50;
+export function bgField(p0: Float32Array, nb: Int32Array): Float32Array {
+  const n = p0.length;
+  let q = Float64Array.from(p0), next = new Float64Array(n);
+  for (let pass = 0; pass < BG_PASSES; pass++) {
+    for (let b = 0; b < n; b++) {
+      const o = 9 * b, v1 = q[nb[o + 1]], v3 = q[nb[o + 3]], v5 = q[nb[o + 5]], v7 = q[nb[o + 7]];
+      // a cube's corner has no cell on the diagonal: the mean of the two beside it, as sampleCoarse takes it
+      const v0 = nb[o] >= 0 ? q[nb[o]] : (v1 + v3) / 2, v2 = nb[o + 2] >= 0 ? q[nb[o + 2]] : (v1 + v5) / 2;
+      const v6 = nb[o + 6] >= 0 ? q[nb[o + 6]] : (v3 + v7) / 2, v8 = nb[o + 8] >= 0 ? q[nb[o + 8]] : (v5 + v7) / 2;
+      const s = 0.015625 * (v0 + v2 + v6 + v8) + 0.09375 * (v1 + v3 + v5 + v7) + 0.5625 * q[b];
+      next[b] = Math.max(0, q[b] + p0[b] - s);
+    }
+    [q, next] = [next, q];
   }
-  return p;
+  return Float32Array.from(q);
 }
-export interface Sampled { surface: Float32Array; t: Float32Array[]; sst: Float32Array[]; rain: Float32Array[]; windE: Float32Array[]; windN: Float32Array[]; seaM: Float32Array }
+
+interface Base { q: Float32Array[]; dsea: Float32Array; uRef: number[]; tRef: number[]; table?: Promise<Int32Array> }
+const bases = new WeakMap<object, Base>();
+// The tier-0 cells' 3 by 3 neighbours (-1 at a cube's corner), by the cells' ids.
+export function neighbours0(): Int32Array {
+  const g = tierGrid(0), fn = g.fn, cells = fn * fn, out = new Int32Array(9 * 6 * cells).fill(-1);
+  for (let f = 0; f < 6; f++)
+    for (let Y = 0; Y < fn; Y++)
+      for (let X = 0; X < fn; X++)
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dx = -1; dx <= 1; dx++) { const s = haloSource(g, f, X + dx, Y + dy); if (s) out[9 * ((f * fn + Y) * fn + X) + (dy + 1) * 3 + dx + 1] = (s.face * fn + s.Y) * fn + s.X; }
+  return out;
+}
+// What the stage reads of a planet as a whole: each season's mean-keeping rain, the distance to the sea, and the land's mean wind (at least the atmosphere's 2 m/s gust) and
+// sea-level air by season, which the response is made at [design: one set for the planet, not for a patch].
+export function baseOf(planet: Planet): Base {
+  let b = bases.get(planet);
+  if (!b) {
+    const nb = neighbours0(), land: number[] = [];
+    for (let i = 0; i < planet.n; i++) if (planet.height[i] > 0) land.push(i);
+    const mean = (f: (i: number) => number) => land.reduce((s, i) => s + f(i), 0) / Math.max(1, land.length);
+    b = {
+      q: planet.seasons.map((s) => bgField(s.rain, nb)), dsea: seaDistance(planet),
+      uRef: planet.seasons.map((s) => mean((i) => Math.max(2, Math.hypot(s.windE[i], s.windN[i])))), tRef: planet.seasons.map((s) => mean((i) => s.t[i])),
+    };
+    bases.set(planet, b);
+  }
+  return b;
+}
+
+// The response, made by the transform kernels once for a planet: a 1,024 m impulse of one coarse cell in the middle of a domain of 128 by 128 coarse cells (a transform of 512, so
+// the wrap is 150 km away), each (season, direction) of the batch; the table is its words from -RAIN_R to RAIN_R along each axis (BATCH x (2 RAIN_R + 1)^2, Q24 mm an hour).
+export const TABLE_FMT = { n: 512, coarse: 4, wide: true } as const;
+export async function rainTable(ctx: Ctx, radius = RAIN_R): Promise<Int32Array> {
+  const b = baseOf(ctx.planet);
+  if (radius !== RAIN_R) return responseOf(ctx, b, radius);
+  b.table ??= responseOf(ctx, b, RAIN_R);
+  return b.table;
+}
+export async function responseOf(ctx: Ctx, b: Base, radius: number): Promise<Int32Array> {
+  const nc = TABLE_FMT.n / TABLE_FMT.coarse, c0 = nc / 2, W = 2 * radius + 1, s = similarityOf(ctx.planet.radius).s;
+  const delays = b.tRef.map((t) => cloudDelays(Math.exp(-Math.max(0, t) / LAPSE / H_W), s));
+  const seasons = SEASONS.map((c, k) => ({ t: b.tRef[k], mm: 0, rains: c.rains, rainWind: b.uRef[k], rainHumid: c.rainHumid, rose: patchRose(WET_ROSE) }));
+  const z = new Int32Array(TABLE_FMT.n * TABLE_FMT.n);
+  for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) z[(c0 * 4 + y) * TABLE_FMT.n + c0 * 4 + x] = 1024 * 65536;
+  const p = await rainWaves(ctx.gpu, TABLE_FMT, z, rainParams(patchRose(WET_ROSE), delays, seasons, TABLE_FMT));
+  const tab = new Int32Array(64 * W * W);
+  for (let sd = 0; sd < 64; sd++)
+    for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) tab[sd * W * W + (dy + radius) * W + dx + radius] = p[sd * nc * nc + (c0 + dy) * nc + c0 + dx];
+  return tab;
+}
+
+// ---------- the planet's fields at the patch ----------
+export interface Sampled { surface: Float32Array; t: Float32Array[]; sst: Float32Array[]; rain: Float32Array[]; windE: Float32Array[]; windN: Float32Array[]; dsea: Float32Array }
+// sampleCoarse's bilinear read, the same floats, with the four centres a cell reads rather than nine (a cell at a cube's corner whose four include a missing one is read by
+// sampleCoarse itself): the patch reads some thirty fields of 800,000 cells.
+export function sampleFast(tier: number, ids: ArrayLike<number>, fields: ArrayLike<number>[]): Float32Array[] {
+  const g0 = tierGrid(0), n0 = g0.fn, fn = tierGrid(tier).fn, cells = fn * fn, B = 2 ** tier;
+  const out = fields.map(() => new Float32Array(ids.length)), cache = new Map<number, Int32Array>();
+  for (let k = 0; k < ids.length; k++) {
+    const id = ids[k], f = Math.floor(id / cells), r = id - f * cells, Y = Math.floor(r / fn), X = r - Y * fn, px = X >> tier, py = Y >> tier, pid = (f * n0 + py) * n0 + px;
+    let around = cache.get(pid);
+    if (!around) {
+      around = new Int32Array(9);
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const s = haloSource(g0, f, px + dx, py + dy); around[(dy + 1) * 3 + dx + 1] = s ? (s.face * n0 + s.Y) * n0 + s.X : -1; }
+      if (cache.size > 4096) cache.clear();
+      cache.set(pid, around);
+    }
+    const u = ((X & (B - 1)) + 0.5) / B, v = ((Y & (B - 1)) + 0.5) / B, ux = u < 0.5, vy = v < 0.5;
+    const cx = ux ? 0 : 1, cy = vy ? 0 : 1, whx = ux ? u + 0.5 : u - 0.5, why = vy ? v + 0.5 : v - 0.5, wlx = 1 - whx, wly = 1 - why, c0 = cy * 3 + cx;
+    const a = around[c0], b = around[c0 + 1], c = around[c0 + 3], d = around[c0 + 4];
+    if (a < 0 || b < 0 || c < 0 || d < 0) { const one = sampleCoarse(tier, [id], fields); for (let m = 0; m < fields.length; m++) out[m][k] = one[m][0]; continue; }
+    for (let m = 0; m < fields.length; m++) { const fm = fields[m]; out[m][k] = wly * (wlx * fm[a] + whx * fm[b]) + why * (wlx * fm[c] + whx * fm[d]); }
+  }
+  return out;
+}
 export function sampledOf(ctx: Ctx, patch: Patch): Sampled {
-  const s = sampleCoarse(patch.tier, patch.ids, planetFields(ctx).fields), at = (k: number) => s.slice(k, k + NS);
-  const sea = s[1 + 2 * NS], sst = at(1 + NS).map((v, k) => Float32Array.from(v, (x, i) => (sea[i] > 1e-3 ? x / sea[i] : s[1 + k][i])));
-  return { surface: s[0], t: at(1), sst, rain: at(2 + 2 * NS), windE: at(2 + 3 * NS), windN: at(2 + 4 * NS), seaM: s[2 + 5 * NS] };
+  const pl = ctx.planet, b = baseOf(pl), sea = Float32Array.from(pl.height, (h) => (h <= 0 ? 1 : 0));
+  const s = sampleFast(patch.tier, patch.ids, [pl.height, ...pl.seasons.map((x) => x.t), ...pl.seasons.map((x) => x.sst), sea, ...b.q, ...pl.seasons.map((x) => x.windE), ...pl.seasons.map((x) => x.windN), b.dsea]);
+  const at = (k: number) => s.slice(k, k + NS), shore = s[1 + 2 * NS];
+  const sst = at(1 + NS).map((v, k) => Float32Array.from(v, (x, i) => (shore[i] > 1e-3 ? x / shore[i] : s[1 + k][i])));
+  return { surface: s[0], t: at(1), sst, rain: at(2 + 2 * NS), windE: at(2 + 3 * NS), windN: at(2 + 4 * NS), dsea: s[2 + 5 * NS] };
 }
 
-// How far, over the land, the air that enters the patch has come: the planet's distance to the nearest sea (tier 0's, by its neighbours' chords) is a floor of it along any
-// bearing, and where the wavefront has no cell upwind (the patch's edge) the salt would start at the coast again [design; the true distance along the wind is longer, so the
-// far salt is a little high near the edge where the wind comes off the land: gap]. Q12 m, as the kernel holds it, 0 over open water.
-const STEP_Q16 = (k: number) => [Math.round(Math.cos((k / DIRS16) * Math.PI * 2) * 1.5 * 65536), Math.round(Math.sin((k / DIRS16) * Math.PI * 2) * 1.5 * 65536)];
-function shoreSeed(S: number, open: Uint8Array, seaM: Float32Array): Int32Array {
-  const shore = new Int32Array(DIRS16 * S * S), lim = (S - 1) * 65536;
-  for (let k = 0; k < DIRS16; k++) {
-    const [cs, sn] = STEP_Q16(k);
-    for (let y = 0; y < S; y++)
-      for (let x = 0; x < S; x++) {
-        const ux = x * 65536 - cs, uy = y * 65536 - sn;
-        if ((ux < 0 || uy < 0 || ux > lim || uy > lim) && !open[y * S + x]) shore[k * S * S + y * S + x] = Math.round(Math.min(3e5, seaM[y * S + x]) * 4096);
-      }
-  }
-  return shore;
-}
 
-// The tier-0 cell (a block's) of a tier-4 cell id: face, row and column of the 16-cell blocks.
-const parentOf = (id: number) => { const f = id >>> 24, r = id & 0xffffff; return f * 65536 + (r >> 16) * 256 + ((r & 4095) >> 4); };
 // How far to turn the rose, in Q16 bearings (mod 16): the wind's direction in the patch's axes less the rose's own mean (climate.ts turned, in the patch's sense).
 const TURN_MASK = 16 * 65536 - 1;
 const turnWord = (e: number, n: number, psi: number) => Math.round(((Math.atan2(n, e) - psi - patchMeanWay(ROSE)) / (2 * Math.PI)) * DIRS16 * 65536) & TURN_MASK;
 const DIRS16 = 16;
 
 // ---------- the rain ----------
-export interface RainTile { made: Float32Array[]; precip: Float32Array[]; delays: { tauC: number; tauF: number }[] }
+export interface RainTile { oro: Float32Array[]; precip: Float32Array[] }
 // The rain of each season on the patch's cells, mm over the season.
-export async function rainOf(ctx: Ctx, patch: Patch, height: Float32Array, geo: Geometry, planet: Sampled): Promise<RainTile> {
-  const S = patch.side, n = S * S, fmt: RainFormat = { n: S, coarse: 4, cells: true, wide: true }, s = similarityOf(ctx.planet.radius).s, centre = ((S >> 1) * S) + (S >> 1);
-  // the scale: RAIN_DOWN, or the next power of two that keeps the transforms' words (a patch of detail over 1.9 km a cell on the mean: none on this planet), so that no tile throws
-  let detail = 0;
-  for (let i = 0; i < n; i++) detail += Math.abs(Math.max(0, height[i]) - Math.max(0, planet.surface[i]));
-  let down = RAIN_DOWN;
-  while (detail / down / 16 > 0.9 * MOST_TOTAL_M) down *= 2;
-  const z = Float32Array.from(height, (h, i) => (Math.max(0, h) - Math.max(0, planet.surface[i])) / down);
-  const t0 = planet.t.map((v) => v[centre]), delays = t0.map((t) => cloudDelays(Math.exp(-Math.max(0, t) / LAPSE / H_W), s));
-  // the moist layer's wind is the planet's surface wind at the patch's centre by season, never under the atmosphere's 2 m/s gust floor [design: the atmosphere's own rain
-  // drifts by the planet's wind, so a delay of 31 to 83 s is 2 to 5 cells of 75 m at the land's median 4.7 m/s; Bornholm's 12 to 13.6 m/s at 850 hPa made it 5 to 14 cells a delay]
-  const wind = planet.windE.map((e, k) => Math.max(2, Math.hypot(e[centre], planet.windN[k][centre])));
-  const seasons = SEASONS.map((c, k) => ({ t: t0[k], mm: 0, rains: c.rains, rainWind: wind[k], rainHumid: c.rainHumid, rose: patchRose(WET_ROSE) }));
-  const par = rainParams(patchRose(WET_ROSE), delays, seasons, fmt), cell = new Int32Array(2 * NS * n);
-  const parent = Int32Array.from(patch.ids, parentOf);
+export async function rainOf(ctx: Ctx, patch: Patch, height: Float32Array, geo: Geometry, planet: Sampled, radius = RAIN_R, meanPasses = MEAN_PASSES): Promise<RainTile> {
+  const S = patch.side, n = S * S, fmt: RainFormat = { n: S, coarse: 4, cells: true, wide: true }, b = baseOf(ctx.planet);
+  if ((patch.x0 - patch.halo) & 3 || (patch.y0 - patch.halo) & 3) throw new Error("air: a patch's first cell must lie on a multiple of 4 (the rain's coarse cells)");
+  if (rainReach(radius, meanPasses) > patch.halo) throw new Error(`air: a halo of ${patch.halo} cells is under the rain's reach of ${rainReach(radius, meanPasses)}`);
+  const zq = new Int32Array(n);
+  for (let i = 0; i < n; i++) {
+    const z = (Math.max(0, height[i]) - Math.max(0, planet.surface[i])) / RAIN_DOWN;
+    if (Math.abs(z) > 2000) throw new Error(`air: a detail relief of ${(z * RAIN_DOWN).toFixed(0)} m is past what the transforms' words hold`);
+    zq[i] = Math.round(z * 65536);
+  }
+  const s = similarityOf(ctx.planet.radius).s, delays = b.tRef.map((t) => cloudDelays(Math.exp(-Math.max(0, t) / LAPSE / H_W), s));
+  const seasons = SEASONS.map((c, k) => ({ t: b.tRef[k], mm: 0, rains: c.rains, rainWind: b.uRef[k], rainHumid: c.rainHumid, rose: patchRose(WET_ROSE) }));
+  const par = rainParams(patchRose(WET_ROSE), delays, seasons, fmt), cell = new Int32Array(3 * NS * n);
   for (let k = 0; k < NS; k++) {
-    const hours = SEASON_DAYS * 24 * SEASONS[k].rains;
+    const hours = SEASON_DAYS * 24 * SEASONS[k].rains, ref = esat(b.tRef[k]) / (b.tRef[k] + 273.15);
     for (let i = 0; i < n; i++) {
-      cell[k * n + i] = Math.round((Math.max(0, planet.rain[k][i]) / hours / down) * 2 ** 24);
+      const t = planet.t[k][i], u = Math.max(2, Math.hypot(planet.windE[k][i], planet.windN[k][i]));
+      cell[k * n + i] = Math.round((Math.max(0, planet.rain[k][i]) / hours) * 2 ** 20);
       cell[(NS + k) * n + i] = turnWord(planet.windE[k][i], planet.windN[k][i], geo.psi[i]);
+      cell[(2 * NS + k) * n + i] = Math.round(RAIN_DOWN * ((esat(t) / (t + 273.15)) / ref) * (u / b.uRef[k]) * 65536);
     }
   }
-  const words = await rainWords(ctx.gpu, fmt, rainHeights(z, fmt), par, cell);
-  // The rain of a cell is the planet's rain at it (smooth, between the four tier-0 centres) times the theory's enhancement there: made over the mean of made, the mean
-  // being smooth too (the blocks' means read between their centres), the ratio held at RAIN_CAP. A block's mean is then brought to the tier-0 cell's own rain by a scale that
-  // is itself read between the blocks' centres, a few passes of it, so that no step stands at a block's edge and the mean is the planet's to the passes' error [design].
-  const B = S >> 4, tier0 = Float64Array.from({ length: B * B }, (_, b) => parent[((b / B | 0) * 16) * S + (b % B) * 16]);
-  const made = [] as Float32Array[], precip = [] as Float32Array[];
+  const words = await rainConvolved(ctx.gpu, fmt, radius, zq, par, await rainTable(ctx, radius), cell);
+  // The blocks of tier 0 are the lattice's own 16 by 16 cells (a tier-0 cell's children, whichever the tiling and across a face's edge, where the lattice continues): a cell's
+  // block is floor of its face position over 16. The mean of the orographic part is read between the blocks' centres (a constant to each block would step at every edge), the means
+  // first brought to a smooth field whose own block means they are by MEAN_PASSES Jacobi passes of the 1/8, 3/4, 1/8 stencil [derived: the children's mean of a bilinear read].
+  const X0 = patch.x0 - patch.halo, Y0 = patch.y0 - patch.halo, BX0 = Math.floor(X0 / 16), BY0 = Math.floor(Y0 / 16), nbx = Math.floor((X0 + S - 1) / 16) - BX0 + 1, nby = Math.floor((Y0 + S - 1) / 16) - BY0 + 1;
+  const bx = Int32Array.from({ length: S }, (_, x) => Math.floor((X0 + x) / 16) - BX0), by = Int32Array.from({ length: S }, (_, y) => Math.floor((Y0 + y) / 16) - BY0);
+  // the bilinear read between centres: the cell's left block, and the share of the right one (held at the outermost centre beyond the patch's)
+  const lerp = (X: number, B0: number, nb: number) => Array.from({ length: S }, (_, x) => { const u = (X + x - 7.5) / 16, bl = Math.floor(u); let i0 = bl - B0, t = u - bl; if (i0 < 0) { i0 = 0; t = 0; } if (i0 > nb - 2) { i0 = nb - 2; t = 1; } return [i0, t] as const; });
+  const lx = lerp(X0, BX0, nbx), ly = lerp(Y0, BY0, nby);
+  const count = new Float64Array(nbx * nby);
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) count[by[y] * nbx + bx[x]]++;
+  const oro = [] as Float32Array[], precip = [] as Float32Array[];
   for (let k = 0; k < NS; k++) {
-    const m = Float32Array.from({ length: n }, (_, i) => (words[k * n + i] * down) / 65536), bg = planet.rain[k], p0 = ctx.planet.seasons[k].rain;
-    const target = Float64Array.from(tier0, (p) => p0[p]);
-    for (const t of target) if (t > WORD_MAX_MM) throw new Error(`air: a tier-0 cell holds ${t.toFixed(0)} mm of rain in a season, past the ${WORD_MAX_MM} mm the downstream words hold`);
-    const around = smoothBlocks(blockMeans(m, S), B, S), out = new Float64Array(n);
-    for (let i = 0; i < n; i++) out[i] = Math.max(0, bg[i]) * (around[i] > 0 ? Math.min(RAIN_CAP, m[i] / around[i]) : 1);
-    const scale = new Float64Array(B * B), mean0 = blockMeans(out, S);
-    for (let b = 0; b < B * B; b++) scale[b] = target[b] <= 0 ? 0 : mean0[b] > 0 ? target[b] / mean0[b] : 1;
-    const fin = new Float32Array(n);
-    for (let pass = 0; pass < SCALE_PASSES; pass++) {
-      const c = smoothBlocks(scale, B, S), got = blockMeans(out.map((v, i) => Math.min(WORD_MAX_MM, v * c[i])), S);
-      for (let b = 0; b < B * B; b++) if (target[b] > 0 && got[b] > 0) scale[b] *= target[b] / got[b];
+    const sum = new Float64Array(nbx * nby), w = words.subarray(k * n, (k + 1) * n), fin = new Float32Array(n), o = new Float32Array(n);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) sum[by[y] * nbx + bx[x]] += w[y * S + x];
+    const m = Float64Array.from(sum, (v, b) => v / count[b] / 65536);
+    let mu = Float64Array.from(m), next = new Float64Array(m.length);
+    const at = (a: Float64Array, ix: number, iy: number) => a[Math.min(nby - 1, Math.max(0, iy)) * nbx + Math.min(nbx - 1, Math.max(0, ix))];
+    for (let pass = 0; pass < meanPasses; pass++) {
+      for (let iy = 0; iy < nby; iy++)
+        for (let ix = 0; ix < nbx; ix++) {
+          const s = 0.015625 * (at(mu, ix - 1, iy - 1) + at(mu, ix + 1, iy - 1) + at(mu, ix - 1, iy + 1) + at(mu, ix + 1, iy + 1)) + 0.09375 * (at(mu, ix, iy - 1) + at(mu, ix - 1, iy) + at(mu, ix + 1, iy) + at(mu, ix, iy + 1)) + 0.5625 * mu[iy * nbx + ix];
+          next[iy * nbx + ix] = mu[iy * nbx + ix] + m[iy * nbx + ix] - s;
+        }
+      [mu, next] = [next, mu];
     }
-    const c = smoothBlocks(scale, B, S);
-    for (let i = 0; i < n; i++) fin[i] = Math.min(WORD_MAX_MM, out[i] * c[i]);
-    made.push(m); precip.push(fin);
-  }
-  return { made, precip, delays };
-}
-
-// The mean of each 16 by 16 block of a patch field (the patch starts on a block), blocks in rows.
-export function blockMeans(f: ArrayLike<number>, S: number): Float64Array {
-  const B = S >> 4, out = new Float64Array(B * B);
-  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) out[(y >> 4) * B + (x >> 4)] += f[y * S + x];
-  for (let b = 0; b < B * B; b++) out[b] /= 256;
-  return out;
-}
-// A field of the blocks' values read between their centres, bilinear (held at the outermost centres beyond them): the blocks' mean-keeping scale without a step at an edge.
-export function smoothBlocks(v: ArrayLike<number>, B: number, S: number): Float64Array {
-  const out = new Float64Array(S * S), at = new Int32Array(S), w = new Float64Array(S);
-  for (let x = 0; x < S; x++) {
-    const u = Math.min(B - 1, Math.max(0, (x - 7.5) / 16)), i0 = Math.min(B - 2, Math.floor(u));
-    at[x] = i0; w[x] = u - i0;
-  }
-  for (let y = 0; y < S; y++)
-    for (let x = 0; x < S; x++) {
-      const a = v[at[y] * B + at[x]], b = v[at[y] * B + at[x] + 1], c = v[(at[y] + 1) * B + at[x]], d = v[(at[y] + 1) * B + at[x] + 1];
-      out[y * S + x] = (1 - w[y]) * ((1 - w[x]) * a + w[x] * b) + w[y] * ((1 - w[x]) * c + w[x] * d);
+    // the rain with the smooth mean of the orographic part taken out and cut at none; the cut adds rain where the part is large against the background (and none is the planet's
+    // where its background is none), so each block's mean is brought back to its background's by a scale at most 1 (the mean of the cut rain is at least the mean it was cut from),
+    // read between the blocks' centres like the mean: no division by less than its numerator, and no step at a block's edge
+    const pos = new Float64Array(n), cut = new Float64Array(nbx * nby), bgSum = new Float64Array(nbx * nby);
+    for (let y = 0; y < S; y++) {
+      const [j0, ty] = ly[y];
+      for (let x = 0; x < S; x++) {
+        const [i0, tx] = lx[x], a = mu[j0 * nbx + i0], b2 = mu[j0 * nbx + i0 + 1], c = mu[(j0 + 1) * nbx + i0], d = mu[(j0 + 1) * nbx + i0 + 1];
+        const around = (1 - ty) * ((1 - tx) * a + tx * b2) + ty * ((1 - tx) * c + tx * d), i = y * S + x;
+        o[i] = w[i] / 65536;
+        pos[i] = Math.max(0, planet.rain[k][i] + (w[i] / 65536 - around));
+        cut[by[y] * nbx + bx[x]] += pos[i]; bgSum[by[y] * nbx + bx[x]] += planet.rain[k][i];
+      }
     }
-  return out;
+    const lam = Float64Array.from(cut, (c, b) => (c > 0 ? bgSum[b] / c : 1));
+    for (let y = 0; y < S; y++) {
+      const [j0, ty] = ly[y];
+      for (let x = 0; x < S; x++) {
+        const [i0, tx] = lx[x], a = lam[j0 * nbx + i0], b2 = lam[j0 * nbx + i0 + 1], c = lam[(j0 + 1) * nbx + i0], d = lam[(j0 + 1) * nbx + i0 + 1];
+        fin[y * S + x] = pos[y * S + x] * ((1 - ty) * ((1 - tx) * a + tx * b2) + ty * ((1 - tx) * c + tx * d));
+      }
+    }
+    oro.push(o); precip.push(fin);
+  }
+  return { oro, precip };
 }
 
 // ---------- the climate ----------
@@ -233,11 +318,10 @@ export interface AirTile {
   saturated: number; // words the stored units could not hold
 }
 
-
 // The patch's air from its heights (1/256 m) and flooded surface (1/256 m).
 export async function airOf(ctx: Ctx, patch: Patch, heightWords: Int32Array, floodedWords: Int32Array, geoIn?: Geometry, sampledIn?: Sampled): Promise<AirTile> {
   const S = patch.side, n = S * S;
-  if ((patch.x0 - patch.halo) % BLOCK || patch.halo % BLOCK || (patch.y0 - patch.halo) % BLOCK) throw new Error("air: a patch's edge must lie on a block of tier 0 (16 cells)");
+  if ((patch.x0 - patch.halo) & 3 || (patch.y0 - patch.halo) & 3) throw new Error("air: a patch's first cell must lie on a multiple of 4");
   const geo = geoIn ?? geometryOf(patch, ctx.planet.radius), planet = sampledIn ?? sampledOf(ctx, patch);
   const height = Float32Array.from(heightWords, (h) => h / 256), open = Uint8Array.from(heightWords, (h, i) => (h <= 0 || floodedWords[i] - h >= 3 ? 1 : 0));
   const rain = await rainOf(ctx, patch, height, geo, planet);
@@ -245,7 +329,7 @@ export async function airOf(ctx: Ctx, patch: Patch, heightWords: Int32Array, flo
   const q16 = (v: number) => Math.round(v * 65536);
   const tS = planet.t.map((v) => Int32Array.from(v, q16)), seaS = planet.sst.map((v) => Int32Array.from(v, q16));
   const e0S = planet.t.map((v, k) => Int32Array.from(v, (t) => q16(SEASONS[k].humid0 * esat(t))));
-  const wturn = new Int32Array(n), band = new Int32Array(n), cps = new Int32Array(n), sps = new Int32Array(n), psi = new Int32Array(n);
+  const wturn = new Int32Array(n), band = new Int32Array(n), dsea = new Int32Array(n);
   const bandAt = Int32Array.from(geo.lat, (l) => Math.round(l / BAND_DEG)), first = bandAt.reduce((a, b) => Math.min(a, b), 1e9), last = bandAt.reduce((a, b) => Math.max(a, b), -1e9);
   const limit = 89.95;
   const bandsDeg = Array.from({ length: last - first + 1 }, (_, k) => Math.max(-limit, Math.min(limit, (first + k) * BAND_DEG)));
@@ -254,8 +338,7 @@ export async function airOf(ctx: Ctx, patch: Patch, heightWords: Int32Array, flo
     for (let k = 0; k < NS; k++) { e += planet.windE[k][i]; nn += planet.windN[k][i]; }
     wturn[i] = turnWord(e, nn, geo.psi[i]);
     band[i] = bandAt[i] - first;
-    cps[i] = q16(Math.cos(geo.psi[i])); sps[i] = q16(Math.sin(geo.psi[i]));
-    psi[i] = Math.round((geo.psi[i] / (2 * Math.PI)) * DIRS16 * 65536) & TURN_MASK;
+    dsea[i] = open[i] ? 0 : Math.round(Math.min(5e5, planet.dsea[i]) * 4096);
   }
   // the snow years' groups: a game tile's four cells of the planet (the cells that share a tile of tier 3), whichever way the patch lays them
   const cells = 4096 * 4096, slot = new Map<number, number>(), groups: number[] = [];
@@ -268,7 +351,7 @@ export async function airOf(ctx: Ctx, patch: Patch, heightWords: Int32Array, flo
   }
   const grp = new Int32Array(4 * (S / 2 + 2) ** 2).fill(-1);
   grp.set(groups);
-  const input: PatchInput = { tS, seaS, e0S, wturn, band, cps, sps, psi, bandsDeg, groups: grp, rose: patchRose(ROSE), shore: shoreSeed(S, open, planet.seaM) };
+  const input: PatchInput = { tS, seaS, e0S, wturn, band, gm: geo.gm, dsea, bandsDeg, groups: grp, rose: patchRose(ROSE) };
   const arena = runClimate(ctx.gpu, { height, open, precip: rain.precip, angle: 0, patch: input }), { SEC } = arena.layout;
   const words = new Int32Array(await readback(ctx.gpu, arena.words, (SEC.z - SEC.windShare) * 4, SEC.windShare * 4));
   arena.destroy();
@@ -323,7 +406,9 @@ export const airStage: TileStage = {
   inputs: ["t4-height.i32", "t4-flooded.i32"],
   outputs: AIR_OUTPUTS,
   async run(ctx, patch, input) {
-    return compact(await airOf(ctx, patch, input["t4-height.i32"] as Int32Array, input["t4-flooded.i32"] as Int32Array));
+    const tile = await airOf(ctx, patch, input["t4-height.i32"] as Int32Array, input["t4-flooded.i32"] as Int32Array), out = compact(tile);
+    // a word past its unit would be clamped and hide what passed it: say so rather than store it
+    if (tile.saturated) throw new Error(`air: ${tile.saturated} words of tile (face ${patch.face}, ${patch.tx}, ${patch.ty}) pass what their stored units hold`);
+    return out;
   },
 };
-
