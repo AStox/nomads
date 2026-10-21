@@ -28,7 +28,7 @@ import {
 import { ACCF, FLD, FLUX, NEXT, PHYS, tectonicsWgsl, type TectonicsLayout } from "../wgsl/globe-tectonics";
 
 export { ACCF, FLD, FLUX, PHYS };
-import { similarityOf } from "./similarity";
+import { EARTH_R, similarityOf } from "./similarity";
 
 // ---------- 1. parameters ----------
 export interface Params {
@@ -140,15 +140,17 @@ export function makeHotspots(p: Params): Hotspot[] {
   return out;
 }
 // The net crust an arc adds a step to each cell of its band, m, per plate and step (0 to steps): half of the clock's flux
-// over the arc's width.
+// over the arc's width. The flux is Earth's per km of arc; the length of arc per unit area goes as 1 / R (the boundaries' length as R, the area as R^2), so on a similar planet it is
+// multiplied by s = R / R_Earth to keep the crust an arc adds per area and time Earth's, the rule every flux of similarity.ts follows [derived R1786]. The reference planet's is Earth's per km as
+// it was calibrated.
 export function makeArcs(p: Params, steps: number): Int32Array {
-  const out = new Int32Array(p.plates * (steps + 1));
+  const out = new Int32Array(p.plates * (steps + 1)), perArea = similarityOf(p.radius).similar ? p.radius / EARTH_R : 1;
   for (let i = 0; i < p.plates; i++) {
     const u = draws(p.seed, 5, i);
     const period = ARC.periodLo + (ARC.periodHi - ARC.periodLo) * u(), len = ARC.lenLo + (ARC.lenHi - ARC.lenLo) * u(), phase = period * u(), flare = ARC.flareLo + (ARC.flareHi - ARC.flareLo) * u();
     for (let s = 0; s <= steps; s++) {
       const flux = ARC.bg + (((s * p.stepMy + phase) % period) < len ? flare : 0);
-      out[i * (steps + 1) + s] = Math.round(((ARC.newShare * flux * p.stepMy) / ARC.widthKm) * 1000);
+      out[i * (steps + 1) + s] = Math.round(((ARC.newShare * flux * perArea * p.stepMy) / ARC.widthKm) * 1000);
     }
   }
   return out;

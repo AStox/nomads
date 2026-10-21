@@ -5,7 +5,7 @@ import { EBM, HELD_HOU, capTable, C_EVAP, H_WATER, circulationOf, diffusionFor, 
 import { erosionFor } from "./erosion";
 import { PLANET_FN, PLANET_RADIUS_M, PLANET_TIER, RADIUS_M, SMALL_RADIUS_M, tierGrid } from "./grid";
 import { EARTH_OMEGA, EARTH_R, similarityOf } from "./similarity";
-import { ARC_KM, EARTH_HOTSPOTS, hotspotsOf, makeHotspots, makeSetup, sweepsFor, DEFAULTS } from "./tectonics";
+import { ARC_KM, EARTH_HOTSPOTS, hotspotsOf, makeArcs, makeHotspots, makeSetup, sweepsFor, DEFAULTS } from "./tectonics";
 
 const earth = circulationOf(planetOf({ radius: EARTH_R })), small = circulationOf(planetOf({ radius: SMALL_RADIUS_M }));
 
@@ -112,4 +112,11 @@ test("the planet: 8,192 cells of 75 m a face is 391.1 km, 256 cells a face at ti
   expect(set.hotspots.length).toBe(1);
   // the spin: Omega a is Earth's
   expect(planetOf({ radius: PLANET_RADIUS_M }).dayS / 60).toBeCloseTo(88.4, 0);
+});
+
+test("an arc's flux is Earth's per area: per km it goes as s on a similar planet (the arcs' length per area goes as 1 / R), and the reference planet's is as calibrated", () => {
+  const ref = makeArcs({ ...DEFAULTS, radius: RADIUS_M }, 100), pl = makeArcs({ ...DEFAULTS, radius: PLANET_RADIUS_M }, 100), s = similarityOf(PLANET_RADIUS_M).s;
+  const minRef = Math.min(...ref), minPl = Math.min(...pl);
+  expect(minRef).toBe(280); // the background 14 km3 a My a km, half of it new, over 50 km, in m a 2 My step
+  expect(Math.abs(minPl / minRef / s - 1)).toBeLessThan(0.02);
 });

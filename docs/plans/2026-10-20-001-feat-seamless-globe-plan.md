@@ -177,6 +177,10 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   largest basins 24,000 to 81,000 km2. The plateau is not a bug: the founder trim (cited law) cuts 89% of the stacked crust (55% on the
   2,000 km planet), the notes already call the ranges flat tables at the limit, and incision is real metres but starved by basins 9 to
   16 times short in sqrt(area): gaps. Facts: winds and west coast pass; rain belts, rain shadow, polar ice and range summits fail.
+  Amended 2026-10-21 (plateaus' missing process; key `7f6ff6c82cdd`): the channel flow run at 100% of its law (7,700 explicit sweeps)
+  changes nothing (mean land height 3,120 and 3,118 m), so no implicit solve was built; the cause was the arcs' flux per km, 16 times
+  Earth's per area on this planet, now times s (R1786): mean land height 2.2 to 2.5 km down to 1.3 to 2.1 km, over 2 km 17 to 21% down
+  to 5 to 8%, land rain at 0 mm 36 to 40% down to 17 to 28%. What still holds the tables up: the founder limit (gap).
 - [ ] **Unit 7b: Solves that stream from disk.** Tiers 1 to 5 and the fine stages as global solves over tiles kept on
   disk, with halo exchange each sweep, inside 18 GB of memory and the GPU's buffer limits; the bake as resumable calls
   under 5 minutes each, driven in order; Unit 5b's one-solve rain and water table and response-time erosion carried over.
