@@ -8,7 +8,7 @@
 // are in docs/research/globe/2026-10-19-atmosphere-impl.md.
 import { afterAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
-import { locate, tierGrid, cellId } from "./grid";
+import { SMALL_RADIUS_M, locate, tierGrid, cellId } from "./grid";
 import { GEO, NODES, NODE_DEG, TAB, TABLE_WORDS } from "../wgsl/globe-atmosphere";
 import {
   ALBEDO, AtmosphereGpu, BANDS, D_RADIUS_EXPONENT, EBM, FIELD, GAMMA, ICE_K, ICE_L, ICE_RHO, NETRAD, PT, RH_REF, SEASON_S, SEASONS, SOIL, T_FREEZE, albedoStep, buildGeometry, capAt, capTable,
@@ -803,4 +803,30 @@ test("determinism: the same planet twice gives the same bytes, pinned to a hash"
   expect(golden(second)).toBe(h);
   for (let s = 0; s < 4; s++) { expect(first.seasons[s].rain).toEqual(second.seasons[s].rain); expect(first.seasons[s].temperature).toEqual(second.seasons[s].temperature); }
   expect(h).toBe(RIDGE_HASH);
+});
+
+// A similar planet's land rain: a flat disc continent of 15 degrees in the trades on the 195.6 km planet. Every season's water closes (evaporation less rain less the change in the vapour held,
+// over the evaporation), the coast is wet, and the interior beyond a tenth of the continent's radius gets nothing: the convective adjustment is a hard threshold on the column's humidity and
+// the winds are steady, so air that has rained out to 0.7 of saturation over flat ground of its own temperature rains no more (R1600: the model's gap, not a leak: the budget closes).
+test("similar planet: a flat continent's water closes every season, the coast is wet and the interior of a dry belt is exactly dry", async () => {
+  const g = tierGrid(0, SMALL_RADIUS_M), gp = buildGeometry(g), latC = 15 * DEG;
+  const ang = (i: number) => Math.acos(Math.min(1, Math.sin(gp.lat[i]) * Math.sin(latC) + Math.cos(gp.lat[i]) * Math.cos(latC) * Math.cos(gp.lon[i])));
+  const height = Float32Array.from({ length: gp.n }, (_, i) => (ang(i) < 15 * DEG ? 100 : -4000));
+  const c = await climateGpu(await theGpu(), g, height, { seaLevel: 0 }, {});
+  for (const s of c.seasons) {
+    const b = s.budget;
+    expect(Math.abs(b.evaporated - b.rained - (b.held1 - b.held0)) / b.evaporated).toBeLessThan(1e-3);
+  }
+  const coast = { r: 0, n: 0 }, inland = { r: 0, n: 0, z: 0 };
+  for (let i = 0; i < gp.n; i++) {
+    if (!c.land[i]) continue;
+    let r = 0;
+    for (const s of c.seasons) { expect(s.rain[i]).toBeGreaterThanOrEqual(0); r += s.rain[i]; }
+    const d = 15 - ang(i) / DEG;
+    if (d < 3) { coast.r += r; coast.n++; } else if (d > 9) { inland.r += r; inland.n++; if (r === 0) inland.z++; }
+  }
+  console.log(`flat continent at 15 degrees: coast ${(coast.r / coast.n).toFixed(0)} mm a year, inland ${(inland.r / inland.n).toFixed(0)} mm, ${(inland.z / inland.n).toFixed(2)} of the interior at exactly 0`);
+  expect(coast.r / coast.n).toBeGreaterThan(500);
+  expect(inland.r / inland.n).toBeLessThan(0.1 * (coast.r / coast.n));
+  expect(inland.z / inland.n).toBeGreaterThan(0.9);
 });
