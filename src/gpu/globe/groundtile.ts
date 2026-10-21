@@ -36,7 +36,6 @@ function dirCode(recv: Int32Array, S: number): { code: Uint8Array; lost: number 
   return { code, lost };
 }
 
-const THE_QUICK = "quick";
 // Tile `tile` of tier `o.tier` from the stage files of `dir`.
 export function makeGroundTile(dir: BakeDir, tile: number, o: { seed: number; key: string; tier: number }): { meta: GroundTileMeta; planes: Planes } {
   const { face, tx, ty } = tileAt(o.tier, tile), p = patchOf(o.tier, face, tx, ty, GROUNDTILE_HALO), S = p.side, planes: Planes = {}, fields: GroundTileMeta["fields"] = [], absent: string[] = [];
@@ -60,7 +59,7 @@ export function makeGroundTile(dir: BakeDir, tile: number, o: { seed: number; ke
     planes[f.name] = plane;
     fields.push({ name: f.name, type: f.type, step: f.step, unit: f.unit });
   }
-  const quick = dir.json<number[][]>(THE_QUICK);
+  const quick = dir.json<number[][]>(tierFile(o.tier, "quick"));
   return { meta: { version: GROUNDTILE_VERSION, seed: o.seed, key: o.key, tile, face, tx, ty, halo: GROUNDTILE_HALO, side: S, fields, absent, lostReceivers, quick: quick?.[tile] ?? null }, planes };
 }
 

@@ -54,6 +54,9 @@ export class FieldFile {
   close() { closeSync(this.fd); }
 }
 
+// The marker of the tiles a stage has made at a tier: one byte a tile, 1 where made (tiers of one bake share its directory, so the tier is in the name).
+export const doneFileOf = (tier: number, stage: string) => `t${tier}-${stage}-done.u8`;
+
 export interface TileProgress { done: boolean; tiles: number; of: number; seconds: number; tileS: number[] }
 // Make the tiles of a stage not yet made, within `budgetS` seconds (a unit's time is taken as the slowest so far); `only` limits the run to some tiles. A stage's `block` is the side, in
 // tiles, of the square of tiles one patch makes at once (a power of 2 that divides the tier's tiles a face: 1 by default): the halo's cost is shared by block * block tiles, and the bytes
@@ -61,8 +64,10 @@ export interface TileProgress { done: boolean; tiles: number; of: number; second
 export async function runTiles(ctx: Ctx, stage: TileStage, budgetS: number, log: (s: string) => void = () => {}, only?: number[]): Promise<TileProgress> {
   const t0 = performance.now(), spent = () => (performance.now() - t0) / 1000, of = tileCount(ctx.tier), fn = tierGrid(ctx.tier).fn, cells = 6 * fn ** 2, T = fn / TILE, bl = stage.block ?? 1;
   if (T % bl) throw new Error(`${stage.name}: a block of ${bl} tiles does not divide the tier's ${T} tiles a face`);
-  const doneFile = `${stage.name}-done.u8`, done = new Uint8Array(of);
+  const doneFile = doneFileOf(ctx.tier, stage.name), legacy = `${stage.name}-done.u8`, done = new Uint8Array(of);
+  // a marker of the first bakes had no tier in its name; one that holds this tier's tile count is this tier's (no two tiers have the same count)
   if (ctx.dir.has(doneFile)) done.set(new Uint8Array(ctx.dir.raw(doneFile)).subarray(0, of));
+  else if (ctx.dir.has(legacy) && ctx.dir.bytes(legacy) === of) done.set(new Uint8Array(ctx.dir.raw(legacy)));
   const outs = stage.outputs.map((f) => new FieldFile(ctx.dir.path(f), typeOf(f), cells));
   const tileS: number[] = [];
   await stage.prepare?.(ctx);

@@ -10,7 +10,7 @@ import { BakeDir } from "./bakedir";
 import { gatherTwin, readDischarge, valueAt } from "./discharge";
 import { tierGrid } from "./grid";
 import { localOf, patchAt, patchOf, tileAt, type Patch } from "./patch";
-import { runTiles, type Ctx, type Field } from "./stages";
+import { doneFileOf, runTiles, type Ctx, type Field } from "./stages";
 import { STAGED_TIER, stagedClimate, stagedPlanet } from "./water-staged";
 import { WATER_HALO, cellsStem, dischargeStems, inflowOf, mapped, unmap, waterFiles, waterOf, waterStage, lastRun, climateFor } from "./water";
 
@@ -160,12 +160,12 @@ describe("the planet's water stage", () => {
       if (!existsSync(other.path(f))) symlinkSync(ctx.dir.path(f), other.path(f));
     const stage = waterStage({ climate: stagedClimate, tier: T }), tiles = [7, 11];
     for (const f of waterFiles(T)) other.remove(f);
-    other.remove("water-done.u8"); other.remove(`${p}quick.json`);
+    other.remove(doneFileOf(T, "water")); other.remove("water-done.u8"); other.remove(`${p}quick.json`);
     const made = new BakeDir(`${SCRATCH}/stage-t${T}-c`);
     for (const f of [`${p}height.i32`, `${p}flooded.i32`, `${p}to.u32`, `${p}rock.u8`, `${p}drift.u8`, `${p}dd.u16`, `${p}basin.u8`, `${p}cells.u32`, ...[0, 1, 2, 3].flatMap((s) => [`${p}q${s}-lo.u32`, `${p}q${s}-hi.u16`])])
       if (!existsSync(made.path(f))) symlinkSync(ctx.dir.path(f), made.path(f));
     for (const f of waterFiles(T)) made.remove(f);
-    made.remove("water-done.u8"); made.remove(`${p}quick.json`);
+    made.remove(doneFileOf(T, "water")); made.remove("water-done.u8"); made.remove(`${p}quick.json`);
     const a: Ctx = { ...ctx, dir: other }, b: Ctx = { ...ctx, dir: made };
     const one = await runTiles(a, stage, 250, () => {}, tiles);
     expect(one.done).toBe(true);

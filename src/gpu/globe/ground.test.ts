@@ -20,7 +20,7 @@ import { precipWord } from "./air";
 import { GROUND_HALO, GROUND_OUT, TABLE_UNIT, compactGround, fieldsAt, groundFormat, groundOutputs, groundStage, groundTile, wordsOf, type GroundFields } from "./ground";
 import { FN, REAL, TIER, scratchBake } from "./ground-staged";
 import { cellAcross, localOf, patchAt, patchOf, tileAt, type Patch } from "./patch";
-import { runTiles, type Field } from "./stages";
+import { doneFileOf, runTiles, type Field } from "./stages";
 import { EDGES, tierGrid } from "./grid";
 
 afterAll(releaseGpu);
@@ -127,13 +127,13 @@ describe("the ground stage on the real planet (seed 1)", () => {
   real("the stage over six tiles: the same bytes twice, resumed in two calls, per tile seconds, the pinned tile", async () => {
     const tiles = [458, 1, 14, 1500, 937, 0], ctx = await scratch(tiles, GROUND_HALO), seconds: Record<number, number> = {};
     const dir = ctx.dir, hashes = (k: number) => hashOf(...groundOutputs(TIER).map((f) => readTile(dir, f, k)));
-    ctx.dir.remove("ground-done.u8");
+    ctx.dir.remove(doneFileOf(TIER, "ground")); ctx.dir.remove(doneFileOf(TIER, "ground")); dir.remove("ground-done.u8");
     const first = await runTiles(ctx, groundStage(TIER), 0.01, () => {}, tiles);
     expect(first.tiles).toBeLessThan(tiles.length);
     let rounds = 1;
     for (let p = first; !p.done && rounds < 10; rounds++) p = await runTiles(ctx, groundStage(TIER), 280, () => {}, tiles);
     const once = tiles.map(hashes);
-    dir.remove("ground-done.u8");
+    dir.remove(doneFileOf(TIER, "ground")); dir.remove("ground-done.u8");
     const again = await runTiles(ctx, groundStage(TIER), 280, () => {}, tiles);
     again.tileS.forEach((s, i) => (seconds[tiles[i]] = s));
     expect(tiles.map(hashes)).toEqual(once);

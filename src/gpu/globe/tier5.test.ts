@@ -10,7 +10,7 @@ import { airHalo, airOf, airOut, airOutputs, airStage, compact } from "./air";
 import { BakeDir, tierFile } from "./bakedir";
 import { PLANET_RADIUS_M, PLANET_TIER } from "./grid";
 import { patchAt, patchOf, tileAt, tileCount, type Patch } from "./patch";
-import { runTiles, type Ctx } from "./stages";
+import { doneFileOf, runTiles, type Ctx, type TileStage } from "./stages";
 import { TERRAIN_HALO, terrainOf } from "./terrain";
 import type { Planet } from "./window";
 
@@ -161,4 +161,22 @@ describe("the tile stages at tier 5 on a synthetic store", () => {
       }
     } finally { rmSync(`${SCRATCH}-one`, { recursive: true, force: true }); rmSync(`${SCRATCH}-block`, { recursive: true, force: true }); }
   }, 290_000);
+
+  test("a stage's done marker belongs to its tier: a marker of another tier's tile count in the directory is not read, one of this tier's (an old bake's, with no tier in its name) is", async () => {
+    const dir = new BakeDir(`${SCRATCH}-marks`), ctx: Ctx = { gpu: null as never, planet: {} as Planet, dir, tier: 2 };
+    const made: number[] = [];
+    const stage: TileStage = { name: "fake", halo: 0, inputs: [], outputs: ["t2-fake.u8"], async run(_c, p) { made.push(p.tx + 4 * p.ty); return { "t2-fake.u8": new Uint8Array(p.side * p.side) }; } };
+    try {
+      dir.write("fake-done.u8", new Uint8Array(384).fill(1)); // tier 3's count: not this tier's
+      const a = await runTiles(ctx, stage, 1e9, () => {}, [0, 5, 9]);
+      expect(made).toEqual([0, 5, 9]);
+      expect(a.tiles).toBe(3);
+      expect(dir.has(doneFileOf(2, "fake"))).toBe(true);
+      rmSync(dir.path(doneFileOf(2, "fake")));
+      dir.write("fake-done.u8", Uint8Array.from({ length: 96 }, (_, k) => (k === 5 ? 1 : 0))); // tier 2's count: tile 5 was made
+      made.length = 0;
+      await runTiles(ctx, stage, 1e9, () => {}, [0, 5, 9]);
+      expect(made).toEqual([0, 9]);
+    } finally { rmSync(`${SCRATCH}-marks`, { recursive: true, force: true }); }
+  });
 });

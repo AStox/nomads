@@ -9,7 +9,7 @@ import { airStage } from "./air";
 import { BakeDir } from "./bakedir";
 import { GROUND_HALO, TABLE_UNIT, groundStage, mappedField } from "./ground";
 import { patchOf, tileAt } from "./patch";
-import { runTiles, type Ctx, type Field, type TileStage } from "./stages";
+import { doneFileOf, runTiles, type Ctx, type Field, type TileStage } from "./stages";
 import { readPlanet, type Planet } from "./window";
 import { diskStore } from "../../../scripts/globe-window";
 
@@ -60,7 +60,7 @@ export async function scratchBake(tiles: number[], halo: number, ground = true):
   // what was made in the scratch bake belongs to the heights it was made from: the real bake's change when the tiers are baked again, and then every stage's tiles are made again
   const stamp = String(statSync(`${BAKE}/t4-height.i32`).mtimeMs), stampFile = `${SCRATCH}/from.txt`;
   if (!existsSync(stampFile) || readFileSync(stampFile, "utf8") !== stamp) {
-    for (const f of ["air", "synwater-4", "ground"]) rmSync(`${SCRATCH}/${f}-done.u8`, { force: true });
+    for (const f of ["air", "synwater-4", "ground"]) { rmSync(`${SCRATCH}/${f}-done.u8`, { force: true }); rmSync(`${SCRATCH}/${doneFileOf(TIER, f)}`, { force: true }); }
     writeFileSync(stampFile, stamp);
   }
   planet ??= await readPlanet(1, diskStore(STOREDIR, KEY));
