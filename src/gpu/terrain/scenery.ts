@@ -7,7 +7,7 @@ import { COVERS, M, RM, SIZE, fineRivers, fineView, type Fine, type FineParts, t
 import type { Island } from "../../terrain/island";
 import type { Gpu } from "../device";
 import { dispatch, pipeline, readback, storage } from "../kernel";
-import { BIN, CHUNK, COUNT, FINE, FINE_AT, FINE_WORDS, FINE_KERNEL, GRADIENTS, IDX, ISLE, ISLE_WORDS, LEN, MV, NQ, NS, ORE_CAP, RASTER, RMW, T, TAB_AT, TABLE, WRITE, clastKernel } from "../wgsl/terrain-scenery";
+import { BIN, CHUNK, COUNT, FINE, FINE_AT, FINE_WORDS, FINE_KERNEL, GEO_AT, GRAD_AT, GRADIENTS, ISLAND_SCENERY, IDX, ISLE, ISLE_WORDS, LEN, MV, NQ, NS, ORE_CAP, RASTER, RMW, T, TAB_AT, TABLE, WRITE, clastKernel, layoutOf, type SceneryLayout } from "../wgsl/terrain-scenery";
 
 // The fields of the island the scenery reads.
 export type SceneryIsland = Pick<Island, "height" | "water" | "moist" | "tree" | "shrub" | "grass" | "marsh" | "bare" | "sand" | "soil" | "silt" | "clayey" | "ph" | "winterTable" | "soilWater" | "rivers"> & {
@@ -34,13 +34,14 @@ export function packIsle(isle: SceneryIsland): Int32Array {
     const src = FIELD[name](isle), s = SCALE[name], at = f * LEN;
     for (let i = 0; i < LEN; i++) out[at + i] = Math.round(src[i] * s);
   });
-  out.set(GRADIENTS, ISLE_WORDS - GRADIENTS.length);
+  out.set(GRADIENTS, GRAD_AT);
+  out.set([-38400, -38400, 0], GEO_AT); // the island's corner is 9,600 m before its centre (quarter metres)
   return out;
 }
 
 // The streams as segments (the two ends and half the stroke's width in Q16 texels, and the bed's depth in cm), binned
 // BIN texels square in segment order (flora.ts's stack of strokes), as the raster kernel reads them.
-function segments(rivers: FineRiver[][]) {
+export function segments(rivers: FineRiver[][]) {
   const px = (x: number) => ((x + SIZE / 2) / SIZE) * RM, bins = RM / BIN, lists: number[][] = Array.from({ length: bins * bins }, () => []);
   const seg: number[] = [];
   let n = 0;
@@ -95,7 +96,7 @@ async function fineOnGpu(g: Gpu, isle: SceneryIsland): Promise<FineOnGpu> {
 
 // A dispatch with its buffers bound where the entry point uses them (an entry that reads only some of a module's
 // bindings has a layout of just those).
-function run(g: Gpu, p: GPUComputePipeline, binds: [number, GPUBuffer][], groups: [number, number?, number?]) {
+export function run(g: Gpu, p: GPUComputePipeline, binds: [number, GPUBuffer][], groups: [number, number?, number?]) {
   const bind = g.device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: binds.map(([binding, buffer]) => ({ binding, resource: { buffer } })) });
   const enc = g.device.createCommandEncoder(), pass = enc.beginComputePass();
   pass.setPipeline(p);
@@ -105,24 +106,29 @@ function run(g: Gpu, p: GPUComputePipeline, binds: [number, GPUBuffer][], groups
   g.device.queue.submit([enc.finish()]);
 }
 
-// The island's fine field and every object on it (flora.ts's fineGround and scatter): the Fine and the Scatter the sim
-// and the page read, in the CPU's units. The objects of seed `seed` depend on nothing but it and the island.
-export async function sceneryGpu(g: Gpu, isle: SceneryIsland, seed: number): Promise<{ fine: Fine; flora: Scatter }> {
-  const { fine, isle: packed, field } = await fineOnGpu(g, isle);
-  run(g, pipeline(g, TABLE, "table"), [[0, packed]], [Math.ceil(LEN / 64)]);
+// The kernels' texts for a layout (the island's, or a tile's: wgsl/terrain-scenery.ts SceneryFormat).
+export interface SceneryKernels { fine: string; table: string; count: string; write: string }
+export const ISLAND_KERNELS: SceneryKernels = { fine: FINE_KERNEL, table: TABLE, count: COUNT, write: WRITE };
+
+// Every object on the fields in `packed` (the packed fields and the fine buffer, which are let go): the tables, the draws counted by quad and written where the counts put them, read back as
+// a Scatter in the CPU's units. `key` is the first quad's key (0 on the island; a tile's quads' keys run on from its own: scatter.ts).
+export async function objectsOn(g: Gpu, L: SceneryLayout, K: SceneryKernels, packed: GPUBuffer, field: GPUBuffer, seed: number, key: number): Promise<Scatter> {
+  const { IDX, NQ } = L;
+  run(g, pipeline(g, K.table, "table"), [[0, packed]], [Math.ceil(L.LEN / 64)]);
   const idx = storage(g, IDX.words * 4);
   g.device.queue.writeBuffer(idx, IDX.seed * 4, new Uint32Array([seed >>> 0]));
-  const base: [number, GPUBuffer][] = [[0, packed], [1, field], [2, idx]], count = pipeline(g, COUNT, "count");
+  g.device.queue.writeBuffer(idx, IDX.key * 4, new Uint32Array([key >>> 0]));
+  const base: [number, GPUBuffer][] = [[0, packed], [1, field], [2, idx]], count = pipeline(g, K.count, "count");
   run(g, count, base, [Math.ceil(NQ / 64)]);
-  run(g, pipeline(g, COUNT, "rank"), [[2, idx]], [Math.ceil(T / 64)]);
-  run(g, pipeline(g, COUNT, "rows"), [[2, idx]], [Math.ceil(Math.sqrt(NQ) / 64)]);
-  run(g, pipeline(g, COUNT, "scan"), [[2, idx]], [1]);
+  run(g, pipeline(g, K.count, "rank"), [[2, idx]], [Math.ceil(T / 64)]);
+  run(g, pipeline(g, K.count, "rows"), [[2, idx]], [Math.ceil(Math.sqrt(NQ) / 64)]);
+  run(g, pipeline(g, K.count, "scan"), [[2, idx]], [1]);
   const meta = new Uint32Array(await readback(g, idx, (IDX.start + T + 1 - IDX.seed) * 4, IDX.seed * 4));
   if (meta[IDX.flag - IDX.seed] !== 0) throw new Error("a quad's entries have no place in any tile's run");
   const start = Int32Array.from(meta.subarray(IDX.start - IDX.seed, IDX.start - IDX.seed + T + 1)), n = start[T], oreN = meta[IDX.oreTotal - IDX.seed];
   if (oreN > ORE_CAP) throw new Error(`${oreN} loose stones of ore, room for ${ORE_CAP}`);
   const out = ["px", "py", "size", "seed", "ks"].map(() => storage(g, Math.max(1, n) * 4));
-  run(g, pipeline(g, WRITE, "write"), [...base, ...out.map((b, k): [number, GPUBuffer] => [3 + k, b])], [Math.ceil(NQ / 64)]);
+  run(g, pipeline(g, K.write, "write"), [...base, ...out.map((b, k): [number, GPUBuffer] => [3 + k, b])], [Math.ceil(NQ / 64)]);
   const word = async (b: GPUBuffer) => { const raw = await readback(g, b); b.destroy(); return raw; };
   const [pxRaw, pyRaw, szRaw, sdRaw, ksRaw] = [await word(out[0]), await word(out[1]), await word(out[2]), await word(out[3]), await word(out[4])];
   const tail = new Uint32Array(await readback(g, idx, (IDX.flag - IDX.seed + 1) * 4, IDX.seed * 4)), oreRaw = new Uint32Array(await readback(g, idx, 4 * Math.max(1, oreN) * 4, IDX.ore * 4));
@@ -134,7 +140,14 @@ export async function sceneryGpu(g: Gpu, isle: SceneryIsland, seed: number): Pro
   for (let i = 0; i < n; i++) { px[i] = pxU[i] / 1e4; py[i] = pyU[i] / 1e4; size[i] = szU[i] / 1e6; kind[i] = ks[i] & 255; species[i] = ks[i] >>> 8; }
   const ore: Scatter["ore"] = [];
   for (let k = 0; k < oreN; k++) ore.push({ px: Math.fround(oreRaw[4 * k] / 1e4), py: Math.fround(oreRaw[4 * k + 1] / 1e4), size: oreRaw[4 * k + 2] / 1e6, seed: oreRaw[4 * k + 3] });
-  return { fine, flora: { n, start, kind, species, px, py, size, seed: new Uint32Array(sdRaw), ore } };
+  return { n, start, kind, species, px, py, size, seed: new Uint32Array(sdRaw), ore };
+}
+
+// The island's fine field and every object on it (flora.ts's fineGround and scatter): the Fine and the Scatter the sim
+// and the page read, in the CPU's units. The objects of seed `seed` depend on nothing but it and the island.
+export async function sceneryGpu(g: Gpu, isle: SceneryIsland, seed: number): Promise<{ fine: Fine; flora: Scatter }> {
+  const { fine, isle: packed, field } = await fineOnGpu(g, isle);
+  return { fine, flora: await objectsOn(g, layoutOf(ISLAND_SCENERY), ISLAND_KERNELS, packed, field, seed, 0) };
 }
 
 // The per-cell tables alone: each plant's fit (Q24) and compensation point (Q23) at every cell, cell-major, as floats. For
@@ -153,7 +166,7 @@ export async function tablesGpu(g: Gpu, isle: SceneryIsland): Promise<{ fit: Flo
 // reads them: 0 treeMm(plant, fit Q24, word), 1 crownOf(plant, mm), 2 bushMm(plant, fit Q24, word), 3 noise(seed, x, y in Q20),
 // 4 fbm of three octaves at a 240 m scale (seed, x, y in quarter meters). The answers are Q24, Q16 or mm as the law has them.
 export async function lawsGpu(g: Gpu, rows: readonly (readonly number[])[]): Promise<Uint32Array> {
-  const idx = storage(g, IDX.words * 4), isle = storage(g, new Int32Array(ISLE_WORDS).fill(0).map((_, k) => (k >= ISLE_WORDS - GRADIENTS.length ? GRADIENTS[k - (ISLE_WORDS - GRADIENTS.length)] : 0)));
+  const idx = storage(g, IDX.words * 4), isle = storage(g, (() => { const w = new Int32Array(ISLE_WORDS); w.set(GRADIENTS, GRAD_AT); return w; })());
   const inp = new Uint32Array(rows.length * 8);
   rows.forEach((r, k) => inp.set(r.map((x) => x >>> 0), k * 8));
   g.device.queue.writeBuffer(idx, IDX.base * 4, inp);

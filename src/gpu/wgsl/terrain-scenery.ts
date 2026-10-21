@@ -29,15 +29,25 @@ import { DBH, FERNS, FLOWERS, FUNGI, GX, GY, HEMERY, HERBS, M, PLANTS, QUAD, REI
 import { FIXED } from "./fixed";
 import { RAND } from "./rand";
 
-export const LEN = N * N;
-export const Q = M - 1; // quads across
-export const NQ = Q * Q, MV = M * M, RMW = (RM * RM) / 4;
 export const BIN = 16; // texels square
 export const NS = PLANTS.length;
+export const T = TILES * TILES;
+export const ORE_CAP = 1 << 16;
 
-// ---------- the island's fields as the kernels read them ----------
+// ---------- the field's format ----------
+// The kernels run on the island (`ISLAND_SCENERY`: a field of N by N cells whose fine lattice runs from the first cell's centre to the last's, 1,021 vertices a side) or on a tile of the planet's
+// 75 m tier (`tileScenery`: the tile's N by N cells in a field with a halo of cells all round it, the lattice running from the tile's own edge to its edge, 1,025 vertices a side, so that
+// the quads of the tiles' lattices meet and none is made by two tiles). `shift` is how many quarter cells the lattice's first vertex lies before a cell's centre (0 on the island, 2 on a
+// tile: a vertex u lies at cell coordinate (u - shift) / 4). A tile's own place (the world position of its corner in quarter metres, its face, the first of its quads' keys) is read from the
+// buffers, so that one text serves every tile.
+export interface SceneryFormat { side: number; halo: number; shift: number }
+export const TILE_HALO = 2;
+export const ISLAND_SCENERY: SceneryFormat = { side: N, halo: 0, shift: 0 };
+export const tileScenery = (halo = TILE_HALO): SceneryFormat => ({ side: N + 2 * halo, halo, shift: 2 });
+
+// ---------- the fields as the kernels read them ----------
 // i32, LEN each, then the tables the table kernel makes (NS fits, NS compensation points, cell-major), then the
-// gradient table of flora.ts noise (GX then GY, 4,096 each, Q24).
+// gradient table of flora.ts noise (GX then GY, 4,096 each, Q24), then the place words (GEO: the corner's x and z in quarter metres, the face).
 export const ISLE = [
   "height", "water", // Q16
   "moist", "tree", "shrub", "grass", "marsh", "bare", "sand", // Q24; the covers in flora.ts COVERS order
@@ -47,28 +57,29 @@ export const ISLE = [
   "sun0", "sun1", "sun2", "sun3", "temp0", "temp1", "temp2", "temp3", // Q16
   "sw0", "sw1", "sw2", "sw3", // Q24: how full the root zone is at the end of each season
 ] as const;
-export const TAB_AT = ISLE.length * LEN, COMP_AT = TAB_AT + NS * LEN, GRAD_AT = COMP_AT + NS * LEN, ISLE_WORDS = GRAD_AT + 2 * 4096;
-const IF = Object.fromEntries(ISLE.map((n, k) => [n, k * LEN])) as Record<(typeof ISLE)[number], number>;
-
 // ---------- the fine field's buffer ----------
 // Two byte planes of the stream mask (coverage 0 to 255, and the bed's depth in cm, four texels a word), then the
 // vertices' fields, i32, MV each.
 export const FINE = ["h", "wet", "moist", "tree", "shrub", "grass", "marsh", "bare", "sand"] as const;
-export const CUT_AT = RMW, FINE_AT = 2 * RMW, FINE_WORDS = FINE_AT + FINE.length * MV;
-const FF = Object.fromEntries(FINE.map((n, k) => [n, FINE_AT + k * MV])) as Record<(typeof FINE)[number], number>;
 
-// ---------- the index buffer ----------
-// Per quad: the entries it puts in each of four tiles (itself, east, south, south-east) and where each run begins in its
-// tile; the loose stones of ore a quad lays and their first rank in its row. Then the meta words.
-export const T = TILES * TILES;
-export const ORE_CAP = 1 << 16;
-export const IDX = (() => {
+export function layoutOf(fmt: SceneryFormat) {
+  const side = fmt.side, LEN = side * side, off = 2 - fmt.shift, m = 4 * N + 1 - 2 * off, Q = m - 1, NQ = Q * Q, MV = m * m, RMW = (RM * RM) / 4;
+  const TAB_AT = ISLE.length * LEN, COMP_AT = TAB_AT + NS * LEN, GRAD_AT = COMP_AT + NS * LEN, GEO_AT = GRAD_AT + 2 * 4096, ISLE_WORDS = GEO_AT + 4;
+  const IF = Object.fromEntries(ISLE.map((n, k) => [n, k * LEN])) as Record<(typeof ISLE)[number], number>;
+  const CUT_AT = RMW, FINE_AT = 2 * RMW, FINE_WORDS = FINE_AT + FINE.length * MV;
+  const FF = Object.fromEntries(FINE.map((n, k) => [n, FINE_AT + k * MV])) as Record<(typeof FINE)[number], number>;
+  // ---------- the index buffer ----------
+  // Per quad: the entries it puts in each of four tiles (itself, east, south, south-east) and where each run begins in its
+  // tile; the loose stones of ore a quad lays and their first rank in its row. Then the meta words (the seed, the flag, the ore's total, the first quad's key).
   let at = 0;
   const take = (n: number) => { const a = at; at += n; return a; };
-  const o = { cnt: take(4 * NQ), base: take(4 * NQ), oreCnt: take(NQ), oreBase: take(NQ), seed: take(1), flag: take(1), oreTotal: take(1), pad: take(13), tileN: take(T), start: take(T + 1), rowT: take(Q), rowC: take(Q), rowStart: take(Q + 1), ore: take(4 * ORE_CAP), words: 0 };
-  o.words = at;
-  return o;
-})();
+  const IDX = { cnt: take(4 * NQ), base: take(4 * NQ), oreCnt: take(NQ), oreBase: take(NQ), seed: take(1), flag: take(1), oreTotal: take(1), key: take(1), pad: take(12), tileN: take(T), start: take(T + 1), rowT: take(Q), rowC: take(Q), rowStart: take(Q + 1), ore: take(4 * ORE_CAP), words: 0 };
+  IDX.words = at;
+  return { side, halo: fmt.halo, shift: fmt.shift, off, LEN, m, Q, NQ, MV, RMW, TAB_AT, COMP_AT, GRAD_AT, GEO_AT, ISLE_WORDS, IF, CUT_AT, FINE_AT, FINE_WORDS, FF, IDX };
+}
+export type SceneryLayout = ReturnType<typeof layoutOf>;
+const ISL = layoutOf(ISLAND_SCENERY);
+export const { LEN, Q, NQ, MV, RMW, TAB_AT, GRAD_AT, GEO_AT, ISLE_WORDS, CUT_AT, FINE_AT, FINE_WORDS, IDX } = ISL;
 
 // ---------- constants as integers, rounded once here ----------
 const Qn = (x: number, bits: number) => {
@@ -132,18 +143,24 @@ const FLORA_KIND = { tree: 0, bush: 1, mushroom: 7, herb: 8, reeds: 9, fern: 10,
 export const STREAMS = { reeds: 0x5c01, clay: 0x5c02, tree: 0x5c03, bush: 0x5c04, fungi: 0x5c05, herb: 0x5c06, fern: 0x5c07, flowers: 0x5c08, grass: 0x5c09, ore: 0x5c0a };
 
 // ---------- the pieces every kernel shares ----------
-const HELP = /* wgsl */ `
+const help = (L: SceneryLayout) => /* wgsl */ `
 ${FIXED}
 const O16 = 65536i;
 const O24 = 16777216i;
-const NSIDE = ${N}u;
-const LEN = ${LEN}u;
-const MW = ${M}u;
-const MV = ${MV}u;
+const NSIDE = ${L.side}u;
+const HALO = ${L.halo}i;
+const SHIFT = ${L.shift}i;
+const OFF = ${L.off}i;
+const NCELLS = ${N}i;
+const LEN = ${L.LEN}u;
+const MW = ${L.m}u;
+const MV = ${L.MV}u;
 const RM = ${RM}u;
-const RMW = ${RMW}u;
-const QS = ${Q}u;
-const NQ = ${NQ}u;
+const RMW = ${L.RMW}u;
+const QS = ${L.Q}u;
+const NQ = ${L.NQ}u;
+// the index of the cell (i, j) of the area's own cells (and the halo's, beyond them) in a field; a cell past the field is the nearest one in it
+fn cellIx(i: i32, j: i32) -> u32 { return u32(clamp(j, -HALO, NCELLS - 1i + HALO) + HALO) * NSIDE + u32(clamp(i, -HALO, NCELLS - 1i + HALO) + HALO); }
 
 // round(a b / 2^sh) and round(a 2^sh / b), signed, saturating, sh from 1 to 31.
 fn qm(a: i32, b: i32, sh: u32) -> i32 {
@@ -173,8 +190,9 @@ fn rdiv64(n: vec2u, d: u32) -> u32 { let s = add64(n, vec2u(d >> 1u, 0u)); retur
 
 `;
 
-const NOISE = /* wgsl */ `
-const GRAD_AT = ${GRAD_AT}u;
+const noise = (L: SceneryLayout) => /* wgsl */ `
+const GRAD_AT = ${L.GRAD_AT}u;
+const GEO_AT = ${L.GEO_AT}u;
 // ---------- flora.ts noise ----------
 // hash is flora.ts hash: x, y and s mixed by three primes (wrapping), then Murmur's finalizer; its top 12 bits pick one
 // of 4,096 gradients. Coordinates are Q20, the gradients and the result Q24.
@@ -202,15 +220,26 @@ fn noiseQ(x: i32, y: i32, s: i32) -> i32 {
 // A coordinate in quarter metres over a divisor (in the same quarters), Q20: round(X 2^20 / d).
 fn crd(X: i32, d: u32) -> i32 {
   let m = mag(X);
-  let q = i32(rdiv64(vec2u(m << 20u, m >> 12u), d));
-  return select(q, -q, X < 0i);
+  let q = rdiv64(vec2u(m << 20u, m >> 12u), d);
+  return select(bitcast<i32>(q), -bitcast<i32>(q), X < 0i);
 }
+// round(a b / 2^24) as qm gives it where it holds, and its low 32 bits where it does not (a tile's coordinates over a face run to 2^21 of Q20 lattice cells: the lattice then wraps, the
+// same for every tile that reads the place, which saturating would not do)
+fn qmw(a: i32, b: i32) -> i32 {
+  let p = add64(mul64(mag(a), mag(b)), vec2u(0x800000u, 0u));
+  let r = bitcast<i32>((p.x >> 24u) | (p.y << 8u));
+  return select(r, -r, (a < 0i) != (b < 0i));
+}
+// the field's place: the world position of the area's corner in quarter metres (x, z) and its face, and the lattice vertex's coordinate in quarter metres
+fn gx(u: u32) -> i32 { return 75i * (i32(u) + OFF) + ISLE[GEO_AT]; }
+fn gz(v: u32) -> i32 { return 75i * (i32(v) + OFF) + ISLE[GEO_AT + 1u]; }
+fn faceKey() -> i32 { return ISLE[GEO_AT + 2u] * 1013i; }
 // flora.ts fbm over a coordinate pair (quarter metres, divisor d), octaves 2 or 3, Q24.
 fn fbmQ(X: i32, Z: i32, d: u32, s: i32, octaves: u32) -> i32 {
   let cx = crd(X, d); let cz = crd(Z, d);
   var total = 0i; var f = O24; var amp = O24 / 2i;
   for (var o = 0u; o < octaves; o++) {
-    total += mq(noiseQ(qm(cx, f, 24u), qm(cz, f, 24u), s + i32(o) * 31i), amp);
+    total += mq(noiseQ(qmw(cx, f), qmw(cz, f), s + faceKey() + i32(o) * 31i), amp);
     f = mq(f, ${q24(2.03)}); amp = amp / 2i;
   }
   return total;
@@ -245,7 +274,7 @@ const PL_SPECIES = ${ARR(PL_SPECIES, "u32")};
 
 // ---------- the stream mask ----------
 export const RASTER = /* wgsl */ `
-${HELP}
+${help(ISL)}
 @group(0) @binding(0) var<storage, read_write> SEG: array<i32>;
 @group(0) @binding(1) var<storage, read_write> BIN: array<u32>;
 @group(0) @binding(2) var<storage, read_write> OUT: array<u32>;
@@ -298,12 +327,14 @@ fn raster(@builtin(global_invocation_id) gid: vec3u) {
 // One thread a vertex of the 1,021 x 1,021 lattice (a quarter of a cell apart): the cubic through the generator's cells
 // (Catmull-Rom at quarter steps, in two passes with the sums scaled so no step overflows), the ground swell, the stream's
 // bed, and the covers wandering at their edges.
-export const FINE_KERNEL = /* wgsl */ `
-${HELP}
-${NOISE}
+export const fineKernel = (L: SceneryLayout) => {
+const { IF, FF, CUT_AT } = L;
+return /* wgsl */ `
+${help(L)}
+${noise(L)}
 @group(0) @binding(0) var<storage, read_write> ISLE: array<i32>;
 @group(0) @binding(1) var<storage, read_write> FINE: array<i32>;
-fn cell(f: u32, i: i32, j: i32) -> i32 { return ISLE[f + u32(clamp(j, 0i, ${N - 1}i)) * NSIDE + u32(clamp(i, 0i, ${N - 1}i))]; }
+fn cell(f: u32, i: i32, j: i32) -> i32 { return ISLE[f + cellIx(i, j)]; }
 // Catmull-Rom between p1 and p2 at t = j / 4: p1 + t (A / 2 + t (B / 2 + t C / 2)), each step rounded.
 fn crm(p0: i32, p1: i32, p2: i32, p3: i32, j: i32) -> i32 {
   let A = p2 - p0; let B = 2i * p0 - 5i * p1 + 4i * p2 - p3; let C = 3i * (p1 - p2) + p3 - p0;
@@ -324,7 +355,8 @@ fn fine(@builtin(global_invocation_id) gid: vec3u) {
   let n = gid.x;
   if (n >= MV) { return; }
   let u = n % MW; let v = n / MW;
-  let cx = i32(u >> 2u); let cy = i32(v >> 2u); let jx = i32(u & 3u); let jy = i32(v & 3u);
+  let pu = i32(u) - SHIFT; let pv = i32(v) - SHIFT;
+  let cx = pu >> 2u; let cy = pv >> 2u; let jx = pu & 3i; let jy = pv & 3i;
   var rows: array<i32, 4>;
   for (var r = 0i; r < 4i; r++) {
     let j = cy + r - 1i;
@@ -338,11 +370,11 @@ fn fine(@builtin(global_invocation_id) gid: vec3u) {
     let w01 = select(0i, 1i, cell(${IF.water}u, cx, cy + 1i) > 0i); let w11 = select(0i, 1i, cell(${IF.water}u, cx + 1i, cy + 1i) > 0i);
     wf = (4i - jy) * ((4i - jx) * w00 + jx * w10) + jy * ((4i - jx) * w01 + jx * w11);
   }
-  // the mask's texel at a vertex is the one 8 + 4 u across (the vertex's meters over the texel's 4.6875, exact)
-  let tx = 8u + 4u * u; let ty = 8u + 4u * v;
+  // the mask's texel at a vertex is the one 4 (u + OFF) across (the vertex's meters over the texel's 4.6875, exact)
+  let tx = min(4u * (u + u32(OFF)), RM - 1u); let ty = min(4u * (v + u32(OFF)), RM - 1u);
   let rv = maskByte(tx, ty, 0u); let bed = maskByte(tx, ty, ${CUT_AT}u);
   // x = START + u STEP in quarter metres is 75 u - 38250
-  let X = 75i * i32(u) - 38250i; let Z = 75i * i32(v) - 38250i;
+  let X = gx(u); let Z = gz(v);
   let swell = mq(${q24(2.6)}, fbmQ(X, Z, 960u, 7i, 3u)) + mq(${q24(0.8)}, fbmQ(X, Z, 240u, 8i, 2u));
   // smooth(-2, 6, base)
   let st = clamp(base + 2i * O16, 0i, 8i * O16) << 5u;
@@ -364,14 +396,18 @@ fn fine(@builtin(global_invocation_id) gid: vec3u) {
   }
 }
 `;
+};
+export const FINE_KERNEL = fineKernel(ISL);
 
 // ---------- the per-cell tables ----------
 // For every cell and plant: its fit (niche.ts fit: the lowest of the pH and water table curves; a fungus has neither
 // axis and fits 1, as an absent axis is left out) and, for a green plant, its compensation point over the year at the
 // cell (growth.ts yearComp, at most 2: the year's dry matter it burns against what it makes of the seasons' sun, warmth
 // and soil water, scaled by its fit). Cells at or below -2 m hold zeros, as the CPU scatter skipped them.
-export const TABLE = /* wgsl */ `
-${HELP}
+export const tableKernel = (L: SceneryLayout) => {
+const { IF, TAB_AT, COMP_AT } = L;
+return /* wgsl */ `
+${help(L)}
 ${CURVE}
 ${PLANT_TABLES}
 @group(0) @binding(0) var<storage, read_write> ISLE: array<i32>;
@@ -419,6 +455,8 @@ fn table(@builtin(global_invocation_id) gid: vec3u) {
   }
 }
 `;
+};
+export const TABLE = tableKernel(ISL);
 
 // ---------- the objects ----------
 // Per quad (u, v) of the 1,020 x 1,020: flora.ts's scatter, layer by layer, with every draw a pure function of
@@ -448,12 +486,14 @@ const PI4 = Math.PI / 4;
 // A guard against a loop that cannot end (a stem's crown is never under a Q16 unit, so a quad's room of at most 1,700 m2
 // is filled well inside it); no quad comes near it.
 const MOST_STEMS = 1 << 22;
-const scatterCode = (write: boolean) => /* wgsl */ `
+const scatterCode = (write: boolean, L: SceneryLayout) => {
+const { IF, FF, IDX, TAB_AT, COMP_AT } = L;
+return /* wgsl */ `
 const TT = ${T}u;
 const TSIDE = ${TILES}u;
-const FMAX = ${Math.floor((M - 1.001) * 65536)}i;
+const FMAX = ${Math.floor((L.m - 1.001) * 65536)}i;
 const I_CNT = ${IDX.cnt}u; const I_BASE = ${IDX.base}u; const I_ORECNT = ${IDX.oreCnt}u; const I_OREBASE = ${IDX.oreBase}u;
-const I_SEED = ${IDX.seed}u; const I_FLAG = ${IDX.flag}u; const I_ORETOTAL = ${IDX.oreTotal}u;
+const I_SEED = ${IDX.seed}u; const I_FLAG = ${IDX.flag}u; const I_ORETOTAL = ${IDX.oreTotal}u; const I_KEY = ${IDX.key}u;
 const I_TILEN = ${IDX.tileN}u; const I_START = ${IDX.start}u; const I_ROWT = ${IDX.rowT}u; const I_ROWC = ${IDX.rowC}u; const I_ROWS = ${IDX.rowStart}u; const I_ORE = ${IDX.ore}u;
 const W_LO = ${ARR(W_LO, "i32")};
 const W_DIFF = ${ARR(W_DIFF, "i32")};
@@ -483,7 +523,7 @@ var<private> FT: array<i32, ${NS}>;
 var<private> CP: array<i32, ${NS}>;
 var<private> WT: array<i32, 5>;
 
-fn isleAt(f: u32, i: i32, j: i32) -> i32 { return ISLE[f + u32(clamp(j, 0i, ${N - 1}i)) * NSIDE + u32(clamp(i, 0i, ${N - 1}i))]; }
+fn isleAt(f: u32, i: i32, j: i32) -> i32 { return ISLE[f + cellIx(i, j)]; }
 fn blinQ(f: u32, cx: i32, cy: i32, jx: i32, jy: i32) -> i32 {
   let top = (4i - jx) * isleAt(f, cx, cy) + jx * isleAt(f, cx + 1i, cy);
   let bot = (4i - jx) * isleAt(f, cx, cy + 1i) + jx * isleAt(f, cx + 1i, cy + 1i);
@@ -508,9 +548,9 @@ fn heightFine(FU: i32, FV: i32) -> i32 { return lerpFine(H_AT, FU, FV); }
 // lvl, and whether any cell there holds water
 fn levelAt(ci: i32, cj: i32) -> vec2i {
   var lvl = -FX_MAX; var any = 0i;
-  for (var b = max(0i, cj - 1i); b <= min(${N - 1}i, cj + 1i); b++) {
-    for (var a = max(0i, ci - 1i); a <= min(${N - 1}i, ci + 1i); a++) {
-      let k = u32(b) * NSIDE + u32(a);
+  for (var b = max(-HALO, cj - 1i); b <= min(NCELLS - 1i + HALO, cj + 1i); b++) {
+    for (var a = max(-HALO, ci - 1i); a <= min(NCELLS - 1i + HALO, ci + 1i); a++) {
+      let k = cellIx(a, b);
       let w = ISLE[${IF.water}u + k];
       if (w > 0i) { any = 1i; lvl = max(lvl, ISLE[${IF.height}u + k] + w); }
     }
@@ -524,13 +564,13 @@ fn bl4(a: i32, b: i32, c: i32, d: i32, tx: i32, ty: i32) -> i32 {
 // above the fine ground there and the cells' water share over a fifth, or the sea's share of the cells over three
 // fifths; outside the island, always
 fn waterOver(FU: i32, FV: i32) -> bool {
-  let ci = (FU + 131072i) >> 18u; let cj = (FV + 131072i) >> 18u;
-  if (ci < 0i || cj < 0i || ci >= ${N}i || cj >= ${N}i) { return true; }
+  let ci = (FU + OFF * 65536i) >> 18u; let cj = (FV + OFF * 65536i) >> 18u;
+  if (ci < -HALO || cj < -HALO || ci >= NCELLS + HALO || cj >= NCELLS + HALO) { return true; }
   let lv = levelAt(ci, cj);
   if (lv.y == 0i) { return false; }
-  let x0 = clamp(FU >> 18u, 0i, ${N - 2}i); let y0 = clamp(FV >> 18u, 0i, ${N - 2}i);
-  let tx = clamp((FU >> 2u) - (x0 << 16u), 0i, O16); let ty = clamp((FV >> 2u) - (y0 << 16u), 0i, O16);
-  let k = u32(y0) * NSIDE + u32(x0);
+  let x0 = clamp((FU - SHIFT * 65536i) >> 18u, -HALO, NCELLS - 2i + HALO); let y0 = clamp((FV - SHIFT * 65536i) >> 18u, -HALO, NCELLS - 2i + HALO);
+  let tx = clamp(((FU - SHIFT * 65536i) >> 2u) - (x0 << 16u), 0i, O16); let ty = clamp(((FV - SHIFT * 65536i) >> 2u) - (y0 << 16u), 0i, O16);
+  let k = cellIx(x0, y0);
   var w = array<i32, 4>(ISLE[${IF.water}u + k], ISLE[${IF.water}u + k + 1u], ISLE[${IF.water}u + k + NSIDE], ISLE[${IF.water}u + k + NSIDE + 1u]);
   var s = array<i32, 4>(ISLE[${IF.height}u + k], ISLE[${IF.height}u + k + 1u], ISLE[${IF.height}u + k + NSIDE], ISLE[${IF.height}u + k + NSIDE + 1u]);
   var wi = array<i32, 4>(0i, 0i, 0i, 0i); var si = array<i32, 4>(0i, 0i, 0i, 0i);
@@ -540,7 +580,7 @@ fn waterOver(FU: i32, FV: i32) -> bool {
 }
 // whether the stream mask read between its texels is over half there (flora.ts riverSmooth > 0.5)
 fn streamOver(FU: i32, FV: i32) -> bool {
-  let ux = 4i * FU + 491520i; let uz = 4i * FV + 491520i;
+  let ux = 4i * FU + ${4 * L.off * 65536 - 32768}i; let uz = 4i * FV + ${4 * L.off * 65536 - 32768}i;
   let i = ux >> 16u; let j = uz >> 16u; let a = ux & 0xffff; let b = uz & 0xffff;
   let m00 = i32(maskAt(i, j)); let m10 = i32(maskAt(i + 1i, j)); let m01 = i32(maskAt(i, j + 1i)); let m11 = i32(maskAt(i + 1i, j + 1i));
   let v = qq(m00 * (O16 - a) + m10 * a, O16 - b) + qq(m01 * (O16 - a) + m11 * a, b);
@@ -551,14 +591,14 @@ fn blocked(FU: i32, FV: i32) -> bool { return waterOver(FU, FV) || streamOver(FU
 // nearest lake or the sea, 0.8 m over its level [gap: the Baltic's yearly high at Rønne was not read]
 fn dryAt(FU: i32, FV: i32) -> bool {
   if (Qclear) { return true; }
-  if (maskAt((524288i + 4i * FU) >> 16u, (524288i + 4i * FV) >> 16u) >= 128u) { return false; }
-  let lv = levelAt((FU + 131072i) >> 18u, (FV + 131072i) >> 18u);
+  if (maskAt((${4 * L.off * 65536}i + 4i * FU) >> 16u, (${4 * L.off * 65536}i + 4i * FV) >> 16u) >= 128u) { return false; }
+  let lv = levelAt((FU + OFF * 65536i) >> 18u, (FV + OFF * 65536i) >> 18u);
   if (lv.y == 0i) { return true; }
   return heightFine(FU, FV) > lv.x + ${Qn(0.8, 16)}i;
 }
 // bilinear(isle.soil, cell of the point) > 0: some neighbour with soil under a positive weight
 fn soilAt(FU: i32, FV: i32) -> bool {
-  let cx = FU >> 18u; let cy = FV >> 18u; let tx = (FU >> 2u) & 0xffff; let ty = (FV >> 2u) & 0xffff;
+  let cx = (FU - SHIFT * 65536i) >> 18u; let cy = (FV - SHIFT * 65536i) >> 18u; let tx = ((FU - SHIFT * 65536i) >> 2u) & 0xffff; let ty = ((FV - SHIFT * 65536i) >> 2u) & 0xffff;
   let s00 = isleAt(${IF.soil}u, cx, cy) > 0i; let s10 = isleAt(${IF.soil}u, cx + 1i, cy) > 0i;
   let s01 = isleAt(${IF.soil}u, cx, cy + 1i) > 0i; let s11 = isleAt(${IF.soil}u, cx + 1i, cy + 1i) > 0i;
   return (s00 && tx < O16 && ty < O16) || (s10 && tx > 0i && ty < O16) || (s01 && tx < O16 && ty > 0i) || (s11 && tx > 0i && ty > 0i);
@@ -567,14 +607,14 @@ fn soilAt(FU: i32, FV: i32) -> bool {
 // texels a metre past its edges, so every point of the quad passes waterAt and riverSmooth
 fn clearQuad() -> bool {
   let u = i32(Qu); let v = i32(Qv);
-  let a0 = (75i * u + 146i) / 300i; let a1 = (75i * u + 229i) / 300i;
-  let b0 = (75i * v + 146i) / 300i; let b1 = (75i * v + 229i) / 300i;
-  if (a1 >= ${N}i || b1 >= ${N}i) { return false; }
-  for (var b = max(0i, b0 - 1i); b <= min(${N - 1}i, b1 + 1i); b++) {
-    for (var a = max(0i, a0 - 1i); a <= min(${N - 1}i, a1 + 1i); a++) { if (ISLE[${IF.water}u + u32(b) * NSIDE + u32(a)] > 0i) { return false; } }
+  let a0 = (75i * (u - SHIFT) + 1346i) / 300i - 4i; let a1 = (75i * (u - SHIFT) + 1429i) / 300i - 4i;
+  let b0 = (75i * (v - SHIFT) + 1346i) / 300i - 4i; let b1 = (75i * (v - SHIFT) + 1429i) / 300i - 4i;
+  if (a1 + 1i > NCELLS - 1i + HALO || b1 + 1i > NCELLS - 1i + HALO) { return false; }
+  for (var b = max(-HALO, b0 - 1i); b <= min(NCELLS - 1i + HALO, b1 + 1i); b++) {
+    for (var a = max(-HALO, a0 - 1i); a <= min(NCELLS - 1i + HALO, a1 + 1i); a++) { if (ISLE[${IF.water}u + cellIx(a, b)] > 0i) { return false; } }
   }
-  for (var b = 4i * v + 7i; b <= min(${RM - 1}i, 4i * v + 12i); b++) {
-    for (var a = 4i * u + 7i; a <= min(${RM - 1}i, 4i * u + 12i); a++) { if (maskAt(a, b) != 0u) { return false; } }
+  for (var b = 4i * (v + OFF) - 1i; b <= min(${RM - 1}i, 4i * (v + OFF) + 4i); b++) {
+    for (var a = 4i * (u + OFF) - 1i; a <= min(${RM - 1}i, 4i * (u + OFF) + 4i); a++) { if (maskAt(a, b) != 0u) { return false; } }
   }
   return true;
 }
@@ -582,7 +622,7 @@ fn clearQuad() -> bool {
 // ---------- where an entry goes ----------
 fn emit(kind: u32, sp: u32, tx4: u32, ty4: u32, size: u32, sd: u32) {
   let tx = min(tx4 / 10000u, TSIDE - 1u); let ty = min(ty4 / 10000u, TSIDE - 1u);
-  let d = select(0u, 1u, tx > ((Qu + 2u) >> 3u)) + select(0u, 2u, ty > ((Qv + 2u) >> 3u));
+  let d = select(0u, 1u, tx > ((Qu + u32(OFF)) >> 3u)) + select(0u, 2u, ty > ((Qv + u32(OFF)) >> 3u));
   ${write ? `let at = Qdst[d] + Qloc[d];
   PX[at] = tx4; PY[at] = ty4; SZ[at] = size; SD[at] = sd; KS[at] = kind | (sp << 8u);` : `_ = size; _ = sd; _ = kind; _ = sp;`}
   Qloc[d] = Qloc[d] + 1u;
@@ -590,10 +630,10 @@ fn emit(kind: u32, sp: u32, tx4: u32, ty4: u32, size: u32, sd: u32) {
 // the game's tile coordinate of a point in ten-thousandths of a tile: round(X / 150 m 10^4), X from the island's corner
 fn tileOf(X: u32) -> u32 { return rdiv64(mul64(X, 625u), 614400u); }
 // a place in the quad by 16-bit fractions of it, as the island's meters in Q16 from its corner
-fn cornerX(u: u32, fr: u32) -> u32 { return 2457600u + 1228800u * u + ((fr * 75u) >> 2u); }
+fn cornerX(u: u32, fr: u32) -> u32 { return ${1228800 * L.off}u + 1228800u * u + ((fr * 75u) >> 2u); }
 // A thing stands where the game puts it, to a ten-thousandth of a tile, and it is checked there too: the fine-grid
 // coordinate of that place is (T * 150 / 10^4 m - 37.5) / 18.75 = T / 1250 - 2.
-fn backAt(t4: u32) -> i32 { return i32(rdiv64(mul64(t4, 32768u), 625u)) - 131072i; }
+fn backAt(t4: u32) -> i32 { return i32(rdiv64(mul64(t4, 32768u), 625u)) - ${65536 * L.off}i; }
 // kind ORE is a loose stone of ore, listed apart from the rest
 const ORE = 255u;
 fn put(kind: u32, sp: u32, fx: u32, fz: u32, size: u32, sd: u32) {
@@ -663,9 +703,9 @@ fn crownOf(p: u32, mm: u32) -> i32 {
 // ---------- what the quad's ground offers each plant ----------
 // the cells' tables read at the quad's center, a bilinear in sixty-fourths
 fn fitsAt() {
-  let sx = i32(2u * Qu + 1u); let sy = i32(2u * Qv + 1u);
+  let sx = 2i * i32(Qu) + 1i - 2i * SHIFT; let sy = 2i * i32(Qv) + 1i - 2i * SHIFT;
   let x1 = sx >> 3u; let y1 = sy >> 3u; let tx = sx & 7i; let ty = sy & 7i;
-  let i = (u32(y1) * NSIDE + u32(x1)) * NS;
+  let i = (u32(y1 + HALO) * NSIDE + u32(x1 + HALO)) * NS;
   for (var p = 0u; p < NS; p++) {
     let a = ISLE[${TAB_AT}u + i + p]; let b = ISLE[${TAB_AT}u + i + NS + p]; let c = ISLE[${TAB_AT}u + i + NSIDE * NS + p]; let d = ISLE[${TAB_AT}u + i + NSIDE * NS + NS + p];
     FT[p] = ((a * (8i - tx) + b * tx) * (8i - ty) + (c * (8i - tx) + d * tx) * ty + 32i) >> 6u;
@@ -754,11 +794,11 @@ fn low(stream: u32, first: u32, n: u32, base: i32, light: i32) {
 
 // ---------- one quad ----------
 fn scatterQuad(q: u32) {
-  Qq = q; Qu = q % QS; Qv = q / QS;
+  Qq = IDX[I_KEY] + q; Qu = q % QS; Qv = q / QS;
   Qseed = IDX[I_SEED];
   Qloc = array<u32, 4>(0u, 0u, 0u, 0u); Qore = 0u;
   let u = Qu; let v = Qv; let i = v * MW + u;
-  let tx0 = (u + 2u) >> 3u; let ty0 = (v + 2u) >> 3u;
+  let tx0 = (u + u32(OFF)) >> 3u; let ty0 = (v + u32(OFF)) >> 3u;
   ${write ? `for (var d = 0u; d < 4u; d++) {
     let t = min(ty0 + (d >> 1u), TSIDE - 1u) * TSIDE + min(tx0 + (d & 1u), TSIDE - 1u);
     Qdst[d] = IDX[I_START + t] + IDX[I_BASE + q * 4u + d];
@@ -770,7 +810,7 @@ fn scatterQuad(q: u32) {
   Qclear = clearQuad();
   let m = FINE[${FF.moist}u + i]; let tree = FINE[${FF.tree}u + i]; let shrub = FINE[${FF.shrub}u + i]; let grass = FINE[${FF.grass}u + i];
   let marsh = FINE[${FF.marsh}u + i]; let sand = FINE[${FF.sand}u + i];
-  let edge = select(0i, 1i, wk >= 1i || maskAt(i32(8u + 4u * u), i32(8u + 4u * v)) > 51u);
+  let edge = select(0i, 1i, wk >= 1i || maskAt(4i * (i32(u) + OFF), 4i * (i32(v) + OFF)) > 51u);
   // the wet margins first: reeds stand in the shallows and on marsh, clay lies in the silt beside still or running water
   {
     var x = mq(marsh, ${q24(1.1)});
@@ -785,7 +825,8 @@ fn scatterQuad(q: u32) {
       if (lerpFine(WET_AT, FU, FV) < ${q24(0.6)} && heightFine(FU, FV) > ${Qn(0.2, 16)}i) { put(${FLORA_KIND.reeds}u, 0u, fx, fz, 1000000u + mulhi(wz, 1500000u), sd); }
     }
     // clay where the ground is clayey: river and lake silt, and the soil of mudstone and basalt
-    let cx = i32(u >> 2u); let cy = i32(v >> 2u); let jx = i32(u & 3u); let jy = i32(v & 3u);
+    let pu = i32(u) - SHIFT; let pv = i32(v) - SHIFT;
+    let cx = pu >> 2u; let cy = pv >> 2u; let jx = pu & 3i; let jy = pv & 3i;
     let silt = blinQ(${IF.silt}u, cx, cy, jx, jy); let clayey = blinQ(${IF.clayey}u, cx, cy, jx, jy);
     let ramp = clamp(qd(clayey - ${q24(0.2)}, ${q24(0.3)}, 24u), 0i, O24);
     let y = mq(max(silt, mq(${q24(1.5)}, ramp)), ${q24(0.08)} + edge * ${q24(0.5)});
@@ -812,7 +853,7 @@ fn scatterQuad(q: u32) {
   }
   let edge2 = 4i * mq(tree, O24 - tree);
   // Small plants come in patches some tens of meters across rather than evenly: 0 in the gaps, up to about 1.7.
-  let clump = clamp(${q24(0.35)} + mq(${q24(1.3)}, noiseQ(crd(75i * i32(u) - 38250i, 180u), crd(75i * i32(v) - 38250i, 180u), 91i)), 0i, ${q24(1.7)});
+  let clump = clamp(${q24(0.35)} + mq(${q24(1.3)}, noiseQ(crd(gx(u), 180u), crd(gz(v), 180u), 91i + faceKey())), 0i, ${q24(1.7)});
   for (var layer = 0u; layer < 4u; layer++) {
     var base = 0i;
     if (layer == 0u) { base = mq(tree, mq(m, ${q24(0.25)})) + mq(grass, ${q24(0.03)}); }
@@ -846,10 +887,11 @@ fn scatterQuad(q: u32) {
   }
 }
 `;
+};
 
-const COMMON = (write: boolean) => /* wgsl */ `
-${HELP}
-${NOISE}
+const common = (write: boolean, L: SceneryLayout) => /* wgsl */ `
+${help(L)}
+${noise(L)}
 ${CURVE}
 ${PLANT_TABLES}
 ${RAND}
@@ -861,15 +903,16 @@ ${write ? `@group(0) @binding(3) var<storage, read_write> PX: array<u32>;
 @group(0) @binding(5) var<storage, read_write> SZ: array<u32>;
 @group(0) @binding(6) var<storage, read_write> SD: array<u32>;
 @group(0) @binding(7) var<storage, read_write> KS: array<u32>;` : ``}
-${scatterCode(write)}
+${scatterCode(write, L)}
 `;
 
 // The first pass, and the passes between: count each quad's entries by destination tile; rank every tile's runs (the
 // quads in raster order, a quad east or south of a tile's own that spills into it first); the ore's ranks by row; the
 // prefix sums. Entry points: count, rank, rows, scan (all on IDX but count, which reads the island and the fine field),
 // and probe, which evaluates the laws on inputs the host gives (the test's).
-export const COUNT = /* wgsl */ `
-${COMMON(false)}
+export const countKernel = (L: SceneryLayout) => {
+return /* wgsl */ `
+${common(false, L)}
 @compute @workgroup_size(64)
 fn count(@builtin(global_invocation_id) gid: vec3u) {
   let q = gid.x;
@@ -884,10 +927,10 @@ fn rank(@builtin(global_invocation_id) gid: vec3u) {
   if (t >= TT) { return; }
   let tx = i32(t % TSIDE); let ty = i32(t / TSIDE);
   var run = 0u;
-  for (var vq = 8i * ty - 3i; vq <= 8i * ty + 5i; vq++) {
-    for (var uq = 8i * tx - 3i; uq <= 8i * tx + 5i; uq++) {
-      if (uq < 0i || uq >= ${Q}i || vq < 0i || vq >= ${Q}i) { continue; }
-      let d = select(0u, 1u, uq == 8i * tx - 3i) + select(0u, 2u, vq == 8i * ty - 3i);
+  for (var vq = 8i * ty - OFF - 1i; vq <= 8i * ty - OFF + 7i; vq++) {
+    for (var uq = 8i * tx - OFF - 1i; uq <= 8i * tx - OFF + 7i; uq++) {
+      if (uq < 0i || uq >= ${L.Q}i || vq < 0i || vq >= ${L.Q}i) { continue; }
+      let d = select(0u, 1u, uq == 8i * tx - OFF - 1i) + select(0u, 2u, vq == 8i * ty - OFF - 1i);
       let q = u32(vq) * QS + u32(uq);
       IDX[I_BASE + q * 4u + d] = run;
       run += IDX[I_CNT + q * 4u + d];
@@ -935,11 +978,14 @@ fn probe(@builtin(global_invocation_id) gid: vec3u) {
   IDX[at + 4u] = out;
 }
 `;
+};
+export const COUNT = countKernel(ISL);
 
 // The second pass: the same draws, each entry written where the ranks put it. A quad whose draws came out other than
 // its count (they cannot) raises the flag.
-export const WRITE = /* wgsl */ `
-${COMMON(true)}
+export const writeKernel = (L: SceneryLayout) => {
+return /* wgsl */ `
+${common(true, L)}
 @compute @workgroup_size(64)
 fn write(@builtin(global_invocation_id) gid: vec3u) {
   let q = gid.x;
@@ -949,6 +995,8 @@ fn write(@builtin(global_invocation_id) gid: vec3u) {
   if (Qore != IDX[I_ORECNT + q]) { IDX[I_FLAG] = 1u; }
 }
 `;
+};
+export const WRITE = writeKernel(ISL);
 
 // ---------- the clasts' counts ----------
 // How many boulders, stones and pebbles lie in each cell (flora.ts clasts as it was): per class a Poisson count whose
@@ -960,7 +1008,7 @@ fn write(@builtin(global_invocation_id) gid: vec3u) {
 export const CHUNK = 8192;
 export const CLAST_STREAM = 0xc1a5;
 export const clastKernel = (classes: number, drifts: number) => /* wgsl */ `
-${HELP}
+${help(ISL)}
 ${RAND}
 @group(0) @binding(0) var<storage, read_write> INP: array<i32>;
 @group(0) @binding(1) var<storage, read_write> OUT: array<u32>;

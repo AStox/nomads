@@ -4,10 +4,10 @@
 // and the island's ground made again from the stage's stored words (the units the files keep) must be the same ground to what those units hold. The cases on the real planet (the bake of
 // seed 1 under /tmp/planet-75m, skipped where it is not) make the air stage's and a stand-in water stage's files for the tiles they need in /tmp/planet-75m/ground-scratch/bake (links to the
 // bake's heights and terrain files, the rest written there) and measure what a halo cuts: two patches half a tile apart, and one place seen from the two faces of a cube's edge.
-// The stand-in water (below) is a function of each cell's height and discharge area and is not the water stage's: the cases that read the water stage's own files (t4-water.u16 and the rest)
-// use them when the bake has them.
+// The stand-in water (ground-staged.ts) is a function of each cell's height and discharge area and is not the water stage's: the cases that read the water stage's own files (t4-water.u16 and
+// the rest) use them when the bake has them.
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readSync, openSync, closeSync, symlinkSync } from "node:fs";
+import { readSync, openSync, closeSync } from "node:fs";
 import { rng } from "../../sim/world";
 import { LEN } from "../../terrain/grid";
 import { releaseGpu, theGpu } from "../device";
@@ -15,14 +15,12 @@ import { generateIsland } from "../terrain/island";
 import { groundWords, pack } from "../terrain/ground";
 import { INPUTS, ISLAND_GROUND, OUTPUTS } from "../wgsl/terrain-ground";
 import type { Site } from "../../terrain/ground";
-import { airStage } from "./air";
-import { BakeDir } from "./bakedir";
-import { GROUND_HALO, GROUND_OUT, GROUND_OUTPUTS, TABLE_UNIT, compactGround, fieldsAt, groundFormat, groundStage, groundTile, mappedField, wordsOf, type GroundFields } from "./ground";
+import type { BakeDir } from "./bakedir";
+import { GROUND_HALO, GROUND_OUT, GROUND_OUTPUTS, TABLE_UNIT, compactGround, fieldsAt, groundFormat, groundStage, groundTile, wordsOf, type GroundFields } from "./ground";
+import { FN, REAL, TIER, scratchBake } from "./ground-staged";
 import { cellAcross, localOf, patchAt, patchOf, tileAt, type Patch } from "./patch";
-import { runTiles, type Ctx, type Field, type TileStage } from "./stages";
-import { readPlanet, type Planet } from "./window";
+import { runTiles, type Field } from "./stages";
 import { EDGES, tierGrid } from "./grid";
-import { diskStore } from "../../../scripts/globe-window";
 
 afterAll(releaseGpu);
 const hashOf = (...f: ArrayBufferView[]) => Bun.hash(Buffer.concat(f.map((a) => new Uint8Array(a.buffer, a.byteOffset, a.byteLength)))).toString(16);
@@ -77,56 +75,8 @@ describe("the patch format on the island's site", () => {
 });
 
 // ---------- the real planet ----------
-const KEY = "c418e5fe9b5e", BAKE = `/tmp/planet-75m/1-${KEY}`, STOREDIR = "/tmp/planet-small/store", SCR = "/tmp/planet-75m/ground-scratch/bake", TIER = 4, FN = 4096;
-const REAL = existsSync(`${BAKE}/t4-height.i32`) && existsSync(`${BAKE}/t4-acc.u32`) && existsSync(`${STOREDIR}/1-${KEY}`);
 const real = REAL ? test : test.skip;
-let planet: Planet | null = null;
-
-// The tiles whose cells a patch of the given tiles covers.
-function tilesCovering(tiles: number[], halo: number): number[] {
-  const want = new Set<number>();
-  for (const k of tiles) {
-    const { face, tx, ty } = tileAt(TIER, k), p = patchOf(TIER, face, tx, ty, halo);
-    for (const id of p.ids) { const f = Math.floor(id / (FN * FN)), r = id - f * FN * FN; want.add(f * 256 + (Math.floor(r / FN) >> 8) * 16 + ((r % FN) >> 8)); }
-  }
-  return [...want].sort((a, b) => a - b);
-}
-
-// A stand-in for the water stage over the tiles asked for (not the water stage's: a function of each cell's height and discharge area): channels where a cell drains 20,000 cells or
-// more, a floodplain within 24 cells of one on ground under 800 m, a power that falls with the area, a water table that is deep where the area is small, and standing water where the
-// tier's flood stands over the ground (a lake) or the cell is sea.
-const synthetic: TileStage = {
-  name: "synwater-2", halo: 32, inputs: [],
-  outputs: ["t4-water.u16", "t4-chn.u8", "t4-valley.u8", "t4-pwr.u16", "t4-stb0.u16", "t4-stb1.u16", "t4-stb2.u16", "t4-stb3.u16", "t4-dry.u16"],
-  async run(ctx, patch) {
-    const n = patch.ids.length, S = patch.side, at = (f: string) => { const m = mappedField(ctx, f), o = new (m.constructor as new (n: number) => Field)(n); for (let i = 0; i < n; i++) o[i] = m[patch.ids[i]]; return o; };
-    const h = at("t4-height.i32") as Int32Array, fl = at("t4-flooded.i32") as Int32Array, acc = at("t4-acc.u32") as Uint32Array;
-    const chn = new Uint8Array(n), valley = new Uint8Array(n), water = new Uint16Array(n), pwr = new Uint16Array(n), d = new Int32Array(n).fill(1e6);
-    for (let i = 0; i < n; i++) { chn[i] = h[i] > 0 && acc[i] >= 20000 && !patch.missing[i] ? 1 : 0; if (chn[i]) d[i] = 0; }
-    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) { const i = y * S + x; if (x) d[i] = Math.min(d[i], d[i - 1] + 1); if (y) d[i] = Math.min(d[i], d[i - S] + 1); }
-    for (let y = S - 1; y >= 0; y--) for (let x = S - 1; x >= 0; x--) { const i = y * S + x; if (x < S - 1) d[i] = Math.min(d[i], d[i + 1] + 1); if (y < S - 1) d[i] = Math.min(d[i], d[i + S] + 1); }
-    const stb = [0, 1, 2, 3].map(() => new Uint16Array(n)), dry = new Uint16Array(n);
-    for (let i = 0; i < n; i++) {
-      valley[i] = h[i] > 0 && d[i] <= 24 && h[i] < 800 * 256 ? 1 : 0;
-      water[i] = h[i] <= 0 ? Math.min(65535, Math.round((-h[i] / 256) * 100) + 100) : fl[i] - h[i] >= 3 ? Math.min(65535, Math.round(((fl[i] - h[i]) / 256) * 100)) : 0;
-      pwr[i] = chn[i] ? Math.min(65535, Math.round((acc[i] / 4000) * 16)) : 0;
-      const depth = 0.2 + 3000 / (acc[i] + 100);
-      for (let k = 0; k < 4; k++) stb[k][i] = Math.min(65535, Math.round(depth * (0.4 + 0.1 * k) * TABLE_UNIT));
-      dry[i] = Math.min(65535, Math.round(depth * TABLE_UNIT));
-    }
-    return { "t4-water.u16": water, "t4-chn.u8": chn, "t4-valley.u8": valley, "t4-pwr.u16": pwr, "t4-stb0.u16": stb[0], "t4-stb1.u16": stb[1], "t4-stb2.u16": stb[2], "t4-stb3.u16": stb[3], "t4-dry.u16": dry };
-  },
-};
-
-// The scratch bake's context: its tiles' air and stand-in water made for the patches of `tiles` at `halo`. The files of the bake that the stages read (heights and the terrain's) are links.
-async function scratch(tiles: number[], halo: number): Promise<Ctx> {
-  mkdirSync(SCR, { recursive: true });
-  for (const f of ["t4-height.i32", "t4-flooded.i32", "t4-rock.u8", "t4-drift.u8", "t4-dd.u16", "t4-to.u32", "t4-acc.u32"]) if (!existsSync(`${SCR}/${f}`)) symlinkSync(`${BAKE}/${f}`, `${SCR}/${f}`);
-  planet ??= await readPlanet(1, diskStore(STOREDIR, KEY));
-  const ctx: Ctx = { gpu: await theGpu(), planet, dir: new BakeDir(SCR), tier: TIER }, need = tilesCovering(tiles, halo);
-  for (const stage of [airStage, synthetic]) await runTiles(ctx, stage, 250, () => {}, need);
-  return ctx;
-}
+const scratch = (tiles: number[], halo: number) => scratchBake(tiles, halo, false);
 const PIN = { tile458: "cd6f5602733af733" };
 const tileOf = (k: number) => tileAt(TIER, k);
 const readTile = (dir: BakeDir, file: string, k: number): Field => {
