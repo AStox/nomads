@@ -22,12 +22,34 @@ export const Q = (x: number) => Math.round(x * 65536);
 export const Q24 = (x: number) => Math.round(x * 2 ** 24);
 export const Q32 = (x: number) => Math.round(x * 2 ** 32);
 
-// ---------- the arena ----------
-// [name, words per cell]. Inputs first (written by the host), then the fields the host reads back, then the rest.
-export const SECTIONS: [string, number][] = [
+// ---------- the format and the arena ----------
+// What the kernels are made for: the grid's side `n` (cells) and, with `patch`, a patch of the planet (src/gpu/globe/air.ts)
+// where the island's one-place constants are the cell's own: each cell's sea-level air, the sea's warmth and the air's water by
+// season, its wind's turn, its band of latitude (the sun's table for the band, in the compass's axes), and the turn of the grid's
+// axes against east and north; the snow years run over groups of four cells made by the host and the wind's wavefront schedule
+// is kept whole. The island's format makes the text the island's stage has always had.
+export interface ClimateFormat { n: number; patch?: boolean }
+export const ISLAND_CLIMATE: ClimateFormat = { n: N };
+// The width of a band of latitude a patch's sun table is made for, degrees [design: 0.1 degree is 0.12% of the day's length at
+// 60 degrees and 195.6 km of radius, so the step between two bands of the table is under the stage's own roundings].
+export const BAND_DEG = 0.1, BANDS_MAX = 200;
+
+// One arena holds every field, in sections of one word a cell (N x N) in the order below; a section named `lee` takes four
+// words a cell (16 bytes, one a bearing), `vk` sixteen, and so on. Each field's unit and scale is written beside it.
+// Inputs first (written by the host), then the fields the host reads back, then the rest.
+const sectionsOf = (patch: boolean): [string, number][] => [
   ["hq", 1], // Q16 m: the ground as the island's height field has it (the sea's depth negative)
   ["open", 1], // 1 over the sea and lakes
   ["precip", 4], // Q16 mm a season
+  ...(patch ? ([
+    ["tS", 4], // Q16 C: the air's sea-level warmth, by season
+    ["seaS", 4], // Q16 C: the sea's surface
+    ["e0S", 4], // Q16 kPa: the air's water at sea level
+    ["wturn", 1], // Q16 bearings (mod 16): the cell's wind direction less the rose's own mean
+    ["band", 1], // the cell's band of latitude in the sun table, counted from the patch's first
+    ["cps", 1], ["sps", 1], // Q16: cosine and sine of the grid's x axis against east, toward north
+    ["psi", 1], // Q16 bearings (mod 16): the same angle
+  ] as [string, number][]) : []),
   ["windShare", 1], // Q16
   ["breeze", 1], // Q16 m/s
   ["salt", 1], // Q16
@@ -61,44 +83,60 @@ export const SECTIONS: [string, number][] = [
   ["cover", 4], // Q16: the share of the ground snow covers, by season
   ["albedo", 4], // Q16
 ];
-export const SEC: Record<string, number> = {};
-export let ARENA_WORDS = 0;
-for (const [name, w] of SECTIONS) { SEC[name] = ARENA_WORDS; ARENA_WORDS += w * LEN; }
-export const INPUT_WORDS = SEC.windShare; // the words the host writes
 
-// ---------- the table buffer ----------
 export const REACH_N = 26; // the horizon's sample distances 1.2^n below 110 cells
-export const SUN_MAX = 80; // sun samples a season (sixty-nine at midsummer)
-export const SUN_STRIDE = 8 + SUN_MAX * 8;
 export const LOGIT_N = 7002, SAT_N = 7002, COVERS_N = 6002;
 export const DAYS = 365 * (YEARS + 1);
-export const MAX_LEVELS = 1024;
-const TABS: [string, number][] = [
-  ["dirs", 64], // per bearing: round(1.5 cos) Q16, round(1.5 sin) Q16, the wind rose's share Q32, 0
-  ["cs16", 32], // per bearing: cos, sin Q16
-  ["reach", REACH_N * 2], // per distance: d cells Q16, 256 / (d * CELL) Q28
-  ["seas", 4 * 16], // per season: t, sea, e0 Q16; pool's cooling Q24; flat sun Q24; warm Q16; 1 / spread Q24; days; light's cloud shares Q16
-  ["sun", 4 * SUN_STRIDE],
-  ["logit", LOGIT_N],
-  ["sat", SAT_N],
-  ["covers", COVERS_N],
-  ["anom", DAYS],
-  ["cal", 365 * 4], // per day: cos, sin, cos 2x of the year's angle Q24 and the day's season
-  ["fogz", FOG_Z.length], // the heights the cloud's chance is given at, Q16 m
-  ["fogrows", 4 * FOG_Z.length], // a season's chance at each of them, Q24
-  ["sched", 2 * MAX_LEVELS],
-  ["lst", DIRS * LEN],
-];
-export const TABO: Record<string, number> = {};
-export let TAB_WORDS = 0;
-for (const [name, w] of TABS) { TABO[name] = TAB_WORDS; TAB_WORDS += w; }
+
+export interface Layout {
+  f: ClimateFormat; n: number; len: number;
+  SECTIONS: [string, number][]; SEC: Record<string, number>; ARENA_WORDS: number; INPUT_WORDS: number; // the words the host writes
+  SUN_MAX: number; SUN_STRIDE: number; MAX_LEVELS: number; GROUPS: number;
+  TABO: Record<string, number>; TAB_WORDS: number;
+}
+const layouts = new Map<string, Layout>();
+export function layoutOf(f: ClimateFormat = ISLAND_CLIMATE): Layout {
+  const key = `${f.n}:${f.patch ? 1 : 0}`;
+  let l = layouts.get(key);
+  if (l) return l;
+  const patch = !!f.patch, len = f.n * f.n;
+  const SUN_MAX = patch ? 96 : 80, SUN_STRIDE = 8 + SUN_MAX * 8, MAX_LEVELS = patch ? 4096 : 1024, GROUPS = (f.n / 2 + 2) ** 2;
+  // the table buffer
+  const TABS: [string, number][] = [
+    ["dirs", 64], // per bearing: round(1.5 cos) Q16, round(1.5 sin) Q16, the wind rose's share Q32, 0
+    ["cs16", 32], // per bearing: cos, sin Q16
+    ["reach", REACH_N * 2], // per distance: d cells Q16, 256 / (d * CELL) Q28
+    ["seas", 4 * 16], // per season: t, sea, e0 Q16; pool's cooling Q24; flat sun Q24; warm Q16; 1 / spread Q24; days; light's cloud shares Q16
+    ...(patch ? ([["sunb", BANDS_MAX * 4 * SUN_STRIDE]] as [string, number][]) : ([["sun", 4 * SUN_STRIDE]] as [string, number][])), // a band's four seasons: the sun's header and rows (a patch's rows in the compass's axes)
+    ["logit", LOGIT_N],
+    ["sat", SAT_N],
+    ["covers", COVERS_N],
+    ["anom", DAYS],
+    ["cal", 365 * 4], // per day: cos, sin, cos 2x of the year's angle Q24 and the day's season
+    ["fogz", FOG_Z.length], // the heights the cloud's chance is given at, Q16 m
+    ["fogrows", 4 * FOG_Z.length], // a season's chance at each of them, Q24
+    ["sched", 2 * MAX_LEVELS],
+    ["lst", DIRS * len],
+    ...(patch ? ([["rosec", DIRS], ["grp", 4 * GROUPS]] as [string, number][]) : []), // the wind rose as measured, Q32; each group's four cells (-1 for none)
+  ];
+  const SECTIONS = sectionsOf(patch), SEC: Record<string, number> = {}, TABO: Record<string, number> = {};
+  let ARENA_WORDS = 0, TAB_WORDS = 0;
+  for (const [name, w] of SECTIONS) { SEC[name] = ARENA_WORDS; ARENA_WORDS += w * len; }
+  for (const [name, w] of TABS) { TABO[name] = TAB_WORDS; TAB_WORDS += w; }
+  l = { f, n: f.n, len, SECTIONS, SEC, ARENA_WORDS, INPUT_WORDS: SEC.windShare, SUN_MAX, SUN_STRIDE, MAX_LEVELS, GROUPS, TABO, TAB_WORDS };
+  layouts.set(key, l);
+  return l;
+}
+// The island's, as the module has always exported them.
+const ISLE = layoutOf();
+export const { SECTIONS, SEC, ARENA_WORDS, INPUT_WORDS, SUN_MAX, SUN_STRIDE, MAX_LEVELS, TABO, TAB_WORDS } = ISLE;
 
 // Words of a season's row in the `seas` table.
 export const SEAS = { t: 0, sea: 1, e0: 2, poolc: 3, flat: 4, warm: 5, inv: 6, days: 7, tb: 8, tg: 9 };
 
-const offsets = () => [
-  ...Object.entries(SEC).map(([k, v]) => `const O_${k} = ${v}u;`),
-  ...Object.entries(TABO).map(([k, v]) => `const T_${k} = ${v}u;`),
+const offsets = (l: Layout) => [
+  ...Object.entries(l.SEC).map(([k, v]) => `const O_${k} = ${v}u;`),
+  ...Object.entries(l.TABO).map(([k, v]) => `const T_${k} = ${v}u;`),
 ].join("\n");
 
 const q = (x: number) => `${Q(x)}i`;
@@ -112,17 +150,19 @@ function wakeFn() {
   return s + `  return ${ws[xs.length - 1]}i;\n}`;
 }
 
-const COMMON = /* wgsl */ `
+const common = (l: Layout) => {
+  const n = l.n;
+  return /* wgsl */ `
 ${FIXED}
 @group(0) @binding(0) var<storage, read_write> W: array<i32>;
 @group(0) @binding(1) var<storage, read> TAB: array<i32>;
 @group(0) @binding(2) var<storage, read_write> CUR: array<u32>;
-const LEN = ${LEN}u;
+const LEN = ${l.len}u;
 const ONE = 65536i;
 const ONE24 = 16777216i;
 const NEG = -0x7fffffffi;
-const LIM = 16711680i; // (N - 1) in Q16
-${offsets()}
+const LIM = ${(n - 1) * 65536}i; // (N - 1) in Q16
+${offsets(l)}
 
 // a * b / 2^sh to nearest, ties away from zero, saturating (1 <= sh <= 48)
 fn mulr(a: i32, b: i32, sh: u32) -> i32 {
@@ -161,7 +201,7 @@ fn seg(a: u32, dw: u32, dx: u32) -> i32 {
 fn lerpq(a: i32, b: i32, t: i32) -> i32 { return a + qmul(b - a, t); }
 // the bilinear read of a section at a cell and a fraction (both Q16) of the way to its +x and +y neighbours
 fn bil(base: u32, j: u32, fx: i32, fy: i32) -> i32 {
-  let a = W[base + j]; let b = W[base + j + 1u]; let c = W[base + j + 256u]; let d = W[base + j + 257u];
+  let a = W[base + j]; let b = W[base + j + 1u]; let c = W[base + j + ${n}u]; let d = W[base + j + ${n + 1}u];
   let r0 = lerpq(a, b, fx); let r1 = lerpq(c, d, fx);
   return lerpq(r0, r1, fy);
 }
@@ -177,10 +217,14 @@ fn ramp_q(v: i32, lo: i32, hi: i32) -> i32 {
 fn touch() { _ = W[0]; _ = TAB[0]; _ = CUR[0]; }
 fn flat(g: vec3u, n: vec3u) -> u32 { touch(); return g.x + g.y * n.x * 64u; }
 `;
+};
 
 // ---------- the heights blurred to the ground around ----------
-export const prepWgsl = () => /* wgsl */ `
-${COMMON}
+// The cell's column and row from its index: masks and shifts where the side is a power of two (the island's 256).
+const colOf = (n: number, i: string) => (Number.isInteger(Math.log2(n)) ? `i32(${i} & ${n - 1}u)` : `i32(${i} % ${n}u)`);
+const rowOf = (n: number, i: string) => (Number.isInteger(Math.log2(n)) ? `i32(${i} >> ${Math.log2(n)}u)` : `i32(${i} / ${n}u)`);
+export const prepWgsl = (f: ClimateFormat = ISLAND_CLIMATE) => /* wgsl */ `
+${common(layoutOf(f))}
 @compute @workgroup_size(64) fn zinit(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
   let i = flat(g, n);
   if (i >= LEN) { return; }
@@ -189,13 +233,20 @@ ${COMMON}
 }
 // 17 cells across, edges repeating: three passes each way make a cheap Gaussian (grid.ts blur, radius 8)
 fn blur_at(src: u32, dst: u32, i: u32, across: bool) {
-  let x = i32(i & 255u); let y = i32(i >> 8u);
-  var s = 0i;
+  let x = ${colOf(f.n, "i")}; let y = ${rowOf(f.n, "i")};
+${f.patch ? `  // the sum of 17 heights of 6.4 km passes a word: the sixteenths and the rest summed apart, divided exactly
+  var hi = 0i; var lo = 0i;
   for (var k = -8i; k <= 8i; k++) {
-    if (across) { s += W[src + u32(y * 256i + clamp(x + k, 0i, 255i))]; }
-    else { s += W[src + u32(clamp(y + k, 0i, 255i) * 256i + x)]; }
+    let v = select(W[src + u32(clamp(y + k, 0i, ${f.n - 1}i) * ${f.n}i + x)], W[src + u32(y * ${f.n}i + clamp(x + k, 0i, ${f.n - 1}i))], across);
+    hi += v >> 4u; lo += v & 15i;
   }
-  W[dst + i] = (s + 8i) / 17i;
+  let q17 = hi / 17i;
+  W[dst + i] = 16i * q17 + (16i * (hi - q17 * 17i) + lo + 8i) / 17i;` : `  var s = 0i;
+  for (var k = -8i; k <= 8i; k++) {
+    if (across) { s += W[src + u32(y * ${f.n}i + clamp(x + k, 0i, ${f.n - 1}i))]; }
+    else { s += W[src + u32(clamp(y + k, 0i, ${f.n - 1}i) * ${f.n}i + x)]; }
+  }
+  W[dst + i] = (s + 8i) / 17i;`}
 }
 @compute @workgroup_size(64) fn blur_x(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
   let i = flat(g, n);
@@ -213,34 +264,39 @@ fn blur_at(src: u32, dst: u32, i: u32, across: bool) {
 // round the place 1.5 cells upwind of it. The host groups the (bearing, cell) pairs into levels, a cell one level after the
 // last cell it reads, and the kernel runs a level at a time (air_step, then air_advance to count the level).
 const STEPM = Math.round(STEP * CELL * 65536);
-export const airWgsl = () => /* wgsl */ `
-${COMMON}
+export const airWgsl = (f: ClimateFormat = ISLAND_CLIMATE) => {
+  const n = f.n, SHS = f.patch ? 4096 : 65536;
+  return /* wgsl */ `
+${common(layoutOf(f))}
 ${wakeFn()}
-const STEPM = ${STEPM}i;
+const STEPM = ${STEPM}i;${f.patch ? `
+// a patch's air has come over land for tens of kilometres: the shore's distance is held in Q12 m (to 524 km), and how far behind a break a cell stands saturates
+const STEPS = ${STEPM >> 4}i;
+fn sadd(a: i32, b: i32) -> i32 { return select(a + b, 0x7fffffffi, a > 0x7fffffffi - b); }` : ""}
 const PARTS_Q = ${Math.round(PARTS * STEP * CELL * 65536)}i;
 @compute @workgroup_size(64) fn air_step(@builtin(global_invocation_id) g: vec3u) {
   let d = CUR[0];
   let start = u32(TAB[T_sched + 2u * d]); let count = u32(TAB[T_sched + 2u * d + 1u]);
   if (g.x >= count) { return; }
   let e = u32(TAB[T_lst + start + g.x]);
-  let k = e >> 16u; let i = e & 0xffffu;
+  ${f.patch ? "let k = e / LEN; let i = e % LEN;" : "let k = e >> 16u; let i = e & 0xffffu;"}
   let cs = TAB[T_dirs + 4u * k]; let sn = TAB[T_dirs + 4u * k + 1u];
-  let x = i32(i & 255u); let y = i32(i >> 8u);
+  let x = ${colOf(n, "i")}; let y = ${rowOf(n, "i")};
   let ux = (x << 16u) - cs; let uy = (y << 16u) - sn;
   let off = ux < 0i || uy < 0i || ux > LIM || uy > LIM;
   let zi = W[O_z + i];
   let b = k * LEN;
   let isopen = W[O_open + i] != 0i;
   var T = NEG; var X = 0i; var v = ONE; var sh = 0i;
-  if (!off) {
-    let x0 = min(254i, ux >> 16u); let y0 = min(254i, uy >> 16u);
+${f.patch ? "  // upwind of the patch's edge the air has come over land for as far as the host seeded it (the cell's word in `shore`, 0 where it did not)\n  if (off) { sh = W[O_shore + b + i]; }\n" : ""}  if (!off) {
+    let x0 = min(${n - 2}i, ux >> 16u); let y0 = min(${n - 2}i, uy >> 16u);
     let fx = ux - (x0 << 16u); let fy = uy - (y0 << 16u);
-    let j = u32(y0 * 256i + x0);
+    let j = u32(y0 * ${n}i + x0);
     let up = bil(O_z, j, fx, fy);
-    if (!isopen) { sh = bil(O_shore + b, j, fx, fy) + STEPM; }
+    if (!isopen) { sh = ${f.patch ? "sadd(bil(O_shore + b, j, fx, fy), STEPS)" : "bil(O_shore + b, j, fx, fy) + STEPM"}; }
     // the break the nearest upwind cell carries, or the ground just upwind if it falls away steeply enough to part the flow
-    let nj = j + select(0u, 1u, fx >= 32768i) + select(0u, 256u, fy >= 32768i);
-    T = W[O_top + b + nj]; X = W[O_since + b + nj] + STEPM;
+    let nj = j + select(0u, 1u, fx >= 32768i) + select(0u, ${n}u, fy >= 32768i);
+    T = W[O_top + b + nj]; X = ${f.patch ? "sadd(W[O_since + b + nj], STEPM)" : "W[O_since + b + nj] + STEPM"};
     if (T > zi) { v = wake_q(qdiv(X, T - zi)); }
     if (up - zi > PARTS_Q) {
       let w = wake_q(qdiv(STEPM, up - zi));
@@ -252,8 +308,8 @@ const PARTS_Q = ${Math.round(PARTS * STEP * CELL * 65536)}i;
   if (isopen) { v = ONE; }
   else { v = qmul(v, ONE + mulr(max(0i, zi - W[O_around + i]), ${Q32(TAYLOR_LEE / HALF_LENGTH)}i, 32u)); }
   W[O_vk + b + i] = v;
-  let e1 = qexp(-qdiv(sh, ${Math.round(SPRAY_M * 65536)}i));
-  let e2 = qexp(-qdiv(sh, ${Math.round(FAR_M * 65536)}i));
+  let e1 = qexp(-qdiv(sh, ${Math.round(SPRAY_M * SHS)}i));
+  let e2 = qexp(-qdiv(sh, ${Math.round(FAR_M * SHS)}i));
   W[O_sk + b + i] = qmul(${q(1 - FAR)}, e1) + qmul(${q(FAR)}, e2);
 }
 @compute @workgroup_size(1) fn air_advance() { touch(); CUR[0] = CUR[0] + 1u; }
@@ -265,8 +321,11 @@ fn fq24(f: u32, v: u32) -> u32 { let p = add64(mul64(f, v), vec2u(0x800000u, 0u)
   if (i >= LEN) { return; }
   var ws = 0u; var sa = 0u;
   var words = array<u32, 4>(0u, 0u, 0u, 0u);
-  for (var k = 0u; k < ${DIRS}u; k++) {
-    let f = u32(TAB[T_dirs + 4u * k + 2u]);
+${f.patch ? "  let turn = W[O_wturn + i];\n" : ""}  for (var k = 0u; k < ${DIRS}u; k++) {
+${f.patch ? `    // the rose as measured, turned to the cell's wind and read between two of its sectors (climate.ts turned)
+    let u = u32((i32(k << 16u) - turn) & 0xfffff); let k0 = u >> 16u; let fr = u & 65535u;
+    let rp = add64(add64(mul64(u32(TAB[T_rosec + k0]), 65536u - fr), mul64(u32(TAB[T_rosec + ((k0 + 1u) & 15u)]), fr)), vec2u(32768u, 0u));
+    let f = (rp.x >> 16u) | (rp.y << 16u);` : "    let f = u32(TAB[T_dirs + 4u * k + 2u]);"}
     let v = u32(W[O_vk + k * LEN + i]);
     ws += fq24(f, v);
     sa += fq24(f, u32(W[O_sk + k * LEN + i]));
@@ -278,21 +337,24 @@ fn fq24(f: u32, v: u32) -> u32 { let p = add64(mul64(f, v), vec2u(0x800000u, 0u)
   W[O_breeze + i] = mulr(i32(ws), ${Q(SEA_WIND)}i, 24u);
   W[O_salt + i] = i32((sa + 128u) >> 8u);
 }`;
+};
 
 // ---------- the ground's normal, its horizons and the share of sky it leaves open ----------
-export const shapeWgsl = () => /* wgsl */ `
-${COMMON}
-fn zat(x: i32, y: i32) -> i32 { return W[O_z + u32(clamp(y, 0i, 255i) * 256i + clamp(x, 0i, 255i))]; }
+export const shapeWgsl = (f: ClimateFormat = ISLAND_CLIMATE) => {
+  const n = f.n;
+  return /* wgsl */ `
+${common(layoutOf(f))}
+fn zat(x: i32, y: i32) -> i32 { return W[O_z + u32(clamp(y, 0i, ${n - 1}i) * ${n}i + clamp(x, 0i, ${n - 1}i))]; }
 // grid.ts sample: the bilinear read at (px, py) in Q16 cells, held inside the grid by a thousandth of a cell
 fn zsample(px: i32, py: i32) -> i32 {
-  let cx = min(px, ${Math.round((N - 1.001) * 65536)}i); let cy = min(py, ${Math.round((N - 1.001) * 65536)}i);
+  let cx = min(px, ${Math.round((n - 1.001) * 65536)}i); let cy = min(py, ${Math.round((n - 1.001) * 65536)}i);
   let x0 = cx >> 16u; let y0 = cy >> 16u;
-  return bil(O_z, u32(y0 * 256i + x0), cx & 65535i, cy & 65535i);
+  return bil(O_z, u32(y0 * ${n}i + x0), cx & 65535i, cy & 65535i);
 }
 @compute @workgroup_size(64) fn shape_main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
   let i = flat(g, n);
   if (i >= LEN) { return; }
-  let x = i32(i & 255u); let y = i32(i >> 8u);
+  let x = ${colOf(n, "i")}; let y = ${rowOf(n, "i")};
   let gx = qdiv(zat(x + 1i, y) - zat(x - 1i, y), ${q(2 * CELL)});
   let gy = qdiv(zat(x, y + 1i) - zat(x, y - 1i), ${q(2 * CELL)});
   let g2 = qmul(gx, gx) + qmul(gy, gy);
@@ -320,10 +382,13 @@ fn zsample(px: i32, py: i32) -> i32 {
   }
   W[O_sky + i] = sky;
 }`;
+};
 
 // ---------- sunlight through the season's cloud ----------
-export const sunWgsl = () => /* wgsl */ `
-${COMMON}
+export const sunWgsl = (f: ClimateFormat = ISLAND_CLIMATE) => {
+  const l = layoutOf(f);
+  return /* wgsl */ `
+${common(l)}
 fn fog_q24(s: u32, z: i32) -> i32 {
   for (var n = 1u; n < ${FOG_Z.length}u; n++) {
     let zn = TAB[T_fogz + n];
@@ -342,8 +407,11 @@ fn fog_q24(s: u32, z: i32) -> i32 {
   let lit = W[O_hq + i] > ${q(-2)};
   let z = W[O_z + i]; let sky = W[O_sky + i];
   let nx = W[O_nx + i]; let ny = W[O_ny + i]; let nz = W[O_nz + i];
-  for (var s = 0u; s < 4u; s++) {
-    let sb = T_sun + s * ${SUN_STRIDE}u;
+${f.patch ? `  // the table's rows are in the compass's axes (east, north): the normal turned to them, and the horizon's bearing in the grid's axes
+  let ce = qmul(nx, W[O_cps + i]) - qmul(ny, W[O_sps + i]); let cn = qmul(nx, W[O_sps + i]) + qmul(ny, W[O_cps + i]);
+  let band = u32(W[O_band + i]); let psi = W[O_psi + i];
+` : ""}  for (var s = 0u; s < 4u; s++) {
+    let sb = ${f.patch ? `T_sunb + (band * 4u + s) * ${l.SUN_STRIDE}u` : `T_sun + s * ${l.SUN_STRIDE}u`};
     let cnt = u32(TAB[sb]); let tb = TAB[sb + 1u]; let gl = TAB[sb + 2u]; let lv = TAB[sb + 3u]; let cl = TAB[sb + 4u]; let icl = TAB[sb + 5u]; let tgl = TAB[sb + 6u];
     let p = fog_q24(s, z);
     let np = ONE24 - p;
@@ -355,11 +423,14 @@ fn fog_q24(s: u32, z: i32) -> i32 {
       var b = 0i;
       for (var q = 0u; q < cnt; q++) {
         let o = sb + 8u + q * 8u;
-        let face = qmul(nx, TAB[o]) + qmul(ny, TAB[o + 1u]) + qmul(nz, TAB[o + 2u]);
+        ${f.patch ? "let face = qmul(ce, TAB[o]) + qmul(cn, TAB[o + 1u]) + qmul(nz, TAB[o + 2u]);" : "let face = qmul(nx, TAB[o]) + qmul(ny, TAB[o + 1u]) + qmul(nz, TAB[o + 2u]);"}
         if (face > 0i) {
-          let k0 = u32(TAB[o + 5u]); let k1 = (k0 + 1u) & 15u;
+${f.patch ? `          let kq = ((TAB[o + 5u] << 16u) + TAB[o + 6u] - psi) & 0xfffff;
+          let k0 = u32(kq) >> 16u; let k1 = (k0 + 1u) & 15u; let fr = kq & 65535i;
           let h0 = W[O_hz + i * ${DIRS}u + k0]; let h1 = W[O_hz + i * ${DIRS}u + k1];
-          if (TAB[o + 3u] > h0 + mulr(h1 - h0, TAB[o + 6u], 16u)) { b += mulr(face, TAB[o + 4u], 16u); }
+          if (TAB[o + 3u] > h0 + mulr(h1 - h0, fr, 16u)) { b += mulr(face, TAB[o + 4u], 16u); }` : `          let k0 = u32(TAB[o + 5u]); let k1 = (k0 + 1u) & 15u;
+          let h0 = W[O_hz + i * ${DIRS}u + k0]; let h1 = W[O_hz + i * ${DIRS}u + k1];
+          if (TAB[o + 3u] > h0 + mulr(h1 - h0, TAB[o + 6u], 16u)) { b += mulr(face, TAB[o + 4u], 16u); }`}
         }
       }
       out = mulr(np, mulr(tb, b, 16u) + mulr(tgl, sky, 16u), 24u) + mulr(p, mulr(icl, sky, 16u), 24u);
@@ -368,10 +439,13 @@ fn fog_q24(s: u32, z: i32) -> i32 {
     W[O_fogS + s * LEN + i] = p; W[O_sunS + s * LEN + i] = out; W[O_clearS + s * LEN + i] = clear;
   }
 }`;
+};
 
 // ---------- warmth and damp air ----------
-export const warmWgsl = () => /* wgsl */ `
-${COMMON}
+export const warmWgsl = (f: ClimateFormat = ISLAND_CLIMATE) => {
+  const l = layoutOf(f);
+  return /* wgsl */ `
+${common(l)}
 @compute @workgroup_size(64) fn pool_main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
   let i = flat(g, n);
   if (i >= LEN) { return; }
@@ -389,29 +463,37 @@ ${COMMON}
   let z = W[O_z + i]; let pool = W[O_pool + i]; let u = W[O_breeze + i];
   let sea = W[O_hq + i] < 0i && W[O_open + i] != 0i;
   let pr = pressure_q(z);
-  let cool = mulr(z, ${Q32(LAPSE)}i, 32u);
+  let cool = mulr(z, ${Q32(LAPSE)}i, 32u);${f.patch ? "\n  let band = u32(W[O_band + i]);" : ""}
   var sum = 0i;
   for (var s = 0u; s < 4u; s++) {
     let r = T_seas + s * 16u;
-    var T = TAB[r + ${SEAS.sea}u];
+    var T = ${f.patch ? "W[O_seaS + s * LEN + i]" : `TAB[r + ${SEAS.sea}u]`};
     if (!sea) {
-      let dI = mulr(W[O_sunS + s * LEN + i] - TAB[r + ${SEAS.flat}u], ${q(11.574)}, 24u);
-      T = TAB[r + ${SEAS.t}u] - cool + qdiv(dI, ${q(32.7)} + qmul(${q(42.2)}, u)) - mulr(pool, TAB[r + ${SEAS.poolc}u], 24u);
+      let dI = mulr(W[O_sunS + s * LEN + i] - ${f.patch ? `TAB[T_sunb + (band * 4u + s) * ${l.SUN_STRIDE}u + 4u]` : `TAB[r + ${SEAS.flat}u]`}, ${q(11.574)}, 24u);
+      T = ${f.patch ? "W[O_tS + s * LEN + i]" : `TAB[r + ${SEAS.t}u]`} - cool + qdiv(dI, ${q(32.7)} + qmul(${q(42.2)}, u)) - mulr(pool, TAB[r + ${SEAS.poolc}u], 24u);
     }
     W[O_tempS + s * LEN + i] = T;
-    W[O_humidS + s * LEN + i] = min(ONE, qdiv(qmul(TAB[r + ${SEAS.e0}u], pr), esat_q(T)));
+    W[O_humidS + s * LEN + i] = min(ONE, qdiv(qmul(${f.patch ? "W[O_e0S + s * LEN + i]" : `TAB[r + ${SEAS.e0}u]`}, pr), esat_q(T)));
     sum += T;
   }
   W[O_temp + i] = (sum + 2i) >> 2u;
 }`;
+};
 
 // ---------- snow ----------
 // Each game tile (two cells a side) runs the snow years on its land cells' means.
 const NEG_LIMIT = -40 * 65536, POS_LIMIT = 30 * 65536;
+// The index of a game tile's first cell from the tile's own (the tiles are two cells a side, row after row).
+const tileOrigin = (n: number) => {
+  const half = n / 2;
+  return Number.isInteger(Math.log2(half)) ? `(tile >> ${Math.log2(half)}u) * ${2 * n}u + (tile & ${half - 1}u) * 2u` : `(tile / ${half}u) * ${2 * n}u + (tile % ${half}u) * 2u`;
+};
 // shift: bits the sums of a day's rain and snow over the years are shifted down by (their ratio is the snow's share), for a place
 // whose year of rain passes what the words hold unshifted (3,000 mm)
-export const snowWgsl = (ranges: { coldest: number; warmest: number }, shift = 0) => /* wgsl */ `
-${COMMON}
+export const snowWgsl = (ranges: { coldest: number; warmest: number }, shift = 0, f: ClimateFormat = ISLAND_CLIMATE) => {
+  const l = layoutOf(f);
+  return /* wgsl */ `
+${common(l)}
 const DAYS_ALL = ${DAYS}u;
 fn tile_mean(base: u32, cells: array<u32, 4>, n: u32, sh: u32) -> i32 {
   var s = 0i;
@@ -426,14 +508,21 @@ fn tile_mean(base: u32, cells: array<u32, 4>, n: u32, sh: u32) -> i32 {
 }
 @compute @workgroup_size(64) fn snow_main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) nw: vec3u) {
   let tile = flat(g, nw);
-  if (tile >= ${(N / 2) * (N / 2)}u) { return; }
-  let i0 = (tile >> 7u) * 512u + (tile & 127u) * 2u;
+${f.patch ? `  if (tile >= ${l.GROUPS}u) { return; }
+  // the group's cells are the host's: a game tile's four cells of the planet, whichever way the patch lays them (-1 where the patch holds none)
   var cells = array<u32, 4>(0u, 0u, 0u, 0u);
   var n = 0u;
   for (var c = 0u; c < 4u; c++) {
-    let j = i0 + (c & 1u) + (c >> 1u) * 256u;
+    let j = TAB[T_grp + tile * 4u + c];
+    if (j >= 0i && W[O_open + u32(j)] == 0i) { cells[n] = u32(j); n++; }
+  }` : `  if (tile >= ${(f.n / 2) * (f.n / 2)}u) { return; }
+  let i0 = ${tileOrigin(f.n)};
+  var cells = array<u32, 4>(0u, 0u, 0u, 0u);
+  var n = 0u;
+  for (var c = 0u; c < 4u; c++) {
+    let j = i0 + (c & 1u) + (c >> 1u) * ${f.n}u;
     if (W[O_open + j] == 0i) { cells[n] = j; n++; }
-  }
+  }`}
   if (n == 0u) { return; }
   var T4 = array<i32, 4>(0i, 0i, 0i, 0i);
   for (var s = 0u; s < 4u; s++) { T4[s] = tile_mean(O_tempS + s * LEN, cells, n, 0u); }
@@ -531,10 +620,13 @@ fn tile_mean(base: u32, cells: array<u32, 4>, n: u32, sh: u32) -> i32 {
     }
   }
 }`;
+};
 
 // ---------- evaporation ----------
-export const petWgsl = (flatYear: number) => /* wgsl */ `
-${COMMON}
+export const petWgsl = (flatYear: number, f: ClimateFormat = ISLAND_CLIMATE) => {
+  const l = layoutOf(f);
+  return /* wgsl */ `
+${common(l)}
 @compute @workgroup_size(64) fn pet_main(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) n: vec3u) {
   let i = flat(g, n);
   if (i >= LEN) { return; }
@@ -566,6 +658,7 @@ ${COMMON}
     year += e; sunSum += (sun + 128i) >> 8u; fogSum += W[O_fogS + s * LEN + i];
   }
   W[O_pet + i] = year;
-  W[O_sun + i] = qdiv(sunSum, ${flatYear}i);
+  ${f.patch ? "W[O_sun + i] = qdiv(sunSum, TAB[T_sunb + u32(W[O_band + i]) * 4u * " + l.SUN_STRIDE + "u + 7u]);" : `W[O_sun + i] = qdiv(sunSum, ${flatYear}i);`}
   W[O_fog + i] = (fogSum + 2i) >> 2u;
 }`;
+};

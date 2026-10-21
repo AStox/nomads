@@ -20,6 +20,20 @@ import { N } from "../../terrain/grid";
 import { COARSE, DIRS, M, NC, SEASONS } from "../../terrain/climate";
 import { FIXED } from "./fixed";
 
+// What a kernel is made for: the fine grid's side `n` (cells), the side of the blocks the heights are averaged to `coarse`
+// (a power of two) and, with `cells`, the per-cell inputs of a patch of the planet (src/gpu/globe/air.ts): each cell's own
+// background rain and wind direction, in place of the one background and the one wet rose of the island's. The coarse grid is
+// n / coarse blocks a side and the transforms' grid four times that [design: the island's own ratio]. The island's format
+// gives the kernels' text as it was before the format existed.
+export interface RainFormat { n: number; coarse: number; cells?: boolean; wide?: boolean }
+export const ISLAND_RAIN: RainFormat = { n: N, coarse: COARSE };
+export const rainDims = (f: RainFormat) => { const nc = f.n / f.coarse; return { nc, m: 4 * nc }; };
+// The thread's index: the global id's x where one row of workgroups covers the passes; a `wide` format may need more than the dispatch limit (65,535 groups of 256) and
+// reads the rows too (src/gpu/kernel.ts cover splits it so).
+const thread = (f: RainFormat) => (f.wide
+  ? { sig: "@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) nw: vec3u", idx: "g.x + g.y * nw.x * 256u" }
+  : { sig: "@builtin(global_invocation_id) g: vec3u", idx: "g.x" });
+
 // Q formats (a number x held as the integer round(x * 2^n)):
 // - height z: Q16 m in, coarse height hc Q20 m; row transform r Q13 m, spectrum hh Q10 m (both unnormalised sums);
 // - twiddles cos and sin of 2 pi n / M: Q28; the wind's cos and sin Q22; wave index times them: q Q22 (grid units of
@@ -29,7 +43,9 @@ import { FIXED } from "./fixed";
 // - the rain of the season out: Q16 mm.
 export const BATCH = SEASONS.length * DIRS; // seasons times wind directions
 
-const COMMON = /* wgsl */ `
+const common = (f: RainFormat) => {
+  const { nc: NC, m: M } = rainDims(f), N = f.n, COARSE = f.coarse;
+  return /* wgsl */ `
 ${FIXED}
 const N = ${N}u;
 const COARSE = ${COARSE}u;
@@ -87,58 +103,67 @@ fn lag(y0: i32, q: i32) -> vec2i {
   let u = divw(1u << 14u, 0u, d).x;
   return vec2i(i32(u), -mulq(x, i32(u), 22u));
 }
-// a pixel's coarse neighbour and fraction (Q16) along one axis: clamp((c + 0.5) / 4 - 0.5, 0, NC - 1.001)
+// a pixel's coarse neighbour and fraction (Q16) along one axis: clamp((c + 0.5) / ${COARSE} - 0.5, 0, NC - 1.001)
 fn axis(c: u32) -> vec2u {
-  let t = 2i * i32(c) - 3i;
+  let t = 2i * i32(c) - ${f.coarse - 1}i;
   if (t <= 0i) { return vec2u(0u, 0u); }
-  if (t >= 8i * i32(NC - 1u)) { return vec2u(NC - 2u, FX_TOP); }
-  return vec2u(u32(t) >> 3u, (u32(t) & 7u) << 13u);
+  if (t >= ${2 * f.coarse}i * i32(NC - 1u)) { return vec2u(NC - 2u, FX_TOP); }
+  return vec2u(u32(t) >> ${Math.log2(2 * f.coarse)}u, (u32(t) & ${2 * f.coarse - 1}u) << ${16 - Math.log2(2 * f.coarse)}u);
 }
 `;
+};
 
 const bind = (names: { n: string; rw?: boolean }[]) =>
   names.map(({ n, rw }, i) => `@group(0) @binding(${i}) var<storage, ${rw ? "read_write" : "read"}> ${n}: array<i32>;`).join("\n");
+// The twiddle index of a product of two indices: their product mod M (a mask where M is a power of two, as the island's is).
+const wrap = (f: RainFormat, e: string) => { const { m } = rainDims(f); return Number.isInteger(Math.log2(m)) ? `(${e}) & (M - 1u)` : `(${e}) % M`; };
+// The block's heights summed to hc, the sum of COARSE^2 heights as Q20 of the mean: the island's 16 are exact; a wider block sums
+// each row, shifts it down to the words (rounding half up) and sums the rows (the sum of 256 of Q16 heights overflows a word).
+const coarseSum = (f: RainFormat) => {
+  if (f.coarse === 4) return "  for (var dy = 0u; dy < COARSE; dy++) { for (var dx = 0u; dx < COARSE; dx++) { s += zq[(cy * COARSE + dy) * N + cx * COARSE + dx]; } }\n  hc[n] = s;";
+  const sh = Math.log2((f.coarse * f.coarse) / 16);
+  return `  for (var dy = 0u; dy < COARSE; dy++) {\n    var row = 0i;\n    for (var dx = 0u; dx < COARSE; dx++) { row += zq[(cy * COARSE + dy) * N + cx * COARSE + dx]; }\n    s += (row + ${(1 << sh) >> 1}i) >> ${sh}u;\n  }\n  hc[n] = s;`;
+};
 
 // Bindings: zq (the heights, Q16 m), hc (out).
-export const rainCoarse = () => /* wgsl */ `${COMMON}
+export const rainCoarse = (f = ISLAND_RAIN) => /* wgsl */ `${common(f)}
 ${bind([{ n: "zq" }, { n: "hc", rw: true }])}
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) g: vec3u) {
-  let n = g.x;
+fn main(${thread(f).sig}) {
+  let n = ${thread(f).idx};
   if (n >= NC * NC) { return; }
   let cx = n % NC; let cy = n / NC;
   var s = 0i;
-  for (var dy = 0u; dy < COARSE; dy++) { for (var dx = 0u; dx < COARSE; dx++) { s += zq[(cy * COARSE + dy) * N + cx * COARSE + dx]; } }
-  hc[n] = s;
+${coarseSum(f)}
 }`;
 
 // Bindings: hc, tw (cos then sin, M each, Q28), r (out: NC rows x M frequencies x re, im).
-export const rainRows = () => /* wgsl */ `${COMMON}
+export const rainRows = (f = ISLAND_RAIN) => /* wgsl */ `${common(f)}
 ${bind([{ n: "hc" }, { n: "tw" }, { n: "r", rw: true }])}
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) g: vec3u) {
-  let n = g.x;
+fn main(${thread(f).sig}) {
+  let n = ${thread(f).idx};
   if (n >= NC * M) { return; }
   let k = n % M; let y = n / M;
   var ar = vec2u(0u); var ai = vec2u(0u);
   for (var x = 0u; x < NC; x++) {
-    let h = hc[y * NC + x]; let t = (k * x) & (M - 1u);
+    let h = hc[y * NC + x]; let t = ${wrap(f, "k * x")};
     ar = add64(ar, smul64(h, tw[t])); ai = sub64(ai, smul64(h, tw[M + t]));
   }
   r[2u * n] = shr64(ar, 35u); r[2u * n + 1u] = shr64(ai, 35u);
 }`;
 
 // Bindings: r, tw, hh (out: M x M, index l * M + k, re and im).
-export const rainCols = () => /* wgsl */ `${COMMON}
+export const rainCols = (f = ISLAND_RAIN) => /* wgsl */ `${common(f)}
 ${bind([{ n: "r" }, { n: "tw" }, { n: "hh", rw: true }])}
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) g: vec3u) {
-  let n = g.x;
+fn main(${thread(f).sig}) {
+  let n = ${thread(f).idx};
   if (n >= MM) { return; }
   let k = n % M; let l = n / M;
   var ar = vec2u(0u); var ai = vec2u(0u);
   for (var y = 0u; y < NC; y++) {
-    let t = (l * y) & (M - 1u); let c = tw[t]; let s = tw[M + t];
+    let t = ${wrap(f, "l * y")}; let c = tw[t]; let s = tw[M + t];
     let a = r[2u * (y * M + k)]; let b = r[2u * (y * M + k) + 1u];
     ar = add64(add64(ar, smul64(a, c)), smul64(b, s));
     ai = add64(sub64(ai, smul64(a, s)), smul64(b, c));
@@ -153,11 +178,11 @@ fn main(@builtin(global_invocation_id) g: vec3u) {
 // |u| <= 1 and imaginary (the term is 1 + m H_w) beyond.
 // Bindings: hh, par (seasons: B, a, c1, y0c, y0f Q26 and the background rain Q24, 8 words each; directions: cos and sin
 // Q22, from word 32; the wet rose's share of the season's rain hours, Q20, from word 64), s (out).
-export const rainTransfer = () => /* wgsl */ `${COMMON}
+export const rainTransfer = (f = ISLAND_RAIN) => /* wgsl */ `${common(f)}
 ${bind([{ n: "hh" }, { n: "par" }, { n: "s", rw: true }])}
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) g: vec3u) {
-  let id = g.x;
+fn main(${thread(f).sig}) {
+  let id = ${thread(f).idx};
   if (id >= SD * MM) { return; }
   let sd = id / MM; let n = id % MM;
   let season = sd / DIRS; let d = sd % DIRS; let sb = season * 8u;
@@ -204,53 +229,71 @@ fn main(@builtin(global_invocation_id) g: vec3u) {
   s[o] = mulq(-gi, a, 14u); s[o + 1u] = mulq(gr, a, 14u);
 }`;
 
-// Bindings: s, tw, a (out: batch x NC rows x M frequencies x re, im). One workgroup a (batch, row).
-export const rainInvA = () => /* wgsl */ `${COMMON}
-${bind([{ n: "s" }, { n: "tw" }, { n: "a", rw: true }])}
-@compute @workgroup_size(256)
-fn main(@builtin(workgroup_id) w: vec3u, @builtin(local_invocation_id) l: vec3u) {
-  let sd = w.x / NC; let y = w.x % NC; let k = l.x;
-  var ar = vec2u(0u); var ai = vec2u(0u);
+// One workgroup of 256 threads a (batch, row): a thread a frequency where M is 256 (the island's); more frequencies, each thread takes every 256th.
+const invABody = (f: RainFormat) => {
+  const inner = `  var ar = vec2u(0u); var ai = vec2u(0u);
   for (var jj = 0u; jj < M; jj++) {
-    let t = (jj * y) & (M - 1u); let c = tw[t]; let sn = tw[M + t];
+    let t = ${wrap(f, "jj * y")}; let c = tw[t]; let sn = tw[M + t];
     let at = 2u * (sd * MM + jj * M + k);
     let sr = s[at]; let si = s[at + 1u];
     ar = sub64(add64(ar, smul64(sr, c)), smul64(si, sn));
     ai = add64(add64(ai, smul64(sr, sn)), smul64(si, c));
   }
   let o = 2u * ((sd * NC + y) * M + k);
-  a[o] = shr64(ar, 36u); a[o + 1u] = shr64(ai, 36u);
-}`;
+  a[o] = shr64(ar, 36u); a[o + 1u] = shr64(ai, 36u);`;
+  if (rainDims(f).m === 256) return `fn main(@builtin(workgroup_id) w: vec3u, @builtin(local_invocation_id) l: vec3u) {\n  let sd = w.x / NC; let y = w.x % NC; let k = l.x;\n${inner}\n}`;
+  return `fn main(@builtin(workgroup_id) w: vec3u, @builtin(local_invocation_id) l: vec3u) {\n  let sd = w.x / NC; let y = w.x % NC;\n  for (var k = l.x; k < M; k += 256u) {\n${inner.replace(/^/gm, "  ")}\n  }\n}`;
+};
+// Bindings: s, tw, a (out: batch x NC rows x M frequencies x re, im). One workgroup a (batch, row).
+export const rainInvA = (f = ISLAND_RAIN) => /* wgsl */ `${common(f)}
+${bind([{ n: "s" }, { n: "tw" }, { n: "a", rw: true }])}
+@compute @workgroup_size(256)
+${invABody(f)}`;
 
 // Bindings: a, tw, p (out: batch x NC x NC, Q24 mm an hour: the rain of a rain hour that the waves add).
-export const rainInvB = () => /* wgsl */ `${COMMON}
+export const rainInvB = (f = ISLAND_RAIN) => /* wgsl */ `${common(f)}
 ${bind([{ n: "a" }, { n: "tw" }, { n: "p", rw: true }])}
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) g: vec3u) {
-  let n = g.x;
+fn main(${thread(f).sig}) {
+  let n = ${thread(f).idx};
   if (n >= SD * NC * NC) { return; }
   let x = n % NC; let y = (n / NC) % NC; let sd = n / (NC * NC);
   var sum = vec2u(0u);
   for (var k = 0u; k < M; k++) {
-    let t = (k * x) & (M - 1u);
+    let t = ${wrap(f, "k * x")};
     let at = 2u * ((sd * NC + y) * M + k);
     sum = sub64(add64(sum, smul64(a[at], tw[t])), smul64(a[at + 1u], tw[M + t]));
   }
   p[n] = shr64(sum, 28u);
 }`;
 
-// Bindings: p, par, out (out: season x cells, Q16 mm).
-export const rainFine = () => /* wgsl */ `${COMMON}
-${bind([{ n: "p" }, { n: "par" }, { n: "out", rw: true }])}
+// Bindings: p, par, out (out: season x cells, Q16 mm); with `cells` also, before out, cell: each season's background rain of
+// every cell (Q24 mm an hour) then each season's turn of the wet rose at every cell (Q16 bearings: the cell's wind direction less
+// the rose's own mean, in steps of 2 pi / DIRS), and par's shares are the season's rose as measured (Q20 times its rain hours,
+// bearing k of the island's code) which the cell's turn reads between two of [design: climate.ts turned, here per cell].
+export const rainFine = (f = ISLAND_RAIN) => /* wgsl */ `${common(f)}
+${bind(f.cells ? [{ n: "p" }, { n: "par" }, { n: "cw" }, { n: "out", rw: true }] : [{ n: "p" }, { n: "par" }, { n: "out", rw: true }])}
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) g: vec3u) {
-  let id = g.x;
+fn main(${thread(f).sig}) {
+  let id = ${thread(f).idx};
   if (id >= NS * CELLS) { return; }
   let season = id / CELLS; let cell = id % CELLS;
   let ax = axis(cell % N); let ay = axis(cell / N);
   let wx = i32(ax.y); let wy = i32(ay.y);
   var acc = 0i;
+${f.cells ? `  let bg = cw[id]; let turn = cw[NS * CELLS + id];
   for (var d = 0u; d < DIRS; d++) {
+    let sd = season * DIRS + d;
+    let u = u32((i32(d << 16u) - turn) & 0xfffff);
+    let k0 = u >> 16u; let fr = i32(u & 65535u);
+    let share = mulq(par[SHARE_AT + season * DIRS + k0], 65536i - fr, 16u) + mulq(par[SHARE_AT + season * DIRS + ((k0 + 1u) & 15u)], fr, 16u);
+    if (share == 0i) { continue; }
+    let b = sd * NC * NC + ay.x * NC + ax.x;
+    let top = mulq(p[b], 65536i - wx, 16u) + mulq(p[b + 1u], wx, 16u);
+    let bot = mulq(p[b + NC], 65536i - wx, 16u) + mulq(p[b + NC + 1u], wx, 16u);
+    let v = bg + mulq(top, 65536i - wy, 16u) + mulq(bot, wy, 16u);
+    if (v > 0i) { acc += mulq(v, share, 28u); }
+  }` : `  for (var d = 0u; d < DIRS; d++) {
     let sd = season * DIRS + d;
     let share = par[SHARE_AT + sd];
     if (share == 0i) { continue; }
@@ -259,6 +302,6 @@ fn main(@builtin(global_invocation_id) g: vec3u) {
     let bot = mulq(p[b + NC], 65536i - wx, 16u) + mulq(p[b + NC + 1u], wx, 16u);
     let v = par[season * 8u + 5u] + mulq(top, 65536i - wy, 16u) + mulq(bot, wy, 16u);
     if (v > 0i) { acc += mulq(v, share, 28u); }
-  }
+  }`}
   out[id] = acc;
 }`;

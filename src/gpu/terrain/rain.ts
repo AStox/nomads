@@ -21,8 +21,8 @@ import { type Gpu } from "../device";
 import { cover, dispatch, pipeline, readback, storage } from "../kernel";
 import { e2f, tolog2 } from "../fixed";
 import { N, CELL } from "../../terrain/grid";
-import { COARSE, DIRS, GAMMA_RATIO, H_W, M, NC, N_M, P_BG, R_V, SEASONS, SEASON_DAYS } from "../../terrain/climate";
-import { BATCH, rainCoarse, rainCols, rainFine, rainInvA, rainInvB, rainRows, rainTransfer } from "../wgsl/terrain-rain";
+import { DIRS, GAMMA_RATIO, H_W, M, N_M, P_BG, R_V, SEASONS, SEASON_DAYS } from "../../terrain/climate";
+import { BATCH, ISLAND_RAIN, rainCoarse, rainCols, rainDims, rainFine, rainInvA, rainInvB, rainRows, rainTransfer, type RainFormat } from "../wgsl/terrain-rain";
 
 const NS = SEASONS.length;
 // Words of the parameter buffer: a season's eight, a direction's two, the wet rose's share of each (season, direction).
@@ -57,9 +57,12 @@ export const V_SNOW = 1;
 // and 741 m [derived, R495].
 export const ICE_SHARE = [0.749, 0.357, 0.408, 0.739];
 export interface Delays { tauC: number; tauF: number }
-export const cloudDelays = (ice: number): Delays => ({ tauC: ice * TAU_C_ICE + (1 - ice) * TAU_C_WARM, tauF: (1 - ice) * TAU_F_RAIN + (ice * H_W) / V_SNOW });
+// On a similar planet (gpu/globe/similarity.ts) the delays are Earth's times s, rounded as the atmosphere rounds them (atmosphere.ts kernelConstants), so that a drift of U tau is Earth's times s.
+export const cloudDelays = (ice: number, s = 1): Delays => (s === 1
+  ? { tauC: ice * TAU_C_ICE + (1 - ice) * TAU_C_WARM, tauF: (1 - ice) * TAU_F_RAIN + (ice * H_W) / V_SNOW }
+  : { tauC: ice * Math.round(TAU_C_ICE * s) + (1 - ice) * Math.round(TAU_C_WARM * s), tauF: (1 - ice) * Math.round(TAU_F_RAIN * s) + ice * Math.round((H_W / V_SNOW) * s) });
 // tau_c / tau_f by season: 1427 / 2124, 2093 / 1536, 2006 / 1612, 1444 / 2109 s.
-export const ISLAND_DELAYS: Delays[] = ICE_SHARE.map(cloudDelays);
+export const ISLAND_DELAYS: Delays[] = ICE_SHARE.map((ice) => cloudDelays(ice));
 
 // FAO-56's saturation vapour pressure, kPa (climate.ts esat), with the exponential taken by the world's integer exp
 // (fixed.ts: 2^f from a table and a series, good to 2^-30) so that no word here depends on the engine's Math.exp.
@@ -69,12 +72,11 @@ function esat(t: number) {
   return 0.6108 * (e2f(lo) / 2 ** 31) * 2 ** (hi | 0);
 }
 
-// The cosine and sine of 2 pi n / M for n < M, Q28: the first M words, then the last M.
-export function twiddles(): Int32Array {
-  const t = new Int32Array(2 * M);
-  for (let n = 0; n < M; n++) {
-    t[n] = Q(Math.cos((2 * Math.PI * n) / M), 28);
-    t[M + n] = Q(Math.sin((2 * Math.PI * n) / M), 28);
+export function twiddles(m = M): Int32Array {
+  const t = new Int32Array(2 * m);
+  for (let n = 0; n < m; n++) {
+    t[n] = Q(Math.cos((2 * Math.PI * n) / m), 28);
+    t[m + n] = Q(Math.sin((2 * Math.PI * n) / m), 28);
   }
   return t;
 }
@@ -82,10 +84,10 @@ export function twiddles(): Int32Array {
 export const windTable = () => Int32Array.from({ length: 2 * DIRS }, (_, n) => Q(n & 1 ? Math.sin((2 * Math.PI * (n >> 1)) / DIRS) : Math.cos((2 * Math.PI * (n >> 1)) / DIRS), 22));
 // How far, in steps of the last place, the closest of the tables' exact values lies from a rounding tie: an engine whose
 // Math.cos or Math.sin is off by a unit in the last place of a double rounds the same word while this is over 1e-6.
-export function tableMargin(): number {
+export function tableMargin(m = M): number {
   let least = 0.5;
   const check = (v: number, n: number) => { least = Math.min(least, Math.abs(Math.abs(v * 2 ** n - Math.floor(v * 2 ** n)) - 0.5)); };
-  for (let n = 0; n < M; n++) { check(Math.cos((2 * Math.PI * n) / M), 28); check(Math.sin((2 * Math.PI * n) / M), 28); }
+  for (let n = 0; n < m; n++) { check(Math.cos((2 * Math.PI * n) / m), 28); check(Math.sin((2 * Math.PI * n) / m), 28); }
   for (let d = 0; d < DIRS; d++) { check(Math.cos((2 * Math.PI * d) / DIRS), 22); check(Math.sin((2 * Math.PI * d) / DIRS), 22); }
   return least;
 }
@@ -98,13 +100,13 @@ export const islandRain = (wetRose: number[]): RainSeason[] => SEASONS.map(({ t,
 
 // The parameter words (layout in wgsl/terrain-rain.ts rainTransfer): from each season's constants, the seasons' cloud
 // delays and the wet roses.
-export function rainParams(wetRose: number[], delays: Delays[] = ISLAND_DELAYS, seasons: RainSeason[] = islandRain(wetRose)): Int32Array {
-  const par = new Int32Array(PAR_WORDS), dk = (2 * Math.PI) / (M * COARSE * CELL);
+export function rainParams(wetRose: number[], delays: Delays[] = ISLAND_DELAYS, seasons: RainSeason[] = islandRain(wetRose), fmt: RainFormat = ISLAND_RAIN): Int32Array {
+  const par = new Int32Array(PAR_WORDS), dk = (2 * Math.PI) / (rainDims(fmt).m * fmt.coarse * CELL);
   seasons.forEach(({ t, mm, rains, rainWind, rainHumid, rose }, si) => {
     const hours = SEASON_DAYS * 24 * rains, bg = mm / hours;
     const Cw = ((rainHumid * esat(t) * 1000) / (R_V * (t + 273.15))) * GAMMA_RATIO;
     par.set([
-      Q(Cw * 3600 * rainWind * dk, 26), // B: C_w in mm an hour for each m, times sigma / q
+      Q(Cw * 3600 * rainWind * dk * (256 / rainDims(fmt).m) ** 2, 26), // B: C_w in mm an hour for each m, times sigma / q, and the inverse's 1 / M^2 (the kernels' shifts hold it for M = 256: a wider grid's own is a factor of (256 / M)^2 more)
       Q((N_M * H_W) / rainWind, 26), // a
       Q((rainWind * dk) / N_M, 26), // c1: sigma / N_m for each unit of q
       Q(rainWind * dk * delays[si].tauC, 26), // sigma tau_c for each unit of q
@@ -117,7 +119,45 @@ export function rainParams(wetRose: number[], delays: Delays[] = ISLAND_DELAYS, 
   return par;
 }
 
-const kernels = { coarse: rainCoarse(), rows: rainRows(), cols: rainCols(), transfer: rainTransfer(), invA: rainInvA(), invB: rainInvB(), fine: rainFine() };
+const kernelSets = new Map<string, Record<"coarse" | "rows" | "cols" | "transfer" | "invA" | "invB" | "fine", string>>();
+const kernelsOf = (f: RainFormat) => {
+  const key = `${f.n}:${f.coarse}:${f.cells ? 1 : 0}:${f.wide ? 1 : 0}`;
+  let k = kernelSets.get(key);
+  if (!k) kernelSets.set(key, (k = { coarse: rainCoarse(f), rows: rainRows(f), cols: rainCols(f), transfer: rainTransfer(f), invA: rainInvA(f), invB: rainInvB(f), fine: rainFine(f) }));
+  return k;
+};
+
+// The heights' Q16 words, their total in coarse cells' sum of metres checked against the words (MOST_TOTAL_M).
+export function rainHeights(z: Float32Array, fmt: RainFormat = ISLAND_RAIN): Int32Array {
+  const zq = new Int32Array(z.length);
+  let total = 0;
+  for (let i = 0; i < z.length; i++) { zq[i] = Math.round(z[i] * 65536); total += Math.abs(zq[i]); }
+  if (total / 65536 / (fmt.coarse * fmt.coarse) > MOST_TOTAL_M) throw new Error("rainGpu: the heights' total passes the transforms' range");
+  return zq;
+}
+
+// The seven passes over the heights' words, the words of each season's rain by cell (Q16 mm) back. `cell` (a format with per-cell
+// inputs) is the fine pass's cell words: each season's background rain (Q24 mm an hour) then each season's turn of the wet rose.
+export async function rainWords(g: Gpu, fmt: RainFormat, zq: Int32Array, par: Int32Array, cell?: Int32Array): Promise<Int32Array> {
+  const { nc, m } = rainDims(fmt), n = fmt.n, k = kernelsOf(fmt);
+  if (zq.length !== n * n) throw new Error(`rainGpu: ${zq.length} heights, wanted ${n * n}`);
+  if (!!cell !== !!fmt.cells) throw new Error("rainGpu: the per-cell words and the format's `cells` go together");
+  const zB = storage(g, zq), twB = storage(g, twiddles(m)), parB = storage(g, par), cellB = cell ? storage(g, cell) : null;
+  const hc = storage(g, nc * nc * 4), r = storage(g, nc * m * 8), hh = storage(g, m * m * 8);
+  const s = storage(g, BATCH * m * m * 8), a = storage(g, BATCH * nc * m * 8), p = storage(g, BATCH * nc * nc * 4);
+  const out = storage(g, NS * n * n * 4);
+  const groups = (c: number): [number, number] => { const w = cover(g, c); if (w[1] !== 1 && !fmt.wide) throw new Error(`rainGpu: ${c} invocations need more than one row of workgroups`); return w; };
+  dispatch(g, pipeline(g, k.coarse), [zB, hc], groups(nc * nc));
+  dispatch(g, pipeline(g, k.rows), [hc, twB, r], groups(nc * m));
+  dispatch(g, pipeline(g, k.cols), [r, twB, hh], groups(m * m));
+  dispatch(g, pipeline(g, k.transfer), [hh, parB, s], groups(BATCH * m * m));
+  dispatch(g, pipeline(g, k.invA), [s, twB, a], [BATCH * nc]);
+  dispatch(g, pipeline(g, k.invB), [a, twB, p], groups(BATCH * nc * nc));
+  dispatch(g, pipeline(g, k.fine), cellB ? [p, parB, cellB, out] : [p, parB, out], groups(NS * n * n));
+  const words = new Int32Array(await readback(g, out));
+  for (const b of [zB, twB, parB, hc, r, hh, s, a, p, out, ...(cellB ? [cellB] : [])]) b.destroy();
+  return words;
+}
 
 // The rain of each season, mm over the season, by cell, with the seasons' cloud delays (the paper's are 1000 s all year:
 // pass those to compare). Throws where the heights' total passes
@@ -125,24 +165,6 @@ const kernels = { coarse: rainCoarse(), rows: rainRows(), cols: rainCols(), tran
 export async function rainGpu(g: Gpu, z: Float32Array, wetRose: number[], delays: Delays[] = ISLAND_DELAYS, seasons?: RainSeason[]): Promise<Float32Array[]> {
   if (z.length !== N * N) throw new Error(`rainGpu: ${z.length} heights, wanted ${N * N}`);
   if (wetRose.length !== DIRS) throw new Error(`rainGpu: ${wetRose.length} directions in the wet rose, wanted ${DIRS}`);
-  const zq = new Int32Array(z.length);
-  let total = 0;
-  for (let i = 0; i < z.length; i++) { zq[i] = Math.round(z[i] * 65536); total += Math.abs(zq[i]); }
-  if (total / 65536 / (COARSE * COARSE) > MOST_TOTAL_M) throw new Error("rainGpu: the heights' total passes the transforms' range");
-
-  const zB = storage(g, zq), twB = storage(g, twiddles()), parB = storage(g, rainParams(wetRose, delays, seasons));
-  const hc = storage(g, NC * NC * 4), r = storage(g, NC * M * 8), hh = storage(g, M * M * 8);
-  const s = storage(g, BATCH * M * M * 8), a = storage(g, BATCH * NC * M * 8), p = storage(g, BATCH * NC * NC * 4);
-  const out = storage(g, NS * N * N * 4);
-  const groups = (n: number) => cover(g, n)[0];
-  dispatch(g, pipeline(g, kernels.coarse), [zB, hc], [groups(NC * NC)]);
-  dispatch(g, pipeline(g, kernels.rows), [hc, twB, r], [groups(NC * M)]);
-  dispatch(g, pipeline(g, kernels.cols), [r, twB, hh], [groups(M * M)]);
-  dispatch(g, pipeline(g, kernels.transfer), [hh, parB, s], [groups(BATCH * M * M)]);
-  dispatch(g, pipeline(g, kernels.invA), [s, twB, a], [BATCH * NC]);
-  dispatch(g, pipeline(g, kernels.invB), [a, twB, p], [groups(BATCH * NC * NC)]);
-  dispatch(g, pipeline(g, kernels.fine), [p, parB, out], [groups(NS * N * N)]);
-  const words = new Int32Array(await readback(g, out));
-  for (const b of [zB, twB, parB, hc, r, hh, s, a, p, out]) b.destroy();
+  const words = await rainWords(g, ISLAND_RAIN, rainHeights(z), rainParams(wetRose, delays, seasons));
   return Array.from({ length: NS }, (_, si) => Float32Array.from(words.subarray(si * N * N, (si + 1) * N * N), (v) => v / 65536));
 }

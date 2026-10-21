@@ -78,7 +78,7 @@ export type Climate = {
 };
 
 // A measured rose (shares from north clockwise) as the code's bearings (k toward (cos, sin) of 2πk/DIRS, x east, y south).
-const codeRose = (fromNorth: number[]) => Array.from({ length: DIRS }, (_, k) => fromNorth[(k + 12) % DIRS]);
+export const codeRose = (fromNorth: number[]) => Array.from({ length: DIRS }, (_, k) => fromNorth[(k + 12) % DIRS]);
 // The way a measured rose's mean points, as an angle of the code's bearings.
 export function meanWay(fromNorth: number[]) {
   const code = codeRose(fromNorth);
