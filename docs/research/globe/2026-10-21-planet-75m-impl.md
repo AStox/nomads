@@ -77,6 +77,18 @@ Two patches half a tile apart, the cells in both interiors (details in the sub-n
 - Species, densities, the leaf season, bog and day range are Bornholm's.
 - Unit 4b's gaps (the climate's humidity budget, the missing cloud physics) pass through unchanged.
 
+## Unit 5b: landforms in the regional tiers (measured on key 883a8d9387df, 195.6 km planet)
+
+Built (8e73fb6): the flood and receivers read 4 neighbours as the island's erosion does (`FLOW_NEIGHBOURS`; slides read 8); hillslope creep is the island's law on the 9-point stencil (substeps for stability, D from `CREEP_LAND`); the rock's erodibility, its threshold slope and the year's rain are read at each cell by the bilinear interpolation of the four tier-0 cells round it (`cellmeans`, `interpx`) instead of one value to a block; children are carried to the next tier by `refineSmooth`: bilinear children, then each parent's remaining height difference carried down the same way 4 times, then a whole-unit constant (a constant to a block was a step of median 2.7 m, p90 37 m, p99 100 m, max 676 m at tier 1 to 2; the step across a block's edge over the step inside it on land fell from 1.38 to 1.25 and stops moving after 4 passes).
+
+Not done, with the measurement:
+- **Erosion run to the landscape's response time is not run.** The response time at the scale of a tier-0 cell (the sum of d / (K sqrt(A)) along a valley to where it leaves its tier-0 cell) is 1,600 My at tier 2 and 3,600 My at tier 3 (granite K 7e-8 per yr). Run for 3 of them (60 steps of 79 My) the shield flattens to a peneplain at its tier-0 mean and the flutes on a range's flanks are smoothed away (tier 2 and tier 3 maps, 2026-10-21). Over the whole flow path it is 17,000 My. `TIER_STEPS` stays 40, 40, 40 and 12 steps of 1 My [design].
+- **Initial roughness** (a zero-sum hash noise at the start of each tier, to seed valleys) was built, run on tier 2 and found not to change the picture; removed.
+- **Smooth inverse distances for the receivers** (the block constant breaking ties between equal slopes): run on tiers 1 to 3, no visible change; removed.
+- **16-cell grid lines remain faintly** on a range and its foothills (range tile 458 and coast tile 17, `/tmp/planet-75m/maps/new458.png`, `new17.png`): the dissected foothills and the radiating valleys on the coast tile read as eroded; the straight terraces, bands and escarpments on the range come from tiers 0 and 1 (Unit 4c's plateaus), which the regional tiers inherit. To be judged again on the planet of Unit 7a.
+- Cost: a step at tier 3 is 5.6 s unloaded (3.9 s before: the 4-neighbour flood needs 896 rounds against 640, plus creep), 26 s with two other jobs on the GPU; tier 4 about 15 to 25 s unloaded, 60 to 130 s loaded.
+
+
 ## Napkin note (for the repo's runbook, not edited here)
 
 **[2026-10-21] A constant to a block is a step at its edge, so look at the 75 m picture before trusting an invariant.** A per-tier-0-cell uplift and a per-cell rain background each made 16 by 16 squares; the tests (parent totals kept, block means kept) passed. Do instead: after any change that keeps a coarse total, measure the step across a coarse cell's edge against the step inside it (mean |d| ratio, `tiers.test.ts`, `regional.test.ts`), and view a tile PNG (`scripts/globe-maps75.ts`). The planet is made by tile stages on patches (`stages.ts`, halo per stage, `patchAt` for a tile independence test: two patches half a tile apart); the island's kernels run on a tile by a format argument, never by a copy. `rm -rf` and `find -delete` are blocked for agents: delete a bake's files by name with `rm -f`; the bake dir /tmp/planet-75m is keyed by the planet's store key.
