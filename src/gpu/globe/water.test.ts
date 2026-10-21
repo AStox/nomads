@@ -196,7 +196,7 @@ describe("the planet's water stage", () => {
   });
 
   // the real tier 4's mountain tile 458 (face 1, tile 10, 12), with the global discharge the planet's bake holds: pinned to the bake of 2026-10-21 (the stand-in rain until the air stage's files exist)
-  const key = "/tmp/planet-75m/1-c418e5fe9b5e", have = existsSync(`${key}/t4-q3-hi.u16`) && existsSync(`${key}/t4-cells.u32`) && existsSync(`${key}/t4-dd.u16`);
+  const key = "/tmp/planet-75m/1-883a8d9387df", have = existsSync(`${key}/t4-q3-hi.u16`) && existsSync(`${key}/t4-cells.u32`) && existsSync(`${key}/t4-dd.u16`);
   test.skipIf(!have)("a mountain tile of the real planet is the same bytes twice, pinned", async () => {
     const ctx: Ctx = { gpu: await theGpu(), planet: {} as never, dir: new BakeDir(key), tier: 4 }, patch = patchOf(4, 1, 10, 12, WATER_HALO);
     const climate = climateFor((h) => ({ precip: [1.3, 0.8, 0.6, 1.3].map((w) => (20 + 0.02 * Math.max(0, h)) * w), pet: [0.3, 1.3, 1.6, 0.5].map((x) => 40 * x) }));
@@ -205,7 +205,7 @@ describe("the planet's water stage", () => {
     for (const f of waterFiles(4)) expect(hash(b[f])).toBe(hash(a[f]));
     const all = Bun.hash(Buffer.concat(waterFiles(4).map((f) => Buffer.from(a[f].buffer, a[f].byteOffset, a[f].byteLength)))).toString(16);
     console.log(`water: real tile 458 at halo ${WATER_HALO}: ${seconds.toFixed(1)} s, aquifer sweeps ${sweeps}, ${lastRun.inflows} inflows, hash ${all}`);
-    expect(all).toBe("f2b155709d059583");
+    expect(all).toBe("UNPINNED: record after the planet-wide surplus, discharge and basin of key 883a8d9387df");
     unmap();
   });
 });
