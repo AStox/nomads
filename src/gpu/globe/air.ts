@@ -48,6 +48,8 @@ export const RAIN_DOWN = 16;
 // a cell of 75 m on the wettest face of a block of 1.2 km is given 4 against the block's mean] and, whatever the block's, no more than the words downstream hold of a season's
 // rain: Q16 in an i32 is 32,767 mm [derived], held at 32,000.
 export const RAIN_CAP = 4, WORD_MAX_MM = 32_000;
+// Passes of the block-mean scale: each reads the scale between the blocks' centres and corrects the blocks' means by what is left [design: measured, the error after 8 is in the notes].
+export const SCALE_PASSES = 8;
 const BLOCK = 16;
 
 // ---------- the patch's place on the sphere ----------
@@ -165,56 +167,58 @@ export async function rainOf(ctx: Ctx, patch: Patch, height: Float32Array, geo: 
   const par = rainParams(patchRose(WET_ROSE), delays, seasons, fmt), cell = new Int32Array(2 * NS * n);
   const parent = Int32Array.from(patch.ids, parentOf);
   for (let k = 0; k < NS; k++) {
-    const hours = SEASON_DAYS * 24 * SEASONS[k].rains, planetRain = ctx.planet.seasons[k].rain;
+    const hours = SEASON_DAYS * 24 * SEASONS[k].rains;
     for (let i = 0; i < n; i++) {
-      cell[k * n + i] = Math.round((planetRain[parent[i]] / hours / down) * 2 ** 24);
+      cell[k * n + i] = Math.round((Math.max(0, planet.rain[k][i]) / hours / down) * 2 ** 24);
       cell[(NS + k) * n + i] = turnWord(planet.windE[k][i], planet.windN[k][i], geo.psi[i]);
     }
   }
   const words = await rainWords(ctx.gpu, fmt, rainHeights(z, fmt), par, cell);
-  // every block of the patch: its cells' made rain and the shape's, the block scaled to the tier-0 cell's own rain, no cell's share of it past the cap
-  const block = new Map<number, number>(), blk = new Int32Array(n);
-  for (let i = 0; i < n; i++) { const p = parent[i]; let b = block.get(p); if (b === undefined) block.set(p, (b = block.size)); blk[i] = b; }
-  const nb = block.size, count = new Float64Array(nb), first = new Int32Array(nb + 1), order = new Int32Array(n);
-  for (let i = 0; i < n; i++) count[blk[i]]++;
-  for (let b = 0; b < nb; b++) first[b + 1] = first[b] + count[b];
-  const fill = first.slice(0, nb);
-  for (let i = 0; i < n; i++) order[fill[blk[i]]++] = i;
+  // The rain of a cell is the planet's rain at it (smooth, between the four tier-0 centres) times the theory's enhancement there: made over the mean of made, the mean
+  // being smooth too (the blocks' means read between their centres), the ratio held at RAIN_CAP. A block's mean is then brought to the tier-0 cell's own rain by a scale that
+  // is itself read between the blocks' centres, a few passes of it, so that no step stands at a block's edge and the mean is the planet's to the passes' error [design].
+  const B = S >> 4, tier0 = Float64Array.from({ length: B * B }, (_, b) => parent[((b / B | 0) * 16) * S + (b % B) * 16]);
   const made = [] as Float32Array[], precip = [] as Float32Array[];
   for (let k = 0; k < NS; k++) {
-    const m = Float32Array.from({ length: n }, (_, i) => (words[k * n + i] * down) / 65536), shape = planet.rain[k], p0 = ctx.planet.seasons[k].rain;
-    const sumMade = new Float64Array(nb), out = new Float64Array(n), fin = new Float32Array(n);
-    for (let i = 0; i < n; i++) sumMade[blk[i]] += m[i];
-    for (let i = 0; i < n; i++) { const mean = sumMade[blk[i]] / count[blk[i]]; out[i] = Math.max(0, mean > 0 ? (shape[i] * m[i]) / mean : shape[i]); }
-    for (let b = 0; b < nb; b++) {
-      const cells = order.subarray(first[b], first[b + 1]), target = p0[parent[cells[0]]];
-      if (target <= 0) continue;
-      if (target > WORD_MAX_MM) throw new Error(`air: a tier-0 cell holds ${target.toFixed(0)} mm of rain in a season, past the ${WORD_MAX_MM} mm the downstream words hold`);
-      let sum = 0;
-      for (const i of cells) sum += out[i];
-      const share = new Float64Array(cells.length);
-      cells.forEach((i, j) => { share[j] = sum > 0 ? (out[i] * cells.length) / sum : 1; });
-      capShares(share, Math.max(1, Math.min(RAIN_CAP, WORD_MAX_MM / target)));
-      cells.forEach((i, j) => { fin[i] = target * share[j]; });
+    const m = Float32Array.from({ length: n }, (_, i) => (words[k * n + i] * down) / 65536), bg = planet.rain[k], p0 = ctx.planet.seasons[k].rain;
+    const target = Float64Array.from(tier0, (p) => p0[p]);
+    for (const t of target) if (t > WORD_MAX_MM) throw new Error(`air: a tier-0 cell holds ${t.toFixed(0)} mm of rain in a season, past the ${WORD_MAX_MM} mm the downstream words hold`);
+    const around = smoothBlocks(blockMeans(m, S), B, S), out = new Float64Array(n);
+    for (let i = 0; i < n; i++) out[i] = Math.max(0, bg[i]) * (around[i] > 0 ? Math.min(RAIN_CAP, m[i] / around[i]) : 1);
+    const scale = new Float64Array(B * B), mean0 = blockMeans(out, S);
+    for (let b = 0; b < B * B; b++) scale[b] = target[b] <= 0 ? 0 : mean0[b] > 0 ? target[b] / mean0[b] : 1;
+    const fin = new Float32Array(n);
+    for (let pass = 0; pass < SCALE_PASSES; pass++) {
+      const c = smoothBlocks(scale, B, S), got = blockMeans(out.map((v, i) => Math.min(WORD_MAX_MM, v * c[i])), S);
+      for (let b = 0; b < B * B; b++) if (target[b] > 0 && got[b] > 0) scale[b] *= target[b] / got[b];
     }
+    const c = smoothBlocks(scale, B, S);
+    for (let i = 0; i < n; i++) fin[i] = Math.min(WORD_MAX_MM, out[i] * c[i]);
     made.push(m); precip.push(fin);
   }
   return { made, precip, delays };
 }
 
-// Shares of a block's rain (their mean 1) with none past `cap`: the surplus of those past it goes to the rest in proportion to their own, over as many passes as it takes
-// (each cell past the cap is held at it), the mean kept; a last resort mixes the shares with the mean's own so that none passes [design].
-export function capShares(share: Float64Array, cap: number) {
-  const n = share.length;
-  for (let pass = 0; pass < 12; pass++) {
-    let surplus = 0, free = 0, nfree = 0;
-    for (let j = 0; j < n; j++) { if (share[j] > cap) { surplus += share[j] - cap; share[j] = cap; } else if (share[j] < cap) { free += share[j]; nfree++; } }
-    if (surplus === 0) return;
-    for (let j = 0; j < n; j++) if (share[j] < cap) share[j] += free > 0 ? (surplus * share[j]) / free : surplus / nfree;
+// The mean of each 16 by 16 block of a patch field (the patch starts on a block), blocks in rows.
+export function blockMeans(f: ArrayLike<number>, S: number): Float64Array {
+  const B = S >> 4, out = new Float64Array(B * B);
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) out[(y >> 4) * B + (x >> 4)] += f[y * S + x];
+  for (let b = 0; b < B * B; b++) out[b] /= 256;
+  return out;
+}
+// A field of the blocks' values read between their centres, bilinear (held at the outermost centres beyond them): the blocks' mean-keeping scale without a step at an edge.
+export function smoothBlocks(v: ArrayLike<number>, B: number, S: number): Float64Array {
+  const out = new Float64Array(S * S), at = new Int32Array(S), w = new Float64Array(S);
+  for (let x = 0; x < S; x++) {
+    const u = Math.min(B - 1, Math.max(0, (x - 7.5) / 16)), i0 = Math.min(B - 2, Math.floor(u));
+    at[x] = i0; w[x] = u - i0;
   }
-  let top = 0;
-  for (let j = 0; j < n; j++) top = Math.max(top, share[j]);
-  if (top > cap) { const lam = (top - cap) / (top - 1); for (let j = 0; j < n; j++) share[j] = (1 - lam) * share[j] + lam; }
+  for (let y = 0; y < S; y++)
+    for (let x = 0; x < S; x++) {
+      const a = v[at[y] * B + at[x]], b = v[at[y] * B + at[x] + 1], c = v[(at[y] + 1) * B + at[x]], d = v[(at[y] + 1) * B + at[x] + 1];
+      out[y * S + x] = (1 - w[y]) * ((1 - w[x]) * a + w[x] * b) + w[y] * ((1 - w[x]) * c + w[x] * d);
+    }
+  return out;
 }
 
 // ---------- the climate ----------

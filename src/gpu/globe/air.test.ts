@@ -9,7 +9,7 @@ import { releaseGpu, theGpu } from "../device";
 import { SMALL_RADIUS_M } from "./grid";
 import { patchAt, type Patch } from "./patch";
 import { tableMargin } from "../terrain/rain";
-import { AIR_HALO, AIR_OUT, AIR_OUTPUTS, RAIN_CAP, WORD_MAX_MM, airOf, airStage, capShares, compact, geometryOf, precipOfWord, rainOf, sampledOf, type AirTile } from "./air";
+import { AIR_HALO, AIR_OUT, AIR_OUTPUTS, WORD_MAX_MM, airOf, airStage, blockMeans, compact, geometryOf, precipOfWord, rainOf, sampledOf, smoothBlocks, type AirTile } from "./air";
 import { PATCH_SNOW_SHIFT } from "../terrain/climate";
 import { runTiles, type Ctx } from "./stages";
 import { BakeDir } from "./tiers";
@@ -36,11 +36,24 @@ const cells = (p: Patch) => ({ x0: p.halo, S: p.side });
 const interior = (p: Patch, f: ArrayLike<number>) => { const { x0, S } = cells(p), out = new Float32Array(256 * 256); for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) out[y * 256 + x] = f[(y + x0) * S + x + x0]; return out; };
 const mean = (xs: ArrayLike<number>) => { let s = 0; for (let i = 0; i < xs.length; i++) s += xs[i]; return s / xs.length; };
 
+// How much a field steps across the edges of the 16 by 16 blocks, as the mean of |d| between neighbouring cells across a block's edge over the mean inside blocks (1 where the
+// edges are like any other place), taken over the patch's cells `margin` blocks in from its border, along x and along y.
+function edgeStep(f: ArrayLike<number>, p: Patch, margin: number) {
+  const S = p.side, lo = margin * 16, hi = S - margin * 16;
+  let across = 0, inside = 0, na = 0, ni = 0;
+  for (let y = lo; y < hi - 1; y++)
+    for (let x = lo; x < hi - 1; x++) {
+      const dx = Math.abs(f[y * S + x + 1] - f[y * S + x]), dy = Math.abs(f[(y + 1) * S + x] - f[y * S + x]);
+      if (x % 16 === 15) { across += dx; na++; } else { inside += dx; ni++; }
+      if (y % 16 === 15) { across += dy; na++; } else { inside += dy; ni++; }
+    }
+  return inside > 0 ? across / na / (inside / ni) : 1; // a field with no variation has no step
+}
+
 describe("the air stage on a staged planet", () => {
   test("the transforms' tables are well clear of rounding ties on the patch's grid, so an engine's last-place cosine cannot change a word", () => {
     expect(tableMargin(512)).toBeGreaterThan(1e-6);
   });
-
   test("the rain is never negative, every block of tier 0 keeps its planet's rain, and a ridge is wetter on its windward side than its lee", async () => {
     const ctx = await ctxOf(planetOf(300, 8, 0)), patch = patchAt(TIER, 0, 1920, 1920, AIR_HALO), cx = 1920 + 128, h = ridge(cx)(patch.ids);
     const geo = geometryOf(patch, ctx.planet.radius), smp = sampledOf(ctx, patch);
@@ -56,8 +69,11 @@ describe("the air stage on a staged planet", () => {
       }
     }
     console.log(`the rain's block means against the planet's 300 mm: worst relative ${worst.toExponential(2)}, the wettest cell ${Math.max(...rain.precip[0]).toFixed(0)} mm`);
-    for (let k = 0; k < 4; k++) expect(Math.max(...rain.precip[k])).toBeLessThanOrEqual(RAIN_CAP * 300 * (1 + 1e-6));
-    expect(worst).toBeLessThan(1e-5);
+    for (let k = 0; k < 4; k++) expect(Math.max(...rain.precip[k])).toBeLessThanOrEqual(WORD_MAX_MM);
+    expect(worst).toBeLessThan(0.01);
+    const steps = [0, 1, 2, 3].map((k) => edgeStep(rain.precip[k], patch, 3));
+    console.log(`staged ridge: edge-step ratio of the rain by season ${steps.map((v) => v.toFixed(3)).join(" ")}`);
+    for (const v of steps) expect(v).toBeLessThan(1.5);
     // the wind blows toward east (x grows east at the centre of face 0): the windward side is x below the ridge
     const band = (from: number, to: number, k: number) => { let s = 0, c = 0; for (let y = patch.halo; y < patch.halo + 256; y++) for (let X = from; X < to; X++) { s += rain.precip[k][y * S + (X - (1920 - patch.halo))]; c++; } return s / c; };
     const windward = band(cx - 24, cx - 8, 0), lee = band(cx + 8, cx + 24, 0);
@@ -76,26 +92,17 @@ describe("the air stage on a staged planet", () => {
     expect(Math.abs(side(cx - 24, cx - 8) - side(cx + 8, cx + 24))).toBeLessThan(0.8 * (windward - lee));
   }, 120_000);
 
-  test("a block's shares are capped, the surplus goes to the rest in proportion, and the mean stays", () => {
-    const share = Float64Array.from({ length: 256 }, (_, i) => (i === 3 ? 90 : i === 4 ? 40 : i < 100 ? 0 : 0.5 + (i % 5) * 0.1));
-    const sum = share.reduce((a, b) => a + b, 0);
-    for (let i = 0; i < 256; i++) share[i] = (share[i] * 256) / sum;
-    const before = Float64Array.from(share);
-    capShares(share, 4);
-    expect(Math.max(...share)).toBeLessThanOrEqual(4 + 1e-9);
-    expect(share.reduce((a, b) => a + b, 0) / 256).toBeCloseTo(1, 12);
-    // the unclipped cells keep their order and their ratios
-    expect(share[200] / share[201]).toBeCloseTo(before[200] / before[201], 9);
-    expect(share[100]).toBeGreaterThan(before[100]);
-    expect(share[0]).toBe(0);
-    // a cap of 1 leaves the mean everywhere; a block of one cell holding everything is spread out
-    const one = Float64Array.from({ length: 256 }, (_, i) => (i === 7 ? 256 : 0));
-    capShares(one, 1);
-    expect(Math.max(...one)).toBeLessThanOrEqual(1 + 1e-9);
-    expect(one.reduce((a, b) => a + b, 0)).toBeCloseTo(256, 9);
+  test("the block-mean scale is read between the blocks' centres: a constant is itself, a ramp of the blocks is a ramp of the cells, and the means of a patch field are its blocks'", () => {
+    const S = 64, B = 4;
+    expect(Array.from(smoothBlocks(new Float64Array(B * B).fill(5), B, S)).every((v) => Math.abs(v - 5) < 1e-12)).toBe(true);
+    const ramp = Float64Array.from({ length: B * B }, (_, b) => 10 + 16 * (b % B)), got = smoothBlocks(ramp, B, S);
+    expect(got[5 * S + 24]).toBeCloseTo(10 + 24 - 7.5, 9);
+    expect(got[5 * S + 40]).toBeCloseTo(10 + 40 - 7.5, 9);
+    const f = Float64Array.from({ length: S * S }, (_, i) => (i % S >> 4) * 100 + (i % 16));
+    expect(blockMeans(f, S)[2]).toBeCloseTo(200 + 7.5, 9);
   });
 
-  test("a planet's rain of 20,000 mm a season, shared out by a mountain, holds no cell past the cap or the words, and the block keeps its rain", async () => {
+  test("a planet's rain of 20,000 mm a season, shared out by a mountain, holds no cell past the words, and the block keeps its rain", async () => {
     const ctx = await ctxOf(planetOf(20_000, 8, 0)), patch = patchAt(TIER, 0, 1920, 1920, AIR_HALO), h = ridge(1920 + 128)(patch.ids);
     const rain = await rainOf(ctx, patch, Float32Array.from(h, (v) => v / 256), geometryOf(patch, ctx.planet.radius), sampledOf(ctx, patch));
     for (let k = 0; k < 4; k++) {
@@ -155,7 +162,7 @@ const gatherFile = (file: string, p: Patch) => {
 };
 const heightsAt = async (_: Ctx, p: Patch) => ({ h: gatherFile(`${BAKE}/t4-height.i32`, p), f: gatherFile(`${BAKE}/t4-flooded.i32`, p) });
 // The pinned hash of tile 458's stored words (this planet's and this engine's: re-record when the air stage, the planet or the bake changes, and say so)
-const PIN = { tile458: "91a017ef93d2c7fe" };
+const PIN = { tile458: "9a283abb8e7c719" };
 
 describe("the air stage on the real planet (seed 1)", () => {
   real("tile 458 (face 1, a range with land and sea): the same twice, the stored words pinned, rain kept by block, and the stored files' sizes", async () => {
@@ -165,18 +172,24 @@ describe("the air stage on the real planet (seed 1)", () => {
     expect(hashOf(words(a))).toBe(hashOf(words(again)));
     console.log(`tile 458: ${s1.toFixed(2)} s (a patch of ${p.side} by ${p.side}), stored words hash ${hashOf(words(a))}, saturated words ${a.saturated}`);
     if (PIN.tile458) expect(hashOf(words(a))).toBe(PIN.tile458);
-    // every whole block of the tile keeps the tier-0 cell's rain to float rounding
+    // every whole block of the tile keeps the tier-0 cell's rain, to what the smooth scale's passes leave (the interpolated scale is not exactly the block's own)
     const P0 = ctx.planet.seasons.map((s) => s.rain), S = p.side;
-    let worst = 0;
+    // (the planet's rain between its centres is not mean-keeping where it changes fast, so a block beside a much drier one is held to what a smooth scale can do)
+    const errs: number[] = [];
+    let mass = 0, miss = 0, got = 0;
     for (let k = 0; k < 4; k++)
       for (let by = 0; by < 16; by++) for (let bx = 0; bx < 16; bx++) {
         let sum = 0;
         for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) sum += a.precip[k][(p.halo + by * 16 + y) * S + p.halo + bx * 16 + x];
         const id = p.ids[(p.halo + by * 16) * S + p.halo + bx * 16], f0 = Math.floor(id / (FN * FN)), r = id - f0 * FN * FN, want = P0[k][f0 * 65536 + (Math.floor(r / FN) >> 4) * 256 + ((r % FN) >> 4)];
-        worst = Math.max(worst, Math.abs(sum / 256 - want) / Math.max(1, want));
+        mass += want; miss += Math.abs(sum / 256 - want); got += sum / 256;
+        if (want >= 50) errs.push(Math.abs(sum / 256 - want) / want);
       }
-    console.log(`real tile: block means against the tier-0 rain, worst relative ${worst.toExponential(2)}`);
-    expect(worst).toBeLessThan(1e-5);
+    errs.sort((u, v) => u - v);
+    const q = (f: number) => errs[Math.floor(f * (errs.length - 1))];
+    console.log(`real tile: block means against the tier-0 rain: summed |error| over summed rain ${(miss / mass).toExponential(2)}, the tile's total ${(got / mass).toFixed(4)} of the planet's; of ${errs.length} blocks over 50 mm: median ${q(0.5).toExponential(2)}, p90 ${q(0.9).toExponential(2)}, worst ${q(1).toExponential(2)}`);
+    expect(miss / mass).toBeLessThan(0.1);
+    expect(Math.abs(got / mass - 1)).toBeLessThan(0.05);
     for (const k of [0, 1, 2, 3]) expect(a.precip[k].every((v) => v >= 0)).toBe(true);
     // the stored words hold what the stage made: the units' rounding is under half a unit
     const stored = compact(a), pr = stored[AIR_OUT.pr[0]] as Uint16Array;
@@ -184,11 +197,11 @@ describe("the air stage on the real planet (seed 1)", () => {
     for (let i = 0; i < pr.length; i++) off = Math.max(off, Math.abs(precipOfWord(pr[i]) - a.precip[0][i]));
     expect(off).toBeLessThan(0.2);
     expect(a.saturated).toBe(0);
-    // no cell holds more than the cap's times its tier-0 cell's rain, or the words downstream hold
-    let over = 0;
-    for (let k = 0; k < 4; k++) for (let i = 0; i < a.precip[k].length; i++) over = Math.max(over, a.precip[k][i] / Math.max(1e-9, Math.min(RAIN_CAP * P0[k][Math.floor(p.ids[i] / (FN * FN)) * 65536 + (((p.ids[i] % (FN * FN)) >> 12) >> 4) * 256 + (((p.ids[i] % FN)) >> 4)], WORD_MAX_MM)));
-    console.log(`the largest cell against its bound (the cap times its tier-0 cell's rain): ${over.toFixed(6)}`);
-    expect(over).toBeLessThan(1 + 1e-5);
+    // no cell holds more than the words downstream hold, and the rain has no step at a block's edge
+    for (let k = 0; k < 4; k++) expect(Math.max(...a.precip[k])).toBeLessThanOrEqual(WORD_MAX_MM);
+    const steps = [0, 1, 2, 3].map((k) => edgeStep(a.precip[k], p, 3));
+    console.log(`real tile: edge-step ratio of the rain (mean |d| across a block's edge over inside it), by season ${steps.map((v) => v.toFixed(3)).join(" ")}`);
+    for (const v of steps) expect(v).toBeLessThan(1.5);
   }, 280_000);
 
   real("two patches of one tile that overlap agree: what the heights alone make exactly, the rest within what a halo cuts (measured, written as a gap in the note)", async () => {
