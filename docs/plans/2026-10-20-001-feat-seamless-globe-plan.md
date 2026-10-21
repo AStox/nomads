@@ -53,10 +53,12 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
 
 ## Key decisions
 
-- **The planet's size is set by the grid.** 4,096 cells of 75 m along a cube face's edge (16 of the 256-cell tiles the
-  kernels run on), so the radius is 4,096 x 75 m x 2 / pi = 195.6 km [derived], 6 x 4,096^2 = 100.7 million cells.
-  Tier 0 stays 256 cells a face (1.2 km cells); the 75 m tier is tier 4. If the bake or the page cannot hold that, the
-  fallback is 2,048 a face (97.8 km, 25 million cells), decided by Unit 4's measurements, not by taste.
+- **The planet's size is set by the grid.** 8,192 cells of 75 m along a cube face's edge (32 of the 256-cell tiles the
+  kernels run on), so the radius is 8,192 x 75 m x 2 / pi = 391.1 km [derived], 6 x 8,192^2 = 402.7 million cells.
+  Tier 0 stays 256 cells a face (2.4 km cells); the 75 m tier is tier 5. Chosen by the operator 2026-10-21 over the
+  195.6 km planet (4,096 a face, built in Units 4 to 5), whose continents were as small as one orogen and came out as
+  5 km plateaus once rock lengths were Earth's (Unit 4c). The cost accepted: about an 8 hour bake in staged calls, about
+  65 GB of stage files, and solves that stream tiles from disk, since a whole tier no longer fits in 18 GB of memory.
 - **Coarse to fine, globally.** Tectonics, the atmosphere and ice run on the coarse tiers as now; each finer tier starts
   from the one above and is solved over the whole planet (erosion's flood and receivers, hydrology, soils and the rest of
   the island's stages), so rivers are one network and every cell's ground is one answer.
@@ -164,6 +166,15 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   cap on rain concentration without a citation; tier-4 erosion run to its response time, so valleys dissect the ranges and
   rivers bend with the ground rather than running straight down planar faces. Check: two tilings give the same bytes; a
   tile PNG of a range and a coast judged against the island's look; then the full rebake on Unit 4c's planet.
+- [ ] **Unit 7a: The planet at 391.1 km.** The coarse tiers rerun at the new radius under Unit 4c's rule (only radius and
+  spin numbers scale); seeds 1 to 3 measured against the Earth-like facts; the plateau's cause checked (the founder trim
+  that may throw crust away, rivers too small to incise) and fixed where it is a bug, written as a gap where it is the
+  planet's size.
+- [ ] **Unit 7b: Solves that stream from disk.** Tiers 1 to 5 and the fine stages as global solves over tiles kept on
+  disk, with halo exchange each sweep, inside 18 GB of memory and the GPU's buffer limits; the bake as resumable calls
+  under 5 minutes each, driven in order; Unit 5b's one-solve rain and water table and response-time erosion carried over.
+  Check: the same bytes as the in-memory solve on the 195.6 km planet's tier 4, then the full bake of seed 1 on Unit 7a's
+  key, with time, memory and disk measured.
 - [ ] **Unit 6: Cutover.** The page streams the pyramid at every zoom and the play area's Ground is cut from the planet's
   tiles (no `windowOf`, no `islandOf` generation); the lattice, windows, `windowOf` and Unit 1's sub-cell decoration are
   deleted; the island's Bornholm path goes with them, every caller migrated. VERSION bumped.
