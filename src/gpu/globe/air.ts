@@ -369,8 +369,8 @@ const seasonal = (stem: string, type: string) => Array.from({ length: NS }, (_, 
 export const AIR_OUT = { pr: seasonal("t4-pr", "u16"), pe: seasonal("t4-pe", "u16"), sun: seasonal("t4-sun", "u16"), tmp: seasonal("t4-tmp", "i16"), hum: seasonal("t4-hum", "u8"), snow: "t4-snow.u8", wsh: "t4-wsh.u8", fog: "t4-fog.u8", snp: seasonal("t4-snp", "u16") };
 export const AIR_OUTPUTS = [...AIR_OUT.pr, ...AIR_OUT.pe, ...AIR_OUT.sun, ...AIR_OUT.tmp, ...AIR_OUT.hum, AIR_OUT.snow, AIR_OUT.wsh, AIR_OUT.fog, ...AIR_OUT.snp];
 // The units of the stored words.
-// snp: the season's mean snowpack in 1/4 mm of water, held at 16 m (65,535) [design: the island's packs are metres at most]
-export const AIR_UNIT = { pe: 10, sun: 1024, tmp: 256, hum: 255, snow: 255, wsh: 255, fog: 255, snp: 4 };
+// snp: the season's mean snowpack in 1/2 mm of water, held at 32.8 m (65,535): the kernel's pack is Q16 mm in a word, 32.8 m, and holds there (a cold range's packs reach 18 m as a season's mean over ten years)
+export const AIR_UNIT = { pe: 10, sun: 1024, tmp: 256, hum: 255, snow: 255, wsh: 255, fog: 255, snp: 2 };
 
 // The stored word of a season's rain: the square root of the mm times 360 (u16), so that 0.006 mm is held at a millimetre and 0.35 mm at the most a cell can hold
 // (32,000 mm), a linear 0.1 mm word saturating at 6,553 where the planet's own tier-0 cells hold 23,000 [design].

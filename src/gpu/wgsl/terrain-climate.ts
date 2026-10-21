@@ -502,7 +502,8 @@ export const snowWgsl = (ranges: { coldest: number; warmest: number }, shift = 0
   const l = layoutOf(f);
   return /* wgsl */ `
 ${common(l)}
-const DAYS_ALL = ${DAYS}u;
+const DAYS_ALL = ${DAYS}u;${f.patch ? `
+// the pack is Q16 mm in a word, 32.8 m of water: a cold range's pack grows through the ten years with no melt and holds at the word rather than wrap [derived: the word; the model has no ice flow]` : ""}
 fn tile_mean(base: u32, cells: array<u32, 4>, n: u32, sh: u32) -> i32 {
   var s = 0i;
   for (var c = 0u; c < n; c++) { s += (W[base + cells[c]] + select(0i, (1i << sh) >> 1u, sh > 0u)) >> sh; }
@@ -574,7 +575,7 @@ ${f.patch ? `  if (tile >= ${l.GROUPS}u) { return; }
       let k = u32(v >> 16u);
       let l0 = TAB[T_logit + k];
       let flakes = qmul(rain, l0 + qmul(TAB[T_logit + k + 1u] - l0, v & 65535i));
-      pack += flakes;
+      ${f.patch ? "pack = select(pack + flakes, 0x7fffffffi, pack > 0x7fffffffi - flakes);" : "pack += flakes;"}
       var ea = E[si]; var sky = back[si];
       if (T < dew[si]) {
         let w = (max(${NEG_LIMIT}i, T) + ${-NEG_LIMIT}i) * 100i;

@@ -187,15 +187,20 @@ const gatherFile = (file: string, p: Patch) => {
 };
 const heightsAt = (p: Patch) => ({ h: gatherFile(`${BAKE}/t4-height.i32`, p), f: gatherFile(`${BAKE}/t4-flooded.i32`, p) });
 // The pinned hash of tile 458's stored words (this planet's and this engine's: re-record when the air stage, the planet or the bake changes, and say so)
-const PIN = { tile458: "" };
+const PIN = { tile458: "ee38721050ea4efc" };
 
 describe("the air stage on the real planet (seed 1)", () => {
   real("tile 458 (face 1, a range with land and sea): the same twice, the stored words pinned, no word saturates, the rain smooth and its extremes", async () => {
     const ctx = await realCtx(), { face, tx, ty } = tileOf(458), p = patchAt(TIER, face, tx * 256, ty * 256, AIR_HALO), { h, f } = heightsAt(p);
-    const t0 = performance.now(), a = await airOf(ctx, p, h, f), s1 = (performance.now() - t0) / 1000, again = await airOf(ctx, p, h, f);
+    const mark = (what: string) => process.stderr.write(`dbg ${what} ${(process.memoryUsage().rss / 1e6).toFixed(0)} MB\n`);
+    mark("gathered");
+    const t0 = performance.now(), a = await airOf(ctx, p, h, f), s1 = (performance.now() - t0) / 1000;
+    mark("first");
+    const again = await airOf(ctx, p, h, f);
+    mark("second");
     const stored = compact(a), interior = (field: ArrayLike<number>) => { const out = new Int32Array(256 * 256); for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) out[y * 256 + x] = field[(y + p.halo) * p.side + x + p.halo]; return out; };
     const words = AIR_OUTPUTS.map((name) => interior(stored[name] as unknown as ArrayLike<number>));
-    const wordsAgain = AIR_OUTPUTS.map((name) => interior(compact(again)[name] as unknown as ArrayLike<number>));
+    const storedAgain = compact(again), wordsAgain = AIR_OUTPUTS.map((name) => interior(storedAgain[name] as unknown as ArrayLike<number>));
     expect(hashOf(words)).toBe(hashOf(wordsAgain));
     console.log(`tile 458: ${s1.toFixed(2)} s (a patch of ${p.side} by ${p.side}), stored words hash ${hashOf(words)}, saturated words ${a.saturated}`);
     if (PIN.tile458) expect(hashOf(words)).toBe(PIN.tile458);
@@ -228,10 +233,10 @@ describe("the air stage on the real planet (seed 1)", () => {
     expect(off).toBeLessThan(0.01);
     const wsh = stored[AIR_OUT.wsh] as Uint8Array, fog = stored[AIR_OUT.fog] as Uint8Array, snp = stored[AIR_OUT.snp[3]] as Uint16Array;
     let dw = 0, df = 0, dp = 0;
-    for (let i = 0; i < wsh.length; i++) { dw = Math.max(dw, Math.abs(wsh[i] / 255 - a.windShare[i])); df = Math.max(df, Math.abs(fog[i] / 255 - a.fog[i])); dp = Math.max(dp, Math.abs(snp[i] / 4 - a.snowpack[3][i])); }
+    for (let i = 0; i < wsh.length; i++) { dw = Math.max(dw, Math.abs(wsh[i] / 255 - a.windShare[i])); df = Math.max(df, Math.abs(fog[i] / 255 - a.fog[i])); dp = Math.max(dp, Math.abs(snp[i] / 2 - a.snowpack[3][i])); }
     expect(dw).toBeLessThanOrEqual(0.5 / 255 + 1e-6);
     expect(df).toBeLessThanOrEqual(0.5 / 255 + 1e-6);
-    expect(dp).toBeLessThanOrEqual(0.125 + 1e-3);
+    expect(dp).toBeLessThanOrEqual(0.25 + 1e-3);
   }, 280_000);
 
   real("tiles 458, 1, 14 and 17 under other tilings: every stored file is the same bytes in the cells two patches share", async () => {
@@ -247,8 +252,8 @@ describe("the air stage on the real planet (seed 1)", () => {
     }
   }, 290_000);
 
-  real("one place seen from the two faces that meet at an edge: a tile of face 0 and the tile of face 5 beside it hold the same cells in their halo and interior; the lattices differ, so the sun is reported", async () => {
-    const ctx = await realCtx(), a = patchAt(TIER, 0, 256, 0, AIR_HALO), S = a.side;
+  real("one place seen from the two faces that meet at an edge: tile 14 of face 0 and the tile of face 5 beside it hold the same cells in their halo and interior; the lattices differ, so the sun is reported", async () => {
+    const ctx = await realCtx(), a = patchAt(TIER, 0, 14 * 256, 0, AIR_HALO), S = a.side;
     // the tile that holds the cells across the edge from tile 1 of face 0, and its patch
     const across = a.ids[(AIR_HALO - 5) * S + AIR_HALO + 10], fb = Math.floor(across / (FN * FN)), rb = across - fb * FN * FN, Yb = Math.floor(rb / FN), Xb = rb - Yb * FN;
     const b = patchAt(TIER, fb, (Xb >> 8) * 256, (Yb >> 8) * 256, AIR_HALO), at = new Map<number, number>();
@@ -256,7 +261,7 @@ describe("the air stage on the real planet (seed 1)", () => {
     const [ha, hb] = [heightsAt(a), heightsAt(b)], [ra, rb2] = [await airOf(ctx, a, ha.h, ha.f), await airOf(ctx, b, hb.h, hb.f)];
     const pairs: [number, number][] = [];
     for (let y = AIR_HALO; y < AIR_HALO + 16; y++) for (let x = AIR_HALO; x < AIR_HALO + 256; x++) { const j = at.get(a.ids[y * S + x]); if (j !== undefined) pairs.push([y * S + x, j]); }
-    console.log(`face 0 tile 1 and face ${fb} tile (${Xb >> 8}, ${Yb >> 8}): ${pairs.length} cells in both`);
+    console.log(`face 0 tile 14 (land from 47 to 4,191 m along its south edge) and face ${fb} tile (${Xb >> 8}, ${Yb >> 8}): ${pairs.length} cells in both`);
     expect(pairs.length).toBeGreaterThan(2000);
     const fields: [string, (t: AirTile) => Float32Array][] = [["sun summer", (t) => t.sun[1]], ["sun winter", (t) => t.sun[3]], ["temp summer", (t) => t.temp[1]], ["temp winter", (t) => t.temp[3]], ["sky", (t) => t.sky], ["pool", (t) => t.pool], ["breeze", (t) => t.breeze], ["precip spring", (t) => t.precip[0]], ["precip autumn", (t) => t.precip[2]]];
     const rows: Record<string, { rms: number; worst: number; scale: number; equal: number }> = {};
