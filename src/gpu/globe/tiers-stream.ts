@@ -523,7 +523,7 @@ export async function streamTier(gpu: Gpu, planet: Planet, dir: BakeDir, tier: n
     log(`tier ${tier}: blocks of ${st.size} cells, ${st.nreg} of them, table in ${spent().toFixed(1)} s, ${st.stepsMade} of ${steps} steps kept`);
     await st.open();
     const r = await st.work(Math.max(0, budgetS - spent() - 10), steps, tier === last, o.maxSteps);
-    log(`tier ${tier}: ${st.stepsMade} of ${steps} steps, stage ${st.prog.stage}, ${spent().toFixed(0)} s this call, visits ${JSON.stringify(st.prog.visits)}, peak rss ${(st.peakRss / 2 ** 30).toFixed(2)} GB, GPU buffers ${(st.solver.bytes / 2 ** 20).toFixed(0)} MB, tile cache ${(st.store.cachedBytes / 2 ** 20).toFixed(0)} MB`);
+    log(`tier ${tier}: ${st.stepsMade} of ${steps} steps, stage ${st.prog.stage}, ${spent().toFixed(0)} s this call, visits ${JSON.stringify(st.prog.visits)}, peak rss ${(st.peakRss / 2 ** 30).toFixed(2)} GB, GPU buffers ${(st.solver.bytes / 2 ** 20).toFixed(0)} MB, tile cache ${(st.store.cachedBytes / 2 ** 20).toFixed(0)} MB, tile files read ${(st.store.stats.readBytes / 2 ** 30).toFixed(1)} GB (${st.store.stats.hits} cache hits, ${st.store.stats.misses} misses), written ${(st.store.stats.writeBytes / 2 ** 30).toFixed(1)} GB`);
     if (!r.done) return { done: false, steps: st.stepsMade, of: steps };
     st.exportCells("H", dir.path(`t${tier}-height.i32`));
     if (tier === last) { st.exportCells("TO", dir.path(`t${tier}-to.u32`)); st.exportCells("ACC", dir.path(`t${tier}-acc.u32`)); st.exportCells("F", dir.path(`t${tier}-flooded.i32`)); }

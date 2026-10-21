@@ -36,8 +36,7 @@ describe("the carry to the next tier, a block at a time", () => {
   test("refineBlock is refineSmooth word for word, over every block of faces' edges and corners", () => {
     const from = 1, n = 6 * (256 << from) ** 2, parent = new Int32Array(n);
     for (let i = 0; i < n; i++) parent[i] = (Math.imul(i, 2654435761) >>> 12) - 2 ** 19;
-    const want = refineSmooth(parent, from), fn = 512 << from * 0, fnc = 256 << (from + 1), out = new Int32Array(want.length), ipar = 128;
-    void fn;
+    const want = refineSmooth(parent, from), fnc = 256 << (from + 1), out = new Int32Array(want.length), ipar = 128;
     for (let f = 0; f < 6; f++)
       for (let ry = 0; ry < (256 << from) / ipar; ry++)
         for (let rx = 0; rx < (256 << from) / ipar; rx++) {
