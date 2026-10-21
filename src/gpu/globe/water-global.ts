@@ -76,9 +76,10 @@ function passStage(tier: number, cfg: WaterConfig, name: string, outputs: string
 }
 const asI32 = (files: string[], names: readonly string[]) => (_c: Ctx, _p: Patch, f: Record<string, Int32Array>) => Object.fromEntries(files.map((file, k) => [file, f[names[k]]]));
 // the packed planes of a relaxation's state (the heights are the tier's own file): files, the hydrology's fields they are made of, and the make
-export const PLANES = [...A_PLANES.filter((n) => n !== "ht"), ...B_PLANES];
-const coefFiles = (tier: number, tag: "a" | "c") => PLANES.map((n) => g(tier, `${tag}-${n}.i32`));
-const COEF_NAMES = ["head", "fxv", "sso", "eaf", "isf", "rock", "drift", "dd", "ww", "we", "wn", "ws", "pe0", "pe1", "pe2", "pe3", "sh0", "sh1", "sh2", "sh3"];
+export const PLANES = [...A_PLANES.filter((n) => n !== "ht" && n !== "res"), ...B_PLANES];
+// the planes of a state on disk: those the relaxation holds and each cell's total conductance (the multigrid's, not the device's)
+const coefFiles = (tier: number, tag: "a" | "c") => [...PLANES, "sum"].map((n) => g(tier, `${tag}-${n}.i32`));
+const COEF_NAMES = ["head", "fxv", "sso", "eaf", "isf", "rock", "drift", "dd", "ww", "we", "wn", "ws", "pe0", "pe1", "pe2", "pe3", "sh0", "sh1", "sh2", "sh3", "ce", "cs", "evk"];
 const ROOTS_Z = Math.round(ROOTS * 2 ** 17), tenth = (v: number) => Math.floor((Math.max(v, 0) * 10 + 32768) / 65536);
 const planes = (tier: number, tag: "a" | "c") => (_c: Ctx, patch: Patch, f: Record<string, Int32Array>): Record<string, Field> => {
   const n = patch.ids.length, meta = new Int32Array(n), pe01 = new Int32Array(n), pe23 = new Int32Array(n), sh01 = new Int32Array(n), sh23 = new Int32Array(n);
@@ -88,8 +89,11 @@ const planes = (tier: number, tag: "a" | "c") => (_c: Ctx, patch: Patch, f: Reco
     pe01[k] = tenth(f.pe0[k]) | (tenth(f.pe1[k]) << 16); pe23[k] = tenth(f.pe2[k]) | (tenth(f.pe3[k]) << 16);
     sh01[k] = tenth(f.sh0[k]) | (tenth(f.sh1[k]) << 16); sh23[k] = tenth(f.sh2[k]) | (tenth(f.sh3[k]) << 16);
   }
-  const by: Record<string, Int32Array> = { head: f.head, fxv: f.fxv, sso: f.sso, eaf: f.eaf, meta, ww: f.ww, we: f.we, wn: f.wn, ws: f.ws, pe01, pe23, sh01, sh23 };
-  return Object.fromEntries(PLANES.map((p) => [g(tier, `${tag}-${p}.i32`), by[p]]));
+  // the cell's total conductance: its four faces (east and north are its own, west and south the neighbours') and its leak
+  const sum = new Int32Array(n);
+  for (let k = 0; k < n; k++) if (k >= patch.side) sum[k] = (f.ce[k] + (k > 0 ? f.ce[k - 1] : 0) + f.cs[k] + f.cs[k - patch.side] + f.evk[k]) | 0;
+  const by: Record<string, Int32Array> = { head: f.head, fxv: f.fxv, sso: f.sso, eaf: f.eaf, meta, ww: f.ww, we: f.we, wn: f.wn, ws: f.ws, pe01, pe23, sh01, sh23, sum };
+  return Object.fromEntries([...PLANES, "sum"].map((p) => [g(tier, `${tag}-${p}.i32`), by[p]]));
 };
 const routeFiles = (tier: number, r: number) => [0, 1, 2, 3, 4].map((c) => g(tier, `w${r}${c}.i32`));
 const WT = ["wt0", "wt1", "wt2", "wt3", "wt4"];

@@ -16,7 +16,7 @@ import { regionalWgsl } from "./globe-regional";
 
 // The logical fields the island's functions read (the colour is the one this module adds).
 export const GFIELDS = ["head", "isf", "fxv", "h", "ww", "we", "wn", "ws", "wd", "evk", "sso", "eaf", "evd", "evb", "eve", "evs", "evw", "evu", "sh0", "sh1", "sh2", "sh3", "pe0", "pe1", "pe2", "pe3", "col"] as const;
-export const A_PLANES = ["head", "fxv", "sso", "eaf", "meta", "ht"] as const;
+export const A_PLANES = ["head", "fxv", "sso", "eaf", "meta", "ht", "res"] as const;
 export const B_PLANES = ["ww", "we", "wn", "ws", "pe01", "pe23", "sh01", "sh23"] as const;
 
 // The top-level function called `name` of a WGSL text, to its closing brace.
@@ -45,7 +45,7 @@ export const globalFormat = (cells: number, omega?: number): WaterFormat => ({ .
 export const OMEGA = 1.99;
 export function aquiferWgsl(tier: number, omega = OMEGA): string {
   const fn = 256 * 2 ** tier, cells = 6 * fn * fn, kernels = kernelsOf(globalFormat(cells, omega)), regional = regionalWgsl(EDGES, fn);
-  const water = ["s64", "smul64", "sat32", "mulshr", "tenth_q16", "gw_params", "exp2n", "gw_frac", "reed_fit", "wet_extra", "gw_et", "aq_cell_n"].map((n) => packed(fnOf(kernels, n)));
+  const water = ["s64", "smul64", "sat32", "mulshr", "tenth_q16", "gw_params", "exp2n", "gw_frac", "reed_fit", "wet_extra", "gw_et", "aq_want_n", "aq_cap", "aq_cell_n"].map((n) => packed(fnOf(kernels, n)));
   const idx = (n: (typeof GFIELDS)[number]) => GFIELDS.indexOf(n);
   return /* wgsl */ `${FIXED}
 ${constsOf(globalFormat(cells, omega), GFIELDS)}
@@ -102,6 +102,30 @@ fn aqg(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: 
   let d0 = gi(f_h, k) - A[k];
   let c = aq_cell_n(k, nbr(k, 2u), nbr(k, 0u), nbr(k, 3u), nbr(k, 1u));
   if (c != 0u) { atomicMax(&C[P[1]], c); if (d0 < ${8 * 2 ** 17}i) { atomicMax(&C[2u + P[1]], c); } }
+}
+// the residual of each cell, in the head's unit: how far a pure Gauss-Seidel step would move it (0 for a fixed cell), into the plane res; C[0] keeps the greatest residual of the cells within 8 m of
+// the ground (C[1]: of all)
+@compute @workgroup_size(256)
+fn aqres(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  _ = arrayLength(&A); _ = arrayLength(&B); _ = arrayLength(&C); _ = arrayLength(&P);
+  let k = gid.x + gid.y * nwg.x * 256u;
+  if (k >= LEN) { return; }
+  var d = 0i;
+  if (ld(f_isf, k) != 1i) {
+    let want = aq_want_n(k, nbr(k, 2u), nbr(k, 0u), nbr(k, 3u), nbr(k, 1u));
+    d = min(want, aq_cap(k)) - A[k];
+  }
+  A[${A_PLANES.indexOf("res")}u * LEN + k] = d;
+  if (d != 0i) { atomicMax(&C[1u], u32(abs(d))); if (gi(f_h, k) - A[k] < ${8 * 2 ** 17}i) { atomicMax(&C[0u], u32(abs(d))); } }
+}
+// a correction (the plane res) added to the heads, none above a cap and none to a fixed cell
+@compute @workgroup_size(256)
+fn aqcorr(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  _ = arrayLength(&A); _ = arrayLength(&B); _ = arrayLength(&C); _ = arrayLength(&P);
+  let k = gid.x + gid.y * nwg.x * 256u;
+  if (k >= LEN) { return; }
+  if (ld(f_isf, k) == 1i) { return; }
+  A[k] = min(aq_cap(k), A[k] + A[${A_PLANES.indexOf("res")}u * LEN + k]);
 }
 `;
 }

@@ -49,7 +49,7 @@ export interface Settled { sweeps: number; change: number; shallow: number }
 export class GlobalAquifer {
   readonly N: number;
   private readonly A: GPUBuffer; private readonly B: GPUBuffer; private readonly C: GPUBuffer; private readonly P: GPUBuffer[] = [];
-  constructor(readonly gpu: Gpu, readonly tier: number, load: (plane: string) => Int32Array | Uint32Array, reverse = false, readonly omega?: number) {
+  constructor(readonly gpu: Gpu, readonly tier: number, load: (plane: string) => Int32Array | Uint32Array, reverse = false, public omega?: number) {
     this.N = FACES * tierGrid(tier).fn ** 2;
     const a = A_PLANES.length * this.N * 4, b = B_PLANES.length * this.N * 4, lim = gpu.device.limits;
     if (Math.max(a, b) > Math.min(lim.maxBufferSize, lim.maxStorageBufferBindingSize)) throw new Error(`aquifer: the state of tier ${tier} is ${(a / 1e9).toFixed(2)} and ${(b / 1e9).toFixed(2)} GB, over a buffer's ${(lim.maxStorageBufferBindingSize / 1e9).toFixed(2)}`);
@@ -59,6 +59,7 @@ export class GlobalAquifer {
       gpu.device.queue.writeBuffer(buffer, k * this.N * 4, w.buffer, w.byteOffset, w.byteLength);
     };
     A_PLANES.forEach((name, k) => {
+      if (name === "res") return;
       const w = load(name);
       if (name === "meta") { const col = colourField(tier), m = new Uint32Array(w.buffer, w.byteOffset, w.length); for (let i = 0; i < m.length; i++) m[i] |= col[i] << 8; }
       put(this.A, k, w);
@@ -86,6 +87,44 @@ export class GlobalAquifer {
     return { sweeps, change: all, shallow: change };
   }
   // The heads, as the cells hold them (the first plane of A).
-  async head(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.A, this.N * 4, 0)); }
+  async head(): Promise<Int32Array> { return this.plane("head"); }
+  async plane(name: (typeof A_PLANES)[number]): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.A, this.N * 4, A_PLANES.indexOf(name) * this.N * 4)); }
+  setPlane(name: (typeof A_PLANES)[number], w: Int32Array | Uint32Array) {
+    if (w.length !== this.N) throw new Error(`aquifer: a plane holds ${w.length} cells, wanted ${this.N}`);
+    this.gpu.device.queue.writeBuffer(this.A, A_PLANES.indexOf(name) * this.N * 4, w.buffer, w.byteOffset, w.byteLength);
+  }
+  private bound(entry: string) {
+    const p = pipeline(this.gpu, aquiferWgsl(this.tier, this.omega), entry);
+    return { p, bind: this.gpu.device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [this.A, this.B, this.C, this.P[0]].map((buffer, binding) => ({ binding, resource: { buffer } })) }) };
+  }
+  // A fixed number of sweeps of the four colours (no read back, no stop): the smoother of a multigrid cycle.
+  sweeps(n: number) {
+    const { gpu } = this, p = pipeline(gpu, aquiferWgsl(this.tier, this.omega), "aqg"), groups = cover(gpu, this.N);
+    const binds = this.P.map((P) => gpu.device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [this.A, this.B, this.C, P].map((buffer, binding) => ({ binding, resource: { buffer } })) }));
+    for (let done = 0; done < n; done += CHUNK) {
+      const enc = gpu.device.createCommandEncoder(), pass = enc.beginComputePass();
+      pass.setPipeline(p);
+      for (let s = 0; s < Math.min(CHUNK, n - done); s++) for (let colour = 0; colour < COLOURS; colour++) { pass.setBindGroup(0, binds[colour * 2]); pass.dispatchWorkgroups(groups[0], groups[1]); }
+      pass.end();
+      gpu.device.queue.submit([enc.finish()]);
+    }
+  }
+  // The residual of every cell into the plane res (the head's unit: where one Gauss-Seidel step would move it, 0 at a fixed cell or a cell held at its cap), and the greatest of the cells
+  // within 8 m of the ground and of all.
+  async residual(): Promise<{ shallow: number; all: number }> {
+    const { p, bind } = this.bound("aqres"), groups = cover(this.gpu, this.N);
+    this.gpu.device.queue.writeBuffer(this.C, 0, new Uint32Array(4));
+    const enc = this.gpu.device.createCommandEncoder(), pass = enc.beginComputePass();
+    pass.setPipeline(p); pass.setBindGroup(0, bind); pass.dispatchWorkgroups(groups[0], groups[1]); pass.end();
+    this.gpu.device.queue.submit([enc.finish()]);
+    const w = new Uint32Array(await readback(this.gpu, this.C, 16, 0));
+    return { shallow: w[0], all: w[1] };
+  }
+  // The plane res (a correction) added to the heads, capped.
+  correct() {
+    const { p, bind } = this.bound("aqcorr"), groups = cover(this.gpu, this.N), enc = this.gpu.device.createCommandEncoder(), pass = enc.beginComputePass();
+    pass.setPipeline(p); pass.setBindGroup(0, bind); pass.dispatchWorkgroups(groups[0], groups[1]); pass.end();
+    this.gpu.device.queue.submit([enc.finish()]);
+  }
   release() { for (const b of [this.A, this.B, this.C, ...this.P]) b.destroy(); }
 }

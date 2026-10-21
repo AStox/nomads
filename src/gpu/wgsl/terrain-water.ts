@@ -717,8 +717,7 @@ var<workgroup> wch: atomic<u32>;
 // put it, over-relaxed, and never above the ground (or its channel's stage); the change in the head, 0 for a fixed cell.
 fn aq_cell(i: u32) -> u32 { return aq_cell_n(i, i - 1u, i + 1u, i - SIDE, i + SIDE); }
 // the same step with the cells west, east, below (y - 1) and above (y + 1) it given: a grid whose neighbours are not at fixed offsets (the whole planet's) passes them
-fn aq_cell_n(i: u32, iw: u32, ie: u32, is_: u32, in_: u32) -> u32 {
-  if (F[f_isf + i] ${W ? "== 1i" : "!= 0i"}) { return 0u; }
+fn aq_want_n(i: u32, iw: u32, ie: u32, is_: u32, in_: u32) -> i32 {
   var acc = mul64(bitcast<u32>(F[f_head + iw] + OFF), gu(f_ww, i));
   acc = add64(acc, mul64(bitcast<u32>(F[f_head + ie] + OFF), gu(f_we, i)));
   acc = add64(acc, mul64(bitcast<u32>(F[f_head + is_] + OFF), gu(f_wn, i)));
@@ -728,9 +727,16 @@ fn aq_cell_n(i: u32, iw: u32, ie: u32, is_: u32, in_: u32) -> u32 {
   acc = add64(acc, vec2u(0x40000000u, 0u));
   var want = bitcast<i32>((acc.x >> 31u) | (acc.y << 1u)) - OFF + gi(f_sso, i);
   if (kd != 0u) { want -= i32(mul64(u32(gw_et(i, gi(f_h, i) - F[f_head + i])), gu(f_eaf, i)).y); }
+  return want;
+}
+// the highest a cell's head may stand: the ground, or its channel's stage
+fn aq_cap(i: u32) -> i32 { return ${W ? "select(gi(f_h, i), F[f_fxv + i], F[f_isf + i] == 2i)" : "gi(f_h, i)"}; }
+fn aq_cell_n(i: u32, iw: u32, ie: u32, is_: u32, in_: u32) -> u32 {
+  if (F[f_isf + i] ${W ? "== 1i" : "!= 0i"}) { return 0u; }
+  let want = aq_want_n(i, iw, ie, is_, in_);
   let hc = F[f_head + i];
   let d = want - hc;
-  let v = min(${W ? "select(gi(f_h, i), F[f_fxv + i], F[f_isf + i] == 2i)" : "gi(f_h, i)"}, ${planet ? (fmt.omega ? `hc + d + (${Math.round(100 * (fmt.omega - 1))}i * d + select(-50i, 50i, d >= 0i)) / 100i` : "hc + 2i * d - (d + select(-5i, 5i, d >= 0i)) / 10i") : "hc + d + (3i * d + select(-2i, 2i, d >= 0i)) / 5i"});
+  let v = min(aq_cap(i), ${planet ? (fmt.omega !== undefined ? `hc + d + (${Math.round(100 * (fmt.omega - 1))}i * d + select(-50i, 50i, d >= 0i)) / 100i` : "hc + 2i * d - (d + select(-5i, 5i, d >= 0i)) / 10i") : "hc + d + (3i * d + select(-2i, 2i, d >= 0i)) / 5i"});
   F[f_head + i] = v;
   return u32(abs(v - hc));
 }
