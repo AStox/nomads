@@ -60,9 +60,16 @@ navigates to `?at=lat,lon`, builds one window in about 23 s, and starts the game
 
 ## Implementation units
 
-- [ ] **Unit 1: The planet in the island's art.** `demo/styles/isopixel/wgsl/globe.js`, `demo/styles/play/globe.js`.
+- [x] **Unit 1: The planet in the island's art.** `demo/styles/isopixel/wgsl/globe.js`, `demo/styles/play/globe.js`.
   Palette indices, the painter's cover classes and light steps, dithered sea and shallows, art pixels upscaled by whole
   pixels. Check: screenshots of the planet whole, at 500 km and at 50 km, beside the island at its `island` level.
+  Done 2026-10-20: every pixel is a pal.js index (cover mixed as g_rgb does and put in by dqBuild's dithered pair, soil,
+  sand, rock and ice ramps, the w ramp for the sea with the surf line and dithered shallows, TONE rows for the light), drawn
+  at a 2 px art pixel and shown by whole pixels; rivers are Bresenham lines of art pixels on the w ramp. Cover comes from
+  Holdridge's PET and Koppen-Geiger's BW rule on the planet's year-mean air and rain. Shots in /tmp/globe-art/final-*.png.
+  Still off: below 12 km the picture is noise on the cells, not terrain (Unit 4); the planet's rain is 0 on three quarters
+  of the land, so most of it reads as desert and bare ground; the hillshade below the 12 km cells is invented relief
+  scaled by the cell's own ruggedness.
 - [ ] **Unit 2: The window lattice and streaming.** `src/gpu/globe` (a lattice module beside `window.ts`), worker-side
   making and keeping. Lattice cells on the cube-sphere, `windowOf` at a cell, neighbours across face edges, the shared
   margin and its blend, a cache by (seed, key, cell), the time per window measured and the order windows are made in

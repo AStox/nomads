@@ -86,7 +86,7 @@ export function packGround(isle, g) {
 // main.js dqBuild: the nearest pair of natural ground colours for every RGB at 5 bits a channel, and how far along the
 // pair the colour lies, packed as first | second << 8 | step << 16.
 const DQ_NAMES = ["g0", "g1", "g2", "g3", "g4", "g5", "g6", "t1", "t2", "t3", "a0", "a1", "a2", "a3", "d0", "d1", "d2", "d3", "d4", "d5", "r0", "r1", "r2", "r3", "r4", "r5", "s0", "s1", "s2", "s3", "m0", "m1", "m2", "m3", "h0", "h1", "h2", "h3", "o0", "o1", "o2", "o3"];
-function dqBuild() {
+export function dqBuild() {
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const ids = DQ_NAMES.map((n) => P[n]), cols = ids.map((i) => RGB[i]), W8 = [3, 4, 2], d2 = (a, b) => W8[0] * (a[0] - b[0]) ** 2 + W8[1] * (a[1] - b[1]) ** 2 + W8[2] * (a[2] - b[2]) ** 2;
   const DQ = new Uint32Array(32768);

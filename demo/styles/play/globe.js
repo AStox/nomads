@@ -1,8 +1,9 @@
-// The globe (/play/?globe): the seed's baked planet (scripts/globe-bake.ts) as a lit sphere to turn and zoom, from the whole
-// planet down to a few times the game's square across the screen. Near enough, the cursor's square is the game's ground
-// (19.2 km, north up), and a click on land or coast lands there: the page goes to ?at=<lat>,<lon>, whose render worker
-// refines the ground from the planet (worker.js landAt); the GLOBE button or G comes back here, to the camera as it was.
-// The globe's detail is the planet's tier 0 (12 km cells) smoothed: a cubic B-spline of the heights shaded per pixel.
+// The globe (/play/?globe): the seed's baked planet (scripts/globe-bake.ts) to turn and zoom, from the whole planet down to
+// a few times the game's square across the screen, drawn in the island's art: the palette's indices, its ramps and tone
+// steps, dithered sea and shallows, drawn at an art pixel and shown by whole pixels (isopixel/wgsl/globe.js). Near enough,
+// the cursor's square is the game's ground (19.2 km, north up), and a click on land or coast lands there: the page goes to
+// ?at=<lat>,<lon>, whose render worker refines the ground from the planet (worker.js landAt); the GLOBE button or G comes
+// back here, to the camera as it was. The globe's detail is the planet's tier 0 (12 km cells): a cubic B-spline of the heights.
 
 // what the globe and the game screen keep between them in the tab's session: the camera, the last landing's place and
 // when it was clicked
@@ -13,12 +14,13 @@ const DEG = Math.PI / 180, APRON = 2, FOV_DEG = 45;
 const ALT_MIN_M = 30_000, ALT_MAX_M = 8_000_000;
 // the cursor's square takes a click once it is this many screen px across [design: a target a hand hits]
 const CLICK_PX = 14;
-// the relief's exaggeration for the shading: the planet's slopes over 12 km cells are a few degrees [design]
-const EXAG = 8;
+// the relief's exaggeration for the light: the island's 1.5 (main.js EXAG) and two thirds more, since a 12 km cell's slopes are
+// the island's smoothed [design]
+const RELIEF = 2.5;
+// an art pixel in CSS px (?art= tries others) [design: the ladder shows an art pixel at 2 to 4 screen px]
+const ART_CSS = 2;
 // the rivers drawn: those carrying at least this much at the view's height, m3/s [design: the big ones from afar]
 const riverCut = (altM) => Math.min(3000, Math.max(20, (altM / 2_000_000) * 600));
-// the island's rock classes' colours on high ground (terrain/geology.ts ids) [design]
-const ROCK_RGB = { 0: [115, 107, 97], 1: [178, 148, 107], 2: [199, 194, 178], 3: [168, 148, 143], 4: [82, 82, 84] };
 
 // From the game screen back to the globe: the same page without the place.
 export function toGlobe() {
@@ -44,7 +46,7 @@ export async function runGlobe({ seed, hint }) {
 
   // ---------- the face textures, each face with an apron of its neighbours' cells ----------
   const SIDE = FN + 2 * APRON, T = SIDE * SIDE;
-  const hTex = new Float32Array(6 * T), cTex = new Uint8Array(6 * T * 4), rTex = new Uint8Array(6 * T * 4);
+  const hTex = new Float32Array(6 * T), cTex = new Uint8Array(6 * T * 4);
   for (let f = 0; f < 6; f++)
     for (let j = 0; j < SIDE; j++)
       for (let i = 0; i < SIDE; i++) {
@@ -55,21 +57,22 @@ export async function runGlobe({ seed, hint }) {
           const a = ((X + 0.5) / FN - 0.5) * (Math.PI / 2), b = ((Y + 0.5) / FN - 0.5) * (Math.PI / 2), q = G.locateVec(g, G.pointOf(f, Math.tan(a), Math.tan(b)));
           id = G.cellId(g, q.face, q.X, q.Y);
         }
-        const o = f * T + j * SIDE + i, rgb = ROCK_RGB[V.rock[id]] ?? ROCK_RGB[3];
+        const o = f * T + j * SIDE + i;
         hTex[o] = V.height[id];
-        // climTexel: the air in half degrees from -64 C, the rain as 16 log2(1 + mm), the ice as 4 sqrt(m), the river's q
+        // climTexel: the air in half degrees from -64 C, the rain as 16 log2(1 + mm), the ice as 4 sqrt(m), the rock's class
         cTex[4 * o] = V.temp[id] + 128;
         cTex[4 * o + 1] = Math.min(255, Math.round(16 * Math.log2(1 + V.rain[id])));
         cTex[4 * o + 2] = Math.min(255, Math.round(4 * Math.sqrt(V.ice[id])));
-        cTex[4 * o + 3] = V.river[id];
-        rTex[4 * o] = rgb[0]; rTex[4 * o + 1] = rgb[1]; rTex[4 * o + 2] = rgb[2]; rTex[4 * o + 3] = 255;
+        cTex[4 * o + 3] = V.rock[id];
       }
-  // the rivers' segments, cell centre to receiver's centre, and each one's flow
+  // the rivers' segments, cell centre to receiver's centre (cut where the height crosses the sea), and each one's flow
   const nSeg = V.segments.length / 2, segP = new Float32Array(nSeg * 6), segQ = new Float32Array(nSeg);
   const centreOf = (id) => { const f = Math.floor(id / (FN * FN)), r = id % (FN * FN); return G.centre(g, f, r % FN, Math.floor(r / FN)); };
   for (let k = 0; k < nSeg; k++) {
-    segP.set(centreOf(V.segments[2 * k]), 6 * k); segP.set(centreOf(V.segments[2 * k + 1]), 6 * k + 3);
-    segQ[k] = 2 ** (V.river[V.segments[2 * k]] / 16) - 1;
+    const from = V.segments[2 * k], to = V.segments[2 * k + 1], a = centreOf(from), b = centreOf(to), hf = V.height[from], ht = V.height[to];
+    const t = ht < 0 && hf > 0 ? hf / (hf - ht) : 1;
+    segP.set(a, 6 * k); segP.set([0, 1, 2].map((i) => a[i] + (b[i] - a[i]) * t), 6 * k + 3);
+    segQ[k] = 2 ** (V.river[from] / 16) - 1;
   }
   const cellAt = (p) => { const q = G.locateVec(g, p); return G.cellId(g, q.face, q.X, q.Y); };
 
@@ -78,30 +81,44 @@ export async function runGlobe({ seed, hint }) {
   if (!adapter) throw new Error("this browser found no WebGPU adapter");
   const device = await adapter.requestDevice();
   device.addEventListener?.("uncapturederror", (e) => { document.body.dataset.error = `gpu: ${e.error.message}`; });
-  const gpuCanvas = document.createElement("canvas"), over = document.createElement("canvas");
-  for (const c of [gpuCanvas, over]) Object.assign(c.style, { position: "fixed", left: "0", top: "0", width: "100vw", height: "100vh" });
+  const gpuCanvas = document.createElement("canvas"), riv = document.createElement("canvas"), over = document.createElement("canvas");
+  for (const c of [gpuCanvas, riv, over]) Object.assign(c.style, { position: "fixed", left: "0", top: "0" });
+  for (const c of [gpuCanvas, over]) Object.assign(c.style, { width: "100vw", height: "100vh" });
+  Object.assign(riv.style, { imageRendering: "pixelated", pointerEvents: "none" });
   over.style.cursor = "grab"; over.style.touchAction = "none";
   over.setAttribute("aria-label", "The planet: drag to turn it, scroll or pinch to zoom, click land to play there once the square shows");
-  document.body.append(gpuCanvas, over);
-  const ctx = gpuCanvas.getContext("webgpu"), format = navigator.gpu.getPreferredCanvasFormat(), c2 = over.getContext("2d");
+  document.body.append(gpuCanvas, riv, over);
+  const c2 = over.getContext("2d"), rc = riv.getContext("2d");
+  const ctx = gpuCanvas.getContext("webgpu"), format = navigator.gpu.getPreferredCanvasFormat();
   ctx.configure({ device, format, alphaMode: "opaque" });
   const tex = (fmt, data, bpt) => {
     const t = device.createTexture({ size: [SIDE, SIDE, 6], format: fmt, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     device.queue.writeTexture({ texture: t }, data, { bytesPerRow: SIDE * bpt, rowsPerImage: SIDE }, [SIDE, SIDE, 6]);
     return t;
   };
+  const pal = await import("../isopixel/pal.js"), { dqBuild } = await import("../isopixel/ground.wgsl.js");
   const { globeWgsl } = await import("../isopixel/wgsl/globe.js");
-  const module = device.createShaderModule({ code: globeWgsl({ FRAMES: G.FRAMES, FN, APRON }) });
+  const { P, RGB, NCOL, HAZE, SHADOW, TONE, TONE_S } = pal;
+  const module = device.createShaderModule({ code: globeWgsl({ FRAMES: G.FRAMES, FN, APRON, P, RGB, NCOL, TONE_S }) });
   const pipeline = await device.createRenderPipelineAsync({ layout: "auto", vertex: { module, entryPoint: "vs" }, fragment: { module, entryPoint: "fs", targets: [{ format }] }, primitive: { topology: "triangle-list" } });
   const ubuf = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const store = (data) => {
+    const b = device.createBuffer({ size: data.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(b, 0, data);
+    return b;
+  };
+  // HAZE and SHADOW, then TONE's rows, one palette index a word (isopixel/wgsl/globe.js T_SHADOW, T_TONE)
+  const tables = new Uint32Array(NCOL * (2 + TONE_S.length));
+  tables.set(HAZE, 0); tables.set(SHADOW, NCOL); tables.set(TONE, 2 * NCOL);
   const bind = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: ubuf } },
       { binding: 1, resource: tex("r32float", hTex, 4).createView({ dimension: "2d-array" }) },
       { binding: 2, resource: tex("rgba8unorm", cTex, 4).createView({ dimension: "2d-array" }) },
-      { binding: 3, resource: tex("rgba8unorm", rTex, 4).createView({ dimension: "2d-array" }) },
-      { binding: 4, resource: device.createSampler({ magFilter: "linear", minFilter: "linear" }) },
+      { binding: 3, resource: device.createSampler({ magFilter: "linear", minFilter: "linear" }) },
+      { binding: 4, resource: { buffer: store(tables) } },
+      { binding: 5, resource: { buffer: store(dqBuild()) } },
     ],
   });
 
@@ -156,21 +173,58 @@ export async function runGlobe({ seed, hint }) {
   }
 
   // ---------- drawing ----------
+  // the planet is drawn on a canvas of device pixels, an art pixel being whole ones; the rivers on a canvas of art pixels
+  const dpr = window.devicePixelRatio || 1, artCss = qn("art", ART_CSS), ART = Math.max(1, Math.round(artCss * dpr));
+  let rw = 0, rh = 0, rimg = null, rpx = null;
   function fit() {
     W = window.innerWidth; H = window.innerHeight;
-    for (const c of [gpuCanvas, over]) { c.width = W; c.height = H; }
+    gpuCanvas.width = Math.floor(W * dpr); gpuCanvas.height = Math.floor(H * dpr);
+    over.width = W; over.height = H;
+    rw = Math.ceil(gpuCanvas.width / ART); rh = Math.ceil(gpuCanvas.height / ART);
+    riv.width = rw; riv.height = rh;
+    riv.style.width = `${(rw * ART) / dpr}px`; riv.style.height = `${(rh * ART) / dpr}px`;
+    rimg = rc.createImageData(rw, rh); rpx = new Uint32Array(rimg.data.buffer);
     dirty = true;
   }
   fit();
   window.addEventListener("resize", fit);
   const u = new Float32Array(24);
   function drawGlobe() {
-    u.set([...B.o, B.a, ...B.fwd, tanH, ...B.e, W / H, ...B.n, EXAG, ...B.sun, R, W, H, 0, 0]);
+    u.set([...B.o, B.a, ...B.fwd, tanH, ...B.e, W / H, ...B.n, RELIEF, ...B.sun, R, gpuCanvas.width, gpuCanvas.height, ART, 0]);
     device.queue.writeBuffer(ubuf, 0, u);
     const enc = device.createCommandEncoder();
     const pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: "clear", storeOp: "store", clearValue: [0, 0, 0, 1] }] });
     pass.setPipeline(pipeline); pass.setBindGroup(0, bind); pass.draw(3); pass.end();
     device.queue.submit([enc.finish()]);
+  }
+  // a straight run of art pixels t wide from a to b (pixel coordinates), Bresenham's, as the palette's colour
+  function artLine(ax, ay, bx, by, t, colour) {
+    let x = Math.floor(ax), y = Math.floor(ay);
+    const x1 = Math.floor(bx), y1 = Math.floor(by), dx = Math.abs(x1 - x), dy = -Math.abs(y1 - y), sx = x < x1 ? 1 : -1, sy = y < y1 ? 1 : -1, o = -(t >> 1);
+    let err = dx + dy;
+    for (let n = 0; n < 4096; n++) {
+      for (let j = 0; j < t; j++) for (let i = 0; i < t; i++) { const px = x + o + i, py = y + o + j; if (px >= 0 && px < rw && py >= 0 && py < rh) rpx[py * rw + px] = colour; }
+      if (x === x1 && y === y1) break;
+      const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x += sx; }
+      if (e2 <= dx) { err += dx; y += sy; }
+    }
+  }
+  // the rivers on the island's water ramp, 1 to 3 art pixels wide, the wider the more they carry
+  const RIVER_RGBA = [P.w5, P.w4, P.w3].map((i) => 0xff000000 | (RGB[i][2] << 16) | (RGB[i][1] << 8) | RGB[i][0]);
+  function drawRivers() {
+    rpx.fill(0);
+    const cut = riverCut(cam.alt), k = dpr / ART;
+    for (let s = 0; s < nSeg; s++) {
+      if (segQ[s] < cut) continue;
+      const a = segP.subarray(6 * s, 6 * s + 3), b = segP.subarray(6 * s + 3, 6 * s + 6);
+      if (!seen(a) || !seen(b)) continue;
+      const pa = project(a), pb = project(b);
+      if (!pa || !pb || (Math.max(pa[0], pb[0]) < 0 || Math.min(pa[0], pb[0]) > W || Math.max(pa[1], pb[1]) < 0 || Math.min(pa[1], pb[1]) > H)) continue;
+      const w = Math.min(2, Math.floor(Math.log2(segQ[s] / cut) / 2));
+      artLine(pa[0] * k, pa[1] * k, pb[0] * k, pb[1] * k, w + 1, RIVER_RGBA[w]);
+    }
+    rc.putImageData(rimg, 0, 0);
   }
   const fmt = (v, d = 0) => v.toLocaleString("en", { maximumFractionDigits: d, minimumFractionDigits: d });
   const place = (lat, lon) => `${fmt(Math.abs(lat), 2)} ${lat >= 0 ? "N" : "S"}, ${fmt(Math.abs(lon), 2)} ${lon >= 0 ? "E" : "W"}`;
@@ -184,19 +238,7 @@ export async function runGlobe({ seed, hint }) {
   }
   function drawOver() {
     c2.clearRect(0, 0, W, H);
-    // the rivers, the wider the more they carry
-    const cut = riverCut(cam.alt), paths = [new Path2D(), new Path2D(), new Path2D()];
-    for (let k = 0; k < nSeg; k++) {
-      if (segQ[k] < cut) continue;
-      const a = segP.subarray(6 * k, 6 * k + 3), b = segP.subarray(6 * k + 3, 6 * k + 6);
-      if (!seen(a) || !seen(b)) continue;
-      const pa = project(a), pb = project(b);
-      if (!pa || !pb || (Math.max(pa[0], pb[0]) < 0 || Math.min(pa[0], pb[0]) > W || Math.max(pa[1], pb[1]) < 0 || Math.min(pa[1], pb[1]) > H)) continue;
-      const w = Math.min(2, Math.floor(Math.log2(segQ[k] / cut) / 2));
-      paths[w].moveTo(pa[0], pa[1]); paths[w].lineTo(pb[0], pb[1]);
-    }
-    c2.strokeStyle = "rgba(52, 112, 210, 0.95)"; c2.lineCap = "round"; c2.lineJoin = "round";
-    paths.forEach((p, w) => { c2.lineWidth = 1.3 + w * 0.9; c2.stroke(p); });
+    drawRivers();
     // the planet's ranked landings (window.ts landingsOf)
     for (const l of V.meta.landings) {
       const p = G.fromLatLon(l.latDeg * DEG, l.lonDeg * DEG);
