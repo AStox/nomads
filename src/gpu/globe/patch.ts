@@ -8,7 +8,8 @@ import { EDGES, TILE, tierGrid, type Grid } from "./grid";
 export interface Patch {
   readonly tier: number; readonly face: number; readonly tx: number; readonly ty: number; readonly halo: number;
   readonly x0: number; readonly y0: number; // the face position of the interior's first cell (a tile's own, unless made by patchAt)
-  readonly side: number; // 256 + 2 * halo
+  readonly interior: number; // the interior's side in cells: one tile's 256, or a block of tiles (the streamed solves run on 512 or 1024)
+  readonly side: number; // interior + 2 * halo
   readonly ids: Int32Array; // the tier's cell id of patch cell (x, y) at y * side + x, x east and y north in the face's axes
   readonly missing: Uint8Array; // 1 where the cell is a repeat at a cube's corner
 }
@@ -25,19 +26,25 @@ export function cellAcross(g: Grid, f: number, X: number, Y: number): number {
   return (e.face * n + ny) * n + nx;
 }
 
-// A patch whose interior is the 256 by 256 cells from face position (x0, y0) (inside the face), for any halo: the tiles' own patches are the ones at multiples of 256, and a
-// patch at another offset is how a test sees whether an answer depends on which tile holds the cell.
-export function patchAt(tier: number, face: number, x0: number, y0: number, halo: number): Patch {
-  const g = tierGrid(tier), side = TILE + 2 * halo, ids = new Int32Array(side * side), missing = new Uint8Array(side * side), X0 = x0 - halo, Y0 = y0 - halo;
-  for (let y = 0; y < side; y++)
+// A patch whose interior is the `interior` (a tile's 256) by `interior` cells from face position (x0, y0) (inside the face), for any halo: the tiles' own patches are the ones at multiples of
+// 256, and a patch at another offset is how a test sees whether an answer depends on which tile holds the cell.
+export function patchAt(tier: number, face: number, x0: number, y0: number, halo: number, interior = TILE): Patch {
+  const g = tierGrid(tier), n = g.fn, side = interior + 2 * halo, ids = new Int32Array(side * side), missing = new Uint8Array(side * side), X0 = x0 - halo, Y0 = y0 - halo;
+  // the cells inside the face by their place, the rest (the rings past an edge) by the edge's own mapping
+  const xa = Math.max(0, -X0), xb = Math.min(side, n - X0);
+  for (let y = 0; y < side; y++) {
+    const Y = Y0 + y, row = y * side, inFace = Y >= 0 && Y < n;
+    if (inFace) for (let x = xa; x < xb; x++) ids[row + x] = (face * n + Y) * n + X0 + x;
     for (let x = 0; x < side; x++) {
-      let id = cellAcross(g, face, X0 + x, Y0 + y), miss = 0;
-      if (id < 0) { id = cellAcross(g, face, Math.min(g.fn - 1, Math.max(0, X0 + x)), Math.min(g.fn - 1, Math.max(0, Y0 + y))); miss = 1; }
-      ids[y * side + x] = id; missing[y * side + x] = miss;
+      if (inFace && x >= xa && x < xb) continue;
+      let id = cellAcross(g, face, X0 + x, Y), miss = 0;
+      if (id < 0) { id = cellAcross(g, face, Math.min(n - 1, Math.max(0, X0 + x)), Math.min(n - 1, Math.max(0, Y))); miss = 1; }
+      ids[row + x] = id; missing[row + x] = miss;
     }
-  return { tier, face, tx: Math.floor(x0 / TILE), ty: Math.floor(y0 / TILE), halo, x0, y0, side, ids, missing };
+  }
+  return { tier, face, tx: Math.floor(x0 / TILE), ty: Math.floor(y0 / TILE), halo, x0, y0, interior, side, ids, missing };
 }
-export const patchOf = (tier: number, face: number, tx: number, ty: number, halo: number): Patch => patchAt(tier, face, tx * TILE, ty * TILE, halo);
+export const patchOf = (tier: number, face: number, tx: number, ty: number, halo: number, interior = TILE): Patch => patchAt(tier, face, tx * TILE, ty * TILE, halo, interior);
 
 // The patch's copy of a global field: the field at each patch cell.
 export function gather<A extends Float32Array | Int32Array | Uint32Array | Uint8Array | Int16Array | Uint16Array | Int8Array>(p: Patch, field: A): A {
@@ -47,9 +54,9 @@ export function gather<A extends Float32Array | Int32Array | Uint32Array | Uint8
 }
 // The patch's interior (the tile's own 256 by 256 cells) of a patch field written into the global field at the tile's cells.
 export function scatter<A extends Float32Array | Int32Array | Uint32Array | Uint8Array | Int16Array | Uint16Array | Int8Array>(p: Patch, patchField: A, global: A): void {
-  for (let y = 0; y < TILE; y++) {
+  for (let y = 0; y < p.interior; y++) {
     const row = (y + p.halo) * p.side + p.halo;
-    for (let x = 0; x < TILE; x++) global[p.ids[row + x]] = patchField[row + x];
+    for (let x = 0; x < p.interior; x++) global[p.ids[row + x]] = patchField[row + x];
   }
 }
 // The patch cell of a global cell id, or -1 when it lies outside the patch. A cell of the face is found by its place; a cell of another face by a lookup of the halo's

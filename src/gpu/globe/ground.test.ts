@@ -54,7 +54,7 @@ describe("the patch format on the island's site", () => {
       tmp: s.seasons.map((x) => Int16Array.from(x.temp, (t) => Math.round(t * 256))), hum: s.seasons.map((x) => Uint8Array.from(x.humid, (h) => Math.round(h * 255))),
     };
     // the island's own sea has its heights at or under 0 and its lakes' water; the stored water is open or not, which is all the kernel reads
-    const patch: Patch = { tier: 4, face: 0, tx: 0, ty: 0, halo: 0, x0: 0, y0: 0, side: 256, ids: Int32Array.from({ length: n }, (_, i) => i), missing: new Uint8Array(n) };
+    const patch: Patch = { tier: 4, face: 0, tx: 0, ty: 0, halo: 0, x0: 0, y0: 0, interior: 256, side: 256, ids: Int32Array.from({ length: n }, (_, i) => i), missing: new Uint8Array(n) };
     const raw = await groundWords(g, wordsOf(f, patch), groundFormat(256)), exact = await groundWords(g, pack(s), ISLAND_GROUND), tile = compactGround(raw, n);
     const rows: string[] = [];
     for (const [file, name, unit] of GROUND_OUT) {
