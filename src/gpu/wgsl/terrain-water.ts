@@ -59,7 +59,10 @@ export const FIELD = Object.fromEntries(FIELDS.map((n, k) => [n, k])) as Record<
 // `side` is the grid's side in cells (the island's 256 by default; a patch of the planet's tier is 256 plus its halo twice). `planet` is the format of a patch of the whole planet
 // (always a window's): a cell may be `void` (a repeat at a cube's corner: it carries no water and no flux), and a hollow's lake stands at the flooded surface the planet's flood
 // gave it (the hollows are the planet's, so none is cut by the grid's edge and no lake's level is a window's) [design].
-export interface WaterFormat { zb: number; qb: number; window: boolean; side?: number; planet?: boolean; len?: number; omega?: number }
+// `seeded`: a planet's patch whose two aquifer solves start from heads given (a coarser tier's, carried to the cell: the fields sd1 and sd2), hold the patch's outer ring at them, and make exactly
+// that many sweeps, so a cell's head is a function of the data within twice that many cells of it and of the coarse heads [design].
+// `cell`: the cell's width in metres where the tier is not the 75 m one (a coarse tier of the global solve: the cell's area is its recharge's and the draw's, its width a reach) [design].
+export interface WaterFormat { zb: number; qb: number; window: boolean; side?: number; planet?: boolean; len?: number; omega?: number; seeded?: number; cell?: number }
 export const ISLAND_WATER: WaterFormat = { zb: 20, qb: 26, window: false };
 export const WINDOW_WATER: WaterFormat = { zb: 17, qb: 16, window: true };
 export const planetWater = (side: number): WaterFormat => ({ zb: 17, qb: 16, window: true, side, planet: true });
@@ -70,7 +73,7 @@ export const sweepTol = (fmt: WaterFormat) => (fmt.planet ? Math.round(0.0005 * 
 // the inflow's words, each a low and a high word: the area, the year's water and each season's
 export const INFLOW = ["ia0l", "ia0h", "iy0l", "iy0h", "is0l", "is0h", "is1l", "is1h", "is2l", "is2h", "is3l", "is3h"];
 export const layoutOf = (fmt: WaterFormat) => {
-  const fields: readonly string[] = fmt.window ? [...INPUTS, ...INFLOW, ...(fmt.planet ? ["voidc", "tch", "tpw", "tdb", "tht", "plcf"] : []), ...INTERNAL, ...OUTPUTS] : FIELDS;
+  const fields: readonly string[] = fmt.window ? [...INPUTS, ...INFLOW, ...(fmt.planet ? ["voidc", "tch", "tpw", "tdb", "tht", "plcf", ...(fmt.seeded !== undefined ? ["sd1", "sd2"] : [])] : []), ...INTERNAL, ...OUTPUTS] : FIELDS;
   return { FIELDS: fields, FIELD: Object.fromEntries(fields.map((n, k) => [n, k])) as Record<string, number> };
 };
 // Atomic words (AT): each region is LEN words.
@@ -88,7 +91,7 @@ const two = (v: bigint) => { const u = BigInt.asUintN(64, v); return [Number(u &
 const BD0 = (Math.log2(0.201) + 0.025 * Math.log2(SUBMERGED * SHIELDS)) / 1.025, BD1 = 0.336 / 1.025, BD2 = 0.085 / 1.025;
 const BD0W = two(BigInt(Math.round(BD0 * 2 ** 32)));
 const D04 = BANKFULL ** -AT_D; // depthOf at the mean flow against the bankfull one
-const springK = (qb: number) => (CELL * CELL / 1000) * 2 ** qb / YEAR_S / 65536; // MM in, FQ out: a spring's flow that evaporates (mm over a year)
+const springK = (qb: number, cell: number) => (cell * cell / 1000) * 2 ** qb / YEAR_S / 65536; // MM in, FQ out: a spring's flow that evaporates (mm over a year)
 
 // ---------- groundwater evapotranspiration ----------
 // What the plants draw from the water table, per cell and year: for each season the least of the demand the soil's bucket
@@ -138,7 +141,7 @@ const gwRock = (zs: number) => ROCKS.flatMap((r) => gwet(r.sand, r.clay, zs)).ma
 const gwDrift = (zs: number) => DRIFTS.flatMap((d) => gwet(d.sand, d.clay, zs)).map((v) => `${v}i`).join(", ");
 // 2^-x for x in 0 to 1 in steps of 1/256, Q30
 const exp2Tab = Array.from({ length: 257 }, (_, k) => `${Math.round(2 ** 30 * 2 ** (-k / 256))}u`).join(", ");
-const KD_K = Math.round(((CELL * CELL) / 1000) * TS); // a cell's area in m2 over 1000 mm a m, in T's scale: mm a year per metre of depth (Q16) to m2 a year (T)
+const kdK = (cell: number) => Math.round(((cell * cell) / 1000) * TS); // a cell's area in m2 over 1000 mm a m, in T's scale: mm a year per metre of depth (Q16) to m2 a year (T)
 // Wet ground evaporates more than the reference grass the soil's bucket stands for: where the water table is within the
 // reeds' niche (very wet, under 0.2 m, falling to nothing at 0.4 m: ESC's regimes, niche.ts reeds, R606) the plants are
 // reed swamp, whose crop coefficient is 1.2 in mid season (FAO-56 Table 12, reed swamp, standing water 1.0 / 1.2 / 1.0
@@ -160,7 +163,7 @@ const driftShare = DRIFTS.flatMap((d) => d.recharge.map((r) => `${q16(r)}i`)).jo
 const driftSy = DRIFTS.map((_, k) => `${q16(SY_DRIFT[k] ?? 0)}i`).join(", ");
 
 export const constsOf = (fmt: WaterFormat, FIELDS: readonly string[]) => {
-  const ZS = 2 ** fmt.zb, [REED_FULL, REED_NONE] = reedZ(ZS), W = fmt.window, LEN = fmt.len ?? sideOf(fmt) ** 2;
+  const ZS = 2 ** fmt.zb, [REED_FULL, REED_NONE] = reedZ(ZS), W = fmt.window, LEN = fmt.len ?? sideOf(fmt) ** 2, cell = fmt.cell ?? CELL;
   return /* wgsl */ `
 const SIDE = ${sideOf(fmt)}u;
 const SIDEI = ${sideOf(fmt)}i;
@@ -180,13 +183,13 @@ const DX = array<i32, 8>(1, 1, 0, -1, -1, -1, 0, 1);
 const DY = array<i32, 8>(0, 1, 1, 1, 0, -1, -1, -1);
 const BUCKET_Q16 = ${q16(BUCKET)}i;
 const FALL_F = vec2u(${two(BigInt(Math.round(FALL * 2 ** (fmt.zb + 31)))).join("u, ")}u);
-const REACH_ORTH = ${q16(CELL)}u;
-const REACH_DIAG = ${q16(Math.hypot(1, 1) * CELL)}u;
+const REACH_ORTH = ${q16(cell)}u;
+const REACH_DIAG = ${q16(Math.hypot(1, 1) * cell)}u;
 const ONE_Z = ${ZS}i;
 const ROOTS_Z = ${Math.round(ROOTS * ZS)}i;
 const KCS = ${q16(KC_SHALLOW)}i;
-const RA_K = ${Math.round((CELL * CELL * 2 ** (fmt.zb + 13)) / 65536 / 1000)}u;
-const MMV = ${(CELL * CELL) / 1000 * 64}u;
+const RA_K = ${Math.round((cell * cell * 2 ** (fmt.zb + 13)) / 65536 / 1000)}u;
+const MMV = ${(cell * cell) / 1000 * 64}u;
 const C_YEAR = ${Math.round(2 ** 32 * 2 ** (fmt.qb - 6) / YEAR_S)}u;
 const C_SEASON = ${Math.round(2 ** 32 * 2 ** (fmt.qb - 6) / SEASON_S)}u;
 const K_YEAR = ${Math.round((YEAR_S / 2 ** (fmt.qb - 6)) * 65536)}u;
@@ -200,11 +203,11 @@ const POWER_K = ${q16((RHO * G) / WIDE_WOOD)}i;
 const WOOD_W = ${q16(WIDE_WOOD)}i;
 const CONFINED_Q16 = ${q16(CONFINED)}i;
 const TFILL = ${Math.round(T_FILL * 2 ** 32)}u;
-const SPRING_K = ${Math.round(springK(fmt.qb) * 2 ** 32)}u;
+const SPRING_K = ${Math.round(springK(fmt.qb, cell) * 2 ** 32)}u;
 const GW_ROCK = array<i32, ${ROCKS.length * 4}>(${gwRock(ZS)});
 const GW_DRIFT = array<i32, ${DRIFTS.length * 4}>(${gwDrift(ZS)});
 const EXP2 = array<u32, 257>(${exp2Tab});
-const KD_K = ${KD_K}u;
+const KD_K = ${kdK(cell)}u;
 const LOG2E_Q16 = 94548u;
 const REED_FULL = ${REED_FULL}i;
 const REED_NONE = ${REED_NONE}i;
@@ -213,20 +216,20 @@ const KC_X = ${q16(KC_WET - 1)}i;
 const SUMMER = ${SUMMER}u;
 const RISE_Z = ${Math.round((W ? 2 ** fmt.zb / 65536 / 1000 : 0.016) * 2 ** 32)}u;
 const SWEEP_TOL = ${sweepTol(fmt)}u;
-${W ? headWords() : `const HEAD_NUM = ${Math.round(CELL / HEAD_C)}u;`}
+${W ? headWords(cell) : `const HEAD_NUM = ${Math.round(cell / HEAD_C)}u;`}
 const OFF = 1073741824i;
 `;
 };
 
 // A window's channel head: cells * fall^2 against (C / CELL) 2^60 as two words, low and high, C its own (WINDOW_HEAD_C).
-const headWords = () => {
-  const t = BigInt(Math.round((WINDOW_HEAD_C / CELL) * 2 ** 52)) << 8n;
+const headWords = (cell: number) => {
+  const t = BigInt(Math.round((WINDOW_HEAD_C / cell) * 2 ** 52)) << 8n;
   return `const HEAD_T0 = ${t & 0xffffffffn}u;\nconst HEAD_T1 = ${t >> 32n}u;`;
 };
 export const kernelsOf = (fmt: WaterFormat) => {
   // the units the format's words imply: the shift that takes a height in Z to whole units of its scale, the slope35 fall's
   // units (2^-(zb + 15)) to Q30, and the log2 of a flow's scale over Q16's
-  const zb = fmt.zb, s30 = zb - 15, W = fmt.window, side = sideOf(fmt), pow2 = (side & (side - 1)) === 0, planet = fmt.planet === true;
+  const zb = fmt.zb, s30 = zb - 15, W = fmt.window, side = sideOf(fmt), pow2 = (side & (side - 1)) === 0, planet = fmt.planet === true, seeded = planet && fmt.seeded !== undefined;
   return /* wgsl */ `
 @group(0) @binding(0) var<storage, read_write> F: array<i32>;
 @group(0) @binding(1) var<storage, read_write> AT: array<atomic<u32>>;
@@ -667,10 +670,14 @@ fn gw_et(i: u32, d: i32) -> i32 {
 @compute @workgroup_size(256)
 fn aqprep(@builtin(global_invocation_id) g: vec3u) {
   let i = g.x;
+${seeded ? `  let sx = cx(i); let sy = cy(i);
+  let sd = select(gi(f_sd1, i), gi(f_sd2, i), P[0] == 1u);
+  if ((sx == 0u || sy == 0u || sx == SIDE - 1u || sy == SIDE - 1u) && gi(f_isf, i) != 1i) { wi(f_isf, i, 1i); wi(f_fxv, i, sd); }` : ""}
   ${W ? "if (gi(f_isf, i) == 1i) { wi(f_head, i, gi(f_fxv, i)); } else if (gi(f_isf, i) == 2i) { wi(f_head, i, min(gi(f_head, i), gi(f_fxv, i))); }" : "if (gi(f_isf, i) != 0i) { wi(f_head, i, gi(f_fxv, i)); }"}
+${seeded ? `  { let k = gi(f_isf, i); if (k == 0i) { wi(f_head, i, min(sd, gi(f_h, i))); } else if (k == 2i) { wi(f_head, i, min(sd, gi(f_fxv, i))); } }` : ""}
   let x = cx(i);${planet ? "\n  let y = cy(i);" : ""}
   let tt = gu(f_tt, i);
-${planet ? `  // a planet's patch holds no head at its edge (the island's ring held at the ground less 3 m would feed water into the ground from outside the patch): the faces of the outer ring carry nothing
+${planet && !seeded ? `  // a planet's patch holds no head at its edge (the island's ring held at the ground less 3 m would feed water into the ground from outside the patch): the faces of the outer ring carry nothing
   let inner = x >= 1u && x <= SIDE - 2u && y >= 1u && y <= SIDE - 2u;
   wu(f_ce, i, select(0u, harm(tt, gu(f_tt, min(i + 1u, LEN - 1u))), inner && x + 1u <= SIDE - 2u));
   wu(f_cs, i, select(0u, harm(tt, gu(f_tt, min(i + SIDE, LEN - 1u))), inner && y + 1u <= SIDE - 2u));` : `  wu(f_ce, i, select(0u, harm(tt, gu(f_tt, min(i + 1u, LEN - 1u))), x < SIDE - 1u));
@@ -1099,7 +1106,7 @@ ${W ? `  let bq = add64(mul64(sqrt_q28(q), u32(WOOD_W)), vec2u(1u << 25u, 0u));
   let bw = (bq.x >> 26u) | (bq.y << 6u);` : `  let bw = add64(mul64(sqrt_q28(q), u32(WOOD_W)), vec2u(0u, 2u)).y >> 2u;`}
   let j = gu(f_to, i);
   let diag = (cx(j) != cx(i)) && (cy(j) != cy(i));
-  let plain = ${planet ? "gu(f_plcf, i)" : "atomicLoad(&AT[a_plc + i])"} * select(${CELL * 1024}u, ${Math.round((CELL / Math.SQRT2) * 1024)}u, diag);
+  let plain = ${planet ? "max(gu(f_plcf, i), atomicLoad(&AT[a_plc + i]))" : "atomicLoad(&AT[a_plc + i])"} * select(${(fmt.cell ?? CELL) * 1024}u, ${Math.round(((fmt.cell ?? CELL) / Math.SQRT2) * 1024)}u, diag);
   let w = max(bw, plain);
   let r = mulhi64(mul64(gu(f_slope, i), w), TFILL);
   wu(f_rtl, i, r.x); wu(f_rth, i, r.y);

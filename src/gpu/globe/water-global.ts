@@ -15,14 +15,15 @@ import type { Gpu } from "../device";
 import type { PassApi } from "../terrain/water";
 import { hydrologyPass } from "../terrain/water";
 import { planetWater, sweepTol } from "../wgsl/terrain-water";
-import { A_PLANES, B_PLANES } from "../wgsl/globe-aquifer";
+import { A_PLANES, B_PLANES, OMEGA } from "../wgsl/globe-aquifer";
 import { ROOTS } from "../../terrain/growth";
 import { GlobalAquifer } from "./aquifer";
 import { dischargeOf, forestOf, readDischarge, signedGatherOf, valueAt } from "./discharge";
 import { FACES, tierGrid } from "./grid";
+import { Multigrid } from "./multigrid";
 import type { Patch } from "./patch";
 import { runTiles, type Ctx, type Field, type TileStage } from "./stages";
-import { at, mapped, patchInput, waterFiles, waterOutputs, lastRun, unmap, type WaterConfig } from "./water";
+import { at, mapped, patchInput, waterFiles, waterFormat, waterOutputs, lastRun, unmap, type WaterConfig } from "./water";
 
 export const GHALO = 2;
 export { A_PLANES, B_PLANES };
@@ -70,7 +71,7 @@ function passStage(tier: number, cfg: WaterConfig, name: string, outputs: string
     async run(ctx, patch) {
       const { input } = patchInput(ctx, patch, { ...cfg, tier });
       input.set = setOf(ctx, patch, loads);
-      return convert(ctx, patch, await hydrologyPass(ctx.gpu, input, planetWater(patch.side), names, script));
+      return convert(ctx, patch, await hydrologyPass(ctx.gpu, input, waterFormat(ctx.tier, patch.side, cfg.finest), names, script));
     },
   };
 }
@@ -151,6 +152,47 @@ export async function solveOf(ctx: Ctx, phase: 1 | 2, most: number, log: (s: str
     return { sweeps: total.sweeps, change: r.shallow, seconds: total.seconds, settled };
   } finally { a.release(); }
 }
+// [design] The schedule of the cascade that is the global solve (multigrid.ts `start`): sweeps at each tier below the finest from the tier above's heads (the over-relaxed step, 1.99; the coarsest tier's
+// 4,000 sweeps at 1.9), then FINE more at the finest tier. Measured on real tier 3 (the coarsened inputs of key 883a8d9387df): the greatest residual within 8 m of the ground 139 units (1.06 mm; the
+// stop was 67, not reached: a gap), 15 ms a sweep unloaded. The heads are a function of the coefficients and these numbers, not of how the calls split.
+export const CASCADE = { perTier: 3000, fine: 9000 } as const;
+export interface CascadeResult { done: boolean; seconds: number; shallow: number; all: number }
+// One solve of the tier as the cascade, in calls: the first makes the cascade's start (every tier from the coarsest, about 100 s at tier 3) and keeps the heads, each next call makes more of the
+// finest tier's sweeps from the kept heads (a sweep is a function of the heads alone, so any split of the 9,000 gives the same bytes), and the last writes g-head<phase>.i32.
+export async function cascadeOf(ctx: Ctx, phase: 1 | 2, log: (s: string) => void, budgetS: number): Promise<CascadeResult> {
+  const t = ctx.tier, out = `${g(t, `head${phase}`)}.i32`, part = `${g(t, `head${phase}`)}-part.i32`, meta = g(t, `casc${phase}`), t0 = performance.now(), tag = phase === 1 ? "a" : "c";
+  const state = ctx.dir.json<{ made: number; seconds: number }>(meta) ?? { made: -1, seconds: 0 };
+  const spent = () => (performance.now() - t0) / 1000, cells = FACES * tierGrid(t).fn ** 2;
+  const plane = (name: string) => (name === "ht" ? new Int32Array(ctx.dir.raw(`t${t}-height.i32`)) : new Int32Array(ctx.dir.raw(g(t, `${tag}-${name}.i32`))));
+  if (state.made < 0) {
+    if (budgetS < 12 + 4e-6 * cells) return { done: false, seconds: 0, shallow: 0, all: 0 };
+    const mg = Multigrid.build(ctx.gpu, t, plane, { pre: 2, post: 2, coarsest: 4000, coarsestOmega: 1.9, smootherOmega: OMEGA });
+    try {
+      await mg.start(0, (s) => log(`solve ${phase}: ${s}`), Array.from({ length: t }, () => CASCADE.perTier));
+      ctx.dir.write(part, await mg.fine.head());
+    } finally { mg.release(); }
+    state.made = 0; state.seconds = spent();
+    ctx.dir.putJson(meta, state);
+  }
+  const a = new GlobalAquifer(ctx.gpu, t, (name) => (name === "head" ? new Int32Array(ctx.dir.raw(part)) : plane(name)));
+  try {
+    // a sweep of the finest tier costs 0.62 ns a cell [measured, unloaded]; a call keeps back what it cannot finish
+    const per = 1e-9 * cells * 1.5;
+    while (state.made < CASCADE.fine && spent() + 64 * per < budgetS) {
+      const n = Math.min(CASCADE.fine - state.made, 64 * Math.max(1, Math.floor(Math.min(2000, (budgetS - spent()) / per) / 64)));
+      a.sweeps(n);
+      await a.residual();
+      state.made += n;
+    }
+    const r = await a.residual(), head = await a.head();
+    state.seconds += spent();
+    const done = state.made >= CASCADE.fine;
+    if (done) { ctx.dir.write(out, head); ctx.dir.remove(part); } else ctx.dir.write(part, head);
+    ctx.dir.putJson(meta, state);
+    log(`solve ${phase}: ${state.made} of ${CASCADE.fine} sweeps after the start, shallow residual ${r.shallow}, all ${r.all}, ${state.seconds.toFixed(0)} s in all`);
+    return { done, seconds: state.seconds, shallow: r.shallow, all: r.all };
+  } finally { a.release(); }
+}
 export async function routeGatherOf(ctx: Ctx, r: 1 | 2, log: (s: string) => void): Promise<void> {
   const t = ctx.tier, N = FACES * tierGrid(t).fn ** 2, basin = mapped(ctx, `t${t}-basin.u8`) as Uint8Array, mask = new Uint32Array(N);
   for (let i = 0; i < N; i++) mask[i] = basin[i] ? 1 : 0;
@@ -161,14 +203,15 @@ export async function routeGatherOf(ctx: Ctx, r: 1 | 2, log: (s: string) => void
 // ---------- the whole chain, in calls ----------
 export interface GlobalProgress { done: boolean; at: string; seconds: number }
 // Make what is not yet made, in the order above, until `budgetS` seconds are used (a tile pass stops at its budget and the next call resumes; a global pass runs whole).
-export async function globalWater(ctx: Ctx, cfg: WaterConfig, budgetS: number, log: (s: string) => void = () => {}, most = 400000): Promise<GlobalProgress> {
+export async function globalWater(ctx: Ctx, cfg: WaterConfig, budgetS: number, log: (s: string) => void = () => {}, until?: "head2"): Promise<GlobalProgress> {
   const t = ctx.tier, t0 = performance.now(), left = () => budgetS - (performance.now() - t0) / 1000, has = (f: string) => ctx.dir.has(f);
   const tiles = async (stage: TileStage) => { const p = await runTiles(ctx, stage, left(), log); unmap(); return p.done; };
   const stop = (at: string): GlobalProgress => ({ done: false, at, seconds: (performance.now() - t0) / 1000 });
   if (!has(`${g(t, "chn")}.i32`)) { if (!(await tiles(beginsStage(t, cfg)))) return stop("begins"); await chnOf(ctx, log); unmap(); }
-  if (!has(`${g(t, "head1")}.i32`)) { if (!(await tiles(coef1Stage(t, cfg)))) return stop("coef1"); if (!(await solveOf(ctx, 1, most, log, { budgetS: Math.max(1, left()) })).settled && !has(`${g(t, "head1")}.i32`)) return stop("solve 1"); unmap(); }
+  if (!has(`${g(t, "head1")}.i32`)) { if (!(await tiles(coef1Stage(t, cfg)))) return stop("coef1"); if (!(await cascadeOf(ctx, 1, log, Math.max(1, left()))).done) return stop("solve 1"); unmap(); }
   if (!has(`${g(t, "r1-ga4")}-hi.i32`)) { if (!(await tiles(route1Stage(t, cfg)))) return stop("route1"); await routeGatherOf(ctx, 1, log); unmap(); }
-  if (!has(`${g(t, "head2")}.i32`)) { if (!(await tiles(coef2Stage(t, cfg)))) return stop("coef2"); if (!(await solveOf(ctx, 2, most, log, { budgetS: Math.max(1, left()) })).settled && !has(`${g(t, "head2")}.i32`)) return stop("solve 2"); unmap(); }
+  if (!has(`${g(t, "head2")}.i32`)) { if (!(await tiles(coef2Stage(t, cfg)))) return stop("coef2"); if (!(await cascadeOf(ctx, 2, log, Math.max(1, left()))).done) return stop("solve 2"); unmap(); }
+  if (until === "head2") return { done: true, at: "head2", seconds: (performance.now() - t0) / 1000 };
   if (!has(`${g(t, "r2-ga4")}-hi.i32`)) { if (!(await tiles(route2Stage(t, cfg)))) return stop("route2"); await routeGatherOf(ctx, 2, log); unmap(); }
   if (!has(`${g(t, "tgt")}.u32`)) { if (!(await tiles(banksStage(t, cfg)))) return stop("banks"); await tgtOf(ctx, log); unmap(); }
   if (!has(`${g(t, "plc")}-lo.i32`)) { if (!(await tiles(valleyStage(t, cfg)))) return stop("valley"); await plcOf(ctx, log); unmap(); }

@@ -35,6 +35,7 @@
 // Also here: `surplusStage` (the weights of the global discharge: each season's surplus over the cell as 1/64 m3, the bucket of the hydrology's `prep` over the planet's rain and potential
 // evaporation, t4-vs0..3.u32) and `basinOf` (t4-basin.u8).
 import { DRIFTS, ROCKS } from "../../terrain/geology";
+import { CELL } from "../../terrain/grid";
 import { YEAR_S } from "../../terrain/water";
 import { hydrologyRaw, surplusRaw, type HydroInput, type Inflow, type Settle } from "../terrain/water";
 import { MISC, TS, planetWater } from "../wgsl/terrain-water";
@@ -43,6 +44,7 @@ import { FACES, TILE, tierGrid } from "./grid";
 import { cellAcross, localOf, type Patch } from "./patch";
 import { KINDS, typeOf, type Ctx, type Field, type TileStage } from "./stages";
 import { sampleCoarse } from "./sample";
+import { seedOf } from "./water-seed";
 import type { Planet } from "./window";
 
 
@@ -50,6 +52,10 @@ import type { Planet } from "./window";
 export const WATER_HALO = 96;
 // The sweeps the two aquifer solves may take at most (a tile that needs more throws: its answer would depend on where it started).
 export const WATER_SWEEPS: readonly [number, number] = [12000, 12000];
+// [design] The patch route's table: the aquifer's two solves start from the global cascade's heads at tier `coarse` (water-global.ts CASCADE) carried to the cell (water-seed.ts), hold the patch's ring at
+// them and make exactly `sweeps` sweeps of the red-black step, which reaches 2 cells a sweep, so a cell's head is a function of the data within 2 x sweeps + 32 = halo cells and of the coarse heads
+// (measured in the notes: tile independence and the deviation from a long relaxation).
+export const WATER_SEEDED = { coarse: 3, sweeps: 48, halo: 128 } as const;
 // The deepest hollow, in 1/256 m, that is not a lake (WATER_TABLE, 3 m), and the least a hollow's cell is raised by, 1 cm (HOLLOW_MIN) rounded up to the tier's unit.
 const WATER_TABLE_UNITS = 3 * 256, HOLLOW_MIN_UNITS = Math.ceil(0.01 * 256);
 // A cell's transmissivity must stay under what a sweep's four faces hold in a u32 (terrain/water.ts MOST_T); the drift's thickness is held under it, which the planet's thickest
@@ -160,8 +166,11 @@ export const surplusFiles = (tier: number) => [0, 1, 2, 3].map((s) => `t${tier}-
 export const lakenetFile = (tier: number) => `t${tier}-lakenet.i32`;
 // The patch's climate as the hydrology takes it.
 const airOf = (c: { precip: Float32Array[]; pet: Float32Array[] }) => ({ seasons: c.precip.map((precip, s) => ({ precip, pet: c.pet[s] })) });
+// The planet's water format at a tier: the kernels' constants are per 75 m cell (grid.ts CELL), which is the finest tier's cell, so a tier above it has a cell twice as wide for each tier; with no
+// `finest` given the cell is the 75 m one whatever the tier [design].
+export const waterFormat = (tier: number, side: number, finest?: number) => (finest === undefined ? planetWater(side) : { ...planetWater(side), cell: CELL * 2 ** (finest - tier) });
 
-export function surplusStage(climate: ClimateSource, tier = 4): TileStage {
+export function surplusStage(climate: ClimateSource, tier = 4, finest?: number): TileStage {
   return {
     name: "surplus", halo: 0, inputs: [], outputs: [...surplusFiles(tier), lakenetFile(tier)],
     async run(ctx, patch) {
@@ -169,7 +178,7 @@ export function surplusStage(climate: ClimateSource, tier = 4): TileStage {
       const h0 = at<Int32Array>(mapped(ctx, `t${ctx.tier}-height.i32`), patch.ids), f0 = at<Int32Array>(mapped(ctx, `t${ctx.tier}-flooded.i32`), patch.ids);
       for (let i = 0; i < n; i++) { h[i] = h0[i] / 256; filled[i] = h0[i] > 0 ? f0[i] / 256 : -1; }
       const input: HydroInput = { h, filled, to, basin: none, rock: none, drift: none, driftDepth: new Float32Array(n), air: airOf(c) };
-      const w = await surplusRaw(ctx.gpu, input, planetWater(patch.side));
+      const w = await surplusRaw(ctx.gpu, input, waterFormat(ctx.tier, patch.side, finest));
       return Object.fromEntries([...surplusFiles(ctx.tier).map((f, s) => [f, new Uint32Array(w[s].buffer, w[s].byteOffset, w[s].length)]), [lakenetFile(ctx.tier), w[4]]]);
     },
   };
@@ -216,7 +225,9 @@ export function inflowOf(ctx: Ctx, patch: Patch, local: (id: number) => number, 
 }
 
 // `extra` names more of the hydrology's fields to keep in lastRun.fields (for measuring).
-export interface WaterConfig { climate: ClimateSource; tier?: number; halo?: number; sweeps?: readonly [number, number]; extra?: readonly string[] }
+// `seed`: the aquifer's two solves start from the heads of the global solve at tier `coarse` (`t<coarse>-g-head1.i32`, `-head2.i32`) carried to the cell, hold the patch's outer ring at them and make
+// exactly `sweeps` sweeps (WaterFormat.seeded); the halo must reach past two cells a sweep.
+export interface WaterConfig { climate: ClimateSource; tier?: number; halo?: number; sweeps?: readonly [number, number]; extra?: readonly string[]; seed?: { coarse: number; sweeps: number }; finest?: number }
 
 // The hydrology's input at a patch: the tier's fields mapped to the patch, the planet's receivers, flooded surface, lakes and discharge (as the inflow), and the climate.
 export function patchInput(ctx: Ctx, patch: Patch, cfg: WaterConfig): { input: HydroInput; local: (id: number) => number; inflow: Inflow[] } {
@@ -238,14 +249,16 @@ export function patchInput(ctx: Ctx, patch: Patch, cfg: WaterConfig): { input: H
   }
   const q = dischargeStems(ctx.tier).map((s) => mappedDischarge(ctx, s)), cells = mappedDischarge(ctx, cellsStem(ctx.tier));
   const inflow = inflowOf(ctx, patch, local, gto, q, cells), c = cfg.climate(ctx, patch);
-  return { input: { h, filled, to, basin, rock, drift, driftDepth, air: airOf(c), inflow, voidc }, local, inflow };
+  const seed = cfg.seed ? ([1, 2].map((s) => seedOf(patch, ctx.tier, cfg.seed!.coarse, mapped(ctx, `t${cfg.seed!.coarse}-g-head${s}.i32`) as Int32Array)) as [Int32Array, Int32Array]) : undefined;
+  return { input: { h, filled, to, basin, rock, drift, driftDepth, air: airOf(c), inflow, voidc, seed }, local, inflow };
 }
 
 // The patch's water: every output as a patch field (side * side), by file name.
 export async function waterOf(ctx: Ctx, patch: Patch, cfg: WaterConfig): Promise<Record<string, Field>> {
   const t0 = performance.now(), nn = patch.ids.length, { input, inflow } = patchInput(ctx, patch, cfg);
   const t1 = performance.now();
-  const raw = await hydrologyRaw(ctx.gpu, input, ["water", "flow", "sf0", "sf1", "sf2", "sf3", "base", "chn", "valley", "pwr", "stb0", "stb1", "stb2", "stb3", "dry", "tab", "rtl", "rth", "qk0", "qk1", "qk2", "qk3", ...(cfg.extra ?? [])], planetWater(patch.side), cfg.sweeps ?? WATER_SWEEPS);
+  const fmt = { ...waterFormat(ctx.tier, patch.side, cfg.finest), ...(cfg.seed ? { seeded: cfg.seed.sweeps } : {}) };
+  const raw = await hydrologyRaw(ctx.gpu, input, ["water", "flow", "sf0", "sf1", "sf2", "sf3", "base", "chn", "valley", "pwr", "stb0", "stb1", "stb2", "stb3", "dry", "tab", "rtl", "rth", "qk0", "qk1", "qk2", "qk3", ...(cfg.extra ?? [])], fmt, cfg.sweeps ?? WATER_SWEEPS);
   if (raw.flags & 1) throw new Error("water: a receiver chain of the patch does not end at a root");
   if (raw.flags & 2) throw new Error("water: a flow path of the patch is longer than the counting sort holds");
   const out = waterOutputs(ctx, patch, raw.fields, nn);

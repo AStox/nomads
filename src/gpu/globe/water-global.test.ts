@@ -55,10 +55,15 @@ describe("the water as one solve", () => {
   });
 
   test("the relaxation is the same bytes visited from the last cell to the first, and settled", async () => {
-    const ctx = await ready(), out = `t${T}-g-head1-reverse.i32`, r = await solveOf(ctx, 1, 400000, () => {}, { reverse: true, out });
+    const ctx = await ready(), fwd = `t${T}-g-head1-forward.i32`, out = `t${T}-g-head1-reverse.i32`, meta = `t${T}-g-g-solve1.json`;
+    ctx.dir.remove(meta);
+    const f = await solveOf(ctx, 1, 400000, () => {}, { out: fwd });
+    ctx.dir.remove(meta);
+    const r = await solveOf(ctx, 1, 400000, () => {}, { reverse: true, out });
+    ctx.dir.remove(meta);
     expect(r.change).toBeLessThan(67);
-    expect(Bun.hash(new Uint8Array(ctx.dir.raw(out)))).toBe(Bun.hash(new Uint8Array(ctx.dir.raw(`t${T}-g-head1.i32`))));
-    ctx.dir.remove(out);
-    console.log(`water-global: solve 1 at tier ${T} settled in ${r.sweeps} sweeps, ${r.seconds.toFixed(1)} s`);
+    expect(Bun.hash(new Uint8Array(ctx.dir.raw(out)))).toBe(Bun.hash(new Uint8Array(ctx.dir.raw(fwd))));
+    ctx.dir.remove(out); ctx.dir.remove(fwd);
+    console.log(`water-global: solve 1 at tier ${T} settled in ${f.sweeps} sweeps (reverse ${r.sweeps}), ${r.seconds.toFixed(1)} s`);
   });
 });

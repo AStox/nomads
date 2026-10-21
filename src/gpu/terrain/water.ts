@@ -30,6 +30,7 @@ export type HydroInput = {
   air: AirSeasons;
   inflow?: readonly Inflow[]; // a window's only (WINDOW_WATER)
   voidc?: Uint8Array; // a planet's patch only (planetWater): the cells that repeat a cube's corner and carry nothing
+  seed?: readonly [Int32Array, Int32Array]; // a seeded patch only (fmt.seeded): the heads, in Z, each of the two aquifer solves starts from and holds the outer ring at
   set?: Record<string, Int32Array>; // hydrologyPass: fields to load into a run (the words of global files at the patch)
 };
 
@@ -92,6 +93,10 @@ function pack(input: HydroInput, fmt: WaterFormat): Int32Array {
     }
   }
   if (input.voidc) put("voidc", (i) => input.voidc![i]);
+  if (fmt.seeded !== undefined) {
+    if (!input.seed) throw new Error("hydrologyGpu: a seeded format needs the seed heads");
+    put("sd1", (i) => input.seed![0][i]); put("sd2", (i) => input.seed![1][i]);
+  }
   return words;
 }
 
@@ -141,10 +146,27 @@ async function relax(run: Run, most: number, sweepsAt: number) {
   run.settle.push({ sweeps, change, errorM: error });
   g.device.queue.writeBuffer(F, (FIELD.misc * len + sweepsAt) * 4, Int32Array.of(sweeps));
 }
+// A seeded patch's relaxation: exactly fmt.seeded sweeps, no read back and no stop on the change, so the heads are a function of the patch's data and the sweeps alone.
+function relaxFixed(run: Run, sweepsAt: number) {
+  const { g, F, FIELD, len } = run, P = [[0, 0], [1, 0]].map((w) => storage(g, Uint32Array.from([...w, 0, 0]))), p = pipeline(g, run.src, "aqrb");
+  const binds = P.map((buffer) => g.device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [F, run.AT, buffer].map((b, binding) => ({ binding, resource: { buffer: b } })) }));
+  run.owned.push(...P);
+  const total = run.fmt.seeded as number;
+  for (let done = 0; done < total; done += CHUNK) {
+    const enc = g.device.createCommandEncoder(), pass = enc.beginComputePass();
+    pass.setPipeline(p);
+    for (let s = 0; s < Math.min(CHUNK, total - done); s++) for (const colour of [0, 1]) { pass.setBindGroup(0, binds[colour]); pass.dispatchWorkgroups(run.len / 256); }
+    pass.end();
+    g.device.queue.submit([enc.finish()]);
+  }
+  run.settle.push({ sweeps: total, change: 0, errorM: 0 });
+  g.device.queue.writeBuffer(F, (FIELD.misc * len + sweepsAt) * 4, Int32Array.of(total));
+}
 const solve = async (run: Run, most: number, sweepsAt: number) => {
-  step(run, "aqprep");
+  step(run, "aqprep", [sweepsAt === MISC.sweeps2 ? 1 : 0]);
   step(run, "aqw");
-  if (run.fmt.planet) await relax(run, most, sweepsAt);
+  if (run.fmt.seeded !== undefined) relaxFixed(run, sweepsAt);
+  else if (run.fmt.planet) await relax(run, most, sweepsAt);
   else step(run, "aquifer", [most, sweepsAt], 1);
   step(run, "outflux");
 };
