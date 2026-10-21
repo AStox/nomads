@@ -27,12 +27,12 @@ const lineOf = (src: string, start: string) => {
   return src.slice(at, src.indexOf("\n", at));
 };
 
-export const globalFormat = (cells: number): WaterFormat => ({ ...planetWater(256), len: cells });
-export function aquiferWgsl(tier: number): string {
-  const fn = 256 * 2 ** tier, cells = 6 * fn * fn, kernels = kernelsOf(globalFormat(cells)), regional = regionalWgsl(EDGES, fn);
+export const globalFormat = (cells: number, omega?: number): WaterFormat => ({ ...planetWater(256), len: cells, omega });
+export function aquiferWgsl(tier: number, omega?: number): string {
+  const fn = 256 * 2 ** tier, cells = 6 * fn * fn, kernels = kernelsOf(globalFormat(cells, omega)), regional = regionalWgsl(EDGES, fn);
   const water = ["gi", "gu", "wi", "wu", "gs", "s64", "smul64", "sat32", "mulshr", "exp2n", "gw_frac", "reed_fit", "wet_extra", "gw_et", "aq_cell_n"].map((n) => fnOf(kernels, n));
   return /* wgsl */ `${FIXED}
-${constsOf(globalFormat(cells), GFIELDS)}
+${constsOf(globalFormat(cells, omega), GFIELDS)}
 const FN = ${fn}u; const FNI = ${fn}i; const CELLS = ${fn * fn}u;
 ${lineOf(regional, "const EDGE_FACE")}
 ${lineOf(regional, "const EDGE_SIDE")}
@@ -52,8 +52,9 @@ fn aqg(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: 
   if (k0 >= LEN) { return; }
   let k = select(k0, LEN - 1u - k0, P[2] == 1u);
   if (gu(f_col, k) != P[0]) { return; }
+  let d0 = gi(f_h, k) - F[f_head + k];
   let c = aq_cell_n(k, nbr(k, 2u), nbr(k, 0u), nbr(k, 3u), nbr(k, 1u));
-  if (c != 0u) { atomicMax(&C[P[1]], c); }
+  if (c != 0u) { atomicMax(&C[P[1]], c); if (d0 < ${8 * 2 ** 17}i) { atomicMax(&C[2u + P[1]], c); } }
 }
 `;
 }

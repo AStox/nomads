@@ -113,17 +113,23 @@ export async function chnOf(ctx: Ctx, log: (s: string) => void): Promise<void> {
   ctx.dir.write(file, chn);
   for (const n of ["lo.u32", "hi.u16"]) ctx.dir.remove(`${stem}-${n}`);
 }
-export async function solveOf(ctx: Ctx, phase: 1 | 2, most: number, log: (s: string) => void, o: { reverse?: boolean; out?: string } = {}): Promise<{ sweeps: number; change: number; seconds: number }> {
-  const t = ctx.tier, out = o.out ?? `${g(t, `head${phase}`)}.i32`, t0 = performance.now();
+export interface SolveResult { sweeps: number; change: number; seconds: number; settled: boolean }
+// One relaxation of the tier, in calls: a call stops at `budgetS` and keeps the heads and the sweeps made (g-head<phase>-part.i32, g-solve<phase>.json), the next goes on from them (a chunk of 64
+// sweeps is the whole state's step, so the bytes do not depend on where the calls split); settled when the greatest change of a head in a sweep is under the format's tolerance.
+export async function solveOf(ctx: Ctx, phase: 1 | 2, most: number, log: (s: string) => void, o: { reverse?: boolean; out?: string; budgetS?: number } = {}): Promise<SolveResult> {
+  const t = ctx.tier, out = o.out ?? `${g(t, `head${phase}`)}.i32`, part = `${g(t, `head${phase}`)}-part.i32`, meta = `g-solve${phase}`, t0 = performance.now(), tol = sweepTol(planetWater(256));
   const fields: Record<string, Int32Array> = {};
   for (const n of COEF) fields[n] = new Int32Array(ctx.dir.raw(g(t, `${phase === 1 ? "a" : "c"}-${n}.i32`)));
+  const before = ctx.dir.json<{ sweeps: number; seconds: number }>(`${g(t, meta)}`) ?? { sweeps: 0, seconds: 0 };
+  if (ctx.dir.has(part)) fields.head = new Int32Array(ctx.dir.raw(part));
   const a = new GlobalAquifer(ctx.gpu, t, fields, o.reverse);
   try {
-    const r = await a.relax(most, sweepTol(planetWater(256)));
-    ctx.dir.write(out, await a.field("head"));
-    const seconds = (performance.now() - t0) / 1000;
-    log(`solve ${phase}: ${r.sweeps} sweeps, last change ${r.change} (of ${sweepTol(planetWater(256))}), ${seconds.toFixed(1)} s`);
-    return { ...r, seconds };
+    const r = await a.relax(Math.max(64, most - before.sweeps), tol, o.budgetS);
+    const head = await a.field("head"), seconds = (performance.now() - t0) / 1000, settled = r.shallow < tol, total = { sweeps: before.sweeps + r.sweeps, seconds: before.seconds + seconds };
+    if (settled || total.sweeps >= most) { ctx.dir.write(out, head); ctx.dir.remove(part); } else ctx.dir.write(part, head);
+    ctx.dir.putJson(g(t, meta), total);
+    log(`solve ${phase}: ${total.sweeps} sweeps (${r.sweeps} this call), last shallow change ${r.shallow}, all ${r.change} (of ${tol}), ${total.seconds.toFixed(1)} s in all`);
+    return { sweeps: total.sweeps, change: r.shallow, seconds: total.seconds, settled };
   } finally { a.release(); }
 }
 export async function routeGatherOf(ctx: Ctx, r: 1 | 2, log: (s: string) => void): Promise<void> {
@@ -141,9 +147,9 @@ export async function globalWater(ctx: Ctx, cfg: WaterConfig, budgetS: number, l
   const tiles = async (stage: TileStage) => { const p = await runTiles(ctx, stage, left(), log); unmap(); return p.done; };
   const stop = (at: string): GlobalProgress => ({ done: false, at, seconds: (performance.now() - t0) / 1000 });
   if (!has(`${g(t, "chn")}.i32`)) { if (!(await tiles(beginsStage(t, cfg)))) return stop("begins"); await chnOf(ctx, log); unmap(); }
-  if (!has(`${g(t, "head1")}.i32`)) { if (!(await tiles(coef1Stage(t, cfg)))) return stop("coef1"); await solveOf(ctx, 1, most, log); unmap(); }
+  if (!has(`${g(t, "head1")}.i32`)) { if (!(await tiles(coef1Stage(t, cfg)))) return stop("coef1"); if (!(await solveOf(ctx, 1, most, log, { budgetS: Math.max(1, left()) })).settled && !has(`${g(t, "head1")}.i32`)) return stop("solve 1"); unmap(); }
   if (!has(`${g(t, "r1-ga4")}-hi.i32`)) { if (!(await tiles(route1Stage(t, cfg)))) return stop("route1"); await routeGatherOf(ctx, 1, log); unmap(); }
-  if (!has(`${g(t, "head2")}.i32`)) { if (!(await tiles(coef2Stage(t, cfg)))) return stop("coef2"); await solveOf(ctx, 2, most, log); unmap(); }
+  if (!has(`${g(t, "head2")}.i32`)) { if (!(await tiles(coef2Stage(t, cfg)))) return stop("coef2"); if (!(await solveOf(ctx, 2, most, log, { budgetS: Math.max(1, left()) })).settled && !has(`${g(t, "head2")}.i32`)) return stop("solve 2"); unmap(); }
   if (!has(`${g(t, "r2-ga4")}-hi.i32`)) { if (!(await tiles(route2Stage(t, cfg)))) return stop("route2"); await routeGatherOf(ctx, 2, log); unmap(); }
   if (!has(`${g(t, "tgt")}.u32`)) { if (!(await tiles(banksStage(t, cfg)))) return stop("banks"); await tgtOf(ctx, log); unmap(); }
   if (!has(`${g(t, "plc")}-lo.i32`)) { if (!(await tiles(valleyStage(t, cfg)))) return stop("valley"); await plcOf(ctx, log); unmap(); }

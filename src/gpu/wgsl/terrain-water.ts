@@ -59,7 +59,7 @@ export const FIELD = Object.fromEntries(FIELDS.map((n, k) => [n, k])) as Record<
 // `side` is the grid's side in cells (the island's 256 by default; a patch of the planet's tier is 256 plus its halo twice). `planet` is the format of a patch of the whole planet
 // (always a window's): a cell may be `void` (a repeat at a cube's corner: it carries no water and no flux), and a hollow's lake stands at the flooded surface the planet's flood
 // gave it (the hollows are the planet's, so none is cut by the grid's edge and no lake's level is a window's) [design].
-export interface WaterFormat { zb: number; qb: number; window: boolean; side?: number; planet?: boolean; len?: number }
+export interface WaterFormat { zb: number; qb: number; window: boolean; side?: number; planet?: boolean; len?: number; omega?: number }
 export const ISLAND_WATER: WaterFormat = { zb: 20, qb: 26, window: false };
 export const WINDOW_WATER: WaterFormat = { zb: 17, qb: 16, window: true };
 export const planetWater = (side: number): WaterFormat => ({ zb: 17, qb: 16, window: true, side, planet: true });
@@ -724,7 +724,7 @@ fn aq_cell_n(i: u32, iw: u32, ie: u32, is_: u32, in_: u32) -> u32 {
   if (kd != 0u) { want -= i32(mul64(u32(gw_et(i, gi(f_h, i) - F[f_head + i])), gu(f_eaf, i)).y); }
   let hc = F[f_head + i];
   let d = want - hc;
-  let v = min(${W ? "select(gi(f_h, i), F[f_fxv + i], F[f_isf + i] == 2i)" : "gi(f_h, i)"}, ${planet ? "hc + 2i * d - (d + select(-5i, 5i, d >= 0i)) / 10i" : "hc + d + (3i * d + select(-2i, 2i, d >= 0i)) / 5i"});
+  let v = min(${W ? "select(gi(f_h, i), F[f_fxv + i], F[f_isf + i] == 2i)" : "gi(f_h, i)"}, ${planet ? (fmt.omega ? `hc + d + (${Math.round(100 * (fmt.omega - 1))}i * d + select(-50i, 50i, d >= 0i)) / 100i` : "hc + 2i * d - (d + select(-5i, 5i, d >= 0i)) / 10i") : "hc + d + (3i * d + select(-2i, 2i, d >= 0i)) / 5i"});
   F[f_head + i] = v;
   return u32(abs(v - hc));
 }
