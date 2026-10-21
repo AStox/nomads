@@ -9,9 +9,11 @@
 import { afterAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
 import { SMALL_RADIUS_M, locate, tierGrid, cellId } from "./grid";
+import { similarityOf } from "./similarity";
+import { qdiv } from "../fixed";
 import { GEO, NODES, NODE_DEG, TAB, TABLE_WORDS } from "../wgsl/globe-atmosphere";
 import {
-  ALBEDO, AtmosphereGpu, BANDS, D_RADIUS_EXPONENT, EBM, FIELD, GAMMA, ICE_K, ICE_L, ICE_RHO, NETRAD, PT, RH_REF, SEASON_S, SEASONS, SOIL, T_FREEZE, albedoStep, buildGeometry, capAt, capTable,
+  TAU_SBM, ALBEDO, AtmosphereGpu, BANDS, D_RADIUS_EXPONENT, EBM, FIELD, GAMMA, ICE_K, ICE_L, ICE_RHO, NETRAD, PT, RH_REF, SEASON_S, SEASONS, SOIL, T_FREEZE, albedoStep, buildGeometry, capAt, capTable,
   circulationOf, climateGpu, coAlbedo, declination, diffusionFor, edgesTwin, finishTwin, heldHouEdge, iceFreeCoAlbedo, iceShare, insolation, kernelConstants, landTables, mulShr, observedCoAlbedo, planetOf,
   prepTwin, solveEbm, solveSoil, stepTwin, windTable, type Climate, type ClimateOptions, type Ctx, type Ebm, type PlanetParams, type Soil,
 } from "./atmosphere";
@@ -806,9 +808,9 @@ test("determinism: the same planet twice gives the same bytes, pinned to a hash"
 });
 
 // A similar planet's land rain: a flat disc continent of 15 degrees in the trades on the 195.6 km planet. Every season's water closes (evaporation less rain less the change in the vapour held,
-// over the evaporation), the coast is wet, and the interior beyond a tenth of the continent's radius gets nothing: the convective adjustment is a hard threshold on the column's humidity and
-// the winds are steady, so air that has rained out to 0.7 of saturation over flat ground of its own temperature rains no more (R1600: the model's gap, not a leak: the budget closes).
-test("similar planet: a flat continent's water closes every season, the coast is wet and the interior of a dry belt is exactly dry", async () => {
+// over the evaporation), the coast is wet, and the interior beyond a tenth of the continent's radius is a dry belt's (under a tenth of the coast's): the steady winds carry the sea's air only so far
+// before it has rained down to the adjustment's onset, and the eddies' mixing (R1783) and the humidity's spread (R1784) leave the interior a little rain where the hard threshold left it none.
+test("similar planet: a flat continent's water closes every season, the coast is wet and the interior of a dry belt is nearly dry", async () => {
   const g = tierGrid(0, SMALL_RADIUS_M), gp = buildGeometry(g), latC = 15 * DEG;
   const ang = (i: number) => Math.acos(Math.min(1, Math.sin(gp.lat[i]) * Math.sin(latC) + Math.cos(gp.lat[i]) * Math.cos(latC) * Math.cos(gp.lon[i])));
   const height = Float32Array.from({ length: gp.n }, (_, i) => (ang(i) < 15 * DEG ? 100 : -4000));
@@ -828,5 +830,72 @@ test("similar planet: a flat continent's water closes every season, the coast is
   console.log(`flat continent at 15 degrees: coast ${(coast.r / coast.n).toFixed(0)} mm a year, inland ${(inland.r / inland.n).toFixed(0)} mm, ${(inland.z / inland.n).toFixed(2)} of the interior at exactly 0`);
   expect(coast.r / coast.n).toBeGreaterThan(500);
   expect(inland.r / inland.n).toBeLessThan(0.1 * (coast.r / coast.n));
-  expect(inland.z / inland.n).toBeGreaterThan(0.9);
+  expect(inland.z / inland.n).toBeLessThan(0.9);
+});
+
+// The two processes a similar planet adds (R1783, R1784: the eddies' diffusion of the humidity, the sub-grid humidity distribution in the convective adjustment). The kernel's step with the similar planet's constants equals its twin word for word, the diffusion moves vapour and conserves it (the sum of area times
+// what it moves is 0 to the rounding of the link coefficients), and the laws' algebra is checked on a lone cell.
+test("kernels: a similar planet's step (eddy diffusion, humidity distribution) equals its twin bit for bit and the diffusion conserves vapour", async () => {
+  const g = tierGrid(0, SMALL_RADIUS_M), gp = buildGeometry(g), gpu = await theGpu();
+  const a = await AtmosphereGpu.make(gpu, g, ridgePlanet(gp), {});
+  try {
+    expect(a.k.kEddy).toBeGreaterThan(30000);
+    expect(a.k.pdfB).toBeGreaterThan(0);
+    const n = a.n, ids: number[] = [];
+    for (let i = 0; i < n; i += 11) ids.push(i);
+    a.loadSeason(1);
+    a.run("prep"); a.run("edges");
+    const dt = await a.chooseStep();
+    expect(dt).toBeLessThan(15); // the diffusion's fractions count in the step
+    a.run("step", 0, 0, 1500);
+    let prev = await a.snapshot(0);
+    prev.dt = dt;
+    let partial = 0, moved = 0;
+    for (let s = 0; s < 3; s++) {
+      const par = s & 1, vap = (S: Int32Array, set: number, id: number) => S[(FIELD.ST + 5 * set + 1) * n + id];
+      for (let id = 0; id < n; id += 7) {
+        const cap = capAt(prev, (prev.S[(FIELD.ST + 5 * par) * n + id] - prev.S[FIELD.LAP * n + id]) | 0), m = vap(prev.S, par, id);
+        if (cap > 0 && m < 0.7 * cap && m > 0.45 * cap) partial++;
+      }
+      a.run("step", par, 0, 1);
+      const next = await a.snapshot(1 - par), t = { ...prev, S: Int32Array.from(prev.S), par, dt, acc: false };
+      for (const id of ids) stepTwin(t, id);
+      for (const id of ids) for (let q = 0; q < 5; q++) { const f = FIELD.ST + 5 * (1 - par) + q; if (next.S[f * n + id] !== t.S[f * n + id]) throw new Error(`step ${s}: field ${f} of cell ${id}: kernel ${next.S[f * n + id]} twin ${t.S[f * n + id]}`); }
+      if (s === 0) {
+        // the diffusion's own change of the vapour in every cell, from the link coefficients and the cells' humidity: the sum of area times it is 0
+        let sum = 0, mag = 0;
+        const capOf = (id: number) => capAt(prev, (prev.S[(FIELD.ST + 5 * par) * n + id] - prev.S[FIELD.LAP * n + id]) | 0);
+        const rh = new Int32Array(n), caps = new Int32Array(n);
+        for (let id = 0; id < n; id++) { caps[id] = capOf(id); rh[id] = caps[id] > 0 ? qdiv(vap(prev.S, par, id), caps[id]) : 0; }
+        for (let id = 0; id < n; id++) {
+          let dm = 0;
+          for (let d = 0; d < 4; d++) { const j = prev.G[GEO.NBR * n + id * 4 + d]; dm += mulShr(mulShr(Math.min(caps[id], caps[j]), (rh[j] - rh[id]) | 0, 16), mulShr(prev.G[GEO.DIF * n + id * 4 + d], Math.imul(prev.k.kEddy, dt), 10), 30); }
+          sum += gp.area[id] * dm; mag += gp.area[id] * Math.abs(dm);
+          if (dm !== 0) moved++;
+        }
+        expect(mag).toBeGreaterThan(0);
+        expect(Math.abs(sum) / mag).toBeLessThan(2e-3);
+      }
+      prev = { ...next, dt, par: 1 - par };
+    }
+    expect(moved).toBeGreaterThan(10000);
+    expect(partial).toBeGreaterThan(1000); // humidity between the distribution's onset and the hard cut, where it now rains
+  } finally { a.release(); }
+});
+
+test("sub-grid humidity: the adjustment's excess starts at RH_ref less the width, grows as a square to the hard cut and is continuous", () => {
+  const sim = similarityOf(SMALL_RADIUS_M), c = { ...lone(false), k: kernelConstants(sim.s, true), dt: 5 }, t15 = 15 * 65536, cap = capAt(c, t15), fb = FIELD.ST + 5, b = 1 - RH_REF;
+  const step = (m: number, cloud = 0) => {
+    c.S[FIELD.ST] = t15; c.S[FIELD.ST + 1] = m; c.S[FIELD.ST + 2] = cloud; c.S[FIELD.ST + 3] = 0; c.S[FIELD.ST + 4] = 0;
+    stepTwin(c, 0);
+    return { m: c.S[fb + 1], cloud: c.S[fb + 2], rain: c.S[fb + 4] };
+  };
+  const frac = c.dt / (TAU_SBM * sim.s), at = (rh: number) => step(Math.round(rh * cap)).rain / (frac * cap);
+  expect(at(RH_REF - b - 0.02)).toBe(0); // under the onset: nothing
+  for (const rh of [0.45, 0.55, 0.65, 0.75, 0.9]) {
+    const x = rh - (RH_REF - b), want = rh >= RH_REF + b ? rh - RH_REF : (x * x) / (4 * b);
+    expect(Math.abs(at(rh) - want)).toBeLessThan(2e-3);
+  }
+  expect(at(RH_REF + b)).toBeCloseTo(b, 2); // the two branches meet at the hard cut's value
+  expect(at(0.55)).toBeGreaterThan(0);
 });

@@ -45,7 +45,8 @@ export const STATE = { TA: 0, M: 1, C: 2, H: 3, PP: 4 } as const;
 // normals (the cell's east and north, the neighbour's east and north: four words a link, Q14), the cell's latitude node and
 // fraction, and for each link its midpoint's latitude node and fraction and the normal on the east and north of the midpoint
 // (four words a link).
-export const GEO = { NBR: 0, LC: 4, NRM: 8, LAT: 24, FRAC: 25, EDGE: 26, UNITS: 42 } as const;
+// DIF: for each link, the length of the shared edge over the distance between the cells' centres and this cell's area, 1 / m2, Q40 (the eddy diffusion's geometry, R1783).
+export const GEO = { NBR: 0, LC: 4, NRM: 8, LAT: 24, FRAC: 25, EDGE: 26, DIF: 42, UNITS: 46 } as const;
 // The tables: the saturation column (Q20 mm) at 1/16 K from CAP_FROM degrees; the two land-evaporation columns on the same
 // temperature grid (the potential evaporation per unit of net radiation, mm/s per W/m2 in Q44, and the net long-wave loss,
 // W/m2 in Q8); the season's zonal tables, node after node.
@@ -74,6 +75,9 @@ export interface Kq {
   rhRef: number; // the relative humidity the convective adjustment relaxes the layer to, Q16
   ksbm: number; // the adjustment's rate, 1 / its time scale, Q30 1/s
   epC1: number; // the share of the day's mean insolation the land's surface absorbs, Q16
+  // The processes a similar planet adds (R1783, R1784); both 0 on the reference planet, whose kernel text is then the one it always had.
+  kEddy: number; // the eddy diffusivity of the vapour column, m2/s (an integer)
+  pdfB: number; // the half width of the sub-grid humidity distribution as a share of saturation, Q16 (0: the convective adjustment's hard threshold)
 }
 
 export function atmosphereWgsl(k: Kq): string {
@@ -244,7 +248,18 @@ fn step(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   var cn = c - mulShr(c, fo, 30u) + inC;
   var hn = h - mulShr(h, fo, 30u) + inH;
   let cap = capAt(ta - S[F_LAP * n + idx]);
-  let fe = S[F_FE * n + idx] * dt;
+${k.kEddy > 0 ? `  // the eddies mix the air's humidity, not its water through the ground: the flux goes with the difference of relative humidity times the smaller of the two columns' saturation
+  var rhi = 0i;
+  if (cap > 0i) { rhi = qdiv(m, cap); }
+  for (var d = 0u; d < 4u; d++) {
+    let j = u32(G[GEO_NBR * n + idx * 4u + d]);
+    let fd = mulShr(G[GEO_DIF * n + idx * 4u + d], ${k.kEddy}i * dt, 10u);
+    let capj = capAt(S[fa * n + j] - S[F_LAP * n + j]);
+    var rhj = 0i;
+    if (capj > 0i) { rhj = qdiv(S[(fa + 1u) * n + j], capj); }
+    mn += mulShr(mulShr(min(cap, capj), rhj - rhi, 16u), fd, 30u);
+  }
+` : ""}  let fe = S[F_FE * n + idx] * dt;
   let land = S[F_LAND * n + idx] != 0i;
   var e = 0i;
   if (land) {
@@ -255,7 +270,12 @@ fn step(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   if (mn > cap) { cn += mn - cap; mn = cap; }
   var sb = 0i;
   let adj = mulShr(cap, ${k.rhRef}i, 16u);
-  if (mn > adj) { sb = mulShr(mn - adj, ${k.ksbm}i * dt, 30u); mn -= sb; }
+${k.pdfB > 0 ? `  let bw = mulShr(cap, ${k.pdfB}i, 16u);
+  var ex = 0i;
+  if (bw > 0i && mn > adj - bw) {
+    if (mn >= adj + bw) { ex = mn - adj; } else { let x = mn - (adj - bw); ex = mulShr(x, qdiv(x, 4i * bw), 16u); }
+  }
+  if (ex > 0i) { sb = mulShr(ex, ${k.ksbm}i * dt, 30u); mn -= sb; }` : `  if (mn > adj) { sb = mulShr(mn - adj, ${k.ksbm}i * dt, 30u); mn -= sb; }`}
   let q = mulShr(cn, S[F_FC * n + idx] * dt, 30u);
   cn -= q; hn += q;
   var p = mulShr(hn, S[F_FF * n + idx] * dt, 30u);
@@ -282,5 +302,5 @@ fn finish(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw
   S[F_TN * n + idx] = tn;
   S[F_SNOW * n + idx] = mulShr(S[F_PACC * n + idx], sf, 16u);
 }
-`.replace(/GEO_(NBR|LC|NRM|LAT|FRAC|EDGE)/g, (_, w: keyof typeof GEO) => `${GEO[w]}u`);
+`.replace(/GEO_(NBR|LC|NRM|LAT|FRAC|EDGE|DIF)/g, (_, w: keyof typeof GEO) => `${GEO[w]}u`);
 }

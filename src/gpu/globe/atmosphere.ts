@@ -119,6 +119,22 @@ export const C_EVAP = 1.2e-3, GUST = 2;
 // condition of a convective parcel is not modelled (the layer is one box) [gap]. The saturation condensation stays, with the
 // rain stage's delays (Smith and Barstad's orographic rain, R1320 to R1323).
 export const RH_REF = 0.7, TAU_SBM = 7200;
+// The eddies' transport of moisture on a similar planet (R1783). Poleward energy transport by the transient eddies is a diffusion of moist static energy, c_p T + L q, with one
+// constant coefficient for all latitudes and climates: D = 1.06e6 m2/s [cited: Hwang and Frierson 2010, GRL, Appendix, read: the energy balance of Frierson, Held and Zurita-Gotor 2007,
+// D tuned to the zonal mean temperature of the CMIP3 models; Held 2001 gives the eddy mixing length and speed it is the product of]. The latent part is the vapour's diffusion at the
+// same D; the dry part is the energy balance's own diffusion (R1437, R1773), so heat is not added twice. On a similar planet the mixing length goes as the radius (the Rhines and the
+// deformation scales, at Omega a and the stratification Earth's, go as a) and the speed is Earth's, so D goes as s: D / (U a), the inverse of a Peclet number, is Earth's, 0.025 at
+// U = 7 m/s [derived]. The reference planet takes none.
+export const EDDY_D_EARTH = 1.06e6;
+// The eddies mix the air's humidity and not its water through the ground: the column's saturation carries the height's lapse, so a cliff in it is a cliff in the water a column can hold, and
+// diffusing the water itself pulled the lowland's vapour up into the cold columns of the ranges and condensed it there (first run: a season's rain of 61 m). The flux is K times the
+// difference of relative humidity times the smaller of the two columns' saturation (symmetric, so the water is conserved) [design].
+// The humidity within a cell is spread, not one value: a uniform distribution of half width (1 - RH_crit) times saturation about the mean, so the adjustment's excess over RH_REF
+// starts at RH_REF less that width and grows as the square of the distance to it until it meets the hard cut at RH_REF plus the width (R1784) [cited: the form is Le Treut and Li
+// 1991's uniform distribution, which is Sundqvist et al. 1989's cloud cover C = 1 - sqrt((1 - RH) / (1 - RH_crit)) when the cloud is the part above saturation (derived in
+// Tompkins's lecture notes, 2008, read, eqs. 7 to 10); RH_crit sets the width and is empirical in every scheme that uses it: here it is the adjustment's own reference humidity,
+// 0.7 (Frierson 2007), the one humidity the scheme already holds [design]].
+export const PDF_WIDTH = 1 - RH_REF;
 // The land's potential evaporation, Priestley and Taylor (1972, Mon. Wea. Rev. 100: 81, R1602): E = alpha Delta / (Delta +
 // gamma) Rn / lambda, alpha 1.26 of a wet surface (the value as FAO and the later papers quote it: the paper was not read),
 // Delta = 4098 e_s / (T + 237.3)^2 kPa/K the slope of Tetens' curve (FAO-56 eq. 13), gamma = 0.665e-3 P = 0.0674 kPa/K at
@@ -376,7 +392,7 @@ const Q = (x: number, n: number) => Math.round(x * 2 ** n);
 // for the evaporation that fills it (R1781): the evaporation is a flux per area (energy limited, Earth's) and the vapour's residence against the advective time, Lambda = (column / E) U / a
 // (about 0.85 on Earth, 9 days of residence against 10 days to cross the planet), is Earth's only if the column goes as s; then U q / L, the vapour a range lifts, is a flux per area
 // of Earth's size too. The saturation column and C_E / H_w go with it (flux C_E U rho_vs (1 - RH) is the same); the lapse rate times H_w, a ratio of heights, does not.
-export function kernelConstants(s = 1): Kq {
+export function kernelConstants(s = 1, similar = s !== 1): Kq {
   const iceFreeze = (2 * ICE_K * SEASON_S) / (ICE_RHO * ICE_L);
   return {
     gammaQ22: Q(GAMMA, 22),
@@ -394,6 +410,7 @@ export function kernelConstants(s = 1): Kq {
     rhRef: Q(RH_REF, 16),
     ksbm: Q(1 / (TAU_SBM * s), 30),
     epC1: Q((1 - NETRAD.ALBEDO) * (NETRAD.AS + NETRAD.BS * NETRAD.SUNSHINE), 16),
+    kEddy: similar ? Math.round(EDDY_D_EARTH * s) : 0, pdfB: similar ? Q(PDF_WIDTH, 16) : 0,
   };
 }
 
@@ -484,6 +501,10 @@ export function buildGeometry(g: Grid): Geometry {
       gdata[ob] = -je; gdata[ob + 1] = -jn; gdata[ob + 2] = -ie; gdata[ob + 3] = -inn;
       gdata[GEO.LC * n + id * 4 + d] = Q(arcLen / (sr[id] * R), 28);
       gdata[GEO.LC * n + j * 4 + s.back] = Q(arcLen / (sr[j] * R), 28);
+      // the edge's length over the centres' distance and each cell's area, 1 / m2, Q40
+      const dist = Math.atan2(Math.hypot(cx[3 * id + 1] * cx[3 * j + 2] - cx[3 * id + 2] * cx[3 * j + 1], cx[3 * id + 2] * cx[3 * j] - cx[3 * id] * cx[3 * j + 2], cx[3 * id] * cx[3 * j + 1] - cx[3 * id + 1] * cx[3 * j]), cx[3 * id] * cx[3 * j] + cx[3 * id + 1] * cx[3 * j + 1] + cx[3 * id + 2] * cx[3 * j + 2]);
+      gdata[GEO.DIF * n + id * 4 + d] = Q(arcLen / (dist * sr[id] * R * R), 40);
+      gdata[GEO.DIF * n + j * 4 + s.back] = Q(arcLen / (dist * sr[j] * R * R), 40);
       // the midpoint's own latitude node and the normal on its east and north (the other side takes it negated)
       const [mE, mN] = eastNorth(m), pos = (Math.asin(m[2]) / DEG + 90) / NODE_DEG, li = Math.min(NODES - 2, Math.floor(pos)), fx = (pos - li) * 65536;
       margin = Math.min(margin, Math.abs(fx - Math.floor(fx) - 0.5));
@@ -620,7 +641,16 @@ export function stepTwin(c: Ctx, idx: number) {
     }
   }
   let mn = (m - mulShr(m, fo, 30) + inM) | 0, cn = (cl - mulShr(cl, fo, 30) + inC) | 0, hn = (h - mulShr(h, fo, 30) + inH) | 0;
-  const cap = capAt(c, (ta - S[at(c, FIELD.LAP, idx)]) | 0), fe = Math.imul(S[at(c, FIELD.FE, idx)], dt), land = S[at(c, FIELD.LAND, idx)] !== 0;
+  const cap = capAt(c, (ta - S[at(c, FIELD.LAP, idx)]) | 0);
+  if (k.kEddy > 0) {
+    const rhi = cap > 0 ? qdiv(m, cap) : 0;
+    for (let d = 0; d < 4; d++) {
+      const j = G[GEO.NBR * n + idx * 4 + d], fd = mulShr(G[GEO.DIF * n + idx * 4 + d], Math.imul(k.kEddy, dt), 10);
+      const capj = capAt(c, (S[at(c, fa, j)] - S[at(c, FIELD.LAP, j)]) | 0), rhj = capj > 0 ? qdiv(S[at(c, fa + 1, j)], capj) : 0;
+      mn = (mn + mulShr(mulShr(Math.min(cap, capj), (rhj - rhi) | 0, 16), fd, 30)) | 0;
+    }
+  }
+  const fe = Math.imul(S[at(c, FIELD.FE, idx)], dt), land = S[at(c, FIELD.LAND, idx)] !== 0;
   let e = 0;
   if (land) {
     const epdt = mulShr(S[at(c, FIELD.EP, idx)], dt, 20);
@@ -630,7 +660,15 @@ export function stepTwin(c: Ctx, idx: number) {
   if (mn > cap) { cn = (cn + mn - cap) | 0; mn = cap; }
   let sb = 0;
   const adj = mulShr(cap, k.rhRef, 16);
-  if (mn > adj) { sb = mulShr((mn - adj) | 0, Math.imul(k.ksbm, dt), 30); mn = (mn - sb) | 0; }
+  if (k.pdfB > 0) {
+    const bw = mulShr(cap, k.pdfB, 16);
+    let ex = 0;
+    if (bw > 0 && mn > adj - bw) {
+      if (mn >= adj + bw) ex = (mn - adj) | 0;
+      else { const x = (mn - (adj - bw)) | 0; ex = mulShr(x, qdiv(x, Math.imul(4, bw)), 16); }
+    }
+    if (ex > 0) { sb = mulShr(ex, Math.imul(k.ksbm, dt), 30); mn = (mn - sb) | 0; }
+  } else if (mn > adj) { sb = mulShr((mn - adj) | 0, Math.imul(k.ksbm, dt), 30); mn = (mn - sb) | 0; }
   const q = mulShr(cn, Math.imul(S[at(c, FIELD.FC, idx)], dt), 30);
   cn = (cn - q) | 0; hn = (hn + q) | 0;
   let p = mulShr(hn, Math.imul(S[at(c, FIELD.FF, idx)], dt), 30);
@@ -766,7 +804,7 @@ export class AtmosphereGpu {
     this.ebm = solveEbm(this.p, landFractionOf(geo, land));
     this.circulation = circulationOf(this.p);
     const sim = similarityOf(this.p.radius);
-    this.k = kernelConstants(sim.s);
+    this.k = kernelConstants(sim.s, sim.similar);
     // the barrier the Froude number reads the rise over: four of the reference planet's cells, Earth's 49 km, times s (the cells factor keeps the product exact on the reference planet)
     this.blockL = Math.round(((BLOCK_CELLS * sim.cells * cellWidthM(g)) / 1000) * 65536);
     const n = this.n, dev = gpu.device;
@@ -833,7 +871,13 @@ export class AtmosphereGpu {
   async chooseStep(): Promise<number> {
     const n = this.n, rates = await this.read(FIELD.R, 4);
     let most = 0;
-    for (let i = 0; i < n; i++) most = Math.max(most, Math.abs(rates[i]) + Math.abs(rates[n + i]) + Math.abs(rates[2 * n + i]) + Math.abs(rates[3 * n + i]));
+    const dif = this.k.kEddy > 0 ? this.geo.gdata.subarray(GEO.DIF * n, (GEO.DIF + 4) * n) : null;
+    for (let i = 0; i < n; i++) {
+      let r = Math.abs(rates[i]) + Math.abs(rates[n + i]) + Math.abs(rates[2 * n + i]) + Math.abs(rates[3 * n + i]);
+      // the eddy diffusion's fractions a second, Q30: K DIF (Q40) over 2^10, summed over the four links
+      if (dif) r += (this.k.kEddy * (dif[4 * i] + dif[4 * i + 1] + dif[4 * i + 2] + dif[4 * i + 3])) / 1024;
+      most = Math.max(most, r);
+    }
     const dt = Math.max(1, Math.min(Math.max(1, Math.round(500 * similarityOf(this.p.radius).s)), Math.floor((0.8 * OUT) / Math.max(1, most))));
     this.setStep(dt);
     return dt;
