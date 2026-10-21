@@ -41,8 +41,12 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
 ## Scope boundaries
 
 - The play area stays 19.2 km. People do not travel out of it (the 2026-10-19 decision stands); the camera does.
-- The planet's physics is unchanged; only its radius changes. A small planet with Earth's physics has compressed
-  climate belts and room for few ranges; that is accepted and written as gaps, not tuned away.
+- The planet's laws are Earth's, scaled by dynamic similarity (operator, 2026-10-20, after Unit 4 measured a calm, dry
+  planet: mean wind under 0.1 m/s, 94% of land under 250 mm a year, ranges ten times too narrow). The dimensionless
+  numbers that set Earth's circulation and relief are kept, not the dimensional constants: the spin is set by Earth's
+  thermal Rossby number (about a 44 minute rotation at 195.6 km) [derived], and lengths set in km in tectonics, erosion
+  and ice scale with the radius. The game keeps its own 24 hour day and sky (sky.ts); the planet's spin is a scaled
+  climate parameter, not the people's day [design].
 
 ## Key decisions
 
@@ -112,6 +116,11 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   planet with the longest rivers), one erosion step 19.9 s (24.5 s), deepest flow path 3,854 of 16,382 cells; tier 3 is 4.2
   s. Recommendation: **4,096 a face**; open for Unit 5: the island's other fine stages at 100 million cells and the disk a
   bake needs between stages are not measured.
+- [ ] **Unit 4b: Earth's similarity on the small planet.** Every dimensional constant in the coarse tiers that depends on
+  planet scale (rotation, Coriolis, the circulation's widths, plate and orogen widths, flexural lengths, hot spot spacing,
+  ice sheet lengths) is re-derived from the dimensionless number it carries on Earth, each cited and tagged; nothing tuned
+  to a picture. Check on seeds 1 to 3: trade winds and westerlies, dry belts and wet belts, rain shadows, a wet mild west
+  coast at mid latitude, polar ice, ranges as wide as Earth's in proportion; the misses written as gaps.
 - [ ] **Unit 5: The 75 m tier over the whole planet.** The island's fine stages (erosion, hydrology, rain, climate, soil,
   ground) run as global solves at tier 4, coarse to fine, across tile and face edges, baked by stages into the tile
   pyramid. The scatter as a pure function of a tile's fields. Check: one drainage network (every river reaches the sea or
@@ -127,6 +136,6 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
 |------|------------|
 | A global 75 m bake is slow (100 million cells; the flood's rounds grow with the distance water travels) | Coarse to fine, each tier starting from the one above; staged calls under 5 minutes; Unit 4 measures before Unit 5 builds; the 2,048 fallback |
 | The page cannot hold the planet | It never holds it: the pyramid is streamed by the tiles under the camera at the zoom's tier |
-| A small planet with Earth's physics looks like one island with one range | Accepted by the operator; measured in Unit 4 and written as gaps |
+| Similarity scaling breaks a law whose number does not scale | Each scaled constant names its dimensionless number; where none applies the constant stays and the miss is a gap |
 | The sphere's perspective and the isometric bearing do not blend cleanly | Below the `island` level's altitude the curvature over the view is small, so the projection change is done there |
 | Two agents in one tree | Disjoint files per unit; at most two agents at once |
