@@ -14,8 +14,6 @@ export function createCamera({ live, view, canvas, onTurn }) {
   let goal = view.zoom, zoomSet = view.zoom, anchor = null, turn = null, pinch = null, good = snapshot();
   function snapshot() { return { x: view.x, z: view.z, zoom: view.zoom, bearing: view.bearing, up: view.up }; }
   const half = () => [canvas.width / 2, canvas.height / 2];
-  const inside = () => Math.abs(view.x) <= BOUND && Math.abs(view.z) <= BOUND;
-  const cap = (z) => (inside() ? z : Math.min(z, 0));
   // move the target so world point A shows at canvas point (sx, sy) in state st; false, and nothing moved, if it cannot
   function hold(A, sx, sy, st = view) {
     const [cx, cy] = half(), T = live.solveTarget(st, A.x, A.z, A.y, sx - cx, sy - cy, A.geo);
@@ -30,7 +28,7 @@ export function createCamera({ live, view, canvas, onTurn }) {
     // the drawn ground under the cursor is picked once per gesture, which ends when the zoom settles
     zoomTo(g, sx, sy) {
       if (!Number.isFinite(g)) return;
-      goal = cap(clamp(g, live.zmin, live.zmax));
+      goal = clamp(g, live.zmin, live.zmax);
       if (sx == null) { anchor = null; return; }
       if (!anchor || Math.hypot(sx - anchor.at[0], sy - anchor.at[1]) > 2) {
         const A = live.groundUnder(view, sx, sy);
@@ -47,7 +45,7 @@ export function createCamera({ live, view, canvas, onTurn }) {
       }
       return st;
     },
-    setZoom(z) { if (Number.isFinite(z)) { goal = zoomSet = view.zoom = cap(clamp(z, live.zmin, live.zmax)); anchor = null; } },
+    setZoom(z) { if (Number.isFinite(z)) { goal = zoomSet = view.zoom = clamp(z, live.zmin, live.zmax); anchor = null; } },
     // the mid-screen target point is held at centre + (dx, dy), so the image moves exactly with the cursor
     panBy(dx, dy) {
       if (!finite(dx, dy) || (!dx && !dy && !view.up)) return;
@@ -81,7 +79,7 @@ export function createCamera({ live, view, canvas, onTurn }) {
       if (da > Math.PI) da -= 2 * Math.PI; else if (da < -Math.PI) da += 2 * Math.PI;
       pinch.ang = ang;
       if (Number.isFinite(da)) view.bearing = norm8(view.bearing - da / (Math.PI / 4));
-      const z = pinch.d > 4 && d > 0 ? cap(clamp(pinch.zoom + Math.log2(d / pinch.d), live.zmin, live.zmax)) : view.zoom;
+      const z = pinch.d > 4 && d > 0 ? clamp(pinch.zoom + Math.log2(d / pinch.d), live.zmin, live.zmax) : view.zoom;
       if (!Number.isFinite(z)) return;
       if (pinch.A) hold(pinch.A, mx, my, { ...view, zoom: z });
       goal = zoomSet = view.zoom = z;
@@ -121,10 +119,8 @@ export function createCamera({ live, view, canvas, onTurn }) {
         goal = zoomSet = view.zoom; anchor = null; pinch = null; cam.stopTurn();
         return false;
       }
-      // away from the play area there is no close ground: a zoom in stops at the island level
-      if (live.zmin < 0 && view.zoom > 0 && !inside()) view.zoom = goal = zoomSet = 0;
-      // the planet is free to roam; the close ground is the play area's alone, so only from the island level in is the target held to it
-      if (view.zoom > 0 || live.zmin === 0) { view.x = clamp(view.x, -BOUND, BOUND); view.z = clamp(view.z, -BOUND, BOUND); }
+      // with a planet the camera is free anywhere at any zoom; without one it is held to the island
+      if (live.zmin === 0) { view.x = clamp(view.x, -BOUND, BOUND); view.z = clamp(view.z, -BOUND, BOUND); }
       view.zoom = zoomSet = clamp(view.zoom, live.zmin, live.zmax); view.bearing = norm8(view.bearing); view.up = clamp(view.up, -UP_MAX, UP_MAX);
       if (!Number.isFinite(goal)) goal = view.zoom;
       good = snapshot();

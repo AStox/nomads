@@ -107,7 +107,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   function onWorker(m) {
     if (m.type.startsWith("sim")) { if (simTo) simTo(m); else simEarly.push(m); }
     else if (m.type === "frameDone") {
-      lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts;
+      lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts; stats.tiles = m.tiles;
       if (m.fronts !== undefined) fronts = new Set(m.fronts ? m.fronts.split(",") : []);
       const sent = sentAt.get(m.id);
       sentAt.delete(m.id);
@@ -870,7 +870,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       const d = Math.hypot(p.sx - x, p.sy - y), score = d + (p.kind === "agent" ? 0 : 3);
       if (d < Math.max(4, p.h * 0.6) && score < bd) { bd = score; best = { kind: p.kind, id: p.id }; }
     }
-    return best ?? ground;
+    // outside the play area there is no sim ground to inspect
+    return best ?? (Math.max(Math.abs(g.x), Math.abs(g.z)) <= SIZE / 2 ? ground : null);
   }
   // a bird's lift is at sprite scale (treeK) and the ground's at terrain scale (exag), so both become terrain meters
   function where(id, sim, view) {

@@ -1,4 +1,3 @@
-// The planet view's share of the generator, bundled for the browser: the baked planet's viewer fields and the cube-sphere's
-// cells (isopixel/planet.js, isopixel/ground-at.js).
-export { viewFromBytes } from "../src/gpu/globe/bake";
-export { FRAMES, RADIUS_M, cellId, centre, eastNorth, fromLatLon, latLon, locateVec, pointOf, tierGrid } from "../src/gpu/globe/grid";
+// The planet layer's share of the generator, bundled for the browser: the cube-sphere's faces and the place of a cell
+// (isopixel/planet.js, isopixel/ground-at.js).
+export { FRAMES, centre, eastNorth, fromLatLon, latLon, tierGrid } from "../src/gpu/globe/grid";

@@ -3,7 +3,7 @@
 // buffers with the atlas of their sprites, and draws each frame the page asks for (webgpu.js). The page (live.js) keeps
 // the camera, the sky and the UI; it sends what moves (the view, the light, the people, animals, fires and overlays),
 // asks for each tick, and gets the sim's state after it (play/remote.js).
-import { generateIsland, fineGroundGpu, rng, crownShare, SIZE, START, STEP, TILE_M, TILES } from "../island.js";
+import { generateIsland, fineGroundGpu, rng, crownShare, SIZE, START, STEP, TILE_M, TILES, CELL } from "../island.js";
 import * as PAL from "./pal.js";
 import { P, NCOL, HAZE, GLOW, TONE, TONE_S } from "./pal.js";
 import { createPlanet } from "./planet.js";
@@ -14,6 +14,7 @@ import { createRenderer, NS, ATLAS } from "./webgpu.js";
 import { Looks, CODES, NONE, castRows, Shelves, entryWords } from "./atlas.js";
 import { PICK_SLOT, EXTRA_PICK, KIND_PICK, NO_SLOT, CELLS_N, CELL_M } from "./wgsl/objects.js";
 import { closeGround } from "./ground-at.js";
+import { openPyramid } from "./pyramid.js";
 
 const early = [];
 onmessage = (e) => early.push(e);
@@ -48,21 +49,18 @@ const SIM_BUDGET_MS = 8;
 // second [design]
 const WARM_BUDGET_MS = 100;
 
-// The seed's baked planet (scripts/globe-bake.ts), if one is: its view file, kept in the browser's cache under a name that
-// carries the planet's key, so a kept copy is never another planet's.
-async function openPlanet(seed) {
-  const manifest = await fetch(new URL(`../planets/${seed}.json`, import.meta.url));
-  if (!manifest.ok) return null;
-  const url = new URL(`../planets/${(await manifest.json()).view}`, import.meta.url).href, cache = await caches.open("nomads-planets");
-  let res = await cache.match(url);
-  if (!res) {
-    res = await fetch(url);
-    if (!res.ok) throw new Error(`the planet of seed ${seed} did not load (${res.status})`);
-    for (const k of await cache.keys()) if (k.url.includes(`/view-${seed}-`)) await cache.delete(k);
-    await cache.put(url, res.clone());
-  }
-  const G = await import("../globe.js"), viewBytes = new Uint8Array(await new Response(res.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
-  return { G, viewBytes, view: G.viewFromBytes(viewBytes) };
+// The seed's baked planet, if one is: its manifest (planets/<seed>.json, written by scripts/demo.ts: the pyramid's tiers, the faces
+// that have tiles and where they are) and the tile pyramid, tier 0 held whole. The planet's radius is the cells' own: a face is
+// 256 << (tiers - 1) cells of CELL metres along its edge, so the sphere's circumference is four of them [derived], and the highest
+// ground a tier-0 cell holds, with a margin for the peaks a mean hides, bounds the relief the planet layer marches.
+async function openPlanet(seed, device) {
+  const res = await fetch(new URL(`../planets/${seed}.json`, import.meta.url));
+  if (!res.ok) return null;
+  const manifest = await res.json(), G = await import("../globe.js");
+  const pyramid = await openPyramid({ device, base: new URL(`../planets/${manifest.tiles}/pyramid`, import.meta.url).href, tiers: manifest.tiers, faces: manifest.faces });
+  let hmax = 0;
+  for (const f of manifest.faces) for (const h of pyramid.planes0(f).height) hmax = Math.max(hmax, h * 0.25);
+  return { G, manifest, pyramid, radiusM: ((256 << (manifest.tiers - 1)) * CELL * 2) / Math.PI, hmax: hmax * 1.5 + 300 };
 }
 
 async function init(m) {
@@ -84,7 +82,7 @@ async function init(m) {
   const simB = m.sim ? await import("../sim.js") : null, simC = m.sim ? await import("../play/sim.js") : null;
   const gpu = { device, adapter: gpuName };
   if (simB) simB.useGpu(gpu);
-  planet = m.planet ? await openPlanet(m.seed) : null;
+  planet = m.planet ? await openPlanet(m.seed, device) : null;
   const ground = await closeGround(simB, m.seed, gpu, planet);
   const { isle, fine: g } = ground;
   const t1 = performance.now();
@@ -98,7 +96,7 @@ async function init(m) {
     device, context, format, timing, ground: pack,
     pal: { P, NCOL, HAZE, GLOW, TONE, TONE_S, WATER: ["w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"].map((k) => P[k]), TILE_M, ORIGIN, TILES, TRAIL_N: Math.round(SIZE / 3), GRID_STEP: WS, FINE: { start: START, step: STEP } },
   });
-  if (planet && ground.place) planetLayer = Object.assign(await createPlanet({ device, format, G: planet.G, viewBytes: planet.viewBytes, pal: PAL, radiusM: ground.place.radiusM }), { radiusM: ground.place.radiusM });
+  if (planet && ground.place) planetLayer = Object.assign(await createPlanet({ device, format, G: planet.G, pyramid: planet.pyramid, pal: PAL, radiusM: planet.radiusM, hmax: planet.hmax }), { radiusM: planet.radiusM });
   let peak = 0;
   for (const h of isle.height) peak = Math.max(peak, h);
   // the page keeps the camera on the island's heights and the drawn ground under it: the fine heights and the cells'
@@ -931,7 +929,9 @@ function render() {
   });
   // the planet under the ladder's views, from the camera the page chose (live.js planetParams)
   const under = f.planet && planetLayer && ((enc, target) => {
-    const cam = planetCam({ ...f.planet, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM });
+    // the camera stands above the ground under its target, as drawn (lifted by the relief's exaggeration), never inside it
+    const lift = Math.max(0, planet.pyramid.heightAt(planet.G.FRAMES, planet.G.fromLatLon((f.planet.lat * Math.PI) / 180, (f.planet.lon * Math.PI) / 180))) * f.exag;
+    const cam = planetCam({ ...f.planet, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM, lift });
     planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, sun: f.planet.sun, exag: f.exag, riverCut: f.planet.riverCut });
   });
   R.frame({ ...f, views, under });
@@ -942,7 +942,7 @@ function render() {
     // the levels and bearings whose front lists are built, when they change (live.js listsReady)
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts });
+    post({ type: "frameDone", id: f.id, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     if (pending) render();
   });
 }

@@ -137,6 +137,22 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
 - [ ] **Unit 6: Cutover.** The page streams the pyramid at every zoom and the play area's Ground is cut from the planet's
   tiles (no `windowOf`, no `islandOf` generation); the lattice, windows, `windowOf` and Unit 1's sub-cell decoration are
   deleted; the island's Bornholm path goes with them, every caller migrated. VERSION bumped.
+  Page half, part 1 built 2026-10-21 (dry-run pyramid, face 1 of key c418e5fe9b5e): the page streams the pyramid
+  (`isopixel/pyramid.js`: tiles under the camera fetched, inflated and held in two GPU atlases, fields 16 B a cell and heights
+  with a halo of 2, a page table per tile of every tier, tier 0 held whole, the finer tier replacing the coarser as it arrives,
+  LRU of 192 layers) and the planet layer reads it at every zoom (`wgsl/globe.js` rewritten: the tier whose cells are about an
+  art pixel, the cells' B-spline, cover, soil, rock, drift, rain, air, lakes and rivers from the tile; the sub-cell noise, the
+  invented hillshade, the sea's swell, the climate's wander and the river line pass are deleted). `scripts/demo.ts` copies the
+  newest pyramid under `/tmp/planet-75m` (`NOMADS_BAKES`) into the site and writes `planets/<seed>.json`; the radius is the
+  cells' own (256 << (tiers - 1) cells of 75 m round four edges), the people's place is the tier-0 land cell with the most trees
+  below 60 degrees. The camera is free anywhere at any zoom and stands above the ground under its target. Measured: a whole
+  orbit to ground descent and a 40 km pan at valley fetched 86 tiles, 17 MB, so about 4 tiles (0.7 MB) a screen at the finest
+  tier; worker GPU ms a frame 3.3 mean, 7.7 p95 on the pan (load average 4). Open: the ladder's close levels and the scatter
+  need the per-tile ground files the pyramid does not hold (scatter.ts reads 49 B a cell of stage files; the painter reads
+  windShare, pet, table, peat, silt, fog, snow, wet, moist and the river lines), asked of Unit 5; the play area is still the
+  island generator's, so it is a stamp (another coast, relief and cover) with a 1.2 km faded edge over the planet; snow is the
+  year's air under -6 C (the pyramid has no seasonal snowpack); the halo repeats a cell across a cube's edge; the plane of the
+  play area (gnomonic) stretches beyond tens of km from it, so the ladder-regime pan is not geodesic there.
 
 ## Risks
 
