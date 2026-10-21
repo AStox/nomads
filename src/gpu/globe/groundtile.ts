@@ -1,4 +1,4 @@
-// The ground tiles: beside the pyramid, one gzipped file a tier-4 tile holding every field the scatter (scatter.ts) and the close levels' painter read, in the stage files' own words, in a field of
+// The ground tiles: beside the pyramid, one gzipped file a tile of the finest tier holding every field the scatter (scatter.ts) and the close levels' painter read, in the stage files' own words, in a field of
 // the tile's cells and a halo of 8. The format is bake.ts GROUNDTILE_FIELDS. The page reads a tile from here and runs the scatter's fine kernel on it (`tileSource` gives scatter.ts the same fields
 // the stage files do, so the objects are the same); nothing in it is made up: a field whose stage file does not exist is left out of the file and named in its header (`absent`), a gap, never
 // a zero plane. Not stored, made from these: the fine ground (heights, wetness, moisture, covers, the stream mask: scatter.ts with `keepFine`), the peat's depth (bit 2 of `flags`, ground.ts PEAT_DEPTH).
@@ -7,8 +7,8 @@
 // meandering polylines (water.ts `shape`) that need a river's whole line; a tile has a part of it [gap: no meanders, no smoothing].
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { DIRS, GROUNDTILE_FIELDS, GROUNDTILE_HALO, GROUNDTILE_SIDE, GROUNDTILE_VERSION, groundTilePath } from "./bake";
-import type { BakeDir } from "./bakedir";
+import { DIRS, GROUNDTILE_FIELDS, GROUNDTILE_HALO, GROUNDTILE_VERSION, groundTilePath } from "./bake";
+import { tierFile, type BakeDir } from "./bakedir";
 import { mappedField } from "./ground";
 import { localOf, patchOf, tileAt, tileCount } from "./patch";
 import type { TileSource } from "./scatter";
@@ -37,13 +37,14 @@ function dirCode(recv: Int32Array, S: number): { code: Uint8Array; lost: number 
 }
 
 const THE_QUICK = "quick";
-// Tile `tile`'s planes from the stage files of `dir`.
-export function makeGroundTile(dir: BakeDir, tile: number, o: { seed: number; key: string }): { meta: GroundTileMeta; planes: Planes } {
-  const { face, tx, ty } = tileAt(4, tile), p = patchOf(4, face, tx, ty, GROUNDTILE_HALO), S = p.side, planes: Planes = {}, fields: GroundTileMeta["fields"] = [], absent: string[] = [];
+// Tile `tile` of tier `o.tier` from the stage files of `dir`.
+export function makeGroundTile(dir: BakeDir, tile: number, o: { seed: number; key: string; tier: number }): { meta: GroundTileMeta; planes: Planes } {
+  const { face, tx, ty } = tileAt(o.tier, tile), p = patchOf(o.tier, face, tx, ty, GROUNDTILE_HALO), S = p.side, planes: Planes = {}, fields: GroundTileMeta["fields"] = [], absent: string[] = [];
   let lostReceivers = 0;
   for (const f of GROUNDTILE_FIELDS) {
-    if (!dir.has(f.file)) { absent.push(f.name); continue; }
-    const m = mappedField({ dir }, f.file), K = KINDS[f.type];
+    const file = tierFile(o.tier, f.file);
+    if (!dir.has(file)) { absent.push(f.name); continue; }
+    const m = mappedField({ dir }, file), K = KINDS[f.type];
     let plane: Field;
     if (f.name === "dir") {
       const local = localOf(p), recv = new Int32Array(p.ids.length);
@@ -110,12 +111,12 @@ export function tileSource(gt: { meta: GroundTileMeta; planes: Planes }): TileSo
 }
 
 export interface GroundTileProgress { done: boolean; made: number; kept: number; of: number; seconds: number; absent: string[] }
-// Write the ground tiles of `tiles` (all 1,536 by default) not yet written, within `budgetS` seconds; a file is written whole and moved into place, so a stopped call has lost nothing.
-export function buildGroundTiles(dir: BakeDir, o: { seed: number; key: string; tiles?: number[]; budgetS?: number }, log: (s: string) => void = () => {}): GroundTileProgress {
-  const t0 = performance.now(), of = tileCount(4), list = o.tiles ?? Array.from({ length: of }, (_, k) => k);
+// Write the ground tiles of `tiles` (all of tier `o.tier` by default) not yet written, within `budgetS` seconds; a file is written whole and moved into place, so a stopped call has lost nothing.
+export function buildGroundTiles(dir: BakeDir, o: { seed: number; key: string; tier: number; tiles?: number[]; budgetS?: number }, log: (s: string) => void = () => {}): GroundTileProgress {
+  const t0 = performance.now(), of = tileCount(o.tier), list = o.tiles ?? Array.from({ length: of }, (_, k) => k);
   let made = 0, kept = 0, worst = 0, absent: string[] = [];
   for (const k of list) {
-    const { face, tx, ty } = tileAt(4, k), path = groundTilePath(dir.dir, face, tx, ty);
+    const { face, tx, ty } = tileAt(o.tier, k), path = groundTilePath(dir.dir, face, tx, ty);
     if (existsSync(path)) { kept++; continue; }
     const spent = (performance.now() - t0) / 1000;
     if (o.budgetS !== undefined && spent + worst * 1.3 > o.budgetS) break;

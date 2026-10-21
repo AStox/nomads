@@ -28,6 +28,7 @@ import {
 } from "../wgsl/terrain-scenery";
 import { TABLE_UNIT, mappedField } from "./ground";
 import { GROUNDTILE_FIELDS } from "./bake";
+import { tierFile } from "./bakedir";
 import { localOf, patchOf, tileAt } from "./patch";
 import type { Ctx, Field } from "./stages";
 
@@ -54,10 +55,10 @@ export function stageSource(ctx: Pick<Ctx, "dir" | "tier">, tile: number): TileS
     plane<A extends Field>(name: string, halo: number) {
       const f = GROUNDTILE_FIELDS.find((g) => g.name === name);
       if (!f) throw new Error(`scatter: no field ${name}`);
-      return at<A>(mappedField(ctx, f.file), patchAtHalo(halo).ids);
+      return at<A>(mappedField(ctx, tierFile(ctx.tier, f.file)), patchAtHalo(halo).ids);
     },
     recv(halo: number) {
-      const p = patchAtHalo(halo), local = localOf(p), to = at<Uint32Array>(mappedField(ctx, "t4-to.u32"), p.ids);
+      const p = patchAtHalo(halo), local = localOf(p), to = at<Uint32Array>(mappedField(ctx, tierFile(ctx.tier, "to.u32")), p.ids);
       return Int32Array.from(to, (r) => local(r));
     },
   };

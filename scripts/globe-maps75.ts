@@ -1,11 +1,12 @@
 // Pictures of the 75 m tier (the planet made by scripts/globe-tiers.ts and the fine stages): a whole face downsampled, and patches of 19.2 km at full 75 m, one across a face's
 // edge, each as height (hillshaded), rivers, rain and cover where those stages have been made. PNGs go to /tmp/planet-75m/maps/.
-//   bun scripts/globe-maps75.ts --seed 1 --key 4c2a2cb36ba6 --face 1 --patches 320:0:0,1214:0:0,40:0:0
+//   bun scripts/globe-maps75.ts --seed 1 --key 4c2a2cb36ba6 [--tier 5] [--radius <m>] --face 1 --patches 320:0:0,1214:0:0,40:0:0
 // A patch is `tile:dx:dy`: the tile's own cells moved by (dx, dy) cells (a negative dx on a tile on a face's west edge reaches across the edge).
 import { mkdirSync, writeFileSync } from "node:fs";
-import { cellAcross } from "../src/gpu/globe/patch";
-import { SMALL_RADIUS_M, tierGrid } from "../src/gpu/globe/grid";
-import { bakeDir } from "../src/gpu/globe/bakedir";
+import { cellAcross, tileCount } from "../src/gpu/globe/patch";
+import { PLANET_CELL_M, PLANET_TIER, TILE, tierGrid } from "../src/gpu/globe/grid";
+import { bakeDir, tierFile } from "../src/gpu/globe/bakedir";
+import { mappedField } from "../src/gpu/globe/ground";
 import { heightColor, mix, png, type RGB } from "./globe-maps";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
@@ -13,14 +14,17 @@ const key = arg("key", process.env.NOMADS_PLANET_KEY ?? ""), seed = Number(arg("
 if (!key) throw new Error("name the planet's key: --key <hash> (the directory under /tmp/planet-75m is <seed>-<key>)");
 const dir = bakeDir(seed, key), OUT = "/tmp/planet-75m/maps";
 mkdirSync(OUT, { recursive: true });
-const g = tierGrid(4), FN = g.fn;
-// 1 unit of the discharge area (t4-acc) is 1/512 of a tier-4 cell's area at the reference rain
-const CELL_M2 = (4 * Math.PI * SMALL_RADIUS_M ** 2) / (6 * FN * FN), RIVER_M2 = Number(arg("river-km2", "2")) * 1e6;
+const TIER = Number(arg("tier", String(PLANET_TIER))), g = tierGrid(TIER), FN = g.fn, PER_FACE = tileCount(TIER) / 6, T = FN / TILE;
+// the planet's radius for the tier: the cell edge PLANET_CELL_M, 6 faces of FN cells, a face's edge a quarter of the equator [derived]
+const RADIUS_M = Number(arg("radius", String((FN * PLANET_CELL_M * 2) / Math.PI)));
+// 1 unit of the discharge area (acc) is 1/512 of a finest-tier cell's area at the reference rain
+const CELL_M2 = (4 * Math.PI * RADIUS_M ** 2) / (6 * FN * FN), RIVER_M2 = Number(arg("river-km2", "2")) * 1e6;
 const areaM2 = (acc: number) => ((acc >>> 0) * CELL_M2) / 512;
 const WATER: RGB = [50, 100, 200], RIVER: RGB = [30, 80, 210];
 
-const height = dir.i32("t4-height"), acc = dir.u32("t4-acc"), flooded = dir.i32("t4-flooded");
-const has = (f: string) => dir.has(f);
+const has = (f: string) => dir.has(tierFile(TIER, f));
+const map = <A extends Int32Array | Uint32Array | Uint16Array | Uint8Array>(f: string) => mappedField({ dir }, tierFile(TIER, f)) as A;
+const height = map<Int32Array>("height.i32"), acc = map<Uint32Array>("acc.u32"), flooded = map<Int32Array>("flooded.i32");
 const optional = <T>(file: string, load: () => T): T | null => (has(file) ? load() : null);
 
 // ---- a whole face, downsampled by DS ----
@@ -47,7 +51,7 @@ function faceMap(face: number, DS: number) {
 // ---- a patch at full resolution ----
 type Window = { ids: Int32Array; size: number; name: string };
 function windowOf(tile: number, dx: number, dy: number): Window {
-  const f = Math.floor(tile / 256), ty = Math.floor((tile % 256) / 16), tx = tile % 16, size = 256, ids = new Int32Array(size * size);
+  const f = Math.floor(tile / PER_FACE), ty = Math.floor((tile % PER_FACE) / T), tx = tile % T, size = 256, ids = new Int32Array(size * size);
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
     let id = cellAcross(g, f, tx * 256 + x + dx, ty * 256 + y + dy);
     if (id < 0) id = cellAcross(g, f, Math.min(FN - 1, Math.max(0, tx * 256 + x + dx)), Math.min(FN - 1, Math.max(0, ty * 256 + y + dy)));
@@ -75,7 +79,7 @@ function patchMaps(w: Window) {
   };
   write(w, "height", shaded);
   // rivers: the water stage's mean flow where it has been made (log scale from 0.3 m3/s), else the drainage area; lakes at the flooded surface or the stage's standing water
-  const flow = optional("t4-flow.u32", () => dir.u32("t4-flow")), water = optional("t4-water.u16", () => new Uint16Array(dir.raw("t4-water.u16")));
+  const flow = optional("flow.u32", () => map<Uint32Array>("flow.u32")), water = optional("water.u16", () => map<Uint16Array>("water.u16"));
   write(w, "rivers", (k, x, y) => {
     const i = w.ids[k], c = shaded(k, x, y);
     if (height[i] > 0 && (water ? water[i] > 0 : flooded[i] - height[i] >= 128)) return WATER;
@@ -84,8 +88,8 @@ function patchMaps(w: Window) {
     return strength > 0 ? mix(c, RIVER, Math.min(1, 0.4 + 0.6 * strength)) : c;
   });
   // rain, mm a year: cream under 300 to deep violet over 6 m, on a log scale
-  if (["t4-pr0.u16", "t4-pr1.u16", "t4-pr2.u16", "t4-pr3.u16"].every((f) => has(f))) {
-    const pr = [0, 1, 2, 3].map((s) => new Uint16Array(dir.raw(`t4-pr${s}.u16`)));
+  if (["pr0.u16", "pr1.u16", "pr2.u16", "pr3.u16"].every((f) => has(f))) {
+    const pr = [0, 1, 2, 3].map((s) => map<Uint16Array>(`pr${s}.u16`));
     write(w, "rain", (k) => {
       const i = w.ids[k];
       if (height[i] <= 0) return heightColor(height[i] / 256);
@@ -94,8 +98,8 @@ function patchMaps(w: Window) {
     });
   }
   // cover: the island's colours for the shares of tree, shrub, grass, marsh and bare ground (mixed as the page's ground does), water and sea blue
-  if (["t4-tree.u8", "t4-shr.u8", "t4-grs.u8", "t4-mar.u8", "t4-bare.u8"].every((f) => has(f))) {
-    const [tree, shr, grs, mar, bare] = ["t4-tree", "t4-shr", "t4-grs", "t4-mar", "t4-bare"].map((f) => new Uint8Array(dir.raw(`${f}.u8`)));
+  if (["tree.u8", "shr.u8", "grs.u8", "mar.u8", "bare.u8"].every((f) => has(f))) {
+    const [tree, shr, grs, mar, bare] = ["tree", "shr", "grs", "mar", "bare"].map((f) => map<Uint8Array>(`${f}.u8`));
     const parts: RGB[] = [[30, 90, 40], [110, 130, 60], [170, 200, 90], [80, 150, 140], [150, 145, 140]];
     write(w, "cover", (k, x, y) => {
       const i = w.ids[k];
