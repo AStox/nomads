@@ -25,11 +25,10 @@ import { TILE, tierGrid, type Grid } from "./grid";
 import { cellAcross, patchAt, type Patch } from "./patch";
 import { CORNER_BESIDE, around3, child4, creepSubsOf } from "./regional";
 import { RegionalPatch, TREE, PATCH_HALO } from "./regional-patch";
-import { defaultParams } from "./erosion";
-import { refineSmooth, tierTable } from "./regional";
+import { tierTable } from "./regional";
 import { TileStore } from "./tilestore";
 import type { BakeDir } from "./bakedir";
-import type { TierRun } from "./tiers";
+import { TIER_STEPS, tierParams, tierParent, type TierRun } from "./tiers";
 import type { Planet } from "./window";
 
 const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]] as const;
@@ -130,6 +129,7 @@ export class StreamedTier {
   readonly log: (s: string) => void;
   worst: Record<string, number> = {};
   private ok = true;
+  peakRss = 0; // the process's resident bytes, the most seen between visits
 
   constructor(readonly gpu: Gpu, readonly tier: number, readonly dir: string, table: Uint32Array, o: StreamOptions = {}, log: (s: string) => void = () => {}) {
     this.log = log;
@@ -270,6 +270,7 @@ export class StreamedTier {
     this.prog.visits[st] = (this.prog.visits[st] ?? 0) + 1;
     this.prog.seconds[st] = (this.prog.seconds[st] ?? 0) + s;
     this.worst[st] = Math.max(this.worst[st] ?? 0, s);
+    this.peakRss = Math.max(this.peakRss, process.memoryUsage.rss());
   }
   private visitStart(r: number) {
     const { face, rx, ry } = this.regionAt(r), ipar = this.size / 2;
@@ -507,24 +508,22 @@ export class StreamedTier {
 }
 
 // ---------- the chain ----------
-// The steps of each tier [design: tiers.ts TIER_STEPS, 40 at tiers 1 to 3 and 12 at the finer ones]. Tier 5 (the 75 m tier of the 391 km planet) takes 12 like tier 4 did.
-export const STREAM_STEPS = [0, 40, 40, 40, 12, 12];
 
 // One tier of the chain made out of core into the files the in-memory chain (tiers.ts) writes: `t<k>-height.i32` (and for the last tier `-to.u32`, `-acc.u32`, `-flooded.i32` and
 // `-run.json`), from the tier above's `t<k-1>-height.i32` (tier 1 from the planet's heights) and the same table (tierTable). Resumable: a call stops at its budget with its work kept in
 // `<dir>/stream-t<k>`; returns done when the tier's files are written.
 export async function streamTier(gpu: Gpu, planet: Planet, dir: BakeDir, tier: number, last: number, budgetS: number, o: StreamOptions & { steps?: number[]; maxSteps?: number; work?: string } = {}, log: (s: string) => void = () => {}): Promise<{ done: boolean; steps: number; of: number; run?: TierRun }> {
-  const steps = (o.steps ?? STREAM_STEPS)[tier], t0 = performance.now(), spent = () => (performance.now() - t0) / 1000;
+  const steps = (o.steps ?? TIER_STEPS)[tier], t0 = performance.now(), spent = () => (performance.now() - t0) / 1000;
   const finished = dir.has(`t${tier}-height.i32`) && (tier < last || dir.has(`t${tier}-run.json`));
   if (finished) return { done: true, steps, of: steps, run: dir.json<TierRun>(`t${tier}-run`) ?? undefined };
-  const table = tierTable(planet, tier, defaultParams({ dtYr: 1e6 }));
+  const table = tierTable(planet, tier, tierParams());
   const st = new StreamedTier(gpu, tier, o.work ?? dir.path(`stream-t${tier}`), table, o, log);
   try {
-    if (st.prog.stage === "start") st.setParent(tier === 1 ? Float32Array.from(planet.height, (v) => v * 256) : dir.i32(`t${tier - 1}-height`), tier - 1);
+    if (st.prog.stage === "start") st.setParent(tierParent(planet, dir, tier), tier - 1);
     log(`tier ${tier}: blocks of ${st.size} cells, ${st.nreg} of them, table in ${spent().toFixed(1)} s, ${st.stepsMade} of ${steps} steps kept`);
     await st.open();
     const r = await st.work(Math.max(0, budgetS - spent() - 10), steps, tier === last, o.maxSteps);
-    log(`tier ${tier}: ${st.stepsMade} of ${steps} steps, stage ${st.prog.stage}, ${spent().toFixed(0)} s this call, visits ${JSON.stringify(st.prog.visits)}`);
+    log(`tier ${tier}: ${st.stepsMade} of ${steps} steps, stage ${st.prog.stage}, ${spent().toFixed(0)} s this call, visits ${JSON.stringify(st.prog.visits)}, peak rss ${(st.peakRss / 2 ** 30).toFixed(2)} GB, GPU buffers ${(st.solver.bytes / 2 ** 20).toFixed(0)} MB, tile cache ${(st.store.cachedBytes / 2 ** 20).toFixed(0)} MB`);
     if (!r.done) return { done: false, steps: st.stepsMade, of: steps };
     st.exportCells("H", dir.path(`t${tier}-height.i32`));
     if (tier === last) { st.exportCells("TO", dir.path(`t${tier}-to.u32`)); st.exportCells("ACC", dir.path(`t${tier}-acc.u32`)); st.exportCells("F", dir.path(`t${tier}-flooded.i32`)); }

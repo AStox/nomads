@@ -14,7 +14,11 @@ export { BakeDir };
 // The steps a tier is eroded for, of 1 My each [design: R1763's 40 at the tiers whose steps cost 0.1 to 4 s; the 75 m tier starts from tier 3's settled network and a step costs 17 s].
 // Not run to the landscape's response time: at the scale of a tier-0 cell it is 1,600 to 3,600 My at tiers 2 and 3 (the sum of d / (K sqrt(A)) along a valley to where it leaves its
 // tier-0 cell, granite K 7e-8), where the shield flattens to a peneplain at its tier-0 mean and the flutes on a range's flanks are smoothed away [measured, 2026-10-21].
-export const TIER_STEPS = [0, 40, 40, 40, 12];
+export const TIER_STEPS = [0, 40, 40, 40, 12, 12];
+// What a tier starts from: the field refineSmooth carries down to it (tier 1: the planet's heights in 1/256 m, the finer tiers: the tier above's heights, the files the chain keeps), and the
+// erosion parameters of every step. The in-memory chain here and the streamed one (tiers-stream.ts) both take them from these two.
+export const tierParent = (planet: Planet, dir: BakeDir, tier: number): ArrayLike<number> => (tier === 1 ? Float32Array.from(planet.height, (v) => v * 256) : dir.i32(`t${tier - 1}-height`));
+export const tierParams = () => defaultParams({ dtYr: 1e6 });
 // What a call keeps back from its budget for the end of a tier (the settled flow and the readbacks) and for saving a state, s.
 const FINISH_S = 60, SAVE_S = 15;
 
@@ -26,11 +30,11 @@ export interface TiersProgress { done: boolean; tier: number; steps: number; log
 // tier `t<k>-to`, `t<k>-acc` and `t<k>-flooded` (the receivers, the discharge area and the flooded surface of its settled flow) and `t<k>-run` (what it cost).
 export async function tiersOf(gpu: Gpu, planet: Planet, dir: BakeDir, budgetS = Infinity, last = 4, steps = TIER_STEPS, log: (s: string) => void = () => {}, maxSteps = Infinity): Promise<TiersProgress> {
   const t0 = performance.now(), spent = () => (performance.now() - t0) / 1000, runs: TierRun[] = [];
-  const params = defaultParams({ dtYr: 1e6 });
+  const params = tierParams();
   for (let t = 1; t <= last; t++) {
     if (dir.has(`t${t}-height.i32`) && (t < last || dir.has(`t${t}-run.json`))) continue;
     const n = planet.n << (2 * t), resuming = dir.has(`t${t}-state.json`);
-    const start = resuming ? new Int32Array(n) : t === 1 ? refineSmooth(Float32Array.from(planet.height, (v) => v * 256), 0) : refineSmooth(dir.i32(`t${t - 1}-height`), t - 1);
+    const start = resuming ? new Int32Array(n) : refineSmooth(tierParent(planet, dir, t), t - 1);
     const r = new Regional(gpu, t, tierTable(planet, t, params), start);
     const run: TierRun = dir.json<TierRun>(`t${t}-partial`) ?? { tier: t, steps: 0, calls: 0, callS: [], rounds: [], slides: [], stepS: [] };
     const c0 = spent();

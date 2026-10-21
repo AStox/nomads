@@ -12,8 +12,8 @@ import { join } from "node:path";
 import { releaseGpu, theGpu } from "../src/gpu/device";
 import { PLANET_RADIUS_M, PLANET_TIER } from "../src/gpu/globe/grid";
 import { BAKE, bakeDir } from "../src/gpu/globe/bakedir";
-import { tiersOf } from "../src/gpu/globe/tiers";
-import { STREAM_STEPS, streamTier } from "../src/gpu/globe/tiers-stream";
+import { TIER_STEPS, tiersOf } from "../src/gpu/globe/tiers";
+import { streamTier } from "../src/gpu/globe/tiers-stream";
 import { readPlanet } from "../src/gpu/globe/window";
 import { STORE } from "./globe-planet";
 import { diskStore, sourceKey } from "./globe-window";
@@ -28,7 +28,7 @@ const hashOf = (path: string) => {
 
 if (import.meta.main) {
   const seed = Number(arg("seed", "1")), key = arg("key", "") || sourceKey(undefined, PLANET_RADIUS_M), last = Number(arg("last", String(PLANET_TIER))), budget = Number(arg("budget", "200"));
-  const only = arg("tier", ""), first = only ? Number(only) : 1, end = only ? Number(only) : last, steps = arg("steps", "") ? [0, ...arg("steps", "").split(",").map(Number)] : STREAM_STEPS;
+  const only = arg("tier", ""), first = only ? Number(only) : 1, end = only ? Number(only) : last, steps = arg("steps", "") ? [0, ...arg("steps", "").split(",").map(Number)] : TIER_STEPS;
   const block = Number(arg("block", "4")), orderArg = arg("order", "forward"), order = orderArg === "forward" || orderArg === "reverse" ? orderArg : Number(orderArg), maxSteps = arg("max-steps", "") ? Number(arg("max-steps", "")) : Infinity;
   const dir = bakeDir(seed, key), t0 = performance.now(), spent = () => (performance.now() - t0) / 1000;
   const peak = () => `rss ${(process.memoryUsage().rss / 2 ** 30).toFixed(2)} GB, peak ${(process.resourceUsage().maxRSS / 2 ** (process.platform === "darwin" ? 30 : 20)).toFixed(2)} GB`;
