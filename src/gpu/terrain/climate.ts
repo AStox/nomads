@@ -285,10 +285,9 @@ type Sources = Record<"prep" | "air" | "shape" | "sun" | "warm" | "snow" | "pet"
 // ---------- the run ----------
 export type Arena = { words: GPUBuffer; layout: Layout; destroy: () => void };
 
-// The bits a patch's snow years' sums of rain are shifted down by: a year's rain of up to 3,000 mm a year times 2^this fits their words [design: the planet's
-// wettest tier-0 cells hold 9,300 mm on seed 1, and the rain a block's cells share out (rain.ts: the orographic waves take the block's rain to its windward
-// faces) gathers 17,000 mm a year in one cell of a staged ridge, so 4: 48,000 mm].
-export const PATCH_SNOW_SHIFT = 4;
+// The bits a patch's snow years' sums of rain are shifted down by: a year's rain of up to 3,000 mm a year times 2^this fits their words [derived: a cell holds at most 32,000 mm
+// a season (air.ts WORD_MAX_MM, the words downstream hold Q16 in an i32), 128,000 mm a year, under 3,000 x 2^6 = 192,000].
+export const PATCH_SNOW_SHIFT = 6;
 
 // Runs every kernel, in one submission, and leaves the arena (the sections of SECTIONS) in a buffer for the function
 // below.

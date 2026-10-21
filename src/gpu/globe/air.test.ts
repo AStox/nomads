@@ -9,7 +9,8 @@ import { releaseGpu, theGpu } from "../device";
 import { SMALL_RADIUS_M } from "./grid";
 import { patchAt, type Patch } from "./patch";
 import { tableMargin } from "../terrain/rain";
-import { AIR_HALO, AIR_OUT, AIR_OUTPUTS, airOf, airStage, compact, rainOf, geometryOf, sampledOf, type AirTile } from "./air";
+import { AIR_HALO, AIR_OUT, AIR_OUTPUTS, RAIN_CAP, WORD_MAX_MM, airOf, airStage, capShares, compact, geometryOf, precipOfWord, rainOf, sampledOf, type AirTile } from "./air";
+import { PATCH_SNOW_SHIFT } from "../terrain/climate";
 import { runTiles, type Ctx } from "./stages";
 import { BakeDir } from "./tiers";
 import { readPlanet, type Planet } from "./window";
@@ -54,7 +55,8 @@ describe("the air stage on a staged planet", () => {
         worst = Math.max(worst, Math.abs(s / 256 - 300) / 300);
       }
     }
-    console.log(`the rain's block means against the planet's 300 mm: worst relative ${worst.toExponential(2)}`);
+    console.log(`the rain's block means against the planet's 300 mm: worst relative ${worst.toExponential(2)}, the wettest cell ${Math.max(...rain.precip[0]).toFixed(0)} mm`);
+    for (let k = 0; k < 4; k++) expect(Math.max(...rain.precip[k])).toBeLessThanOrEqual(RAIN_CAP * 300 * (1 + 1e-6));
     expect(worst).toBeLessThan(1e-5);
     // the wind blows toward east (x grows east at the centre of face 0): the windward side is x below the ridge
     const band = (from: number, to: number, k: number) => { let s = 0, c = 0; for (let y = patch.halo; y < patch.halo + 256; y++) for (let X = from; X < to; X++) { s += rain.precip[k][y * S + (X - (1920 - patch.halo))]; c++; } return s / c; };
@@ -72,6 +74,45 @@ describe("the air stage on a staged planet", () => {
     expect(sideBack(cx + 8, cx + 24)).toBeGreaterThan(1.05 * sideBack(cx - 24, cx - 8));
     // (a measured rose is not symmetric about its mean, so some contrast remains)
     expect(Math.abs(side(cx - 24, cx - 8) - side(cx + 8, cx + 24))).toBeLessThan(0.8 * (windward - lee));
+  }, 120_000);
+
+  test("a block's shares are capped, the surplus goes to the rest in proportion, and the mean stays", () => {
+    const share = Float64Array.from({ length: 256 }, (_, i) => (i === 3 ? 90 : i === 4 ? 40 : i < 100 ? 0 : 0.5 + (i % 5) * 0.1));
+    const sum = share.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < 256; i++) share[i] = (share[i] * 256) / sum;
+    const before = Float64Array.from(share);
+    capShares(share, 4);
+    expect(Math.max(...share)).toBeLessThanOrEqual(4 + 1e-9);
+    expect(share.reduce((a, b) => a + b, 0) / 256).toBeCloseTo(1, 12);
+    // the unclipped cells keep their order and their ratios
+    expect(share[200] / share[201]).toBeCloseTo(before[200] / before[201], 9);
+    expect(share[100]).toBeGreaterThan(before[100]);
+    expect(share[0]).toBe(0);
+    // a cap of 1 leaves the mean everywhere; a block of one cell holding everything is spread out
+    const one = Float64Array.from({ length: 256 }, (_, i) => (i === 7 ? 256 : 0));
+    capShares(one, 1);
+    expect(Math.max(...one)).toBeLessThanOrEqual(1 + 1e-9);
+    expect(one.reduce((a, b) => a + b, 0)).toBeCloseTo(256, 9);
+  });
+
+  test("a planet's rain of 20,000 mm a season, shared out by a mountain, holds no cell past the cap or the words, and the block keeps its rain", async () => {
+    const ctx = await ctxOf(planetOf(20_000, 8, 0)), patch = patchAt(TIER, 0, 1920, 1920, AIR_HALO), h = ridge(1920 + 128)(patch.ids);
+    const rain = await rainOf(ctx, patch, Float32Array.from(h, (v) => v / 256), geometryOf(patch, ctx.planet.radius), sampledOf(ctx, patch));
+    for (let k = 0; k < 4; k++) {
+      const top = Math.max(...rain.precip[k]);
+      console.log(`season ${k}: the wettest cell ${top.toFixed(0)} mm of ${WORD_MAX_MM}`);
+      expect(top).toBeLessThanOrEqual(WORD_MAX_MM * (1 + 1e-6));
+    }
+    const S = patch.side;
+    let s = 0;
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) s += rain.precip[0][(16 * 20 + y) * S + 16 * 20 + x];
+    expect(Math.abs(s / 256 - 20_000) / 20_000).toBeLessThan(1e-5);
+    // and the climate over it runs: a year of 80,000 mm is inside the snow years' words
+    expect(80_000).toBeLessThan(3000 * 2 ** PATCH_SNOW_SHIFT);
+    const hh = hills(patch.ids), air = await airOf(ctx, patch, hh, hh);
+    expect(air.precip[0].every((v) => Number.isFinite(v))).toBe(true);
+    expect(air.snowCover.every((v) => v >= 0 && v <= 1)).toBe(true);
+    expect(air.saturated).toBe(0);
   }, 120_000);
 
   test("a run is the same twice, and what the heights alone make is the same from two patches that overlap", async () => {
@@ -114,7 +155,7 @@ const gatherFile = (file: string, p: Patch) => {
 };
 const heightsAt = async (_: Ctx, p: Patch) => ({ h: gatherFile(`${BAKE}/t4-height.i32`, p), f: gatherFile(`${BAKE}/t4-flooded.i32`, p) });
 // The pinned hash of tile 458's stored words (this planet's and this engine's: re-record when the air stage, the planet or the bake changes, and say so)
-const PIN = { tile458: "b9531c6b8665a79f" };
+const PIN = { tile458: "91a017ef93d2c7fe" };
 
 describe("the air stage on the real planet (seed 1)", () => {
   real("tile 458 (face 1, a range with land and sea): the same twice, the stored words pinned, rain kept by block, and the stored files' sizes", async () => {
@@ -139,7 +180,15 @@ describe("the air stage on the real planet (seed 1)", () => {
     for (const k of [0, 1, 2, 3]) expect(a.precip[k].every((v) => v >= 0)).toBe(true);
     // the stored words hold what the stage made: the units' rounding is under half a unit
     const stored = compact(a), pr = stored[AIR_OUT.pr[0]] as Uint16Array;
-    expect(Math.abs(pr[(p.halo + 5) * S + p.halo + 5] / 10 - a.precip[0][(p.halo + 5) * S + p.halo + 5])).toBeLessThanOrEqual(0.05 + 1e-4);
+    let off = 0;
+    for (let i = 0; i < pr.length; i++) off = Math.max(off, Math.abs(precipOfWord(pr[i]) - a.precip[0][i]));
+    expect(off).toBeLessThan(0.2);
+    expect(a.saturated).toBe(0);
+    // no cell holds more than the cap's times its tier-0 cell's rain, or the words downstream hold
+    let over = 0;
+    for (let k = 0; k < 4; k++) for (let i = 0; i < a.precip[k].length; i++) over = Math.max(over, a.precip[k][i] / Math.max(1e-9, Math.min(RAIN_CAP * P0[k][Math.floor(p.ids[i] / (FN * FN)) * 65536 + (((p.ids[i] % (FN * FN)) >> 12) >> 4) * 256 + (((p.ids[i] % FN)) >> 4)], WORD_MAX_MM)));
+    console.log(`the largest cell against its bound (the cap times its tier-0 cell's rain): ${over.toFixed(6)}`);
+    expect(over).toBeLessThan(1 + 1e-5);
   }, 280_000);
 
   real("two patches of one tile that overlap agree: what the heights alone make exactly, the rest within what a halo cuts (measured, written as a gap in the note)", async () => {

@@ -26,7 +26,7 @@
 // rain's first drift whole; what it cuts is measured in the notes (docs/research/globe/2026-10-21-planet-75m-air.md) and by air.test.ts.
 import { SEASONS, SEASON_DAYS, H_W, LAPSE, ROSE, WET_ROSE, esat } from "../../terrain/climate";
 import { eastNorth, haloSource, pointOf, tierGrid } from "./grid";
-import { cloudDelays, rainHeights, rainParams, rainWords } from "../terrain/rain";
+import { MOST_TOTAL_M, cloudDelays, rainHeights, rainParams, rainWords } from "../terrain/rain";
 import { patchMeanWay, patchRose, runClimate, type PatchInput } from "../terrain/climate";
 import { BAND_DEG } from "../wgsl/terrain-climate";
 import type { RainFormat } from "../wgsl/terrain-rain";
@@ -39,9 +39,15 @@ import type { Ctx, Field, TileStage } from "./stages";
 
 const NS = SEASONS.length, DEG = Math.PI / 180;
 export const AIR_HALO = 128;
-// The orographic rain is reckoned on the detail relief over this: the transforms' words hold a coarse sum of 2e6 m, which a hundred metres of mean detail over a 512-cell patch passes
-// [derived: rain.ts MOST_TOTAL_M], so the heights and the background are taken at a quarter and the theory (linear in both, R1708) is read back at four times.
-export const RAIN_DOWN = 4;
+// The orographic rain is reckoned on the detail relief over this: the transforms' words hold a coarse sum of 2e6 m of height, which 122 m of mean detail over a 512-cell patch
+// passes [derived: rain.ts MOST_TOTAL_M], so the heights and the background are taken at a sixteenth and the theory (linear in both, R1708) is read back at sixteen times. The
+// detail is under the planet's highest ground (6.5 km) in size, so its mean under 400 m at this scale: the check cannot fail.
+export const RAIN_DOWN = 16;
+// No cell's rain is more than this many times its block's mean [design: orographic rain over a face of a mountain is a few times the air's own rain around it: Bornholm's
+// gauges rise 17% of the island's rain for each 100 m of height (R1327, r 0.82), 2.7 times over a kilometre, and the theory's gain over them is 3.5 (the rain note, finding 5);
+// a cell of 75 m on the wettest face of a block of 1.2 km is given 4 against the block's mean] and, whatever the block's, no more than the words downstream hold of a season's
+// rain: Q16 in an i32 is 32,767 mm [derived], held at 32,000.
+export const RAIN_CAP = 4, WORD_MAX_MM = 32_000;
 const BLOCK = 16;
 
 // ---------- the patch's place on the sphere ----------
@@ -148,7 +154,12 @@ export interface RainTile { made: Float32Array[]; precip: Float32Array[]; delays
 // The rain of each season on the patch's cells, mm over the season.
 export async function rainOf(ctx: Ctx, patch: Patch, height: Float32Array, geo: Geometry, planet: Sampled): Promise<RainTile> {
   const S = patch.side, n = S * S, fmt: RainFormat = { n: S, coarse: 4, cells: true, wide: true }, s = similarityOf(ctx.planet.radius).s, centre = ((S >> 1) * S) + (S >> 1);
-  const z = Float32Array.from(height, (h, i) => (Math.max(0, h) - Math.max(0, planet.surface[i])) / RAIN_DOWN);
+  // the scale: RAIN_DOWN, or the next power of two that keeps the transforms' words (a patch of detail over 1.9 km a cell on the mean: none on this planet), so that no tile throws
+  let detail = 0;
+  for (let i = 0; i < n; i++) detail += Math.abs(Math.max(0, height[i]) - Math.max(0, planet.surface[i]));
+  let down = RAIN_DOWN;
+  while (detail / down / 16 > 0.9 * MOST_TOTAL_M) down *= 2;
+  const z = Float32Array.from(height, (h, i) => (Math.max(0, h) - Math.max(0, planet.surface[i])) / down);
   const t0 = planet.t.map((v) => v[centre]), delays = t0.map((t) => cloudDelays(Math.exp(-Math.max(0, t) / LAPSE / H_W), s));
   const seasons = SEASONS.map((c, k) => ({ t: t0[k], mm: 0, rains: c.rains, rainWind: c.rainWind, rainHumid: c.rainHumid, rose: patchRose(WET_ROSE) }));
   const par = rainParams(patchRose(WET_ROSE), delays, seasons, fmt), cell = new Int32Array(2 * NS * n);
@@ -156,30 +167,54 @@ export async function rainOf(ctx: Ctx, patch: Patch, height: Float32Array, geo: 
   for (let k = 0; k < NS; k++) {
     const hours = SEASON_DAYS * 24 * SEASONS[k].rains, planetRain = ctx.planet.seasons[k].rain;
     for (let i = 0; i < n; i++) {
-      cell[k * n + i] = Math.round((planetRain[parent[i]] / hours / RAIN_DOWN) * 2 ** 24);
+      cell[k * n + i] = Math.round((planetRain[parent[i]] / hours / down) * 2 ** 24);
       cell[(NS + k) * n + i] = turnWord(planet.windE[k][i], planet.windN[k][i], geo.psi[i]);
     }
   }
   const words = await rainWords(ctx.gpu, fmt, rainHeights(z, fmt), par, cell);
-  // every block of the patch: its cells' made rain and the shape's, the block scaled to the tier-0 cell's own rain
+  // every block of the patch: its cells' made rain and the shape's, the block scaled to the tier-0 cell's own rain, no cell's share of it past the cap
   const block = new Map<number, number>(), blk = new Int32Array(n);
   for (let i = 0; i < n; i++) { const p = parent[i]; let b = block.get(p); if (b === undefined) block.set(p, (b = block.size)); blk[i] = b; }
-  const nb = block.size, count = new Float64Array(nb);
+  const nb = block.size, count = new Float64Array(nb), first = new Int32Array(nb + 1), order = new Int32Array(n);
   for (let i = 0; i < n; i++) count[blk[i]]++;
+  for (let b = 0; b < nb; b++) first[b + 1] = first[b] + count[b];
+  const fill = first.slice(0, nb);
+  for (let i = 0; i < n; i++) order[fill[blk[i]]++] = i;
   const made = [] as Float32Array[], precip = [] as Float32Array[];
   for (let k = 0; k < NS; k++) {
-    const m = Float32Array.from({ length: n }, (_, i) => (words[k * n + i] * RAIN_DOWN) / 65536), shape = planet.rain[k], p0 = ctx.planet.seasons[k].rain;
-    const sumMade = new Float64Array(nb), sumOut = new Float64Array(nb), out = new Float64Array(n);
+    const m = Float32Array.from({ length: n }, (_, i) => (words[k * n + i] * down) / 65536), shape = planet.rain[k], p0 = ctx.planet.seasons[k].rain;
+    const sumMade = new Float64Array(nb), out = new Float64Array(n), fin = new Float32Array(n);
     for (let i = 0; i < n; i++) sumMade[blk[i]] += m[i];
-    for (let i = 0; i < n; i++) { const mean = sumMade[blk[i]] / count[blk[i]]; out[i] = Math.max(0, mean > 0 ? (shape[i] * m[i]) / mean : shape[i]); sumOut[blk[i]] += out[i]; }
-    const fin = new Float32Array(n);
-    for (let i = 0; i < n; i++) {
-      const b = blk[i], mean = sumOut[b] / count[b], target = p0[parent[i]];
-      fin[i] = target <= 0 ? 0 : mean > 0 ? (out[i] * target) / mean : target;
+    for (let i = 0; i < n; i++) { const mean = sumMade[blk[i]] / count[blk[i]]; out[i] = Math.max(0, mean > 0 ? (shape[i] * m[i]) / mean : shape[i]); }
+    for (let b = 0; b < nb; b++) {
+      const cells = order.subarray(first[b], first[b + 1]), target = p0[parent[cells[0]]];
+      if (target <= 0) continue;
+      if (target > WORD_MAX_MM) throw new Error(`air: a tier-0 cell holds ${target.toFixed(0)} mm of rain in a season, past the ${WORD_MAX_MM} mm the downstream words hold`);
+      let sum = 0;
+      for (const i of cells) sum += out[i];
+      const share = new Float64Array(cells.length);
+      cells.forEach((i, j) => { share[j] = sum > 0 ? (out[i] * cells.length) / sum : 1; });
+      capShares(share, Math.max(1, Math.min(RAIN_CAP, WORD_MAX_MM / target)));
+      cells.forEach((i, j) => { fin[i] = target * share[j]; });
     }
     made.push(m); precip.push(fin);
   }
   return { made, precip, delays };
+}
+
+// Shares of a block's rain (their mean 1) with none past `cap`: the surplus of those past it goes to the rest in proportion to their own, over as many passes as it takes
+// (each cell past the cap is held at it), the mean kept; a last resort mixes the shares with the mean's own so that none passes [design].
+export function capShares(share: Float64Array, cap: number) {
+  const n = share.length;
+  for (let pass = 0; pass < 12; pass++) {
+    let surplus = 0, free = 0, nfree = 0;
+    for (let j = 0; j < n; j++) { if (share[j] > cap) { surplus += share[j] - cap; share[j] = cap; } else if (share[j] < cap) { free += share[j]; nfree++; } }
+    if (surplus === 0) return;
+    for (let j = 0; j < n; j++) if (share[j] < cap) share[j] += free > 0 ? (surplus * share[j]) / free : surplus / nfree;
+  }
+  let top = 0;
+  for (let j = 0; j < n; j++) top = Math.max(top, share[j]);
+  if (top > cap) { const lam = (top - cap) / (top - 1); for (let j = 0; j < n; j++) share[j] = (1 - lam) * share[j] + lam; }
 }
 
 // ---------- the climate ----------
@@ -244,22 +279,29 @@ const seasonal = (stem: string, type: string) => Array.from({ length: NS }, (_, 
 export const AIR_OUT = { pr: seasonal("t4-pr", "u16"), pe: seasonal("t4-pe", "u16"), sun: seasonal("t4-sun", "u16"), tmp: seasonal("t4-tmp", "i16"), hum: seasonal("t4-hum", "u8"), snow: "t4-snow.u8" };
 export const AIR_OUTPUTS = [...AIR_OUT.pr, ...AIR_OUT.pe, ...AIR_OUT.sun, ...AIR_OUT.tmp, ...AIR_OUT.hum, AIR_OUT.snow];
 // The units of the stored words.
-export const AIR_UNIT = { pr: 10, pe: 10, sun: 1024, tmp: 256, hum: 255, snow: 255 };
+export const AIR_UNIT = { pe: 10, sun: 1024, tmp: 256, hum: 255, snow: 255 };
+
+// The stored word of a season's rain: the square root of the mm times 360 (u16), so that 0.006 mm is held at a millimetre and 0.35 mm at the most a cell can hold
+// (32,000 mm), a linear 0.1 mm word saturating at 6,553 where the planet's own tier-0 cells hold 23,000 [design].
+export const PR_K = 360;
+export const precipWord = (mm: number) => Math.round(Math.sqrt(Math.max(0, mm)) * PR_K);
+export const precipOfWord = (v: number) => (v / PR_K) ** 2;
 
 export function compact(a: AirTile): Record<string, Field> {
   const out: Record<string, Field> = {};
   let saturated = 0;
-  const put = (name: string, src: Float32Array, unit: number, lo: number, hi: number, K: new (n: number) => Field) => {
+  const put = (name: string, src: Float32Array, word: (v: number) => number, lo: number, hi: number, K: new (n: number) => Field) => {
     const f = new K(src.length);
-    for (let i = 0; i < src.length; i++) { const v = Math.round(src[i] * unit); if (v < lo || v > hi) saturated++; f[i] = Math.max(lo, Math.min(hi, v)); }
+    for (let i = 0; i < src.length; i++) { const v = word(src[i]); if (v < lo || v > hi) saturated++; f[i] = Math.max(lo, Math.min(hi, v)); }
     out[name] = f;
   };
+  const linear = (unit: number) => (v: number) => Math.round(v * unit);
   for (let k = 0; k < NS; k++) {
-    put(AIR_OUT.pr[k], a.precip[k], AIR_UNIT.pr, 0, 65535, Uint16Array); put(AIR_OUT.pe[k], a.pet[k], AIR_UNIT.pe, 0, 65535, Uint16Array);
-    put(AIR_OUT.sun[k], a.sun[k], AIR_UNIT.sun, 0, 65535, Uint16Array); put(AIR_OUT.tmp[k], a.temp[k], AIR_UNIT.tmp, -32768, 32767, Int16Array);
-    put(AIR_OUT.hum[k], a.humid[k], AIR_UNIT.hum, 0, 255, Uint8Array);
+    put(AIR_OUT.pr[k], a.precip[k], precipWord, 0, 65535, Uint16Array); put(AIR_OUT.pe[k], a.pet[k], linear(AIR_UNIT.pe), 0, 65535, Uint16Array);
+    put(AIR_OUT.sun[k], a.sun[k], linear(AIR_UNIT.sun), 0, 65535, Uint16Array); put(AIR_OUT.tmp[k], a.temp[k], linear(AIR_UNIT.tmp), -32768, 32767, Int16Array);
+    put(AIR_OUT.hum[k], a.humid[k], linear(AIR_UNIT.hum), 0, 255, Uint8Array);
   }
-  put(AIR_OUT.snow, a.snowCover, AIR_UNIT.snow, 0, 255, Uint8Array);
+  put(AIR_OUT.snow, a.snowCover, linear(AIR_UNIT.snow), 0, 255, Uint8Array);
   a.saturated = saturated;
   return out;
 }
