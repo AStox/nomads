@@ -46,15 +46,15 @@ function around3(g0: Grid, f: number, X: number, Y: number, out: Int32Array) {
     }
 }
 const CORNER_BESIDE = [[0, 1, 3], [2, 1, 5], [6, 3, 7], [8, 5, 7]] as const;
-// Calls emit(parent, children) with the 4^tier interpolated values of each tier-0 cell, child (i, j) at index j * B + i (i east, j north).
-function eachParent(field: Field, tier: number, emit: (parent: number, v: Float64Array) => void) {
-  const g0 = tierGrid(0), B = 1 << tier, ids = new Int32Array(9), val = new Float64Array(9), out = new Float64Array(B * B);
+// Calls emit(parent, children) with the 4^(tier - from) interpolated values of each cell of tier `from` (tier 0 unless given), child (i, j) at index j * B + i (i east, j north).
+function eachParent(field: Field, tier: number, emit: (parent: number, v: Float64Array) => void, from = 0) {
+  const gp = tierGrid(from), fnp = gp.fn, up = tier - from, B = 1 << up, ids = new Int32Array(9), val = new Float64Array(9), out = new Float64Array(B * B);
   const wlo = new Float64Array(B), whi = new Float64Array(B), ilo = new Int32Array(B);
   for (let i = 0; i < B; i++) { const u = (i + 0.5) / B, lo = u < 0.5; ilo[i] = lo ? 0 : 1; whi[i] = lo ? u + 0.5 : u - 0.5; wlo[i] = 1 - whi[i]; }
   for (let f = 0; f < FACES; f++)
-    for (let Y = 0; Y < 256; Y++)
-      for (let X = 0; X < 256; X++) {
-        around3(g0, f, X, Y, ids);
+    for (let Y = 0; Y < fnp; Y++)
+      for (let X = 0; X < fnp; X++) {
+        around3(gp, f, X, Y, ids);
         for (let c = 0; c < 9; c++) if (ids[c] >= 0) val[c] = field[ids[c]];
         // a cube corner's missing cell: the mean of the two beside it
         for (const [c, a, b] of CORNER_BESIDE) if (ids[c] < 0) val[c] = (val[a] + val[b]) / 2;
@@ -65,11 +65,11 @@ function eachParent(field: Field, tier: number, emit: (parent: number, v: Float6
             out[j * B + i] = wj0 * (wlo[i] * val[c0] + whi[i] * val[c0 + 1]) + wj1 * (wlo[i] * val[c0 + 3] + whi[i] * val[c0 + 4]);
           }
         }
-        emit((f * 256 + Y) * 256 + X, out);
+        emit((f * fnp + Y) * fnp + X, out);
       }
 }
-const cellIndex = (tier: number, parent: number, c: number) => {
-  const B = 1 << tier, fn = 256 << tier, f = Math.floor(parent / 65536), r = parent - f * 65536, Y0 = Math.floor(r / 256), X0 = r - Y0 * 256, j = Math.floor(c / B), i = c - j * B;
+const cellIndex = (tier: number, parent: number, c: number, from = 0) => {
+  const up = tier - from, B = 1 << up, fn = 256 << tier, fnp = 256 << from, f = Math.floor(parent / (fnp * fnp)), r = parent - f * fnp * fnp, Y0 = Math.floor(r / fnp), X0 = r - Y0 * fnp, j = Math.floor(c / B), i = c - j * B;
   return (f * fn + Y0 * B + j) * fn + X0 * B + i;
 };
 // A height in 1/256 m above the sea for every cell of the tier, the children of each tier-0 cell summing to 256 times its height times 4^tier to the unit.
@@ -81,6 +81,53 @@ export function remapHeights(tier: number, height: Field): Int32Array {
     const d = Math.round(height[p] * 256 * n) - sum, base = Math.floor(d / n), rem = d - base * n;
     for (let c = 0; c < n; c++) out[cellIndex(tier, p, c)] = v[c] + base + (c < rem ? 1 : 0);
   });
+  return out;
+}
+// The heights of tier `from` (1/256 m) carried to a finer tier: each child the bilinear value between the parent's and its neighbours' centres, moved by one
+// whole-unit constant so that the children of a cell sum to 4^(tier - from) times its height exactly (the tier above's totals are kept) [design, R1761].
+export function remapInts(from: number, tier: number, height: Int32Array): Int32Array {
+  const n = 1 << (2 * (tier - from)), cells = CELLS0 << (2 * from), out = new Int32Array(cells * n);
+  if (height.length !== cells) throw new Error(`remapInts: tier ${from} holds ${cells} cells, got ${height.length}`);
+  eachParent(height, tier, (p, v) => {
+    let sum = 0;
+    for (let c = 0; c < n; c++) { v[c] = Math.round(v[c]); sum += v[c]; }
+    const d = height[p] * n - sum, base = Math.floor(d / n), rem = d - base * n;
+    for (let c = 0; c < n; c++) out[cellIndex(tier, p, c, from)] = v[c] + base + (c < rem ? 1 : 0);
+  }, from);
+  return out;
+}
+// remapInts for one tier up (children 2 by 2), the whole planet's 25 million cells in seconds: the same arithmetic as eachParent's (weights 3/4 and 1/4 of the two
+// nearest centres on each axis, so a child is (9a + 3b + 3c + d) / 16 rounded half up) with the cells round a face's edge or corner taken from eachParent's own path.
+export function refineInts(from: number, height: Int32Array): Int32Array {
+  const fnp = 256 << from, fn = fnp * 2, cells = fnp * fnp, out = new Int32Array(height.length * 4), gp = tierGrid(from), ids = new Int32Array(9), val = new Float64Array(9);
+  if (height.length !== CELLS0 << (2 * from)) throw new Error(`refineInts: tier ${from} holds ${CELLS0 << (2 * from)} cells, got ${height.length}`);
+  const o = (f: number, Y: number, X: number, j: number, i: number) => (f * fn + 2 * Y + j) * fn + 2 * X + i;
+  for (let f = 0; f < FACES; f++) {
+    const base = f * cells;
+    for (let Y = 0; Y < fnp; Y++) {
+      for (let X = 0; X < fnp; X++) {
+        const p = base + Y * fnp + X;
+        let sw: number, se: number, nw: number, ne: number, w: number, e: number, s: number, n: number, ce = height[p];
+        if (X > 0 && X < fnp - 1 && Y > 0 && Y < fnp - 1) {
+          w = height[p - 1]; e = height[p + 1]; s = height[p - fnp]; n = height[p + fnp];
+          sw = height[p - fnp - 1]; se = height[p - fnp + 1]; nw = height[p + fnp - 1]; ne = height[p + fnp + 1];
+        } else {
+          around3(gp, f, X, Y, ids);
+          for (let c = 0; c < 9; c++) if (ids[c] >= 0) val[c] = height[ids[c]];
+          for (const [c, a, b] of CORNER_BESIDE) if (ids[c] < 0) val[c] = (val[a] + val[b]) / 2;
+          sw = val[0]; s = val[1]; se = val[2]; w = val[3]; ce = val[4]; e = val[5]; nw = val[6]; n = val[7]; ne = val[8];
+        }
+        // child (i, j) lies at 1/4 or 3/4 of the way between the parent's centre and the neighbour's on each axis: weights 3/4 on the parent's side
+        const v00 = Math.round((9 * ce + 3 * w + 3 * s + sw) / 16), v10 = Math.round((9 * ce + 3 * e + 3 * s + se) / 16);
+        const v01 = Math.round((9 * ce + 3 * w + 3 * n + nw) / 16), v11 = Math.round((9 * ce + 3 * e + 3 * n + ne) / 16);
+        const d = height[p] * 4 - (v00 + v10 + v01 + v11), base4 = Math.floor(d / 4), rem = d - base4 * 4;
+        out[o(f, Y, X, 0, 0)] = v00 + base4 + (0 < rem ? 1 : 0);
+        out[o(f, Y, X, 0, 1)] = v10 + base4 + (1 < rem ? 1 : 0);
+        out[o(f, Y, X, 1, 0)] = v01 + base4 + (2 < rem ? 1 : 0);
+        out[o(f, Y, X, 1, 1)] = v11 + base4 + (3 < rem ? 1 : 0);
+      }
+    }
+  }
   return out;
 }
 // A quantity that is never negative (rain, runoff) on every cell of the tier, the children's mean the parent's value (to float32).
@@ -120,8 +167,10 @@ export function tierTable(planet: Planet, tier: number, p: ErosionParams): Uint3
     X[c * XSTRIDE] = wsum > 0 ? Math.floor(acc / wsum) : 0;
     X[c * XSTRIDE + 1] = Math.round((2 ** 15 * areaSr(g0, x, Y)) / meanSr);
     for (let d = 0; d < 8; d++) {
-      X[c * XSTRIDE + 2 + d] = invd[c * 8 + d] * 2 ** tier;
-      X[c * XSTRIDE + 10 + d] = invd[c * 8 + d] > 0 ? Math.round((tan * 256 * 2 ** 28) / (invd[c * 8 + d] * 2 ** tier)) : 0;
+      // a tier-0 corner cell has no diagonal neighbour toward the cube's corner, but its children do: the distance there is the diagonal of the two edges beside it [derived]
+      const iv = invd[c * 8 + d] > 0 || d < 4 ? invd[c * 8 + d] : Math.round((invd[c * 8 + d - 4] + invd[c * 8 + ((d - 3) & 3)]) / 2 / Math.SQRT2);
+      X[c * XSTRIDE + 2 + d] = iv * 2 ** tier;
+      X[c * XSTRIDE + 10 + d] = iv > 0 ? Math.round((tan * 256 * 2 ** 28) / (iv * 2 ** tier)) : 0;
     }
   }
   return X;

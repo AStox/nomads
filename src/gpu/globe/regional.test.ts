@@ -7,7 +7,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
 import { defaultParams } from "./erosion";
 import { FACES, centre, haloSource, tierGrid, type Grid } from "./grid";
-import { Regional, parentOf, remapAmounts, remapHeights, tierTable, type TierState } from "./regional";
+import { Regional, parentOf, refineInts, remapAmounts, remapHeights, remapInts, tierTable, type TierState } from "./regional";
 import type { Planet } from "./window";
 
 afterAll(releaseGpu);
@@ -134,5 +134,21 @@ describe("the regional tier", () => {
     expect(Array.from(resumed.carry)).toEqual(Array.from(a.carry));
     console.log(`regional step hash ${hash(a.height)}, ${lowered} cells lowered, ${raised} raised`);
     expect(hash(a.height)).toBe("e7ca2d8125bb8a49");
+  });
+});
+
+describe("the tiers made one from the one above", () => {
+  test("a tier carried to the next keeps each parent's height to the unit and refineInts is the general remap", () => {
+    let s = 777;
+    const heights = Int32Array.from({ length: N1 }, () => { s = (s * 1103515245 + 12345) >>> 0; return Math.round((s / 2 ** 32) * 3500 * 256 - 500 * 256); });
+    const fine = refineInts(TIER, heights), general = remapInts(TIER, TIER + 1, heights);
+    expect(fine.length).toBe(4 * N1);
+    expect(hash(fine)).toBe(hash(general));
+    // the four children of a cell sum to four times its height
+    const fn = 2 * g1.fn, total = new Float64Array(N1);
+    for (let f = 0; f < FACES; f++)
+      for (let Y = 0; Y < fn; Y++)
+        for (let X = 0; X < fn; X++) total[(f * g1.fn + (Y >> 1)) * g1.fn + (X >> 1)] += fine[(f * fn + Y) * fn + X];
+    for (let p = 0; p < N1; p++) expect(total[p]).toBe(4 * heights[p]);
   });
 });
