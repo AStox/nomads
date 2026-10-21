@@ -7,8 +7,8 @@ import type { BakeDir } from "./bakedir";
 import { KINDS, typeOf, type Field, type FieldType } from "./stages";
 
 const TILE = 256, CELLS = TILE * TILE;
-// Where a field comes from: a global field file of the top tier and the integer (of the field's own type, in the field's step) of each of its words.
-export interface Source { file: string; convert: (raw: number) => number }
+// Where a field comes from: global field files of the top tier (one or several: a year's mean of four seasons) and the integer, of the field's own type and in its step, made of their words.
+export interface Source { files: string[]; convert: (raw: number[]) => number }
 export type Planes = Record<string, Field>;
 
 const clampTo = (type: FieldType, v: number) => {
@@ -68,10 +68,10 @@ export function buildPyramid(dir: BakeDir, o: PyramidOptions): number[] {
   const read = (f: (typeof PYRAMID_FIELDS)[number], face: number, tx: number, ty: number): Field => {
     const out = new KINDS[f.type](CELLS), s = o.sources[f.name];
     if (!s) return out;
-    const K = KINDS[typeOf(s.file)], row = new K(TILE);
+    const Ks = s.files.map((file) => KINDS[typeOf(file)]), rows = Ks.map((K) => new K(TILE)), raw = new Array<number>(s.files.length);
     for (let y = 0; y < TILE; y++) {
-      readSync(fd(s.file), new Uint8Array(row.buffer), 0, TILE * K.BYTES_PER_ELEMENT, ((face * fn + ty * TILE + y) * fn + tx * TILE) * K.BYTES_PER_ELEMENT);
-      for (let x = 0; x < TILE; x++) out[y * TILE + x] = clampTo(f.type, s.convert(row[x]));
+      s.files.forEach((file, m) => readSync(fd(file), new Uint8Array(rows[m].buffer), 0, TILE * Ks[m].BYTES_PER_ELEMENT, ((face * fn + ty * TILE + y) * fn + tx * TILE) * Ks[m].BYTES_PER_ELEMENT));
+      for (let x = 0; x < TILE; x++) { for (let m = 0; m < rows.length; m++) raw[m] = rows[m][x]; out[y * TILE + x] = clampTo(f.type, s.convert(raw)); }
     }
     return out;
   };

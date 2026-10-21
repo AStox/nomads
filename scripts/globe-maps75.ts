@@ -74,11 +74,38 @@ function patchMaps(w: Window) {
     return [Math.min(255, c[0] * s * 1.3), Math.min(255, c[1] * s * 1.3), Math.min(255, c[2] * s * 1.3)];
   };
   write(w, "height", shaded);
+  // rivers: the water stage's mean flow where it has been made (log scale from 0.3 m3/s), else the drainage area; lakes at the flooded surface or the stage's standing water
+  const flow = optional("t4-flow.u32", () => dir.u32("t4-flow")), water = optional("t4-water.u16", () => new Uint16Array(dir.raw("t4-water.u16")));
   write(w, "rivers", (k, x, y) => {
     const i = w.ids[k], c = shaded(k, x, y);
-    if (height[i] > 0 && flooded[i] - height[i] >= 128) return WATER;
-    return height[i] > 0 && areaM2(acc[i]) >= RIVER_M2 / 8 ? mix(c, RIVER, Math.min(1, 0.4 + 0.6 * Math.log10(areaM2(acc[i]) / (RIVER_M2 / 8)) / 2)) : c;
+    if (height[i] > 0 && (water ? water[i] > 0 : flooded[i] - height[i] >= 128)) return WATER;
+    if (height[i] <= 0) return c;
+    const strength = flow ? Math.log10(flow[i] / 65536 / 0.3) / 2 : Math.log10(areaM2(acc[i]) / (RIVER_M2 / 8)) / 2;
+    return strength > 0 ? mix(c, RIVER, Math.min(1, 0.4 + 0.6 * strength)) : c;
   });
+  // rain, mm a year: cream under 300 to deep violet over 6 m, on a log scale
+  if (["t4-pr0.u16", "t4-pr1.u16", "t4-pr2.u16", "t4-pr3.u16"].every((f) => has(f))) {
+    const pr = [0, 1, 2, 3].map((s) => new Uint16Array(dir.raw(`t4-pr${s}.u16`)));
+    write(w, "rain", (k) => {
+      const i = w.ids[k];
+      if (height[i] <= 0) return heightColor(height[i] / 256);
+      const mm = pr.reduce((a, p) => a + (p[i] / 360) ** 2, 0), t = Math.max(0, Math.min(1, Math.log10(Math.max(mm, 1) / 100) / 2.3));
+      return mix([250, 240, 200], [60, 20, 120], t);
+    });
+  }
+  // cover: the island's colours for the shares of tree, shrub, grass, marsh and bare ground (mixed as the page's ground does), water and sea blue
+  if (["t4-tree.u8", "t4-shr.u8", "t4-grs.u8", "t4-mar.u8", "t4-bare.u8"].every((f) => has(f))) {
+    const [tree, shr, grs, mar, bare] = ["t4-tree", "t4-shr", "t4-grs", "t4-mar", "t4-bare"].map((f) => new Uint8Array(dir.raw(`${f}.u8`)));
+    const parts: RGB[] = [[30, 90, 40], [110, 130, 60], [170, 200, 90], [80, 150, 140], [150, 145, 140]];
+    write(w, "cover", (k, x, y) => {
+      const i = w.ids[k];
+      if (height[i] <= 0) return heightColor(height[i] / 256);
+      if (water ? water[i] > 0 : flooded[i] - height[i] >= 128) return WATER;
+      const s = [tree[i], shr[i], grs[i], mar[i], bare[i]], t = s.reduce((a, b) => a + b, 0) || 1, c = [0, 1, 2].map((m) => s.reduce((a, v, n) => a + (v / t) * parts[n][m], 0)) as RGB;
+      const sh = shaded(k, x, y), lum = (sh[0] + sh[1] + sh[2]) / (3 * 150);
+      return [Math.min(255, c[0] * lum), Math.min(255, c[1] * lum), Math.min(255, c[2] * lum)];
+    });
+  }
 }
 
 if (import.meta.main) {

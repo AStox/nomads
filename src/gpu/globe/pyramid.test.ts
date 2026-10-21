@@ -15,7 +15,7 @@ describe("the pyramid", () => {
     const dir = new BakeDir(mkdtempSync(join(tmpdir(), "pyr-"))), n = 6 * FN * FN;
     const height = Int32Array.from({ length: n }, (_, i) => ((i * 2654435761) >>> 0) % 4000000 - 1000000), rock = Uint8Array.from({ length: n }, (_, i) => ((i >> 1) ^ (i >> 9)) % 5), river = Uint8Array.from({ length: n }, (_, i) => (i % 97 === 0 ? 200 : i % 7));
     dir.write("t1-height.i32", height); dir.write("t1-rock.u8", rock); dir.write("t1-river.u8", river);
-    const counts = buildPyramid(dir, { seed: 1, key: "k", topTier: TOP, sources: { height: { file: "t1-height.i32", convert: (v) => v / 64 }, rock: { file: "t1-rock.u8", convert: (v) => v }, river: { file: "t1-river.u8", convert: (v) => v } } });
+    const counts = buildPyramid(dir, { seed: 1, key: "k", topTier: TOP, sources: { height: { files: ["t1-height.i32"], convert: ([v]) => v / 64 }, rock: { files: ["t1-rock.u8"], convert: ([v]) => v }, river: { files: ["t1-river.u8", "t1-height.i32"], convert: ([v]) => v } } });
     expect(counts).toEqual([6, 24]);
     const top = readTile(readFileSync(tilePath(dir.dir, 1, 3, 1, 0))), at = (x: number, y: number) => (3 * FN + y) * FN + x;
     expect(top.meta.tier).toBe(1);
