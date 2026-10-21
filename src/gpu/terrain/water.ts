@@ -30,6 +30,7 @@ export type HydroInput = {
   air: AirSeasons;
   inflow?: readonly Inflow[]; // a window's only (WINDOW_WATER)
   voidc?: Uint8Array; // a planet's patch only (planetWater): the cells that repeat a cube's corner and carry nothing
+  set?: Record<string, Int32Array>; // hydrologyPass: fields to load into a run (the words of global files at the patch)
 };
 
 const S = 4;
@@ -200,6 +201,35 @@ export async function hydrologyRaw(g: Gpu, input: HydroInput, names: readonly st
   const counters = new Uint32Array(await readback(g, AT, 12, AT_OF.cnt * len * 4));
   for (const b of [F, AT, ...run.owned]) b.destroy();
   return { fields, misc, basins: counters[0], flags: counters[1], lakes: counters[2], settle: run.settle };
+}
+
+// A run of chosen steps of the hydrology over a patch, for the planet's passes between its global solves: `script` calls the steps in the order wanted, `load` puts fields of `input.set` (whole
+// patch fields, such as a global head or a global gather's sums) into the run where they stand, and the named fields come back.
+export type PassApi = {
+  step: (entry: (typeof ENTRIES)[number], params?: number[], groups?: number) => void;
+  areas: () => void; // each cell's drainage area in cells (with the inflow's) in ga0
+  yearGather: () => void; // the year's surplus gathered into ga0
+  routePrep: () => void; // the five weights of the seasons' routes (the ground water in the fifth)
+  routeGather: () => void; // gathered into ga0..ga4 with the inflow
+  load: (names: readonly string[]) => void;
+};
+export async function hydrologyPass(g: Gpu, input: HydroInput, fmt: WaterFormat, names: readonly string[], script: (api: PassApi) => void): Promise<Record<string, Int32Array>> {
+  const { FIELD } = layoutOf(fmt), len = sideOf(fmt) ** 2;
+  const F = storage(g, pack(input, fmt)), AT = storage(g, AT_REGIONS.length * len * 4);
+  const run: Run = { g, F, AT, owned: [], fmt, src: waterWgsl(fmt), FIELD, len, sweeps: [0, 0], settle: [] };
+  script({
+    step: (entry, params, groups) => step(run, entry, params, groups),
+    areas: () => areas(run),
+    yearGather: () => { step(run, "weights", [1]); step(run, "gather", gatherOf(run, 1, "iy0l", 1), 1); },
+    routePrep: () => step(run, "routeprep"),
+    routeGather: () => step(run, "gather", gatherOf(run, 5, "is0l", 4), 1),
+    // a name `field@tag` loads input.set["field@tag"] into the field `field`: a field loaded twice with different words (a head before and after a solve)
+    load: (list) => { for (const name of list) { const a = input.set?.[name], field = name.split("@")[0]; if (!a || a.length !== len) throw new Error(`hydrologyPass: no field ${name} to load`); g.device.queue.writeBuffer(F, FIELD[field] * len * 4, a.buffer, a.byteOffset, a.byteLength); } },
+  });
+  const out: Record<string, Int32Array> = {};
+  for (const name of names) out[name] = new Int32Array(await readback(g, F, len * 4, FIELD[name] * len * 4));
+  for (const b of [F, AT, ...run.owned]) b.destroy();
+  return out;
 }
 
 // Each season's surplus over every cell as the water's own volume, Q6 m3 over the season: the bucket of `prep` and nothing after (a planet's format), the weights of the planet's global

@@ -70,7 +70,7 @@ export function mapped(ctx: Ctx, file: string): Field {
   return f;
 }
 export const unmap = () => maps.clear();
-const at = <A extends Field>(f: Field, ids: Int32Array): A => {
+export const at = <A extends Field>(f: Field, ids: Int32Array): A => {
   const out = new (f.constructor as new (n: number) => A)(ids.length);
   for (let k = 0; k < ids.length; k++) out[k] = f[ids[k]];
   return out;
@@ -217,9 +217,9 @@ export function inflowOf(ctx: Ctx, patch: Patch, local: (id: number) => number, 
 // `extra` names more of the hydrology's fields to keep in lastRun.fields (for measuring).
 export interface WaterConfig { climate: ClimateSource; tier?: number; halo?: number; sweeps?: readonly [number, number]; extra?: readonly string[] }
 
-// The patch's water: every output as a patch field (side * side), by file name.
-export async function waterOf(ctx: Ctx, patch: Patch, cfg: WaterConfig): Promise<Record<string, Field>> {
-  const t0 = performance.now(), nn = patch.ids.length, ids = patch.ids, local = localOf(patch), G = (f: string) => mapped(ctx, f);
+// The hydrology's input at a patch: the tier's fields mapped to the patch, the planet's receivers, flooded surface, lakes and discharge (as the inflow), and the climate.
+export function patchInput(ctx: Ctx, patch: Patch, cfg: WaterConfig): { input: HydroInput; local: (id: number) => number; inflow: Inflow[] } {
+  const nn = patch.ids.length, ids = patch.ids, local = localOf(patch), G = (f: string) => mapped(ctx, f);
   const h0 = at<Int32Array>(G(`t${ctx.tier}-height.i32`), ids), f0 = at<Int32Array>(G(`t${ctx.tier}-flooded.i32`), ids), gto = G(`t${ctx.tier}-to.u32`) as Uint32Array;
   const p = `t${ctx.tier}-`, basin0 = at<Uint8Array>(G(`${p}basin.u8`), ids), rock = at<Uint8Array>(G(`${p}rock.u8`), ids), drift = at<Uint8Array>(G(`${p}drift.u8`), ids), dd0 = at<Uint16Array>(G(`${p}dd.u16`), ids);
   const h = new Float32Array(nn), filled = new Float32Array(nn), to = new Int32Array(nn), basin = new Uint8Array(nn), driftDepth = new Float32Array(nn), voidc = new Uint8Array(nn);
@@ -237,12 +237,24 @@ export async function waterOf(ctx: Ctx, patch: Patch, cfg: WaterConfig): Promise
   }
   const q = dischargeStems(ctx.tier).map((s) => mappedDischarge(ctx, s)), cells = mappedDischarge(ctx, cellsStem(ctx.tier));
   const inflow = inflowOf(ctx, patch, local, gto, q, cells), c = cfg.climate(ctx, patch);
-  const input: HydroInput = { h, filled, to, basin, rock, drift, driftDepth, air: airOf(c), inflow, voidc };
+  return { input: { h, filled, to, basin, rock, drift, driftDepth, air: airOf(c), inflow, voidc }, local, inflow };
+}
+
+// The patch's water: every output as a patch field (side * side), by file name.
+export async function waterOf(ctx: Ctx, patch: Patch, cfg: WaterConfig): Promise<Record<string, Field>> {
+  const t0 = performance.now(), nn = patch.ids.length, { input, inflow } = patchInput(ctx, patch, cfg);
   const t1 = performance.now();
   const raw = await hydrologyRaw(ctx.gpu, input, ["water", "flow", "sf0", "sf1", "sf2", "sf3", "base", "chn", "valley", "pwr", "stb0", "stb1", "stb2", "stb3", "dry", "tab", "rtl", "rth", "qk0", "qk1", "qk2", "qk3", ...(cfg.extra ?? [])], planetWater(patch.side), cfg.sweeps ?? WATER_SWEEPS);
   if (raw.flags & 1) throw new Error("water: a receiver chain of the patch does not end at a root");
   if (raw.flags & 2) throw new Error("water: a flow path of the patch is longer than the counting sort holds");
-  const f = raw.fields, u16 = (v: number) => Math.min(65535, Math.max(0, v));
+  const out = waterOutputs(ctx, patch, raw.fields, nn);
+  recordRun(raw, inflow.length, t0, t1);
+  return out;
+}
+
+// The stored files' patch fields from the kernels' words (the fields of a finished run): every unit conversion of the outputs, and the patch's interior quick runoff in lastRun.quick.
+export function waterOutputs(ctx: Ctx, patch: Patch, f: Record<string, Int32Array>, nn: number): Record<string, Field> {
+  const u16 = (v: number) => Math.min(65535, Math.max(0, v));
   const water = new Uint16Array(nn), flow = new Uint32Array(nn), qwet = new Uint32Array(nn), base = new Uint16Array(nn), chn = new Uint8Array(nn), valley = new Uint8Array(nn), pwr = new Uint16Array(nn), dry = new Uint16Array(nn);
   const stb = [0, 1, 2, 3].map(() => new Uint16Array(nn));
   const Zcm = 100 / 2 ** 17, Z256 = 256 / 2 ** 17, tab = new Uint16Array(nn), under = new Uint16Array(nn);
@@ -263,9 +275,12 @@ export async function waterOf(ctx: Ctx, patch: Patch, cfg: WaterConfig): Promise
   for (let y = 0; y < TILE; y++) for (let x = 0; x < TILE; x++) { const k = (y + patch.halo) * patch.side + x + patch.halo; for (let s = 0; s < 4; s++) qs[s] += f[`qk${s}`][k]; }
   const mean = (qs[0] + qs[1] + qs[2] + qs[3]) / 4;
   lastRun.quick = qs.map((v) => (mean > 0 ? v / mean : 0));
-  lastRun.sweeps = [raw.misc[MISC.sweeps1], raw.misc[MISC.sweeps2]]; lastRun.flags = raw.flags; lastRun.inflows = inflow.length; lastRun.fields = raw.fields; lastRun.settle = raw.settle;
+  return Object.fromEntries(waterFiles(ctx.tier).map((name, k) => [name, [water, flow, qwet, base, chn, valley, pwr, stb[0], stb[1], stb[2], stb[3], dry, tab, under][k]]));
+}
+
+function recordRun(raw: { misc: Int32Array; flags: number; settle: Settle[]; fields: Record<string, Int32Array> }, inflows: number, t0: number, t1: number) {
+  lastRun.sweeps = [raw.misc[MISC.sweeps1], raw.misc[MISC.sweeps2]]; lastRun.flags = raw.flags; lastRun.inflows = inflows; lastRun.fields = raw.fields; lastRun.settle = raw.settle;
   lastRun.seconds = { inputs: (t1 - t0) / 1000, gpu: (performance.now() - t1) / 1000 };
-  return Object.fromEntries(waterFiles(ctx.tier).map((f, k) => [f, [water, flow, qwet, base, chn, valley, pwr, stb[0], stb[1], stb[2], stb[3], dry, tab, under][k]]));
 }
 
 export function waterStage(cfg: WaterConfig): TileStage {

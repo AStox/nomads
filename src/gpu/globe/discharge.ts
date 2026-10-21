@@ -90,3 +90,18 @@ export function sumUpstream(to: ArrayLike<number>, weight: (id: number) => numbe
   }
   return total;
 }
+
+// A forest sorted by depth for the passes that need one, made once from the tier's receivers.
+export async function forestOf(gpu: Gpu, dir: BakeDir, tier: number): Promise<Regional> {
+  const g = tierGrid(tier), N = FACES * g.fn * g.fn, to = new Uint32Array(dir.raw(`t${tier}-to.u32`)), zero = new Int32Array(N), r = new Regional(gpu, tier, new Uint32Array(20 * 6 * 256 * 256), zero, zero);
+  await r.forest(to);
+  return r;
+}
+// Signed weight files (i32 a cell) summed down the forest, each into `<stem>-lo.i32` and `<stem>-hi.i32` (the 64-bit two's complement sum's words); `mask` as Regional.gatherSigned takes it.
+export async function signedGatherOf(r: Regional, dir: BakeDir, weights: readonly string[], stems: readonly string[], mask: Uint32Array, log: (s: string) => void = () => {}): Promise<void> {
+  for (let c = 0; c < weights.length; c++) {
+    const t0 = performance.now(), { lo, hi } = await r.gatherSigned(new Int32Array(dir.raw(weights[c])), mask);
+    dir.write(`${stems[c]}-lo.i32`, lo); dir.write(`${stems[c]}-hi.i32`, hi);
+    log(`gather: ${stems[c]} from ${weights[c]} ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+  }
+}

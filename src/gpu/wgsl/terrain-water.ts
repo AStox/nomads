@@ -59,7 +59,7 @@ export const FIELD = Object.fromEntries(FIELDS.map((n, k) => [n, k])) as Record<
 // `side` is the grid's side in cells (the island's 256 by default; a patch of the planet's tier is 256 plus its halo twice). `planet` is the format of a patch of the whole planet
 // (always a window's): a cell may be `void` (a repeat at a cube's corner: it carries no water and no flux), and a hollow's lake stands at the flooded surface the planet's flood
 // gave it (the hollows are the planet's, so none is cut by the grid's edge and no lake's level is a window's) [design].
-export interface WaterFormat { zb: number; qb: number; window: boolean; side?: number; planet?: boolean }
+export interface WaterFormat { zb: number; qb: number; window: boolean; side?: number; planet?: boolean; len?: number }
 export const ISLAND_WATER: WaterFormat = { zb: 20, qb: 26, window: false };
 export const WINDOW_WATER: WaterFormat = { zb: 17, qb: 16, window: true };
 export const planetWater = (side: number): WaterFormat => ({ zb: 17, qb: 16, window: true, side, planet: true });
@@ -159,8 +159,8 @@ const driftK = DRIFTS.map((d) => `${Math.round(d.ksat * YEAR_S * TS)}u`).join(",
 const driftShare = DRIFTS.flatMap((d) => d.recharge.map((r) => `${q16(r)}i`)).join(", ");
 const driftSy = DRIFTS.map((_, k) => `${q16(SY_DRIFT[k] ?? 0)}i`).join(", ");
 
-const constsOf = (fmt: WaterFormat, FIELDS: readonly string[]) => {
-  const ZS = 2 ** fmt.zb, [REED_FULL, REED_NONE] = reedZ(ZS), W = fmt.window, LEN = sideOf(fmt) ** 2;
+export const constsOf = (fmt: WaterFormat, FIELDS: readonly string[]) => {
+  const ZS = 2 ** fmt.zb, [REED_FULL, REED_NONE] = reedZ(ZS), W = fmt.window, LEN = fmt.len ?? sideOf(fmt) ** 2;
   return /* wgsl */ `
 const SIDE = ${sideOf(fmt)}u;
 const SIDEI = ${sideOf(fmt)}i;
@@ -223,7 +223,7 @@ const headWords = () => {
   const t = BigInt(Math.round((WINDOW_HEAD_C / CELL) * 2 ** 52)) << 8n;
   return `const HEAD_T0 = ${t & 0xffffffffn}u;\nconst HEAD_T1 = ${t >> 32n}u;`;
 };
-const kernelsOf = (fmt: WaterFormat) => {
+export const kernelsOf = (fmt: WaterFormat) => {
   // the units the format's words imply: the shift that takes a height in Z to whole units of its scale, the slope35 fall's
   // units (2^-(zb + 15)) to Q30, and the log2 of a flow's scale over Q16's
   const zb = fmt.zb, s30 = zb - 15, W = fmt.window, side = sideOf(fmt), pow2 = (side & (side - 1)) === 0, planet = fmt.planet === true;
@@ -394,6 +394,13 @@ fn hollowset(@builtin(global_invocation_id) g: vec3u) {
   let inb = gi(f_basin, i) != 0i && gi(f_sea, i) == 0i;
   wi(f_hol, i, select(-1i, i32(i), inb));
   wi(f_spl, i, select(0i, 1i, inb));
+}
+// where a channel begins (the weights of the planet's channel gather: a cell is a channel where anything that drains to it begins one), needs the cells gathered and the fall
+@compute @workgroup_size(256)
+fn beginsw(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  let valid = gi(f_sea, i) == 0i && !nonspill(i);
+  wi(f_wt0, i, select(0i, 1i, valid && begins(gu(f_ga0l, i), gu(f_fall, i))));
 }` : ""}
 
 // ---------- the tree: depth by pointer jumping, then the cells filed by depth ----------
@@ -702,12 +709,14 @@ fn aqw(@builtin(global_invocation_id) g: vec3u) {
 var<workgroup> wch: atomic<u32>;
 // One cell's relaxation step (the one law of the sweep, whatever the order the sweep visits the cells in): its head moves to where its neighbours, its recharge and the plants' draw would
 // put it, over-relaxed, and never above the ground (or its channel's stage); the change in the head, 0 for a fixed cell.
-fn aq_cell(i: u32) -> u32 {
+fn aq_cell(i: u32) -> u32 { return aq_cell_n(i, i - 1u, i + 1u, i - SIDE, i + SIDE); }
+// the same step with the cells west, east, below (y - 1) and above (y + 1) it given: a grid whose neighbours are not at fixed offsets (the whole planet's) passes them
+fn aq_cell_n(i: u32, iw: u32, ie: u32, is_: u32, in_: u32) -> u32 {
   if (F[f_isf + i] ${W ? "== 1i" : "!= 0i"}) { return 0u; }
-  var acc = mul64(bitcast<u32>(F[f_head + i - 1u] + OFF), gu(f_ww, i));
-  acc = add64(acc, mul64(bitcast<u32>(F[f_head + i + 1u] + OFF), gu(f_we, i)));
-  acc = add64(acc, mul64(bitcast<u32>(F[f_head + i - SIDE] + OFF), gu(f_wn, i)));
-  acc = add64(acc, mul64(bitcast<u32>(F[f_head + i + SIDE] + OFF), gu(f_ws, i)));
+  var acc = mul64(bitcast<u32>(F[f_head + iw] + OFF), gu(f_ww, i));
+  acc = add64(acc, mul64(bitcast<u32>(F[f_head + ie] + OFF), gu(f_we, i)));
+  acc = add64(acc, mul64(bitcast<u32>(F[f_head + is_] + OFF), gu(f_wn, i)));
+  acc = add64(acc, mul64(bitcast<u32>(F[f_head + in_] + OFF), gu(f_ws, i)));
   let kd = gu(f_evk, i);
   if (kd != 0u) { acc = add64(acc, mul64(bitcast<u32>(F[f_head + i] + OFF), gu(f_wd, i))); }
   acc = add64(acc, vec2u(0x40000000u, 0u));
@@ -1098,4 +1107,4 @@ const MISC_ROUNDS = ${MISC.rounds}u;
 const MISC_QUICK = ${MISC.quick}u;
 ` + kernelsOf(fmt)).replace(/(@compute @workgroup_size\(256\)\nfn \w+\(.*\) \{)/g, "$1\n  touch();");
 export const WATER_WGSL = waterWgsl(ISLAND_WATER);
-export const ENTRIES = ["prep", "hollows", "hollowset", "levels", "weights", "gather", "flow0", "channels", "fixedset", "aqprep", "aqw", "aquifer", "aqrb", "outflux", "routeprep", "routefin", "quicksum", "lakeprep", "lakecand", "lakelevel", "lakewater", "lakefill", "surplusw", "afterlake", "tables", "seasons", "banks", "reach", "valley", "under", "springs"] as const;
+export const ENTRIES = ["prep", "hollows", "hollowset", "beginsw", "levels", "weights", "gather", "flow0", "channels", "fixedset", "aqprep", "aqw", "aquifer", "aqrb", "outflux", "routeprep", "routefin", "quicksum", "lakeprep", "lakecand", "lakelevel", "lakewater", "lakefill", "surplusw", "afterlake", "tables", "seasons", "banks", "reach", "valley", "under", "springs"] as const;

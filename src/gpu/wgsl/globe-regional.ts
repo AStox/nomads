@@ -19,7 +19,7 @@
 import { FIXED } from "./fixed";
 
 // Fields of E (flat cells, one i32 word each).
-export const RF = { H: 0, W: 1, TO: 2, RD: 3, UA: 4, UB: 5, DA: 6, DB: 7, DP: 8, ORD: 9, ACC: 10, ER: 11, RHO: 12, COUNT: 13 } as const;
+export const RF = { H: 0, W: 1, TO: 2, RD: 3, UA: 4, UB: 5, DA: 6, DB: 7, DP: 8, ORD: 9, ACC: 10, ER: 11, RHO: 12, KQ: 13, TQ: 14, COUNT: 15 } as const;
 // Fields below SPLIT live in E, the rest in E2: tier 4's thirteen fields of 100 million words are 5.2 GB, over a buffer's 4 GB.
 export const SPLIT = 7;
 export const MAXD = 16382; // the deepest flow path the counting sort holds, in cells
@@ -27,13 +27,20 @@ export const HIST = 16384;
 // AT words after the flooded surface (N words): the depth histogram, its cursors, the start of each depth's run, 16 counters, then three words for each tier-0 cell (loss, land count, carry).
 export const CNT = { flags: 0, top: 1, changed: 2 } as const;
 export const FLAG = { chain: 1, depth: 2, area: 4 } as const;
-export const XSTRIDE = 20; // words a tier-0 cell holds in X: erodibility word, area weight (Q15 of the mean cell), eight inverse distances (Q28 of 1/m at the tier's spacing), the steepest fall (1/256 m) to each of the eight neighbours
+// Words a tier-0 cell holds in X: [0] the rock's erodibility (a pool-weighted K word), [1] the area weight (Q15 of the mean cell), [2..9] eight inverse distances (Q28 of 1/m at the tier's
+// spacing), [10..17] the distance to each of the eight neighbours (Q16 m), [18] the rock's threshold slope (tan, Q20), [19] the year's rain over the reference rain (Q8), [20..27] each
+// direction's creep coefficient for one step (D dt weight / d^2, Q24). The erodibility, the threshold slope and the rain are read at a cell by interpolating the four tier-0 cells round
+// it (`smooth`), not as one value to a block, so none steps at a block's edge.
+export const XSTRIDE = 28;
 
-export function regionalWgsl(edges: readonly (readonly { face: number; side: number; flip: boolean }[])[], fn: number): string {
+// The neighbours the flood and the receivers read: 4 as the island's flood and receivers do (water leaves a cell by an edge, never across a corner, so no river runs straight on the
+// diagonal of the lattice), or 8; the landslides read all 8 (a slope is as steep across a corner as along an edge).
+export const FLOW_NEIGHBOURS = 4;
+export function regionalWgsl(edges: readonly (readonly { face: number; side: number; flip: boolean }[])[], fn: number, nflow: 4 | 8 = FLOW_NEIGHBOURS): string {
   const flat = edges.flatMap((e) => e);
   const fields = Object.entries(RF).filter(([k]) => k !== "COUNT").map(([k, v]) => `const E_${k}: u32 = ${v}u;`).join("\n");
   return /* wgsl */ `${FIXED}
-const FN = ${fn}u; const FNI = ${fn}i; const CELLS = ${fn * fn}u; const N = ${6 * fn * fn}u; const NP = 393216u; const FACT = ${fn / 256}u;
+const FN = ${fn}u; const FNI = ${fn}i; const CELLS = ${fn * fn}u; const N = ${6 * fn * fn}u; const NP = 393216u; const FACT = ${fn / 256}u; const NFLOW = ${nflow}u;
 const EDGE_FACE = array<u32, 24>(${flat.map((e) => `${e.face}u`).join(", ")});
 const EDGE_SIDE = array<u32, 24>(${flat.map((e) => `${e.side}u`).join(", ")});
 const EDGE_FLIP = array<u32, 24>(${flat.map((e) => (e.flip ? "1u" : "0u")).join(", ")});
@@ -113,7 +120,7 @@ fn flood(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   if (k >= N) { return; }
   if (!is_land(k)) { return; }
   var m = INF;
-  for (var d = 0u; d < 8u; d++) {
+  for (var d = 0u; d < NFLOW; d++) {
     let j = nbr(k, d);
     if (j != NONE) { m = min(m, fl(j)); }
   }
@@ -133,7 +140,7 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   var to = k; var rd = 0u; var best = vec2u(0u, 0u);
   if (is_land(k)) {
     let f = fl(k);
-    for (var d = 0u; d < 8u; d++) {
+    for (var d = 0u; d < NFLOW; d++) {
       let j = nbr(k, d);
       if (j == NONE) { continue; }
       let dz = f - fl(j);
@@ -279,6 +286,50 @@ fn area64(@builtin(local_invocation_index) t: u32) {
   }
 }
 
+// the gather with signed weights and a mask word a cell (E_RD): bit 1 a cell whose negative sum passes down as nothing, bit 2 a cell whose sum is not passed down at all; the sums as 64-bit
+// two's complement, the low word in ACC and the high in ER
+@compute @workgroup_size(256)
+fn areaS64(@builtin(local_invocation_index) t: u32) {
+  touch();
+  let top = top_depth(t);
+  for (var s = 0u; s <= top; s++) {
+    let d = top - s;
+    let lo = level_lo(d); let hi = level_hi(d, top);
+    for (var p = lo + t; p < hi; p += 256u) {
+      let k = u32(e_get(E_ORD, p));
+      let w = e_get(E_W, k);
+      var a = vec2u(bitcast<u32>(w), select(0u, 0xffffffffu, w < 0i));
+      for (var e = 0u; e < 8u; e++) {
+        let j = nbr(k, e);
+        if (j != NONE && j != k && e_getu(E_TO, j) == k) {
+          let c = vec2u(e_getu(E_ACC, j), e_getu(E_ER, j)); let m = e_getu(E_RD, j);
+          if ((m & 2u) == 0u && !((m & 1u) != 0u && isneg64(c))) { a = add64(a, c); }
+        }
+      }
+      e_setu(E_ACC, k, a.x);
+      e_setu(E_ER, k, a.y);
+    }
+    storageBarrier(); workgroupBarrier();
+  }
+}
+// the nearest cell at or below each cell (down its receivers) whose flag (E_W, not 0) is set, NONE where there is none: the shallowest first
+@compute @workgroup_size(256)
+fn reach64(@builtin(local_invocation_index) t: u32) {
+  touch();
+  let top = top_depth(t);
+  for (var d = 0u; d <= top; d++) {
+    let lo = level_lo(d); let hi = level_hi(d, top);
+    for (var p = lo + t; p < hi; p += 256u) {
+      let k = u32(e_get(E_ORD, p));
+      let j = e_getu(E_TO, k);
+      var r = NONE;
+      if (e_getu(E_W, k) != 0u) { r = k; } else if (j != k) { r = e_getu(E_ACC, j); }
+      e_setu(E_ACC, k, r);
+    }
+    storageBarrier(); workgroupBarrier();
+  }
+}
+
 // ---- the implicit stream power step, shallowest depth first ----
 // n = 1 (m = 1/2): h' = h_r + (h - h_r) / (1 + f), f = K dt sqrt(A) / d, Braun and Willett 2013. A is the discharge area at the reference rain.
 @compute @workgroup_size(256)
@@ -296,7 +347,7 @@ fn incise(@builtin(local_invocation_index) t: u32) {
       var hj = 0i;
       if (is_land(j)) { hj = e_get(E_H, j); }
       if (hj >= hk) { continue; }
-      let kc = X[pid(k) * ${XSTRIDE}u];
+      let kc = e_getu(E_KQ, k);
       if (kc == 0u) { continue; }
       let acc = e_getu(E_ACC, k); let rd = e_getu(E_RD, k);
       let delta = u32(hk - hj);
@@ -339,12 +390,12 @@ fn slide(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   if (k >= N) { return; }
   let h = e_get(E_H, k);
   if (h <= 1i) { return; }
-  let base = pid(k) * ${XSTRIDE}u + 10u;
+  let base = pid(k) * ${XSTRIDE}u + 10u; let tq = e_getu(E_TQ, k);
   var lim = h;
   for (var d = 0u; d < 8u; d++) {
     let j = nbr(k, d);
     if (j == NONE) { continue; }
-    lim = min(lim, max(e_get(E_H, j), 0i) + i32(X[base + d]));
+    lim = min(lim, max(e_get(E_H, j), 0i) + i32(shr64(mul64(tq, X[base + d]), 28u).x));
   }
   let nh = max(lim, 1i);
   if (nh < h) {
@@ -378,7 +429,7 @@ fn tally(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   let p = pid(k);
   atomicAdd(&AT[A_PC + p], 1i);
   let er = e_get(E_ER, k);
-  if (er > 0i) { atomicAdd(&AT[A_PS + p], er); }
+  atomicAdd(&AT[A_PS + p], er);
 }
 // the tier-0 cell next to p in direction d (0 east, 1 north, 2 west, 3 south, 4 NE, 5 NW, 6 SW, 7 SE), across a face's edge where it is one; NONE at a cube's corner's missing diagonal
 fn pnbr(p: u32, d: u32) -> u32 {
@@ -496,6 +547,70 @@ fn pcarry(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw
   if (p >= NP) { return; }
   if (fl(A_PC + p) == 0i) { return; }
   atomicStore(&AT[A_CARRY + p], fl(A_PS + p) + fl(A_CARRY + p) - fl(A_PL + p));
+}
+// ---- the rock, the threshold slope and the rain at each cell: the four tier-0 cells round it weighted by the cell's place, as interp weights them ----
+fn interpx(k: u32, wd: u32) -> u32 {
+  let f = k / CELLS; let r = k - f * CELLS; let cy = r / FN; let cx = r - cy * FN;
+  let ix = i32(cx % FACT); let iy = i32(cy % FACT); let B = i32(FACT);
+  let wxn = u32(abs(2 * ix + 1 - B)) * (32768u / FACT); let wyn = u32(abs(2 * iy + 1 - B)) * (32768u / FACT);
+  let wxc = 65536u - wxn; let wyc = 65536u - wyn;
+  let p = pid(k);
+  let dxs = select(0u, 2u, 2 * ix + 1 < B);
+  let dys = select(1u, 3u, 2 * iy + 1 < B);
+  var dd = 4u;
+  if (dxs == 2u && dys == 1u) { dd = 5u; } else if (dxs == 2u && dys == 3u) { dd = 6u; } else if (dxs == 0u && dys == 3u) { dd = 7u; }
+  let px = pnbr(p, dxs); let py = pnbr(p, dys); let pd = pnbr(p, dd);
+  var w = array<u32, 4>(shr64(mul64(wxc, wyc), 16u).x, 0u, 0u, 0u);
+  var v = array<u32, 4>(X[p * ${XSTRIDE}u + wd], 0u, 0u, 0u);
+  if (px != NONE) { w[1] = shr64(mul64(wxn, wyc), 16u).x; v[1] = X[px * ${XSTRIDE}u + wd]; }
+  if (py != NONE) { w[2] = shr64(mul64(wxc, wyn), 16u).x; v[2] = X[py * ${XSTRIDE}u + wd]; }
+  if (pd != NONE) { w[3] = shr64(mul64(wxn, wyn), 16u).x; v[3] = X[pd * ${XSTRIDE}u + wd]; }
+  var wsum = 0u; var acc = vec2u(0u, 0u);
+  for (var j = 0u; j < 4u; j++) { wsum += w[j]; acc = add64(acc, mul64(v[j], w[j])); }
+  let n = add64(acc, vec2u(wsum >> 1u, 0u));
+  return divw(n.y, n.x, wsum).x;
+}
+@compute @workgroup_size(256)
+fn cellmeans(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  e_setu(E_KQ, k, interpx(k, 0u));
+  e_setu(E_TQ, k, interpx(k, 18u));
+  e_setu(E_RHO, k, interpx(k, 19u));
+}
+
+// ---- hillslope creep: dh = D dt (9-point Laplacian) per step, in P[1] substeps, over land (the sea is the base at zero); what a cell loses or gains is booked like the rest ----
+fn mulq24(a: i32, c: u32) -> i32 {
+  let m = shr64(add64(mul64(u32(abs(a)), c), vec2u(1u << 23u, 0u)), 24u).x;
+  return select(i32(m), -i32(m), a < 0i);
+}
+@compute @workgroup_size(256)
+fn creep(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  let h = e_get(E_H, k);
+  if (h <= 0i) { e_set(E_UA, k, h); return; }
+  let base = pid(k) * ${XSTRIDE}u + 20u; let subs = max(1u, P[1]);
+  var dh = 0i;
+  for (var d = 0u; d < 8u; d++) {
+    let j = nbr(k, d);
+    if (j == NONE) { continue; }
+    dh += mulq24(max(e_get(E_H, j), 0i) - h, X[base + d] / subs);
+  }
+  e_set(E_UA, k, max(1i, h + dh));
+}
+@compute @workgroup_size(256)
+fn creepapply(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  let h = e_get(E_H, k);
+  if (h <= 0i) { return; }
+  let nh = e_get(E_UA, k);
+  e_set(E_ER, k, e_get(E_ER, k) + (h - nh));
+  e_set(E_H, k, nh);
 }
 `;
 }

@@ -158,7 +158,8 @@ const STACK = [1, 4, 2, 3, 0];
 const tanOfPools = () => ROCK_OF.map((r) => Math.tan((THRESHOLD_DEG[r] * Math.PI) / 180));
 export function tierTable(planet: Planet, tier: number, p: ErosionParams): Uint32Array {
   const g0 = tierGrid(0, planet.radius), gt = tierGrid(tier, planet.radius), X = new Uint32Array(CELLS0 * XSTRIDE), kw = p.K.map((k) => kWord(gt, p, k)), tanOf = tanOfPools();
-  const { invd } = neighbourTables(g0), meanSr = (4 * Math.PI) / CELLS0;
+  // a planet with no climate (a staged one) rains the reference rain everywhere
+  const { invd } = neighbourTables(g0), meanSr = (4 * Math.PI) / CELLS0, rain = planet.seasons ? annualRain(planet) : new Float32Array(CELLS0).fill(REF_RAIN_MMYR);
   for (let c = 0; c < CELLS0; c++) {
     let rem = SKIN_M, wsum = 0, acc = 0, tanSum = 0;
     for (const pl of STACK) { const w = Math.min(Math.max(0, planet.pools[pl][c]), rem); rem -= w; wsum += w; acc += w * kw[pl]; tanSum += w * tanOf[pl]; }
@@ -166,14 +167,25 @@ export function tierTable(planet: Planet, tier: number, p: ErosionParams): Uint3
     const f = Math.floor(c / 65536), r = c - f * 65536, Y = Math.floor(r / 256), x = r - Y * 256;
     X[c * XSTRIDE] = wsum > 0 ? Math.floor(acc / wsum) : 0;
     X[c * XSTRIDE + 1] = Math.round((2 ** 15 * areaSr(g0, x, Y)) / meanSr);
+    X[c * XSTRIDE + 18] = Math.round(tan * 2 ** 20);
+    X[c * XSTRIDE + 19] = rainWord(rain[c], REF_RAIN_MMYR);
     for (let d = 0; d < 8; d++) {
       // a tier-0 corner cell has no diagonal neighbour toward the cube's corner, but its children do: the distance there is the diagonal of the two edges beside it [derived]
       const iv = invd[c * 8 + d] > 0 || d < 4 ? invd[c * 8 + d] : Math.round((invd[c * 8 + d - 4] + invd[c * 8 + ((d - 3) & 3)]) / 2 / Math.SQRT2);
       X[c * XSTRIDE + 2 + d] = iv * 2 ** tier;
-      X[c * XSTRIDE + 10 + d] = iv > 0 ? Math.round((tan * 256 * 2 ** 28) / (iv * 2 ** tier)) : 0;
+      X[c * XSTRIDE + 10 + d] = iv > 0 ? Math.round(2 ** 44 / (iv * 2 ** tier)) : 0;
+      // creep: the isotropic 9-point Laplacian's weights, 2/3 along an edge and 1/3 across a corner (over the distance squared), times D dt [derived: Patra and Karttunen's stencil]
+      const inv = (iv * 2 ** tier) / 2 ** 28;
+      X[c * XSTRIDE + 20 + d] = Math.round(2 ** 24 * p.creepLand * p.dtYr * (d < 4 ? 2 / 3 : 1 / 3) * inv * inv);
     }
   }
   return X;
+}
+// The creep's substeps: the fewest that keep the 9-point stencil's coefficients under one half in sum [derived: an explicit step with every weight positive is stable to one].
+function creepSubsOf(table: Uint32Array): number {
+  let most = 0;
+  for (let c = 0; c < table.length / XSTRIDE; c++) { let s = 0; for (let d = 0; d < 8; d++) s += table[c * XSTRIDE + 20 + d]; most = Math.max(most, s); }
+  return Math.max(1, Math.ceil(most / 2 ** 24 / 0.5));
 }
 
 // ---------- 4. the kernels on a device ----------
@@ -198,7 +210,7 @@ export class Regional {
   lastSlide = 32;
   // with `profile` set each phase is waited for and its seconds added to `seconds` (the flood's rounds, the tree and discharge, the incision, the landslides, the uplift)
   profile = false;
-  readonly seconds: Record<string, number> = { flood: 0, tree: 0, incise: 0, slide: 0, lift: 0 };
+  readonly seconds: Record<string, number> = { flood: 0, tree: 0, incise: 0, slide: 0, creep: 0, lift: 0 };
   private async lap<T>(name: string, f: () => Promise<T> | T): Promise<T> {
     if (!this.profile) return f();
     await this.gpu.device.queue.onSubmittedWorkDone();
@@ -207,21 +219,24 @@ export class Regional {
     this.seconds[name] += (performance.now() - t) / 1000;
     return v;
   }
-  constructor(readonly gpu: Gpu, readonly tier: number, table: Uint32Array, height: Int32Array, rho: Int32Array) {
+  creepSubs: number;
+  // `rho` (the rain of each cell) is no longer given: the rain, like the rock, is read at a cell from the table of tier-0 cells by interpolation (`smooth`).
+  constructor(readonly gpu: Gpu, readonly tier: number, table: Uint32Array, height: Int32Array, _rho?: Int32Array) {
     this.g = tierGrid(tier);
     this.fn = this.g.fn;
     this.N = FACES * this.fn * this.fn;
-    if (height.length !== this.N || rho.length !== this.N) throw new Error(`regional: tier ${tier} holds ${this.N} cells, got ${height.length} heights and ${rho.length} rains`);
+    if (height.length !== this.N) throw new Error(`regional: tier ${tier} holds ${this.N} cells, got ${height.length} heights`);
     this.atCnt = this.N + 3 * HIST;
     this.atCarry = this.atCnt + 16 + 2 * CELLS0;
     this.E = storage(gpu, SPLIT * this.N * 4);
     this.E2 = storage(gpu, (RF.COUNT - SPLIT) * this.N * 4);
     this.AT = storage(gpu, (this.atCarry + 3 * CELLS0) * 4);
-    this.P = storage(gpu, new Uint32Array([1, 0, 0, 0]));
+    this.creepSubs = creepSubsOf(table);
+    this.P = storage(gpu, new Uint32Array([1, this.creepSubs, 0, 0]));
     this.X = storage(gpu, table);
     this.wgsl = regionalWgsl(EDGES, this.fn);
     this.write("H", height);
-    this.write("RHO", rho);
+    this.submit((p) => this.run(p, "cellmeans", this.N));
   }
   private write(f: keyof typeof RF, data: ArrayBufferView) {
     const [b, o] = this.at(f);
@@ -234,8 +249,31 @@ export class Regional {
     this.write("H", s.height);
     this.gpu.device.queue.writeBuffer(this.AT, this.atCarry * 4, s.carry);
   }
-  setTable(table: Uint32Array) { this.gpu.device.queue.writeBuffer(this.X, 0, table); }
-  setRain(rho: Int32Array) { this.write("RHO", rho); }
+  // A new table (another step, another K dt): the creep's substeps and every cell's rock, slope and rain are made again from it.
+  setTable(table: Uint32Array) {
+    this.creepSubs = creepSubsOf(table);
+    this.gpu.device.queue.writeBuffer(this.X, 0, table);
+    this.gpu.device.queue.writeBuffer(this.P, 0, new Uint32Array([1, this.creepSubs, 0, 0]));
+    this.submit((p) => this.run(p, "cellmeans", this.N));
+  }
+  // The landscape's response time at the scale of a tier-0 cell, years: the longest, over the cells, of the sum along the flow path of d / (K sqrt(A)) for as far as the path stays
+  // in the cell's own tier-0 cell, the time the stream power law takes to carry a change at a valley's head to where the valley leaves the cell the planet's own uplift is set in
+  // (Whipple and Tucker 1999; the island takes its response time from the first flood the same way, R1560). Over the whole path it would be the longest river's, tens of
+  // thousands of My on a planet of continents, which is not the time the 75 m relief takes. Read from the flow of the last `flow()`; `dtYr` is the step the table was made for.
+  async responseTime(dtYr: number): Promise<number> {
+    const [to, rd, acc, kq, ord] = await Promise.all([this.readField("TO"), this.readField("RD"), this.readField("ACC"), this.readField("KQ"), this.readField("ORD")]);
+    const t = new Float64Array(this.N), fn = this.fn, cells = fn * fn, tier = this.tier, side = fn >> tier;
+    const parent = (k: number) => { const f = Math.floor(k / cells), r = k - f * cells, Y = Math.floor(r / fn); return (f * side + (Y >> tier)) * side + ((r - Y * fn) >> tier); };
+    let most = 0;
+    for (let p = 0; p < this.N; p++) {
+      const k = ord[p], j = to[k];
+      if (j === k) continue;
+      const f = ((kq[k] >>> 0) * (rd[k] >>> 0) * Math.sqrt(acc[k] >>> 0) * 256) / 2 ** 48;
+      t[k] = (f > 0 ? dtYr / f : 0) + (parent(j) === parent(k) ? t[j] : 0);
+      if (t[k] > most) most = t[k];
+    }
+    return most;
+  }
   private bind(entry: string) {
     let b = this.binds.get(entry);
     const p = pipeline(this.gpu, this.wgsl, entry);
@@ -303,6 +341,7 @@ export class Regional {
       }
     });
     this.lastSlide = slide - chunk;
+    await this.lap("creep", () => this.submit((p) => { for (let s = 0; s < this.creepSubs; s++) { this.run(p, "creep", N); this.run(p, "creepapply", N); } }));
     await this.lap("lift", () => this.submit((p) => { this.run(p, "pzero", CELLS0); this.run(p, "tally", N); this.run(p, "pmean", CELLS0); this.run(p, "lift", N); this.run(p, "pres", CELLS0); this.run(p, "lift", N); this.run(p, "pfin", CELLS0); this.run(p, "spread", N); this.run(p, "pcarry", CELLS0); }));
     return rounds;
   }
@@ -346,6 +385,19 @@ export class Regional {
     this.submit((p) => this.run(p, "area64", 0));
     const [lo, hi] = await Promise.all([this.read("ACC"), this.read("ER")]);
     return { lo: new Uint32Array(lo), hi: new Uint32Array(hi) };
+  }
+  // The same with signed weights (i32 a cell) and a mask word a cell (1: a negative sum passes down as 0, 2: the sum is not passed down); the sums as 64-bit two's complement words.
+  async gatherSigned(weights: Int32Array, mask: Uint32Array): Promise<{ lo: Uint32Array; hi: Int32Array }> {
+    this.write("W", weights); this.write("RD", mask);
+    this.submit((p) => this.run(p, "areaS64", 0));
+    const [lo, hi] = await Promise.all([this.read("ACC"), this.read("ER")]);
+    return { lo: new Uint32Array(lo), hi: new Int32Array(hi) };
+  }
+  // For each cell the nearest cell down its receivers (itself included) whose flag is not 0, 0xffffffff where there is none.
+  async reach(flags: Uint32Array): Promise<Uint32Array> {
+    this.write("W", flags);
+    this.submit((p) => this.run(p, "reach64", 0));
+    return new Uint32Array(await this.read("ACC"));
   }
 }
 
@@ -413,3 +465,31 @@ export async function regionalOf(gpu: Gpu, planet: Planet, store: PlanetStore, k
 }
 // What the end of a tier costs, s (the settled flow and the readbacks), and a state's save [design: the margins the stage leaves under its budget].
 const FINISH_S = 60, SAVE_S = 10;
+
+// ---------- 6. the start's roughness ----------
+// A surface made by the remap is smooth: water on it runs down parallel lines the cells' lattice sets, and nothing seeds the valleys the stream power law would deepen. Real ground is
+// rough at every scale, so each 2 by 2 of children (4 by 4 at the first tier made from tier 0's remap is not a group: the groups are tier-t cells sharing a tier t - 1 parent) is given
+// a zero-sum roughness of `amplitude` metres, a function of the cell's identity (an integer hash, so the same wherever it is made) and the sum of every group is left as it was, so the
+// parent totals the remap kept are kept [design: the amplitude is a tier's own: a landscape is self-affine, rough in proportion to the cell's size to a power, ROUGH_HURST].
+export const ROUGH_M = 1; // metres at 75 m cells [design, UNVERIFIED]
+export const ROUGH_HURST = 0.8; // [UNVERIFIED: the self-affine exponent of land surfaces]
+const hash32 = (x: number): number => {
+  x = Math.imul(x ^ (x >>> 16), 0x7feb352d); x = Math.imul(x ^ (x >>> 15), 0x846ca68b);
+  return (x ^ (x >>> 16)) >>> 0;
+};
+export function roughen(height: Int32Array, tier: number, seed: number): Int32Array {
+  const fn = 256 << tier, cells = fn * fn, amp = Math.round(ROUGH_M * 256 * 2 ** ((4 - tier) * ROUGH_HURST)), out = Int32Array.from(height);
+  const r = new Int32Array(4);
+  for (let f = 0; f < FACES; f++)
+    for (let Y = 0; Y < fn; Y += 2)
+      for (let X = 0; X < fn; X += 2) {
+        const base = f * cells + Y * fn + X, ids = [base, base + 1, base + fn, base + fn + 1];
+        if (ids.some((i) => height[i] <= 2 * amp)) continue;
+        let sum = 0;
+        for (let c = 0; c < 4; c++) { r[c] = (hash32(ids[c] ^ Math.imul(seed, 0x9e3779b1)) % (2 * amp + 1)) - amp; sum += r[c]; }
+        const mean = Math.trunc(sum / 4);
+        let left = sum - 4 * mean;
+        for (let c = 0; c < 4; c++) { let v = r[c] - mean; if (left !== 0) { v -= Math.sign(left); left -= Math.sign(left); } out[ids[c]] = height[ids[c]] + v; }
+      }
+  return out;
+}
