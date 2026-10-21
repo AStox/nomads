@@ -89,11 +89,16 @@ navigates to `?at=lat,lon`, builds one window in about 23 s, and starts the game
   in; panning across lattice edges streams the next window; the sim stays in its window. Cutover: `?globe`, `?at`, the
   GLOBE button and G removed. Check: a recorded zoom from the whole planet to `close` and a long pan at `valley`, no page
   error, frame times within the ladder's budget.
-- [ ] **Unit 4: The gap between 12 km and 75 m.** Between the planet's cells and a window the view is the planet's
-  B-spline, which reads blurred at a few hundred km across. Options: windows' own coarse levels as they are made, or a
-  cheap refinement tier of the planet (no erosion rerun). Decided after Unit 3 shows how it reads. Unit 1 left noise and
-  a hillshade scaled by each cell's ruggedness below 12 km; that is decoration the planet does not hold, so this unit
-  replaces it with real terrain and deletes it.
+- [ ] **Unit 4: A regional tier that the windows agree on.** Two problems with one cause: between the planet's 12 km
+  cells and a window the view is the planet's B-spline (blurred at a few hundred km across, with Unit 1's invented
+  sub-cell hillshade on it), and neighbouring windows erode independently, so their shared edges differ by 63 to 809 m
+  rms and their rivers cross 1.4 to 11.5 km apart. A tier between them (a quadtree tier of about 1.5 km cells over the
+  whole planet, so it has no patch seams of its own, baked by stages like the planet and made from it by a remap that
+  depends only on the ground point) fixes the drainage network and the mean
+  surface once; every window then refines under it with its rivers pinned where the tier's cross its edges, so
+  neighbours agree by construction. The tier is also what the view draws between 12 km and 75 m, and Unit 1's invented
+  hillshade is deleted. Check: the seam residual on Unit 2's four pairs before and after, rivers' crossing distance, the
+  island path's goldens unchanged.
 
 ## Risks
 
