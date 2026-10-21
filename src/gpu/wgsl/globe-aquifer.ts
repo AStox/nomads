@@ -41,7 +41,9 @@ const packed = (src: string) => src
   .replace(/F\[(f_\w+) \+ ([^\]]+)\]/g, "ld($1, $2)");
 
 export const globalFormat = (cells: number, omega?: number): WaterFormat => ({ ...planetWater(256), len: cells, omega });
-export function aquiferWgsl(tier: number, omega?: number): string {
+// The over-relaxation of the global solve: 1.99, near the optimum 2 / (1 + sin(pi / N)) of a grid 2,048 to 4,096 wide (1.9 leaves the slowest mode an e-fold in 20,000 sweeps, 1.99 in 8,000 on real tier 3)
+export const OMEGA = 1.99;
+export function aquiferWgsl(tier: number, omega = OMEGA): string {
   const fn = 256 * 2 ** tier, cells = 6 * fn * fn, kernels = kernelsOf(globalFormat(cells, omega)), regional = regionalWgsl(EDGES, fn);
   const water = ["s64", "smul64", "sat32", "mulshr", "tenth_q16", "gw_params", "exp2n", "gw_frac", "reed_fit", "wet_extra", "gw_et", "aq_cell_n"].map((n) => packed(fnOf(kernels, n)));
   const idx = (n: (typeof GFIELDS)[number]) => GFIELDS.indexOf(n);
