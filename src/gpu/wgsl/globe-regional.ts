@@ -25,7 +25,7 @@ export const SPLIT = 7;
 export const MAXD = 16382; // the deepest flow path the counting sort holds, in cells
 export const HIST = 16384;
 // AT words after the flooded surface (N words): the depth histogram, its cursors, the start of each depth's run, 16 counters, then three words for each tier-0 cell (loss, land count, carry).
-export const CNT = { flags: 0, top: 1, changed: 2 } as const;
+export const CNT = { flags: 0, top: 1, changed: 2, pending: 3 } as const;
 export const FLAG = { chain: 1, depth: 2, area: 4 } as const;
 // Words a tier-0 cell holds in X: [0] the rock's erodibility (a pool-weighted K word), [1] the area weight (Q15 of the mean cell), [2..9] eight inverse distances (Q28 of 1/m at the tier's
 // spacing), [10..17] the distance to each of the eight neighbours (Q16 m), [18] the rock's threshold slope (tan, Q20), [19] the year's rain over the reference rain (Q8), [20..27] each
@@ -36,11 +36,16 @@ export const XSTRIDE = 28;
 // The neighbours the flood and the receivers read: 4 as the island's flood and receivers do (water leaves a cell by an edge, never across a corner, so no river runs straight on the
 // diagonal of the lattice), or 8; the landslides read all 8 (a slope is as steep across a corner as along an edge).
 export const FLOW_NEIGHBOURS = 4;
-export function regionalWgsl(edges: readonly (readonly { face: number; side: number; flip: boolean }[])[], fn: number, nflow: 4 | 8 = FLOW_NEIGHBOURS): string {
+// `patch` lays the kernels on a patch (src/gpu/globe/patch.ts: a block of tiles and a halo of cells all round it, side * side cells flat, the global cell id of each in the IDS binding, a
+// cube corner's missing cell NONE) instead of the whole tier: a cell's neighbours are its neighbours in the patch, its place is read from IDS, and the cells of the halo are read and never
+// written (`interior`). Every law is the same text in both layouts.
+export function regionalWgsl(edges: readonly (readonly { face: number; side: number; flip: boolean }[])[], fn: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, patch?: { side: number; halo: number }): string {
+  const P = patch !== undefined;
   const flat = edges.flatMap((e) => e);
   const fields = Object.entries(RF).filter(([k]) => k !== "COUNT").map(([k, v]) => `const E_${k}: u32 = ${v}u;`).join("\n");
   return /* wgsl */ `${FIXED}
-const FN = ${fn}u; const FNI = ${fn}i; const CELLS = ${fn * fn}u; const N = ${6 * fn * fn}u; const NP = 393216u; const FACT = ${fn / 256}u; const NFLOW = ${nflow}u;
+const FN = ${fn}u; const FNI = ${fn}i; const CELLS = ${fn * fn}u; const N = ${P ? patch.side * patch.side : 6 * fn * fn}u; const NP = 393216u; const FACT = ${fn / 256}u; const NFLOW = ${nflow}u;
+const SIDE = ${P ? patch.side : 0}u; const HALO = ${P ? patch.halo : 0}u;
 const EDGE_FACE = array<u32, 24>(${flat.map((e) => `${e.face}u`).join(", ")});
 const EDGE_SIDE = array<u32, 24>(${flat.map((e) => `${e.side}u`).join(", ")});
 const EDGE_FLIP = array<u32, 24>(${flat.map((e) => (e.flip ? "1u" : "0u")).join(", ")});
@@ -50,16 +55,17 @@ const DXY = array<vec2i, 8>(vec2i(1, 0), vec2i(0, 1), vec2i(-1, 0), vec2i(0, -1)
 @group(0) @binding(2) var<storage, read_write> AT: array<atomic<i32>>;
 @group(0) @binding(3) var<storage, read> X: array<u32>;
 @group(0) @binding(4) var<storage, read_write> E2: array<i32>;
+${P ? "@group(0) @binding(5) var<storage, read> IDS: array<u32>;" : ""}
 
 ${fields}
-const MAXD = ${MAXD}u; const SPLIT = ${SPLIT}u;
+const MAXD = ${MAXD}u; const SPLIT = ${P ? RF.COUNT : SPLIT}u;
 const A_HIST = N; const A_CUR = N + ${HIST}u; const A_LVS = N + ${2 * HIST}u; const A_CNT = N + ${3 * HIST}u; const A_PS = A_CNT + 16u; const A_PC = A_PS + NP; const A_CARRY = A_PC + NP; const A_PM = A_CARRY + NP; const A_PL = A_PM + NP;
 const INF = 0x7fffffffi;
 const NONE = 0xffffffffu;
-const CNT_FLAGS = ${CNT.flags}u; const CNT_TOP = ${CNT.top}u; const CNT_CHANGED = ${CNT.changed}u;
+const CNT_FLAGS = ${CNT.flags}u; const CNT_TOP = ${CNT.top}u; const CNT_CHANGED = ${CNT.changed}u; const CNT_PENDING = ${CNT.pending}u;
 const FLAG_CHAIN = ${FLAG.chain}i; const FLAG_DEPTH = ${FLAG.depth}i; const FLAG_AREA = ${FLAG.area}i;
 
-fn touch() { _ = P[0]; _ = E[0]; _ = atomicLoad(&AT[0]); _ = X[0]; _ = E2[0]; }
+fn touch() { _ = P[0]; _ = E[0]; _ = atomicLoad(&AT[0]); _ = X[0]; _ = E2[0]; ${P ? "_ = IDS[0];" : ""} }
 fn gk(g: vec3u, n: vec3u) -> u32 { return g.x + g.y * n.x * 256u; }
 fn e_get(f: u32, k: u32) -> i32 { if (f < SPLIT) { return E[f * N + k]; } return E2[(f - SPLIT) * N + k]; }
 fn e_set(f: u32, k: u32, v: i32) { if (f < SPLIT) { E[f * N + k] = v; } else { E2[(f - SPLIT) * N + k] = v; } }
@@ -68,16 +74,26 @@ fn e_setu(f: u32, k: u32, v: u32) { e_set(f, k, bitcast<i32>(v)); }
 fn fl(k: u32) -> i32 { return atomicLoad(&AT[k]); }
 fn flag(f: i32) { atomicOr(&AT[A_CNT + CNT_FLAGS], f); }
 fn is_land(k: u32) -> bool { return e_get(E_H, k) > 0i; }
+// the global id of cell k (the cell's own number in the whole tier; a patch holds it in IDS) and whether the kernels may write it (all of a tier's cells; a patch's interior)
+${P ? `fn cid(k: u32) -> u32 { return IDS[k]; }
+fn interior(k: u32) -> bool { let x = k % SIDE; let y = k / SIDE; return x >= HALO && x < SIDE - HALO && y >= HALO && y < SIDE - HALO; }` : `fn cid(k: u32) -> u32 { return k; }
+fn interior(k: u32) -> bool { return true; }`}
 // the tier-0 cell a cell lies in
 fn pid(k: u32) -> u32 {
-  let f = k / CELLS; let r = k - f * CELLS; let y = r / FN; let x = r - y * FN;
+  let c = cid(k); let f = c / CELLS; let r = c - f * CELLS; let y = r / FN; let x = r - y * FN;
   return (f * 256u + y / FACT) * 256u + x / FACT;
 }
 fn invd(k: u32, d: u32) -> u32 { return X[pid(k) * ${XSTRIDE}u + 2u + d]; }
 
 // The cell next to k in direction d (0 east, 1 north, 2 west, 3 south, 4 NE, 5 NW, 6 SW, 7 SE), across a face's edge where it is one: grid.ts
 // haloSource. NONE at a cube's corner, where the diagonal cell does not exist.
-fn nbr(k: u32, d: u32) -> u32 {
+${P ? `fn nbr(k: u32, d: u32) -> u32 {
+  let x = i32(k % SIDE); let y = i32(k / SIDE); let o = DXY[d]; let nx = x + o.x; let ny = y + o.y;
+  if (nx < 0 || ny < 0 || nx >= i32(SIDE) || ny >= i32(SIDE)) { return NONE; }
+  let j = u32(ny) * SIDE + u32(nx);
+  if (IDS[j] == NONE) { return NONE; }
+  return j;
+}` : `fn nbr(k: u32, d: u32) -> u32 {
   let f = k / CELLS; let r = k - f * CELLS; let y = i32(r / FN); let x = i32(r - u32(y) * FN);
   let o = DXY[d]; let nx = x + o.x; let ny = y + o.y;
   let xo = nx < 0 || nx >= FNI; let yo = ny < 0 || ny >= FNI;
@@ -91,7 +107,7 @@ fn nbr(k: u32, d: u32) -> u32 {
   var gx = a; var gy = a;
   if (gs == 0u) { gx = FNI - 1; } else if (gs == 1u) { gy = FNI - 1; } else if (gs == 2u) { gx = 0; } else { gy = 0; }
   return EDGE_FACE[e] * CELLS + u32(gy) * FN + u32(gx);
-}
+}`}
 
 // each land cell's discharge weight: its area weight times its rain over the reference rain, in 1/512 of the mean cell (Q15 area, Q8 rain, shift 14)
 @compute @workgroup_size(256)
@@ -100,7 +116,7 @@ fn weights(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) n
   let k = gk(gid, nwg);
   if (k >= N) { return; }
   var w = 0u;
-  if (is_land(k)) { w = (X[pid(k) * ${XSTRIDE}u + 1u] * e_getu(E_RHO, k) + 8192u) >> 14u; }
+  if (interior(k) && is_land(k)) { w = (X[pid(k) * ${XSTRIDE}u + 1u] * e_getu(E_RHO, k) + 8192u) >> 14u; }
   e_setu(E_W, k, w);
   e_set(E_ER, k, 0i);
 }
@@ -118,7 +134,7 @@ fn flood(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   touch();
   let k = gk(gid, nwg);
   if (k >= N) { return; }
-  if (!is_land(k)) { return; }
+  if (!interior(k) || !is_land(k)) { return; }
   var m = INF;
   for (var d = 0u; d < NFLOW; d++) {
     let j = nbr(k, d);
@@ -138,7 +154,7 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   let k = gk(gid, nwg);
   if (k >= N) { return; }
   var to = k; var rd = 0u; var best = vec2u(0u, 0u);
-  if (is_land(k)) {
+  if (interior(k) && is_land(k)) {
     let f = fl(k);
     for (var d = 0u; d < NFLOW; d++) {
       let j = nbr(k, d);
@@ -332,6 +348,30 @@ fn reach64(@builtin(local_invocation_index) t: u32) {
 
 // ---- the implicit stream power step, shallowest depth first ----
 // n = 1 (m = 1/2): h' = h_r + (h - h_r) / (1 + f), f = K dt sqrt(A) / d, Braun and Willett 2013. A is the discharge area at the reference rain.
+// a cell the step leaves as it is whatever its receiver does: sea, a lake (the flooded surface above it) or rock with no erodibility
+fn incise_skip(k: u32) -> bool { let hk = e_get(E_H, k); return hk <= 0i || fl(k) > hk || e_getu(E_KQ, k) == 0u; }
+// the step of a cell that is not skipped, given its receiver j at its final height
+fn incise_one(k: u32, j: u32) {
+  let hk = e_get(E_H, k);
+  var hj = 0i;
+  if (is_land(j)) { hj = e_get(E_H, j); }
+  if (hj >= hk) { return; }
+  let kc = e_getu(E_KQ, k);
+  let acc = e_getu(E_ACC, k); let rd = e_getu(E_RD, k);
+  let delta = u32(hk - hj);
+  var x = delta;
+  let s8 = sqrt64(vec2u(acc << 16u, acc >> 16u));
+  let p1 = mul64(kc, rd);
+  let p1s = select((p1.x >> 16u) | (p1.y << 16u), 0xffffffffu, (p1.y >> 16u) != 0u);
+  let f64_ = shr64(mul64(p1s, s8), 16u);
+  let f16 = select(f64_.x, 0x7fffffffu, f64_.y != 0u || f64_.x > 0x7fffffffu);
+  if (f16 > 0u) {
+    let u = divw(65536u, 0u, f16 + 65536u).x;
+    x = umulsh(delta, u, 32u);
+  }
+  let nh = max(hj + i32(x), 1i);
+  if (nh < hk) { e_set(E_ER, k, hk - nh); e_set(E_H, k, nh); }
+}
 @compute @workgroup_size(256)
 fn incise(@builtin(local_invocation_index) t: u32) {
   touch();
@@ -341,28 +381,8 @@ fn incise(@builtin(local_invocation_index) t: u32) {
     for (var p = lo + t; p < hi; p += 256u) {
       let k = u32(e_get(E_ORD, p));
       let j = e_getu(E_TO, k);
-      let hk = e_get(E_H, k);
-      if (hk <= 0i || j == k) { continue; }
-      if (fl(k) > hk) { continue; }
-      var hj = 0i;
-      if (is_land(j)) { hj = e_get(E_H, j); }
-      if (hj >= hk) { continue; }
-      let kc = e_getu(E_KQ, k);
-      if (kc == 0u) { continue; }
-      let acc = e_getu(E_ACC, k); let rd = e_getu(E_RD, k);
-      let delta = u32(hk - hj);
-      var x = delta;
-      let s8 = sqrt64(vec2u(acc << 16u, acc >> 16u));
-      let p1 = mul64(kc, rd);
-      let p1s = select((p1.x >> 16u) | (p1.y << 16u), 0xffffffffu, (p1.y >> 16u) != 0u);
-      let f64_ = shr64(mul64(p1s, s8), 16u);
-      let f16 = select(f64_.x, 0x7fffffffu, f64_.y != 0u || f64_.x > 0x7fffffffu);
-      if (f16 > 0u) {
-        let u = divw(65536u, 0u, f16 + 65536u).x;
-        x = umulsh(delta, u, 32u);
-      }
-      let nh = max(hj + i32(x), 1i);
-      if (nh < hk) { e_set(E_ER, k, hk - nh); e_set(E_H, k, nh); }
+      if (j == k || incise_skip(k)) { continue; }
+      incise_one(k, j);
     }
     storageBarrier(); workgroupBarrier();
   }
@@ -388,6 +408,7 @@ fn slide(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   touch();
   let k = gk(gid, nwg);
   if (k >= N) { return; }
+  if (!interior(k)) { return; }
   let h = e_get(E_H, k);
   if (h <= 1i) { return; }
   let base = pid(k) * ${XSTRIDE}u + 10u; let tq = e_getu(E_TQ, k);
@@ -420,16 +441,16 @@ fn pzero(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   atomicStore(&AT[A_PC + p], 0i);
   atomicStore(&AT[A_PL + p], 0i);
 }
+// the land cells of each tier-0 cell, and what they lost (a patch tallies the two at different times: the count once, the loss after each stage's visit)
+fn tally_count(k: u32) { if (interior(k) && is_land(k)) { atomicAdd(&AT[A_PC + pid(k)], 1i); } }
+fn tally_loss(k: u32) { if (interior(k) && is_land(k)) { atomicAdd(&AT[A_PS + pid(k)], e_get(E_ER, k)); } }
 @compute @workgroup_size(256)
 fn tally(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
   let k = gk(gid, nwg);
   if (k >= N) { return; }
-  if (!is_land(k)) { return; }
-  let p = pid(k);
-  atomicAdd(&AT[A_PC + p], 1i);
-  let er = e_get(E_ER, k);
-  atomicAdd(&AT[A_PS + p], er);
+  tally_count(k);
+  tally_loss(k);
 }
 // the tier-0 cell next to p in direction d (0 east, 1 north, 2 west, 3 south, 4 NE, 5 NW, 6 SW, 7 SE), across a face's edge where it is one; NONE at a cube's corner's missing diagonal
 fn pnbr(p: u32, d: u32) -> u32 {
@@ -478,7 +499,7 @@ fn pres(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
 }
 // the interpolated mean at a land cell, Q8: the four tier-0 cells round it weighted by the child's place (weights Q16, the neighbour's |2i + 1 - B| / 2B along each axis), those with no land left out
 fn interp(k: u32) -> i32 {
-  let f = k / CELLS; let r = k - f * CELLS; let Y = r / FN; let X = r - Y * FN;
+  let c = cid(k); let f = c / CELLS; let r = c - f * CELLS; let Y = r / FN; let X = r - Y * FN;
   let ix = i32(X % FACT); let iy = i32(Y % FACT); let B = i32(FACT);
   let ax = u32(abs(2 * ix + 1 - B)); let ay = u32(abs(2 * iy + 1 - B));
   let wxn = ax * (32768u / FACT); let wyn = ay * (32768u / FACT);
@@ -506,7 +527,7 @@ fn interp(k: u32) -> i32 {
 }
 // every land cell of the tier-0 cell rises by the interpolated mean of its neighbourhood (this is the first pass, of the means; the second of the leftover)
 fn raise(k: u32) {
-  if (!is_land(k)) { return; }
+  if (!interior(k) || !is_land(k)) { return; }
   let up = interp(k) >> 8u;
   e_set(E_H, k, e_get(E_H, k) + up);
   atomicAdd(&AT[A_PL + pid(k)], up);
@@ -534,7 +555,7 @@ fn spread(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw
   touch();
   let k = gk(gid, nwg);
   if (k >= N) { return; }
-  if (!is_land(k)) { return; }
+  if (!interior(k) || !is_land(k)) { return; }
   let h = e_get(E_H, k);
   let nh = max(1i, h + fl(A_PM + pid(k)));
   e_set(E_H, k, nh);
@@ -550,7 +571,7 @@ fn pcarry(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw
 }
 // ---- the rock, the threshold slope and the rain at each cell: the four tier-0 cells round it weighted by the cell's place, as interp weights them ----
 fn interpx(k: u32, wd: u32) -> u32 {
-  let f = k / CELLS; let r = k - f * CELLS; let cy = r / FN; let cx = r - cy * FN;
+  let c = cid(k); let f = c / CELLS; let r = c - f * CELLS; let cy = r / FN; let cx = r - cy * FN;
   let ix = i32(cx % FACT); let iy = i32(cy % FACT); let B = i32(FACT);
   let wxn = u32(abs(2 * ix + 1 - B)) * (32768u / FACT); let wyn = u32(abs(2 * iy + 1 - B)) * (32768u / FACT);
   let wxc = 65536u - wxn; let wyc = 65536u - wyn;
@@ -606,11 +627,102 @@ fn creepapply(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups
   touch();
   let k = gk(gid, nwg);
   if (k >= N) { return; }
+  if (!interior(k)) { return; }
   let h = e_get(E_H, k);
   if (h <= 0i) { return; }
   let nh = e_get(E_UA, k);
   e_set(E_ER, k, e_get(E_ER, k) + (h - nh));
   e_set(E_H, k, nh);
 }
+${P ? `
+// ---- the patch layout's own kernels: what a tile-by-tile solve does between the laws (src/gpu/globe/regional-patch.ts) ----
+@compute @workgroup_size(256)
+fn erzero(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  e_set(E_ER, k, 0i);
+}
+@compute @workgroup_size(256)
+fn tallyc(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  tally_count(k);
+}
+@compute @workgroup_size(256)
+fn tallyl(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  tally_loss(k);
+}
+// the receiver of a cell from the direction kept for it (E_DB: 0 to 3, the flow neighbours, else its own: a sea cell or a cell of the halo, which a patch treats as a root)
+@compute @workgroup_size(256)
+fn todfrom(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  var to = k; var rd = 0u;
+  if (interior(k)) {
+    let d = e_getu(E_DB, k);
+    if (d < NFLOW) { let j = nbr(k, d); if (j != NONE) { to = j; rd = invd(k, d); } }
+  }
+  e_setu(E_TO, k, to);
+  e_setu(E_RD, k, rd);
+}
+// the direction of the receiver recv chose (255: none)
+@compute @workgroup_size(256)
+fn todir(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  var dir = 255u;
+  let to = e_getu(E_TO, k);
+  if (interior(k) && to != k) { for (var d = 0u; d < NFLOW; d++) { if (nbr(k, d) == to) { dir = d; } } }
+  e_setu(E_DB, k, dir);
+}
+// which cells the incision has settled before any receiver is known: the sea, lakes, rock with no erodibility and the roots (E_W 1), the rest 0
+@compute @workgroup_size(256)
+fn resinit(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  e_set(E_W, k, select(0i, 1i, interior(k) && (incise_skip(k) || e_getu(E_TO, k) == k)));
+}
+// the incision of the cells whose receiver is settled (E_W 1), the shallowest first within the patch; a cell whose chain leaves the patch by a cell not yet settled waits
+@compute @workgroup_size(256)
+fn incisep(@builtin(local_invocation_index) t: u32) {
+  touch();
+  let top = top_depth(t);
+  for (var d = 1u; d <= top; d++) {
+    let lo = level_lo(d); let hi = level_hi(d, top);
+    for (var p = lo + t; p < hi; p += 256u) {
+      let k = u32(e_get(E_ORD, p));
+      if (!interior(k) || e_get(E_W, k) != 0i) { continue; }
+      let j = e_getu(E_TO, k);
+      if (e_get(E_W, j) == 0i) { continue; }
+      incise_one(k, j);
+      e_set(E_W, k, 1i);
+    }
+    storageBarrier(); workgroupBarrier();
+  }
+}
+@compute @workgroup_size(256)
+fn rescount(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  if (interior(k) && e_get(E_W, k) == 0i) { atomicAdd(&AT[A_CNT + CNT_PENDING], 1i); }
+}
+// the discharge that enters the patch from beyond its edge (E_DP, u32 at the receiving interior cell) added to that cell's own weight
+@compute @workgroup_size(256)
+fn inject(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  if (interior(k)) { e_setu(E_W, k, e_getu(E_W, k) + e_getu(E_DP, k)); }
+}
+` : ""}
 `;
 }

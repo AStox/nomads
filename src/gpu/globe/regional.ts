@@ -35,7 +35,7 @@ export const parentOf = (tier: number, id: number): number => {
 // proportion for a quantity that cannot fall under zero. A child's value depends on its parent and the parents' round it, never on a window.
 type Field = ArrayLike<number>;
 // The 3 by 3 tier-0 cells round (f, X, Y) as ids: row dy = -1, 0, 1 (south to north), column dx = -1, 0, 1 (west to east); the corner's missing one is -1.
-function around3(g0: Grid, f: number, X: number, Y: number, out: Int32Array) {
+export function around3(g0: Grid, f: number, X: number, Y: number, out: Int32Array) {
   const n = g0.fn;
   for (let dy = -1; dy <= 1; dy++)
     for (let dx = -1; dx <= 1; dx++) {
@@ -45,7 +45,13 @@ function around3(g0: Grid, f: number, X: number, Y: number, out: Int32Array) {
       out[(dy + 1) * 3 + dx + 1] = s ? (s.face * n + s.Y) * n + s.X : -1;
     }
 }
-const CORNER_BESIDE = [[0, 1, 3], [2, 1, 5], [6, 3, 7], [8, 5, 7]] as const;
+export const CORNER_BESIDE = [[0, 1, 3], [2, 1, 5], [6, 3, 7], [8, 5, 7]] as const;
+// The four children of a cell, by place (SW, SE, NW, NE) in `q`, from its centre value and its eight neighbours': a child lies at 1/4 or 3/4 of the way between the parent's centre and
+// the neighbour's on each axis, so 3/4 on the parent's side (the one stencil of the in-memory and the streamed carry to the next tier).
+export const child4 = (ce: number, w: number, e: number, s: number, n: number, sw: number, se: number, nw: number, ne: number, q: Float64Array) => {
+  q[0] = (9 * ce + 3 * w + 3 * s + sw) / 16; q[1] = (9 * ce + 3 * e + 3 * s + se) / 16; q[2] = (9 * ce + 3 * w + 3 * n + nw) / 16; q[3] = (9 * ce + 3 * e + 3 * n + ne) / 16;
+};
+const quad = new Float64Array(4);
 // Calls emit(parent, children) with the 4^(tier - from) interpolated values of each cell of tier `from` (tier 0 unless given), child (i, j) at index j * B + i (i east, j north).
 function eachParent(field: Field, tier: number, emit: (parent: number, v: Float64Array) => void, from = 0) {
   const gp = tierGrid(from), fnp = gp.fn, up = tier - from, B = 1 << up, ids = new Int32Array(9), val = new Float64Array(9), out = new Float64Array(B * B);
@@ -116,7 +122,9 @@ function children2(parent: ArrayLike<number>, from: number, out: Float64Array, a
           sw = val[0]; s = val[1]; se = val[2]; w = val[3]; ce = val[4]; e = val[5]; nw = val[6]; n = val[7]; ne = val[8];
         }
         // child (i, j) lies at 1/4 or 3/4 of the way between the parent's centre and the neighbour's on each axis: weights 3/4 on the parent's side
-        const o = (f * fn + 2 * Y) * fn + 2 * X, v00 = (9 * ce + 3 * w + 3 * s + sw) / 16, v10 = (9 * ce + 3 * e + 3 * s + se) / 16, v01 = (9 * ce + 3 * w + 3 * n + nw) / 16, v11 = (9 * ce + 3 * e + 3 * n + ne) / 16;
+        const o = (f * fn + 2 * Y) * fn + 2 * X;
+        child4(ce, w, e, s, n, sw, se, nw, ne, quad);
+        const v00 = quad[0], v10 = quad[1], v01 = quad[2], v11 = quad[3];
         if (add) { out[o] += v00; out[o + 1] += v10; out[o + fn] += v01; out[o + fn + 1] += v11; } else { out[o] = v00; out[o + 1] = v10; out[o + fn] = v01; out[o + fn + 1] = v11; }
       }
     }
@@ -202,7 +210,7 @@ export function tierTable(planet: Planet, tier: number, p: ErosionParams): Uint3
   return X;
 }
 // The creep's substeps: the fewest that keep the 9-point stencil's coefficients under one half in sum [derived: an explicit step with every weight positive is stable to one].
-function creepSubsOf(table: Uint32Array): number {
+export function creepSubsOf(table: Uint32Array): number {
   let most = 0;
   for (let c = 0; c < table.length / XSTRIDE; c++) { let s = 0; for (let d = 0; d < 8; d++) s += table[c * XSTRIDE + 20 + d]; most = Math.max(most, s); }
   return Math.max(1, Math.ceil(most / 2 ** 24 / 0.5));

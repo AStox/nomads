@@ -102,12 +102,14 @@ export class TileStore {
   close() { for (const n of [...this.fds.keys()]) this.closeFd(n); this.cache.clear(); this.held = 0; }
 
   // The patch's copy of a plane: the value at each patch cell (a repeat at a cube's corner, `missing`, is the repeated cell's value). `out` is reused when given.
-  gather<A extends Field>(name: string, p: Patch, out?: A): A {
+  // `ring` false leaves the halo cells as they were (zero in a fresh array): a stage that reads only its own cells does not read the neighbours' tiles.
+  gather<A extends Field>(name: string, p: Patch, out?: A, ring = true): A {
     const K = KINDS[this.typeOf(name)], S = p.side, n = this.fn, T = this.T;
     if (p.tier !== this.tier) throw new Error(`tilestore: a tier ${p.tier} patch on a tier ${this.tier} store`);
     const o = (out ?? new K(S * S)) as A;
-    const X0 = p.x0 - p.halo, Y0 = p.y0 - p.halo, xa = Math.max(0, -X0), xb = Math.min(S, n - X0), face = p.face;
-    for (let y = 0; y < S; y++) {
+    const X0 = p.x0 - p.halo, Y0 = p.y0 - p.halo, face = p.face, lo = ring ? 0 : p.halo, hi = ring ? S : S - p.halo;
+    const xa = Math.max(lo, -X0), xb = Math.min(hi, n - X0);
+    for (let y = lo; y < hi; y++) {
       const Y = Y0 + y, row = y * S;
       if (Y >= 0 && Y < n && xb > xa) {
         // inside the face, a run of cells by tile column: one contiguous piece of a tile row each
@@ -117,9 +119,9 @@ export class TileStore {
           (o as Uint8Array).set((t as Uint8Array).subarray(iy + c0, iy + c0 + len), row + x);
           x += len;
         }
-        for (let x = 0; x < xa; x++) o[row + x] = this.valueAt(name, p.ids[row + x]);
-        for (let x = xb; x < S; x++) o[row + x] = this.valueAt(name, p.ids[row + x]);
-      } else for (let x = 0; x < S; x++) o[row + x] = this.valueAt(name, p.ids[row + x]);
+        for (let x = lo; x < xa; x++) o[row + x] = this.valueAt(name, p.ids[row + x]);
+        for (let x = xb; x < hi; x++) o[row + x] = this.valueAt(name, p.ids[row + x]);
+      } else for (let x = lo; x < hi; x++) o[row + x] = this.valueAt(name, p.ids[row + x]);
     }
     return o;
   }
@@ -154,6 +156,17 @@ export class TileStore {
           }
         }
     } finally { closeSync(fd); }
+  }
+  // The plane from an array of the tier's cells in cell order.
+  putCells(name: string, cells: Field) {
+    const K = KINDS[this.typeOf(name)], n = this.fn, T = this.T, tile = new K(TILE_CELLS);
+    if (cells.length !== 6 * n * n) throw new Error(`tilestore: ${cells.length} cells for a tier ${this.tier} plane of ${6 * n * n}`);
+    for (let f = 0; f < 6; f++)
+      for (let ty = 0; ty < T; ty++)
+        for (let tx = 0; tx < T; tx++) {
+          for (let y = 0; y < TILE; y++) { const at = (f * n + ty * TILE + y) * n + tx * TILE; (tile as Uint8Array).set((cells as Uint8Array).subarray(at, at + TILE), y * TILE); }
+          this.write(name, this.tileIndex(f, tx, ty), tile);
+        }
   }
   toCells(name: string, path: string) {
     const K = KINDS[this.typeOf(name)], w = K.BYTES_PER_ELEMENT, n = this.fn, T = this.T, band = new K(TILE * n);
