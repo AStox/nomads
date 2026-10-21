@@ -6,6 +6,8 @@ import { releaseGpu, theGpu } from "../src/gpu/device";
 import { dischargeOf } from "../src/gpu/globe/discharge";
 import { SMALL_RADIUS_M } from "../src/gpu/globe/grid";
 import { forget, runTiles } from "../src/gpu/globe/stages";
+import { AIR_UNIT, precipOfWord } from "../src/gpu/globe/air";
+import { globalWater } from "../src/gpu/globe/water-global";
 import { basinOf, climateFiles, dischargeFields, lastRun, planetRain, surplusFiles, surplusStage, unmap, waterStage } from "../src/gpu/globe/water";
 import { readPlanet } from "../src/gpu/globe/window";
 import { STORE } from "./globe-planet";
@@ -21,11 +23,14 @@ if (import.meta.main) {
   try {
     const planet = await readPlanet(seed, diskStore(STORE, key)), dir = bakeDir(seed, key), gpu = await theGpu(), ctx = { gpu, planet, dir, tier };
     // the air stage's files (u16, 0.1 mm over the season) when they exist and `--climate standin` is not asked for, else the planet's own rain
-    const climate = dir.has("t4-pr0.u16") && arg("climate", "air") !== "standin" ? climateFiles([0, 1, 2, 3].map((s) => `t4-pr${s}.u16`), [0, 1, 2, 3].map((s) => `t4-pe${s}.u16`), 10) : planetRain(planet), log = (s: string) => console.log(s);
+    const climate = dir.has("t4-pr0.u16") && arg("climate", "air") !== "standin" ? climateFiles([0, 1, 2, 3].map((s) => `t4-pr${s}.u16`), [0, 1, 2, 3].map((s) => `t4-pe${s}.u16`), precipOfWord, (w) => w / AIR_UNIT.pe) : planetRain(planet), log = (s: string) => console.log(s);
     if (name === "discharge") {
       const p = await dischargeOf(gpu, dir, tier, dischargeFields(tier), budget, log);
       console.log(`discharge: ${p.done ? "done" : "run this again"}, ${p.made.length} fields this call, ${p.seconds.toFixed(0)} s`);
       if (p.done) for (const f of surplusFiles(tier)) if (arg("keep", "1") !== "1") dir.remove(f);
+    } else if (name === "global") {
+      const p = await globalWater(ctx, { climate, tier }, budget, log);
+      console.log(`global water: ${p.done ? "done" : `stopped at ${p.at}: run this again`}, ${p.seconds.toFixed(0)} s`);
     } else if (name === "basin") {
       console.log(`lakes decided over the tier (needs surplus and discharge): ${JSON.stringify(basinOf(ctx))}`);
     } else if (name === "surplus" || name === "water") {
@@ -34,7 +39,7 @@ if (import.meta.main) {
       const mean = p.tileS.length ? p.tileS.reduce((a, b) => a + b, 0) / p.tileS.length : 0;
       console.log(`${name}: ${p.tiles} of ${p.of} tiles made${p.done ? ", done" : ": run this again"}; this call ${p.tileS.length} tiles, mean ${mean.toFixed(2)} s, ${((performance.now() - t0) / 1000).toFixed(0)} s`);
       if (name === "water") console.log(`last tile: sweeps ${lastRun.sweeps.join(" and ")}, settle ${JSON.stringify(lastRun.settle)}, inflows ${lastRun.inflows}, inputs ${lastRun.seconds.inputs.toFixed(2)} s, gpu ${lastRun.seconds.gpu.toFixed(2)} s`);
-    } else throw new Error(`stage "${name}": surplus, discharge, basin or water`);
+    } else throw new Error(`stage "${name}": surplus, discharge, basin, global or water`);
     forget(); unmap();
   } finally { await releaseGpu(); }
   process.exit(0);

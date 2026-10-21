@@ -79,10 +79,11 @@ export const at = <A extends Field>(f: Field, ids: Int32Array): A => {
 // ---------- the climate ----------
 // Each season's rain and potential evaporation over the patch's cells, mm over the season. Nothing in it is a constant of a place.
 export type ClimateSource = (ctx: Ctx, patch: Patch) => { precip: Float32Array[]; pet: Float32Array[] };
-// Four files of rain and four of potential evaporation as u16, `perMm` units to the millimetre.
-export const climateFiles = (pr: readonly string[], pet: readonly string[], perMm: number): ClimateSource => (ctx, patch) => {
-  const conv = (file: string) => { const raw = at<Uint16Array>(mapped(ctx, file), patch.ids), out = new Float32Array(raw.length); for (let k = 0; k < raw.length; k++) out[k] = raw[k] / perMm; return out; };
-  return { precip: pr.map(conv), pet: pet.map(conv) };
+// Four files of rain and four of potential evaporation as u16, each with the function that takes a word to mm over the season (the air stage's rain is a companded word, its potential
+// evaporation a linear 0.1 mm: air.ts precipOfWord and AIR_UNIT.pe).
+export const climateFiles = (pr: readonly string[], pet: readonly string[], prMm: (word: number) => number, petMm: (word: number) => number): ClimateSource => (ctx, patch) => {
+  const conv = (file: string, mm: (w: number) => number) => { const raw = at<Uint16Array>(mapped(ctx, file), patch.ids), out = new Float32Array(raw.length); for (let k = 0; k < raw.length; k++) out[k] = mm(raw[k]); return out; };
+  return { precip: pr.map((f) => conv(f, prMm)), pet: pet.map((f) => conv(f, petMm)) };
 };
 // A climate that is a function of a cell's height alone (height in m), for stagings and tests.
 export const climateFor = (of: (heightM: number) => { precip: number[]; pet: number[] }): ClimateSource => (ctx, patch) => {
