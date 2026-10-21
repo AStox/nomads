@@ -151,8 +151,14 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   need the per-tile ground files the pyramid does not hold (scatter.ts reads 49 B a cell of stage files; the painter reads
   windShare, pet, table, peat, silt, fog, snow, wet, moist and the river lines), asked of Unit 5; the play area is still the
   island generator's, so it is a stamp (another coast, relief and cover) with a 1.2 km faded edge over the planet; snow is the
-  year's air under -6 C (the pyramid has no seasonal snowpack); the halo repeats a cell across a cube's edge; the plane of the
-  play area (gnomonic) stretches beyond tens of km from it, so the ladder-regime pan is not geodesic there.
+  year's air under -6 C (the pyramid has no seasonal snowpack). Fixed 2026-10-21: the height halo (2 cells) and a new field halo
+  (1 cell) are the neighbouring tiles' cells across a tile's and a cube face's edge by the grid's own rule (`cellAcross`), refreshed as
+  neighbours arrive, checked on a synthetic field over every tile of tier 1 (24,768 halo cells, all the field's value at the cell that
+  stands there); the camera is geodesic: the planet camera does the pan hold wherever the play area's plane (true to a part in a
+  hundred) cannot be needed (farther from the place than the play area and the canvas's reach, or from zoom -1.5 out), on the sphere
+  raised to the ground under the target as the worker drew it, so a drag moves the target by the pixel distance's ground distance
+  (0.98 to 1.0 of it at zoom 6, 20 and 60 degrees from the place) and the held point stays under the cursor. The plane's re-anchoring waits
+  for the ladder drawing ground away from the place.
 
 ## Risks
 

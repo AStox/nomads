@@ -33,15 +33,17 @@ export function planetCam({ lat, lon, dist, tilt, heading, tanH, w, h, radiusM =
     }
     return [((dot(v, right) / (z * tanH * aspect) + 1) / 2) * w, ((1 - dot(v, up) / (z * tanH)) / 2) * h];
   }
-  // the sphere's point under a canvas point (relief ignored), or null off the planet
+  // the surface under a canvas point as a unit point, or null off it: the sphere raised by `lift` (the ground under the target as
+  // drawn), relief otherwise ignored, so the target itself is exact
+  const rho2m1 = 2 * (lift / radiusM) + (lift / radiusM) ** 2;
   function pick(x, y) {
     const nx = (x / w) * 2 - 1, ny = 1 - (y / h) * 2;
     const rd = unit([0, 1, 2].map((i) => fwd[i] + nx * tanH * aspect * right[i] + ny * tanH * up[i]));
     // the near root t = c / (-b + sqrt(disc)) keeps its digits when the camera is close to the ground
-    const b = dot(o, rd), c = 2 * dot(T, off) + dot(off, off), disc = b * b - c;
+    const b = dot(o, rd), c = 2 * dot(T, off) + dot(off, off) - rho2m1, disc = b * b - c;
     if (disc < 0 || b >= 0) return null;
     const t = c / (-b + Math.sqrt(disc));
     return t < 0 ? null : unit([0, 1, 2].map((i) => o[i] + t * rd[i]));
   }
-  return { o, T, off, fwd, right, up, tanH, aspect, dist, tilt, heading, lat, lon, w, h, radiusM, project, pick };
+  return { o, T, off, fwd, right, up, tanH, aspect, dist, tilt, heading, lat, lon, w, h, radiusM, lift, project, pick };
 }

@@ -22,7 +22,7 @@ const ORIGIN = -SIZE / 2, WS = 12.5;
 // entries and rows kept for sprites made while the page runs (live sprites, and objects' sprites the world grew into
 // since the atlas was laid out), and the atlas layers they go in
 const DYN_ENTRIES = 32768, DYN_ROWS = 1 << 20, DYN_LAYERS = 4;
-let R = null, device = null, gpuName = "", canvas = null, context = null, planet = null, planetLayer = null;
+let R = null, device = null, gpuName = "", canvas = null, context = null, planet = null, planetLayer = null, planetLift = 0;
 // each sprite's foot (rows its anchor sits above the ground), by atlas id, for the checks
 let table = null, nStatic = 0, rowsStatic = 0, dyn = null, liveIds = new Map(), dynMade = new Set(), feet = new Int16Array(0);
 // the page's live sprites as they came, by its ids: placed in the dynamic layers when a frame first draws them, and again
@@ -57,7 +57,7 @@ async function openPlanet(seed, device) {
   const res = await fetch(new URL(`../planets/${seed}.json`, import.meta.url));
   if (!res.ok) return null;
   const manifest = await res.json(), G = await import("../globe.js");
-  const pyramid = await openPyramid({ device, base: new URL(`../planets/${manifest.tiles}/pyramid`, import.meta.url).href, tiers: manifest.tiers, faces: manifest.faces });
+  const pyramid = await openPyramid({ device, base: new URL(`../planets/${manifest.tiles}/pyramid`, import.meta.url).href, tiers: manifest.tiers, faces: manifest.faces, across: G.cellAcross });
   let hmax = 0;
   for (const f of manifest.faces) for (const h of pyramid.planes0(f).height) hmax = Math.max(hmax, h * 0.25);
   return { G, manifest, pyramid, radiusM: ((256 << (manifest.tiers - 1)) * CELL * 2) / Math.PI, hmax: hmax * 1.5 + 300 };
@@ -930,7 +930,7 @@ function render() {
   // the planet under the ladder's views, from the camera the page chose (live.js planetParams)
   const under = f.planet && planetLayer && ((enc, target) => {
     // the camera stands above the ground under its target, as drawn (lifted by the relief's exaggeration), never inside it
-    const lift = Math.max(0, planet.pyramid.heightAt(planet.G.FRAMES, planet.G.fromLatLon((f.planet.lat * Math.PI) / 180, (f.planet.lon * Math.PI) / 180))) * f.exag;
+    const lift = (planetLift = Math.max(0, planet.pyramid.heightAt(planet.G.FRAMES, planet.G.fromLatLon((f.planet.lat * Math.PI) / 180, (f.planet.lon * Math.PI) / 180))) * f.exag);
     const cam = planetCam({ ...f.planet, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM, lift });
     planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, sun: f.planet.sun, exag: f.exag, riverCut: f.planet.riverCut });
   });
@@ -942,7 +942,7 @@ function render() {
     // the levels and bearings whose front lists are built, when they change (live.js listsReady)
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: planetLift, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     if (pending) render();
   });
 }

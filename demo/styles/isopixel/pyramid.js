@@ -2,12 +2,15 @@
 // each pixel needs, fetched, inflated and kept in two GPU atlases, so the planet layer reads the same 75 m ground at every zoom and
 // the finer tier replaces the coarser one as it arrives. Tier t has 2^t by 2^t tiles of 256 by 256 cells a face; tier 0 is held whole
 // from the start (six tiles), so a pixel always has a ground to read.
-//   fields: one texel of 16 bytes a cell, nearest or bilinear inside a tile (rgba32uint, 256 by 256)
-//   heights: the cell's height in metres with a halo of 2 cells from the neighbouring tiles of its tier (r32float, 260 by 260), so
-//            the B-spline of the cells and the relief march never leave their layer; across a cube's edge the halo repeats the
-//            edge's cell [gap: a seam of a cell or two at a cube's edge]
-//   table:  per tile of every tier, its atlas layer or NONE (storage buffer, the shader's page table)
-const TILE = 256, HALO = 2, HS = TILE + 2 * HALO, NONE = 0xffffffff;
+//   fields:  one texel of 16 bytes a cell (rgba32uint) with a halo of 1 cell, so the bilinear fields run on across a tile's edge
+//   heights: the cell's height in metres (r32float) with a halo of 2 cells, so the B-spline of the cells and the relief march never
+//            leave their layer
+// Both halos are the neighbouring tiles' cells of the tier, across a cube's edge too: the cell past the edge is the neighbouring
+// face's (the grid's own halo rule, src/gpu/globe/patch.ts cellAcross, the index along the edge kept or reversed as grid.ts EDGES
+// says), so no seam shows at a tile's or a face's edge. Where a neighbour is not held, or at a cube's corner where no cell stands,
+// the halo repeats the tile's own edge cell until the neighbour arrives (a held tile's halo is refreshed when one does).
+//   table:   per tile of every tier, its atlas layer or NONE (storage buffer, the shader's page table)
+const TILE = 256, HALO = 2, HS = TILE + 2 * HALO, FHS = TILE + 2, NONE = 0xffffffff, hStep = 0.25;
 const inflate = async (res) => new Uint8Array(await new Response(res.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
 const TYPES = { i8: Int8Array, u8: Uint8Array, i16: Int16Array, u16: Uint16Array, i32: Int32Array, u32: Uint32Array, f32: Float32Array };
 
@@ -35,70 +38,139 @@ export function faceFrac(FRAMES, p) {
   return { f, fx: Math.atan(ua) / (Math.PI / 2) + 0.5, fy: Math.atan(vb) / (Math.PI / 2) + 0.5 };
 }
 
-// info: the manifest (tiers, the faces that have tiles, where they are); slots: the atlas layers (each 1 MB of fields and 0.27 MB of
-// heights) [design: 192, a screen's tiles at three tiers and the cache for a pan]
-export async function openPyramid({ device, base, tiers, faces, slots = 192, inflight = 6 }) {
+// The tile and cell holding the cell at face position (X, Y) of face f at tier t, which may lie past the face's edge: { i: the tile's
+// index, lx, ly: the cell in it }, or null at a cube's corner. across(n, f, X, Y) is the cell's id (face * n * n + Y * n + X) or -1.
+export function cellOf(across, t, f, X, Y) {
+  const n = TILE << t;
+  let ff = f, xx = X, yy = Y;
+  if (X < 0 || X >= n || Y < 0 || Y >= n) {
+    const id = across(n, f, X, Y);
+    if (id < 0) return null;
+    ff = Math.floor(id / (n * n)); const r = id % (n * n); yy = Math.floor(r / n); xx = r % n;
+  }
+  return { i: tileIndex(t, ff, xx >> 8, yy >> 8), lx: xx & 255, ly: yy & 255 };
+}
+
+// A tile's heights in metres with their halo of HALO cells from the neighbours: planeAt(i) the held tile's height plane (Int16, in
+// steps of hStep) or undefined; a cell with none held is the tile's own nearest edge cell.
+export function haloHeights(across, planeAt, t, f, tx, ty) {
+  const own = planeAt(tileIndex(t, f, tx, ty)), out = new Float32Array(HS * HS), x0 = tx * TILE, y0 = ty * TILE, clamp = (v) => Math.min(TILE - 1, Math.max(0, v));
+  for (let y = 0; y < HS; y++)
+    for (let x = 0; x < HS; x++) {
+      const lx = x - HALO, ly = y - HALO;
+      if (lx >= 0 && lx < TILE && ly >= 0 && ly < TILE) { out[y * HS + x] = own[ly * TILE + lx] * hStep; continue; }
+      const c = cellOf(across, t, f, x0 + lx, y0 + ly), H = c && planeAt(c.i);
+      out[y * HS + x] = (H ? H[c.ly * TILE + c.lx] : own[clamp(ly) * TILE + clamp(lx)]) * hStep;
+    }
+  return out;
+}
+
+// info: the manifest (tiers, the faces that have tiles, where they are); across: the grid's cellAcross for a face of n cells; slots: the
+// atlas layers (each 1 MB of fields and 0.27 MB of heights) [design: 192, a screen's tiles at three tiers and the cache for a pan]
+export async function openPyramid({ device, base, tiers, faces, across: cellAcross, slots = 192, inflight = 6 }) {
   const total = tierOffset(tiers), table = new Uint32Array(total).fill(NONE);
-  const fieldsT = device.createTexture({ size: [TILE, TILE, slots], format: "rgba32uint", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST, label: "pyramid fields" });
+  const fieldsT = device.createTexture({ size: [FHS, FHS, slots], format: "rgba32uint", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST, label: "pyramid fields" });
   const heightsT = device.createTexture({ size: [HS, HS, slots], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST, label: "pyramid heights" });
   const tableB = device.createBuffer({ size: Math.max(16, table.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, label: "pyramid table" });
   const free = Array.from({ length: slots }, (_, i) => slots - 1 - i), slotOf = new Map(), held = new Array(slots).fill(null);
-  const lastWant = new Map(), flying = new Set(), absent = new Set(), host = new Map(), whole = new Map(), stats = { fetched: 0, bytes: 0, evicted: 0 };
+  const lastWant = new Map(), flying = new Set(), absent = new Set(), host = new Map(), edges = new Map(), whole = new Map(), stats = { fetched: 0, bytes: 0, evicted: 0 };
   let frameNo = 0, tableDirty = true;
   const tileOf = (i) => { let t = 0; while (i >= tierOffset(t + 1)) t++; const r = i - tierOffset(t), n = 4 ** t, f = Math.floor(r / n), q = r % n; return { t, f, ty: Math.floor(q / 2 ** t), tx: q % 2 ** t }; };
   const url = (t, f, tx, ty) => `${base}/t${t}/f${f}/${ty}-${tx}.tile.gz`;
+  const across = (n, f, X, Y) => cellAcross({ fn: n }, f, X, Y);
+  const planeAt = (i) => host.get(i);
 
   // the cell field's words: height (as its 16 bits), rock, drift | drift depth, temperature, rain | water, river, tree, shrub | grass, marsh, bare, soil
   function packFields(P) {
     const out = new Uint32Array(TILE * TILE * 4), h = new Uint16Array(P.height.buffer, P.height.byteOffset, TILE * TILE), t8 = new Uint8Array(P.temp.buffer, P.temp.byteOffset, TILE * TILE);
     for (let c = 0; c < TILE * TILE; c++) {
       const o = 4 * c;
-      out[o] = h[c] | (P.rock[c] << 16) | (P.drift[c] << 24);
-      out[o + 1] = P.driftDepth[c] | (t8[c] << 8) | (P.rain[c] << 16);
-      out[o + 2] = P.water[c] | (P.river[c] << 8) | (P.tree[c] << 16) | (P.shrub[c] << 24);
-      out[o + 3] = P.grass[c] | (P.marsh[c] << 8) | (P.bare[c] << 16) | (P.soil[c] << 24);
+      out[o] = (h[c] | (P.rock[c] << 16) | (P.drift[c] << 24)) >>> 0;
+      out[o + 1] = (P.driftDepth[c] | (t8[c] << 8) | (P.rain[c] << 16)) >>> 0;
+      out[o + 2] = (P.water[c] | (P.river[c] << 8) | (P.tree[c] << 16) | (P.shrub[c] << 24)) >>> 0;
+      out[o + 3] = (P.grass[c] | (P.marsh[c] << 8) | (P.bare[c] << 16) | (P.soil[c] << 24)) >>> 0;
     }
     return out;
   }
-  const hStep = 0.25;
-  // a tile's heights with their halo from the neighbours of its tier that are held (else the edge's own cell)
-  function layerOf(t, f, tx, ty) {
-    const own = host.get(tileIndex(t, f, tx, ty)), out = new Float32Array(HS * HS), n = 2 ** t;
-    for (let y = 0; y < HS; y++)
-      for (let x = 0; x < HS; x++) {
-        let gx = x - HALO, gy = y - HALO, nx = tx, ny = ty, src = own;
-        if (gx < 0 || gx >= TILE || gy < 0 || gy >= TILE) {
-          nx += gx < 0 ? -1 : gx >= TILE ? 1 : 0; ny += gy < 0 ? -1 : gy >= TILE ? 1 : 0;
-          const nb = nx >= 0 && ny >= 0 && nx < n && ny < n ? host.get(tileIndex(t, f, nx, ny)) : null;
-          if (nb) { src = nb; gx = (gx + TILE) % TILE; gy = (gy + TILE) % TILE; } else { gx = Math.min(TILE - 1, Math.max(0, gx)); gy = Math.min(TILE - 1, Math.max(0, gy)); }
-        }
-        out[y * HS + x] = src[gy * TILE + gx] * hStep;
+  // a tile's outermost cells' words, the part of it its neighbours' halos read: top (row 0), bottom (row 255), left (column 0), right
+  function edgesOf(w) {
+    const row = (y) => w.slice(y * TILE * 4, (y + 1) * TILE * 4), col = (x) => { const o = new Uint32Array(TILE * 4); for (let y = 0; y < TILE; y++) o.set(w.subarray((y * TILE + x) * 4, (y * TILE + x) * 4 + 4), y * 4); return o; };
+    return { top: row(0), bottom: row(TILE - 1), left: col(0), right: col(TILE - 1) };
+  }
+  // the words of cell (lx, ly) of a held tile that lies on its edge, or null
+  function edgeWord(i, lx, ly) {
+    const e = edges.get(i);
+    if (!e) return null;
+    if (ly === 0) return e.top.subarray(4 * lx, 4 * lx + 4);
+    if (ly === TILE - 1) return e.bottom.subarray(4 * lx, 4 * lx + 4);
+    if (lx === 0) return e.left.subarray(4 * ly, 4 * ly + 4);
+    if (lx === TILE - 1) return e.right.subarray(4 * ly, 4 * ly + 4);
+    return null;
+  }
+  // the halo ring of a tile's field layer (a FHS by FHS buffer of words) from the held neighbours, else the tile's own nearest edge cell
+  function ringInto(buf, i) {
+    const { t, f, tx, ty } = tileOf(i), x0 = tx * TILE, y0 = ty * TILE, clamp = (v) => Math.min(TILE - 1, Math.max(0, v));
+    for (let y = 0; y < FHS; y++)
+      for (let x = 0; x < FHS; x++) {
+        if (x > 0 && x < FHS - 1 && y > 0 && y < FHS - 1) continue;
+        const lx = x - 1, ly = y - 1, c = cellOf(across, t, f, x0 + lx, y0 + ly);
+        const w = (c && edgeWord(c.i, c.lx, c.ly)) || edgeWord(i, clamp(lx), clamp(ly));
+        buf.set(w, (y * FHS + x) * 4);
       }
-    return out;
+  }
+  // the tiles whose halos read this tile's cells (and whose cells its own read): the eight round it, across a face's edge too
+  function neighbours(i) {
+    const { t, f, tx, ty } = tileOf(i), out = new Set();
+    for (const [dx, dy] of [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [-1, -1], [1, -1]]) {
+      const c = cellOf(across, t, f, dx < 0 ? tx * TILE - 1 : dx > 0 ? (tx + 1) * TILE : tx * TILE + TILE / 2, dy < 0 ? ty * TILE - 1 : dy > 0 ? (ty + 1) * TILE : ty * TILE + TILE / 2);
+      if (c && c.i !== i) out.add(c.i);
+    }
+    return [...out];
   }
   const upHeights = (slot, data) => device.queue.writeTexture({ texture: heightsT, origin: [0, 0, slot] }, data, { bytesPerRow: HS * 4, rowsPerImage: HS }, [HS, HS, 1]);
-  function put(i, planes) {
+  // a tile's heights with the halo from what is held now
+  function heightsOf(i) {
     const { t, f, tx, ty } = tileOf(i);
+    return haloHeights(across, planeAt, t, f, tx, ty);
+  }
+  // the four lines of a held tile's field halo written again (after a neighbour arrived)
+  function refreshRing(i) {
+    const slot = slotOf.get(i), buf = new Uint32Array(FHS * FHS * 4);
+    ringInto(buf, i);
+    const wr = (origin, size, data) => device.queue.writeTexture({ texture: fieldsT, origin: [...origin, slot] }, data, { bytesPerRow: size[0] * 16, rowsPerImage: size[1] }, [...size, 1]);
+    wr([0, 0], [FHS, 1], buf.subarray(0, FHS * 4));
+    wr([0, FHS - 1], [FHS, 1], buf.subarray((FHS - 1) * FHS * 4, FHS * FHS * 4));
+    const col = (x) => { const o = new Uint32Array(FHS * 4); for (let y = 0; y < FHS; y++) o.set(buf.subarray((y * FHS + x) * 4, (y * FHS + x) * 4 + 4), y * 4); return o; };
+    wr([0, 0], [1, FHS], col(0));
+    wr([FHS - 1, 0], [1, FHS], col(FHS - 1));
+  }
+
+  function put(i, planes) {
+    const { t, f } = tileOf(i);
     let slot = free.pop();
     if (slot === undefined) {
       // the least lately wanted tile that this frame does not want
       let worst = -1, at = -1;
       for (let s = 0; s < slots; s++) if (held[s] != null && held[s] >= tierOffset(1) && (lastWant.get(held[s]) ?? -1) < frameNo - 2 && (worst < 0 || (lastWant.get(held[s]) ?? -1) < worst)) { worst = lastWant.get(held[s]) ?? -1; at = s; }
       if (at < 0) return false;
-      table[held[at]] = NONE; host.delete(held[at]); slotOf.delete(held[at]); slot = at; stats.evicted++;
+      table[held[at]] = NONE; host.delete(held[at]); edges.delete(held[at]); slotOf.delete(held[at]); slot = at; stats.evicted++;
     }
     host.set(i, planes.height);
     if (t === 0) whole.set(f, planes);
     held[slot] = i; slotOf.set(i, slot); table[i] = slot; tableDirty = true;
-    device.queue.writeTexture({ texture: fieldsT, origin: [0, 0, slot] }, packFields(planes), { bytesPerRow: TILE * 16, rowsPerImage: TILE }, [TILE, TILE, 1]);
-    upHeights(slot, layerOf(t, f, tx, ty));
+    const words = packFields(planes);
+    edges.set(i, edgesOf(words));
+    const buf = new Uint32Array(FHS * FHS * 4);
+    for (let y = 0; y < TILE; y++) buf.set(words.subarray(y * TILE * 4, (y + 1) * TILE * 4), ((y + 1) * FHS + 1) * 4);
+    ringInto(buf, i);
+    device.queue.writeTexture({ texture: fieldsT, origin: [0, 0, slot] }, buf, { bytesPerRow: FHS * 16, rowsPerImage: FHS }, [FHS, FHS, 1]);
+    upHeights(slot, heightsOf(i));
     // the neighbours' halos now have this tile's cells
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-      if (!dx && !dy) continue;
-      const nx = tx + dx, ny = ty + dy;
-      if (nx < 0 || ny < 0 || nx >= 2 ** t || ny >= 2 ** t) continue;
-      const j = tileIndex(t, f, nx, ny), s = slotOf.get(j);
-      if (s !== undefined) upHeights(s, layerOf(t, f, nx, ny));
+    for (const j of neighbours(i)) {
+      const s = slotOf.get(j);
+      if (s === undefined) continue;
+      refreshRing(j);
+      upHeights(s, heightsOf(j));
     }
     return true;
   }

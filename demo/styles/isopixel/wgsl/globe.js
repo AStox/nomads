@@ -191,7 +191,8 @@ struct Fv {
   rock: u32, drift: u32, dd: f32, temp: f32, rain: f32, water: f32, river: f32,
   tree: f32, shrub: f32, grass: f32, marsh: f32, bare: f32, soil: f32,
 }
-fn word(l: u32, ix: i32, iy: i32) -> vec4u { return textureLoad(fieldsT, clamp(vec2i(ix, iy), vec2i(0), vec2i(255)), i32(l), 0); }
+// a cell of the tile by its place in the tile, which may lie one past it: the layer holds a halo of 1 cell from the neighbouring tiles
+fn word(l: u32, ix: i32, iy: i32) -> vec4u { return textureLoad(fieldsT, clamp(vec2i(ix + 1, iy + 1), vec2i(0), vec2i(257)), i32(l), 0); }
 fn unpack(w: vec4u) -> Fv {
   let t8 = i32((w.y >> 8u) & 255u);
   var F: Fv;

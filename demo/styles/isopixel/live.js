@@ -107,7 +107,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   function onWorker(m) {
     if (m.type.startsWith("sim")) { if (simTo) simTo(m); else simEarly.push(m); }
     else if (m.type === "frameDone") {
-      lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts; stats.tiles = m.tiles;
+      lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts; stats.tiles = m.tiles; stats.lift = m.lift;
       if (m.fronts !== undefined) fronts = new Set(m.fronts ? m.fronts.split(",") : []);
       const sent = sentAt.get(m.id);
       sentAt.delete(m.id);
@@ -233,7 +233,17 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     view.x = T.x; view.z = T.z;
     if (T.geo) { view.geo = T.geo; view.synced = { x: view.x, z: view.z, lat: T.geo.lat, lon: T.geo.lon }; }
   }
-  const planetMode = (view) => !!PLACE && view.zoom < ZLAD;
+  // The planet's camera and its geodesic pan hold where the play area's plane (flat, about the place) would stretch: from ZLAD out,
+  // and wherever the target is farther from the place than the play area and the canvas's reach (a ladder view there draws nothing, so
+  // nothing needs the plane). Within that reach the plane is true to a part in a hundred.
+  const planetMode = (view) => {
+    if (!PLACE) return false;
+    if (view.zoom < ZLAD) return true;
+    const g = view.geo;
+    if (!g) return false;
+    const ppm = ppmOf(clampZ(view.zoom)), reach = ((SIZE / 2 + PLAY_EDGE_M) * Math.SQRT2) + (1.25 * (0.71 * canvas.width + 1.41 * canvas.height)) / (2 * ppm);
+    return Math.acos(Math.min(1, dotv(vecOf(g), PLACE.c))) * PR > reach;
+  };
   // the planet camera's look at a zoom: u runs from the whole planet (0) to the ladder's first zoom (1)
   function planetParams(view) {
     const zw = zminNow(), u = clamp((view.zoom - zw) / (ZLAD - zw), 0, 1), k = smooth(0.25, 0.9, u), tanH = 0.414 * (0.05 / 0.414) ** smooth(0.2, 0.9, u);
@@ -247,8 +257,9 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const light = [0, 1, 2].map((i) => PLACE.c[i] * Math.sin(el) + Math.cos(el) * ((PLACE.e[i] * dir[0]) / dl - (PLACE.n[i] * dir[1]) / dl));
     return { lat: view.geo.lat, lon: view.geo.lon, dist, tilt: ISO_TILT * k, heading: iso * k, tanH, sun: light, riverCut: clamp((720 * (canvas.height / ppm)) / PR, 20, 3000) };
   }
-  const planetCamOf = (view) => { const p = planetParams(view); return planetCam({ ...p, w: canvas.width, h: canvas.height, radiusM: PR }); };
-  const planetScreen = (view, geo) => planetCamOf(view).project(vecOf(geo)) ?? [-1e9, -1e9];
+  // the camera as the worker drew it last frame: stood above the ground under its target (stats.lift), so a pick lands on what is drawn
+  const planetCamOf = (view) => { const p = planetParams(view); return planetCam({ ...p, w: canvas.width, h: canvas.height, radiusM: PR, lift: stats.lift ?? 0 }); };
+  const planetScreen = (view, geo) => { const k = 1 + (stats.lift ?? 0) / PR, P = vecOf(geo); return planetCamOf(view).project([P[0] * k, P[1] * k, P[2] * k]) ?? [-1e9, -1e9]; };
   function planetUnder(view, sx, sy) {
     syncGeo(view);
     const P = planetCamOf(view).pick(sx, sy);
