@@ -197,6 +197,17 @@ describe("the air stage on the real planet (seed 1)", () => {
     for (let i = 0; i < pr.length; i++) off = Math.max(off, Math.abs(precipOfWord(pr[i]) - a.precip[0][i]));
     expect(off).toBeLessThan(0.2);
     expect(a.saturated).toBe(0);
+    // the three fields the page reads: wind share, fog (1/255 of 0..1) and the snowpack (1/4 mm), each the stage's word to its unit
+    const wsh = stored[AIR_OUT.wsh] as Uint8Array, fog = stored[AIR_OUT.fog] as Uint8Array, snp = stored[AIR_OUT.snp[3]] as Uint16Array;
+    let dw = 0, df = 0, dp = 0, packed = 0;
+    for (let i = 0; i < wsh.length; i++) {
+      dw = Math.max(dw, Math.abs(wsh[i] / 255 - a.windShare[i])); df = Math.max(df, Math.abs(fog[i] / 255 - a.fog[i])); dp = Math.max(dp, Math.abs(snp[i] / 4 - a.snowpack[3][i]));
+      if (snp[i] > 0) packed++;
+    }
+    console.log(`real tile: wind share, fog and snowpack words decode to within ${dw.toExponential(1)}, ${df.toExponential(1)} and ${dp.toFixed(3)} mm; ${packed} cells hold winter snow`);
+    expect(dw).toBeLessThanOrEqual(0.5 / 255 + 1e-6);
+    expect(df).toBeLessThanOrEqual(0.5 / 255 + 1e-6);
+    expect(dp).toBeLessThanOrEqual(0.125 + 1e-3);
     // no cell holds more than the words downstream hold, and the rain has no step at a block's edge
     for (let k = 0; k < 4; k++) expect(Math.max(...a.precip[k])).toBeLessThanOrEqual(WORD_MAX_MM);
     const steps = [0, 1, 2, 3].map((k) => edgeStep(a.precip[k], p, 3));
