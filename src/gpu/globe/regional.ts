@@ -96,40 +96,60 @@ export function remapInts(from: number, tier: number, height: Int32Array): Int32
   }, from);
   return out;
 }
-// remapInts for one tier up (children 2 by 2), the whole planet's 25 million cells in seconds: the same arithmetic as eachParent's (weights 3/4 and 1/4 of the two
-// nearest centres on each axis, so a child is (9a + 3b + 3c + d) / 16 rounded half up) with the cells round a face's edge or corner taken from eachParent's own path.
-export function refineInts(from: number, height: Int32Array): Int32Array {
-  const fnp = 256 << from, fn = fnp * 2, cells = fnp * fnp, out = new Int32Array(height.length * 4), gp = tierGrid(from), ids = new Int32Array(9), val = new Float64Array(9);
-  if (height.length !== CELLS0 << (2 * from)) throw new Error(`refineInts: tier ${from} holds ${CELLS0 << (2 * from)} cells, got ${height.length}`);
-  const o = (f: number, Y: number, X: number, j: number, i: number) => (f * fn + 2 * Y + j) * fn + 2 * X + i;
+// The children, 2 by 2 to a parent, of a field at tier `from` (weights 3/4 and 1/4 of the two nearest centres on each axis, so a child is (9a + 3b + 3c + d) / 16), the cells round a
+// face's edge or corner taken from eachParent's own path, written into `out` at the children's cell numbers. `add` adds to what `out` holds.
+function children2(parent: ArrayLike<number>, from: number, out: Float64Array, add: boolean) {
+  const fnp = 256 << from, fn = fnp * 2, cells = fnp * fnp, gp = tierGrid(from), ids = new Int32Array(9), val = new Float64Array(9);
   for (let f = 0; f < FACES; f++) {
     const base = f * cells;
     for (let Y = 0; Y < fnp; Y++) {
       for (let X = 0; X < fnp; X++) {
         const p = base + Y * fnp + X;
-        let sw: number, se: number, nw: number, ne: number, w: number, e: number, s: number, n: number, ce = height[p];
+        let sw: number, se: number, nw: number, ne: number, w: number, e: number, s: number, n: number, ce = parent[p];
         if (X > 0 && X < fnp - 1 && Y > 0 && Y < fnp - 1) {
-          w = height[p - 1]; e = height[p + 1]; s = height[p - fnp]; n = height[p + fnp];
-          sw = height[p - fnp - 1]; se = height[p - fnp + 1]; nw = height[p + fnp - 1]; ne = height[p + fnp + 1];
+          w = parent[p - 1]; e = parent[p + 1]; s = parent[p - fnp]; n = parent[p + fnp];
+          sw = parent[p - fnp - 1]; se = parent[p - fnp + 1]; nw = parent[p + fnp - 1]; ne = parent[p + fnp + 1];
         } else {
           around3(gp, f, X, Y, ids);
-          for (let c = 0; c < 9; c++) if (ids[c] >= 0) val[c] = height[ids[c]];
+          for (let c = 0; c < 9; c++) if (ids[c] >= 0) val[c] = parent[ids[c]];
           for (const [c, a, b] of CORNER_BESIDE) if (ids[c] < 0) val[c] = (val[a] + val[b]) / 2;
           sw = val[0]; s = val[1]; se = val[2]; w = val[3]; ce = val[4]; e = val[5]; nw = val[6]; n = val[7]; ne = val[8];
         }
         // child (i, j) lies at 1/4 or 3/4 of the way between the parent's centre and the neighbour's on each axis: weights 3/4 on the parent's side
-        const v00 = Math.round((9 * ce + 3 * w + 3 * s + sw) / 16), v10 = Math.round((9 * ce + 3 * e + 3 * s + se) / 16);
-        const v01 = Math.round((9 * ce + 3 * w + 3 * n + nw) / 16), v11 = Math.round((9 * ce + 3 * e + 3 * n + ne) / 16);
-        const d = height[p] * 4 - (v00 + v10 + v01 + v11), base4 = Math.floor(d / 4), rem = d - base4 * 4;
-        out[o(f, Y, X, 0, 0)] = v00 + base4 + (0 < rem ? 1 : 0);
-        out[o(f, Y, X, 0, 1)] = v10 + base4 + (1 < rem ? 1 : 0);
-        out[o(f, Y, X, 1, 0)] = v01 + base4 + (2 < rem ? 1 : 0);
-        out[o(f, Y, X, 1, 1)] = v11 + base4 + (3 < rem ? 1 : 0);
+        const o = (f * fn + 2 * Y) * fn + 2 * X, v00 = (9 * ce + 3 * w + 3 * s + sw) / 16, v10 = (9 * ce + 3 * e + 3 * s + se) / 16, v01 = (9 * ce + 3 * w + 3 * n + nw) / 16, v11 = (9 * ce + 3 * e + 3 * n + ne) / 16;
+        if (add) { out[o] += v00; out[o + 1] += v10; out[o + fn] += v01; out[o + fn + 1] += v11; } else { out[o] = v00; out[o + 1] = v10; out[o + fn] = v01; out[o + fn + 1] = v11; }
       }
     }
   }
+}
+// A field at tier `from` (1/256 m) carried to the next tier: the bilinear children, then what is left of each parent's height (its height less the children's mean) is carried
+// down the same way, `passes` times, so that the children's means come to the parents' without a constant to a block (a constant is a step of up to 100 m at the block's
+// edge on a range: measured); the last whole-unit constant, which is then under a unit, makes the children of every cell sum to 4 times its height exactly [design, R1761].
+export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4): Int32Array {
+  const n = CELLS0 << (2 * from), c = new Float64Array(4 * n), out = new Int32Array(4 * n), fnp = 256 << from, fn = fnp * 2, cells = fnp * fnp;
+  if (parent.length !== n) throw new Error(`refineSmooth: tier ${from} holds ${n} cells, got ${parent.length}`);
+  children2(parent, from, c, false);
+  if (passes > 0) {
+    const r = new Float64Array(n), corr = new Float64Array(4 * n);
+    for (let pass = 0; pass < passes; pass++) {
+      for (let f = 0; f < FACES; f++)
+        for (let Y = 0; Y < fnp; Y++)
+          for (let X = 0; X < fnp; X++) { const p = f * cells + Y * fnp + X, o = (f * fn + 2 * Y) * fn + 2 * X; r[p] = parent[p] - (c[o] + c[o + 1] + c[o + fn] + c[o + fn + 1]) / 4; }
+      children2(r, from, corr, false);
+      for (let i = 0; i < c.length; i++) c[i] += corr[i];
+    }
+  }
+  for (let f = 0; f < FACES; f++)
+    for (let Y = 0; Y < fnp; Y++)
+      for (let X = 0; X < fnp; X++) {
+        const p = f * cells + Y * fnp + X, o = (f * fn + 2 * Y) * fn + 2 * X, v = [Math.round(c[o]), Math.round(c[o + 1]), Math.round(c[o + fn]), Math.round(c[o + fn + 1])];
+        const d = Math.round(parent[p] * 4) - (v[0] + v[1] + v[2] + v[3]), base4 = Math.floor(d / 4), rem = d - base4 * 4;
+        out[o] = v[0] + base4 + (0 < rem ? 1 : 0); out[o + 1] = v[1] + base4 + (1 < rem ? 1 : 0); out[o + fn] = v[2] + base4 + (2 < rem ? 1 : 0); out[o + fn + 1] = v[3] + base4 + (3 < rem ? 1 : 0);
+      }
   return out;
 }
+// remapInts for one tier up with no smoothing of the constants: the bilinear children and one constant to a block.
+export const refineInts = (from: number, height: Int32Array): Int32Array => refineSmooth(height, from, 0);
 // A quantity that is never negative (rain, runoff) on every cell of the tier, the children's mean the parent's value (to float32).
 export function remapAmounts(tier: number, field: Field, scale = 1): Float32Array {
   const n = 1 << (2 * tier), out = new Float32Array(CELLS0 * n);
@@ -255,24 +275,6 @@ export class Regional {
     this.gpu.device.queue.writeBuffer(this.X, 0, table);
     this.gpu.device.queue.writeBuffer(this.P, 0, new Uint32Array([1, this.creepSubs, 0, 0]));
     this.submit((p) => this.run(p, "cellmeans", this.N));
-  }
-  // The landscape's response time at the scale of a tier-0 cell, years: the longest, over the cells, of the sum along the flow path of d / (K sqrt(A)) for as far as the path stays
-  // in the cell's own tier-0 cell, the time the stream power law takes to carry a change at a valley's head to where the valley leaves the cell the planet's own uplift is set in
-  // (Whipple and Tucker 1999; the island takes its response time from the first flood the same way, R1560). Over the whole path it would be the longest river's, tens of
-  // thousands of My on a planet of continents, which is not the time the 75 m relief takes. Read from the flow of the last `flow()`; `dtYr` is the step the table was made for.
-  async responseTime(dtYr: number): Promise<number> {
-    const [to, rd, acc, kq, ord] = await Promise.all([this.readField("TO"), this.readField("RD"), this.readField("ACC"), this.readField("KQ"), this.readField("ORD")]);
-    const t = new Float64Array(this.N), fn = this.fn, cells = fn * fn, tier = this.tier, side = fn >> tier;
-    const parent = (k: number) => { const f = Math.floor(k / cells), r = k - f * cells, Y = Math.floor(r / fn); return (f * side + (Y >> tier)) * side + ((r - Y * fn) >> tier); };
-    let most = 0;
-    for (let p = 0; p < this.N; p++) {
-      const k = ord[p], j = to[k];
-      if (j === k) continue;
-      const f = ((kq[k] >>> 0) * (rd[k] >>> 0) * Math.sqrt(acc[k] >>> 0) * 256) / 2 ** 48;
-      t[k] = (f > 0 ? dtYr / f : 0) + (parent(j) === parent(k) ? t[j] : 0);
-      if (t[k] > most) most = t[k];
-    }
-    return most;
   }
   private bind(entry: string) {
     let b = this.binds.get(entry);
@@ -465,31 +467,3 @@ export async function regionalOf(gpu: Gpu, planet: Planet, store: PlanetStore, k
 }
 // What the end of a tier costs, s (the settled flow and the readbacks), and a state's save [design: the margins the stage leaves under its budget].
 const FINISH_S = 60, SAVE_S = 10;
-
-// ---------- 6. the start's roughness ----------
-// A surface made by the remap is smooth: water on it runs down parallel lines the cells' lattice sets, and nothing seeds the valleys the stream power law would deepen. Real ground is
-// rough at every scale, so each 2 by 2 of children (4 by 4 at the first tier made from tier 0's remap is not a group: the groups are tier-t cells sharing a tier t - 1 parent) is given
-// a zero-sum roughness of `amplitude` metres, a function of the cell's identity (an integer hash, so the same wherever it is made) and the sum of every group is left as it was, so the
-// parent totals the remap kept are kept [design: the amplitude is a tier's own: a landscape is self-affine, rough in proportion to the cell's size to a power, ROUGH_HURST].
-export const ROUGH_M = 1; // metres at 75 m cells [design, UNVERIFIED]
-export const ROUGH_HURST = 0.8; // [UNVERIFIED: the self-affine exponent of land surfaces]
-const hash32 = (x: number): number => {
-  x = Math.imul(x ^ (x >>> 16), 0x7feb352d); x = Math.imul(x ^ (x >>> 15), 0x846ca68b);
-  return (x ^ (x >>> 16)) >>> 0;
-};
-export function roughen(height: Int32Array, tier: number, seed: number): Int32Array {
-  const fn = 256 << tier, cells = fn * fn, amp = Math.round(ROUGH_M * 256 * 2 ** ((4 - tier) * ROUGH_HURST)), out = Int32Array.from(height);
-  const r = new Int32Array(4);
-  for (let f = 0; f < FACES; f++)
-    for (let Y = 0; Y < fn; Y += 2)
-      for (let X = 0; X < fn; X += 2) {
-        const base = f * cells + Y * fn + X, ids = [base, base + 1, base + fn, base + fn + 1];
-        if (ids.some((i) => height[i] <= 2 * amp)) continue;
-        let sum = 0;
-        for (let c = 0; c < 4; c++) { r[c] = (hash32(ids[c] ^ Math.imul(seed, 0x9e3779b1)) % (2 * amp + 1)) - amp; sum += r[c]; }
-        const mean = Math.trunc(sum / 4);
-        let left = sum - 4 * mean;
-        for (let c = 0; c < 4; c++) { let v = r[c] - mean; if (left !== 0) { v -= Math.sign(left); left -= Math.sign(left); } out[ids[c]] = height[ids[c]] + v; }
-      }
-  return out;
-}
