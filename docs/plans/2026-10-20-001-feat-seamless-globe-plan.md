@@ -83,7 +83,9 @@ navigates to `?at=lat,lon`, builds one window in about 23 s, and starts the game
   error, frame times within the ladder's budget.
 - [ ] **Unit 4: The gap between 12 km and 75 m.** Between the planet's cells and a window the view is the planet's
   B-spline, which reads blurred at a few hundred km across. Options: windows' own coarse levels as they are made, or a
-  cheap refinement tier of the planet (no erosion rerun). Decided after Unit 3 shows how it reads.
+  cheap refinement tier of the planet (no erosion rerun). Decided after Unit 3 shows how it reads. Unit 1 left noise and
+  a hillshade scaled by each cell's ruggedness below 12 km; that is decoration the planet does not hold, so this unit
+  replaces it with real terrain and deletes it.
 
 ## Risks
 
