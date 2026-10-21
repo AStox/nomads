@@ -467,7 +467,8 @@ fn lift(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   if (k >= N) { return; }
   raise(k);
 }
-// what is still owed after both passes: a share of it to every land cell, and the remainder (or a deficit, which no cell is lowered by) carried
+// what is still owed (or over-lifted) after both passes: an even share of it to every land cell, up or down (no cell goes under one unit; what that holds back is carried with the
+// remainder), so that the tier-0 cell's total height stays what it was to the carry, which is under a unit a cell unless cells were held at one
 @compute @workgroup_size(256)
 fn pfin(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
@@ -475,10 +476,7 @@ fn pfin(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   if (p >= NP) { return; }
   let c = fl(A_PC + p);
   if (c == 0i) { return; }
-  let r = fl(A_PS + p) + fl(A_CARRY + p) - fl(A_PL + p);
-  let each = select(0i, r / c, r > 0i);
-  atomicStore(&AT[A_PM + p], each);
-  atomicStore(&AT[A_CARRY + p], r - c * each);
+  atomicStore(&AT[A_PM + p], (fl(A_PS + p) + fl(A_CARRY + p) - fl(A_PL + p)) / c);
 }
 @compute @workgroup_size(256)
 fn spread(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
@@ -486,7 +484,18 @@ fn spread(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw
   let k = gk(gid, nwg);
   if (k >= N) { return; }
   if (!is_land(k)) { return; }
-  e_set(E_H, k, e_get(E_H, k) + fl(A_PM + pid(k)));
+  let h = e_get(E_H, k);
+  let nh = max(1i, h + fl(A_PM + pid(k)));
+  e_set(E_H, k, nh);
+  atomicAdd(&AT[A_PL + pid(k)], nh - h);
+}
+@compute @workgroup_size(256)
+fn pcarry(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let p = gk(gid, nwg);
+  if (p >= NP) { return; }
+  if (fl(A_PC + p) == 0i) { return; }
+  atomicStore(&AT[A_CARRY + p], fl(A_PS + p) + fl(A_CARRY + p) - fl(A_PL + p));
 }
 `;
 }

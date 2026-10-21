@@ -145,7 +145,7 @@ describe("the regional tier", () => {
         }
     console.log(`regional step hash ${hash(a.height)}, ${lowered} cells lowered, ${raised} raised, block edge ${(edge / ne / 256).toFixed(3)} m inside ${(inner / ni / 256).toFixed(3)} m`);
     expect(edge / ne).toBeLessThan((inner / ni) * 1.34);
-    expect(hash(a.height)).toBe("5d66e2532e436644");
+    expect(hash(a.height)).toBe("ec51aeec0e4cc221");
   });
 });
 

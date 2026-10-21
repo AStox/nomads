@@ -22,7 +22,7 @@ export interface TiersProgress { done: boolean; tier: number; steps: number; log
 
 // What the chain keeps: `t<k>-state` (heights and carries of an unfinished tier, with the steps made), `t<k>-height` (a finished tier's heights, 1/256 m), and for the last
 // tier `t<k>-to`, `t<k>-acc` and `t<k>-flooded` (the receivers, the discharge area and the flooded surface of its settled flow) and `t<k>-run` (what it cost).
-export async function tiersOf(gpu: Gpu, planet: Planet, dir: BakeDir, budgetS = Infinity, last = 4, steps = TIER_STEPS, log: (s: string) => void = () => {}): Promise<TiersProgress> {
+export async function tiersOf(gpu: Gpu, planet: Planet, dir: BakeDir, budgetS = Infinity, last = 4, steps = TIER_STEPS, log: (s: string) => void = () => {}, maxSteps = Infinity): Promise<TiersProgress> {
   const t0 = performance.now(), spent = () => (performance.now() - t0) / 1000, runs: TierRun[] = [];
   const params = defaultParams({ dtYr: 1e6 });
   for (let t = 1; t <= last; t++) {
@@ -38,12 +38,12 @@ export async function tiersOf(gpu: Gpu, planet: Planet, dir: BakeDir, budgetS = 
       const kept = resuming ? dir.json<{ steps: number }>(`t${t}-state`) : null;
       if (kept) { r.load({ height: dir.i32(`t${t}-state`), carry: dir.i32(`t${t}-carry`), steps: kept.steps }); made = kept.steps; }
       log(`tier ${t}: ${n} cells, inputs ${(spent() - c0).toFixed(1)} s, ${made} of ${steps[t]} steps kept`);
-      let last1 = 0;
-      while (made < steps[t]) {
+      let last1 = 0, madeNow = 0;
+      while (made < steps[t] && madeNow < maxSteps) {
         if (spent() + last1 * 1.3 + (t === last ? FINISH_S : 5) + SAVE_S > budgetS) break;
         const s0 = performance.now();
         await r.step();
-        made++;
+        made++; madeNow++;
         last1 = (performance.now() - s0) / 1000;
         run.stepS.push(last1); run.rounds.push(r.lastRounds); run.slides.push(r.lastSlide);
         log(`tier ${t} step ${made} ${last1.toFixed(1)} s, flood ${r.lastRounds} rounds, slides ${r.lastSlide}`);

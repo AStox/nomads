@@ -303,7 +303,7 @@ export class Regional {
       }
     });
     this.lastSlide = slide - chunk;
-    await this.lap("lift", () => this.submit((p) => { this.run(p, "pzero", CELLS0); this.run(p, "tally", N); this.run(p, "pmean", CELLS0); this.run(p, "lift", N); this.run(p, "pres", CELLS0); this.run(p, "lift", N); this.run(p, "pfin", CELLS0); this.run(p, "spread", N); }));
+    await this.lap("lift", () => this.submit((p) => { this.run(p, "pzero", CELLS0); this.run(p, "tally", N); this.run(p, "pmean", CELLS0); this.run(p, "lift", N); this.run(p, "pres", CELLS0); this.run(p, "lift", N); this.run(p, "pfin", CELLS0); this.run(p, "spread", N); this.run(p, "pcarry", CELLS0); }));
     return rounds;
   }
   async readH(): Promise<Int32Array> { return this.readField("H"); }
