@@ -79,7 +79,9 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   the baked planet's tiles; the sim stays in its play area. Cutover: `?globe`, `?at`, the GLOBE button and G removed.
   Check: a recorded zoom from the whole planet to `close` and a long pan, no page error, frame times within the ladder's
   budget.
-  Built 2026-10-20, frame times not yet measured on a quiet GPU: one zoom runs from the whole planet (zoom -7.2 at 2,000 km, from
+  Built 2026-10-20 (frame times, worker GPU ms a frame by zoom band, mean: 0.9 to 2 for the planet alone, 9 to 17 with the ladder
+  against 7 to 24 for the island alone in the same sitting, on a GPU another agent's jobs shared and twice timed out, so the
+  ladder's own budget is neither shown met nor missed): one zoom runs from the whole planet (zoom -7.2 at 2,000 km, from
   the radius in `place`) to `close`. The planet (`isopixel/planet.js`, camera `planet-cam.js`) is drawn in the render worker under
   the ladder's views (`webgpu.js` frame `under`); its camera eases from straight down with a 45 degree field to the ladder's look
   (60 degrees off vertical, the bearing turns it, a 3 degree field so the sphere reads as the ladder's parallel projection)
