@@ -58,7 +58,7 @@ ${lineOf(regional, "const NONE")}
 @group(0) @binding(2) var<storage, read_write> C: array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read> P: array<u32>;
 ${fnOf(regional, "nbr")}
-fn meta(i: u32) -> u32 { return bitcast<u32>(A[${A_PLANES.indexOf("meta")}u * LEN + i]); }
+fn cellmeta(i: u32) -> u32 { return bitcast<u32>(A[${A_PLANES.indexOf("meta")}u * LEN + i]); }
 fn two(p: u32, s: u32, i: u32) -> u32 { return (bitcast<u32>(B[p * LEN + i]) >> (16u * (s & 1u))) & 0xffffu; }
 fn pe_s(s: u32, i: u32) -> i32 { return tenth_q16(two(${B_PLANES.indexOf("pe01")}u + s / 2u, s, i)); }
 fn sh_s(s: u32, i: u32) -> i32 { return tenth_q16(two(${B_PLANES.indexOf("sh01")}u + s / 2u, s, i)); }
@@ -66,7 +66,7 @@ fn w4(p: u32, i: u32) -> i32 { return B[p * LEN + i]; }
 // the island's field f (an offset of LEN words a field) of cell i
 fn ld(f: u32, i: u32) -> i32 {
   let q = f / LEN;
-  let m = meta(i);
+  let m = cellmeta(i);
   switch (q) {
     case ${idx("head")}u: { return A[i]; }
     case ${idx("isf")}u: { return i32(m & 3u); }
@@ -96,7 +96,7 @@ fn aqg(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: 
   let k0 = gid.x + gid.y * nwg.x * 256u;
   if (k0 >= LEN) { return; }
   let k = select(k0, LEN - 1u - k0, P[2] == 1u);
-  if (((meta(k) >> 8u) & 3u) != P[0]) { return; }
+  if (((cellmeta(k) >> 8u) & 3u) != P[0]) { return; }
   let d0 = gi(f_h, k) - A[k];
   let c = aq_cell_n(k, nbr(k, 2u), nbr(k, 0u), nbr(k, 3u), nbr(k, 1u));
   if (c != 0u) { atomicMax(&C[P[1]], c); if (d0 < ${8 * 2 ** 17}i) { atomicMax(&C[2u + P[1]], c); } }
