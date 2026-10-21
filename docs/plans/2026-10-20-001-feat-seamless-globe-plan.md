@@ -129,11 +129,22 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   +6 m/s, Hadley edge 28.9 degrees, dry belt at 30 (395 mm against 4,000 at the equator and 1,000 at mid latitudes), rain
   shadows 0.68 to 0.72, wet mild west coasts, a 40 K equator to pole contrast. Misses written as gaps: polar ice (4 to 18%
   of polar land), range widths read over plateaus, tropics twice Earth's and dry interiors, aspect ratio, gravity.
-- [ ] **Unit 5: The 75 m tier over the whole planet.** The island's fine stages (erosion, hydrology, rain, climate, soil,
+- [x] **Unit 5: The 75 m tier over the whole planet.** The island's fine stages (erosion, hydrology, rain, climate, soil,
   ground) run as global solves at tier 4, coarse to fine, across tile and face edges, baked by stages into the tile
   pyramid. The scatter as a pure function of a tile's fields. Check: one drainage network (every river reaches the sea or
   a closed basin across tile and face edges), identity across two bakes, the island's stage invariants where they apply,
   pinned hashes.
+  Done 2026-10-21 (`docs/research/globe/2026-10-21-planet-75m-impl.md`, sub-notes `-air`, `-water`, `-ground`): seed 1 on
+  the planet of key 883a8d9387df baked whole in about 31 calls and 1 hour 55 minutes of GPU: tiers 1 to 4 each from the one
+  above (the uplift a smooth field that keeps every tier-0 cell's mean; the first version, a constant to a block, left
+  steps of 3 to 4 times the slope at every block's edge), tier 4 of 100.7 million cells (21.7 million land) one drainage
+  network (bad 0; 8,939 receivers cross a face's edge, 127,126 a tile's); the island's terrain, air (1.1 s a tile), water
+  (the exact global discharge, lakes decided once over the tier, 0.1 to 7 s a tile) and ground (0.1 s) stages run as tile
+  stages on patches, the kernels widened by a format with the island's goldens unchanged; the scatter a pure function of a
+  tile (8.8 to 14.5 million objects in 0.1 to 0.2 s). Pyramid 2,046 tiles, 338 MB; ground tiles 994 MB; stage files 16 GB.
+  Tile independence: word for word for terrain and ground; not for the rain (lee waves reach past any halo: rms 6.7 mm of a
+  849 mm p99), the deep water table near a patch's edge, and the sun across a face's edge (12% in the low-sun season): gaps.
+  Still open: part-full lakes, meltwater valleys, river meanders, Unit 4b's rain budget.
 - [ ] **Unit 6: Cutover.** The page streams the pyramid at every zoom and the play area's Ground is cut from the planet's
   tiles (no `windowOf`, no `islandOf` generation); the lattice, windows, `windowOf` and Unit 1's sub-cell decoration are
   deleted; the island's Bornholm path goes with them, every caller migrated. VERSION bumped.

@@ -56,7 +56,7 @@ Calls are the tool's 5 minutes; times are wall time on the M3 Pro with the GPU s
 | terrain | 0.025 s | all | 1 | 39 s | |
 | air | 1.1 s (patch 512 x 512, halo 128) | 166 to 224 tiles | 8 | 29 min | 1.9 GB |
 | surplus, discharge (exact 64-bit sums of 5 weight fields), basin (lakes decided over the tier) | 0.02 s; 10 s whole; 15 s whole | all | 2 | 1 min | discharge: the sort and gathers on the GPU, 5.6 GB |
-| water | 0.65 to 4.4 s a call's mean, 3.0 s worst; mountains 5 to 7 s | 50 to 334 tiles | 11 | 39 min | files mapped, not held |
+| water | a call's mean 0.65 to 4.4 s (sea tiles under 1 s, mountain tiles up to 7 s at the 12,000 sweep cap) | 50 to 334 tiles | 11 | 39 min | files mapped, not held |
 | ground | 0.10 s | 1,122 then 414 | 2 | 2.7 min | 0.4 GB |
 | ground tiles (the page's per-tile files, halo 8, 39 planes) | 0.05 s | all | 1 | 69 s | |
 | pyramid (2,046 tiles of 14 fields) | 0.04 s | all | 1 | 90 s | 0.14 GB |
