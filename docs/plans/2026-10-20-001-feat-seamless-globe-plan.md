@@ -97,11 +97,21 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   not the planet's land at its place (another coast and relief), so the play area shows as a diamond stamp over the planet from zoom
   -1.5 to about 1, with a dithered blue halo from its deep sea; the planet's sun is the island's held 25 degrees up; the island level
   at zoom -1 to 0 draws a larger art buffer than at 0 and costs more.
-- [ ] **Unit 4: The planet at 195.6 km.** The generator's coarse tiers at the new radius: tectonics, atmosphere, ice and
+- [x] **Unit 4: The planet at 195.6 km.** The generator's coarse tiers at the new radius: tectonics, atmosphere, ice and
   sea level rerun, the planet store and bake keyed by it. Measure what it makes (land share, ranges, rain belts, ice) and
   write the gaps the small radius opens. Measure the cost of the 75 m tier before building it: cells, bytes per field,
   GPU time per global erosion step at tier 4, the number of staged calls, disk, and what the page must stream; decide
   4,096 or 2,048 a face from those numbers.
+  Done 2026-10-20 (`docs/research/globe/2026-10-20-small-planet-impl.md`): the radius is a parameter through the planet's
+  stages (`SMALL_RADIUS_M` 195,569.6 m; the 2,000 km pins hold), plate speeds and hot spots scale by similarity, the chain
+  runs in resumable parts and the atmosphere marches 10 days (its step is 52 s on 1.2 km cells: 249 s a call at 30 days).
+  Seeds 1 to 3: land 21 to 28%, highest 5.8 to 6.0 km, continents up to 71,000 km2, longest river 179 to 339 km, ice only
+  on ranges; the atmosphere makes no wind (0.07 m/s) and so no rain belts (land 151 to 212 mm a year, 93 to 94% under 250
+  mm) and a 12 K equator to pole contrast (gaps, not retuned). The global finer tier (`regional.ts`) was timed at tier 4 on
+  the real planet: 100.7 million cells, 5.6 GB of solver buffers, one global flood 16 s in 1,280 rounds (1,664 on the
+  planet with the longest rivers), one erosion step 19.9 s (24.5 s), deepest flow path 3,854 of 16,382 cells; tier 3 is 4.2
+  s. Recommendation: **4,096 a face**; open for Unit 5: the island's other fine stages at 100 million cells and the disk a
+  bake needs between stages are not measured.
 - [ ] **Unit 5: The 75 m tier over the whole planet.** The island's fine stages (erosion, hydrology, rain, climate, soil,
   ground) run as global solves at tier 4, coarse to fine, across tile and face edges, baked by stages into the tile
   pyramid. The scatter as a pure function of a tile's fields. Check: one drainage network (every river reaches the sea or

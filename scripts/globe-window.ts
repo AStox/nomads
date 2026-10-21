@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { releaseGpu, theGpu } from "../src/gpu/device";
+import { RADIUS_M } from "../src/gpu/globe/grid";
 import { STAGES, buildStage, landingCounts, landingsOf, readPlanet, windowBytes, windowOf, type Landing, type PlanetStore, type Stage, type Window } from "../src/gpu/globe/window";
 import { CELL, LEN, N } from "../src/terrain/grid";
 import { heightColor, mix, png, type RGB } from "./globe-maps";
@@ -20,8 +21,9 @@ const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${n
 
 // The globe's sources whose change makes another planet: the key of a planet's directory.
 const SOURCES = ["grid", "tectonics", "erosion", "atmosphere", "ice"].flatMap((n) => [`src/gpu/globe/${n}.ts`, `src/gpu/wgsl/globe-${n}.ts`]);
-export function sourceKey(root = join(import.meta.dir, "..")): string {
+export function sourceKey(root = join(import.meta.dir, ".."), radius = RADIUS_M): string {
   const h = createHash("sha256");
+  h.update(String(radius));
   for (const f of SOURCES) h.update(readFileSync(join(root, f)));
   return h.digest("hex").slice(0, 12);
 }

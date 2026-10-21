@@ -322,6 +322,11 @@ export class Erosion {
     return sum;
   }
   async readFlooded(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, this.N * 4, 0)); }
+  // The sediment in transit as a stopped run kept it.
+  loadCarry(lo: Int32Array, hi: Int32Array) {
+    this.gpu.device.queue.writeBuffer(this.E, EF.CL * this.N * 4, lo);
+    this.gpu.device.queue.writeBuffer(this.E, EF.CH * this.N * 4, hi);
+  }
   async readState(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.S, FLD.COUNT * fieldWords(this.g) * 4)); }
   async readFlow(): Promise<Flow> {
     const [to, acc, depth, height] = await Promise.all([EF.TO, EF.ACC, EF.DP, EF.H].map((f) => this.readE(f)));
@@ -681,6 +686,16 @@ export interface ChainOptions {
   afterMy?: number;
   track?: boolean; // keep each cell's total removed and deposited volume over the run
   onStep?: (step: number, er: Erosion, tec: Tectonics) => void | Promise<void>;
+  // Stop before the next step once this many seconds have passed (every part makes at least one step), returning the state to resume from (`stopped`), and resume from such a state: a run kept in parts
+  // each under a call's limit gives the bytes of the run made whole, since everything a step reads is in the state.
+  budgetS?: number;
+  resume?: ChainState;
+}
+// What a stopped run keeps: the tectonics' state (the rock volumes, ages and plates), the sediment in transit, the rain field and when it is next asked for, and where the
+// run had got to (the tectonic steps done, then the erosion-only substeps done), with the books so far.
+export interface ChainState {
+  S: Int32Array; carryLo: Int32Array; carryHi: Int32Array; rain: Float32Array; nextRain: number;
+  step: number; quiet: number; rounds: number; ledger: [string, string, string];
 }
 export interface ChainResult {
   S: Int32Array; // the final state, elevation current
@@ -691,17 +706,27 @@ export interface ChainResult {
   flow: Flow;
   rounds: number; // flood rounds, the most a substep took
   seconds: number;
+  stopped?: ChainState; // set when the run stopped at its budget: the fields above are then the partial run's and the state is what to resume from
 }
 // Tectonics for the whole span with `substeps` of erosion after each step (interleaved: rock removed from a column and deposited changes the
 // volumes the next tectonic step moves, and isostasy re-floats a column as it is cut), on one device; the planet from `startingState` unless given.
 export async function runChain(gpu: Gpu, set: Setup, o: ChainOptions, from?: ReturnType<typeof startingState>): Promise<ChainResult> {
-  const t0 = performance.now(), ext = extTables(set.grid), start = from ?? startingState(set, ext.tab), tec = new Tectonics(gpu, set, ext, start.S);
+  const t0 = performance.now(), ext = extTables(set.grid), r0 = o.resume, tec = new Tectonics(gpu, set, ext, r0 ? r0.S : (from ?? startingState(set, ext.tab)).S);
   const dt = (set.params.stepMy * 1e6) / o.substeps, er = new Erosion(gpu, set, ext, tec.S, { ...o.params, dtYr: dt });
-  const N = er.N, total: Ledger = { removed: 0n, deposited: 0n, dissolved: 0n };
+  const N = er.N, total: Ledger = r0 ? { removed: BigInt(r0.ledger[0]), deposited: BigInt(r0.ledger[1]), dissolved: BigInt(r0.ledger[2]) } : { removed: 0n, deposited: 0n, dissolved: 0n };
   const removedV = o.track ? new Float64Array(N) : undefined, depositedV = o.track ? new Float64Array(N) : undefined;
-  let rain: Float32Array = new Float32Array(N), nextRain = 0, rounds = 0;
+  let rain: Float32Array = r0 ? r0.rain : new Float32Array(N), nextRain = r0 ? r0.nextRain : 0, rounds = r0 ? r0.rounds : 0;
+  const late = () => o.budgetS !== undefined && (performance.now() - t0) / 1000 > o.budgetS;
+  const stop = async (step: number, quiet: number): Promise<ChainResult> => {
+    const [carryLo, carryHi] = await Promise.all([er.readE(EF.CL), er.readE(EF.CH)]);
+    const stopped: ChainState = { S: await tec.read(), carryLo, carryHi, rain, nextRain, step, quiet, rounds, ledger: [String(total.removed), String(total.deposited), String(total.dissolved)] };
+    return { S: stopped.S, ledger: total, carry: 0n, rain, flow: undefined as unknown as Flow, rounds, seconds: (performance.now() - t0) / 1000, stopped };
+  };
   try {
-    for (let s = 0; s < set.steps; s++) {
+    if (r0) { tec.stepNo = r0.step; er.loadCarry(r0.carryLo, r0.carryHi); er.setRain(rain); }
+    const first = r0 ? r0.step : 0;
+    for (let s = first; s < set.steps; s++) {
+      if (s > first && late()) return await stop(s, 0);
       const t = s * set.params.stepMy;
       tec.step();
       if (t >= (o.erodeFromMy ?? 0)) {
@@ -722,7 +747,9 @@ export async function runChain(gpu: Gpu, set: Setup, o: ChainOptions, from?: Ret
       if (o.onStep) await o.onStep(s, er, tec);
     }
     const quiet = o.substeps > 0 ? Math.round(((o.afterMy ?? 0) * 1e6) / dt) : 0;
-    for (let q = 0; q < quiet; q++) {
+    const quietFirst = r0 ? r0.quiet : 0;
+    for (let q = quietFirst; q < quiet; q++) {
+      if ((q > quietFirst || first >= set.steps) && late()) return await stop(set.steps, q);
       const r = await er.substep(true, removedV ? async () => { const [rv, ad] = await Promise.all([er.readE(EF.RV), er.readE(EF.AD)]); for (let i = 0; i < N; i++) { removedV[i] += rv[i] >>> 0; depositedV![i] += ad[i] >>> 0; } } : undefined);
       rounds = Math.max(rounds, r.rounds);
       total.removed += r.ledger!.removed; total.deposited += r.ledger!.deposited; total.dissolved += r.ledger!.dissolved;

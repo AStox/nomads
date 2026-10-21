@@ -29,5 +29,5 @@ export function coastPlanet(seed = 7): Planet {
     windE: new Float32Array(n).fill(5), windN: new Float32Array(n), sst: field(0, sst),
   }));
   const zero = () => new Float32Array(n);
-  return { seed, n, height, pools, to, acc: new Uint32Array(n), seasons, ice: { maxM: zero(), nowM: zero(), cutM: zero(), laidM: zero() }, sea: { lowM: -5, nowM: 0 } };
+  return { seed, n, height, pools, to, acc: new Uint32Array(n), seasons, ice: { maxM: zero(), nowM: zero(), cutM: zero(), laidM: zero() }, sea: { lowM: -5, nowM: 0 }, radius: RADIUS_M };
 }

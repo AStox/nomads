@@ -20,7 +20,7 @@ import { COARSE, H_W, LAPSE, ROSE, SEASONS, WET_ROSE, meanWay, turned } from "..
 import { YEAR_S } from "../../terrain/water";
 import { skyAt, type Sky } from "../../sim/sky";
 import { SEASON_S as SEASON_S_PLANET, climateGpu, type Climate as GlobeClimate } from "./atmosphere";
-import { runChain } from "./erosion";
+import { runChain, type ChainState } from "./erosion";
 import { FACES, RADIUS_M, areaSr, cellId, eastNorth, fromLatLon, locateVec, meanAreaM2, tierGrid, type V3 } from "./grid";
 import { IF, IceGpu, defaultLaw, forcingTable, lgmForcing, orbitOf, runIce, seaState } from "./ice";
 import { DEFAULTS, cellAreas, cellVectors, derive, extTables, makeSetup, neighbours } from "./tectonics";
@@ -45,6 +45,7 @@ export interface Planet {
   // the ice at the cycle's greatest volume and now (the sea's return leaves some), the rock it cut and the sediment it laid over the cycle, m
   ice: { maxM: Float32Array; nowM: Float32Array; cutM: Float32Array; laidM: Float32Array };
   sea: { lowM: number; nowM: number }; // the lowest sea of the cycle and the present one, m against the ice-free sea
+  radius: number; // m: the planet's radius, the grid's
 }
 
 // The chain's settings: the erosion unit's whole chain as the ranges note ran it (200 My of tectonics with four 0.5 My substeps of
@@ -98,26 +99,44 @@ export function unpackRecord(bytes: Uint8Array): { meta: Record<string, any>; ar
   return { meta: head.meta, arrays };
 }
 
+// The days a season's moist air is marched before its window. The step is set by the cells' size (the least that keeps the upwind scheme stable: 52 s on the 195.6 km
+// planet's 1.2 km cells, 500 s on the 2,000 km planet's 12 km cells), so the default 30 days took 249 s a call on the small planet; the rain after 5 and after 10 days
+// differs by 0.1% on the synthetic two-continent planet (80.4 and 80.3 mm a year, the held water's drift over the window 0.3%), and 10 is taken [design, measured].
+export const spinDaysFor = (radius: number) => (radius < RADIUS_M ? 10 : 30);
 // The atmosphere's four seasons on a height field; its 2 day window is halved where the rain passes its accumulator, as the
 // erosion unit's script does (the rain is scaled to the season by the window's length, so a shorter one is a snapshot of the same state).
-async function climateOf(gpu: Gpu, height: Float32Array): Promise<GlobeClimate> {
+async function climateOf(gpu: Gpu, height: Float32Array, radius: number): Promise<GlobeClimate> {
   for (let windowDays = 2; ; windowDays /= 2) {
-    try { return await climateGpu(gpu, tierGrid(0), height, { seaLevel: 0 }, { windowDays }); }
+    try { return await climateGpu(gpu, tierGrid(0, radius), height, { seaLevel: 0 }, { windowDays, spinDays: spinDaysFor(radius) }); }
     catch (e) { if (windowDays <= 0.25 || !String(e).includes("accumulator")) throw e; }
   }
 }
-const annualRain = async (gpu: Gpu, height: Float32Array) => {
-  const c = await climateOf(gpu, height), out = new Float32Array(height.length);
+const annualRain = async (gpu: Gpu, height: Float32Array, radius: number) => {
+  const c = await climateOf(gpu, height, radius), out = new Float32Array(height.length);
   for (const s of c.seasons) for (let i = 0; i < out.length; i++) out[i] += s.rain[i];
   return out;
 };
 
-async function chainStage(gpu: Gpu, seed: number): Promise<Uint8Array> {
-  const set = makeSetup({ seed, spanMy: CHAIN.spanMy, plates: CHAIN.plates, seaLevel: 0 }), ext = extTables(set.grid);
-  const res = await runChain(gpu, set, { rain: (h) => annualRain(gpu, h), rainEveryMy: CHAIN.rainEveryMy, substeps: CHAIN.substeps, afterMy: CHAIN.afterMy });
+// The chain, in parts of `budgetS` seconds at most (a part ends at the first tectonic step after it; a step is some 2 s and an atmosphere call 40 s, so the caller leaves
+// that margin under its own limit): null while the run is not done, its state kept in the store as "chain-part".
+async function chainStage(gpu: Gpu, seed: number, radius: number, store: PlanetStore, budgetS: number): Promise<Uint8Array | null> {
+  const set = makeSetup({ seed, spanMy: CHAIN.spanMy, plates: CHAIN.plates, seaLevel: 0, radius }), ext = extTables(set.grid), kept = await store.get(seed, "chain-part");
+  let resume: ChainState | undefined, before = 0;
+  if (kept) {
+    const { meta, arrays: a } = unpackRecord(kept);
+    resume = { S: a.S as Int32Array, carryLo: a.carryLo as Int32Array, carryHi: a.carryHi as Int32Array, rain: a.rain as Float32Array, nextRain: meta.nextRain, step: meta.step, quiet: meta.quiet, rounds: meta.rounds, ledger: meta.ledger };
+    before = meta.seconds;
+  }
+  const res = await runChain(gpu, set, { rain: (h) => annualRain(gpu, h, radius), rainEveryMy: CHAIN.rainEveryMy, substeps: CHAIN.substeps, afterMy: CHAIN.afterMy, resume, budgetS });
+  const seconds = before + res.seconds;
+  if (res.stopped) {
+    const s = res.stopped;
+    await store.put(seed, "chain-part", packRecord({ nextRain: s.nextRain, step: s.step, quiet: s.quiet, rounds: s.rounds, ledger: s.ledger, seconds }, { S: s.S, carryLo: s.carryLo, carryHi: s.carryHi, rain: s.rain }));
+    return null;
+  }
   const d = derive(set, ext.tab, res.S), arrays: Record<string, Arr> = { height: d.height, to: res.flow.to, acc: res.flow.acc };
   d.pools.forEach((p, k) => { arrays[`pool${k}`] = p; });
-  return packRecord({ seconds: res.seconds }, arrays);
+  return packRecord({ seconds, radius }, arrays);
 }
 function climateRecord(c: GlobeClimate): Uint8Array {
   const arrays: Record<string, Arr> = {};
@@ -133,9 +152,9 @@ const thickness = (v: Int32Array, aw: Int32Array) => Float32Array.from(v, (x, i)
 
 // The ice cycle, resumed from the part kept: runs outer steps until `budgetS` seconds have passed or the cycle is done, and keeps
 // its state. Returns whether the cycle is done.
-async function iceStage(gpu: Gpu, seed: number, store: PlanetStore, budgetS: number): Promise<boolean> {
+async function iceStage(gpu: Gpu, seed: number, store: PlanetStore, budgetS: number, radius: number): Promise<boolean> {
   const chain = unpackRecord((await store.get(seed, "chain"))!), clim = unpackRecord((await store.get(seed, "climate0"))!);
-  const g = tierGrid(0), ext = extTables(g), N = FACES * g.fn * g.fn;
+  const g = tierGrid(0, radius), ext = extTables(g), N = FACES * g.fn * g.fn;
   const inp = { bed: chain.arrays.height as Float32Array, ts: [0, 1, 2, 3].map((k) => clim.arrays[`t${k}`]), precip: [0, 1, 2, 3].map((k) => clim.arrays[`rain${k}`]) };
   const ice = new IceGpu(gpu, ext.tab, inp, defaultLaw());
   try {
@@ -177,33 +196,38 @@ async function iceStage(gpu: Gpu, seed: number, store: PlanetStore, budgetS: num
 
 // Runs one stage of a seed's planet (each stage needs the ones before it kept); the ice stage may stop at `budgetS` and be
 // called again. Returns whether the stage is now kept.
-export async function buildStage(gpu: Gpu, seed: number, stage: Stage, store: PlanetStore, budgetS = Infinity): Promise<boolean> {
+export async function buildStage(gpu: Gpu, seed: number, stage: Stage, store: PlanetStore, budgetS = Infinity, radius = RADIUS_M): Promise<boolean> {
   if (await store.get(seed, stage)) return true;
-  if (stage === "chain") { await store.put(seed, "chain", await chainStage(gpu, seed)); return true; }
+  if (stage === "chain") {
+    const done = await chainStage(gpu, seed, radius, store, budgetS);
+    if (done) await store.put(seed, "chain", done);
+    return done !== null;
+  }
   if (stage === "climate0") {
     const chain = unpackRecord((await store.get(seed, "chain"))!);
-    await store.put(seed, "climate0", climateRecord(await climateOf(gpu, chain.arrays.height as Float32Array)));
+    await store.put(seed, "climate0", climateRecord(await climateOf(gpu, chain.arrays.height as Float32Array, radius)));
     return true;
   }
-  if (stage === "ice") return iceStage(gpu, seed, store, budgetS);
+  if (stage === "ice") return iceStage(gpu, seed, store, budgetS, radius);
   const ice = unpackRecord((await store.get(seed, "ice"))!), now = ice.meta.nowM as number;
   const height = Float32Array.from(ice.arrays.after, (h) => h - now);
-  await store.put(seed, "climate1", climateRecord(await climateOf(gpu, height)));
+  await store.put(seed, "climate1", climateRecord(await climateOf(gpu, height, radius)));
   return true;
 }
 
 // The planet of a seed: every stage not kept is run (the whole chain takes some 6 to 8 minutes on the M3 Pro), then the fields
 // are read from the store. A seed's planet is kept in memory for the process.
-const planets = new Map<number, Promise<Planet>>();
-export function planetOf(gpu: Gpu, seed: number, store: PlanetStore = memoryStore()): Promise<Planet> {
-  let p = planets.get(seed);
+const planets = new Map<string, Promise<Planet>>();
+export function planetOf(gpu: Gpu, seed: number, store: PlanetStore = memoryStore(), radius = RADIUS_M): Promise<Planet> {
+  const at = `${seed}:${radius}`;
+  let p = planets.get(at);
   if (!p) {
     p = (async () => {
-      for (const s of STAGES) while (!(await buildStage(gpu, seed, s, store)));
+      for (const s of STAGES) while (!(await buildStage(gpu, seed, s, store, Infinity, radius)));
       return readPlanet(seed, store);
     })();
-    planets.set(seed, p);
-    p.catch(() => planets.delete(seed));
+    planets.set(at, p);
+    p.catch(() => planets.delete(at));
   }
   return p;
 }
@@ -221,6 +245,7 @@ export async function readPlanet(seed: number, store: PlanetStore): Promise<Plan
     seasons: [0, 1, 2, 3].map((k) => ({ t: f32(clim, `t${k}`), rain: f32(clim, `rain${k}`), snow: f32(clim, `snow${k}`), runoff: f32(clim, `runoff${k}`), windE: f32(clim, `windE${k}`), windN: f32(clim, `windN${k}`), sst: f32(clim, `sst${k}`) })),
     ice: { maxM: f32(ice, "maxM"), nowM: f32(ice, "nowIceM"), cutM: f32(ice, "cutM"), laidM: f32(ice, "laidM") },
     sea: { lowM: ice.meta.lowM as number, nowM: now },
+    radius: (chain.meta.radius as number | undefined) ?? RADIUS_M,
   };
 }
 // The discharge area a cell of the planet gathers, m2 at the reference rain (erosion.ts accToM2).

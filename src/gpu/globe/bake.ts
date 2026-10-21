@@ -3,7 +3,7 @@
 import { LAPSE } from "../../terrain/climate";
 import { DOLERITE, GRANITE, LIMESTONE, MUDSTONE, SANDSTONE } from "../../terrain/geology";
 import { SEASON_S } from "./atmosphere";
-import { tierGrid } from "./grid";
+import { RADIUS_M, tierGrid } from "./grid";
 import { SEASON_COUNT, landingsOf, packRecord, rockAtDepth, unpackRecord, upstreamOf, type Landing, type Planet } from "./window";
 
 // ---------- the planet for windowOf ----------
@@ -12,7 +12,7 @@ export function planetBytes(p: Planet): Uint8Array {
   const arrays: Record<string, Float32Array | Uint32Array> = { height: p.height, to: p.to, acc: p.acc, iceMax: p.ice.maxM, iceNow: p.ice.nowM, iceLaid: p.ice.laidM };
   p.pools.forEach((a, k) => (arrays[`pool${k}`] = a));
   p.seasons.forEach((s, k) => { for (const f of seasonKeys) arrays[`${f}${k}`] = s[f]; });
-  return packRecord({ seed: p.seed, n: p.n, sea: p.sea }, arrays);
+  return packRecord({ seed: p.seed, n: p.n, sea: p.sea, radius: p.radius }, arrays);
 }
 // The season's snow and the ice's cut rock are not carried (windowOf and landingsOf read neither): they come back empty.
 export function planetFromBytes(bytes: Uint8Array): Planet {
@@ -22,7 +22,7 @@ export function planetFromBytes(bytes: Uint8Array): Planet {
     pools: [0, 1, 2, 3, 4].map((k) => f(`pool${k}`)),
     seasons: Array.from({ length: SEASON_COUNT }, (_, k) => ({ t: f(`t${k}`), rain: f(`rain${k}`), snow: none, runoff: f(`runoff${k}`), windE: f(`windE${k}`), windN: f(`windN${k}`), sst: f(`sst${k}`) })),
     ice: { maxM: f("iceMax"), nowM: f("iceNow"), cutM: none, laidM: f("iceLaid") },
-    sea: meta.sea,
+    sea: meta.sea, radius: meta.radius ?? RADIUS_M,
   };
 }
 
@@ -60,7 +60,7 @@ export function viewBytes(p: Planet, key: string): Uint8Array {
   }
   const landings = landingsOf(p, 20).map(({ cell: _, ...l }) => l);
   const rocks = { [MUDSTONE]: "mudstone", [SANDSTONE]: "sandstone", [LIMESTONE]: "limestone", [GRANITE]: "granite", [DOLERITE]: "dolerite" };
-  const meta = { seed: p.seed, key, n, fn: tierGrid(0).fn, sea: p.sea, scales: VIEW_SCALES, landings, rocks };
+  const meta = { seed: p.seed, key, n, fn: tierGrid(0).fn, radius: p.radius, sea: p.sea, scales: VIEW_SCALES, landings, rocks };
   return packRecord(meta, { height: words(height), temp: words(temp), rain: words(rain), ice: words(ice), rock: words(rock), river: words(river), segments: Uint32Array.from(segs) });
 }
 export interface View {

@@ -129,11 +129,13 @@ export function makePlates(p: Params): Plate[] {
 }
 export function makeHotspots(p: Params): Hotspot[] {
   const out: Hotspot[] = [];
-  const area = Math.PI * HOT_RADIUS_KM ** 2 / 3; // km2: a cone's volume is a third of base times height
+  // The footprint and the flux are set for the 2,000 km planet: on another radius the footprint keeps its angle (its radius scales with the planet's) and the flux its
+  // peak height (it scales with the footprint's area), so a hot spot builds the same cone on a smaller sphere [design: a similarity of the horizontal lengths; heights stay]
+  const s = p.radius / RADIUS_M, footKm = HOT_RADIUS_KM * s, area = Math.PI * footKm ** 2 / 3; // km2: a cone's volume is a third of base times height
   for (let h = 0; h < p.hotspots; h++) {
     const u = draws(p.seed, 4, h);
-    const dir = sphere(u(), u()), fluxKm3Yr = HOT_FLUX_LO * (HOT_FLUX_HI / HOT_FLUX_LO) ** u();
-    out.push({ dir, fluxKm3Yr, radiusKm: HOT_RADIUS_KM, peakM: Math.min(25_000, Math.round((fluxKm3Yr * 1e6 * p.stepMy * 1000) / area)) });
+    const dir = sphere(u(), u()), fluxKm3Yr = HOT_FLUX_LO * (HOT_FLUX_HI / HOT_FLUX_LO) ** u() * s * s;
+    out.push({ dir, fluxKm3Yr, radiusKm: footKm, peakM: Math.min(25_000, Math.round((fluxKm3Yr * 1e6 * p.stepMy * 1000) / area)) });
   }
   return out;
 }
@@ -199,7 +201,7 @@ export function thermalTable(): Int32Array {
 const Q30 = 2 ** 30;
 // parts: plates, hot spots or arcs to use in place of the seed's (the tests stage a collision with plates of their own).
 export function makeSetup(over: Partial<Params> = {}, sweeps: Sweeps = DEFAULT_SWEEPS, parts: { plates?: Plate[]; hotspots?: Hotspot[]; arcM?: Int32Array } = {}): Setup {
-  const params = { ...DEFAULTS, ...over };
+  const params = { ...DEFAULTS, speedScale: (over.radius ?? DEFAULTS.radius) / 6_371_000, ...over };
   const grid = tierGrid(0, params.radius), steps = Math.round(params.spanMy / params.stepMy);
   const plates = parts.plates ?? makePlates(params), hotspots = parts.hotspots ?? makeHotspots(params), arcM = parts.arcM ?? makeArcs({ ...params, plates: plates.length }, steps);
   const NP = plates.length, NH = hotspots.length, fn = grid.fn;

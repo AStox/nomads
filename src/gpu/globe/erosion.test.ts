@@ -7,12 +7,12 @@ import { afterAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
 import { storage } from "../kernel";
 import { buildGeometry, climateGpu } from "./atmosphere";
-import { FACES, cellId, fieldWords, fromLatLon, meanAreaM2, tierGrid } from "./grid";
+import { FACES, SMALL_RADIUS_M, cellId, fieldWords, fromLatLon, meanAreaM2, tierGrid } from "./grid";
 import { Tectonics, cellAreas, cellVectors, extTables, makeSetup, neighbours, startingState, stateFrom, totals, FLD, type Column } from "./tectonics";
 import { ridgePlanet } from "./synthetic";
 import {
   EF, K_GRANITE, K_SANDSTONE, K_VOLCANIC, MONTGOMERY_BRANDON, N2_REF, NONE, REF_RAIN_MMYR, Erosion, Twin, accToM2, creepIterations, defaultParams, denudationFromRelief, erosionWords, kForN2, kWord, neighbourTables,
-  rainWord, rivers,
+  rainWord, rivers, runChain, type ChainState,
 } from "./erosion";
 
 afterAll(releaseGpu);
@@ -370,4 +370,17 @@ test("the relief law in a dry land: with no rain there is no river to carry the 
   expect(removed).toBe(deposited + dissolved + transit);
   expect(sum(after) - sum(before)).toBe(-(dissolved + transit));
   er.release(); tec.release();
+});
+
+test("a chain stopped at its budget resumes to the bytes of the run made whole, on the small planet", async () => {
+  const gpu = await theGpu(), set = makeSetup({ seed: 1, spanMy: 6, radius: SMALL_RADIUS_M, plates: 10 }), o = { rain: async () => 800, rainEveryMy: 4, substeps: 2, afterMy: 1 };
+  const whole = await runChain(gpu, set, o);
+  let resume: ChainState | undefined, parts = 0, last = await runChain(gpu, set, { ...o, budgetS: 1e-9 });
+  while (last.stopped) { parts++; resume = last.stopped; last = await runChain(gpu, set, { ...o, budgetS: 1e-9, resume }); }
+  expect(parts).toBeGreaterThanOrEqual(2); // each part made one tectonic step at least
+  expect(sha(last.S)).toBe(sha(whole.S));
+  expect(Array.from(last.flow.to)).toEqual(Array.from(whole.flow.to));
+  expect(Array.from(last.flow.acc)).toEqual(Array.from(whole.flow.acc));
+  expect(last.carry).toBe(whole.carry);
+  expect(last.ledger).toEqual(whole.ledger);
 });

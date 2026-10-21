@@ -31,6 +31,9 @@ export const TILE_WORDS = TILE * TILE;
 // Planet radius, m: about 4,000 km across [design: the operator's decision of 2026-10-19, a planet smaller than Earth at
 // the cost of compressed climate belts].
 export const RADIUS_M = 2_000_000;
+// The small planet of the seamless globe plan: 4,096 cells of 75 m along a cube face's edge at the face's centre (tier 4), so the radius is 4,096 x 75 m x 2 / pi = 195.6 km
+// [derived: the equiangular face spans a quarter turn, pi / 2 radians, over its cells]. The cells are 75 m across at a face's centre and 63 to 75 m over the face (the square root of the grid's 1.41 area ratio is 1.19).
+export const SMALL_RADIUS_M = (4096 * 75 * 2) / Math.PI;
 
 export interface Grid {
   readonly fn: number; // cells along a face's side
