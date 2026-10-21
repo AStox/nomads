@@ -20,7 +20,7 @@
 // The truncation is the model's [design]: the response's waves decay slowly (90% of its energy lies within 15 coarse cells, 99% within 55), so the truncated sum differs from the
 // untruncated by 3 to 10% of the waves' rms at 56 and 18 to 25% at 24 (notes).
 // The rain of a cell is its background plus its orographic part less the mean of that part, cut at none, where the mean is read between the centres of the tier-0 blocks (a block is
-// the 16 by 16 cells of one tier-0 cell; a constant to each would step at every edge); the cut adds rain where the part is large against the background, so a block's mean is then
+// the 2^tier by 2^tier cells of one tier-0 cell (16 by 16 at tier 4); a constant to each would step at every edge); the cut adds rain where the part is large against the background, so a block's mean is then
 // brought back to its background's by a scale at most 1, read between the blocks' centres (a block with no background keeps none). No cell's share of its tier-0 cell's rain is capped.
 // Reach of a cell's rain: rainReach (the waves, then the means, the passes that make them smooth, the scale).
 //
@@ -32,6 +32,7 @@
 import { SEASONS, SEASON_DAYS, H_W, LAPSE, ROSE, WET_ROSE, esat } from "../../terrain/climate";
 import { CELL } from "../../terrain/grid";
 import { eastNorth, haloSource, pointOf, tierGrid } from "./grid";
+import { tierFile } from "./bakedir";
 import { cloudDelays, rainConvolved, rainParams, rainWaves } from "../terrain/rain";
 import { patchMeanWay, patchRose, runClimate, type PatchInput } from "../terrain/climate";
 import { BAND_DEG } from "../wgsl/terrain-climate";
@@ -44,16 +45,17 @@ import { similarityOf } from "./similarity";
 import type { Ctx, Field, TileStage } from "./stages";
 
 const NS = SEASONS.length;
-// The rain's reach, cells: the waves (radius coarse cells of 4, the cell's own coarse cell and its bilinear read: 4 radius + 8), the block means a cell's smooth mean reads (the blocks
-// either side of its own: 31 cells), each Jacobi pass of the means (a block more: 16) and the scale that keeps a block's mean (the blocks either side again: 31). The halo is that rounded up to a block of tier 0.
-export const rainReach = (radius: number, passes: number) => 4 * radius + 8 + 31 + 16 * passes + 31;
+// The rain's reach, cells, for blocks of `block` cells (a tier-0 cell's children, 2^tier): the waves (radius coarse cells of 4, the cell's own coarse cell and its bilinear read: 4 radius + 8), the
+// block means a cell's smooth mean reads (the blocks either side of its own: 2 block - 1 cells), each Jacobi pass of the means (a block more) and the scale that keeps a block's mean (the blocks either side again).
+export const rainReach = (radius: number, passes: number, block: number) => 4 * radius + 8 + (2 * block - 1) + block * passes + (2 * block - 1);
 // Passes that bring the smooth mean's own block means to the orographic part's [design: set from the error left, measured in the notes].
 export const MEAN_PASSES = 1;
 // The detail relief is reckoned at a sixteenth (the words of the transforms hold a coarse height to 2,047 m) and the waves read back at sixteen times by the gain [derived].
 export const RAIN_DOWN = 16;
 // The response is kept to this many coarse cells (300 m) from the impulse [design: set from the response's decay and the error it leaves, measured in the notes].
 export const RAIN_R = 56;
-export const AIR_HALO = 16 * Math.ceil(rainReach(RAIN_R, MEAN_PASSES) / 16);
+// The block of tier 0 is 2^tier cells (16 at the 195.6 km planet's tier 4, 32 at tier 5), so the halo is the reach rounded up to 16 cells of that tier's lattice.
+export const airHalo = (tier: number) => 16 * Math.ceil(rainReach(RAIN_R, MEAN_PASSES, 2 ** tier) / 16);
 // The most rain a stored word holds in a season, mm [derived: the words downstream, Q16 in an i32, hold 32,767 mm].
 export const WORD_MAX_MM = 32_000;
 
@@ -237,7 +239,7 @@ export interface RainTile { oro: Float32Array[]; precip: Float32Array[] }
 export async function rainOf(ctx: Ctx, patch: Patch, height: Float32Array, geo: Geometry, planet: Sampled, radius = RAIN_R, meanPasses = MEAN_PASSES): Promise<RainTile> {
   const S = patch.side, n = S * S, fmt: RainFormat = { n: S, coarse: 4, cells: true, wide: true }, b = baseOf(ctx.planet);
   if ((patch.x0 - patch.halo) & 3 || (patch.y0 - patch.halo) & 3) throw new Error("air: a patch's first cell must lie on a multiple of 4 (the rain's coarse cells)");
-  if (rainReach(radius, meanPasses) > patch.halo) throw new Error(`air: a halo of ${patch.halo} cells is under the rain's reach of ${rainReach(radius, meanPasses)}`);
+  if (rainReach(radius, meanPasses, 2 ** patch.tier) > patch.halo) throw new Error(`air: a halo of ${patch.halo} cells is under the rain's reach of ${rainReach(radius, meanPasses, 2 ** patch.tier)}`);
   const zq = new Int32Array(n);
   for (let i = 0; i < n; i++) {
     const z = (Math.max(0, height[i]) - Math.max(0, planet.surface[i])) / RAIN_DOWN;
@@ -257,13 +259,13 @@ export async function rainOf(ctx: Ctx, patch: Patch, height: Float32Array, geo: 
     }
   }
   const words = await rainConvolved(ctx.gpu, fmt, radius, zq, par, await rainTable(ctx, radius), cell);
-  // The blocks of tier 0 are the lattice's own 16 by 16 cells (a tier-0 cell's children, whichever the tiling and across a face's edge, where the lattice continues): a cell's
-  // block is floor of its face position over 16. The mean of the orographic part is read between the blocks' centres (a constant to each block would step at every edge), the means
+  // The blocks of tier 0 are the lattice's own 2^tier by 2^tier cells (a tier-0 cell's children, whichever the tiling and across a face's edge, where the lattice continues): a cell's
+  // block is floor of its face position over 2^tier. The mean of the orographic part is read between the blocks' centres (a constant to each block would step at every edge), the means
   // first brought to a smooth field whose own block means they are by MEAN_PASSES Jacobi passes of the 1/8, 3/4, 1/8 stencil [derived: the children's mean of a bilinear read].
-  const X0 = patch.x0 - patch.halo, Y0 = patch.y0 - patch.halo, BX0 = Math.floor(X0 / 16), BY0 = Math.floor(Y0 / 16), nbx = Math.floor((X0 + S - 1) / 16) - BX0 + 1, nby = Math.floor((Y0 + S - 1) / 16) - BY0 + 1;
-  const bx = Int32Array.from({ length: S }, (_, x) => Math.floor((X0 + x) / 16) - BX0), by = Int32Array.from({ length: S }, (_, y) => Math.floor((Y0 + y) / 16) - BY0);
+  const B = 2 ** patch.tier, X0 = patch.x0 - patch.halo, Y0 = patch.y0 - patch.halo, BX0 = Math.floor(X0 / B), BY0 = Math.floor(Y0 / B), nbx = Math.floor((X0 + S - 1) / B) - BX0 + 1, nby = Math.floor((Y0 + S - 1) / B) - BY0 + 1;
+  const bx = Int32Array.from({ length: S }, (_, x) => Math.floor((X0 + x) / B) - BX0), by = Int32Array.from({ length: S }, (_, y) => Math.floor((Y0 + y) / B) - BY0);
   // the bilinear read between centres: the cell's left block, and the share of the right one (held at the outermost centre beyond the patch's)
-  const lerp = (X: number, B0: number, nb: number) => Array.from({ length: S }, (_, x) => { const u = (X + x - 7.5) / 16, bl = Math.floor(u); let i0 = bl - B0, t = u - bl; if (i0 < 0) { i0 = 0; t = 0; } if (i0 > nb - 2) { i0 = nb - 2; t = 1; } return [i0, t] as const; });
+  const lerp = (X: number, B0: number, nb: number) => Array.from({ length: S }, (_, x) => { const u = (X + x - (B - 1) / 2) / B, bl = Math.floor(u); let i0 = bl - B0, t = u - bl; if (i0 < 0) { i0 = 0; t = 0; } if (i0 > nb - 2) { i0 = nb - 2; t = 1; } return [i0, t] as const; });
   const lx = lerp(X0, BX0, nbx), ly = lerp(Y0, BY0, nby);
   const count = new Float64Array(nbx * nby);
   for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) count[by[y] * nbx + bx[x]]++;
@@ -341,10 +343,10 @@ export async function airOf(ctx: Ctx, patch: Patch, heightWords: Int32Array, flo
     dsea[i] = open[i] ? 0 : Math.round(Math.min(5e5, planet.dsea[i]) * 4096);
   }
   // the snow years' groups: a game tile's four cells of the planet (the cells that share a tile of tier 3), whichever way the patch lays them
-  const cells = 4096 * 4096, slot = new Map<number, number>(), groups: number[] = [];
+  const fn = tierGrid(patch.tier).fn, cells = fn * fn, half = fn / 2, slot = new Map<number, number>(), groups: number[] = [];
   for (let i = 0; i < n; i++) {
     if (patch.missing[i]) continue;
-    const id = patch.ids[i], f = Math.floor(id / cells), r = id - f * cells, key = (f * 2048 + (Math.floor(r / 4096) >> 1)) * 2048 + ((r & 4095) >> 1);
+    const id = patch.ids[i], f = Math.floor(id / cells), r = id - f * cells, key = (f * half + (Math.floor(r / fn) >> 1)) * half + ((r & (fn - 1)) >> 1);
     let g = slot.get(key);
     if (g === undefined) { slot.set(key, (g = slot.size)); groups.push(-1, -1, -1, -1); }
     for (let c = 0; c < 4; c++) if (groups[4 * g + c] < 0) { groups[4 * g + c] = i; break; }
@@ -365,9 +367,12 @@ export async function airOf(ctx: Ctx, patch: Patch, heightWords: Int32Array, flo
 }
 
 // ---------- the stage ----------
-const seasonal = (stem: string, type: string) => Array.from({ length: NS }, (_, k) => `${stem}${k}.${type}`);
-export const AIR_OUT = { pr: seasonal("t4-pr", "u16"), pe: seasonal("t4-pe", "u16"), sun: seasonal("t4-sun", "u16"), tmp: seasonal("t4-tmp", "i16"), hum: seasonal("t4-hum", "u8"), snow: "t4-snow.u8", wsh: "t4-wsh.u8", fog: "t4-fog.u8", snp: seasonal("t4-snp", "u16") };
-export const AIR_OUTPUTS = [...AIR_OUT.pr, ...AIR_OUT.pe, ...AIR_OUT.sun, ...AIR_OUT.tmp, ...AIR_OUT.hum, AIR_OUT.snow, AIR_OUT.wsh, AIR_OUT.fog, ...AIR_OUT.snp];
+const seasonal = (tier: number, stem: string, type: string) => Array.from({ length: NS }, (_, k) => tierFile(tier, `${stem}${k}.${type}`));
+export const airOut = (tier: number) => ({
+  pr: seasonal(tier, "pr", "u16"), pe: seasonal(tier, "pe", "u16"), sun: seasonal(tier, "sun", "u16"), tmp: seasonal(tier, "tmp", "i16"), hum: seasonal(tier, "hum", "u8"),
+  snow: tierFile(tier, "snow.u8"), wsh: tierFile(tier, "wsh.u8"), fog: tierFile(tier, "fog.u8"), snp: seasonal(tier, "snp", "u16"),
+});
+export const airOutputs = (tier: number) => { const o = airOut(tier); return [...o.pr, ...o.pe, ...o.sun, ...o.tmp, ...o.hum, o.snow, o.wsh, o.fog, ...o.snp]; };
 // The units of the stored words.
 // snp: the season's mean snowpack in 1/2 mm of water, held at 32.8 m (65,535): the kernel's pack is Q16 mm in a word, 32.8 m, and holds there (a cold range's packs reach 18 m as a season's mean over ten years)
 export const AIR_UNIT = { pe: 10, sun: 1024, tmp: 256, hum: 255, snow: 255, wsh: 255, fog: 255, snp: 2 };
@@ -378,8 +383,8 @@ export const PR_K = 360;
 export const precipWord = (mm: number) => Math.round(Math.sqrt(Math.max(0, mm)) * PR_K);
 export const precipOfWord = (v: number) => (v / PR_K) ** 2;
 
-export function compact(a: AirTile): Record<string, Field> {
-  const out: Record<string, Field> = {};
+export function compact(a: AirTile, tier: number): Record<string, Field> {
+  const out: Record<string, Field> = {}, names = airOut(tier);
   let saturated = 0;
   const put = (name: string, src: Float32Array, word: (v: number) => number, lo: number, hi: number, K: new (n: number) => Field) => {
     const f = new K(src.length);
@@ -388,27 +393,32 @@ export function compact(a: AirTile): Record<string, Field> {
   };
   const linear = (unit: number) => (v: number) => Math.round(v * unit);
   for (let k = 0; k < NS; k++) {
-    put(AIR_OUT.pr[k], a.precip[k], precipWord, 0, 65535, Uint16Array); put(AIR_OUT.pe[k], a.pet[k], linear(AIR_UNIT.pe), 0, 65535, Uint16Array);
-    put(AIR_OUT.sun[k], a.sun[k], linear(AIR_UNIT.sun), 0, 65535, Uint16Array); put(AIR_OUT.tmp[k], a.temp[k], linear(AIR_UNIT.tmp), -32768, 32767, Int16Array);
-    put(AIR_OUT.hum[k], a.humid[k], linear(AIR_UNIT.hum), 0, 255, Uint8Array);
+    put(names.pr[k], a.precip[k], precipWord, 0, 65535, Uint16Array); put(names.pe[k], a.pet[k], linear(AIR_UNIT.pe), 0, 65535, Uint16Array);
+    put(names.sun[k], a.sun[k], linear(AIR_UNIT.sun), 0, 65535, Uint16Array); put(names.tmp[k], a.temp[k], linear(AIR_UNIT.tmp), -32768, 32767, Int16Array);
+    put(names.hum[k], a.humid[k], linear(AIR_UNIT.hum), 0, 255, Uint8Array);
   }
-  put(AIR_OUT.snow, a.snowCover, linear(AIR_UNIT.snow), 0, 255, Uint8Array);
-  put(AIR_OUT.wsh, a.windShare, linear(AIR_UNIT.wsh), 0, 255, Uint8Array);
-  put(AIR_OUT.fog, a.fog, linear(AIR_UNIT.fog), 0, 255, Uint8Array);
-  for (let k = 0; k < NS; k++) put(AIR_OUT.snp[k], a.snowpack[k], linear(AIR_UNIT.snp), 0, 65535, Uint16Array);
+  put(names.snow, a.snowCover, linear(AIR_UNIT.snow), 0, 255, Uint8Array);
+  put(names.wsh, a.windShare, linear(AIR_UNIT.wsh), 0, 255, Uint8Array);
+  put(names.fog, a.fog, linear(AIR_UNIT.fog), 0, 255, Uint8Array);
+  for (let k = 0; k < NS; k++) put(names.snp[k], a.snowpack[k], linear(AIR_UNIT.snp), 0, 65535, Uint16Array);
   a.saturated = saturated;
   return out;
 }
 
-export const airStage: TileStage = {
-  name: "air",
-  halo: AIR_HALO,
-  inputs: ["t4-height.i32", "t4-flooded.i32"],
-  outputs: AIR_OUTPUTS,
-  async run(ctx, patch, input) {
-    const tile = await airOf(ctx, patch, input["t4-height.i32"] as Int32Array, input["t4-flooded.i32"] as Int32Array), out = compact(tile);
-    // a word past its unit would be clamped and hide what passed it: say so rather than store it
-    if (tile.saturated) throw new Error(`air: ${tile.saturated} words of tile (face ${patch.face}, ${patch.tx}, ${patch.ty}) pass what their stored units hold`);
-    return out;
-  },
+// `block`: the side in tiles of the square one patch makes (stages.ts runTiles); the halo is shared by block * block tiles and no byte changes.
+export const airStage = (tier: number, block = 1): TileStage => {
+  const height = tierFile(tier, "height.i32"), flooded = tierFile(tier, "flooded.i32");
+  return {
+    name: "air",
+    halo: airHalo(tier),
+    block,
+    inputs: [height, flooded],
+    outputs: airOutputs(tier),
+    async run(ctx, patch, input) {
+      const tile = await airOf(ctx, patch, input[height] as Int32Array, input[flooded] as Int32Array), out = compact(tile, tier);
+      // a word past its unit would be clamped and hide what passed it: say so rather than store it
+      if (tile.saturated) throw new Error(`air: ${tile.saturated} words of tile (face ${patch.face}, ${patch.tx}, ${patch.ty}) pass what their stored units hold`);
+      return out;
+    },
+  };
 };

@@ -20,8 +20,8 @@ export const REAL = existsSync(`${BAKE}/t4-height.i32`) && existsSync(`${BAKE}/t
 export function tilesCovering(tiles: number[], halo: number): number[] {
   const want = new Set<number>();
   for (const k of tiles) {
-    const { face, tx, ty } = tileAt(TIER, k), p = patchOf(TIER, face, tx, ty, halo);
-    for (const id of p.ids) { const f = Math.floor(id / (FN * FN)), r = id - f * FN * FN; want.add(f * 256 + (Math.floor(r / FN) >> 8) * 16 + ((r % FN) >> 8)); }
+    const { face, tx, ty } = tileAt(TIER, k), p = patchOf(TIER, face, tx, ty, halo), T = 1 << TIER;
+    for (const id of p.ids) { const f = Math.floor(id / (FN * FN)), r = id - f * FN * FN; want.add(f * T * T + (Math.floor(r / FN) >> 8) * T + ((r % FN) >> 8)); }
   }
   return [...want].sort((a, b) => a - b);
 }
@@ -66,7 +66,7 @@ export async function scratchBake(tiles: number[], halo: number, ground = true):
   planet ??= await readPlanet(1, diskStore(STOREDIR, KEY));
   const ctx: Ctx = { gpu: await theGpu(), planet, dir: new BakeDir(SCRATCH), tier: TIER }, covered = tilesCovering(tiles, ground ? halo : 0);
   const need = ground ? tilesCovering(covered, GROUND_HALO) : tilesCovering(tiles, halo);
-  for (const stage of [airStage, standInWater]) await runTiles(ctx, stage, 250, () => {}, need);
-  if (ground) await runTiles(ctx, groundStage, 250, () => {}, covered);
+  for (const stage of [airStage(TIER), standInWater]) await runTiles(ctx, stage, 250, () => {}, need);
+  if (ground) await runTiles(ctx, groundStage(TIER), 250, () => {}, covered);
   return ctx;
 }

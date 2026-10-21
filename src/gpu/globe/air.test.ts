@@ -10,7 +10,7 @@ import { releaseGpu, theGpu } from "../device";
 import { SMALL_RADIUS_M } from "./grid";
 import { patchAt, type Patch } from "./patch";
 import { tableMargin } from "../terrain/rain";
-import { AIR_HALO, AIR_OUT, AIR_OUTPUTS, WORD_MAX_MM, airOf, airStage, bgField, compact, geometryOf, neighbours0, precipOfWord, rainOf, sampleFast, sampledOf, type AirTile } from "./air";
+import { WORD_MAX_MM, airHalo, airOf, airOut, airOutputs, airStage, bgField, compact, geometryOf, neighbours0, precipOfWord, rainOf, sampleFast, sampledOf, type AirTile } from "./air";
 import { sampleCoarse } from "./sample";
 import { eastNorth, pointOf, tierGrid } from "./grid";
 import { runTiles, type Ctx } from "./stages";
@@ -20,6 +20,7 @@ import { diskStore } from "../../../scripts/globe-window";
 
 afterAll(releaseGpu);
 const N0 = 6 * 256 * 256, FN = 4096, TIER = 4;
+const AIR_HALO = airHalo(TIER), AIR_OUT = airOut(TIER), AIR_OUTPUTS = airOutputs(TIER), STAGE = airStage(TIER);
 const bytes = (a: ArrayBufferView) => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
 const hashOf = (arrays: ArrayBufferView[]) => Bun.hash(Buffer.concat(arrays.map(bytes))).toString(16);
 
@@ -60,7 +61,7 @@ function edgeStep(f: ArrayLike<number>, p: Patch, margin: number) {
 
 // The cells two patches of one face both hold in their interiors, and how many of each stored file's words in them differ (the words are compact()'s, the file's own).
 function compare(pa: Patch, a: AirTile, pb: Patch, b: AirTile) {
-  const wa = compact(a), wb = compact(b), Sa = pa.side, Sb = pb.side, Xa = pa.x0 - pa.halo, Ya = pa.y0 - pa.halo, Xb = pb.x0 - pb.halo, Yb = pb.y0 - pb.halo;
+  const wa = compact(a, TIER), wb = compact(b, TIER), Sa = pa.side, Sb = pb.side, Xa = pa.x0 - pa.halo, Ya = pa.y0 - pa.halo, Xb = pb.x0 - pb.halo, Yb = pb.y0 - pb.halo;
   if (pa.face !== pb.face) throw new Error("compare: patches of one face");
   const x0 = Math.max(pa.x0, pb.x0), x1 = Math.min(pa.x0, pb.x0) + 256 + Math.abs(pa.x0 - pb.x0) - Math.abs(pa.x0 - pb.x0), y0 = Math.max(pa.y0, pb.y0);
   void x1;
@@ -154,7 +155,7 @@ describe("the air stage on a staged planet", () => {
     const run = async (p: Patch) => { const h = hills(p.ids); return airOf(ctx, p, h, h); };
     const a = await run(base);
     const again = await run(base);
-    const wa = compact(a), wb = compact(again);
+    const wa = compact(a, TIER), wb = compact(again, TIER);
     expect(hashOf(AIR_OUTPUTS.map((n) => wa[n] as ArrayBufferView))).toBe(hashOf(AIR_OUTPUTS.map((n) => wb[n] as ArrayBufferView)));
     for (const [label, p] of [["shifted 16 east", patchAt(TIER, 2, 1040, 2048, AIR_HALO)], ["shifted 100 east, 36 north", patchAt(TIER, 2, 1124, 2084, AIR_HALO)], ["shifted 128 east and north", patchAt(TIER, 2, 1152, 2176, AIR_HALO)], ["halo 352", patchAt(TIER, 2, 1024, 2048, 352)], ["shifted 100 west, halo 336", patchAt(TIER, 2, 924, 2048, 336)]] as const) {
       const c = compare(base, a, p, await run(p)), bad = Object.entries(c.differing).filter(([, v]) => v > 0);
@@ -192,15 +193,11 @@ const PIN = { tile458: "ee38721050ea4efc" };
 describe("the air stage on the real planet (seed 1)", () => {
   real("tile 458 (face 1, a range with land and sea): the same twice, the stored words pinned, no word saturates, the rain smooth and its extremes", async () => {
     const ctx = await realCtx(), { face, tx, ty } = tileOf(458), p = patchAt(TIER, face, tx * 256, ty * 256, AIR_HALO), { h, f } = heightsAt(p);
-    const mark = (what: string) => process.stderr.write(`dbg ${what} ${(process.memoryUsage().rss / 1e6).toFixed(0)} MB\n`);
-    mark("gathered");
     const t0 = performance.now(), a = await airOf(ctx, p, h, f), s1 = (performance.now() - t0) / 1000;
-    mark("first");
     const again = await airOf(ctx, p, h, f);
-    mark("second");
-    const stored = compact(a), interior = (field: ArrayLike<number>) => { const out = new Int32Array(256 * 256); for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) out[y * 256 + x] = field[(y + p.halo) * p.side + x + p.halo]; return out; };
+    const stored = compact(a, TIER), interior = (field: ArrayLike<number>) => { const out = new Int32Array(256 * 256); for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) out[y * 256 + x] = field[(y + p.halo) * p.side + x + p.halo]; return out; };
     const words = AIR_OUTPUTS.map((name) => interior(stored[name] as unknown as ArrayLike<number>));
-    const storedAgain = compact(again), wordsAgain = AIR_OUTPUTS.map((name) => interior(storedAgain[name] as unknown as ArrayLike<number>));
+    const storedAgain = compact(again, TIER), wordsAgain = AIR_OUTPUTS.map((name) => interior(storedAgain[name] as unknown as ArrayLike<number>));
     expect(hashOf(words)).toBe(hashOf(wordsAgain));
     console.log(`tile 458: ${s1.toFixed(2)} s (a patch of ${p.side} by ${p.side}), stored words hash ${hashOf(words)}, saturated words ${a.saturated}`);
     if (PIN.tile458) expect(hashOf(words)).toBe(PIN.tile458);
@@ -280,15 +277,15 @@ describe("the air stage on the real planet (seed 1)", () => {
 
   real("the stage over a handful of real tiles, in two calls that resume, writes the same bytes as one call", async () => {
     const ctx = await realCtx(), tiles = [458, 1, 14], work = "/tmp/planet-75m/air-scratch/stage", one = `${work}-one`;
-    for (const d of [work, one]) { rmSync(d, { recursive: true, force: true }); mkdirSync(d, { recursive: true }); for (const f of airStage.inputs) linkSync(`${BAKE}/${f}`, `${d}/${f}`); }
+    for (const d of [work, one]) { rmSync(d, { recursive: true, force: true }); mkdirSync(d, { recursive: true }); for (const f of STAGE.inputs) linkSync(`${BAKE}/${f}`, `${d}/${f}`); }
     const split = { ...ctx, dir: new BakeDir(work) }, whole = { ...ctx, dir: new BakeDir(one) };
     try {
-      const p1 = await runTiles(split, airStage, 1e9, () => {}, [458]);
+      const p1 = await runTiles(split, STAGE, 1e9, () => {}, [458]);
       expect(p1.tiles).toBe(1);
-      const p2 = await runTiles(split, airStage, 1e9, () => {}, tiles);
+      const p2 = await runTiles(split, STAGE, 1e9, () => {}, tiles);
       expect(p2.tileS.length).toBe(2); // the first was kept
       expect(p2.done).toBe(true);
-      await runTiles(whole, airStage, 1e9, () => {}, tiles);
+      await runTiles(whole, STAGE, 1e9, () => {}, tiles);
       console.log(`runTiles: tile 458 ${p1.tileS[0].toFixed(2)} s, then tiles 1 and 14 ${p2.tileS.map((v) => v.toFixed(2)).join(" and ")} s`);
       const cellsAt = (tile: number) => { const { face, tx, ty } = tileOf(tile); return Array.from({ length: 256 }, (_, y) => (face * FN + ty * 256 + y) * FN + tx * 256); };
       for (const name of AIR_OUTPUTS) {

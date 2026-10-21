@@ -1,10 +1,10 @@
 // The planet's water over the 75 m tier (src/gpu/globe/water.ts, discharge.ts), in calls of at most --budget seconds into /tmp/planet-75m/<seed>-<planet key>/: run each stage again until it
 // says done, in this order: surplus (each season's surplus over every cell, the weights), discharge (the exact global sums down the whole forest), water (the hydrology on every tile's patch).
-// `--only a,b,c` limits surplus and water to those tiles (tile = face * 256 + ty * 16 + tx); the discharge is always the whole planet's.
+// `--only a,b,c` limits surplus and water to those tiles (tile = face * T * T + ty * T + tx, T = 2^tier tiles along a face; `--tier` defaults to the planet's finest, grid.ts PLANET_TIER); the discharge is always the whole planet's.
 //   lockf /tmp/nomads-gpu.lock bun scripts/globe-water.ts --stage surplus --seed 1 --key c418e5fe9b5e
 import { releaseGpu, theGpu } from "../src/gpu/device";
 import { dischargeOf } from "../src/gpu/globe/discharge";
-import { SMALL_RADIUS_M } from "../src/gpu/globe/grid";
+import { PLANET_RADIUS_M, PLANET_TIER } from "../src/gpu/globe/grid";
 import { forget, runTiles } from "../src/gpu/globe/stages";
 import { AIR_UNIT, precipOfWord } from "../src/gpu/globe/air";
 import { globalWater } from "../src/gpu/globe/water-global";
@@ -17,13 +17,13 @@ import { diskStore, sourceKey } from "./globe-window";
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 
 if (import.meta.main) {
-  const seed = Number(arg("seed", "1")), key = arg("key", "") || sourceKey(undefined, SMALL_RADIUS_M), name = arg("stage", ""), budget = Number(arg("budget", "270")), tier = 4;
+  const seed = Number(arg("seed", "1")), key = arg("key", "") || sourceKey(undefined, PLANET_RADIUS_M), name = arg("stage", ""), budget = Number(arg("budget", "270")), tier = Number(arg("tier", String(PLANET_TIER)));
   const only = arg("only", "") ? arg("only", "").split(",").map(Number) : undefined, halo = arg("halo", "") ? Number(arg("halo", "")) : undefined;
   const t0 = performance.now();
   try {
     const planet = await readPlanet(seed, diskStore(STORE, key)), dir = bakeDir(seed, key), gpu = await theGpu(), ctx = { gpu, planet, dir, tier };
     // the air stage's files (u16, 0.1 mm over the season) when they exist and `--climate standin` is not asked for, else the planet's own rain
-    const climate = dir.has("t4-pr0.u16") && arg("climate", "air") !== "standin" ? climateFiles([0, 1, 2, 3].map((s) => `t4-pr${s}.u16`), [0, 1, 2, 3].map((s) => `t4-pe${s}.u16`), precipOfWord, (w) => w / AIR_UNIT.pe) : planetRain(planet), log = (s: string) => console.log(s);
+    const climate = dir.has(`t${tier}-pr0.u16`) && arg("climate", "air") !== "standin" ? climateFiles([0, 1, 2, 3].map((s) => `t${tier}-pr${s}.u16`), [0, 1, 2, 3].map((s) => `t${tier}-pe${s}.u16`), precipOfWord, (w) => w / AIR_UNIT.pe) : planetRain(planet), log = (s: string) => console.log(s);
     if (name === "discharge") {
       const p = await dischargeOf(gpu, dir, tier, dischargeFields(tier), budget, log);
       console.log(`discharge: ${p.done ? "done" : "run this again"}, ${p.made.length} fields this call, ${p.seconds.toFixed(0)} s`);

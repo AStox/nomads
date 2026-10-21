@@ -15,9 +15,9 @@ import { generateIsland } from "../terrain/island";
 import { groundWords, pack } from "../terrain/ground";
 import { INPUTS, ISLAND_GROUND, OUTPUTS } from "../wgsl/terrain-ground";
 import type { Site } from "../../terrain/ground";
-import type { BakeDir } from "./bakedir";
+import { tierFile, type BakeDir } from "./bakedir";
 import { precipWord } from "./air";
-import { GROUND_HALO, GROUND_OUT, GROUND_OUTPUTS, TABLE_UNIT, compactGround, fieldsAt, groundFormat, groundStage, groundTile, wordsOf, type GroundFields } from "./ground";
+import { GROUND_HALO, GROUND_OUT, TABLE_UNIT, compactGround, fieldsAt, groundFormat, groundOutputs, groundStage, groundTile, wordsOf, type GroundFields } from "./ground";
 import { FN, REAL, TIER, scratchBake } from "./ground-staged";
 import { cellAcross, localOf, patchAt, patchOf, tileAt, type Patch } from "./patch";
 import { runTiles, type Field } from "./stages";
@@ -55,11 +55,11 @@ describe("the patch format on the island's site", () => {
     };
     // the island's own sea has its heights at or under 0 and its lakes' water; the stored water is open or not, which is all the kernel reads
     const patch: Patch = { tier: 4, face: 0, tx: 0, ty: 0, halo: 0, x0: 0, y0: 0, interior: 256, side: 256, ids: Int32Array.from({ length: n }, (_, i) => i), missing: new Uint8Array(n) };
-    const raw = await groundWords(g, wordsOf(f, patch), groundFormat(256)), exact = await groundWords(g, pack(s), ISLAND_GROUND), tile = compactGround(raw, n);
+    const raw = await groundWords(g, wordsOf(f, patch), groundFormat(256)), exact = await groundWords(g, pack(s), ISLAND_GROUND), tile = compactGround(raw, n, TIER);
     const rows: string[] = [];
     for (const [file, name, unit] of GROUND_OUT) {
       if (name === "flags") continue;
-      const k = OUTPUTS.findIndex((o) => o[0] === name), div = OUTPUTS[k][1] as number, field = tile.fields[file];
+      const k = OUTPUTS.findIndex((o) => o[0] === name), div = OUTPUTS[k][1] as number, field = tile.fields[tierFile(TIER, file)];
       let worst = 0, sum = 0, bad = 0;
       for (let i = 0; i < n; i++) {
         if (s.open[i]) continue;
@@ -94,7 +94,7 @@ function shared(a: Patch, b: Patch): [number, number][] {
   for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) { const k = (y + b.halo) * b.side + x + b.halo, i = at.get(b.ids[k]); if (i !== undefined) pairs.push([i, k]); }
   return pairs;
 }
-const differing = (a: Record<string, Field>, b: Record<string, Field>, pairs: [number, number][]) => GROUND_OUTPUTS.map((f) => [f, pairs.reduce((n, [i, k]) => n + (a[f][i] !== b[f][k] ? 1 : 0), 0)] as const).filter(([, n]) => n);
+const differing = (a: Record<string, Field>, b: Record<string, Field>, pairs: [number, number][]) => groundOutputs(TIER).map((f) => [f, pairs.reduce((n, [i, k]) => n + (a[f][i] !== b[f][k] ? 1 : 0), 0)] as const).filter(([, n]) => n);
 
 describe("the ground stage on the real planet (seed 1)", () => {
   real("two patches half a tile apart agree over every cell they share", async () => {
@@ -126,15 +126,15 @@ describe("the ground stage on the real planet (seed 1)", () => {
 
   real("the stage over six tiles: the same bytes twice, resumed in two calls, per tile seconds, the pinned tile", async () => {
     const tiles = [458, 1, 14, 1500, 937, 0], ctx = await scratch(tiles, GROUND_HALO), seconds: Record<number, number> = {};
-    const dir = ctx.dir, hashes = (k: number) => hashOf(...GROUND_OUTPUTS.map((f) => readTile(dir, f, k)));
+    const dir = ctx.dir, hashes = (k: number) => hashOf(...groundOutputs(TIER).map((f) => readTile(dir, f, k)));
     ctx.dir.remove("ground-done.u8");
-    const first = await runTiles(ctx, groundStage, 0.01, () => {}, tiles);
+    const first = await runTiles(ctx, groundStage(TIER), 0.01, () => {}, tiles);
     expect(first.tiles).toBeLessThan(tiles.length);
     let rounds = 1;
-    for (let p = first; !p.done && rounds < 10; rounds++) p = await runTiles(ctx, groundStage, 280, () => {}, tiles);
+    for (let p = first; !p.done && rounds < 10; rounds++) p = await runTiles(ctx, groundStage(TIER), 280, () => {}, tiles);
     const once = tiles.map(hashes);
     dir.remove("ground-done.u8");
-    const again = await runTiles(ctx, groundStage, 280, () => {}, tiles);
+    const again = await runTiles(ctx, groundStage(TIER), 280, () => {}, tiles);
     again.tileS.forEach((s, i) => (seconds[tiles[i]] = s));
     expect(tiles.map(hashes)).toEqual(once);
     // the pinned words of tile 458 (this planet's, this engine's, the stand-in water's: re-record when the water stage's files replace it, and say so)
@@ -142,7 +142,7 @@ describe("the ground stage on the real planet (seed 1)", () => {
     console.log(`ground: tiles ${tiles.join(", ")} made in ${rounds} calls, again in ${JSON.stringify(seconds)} s; hash of each ${JSON.stringify(Object.fromEntries(tiles.map((k, i) => [k, once[i]])))}`);
     // what the tiles hold
     for (const k of tiles) {
-      const t = Object.fromEntries(GROUND_OUT.map(([f]) => [f, readTile(dir, f, k)])), n = 256 * 256;
+      const t = Object.fromEntries(GROUND_OUT.map(([f]) => [tierFile(TIER, f), readTile(dir, tierFile(TIER, f), k)])), n = 256 * 256;
       let land = 0, forest = 0, bad = 0, silt = 0, sand = 0, peat = 0;
       for (let i = 0; i < n; i++) {
         const sum = t["t4-tree.u8"][i] + t["t4-shr.u8"][i] + t["t4-grs.u8"][i] + t["t4-mar.u8"][i] + t["t4-bare.u8"][i], fl = t["t4-sflag.u8"][i];

@@ -1,20 +1,21 @@
 // The `terrain` tile stage: the rock at each cell's surface, and the drift (what the ice left on it) and its thickness, from the planet's rock pools and ice and the tier's
 // heights, as window.ts and the island's upstream stage lay them for a window (R1701, R1703, R530) but per cell and with no window's edge in them.
 //
-// Outputs (global fields of the tier, cell order):
-//   t4-rock.u8   the island's rock class at the surface (terrain/geology.ts ROCKS): the planet's pools laid as a stack and read down to the depth the cell lies under the
-//                planet's own surface at its place (the tier-0 surface sampled to the cell; a valley floor lies deeper than a ridge, so it shows older rock)
-//   t4-drift.u8  geology.ts DRIFTS: bare rock, clay or sandy till; the planet has no meltwater valleys (the island's joint valleys are drawn by a window's key) [gap]
-//   t4-dd.u16    the drift's thickness in 1/1024 m, at most TILL_MOST_M
+// Outputs (global fields of the tier, cell order; `t<tier>-` is the tier's prefix, bakedir.ts tierFile):
+//   rock.u8   the island's rock class at the surface (terrain/geology.ts ROCKS): the planet's pools laid as a stack and read down to the depth the cell lies under the
+//             planet's own surface at its place (the tier-0 surface sampled to the cell; a valley floor lies deeper than a ridge, so it shows older rock)
+//   drift.u8  geology.ts DRIFTS: bare rock, clay or sandy till; the planet has no meltwater valleys (the island's joint valleys are drawn by a window's key) [gap]
+//   dd.u16    the drift's thickness in 1/1024 m, at most TILL_MOST_M
 import { TILL_MAX } from "../../terrain/geology";
 import { cover, dispatch, pipeline, readback, storage } from "../kernel";
 import { terrainWgsl, TF, ZQ } from "../wgsl/globe-terrain";
+import { tierFile } from "./bakedir";
 import type { Ctx, Field, TileStage } from "./stages";
 import { sampleCoarse } from "./sample";
 import type { Patch } from "./patch";
 import { TILL_MOST_M, rockAtDepth } from "./window";
 
-// The reach: the blur's 12 cells (three passes of 4 to a side) rounded up to a block of tier 0 (16 cells), which every stage of the unit uses [design].
+// The reach: the blur's 12 cells (three passes of 4 to a side), rounded up to 16 cells [design].
 export const TERRAIN_HALO = 16;
 const q16 = (x: number) => Math.round(x * ZQ);
 
@@ -41,13 +42,17 @@ export async function terrainOf(ctx: Ctx, patch: Patch, height: Int32Array): Pro
   return { rock, drift, dd };
 }
 
-export const terrainStage: TileStage = {
-  name: "terrain",
-  halo: TERRAIN_HALO,
-  inputs: ["t4-height.i32"],
-  outputs: ["t4-rock.u8", "t4-drift.u8", "t4-dd.u16"],
-  async run(ctx, patch, input) {
-    const r = await terrainOf(ctx, patch, input["t4-height.i32"] as Int32Array);
-    return { "t4-rock.u8": r.rock as Field, "t4-drift.u8": r.drift as Field, "t4-dd.u16": r.dd as Field };
-  },
+export const terrainStage = (tier: number, block = 1): TileStage => {
+  const height = tierFile(tier, "height.i32"), rock = tierFile(tier, "rock.u8"), drift = tierFile(tier, "drift.u8"), dd = tierFile(tier, "dd.u16");
+  return {
+    name: "terrain",
+    halo: TERRAIN_HALO,
+    block,
+    inputs: [height],
+    outputs: [rock, drift, dd],
+    async run(ctx, patch, input) {
+      const r = await terrainOf(ctx, patch, input[height] as Int32Array);
+      return { [rock]: r.rock as Field, [drift]: r.drift as Field, [dd]: r.dd as Field };
+    },
+  };
 };

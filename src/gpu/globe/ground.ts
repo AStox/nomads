@@ -2,7 +2,7 @@
 // seasonal bucket, the plants' compensation points and the cover they settle, fertility, RothC's carbon, pH) on a patch of the 75 m tier, the island's kernels widened by a format
 // (`GroundFormat {n, patch, reach}`: any side, and a halo-limited sweep of the nearest channel's power), each cell by its own inputs and none a window's value.
 //
-// Inputs, per cell (global files of the tier, read by the cells of the patch and mapped, never held whole):
+// Inputs, per cell (global files of the tier, read by the cells of the patch and mapped, never held whole; each is `t<tier>-<name>`, bakedir.ts tierFile, and the lists below write t4-):
 //   t4-height.i32 (1/256 m above the present sea), t4-water.u16 (cm over the ground: the sea's and a lake's; open water is water over 0 or a height at or under 0)   the water stage
 //   t4-rock.u8, t4-drift.u8, t4-dd.u16 (1/1024 m)                                                                                                       the terrain stage
 //   t4-chn.u8, t4-valley.u8, t4-pwr.u16 (1/16 W/m2), t4-stb0..3.u16 and t4-dry.u16 (1/256 m, held at 255.99 m)                                         the water stage
@@ -32,6 +32,7 @@ import { INPUTS, OUTPUTS, type GroundFormat } from "../wgsl/terrain-ground";
 import { groundWords } from "../terrain/ground";
 import { PR_K } from "./air";
 import type { Patch } from "./patch";
+import { tierFile } from "./bakedir";
 import { KINDS, typeOf, type Ctx, type Field, type TileStage } from "./stages";
 
 export const GROUND_HALO = 64;
@@ -40,13 +41,13 @@ export const TABLE_UNIT = 256;
 export const groundFormat = (side: number, reach = GROUND_HALO): GroundFormat => ({ n: side, patch: true, reach });
 
 // ---------- the files ----------
-const seasonal = (stem: string, type: string) => [0, 1, 2, 3].map((k) => `t4-${stem}${k}.${type}`);
-export const GROUND_IN = {
-  height: "t4-height.i32", water: "t4-water.u16", rock: "t4-rock.u8", drift: "t4-drift.u8", dd: "t4-dd.u16",
-  chn: "t4-chn.u8", valley: "t4-valley.u8", pwr: "t4-pwr.u16", stb: seasonal("stb", "u16"), dry: "t4-dry.u16",
-  pr: seasonal("pr", "u16"), pe: seasonal("pe", "u16"), sun: seasonal("sun", "u16"), tmp: seasonal("tmp", "i16"), hum: seasonal("hum", "u8"),
-};
-export const GROUND_INPUTS = Object.values(GROUND_IN).flat();
+const seasonal = (tier: number, stem: string, type: string) => [0, 1, 2, 3].map((k) => tierFile(tier, `${stem}${k}.${type}`));
+export const groundIn = (tier: number) => ({
+  height: tierFile(tier, "height.i32"), water: tierFile(tier, "water.u16"), rock: tierFile(tier, "rock.u8"), drift: tierFile(tier, "drift.u8"), dd: tierFile(tier, "dd.u16"),
+  chn: tierFile(tier, "chn.u8"), valley: tierFile(tier, "valley.u8"), pwr: tierFile(tier, "pwr.u16"), stb: seasonal(tier, "stb", "u16"), dry: tierFile(tier, "dry.u16"),
+  pr: seasonal(tier, "pr", "u16"), pe: seasonal(tier, "pe", "u16"), sun: seasonal(tier, "sun", "u16"), tmp: seasonal(tier, "tmp", "i16"), hum: seasonal(tier, "hum", "u8"),
+});
+export const groundInputs = (tier: number) => Object.values(groundIn(tier)).flat();
 
 // The stored words of a field of the tier, mapped: a tile touches the pages of its patch's cells only.
 const maps = new Map<string, Field>();
@@ -73,10 +74,10 @@ export interface GroundFields {
   pr: Uint16Array[]; pe: Uint16Array[]; sun: Uint16Array[]; tmp: Int16Array[]; hum: Uint8Array[];
 }
 export function fieldsAt(ctx: Ctx, patch: Patch): GroundFields {
-  const one = <A extends Field>(file: string) => gathered<A>(mappedField(ctx, file), patch.ids), many = <A extends Field>(files: string[]) => files.map((f) => one<A>(f));
+  const g = groundIn(ctx.tier), one = <A extends Field>(file: string) => gathered<A>(mappedField(ctx, file), patch.ids), many = <A extends Field>(files: string[]) => files.map((f) => one<A>(f));
   return {
-    height: one(GROUND_IN.height), water: one(GROUND_IN.water), rock: one(GROUND_IN.rock), drift: one(GROUND_IN.drift), dd: one(GROUND_IN.dd), chn: one(GROUND_IN.chn), valley: one(GROUND_IN.valley),
-    pwr: one(GROUND_IN.pwr), stb: many(GROUND_IN.stb), dry: one(GROUND_IN.dry), pr: many(GROUND_IN.pr), pe: many(GROUND_IN.pe), sun: many(GROUND_IN.sun), tmp: many(GROUND_IN.tmp), hum: many(GROUND_IN.hum),
+    height: one(g.height), water: one(g.water), rock: one(g.rock), drift: one(g.drift), dd: one(g.dd), chn: one(g.chn), valley: one(g.valley),
+    pwr: one(g.pwr), stb: many(g.stb), dry: one(g.dry), pr: many(g.pr), pe: many(g.pe), sun: many(g.sun), tmp: many(g.tmp), hum: many(g.hum),
   };
 }
 
@@ -111,16 +112,16 @@ export function wordsOf(f: GroundFields, patch: Patch): Int32Array {
 
 // ---------- the kernel's outputs to the stored words ----------
 export const GROUND_OUT = [
-  ["t4-tree.u8", "tree", 255], ["t4-shr.u8", "shrub", 255], ["t4-grs.u8", "grass", 255], ["t4-mar.u8", "marsh", 255], ["t4-bare.u8", "bare", 255],
-  ["t4-soil.u16", "soil", 1024], ["t4-sflag.u8", "flags", 1], ["t4-sandy.u8", "sandy", 255], ["t4-clayey.u8", "clayey", 255], ["t4-fert.u8", "fertility", 255], ["t4-moist.u8", "moist", 255],
-  ["t4-sw0.u8", "soilWater0", 255], ["t4-sw1.u8", "soilWater1", 255], ["t4-sw2.u8", "soilWater2", 255], ["t4-sw3.u8", "soilWater3", 255],
-  ["t4-ph.u8", "ph", 30], ["t4-org.u8", "organic", 2.55], ["t4-carb.u16", "carbon", 16], ["t4-nit.u16", "nitrogen", 64],
+  ["tree.u8", "tree", 255], ["shr.u8", "shrub", 255], ["grs.u8", "grass", 255], ["mar.u8", "marsh", 255], ["bare.u8", "bare", 255],
+  ["soil.u16", "soil", 1024], ["sflag.u8", "flags", 1], ["sandy.u8", "sandy", 255], ["clayey.u8", "clayey", 255], ["fert.u8", "fertility", 255], ["moist.u8", "moist", 255],
+  ["sw0.u8", "soilWater0", 255], ["sw1.u8", "soilWater1", 255], ["sw2.u8", "soilWater2", 255], ["sw3.u8", "soilWater3", 255],
+  ["ph.u8", "ph", 30], ["org.u8", "organic", 2.55], ["carb.u16", "carbon", 16], ["nit.u16", "nitrogen", 64],
 ] as const;
-export const GROUND_OUTPUTS: string[] = GROUND_OUT.map((o) => o[0]);
+export const groundOutputs = (tier: number): string[] => GROUND_OUT.map((o) => tierFile(tier, o[0]));
 
 export interface GroundTile { fields: Record<string, Field>; saturated: number }
 // The kernel's words of a patch as the stored fields (a patch's side by side words each).
-export function compactGround(raw: Int32Array, n: number): GroundTile {
+export function compactGround(raw: Int32Array, n: number, tier: number): GroundTile {
   const k = (name: string) => OUTPUTS.findIndex((o) => o[0] === name), fields: Record<string, Field> = {};
   let saturated = 0;
   for (const [file, name, unit] of GROUND_OUT) {
@@ -136,28 +137,29 @@ export function compactGround(raw: Int32Array, n: number): GroundTile {
         out[i] = Math.max(0, Math.min(hi, v));
       }
     }
-    fields[file] = out;
+    fields[tierFile(tier, file)] = out;
   }
   return { fields, saturated };
 }
 
 export async function groundTile(gpu: Gpu, patch: Patch, f: GroundFields, reach = GROUND_HALO): Promise<GroundTile> {
   const n = patch.ids.length, raw = await groundWords(gpu, wordsOf(f, patch), groundFormat(patch.side, reach));
-  return compactGround(raw, n);
+  return compactGround(raw, n, patch.tier);
 }
 
 export let lastSaturated = 0;
-export const groundStage: TileStage = {
+export const groundStage = (tier: number, block = 1): TileStage => ({
   name: "ground",
   halo: GROUND_HALO,
+  block,
   inputs: [],
-  outputs: GROUND_OUTPUTS,
+  outputs: groundOutputs(tier),
   async prepare(ctx) {
-    for (const f of GROUND_INPUTS) if (!ctx.dir.has(f)) throw new Error(`ground: ${f} is not in ${ctx.dir.dir} (the water, terrain and air stages come first)`);
+    for (const f of groundInputs(tier)) if (!ctx.dir.has(f)) throw new Error(`ground: ${f} is not in ${ctx.dir.dir} (the water, terrain and air stages come first)`);
   },
   async run(ctx, patch) {
     const t = await groundTile(ctx.gpu, patch, fieldsAt(ctx, patch));
     lastSaturated += t.saturated;
     return t.fields;
   },
-};
+});

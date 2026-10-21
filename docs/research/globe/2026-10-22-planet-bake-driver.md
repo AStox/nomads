@@ -91,7 +91,7 @@ Disk at tier 5 by stage (GiB, files only; sizes exact except the last two) [deri
 - A kill of the driver leaves a lock file holding its pid and the command of its call in flight. The next driver sees the pid dead (or reused: `ps` must name `globe-bake-driver`), moves the lock aside, takes its own, and if a process with the dead driver's command line still runs (its call is not over: it holds the stage's files) waits for it (patience: budget + grace + 30 s, then SIGKILL) before it starts. A second driver on a live lock is refused (exit 1) and leaves the first's lock alone.
 - A kill of a child: the call ends with the signal; if the stage moved anything (the measure, or the size or time of a file in the stage's `watch` list: a solve's steps) the count of calls without progress starts again, else it grows; 3 in a row stop the driver with the last 12 lines of the child's output.
 - A whole-file output a kill cut short (written by one `writeFileSync`: the tier files, the discharge, the basin) has the wrong size; the stage's `whole` list names them with their sizes and the driver removes a wrong-sized one before the next call, so the script makes it again instead of trusting it.
-- Not the driver's, noted: the tile stages (`stages.ts runTiles`) rewrite their `<stage>-done.u8` with `writeFileSync` (truncate, then write) after every tile, so a SIGKILL inside it can leave a short marker; the tiles past its end are made again (right, wasteful). The preallocated outputs are always at their full size.
+- The tile stages (`stages.ts runTiles`) write their `<stage>-done.u8` to a `.part` file and rename it over the marker, so a SIGKILL leaves the old marker whole; a marker longer or shorter than the tier's tile count is read as far as it goes and the rest is made again. The preallocated outputs are always at their full size.
 - Tested with fake stages (the fixture: N tiles, a sleep, a done file, can fail or die): end to end with spent files deleted after their consumer's last call and the consumer reading them at every tile; SIGKILL of the driver (the orphan call is waited for) and of a child, each ending in the byte-identical directory of an undisturbed run; a stage that dies after each tile (6 calls), one that fails twice then works, one that fails always (3 calls, exit 1); a call over its time; `--stop-after`, `--from`, `--max-calls`, `--status` while running; SIGTERM; the free-space floor and the hard stop (exit 3, stage named, nothing lost: rerun finishes); a second driver refused, a dead pid's lock and a non-driver pid's lock taken over; the progress file rebuilt; a torn whole file removed; the lock wait not counted against the budget and the lock free after the run.
 
 ## 6. Measured
@@ -118,4 +118,35 @@ At tier 5 that is 6,144 ground tiles (about 6 minutes, 2 calls, 4.0 GB) and 8,19
 
 ## Cost model (tier 5)
 
-(AirStage: the cost model goes here.)
+The planet at tier 5 has 6,144 tiles of 256 x 256 cells (4 times tier 4's 1,536) and 402.7 M cells. Seconds are what was measured on the M3 Pro with the GPU shared with other agents' jobs (**contended**: an upper bound; at tier 4 the same air tile took 2.9 s on a quiet GPU and 5 to 8 s on a busy one, so the quiet figure is about 0.4 to 0.6 of the contended one [INFERENCE from that one pair]). Nothing here was run on a real tier 5: the tile stages were run on a synthetic sparse tier-5 store (`tier5.test.ts`: terrain, air, `runTiles`, blocks), the rest are tier-4 measurements per tile carried over (a tile is 256 x 256 cells whatever the tier, and the stages' halos are in cells: [INFERENCE] the per-tile cost does not change; air's halo does, below).
+
+| stage | s a tile (tier 5) | 6,144 tiles | calls of 240 s | disk (GiB, driver notes) | memory |
+|---|---|---|---|---|---|
+| tiers 1 to 5 (TierStream) | not measured here (tier 4: 15.9 s a step in memory, 12 steps) | | | 6.5 | GPU 5.6 GB at tier 4 for the in-memory solve; the streamed solve is TierStream's |
+| terrain | 0.025 (tier 4) | 2.6 min | 1 | 1.5 | small (patch 288 x 288) |
+| air, a tile a patch (block 1) | 5.2 (patch 1,056 x 1,056, halo 400) | 8.9 h | 133 | 17.6 | 1.7 GB RSS |
+| air, 2 x 2 tiles a patch (block 2) | 2.24 (patch 1,312) | 3.8 h | 57 | | 2.4 GB RSS |
+| **air, 4 x 4 tiles a patch (block 4, the driver's)** | **1.12 (patch 1,824)** | **1.9 h** | **29** (13 patches of 16 tiles a call) | | 2.1 GB RSS |
+| surplus | 0.02 (tier 4) | 2 min | 1 | 7.5 (6.0 spent after discharge) | files mapped |
+| discharge | 10 s whole at tier 4 | about 1 min [INFERENCE: sorts scale with the cells] | 1 | 10.5 | GPU 5.6 GB at tier 4, **22 GB at tier 5: over the GPU's buffer and the machine's memory** (WaterStage's and TierStream's; the driver notes list it as a gap) |
+| basin | 15 s whole at tier 4 | about 1 min | 1 | 0.4 | |
+| water on patches (`--water patch`, halo 96) | mean 1.1 (0.65 to 4.4; mountain tiles to 7 at the 12,000 sweep cap) | 1.9 h | 29 | 11.3 | mapped files |
+| water as one solve (`--water global`) | | | | | **cannot run as built**: 21 GiB of packed state over the 4.29 GB buffer binding (driver notes) |
+| ground | 0.10 | 10 min | 3 | 8.3 | 0.4 to 0.5 GB |
+| ground tiles (CPU) | 0.058 | 6 min | 2 | 3.7 | 0.5 GB heap, the stage files mapped |
+| pyramid (CPU, 8,190 tiles) | 0.055 a tile | 7.5 min | 2 to 3 | 1.3 | 0.13 GB |
+
+Total wall time with the quiet-GPU factor unknown: about **4.2 hours contended** from tiers' end to the pyramid (air 1.9 + water 1.9 + the rest 0.4), plus the tiers (unmeasured) and the maps; peak disk 47.3 GiB, ending near 50 GiB (driver notes), far under the 100 GB stop.
+
+**Air's halo is the one cost that changed with the tier.** The rain's blocks are the children of a tier-0 cell: 2^tier cells, so 32 at tier 5. The rain reaches `4 R + 8 + (2 B - 1) + B passes + (2 B - 1)` cells for B = 32: 390, a halo of 400 against tier 4's 320. A single tile's patch is 1,056 x 1,056 cells (1.1 M) for 65,536 interior cells: 17 cells computed for each one kept; the tier-4 patch was 12.3. Per tile that is 5.2 s at block 1 where tier 4 took 2.9 to 5 s.
+
+**What dominates:** air (1.9 h at block 4) and water on patches (1.9 h): 90% of the wall time after the tiers. Both are halo-bound: the cost is the patch, not the interior (air: 400 of halo; water: 96).
+
+**What cuts cost without changing a byte** (all of them leave every stored word the same, which is what tile independence is, tested):
+1. *Air in blocks of tiles* (done, `--block 4`, the driver's default): the halo is shared by 16 tiles, 5.16 to 1.12 s a tile (4.6 times), 8.9 h to 1.9 h; byte for byte the same as single tiles (`tier5.test.ts`: four tiles one at a time against one block of 2 x 2, every stored file). A block of 8 (patch 2,848, 8.1 M cells, about 5.5 GB of kernel words) was not tried [INFERENCE: over the GPU's buffer limit].
+2. *Water in blocks* (the water stage has no `block` yet; `stages.ts` makes any stage's block a one-word change): a patch of 448 x 448 for 256 x 256 interior is 3.1 cells for each kept; block 2 (704) is 1.9, block 4 (1,216) is 1.4, so 1.6 and 2.2 times faster [derived from the patch sizes; the sweep count a patch needs may rise with its size: unmeasured]. That would take the 1.9 h to about 0.9 h.
+3. *CPU work per patch* (the patch's metric 0.5 s, the planet's fields sampled to the cells 0.44 s at tier 4; once per process: the background 0.54 s, the response table 0.28 s) is per patch, so blocks share it too; the driver's 29 calls start 29 processes (about 2 s each).
+4. *Ground tiles and the pyramid* read each source row per field; reading a row once for the fields that share a file, and a hoisted per-cell closure, would cut the CPU time without changing a byte (PyramidTiles' notes); the gzip level would change bytes and is left alone.
+5. *Memory:* `globalField` maps the stage's input files (a tile touches the pages of its patch), so no stage holds a 1.6 GB plane (RSS counts the mapped pages: compare it to the 4 GB rule with that in mind).
+
+**Not measured (stated, not estimated):** the tiers 1 to 5 at tier 5 (TierStream's), the real tier 5 of any stage, the maps, a quiet GPU's time for any stage but one tier-4 air tile.

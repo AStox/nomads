@@ -75,6 +75,8 @@ export function realStages(c: Cfg): Stage[] {
     ...season("sun", "u16"), ...season("tmp", "i16"), ...season("sw", "u8"), f("pr1.u16"), f("pe1.u16"), f("wsh.u8"), f("fog.u8"), ...season("snp", "u16"), TO, f("chn.u8"), f("flow.u32"), f("base.u16"), f("under.u16")];
   const pyramidIn = [HEIGHT, f("rock.u8"), f("drift.u8"), f("dd.u16"), ...season("tmp", "i16"), ...season("pr", "u16"), f("water.u16"), f("flow.u32"), f("tree.u8"), f("shr.u8"), f("grs.u8"), f("mar.u8"), f("bare.u8"), f("soil.u16")];
   const lower = Array.from({ length: T - 1 }, (_, i): Spent => ({ ...sizedAt(T, tierFile(i + 1, "height.i32"), i + 1), from: "tiers" }));
+  // 4 by 4 tiles a patch: the halo (400 cells) is shared by 16 tiles, 4.6 times faster at tier 5 and the same bytes (tier5.test.ts); a patch of 1,824 cells holds 2.1 GB
+  const AIR_BLOCK = 4;
   const done = (stage: string) => ({ tiles: [`${stage}-done.u8`], of: tiles });
   const sc = (file: string, ...a: (string | number)[]) => ["bun", `scripts/${file}`, ...a.map(String)];
   const who = ["--seed", c.seed, "--key", c.key], tb = ["--tier", c.tier, "--budget", c.budget];
@@ -89,7 +91,7 @@ export function realStages(c: Cfg): Stage[] {
       measure: { files: [sz(HEIGHT), sz(TO), sz(ACC), sz(FLOODED), { name: `t${T}-run.json` }] }, watch: ["stream-t*"],
       whole: [...Array.from({ length: T }, (_, i) => sizedAt(T, tierFile(i + 1, "height.i32"), i + 1)), sz(TO), sz(ACC), sz(FLOODED)], spent: [...lower, { name: "stream-t*", from: "tiers" }] },
     { name: "terrain", kind: "GPU", command: stage("terrain"), tierFlag: "scripts/globe-stage.ts", needs: ["tiers"], inputs: [HEIGHT], outputs: [...terrain, "terrain-done.u8"], measure: done("terrain"), watch: [], whole: [], spent: [] },
-    { name: "air", kind: "GPU", command: stage("air"), tierFlag: "scripts/globe-stage.ts", needs: ["tiers"], inputs: [HEIGHT, FLOODED], outputs: [...air, "air-done.u8"], measure: done("air"), watch: [], whole: [], spent: [] },
+    { name: "air", kind: "GPU", command: stage("air", "--block", AIR_BLOCK), tierFlag: "scripts/globe-stage.ts", needs: ["tiers"], inputs: [HEIGHT, FLOODED], outputs: [...air, "air-done.u8"], measure: done("air"), watch: [], whole: [], spent: [] },
     { name: "surplus", kind: "GPU", command: waterCmd("surplus"), tierFlag: "scripts/globe-water.ts", needs: ["tiers", "air"], inputs: [HEIGHT, FLOODED, ...climate], outputs: [...surplus, "surplus-done.u8"], measure: done("surplus"), watch: [], whole: [], spent: [] },
     { name: "discharge", kind: "GPU", command: waterCmd("discharge"), tierFlag: "scripts/globe-water.ts", needs: ["tiers", "surplus"], inputs: [TO, ...season("vs", "u32")], outputs: discharge,
       measure: { files: discharge.map(sz) }, watch: [`${f("q")}*`, cells], whole: discharge.map(sz), spent: season("vs", "u32").map((n): Spent => ({ ...sz(n), from: "surplus" })) },

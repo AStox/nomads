@@ -34,6 +34,11 @@ export const RADIUS_M = 2_000_000;
 // The small planet of the seamless globe plan: 4,096 cells of 75 m along a cube face's edge at the face's centre (tier 4), so the radius is 4,096 x 75 m x 2 / pi = 195.6 km
 // [derived: the equiangular face spans a quarter turn, pi / 2 radians, over its cells]. The cells are 75 m across at a face's centre and 63 to 75 m over the face (the square root of the grid's 1.41 area ratio is 1.19).
 export const SMALL_RADIUS_M = (4096 * 75 * 2) / Math.PI;
+// The planet of the seamless globe plan since 2026-10-21 (the operator's choice, Unit 7a): 8,192 cells of 75 m along a cube face's edge, so the radius is 8,192 x 75 m x 2 / pi = 391.1 km [derived]. Tier 0 stays
+// 256 cells a face (2.4 km cells) and the 75 m tier is tier PLANET_TIER = 5. Every stage and script takes its radius and finest tier from here, not from a literal.
+export const PLANET_CELL_M = 75, PLANET_FN = 8192;
+export const PLANET_RADIUS_M = (PLANET_FN * PLANET_CELL_M * 2) / Math.PI;
+export const PLANET_TIER = Math.log2(PLANET_FN / 256);
 
 export interface Grid {
   readonly fn: number; // cells along a face's side
