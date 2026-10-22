@@ -320,6 +320,7 @@ export interface AirTile {
   // not stored (the sim's own, made again for its play area)
   snow: Float32Array; snowpack: Float32Array[]; fog: Float32Array; sky: Float32Array; pool: Float32Array; breeze: Float32Array; windShare: Float32Array; salt: Float32Array; lee: Uint8Array;
   saturated: number; // words the stored units could not hold
+  over: Record<string, { words: number; most: number; lo: number; hi: number }>; // by stored file: how many, the furthest word reached (before holding) and the file's range
 }
 
 // The patch's air from its heights (1/256 m) and flooded surface (1/256 m).
@@ -364,7 +365,7 @@ export async function airOf(ctx: Ctx, patch: Patch, heightWords: Int32Array, flo
   return {
     precip: rain.precip, pet: four("petS", 65536), sun: four("sunS", 2 ** 24), temp: four("tempS", 65536), humid: four("humidS", 65536), snowCover: field("snowCover", 65536),
     snow: field("snow", 65536), snowpack: four("snowpack", 65536), fog: field("fog", 2 ** 24), sky: field("sky", 65536), pool: field("pool", 65536), breeze: field("breeze", 65536),
-    windShare: field("windShare", 65536), salt: field("salt", 65536), lee: new Uint8Array(words.buffer, (SEC.lee - SEC.windShare) * 4, n * 16).slice(), saturated: 0,
+    windShare: field("windShare", 65536), salt: field("salt", 65536), lee: new Uint8Array(words.buffer, (SEC.lee - SEC.windShare) * 4, n * 16).slice(), saturated: 0, over: {},
   };
 }
 
@@ -385,12 +386,25 @@ export const PR_K = 360;
 export const precipWord = (mm: number) => Math.round(Math.sqrt(Math.max(0, mm)) * PR_K);
 export const precipOfWord = (v: number) => (v / PR_K) ** 2;
 
-export function compact(a: AirTile, tier: number): Record<string, Field> {
+export function compact(a: AirTile, tier: number, patch?: Patch): Record<string, Field> {
   const out: Record<string, Field> = {}, names = airOut(tier);
   let saturated = 0;
+  a.over = {};
+  // only the words that are stored count: the patch's halo is not kept, and its cells beyond a cube's corner (repeats of the nearest cell, where the lattice has no cell) hold the metric's
+  // degenerate values (a sun of 79 MJ/m2 a day on a repeated plateau) that no tile ever reads as its own
+  const stored = new Uint8Array(a.sky.length).fill(patch ? 0 : 1);
+  if (patch) for (let y = patch.halo; y < patch.side - patch.halo; y++) for (let x = patch.halo; x < patch.side - patch.halo; x++) stored[y * patch.side + x] = patch.missing[y * patch.side + x] ? 0 : 1;
   const put = (name: string, src: Float32Array, word: (v: number) => number, lo: number, hi: number, K: new (n: number) => Field) => {
     const f = new K(src.length);
-    for (let i = 0; i < src.length; i++) { const v = word(src[i]); if (v < lo || v > hi) saturated++; f[i] = Math.max(lo, Math.min(hi, v)); }
+    for (let i = 0; i < src.length; i++) {
+      const v = word(src[i]);
+      f[i] = Math.max(lo, Math.min(hi, v));
+      if ((v >= lo && v <= hi) || !stored[i]) continue;
+      saturated++;
+      const o = (a.over[name] ??= { words: 0, most: v, lo, hi });
+      o.words++;
+      if (Math.abs(v - (v < lo ? lo : hi)) > Math.abs(o.most - (o.most < lo ? lo : hi))) o.most = v;
+    }
     out[name] = f;
   };
   const linear = (unit: number) => (v: number) => Math.round(v * unit);
@@ -417,9 +431,9 @@ export const airStage = (tier: number, block = 1): TileStage => {
     inputs: [height, flooded],
     outputs: airOutputs(tier),
     async run(ctx, patch, input) {
-      const tile = await airOf(ctx, patch, input[height] as Int32Array, input[flooded] as Int32Array), out = compact(tile, tier);
-      // a word past its unit would be clamped and hide what passed it: say so rather than store it
-      if (tile.saturated) throw new Error(`air: ${tile.saturated} words of tile (face ${patch.face}, ${patch.tx}, ${patch.ty}) pass what their stored units hold`);
+      const tile = await airOf(ctx, patch, input[height] as Int32Array, input[flooded] as Int32Array), out = compact(tile, tier, patch);
+      // a word past its unit would be clamped and hide what passed it: say which file, how many and how far rather than store it
+      if (tile.saturated) throw new Error(`air: ${tile.saturated} words of the block at face ${patch.face} (${patch.tx}, ${patch.ty}) pass what their stored units hold: ${Object.entries(tile.over).map(([f, o]) => `${f} ${o.words} words, the furthest ${o.most} against ${o.lo} to ${o.hi}`).join("; ")}`);
       return out;
     },
   };
