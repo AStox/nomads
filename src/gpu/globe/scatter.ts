@@ -22,7 +22,7 @@ import { CELL } from "../../terrain/grid";
 import { SIZE, type FineRiver, type Scatter } from "../../terrain/flora";
 import { BANKFULL, WOODED, bankDepth, bankWidth } from "../../terrain/water";
 import { dispatch, pipeline, readback, storage } from "../kernel";
-import { objectsOn, run, segments, type SceneryKernels } from "../terrain/scenery";
+import { objectsOn, run, segments, type CellWindow, type SceneryKernels, type WindowedScatter } from "../terrain/scenery";
 import {
   GRADIENTS, ISLE, RASTER, countKernel, fineKernel, layoutOf, tableKernel, tileScenery, writeKernel, type SceneryLayout,
 } from "../wgsl/terrain-scenery";
@@ -128,10 +128,15 @@ export function riversOf(source: TileSource, tile: number, tier = 4): FineRiver[
 }
 
 // `fine` (when asked for): the fine field's heights over the 1,025 by 1,025 vertices, m, and the stream mask (RM by RM texels, 0 to 255).
-export interface TileScatter { flora: Scatter; tile: number; segments: number; fine?: { h: Float32Array; mask: Uint8Array } }
+export interface TileScatter<F extends Scatter = Scatter> { flora: F; tile: number; segments: number; fine?: { h: Float32Array; mask: Uint8Array } }
 // Every object on tile `tile` of the tier for world seed `seed`: `flora.px` and `py` are in game tiles (150 m) from the tile's north-west corner, `start` runs over its 128 by 128 game tiles.
 // `source` is the stage files by default; the ground tile's planes (groundtile.ts) give the same objects.
-export async function scatterTile(ctx: Pick<Ctx, "gpu" | "dir" | "tier">, tile: number, seed: number, halo = SCATTER_HALO, keepFine = false, source: TileSource = stageSource(ctx, tile)): Promise<TileScatter> {
+// With `window` (a rectangle of the tile's cells: x0, y0, w, h) only the objects whose place lies in it are made: the same objects, with the same bytes, as the whole tile's run cut to the window,
+// each with its index in the whole run (`flora.ids`, `flora.oreIds`), so that ids are stable whichever is asked for. The draws are counted over the whole tile (that is what fixes the ids), the
+// write pass makes the quads the window touches, and only the rows of game tiles it touches are read back. The fine field is the whole tile's.
+export async function scatterTile(ctx: Pick<Ctx, "gpu" | "dir" | "tier">, tile: number, seed: number, halo: number | undefined, keepFine: boolean | undefined, source: TileSource | undefined, window: CellWindow): Promise<TileScatter<WindowedScatter>>;
+export async function scatterTile(ctx: Pick<Ctx, "gpu" | "dir" | "tier">, tile: number, seed: number, halo?: number, keepFine?: boolean, source?: TileSource): Promise<TileScatter>;
+export async function scatterTile(ctx: Pick<Ctx, "gpu" | "dir" | "tier">, tile: number, seed: number, halo = SCATTER_HALO, keepFine = false, source: TileSource = stageSource(ctx, tile), window?: CellWindow): Promise<TileScatter<Scatter | WindowedScatter>> {
   const g = ctx.gpu, { L, K } = kernelsOf(halo), rivers = riversOf(source, tile, ctx.tier), { seg, table } = segments(rivers);
   const segs = storage(g, seg), bins = storage(g, table), field = storage(g, L.FINE_WORDS * 4), packed = storage(g, packTile(source, tile, halo, ctx.tier));
   dispatch(g, pipeline(g, RASTER, "raster"), [segs, bins, field], [Math.ceil(L.RMW / 256)]);
@@ -141,7 +146,7 @@ export async function scatterTile(ctx: Pick<Ctx, "gpu" | "dir" | "tier">, tile: 
     const [mask, h] = await Promise.all([readback(g, field, L.RMW * 4), readback(g, field, L.MV * 4, L.FINE_AT * 4)]);
     fine = { mask: new Uint8Array(mask), h: Float32Array.from(new Int32Array(h), (v) => v / Q16) };
   }
-  const flora = await objectsOn(g, L, K, packed, field, seed, keyOf(tile));
+  const flora = window ? await objectsOn(g, L, K, packed, field, seed, keyOf(tile), window) : await objectsOn(g, L, K, packed, field, seed, keyOf(tile));
   segs.destroy(); bins.destroy();
   return { flora, tile, segments: seg.length / 8, fine };
 }

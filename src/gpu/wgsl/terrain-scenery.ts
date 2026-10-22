@@ -73,7 +73,7 @@ export function layoutOf(fmt: SceneryFormat) {
   // tile; the loose stones of ore a quad lays and their first rank in its row. Then the meta words (the seed, the flag, the ore's total, the first quad's key).
   let at = 0;
   const take = (n: number) => { const a = at; at += n; return a; };
-  const IDX = { cnt: take(4 * NQ), base: take(4 * NQ), oreCnt: take(NQ), oreBase: take(NQ), seed: take(1), flag: take(1), oreTotal: take(1), key: take(1), pad: take(12), tileN: take(T), start: take(T + 1), rowT: take(Q), rowC: take(Q), rowStart: take(Q + 1), ore: take(4 * ORE_CAP), words: 0 };
+  const IDX = { cnt: take(4 * NQ), base: take(4 * NQ), oreCnt: take(NQ), oreBase: take(NQ), seed: take(1), flag: take(1), oreTotal: take(1), key: take(1), win: take(4), pad: take(8), tileN: take(T), start: take(T + 1), rowT: take(Q), rowC: take(Q), rowStart: take(Q + 1), ore: take(4 * ORE_CAP), words: 0 };
   IDX.words = at;
   return { side, halo: fmt.halo, shift: fmt.shift, off, LEN, m, Q, NQ, MV, RMW, TAB_AT, COMP_AT, GRAD_AT, GEO_AT, ISLE_WORDS, IF, CUT_AT, FINE_AT, FINE_WORDS, FF, IDX };
 }
@@ -493,7 +493,7 @@ const TT = ${T}u;
 const TSIDE = ${TILES}u;
 const FMAX = ${Math.floor((L.m - 1.001) * 65536)}i;
 const I_CNT = ${IDX.cnt}u; const I_BASE = ${IDX.base}u; const I_ORECNT = ${IDX.oreCnt}u; const I_OREBASE = ${IDX.oreBase}u;
-const I_SEED = ${IDX.seed}u; const I_FLAG = ${IDX.flag}u; const I_ORETOTAL = ${IDX.oreTotal}u; const I_KEY = ${IDX.key}u;
+const I_SEED = ${IDX.seed}u; const I_FLAG = ${IDX.flag}u; const I_ORETOTAL = ${IDX.oreTotal}u; const I_KEY = ${IDX.key}u; const I_WIN = ${IDX.win}u;
 const I_TILEN = ${IDX.tileN}u; const I_START = ${IDX.start}u; const I_ROWT = ${IDX.rowT}u; const I_ROWC = ${IDX.rowC}u; const I_ROWS = ${IDX.rowStart}u; const I_ORE = ${IDX.ore}u;
 const W_LO = ${ARR(W_LO, "i32")};
 const W_DIFF = ${ARR(W_DIFF, "i32")};
@@ -624,8 +624,13 @@ fn emit(kind: u32, sp: u32, tx4: u32, ty4: u32, size: u32, sd: u32) {
   let tx = min(tx4 / 10000u, TSIDE - 1u); let ty = min(ty4 / 10000u, TSIDE - 1u);
   let d = select(0u, 1u, tx > ((Qu + u32(OFF)) >> 3u)) + select(0u, 2u, ty > ((Qv + u32(OFF)) >> 3u));
   ${write ? `let at = Qdst[d] + Qloc[d];
-  PX[at] = tx4; PY[at] = ty4; SZ[at] = size; SD[at] = sd; KS[at] = kind | (sp << 8u);` : `_ = size; _ = sd; _ = kind; _ = sp;`}
+  if (inWindow(tx4, ty4)) { PX[at] = tx4; PY[at] = ty4; SZ[at] = size; SD[at] = sd; KS[at] = kind | (sp << 8u); }` : `_ = size; _ = sd; _ = kind; _ = sp;`}
   Qloc[d] = Qloc[d] + 1u;
+}
+// whether an entry's place (ten-thousandths of a game tile of 2 cells) lies in the window of cells the write pass makes (IDX I_WIN: x0, y0, x1, y1, the end exclusive; the whole area when none is asked for)
+fn inWindow(tx4: u32, ty4: u32) -> bool {
+  let cx = (tx4 * 2u) / 10000u; let cy = (ty4 * 2u) / 10000u;
+  return cx >= IDX[I_WIN] && cx < IDX[I_WIN + 2u] && cy >= IDX[I_WIN + 1u] && cy < IDX[I_WIN + 3u];
 }
 // the game's tile coordinate of a point in ten-thousandths of a tile: round(X / 150 m 10^4), X from the island's corner
 fn tileOf(X: u32) -> u32 { return rdiv64(mul64(X, 625u), 614400u); }
@@ -647,7 +652,7 @@ fn put(kind: u32, sp: u32, fx: u32, fz: u32, size: u32, sd: u32) {
   }
   if (kind == ORE) {
     ${write ? `let at = I_ORE + 4u * (QoreAt + Qore);
-    IDX[at] = tx4; IDX[at + 1u] = ty4; IDX[at + 2u] = size; IDX[at + 3u] = sd;` : `_ = size; _ = sd;`}
+    if (inWindow(tx4, ty4)) { IDX[at] = tx4; IDX[at + 1u] = ty4; IDX[at + 2u] = size; IDX[at + 3u] = sd; }` : `_ = size; _ = sd;`}
     Qore = Qore + 1u;
     return;
   }
@@ -990,6 +995,9 @@ ${common(true, L)}
 fn write(@builtin(global_invocation_id) gid: vec3u) {
   let q = gid.x;
   if (q >= NQ) { return; }
+  // a quad more than a cell outside the window makes nothing that lies in it (its objects lie within its own cell, 4 quads across)
+  let cu = i32((q % QS + u32(OFF)) >> 2u); let cv = i32((q / QS + u32(OFF)) >> 2u);
+  if (cu + 1i < i32(IDX[I_WIN]) || cu - 1i >= i32(IDX[I_WIN + 2u]) || cv + 1i < i32(IDX[I_WIN + 1u]) || cv - 1i >= i32(IDX[I_WIN + 3u])) { return; }
   scatterQuad(q);
   for (var d = 0u; d < 4u; d++) { if (Qloc[d] != IDX[I_CNT + q * 4u + d]) { IDX[I_FLAG] = 1u; } }
   if (Qore != IDX[I_ORECNT + q]) { IDX[I_FLAG] = 1u; }

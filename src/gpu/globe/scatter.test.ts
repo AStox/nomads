@@ -132,6 +132,33 @@ describe("the scatter of a tile of the real planet (seed 1)", () => {
     console.log(`scatter:\n  ${results.join("\n  ")}`);
   }, 280_000);
 
+  real("a window's objects are the whole tile's cut to the window, byte for byte, with the whole run's ids", async () => {
+    const c = await ctx(), whole = await scatterTile(c, 458, SEED), f = whole.flora, windows = [{ x0: 37, y0: 101, w: 100, h: 64 }, { x0: 0, y0: 0, w: 256, h: 256 }, { x0: 200, y0: 10, w: 0, h: 50 }, { x0: 250, y0: 250, w: 40, h: 40 }];
+    const inside = (w: { x0: number; y0: number; w: number; h: number }, tx4: number, ty4: number) => { const cx = Math.floor((tx4 * 2) / 10000), cy = Math.floor((ty4 * 2) / 10000); return cx >= w.x0 && cx < w.x0 + w.w && cy >= w.y0 && cy < w.y0 + w.h; };
+    const rows: string[] = [];
+    for (const w of windows) {
+      const t0 = performance.now(), got = (await scatterTile(c, 458, SEED, undefined, undefined, undefined, w)).flora, s0 = (performance.now() - t0) / 1000;
+      const keep: number[] = [];
+      for (let e = 0; e < f.n; e++) if (inside(w, Math.round(f.px[e] * 1e4), Math.round(f.py[e] * 1e4))) keep.push(e);
+      expect(got.n, `count in ${JSON.stringify(w)}`).toBe(keep.length);
+      expect(Array.from(got.ids)).toEqual(keep);
+      const same = (a: Float32Array | Uint8Array | Uint32Array, pick: (e: number) => number) => { const want = new (a.constructor as new (v: ArrayLike<number>) => typeof a)(keep.map(pick)); return Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(Buffer.from(want.buffer, want.byteOffset, want.byteLength)); };
+      expect(same(got.px, (e) => f.px[e])).toBe(true);
+      expect(same(got.py, (e) => f.py[e])).toBe(true);
+      expect(same(got.size, (e) => f.size[e])).toBe(true);
+      expect(same(got.kind, (e) => f.kind[e])).toBe(true);
+      expect(same(got.species, (e) => f.species[e])).toBe(true);
+      expect(same(got.seed, (e) => f.seed[e])).toBe(true);
+      const oreKeep = f.ore.map((o, k) => [o, k] as const).filter(([o]) => inside(w, Math.round(o.px * 1e4), Math.round(o.py * 1e4)));
+      expect(got.ore).toEqual(oreKeep.map(([o]) => o));
+      expect(Array.from(got.oreIds)).toEqual(oreKeep.map(([, k]) => k));
+      rows.push(`${JSON.stringify(w)}: ${got.n} of ${f.n} objects, ${got.ore.length} ore, ${s0.toFixed(2)} s`);
+    }
+    // without a window the bytes are the whole run's, as before
+    expect(hashOf(await scatterTile(c, 458, SEED))).toBe(hashOf(whole));
+    console.log(`scatter windows on tile 458:\n  ${rows.join("\n  ")}`);
+  }, 280_000);
+
   real("the cost of a tile's scatter", async () => {
     const c = await ctx(), rows: string[] = [];
     await scatterTile(c, 458, SEED); // the pipelines compile on first use
