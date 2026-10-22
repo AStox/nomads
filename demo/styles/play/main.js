@@ -75,6 +75,8 @@ async function main() {
   const view = { x: -2738, z: -1838, zoom: zoom0, bearing: norm8(Math.round(num("bearing", 0))), up: 0, selected: null, turnTo: null };
   const metrics = { readyMs: Math.round(ready), revealMs: 0, tabs: [], turns: [] };
   const camera = createCamera({ live, view, canvas, onTurn: (t) => metrics.turns.push({ startMs: Math.round(t.start), totalMs: Math.round(t.total) }) });
+  // away from the island the ground is the planet's and has no people on it: what was selected or followed is let go, and a gesture held on the old frame
+  live.onGround((m) => { camera.dropAnchor(); if (m === "win") select(null); });
   let follow = null, openingPerson = null, opening = null, farSince = 0, farDest = null;
   // Open on the person nearest the densest cluster of shelters, fires and stumps, and follow them; with nothing built
   // yet, on whoever has the most going on around them.

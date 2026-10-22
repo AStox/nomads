@@ -46,6 +46,8 @@ export function createCamera({ live, view, canvas, onTurn }) {
       return st;
     },
     setZoom(z) { if (Number.isFinite(z)) { goal = zoomSet = view.zoom = clamp(z, live.zmin, live.zmax); anchor = null; } },
+    // the ground a gesture was held on is another now (its coordinates are in the old frame): the gesture lets go
+    dropAnchor() { anchor = null; pinch = null; },
     // the mid-screen target point is held at centre + (dx, dy), so the image moves exactly with the cursor
     panBy(dx, dy) {
       if (!finite(dx, dy) || (!dx && !dy && !view.up)) return;

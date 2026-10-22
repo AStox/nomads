@@ -962,20 +962,22 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   const TN = pal.TRAIL_N, trailT = tex({ size: [TN, TN], format: "r8uint", label: "trails" });
   const iceT = tex({ size: [pal.TILES, pal.TILES], format: "r8uint", label: "ice" });
   const stor = (data, label) => { const b = B(data.byteLength, STOR, label); device.queue.writeBuffer(b, 0, data); return b; };
-  const groundBuffers = GROUND_BINDINGS.map((b, i) => {
+  let groundBuffers = GROUND_BINDINGS.map((b, i) => {
     if (b.kind !== "storage") return null;
     const data = [gp.dq, gp.grad, gp.streams, gp.streamBins][i - 6];
     return stor(data.length ? data : new Uint32Array(4), `ground${i}`);
   });
-  const groundGroup = device.createBindGroup({
+  const makeGroundGroup = () => device.createBindGroup({
     layout: groundLayout,
     entries: [fineT, isleT, gridT, riverT, trailT, iceT].map((t, i) => ({ binding: i, resource: t.createView() })).concat(groundBuffers.slice(6).map((b, k) => ({ binding: 6 + k, resource: { buffer: b } }))),
   });
+  let groundGroup = makeGroundGroup();
   // the gradient of the heights for the light (setHeights of old: over two steps each way), into grid layers 3 and 4; the
   // highest of them, under which the sun's trace stops marching
   let gridTop = -Infinity;
-  {
-    const h = gp.grid.data.subarray(0, GN * GN), gx = new Float32Array(GN * GN), gz = new Float32Array(GN * GN), step = pal.GRID_STEP;
+  function gradientOf(h) {
+    const gx = new Float32Array(GN * GN), gz = new Float32Array(GN * GN), step = pal.GRID_STEP;
+    gridTop = -Infinity;
     for (const v of h) if (v > gridTop) gridTop = v;
     const at = (i, j) => h[Math.min(GN - 1, Math.max(0, j)) * GN + Math.min(GN - 1, Math.max(0, i))];
     for (let j = 0; j < GN; j++)
@@ -985,6 +987,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       }
     upload(gridT, gx, GN, GN, 4, 3); upload(gridT, gz, GN, GN, 4, 4);
   }
+  gradientOf(gp.grid.data.subarray(0, GN * GN));
   // tables: haze, glow, the ground's tones by light, then the sky's light table
   const tables = new Uint32Array(FONT0 + fontRows.length);
   tables.set(HAZE, 0); tables.set(GLOW, NCOL); tables.set(TONE, 2 * NCOL); tables.set(fontRows, FONT0);
@@ -993,6 +996,25 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   const sunTex = () => device.createTexture({ size: [GN, GN], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC, label: "sun" });
   const sunMaps = [sunTex(), sunTex()], foldT = sunTex();
   let sunFront = 0, sunJob = null, sunShown = null, exagFolded = null;
+  // The ground replaced by another of the same size (a window of the planet in place of the island): its layers written into the
+  // textures, its stream buffers made again, the gradient and the highest ground worked out again, and the sun's trace and the
+  // folds' laid again from the new heights. The trails and the ice are the caller's to set (setTrails, setIce).
+  function setGround(g2) {
+    for (let l = 0; l < g2.fine.layers; l++) upload(fineT, g2.fine.data.subarray(l * g2.fine.size ** 2, (l + 1) * g2.fine.size ** 2), g2.fine.size, g2.fine.size, 4, l);
+    for (let l = 0; l < g2.isle.layers; l++) upload(isleT, g2.isle.data.subarray(l * g2.isle.size ** 2, (l + 1) * g2.isle.size ** 2), g2.isle.size, g2.isle.size, 4, l);
+    for (let l = 0; l < 3; l++) upload(gridT, g2.grid.data.subarray(l * GN * GN, (l + 1) * GN * GN), GN, GN, 4, l);
+    upload(riverT, g2.river, RMN, RMN, 1);
+    const old = groundBuffers;
+    groundBuffers = GROUND_BINDINGS.map((b, i) => {
+      if (b.kind !== "storage") return null;
+      const data = [g2.dq, g2.grad, g2.streams, g2.streamBins][i - 6];
+      return stor(data.length ? data : new Uint32Array(4), `ground${i}`);
+    });
+    groundGroup = makeGroundGroup();
+    for (const b of old) b?.destroy();
+    gradientOf(g2.grid.data.subarray(0, GN * GN));
+    exagFolded = null; sunShown = null; sunJob = null;
+  }
   // The trees' cover, laid by the GPU from the trees in the object buffers (wgsl/objects.js canopyMain): cells of
   // canopy.step metres over the island (3 m, or coarser on an island too big for 3 m cells to stay under about 4800 a
   // side), a byte each, its 8 x 8 means, and the scratch it is summed in; rows padded for the copies into textures.
@@ -1162,7 +1184,17 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     });
     await Promise.all(made.flatMap((s) => [s.cull.ready, s.fill?.ready, s.needs?.ready, s.canopy?.ready, s.far?.cull.ready, s.far?.count.ready, s.far?.mark?.ready, s.far?.keep?.ready]));
     if (errors.length) throw new Error(errors.join("\n"));
+    // a source that is gone (the planet window the camera left) holds no far lists, front lists or cell caches any more
+    for (const old of sources) if (!made.some((s) => s.name === old.name)) forgetSource(old.name);
     sources = made;
+  }
+  function forgetSource(name) {
+    const f = farState.get(name);
+    if (f) { for (const b of [f.key, f.cnt, ...f.idx, ...f.list]) b?.destroy(); farState.delete(name); }
+    for (const [k, fr] of frontState) if (k.startsWith(`${name}|`)) { frontRetired.push(fr.list, fr.idx); frontState.delete(k); }
+    for (let i = frontWant.length - 1; i >= 0; i--) if (frontWant[i].startsWith(`${name}|`)) frontWant.splice(i, 1);
+    const c = cacheState.get(name);
+    if (c) { cacheRetired.push(c.cslot, c.cnt, c.buf, c.fill); cacheState.delete(name); }
   }
   // ---------- the cells' caches (wgsl/objects.js cacheFillWGSL) ----------
   // Per source of cells, by name so they outlive setSources: each cell's slot (NO_SLOT for none), each slot's count and
@@ -1827,7 +1859,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   }
   await Promise.all(Object.values(S).map((o) => o.ready));
   return {
-    errors, stats, frame, setSources, setMeta, survey, buildCanopy, farBuild, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
+    errors, stats, frame, setSources, setGround, setMeta, survey, buildCanopy, farBuild, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
     get busy() { return inFlight; },
     setFarUse: (on) => { farUse = on; },
     setFadeKeep: (on) => { fadeKeep = on; },

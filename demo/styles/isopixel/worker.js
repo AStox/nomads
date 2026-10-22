@@ -15,6 +15,7 @@ import { Looks, CODES, NONE, castRows, Shelves, entryWords } from "./atlas.js";
 import { PICK_SLOT, EXTRA_PICK, KIND_PICK, NO_SLOT, CELLS_N, CELL_M } from "./wgsl/objects.js";
 import { closeGround } from "./ground-at.js";
 import { openPyramid } from "./pyramid.js";
+import { createWindows } from "./groundwin.js";
 
 const early = [];
 onmessage = (e) => early.push(e);
@@ -60,7 +61,8 @@ async function openPlanet(seed, device) {
   const pyramid = await openPyramid({ device, base: new URL(`../planets/${manifest.tiles}/pyramid`, import.meta.url).href, tiers: manifest.tiers, faces: manifest.faces, across: G.cellAcross });
   let hmax = 0;
   for (const f of manifest.faces) for (const h of pyramid.planes0(f).height) hmax = Math.max(hmax, h * 0.25);
-  return { G, manifest, pyramid, radiusM: ((256 << (manifest.tiers - 1)) * CELL * 2) / Math.PI, hmax: hmax * 1.5 + 300 };
+  const T = manifest.groundtiles ? await import("../tile.js") : null, base = new URL(`../planets/${manifest.tiles}`, import.meta.url).href;
+  return { G, T, base, manifest, pyramid, radiusM: ((256 << (manifest.tiers - 1)) * CELL * 2) / Math.PI, hmax: hmax * 1.5 + 300 };
 }
 
 async function init(m) {
@@ -99,9 +101,15 @@ async function init(m) {
   if (planet && ground.place) planetLayer = Object.assign(await createPlanet({ device, format, G: planet.G, pyramid: planet.pyramid, pal: PAL, radiusM: planet.radiusM, hmax: planet.hmax }), { radiusM: planet.radiusM });
   let peak = 0;
   for (const h of isle.height) peak = Math.max(peak, h);
+  home = { pack, fields: { peak, h: g.h, height: isle.height, water: isle.water } };
+  if (planet?.T && simB) {
+    // the most objects a window's body holds: 28 bytes a slot must fit the device's storage binding, and at most 8.4 million [design: 235 MB]
+    const room = Math.min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize) / 28;
+    planet.wins = createWindows({ G: planet.G, T: planet.T, gpu, base: planet.base, tier: planet.manifest.tiers - 1, seed: m.seed, radiusM: planet.radiusM, quick: isle.quick, top: Math.min(1 << 23, 2 ** Math.floor(Math.log2(room))) });
+  }
   // the page keeps the camera on the island's heights and the drawn ground under it: the fine heights and the cells'
   // water, from which live.js (ground.js) works out every level's tile map as the GPU does
-  post({ type: "fields", info: adapter.info ? { vendor: adapter.info.vendor, architecture: adapter.info.architecture, description: adapter.info.description } : null, peak, h: g.h, height: isle.height, water: isle.water, ms: { grow: t1 - t0, pack: t2 - t1 }, place: ground.place });
+  post({ type: "fields", info: adapter.info ? { vendor: adapter.info.vendor, architecture: adapter.info.architecture, description: adapter.info.description } : null, peak, h: g.h, height: isle.height, water: isle.water, ms: { grow: t1 - t0, pack: t2 - t1 }, place: ground.place && { ...ground.place, windows: !!planet?.wins } });
   await new Promise((r) => setTimeout(r, 0));
   if (R.errors.length) throw new Error(R.errors.join("\n"));
   mark("renderer");
@@ -155,7 +163,7 @@ async function setupObjects(sim, w) {
   spritesP = makeAll(jobs).then((made) => { mark("sprites"); return made; });
   S.ms = { sources: t1 - t0, survey: performance.now() - t1 };
 }
-const sources = () => [S.plant, ...(S.statics.cap ? [S.statics] : []), S.extras, ...(S.animals ? [S.animals] : []), ...(S.dead ?? [])];
+const sources = () => (S.win ? [S.win] : [S.plant, ...(S.statics.cap ? [S.statics] : []), S.extras, ...(S.animals ? [S.animals] : []), ...(S.dead ?? [])]);
 
 // The generator's objects that aren't stems (src/gpu/flora.ts: static dormant), counted into the spatial index's cells
 // and laid out cell by cell in entry order, fields as the store holds a piece's: x, y (mm), what, size (f32 bits),
@@ -896,6 +904,71 @@ async function whereOf(id) {
   return { id, alive: (a[0] & 1) === 1, x: Math.fround(Math.fround(a[1]) * Math.fround(0.001) + Math.fround(ORIGIN)), z: Math.fround(Math.fround(a[2]) * Math.fround(0.001) + Math.fround(ORIGIN)) };
 }
 
+// ---------- the close ground anywhere ----------
+// The ladder draws the ground under it from `home` (the island the sim lives on) or, anywhere else, from a window of the planet's own ground tiles
+// (groundwin.js) laid at the camera. The page says where its camera is and which it wants (a want); the worker makes the window (a few seconds the
+// first time) and tells the page its frame and heights; the page puts its view in the new frame and names the ground in every frame after (its gid),
+// and the first frame that names it is the one the renderer switches on (applyGround), so a frame is never drawn on ground its coordinates are not in.
+let curGid = 0, gids = 0, prepared = null, switching = false, building = false, wanting = null, home = null;
+const winSpecs = new Map();
+const winSpec = (cap) => {
+  if (!winSpecs.has(cap)) winSpecs.set(cap, { cap, fields: { x: 0, y: 1, what: 2, size: 3, seed: 4, pick: 5 }, sizeMm: false, marks: false, ordered: false, indexed: true, canopy: true });
+  return winSpecs.get(cap);
+};
+async function groundWant(m) {
+  wanting = m;
+  if (building || !planet?.wins || !S || !home) return;
+  building = true;
+  try {
+    while (wanting) {
+      const want = wanting;
+      wanting = null;
+      if (want.mode === "home") {
+        if (!S.win && !prepared) continue;
+        prepared = { gid: ++gids, mode: "home" };
+        post({ type: "ground", gid: prepared.gid, mode: "home", frame: null, fields: home.fields });
+      } else {
+        const w = await planet.wins.build(want.lat, want.lon);
+        prepared = { gid: ++gids, mode: "win", win: w };
+        post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon }, fields: w.fields, stats: w.stats });
+      }
+    }
+  } catch (err) {
+    console.error("window", err);
+    post({ type: "windowError", error: String((err && err.stack) || err) });
+  } finally { building = false; }
+}
+async function applyGround(p) {
+  switching = true;
+  try {
+    const old = S.win;
+    if (p.mode === "win") {
+      const o = p.win.objects;
+      S.win = { name: "win", cap: o.cap, body: buffer(o.body), start: buffer(o.start), spec: winSpec(o.cap) };
+      await R.setSources(sources());
+      R.setGround(p.win.pack);
+      R.setIce(new Uint8Array(TILES * TILES));
+    } else {
+      S.win = null;
+      await R.setSources(sources());
+      R.setGround(home.pack);
+      R.setIce(iceOf(sim.w.ice));
+    }
+    R.buildCanopy();
+    R.farBuild(farLevels());
+    if (old) { old.body.destroy(); old.start.destroy(); }
+    p.win = null;
+    curGid = p.gid;
+    if (prepared === p) prepared = null;
+    if (p.mode === "win") {
+      looks.addAll(await R.survey(0, 0, (CODES * CODES) / 32));
+      R.setMeta(looks.meta());
+      growTable();
+      refreshSprites();
+    }
+  } finally { switching = false; }
+}
+
 // ---------- frames ----------
 // The page's frame: views with their uniforms and live sprites by the page's sprite ids, which go into the dynamic
 // layers the first time they come.
@@ -916,6 +989,15 @@ function liveInstances(list) {
 function render() {
   const f = pending;
   if (!f || rendering) return;
+  // a frame names the ground its view's coordinates are in: the one prepared is switched to when the page first sends it, and a frame of an earlier one is stale
+  if (f.gid !== undefined && f.gid !== curGid) {
+    if (prepared && f.gid === prepared.gid) {
+      if (!switching) applyGround(prepared).then(() => render()).catch((err) => post({ type: "error", error: String((err && err.stack) || err) }));
+      return;
+    }
+    pending = null;
+    return;
+  }
   if (R.busy >= 2) { setTimeout(render, 1); return; }
   pending = null;
   rendering = true;
@@ -925,7 +1007,7 @@ function render() {
     const prims = v.prims ? Int32Array.from(v.prims) : null;
     // a sprite primitive names the page's sprite
     if (prims) for (let i = 0; i < prims.length; i += 8) if (prims[i] === 0) { const sp = liveId(prims[i + 3]); prims[i + 3] = sp ?? 0; if (sp === undefined) { prims[i] = 2; prims[i + 4] = 255; } }
-    return { ...v, U: { ...v.U, gflags: trailQ?.size ? 1 : 0 }, live: v.live?.length ? liveInstances(v.live) : null, prims };
+    return { ...v, U: { ...v.U, gflags: !S?.win && trailQ?.size ? 1 : 0 }, live: v.live?.length ? liveInstances(v.live) : null, prims };
   });
   // the planet under the ladder's views, from the camera the page chose (live.js planetParams)
   const under = f.planet && planetLayer && ((enc, target) => {
@@ -955,6 +1037,7 @@ const handle = async (e) => {
     // the whole island at each level and bearing that keeps front lists (live.js islandView)
     else if (m.type === "frontViews") R.setFrontViews(m.views);
     else if (m.type === "frame") { pending = m; render(); }
+    else if (m.type === "want") groundWant(m);
     else if (m.type === "simTick") await simTick(m.n);
     // asked in a tick's pause (sim.ts tickPause), answered with the state after it, as the world stands between ticks
     else if (m.type === "simWant") { want = m.want; if (!ticking) post({ type: "simState", ...answers() }); }

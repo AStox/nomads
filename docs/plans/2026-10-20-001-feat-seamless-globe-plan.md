@@ -209,8 +209,29 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   stands there); the camera is geodesic: the planet camera does the pan hold wherever the play area's plane (true to a part in a
   hundred) cannot be needed (farther from the place than the play area and the canvas's reach, or from zoom -1.5 out), on the sphere
   raised to the ground under the target as the worker drew it, so a drag moves the target by the pixel distance's ground distance
-  (0.98 to 1.0 of it at zoom 6, 20 and 60 degrees from the place) and the held point stays under the cursor. The plane's re-anchoring waits
-  for the ladder drawing ground away from the place.
+  (0.98 to 1.0 of it at zoom 6, 20 and 60 degrees from the place) and the held point stays under the cursor.
+  Page half, part 2 (2026-10-21 and 22; key 883a8d9387df, face 1 and an edge visited in Chrome, then code only while the bake ran): the ladder's
+  levels draw anywhere from the planet's ground tiles. `isopixel/groundwin.js` makes a WINDOW of 256 by 256 cells at the camera from up to 4 interior
+  and a few halo ground tiles (`groundtiles/f<face>/<ty>-<tx>.gt.gz`, streamed like the pyramid; across a cube's edge the face across's cells laid
+  flat by `cellAcross`, receivers turned), runs the scatter's fine kernel on its cells (`demo/tile.ts` -> `tile.js`, `windowFine`: the same vertex
+  whichever window holds it) and the painter's `packGround` on them (rows turned so z runs south), and the scatter of each interior tile cut to
+  the window; the worker (`groundWant`, `applyGround`) switches the renderer's ground (`webgpu.js setGround`) and object source in the frame that first
+  names the new ground (`gid`), and the page (`live.js`) puts its view in the window's frame (`FRM`: the place's plane re-anchored to the camera, the sky
+  turned by the frame's rotation) so the plane is always about the camera's ground; the sim stays in the island's frame and there are no people or animals
+  away from it. First window made in 4.5 to 7.7 s (tiles 0.1 to 0.5, fine 0.3, painter packing 0.9, scatter 2.7 to 6.2), 4 tiles, 5 MB;
+  6 to 8 million objects; trees on the planet's own cover looked right at two places (a window 4 degrees east of the island, and one across the cube
+  edge of faces 0 and 1; a third place and the stills for the report wait for the GPU).
+  Memory audit (reading and a CPU test, `winobjects.js`): the leak was mine: `cut()` kept `subarray`s of arrays sized to the whole tile (26 bytes
+  an object of a tile's 17.7 million, over 4 tiles about 1.8 GB held to the end of the build). A tile is now cut to exact-size arrays the moment it is made
+  and let go, thinned by halves of its seeds' hash past `top` objects (the device's binding limit over 28 bytes a slot, at most 8.4 million; a thinning only
+  drops objects), 20 bytes an object kept; measured on the CPU for 4 tiles of 17.7 million: 4.4 million kept at share 1/4, the body 224 MB, and the
+  collector's own memory about 90 MB over the synthetic scatter's 300 MB. In the renderer a gone source's far lists, front lists and cell caches were
+  never released (`forgetSource`, from `setSources`). The window was asked for at every step of a pan at a zoom where the view is wider than a window
+  (island level), each a few seconds of GPU work: no window is asked for there now (the planet layer alone draws it). Ground tiles held: 8 (6 MB each);
+  the scatter of a tile is never held. Not run since these changes: the page, the GPU (the bake's rain stage ran meanwhile). Open: the scatter makes
+  all of each interior tile (17.7 million objects, 0.4 GB of GPU buffers) for the quarter of it a window takes: a window argument to scatter.ts' count and
+  write kernels is the cut for it; a window of 15 to 26 million objects thinned to 4 to 8 million reads sparser than the island (about half to a quarter
+  of its trees); the page thread works out the camera's heights again (0.1 to 0.3 s) at each window switch.
 
 ## Risks
 
