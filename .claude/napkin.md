@@ -69,6 +69,8 @@
    **[2026-10-21]** The planet layer streams the tile pyramid (`isopixel/pyramid.js`; halos are the neighbouring tiles' cells by `cellAcross`, refreshed when a neighbour arrives); `scripts/demo.ts` copies the newest `/tmp/planet-75m/<seed>-<key>/pyramid` into the site, so rebuild after a bake. Anything that picks on the planet must use the camera's `lift` (posted by the worker in `frameDone`); `groundUnder`, `screenOf` and `solveTarget` switch plane or sphere by `planetMode`.
 8. **[2026-10-20] The operator's disk filled up (49 GB free after the operator cleared space); agents' /tmp scratch reached 3.4 GB in two days**
    Planet stores, Chrome profiles, frame dumps and per-run map dirs piled up under /tmp and the disk warning fired. `rm -rf` is blocked for agents and needs the operator. Do instead: give every agent one scratch dir and a size cap in its brief, one reused Chrome profile, and have it delete its own scratch before it reports; check `df -h /System/Volumes/Data` before any bake.
+9. **[2026-10-22] The Mac slept overnight and every long job died with it**
+   Clock jumps of 30+ minutes, shell commands timing out, the bake's calls making no progress, the quick tunnel's "Tunnel not found", Cloudflare's API timing out and agents erroring on stalled API streams were all one cause; the battery was at 9% in the morning. Do instead: before any bake or overnight run, start `caffeinate -dimsu` as a detached service and check `pmset -g batt` shows AC; after a wake, restart the tunnel (new URL), the bake driver from its done markers, and the agents. A new quick tunnel's name can fail locally on cached DNS for a minute (`curl` exit 6) while it already works.
 
 ## GPU Sim
 1. **[2026-10-14] tick(w) is async; integer-only arithmetic in gate kernels**
