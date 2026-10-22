@@ -78,7 +78,7 @@ describe("the patch format on the island's site", () => {
 // ---------- the real planet ----------
 const real = REAL ? test : test.skip;
 const scratch = (tiles: number[], halo: number) => scratchBake(tiles, halo, false);
-const PIN = { tile458: "988394b1689bb6fe" };
+const PIN = { tile458: "996d1f8b640582c1" };
 const tileOf = (k: number) => tileAt(TIER, k);
 const readTile = (dir: BakeDir, file: string, k: number): Field => {
   const { face, tx, ty } = tileOf(k), K = file.endsWith("u8") ? Uint8Array : Uint16Array, fd = openSync(dir.path(file), "r"), out = new K(256 * 256);
