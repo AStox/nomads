@@ -195,14 +195,15 @@ export class StreamedTier {
     writeFileSync(this.path("progress.json"), JSON.stringify(this.prog));
   }
   private saveSkeleton() {
-    const ids = [...this.la.keys()], f = new Float64Array(ids.length * 4);
-    ids.forEach((id, i) => { f[4 * i] = id; f[4 * i + 1] = this.la.get(id) ?? 0; f[4 * i + 2] = this.par.get(id) ?? -2; f[4 * i + 3] = this.total.get(id) ?? -1; });
+    // an exit's sum (la) and what carries it on (par) are set by different blocks, so a call may end with one of them known and not the other
+    const ids = [...new Set([...this.la.keys(), ...this.par.keys(), ...this.total.keys()])], f = new Float64Array(ids.length * 4);
+    ids.forEach((id, i) => { f[4 * i] = id; f[4 * i + 1] = this.la.get(id) ?? -1; f[4 * i + 2] = this.par.get(id) ?? -2; f[4 * i + 3] = this.total.get(id) ?? -1; });
     writeFileSync(this.path("skeleton.f64"), new Uint8Array(f.buffer));
   }
   private loadSkeleton() {
     const b = readFileSync(this.path("skeleton.f64")), f = new Float64Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
     this.la.clear(); this.par.clear(); this.total.clear();
-    for (let i = 0; i < f.length; i += 4) { this.la.set(f[i], f[i + 1]); if (f[i + 2] !== -2) this.par.set(f[i], f[i + 2]); if (f[i + 3] >= 0) this.total.set(f[i], f[i + 3]); }
+    for (let i = 0; i < f.length; i += 4) { if (f[i + 1] >= 0) this.la.set(f[i], f[i + 1]); if (f[i + 2] !== -2) this.par.set(f[i], f[i + 2]); if (f[i + 3] >= 0) this.total.set(f[i], f[i + 3]); }
   }
   release() { this.solver.release(); this.store.close(); }
 

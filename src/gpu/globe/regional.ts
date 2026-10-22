@@ -184,8 +184,11 @@ export const annualRain = (planet: Planet): Float32Array => {
 const STACK = [1, 4, 2, 3, 0];
 // The threshold slope of each pool as the window's landslides take it (geology.ts THRESHOLD_DEG of the island's rock the pool stands for, window.ts ROCK_OF) [R1714].
 const tanOfPools = () => ROCK_OF.map((r) => Math.tan((THRESHOLD_DEG[r] * Math.PI) / 180));
+// One rain over every land cell: a quarter of the reference rain at four times K, so that K sqrt(A) is the reference's and a cell weighs 128 (not 512), which keeps the discharge area of a basin
+// of 33 million cells under the 32 bits it is summed in (the planet's largest basin at 75 m is over 14 million: at the reference rain it overflowed, measured at tier 5) [derived].
+export const UNIFORM_RAIN = { word: 64, kScale: 2 };
 export function tierTable(planet: Planet, tier: number, p: ErosionParams, uniformRain = false): Uint32Array {
-  const g0 = tierGrid(0, planet.radius), gt = tierGrid(tier, planet.radius), X = new Uint32Array(CELLS0 * XSTRIDE), kw = p.K.map((k) => kWord(gt, p, k)), tanOf = tanOfPools();
+  const g0 = tierGrid(0, planet.radius), gt = tierGrid(tier, planet.radius), X = new Uint32Array(CELLS0 * XSTRIDE), kw = p.K.map((k) => Math.min(0xffffffff, kWord(gt, p, k) * (uniformRain ? UNIFORM_RAIN.kScale : 1))), tanOf = tanOfPools();
   // a planet with no climate (a staged one) rains the reference rain everywhere
   const { invd } = neighbourTables(g0), meanSr = (4 * Math.PI) / CELLS0, rain = planet.seasons && !uniformRain ? annualRain(planet) : new Float32Array(CELLS0).fill(REF_RAIN_MMYR);
   for (let c = 0; c < CELLS0; c++) {
@@ -196,7 +199,7 @@ export function tierTable(planet: Planet, tier: number, p: ErosionParams, unifor
     X[c * XSTRIDE] = wsum > 0 ? Math.floor(acc / wsum) : 0;
     X[c * XSTRIDE + 1] = Math.round((2 ** 15 * areaSr(g0, x, Y)) / meanSr);
     X[c * XSTRIDE + 18] = Math.round(tan * 2 ** 20);
-    X[c * XSTRIDE + 19] = rainWord(rain[c], REF_RAIN_MMYR);
+    X[c * XSTRIDE + 19] = uniformRain ? UNIFORM_RAIN.word : rainWord(rain[c], REF_RAIN_MMYR);
     for (let d = 0; d < 8; d++) {
       // a tier-0 corner cell has no diagonal neighbour toward the cube's corner, but its children do: the distance there is the diagonal of the two edges beside it [derived]
       const iv = invd[c * 8 + d] > 0 || d < 4 ? invd[c * 8 + d] : Math.round((invd[c * 8 + d - 4] + invd[c * 8 + ((d - 3) & 3)]) / 2 / Math.SQRT2);
