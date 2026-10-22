@@ -14,21 +14,16 @@ type I32 = Int32Array | Uint32Array;
 export { BakeDir };
 // The law of each tier (tier 0 is the planet's own, not solved here): how its flow is routed, the length in My of each of its steps, and whether it rains the planet's rain or one rain.
 export interface TierLaw { route: RouteLaw; dtMy: readonly number[]; uniformRain: boolean }
-// Tiers 1 to 3: 40 steps of 1 My under the planet's rain [design: R1763's 40 at the tiers whose steps cost 0.1 to 4 s]. Not run to the landscape's response time: at the scale of a tier-0 cell
-// it is 1,600 to 3,600 My at tiers 2 and 3 (the sum of d / (K sqrt(A)) along a valley to where it leaves its tier-0 cell, granite K 7e-8), where the shield flattens to a peneplain at its
-// tier-0 mean and the flutes on a range's flanks are smoothed away [measured, 2026-10-21]. Their flow was routed to the steepest of four neighbours, which left the lattice in the surface the
-// fine tiers start from (rows and columns of valleys a kilometre or two apart, and at the diagonals); it is now the island's eight neighbours with the receiver drawn among the lower ones
-// (wgsl/globe-regional.ts recv) [measured, 2026-10-22: docs/research/globe/2026-10-22-planet-island-law.md].
-const COARSE: TierLaw = { route: { nflow: 8, stochastic: true }, dtMy: Array.from({ length: 40 }, () => 1), uniformRain: false };
-// Tiers 4 and 5: the island's law (one rain, eight neighbours, drawn receivers, the exact smooth uplift) with step lengths that fall from 26 to 1.6 My: the early long steps carry the landscape
-// toward its form and the short ones settle it, since the form the coupled laws reach depends on the step (at 130 My the surface is a peneplain, at 13 My the valleys are 15% less incised than
-// at 3 and 6.5 My, whose statistics agree within 5%) and the uplift of a step is the whole of what the step took off [measured: the note]. Tier 4 (150 m) does the work of a tier of 75 m
-// cells at a quarter of the cost; tier 5 carries it and settles at the step lengths that end tier 4's.
-export const TIER_LAWS: readonly TierLaw[] = [
-  COARSE, COARSE, COARSE, COARSE,
-  { route: { nflow: 8, stochastic: true }, dtMy: [...Array(4).fill(26), ...Array(6).fill(13), ...Array(10).fill(6.5), ...Array(4).fill(3.25), ...Array(4).fill(1.6)], uniformRain: true },
-  { route: { nflow: 8, stochastic: true }, dtMy: [6.5, 6.5, 3.25, 3.25, 1.6, 1.6], uniformRain: true },
-];
+// Tiers 1 to 5 are the island's law: one rain, eight neighbours with the receiver drawn among the lower ones (wgsl/globe-regional.ts recv), the exact smooth uplift, and step lengths that fall from
+// 26 to 1.6 My: the early long steps carry the landscape toward its form and the short ones settle it, since the form the coupled laws reach depends on the step (at 130 My the surface is a
+// peneplain, at 13 My the valleys are 15% less incised than at 3 and 6.5 My, whose statistics agree within 5%) and the uplift of a step is the whole of what the step took off. Tiers 1 to 3
+// used to be 40 steps of 1 My under the planet's rain and the steepest of four neighbours: the planet's rain is under 26 mm a year over half of a range, which starves the incision (the response
+// time of a range region is 15,140 My with it and 399 My under one rain), and four-neighbour routing left a lattice of rows and columns of valleys in the surface the fine tiers start from; under
+// the island's law the worst tier-0 cell of a 12 by 12 tile range region is 0.95 m off the planet's mean (260 m before) [measured, 2026-10-22: docs/research/globe/2026-10-22-planet-island-law.md].
+// Tier 4 (150 m) does the work of a tier of 75 m cells at a quarter of the cost; tier 5 carries it and settles at the step lengths that end tier 4's.
+const SCHEDULE = [...Array(4).fill(26), ...Array(6).fill(13), ...Array(10).fill(6.5), ...Array(4).fill(3.25), ...Array(4).fill(1.6)] as number[];
+const ISLAND: TierLaw = { route: { nflow: 8, stochastic: true }, dtMy: SCHEDULE, uniformRain: true };
+export const TIER_LAWS: readonly TierLaw[] = [ISLAND, ISLAND, ISLAND, ISLAND, ISLAND, { ...ISLAND, dtMy: [6.5, 6.5, 3.25, 3.25, 1.6, 1.6] }];
 export const TIER_STEPS = TIER_LAWS.map((l, t) => (t === 0 ? 0 : l.dtMy.length));
 // A tier's table (the K dt and the creep coefficients) of step number `step`, made once for each step length.
 export function tierTableOf(planet: Planet, tier: number): (step: number) => Uint32Array {
