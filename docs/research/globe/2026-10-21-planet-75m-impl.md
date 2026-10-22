@@ -89,6 +89,28 @@ Not done, with the measurement:
 - Cost: a step at tier 3 is 5.6 s unloaded (3.9 s before: the 4-neighbour flood needs 896 rounds against 640, plus creep), 26 s with two other jobs on the GPU; tier 4 about 15 to 25 s unloaded, 60 to 130 s loaded.
 
 
+## Unit 7b: the full bake of seed 1 on the 391.1 km planet (key 7f6ff6c82cdd, tier 5, 8,192 cells a face, 402.7 M cells, 6,144 tiles)
+
+Run by `scripts/globe-bake-driver.ts` (resumable calls of 230 s under the GPU lock, a progress file and a log in the bake dir, `df` check, 100 GB stop). Dir `/tmp/planet-75m/1-7f6ff6c82cdd/`; pyramid `pyramid/` (6 tiers, 8,190 tiles, 843 MB, `pyramid.json`); ground tiles `groundtiles/` (6,144 files, 3.0 GB); maps `/tmp/planet-75m/maps/`; whole bake 49 GB.
+
+| stage | calls | seconds | what it is | disk GB |
+|---|---|---|---|---|
+| tiers 1 to 5 (streamed, 12 steps at tier 5; 1 to 3 in memory) | 22 | 4,818 | tier 5 steps 4 to 5 min contended | 6.0 |
+| terrain | 1 | 211 | 0.034 s a tile | 1.5 |
+| air (blocks of 4 by 4 tiles) | 116 | 28,280 | 16 to 45 s a block of 16 tiles; 3,648 tiles redone after a rain-scale bug, and about 8 h of stalls while the Mac slept | 17.6 |
+| tier-3 pool, surplus, coarse cascade (3 solves), discharge, basin | 17 | 1,100 | the coarse water | 0.4 |
+| surplus, discharge (streamed), basin (streamed) at tier 5 | 3 | 408 | CPU for the last two | 0.3 |
+| water (tier-3 heads seeded into 48-sweep patches) | 9 | 1,870 | 0.3 s a tile | 11.3 |
+| ground | 5 | 1,019 | 0.17 s a tile | 8.3 |
+| ground tiles | 3 | 464 | CPU | 3.0 |
+| pyramid | 3 | 520 | CPU | 0.8 |
+
+Peak process memory 8.1 GB (air blocks), 2.2 GB in the tier chain; peak disk 79 GB under /tmp/planet-75m including 0.7 GB of an old key and 14 GB of scratch.
+
+Landforms on this planet (judged on `/tmp/planet-75m/maps/face1-height-rivers.png` and tile PNGs of a range, tile 574, and a coast, tile 1253): not met. The plateaus of Unit 7a are high and flat; rivers are straight and parallel along the lattice's axes on the smooth ramps (the 4-neighbour routing runs water down a plane in rows and columns), the range tile shows 16-cell blocks of planar faces, and the coast tile has sheer planar cliffs with a few dark ravines. They do not read as the island's eroded look. The causes written in the Unit 5b section stand: the regional tiers inherit tiers 0 and 1's relief, 1 My steps do not erode a 391 km planet's ramps to a dissected form, and erosion run to the response time (1,600 to 3,600 My at tiers 2 and 3) flattens the shield instead.
+
+Gaps found in the bake: the rain's block scale could exceed 1 (a cell of 55 m of rain on a cliff; fixed, `min(1, ...)`); a saturation check counted words in the halo past a cube corner (now counts stored words only); the V-cycle for the water table does not converge on real tier 3 (the cascade does 25 to 40 times better; the tier-4 and 5 water is 48 red-black sweeps seeded from the tier-3 heads, 1 to 5 cells of 16,384 off by one unit across a tiling on the plateau tile 854, deviation from a 12,000-sweep reference up to 26 m on unanchored plateaus); the tier-3 climate cannot run (402 bands of latitude), so tier 3 is pooled from tier 5.
+
 ## Napkin note (for the repo's runbook, not edited here)
 
 **[2026-10-21] A constant to a block is a step at its edge, so look at the 75 m picture before trusting an invariant.** A per-tier-0-cell uplift and a per-cell rain background each made 16 by 16 squares; the tests (parent totals kept, block means kept) passed. Do instead: after any change that keeps a coarse total, measure the step across a coarse cell's edge against the step inside it (mean |d| ratio, `tiers.test.ts`, `regional.test.ts`), and view a tile PNG (`scripts/globe-maps75.ts`). The planet is made by tile stages on patches (`stages.ts`, halo per stage, `patchAt` for a tile independence test: two patches half a tile apart); the island's kernels run on a tile by a format argument, never by a copy. `rm -rf` and `find -delete` are blocked for agents: delete a bake's files by name with `rm -f`; the bake dir /tmp/planet-75m is keyed by the planet's store key.
