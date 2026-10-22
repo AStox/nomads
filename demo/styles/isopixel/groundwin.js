@@ -168,9 +168,11 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const col = collector({ N, CELL, cap: top });
     for (const t of tl) {
       if (!t.interior) continue;
-      const place = placer(t, face, x0, y0, srcF, srcX, srcY, turn);
-      if (!place) continue;
-      let sc = (await T.scatterTile({ gpu, dir: null, tier }, t.f * nT * nT + t.ty * nT + t.tx, seed, 2, false, T.tileSource(t.gt))).flora;
+      const at = placer(t, face, x0, y0, srcF, srcX, srcY, turn);
+      if (!at || at.rect.w <= 0 || at.rect.h <= 0) continue;
+      const place = at.place;
+      // only the cells of the tile the window touches are made (the objects' ids in the tile's whole run are the same either way)
+      let sc = (await T.scatterTile({ gpu, dir: null, tier }, t.f * nT * nT + t.ty * nT + t.tx, seed, 2, false, T.tileSource(t.gt), at.rect)).flora;
       stats.scatter = (stats.scatter ?? 0) + 1;
       col.add(sc, (q, out) => place(sc.px[q], sc.py[q], out));
       sc = null;
@@ -194,28 +196,35 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     };
   }
 
-  // Where a tile's objects stand in the window: place(px, py, out) puts the window's x and y (cells from its west edge, and south from its north edge)
-  // of the object at (px, py) game tiles (two cells each) from the tile's north-west corner in out, true; null when the tile's face is turned
-  // against the window's by no turn the window knows. This face's cells are the window's by p_window = R^T (p_face - p0) + w0 from a cell that stands in both.
+  // Where a tile's objects stand in the window: { place, rect }. place(px, py, out) puts the window's x and y (cells from its west edge, and south from its
+  // north edge) of the object at (px, py) game tiles (two cells each) from the tile's north-west corner in out; rect is the rectangle of the tile's cells
+  // (x0, y0, w, h) that holds the window, which is all the scatter need make. null when the tile's face is turned against the window's by no turn the
+  // window knows. This face's cells are the window's by p_window = R^T (p_face - p0) + w0 from a cell that stands in both.
   function placer(t, face, x0, y0, srcF, srcX, srcY, turn) {
-    let tr = null;
-    if (t.f !== face) {
-      const d = turn.get(t.f);
-      let k = -1;
-      for (let q = 0; q < S * S; q++) if (srcF[q] === t.f) { k = q; break; }
-      if (!d || k < 0) return null;
-      tr = { d, s0: [srcX[k] + 0.5, srcY[k] + 0.5], w0: [(k % S) - H + 0.5, Math.floor(k / S) - H + 0.5] };
+    const clip = (lo, hi) => { const a = Math.max(0, Math.floor(lo) - 1), b = Math.min(256, Math.ceil(hi) + 1); return [a, Math.max(0, b - a)]; };
+    if (t.f === face) {
+      const [rx, rw] = clip(x0 - t.tx * 256, x0 + N - t.tx * 256), [ry, rh] = clip(y0 - t.ty * 256, y0 + N - t.ty * 256);
+      return { rect: { x0: rx, y0: ry, w: rw, h: rh }, place: (px, py, out) => { out[0] = t.tx * 256 + px * 2 - x0; out[1] = N - (t.ty * 256 + py * 2 - y0); return true; } };
     }
-    return (px, py, out) => {
-      const sx = t.tx * 256 + px * 2, sy = t.ty * 256 + py * 2;
-      let cx, cy;
-      if (!tr) { cx = sx - x0; cy = sy - y0; }
-      else {
-        const dx = sx - tr.s0[0], dy = sy - tr.s0[1];
-        cx = tr.d[0] * dx + tr.d[1] * dy + tr.w0[0]; cy = -tr.d[1] * dx + tr.d[0] * dy + tr.w0[1];
-      }
-      out[0] = cx; out[1] = N - cy;
-      return true;
+    const d = turn.get(t.f);
+    let k = -1;
+    for (let q = 0; q < S * S; q++) if (srcF[q] === t.f) { k = q; break; }
+    if (!d || k < 0) return null;
+    const s0 = [srcX[k] + 0.5, srcY[k] + 0.5], w0 = [(k % S) - H + 0.5, Math.floor(k / S) - H + 0.5];
+    // the window's corners back in the tile's cells: p_face = R (p_window - w0) + p0
+    const xs = [], ys = [];
+    for (const [cx, cy] of [[0, 0], [N, 0], [0, N], [N, N]]) {
+      const ux = cx - w0[0], uy = cy - w0[1];
+      xs.push(s0[0] + d[0] * ux - d[1] * uy - t.tx * 256); ys.push(s0[1] + d[1] * ux + d[0] * uy - t.ty * 256);
+    }
+    const [rx, rw] = clip(Math.min(...xs), Math.max(...xs)), [ry, rh] = clip(Math.min(...ys), Math.max(...ys));
+    return {
+      rect: { x0: rx, y0: ry, w: rw, h: rh },
+      place: (px, py, out) => {
+        const dx = t.tx * 256 + px * 2 - s0[0], dy = t.ty * 256 + py * 2 - s0[1];
+        out[0] = d[0] * dx + d[1] * dy + w0[0]; out[1] = N - (-d[1] * dx + d[0] * dy + w0[1]);
+        return true;
+      },
     };
   }
   return { build, stats, groundTile };

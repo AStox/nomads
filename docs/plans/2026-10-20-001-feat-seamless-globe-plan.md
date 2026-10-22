@@ -228,10 +228,11 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   collector's own memory about 90 MB over the synthetic scatter's 300 MB. In the renderer a gone source's far lists, front lists and cell caches were
   never released (`forgetSource`, from `setSources`). The window was asked for at every step of a pan at a zoom where the view is wider than a window
   (island level), each a few seconds of GPU work: no window is asked for there now (the planet layer alone draws it). Ground tiles held: 8 (6 MB each);
-  the scatter of a tile is never held. Not run since these changes: the page, the GPU (the bake's rain stage ran meanwhile). Open: the scatter makes
-  all of each interior tile (17.7 million objects, 0.4 GB of GPU buffers) for the quarter of it a window takes: a window argument to scatter.ts' count and
-  write kernels is the cut for it; a window of 15 to 26 million objects thinned to 4 to 8 million reads sparser than the island (about half to a quarter
-  of its trees); the page thread works out the camera's heights again (0.1 to 0.3 s) at each window switch.
+  the scatter of a tile is never held. Not run since these changes: the page, the GPU (the bake's rain stage ran meanwhile). The scatter now makes only
+  the cells of each interior tile the window touches (`scatterTile`'s `window`, 8299f72; for a tile of another face the bounding box of the window's
+  corners turned into its cells, inverse checked on the CPU to 6e-14 cells; a tile the window does not reach is not run at all), so the 0.4 GB of GPU
+  buffers and 300 MB of arrays a tile took are about a quarter, untried on the GPU. Open: a window of 15 to 26 million objects thinned to 4 to 8 million reads
+  sparser than the island (about half to a quarter of its trees); the page thread works out the camera's heights again (0.1 to 0.3 s) at each window switch.
 
 ## Risks
 
