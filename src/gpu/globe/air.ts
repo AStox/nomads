@@ -285,8 +285,8 @@ export async function rainOf(ctx: Ctx, patch: Patch, height: Float32Array, geo: 
       [mu, next] = [next, mu];
     }
     // the rain with the smooth mean of the orographic part taken out and cut at none; the cut adds rain where the part is large against the background (and none is the planet's
-    // where its background is none), so each block's mean is brought back to its background's by a scale at most 1 (the mean of the cut rain is at least the mean it was cut from),
-    // read between the blocks' centres like the mean: no division by less than its numerator, and no step at a block's edge
+    // where its background is none), so each block's mean is brought back toward its background's by a scale of at most 1 (where the cut rain's mean is under the background's it is left as cut),
+    // read between the blocks' centres like the mean: no step at a block's edge
     const pos = new Float64Array(n), cut = new Float64Array(nbx * nby), bgSum = new Float64Array(nbx * nby);
     for (let y = 0; y < S; y++) {
       const [j0, ty] = ly[y];
@@ -298,7 +298,9 @@ export async function rainOf(ctx: Ctx, patch: Patch, height: Float32Array, geo: 
         cut[by[y] * nbx + bx[x]] += pos[i]; bgSum[by[y] * nbx + bx[x]] += planet.rain[k][i];
       }
     }
-    const lam = Float64Array.from(cut, (c, b) => (c > 0 ? bgSum[b] / c : 1));
+    // at most 1, held by the rule and not by the arithmetic: the smooth mean read between the centres is not the block's own, so at a cliff (a block whose neighbours hold far more orographic rain than it
+    // does) the cut rain's mean can fall under the background's and the ratio is unbounded (a cell of a tier-0 cell with 44 mm held 55 m; the scale is read between the blocks' centres) [design: R1811]
+    const lam = Float64Array.from(cut, (c, b) => (c > 0 ? Math.min(1, bgSum[b] / c) : 1));
     for (let y = 0; y < S; y++) {
       const [j0, ty] = ly[y];
       for (let x = 0; x < S; x++) {

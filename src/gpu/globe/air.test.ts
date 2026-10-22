@@ -188,7 +188,7 @@ const gatherFile = (file: string, p: Patch) => {
 };
 const heightsAt = (p: Patch) => ({ h: gatherFile(`${BAKE}/t4-height.i32`, p), f: gatherFile(`${BAKE}/t4-flooded.i32`, p) });
 // The pinned hash of tile 458's stored words (this planet's and this engine's: re-record when the air stage, the planet or the bake changes, and say so)
-const PIN = { tile458: "ee38721050ea4efc" };
+const PIN = { tile458: "e387c8d10bc31d38" };
 
 describe("the air stage on the real planet (seed 1)", () => {
   real("tile 458 (face 1, a range with land and sea): the same twice, the stored words pinned, no word saturates, the rain smooth and its extremes", async () => {
