@@ -31,8 +31,10 @@ const inputs = () => {
   const coarse = field(g0), planet = planetOf0();
   return { table: tierTable(planet, TIER, defaultParams({ dtYr: 1e6 })), height: remapHeights(TIER, coarse), rho: Int32Array.from({ length: N1 }, () => 256) };
 };
+// the four-neighbour law these cases test (the fine tiers' eight-neighbour law is tiers-stream.test.ts's)
+const FOUR = { nflow: 4 as const, stochastic: false };
 // The four edge neighbours of a tier-1 cell (what the flood and the receivers read), across face edges as the grid gives them.
-const neighbours8 = (id: number): number[] => {
+const neighbours4 = (id: number): number[] => {
   const cells = g1.fn * g1.fn, f = Math.floor(id / cells), Y = Math.floor((id - f * cells) / g1.fn), X = id - f * cells - Y * g1.fn, out: number[] = [];
   for (const [dx, dy] of [[1, 0], [0, 1], [-1, 0], [0, -1]]) {
     const s = haloSource(g1, f, X + dx, Y + dy);
@@ -67,7 +69,7 @@ describe("the regional tier", () => {
   });
 
   test("the flood and the receivers across face edges make one forest rooted at the sea", async () => {
-    const { table, height, rho } = inputs(), r = new Regional(await theGpu(), TIER, table, height, rho);
+    const { table, height, rho } = inputs(), r = new Regional(await theGpu(), TIER, table, height, FOUR);
     try {
       await r.flow();
       const [to, flooded, acc, w, h] = await Promise.all([r.readField("TO"), r.readFlooded(), r.readField("ACC"), r.readField("W"), r.readH()]);
@@ -95,7 +97,7 @@ describe("the regional tier", () => {
         const i = pop();
         if (done[i]) continue;
         done[i] = 1;
-        for (const j of neighbours8(i)) if (h[j] > 0 && !done[j] && Math.max(h[j], f[i] + 1) < f[j]) { f[j] = Math.max(h[j], f[i] + 1); push(j); }
+        for (const j of neighbours4(i)) if (h[j] > 0 && !done[j] && Math.max(h[j], f[i] + 1) < f[j]) { f[j] = Math.max(h[j], f[i] + 1); push(j); }
       }
       let wrong = 0;
       for (let k = 0; k < N1; k++) if (f[k] !== flooded[k]) wrong++;
@@ -106,7 +108,7 @@ describe("the regional tier", () => {
   test("a step keeps each tier-0 cell's total height, is the same twice and the same resumed", async () => {
     const { table, height, rho } = inputs(), gpu = await theGpu();
     const run = async (steps: number, from?: TierState) => {
-      const r = new Regional(gpu, TIER, table, height, rho);
+      const r = new Regional(gpu, TIER, table, height, FOUR);
       try {
         if (from) r.load(from);
         for (let s = 0; s < steps; s++) await r.step();
@@ -145,7 +147,7 @@ describe("the regional tier", () => {
         }
     console.log(`regional step hash ${hash(a.height)}, ${lowered} cells lowered, ${raised} raised, block edge ${(edge / ne / 256).toFixed(3)} m inside ${(inner / ni / 256).toFixed(3)} m`);
     expect(edge / ne).toBeLessThan((inner / ni) * 1.34);
-    expect(hash(a.height)).toBe("bbd2995609f8c88");
+    expect(hash(a.height)).toBe("68800e423f7a1272");
   });
 });
 

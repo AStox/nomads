@@ -34,7 +34,7 @@ const near8 = (g: Grid) => (id: number): number[] => {
 
 describe("the global discharge", () => {
   test("the gather is exact where a basin's sum passes 32 bits, across a face's edge", async () => {
-    const gpu = await theGpu(), r = new Regional(gpu, TIER, tierTable(planet0(), TIER, defaultParams({ dtYr: 1e6 })), remapHeights(TIER, ridge()), Int32Array.from({ length: N1 }, () => 256));
+    const gpu = await theGpu(), r = new Regional(gpu, TIER, tierTable(planet0(), TIER, defaultParams({ dtYr: 1e6 })), remapHeights(TIER, ridge()));
     try {
       await r.flow();
       const to = new Uint32Array((await r.readField("TO")).buffer), cells = g1.fn * g1.fn;
@@ -53,7 +53,7 @@ describe("the global discharge", () => {
       expect(across).toBeGreaterThan(50);
       expect(most).toBeGreaterThan(2 ** 40);
       // a forest given and not flooded sorts to the same sums
-      const f = new Regional(gpu, TIER, new Uint32Array(20 * N0), new Int32Array(N1), new Int32Array(N1));
+      const f = new Regional(gpu, TIER, new Uint32Array(20 * N0), new Int32Array(N1));
       try {
         await f.forest(to);
         const again = await f.gather64(w);

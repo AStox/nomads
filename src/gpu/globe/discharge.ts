@@ -35,7 +35,7 @@ export async function dischargeOf(gpu: Gpu, dir: BakeDir, tier: number, fields: 
   if (!todo.length) return { done: true, made, seconds: spent() };
   const to = new Uint32Array(dir.raw(`t${tier}-to.u32`));
   if (to.length !== N) throw new Error(`discharge: tier ${tier} holds ${N} cells, its receivers ${to.length}`);
-  const zero = new Int32Array(N), r = new Regional(gpu, tier, new Uint32Array(20 * 6 * 256 * 256), zero, zero);
+  const zero = new Int32Array(N), r = new Regional(gpu, tier, new Uint32Array(20 * 6 * 256 * 256), zero);
   try {
     const f0 = performance.now();
     await r.forest(to);
@@ -93,7 +93,7 @@ export function sumUpstream(to: ArrayLike<number>, weight: (id: number) => numbe
 
 // A forest sorted by depth for the passes that need one, made once from the tier's receivers.
 export async function forestOf(gpu: Gpu, dir: BakeDir, tier: number): Promise<Regional> {
-  const g = tierGrid(tier), N = FACES * g.fn * g.fn, to = new Uint32Array(dir.raw(`t${tier}-to.u32`)), zero = new Int32Array(N), r = new Regional(gpu, tier, new Uint32Array(20 * 6 * 256 * 256), zero, zero);
+  const g = tierGrid(tier), N = FACES * g.fn * g.fn, to = new Uint32Array(dir.raw(`t${tier}-to.u32`)), zero = new Int32Array(N), r = new Regional(gpu, tier, new Uint32Array(20 * 6 * 256 * 256), zero);
   await r.forest(to);
   return r;
 }

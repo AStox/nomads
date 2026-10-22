@@ -10,7 +10,7 @@ import { releaseGpu, theGpu } from "../device";
 import { defaultParams } from "./erosion";
 import { FACES, centre, tierGrid, type Grid } from "./grid";
 import { patchAt } from "./patch";
-import { Regional, refineSmooth, remapHeights, tierTable } from "./regional";
+import { Regional, refineSmooth, remapHeights, tierTable, type RouteLaw } from "./regional";
 import { StreamedTier, refineBlock, type StreamOptions } from "./tiers-stream";
 import type { Planet } from "./window";
 
@@ -49,21 +49,28 @@ describe("the carry to the next tier, a block at a time", () => {
 
 describe("the streamed step", () => {
   const TIER = 2, planet = planetOf0(), table = tierTable(planet, TIER, defaultParams({ dtYr: 1e6 })), height = remapHeights(TIER, ridge(g0));
-  // the in-memory solve: `steps` steps, the heights and carries after them, then the settled flow of the last heights
-  async function oracle(steps: number): Promise<Words> {
-    const r = new Regional(await theGpu(), TIER, table, height);
+  // the island's law: eight neighbours, the receiver drawn among the lower ones, one rain, and the length of each step (My)
+  interface Island { route: RouteLaw; dts: number[]; tableAt: (step: number) => Uint32Array }
+  const islandLaw = (dts: number[]): Island => {
+    const made = new Map<number, Uint32Array>();
+    return { route: { nflow: 8, stochastic: true }, dts, tableAt: (step) => { const dt = dts[Math.min(step, dts.length - 1)]; if (!made.has(dt)) made.set(dt, tierTable(planet, TIER, defaultParams({ dtYr: dt * 1e6 }), true)); return made.get(dt) as Uint32Array; } };
+  };
+  // the in-memory solve: `steps` steps, the heights and carries after them, then the settled flow of the last heights (the steepest descent, whatever the law)
+  async function oracle(steps: number, law?: Island): Promise<Words> {
+    const r = new Regional(await theGpu(), TIER, law ? law.tableAt(0) : table, height, law?.route);
     try {
-      for (let s = 0; s < steps; s++) await r.step();
+      for (let s = 0; s < steps; s++) { if (law && s > 0 && law.tableAt(s) !== law.tableAt(s - 1)) r.setTable(law.tableAt(s)); await r.step(); }
       const state = await r.state(steps);
+      r.setRoute(false);
       await r.flow();
       const flow = await r.readFlow();
       return { height: state.height, carry: state.carry, to: new Int32Array(flow.to.buffer), acc: new Int32Array(flow.acc.buffer), flooded: await r.readFlooded() };
     } finally { r.release(); }
   }
-  async function streamed(dir: string, steps: number, o: StreamOptions, budget = Infinity): Promise<Words & { calls: number; visits: Record<string, number>[] }> {
+  async function streamed(dir: string, steps: number, o: StreamOptions, budget = Infinity, law?: Island): Promise<Words & { calls: number; visits: Record<string, number>[] }> {
     const calls: StreamedTier[] = [];
     for (let guard = 0; guard < 400; guard++) {
-      const st = new StreamedTier(await theGpu(), TIER, dir, table, o);
+      const st = new StreamedTier(await theGpu(), TIER, dir, law ? law.tableAt(0) : table, law ? { ...o, law: law.route, tableAt: law.tableAt } : o);
       calls.push(st);
       if (!st.started) st.setHeights(height);
       await st.open();
@@ -94,6 +101,11 @@ describe("the streamed step", () => {
       seen.push(`blocks of ${o.block}${o.order ? ` order ${o.order}` : ""}: visits ${JSON.stringify(got.visits[1])}`);
     }
     console.log(`streamed step on tier 2 equals the in-memory step:\n  ${seen.join("\n  ")}`);
+  }, 280_000);
+
+  test("the island's law (eight neighbours, drawn receivers, steps of 26, 6.5 and 1.6 My, one rain) is the in-memory solve's bytes in blocks of 1 and 2 tiles, in another order and in short calls", async () => {
+    const law = islandLaw([26, 6.5, 1.6]), want = await oracle(3, law);
+    for (const [o, budget] of [[{ block: 1 }, Infinity], [{ block: 2, order: "reverse" as const }, Infinity], [{ block: 2 }, 0.6]] as const) equal(want, await streamed(work(), 3, o, budget, law));
   }, 280_000);
 
   test("calls too short to finish a step make the same bytes, and a call that died inside a step is begun again from the step's heights", async () => {

@@ -43,7 +43,7 @@ if (import.meta.main) {
     } else if (name === "flow") {
       // the receivers and the flooded surface of a coarse tier from its heights (the regional flood), for the coarse global solve
       if (!dir.has(`t${tier}-to.u32`)) {
-        const F = 256 * 2 ** tier, r = new Regional(gpu, tier, tierTable(planet, tier, defaultParams({ dtYr: 1e6 })), new Int32Array(dir.raw(`t${tier}-height.i32`)), new Int32Array(6 * F * F).fill(256));
+        const F = 256 * 2 ** tier, r = new Regional(gpu, tier, tierTable(planet, tier, defaultParams({ dtYr: 1e6 })), new Int32Array(dir.raw(`t${tier}-height.i32`)));
         try { await r.flow(); dir.write(`t${tier}-to.u32`, new Uint32Array((await r.readField("TO")).buffer)); dir.write(`t${tier}-flooded.i32`, await r.readFlooded()); } finally { r.release(); }
       }
       console.log("flow: done");

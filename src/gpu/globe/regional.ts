@@ -6,7 +6,7 @@
 // What was built and measured: docs/research/globe/2026-10-20-small-planet-impl.md (R1760 and up).
 import type { Gpu } from "../device";
 import { cover, pipeline, readback, storage } from "../kernel";
-import { CNT, FLAG, HIST, RF, SPLIT, XSTRIDE, regionalWgsl } from "../wgsl/globe-regional";
+import { CNT, FLAG, FLOW_NEIGHBOURS, HIST, RF, SOLVE_SWEEPS, SPLIT, XSTRIDE, regionalWgsl } from "../wgsl/globe-regional";
 import { EDGES, FACES, areaSr, haloSource, tierGrid, type Grid } from "./grid";
 import { SKIN_M, defaultParams, kWord, neighbourTables, rainWord, REF_RAIN_MMYR, type ErosionParams } from "./erosion";
 import { THRESHOLD_DEG } from "../../terrain/geology";
@@ -184,10 +184,10 @@ export const annualRain = (planet: Planet): Float32Array => {
 const STACK = [1, 4, 2, 3, 0];
 // The threshold slope of each pool as the window's landslides take it (geology.ts THRESHOLD_DEG of the island's rock the pool stands for, window.ts ROCK_OF) [R1714].
 const tanOfPools = () => ROCK_OF.map((r) => Math.tan((THRESHOLD_DEG[r] * Math.PI) / 180));
-export function tierTable(planet: Planet, tier: number, p: ErosionParams): Uint32Array {
+export function tierTable(planet: Planet, tier: number, p: ErosionParams, uniformRain = false): Uint32Array {
   const g0 = tierGrid(0, planet.radius), gt = tierGrid(tier, planet.radius), X = new Uint32Array(CELLS0 * XSTRIDE), kw = p.K.map((k) => kWord(gt, p, k)), tanOf = tanOfPools();
   // a planet with no climate (a staged one) rains the reference rain everywhere
-  const { invd } = neighbourTables(g0), meanSr = (4 * Math.PI) / CELLS0, rain = planet.seasons ? annualRain(planet) : new Float32Array(CELLS0).fill(REF_RAIN_MMYR);
+  const { invd } = neighbourTables(g0), meanSr = (4 * Math.PI) / CELLS0, rain = planet.seasons && !uniformRain ? annualRain(planet) : new Float32Array(CELLS0).fill(REF_RAIN_MMYR);
   for (let c = 0; c < CELLS0; c++) {
     let rem = SKIN_M, wsum = 0, acc = 0, tanSum = 0;
     for (const pl of STACK) { const w = Math.min(Math.max(0, planet.pools[pl][c]), rem); rem -= w; wsum += w; acc += w * kw[pl]; tanSum += w * tanOf[pl]; }
@@ -217,6 +217,8 @@ export function creepSubsOf(table: Uint32Array): number {
 }
 
 // ---------- 4. the kernels on a device ----------
+// The routing of a tier's flow: the neighbours the flood and the receivers read, and whether a receiver is drawn among the lower ones (wgsl/globe-regional.ts recv) or is the steepest.
+export interface RouteLaw { nflow: 4 | 8; stochastic: boolean }
 export interface TierState { height: Int32Array; carry: Int32Array; steps: number }
 export interface TierFlow { to: Uint32Array; acc: Uint32Array; rounds: number }
 const readU32 = async (gpu: Gpu, b: GPUBuffer, words: number, at: number) => new Uint32Array(await readback(gpu, b, words * 4, at * 4));
@@ -248,8 +250,10 @@ export class Regional {
     return v;
   }
   creepSubs: number;
+  stepNo = 0; // the steps made: the routing's draws are made for it
+  private route: 0 | 1;
   // `rho` (the rain of each cell) is no longer given: the rain, like the rock, is read at a cell from the table of tier-0 cells by interpolation (`smooth`).
-  constructor(readonly gpu: Gpu, readonly tier: number, table: Uint32Array, height: Int32Array, _rho?: Int32Array) {
+  constructor(readonly gpu: Gpu, readonly tier: number, table: Uint32Array, height: Int32Array, readonly law: RouteLaw = { nflow: FLOW_NEIGHBOURS, stochastic: false }) {
     this.g = tierGrid(tier);
     this.fn = this.g.fn;
     this.N = FACES * this.fn * this.fn;
@@ -258,11 +262,12 @@ export class Regional {
     this.atCarry = this.atCnt + 16 + 2 * CELLS0;
     this.E = storage(gpu, SPLIT * this.N * 4);
     this.E2 = storage(gpu, (RF.COUNT - SPLIT) * this.N * 4);
-    this.AT = storage(gpu, (this.atCarry + 3 * CELLS0) * 4);
+    this.AT = storage(gpu, (this.atCarry + 13 * CELLS0) * 4);
     this.creepSubs = creepSubsOf(table);
-    this.P = storage(gpu, new Uint32Array([1, this.creepSubs, 0, 0]));
+    this.P = storage(gpu, new Uint32Array([1, this.creepSubs, 0, law.stochastic ? 1 : 0]));
+    this.route = law.stochastic ? 1 : 0;
     this.X = storage(gpu, table);
-    this.wgsl = regionalWgsl(EDGES, this.fn);
+    this.wgsl = regionalWgsl(EDGES, this.fn, law.nflow);
     this.write("H", height);
     this.submit((p) => this.run(p, "cellmeans", this.N));
   }
@@ -281,7 +286,7 @@ export class Regional {
   setTable(table: Uint32Array) {
     this.creepSubs = creepSubsOf(table);
     this.gpu.device.queue.writeBuffer(this.X, 0, table);
-    this.gpu.device.queue.writeBuffer(this.P, 0, new Uint32Array([1, this.creepSubs, 0, 0]));
+    this.gpu.device.queue.writeBuffer(this.P, 0, new Uint32Array([1, this.creepSubs, this.stepNo, this.route]));
     this.submit((p) => this.run(p, "cellmeans", this.N));
   }
   private bind(entry: string) {
@@ -306,6 +311,11 @@ export class Regional {
     this.gpu.device.queue.submit([enc.finish()]);
   }
   private clear(word: number, count: number) { this.gpu.device.queue.writeBuffer(this.AT, word * 4, new Uint32Array(count)); }
+  // Whether the receivers are drawn among the lower neighbours (the law's) or are the steepest: the settled flow of a tier's final heights is the steepest, as the water stages route.
+  setRoute(stochastic: boolean) {
+    this.route = stochastic ? 1 : 0;
+    this.gpu.device.queue.writeBuffer(this.P, 12, new Uint32Array([this.route]));
+  }
   async flags(): Promise<number> { return (await readU32(this.gpu, this.AT, 1, this.atCnt + CNT.flags))[0]; }
   // The flooded surface, the receivers, the depth sort and the discharge area of the heights in E (weights from the rain and the table).
   async flow(): Promise<number> {
@@ -336,6 +346,7 @@ export class Regional {
   }
   // One erosion step on the heights in E: flow, the implicit stream power step, then every land cell of a tier-0 cell rises by the mean height its land cells lost.
   async step(): Promise<number> {
+    this.gpu.device.queue.writeBuffer(this.P, 8, new Uint32Array([this.stepNo]));
     const rounds = await this.flow(), N = this.N;
     await this.lap("incise", () => this.submit((p) => this.run(p, "incise", 0)));
     // the landslides, rounds until a round moves nothing
@@ -352,7 +363,12 @@ export class Regional {
     });
     this.lastSlide = slide - chunk;
     await this.lap("creep", () => this.submit((p) => { for (let s = 0; s < this.creepSubs; s++) { this.run(p, "creep", N); this.run(p, "creepapply", N); } }));
-    await this.lap("lift", () => this.submit((p) => { this.run(p, "pzero", CELLS0); this.run(p, "tally", N); this.run(p, "pmean", CELLS0); this.run(p, "lift", N); this.run(p, "pres", CELLS0); this.run(p, "lift", N); this.run(p, "pfin", CELLS0); this.run(p, "spread", N); this.run(p, "pcarry", CELLS0); }));
+    await this.lap("lift", () => this.submit((p) => {
+      this.run(p, "pzero", CELLS0); this.run(p, "tally", N); this.run(p, "pstzero", CELLS0); this.run(p, "pstencil", N); this.run(p, "pmean", CELLS0);
+      for (let s = 0; s < SOLVE_SWEEPS; s += 2) { this.run(p, "psolve", CELLS0); this.run(p, "psolve2", CELLS0); }
+      this.run(p, "lift", N); this.run(p, "pcarry", CELLS0);
+    }));
+    this.stepNo++;
     return rounds;
   }
   async readH(): Promise<Int32Array> { return this.readField("H"); }
@@ -446,8 +462,8 @@ export async function regionalOf(gpu: Gpu, planet: Planet, store: PlanetStore, k
   const done = await store.get(planet.seed, `regional-${key}`);
   if (done) return unpackTier(done);
   const t0 = performance.now(), spent = () => (performance.now() - t0) / 1000;
-  const { table, height, rho } = regionalInputs(planet, o);
-  const r = new Regional(gpu, o.tier, table, height, rho);
+  const { table, height } = regionalInputs(planet, o);
+  const r = new Regional(gpu, o.tier, table, height);
   try {
     const kept = await store.get(planet.seed, `regional-state-${key}`), prior = kept ? unpackState(kept, key) : null;
     let steps = 0;

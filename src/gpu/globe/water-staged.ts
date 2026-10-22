@@ -53,7 +53,7 @@ export async function stagedPlanet(gpu: Gpu, dir: BakeDir, log: (s: string) => v
     const f = Math.floor(i / CELLS2), r = i - f * CELLS2, Y = Math.floor(r / g2.fn), X = r - Y * g2.fn;
     if (height[i] > 0) height[i] = Math.max(1, height[i] - Math.round(pitDepth(f, X, Y) * 256));
   }
-  const r = new Regional(gpu, STAGED_TIER, tierTable(planet, STAGED_TIER, defaultParams({ dtYr: 1e6 })), height, Int32Array.from({ length: N2 }, () => 256));
+  const r = new Regional(gpu, STAGED_TIER, tierTable(planet, STAGED_TIER, defaultParams({ dtYr: 1e6 })), height);
   try {
     await r.flow();
     dir.write("t2-height.i32", await r.readH());

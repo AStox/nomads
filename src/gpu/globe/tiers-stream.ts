@@ -23,15 +23,17 @@ import { join } from "node:path";
 import type { Gpu } from "../device";
 import { TILE, tierGrid, type Grid } from "./grid";
 import { cellAcross, patchAt, type Patch } from "./patch";
-import { CORNER_BESIDE, around3, child4, creepSubsOf } from "./regional";
+import { CORNER_BESIDE, around3, child4, creepSubsOf, type RouteLaw } from "./regional";
+import { FLOW_NEIGHBOURS, SOLVE_SWEEPS } from "../wgsl/globe-regional";
 import { RegionalPatch, TREE, PATCH_HALO } from "./regional-patch";
 import { tierTable } from "./regional";
 import { TileStore } from "./tilestore";
 import type { BakeDir } from "./bakedir";
-import { TIER_STEPS, tierParams, tierParent, type TierRun } from "./tiers";
+import { TIER_LAWS, TIER_STEPS, tierParent, tierTableOf, type TierRun } from "./tiers";
 import type { Planet } from "./window";
 
-const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]] as const;
+// the neighbours in the kernels' order of directions (0 east, 1 north, 2 west, 3 south, then the diagonals NE, NW, SW, SE)
+const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [-1, -1], [1, -1]] as const;
 const NP = 6 * 256 * 256;
 const NONE_DIR = 255;
 const INF = 0x7fffffff;
@@ -91,15 +93,17 @@ export function refineBlock(parent: ArrayLike<number>, from: number, p: Patch, p
     }
   return out;
 }
-const REFINE_PASSES = 4;
-const REFINE_HALO = REFINE_PASSES + 2;
+export const REFINE_PASSES = 4;
+export const REFINE_HALO = REFINE_PASSES + 2;
 
 // ---------- the solve ----------
-type Stage = "start" | "idle" | "init" | "flood" | "recv" | "area1" | "skel" | "area2" | "incise" | "slide" | "creep" | "lift1" | "lift2" | "lift3";
+type Stage = "start" | "idle" | "init" | "flood" | "recv" | "area1" | "skel" | "area2" | "incise" | "slide" | "creep" | "stencil" | "lift";
 export interface StreamOptions {
   block?: number; // tiles to a side of a block (a patch's interior is block * 256 cells)
   order?: "forward" | "reverse" | number; // the order the blocks are visited in (a number: a shuffle with that seed): the bytes do not depend on it
   cacheBytes?: number;
+  law?: RouteLaw; // how the flow is routed (default: the steepest of eight neighbours)
+  tableAt?: (step: number) => Uint32Array; // the tier-0 table of each step (its K dt and creep coefficients); default: the one table given
 }
 interface Progress {
   tier: number; block: number; steps: number; stage: Stage; job: "idle" | "step" | "flow"; sub: number; running: boolean;
@@ -117,7 +121,9 @@ export class StreamedTier {
   readonly fn: number;
   readonly store: TileStore;
   readonly solver: RegionalPatch;
-  readonly subs: number;
+  subs: number;
+  readonly law: RouteLaw;
+  private readonly tableAt: (step: number) => Uint32Array;
   prog: Progress;
   private readonly g: Grid;
   private readonly rings = new Map<number, Ring>();
@@ -142,8 +148,10 @@ export class StreamedTier {
     this.g = tierGrid(tier);
     this.fn = this.g.fn;
     this.store = new TileStore(dir, tier, { H: "i32", F: "i32", ACC: "i32", TOD: "u8", RES: "u8", TO: "i32" }, o.cacheBytes);
+    this.law = o.law ?? { nflow: FLOW_NEIGHBOURS, stochastic: false };
+    this.tableAt = o.tableAt ?? (() => table);
     this.subs = creepSubsOf(table);
-    this.solver = new RegionalPatch(gpu, tier, this.size, table, this.subs);
+    this.solver = new RegionalPatch(gpu, tier, this.size, table, this.subs, this.law.nflow, this.law.stochastic ? 1 : 0);
     const ord = Array.from({ length: this.nreg }, (_, i) => i);
     if (o.order === "reverse") ord.reverse();
     else if (typeof o.order === "number") {
@@ -176,6 +184,7 @@ export class StreamedTier {
       this.prog.job = "idle"; this.prog.stage = "idle";
     }
     if (this.prog.running && this.prog.job === "flow") { this.prog.job = "idle"; this.prog.stage = "idle"; this.prog.exportTo = false; }
+    this.arm();
     this.prog.running = false;
   }
   private carryOnly(carry: Int32Array) { const w = new Int32Array(5 * NP); w.set(carry, 2 * NP); return w; }
@@ -240,7 +249,7 @@ export class StreamedTier {
     const n = this.fn, cells = n * n;
     for (let e = 0; e < ring.halo.length; e++) {
       const d = tod[ring.halo[e]];
-      if (d >= 4) continue;
+      if (d >= this.law.nflow) continue;
       const id = ring.hid[e], f = Math.floor(id / cells), q = id - f * cells, Y = Math.floor(q / n), X = q - Y * n;
       const rid = cellAcross(this.g, f, X + DIRS[d][0], Y + DIRS[d][1]);
       if (rid < 0) continue;
@@ -262,8 +271,8 @@ export class StreamedTier {
       case "area2": await this.visitArea(r, true); break;
       case "incise": await this.visitIncise(r); break;
       case "creep": await this.visitCreep(r); break;
-      case "lift1": case "lift2": await this.visitLift(r, "lift"); break;
-      case "lift3": await this.visitLift(r, "spread"); break;
+      case "stencil": await this.visitStencil(r); break;
+      case "lift": await this.visitLift(r); break;
       default: throw new Error(`tiers-stream: no visit for stage ${st}`);
     }
     const s = (performance.now() - t0) / 1000;
@@ -329,7 +338,7 @@ export class StreamedTier {
     const inject = new Int32Array(S * S);
     if (second) this.inflows(p, ring, tod, (id, into) => { const t = this.total.get(id); if (t === undefined) throw new Error(`tiers-stream: no discharge for cell ${id}, which flows into block ${r}`); inject[into] = (inject[into] + t) | 0; });
     if (second) s.write("DP", inject);
-    s.go(["cellmeans", "weights", "todfrom", ...(second ? ["inject"] : []), ...TREE, "area"]);
+    s.go(["cellmeans", "weights", second ? "todfrom" : "todexit", ...(second ? ["inject"] : []), ...TREE, "area"]);
     const flags = await s.counter("flags");
     if (flags & s.flags.area) throw new Error("tiers-stream: a basin's discharge area passed 32 bits");
     if (flags & (s.flags.chain | s.flags.depth)) throw new Error(`tiers-stream: the receivers' chains do not end at the sea in block ${r} (flags ${flags})`);
@@ -343,15 +352,14 @@ export class StreamedTier {
       }
       return;
     }
-    // the cells that drain out of the block, with the sum of the cells that drain to them within it, and the cell of another block that drains in with the cell that carries its sum on
-    const to = await s.read("TO"), ua = await s.read("UA"), exitOf = new Map<number, number>();
-    for (const e of ring.inner) { const t = to[e]; if (t !== e && !this.isInterior(p, t)) { exitOf.set(t, e); this.la.set(p.ids[e], acc[e] >>> 0); } }
+    // the cells that drain out of the block (each a root of this pass's tree), with the sum of the cells that drain to them within it, and the cell of another block that drains in with the exit
+    // cell that carries its sum on
+    const ua = await s.read("UA"), isExit = (k: number) => { const d = tod[k]; if (d >= this.law.nflow) return false; const q = k + DIRS[d][1] * S + DIRS[d][0]; return !p.missing[q] && !this.isInterior(p, q); };
+    for (const e of ring.inner) if (isExit(e)) this.la.set(p.ids[e], acc[e] >>> 0);
     this.inflows(p, ring, tod, (id, into) => {
       const root = ua[into];
-      if (this.isInterior(p, root)) { this.par.set(id, -1); return; }
-      const e = exitOf.get(root);
-      if (e === undefined) throw new Error(`tiers-stream: a root outside block ${r} that no cell drains into`);
-      this.par.set(id, p.ids[e]);
+      if (isExit(root) && this.isInterior(p, root)) this.par.set(id, p.ids[root]);
+      else this.par.set(id, -1);
     });
   }
   // Each exit's total: its own block's sum of the cells upstream of it plus the totals of the exits that flow into those cells; the forest of exits solved from the leaves in exact integers.
@@ -401,10 +409,17 @@ export class StreamedTier {
     s.go(["cellmeans", "erzero", "creep", "creepapply", "tallyl"]);
     this.store.scatter("ACC", p, await s.read("H"));
   }
-  private async visitLift(r: number, law: "lift" | "spread") {
+  // The stencil of the uplift's solve: each land cell adds its interpolation weights to its tier-0 cell's nine slots (the counts of every tier-0 cell's land are all in, from the init visits).
+  private async visitStencil(r: number) {
     const p = this.patch(r), s = this.solver;
     s.setPatch(p); s.write("H", this.store.gather("H", p, undefined, false) as Int32Array);
-    s.go([law]);
+    s.go(["pstencil"]);
+  }
+  // Every land cell rises by the interpolated coefficients the tier-0 tables hold.
+  private async visitLift(r: number) {
+    const p = this.patch(r), s = this.solver;
+    s.setPatch(p); s.write("H", this.store.gather("H", p, undefined, false) as Int32Array);
+    s.go(["lift"]);
     this.store.scatter("H", p, await s.read("H"));
   }
 
@@ -444,10 +459,9 @@ export class StreamedTier {
       case "creep":
         this.store.swap("H", "ACC");
         if (++pr.sub < this.subs) { this.all(); break; }
-        s.go(["pmean"]); go("lift1"); break;
-      case "lift1": s.go(["pres"]); go("lift2"); break;
-      case "lift2": s.go(["pfin"]); go("lift3"); break;
-      case "lift3": {
+        s.go(["pstzero"]); go("stencil"); break;
+      case "stencil": s.go(["pmean", ...Array.from({ length: SOLVE_SWEEPS / 2 }, () => ["psolve", "psolve2"]).flat()]); go("lift"); break;
+      case "lift": {
         s.go(["pcarry"]);
         pr.steps++; pr.stepS.push(pr.curS); pr.stepVisits.push(pr.visits); pr.curS = 0; pr.visits = {};
         pr.stage = "idle"; pr.job = "idle";
@@ -466,7 +480,16 @@ export class StreamedTier {
       writeFileSync(this.path("carry.bak.i32"), new Uint8Array((await this.solver.readCarry()).buffer));
     }
     pr.job = job; pr.stage = "init"; pr.sub = 0; this.all();
+    this.arm();
     this.solver.go(["pzero"]);
+  }
+  // What a step's kernels read of the step: its number (the routing's draws), whether the receivers are drawn (not in the settled flow of the final heights, which is the steepest descent the
+  // water stages route by) and its table, whose K dt and creep coefficients are its step length's.
+  private arm() {
+    const pr = this.prog;
+    this.solver.setStep(pr.steps);
+    this.solver.setRoute(pr.job === "flow" || !this.law.stochastic ? 0 : 1);
+    if (pr.job !== "flow") { const t = this.tableAt(pr.steps); this.subs = creepSubsOf(t); this.solver.setTable(t, this.subs); }
   }
   // Work for up to `budgetS` seconds: the start (the heights carried from the tier above), `steps` steps in all, and with `finish` the settled flow of the final heights with its
   // planes kept (the receivers' global ids as TO, the area, the flooded surface). Returns when the work is done or the budget is spent: `done` says which.
@@ -485,7 +508,7 @@ export class StreamedTier {
           else return { done: pr.steps >= steps && (!finish || pr.exportTo) };
         }
         const r = this.pick();
-        if (r < 0) { const was = pr.stage; if (await this.advance() && was === "lift3") madeNow++; continue; }
+        if (r < 0) { const was = pr.stage; if (await this.advance() && was === "lift") madeNow++; continue; }
         if (spent() + 1.5 * worstOf(pr.stage) > budgetS) return { done: false };
         const c0 = performance.now();
         await this.visit(r);
@@ -516,8 +539,8 @@ export async function streamTier(gpu: Gpu, planet: Planet, dir: BakeDir, tier: n
   const steps = (o.steps ?? TIER_STEPS)[tier], t0 = performance.now(), spent = () => (performance.now() - t0) / 1000;
   const finished = dir.has(`t${tier}-height.i32`) && (tier < last || dir.has(`t${tier}-run.json`));
   if (finished) return { done: true, steps, of: steps, run: dir.json<TierRun>(`t${tier}-run`) ?? undefined };
-  const table = tierTable(planet, tier, tierParams());
-  const st = new StreamedTier(gpu, tier, o.work ?? dir.path(`stream-t${tier}`), table, o, log);
+  const tableAt = tierTableOf(planet, tier);
+  const st = new StreamedTier(gpu, tier, o.work ?? dir.path(`stream-t${tier}`), tableAt(0), { ...o, law: TIER_LAWS[tier].route, tableAt }, log);
   try {
     if (st.prog.stage === "start") st.setParent(tierParent(planet, dir, tier), tier - 1);
     log(`tier ${tier}: blocks of ${st.size} cells, ${st.nreg} of them, table in ${spent().toFixed(1)} s, ${st.stepsMade} of ${steps} steps kept`);

@@ -33,9 +33,12 @@ export const FLAG = { chain: 1, depth: 2, area: 4 } as const;
 // it (`smooth`), not as one value to a block, so none steps at a block's edge.
 export const XSTRIDE = 28;
 
-// The neighbours the flood and the receivers read: 4 as the island's flood and receivers do (water leaves a cell by an edge, never across a corner, so no river runs straight on the
-// diagonal of the lattice), or 8; the landslides read all 8 (a slope is as steep across a corner as along an edge).
-export const FLOW_NEIGHBOURS = 4;
+// The neighbours the flood and the receivers read: 8, as the island's flood and receivers do (terrain-upstream.ts flround, recv; an earlier note here said 4, which the island does not), or 4,
+// which sends water along rows and columns only; the landslides read all 8.
+export const FLOW_NEIGHBOURS: 4 | 8 = 8;
+// The sweeps of the uplift's solve (even, so the coefficients end in the buffer they started in): the stencil's worst mode contracts by 0.56 a sweep, so 64 leave under 1e-15 of the error
+// of the first guess [derived].
+export const SOLVE_SWEEPS = 64;
 // `patch` lays the kernels on a patch (src/gpu/globe/patch.ts: a block of tiles and a halo of cells all round it, side * side cells flat, the global cell id of each in the IDS binding, a
 // cube corner's missing cell NONE) instead of the whole tier: a cell's neighbours are its neighbours in the patch, its place is read from IDS, and the cells of the halo are read and never
 // written (`interior`). Every law is the same text in both layouts.
@@ -59,7 +62,7 @@ ${P ? "@group(0) @binding(5) var<storage, read> IDS: array<u32>;" : ""}
 
 ${fields}
 const MAXD = ${MAXD}u; const SPLIT = ${P ? RF.COUNT : SPLIT}u;
-const A_HIST = N; const A_CUR = N + ${HIST}u; const A_LVS = N + ${2 * HIST}u; const A_CNT = N + ${3 * HIST}u; const A_PS = A_CNT + 16u; const A_PC = A_PS + NP; const A_CARRY = A_PC + NP; const A_PM = A_CARRY + NP; const A_PL = A_PM + NP;
+const A_HIST = N; const A_CUR = N + ${HIST}u; const A_LVS = N + ${2 * HIST}u; const A_CNT = N + ${3 * HIST}u; const A_PS = A_CNT + 16u; const A_PC = A_PS + NP; const A_CARRY = A_PC + NP; const A_PM = A_CARRY + NP; const A_PL = A_PM + NP; const A_ST = A_PL + NP; const A_PM2 = A_ST + 9u * NP;
 const INF = 0x7fffffffi;
 const NONE = 0xffffffffu;
 const CNT_FLAGS = ${CNT.flags}u; const CNT_TOP = ${CNT.top}u; const CNT_CHANGED = ${CNT.changed}u; const CNT_PENDING = ${CNT.pending}u;
@@ -148,6 +151,19 @@ fn flood(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
 }
 
 // ---- receivers: steepest descent on the flooded surface, the sea ending every river ----
+// With the routing parameter P[3] set, the receiver is instead drawn among the lower neighbours with the probability proportional to the fall to each over its distance, anew each step (P[2]):
+// Fairfield and Leymarie's remedy for the grid bias of steepest descent, which sends water down any slope within 22.5 degrees of a lattice direction along that direction [Tarboton 1997 reads
+// and cites it]. Every lower neighbour is a valid receiver (the flooded surface falls strictly along it), so the forest stays a forest; the draw is a Philox word of the cell's own id, so
+// it is the same for the same cell whatever the tiling.
+fn philox(c0: vec4u, k0: vec2u) -> vec4u {
+  var c = c0; var k = k0;
+  for (var r = 0u; r < 10u; r++) {
+    let x = mul64(0xD2511F53u, c.x); let y = mul64(0xCD9E8D57u, c.z);
+    c = vec4u(y.y ^ c.y ^ k.x, y.x, x.y ^ c.w ^ k.y, x.x);
+    k = k + vec2u(0x9E3779B9u, 0xBB67AE85u);
+  }
+  return c;
+}
 @compute @workgroup_size(256)
 fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
@@ -156,6 +172,7 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   var to = k; var rd = 0u; var best = vec2u(0u, 0u);
   if (interior(k) && is_land(k)) {
     let f = fl(k);
+    var share = array<u32, 8>(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u); var total = 0u;
     for (var d = 0u; d < NFLOW; d++) {
       let j = nbr(k, d);
       if (j == NONE) { continue; }
@@ -164,6 +181,15 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
       let iv = invd(k, d);
       let key = mul64(u32(dz), iv);
       if (lt64(best, key)) { best = key; to = j; rd = iv; }
+      share[d] = max(1u, min(shr64(key, 16u).x, 0x0fffffffu)); total += share[d];
+    }
+    if (P[3] != 0u && total > 0u) {
+      let r = philox(vec4u(cid(k), P[2], 0u, 0x52434456u), vec2u(0x4c414e44u, 0x524f5554u)).x % total;
+      var acc = 0u;
+      for (var d = 0u; d < NFLOW; d++) {
+        acc += share[d];
+        if (share[d] != 0u && r < acc) { to = nbr(k, d); rd = invd(k, d); break; }
+      }
     }
   }
   e_setu(E_TO, k, to);
@@ -489,16 +515,10 @@ fn pmean(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   if (p >= NP) { return; }
   atomicStore(&AT[A_PM + p], mean_q8(p, fl(A_PS + p) + fl(A_CARRY + p)));
 }
-// what the tier-0 cell's land is still owed after the rises so far
-@compute @workgroup_size(256)
-fn pres(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
-  touch();
-  let p = gk(gid, nwg);
-  if (p >= NP) { return; }
-  atomicStore(&AT[A_PM + p], mean_q8(p, fl(A_PS + p) + fl(A_CARRY + p) - fl(A_PL + p)));
-}
-// the interpolated mean at a land cell, Q8: the four tier-0 cells round it weighted by the child's place (weights Q16, the neighbour's |2i + 1 - B| / 2B along each axis), those with no land left out
-fn interp(k: u32) -> i32 {
+// The rise of a land cell is the bilinear interpolation of coefficients m on the tier-0 cells round it (the four whose centres bracket the cell, weights Q16, the neighbour's |2i + 1 - B| / 2B
+// along each axis, those with no land left out): lift_at gives them. The coefficients are solved (psolve) so that the land of every tier-0 cell rises by exactly what it lost.
+struct LiftAt { p: array<u32, 4>, s: array<u32, 4>, w: array<u32, 4> }
+fn lift_at(k: u32) -> LiftAt {
   let c = cid(k); let f = c / CELLS; let r = c - f * CELLS; let Y = r / FN; let X = r - Y * FN;
   let ix = i32(X % FACT); let iy = i32(Y % FACT); let B = i32(FACT);
   let ax = u32(abs(2 * ix + 1 - B)); let ay = u32(abs(2 * iy + 1 - B));
@@ -509,28 +529,33 @@ fn interp(k: u32) -> i32 {
   let dys = select(1u, 3u, 2 * iy + 1 < B);
   var dd = 4u;
   if (dxs == 2u && dys == 1u) { dd = 5u; } else if (dxs == 2u && dys == 3u) { dd = 6u; } else if (dxs == 0u && dys == 3u) { dd = 7u; }
-  let px = pnbr(p, dxs); let py = pnbr(p, dys); let pd = pnbr(p, dd);
-  var w = array<u32, 4>(shr64(mul64(wxc, wyc), 16u).x, 0u, 0u, 0u);
-  w[1] = select(0u, shr64(mul64(wxn, wyc), 16u).x, px != NONE);
-  w[2] = select(0u, shr64(mul64(wxc, wyn), 16u).x, py != NONE);
-  w[3] = select(0u, shr64(mul64(wxn, wyn), 16u).x, pd != NONE);
-  if (px != NONE && fl(A_PC + px) == 0i) { w[1] = 0u; }
-  if (py != NONE && fl(A_PC + py) == 0i) { w[2] = 0u; }
-  if (pd != NONE && fl(A_PC + pd) == 0i) { w[3] = 0u; }
-  var m = array<i32, 4>(fl(A_PM + p), 0i, 0i, 0i);
-  if (px != NONE) { m[1] = fl(A_PM + px); }
-  if (py != NONE) { m[2] = fl(A_PM + py); }
-  if (pd != NONE) { m[3] = fl(A_PM + pd); }
-  var wsum = 0u; var acc = vec2u(0u, 0u);
-  for (var j = 0u; j < 4u; j++) { wsum += w[j]; acc = add64(acc, mul64(u32(m[j]), w[j])); }
-  return sdiv(false, add64(acc, vec2u(wsum >> 1u, 0u)), wsum);
+  var o: LiftAt;
+  o.p = array<u32, 4>(p, pnbr(p, dxs), pnbr(p, dys), pnbr(p, dd));
+  o.s = array<u32, 4>(8u, dxs, dys, dd);
+  o.w = array<u32, 4>(shr64(mul64(wxc, wyc), 16u).x, shr64(mul64(wxn, wyc), 16u).x, shr64(mul64(wxc, wyn), 16u).x, shr64(mul64(wxn, wyn), 16u).x);
+  for (var j = 1u; j < 4u; j++) { if (o.p[j] == NONE || fl(A_PC + o.p[j]) == 0i) { o.w[j] = 0u; } }
+  return o;
 }
-// every land cell of the tier-0 cell rises by the interpolated mean of its neighbourhood (this is the first pass, of the means; the second of the leftover)
+// the interpolated coefficient at a land cell, Q8
+fn interp(k: u32) -> i32 {
+  let o = lift_at(k);
+  var wsum = 0u; var pos = vec2u(0u, 0u); var neg = vec2u(0u, 0u);
+  for (var j = 0u; j < 4u; j++) {
+    if (o.w[j] == 0u) { continue; }
+    wsum += o.w[j];
+    let m = fl(A_PM + o.p[j]);
+    if (m >= 0i) { pos = add64(pos, mul64(u32(m), o.w[j])); } else { neg = add64(neg, mul64(u32(-m), o.w[j])); }
+  }
+  if (lt64(pos, neg)) { return sdiv(true, add64(vec2u(neg.x - pos.x, neg.y - pos.y - select(0u, 1u, neg.x < pos.x)), vec2u(wsum >> 1u, 0u)), wsum); }
+  return sdiv(false, add64(vec2u(pos.x - neg.x, pos.y - neg.y - select(0u, 1u, pos.x < neg.x)), vec2u(wsum >> 1u, 0u)), wsum);
+}
+// every land cell rises (or sinks, where the coefficients are negative; never under one unit) by the interpolated coefficients
 fn raise(k: u32) {
   if (!interior(k) || !is_land(k)) { return; }
-  let up = interp(k) >> 8u;
-  e_set(E_H, k, e_get(E_H, k) + up);
-  atomicAdd(&AT[A_PL + pid(k)], up);
+  let h = e_get(E_H, k);
+  let nh = max(1i, h + (interp(k) >> 8u));
+  e_set(E_H, k, nh);
+  atomicAdd(&AT[A_PL + pid(k)], nh - h);
 }
 @compute @workgroup_size(256)
 fn lift(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
@@ -539,27 +564,77 @@ fn lift(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   if (k >= N) { return; }
   raise(k);
 }
-// what is still owed (or over-lifted) after both passes: an even share of it to every land cell, up or down (no cell goes under one unit; what that holds back is carried with the
-// remainder), so that the tier-0 cell's total height stays what it was to the carry, which is under a unit a cell unless cells were held at one
+// The stencil of the solve: the land of tier-0 cell p rises, summed over its cells, by (the sum over the nine tier-0 cells q round p, slot s, of ST[p][s] * m[q]) / 2^16 / 256 units, ST the
+// cells' normalized weights (Q16, each cell's four summing to 2^16 exactly) added up by the slot of the neighbour they fall on (the slots are the neighbour directions 0 to 7 and 8 the cell
+// itself). It depends on which cells are land and where, so it is made once, after the land cells of every tier-0 cell are counted.
 @compute @workgroup_size(256)
-fn pfin(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+fn pstzero(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
   let p = gk(gid, nwg);
   if (p >= NP) { return; }
-  let c = fl(A_PC + p);
-  if (c == 0i) { return; }
-  atomicStore(&AT[A_PM + p], (fl(A_PS + p) + fl(A_CARRY + p) - fl(A_PL + p)) / c);
+  for (var s = 0u; s < 9u; s++) { atomicStore(&AT[A_ST + p * 9u + s], 0i); }
 }
 @compute @workgroup_size(256)
-fn spread(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+fn pstencil(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
   let k = gk(gid, nwg);
   if (k >= N) { return; }
   if (!interior(k) || !is_land(k)) { return; }
-  let h = e_get(E_H, k);
-  let nh = max(1i, h + fl(A_PM + pid(k)));
-  e_set(E_H, k, nh);
-  atomicAdd(&AT[A_PL + pid(k)], nh - h);
+  let o = lift_at(k);
+  var wsum = 0u;
+  for (var j = 0u; j < 4u; j++) { wsum += o.w[j]; }
+  var rest = 65536u;
+  for (var j = 1u; j < 4u; j++) {
+    if (o.w[j] == 0u) { continue; }
+    let q = divw(mul64(o.w[j], 65536u).y, mul64(o.w[j], 65536u).x, wsum).x;
+    atomicAdd(&AT[A_ST + o.p[0] * 9u + o.s[j]], i32(q));
+    rest -= q;
+  }
+  atomicAdd(&AT[A_ST + o.p[0] * 9u + 8u], i32(rest));
+}
+// One Jacobi sweep of the solve from the coefficients in one buffer to the other (the coefficients start as the mean loss, pmean): m[p] moves by what the land of p is short of its
+// loss (and carry), over its own weight. A coefficient may be negative: where one tier-0 cell loses a great deal beside cells that lose little, the field that is smooth and holds every
+// mean has to dip beside the peak. The stencil's diagonal is at least a quarter of a cell's weight, so the sweeps converge; the carry is what rounding, a cell held at one unit or a
+// cell next to the cube's corner leaves, and is paid in the next step's loss.
+fn solve_sweep(p: u32, src: u32, dst: u32) {
+  let c = fl(A_PC + p);
+  if (c == 0i) { atomicStore(&AT[dst + p], 0i); return; }
+  var pos = vec2u(0u, 0u); var neg = vec2u(0u, 0u);
+  for (var s = 0u; s < 9u; s++) {
+    var q = p;
+    if (s < 8u) { q = pnbr(p, s); }
+    if (q == NONE) { continue; }
+    let w = u32(fl(A_ST + p * 9u + s)); let mq = fl(src + q);
+    if (mq >= 0i) { pos = add64(pos, mul64(w, u32(mq))); } else { neg = add64(neg, mul64(w, u32(-mq))); }
+  }
+  let tot = fl(A_PS + p) + fl(A_CARRY + p);
+  // pos - neg = tot << 24 is the equation, as lo = pos + the negative part of the aim and hi = the positive part of the aim + neg
+  let lo = select(pos, add64(pos, mul64(u32(-tot), 1u << 24u)), tot < 0i);
+  let hi = select(neg, add64(neg, mul64(u32(tot), 1u << 24u)), tot > 0i);
+  let own = u32(fl(A_ST + p * 9u + 8u));
+  var nm = fl(src + p);
+  if (lt64(lo, hi)) {
+    let d = sdiv(false, vec2u(hi.x - lo.x, hi.y - lo.y - select(0u, 1u, hi.x < lo.x)), own);
+    nm = min(nm + d, 0x3fffffffi);
+  } else {
+    let d = sdiv(false, vec2u(lo.x - hi.x, lo.y - hi.y - select(0u, 1u, lo.x < hi.x)), own);
+    nm = max(nm - d, -0x3fffffffi);
+  }
+  atomicStore(&AT[dst + p], nm);
+}
+@compute @workgroup_size(256)
+fn psolve(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let p = gk(gid, nwg);
+  if (p >= NP) { return; }
+  solve_sweep(p, A_PM, A_PM2);
+}
+@compute @workgroup_size(256)
+fn psolve2(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let p = gk(gid, nwg);
+  if (p >= NP) { return; }
+  solve_sweep(p, A_PM2, A_PM);
 }
 @compute @workgroup_size(256)
 fn pcarry(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
@@ -667,6 +742,21 @@ fn todfrom(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) n
   if (interior(k)) {
     let d = e_getu(E_DB, k);
     if (d < NFLOW) { let j = nbr(k, d); if (j != NONE) { to = j; rd = invd(k, d); } }
+  }
+  e_setu(E_TO, k, to);
+  e_setu(E_RD, k, rd);
+}
+// the same, with every interior cell that drains into a cell of the halo a root of its own: the pointer jumps then end at the cell that carries a chain out of the patch and not at the halo cell
+// it drains into (with eight neighbours several cells of the patch's edge drain into one cell of the halo)
+@compute @workgroup_size(256)
+fn todexit(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  var to = k; var rd = 0u;
+  if (interior(k)) {
+    let d = e_getu(E_DB, k);
+    if (d < NFLOW) { let j = nbr(k, d); if (j != NONE && interior(j)) { to = j; rd = invd(k, d); } }
   }
   e_setu(E_TO, k, to);
   e_setu(E_RD, k, rd);

@@ -4,7 +4,7 @@
 // the regional solve keeps them and stay on the device from one patch to the next.
 import type { Gpu } from "../device";
 import { cover, pipeline, readback, storage } from "../kernel";
-import { CNT, FLAG, HIST, RF, XSTRIDE, regionalWgsl } from "../wgsl/globe-regional";
+import { CNT, FLAG, FLOW_NEIGHBOURS, HIST, RF, XSTRIDE, regionalWgsl } from "../wgsl/globe-regional";
 import { EDGES, tierGrid } from "./grid";
 import type { Patch } from "./patch";
 
@@ -12,7 +12,9 @@ const NP = 6 * 256 * 256;
 export const PATCH_HALO = 1;
 // entry points that run as one workgroup (the walks over the depths) and those over the tier-0 cells
 const SINGLE: Record<string, true> = { lvscan: true, area: true, area64: true, areaS64: true, reach64: true, incise: true, incisep: true };
-const PARENT: Record<string, true> = { pzero: true, pmean: true, pres: true, pfin: true, pcarry: true };
+const PARENT: Record<string, true> = { pzero: true, pstzero: true, pmean: true, psolve: true, psolve2: true, pcarry: true };
+// the tier-0 tables in AT after the flooded surface's block: loss, land count, carry, coefficients, rises (one word a tier-0 cell each), the stencil (nine words), the second coefficients
+export const PARENT_WORDS = 15;
 export type Step = string | readonly [string, number];
 
 export class RegionalPatch {
@@ -29,10 +31,11 @@ export class RegionalPatch {
   private readonly binds = new Map<string, GPUBindGroup>();
   private readonly atCnt: number;
   private readonly atParents: number;
-  readonly creepSubs: number;
+  creepSubs: number;
+  private stepNo = 0;
   readonly flags = FLAG;
 
-  constructor(readonly gpu: Gpu, readonly tier: number, interior: number, table: Uint32Array, creepSubs: number) {
+  constructor(readonly gpu: Gpu, readonly tier: number, interior: number, table: Uint32Array, creepSubs: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, public route: 0 | 1 = 0) {
     this.fn = tierGrid(tier).fn;
     this.side = interior + 2 * PATCH_HALO;
     this.N = this.side * this.side;
@@ -40,14 +43,30 @@ export class RegionalPatch {
     this.atParents = this.atCnt + 16;
     this.E = storage(gpu, RF.COUNT * this.N * 4);
     this.E2 = storage(gpu, 16);
-    this.AT = storage(gpu, (this.atParents + 5 * NP) * 4);
+    this.AT = storage(gpu, (this.atParents + PARENT_WORDS * NP) * 4);
     this.creepSubs = creepSubs;
-    this.P = storage(gpu, new Uint32Array([1, creepSubs, 0, 0]));
+    this.P = storage(gpu, new Uint32Array([1, creepSubs, 0, route]));
     this.X = storage(gpu, table);
     this.IDS = storage(gpu, this.N * 4);
-    this.wgsl = regionalWgsl(EDGES, this.fn, undefined, { side: this.side, halo: PATCH_HALO });
+    this.wgsl = regionalWgsl(EDGES, this.fn, nflow, { side: this.side, halo: PATCH_HALO });
   }
-  get bytes() { return (RF.COUNT * this.N + this.atParents + 5 * NP + this.N) * 4 + XSTRIDE * NP * 4; }
+  // Another step's table (its K dt and creep coefficients) and the creep's substeps it needs.
+  setTable(table: Uint32Array, creepSubs: number) {
+    this.creepSubs = creepSubs;
+    this.gpu.device.queue.writeBuffer(this.X, 0, table);
+    this.gpu.device.queue.writeBuffer(this.P, 0, new Uint32Array([1, creepSubs, this.stepNo, this.route]));
+  }
+  // Whether a receiver is drawn among the lower neighbours (1) or is the steepest (0).
+  setRoute(route: 0 | 1) {
+    this.route = route;
+    this.gpu.device.queue.writeBuffer(this.P, 12, new Uint32Array([route]));
+  }
+  // The step the routing's draws are made for.
+  setStep(n: number) {
+    this.stepNo = n;
+    this.gpu.device.queue.writeBuffer(this.P, 8, new Uint32Array([n]));
+  }
+  get bytes() { return (RF.COUNT * this.N + this.atParents + PARENT_WORDS * NP + this.N) * 4 + XSTRIDE * NP * 4; }
 
   // The patch the buffers hold: the cell ids (a cube corner's missing cell as 0xffffffff, which the kernels read as no cell).
   setPatch(p: Patch) {
@@ -65,7 +84,7 @@ export class RegionalPatch {
   async counter(c: keyof typeof CNT): Promise<number> { return new Int32Array(await readback(this.gpu, this.AT, 4, (this.atCnt + CNT[c]) * 4))[0]; }
   // The tier-0 tables, five of them (loss, land count, carry, mean, rises), in and out; and the carry alone (what a state keeps).
   writeParents(words: Int32Array) { this.gpu.device.queue.writeBuffer(this.AT, this.atParents * 4, words.buffer, words.byteOffset, words.byteLength); }
-  async readParents(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, 5 * NP * 4, this.atParents * 4)); }
+  async readParents(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, PARENT_WORDS * NP * 4, this.atParents * 4)); }
   async readCarry(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, NP * 4, (this.atParents + 2 * NP) * 4)); }
 
   private bind(entry: string) {
