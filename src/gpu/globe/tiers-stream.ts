@@ -123,6 +123,7 @@ export class StreamedTier {
   readonly solver: RegionalPatch;
   subs: number;
   readonly law: RouteLaw;
+  private readonly slideSolver: RegionalPatch | null; // the slides of sixteen neighbours read two cells past a block's edge: a patch of halo two of their own
   private readonly tableAt: (step: number) => Uint32Array;
   prog: Progress;
   private readonly g: Grid;
@@ -151,7 +152,8 @@ export class StreamedTier {
     this.law = o.law ?? { nflow: FLOW_NEIGHBOURS, stochastic: false };
     this.tableAt = o.tableAt ?? (() => table);
     this.subs = creepSubsOf(table);
-    this.solver = new RegionalPatch(gpu, tier, this.size, table, this.subs, this.law.nflow, this.law.stochastic ? 1 : 0);
+    this.solver = new RegionalPatch(gpu, tier, this.size, table, this.subs, this.law.nflow, this.law.stochastic ? 1 : 0, this.law.slide ?? 8);
+    this.slideSolver = this.law.slide === 16 ? new RegionalPatch(gpu, tier, this.size, table, this.subs, this.law.nflow, 0, 16, 2) : null;
     const ord = Array.from({ length: this.nreg }, (_, i) => i);
     if (o.order === "reverse") ord.reverse();
     else if (typeof o.order === "number") {
@@ -205,7 +207,7 @@ export class StreamedTier {
     this.la.clear(); this.par.clear(); this.total.clear();
     for (let i = 0; i < f.length; i += 4) { if (f[i + 1] >= 0) this.la.set(f[i], f[i + 1]); if (f[i + 2] !== -2) this.par.set(f[i], f[i + 2]); if (f[i + 3] >= 0) this.total.set(f[i], f[i + 3]); }
   }
-  release() { this.solver.release(); this.store.close(); }
+  release() { this.solver.release(); this.slideSolver?.release(); this.store.close(); }
 
   // ---- the blocks ----
   private regionAt(r: number) { const per = this.R * this.R, face = Math.floor(r / per), q = r - face * per, ry = Math.floor(q / this.R); return { face, rx: q - ry * this.R, ry }; }
@@ -266,7 +268,7 @@ export class StreamedTier {
       case "start": this.visitStart(r); break;
       case "init": await this.visitInit(r); break;
       case "flood": await this.visitFixed(r, "flood"); break;
-      case "slide": await this.visitFixed(r, "slide"); break;
+      case "slide": await (this.slideSolver ? this.visitSlide16(r, this.slideSolver) : this.visitFixed(r, "slide")); break;
       case "recv": await this.visitRecv(r); break;
       case "area1": await this.visitArea(r, false); break;
       case "area2": await this.visitArea(r, true); break;
@@ -318,6 +320,46 @@ export class StreamedTier {
     let changed = false;
     for (let y = 1; y < S - 1 && !changed; y++) for (let x = 1; x < S - 1; x++) if (after[y * S + x] !== before[y * S + x]) { changed = true; break; }
     if (changed) { this.store.scatter(law === "flood" ? "F" : "H", p, after); this.mark(r, ring, (k) => after[k] !== before[k]); }
+  }
+  // The landslides of sixteen neighbours, run to the block's own fixed point on a patch of halo two. The loss each cell made is booked in the main solver's tier-0 tables from the heights, as the
+  // eight-neighbour visit books it: the fall of every land cell of the interior. A block whose cells within two of its edge changed puts back every block that has one of them in its halo.
+  private async visitSlide16(r: number, s2: RegionalPatch) {
+    const { face, rx, ry } = this.regionAt(r), p2 = patchAt(this.tier, face, rx * this.size, ry * this.size, 2, this.size), p = this.patch(r), s = this.solver, S2 = p2.side, S = p.side;
+    const H = this.store.gather("H", p2) as Int32Array;
+    s2.setPatch(p2); s2.write("H", H); s2.go(["cellmeans"]);
+    let rounds = 0, chunk = 32;
+    for (;;) {
+      s2.clearCounter("changed");
+      s2.go([["slide", chunk]]);
+      rounds += chunk;
+      if ((await s2.counter("changed")) === 0) break;
+      chunk = 64;
+      if (rounds > 40000) throw new Error(`tiers-stream: the slide did not settle in 40,000 rounds in block ${r}`);
+    }
+    const after = await s2.read("H"), h1 = new Int32Array(S * S), er = new Int32Array(S * S);
+    let changed = false;
+    for (let y = 0; y < this.size; y++) for (let x = 0; x < this.size; x++) {
+      const k2 = (y + 2) * S2 + x + 2, k = (y + 1) * S + x + 1;
+      h1[k] = after[k2]; er[k] = H[k2] - after[k2];
+      if (er[k]) changed = true;
+    }
+    s.setPatch(p); s.write("H", h1); s.write("ER", er); s.go(["tallyl"]);
+    if (!changed) return;
+    this.store.scatter("H", p2, after);
+    const todo = this.prog.todo, reach = [...DIRS, [2, 1], [1, 2], [-1, 2], [-2, 1], [-2, -1], [-1, -2], [1, -2], [2, -1]] as const, lo = 2, hi = 2 + this.size;
+    for (let y = 0; y < this.size; y++) for (let x = 0; x < this.size; x++) {
+      if (x >= 2 && y >= 2 && x < this.size - 2 && y < this.size - 2) continue;
+      const k2 = (y + 2) * S2 + x + 2;
+      if (after[k2] === H[k2]) continue;
+      for (const [dx, dy] of reach) {
+        const jx = x + 2 + dx, jy = y + 2 + dy;
+        if (jx >= lo && jx < hi && jy >= lo && jy < hi) continue;
+        const j = jy * S2 + jx;
+        if (jx < 0 || jy < 0 || jx >= S2 || jy >= S2 || p2.missing[j]) continue;
+        const q = this.regionOfId(p2.ids[j]);
+        if (q !== r) todo[q] = 1;
+      }
+    }
   }
   private async visitRecv(r: number) {
     const p = this.patch(r), s = this.solver, H = this.store.gather("H", p, undefined, false) as Int32Array, F = this.store.gather("F", p) as Int32Array;
@@ -490,7 +532,7 @@ export class StreamedTier {
     const pr = this.prog;
     this.solver.setStep(pr.steps);
     this.solver.setRoute(pr.job === "flow" || !this.law.stochastic ? 0 : 1);
-    if (pr.job !== "flow") { const t = this.tableAt(pr.steps); this.subs = creepSubsOf(t); this.solver.setTable(t, this.subs); }
+    if (pr.job !== "flow") { const t = this.tableAt(pr.steps); this.subs = creepSubsOf(t); this.solver.setTable(t, this.subs); this.slideSolver?.setTable(t, this.subs); }
   }
   // Work for up to `budgetS` seconds: the start (the heights carried from the tier above), `steps` steps in all, and with `finish` the settled flow of the final heights with its
   // planes kept (the receivers' global ids as TO, the area, the flooded surface). Returns when the work is done or the budget is spent: `done` says which.

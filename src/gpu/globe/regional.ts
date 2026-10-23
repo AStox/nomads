@@ -187,6 +187,8 @@ const tanOfPools = () => ROCK_OF.map((r) => Math.tan((THRESHOLD_DEG[r] * Math.PI
 // One rain over every land cell: a quarter of the reference rain at four times K, so that K sqrt(A) is the reference's and a cell weighs 128 (not 512), which keeps the discharge area of a basin
 // of 33 million cells under the 32 bits it is summed in (the planet's largest basin at 75 m is over 14 million: at the reference rain it overflowed, measured at tier 5) [derived].
 export const UNIFORM_RAIN = { word: 64, kScale: 2 };
+// the knight moves in the kernels' order (wgsl/globe-regional.ts KNIGHT)
+const KNIGHT = [[2, 1], [1, 2], [-1, 2], [-2, 1], [-2, -1], [-1, -2], [1, -2], [2, -1]] as const;
 export function tierTable(planet: Planet, tier: number, p: ErosionParams, uniformRain = false): Uint32Array {
   const g0 = tierGrid(0, planet.radius), gt = tierGrid(tier, planet.radius), X = new Uint32Array(CELLS0 * XSTRIDE), kw = p.K.map((k) => Math.min(0xffffffff, kWord(gt, p, k) * (uniformRain ? UNIFORM_RAIN.kScale : 1))), tanOf = tanOfPools();
   // a planet with no climate (a staged one) rains the reference rain everywhere
@@ -209,6 +211,11 @@ export function tierTable(planet: Planet, tier: number, p: ErosionParams, unifor
       const inv = (iv * 2 ** tier) / 2 ** 28;
       X[c * XSTRIDE + 20 + d] = Math.round(2 ** 24 * p.creepLand * p.dtYr * (d < 4 ? 2 / 3 : 1 / 3) * inv * inv);
     }
+    // the eight knight moves' distances (Q16 m): two steps along one axis and one along the other, each at the table's distance on its side, taken as orthogonal
+    for (let q = 0; q < 8; q++) {
+      const [dx, dy] = KNIGHT[q], dE = X[c * XSTRIDE + 10 + (dx > 0 ? 0 : 2)], dN = X[c * XSTRIDE + 10 + (dy > 0 ? 1 : 3)];
+      X[c * XSTRIDE + 28 + q] = Math.round(Math.hypot(Math.abs(dx) * dE, Math.abs(dy) * dN));
+    }
   }
   return X;
 }
@@ -221,7 +228,7 @@ export function creepSubsOf(table: Uint32Array): number {
 
 // ---------- 4. the kernels on a device ----------
 // The routing of a tier's flow: the neighbours the flood and the receivers read, and whether a receiver is drawn among the lower ones (wgsl/globe-regional.ts recv) or is the steepest.
-export interface RouteLaw { nflow: 4 | 8; stochastic: boolean }
+export interface RouteLaw { nflow: 4 | 8; stochastic: boolean; slide?: 8 | 16 }
 export interface TierState { height: Int32Array; carry: Int32Array; steps: number }
 export interface TierFlow { to: Uint32Array; acc: Uint32Array; rounds: number }
 const readU32 = async (gpu: Gpu, b: GPUBuffer, words: number, at: number) => new Uint32Array(await readback(gpu, b, words * 4, at * 4));
@@ -270,7 +277,7 @@ export class Regional {
     this.P = storage(gpu, new Uint32Array([1, this.creepSubs, 0, law.stochastic ? 1 : 0]));
     this.route = law.stochastic ? 1 : 0;
     this.X = storage(gpu, table);
-    this.wgsl = regionalWgsl(EDGES, this.fn, law.nflow);
+    this.wgsl = regionalWgsl(EDGES, this.fn, law.nflow, undefined, law.slide ?? 8);
     this.write("H", height);
     this.submit((p) => this.run(p, "cellmeans", this.N));
   }

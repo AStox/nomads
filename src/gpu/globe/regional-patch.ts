@@ -35,9 +35,9 @@ export class RegionalPatch {
   private stepNo = 0;
   readonly flags = FLAG;
 
-  constructor(readonly gpu: Gpu, readonly tier: number, interior: number, table: Uint32Array, creepSubs: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, public route: 0 | 1 = 0) {
+  constructor(readonly gpu: Gpu, readonly tier: number, interior: number, table: Uint32Array, creepSubs: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, public route: 0 | 1 = 0, slideN: 8 | 16 = 8, readonly halo = PATCH_HALO) {
     this.fn = tierGrid(tier).fn;
-    this.side = interior + 2 * PATCH_HALO;
+    this.side = interior + 2 * halo;
     this.N = this.side * this.side;
     this.atCnt = this.N + 3 * HIST;
     this.atParents = this.atCnt + 16;
@@ -48,7 +48,7 @@ export class RegionalPatch {
     this.P = storage(gpu, new Uint32Array([1, creepSubs, 0, route]));
     this.X = storage(gpu, table);
     this.IDS = storage(gpu, this.N * 4);
-    this.wgsl = regionalWgsl(EDGES, this.fn, nflow, { side: this.side, halo: PATCH_HALO });
+    this.wgsl = regionalWgsl(EDGES, this.fn, nflow, { side: this.side, halo }, slideN);
   }
   // Another step's table (its K dt and creep coefficients) and the creep's substeps it needs.
   setTable(table: Uint32Array, creepSubs: number) {

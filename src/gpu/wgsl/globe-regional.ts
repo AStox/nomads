@@ -31,7 +31,8 @@ export const FLAG = { chain: 1, depth: 2, area: 4 } as const;
 // spacing), [10..17] the distance to each of the eight neighbours (Q16 m), [18] the rock's threshold slope (tan, Q20), [19] the year's rain over the reference rain (Q8), [20..27] each
 // direction's creep coefficient for one step (D dt weight / d^2, Q24). The erodibility, the threshold slope and the rain are read at a cell by interpolating the four tier-0 cells round
 // it (`smooth`), not as one value to a block, so none steps at a block's edge.
-export const XSTRIDE = 28;
+// ...[28..35] the distance to each of the eight knight-move cells (Q16 m), the slides' 16-neighbour reach.
+export const XSTRIDE = 36;
 
 // The neighbours the flood and the receivers read: 8, as the island's flood and receivers do (terrain-upstream.ts flround, recv; an earlier note here said 4, which the island does not), or 4,
 // which sends water along rows and columns only; the landslides read all 8.
@@ -42,13 +43,14 @@ export const SOLVE_SWEEPS = 128;
 // `patch` lays the kernels on a patch (src/gpu/globe/patch.ts: a block of tiles and a halo of cells all round it, side * side cells flat, the global cell id of each in the IDS binding, a
 // cube corner's missing cell NONE) instead of the whole tier: a cell's neighbours are its neighbours in the patch, its place is read from IDS, and the cells of the halo are read and never
 // written (`interior`). Every law is the same text in both layouts.
-export function regionalWgsl(edges: readonly (readonly { face: number; side: number; flip: boolean }[])[], fn: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, patch?: { side: number; halo: number }): string {
+export function regionalWgsl(edges: readonly (readonly { face: number; side: number; flip: boolean }[])[], fn: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, patch?: { side: number; halo: number }, slideN: 8 | 16 = 8): string {
   const P = patch !== undefined;
   const flat = edges.flatMap((e) => e);
   const fields = Object.entries(RF).filter(([k]) => k !== "COUNT").map(([k, v]) => `const E_${k}: u32 = ${v}u;`).join("\n");
   return /* wgsl */ `${FIXED}
 const FN = ${fn}u; const FNI = ${fn}i; const CELLS = ${fn * fn}u; const N = ${P ? patch.side * patch.side : 6 * fn * fn}u; const NP = 393216u; const FACT = ${fn / 256}u; const NFLOW = ${nflow}u;
-const SIDE = ${P ? patch.side : 0}u; const HALO = ${P ? patch.halo : 0}u;
+const SIDE = ${P ? patch.side : 0}u; const HALO = ${P ? patch.halo : 0}u; const SLIDEN = ${slideN}u;
+const KNIGHT = array<vec2i, 8>(vec2i(2, 1), vec2i(1, 2), vec2i(-1, 2), vec2i(-2, 1), vec2i(-2, -1), vec2i(-1, -2), vec2i(1, -2), vec2i(2, -1));
 const EDGE_FACE = array<u32, 24>(${flat.map((e) => `${e.face}u`).join(", ")});
 const EDGE_SIDE = array<u32, 24>(${flat.map((e) => `${e.side}u`).join(", ")});
 const EDGE_FLIP = array<u32, 24>(${flat.map((e) => (e.flip ? "1u" : "0u")).join(", ")});
@@ -428,7 +430,34 @@ fn sqrt64(n: vec2u) -> u32 {
 }
 fn umulsh(a: u32, b: u32, s: u32) -> u32 { return shr64(add64(mul64(a, b), vec2u(1u << (s - 1u), 0u)), s).x; }
 
+// The cell at offset (dx, dy) of k, up to two cells away: in a patch the cell there in the patch (NONE past its edge or at a cube corner's missing cell), over the whole tier the cell the face's
+// lattice continues to across an edge as patch.ts cellAcross lays it (NONE at a cube's corner), so that a patch of halo two and the whole tier see the same cells.
+${P ? `fn nbr2(k: u32, dx: i32, dy: i32) -> u32 {
+  let nx = i32(k % SIDE) + dx; let ny = i32(k / SIDE) + dy;
+  if (nx < 0 || ny < 0 || nx >= i32(SIDE) || ny >= i32(SIDE)) { return NONE; }
+  let j = u32(ny) * SIDE + u32(nx);
+  if (IDS[j] == NONE) { return NONE; }
+  return j;
+}` : `fn nbr2(k: u32, dx: i32, dy: i32) -> u32 {
+  let f = k / CELLS; let r = k - f * CELLS; let y = i32(r / FN); let x = i32(r - u32(y) * FN);
+  let nx = x + dx; let ny = y + dy;
+  let xo = nx < 0 || nx >= FNI; let yo = ny < 0 || ny >= FNI;
+  if (!xo && !yo) { return u32(i32(k) + dy * FNI + dx); }
+  if (xo && yo) { return NONE; }
+  var s = 1u; var along = nx; var depth = 0;
+  if (xo) { s = select(0u, 2u, nx < 0); along = ny; depth = select(nx - FNI, -nx - 1, nx < 0); } else { s = select(1u, 3u, ny < 0); depth = select(ny - FNI, -ny - 1, ny < 0); }
+  let e = f * 4u + s;
+  let gs = EDGE_SIDE[e];
+  let a = select(along, FNI - 1 - along, EDGE_FLIP[e] == 1u);
+  var gx = a; var gy = a;
+  if (gs == 0u) { gx = FNI - 1 - depth; } else if (gs == 1u) { gy = FNI - 1 - depth; } else if (gs == 2u) { gx = depth; } else { gy = depth; }
+  return EDGE_FACE[e] * CELLS + u32(gy) * FN + u32(gx);
+}`}
+
 // ---- the threshold hillslopes: the greatest surface under the heights with no fall steeper than the rock's threshold (the sea at 0 beside the coast) ----
+// The eight neighbours alone give an envelope that is an octagonal cone round every peak (the least over the neighbours of h + tan(threshold) d, with d the length of the one-step path: the
+// surface is planar between rays at multiples of 45 degrees, so a slope reads as streaks at 45 degrees); with the eight knight moves too (SLIDEN 16) the cone has sixteen sides, which is
+// within 3% of round [derived: the longest of the two metrics' difference is 1 - cos(22.5 degrees) = 0.076 for eight directions and 1 - cos(11.25 degrees) = 0.019 for sixteen].
 @compute @workgroup_size(256)
 fn slide(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
@@ -443,6 +472,13 @@ fn slide(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
     let j = nbr(k, d);
     if (j == NONE) { continue; }
     lim = min(lim, max(e_get(E_H, j), 0i) + i32(shr64(mul64(tq, X[base + d]), 28u).x));
+  }
+  if (SLIDEN == 16u) {
+    for (var q = 0u; q < 8u; q++) {
+      let j = nbr2(k, KNIGHT[q].x, KNIGHT[q].y);
+      if (j == NONE) { continue; }
+      lim = min(lim, max(e_get(E_H, j), 0i) + i32(shr64(mul64(tq, X[pid(k) * ${XSTRIDE}u + 28u + q]), 28u).x));
+    }
   }
   let nh = max(lim, 1i);
   if (nh < h) {

@@ -39,7 +39,9 @@ export function readCells(file: string, ids: ArrayLike<number>): Int32Array {
   return out;
 }
 
-export interface LandOptions { nflow: 4 | 8; stochastic?: boolean }
+// The halo of a region's patch: two cells, which the slides of sixteen neighbours read.
+export const LAND_HALO = 2;
+export interface LandOptions { nflow: 4 | 8; stochastic?: boolean; slide?: 8 | 16 }
 export interface LandState { height: Int32Array; carry: Int32Array; steps: number }
 
 export class LandRegion {
@@ -56,15 +58,15 @@ export class LandRegion {
 
   // `height` is the patch's cells (side * side, halo included, the halo at the heights held); `flooded` the halo's flooded surface (a halo cell's value; interior values are ignored).
   constructor(readonly gpu: Gpu, readonly tier: number, face: number, x0: number, y0: number, readonly size: number, table: Uint32Array, height: Int32Array, flooded: Int32Array, o: LandOptions = { nflow: 8 }) {
-    this.patch = patchAt(tier, face, x0, y0, 1, size);
+    this.patch = patchAt(tier, face, x0, y0, LAND_HALO, size);
     this.side = this.patch.side;
     this.subs = creepSubsOf(table);
-    this.solver = new RegionalPatch(gpu, tier, size, table, this.subs, o.nflow, o.stochastic ? 1 : 0);
+    this.solver = new RegionalPatch(gpu, tier, size, table, this.subs, o.nflow, o.stochastic ? 1 : 0, o.slide ?? 8, LAND_HALO);
     this.solver.setPatch(this.patch);
     this.flood0 = new Int32Array(this.side * this.side);
     const S = this.side;
     for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-      const k = y * S + x, inner = x > 0 && y > 0 && x < S - 1 && y < S - 1;
+      const k = y * S + x, inner = x >= LAND_HALO && y >= LAND_HALO && x < S - LAND_HALO && y < S - LAND_HALO;
       this.flood0[k] = inner ? (height[k] <= 0 ? height[k] : INF) : flooded[k];
     }
     this.solver.write("H", height);
@@ -135,7 +137,7 @@ export class LandRegion {
     await this.lap("creep", () => s.go(Array.from({ length: this.subs }, () => ["creep", "creepapply"]).flat()));
     const er = await s.read("ER"), S = this.side;
     this.loss = 0;
-    for (let y = 1; y < S - 1; y++) for (let x = 1; x < S - 1; x++) this.loss += er[y * S + x];
+    for (let y = LAND_HALO; y < S - LAND_HALO; y++) for (let x = LAND_HALO; x < S - LAND_HALO; x++) this.loss += er[y * S + x];
     await this.lap("lift", () => s.go(["tally", "pstzero", "pstencil", "pmean", ...Array.from({ length: SOLVE_SWEEPS / 2 }, () => ["psolve", "psolve2"]).flat(), "lift", "pcarry"]));
     this.steps++;
   }

@@ -22,7 +22,7 @@ export interface TierLaw { route: RouteLaw; dtMy: readonly number[]; uniformRain
 // the island's law the worst tier-0 cell of a 12 by 12 tile range region is 0.95 m off the planet's mean (260 m before) [measured, 2026-10-22: docs/research/globe/2026-10-22-planet-island-law.md].
 // Tier 4 (150 m) does the work of a tier of 75 m cells at a quarter of the cost; tier 5 carries it and settles at the step lengths that end tier 4's.
 const SCHEDULE = [...Array(4).fill(26), ...Array(6).fill(13), ...Array(10).fill(6.5), ...Array(4).fill(3.25), ...Array(4).fill(1.6)] as number[];
-const ISLAND: TierLaw = { route: { nflow: 8, stochastic: true }, dtMy: SCHEDULE, uniformRain: true };
+const ISLAND: TierLaw = { route: { nflow: 8, stochastic: true, slide: 16 }, dtMy: SCHEDULE, uniformRain: true };
 export const TIER_LAWS: readonly TierLaw[] = [ISLAND, ISLAND, ISLAND, ISLAND, ISLAND, { ...ISLAND, dtMy: [6.5, 6.5, 3.25, 3.25, 1.6, 1.6] }];
 export const TIER_STEPS = TIER_LAWS.map((l, t) => (t === 0 ? 0 : l.dtMy.length));
 // A tier's table (the K dt and the creep coefficients) of step number `step`, made once for each step length.

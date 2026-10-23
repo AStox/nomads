@@ -51,9 +51,9 @@ describe("the streamed step", () => {
   const TIER = 2, planet = planetOf0(), table = tierTable(planet, TIER, defaultParams({ dtYr: 1e6 })), height = remapHeights(TIER, ridge(g0));
   // the island's law: eight neighbours, the receiver drawn among the lower ones, one rain, and the length of each step (My)
   interface Island { route: RouteLaw; dts: number[]; tableAt: (step: number) => Uint32Array }
-  const islandLaw = (dts: number[]): Island => {
+  const islandLaw = (dts: number[], slide: 8 | 16 = 16): Island => {
     const made = new Map<number, Uint32Array>();
-    return { route: { nflow: 8, stochastic: true }, dts, tableAt: (step) => { const dt = dts[Math.min(step, dts.length - 1)]; if (!made.has(dt)) made.set(dt, tierTable(planet, TIER, defaultParams({ dtYr: dt * 1e6 }), true)); return made.get(dt) as Uint32Array; } };
+    return { route: { nflow: 8, stochastic: true, slide }, dts, tableAt: (step) => { const dt = dts[Math.min(step, dts.length - 1)]; if (!made.has(dt)) made.set(dt, tierTable(planet, TIER, defaultParams({ dtYr: dt * 1e6 }), true)); return made.get(dt) as Uint32Array; } };
   };
   // the in-memory solve: `steps` steps, the heights and carries after them, then the settled flow of the last heights (the steepest descent, whatever the law)
   async function oracle(steps: number, law?: Island): Promise<Words> {
@@ -103,9 +103,9 @@ describe("the streamed step", () => {
     console.log(`streamed step on tier 2 equals the in-memory step:\n  ${seen.join("\n  ")}`);
   }, 280_000);
 
-  test("the island's law (eight neighbours, drawn receivers, steps of 26, 6.5 and 1.6 My, one rain) is the in-memory solve's bytes in blocks of 1 and 2 tiles, in another order and in short calls", async () => {
+  test("the fine tiers' law (eight neighbours, drawn receivers, slides of sixteen neighbours, steps of 26, 6.5 and 1.6 My, one rain) is the in-memory solve's bytes in blocks of 1, 2 and 4 tiles, in another order and in short calls", async () => {
     const law = islandLaw([26, 6.5, 1.6]), want = await oracle(3, law);
-    for (const [o, budget] of [[{ block: 1 }, Infinity], [{ block: 2, order: "reverse" as const }, Infinity], [{ block: 2 }, 0.6]] as const) equal(want, await streamed(work(), 3, o, budget, law));
+    for (const [o, budget] of [[{ block: 1 }, Infinity], [{ block: 4 }, Infinity], [{ block: 2, order: "reverse" as const }, Infinity], [{ block: 1, order: 5 }, Infinity], [{ block: 2 }, 0.6]] as const) equal(want, await streamed(work(), 3, o, budget, law));
   }, 280_000);
 
   test("calls too short to finish a step make the same bytes, and a call that died inside a step is begun again from the step's heights", async () => {
