@@ -161,11 +161,19 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   but the continents became plateaus (half the land over 2 km at 4.6 to 5 km, mean 2.3 km): the planet's rivers drain 5,700 to
   7,600 km2 at most, so Earth's incision law removes crust 30 times too slowly; rain shadow, rain belts and land rain fail
   (gaps in the note). Grid lines: the leaks are in regional.ts (Unit 5's files).
-- [ ] **Unit 5b: The 75 m tier as one solve, and landforms that read as eroded.** Rain and the water table as global
+- [x] **Unit 5b: The 75 m tier as one solve, and landforms that read as eroded.** Rain and the water table as global
   solves (sweeps with halo exchange between tiles until converged, so a cell's answer does not depend on the tiling); no
   cap on rain concentration without a citation; tier-4 erosion run to its response time, so valleys dissect the ranges and
   rivers bend with the ground rather than running straight down planar faces. Check: two tilings give the same bytes; a
   tile PNG of a range and a coast judged against the island's look; then the full rebake on Unit 4c's planet.
+  Built 2026-10-22/23: rain is a finite-support integer convolution with no cap, equal bytes under any tiling on real
+  tiles (gaps: truncation 3 to 10% of the waves, block means not exact, face-edge rain and breeze the same law on two
+  grids); the water table is a tier-3 global cascade plus 48-sweep patches seeded from it (not one solve: up to 26 m off
+  on unanchored plateaus; the V-cycle does not converge); landforms are the island's own erosion law at tiers 1 to 5
+  (response-time runs smear the planet to a peneplain, so falling steps of 26 to 1.6 My; one rain; drawn 8-neighbour
+  receivers; B-spline uplift; 16-neighbour slides), judged on the 75 m PNGs, dendritic and without squares or rays; at
+  the page's close zoom the ground is smooth (no detail finer than 75 m, a Unit 6 question). Note
+  docs/research/globe/2026-10-22-planet-island-law.md and the impl log.
 - [x] **Unit 7a: The planet at 391.1 km.** The coarse tiers rerun at the new radius under Unit 4c's rule (only radius and
   spin numbers scale); seeds 1 to 3 measured against the Earth-like facts; the plateau's cause checked (the founder trim
   that may throw crust away, rivers too small to incise) and fixed where it is a bug, written as a gap where it is the
