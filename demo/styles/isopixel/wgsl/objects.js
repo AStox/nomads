@@ -10,7 +10,7 @@
 // An object's look is worked out here from its buffer every frame, as atlas.js Looks numbers it: its family (pair base
 // from the tables, then layout, tint, the forest's darkness at its foot and its crown's width for a tree; layout, moss
 // and berries for anything else) and its sprite's size at the level shown, as main.js collectLive drew it.
-import { NS, META_WORDS, M_KIND, M_BASE, M_TSP, M_WB, M_CROWN, M_LEV, HSTEPS, CODES, K_TREE, K_GRASS, K_FLAT, K_MOSSY, K_DRAWN, NB, NONE } from "../atlas.js";
+import { NS, META_WORDS, M_KIND, M_BASE, M_TSP, M_WB, M_CROWN, M_LEV, M_WRAP, HSTEPS, CODES, K_TREE, K_GRASS, K_FLAT, K_MOSSY, K_DRAWN, NB, NONE } from "../atlas.js";
 
 // A plant's pick is its slot with this bit, which the worker turns into its object number (flora.ts entry); one of the
 // CPU's records' its slot with EXTRA_PICK, which the worker turns into the thing's id; anything else's pick is its
@@ -77,22 +77,27 @@ const ORIGIN_M: f32 = ${f(g.ORIGIN)};
 // the sprite table, after the looks' tables in the same buffer
 const TABLE0: u32 = ${META_WORDS}u;
 fn kindOf(k: u32) -> u32 { return looks[${M_KIND}u + min(k, ${CODES - 1}u)]; }
-// a layer of a grid of n texels a side, read between its texels at grid coordinates (u, v), held to [0, n - 1.001]
-fn bilin(t: texture_2d_array<f32>, L: i32, n: i32, u: f32, v: f32) -> f32 {
+// a layer of a grid of n texels a side, read between its texels at grid coordinates (u, v), held to [0, n - 1.001]; w the word of its shift in the looks' wrap words
+// (the ground slid past its logical cell 0, ground.wgsl.js g_wr)
+fn wrapI(v: vec2i, w: u32, n: i32) -> vec2i {
+  let t = v + vec2i(i32(looks[${M_WRAP}u + w]), i32(looks[${M_WRAP}u + w + 1u]));
+  return vec2i(select(t.x, t.x - n, t.x >= n), select(t.y, t.y - n, t.y >= n));
+}
+fn bilin(t: texture_2d_array<f32>, L: i32, n: i32, w: u32, u: f32, v: f32) -> f32 {
   let fu = clamp(u, 0.0, f32(n) - 1.001);
   let fv = clamp(v, 0.0, f32(n) - 1.001);
   let i = vec2i(i32(fu), i32(fv));
   let a = fu - f32(i.x);
   let b = fv - f32(i.y);
-  let p = textureLoad(t, i, L, 0).x;
-  let q = textureLoad(t, i + vec2i(1, 0), L, 0).x;
-  let r = textureLoad(t, i + vec2i(0, 1), L, 0).x;
-  let s = textureLoad(t, i + vec2i(1, 1), L, 0).x;
+  let p = textureLoad(t, wrapI(i, w, n), L, 0).x;
+  let q = textureLoad(t, wrapI(i + vec2i(1, 0), w, n), L, 0).x;
+  let r = textureLoad(t, wrapI(i + vec2i(0, 1), w, n), L, 0).x;
+  let s = textureLoad(t, wrapI(i + vec2i(1, 1), w, n), L, 0).x;
   return (p * (1.0 - a) + q * a) * (1.0 - b) + (r * (1.0 - a) + s * a) * b;
 }
 // the share of the sky the ground's folds hide at a point (main.js worldAO), and the trees' cover there (flora.ts fine)
-fn aoAt(x: f32, z: f32) -> f32 { return bilin(gridTex, 1, ${g.GN}, (x - (${f(g.ORIGIN)})) / ${f(g.WS)}, (z - (${f(g.ORIGIN)})) / ${f(g.WS)}); }
-fn treeAt(x: f32, z: f32) -> f32 { return bilin(fineTex, 4, ${g.M}, (x - (${f(g.FSTART)})) / ${f(g.FSTEP)}, (z - (${f(g.FSTART)})) / ${f(g.FSTEP)}); }
+fn aoAt(x: f32, z: f32) -> f32 { return bilin(gridTex, 1, ${g.GN}, 4u, (x - (${f(g.ORIGIN)})) / ${f(g.WS)}, (z - (${f(g.ORIGIN)})) / ${f(g.WS)}); }
+fn treeAt(x: f32, z: f32) -> f32 { return bilin(fineTex, 4, ${g.M}, 0u, (x - (${f(g.FSTART)})) / ${f(g.FSTEP)}, (z - (${f(g.FSTART)})) / ${f(g.FSTEP)}); }
 // the size in meters an object is drawn at (px.js shown); grass by its width
 fn hkOf(o: Obj, kf: u32) -> f32 {
   if ((kf & ${K_GRASS}u) != 0u || o.size >= 1.0) { return o.size; }

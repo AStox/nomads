@@ -866,6 +866,7 @@ async function check(m) {
   // the far lists on or off, and built again from the buffers as they are now (rebuild)
   if (m.op === "far") { R.setFarUse(!!m.on); if (m.rebuild) R.farBuild(farLevels()); return true; }
   if (m.op === "fade") { R.setFadeKeep(!!m.on); return true; }
+  if (m.op === "roll") { R.debugRoll(m.kx, m.ky); return true; }
   if (m.op === "front") { R.setFrontUse(!!m.on); return true; }
   // view 0's G-buffer kept (gsnap), and the next one compared with it pixel by pixel (gdiff): what each pixel shows
   // (kind, colour, flags) and whose it is

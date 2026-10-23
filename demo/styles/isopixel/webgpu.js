@@ -21,7 +21,7 @@
 // drawn turned to the bearing shown, so the island turns as a solid thing with its sprites upright.
 
 import { GROUND_BINDINGS, groundWGSL } from "./ground.wgsl.js";
-import { NS, ATLAS, META_WORDS } from "./atlas.js";
+import { NS, ATLAS, META_WORDS, M_WRAP } from "./atlas.js";
 import { CELLS_N, CELL_M, CELLS, FAR_LVL, objectWGSL, sourceWGSL, cullWGSL, cacheFillWGSL, CLAMP_WGSL, NEEDS_WGSL, FAR_COUNT_WGSL, FAR_FILE_WGSL, FAR_SCAN_WGSL, FRONT_SCAN_WGSL, CANOPY_WGSL, CANOPY_BYTES_WGSL, CANOPY_WIDE_WGSL, CANOPY_TALL_WGSL } from "./wgsl/objects.js";
 
 // steps of the key light in the light table, each at the fire's four levels, the palette as drawn in a last row
@@ -645,10 +645,10 @@ fn gridBil(layer: i32, p: vec2f) -> f32 {
   let i = vec2i(floor(f));
   let i1 = min(i + 1, vec2i(i32(n)));
   let t = f - floor(f);
-  let a = textureLoad(gGrid, i, layer, 0).r;
-  let b = textureLoad(gGrid, vec2i(i1.x, i.y), layer, 0).r;
-  let c = textureLoad(gGrid, vec2i(i.x, i1.y), layer, 0).r;
-  let d = textureLoad(gGrid, i1, layer, 0).r;
+  let a = textureLoad(gGrid, g_wr(i, 2u, g_WN), layer, 0).r;
+  let b = textureLoad(gGrid, g_wr(vec2i(i1.x, i.y), 2u, g_WN), layer, 0).r;
+  let c = textureLoad(gGrid, g_wr(vec2i(i.x, i1.y), 2u, g_WN), layer, 0).r;
+  let d = textureLoad(gGrid, g_wr(i1, 2u, g_WN), layer, 0).r;
   return mix(mix(a, b, t.x), mix(c, d, t.x), t.y);
 }
 fn sunBil(p: vec2f) -> f32 {
@@ -809,10 +809,10 @@ fn hBil(p: vec2f) -> f32 {
   let i = vec2i(floor(f));
   let i1 = min(i + 1, vec2i(i32(n)));
   let t = f - floor(f);
-  let a = textureLoad(gGrid, i, 0, 0).r;
-  let b = textureLoad(gGrid, vec2i(i1.x, i.y), 0, 0).r;
-  let c = textureLoad(gGrid, vec2i(i.x, i1.y), 0, 0).r;
-  let d = textureLoad(gGrid, i1, 0, 0).r;
+  let a = textureLoad(gGrid, g_wr(i, 2u, g_WN), 0, 0).r;
+  let b = textureLoad(gGrid, g_wr(vec2i(i1.x, i.y), 2u, g_WN), 0, 0).r;
+  let c = textureLoad(gGrid, g_wr(vec2i(i.x, i1.y), 2u, g_WN), 0, 0).r;
+  let d = textureLoad(gGrid, g_wr(i1, 2u, g_WN), 0, 0).r;
   return mix(mix(a, b, t.x), mix(c, d, t.x), t.y);
 }
 @compute @workgroup_size(8, 8)
@@ -820,7 +820,7 @@ fn sunMain(@builtin(global_invocation_id) id: vec3u) {
   let y = id.y + T.row0;
   if (id.x >= T.n || y >= T.n) { return; }
   let p = vec2f(f32(id.x), f32(y));
-  let h0 = textureLoad(gGrid, vec2i(p), 0, 0).r * T.exag;
+  let h0 = textureLoad(gGrid, g_wr(vec2i(p), 2u, g_WN), 0, 0).r * T.exag;
   let dir = vec2f(T.dx, T.dz);
   var ex = -1e9;
   for (var d = T.step; d < 2400.0; d *= 1.09) {
@@ -836,7 +836,7 @@ fn sinAt(t: f32) -> f32 { return t * inverseSqrt(1.0 + t * t); }
 fn foldMain(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= T.n || id.y >= T.n) { return; }
   let p = vec2f(f32(id.x), f32(id.y));
-  let h0 = textureLoad(gGrid, vec2i(p), 0, 0).r * T.exag;
+  let h0 = textureLoad(gGrid, g_wr(vec2i(p), 2u, g_WN), 0, 0).r * T.exag;
   let g = vec2f(hBil(p + vec2f(2.0, 0.0)) - hBil(p - vec2f(2.0, 0.0)), hBil(p + vec2f(0.0, 2.0)) - hBil(p - vec2f(0.0, 2.0))) * T.exag / (4.0 * T.step);
   var occ = 0.0;
   for (var i = 0; i < 12; i++) {
@@ -947,7 +947,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // ---------- resources ----------
   const B = (size, usage, label) => device.createBuffer({ size: Math.max(16, Math.ceil(size / 4) * 4), usage, label });
   const STOR = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, UNI = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
-  const tex = (o) => device.createTexture({ usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST, dimension: "2d", ...o });
+  const tex = (o) => device.createTexture({ usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC, dimension: "2d", ...o });
   const upload = (t, data, w, h, bpp, layer = 0) => device.queue.writeTexture({ texture: t, origin: [0, 0, layer] }, data, { bytesPerRow: w * bpp, rowsPerImage: h }, [w, h, 1]);
   // the ground's fields
   const gp = ground;
@@ -1024,6 +1024,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     });
     groundGroup = makeGroundGroup();
     for (const b of old) b?.destroy();
+    setWrap(new Int32Array(10));
     if (!gpu) gradientOf(g2.grid.data.subarray(0, GN * GN));
     exagFolded = null; sunShown = null; sunJob = null;
   }
@@ -1128,6 +1129,39 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   const group = (s, v = 0, over = {}) => device.createBindGroup({ layout: s.bgl, entries: s.binds.map((n) => { const name = n.split(":")[0]; return { binding: RES[name][0], resource: over[name] ?? res(name, v) }; }) });
 
   // ---------- the light's fields ----------
+  // The ground's wrap (ground.wgsl.js g_wrapW): where its logical cell 0 lies in the fine, isle, grid and mask textures, and the noise's offset in whole metres, an x y
+  // pair each; the object passes read the same words from the looks' table. All zero for a ground as laid.
+  const wrapNow = new Int32Array(10);
+  function setWrap(w) {
+    wrapNow.set(w);
+    device.queue.writeBuffer(groundBuffers[7], 4098 * 8, wrapNow);
+    device.queue.writeBuffer(looksB, M_WRAP * 4, wrapNow);
+  }
+  // a logical layer of the grid's size put into a grid-texture layer where the wrap puts it: up to four rectangles, put(x0, y0, w, h, dx, dy) from the layer's (x0, y0) to the texture's (dx, dy)
+  function gridRects(layer, put) {
+    const sx = wrapNow[4], sy = wrapNow[5];
+    for (const [x0, w, dx] of [[0, GN - sx, sx], [GN - sx, sx, 0]])
+      for (const [y0, h, dy] of [[0, GN - sy, sy], [GN - sy, sy, 0]]) if (w > 0 && h > 0) put(x0, y0, w, h, dx, dy);
+  }
+  // A check: the ground's textures rolled kx, ky cells in their own storage and the wrap set to match. Nothing logical changes, so a frame drawn after is the frame drawn before.
+  function debugRoll(kx, ky) {
+    if (wrapNow.some(Boolean)) throw new Error("debugRoll: the ground is already rolled");
+    const w = new Int32Array(10), enc = device.createCommandEncoder(), temps = [];
+    [[fineT, gp.fine.size, 4], [isleT, gp.isle.size, 1], [gridT, GN, 6], [riverT, RMN, 16]].forEach(([t, n, per], k) => {
+      const mod = (v) => ((v % n) + n) % n, sx = mod(per * kx), sy = mod(per * ky), d = t.depthOrArrayLayers;
+      w[2 * k] = sx; w[2 * k + 1] = sy;
+      const tmp = device.createTexture({ size: [n, n, d], format: t.format, usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST });
+      enc.copyTextureToTexture({ texture: t }, { texture: tmp }, [n, n, d]);
+      for (const [x0, ww, dx] of [[0, n - sx, sx], [n - sx, sx, 0]])
+        for (const [y0, hh, dy] of [[0, n - sy, sy], [n - sy, sy, 0]]) if (ww > 0 && hh > 0) enc.copyTextureToTexture({ texture: tmp, origin: [x0, y0, 0] }, { texture: t, origin: [dx, dy, 0] }, [ww, hh, d]);
+      temps.push(tmp);
+    });
+    device.queue.submit([enc.finish()]);
+    setWrap(w);
+    for (const t of temps) t.destroy();
+    // the sun map and the folds traced again over the rolled heights, so their reads and the layer copies are checked too
+    exagFolded = null; sunShown = null; sunJob = null;
+  }
   // How much sky the ground's folds hide, traced once over the heights at the drawn exaggeration into grid layer 6.
   function fold(enc, exag) {
     if (exagFolded === exag) return;
@@ -1136,7 +1170,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     pass.setPipeline(S.fold.p); pass.setBindGroup(0, group(S.fold, 0, { sunOut: foldT.createView() })); pass.setBindGroup(1, groundGroup);
     pass.dispatchWorkgroups(Math.ceil(GN / 8), Math.ceil(GN / 8));
     pass.end();
-    enc.copyTextureToTexture({ texture: foldT }, { texture: gridT, origin: [0, 0, 6] }, [GN, GN, 1]);
+    gridRects(6, (x0, y0, w, h, dx, dy) => enc.copyTextureToTexture({ texture: foldT, origin: [x0, y0] }, { texture: gridT, origin: [dx, dy, 6] }, [w, h, 1]));
     exagFolded = exag;
   }
   // The map for what casts shadows, the sun or the moon (cast: { dir: [x, z] toward it, tan of its elevation, exag }):
@@ -1507,7 +1541,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // a source's slots as workgroups, 256 threads each, folded into two dimensions past the 65535 limit
   const spread = (n) => { const wg = Math.max(1, Math.ceil(n / 256)), wx = Math.min(wg, 32768); return [wx, Math.ceil(wg / wx)]; };
   // the tables looks are read by (atlas.js Looks.meta)
-  function setMeta(words) { metaCPU.set(words); device.queue.writeBuffer(looksB, 0, words); }
+  function setMeta(words) { metaCPU.set(words); device.queue.writeBuffer(looksB, 0, words); device.queue.writeBuffer(looksB, M_WRAP * 4, wrapNow); }
   // The survey (wgsl/objects.js needsMain) over every source: mode 0 the kind and species pairs, mode 1 the families and
   // sizes the first nl levels draw, as bits; words: how many 32-bit words of them.
   async function survey(mode, nl, words) {
@@ -1547,7 +1581,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     pass.end();
     enc.copyBufferToTexture({ buffer: c.bytes, bytesPerRow: c.rp }, { texture: c.t0 }, [c.n, c.n, 1]);
     enc.copyBufferToTexture({ buffer: c.wide, bytesPerRow: c.rp3 * 4 }, { texture: c.t3 }, [c.n3, c.n3, 1]);
-    enc.copyBufferToTexture({ buffer: c.tallOut, bytesPerRow: c.rpt * 4 }, { texture: gridT, origin: [0, 0, 5] }, [GN, GN, 1]);
+    gridRects(5, (x0, y0, w, h, dx, dy) => enc.copyBufferToTexture({ buffer: c.tallOut, offset: y0 * c.rpt * 4 + x0 * 4, bytesPerRow: c.rpt * 4 }, { texture: gridT, origin: [dx, dy, 5] }, [w, h, 1]));
     device.queue.submit([enc.finish()]);
   }
   // The cells of the sim's spatial index under a view's tile window, whose corners in world metres bound it.
@@ -1880,7 +1914,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   }
   await Promise.all(Object.values(S).map((o) => o.ready));
   return {
-    errors, stats, frame, setSources, warmSpec, setGround, setMeta, survey, buildCanopy, farBuild, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
+    errors, stats, frame, setSources, warmSpec, setGround, setWrap, debugRoll, setMeta, survey, buildCanopy, farBuild, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
     get busy() { return inFlight; },
     setFarUse: (on) => { farUse = on; },
     setFadeKeep: (on) => { fadeKeep = on; },

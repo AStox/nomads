@@ -52,7 +52,7 @@ export function packGround(isle, g, onGpu = null) {
   }
 
   // the noise's gradient table, as flora.ts makes it, and after it the place's runoff by season against its mean (times 1.2, flowNow's) which a stream's quick share follows
-  const grad = new Float32Array(8192 + 4);
+  const grad = new Float32Array(8192 + 4 + 10);
   for (let k = 0; k < 4096; k++) { grad[k * 2] = Math.cos((k / 4096) * 6.2831853); grad[k * 2 + 1] = Math.sin((k / 4096) * 6.2831853); }
   for (let q = 0; q < 4; q++) grad[8192 + q] = isle.quick[q] * 1.2;
 
@@ -148,7 +148,7 @@ function ratio(S, oct = 0, c = 0) {
   return `${q}, ${o}, ${p}, ${lit(q / p)}`;
 }
 // noise(vx / Sx, vz / Sz, seed) at octave oct of an fbm
-const NOISE = (Sx, Sz, seed, oct = 0, vx = "x", vz = "z") => `g_noiseP(g_dv(${vx}, ${ratio(Sx, oct)}), g_dv(${vz}, ${ratio(Sz, oct)}), ${seed + oct * 31})`;
+const NOISE = (Sx, Sz, seed, oct = 0, vx = "x", vz = "z") => `g_noiseP(g_dvn(${vx}, ${ratio(Sx, oct)}, g_wrapW(4u).x), g_dvn(${vz}, ${ratio(Sz, oct)}, g_wrapW(4u).y), ${seed + oct * 31})`;
 // fbm(vx / Sx, vz / Sz, seed, 2)
 const FBM = (Sx, Sz, seed, vx = "x", vz = "z") => `(${NOISE(Sx, Sz, seed, 0, vx, vz)} * 0.5 + ${NOISE(Sx, Sz, seed, 1, vx, vz)} * 0.25)`;
 // main.js fade(S, mpp)
@@ -180,6 +180,14 @@ ${G} @binding(7) var<storage, read> gGradT: array<vec2<f32>>;
 fn g_quick(s: u32) -> f32 { let v = gGradT[4096u + (s >> 1u)]; return select(v.x, v.y, (s & 1u) == 1u); }
 ${G} @binding(8) var<storage, read> gStreams: array<f32>;
 ${G} @binding(9) var<storage, read> gStreamBins: array<u32>;
+// Where the ground's logical cell 0 lies in each texture (a slide of the ground past it wraps round, so a slide writes only what it uncovers): the shift in
+// fine vertices, isle cells, grid nodes and mask texels, each held in [0, size) by the caller, and the whole meters the noise is offset by (the window's
+// origin has moved by them since the ground was laid). All in the entries of gGradT after the runoff's two, as signed words; zero is the ground as laid.
+fn g_wrapW(k: u32) -> vec2<i32> { return bitcast<vec2<i32>>(gGradT[4098u + k]); }
+fn g_wr(v: vec2<i32>, k: u32, n: i32) -> vec2<i32> {
+  let t = v + g_wrapW(k);
+  return vec2<i32>(select(t.x, t.x - n, t.x >= n), select(t.y, t.y - n, t.y >= n));
+}
 
 // k: the level's art pixels per meter; frame 0..7 of the water's loop; season 0 spring .. 3 winter; flags bit 0: worn
 // paths are drawn
@@ -226,9 +234,10 @@ fn g_smooth(a: f32, b: f32, v: f32) -> f32 { let t = clamp((v - a) / (b - a), 0.
 fn g_jround(v: f32) -> f32 { return floor(v + 0.5); }
 fn g_fdiv(a: i32, p: i32) -> i32 { let d = a / p; return select(d, d - 1, d * p != a && a < 0); }
 // (x q + o) / p as a whole part and a fraction in [0, 1); qp is q / p
-fn g_dv(x: f32, q: i32, o: i32, p: i32, qp: f32) -> vec2<f32> {
+fn g_dv(x: f32, q: i32, o: i32, p: i32, qp: f32) -> vec2<f32> { return g_dvn(x, q, o, p, qp, 0); }
+fn g_dvn(x: f32, q: i32, o: i32, p: i32, qp: f32, off: i32) -> vec2<f32> {
   let xb = floor(x);
-  let a = i32(xb) * q + o;
+  let a = (i32(xb) + off) * q + o;
   let n = g_fdiv(a, p);
   let f = f32(a - n * p) / f32(p) + (x - xb) * qp;
   let k = floor(f);
@@ -269,13 +278,13 @@ fn g_fade(lo: f32, hi: f32, mpp: f32) -> f32 { return 1.0 - g_smooth(lo, hi, mpp
 fn g_clusters(x: f32, z: f32, q: i32, o: i32, p: i32, qp: f32, lo: f32, hi: f32, seed: i32, mpp: f32, cut: f32) -> f32 {
   let a = g_fade(lo, hi, mpp);
   if (a <= 0.0) { return 0.0; }
-  let n = g_noiseP(g_dv(x, q, o, p, qp), g_dv(z, q, o, p, qp), seed) * a;
+  let n = g_noiseP(g_dvn(x, q, o, p, qp, g_wrapW(4u).x), g_dvn(z, q, o, p, qp, g_wrapW(4u).y), seed) * a;
   return select(select(0.0, -1.0, n < -cut), 1.0, n > cut);
 }
 fn g_nfade(x: f32, z: f32, qx: i32, ox: i32, px: i32, rx: f32, qz: i32, oz: i32, pz: i32, rz: f32, seed: i32, lo: f32, hi: f32, mpp: f32) -> f32 {
   let a = g_fade(lo, hi, mpp);
   if (a <= 0.0) { return 0.0; }
-  return g_noiseP(g_dv(x, qx, ox, px, rx), g_dv(z, qz, oz, pz, rz), seed) * a;
+  return g_noiseP(g_dvn(x, qx, ox, px, rx, g_wrapW(4u).x), g_dvn(z, qz, oz, pz, rz, g_wrapW(4u).y), seed) * a;
 }
 fn g_toneIndex(v: f32, X: i32, Y: i32, n: i32) -> i32 { return clamp(i32(floor(v + 0.5 + (bayer(X, Y) - 0.5) * 0.55)), 0, n - 1); }
 fn g_dithIndex(v: f32, X: i32, Y: i32, n: i32) -> i32 { return clamp(i32(floor(v + bayer(X, Y))), 0, n - 1); }
@@ -305,14 +314,14 @@ fn g_fineAt(L: i32, x: f32, z: f32) -> f32 {
   let tu = cu.y;
   let tv = cv.y;
   let i = vec2<i32>(i32(cu.x), i32(cv.x));
-  let a = textureLoad(gFine, i, L, 0).x;
-  let b = textureLoad(gFine, i + vec2<i32>(1, 0), L, 0).x;
-  let c = textureLoad(gFine, i + vec2<i32>(0, 1), L, 0).x;
-  let d = textureLoad(gFine, i + vec2<i32>(1, 1), L, 0).x;
+  let a = textureLoad(gFine, g_wr(i, 0u, g_M), L, 0).x;
+  let b = textureLoad(gFine, g_wr(i + vec2<i32>(1, 0), 0u, g_M), L, 0).x;
+  let c = textureLoad(gFine, g_wr(i + vec2<i32>(0, 1), 0u, g_M), L, 0).x;
+  let d = textureLoad(gFine, g_wr(i + vec2<i32>(1, 1), 0u, g_M), L, 0).x;
   return (a * (1.0 - tu) + b * tu) * (1.0 - tv) + (c * (1.0 - tu) + d * tu) * tv;
 }
 fn heightAt(x: f32, z: f32) -> f32 { return g_fineAt(0, x, z); }
-fn g_isleAt(L: i32, i: i32, j: i32) -> f32 { return textureLoad(gIsle, vec2<i32>(clamp(i, 0, g_N - 1), clamp(j, 0, g_N - 1)), L, 0).x; }
+fn g_isleAt(L: i32, i: i32, j: i32) -> f32 { return textureLoad(gIsle, g_wr(vec2<i32>(clamp(i, 0, g_N - 1), clamp(j, 0, g_N - 1)), 1u, g_N), L, 0).x; }
 // Fine.bilinear over an island field at cell coordinates from g_cellC
 fn g_bil(L: i32, cx: vec2<f32>, cy: vec2<f32>) -> f32 {
   let tx = cx.y;
@@ -329,7 +338,7 @@ fn g_gridAt(L: i32, x: f32, z: f32) -> f32 {
   let a = cu.y;
   let c = cv.y;
   let i = vec2<i32>(i32(cu.x), i32(cv.x));
-  return (textureLoad(gGrid, i, L, 0).x * (1.0 - a) + textureLoad(gGrid, i + vec2<i32>(1, 0), L, 0).x * a) * (1.0 - c) + (textureLoad(gGrid, i + vec2<i32>(0, 1), L, 0).x * (1.0 - a) + textureLoad(gGrid, i + vec2<i32>(1, 1), L, 0).x * a) * c;
+  return (textureLoad(gGrid, g_wr(i, 2u, g_WN), L, 0).x * (1.0 - a) + textureLoad(gGrid, g_wr(i + vec2<i32>(1, 0), 2u, g_WN), L, 0).x * a) * (1.0 - c) + (textureLoad(gGrid, g_wr(i + vec2<i32>(0, 1), 2u, g_WN), L, 0).x * (1.0 - a) + textureLoad(gGrid, g_wr(i + vec2<i32>(1, 1), 2u, g_WN), L, 0).x * a) * c;
 }
 
 // flora.ts waterAt: how much standing water covers a point, 0..1
@@ -383,14 +392,14 @@ fn surfAt(x: f32, z: f32) -> f32 {
       let X = cx + dx;
       let Y = cy + dy;
       if (X < 0 || Y < 0 || X >= g_N || Y >= g_N) { continue; }
-      let w = textureLoad(gIsle, vec2<i32>(X, Y), ${IL.water}, 0).x;
+      let w = textureLoad(gIsle, g_wr(vec2<i32>(X, Y), 1u, g_N), ${IL.water}, 0).x;
       if (w <= 0.0) { continue; }
-      if (dx * dx + dy * dy < bd) { bd = dx * dx + dy * dy; best = textureLoad(gIsle, vec2<i32>(X, Y), ${IL.height}, 0).x + w; }
+      if (dx * dx + dy * dy < bd) { bd = dx * dx + dy * dy; best = textureLoad(gIsle, g_wr(vec2<i32>(X, Y), 1u, g_N), ${IL.height}, 0).x + w; }
     }
   }
   return best;
 }
-fn g_riverAt(i: i32, j: i32) -> f32 { return f32(textureLoad(gRiver, vec2<i32>(clamp(i, 0, g_RM - 1), clamp(j, 0, g_RM - 1)), 0).x) / 255.0; }
+fn g_riverAt(i: i32, j: i32) -> f32 { return f32(textureLoad(gRiver, g_wr(vec2<i32>(clamp(i, 0, g_RM - 1), clamp(j, 0, g_RM - 1)), 3u, g_RM), 0).x) / 255.0; }
 // flora.ts riverSmooth: the stream mask read between its texels
 fn g_riverSmooth(x: f32, z: f32) -> f32 {
   let cu = g_maskC(x);
@@ -459,7 +468,7 @@ fn g_iceTex(X: i32, Y: i32, x: f32, z: f32) -> u32 {
 fn g_lapAngle(x: f32, z: f32, frame: u32) -> f32 {
   let xb = floor(x);
   let zb = floor(z);
-  let A = i32(xb) + i32(zb);
+  let A = i32(xb) + g_wrapW(4u).x + i32(zb) + g_wrapW(4u).y;
   let n = g_fdiv(A, 25);
   let f = (f32(A - n * 25) + (x - xb) + (z - zb)) / 25.0;
   let m = floor(f32(n) / 6.2831855);
@@ -558,7 +567,7 @@ fn g_rgb(L: g_Land, s: f32, x: f32, z: f32, m60: f32, mpp: f32) -> vec3<f32> {
   let soil = g_bil(${IL.soil}, L.cx, L.cy);
   let silt = g_bil(${IL.silt}, L.cx, L.cy);
   let fog = g_bil(${IL.fog}, L.cx, L.cy);
-  let rock = i32(textureLoad(gIsle, vec2<i32>(clamp(g_roundC(L.cx), 0, g_N - 1), clamp(g_roundC(L.cy), 0, g_N - 1)), ${IL.rock}, 0).x);
+  let rock = i32(textureLoad(gIsle, g_wr(vec2<i32>(clamp(g_roundC(L.cx), 0, g_N - 1), clamp(g_roundC(L.cy), 0, g_N - 1)), 1u, g_N), ${IL.rock}, 0).x);
   var grass: vec3<f32>;
   if (lush > 0.5) { grass = g_mixc(${rgb([98, 126, 60])}, ${rgb([56, 96, 48])}, (lush - 0.5) * 2.0); } else { grass = g_mixc(${rgb([160, 150, 90])}, ${rgb([98, 126, 60])}, lush * 2.0); }
   let marsh = g_mixc(${rgb([74, 94, 56])}, ${rgb([48, 50, 38])}, peat);
@@ -741,7 +750,7 @@ fn g_land(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32, wet: f32, riv
       if (rf > 0.0) {
         let xb = floor(x);
         let zb = floor(z);
-        let A = 3 * i32(xb) + 4 * i32(zb);
+        let A = 3 * (i32(xb) + g_wrapW(4u).x) + 4 * (i32(zb) + g_wrapW(4u).y);
         let n = g_fdiv(A, 15);
         let r = (f32(A - n * 15) + 3.0 * (x - xb) + 4.0 * (z - zb)) / 15.0 + ${FBM(24, 24, 61)} * 2.0;
         let f = r - floor(r);
