@@ -919,10 +919,19 @@ const winSpec = (cap) => {
   return winSpecs.get(cap);
 };
 // The windows made, the last three kept (the one drawn, and two more a pan back or a zoom out and in finds made), with their ground and objects on the GPU. A window is
-// found again by place: one made within WIN_NEAR metres of the place asked for covers the view as well.
-const WIN_NEAR = 600, WIN_KEEP = 3, winCache = [];
+// found again by what it covers: the page's own test for a window's cover (the view's half extent in the window's metres and the place's distance from the window's
+// centre, inside the window's half side less 600 m); one made within WIN_NEAR metres of the place asked for serves when the ask names no half extent.
+const WIN_NEAR = 600, WIN_REACH = (256 * 75) / 2 - 600, WIN_KEEP = 3, winCache = [];
 const arcOf = (a, b) => planet.radiusM * Math.acos(Math.min(1, Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.cos((a.lon - b.lon) * Math.PI / 180) + Math.sin(a.lat * Math.PI / 180) * Math.sin(b.lat * Math.PI / 180)));
-const winNear = (want) => winCache.find((w) => !w.dead && arcOf(w, want) < WIN_NEAR);
+const winNear = (want) => {
+  let best = null, bestD = Infinity;
+  for (const w of winCache) {
+    if (w.dead) continue;
+    const d = arcOf(w, want);
+    if ((want.half !== undefined ? d / w.scale + want.half <= WIN_REACH : d < WIN_NEAR) && d < bestD) { best = w; bestD = d; }
+  }
+  return best;
+};
 function destroyWindow(w) {
   w.dead = true;
   const pk = w.pack;

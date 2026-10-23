@@ -274,6 +274,19 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     stats.window = m.stats ?? null;
     onGround?.(mode);
   }
+  // the target's own drift (a pan, a follow) carried 3 s on: the window the view will want then is asked for now, speculatively
+  let panAt = 0, panGeo = null, panV = null;
+  function panAhead(view, now) {
+    if (!view.geo) return;
+    if (panGeo && now > panAt) {
+      const dt = (now - panAt) / 1000, vl = (view.geo.lat - panGeo.lat) / dt, vo = (view.geo.lon - panGeo.lon) / dt;
+      panV = panV ? { lat: panV.lat * 0.8 + vl * 0.2, lon: panV.lon * 0.8 + vo * 0.2 } : { lat: vl, lon: vo };
+    }
+    panGeo = { lat: view.geo.lat, lon: view.geo.lon };
+    panAt = now;
+    if (!panV || Math.hypot(panV.lat, panV.lon * Math.cos(view.geo.lat * D2R)) * D2R * PR < 150) return;
+    wantGround({ ...view, geo: { lat: view.geo.lat + panV.lat * 3, lon: view.geo.lon + panV.lon * 3 } }, now, true);
+  }
   // Which ground the camera wants: the island's while its view stays inside the play area, else a window laid at the camera, made again when the view
   // nears the window's edge (the worker is told, and answers when it has it; until then the ladder draws what ground it has)
   function wantGround(view, now, speculative = false) {
@@ -284,7 +297,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     if (half > SIZE / 2 - 1800) return;
     let want = null;
     if (arc(HOME.c) + half < SIZE / 2 + 800) { if (mode !== "home") want = { mode: "home" }; }
-    else if (mode !== "win" || arc(FRM.c) / FRM.scale + half > SIZE / 2 - 600) want = { mode: "win", lat: view.geo.lat, lon: view.geo.lon };
+    else if (mode !== "win" || arc(FRM.c) / FRM.scale + half > SIZE / 2 - 600) want = { mode: "win", lat: view.geo.lat, lon: view.geo.lon, half };
     // a speculative ask is for the view a zoom is heading to: the worker makes the window ahead of the view that needs it, and keeps it
     if (speculative) {
       if (!want || want.mode !== "win") return;
@@ -852,6 +865,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     sky = mode === "win" ? skyFor(clock, now, planetSky(homeSky)) : homeSky;
     syncGeo(view);
     wantGround(view, now);
+    panAhead(view, now);
     const pl = plan(view), T = tablesFor(sky);
     frameSprites = [];
     // the sim's people, animals and things live on the island: elsewhere there are none
