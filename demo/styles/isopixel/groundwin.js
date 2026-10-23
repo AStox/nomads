@@ -5,11 +5,10 @@
 // run on its cells (so a vertex is the same whichever window holds it), and what grew is each tile's own scatter (scatter.ts: the same
 // objects every visit) cut to the window. The window is the island's ground in everything the painter and the renderer read, and in
 // its frame: x along the face's X axis, z against its Y (north-up as the planet is seen from above, not mirrored), metres of 75 m a cell.
-import { CELL, M, N, RM, SIZE } from "../island.js";
+import { CELL, N } from "../island.js";
 import { packGround } from "./ground.wgsl.js";
-import { collector } from "./winobjects.js";
 
-const S = N + 16, H = 8, MT = 1025;
+const S = N + 16, H = 8, UNITS = 5000;
 const TYPES = { i8: Int8Array, u8: Uint8Array, i16: Int16Array, u16: Uint16Array, i32: Int32Array, u32: Uint32Array, f32: Float32Array };
 const DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
 const D2R = Math.PI / 180;
@@ -36,7 +35,7 @@ function decode(raw) {
 export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, keep = 6, top = CAPS[CAPS.length - 1] }) {
   const g = G.tierGrid(tier), fn = g.fn, nT = 2 ** tier, tiles = new Map();
   // the window's kernels compile on the GPU process's own threads from the start, so no window stops the frames to compile one
-  const warming = T.warmScatter(gpu);
+  const warming = T.warmWindow(gpu);
   const tileKey = (f, tx, ty) => (f * nT + ty) * nT + tx;
   // a ground tile, fetched and kept (the least lately used going when `keep` are held)
   async function groundTile(f, tx, ty) {
@@ -131,7 +130,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     for (let k = 0; k < S * S; k++) if (own[k] < 0) { if (planes.chn) planes.chn[k] = 0; if (planes.dir) planes.dir[k] = 0; }
     const win = { meta: { side: S, halo: H, fields: first.meta.fields, absent: [] }, planes };
     const src = T.tileSource(win);
-    const fine = await T.windowFine(gpu, src, face, x0, y0);
+    const wg = await T.windowGround(gpu, src, face, x0, y0);
     const t2 = performance.now();
 
     // ---------- the painter's inputs, rows turned so that z runs south ----------
@@ -151,46 +150,25 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       peat: flipCells((a) => (flags[a] & 4 ? 1 : 0)), soil: flipCells((a) => pl.soil[a] / 1024), silt: flipCells((a) => (flags[a] & 1 ? 1 : 0)), fog: flipCells((a) => pl.fog[a] / 255),
       seasons: [0, 1, 2, 3].map((s) => ({ precip: s === 1 ? precip : null, pet: s === 1 ? pet : null, snowpack: snow[s] })), quick: runoff,
     };
-    // the fine ground, the tile's lattice (1,025 a side, edge to edge) cropped to the island's (1,021, a vertex on each cell's centre and a quarter between) and turned
-    const cropFlip = (F) => { const o = new Float32Array(M * M); for (let v = 0; v < M; v++) { const row = (MT - 3 - v) * MT + 2; for (let u = 0; u < M; u++) o[v * M + u] = F[row + u]; } return o; };
-    const L = fine.layers, mask = new Uint8Array(RM * RM);
-    for (let r = 0; r < RM; r++) mask.set(fine.mask.subarray((RM - 1 - r) * RM, (RM - r) * RM), r * RM);
-    const river = new Float32Array(M * M);
-    for (let v = 0, i = 0; v < M; v++) for (let u = 0; u < M; u++, i++) river[i] = mask[(8 + 4 * v) * RM + 8 + 4 * u] / 255;
-    const h = cropFlip(L.h);
-    const START = CELL / 2 - SIZE / 2, STEP = CELL / 4, max = M - 1.001;
-    const heightAt = (x, z) => {
-      const fu = Math.min(max, Math.max(0, (x - START) / STEP)), fv = Math.min(max, Math.max(0, (z - START) / STEP)), u = Math.floor(fu), v = Math.floor(fv), a = fu - u, b = fv - v, i = v * M + u;
-      return (h[i] * (1 - a) + h[i + 1] * a) * (1 - b) + (h[i + M] * (1 - a) + h[i + M + 1] * a) * b;
-    };
-    // the streams: each channel cell's step to its receiver, z turned
-    const rivers = fine.rivers.map((line) => line.map((p) => [p[0], -p[1], ...p.slice(2)]));
-    const ground = { h, wet: cropFlip(L.wet), moist: cropFlip(L.moist), river, cover: Object.fromEntries(["tree", "shrub", "grass", "marsh", "bare", "sand"].map((n) => [n, cropFlip(L[n])])), rivers, mask, heightAt };
-    const pack = packGround(isle, ground);
+    // the fine layers, the stream mask and the light grid are the GPU's (windowGround), copied into the renderer's textures by setGround; only the streams are binned here, z turned
+    const h = wg.h;
+    const rivers = wg.rivers.map((line) => line.map((p) => [p[0], -p[1], ...p.slice(2)]));
+    const pack = packGround(isle, { rivers }, { fine: wg.fine, grid: wg.grid, mask: wg.mask, top: wg.top, finePitch: wg.finePitch, fineLayerWords: wg.fineLayerWords, gridPitch: wg.gridPitch, gridLayerWords: wg.gridLayerWords });
     const t3 = performance.now();
     let peak = 0;
     for (const v of height) peak = Math.max(peak, v);
 
-    // ---------- what grew: each tile's own scatter, cut to the window ----------
-    // what grew: each tile's own scatter, cut to the window as it comes (a tile holds up to 17.7 million objects, 300 MB) and let go
-    const col = collector({ N, CELL, cap: top });
-    let tScat = 0, tAdd = 0;
+    // ---------- what grew: each tile's own scatter, put in the window's frame, thinned and binned into the renderer's body on the GPU, nothing read back ----------
+    const placed = [];
     for (const t of tl) {
       if (!t.interior) continue;
       const at = placer(t, face, x0, y0, srcF, srcX, srcY, turn);
       if (!at || at.rect.w <= 0 || at.rect.h <= 0) continue;
-      const place = at.place;
       // only the cells of the tile the window touches are made (the objects' ids in the tile's whole run are the same either way)
-      const ta = performance.now();
-      let sc = (await T.scatterTile({ gpu, dir: null, tier }, t.f * nT * nT + t.ty * nT + t.tx, seed, 2, false, T.tileSource(t.gt), at.rect)).flora;
-      const tb = performance.now();
+      placed.push({ tile: t.f * nT * nT + t.ty * nT + t.tx, source: T.tileSource(t.gt), rect: at.rect, a0: t.tx * 256 * UNITS, a1: t.ty * 256 * UNITS, ...at.units });
       stats.scatter = (stats.scatter ?? 0) + 1;
-      col.add(sc, (q, out) => place(sc.px[q], sc.py[q], out));
-      tScat += tb - ta; tAdd += performance.now() - tb;
-      sc = null;
     }
-    const tl0 = performance.now();
-    const objects = col.lay((k) => CAPS.find((c) => c >= k && c <= top) ?? top);
+    const objects = await T.windowObjects(gpu, tier, placed, seed, { caps: CAPS.filter((c) => c <= top), side: N });
     const t4 = performance.now();
 
     // ---------- where the window stands on the sphere ----------
@@ -202,27 +180,28 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const scale = Math.sqrt(arc(c, pe) * arc(c, pn)) / CELL;
     const [E, Nn] = G.eastNorth(c);
     stats.builds++;
-    stats.ms = { tiles: t1 - t0, fine: t2 - t1, pack: t3 - t2, flora: t4 - t3, scatter: tScat, cut: tAdd, lay: t4 - tl0, total: t4 - t0 };
+    stats.ms = { tiles: t1 - t0, fine: t2 - t1, pack: t3 - t2, flora: t4 - t3, total: t4 - t0 };
     return {
       id: `${face}:${x0}:${y0}`, face, x0, y0, c, e, n, scale, rot: [dot(e, E), dot(e, Nn), dot(n, E), dot(n, Nn)],
       lat: G.latLon(c).lat / D2R, lon: G.latLon(c).lon / D2R, pack, objects, fields: { peak, h, height, water }, stats: { ...stats, ms: stats.ms, objects: objects.n, share: objects.share },
     };
   }
 
-  // Where a tile's objects stand in the window: { place, rect }. place(px, py, out) puts the window's x and y (cells from its west edge, and south from its
-  // north edge) of the object at (px, py) game tiles (two cells each) from the tile's north-west corner in out; rect is the rectangle of the tile's cells
-  // (x0, y0, w, h) that holds the window, which is all the scatter need make. null when the tile's face is turned against the window's by no turn the
-  // window knows. This face's cells are the window's by p_window = R^T (p_face - p0) + w0 from a cell that stands in both.
+  // Where a tile's objects stand in the window, in whole units of 15 mm (UNITS to the cell): { rect, units }. units are the shift and turn the GPU's place kernel applies (wgsl/terrain-place.ts):
+  // out x = d0 (A0 + px - s0x) + d1 (A1 + py - s0y) + w0x, out y = N - (-d1 (A0 + px - s0x) + d0 (A1 + py - s0y) + w0y), A the tile's corner and (px, py) the entry's place from it. rect is the
+  // rectangle of the tile's cells (x0, y0, w, h) that holds the window, which is all the scatter need make. null when the tile's face is turned against the window's by no turn the window knows.
+  // This face's cells are the window's by p_window = R^T (p_face - p0) + w0 from a cell that stands in both.
   function placer(t, face, x0, y0, srcF, srcX, srcY, turn) {
     const clip = (lo, hi) => { const a = Math.max(0, Math.floor(lo) - 1), b = Math.min(256, Math.ceil(hi) + 1); return [a, Math.max(0, b - a)]; };
     if (t.f === face) {
       const [rx, rw] = clip(x0 - t.tx * 256, x0 + N - t.tx * 256), [ry, rh] = clip(y0 - t.ty * 256, y0 + N - t.ty * 256);
-      return { rect: { x0: rx, y0: ry, w: rw, h: rh }, place: (px, py, out) => { out[0] = t.tx * 256 + px * 2 - x0; out[1] = N - (t.ty * 256 + py * 2 - y0); return true; } };
+      return { rect: { x0: rx, y0: ry, w: rw, h: rh }, units: { s0x: x0 * UNITS, s0y: y0 * UNITS, w0x: 0, w0y: 0, d0: 1, d1: 0 } };
     }
     const d = turn.get(t.f);
     let k = -1;
     for (let q = 0; q < S * S; q++) if (srcF[q] === t.f) { k = q; break; }
     if (!d || k < 0) return null;
+    const s0x = srcX[k] * UNITS + UNITS / 2, s0y = srcY[k] * UNITS + UNITS / 2, w0x = ((k % S) - H) * UNITS + UNITS / 2, w0y = (Math.floor(k / S) - H) * UNITS + UNITS / 2;
     const s0 = [srcX[k] + 0.5, srcY[k] + 0.5], w0 = [(k % S) - H + 0.5, Math.floor(k / S) - H + 0.5];
     // the window's corners back in the tile's cells: p_face = R (p_window - w0) + p0
     const xs = [], ys = [];
@@ -231,14 +210,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       xs.push(s0[0] + d[0] * ux - d[1] * uy - t.tx * 256); ys.push(s0[1] + d[1] * ux + d[0] * uy - t.ty * 256);
     }
     const [rx, rw] = clip(Math.min(...xs), Math.max(...xs)), [ry, rh] = clip(Math.min(...ys), Math.max(...ys));
-    return {
-      rect: { x0: rx, y0: ry, w: rw, h: rh },
-      place: (px, py, out) => {
-        const dx = t.tx * 256 + px * 2 - s0[0], dy = t.ty * 256 + py * 2 - s0[1];
-        out[0] = d[0] * dx + d[1] * dy + w0[0]; out[1] = N - (-d[1] * dx + d[0] * dy + w0[1]);
-        return true;
-      },
-    };
+    return { rect: { x0: rx, y0: ry, w: rw, h: rh }, units: { s0x, s0y, w0x, w0y, d0: d[0], d1: d[1] } };
   }
   return { build, stats, groundTile };
 }

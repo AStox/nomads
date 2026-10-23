@@ -22,27 +22,34 @@ const IL = Object.fromEntries(ISLE_LAYERS.map((n, i) => [n, i]));
 // Everything the painter reads, as plain typed arrays for the renderer to upload: the fine ground (M x M, ten layers),
 // the island's fields (N x N), the 12.5 m light grid (heights, occlusion, slope; layers 3 to 7 the renderer's own), the
 // stream mask, main.js's table of ground colour pairs, the noise's gradients (and the place's runoff by season) and the streams binned for streamAt.
-export function packGround(isle, g) {
-  const MM = M * M, fine = new Float32Array(MM * 10);
-  [g.h, g.wet, g.moist, g.river, ...COVER_LAYERS.map((k) => g.cover[k])].forEach((f, L) => fine.set(f, L * MM));
+// onGpu, when the fine layers, the light grid and the stream mask were made on the GPU (demo/tile.ts windowGround): { fine, grid, mask } buffers, which the renderer copies into its
+// textures, so none of that is made here; g then holds only the streams (rivers).
+export function packGround(isle, g, onGpu = null) {
+  const MM = M * M, fine = onGpu ? null : new Float32Array(MM * 10);
+  if (!onGpu) [g.h, g.wet, g.moist, g.river, ...COVER_LAYERS.map((k) => g.cover[k])].forEach((f, L) => fine.set(f, L * MM));
   const NN = N * N, S1 = isle.seasons[1], src = { height: isle.height, water: isle.water, windShare: isle.windShare, rock: isle.rock, precip: S1.precip, pet: S1.pet, table: isle.table, peat: isle.peat, soil: isle.soil, silt: isle.silt, fog: isle.fog };
   for (let s = 0; s < 4; s++) src[`snow${s}`] = isle.seasons[s].snowpack;
   const isl = new Float32Array(NN * ISLE_LAYERS.length);
   ISLE_LAYERS.forEach((n, L) => isl.set(src[n], L * NN));
 
   // main.js worldHeights and worldAO, and flora.ts worldSlope, worked out the way they work them out
-  const W2 = WN * WN, grid = new Float32Array(W2 * 8), h = grid.subarray(0, W2), ao = grid.subarray(W2, 2 * W2), sl = grid.subarray(2 * W2, 3 * W2);
-  for (let j = 0; j < WN; j++) for (let i = 0; i < WN; i++) h[j * WN + i] = Math.max(0, g.heightAt(ORIGIN + i * WS, ORIGIN + j * WS));
-  const r = 16, tmp = new Float32Array(W2), m = new Float32Array(W2);
-  for (let j = 0; j < WN; j++) { let a = 0, c = 0; for (let i = -r; i < WN + r; i++) { if (i + r < WN) { a += h[j * WN + i + r]; c++; } if (i - r - 1 >= 0) { a -= h[j * WN + i - r - 1]; c--; } if (i >= 0 && i < WN) tmp[j * WN + i] = a / c; } }
-  for (let i = 0; i < WN; i++) { let a = 0, c = 0; for (let j = -r; j < WN + r; j++) { if (j + r < WN) { a += tmp[(j + r) * WN + i]; c++; } if (j - r - 1 >= 0) { a -= tmp[(j - r - 1) * WN + i]; c--; } if (j >= 0 && j < WN) m[j * WN + i] = a / c; } }
-  for (let k = 0; k < W2; k++) ao[k] = Math.max(-1, Math.min(0.6, (h[k] - m[k]) / 45));
-  const d = 18.75;
-  for (let j = 0; j < WN; j++)
-    for (let i = 0; i < WN; i++) {
-      const X = -SIZE / 2 + i * WS, Z = -SIZE / 2 + j * WS;
-      sl[j * WN + i] = Math.hypot(g.heightAt(X + d, Z) - g.heightAt(X - d, Z), g.heightAt(X, Z + d) - g.heightAt(X, Z - d)) / (2 * d);
-    }
+  let grid = null;
+  if (!onGpu) {
+    const W2 = WN * WN;
+    grid = new Float32Array(W2 * 8);
+    const h = grid.subarray(0, W2), ao = grid.subarray(W2, 2 * W2), sl = grid.subarray(2 * W2, 3 * W2);
+    for (let j = 0; j < WN; j++) for (let i = 0; i < WN; i++) h[j * WN + i] = Math.max(0, g.heightAt(ORIGIN + i * WS, ORIGIN + j * WS));
+    const r = 16, tmp = new Float32Array(W2), m = new Float32Array(W2);
+    for (let j = 0; j < WN; j++) { let a = 0, c = 0; for (let i = -r; i < WN + r; i++) { if (i + r < WN) { a += h[j * WN + i + r]; c++; } if (i - r - 1 >= 0) { a -= h[j * WN + i - r - 1]; c--; } if (i >= 0 && i < WN) tmp[j * WN + i] = a / c; } }
+    for (let i = 0; i < WN; i++) { let a = 0, c = 0; for (let j = -r; j < WN + r; j++) { if (j + r < WN) { a += tmp[(j + r) * WN + i]; c++; } if (j - r - 1 >= 0) { a -= tmp[(j - r - 1) * WN + i]; c--; } if (j >= 0 && j < WN) m[j * WN + i] = a / c; } }
+    for (let k = 0; k < W2; k++) ao[k] = Math.max(-1, Math.min(0.6, (h[k] - m[k]) / 45));
+    const d = 18.75;
+    for (let j = 0; j < WN; j++)
+      for (let i = 0; i < WN; i++) {
+        const X = -SIZE / 2 + i * WS, Z = -SIZE / 2 + j * WS;
+        sl[j * WN + i] = Math.hypot(g.heightAt(X + d, Z) - g.heightAt(X - d, Z), g.heightAt(X, Z + d) - g.heightAt(X, Z - d)) / (2 * d);
+      }
+  }
 
   // the noise's gradient table, as flora.ts makes it, and after it the place's runoff by season against its mean (times 1.2, flowNow's) which a stream's quick share follows
   const grad = new Float32Array(8192 + 4);
@@ -71,10 +78,10 @@ export function packGround(isle, g) {
   streamBins[NB * NB] = at;
 
   return {
-    fine: { size: M, layers: 10, data: fine },
+    fine: onGpu ? { size: M, layers: 10, gpu: onGpu.fine, pitch: onGpu.finePitch, layerWords: onGpu.fineLayerWords } : { size: M, layers: 10, data: fine },
     isle: { size: N, layers: ISLE_LAYERS.length, data: isl },
-    grid: { size: WN, layers: 8, data: grid },
-    river: g.mask,
+    grid: onGpu ? { size: WN, layers: 8, gpu: onGpu.grid, top: onGpu.top, pitch: onGpu.gridPitch, layerWords: onGpu.gridLayerWords } : { size: WN, layers: 8, data: grid },
+    river: onGpu ? { gpu: onGpu.mask } : g.mask,
     dq: dqBuild(),
     grad,
     streams: new Float32Array(verts.length ? verts : [0, 0, 0, 0, 0]),
@@ -85,7 +92,9 @@ export function packGround(isle, g) {
 // main.js dqBuild: the nearest pair of natural ground colours for every RGB at 5 bits a channel, and how far along the
 // pair the colour lies, packed as first | second << 8 | step << 16.
 const DQ_NAMES = ["g0", "g1", "g2", "g3", "g4", "g5", "g6", "t1", "t2", "t3", "a0", "a1", "a2", "a3", "d0", "d1", "d2", "d3", "d4", "d5", "r0", "r1", "r2", "r3", "r4", "r5", "s0", "s1", "s2", "s3", "m0", "m1", "m2", "m3", "h0", "h1", "h2", "h3", "o0", "o1", "o2", "o3"];
+let DQ_TABLE = null;
 export function dqBuild() {
+  if (DQ_TABLE) return DQ_TABLE;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const ids = DQ_NAMES.map((n) => P[n]), cols = ids.map((i) => RGB[i]), W8 = [3, 4, 2], d2 = (a, b) => W8[0] * (a[0] - b[0]) ** 2 + W8[1] * (a[1] - b[1]) ** 2 + W8[2] * (a[2] - b[2]) ** 2;
   const DQ = new Uint32Array(32768);
@@ -104,6 +113,7 @@ export function dqBuild() {
           }
         DQ[(r << 10) | (gg << 5) | b] = ids[best[1]] | (ids[best[2]] << 8) | (Math.round(best[3] * 255) << 16);
       }
+  DQ_TABLE = DQ;
   return DQ;
 }
 

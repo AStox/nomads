@@ -131,6 +131,31 @@ export async function objectsOn(g: Gpu, L: SceneryLayout, K: SceneryKernels, pac
 // The draws are counted over every quad, so that each entry's place in the run (its id) is the whole run's; the write pass makes only the quads that can hold the window's entries and writes only
 // those, and only the rows of game tiles the window touches are read back.
 export async function objectsOn(g: Gpu, L: SceneryLayout, K: SceneryKernels, packed: GPUBuffer, field: GPUBuffer, seed: number, key: number, window?: CellWindow): Promise<Scatter | WindowedScatter> {
+  const { IDX } = L;
+  let t = performance.now();
+  const { idx, out, start, n, oreN, from, to } = await objectsGpu(g, L, K, packed, field, seed, key, window, true);
+  t = performance.now();
+  const word = async (b: GPUBuffer) => { const raw = to > from ? await readback(g, b, (to - from) * 4, from * 4) : new ArrayBuffer(0); b.destroy(); return raw; };
+  const [pxRaw, pyRaw, szRaw, sdRaw, ksRaw] = [await word(out[0]), await word(out[1]), await word(out[2]), await word(out[3]), await word(out[4])];
+  const tail = new Uint32Array(await readback(g, idx, (IDX.flag - IDX.seed + 1) * 4, IDX.seed * 4)), oreRaw = new Uint32Array(await readback(g, idx, 4 * Math.max(1, oreN) * 4, IDX.ore * 4));
+  t = await lap(g, "readback", t);
+  if (tail[IDX.flag - IDX.seed] !== 0) throw new Error("the second pass drew other entries than the first counted");
+  idx.destroy(); packed.destroy(); field.destroy();
+  // the game's tile coordinate and the size, from their integers, in place (the same float32 a CPU division stores)
+  if (window) return windowed(window, from, to, [pxRaw, pyRaw, szRaw, sdRaw, ksRaw], oreRaw, oreN);
+  const pxU = new Uint32Array(pxRaw), pyU = new Uint32Array(pyRaw), szU = new Uint32Array(szRaw), ks = new Uint32Array(ksRaw);
+  const px = new Float32Array(pxRaw), py = new Float32Array(pyRaw), size = new Float32Array(szRaw), kind = new Uint8Array(n), species = new Uint8Array(n);
+  for (let i = 0; i < n; i++) { px[i] = pxU[i] / 1e4; py[i] = pyU[i] / 1e4; size[i] = szU[i] / 1e6; kind[i] = ks[i] & 255; species[i] = ks[i] >>> 8; }
+  const ore: Scatter["ore"] = [];
+  for (let k = 0; k < oreN; k++) ore.push({ px: Math.fround(oreRaw[4 * k] / 1e4), py: Math.fround(oreRaw[4 * k + 1] / 1e4), size: oreRaw[4 * k + 2] / 1e6, seed: oreRaw[4 * k + 3] });
+  return { n, start, kind, species, px, py, size, seed: new Uint32Array(sdRaw), ore };
+}
+
+// What the draws leave on the GPU: the entries' arrays (px, py, size, seed, ks as the write kernel puts them, indexed by the entry's place in the whole run), the run's starts by game tile,
+// and the span [from, to) of entries the window's rows hold (the whole run without a window). The caller owns the buffers (idx too, which the loose ore is read from).
+export interface GpuRun { idx: GPUBuffer; out: GPUBuffer[]; start: Int32Array; n: number; oreN: number; from: number; to: number }
+// written false counts the draws only (the starts by game tile) and makes no arrays.
+export async function objectsGpu(g: Gpu, L: SceneryLayout, K: SceneryKernels, packed: GPUBuffer, field: GPUBuffer, seed: number, key: number, window?: CellWindow, written = true): Promise<GpuRun> {
   const { IDX, NQ } = L;
   let t = performance.now();
   run(g, pipeline(g, K.table, "table"), [[0, packed]], [Math.ceil(L.LEN / 64)]);
@@ -151,26 +176,22 @@ export async function objectsOn(g: Gpu, L: SceneryLayout, K: SceneryKernels, pac
   if (meta[IDX.flag - IDX.seed] !== 0) throw new Error("a quad's entries have no place in any tile's run");
   const start = Int32Array.from(meta.subarray(IDX.start - IDX.seed, IDX.start - IDX.seed + T + 1)), n = start[T], oreN = meta[IDX.oreTotal - IDX.seed];
   if (oreN > ORE_CAP) throw new Error(`${oreN} loose stones of ore, room for ${ORE_CAP}`);
-  const out = ["px", "py", "size", "seed", "ks"].map(() => storage(g, Math.max(1, n) * 4));
-  run(g, pipeline(g, K.write, "write"), [...base, ...out.map((b, k): [number, GPUBuffer] => [3 + k, b])], [Math.ceil(NQ / 64)]);
-  t = await lap(g, "write", t);
+  const counted: GpuRun = { idx, out: [], start, n, oreN, from: 0, to: 0 };
+  if (written) {
+    objectsWrite(g, L, K, packed, field, counted);
+    t = await lap(g, "write", t);
+  }
+  const out = counted.out;
   // the game tiles' rows the window touches (an entry lies in the game tile its place is in, and a game tile is 2 cells): their runs are contiguous in the arrays
   const rows = window ? { lo: Math.max(0, Math.floor(Math.max(0, window.y0) / 2) - 1), hi: Math.min(TILES - 1, Math.floor((y1 - 1) / 2) + 1) } : { lo: 0, hi: TILES - 1 };
   const from = window ? (window.w > 0 && window.h > 0 ? start[rows.lo * TILES] : 0) : 0, to = window ? (window.w > 0 && window.h > 0 ? start[(rows.hi + 1) * TILES] : 0) : n;
-  const word = async (b: GPUBuffer) => { const raw = to > from ? await readback(g, b, (to - from) * 4, from * 4) : new ArrayBuffer(0); b.destroy(); return raw; };
-  const [pxRaw, pyRaw, szRaw, sdRaw, ksRaw] = [await word(out[0]), await word(out[1]), await word(out[2]), await word(out[3]), await word(out[4])];
-  const tail = new Uint32Array(await readback(g, idx, (IDX.flag - IDX.seed + 1) * 4, IDX.seed * 4)), oreRaw = new Uint32Array(await readback(g, idx, 4 * Math.max(1, oreN) * 4, IDX.ore * 4));
-  t = await lap(g, "readback", t);
-  if (tail[IDX.flag - IDX.seed] !== 0) throw new Error("the second pass drew other entries than the first counted");
-  idx.destroy(); packed.destroy(); field.destroy();
-  // the game's tile coordinate and the size, from their integers, in place (the same float32 a CPU division stores)
-  if (window) return windowed(window, from, to, [pxRaw, pyRaw, szRaw, sdRaw, ksRaw], oreRaw, oreN);
-  const pxU = new Uint32Array(pxRaw), pyU = new Uint32Array(pyRaw), szU = new Uint32Array(szRaw), ks = new Uint32Array(ksRaw);
-  const px = new Float32Array(pxRaw), py = new Float32Array(pyRaw), size = new Float32Array(szRaw), kind = new Uint8Array(n), species = new Uint8Array(n);
-  for (let i = 0; i < n; i++) { px[i] = pxU[i] / 1e4; py[i] = pyU[i] / 1e4; size[i] = szU[i] / 1e6; kind[i] = ks[i] & 255; species[i] = ks[i] >>> 8; }
-  const ore: Scatter["ore"] = [];
-  for (let k = 0; k < oreN; k++) ore.push({ px: Math.fround(oreRaw[4 * k] / 1e4), py: Math.fround(oreRaw[4 * k + 1] / 1e4), size: oreRaw[4 * k + 2] / 1e6, seed: oreRaw[4 * k + 3] });
-  return { n, start, kind, species, px, py, size, seed: new Uint32Array(sdRaw), ore };
+  return { idx, out, start, n, oreN, from, to };
+}
+
+// The write pass of a run counted with written false: makes the arrays (run.out) and fills them, the quads the window touches only.
+export function objectsWrite(g: Gpu, L: SceneryLayout, K: SceneryKernels, packed: GPUBuffer, field: GPUBuffer, r: GpuRun) {
+  r.out = ["px", "py", "size", "seed", "ks"].map(() => storage(g, Math.max(1, r.n) * 4));
+  run(g, pipeline(g, K.write, "write"), [[0, packed], [1, field], [2, r.idx], ...r.out.map((b, k): [number, GPUBuffer] => [3 + k, b])], [Math.ceil(L.NQ / 64)]);
 }
 
 // The island's fine field and every object on it (flora.ts's fineGround and scatter): the Fine and the Scatter the sim

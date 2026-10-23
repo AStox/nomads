@@ -1000,10 +1000,22 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // textures, its stream buffers made again, the gradient and the highest ground worked out again, and the sun's trace and the
   // folds' laid again from the new heights. The trails and the ice are the caller's to set (setTrails, setIce).
   function setGround(g2) {
-    for (let l = 0; l < g2.fine.layers; l++) upload(fineT, g2.fine.data.subarray(l * g2.fine.size ** 2, (l + 1) * g2.fine.size ** 2), g2.fine.size, g2.fine.size, 4, l);
     for (let l = 0; l < g2.isle.layers; l++) upload(isleT, g2.isle.data.subarray(l * g2.isle.size ** 2, (l + 1) * g2.isle.size ** 2), g2.isle.size, g2.isle.size, 4, l);
-    for (let l = 0; l < 3; l++) upload(gridT, g2.grid.data.subarray(l * GN * GN, (l + 1) * GN * GN), GN, GN, 4, l);
-    upload(riverT, g2.river, RMN, RMN, 1);
+    const gpu = g2.fine.gpu;
+    if (gpu) {
+      // made on the GPU (packGround's onGpu): copied into the textures, their buffers let go once the copies are queued
+      const enc = device.createCommandEncoder(), M = g2.fine.size, fp = g2.fine.pitch, gp2 = g2.grid.pitch;
+      for (let l = 0; l < g2.fine.layers; l++) enc.copyBufferToTexture({ buffer: gpu, offset: l * g2.fine.layerWords * 4, bytesPerRow: fp * 4, rowsPerImage: M }, { texture: fineT, origin: [0, 0, l] }, [M, M, 1]);
+      for (let l = 0; l < 5; l++) enc.copyBufferToTexture({ buffer: g2.grid.gpu, offset: l * g2.grid.layerWords * 4, bytesPerRow: gp2 * 4, rowsPerImage: GN }, { texture: gridT, origin: [0, 0, l] }, [GN, GN, 1]);
+      enc.copyBufferToTexture({ buffer: g2.river.gpu, bytesPerRow: RMN }, { texture: riverT }, [RMN, RMN, 1]);
+      device.queue.submit([enc.finish()]);
+      gpu.destroy(); g2.grid.gpu.destroy(); g2.river.gpu.destroy();
+      gridTop = g2.grid.top;
+    } else {
+      for (let l = 0; l < g2.fine.layers; l++) upload(fineT, g2.fine.data.subarray(l * g2.fine.size ** 2, (l + 1) * g2.fine.size ** 2), g2.fine.size, g2.fine.size, 4, l);
+      for (let l = 0; l < 3; l++) upload(gridT, g2.grid.data.subarray(l * GN * GN, (l + 1) * GN * GN), GN, GN, 4, l);
+      upload(riverT, g2.river, RMN, RMN, 1);
+    }
     const old = groundBuffers;
     groundBuffers = GROUND_BINDINGS.map((b, i) => {
       if (b.kind !== "storage") return null;
@@ -1012,7 +1024,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     });
     groundGroup = makeGroundGroup();
     for (const b of old) b?.destroy();
-    gradientOf(g2.grid.data.subarray(0, GN * GN));
+    if (!gpu) gradientOf(g2.grid.data.subarray(0, GN * GN));
     exagFolded = null; sunShown = null; sunJob = null;
   }
   // The trees' cover, laid by the GPU from the trees in the object buffers (wgsl/objects.js canopyMain): cells of

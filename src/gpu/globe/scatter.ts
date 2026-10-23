@@ -136,6 +136,15 @@ export function riversOf(source: TileSource, tile: number, tier = 4): FineRiver[
 
 // `fine` (when asked for): the fine field's heights over the 1,025 by 1,025 vertices, m, and the stream mask (RM by RM texels, 0 to 255).
 export interface TileScatter<F extends Scatter = Scatter> { flora: F; tile: number; segments: number; fine?: { h: Float32Array; mask: Uint8Array } }
+// A tile's streams rasterised and its fine ground made, left on the GPU for the scatter's kernels: the packed fields, the fine buffer, and what to let go of when they are done.
+export function tileFields(ctx: Pick<Ctx, "gpu" | "tier">, tile: number, source: TileSource, halo = SCATTER_HALO) {
+  const g = ctx.gpu, { L, K } = kernelsOf(halo), rivers = riversOf(source, tile, ctx.tier), { seg, table } = segments(rivers);
+  const segs = storage(g, seg), bins = storage(g, table), field = storage(g, L.FINE_WORDS * 4), packed = storage(g, packTile(source, tile, halo, ctx.tier));
+  dispatch(g, pipeline(g, RASTER, "raster"), [segs, bins, field], [Math.ceil(L.RMW / 256)]);
+  run(g, pipeline(g, K.fine, "fine"), [[0, packed], [1, field]], [Math.ceil(L.MV / 256)]);
+  return { g, L, K, packed, field, segments: seg.length / 8, release: () => { segs.destroy(); bins.destroy(); } };
+}
+
 // Every object on tile `tile` of the tier for world seed `seed`: `flora.px` and `py` are in game tiles (150 m) from the tile's north-west corner, `start` runs over its 128 by 128 game tiles.
 // `source` is the stage files by default; the ground tile's planes (groundtile.ts) give the same objects.
 // With `window` (a rectangle of the tile's cells: x0, y0, w, h) only the objects whose place lies in it are made: the same objects, with the same bytes, as the whole tile's run cut to the window,
@@ -144,16 +153,13 @@ export interface TileScatter<F extends Scatter = Scatter> { flora: F; tile: numb
 export async function scatterTile(ctx: Pick<Ctx, "gpu" | "dir" | "tier">, tile: number, seed: number, halo: number | undefined, keepFine: boolean | undefined, source: TileSource | undefined, window: CellWindow): Promise<TileScatter<WindowedScatter>>;
 export async function scatterTile(ctx: Pick<Ctx, "gpu" | "dir" | "tier">, tile: number, seed: number, halo?: number, keepFine?: boolean, source?: TileSource): Promise<TileScatter>;
 export async function scatterTile(ctx: Pick<Ctx, "gpu" | "dir" | "tier">, tile: number, seed: number, halo = SCATTER_HALO, keepFine = false, source: TileSource = stageSource(ctx, tile), window?: CellWindow): Promise<TileScatter<Scatter | WindowedScatter>> {
-  const g = ctx.gpu, { L, K } = kernelsOf(halo), rivers = riversOf(source, tile, ctx.tier), { seg, table } = segments(rivers);
-  const segs = storage(g, seg), bins = storage(g, table), field = storage(g, L.FINE_WORDS * 4), packed = storage(g, packTile(source, tile, halo, ctx.tier));
-  dispatch(g, pipeline(g, RASTER, "raster"), [segs, bins, field], [Math.ceil(L.RMW / 256)]);
-  run(g, pipeline(g, K.fine, "fine"), [[0, packed], [1, field]], [Math.ceil(L.MV / 256)]);
+  const { g, L, K, packed, field, segments: nSeg, release } = tileFields(ctx, tile, source, halo);
   let fine: TileScatter["fine"];
   if (keepFine) {
     const [mask, h] = await Promise.all([readback(g, field, L.RMW * 4), readback(g, field, L.MV * 4, L.FINE_AT * 4)]);
     fine = { mask: new Uint8Array(mask), h: Float32Array.from(new Int32Array(h), (v) => v / Q16) };
   }
   const flora = window ? await objectsOn(g, L, K, packed, field, seed, keyOf(tile), window) : await objectsOn(g, L, K, packed, field, seed, keyOf(tile));
-  segs.destroy(); bins.destroy();
-  return { flora, tile, segments: seg.length / 8, fine };
+  release();
+  return { flora, tile, segments: nSeg, fine };
 }

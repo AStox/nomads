@@ -935,6 +935,9 @@ async function groundWant(m) {
         post({ type: "ground", gid: prepared.gid, mode: "home", frame: null, fields: home.fields });
       } else {
         const w = await planet.wins.build(want.lat, want.lon);
+        // a window made but never switched to (the page asked for another) holds its ground on the GPU still
+        const lost = prepared?.win;
+        if (lost) { const pk = lost.pack; pk.fine.gpu.destroy(); pk.grid.gpu.destroy(); pk.river.gpu.destroy(); lost.objects.body.destroy(); lost.objects.start.destroy(); }
         prepared = { gid: ++gids, mode: "win", win: w };
         post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon }, fields: w.fields, stats: w.stats });
       }
@@ -953,7 +956,7 @@ async function applyGround(p) {
     const old = S.win;
     if (p.mode === "win") {
       const o = p.win.objects;
-      S.win = { name: "win", cap: o.cap, body: buffer(o.body), start: buffer(o.start), spec: winSpec(o.cap) };
+      S.win = { name: "win", cap: o.cap, body: o.body, start: o.start, spec: winSpec(o.cap) };
       await R.setSources(sources());
       R.setGround(p.win.pack);
       R.setIce(new Uint8Array(TILES * TILES));
