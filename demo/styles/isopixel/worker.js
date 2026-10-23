@@ -23,7 +23,7 @@ const ORIGIN = -SIZE / 2, WS = 12.5;
 // entries and rows kept for sprites made while the page runs (live sprites, and objects' sprites the world grew into
 // since the atlas was laid out), and the atlas layers they go in
 const DYN_ENTRIES = 32768, DYN_ROWS = 1 << 20, DYN_LAYERS = 4;
-let blocksOn = true, R = null, device = null, gpuName = "", canvas = null, context = null, planet = null, planetLayer = null, planetLift = 0;
+let camTick = 0, blocksOn = true, R = null, device = null, gpuName = "", canvas = null, context = null, planet = null, planetLayer = null, planetLift = 0;
 // each sprite's foot (rows its anchor sits above the ground), by atlas id, for the checks
 let table = null, nStatic = 0, rowsStatic = 0, dyn = null, liveIds = new Map(), dynMade = new Set(), feet = new Int16Array(0);
 // the page's live sprites as they came, by its ids: placed in the dynamic layers when a frame first draws them, and again
@@ -959,6 +959,23 @@ function blockSources(w) {
     return { name: `b:${r.key}`, cap: r.cap, body: r.body, start: r.start, spec: blockSpec(r.cap), oc: [r.X - w.x0, w.y0 + 256 - (r.Y + 64)] };
   });
 }
+// where a view's place is in a window's cells (x east, z south from its north-west corner): the page's planeOf for the window's frame, metres of the window being 75 m cells
+function camCells(w, lat, lon) {
+  const D = Math.PI / 180, cl = Math.cos(lat * D), v = [cl * Math.cos(lon * D), cl * Math.sin(lon * D), Math.sin(lat * D)];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2], d = dot(v, w.c);
+  if (d < 0.1) return { x: 128, z: 128 };
+  return { x: 128 + (planet.radiusM * dot(v, w.e)) / (d * w.scale * 75), z: 128 - (planet.radiusM * dot(v, w.n)) / (d * w.scale * 75) };
+}
+// the blocks' shares ranked again round the camera when it has gone 24 cells from where they were ranked for and has come to rest
+function refocus(w, want) {
+  if (!blocksOn || !w.blockPlan || w.blocksBusy || !w.blockRecs || want.lat === undefined) return;
+  const cam = camCells(w, want.lat, want.lon), prev = w.camPrev;
+  w.camPrev = cam;
+  // only once the camera has settled (under 6 cells since the last look, half a second ago): a pan would make blocks for every step of it
+  if (!prev || Math.hypot(cam.x - prev.x, cam.z - prev.z) > 6) return;
+  if (w.blockCam && Math.hypot(cam.x - w.blockCam.x, cam.z - w.blockCam.z) < 24) return;
+  startObjects(w, cam);
+}
 // The windows made, the last three kept (the one drawn, and two more a pan back or a zoom out and in finds made), with their ground and objects on the GPU. A window is
 // found again by what it covers: the page's own test for a window's cover (the view's half extent in the window's metres and the place's distance from the window's
 // centre, inside the window's half side less 600 m); one made within WIN_NEAR metres of the place asked for serves when the ask names no half extent.
@@ -1010,7 +1027,7 @@ async function groundWant(m) {
       }
       let w = winNear(want);
       // the window drawn already, or one on its way, is the answer to a repeated ask
-      if (w && !spec && (w === curWin || w === prepared?.win)) continue;
+      if (w && !spec && (w === curWin || w === prepared?.win)) { if (w === curWin) refocus(w, want); continue; }
       const fresh = !w;
       if (!w) {
         w = await planet.wins.build(want.lat, want.lon, curWin ?? winCache[winCache.length - 1] ?? null);
@@ -1021,7 +1038,7 @@ async function groundWant(m) {
         post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon }, fields: w.fields, stats: { ...w.stats, id: w.id, objects: w.objectsValue?.n ?? null, share: w.objectsValue?.share ?? null } });
       }
       // a window made now has its objects made after its ground is out
-      if (fresh) startObjects(w);
+      if (fresh) startObjects(w, camCells(w, want.lat, want.lon));
     }
   } catch (err) {
     console.error("window", err);
@@ -1029,8 +1046,9 @@ async function groundWant(m) {
   } finally { building = false; }
 }
 // the objects of a window (a promise of GPU buffers, groundwin.js startObjects): kept on the window, handed to the drawn source when they arrive, their size told to the page
-function startObjects(w) {
+function startObjects(w, cam) {
   if (blocksOn && w.blockPlan) {
+    w.blockCam = cam ?? { x: 128, z: 128 };
     const tBlocks = performance.now();
     w.blocksBusy = true;
     // the near blocks are drawn as soon as they are made, the rest when they are
@@ -1039,7 +1057,7 @@ function startObjects(w) {
       w.blockRecs = recs; w.blockKd = kds;
       if (!w.dead) { attachObjects(w); post({ type: "windowObjects", id: w.id, objects: recs.reduce((n, b) => n + b.n, 0), share: 0, ms: performance.now() - tBlocks, estimate: 0, blocks: recs.length, made: 0, stage: 1 }); }
     };
-    planet.wins.makeBlocks(w, blockCache, undefined, stage).then((r) => {
+    planet.wins.makeBlocks(w, blockCache, w.blockCam, stage).then((r) => {
       w.blocksBusy = false;
       for (const b of r.fresh) blockAll.add(b);
       w.blockRecs = r.recs; w.blockKd = r.kds;
@@ -1226,7 +1244,7 @@ const handle = async (e) => {
     else if (m.type === "levels") levelsIn.resolve(m.levels);
     // the whole island at each level and bearing that keeps front lists (live.js islandView)
     else if (m.type === "frontViews") R.setFrontViews(m.views);
-    else if (m.type === "frame") { pending = m; render(); }
+    else if (m.type === "frame") { pending = m; if (m.cam && curWin && ++camTick % 30 === 0) refocus(curWin, m.cam); render(); }
     else if (m.type === "want") groundWant(m);
     else if (m.type === "simTick") await simTick(m.n);
     // asked in a tick's pause (sim.ts tickPause), answered with the state after it, as the world stands between ticks
