@@ -172,34 +172,42 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // camera's solves well posed; VK: screen px a meter of height rises, per screen px per meter across
   const VK = LV[0].lp / (LV[0].levelM * PL[0]);
   let HG = null, CH = null;
-  function cameraHeights() {
-    HG = { step: 25, n: Math.ceil(SIZE / 25) + 1 };
-    HG.h = new Float32Array(HG.n * HG.n);
-    for (let j = 0; j < HG.n; j++) for (let i = 0; i < HG.n; i++) HG.h[j * HG.n + i] = Math.max(0, G.heightAt(ORIGIN + i * HG.step, ORIGIN + j * HG.step));
-    CH = Float32Array.from(HG.h);
-  {
-    const n = HG.n, r = Math.round(150 / HG.step), tmp = new Float32Array(n * n);
+  // The camera heights of ground g, a generator that yields between its passes so the frames can take it a slice at a time (a planet window's ground is
+  // too steep for the 64 passes' stop and takes all of them, 0.3 s in one piece).
+  function* cameraHeightsOf(g) {
+    const hg = { step: 25, n: Math.ceil(SIZE / 25) + 1 }, n = hg.n, r = Math.round(150 / hg.step);
+    hg.h = new Float32Array(n * n);
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) hg.h[j * n + i] = Math.max(0, g.heightAt(ORIGIN + i * hg.step, ORIGIN + j * hg.step));
+    yield;
+    const ch = Float32Array.from(hg.h), tmp = new Float32Array(n * n);
     const steep = () => {
-      let g = 0;
-      for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) { const k = j * n + i; g = Math.max(g, Math.hypot(CH[k + 1] - CH[k], CH[k + n] - CH[k])); }
-      return (g / HG.step) * VK * Math.SQRT2;
+      let m = 0;
+      for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) { const k = j * n + i, dx = ch[k + 1] - ch[k], dz = ch[k + n] - ch[k]; m = Math.max(m, dx * dx + dz * dz); }
+      return (Math.sqrt(m) / hg.step) * VK * Math.SQRT2;
+    };
+    // one box blur along a line: its head and tail take the edges' counts, its long middle adds one and drops one with no test
+    const blurLine = (src, dst, o, di) => {
+      let a = 0, c = 0;
+      for (let q = 0; q <= r && q < n; q++) { a += src[o + q * di]; c++; }
+      let p = o, add = o + (r + 1) * di, sub = o, i = 0;
+      for (; i < r && i < n; i++) { dst[p] = a / c; if (i + r + 1 < n) { a += src[add]; c++; } add += di; p += di; }
+      for (; i < n - r - 1; i++) { dst[p] = a / c; a += src[add]; c++; a -= src[sub]; c--; add += di; sub += di; p += di; }
+      for (; i < n; i++) { dst[p] = a / c; if (i + r + 1 < n) { a += src[add]; c++; } if (i - r >= 0) { a -= src[sub]; c--; } add += di; sub += di; p += di; }
     };
     let pass = 0;
-    for (; pass < 2 || (pass < 64 && steep() > 0.5); pass++)
-      for (const [src, dst, di, dj] of [[CH, tmp, 1, n], [tmp, CH, n, 1]])
-        for (let j = 0; j < n; j++) {
-          let a = 0, c = 0;
-          for (let q = 0; q <= r && q < n; q++) { a += src[j * dj + q * di]; c++; }
-          for (let i = 0; i < n; i++) {
-            dst[j * dj + i * di] = a / c;
-            if (i + r + 1 < n) { a += src[j * dj + (i + r + 1) * di]; c++; }
-            if (i - r >= 0) { a -= src[j * dj + (i - r) * di]; c--; }
-          }
-        }
-    stats.camHeight = { passes: pass, steep: +steep().toFixed(3) };
+    for (; pass < 2 || (pass < 64 && steep() > 0.5); pass++) {
+      for (let j = 0; j < n; j++) blurLine(ch, tmp, j * n, 1);
+      yield;
+      for (let j = 0; j < n; j++) blurLine(tmp, ch, j, n);
+      yield;
+    }
+    return { hg, ch, camHeight: { passes: pass, steep: +steep().toFixed(3) } };
   }
+  const drain = (it) => { let s; while (!(s = it.next()).done); return s.value; };
+  {
+    const f = drain(cameraHeightsOf(G));
+    HG = f.hg; CH = f.ch; stats.camHeight = f.camHeight;
   }
-  cameraHeights();
   const camHg = (x, z) => {
     const n = HG.n, fx = clamp((x - ORIGIN) / HG.step, 0, n - 1.001), fz = clamp((z - ORIGIN) / HG.step, 0, n - 1.001), i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, k = j * n + i;
     const h00 = CH[k], h10 = CH[k + 1], h01 = CH[k + n], h11 = CH[k + n + 1];
@@ -260,8 +268,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // The ground message the worker sends when it has a window (or the island again) ready: taken at the next frame, where it replaces everything the
   // page works out from the ground's heights, puts the view in the new frame (the same place of the planet, its metres in the window's), and from
   // then on every frame names it (gid), which is how the worker knows to switch its renderer to it in the same frame.
-  function applyGroundMsg(m, view) {
-    setFields(m.fields);
+  function applyGroundMsg(m, view, f) {
+    commitFields(f);
     gid = m.gid; asked = null;
     if (m.mode === "win" && mode !== "win") winFadeAt = performance.now();
     mode = m.mode;
@@ -452,21 +460,37 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // the highest ground in a world rectangle, from the island's heights in MH_M cells
   const MH_M = 300, MHN = Math.ceil(SIZE / MH_M);
   let MH = null;
-  function highestGrid() {
-    MH = new Float32Array(MHN * MHN);
+  function highestOf(g) {
+    const mh = new Float32Array(MHN * MHN);
     for (let j = 0; j < MHN * 8; j++)
       for (let i = 0; i < MHN * 8; i++) {
-        const h = G.heightAt(ORIGIN + (i + 0.5) * (MH_M / 8), ORIGIN + (j + 0.5) * (MH_M / 8)), k = (j >> 3) * MHN + (i >> 3);
-        if (h > MH[k]) MH[k] = h;
+        const h = g.heightAt(ORIGIN + (i + 0.5) * (MH_M / 8), ORIGIN + (j + 0.5) * (MH_M / 8)), k = (j >> 3) * MHN + (i >> 3);
+        if (h > mh[k]) mh[k] = h;
       }
+    return mh;
   }
-  highestGrid();
+  MH = highestOf(G);
   // the ground replaced by another's heights and water (the worker's window of the planet, or the island again): everything the page works out
-  // from them is made again
-  function setFields(msg) {
-    G = createGround(msg); peak = msg.peak;
+  // from them is made again, a slice of it a frame (fieldsOf) while the old ground stays, then all at once (commitFields)
+  function* fieldsOf(msg) {
+    const g = createGround(msg), hs = yield* cameraHeightsOf(g);
+    return { G: g, peak: msg.peak, ...hs, mh: highestOf(g) };
+  }
+  function commitFields(f) {
+    G = f.G; peak = f.peak;
     for (const l of LV) l.peakLev = Math.ceil((peak + 10) / l.levelM);
-    cameraHeights(); highestGrid();
+    HG = f.hg; CH = f.ch; MH = f.mh; stats.camHeight = f.camHeight;
+  }
+  // the ground message in hand, its fields made up to FIELDS_SLICE_MS a frame (a new message in hand starts again)
+  const FIELDS_SLICE_MS = 12;
+  let fieldsJob = null;
+  function fieldsSlice(m) {
+    if (fieldsJob?.m !== m) fieldsJob = { m, it: fieldsOf(m.fields) };
+    const t = performance.now();
+    for (let s = fieldsJob.it.next(); ; s = fieldsJob.it.next()) {
+      if (s.done) { const f = s.value; fieldsJob = null; return f; }
+      if (performance.now() - t > FIELDS_SLICE_MS) return null;
+    }
   }
   // a cell's own samples miss the crest between them by little; one cell's margin all round takes it in
   function highest(x0, z0, x1, z1) {
@@ -860,7 +884,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const clock = sim?.clock?.() ?? { hour: 8, day: 1 };
     // the ground's colour follows the season
     season = clock.season ?? season;
-    if (pendingGround) { applyGroundMsg(pendingGround, view); pendingGround = null; }
+    if (pendingGround) { const f = fieldsSlice(pendingGround); if (f) { applyGroundMsg(pendingGround, view, f); pendingGround = null; } }
     homeSky = skyFor(clock, now);
     sky = mode === "win" ? skyFor(clock, now, planetSky(homeSky)) : homeSky;
     syncGeo(view);
