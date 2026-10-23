@@ -218,6 +218,7 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   hundred) cannot be needed (farther from the place than the play area and the canvas's reach, or from zoom -1.5 out), on the sphere
   raised to the ground under the target as the worker drew it, so a drag moves the target by the pixel distance's ground distance
   (0.98 to 1.0 of it at zoom 6, 20 and 60 degrees from the place) and the held point stays under the cursor.
+  **Superseded 2026-10-23 by Unit 8: the window below (Page half, part 2, and the window's costs) is kept as the record of what was built and measured; it is retired at Unit 8 step 5.**
   Page half, part 2 (2026-10-21 and 22; key 883a8d9387df, face 1 and an edge visited in Chrome, then code only while the bake ran): the ladder's
   levels draw anywhere from the planet's ground tiles. `isopixel/groundwin.js` makes a WINDOW of 256 by 256 cells at the camera from up to 4 interior
   and a few halo ground tiles (`groundtiles/f<face>/<ty>-<tx>.gt.gz`, streamed like the pyramid; across a cube's edge the face across's cells laid
@@ -289,6 +290,21 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   of a place more than a quarter of the planet from it, so a drag there did nothing or went back; it holds the target's planet place (`panBy` in camera.js). A
   drag toward a pole, which folded the answer back down the far side (north is up at every planet zoom), stops at the pole now (both poles at 90 degrees are
   reached; a full turn of longitude takes four drags of 450 px).
+
+- [ ] **Unit 8: One quadtree, tiles produced on demand, the window retired.** Operator, 2026-10-23: "I don't like these set chunks that we load in. ... some kind of data
+  streaming that works at any level for any space." Research: `docs/research/globe/2026-10-23-planet-streaming.md` (how Cesium, Far Cry 5, Flight Simulator, Proland,
+  Outerra and others do it; the fit to this code). One tree of tiles at every level chosen by screen-space error; the pyramid's tiers 0 to 5 stay; tiers 6 and 7
+  (37.5 m and 18.75 m cells, 256 cells a tile, a tier-7 tile is 4.8 km) are produced on the GPU by the fine kernel (`fineKernel`, Proland's procedural residual producer); the
+  painter and the object culler read tiles through a page table; each tile's ground and objects are produced on demand under a per-frame budget and a hard-capped
+  cache; a parent is drawn until its child is ready; no fixed window. Baseline (2026-10-23, GPU shared): a window built in 7.0 s the first time (scatter 6.3 s), 3.9 s and 2.5 s after;
+  ground on screen 9.3 s after the start of a 2.3 s dive; frame gaps to 1.5 s. Gates at every step: the same pixels (`scripts/play/ground-parity.ts` and stills against the window),
+  the same objects by id once a tile's objects have arrived, painter GPU ms within the ladder's budget (9 to 17 ms a frame with the ladder, Unit 3), and the operator-visible result.
+  Fallback if the painter's page-table reads cost too much: a toroidal fill of the painter's inputs from the tiles (Losasso and Hoppe), leaving its reads as they are.
+  Steps: 0 compile every kernel the producers use at load with `pipelineSoon`; 1 fine tiles (tiers 6 and 7) written into an atlas on the GPU with no readback, the painter
+  reading them through the page table; 2 ground from tiles the moment they exist, one scheduler (priority, per-frame budget, parent fallback, prediction from the zoom goal and
+  pan); 3 object tiles on the GPU, nothing read back, density nested by level with the seed-hash share, fading in nearest first; 4 wide levels (share by level, ground colour
+  where a tree is under about 2 art pixels); 5 cutover: the play area's Ground cut from the planet's tiles, the window, `gid` and the 5 s re-ask deleted, an OPFS cache of tiles.
+  Progress: Measurements 2026-10-23 (GPU free; `scripts/play/tilecost.ts` headless, and the live page by a dive harness): (1) a tier-5 ground tile's scatter on the GPU is cheap, warm 150 ms for 9.5 M objects (table 14, count 16 to 35, write 22 to 44, readback 34, host conversion 60), a 64 by 64 cell rectangle of it 50 to 70 ms of which the whole-tile table and count are 30; the window's fine ground 50 ms warm in Bun; on the page the same window costs fine 190 to 260, scatter 850 to 1,570 (4 tiles), JS cut 755 to 1,450, pack 460 to 520, and the first window pays 1.2 s more in the fine kernels and 2.6 s more in the scatter than the second. (2) painter at close zoom in a window: worker GPU 2.7 to 3.2 ms a frame mean, 3.6 p95 (baseline for the gate; Metal timestamps are unreliable). (3) a window's fine ground is 1,025 by 1,025 vertices; a tier-7 tile is 257 by 257, 1/16 of it: about 3 to 4 ms of GPU in Bun. (4) objects per 4.8 km rectangle of a forest tile: 1.8 to 2.0 M (56 MB at 28 B), 0 over sea; a tile's table and count are 30 ms and can be kept; the write pass of a rectangle 6 to 22 ms. (5) ids: the window source is the only source in window mode (`worker.js sources()`), has no pick, and the sim has no object there, so ids matter only for the equal-objects gate. Step 0 built: the window's kernels (`warmScatter`) and the window source's renderer passes in each cap (`warmSpec`, `passesOf`) are compiled at load; cold first window 9.8 s to 7.0 s after the dive start (fine 1,391 to 187 ms, apply 1,283 to 894 ms, scatter 4.8 to 2.9 s), warm windows unchanged; the remaining first-use cost (apply 0.7 s, scatter 1.4 s) is memory and first dispatches, not compiles [I].
 
 ## Risks
 

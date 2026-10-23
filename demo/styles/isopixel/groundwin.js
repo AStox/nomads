@@ -35,6 +35,8 @@ function decode(raw) {
 // radius; quick: the island's runoff by season, for a window whose tiles hold none.
 export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, keep = 6, top = CAPS[CAPS.length - 1] }) {
   const g = G.tierGrid(tier), fn = g.fn, nT = 2 ** tier, tiles = new Map();
+  // the window's kernels compile on the GPU process's own threads from the start, so no window stops the frames to compile one
+  const warming = T.warmScatter(gpu);
   const tileKey = (f, tx, ty) => (f * nT + ty) * nT + tx;
   // a ground tile, fetched and kept (the least lately used going when `keep` are held)
   async function groundTile(f, tx, ty) {
@@ -57,6 +59,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
 
   // The window whose centre is the cell holding (lat, lon) degrees. Returns what the renderer, the page and the object buffer take.
   async function build(lat, lon) {
+    await warming;
     const t0 = performance.now(), loc = G.locateVec(g, G.fromLatLon(lat * D2R, lon * D2R)), face = loc.face, x0 = loc.X - N / 2, y0 = loc.Y - N / 2;
     // Where every cell of the window and its halo comes from. The tiles of the window's own face that its cells lie on hold them, and the 8 cells of
     // halo each holds past its edge (laid flat across a cube's edge in the face's own axes), so a cell is read from them in the window's own frame;
@@ -171,17 +174,22 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     // ---------- what grew: each tile's own scatter, cut to the window ----------
     // what grew: each tile's own scatter, cut to the window as it comes (a tile holds up to 17.7 million objects, 300 MB) and let go
     const col = collector({ N, CELL, cap: top });
+    let tScat = 0, tAdd = 0;
     for (const t of tl) {
       if (!t.interior) continue;
       const at = placer(t, face, x0, y0, srcF, srcX, srcY, turn);
       if (!at || at.rect.w <= 0 || at.rect.h <= 0) continue;
       const place = at.place;
       // only the cells of the tile the window touches are made (the objects' ids in the tile's whole run are the same either way)
+      const ta = performance.now();
       let sc = (await T.scatterTile({ gpu, dir: null, tier }, t.f * nT * nT + t.ty * nT + t.tx, seed, 2, false, T.tileSource(t.gt), at.rect)).flora;
+      const tb = performance.now();
       stats.scatter = (stats.scatter ?? 0) + 1;
       col.add(sc, (q, out) => place(sc.px[q], sc.py[q], out));
+      tScat += tb - ta; tAdd += performance.now() - tb;
       sc = null;
     }
+    const tl0 = performance.now();
     const objects = col.lay((k) => CAPS.find((c) => c >= k && c <= top) ?? top);
     const t4 = performance.now();
 
@@ -194,7 +202,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const scale = Math.sqrt(arc(c, pe) * arc(c, pn)) / CELL;
     const [E, Nn] = G.eastNorth(c);
     stats.builds++;
-    stats.ms = { tiles: t1 - t0, fine: t2 - t1, pack: t3 - t2, flora: t4 - t3, total: t4 - t0 };
+    stats.ms = { tiles: t1 - t0, fine: t2 - t1, pack: t3 - t2, flora: t4 - t3, scatter: tScat, cut: tAdd, lay: t4 - tl0, total: t4 - t0 };
     return {
       id: `${face}:${x0}:${y0}`, face, x0, y0, c, e, n, scale, rot: [dot(e, E), dot(e, Nn), dot(n, E), dot(n, Nn)],
       lat: G.latLon(c).lat / D2R, lon: G.latLon(c).lon / D2R, pack, objects, fields: { peak, h, height, water }, stats: { ...stats, ms: stats.ms, objects: objects.n, share: objects.share },

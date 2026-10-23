@@ -6,11 +6,11 @@ import { BANKFULL, WOODED, bankDepth, bankWidth } from "../src/terrain/water";
 import { dispatch, pipeline, readback, storage } from "../src/gpu/kernel";
 import { run, segments } from "../src/gpu/terrain/scenery";
 import { FINE, RASTER, fineKernel, layoutOf, tileScenery } from "../src/gpu/wgsl/terrain-scenery";
-import { SCATTER_HALO, RIVER_HALO, packTile, scatterTile, type TileSource } from "../src/gpu/globe/scatter";
+import { SCATTER_HALO, RIVER_HALO, packTile, scatterTile, warmScatter, type TileSource } from "../src/gpu/globe/scatter";
 import type { Gpu } from "../src/gpu/device";
 
 export { tileSource } from "../src/gpu/globe/groundtile";
-export { SCATTER_HALO, RIVER_HALO, scatterTile };
+export { SCATTER_HALO, RIVER_HALO, scatterTile, warmScatter };
 
 const Q16 = 65536, Q24 = 16777216;
 const halo = SCATTER_HALO, L = layoutOf(tileScenery(halo)), FINE_K = fineKernel(L);

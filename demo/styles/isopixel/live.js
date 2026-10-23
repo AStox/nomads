@@ -107,7 +107,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   function onWorker(m) {
     if (m.type.startsWith("sim")) { if (simTo) simTo(m); else simEarly.push(m); }
     else if (m.type === "frameDone") {
-      lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts; stats.tiles = m.tiles; stats.lift = m.lift;
+      lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts; stats.tiles = m.tiles; stats.lift = m.lift; stats.applyMs = m.applyMs;
       if (m.fronts !== undefined) fronts = new Set(m.fronts ? m.fronts.split(",") : []);
       const sent = sentAt.get(m.id);
       sentAt.delete(m.id);

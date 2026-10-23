@@ -106,6 +106,8 @@ async function init(m) {
     // the most objects a window's body holds: 28 bytes a slot must fit the device's storage binding, and at most 8.4 million [design: 235 MB]
     const room = Math.min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize) / 28;
     planet.wins = createWindows({ G: planet.G, T: planet.T, gpu, base: planet.base, tier: planet.manifest.tiers - 1, seed: m.seed, radiusM: planet.radiusM, quick: isle.quick, top: Math.min(1 << 23, 2 ** Math.floor(Math.log2(room))) });
+    // the window source's passes for each size its body comes in, compiled now on the GPU process's own threads (a first window then does not wait on them)
+    for (const cap of [1 << 23, 1 << 22, 1 << 21, 1 << 20].filter((c) => c <= Math.min(1 << 23, 2 ** Math.floor(Math.log2(room))))) void R.warmSpec("win", winSpec(cap)).catch((err) => console.warn("warm window passes", err));
   }
   // the page keeps the camera on the island's heights and the drawn ground under it: the fine heights and the cells'
   // water, from which live.js (ground.js) works out every level's tile map as the GPU does
@@ -943,8 +945,10 @@ async function groundWant(m) {
     post({ type: "windowError", error: String((err && err.stack) || err) });
   } finally { building = false; }
 }
+let applyMs = 0;
 async function applyGround(p) {
   switching = true;
+  const tApply = performance.now();
   try {
     const old = S.win;
     if (p.mode === "win") {
@@ -971,7 +975,7 @@ async function applyGround(p) {
       growTable();
       refreshSprites();
     }
-  } finally { switching = false; }
+  } finally { switching = false; applyMs = performance.now() - tApply; }
 }
 
 // ---------- frames ----------
@@ -1032,7 +1036,7 @@ function render() {
     // the levels and bearings whose front lists are built, when they change (live.js listsReady)
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: planetLift, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: planetLift, applyMs, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     if (pending) render();
   });
 }

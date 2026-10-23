@@ -1153,9 +1153,8 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // A source's passes are made once for its spec (a new spec, as a grown records buffer brings, makes them again). A
   // source names any more buffers its reader binds in binds (drv, gone, counts) and gives them in over, or each frame in
   // dyn() when they are replaced as the sim runs; a source of members has no survey, canopy or far lists.
-  async function setSources(list) {
-    const made = list.map((s) => {
-      const sp = s.spec;
+  function passesOf(s) {
+    const sp = s.spec;
       if (!sp.passes) {
         const own = [...(sp.members === "cells" ? [] : ["body"]), ...(sp.marks ? ["marks"] : []), ...(sp.binds ?? [])];
         const src = `${objectWGSL({ ORIGIN: pal.ORIGIN, GN, WS: pal.GRID_STEP, M: gp.fine.size, FSTART: pal.FINE.start, FSTEP: pal.FINE.step })}\n${sourceWGSL(sp, pal.ORIGIN)}`;
@@ -1179,6 +1178,16 @@ export async function createRenderer({ device, context, format, pal, ground, tim
           } : null,
         };
       }
+    return sp;
+  }
+  // a spec's passes compiled before any source of it exists (the planet window's, in each size it comes in)
+  async function warmSpec(name, spec) {
+    const sp = passesOf({ name, spec }).passes;
+    await Promise.all([sp.cull.ready, sp.fill?.ready, sp.needs?.ready, sp.canopy?.ready, sp.far?.cull.ready, sp.far?.count.ready, sp.far?.mark?.ready, sp.far?.keep?.ready]);
+  }
+  async function setSources(list) {
+    const made = list.map((s) => {
+      const sp = passesOf(s);
       const over = { body: s.body && { buffer: s.body }, order: s.order && { buffer: s.order }, start: s.start && { buffer: s.start }, marks: s.marks && { buffer: s.marks }, ...s.over };
       return { ...s, ...sp.passes, over };
     });
@@ -1859,7 +1868,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   }
   await Promise.all(Object.values(S).map((o) => o.ready));
   return {
-    errors, stats, frame, setSources, setGround, setMeta, survey, buildCanopy, farBuild, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
+    errors, stats, frame, setSources, warmSpec, setGround, setMeta, survey, buildCanopy, farBuild, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
     get busy() { return inFlight; },
     setFarUse: (on) => { farUse = on; },
     setFadeKeep: (on) => { fadeKeep = on; },

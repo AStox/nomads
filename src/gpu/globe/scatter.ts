@@ -21,7 +21,8 @@
 import { CELL } from "../../terrain/grid";
 import { SIZE, type FineRiver, type Scatter } from "../../terrain/flora";
 import { BANKFULL, WOODED, bankDepth, bankWidth } from "../../terrain/water";
-import { dispatch, pipeline, readback, storage } from "../kernel";
+import { dispatch, pipeline, pipelineSoon, readback, storage } from "../kernel";
+import type { Gpu } from "../device";
 import { objectsOn, run, segments, type CellWindow, type SceneryKernels, type WindowedScatter } from "../terrain/scenery";
 import {
   GRADIENTS, ISLE, RASTER, countKernel, fineKernel, layoutOf, tableKernel, tileScenery, writeKernel, type SceneryLayout,
@@ -77,6 +78,12 @@ function kernelsOf(halo: number) {
     kernels.set(halo, k);
   }
   return k;
+}
+
+// Every kernel a tile's scatter and fine ground run, set compiling off the frames' queue (kernel.ts pipelineSoon), so the first window finds them made; resolves when all are.
+export function warmScatter(g: Gpu, halo = SCATTER_HALO): Promise<unknown> {
+  const { K } = kernelsOf(halo);
+  return Promise.all([[RASTER, "raster"], [K.fine, "fine"], [K.table, "table"], [K.count, "count"], [K.count, "rank"], [K.count, "rows"], [K.count, "scan"], [K.write, "write"]].map(([src, entry]) => pipelineSoon(g, src, entry)));
 }
 
 // The tile's fields as the kernels hold them (wgsl/terrain-scenery.ts ISLE, in a field of the tile's cells and a halo of `halo`), from the stored words by integer arithmetic alone.

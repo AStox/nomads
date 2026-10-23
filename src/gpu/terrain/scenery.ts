@@ -110,6 +110,15 @@ export function run(g: Gpu, p: GPUComputePipeline, binds: [number, GPUBuffer][],
 export interface SceneryKernels { fine: string; table: string; count: string; write: string }
 export const ISLAND_KERNELS: SceneryKernels = { fine: FINE_KERNEL, table: TABLE, count: COUNT, write: WRITE };
 
+// When on, each stage of objectsOn waits for the GPU and adds its milliseconds here (a measurement, off by default).
+export const laps: { on: boolean; ms: Record<string, number> } = { on: false, ms: {} };
+const lap = async (g: Gpu, name: string, t0: number) => {
+  if (!laps.on) return t0;
+  await g.device.queue.onSubmittedWorkDone();
+  const t = performance.now();
+  laps.ms[name] = (laps.ms[name] ?? 0) + (t - t0);
+  return t;
+};
 // Every object on the fields in `packed` (the packed fields and the fine buffer, which are let go): the tables, the draws counted by quad and written where the counts put them, read back as
 // a Scatter in the CPU's units. `key` is the first quad's key (0 on the island; a tile's quads' keys run on from its own: scatter.ts).
 // A rectangle of the area's cells, x0, y0 and the width and height, in cells from the area's corner.
@@ -123,7 +132,9 @@ export async function objectsOn(g: Gpu, L: SceneryLayout, K: SceneryKernels, pac
 // those, and only the rows of game tiles the window touches are read back.
 export async function objectsOn(g: Gpu, L: SceneryLayout, K: SceneryKernels, packed: GPUBuffer, field: GPUBuffer, seed: number, key: number, window?: CellWindow): Promise<Scatter | WindowedScatter> {
   const { IDX, NQ } = L;
+  let t = performance.now();
   run(g, pipeline(g, K.table, "table"), [[0, packed]], [Math.ceil(L.LEN / 64)]);
+  t = await lap(g, "table", t);
   const idx = storage(g, IDX.words * 4);
   g.device.queue.writeBuffer(idx, IDX.seed * 4, new Uint32Array([seed >>> 0]));
   g.device.queue.writeBuffer(idx, IDX.key * 4, new Uint32Array([key >>> 0]));
@@ -134,18 +145,22 @@ export async function objectsOn(g: Gpu, L: SceneryLayout, K: SceneryKernels, pac
   run(g, pipeline(g, K.count, "rank"), [[2, idx]], [Math.ceil(T / 64)]);
   run(g, pipeline(g, K.count, "rows"), [[2, idx]], [Math.ceil(Math.sqrt(NQ) / 64)]);
   run(g, pipeline(g, K.count, "scan"), [[2, idx]], [1]);
+  t = await lap(g, "count", t);
   const meta = new Uint32Array(await readback(g, idx, (IDX.start + T + 1 - IDX.seed) * 4, IDX.seed * 4));
+  t = performance.now();
   if (meta[IDX.flag - IDX.seed] !== 0) throw new Error("a quad's entries have no place in any tile's run");
   const start = Int32Array.from(meta.subarray(IDX.start - IDX.seed, IDX.start - IDX.seed + T + 1)), n = start[T], oreN = meta[IDX.oreTotal - IDX.seed];
   if (oreN > ORE_CAP) throw new Error(`${oreN} loose stones of ore, room for ${ORE_CAP}`);
   const out = ["px", "py", "size", "seed", "ks"].map(() => storage(g, Math.max(1, n) * 4));
   run(g, pipeline(g, K.write, "write"), [...base, ...out.map((b, k): [number, GPUBuffer] => [3 + k, b])], [Math.ceil(NQ / 64)]);
+  t = await lap(g, "write", t);
   // the game tiles' rows the window touches (an entry lies in the game tile its place is in, and a game tile is 2 cells): their runs are contiguous in the arrays
   const rows = window ? { lo: Math.max(0, Math.floor(Math.max(0, window.y0) / 2) - 1), hi: Math.min(TILES - 1, Math.floor((y1 - 1) / 2) + 1) } : { lo: 0, hi: TILES - 1 };
   const from = window ? (window.w > 0 && window.h > 0 ? start[rows.lo * TILES] : 0) : 0, to = window ? (window.w > 0 && window.h > 0 ? start[(rows.hi + 1) * TILES] : 0) : n;
   const word = async (b: GPUBuffer) => { const raw = to > from ? await readback(g, b, (to - from) * 4, from * 4) : new ArrayBuffer(0); b.destroy(); return raw; };
   const [pxRaw, pyRaw, szRaw, sdRaw, ksRaw] = [await word(out[0]), await word(out[1]), await word(out[2]), await word(out[3]), await word(out[4])];
   const tail = new Uint32Array(await readback(g, idx, (IDX.flag - IDX.seed + 1) * 4, IDX.seed * 4)), oreRaw = new Uint32Array(await readback(g, idx, 4 * Math.max(1, oreN) * 4, IDX.ore * 4));
+  t = await lap(g, "readback", t);
   if (tail[IDX.flag - IDX.seed] !== 0) throw new Error("the second pass drew other entries than the first counted");
   idx.destroy(); packed.destroy(); field.destroy();
   // the game's tile coordinate and the size, from their integers, in place (the same float32 a CPU division stores)
