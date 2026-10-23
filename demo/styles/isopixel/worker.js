@@ -916,7 +916,7 @@ let lastLut = null, lutShown = false;
 let curGid = 0, gids = 0, prepared = null, switching = false, building = false, wantNow = null, wantSoon = null, home = null, curWin = null;
 const winSpecs = new Map();
 const winSpec = (cap) => {
-  if (!winSpecs.has(cap)) winSpecs.set(cap, { cap, fields: { x: 0, y: 1, what: 2, size: 3, seed: 4, pick: 5 }, sizeMm: false, marks: false, ordered: false, indexed: true, canopy: true });
+  if (!winSpecs.has(cap)) winSpecs.set(cap, { cap, fields: { x: 0, y: 1, what: 2, size: 3, seed: 4, pick: 5 }, sizeMm: false, marks: false, ordered: false, indexed: true, canopy: true, origin: true });
   return winSpecs.get(cap);
 };
 // The windows made, the last three kept (the one drawn, and two more a pan back or a zoom out and in finds made), with their ground and objects on the GPU. A window is
@@ -952,7 +952,7 @@ function keepWindow(w) {
 // a window's objects arrive after its ground: until they do the source is an empty one of the smallest size
 const EMPTY_CAP = 1 << 20;
 let emptyObjects = null;
-const emptyBody = () => (emptyObjects ??= { cap: EMPTY_CAP, body: buffer(new Uint32Array(7 * EMPTY_CAP)), start: buffer(new Uint32Array(256 * 256 + 1)) });
+const emptyBody = () => (emptyObjects ??= { cap: EMPTY_CAP, body: buffer(new Uint32Array(7 * EMPTY_CAP + 2)), start: buffer(new Uint32Array(256 * 256 + 1)) });
 async function groundWant(m) {
   if (m.speculative) { if (!wantNow) wantSoon = m; } else wantNow = m;
   if (building || !planet?.wins || !S || !home) return;

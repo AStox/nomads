@@ -35,6 +35,8 @@ export function sourceWGSL(spec, ORIGIN) {
   if (spec.members === "cells") return `${spec.decls ?? ""}\n${spec.member}`;
   const C = spec.cap, F = spec.fields, at = (name) => `${(1 + F[name]) * C}u`;
   const hideWords = Math.ceil(C / 32);
+  // spec.origin: where the source stands in the window's frame, two words after its columns (mm from the window corner, signed): x, then z
+  const tail = (1 + Object.keys(F).length) * C, shift = (axis) => (spec.origin ? ` + f32(bitcast<i32>(body[${tail + (axis === "x" ? 0 : 1)}u])) * 0.001` : "");
   const read = spec.read ? spec.read(at) : `
   let what = body[${at("what")} + i];
   o.kind = what & 255u;
@@ -51,8 +53,8 @@ fn readObj(i: u32) -> Obj {
   o.ok = (body[i] & 1u) == 1u;
   ${spec.marks ? "if (((marks[i >> 5u] >> (i & 31u)) & 1u) == 1u) { o.ok = false; }" : ""}
   if (!o.ok) { return o; }
-  o.x = f32(body[${at("x")} + i]) * 0.001 + (${f(ORIGIN)});
-  o.z = f32(body[${at("y")} + i]) * 0.001 + (${f(ORIGIN)});${read}
+  o.x = f32(body[${at("x")} + i]) * 0.001 + (${f(ORIGIN)})${shift("x")};
+  o.z = f32(body[${at("y")} + i]) * 0.001 + (${f(ORIGIN)})${shift("z")};${read}
   return o;
 }
 // the cell of the sim's spatial index a slot's place is in (src/gpu/wgsl/index.ts INDEX_KEYS)
