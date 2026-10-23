@@ -912,73 +912,127 @@ async function whereOf(id) {
 // first time) and tells the page its frame and heights; the page puts its view in the new frame and names the ground in every frame after (its gid),
 // and the first frame that names it is the one the renderer switches on (applyGround), so a frame is never drawn on ground its coordinates are not in.
 let lastLut = null, lutShown = false;
-let curGid = 0, gids = 0, prepared = null, switching = false, building = false, wanting = null, home = null, built = null;
+let curGid = 0, gids = 0, prepared = null, switching = false, building = false, wantNow = null, wantSoon = null, home = null, curWin = null;
 const winSpecs = new Map();
 const winSpec = (cap) => {
   if (!winSpecs.has(cap)) winSpecs.set(cap, { cap, fields: { x: 0, y: 1, what: 2, size: 3, seed: 4, pick: 5 }, sizeMm: false, marks: false, ordered: false, indexed: true, canopy: true });
   return winSpecs.get(cap);
 };
+// The windows made, the last three kept (the one drawn, and two more a pan back or a zoom out and in finds made), with their ground and objects on the GPU. A window is
+// found again by place: one made within WIN_NEAR metres of the place asked for covers the view as well.
+const WIN_NEAR = 600, WIN_KEEP = 3, winCache = [];
+const arcOf = (a, b) => planet.radiusM * Math.acos(Math.min(1, Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.cos((a.lon - b.lon) * Math.PI / 180) + Math.sin(a.lat * Math.PI / 180) * Math.sin(b.lat * Math.PI / 180)));
+const winNear = (want) => winCache.find((w) => !w.dead && arcOf(w, want) < WIN_NEAR);
+function destroyWindow(w) {
+  w.dead = true;
+  const pk = w.pack;
+  pk.fine.gpu.destroy(); pk.grid.gpu.destroy(); pk.river.gpu.destroy();
+  if (w.objectsValue) { w.objectsValue.body.destroy(); w.objectsValue.start.destroy(); }
+}
+function keepWindow(w) {
+  w.pack.keep = true;
+  winCache.push(w);
+  while (winCache.length > WIN_KEEP) {
+    const i = winCache.findIndex((x) => x !== curWin && x !== prepared?.win);
+    if (i < 0) break;
+    destroyWindow(winCache.splice(i, 1)[0]);
+  }
+}
+// a window's objects arrive after its ground: until they do the source is an empty one of the smallest size
+const EMPTY_CAP = 1 << 20;
+let emptyObjects = null;
+const emptyBody = () => (emptyObjects ??= { cap: EMPTY_CAP, body: buffer(new Uint32Array(7 * EMPTY_CAP)), start: buffer(new Uint32Array(256 * 256 + 1)) });
 async function groundWant(m) {
-  wanting = m;
+  if (m.speculative) { if (!wantNow) wantSoon = m; } else wantNow = m;
   if (building || !planet?.wins || !S || !home) return;
   building = true;
   try {
-    while (wanting) {
-      const want = wanting;
-      wanting = null;
-      // the page asks again every few seconds until the ground arrives: a window already made (or being made) for the same place is not made twice
-      if (want.mode === "win" && built && built.lat === want.lat && built.lon === want.lon) continue;
-      built = want.mode === "win" ? { lat: want.lat, lon: want.lon } : null;
+    while (wantNow || wantSoon) {
+      const want = wantNow ?? wantSoon, spec = !wantNow;
+      if (spec) wantSoon = null; else wantNow = null;
       if (want.mode === "home") {
         if (!S.win && !prepared) continue;
         prepared = { gid: ++gids, mode: "home" };
         post({ type: "ground", gid: prepared.gid, mode: "home", frame: null, fields: home.fields });
-      } else {
-        const w = await planet.wins.build(want.lat, want.lon);
-        // a window made but never switched to (the page asked for another) holds its ground on the GPU still
-        const lost = prepared?.win;
-        if (lost) { const pk = lost.pack; pk.fine.gpu.destroy(); pk.grid.gpu.destroy(); pk.river.gpu.destroy(); lost.objects.body.destroy(); lost.objects.start.destroy(); }
-        prepared = { gid: ++gids, mode: "win", win: w };
-        post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon }, fields: w.fields, stats: w.stats });
+        continue;
       }
+      let w = winNear(want);
+      // the window drawn already, or one on its way, is the answer to a repeated ask
+      if (w && !spec && (w === curWin || w === prepared?.win)) continue;
+      const fresh = !w;
+      if (!w) {
+        w = await planet.wins.build(want.lat, want.lon);
+        keepWindow(w);
+      }
+      if (!spec) {
+        prepared = { gid: ++gids, mode: "win", win: w };
+        post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon }, fields: w.fields, stats: { ...w.stats, id: w.id, objects: w.objectsValue?.n ?? null, share: w.objectsValue?.share ?? null } });
+      }
+      // a window made now has its objects made after its ground is out
+      if (fresh) startObjects(w);
     }
   } catch (err) {
     console.error("window", err);
-    built = null;
     post({ type: "windowError", error: String((err && err.stack) || err) });
   } finally { building = false; }
+}
+// the objects of a window (a promise of GPU buffers, groundwin.js startObjects): kept on the window, handed to the drawn source when they arrive, their size told to the page
+function startObjects(w) {
+  w.startObjects().then((o) => {
+    w.objectsValue = o;
+    if (w.dead) { o.body.destroy(); o.start.destroy(); return; }
+    attachObjects(w);
+    post({ type: "windowObjects", id: w.id, objects: o.n, share: o.share, ms: o.ms, estimate: o.estimate });
+  }).catch((err) => { console.error("window objects", err); post({ type: "windowError", error: String((err && err.stack) || err) }); });
 }
 let applyMs = 0;
 async function applyGround(p) {
   switching = true;
   const tApply = performance.now();
   try {
-    const old = S.win;
     if (p.mode === "win") {
-      const o = p.win.objects;
+      const w = p.win, o = w.objectsValue ?? emptyBody();
       S.win = { name: "win", cap: o.cap, body: o.body, start: o.start, spec: winSpec(o.cap) };
+      curWin = w;
       await R.setSources(sources());
-      R.setGround(p.win.pack);
+      R.setGround(w.pack);
       R.setIce(new Uint8Array(TILES * TILES));
     } else {
-      S.win = null;
+      S.win = null; curWin = null;
       await R.setSources(sources());
       R.setGround(home.pack);
       R.setIce(iceOf(sim.w.ice));
     }
     R.buildCanopy();
     R.farBuild(farLevels());
-    if (old) { old.body.destroy(); old.start.destroy(); }
-    p.win = null;
     curGid = p.gid;
     if (prepared === p) prepared = null;
-    if (p.mode === "win") {
-      looks.addAll(await R.survey(0, 0, (CODES * CODES) / 32));
-      R.setMeta(looks.meta());
-      growTable();
-      refreshSprites();
-    }
+    if (p.mode === "win") await surveyWindow();
   } finally { switching = false; applyMs = performance.now() - tApply; }
+}
+async function surveyWindow() {
+  looks.addAll(await R.survey(0, 0, (CODES * CODES) / 32));
+  R.setMeta(looks.meta());
+  growTable();
+  refreshSprites();
+}
+// the objects of the window drawn arrive: its source takes them in place of the empty one (a window not drawn takes them when it is)
+async function attachObjects(w) {
+  if (curWin !== w || !w.objectsValue) return;
+  while (switching) await new Promise((r) => setTimeout(r, 5));
+  if (curWin !== w || S.win?.body === w.objectsValue.body) return;
+  switching = true;
+  try {
+    const o = w.objectsValue;
+    S.win = { name: "win", cap: o.cap, body: o.body, start: o.start, spec: winSpec(o.cap) };
+    await R.setSources(sources());
+    R.buildCanopy();
+    R.farBuild(farLevels());
+    await surveyWindow();
+  } catch (err) {
+    console.error("window objects", err);
+    post({ type: "windowError", error: String((err && err.stack) || err) });
+  } finally { switching = false; }
 }
 
 // ---------- frames ----------

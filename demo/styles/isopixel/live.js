@@ -117,6 +117,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     else if (m.type === "progress") onProgress?.(m.d, m.n, m.what);
     else if (m.type === "ground") pendingGround = m;
     else if (m.type === "windowError") console.warn(`window: ${m.error}`);
+    else if (m.type === "windowObjects") { if (stats.window?.id === m.id) Object.assign(stats.window, { objects: m.objects, share: m.share, objectsMs: m.ms, objectsAt: performance.now() }); }
     else if (m.type === "pick") { picksWait.get(m.id)?.(m.r); picksWait.delete(m.id); }
     else if (m.type === "check") { checksWait.get(m.id)?.(m.r); checksWait.delete(m.id); }
     else if (m.type === "spritesReset") sentSprites.clear();
@@ -227,7 +228,9 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // the play area's plane (x east, z south of the place, ground.js place) and the sphere, gnomonic about the place
   // The ground the ladder draws is the island (the play area, true metres, north up) or a window of the planet's own ground laid at the camera by the
   // worker (groundwin.js: its frame is a face's axes, and a metre of its 75 m cells is `scale` true metres), so the plane is about FRM, not the place.
-  let FRM = PLACE && { c: PLACE.c, e: PLACE.e, n: PLACE.n, scale: 1, rot: [1, 0, 0, 1] }, gid = 0, mode = "home", pendingGround = null, asked = null, onGround = null;
+  let FRM = PLACE && { c: PLACE.c, e: PLACE.e, n: PLACE.n, scale: 1, rot: [1, 0, 0, 1] }, gid = 0, mode = "home", pendingGround = null, asked = null, askedSpec = null, onGround = null, winFadeAt = 0;
+  // the window's ladder comes in over half a second from the planet layer under it when it replaces no window (the island, or no ground at all)
+  const winFade = () => (winFadeAt ? smooth(0, 1, (performance.now() - winFadeAt) / 500) : 1);
   const geoOf = (x, z) => geoOfVec([0, 1, 2].map((i) => FRM.c[i] + ((x * FRM.e[i] - z * FRM.n[i]) * FRM.scale) / PR));
   const planeOf = (g) => { const v = vecOf(g), d = dotv(v, FRM.c); return d > 0.1 ? { x: (PR * dotv(v, FRM.e)) / (d * FRM.scale), z: (-PR * dotv(v, FRM.n)) / (d * FRM.scale) } : null; };
   function syncGeo(view) {
@@ -259,7 +262,9 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // then on every frame names it (gid), which is how the worker knows to switch its renderer to it in the same frame.
   function applyGroundMsg(m, view) {
     setFields(m.fields);
-    gid = m.gid; mode = m.mode; asked = null;
+    gid = m.gid; asked = null;
+    if (m.mode === "win" && mode !== "win") winFadeAt = performance.now();
+    mode = m.mode;
     FRM = m.mode === "win" ? { c: m.frame.c, e: m.frame.e, n: m.frame.n, scale: m.frame.scale, rot: m.frame.rot } : HOME;
     if (view.geo) {
       const q = planeOf(view.geo);
@@ -271,7 +276,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   }
   // Which ground the camera wants: the island's while its view stays inside the play area, else a window laid at the camera, made again when the view
   // nears the window's edge (the worker is told, and answers when it has it; until then the ladder draws what ground it has)
-  function wantGround(view, now) {
+  function wantGround(view, now, speculative = false) {
     if (!HAS_WIN || !objectsReady || view.zoom < ZLAD + 0.5 || !view.geo) return;
     const ppm = ppmOf(clampZ(view.zoom)), half = (canvas.width / 2 + canvas.height) / ppm, v = vecOf(view.geo), arc = (c) => Math.acos(Math.min(1, dotv(v, c))) * PR;
     // a view wider than a window can hold (the coarse ladder levels) is drawn by the planet layer alone away from the island: asking for windows there
@@ -280,6 +285,14 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     let want = null;
     if (arc(HOME.c) + half < SIZE / 2 + 800) { if (mode !== "home") want = { mode: "home" }; }
     else if (mode !== "win" || arc(FRM.c) / FRM.scale + half > SIZE / 2 - 600) want = { mode: "win", lat: view.geo.lat, lon: view.geo.lon };
+    // a speculative ask is for the view a zoom is heading to: the worker makes the window ahead of the view that needs it, and keeps it
+    if (speculative) {
+      if (!want || want.mode !== "win") return;
+      if (askedSpec && now - askedSpec.t < 5000 && Math.hypot(askedSpec.lat - want.lat, askedSpec.lon - want.lon) * D2R * PR < 1500) return;
+      askedSpec = { ...want, t: now };
+      worker.postMessage({ type: "want", ...want, speculative: true });
+      return;
+    }
     if (!want) { asked = null; return; }
     if (asked && asked.mode === want.mode && now - asked.t < 5000 && (want.mode === "home" || Math.hypot(asked.lat - want.lat, asked.lon - want.lon) * D2R * PR < 1500)) return;
     asked = { ...want, t: now };
@@ -750,7 +763,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     return x1 > -W / 4 && x0 < W * 1.25 && y1 > -H / 4 && y0 < H * 1.25;
   }
   function plan(view) {
-    const lf = levelFor(view.zoom), beta = norm8(view.bearing ?? 0), a = PLACE ? smooth(ZLAD, ZLAD + 1, view.zoom) : 1;
+    const lf = levelFor(view.zoom), beta = norm8(view.bearing ?? 0), a = (PLACE ? smooth(ZLAD, ZLAD + 1, view.zoom) : 1) * winFade();
     if (a <= 0 || (PLACE && !playAreaShown(view))) return { lf, parts: [], beta };
     const fade = lf.L < NL - 1 && lf.t > 0.6, m = fade ? FADE_MARGIN : 0, parts = [[camera(view, lf.L, beta, m), a]];
     if (fade) parts.push([camera(view, lf.L + 1, beta, m), smooth(0.6, 1, lf.t)]);
@@ -1047,7 +1060,12 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // waits for them
     readiness: () => { const ready = objectsReady || !simOpts; return { done: ready ? 1 : 0, all: 1, ready }; },
     // the views shown next (a follow's destination, a zoom's first level), whose levels' lists the worker builds first
-    prefetch: (vs) => { ahead = (vs ?? []).filter((v) => Number.isFinite(v?.zoom)).map((v) => ({ L: levelFor(v.zoom).L, b: norm8(v.bearing ?? 0) })); },
+    // the first of them, a zoom's goal, is where a window will be wanted: asked of the worker now, ahead of the view that needs it
+    prefetch: (vs) => {
+      ahead = (vs ?? []).filter((v) => Number.isFinite(v?.zoom)).map((v) => ({ L: levelFor(v.zoom).L, b: norm8(v.bearing ?? 0) }));
+      const g = vs?.[0];
+      if (g && !g.later && Number.isFinite(g.zoom) && PLACE) { const q = { ...g }; syncGeo(q); wantGround(q, performance.now(), true); }
+    },
     // whether a view's level draws from lists built for it: a level that keeps front lists (the island levels, at a
     // whole bearing) only once the worker has built them; any other at once
     listsReady: (v) => { const L = levelFor(v.zoom).L, b = norm8(v.bearing ?? 0); return !frontLevels.has(L) || !Number.isInteger(b) || fronts.has(`${L}|${b}`); },

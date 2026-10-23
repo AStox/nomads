@@ -41,7 +41,7 @@ export function createCamera({ live, view, canvas, onTurn }) {
       const st = { ...view, zoom: goal };
       if (anchor) {
         const s = live.screenOf(view, anchor.A.x, anchor.A.z, anchor.A.y, anchor.A.geo), [cx, cy] = half(), T = live.solveTarget(st, anchor.A.x, anchor.A.z, anchor.A.y, s[0] - cx, s[1] - cy, anchor.A.geo);
-        if (T && finite(T.x, T.z)) { st.x = T.x; st.z = T.z; }
+        if (T && finite(T.x, T.z)) { st.x = T.x; st.z = T.z; if (T.geo) { st.geo = T.geo; st.synced = { x: T.x, z: T.z, lat: T.geo.lat, lon: T.geo.lon }; } }
       }
       return st;
     },

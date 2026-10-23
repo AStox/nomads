@@ -1009,7 +1009,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       for (let l = 0; l < 5; l++) enc.copyBufferToTexture({ buffer: g2.grid.gpu, offset: l * g2.grid.layerWords * 4, bytesPerRow: gp2 * 4, rowsPerImage: GN }, { texture: gridT, origin: [0, 0, l] }, [GN, GN, 1]);
       enc.copyBufferToTexture({ buffer: g2.river.gpu, bytesPerRow: RMN }, { texture: riverT }, [RMN, RMN, 1]);
       device.queue.submit([enc.finish()]);
-      gpu.destroy(); g2.grid.gpu.destroy(); g2.river.gpu.destroy();
+      if (!g2.keep) { gpu.destroy(); g2.grid.gpu.destroy(); g2.river.gpu.destroy(); }
       gridTop = g2.grid.top;
     } else {
       for (let l = 0; l < g2.fine.layers; l++) upload(fineT, g2.fine.data.subarray(l * g2.fine.size ** 2, (l + 1) * g2.fine.size ** 2), g2.fine.size, g2.fine.size, 4, l);

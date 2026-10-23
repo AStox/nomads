@@ -133,6 +133,20 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const wg = await T.windowGround(gpu, src, face, x0, y0);
     const t2 = performance.now();
 
+    // ---------- what grew: each tile's own scatter, put in the window's frame, thinned and binned into the renderer's body on the GPU, nothing read back ----------
+    // started by the caller (startObjects) once the ground is out, so the page has the ground without waiting on the objects' CPU work; its promise is `w.objects`
+    const startObjects = () => {
+      const placed = [], tStart = performance.now();
+      for (const t of tl) {
+        if (!t.interior) continue;
+        const at = placer(t, face, x0, y0, srcF, srcX, srcY, turn);
+        if (!at || at.rect.w <= 0 || at.rect.h <= 0) continue;
+        // only the cells of the tile the window touches are made (the objects' ids in the tile's whole run are the same either way)
+        placed.push({ tile: t.f * nT * nT + t.ty * nT + t.tx, source: T.tileSource(t.gt), rect: at.rect, a0: t.tx * 256 * UNITS, a1: t.ty * 256 * UNITS, ...at.units });
+      }
+      return (w.objects = T.windowObjects(gpu, tier, placed, seed, { caps: CAPS.filter((c) => c <= top), side: N }).then((o) => ({ ...o, ms: performance.now() - tStart })));
+    };
+
     // ---------- the painter's inputs, rows turned so that z runs south ----------
     const flipCells = (f) => { const o = new Float32Array(N * N); for (let j = 0; j < N; j++) { const at = (H + N - 1 - j) * S + H; for (let i = 0; i < N; i++) o[j * N + i] = f(at + i); } return o; };
     const pl = planes;
@@ -158,19 +172,6 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     let peak = 0;
     for (const v of height) peak = Math.max(peak, v);
 
-    // ---------- what grew: each tile's own scatter, put in the window's frame, thinned and binned into the renderer's body on the GPU, nothing read back ----------
-    const placed = [];
-    for (const t of tl) {
-      if (!t.interior) continue;
-      const at = placer(t, face, x0, y0, srcF, srcX, srcY, turn);
-      if (!at || at.rect.w <= 0 || at.rect.h <= 0) continue;
-      // only the cells of the tile the window touches are made (the objects' ids in the tile's whole run are the same either way)
-      placed.push({ tile: t.f * nT * nT + t.ty * nT + t.tx, source: T.tileSource(t.gt), rect: at.rect, a0: t.tx * 256 * UNITS, a1: t.ty * 256 * UNITS, ...at.units });
-      stats.scatter = (stats.scatter ?? 0) + 1;
-    }
-    const objects = await T.windowObjects(gpu, tier, placed, seed, { caps: CAPS.filter((c) => c <= top), side: N });
-    const t4 = performance.now();
-
     // ---------- where the window stands on the sphere ----------
     const pc = (fx, fy) => G.pointOf(face, Math.tan(((x0 + fx) / fn - 0.5) * (Math.PI / 2)), Math.tan(((y0 + fy) / fn - 0.5) * (Math.PI / 2)));
     const c = pc(N / 2, N / 2), pe = pc(N / 2 + 1, N / 2), pn = pc(N / 2, N / 2 + 1);
@@ -180,11 +181,12 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const scale = Math.sqrt(arc(c, pe) * arc(c, pn)) / CELL;
     const [E, Nn] = G.eastNorth(c);
     stats.builds++;
-    stats.ms = { tiles: t1 - t0, fine: t2 - t1, pack: t3 - t2, flora: t4 - t3, total: t4 - t0 };
-    return {
+    stats.ms = { tiles: t1 - t0, fine: t2 - t1, pack: t3 - t2, total: t3 - t0 };
+    const w = {
       id: `${face}:${x0}:${y0}`, face, x0, y0, c, e, n, scale, rot: [dot(e, E), dot(e, Nn), dot(n, E), dot(n, Nn)],
-      lat: G.latLon(c).lat / D2R, lon: G.latLon(c).lon / D2R, pack, objects, fields: { peak, h, height, water }, stats: { ...stats, ms: stats.ms, objects: objects.n, share: objects.share },
+      lat: G.latLon(c).lat / D2R, lon: G.latLon(c).lon / D2R, pack, startObjects, objects: null, fields: { peak, h, height, water }, stats: { ...stats, ms: stats.ms },
     };
+    return w;
   }
 
   // Where a tile's objects stand in the window, in whole units of 15 mm (UNITS to the cell): { rect, units }. units are the shift and turn the GPU's place kernel applies (wgsl/terrain-place.ts):
