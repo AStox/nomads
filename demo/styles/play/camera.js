@@ -51,7 +51,8 @@ export function createCamera({ live, view, canvas, onTurn }) {
     // the mid-screen target point is held at centre + (dx, dy), so the image moves exactly with the cursor
     panBy(dx, dy) {
       if (!finite(dx, dy) || (!dx && !dy && !view.up)) return;
-      const A = { x: view.x, z: view.z, y: live.camH(view.x, view.z) + view.up }, [cx, cy] = half();
+      // the target's place on the planet is view.geo: its plane coordinates (about the play area) say nothing of a place past a quarter of the planet from it
+      const A = { x: view.x, z: view.z, y: live.camH(view.x, view.z) + view.up, geo: view.geo }, [cx, cy] = half();
       if (!hold(A, cx + dx, cy + dy, { ...view, up: 0 })) return;
       view.up = 0;
       if (anchor) anchor.at = [anchor.at[0] + dx, anchor.at[1] + dy];

@@ -12,7 +12,7 @@
 // the surf line and the dithered shallows, and light is the bake's: a slope's signed light moves each colour along its ramp by the
 // palette's tone steps (pal.js TONE), dithered by the same Bayer matrix. The pass draws at an art pixel of `art` device pixels and the
 // canvas shows it by whole pixels, so nothing is smoother than the island.
-export function globeWgsl({ FRAMES, P, RGB, NCOL, TONE_S, offsets }) {
+export function globeWgsl({ FRAMES, P, RGB, NCOL, TONE_S, offsets, LEVELS }) {
   const lit = (v) => { const s = String(Math.fround(v)); return /[.e]/.test(s) ? s : `${s}.0`; };
   const v3 = (a) => `vec3f(${a.map(lit).join(", ")})`;
   const u = (n) => `${P[n]}u`;
@@ -33,6 +33,7 @@ const HALO = 2.0;
 const HS = 260;
 
 const NC = ${NCOL}u;
+const LEVELS = ${LEVELS};
 const PAL = array<vec3f, ${NCOL}>(${RGB.map((c) => rgb(c)).join(", ")});
 // the palette's tables (pal.js): HAZE and SHADOW, one index each, then TONE's rows, one per slope light in TONE_S
 const T_SHADOW = NC;
@@ -60,6 +61,8 @@ struct U {
   off: vec3f, art: f32,     // the camera less its target, and the art pixel in device pixels
   size: vec2f, zNear: f32, zFar: f32, // the canvas in device pixels, and the depth range along the view in radii
   cut: f32, airK: f32, aw: f32, ah: f32, // the river cut (m3/s), how much of the air's haze a camera this high shows, and the art-pixel target's size
+  moon: vec3f, moonMix: f32, // the moon's direction, and how much of the key light it is (1 once the sun is down)
+  amb: vec4f,               // x: the sky's ambient light where the camera stands, the light tables' row 0 (live.js ambientOf)
 }
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var fieldsT: texture_2d_array<u32>;  // a tile's cells, 16 bytes each (pyramid.js)
@@ -67,6 +70,7 @@ struct U {
 @group(0) @binding(3) var<storage, read> table: array<u32>; // each tile's atlas layer, or NONE
 @group(0) @binding(4) var<storage, read> tables: array<u32>;
 @group(0) @binding(5) var<storage, read> dqT: array<u32>; // ground.wgsl.js dqBuild
+@group(0) @binding(6) var<storage, read> lutT: array<u32>; // the sky's light tables the ladder's shade pass maps its palette through (webgpu.js LUT0 on): LEVELS key light steps by the fire's 4 levels, NC colours each
 @group(0) @binding(8) var artT: texture_2d<f32>;          // the picture at an art pixel, for the blit that shows it by whole pixels
 
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -83,6 +87,13 @@ struct U {
 var<private> gX: i32;
 var<private> gY: i32;
 var<private> gMpp: f32;  // metres to an art pixel at the surface
+// the sky's ambient light with the sun at sin(elevation) s: live.js lightOf's a (a power of the sun's height by day, an e-fold each 2.2 degrees below the horizon) and AMB, STAR [change both together]
+fn ambOf(s: f32) -> f32 {
+  let a0 = pow(0.021 / (0.8512 + 0.021), 0.65);
+  let day = pow((max(s, 0.0) + 0.021) / (0.8512 + 0.021), 0.65);
+  let night = a0 * exp(degrees(asin(clamp(s, -1.0, 0.0))) / 2.2);
+  return 0.9 * select(night, day, s >= 0.0) + 0.0012;
+}
 var<private> gForm: f32; // the planet's form light in tone steps, 0 where the island's flat ground is
 
 fn bayer(x: i32, y: i32) -> f32 { return g_BAYER[((y & 3) << 2u) | (x & 3)]; }
@@ -404,7 +415,7 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   var gl = 0.0;
   // the camera's light, flat ground at the view's middle unchanged
   let sd = dot(p, u.sun);
-  gForm = clamp(1.7 * (sd - 0.7), -2.6, 0.7);
+  gForm = 0.0;
   if (tl.slot == NONE) {
     // no tile of the planet here (a face that is not baked): the deep sea
     idx = ${u("w0")};
@@ -446,16 +457,20 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
       }
     }
   }
-  // past the terminator the night's shadow tones, then the air's haze toward the limb (seen from a height, not from the
-  // ground), each dithered
-  let night = sm(0.0, -0.5, sd);
-  if (bayer(gX, gY) < night) { idx = tables[T_SHADOW + idx]; }
+  // the air's haze toward the limb (seen from a height, not from the ground), each dithered
   let mu = max(dot(p, -rd), 0.0);
   let air = pow(1.0 - mu, 5.0) * 0.9 * u.airK;
   if (bayer(gX, gY) < air) { idx = tables[idx]; }
   if (bayer(gX + 2, gY + 1) < air * air) { idx = tables[idx]; }
-  o_.color = vec4f(PAL[idx], 1.0);
+  // the light the ground has: the key light's share on flat ground here (the sun's height over this place, the moon's once the sun is down), through the same light tables the ladder's shade
+  // pass maps its palette through, so the night side, the terminator and the day side show as the close levels show a night, a dusk and a day
+  let key = mix(max(sd, 0.0), max(dot(p, u.moon), 0.04), u.moonMix);
+  // the tables' row 0 is the ambient light of the sky where the camera stands: a place with less of it (the night side from a day) shows that much darker
+  let ambK = min(1.0, ambOf(sd) / max(u.amb.x, 1e-6));
+  let row = u32(min(f32(LEVELS - 1), floor(key * f32(LEVELS - 1) + bayer(gX, gY)))) * 4u;
+  o_.color = vec4f(unpack4x8unorm(lutT[row * NC + idx]).rgb * ambK, 1.0);
   return o_;
 }
 `;
+
 }

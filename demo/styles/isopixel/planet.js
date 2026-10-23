@@ -20,7 +20,7 @@ const GRID_X = 12, GRID_Y = 8;
 // draw: cam from planetCam; opts { w, h (target px), art (device px an art pixel, 2), sun (unit vector, the light that shades the
 // sphere), relief (the light's exaggeration of slopes, 2.5), exag (the ground's lift, 1.5 as the ladder's), riverCut (m3/s), clearRGB
 // (0 to 255), timestampWrites }. A draw's uniforms are one of RING buffers in turn, so up to RING draws may be recorded before one submit.
-export async function createPlanet({ device, format, G, pyramid, pal, radiusM, hmax }) {
+export async function createPlanet({ device, format, G, pyramid, pal, radiusM, hmax, levels }) {
   const R = radiusM, { P, RGB, NCOL, HAZE, SHADOW, TONE, TONE_S } = pal, offsets = Array.from({ length: pyramid.tiers + 1 }, (_, t) => tierOffset(t));
   const store = (data) => {
     const b = device.createBuffer({ size: Math.max(16, data.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -39,6 +39,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       { binding: 3, visibility: F, buffer: { type: "read-only-storage" } },
       { binding: 4, visibility: F, buffer: { type: "read-only-storage" } },
       { binding: 5, visibility: F, buffer: { type: "read-only-storage" } },
+      { binding: 6, visibility: F, buffer: { type: "read-only-storage" } },
     ],
   });
   const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
@@ -48,15 +49,17 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       { binding: 8, visibility: F, texture: { sampleType: "float", viewDimension: "2d" } },
     ],
   });
-  const module = device.createShaderModule({ code: globeWgsl({ FRAMES: G.FRAMES, P, RGB, NCOL, TONE_S, offsets }) });
+  const module = device.createShaderModule({ code: globeWgsl({ FRAMES: G.FRAMES, P, RGB, NCOL, TONE_S, offsets, LEVELS: levels }) });
   const artTarget = [{ format: ART_FORMAT }];
   const [planetPipe, blitPipe] = await Promise.all([
     device.createRenderPipelineAsync({ layout, vertex: { module, entryPoint: "vs" }, fragment: { module, entryPoint: "fs", targets: artTarget }, primitive: { topology: "triangle-list" }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: "always" } }),
     device.createRenderPipelineAsync({ layout: device.createPipelineLayout({ bindGroupLayouts: [blitBgl] }), vertex: { module, entryPoint: "vs" }, fragment: { module, entryPoint: "bfs", targets: [{ format }] }, primitive: { topology: "triangle-list" } }),
   ]);
   const dq = store(dqBuild()), tab = store(tables);
+  // the sky's light tables (the page sends them as the light changes): levels x 4 fire levels (and a last row) of NCOL colours
+  const lutB = device.createBuffer({ size: (levels * 4 + 1) * NCOL * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const ring = Array.from({ length: RING }, () => {
-    const buffer = device.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const buffer = device.createBuffer({ size: 176, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const bind = device.createBindGroup({
       layout: bgl,
       entries: [
@@ -66,13 +69,14 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
         { binding: 3, resource: { buffer: pyramid.tableB } },
         { binding: 4, resource: { buffer: tab } },
         { binding: 5, resource: { buffer: dq } },
+        { binding: 6, resource: { buffer: lutB } },
       ],
     });
     return { buffer, bind, blit: null };
   });
   // the picture is made at an art pixel (a quarter of the pixels at 2) and shown by whole pixels in a second pass
   let slot = 0, art = null;
-  const u = new Float32Array(36);
+  const u = new Float32Array(44);
   function artFor(aw, ah) {
     if (art && art.w === aw && art.h === ah) return art;
     art?.color.destroy(); art?.depth.destroy();
@@ -110,7 +114,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     const a = artFor(Math.ceil(w / artPx), Math.ceil(h / artPx));
     const hmaxR = (exag * hmax) / R, oLen = Math.hypot(cam.o[0], cam.o[1], cam.o[2]), cut = opts.riverCut ?? 20;
     u.set([...cam.o, cam.tanH, ...cam.fwd, cam.aspect, ...cam.right, opts.relief ?? 2.5, ...cam.up, exag, ...sun, R, ...cam.T, hmaxR, ...cam.off, artPx,
-      w, h, Math.max(1e-6, 0.4 * (oLen - 1 - hmaxR)), oLen + 1.01, cut, sm(0.05, 0.3, oLen - 1), a.w, a.h]);
+      w, h, Math.max(1e-6, 0.4 * (oLen - 1 - hmaxR)), oLen + 1.01, cut, sm(0.05, 0.3, oLen - 1), a.w, a.h, ...(opts.moon ?? [0, 0, 1]), opts.moonMix ?? 0, opts.amb ?? 1, 0, 0, 0]);
     const r = ring[slot++ % RING], ts = opts.timestampWrites;
     device.queue.writeBuffer(r.buffer, 0, u);
     const pass = enc.beginRenderPass({
@@ -127,5 +131,6 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     });
     blit.setPipeline(blitPipe); blit.setBindGroup(0, r.blit); blit.draw(3); blit.end();
   }
-  return { hmax, draw };
+  const setLut = (lut) => device.queue.writeBuffer(lutB, 0, lut.subarray(0, Math.min(lut.length, (levels * 4 + 1) * NCOL)));
+  return { hmax, draw, setLut };
 }

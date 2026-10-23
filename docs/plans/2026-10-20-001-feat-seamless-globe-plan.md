@@ -104,7 +104,7 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   renderer's own checks. Loaded to `body.ready` with no page error (default, `?planet=0`, `?sim=0`, `?seed=2`); a scripted zoom
   from the whole planet to close and back and a 15 s pan at `valley` recorded in `/tmp/globe-seamless/`. Still seams: the island is
   not the planet's land at its place (another coast and relief), so the play area shows as a diamond stamp over the planet from zoom
-  -1.5 to about 1, with a dithered blue halo from its deep sea; the planet's sun is the island's held 25 degrees up; the island level
+  -1.5 to about 1, with a dithered blue halo from its deep sea; the planet's sun is the island's (fixed later, see Unit 6); the island level
   at zoom -1 to 0 draws a larger art buffer than at 0 and costs more.
 - [x] **Unit 4: The planet at 195.6 km.** The generator's coarse tiers at the new radius: tectonics, atmosphere, ice and
   sea level rerun, the planet store and bake keyed by it. Measure what it makes (land share, ranges, rain belts, ice) and
@@ -272,6 +272,23 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   the worker made each ask's window (two builds for a 4 s one under load); a window already made for the same place is not made again (`built` in worker.js).
   Window costs now (the GPU free): ground tiles 0.04 to 0.24 s, fine ground 0.2 s, painter packing 0.5 s, scatter 0.5 to 3 s (the lowland, 6.5 million objects),
   1.3 to 4.2 s in all; about 6 MB of tiles.
+  The planet's sun (2026-10-23; it was the play area's sun held 25 degrees up, so the globe was bright at any hour and dark once zoomed in): one sun and one moon for
+  the whole planet, each a point of the sky fixed by its direction over the play area (the sim's bearing and elevation from sky.ts, whose island lies at its own
+  latitude and whose clock is the game's 24 hour day), so the sim's light is exact over the play area and every other place sees that sky point from where it
+  stands (`skyVec`, `bodyOver` in live.js). Reconciling the planet's spin with the game's day: the planet's own spin (44 minutes, a climate parameter) does not
+  light anything; the game's clock moves the sun, once round the planet in a game day, rising and setting over the year's tilt as sky.ts has it, so the globe
+  has a day side, a night side and a terminator that turn with the clock, and a place's light on the globe is its light at the close levels at that
+  clock. A window (`mode "win"`) lights its own place with the same sun (`lightOf(..., at)`, `planetSky`: the body's bearing and elevation over the window's
+  frame), replacing the old turning of the home sky by the frame's rotation. The globe is drawn through the ladder's own light tables (`lutT`, the shade
+  pass's LUT: the palette at the key light's share on flat ground there, the moon's once the sun is down), times the sky's ambient light there against the camera's
+  (`ambOf`, live.js `ambientOf`), so its dusk and night are the close levels' with no palette of its own; the HUD still reads the sim's sun. Stills in
+  `/tmp/globe-seamless/`: `globe-sun-times-v2.png` (08:00, 13:00, 19:00, a night side from a day place, the subsolar side), `zoom-sequence-13h.png` and
+  `zoom-sequence-19h.png`. Open: the moon's light on the globe is the home sky's single key row (no per-place moon phase or rise), the sun's low-elevation glow
+  band is not drawn, and the window's sun is fixed at its centre while the camera moves inside it.
+  Rotating the globe (`/tmp/globe-seamless/rotation-sequence-by-drag.png`): a pan held the target by its plane coordinates about the play area, which say nothing
+  of a place more than a quarter of the planet from it, so a drag there did nothing or went back; it holds the target's planet place (`panBy` in camera.js). A
+  drag toward a pole, which folded the answer back down the far side (north is up at every planet zoom), stops at the pole now (both poles at 90 degrees are
+  reached; a full turn of longitude takes four drags of 450 px).
 
 ## Risks
 

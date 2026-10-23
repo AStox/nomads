@@ -285,14 +285,17 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     asked = { ...want, t: now };
     worker.postMessage({ type: "want", ...want });
   }
-  // the window's frame is a face's axes, so its north is the planet's turned by rot: the sky's directions (true compass, x east z south) turned into its
-  function turnSky(k) {
-    const [a, b, c, d] = FRM.rot, t = ([x, z]) => [x * a - z * b, -x * c + z * d];
-    if (k.cast) k.cast = { ...k.cast, dir: t(k.cast.dir) };
-    if (k.L) { const [x, z] = t([k.L[0], k.L[2]]); k.L = [x, k.L[1], z]; }
-    if (k.sun) k.sun = { ...k.sun, dir: t(k.sun.dir) };
-    if (k.moon) k.moon = { ...k.moon, dir: t(k.moon.dir) };
+  // One sun and one moon for the whole planet, set so that over the play area they are the sim's (sky.ts, whose island lies at its own latitude and whose clock
+  // is the game's 24 hour day, not the planet's spin): each body's direction over the play area (its compass bearing and elevation) is a point of the sky,
+  // and every other place of the planet sees that same point from where it stands. So the sun shows a day side, a night side and a terminator on the globe, turns
+  // once to the game's day and rises and sets over the year's tilt as the sim's does, and a place's light on the globe is its light at the close levels.
+  const skyVec = (b) => { const dl = Math.hypot(b.dir[0], b.dir[1]) || 1, ce = Math.cos(b.el); return [0, 1, 2].map((i) => PLACE.c[i] * Math.sin(b.el) + ce * ((PLACE.e[i] * b.dir[0]) / dl - (PLACE.n[i] * b.dir[1]) / dl)); };
+  // a sky point as a body over a place's frame (c up, e east, n north: x east and z south on its plane)
+  function bodyOver(v, F) {
+    const u = dotv(v, F.c), e = dotv(v, F.e), n = dotv(v, F.n), h = Math.hypot(e, n);
+    return { dir: h > 1e-9 ? [e / h, -n / h] : [0, 1], el: Math.asin(clamp(u, -1, 1)), tan: u / Math.max(h, 1e-9) };
   }
+  const planetSky = (k) => ({ sun: bodyOver(skyVec(k.sun), FRM), moon: { ...bodyOver(skyVec(k.moon), FRM), phase: k.moon.phase, lit: k.moon.lit }, id: gid });
   // the planet camera's look at a zoom: u runs from the whole planet (0) to the ladder's first zoom (1)
   function planetParams(view) {
     const zw = zminNow(), u = clamp((view.zoom - zw) / (ZLAD - zw), 0, 1), k = smooth(0.25, 0.9, u), tanH = 0.414 * (0.05 / 0.414) ** smooth(0.2, 0.9, u);
@@ -301,10 +304,9 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // screen up on the ground at bearing b is the plane's (-1, -1) turned b * 45 degrees, the plane's north turned from the planet's by the frame's turn; the whole planet is north up
     let iso = (-45 + 45 * (view.bearing ?? 0)) * D2R + Math.atan2(FRM.rot[2], FRM.rot[3]);
     iso = ((((iso + Math.PI) % TAU) + TAU) % TAU) - Math.PI;
-    // the light is the sky's sun at the play area, held up to 25 degrees so the planet is never dark
-    const sun = sky?.sun, el = Math.max(sun?.el ?? 0.8, 25 * D2R), dir = sun?.dir ?? [0.6, 0.8], dl = Math.hypot(dir[0], dir[1]) || 1;
-    const light = [0, 1, 2].map((i) => PLACE.c[i] * Math.sin(el) + Math.cos(el) * ((PLACE.e[i] * dir[0]) / dl - (PLACE.n[i] * dir[1]) / dl));
-    return { lat: view.geo.lat, lon: view.geo.lon, dist, tilt: ISO_TILT * k, heading: iso * k, tanH, sun: light, riverCut: clamp((720 * ((canvas.height * FRM.scale) / ppm)) / PR, 20, 3000) };
+    // the light is the planet's sun (planetSky): day, night and the terminator between, as the clock stands
+    const light = skyVec(homeSky?.sun ?? { el: 0.8, dir: [0.6, 0.8] }), moon = homeSky?.moon ? skyVec(homeSky.moon) : [0, 0, 1];
+    return { lat: view.geo.lat, lon: view.geo.lon, dist, tilt: ISO_TILT * k, heading: iso * k, tanH, sun: light, moon, moonMix: homeSky ? smooth(3, -2, homeSky.e) : 0, amb: ambientOf(Math.sin(sky?.sun?.el ?? 0.8)), riverCut: clamp((720 * ((canvas.height * FRM.scale) / ppm)) / PR, 20, 3000) };
   }
   // the camera as the worker drew it last frame: stood above the ground under its target (stats.lift), so a pick lands on what is drawn
   const planetCamOf = (view) => { const p = planetParams(view); return planetCam({ ...p, w: canvas.width, h: canvas.height, radiusM: PR, lift: stats.lift ?? 0 }); };
@@ -332,6 +334,9 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       g = geoOfVec([0, 1, 2].map((i) => T[i] * c + nxT[i] * sn + n[i] * nt * (1 - c)));
       if (ang < 1e-10) break;
     }
+    // north is up at every planet zoom, so a drag on toward a pole that would go over it folds the answer back down the far side: the pole stops it
+    const near = Math.abs(view.geo.lat) > 70 ? Math.sign(view.geo.lat) : 0;
+    if (near && oy * near > 0 && Math.abs(g.lat) < Math.abs(view.geo.lat) - 0.05) g = { lat: near * 89.99, lon: view.geo.lon };
     const q = planeOf(g);
     return { x: q?.x ?? view.x, z: q?.z ?? view.z, geo: g };
   }
@@ -641,8 +646,9 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // The light of an hour under cloud (0 clear to 1 overcast): A the sky's; K the key light's, which lights a face by how it
   // turns to L (the sun, the dusk's glow and the moon, weighted by their light); cast: what casts shadows, k its share of K.
   // moonless: the sky without the moon, which the eye's exposure is measured against.
-  function lightOf(hour, day, cloud, moonless = false) {
-    const sun = bodyAt(hourAngle(hour, NOON), declination(day, hour)), moon = moonAt(day, hour), e = sun.el / DEG, clear = 1 - cloud;
+  // `at`, for a place of the planet other than the play area, is the sun and moon over it ({ sun, moon }, planetSky below)
+  function lightOf(hour, day, cloud, moonless = false, at = null) {
+    const sun = at?.sun ?? bodyAt(hourAngle(hour, NOON), declination(day, hour)), moon = at?.moon ?? moonAt(day, hour), e = sun.el / DEG, clear = 1 - cloud;
     const up = (b, lo, hi) => smooth(lo * DEG, hi * DEG, b.el);
     // the sun's last light goes over its last degrees, and the moon's first comes over its first
     const sunClear = transmit(sun.el).map((t, k) => (t / NOON_T[k]) * up(sun, -1, 2)), S = sunClear.map((s) => s * clear);
@@ -665,6 +671,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // part (GAM), so an overcast day still reads bright and a moonlit night stays dark but for what the moon lights. The
   // light measured: flat ground and faces turned to the key light alike (as one turned to it by at least REFN). WB: noon's
   // light on flat ground, under which the palette shows as drawn.
+  // the sky's ambient light with the sun at sin(elevation) s, as lightOf takes it (globe.js ambOf holds the same)
+  const ambientOf = (s) => AMB * (s >= 0 ? ((s + AMB_0) / (Math.sin(SUN_HIGH) + AMB_0)) ** AMB_P : ((AMB_0 / (Math.sin(SUN_HIGH) + AMB_0)) ** AMB_P) * Math.exp(Math.asin(Math.max(-1, s)) / DEG / DUSK)) + STAR;
   const REFN = 0.45, GAM = 0.16, D_NIGHT = 0.15;
   const refOf = (l) => lum(l.A) + lum(l.K) * Math.max(l.L[1], REFN);
   const NOON_L = lightOf(NOON, REF_DAY, 0, true), WB = NOON_L.A.map((a, k) => a + NOON_L.K[k] * NOON_L.L[1]), WBL = lum(WB);
@@ -672,21 +680,21 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   const exposure = (hour, day, l, c = lightOf(hour, day, 0, true)) => (shadowShows(l.e) / lum(c.A)) * (refOf(l) / refOf(c)) ** (GAM - 1);
   // the exposure at which a fire's light is all there: a clear sky with the sun FIRE_E degrees down on a midsummer evening
   const FIRE_AT = (() => { let lo = NOON, hi = NOON + 12; for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (lightOf(m, REF_DAY, 0, true).e > FIRE_E) lo = m; else hi = m; } const l = lightOf(lo, REF_DAY, 0, true); return exposure(lo, REF_DAY, l, l); })();
-  let cloud = 0, cloudAt = 0, sky = null, tablesId = "";
+  let cloud = 0, cloudAt = 0, sky = null, homeSky = null, tablesId = "";
   // The sky of a frame: its light; gain, display per unit of light by channel; dim, how far the dark has drained colour;
   // night, how dark the evening has grown for the fires; fire, how much of a fire's light shows; cast for the GPU, null
   // while nothing casts; flat, relief and toneK for the GPU's shading (the relief softer by night, as eyes see less of
   // it); id, which light tables it needs.
-  function skyFor(clock, now) {
+  function skyFor(clock, now, at = null) {
     const hour = clock.hour ?? 8, day = clock.day ?? 1;
     // a change of weather drifts in over a few seconds
     cloud += ((COVER[simRef?.w?.weather?.sky] ?? 0) - cloud) * (cloudAt ? 1 - Math.exp(-Math.min(1000, now - cloudAt) / 2500) : 1);
     cloudAt = now;
-    const l = lightOf(hour, day, cloud), E = exposure(hour, day, l), dim = smooth(-1, -11, l.e), flat = Math.max(0, l.L[1]);
+    const l = lightOf(hour, day, cloud, false, at), E = exposure(hour, day, l, at ? lightOf(hour, day, 0, true, at) : undefined), dim = smooth(-1, -11, l.e), flat = Math.max(0, l.L[1]);
     return {
       ...l, gain: WB.map((w) => (E * WBL) / w), dim, night: smooth(1, -8, l.e), fire: Math.min(1, E / FIRE_AT),
       cast: l.cast && { ...l.cast, exag: EXAG }, flat, relief: EXAG * RELIEF, toneK: ((TONE_G * l.direct) / (lum(l.A) + lum(l.K) * flat)) * (1 - 0.6 * dim),
-      cloud, id: `${Math.round(hour * 60)}|${day}|${Math.round(cloud * 40)}`,
+      cloud, id: `${Math.round(hour * 60)}|${day}|${Math.round(cloud * 40)}|${at?.id ?? 0}`,
     };
   }
   // An upright thing's share of the key light seen from bearing b: the half of a round form facing the viewer, lit when
@@ -827,8 +835,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the ground's colour follows the season
     season = clock.season ?? season;
     if (pendingGround) { applyGroundMsg(pendingGround, view); pendingGround = null; }
-    sky = skyFor(clock, now);
-    if (mode === "win") turnSky(sky);
+    homeSky = skyFor(clock, now);
+    sky = mode === "win" ? skyFor(clock, now, planetSky(homeSky)) : homeSky;
     syncGeo(view);
     wantGround(view, now);
     const pl = plan(view), T = tablesFor(sky);
@@ -1051,7 +1059,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     pins: () => pins,
     // the last frame's sky (skyFor): sun and moon ({ dir, el in radians; the moon's phase and lit share }), e: the sun's
     // elevation in degrees, cloud: the cover it is lit under, 0 to 1
-    sky: () => sky,
+    sky: () => homeSky,
     // the frames the worker finished since the last call: { id, latency (ms from sent to done), gpu, cpu (ms), at (when
     // the page heard it was done), passes (each pass's GPU ms) }
     frameTimes: () => frameMs.splice(0),

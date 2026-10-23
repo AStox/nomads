@@ -10,7 +10,7 @@ import { createPlanet } from "./planet.js";
 import { planetCam } from "./planet-cam.js";
 import { LIVE, shown, ANIMAL_BODY, ANIMAL_DRAWN } from "./px.js";
 import { packGround } from "./ground.wgsl.js";
-import { createRenderer, NS, ATLAS } from "./webgpu.js";
+import { createRenderer, NS, ATLAS, LEVELS } from "./webgpu.js";
 import { Looks, CODES, NONE, castRows, Shelves, entryWords } from "./atlas.js";
 import { PICK_SLOT, EXTRA_PICK, KIND_PICK, NO_SLOT, CELLS_N, CELL_M } from "./wgsl/objects.js";
 import { closeGround } from "./ground-at.js";
@@ -98,7 +98,7 @@ async function init(m) {
     device, context, format, timing, ground: pack,
     pal: { P, NCOL, HAZE, GLOW, TONE, TONE_S, WATER: ["w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"].map((k) => P[k]), TILE_M, ORIGIN, TILES, TRAIL_N: Math.round(SIZE / 3), GRID_STEP: WS, FINE: { start: START, step: STEP } },
   });
-  if (planet && ground.place) planetLayer = Object.assign(await createPlanet({ device, format, G: planet.G, pyramid: planet.pyramid, pal: PAL, radiusM: planet.radiusM, hmax: planet.hmax }), { radiusM: planet.radiusM });
+  if (planet && ground.place) planetLayer = Object.assign(await createPlanet({ device, format, G: planet.G, pyramid: planet.pyramid, pal: PAL, radiusM: planet.radiusM, hmax: planet.hmax, levels: LEVELS }), { radiusM: planet.radiusM });
   let peak = 0;
   for (const h of isle.height) peak = Math.max(peak, h);
   home = { pack, fields: { peak, h: g.h, height: isle.height, water: isle.water } };
@@ -909,6 +909,7 @@ async function whereOf(id) {
 // (groundwin.js) laid at the camera. The page says where its camera is and which it wants (a want); the worker makes the window (a few seconds the
 // first time) and tells the page its frame and heights; the page puts its view in the new frame and names the ground in every frame after (its gid),
 // and the first frame that names it is the one the renderer switches on (applyGround), so a frame is never drawn on ground its coordinates are not in.
+let lastLut = null, lutShown = false;
 let curGid = 0, gids = 0, prepared = null, switching = false, building = false, wanting = null, home = null, built = null;
 const winSpecs = new Map();
 const winSpec = (cap) => {
@@ -1007,6 +1008,9 @@ function render() {
   rendering = true;
   const t0 = performance.now();
   for (const s of f.sprites ?? []) liveSrc.set(s.id, s);
+  // the planet layer maps its palette through the same light tables as the ladder (kept, for a layer made after the first frame)
+  if (f.lut) lastLut = f.lut;
+  if (f.lut || (lastLut && planetLayer && !lutShown)) { planetLayer?.setLut(lastLut); lutShown = !!planetLayer; }
   const views = f.views.map((v) => {
     const prims = v.prims ? Int32Array.from(v.prims) : null;
     // a sprite primitive names the page's sprite
@@ -1018,7 +1022,7 @@ function render() {
     // the camera stands above the ground under its target, as drawn (lifted by the relief's exaggeration), never inside it
     const lift = (planetLift = Math.max(0, planet.pyramid.heightAt(planet.G.FRAMES, planet.G.fromLatLon((f.planet.lat * Math.PI) / 180, (f.planet.lon * Math.PI) / 180))) * f.exag);
     const cam = planetCam({ ...f.planet, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM, lift });
-    planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, sun: f.planet.sun, exag: f.exag, riverCut: f.planet.riverCut });
+    planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, sun: f.planet.sun, moon: f.planet.moon, moonMix: f.planet.moonMix, amb: f.planet.amb, exag: f.exag, riverCut: f.planet.riverCut });
   });
   R.frame({ ...f, views, under });
   frames++;
