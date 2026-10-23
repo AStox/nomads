@@ -15,6 +15,7 @@ import { readPlanet, type Planet } from "../src/gpu/globe/window";
 import { patchAt } from "../src/gpu/globe/patch";
 import { STORE } from "./globe-planet";
 import { diskStore } from "./globe-window";
+import { measures } from "./globe-land-real";
 import { blockStep, dissection, shoreHeights, lattice, renderLand, responseYears } from "./globe-land-metrics";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
@@ -79,6 +80,7 @@ try {
     }
     err.sort((a, b) => a - b);
     res.meanErrM = { parents: err.length, p50: +err[Math.floor(err.length * 0.5)].toFixed(2), p90: +err[Math.floor(err.length * 0.9)].toFixed(2), p99: +err[Math.floor(err.length * 0.99)].toFixed(2), max: +err[err.length - 1].toFixed(2) };
+    res.d2 = measures(height, S, x0 - 1, y0 - 1, per);
     res.shore = shoreHeights(height, S, live);
     res.dissection30 = dissection(height, cells, S, live, 30, per, cellM);
     for (const b of [per, per / 2, per / 4, per / 8]) res[`blockStep${b}`] = +blockStep(height, S, live, b, 0).toFixed(3);

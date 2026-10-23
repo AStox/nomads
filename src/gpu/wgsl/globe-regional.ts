@@ -36,9 +36,9 @@ export const XSTRIDE = 28;
 // The neighbours the flood and the receivers read: 8, as the island's flood and receivers do (terrain-upstream.ts flround, recv; an earlier note here said 4, which the island does not), or 4,
 // which sends water along rows and columns only; the landslides read all 8.
 export const FLOW_NEIGHBOURS: 4 | 8 = 8;
-// The sweeps of the uplift's solve (even, so the coefficients end in the buffer they started in): the stencil's worst mode contracts by 0.56 a sweep, so 64 leave under 1e-15 of the error
+// The sweeps of the uplift's solve (even, so the coefficients end in the buffer they started in): a damped sweep contracts the stencil's worst mode by 0.83, so 128 leave under 1e-10 of the error
 // of the first guess [derived].
-export const SOLVE_SWEEPS = 64;
+export const SOLVE_SWEEPS = 128;
 // `patch` lays the kernels on a patch (src/gpu/globe/patch.ts: a block of tiles and a halo of cells all round it, side * side cells flat, the global cell id of each in the IDS binding, a
 // cube corner's missing cell NONE) instead of the whole tier: a cell's neighbours are its neighbours in the patch, its place is read from IDS, and the cells of the halo are read and never
 // written (`interior`). Every law is the same text in both layouts.
@@ -515,32 +515,37 @@ fn pmean(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   if (p >= NP) { return; }
   atomicStore(&AT[A_PM + p], mean_q8(p, fl(A_PS + p) + fl(A_CARRY + p)));
 }
-// The rise of a land cell is the bilinear interpolation of coefficients m on the tier-0 cells round it (the four whose centres bracket the cell, weights Q16, the neighbour's |2i + 1 - B| / 2B
-// along each axis, those with no land left out): lift_at gives them. The coefficients are solved (psolve) so that the land of every tier-0 cell rises by exactly what it lost.
-struct LiftAt { p: array<u32, 4>, s: array<u32, 4>, w: array<u32, 4> }
+// The rise of a land cell is the quadratic B-spline interpolation of coefficients m on the tier-0 cells round it (the nine whose centres lie within one cell, the weights along an axis for a cell
+// at offset u from its tier-0 centre, |u| < 1/2: (1/2 - u)^2 / 2, 3/4 - u^2 and (1/2 + u)^2 / 2 for the neighbour on the low side, the cell itself and the one on the high side; those with no land
+// left out): lift_at gives them as integers over a common denominator. It is the limit of the 3/4, 1/4 stencil the tiers' heights are carried down by (refineSmooth, child4: Chaikin's corner
+// cutting, whose limit curve is the quadratic B-spline), so it is as smooth as the surface it adds to: C1, where the bilinear weights it replaces had a crease along every tier-0 centre line
+// (the second difference of the heights at the two cells beside a centre was 2 to 2.5 times its value elsewhere on the range [measured: 6.2 and 6.4 m against 2.6]). The coefficients are
+// solved (psolve) so that the land of every tier-0 cell rises by exactly what it lost.
+struct LiftAt { p: array<u32, 9>, s: array<u32, 9>, w: array<u32, 9> }
 fn lift_at(k: u32) -> LiftAt {
   let c = cid(k); let f = c / CELLS; let r = c - f * CELLS; let Y = r / FN; let X = r - Y * FN;
-  let ix = i32(X % FACT); let iy = i32(Y % FACT); let B = i32(FACT);
-  let ax = u32(abs(2 * ix + 1 - B)); let ay = u32(abs(2 * iy + 1 - B));
-  let wxn = ax * (32768u / FACT); let wyn = ay * (32768u / FACT);
-  let wxc = 65536u - wxn; let wyc = 65536u - wyn;
+  let B = i32(FACT); let ax = 2 * i32(X % FACT) + 1 - B; let ay = 2 * i32(Y % FACT) + 1 - B;
+  // numerators over 8 B^2 for the neighbour on the low side, the cell, the one on the high side
+  let wx = array<u32, 3>(u32((B - ax) * (B - ax)), u32(2 * (3 * B * B - ax * ax)), u32((B + ax) * (B + ax)));
+  let wy = array<u32, 3>(u32((B - ay) * (B - ay)), u32(2 * (3 * B * B - ay * ay)), u32((B + ay) * (B + ay)));
   let p = pid(k);
-  let dxs = select(0u, 2u, 2 * ix + 1 < B);
-  let dys = select(1u, 3u, 2 * iy + 1 < B);
-  var dd = 4u;
-  if (dxs == 2u && dys == 1u) { dd = 5u; } else if (dxs == 2u && dys == 3u) { dd = 6u; } else if (dxs == 0u && dys == 3u) { dd = 7u; }
   var o: LiftAt;
-  o.p = array<u32, 4>(p, pnbr(p, dxs), pnbr(p, dys), pnbr(p, dd));
-  o.s = array<u32, 4>(8u, dxs, dys, dd);
-  o.w = array<u32, 4>(shr64(mul64(wxc, wyc), 16u).x, shr64(mul64(wxn, wyc), 16u).x, shr64(mul64(wxc, wyn), 16u).x, shr64(mul64(wxn, wyn), 16u).x);
-  for (var j = 1u; j < 4u; j++) { if (o.p[j] == NONE || fl(A_PC + o.p[j]) == 0i) { o.w[j] = 0u; } }
+  for (var m = 0u; m < 9u; m++) {
+    // slot 0 is the cell itself; the others the directions 0 to 7 (0 east, 1 north, 2 west, 3 south, 4 NE, 5 NW, 6 SW, 7 SE)
+    var dx = 0i; var dy = 0i; var slot = 8u;
+    if (m > 0u) { slot = m - 1u; dx = DXY[slot].x; dy = DXY[slot].y; }
+    o.s[m] = slot;
+    o.p[m] = select(p, pnbr(p, slot), m > 0u);
+    o.w[m] = wx[u32(dx + 1)] * wy[u32(dy + 1)];
+    if (m > 0u && (o.p[m] == NONE || fl(A_PC + o.p[m]) == 0i)) { o.w[m] = 0u; }
+  }
   return o;
 }
 // the interpolated coefficient at a land cell, Q8
 fn interp(k: u32) -> i32 {
   let o = lift_at(k);
   var wsum = 0u; var pos = vec2u(0u, 0u); var neg = vec2u(0u, 0u);
-  for (var j = 0u; j < 4u; j++) {
+  for (var j = 0u; j < 9u; j++) {
     if (o.w[j] == 0u) { continue; }
     wsum += o.w[j];
     let m = fl(A_PM + o.p[j]);
@@ -582,9 +587,9 @@ fn pstencil(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) 
   if (!interior(k) || !is_land(k)) { return; }
   let o = lift_at(k);
   var wsum = 0u;
-  for (var j = 0u; j < 4u; j++) { wsum += o.w[j]; }
+  for (var j = 0u; j < 9u; j++) { wsum += o.w[j]; }
   var rest = 65536u;
-  for (var j = 1u; j < 4u; j++) {
+  for (var j = 1u; j < 9u; j++) {
     if (o.w[j] == 0u) { continue; }
     let q = divw(mul64(o.w[j], 65536u).y, mul64(o.w[j], 65536u).x, wsum).x;
     atomicAdd(&AT[A_ST + o.p[0] * 9u + o.s[j]], i32(q));
@@ -594,7 +599,7 @@ fn pstencil(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) 
 }
 // One Jacobi sweep of the solve from the coefficients in one buffer to the other (the coefficients start as the mean loss, pmean): m[p] moves by what the land of p is short of its
 // loss (and carry), over its own weight. A coefficient may be negative: where one tier-0 cell loses a great deal beside cells that lose little, the field that is smooth and holds every
-// mean has to dip beside the peak. The stencil's diagonal is at least a quarter of a cell's weight, so the sweeps converge; the carry is what rounding, a cell held at one unit or a
+// mean has to dip beside the peak. The B-spline stencil's smooth modes make a plain Jacobi sweep overshoot (its factor is -1.25 there), so a sweep moves two thirds of the way (factors between -0.5 and 0.83); the carry is what rounding, a cell held at one unit or a
 // cell next to the cube's corner leaves, and is paid in the next step's loss.
 fn solve_sweep(p: u32, src: u32, dst: u32) {
   let c = fl(A_PC + p);
@@ -615,10 +620,10 @@ fn solve_sweep(p: u32, src: u32, dst: u32) {
   var nm = fl(src + p);
   if (lt64(lo, hi)) {
     let d = sdiv(false, vec2u(hi.x - lo.x, hi.y - lo.y - select(0u, 1u, hi.x < lo.x)), own);
-    nm = min(nm + d, 0x3fffffffi);
+    nm = min(nm + d - d / 3i, 0x3fffffffi);
   } else {
     let d = sdiv(false, vec2u(lo.x - hi.x, lo.y - hi.y - select(0u, 1u, lo.x < hi.x)), own);
-    nm = max(nm - d, -0x3fffffffi);
+    nm = max(nm - d + d / 3i, -0x3fffffffi);
   }
   atomicStore(&AT[dst + p], nm);
 }
