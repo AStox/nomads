@@ -185,13 +185,18 @@ export function cullWGSL(spec, far = false, front = null) {
     ? `
 @compute @workgroup_size(64)
 fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u) {
-${spec.origin ? `  let oc = srcOc();
-  let cl = vec2i(i32(V.cx0 + wid.x), i32(V.cy0 + wid.y)) - oc;
+${spec.origin ? `  // the dispatch covers the source's own part of the view's rectangle: from its first column and row
+  let oc = srcOc();
+  let gx = max(V.cx0, u32(max(oc.x, 0))) + wid.x;
+  let gy = max(V.cy0, u32(max(oc.y, 0))) + wid.y;
+  let cl = vec2i(i32(gx), i32(gy)) - oc;
   if (cl.x < 0 || cl.y < 0 || cl.x >= ${CELLS_N} || cl.y >= ${CELLS_N}) { return; }
-  let c = u32(cl.y) * ${CELLS_N}u + u32(cl.x);` : `  let c = (V.cy0 + wid.y) * ${CELLS_N}u + V.cx0 + wid.x;`}
+  let c = u32(cl.y) * ${CELLS_N}u + u32(cl.x);` : `  let gx = V.cx0 + wid.x;
+  let gy = V.cy0 + wid.y;
+  let c = gy * ${CELLS_N}u + gx;`}
   if (lid.x == 0u) {
-    let r = rowCells(V.cy0 + wid.y);
-    let cx = V.cx0 + wid.x;
+    let r = rowCells(gy);
+    let cx = gx;
     wa = fidx[c]; wb = select(wa, wa + fidx[${FAR_LVL}u + V.farL * ${CELLS}u + c], cx >= r.x && cx <= r.y);
   }
   let a = workgroupUniformLoad(&wa);
@@ -271,11 +276,12 @@ fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid
 @compute @workgroup_size(256)
 fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u, @builtin(num_workgroups) nw: vec3u) {
 ${spec.origin ? `  let oc = srcOc();
-  let cyl = i32(V.cy0 + wid.y) - oc.y;
+  let gy = max(V.cy0, u32(max(oc.y, 0))) + wid.y;
+  let cyl = i32(gy) - oc.y;
   if (lid.x == 0u) {
     wa = 0u; wb = 0u;
     if (cyl >= 0 && cyl < ${CELLS_N}) {
-      let s = rowCells(V.cy0 + wid.y);
+      let s = rowCells(gy);
       let lo = max(i32(s.x) - oc.x, 0);
       let hi = min(i32(s.y) - oc.x, ${CELLS_N - 1});
       if (s.x <= s.y && lo <= hi) { wa = start[u32(cyl) * ${CELLS_N}u + u32(lo)]; wb = start[u32(cyl) * ${CELLS_N}u + u32(hi) + 1u]; }
@@ -695,8 +701,10 @@ fn canopyMain(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups
     }
   }
   let G = i32(Kp.gn);
-  let gi = clamp(i32(floor((o.x - (${f(ORIGIN)})) / Kp.gs + 0.5)), 0, G - 1);
-  let gj = clamp(i32(floor((o.z - (${f(ORIGIN)})) / Kp.gs + 0.5)), 0, G - 1);
+  // a tree off the window (a block reaches past it) has no cell of the grid to count in
+  let gi = i32(floor((o.x - (${f(ORIGIN)})) / Kp.gs + 0.5));
+  let gj = i32(floor((o.z - (${f(ORIGIN)})) / Kp.gs + 0.5));
+  if (gi < 0 || gj < 0 || gi >= G || gj >= G) { return; }
   let gc = u32(gj * G + gi);
   atomicAdd(&canTall[gc * 2u], 1u);
   atomicAdd(&canTall[gc * 2u + 1u], u32(max(o.size, 0.0) * 100.0 + 0.5));

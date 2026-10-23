@@ -14,6 +14,8 @@ const DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -
 const D2R = Math.PI / 180;
 // the sizes the window's object buffer comes in, so its pipelines are made once for each [design: a body is 28 bytes a slot, 235 MB at the top]
 const CAPS = [1 << 20, 1 << 21, 1 << 22, 1 << 23];
+// The blocks a window's objects can come in (cells a side, and the sizes of body a block comes in)
+export const BLOCK = 64, BLOCK_CAPS = [1 << 17, 1 << 19, 1 << 21];
 const inflate = async (res) => new Uint8Array(await new Response(res.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const unit = (a) => { const l = Math.hypot(a[0], a[1], a[2]); return [a[0] / l, a[1] / l, a[2] / l]; };
@@ -137,6 +139,10 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
 
     // ---------- what grew: each tile's own scatter, put in the window's frame, thinned and binned into the renderer's body on the GPU, nothing read back ----------
     // started by the caller (startObjects) once the ground is out, so the page has the ground without waiting on the objects' CPU work; its promise is `w.objects`
+    // Where the window's objects come from when they are made by block (makeBlocks): the tiles its cells lie on, all of its own face; null when one is across a cube's edge (turned
+    // against the window's), which the whole window's objects serve.
+    const inner = tl.filter((t) => t.interior);
+    const blockPlan = inner.every((t) => t.f === face) ? { face, x0, y0, tiles: inner.map((t) => ({ tile: t.f * nT * nT + t.ty * nT + t.tx, tx: t.tx, ty: t.ty, gt: t.gt })) } : null;
     const startObjects = () => {
       const placed = [], tStart = performance.now();
       for (const t of tl) {
@@ -186,7 +192,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     stats.ms = { tiles: t1 - t0, fine: t2 - t1, pack: t3 - t2, total: t3 - t0 };
     const w = {
       id: `${face}:${x0}:${y0}`, face, x0, y0, c, e, n, scale, rot: [dot(e, E), dot(e, Nn), dot(n, E), dot(n, Nn)],
-      lat: G.latLon(c).lat / D2R, lon: G.latLon(c).lon / D2R, pack, field: { field: wg.field, x0, y0, face }, slid: !!from, startObjects, objects: null, fields: { peak, h, height, water }, stats: { ...stats, ms: stats.ms },
+      lat: G.latLon(c).lat / D2R, lon: G.latLon(c).lon / D2R, pack, blockPlan, field: { field: wg.field, x0, y0, face }, slid: !!from, startObjects, objects: null, fields: { peak, h, height, water }, stats: { ...stats, ms: stats.ms },
     };
     return w;
   }
@@ -216,5 +222,54 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const [rx, rw] = clip(Math.min(...xs), Math.max(...xs)), [ry, rh] = clip(Math.min(...ys), Math.max(...ys));
     return { rect: { x0: rx, y0: ry, w: rw, h: rh }, units: { s0x, s0y, w0x, w0y, d0: d[0], d1: d[1] } };
   }
-  return { build, stats, groundTile };
+  // The window's objects as blocks of 64 cells of its tiles, each its own source in its own frame (wgsl/objects.js srcOc): `cache` (key to record) holds those made already, so a window
+  // over tiles another covered makes only what is new. One run of each tile's scatter serves all its blocks. The share is the window's whole-made rule over the blocks it needs: the largest
+  // 2^-k keeping their entries in `top` slots (and any one block's in the largest block), a record kept only when it was made at that share. Returns { recs, fresh, k, n, estimate }, or null.
+  async function makeBlocks(w, cache) {
+    const plan = w.blockPlan;
+    if (!plan) return null;
+    const { x0, y0 } = plan, need = [];
+    for (const t of plan.tiles) {
+      const rec = [];
+      for (let by = 0; by < 256 / BLOCK; by++)
+        for (let bx = 0; bx < 256 / BLOCK; bx++) {
+          const X = t.tx * 256 + bx * BLOCK, Y = t.ty * 256 + by * BLOCK;
+          if (X + BLOCK > x0 && X < x0 + N && Y + BLOCK > y0 && Y < y0 + N) rec.push({ bx, by, X, Y, key: `${t.tile}:${bx}:${by}` });
+        }
+      if (rec.length) need.push({ t, rec });
+    }
+    const opened = await Promise.all(need.map(async ({ t, rec }) => {
+      const lo = (v) => Math.max(0, Math.min(...rec.map(v)) * BLOCK - 1), hi = (v) => Math.min(256, (Math.max(...rec.map(v)) + 1) * BLOCK + 1);
+      const rx = lo((r) => r.bx), ry = lo((r) => r.by), rect = { x0: rx, y0: ry, w: hi((r) => r.bx) - rx, h: hi((r) => r.by) - ry };
+      const run = await T.openTile(gpu, tier, { tile: t.tile, source: T.tileSource(t.gt), rect, a0: t.tx * 256 * UNITS, a1: t.ty * 256 * UNITS, s0x: 0, s0y: 0, w0x: 0, w0y: 0, d0: 1, d1: 0 }, seed, { caps: BLOCK_CAPS });
+      return { t, rec, run };
+    }));
+    try {
+      let total = 0, most = 0;
+      for (const { t, rec, run } of opened) {
+        // the draws of the cells of the tile the window holds decide the share, as the whole window's would (one rectangle a tile, so the blocks' margins are not counted twice); the largest block decides the cap
+        const lo = Math.max(x0, t.tx * 256) - t.tx * 256, lo2 = Math.max(y0, t.ty * 256) - t.ty * 256;
+        total += run.est({ bx0: lo, by0: lo2, n: 256, w: Math.min(x0 + N, t.tx * 256 + 256) - Math.max(x0, t.tx * 256), h: Math.min(y0 + N, t.ty * 256 + 256) - Math.max(y0, t.ty * 256) });
+        for (const r of rec) most = Math.max(most, run.est({ bx0: r.bx * BLOCK, by0: r.by * BLOCK, n: BLOCK }));
+      }
+      let k = 0;
+      while (total / 2 ** k > top * 0.92 || most / 2 ** k > BLOCK_CAPS[BLOCK_CAPS.length - 1] * 0.92) k++;
+      const recs = [], fresh = [];
+      let n = 0;
+      // what is missing or made at another share, a tile at a time, each tile's blocks together
+      const made = await Promise.all(opened.map(async ({ t, rec, run }) => {
+        const miss = rec.filter((r) => { const b = cache.get(r.key); return !b || b.k !== k; });
+        const got = miss.length ? await run.makeMany(miss.map((r) => ({ bx0: r.bx * BLOCK, by0: r.by * BLOCK, n: BLOCK, k }))) : [];
+        return miss.map((r, i) => ({ r, o: got[i] }));
+      }));
+      for (const { r, o } of made.flat()) {
+        const b = { key: r.key, k, cap: o.cap, n: o.n, body: o.body, start: o.start, face: plan.face, X: r.X, Y: r.Y };
+        cache.set(r.key, b);
+        fresh.push(b);
+      }
+      for (const { rec } of opened) for (const r of rec) { const b = cache.get(r.key); recs.push(b); n += b.n; }
+      return { recs, fresh, k, n, estimate: total };
+    } finally { for (const { run } of opened) run.close(); }
+  }
+  return { build, stats, groundTile, makeBlocks };
 }

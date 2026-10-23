@@ -12,7 +12,7 @@ import { placeKernels } from "../src/gpu/globe/windowobjects";
 import type { Gpu } from "../src/gpu/device";
 
 export { tileSource } from "../src/gpu/globe/groundtile";
-export { windowObjects } from "../src/gpu/globe/windowobjects";
+export { openTile, windowObjects } from "../src/gpu/globe/windowobjects";
 export { SCATTER_HALO, RIVER_HALO, scatterTile, warmScatter };
 
 const Q16 = 65536, Q24 = 16777216;

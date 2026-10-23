@@ -1217,7 +1217,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
             count: pipe({ label: `far count ${s.name}`, binds: ["Fp", ...own, "fkey:w", "fcnt:w", ...ground], code: `${src}\n${FAR_COUNT_WGSL}`, compute: "farCount" }),
             // a source builds front lists when its keep pass's storage buffers fit the device's limit (a log's reader
             // and its driver ring do, ten of ten on AMD RDNA-1 2026-10-17), its own buffers all given once (over)
-            ...(!s.dyn && ["map", ...own, "flist", "fidx", "looks", "entries", "fkeysR", "flistOut", "fout"].filter((n) => RES[n][1] === "storage").length <= device.limits.maxStorageBuffersPerShaderStage && {
+            ...(!s.dyn && sp.front !== false && ["map", ...own, "flist", "fidx", "looks", "entries", "fkeysR", "flistOut", "fout"].filter((n) => RES[n][1] === "storage").length <= device.limits.maxStorageBuffersPerShaderStage && {
               mark: pipe({ label: `front mark ${s.name}`, binds: ["V", "map", ...own, "flist", "fidx", "looks", "entries", "gridTex", "fineTex", "fkeys:w"], code: `${MAP_READ}\n${src}\n${cullWGSL(sp, true, "mark")}`, compute: "cullMain" }),
               keep: pipe({ label: `front keep ${s.name}`, binds: ["V", "map", ...own, "flist", "fidx", "looks", "entries", "gridTex", "fineTex", "fkeysR", "flistOut:w", "fout:w"], code: `${MAP_READ}\n${src}\n${cullWGSL(sp, true, "keep")}`, compute: "cullMain" }),
             }),
@@ -1789,12 +1789,20 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     if (objCount) {
       // an indexed source's rows of cells under the view, each row's run split among enough workgroups to keep the GPU busy
       const rows = rect.cy1 - rect.cy0 + 1, perRow = Math.min(64, Math.max(1, Math.ceil(2048 / rows)));
+      // a source that stands in the window's frame by its origin (s.oc, in cells) is walked over its own part of the rectangle only
+      const part = (s) => {
+        if (!s.oc) return { cols: rect.cx1 - rect.cx0 + 1, rows };
+        const c0 = Math.max(rect.cx0, s.oc[0]), c1 = Math.min(rect.cx1, s.oc[0] + s.spec.n - 1), r0 = Math.max(rect.cy0, s.oc[1]), r1 = Math.min(rect.cy1, s.oc[1] + s.spec.n - 1);
+        return { cols: Math.max(0, c1 - c0 + 1), rows: Math.max(0, r1 - r0 + 1) };
+      };
       pass = enc.beginComputePass(tw("cull"));
       pass.setBindGroup(1, groundGroup);
       for (const s of sources) {
         // a source of members drawn under a pixel at this level (its biggest, spec.most metres) is not walked
         const most = s.spec.most;
         if (skipped.has(s.name)) continue;
+        const pt = part(s);
+        if (!pt.cols || !pt.rows) continue;
         if (most !== undefined && (most < 1 ? most ** 0.55 : most) * Math.max(U.pv, U.pw) < 1) continue;
         const over = { ...s.over, ...s.dyn?.(), ...(s.fill ? cacheBinds(s) : {}) };
         const f = farL >= 0 && s.far && farState.get(s.name);
@@ -1806,12 +1814,12 @@ export async function createRenderer({ device, context, format, pal, ground, tim
           if ((fr ? fr.n : f.n[f.front]) === 0) continue;
           const lists = fr ? { flist: { buffer: fr.list }, fidx: { buffer: fr.idx } } : { flist: { buffer: f.list[f.front] }, fidx: { buffer: f.idx[f.front] } };
           pass.setPipeline(s.far.cull.p); pass.setBindGroup(0, group(s.far.cull, k, { ...over, ...lists }));
-          pass.dispatchWorkgroups(rect.cx1 - rect.cx0 + 1, rows);
+          pass.dispatchWorkgroups(pt.cols, pt.rows);
           continue;
         }
         pass.setPipeline(s.cull.p); pass.setBindGroup(0, group(s.cull, k, over));
         if (s.spec.members === "cells") pass.dispatchWorkgroups(rect.cx1 - rect.cx0 + 1, rows);
-        else if (s.spec.members === "bins" || s.spec.indexed) pass.dispatchWorkgroups(perRow, rows);
+        else if (s.spec.members === "bins" || s.spec.indexed) pass.dispatchWorkgroups(perRow, pt.rows);
         else pass.dispatchWorkgroups(...spread(s.spec.cap));
       }
       pass.setPipeline(S.clampArgs.p); pass.setBindGroup(0, group(S.clampArgs, k)); pass.dispatchWorkgroups(1);

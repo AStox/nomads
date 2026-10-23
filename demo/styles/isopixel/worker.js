@@ -15,7 +15,7 @@ import { Looks, CODES, NONE, castRows, Shelves, entryWords } from "./atlas.js";
 import { PICK_SLOT, EXTRA_PICK, KIND_PICK, NO_SLOT, CELLS_N, CELL_M } from "./wgsl/objects.js";
 import { closeGround } from "./ground-at.js";
 import { openPyramid } from "./pyramid.js";
-import { createWindows } from "./groundwin.js";
+import { BLOCK_CAPS, createWindows } from "./groundwin.js";
 
 const early = [];
 onmessage = (e) => early.push(e);
@@ -23,7 +23,7 @@ const ORIGIN = -SIZE / 2, WS = 12.5;
 // entries and rows kept for sprites made while the page runs (live sprites, and objects' sprites the world grew into
 // since the atlas was laid out), and the atlas layers they go in
 const DYN_ENTRIES = 32768, DYN_ROWS = 1 << 20, DYN_LAYERS = 4;
-let R = null, device = null, gpuName = "", canvas = null, context = null, planet = null, planetLayer = null, planetLift = 0;
+let blocksOn = true, R = null, device = null, gpuName = "", canvas = null, context = null, planet = null, planetLayer = null, planetLift = 0;
 // each sprite's foot (rows its anchor sits above the ground), by atlas id, for the checks
 let table = null, nStatic = 0, rowsStatic = 0, dyn = null, liveIds = new Map(), dynMade = new Set(), feet = new Int16Array(0);
 // the page's live sprites as they came, by its ids: placed in the dynamic layers when a frame first draws them, and again
@@ -85,6 +85,7 @@ async function init(m) {
   const gpu = { device, adapter: gpuName };
   if (simB) simB.useGpu(gpu);
   planet = m.planet ? await openPlanet(m.seed, device) : null;
+  blocksOn = m.blocks !== false;
   const ground = await closeGround(simB, m.seed, gpu, planet);
   const { isle, fine: g } = ground;
   const t1 = performance.now();
@@ -108,6 +109,7 @@ async function init(m) {
     planet.wins = createWindows({ G: planet.G, T: planet.T, gpu, base: planet.base, tier: planet.manifest.tiers - 1, seed: m.seed, radiusM: planet.radiusM, quick: isle.quick, top: Math.min(1 << 23, 2 ** Math.floor(Math.log2(room))) });
     // the window source's passes for each size its body comes in, compiled now on the GPU process's own threads (a first window then does not wait on them)
     for (const cap of [1 << 23, 1 << 22, 1 << 21, 1 << 20].filter((c) => c <= Math.min(1 << 23, 2 ** Math.floor(Math.log2(room))))) void R.warmSpec("win", winSpec(cap)).catch((err) => console.warn("warm window passes", err));
+    for (const cap of BLOCK_CAPS) void R.warmSpec("block", blockSpec(cap)).catch((err) => console.warn("warm block passes", err));
   }
   // the page keeps the camera on the island's heights and the drawn ground under it: the fine heights and the cells'
   // water, from which live.js (ground.js) works out every level's tile map as the GPU does
@@ -165,7 +167,7 @@ async function setupObjects(sim, w) {
   spritesP = makeAll(jobs).then((made) => { mark("sprites"); return made; });
   S.ms = { sources: t1 - t0, survey: performance.now() - t1 };
 }
-const sources = () => (S.win ? (S.winParts ?? [S.win]) : [S.plant, ...(S.statics.cap ? [S.statics] : []), S.extras, ...(S.animals ? [S.animals] : []), ...(S.dead ?? [])]);
+const sources = () => (S.win ? (S.win.blocks ?? S.winParts ?? [S.win]) : [S.plant, ...(S.statics.cap ? [S.statics] : []), S.extras, ...(S.animals ? [S.animals] : []), ...(S.dead ?? [])]);
 
 // The generator's objects that aren't stems (src/gpu/flora.ts: static dormant), counted into the spatial index's cells
 // and laid out cell by cell in entry order, fields as the store holds a piece's: x, y (mm), what, size (f32 bits),
@@ -922,6 +924,30 @@ const winSpec = (cap, n = 256) => {
   if (!winSpecs.has(key)) winSpecs.set(key, { cap, n, fields: { x: 0, y: 1, what: 2, size: 3, seed: 4, pick: 5 }, sizeMm: false, marks: false, ordered: false, indexed: true, canopy: true, origin: true });
   return winSpecs.get(key);
 };
+// The window's objects by block (groundwin.js makeBlocks): a block is a source of 64 cells a side standing in the window's frame by the origin written after its body's columns, so a
+// block made for one window serves the next that covers it with its origin written again. blockCache holds the blocks by key, blockAll every one made (swept when no kept window holds it).
+const blockSpecs = new Map();
+const blockSpec = (cap) => {
+  if (!blockSpecs.has(cap)) blockSpecs.set(cap, { ...winSpec(cap, 64), front: false });
+  return blockSpecs.get(cap);
+};
+const blockCache = new Map(), blockAll = new Set();
+function sweepBlocks() {
+  const keep = new Set();
+  for (const w of winCache) for (const r of w.blockRecs ?? []) keep.add(r);
+  for (const r of [...blockAll]) {
+    if (keep.has(r)) continue;
+    r.body.destroy(); r.start.destroy(); blockAll.delete(r);
+    if (blockCache.get(r.key) === r) blockCache.delete(r.key);
+  }
+}
+// the window's blocks written their origins in its frame (mm from its corner: x east, z south to the block's north edge) and as the sources the renderer is given
+function blockSources(w) {
+  return w.blockRecs.map((r) => {
+    device.queue.writeBuffer(r.body, 7 * r.cap * 4, Int32Array.of((r.X - w.x0) * 75000, (w.y0 + 256 - (r.Y + 64)) * 75000));
+    return { name: `b:${r.key}`, cap: r.cap, body: r.body, start: r.start, spec: blockSpec(r.cap), oc: [r.X - w.x0, w.y0 + 256 - (r.Y + 64)] };
+  });
+}
 // The windows made, the last three kept (the one drawn, and two more a pan back or a zoom out and in finds made), with their ground and objects on the GPU. A window is
 // found again by what it covers: the page's own test for a window's cover (the view's half extent in the window's metres and the place's distance from the window's
 // centre, inside the window's half side less 600 m); one made within WIN_NEAR metres of the place asked for serves when the ask names no half extent.
@@ -941,6 +967,7 @@ function destroyWindow(w) {
   const pk = w.pack;
   pk.fine.gpu.destroy(); pk.grid.gpu.destroy(); pk.river.gpu.destroy();
   w.field?.field.destroy();
+  if (w.blockRecs) { w.blockRecs = null; queueMicrotask(sweepBlocks); }
   if (w.objectsValue) { w.objectsValue.body.destroy(); w.objectsValue.start.destroy(); }
 }
 function keepWindow(w) {
@@ -992,6 +1019,17 @@ async function groundWant(m) {
 }
 // the objects of a window (a promise of GPU buffers, groundwin.js startObjects): kept on the window, handed to the drawn source when they arrive, their size told to the page
 function startObjects(w) {
+  if (blocksOn && w.blockPlan) {
+    const tBlocks = performance.now();
+    planet.wins.makeBlocks(w, blockCache).then((r) => {
+      for (const b of r.fresh) blockAll.add(b);
+      w.blockRecs = r.recs;
+      if (w.dead) { w.blockRecs = null; sweepBlocks(); return; }
+      attachObjects(w);
+      post({ type: "windowObjects", id: w.id, objects: r.n, share: 2 ** -r.k, ms: performance.now() - tBlocks, estimate: r.estimate, blocks: r.recs.length, made: r.fresh.length });
+    }).catch((err) => { console.error("window blocks", err); post({ type: "windowError", error: String((err && err.stack) || err) }); });
+    return;
+  }
   w.startObjects().then((o) => {
     w.objectsValue = o;
     if (w.dead) { o.body.destroy(); o.start.destroy(); return; }
@@ -1006,7 +1044,7 @@ async function applyGround(p) {
   try {
     if (p.mode === "win") {
       const w = p.win, o = w.objectsValue ?? emptyBody();
-      S.win = { name: "win", cap: o.cap, body: o.body, start: o.start, spec: winSpec(o.cap) };
+      S.win = w.blockRecs ? { name: "win", blocks: blockSources(w) } : { name: "win", cap: o.cap, body: o.body, start: o.start, spec: winSpec(o.cap) };
       curWin = w;
       await R.setSources(sources());
       R.setGround(w.pack);
@@ -1032,13 +1070,13 @@ async function surveyWindow() {
 }
 // the objects of the window drawn arrive: its source takes them in place of the empty one (a window not drawn takes them when it is)
 async function attachObjects(w) {
-  if (curWin !== w || !w.objectsValue) return;
+  if (curWin !== w || !(w.objectsValue || w.blockRecs)) return;
   while (switching) await new Promise((r) => setTimeout(r, 5));
-  if (curWin !== w || S.win?.body === w.objectsValue.body) return;
+  if (curWin !== w || (w.objectsValue && S.win?.body === w.objectsValue.body) || (w.blockRecs && S.win?.blocks?.length === w.blockRecs.length && S.win.blocks[0]?.body === w.blockRecs[0]?.body)) return;
   switching = true;
   try {
     const o = w.objectsValue;
-    S.win = { name: "win", cap: o.cap, body: o.body, start: o.start, spec: winSpec(o.cap) };
+    S.win = w.blockRecs ? { name: "win", blocks: blockSources(w) } : { name: "win", cap: o.cap, body: o.body, start: o.start, spec: winSpec(o.cap) };
     await R.setSources(sources());
     R.buildCanopy();
     R.farBuild(farLevels());

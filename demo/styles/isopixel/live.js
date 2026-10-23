@@ -67,7 +67,7 @@ export const hasWebGPU = () => typeof navigator !== "undefined" && !!navigator.g
 
 // sim: { warm (sim days), jev } runs the game's sim in the render worker (play/remote.js connectSim reads it); null
 // draws the island alone. planet: the worker opens the seed's baked planet, if there is one, and the game's ground is its home window.
-export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = null, planet = true } = {}) {
+export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = null, planet = true, blocks = true } = {}) {
   if (!hasWebGPU()) throw new Error("this browser does not offer WebGPU", { cause: "nogpu" });
   const TH = await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {}));
   const tStart = performance.now();
@@ -102,7 +102,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       else if (m.type === "error") fail(new Error(m.error));
       else onWorker(m);
     };
-    worker.postMessage({ type: "init", seed, canvas: off, sim: simOpts, planet }, [off]);
+    worker.postMessage({ type: "init", seed, canvas: off, sim: simOpts, planet, blocks }, [off]);
   });
   function onWorker(m) {
     if (m.type.startsWith("sim")) { if (simTo) simTo(m); else simEarly.push(m); }
@@ -117,7 +117,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     else if (m.type === "progress") onProgress?.(m.d, m.n, m.what);
     else if (m.type === "ground") pendingGround = m;
     else if (m.type === "windowError") console.warn(`window: ${m.error}`);
-    else if (m.type === "windowObjects") { if (stats.window?.id === m.id) Object.assign(stats.window, { objects: m.objects, share: m.share, objectsMs: m.ms, objectsAt: performance.now() }); }
+    else if (m.type === "windowObjects") { if (stats.window?.id === m.id) Object.assign(stats.window, { objects: m.objects, share: m.share, objectsMs: m.ms, objectsAt: performance.now(), blocks: m.blocks, made: m.made }); }
     else if (m.type === "pick") { picksWait.get(m.id)?.(m.r); picksWait.delete(m.id); }
     else if (m.type === "check") { checksWait.get(m.id)?.(m.r); checksWait.delete(m.id); }
     else if (m.type === "spritesReset") sentSprites.clear();
