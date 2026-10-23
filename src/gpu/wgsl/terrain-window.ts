@@ -147,3 +147,36 @@ fn gradient(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 export const GRID_SCRATCH_LAYERS = GRID_LAYERS + 1;
+
+// A window moved by (dx, dy) cells of the face: the lattice's field (the stream mask's plane and the beds' plane, 16 texels a cell, then the fine planes, 4 vertices a cell) copied from
+// the field the window had, each word from where the move puts it; a word whose source is outside is left 0, for the rectangles of the fine and raster kernels to make. SH: dx, dy.
+// The threads fill a 4,096 groups wide sheet, so the 18 million words of a field fit the dispatch limits.
+export const fieldShiftKernel = (L: SceneryLayout) => /* wgsl */ `
+@group(0) @binding(0) var<storage, read> OLD: array<u32>;
+@group(0) @binding(1) var<storage, read_write> NEW: array<u32>;
+@group(0) @binding(2) var<storage, read> SH: array<i32>;
+const RMW = ${L.RMW}u;
+const RMR = ${RM / 4}u;
+const MW = ${L.m}u;
+const MV = ${L.MV}u;
+const FINE_AT = ${L.FINE_AT}u;
+const WORDS = ${L.FINE_WORDS}u;
+@compute @workgroup_size(256)
+fn shift(@builtin(global_invocation_id) gid: vec3u) {
+  let w = gid.y * 1048576u + gid.x;
+  if (w >= WORDS) { return; }
+  let dx = SH[0]; let dy = SH[1];
+  if (w < FINE_AT) {
+    let p = w / RMW; let i = w % RMW;
+    let c = i32(i % RMR) + 4i * dx; let r = i32(i / RMR) + ${RM / 256}i * dy;
+    if (c < 0i || c >= i32(RMR) || r < 0i || r >= ${RM}i) { return; }
+    NEW[w] = OLD[p * RMW + u32(r) * RMR + u32(c)];
+    return;
+  }
+  let j = w - FINE_AT;
+  let q = j / MV; let n = j % MV;
+  let u = i32(n % MW) + 4i * dx; let v = i32(n / MW) + 4i * dy;
+  if (u < 0i || u >= i32(MW) || v < 0i || v >= i32(MW)) { return; }
+  NEW[w] = OLD[FINE_AT + q * MV + u32(v) * MW + u32(u)];
+}
+`;

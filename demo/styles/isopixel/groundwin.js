@@ -57,7 +57,8 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
   const stats = { tiles: 0, bytes: 0, builds: 0, ms: {} };
 
   // The window whose centre is the cell holding (lat, lon) degrees. Returns what the renderer, the page and the object buffer take.
-  async function build(lat, lon) {
+  // prev: a window of this face made before (the page's current one, say): when this one lies within 192 cells of it the ground is that's lattice moved and only the strips it uncovers made
+  async function build(lat, lon, prev = null) {
     await warming;
     const t0 = performance.now(), loc = G.locateVec(g, G.fromLatLon(lat * D2R, lon * D2R)), face = loc.face, x0 = loc.X - N / 2, y0 = loc.Y - N / 2;
     // Where every cell of the window and its halo comes from. The tiles of the window's own face that its cells lie on hold them, and the 8 cells of
@@ -130,7 +131,8 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     for (let k = 0; k < S * S; k++) if (own[k] < 0) { if (planes.chn) planes.chn[k] = 0; if (planes.dir) planes.dir[k] = 0; }
     const win = { meta: { side: S, halo: H, fields: first.meta.fields, absent: [] }, planes };
     const src = T.tileSource(win);
-    const wg = await T.windowGround(gpu, src, face, x0, y0);
+    const pf = prev?.field, from = pf && pf.face === face && Math.abs(x0 - pf.x0) < 192 && Math.abs(y0 - pf.y0) < 192 ? pf : null;
+    const wg = await T.windowGround(gpu, src, face, x0, y0, { keep: true, from });
     const t2 = performance.now();
 
     // ---------- what grew: each tile's own scatter, put in the window's frame, thinned and binned into the renderer's body on the GPU, nothing read back ----------
@@ -184,7 +186,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     stats.ms = { tiles: t1 - t0, fine: t2 - t1, pack: t3 - t2, total: t3 - t0 };
     const w = {
       id: `${face}:${x0}:${y0}`, face, x0, y0, c, e, n, scale, rot: [dot(e, E), dot(e, Nn), dot(n, E), dot(n, Nn)],
-      lat: G.latLon(c).lat / D2R, lon: G.latLon(c).lon / D2R, pack, startObjects, objects: null, fields: { peak, h, height, water }, stats: { ...stats, ms: stats.ms },
+      lat: G.latLon(c).lat / D2R, lon: G.latLon(c).lon / D2R, pack, field: { field: wg.field, x0, y0, face }, slid: !!from, startObjects, objects: null, fields: { peak, h, height, water }, stats: { ...stats, ms: stats.ms },
     };
     return w;
   }

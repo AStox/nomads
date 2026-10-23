@@ -273,11 +273,13 @@ const PL_SPECIES = ${ARR(PL_SPECIES, "u32")};
 `;
 
 // ---------- the stream mask ----------
-export const RASTER = /* wgsl */ `
+// rect: the words of four texels of a rectangle only (RECT: first word of a row, first row, words across, rows).
+export const rasterKernel = (rect = false) => /* wgsl */ `
 ${help(ISL)}
 @group(0) @binding(0) var<storage, read_write> SEG: array<i32>;
 @group(0) @binding(1) var<storage, read_write> BIN: array<u32>;
 @group(0) @binding(2) var<storage, read_write> OUT: array<u32>;
+${rect ? "@group(0) @binding(3) var<storage, read> RECT: array<u32>;" : ""}
 const BINS = ${RM / BIN}u;
 const SEG_WORDS = 8u;
 
@@ -286,9 +288,10 @@ const SEG_WORDS = 8u;
 // strokes stack as cov += a (1 - cov) (flora.ts's canvas stacking), in Q24; the mask is round(255 cov).
 @compute @workgroup_size(256)
 fn raster(@builtin(global_invocation_id) gid: vec3u) {
-  let w = gid.x;
+${rect ? `  if (gid.x >= RECT[2] * RECT[3]) { return; }
+  let y = RECT[1] + gid.x / RECT[2]; let x0 = (RECT[0] + gid.x % RECT[2]) * 4u; let w = y * (RM / 4u) + x0 / 4u;` : `  let w = gid.x;
   if (w >= RMW) { return; }
-  let y = w / (RM / 4u); let x0 = (w % (RM / 4u)) * 4u;
+  let y = w / (RM / 4u); let x0 = (w % (RM / 4u)) * 4u;`}
   let b = (y / ${BIN}u) * BINS + x0 / ${BIN}u;
   var cov = array<i32, 4>(0i, 0i, 0i, 0i);
   var cut = array<u32, 4>(0u, 0u, 0u, 0u);
@@ -322,18 +325,21 @@ fn raster(@builtin(global_invocation_id) gid: vec3u) {
   OUT[RMW + w] = depth;
 }
 `;
+export const RASTER = rasterKernel();
 
 // ---------- the fine field ----------
 // One thread a vertex of the 1,021 x 1,021 lattice (a quarter of a cell apart): the cubic through the generator's cells
 // (Catmull-Rom at quarter steps, in two passes with the sums scaled so no step overflows), the ground swell, the stream's
 // bed, and the covers wandering at their edges.
-export const fineKernel = (L: SceneryLayout) => {
+// rect: the lattice vertices of a rectangle only (RECT: u0, v0, w, h), each written where the whole lattice's run would have put it (a window slid, its uncovered strips made).
+export const fineKernel = (L: SceneryLayout, rect = false) => {
 const { IF, FF, CUT_AT } = L;
 return /* wgsl */ `
 ${help(L)}
 ${noise(L)}
 @group(0) @binding(0) var<storage, read_write> ISLE: array<i32>;
 @group(0) @binding(1) var<storage, read_write> FINE: array<i32>;
+${rect ? "@group(0) @binding(2) var<storage, read> RECT: array<u32>;" : ""}
 fn cell(f: u32, i: i32, j: i32) -> i32 { return ISLE[f + cellIx(i, j)]; }
 // Catmull-Rom between p1 and p2 at t = j / 4: p1 + t (A / 2 + t (B / 2 + t C / 2)), each step rounded.
 fn crm(p0: i32, p1: i32, p2: i32, p3: i32, j: i32) -> i32 {
@@ -352,9 +358,11 @@ fn maskByte(tx: u32, ty: u32, plane: u32) -> u32 { let t = ty * RM + tx; return 
 
 @compute @workgroup_size(256)
 fn fine(@builtin(global_invocation_id) gid: vec3u) {
-  let n = gid.x;
+${rect ? `  if (gid.x >= RECT[2] * RECT[3]) { return; }
+  let u = RECT[0] + gid.x % RECT[2]; let v = RECT[1] + gid.x / RECT[2];
+  let n = v * MW + u;` : `  let n = gid.x;
   if (n >= MV) { return; }
-  let u = n % MW; let v = n / MW;
+  let u = n % MW; let v = n / MW;`}
   let pu = i32(u) - SHIFT; let pv = i32(v) - SHIFT;
   let cx = pu >> 2u; let cy = pv >> 2u; let jx = pu & 3i; let jy = pv & 3i;
   var rows: array<i32, 4>;

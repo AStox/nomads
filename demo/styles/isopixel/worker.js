@@ -937,6 +937,7 @@ function destroyWindow(w) {
   w.dead = true;
   const pk = w.pack;
   pk.fine.gpu.destroy(); pk.grid.gpu.destroy(); pk.river.gpu.destroy();
+  w.field?.field.destroy();
   if (w.objectsValue) { w.objectsValue.body.destroy(); w.objectsValue.start.destroy(); }
 }
 function keepWindow(w) {
@@ -971,7 +972,7 @@ async function groundWant(m) {
       if (w && !spec && (w === curWin || w === prepared?.win)) continue;
       const fresh = !w;
       if (!w) {
-        w = await planet.wins.build(want.lat, want.lon);
+        w = await planet.wins.build(want.lat, want.lon, curWin ?? winCache[winCache.length - 1] ?? null);
         keepWindow(w);
       }
       if (!spec) {
