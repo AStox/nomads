@@ -928,13 +928,24 @@ const winSpec = (cap, n = 256) => {
 // block made for one window serves the next that covers it with its origin written again. blockCache holds the blocks by key, blockAll every one made (swept when no kept window holds it).
 const blockSpecs = new Map();
 const blockSpec = (cap) => {
-  if (!blockSpecs.has(cap)) blockSpecs.set(cap, { ...winSpec(cap, 64), front: false });
+  if (!blockSpecs.has(cap)) blockSpecs.set(cap, { ...winSpec(cap, 64), front: false, thin: true });
   return blockSpecs.get(cap);
 };
 const blockCache = new Map(), blockAll = new Set();
+// The blocks the kept windows hold, newest window first, while they fit BLOCK_BYTES (the window drawn and the one coming always do); a window left without its blocks makes them again when it is drawn.
+const BLOCK_BYTES = 600e6;
 function sweepBlocks() {
   const keep = new Set();
-  for (const w of winCache) for (const r of w.blockRecs ?? []) keep.add(r);
+  let bytes = 0;
+  const bytesOf = (r) => (7 * r.cap + 4) * 4;
+  const newest = [...winCache].reverse().sort((a, b) => (b === curWin) - (a === curWin) || (b === prepared?.win) - (a === prepared?.win));
+  for (const w of newest) {
+    if (!w.blockRecs) continue;
+    const add = w.blockRecs.filter((r) => !keep.has(r)).reduce((n, r) => n + bytesOf(r), 0);
+    if (bytes + add > BLOCK_BYTES && w !== curWin && w !== prepared?.win) { w.blockRecs = null; continue; }
+    for (const r of w.blockRecs) keep.add(r);
+    bytes += add;
+  }
   for (const r of [...blockAll]) {
     if (keep.has(r)) continue;
     r.body.destroy(); r.start.destroy(); blockAll.delete(r);
@@ -944,7 +955,7 @@ function sweepBlocks() {
 // the window's blocks written their origins in its frame (mm from its corner: x east, z south to the block's north edge) and as the sources the renderer is given
 function blockSources(w) {
   return w.blockRecs.map((r) => {
-    device.queue.writeBuffer(r.body, 7 * r.cap * 4, Int32Array.of((r.X - w.x0) * 75000, (w.y0 + 256 - (r.Y + 64)) * 75000));
+    device.queue.writeBuffer(r.body, 7 * r.cap * 4, Int32Array.of((r.X - w.x0) * 75000, (w.y0 + 256 - (r.Y + 64)) * 75000, w.blockKd?.get(r.key) ?? 0));
     return { name: `b:${r.key}`, cap: r.cap, body: r.body, start: r.start, spec: blockSpec(r.cap), oc: [r.X - w.x0, w.y0 + 256 - (r.Y + 64)] };
   });
 }
@@ -982,7 +993,7 @@ function keepWindow(w) {
 // a window's objects arrive after its ground: until they do the source is an empty one of the smallest size
 const EMPTY_CAP = 1 << 20;
 let emptyObjects = null;
-const emptyBody = () => (emptyObjects ??= { cap: EMPTY_CAP, body: buffer(new Uint32Array(7 * EMPTY_CAP + 2)), start: buffer(new Uint32Array(256 * 256 + 1)) });
+const emptyBody = () => (emptyObjects ??= { cap: EMPTY_CAP, body: buffer(new Uint32Array(7 * EMPTY_CAP + 4)), start: buffer(new Uint32Array(256 * 256 + 1)) });
 async function groundWant(m) {
   if (m.speculative) { if (!wantNow) wantSoon = m; } else wantNow = m;
   if (building || !planet?.wins || !S || !home) return;
@@ -1021,13 +1032,22 @@ async function groundWant(m) {
 function startObjects(w) {
   if (blocksOn && w.blockPlan) {
     const tBlocks = performance.now();
-    planet.wins.makeBlocks(w, blockCache).then((r) => {
+    w.blocksBusy = true;
+    // the near blocks are drawn as soon as they are made, the rest when they are
+    const stage = (recs, kds) => {
+      for (const b of recs) blockAll.add(b);
+      w.blockRecs = recs; w.blockKd = kds;
+      if (!w.dead) { attachObjects(w); post({ type: "windowObjects", id: w.id, objects: recs.reduce((n, b) => n + b.n, 0), share: 0, ms: performance.now() - tBlocks, estimate: 0, blocks: recs.length, made: 0, stage: 1 }); }
+    };
+    planet.wins.makeBlocks(w, blockCache, undefined, stage).then((r) => {
+      w.blocksBusy = false;
       for (const b of r.fresh) blockAll.add(b);
-      w.blockRecs = r.recs;
+      w.blockRecs = r.recs; w.blockKd = r.kds;
       if (w.dead) { w.blockRecs = null; sweepBlocks(); return; }
       attachObjects(w);
-      post({ type: "windowObjects", id: w.id, objects: r.n, share: 2 ** -r.k, ms: performance.now() - tBlocks, estimate: r.estimate, blocks: r.recs.length, made: r.fresh.length });
-    }).catch((err) => { console.error("window blocks", err); post({ type: "windowError", error: String((err && err.stack) || err) }); });
+      sweepBlocks();
+      post({ type: "windowObjects", id: w.id, objects: r.n, share: 2 ** -r.k, ms: performance.now() - tBlocks, estimate: r.estimate, blocks: r.recs.length, made: r.fresh.length, bytes: [...blockAll].reduce((n, b) => n + (7 * b.cap + 4) * 4, 0) });
+    }).catch((err) => { w.blocksBusy = false; console.error("window blocks", err); post({ type: "windowError", error: String((err && err.stack) || err) }); });
     return;
   }
   w.startObjects().then((o) => {
@@ -1060,6 +1080,7 @@ async function applyGround(p) {
     curGid = p.gid;
     if (prepared === p) prepared = null;
     if (p.mode === "win") await surveyWindow();
+    if (p.mode === "win" && blocksOn && p.win.blockPlan && !p.win.blockRecs && !p.win.blocksBusy) startObjects(p.win);
   } finally { switching = false; applyMs = performance.now() - tApply; }
 }
 async function surveyWindow() {

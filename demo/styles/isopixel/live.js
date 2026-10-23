@@ -117,7 +117,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     else if (m.type === "progress") onProgress?.(m.d, m.n, m.what);
     else if (m.type === "ground") pendingGround = m;
     else if (m.type === "windowError") console.warn(`window: ${m.error}`);
-    else if (m.type === "windowObjects") { (stats.objectLog ??= []).push({ id: m.id, objects: m.objects, share: m.share, ms: Math.round(m.ms), blocks: m.blocks, made: m.made }); if (stats.window?.id === m.id) Object.assign(stats.window, { objects: m.objects, share: m.share, objectsMs: m.ms, objectsAt: performance.now(), blocks: m.blocks, made: m.made }); }
+    else if (m.type === "windowObjects") { (stats.objectLog ??= []).push({ id: m.id, objects: m.objects, share: m.share, ms: Math.round(m.ms), blocks: m.blocks, made: m.made, bytes: m.bytes }); if (stats.window?.id === m.id) Object.assign(stats.window, { objects: m.objects, share: m.share, objectsMs: m.ms, objectsAt: performance.now(), blocks: m.blocks, made: m.made }); }
     else if (m.type === "pick") { picksWait.get(m.id)?.(m.r); picksWait.delete(m.id); }
     else if (m.type === "check") { checksWait.get(m.id)?.(m.r); checksWait.delete(m.id); }
     else if (m.type === "spritesReset") sentSprites.clear();

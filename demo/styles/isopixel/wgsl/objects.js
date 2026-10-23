@@ -36,7 +36,7 @@ export function sourceWGSL(spec, ORIGIN) {
   const C = spec.cap, F = spec.fields, at = (name) => `${(1 + F[name]) * C}u`;
   const hideWords = Math.ceil(C / 32);
   const cn = spec.n ?? CELLS_N;
-  // spec.origin: where the source stands in the window's frame, two words after its columns (mm from the window corner, signed): x, then z
+  // spec.origin: where the source stands in the window's frame, two words after its columns (mm from the window corner, signed): x, then z; spec.thin: a third, k: only the objects of the share 2^-k are drawn (the body was made at a denser one)
   const tail = (1 + Object.keys(F).length) * C, shift = (axis) => (spec.origin ? ` + f32(bitcast<i32>(body[${tail + (axis === "x" ? 0 : 1)}u])) * 0.001` : "");
   const read = spec.read ? spec.read(at) : `
   let what = body[${at("what")} + i];
@@ -51,6 +51,12 @@ export function sourceWGSL(spec, ORIGIN) {
 const CAP: u32 = ${C}u;
 ${spec.origin ? `// the source's corner in the window's cells (a whole number of them)
 fn srcOc() -> vec2i { return vec2i(bitcast<i32>(body[${tail}u]) / ${CELL_M * 1000}, bitcast<i32>(body[${tail + 1}u]) / ${CELL_M * 1000}); }` : ""}
+${spec.thin ? `// the murmur finaliser's mix of a seed (terrain-place.ts mixSeed): an object is of the share 2^-k when its top k bits are 0
+fn mixSeed(seed: u32) -> u32 {
+  var h = seed;
+  h ^= h >> 16u; h *= 0x85ebca6bu; h ^= h >> 13u; h *= 0xc2b2ae35u; h ^= h >> 16u;
+  return h;
+}` : ""}
 fn readObj(i: u32) -> Obj {
   var o: Obj;
   o.ok = (body[i] & 1u) == 1u;
@@ -58,6 +64,7 @@ fn readObj(i: u32) -> Obj {
   if (!o.ok) { return o; }
   o.x = f32(body[${at("x")} + i]) * 0.001 + (${f(ORIGIN)})${shift("x")};
   o.z = f32(body[${at("y")} + i]) * 0.001 + (${f(ORIGIN)})${shift("z")};${read}
+  ${spec.thin ? `if (body[${tail + 2}u] > 0u && (mixSeed(o.seed) >> (32u - body[${tail + 2}u])) != 0u) { o.ok = false; }` : ""}
   return o;
 }
 // the cell of the sim's spatial index a slot's place is in (src/gpu/wgsl/index.ts INDEX_KEYS)

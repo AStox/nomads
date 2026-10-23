@@ -51,7 +51,7 @@ export async function windowObjects(g: Gpu, tier: number, tiles: PlaceTile[], se
       if (overflow || kept > top) { stage.destroy(); counts.destroy(); k++; stageCap = Math.min(top, Math.ceil(kept / 2) + 4096); continue; }
       const cap = o.caps.find((c) => c >= kept && c <= top) ?? top;
       // two words after the seven columns: the source's origin in the window's frame (the renderer's readObj), 0 for a window's own
-      const body = storage(g, (7 * cap + 2) * 4), start = storage(g, (side * side + 1) * 4), cur = storage(g, side * side * 4);
+      const body = storage(g, (7 * cap + 4) * 4), start = storage(g, (side * side + 1) * 4), cur = storage(g, side * side * 4);
       dispatch(g, pipeline(g, scanKernelFor(side), "scan"), [counts, start, cur], [1]);
       if (kept > 0) {
         const [sx, sy] = cover(g, kept), u = uniform(g, new Uint32Array([kept, sx, cap, 0]));
@@ -115,7 +115,7 @@ export async function openTile(g: Gpu, tier: number, tile: PlaceTile, seed: numb
       if (overflow && stageCap < top) { stage.destroy(); counts.destroy(); stageCap = Math.min(top, stageCap * 2); continue; }
       if (overflow || kept > top) { stage.destroy(); counts.destroy(); k++; stageCap = Math.min(top, Math.ceil(kept / 2) + 4096); continue; }
       const cap = o.caps.find((c) => c >= kept && c <= top) ?? top;
-      const body = storage(g, (7 * cap + 2) * 4), start = storage(g, (b.n * b.n + 1) * 4), cur = storage(g, b.n * b.n * 4);
+      const body = storage(g, (7 * cap + 4) * 4), start = storage(g, (b.n * b.n + 1) * 4), cur = storage(g, b.n * b.n * 4);
       dispatch(g, pipeline(g, scanKernelFor(b.n), "scan"), [counts, start, cur], [1]);
       if (kept > 0) {
         const [sx, sy] = cover(g, kept), u = uniform(g, new Uint32Array([kept, sx, cap, 0]));
@@ -161,7 +161,7 @@ export async function openTile(g: Gpu, tier: number, tile: PlaceTile, seed: numb
     const enc = g.device.createCommandEncoder(), pass = enc.beginComputePass(), unis: GPUBuffer[] = [], curs: GPUBuffer[] = [], scan = pipeline(g, scanKernelFor(specs[0]?.n ?? 64), "scan"), scat = pipeline(g, scatterKernel, "scatter");
     for (const i of good) {
       const b = specs[i], kept = t[i * 2], cap = o.caps.find((c) => c >= kept && c <= top) ?? top;
-      const body = storage(g, (7 * cap + 2) * 4), start = storage(g, (b.n * b.n + 1) * 4), cur = storage(g, b.n * b.n * 4);
+      const body = storage(g, (7 * cap + 4) * 4), start = storage(g, (b.n * b.n + 1) * 4), cur = storage(g, b.n * b.n * 4);
       curs.push(cur);
       pass.setPipeline(scan);
       pass.setBindGroup(0, g.device.createBindGroup({ layout: scan.getBindGroupLayout(0), entries: [counts[i], start, cur].map((buffer, binding) => ({ binding, resource: { buffer } })) }));

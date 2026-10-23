@@ -16,7 +16,7 @@ const gpu = await theGpu(), g = tierGrid(TIER), loc = locateVec(g, fromLatLon((l
 const tx = Math.floor(loc.X / 256), ty = Math.floor(loc.Y / 256), tile = loc.face * nT * nT + ty * nT + tx;
 const gt = readGroundTile(readFileSync(`/tmp/planet-75m/1-${key}/groundtiles/f${loc.face}/${ty}-${tx}.gt.gz`));
 // a window whose west edge is 60 cells into the tile and north edge 100 cells down it (the tile's corner of the objects)
-const x0 = tx * 256 + 60, y0 = ty * 256 + 100, caps = [1 << 20, 1 << 21, 1 << 22, 1 << 23];
+const x0 = tx * 256 + 60, y0 = ty * 256 + 100, caps = [1 << 20, 1 << 21, 1 << 22, 1 << 23, 1 << 24];
 const clip = (lo: number, hi: number) => { const a = Math.max(0, Math.floor(lo) - 1), b = Math.min(256, Math.ceil(hi) + 1); return [a, Math.max(0, b - a)]; };
 const [rx, rw] = clip(x0 - tx * 256, x0 + N - tx * 256), [ry, rh] = clip(y0 - ty * 256, y0 + N - ty * 256);
 const win = await windowObjects(gpu, TIER, [{ tile, source: tileSource(gt), rect: { x0: rx, y0: ry, w: rw, h: rh }, a0: tx * 256 * UNITS, a1: ty * 256 * UNITS, s0x: x0 * UNITS, s0y: y0 * UNITS, w0x: 0, w0y: 0, d0: 1, d1: 0 }], 1, { caps, share: 2 ** -K });
@@ -53,4 +53,11 @@ winSet.sort(); blockSet.sort();
 let diff = 0;
 for (let i = 0; i < Math.max(winSet.length, blockSet.length) && diff < 5; i++) if (winSet[i] !== blockSet[i]) { console.log(`FAIL at ${i}: window ${winSet[i]} blocks ${blockSet[i]}`); diff++; }
 console.log(`${winSet.length === blockSet.length && !diff && !bad ? "ok  " : "FAIL"} window ${winSet.length} objects, blocks ${blockSet.length} inside the window`);
-await exit(diff || bad || winSet.length !== blockSet.length ? 1 : 0);
+// the sources' draw-time thinning (wgsl/objects.js, spec.thin: the objects whose mixed seed has its top kd bits clear) takes a block made at share 2^-k0 to exactly the one made at 2^-(k0+kd)
+const mix = (seed: number) => { let h = seed >>> 0; h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b) >>> 0; h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35) >>> 0; h ^= h >>> 16; return h >>> 0; };
+const dense = await tileBlocks(gpu, TIER, { tile, source: tileSource(gt), rect: { x0: 0, y0: 0, w: 256, h: 256 }, a0: tx * 256 * UNITS, a1: ty * 256 * UNITS, s0x: 0, s0y: 0, w0x: 0, w0y: 0, d0: 1, d1: 0 }, [{ bx0: 128, by0: 128, n: 64, k: 0 }, { bx0: 128, by0: 128, n: 64, k: 2 }], 1, { caps });
+const read = async (o: (typeof dense)[number]) => { const b = new Uint32Array(await readback(gpu, o.body)); return Array.from({ length: o.n }, (_, i) => `${b[3 * o.cap + i]}:${b[5 * o.cap + i]}:${b[o.cap + i]}:${b[2 * o.cap + i]}`); };
+const whole = (await read(dense[0])).filter((t) => (mix(Number(t.split(":")[1])) >>> 30) === 0).sort(), quarter = (await read(dense[1])).sort();
+const thin = whole.length === quarter.length && whole.every((v, i) => v === quarter[i]) ? 0 : 1;
+console.log(`${thin ? "FAIL" : "ok  "} a block made whole and thinned by the hash to a quarter: ${whole.length} objects, the block made at a quarter: ${quarter.length}`);
+await exit(diff || bad || thin || winSet.length !== blockSet.length ? 1 : 0);
