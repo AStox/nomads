@@ -10,8 +10,8 @@
 // says), so no seam shows at a tile's or a face's edge. Where a neighbour is not held, or at a cube's corner where no cell stands,
 // the halo repeats the tile's own edge cell until the neighbour arrives (a held tile's halo is refreshed when one does).
 //   table:   per tile of every tier, its atlas layer or NONE (storage buffer, the shader's page table)
+import { fetchTileBytes } from "./tilecache.js";
 const TILE = 256, HALO = 2, HS = TILE + 2 * HALO, FHS = TILE + 2, NONE = 0xffffffff, hStep = 0.25;
-const inflate = async (res) => new Uint8Array(await new Response(res.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
 const TYPES = { i8: Int8Array, u8: Uint8Array, i16: Int16Array, u16: Uint16Array, i32: Int32Array, u32: Uint32Array, f32: Float32Array };
 
 // a tile's bytes (header length, header JSON, the planes in the header's field order) as its header and typed planes by name
@@ -177,12 +177,10 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
   async function load(i) {
     flying.add(i);
     try {
-      const { t, f, tx, ty } = tileOf(i), res = await fetch(url(t, f, tx, ty));
-      if (!res.ok) { absent.add(i); return; }
-      const raw = await inflate(res), { planes } = decodeTile(raw);
-      stats.fetched++; stats.bytes += Number(res.headers.get("content-length") ?? 0);
+      const { t, f, tx, ty } = tileOf(i), { raw, bytes } = await fetchTileBytes(url(t, f, tx, ty)), { planes } = decodeTile(raw);
+      stats.fetched++; stats.bytes += bytes;
       put(i, planes);
-    } catch (e) { absent.add(i); console.warn(`tile ${i}: ${e.message}`); } finally { flying.delete(i); }
+    } catch (e) { absent.add(i); if (!e.status) console.warn(`tile ${i}: ${e.message}`); } finally { flying.delete(i); }
   }
 
   // tier 0 whole, before the first frame
