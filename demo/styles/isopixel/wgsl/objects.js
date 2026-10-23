@@ -35,6 +35,7 @@ export function sourceWGSL(spec, ORIGIN) {
   if (spec.members === "cells") return `${spec.decls ?? ""}\n${spec.member}`;
   const C = spec.cap, F = spec.fields, at = (name) => `${(1 + F[name]) * C}u`;
   const hideWords = Math.ceil(C / 32);
+  const cn = spec.n ?? CELLS_N;
   // spec.origin: where the source stands in the window's frame, two words after its columns (mm from the window corner, signed): x, then z
   const tail = (1 + Object.keys(F).length) * C, shift = (axis) => (spec.origin ? ` + f32(bitcast<i32>(body[${tail + (axis === "x" ? 0 : 1)}u])) * 0.001` : "");
   const read = spec.read ? spec.read(at) : `
@@ -61,9 +62,9 @@ fn readObj(i: u32) -> Obj {
 }
 // the cell of the sim's spatial index a slot's place is in (src/gpu/wgsl/index.ts INDEX_KEYS)
 fn cellOf(i: u32) -> u32 {
-  let cx = min(body[${at("x")} + i] / ${CELL_M * 1000}u, ${CELLS_N - 1}u);
-  let cy = min(body[${at("y")} + i] / ${CELL_M * 1000}u, ${CELLS_N - 1}u);
-  return cy * ${CELLS_N}u + cx;
+  let cx = min(body[${at("x")} + i] / ${CELL_M * 1000}u, ${cn - 1}u);
+  let cy = min(body[${at("y")} + i] / ${CELL_M * 1000}u, ${cn - 1}u);
+  return cy * ${cn}u + cx;
 }
 ${spec.member ?? ""}`;
 }
@@ -178,6 +179,7 @@ fn spriteOf(F: Fam, f: u32, si: u32) -> u32 {
 // whole workgroup, rather than one a thread on the same three counters.
 // front: "mark" or "keep", the two walks that build a far level's front list (FRONT_WGSL) in place of the cull's walk.
 export function cullWGSL(spec, far = false, front = null) {
+  const { N: CELLS_N, CELLS, FAR_LVL } = cellsOf(spec.n);
   const one = (k) => `{ let o = readObj(${k}); if (o.ok) { e = cullEval(o); } }`;
   const walk = far
     ? `
@@ -369,7 +371,7 @@ fn cullEval(o: Obj) -> Emit {
 var<workgroup> wa: u32;
 var<workgroup> wb: u32;
 var<workgroup> wm: u32;
-${front ? frontWalk(front, !!spec.origin) : `var<workgroup> eN: array<atomic<u32>, 3>;
+${front ? frontWalk(front, !!spec.origin, spec.n) : `var<workgroup> eN: array<atomic<u32>, 3>;
 var<workgroup> eB: array<u32, 3>;
 // A round's objects listed, every thread of the workgroup calling it together: sprites from args.ic, specks from
 // args.pic, and the rows of the sprites that found room from args.ric, as many as the lists hold.
@@ -480,6 +482,8 @@ fn clampMain() {
 // pass: farCount files each slot's cell and coarsest level (fkey) and counts them, farScan lays out the cells, and
 // farFile puts every slot at its place.
 export const FAR_LVL = CELLS_N * CELLS_N + 1, CELLS = CELLS_N * CELLS_N, FAR_MARGIN = 1.1;
+// a source's cells a side (spec.n, 256 unless it says): its cell count and where the far index's levels start
+export const cellsOf = (n = CELLS_N) => ({ N: n, CELLS: n * n, FAR_LVL: n * n + 1 });
 export const FAR_COUNT_WGSL = `
 @compute @workgroup_size(256)
 fn farCount(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw: vec3u) {
@@ -513,7 +517,7 @@ fn farFile(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) n
 }`;
 // One workgroup: each cell's count over its levels, scanned into the cells' starts (fidx[c], the total at fidx[CELLS]),
 // each far level's count per cell, and the counts turned into each (cell, level) run's first place for farFile.
-export const FAR_SCAN_WGSL = `
+export const farScanWGSL = (n = CELLS_N) => { const { CELLS, FAR_LVL } = cellsOf(n); return `
 var<workgroup> part: array<u32, 256>;
 @compute @workgroup_size(256)
 fn farScan(@builtin(local_invocation_id) lid: vec3u) {
@@ -541,7 +545,7 @@ fn farScan(@builtin(local_invocation_id) lid: vec3u) {
     }
     at += inCell;
   }
-}`;
+}`; };
 
 // ---------- the far levels' front lists ----------
 // At the coarsest far levels nearly every object is a speck of one pixel, many to a pixel, and only the nearest of a
@@ -554,7 +558,8 @@ fn farScan(@builtin(local_invocation_id) lid: vec3u) {
 // cell's run from fout[c] (FRONT_SCAN_WGSL), their count at fout[FAR_LVL + L * CELLS + c] where a far list's index
 // holds it, so the far cull walks a front list as it walks a far list. An object that is no speck now (not drawn,
 // hidden, dead) is kept, so one that grows or shows again is drawn as before.
-function frontWalk(mode, origin = false) {
+function frontWalk(mode, origin = false, n = CELLS_N) {
+  const { N: CELLS_N, CELLS, FAR_LVL } = cellsOf(n);
   return `${mode === "keep" ? "var<workgroup> wk: atomic<u32>;" : ""}
 // a speck's pixel in the view (its index and 1, 0 off the view) and its depth as a key that orders as the depth does,
 // nearer larger (webgpu.js speck)
@@ -593,7 +598,7 @@ ${mode === "mark" ? "    if (q.x != 0u) { atomicMax(&fkeys[q.x - 1u], q.y); }" :
 }
 // One workgroup: the far list's count of each cell at level Fp.lvl (fidx[FAR_LVL + lvl * CELLS + c]) scanned into the
 // cells' runs of a front list (fout[c], the total at fout[CELLS]).
-export const FRONT_SCAN_WGSL = `
+export const frontScanWGSL = (n = CELLS_N) => { const { CELLS, FAR_LVL } = cellsOf(n); return `
 var<workgroup> part: array<u32, 256>;
 @compute @workgroup_size(256)
 fn frontScan(@builtin(local_invocation_id) lid: vec3u) {
@@ -611,7 +616,7 @@ fn frontScan(@builtin(local_invocation_id) lid: vec3u) {
   workgroupBarrier();
   var at = part[lid.x];
   for (var c = c0; c < c0 + per; c++) { fout[c] = at; at += fidx[${FAR_LVL}u + Fp.lvl * ${CELLS}u + c]; }
-}`;
+}`; };
 
 // ---------- the sprites wanted ----------
 // Kp.mode 0: every kind and species pair the source holds, a bit each (CODES x CODES), so the worker can number their

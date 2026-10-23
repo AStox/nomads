@@ -916,9 +916,11 @@ async function whereOf(id) {
 let lastLut = null, lutShown = false;
 let curGid = 0, gids = 0, prepared = null, switching = false, building = false, wantNow = null, wantSoon = null, home = null, curWin = null;
 const winSpecs = new Map();
-const winSpec = (cap) => {
-  if (!winSpecs.has(cap)) winSpecs.set(cap, { cap, fields: { x: 0, y: 1, what: 2, size: 3, seed: 4, pick: 5 }, sizeMm: false, marks: false, ordered: false, indexed: true, canopy: true, origin: true });
-  return winSpecs.get(cap);
+// n: the source's cells a side (a window's own are 256)
+const winSpec = (cap, n = 256) => {
+  const key = n === 256 ? cap : `${cap}:${n}`;
+  if (!winSpecs.has(key)) winSpecs.set(key, { cap, n, fields: { x: 0, y: 1, what: 2, size: 3, seed: 4, pick: 5 }, sizeMm: false, marks: false, ordered: false, indexed: true, canopy: true, origin: true });
+  return winSpecs.get(key);
 };
 // The windows made, the last three kept (the one drawn, and two more a pan back or a zoom out and in finds made), with their ground and objects on the GPU. A window is
 // found again by what it covers: the page's own test for a window's cover (the view's half extent in the window's metres and the place's distance from the window's
@@ -1047,7 +1049,7 @@ async function attachObjects(w) {
   } finally { switching = false; }
 }
 
-// A check: the drawn window's objects split into four quadrants, each its own source with its own origin (wgsl/objects.js srcOc) and its own cells from 0, the same objects drawn
+// A check: the drawn window's objects split into four quadrants, each its own source of 128 cells a side with its own origin (wgsl/objects.js srcOc) and its own cells from 0, the same objects drawn
 // by four sources; null puts the one source back.
 async function readWords(buf, bytes) {
   const rb = device.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
@@ -1071,20 +1073,20 @@ async function splitQuads(on) {
       const parts = [0, 1, 2, 3].map(() => ({ slots: [], cells: [] }));
       for (let cy = 0; cy < 256; cy++) for (let cx = 0; cx < 256; cx++) {
         const c = cy * 256 + cx, q = (cy >> 7) * 2 + (cx >> 7);
-        for (let i = start[c]; i < start[c + 1]; i++) { parts[q].slots.push(i); parts[q].cells.push(((cy & 127) * 256) + (cx & 127)); }
+        for (let i = start[c]; i < start[c + 1]; i++) { parts[q].slots.push(i); parts[q].cells.push(((cy & 127) * 128) + (cx & 127)); }
       }
       S.winParts = parts.map((pt, q) => {
         const n = pt.slots.length, cap = [1 << 20, 1 << 21, 1 << 22, 1 << 23].find((c) => c >= n) ?? 1 << 23, ox = (q & 1) * 128 * 75000, oz = (q >> 1) * 128 * 75000;
-        const b = new Uint32Array(7 * cap + 2), st = new Uint32Array(256 * 256 + 1);
+        const b = new Uint32Array(7 * cap + 2), st = new Uint32Array(128 * 128 + 1);
         pt.slots.forEach((i, k) => {
           b[k] = 1;
           b[C * 0 + cap + k] = body[C + i] - ox; b[2 * cap + k] = body[2 * C + i] - oz;
           for (let col = 3; col < 7; col++) b[col * cap + k] = body[col * C + i];
           st[pt.cells[k] + 1]++;
         });
-        for (let c = 0; c < 256 * 256; c++) st[c + 1] += st[c];
+        for (let c = 0; c < 128 * 128; c++) st[c + 1] += st[c];
         b[7 * cap] = ox; b[7 * cap + 1] = oz;
-        return { name: `win:q${q}`, cap, body: buffer(b), start: buffer(st), spec: winSpec(cap) };
+        return { name: `win:q${q}`, cap, body: buffer(b), start: buffer(st), spec: winSpec(cap, 128) };
       });
     }
     await R.setSources(sources());

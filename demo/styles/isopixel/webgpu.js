@@ -22,7 +22,7 @@
 
 import { GROUND_BINDINGS, groundWGSL } from "./ground.wgsl.js";
 import { NS, ATLAS, META_WORDS, M_WRAP } from "./atlas.js";
-import { CELLS_N, CELL_M, CELLS, FAR_LVL, objectWGSL, sourceWGSL, cullWGSL, cacheFillWGSL, CLAMP_WGSL, NEEDS_WGSL, FAR_COUNT_WGSL, FAR_FILE_WGSL, FAR_SCAN_WGSL, FRONT_SCAN_WGSL, CANOPY_WGSL, CANOPY_BYTES_WGSL, CANOPY_WIDE_WGSL, CANOPY_TALL_WGSL } from "./wgsl/objects.js";
+import { CELLS_N, CELL_M, CELLS, FAR_LVL, objectWGSL, sourceWGSL, cullWGSL, cacheFillWGSL, CLAMP_WGSL, NEEDS_WGSL, FAR_COUNT_WGSL, FAR_FILE_WGSL, farScanWGSL, frontScanWGSL, cellsOf, CANOPY_WGSL, CANOPY_BYTES_WGSL, CANOPY_WIDE_WGSL, CANOPY_TALL_WGSL } from "./wgsl/objects.js";
 
 // steps of the key light in the light table, each at the fire's four levels, the palette as drawn in a last row
 export const LEVELS = 16;
@@ -1237,6 +1237,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       const over = { body: s.body && { buffer: s.body }, order: s.order && { buffer: s.order }, start: s.start && { buffer: s.start }, marks: s.marks && { buffer: s.marks }, ...s.over };
       return { ...s, ...sp.passes, over };
     });
+    for (const s of made) if (s.far) { const sc = scanOf(s.spec.n); await Promise.all([sc.far.ready, sc.front.ready]); }
     await Promise.all(made.flatMap((s) => [s.cull.ready, s.fill?.ready, s.needs?.ready, s.canopy?.ready, s.far?.cull.ready, s.far?.count.ready, s.far?.mark?.ready, s.far?.keep?.ready]));
     if (errors.length) throw new Error(errors.join("\n"));
     // a source that is gone (the planet window the camera left) holds no far lists, front lists or cell caches any more
@@ -1355,18 +1356,26 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // ---------- the far levels' lists (wgsl/objects.js FAR_COUNT_WGSL) ----------
   // Per indexed source, by name so they outlive setSources: the slots' keys, the counts (then the runs' cursors), and two
   // lists with their cell index, one drawn from (front) while the other is built. A build goes a slice of slots a frame.
-  const FAR_SLICE = 1 << 20, FAR_IDX = FAR_LVL + 8 * CELLS;
+  const FAR_SLICE = 1 << 20;
+  // the far index's and the front lists' sizes for a source of n cells a side (spec.n, 256 unless it says)
+  const farIdxWords = (n) => { const c = cellsOf(n); return c.FAR_LVL + 8 * c.CELLS; };
   const farU = B(FU.bytes, UNI, "far"), farState = new Map();
   // farUse: off for the page checks (scripts/play/objects.ts), which compare a far view drawn both ways
   // farGens numbers every far list built, so a front list knows the far list it came from (f.gen, and f.prevGen before it)
   let farN = 0, farUse = true, skipped = new Set(), farGens = 0;
-  const farScanP = pipe({ label: "far scan", binds: ["Fp", "fcntR:w", "fidx:w"], code: FAR_SCAN_WGSL, compute: "farScan" });
+  // the scans lay out a source's cells, so one pair per cell count
+  const scanPipes = new Map();
+  function scanOf(n = CELLS_N) {
+    let p = scanPipes.get(n);
+    if (!p) scanPipes.set(n, p = { far: pipe({ label: `far scan ${n}`, binds: ["Fp", "fcntR:w", "fidx:w"], code: farScanWGSL(n), compute: "farScan" }), front: pipe({ label: `front scan ${n}`, binds: ["Fp", "fidx", "fout:w"], code: frontScanWGSL(n), compute: "frontScan" }) });
+    return p;
+  }
   const farFileP = pipe({ label: "far file", binds: ["Fp", "fkey", "fcnt:w", "flist:w"], code: FAR_FILE_WGSL, compute: "farFile" });
   function farOf(s) {
     let f = farState.get(s.name);
     if (f && f.body === s.body) return f;
     if (f) for (const b of [f.key, f.cnt, ...f.idx, ...f.list]) b?.destroy();
-    f = { body: s.body, cap: s.spec.cap, key: B(s.spec.cap * 4, STOR, "farKey"), cnt: B(CELLS * 8 * 4, STOR, "farCnt"), idx: [0, 1].map(() => B(FAR_IDX * 4, STOR | GPUBufferUsage.COPY_SRC, "farIdx")), list: [null, null], n: [0, 0], front: -1, job: null, gen: 0 };
+    f = { body: s.body, cap: s.spec.cap, key: B(s.spec.cap * 4, STOR, "farKey"), cnt: B(cellsOf(s.spec.n).CELLS * 8 * 4, STOR, "farCnt"), idx: [0, 1].map(() => B(farIdxWords(s.spec.n) * 4, STOR | GPUBufferUsage.COPY_SRC, "farIdx")), list: [null, null], n: [0, 0], front: -1, job: null, gen: 0 };
     farState.set(s.name, f);
     return f;
   }
@@ -1397,10 +1406,11 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     if (j.phase !== "scan") return null;
     device.queue.writeBuffer(farU, 0, FU.pack({ base: 0, n: 0, nf: farN }));
     const pass = enc.beginComputePass();
-    pass.setPipeline(farScanP.p); pass.setBindGroup(0, group(farScanP, 0, { fcntR: { buffer: f.cnt }, fidx: { buffer: f.idx[back] } })); pass.dispatchWorkgroups(1);
+    const scanP = scanOf(s.spec.n).far;
+    pass.setPipeline(scanP.p); pass.setBindGroup(0, group(scanP, 0, { fcntR: { buffer: f.cnt }, fidx: { buffer: f.idx[back] } })); pass.dispatchWorkgroups(1);
     pass.end();
     const rb = B(4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "farTotal");
-    enc.copyBufferToBuffer(f.idx[back], CELLS * 4, rb, 0, 4);
+    enc.copyBufferToBuffer(f.idx[back], cellsOf(s.spec.n).CELLS * 4, rb, 0, 4);
     j.phase = "wait";
     return () => rb.mapAsync(GPUMapMode.READ).then(() => {
       const total = new Uint32Array(rb.getMappedRange())[0];
@@ -1415,7 +1425,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     for (const s of sources) {
       const f = s.far && farState.get(s.name);
       if (!f?.job || f.body !== s.body) continue;
-      if (f.job.phase === "wait" || !farScanP.p || !farFileP.p) return true;
+      if (f.job.phase === "wait" || !scanOf(s.spec.n).far.p || !farFileP.p) return true;
       const after = farStep(enc, s, f, FAR_SLICE);
       if (after) pendingPickReads.push(after);
       return true;
@@ -1434,7 +1444,6 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // lists of its views' bearing at every level that has them, its own level first.
   const FRONT_ROWS = 8;
   const frontU = B(FU.bytes, UNI, "front"), frontV = B(VU.bytes, UNI, "frontView"), frontState = new Map(), frontWant = [];
-  const frontScanP = pipe({ label: "front scan", binds: ["Fp", "fidx", "fout:w"], code: FRONT_SCAN_WGSL, compute: "frontScan" });
   let frontViews = new Map(), frontUse = true, frontJob = null, frontKeys = null;
   // the views of the whole island live.js laid out, [{ L, b, U }], those whose tile map fits the map buffer
   function setFrontViews(list) { frontViews = new Map(list.filter((v) => v.U.ni * v.U.nj <= MAX_TILES && (v.U.ni + 1) * (v.U.nj + 1) <= MAX_TILES + 4096).map((v) => [`${v.L}|${v.b}`, v.U])); }
@@ -1480,7 +1489,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       const key = frontWant.shift();
       if (!key) return null;
       const [name, L, b] = key.split("|"), s = sources.find((x) => x.name === name), f = s && farState.get(name), U = frontViews.get(`${L}|${b}`);
-      if (!f || f.front < 0 || !U || !s.far.keep?.p || !s.far.mark?.p || !frontScanP.p) return null;
+      if (!f || f.front < 0 || !U || !s.far.keep?.p || !s.far.mark?.p || !scanOf(s.spec.n).front.p) return null;
       frontJob = { key, s, f, L: +L, U, gen: f.gen, phase: "scan", row: 0 };
     }
     const j = frontJob, f = j.f, s = j.s;
@@ -1488,13 +1497,14 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     if (f.gen !== j.gen || farState.get(s.name) !== f || !sources.includes(s)) { frontRetired.push(...[j.idx, j.list].filter(Boolean)); frontWant.unshift(j.key); frontJob = null; return null; }
     const flist = { buffer: f.list[f.front] }, fidx = { buffer: f.idx[f.front] };
     if (j.phase === "scan") {
-      j.idx = B(FAR_IDX * 4, STOR | GPUBufferUsage.COPY_SRC, "frontIdx");
+      j.idx = B(farIdxWords(s.spec.n) * 4, STOR | GPUBufferUsage.COPY_SRC, "frontIdx");
       device.queue.writeBuffer(frontU, 0, FU.pack({ lvl: j.L }));
       const pass = enc.beginComputePass();
-      pass.setPipeline(frontScanP.p); pass.setBindGroup(0, group(frontScanP, 0, { Fp: { buffer: frontU }, fidx, fout: { buffer: j.idx } })); pass.dispatchWorkgroups(1);
+      const fscan = scanOf(s.spec.n).front;
+      pass.setPipeline(fscan.p); pass.setBindGroup(0, group(fscan, 0, { Fp: { buffer: frontU }, fidx, fout: { buffer: j.idx } })); pass.dispatchWorkgroups(1);
       pass.end();
       const rb = B(4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "frontTotal");
-      enc.copyBufferToBuffer(j.idx, CELLS * 4, rb, 0, 4);
+      enc.copyBufferToBuffer(j.idx, cellsOf(s.spec.n).CELLS * 4, rb, 0, 4);
       j.phase = "wait";
       return () => rb.mapAsync(GPUMapMode.READ).then(() => {
         j.n = new Uint32Array(rb.getMappedRange())[0];
