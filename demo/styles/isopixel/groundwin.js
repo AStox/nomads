@@ -32,7 +32,7 @@ function decode(raw) {
 
 // G: the globe.js bundle; T: the tile.js bundle (the scatter and the window's fine ground); gpu: the worker's { device, adapter };
 // base: where the planet's files are (its `groundtiles` directory is in it); tier: the finest tier; seed: the world's; radiusM: the planet's
-// radius; quick: the island's runoff by season (the painter's constants, baked into its shaders).
+// radius; quick: the island's runoff by season, for a window whose tiles hold none.
 export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, keep = 6, top = CAPS[CAPS.length - 1] }) {
   const g = G.tierGrid(tier), fn = g.fn, nT = 2 ** tier, tiles = new Map();
   const tileKey = (f, tx, ty) => (f * nT + ty) * nT + tx;
@@ -138,10 +138,15 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const height = flipCells((a) => pl.height[a] / 256), water = flipCells((a) => pl.water[a] * 0.01);
     const season = (name, f) => Array.from({ length: 4 }, (_, s) => (pl[`${name}${s}`] ? flipCells((a) => f(pl[`${name}${s}`][a])) : null));
     const precip = flipCells((a) => (pl.pr1[a] / 360) ** 2), pet = flipCells((a) => pl.pe1[a] * 0.1), snow = season("snp", (v) => v * 0.25);
+    // the runoff by season is the tiles' own (the water stage's, per tile), weighted by the window's cells in each; the island's where no tile holds one
+    const wq = [0, 0, 0, 0];
+    let wn = 0;
+    for (let j = H; j < H + N; j++) for (let i = H; i < H + N; i++) { const q = own[j * S + i] >= 0 && tl[own[j * S + i]].gt.meta.quick; if (q) { for (let s = 0; s < 4; s++) wq[s] += q[s]; wn++; } }
+    const runoff = wn ? wq.map((v) => v / wn) : quick;
     const isle = {
       height, water, windShare: flipCells((a) => pl.wsh[a] / 255), rock: flipCells((a) => pl.rock[a]), table: flipCells((a) => pl.tab[a] / 256),
       peat: flipCells((a) => (flags[a] & 4 ? 1 : 0)), soil: flipCells((a) => pl.soil[a] / 1024), silt: flipCells((a) => (flags[a] & 1 ? 1 : 0)), fog: flipCells((a) => pl.fog[a] / 255),
-      seasons: [0, 1, 2, 3].map((s) => ({ precip: s === 1 ? precip : null, pet: s === 1 ? pet : null, snowpack: snow[s] })), quick,
+      seasons: [0, 1, 2, 3].map((s) => ({ precip: s === 1 ? precip : null, pet: s === 1 ? pet : null, snowpack: snow[s] })), quick: runoff,
     };
     // the fine ground, the tile's lattice (1,025 a side, edge to edge) cropped to the island's (1,021, a vertex on each cell's centre and a quarter between) and turned
     const cropFlip = (F) => { const o = new Float32Array(M * M); for (let v = 0; v < M; v++) { const row = (MT - 3 - v) * MT + 2; for (let u = 0; u < M; u++) o[v * M + u] = F[row + u]; } return o; };

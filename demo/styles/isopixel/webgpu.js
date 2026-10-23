@@ -893,7 +893,7 @@ const GLYPHS = {
 export async function createRenderer({ device, context, format, pal, ground, timing }) {
   const { P, NCOL, HAZE, GLOW, TONE, TONE_S, WATER } = pal;
   const errors = [], stats = { traces: 0, gpuMs: 0, tiles: 0, compile: {} };
-  const STRUCTS = `${VU.wgsl}\n${TU.wgsl}\n${PU.wgsl}\n${KU.wgsl}\n${FU.wgsl}\n${TYPES}`, GROUND = groundWGSL(1, ground.consts ?? {});
+  const STRUCTS = `${VU.wgsl}\n${TU.wgsl}\n${PU.wgsl}\n${KU.wgsl}\n${FU.wgsl}\n${TYPES}`, GROUND = groundWGSL(1);
   const stage = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE;
   const groundLayout = device.createBindGroupLayout({
     label: "ground",

@@ -21,6 +21,8 @@ export function windowRivers(source: TileSource): FineRiver[][] {
   const S = 256 + 2 * RIVER_HALO, n = S * S;
   const height = source.plane<Int32Array>("height", RIVER_HALO), to = source.recv(RIVER_HALO), chn = source.plane<Uint8Array>("chn", RIVER_HALO), flow = source.plane<Uint32Array>("flow", RIVER_HALO);
   const tree = source.plane<Uint8Array>("tree", RIVER_HALO), shrub = source.plane<Uint8Array>("shrub", RIVER_HALO), lines: FineRiver[][] = [];
+  // the groundwater's share of the flow and what the valley's fill carries under the bed, as the island's streams hold them (the painter's dry beds follow them)
+  const base = source.plane<Uint16Array>("base", RIVER_HALO), under = source.plane<Uint16Array>("under", RIVER_HALO);
   const x = (i: number) => (((i % S) - RIVER_HALO) * CELL + CELL / 2) - SIZE / 2, z = (i: number) => ((Math.floor(i / S) - RIVER_HALO) * CELL + CELL / 2) - SIZE / 2;
   for (let i = 0; i < n; i++) {
     if (!chn[i] || !flow[i]) continue;
@@ -28,7 +30,7 @@ export function windowRivers(source: TileSource): FineRiver[][] {
     if (j < 0 || j === i) continue;
     const q = flow[i] / Q16, qbf = q * BANKFULL, wooded = (tree[i] + shrub[i]) / 255 >= WOODED;
     const run2 = Math.hypot(x(j) - x(i), z(j) - z(i)), s = Math.max((height[i] - height[j]) / 256 / run2, 1e-4 / CELL);
-    const point = (k: number): FineRiver => [x(k), z(k), q, 0, qbf, s, 0, bankWidth(qbf, wooded), bankDepth(qbf, s)];
+    const point = (k: number): FineRiver => [x(k), z(k), q, base[i] / 65535, qbf, s, under[i] / 4096, bankWidth(qbf, wooded), bankDepth(qbf, s)];
     lines.push([point(i), point(j)]);
   }
   return lines;

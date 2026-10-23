@@ -246,11 +246,32 @@ chose a smaller planet with 75 m everywhere over a coarser planet with derived d
   shared), 5.8 to 6.4 MB of ground tiles, 6 to 8.3 million objects (share 1/2 or 1/4 of what the window holds: 8.3 million at share 1/2 is up to 16 million
   in the window), GPU 1 to 4.5 ms a frame at zooms 5 to 8.3 (an upper bound: the bake ran on the same GPU). Straight diagonal channels in the planet's
   data (a D8 stream down a plain: a river of 1 cell wide in a line for kilometres) draw as straight rills and, where a stream is wide, as a straight blue band
-  (seen at 13.3 N 44.8 E at zoom 5): that is the bake's flow, not the window. `ground-parity.ts` not re-run (the painter is unchanged: only
-  `packGround`'s inputs are the window's).
+  (seen at 13.3 N 44.8 E at zoom 5): that is the bake's flow, not the window.
   Open: the thinning leaves a window at a half to a quarter of the island's tree density (`top`, 8.4 million slots, 235 MB); the page thread works out the
-  camera's heights again (0.1 to 0.3 s) at each window switch; the quick runoff constants in the painter stay the island's; no people or animals away from
-  the island by design.
+  camera's heights again (0.1 to 0.3 s) at each window switch; no people or animals away from the island by design.
+  What the play area draws below its 75 m cells (2026-10-23, read and measured): the fine field (`fineGroundGpu`, `fineKernel` in
+  `src/gpu/wgsl/terrain-scenery.ts`: a Catmull-Rom cubic through the 75 m heights at quarter steps (18.75 m), a ground swell of 2.6 m at 960 m and 0.8 m at
+  240 m, the stream bed cut by the mask's coverage, the covers wandering at their edges, the wet cells), the stream mask (the raster of the streams'
+  segments, 4.7 m texels), the scatter (`sceneryGpu`: trees, shrubs, clasts, sticks, mushrooms, herbs, ore), and the painter's 3 m ground
+  (`ground.wgsl.js` over those and the 75 m fields). A window ran all of it already by the same code: `windowFine` runs `fineKernel` on the window's tiles'
+  fields (the kernel's inputs are the 26 ground tile planes the tiles hold; none is missing from `GROUNDTILE_FIELDS`), the scatter is the tile's own, and the
+  painter is `packGround`'s. Measured on the GPU (island seed 1 against windows of the second rebake): sub-75 m relief, the rms of the fine height over its
+  75 m box, 0.95 m on the island, 1.26 m at range 574, 1.40 m at coast 1253, 0.52 m on a lowland; mean |second difference| at 18.75 m 0.18, 0.20, 0.16, 0.13 m. So the
+  smooth look of a steep window is the 75 m field's (30 m of height a cell at range 574, the fine stage's metre-scale swell is under it), not a missing stage.
+  Two inputs the tiles hold were not read, and now are: each stream's groundwater share and the flow its valley carries under its bed (`base`, `under`;
+  the painter draws a stream dry where its flow is no more than the latter), and the water stage's runoff by season (`meta.quick`, per tile: weighted over the
+  window's cells). The painter held the island's runoff as four literals in its shader text (every pipeline recompiled for a new value): it is now the two
+  entries after the gradient table in `gGradT` (`g_quick`), filled by `packGround` from `isle.quick`, so the shader text no longer depends on the place;
+  `ground-parity.ts` against main.js after the change: heightAt, waterAt, surfAt, bankColour 0 off, paintGround 0.002% off (3 of 150,000, each a threshold within a
+  millimetre). The close stills of range 574 and coast 1253 are the same before and after (`/tmp/globe-seamless/before-*.png`, `after-*.png`): the streams
+  there carry little under-bed flow.
+  The camera snap-back (the first far visit after a load went back to the island): reproduced; the page opens following a person (`select(openingPerson)`),
+  and a script's `view.geo` (or x and z) is not a gesture, so `followStep` cut the camera back to them after 3 s, and asked for a window about the camera
+  every 5 s meanwhile. A view moved between frames by something other than the camera now lets the follow go (`placed` in play/main.js); a drag, pinch or
+  wheel zoom behave as before (following still tracks a walker: checked on a fresh load). Also fixed: the page asks again every 5 s until the ground arrives and
+  the worker made each ask's window (two builds for a 4 s one under load); a window already made for the same place is not made again (`built` in worker.js).
+  Window costs now (the GPU free): ground tiles 0.04 to 0.24 s, fine ground 0.2 s, painter packing 0.5 s, scatter 0.5 to 3 s (the lowland, 6.5 million objects),
+  1.3 to 4.2 s in all; about 6 MB of tiles.
 
 ## Risks
 

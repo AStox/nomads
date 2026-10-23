@@ -21,8 +21,7 @@ const IL = Object.fromEntries(ISLE_LAYERS.map((n, i) => [n, i]));
 // ---------- packing ----------
 // Everything the painter reads, as plain typed arrays for the renderer to upload: the fine ground (M x M, ten layers),
 // the island's fields (N x N), the 12.5 m light grid (heights, occlusion, slope; layers 3 to 7 the renderer's own), the
-// stream mask, main.js's table of ground colour pairs, the noise's gradients and the streams binned for streamAt.
-// `consts` goes to groundWGSL as it is.
+// stream mask, main.js's table of ground colour pairs, the noise's gradients (and the place's runoff by season) and the streams binned for streamAt.
 export function packGround(isle, g) {
   const MM = M * M, fine = new Float32Array(MM * 10);
   [g.h, g.wet, g.moist, g.river, ...COVER_LAYERS.map((k) => g.cover[k])].forEach((f, L) => fine.set(f, L * MM));
@@ -45,9 +44,10 @@ export function packGround(isle, g) {
       sl[j * WN + i] = Math.hypot(g.heightAt(X + d, Z) - g.heightAt(X - d, Z), g.heightAt(X, Z + d) - g.heightAt(X, Z - d)) / (2 * d);
     }
 
-  // the noise's gradient table, as flora.ts makes it
-  const grad = new Float32Array(8192);
+  // the noise's gradient table, as flora.ts makes it, and after it the place's runoff by season against its mean (times 1.2, flowNow's) which a stream's quick share follows
+  const grad = new Float32Array(8192 + 4);
   for (let k = 0; k < 4096; k++) { grad[k * 2] = Math.cos((k / 4096) * 6.2831853); grad[k * 2 + 1] = Math.sin((k / 4096) * 6.2831853); }
+  for (let q = 0; q < 4; q++) grad[8192 + q] = isle.quick[q] * 1.2;
 
   // Streams: every vertex as x, z, mean flow, groundwater share, bankfull flow, the flow under its bed, bankfull width
   // (flora.ts FineRiver); a bin's list holds the index of each segment's second vertex, in flora.ts's order, so ties
@@ -79,7 +79,6 @@ export function packGround(isle, g) {
     grad,
     streams: new Float32Array(verts.length ? verts : [0, 0, 0, 0, 0]),
     streamBins,
-    consts: { quick: Array.from(isle.quick) },
   };
 }
 
@@ -156,11 +155,8 @@ const u = (name) => `${P[name]}u`;
 const ramp = (...names) => arr("u32", names.map(u));
 
 // The ground's WGSL at bind group `group`: the bindings in GROUND_BINDINGS order and the functions the renderer calls.
-// consts: packGround's `consts` (the island's runoff by season).
-export function groundWGSL(group, consts) {
-  if (!consts?.quick || consts.quick.length < 4) throw new Error("groundWGSL needs packGround's consts (quick by season)");
+export function groundWGSL(group) {
   const G = `@group(${group})`;
-  const SEASON_QUICK = consts.quick.slice(0, 4).map((q) => lit(q * 1.2));
   return /* wgsl */ `
 ${G} @binding(0) var gFine: texture_2d_array<f32>;
 ${G} @binding(1) var gIsle: texture_2d_array<f32>;
@@ -170,6 +166,8 @@ ${G} @binding(4) var gTrail: texture_2d<u32>;
 ${G} @binding(5) var gIce: texture_2d<u32>;
 ${G} @binding(6) var<storage, read> gDQ: array<u32>;
 ${G} @binding(7) var<storage, read> gGradT: array<vec2<f32>>;
+// the place's runoff by season, in the two entries after the gradient table's 4,096
+fn g_quick(s: u32) -> f32 { let v = gGradT[4096u + (s >> 1u)]; return select(v.x, v.y, (s & 1u) == 1u); }
 ${G} @binding(8) var<storage, read> gStreams: array<f32>;
 ${G} @binding(9) var<storage, read> gStreamBins: array<u32>;
 
@@ -187,7 +185,6 @@ const g_NB: i32 = ${NB};
 // the island's corner, -ORIGIN, in whole meters
 const g_HALFI: i32 = ${SIZE / 2};
 const g_ORIGIN: f32 = ${lit(ORIGIN)};
-const g_QUICK = array<f32, 4>(${SEASON_QUICK.join(", ")});
 
 const g_BAYER = ${arr("f32", [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map((v) => lit((v + 0.5) / 16)))};
 const g_DI = ${ramp("d0", "d1", "d2", "d3", "d4", "d5")};
@@ -473,7 +470,7 @@ fn g_water(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32, kind: u32, w
     // makes it (water.ts widthOf), or not at all where the flow is no more than the valley's fill carries under the bed
     let st = g_streamAt(x, z);
     var q = 0.0;
-    if (st.ok > 0.0) { q = st.q * (st.base + (1.0 - st.base) * g_QUICK[ctx.season & 3u]); }
+    if (st.ok > 0.0) { q = st.q * (st.base + (1.0 - st.base) * g_quick(ctx.season & 3u)); }
     bed = st.ok == 0.0 || st.qbf <= 0.0 || q <= st.under || st.d > st.wbf * pow(q / st.qbf, 0.26) / 2.0;
   } else {
     gx = (waterAt(x + 3.0, z) - waterAt(x - 3.0, z)) / 6.0;

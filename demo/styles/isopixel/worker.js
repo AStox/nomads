@@ -909,7 +909,7 @@ async function whereOf(id) {
 // (groundwin.js) laid at the camera. The page says where its camera is and which it wants (a want); the worker makes the window (a few seconds the
 // first time) and tells the page its frame and heights; the page puts its view in the new frame and names the ground in every frame after (its gid),
 // and the first frame that names it is the one the renderer switches on (applyGround), so a frame is never drawn on ground its coordinates are not in.
-let curGid = 0, gids = 0, prepared = null, switching = false, building = false, wanting = null, home = null;
+let curGid = 0, gids = 0, prepared = null, switching = false, building = false, wanting = null, home = null, built = null;
 const winSpecs = new Map();
 const winSpec = (cap) => {
   if (!winSpecs.has(cap)) winSpecs.set(cap, { cap, fields: { x: 0, y: 1, what: 2, size: 3, seed: 4, pick: 5 }, sizeMm: false, marks: false, ordered: false, indexed: true, canopy: true });
@@ -923,6 +923,9 @@ async function groundWant(m) {
     while (wanting) {
       const want = wanting;
       wanting = null;
+      // the page asks again every few seconds until the ground arrives: a window already made (or being made) for the same place is not made twice
+      if (want.mode === "win" && built && built.lat === want.lat && built.lon === want.lon) continue;
+      built = want.mode === "win" ? { lat: want.lat, lon: want.lon } : null;
       if (want.mode === "home") {
         if (!S.win && !prepared) continue;
         prepared = { gid: ++gids, mode: "home" };
@@ -935,6 +938,7 @@ async function groundWant(m) {
     }
   } catch (err) {
     console.error("window", err);
+    built = null;
     post({ type: "windowError", error: String((err && err.stack) || err) });
   } finally { building = false; }
 }

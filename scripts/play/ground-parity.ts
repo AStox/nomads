@@ -228,7 +228,7 @@ const groundGroup = (iceOn: number) => dev.createBindGroup({
   entries: [...ground, iceViews[iceOn]].map((resource, binding) => ({ binding, resource })).concat(stores.map((buffer, k) => ({ binding: 6 + k, resource: { buffer } })) as never[]),
 });
 const testLayout = dev.createBindGroupLayout({ entries: [0, 1, 2].map((binding) => ({ binding, visibility: vis, buffer: { type: binding ? ("storage" as const) : ("read-only-storage" as const) } })) });
-const code = `${groundWGSL(0, pk.consts)}
+const code = `${groundWGSL(0)}
 struct Q { x: f32, z: f32, X: i32, Y: i32, k: f32, frame: u32, season: u32, flags: u32, face: u32, depth: f32, hpx: f32, lev: f32, lp: f32, n: u32, p1: u32, p2: u32 }
 @group(1) @binding(0) var<storage, read> qs: array<Q>;
 @group(1) @binding(1) var<storage, read_write> outU: array<vec2<u32>>;

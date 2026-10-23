@@ -562,7 +562,7 @@ async function main() {
   statsEl.hidden = !showStats;
   let lastStats = 0, readyMarked = false, lastNow = performance.now();
   const bench = benchKinds.length ? benchSeq(benchKinds) : null;
-  let revealed = false, relayShown = false;
+  let revealed = false, relayShown = false, placed = null;
   function loop(now) {
     const dt = Math.min(100, now - lastNow);
     lastNow = now;
@@ -574,6 +574,9 @@ async function main() {
     }
     // a bench runs once the world has warmed, or during the warm with ?benchwarm
     if (revealed && bench && (!sim?.warming || Q.has("benchwarm"))) bench.step(now);
+    // a view put somewhere between frames by something other than the camera (a script setting view.geo or x and z) is not what the followed one is: let it go,
+    // or the camera is cut back to them (across a planet's width of ground a window of it was being made for every cut)
+    if (follow && placed && (view.x !== placed.x || view.z !== placed.z || view.geo?.lat !== placed.lat || view.geo?.lon !== placed.lon)) { follow = null; farSince = 0; }
     camera.step(dt, now);
     if (follow && sim) followStep(now, dt);
     // a zoom's destination, or a bench's first view, has its level's lists built first
@@ -582,6 +585,7 @@ async function main() {
     if (!revealed && opening) camera.lookAt(live.where(opening, sim, view));
     camera.guard();
     const r = live.frame(view, sim, { show: revealed });
+    placed = { x: view.x, z: view.z, lat: view.geo?.lat, lon: view.geo?.lon };
     if (!revealed) {
       // every bearing of the opening view, so the first turns land on baked ground; the load can take its time. With
       // ?adj=0 nothing bakes the other bearings, so only this one.
