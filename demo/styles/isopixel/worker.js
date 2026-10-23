@@ -165,7 +165,7 @@ async function setupObjects(sim, w) {
   spritesP = makeAll(jobs).then((made) => { mark("sprites"); return made; });
   S.ms = { sources: t1 - t0, survey: performance.now() - t1 };
 }
-const sources = () => (S.win ? [S.win] : [S.plant, ...(S.statics.cap ? [S.statics] : []), S.extras, ...(S.animals ? [S.animals] : []), ...(S.dead ?? [])]);
+const sources = () => (S.win ? (S.winParts ?? [S.win]) : [S.plant, ...(S.statics.cap ? [S.statics] : []), S.extras, ...(S.animals ? [S.animals] : []), ...(S.dead ?? [])]);
 
 // The generator's objects that aren't stems (src/gpu/flora.ts: static dormant), counted into the spatial index's cells
 // and laid out cell by cell in entry order, fields as the store holds a piece's: x, y (mm), what, size (f32 bits),
@@ -867,6 +867,7 @@ async function check(m) {
   if (m.op === "far") { R.setFarUse(!!m.on); if (m.rebuild) R.farBuild(farLevels()); return true; }
   if (m.op === "fade") { R.setFadeKeep(!!m.on); return true; }
   if (m.op === "roll") { R.debugRoll(m.kx, m.ky); return true; }
+  if (m.op === "quads") return splitQuads(!!m.on);
   if (m.op === "front") { R.setFrontUse(!!m.on); return true; }
   // view 0's G-buffer kept (gsnap), and the next one compared with it pixel by pixel (gdiff): what each pixel shows
   // (kind, colour, flags) and whose it is
@@ -1043,6 +1044,54 @@ async function attachObjects(w) {
   } catch (err) {
     console.error("window objects", err);
     post({ type: "windowError", error: String((err && err.stack) || err) });
+  } finally { switching = false; }
+}
+
+// A check: the drawn window's objects split into four quadrants, each its own source with its own origin (wgsl/objects.js srcOc) and its own cells from 0, the same objects drawn
+// by four sources; null puts the one source back.
+async function readWords(buf, bytes) {
+  const rb = device.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+  const enc = device.createCommandEncoder();
+  enc.copyBufferToBuffer(buf, 0, rb, 0, bytes);
+  device.queue.submit([enc.finish()]);
+  await rb.mapAsync(GPUMapMode.READ);
+  const out = new Uint32Array(rb.getMappedRange().slice(0));
+  rb.unmap(); rb.destroy();
+  return out;
+}
+async function splitQuads(on) {
+  while (switching) await new Promise((r) => setTimeout(r, 5));
+  switching = true;
+  try {
+    if (!on) { for (const q of S.winParts ?? []) { q.body.destroy(); q.start.destroy(); } S.winParts = null; }
+    else {
+      const o = curWin?.objectsValue;
+      if (!o) return false;
+      const C = o.cap, body = await readWords(o.body, 7 * C * 4), start = await readWords(o.start, (256 * 256 + 1) * 4);
+      const parts = [0, 1, 2, 3].map(() => ({ slots: [], cells: [] }));
+      for (let cy = 0; cy < 256; cy++) for (let cx = 0; cx < 256; cx++) {
+        const c = cy * 256 + cx, q = (cy >> 7) * 2 + (cx >> 7);
+        for (let i = start[c]; i < start[c + 1]; i++) { parts[q].slots.push(i); parts[q].cells.push(((cy & 127) * 256) + (cx & 127)); }
+      }
+      S.winParts = parts.map((pt, q) => {
+        const n = pt.slots.length, cap = [1 << 20, 1 << 21, 1 << 22, 1 << 23].find((c) => c >= n) ?? 1 << 23, ox = (q & 1) * 128 * 75000, oz = (q >> 1) * 128 * 75000;
+        const b = new Uint32Array(7 * cap + 2), st = new Uint32Array(256 * 256 + 1);
+        pt.slots.forEach((i, k) => {
+          b[k] = 1;
+          b[C * 0 + cap + k] = body[C + i] - ox; b[2 * cap + k] = body[2 * C + i] - oz;
+          for (let col = 3; col < 7; col++) b[col * cap + k] = body[col * C + i];
+          st[pt.cells[k] + 1]++;
+        });
+        for (let c = 0; c < 256 * 256; c++) st[c + 1] += st[c];
+        b[7 * cap] = ox; b[7 * cap + 1] = oz;
+        return { name: `win:q${q}`, cap, body: buffer(b), start: buffer(st), spec: winSpec(cap) };
+      });
+    }
+    await R.setSources(sources());
+    R.buildCanopy();
+    R.farBuild(farLevels());
+    await surveyWindow();
+    return S.winParts ? S.winParts.map((q) => q.name) : true;
   } finally { switching = false; }
 }
 

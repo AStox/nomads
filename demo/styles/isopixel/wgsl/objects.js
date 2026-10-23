@@ -48,6 +48,8 @@ export function sourceWGSL(spec, ORIGIN) {
   o.nst = ${F.nst !== undefined ? `body[${at("nst")} + i]` : spec.marks ? `(marks[${hideWords}u + (i >> 4u)] >> ((i & 15u) * 2u)) & 3u` : "0u"};`;
   return `${spec.decls ?? ""}
 const CAP: u32 = ${C}u;
+${spec.origin ? `// the source's corner in the window's cells (a whole number of them)
+fn srcOc() -> vec2i { return vec2i(bitcast<i32>(body[${tail}u]) / ${CELL_M * 1000}, bitcast<i32>(body[${tail + 1}u]) / ${CELL_M * 1000}); }` : ""}
 fn readObj(i: u32) -> Obj {
   var o: Obj;
   o.ok = (body[i] & 1u) == 1u;
@@ -181,7 +183,10 @@ export function cullWGSL(spec, far = false, front = null) {
     ? `
 @compute @workgroup_size(64)
 fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u) {
-  let c = (V.cy0 + wid.y) * ${CELLS_N}u + V.cx0 + wid.x;
+${spec.origin ? `  let oc = srcOc();
+  let cl = vec2i(i32(V.cx0 + wid.x), i32(V.cy0 + wid.y)) - oc;
+  if (cl.x < 0 || cl.y < 0 || cl.x >= ${CELLS_N} || cl.y >= ${CELLS_N}) { return; }
+  let c = u32(cl.y) * ${CELLS_N}u + u32(cl.x);` : `  let c = (V.cy0 + wid.y) * ${CELLS_N}u + V.cx0 + wid.x;`}
   if (lid.x == 0u) {
     let r = rowCells(V.cy0 + wid.y);
     let cx = V.cx0 + wid.x;
@@ -263,8 +268,18 @@ fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid
     ? `
 @compute @workgroup_size(256)
 fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u, @builtin(num_workgroups) nw: vec3u) {
-  let cy = V.cy0 + wid.y;
-  if (lid.x == 0u) { let s = rowCells(cy); wa = start[cy * ${CELLS_N}u + s.x]; wb = select(wa, start[cy * ${CELLS_N}u + s.y + 1u], s.x <= s.y); }
+${spec.origin ? `  let oc = srcOc();
+  let cyl = i32(V.cy0 + wid.y) - oc.y;
+  if (lid.x == 0u) {
+    wa = 0u; wb = 0u;
+    if (cyl >= 0 && cyl < ${CELLS_N}) {
+      let s = rowCells(V.cy0 + wid.y);
+      let lo = max(i32(s.x) - oc.x, 0);
+      let hi = min(i32(s.y) - oc.x, ${CELLS_N - 1});
+      if (s.x <= s.y && lo <= hi) { wa = start[u32(cyl) * ${CELLS_N}u + u32(lo)]; wb = start[u32(cyl) * ${CELLS_N}u + u32(hi) + 1u]; }
+    }
+  }` : `  let cy = V.cy0 + wid.y;
+  if (lid.x == 0u) { let s = rowCells(cy); wa = start[cy * ${CELLS_N}u + s.x]; wb = select(wa, start[cy * ${CELLS_N}u + s.y + 1u], s.x <= s.y); }`}
   let a = workgroupUniformLoad(&wa);
   let b = workgroupUniformLoad(&wb);
   for (var r0 = a + wid.x * 256u; r0 < b; r0 += nw.x * 256u) {
@@ -354,7 +369,7 @@ fn cullEval(o: Obj) -> Emit {
 var<workgroup> wa: u32;
 var<workgroup> wb: u32;
 var<workgroup> wm: u32;
-${front ? frontWalk(front) : `var<workgroup> eN: array<atomic<u32>, 3>;
+${front ? frontWalk(front, !!spec.origin) : `var<workgroup> eN: array<atomic<u32>, 3>;
 var<workgroup> eB: array<u32, 3>;
 // A round's objects listed, every thread of the workgroup calling it together: sprites from args.ic, specks from
 // args.pic, and the rows of the sprites that found room from args.ric, as many as the lists hold.
@@ -539,7 +554,7 @@ fn farScan(@builtin(local_invocation_id) lid: vec3u) {
 // cell's run from fout[c] (FRONT_SCAN_WGSL), their count at fout[FAR_LVL + L * CELLS + c] where a far list's index
 // holds it, so the far cull walks a front list as it walks a far list. An object that is no speck now (not drawn,
 // hidden, dead) is kept, so one that grows or shows again is drawn as before.
-function frontWalk(mode) {
+function frontWalk(mode, origin = false) {
   return `${mode === "keep" ? "var<workgroup> wk: atomic<u32>;" : ""}
 // a speck's pixel in the view (its index and 1, 0 off the view) and its depth as a key that orders as the depth does,
 // nearer larger (webgpu.js speck)
@@ -555,7 +570,10 @@ fn speckKey(e: Emit) -> vec2u {
 }
 @compute @workgroup_size(64)
 fn cullMain(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u) {
-  let c = (V.cy0 + wid.y) * ${CELLS_N}u + V.cx0 + wid.x;
+${origin ? `  let oc = srcOc();
+  let cl = vec2i(i32(V.cx0 + wid.x), i32(V.cy0 + wid.y)) - oc;
+  if (cl.x < 0 || cl.y < 0 || cl.x >= ${CELLS_N} || cl.y >= ${CELLS_N}) { return; }
+  let c = u32(cl.y) * ${CELLS_N}u + u32(cl.x);` : `  let c = (V.cy0 + wid.y) * ${CELLS_N}u + V.cx0 + wid.x;`}
   if (lid.x == 0u) { wa = fidx[c]; wb = wa + fidx[${FAR_LVL}u + V.farL * ${CELLS}u + c];${mode === "keep" ? " atomicStore(&wk, 0u);" : ""} }
   let a = workgroupUniformLoad(&wa);
   let b = workgroupUniformLoad(&wb);
