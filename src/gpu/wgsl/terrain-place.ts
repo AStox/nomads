@@ -16,7 +16,7 @@ fn mixSeed(seed: u32) -> u32 {
 `;
 
 // U: lo, hi (the span of entries), groups (workgroups along x, for a dispatch in two dimensions), shift (the share is 2^-shift), cap (staging entries), then the tile's
-// transform: a0, a1 (the tile's corner in units), s0x, s0y, w0x, w0y, d0, d1, win (the window's side in units).
+// transform: a0, a1 (the tile's corner in units), s0x, s0y, w0x, w0y, d0, d1, win (the window's side in units), then q0: the cells a side of the frame (the window's 256, a block's 64).
 // PX, PY, SZ, SD, KS: the write kernel's arrays. STAGE: STAGE_WORDS words an entry (x and z in mm, what, size as f32 bits, seed, cell). COUNTS: a word a cell, then the staged total and an overflow flag.
 export const placeKernel = /* wgsl */ `
 struct P { lo: u32, hi: u32, groups: u32, shift: u32, cap: u32, p0: u32, p1: u32, p2: u32, a0: i32, a1: i32, s0x: i32, s0y: i32, w0x: i32, w0y: i32, d0: i32, d1: i32, win: i32, q0: i32, q1: i32, q2: i32 }
@@ -44,7 +44,7 @@ fn place(@builtin(global_invocation_id) gid: vec3u) {
   if (o0 < 0 || o0 >= U.win || o1 < 0 || o1 >= U.win) { return; }
   let at = atomicAdd(&COUNTS[${CELLS}u], 1u);
   if (at >= U.cap) { atomicStore(&COUNTS[${CELLS + 1}u], 1u); return; }
-  let cell = u32(o1 / ${UNITS_PER_CELL}) * 256u + u32(o0 / ${UNITS_PER_CELL});
+  let cell = u32(o1 / ${UNITS_PER_CELL}) * u32(U.q0) + u32(o0 / ${UNITS_PER_CELL});
   atomicAdd(&COUNTS[cell], 1u);
   let b = at * ${STAGE_WORDS}u;
   STAGE[b] = u32(o0) * 15u;
@@ -56,34 +56,36 @@ fn place(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-// The runs' starts: START[c] is the sum of the counts before cell c, START[CELLS] the total; CUR a copy of them for the scatter's cursors. One workgroup, a thread a run of 256 cells.
-export const scanKernel = /* wgsl */ `
+// The runs' starts: START[c] is the sum of the counts before cell c, START[n * n] the total; CUR a copy of them for the scatter's cursors. One workgroup, a thread a run of n * n / 256 cells.
+export const scanKernelFor = (n: number) => /* wgsl */ `
 @group(0) @binding(0) var<storage, read> COUNTS: array<u32>;
 @group(0) @binding(1) var<storage, read_write> START: array<u32>;
 @group(0) @binding(2) var<storage, read_write> CUR: array<u32>;
 var<workgroup> part: array<u32, 256>;
+const PER = ${(n * n) / 256}u;
 @compute @workgroup_size(256)
 fn scan(@builtin(local_invocation_id) lid: vec3u) {
   let t = lid.x;
   var s = 0u;
-  for (var i = 0u; i < 256u; i++) { s += COUNTS[t * 256u + i]; }
+  for (var i = 0u; i < PER; i++) { s += COUNTS[t * PER + i]; }
   part[t] = s;
   workgroupBarrier();
   if (t == 0u) {
     var a = 0u;
     for (var i = 0u; i < 256u; i++) { let v = part[i]; part[i] = a; a += v; }
-    START[${CELLS}u] = a;
+    START[${n * n}u] = a;
   }
   workgroupBarrier();
   var a = part[t];
-  for (var i = 0u; i < 256u; i++) {
-    let c = t * 256u + i;
+  for (var i = 0u; i < PER; i++) {
+    let c = t * PER + i;
     START[c] = a;
     CUR[c] = a;
     a += COUNTS[c];
   }
 }
 `;
+export const scanKernel = scanKernelFor(256);
 
 // U: n (staged entries), groups, slots (the body's capacity). BODY: the renderer's source body, a word a slot for the alive flag, then x, z, what, size, seed and pick columns of slots words each.
 export const scatterKernel = /* wgsl */ `

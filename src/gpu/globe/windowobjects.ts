@@ -4,7 +4,7 @@
 import { TILES } from "../../terrain/flora";
 import { cover, dispatch, pipeline, readback, storage, uniform } from "../kernel";
 import { objectsGpu, objectsWrite, type CellWindow } from "../terrain/scenery";
-import { CELLS, STAGE_WORDS, placeKernel, scanKernel, scatterKernel } from "../wgsl/terrain-place";
+import { CELLS, STAGE_WORDS, placeKernel, scanKernelFor, scatterKernel } from "../wgsl/terrain-place";
 import type { Gpu } from "../device";
 import { keyOf, tileFields, type TileSource } from "./scatter";
 
@@ -14,7 +14,7 @@ export interface PlaceTile { tile: number; source: TileSource; rect: CellWindow;
 export interface WindowObjects { body: GPUBuffer; start: GPUBuffer; n: number; cap: number; share: number; estimate: number }
 
 export async function windowObjects(g: Gpu, tier: number, tiles: PlaceTile[], seed: number, o: { caps: number[]; share?: number; side?: number }): Promise<WindowObjects> {
-  const ctx = { gpu: g, tier }, top = o.caps[o.caps.length - 1], win = (o.side ?? 256) * 5000;
+  const ctx = { gpu: g, tier }, top = o.caps[o.caps.length - 1], side = o.side ?? 256, win = side * 5000;
   // what the draws count, tile by tile, kept on the GPU for the writes
   const held = await Promise.all(tiles.map(async (t) => {
     const f = tileFields(ctx, t.tile, t.source);
@@ -38,7 +38,7 @@ export async function windowObjects(g: Gpu, tier: number, tiles: PlaceTile[], se
         if (span > 0) {
           const [gx, gy] = cover(g, span);
           const p = new Int32Array(20);
-          p.set([run.from, run.to, gx, k, stageCap, 0, 0, 0, t.a0, t.a1, t.s0x, t.s0y, t.w0x, t.w0y, t.d0, t.d1, win]);
+          p.set([run.from, run.to, gx, k, stageCap, 0, 0, 0, t.a0, t.a1, t.s0x, t.s0y, t.w0x, t.w0y, t.d0, t.d1, win, side]);
           const u = uniform(g, p);
           dispatch(g, pipeline(g, placeKernel, "place"), [u, ...run.out.slice(0, 5), stage, counts], [gx, gy]);
           u.destroy();
@@ -51,8 +51,8 @@ export async function windowObjects(g: Gpu, tier: number, tiles: PlaceTile[], se
       if (overflow || kept > top) { stage.destroy(); counts.destroy(); k++; stageCap = Math.min(top, Math.ceil(kept / 2) + 4096); continue; }
       const cap = o.caps.find((c) => c >= kept && c <= top) ?? top;
       // two words after the seven columns: the source's origin in the window's frame (the renderer's readObj), 0 for a window's own
-      const body = storage(g, (7 * cap + 2) * 4), start = storage(g, (CELLS + 1) * 4), cur = storage(g, CELLS * 4);
-      dispatch(g, pipeline(g, scanKernel, "scan"), [counts, start, cur], [1]);
+      const body = storage(g, (7 * cap + 2) * 4), start = storage(g, (side * side + 1) * 4), cur = storage(g, side * side * 4);
+      dispatch(g, pipeline(g, scanKernelFor(side), "scan"), [counts, start, cur], [1]);
       if (kept > 0) {
         const [sx, sy] = cover(g, kept), u = uniform(g, new Uint32Array([kept, sx, cap, 0]));
         dispatch(g, pipeline(g, scatterKernel, "scatter"), [u, stage, cur, body], [sx, sy]);
@@ -67,4 +67,58 @@ export async function windowObjects(g: Gpu, tier: number, tiles: PlaceTile[], se
 }
 
 // the kernels this makes, for warming them
-export const placeKernels: [string, string][] = [[placeKernel, "place"], [scanKernel, "scan"], [scatterKernel, "scatter"]];
+export const placeKernels: [string, string][] = [[placeKernel, "place"], [scanKernelFor(256), "scan"], [scanKernelFor(64), "scan"], [scatterKernel, "scatter"]];
+
+// A block of a ground tile's cells made as a source of its own: bx0, by0 its corner in the tile's cells and n its cells a side; k its share's shift (2^-k) or the least that fits `top` slots.
+export interface BlockSpec { bx0: number; by0: number; n: number; k?: number }
+export interface BlockObjects extends WindowObjects { bx0: number; by0: number; n_: number }
+
+// The objects of several blocks of one tile, each in the block's own frame (x east, z south, mm from the block's north-west corner; `tile.a0`, `a1` the tile's corner in units, which the
+// blocks' frames hang from), from one run of the tile's scatter over `tile.rect` (the cells the blocks cover), so the tile's tables and counts are made once however many blocks there are.
+// The same entries as the window's, thinned by the same hash: a block at share 2^-k holds exactly those of the window's at 2^-k that lie in it.
+export async function tileBlocks(g: Gpu, tier: number, tile: PlaceTile, blocks: BlockSpec[], seed: number, o: { caps: number[] }): Promise<BlockObjects[]> {
+  const ctx = { gpu: g, tier }, top = o.caps[o.caps.length - 1], f = tileFields(ctx, tile.tile, tile.source);
+  const run = await objectsGpu(g, f.L, f.K, f.packed, f.field, seed, keyOf(tile.tile), tile.rect, false);
+  try {
+    objectsWrite(g, f.L, f.K, f.packed, f.field, run);
+    const span = run.to - run.from, out: BlockObjects[] = [];
+    for (const b of blocks) {
+      const rx0 = Math.max(0, b.bx0 - 1), ry0 = Math.max(0, b.by0 - 1);
+      let est = 0;
+      for (let gy = Math.floor(ry0 / 2); gy <= Math.floor((Math.min(256, b.by0 + b.n + 1) - 1) / 2); gy++)
+        for (let gx = Math.floor(rx0 / 2); gx <= Math.floor((Math.min(256, b.bx0 + b.n + 1) - 1) / 2); gx++) est += run.start[gy * TILES + gx + 1] - run.start[gy * TILES + gx];
+      let k = b.k ?? 0;
+      if (b.k === undefined) while (est / 2 ** k > top * 0.92) k++;
+      let stageCap = Math.min(top, Math.ceil((est / 2 ** k) * 1.1) + 4096);
+      const win = b.n * 5000;
+      for (;;) {
+        const stage = storage(g, stageCap * STAGE_WORDS * 4), counts = storage(g, (CELLS + 2) * 4);
+        if (span > 0) {
+          const [gx, gy] = cover(g, span), p = new Int32Array(20);
+          // the block's corner: x west, y at its south edge (the frame's z runs south from the north edge)
+          p.set([run.from, run.to, gx, k, stageCap, 0, 0, 0, tile.a0, tile.a1, tile.a0 + b.bx0 * 5000, tile.a1 + b.by0 * 5000, 0, 0, 1, 0, win, b.n]);
+          const u = uniform(g, p);
+          dispatch(g, pipeline(g, placeKernel, "place"), [u, ...run.out.slice(0, 5), stage, counts], [gx, gy]);
+          u.destroy();
+        }
+        const tail = new Uint32Array(await readback(g, counts, 8, CELLS * 4)), kept = tail[0], overflow = tail[1] !== 0;
+        if (overflow && stageCap < top) { stage.destroy(); counts.destroy(); stageCap = Math.min(top, stageCap * 2); continue; }
+        if (overflow || kept > top) { stage.destroy(); counts.destroy(); k++; stageCap = Math.min(top, Math.ceil(kept / 2) + 4096); continue; }
+        const cap = o.caps.find((c) => c >= kept && c <= top) ?? top;
+        const body = storage(g, (7 * cap + 2) * 4), start = storage(g, (b.n * b.n + 1) * 4), cur = storage(g, b.n * b.n * 4);
+        dispatch(g, pipeline(g, scanKernelFor(b.n), "scan"), [counts, start, cur], [1]);
+        if (kept > 0) {
+          const [sx, sy] = cover(g, kept), u = uniform(g, new Uint32Array([kept, sx, cap, 0]));
+          dispatch(g, pipeline(g, scatterKernel, "scatter"), [u, stage, cur, body], [sx, sy]);
+          u.destroy();
+        }
+        stage.destroy(); counts.destroy(); cur.destroy();
+        out.push({ body, start, n: kept, cap, share: 2 ** -k, estimate: est, bx0: b.bx0, by0: b.by0, n_: b.n });
+        break;
+      }
+    }
+    return out;
+  } finally {
+    f.packed.destroy(); f.field.destroy(); run.idx.destroy(); f.release(); for (const b of run.out) b.destroy();
+  }
+}
