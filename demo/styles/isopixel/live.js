@@ -107,7 +107,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   function onWorker(m) {
     if (m.type.startsWith("sim")) { if (simTo) simTo(m); else simEarly.push(m); }
     else if (m.type === "frameDone") {
-      lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts; stats.tiles = m.tiles; stats.lift = m.lift; stats.applyMs = m.applyMs;
+      lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts; stats.tiles = m.tiles; stats.lift = m.lift; stats.q = m.q; stats.applyMs = m.applyMs;
       if (m.fronts !== undefined) fronts = new Set(m.fronts ? m.fronts.split(",") : []);
       const sent = sentAt.get(m.id);
       sentAt.delete(m.id);
@@ -224,7 +224,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // from straight down to the ladder's own look (60 degrees from the vertical, bearing b turning it b * 45 degrees; a narrow field
   // of view at the end, so the sphere reads as the ladder's parallel projection). view.geo (lat, lon) is the target on the planet
   // and view.x, view.z the same place in the play area's metres; whichever moved last is kept (syncGeo).
-  const PLACE = fieldsMsg.place ?? null, PR = PLACE?.radiusM, D2R = Math.PI / 180, ISO_TILT = Math.PI / 3;
+  const PGQ = new URLSearchParams(location.search).get("pg"), PG_CANOPY = new URLSearchParams(location.search).get("cn") === null ? null : Number(new URLSearchParams(location.search).get("cn")), PLACE = fieldsMsg.place ?? null, PR = PLACE?.radiusM, D2R = Math.PI / 180, ISO_TILT = Math.PI / 3;
   // the zoom the ladder is first drawn at (faded in over the next step), and the play area's edge fade [design]
   const ZLAD = -1.5, PLAY_EDGE_M = 1200;
   // the whole planet fits the canvas at its smallest zoom: 0.4 of the canvas height across a radius
@@ -351,10 +351,10 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     iso = ((((iso + Math.PI) % TAU) + TAU) % TAU) - Math.PI;
     // the light is the planet's sun (planetSky): day, night and the terminator between, as the clock stands
     const light = skyVec(homeSky?.sun ?? { el: 0.8, dir: [0.6, 0.8] }), moon = homeSky?.moon ? skyVec(homeSky.moon) : [0, 0, 1];
-    return { lat: view.geo.lat, lon: view.geo.lon, dist, tilt: ISO_TILT * k, heading: iso * k, tanH, sun: light, moon, moonMix: sky ? smooth(3, -2, sky.e) : 0, amb: ambientOf(Math.sin(sky?.sun?.el ?? 0.8)), riverCut: clamp((720 * ((canvas.height * FRM.scale) / ppm)) / PR, 20, 3000) };
+    return { lat: view.geo.lat, lon: view.geo.lon, dist, tilt: ISO_TILT * k, heading: iso * k, tanH, ortho: smooth(ZLAD - 1.5, ZLAD, view.zoom), liftM: (camH(view.x, view.z) + (view.up || 0)) * EXAG, sun: light, moon, moonMix: sky ? smooth(3, -2, sky.e) : 0, amb: ambientOf(Math.sin(sky?.sun?.el ?? 0.8)), riverCut: clamp((720 * ((canvas.height * FRM.scale) / ppm)) / PR, 20, 3000) };
   }
   // the camera as the worker drew it last frame: stood above the ground under its target (stats.lift), so a pick lands on what is drawn
-  const planetCamOf = (view) => { const p = planetParams(view); return planetCam({ ...p, w: canvas.width, h: canvas.height, radiusM: PR, lift: stats.lift ?? 0 }); };
+  const planetCamOf = (view) => { const p = planetParams(view); return planetCam({ ...p, q: stats.q ?? null, w: canvas.width, h: canvas.height, radiusM: PR, lift: stats.lift ?? 0 }); };
   const planetScreen = (view, geo) => { const k = 1 + (stats.lift ?? 0) / PR, P = vecOf(geo); return planetCamOf(view).project([P[0] * k, P[1] * k, P[2] * k]) ?? [-1e9, -1e9]; };
   function planetUnder(view, sx, sy) {
     syncGeo(view);
@@ -871,20 +871,21 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     drawFires(cam, r.fires, now, sky.night, live, fires);
     overlays(cam, now, view, r.fires, r.out.filter((o) => o.over), r.picks, prims);
     if (k === 0) { lastPick = r.picks; pickCam = cam; pickOwners = owners; }
-    const ao = AO, hz = hazeOf(cam, clock.hour ?? 8), FR = new Float32Array(fires.length * 4);
+    const hz = hazeOf(cam, clock.hour ?? 8), FR = new Float32Array(fires.length * 4);
     fires.forEach((f, i) => FR.set(f, i * 4));
     const U = {
       ...placeOf(cam, win),
       frame: Math.floor(now / 160) & 7, season: SEASON_I[season] ?? 0,
       casting: cast ? 1 : 0, sunx: vec[0], suny: vec[1],
-      lx: sky.L[0], ly: sky.L[1], lz: sky.L[2], ar: sky.A[0], ag: sky.A[1], ab: sky.A[2], kr: sky.K[0], kg: sky.K[1], kb: sky.K[2],
-      sunK: cast ? cast.k : 0, flat: sky.flat, relief: sky.relief, spr: spriteLight(view.bearing), toneK: sky.toneK,
-      aoK: ao.on ? ao.k : 0, aoTer: ao.ter, aoCan: ao.can, aoTree: ao.tree, aoTop: ao.top, aoSelf: ao.self, aoKey: ao.key, aoDbg: ao.dbg,
+      ...groundLight(), spr: spriteLight(view.bearing),
+      aoDbg: AO.dbg,
       half: SIZE / 2, edge: PLACE ? PLAY_EDGE_M : 0, hmost: hz.most, htop: hz.top, hreach: hz.reach, sea: P.w1, nfires: fires.length, night: sky.night,
     };
     const n = Math.max(1, Math.ceil(cam.s - 1e-3));
     return { U, L: cam.L, beta: md.beta, alpha: w, present: { dx: cam.dx, dy: cam.dy, sc: cam.s, nn: n, nearest: Math.abs(cam.s - n) < 1e-3 ? 1 : 0 }, live, liveRows: cast ? liveRows : null, xray, prims: prims.a, fires: FR };
   }
+  // the light the ground is lit by, as the shade pass takes it from a view's uniforms and the planet pass (wgsl/globe.js lightFine) from the frame
+  const groundLight = () => ({ lx: sky.L[0], ly: sky.L[1], lz: sky.L[2], ar: sky.A[0], ag: sky.A[1], ab: sky.A[2], kr: sky.K[0], kg: sky.K[1], kb: sky.K[2], sunK: sky.cast ? sky.cast.k : 0, flat: sky.flat, relief: sky.relief, toneK: sky.toneK, aoK: AO.on ? AO.k : 0, aoTer: AO.ter, aoCan: AO.can, aoTree: AO.tree, aoTop: AO.top, aoSelf: AO.self, aoKey: AO.key });
   // the ambient occlusion's knobs: ?ao=0 draws without it, ?ao=dbg shows it alone. on: 0 turns it off.
   // k: the most of the sky's light a point can lose. ter: how strongly the ground's folds count. can, tree: how strongly
   // the trees' cover counts for the ground and for a sprite's pixels, top the share of it the canopy's top keeps. self:
@@ -913,7 +914,9 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the sim's people, animals and things live on the island: elsewhere there are none
     const simUse = mode === "home" ? sim : null;
     const views = pl.parts.map(([cam, w], k) => viewOf(cam, k, w, simUse, clock, now, view));
-    const id = ++frameNo, msg = { type: "frame", id, gid: PLACE ? gid : undefined, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), cam: view.geo && PLACE ? { lat: view.geo.lat, lon: view.geo.lon, ext: viewExtent(view) } : undefined, exag: EXAG, relief: sky.relief, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG }, planet: PLACE && ladderAlpha(view) < 1 ? planetParams(view) : null };
+    // the ground is the planet pass's wherever a window of the planet is drawn (the ladder draws the sprites and their shade over it); the island of the game keeps its own (?pg=0 and ?pg=1 force either)
+    const groundOff = PLACE && (PGQ === null ? mode === "win" : PGQ === "1");
+    const id = ++frameNo, msg = { type: "frame", id, gid: PLACE ? gid : undefined, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), cam: view.geo && PLACE ? { lat: view.geo.lat, lon: view.geo.lon, ext: viewExtent(view) } : undefined, exag: EXAG, relief: sky.relief, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG }, planet: PLACE && (groundOff || ladderAlpha(view) < 1) ? { ...planetParams(view), light: groundLight(), canopy: PG_CANOPY ?? smooth(3, 10, 2 / ppmOf(clampZ(view.zoom))) } : null, groundOff };
     if (lutSent !== sky.id) { msg.lut = T.gpu.slice(); lutSent = sky.id; }
     ownersOf.set(id, pickOwners);
     if (ownersOf.size > 30) ownersOf.delete(ownersOf.keys().next().value);

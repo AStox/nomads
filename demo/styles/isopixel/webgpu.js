@@ -757,6 +757,14 @@ fn shadeFS(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   else if (kind == 0u) {
     var ctx: PaintCtx;
     ctx.k = V.k; ctx.frame = V.frame; ctx.season = V.season; ctx.flags = V.gflags;
+    // the ground left to the planet pass under this one (wgsl/globe.js): nothing is drawn here but the shade the sprites cast on it, as the light's loss over flat ground
+    if ((V.gflags & 2u) != 0u) {
+      let sh = select(0.0, textureLoad(mask, q, 0).r * V.sunK, V.sunK > 0.0);
+      if (sh <= 0.0) { return vec4f(0.0); }
+      let lit = vec3f(V.ar, V.ag, V.ab) + vec3f(V.kr, V.kg, V.kb) * V.flat;
+      let shd = vec3f(V.ar, V.ag, V.ab) + vec3f(V.kr, V.kg, V.kb) * V.flat * (1.0 - sh);
+      return vec4f(0.0, 0.0, 0.0, 1.0 - dot(shd / lit, vec3f(0.3, 0.59, 0.11)));
+    }
     c = paintGround(w.x, w.y, X, Y, ctx);
   }
   // people seen through the leaves: a checkered silhouette over any other sprite
@@ -863,21 +871,23 @@ fn foldMain(@builtin(global_invocation_id) id: vec3u) {
 const PRESENT_WGSL = `
 @vertex
 fn fullVS(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0); }
-fn artAt(k: vec2f) -> vec4f { return textureLoad(art, clamp(vec2i(floor(k / P.nn)), vec2i(0), vec2i(i32(P.aw) - 1, i32(P.ah) - 1)), 0); }
+// premultiplied, so the texels a bilinear read blends weigh by their cover and a clear texel leaves no dark fringe on what is next to it
+fn pre(c: vec4f) -> vec4f { return vec4f(c.rgb * c.a, c.a); }
+fn artAt(k: vec2f) -> vec4f { return pre(textureLoad(art, clamp(vec2i(floor(k / P.nn)), vec2i(0), vec2i(i32(P.aw) - 1, i32(P.ah) - 1)), 0)); }
 @fragment
 fn presentFS(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   let pc = pos.xy;
   let a = (pc - vec2f(P.dx, P.dy)) / P.sc;
   var c: vec4f;
   if (a.x < 0.0 || a.y < 0.0 || a.x >= f32(P.aw) || a.y >= f32(P.ah)) { discard; }
-  else if (P.nearest == 1u) { c = textureLoad(art, vec2i(floor(a)), 0); }
+  else if (P.nearest == 1u) { c = pre(textureLoad(art, vec2i(floor(a)), 0)); }
   else {
     let m = (pc - vec2f(P.dx, P.dy)) * P.nn / P.sc - 0.5;
     let m0 = floor(m);
     let f = m - m0;
     c = mix(mix(artAt(m0), artAt(m0 + vec2f(1.0, 0.0)), f.x), mix(artAt(m0 + vec2f(0.0, 1.0)), artAt(m0 + vec2f(1.0, 1.0)), f.x), f.y);
   }
-  return vec4f(c.rgb * c.a * P.alpha, c.a * P.alpha);
+  return c * P.alpha;
 }`;
 
 const GLYPHS = {
@@ -1971,7 +1981,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       for (const s of sources) {
         // a source of members drawn under a pixel at this level (its biggest, spec.most metres) is not walked
         const most = s.spec.most;
-        if (skipped.has(s.name)) continue;
+        if (skipped.has(s.name) || skipped.has("*")) continue;
         const pt = part(s);
         if (!pt.cols || !pt.rows) continue;
         if (most !== undefined && (most < 1 ? most ** 0.55 : most) * Math.max(U.pv, U.pw) < 1) continue;
@@ -2110,6 +2120,8 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     // the ground's pages as the planet pass reads them (slice H): the textures and the table, on only while the page table is what the painter reads. table: [on, entry 0 to 15], entries as the painter's page table (a slot, or -(2 + n) for a page not resident)
     pageGround: () => ({ on: pgOnNow && !!PT, fine: PT?.fine ?? null, grid: PT?.grid ?? null, river: PT?.river ?? null, table: pageNow, block: blockNow }),
     setBlockPages, copyPages,
+    // the light's rasters the planet pass reads over the window (wgsl/globe.js lightFine): the sun's map (the front one), the trees' cover near and wide, and their grids' sizes
+    lightGround: () => ({ sun: sunMaps[sunFront], can0: canopy.t0, can3: canopy.t3, gridN: GN, gridStep: pal.GRID_STEP, canN: canopy.n, canStep: canopy.step, can3N: canopy.n3, half: SIZE / 2 }),
     setFrontUse: (on) => { frontUse = on; },
     setFrontViews, frontsReady,
     // sources the cull leaves out, by name (the page checks, to time each source's share)

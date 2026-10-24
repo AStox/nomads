@@ -65,10 +65,10 @@ struct U {
   nt: vec4f,                // the noise's frame, the camera's target on its face: x, y the equiangular tangents, z, w the fractions of a metre of its place
   nw: vec4i,                // and the whole metres of that place (noise offsets)
   cf: vec4f,                // x: the finest level the whole view has tiles for (planet.js), y: the water's frame 0 to 7, z: the season 0 to 3, w: how far the whole screen has gone over to the fine pages, 0 to 1
-  tf: vec4i,                // x: the face of the camera's target
+  tf: vec4i,                // x: the face of the camera's target; y, z: as f32 bits, the orthographic share of the camera (0 perspective, 1 parallel rays) and the half height of the screen at the target's depth in radii
   pw: vec4i,                // the fine pages (the renderer's, planet.js opts.pages): x: they are all held for the view, y, z, w: their window's face and its first cell's x and y on it
   pgt: array<vec4i, 4>,     // and their table: a slot for each of the sixteen pages, or -(2 + the page whose range stands in)
-  sprl: vec4f,              // x: an upright sprite's share of the key light (live.js spriteLight)
+  sprl: vec4f,              // x: an upright sprite's share of the key light (live.js spriteLight); y: the share of the tree cover the ground paints as crowns (the rest is drawn as sprites and specks)
 }
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var fieldsT: texture_2d_array<u32>;  // a tile's cells, 16 bytes each (pyramid.js)
@@ -82,6 +82,11 @@ struct U {
 @group(0) @binding(9) var gFine: texture_2d_array<f32>;   // the fine pages (pages.js): the fine layers, the light grid, the stream mask
 @group(0) @binding(10) var gGrid: texture_2d_array<f32>;
 @group(0) @binding(11) var gRiver: texture_2d<u32>;
+// the window's light, which the ladder's shade pass lights its ground by (webgpu.js SHADE_WGSL lightAt): its numbers, the sun's map, and the trees' cover near and wide
+@group(0) @binding(12) var<uniform> lt: array<vec4f, 7>;
+@group(0) @binding(13) var sunT: texture_2d<f32>;
+@group(0) @binding(14) var can0T: texture_2d<u32>;
+@group(0) @binding(15) var can3T: texture_2d<f32>;
 fn pgOn() -> bool { return u.pw.x != 0; }
 fn pgTab(k: u32) -> i32 { return u.pgt[k >> 2u][k & 3u]; }
 ${pageWGSL()}
@@ -102,6 +107,11 @@ fn g_wrapW(k: u32) -> vec2<i32> { return u.nw.xy; }
 var<private> gX: i32;
 var<private> gY: i32;
 var<private> gMpp: f32;  // metres to an art pixel at the surface
+var<private> gOff: vec3f; // the pixel's ray origin less the target, radii
+var<private> gOk: f32;
+var<private> gHH: f32;
+// radii a device pixel spans at path length t along the pixel's ray
+fn pxR(t: f32) -> f32 { return 2.0 * ((1.0 - gOk) * u.tanH * t + gOk * gHH) / u.size.y; }
 // the sky's ambient light with the sun at sin(elevation) s: live.js lightOf's a (a power of the sun's height by day, an e-fold each 2.2 degrees below the horizon) and AMB, STAR [change both together]
 fn ambOf(s: f32) -> f32 {
   let a0 = pow(0.021 / (0.8512 + 0.021), 0.65);
@@ -447,8 +457,79 @@ fn lift(p: vec3f) -> f32 {
   return max(hBil(t), 0.0) * u.exag / u.radiusM;
 }
 fn below(t: f32, rd: vec3f) -> bool {
-  let w = u.off + t * rd;
+  let w = gOff + t * rd;
   return radial(w) <= lift(normalize(u.T + w));
+}
+
+// ---------- the window's light (the ladder's shade pass lightAt, for the ground under no sprite) ----------
+fn lgBil(t: texture_2d<f32>, n: f32, p: vec2f) -> f32 {
+  let f = clamp(p, vec2f(0.0), vec2f(n - 1.0));
+  let i = vec2i(floor(f));
+  let i1 = min(i + 1, vec2i(i32(n) - 1));
+  let w = f - floor(f);
+  return mix(mix(textureLoad(t, i, 0).r, textureLoad(t, vec2i(i1.x, i.y), 0).r, w.x), mix(textureLoad(t, vec2i(i.x, i1.y), 0).r, textureLoad(t, i1, 0).r, w.x), w.y);
+}
+// the window's folds raster (layer 6 of the pages' first group, laid over the whole window)
+fn lgFold(p: vec2f) -> f32 {
+  let n = lt[5].x - 1.0;
+  let f = clamp(p, vec2f(0.0), vec2f(n));
+  let i = vec2i(floor(f));
+  let i1 = min(i + 1, vec2i(i32(n)));
+  let w = f - floor(f);
+  return mix(mix(textureLoad(gGrid, i, 6, 0).r, textureLoad(gGrid, vec2i(i1.x, i.y), 6, 0).r, w.x), mix(textureLoad(gGrid, vec2i(i.x, i1.y), 6, 0).r, textureLoad(gGrid, i1, 6, 0).r, w.x), w.y);
+}
+fn lgCan0(p: vec2f) -> f32 {
+  let n = lt[5].z - 1.0;
+  let f = clamp(p, vec2f(0.0), vec2f(n));
+  let i = vec2i(floor(f));
+  let i1 = min(i + 1, vec2i(i32(n)));
+  let w = f - floor(f);
+  let a = f32(textureLoad(can0T, i, 0).r);
+  let b = f32(textureLoad(can0T, vec2i(i1.x, i.y), 0).r);
+  let c = f32(textureLoad(can0T, vec2i(i.x, i1.y), 0).r);
+  let d = f32(textureLoad(can0T, i1, 0).r);
+  return mix(mix(a, b, w.x), mix(c, d, w.x), w.y) / 255.0;
+}
+struct Lit { row: u32, ao: u32, c: u32 }
+// the ground at a place of the window (its cells from the north-west corner) as the shade pass lights it: the palette colour c0 moved along its tone steps by the slope's light
+// less the sun's shadow, the light's level, and the occlusion of the folds and the canopy (aoMul)
+fn lightFine(cell: vec2f, c0: u32, wet: bool) -> Lit {
+  var o: Lit;
+  o.c = c0;
+  o.ao = 0u;
+  let p = cell * ${PAGE_GEOM.grid}.0;
+  let flatL = lt[1].w;
+  let g = vec2f(fineGrid(3, cell), fineGrid(4, cell)) * lt[2].w;
+  let slope = max(0.0, dot(lt[0].xyz, normalize(vec3f(-g.x, 1.0, -g.y))));
+  var sh = 0.0;
+  if (lt[0].w > 0.0) { sh = smoothstep(0.3, 0.7, lgBil(sunT, lt[5].x, p)) * lt[0].w; }
+  let bd = bayer(gX, gY);
+  if (lt[3].y > 0.0 && !wet) {
+    let pc = cell * ${PAGE_GEOM.cellM}.0 / lt[5].w;
+    let near = lgCan0(pc) * 2.0;
+    let wide = lgBil(can3T, lt[6].x, (pc + 0.5) * lt[6].x / lt[5].z - 0.5) * 2.0;
+    let treeOcc = 1.0 - exp(-lt[3].w * 0.5 * (near + wide));
+    let fold = lt[3].z * lgFold(p);
+    let lost = clamp(1.0 - (1.0 - fold) * (1.0 - treeOcc), 0.0, 1.0);
+    o.ao = u32(min(7.0, floor(lost * lt[3].y * 7.0 + bd))) | (u32(floor(3.0 * treeOcc / max(treeOcc + fold, 1e-3) + 0.5)) << 3u);
+  }
+  if (!wet) {
+    let s = 1.5 * tanh(lt[3].x * max(0.0, slope - flatL) * (1.0 - sh) / 1.5);
+    o.c = toned(c0, s);
+  }
+  let f = select(slope, flatL, wet);
+  o.row = u32(min(f32(LEVELS - 1), floor(f * (1.0 - sh) * f32(LEVELS - 1) + bd)));
+  return o;
+}
+// the light's loss to occlusion at a light level (the shade pass aoMul)
+fn aoMul(ao: u32, row: u32) -> vec3f {
+  if (ao == 0u) { return vec3f(1.0); }
+  let a = f32(ao & 7u) / 7.0 * (1.0 - 0.27 * f32(row & 3u));
+  let f = f32((row >> 2u) & 15u) / f32(LEVELS - 1);
+  let A = lt[1].xyz;
+  let key = lt[2].xyz * f;
+  let hue = mix(vec3f(1.0), vec3f(1.1, 0.85, 1.1), f32(ao >> 3u) / 3.0);
+  return max(vec3f(0.0), 1.0 - a * hue * (A + lt[4].w * key) / (A + key + 1e-4));
 }
 
 struct Out {
@@ -463,11 +544,18 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   gY = i32(floor(pos.y));
   let at = (vec2f(f32(gX), f32(gY)) + 0.5) * a;
   let ndc = vec2f(at.x / u.size.x * 2.0 - 1.0, 1.0 - at.y / u.size.y * 2.0);
-  let rd = normalize(u.fwd + ndc.x * u.tanH * u.aspect * u.right + ndc.y * u.tanH * u.up);
-  let o = u.T + u.off;
+  // a blend from the perspective camera (k 0) to the orthographic one (k 1, the ladder's own projection): the rays' spread and their origins' spread trade off, and the screen
+  // holds the same metres at the target's depth whatever k is (hh: the half height there, in radii)
+  let ok = bitcast<f32>(u.tf.y);
+  let hh = bitcast<f32>(u.tf.z);
+  let rd = normalize(u.fwd + (1.0 - ok) * (ndc.x * u.tanH * u.aspect * u.right + ndc.y * u.tanH * u.up));
+  gOff = u.off + ok * hh * (ndc.x * u.aspect * u.right + ndc.y * u.up);
+  gOk = ok;
+  gHH = hh;
+  let o = u.T + gOff;
   let b = dot(o, rd);
   // the shell between the sphere and the highest relief; c is |o|^2 - r^2 in the small numbers
-  let s0 = 2.0 * dot(u.T, u.off) + dot(u.off, u.off);
+  let s0 = 2.0 * dot(u.T, gOff) + dot(gOff, gOff);
   let c1 = s0 - u.hmaxR * (2.0 + u.hmaxR);
   let d1 = b * b - c1;
   var o_: Out;
@@ -480,10 +568,10 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   var tEnd = tOut;
   if (sea) { tEnd = s0 / (-b + sqrt(d0)); }
   // the relief is marched at the tier of the entry's pixel, never finer than the whole view has tiles for
-  gMarch = min(tierFor(a * 2.0 * u.tanH / u.size.y * max(tIn, 1e-6) * u.radiusM), u32(ceil(u.cf.x)));
+  gMarch = min(tierFor(a * pxR(max(tIn, 1e-6)) * u.radiusM), u32(ceil(u.cf.x)));
   // steps: one per 2.5 art pixels the shell's path covers on the screen, at least 2
-  let pxPerR = u.size.y / (2.0 * u.tanH * max(tIn, 1e-6)) / a;
-  let reach = (tEnd - tIn) * length(cross(rd, normalize(u.T + u.off + tIn * rd))) * pxPerR;
+  let pxPerR = 1.0 / (pxR(max(tIn, 1e-6)) * a);
+  let reach = (tEnd - tIn) * length(cross(rd, normalize(u.T + gOff + tIn * rd))) * pxPerR;
   let n = clamp(i32(ceil(reach / 2.5)) + 2, 2, 40);
   var tHit = tEnd;
   var hit = sea;
@@ -504,8 +592,8 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     tp = t;
   }
   if (!hit) { o_.color = vec4f(PAL[spaceIdx(rd, b)], 1.0); return o_; }
-  let p = normalize(u.T + u.off + tHit * rd);
-  gMpp = a * 2.0 * u.tanH / u.size.y * tHit * u.radiusM;
+  let p = normalize(u.T + gOff + tHit * rd);
+  gMpp = a * pxR(tHit) * u.radiusM;
   o_.depth = depthOf(tHit * dot(rd, u.fwd));
 
   let fc = faceOf(p);
@@ -533,6 +621,10 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   gForm = 0.0;
   var facing = sd;
   var slopeFacing = sd;
+  // where the window's own light lights the pixel (the ground inside the fine pages), its level and occlusion
+  var isLit = false;
+  var litRow = 0u;
+  var litAo = 0u;
   if (tl.slot == NONE) {
     // no tile of the planet here (a face that is not baked): the deep sea
     idx = ${u("w0")};
@@ -581,20 +673,23 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     gFn = useFine;
     gFx = fcell;
     let mppN = gMpp / gSc;
-    let xz = noiseXZ(u.off + tHit * rd);
+    let xz = noiseXZ(gOff + tHit * rd);
     var ctx: PaintCtx;
     ctx.k = 1.0 / mppN;
     ctx.frame = u32(u.cf.y);
     ctx.season = u32(u.cf.z);
     ctx.flags = 0u;
     // no tree is drawn by this pass: the whole of the tree cover is the ground's crowns
-    ctx.canopy = 1.0;
+    ctx.canopy = u.sprl.y;
     var S: GSample;
     fillTop(&S, xz.x, xz.y);
     idx = g_paint(&S, xz.x, xz.y, gX, gY, ctx, mppN);
     if (S.isCrown) {
       // a pixel painted with the tree sprites' colours is lit as the shade pass lights an upright sprite: half its own light and half the slope's
       facing = 0.5 * (u.sprl.x + slopeFacing);
+    } else if (useFine && lt[6].z > 0.5) {
+      let Lq = lightFine(fcell, idx, S.isWater);
+      idx = Lq.c; litRow = Lq.row * 4u; litAo = Lq.ao; isLit = true;
     } else if (!S.isWater) {
       idx = toned(idx, sl + gForm);
       facing = slopeFacing;
@@ -610,8 +705,9 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   let key = mix(max(facing, 0.0), max(dot(p, u.moon), 0.04), u.moonMix);
   // the tables' row 0 is the ambient light of the sky where the camera stands: a place with less of it (the night side from a day) shows that much darker
   let ambK = min(1.0, ambOf(sd) / max(u.amb.x, 1e-6));
-  let row = u32(min(f32(LEVELS - 1), floor(key * f32(LEVELS - 1) + bayer(gX, gY)))) * 4u;
-  o_.color = vec4f(unpack4x8unorm(lutT[row * NC + idx]).rgb * ambK, 1.0);
+  var row = u32(min(f32(LEVELS - 1), floor(key * f32(LEVELS - 1) + bayer(gX, gY)))) * 4u;
+  if (isLit) { row = litRow; }
+  o_.color = vec4f(unpack4x8unorm(lutT[row * NC + idx]).rgb * ambK * select(vec3f(1.0), aoMul(litAo, row), isLit), 1.0);
   return o_;
 }
 `;

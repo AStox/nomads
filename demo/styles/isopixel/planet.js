@@ -53,6 +53,10 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       { binding: 9, visibility: F, texture: { sampleType: "unfilterable-float", viewDimension: "2d-array" } },
       { binding: 10, visibility: F, texture: { sampleType: "unfilterable-float", viewDimension: "2d-array" } },
       { binding: 11, visibility: F, texture: { sampleType: "uint", viewDimension: "2d" } },
+      { binding: 12, visibility: F, buffer: { type: "uniform" } },
+      { binding: 13, visibility: F, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } },
+      { binding: 14, visibility: F, texture: { sampleType: "uint", viewDimension: "2d" } },
+      { binding: 15, visibility: F, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } },
     ],
   });
   const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
@@ -73,12 +77,16 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
   const lutB = device.createBuffer({ size: (levels * 4 + 1) * NCOL * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   // the renderer's fine pages (opts.pages), or 1 by 1 stand-ins the shader never reads while there are none
   const stand = { fine: device.createTexture({ size: [1, 1, 1], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING }), river: device.createTexture({ size: [1, 1], format: "r8uint", usage: GPUTextureUsage.TEXTURE_BINDING }) };
+  // the ground's light (opts.light, opts.lightGround): seven vec4f of the sky's light and the rasters' sizes, and the window's sun map and trees' cover, 1 by 1 stand-ins while there is no window
+  const lStand = { sun: device.createTexture({ size: [1, 1], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING }), can0: stand.river, can3: device.createTexture({ size: [1, 1], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING }) };
+  const lring = Array.from({ length: RING }, () => device.createBuffer({ size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }));
+  const lb = new Float32Array(28);
   const ring = Array.from({ length: RING }, () => ({ buffer: device.createBuffer({ size: 336, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }), bind: null, key: null, blit: null }));
   // a ring slot's bind group for the pages' textures, made again only when they are other ones
-  function bindFor(r, pg) {
-    const fine = pg?.fine ?? stand.fine, grid = pg?.grid ?? stand.fine, river = pg?.river ?? stand.river;
-    if (r.key && r.key[0] === fine && r.key[1] === grid && r.key[2] === river) return r.bind;
-    r.key = [fine, grid, river];
+  function bindFor(r, pg, lg, lbuf) {
+    const fine = pg?.fine ?? stand.fine, grid = pg?.grid ?? stand.fine, river = pg?.river ?? stand.river, sun = lg?.sun ?? lStand.sun, can0 = lg?.can0 ?? lStand.can0, can3 = lg?.can3 ?? lStand.can3;
+    if (r.key && r.key[0] === fine && r.key[1] === grid && r.key[2] === river && r.key[3] === sun && r.key[4] === can0 && r.key[5] === can3) return r.bind;
+    r.key = [fine, grid, river, sun, can0, can3];
     const view = (t, dimension) => (t.createView ? t.createView({ dimension }) : t);
     r.bind = device.createBindGroup({
       layout: bgl,
@@ -94,6 +102,10 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
         { binding: 9, resource: view(fine, "2d-array") },
         { binding: 10, resource: view(grid, "2d-array") },
         { binding: 11, resource: view(river, "2d") },
+        { binding: 12, resource: { buffer: lbuf } },
+        { binding: 13, resource: view(sun, "2d") },
+        { binding: 14, resource: view(can0, "2d") },
+        { binding: 15, resource: view(can3, "2d") },
       ],
     });
     return r.bind;
@@ -175,15 +187,19 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     fine = goal > fine ? Math.min(1, fine + dt * FINE_RATE) : goal;
     capAt = now;
     const a = artFor(Math.ceil(w / artPx), Math.ceil(h / artPx));
-    const hmaxR = (exag * hmax) / R, oLen = Math.hypot(cam.o[0], cam.o[1], cam.o[2]), cut = opts.riverCut ?? 20, nf = noiseFrame(cam.T);
+    // close up, where the view is tens of metres or a few kilometres across, the relief it can show lies within a 45 degree slope of the target's height over the view's reach: the shell the rays are
+    // marched through ends there rather than at the planet's highest summit, so its few steps land on the ground the view has
+    let hmaxR = (exag * hmax) / R;
+    if ((opts.ortho ?? 0) > 0.5) hmaxR = Math.min(hmaxR, (cam.lift + cam.hh * R * Math.hypot(cam.aspect, 2) * 1.5) / R);
+    const oLen = Math.hypot(cam.o[0], cam.o[1], cam.o[2]), cut = opts.riverCut ?? 20, nf = noiseFrame(cam.T);
     u.set([...cam.o, cam.tanH, ...cam.fwd, cam.aspect, ...cam.right, opts.relief ?? 2.5, ...cam.up, exag, ...sun, R, ...cam.T, hmaxR, ...cam.off, artPx,
       w, h, Math.max(1e-6, 0.4 * (oLen - 1 - hmaxR)), oLen + 1.01, cut, sm(0.05, 0.3, oLen - 1), a.w, a.h, ...(opts.moon ?? [0, 0, 1]), opts.moonMix ?? 0, opts.amb ?? 1, 0, 0, 0,
       nf.ua, nf.vb, nf.fx, nf.fz]);
     ui[48] = nf.ox; ui[49] = nf.oz; ui[50] = 0; ui[51] = 0;
     u[52] = cap; u[53] = opts.frame ?? (Math.floor(now / 160) & 7); u[54] = opts.season ?? 0; u[55] = fine;
-    ui[56] = nf.f; ui[57] = 0; ui[58] = 0; ui[59] = 0;
+    ui[56] = nf.f; u[57] = opts.ortho ?? 0; u[58] = (cam.tanH * cam.dist) / cam.radiusM; ui[59] = 0;
     ui[60] = pg ? 1 : 0; ui[61] = pg?.face ?? 0; ui[62] = pg?.x0 ?? 0; ui[63] = pg?.y0 ?? 0;
-    u[80] = opts.spr ?? 0.6;
+    u[80] = opts.spr ?? 0.6; u[81] = opts.canopy ?? 1;
     // the renderer's table is its on word, then the sixteen entries
     for (let k = 0; k < 16; k++) ui[64 + k] = pg ? pg.table[1 + k] : -1;
     const r = ring[slot++ % RING], ts = opts.timestampWrites;
@@ -193,7 +209,14 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       depthStencilAttachment: { view: a.depthView, depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "discard" },
       ...(ts ? { timestampWrites: { querySet: ts.querySet, beginningOfPassWriteIndex: ts.beginningOfPassWriteIndex } } : {}),
     });
-    pass.setBindGroup(0, bindFor(r, opts.pages));
+    // the window's light only where the pages are on (the window's rasters lie over the same cells)
+    const L = opts.light, G2 = pg && opts.lightGround, k = lring[(slot - 1) % RING];
+    lb.fill(0);
+    if (L && G2) {
+      lb.set([L.lx, L.ly, L.lz, L.sunK, L.ar, L.ag, L.ab, L.flat, L.kr, L.kg, L.kb, L.relief, L.toneK, L.aoK, L.aoTer, L.aoCan, L.aoTree, L.aoTop, L.aoSelf, L.aoKey, G2.gridN, G2.gridStep, G2.canN, G2.canStep, G2.can3N, G2.half, 1, 0]);
+    }
+    device.queue.writeBuffer(k, 0, lb);
+    pass.setBindGroup(0, bindFor(r, opts.pages, G2, k));
     pass.setPipeline(planetPipe); pass.draw(3);
     pass.end();
     const blit = enc.beginRenderPass({
