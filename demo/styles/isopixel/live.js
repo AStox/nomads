@@ -1149,8 +1149,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       camera, project: (md, x, z) => project({ md }, x, z),
       // the planet camera's own screen place of a play-area point, to set against the ladder's screenOf where both draw (the page checks)
       planetScreen: (view, x, z) => (PLACE ? planetCamOf(view).project(vecOf(geoOf(x, z))) : null),
-      // the drawing's clock held where it is (on) or let run again
-      hold: (on) => { held = on ? performance.now() : null; },
+      // the drawing's clock held where it is (on), at a given reading (a number: the same animation frame in every run, for stills that must repeat), or let run again (false)
+      hold: (on) => { held = on ? (typeof on === "number" ? on : performance.now()) : null; },
       // the query goes apart from the request's id, as a query may carry an id of its own (kill's thing)
       check: (m) => new Promise((resolve) => { const id = ++checkNo; checksWait.set(id, resolve); worker.postMessage({ type: "check", id, q: m }); }),
     },

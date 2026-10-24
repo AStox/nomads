@@ -886,6 +886,8 @@ async function check(m) {
   if (m.op === "roll") { R.debugRoll(m.kx, m.ky); return true; }
   // the share each block of the drawn window is drawn at (2^-eff of what its ground grew) and where it stands in the window's cells (plan R6: the blocks the screen can touch must all show one share)
   if (m.op === "shares") return curWin?.blockRecs && { k0: curWin.blockK0, view: curWin.blockView, blocks: curWin.blockRecs.map((b) => ({ key: b.key, eff: curWin.blockKd?.get(b.key) ?? b.k, made: b.k, c0: b.X - curWin.x0, z0: curWin.y0 + 256 - (b.Y + 64) })) };
+  // whether the page is still making what it draws (sprites made on demand, the window's blocks, a switch): a still taken before it is idle shows the nearest sprite made, so a gate waits for busy to stay false
+  if (m.op === "idle") return { busy: !!refreshing || !!curWin?.blocksBusy || switching || building || !!prepared, sprites: nStatic + (dyn ? dyn.next - nStatic : 0), asked: asked.size };
   if (m.op === "quads") return splitQuads(!!m.on);
   if (m.op === "front") { R.setFrontUse(!!m.on); return true; }
   // view 0's G-buffer kept (gsnap), and the next one compared with it pixel by pixel (gdiff): what each pixel shows
@@ -1002,7 +1004,8 @@ function refocus(w, m) {
   const on = new Set(vis);
   w.blockK0 = k0; w.blockView = view;
   for (const b of w.blockRecs) w.blockKd.set(b.key, k0 + (on.has(b.key) ? 0 : RING_OUT));
-  if (curWin === w) writeExponents(w);
+  // the canopy raster and the far lists are made from the blocks as drawn (their exponent words), so they are made again once the share has moved by a seventh of a step: a stale raster shades a crown by the share it was made at
+  if (curWin === w) { writeExponents(w); if (Math.abs(k0 - (w.canopyK0 ?? -9)) > 0.15) { w.canopyK0 = k0; R.buildCanopy(); R.farBuild(farLevels()); } }
 }
 // every block's exponent word (a float's bits, third of its tail) as the window's map holds it
 function writeExponents(w) {
@@ -1138,6 +1141,7 @@ async function applyGround(p) {
       if (sim) R.setIce(iceOf(sim.w.ice));
     }
     R.buildCanopy();
+    if (p.mode === "win") p.win.canopyK0 = p.win.blockK0;
     R.farBuild(farLevels());
     curGid = p.gid;
     if (prepared === p) prepared = null;
@@ -1162,6 +1166,7 @@ async function attachObjects(w) {
     S.win = w.blockRecs ? { name: "win", blocks: blockSources(w) } : { name: "win", cap: o.cap, body: o.body, start: o.start, spec: winSpec(o.cap) };
     await R.setSources(sources());
     R.buildCanopy();
+    w.canopyK0 = w.blockK0;
     R.farBuild(farLevels());
     await surveyWindow();
   } catch (err) {
