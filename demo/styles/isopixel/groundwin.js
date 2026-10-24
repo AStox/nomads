@@ -66,18 +66,28 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
   const lose = (key) => { if (blockKeys.has(key)) { blockKeys = new Set(); onBlockLost?.(); } };
   const pageKey = (face, px, py) => `${face}:${px}:${py}`;
   const pagesOf = (w) => { const out = []; for (let iy = 0; iy < 4; iy++) for (let ix = 0; ix < 4; ix++) out.push({ ix, iy, px: w.x0 + PAGE * ix, py: w.y0 + PAGE * iy, key: pageKey(w.face, w.x0 + PAGE * ix, w.y0 + PAGE * iy) }); return out; };
-  // The pages `recs` (each { px, py, slot, h }) made from the page source `ps`, STAGE at a time in the staging atlas: two pages a submit with the GPU waited on between, so the frames the renderer draws meanwhile are not held
-  // back by the whole window's work (a page is about 5 ms of the GPU), then the stage's heights read (the camera's) and its pages copied into their slots of the painter's textures before the stage is used again.
-  async function makeInto(recs, ps) {
+  // The pages `recs` (each { key, px, py, slot, h }) made from the page source `ps`, STAGE at a time in the staging atlas: two pages a submit with the GPU waited on between, so the frames the renderer draws meanwhile are not held
+  // back by the whole window's work (a page is about 5 ms of the GPU), then the stage's heights read (the camera's) and its pages copied into their slots of the painter's textures before the stage is used again. The stage is
+  // one set of buffers, so one chunk at a time is made in it (`stage`); a page that has lost its slot to another meanwhile (it is no longer the one `pages` holds) is not copied, and the ring's pages (`ring`) wait while a window is being made.
+  let stage = Promise.resolve(), winBusy = 0;
+  async function makeInto(recs, ps, ring = false) {
     for (let i = 0; i < recs.length; i += STAGE) {
-      const chunk = recs.slice(i, i + STAGE);
-      for (let j = 0; j < chunk.length; j += 2) {
-        T.groundPages(gpu, atlas, ps, chunk.slice(j, j + 2).map((r, k) => ({ px: r.px, py: r.py, slot: j + k })));
-        await gpu.device.queue.onSubmittedWorkDone();
-      }
-      const hs = await T.pageHeights(gpu, atlas, chunk.map((_, j) => j));
-      chunk.forEach((r, j) => { r.h = hs[j]; });
-      await put(atlas, chunk.map((r, j) => ({ from: j, to: r.slot })), SLOTS);
+      while (ring && winBusy > 0) await new Promise((r) => setTimeout(r, 30));
+      const run = async () => {
+        const chunk = recs.slice(i, i + STAGE).filter((r) => pages.get(r.key) === r);
+        if (!chunk.length) return;
+        for (let j = 0; j < chunk.length; j += 2) {
+          T.groundPages(gpu, atlas, ps, chunk.slice(j, j + 2).map((r, k) => ({ px: r.px, py: r.py, slot: j + k })));
+          await gpu.device.queue.onSubmittedWorkDone();
+        }
+        const hs = await T.pageHeights(gpu, atlas, chunk.map((_, j) => j));
+        chunk.forEach((r, j) => { r.h = hs[j]; });
+        const own = chunk.map((r, j) => ({ r, from: j })).filter(({ r }) => pages.get(r.key) === r);
+        await put(atlas, own.map(({ r, from }) => ({ from, to: r.slot })), SLOTS);
+      };
+      const next = stage.then(run);
+      stage = next.catch(() => {});
+      await next;
     }
   }
   // The window's 16 pages are in slots and made. Returns how many were made.
@@ -109,7 +119,8 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       if (todo.length) {
         const batch = (async () => {
           const ps = T.pageSource(gpu, w.src, w.face, w.x0, w.y0);
-          await makeInto(todo, ps);
+          winBusy++;
+          try { await makeInto(todo, ps); } finally { winBusy--; }
           ps.destroy();
         })();
         batch.catch(() => { for (const r of todo) if (pages.get(r.key) === r) pages.delete(r.key); });
@@ -137,7 +148,8 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
         const px = bx + ix * PAGE, py = by + iy * PAGE;
         list.push({ ix, iy, px, py, key: pageKey(w.face, px, py), inside: px >= 0 && py >= 0 && px + PAGE <= fn && py + PAGE <= fn });
       }
-    const pin = { mine: new Set(list.filter((p) => p.inside).map((p) => p.key)) };
+    // only the window's own 16 are held while the ring is made: a ring page is let go to any window that needs the slot (it is then not in the table, and the pages that are get no copy from a made page that has lost its slot)
+    const pin = { mine: new Set(pagesOf(w).map((p) => p.key)) };
     pins.add(pin);
     try {
       const stamp = ++usedAt, taken = new Set([...pages.values()].map((r) => r.slot)), held = new Set(drawn?.pageList?.map((p) => p.key)), todo = [];
@@ -150,7 +162,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
           if (slot < 0) {
             let old = null;
             for (const r of pages.values()) if (!held.has(r.key) && ![...pins].some((q) => q.mine.has(r.key)) && (!old || r.used < old.used)) old = r;
-            if (!old) throw new Error("pages: every slot is held by a window being made or drawn");
+            if (!old) continue;
             lose(old.key); pages.delete(old.key); slot = old.slot;
           }
           taken.add(slot);
@@ -170,16 +182,16 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       const batch = (async () => {
         for (const { sx, sy, list: recs } of bySrc.values()) {
           const { src } = await gather(w.face, sx, sy), ps = T.pageSource(gpu, src, w.face, sx, sy);
-          await makeInto(recs, ps);
+          await makeInto(recs, ps, true);
           ps.destroy();
         }
       })();
       batch.catch(() => { for (const t of todo) if (pages.get(t.rec.key) === t.rec) pages.delete(t.rec.key); });
       for (const t of todo) t.rec.ready = batch;
-      await Promise.all(list.filter((p) => p.inside).map((p) => p.rec.ready));
-      const table = new Int32Array(n * n).fill(-1);
-      for (const p of list) if (p.inside) table[(n - 1 - p.iy) * n + p.ix] = p.rec.slot;
-      blockKeys = new Set(list.filter((p) => p.inside).map((p) => p.key));
+      await Promise.all(list.filter((p) => p.rec).map((p) => p.rec.ready));
+      const table = new Int32Array(n * n).fill(-1), kept = list.filter((p) => p.inside && p.rec && pages.get(p.key) === p.rec);
+      for (const p of kept) table[(n - 1 - p.iy) * n + p.ix] = p.rec.slot;
+      blockKeys = new Set(kept.map((p) => p.key));
       return { block: { face: w.face, x0: bx, y0: by, n, table } };
     } finally { pins.delete(pin); }
   }
