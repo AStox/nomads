@@ -15,7 +15,7 @@ import { LEVELS } from "./webgpu.js";
 import { crownRatio } from "./atlas.js";
 import { createGround } from "./ground.js";
 import { LADDER, levelOf } from "./ladder.js";
-import { SIZE, TILE_M, crownShare } from "../island.js";
+import { SIZE, TILE_M, CELL, N as WIN_N, crownShare } from "../island.js";
 import { planetCam } from "./planet-cam.js";
 import { canopyHold } from "./canopy.js";
 
@@ -240,8 +240,25 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   let FRM = PLACE && { c: PLACE.c, e: PLACE.e, n: PLACE.n, scale: 1, rot: [1, 0, 0, 1] }, gid = 0, mode = "home", pendingGround = null, asked = null, askedSpec = null, onGround = null, winFadeAt = 0;
   // the window's ladder comes in over half a second from the planet layer under it when it replaces no window (the island, or no ground at all)
   const winFade = () => (winFadeAt ? smooth(0, 1, (performance.now() - winFadeAt) / 500) : 1);
-  const geoOf = (x, z) => geoOfVec([0, 1, 2].map((i) => FRM.c[i] + ((x * FRM.e[i] - z * FRM.n[i]) * FRM.scale) / PR));
-  const planeOf = (g) => { const v = vecOf(g), d = dotv(v, FRM.c); return d > 0.1 ? { x: (PR * dotv(v, FRM.e)) / (d * FRM.scale), z: (-PR * dotv(v, FRM.n)) / (d * FRM.scale) } : null; };
+  // A window's plane is its cell lattice, the frame its sprites stand in (cell (X, Y) of its face's gnomonic grid is plane ((X - x0 - 128) * 75, (y0 + 128 - Y) * 75), x east, z south): a cell is 75 m by its
+  // own east and north arcs, which differ from each other and from a mean `scale` by a tenth and more away from a face's centre, so the place a plane point names on the sphere goes through the lattice
+  // (the grid's own mapping, as worker.js cellQ reads it), never the isotropic tangent plane, which drifts from the sprites by that tenth of the distance from the window's centre. The home island's plane is
+  // true metres about the place (no lattice).
+  const GL = PLACE?.windows ? await import("../globe.js") : null, FN = PR ? Math.round((PR * Math.PI) / (2 * CELL)) : 0, HALF = WIN_N / 2, QUARTER = Math.PI / 2;
+  const cellsOfId = (id) => { const [face, x0, y0] = id.split(":").map(Number); return { face, x0, y0 }; };
+  const geoOf = (x, z) => {
+    const K = FRM.cells;
+    if (!K) return geoOfVec([0, 1, 2].map((i) => FRM.c[i] + ((x * FRM.e[i] - z * FRM.n[i]) * FRM.scale) / PR));
+    return geoOfVec(GL.pointOf(K.face, Math.tan(((K.x0 + HALF + x / CELL) / FN - 0.5) * QUARTER), Math.tan(((K.y0 + HALF - z / CELL) / FN - 0.5) * QUARTER)));
+  };
+  const planeOf = (g) => {
+    const v = vecOf(g), K = FRM.cells;
+    if (!K) { const d = dotv(v, FRM.c); return d > 0.1 ? { x: (PR * dotv(v, FRM.e)) / (d * FRM.scale), z: (-PR * dotv(v, FRM.n)) / (d * FRM.scale) } : null; }
+    const F = GL.FRAMES[K.face], w = dotv(v, F.n);
+    if (w < 0.2) return null;
+    const X = (Math.atan(dotv(v, F.ex) / w) / QUARTER + 0.5) * FN, Y = (Math.atan(dotv(v, F.ey) / w) / QUARTER + 0.5) * FN;
+    return { x: (X - K.x0 - HALF) * CELL, z: (K.y0 + HALF - Y) * CELL };
+  };
   function syncGeo(view) {
     if (!PLACE) return;
     const s = view.synced, g = view.geo;
@@ -274,7 +291,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     gid = m.gid; asked = null;
     if (m.mode === "win" && mode !== "win") winFadeAt = performance.now();
     mode = m.mode;
-    FRM = m.mode === "win" ? { c: m.frame.c, e: m.frame.e, n: m.frame.n, scale: m.frame.scale, rot: m.frame.rot } : HOME;
+    FRM = m.mode === "win" ? { c: m.frame.c, e: m.frame.e, n: m.frame.n, scale: m.frame.scale, rot: m.frame.rot, cells: cellsOfId(m.frame.id) } : HOME;
     if (view.geo) {
       const q = planeOf(view.geo);
       if (q) { view.x = q.x; view.z = q.z; }
