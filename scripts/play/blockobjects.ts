@@ -156,6 +156,14 @@ for (const [elat, elon] of places) {
     if (onlyBlocks || strayed) fail(`the window's ${whole.n} objects and the blocks' ${B.length} inside it differ: ${onlyBlocks} only in the blocks, ${strayed} only in the window off a tile edge`);
     if (turned.length && !turnedObjs) fail("no object stands in a turned block");
     console.log(`${edgeBad > before ? "FAIL" : "ok  "} edge window ${whole.n} objects, blocks ${B.length} inside the window (${turnedObjs} in turned blocks; ${edgeOnly} only the window's, on a tile's south edge), every object in its own cell`);
+    // a cache entry another window's call sweeps while this call awaits (it shows when the tiles' runs are chosen, then is gone when the blocks are made): the block is made anyway
+    {
+      const seeded = new Map((r.recs as { key: string }[]).map((b) => [b.key, b])), seen = new Set<string>(), flaky = { get: (k: string) => (seen.has(k) ? undefined : (seen.add(k), seeded.get(k))), set: (k: string, v: unknown) => seeded.set(k, v) };
+      const again = await wins.makeBlocks(win, flaky as unknown as Map<string, never>).catch((e: Error) => e);
+      if (again instanceof Error) fail(`makeBlocks with a cache that loses entries: ${again.message}`);
+      else if (again.recs.length !== r.recs.length || again.n !== r.n) fail(`makeBlocks with a cache that loses entries: ${again.recs.length} blocks, ${again.n} objects against ${r.recs.length}, ${r.n}`);
+      else console.log(`ok   makeBlocks with a cache that loses entries made all ${again.recs.length} blocks again (${again.fresh.length} fresh, ${again.n} objects)`);
+    }
     if (!turned.length) continue;
     // a turned block is the same bytes whichever window holds it: a window shifted along the edge makes its own, and every turned block both made is equal (record corner and objects)
     const fn = N << TIER, sx = win.x0 + N / 2 + shift >= fn ? -shift : shift, cp = G.pointOf(win.face, Math.tan(((win.x0 + N / 2 + sx) / fn - 0.5) * (Math.PI / 2)), Math.tan(((win.y0 + N / 2) / fn - 0.5) * (Math.PI / 2))), ll = G.latLon(cp);
