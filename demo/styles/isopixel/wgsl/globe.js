@@ -510,16 +510,16 @@ fn lgCan0(p: vec2f) -> f32 {
   return mix(mix(a, b, w.x), mix(c, d, w.x), w.y) / 255.0;
 }
 struct Lit { row: u32, ao: u32, c: u32 }
-// the ground at a place of the window (its cells from the north-west corner) as the shade pass lights it: the palette colour c0 moved along its tone steps by the slope's light
+// the ground at a place of the window (its cells from the north-west corner) as the shade pass lights it: the palette colour c0 moved along its tone steps by the slope's light slopeL (the sun on the
+// ground's normal, the tiers' B-spline or the fine pages' gradient alike)
 // less the sun's shadow, the light's level, and the occlusion of the folds and the canopy (aoMul)
-fn lightFine(cell: vec2f, c0: u32, wet: bool, haveR: bool) -> Lit {
+fn lightFine(slopeL: f32, cell: vec2f, c0: u32, wet: bool, haveR: bool) -> Lit {
   var o: Lit;
   o.c = c0;
   o.ao = 0u;
   let p = cell * ${PAGE_GEOM.grid}.0;
   let flatL = lt[1].w;
-  let g = vec2f(fineGrid(3, cell + gWo), fineGrid(4, cell + gWo)) * lt[2].w;
-  let slope = max(0.0, dot(lt[0].xyz, normalize(vec3f(-g.x, 1.0, -g.y))));
+  let slope = max(0.0, slopeL);
   var sh = 0.0;
   // the window's own shadows and occlusion come in by the zoom (lt[6].y: 0 far out, 1 close), as detail the ground's cells cannot hold fades by scale
   if (haveR && lt[0].w > 0.0) { sh = smoothstep(0.3, 0.7, lgBil(sunT, lt[5].x, p)) * lt[0].w * lt[6].y; }
@@ -721,7 +721,7 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
       }
     } else if (useFine && lt[6].w > 0.5) {
       // the ladder's light on every pixel of the fine pages (the block's, where no window is drawn too, so the window's arrival changes no pixel's light), its shadow, folds and canopy cover only where the window's rasters lie
-      let Lq = lightFine(fcell, idx, S.isWater, lt[6].z > 0.5 && fcell.x > 1.0 && fcell.x < ${PAGE_GEOM.cells - 1}.0 && fcell.y > 1.0 && fcell.y < ${PAGE_GEOM.cells - 1}.0);
+      let Lq = lightFine(slopeFacing, fcell, idx, S.isWater, lt[6].z > 0.5 && fcell.x > 1.0 && fcell.x < ${PAGE_GEOM.cells - 1}.0 && fcell.y > 1.0 && fcell.y < ${PAGE_GEOM.cells - 1}.0);
       idx = Lq.c; litRow = Lq.row * 4u; litAo = Lq.ao; isLit = true;
     } else if (!S.isWater) {
       // the tone of the ladder's shade pass from the sun's light on the slope (its toneK, and flat ground's light as the zero), so the tiers' light and the fine pages' are one; the planet's own tone of a fixed
