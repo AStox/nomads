@@ -1035,6 +1035,14 @@ let planetQ = null, planetRelief = null, reliefAtMs = 0;
 // The relief under a grid of screen points as drawn (heights in drawn metres, -1 off the planet), for the page's picks and zoom anchors (live.js reliefAt): each point's ray meets the sphere raised to the height
 // found at the last place it met, twice, so a click lands on the ground that is drawn and not on the sea-level sphere under it.
 const RELIEF_W = 17, RELIEF_H = 11;
+// The ground's height in metres at a unit point as the planet pass draws it: from the tier the screen shows, blended between the two tiers it is dithering between (planet.js cap is a fraction), never the finest tile
+// held, which depends on the way the place was reached (a place reached zooming out holds finer tiles) and steps as the zoom crosses a level, moving the picture, the camera's lift and the point a wheel zoom holds by tens of px
+// the widest box the lift averages over, where the camera is still a perspective one over a whole planet [design: 100 km]
+const LIFT_REACH_M = 100e3;
+function drawnHeight(P) {
+  const cap = Math.min(5, planetLayer?.level?.() ?? 5), t0 = Math.floor(cap), ft = cap - t0, H = planet.pyramid.heightAt;
+  return Math.max(0, H(planet.G.FRAMES, P, t0) * (1 - ft) + (ft > 0 ? H(planet.G.FRAMES, P, t0 + 1) * ft : 0));
+}
 function reliefGrid(cam, lift, ex) {
   const d = new Float32Array(RELIEF_W * RELIEF_H);
   for (let j = 0; j < RELIEF_H; j++)
@@ -1042,7 +1050,7 @@ function reliefGrid(cam, lift, ex) {
       let h = lift;
       for (let k = 0; k < 2 && h >= 0; k++) {
         const P = cam.pick((i * canvas.width) / (RELIEF_W - 1), (j * canvas.height) / (RELIEF_H - 1), h);
-        h = P ? Math.max(0, planet.pyramid.heightAt(planet.G.FRAMES, P)) * ex : -1;
+        h = P ? drawnHeight(P) * ex : -1;
       }
       d[j * RELIEF_W + i] = h;
     }
@@ -1425,11 +1433,18 @@ function render() {
     // the camera stands above the ground under its target, as drawn (lifted by the relief's exaggeration), never inside it
     // the ladder's metre is a cell's 75 m over its own cells and its heights are true metres, so a parallel camera draws the relief as exag times the window's scale to keep their ratio
     const ex = f.exag * (1 + (f.planet.ortho ?? 0) * ((f.planet.scale ?? 1) - 1)), sx = ex / f.exag;
-    // from the tier the screen shows (planet.js cap), not the finest held: a place reached zooming out holds finer tiles than one reached zooming in, and the lift (the picture's height) must not
-    // carry that history
-    const pyr = Math.max(0, planet.pyramid.heightAt(planet.G.FRAMES, planet.G.fromLatLon((f.planet.lat * Math.PI) / 180, (f.planet.lon * Math.PI) / 180), Math.floor(planetLayer.level?.() ?? 5))) * ex;
-    // where the ladder holds the target on the screen (its camera height, the ground blurred) once the camera is parallel, so a cell is on the screen where its sprites are
-    liftInfo = { pyr, tier: Math.floor(planetLayer.level?.() ?? 5), lo: f.planet.liftOrtho, lm: f.planet.liftM, sx, ex };
+    // from the tier the screen shows (planet.js cap), not the finest held: a place reached zooming out holds finer tiles than one reached zooming in, and the lift (the picture's height) must not carry that history
+    // averaged over the ground a half screen reaches round the target (nine points a quarter of a half screen apart, a box the view's own size): the height of the one point under the target varies by tens of metres over the
+    // kilometres a wheel zoom or a drag moves the target on a slope, and each metre is a tenth of a pixel the picture slides by (the page's solve cannot know it, so a held point drifted); the box moves slowly
+    const P0 = planet.G.fromLatLon((f.planet.lat * Math.PI) / 180, (f.planet.lon * Math.PI) / 180), [E0, N0] = planet.G.eastNorth(P0), reach = Math.min((f.planet.tanH * f.planet.dist) / planetLayer.radiusM, LIFT_REACH_M / planetLayer.radiusM);
+    let hs = 0;
+    for (let a = -1; a <= 1; a++)
+      for (let b = -1; b <= 1; b++) {
+        const v = [0, 1, 2].map((i) => P0[i] + (a * E0[i] + b * N0[i]) * reach * 0.5), l = Math.hypot(v[0], v[1], v[2]);
+        hs += drawnHeight([v[0] / l, v[1] / l, v[2] / l]);
+      }
+    const pyr = (hs / 9) * ex;
+    liftInfo = { pyr, tier: planetLayer.level?.() ?? 5, lo: f.planet.liftOrtho, lm: f.planet.liftM, sx, ex };
     const lift = (planetLift = Math.max(0, pyr + (f.planet.liftOrtho ?? f.planet.ortho ?? 0) * (f.planet.liftM != null ? f.planet.liftM * sx - pyr : 0)));
     const cam = planetCam({ ...f.planet, q, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM, lift });
     if (performance.now() - reliefAtMs > 100) { planetRelief = reliefGrid(cam, lift, ex); reliefAtMs = performance.now(); }

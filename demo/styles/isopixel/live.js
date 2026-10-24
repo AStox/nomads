@@ -442,8 +442,10 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const P = vecOf(geo), sx = canvas.width / 2 + ox, sy = canvas.height / 2 + oy, isTarget = geo.lat === view.geo.lat && geo.lon === view.geo.lon;
     const hA = isTarget ? stats.lift ?? 0 : Number.isFinite(y) ? y * drawnK(view) : planetProject(view, geo)?.h ?? stats.lift ?? 0;
     let g = { ...view.geo };
+    // the camera stands at the lift the worker gave the target (worker.js: the ground's height averaged over a box the view's size, which a move of the target changes slowly)
+    const lift0 = stats.lift ?? 0;
     for (let k = 0; k < 10; k++) {
-      const Q = planetCamOf({ ...view, geo: g }, planetProject(view, g)?.h ?? stats.lift ?? 0).pick(sx, sy, hA);
+      const Q = planetCamOf({ ...view, geo: g }, lift0).pick(sx, sy, hA);
       if (!Q) return null;
       const ax = [Q[1] * P[2] - Q[2] * P[1], Q[2] * P[0] - Q[0] * P[2], Q[0] * P[1] - Q[1] * P[0]], s = Math.hypot(ax[0], ax[1], ax[2]);
       if (s < 1e-12) break;
