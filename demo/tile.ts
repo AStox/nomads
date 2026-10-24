@@ -6,7 +6,7 @@ import { BANKFULL, WOODED, bankDepth, bankWidth } from "../src/terrain/water";
 import { dispatch, pipeline, pipelineSoon, readback, storage } from "../src/gpu/kernel";
 import { run, segments } from "../src/gpu/terrain/scenery";
 import { FINE, RASTER, fineKernel, layoutOf, rasterKernel, tileScenery } from "../src/gpu/wgsl/terrain-scenery";
-import { FINE_LAYER_WORDS, GN, GRID_LAYER_WORDS, GRID_PITCH, GRID_SCRATCH_LAYERS, FINE_OUT_LAYERS, FINE_PITCH, fieldShiftKernel, fineOutKernel, gridFoldKernels, gridHeightKernel, maskOutKernel, PAGE_CELLS, PAGE_FINE_WORDS, PAGE_GRID_WORDS, PAGE_HALO_NODES, PAGE_HALO_VERTS, PAGE_HN, PAGE_MASK_WORDS, PAGE_NG, PAGE_NV, PAGE_PARAMS, PAGE_SCRATCH_LAYER_WORDS, pageFineKernel, pageGridKernels, pageHeightPlaneKernel, pageMaskKernel } from "../src/gpu/wgsl/terrain-window";
+import { FINE_LAYER_WORDS, GN, GRID_LAYER_WORDS, GRID_PITCH, GRID_SCRATCH_LAYERS, FINE_OUT_LAYERS, FINE_PITCH, fieldShiftKernel, fineOutKernel, gridFoldKernels, gridHeightKernel, maskOutKernel, PAGE_CELLS, PAGE_FINE_LAYER_WORDS, PAGE_FINE_PITCH, PAGE_FINE_WORDS, PAGE_GRID_WORDS, PAGE_HALO_NODES, PAGE_HALO_VERTS, PAGE_HN, PAGE_MASK_WORDS, PAGE_NG, PAGE_NV, PAGE_PARAMS, PAGE_SCRATCH_LAYER_WORDS, pageFineKernel, pageGridKernels, pageHeightPlaneKernel, pageMaskKernel } from "../src/gpu/wgsl/terrain-window";
 import { SCATTER_HALO, RIVER_HALO, packTile, scatterTile, warmScatter, type TileSource } from "../src/gpu/globe/scatter";
 import { placeKernels } from "../src/gpu/globe/windowobjects";
 import type { Gpu } from "../src/gpu/device";
@@ -131,12 +131,12 @@ export function pageAtlas(g: Gpu, slots: number): PageAtlas {
 
 // A window as a source of pages: its streams binned, its cells packed and its lattice's field (the window's size, 71 MB), kept between calls so pages asked for at different times from the
 // same window repeat none of it (the CPU's part is 16 ms of the first call). The caller owns it and destroys it when no more of its pages will be asked for.
-export interface PageSource { face: number; x0: number; y0: number; segs: GPUBuffer; bins: GPUBuffer; packed: GPUBuffer; field: GPUBuffer; destroy(): void }
+export interface PageSource { face: number; x0: number; y0: number; rivers: FineRiver[][]; segs: GPUBuffer; bins: GPUBuffer; packed: GPUBuffer; field: GPUBuffer; destroy(): void }
 export function pageSource(g: Gpu, source: TileSource, face: number, x0: number, y0: number): PageSource {
-  const { seg, table } = segments(windowRivers(source)), words = packTile(source, 0, halo, 4);
+  const rivers = windowRivers(source), { seg, table } = segments(rivers), words = packTile(source, 0, halo, 4);
   words.set([x0 * 4 * CELL, y0 * 4 * CELL, face], L.GEO_AT);
   const segs = storage(g, seg), bins = storage(g, table), packed = storage(g, words), field = storage(g, L.FINE_WORDS * 4);
-  return { face, x0, y0, segs, bins, packed, field, destroy: () => { for (const b of [segs, bins, packed, field]) b.destroy(); } };
+  return { face, x0, y0, rivers, segs, bins, packed, field, destroy: () => { for (const b of [segs, bins, packed, field]) b.destroy(); } };
 }
 
 // The pages whose corner cells are (px, py) of the source's face, made into their slots from the source: each page lies within the window's 256 cells. One raster and one fine run over
@@ -178,6 +178,22 @@ export function groundPages(g: Gpu, atlas: PageAtlas, src: PageSource, list: Pag
   dispatch(g, pipeline(g, PAGE_FOLDS, "pageGradient"), [heights, atlas.grid, scratch, pg], [cover, n]);
   for (const b of [pg, scratch, heights]) b.destroy();
   return pages;
+}
+
+// The heights (layer 0 of the fine layers, PAGE_NV rows of PAGE_NV vertices, the rows as the page stores them) of the pages in `slots`, read back once the pages' work is done: for the camera's
+// own heights, which the page makes from them (live.js cameraHeightsOf) and the highest ground.
+export async function pageHeights(g: Gpu, atlas: PageAtlas, slots: number[]): Promise<Float32Array[]> {
+  const layer = PAGE_FINE_LAYER_WORDS * 4, rb = g.device.createBuffer({ size: Math.max(4, slots.length * layer), usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), enc = g.device.createCommandEncoder();
+  slots.forEach((s, k) => enc.copyBufferToBuffer(atlas.fine, s * PAGE_FINE_WORDS * 4, rb, k * layer, layer));
+  g.device.queue.submit([enc.finish()]);
+  await rb.mapAsync(GPUMapMode.READ);
+  const all = new Float32Array(rb.getMappedRange().slice(0)), out = slots.map((_, k) => {
+    const h = new Float32Array(PAGE_NV * PAGE_NV);
+    for (let r = 0; r < PAGE_NV; r++) h.set(all.subarray((k * layer) / 4 + r * PAGE_FINE_PITCH, (k * layer) / 4 + r * PAGE_FINE_PITCH + PAGE_NV), r * PAGE_NV);
+    return h;
+  });
+  rb.unmap(); rb.destroy();
+  return out;
 }
 
 // Where a page's lines meet its neighbours', in the face's axes (x east, y along the lattice's rows) and the stored rows (turned: row 0 is the page's last lattice row): for each side the

@@ -67,7 +67,7 @@ export const hasWebGPU = () => typeof navigator !== "undefined" && !!navigator.g
 
 // sim: { warm (sim days), jev } runs the game's sim in the render worker (play/remote.js connectSim reads it); null
 // draws the island alone. planet: the worker opens the seed's baked planet, if there is one, and the game's ground is its home window.
-export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = null, planet = true, blocks = true } = {}) {
+export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = null, planet = true, blocks = true, pages = true } = {}) {
   if (!hasWebGPU()) throw new Error("this browser does not offer WebGPU", { cause: "nogpu" });
   const TH = await import("./things.js").catch((e) => (console.warn(`things.js not loaded: ${e.message}`), {}));
   const tStart = performance.now();
@@ -102,7 +102,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       else if (m.type === "error") fail(new Error(m.error));
       else onWorker(m);
     };
-    worker.postMessage({ type: "init", seed, canvas: off, sim: simOpts, planet, blocks }, [off]);
+    worker.postMessage({ type: "init", seed, canvas: off, sim: simOpts, planet, blocks, pages }, [off]);
   });
   function onWorker(m) {
     if (m.type.startsWith("sim")) { if (simTo) simTo(m); else simEarly.push(m); }
@@ -306,7 +306,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const mC = SIZE / 2 - PLAY_EDGE_M - ext;
     if (mC < 0) return;
     let want = null;
-    if (arc(HOME.c) < mC + 800) { if (mode !== "home") want = { mode: "home" }; }
+    // with no game on it the play area is the planet's ground like any other (a window), never the island stamp
+    if (simOpts && arc(HOME.c) < mC + 800) { if (mode !== "home") want = { mode: "home" }; }
     else if (mode !== "win" || arc(FRM.c) / FRM.scale > mC - 0.5 * ext - 800) want = { mode: "win", lat: view.geo.lat, lon: view.geo.lon, half, ext };
     // a speculative ask is for the view a zoom is heading to: the worker makes the window ahead of the view that needs it, and keeps it
     if (speculative) {
@@ -733,6 +734,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // the exposure at which a fire's light is all there: a clear sky with the sun FIRE_E degrees down on a midsummer evening
   const FIRE_AT = (() => { let lo = NOON, hi = NOON + 12; for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (lightOf(m, REF_DAY, 0, true).e > FIRE_E) lo = m; else hi = m; } const l = lightOf(lo, REF_DAY, 0, true); return exposure(lo, REF_DAY, l, l); })();
   let cloud = 0, cloudAt = 0, sky = null, homeSky = null, tablesId = "";
+  // the clock when no game runs (the world alone): a fixed hour the page sets (setClock), day 1 of the year's start
+  const worldClock = { hour: 13, day: 1 };
   // The sky of a frame: its light; gain, display per unit of light by channel; dim, how far the dark has drained colour;
   // night, how dark the evening has grown for the fires; fire, how much of a fire's light shows; cast for the GPU, null
   // while nothing casts; flat, relief and toneK for the GPU's shading (the relief softer by night, as eyes see less of
@@ -888,7 +891,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     if (sim) simRef = sim;
     // the GPU's canvas belongs to the worker once transferred: its size goes there, and is kept here only to compare
     if (glSize[0] !== canvas.width || glSize[1] !== canvas.height) { worker.postMessage({ type: "resize", W: canvas.width, H: canvas.height }); glSize = [canvas.width, canvas.height]; }
-    const clock = sim?.clock?.() ?? { hour: 8, day: 1 };
+    const clock = sim?.clock?.() ?? worldClock;
     // the ground's colour follows the season
     season = clock.season ?? season;
     if (pendingGround) { const f = fieldsSlice(pendingGround); if (f) { applyGroundMsg(pendingGround, view, f); pendingGround = null; } }
@@ -911,7 +914,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     worker.postMessage(msg, msg.lut ? [msg.lut.buffer] : []);
     const ready = objectsReady || !simOpts;
     const holes = !ready || !!lost;
-    if (show && ready && !shownGL) { glc.style.visibility = "visible"; shownGL = true; }
+    if (show && ready && !shownGL && (simOpts || !HAS_WIN || mode === "win" || (stats.ladderAlpha ?? 0) < 0.01)) { glc.style.visibility = "visible"; shownGL = true; }
     stats.slots = pl.parts.length;
     const ms = performance.now() - t0;
     stats.composeMs = stats.composeMs ? stats.composeMs * 0.9 + ms * 0.1 : ms;
@@ -1127,6 +1130,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the page heard it was done), passes (each pass's GPU ms) }
     frameTimes: () => frameMs.splice(0),
     frame, pick, where, stats, lastMs: 0, lastHoles: true, level: null, lastParts: [],
+    // the hour (and day) the world is lit at when no game runs
+    setClock: (c) => Object.assign(worldClock, c),
     // the sim's side of the worker (play/remote.js): send it a message, and take what it posts of the sim
     post: (m) => worker.postMessage(m),
     onSim: (fn) => { simTo = fn; for (const m of simEarly.splice(0)) fn(m); },

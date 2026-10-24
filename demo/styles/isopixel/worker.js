@@ -3,7 +3,7 @@
 // buffers with the atlas of their sprites, and draws each frame the page asks for (webgpu.js). The page (live.js) keeps
 // the camera, the sky and the UI; it sends what moves (the view, the light, the people, animals, fires and overlays),
 // asks for each tick, and gets the sim's state after it (play/remote.js).
-import { generateIsland, fineGroundGpu, rng, crownShare, SIZE, START, STEP, TILE_M, TILES, CELL } from "../island.js";
+import { crownShare, SIZE, START, STEP, TILE_M, TILES, CELL } from "../island.js";
 import * as PAL from "./pal.js";
 import { P, NCOL, HAZE, GLOW, TONE, TONE_S } from "./pal.js";
 import { createPlanet } from "./planet.js";
@@ -81,12 +81,13 @@ async function init(m) {
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: "opaque" });
   say("growing the island", 0, 1);
-  const simB = m.sim ? await import("../sim.js") : null, simC = m.sim ? await import("../play/sim.js") : null;
+  // the sim's bundle holds the objects' kinds and species whatever runs, so the world is drawn with or without a game on it (startWorld)
+  const simB = await import("../sim.js"), simC = m.sim ? await import("../play/sim.js") : null;
   const gpu = { device, adapter: gpuName };
-  if (simB) simB.useGpu(gpu);
+  if (m.sim) simB.useGpu(gpu);
   planet = m.planet ? await openPlanet(m.seed, device) : null;
   blocksOn = m.blocks !== false;
-  const ground = await closeGround(simB, m.seed, gpu, planet);
+  const ground = await closeGround(m.sim ? simB : null, m.seed, gpu, planet);
   const { isle, fine: g } = ground;
   const t1 = performance.now();
   say("laying out the ground", 0, 1);
@@ -94,6 +95,7 @@ async function init(m) {
   const t2 = performance.now();
   // the world takes up residence on the GPU while the shaders build; it draws once the renderer is ready
   if (m.sim) startSim(simB, simC.createSim, m.seed, m.sim).catch((err) => post({ type: "simError", error: String((err && err.stack) || err) }));
+  else startWorld(simB).catch((err) => post({ type: "error", error: String((err && err.stack) || err) }));
   say("building the shaders", 0, 1);
   R = await createRenderer({
     device, context, format, timing, ground: pack,
@@ -103,10 +105,10 @@ async function init(m) {
   let peak = 0;
   for (const h of isle.height) peak = Math.max(peak, h);
   home = { pack, fields: { peak, h: g.h, height: isle.height, water: isle.water } };
-  if (planet?.T && simB) {
+  if (planet?.T) {
     // the most objects a window's body holds: 28 bytes a slot must fit the device's storage binding, and at most 8.4 million [design: 235 MB]
     const room = Math.min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize) / 28;
-    planet.wins = createWindows({ G: planet.G, T: planet.T, gpu, base: planet.base, tier: planet.manifest.tiers - 1, seed: m.seed, radiusM: planet.radiusM, quick: isle.quick, top: Math.min(1 << 23, 2 ** Math.floor(Math.log2(room))) });
+    planet.wins = createWindows({ G: planet.G, T: planet.T, gpu, base: planet.base, tier: planet.manifest.tiers - 1, seed: m.seed, radiusM: planet.radiusM, quick: isle.quick, paged: m.pages !== false, top: Math.min(1 << 23, 2 ** Math.floor(Math.log2(room))) });
     // the window source's passes for each size its body comes in, compiled now on the GPU process's own threads (a first window then does not wait on them)
     for (const cap of [1 << 23, 1 << 22, 1 << 21, 1 << 20].filter((c) => c <= Math.min(1 << 23, 2 ** Math.floor(Math.log2(room))))) void R.warmSpec("win", winSpec(cap)).catch((err) => console.warn("warm window passes", err));
     for (const cap of BLOCK_CAPS) void R.warmSpec("block", blockSpec(cap)).catch((err) => console.warn("warm block passes", err));
@@ -167,7 +169,7 @@ async function setupObjects(sim, w) {
   spritesP = makeAll(jobs).then((made) => { mark("sprites"); return made; });
   S.ms = { sources: t1 - t0, survey: performance.now() - t1 };
 }
-const sources = () => (S.win ? (S.win.blocks ?? S.winParts ?? [S.win]) : [S.plant, ...(S.statics.cap ? [S.statics] : []), S.extras, ...(S.animals ? [S.animals] : []), ...(S.dead ?? [])]);
+const sources = () => (S.win ? (S.win.blocks ?? S.winParts ?? [S.win]) : S.plant ? [S.plant, ...(S.statics.cap ? [S.statics] : []), S.extras, ...(S.animals ? [S.animals] : []), ...(S.dead ?? [])] : []);
 
 // The generator's objects that aren't stems (src/gpu/flora.ts: static dormant), counted into the spatial index's cells
 // and laid out cell by cell in entry order, fields as the store holds a piece's: x, y (mm), what, size (f32 bits),
@@ -651,7 +653,7 @@ function refreshSprites() {
 let canopyAt = 0, canopyLandings = -1;
 function canopyOften() {
   const now = performance.now();
-  if (!S || (!S.dirty && canopyLandings === S.flora.landings) || now - canopyAt < 1000) return;
+  if (!S?.flora || (!S.dirty && canopyLandings === S.flora.landings) || now - canopyAt < 1000) return;
   S.dirty = false; canopyLandings = S.flora.landings; canopyAt = now;
   R.buildCanopy();
 }
@@ -775,6 +777,19 @@ async function startSim(bundle, createSim, seed, { warm = 0, jev = null }) {
   S.spriteLandings = S.flora.landings; S.newLooks = false; S.spritesAt = performance.now();
   refreshSprites();
 }
+// The world with no game on it (the page's default): the planet's own ground and what grew on it, drawn through the windows (groundwin.js), no people, no animals, no sim to warm. The objects are the windows'
+// blocks alone; the atlas starts empty and the sprites are made as the blocks show their families (surveyWindow, refreshSprites), as the sim's stems' new sizes are made while the page runs.
+async function startWorld(bundle) {
+  await rendererIn.promise;
+  level = await levelsIn.promise; B = bundle; FLORA_N = bundle.FLORA;
+  S = { flora: null, w: null, plant: null, statics: { cap: 0 }, extras: null, hidden: new Set(), hiddenSlots: new Map() };
+  looks = new Looks(bundle.FLORA, bundle.SPECIES, level, crownShare);
+  R.setMeta(looks.meta());
+  growTable();
+  const atlas = packAtlas([]);
+  mark("objects");
+  post({ type: "objects", n: 0, plants: 0, statics: 0, records: 0, sprites: atlas.sprites, layers: atlas.layers, families: looks.n, timeline, ms: {} });
+}
 // The ticks the page says are due (n), one after another while the frame's sim budget lasts (the warm's while it warms;
 // at least one), each awaited and each in its own task (napkin: ticks run back to back in one task leave every agent
 // thinking), their changes onto the GPU; then the state after them to the page once, with how many ran and what changed
@@ -843,8 +858,8 @@ function aboutOf(sel) {
 // the id of the thing an object's pick names (wgsl/objects.js PICK_SLOT, EXTRA_PICK), or null; one of another kind's
 // (KIND_PICK) needs its slot's generation from the GPU, so its id comes by kindId
 function idOfPick(p) {
-  if (p & PICK_SLOT) { const e = S.flora.entry(p & (PICK_SLOT - 1)); return e ? `t${e}` : null; }
-  if (p & EXTRA_PICK) return S.extras.ids[p & (EXTRA_PICK - 1)] ?? null;
+  if (p & PICK_SLOT) { const e = S.flora?.entry(p & (PICK_SLOT - 1)); return e ? `t${e}` : null; }
+  if (p & EXTRA_PICK) return S.extras?.ids[p & (EXTRA_PICK - 1)] ?? null;
   if (p & KIND_PICK) return null;
   return p ? `t${p}` : null;
 }
@@ -897,7 +912,7 @@ async function check(m) {
 // a thing's place as its buffer holds it (world metres) and whether its slot is alive, read back from the GPU
 async function whereOf(id) {
   const e = /^t\d+$/.test(id) ? +id.slice(1) : 0;
-  if (!e || e > S.flora.n) return null;
+  if (!e || !S.flora || e > S.flora.n) return null;
   let src, slot;
   if (S.flora.isPlant(e)) { src = S.plant; slot = S.flora.slot(e); } else { src = S.statics; slot = staticSlot(e); }
   if (slot < 0) return null;
@@ -999,14 +1014,12 @@ const winNear = (want) => {
 };
 function destroyWindow(w) {
   w.dead = true;
-  const pk = w.pack;
-  pk.fine.gpu.destroy(); pk.grid.gpu.destroy(); pk.river.gpu.destroy();
-  w.field?.field.destroy();
+  // a paged window's ground is its pages, which the page cache lets go of when it needs the slots (groundwin.js ensurePages); one made whole (?pages=0) holds its own buffers
+  if (!w.paged) { w.pack.fine.gpu.destroy(); w.pack.grid.gpu.destroy(); w.pack.river.gpu.destroy(); }
   if (w.blockRecs) { w.blockRecs = null; queueMicrotask(sweepBlocks); }
   if (w.objectsValue) { w.objectsValue.body.destroy(); w.objectsValue.start.destroy(); }
 }
 function keepWindow(w) {
-  w.pack.keep = true;
   winCache.push(w);
   while (winCache.length > WIN_KEEP) {
     const i = winCache.findIndex((x) => x !== curWin && x !== prepared?.win);
@@ -1037,15 +1050,16 @@ async function groundWant(m) {
       if (w && !spec && (w === curWin || w === prepared?.win)) { if (w === curWin) refocus(w, want); continue; }
       const fresh = !w;
       if (!w) {
-        w = await planet.wins.build(want.lat, want.lon, curWin ?? winCache[winCache.length - 1] ?? null);
+        w = await planet.wins.build(want.lat, want.lon);
         keepWindow(w);
+        console.info("[win]", w.id, "pages made", w.stats.made, "ms", JSON.stringify(Object.fromEntries(Object.entries(w.stats.ms).map(([k, v]) => [k, Math.round(v)]))), "t", Math.round(performance.now()));
       }
       // a window made now has its objects made too, and its ground is shown once the blocks the view can touch are made (one level of detail across the screen, plan R6: until then the screen stays as it was)
       const near = fresh ? startObjects(w, viewCells(w, want)) : null;
       if (!spec) {
         if (near) await near;
         prepared = { gid: ++gids, mode: "win", win: w };
-        post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon }, fields: w.fields, stats: { ...w.stats, id: w.id, objects: w.objectsValue?.n ?? null, share: w.objectsValue?.share ?? null } });
+        post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon }, fields: w.fields, stats: { ...w.stats, id: w.id, objects: w.blockRecs ? w.blockRecs.reduce((n, b) => n + b.n, 0) : w.objectsValue?.n ?? null, share: w.blockK0 !== undefined ? 2 ** -w.blockK0 : w.objectsValue?.share ?? null } });
       }
     }
   } catch (err) {
@@ -1096,14 +1110,20 @@ async function applyGround(p) {
       const w = p.win, o = w.objectsValue ?? emptyBody();
       S.win = w.blockRecs ? { name: "win", blocks: blockSources(w) } : { name: "win", cap: o.cap, body: o.body, start: o.start, spec: winSpec(o.cap) };
       curWin = w;
+      planet.wins.setDrawn(w);
       await R.setSources(sources());
-      R.setGround(w.pack);
+      // the window's pages (made again if the cache let one go) into the painter's page textures, only those it does not already hold, and the table turned on for the whole screen
+      if (w.paged) {
+        const set = await planet.wins.pageSet(w), r = R.setGroundPages({ ...w.pack, atlas: planet.wins.atlas, pages: set, top: w.pack.grid.top });
+        if (!r.on) throw new Error(`the window's pages are not all there: ${JSON.stringify(r.missing)}`);
+      } else { w.pack.keep = true; R.setGround(w.pack); }
       R.setIce(new Uint8Array(TILES * TILES));
     } else {
       S.win = null; curWin = null;
+      planet.wins.setDrawn(null);
       await R.setSources(sources());
       R.setGround(home.pack);
-      R.setIce(iceOf(sim.w.ice));
+      if (sim) R.setIce(iceOf(sim.w.ice));
     }
     R.buildCanopy();
     R.farBuild(farLevels());

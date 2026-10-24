@@ -19,7 +19,7 @@ const num = (k, def, lo = -Infinity, hi = Infinity) => {
 // slept once and every daily law has run once before the world is live; the week it was before ticks were seconds took
 // about 9 minutes on the dev machine (real-time tick plan, Unit 11 outcome); at most 140 days, about the 40,000 ticks of
 // 300 s it has always been held to]
-const seed = Math.trunc(num("seed", 1)), warm = num("warm", 1, 0, 140), withSim = Q.get("sim") !== "0";
+const seed = Math.trunc(num("seed", 1)), warm = num("warm", 1, 0, 140), withSim = Q.get("sim") === "1"; // the world alone by default (plan: the operator's scope, 2026-10-23); ?sim=1 runs the game on it
 // ?planet=0: the island the generator made instead of the seed's planet (for the renderer's own checks, which stand on it)
 const planet = Q.get("planet") !== "0";
 // ?bench=zoom, or several in turn on one load (?bench=zoom,orbit,turn,pan), each from the view the first began at
@@ -63,11 +63,11 @@ async function main() {
   const jev = jevQ === "off" ? null : localStorage.getItem("nomads-jev");
   // the token is kept, not shown: a copied link doesn't carry it
   if (jevQ) { Q.delete("jev"); history.replaceState(null, "", `${location.pathname}${Q.size ? `?${Q}` : ""}`); }
-  const live = await createLive({ seed, canvas, planet, blocks: Q.get("blocks") !== "0", sim: withSim ? { warm, jev } : null, onProgress: (d, n, what) => { step = [what, 0.5 * (what === "drawing the sprites" ? 1 : 0) + (0.5 * d) / n]; say(); } });
+  const live = await createLive({ seed, canvas, planet, blocks: Q.get("blocks") !== "0", pages: Q.get("pages") !== "0", sim: withSim ? { warm, jev } : null, onProgress: (d, n, what) => { step = [what, 0.5 * (what === "drawing the sprites" ? 1 : 0) + (0.5 * d) / n]; say(); } });
   const sim = withSim ? await connectSim(live) : null;
   // ?hour= pins the hour the island is drawn at, its light and sun, while the sim runs on; ?speed= starts it faster, in
   // sim seconds a wall second (600 the usual pace, 19200 runs a day in about four and a half seconds), for timelapses
-  if (sim) { sim.hour = num("hour", null, 0, 24); sim.speed = num("speed", PACE, PACE / 4, 32 * PACE); }
+  if (sim) { sim.hour = num("hour", null, 0, 24); sim.speed = num("speed", PACE, PACE / 4, 32 * PACE); } else live.setClock({ hour: num("hour", 13, 0, 24) });
   const ready = performance.now() - t0;
   // ?zoom= takes a name, the old 0..3 index, or a number of zoom steps; ?bearing= one of the 8 whole bearings
   const zq = Q.get("zoom"), names = ["island", "region", "valley", "close"];
