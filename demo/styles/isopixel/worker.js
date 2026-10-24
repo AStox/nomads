@@ -1300,7 +1300,7 @@ function render() {
     blockFollow(cam);
     // the page ground the ladder reads, for the planet pass's finest tier (planet.js, the window's face and corner cells are the pages' frame), with the ladder's own season, frame and relief so water, grass and slope light match it
     const pg = R.pageGround(), pages = curWin && pg.on ? { ...pg, face: curWin.face, x0: curWin.x0, y0: curWin.y0 } : pg.block ? { ...pg, on: false } : null, v0 = views[0]?.U;
-    planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, spr: v0?.spr, canopy: f.planet.canopy, ortho: f.planet.ortho, sun: f.planet.sun, moon: f.planet.moon, moonMix: f.planet.moonMix, amb: f.planet.amb, exag: ex, riverCut: f.planet.riverCut, season: v0?.season, frame: v0?.frame, relief: f.relief, pages, light: f.planet.light, lightFade: f.planet.lightFade, lightGround: pages ? R.lightGround() : null, streams: pages ? R.streamGround() : null });
+    planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, spr: f.planet.spr ?? v0?.spr, canopy: f.planet.canopy, ortho: f.planet.ortho, sun: f.planet.sun, moon: f.planet.moon, moonMix: f.planet.moonMix, amb: f.planet.amb, exag: ex, riverCut: f.planet.riverCut, season: v0?.season, frame: v0?.frame, relief: f.relief, pages, light: f.planet.light, lightFade: f.planet.lightFade, lightGround: pages ? R.lightGround() : null, streams: pages ? R.streamGround() : null });
   });
   noteLevel(f.cam);
   R.frame({ ...f, views, under });
