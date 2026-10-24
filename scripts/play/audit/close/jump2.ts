@@ -1,0 +1,5 @@
+import { sharp, shiftSearch, OUT } from "./lib.ts";
+const [tag, place, za, zb] = process.argv.slice(2), k = 2 ** (+zb - +za);
+const prep = async (f: string, scale: number) => { const W = Math.round(1600 * scale), H = Math.round(1000 * scale); const b = await sharp(f).removeAlpha().greyscale().resize(W, H).extract({ left: Math.round((W - 1600) / 2), top: Math.round((H - 1000) / 2), width: 1600, height: 1000 }).blur(6).raw().toBuffer(); const o = new Float32Array(b.length); for (let i = 0; i < o.length; i++) o[i] = b[i]; return { d: o, w: 1600, h: 1000 }; };
+const A = await prep(`${OUT}/${tag}-${place}-${za}.png`, k), B = await prep(`${OUT}/${tag}-${place}-${zb}.png`, 1);
+for (const [x0, y0] of [[700, 430], [700, 560], [200, 430], [1200, 430], [700, 150], [700, 750], [200, 150], [1200, 750]]) { const s = shiftSearch(A, B, x0, y0, 220, 120, 260, undefined, 4); console.log(`block centre (${x0 + 110},${y0 + 60}) offset from screen centre (${x0 + 110 - 800},${y0 + 60 - 500}): feature moved (${s.best[0]},${s.best[1]}) cost ${s.cost}/${s.zero}`); }
