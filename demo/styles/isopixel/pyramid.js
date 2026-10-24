@@ -74,6 +74,8 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
   const tableB = device.createBuffer({ size: Math.max(16, table.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, label: "pyramid table" });
   const free = Array.from({ length: slots }, (_, i) => slots - 1 - i), slotOf = new Map(), held = new Array(slots).fill(null);
   const lastWant = new Map(), flying = new Set(), absent = new Set(), host = new Map(), edges = new Map(), whole = new Map(), stats = { fetched: 0, bytes: 0, evicted: 0 };
+  // the highest cell of each held tile, in metres (its height plane's greatest word times the step): what a view's ray march need not climb past (maxOver)
+  const tileTop = new Map();
   // a held tile whose neighbour arrived has its halo written again once a frame, not at the arrival (up to eight tiles a time were each a full height tile and a ring); retryAt: a tile that failed to
   // load (not a 404) is asked again after a pause; stash: tiles that arrived with no slot to take, put when one is free
   const dirty = new Set(), retryAt = new Map(), stash = new Map(), ringBuf = new Uint32Array(FHS * FHS * 4);
@@ -157,9 +159,10 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
       let worst = -1, at = -1;
       for (let s = 0; s < slots; s++) if (held[s] != null && held[s] >= tierOffset(1) && (lastWant.get(held[s]) ?? -1) < frameNo - 2 && (worst < 0 || (lastWant.get(held[s]) ?? -1) < worst)) { worst = lastWant.get(held[s]) ?? -1; at = s; }
       if (at < 0) return false;
-      table[held[at]] = NONE; host.delete(held[at]); edges.delete(held[at]); slotOf.delete(held[at]); slot = at; stats.evicted++;
+      table[held[at]] = NONE; host.delete(held[at]); tileTop.delete(held[at]); edges.delete(held[at]); slotOf.delete(held[at]); slot = at; stats.evicted++;
     }
     host.set(i, planes.height);
+    { let top = -32768; const H = planes.height; for (let c = 0; c < H.length; c++) if (H[c] > top) top = H[c]; tileTop.set(i, top * hStep); }
     if (t === 0) whole.set(f, planes);
     held[slot] = i; slotOf.set(i, slot); table[i] = slot; tableDirty = true;
     const words = packFields(planes);
@@ -206,6 +209,19 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
 
   return {
     fieldsT, heightsT, tableB, tiers, stats, get version() { return version; }, held: () => slotOf.size, flying: () => flying.size,
+    // The highest cell, in metres, of the held tiles among `list` ([{ t, f, tx, ty }], as want takes them), and how many of them are not held, and the highest of each tier's (byTier[t]): { top, missing, byTier }. A held tile's cells are the values the
+    // planet pass reads there (a coarse tier's are its children's means, so its top is under what its children hold: a bound for a view is taken over the tiles the view reads, at the tiers it reads
+    // them, and the caller adds the margin the spline's reach across a tile's edge needs). top is -Infinity when none is held.
+    maxOver(list) {
+      let top = -Infinity, missing = 0;
+      const byTier = new Array(tiers).fill(-Infinity);
+      for (const w of list) {
+        const v = tileTop.get(tileIndex(w.t, w.f, w.tx, w.ty));
+        if (v === undefined) missing++;
+        else { if (v > top) top = v; if (v > byTier[w.t]) byTier[w.t] = v; }
+      }
+      return { top, missing, byTier };
+    },
     // whether a tile is held, or never will be (its face is not baked, or its file is not there): what the view's finest level waits on (planet.js readyLevel)
     ready(t, f, tx, ty) { const i = tileIndex(t, f, tx, ty); return slotOf.has(i) || absent.has(i) || !faces.includes(f); },
     // the tile of tier 0 as planes, for choosing a place (held while the planet is)

@@ -36,7 +36,7 @@ const SUN_MOVE = 0.004, SUN_STRIPES = 12;
 // how far from each cell of the island's heights the ground's folds are looked over for the sky they hide (meters)
 const TER_REACH = 450;
 // the most objects one view draws, their shadow rows, and tiles under a view
-const MAX_INST = 1 << 21, MAX_ROWS = 1 << 22, MAX_TILES = 1 << 20;
+const MAX_INST = 1 << 21, MAX_ROWS = 1 << 22, MAX_TILES = 1 << 21;
 // the most live sprites, their shadow rows, overlay primitives and fires a frame sends
 const MAX_LIVE = 1 << 14, MAX_LIVE_ROWS = 1 << 16, MAX_PRIMS = 1 << 16, MAX_FIRES = 64;
 
@@ -1868,6 +1868,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // vertices and the picture came out differently at every load. Such a view is cut down round its middle to what the buffer holds, never past it.
   function fitTiles(v) {
     const U = v.U;
+    stats.tilesMax = Math.max(stats.tilesMax ?? 0, U.ni * U.nj);
     if (U.ni * U.nj <= MAX_TILES && (U.ni + 1) * (U.nj + 1) <= MAX_TILES + 4096) return v;
     const k = Math.sqrt((MAX_TILES * 0.97) / (U.ni * U.nj)), ni = Math.max(3, Math.floor(U.ni * k)), nj = Math.max(3, Math.floor(U.nj * k));
     stats.tilesCut = (stats.tilesCut ?? 0) + 1;

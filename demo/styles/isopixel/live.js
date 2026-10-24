@@ -108,7 +108,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   function onWorker(m) {
     if (m.type.startsWith("sim")) { if (simTo) simTo(m); else simEarly.push(m); }
     else if (m.type === "frameDone") {
-      lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts; stats.tiles = m.tiles; stats.lift = m.lift; stats.q = m.q; stats.relief = m.relief; stats.applyMs = m.applyMs;
+      lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts; stats.tiles = m.tiles; stats.lift = m.lift; stats.q = m.q; stats.relief = m.relief; stats.tilesMax = m.tilesMax; stats.tilesCut = m.tilesCut; stats.applyMs = m.applyMs;
       // settled: the worker's word that what it drew has what the view asked of the planet (or, until it says so, that its tiles are held and none is in flight)
       quietDone = (m.settled ?? (m.tiles ? m.tiles.held > 0 && m.tiles.flying === 0 : true)) ? quietDone + 1 : 0;
       if (m.fronts !== undefined) fronts = new Set(m.fronts ? m.fronts.split(",") : []);
