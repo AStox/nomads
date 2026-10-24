@@ -21,7 +21,8 @@
 // drawn turned to the bearing shown, so the island turns as a solid thing with its sprites upright.
 
 import { GROUND_BINDINGS, groundWGSL } from "./ground.wgsl.js";
-import { NS, ATLAS, META_WORDS, M_WRAP } from "./atlas.js";
+import { NS, ATLAS, META_WORDS, M_WRAP, M_PAGES } from "./atlas.js";
+import { PAGE_LAYERS, PAGE_MAX_SLOTS, PAGE_ROW, PAGE_SLOTS, PAGE_TEX, PAGE_WORDS } from "./pages.js";
 import { CELLS_N, CELL_M, CELLS, FAR_LVL, objectWGSL, sourceWGSL, cullWGSL, cacheFillWGSL, CLAMP_WGSL, NEEDS_WGSL, FAR_COUNT_WGSL, FAR_FILE_WGSL, farScanWGSL, frontScanWGSL, cellsOf, CANOPY_WGSL, CANOPY_BYTES_WGSL, CANOPY_WIDE_WGSL, CANOPY_TALL_WGSL } from "./wgsl/objects.js";
 
 // steps of the key light in the light table, each at the fire's four levels, the palette as drawn in a last row
@@ -645,6 +646,7 @@ fn gridBil(layer: i32, p: vec2f) -> f32 {
   let i = vec2i(floor(f));
   let i1 = min(i + 1, vec2i(i32(n)));
   let t = f - floor(f);
+  if (layer < 5 && pgOn()) { let q = pgGridQ(gGrid, layer, i); return mix(mix(q.x, q.y, t.x), mix(q.z, q.w, t.x), t.y); }
   let a = textureLoad(gGrid, g_wr(i, 2u, g_WN), layer, 0).r;
   let b = textureLoad(gGrid, g_wr(vec2i(i1.x, i.y), 2u, g_WN), layer, 0).r;
   let c = textureLoad(gGrid, g_wr(vec2i(i.x, i1.y), 2u, g_WN), layer, 0).r;
@@ -803,12 +805,17 @@ fn shadeFS(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 // the ray stands above T.top, the island's highest drawn ground and 3.5 m more: past there every step's rise is under
 // the -3 m below which the edge's softening gives none, so the map is what the whole march gives, to the bit.
 const TRACE_WGSL = `
+fn hAt(i: vec2i) -> f32 {
+  if (pgOn()) { return pgGridAt(gGrid, 0, i); }
+  return textureLoad(gGrid, g_wr(i, 2u, g_WN), 0, 0).r;
+}
 fn hBil(p: vec2f) -> f32 {
   let n = f32(T.n) - 1.0;
   let f = clamp(p, vec2f(0.0), vec2f(n));
   let i = vec2i(floor(f));
   let i1 = min(i + 1, vec2i(i32(n)));
   let t = f - floor(f);
+  if (pgOn()) { let q = pgGridQ(gGrid, 0, i); return mix(mix(q.x, q.y, t.x), mix(q.z, q.w, t.x), t.y); }
   let a = textureLoad(gGrid, g_wr(i, 2u, g_WN), 0, 0).r;
   let b = textureLoad(gGrid, g_wr(vec2i(i1.x, i.y), 2u, g_WN), 0, 0).r;
   let c = textureLoad(gGrid, g_wr(vec2i(i.x, i1.y), 2u, g_WN), 0, 0).r;
@@ -820,7 +827,7 @@ fn sunMain(@builtin(global_invocation_id) id: vec3u) {
   let y = id.y + T.row0;
   if (id.x >= T.n || y >= T.n) { return; }
   let p = vec2f(f32(id.x), f32(y));
-  let h0 = textureLoad(gGrid, g_wr(vec2i(p), 2u, g_WN), 0, 0).r * T.exag;
+  let h0 = hAt(vec2i(p)) * T.exag;
   let dir = vec2f(T.dx, T.dz);
   var ex = -1e9;
   for (var d = T.step; d < 2400.0; d *= 1.09) {
@@ -836,7 +843,7 @@ fn sinAt(t: f32) -> f32 { return t * inverseSqrt(1.0 + t * t); }
 fn foldMain(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= T.n || id.y >= T.n) { return; }
   let p = vec2f(f32(id.x), f32(id.y));
-  let h0 = textureLoad(gGrid, g_wr(vec2i(p), 2u, g_WN), 0, 0).r * T.exag;
+  let h0 = hAt(vec2i(p)) * T.exag;
   let g = vec2f(hBil(p + vec2f(2.0, 0.0)) - hBil(p - vec2f(2.0, 0.0)), hBil(p + vec2f(0.0, 2.0)) - hBil(p - vec2f(0.0, 2.0))) * T.exag / (4.0 * T.step);
   var occ = 0.0;
   for (var i = 0; i < 12; i++) {
@@ -951,25 +958,29 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   const upload = (t, data, w, h, bpp, layer = 0) => device.queue.writeTexture({ texture: t, origin: [0, 0, layer] }, data, { bytesPerRow: w * bpp, rowsPerImage: h }, [w, h, 1]);
   // the ground's fields
   const gp = ground;
-  const fineT = tex({ size: [gp.fine.size, gp.fine.size, gp.fine.layers], format: "r32float", label: "fine" });
-  for (let l = 0; l < gp.fine.layers; l++) upload(fineT, gp.fine.data.subarray(l * gp.fine.size ** 2, (l + 1) * gp.fine.size ** 2), gp.fine.size, gp.fine.size, 4, l);
-  const isleT = tex({ size: [gp.isle.size, gp.isle.size, gp.isle.layers], format: "r32float", label: "isle" });
-  for (let l = 0; l < gp.isle.layers; l++) upload(isleT, gp.isle.data.subarray(l * gp.isle.size ** 2, (l + 1) * gp.isle.size ** 2), gp.isle.size, gp.isle.size, 4, l);
-  const GN = gp.grid.size, gridT = device.createTexture({ size: [GN, GN, 8], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC, label: "grid" });
-  for (let l = 0; l < 3; l++) upload(gridT, gp.grid.data.subarray(l * GN * GN, (l + 1) * GN * GN), GN, GN, 4, l);
-  const RMN = Math.round(Math.sqrt(gp.river.length)), riverT = tex({ size: [RMN, RMN], format: "r8uint", label: "river" });
-  upload(riverT, gp.river, RMN, RMN, 1);
+  const fineW = tex({ size: [gp.fine.size, gp.fine.size, gp.fine.layers], format: "r32float", label: "fine" });
+  for (let l = 0; l < gp.fine.layers; l++) upload(fineW, gp.fine.data.subarray(l * gp.fine.size ** 2, (l + 1) * gp.fine.size ** 2), gp.fine.size, gp.fine.size, 4, l);
+  const isleW = tex({ size: [gp.isle.size, gp.isle.size, gp.isle.layers], format: "r32float", label: "isle" });
+  for (let l = 0; l < gp.isle.layers; l++) upload(isleW, gp.isle.data.subarray(l * gp.isle.size ** 2, (l + 1) * gp.isle.size ** 2), gp.isle.size, gp.isle.size, 4, l);
+  const GN = gp.grid.size, gridW = device.createTexture({ size: [GN, GN, 8], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC, label: "grid" });
+  for (let l = 0; l < 3; l++) upload(gridW, gp.grid.data.subarray(l * GN * GN, (l + 1) * GN * GN), GN, GN, 4, l);
+  const RMN = Math.round(Math.sqrt(gp.river.length)), riverW = tex({ size: [RMN, RMN], format: "r8uint", label: "river" });
+  upload(riverW, gp.river, RMN, RMN, 1);
+  // the textures the painter reads: the window's (above), or the pages' atlas (setGroundPages)
+  let fineT = fineW, isleT = isleW, gridT = gridW, riverT = riverW;
   const TN = pal.TRAIL_N, trailT = tex({ size: [TN, TN], format: "r8uint", label: "trails" });
   const iceT = tex({ size: [pal.TILES, pal.TILES], format: "r8uint", label: "ice" });
   const stor = (data, label) => { const b = B(data.byteLength, STOR, label); device.queue.writeBuffer(b, 0, data); return b; };
+  // the gradient table's words, then room for the page table's (pages.js): an on word and sixteen entries, as eighteen words
+  const GRAD_WORDS = gp.grad.length, withTable = (data, i) => { if (i !== 7) return data; const o = new Float32Array(GRAD_WORDS + 18); o.set(data); return o; };
   let groundBuffers = GROUND_BINDINGS.map((b, i) => {
     if (b.kind !== "storage") return null;
     const data = [gp.dq, gp.grad, gp.streams, gp.streamBins][i - 6];
-    return stor(data.length ? data : new Uint32Array(4), `ground${i}`);
+    return stor(data.length ? withTable(data, i) : new Uint32Array(4), `ground${i}`);
   });
   const makeGroundGroup = () => device.createBindGroup({
     layout: groundLayout,
-    entries: [fineT, isleT, gridT, riverT, trailT, iceT].map((t, i) => ({ binding: i, resource: t.createView() })).concat(groundBuffers.slice(6).map((b, k) => ({ binding: 6 + k, resource: { buffer: b } }))),
+    entries: [fineT, isleT, gridT, riverT, trailT, iceT].map((t, i) => ({ binding: i, resource: t.createView(i < 3 ? { dimension: "2d-array" } : {}) })).concat(groundBuffers.slice(6).map((b, k) => ({ binding: 6 + k, resource: { buffer: b } }))),
   });
   let groundGroup = makeGroundGroup();
   // the gradient of the heights for the light (setHeights of old: over two steps each way), into grid layers 3 and 4; the
@@ -1000,6 +1011,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // textures, its stream buffers made again, the gradient and the highest ground worked out again, and the sun's trace and the
   // folds' laid again from the new heights. The trails and the ice are the caller's to set (setTrails, setIce).
   function setGround(g2) {
+    useTextures(fineW, isleW, gridW, riverW);
     for (let l = 0; l < g2.isle.layers; l++) upload(isleT, g2.isle.data.subarray(l * g2.isle.size ** 2, (l + 1) * g2.isle.size ** 2), g2.isle.size, g2.isle.size, 4, l);
     const gpu = g2.fine.gpu;
     if (gpu) {
@@ -1020,13 +1032,115 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     groundBuffers = GROUND_BINDINGS.map((b, i) => {
       if (b.kind !== "storage") return null;
       const data = [g2.dq, g2.grad, g2.streams, g2.streamBins][i - 6];
-      return stor(data.length ? data : new Uint32Array(4), `ground${i}`);
+      return stor(data.length ? withTable(data, i) : new Uint32Array(4), `ground${i}`);
     });
     groundGroup = makeGroundGroup();
     for (const b of old) b?.destroy();
     setWrap(new Int32Array(10));
+    setPages(null);
     if (!gpu) gradientOf(g2.grid.data.subarray(0, GN * GN));
     exagFolded = null; sunShown = null; sunJob = null;
+  }
+  // ---------- the ground as pages (pages.js) ----------
+  // The window's 4 by 4 pages of 64 cells in slots of an atlas of textures, read through a page table in place of the window's own textures. setGroundPages copies the pages
+  // made on the GPU (demo/tile.ts pageAtlas, groundPages) into the slots and turns the table on; setGround turns it off again; setGroundPagesOn flips between the two ground
+  // sets once both are loaded. The caller owns the atlas buffers. The painter's rasters over the whole window (the trees' mean height, the folds: grid layers 5 and 6) stay
+  // window-sized, in layers 5 and 6 of the first group's grid texture; the caller lays them again after a flip (buildCanopy), as it does after setGround.
+  let PT = null, pgLogical = null, pgTop = 0, pgOnNow = false;
+  const pageNow = new Int32Array(17);
+  const useTextures = (f, i, g, r) => { fineT = f; isleT = i; gridT = g; riverT = r; };
+  // the table words, to the painter's gradient buffer (after its wrap words) and the looks' table: logical page p read from entry p
+  function setPages(logical) {
+    pageNow.fill(0);
+    pgOnNow = !!logical;
+    if (logical) { pageNow[0] = 1; pageNow.set(logical, 1); }
+    const words = new Int32Array(18);
+    words[0] = pageNow[0]; words.set(pageNow.subarray(1), 2);
+    device.queue.writeBuffer(groundBuffers[7], GRAD_WORDS * 4, words);
+    metaCPU.set(new Uint32Array(pageNow.buffer), M_PAGES);
+    device.queue.writeBuffer(looksB, M_PAGES * 4, pageNow);
+  }
+  function pageTextures(groups) {
+    const T = (size, format, label) => tex({ size, format, label });
+    return {
+      groups,
+      fine: T([PAGE_TEX.fine, PAGE_TEX.fine, groups * PAGE_LAYERS.fine], "r32float", "fine pages"),
+      grid: T([PAGE_TEX.grid, PAGE_TEX.grid, groups * PAGE_LAYERS.grid], "r32float", "grid pages"), river: T([PAGE_TEX.river, 1024 * 4 * groups], "r8uint", "river pages"),
+    };
+  }
+  // p: { atlas: { slots, fine, grid, mask } (demo/tile.ts pageAtlas), pages: [{ ox, oy, slot, copy }] (the page's corner cell from the window's, in the face's axes as groundPages takes it,
+  // multiples of 64 up to 192; copy: false for a slot already holding the page), isle: the window's island fields as setGround takes them (they stay one window texture, uploaded when the pages are turned on), top: the highest ground, and the
+  // rest of a setGround pack: dq, grad, streams, streamBins, need: { x0, z0, x1, z1 } the metres the view (and its prefetch margin) will read, in the painter's x and z }. A page of the 4 by 4 that is
+  // not listed reads as the nearest listed page's edge, which would show as a smear: so while a page under `need` (the whole window when it is not given) is missing, the pages are loaded
+  // but not turned on, the whole screen stays on the window's own textures, and the call returns { on: false, missing: [{ ox, oy }] }; once the pages are there, one call turns them on for the whole screen.
+  function setGroundPages(p) {
+    const { atlas, pages } = p, groups = Math.ceil(atlas.slots / PAGE_SLOTS), logical = new Int32Array(16).fill(-1);
+    if (!pages.length) throw new Error("setGroundPages: no pages");
+    if (atlas.slots > PAGE_MAX_SLOTS) throw new Error(`setGroundPages: ${atlas.slots} slots of at most ${PAGE_MAX_SLOTS}`);
+    if (!PT || PT.groups !== groups) { if (PT) for (const t of [PT.fine, PT.grid, PT.river]) t.destroy(); PT = pageTextures(groups); }
+    const enc = device.createCommandEncoder();
+    for (const pg of pages) {
+      if (pg.ox % 64 || pg.oy % 64 || pg.ox < 0 || pg.oy < 0 || pg.ox > 192 || pg.oy > 192) throw new Error(`setGroundPages: the page at ${pg.ox}, ${pg.oy} is not one of the window's 16`);
+      if (!(pg.slot >= 0 && pg.slot < atlas.slots)) throw new Error(`setGroundPages: slot ${pg.slot} of ${atlas.slots}`);
+      // the window's rows are turned against the face's: the page at oy cells up the face is the (192 - oy) / 64 th of the window's rows
+      const ix = pg.ox / 64, iy = 3 - pg.oy / 64, s = pg.slot, g = s >> 4, tx = s & 3, ty = (s >> 2) & 3;
+      logical[iy * 4 + ix] = s;
+      if (pg.copy === false) continue;
+      enc.copyBufferToTexture({ buffer: atlas.fine, offset: s * PAGE_WORDS.fine * 4, bytesPerRow: PAGE_ROW.fine, rowsPerImage: 257 }, { texture: PT.fine, origin: [tx * 257, ty * 257, g * PAGE_LAYERS.fine] }, [257, 257, PAGE_LAYERS.fine]);
+      enc.copyBufferToTexture({ buffer: atlas.grid, offset: s * PAGE_WORDS.grid * 4, bytesPerRow: PAGE_ROW.grid, rowsPerImage: 385 }, { texture: PT.grid, origin: [tx * 385, ty * 385, g * PAGE_LAYERS.grid] }, [385, 385, 5]);
+      enc.copyBufferToTexture({ buffer: atlas.mask, offset: s * PAGE_WORDS.mask * 4, bytesPerRow: PAGE_ROW.mask, rowsPerImage: 1024 }, { texture: PT.river, origin: [tx * 1024, (s >> 2) * 1024] }, [1024, 1024, 1]);
+    }
+    device.queue.submit([enc.finish()]);
+    const half = -pal.ORIGIN, pm = half / 2, need = p.need ?? { x0: -half, z0: -half, x1: half, z1: half }, missing = [];
+    for (let k = 0; k < 16; k++) {
+      const ix = k % 4, iy = k >> 2;
+      if (logical[k] < 0 && need.x1 > -half + ix * pm && need.x0 < -half + (ix + 1) * pm && need.z1 > -half + iy * pm && need.z0 < -half + (iy + 1) * pm) missing.push({ ox: ix * 64, oy: (3 - iy) * 64 });
+    }
+    // a page of the 4 by 4 not listed reads as the nearest listed one (logical index, held to its edge by the shader): -(2 + its index)
+    for (let k = 0; k < 16; k++) {
+      if (logical[k] >= 0) continue;
+      let best = -1, bd = Infinity;
+      for (let j = 0; j < 16; j++) if (logical[j] >= 0) { const d = (j % 4 - k % 4) ** 2 + ((j >> 2) - (k >> 2)) ** 2; if (d < bd) { bd = d; best = j; } }
+      logical[k] = -(2 + best);
+    }
+    if (missing.length) return { on: false, missing };
+    pgLogical = logical; pgTop = p.top ?? p.grid?.top ?? 0;
+    adoptPages(p);
+    return { on: true, missing };
+  }
+  // the atlas textures and the table, read from now on; the stream buffers and the trace's top as setGround makes them
+  function adoptPages(p) {
+    for (let l = 0; l < p.isle.layers; l++) upload(isleW, p.isle.data.subarray(l * p.isle.size ** 2, (l + 1) * p.isle.size ** 2), p.isle.size, p.isle.size, 4, l);
+    useTextures(PT.fine, isleW, PT.grid, PT.river);
+    const old = groundBuffers;
+    groundBuffers = GROUND_BINDINGS.map((b, i) => {
+      if (b.kind !== "storage") return null;
+      const data = [p.dq, p.grad, p.streams, p.streamBins][i - 6];
+      return stor(data.length ? withTable(data, i) : new Uint32Array(4), `ground${i}`);
+    });
+    groundGroup = makeGroundGroup();
+    for (const b of old) b?.destroy();
+    gridTop = pgTop;
+    setWrap(new Int32Array(10));
+    setPages(pgLogical);
+    exagFolded = null; sunShown = null; sunJob = null;
+  }
+  // The pages on or off (the window's own textures read when off), for a check that draws both: false until pages are loaded. The window's textures must hold the window (setGround).
+  function setGroundPagesOn(on) {
+    if (!PT || !pgLogical) return false;
+    if (on) {
+      useTextures(PT.fine, isleW, PT.grid, PT.river);
+      groundGroup = makeGroundGroup();
+      setWrap(new Int32Array(10));
+      setPages(pgLogical);
+    } else {
+      useTextures(fineW, isleW, gridW, riverW);
+      groundGroup = makeGroundGroup();
+      setWrap(new Int32Array(10));
+      setPages(null);
+    }
+    exagFolded = null; sunShown = null; sunJob = null;
+    return on;
   }
   // The trees' cover, laid by the GPU from the trees in the object buffers (wgsl/objects.js canopyMain): cells of
   // canopy.step metres over the island (3 m, or coarser on an island too big for 3 m cells to stay under about 4800 a
@@ -1136,6 +1250,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     wrapNow.set(w);
     device.queue.writeBuffer(groundBuffers[7], 4098 * 8, wrapNow);
     device.queue.writeBuffer(looksB, M_WRAP * 4, wrapNow);
+    metaCPU.set(new Uint32Array(wrapNow.buffer), M_WRAP);
   }
   // a logical layer of the grid's size put into a grid-texture layer where the wrap puts it: up to four rectangles, put(x0, y0, w, h, dx, dy) from the layer's (x0, y0) to the texture's (dx, dy)
   function gridRects(layer, put) {
@@ -1145,6 +1260,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   }
   // A check: the ground's textures rolled kx, ky cells in their own storage and the wrap set to match. Nothing logical changes, so a frame drawn after is the frame drawn before.
   function debugRoll(kx, ky) {
+    if (pgOnNow) return debugRollPages(kx, ky);
     if (wrapNow.some(Boolean)) throw new Error("debugRoll: the ground is already rolled");
     const w = new Int32Array(10), enc = device.createCommandEncoder(), temps = [];
     [[fineT, gp.fine.size, 4], [isleT, gp.isle.size, 1], [gridT, GN, 6], [riverT, RMN, 16]].forEach(([t, n, per], k) => {
@@ -1160,6 +1276,43 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     setWrap(w);
     for (const t of temps) t.destroy();
     // the sun map and the folds traced again over the rolled heights, so their reads and the layer copies are checked too
+    exagFolded = null; sunShown = null; sunJob = null;
+  }
+  // The same check over pages: the page table rolled kx, ky cells (whole pages), which is a permutation of its entries, and the window's own rasters (grid layers 5 and 6) rolled in storage.
+  function debugRollPages(kx, ky) {
+    if (kx % 64 || ky % 64) throw new Error("debugRoll: pages roll by whole pages (multiples of 64 cells)");
+    if (pgLogical.some((v) => v < 0)) throw new Error("debugRoll: the pages roll only when all 16 are resident");
+    const mod = (v, n) => ((v % n) + n) % n, w = new Int32Array(10), gx = mod(6 * kx, GN), gy = mod(6 * ky, GN), sx = mod(kx / 64, 4), sy = mod(ky / 64, 4);
+    w[4] = gx; w[5] = gy;
+    const U = GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST, enc = device.createCommandEncoder();
+    const old = { fine: PT.fine, grid: PT.grid, river: PT.river };
+    // the pages' data moved: page p's slot is the one the page at (p + shift) held, its tile copied there from a copy of the atlas, and the table made to match
+    const copies = Object.fromEntries(Object.entries(old).map(([k, t]) => {
+      const c = device.createTexture({ size: [t.width, t.height, t.depthOrArrayLayers], format: t.format, usage: U });
+      enc.copyTextureToTexture({ texture: t }, { texture: c }, [t.width, t.height, t.depthOrArrayLayers]);
+      return [k, c];
+    }));
+    const next = new Int32Array(16);
+    for (let y = 0; y < 4; y++)
+      for (let x = 0; x < 4; x++) {
+        const s = pgLogical[y * 4 + x], t = pgLogical[((y + sy) & 3) * 4 + ((x + sx) & 3)];
+        next[y * 4 + x] = t;
+        const put = (k, n, layers, per) => {
+          const at = (q) => (k === "river" ? [(q & 3) * n, (q >> 2) * n, 0] : [(q & 3) * n, ((q >> 2) & 3) * n, (q >> 4) * per]);
+          enc.copyTextureToTexture({ texture: copies[k], origin: at(s) }, { texture: old[k], origin: at(t) }, [n, n, layers]);
+        };
+        put("fine", 257, PAGE_LAYERS.fine, PAGE_LAYERS.fine); put("grid", 385, 5, PAGE_LAYERS.grid); put("river", 1024, 1, 1);
+      }
+    // the window's own rasters (grid layers 5 and 6) rolled in storage as the window's are
+    const tmp = device.createTexture({ size: [GN, GN, 2], format: "r32float", usage: U });
+    enc.copyTextureToTexture({ texture: gridT, origin: [0, 0, 5] }, { texture: tmp }, [GN, GN, 2]);
+    for (const [x0, ww, dx] of [[0, GN - gx, gx], [GN - gx, gx, 0]])
+      for (const [y0, hh, dy] of [[0, GN - gy, gy], [GN - gy, gy, 0]]) if (ww > 0 && hh > 0) enc.copyTextureToTexture({ texture: tmp, origin: [x0, y0, 0] }, { texture: gridT, origin: [dx, dy, 5] }, [ww, hh, 2]);
+    device.queue.submit([enc.finish()]);
+    pgLogical = next;
+    setWrap(w);
+    setPages(pgLogical);
+    for (const c of [tmp, ...Object.values(copies)]) c.destroy();
     exagFolded = null; sunShown = null; sunJob = null;
   }
   // How much sky the ground's folds hide, traced once over the heights at the drawn exaggeration into grid layer 6.
@@ -1551,7 +1704,10 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // a source's slots as workgroups, 256 threads each, folded into two dimensions past the 65535 limit
   const spread = (n) => { const wg = Math.max(1, Math.ceil(n / 256)), wx = Math.min(wg, 32768); return [wx, Math.ceil(wg / wx)]; };
   // the tables looks are read by (atlas.js Looks.meta)
-  function setMeta(words) { metaCPU.set(words); device.queue.writeBuffer(looksB, 0, words); device.queue.writeBuffer(looksB, M_WRAP * 4, wrapNow); }
+  function setMeta(words) {
+    metaCPU.set(words); device.queue.writeBuffer(looksB, 0, words); device.queue.writeBuffer(looksB, M_WRAP * 4, wrapNow);
+    metaCPU.set(new Uint32Array(wrapNow.buffer), M_WRAP); metaCPU.set(new Uint32Array(pageNow.buffer), M_PAGES); device.queue.writeBuffer(looksB, M_PAGES * 4, pageNow);
+  }
   // The survey (wgsl/objects.js needsMain) over every source: mode 0 the kind and species pairs, mode 1 the families and
   // sizes the first nl levels draw, as bits; words: how many 32-bit words of them.
   async function survey(mode, nl, words) {
@@ -1932,7 +2088,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   }
   await Promise.all(Object.values(S).map((o) => o.ready));
   return {
-    errors, stats, frame, setSources, warmSpec, setGround, setWrap, debugRoll, setMeta, survey, buildCanopy, farBuild, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
+    errors, stats, frame, setSources, warmSpec, setGround, setGroundPages, setGroundPagesOn, setWrap, debugRoll, setMeta, survey, buildCanopy, farBuild, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
     get busy() { return inFlight; },
     setFarUse: (on) => { farUse = on; },
     setFadeKeep: (on) => { fadeKeep = on; },

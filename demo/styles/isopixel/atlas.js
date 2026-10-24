@@ -21,7 +21,8 @@ const MOSSY = new Set(["boulder", "stone"]);
 export const CODES = 64, HSTEPS = 256, MAX_LEVELS = 16;
 export const M_KIND = 0, M_BASE = M_KIND + CODES, M_TSP = M_BASE + CODES * CODES, M_WB = M_TSP + CODES, M_CROWN = M_WB + 4 * HSTEPS, M_LEV = M_CROWN + 4 * HSTEPS;
 // then the ground's wrap words (ground.wgsl.js g_wrapW: shifts of the fine, isle, grid and mask textures and the noise offset, as x y pairs), which the object passes read the ground by
-export const M_WRAP = M_LEV + 4 * MAX_LEVELS, META_WORDS = M_WRAP + 10;
+// then the page table (pages.js): an on word and sixteen entries
+export const M_WRAP = M_LEV + 4 * MAX_LEVELS, M_PAGES = M_WRAP + 10, META_WORDS = M_PAGES + 17;
 export const K_TREE = 1, K_GRASS = 2, K_FLAT = 4, K_MOSSY = 8, K_DRAWN = 16;
 export const NONE = 0xffffffff;
 // A tree's crown is drawn as wide as Unit 7's crowns stand (light.ts crownRadius, flora.ts crownShare): its width over

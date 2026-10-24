@@ -10,7 +10,8 @@
 // An object's look is worked out here from its buffer every frame, as atlas.js Looks numbers it: its family (pair base
 // from the tables, then layout, tint, the forest's darkness at its foot and its crown's width for a tree; layout, moss
 // and berries for anything else) and its sprite's size at the level shown, as main.js collectLive drew it.
-import { NS, META_WORDS, M_KIND, M_BASE, M_TSP, M_WB, M_CROWN, M_LEV, M_WRAP, HSTEPS, CODES, K_TREE, K_GRASS, K_FLAT, K_MOSSY, K_DRAWN, NB, NONE } from "../atlas.js";
+import { NS, META_WORDS, M_KIND, M_BASE, M_TSP, M_WB, M_CROWN, M_LEV, M_WRAP, M_PAGES, HSTEPS, CODES, K_TREE, K_GRASS, K_FLAT, K_MOSSY, K_DRAWN, NB, NONE } from "../atlas.js";
+import { pageWGSL } from "../pages.js";
 
 // A plant's pick is its slot with this bit, which the worker turns into its object number (flora.ts entry); one of the
 // CPU's records' its slot with EXTRA_PICK, which the worker turns into the thing's id; anything else's pick is its
@@ -107,9 +108,29 @@ fn bilin(t: texture_2d_array<f32>, L: i32, n: i32, w: u32, u: f32, v: f32) -> f3
   let s = textureLoad(t, wrapI(i + vec2i(1, 1), w, n), L, 0).x;
   return (p * (1.0 - a) + q * a) * (1.0 - b) + (r * (1.0 - a) + s * a) * b;
 }
+// the ground read through pages (pages.js), its table in the looks' words after the wrap's
+fn pgOn() -> bool { return bitcast<i32>(looks[${M_PAGES}u]) != 0; }
+fn pgTab(k: u32) -> i32 { return bitcast<i32>(looks[${M_PAGES}u + 1u + k]); }
+${pageWGSL()}
 // the share of the sky the ground's folds hide at a point (main.js worldAO), and the trees' cover there (flora.ts fine)
-fn aoAt(x: f32, z: f32) -> f32 { return bilin(gridTex, 1, ${g.GN}, 4u, (x - (${f(g.ORIGIN)})) / ${f(g.WS)}, (z - (${f(g.ORIGIN)})) / ${f(g.WS)}); }
-fn treeAt(x: f32, z: f32) -> f32 { return bilin(fineTex, 4, ${g.M}, 0u, (x - (${f(g.FSTART)})) / ${f(g.FSTEP)}, (z - (${f(g.FSTART)})) / ${f(g.FSTEP)}); }
+fn aoAt(x: f32, z: f32) -> f32 {
+  let u = (x - (${f(g.ORIGIN)})) / ${f(g.WS)}; let v = (z - (${f(g.ORIGIN)})) / ${f(g.WS)};
+  if (pgOn()) {
+    let fu = clamp(u, 0.0, ${g.GN}.0 - 1.001); let fv = clamp(v, 0.0, ${g.GN}.0 - 1.001);
+    let i = vec2i(i32(fu), i32(fv));
+    return pgBil(pgGridQ(gridTex, 1, i), fu - f32(i.x), fv - f32(i.y));
+  }
+  return bilin(gridTex, 1, ${g.GN}, 4u, u, v);
+}
+fn treeAt(x: f32, z: f32) -> f32 {
+  let u = (x - (${f(g.FSTART)})) / ${f(g.FSTEP)}; let v = (z - (${f(g.FSTART)})) / ${f(g.FSTEP)};
+  if (pgOn()) {
+    let fu = clamp(u, 0.0, ${g.M}.0 - 1.001); let fv = clamp(v, 0.0, ${g.M}.0 - 1.001);
+    let i = vec2i(i32(fu), i32(fv));
+    return pgBil(pgFineQ(fineTex, 4, i), fu - f32(i.x), fv - f32(i.y));
+  }
+  return bilin(fineTex, 4, ${g.M}, 0u, u, v);
+}
 // the size in meters an object is drawn at (px.js shown); grass by its width
 fn hkOf(o: Obj, kf: u32) -> f32 {
   if ((kf & ${K_GRASS}u) != 0u || o.size >= 1.0) { return o.size; }

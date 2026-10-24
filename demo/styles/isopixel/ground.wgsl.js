@@ -9,6 +9,7 @@
 // division, exact to about a millionth of a cell.
 import { CELL, LEPTOSOL, M, N, RM, SC, SIZE, START, STEP, TILES, TILE_M } from "../island.js";
 import { P, RGB } from "./pal.js";
+import { pageWGSL } from "./pages.js";
 
 const ORIGIN = -SIZE / 2, WS = 12.5, WN = Math.ceil(SIZE / WS) + 1, TN = Math.round(SIZE / 3);
 // flora.ts streamAt's bins: 50 m across, holding every segment within REACH of them, cell -1 at index 0
@@ -188,6 +189,10 @@ fn g_wr(v: vec2<i32>, k: u32, n: i32) -> vec2<i32> {
   let t = v + g_wrapW(k);
   return vec2<i32>(select(t.x, t.x - n, t.x >= n), select(t.y, t.y - n, t.y >= n));
 }
+// The ground read through pages (pages.js): the table after the wrap words, an on word then sixteen entries.
+fn pgOn() -> bool { return bitcast<vec2<i32>>(gGradT[4103u]).x != 0; }
+fn pgTab(k: u32) -> i32 { let v = bitcast<vec2<i32>>(gGradT[4104u + (k >> 1u)]); return select(v.x, v.y, (k & 1u) == 1u); }
+${pageWGSL()}
 
 // k: the level's art pixels per meter; frame 0..7 of the water's loop; season 0 spring .. 3 winter; flags bit 0: worn
 // paths are drawn
@@ -314,6 +319,7 @@ fn g_fineAt(L: i32, x: f32, z: f32) -> f32 {
   let tu = cu.y;
   let tv = cv.y;
   let i = vec2<i32>(i32(cu.x), i32(cv.x));
+  if (pgOn()) { return pgBil(pgFineQ(gFine, L, i), tu, tv); }
   let a = textureLoad(gFine, g_wr(i, 0u, g_M), L, 0).x;
   let b = textureLoad(gFine, g_wr(i + vec2<i32>(1, 0), 0u, g_M), L, 0).x;
   let c = textureLoad(gFine, g_wr(i + vec2<i32>(0, 1), 0u, g_M), L, 0).x;
@@ -321,7 +327,10 @@ fn g_fineAt(L: i32, x: f32, z: f32) -> f32 {
   return (a * (1.0 - tu) + b * tu) * (1.0 - tv) + (c * (1.0 - tu) + d * tu) * tv;
 }
 fn heightAt(x: f32, z: f32) -> f32 { return g_fineAt(0, x, z); }
-fn g_isleAt(L: i32, i: i32, j: i32) -> f32 { return textureLoad(gIsle, g_wr(vec2<i32>(clamp(i, 0, g_N - 1), clamp(j, 0, g_N - 1)), 1u, g_N), L, 0).x; }
+fn g_isleAt(L: i32, i: i32, j: i32) -> f32 {
+  let c = vec2<i32>(clamp(i, 0, g_N - 1), clamp(j, 0, g_N - 1));
+  return textureLoad(gIsle, g_wr(c, 1u, g_N), L, 0).x;
+}
 // Fine.bilinear over an island field at cell coordinates from g_cellC
 fn g_bil(L: i32, cx: vec2<f32>, cy: vec2<f32>) -> f32 {
   let tx = cx.y;
@@ -338,6 +347,7 @@ fn g_gridAt(L: i32, x: f32, z: f32) -> f32 {
   let a = cu.y;
   let c = cv.y;
   let i = vec2<i32>(i32(cu.x), i32(cv.x));
+  if (pgOn() && L < 5) { return pgBil(pgGridQ(gGrid, L, i), a, c); }
   return (textureLoad(gGrid, g_wr(i, 2u, g_WN), L, 0).x * (1.0 - a) + textureLoad(gGrid, g_wr(i + vec2<i32>(1, 0), 2u, g_WN), L, 0).x * a) * (1.0 - c) + (textureLoad(gGrid, g_wr(i + vec2<i32>(0, 1), 2u, g_WN), L, 0).x * (1.0 - a) + textureLoad(gGrid, g_wr(i + vec2<i32>(1, 1), 2u, g_WN), L, 0).x * a) * c;
 }
 
@@ -392,14 +402,18 @@ fn surfAt(x: f32, z: f32) -> f32 {
       let X = cx + dx;
       let Y = cy + dy;
       if (X < 0 || Y < 0 || X >= g_N || Y >= g_N) { continue; }
-      let w = textureLoad(gIsle, g_wr(vec2<i32>(X, Y), 1u, g_N), ${IL.water}, 0).x;
+      let w = g_isleAt(${IL.water}, X, Y);
       if (w <= 0.0) { continue; }
-      if (dx * dx + dy * dy < bd) { bd = dx * dx + dy * dy; best = textureLoad(gIsle, g_wr(vec2<i32>(X, Y), 1u, g_N), ${IL.height}, 0).x + w; }
+      if (dx * dx + dy * dy < bd) { bd = dx * dx + dy * dy; best = g_isleAt(${IL.height}, X, Y) + w; }
     }
   }
   return best;
 }
-fn g_riverAt(i: i32, j: i32) -> f32 { return f32(textureLoad(gRiver, g_wr(vec2<i32>(clamp(i, 0, g_RM - 1), clamp(j, 0, g_RM - 1)), 3u, g_RM), 0).x) / 255.0; }
+fn g_riverAt(i: i32, j: i32) -> f32 {
+  let c = vec2<i32>(clamp(i, 0, g_RM - 1), clamp(j, 0, g_RM - 1));
+  if (pgOn()) { return f32(pgRiver(gRiver, c)) / 255.0; }
+  return f32(textureLoad(gRiver, g_wr(c, 3u, g_RM), 0).x) / 255.0;
+}
 // flora.ts riverSmooth: the stream mask read between its texels
 fn g_riverSmooth(x: f32, z: f32) -> f32 {
   let cu = g_maskC(x);
@@ -408,6 +422,7 @@ fn g_riverSmooth(x: f32, z: f32) -> f32 {
   let b = cv.y;
   let i = i32(cu.x);
   let j = i32(cv.x);
+  if (pgOn()) { return pgBil(pgRiverQ(gRiver, vec2<i32>(i, j)), a, b); }
   return (g_riverAt(i, j) * (1.0 - a) + g_riverAt(i + 1, j) * a) * (1.0 - b) + (g_riverAt(i, j + 1) * (1.0 - a) + g_riverAt(i + 1, j + 1) * a) * b;
 }
 // flora.ts streamAt's bin of a coordinate, from its whole meters, which cannot cross a bin edge on their own
@@ -567,7 +582,7 @@ fn g_rgb(L: g_Land, s: f32, x: f32, z: f32, m60: f32, mpp: f32) -> vec3<f32> {
   let soil = g_bil(${IL.soil}, L.cx, L.cy);
   let silt = g_bil(${IL.silt}, L.cx, L.cy);
   let fog = g_bil(${IL.fog}, L.cx, L.cy);
-  let rock = i32(textureLoad(gIsle, g_wr(vec2<i32>(clamp(g_roundC(L.cx), 0, g_N - 1), clamp(g_roundC(L.cy), 0, g_N - 1)), 1u, g_N), ${IL.rock}, 0).x);
+  let rock = i32(g_isleAt(${IL.rock}, g_roundC(L.cx), g_roundC(L.cy)));
   var grass: vec3<f32>;
   if (lush > 0.5) { grass = g_mixc(${rgb([98, 126, 60])}, ${rgb([56, 96, 48])}, (lush - 0.5) * 2.0); } else { grass = g_mixc(${rgb([160, 150, 90])}, ${rgb([98, 126, 60])}, lush * 2.0); }
   let marsh = g_mixc(${rgb([74, 94, 56])}, ${rgb([48, 50, 38])}, peat);
@@ -707,8 +722,19 @@ fn g_land(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32, wet: f32, riv
   let layer = array<i32, 6>(6, 4, 5, 7, 8, 9);
   var best = 0u;
   var bs = -1.0;
+  var cc = array<f32, 6>();
+  if (pgOn()) {
+    // one page lookup for the six layers
+    let hi = vec2<f32>(${M - 2}.0, ${lit(M - 1.001 - (M - 2))});
+    let cu = g_clampC(g_fineC(wx), hi);
+    let cv = g_clampC(g_fineC(wz), hi);
+    let at = pgFineAt(vec2<i32>(i32(cu.x), i32(cv.x)));
+    for (var q = 0u; q < 6u; q++) { cc[q] = pgBil(pgFineLd(gFine, at, layer[q]), cu.y, cv.y); }
+  } else {
+    for (var q = 0u; q < 6u; q++) { cc[q] = g_fineAt(layer[q], wx, wz); }
+  }
   for (var q = 0u; q < 6u; q++) {
-    let c = g_fineAt(layer[q], wx, wz);
+    let c = cc[q];
     L.c[q] = c;
     if (c > bs) { bs = c; best = q; }
   }
