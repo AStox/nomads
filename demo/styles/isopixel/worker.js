@@ -589,30 +589,46 @@ const REFRESH_CHUNK = 16;
 // sprites for every [family key, size index, slot] in jobs, by as many sprite workers as the machine spares, chunk to a
 // message (each message's sprites are taken in as one task here); the page's loading line is told how far they are
 // only for the first view (report)
+// The sprite workers are kept between calls (a spawn re-imports the sprite, island and things modules: tens of ms of CPU and half a megabyte of JS each, at every refresh): idle ones wait in
+// `idleSprites`, and those past two are let go a few seconds after the last call.
+const idleSprites = [];
+let spriteReap = 0;
+const spawnSprite = () => new Promise((ok, fail) => {
+  const w = new Worker(new URL("./sprites-worker.js", import.meta.url), { type: "module" });
+  w.onerror = (e) => fail(new Error(`sprite worker: ${e.message}`));
+  w.onmessage = (e) => { if (e.data.ready) ok(w); };
+});
 async function makeAll(jobs, { chunk = 200, report = true, small = false, onChunk = null } = {}) {
   if (!jobs.length) return [];
   const nw = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2, Math.ceil(jobs.length / 100))), out = [];
-  const workers = await Promise.all(Array.from({ length: nw }, () => new Promise((ok, fail) => {
-    const w = new Worker(new URL("./sprites-worker.js", import.meta.url), { type: "module" });
-    w.onerror = (e) => fail(new Error(`sprite worker: ${e.message}`));
-    w.onmessage = (e) => { if (e.data.ready) ok(w); };
-  })));
+  clearTimeout(spriteReap);
+  const workers = idleSprites.splice(0, nw);
+  const fresh = await Promise.all(Array.from({ length: nw - workers.length }, spawnSprite));
+  workers.push(...fresh);
   // the big ones first, dealt round, so every worker has about the same to draw; while the page runs the small ones first (the coarse levels a window is drawn at need only those)
   jobs.sort(small ? (a, b) => a[1] - b[1] : (a, b) => b[1] - a[1]);
   const lists = workers.map(() => []);
   jobs.forEach((j, i) => lists[i % nw].push(j));
   let done = 0;
-  await Promise.all(workers.map((w, i) => new Promise((ok) => {
-    const list = lists[i], CH = chunk;
-    let at = 0;
-    const next = () => {
-      if (at >= list.length) { w.terminate(); ok(); return; }
-      w.postMessage({ id: at, jobs: list.slice(at, at + CH) });
-      at += CH;
-    };
-    w.onmessage = (e) => { for (const r of e.data.out) out.push(r); onChunk?.(e.data.out); done += e.data.out.length; if (report) say("drawing the sprites", done, jobs.length); next(); };
-    next();
-  })));
+  try {
+    await Promise.all(workers.map((w, i) => new Promise((ok, fail) => {
+      const list = lists[i], CH = chunk;
+      let at = 0;
+      const next = () => {
+        if (at >= list.length) { ok(); return; }
+        w.postMessage({ id: at, jobs: list.slice(at, at + CH) });
+        at += CH;
+      };
+      w.onerror = (e) => fail(new Error(`sprite worker: ${e.message}`));
+      w.onmessage = (e) => { for (const r of e.data.out) out.push(r); onChunk?.(e.data.out); done += e.data.out.length; if (report) say("drawing the sprites", done, jobs.length); next(); };
+      next();
+    })));
+  } catch (err) {
+    for (const w of workers) w.terminate();
+    throw err;
+  }
+  idleSprites.push(...workers);
+  spriteReap = setTimeout(() => { for (const w of idleSprites.splice(2)) w.terminate(); }, 8000);
   return out;
 }
 // The made sprites into atlas layers, the tallest first along shelves, and the tables that find them.

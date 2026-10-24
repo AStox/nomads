@@ -74,6 +74,9 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
   const tableB = device.createBuffer({ size: Math.max(16, table.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, label: "pyramid table" });
   const free = Array.from({ length: slots }, (_, i) => slots - 1 - i), slotOf = new Map(), held = new Array(slots).fill(null);
   const lastWant = new Map(), flying = new Set(), absent = new Set(), host = new Map(), edges = new Map(), whole = new Map(), stats = { fetched: 0, bytes: 0, evicted: 0 };
+  // a held tile whose neighbour arrived has its halo written again once a frame, not at the arrival (up to eight tiles a time were each a full height tile and a ring); retryAt: a tile that failed to
+  // load (not a 404) is asked again after a pause; stash: tiles that arrived with no slot to take, put when one is free
+  const dirty = new Set(), retryAt = new Map(), stash = new Map(), ringBuf = new Uint32Array(FHS * FHS * 4);
   let frameNo = 0, tableDirty = true;
   const tileOf = (i) => { let t = 0; while (i >= tierOffset(t + 1)) t++; const r = i - tierOffset(t), n = 4 ** t, f = Math.floor(r / n), q = r % n; return { t, f, ty: Math.floor(q / 2 ** t), tx: q % 2 ** t }; };
   const url = (t, f, tx, ty) => `${base}/t${t}/f${f}/${ty}-${tx}.tile.gz`;
@@ -135,7 +138,7 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
   }
   // the four lines of a held tile's field halo written again (after a neighbour arrived)
   function refreshRing(i) {
-    const slot = slotOf.get(i), buf = new Uint32Array(FHS * FHS * 4);
+    const slot = slotOf.get(i), buf = ringBuf;
     ringInto(buf, i);
     const wr = (origin, size, data) => device.queue.writeTexture({ texture: fieldsT, origin: [...origin, slot] }, data, { bytesPerRow: size[0] * 16, rowsPerImage: size[1] }, [...size, 1]);
     wr([0, 0], [FHS, 1], buf.subarray(0, FHS * 4));
@@ -166,28 +169,36 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
     device.queue.writeTexture({ texture: fieldsT, origin: [0, 0, slot] }, buf, { bytesPerRow: FHS * 16, rowsPerImage: FHS }, [FHS, FHS, 1]);
     upHeights(slot, heightsOf(i));
     // the neighbours' halos now have this tile's cells
-    for (const j of neighbours(i)) {
+    for (const j of neighbours(i)) if (slotOf.has(j)) dirty.add(j);
+    return true;
+  }
+  function flushHalos(max = 3) {
+    for (const j of dirty) {
+      dirty.delete(j);
       const s = slotOf.get(j);
       if (s === undefined) continue;
       refreshRing(j);
       upHeights(s, heightsOf(j));
+      if (--max <= 0) break;
     }
-    return true;
   }
   async function load(i) {
     flying.add(i);
     try {
       const { t, f, tx, ty } = tileOf(i), { raw, bytes } = await fetchTileBytes(url(t, f, tx, ty)), { planes } = decodeTile(raw);
       stats.fetched++; stats.bytes += bytes;
-      put(i, planes);
-    } catch (e) { absent.add(i); if (!e.status) console.warn(`tile ${i}: ${e.message}`); } finally { flying.delete(i); }
+      if (!put(i, planes)) { stash.set(i, planes); while (stash.size > 16) stash.delete(stash.keys().next().value); }
+    } catch (e) {
+      // a missing file never comes; any other failure (the network, a timeout) is tried again after a pause
+      if (e.status === 404) absent.add(i); else { retryAt.set(i, performance.now() + 4000); console.warn(`tile ${i}: ${e.message}`); }
+    } finally { flying.delete(i); }
   }
 
   // tier 0 whole, before the first frame
   const t0 = [];
   for (const f of faces) t0.push(load(tileIndex(0, f, 0, 0)));
   await Promise.all(t0);
-  const flush = () => { if (tableDirty) { device.queue.writeBuffer(tableB, 0, table); tableDirty = false; } };
+  const flush = () => { flushHalos(); if (tableDirty) { device.queue.writeBuffer(tableB, 0, table); tableDirty = false; } };
   flush();
 
   return {
@@ -210,10 +221,13 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
     // the tiles a frame wants, [{ t, f, tx, ty }] most wanted first: marks them wanted, and starts the fetches that are free
     want(list) {
       frameNo++;
+      const now = performance.now();
       for (const w of list) {
         const i = tileIndex(w.t, w.f, w.tx, w.ty);
         lastWant.set(i, frameNo);
         if (slotOf.has(i) || absent.has(i) || flying.has(i) || !faces.includes(w.f)) continue;
+        if (stash.has(i)) { if (put(i, stash.get(i))) stash.delete(i); continue; }
+        if ((retryAt.get(i) ?? 0) > now) continue;
         if (flying.size >= inflight) break;
         load(i);
       }

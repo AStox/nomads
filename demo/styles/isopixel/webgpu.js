@@ -1210,7 +1210,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   function ensure(w, h) {
     if (cap && cap.w >= w && cap.h >= h) return;
     w = Math.max(w, cap?.w ?? 0); h = Math.max(h, cap?.h ?? 0);
-    cap?.list.forEach((t) => t.destroy());
+    cap?.list.forEach((t) => t.destroy()); cap?.keys.destroy();
     const T = (format, usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING) => device.createTexture({ size: [w, h], format, usage });
     const c = { w, h, gK: T("rg32uint", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC), gW: T("rgba32float", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING), depth: T("depth32float", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING), keys: B(w * h * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, "keys"), mask: T("r8unorm"), maskZ: T("depth16unorm", GPUTextureUsage.RENDER_ATTACHMENT), over: T("r8uint"), xray: T("rg32uint"), art: [0, 1, 2].map(() => T("rgba8unorm", GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC)), pickBuf: null };
     // what each art buffer holds: the level and bearing it was drawn at, its absolute art px origin and size, and the frame

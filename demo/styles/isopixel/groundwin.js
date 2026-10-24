@@ -44,6 +44,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     if (!t) {
       t = fetchTileBytes(`${base}/groundtiles/f${f}/${ty}-${tx}.gt.gz`).then(({ raw, bytes }) => ({ ...decode(raw), bytes }));
       tiles.set(k, t);
+      t.catch(() => { if (tiles.get(k) === t) tiles.delete(k); });
       stats.tiles++;
     } else { tiles.delete(k); tiles.set(k, t); }
     while (tiles.size > keep + 2) { const old = tiles.keys().next().value; tiles.delete(old); }

@@ -107,7 +107,7 @@ export async function fetchTileBytes(url) {
       try { return { raw: await gunzip(file.stream()), bytes: 0 }; } catch { await forget(s, name); }
     }
   }
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
   if (!res.ok) throw Object.assign(new Error(`${url} did not load (${res.status})`), { status: res.status });
   if (!s) return { raw: await gunzip(res.body), bytes: Number(res.headers.get("content-length") ?? 0) };
   const [a, b] = res.body.tee();
