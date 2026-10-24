@@ -754,17 +754,17 @@ fn shadeFS(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   var groundish = kind == 0u || kind == 3u;
   // beyond an island-wide level's map the sea runs on, deep and plain, as the CPU bake once laid it under every chunk
   if (empty) { c = select(V.sea + 1u, V.sea, bay(vec2i(X, Y)) < 0.65); }
+  else if (groundish && (V.gflags & 2u) != 0u) {
+    // the ground (and the banks between its levels) is left to the planet pass under this one (wgsl/globe.js): nothing is drawn here but the shade the sprites cast on it, as the light's loss over flat ground
+    let sh = select(0.0, textureLoad(mask, q, 0).r * V.sunK, V.sunK > 0.0);
+    if (sh <= 0.0) { return vec4f(0.0); }
+    let lit = vec3f(V.ar, V.ag, V.ab) + vec3f(V.kr, V.kg, V.kb) * V.flat;
+    let shd = vec3f(V.ar, V.ag, V.ab) + vec3f(V.kr, V.kg, V.kb) * V.flat * (1.0 - sh);
+    return vec4f(0.0, 0.0, 0.0, 1.0 - dot(shd / lit, vec3f(0.3, 0.59, 0.11)));
+  }
   else if (kind == 0u) {
     var ctx: PaintCtx;
     ctx.k = V.k; ctx.frame = V.frame; ctx.season = V.season; ctx.flags = V.gflags;
-    // the ground left to the planet pass under this one (wgsl/globe.js): nothing is drawn here but the shade the sprites cast on it, as the light's loss over flat ground
-    if ((V.gflags & 2u) != 0u) {
-      let sh = select(0.0, textureLoad(mask, q, 0).r * V.sunK, V.sunK > 0.0);
-      if (sh <= 0.0) { return vec4f(0.0); }
-      let lit = vec3f(V.ar, V.ag, V.ab) + vec3f(V.kr, V.kg, V.kb) * V.flat;
-      let shd = vec3f(V.ar, V.ag, V.ab) + vec3f(V.kr, V.kg, V.kb) * V.flat * (1.0 - sh);
-      return vec4f(0.0, 0.0, 0.0, 1.0 - dot(shd / lit, vec3f(0.3, 0.59, 0.11)));
-    }
     c = paintGround(w.x, w.y, X, Y, ctx);
   }
   // people seen through the leaves: a checkered silhouette over any other sprite
