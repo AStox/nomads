@@ -335,13 +335,14 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
         }
     need.sort((a, b) => b.vis - a.vis || a.d - b.d);
     // null until every block's estimate is known (the first time a block is met, its tile's run gives it)
+    // The densest share's exponent as a float, continuous in the view (plan R7: a share is never a step on screen): the blocks the viewport reaches (a fractional count of them, so the
+    // exponent does not jump as one more row of blocks comes in) at 2^-k0 and the rest RING_OUT steps thinner hold BLOCK_TOTAL objects, and the fullest block fits the largest body with half a step to spare
+    // (blocks are made half a step denser than they are drawn, madeK). null until every block's estimate is known (the first time a block is met, its tile's run gives it).
     const k0Of = () => {
       if (!need.every((b) => estOf.has(b.key))) return null;
-      const m = Math.min(need.length, (Math.ceil((2 * r) / BLOCK) + 1) ** 2), e = need.map((b) => estOf.get(b.key)).sort((a, b) => b - a), most = BLOCK_CAPS[BLOCK_CAPS.length - 1] * 0.92;
-      const top = e.slice(0, m).reduce((a, b) => a + b, 0), rest = e.slice(m).reduce((a, b) => a + b, 0);
-      let k = 0;
-      while (top / 2 ** k + rest / 2 ** (k + RING_OUT) > BLOCK_TOTAL || e[0] / 2 ** k > most) k++;
-      return k;
+      const mf = Math.min(need.length, (2 * r) / BLOCK + 1) ** 2 * 1, e = need.map((b) => estOf.get(b.key)).sort((a, b) => b - a), most = BLOCK_CAPS[BLOCK_CAPS.length - 1] * 0.92, m = Math.min(need.length, mf), n = Math.ceil(m);
+      const sum = e.reduce((a, b) => a + b, 0), topMean = e.slice(0, n).reduce((a, b) => a + b, 0) / n, top = Math.min(sum, m * topMean), rest = sum - top;
+      return Math.max(0, Math.log2((top + rest * 2 ** -RING_OUT) / BLOCK_TOTAL), Math.log2(e[0] / most) + 0.5);
     };
     return { need, k0Of };
   }
@@ -350,9 +351,11 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     if (!plan) return null;
     const { need, k0Of } = layoutBlocks(w, view);
     let k0 = k0Of();
-    const kOf = (r) => k0 + (r.vis ? 0 : RING_OUT);
+    // eOf: the exponent a block is drawn at (its share is 2^-e, the sources' third word as a float); madeK: the integer share it is made at, half a step denser than drawn so a zoom in
+    // never waits on a remake; needK: the thinnest a held block may be (made at a share no thinner than this) to draw e
+    const eOf = (r) => k0 + (r.vis ? 0 : RING_OUT), madeK = (r) => Math.max(0, Math.floor(eOf(r) - 0.5)), needK = (r) => Math.max(0, Math.floor(eOf(r) - 0.25));
     // the runs of the tiles with blocks to make (all of them, the first time, for the estimates)
-    const todoOf = () => need.filter((r) => { const b = cache.get(r.key); return !b || b.k > kOf(r); });
+    const todoOf = () => need.filter((r) => { const b = cache.get(r.key); return !b || b.k > needK(r); });
     const open = k0 === null ? need : todoOf();
     // the runs of the tiles the blocks `recs` stand on, each over the cells its blocks cover
     const openFor = (recs) => {
@@ -370,13 +373,13 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       for (const { rec, run } of opened) for (const r of rec) { r.run = run; if (!estOf.has(r.key)) estOf.set(r.key, run.est({ bx0: r.bx * BLOCK, by0: r.by * BLOCK, n: BLOCK })); }
       if (k0 === null) k0 = k0Of();
       const total = need.reduce((a, r) => a + estOf.get(r.key), 0);
-      need.forEach((r) => { r.k = kOf(r); });
+      need.forEach((r) => { r.k = madeK(r); });
       const recs = [], fresh = [], kds = new Map();
       // `held`: the record of every block this call draws, as found in the cache or made here (another window's call may sweep or replace a cache entry while this one awaits)
       const held = new Map();
       const make = async (list) => {
         const todo = [];
-        for (const r of list) { const b = cache.get(r.key); if (b && b.k <= r.k) held.set(r.key, b); else todo.push(r); }
+        for (const r of list) { const b = cache.get(r.key); if (b && b.k <= needK(r)) held.set(r.key, b); else todo.push(r); }
         // a block that was not todo when the runs were opened (its cache entry has gone since) gets a run of its own tile here
         const late = await openFor(todo.filter((r) => !r.run));
         try {
@@ -394,7 +397,8 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
           }
         } finally { for (const { run } of late) run.close(); }
       };
-      const collect = (list) => { const out = []; for (const r of list) { const b = held.get(r.key); out.push(b); kds.set(r.key, Math.max(0, r.k - b.k)); } return out; };
+      // the draw exponent is absolute (an object is drawn iff its hash is under 2^-e; a block made at share k holds only hashes under 2^-k, so e >= k)
+      const collect = (list) => { const out = []; for (const r of list) { const b = held.get(r.key); out.push(b); kds.set(r.key, eOf(r)); } return out; };
       const vis = need.filter((r) => r.vis), out = need.filter((r) => !r.vis);
       await make(vis);
       if (stage && out.length) stage(collect(vis), kds, k0);

@@ -15,7 +15,7 @@ import { Looks, CODES, NONE, castRows, Shelves, entryWords } from "./atlas.js";
 import { PICK_SLOT, EXTRA_PICK, KIND_PICK, NO_SLOT, CELLS_N, CELL_M } from "./wgsl/objects.js";
 import { closeGround } from "./ground-at.js";
 import { openPyramid } from "./pyramid.js";
-import { BLOCK_CAPS, createWindows } from "./groundwin.js";
+import { BLOCK_CAPS, RING_OUT, createWindows } from "./groundwin.js";
 
 const early = [];
 onmessage = (e) => early.push(e);
@@ -885,7 +885,7 @@ async function check(m) {
   if (m.op === "fade") { R.setFadeKeep(!!m.on); return true; }
   if (m.op === "roll") { R.debugRoll(m.kx, m.ky); return true; }
   // the share each block of the drawn window is drawn at (2^-eff of what its ground grew) and where it stands in the window's cells (plan R6: the blocks the screen can touch must all show one share)
-  if (m.op === "shares") return curWin?.blockRecs && { k0: curWin.blockK0, view: curWin.blockView, blocks: curWin.blockRecs.map((b) => ({ key: b.key, eff: b.k + (curWin.blockKd?.get(b.key) ?? 0), c0: b.X - curWin.x0, z0: curWin.y0 + 256 - (b.Y + 64) })) };
+  if (m.op === "shares") return curWin?.blockRecs && { k0: curWin.blockK0, view: curWin.blockView, blocks: curWin.blockRecs.map((b) => ({ key: b.key, eff: curWin.blockKd?.get(b.key) ?? b.k, made: b.k, c0: b.X - curWin.x0, z0: curWin.y0 + 256 - (b.Y + 64) })) };
   if (m.op === "quads") return splitQuads(!!m.on);
   if (m.op === "front") { R.setFrontUse(!!m.on); return true; }
   // view 0's G-buffer kept (gsnap), and the next one compared with it pixel by pixel (gdiff): what each pixel shows
@@ -972,7 +972,9 @@ function sweepBlocks() {
 // the window's blocks written their origins in its frame (mm from its corner: x east, z south to the block's north edge) and as the sources the renderer is given
 function blockSources(w) {
   return w.blockRecs.map((r) => {
-    device.queue.writeBuffer(r.body, 7 * r.cap * 4, Int32Array.of((r.X - w.x0) * 75000, (w.y0 + 256 - (r.Y + 64)) * 75000, w.blockKd?.get(r.key) ?? 0));
+    const tail = new Int32Array(3), tailF = new Float32Array(tail.buffer);
+    tail[0] = (r.X - w.x0) * 75000; tail[1] = (w.y0 + 256 - (r.Y + 64)) * 75000; tailF[2] = w.blockKd?.get(r.key) ?? 0;
+    device.queue.writeBuffer(r.body, 7 * r.cap * 4, tail);
     return { name: `b:${r.key}`, cap: r.cap, body: r.body, start: r.start, spec: blockSpec(r.cap), oc: [r.X - w.x0, w.y0 + 256 - (r.Y + 64)] };
   });
 }
@@ -987,15 +989,25 @@ let lastCam = null;
 // The camera's place and the viewport's reach in a window's cells (ext: the canvas's farthest ground from the target, a window's 75 m cells being plane metres of 75): what groundwin.js blocksNeed and
 // makeBlocks take. A message without a reach (the first ask) is taken as a view of the whole window.
 const viewCells = (w, m) => ({ ...camCells(w, m.lat, m.lon), ext: m.ext !== undefined ? m.ext / 75 : m.half !== undefined ? m.half / 75 : 128 });
-// The blocks drawn again when the view can touch a block the window holds none of at the share it needs, or the share one level of detail across the screen needs has changed (a zoom, or a
-// pan that brings a block into the margin): checked every thirty frames, and only made while the last is not (plan R6).
+// The blocks the view can touch are drawn at one exponent k0 (float, continuous in the zoom: groundwin.js k0Of), the rest RING_OUT steps thinner. A block held made at a share no thinner than
+// floor(e - 0.25) serves, so a zoom only rewrites the sources' exponent words (writeExponents); blocks are made again only when a visible one is too thin (a zoom in past its margin, or one that
+// came into the margin), made half a step denser than drawn so that happens before it shows (plan R7). Checked every six frames.
 function refocus(w, m) {
   if (!blocksOn || !w.blockPlan || w.blocksBusy || !w.blockRecs || m.lat === undefined) return;
   const view = viewCells(w, m), { vis, k0 } = planet.wins.blocksNeed(w, view);
   if (k0 === null) return;
-  const held = new Map(w.blockRecs.map((b) => [b.key, b]));
-  if (k0 === w.blockK0 && vis.every((k) => held.has(k) && held.get(k).k <= k0)) return;
-  startObjects(w, view);
+  const held = new Map(w.blockRecs.map((b) => [b.key, b])), need = (e) => Math.max(0, Math.floor(e - 0.25));
+  if (!vis.every((k) => held.has(k) && held.get(k).k <= need(k0))) { startObjects(w, view); return; }
+  if (Math.abs(k0 - w.blockK0) < 0.005) return;
+  const on = new Set(vis);
+  w.blockK0 = k0; w.blockView = view;
+  for (const b of w.blockRecs) w.blockKd.set(b.key, k0 + (on.has(b.key) ? 0 : RING_OUT));
+  if (curWin === w) writeExponents(w);
+}
+// every block's exponent word (a float's bits, third of its tail) as the window's map holds it
+function writeExponents(w) {
+  const f = new Float32Array(1);
+  for (const r of w.blockRecs) { f[0] = w.blockKd.get(r.key) ?? 0; device.queue.writeBuffer(r.body, (7 * r.cap + 2) * 4, f); }
 }
 // The windows made, the last three kept (the one drawn, and two more a pan back or a zoom out and in finds made), with their ground and objects on the GPU. A window is
 // found again by what it covers: the page's own test (live.js wantGround) of the viewport's reach and the place's distance from the window's centre against the window's half side less its faded edge;
@@ -1278,7 +1290,7 @@ const handle = async (e) => {
     else if (m.type === "levels") levelsIn.resolve(m.levels);
     // the whole island at each level and bearing that keeps front lists (live.js islandView)
     else if (m.type === "frontViews") R.setFrontViews(m.views);
-    else if (m.type === "frame") { pending = m; if (m.cam) lastCam = m.cam; if (m.cam && curWin && ++camTick % 30 === 0) refocus(curWin, m.cam); render(); }
+    else if (m.type === "frame") { pending = m; if (m.cam) lastCam = m.cam; if (m.cam && curWin && ++camTick % 6 === 0) refocus(curWin, m.cam); render(); }
     else if (m.type === "want") groundWant(m);
     else if (m.type === "simTick") await simTick(m.n);
     // asked in a tick's pause (sim.ts tickPause), answered with the state after it, as the world stands between ticks
