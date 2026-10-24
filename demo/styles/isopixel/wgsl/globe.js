@@ -275,22 +275,43 @@ fn fieldsAt(t: Tl) -> Fv {
   F.lake = mix(mix(a.lake, b.lake, fx), mix(c.lake, d.lake, fx), fy);
   return F;
 }
-// the stream cells round a place: how much of a stream lies there (the bilinear of the cells that carry one: a ridge along it, one cell either side)
-// and the largest flow of them in m3/s; the cells' flow is the byte 16 log2(1 + q)
-fn riverRidge(t: Tl, qc: f32) -> vec2f {
-  let x = t.lx - 0.5;
-  let y = t.ly - 0.5;
-  let ix = i32(floor(x));
-  let iy = i32(floor(y));
-  let fx = x - floor(x);
-  let fy = y - floor(y);
-  var on = vec4f(0.0);
-  var qm = 0.0;
-  for (var k = 0; k < 4; k++) {
-    let q8 = f32((word(t.slot, ix + (k & 1), iy + (k >> 1u)).z >> 8u) & 255u);
-    if (q8 >= qc && q8 > 0.0) { on[k] = 1.0; qm = max(qm, exp2(q8 / 16.0) - 1.0); }
+// the flow of a stream cell in m3/s, 0 where it carries none above the cut (the cells' flow is the byte 16 log2(1 + q))
+fn streamQ(t: Tl, ix: i32, iy: i32, qc: f32) -> f32 {
+  let q8 = f32((word(t.slot, ix, iy).z >> 8u) & 255u);
+  return select(0.0, exp2(q8 / 16.0) - 1.0, q8 >= qc && q8 > 0.0);
+}
+// how far outside the nearest stream a place is, in metres of the noise's frame (negative inside), and that stream's flow: a stream runs along the line through the centres of the cells that
+// carry one and are next to each other (a cell to a cell, the flow and so the width taken along it), as wide as its flow makes it (WIDE) and never under a pixel (mpp), so the line a
+// pixel's centres sample is whole where it steps from a cell to its diagonal
+var<private> NB: array<vec2i, 5> = array<vec2i, 5>(vec2i(0, 0), vec2i(1, 0), vec2i(0, 1), vec2i(1, 1), vec2i(-1, 1));
+fn streamAt(t: Tl, qc: f32, mpp: f32) -> vec2f {
+  let p = vec2f(t.lx, t.ly);
+  let c0 = vec2i(floor(p));
+  var q: array<f32, 9>;
+  for (var j = 0; j < 3; j++) { for (var i = 0; i < 3; i++) { q[j * 3 + i] = streamQ(t, c0.x + i - 1, c0.y + j - 1, qc); } }
+  var best = vec2f(1.0e9, 0.0);
+  for (var j = 0; j < 3; j++) {
+    for (var i = 0; i < 3; i++) {
+      let qa = q[j * 3 + i];
+      if (qa <= 0.0) { continue; }
+      let pa = vec2f(f32(c0.x + i - 1) + 0.5, f32(c0.y + j - 1) + 0.5);
+      for (var k = 0; k < 5; k++) {
+        // the cell itself, then the cell to its east, south, south east and south west
+        let nb = vec2i(i, j) + NB[k];
+        if (nb.x < 0 || nb.x > 2 || nb.y > 2) { continue; }
+        let qb = q[nb.y * 3 + nb.x];
+        if (qb <= 0.0) { continue; }
+        let ab = vec2f(NB[k]);
+        let tt = select(0.0, clamp(dot(p - pa, ab) / dot(ab, ab), 0.0, 1.0), k > 0);
+        let d = length(p - (pa + ab * tt));
+        let qq = mix(qa, qb, tt);
+        let wE = max(WIDE * sqrt(qq) / gSc, mpp);
+        let e = d * gCm - 0.5 * wE;
+        if (e < best.x) { best = vec2f(e, qq); }
+      }
+    }
   }
-  return vec2f(mix(mix(on.x, on.y, fx), mix(on.z, on.w, fx), fy), qm);
+  return best;
 }
 
 // ---------- the ground sample from the tier's cells, or from the fine pages (the readers of ground.wgsl.js GSample for the planet) ----------
@@ -330,27 +351,25 @@ fn fillTop(S: ptr<function, GSample>, x: f32, z: f32) {
     // standing water as the island's waterAt has it from the cells' level and the fine height: the sea's level is 0, a lake's its cell's height and depth
     gLvl = max(select(-1.0e4, gHt + gF.water, gF.water >= 0.25), select(-1.0e4, 0.0, gHt < 8.0));
     (*S).wet = clamp(0.5 + (gLvl - gH) * 0.5, 0.0, 1.0);
-    // a stream the mask holds is a texel wide (PAGE_GEOM.cellM over mask, 4.7 m) or more: over a pixel wider than 0.7 of that it shows as the share of the pixel it covers, dithered as the tier's
-    // streams are below, so the finer streams fade out with the scale and not all at once where the fine pages end
-    let showMask = min(1.0, ${PAGE_GEOM.cellM / PAGE_GEOM.mask} / (0.7 * gMpp / gSc));
-    (*S).river = select(0.0, fineRiver(gFx), bayer(gX, gY) < showMask);
+    // a stream is a line a pixel wide at least, as the tier's are (streamAt): over a pixel wider than the mask's texel (PAGE_GEOM.cellM over mask, 4.7 m) the mask is read half a pixel to each side too
+    var rv = fineRiver(gFx);
+    let mppN = gMpp / gSc;
+    if (mppN > ${PAGE_GEOM.cellM / PAGE_GEOM.mask}) {
+      let o = 0.5 * mppN / gCm5;
+      rv = max(max(rv, fineRiver(gFx + vec2f(o, o))), max(fineRiver(gFx + vec2f(-o, o)), max(fineRiver(gFx + vec2f(o, -o)), fineRiver(gFx - vec2f(o, o)))));
+    }
+    (*S).river = rv;
     return;
   }
   (*S).wet = select(0.0, 1.0, gH < 0.0 || gF.lake >= 0.5);
   if ((*S).wet > 0.5) { return; }
-  // a stream is a line as wide as its flow makes it, as a pixel's share of it where that is under the pixel: the cells that carry one give a ridge, cut where its width
-  // is the line's, and the pixels left of a line thinner than 0.7 pixel are dithered out
+  // a stream is a line as wide as its flow makes it and a pixel at least (streamAt); the streams under the flow the view's scale cuts are dithered out as it rises to it
   let mpp = gMpp / gSc;
   let qc = 16.0 * log2(1.0 + 0.5 * u.cut);
-  let rr = riverRidge(gTl, qc);
-  if (rr.y <= 0.0) { return; }
-  let w = WIDE * sqrt(rr.y) / gSc;
-  let wEff = max(w, 0.7 * mpp);
-  let tau = 1.0 - clamp(wEff / (2.0 * gCm), 0.0, 1.0);
-  let show = clamp(w / (0.7 * mpp), 0.0, 1.0) * g_smooth(0.5, 1.0, rr.y / u.cut);
-  if (rr.x > tau && bayer(gX, gY) < show) {
+  let sa = streamAt(gTl, qc, mpp);
+  if (sa.x < 0.0 && bayer(gX, gY) < g_smooth(0.5, 1.0, sa.y / u.cut)) {
     (*S).river = 1.0;
-    gRShore = (rr.x - tau) / max(1.0 - tau, 1e-3) * wEff * 0.5;
+    gRShore = -sa.x;
   }
 }
 fn fillWater(S: ptr<function, GSample>, x: f32, z: f32, ctx: PaintCtx, river: bool) {
