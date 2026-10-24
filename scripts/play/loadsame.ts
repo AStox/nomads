@@ -13,7 +13,8 @@ const SITE = args.find((a, i) => !a.startsWith("--") && !args[i - 1]?.startsWith
 const LOADS = Number(at("--loads", "3")), LIMIT = Number(at("--limit", "0.5")), [VW, VH] = at("--vp", "1600x1000").split("x").map(Number), PROFILE = at("--profile", "/tmp/loadsame-chrome");
 if (!SITE) { console.error("usage: loadsame.ts <siteUrl> [--loads 3] [--limit 0.5] [--vp 1600x1000] [--profile /tmp/dir]"); process.exit(2); }
 const sleep = Bun.sleep;
-const PLACES: [string, number[] | null, number][] = [["opening", null, 0], ["A z6.5", [4.35, -39.38], 6.5], ["B z4.5", [-5.38, 73.13], 4.5]];
+// [name, place jumped to (null: the opening view), zoom, a fast pan after the settle: no reveal waits for the picture there]
+const PLACES: [string, number[] | null, number, boolean][] = [["opening", null, 0, false], ["A z6.5", [4.35, -39.38], 6.5, false], ["B z4.5", [-5.38, 73.13], 4.5, false], ["A z6.5 after a fast pan", [4.35, -39.38], 6.5, true]];
 rmSync(PROFILE, { recursive: true, force: true });
 
 const shots: Buffer[][] = [];
@@ -32,15 +33,25 @@ for (let load = 0; load < LOADS; load++) {
     await page.waitForSelector("body.ready", { timeout: 180000 });
     await page.evaluate(() => (window as any).play.live.debug.hold(1000));
     const row: Buffer[] = [];
-    for (const [name, geo, z] of PLACES) {
+    // the view settled: the window made, its trees and the planet's tiles in
+    const settle = () => page.evaluate(async () => {
+      const L = (window as any).play.live, s = (t: number) => new Promise((r) => setTimeout(r, t));
+      const t0 = performance.now(); let quiet = 0;
+      while (performance.now() - t0 < 40000 && quiet < 6) { await s(200); const c = await L.debug.check({ op: "idle" }); quiet = c?.busy || L.stats.tiles?.flying ? 0 : quiet + 1; }
+    });
+    for (const [name, geo, z, pan] of PLACES) {
       if (geo) {
-        // the place jumped to, the view settled: the window made, its trees and the planet's tiles in
         await page.evaluate((g: number[], zz: number) => { const P = (window as any).play; P.view.geo = { lat: g[0], lon: g[1] }; P.camera.setZoom(zz); }, geo, z);
-        await page.evaluate(async () => {
-          const L = (window as any).play.live, s = (t: number) => new Promise((r) => setTimeout(r, t));
-          const t0 = performance.now(); let quiet = 0;
-          while (performance.now() - t0 < 40000 && quiet < 6) { await s(200); const c = await L.debug.check({ op: "idle" }); quiet = c?.busy || L.stats.tiles?.flying ? 0 : quiet + 1; }
-        });
+        await settle();
+        if (pan) {
+          // eight quick drags the same way (a few kilometres: the window is made again on the way), then the same settle
+          for (let k = 0; k < 8; k++) {
+            await page.mouse.move(300, 500); await page.mouse.down();
+            for (let i = 1; i <= 10; i++) { await page.mouse.move(300 + 100 * i, 500); await sleep(10); }
+            await page.mouse.up();
+          }
+          await settle();
+        }
         await sleep(1500);
       } else await sleep(9000);
       row.push(await sharp(await page.screenshot({ type: "png" })).removeAlpha().raw().toBuffer());
