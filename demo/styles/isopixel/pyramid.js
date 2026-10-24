@@ -84,12 +84,12 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
   const across = (n, f, X, Y) => cellAcross({ fn: n }, f, X, Y);
   const planeAt = (i) => host.get(i);
 
-  // the cell field's words: height (as its 16 bits), rock, drift | drift depth, temperature, rain | water, river, tree, shrub | grass, marsh, bare, soil
+  // the cell field's words: height (as its 16 bits), rock and drift (4 bits each), the lake share | drift depth, temperature, rain | water, river, tree, shrub | grass, marsh, bare, soil
   function packFields(P) {
     const out = new Uint32Array(TILE * TILE * 4), h = new Uint16Array(P.height.buffer, P.height.byteOffset, TILE * TILE), t8 = new Uint8Array(P.temp.buffer, P.temp.byteOffset, TILE * TILE);
     for (let c = 0; c < TILE * TILE; c++) {
       const o = 4 * c;
-      out[o] = (h[c] | (P.rock[c] << 16) | (P.drift[c] << 24)) >>> 0;
+      out[o] = (h[c] | ((P.rock[c] | (P.drift[c] << 4)) << 16) | ((P.lake ? P.lake[c] : P.water[c] > 0 ? 255 : 0) << 24)) >>> 0;
       out[o + 1] = (P.driftDepth[c] | (t8[c] << 8) | (P.rain[c] << 16)) >>> 0;
       out[o + 2] = (P.water[c] | (P.river[c] << 8) | (P.tree[c] << 16) | (P.shrub[c] << 24)) >>> 0;
       out[o + 3] = (P.grass[c] | (P.marsh[c] << 8) | (P.bare[c] << 16) | (P.soil[c] << 24)) >>> 0;

@@ -226,15 +226,16 @@ fn heightSpline(t: Tl) -> vec3f {
 // a cell's fields, as bake.ts PYRAMID_FIELDS gives them in their steps
 struct Fv {
   rock: u32, drift: u32, dd: f32, temp: f32, rain: f32, water: f32, river: f32,
-  tree: f32, shrub: f32, grass: f32, marsh: f32, bare: f32, soil: f32,
+  tree: f32, shrub: f32, grass: f32, marsh: f32, bare: f32, soil: f32, lake: f32,
 }
 // a cell of the tile by its place in the tile, which may lie one past it: the layer holds a halo of 1 cell from the neighbouring tiles
 fn word(l: u32, ix: i32, iy: i32) -> vec4u { return textureLoad(fieldsT, clamp(vec2i(ix + 1, iy + 1), vec2i(0), vec2i(257)), i32(l), 0); }
 fn unpack(w: vec4u) -> Fv {
   let t8 = i32((w.y >> 8u) & 255u);
   var F: Fv;
-  F.rock = (w.x >> 16u) & 255u;
-  F.drift = (w.x >> 24u) & 255u;
+  F.rock = (w.x >> 16u) & 15u;
+  F.drift = (w.x >> 20u) & 15u;
+  F.lake = f32(w.x >> 24u) / 255.0;
   F.dd = f32(w.y & 255u) * 0.125;
   F.temp = f32(select(t8, t8 - 256, t8 > 127)) * 0.5;
   F.rain = f32(w.y >> 16u);
@@ -270,6 +271,7 @@ fn fieldsAt(t: Tl) -> Fv {
   F.bare = mix(mix(a.bare, b.bare, fx), mix(c.bare, d.bare, fx), fy);
   F.soil = mix(mix(a.soil, b.soil, fx), mix(c.soil, d.soil, fx), fy);
   F.water = mix(mix(a.water, b.water, fx), mix(c.water, d.water, fx), fy);
+  F.lake = mix(mix(a.lake, b.lake, fx), mix(c.lake, d.lake, fx), fy);
   return F;
 }
 // the stream cells round a place: how much of a stream lies there (the bilinear of the cells that carry one: a ridge along it, one cell either side)
@@ -330,7 +332,7 @@ fn fillTop(S: ptr<function, GSample>, x: f32, z: f32) {
     (*S).river = fineRiver(gFx);
     return;
   }
-  (*S).wet = select(0.0, 1.0, gH < 0.0 || gF.water >= 0.25);
+  (*S).wet = select(0.0, 1.0, gH < 0.0 || gF.lake >= 0.5);
   if ((*S).wet > 0.5) { return; }
   // a stream is a line as wide as its flow makes it, as a pixel's share of it where that is under the pixel: the cells that carry one give a ridge, cut where its width
   // is the line's, and the pixels left of a line thinner than 0.7 pixel are dithered out
@@ -385,8 +387,23 @@ fn fillWater(S: ptr<function, GSample>, x: f32, z: f32, ctx: PaintCtx, river: bo
     return;
   }
   // a lake's edge is a gentle one, as the island's lakes
-  let gl = select(0.05, gGl, sea);
-  (*S).shore = select(60.0, depth / gl, gl > 1e-4) / gSc;
+  if (sea) {
+    (*S).shore = select(60.0, depth / gGl, gGl > 1e-4) / gSc;
+    return;
+  }
+  // a lake's shore is where its share of the cell crosses a half: its distance is the share over its slope between the cells' centres, in cells
+  let lx = gTl.lx - 0.5;
+  let ly = gTl.ly - 0.5;
+  let ix = i32(floor(lx));
+  let iy = i32(floor(ly));
+  let fx = lx - floor(lx);
+  let fy = ly - floor(ly);
+  let a = f32(word(gTl.slot, ix, iy).x >> 24u);
+  let b = f32(word(gTl.slot, ix + 1, iy).x >> 24u);
+  let c = f32(word(gTl.slot, ix, iy + 1).x >> 24u);
+  let d = f32(word(gTl.slot, ix + 1, iy + 1).x >> 24u);
+  let g = length(vec2f(mix(b - a, d - c, fy), mix(c - a, d - b, fx))) / 255.0;
+  (*S).shore = select(60.0 * gCm, (gF.lake - 0.5) / g * gCm, g > 1e-4);
 }
 fn fillLand(S: ptr<function, GSample>, x: f32, z: f32, wx: f32, wz: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) {
   // the covers where the biome edges wander to, in cells
