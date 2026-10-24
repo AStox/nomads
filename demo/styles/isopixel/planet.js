@@ -178,6 +178,18 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       if (pts.every((p) => { const e = Math.min(p.lv, k), a = tileOf(p, Math.floor(e)), b = tileOf(p, Math.min(top, Math.ceil(e))); return pyramid.ready(a.t, a.f, a.tx, a.ty) && pyramid.ready(b.t, b.f, b.tx, b.ty); })) return k;
     return 0;
   }
+  // The highest ground the view's rays can meet, in metres, or null (the planet's highest summit stands: some tile the view reads is not held yet). A ray reads the tiers its pixels read (the level's
+  // floor and ceiling, never a coarser one than the coarsest pixel's), and a tile's top is its highest cell as held (pyramid.maxOver), which for a coarse tier is the means; the cubic B-spline reaches 2 cells
+  // past a tile's edge into a neighbour the list may not hold, which can stand over this tile's top by 2 cells at the steepest baked slope (0.8, measured at D, M and M2), and the ray starts
+  // 5 percent of the top and 30 m above it [design: the lead's margin]
+  function shellTop(pts, list) {
+    if (!pyramid.maxOver || !pts.length) return null;
+    const lo = Math.max(0, Math.floor(Math.min(...pts.map((p) => p.lv)))), read = list.filter((k) => k.t >= lo), mo = pyramid.maxOver(read);
+    if (mo.missing > 0 || !Number.isFinite(mo.top)) return null;
+    let top = -Infinity;
+    for (let t = lo; t <= pyramid.tiers - 1; t++) if (Number.isFinite(mo.byTier[t])) top = Math.max(top, mo.byTier[t] + 2 * 0.8 * ((R * Math.PI) / 2 / (256 * 2 ** t)));
+    return Math.max(0, top) * 1.05 + 30;
+  }
   // the level the screen shows: down at once (a coarser level is always held), up by CAP_RATE a second
   let cap = 0, capAt = performance.now(), fine = 0, last = null, drawn = false;
 
@@ -233,6 +245,8 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     // close up, where the view is tens of metres or a few kilometres across, the relief it can show lies within a 45 degree slope of the target's height over the view's reach: the shell the rays are
     // marched through ends there rather than at the planet's highest summit, so its few steps land on the ground the view has
     let hmaxR = (exag * hmax) / R;
+    const viewTop = shellTop(pts, wantedNow);
+    if (viewTop !== null) hmaxR = Math.min(hmaxR, (exag * viewTop) / R);
     if ((opts.ortho ?? 0) > 0.5) hmaxR = Math.min(hmaxR, (cam.lift + cam.hh * R * Math.hypot(cam.aspect, 2) * 1.5) / R);
     const oLen = Math.hypot(cam.o[0], cam.o[1], cam.o[2]), cut = opts.riverCut ?? 20, nf = noiseFrame(cam.T);
     u.set([...cam.o, cam.tanH, ...cam.fwd, cam.aspect, ...cam.right, opts.relief ?? 2.5, ...cam.up, exag, ...sun, R, ...cam.T, hmaxR, ...cam.off, artPx,
