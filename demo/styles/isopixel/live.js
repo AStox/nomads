@@ -299,13 +299,15 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // nears the window's edge (the worker is told, and answers when it has it; until then the ladder draws what ground it has)
   function wantGround(view, now, speculative = false) {
     if (!HAS_WIN || !objectsReady || view.zoom < ZLAD + 0.5 || !view.geo) return;
-    const ppm = ppmOf(clampZ(view.zoom)), half = (canvas.width / 2 + canvas.height) / ppm, v = vecOf(view.geo), arc = (c) => Math.acos(Math.min(1, dotv(v, c))) * PR;
-    // a view wider than a window can hold (the coarse ladder levels) is drawn by the planet layer alone away from the island: asking for windows there
-    // would make one at every step of a pan, each a few seconds of the GPU's work for ground that cannot cover the view
-    if (half > SIZE / 2 - 1800) return;
+    const ext = viewExtent(view), half = (canvas.width / 2 + canvas.height) / ppmOf(clampZ(view.zoom)), v = vecOf(view.geo), arc = (c) => Math.acos(Math.min(1, dotv(v, c))) * PR;
+    // a view wider than a window can cover (the coarse ladder levels) is drawn by the planet layer alone away from the island: asking for windows there
+    // would make one at every step of a pan, each a few seconds of the GPU's work for ground that cannot cover the view. mC is the margin a window laid at the camera leaves
+    // (coverMargin); a window is made again when the camera nears the point where the screen's fade (half the viewport's reach) and a prefetch margin begin.
+    const mC = SIZE / 2 - PLAY_EDGE_M - ext;
+    if (mC < 0) return;
     let want = null;
-    if (arc(HOME.c) + half < SIZE / 2 + 800) { if (mode !== "home") want = { mode: "home" }; }
-    else if (mode !== "win" || arc(FRM.c) / FRM.scale + half > SIZE / 2 - 600) want = { mode: "win", lat: view.geo.lat, lon: view.geo.lon, half };
+    if (arc(HOME.c) < mC + 800) { if (mode !== "home") want = { mode: "home" }; }
+    else if (mode !== "win" || arc(FRM.c) / FRM.scale > mC - 0.5 * ext - 800) want = { mode: "win", lat: view.geo.lat, lon: view.geo.lon, half, ext };
     // a speculative ask is for the view a zoom is heading to: the worker makes the window ahead of the view that needs it, and keeps it
     if (speculative) {
       if (!want || want.mode !== "win") return;
@@ -789,9 +791,14 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // a pan of that much between two drawings still finds the canvas covered [design: 5 percent, about three frames of the
   // zoom bench's zoom out at its 1.8 percent a frame].
   const FADE_MARGIN = 0.05;
-  // whether the play area, faded edge and all, fills the canvas, so the planet under it cannot show: the canvas's farthest ground, at
-  // most (0.71 W / 2 + 1.41 H / 2) / ppm of the target along each axis (the ladder's basis, inverted), a quarter more for the relief's lift
-  const playAreaCovers = (view) => view.zoom >= 0 && Math.max(Math.abs(view.x), Math.abs(view.z)) + (1.25 * (0.71 * canvas.width + 1.41 * canvas.height)) / (2 * ppmOf(clampZ(view.zoom))) < SIZE / 2 - PLAY_EDGE_M;
+  // The canvas's farthest ground from the target, along each axis: at most (0.71 W / 2 + 1.41 H / 2) / ppm (the ladder's basis, inverted), a quarter more for the relief's lift
+  const viewExtent = (view) => (1.25 * (0.71 * canvas.width + 1.41 * canvas.height)) / (2 * ppmOf(clampZ(view.zoom)));
+  // One level of detail across the whole screen (plan R6): the ladder's ground is only as large as the play area or the window laid at the camera, so it is shown only when
+  // it fills the canvas (the margin, in metres, by which the viewport lies inside the area less its faded edge), and it comes in by one fade over the whole canvas as the margin
+  // opens; until then the planet layer alone is drawn, at the same level everywhere on the screen.
+  const coverMargin = (view) => SIZE / 2 - PLAY_EDGE_M - Math.max(Math.abs(view.x), Math.abs(view.z)) - viewExtent(view);
+  const coverFade = (view) => (PLACE ? smooth(0, 1, coverMargin(view) / (0.5 * viewExtent(view))) : 1);
+  const ladderAlpha = (view) => (PLACE ? smooth(ZLAD, ZLAD + 1, view.zoom) * winFade() * coverFade(view) : 1);
   // whether any of the play area (and its fade) can be in the canvas, by the corners' screen box a quarter canvas wider on every side
   function playAreaShown(view) {
     const h = SIZE / 2 + PLAY_EDGE_M, y = camH(view.x, view.z) + (view.up || 0), W = canvas.width, H = canvas.height;
@@ -800,7 +807,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     return x1 > -W / 4 && x0 < W * 1.25 && y1 > -H / 4 && y0 < H * 1.25;
   }
   function plan(view) {
-    const lf = levelFor(view.zoom), beta = norm8(view.bearing ?? 0), a = (PLACE ? smooth(ZLAD, ZLAD + 1, view.zoom) : 1) * winFade();
+    const lf = levelFor(view.zoom), beta = norm8(view.bearing ?? 0), a = (stats.ladderAlpha = ladderAlpha(view));
     if (a <= 0 || (PLACE && !playAreaShown(view))) return { lf, parts: [], beta };
     const fade = lf.L < NL - 1 && lf.t > 0.6, m = fade ? FADE_MARGIN : 0, parts = [[camera(view, lf.L, beta, m), a]];
     if (fade) parts.push([camera(view, lf.L + 1, beta, m), smooth(0.6, 1, lf.t)]);
@@ -895,7 +902,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the sim's people, animals and things live on the island: elsewhere there are none
     const simUse = mode === "home" ? sim : null;
     const views = pl.parts.map(([cam, w], k) => viewOf(cam, k, w, simUse, clock, now, view));
-    const id = ++frameNo, msg = { type: "frame", id, gid: PLACE ? gid : undefined, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), cam: view.geo && PLACE ? { lat: view.geo.lat, lon: view.geo.lon } : undefined, exag: EXAG, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG }, planet: PLACE && !playAreaCovers(view) ? planetParams(view) : null };
+    const id = ++frameNo, msg = { type: "frame", id, gid: PLACE ? gid : undefined, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), cam: view.geo && PLACE ? { lat: view.geo.lat, lon: view.geo.lon, ext: viewExtent(view) } : undefined, exag: EXAG, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG }, planet: PLACE && ladderAlpha(view) < 1 ? planetParams(view) : null };
     if (lutSent !== sky.id) { msg.lut = T.gpu.slice(); lutSent = sky.id; }
     ownersOf.set(id, pickOwners);
     if (ownersOf.size > 30) ownersOf.delete(ownersOf.keys().next().value);

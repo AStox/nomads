@@ -869,6 +869,8 @@ async function check(m) {
   if (m.op === "far") { R.setFarUse(!!m.on); if (m.rebuild) R.farBuild(farLevels()); return true; }
   if (m.op === "fade") { R.setFadeKeep(!!m.on); return true; }
   if (m.op === "roll") { R.debugRoll(m.kx, m.ky); return true; }
+  // the share each block of the drawn window is drawn at (2^-eff of what its ground grew) and where it stands in the window's cells (plan R6: the blocks the screen can touch must all show one share)
+  if (m.op === "shares") return curWin?.blockRecs && { k0: curWin.blockK0, view: curWin.blockView, blocks: curWin.blockRecs.map((b) => ({ key: b.key, eff: b.k + (curWin.blockKd?.get(b.key) ?? 0), c0: b.X - curWin.x0, z0: curWin.y0 + 256 - (b.Y + 64) })) };
   if (m.op === "quads") return splitQuads(!!m.on);
   if (m.op === "front") { R.setFrontUse(!!m.on); return true; }
   // view 0's G-buffer kept (gsnap), and the next one compared with it pixel by pixel (gdiff): what each pixel shows
@@ -966,27 +968,32 @@ function camCells(w, lat, lon) {
   if (d < 0.1) return { x: 128, z: 128 };
   return { x: 128 + (planet.radiusM * dot(v, w.e)) / (d * w.scale * 75), z: 128 - (planet.radiusM * dot(v, w.n)) / (d * w.scale * 75) };
 }
-// the blocks' shares ranked again round the camera when it has gone 24 cells from where they were ranked for and has come to rest
-function refocus(w, want) {
-  if (!blocksOn || !w.blockPlan || w.blocksBusy || !w.blockRecs || want.lat === undefined) return;
-  const cam = camCells(w, want.lat, want.lon), prev = w.camPrev;
-  w.camPrev = cam;
-  // only once the camera has settled (under 6 cells since the last look, half a second ago): a pan would make blocks for every step of it
-  if (!prev || Math.hypot(cam.x - prev.x, cam.z - prev.z) > 6) return;
-  if (w.blockCam && Math.hypot(cam.x - w.blockCam.x, cam.z - w.blockCam.z) < 24) return;
-  startObjects(w, cam);
+let lastCam = null;
+// The camera's place and the viewport's reach in a window's cells (ext: the canvas's farthest ground from the target, a window's 75 m cells being plane metres of 75): what groundwin.js blocksNeed and
+// makeBlocks take. A message without a reach (the first ask) is taken as a view of the whole window.
+const viewCells = (w, m) => ({ ...camCells(w, m.lat, m.lon), ext: m.ext !== undefined ? m.ext / 75 : m.half !== undefined ? m.half / 75 : 128 });
+// The blocks drawn again when the view can touch a block the window holds none of at the share it needs, or the share one level of detail across the screen needs has changed (a zoom, or a
+// pan that brings a block into the margin): checked every thirty frames, and only made while the last is not (plan R6).
+function refocus(w, m) {
+  if (!blocksOn || !w.blockPlan || w.blocksBusy || !w.blockRecs || m.lat === undefined) return;
+  const view = viewCells(w, m), { vis, k0 } = planet.wins.blocksNeed(w, view);
+  if (k0 === null) return;
+  const held = new Map(w.blockRecs.map((b) => [b.key, b]));
+  if (k0 === w.blockK0 && vis.every((k) => held.has(k) && held.get(k).k <= k0)) return;
+  startObjects(w, view);
 }
 // The windows made, the last three kept (the one drawn, and two more a pan back or a zoom out and in finds made), with their ground and objects on the GPU. A window is
-// found again by what it covers: the page's own test for a window's cover (the view's half extent in the window's metres and the place's distance from the window's
-// centre, inside the window's half side less 600 m); one made within WIN_NEAR metres of the place asked for serves when the ask names no half extent.
-const WIN_NEAR = 600, WIN_REACH = (256 * 75) / 2 - 600, WIN_KEEP = 3, winCache = [];
+// found again by what it covers: the page's own test (live.js wantGround) of the viewport's reach and the place's distance from the window's centre against the window's half side less its faded edge;
+// one made within WIN_NEAR metres of the place asked for serves when the ask names no reach.
+const WIN_NEAR = 600, WIN_EDGE = 1200, WIN_KEEP = 3, winCache = [];
 const arcOf = (a, b) => planet.radiusM * Math.acos(Math.min(1, Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.cos((a.lon - b.lon) * Math.PI / 180) + Math.sin(a.lat * Math.PI / 180) * Math.sin(b.lat * Math.PI / 180)));
 const winNear = (want) => {
   let best = null, bestD = Infinity;
   for (const w of winCache) {
     if (w.dead) continue;
     const d = arcOf(w, want);
-    if ((want.half !== undefined ? d / w.scale + want.half <= WIN_REACH : d < WIN_NEAR) && d < bestD) { best = w; bestD = d; }
+    // the page's own rule (live.js wantGround): a window serves while the camera is within the margin its viewport and fade leave
+    if ((want.ext !== undefined ? d / w.scale <= Math.max(WIN_NEAR, (256 * 75) / 2 - WIN_EDGE - 1.5 * want.ext - 800) : d < WIN_NEAR) && d < bestD) { best = w; bestD = d; }
   }
   return best;
 };
@@ -1033,40 +1040,45 @@ async function groundWant(m) {
         w = await planet.wins.build(want.lat, want.lon, curWin ?? winCache[winCache.length - 1] ?? null);
         keepWindow(w);
       }
+      // a window made now has its objects made too, and its ground is shown once the blocks the view can touch are made (one level of detail across the screen, plan R6: until then the screen stays as it was)
+      const near = fresh ? startObjects(w, viewCells(w, want)) : null;
       if (!spec) {
+        if (near) await near;
         prepared = { gid: ++gids, mode: "win", win: w };
         post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon }, fields: w.fields, stats: { ...w.stats, id: w.id, objects: w.objectsValue?.n ?? null, share: w.objectsValue?.share ?? null } });
       }
-      // a window made now has its objects made after its ground is out
-      if (fresh) startObjects(w, camCells(w, want.lat, want.lon));
     }
   } catch (err) {
     console.error("window", err);
     post({ type: "windowError", error: String((err && err.stack) || err) });
   } finally { building = false; }
 }
-// the objects of a window (a promise of GPU buffers, groundwin.js startObjects): kept on the window, handed to the drawn source when they arrive, their size told to the page
-function startObjects(w, cam) {
+// the objects of a window (a promise of GPU buffers, groundwin.js startObjects): kept on the window, handed to the drawn source when they arrive, their size told to the page. By block, the promise
+// answered is that of the blocks the view can touch (the others follow); the whole window's objects are not waited for.
+function startObjects(w, view) {
   if (blocksOn && w.blockPlan) {
-    w.blockCam = cam ?? { x: 128, z: 128 };
+    const near = Promise.withResolvers();
+    w.blockView = view ?? { x: 128, z: 128, ext: 128 };
     const tBlocks = performance.now();
     w.blocksBusy = true;
-    // the near blocks are drawn as soon as they are made, the rest when they are
-    const stage = (recs, kds) => {
+    // the blocks the view can touch are drawn as soon as they are all made, the rest when they are
+    const stage = (recs, kds, k0) => {
       for (const b of recs) blockAll.add(b);
-      w.blockRecs = recs; w.blockKd = kds;
+      w.blockRecs = recs; w.blockKd = kds; w.blockK0 = k0;
+      near.resolve();
       if (!w.dead) { attachObjects(w); post({ type: "windowObjects", id: w.id, objects: recs.reduce((n, b) => n + b.n, 0), share: 0, ms: performance.now() - tBlocks, estimate: 0, blocks: recs.length, made: 0, stage: 1 }); }
     };
-    planet.wins.makeBlocks(w, blockCache, w.blockCam, stage).then((r) => {
+    planet.wins.makeBlocks(w, blockCache, w.blockView, stage).then((r) => {
       w.blocksBusy = false;
       for (const b of r.fresh) blockAll.add(b);
-      w.blockRecs = r.recs; w.blockKd = r.kds;
+      w.blockRecs = r.recs; w.blockKd = r.kds; w.blockK0 = r.k0;
+      near.resolve();
       if (w.dead) { w.blockRecs = null; sweepBlocks(); return; }
       attachObjects(w);
       sweepBlocks();
       post({ type: "windowObjects", id: w.id, objects: r.n, share: 2 ** -r.k, ms: performance.now() - tBlocks, estimate: r.estimate, blocks: r.recs.length, made: r.fresh.length, bytes: [...blockAll].reduce((n, b) => n + (7 * b.cap + 4) * 4, 0) });
-    }).catch((err) => { w.blocksBusy = false; console.error("window blocks", err); post({ type: "windowError", error: String((err && err.stack) || err) }); });
-    return;
+    }).catch((err) => { w.blocksBusy = false; near.resolve(); console.error("window blocks", err); post({ type: "windowError", error: String((err && err.stack) || err) }); });
+    return near.promise;
   }
   w.startObjects().then((o) => {
     w.objectsValue = o;
@@ -1098,7 +1110,7 @@ async function applyGround(p) {
     curGid = p.gid;
     if (prepared === p) prepared = null;
     if (p.mode === "win") await surveyWindow();
-    if (p.mode === "win" && blocksOn && p.win.blockPlan && !p.win.blockRecs && !p.win.blocksBusy) startObjects(p.win);
+    if (p.mode === "win" && blocksOn && p.win.blockPlan && !p.win.blockRecs && !p.win.blocksBusy) startObjects(p.win, lastCam ? viewCells(p.win, lastCam) : undefined);
   } finally { switching = false; applyMs = performance.now() - tApply; }
 }
 async function surveyWindow() {
@@ -1244,7 +1256,7 @@ const handle = async (e) => {
     else if (m.type === "levels") levelsIn.resolve(m.levels);
     // the whole island at each level and bearing that keeps front lists (live.js islandView)
     else if (m.type === "frontViews") R.setFrontViews(m.views);
-    else if (m.type === "frame") { pending = m; if (m.cam && curWin && ++camTick % 30 === 0) refocus(curWin, m.cam); render(); }
+    else if (m.type === "frame") { pending = m; if (m.cam) lastCam = m.cam; if (m.cam && curWin && ++camTick % 30 === 0) refocus(curWin, m.cam); render(); }
     else if (m.type === "want") groundWant(m);
     else if (m.type === "simTick") await simTick(m.n);
     // asked in a tick's pause (sim.ts tickPause), answered with the state after it, as the world stands between ticks

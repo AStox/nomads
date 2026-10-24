@@ -16,7 +16,7 @@ const D2R = Math.PI / 180;
 // the sizes the window's object buffer comes in, so its pipelines are made once for each [design: a body is 28 bytes a slot, 235 MB at the top]
 const CAPS = [1 << 20, 1 << 21, 1 << 22, 1 << 23];
 // The blocks a window's objects can come in (cells a side, and the sizes of body a block comes in)
-export const BLOCK = 64, BLOCK_CAPS = [1 << 17, 1 << 18, 1 << 19, 1 << 20, 1 << 21], BLOCK_TOTAL = 11e6, RING_SHIFT = [0, 2, 4, 5];
+export const BLOCK = 64, BLOCK_CAPS = [1 << 17, 1 << 18, 1 << 19, 1 << 20, 1 << 21], BLOCK_TOTAL = 11e6, RING_OUT = 3;
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const unit = (a) => { const l = Math.hypot(a[0], a[1], a[2]); return [a[0] / l, a[1] / l, a[2] / l]; };
 
@@ -220,23 +220,46 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     return { rect: { x0: rx, y0: ry, w: rw, h: rh }, units: { s0x, s0y, w0x, w0y, d0: d[0], d1: d[1] } };
   }
   // The window's objects as blocks of 64 cells of its tiles, each its own source in its own frame (wgsl/objects.js srcOc): `cache` (key to record) holds those made already, so a window
-  // over tiles another covered makes only what is new. One run of each tile's scatter serves all its blocks. A block's share is by its distance from `cam` (the camera, in the window's cells):
-  // the nearest four blocks the densest, the next twelve a quarter of that, the next nine a sixteenth, the rest a thirty-second (RING_SHIFT), the densest the largest share 2^-k0 that keeps the whole in BLOCK_TOTAL
-  // objects (and any one block in the largest body). A record made at a share as dense as wanted or denser serves (it draws the thinner share, the sources' third word, kd); a thinner one
-  // is made again. The blocks are made nearest first, `stage(recs, kds)` called after the near sixteen so their trees are drawn before the rest are made. Returns { recs, kds, fresh, k, n, estimate }, or null.
-  async function makeBlocks(w, cache, cam = { x: N / 2, z: N / 2 }, stage = null) {
-    const plan = w.blockPlan;
-    if (!plan) return null;
-    const { x0, y0 } = plan, need = [];
-    for (const t of plan.tiles)
+  // over tiles another covered makes only what is new. One run of each tile's scatter serves all its blocks. One level of detail across the screen (plan R6): `view` is the camera's place in
+  // the window's cells (x east, z south from its north-west corner) and ext the viewport's farthest ground from it, in cells; every block the viewport grown by a prefetch margin can touch (vis)
+  // is made and drawn at one share 2^-k0, the largest that keeps the window's blocks in BLOCK_TOTAL objects whatever the camera's place (the most vis blocks the view can hold, at the
+  // densest they stand, plus the others RING_OUT steps thinner) and each in the largest body; only blocks past the margin are thinner (RING_OUT). A record made at a share as dense as wanted or
+  // denser serves (it draws the thinner share, the sources' third word, kd); a thinner one is made again. The vis blocks are made first and `stage(recs, kds)` called with only them, so no
+  // block of the screen is drawn at another share than the rest. Returns { recs, kds, fresh, k, k0, vis, n, estimate }, or null.
+  const estOf = new Map();
+  function layoutBlocks(w, view) {
+    const { x0, y0, tiles: ts } = w.blockPlan, r = 1.5 * view.ext + 16, need = [];
+    for (const t of ts)
       for (let by = 0; by < 256 / BLOCK; by++)
         for (let bx = 0; bx < 256 / BLOCK; bx++) {
           const X = t.tx * 256 + bx * BLOCK, Y = t.ty * 256 + by * BLOCK;
-          if (X + BLOCK > x0 && X < x0 + N && Y + BLOCK > y0 && Y < y0 + N) need.push({ t, bx, by, X, Y, key: `${t.tile}:${bx}:${by}`, d: Math.hypot(X + BLOCK / 2 - x0 - cam.x, y0 + N - (Y + BLOCK / 2) - cam.z) });
+          if (!(X + BLOCK > x0 && X < x0 + N && Y + BLOCK > y0 && Y < y0 + N)) continue;
+          const c0 = X - x0, z0 = y0 + N - (Y + BLOCK);
+          need.push({ t, bx, by, X, Y, key: `${t.tile}:${bx}:${by}`, vis: c0 + BLOCK > view.x - r && c0 < view.x + r && z0 + BLOCK > view.z - r && z0 < view.z + r, d: Math.hypot(c0 + BLOCK / 2 - view.x, z0 + BLOCK / 2 - view.z) });
         }
-    need.sort((a, b) => a.d - b.d);
+    need.sort((a, b) => b.vis - a.vis || a.d - b.d);
+    // null until every block's estimate is known (the first time a block is met, its tile's run gives it)
+    const k0Of = () => {
+      if (!need.every((b) => estOf.has(b.key))) return null;
+      const m = Math.min(need.length, (Math.ceil((2 * r) / BLOCK) + 1) ** 2), e = need.map((b) => estOf.get(b.key)).sort((a, b) => b - a), most = BLOCK_CAPS[BLOCK_CAPS.length - 1] * 0.92;
+      const top = e.slice(0, m).reduce((a, b) => a + b, 0), rest = e.slice(m).reduce((a, b) => a + b, 0);
+      let k = 0;
+      while (top / 2 ** k + rest / 2 ** (k + RING_OUT) > BLOCK_TOTAL || e[0] / 2 ** k > most) k++;
+      return k;
+    };
+    return { need, k0Of };
+  }
+  async function makeBlocks(w, cache, view = { x: N / 2, z: N / 2, ext: N }, stage = null) {
+    const plan = w.blockPlan;
+    if (!plan) return null;
+    const { need, k0Of } = layoutBlocks(w, view);
+    let k0 = k0Of();
+    const kOf = (r) => k0 + (r.vis ? 0 : RING_OUT);
+    // the runs of the tiles with blocks to make (all of them, the first time, for the estimates)
+    const todoOf = () => need.filter((r) => { const b = cache.get(r.key); return !b || b.k > kOf(r); });
+    const open = k0 === null ? need : todoOf();
     const byTile = new Map();
-    for (const r of need) { if (!byTile.has(r.t.tile)) byTile.set(r.t.tile, { t: r.t, rec: [] }); byTile.get(r.t.tile).rec.push(r); }
+    for (const r of open) { if (!byTile.has(r.t.tile)) byTile.set(r.t.tile, { t: r.t, rec: [] }); byTile.get(r.t.tile).rec.push(r); }
     const opened = await Promise.all([...byTile.values()].map(async ({ t, rec }) => {
       const lo = (v) => Math.max(0, Math.min(...rec.map(v)) * BLOCK - 1), hi = (v) => Math.min(256, (Math.max(...rec.map(v)) + 1) * BLOCK + 1);
       const rx = lo((r) => r.bx), ry = lo((r) => r.by), rect = { x0: rx, y0: ry, w: hi((r) => r.bx) - rx, h: hi((r) => r.by) - ry };
@@ -244,13 +267,10 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       return { t, rec, run };
     }));
     try {
-      const runOf = new Map();
-      for (const { rec, run } of opened) for (const r of rec) { r.run = run; r.est = run.est({ bx0: r.bx * BLOCK, by0: r.by * BLOCK, n: BLOCK }); }
-      const ring = (i) => RING_SHIFT[i < 4 ? 0 : i < 16 ? 1 : i < 25 ? 2 : 3], most = BLOCK_CAPS[BLOCK_CAPS.length - 1] * 0.92;
-      let k0 = 0;
-      const sum = (k) => need.reduce((a, r, i) => a + r.est / 2 ** (k + ring(i)), 0);
-      while (sum(k0) > BLOCK_TOTAL || need.some((r, i) => r.est / 2 ** (k0 + ring(i)) > most)) k0++;
-      need.forEach((r, i) => { r.k = k0 + ring(i); });
+      for (const { rec, run } of opened) for (const r of rec) { r.run = run; if (!estOf.has(r.key)) estOf.set(r.key, run.est({ bx0: r.bx * BLOCK, by0: r.by * BLOCK, n: BLOCK })); }
+      if (k0 === null) k0 = k0Of();
+      const total = need.reduce((a, r) => a + estOf.get(r.key), 0);
+      need.forEach((r) => { r.k = kOf(r); });
       const recs = [], fresh = [], kds = new Map();
       const make = async (list) => {
         const todo = list.filter((r) => { const b = cache.get(r.key); return !b || b.k > r.k; });
@@ -266,15 +286,17 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
         }
       };
       const collect = (list) => { const out = []; for (const r of list) { const b = cache.get(r.key); out.push(b); kds.set(r.key, Math.max(0, r.k - b.k)); } return out; };
-      await make(need.slice(0, 16));
-      if (stage && need.length > 16) stage(collect(need.slice(0, 16)), kds, k0);
-      await make(need.slice(16));
+      const vis = need.filter((r) => r.vis), out = need.filter((r) => !r.vis);
+      await make(vis);
+      if (stage && out.length) stage(collect(vis), kds, k0);
+      await make(out);
       const all = collect(need);
-      let kept = 0, total = 0;
+      let kept = 0;
       for (const b of all) kept += b.n;
-      for (const r of need) total += r.est;
-      return { recs: all, kds, fresh, k: total > 0 ? -Math.log2(Math.max(1e-9, kept / total)) : 0, k0, n: kept, estimate: total };
+      return { recs: all, kds, fresh, k: total > 0 ? -Math.log2(Math.max(1e-9, kept / total)) : 0, k0, vis: new Set(vis.map((r) => r.key)), n: kept, estimate: total };
     } finally { for (const { run } of opened) run.close(); }
   }
-  return { build, stats, groundTile, makeBlocks };
+  // the blocks the view can touch and the share they are drawn at, for the worker to see whether the blocks it holds still serve (null k0: a block's estimate is not known yet)
+  const blocksNeed = (w, view) => { const { need, k0Of } = layoutBlocks(w, view); return { vis: need.filter((r) => r.vis).map((r) => r.key), k0: k0Of() }; };
+  return { build, stats, groundTile, makeBlocks, blocksNeed };
 }
