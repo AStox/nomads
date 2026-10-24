@@ -70,8 +70,18 @@ export async function windowObjects(g: Gpu, tier: number, tiles: PlaceTile[], se
 export const placeKernels: [string, string][] = [[placeKernel, "place"], [scanKernelFor(256), "scan"], [scanKernelFor(64), "scan"], [scatterKernel, "scatter"]];
 
 // A block of a ground tile's cells made as a source of its own: bx0, by0 its corner in the tile's cells and n its cells a side; k its share's shift (2^-k) or the least that fits `top` slots.
-export interface BlockSpec { bx0: number; by0: number; n: number; k?: number }
+// `turn`: for a tile of another cube face than the window's, the tile's shift and quarter turn into the window's frame (a PlaceTile's s0x ... d1, with the tile's a0, a1) and (cx, cy) the
+// south-west corner, in the window's cells (x east, y north, from its south-west corner), of the square the block stands on there. The block is then made in the window's frame: its n cells
+// square is the quarter turn of the tile block's, its objects are placed (x east, z south, mm from that square's north-west corner) and filed by the square's cells; which objects it holds,
+// and their kind, size and seed, are the tile block's own whichever window holds it.
+export type Turn = Pick<PlaceTile, "s0x" | "s0y" | "w0x" | "w0y" | "d0" | "d1"> & { cx: number; cy: number };
+export interface BlockSpec { bx0: number; by0: number; n: number; k?: number; turn?: Turn }
 export interface BlockObjects extends WindowObjects { bx0: number; by0: number; n_: number }
+
+// The place kernel's transform words (s0x, s0y, w0x, w0y, d0, d1) of a block: the tile's own frame from the block's corner, or the window's from the turned block's square.
+const frameOf = (tile: PlaceTile, b: BlockSpec) => b.turn
+  ? [b.turn.s0x, b.turn.s0y, b.turn.w0x - b.turn.cx * 5000, b.turn.w0y - b.turn.cy * 5000, b.turn.d0, b.turn.d1]
+  : [tile.a0 + b.bx0 * 5000, tile.a1 + b.by0 * 5000, 0, 0, 1, 0];
 
 // One run of a tile's scatter over `tile.rect` (the cells the blocks asked of it cover), from which any number of blocks are made, each in its own frame (x east, z south, mm from the block's
 // north-west corner; `tile.a0`, `a1` the tile's corner in units, which the blocks' frames hang from), so the tile's tables and counts are made once however many blocks there are. The same
@@ -94,7 +104,7 @@ export async function openTile(g: Gpu, tier: number, tile: PlaceTile, seed: numb
     let k = b.k ?? 0;
     if (b.k === undefined) while (e / 2 ** k > top * 0.92) k++;
     let stageCap = Math.min(top, Math.ceil((e / 2 ** k) * 1.1) + 4096);
-    const win = b.n * 5000;
+    const win = b.n * 5000, fr = frameOf(tile, b);
     for (;;) {
       const stage = storage(g, stageCap * STAGE_WORDS * 4), counts = storage(g, (CELLS + 2) * 4);
       if (span > 0) {
@@ -105,7 +115,7 @@ export async function openTile(g: Gpu, tier: number, tile: PlaceTile, seed: numb
           if (hi <= lo) continue;
           const [gx, gy2] = cover(g, hi - lo), p = new Int32Array(20);
           // the block's corner: x west, y at its south edge (the frame's z runs south from the north edge)
-          p.set([lo, hi, gx, k, stageCap, 0, 0, 0, tile.a0, tile.a1, tile.a0 + b.bx0 * 5000, tile.a1 + b.by0 * 5000, 0, 0, 1, 0, win, b.n]);
+          p.set([lo, hi, gx, k, stageCap, 0, 0, 0, tile.a0, tile.a1, ...fr, win, b.n]);
           const u = uniform(g, p);
           dispatch(g, pipeline(g, placeKernel, "place"), [u, ...run.out.slice(0, 5), stage, counts], [gx, gy2]);
           u.destroy();
@@ -131,7 +141,7 @@ export async function openTile(g: Gpu, tier: number, tile: PlaceTile, seed: numb
   const makeMany = async (specs: BlockSpec[]): Promise<BlockObjects[]> => {
     const ks = specs.map((b) => { const e = est(b); let k = b.k ?? 0; if (b.k === undefined) while (e / 2 ** k > top * 0.92) k++; return { e, k }; });
     const stages = specs.map((b, i) => storage(g, Math.min(top, Math.ceil((ks[i].e / 2 ** ks[i].k) * 1.1) + 4096) * STAGE_WORDS * 4)), counts = specs.map(() => storage(g, (CELLS + 2) * 4));
-    const caps = specs.map((b, i) => Math.min(top, Math.ceil((ks[i].e / 2 ** ks[i].k) * 1.1) + 4096));
+    const caps = specs.map((b, i) => Math.min(top, Math.ceil((ks[i].e / 2 ** ks[i].k) * 1.1) + 4096)), frames = specs.map((b) => frameOf(tile, b));
     const place = pipeline(g, placeKernel, "place"), tails = storage(g, specs.length * 8 + 8);
     {
       const enc = g.device.createCommandEncoder(), pass = enc.beginComputePass(), unis: GPUBuffer[] = [];
@@ -141,7 +151,7 @@ export async function openTile(g: Gpu, tier: number, tile: PlaceTile, seed: numb
           const lo = run.start[gy * TILES + gxLo], hi = run.start[gy * TILES + gxHi + 1];
           if (hi <= lo) continue;
           const [gx, gy2] = cover(g, hi - lo), p = new Int32Array(20);
-          p.set([lo, hi, gx, ks[i].k, caps[i], 0, 0, 0, tile.a0, tile.a1, tile.a0 + b.bx0 * 5000, tile.a1 + b.by0 * 5000, 0, 0, 1, 0, b.n * 5000, b.n]);
+          p.set([lo, hi, gx, ks[i].k, caps[i], 0, 0, 0, tile.a0, tile.a1, ...frames[i], b.n * 5000, b.n]);
           const u = uniform(g, p);
           unis.push(u);
           pass.setPipeline(place);

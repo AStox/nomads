@@ -136,10 +136,11 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
 
     // ---------- what grew: each tile's own scatter, put in the window's frame, thinned and binned into the renderer's body on the GPU, nothing read back ----------
     // started by the caller (startObjects) once the ground is out, so the page has the ground without waiting on the objects' CPU work; its promise is `w.objects`
-    // Where the window's objects come from when they are made by block (makeBlocks): the tiles its cells lie on, all of its own face; null when one is across a cube's edge (turned
-    // against the window's), which the whole window's objects serve.
+    // Where the window's objects come from when they are made by block (makeBlocks): the tiles its cells lie on. A tile of another cube face than the window's carries `at`, its shift and
+    // quarter turn into the window's frame (placer), which lays its blocks in the window's frame; null when such a tile's turn is not known, which the whole window's objects serve.
     const inner = tl.filter((t) => t.interior);
-    const blockPlan = inner.every((t) => t.f === face) ? { face, x0, y0, tiles: inner.map((t) => ({ tile: t.f * nT * nT + t.ty * nT + t.tx, tx: t.tx, ty: t.ty, gt: t.gt })) } : null;
+    const planTiles = inner.map((t) => ({ tile: t.f * nT * nT + t.ty * nT + t.tx, tx: t.tx, ty: t.ty, gt: t.gt, at: t.f === face ? null : placer(t, face, x0, y0, srcF, srcX, srcY, turn) }));
+    const blockPlan = inner.every((t, i) => t.f === face || planTiles[i].at) ? { face, x0, y0, tiles: planTiles } : null;
     const startObjects = () => {
       const placed = [], tStart = performance.now();
       for (const t of tl) {
@@ -228,14 +229,27 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
   // block of the screen is drawn at another share than the rest. Returns { recs, kds, fresh, k, k0, vis, n, estimate }, or null.
   const estOf = new Map();
   function layoutBlocks(w, view) {
-    const { x0, y0, tiles: ts } = w.blockPlan, r = 1.5 * view.ext + 16, need = [];
+    const { face, x0, y0, tiles: ts } = w.blockPlan, r = 1.5 * view.ext + 16, need = [];
     for (const t of ts)
       for (let by = 0; by < 256 / BLOCK; by++)
         for (let bx = 0; bx < 256 / BLOCK; bx++) {
-          const X = t.tx * 256 + bx * BLOCK, Y = t.ty * 256 + by * BLOCK;
-          if (!(X + BLOCK > x0 && X < x0 + N && Y + BLOCK > y0 && Y < y0 + N)) continue;
-          const c0 = X - x0, z0 = y0 + N - (Y + BLOCK);
-          need.push({ t, bx, by, X, Y, key: `${t.tile}:${bx}:${by}`, vis: c0 + BLOCK > view.x - r && c0 < view.x + r && z0 + BLOCK > view.z - r && z0 < view.z + r, d: Math.hypot(c0 + BLOCK / 2 - view.x, z0 + BLOCK / 2 - view.z) });
+          // the block's square in the window's cells (x east, y north from its south-west corner): the tile's own cells for a tile of the window's face, else their quarter turn, from the
+          // corners by the place kernel's transform (wgsl/terrain-place.ts). X, Y are that corner in the window's face's cells, extended past the cube's edge: the same whichever window holds it.
+          let cx = t.tx * 256 + bx * BLOCK - x0, cy = t.ty * 256 + by * BLOCK - y0, turn;
+          if (t.at) {
+            const u = t.at.units, ax = t.tx * 256 * UNITS, ay = t.ty * 256 * UNITS;
+            let mx = Infinity, my = Infinity;
+            for (const fx of [ax + bx * BLOCK * UNITS, ax + (bx + 1) * BLOCK * UNITS])
+              for (const fy of [ay + by * BLOCK * UNITS, ay + (by + 1) * BLOCK * UNITS]) {
+                mx = Math.min(mx, u.d0 * (fx - u.s0x) + u.d1 * (fy - u.s0y) + u.w0x);
+                my = Math.min(my, -u.d1 * (fx - u.s0x) + u.d0 * (fy - u.s0y) + u.w0y);
+              }
+            cx = Math.round(mx / UNITS); cy = Math.round(my / UNITS);
+            turn = { ...u, cx, cy };
+          }
+          if (!(cx + BLOCK > 0 && cx < N && cy + BLOCK > 0 && cy < N)) continue;
+          const X = x0 + cx, Y = y0 + cy, c0 = cx, z0 = N - cy - BLOCK;
+          need.push({ t, bx, by, X, Y, turn, key: `${t.tile}:${bx}:${by}${t.at ? `@${face}` : ""}`, vis: c0 + BLOCK > view.x - r && c0 < view.x + r && z0 + BLOCK > view.z - r && z0 < view.z + r, d: Math.hypot(c0 + BLOCK / 2 - view.x, z0 + BLOCK / 2 - view.z) });
         }
     need.sort((a, b) => b.vis - a.vis || a.d - b.d);
     // null until every block's estimate is known (the first time a block is met, its tile's run gives it)
@@ -276,7 +290,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
         const todo = list.filter((r) => { const b = cache.get(r.key); return !b || b.k > r.k; });
         const got = await Promise.all([...new Set(todo.map((r) => r.run))].map(async (run) => {
           const mine = todo.filter((r) => r.run === run);
-          const o = await run.makeMany(mine.map((r) => ({ bx0: r.bx * BLOCK, by0: r.by * BLOCK, n: BLOCK, k: r.k })));
+          const o = await run.makeMany(mine.map((r) => ({ bx0: r.bx * BLOCK, by0: r.by * BLOCK, n: BLOCK, k: r.k, turn: r.turn })));
           return mine.map((r, i) => ({ r, o: o[i] }));
         }));
         for (const { r, o } of got.flat()) {
