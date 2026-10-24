@@ -9,8 +9,8 @@
 // the page (257 vertices, the edge shared); a grid page has 385 nodes (the edge shared) and a mask page 1,024 texels.
 
 export const PAGE_SLOTS = 16; // slots in a group: a 4 by 4 tile of pages in each layer of the atlas
-export const PAGE_TEX = { fine: 257 * 4, grid: 385 * 4, river: 1024 * 4 };
-export const PAGE_MAX_SLOTS = 32; // the stream masks are one 2d texture, 4 slots across, and a texture is 8,192 texels at most
+export const PAGE_TEX = { fine: 257 * 4, grid: 385 * 4, river: 1024 * 8 };
+export const PAGE_MAX_SLOTS = 64; // the stream masks are one 2d texture, 8 slots across (slot s at column s & 7, row s >> 3), and a texture is 8,192 texels at most
 export const PAGE_LAYERS = { fine: 10, grid: 8 };
 
 // a page's words in the atlas buffers demo/tile.ts pageAtlas makes (terrain-window.ts PAGE_FINE_WORDS, PAGE_GRID_WORDS, PAGE_MASK_WORDS) and their rows' bytes, which scripts/play/groundpages-live.ts checks against it
@@ -61,7 +61,7 @@ fn pgRiverQ(t: texture_2d<u32>, i0: vec2i) -> vec4f {
   let j = clamp(i0 + vec2i(1), vec2i(0), vec2i(4095));
   if ((i.x >> 10u) == (j.x >> 10u) && (i.y >> 10u) == (j.y >> 10u)) {
     let s = pgOf(vec2u(i) >> vec2u(10u));
-    let o = vec2i(s.x & 3, s.x >> 2u) * 1024 + (i & vec2i(1023));
+    let o = vec2i(s.x & 7, s.x >> 3u) * 1024 + (i & vec2i(1023));
     let d = j - i;
     return vec4f(f32(textureLoad(t, o, 0).x), f32(textureLoad(t, o + vec2i(d.x, 0), 0).x), f32(textureLoad(t, o + vec2i(0, d.y), 0).x), f32(textureLoad(t, o + d, 0).x)) / 255.0;
   }
@@ -71,7 +71,7 @@ fn pgRiverQ(t: texture_2d<u32>, i0: vec2i) -> vec4f {
 fn pgRiver(t: texture_2d<u32>, i: vec2i) -> u32 {
   let s = pgOf(min(vec2u(i) >> vec2u(10u), vec2u(3u)));
   let c = clamp(i - 1024 * s.yz, vec2i(0), vec2i(1023));
-  return textureLoad(t, vec2i(s.x & 3, s.x >> 2u) * 1024 + c, 0).x;
+  return textureLoad(t, vec2i(s.x & 7, s.x >> 3u) * 1024 + c, 0).x;
 }
 // the four texels of a quad read between, as the bilinear of ground.wgsl.js g_fineAt and wgsl/objects.js bilin does
 fn pgBil(q: vec4f, a: f32, b: f32) -> f32 { return (q.x * (1.0 - a) + q.y * a) * (1.0 - b) + (q.z * (1.0 - a) + q.w * a) * b; }
