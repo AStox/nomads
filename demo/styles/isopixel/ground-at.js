@@ -26,8 +26,8 @@ export function playPlace(pyramid, G, faces) {
 }
 
 // simB: the sim's bundle (world.ts keeps the island for its world), or null for a view with no sim; planet: worker.js openPlanet's with
-// its pyramid, or null where no planet is baked. Returns { isle, fine, place }; place is null with no planet.
-export async function closeGround(simB, seed, gpu, planet) {
+// its pyramid, or null where no planet is baked, or the promise of either (the island is made while it loads). Returns { isle, fine, place }; place is null with no planet.
+export async function closeGround(simB, seed, gpu, planetIn) {
   let isle, fine;
   if (simB) {
     await simB.islandOf(seed);
@@ -36,6 +36,7 @@ export async function closeGround(simB, seed, gpu, planet) {
     isle = await generateIsland(rng(seed), gpu);
     fine = await fineGroundGpu(gpu, isle);
   }
+  const planet = await planetIn;
   const at = planet && playPlace(planet.pyramid, planet.G, planet.manifest.faces);
   if (!at) return { isle, fine, place: null };
   const c = planet.G.fromLatLon((at.lat * Math.PI) / 180, (at.lon * Math.PI) / 180), [e, n] = planet.G.eastNorth(c);

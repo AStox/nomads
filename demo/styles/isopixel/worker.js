@@ -83,12 +83,15 @@ async function init(m) {
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: "opaque" });
   say("growing the island", 0, 1);
+  // the planet's files and the island's generation start at once, and go on while the sim's bundle (1.3 MB, unused by a page with no game) is fetched; the island of a game is the bundle's
+  const gpu = { device, adapter: gpuName };
+  const planetP = m.planet ? openPlanet(m.seed, device) : null;
+  const groundP = m.sim ? null : closeGround(null, m.seed, gpu, planetP);
   // the sim's bundle holds the objects' kinds and species whatever runs, so the world is drawn with or without a game on it (startWorld)
   const simB = await import("../sim.js"), simC = m.sim ? await import("../play/sim.js") : null;
-  const gpu = { device, adapter: gpuName };
   if (m.sim) simB.useGpu(gpu);
-  planet = m.planet ? await openPlanet(m.seed, device) : null;
-  const ground = await closeGround(m.sim ? simB : null, m.seed, gpu, planet);
+  planet = await planetP;
+  const ground = groundP ? await groundP : await closeGround(simB, m.seed, gpu, planetP);
   const { isle, fine: g } = ground;
   const t1 = performance.now();
   say("laying out the ground", 0, 1);

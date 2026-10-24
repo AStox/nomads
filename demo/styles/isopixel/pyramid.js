@@ -77,7 +77,8 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
   // a held tile whose neighbour arrived has its halo written again once a frame, not at the arrival (up to eight tiles a time were each a full height tile and a ring); retryAt: a tile that failed to
   // load (not a 404) is asked again after a pause; stash: tiles that arrived with no slot to take, put when one is free
   const dirty = new Set(), retryAt = new Map(), stash = new Map(), ringBuf = new Uint32Array(FHS * FHS * 4);
-  let frameNo = 0, tableDirty = true;
+  // version: bumped by anything that changes what the atlases hold (a tile put or evicted, a halo written again), which planet.js settled() compares with the draw's
+  let frameNo = 0, tableDirty = true, version = 0;
   const tileOf = (i) => { let t = 0; while (i >= tierOffset(t + 1)) t++; const r = i - tierOffset(t), n = 4 ** t, f = Math.floor(r / n), q = r % n; return { t, f, ty: Math.floor(q / 2 ** t), tx: q % 2 ** t }; };
   const url = (t, f, tx, ty) => `${base}/t${t}/f${f}/${ty}-${tx}.tile.gz`;
   const across = (n, f, X, Y) => cellAcross({ fn: n }, f, X, Y);
@@ -170,6 +171,7 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
     upHeights(slot, heightsOf(i));
     // the neighbours' halos now have this tile's cells
     for (const j of neighbours(i)) if (slotOf.has(j)) dirty.add(j);
+    version++;
     return true;
   }
   function flushHalos(max = 3) {
@@ -179,6 +181,7 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
       if (s === undefined) continue;
       refreshRing(j);
       upHeights(s, heightsOf(j));
+      version++;
       if (--max <= 0) break;
     }
   }
@@ -202,7 +205,7 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
   flush();
 
   return {
-    fieldsT, heightsT, tableB, tiers, stats, held: () => slotOf.size, flying: () => flying.size,
+    fieldsT, heightsT, tableB, tiers, stats, get version() { return version; }, held: () => slotOf.size, flying: () => flying.size,
     // whether a tile is held, or never will be (its face is not baked, or its file is not there): what the view's finest level waits on (planet.js readyLevel)
     ready(t, f, tx, ty) { const i = tileIndex(t, f, tx, ty); return slotOf.has(i) || absent.has(i) || !faces.includes(f); },
     // the tile of tier 0 as planes, for choosing a place (held while the planet is)

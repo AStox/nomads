@@ -317,20 +317,27 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const blockPlan = inner.every((t, i) => t.f === face || planTiles[i].at) ? { face, x0, y0, tiles: planTiles } : null;
 
     // ---------- the painter's inputs, rows turned so that z runs south ----------
-    const flipCells = (f) => { const o = new Float32Array(N * N); for (let j = 0; j < N; j++) { const at = (H + N - 1 - j) * S + H; for (let i = 0; i < N; i++) o[j * N + i] = f(at + i); } return o; };
+    // a plane's cells of the window, rows turned, as float32 (the engine converts across the tiles' array types, the laws below then run over one array type)
+    const flipBuf = new Float32Array(S * S);
+    const flip = (src) => { flipBuf.set(src); const o = new Float32Array(N * N); for (let j = 0; j < N; j++) { const at = (H + N - 1 - j) * S + H; o.set(flipBuf.subarray(at, at + N), j * N); } return o; };
+    const mul = (o, k) => { for (let i = 0; i < o.length; i++) o[i] = o[i] * k; return o; };
+    const div = (o, d) => { for (let i = 0; i < o.length; i++) o[i] = o[i] / d; return o; };
+    const bit = (o, m) => { for (let i = 0; i < o.length; i++) o[i] = o[i] & m ? 1 : 0; return o; };
     const pl = planes;
     const flags = pl.flags;
-    const height = flipCells((a) => pl.height[a] / 256), water = flipCells((a) => pl.water[a] * 0.01);
-    const season = (name, f) => Array.from({ length: 4 }, (_, s) => (pl[`${name}${s}`] ? flipCells((a) => f(pl[`${name}${s}`][a])) : null));
-    const precip = flipCells((a) => (pl.pr1[a] / 360) ** 2), pet = flipCells((a) => pl.pe1[a] * 0.1), snow = season("snp", (v) => v * 0.25);
+    const height = div(flip(pl.height), 256), water = mul(flip(pl.water), 0.01);
+    const season = (name, k) => Array.from({ length: 4 }, (_, s) => (pl[`${name}${s}`] ? mul(flip(pl[`${name}${s}`]), k) : null));
+    const precip = flip(pl.pr1);
+    for (let i = 0; i < precip.length; i++) precip[i] = (precip[i] / 360) ** 2;
+    const pet = mul(flip(pl.pe1), 0.1), snow = season("snp", 0.25);
     // the runoff by season is the tiles' own (the water stage's, per tile), weighted by the window's cells in each; the island's where no tile holds one
     const wq = [0, 0, 0, 0];
     let wn = 0;
     for (let j = H; j < H + N; j++) for (let i = H; i < H + N; i++) { const q = own[j * S + i] >= 0 && tl[own[j * S + i]].gt.meta.quick; if (q) { for (let s = 0; s < 4; s++) wq[s] += q[s]; wn++; } }
     const runoff = wn ? wq.map((v) => v / wn) : quick;
     const isle = {
-      height, water, windShare: flipCells((a) => pl.wsh[a] / 255), rock: flipCells((a) => pl.rock[a]), table: flipCells((a) => pl.tab[a] / 256),
-      peat: flipCells((a) => (flags[a] & 4 ? 1 : 0)), soil: flipCells((a) => pl.soil[a] / 1024), silt: flipCells((a) => (flags[a] & 1 ? 1 : 0)), fog: flipCells((a) => pl.fog[a] / 255),
+      height, water, windShare: div(flip(pl.wsh), 255), rock: flip(pl.rock), table: div(flip(pl.tab), 256),
+      peat: bit(flip(flags), 4), soil: div(flip(pl.soil), 1024), silt: bit(flip(flags), 1), fog: div(flip(pl.fog), 255),
       seasons: [0, 1, 2, 3].map((s) => ({ precip: s === 1 ? precip : null, pet: s === 1 ? pet : null, snowpack: snow[s] })), quick: runoff,
     };
     // the window's ground is its pages (ensurePages), given to the painter by setGroundPages, the camera's heights the pages' own and the highest ground theirs. Only the streams are binned here, z turned.
