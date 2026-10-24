@@ -1,5 +1,5 @@
 import { launch, load, take, sleep } from "../perf/lib";
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   await load(r, "?hour=13&warm=0"); await sleep(3000);
   await r.page.mouse.move(800, 500);

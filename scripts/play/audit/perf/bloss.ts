@@ -5,7 +5,7 @@ const args = Object.fromEntries(process.argv.slice(2).map((a) => { const m = /^-
 const tag = args.tag ?? "bloss", z = Number(args.z ?? 3.2), dwell = Number(args.dwell ?? 1800), cycles = Number(args.cycles ?? 14);
 const P: Record<string, number[]> = { B: [-5.38, 73.13], BB: [-35.9034, 43.5937], A: [4.35, -39.38] };
 const home = P[args.place ?? "B"], FAR = [[26.8, 15.1], [49.0, 75.0], [-45, -93], [17, 164], [30, 108], [-39.4, 39.8]];
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 const out: any = { args, cycles: [], bigs: [], maxSizes: null };
 const t0 = Date.now();
 try {

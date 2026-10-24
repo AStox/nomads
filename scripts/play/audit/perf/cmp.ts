@@ -5,7 +5,7 @@ const sites = [process.argv[2], process.argv[3]];
 const places: [string, number[] | null, number][] = [["home", null, 8.3], ["A6", [4.35, -39.38], 6.5], ["B4", [-5.38, 73.13], 4.5], ["A3", [4.35, -39.38], 3.2], ["A-2", [4.35, -39.38], -2]];
 const shots: Record<string, Buffer[]> = {};
 for (const site of sites) {
-  const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+  const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
   try {
     await r.page.goto(`${site}/play/?hour=13&warm=0`, { waitUntil: "domcontentloaded", timeout: 60000 });
     await r.page.waitForSelector("body.ready", { timeout: 120000 });

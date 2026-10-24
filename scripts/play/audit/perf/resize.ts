@@ -1,6 +1,6 @@
 // window growth: leaks (cap.keys) and frame cost while resizing; bufLive / footprint per step
 import { launch, load, sleep, take, summarize, settleTo, procs, footprint, save } from "./lib";
-const r = await launch({ vw: 1000, vh: 700, profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ vw: 1000, vh: 700, profile: "/tmp/globe-fix-lead2/chrome" });
 const rows: any[] = [];
 try {
   await load(r, "?hour=13");

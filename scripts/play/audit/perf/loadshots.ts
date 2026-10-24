@@ -1,5 +1,5 @@
 import { launch, sleep, SITE, sharp, take } from "./lib";
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   const t0 = performance.now();
   await r.page.goto(`${SITE}/play/`, { waitUntil: "domcontentloaded" });
@@ -8,7 +8,7 @@ try {
     const wait = t * 1000 - (performance.now() - t0); if (wait > 0) await sleep(wait);
     const s = await r.page.evaluate(() => { const P = (window as any).__perf, pl = (window as any).play; return { ready: document.body.classList.contains("ready"), gpu: P.gpuVisible, mode: pl?.live?.mode, zoom: pl?.view?.zoom, geo: pl?.view?.geo, win: pl?.live?.stats?.window?.objects, tiles: pl?.live?.stats?.tiles }; });
     const png: Buffer = await r.page.screenshot({ type: "png" });
-    await sharp(png).resize(800, 500).jpeg({ quality: 80 }).toFile(`/tmp/globe-fix-lead/out/load-${String(t).replace(".", "_")}.jpg`);
+    await sharp(png).resize(800, 500).jpeg({ quality: 80 }).toFile(`/tmp/globe-fix-lead2/out/load-${String(t).replace(".", "_")}.jpg`);
     console.log(t, JSON.stringify(s));
   }
   const d = await take(r.page);

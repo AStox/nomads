@@ -1,6 +1,6 @@
 // does a use-after-destroy validation error flip the page's WEBGPU LOST badge while the device is alive?
 import { launch, load, take, sleep, save } from "./lib";
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   await load(r, "?hour=13"); await sleep(500);
   const state = () => r.page.evaluate(() => { const L = (window as any).play.live, el = document.getElementById("render"); return { renderer: L.renderer(), badge: el && !el.hidden ? el.textContent : null, badgeTitle: el?.title ?? null }; });

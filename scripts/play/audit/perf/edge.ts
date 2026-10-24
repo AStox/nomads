@@ -2,7 +2,7 @@
 import { launch, load, take, sleep, settleTo } from "./lib";
 import { sharp } from "./lib";
 const Z = Number(process.argv[2] ?? 3.2), DX = Number(process.argv[3] ?? 3000);
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   await load(r, "?hour=13&warm=0");
   await settleTo(r.page, [4.35, -39.38], Z, 30000); await sleep(1500);
@@ -11,7 +11,7 @@ try {
   const info2 = await r.page.evaluate(() => { const P = (window as any).play; return { x: P.view.x, z: P.view.z, id: P.live.stats.window?.id, ppm: P.live.debug?.ppm }; });
   console.log(JSON.stringify(info), JSON.stringify(info2));
   const png: Buffer = await r.page.screenshot({ type: "png" });
-  await sharp(png).toFile(`/tmp/globe-fix-lead/out/edge-${Z}-${DX}.png`);
+  await sharp(png).toFile(`/tmp/globe-fix-lead2/out/edge-${Z}-${DX}.png`);
   const { data, info: im } = await sharp(png).greyscale().raw().toBuffer({ resolveWithObject: true });
   const W = im.width, strip = 20; const prof: number[] = [];
   for (let x0 = 0; x0 + strip <= W; x0 += strip) { let s = 0, n = 0; for (let y = 400; y < 600; y++) for (let x = x0; x < x0 + strip; x++) { s += data[y * W + x]; n++; } prof.push(+(s / n).toFixed(1)); }

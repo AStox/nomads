@@ -5,7 +5,7 @@ import { launch, load, take, summarize, pageState, sleep, save, drag, wheel, pro
 const args = Object.fromEntries(process.argv.slice(2).map((a) => { const m = /^--([^=]+)=?(.*)$/.exec(a)!; return [m[1], m[2] || "1"]; }));
 const place = args.place ?? "A", vp = (args.vp ?? "1600x1000").split("x").map(Number), dpr = Number(args.dpr ?? 1), tag = args.tag ?? "grid", secs = Number(args.secs ?? 4) * 1000;
 const PLACES: Record<string, [number, number]> = { A: [4.35, -39.38], B: [-5.38, 73.13], C: [16.8, 84.38], BB: [-35.9034, 43.5937], DEF: [47.805848, 38.630365] };
-const r = await launch({ vw: vp[0], vh: vp[1], dpr, profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ vw: vp[0], vh: vp[1], dpr, profile: "/tmp/globe-fix-lead2/chrome" });
 const out: any = { args, place, vp, dpr, zooms: [] };
 const deadline = Date.now() + 235000;
 try {

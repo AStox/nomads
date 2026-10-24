@@ -1,7 +1,7 @@
 // still camera: how many frames are drawn against skipped, and whether the picture stays
 import { launch, load, take, sleep, summarize } from "./lib";
 import { createHash } from "node:crypto";
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   await load(r, "?hour=13&warm=0"); await sleep(5000);
   const hash = async () => createHash("md5").update(await r.page.screenshot({ type: "jpeg", quality: 60 })).digest("hex").slice(0, 8);

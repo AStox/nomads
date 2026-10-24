@@ -56,7 +56,7 @@ const INIT = () => {
 export interface Run { browser: any; page: any; pid: number; errs: string[]; cons: [number, string][]; close: () => Promise<void>; t0: number }
 
 export async function launch(opts: { vw?: number; vh?: number; dpr?: number; profile?: string; keepProfile?: boolean } = {}): Promise<Run> {
-  const vw = opts.vw ?? 1600, vh = opts.vh ?? 1000, dpr = opts.dpr ?? 1, profile = opts.profile ?? "/tmp/globe-fix-lead/chrome";
+  const vw = opts.vw ?? 1600, vh = opts.vh ?? 1000, dpr = opts.dpr ?? 1, profile = opts.profile ?? "/tmp/globe-fix-lead2/chrome";
   if (!opts.keepProfile) rmSync(profile, { recursive: true, force: true });
   mkdirSync(profile, { recursive: true });
   const browser = await puppeteer.launch({
@@ -149,8 +149,8 @@ export function procs(pid: number) {
 export function footprint(pid: number): number | null {
   try { const s = execSync(`footprint -p ${pid} 2>/dev/null | grep -i "phys_footprint:" | head -1`, { timeout: 8000 }).toString(); const m = /phys_footprint:\s*([\d.]+)\s*(\w+)/i.exec(s); if (!m) return null; const v = +m[1]; return m[2].startsWith("G") ? v * 1024 : m[2].startsWith("K") ? v / 1024 : v; } catch { return null; }
 }
-export const save = (name: string, obj: any) => writeFileSync(`/tmp/globe-fix-lead/out/${name}.json`, JSON.stringify(obj, null, 1));
-mkdirSync("/tmp/globe-fix-lead/out", { recursive: true });
+export const save = (name: string, obj: any) => writeFileSync(`/tmp/globe-fix-lead2/out/${name}.json`, JSON.stringify(obj, null, 1));
+mkdirSync("/tmp/globe-fix-lead2/out", { recursive: true });
 
 export async function workerHeap(page: any): Promise<{ used: number; total: number }[]> {
   const out: any[] = [];

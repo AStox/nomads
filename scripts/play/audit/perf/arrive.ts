@@ -4,7 +4,7 @@ import { launch, load, take, sleep, save, SITE } from "./lib";
 const args = Object.fromEntries(process.argv.slice(2).map((a) => { const m = /^--([^=]+)=?(.*)$/.exec(a)!; return [m[1], m[2] || "1"]; }));
 const tag = args.tag ?? "arr";
 const CASES: [string, number[], number][] = [["ocean z3.2", [25.77, -45.48], 3.2], ["ocean z6", [34.06, 10.52], 6], ["forest A z3.2", [4.35, -39.38], 3.2], ["forest A z6", [4.8, -39.0], 6], ["B z3.2", [-5.38, 73.13], 3.2], ["ocean z3.2 again", [-48.77, 145.55], 3.2]];
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 const out: any = { cases: [] };
 try {
   await load(r, "?hour=13"); await sleep(1000);

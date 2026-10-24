@@ -3,7 +3,7 @@
 import { launch, load, take, sleep, save, drag, settleTo, summarize } from "./lib";
 const args = Object.fromEntries(process.argv.slice(2).map((a) => { const m = /^--([^=]+)=?(.*)$/.exec(a)!; return [m[1], m[2] || "1"]; }));
 const z = Number(args.z ?? 3), what = args.what ?? "pan";
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   await load(r, "?hour=13");
   if (what === "ocean") { await settleTo(r.page, [10, 10], 1, 8000); await sleep(1000); } else { await settleTo(r.page, [4.35, -39.38], z, 25000); await sleep(1500); }

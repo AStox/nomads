@@ -36,7 +36,16 @@ const SUN_MOVE = 0.004, SUN_STRIPES = 12;
 // how far from each cell of the island's heights the ground's folds are looked over for the sky they hide (meters)
 const TER_REACH = 450;
 // the most objects one view draws, their shadow rows, and tiles under a view
-const MAX_INST = 1 << 21, MAX_ROWS = 1 << 22, MAX_TILES = 1 << 21;
+const MAX_INST = 1 << 21, MAX_ROWS = 1 << 22, MAX_TILES = 1 << 20;
+// the tile blocks a view works on at most (live.js windowOf), and the flags the map keeps for them
+const BLK_MAX = MAX_TILES >> 6;
+const FOFF_B = (3 * MAX_TILES + 4096) * 4;
+// every block of a window's rectangle, each one that can show
+const fullBlocks = (U) => {
+  const n = Math.min(BLK_MAX, Math.ceil(U.ni / 16) * Math.ceil(U.nj / 16)), a = new Uint32Array(n);
+  for (let b = 0; b < n; b++) a[b] = b | 0x40000000;
+  return a;
+};
 // the most live sprites, their shadow rows, overlay primitives and fires a frame sends
 const MAX_LIVE = 1 << 14, MAX_LIVE_ROWS = 1 << 16, MAX_PRIMS = 1 << 16, MAX_FIRES = 64;
 
@@ -68,7 +77,7 @@ const VU = struct("U", [
   // origin and size
   ["cx", "f"], ["cz", "f"], ["levc", "f"], ["offx", "f"], ["offy", "f"], ["gx0", "i"], ["gy0", "i"], ["aw", "u"], ["ah", "u"],
   // the tile window in the grid
-  ["i0", "i"], ["j0", "i"], ["ni", "u"], ["nj", "u"],
+  ["i0", "i"], ["j0", "i"], ["ni", "u"], ["nj", "u"], ["nbi", "u"], ["nblk", "u"], ["bsum", "u"],
   // the level
   ["H", "f"], ["hb", "f"], ["lp", "f"], ["tileM", "f"], ["levelM", "f"], ["k", "f"], ["pv", "f"], ["pw", "f"], ["shrunk", "u"], ["bias", "f"], ["peak", "f"], ["mapN", "i"],
   ["zinv", "f"], ["frame", "u"], ["season", "u"], ["gflags", "u"],
@@ -166,6 +175,11 @@ const RES = {
   fkeysR: [59, "storage", "array<u32>"],
   flistOut: [60, "storage", "array<u32>"],
   fout: [61, "storage", "array<u32>"],
+  // the ground tiles a view can show: the compacted list of the tile cull pass and its indirect draw's arguments (vertex count first)
+  tlist: [62, "storage", "array<u32>"],
+  tcnt: [63, "storage", "array<atomic<u32>>"],
+  // the tile blocks of a view (live.js windowOf): each as its index in the window's blocks, bit 30 set for one that can show
+  blk: [64, "storage", "array<u32>"],
 };
 const TYPES = `
 struct Inst { sp: u32, x: i32, y: i32, z: f32, flags: u32, pick: u32, wx: f32, wz: f32 }
@@ -220,13 +234,21 @@ const QY = array<f32, 6>(0.0, 0.0, 1.0, 1.0, 0.0, 1.0);
 // One buffer (map): each tile's water and level as a pair, then from VOFF each vertex's level. A tile's water (main.js
 // buildMap on a live level): over 0.45 of five points under standing water, or over 0.1 and below sea level, is water at
 // the surface of the nearest water cell, a lake above half a meter, else the sea.
-const VOFF = `${2 * MAX_TILES}u`;
+const VOFF = `${2 * MAX_TILES}u`, FOFF = `${3 * MAX_TILES + 4096}u`;
+// The map is made for the blocks of 16 by 16 tiles live.js windowOf lists (blk: a block's index in the rectangle, bit 30 set for one that can show, clear for the ring of neighbours that its
+// vertices and banks read), a workgroup each, and a block that can show says so with a flag at FOFF, where groundLev reads it: a tile of any other block has no ground.
 const TILES_WGSL = `
-@compute @workgroup_size(64)
-fn tilesMain(@builtin(global_invocation_id) id: vec3u) {
-  if (id.x >= V.ni * V.nj) { return; }
-  let u = f32(V.i0 + i32(id.x % V.ni));
-  let v = f32(V.j0 + i32(id.x / V.ni));
+@compute @workgroup_size(256)
+fn tilesMain(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let e = blk[wg.x];
+  let b = e & 0x3FFFFFFFu;
+  let ti = (b % V.nbi) * 16u + (li & 15u);
+  let tj = (b / V.nbi) * 16u + (li >> 4u);
+  if (li == 0u && (e & 0x40000000u) != 0u) { map[${FOFF} + b] = 1.0; }
+  if (ti >= V.ni || tj >= V.nj) { return; }
+  let id = tj * V.ni + ti;
+  let u = f32(V.i0 + i32(ti));
+  let v = f32(V.j0 + i32(tj));
   let offs = array<vec2f, 5>(vec2f(0.5, 0.5), vec2f(0.22, 0.5), vec2f(0.78, 0.5), vec2f(0.5, 0.22), vec2f(0.5, 0.78));
   var wet = 0.0;
   for (var k = 0; k < 5; k++) { let p = gridW(u + offs[k].x, v + offs[k].y); wet += waterAt(p.x, p.y); }
@@ -235,31 +257,37 @@ fn tilesMain(@builtin(global_invocation_id) id: vec3u) {
   let hh = heightAt(c.x, c.y);
   var out = vec2f(0.0, 0.0);
   if (wet > 0.45 || (wet > 0.1 && hh < -0.5)) { let s = surfAt(c.x, c.y); out = vec2f(select(1.0, 2.0, s > 0.5), s / V.levelM); }
-  map[2u * id.x] = out.x;
-  map[2u * id.x + 1u] = out.y;
+  map[2u * id] = out.x;
+  map[2u * id + 1u] = out.y;
 }`;
 // A vertex's level: the ground's height, or where it touches standing water the highest water's level, never below
 // the sea.
 const VERTS_WGSL = `
-@compute @workgroup_size(64)
-fn vertsMain(@builtin(global_invocation_id) id: vec3u) {
+@compute @workgroup_size(256)
+fn vertsMain(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let b = blk[wg.x] & 0x3FFFFFFFu;
   let vi = V.ni + 1u;
-  if (id.x >= vi * (V.nj + 1u)) { return; }
-  let i = i32(id.x % vi);
-  let j = i32(id.x / vi);
-  let p = gridW(f32(V.i0 + i), f32(V.j0 + j));
-  var lev = heightAt(p.x, p.y) / V.levelM;
-  var wetv = false;
-  var fl = 0.0;
-  for (var b = j - 1; b <= j; b++) {
-    for (var a = i - 1; a <= i; a++) {
-      if (a < 0 || b < 0 || a >= i32(V.ni) || b >= i32(V.nj)) { continue; }
-      let t = vec2f(map[2u * (u32(b) * V.ni + u32(a))], map[2u * (u32(b) * V.ni + u32(a)) + 1u]);
-      if (t.x > 0.5) { fl = select(t.y, max(fl, t.y), wetv); wetv = true; }
+  // the block's 17 by 17 vertices (a vertex on a shared edge is made by both blocks, the same value)
+  for (var s = li; s < 289u; s += 256u) {
+    let iu = (b % V.nbi) * 16u + s % 17u;
+    let ju = (b / V.nbi) * 16u + s / 17u;
+    if (iu > V.ni || ju > V.nj) { continue; }
+    let i = i32(iu);
+    let j = i32(ju);
+    let p = gridW(f32(V.i0 + i), f32(V.j0 + j));
+    var lev = heightAt(p.x, p.y) / V.levelM;
+    var wetv = false;
+    var fl = 0.0;
+    for (var bb = j - 1; bb <= j; bb++) {
+      for (var a = i - 1; a <= i; a++) {
+        if (a < 0 || bb < 0 || a >= i32(V.ni) || bb >= i32(V.nj)) { continue; }
+        let t = vec2f(map[2u * (u32(bb) * V.ni + u32(a))], map[2u * (u32(bb) * V.ni + u32(a)) + 1u]);
+        if (t.x > 0.5) { fl = select(t.y, max(fl, t.y), wetv); wetv = true; }
+      }
     }
+    if (wetv) { lev = fl; }
+    map[${VOFF} + ju * vi + iu] = max(0.0, lev);
   }
-  if (wetv) { lev = fl; }
-  map[${VOFF} + id.x] = max(0.0, lev);
 }`;
 // The tile map read back: a tile's corners (top, right, bottom, left as main.js), its diagonal and its water.
 const MAP_READ = `
@@ -284,6 +312,7 @@ fn groundLev(u: f32, v: f32) -> f32 {
   let ti = i32(fi) - V.i0;
   let tj = i32(fj) - V.j0;
   if (ti < 0 || tj < 0 || ti >= i32(V.ni) || tj >= i32(V.nj)) { return -1e9; }
+  if (map[${FOFF} + (u32(tj) >> 4u) * V.nbi + (u32(ti) >> 4u)] < 0.5) { return -1e9; }
   let o = tileAt(ti, tj);
   let fu = u - fi;
   let fv = v - fj;
@@ -294,6 +323,44 @@ fn groundLev(u: f32, v: f32) -> f32 {
   if (o.diag == 0u) { if (fu >= fv) { return T + (R - T) * fu + (B - R) * fv; } return T + (B - L) * fu + (L - T) * fv; }
   if (fu + fv <= 1.0) { return T + (R - T) * fu + (L - T) * fv; }
   return R + L - B + (B - L) * fu + (B - R) * fv;
+}`;
+// A tile can show only where some part of it (its four corners at its lowest and highest level, and a bank strip down to the water beside it) lies on the art buffer. The window's grid is a
+// rectangle in tile axes, laid for the lowest and highest ground the view can see, so on steep ground most of it lies off the buffer; this lists the tiles that do and the world pass draws only those.
+const TCULL_WGSL = `
+fn flatCorner(u: f32, v: f32) -> vec3f { let w = gridW(u, v); return screen(rel(w.x, w.y), 0.0); }
+@compute @workgroup_size(256)
+fn tcullMain(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let e = blk[wg.x];
+  if ((e & 0x40000000u) == 0u) { return; }
+  let b = e & 0x3FFFFFFFu;
+  let tiu = (b % V.nbi) * 16u + (li & 15u);
+  let tju = (b / V.nbi) * 16u + (li >> 4u);
+  if (tiu < 1u || tju < 1u || tiu + 1u >= V.ni || tju + 1u >= V.nj) { return; }
+  let ti = i32(tiu);
+  let tj = i32(tju);
+  if (V.mapN > 0 && (V.i0 + ti < 0 || V.j0 + tj < 0 || V.i0 + ti >= V.mapN || V.j0 + tj >= V.mapN)) { return; }
+  let T = tileAt(ti, tj);
+  var lo = min(min(T.c.x, T.c.y), min(T.c.z, T.c.w));
+  let hi = max(max(T.c.x, T.c.y), max(T.c.z, T.c.w));
+  if (T.kind == 0u) {
+    let a = tileAt(ti, tj + 1);
+    let n = tileAt(ti + 1, tj);
+    if (a.kind > 0u) { lo = min(lo, min(a.c.x, a.c.y)); }
+    if (n.kind > 0u) { lo = min(lo, min(n.c.w, n.c.x)); }
+  }
+  let u = f32(V.i0 + ti);
+  let v = f32(V.j0 + tj);
+  let s0 = flatCorner(u, v);
+  let s1 = flatCorner(u + 1.0, v);
+  let s2 = flatCorner(u + 1.0, v + 1.0);
+  let s3 = flatCorner(u, v + 1.0);
+  let xmin = min(min(s0.x, s1.x), min(s2.x, s3.x));
+  let xmax = max(max(s0.x, s1.x), max(s2.x, s3.x));
+  let yTop = min(min(s0.y, s1.y), min(s2.y, s3.y)) - hi * V.lp;
+  let yBot = max(max(s0.y, s1.y), max(s2.y, s3.y)) - lo * V.lp;
+  if (xmax < -1.0 || xmin > f32(V.aw) + 1.0 || yBot < -1.0 || yTop > f32(V.ah) + 1.0) { return; }
+  let k = atomicAdd(&tcnt[0], 18u) / 18u;
+  tlist[k] = (tju - 1u) * (V.ni - 2u) + (tiu - 1u);
 }`;
 
 // ---------- 3. the world pass: the ground ----------
@@ -309,7 +376,7 @@ fn corner(u: f32, v: f32, lev: f32) -> vec3f { let w = gridW(u, v); return scree
 fn terrainVS(@builtin(vertex_index) vid: u32) -> TOut {
   var o: TOut;
   o.pos = vec4f(2.0, 2.0, 2.0, 1.0); o.kind = 0u; o.w = vec2f(0.0); o.bank = vec3f(0.0);
-  let t = vid / 18u;
+  let t = tlist[vid / 18u];
   let q = vid % 18u;
   let iw = V.ni - 2u;
   let ti = i32(t % iw) + 1;
@@ -939,13 +1006,14 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   for (const ch of [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", ...extra]) fontRows.push(...GLYPHS[ch].split(" ").map((r) => parseInt(r, 2)));
   const LUT0 = 10 * NCOL, FONT0 = LUT0 + ROWS * NCOL;
   const S = {
-    tiles: pipe({ label: "tiles", binds: ["V", "map:w"], code: TILES_WGSL, compute: "tilesMain", withGround: true }),
-    verts: pipe({ label: "verts", binds: ["V", "map:w"], code: VERTS_WGSL, compute: "vertsMain", withGround: true }),
+    tiles: pipe({ label: "tiles", binds: ["V", "map:w", "blk"], code: TILES_WGSL, compute: "tilesMain", withGround: true }),
+    verts: pipe({ label: "verts", binds: ["V", "map:w", "blk"], code: VERTS_WGSL, compute: "vertsMain", withGround: true }),
+    tcull: pipe({ label: "tcull", binds: ["V", "map", "tlist:w", "tcnt:w", "blk"], code: `${MAP_READ}\n${TCULL_WGSL}`, compute: "tcullMain" }),
     clampArgs: pipe({ label: "clampArgs", binds: ["V", "args:w"], code: CLAMP_WGSL, compute: "clampMain" }),
     canBytes: pipe({ label: "canBytes", binds: ["Kp", "canAccR", "canBytes:w"], code: CANOPY_BYTES_WGSL, compute: "canBytesMain" }),
     canWide: pipe({ label: "canWide", binds: ["Kp", "canAccR", "canWide:w"], code: CANOPY_WIDE_WGSL, compute: "canWideMain" }),
     canTall: pipe({ label: "canTall", binds: ["Kp", "canTallR", "canTallOut:w"], code: CANOPY_TALL_WGSL, compute: "canTallMain" }),
-    terrain: pipe({ label: "terrain", binds: ["V", "map"], code: `${MAP_READ}\n${TERRAIN_WGSL}`, vs: "terrainVS", fs: "terrainFS", targets: GT, depth: true, withGround: true }),
+    terrain: pipe({ label: "terrain", binds: ["V", "map", "tlist"], code: `${MAP_READ}\n${TERRAIN_WGSL}`, vs: "terrainVS", fs: "terrainFS", targets: GT, depth: true, withGround: true }),
     sprites: pipe({ label: "sprites", binds: ["V", "inst", "entries", "atlas"], code: SPRITE_WGSL("inst").replace(/@fragment\nfn xrayFS[\s\S]*$/, ""), vs: "spriteVS", fs: "spriteFS", targets: GT, depth: true }),
     splatA: pipe({ label: "splatA", binds: ["V", "pts", "entries", "argsR", "keys:w", "zbuf"], code: SPLAT_WGSL.replace(/@compute @workgroup_size\(64\)\nfn splatB[\s\S]*$/, ""), compute: "splatA" }),
     splatB: pipe({ label: "splatB", binds: ["V", "pts", "entries", "argsR", "keysR", "zbuf", "gKs", "gWs", "atlas"], code: SPLAT_WGSL.replace(/@compute @workgroup_size\(64\)\nfn splatA[\s\S]*?\n}\n/, ""), compute: "splatB" }),
@@ -1202,7 +1270,12 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   const argsB = B(64, GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC, "args"), argsInit = B(64, GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST, "argsInit");
   // the indirect draws: sprites (6 vertices), shadow rows (a strip of 4), specks (a dispatch)
   device.queue.writeBuffer(argsInit, 0, new Uint32Array([6, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0]));
-  const mapB = B(MAX_TILES * 12 + 4 * 4096, GPUBufferUsage.STORAGE, "map");
+  const mapB = B((3 * MAX_TILES + 4096 + BLK_MAX) * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, "map");
+  const blkB = [0, 1].map((k) => B(BLK_MAX * 4, STOR, `blk${k}`));
+  const blkF = B(BLK_MAX * 4, STOR, "blkFront");
+  // the tile cull's list (every tile of the grid at most) and the indirect draw's arguments: [vertex count, 1, 0, 0] and the count the cull pass adds to
+  const tlistB = B(MAX_TILES * 4, GPUBufferUsage.STORAGE, "tlist"), tcntB = B(16, GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC, "tcnt"), tcntInit = B(16, GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST, "tcntInit");
+  device.queue.writeBuffer(tcntInit, 0, new Uint32Array([0, 1, 0, 0]));
   // a view's own (two cross-fading views go in one submit, whose queued writes all land before it runs)
   const liveB = [0, 1].map((k) => B(MAX_LIVE * 32, STOR, `live${k}`)), liveRowsB = [0, 1].map((k) => B(MAX_LIVE_ROWS * 16, STOR, `liveRows${k}`)), primsB = [0, 1].map((k) => B(MAX_PRIMS * 32, STOR, `prims${k}`));
   const viewU = [0, 1].map((k) => B(VU.bytes, UNI, `view${k}`)), firesU = [0, 1].map((k) => B(MAX_FIRES * 16, UNI, `fires${k}`)), presentU = [0, 1].map((k) => B(PU.bytes, UNI, `present${k}`));
@@ -1230,6 +1303,9 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     switch (name) {
       case "V": return { buffer: viewU[v] };
       case "map": return { buffer: mapB };
+      case "tlist": return { buffer: tlistB };
+      case "blk": return { buffer: blkB[v] };
+      case "tcnt": return { buffer: tcntB };
       case "gridTex": return vw2(gridT);
       case "fineTex": return vw2(fineT);
       case "need": return { buffer: needB };
@@ -1731,11 +1807,14 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     const rows = Math.min(FRONT_ROWS, CELLS_N - j.row);
     device.queue.writeBuffer(frontV, 0, VU.pack({ ...U, cx0: 0, cx1: CELLS_N - 1, cy0: j.row, cy1: j.row + rows - 1, farL: j.L, maxinst: MAX_INST, maxrows: MAX_ROWS, gridN: GN, gridStep: pal.GRID_STEP, canN: canopy.n, canStep: canopy.step, can3: canopy.n3, ncol: NCOL }));
     const V = { buffer: frontV };
-    // the island's tile map at the level and bearing, as a frame lays out a view's, then the slice
+    // the island's tile map at the level and bearing, as a frame lays out a view's (every block of its rectangle), then the slice
+    const blk = (j.blk ??= fullBlocks(U));
+    device.queue.writeBuffer(blkF, 0, blk);
+    enc.clearBuffer(mapB, FOFF_B, Math.min(BLK_MAX, U.nbi * Math.ceil(U.nj / 16)) * 4);
     let pass = enc.beginComputePass(tw("front"));
     pass.setBindGroup(1, groundGroup);
-    pass.setPipeline(S.tiles.p); pass.setBindGroup(0, group(S.tiles, 0, { V })); pass.dispatchWorkgroups(Math.ceil((U.ni * U.nj) / 64));
-    pass.setPipeline(S.verts.p); pass.setBindGroup(0, group(S.verts, 0, { V })); pass.dispatchWorkgroups(Math.ceil(((U.ni + 1) * (U.nj + 1)) / 64));
+    pass.setPipeline(S.tiles.p); pass.setBindGroup(0, group(S.tiles, 0, { V, blk: { buffer: blkF } })); pass.dispatchWorkgroups(blk.length);
+    pass.setPipeline(S.verts.p); pass.setBindGroup(0, group(S.verts, 0, { V, blk: { buffer: blkF } })); pass.dispatchWorkgroups(blk.length);
     pass.end();
     pass = enc.beginComputePass(tw("front"));
     pass.setBindGroup(1, groundGroup);
@@ -1860,7 +1939,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   const picks = [];
   const pickRead = [0, 1, 2, 3].map(() => ({ b: B(256, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "pick"), busy: false }));
   // how many sprites, points and shadow rows view 0 drew, read back a frame or two late
-  const countRead = [0, 1, 2].map(() => ({ b: B(48, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "counts"), busy: false }));
+  const countRead = [0, 1, 2].map(() => ({ b: B(64, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "counts"), busy: false }));
   let inFlight = 0;
 
   // f: worker.js's frame: { views: [{ U (VU fields), alpha, present: { dx, dy, sc, nn, nearest }, live, liveRows, prims, fires, xray }], lut, out, sea, cast, exag, ahead (frontAsk) }
@@ -1872,7 +1951,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     if (U.ni * U.nj <= MAX_TILES && (U.ni + 1) * (U.nj + 1) <= MAX_TILES + 4096) return v;
     const k = Math.sqrt((MAX_TILES * 0.97) / (U.ni * U.nj)), ni = Math.max(3, Math.floor(U.ni * k)), nj = Math.max(3, Math.floor(U.nj * k));
     stats.tilesCut = (stats.tilesCut ?? 0) + 1;
-    return { ...v, U: { ...U, ni, nj, i0: U.i0 + ((U.ni - ni) >> 1), j0: U.j0 + ((U.nj - nj) >> 1) } };
+    return { ...v, blk: null, U: { ...U, ni, nj, nbi: Math.ceil(ni / 16), i0: U.i0 + ((U.ni - ni) >> 1), j0: U.j0 + ((U.nj - nj) >> 1) } };
   }
   function frame(f) {
     const views = f.views.map(fitTiles);
@@ -2006,10 +2085,18 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     stats.tiles = nTiles;
     // 1. the tile map, 2. cull
     enc.copyBufferToBuffer(argsInit, 0, argsB, 0, 64);
+    enc.copyBufferToBuffer(tcntInit, 0, tcntB, 0, 16);
+    const blk = v.blk ?? fullBlocks(U), nBlk = Math.min(blk.length, BLK_MAX);
+    device.queue.writeBuffer(blkB[k], 0, blk, 0, nBlk);
+    enc.clearBuffer(mapB, FOFF_B, Math.min(BLK_MAX, U.nbi * Math.ceil(U.nj / 16)) * 4);
+    stats.blocks = nBlk;
     let pass = enc.beginComputePass(tw("map"));
     pass.setBindGroup(1, groundGroup);
-    pass.setPipeline(S.tiles.p); pass.setBindGroup(0, group(S.tiles, k)); pass.dispatchWorkgroups(Math.ceil(nTiles / 64));
-    pass.setPipeline(S.verts.p); pass.setBindGroup(0, group(S.verts, k)); pass.dispatchWorkgroups(Math.ceil(((U.ni + 1) * (U.nj + 1)) / 64));
+    pass.setPipeline(S.tiles.p); pass.setBindGroup(0, group(S.tiles, k)); pass.dispatchWorkgroups(nBlk);
+    pass.setPipeline(S.verts.p); pass.setBindGroup(0, group(S.verts, k)); pass.dispatchWorkgroups(nBlk);
+    pass.end();
+    pass = enc.beginComputePass(tw("tcull"));
+    pass.setPipeline(S.tcull.p); pass.setBindGroup(0, group(S.tcull, k)); pass.dispatchWorkgroups(nBlk);
     pass.end();
     if (objCount) {
       // an indexed source's rows of cells under the view, each row's run split among enough workgroups to keep the GPU busy
@@ -2063,7 +2150,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     });
     rp.setViewport(0, 0, U.aw, U.ah, 0, 1);
     rp.setPipeline(S.terrain.p); rp.setBindGroup(0, group(S.terrain, k)); rp.setBindGroup(1, groundGroup);
-    rp.draw(18 * Math.max(0, U.ni - 2) * Math.max(0, U.nj - 2));
+    rp.drawIndirect(tcntB, 0);
     if (objCount) {
       rp.setPipeline(S.sprites.p); rp.setBindGroup(0, group(S.sprites, k)); rp.drawIndirect(argsB, 0);
     }
@@ -2097,7 +2184,8 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       if (cr) {
         cr.busy = true;
         enc.copyBufferToBuffer(argsB, 0, cr.b, 0, 48);
-        pendingPickReads.push(() => cr.b.mapAsync(GPUMapMode.READ).then(() => { const a = new Uint32Array(cr.b.getMappedRange().slice(0)); cr.b.unmap(); cr.busy = false; stats.counts = { sprites: a[1], rows: a[5], points: a[9], tiles: nTiles }; }).catch(() => { cr.busy = false; }));
+        enc.copyBufferToBuffer(tcntB, 0, cr.b, 48, 16);
+        pendingPickReads.push(() => cr.b.mapAsync(GPUMapMode.READ).then(() => { const a = new Uint32Array(cr.b.getMappedRange().slice(0)); cr.b.unmap(); cr.busy = false; stats.counts = { sprites: a[1], rows: a[5], points: a[9], tiles: nTiles, tilesDrawn: a[12] / 18 }; }).catch(() => { cr.busy = false; }));
       }
     }
     // the instances asked for (checks: scripts/play/objects.ts), as view 0 drew them: sprites, then specks

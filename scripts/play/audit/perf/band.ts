@@ -5,7 +5,7 @@ const args = Object.fromEntries(process.argv.slice(2).map((a) => { const m = /^-
 const vp = (args.vp ?? "1600x1000").split("x").map(Number), tag = args.tag ?? "band";
 const OCEAN = [[25.77, -45.48], [-48.77, 145.55], [34.06, 10.52], [-17.66, 129.3], [44.48, -13.6], [-45.8, -138.7], [49.4, -66.3], [35.0, -8.5], [-16.9, 96.2], [55.6, 122.6]];
 const zs = (args.zooms ?? "2.6,2.8,3.0,3.2,3.4,3.6,3.8,4.0,4.4").split(",").map(Number);
-const r = await launch({ vw: vp[0], vh: vp[1], profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ vw: vp[0], vh: vp[1], profile: "/tmp/globe-fix-lead2/chrome" });
 const out: any = { vp, rows: [] };
 const t0 = Date.now();
 try {

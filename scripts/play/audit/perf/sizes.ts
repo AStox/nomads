@@ -5,7 +5,7 @@ const out: any[] = [];
 const deadline = Date.now() + 230000;
 for (const [w, h, dpr] of SIZES) {
   if (Date.now() > deadline) break;
-  const r = await launch({ vw: w, vh: h, dpr, profile: "/tmp/globe-fix-lead/chrome" });
+  const r = await launch({ vw: w, vh: h, dpr, profile: "/tmp/globe-fix-lead2/chrome" });
   try {
     await load(r, "?hour=13");
     const row: any = { w, h, dpr, z: {} };
@@ -14,7 +14,7 @@ for (const [w, h, dpr] of SIZES) {
       await take(r.page); await sleep(3000);
       const d = await take(r.page); const s = summarize(d);
       row.z[z] = { gpu: s.gpuMs, passes: Object.fromEntries(Object.entries(s.passes).map(([k, p]: any) => [k, p.mean])), rafMean: s.rafDt.mean, doneHz: s.doneHz, dropped: s.dropped };
-      if (z === 6) { const png: Buffer = await r.page.screenshot({ type: "png" }); row.shot = [(await sharp(png).metadata()).width, (await sharp(png).metadata()).height]; if (dpr === 2) await sharp(png).extract({ left: 300, top: 200, width: 400, height: 250 }).png().toFile("/tmp/globe-fix-lead/out/dpr2-crop.png"); }
+      if (z === 6) { const png: Buffer = await r.page.screenshot({ type: "png" }); row.shot = [(await sharp(png).metadata()).width, (await sharp(png).metadata()).height]; if (dpr === 2) await sharp(png).extract({ left: 300, top: 200, width: 400, height: 250 }).png().toFile("/tmp/globe-fix-lead2/out/dpr2-crop.png"); }
     }
     row.canvas = await r.page.evaluate(() => { const c = document.getElementById("view") as HTMLCanvasElement, g = document.getElementById("gpu") as HTMLCanvasElement; return { view: [c.width, c.height], gpu: g && [g.width, g.height], dpr: devicePixelRatio, inner: [innerWidth, innerHeight] }; });
     out.push(row);

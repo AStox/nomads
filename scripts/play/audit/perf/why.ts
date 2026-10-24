@@ -1,5 +1,5 @@
 import { launch, load, take, sleep } from "./lib";
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   await load(r, "?hour=13&warm=0"); await sleep(5000);
   for (const z of (process.argv[2] ?? "6,3.2").split(",").map(Number)) {

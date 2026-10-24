@@ -5,7 +5,7 @@ import { launch, load, take, summarize, pageState, sleep, save, drag, wheel, pro
 const args = Object.fromEntries(process.argv.slice(2).map((a) => { const m = /^--([^=]+)=?(.*)$/.exec(a)!; return [m[1], m[2] || "1"]; }));
 const tag = args.tag ?? "j", place = args.place ?? "A", zTo = Number(args.zoomTo ?? 6.5), steps = (args.steps ?? "dive,jump,pan").split(",");
 const PLACES: Record<string, [number, number]> = { A: [4.35, -39.38], B: [-5.38, 73.13], C: [16.8, 84.38], BB: [-35.9034, 43.5937], D: [40.2, 10.5], E: [-20.5, -120.3] };
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 const out: any = { args, load: null, dives: [], jumps: [], pan: null };
 const deadline = Date.now() + 238000;
 const shot = async () => { const png: Buffer = await r.page.screenshot({ type: "png" }); return sharp(png).resize(240, 150, { fit: "fill" }).removeAlpha().raw().toBuffer() as Promise<Buffer>; };

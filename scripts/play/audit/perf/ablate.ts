@@ -7,7 +7,7 @@ const variants = (args.variants ?? "base").split(";"), zooms = (args.zooms ?? "1
 const out: any = { args, rows: [] };
 const base = process.env.SITE_AB ?? "http://127.0.0.1:8292";
 for (const v of variants) {
-  const r = await launch({ vw: vp[0], vh: vp[1], profile: "/tmp/globe-fix-lead/chrome" });
+  const r = await launch({ vw: vp[0], vh: vp[1], profile: "/tmp/globe-fix-lead2/chrome" });
   try {
     await r.page.goto(`${base}/play/?hour=13&abl=${v === "base" ? "" : v}`, { waitUntil: "domcontentloaded", timeout: 60000 });
     await r.page.waitForSelector("body.ready", { timeout: 120000 });

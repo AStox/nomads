@@ -6,7 +6,7 @@ const args = Object.fromEntries(process.argv.slice(2).map((a) => { const m = /^-
 const tag = args.tag ?? "load", N = Number(args.n ?? 2), query = args.query ?? "";
 const out: any = { runs: [] };
 const deadline = Date.now() + 238000;
-const profile = "/tmp/globe-fix-lead/chrome";
+const profile = "/tmp/globe-fix-lead2/chrome";
 for (const mode of ["cold", "warm", "cold", "warm"].slice(0, N * 2)) {
   if (Date.now() > deadline - 45000) break;
   const r = await launch({ profile, keepProfile: mode === "warm" });

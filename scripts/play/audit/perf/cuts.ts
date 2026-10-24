@@ -1,7 +1,7 @@
 // the largest ladder grid a view asked for (tilesMax) and the views cut to fit the tile map (tilesCut), over a zoom ladder at each place and a wheel sweep
 import { launch, sleep } from "./lib";
 const places: [string, number[]][] = [["A", [4.35, -39.38]], ["B", [-5.38, 73.13]], ["C", [16.8, 84.38]], ["M", [-26.17, -36.17]], ["R", [12.02, 83.89]], ["E2", [13.27, 45.0]], ["D", [16.11, 43.64]], ["home", [47.806, 38.63]]];
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   await r.page.goto(`${process.env.SITE ?? "http://127.0.0.1:8231"}/play/?hour=13&warm=0`, { waitUntil: "domcontentloaded", timeout: 60000 });
   await r.page.waitForSelector("body.ready", { timeout: 120000 });

@@ -14,8 +14,8 @@ export const PLACES: Record<string, [number, number]> = {
   K3: [4.35, -35.6385],
   E2: [13.27, 45.0],      // cube edge of faces 0/1 (E2: along lon 45 at lat 13.27)
 };
-const PROFILE = "/tmp/globe-fix-lead/chrome";
-export const OUT = "/tmp/globe-fix-lead/out";
+const PROFILE = "/tmp/globe-fix-lead2/chrome";
+export const OUT = "/tmp/globe-fix-lead2/out";
 mkdirSync(OUT, { recursive: true });
 
 export async function withBrowser(fn: (page: any, errs: string[], browser: any) => Promise<void>, opts: { vp?: [number, number]; q?: string } = {}) {

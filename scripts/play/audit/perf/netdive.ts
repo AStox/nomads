@@ -1,6 +1,6 @@
 // OPFS: which tiles a second dive fetches again
 import { launch, load, sleep, take, netlog, save, settleTo } from "./lib";
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   await load(r, "?hour=13"); await netlog();
   const out: any[] = [];

@@ -5,7 +5,7 @@ const args = Object.fromEntries(process.argv.slice(2).map((a) => { const m = /^-
 const tag = args.tag ?? "soak", secs = Number(args.secs ?? 225), seed0 = Number(args.seed ?? 1), bbP = Number(args.bb ?? 0.25), dwell = Number(args.dwell ?? 4500), site = args.site;
 let s = seed0 * 2654435761 >>> 0; const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
 const BB = [-35.9034, 43.5937], KNOWN = [[4.35, -39.38], [-5.38, 73.13], [16.8, 84.38]];
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 const out: any = { args, jumps: [], series: [], events: [] };
 const t0 = Date.now();
 let lostSeen = 0;

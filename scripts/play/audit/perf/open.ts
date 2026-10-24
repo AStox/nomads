@@ -1,7 +1,7 @@
 import { launch, sleep } from "./lib";
 import { sharp } from "./lib";
 const site = process.argv[2], out = process.argv[3];
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   await r.page.goto(`${site}/play/?hour=13&warm=0`, { waitUntil: "domcontentloaded", timeout: 60000 });
   await r.page.waitForSelector("body.ready", { timeout: 120000 });

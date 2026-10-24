@@ -519,7 +519,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // Ground at a screen point lies between the lowest and the highest ground of the footprint that screen can see, so the window is laid for those heights and then again for the
   // lowest and highest ground in the window so found, until it stops shrinking: a peak or a high plateau elsewhere in the island (or in the first, widest window) does not widen it, which
   // sized the ladder's terrain grid by the window's highest ground and cost up to 14 ms of a frame. [i0, j0, ni, nj, the highest level].
-  function windowOf(cam, vec) {
+  function windowOf(cam, vec, cut = true) {
     const md = cam.md, grid = md.grid, reach = md.tall * (2 + Math.hypot(vec[0], vec[1])) + 16, offx = cam.gcx - cam.gx0, offy = cam.gcy - cam.gy0;
     let top = md.peakLev, bot = 0, win = null;
     for (let pass = 0; pass < 4; pass++) {
@@ -538,12 +538,48 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       if (nTop === top && nBot === bot) break;
       top = nTop; bot = nBot;
     }
-    return win;
+    return cut ? cutBlocks(cam, reach, win) : win;
+  }
+  // The window is a rectangle in the grid's axes laid for the lowest and highest ground in all of it, and on steep ground most of it lies off the screen (a mountain's face: a million tiles
+  // for 500 on screen). It is cut to the blocks of BLK by BLK tiles that can show: a block shows where its corners, at the lowest and highest ground and water standing in it (the island's
+  // extremes by MH_M cell, a cell's margin all round), lie on the buffer less the sprites' reach, and the tile passes work on those, a ring of blocks round them for the neighbours the vertices
+  // and banks read, and on nothing else. The rectangle is the bounding box of the blocks, at whole blocks, so it follows the visible ground. [i0, j0, ni, nj, top, the blocks]: each block as
+  // its index in the rectangle's blocks, a bit above 2^30 when it is one of those that can show (the ring's are for their neighbours only).
+  const BLK = 16;
+  function cutBlocks(cam, reach, win) {
+    const md = cam.md, grid = md.grid, [i0, j0, ni, nj, top] = win, offx = cam.gcx - cam.gx0, offy = cam.gcy - cam.gy0, [cu, cv] = md.uv(cam.view.x, cam.view.z);
+    const bi0 = Math.floor(i0 / BLK), bj0 = Math.floor(j0 / BLK), nbi = Math.floor((i0 + ni - 1) / BLK) - bi0 + 1, nbj = Math.floor((j0 + nj - 1) / BLK) - bj0 + 1;
+    const core = new Uint8Array(nbi * nbj), m2 = md.tileM * 2;
+    let ci0 = Infinity, ci1 = -1, cj0 = Infinity, cj1 = -1;
+    for (let bj = 0; bj < nbj; bj++)
+      for (let bi = 0; bi < nbi; bi++) {
+        let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, sx0 = Infinity, sx1 = -Infinity, sb0 = Infinity, sb1 = -Infinity;
+        for (let c = 0; c < 4; c++) {
+          const [x, z] = grid.toW((bi0 + bi + (c & 1)) * BLK, (bj0 + bj + (c >> 1)) * BLK), [mu, mv] = md.uv(x, z), du = mu - cu, dv = mv - cv, sx = offx + (du - dv) * md.H, sb = offy + (du + dv) * md.hb + cam.lev * md.lp;
+          x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); sx0 = Math.min(sx0, sx); sx1 = Math.max(sx1, sx); sb0 = Math.min(sb0, sb); sb1 = Math.max(sb1, sb);
+        }
+        if (sx1 < -reach || sx0 > cam.AW + reach) continue;
+        const hi = Math.max(0, Math.ceil((highest(x0 - m2, z0 - m2, x1 + m2, z1 + m2) + 10) / md.levelM)), lo = Math.max(0, Math.floor((lowest(x0 - m2, z0 - m2, x1 + m2, z1 + m2) - 10) / md.levelM));
+        if (sb1 - lo * md.lp < -reach || sb0 - hi * md.lp > cam.AH + reach) continue;
+        core[bj * nbi + bi] = 1;
+        ci0 = Math.min(ci0, bi); ci1 = Math.max(ci1, bi); cj0 = Math.min(cj0, bj); cj1 = Math.max(cj1, bj);
+      }
+    if (ci1 < 0) return [bi0 * BLK, bj0 * BLK, 3 * BLK, 3 * BLK, top, new Uint32Array(0)];
+    // the rectangle: the blocks that can show and a ring of one
+    const ai0 = Math.max(0, ci0 - 1), ai1 = Math.min(nbi - 1, ci1 + 1), aj0 = Math.max(0, cj0 - 1), aj1 = Math.min(nbj - 1, cj1 + 1), wi = ai1 - ai0 + 1, wj = aj1 - aj0 + 1, list = [];
+    for (let bj = aj0; bj <= aj1; bj++)
+      for (let bi = ai0; bi <= ai1; bi++) {
+        let near = false, here = core[bj * nbi + bi] === 1;
+        for (let dj = -1; dj <= 1 && !near; dj++) for (let di = -1; di <= 1; di++) { const a = bi + di, b = bj + dj; if (a >= 0 && b >= 0 && a < nbi && b < nbj && core[b * nbi + a]) { near = true; break; } }
+        if (near) list.push(((bj - aj0) * wi + (bi - ai0)) | (here ? 0x40000000 : 0));
+      }
+    return [(bi0 + ai0) * BLK, (bj0 + aj0) * BLK, wi * BLK, wj * BLK, top, Uint32Array.from(list)];
   }
   // the highest and lowest ground in a world rectangle, from the island's heights in MH_M cells
   const MH_M = 300, MHN = Math.ceil(SIZE / MH_M);
   let MH = null;
-  function highestOf(g) {
+  // f: the fields' height and water by cell: a lake's surface can stand above every ground sample of the cell it lies in, and the tile map draws it there
+  function highestOf(g, f) {
     const hi = new Float32Array(MHN * MHN), lo = new Float32Array(MHN * MHN).fill(Infinity);
     for (let j = 0; j < MHN * 8; j++)
       for (let i = 0; i < MHN * 8; i++) {
@@ -551,6 +587,14 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
         if (h > hi[k]) hi[k] = h;
         if (h < lo[k]) lo[k] = h;
       }
+    if (f?.water)
+      for (let Y = 0; Y < WIN_N; Y++)
+        for (let X = 0; X < WIN_N; X++) {
+          const w = f.water[Y * WIN_N + X];
+          if (w <= 0) continue;
+          const a = clamp(Math.floor((X * CELL) / MH_M), 0, MHN - 1), b = clamp(Math.floor((Y * CELL) / MH_M), 0, MHN - 1), k = b * MHN + a, s = f.height[Y * WIN_N + X] + w;
+          if (s > hi[k]) hi[k] = s;
+        }
     return { hi, lo };
   }
   MH = highestOf(G);
@@ -558,7 +602,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // from them is made again, a slice of it a frame (fieldsOf) while the old ground stays, then all at once (commitFields)
   function* fieldsOf(msg) {
     const g = createGround(msg), hs = yield* cameraHeightsOf(g);
-    return { G: g, peak: msg.peak, ...hs, mh: highestOf(g) };
+    return { G: g, peak: msg.peak, ...hs, mh: highestOf(g, msg) };
   }
   function commitFields(f) {
     G = f.G; peak = f.peak;
@@ -901,12 +945,12 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // A camera's place on its level and bearing for the GPU (webgpu.js VU): its grid, target, art buffer and tile window
   // (win: windowOf's).
   function placeOf(cam, win) {
-    const md = cam.md, G0 = gridOf(cam.L, md.b).F, [i0, j0, ni, nj, top] = win;
+    const md = cam.md, G0 = gridOf(cam.L, md.b).F, [i0, j0, ni, nj, top, blk] = win;
     return {
       eubx: G0.eu[0], euby: G0.eu[1], evbx: G0.ev[0], evby: G0.ev[1], obx: G0.ox, obz: G0.oz,
       eux: md.eu[0], euy: md.eu[1], evx: md.ev[0], evy: md.ev[1],
       cx: cam.view.x, cz: cam.view.z, levc: cam.lev, offx: cam.gcx - cam.gx0, offy: cam.gcy - cam.gy0, gx0: cam.gx0, gy0: cam.gy0, aw: cam.AW, ah: cam.AH,
-      i0, j0, ni, nj, H: md.H, hb: md.hb, lp: md.lp, tileM: md.tileM, levelM: md.levelM, k: md.k, pv: md.pv, pw: md.pw, shrunk: md.shrunk ? 1 : 0, bias: md.hb + 2, peak: top, zinv: 1 / (2 * zSpan(cam, top)), mapN: LADDER[cam.L].paged ? 0 : Math.ceil((2 * (SIZE / 2) * (Math.abs(Math.cos((md.b * Math.PI) / 4)) + Math.abs(Math.sin((md.b * Math.PI) / 4)))) / md.tileM),
+      i0, j0, ni, nj, nbi: Math.ceil(ni / BLK), nblk: blk ? blk.length : 0, bsum: blk ? blk.reduce((a, e) => (Math.imul(a, 31) + e) | 0, blk.length) : 0, H: md.H, hb: md.hb, lp: md.lp, tileM: md.tileM, levelM: md.levelM, k: md.k, pv: md.pv, pw: md.pw, shrunk: md.shrunk ? 1 : 0, bias: md.hb + 2, peak: top, zinv: 1 / (2 * zSpan(cam, top)), mapN: LADDER[cam.L].paged ? 0 : Math.ceil((2 * (SIZE / 2) * (Math.abs(Math.cos((md.b * Math.PI) / 4)) + Math.abs(Math.sin((md.b * Math.PI) / 4)))) / md.tileM),
     };
   }
   // The whole island at level L and whole bearing b, at one art px a px, as webgpu.js builds a far level's front lists
@@ -922,7 +966,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       }
     const gx0 = Math.floor(x0) - 8, gy0 = Math.floor(y0) - 8, gcx = (uc - vc) * md.H, gcy = (uc + vc) * md.hb;
     const cam = { view: { x: 0, z: 0, up: 0 }, md, L, s: 1, AW: Math.ceil(x1) - gx0 + 8, AH: Math.ceil(y1) - gy0 + 8, gcx, gcy, gx0, gy0, lev: 0, czc: 1.5 * md.H * (uc + vc) };
-    return placeOf(cam, windowOf(cam, [0, 0]));
+    return placeOf(cam, windowOf(cam, [0, 0], false));
   }
   // the island levels down to FRONT_M tiles keep front lists, at every whole bearing [design: the levels whose specks
   // outnumber their sprites in a view, measured 2026-10-15 at seed 1: island, isle200, isle100]
@@ -956,7 +1000,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       half: SIZE / 2, edge: PLACE ? PLAY_EDGE_M : 0, hmost: hz.most, htop: hz.top, hreach: hz.reach, sea: P.w1, nfires: fires.length, night: sky.night,
     };
     const n = Math.max(1, Math.ceil(cam.s - 1e-3));
-    return { U, L: cam.L, beta: md.beta, alpha: w, present: { dx: cam.dx, dy: cam.dy, sc: cam.s, nn: n, nearest: Math.abs(cam.s - n) < 1e-3 ? 1 : 0 }, live, liveRows: cast ? liveRows : null, xray, prims: prims.a, fires: FR };
+    return { U, blk: win[5] ?? null, L: cam.L, beta: md.beta, alpha: w, present: { dx: cam.dx, dy: cam.dy, sc: cam.s, nn: n, nearest: Math.abs(cam.s - n) < 1e-3 ? 1 : 0 }, live, liveRows: cast ? liveRows : null, xray, prims: prims.a, fires: FR };
   }
   // the light the ground is lit by, as the shade pass takes it from a view's uniforms and the planet pass (wgsl/globe.js lightFine) from the frame
   const groundLight = () => ({ lx: sky.L[0], ly: sky.L[1], lz: sky.L[2], ar: sky.A[0], ag: sky.A[1], ab: sky.A[2], kr: sky.K[0], kg: sky.K[1], kb: sky.K[2], sunK: sky.cast ? sky.cast.k : 0, flat: sky.flat, relief: sky.relief, toneK: sky.toneK, aoK: AO.on ? AO.k : 0, aoTer: AO.ter, aoCan: AO.can, aoTree: AO.tree, aoTop: AO.top, aoSelf: AO.self, aoKey: AO.key });

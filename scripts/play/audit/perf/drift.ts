@@ -1,5 +1,5 @@
 import { launch, load, sleep, save } from "./lib";
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   await load(r, "");
   const rows: any[] = [];

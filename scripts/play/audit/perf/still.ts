@@ -3,7 +3,7 @@ import { launch, sleep, settleTo } from "./lib";
 import { sharp } from "./lib";
 const site = process.argv[2] ?? "http://127.0.0.1:8231";
 const zs = (process.argv[3] ?? "2.0,2.6,3.2,4,5,6,6.5,7,7.5,8,8.3,9").split(",").map(Number);
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   await r.page.goto(`${site}/play/?hour=13&warm=0`, { waitUntil: "domcontentloaded", timeout: 60000 });
   await r.page.waitForSelector("body.ready", { timeout: 120000 });

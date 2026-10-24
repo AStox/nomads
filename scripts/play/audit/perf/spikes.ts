@@ -1,6 +1,6 @@
 // a long real pan at A: frames over 16 ms of GPU with their passes, and the page's rAF worst
 import { launch, load, take, sleep, drag, settleTo, summarize } from "./lib";
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   await load(r, "?hour=13&warm=0");
   await settleTo(r.page, [4.35, -39.38], Number(process.argv[2] ?? 6.5), 25000); await sleep(1500);

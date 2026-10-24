@@ -4,13 +4,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 export const puppeteer = (await import(join(homedir(), ".bun/install/global/node_modules/puppeteer-core"))).default;
 export const sharp = (await import(join(homedir(), ".bun/install/global/node_modules/sharp/dist/index.cjs"))).default;
 export const sleep = Bun.sleep;
-export const OUT = "/tmp/globe-fix-lead/out";
+export const OUT = "/tmp/globe-fix-lead2/out";
 export const PLACES: Record<string, [number, number]> = { A: [4.35, -39.38], B: [-5.38, 73.13], C: [16.8, 84.38], D: [16.11, 43.64], E: [35.26, 45], G: [44.9, 133.05], K: [-15.75, 26.76], R: [12.02, 83.89] };
 export async function session(vp: [number, number], query: string, fn: (page: any, browser: any) => Promise<void>) {
   const [VW, VH] = vp;
   const browser = await puppeteer.launch({
     executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true, protocolTimeout: 60000,
-    args: ["--headless=new", "--enable-unsafe-webgpu", `--window-size=${VW},${VH + 143}`, `--user-data-dir=/tmp/globe-fix-lead/chrome`],
+    args: ["--headless=new", "--enable-unsafe-webgpu", `--window-size=${VW},${VH + 143}`, `--user-data-dir=/tmp/globe-fix-lead2/chrome`],
     defaultViewport: { width: VW, height: VH, deviceScaleFactor: 1 },
   });
   const bye = async () => { try { await browser.close(); } catch {} process.exit(1); };

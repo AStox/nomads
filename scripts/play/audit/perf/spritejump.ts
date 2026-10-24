@@ -1,7 +1,7 @@
 // sprites drawn as the zoom crosses 2.8 to 3.4 in small steps, both ways: the largest change from one step to the next
 import { launch, sleep } from "./lib";
 const site = process.env.SITE ?? "http://127.0.0.1:8231";
-const r = await launch({ profile: "/tmp/globe-fix-lead/chrome" });
+const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
 try {
   await r.page.goto(`${site}/play/?hour=13&warm=0`, { waitUntil: "domcontentloaded", timeout: 60000 });
   await r.page.waitForSelector("body.ready", { timeout: 120000 });
