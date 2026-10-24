@@ -20,6 +20,9 @@ const GRID_X = 14, GRID_Y = 10, MARGIN = 0.12;
 const CAP_RATE = 3;
 // how fast the whole screen goes over to the fine pages once the view holds them all, in shares a second: about two thirds of a second
 const FINE_RATE = 1.5;
+// the reach (half the screen's diagonal on the ground, m) a block of pages holds with its camera within half a page of its middle, which is as far as the renderer lets the camera go from the middle before
+// it makes the block again (worker.js blockFollow): a view of more is never drawn from the pages, so the same view is the same picture whether the block was made on the way in or left from the way out
+const FINE_REACH = (PAGE_BLOCK / 2 - 0.5) * PAGE_GEOM.pageCells * PAGE_GEOM.cellM;
 
 // G: the globe.js bundle's namespace (FRAMES); pyramid: pyramid.js openPyramid's; pal: pal.js's namespace; radiusM: the planet's radius
 // in metres, which every metre in here follows; the cameras (planetCam's radiusM) must be of the same radius.
@@ -218,7 +221,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       const xc = p.fx * FN - blk.x0, zc = BCELLS - (p.fy * FN - blk.y0);
       return p.f === blk.face && xc > 1 && xc < BCELLS - 1 && zc > 1 && zc < BCELLS - 1 && resident[Math.floor(zc / PAGE_GEOM.pageCells) * BN + Math.floor(xc / PAGE_GEOM.pageCells)] >= 0;
     };
-    const goal = blk && ready >= top && pts.every(inPages) ? 1 : 0;
+    const goal = blk && ready >= top && cam.hh * R * Math.hypot(cam.aspect, 1) <= FINE_REACH && pts.every(inPages) ? 1 : 0;
     fine = goal > fine ? Math.min(1, fine + dt * FINE_RATE) : goal;
     capAt = now;
     const a = artFor(Math.ceil(w / artPx), Math.ceil(h / artPx));

@@ -1,3 +1,4 @@
+import { SC } from "../../island.js";
 import { groundWGSL } from "../ground.wgsl.js";
 import { PAGE_BLOCK, PAGE_GEOM, pageGeom, pageWGSL } from "../pages.js";
 
@@ -329,7 +330,10 @@ fn fillTop(S: ptr<function, GSample>, x: f32, z: f32) {
     // standing water as the island's waterAt has it from the cells' level and the fine height: the sea's level is 0, a lake's its cell's height and depth
     gLvl = max(select(-1.0e4, gHt + gF.water, gF.water >= 0.25), select(-1.0e4, 0.0, gHt < 8.0));
     (*S).wet = clamp(0.5 + (gLvl - gH) * 0.5, 0.0, 1.0);
-    (*S).river = fineRiver(gFx);
+    // a stream the mask holds is a texel wide (PAGE_GEOM.cellM over mask, 4.7 m) or more: over a pixel wider than 0.7 of that it shows as the share of the pixel it covers, dithered as the tier's
+    // streams are below, so the finer streams fade out with the scale and not all at once where the fine pages end
+    let showMask = min(1.0, ${PAGE_GEOM.cellM / PAGE_GEOM.mask} / (0.7 * gMpp / gSc));
+    (*S).river = select(0.0, fineRiver(gFx), bayer(gX, gY) < showMask);
     return;
   }
   (*S).wet = select(0.0, 1.0, gH < 0.0 || gF.lake >= 0.5);
@@ -428,7 +432,7 @@ fn fillLand(S: ptr<function, GSample>, x: f32, z: f32, wx: f32, wz: f32, X: i32,
     (*S).c[3] = pgBil(pgFineLd(gFine, at, 7), t5.x, t5.y);
     (*S).c[4] = pgBil(pgFineLd(gFine, at, 8), t5.x, t5.y);
     (*S).c[5] = pgBil(pgFineLd(gFine, at, 9), t5.x, t5.y);
-    (*S).rockS = select(0.0, 1.0, gGl >= 1.25);
+    (*S).rockS = select(0.0, 1.0, gGl >= ${lit(SC)});
     (*S).s = max(0.0, fineGrid(1, gFx)) * 0.4;
     return;
   }
@@ -439,9 +443,9 @@ fn fillLand(S: ptr<function, GSample>, x: f32, z: f32, wx: f32, wz: f32, X: i32,
   (*S).c[4] = F.bare;
   // meltwater sand is the painter's sand
   (*S).c[5] = select(0.0, 0.8, F.drift == 3u);
-  // a cell averages the ground it holds, so the slope that is a cliff at the light grid's 12.5 m (the island's critical slope, 1.25) is gentler the larger the cell: it falls as the root of the cell's size
-  let cliff = 1.25 * sqrt(12.5 / max(gCm * gSc, 12.5));
-  (*S).rockS = max(g_smooth(3200.0, 4800.0, gH) * g_smooth(0.5 * cliff, cliff, gGl), g_smooth(0.8 * cliff, 1.3 * cliff, gGl));
+  // the island's critical slope on the slope the pixel reads (the cells' B-spline here, the light grid's in the fine branch): the baked 12.5 m slope under a cell follows the cell's own and never
+  // passes about 0.8, so no cliff share is made up for the ground a cell averages
+  (*S).rockS = select(0.0, 1.0, gGl >= ${lit(SC)});
   (*S).s = 0.0;
 }
 fn fillColour(S: ptr<function, GSample>) {
@@ -724,7 +728,16 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     var hU = h;
     if (useFine) {
       let da5 = (PI / 2.0) / FN;
-      gradU = (fineGrid(3, bcell) * 75.0 / (u.radiusM * da5 * length(kx))) * normalize(kx) - (fineGrid(4, bcell) * 75.0 / (u.radiusM * da5 * length(ky))) * normalize(ky);
+      // the same solve as the tier's, from the light grid's slopes a cell along the window's x and against its z: the lattice's axes are not at right angles, so each along its own tangent is not the gradient
+      let Tx5 = u.radiusM * da5 * kx;
+      let Ty5 = u.radiusM * da5 * ky;
+      let E5 = dot(Tx5, Tx5);
+      let F5 = dot(Tx5, Ty5);
+      let G5 = dot(Ty5, Ty5);
+      let det5 = max(E5 * G5 - F5 * F5, 1e-6);
+      let hx5 = fineGrid(3, bcell) * 75.0;
+      let hy5 = -fineGrid(4, bcell) * 75.0;
+      gradU = ((G5 * hx5 - F5 * hy5) * Tx5 + (E5 * hy5 - F5 * hx5) * Ty5) / det5;
       hU = fineLayer(0, bcell);
     }
     var sl = clamp(-4.4 * u.relief * dot(gradU, toSun), 0.0, 2.0);
