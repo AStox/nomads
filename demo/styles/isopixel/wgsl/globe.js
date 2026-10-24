@@ -1,5 +1,5 @@
 import { groundWGSL } from "../ground.wgsl.js";
-import { PAGE_GEOM, pageWGSL } from "../pages.js";
+import { PAGE_BLOCK, PAGE_GEOM, pageGeom, pageWGSL } from "../pages.js";
 
 // The planet layer's picture (planet.js): each art pixel's ray crosses the shell between the unit sphere and the highest relief (land
 // stands exag times its height above the sphere, the sea is the sphere) and is marched to the surface, so a tilted view shifts a high
@@ -22,6 +22,8 @@ export function globeWgsl({ FRAMES, P, RGB, NCOL, TONE_S, offsets, LEVELS }) {
   const ramp = (...n) => `array<u32, ${n.length}>(${n.map(u).join(", ")})`;
   const rgb = (c) => v3(c.map((x) => x / 255));
   const tiers = offsets.length - 1;
+  // the block's lattices
+  const GEOM = pageGeom(PAGE_BLOCK);
   return /* wgsl */ `
 ${groundWGSL(0, { planet: true })}
 const PI = 3.14159265358979;
@@ -67,7 +69,10 @@ struct U {
   cf: vec4f,                // x: the finest level the whole view has tiles for (planet.js), y: the water's frame 0 to 7, z: the season 0 to 3, w: how far the whole screen has gone over to the fine pages, 0 to 1
   tf: vec4i,                // x: the face of the camera's target; y, z: as f32 bits, the orthographic share of the camera (0 perspective, 1 parallel rays) and the half height of the screen at the target's depth in radii
   pw: vec4i,                // the fine pages (the renderer's, planet.js opts.pages): x: they are all held for the view, y, z, w: their window's face and its first cell's x and y on it
-  pgt: array<vec4i, 4>,     // and their table: a slot for each of the sixteen pages, or -(2 + the page whose range stands in)
+  bw: vec4i,                // the block of pages the ground is read from (the window's pages and the ring round them; the table is ptab): x: it is held, y, z: its first cell's x and y on its face, w: the face
+  bw1: vec4i,
+  bw2: vec4i,
+  bw3: vec4i,
   sprl: vec4f,              // x: an upright sprite's share of the key light (live.js spriteLight); y: the share of the tree cover the ground paints as crowns (the rest is drawn as sprites and specks)
 }
 @group(0) @binding(0) var<uniform> u: U;
@@ -87,9 +92,12 @@ struct U {
 @group(0) @binding(13) var sunT: texture_2d<f32>;
 @group(0) @binding(14) var can0T: texture_2d<u32>;
 @group(0) @binding(15) var can3T: texture_2d<f32>;
-fn pgOn() -> bool { return u.pw.x != 0; }
-fn pgTab(k: u32) -> i32 { return u.pgt[k >> 2u][k & 3u]; }
-${pageWGSL()}
+@group(0) @binding(17) var<storage, read> gStreams: array<f32>;      // the window's streams and their bins (the ladder's, ground.wgsl.js g_streamAt)
+@group(0) @binding(18) var<storage, read> gStreamBins: array<u32>;
+@group(0) @binding(16) var<storage, read> ptab: array<i32>; // the block's table: a slot for each of its pages, row by row from the north, or -1 where there is none
+fn pgOn() -> bool { return u.bw.x != 0; }
+fn pgTab(k: u32) -> i32 { return ptab[k]; }
+${pageWGSL({ n: PAGE_BLOCK })}
 // the painter's noise is offset by whole metres, here those of the noise frame's origin
 fn g_wrapW(k: u32) -> vec2<i32> { return u.nw.xy; }
 
@@ -281,16 +289,17 @@ var<private> gCm5: f32;    // and to a cell of the fine pages' window (a finest 
 var<private> gF: Fv;       // the tier cells' fields at the pixel
 var<private> gRShore: f32; // how far inside a stream the pixel lies, noise metres
 var<private> gFn: bool;    // this pixel reads the fine pages
-var<private> gFx: vec2f;   // its place in their window's cells: x east, z south
+var<private> gWo: vec2f;   // the block's cells less the window's, at this pixel (the block need not be centred on the window)
+var<private> gFx: vec2f;   // its place in the block's cells: x east, z south
 var<private> gLvl: f32;    // the level of the standing water round it, m
 // a fine page's field at a place in the window's cells: layer L of the fine layers (h, wet, moist, river, tree, shrub, grass, marsh, bare, sand), of the light grid (h, folds, slope, gx, gz), the stream mask 0 to 1
 fn fineLayer(L: i32, c: vec2f) -> f32 {
-  let v = clamp((c - vec2f(0.5)) * ${PAGE_GEOM.fine}.0, vec2f(0.0), vec2f(${PAGE_GEOM.fineMax}));
+  let v = clamp((c - vec2f(0.5)) * ${PAGE_GEOM.fine}.0, vec2f(0.0), vec2f(${GEOM.fineMax}));
   let t = v - floor(v);
   return pgBil(pgFineQ(gFine, L, vec2i(floor(v))), t.x, t.y);
 }
 fn fineGrid(L: i32, c: vec2f) -> f32 {
-  let v = clamp(c * ${PAGE_GEOM.grid}.0, vec2f(0.0), vec2f(${PAGE_GEOM.gridMax}));
+  let v = clamp(c * ${PAGE_GEOM.grid}.0, vec2f(0.0), vec2f(${GEOM.gridMax}));
   let t = v - floor(v);
   return pgBil(pgGridQ(gGrid, L, vec2i(floor(v))), t.x, t.y);
 }
@@ -340,6 +349,16 @@ fn fillWater(S: ptr<function, GSample>, x: f32, z: f32, ctx: PaintCtx, river: bo
       let gz = (fineRiver(gFx + vec2f(0.0, dc)) - fineRiver(gFx - vec2f(0.0, dc))) / 6.0;
       let gl = length(vec2f(gx, gz));
       (*S).shore = select(60.0, ((*S).river - 0.5) / gl, gl > 1e-4);
+      // inside the window, where its streams are held, a stream runs as wide as its flow makes it and is a dry bed where it runs no more than the valley's fill carries (the ladder's fillWater); outside, the mask's
+      // lines are water at the mask's width
+      let wc = gFx - gWo;
+      if (lt[6].z > 0.5 && wc.x > 1.0 && wc.x < ${PAGE_GEOM.cells - 1}.0 && wc.y > 1.0 && wc.y < ${PAGE_GEOM.cells - 1}.0) {
+        let h = ${PAGE_GEOM.cells * PAGE_GEOM.cellM / 2}.0;
+        let st = g_streamAt(wc.x * ${PAGE_GEOM.cellM}.0 - h, wc.y * ${PAGE_GEOM.cellM}.0 - h);
+        var q = 0.0;
+        if (st.ok > 0.0) { q = st.q * (st.base + (1.0 - st.base) * g_quick(ctx.season & 3u)); }
+        (*S).bed = st.ok == 0.0 || st.qbf <= 0.0 || q <= st.under || st.d > st.wbf * pow(q / st.qbf, 0.26) / 2.0;
+      }
     }
     return;
   }
@@ -371,7 +390,7 @@ fn fillLand(S: ptr<function, GSample>, x: f32, z: f32, wx: f32, wz: f32, X: i32,
   if (gFn) {
     // the fine pages' covers (grass, tree, shrub, marsh, bare, sand as the island lays them), the critical slope and the ridges' light of the light grid; the window's z runs south against the face's y
     let c = gFx + vec2f(wx - x, -(wz - z)) / gCm5;
-    let v = clamp((c - vec2f(0.5)) * ${PAGE_GEOM.fine}.0, vec2f(0.0), vec2f(${PAGE_GEOM.fineMax}));
+    let v = clamp((c - vec2f(0.5)) * ${PAGE_GEOM.fine}.0, vec2f(0.0), vec2f(${GEOM.fineMax}));
     let t5 = v - floor(v);
     let at = pgFineAt(vec2i(floor(v)));
     (*S).c[0] = pgBil(pgFineLd(gFine, at, 6), t5.x, t5.y);
@@ -499,7 +518,7 @@ fn lightFine(cell: vec2f, c0: u32, wet: bool) -> Lit {
   o.ao = 0u;
   let p = cell * ${PAGE_GEOM.grid}.0;
   let flatL = lt[1].w;
-  let g = vec2f(fineGrid(3, cell), fineGrid(4, cell)) * lt[2].w;
+  let g = vec2f(fineGrid(3, cell + gWo), fineGrid(4, cell + gWo)) * lt[2].w;
   let slope = max(0.0, dot(lt[0].xyz, normalize(vec3f(-g.x, 1.0, -g.y))));
   var sh = 0.0;
   if (lt[0].w > 0.0) { sh = smoothstep(0.3, 0.7, lgBil(sunT, lt[5].x, p)) * lt[0].w; }
@@ -598,14 +617,18 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
 
   let fc = faceOf(p);
   let f = fc.f;
-  // the fine pages where the view holds them all (U.pw.x) and this pixel lies in their window and one of their resident pages: the whole screen goes over to them as one scalar, U.cf.w,
-  // rises, each pixel when its dither is under it, and fades back out as the pixel grows past two fine vertices (18.75 m), so a zoom is one continuous cross-fade
+  // the fine pages where the view holds them all (U.bw.x) and this pixel lies in the block and in one of its resident pages: the whole screen goes over to them as one scalar, U.cf.w,
+  // rises, each pixel when its dither is under it, and fades back out as the pixel grows past two fine vertices (18.75 m), so a zoom is one continuous cross-fade. fcell is the pixel's
+  // place in the window's cells (the window's own light is in them), bcell in the block's (the pages are)
   var useFine = false;
   var fcell = vec2f(0.0);
-  if (pgOn() && f == u.pw.y && u.cf.w > 0.0) {
+  var bcell = vec2f(0.0);
+  if (pgOn() && f == u.bw.w && u.cf.w > 0.0) {
     fcell = vec2f(fc.fx * FN - f32(u.pw.z), ${PAGE_GEOM.cells}.0 - (fc.fy * FN - f32(u.pw.w)));
-    let inside = fcell.x > 1.0 && fcell.x < ${PAGE_GEOM.cells - 1}.0 && fcell.y > 1.0 && fcell.y < ${PAGE_GEOM.cells - 1}.0;
-    if (inside && pgTab(u32(i32(fcell.y / ${PAGE_GEOM.pageCells}.0) * 4 + i32(fcell.x / ${PAGE_GEOM.pageCells}.0))) >= 0) {
+    bcell = vec2f(fc.fx * FN - f32(u.bw.y), ${GEOM.cells}.0 - (fc.fy * FN - f32(u.bw.z)));
+    gWo = bcell - fcell;
+    let inside = bcell.x > 1.0 && bcell.x < ${GEOM.cells - 1}.0 && bcell.y > 1.0 && bcell.y < ${GEOM.cells - 1}.0;
+    if (inside && pgTab(u32(i32(bcell.y / ${PAGE_GEOM.pageCells}.0) * ${PAGE_BLOCK} + i32(bcell.x / ${PAGE_GEOM.pageCells}.0))) >= 0) {
       useFine = bayer(gX, gY) < u.cf.w * (1.0 - g_smooth(18.75, 56.0, gMpp));
     }
   }
@@ -657,8 +680,8 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     var hU = h;
     if (useFine) {
       let da5 = (PI / 2.0) / FN;
-      gradU = (fineGrid(3, fcell) * 75.0 / (u.radiusM * da5 * length(kx))) * normalize(kx) - (fineGrid(4, fcell) * 75.0 / (u.radiusM * da5 * length(ky))) * normalize(ky);
-      hU = fineLayer(0, fcell);
+      gradU = (fineGrid(3, bcell) * 75.0 / (u.radiusM * da5 * length(kx))) * normalize(kx) - (fineGrid(4, bcell) * 75.0 / (u.radiusM * da5 * length(ky))) * normalize(ky);
+      hU = fineLayer(0, bcell);
     }
     var sl = clamp(-4.4 * u.relief * dot(gradU, toSun), 0.0, 2.0);
     slopeFacing = dot(normalize(p - u.relief * gradU), u.sun);
@@ -671,7 +694,7 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     gGl = length(gradU);
     gTl = tl;
     gFn = useFine;
-    gFx = fcell;
+    gFx = bcell;
     let mppN = gMpp / gSc;
     let xz = noiseXZ(gOff + tHit * rd);
     var ctx: PaintCtx;
@@ -687,7 +710,7 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     if (S.isCrown) {
       // a pixel painted with the tree sprites' colours is lit as the shade pass lights an upright sprite: half its own light and half the slope's
       facing = 0.5 * (u.sprl.x + slopeFacing);
-    } else if (useFine && lt[6].z > 0.5) {
+    } else if (useFine && lt[6].z > 0.5 && fcell.x > 1.0 && fcell.x < ${PAGE_GEOM.cells - 1}.0 && fcell.y > 1.0 && fcell.y < ${PAGE_GEOM.cells - 1}.0) {
       let Lq = lightFine(fcell, idx, S.isWater);
       idx = Lq.c; litRow = Lq.row * 4u; litAo = Lq.ao; isLit = true;
     } else if (!S.isWater) {

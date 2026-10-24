@@ -7,7 +7,7 @@
 // shader the finest level for which every tile the whole view reads is held (`cap`): the whole screen shows one level and a finer one
 // arrives as one cross-fade of all of it.
 import { CROWN_AT, dqBuild, noiseGrads } from "./ground.wgsl.js";
-import { PAGE_GEOM } from "./pages.js";
+import { PAGE_BLOCK, PAGE_GEOM } from "./pages.js";
 import { faceFrac, tierOffset } from "./pyramid.js";
 import { globeWgsl } from "./wgsl/globe.js";
 
@@ -57,6 +57,9 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       { binding: 13, visibility: F, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } },
       { binding: 14, visibility: F, texture: { sampleType: "uint", viewDimension: "2d" } },
       { binding: 15, visibility: F, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } },
+      { binding: 16, visibility: F, buffer: { type: "read-only-storage" } },
+      { binding: 17, visibility: F, buffer: { type: "read-only-storage" } },
+      { binding: 18, visibility: F, buffer: { type: "read-only-storage" } },
     ],
   });
   const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
@@ -79,14 +82,21 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
   const stand = { fine: device.createTexture({ size: [1, 1, 1], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING }), river: device.createTexture({ size: [1, 1], format: "r8uint", usage: GPUTextureUsage.TEXTURE_BINDING }) };
   // the ground's light (opts.light, opts.lightGround): seven vec4f of the sky's light and the rasters' sizes, and the window's sun map and trees' cover, 1 by 1 stand-ins while there is no window
   const lStand = { sun: device.createTexture({ size: [1, 1], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING }), can0: stand.river, can3: device.createTexture({ size: [1, 1], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING }) };
+  // the block of pages' table (wgsl/globe.js ptab), for the largest block
+  const ptabB = device.createBuffer({ size: 4 * 64, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  // the window's streams (opts.streams: webgpu.js streamGround), or a stand-in the shader never reads while there is no window
+  const sStand = device.createBuffer({ size: 16, usage: GPUBufferUsage.STORAGE });
+  let quickSet = null;
+  const ptab = new Int32Array(64), resident = new Int32Array(64), BN = PAGE_BLOCK, BCELLS = PAGE_GEOM.pageCells * BN, RINGP = (BN - 4) / 2;
   const lring = Array.from({ length: RING }, () => device.createBuffer({ size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }));
   const lb = new Float32Array(28);
   const ring = Array.from({ length: RING }, () => ({ buffer: device.createBuffer({ size: 336, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }), bind: null, key: null, blit: null }));
   // a ring slot's bind group for the pages' textures, made again only when they are other ones
-  function bindFor(r, pg, lg, lbuf) {
+  function bindFor(r, pg, lg, lbuf, sg) {
+    const streams = sg?.streams ?? sStand, bins = sg?.streamBins ?? sStand;
     const fine = pg?.fine ?? stand.fine, grid = pg?.grid ?? stand.fine, river = pg?.river ?? stand.river, sun = lg?.sun ?? lStand.sun, can0 = lg?.can0 ?? lStand.can0, can3 = lg?.can3 ?? lStand.can3;
-    if (r.key && r.key[0] === fine && r.key[1] === grid && r.key[2] === river && r.key[3] === sun && r.key[4] === can0 && r.key[5] === can3) return r.bind;
-    r.key = [fine, grid, river, sun, can0, can3];
+    if (r.key && r.key[0] === fine && r.key[1] === grid && r.key[2] === river && r.key[3] === sun && r.key[4] === can0 && r.key[5] === can3 && r.key[6] === streams && r.key[7] === bins) return r.bind;
+    r.key = [fine, grid, river, sun, can0, can3, streams, bins];
     const view = (t, dimension) => (t.createView ? t.createView({ dimension }) : t);
     r.bind = device.createBindGroup({
       layout: bgl,
@@ -106,13 +116,16 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
         { binding: 13, resource: view(sun, "2d") },
         { binding: 14, resource: view(can0, "2d") },
         { binding: 15, resource: view(can3, "2d") },
+        { binding: 16, resource: { buffer: ptabB } },
+        { binding: 17, resource: { buffer: streams } },
+        { binding: 18, resource: { buffer: bins } },
       ],
     });
     return r.bind;
   }
   // the picture is made at an art pixel (a quarter of the pixels at 2) and shown by whole pixels in a second pass
   let slot = 0, art = null;
-  // wgsl/globe.js U: 44 floats, then the noise frame's fractions and tangents, its whole metres and the target's face, the level cap, the water frame, the season and the share gone over to the fine pages, the pages' readiness and window, their table
+  // wgsl/globe.js U: 44 floats, then the noise frame's fractions and tangents, its whole metres and the target's face, the level cap, the water frame, the season and the share gone over to the fine pages, the pages' readiness and window, the block of pages
   const ub = new ArrayBuffer(336), u = new Float32Array(ub), ui = new Int32Array(ub);
   function artFor(aw, ah) {
     if (art && art.w === aw && art.h === ah) return art;
@@ -177,13 +190,34 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     pyramid.want(wanted(pts));
     const now = performance.now(), ready = readyLevel(pts), dt = (now - capAt) / 1000, pg = opts.pages?.on ? opts.pages : null;
     cap = ready < cap ? ready : Math.min(ready, cap + dt * CAP_RATE);
-    // the whole screen goes over to the fine pages once every point of the view (and its margin) lies in a resident page of the window and the finest tier is held too, never part of it
-    // (a window the view outgrows is a patch on the screen), and back at once when it does not
+    // the whole screen goes over to the fine pages once every point of the view (and its margin) lies in a resident page of the block and the finest tier is held too, never part of it
+    // (a block the view outgrows is a patch on the screen), and back at once when it does not
+    // the block: the pages the renderer made round the window's (pg.block), or while it is not there the window's own 16 in the middle of it; a page it has not is read as the nearest it has
+    // (wgsl/globe.js pgOf), so the ground a sprite or a stream's bank reaches over a page's edge is held to that page's range
+    let blk = null;
+    const pb = opts.pages?.block;
+    if (pg || pb) {
+      if (pb && pb.n === BN) blk = pb;
+      else {
+        const t = new Int32Array(BN * BN).fill(-1);
+        for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) t[(r + RINGP) * BN + c + RINGP] = Math.max(-1, pg.table[1 + r * 4 + c]);
+        blk = { face: pg.face, x0: pg.x0 - RINGP * PAGE_GEOM.pageCells, y0: pg.y0 - RINGP * PAGE_GEOM.pageCells, n: BN, table: t };
+      }
+      resident.fill(-1); ptab.fill(-1);
+      for (let k = 0; k < BN * BN; k++) resident[k] = ptab[k] = blk.table[k];
+      for (let k = 0; k < BN * BN; k++) {
+        if (resident[k] >= 0) continue;
+        let best = -1, bd = Infinity;
+        for (let j = 0; j < BN * BN; j++) if (resident[j] >= 0) { const d = Math.abs((j % BN) - (k % BN)) + Math.abs(((j / BN) | 0) - ((k / BN) | 0)); if (d < bd) { bd = d; best = j; } }
+        if (best >= 0) ptab[k] = -(2 + best);
+      }
+      device.queue.writeBuffer(ptabB, 0, ptab);
+    }
     const FN = 256 * 2 ** top, inPages = (p) => {
-      const xc = p.fx * FN - pg.x0, zc = PAGE_GEOM.cells - (p.fy * FN - pg.y0);
-      return p.f === pg.face && xc > 1 && xc < PAGE_GEOM.cells - 1 && zc > 1 && zc < PAGE_GEOM.cells - 1 && pg.table[1 + Math.floor(zc / PAGE_GEOM.pageCells) * 4 + Math.floor(xc / PAGE_GEOM.pageCells)] >= 0;
+      const xc = p.fx * FN - blk.x0, zc = BCELLS - (p.fy * FN - blk.y0);
+      return p.f === blk.face && xc > 1 && xc < BCELLS - 1 && zc > 1 && zc < BCELLS - 1 && resident[Math.floor(zc / PAGE_GEOM.pageCells) * BN + Math.floor(xc / PAGE_GEOM.pageCells)] >= 0;
     };
-    const goal = pg && ready >= top && pts.every(inPages) ? 1 : 0;
+    const goal = blk && ready >= top && pts.every(inPages) ? 1 : 0;
     fine = goal > fine ? Math.min(1, fine + dt * FINE_RATE) : goal;
     capAt = now;
     const a = artFor(Math.ceil(w / artPx), Math.ceil(h / artPx));
@@ -200,8 +234,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     ui[56] = nf.f; u[57] = opts.ortho ?? 0; u[58] = (cam.tanH * cam.dist) / cam.radiusM; ui[59] = 0;
     ui[60] = pg ? 1 : 0; ui[61] = pg?.face ?? 0; ui[62] = pg?.x0 ?? 0; ui[63] = pg?.y0 ?? 0;
     u[80] = opts.spr ?? 0.6; u[81] = opts.canopy ?? 1;
-    // the renderer's table is its on word, then the sixteen entries
-    for (let k = 0; k < 16; k++) ui[64 + k] = pg ? pg.table[1 + k] : -1;
+    ui[64] = blk ? 1 : 0; ui[65] = blk?.x0 ?? 0; ui[66] = blk?.y0 ?? 0; ui[67] = blk?.face ?? 0;
     const r = ring[slot++ % RING], ts = opts.timestampWrites;
     device.queue.writeBuffer(r.buffer, 0, ub);
     const pass = enc.beginRenderPass({
@@ -216,7 +249,10 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       lb.set([L.lx, L.ly, L.lz, L.sunK, L.ar, L.ag, L.ab, L.flat, L.kr, L.kg, L.kb, L.relief, L.toneK, L.aoK, L.aoTer, L.aoCan, L.aoTree, L.aoTop, L.aoSelf, L.aoKey, G2.gridN, G2.gridStep, G2.canN, G2.canStep, G2.can3N, G2.half, 1, 0]);
     }
     device.queue.writeBuffer(k, 0, lb);
-    pass.setBindGroup(0, bindFor(r, opts.pages, G2, k));
+    // the window's runoff by season, in the noise table where the streams read it (ground.wgsl.js noiseGrads), as the window's own painter has it
+    const sg = pg && opts.streams;
+    if (sg && sg.quick !== quickSet) { device.queue.writeBuffer(grads, 4096 * 8, sg.quick); quickSet = sg.quick; }
+    pass.setBindGroup(0, bindFor(r, opts.pages, G2, k, sg));
     pass.setPipeline(planetPipe); pass.draw(3);
     pass.end();
     const blit = enc.beginRenderPass({

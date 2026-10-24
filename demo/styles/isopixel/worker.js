@@ -106,7 +106,7 @@ async function init(m) {
   for (const h of isle.height) peak = Math.max(peak, h);
   home = { pack, fields: { peak, h: g.h, height: isle.height, water: isle.water } };
   if (planet?.T) {
-    planet.wins = createWindows({ G: planet.G, T: planet.T, gpu, base: planet.base, tier: planet.manifest.tiers - 1, seed: m.seed, radiusM: planet.radiusM, quick: isle.quick, put: (atlas, list, slots) => R.copyPages(atlas, list, slots), onBlockLost: () => R.setBlockPages({ block: null }) });
+    planet.wins = createWindows({ G: planet.G, T: planet.T, gpu, base: planet.base, tier: planet.manifest.tiers - 1, seed: m.seed, radiusM: planet.radiusM, quick: isle.quick, put: (atlas, list, slots) => R.copyPages(atlas, list, slots), onBlockLost: () => { R.setBlockPages({ block: null }); blk = null; } });
     // the passes of the empty source a window draws until its blocks come, and of each size a block comes in, compiled now on the GPU process's own threads (a first window then does not wait on them)
     void R.warmSpec("win", winSpec(EMPTY_CAP)).catch((err) => console.warn("warm window passes", err));
     for (const cap of BLOCK_CAPS) void R.warmSpec("block", blockSpec(cap)).catch((err) => console.warn("warm block passes", err));
@@ -962,6 +962,18 @@ let lastLut = null, lutShown = false;
 // assumes (the window's scale and the bearing of its north axis) to the cells' true tangent vectors there, so that the planet's ground is drawn in the ladder's metric and a cell is
 // where the ladder's objects stand on it (planet-cam.js q). Null away from a window or without a parallel camera.
 let gTopGrid = null, planetQ = null;
+// The pages the planet pass reads where no window is (the view is wider than a window covers, under about zoom 3, or the camera is away from any): a block of them round the camera's page, made behind the frames and
+// moved by whole pages when the camera is more than half a page from its middle. Pages are global, so a window made later finds those that are its own. blk is the block the painter has (first page, in cells)
+let blk = null, blkMaking = false;
+function blockFollow(cam) {
+  if (!planet?.wins || curWin || blkMaking || switching || !cam.T) return;
+  // half the screen's diagonal in metres on the ground: a block (28.8 km) holds a view of this reach with its camera within a page of its middle
+  if (cam.hh * planetLayer.radiusM * Math.hypot(cam.aspect, 1) > 15000) return;
+  const c = planet.wins.cellOf(cam.T), bx = Math.round((c.x - 192) / 64) * 64, by = Math.round((c.y - 192) / 64) * 64;
+  if (blk && blk.face === c.face && Math.abs(c.x - (blk.x + 192)) <= 32 && Math.abs(c.y - (blk.y + 192)) <= 32) return;
+  blkMaking = true;
+  planet.wins.ensureBlockAt(c.face, bx, by).then((b) => { if (!curWin) { R.setBlockPages(b); blk = { face: b.block.face, x: b.block.x0, y: b.block.y0 }; } }).catch((err) => console.warn("block pages", err)).finally(() => { blkMaking = false; });
+}
 function cellQ(pp) {
   if (!curWin || !(pp.ortho > 0) || !planet) return null;
   const G = planet.G, tier = planet.manifest.tiers - 1, D2R = Math.PI / 180, dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -1166,9 +1178,8 @@ async function applyGround(p) {
       // the window's pages (made again if the cache let one go) into the painter's page textures, only those it does not already hold, and the table turned on for the whole screen
       const set = await planet.wins.pageSet(w), r = R.setGroundPages({ ...w.pack, pages: set, top: w.pack.grid.top });
       if (!r.on) throw new Error(`the window's pages are not all there: ${JSON.stringify(r.missing)}`);
-      // the pages round the window's, for the planet pass: the old block goes at once (its slots may be given to other pages), the new one is made behind the frames and given to the painter when it is there
-      R.setBlockPages({ block: null });
-      planet.wins.ensureBlock(w).then((b) => { if (curWin === w) R.setBlockPages(b); }).catch((err) => console.warn("block pages", err));
+      // the pages round the window's, for the planet pass: the block held stays until the new one is made behind the frames (a page it loses to another window takes it away, onBlockLost) and is given to the painter when it is there
+      planet.wins.ensureBlock(w).then((b) => { if (curWin === w) { R.setBlockPages(b); blk = { face: b.block.face, x: b.block.x0, y: b.block.y0 }; } }).catch((err) => console.warn("block pages", err));
       R.setIce(new Uint8Array(TILES * TILES));
     } else {
       S.win = null; curWin = null;
@@ -1265,9 +1276,10 @@ function render() {
     // where the ladder holds the target on the screen (its camera height, the ground blurred) once the camera is parallel, so a cell is on the screen where its sprites are
     const lift = (planetLift = Math.max(0, pyr + (f.planet.ortho ?? 0) * ((f.planet.liftM ?? pyr) * sx - pyr)));
     const cam = planetCam({ ...f.planet, q, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM, lift });
+    blockFollow(cam);
     // the page ground the ladder reads, for the planet pass's finest tier (planet.js, the window's face and corner cells are the pages' frame), with the ladder's own season, frame and relief so water, grass and slope light match it
-    const pg = R.pageGround(), pages = curWin && pg.on ? { ...pg, face: curWin.face, x0: curWin.x0, y0: curWin.y0 } : null, v0 = views[0]?.U;
-    planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, spr: v0?.spr, canopy: f.planet.canopy, ortho: f.planet.ortho, sun: f.planet.sun, moon: f.planet.moon, moonMix: f.planet.moonMix, amb: f.planet.amb, exag: ex, riverCut: f.planet.riverCut, season: v0?.season, frame: v0?.frame, relief: f.relief, pages, light: f.planet.light, lightGround: pages ? R.lightGround() : null });
+    const pg = R.pageGround(), pages = curWin && pg.on ? { ...pg, face: curWin.face, x0: curWin.x0, y0: curWin.y0 } : pg.block ? { ...pg, on: false } : null, v0 = views[0]?.U;
+    planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, spr: v0?.spr, canopy: f.planet.canopy, ortho: f.planet.ortho, sun: f.planet.sun, moon: f.planet.moon, moonMix: f.planet.moonMix, amb: f.planet.amb, exag: ex, riverCut: f.planet.riverCut, season: v0?.season, frame: v0?.frame, relief: f.relief, pages, light: f.planet.light, lightGround: pages ? R.lightGround() : null, streams: pages ? R.streamGround() : null });
   });
   noteLevel(views[0]?.U);
   R.frame({ ...f, views, under });

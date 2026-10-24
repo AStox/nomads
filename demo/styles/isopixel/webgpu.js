@@ -1104,7 +1104,9 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // rest of a setGround pack: dq, grad, streams, streamBins, need: { x0, z0, x1, z1 } the metres the view (and its prefetch margin) will read, in the painter's x and z }. A page of the 4 by 4 that is
   // not listed reads as the nearest listed page's edge, which would show as a smear: so while a page under `need` (the whole window when it is not given) is missing, the pages are loaded
   // but not turned on, the whole screen stays on the window's own textures, and the call returns { on: false, missing: [{ ox, oy }] }; once the pages are there, one call turns them on for the whole screen.
+  let winQuick = new Float32Array(4);
   function setGroundPages(p) {
+    winQuick = p.grad.slice(8192, 8196);
     const { pages } = p, logical = new Int32Array(16).fill(-1);
     if (!pages.length) throw new Error("setGroundPages: no pages");
     if (!PT) throw new Error("setGroundPages: no page was copied into the textures (copyPages)");
@@ -2121,6 +2123,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     pageGround: () => ({ on: pgOnNow && !!PT, fine: PT?.fine ?? null, grid: PT?.grid ?? null, river: PT?.river ?? null, table: pageNow, block: blockNow }),
     setBlockPages, copyPages,
     // the light's rasters the planet pass reads over the window (wgsl/globe.js lightFine): the sun's map (the front one), the trees' cover near and wide, and their grids' sizes
+    streamGround: () => ({ streams: groundBuffers[8], streamBins: groundBuffers[9], quick: winQuick }),
     lightGround: () => ({ sun: sunMaps[sunFront], can0: canopy.t0, can3: canopy.t3, gridN: GN, gridStep: pal.GRID_STEP, canN: canopy.n, canStep: canopy.step, can3N: canopy.n3, half: SIZE / 2 }),
     setFrontUse: (on) => { frontUse = on; },
     setFrontViews, frontsReady,

@@ -19,6 +19,8 @@ export const PAGE_ROW = { fine: 1280, grid: 1792, mask: 1024 };
 // the window's cells (75 m, 256 across) in each field's own lattice: fine vertices a cell is 4 apart from the first cell's centre (1,021 of them), grid nodes 6 a cell from the window's edge (1,537), mask texels 16 a cell
 // from the edge (4,096), the largest position a bilinear read starts from each in a field's own units, and the cells to a page and across a window
 export const PAGE_GEOM = { fine: 4, grid: 6, mask: 16, fineMax: 1019.999, gridMax: 1535.999, pageCells: 64, cells: 256, cellM: 75 };
+// pages a side of the block the planet pass reads (groundwin.js SQUARE: the window's 4 and a ring of (PAGE_BLOCK - 4) / 2 round them)
+export const PAGE_BLOCK = 6;
 // the same for a square of n pages a side (n * 64 cells, 256 n - 3 fine vertices, 384 n + 1 grid nodes, 1,024 n mask texels): the window's is n = 4
 export const pageGeom = (n) => ({ ...PAGE_GEOM, cells: PAGE_GEOM.pageCells * n, fineMax: 256 * n - 5 + 0.999, gridMax: 384 * n - 1 + 0.999 });
 // n: pages a side of the table the module's pgTab(k) holds (k = row * n + column; the window's is 4, the planet pass's block 6)

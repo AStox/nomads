@@ -189,8 +189,10 @@ ${G} @binding(4) var gTrail: texture_2d<u32>;
 ${G} @binding(5) var gIce: texture_2d<u32>;
 ${G} @binding(6) var<storage, read> gDQ: array<u32>;
 ${G} @binding(7) var<storage, read> gGradT: array<vec2<f32>>;
+`)}
 // the place's runoff by season, in the two entries after the gradient table's 4,096
 fn g_quick(s: u32) -> f32 { let v = gGradT[4096u + (s >> 1u)]; return select(v.x, v.y, (s & 1u) == 1u); }
+${I(/* wgsl */ `
 ${G} @binding(8) var<storage, read> gStreams: array<f32>;
 ${G} @binding(9) var<storage, read> gStreamBins: array<u32>;
 // Where the ground's logical cell 0 lies in each texture (a slide of the ground past it wraps round, so a slide writes only what it uncovers): the shift in
@@ -220,9 +222,11 @@ const g_RM: i32 = ${RM};
 const g_WN: i32 = ${WN};
 const g_TN: i32 = ${TN};
 const g_TILES: i32 = ${TILES};
+`)}
 const g_NB: i32 = ${NB};
 // the island's corner, -ORIGIN, in whole meters
 const g_HALFI: i32 = ${SIZE / 2};
+${I(/* wgsl */ `
 const g_ORIGIN: f32 = ${lit(ORIGIN)};
 `)}
 
@@ -443,6 +447,7 @@ fn g_riverSmooth(x: f32, z: f32) -> f32 {
   if (pgOn()) { return pgBil(pgRiverQ(gRiver, vec2<i32>(i, j)), a, b); }
   return (g_riverAt(i, j) * (1.0 - a) + g_riverAt(i + 1, j) * a) * (1.0 - b) + (g_riverAt(i, j + 1) * (1.0 - a) + g_riverAt(i + 1, j + 1) * a) * b;
 }
+`)}
 // flora.ts streamAt's bin of a coordinate, from its whole meters, which cannot cross a bin edge on their own
 fn g_binOf(x: f32) -> i32 { return g_fdiv(i32(floor(x)) + g_HALFI, ${BIN}) + 1; }
 // flora.ts streamAt: the nearest stream's distance off its middle, its mean flow, groundwater share, bankfull flow, the
@@ -473,7 +478,6 @@ fn g_streamAt(x: f32, z: f32) -> GStream {
   }
   return best;
 }
-`)}
 
 ${I(/* wgsl */ `
 // ---------- ice (the ice edge the CPU bake once drew, main.js iceTex) ----------
