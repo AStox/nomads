@@ -87,7 +87,7 @@ const VU = struct("U", [
 const TU = struct("Tr", [["n", "u"], ["step", "f"], ["exag", "f"], ["tan", "f"], ["dx", "f"], ["dz", "f"], ["row0", "u"], ["reach", "f"], ["top", "f"]]);
 const PU = struct("Pr", [["dx", "f"], ["dy", "f"], ["sc", "f"], ["nn", "f"], ["alpha", "f"], ["aw", "u"], ["ah", "u"], ["nearest", "u"], ["sr", "f"], ["sg", "f"], ["sb", "f"]]);
 // the object passes outside a frame (wgsl/objects.js): the survey's mode and levels, and the trees' cover's grids
-const KU = struct("Ks", [["mode", "u"], ["nl", "u"], ["canN", "u"], ["canStep", "f"], ["gn", "u"], ["gs", "f"], ["rp", "u"], ["n3", "u"], ["rp3", "u"], ["rpt", "u"]]);
+const KU = struct("Ks", [["mode", "u"], ["nl", "u"], ["l0", "u"], ["canN", "u"], ["canStep", "f"], ["gn", "u"], ["gs", "f"], ["rp", "u"], ["n3", "u"], ["rp3", "u"], ["rpt", "u"]]);
 // a slice of a far list's build: its first slot, how many, and how many far levels; a front list's level
 const FU = struct("Fs", [["base", "u"], ["n", "u"], ["nf", "u"], ["lvl", "u"]]);
 
@@ -1735,10 +1735,10 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   }
   // The survey (wgsl/objects.js needsMain) over every source: mode 0 the kind and species pairs, mode 1 the families and
   // sizes the first nl levels draw, as bits; words: how many 32-bit words of them.
-  async function survey(mode, nl, words) {
+  async function survey(mode, nl, words, l0 = 0) {
     if (needB.size < words * 4) { needB.destroy(); needB = B(words * 4, STOR | GPUBufferUsage.COPY_SRC, "need"); }
     const read = B(words * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "needRead");
-    device.queue.writeBuffer(kpU, 0, KU.pack({ mode, nl }));
+    device.queue.writeBuffer(kpU, 0, KU.pack({ mode, nl, l0 }));
     const enc = device.createCommandEncoder();
     enc.clearBuffer(needB, 0, words * 4);
     const pass = enc.beginComputePass();

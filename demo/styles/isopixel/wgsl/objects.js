@@ -12,6 +12,7 @@
 // and berries for anything else) and its sprite's size at the level shown, as main.js collectLive drew it.
 import { NS, META_WORDS, M_KIND, M_BASE, M_TSP, M_WB, M_CROWN, M_LEV, M_WRAP, M_PAGES, HSTEPS, CODES, K_TREE, K_GRASS, K_FLAT, K_MOSSY, K_DRAWN, NB, NONE } from "../atlas.js";
 import { pageWGSL } from "../pages.js";
+import { TREE_FADE_MIN } from "../canopy.js";
 
 // A plant's pick is its slot with this bit, which the worker turns into its object number (flora.ts entry); one of the
 // CPU's records' its slot with EXTRA_PICK, which the worker turns into the thing's id; anything else's pick is its
@@ -58,6 +59,7 @@ fn mixSeed(seed: u32) -> u32 {
   h ^= h >> 16u; h *= 0x85ebca6bu; h ^= h >> 13u; h *= 0xc2b2ae35u; h ^= h >> 16u;
   return h;
 }` : ""}
+var<private> skipThin: bool = false;
 fn readObj(i: u32) -> Obj {
   var o: Obj;
   o.ok = (body[i] & 1u) == 1u;
@@ -68,7 +70,8 @@ fn readObj(i: u32) -> Obj {
   // the third tail word: a whole number up to 31 is k, only the objects whose hash has its top k bits 0 are drawn; any other nonzero word is the f32 bits of a share exponent e, and an object is drawn while its hash is under 2^(32 - e),
   // so the share grows an object at a time between whole numbers (a whole e draws what k = e does); 0 draws all of the body
   ${spec.thin ? `let thinW = body[${tail + 2}u];
-  if (thinW > 0u && thinW < 32u) { if ((mixSeed(o.seed) >> (32u - thinW)) != 0u) { o.ok = false; } }
+  if (skipThin) {}
+  else if (thinW > 0u && thinW < 32u) { if ((mixSeed(o.seed) >> (32u - thinW)) != 0u) { o.ok = false; } }
   else if (thinW != 0u && mixSeed(o.seed) >= u32(min(exp2(32.0 - bitcast<f32>(thinW)), 4294967040.0))) { o.ok = false; }` : ""}
   return o;
 }
@@ -81,10 +84,25 @@ fn cellOf(i: u32) -> u32 {
 ${spec.member ?? ""}`;
 }
 
+// A tree under a pixel is not dropped at once: from 1 art px down to TREE_FADE_MIN it is drawn as one speck when its
+// seed's hash is under its share, so each tree keeps its fate as the zoom goes and none changes with another. The share
+// is the tree's area in px (hpx squared), which holds the speck coverage of a wood as the trees shrink, times treeFade,
+// which takes it down to none. canopy.js says the share the ground paints in their place.
+const TREE_SHARE_WGSL = `
+fn treeFade(hpx: f32) -> f32 { return smoothstep(${TREE_FADE_MIN}, 1.0, hpx); }
+fn treeShare(hpx: f32) -> f32 { return min(hpx * hpx, 1.0) * treeFade(hpx); }
+fn fateOf(seed: u32) -> f32 {
+  var h = seed ^ 0x9E3779B9u;
+  h = (h ^ (h >> 16u)) * 0x7FEB352Du;
+  h = (h ^ (h >> 15u)) * 0x846CA68Bu;
+  h = h ^ (h >> 16u);
+  return f32(h >> 8u) / 16777216.0;
+}`;
+
 // What every object pass shares: the Obj, the tables, and an object's look. g: ORIGIN; GN, WS the 12.5 m light grid
 // (grid layer 1 its hollows' share of the sky); M, FSTART, FSTEP the fine ground (layer 4 its tree cover).
 export function objectWGSL(g) {
-  return `
+  return `${TREE_SHARE_WGSL}
 struct Obj { ok: bool, x: f32, z: f32, kind: u32, sp: u32, size: f32, seed: u32, pick: u32, nst: u32 }
 struct Fam { f: u32, wb: u32, tree: bool }
 const NONE: u32 = ${NONE}u;
@@ -378,7 +396,7 @@ fn cullEval(o: Obj) -> Emit {
   if ((kf & ${K_DRAWN}u) == 0u) { return e; }
   let tree = (kf & ${K_TREE}u) != 0u;
   let hpx = hpxOf(o, kf, V.pv, V.pw);
-  if (hpx < 1.0) { return e; }
+  if (hpx < 1.0 && (!tree || fateOf(o.seed) >= treeShare(hpx))) { return e; }
   let d = rel(o.x, o.z);
   // within reach whatever the ground's height: as tall and as wide as it is drawn, and its shadow
   let reach = hpx * 2.0 + 8.0 + select(0.0, hpx * 4.0, V.casting != 0u);
@@ -537,7 +555,7 @@ fn farCount(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) 
     if (L >= Fp.nf) { return; }
     let pv = bitcast<f32>(looks[${M_LEV}u + L * 4u]) * ${FAR_MARGIN};
     let pw = bitcast<f32>(looks[${M_LEV}u + L * 4u + 1u]) * ${FAR_MARGIN};
-    if (hpxOf(o, kf, pv, pw) >= 1.0) { break; }
+    if (hpxOf(o, kf, pv, pw) >= select(1.0, ${TREE_FADE_MIN}, (kf & ${K_TREE}u) != 0u)) { break; }
     L++;
   }
   let c = cellOf(i);
@@ -663,6 +681,7 @@ fn frontScan(@builtin(local_invocation_id) lid: vec3u) {
 export const NEEDS_WGSL = `
 @compute @workgroup_size(256)
 fn needsMain(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw: vec3u) {
+  skipThin = true;
   let i = gid.x + gid.y * nw.x * 256u;
   if (i >= CAP) { return; }
   let o = readObj(i);
@@ -676,9 +695,9 @@ fn needsMain(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups)
   }
   let F = famOf(o, kf);
   if (F.f == NONE) { return; }
-  for (var L = 0u; L < Kp.nl; L++) {
+  for (var L = Kp.l0; L < Kp.nl; L++) {
     let hpx = hpxOf(o, kf, bitcast<f32>(looks[${M_LEV}u + L * 4u]), bitcast<f32>(looks[${M_LEV}u + L * 4u + 1u]));
-    if (hpx < 1.0) { continue; }
+    if (hpx < select(1.0, ${TREE_FADE_MIN}, F.tree)) { continue; }
     let bit = (F.f + select(0u, looks[${M_LEV}u + L * 4u + 2u], F.tree)) * ${NS}u + sizeIdx(hpx, F.tree);
     if ((bit >> 5u) < arrayLength(&need)) { atomicOr(&need[bit >> 5u], 1u << (bit & 31u)); }
   }

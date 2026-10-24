@@ -23,7 +23,7 @@ onmessage = (e) => early.push(e);
 const ORIGIN = -SIZE / 2, WS = 12.5;
 // entries and rows kept for sprites made while the page runs (live sprites, and objects' sprites the world grew into
 // since the atlas was laid out), and the atlas layers they go in
-const DYN_ENTRIES = 32768, DYN_ROWS = 1 << 20, DYN_LAYERS = 4;
+const DYN_ENTRIES = 32768, DYN_ROWS = 1 << 22, DYN_LAYERS = 8;
 let camTick = 0, blocksOn = true, R = null, device = null, gpuName = "", canvas = null, context = null, planet = null, planetLayer = null, planetLift = 0;
 // each sprite's foot (rows its anchor sits above the ground), by atlas id, for the checks
 let table = null, nStatic = 0, rowsStatic = 0, dyn = null, liveIds = new Map(), dynMade = new Set(), feet = new Int16Array(0);
@@ -507,14 +507,28 @@ function gone(id) {
 // ---------- sprites ----------
 // every family and size the survey found drawn and not made yet, as [family key, size index, slot]
 const asked = new Set();
+// the level the page draws (the nearest to its first view's tree scale), and the range of levels sprites are made for while a world has no game: the one before it to two finer, since a zoom comes to those next
+let lvNow = -1;
+const spriteLevels = () => (S?.flora || lvNow < 0 ? [0, level.length] : [Math.max(0, lvNow - 1), Math.min(level.length, lvNow + 3)]);
+function noteLevel(U) {
+  if (!U || !level?.length) return;
+  let best = 0;
+  for (let i = 1; i < level.length; i++) if (Math.abs(level[i].pv - U.pv) < Math.abs(level[best].pv - U.pv)) best = i;
+  if (best === lvNow) return;
+  lvNow = best;
+  if (curWin && !S?.flora) refreshSprites();
+}
 async function wanted() {
-  const need = await R.survey(1, level.length, words32(looks.n * NS)), jobs = [];
+  // a world with no game makes nothing until the page has said which level it draws (noteLevel asks again): every level at once does not fit the dynamic layers
+  if (!S?.flora && lvNow < 0) return [];
+  const [l0, l1] = spriteLevels();
+  const need = await R.survey(1, l1, words32(looks.n * NS), l0), jobs = [];
   // a source of members has no survey: every layout, moss and size its members' sizes reach at each level
   const hq = (h) => (h < 8 ? Math.round(h * 2) : 8 + Math.round(h));
   for (const s of sources()) {
     const q = s.spec.needs, base = q && looks.base.get(q.kind * CODES + q.sp);
     if (base === undefined || base === null) continue;
-    for (const l of level) {
+    for (const l of level.slice(l0, l1)) {
       const lo = Math.max(1, shown(q.lo) * l.pv), hi = shown(q.hi) * l.pv;
       for (let si = hq(lo); hi >= 1 && si <= Math.min(NS - 1, hq(hi)); si++)
         for (let vr = 0; vr < 8; vr++)
@@ -547,7 +561,7 @@ const REFRESH_CHUNK = 16;
 // sprites for every [family key, size index, slot] in jobs, by as many sprite workers as the machine spares, chunk to a
 // message (each message's sprites are taken in as one task here); the page's loading line is told how far they are
 // only for the first view (report)
-async function makeAll(jobs, { chunk = 200, report = true } = {}) {
+async function makeAll(jobs, { chunk = 200, report = true, small = false, onChunk = null } = {}) {
   if (!jobs.length) return [];
   const nw = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2, Math.ceil(jobs.length / 100))), out = [];
   const workers = await Promise.all(Array.from({ length: nw }, () => new Promise((ok, fail) => {
@@ -555,8 +569,8 @@ async function makeAll(jobs, { chunk = 200, report = true } = {}) {
     w.onerror = (e) => fail(new Error(`sprite worker: ${e.message}`));
     w.onmessage = (e) => { if (e.data.ready) ok(w); };
   })));
-  // the big ones first, dealt round, so every worker has about the same to draw
-  jobs.sort((a, b) => b[1] - a[1]);
+  // the big ones first, dealt round, so every worker has about the same to draw; while the page runs the small ones first (the coarse levels a window is drawn at need only those)
+  jobs.sort(small ? (a, b) => a[1] - b[1] : (a, b) => b[1] - a[1]);
   const lists = workers.map(() => []);
   jobs.forEach((j, i) => lists[i % nw].push(j));
   let done = 0;
@@ -568,7 +582,7 @@ async function makeAll(jobs, { chunk = 200, report = true } = {}) {
       w.postMessage({ id: at, jobs: list.slice(at, at + CH) });
       at += CH;
     };
-    w.onmessage = (e) => { for (const r of e.data.out) out.push(r); done += e.data.out.length; if (report) say("drawing the sprites", done, jobs.length); next(); };
+    w.onmessage = (e) => { for (const r of e.data.out) out.push(r); onChunk?.(e.data.out); done += e.data.out.length; if (report) say("drawing the sprites", done, jobs.length); next(); };
     next();
   })));
   return out;
@@ -615,6 +629,8 @@ function putDynamic(s) {
   return id;
 }
 function dynReset() {
+  // what was made and is gone is asked for again by the next survey
+  refreshAgain = true;
   dyn.shelves.reset(); dyn.next = nStatic; dyn.rows = rowsStatic;
   liveIds = new Map();
   for (const slot of dynMade) { R.tablePut(slot, 0); table[slot] = 0; asked.delete(slot); }
@@ -638,22 +654,26 @@ function liveId(id) {
 // new kind came), made off this thread and put in the dynamic layers a part at a time between frames (PART_MS); the
 // GPU draws the nearest made meanwhile.
 let refreshing = null;
+let refreshAgain = false;
 function refreshSprites() {
-  if (refreshing || !dyn) return;
+  // a survey that comes while sprites are being made is made after them, not dropped
+  if (refreshing || !dyn) { if (refreshing) refreshAgain = true; return; }
   refreshing = (async () => {
-    const made = await makeAll(await wanted(), { chunk: REFRESH_CHUNK, report: false });
-    let t = performance.now();
-    for (const [slot, s] of made) {
-      if (performance.now() - t > PART_MS) { await nextTask(); t = performance.now(); }
-      if (s) crownMean.add(looks.key(Math.floor(slot / NS)), s);
-      let id = s ? putDynamic(s) : null;
-      if (s && id === null) { dynReset(); id = putDynamic(s); }
-      table[slot] = s ? (id === null ? 0 : id + 1) : NONE;
-      if (!s || id !== null) { R.tablePut(slot, table[slot]); if (s) dynMade.add(slot); }
-      if (s && id === null) asked.delete(slot);
-    }
+    // each message's sprites go into the table as they arrive, so a size is drawn as soon as it is made and a coarse level does not wait for the big sizes
+    const put = (out) => {
+      for (const [slot, s] of out) {
+        if (s) crownMean.add(looks.key(Math.floor(slot / NS)), s);
+        let id = s ? putDynamic(s) : null;
+        if (s && id === null) { dynReset(); id = putDynamic(s); }
+        table[slot] = s ? (id === null ? 0 : id + 1) : NONE;
+        if (!s || id !== null) { R.tablePut(slot, table[slot]); if (s) dynMade.add(slot); }
+        if (s && id === null) asked.delete(slot);
+      }
+    };
+    const jobs = await wanted();
+    await makeAll(jobs, { chunk: REFRESH_CHUNK, report: false, small: true, onChunk: put });
     planetLayer?.setCrown(crownMean.cdf());
-  })().catch((err) => console.error("sprites", err)).finally(() => { refreshing = null; });
+  })().catch((err) => console.error("sprites", err)).finally(() => { refreshing = null; if (refreshAgain) { refreshAgain = false; refreshSprites(); } });
 }
 // The trees' cover laid again on the GPU (webgpu.js buildCanopy) once the trees have changed, at most once a second.
 let canopyAt = 0, canopyLandings = -1;
@@ -883,7 +903,8 @@ let gsnap = null;
 async function check(m) {
   if (m.op === "drawn") {
     const r = await R.instances(), foot = (sp) => feet[sp] ?? 0;
-    return [...r.sprites, ...r.points].map((it) => ({ id: idOfPick(it.pick), src: srcOfPick(it.pick), x: it.x, y: it.y - foot(it.sp), wx: it.wx, wz: it.wz }));
+    const rev = new Map(); if (m.slots) table.forEach((v, slot) => { if (v && v !== NONE) rev.set(v - 1, slot); });
+    return [...r.sprites, ...r.points].map((it) => ({ id: idOfPick(it.pick), src: srcOfPick(it.pick), x: it.x, y: it.y - foot(it.sp), wx: it.wx, wz: it.wz, ...(m.slots ? { slot: rev.get(it.sp) ?? -1, fl: it.flags } : {}) }));
   }
   if (m.op === "count") { const r = await R.instances(); return { sprites: r.counts[0], points: r.counts[1], far: R.stats.far ?? null, front: R.stats.front ?? null, dynamic: dyn && { entries: dyn.next - nStatic, of: DYN_ENTRIES, layers: dyn.shelves.layers, ofLayers: DYN_LAYERS } }; }
   // the far lists on or off, and built again from the buffers as they are now (rebuild)
@@ -1310,6 +1331,7 @@ function render() {
     const pg = R.pageGround(), pages = curWin && pg.on ? { ...pg, face: curWin.face, x0: curWin.x0, y0: curWin.y0 } : null, v0 = views[0]?.U;
     planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, spr: v0?.spr, canopy: f.planet.canopy, ortho: f.planet.ortho, sun: f.planet.sun, moon: f.planet.moon, moonMix: f.planet.moonMix, amb: f.planet.amb, exag: ex, riverCut: f.planet.riverCut, season: v0?.season, frame: v0?.frame, relief: f.relief, pages, light: f.planet.light, lightGround: pages ? R.lightGround() : null });
   });
+  noteLevel(views[0]?.U);
   R.frame({ ...f, views, under });
   frames++;
   const ms = performance.now() - t0;
