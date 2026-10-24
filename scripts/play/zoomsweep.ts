@@ -35,7 +35,8 @@ try {
   page.on("console", (m: { text(): string }) => { if (/WEBGPU LOST/.test(m.text())) errs.push(m.text()); });
   await page.goto(`${SITE}/play/?zoom=island&hour=13&warm=0`, { waitUntil: "domcontentloaded", timeout: 120000 });
   await page.waitForSelector("body.ready", { timeout: 180000 });
-  await page.evaluate(() => { (window as unknown as { play: { sim: { paused: boolean } } }).play.sim.paused = true; });
+  // a page with a game on it is paused so its weather and light hold; the world alone has no sim to pause
+  await page.evaluate(() => { const s = (window as unknown as { play: { sim: { paused: boolean } | null } }).play.sim; if (s) s.paused = true; });
   await sleep(2000);
   const zmin = ZMIN ? Number(ZMIN) : await page.evaluate(() => (window as any).play.live.zmin as number);
   const geo = PLACES[place];
