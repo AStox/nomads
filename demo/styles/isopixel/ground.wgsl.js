@@ -577,9 +577,11 @@ fn g_water(S: GSample, x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) 
   } else {
     // a narrow band of shallows along the shore in meters, then open water by depth
     let shallow = max((1.0 - g_smooth(0.0, 2.5, depth)) * 0.8, 1.0 - g_smooth(0.0, 12.0, shore)) * (0.6 + 0.4 * (1.0 - g_smooth(0.0, 9.0, depth)));
-    let R = g_jround(${FBM(90, 90, 41)} * ${FADE(90)} * 1.5);
+    let Rs = ${FBM(90, 90, 41)} * ${FADE(90)} * 1.5;
+    let R = g_jround(Rs);
     let C = ${CL(3, 42, "0.5")};
-    v = 1.4 + 3.9 * shallow + R * 0.4 + C * 0.5;
+    // the island rounds the swell to whole steps (main.js); the planet keeps its value, since stepped it stands up as rings of one colour round each crest once a pixel outgrows the swell
+    v = 1.4 + 3.9 * shallow + ${planet ? "Rs" : "R"} * 0.4 + C * 0.5;
     // the sea beyond the shelf darkens with its depth, none of it above 100 m
     let deep = select(0.0, g_smooth(100.0, 4000.0, depth), kind == 1u);
     v -= 0.7 * deep;
