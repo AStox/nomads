@@ -93,6 +93,7 @@ export function readTile(gz: Uint8Array): { meta: Record<string, any>; planes: P
 export interface PyramidOptions {
   seed: number; key: string; topTier: number; sources: Partial<Record<(typeof PYRAMID_FIELDS)[number]["name"], Source>>; faces?: number[];
   unitTier?: number; // the tier whose tiles root the work units (default 3 tiers above the top: 85 tiles a unit)
+  out?: string; // the directory the tiles (`pyramid/`) and `pyramid.json` are written under, default the bake directory the fields are read from
   budgetS?: number; // stop before a unit that would pass this many seconds; every call that has a unit left makes at least one
 }
 export interface PyramidProgress { done: boolean; unitsMade: number; unitsKept: number; units: number; counts: number[]; seconds: number }
@@ -106,7 +107,7 @@ function putTile(path: string, bytes: Uint8Array) {
 // root is written last: a unit whose root exists is whole and is kept, one that does not is made again from its top tier (a killed call leaves at most `.part` files and unfinished units).
 // The tiers above the units' roots are pooled from the roots' files once a face's units all exist; the face's tier 0 tile, written last, marks the face done. Memory is one unit's ancestors.
 export function buildPyramid(dir: BakeDir, o: PyramidOptions): PyramidProgress {
-  const t0 = performance.now(), fn = TILE << o.topTier, counts = new Array<number>(o.topTier + 1).fill(0), fds = new Map<string, number>();
+  const root = o.out ?? dir.dir, t0 = performance.now(), fn = TILE << o.topTier, counts = new Array<number>(o.topTier + 1).fill(0), fds = new Map<string, number>();
   const u = o.unitTier ?? Math.max(0, o.topTier - 3), faces = o.faces ?? [0, 1, 2, 3, 4, 5], side = 1 << u;
   const fd = (file: string) => { let n = fds.get(file); if (n === undefined) { n = openSync(dir.path(file), "r"); fds.set(file, n); } return n; };
   const read = (f: (typeof PYRAMID_FIELDS)[number], face: number, tx: number, ty: number): Field => {
@@ -140,7 +141,7 @@ export function buildPyramid(dir: BakeDir, o: PyramidOptions): PyramidProgress {
   };
   const poolOf = (kids: Planes[]): Planes => Object.fromEntries(PYRAMID_FIELDS.map((f) => [f.name, pool(f.pool, f.type, kids.map((k) => k[f.name]))]));
   const put = (tier: number, face: number, tx: number, ty: number, planes: Planes) => {
-    putTile(tilePath(dir.dir, tier, face, tx, ty), tileBytes({ seed: o.seed, key: o.key, tier, face, tx, ty }, planes));
+    putTile(tilePath(root, tier, face, tx, ty), tileBytes({ seed: o.seed, key: o.key, tier, face, tx, ty }, planes));
     counts[tier]++;
   };
   const make = (tier: number, face: number, tx: number, ty: number): Planes => {
@@ -149,7 +150,7 @@ export function buildPyramid(dir: BakeDir, o: PyramidOptions): PyramidProgress {
     return planes;
   };
   const above = (tier: number, face: number, tx: number, ty: number): Planes => {
-    if (tier === u) return readTile(readFileSync(tilePath(dir.dir, tier, face, tx, ty))).planes;
+    if (tier === u) return readTile(readFileSync(tilePath(root, tier, face, tx, ty))).planes;
     const planes = poolOf([0, 1, 2, 3].map((n) => above(tier + 1, face, 2 * tx + (n & 1), 2 * ty + (n >> 1))));
     put(tier, face, tx, ty, planes);
     return planes;
@@ -159,19 +160,19 @@ export function buildPyramid(dir: BakeDir, o: PyramidOptions): PyramidProgress {
     for (const face of faces) {
       for (let ty = 0; ty < side && !stopped; ty++)
         for (let tx = 0; tx < side; tx++) {
-          if (existsSync(tilePath(dir.dir, u, face, tx, ty))) { kept++; continue; }
+          if (existsSync(tilePath(root, u, face, tx, ty))) { kept++; continue; }
           if (o.budgetS !== undefined && made > 0 && (performance.now() - t0) / 1000 + worst * 1.3 > o.budgetS) { stopped = true; break; }
           const s0 = performance.now();
           make(u, face, tx, ty);
           worst = Math.max(worst, (performance.now() - s0) / 1000); made++;
         }
       if (stopped) break;
-      if (u > 0 && !existsSync(tilePath(dir.dir, 0, face, 0, 0))) above(0, face, 0, 0);
+      if (u > 0 && !existsSync(tilePath(root, 0, face, 0, 0))) above(0, face, 0, 0);
       doneFaces++;
     }
   } finally { for (const n of fds.values()) closeSync(n); }
   const done = doneFaces === faces.length;
-  if (done) dir.putJson("pyramid", { version: PYRAMID_VERSION, seed: o.seed, key: o.key, tiers: o.topTier + 1, fields: PYRAMID_FIELDS.map((f) => f.name), missing: PYRAMID_FIELDS.filter((f) => !o.sources[f.name]).map((f) => f.name) });
+  if (done) writeFileSync(join(root, "pyramid.json"), JSON.stringify({ version: PYRAMID_VERSION, seed: o.seed, key: o.key, tiers: o.topTier + 1, fields: PYRAMID_FIELDS.map((f) => f.name), missing: PYRAMID_FIELDS.filter((f) => !o.sources[f.name]).map((f) => f.name) }));
   return { done, unitsMade: made, unitsKept: kept, units: faces.length * side * side, counts, seconds: (performance.now() - t0) / 1000 };
 }
 export type { FieldType };
