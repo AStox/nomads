@@ -37,7 +37,7 @@ export function sourceWGSL(spec, ORIGIN) {
   const C = spec.cap, F = spec.fields, at = (name) => `${(1 + F[name]) * C}u`;
   const hideWords = Math.ceil(C / 32);
   const cn = spec.n ?? CELLS_N;
-  // spec.origin: where the source stands in the window's frame, two words after its columns (mm from the window corner, signed): x, then z; spec.thin: a third, k: only the objects of the share 2^-k are drawn (the body was made at a denser one)
+  // spec.origin: where the source stands in the window's frame, two words after its columns (mm from the window corner, signed): x, then z; spec.thin: a third, the share drawn, as k or as the f32 bits of a fractional exponent (the body was made at a denser one)
   const tail = (1 + Object.keys(F).length) * C, shift = (axis) => (spec.origin ? ` + f32(bitcast<i32>(body[${tail + (axis === "x" ? 0 : 1)}u])) * 0.001` : "");
   const read = spec.read ? spec.read(at) : `
   let what = body[${at("what")} + i];
@@ -65,7 +65,11 @@ fn readObj(i: u32) -> Obj {
   if (!o.ok) { return o; }
   o.x = f32(body[${at("x")} + i]) * 0.001 + (${f(ORIGIN)})${shift("x")};
   o.z = f32(body[${at("y")} + i]) * 0.001 + (${f(ORIGIN)})${shift("z")};${read}
-  ${spec.thin ? `if (body[${tail + 2}u] > 0u && (mixSeed(o.seed) >> (32u - body[${tail + 2}u])) != 0u) { o.ok = false; }` : ""}
+  // the third tail word: a whole number up to 31 is k, only the objects whose hash has its top k bits 0 are drawn; any other nonzero word is the f32 bits of a share exponent e, and an object is drawn while its hash is under 2^(32 - e),
+  // so the share grows an object at a time between whole numbers (a whole e draws what k = e does); 0 draws all of the body
+  ${spec.thin ? `let thinW = body[${tail + 2}u];
+  if (thinW > 0u && thinW < 32u) { if ((mixSeed(o.seed) >> (32u - thinW)) != 0u) { o.ok = false; } }
+  else if (thinW != 0u && mixSeed(o.seed) >= u32(min(exp2(32.0 - bitcast<f32>(thinW)), 4294967040.0))) { o.ok = false; }` : ""}
   return o;
 }
 // the cell of the sim's spatial index a slot's place is in (src/gpu/wgsl/index.ts INDEX_KEYS)
