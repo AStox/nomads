@@ -68,6 +68,8 @@ async function main() {
   // ?hour= pins the hour the island is drawn at, its light and sun, while the sim runs on; ?speed= starts it faster, in
   // sim seconds a wall second (600 the usual pace, 19200 runs a day in about four and a half seconds), for timelapses
   if (sim) { sim.hour = num("hour", null, 0, 24); sim.speed = num("speed", PACE, PACE / 4, 32 * PACE); } else live.setClock({ hour: num("hour", 13, 0, 24) });
+  // with no sim the hint names only what works: the camera's controls and the hour, which sets the light and nothing else
+  if (!sim) hint.textContent = touchy ? "drag to pan \u00b7 pinch to zoom, out to the whole planet \u00b7 twist two fingers to turn \u00b7 the slider sets the hour (the light only)" : "drag to pan \u00b7 scroll or double-click to zoom, out to the whole planet \u00b7 Q/E or right-drag to turn \u00b7 [ and ] or the slider set the hour (the light only)";
   const ready = performance.now() - t0;
   // ?zoom= takes a name, the old 0..3 index, or a number of zoom steps; ?bearing= one of the 8 whole bearings
   const zq = Q.get("zoom"), names = ["island", "region", "valley", "close"];
@@ -504,11 +506,36 @@ async function main() {
     pause: () => { if (sim) sim.paused = !sim.paused; }, slower: () => speedBy(-1), faster: () => speedBy(1),
     next: () => next(), paths: () => { view.path = view.path === false; },
   };
+  // ---------- the readout: where the camera is, how far in, how big the ground is, which way north lies, and the hour (with no sim it sets the light only) ----------
+  const hud = document.getElementById("hud"), hudOf = (s) => hud.querySelector(s), hourIn = hudOf("input"), hourV = hudOf(".hour-v"), northEl = hudOf(".north span"), scaleEl = hudOf("i.scale"), scaleLabel = hudOf(".scale-label");
+  let hour = num("hour", 13, 0, 24), hudKey = "";
+  const hourText = (h) => `${String(Math.floor(h) % 24).padStart(2, "0")}:${String(Math.floor((h % 1) * 60)).padStart(2, "0")}`;
+  const setHour = (h) => { hour = ((h % 24) + 24) % 24; if (!sim) live.setClock({ hour }); };
+  const hourBy = (d) => setHour(Math.round(hour) + d);
+  hudOf(".hour").hidden = !!sim;
+  hourIn.addEventListener("input", () => setHour(+hourIn.value));
+  hourIn.addEventListener("change", () => hourIn.blur());
+  const niceM = (m) => { const p = 10 ** Math.floor(Math.log10(m)), f = m / p; return p * (f >= 5 ? 5 : f >= 2 ? 2 : 1); };
+  function paintHud() {
+    const g = view.geo, mpp = live.mPerPx(view);
+    if (!g || !mpp) { hud.hidden = true; return; }
+    const m = niceM(mpp * 100), px = Math.round(m / mpp), north = live.northAngle(view);
+    const pos = `${Math.abs(g.lat).toFixed(2)}\u00b0 ${g.lat < 0 ? "S" : "N"}  ${Math.abs(g.lon).toFixed(2)}\u00b0 ${g.lon < 0 ? "W" : "E"}`, zoom = `zoom ${view.zoom.toFixed(2)}`, label = m >= 1000 ? `${m / 1000} km` : `${m} m`;
+    hud.hidden = false;
+    const key = `${pos}|${zoom}|${label}|${px}|${Math.round(north)}|${Math.round(hour * 4)}`;
+    if (key === hudKey) return;
+    hudKey = key;
+    hudOf(".pos").textContent = pos; hudOf(".zoom").textContent = zoom;
+    scaleEl.style.width = `${px}px`; scaleLabel.textContent = label;
+    northEl.style.display = "inline-block"; northEl.style.transform = `rotate(${north.toFixed(1)}deg)`;
+    if (!sim) { hourIn.value = String(hour); hourV.textContent = hourText(hour); }
+  }
+  for (const b of pad.querySelectorAll("button")) if (!sim && ["pause", "slower", "faster", "next", "paths"].includes(b.dataset.act)) b.hidden = true;
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") select(null);
     else if (e.key === "Tab" && sim?.w.agents.length) { e.preventDefault(); next(e.shiftKey); }
     else if (e.key === " " && sim) { ACT.pause(); e.preventDefault(); }
-    else if (e.key === "[" || e.key === "]") speedBy(e.key === "]" ? 1 : -1);
+    else if (e.key === "[" || e.key === "]") { if (sim) speedBy(e.key === "]" ? 1 : -1); else hourBy(e.key === "]" ? 1 : -1); }
     else if (e.key === "+" || e.key === "=" || e.key === "-") zoomBy(e.key === "-" ? -1 : 1);
     else if (e.key === "h" || e.key === "H") ACT.paths();
     else if (e.key === "q" || e.key === "Q") ACT.left();
@@ -592,13 +619,13 @@ async function main() {
       const rd = { done: 0, all: 0 };
       for (const b of Q.get("adj") === "0" ? [view.bearing] : [0, 1, 2, 3, 4, 5, 6, 7]) { const q = live.readiness(view, b); rd.done += q.done; rd.all += q.all; }
       rd.ready = rd.done === rd.all;
-      if (rd.ready && !r.holes) {
+      if (rd.ready && !r.holes && live.pictureReady()) {
         revealed = true;
         metrics.revealMs = Math.round(performance.now() - t0);
         paintWorld();
         // follow the settlement's person only if they are in this frame
         if (openingPerson && !bench && live.picks().some((p) => p.id === openingPerson)) select(openingPerson, false);
-      } else loadingScreen(canvas, `baking the view from every side ${rd.done}/${rd.all}`, rd.done / rd.all);
+      } else loadingScreen(canvas, rd.ready && !r.holes ? "drawing the planet" : `baking the view from every side ${rd.done}/${rd.all}`, rd.ready ? 1 : rd.done / rd.all);
     }
     if (tabWatch) {
       const dt2 = now - tabWatch.last;
@@ -606,7 +633,7 @@ async function main() {
       if (r.holes) tabWatch.hole += dt2;
       if (now - tabWatch.t0 > 6000) { metrics.tabs.push({ holeMs: Math.round(tabWatch.hole), cutMs: Math.round(tabWatch.cutAt) }); tabWatch = null; }
     }
-    if (revealed) { paintPace(); paintClock(); paintPad(); }
+    if (revealed) { paintPace(); paintClock(); paintPad(); paintHud(); }
     paintRender();
     if (!readyMarked && revealed && !bench) {
       readyMarked = true; document.body.dataset.firstFrame = String(Math.round(performance.now() - t0)); document.body.classList.add("ready");

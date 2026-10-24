@@ -11,7 +11,7 @@ const finite = (...v) => v.every(Number.isFinite);
 
 export function createCamera({ live, view, canvas, onTurn }) {
   view.up ??= 0;
-  let goal = view.zoom, zoomSet = view.zoom, anchor = null, turn = null, pinch = null, good = snapshot();
+  let goal = view.zoom, zoomSet = view.zoom, anchor = null, tried = null, turn = null, pinch = null, good = snapshot();
   function snapshot() { return { x: view.x, z: view.z, zoom: view.zoom, bearing: view.bearing, up: view.up }; }
   const half = () => [canvas.width / 2, canvas.height / 2];
   // move the target so world point A shows at canvas point (sx, sy) in state st; false, and nothing moved, if it cannot
@@ -25,15 +25,16 @@ export function createCamera({ live, view, canvas, onTurn }) {
   const cam = {
     get goal() { return goal; },
     get turning() { return !!turn; },
-    // the drawn ground under the cursor is picked once per gesture, which ends when the zoom settles
+    // the drawn ground under the cursor is picked once per gesture (where the cursor stands, until it moves), which ends when the zoom settles; a cursor off the planet finds nothing then and the whole gesture zooms about the
+    // centre: picking again as the growing planet reaches the cursor would hold a limb point there and swing the planet by hundreds of km
     zoomTo(g, sx, sy) {
       if (!Number.isFinite(g)) return;
       goal = clamp(g, live.zmin, live.zmax);
-      if (sx == null) { anchor = null; return; }
-      if (!anchor || Math.hypot(sx - anchor.at[0], sy - anchor.at[1]) > 2) {
-        const A = live.groundUnder(view, sx, sy);
-        anchor = A && finite(A.x, A.z, A.y) ? { A, at: [sx, sy] } : null;
-      }
+      if (sx == null) { anchor = null; tried = null; return; }
+      if (anchor ? Math.hypot(sx - anchor.at[0], sy - anchor.at[1]) <= 2 : tried && Math.hypot(sx - tried[0], sy - tried[1]) <= 2) return;
+      tried = [sx, sy];
+      const A = live.groundUnder(view, sx, sy);
+      if (A && finite(A.x, A.z, A.y)) anchor = { A, at: [sx, sy] };
     },
     // where a zoom under way will stand: its goal, with the ground under the cursor still where it is now; null at rest
     goalView() {
@@ -45,9 +46,9 @@ export function createCamera({ live, view, canvas, onTurn }) {
       }
       return st;
     },
-    setZoom(z) { if (Number.isFinite(z)) { goal = zoomSet = view.zoom = clamp(z, live.zmin, live.zmax); anchor = null; } },
+    setZoom(z) { if (Number.isFinite(z)) { goal = zoomSet = view.zoom = clamp(z, live.zmin, live.zmax); anchor = null; tried = null; } },
     // the ground a gesture was held on is another now (its coordinates are in the old frame): the gesture lets go
-    dropAnchor() { anchor = null; pinch = null; },
+    dropAnchor() { anchor = null; tried = null; pinch = null; },
     // the mid-screen target point is held at centre + (dx, dy), so the image moves exactly with the cursor
     panBy(dx, dy) {
       if (!finite(dx, dy) || (!dx && !dy && !view.up)) return;
@@ -104,16 +105,16 @@ export function createCamera({ live, view, canvas, onTurn }) {
     offCentre(p) { const s = live.screenOf(view, p.x, p.z, p.y), [cx, cy] = half(); return Math.hypot(s[0] - cx, s[1] - cy); },
     step(dt, now) {
       // a zoom set from outside (a script, the bench) is taken as the new goal
-      if (view.zoom !== zoomSet) { goal = zoomSet = view.zoom; anchor = null; }
+      if (view.zoom !== zoomSet) { goal = zoomSet = view.zoom; anchor = null; tried = null; }
       turnStep(dt, now);
-      if (view.zoom === goal) { anchor = null; return; }
+      if (view.zoom === goal) { anchor = null; tried = null; return; }
       let z = view.zoom + (goal - view.zoom) * (1 - Math.exp(-dt / ZOOM_TAU));
       if (Math.abs(goal - z) < 1e-4) z = goal;
       if (anchor) {
         if (!hold(anchor.A, ...live.screenOf(view, anchor.A.x, anchor.A.z, anchor.A.y, anchor.A.geo).slice(0, 2), { ...view, zoom: z })) anchor = null;
       }
       view.zoom = zoomSet = z;
-      if (z === goal) anchor = null;
+      if (z === goal) { anchor = null; tried = null; }
     },
     // No NaN or Infinity survives a frame: the last good state comes back. Then everything is clamped to the island.
     guard() {

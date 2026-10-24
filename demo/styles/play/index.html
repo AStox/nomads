@@ -11,6 +11,13 @@
   #hint, #stats { position: fixed; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; color: #eef2f6; pointer-events: none; }
   #hint { left: 12px; bottom: 10px; padding: 5px 9px; background: rgba(13, 11, 20, 0.66); border-radius: 3px; transition: opacity 1.2s; }
   #hint.gone { opacity: 0; }
+  #hud { position: fixed; left: 12px; top: 10px; display: flex; gap: 12px; align-items: center; padding: 5px 9px; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; color: #eef2f6; background: rgba(13, 11, 20, 0.66); border-radius: 3px; pointer-events: none; z-index: 1; white-space: nowrap; }
+  #hud[hidden], #hud [hidden] { display: none; }
+  #hud .scale { display: inline-block; vertical-align: middle; height: 5px; margin-right: 6px; border: 1px solid #eef2f6; border-top: 0; }
+  #hud input[type=range] { width: 120px; vertical-align: middle; pointer-events: auto; accent-color: #d9a441; }
+  #hud .north { display: inline-block; width: 18px; text-align: center; transition: none; }
+  #hud .north b { display: block; font-size: 9px; line-height: 9px; }
+  body.narrow #hud { top: calc(34px + env(safe-area-inset-top)); left: 8px; right: 8px; flex-wrap: wrap; white-space: normal; }
   canvas#inspector { position: fixed; left: 12px; top: 12px; width: 368px; height: 464px; image-rendering: pixelated; }
   canvas#inspector[hidden] { display: none; }
   canvas#world { position: fixed; right: 12px; top: 40px; image-rendering: pixelated; }
@@ -41,6 +48,13 @@
 </head>
 <body>
 <canvas id="view" aria-label="Drag to pan, scroll or pinch to zoom, Q and E or right-drag to turn, click anything to inspect it"></canvas>
+<div id="hud" hidden aria-label="Where the camera is: position, zoom, scale, north and the hour">
+  <span class="pos"></span>
+  <span class="zoom"></span>
+  <span><i class="scale"></i><span class="scale-label"></span></span>
+  <span class="north" title="North"><b>N</b><span>&#9650;</span></span>
+  <label class="hour" title="The hour the light is drawn at. [ and ] step it."><input type="range" min="0" max="24" step="0.25" aria-label="Hour of day"> <span class="hour-v"></span></label>
+</div>
 <canvas id="inspector" hidden aria-label="What is selected, from the sim"></canvas>
 <canvas id="world" hidden aria-label="Everyone and everything in the world, population over time, and the key to the markers"></canvas>
 <canvas id="tip" hidden></canvas>

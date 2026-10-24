@@ -1029,10 +1029,24 @@ async function whereOf(id) {
 // first time) and tells the page its frame and heights; the page puts its view in the new frame and names the ground in every frame after (its gid),
 // and the first frame that names it is the one the renderer switches on (applyGround), so a frame is never drawn on ground its coordinates are not in.
 let lastLut = null, lutShown = false;
-// The window's cells at the camera's target as the ladder lays them, against the ground's own: the 2 by 2 map q (east and north components) from the isotropic frame the planet camera
-// assumes (the window's scale and the bearing of its north axis) to the cells' true tangent vectors there, so that the planet's ground is drawn in the ladder's metric and a cell is
-// where the ladder's objects stand on it (planet-cam.js q). Null away from a window or without a parallel camera.
-let gTopGrid = null, planetQ = null;
+// The map q the page works out for the camera's target (live.js latticeAt) is posted back with each frame done (planetQ), for the checks.
+let planetQ = null, planetRelief = null, reliefAtMs = 0;
+// The relief under a grid of screen points as drawn (heights in drawn metres, -1 off the planet), for the page's picks and zoom anchors (live.js reliefAt): each point's ray meets the sphere raised to the height
+// found at the last place it met, twice, so a click lands on the ground that is drawn and not on the sea-level sphere under it.
+const RELIEF_W = 17, RELIEF_H = 11;
+function reliefGrid(cam, lift, ex) {
+  const d = new Float32Array(RELIEF_W * RELIEF_H);
+  for (let j = 0; j < RELIEF_H; j++)
+    for (let i = 0; i < RELIEF_W; i++) {
+      let h = lift;
+      for (let k = 0; k < 2 && h >= 0; k++) {
+        const P = cam.pick((i * canvas.width) / (RELIEF_W - 1), (j * canvas.height) / (RELIEF_H - 1), h);
+        h = P ? Math.max(0, planet.pyramid.heightAt(planet.G.FRAMES, P)) * ex : -1;
+      }
+      d[j * RELIEF_W + i] = h;
+    }
+  return { w: RELIEF_W, h: RELIEF_H, d };
+}
 // The pages the planet pass reads where no window is (the view is wider than a window covers, under about zoom 3, or the camera is away from any): a block of them round the camera's page, made behind the frames and
 // moved by whole pages when the camera is more than half a page from its middle. Pages are global, so a window made later finds those that are its own. blk is the block the painter has (first page, in cells)
 let blk = null, blkMaking = false, blkDist = 0, blkMoved = 0;
@@ -1048,22 +1062,6 @@ function blockFollow(cam) {
   if (blk && blk.face === c.face && Math.abs(c.x - (blk.x + 192)) <= 32 && Math.abs(c.y - (blk.y + 192)) <= 32) return;
   blkMaking = true;
   planet.wins.ensureBlockAt(c.face, bx, by).then((b) => { if (!curWin) { R.setBlockPages(b); blk = { face: b.block.face, x: b.block.x0, y: b.block.y0 }; } }).catch((err) => console.warn("block pages", err)).finally(() => { blkMaking = false; });
-}
-function cellQ(pp) {
-  if (!curWin || !(pp.ortho > 0) || !planet) return null;
-  const G = planet.G, tier = planet.manifest.tiers - 1, D2R = Math.PI / 180, dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-  gTopGrid ??= G.tierGrid(tier);
-  const c = G.fromLatLon(pp.lat * D2R, pp.lon * D2R), [E, N] = G.eastNorth(c), F = G.FRAMES[curWin.face], w = dot(c, F.n);
-  if (w < 0.2) return null;
-  const fn = gTopGrid.fn, sx = (Math.atan(dot(c, F.ex) / w) / (Math.PI / 2) + 0.5) * fn, sy = (Math.atan(dot(c, F.ey) / w) / (Math.PI / 2) + 0.5) * fn;
-  const at = (dx, dy) => G.pointOf(curWin.face, Math.tan(((sx + dx) / fn - 0.5) * (Math.PI / 2)), Math.tan(((sy + dy) / fn - 0.5) * (Math.PI / 2)));
-  const a = at(0.5, 0), b = at(-0.5, 0), c2 = at(0, 0.5), d = at(0, -0.5), per = planet.radiusM / 75;
-  const jx = [(dot(a, E) - dot(b, E)) * per, (dot(a, N) - dot(b, N)) * per], jz = [-(dot(c2, E) - dot(d, E)) * per, -(dot(c2, N) - dot(d, N)) * per];
-  const nn = Math.hypot(curWin.rot[2], curWin.rot[3]), nE = curWin.rot[2] / nn, nN = curWin.rot[3] / nn, sc = curWin.scale;
-  // the camera's own: x along the east that is perpendicular to the north axis, z against it
-  const x0 = [sc * nN, -sc * nE], z0 = [-sc * nE, -sc * nN], det = x0[0] * z0[1] - z0[0] * x0[1];
-  const inv = [z0[1] / det, -z0[0] / det, -x0[1] / det, x0[0] / det];
-  return [jx[0] * inv[0] + jz[0] * inv[2], jx[0] * inv[1] + jz[0] * inv[3], jx[1] * inv[0] + jz[1] * inv[2], jx[1] * inv[1] + jz[1] * inv[3]];
 }
 let curGid = 0, gids = 0, prepared = null, switching = false, building = false, wantNow = null, wantSoon = null, home = null, curWin = null;
 const winSpecs = new Map();
@@ -1413,16 +1411,17 @@ function render() {
     return { ...v, U: { ...v.U, gflags: (!S?.win && trailQ?.size ? 1 : 0) | (f.groundOff ? 2 : 0) }, live: v.live?.length ? liveInstances(v.live) : null, prims };
   });
   // the planet under the ladder's views, from the camera the page chose (live.js planetParams)
-  const q = f.planet && cellQ(f.planet);
+  const q = f.planet?.q ?? null;
   planetQ = q;
   const under = f.planet && planetLayer && ((enc, target) => {
     // the camera stands above the ground under its target, as drawn (lifted by the relief's exaggeration), never inside it
     // the ladder's metre is a cell's 75 m over its own cells and its heights are true metres, so a parallel camera draws the relief as exag times the window's scale to keep their ratio
-    const ex = f.exag * (1 + (f.planet.ortho ?? 0) * ((curWin?.scale ?? 1) - 1)), sx = ex / f.exag;
+    const ex = f.exag * (1 + (f.planet.ortho ?? 0) * ((f.planet.scale ?? 1) - 1)), sx = ex / f.exag;
     const pyr = Math.max(0, planet.pyramid.heightAt(planet.G.FRAMES, planet.G.fromLatLon((f.planet.lat * Math.PI) / 180, (f.planet.lon * Math.PI) / 180))) * ex;
     // where the ladder holds the target on the screen (its camera height, the ground blurred) once the camera is parallel, so a cell is on the screen where its sprites are
-    const lift = (planetLift = Math.max(0, pyr + (f.planet.ortho ?? 0) * ((f.planet.liftM ?? pyr) * sx - pyr)));
+    const lift = (planetLift = Math.max(0, pyr + (f.planet.liftOrtho ?? f.planet.ortho ?? 0) * (f.planet.liftM != null ? f.planet.liftM * sx - pyr : 0)));
     const cam = planetCam({ ...f.planet, q, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM, lift });
+    if (performance.now() - reliefAtMs > 100) { planetRelief = reliefGrid(cam, lift, ex); reliefAtMs = performance.now(); }
     blockFollow(cam);
     // the page ground the ladder reads, for the planet pass's finest tier (planet.js, the window's face and corner cells are the pages' frame), with the ladder's own season, frame and relief so water, grass and slope light match it
     const pg = R.pageGround(), pages = curWin && pg.on ? { ...pg, face: curWin.face, x0: curWin.x0, y0: curWin.y0 } : pg.block ? { ...pg, on: false } : null, v0 = views[0]?.U;
@@ -1439,7 +1438,7 @@ function render() {
     // the levels and bearings whose front lists are built, when they change (live.js listsReady)
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: planetLift, q: planetQ, applyMs, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: planetLift, q: planetQ, relief: planetRelief, applyMs, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     if (pending) render();
   });
 }
