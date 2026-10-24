@@ -412,7 +412,9 @@ fn cullEval(o: Obj) -> Emit {
   if (ax < -reach || ay < -reach || ax > f32(V.aw) + reach || ay - hpx * 2.0 > f32(V.ah) + reach) { return e; }
   let F = famOf(o, kf);
   if (F.f == NONE) { return e; }
-  let sp = spriteOf(F, F.f + select(0u, V.shrunk, tree), sizeIdx(hpx, tree));
+  var sp = spriteOf(F, F.f + select(0u, V.shrunk, tree), sizeIdx(hpx, tree));
+  // the level just entered has its own sprites made last; until they are, the tree is drawn as the other style of the pair (direct or shrunk), not left out
+  if (sp == 0u && tree) { sp = spriteOf(F, F.f + select(1u, 0u, V.shrunk != 0u), sizeIdx(hpx, tree)); }
   if (sp == 0u || sp == 0xFFFFFFFFu) { return e; }
   let e0 = entries[(sp - 1u) * 2u];
   let foot = f32(i32((e0.w >> 8u) & 255u) - 128);

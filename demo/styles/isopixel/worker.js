@@ -15,6 +15,7 @@ import { createRenderer, NS, ATLAS, LEVELS } from "./webgpu.js";
 import { Looks, CODES, NONE, castRows, Shelves, entryWords } from "./atlas.js";
 import { PICK_SLOT, EXTRA_PICK, KIND_PICK, NO_SLOT, CELLS_N, CELL_M } from "./wgsl/objects.js";
 import { closeGround } from "./ground-at.js";
+import { LADDER } from "./ladder.js";
 import { openPyramid } from "./pyramid.js";
 import { BLOCK_CAPS, RING_OUT, createWindows } from "./groundwin.js";
 
@@ -504,21 +505,30 @@ function gone(id) {
 // ---------- sprites ----------
 // every family and size the survey found drawn and not made yet, as [family key, size index, slot]
 const asked = new Set();
-// the level the page draws (the nearest to its first view's tree scale), and the range of levels sprites are made for while a world has no game: the one before it to two finer, since a zoom comes to those next
+// the level the camera's reach draws (noteLevel), and the levels sprites are made for while a world has no game, in the order they are needed: the drawn one, the next
+// finer (a zoom in cross-fades to it from 0.6 of the way and comes to it next), then the one before; each is surveyed and made whole before the next, so the level a zoom is about to enter is
+// there before a farther one takes the dynamic layers
 let lvNow = -1;
-const spriteLevels = () => (S?.flora || lvNow < 0 ? [0, level.length] : [Math.max(0, lvNow - 1), Math.min(level.length, lvNow + 3)]);
-function noteLevel(U) {
-  if (!U || !level?.length) return;
-  let best = 0;
-  for (let i = 1; i < level.length; i++) if (Math.abs(level[i].pv - U.pv) < Math.abs(level[best].pv - U.pv)) best = i;
+const spriteOrder = () => (S?.flora || lvNow < 0 ? [null] : [lvNow, lvNow + 1, lvNow - 1].filter((l) => l >= 0 && l < level.length));
+// the ladder's level at a view whose farthest ground is ext metres away (live.js levelFor and viewExtent), so a level's sprites are asked for as the camera nears it, before the ladder shows
+const levelP = LADDER.map((Z) => Z.W / 2 / Z.tileM);
+function levelOfExt(ext) {
+  const ppm = (1.25 * (0.71 * canvas.width + 1.41 * canvas.height)) / (2 * ext);
+  let L = 0;
+  while (L < levelP.length - 1 && 2 * levelP[L + 1] <= ppm * 1.000001) L++;
+  return L;
+}
+function noteLevel(cam) {
+  if (!cam?.ext || !level?.length) return;
+  const best = Math.min(level.length - 1, levelOfExt(cam.ext));
   if (best === lvNow) return;
   lvNow = best;
   if (curWin && !S?.flora) refreshSprites();
 }
-async function wanted() {
+async function wanted(only = null) {
   // a world with no game makes nothing until the page has said which level it draws (noteLevel asks again): every level at once does not fit the dynamic layers
   if (!S?.flora && lvNow < 0) return [];
-  const [l0, l1] = spriteLevels();
+  const [l0, l1] = only === null ? [0, level.length] : [only, only + 1];
   const need = await R.survey(1, l1, words32(looks.n * NS), l0), jobs = [];
   // a source of members has no survey: every layout, moss and size its members' sizes reach at each level
   const hq = (h) => (h < 8 ? Math.round(h * 2) : 8 + Math.round(h));
@@ -667,8 +677,7 @@ function refreshSprites() {
         if (s && id === null) asked.delete(slot);
       }
     };
-    const jobs = await wanted();
-    await makeAll(jobs, { chunk: REFRESH_CHUNK, report: false, small: true, onChunk: put });
+    for (const l of spriteOrder()) await makeAll(await wanted(l), { chunk: REFRESH_CHUNK, report: false, small: true, onChunk: put });
     planetLayer?.setCrown(crownMean.cdf());
   })().catch((err) => console.error("sprites", err)).finally(() => { refreshing = null; if (refreshAgain) { refreshAgain = false; refreshSprites(); } });
 }
@@ -1281,7 +1290,7 @@ function render() {
     const pg = R.pageGround(), pages = curWin && pg.on ? { ...pg, face: curWin.face, x0: curWin.x0, y0: curWin.y0 } : pg.block ? { ...pg, on: false } : null, v0 = views[0]?.U;
     planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, spr: v0?.spr, canopy: f.planet.canopy, ortho: f.planet.ortho, sun: f.planet.sun, moon: f.planet.moon, moonMix: f.planet.moonMix, amb: f.planet.amb, exag: ex, riverCut: f.planet.riverCut, season: v0?.season, frame: v0?.frame, relief: f.relief, pages, light: f.planet.light, lightGround: pages ? R.lightGround() : null, streams: pages ? R.streamGround() : null });
   });
-  noteLevel(views[0]?.U);
+  noteLevel(f.cam);
   R.frame({ ...f, views, under });
   frames++;
   const ms = performance.now() - t0;
