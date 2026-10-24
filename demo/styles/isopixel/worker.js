@@ -12,7 +12,7 @@ import { planetCam } from "./planet-cam.js";
 import { LIVE, shown, ANIMAL_BODY, ANIMAL_DRAWN } from "./px.js";
 import { packGround } from "./ground.wgsl.js";
 import { createRenderer, NS, ATLAS, LEVELS } from "./webgpu.js";
-import { Looks, CODES, NONE, castRows, Shelves, entryWords } from "./atlas.js";
+import { Looks, CODES, NONE, castRows, Shelves, entryWords, crownSeedJobs } from "./atlas.js";
 import { PICK_SLOT, EXTRA_PICK, KIND_PICK, NO_SLOT, CELLS_N, CELL_M } from "./wgsl/objects.js";
 import { closeGround } from "./ground-at.js";
 import { LADDER } from "./ladder.js";
@@ -103,6 +103,7 @@ async function init(m) {
     pal: { P, NCOL, HAZE, GLOW, TONE, TONE_S, WATER: ["w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"].map((k) => P[k]), TILE_M, ORIGIN, TILES, TRAIL_N: Math.round(SIZE / 3), GRID_STEP: WS, FINE: { start: START, step: STEP } },
   });
   if (planet && ground.place) planetLayer = Object.assign(await createPlanet({ device, format, G: planet.G, pyramid: planet.pyramid, pal: PAL, radiusM: planet.radiusM, hmax: planet.hmax, levels: LEVELS }), { radiusM: planet.radiusM });
+  planetLayer?.setCrown(crownMean.cdf());
   let peak = 0;
   for (const h of isle.height) peak = Math.max(peak, h);
   home = { pack, fields: { peak, h: g.h, height: isle.height, water: isle.water } };
@@ -596,6 +597,12 @@ async function makeAll(jobs, { chunk = 200, report = true, small = false, onChun
 }
 // The made sprites into atlas layers, the tallest first along shelves, and the tables that find them.
 const crownMean = new CrownMean(PAL.RGB);
+// the ground's crown colours from the first frame, before any sprite of the world is made: one of each species' trees at the sizes a forest draws (atlas.js crownSeedJobs); the world's own add to them as they are made
+async function seedCrowns() {
+  const jobs = crownSeedJobs(looks.crownShare), keys = jobs.map((j) => j[0]);
+  for (const [i, s] of await makeAll(jobs, { report: false })) crownMean.add(keys[i], s);
+  planetLayer?.setCrown(crownMean.cdf());
+}
 function packAtlas(made) {
   const list = made.filter(([, s]) => s).sort((a, b) => b[1].h - a[1].h || b[1].w - a[1].w);
   for (const [slot, s] of made) if (!s) table[slot] = NONE;
@@ -819,6 +826,7 @@ async function startWorld(bundle) {
   R.setMeta(looks.meta());
   growTable();
   const atlas = packAtlas([]);
+  seedCrowns().catch((err) => console.error("crown seed", err));
   mark("objects");
   post({ type: "objects", n: 0, plants: 0, statics: 0, records: 0, sprites: atlas.sprites, layers: atlas.layers, families: looks.n, timeline, ms: {} });
 }

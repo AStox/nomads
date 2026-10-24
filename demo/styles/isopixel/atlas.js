@@ -108,6 +108,21 @@ export class Looks {
   }
 }
 
+// One tree sprite of each species at the sizes and variants a forest draws, as [family key, size, number] jobs, for the ground's crown colours before any tree of the world has a sprite (crown.js): the
+// layouts 0 and 1, every tint, the first three darknesses, the crown's width a tree of 12 m has, at 16 and 24 px high, each species alike
+export function crownSeedJobs(crownShare) {
+  const jobs = [];
+  for (const sp of TREES)
+    for (const idx of [16, 24])
+      for (let vr = 0; vr < 2; vr++)
+        for (let ti = 0; ti < 4; ti++)
+          for (let di = 0; di < 3; di++) {
+            const wb = Math.max(0, Math.min(NB - 1, Math.round(Math.log(crownRatio(crownShare, sp, 12) / RHO0) / Math.log(RHO_STEP))));
+            jobs.push([`t|${sp}|${vr}|${tintOf(sp, ti)}|${di ? -di / 4 : 0}|0|${rhoOf(wb)}`, idx, jobs.length]);
+          }
+  return jobs;
+}
+
 // One sprite of a family at a size index: the drawing sprites.js or things.js makes for it (an animal of the GPU's store
 // standing, its layout its variation).
 export function makeSprite(key, idx, SP, TH) {
