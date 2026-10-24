@@ -21,7 +21,7 @@ export async function session(vp: [number, number], query: string, fn: (page: an
     const errs: string[] = [];
     page.on("pageerror", (e: Error) => errs.push("PAGEERR " + e.message));
     page.on("console", (m: any) => { const t = m.text(); if (/LOST|error|Error|warn|WebGPU|render worker|pages:/i.test(t) && !/font/i.test(t)) errs.push(t.slice(0, 200)); });
-    await page.goto(`http://127.0.0.1:8231/play/?${query}`, { waitUntil: "domcontentloaded", timeout: 120000 });
+    await page.goto(`${process.env.SITE ?? "http://127.0.0.1:8231"}/play/?${query}`, { waitUntil: "domcontentloaded", timeout: 120000 });
     await page.waitForSelector("body.ready", { timeout: 90000 });
     (page as any).errs = errs;
     await fn(page, browser);

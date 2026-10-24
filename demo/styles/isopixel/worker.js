@@ -725,7 +725,8 @@ function refreshSprites() {
     // each message's sprites go into the table as they arrive, so a size is drawn as soon as it is made and a coarse level does not wait for the big sizes
     const put = (out) => {
       for (const [slot, s] of out) {
-        if (s) crownMean.add(looks.key(Math.floor(slot / NS)), s);
+        // a world with no game makes its levels' sprites one level after another as the camera nears them, so counting them would shift the ground's crown colours at each level entered (the zoom's history); it keeps the seeds' histogram
+        if (s && S?.flora) crownMean.add(looks.key(Math.floor(slot / NS)), s);
         let id = s ? putDynamic(s) : null;
         if (s && id === null) { dynSwitch(); id = putDynamic(s); }
         table[slot] = s ? (id === null ? 0 : id + 1) : NONE;
@@ -1050,18 +1051,25 @@ function reliefGrid(cam, lift, ex) {
 // The pages the planet pass reads where no window is (the view is wider than a window covers, under about zoom 3, or the camera is away from any): a block of them round the camera's page, made behind the frames and
 // moved by whole pages when the camera is more than half a page from its middle. Pages are global, so a window made later finds those that are its own. blk is the block the painter has (first page, in cells)
 let blk = null, blkMaking = false, blkDist = 0, blkMoved = 0;
+// whether the window drawn holds the camera's target well inside its own pages (a window's 16 pages are 256 cells; the margin leaves the view's reach to the pages round it): a camera far from it
+// (a window kept from another place) is followed by the block as if there were none, so the pages the planet pass reads do not depend on the windows made on the way
+const winCovers = (cam) => {
+  if (!curWin || !cam.T || !planet?.wins) return !!curWin && !cam.T;
+  const c = planet.wins.cellOf(cam.T);
+  return c.face === curWin.face && Math.abs(c.x - (curWin.x0 + 128)) <= 96 && Math.abs(c.y - (curWin.y0 + 128)) <= 96;
+};
 function blockFollow(cam) {
   // a window being asked for or made has the GPU first, and so has a zoom still running (the window it ends in is wanted soon): the block waits for either
   const now = performance.now();
   if (Math.abs(cam.dist - blkDist) > 1e-3 * cam.dist) blkMoved = now;
   blkDist = cam.dist;
-  if (!planet?.wins || curWin || blkMaking || switching || building || wantNow || wantSoon || !cam.T || now - blkMoved < 700) return;
+  if (!planet?.wins || winCovers(cam) || blkMaking || switching || building || wantNow || wantSoon || !cam.T || now - blkMoved < 700) return;
   // half the screen's diagonal in metres on the ground: a block (28.8 km) holds a view of this reach with its camera within a page of its middle
   if (cam.hh * planetLayer.radiusM * Math.hypot(cam.aspect, 1) > 15000) return;
   const c = planet.wins.cellOf(cam.T), bx = Math.round((c.x - 192) / 64) * 64, by = Math.round((c.y - 192) / 64) * 64;
   if (blk && blk.face === c.face && Math.abs(c.x - (blk.x + 192)) <= 32 && Math.abs(c.y - (blk.y + 192)) <= 32) return;
   blkMaking = true;
-  planet.wins.ensureBlockAt(c.face, bx, by).then((b) => { if (!curWin) { R.setBlockPages(b); blk = { face: b.block.face, x: b.block.x0, y: b.block.y0 }; } }).catch((err) => console.warn("block pages", err)).finally(() => { blkMaking = false; });
+  planet.wins.ensureBlockAt(c.face, bx, by).then((b) => { if (!winCovers(cam)) { R.setBlockPages(b); blk = { face: b.block.face, x: b.block.x0, y: b.block.y0 }; } }).catch((err) => console.warn("block pages", err)).finally(() => { blkMaking = false; });
 }
 let curGid = 0, gids = 0, prepared = null, switching = false, building = false, wantNow = null, wantSoon = null, home = null, curWin = null;
 const winSpecs = new Map();
@@ -1347,7 +1355,7 @@ let pending = null, rendering = false, frames = 0, frontsSent = "";
 // A frame is not drawn when it cannot differ from the one drawn: its views, planet, light and canvas are those of the last drawn frame, nothing the renderer holds changed since (R.rev), nothing it builds is half
 // done (R.settled), the planet layer says its picture is settled, and it has been so for a second (what the frames' own calls start, as the planet block's follow, has been started by then). The canvas keeps
 // the last picture it showed. The views' animation frame (the sea's and the leaves' clock, live.js) changes about six times a second: that is drawn, and is not a change that restarts the second.
-let lastKey = "", lastAnim = "", lastRev = -1, sameSince = 0, skips = 0;
+let liftInfo = null, lastKey = "", lastAnim = "", lastRev = -1, sameSince = 0, skips = 0;
 function frameKey(f) {
   return JSON.stringify([f.views.map((v) => [{ ...v.U, frame: 0 }, v.alpha, v.present, v.fires, v.xray, v.live?.length, v.prims?.length, v.liveRows?.length]), f.planet, f.exag, f.cast, f.seaRGB, f.relief, f.groundOff, f.gid, f.ahead, canvas.width, canvas.height]);
 }
@@ -1393,7 +1401,7 @@ function render() {
     pending = null; skips++;
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: 0, gpuMs: 0, passes: R.stats.passes, counts: R.stats.counts, at: 0, fronts, lift: planetLift, q: planetQ, relief: planetRelief, applyMs, skipped: true, settled: true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: 0, gpuMs: 0, passes: R.stats.passes, counts: R.stats.counts, at: 0, fronts, lift: planetLift, liftInfo, q: planetQ, relief: planetRelief, applyMs, skipped: true, settled: true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     return;
   }
   lastKey = key; lastAnim = anim;
@@ -1417,14 +1425,17 @@ function render() {
     // the camera stands above the ground under its target, as drawn (lifted by the relief's exaggeration), never inside it
     // the ladder's metre is a cell's 75 m over its own cells and its heights are true metres, so a parallel camera draws the relief as exag times the window's scale to keep their ratio
     const ex = f.exag * (1 + (f.planet.ortho ?? 0) * ((f.planet.scale ?? 1) - 1)), sx = ex / f.exag;
-    const pyr = Math.max(0, planet.pyramid.heightAt(planet.G.FRAMES, planet.G.fromLatLon((f.planet.lat * Math.PI) / 180, (f.planet.lon * Math.PI) / 180))) * ex;
+    // from the tier the screen shows (planet.js cap), not the finest held: a place reached zooming out holds finer tiles than one reached zooming in, and the lift (the picture's height) must not
+    // carry that history
+    const pyr = Math.max(0, planet.pyramid.heightAt(planet.G.FRAMES, planet.G.fromLatLon((f.planet.lat * Math.PI) / 180, (f.planet.lon * Math.PI) / 180), Math.floor(planetLayer.level?.() ?? 5))) * ex;
     // where the ladder holds the target on the screen (its camera height, the ground blurred) once the camera is parallel, so a cell is on the screen where its sprites are
+    liftInfo = { pyr, tier: Math.floor(planetLayer.level?.() ?? 5), lo: f.planet.liftOrtho, lm: f.planet.liftM, sx, ex };
     const lift = (planetLift = Math.max(0, pyr + (f.planet.liftOrtho ?? f.planet.ortho ?? 0) * (f.planet.liftM != null ? f.planet.liftM * sx - pyr : 0)));
     const cam = planetCam({ ...f.planet, q, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM, lift });
     if (performance.now() - reliefAtMs > 100) { planetRelief = reliefGrid(cam, lift, ex); reliefAtMs = performance.now(); }
     blockFollow(cam);
     // the page ground the ladder reads, for the planet pass's finest tier (planet.js, the window's face and corner cells are the pages' frame), with the ladder's own season, frame and relief so water, grass and slope light match it
-    const pg = R.pageGround(), pages = curWin && pg.on ? { ...pg, face: curWin.face, x0: curWin.x0, y0: curWin.y0 } : pg.block ? { ...pg, on: false } : null, v0 = views[0]?.U;
+    const pg = R.pageGround(), pages = curWin && pg.on && winCovers(cam) ? { ...pg, face: curWin.face, x0: curWin.x0, y0: curWin.y0 } : pg.block ? { ...pg, on: false } : null, v0 = views[0]?.U;
     planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, spr: f.planet.spr ?? v0?.spr, canopy: f.planet.canopy, ortho: f.planet.ortho, sun: f.planet.sun, moon: f.planet.moon, moonMix: f.planet.moonMix, amb: f.planet.amb, exag: ex, riverCut: f.planet.riverCut, season: v0?.season, frame: v0?.frame, relief: f.relief, pages, light: f.planet.light, lightFade: f.planet.lightFade, lightGround: pages ? R.lightGround() : null, streams: pages ? R.streamGround() : null });
   });
   noteLevel(f.cam);
@@ -1438,7 +1449,7 @@ function render() {
     // the levels and bearings whose front lists are built, when they change (live.js listsReady)
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: planetLift, q: planetQ, relief: planetRelief, applyMs, settled: !planetLayer || planetLayer.settled?.() === true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: planetLift, liftInfo, q: planetQ, relief: planetRelief, applyMs, settled: !planetLayer || planetLayer.settled?.() === true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     if (pending) render();
   });
 }

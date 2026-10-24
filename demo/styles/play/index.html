@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>Nomads: live</title>
+<link rel="icon" href="data:,">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0b14; overscroll-behavior: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   canvas#view { display: block; width: 100vw; height: 100vh; height: 100dvh; image-rendering: pixelated; touch-action: none; cursor: grab; }
@@ -17,6 +18,8 @@
   #hud input[type=range] { width: 120px; vertical-align: middle; pointer-events: auto; accent-color: #d9a441; }
   #hud .north { display: inline-block; width: 18px; text-align: center; transition: none; }
   #hud .north b { display: block; font-size: 9px; line-height: 9px; }
+  /* the readout (541 px from the left edge) and the badge (314 px at the right edge) share the top row only from 900 px wide; under it the readout drops below the badge */
+  @media (max-width: 900px) { #hud { top: 36px; } }
   body.narrow #hud { top: calc(34px + env(safe-area-inset-top)); left: 8px; right: 8px; flex-wrap: wrap; white-space: normal; }
   canvas#inspector { position: fixed; left: 12px; top: 12px; width: 368px; height: 464px; image-rendering: pixelated; }
   canvas#inspector[hidden] { display: none; }

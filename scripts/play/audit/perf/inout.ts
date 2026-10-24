@@ -9,12 +9,17 @@ try {
   await r.page.goto(`${site}/play/?hour=13&warm=0`, { waitUntil: "domcontentloaded", timeout: 60000 });
   await r.page.waitForSelector("body.ready", { timeout: 120000 });
   await r.page.evaluate((la: number, lo: number) => { const P = (window as any).play; P.live.debug.hold(1000); P.view.geo = { lat: la, lon: lo }; }, la, lo);
+  const st = () => r.page.evaluate(() => { const L = (window as any).play.live; return { mode: L.mode, lift: +(L.stats.lift ?? 0).toFixed(1), alpha: +(L.stats.ladderAlpha ?? 0).toFixed(2), canopy: L.stats.canopy ?? null, li: L.stats.liftInfo }; });
   const shot = async () => sharp((await r.page.screenshot({ type: "png" })) as Buffer).removeAlpha().raw().toBuffer();
-  for (const z of zs) {
-    await go(r.page, -4, 3000); await go(r.page, z, 9000); const a = await shot();
-    await go(r.page, 7, 12000); await go(r.page, z, 9000); const b = await shot();
+  const ins: Record<number, [Buffer, any]> = {};
+  await go(r.page, -4, 3000);
+  for (const z of zs) { await go(r.page, z, 9000); ins[z] = [await shot(), await st()]; }
+  await go(r.page, 7, 12000);
+  for (const z of [...zs].reverse()) {
+    await go(r.page, z, 9000);
+    const b = await shot(), sb = await st(), [a, sa] = ins[z];
     let d = 0; for (let i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]);
-    console.log(`z ${z}: luma in ${luma(a).toFixed(1)} out ${luma(b).toFixed(1)} diff ${(d / a.length).toFixed(2)}`);
+    console.log(`z ${z}: luma in ${luma(a).toFixed(1)} out ${luma(b).toFixed(1)} diff ${(d / a.length).toFixed(2)} | in ${JSON.stringify(sa)} out ${JSON.stringify(sb)}`);
     await sharp(a, { raw: { width: 1600, height: 1000, channels: 3 } }).png().toFile(`/tmp/globe-fix-lead2/out/inout-${z}-in.png`);
     await sharp(b, { raw: { width: 1600, height: 1000, channels: 3 } }).png().toFile(`/tmp/globe-fix-lead2/out/inout-${z}-out.png`);
   }

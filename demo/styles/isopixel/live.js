@@ -108,7 +108,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   function onWorker(m) {
     if (m.type.startsWith("sim")) { if (simTo) simTo(m); else simEarly.push(m); }
     else if (m.type === "frameDone") {
-      lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts; stats.tiles = m.tiles; stats.lift = m.lift; stats.q = m.q; stats.relief = m.relief; stats.tilesMax = m.tilesMax; stats.tilesCut = m.tilesCut; stats.applyMs = m.applyMs;
+      lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts; stats.tiles = m.tiles; stats.lift = m.lift; stats.liftInfo = m.liftInfo; stats.q = m.q; stats.relief = m.relief; stats.tilesMax = m.tilesMax; stats.tilesCut = m.tilesCut; stats.applyMs = m.applyMs;
       // settled: the worker's word that what it drew has what the view asked of the planet (or, until it says so, that its tiles are held and none is in flight)
       quietDone = (m.settled ?? (m.tiles ? m.tiles.held > 0 && m.tiles.flying === 0 : true)) ? quietDone + 1 : 0;
       if (m.fronts !== undefined) fronts = new Set(m.fronts ? m.fronts.split(",") : []);
@@ -230,7 +230,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // and view.x, view.z the same place in the play area's metres; whichever moved last is kept (syncGeo).
   const PGQ = new URLSearchParams(location.search).get("pg"), PG_CANOPY = new URLSearchParams(location.search).get("cn") === null ? null : Number(new URLSearchParams(location.search).get("cn")), PLACE = fieldsMsg.place ?? null, PR = PLACE?.radiusM, D2R = Math.PI / 180, ISO_TILT = Math.PI / 3;
   // the zoom the ladder is first drawn at (faded in over the next step), and the play area's edge fade [design]
-  const ZLAD = -1.5, PLAY_EDGE_M = 1200;
+  const ZLAD = -1.5, PLAY_EDGE_M = 1200, LIFT_PER_COVER = 3;
   // the whole planet fits the canvas at its smallest zoom: 0.4 of the canvas's shorter side across a radius
   const zminNow = () => (PLACE ? Math.min(ZLAD - 0.5, Math.log2((0.4 * Math.min(canvas.width, canvas.height)) / (Math.SQRT2 * PR * PPM0))) : 0);
   const clampZ = (z) => clamp(z, zminNow(), ZMAX);
@@ -366,13 +366,14 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   }
   // The cells under a place as the planet's grid lays them, in the frame a window of them there would have (east along the cells' X axis, north across it): `sc` true metres a frame metre, `turn` the
   // frame's north from true north, and `q`, the 2 by 2 on the frame's east and north that carries it to the cells' own axes, which the planet's camera maps its rays by (planet-cam.js). One answer for a
-  // place whether or not a window is drawn, so the ground has one projection in every mode and a window's arrival changes nothing. With no window the face under the place is kept until the place is well off it.
+  // place whether or not a window is drawn, so the ground has one projection in every mode and a window's arrival changes nothing. With no window it is the face the place lies on, which is the face a window made there would be on, so the picture does not depend on whether a window was made on the way (a face kept past its edge drew the cells 1.4 times their size at the planet's highest range, and the relief with them).
   let latFace = 0;
   function latticeAt(geo) {
     if (!GL) return { sc: FRM.scale, turn: Math.atan2(FRM.rot[2], FRM.rot[3]), q: null };
     const c = vecOf(geo);
-    if (FRM.cells) latFace = FRM.cells.face;
-    else if (dotv(c, GL.FRAMES[latFace].n) < 0.5) latFace = GL.FRAMES.reduce((b, F, i) => (dotv(c, F.n) > dotv(c, GL.FRAMES[b].n) ? i : b), 0);
+    // a window's own face where the target lies within its reach (the sprites stand in that lattice, even past a cube edge), else the face the target is on
+    if (FRM.cells && Math.acos(Math.min(1, dotv(c, FRM.c))) * PR < SIZE) latFace = FRM.cells.face;
+    else latFace = GL.FRAMES.reduce((b, F, i) => (dotv(c, F.n) > dotv(c, GL.FRAMES[b].n) ? i : b), 0);
     const F = GL.FRAMES[latFace], w = dotv(c, F.n), sx = (Math.atan(dotv(c, F.ex) / w) / QUARTER + 0.5) * FN, sy = (Math.atan(dotv(c, F.ey) / w) / QUARTER + 0.5) * FN;
     const at = (dx, dy) => GL.pointOf(latFace, Math.tan(((sx + dx) / FN - 0.5) * QUARTER), Math.tan(((sy + dy) / FN - 0.5) * QUARTER));
     const [E, Nn] = GL.eastNorth(c), per = PR / CELL, a = at(0.5, 0), b = at(-0.5, 0), c2 = at(0, 0.5), d = at(0, -0.5);
@@ -394,8 +395,10 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     iso = iso > Math.PI ? iso - TAU : iso < -Math.PI ? iso + TAU : iso;
     // the light is the planet's sun (planetSky): day, night and the terminator between, as the clock stands
     const light = skyVec(homeSky?.sun ?? { el: 0.8, dir: [0.6, 0.8] }), moon = homeSky?.moon ? skyVec(homeSky.moon) : [0, 0, 1];
-    // the camera stands on the planet's own height under the target until a window's ground is drawn, then eases to the ladder's camera height as the ladder fades in (they differ by tens of metres on a mountain)
-    return { lat: view.geo.lat, lon: view.geo.lon, dist, tilt: ISO_TILT * k, heading: iso, tanH, ortho, q: lat.q, scale: lat.sc, liftOrtho: ortho * (mode === "win" && !simOpts ? winFade() : 1), liftM: mode === "win" || simOpts ? (camH(view.x, view.z) + (view.up || 0)) * EXAG : null, sun: light, moon, moonMix: sky ? smooth(3, -2, sky.e) : 0, amb: ambientOf(Math.sin(sky?.sun?.el ?? 0.8)), riverCut: clamp((720 * ((canvas.height * scale) / ppm)) / PR, 20, 3000) };
+    // the camera stands on the planet's own height under the target until the ladder's sprites show, then eases to the ladder's camera height (they differ by tens of metres on a mountain and by a kilometre at the
+  // planet's highest range) as the window's cover grows, so the same view is the same picture whether a window of this place was made on the way (the camera height is the window's, a place's window is kept
+  // after a zoom out) or not. It is whole by the time the sprites are a third of the picture, where they must stand on the ground: LIFT_PER_COVER [design: 3, a third]
+    return { lat: view.geo.lat, lon: view.geo.lon, dist, tilt: ISO_TILT * k, heading: iso, tanH, ortho, q: lat.q, scale: lat.sc, liftOrtho: ortho * (mode === "win" && !simOpts ? winFade() * Math.min(1, LIFT_PER_COVER * coverFade(view)) : 1), liftM: mode === "win" || simOpts ? (camH(view.x, view.z) + (view.up || 0)) * EXAG : null, sun: light, moon, moonMix: sky ? smooth(3, -2, sky.e) : 0, amb: ambientOf(Math.sin(sky?.sun?.el ?? 0.8)), riverCut: clamp((720 * ((canvas.height * scale) / ppm)) / PR, 20, 3000) };
   }
   // the camera as the worker drew it last frame: stood above the ground under its target (stats.lift), so a pick lands on what is drawn
   const planetCamOf = (view, lift = stats.lift ?? 0) => { const p = planetParams(view); return planetCam({ ...p, w: canvas.width, h: canvas.height, radiusM: PR, lift }); };

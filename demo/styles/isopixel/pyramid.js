@@ -226,10 +226,10 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
     ready(t, f, tx, ty) { const i = tileIndex(t, f, tx, ty); return slotOf.has(i) || absent.has(i) || !faces.includes(f); },
     // the tile of tier 0 as planes, for choosing a place (held while the planet is)
     planes0: (f) => whole.get(f),
-    // the ground's height in metres at a unit point, from the finest tile held there (bilinear between its cells' centres), 0 where none is
-    heightAt(FRAMES, p) {
+    // the ground's height in metres at a unit point, from the finest tile held there at tier maxTier or coarser (bilinear between its cells' centres), 0 where none is
+    heightAt(FRAMES, p, maxTier = tiers - 1) {
       const { f, fx, fy } = faceFrac(FRAMES, p);
-      for (let t = tiers - 1; t >= 0; t--) {
+      for (let t = Math.min(tiers - 1, maxTier); t >= 0; t--) {
         const n = 2 ** t, sx = fx * TILE * n, sy = fy * TILE * n, tx = Math.min(n - 1, Math.floor(sx / TILE)), ty = Math.min(n - 1, Math.floor(sy / TILE)), H = host.get(tileIndex(t, f, tx, ty));
         if (!H) continue;
         const x = Math.max(0, Math.min(TILE - 1.001, sx - tx * TILE - 0.5)), y = Math.max(0, Math.min(TILE - 1.001, sy - ty * TILE - 0.5)), ix = Math.floor(x), iy = Math.floor(y), a = x - ix, b = y - iy, i = iy * TILE + ix;
