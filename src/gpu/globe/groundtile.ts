@@ -88,7 +88,7 @@ export function tileSource(gt: { meta: GroundTileMeta; planes: Planes }): TileSo
   const S = gt.meta.side, H = gt.meta.halo;
   const crop = (src: Field, halo: number): Field => {
     const side = 256 + 2 * halo, off = H - halo, out = new (src.constructor as new (n: number) => Field)(side * side);
-    for (let y = 0; y < side; y++) for (let x = 0; x < side; x++) out[y * side + x] = src[(y + off) * S + x + off];
+    for (let y = 0; y < side; y++) (out as Uint8Array).set((src as Uint8Array).subarray((y + off) * S + off, (y + off) * S + off + side), y * side);
     return out;
   };
   return {

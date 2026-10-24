@@ -1137,7 +1137,11 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     size: SIZE, tileM: TILE_M,
     // every view is drawn whole on the GPU each frame; only the first, while the objects' sprites are still being made,
     // waits for them
-    readiness: () => { const ready = objectsReady || !simOpts; return { done: ready ? 1 : 0, all: 1, ready }; },
+    // with no game on, the page is ready when its ground is: the window the view stands in (or the planet alone where none is wanted), or after 20 s whatever
+    readiness: () => {
+      const ready = (objectsReady || !simOpts) && (simOpts || !HAS_WIN || mode === "win" || (stats.ladderAlpha ?? 0) < 0.01 || performance.now() - tStart > 20000);
+      return { done: ready ? 1 : 0, all: 1, ready };
+    },
     // the views shown next (a follow's destination, a zoom's first level), whose levels' lists the worker builds first
     // the first of them, a zoom's goal, is where a window will be wanted: asked of the worker now, ahead of the view that needs it
     prefetch: (vs) => {

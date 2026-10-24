@@ -1205,6 +1205,10 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // a view's own (two cross-fading views go in one submit, whose queued writes all land before it runs)
   const liveB = [0, 1].map((k) => B(MAX_LIVE * 32, STOR, `live${k}`)), liveRowsB = [0, 1].map((k) => B(MAX_LIVE_ROWS * 16, STOR, `liveRows${k}`)), primsB = [0, 1].map((k) => B(MAX_PRIMS * 32, STOR, `prims${k}`));
   const viewU = [0, 1].map((k) => B(VU.bytes, UNI, `view${k}`)), firesU = [0, 1].map((k) => B(MAX_FIRES * 16, UNI, `fires${k}`)), presentU = [0, 1].map((k) => B(PU.bytes, UNI, `present${k}`));
+  // views of textures that live on, made once (a bind group built at every use made 200 a frame)
+  const viewCache = new WeakMap();
+  const vw = (t, o) => { let m = viewCache.get(t); if (!m) viewCache.set(t, m = new Map()); const k = o ? "a" : ""; let v = m.get(k); if (!v) m.set(k, v = t.createView(o)); return v; };
+  const vw2 = (t) => vw(t, { dimension: "2d-array" });
   // per-frame targets, sized to the largest view
   let cap = null;
   function ensure(w, h) {
@@ -1225,8 +1229,8 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     switch (name) {
       case "V": return { buffer: viewU[v] };
       case "map": return { buffer: mapB };
-      case "gridTex": return gridT.createView({ dimension: "2d-array" });
-      case "fineTex": return fineT.createView({ dimension: "2d-array" });
+      case "gridTex": return vw2(gridT);
+      case "fineTex": return vw2(fineT);
       case "need": return { buffer: needB };
       case "Kp": return { buffer: kpU };
       case "Fp": return { buffer: farU };
@@ -1242,28 +1246,28 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       case "pts": return { buffer: instB, offset: MAX_INST * 32, size: MAX_INST * 32 };
       case "keys": case "keysR": return { buffer: cap.keys };
       case "argsR": return { buffer: argsB };
-      case "zbuf": return cap.depth.createView();
-      case "gKs": return cap.gK.createView();
-      case "gWs": return cap.gW.createView();
+      case "zbuf": return vw(cap.depth);
+      case "gKs": return vw(cap.gK);
+      case "gWs": return vw(cap.gW);
       case "rowInst": return { buffer: rowInstB };
       case "args": return { buffer: argsB };
-      case "atlas": return atlasT.createView({ dimension: "2d-array" });
+      case "atlas": return vw2(atlasT);
       case "live": return { buffer: liveB[v] };
       case "liveRows": return { buffer: liveRowsB[v] };
       case "prims": return { buffer: primsB[v] };
-      case "gK": return cap.gK.createView();
-      case "gW": return cap.gW.createView();
-      case "mask": return cap.mask.createView();
-      case "over": return cap.over.createView();
-      case "xray": return cap.xray.createView();
-      case "sun": return sunMaps[sunFront].createView();
-      case "can0": return canopy.t0.createView();
-      case "can3": return canopy.t3.createView();
+      case "gK": return vw(cap.gK);
+      case "gW": return vw(cap.gW);
+      case "mask": return vw(cap.mask);
+      case "over": return vw(cap.over);
+      case "xray": return vw(cap.xray);
+      case "sun": return vw(sunMaps[sunFront]);
+      case "can0": return vw(canopy.t0);
+      case "can3": return vw(canopy.t3);
       case "tables": return { buffer: tablesB };
       case "fires": return { buffer: firesU[v] };
       case "T": return { buffer: traceU };
       case "P": return { buffer: presentU[v] };
-      case "art": return cap.art[v].createView();
+      case "art": return vw(cap.art[v]);
       default: throw new Error(`no resource ${name}`);
     }
   };
@@ -1347,7 +1351,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     if (exagFolded === exag) return;
     device.queue.writeBuffer(traceU, 0, TU.pack({ n: GN, step: pal.GRID_STEP, exag, reach: TER_REACH }));
     const pass = enc.beginComputePass(tw("fold"));
-    pass.setPipeline(S.fold.p); pass.setBindGroup(0, group(S.fold, 0, { sunOut: foldT.createView() })); pass.setBindGroup(1, groundGroup);
+    pass.setPipeline(S.fold.p); pass.setBindGroup(0, group(S.fold, 0, { sunOut: vw(foldT) })); pass.setBindGroup(1, groundGroup);
     pass.dispatchWorkgroups(Math.ceil(GN / 8), Math.ceil(GN / 8));
     pass.end();
     gridRects(6, (x0, y0, w, h, dx, dy) => enc.copyTextureToTexture({ texture: foldT, origin: [x0, y0] }, { texture: gridT, origin: [dx, dy, 6] }, [w, h, 1]));
@@ -1366,7 +1370,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     const rows = sunShown ? Math.ceil(GN / SUN_STRIPES) : GN;
     device.queue.writeBuffer(traceU, 0, TU.pack({ n: GN, step: pal.GRID_STEP, exag: sunJob.exag, tan: sunJob.tan, dx: sunJob.dir[0], dz: sunJob.dir[1], row0: sunJob.row, reach: TER_REACH, top: gridTop * sunJob.exag + 3.5 }));
     const pass = enc.beginComputePass(tw("sun"));
-    pass.setPipeline(S.sun.p); pass.setBindGroup(0, group(S.sun, 0, { sunOut: sunMaps[1 - sunFront].createView() })); pass.setBindGroup(1, groundGroup);
+    pass.setPipeline(S.sun.p); pass.setBindGroup(0, group(S.sun, 0, { sunOut: vw(sunMaps[1 - sunFront]) })); pass.setBindGroup(1, groundGroup);
     pass.dispatchWorkgroups(Math.ceil(GN / 8), Math.ceil(Math.min(rows, GN - sunJob.row) / 8));
     pass.end();
     sunJob.row += rows;
@@ -1438,7 +1442,8 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // views reach that no slot holds, at most FILL_MEMBERS members' worth (at least one cell), into slots no view showed
   // this frame, the least lately shown first; the slots grow when a frame shows more cells than they hold.
   const FILL_MEMBERS = 1 << 19, FILL_MAX = 256, NO_SLOT = 0xffffffff, cacheState = new Map();
-  let cacheFrameNo = 0, cacheRetired = [];
+  // rev counts what the page changes in the renderer between frames (the mutators below); idleAfter: the last frame left no build, trace, fill or fold to go on with; cacheLeft: cells of a source's cache still to fill
+  let cacheFrameNo = 0, cacheRetired = [], cacheLeft = false, rev = 0, idleAfter = false;
   function cacheOf(s) {
     let c = cacheState.get(s.name);
     if (c && c.cm === s.spec.cache.cm) return c;
@@ -1476,7 +1481,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // The cells this frame's views reach, held or filled. The reach is four px wider than the cull's, so every cell the
   // GPU walks is held whatever the floats round to.
   function cacheFrame(enc, views) {
-    cacheFrameNo++;
+    cacheFrameNo++; cacheLeft = false;
     const jobs = [];
     for (const s of sources) {
       if (!s.fill) continue;
@@ -1517,9 +1522,11 @@ export async function createRenderer({ device, context, format, pal, ground, tim
         budget -= counts[cell];
         fullest = Math.max(fullest, counts[cell]);
       }
+      if (want.length > fill.length / 2) cacheLeft = true;
       if (!fill.length) continue;
       device.queue.writeBuffer(c.fill, 0, Uint32Array.from([fill.length / 2, ...fill]));
       jobs.push({ s, c, n: fill.length / 2, fullest });
+      cacheLeft = true;
     }
     if (!jobs.length) return;
     const pass = enc.beginComputePass(tw("fill"));
@@ -1871,7 +1878,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       // an art buffer drawn for an earlier camera at the same level and bearing lies at its own absolute origin
       const dx = p.dx + (t.gx0 - v.U.gx0) * p.sc, dy = p.dy + (t.gy0 - v.U.gy0) * p.sc;
       device.queue.writeBuffer(presentU[k], 0, PU.pack({ dx, dy, sc: p.sc, nn: p.nn, alpha: v.alpha, aw: t.aw, ah: t.ah, nearest: p.nearest, sr: f.seaRGB[0], sg: f.seaRGB[1], sb: f.seaRGB[2] }));
-      pass.setBindGroup(0, group(S.present, k, { art: cap.art[s.slot].createView() }));
+      pass.setBindGroup(0, group(S.present, k, { art: vw(cap.art[s.slot]) }));
       pass.draw(3);
     });
     pass.end();
@@ -1884,6 +1891,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     for (const b of frontRetired.splice(0)) b.destroy();
     inFlight++;
     device.queue.onSubmittedWorkDone().then(() => { inFlight--; });
+    idleAfter = !farBusy && !frontJob && !frontWant.length && !sunJob && !cacheLeft && exagFolded === f.exag && (!f.cast || !!sunShown);
     if (qr) {
       qr.busy = true;
       qr.b.mapAsync(GPUMapMode.READ).then(() => {
@@ -2021,10 +2029,10 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     if (nLive) device.queue.writeBuffer(liveB[k], 0, v.live);
     let rp = enc.beginRenderPass({
       colorAttachments: [
-        { view: cap.gK.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0xffffffff, g: 0, b: 0, a: 0 } },
-        { view: cap.gW.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } },
+        { view: vw(cap.gK), loadOp: "clear", storeOp: "store", clearValue: { r: 0xffffffff, g: 0, b: 0, a: 0 } },
+        { view: vw(cap.gW), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } },
       ],
-      depthStencilAttachment: { view: cap.depth.createView(), depthLoadOp: "clear", depthStoreOp: "store", depthClearValue: 1 },
+      depthStencilAttachment: { view: vw(cap.depth), depthLoadOp: "clear", depthStoreOp: "store", depthClearValue: 1 },
       ...tw("world"),
     });
     rp.setViewport(0, 0, U.aw, U.ah, 0, 1);
@@ -2047,8 +2055,8 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     const nLiveRows = v.liveRows ? v.liveRows.length / 4 : 0;
     if (nLiveRows) device.queue.writeBuffer(liveRowsB[k], 0, Int32Array.from(v.liveRows));
     rp = enc.beginRenderPass({
-      colorAttachments: [{ view: cap.mask.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-      depthStencilAttachment: { view: cap.maskZ.createView(), depthLoadOp: "clear", depthStoreOp: "discard", depthClearValue: 1 },
+      colorAttachments: [{ view: vw(cap.mask), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+      depthStencilAttachment: { view: vw(cap.maskZ), depthLoadOp: "clear", depthStoreOp: "discard", depthClearValue: 1 },
       ...tw("mask"),
     });
     rp.setViewport(0, 0, U.aw, U.ah, 0, 1);
@@ -2105,16 +2113,16 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     // 5. overlays and the x-ray
     const nPrims = v.prims ? v.prims.length / 8 : 0;
     if (nPrims) device.queue.writeBuffer(primsB[k], 0, v.prims);
-    rp = enc.beginRenderPass({ colorAttachments: [{ view: cap.over.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 255, g: 0, b: 0, a: 0 } }], ...tw("over") });
+    rp = enc.beginRenderPass({ colorAttachments: [{ view: vw(cap.over), loadOp: "clear", storeOp: "store", clearValue: { r: 255, g: 0, b: 0, a: 0 } }], ...tw("over") });
     rp.setViewport(0, 0, U.aw, U.ah, 0, 1);
     if (nPrims) { rp.setPipeline(S.over.p); rp.setBindGroup(0, group(S.over, k)); rp.setBindGroup(1, groundGroup); rp.draw(6, nPrims); }
     rp.end();
-    rp = enc.beginRenderPass({ colorAttachments: [{ view: cap.xray.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });
+    rp = enc.beginRenderPass({ colorAttachments: [{ view: vw(cap.xray), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });
     rp.setViewport(0, 0, U.aw, U.ah, 0, 1);
     if (v.xray && nLive) { rp.setPipeline(S.xray.p); rp.setBindGroup(0, group(S.xray, k)); for (const i of v.xray) rp.draw(6, 1, 0, i); }
     rp.end();
     // 6. shade into the view's art buffer
-    rp = enc.beginRenderPass({ colorAttachments: [{ view: cap.art[slot].createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 1 } }], ...tw("shade") });
+    rp = enc.beginRenderPass({ colorAttachments: [{ view: vw(cap.art[slot]), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 1 } }], ...tw("shade") });
     rp.setViewport(0, 0, U.aw, U.ah, 0, 1);
     rp.setPipeline(S.shade.p); rp.setBindGroup(0, group(S.shade, k)); rp.setBindGroup(1, groundGroup);
     rp.draw(3);
@@ -2122,9 +2130,13 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     cap.tags[slot] = { L: v.L, beta: v.beta, gx0: U.gx0, gy0: U.gy0, aw: U.aw, ah: U.ah, frame: frameNo, hazeTop: U.gy0 + U.htop, hreach: U.hreach };
   }
   await Promise.all(Object.values(S).map((o) => o.ready));
-  return {
+  const api = {
     errors, stats, frame, setSources, warmSpec, setGround, setGroundPages, setGroundPagesOn, setWrap, debugRoll, setMeta, survey, buildCanopy, farBuild, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
     get busy() { return inFlight; },
+    // whether drawing the last frame's inputs again would draw the same picture: nothing the renderer builds or traces is half done, nothing asked of it (a pick, a check) waits for a frame, and nothing was
+    // changed in it since (rev, which the caller compares with the one it saw at that frame)
+    get rev() { return rev; },
+    get settled() { return idleAfter && !picks.length && !instWant.length && !fadeWant.length && !gbufWant.length && !pendingPickReads.length && !cacheRetired.length && !frontRetired.length; },
     setFarUse: (on) => { farUse = on; },
     setFadeKeep: (on) => { fadeKeep = on; },
     // the ground's pages as the planet pass reads them (slice H): the textures and the table, on only while the page table is what the painter reads. table: [on, entry 0 to 15], entries as the painter's page table (a slot, or -(2 + n) for a page not resident)
@@ -2146,4 +2158,10 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     // the next cross-fade frame that presents a kept view, that view drawn again and compared (fadeReads)
     fadeCheck: () => new Promise((resolve) => fadeWant.push(resolve)),
   };
+  // what the page changes between frames: any of these makes the next frame differ
+  for (const k of ["setSources", "setGround", "setGroundPages", "setGroundPagesOn", "setWrap", "debugRoll", "setMeta", "survey", "buildCanopy", "farBuild", "setAtlas", "setTable", "atlasPut", "entriesPut", "rowsPut", "tablePut", "setTrails", "setTrailRect", "setIce", "setBlockPages", "copyPages", "setFarUse", "setFadeKeep", "setFrontUse", "setFrontViews", "setSkipped"]) {
+    const fn = api[k];
+    api[k] = (...a) => { rev++; return fn(...a); };
+  }
+  return api;
 }

@@ -263,11 +263,19 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       planes[fld.name] = out;
     }
     const names = first.meta.fields.map((f) => f.name);
-    for (let k = 0; k < S * S; k++) {
+    // the window's cells come from its tiles in runs of consecutive cells (a row of one tile), copied by the engine a run at a time: a plane of a cell is a megamorphic typed array access over seven array types
+    const runs = [];
+    for (let k = 0; k < S * S;) {
       const q = own[k];
-      if (q < 0) continue;
-      const pl0 = tl[q].gt.planes;
-      for (const n of names) planes[n][k] = pl0[n][at[k]];
+      if (q < 0) { k++; continue; }
+      let e = k + 1;
+      while (e < S * S && own[e] === q && at[e] === at[e - 1] + 1 && (e % S) !== 0) e++;
+      runs.push(k, e - k, q, at[k]);
+      k = e;
+    }
+    for (const n of names) {
+      const out = planes[n], from = tl.map((t) => t.gt.planes[n]);
+      for (let r = 0; r < runs.length; r += 4) out.set(from[runs[r + 2]].subarray(runs[r + 3], runs[r + 3] + runs[r + 1]), runs[r]);
     }
     // a receiver is a step in its own face's cells: turned into the window's
     if (planes.dir) {

@@ -89,26 +89,24 @@ export function warmScatter(g: Gpu, halo = SCATTER_HALO): Promise<unknown> {
 // The tile's fields as the kernels hold them (wgsl/terrain-scenery.ts ISLE, in a field of the tile's cells and a halo of `halo`), from the stored words by integer arithmetic alone.
 export function packTile(source: TileSource, tile: number, halo = SCATTER_HALO, tier = 4): Int32Array {
   const { face, tx, ty } = tileAt(tier, tile), { L } = kernelsOf(halo), n = (256 + 2 * halo) ** 2, out = new Int32Array(L.ISLE_WORDS);
-  const get = <A extends Field>(name: string) => source.plane<A>(name, halo);
-  const put = (name: (typeof ISLE)[number], fill: (i: number) => number) => { const o = L.IF[name]; for (let i = 0; i < n; i++) out[o + i] = fill(i); };
-  const height = get<Int32Array>("height"), water = get<Uint16Array>("water"), flags = get<Uint8Array>("flags"), soil = get<Uint16Array>("soil");
-  put("height", (i) => height[i] * 256);
-  put("water", (i) => Math.round((water[i] * Q16) / 100));
-  const moist = get<Uint8Array>("moist");
-  put("moist", (i) => share24[moist[i]]);
-  (["tree", "shrub", "grass", "marsh", "bare"] as const).forEach((name) => { const c = get<Uint8Array>(name); put(name, (i) => share24[c[i]]); });
-  put("sand", (i) => (flags[i] & 2 ? Q24 : 0));
-  put("silt", (i) => (flags[i] & 1 ? Q24 : 0));
-  put("soil", (i) => soil[i] * 64);
-  const clay = get<Uint8Array>("clayey"), ph = get<Uint8Array>("ph"), stb = get<Uint16Array>("winter");
-  put("clayey", (i) => share24[clay[i]]);
-  put("ph", (i) => ph16[ph[i]]);
-  put("winter", (i) => stb[i] * (Q16 / TABLE_UNIT));
+  // Each plane is converted to int32 by the engine (`set` across array types) so the loops below see one array type: a loop over a closure per cell, or over seven array types, ran at 170 ns a cell
+  const tmp = new Int32Array(n);
+  const get = <A extends Field>(name: string) => { tmp.set(source.plane<A>(name, halo) as ArrayLike<number>); return tmp; };
+  const scaled = (name: (typeof ISLE)[number], from: string, k: number) => { const t = get(from), o = L.IF[name]; for (let i = 0; i < n; i++) out[o + i] = t[i] * k; };
+  const lut = (name: (typeof ISLE)[number], from: string, table: Int32Array) => { const t = get(from), o = L.IF[name]; for (let i = 0; i < n; i++) out[o + i] = table[t[i]]; };
+  scaled("height", "height", 256);
+  { const t = get("water"), o = L.IF.water; for (let i = 0; i < n; i++) out[o + i] = Math.round((t[i] * Q16) / 100); }
+  lut("moist", "moist", share24);
+  for (const name of ["tree", "shrub", "grass", "marsh", "bare"] as const) lut(name, name, share24);
+  { const t = get("flags"), a = L.IF.sand, b = L.IF.silt; for (let i = 0; i < n; i++) { out[a + i] = t[i] & 2 ? Q24 : 0; out[b + i] = t[i] & 1 ? Q24 : 0; } }
+  scaled("soil", "soil", 64);
+  lut("clayey", "clayey", share24);
+  lut("ph", "ph", ph16);
+  scaled("winter", "winter", Q16 / TABLE_UNIT);
   for (let k = 0; k < 4; k++) {
-    const sun = get<Uint16Array>(`sun${k}`), tmp = get<Int16Array>(`tmp${k}`), sw = get<Uint8Array>(`sw${k}`);
-    put(`sun${k}` as (typeof ISLE)[number], (i) => sun[i] * 64);
-    put(`temp${k}` as (typeof ISLE)[number], (i) => tmp[i] * 256);
-    put(`sw${k}` as (typeof ISLE)[number], (i) => share24[sw[i]]);
+    scaled(`sun${k}` as (typeof ISLE)[number], `sun${k}`, 64);
+    scaled(`temp${k}` as (typeof ISLE)[number], `tmp${k}`, 256);
+    lut(`sw${k}` as (typeof ISLE)[number], `sw${k}`, share24);
   }
   out.set(GRADIENTS, L.GRAD_AT);
   // the tile's corner in quarter metres from its face's, and its face (the noise's place)

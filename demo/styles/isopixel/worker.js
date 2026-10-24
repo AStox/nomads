@@ -1339,6 +1339,13 @@ async function attachObjects(w) {
 // The page's frame: views with their uniforms and live sprites by the page's sprite ids, which go into the dynamic
 // layers the first time they come.
 let pending = null, rendering = false, frames = 0, frontsSent = "";
+// A frame is not drawn when it cannot differ from the one drawn: its views, planet, light and canvas are those of the last drawn frame, nothing the renderer holds changed since (R.rev), nothing it builds is half
+// done (R.settled), the planet layer says its picture is settled, and it has been so for a second (what the frames' own calls start, as the planet block's follow, has been started by then). The canvas keeps
+// the last picture it showed. The views' animation frame (the sea's and the leaves' clock, live.js) changes about six times a second: that is drawn, and is not a change that restarts the second.
+let lastKey = "", lastAnim = "", lastRev = -1, sameSince = 0, skips = 0;
+function frameKey(f) {
+  return JSON.stringify([f.views.map((v) => [{ ...v.U, frame: 0 }, v.alpha, v.present, v.fires, v.xray, v.live?.length, v.prims?.length, v.liveRows?.length]), f.planet, f.exag, f.cast, f.seaRGB, f.relief, f.groundOff, f.gid, f.ahead, canvas.width, canvas.height]);
+}
 const tmp = new ArrayBuffer(32 * 16384);
 function liveInstances(list) {
   const n = list.length / 8, U = new Uint32Array(tmp, 0, n * 8), I = new Int32Array(tmp, 0, n * 8), F = new Float32Array(tmp, 0, n * 8);
@@ -1374,6 +1381,17 @@ function render() {
     return;
   }
   if (R.busy >= 2) { setTimeout(render, 1); return; }
+  const now = performance.now(), key = frameKey(f), anim = f.views.map((v) => v.U.frame).join();
+  const same = key === lastKey && R.rev === lastRev && R.settled && !f.lut && !f.sprites?.length && !f.views.some((v) => v.live?.length) && (!planetLayer || planetLayer.settled?.() === true);
+  if (!same) sameSince = now;
+  if (same && now - sameSince > 1000 && anim === lastAnim) {
+    pending = null; skips++;
+    const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
+    frontsSent = fr;
+    post({ type: "frameDone", id: f.id, cpuMs: 0, gpuMs: 0, passes: R.stats.passes, counts: R.stats.counts, at: 0, fronts, lift: planetLift, q: planetQ, applyMs, skipped: true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    return;
+  }
+  lastKey = key; lastAnim = anim;
   pending = null;
   rendering = true;
   const t0 = performance.now();
@@ -1409,6 +1427,7 @@ function render() {
   frames++;
   const ms = performance.now() - t0;
   rendering = false;
+  lastRev = R.rev;
   device.queue.onSubmittedWorkDone().then(() => {
     // the levels and bearings whose front lists are built, when they change (live.js listsReady)
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
