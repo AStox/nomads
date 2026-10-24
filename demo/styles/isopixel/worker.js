@@ -24,7 +24,7 @@ const ORIGIN = -SIZE / 2, WS = 12.5;
 // entries and rows kept for sprites made while the page runs (live sprites, and objects' sprites the world grew into
 // since the atlas was laid out), and the atlas layers they go in
 const DYN_ENTRIES = 32768, DYN_ROWS = 1 << 22, DYN_LAYERS = 8;
-let camTick = 0, blocksOn = true, R = null, device = null, gpuName = "", canvas = null, context = null, planet = null, planetLayer = null, planetLift = 0;
+let camTick = 0, R = null, device = null, gpuName = "", canvas = null, context = null, planet = null, planetLayer = null, planetLift = 0;
 // each sprite's foot (rows its anchor sits above the ground), by atlas id, for the checks
 let table = null, nStatic = 0, rowsStatic = 0, dyn = null, liveIds = new Map(), dynMade = new Set(), feet = new Int16Array(0);
 // the page's live sprites as they came, by its ids: placed in the dynamic layers when a frame first draws them, and again
@@ -87,7 +87,6 @@ async function init(m) {
   const gpu = { device, adapter: gpuName };
   if (m.sim) simB.useGpu(gpu);
   planet = m.planet ? await openPlanet(m.seed, device) : null;
-  blocksOn = m.blocks !== false;
   const ground = await closeGround(m.sim ? simB : null, m.seed, gpu, planet);
   const { isle, fine: g } = ground;
   const t1 = performance.now();
@@ -107,11 +106,9 @@ async function init(m) {
   for (const h of isle.height) peak = Math.max(peak, h);
   home = { pack, fields: { peak, h: g.h, height: isle.height, water: isle.water } };
   if (planet?.T) {
-    // the most objects a window's body holds: 28 bytes a slot must fit the device's storage binding, and at most 8.4 million [design: 235 MB]
-    const room = Math.min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize) / 28;
-    planet.wins = createWindows({ G: planet.G, T: planet.T, gpu, base: planet.base, tier: planet.manifest.tiers - 1, seed: m.seed, radiusM: planet.radiusM, quick: isle.quick, paged: m.pages !== false, put: (atlas, list, slots) => R.copyPages(atlas, list, slots), onBlockLost: () => R.setBlockPages({ block: null }), top: Math.min(1 << 23, 2 ** Math.floor(Math.log2(room))) });
-    // the window source's passes for each size its body comes in, compiled now on the GPU process's own threads (a first window then does not wait on them)
-    for (const cap of [1 << 23, 1 << 22, 1 << 21, 1 << 20].filter((c) => c <= Math.min(1 << 23, 2 ** Math.floor(Math.log2(room))))) void R.warmSpec("win", winSpec(cap)).catch((err) => console.warn("warm window passes", err));
+    planet.wins = createWindows({ G: planet.G, T: planet.T, gpu, base: planet.base, tier: planet.manifest.tiers - 1, seed: m.seed, radiusM: planet.radiusM, quick: isle.quick, put: (atlas, list, slots) => R.copyPages(atlas, list, slots), onBlockLost: () => R.setBlockPages({ block: null }) });
+    // the passes of the empty source a window draws until its blocks come, and of each size a block comes in, compiled now on the GPU process's own threads (a first window then does not wait on them)
+    void R.warmSpec("win", winSpec(EMPTY_CAP)).catch((err) => console.warn("warm window passes", err));
     for (const cap of BLOCK_CAPS) void R.warmSpec("block", blockSpec(cap)).catch((err) => console.warn("warm block passes", err));
   }
   // the page keeps the camera on the island's heights and the drawn ground under it: the fine heights and the cells'
@@ -170,7 +167,7 @@ async function setupObjects(sim, w) {
   spritesP = makeAll(jobs).then((made) => { mark("sprites"); return made; });
   S.ms = { sources: t1 - t0, survey: performance.now() - t1 };
 }
-const sources = () => (S.win ? (S.win.blocks ?? S.winParts ?? [S.win]) : S.plant ? [S.plant, ...(S.statics.cap ? [S.statics] : []), S.extras, ...(S.animals ? [S.animals] : []), ...(S.dead ?? [])] : []);
+const sources = () => (S.win ? (S.win.blocks ?? [S.win]) : S.plant ? [S.plant, ...(S.statics.cap ? [S.statics] : []), S.extras, ...(S.animals ? [S.animals] : []), ...(S.dead ?? [])] : []);
 
 // The generator's objects that aren't stems (src/gpu/flora.ts: static dormant), counted into the spatial index's cells
 // and laid out cell by cell in entry order, fields as the store holds a piece's: x, y (mm), what, size (f32 bits),
@@ -915,7 +912,6 @@ async function check(m) {
   if (m.op === "shares") return curWin?.blockRecs && { k0: curWin.blockK0, view: curWin.blockView, blocks: curWin.blockRecs.map((b) => ({ key: b.key, eff: curWin.blockKd?.get(b.key) ?? b.k, made: b.k, c0: b.X - curWin.x0, z0: curWin.y0 + 256 - (b.Y + 64) })) };
   // whether the page is still making what it draws (sprites made on demand, the window's blocks, a switch): a still taken before it is idle shows the nearest sprite made, so a gate waits for busy to stay false
   if (m.op === "idle") return { busy: !!refreshing || !!curWin?.blocksBusy || switching || building || !!prepared, sprites: nStatic + (dyn ? dyn.next - nStatic : 0), asked: asked.size };
-  if (m.op === "quads") return splitQuads(!!m.on);
   if (m.op === "front") { R.setFrontUse(!!m.on); return true; }
   // view 0's G-buffer kept (gsnap), and the next one compared with it pixel by pixel (gdiff): what each pixel shows
   // (kind, colour, flags) and whose it is
@@ -1042,7 +1038,7 @@ const viewCells = (w, m) => ({ ...camCells(w, m.lat, m.lon), ext: m.ext !== unde
 // floor(e - 0.25) serves, so a zoom only rewrites the sources' exponent words (writeExponents); blocks are made again only when a visible one is too thin (a zoom in past its margin, or one that
 // came into the margin), made half a step denser than drawn so that happens before it shows (plan R7). Checked every six frames.
 function refocus(w, m) {
-  if (!blocksOn || !w.blockPlan || w.blocksBusy || !w.blockRecs || m.lat === undefined) return;
+  if (!w.blockPlan || w.blocksBusy || !w.blockRecs || m.lat === undefined) return;
   const view = viewCells(w, m), { vis, k0 } = planet.wins.blocksNeed(w, view);
   if (k0 === null) return;
   const held = new Map(w.blockRecs.map((b) => [b.key, b])), need = (e) => Math.max(0, Math.floor(e - 0.25));
@@ -1076,10 +1072,8 @@ const winNear = (want) => {
 };
 function destroyWindow(w) {
   w.dead = true;
-  // a paged window's ground is its pages, which the page cache lets go of when it needs the slots (groundwin.js ensurePages); one made whole (?pages=0) holds its own buffers
-  if (!w.paged) { w.pack.fine.gpu.destroy(); w.pack.grid.gpu.destroy(); w.pack.river.gpu.destroy(); }
+  // a window's ground is its pages, which the page cache lets go of when it needs the slots (groundwin.js ensurePages)
   if (w.blockRecs) { w.blockRecs = null; queueMicrotask(sweepBlocks); }
-  if (w.objectsValue) { w.objectsValue.body.destroy(); w.objectsValue.start.destroy(); }
 }
 function keepWindow(w) {
   winCache.push(w);
@@ -1121,7 +1115,7 @@ async function groundWant(m) {
       if (!spec) {
         if (near) await near;
         prepared = { gid: ++gids, mode: "win", win: w };
-        post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon }, fields: w.fields, stats: { ...w.stats, id: w.id, objects: w.blockRecs ? w.blockRecs.reduce((n, b) => n + b.n, 0) : w.objectsValue?.n ?? null, share: w.blockK0 !== undefined ? 2 ** -w.blockK0 : w.objectsValue?.share ?? null } });
+        post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon }, fields: w.fields, stats: { ...w.stats, id: w.id, objects: w.blockRecs ? w.blockRecs.reduce((n, b) => n + b.n, 0) : null, share: w.blockK0 !== undefined ? 2 ** -w.blockK0 : null } });
       }
     }
   } catch (err) {
@@ -1132,7 +1126,8 @@ async function groundWant(m) {
 // the objects of a window (a promise of GPU buffers, groundwin.js startObjects): kept on the window, handed to the drawn source when they arrive, their size told to the page. By block, the promise
 // answered is that of the blocks the view can touch (the others follow); the whole window's objects are not waited for.
 function startObjects(w, view) {
-  if (blocksOn && w.blockPlan) {
+  if (!w.blockPlan) return Promise.resolve();
+  {
     const near = Promise.withResolvers();
     w.blockView = view ?? { x: 128, z: 128, ext: 128 };
     const tBlocks = performance.now();
@@ -1156,12 +1151,6 @@ function startObjects(w, view) {
     }).catch((err) => { w.blocksBusy = false; near.resolve(); console.error("window blocks", err); post({ type: "windowError", error: String((err && err.stack) || err) }); });
     return near.promise;
   }
-  w.startObjects().then((o) => {
-    w.objectsValue = o;
-    if (w.dead) { o.body.destroy(); o.start.destroy(); return; }
-    attachObjects(w);
-    post({ type: "windowObjects", id: w.id, objects: o.n, share: o.share, ms: o.ms, estimate: o.estimate });
-  }).catch((err) => { console.error("window objects", err); post({ type: "windowError", error: String((err && err.stack) || err) }); });
 }
 let applyMs = 0;
 async function applyGround(p) {
@@ -1169,19 +1158,17 @@ async function applyGround(p) {
   const tApply = performance.now();
   try {
     if (p.mode === "win") {
-      const w = p.win, o = w.objectsValue ?? emptyBody();
+      const w = p.win, o = emptyBody();
       S.win = w.blockRecs ? { name: "win", blocks: blockSources(w) } : { name: "win", cap: o.cap, body: o.body, start: o.start, spec: winSpec(o.cap) };
       curWin = w;
       planet.wins.setDrawn(w);
       await R.setSources(sources());
       // the window's pages (made again if the cache let one go) into the painter's page textures, only those it does not already hold, and the table turned on for the whole screen
-      if (w.paged) {
-        const set = await planet.wins.pageSet(w), r = R.setGroundPages({ ...w.pack, pages: set, top: w.pack.grid.top });
-        if (!r.on) throw new Error(`the window's pages are not all there: ${JSON.stringify(r.missing)}`);
-        // the pages round the window's, for the planet pass: the old block goes at once (its slots may be given to other pages), the new one is made behind the frames and given to the painter when it is there
-        R.setBlockPages({ block: null });
-        planet.wins.ensureBlock(w).then((b) => { if (curWin === w) R.setBlockPages(b); }).catch((err) => console.warn("block pages", err));
-      } else { w.pack.keep = true; R.setGround(w.pack); }
+      const set = await planet.wins.pageSet(w), r = R.setGroundPages({ ...w.pack, pages: set, top: w.pack.grid.top });
+      if (!r.on) throw new Error(`the window's pages are not all there: ${JSON.stringify(r.missing)}`);
+      // the pages round the window's, for the planet pass: the old block goes at once (its slots may be given to other pages), the new one is made behind the frames and given to the painter when it is there
+      R.setBlockPages({ block: null });
+      planet.wins.ensureBlock(w).then((b) => { if (curWin === w) R.setBlockPages(b); }).catch((err) => console.warn("block pages", err));
       R.setIce(new Uint8Array(TILES * TILES));
     } else {
       S.win = null; curWin = null;
@@ -1196,7 +1183,7 @@ async function applyGround(p) {
     curGid = p.gid;
     if (prepared === p) prepared = null;
     if (p.mode === "win") await surveyWindow();
-    if (p.mode === "win" && blocksOn && p.win.blockPlan && !p.win.blockRecs && !p.win.blocksBusy) startObjects(p.win, lastCam ? viewCells(p.win, lastCam) : undefined);
+    if (p.mode === "win" && p.win.blockPlan && !p.win.blockRecs && !p.win.blocksBusy) startObjects(p.win, lastCam ? viewCells(p.win, lastCam) : undefined);
   } finally { switching = false; applyMs = performance.now() - tApply; }
 }
 async function surveyWindow() {
@@ -1207,13 +1194,12 @@ async function surveyWindow() {
 }
 // the objects of the window drawn arrive: its source takes them in place of the empty one (a window not drawn takes them when it is)
 async function attachObjects(w) {
-  if (curWin !== w || !(w.objectsValue || w.blockRecs)) return;
+  if (curWin !== w || !w.blockRecs) return;
   while (switching) await new Promise((r) => setTimeout(r, 5));
-  if (curWin !== w || (w.objectsValue && S.win?.body === w.objectsValue.body) || (w.blockRecs && S.win?.blocks?.length === w.blockRecs.length && S.win.blocks[0]?.body === w.blockRecs[0]?.body)) return;
+  if (curWin !== w || (S.win?.blocks?.length === w.blockRecs.length && S.win.blocks[0]?.body === w.blockRecs[0]?.body)) return;
   switching = true;
   try {
-    const o = w.objectsValue;
-    S.win = w.blockRecs ? { name: "win", blocks: blockSources(w) } : { name: "win", cap: o.cap, body: o.body, start: o.start, spec: winSpec(o.cap) };
+    S.win = { name: "win", blocks: blockSources(w) };
     await R.setSources(sources());
     R.buildCanopy();
     w.canopyK0 = w.blockK0;
@@ -1222,54 +1208,6 @@ async function attachObjects(w) {
   } catch (err) {
     console.error("window objects", err);
     post({ type: "windowError", error: String((err && err.stack) || err) });
-  } finally { switching = false; }
-}
-
-// A check: the drawn window's objects split into four quadrants, each its own source of 128 cells a side with its own origin (wgsl/objects.js srcOc) and its own cells from 0, the same objects drawn
-// by four sources; null puts the one source back.
-async function readWords(buf, bytes) {
-  const rb = device.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
-  const enc = device.createCommandEncoder();
-  enc.copyBufferToBuffer(buf, 0, rb, 0, bytes);
-  device.queue.submit([enc.finish()]);
-  await rb.mapAsync(GPUMapMode.READ);
-  const out = new Uint32Array(rb.getMappedRange().slice(0));
-  rb.unmap(); rb.destroy();
-  return out;
-}
-async function splitQuads(on) {
-  while (switching) await new Promise((r) => setTimeout(r, 5));
-  switching = true;
-  try {
-    if (!on) { for (const q of S.winParts ?? []) { q.body.destroy(); q.start.destroy(); } S.winParts = null; }
-    else {
-      const o = curWin?.objectsValue;
-      if (!o) return false;
-      const C = o.cap, body = await readWords(o.body, 7 * C * 4), start = await readWords(o.start, (256 * 256 + 1) * 4);
-      const parts = [0, 1, 2, 3].map(() => ({ slots: [], cells: [] }));
-      for (let cy = 0; cy < 256; cy++) for (let cx = 0; cx < 256; cx++) {
-        const c = cy * 256 + cx, q = (cy >> 7) * 2 + (cx >> 7);
-        for (let i = start[c]; i < start[c + 1]; i++) { parts[q].slots.push(i); parts[q].cells.push(((cy & 127) * 128) + (cx & 127)); }
-      }
-      S.winParts = parts.map((pt, q) => {
-        const n = pt.slots.length, cap = [1 << 20, 1 << 21, 1 << 22, 1 << 23].find((c) => c >= n) ?? 1 << 23, ox = (q & 1) * 128 * 75000, oz = (q >> 1) * 128 * 75000;
-        const b = new Uint32Array(7 * cap + 2), st = new Uint32Array(128 * 128 + 1);
-        pt.slots.forEach((i, k) => {
-          b[k] = 1;
-          b[C * 0 + cap + k] = body[C + i] - ox; b[2 * cap + k] = body[2 * C + i] - oz;
-          for (let col = 3; col < 7; col++) b[col * cap + k] = body[col * C + i];
-          st[pt.cells[k] + 1]++;
-        });
-        for (let c = 0; c < 128 * 128; c++) st[c + 1] += st[c];
-        b[7 * cap] = ox; b[7 * cap + 1] = oz;
-        return { name: `win:q${q}`, cap, body: buffer(b), start: buffer(st), spec: winSpec(cap, 128) };
-      });
-    }
-    await R.setSources(sources());
-    R.buildCanopy();
-    R.farBuild(farLevels());
-    await surveyWindow();
-    return S.winParts ? S.winParts.map((q) => q.name) : true;
   } finally { switching = false; }
 }
 

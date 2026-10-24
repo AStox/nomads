@@ -63,7 +63,7 @@ async function main() {
   const jev = jevQ === "off" ? null : localStorage.getItem("nomads-jev");
   // the token is kept, not shown: a copied link doesn't carry it
   if (jevQ) { Q.delete("jev"); history.replaceState(null, "", `${location.pathname}${Q.size ? `?${Q}` : ""}`); }
-  const live = await createLive({ seed, canvas, planet, blocks: Q.get("blocks") !== "0", pages: Q.get("pages") !== "0", sim: withSim ? { warm, jev } : null, onProgress: (d, n, what) => { step = [what, 0.5 * (what === "drawing the sprites" ? 1 : 0) + (0.5 * d) / n]; say(); } });
+  const live = await createLive({ seed, canvas, planet, sim: withSim ? { warm, jev } : null, onProgress: (d, n, what) => { step = [what, 0.5 * (what === "drawing the sprites" ? 1 : 0) + (0.5 * d) / n]; say(); } });
   const sim = withSim ? await connectSim(live) : null;
   // ?hour= pins the hour the island is drawn at, its light and sun, while the sim runs on; ?speed= starts it faster, in
   // sim seconds a wall second (600 the usual pace, 19200 runs a day in about four and a half seconds), for timelapses

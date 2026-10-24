@@ -13,8 +13,6 @@ const S = N + 16, H = 8, UNITS = 5000;
 const TYPES = { i8: Int8Array, u8: Uint8Array, i16: Int16Array, u16: Uint16Array, i32: Int32Array, u32: Uint32Array, f32: Float32Array };
 const DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
 const D2R = Math.PI / 180;
-// the sizes the window's object buffer comes in, so its pipelines are made once for each [design: a body is 28 bytes a slot, 235 MB at the top]
-const CAPS = [1 << 20, 1 << 21, 1 << 22, 1 << 23];
 // The blocks a window's objects can come in (cells a side, and the sizes of body a block comes in)
 export const BLOCK = 64, BLOCK_CAPS = [1 << 17, 1 << 18, 1 << 19, 1 << 20, 1 << 21], BLOCK_TOTAL = 11e6, RING_OUT = 3;
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -34,7 +32,7 @@ function decode(raw) {
 // G: the globe.js bundle; T: the tile.js bundle (the scatter and the window's fine ground); gpu: the worker's { device, adapter };
 // base: where the planet's files are (its `groundtiles` directory is in it); tier: the finest tier; seed: the world's; radiusM: the planet's
 // radius; quick: the island's runoff by season, for a window whose tiles hold none.
-export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, keep = 6, top = CAPS[CAPS.length - 1], paged = true, onBlockLost = null, put = null }) {
+export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, keep = 6, onBlockLost = null, put = null }) {
   const g = G.tierGrid(tier), fn = g.fn, nT = 2 ** tier, tiles = new Map();
   // the window's kernels compile on the GPU process's own threads from the start, so no window stops the frames to compile one
   const warming = T.warmWindow(gpu);
@@ -285,27 +283,15 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const t0 = performance.now(), loc = G.locateVec(g, G.fromLatLon(lat * D2R, lon * D2R)), face = loc.face, x0 = Math.round((loc.X - N / 2) / PAGE) * PAGE, y0 = Math.round((loc.Y - N / 2) / PAGE) * PAGE;
     const { tl, own, at, srcF, srcX, srcY, turn, planes, src, t1 } = await gather(face, x0, y0);
     const wp = { face, x0, y0, src };
-    wp.made = paged ? await ensurePages(wp) : 0;
+    wp.made = await ensurePages(wp);
     const t2 = performance.now();
 
-    // ---------- what grew: each tile's own scatter, put in the window's frame, thinned and binned into the renderer's body on the GPU, nothing read back ----------
-    // started by the caller (startObjects) once the ground is out, so the page has the ground without waiting on the objects' CPU work; its promise is `w.objects`
-    // Where the window's objects come from when they are made by block (makeBlocks): the tiles its cells lie on. A tile of another cube face than the window's carries `at`, its shift and
-    // quarter turn into the window's frame (placer), which lays its blocks in the window's frame; null when such a tile's turn is not known, which the whole window's objects serve.
+    // ---------- what grew: each tile's own scatter, made by block (makeBlocks) once the ground is out, nothing read back ----------
+    // Where the window's objects come from: the tiles its cells lie on. A tile of another cube face than the window's carries `at`, its shift and quarter turn into the window's frame (placer),
+    // which lays its blocks in the window's frame; the plan is null (the window has no objects) when such a tile's turn is not known.
     const inner = tl.filter((t) => t.interior);
     const planTiles = inner.map((t) => ({ tile: t.f * nT * nT + t.ty * nT + t.tx, tx: t.tx, ty: t.ty, gt: t.gt, at: t.f === face ? null : placer(t, face, x0, y0, srcF, srcX, srcY, turn) }));
     const blockPlan = inner.every((t, i) => t.f === face || planTiles[i].at) ? { face, x0, y0, tiles: planTiles } : null;
-    const startObjects = () => {
-      const placed = [], tStart = performance.now();
-      for (const t of tl) {
-        if (!t.interior) continue;
-        const at = placer(t, face, x0, y0, srcF, srcX, srcY, turn);
-        if (!at || at.rect.w <= 0 || at.rect.h <= 0) continue;
-        // only the cells of the tile the window touches are made (the objects' ids in the tile's whole run are the same either way)
-        placed.push({ tile: t.f * nT * nT + t.ty * nT + t.tx, source: T.tileSource(t.gt), rect: at.rect, a0: t.tx * 256 * UNITS, a1: t.ty * 256 * UNITS, ...at.units });
-      }
-      return (w.objects = T.windowObjects(gpu, tier, placed, seed, { caps: CAPS.filter((c) => c <= top), side: N }).then((o) => ({ ...o, ms: performance.now() - tStart })));
-    };
 
     // ---------- the painter's inputs, rows turned so that z runs south ----------
     const flipCells = (f) => { const o = new Float32Array(N * N); for (let j = 0; j < N; j++) { const at = (H + N - 1 - j) * S + H; for (let i = 0; i < N; i++) o[j * N + i] = f(at + i); } return o; };
@@ -324,19 +310,12 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       peat: flipCells((a) => (flags[a] & 4 ? 1 : 0)), soil: flipCells((a) => pl.soil[a] / 1024), silt: flipCells((a) => (flags[a] & 1 ? 1 : 0)), fog: flipCells((a) => pl.fog[a] / 255),
       seasons: [0, 1, 2, 3].map((s) => ({ precip: s === 1 ? precip : null, pet: s === 1 ? pet : null, snowpack: snow[s] })), quick: runoff,
     };
-    // the window's ground is its pages (ensurePages), given to the painter by setGroundPages, the camera's heights the pages' own and the highest ground theirs; with `pages` off the ground is made whole as windowGround makes it
-    // and given by setGround (a check against the pages). Only the streams are binned here, z turned.
-    let h, ground;
-    if (paged) {
-      h = heightsOf(wp.pageList);
-    } else {
-      ground = await T.windowGround(gpu, src, face, x0, y0);
-      h = ground.h;
-    }
+    // the window's ground is its pages (ensurePages), given to the painter by setGroundPages, the camera's heights the pages' own and the highest ground theirs. Only the streams are binned here, z turned.
+    const h = heightsOf(wp.pageList);
     let highest = -Infinity;
     for (const v of h) if (v > highest) highest = v;
     const rivers = T.windowRivers(src).map((line) => line.map((p) => [p[0], -p[1], ...p.slice(2)]));
-    const pack = packGround(isle, { rivers }, paged ? { fine: null, grid: null, mask: null, top: highest + 2, finePitch: 0, fineLayerWords: 0, gridPitch: 0, gridLayerWords: 0 } : { fine: ground.fine, grid: ground.grid, mask: ground.mask, top: ground.top, finePitch: ground.finePitch, fineLayerWords: ground.fineLayerWords, gridPitch: ground.gridPitch, gridLayerWords: ground.gridLayerWords });
+    const pack = packGround(isle, { rivers }, { fine: null, grid: null, mask: null, top: highest + 2, finePitch: 0, fineLayerWords: 0, gridPitch: 0, gridLayerWords: 0 });
     const t3 = performance.now();
     let peak = 0;
     for (const v of height) peak = Math.max(peak, v);
@@ -353,7 +332,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     stats.ms = { tiles: t1 - t0, fine: t2 - t1, pack: t3 - t2, total: t3 - t0 };
     const w = {
       id: `${face}:${x0}:${y0}`, face, x0, y0, c, e, n, scale, rot: [dot(e, E), dot(e, Nn), dot(n, E), dot(n, Nn)],
-      src, paged, pageList: wp.pageList, lat: G.latLon(c).lat / D2R, lon: G.latLon(c).lon / D2R, pack, blockPlan, startObjects, objects: null, fields: { peak, h, height, water }, stats: { ...stats, ms: stats.ms, made: wp.made },
+      src, pageList: wp.pageList, lat: G.latLon(c).lat / D2R, lon: G.latLon(c).lon / D2R, pack, blockPlan, fields: { peak, h, height, water }, stats: { ...stats, ms: stats.ms, made: wp.made },
     };
     return w;
   }
