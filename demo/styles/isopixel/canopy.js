@@ -24,3 +24,12 @@ export function canopyShare(ppm, e = 0, hk = 12, art = 2) {
   const hpx = (hk * ppm * TREE_K) / art;
   return 1 - 2 ** -Math.max(0, e) * treeShare(hpx);
 }
+
+// The drawn trees' silhouettes cover the ground's tree cover only once they are big: a tree of hpx art px has a crown a fraction of that wide, so over a few art px the sprites are
+// thin marks on a lawn and the cover's colour is still wanted from the ground, falling away as their area grows (the square of their height) until their crowns meet, at COVER_PX art
+// px tall [design: the value at which the sweep's mean colour holds through the join]. The share the ground paints as crowns beside canopyShare's, which counts a tree drawn as covering.
+export const COVER_PX = 5;
+export function canopyHold(ppm, e = 0, hk = 12, art = 2) {
+  const hpx = (hk * ppm * TREE_K) / art;
+  return 1 - 2 ** -Math.max(0, e) * Math.min(1, (hpx / COVER_PX) ** 2) * treeFade(hpx);
+}

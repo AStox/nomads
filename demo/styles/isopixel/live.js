@@ -17,7 +17,7 @@ import { createGround } from "./ground.js";
 import { LADDER, levelOf } from "./ladder.js";
 import { SIZE, TILE_M, crownShare } from "../island.js";
 import { planetCam } from "./planet-cam.js";
-import { canopyShare } from "./canopy.js";
+import { canopyHold } from "./canopy.js";
 
 const SIM = TILE_M, ORIGIN = -SIZE / 2, TAU = Math.PI * 2, NL = LADDER.length, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -917,7 +917,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const views = pl.parts.map(([cam, w], k) => viewOf(cam, k, w, simUse, clock, now, view));
     // the ground is the planet pass's wherever a window of the planet is drawn (the ladder draws the sprites and their shade over it); the island of the game keeps its own (?pg=0 and ?pg=1 force either)
     const groundOff = PLACE && (PGQ === null ? mode === "win" : PGQ === "1");
-    const id = ++frameNo, msg = { type: "frame", id, gid: PLACE ? gid : undefined, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), cam: view.geo && PLACE ? { lat: view.geo.lat, lon: view.geo.lon, ext: viewExtent(view) } : undefined, exag: EXAG, relief: sky.relief, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG }, planet: PLACE && (groundOff || ladderAlpha(view) < 1) ? { ...planetParams(view), light: groundLight(), canopy: PG_CANOPY ?? 1 - ladderAlpha(view) * (1 - canopyShare(ppmOf(clampZ(view.zoom)), -Math.log2(Math.max(1e-3, stats.window?.share ?? 1)))) } : null, groundOff };
+    const id = ++frameNo, msg = { type: "frame", id, gid: PLACE ? gid : undefined, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), cam: view.geo && PLACE ? { lat: view.geo.lat, lon: view.geo.lon, ext: viewExtent(view) } : undefined, exag: EXAG, relief: sky.relief, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG }, planet: PLACE && (groundOff || ladderAlpha(view) < 1) ? { ...planetParams(view), light: groundLight(), lightFade: smooth(2.6, 3.8, view.zoom), canopy: PG_CANOPY ?? 1 - ladderAlpha(view) * (1 - canopyHold(ppmOf(clampZ(view.zoom)), -Math.log2(Math.max(1e-3, stats.window?.share ?? 1)))) } : null, groundOff };
     if (lutSent !== sky.id) { msg.lut = T.gpu.slice(); lutSent = sky.id; }
     ownersOf.set(id, pickOwners);
     if (ownersOf.size > 30) ownersOf.delete(ownersOf.keys().next().value);

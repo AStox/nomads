@@ -245,8 +245,9 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     // the window's light only where the pages are on (the window's rasters lie over the same cells)
     const L = opts.light, G2 = pg && opts.lightGround, k = lring[(slot - 1) % RING];
     lb.fill(0);
-    if (L && G2) {
-      lb.set([L.lx, L.ly, L.lz, L.sunK, L.ar, L.ag, L.ab, L.flat, L.kr, L.kg, L.kb, L.relief, L.toneK, L.aoK, L.aoTer, L.aoCan, L.aoTree, L.aoTop, L.aoSelf, L.aoKey, G2.gridN, G2.gridStep, G2.canN, G2.canStep, G2.can3N, G2.half, 1, 0]);
+    // the numbers of the light on every pixel of the fine pages (w), the window's rasters where there is a window (z)
+    if (L) {
+      lb.set([L.lx, L.ly, L.lz, L.sunK, L.ar, L.ag, L.ab, L.flat, L.kr, L.kg, L.kb, L.relief, L.toneK, L.aoK, L.aoTer, L.aoCan, L.aoTree, L.aoTop, L.aoSelf, L.aoKey, G2?.gridN ?? 1, G2?.gridStep ?? 1, G2?.canN ?? 1, G2?.canStep ?? 1, G2?.can3N ?? 1, opts.lightFade ?? 1, G2 ? 1 : 0, 1]);
     }
     device.queue.writeBuffer(k, 0, lb);
     // the window's runoff by season, in the noise table where the streams read it (ground.wgsl.js noiseGrads), as the window's own painter has it

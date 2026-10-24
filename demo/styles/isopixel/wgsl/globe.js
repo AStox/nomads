@@ -512,7 +512,7 @@ fn lgCan0(p: vec2f) -> f32 {
 struct Lit { row: u32, ao: u32, c: u32 }
 // the ground at a place of the window (its cells from the north-west corner) as the shade pass lights it: the palette colour c0 moved along its tone steps by the slope's light
 // less the sun's shadow, the light's level, and the occlusion of the folds and the canopy (aoMul)
-fn lightFine(cell: vec2f, c0: u32, wet: bool) -> Lit {
+fn lightFine(cell: vec2f, c0: u32, wet: bool, haveR: bool) -> Lit {
   var o: Lit;
   o.c = c0;
   o.ao = 0u;
@@ -521,14 +521,15 @@ fn lightFine(cell: vec2f, c0: u32, wet: bool) -> Lit {
   let g = vec2f(fineGrid(3, cell + gWo), fineGrid(4, cell + gWo)) * lt[2].w;
   let slope = max(0.0, dot(lt[0].xyz, normalize(vec3f(-g.x, 1.0, -g.y))));
   var sh = 0.0;
-  if (lt[0].w > 0.0) { sh = smoothstep(0.3, 0.7, lgBil(sunT, lt[5].x, p)) * lt[0].w; }
+  // the window's own shadows and occlusion come in by the zoom (lt[6].y: 0 far out, 1 close), as detail the ground's cells cannot hold fades by scale
+  if (haveR && lt[0].w > 0.0) { sh = smoothstep(0.3, 0.7, lgBil(sunT, lt[5].x, p)) * lt[0].w * lt[6].y; }
   let bd = bayer(gX, gY);
-  if (lt[3].y > 0.0 && !wet) {
+  if (haveR && lt[3].y > 0.0 && !wet) {
     let pc = cell * ${PAGE_GEOM.cellM}.0 / lt[5].w;
     let near = lgCan0(pc) * 2.0;
     let wide = lgBil(can3T, lt[6].x, (pc + 0.5) * lt[6].x / lt[5].z - 0.5) * 2.0;
-    let treeOcc = 1.0 - exp(-lt[3].w * 0.5 * (near + wide));
-    let fold = lt[3].z * lgFold(p);
+    let treeOcc = (1.0 - exp(-lt[3].w * 0.5 * (near + wide))) * lt[6].y;
+    let fold = lt[3].z * lgFold(p) * lt[6].y;
     let lost = clamp(1.0 - (1.0 - fold) * (1.0 - treeOcc), 0.0, 1.0);
     o.ao = u32(min(7.0, floor(lost * lt[3].y * 7.0 + bd))) | (u32(floor(3.0 * treeOcc / max(treeOcc + fold, 1e-3) + 0.5)) << 3u);
   }
@@ -710,11 +711,14 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     if (S.isCrown) {
       // a pixel painted with the tree sprites' colours is lit as the shade pass lights an upright sprite: half its own light and half the slope's
       facing = 0.5 * (u.sprl.x + slopeFacing);
-    } else if (useFine && lt[6].z > 0.5 && fcell.x > 1.0 && fcell.x < ${PAGE_GEOM.cells - 1}.0 && fcell.y > 1.0 && fcell.y < ${PAGE_GEOM.cells - 1}.0) {
-      let Lq = lightFine(fcell, idx, S.isWater);
+    } else if (useFine && lt[6].w > 0.5) {
+      // the ladder's light on every pixel of the fine pages (the block's, where no window is drawn too, so the window's arrival changes no pixel's light), its shadow, folds and canopy cover only where the window's rasters lie
+      let Lq = lightFine(fcell, idx, S.isWater, lt[6].z > 0.5 && fcell.x > 1.0 && fcell.x < ${PAGE_GEOM.cells - 1}.0 && fcell.y > 1.0 && fcell.y < ${PAGE_GEOM.cells - 1}.0);
       idx = Lq.c; litRow = Lq.row * 4u; litAo = Lq.ao; isLit = true;
     } else if (!S.isWater) {
-      idx = toned(idx, sl + gForm);
+      // the tone of the ladder's shade pass from the sun's light on the slope (its toneK, and flat ground's light as the zero), so the tiers' light and the fine pages' are one; the planet's own tone of a fixed
+      // northwest light where the page sends no light
+      idx = toned(idx, select(sl + gForm, 1.5 * tanh(lt[3].x * max(0.0, slopeFacing - lt[1].w) / 1.5), lt[6].w > 0.5));
       facing = slopeFacing;
     }
   }
