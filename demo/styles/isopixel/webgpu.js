@@ -1595,6 +1595,11 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     return () => rb.mapAsync(GPUMapMode.READ).then(() => {
       const total = new Uint32Array(rb.getMappedRange())[0];
       rb.unmap(); rb.destroy();
+      // a slot is in the list once at most: a total over the cap is a scan of counts that were not this build's (a submit of it was dropped), so the build is made again, and never sized from it
+      if (total > f.cap) {
+        if (f.job === j) f.job = (j.tries ?? 0) < 3 ? { phase: "count", at: 0, tries: (j.tries ?? 0) + 1 } : null;
+        return;
+      }
       f.n ??= [0, 0]; f.n[back] = total;
       if (!f.list[back] || f.list[back].size < total * 4) { f.list[back]?.destroy(); f.list[back] = B(Math.max(16, Math.ceil(total * 1.25) * 4), STOR, "farList"); }
       if (f.job === j) { j.phase = "file"; j.at = 0; }

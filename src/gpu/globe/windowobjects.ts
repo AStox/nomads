@@ -38,7 +38,7 @@ export async function windowObjects(g: Gpu, tier: number, tiles: PlaceTile[], se
         if (span > 0) {
           const [gx, gy] = cover(g, span);
           const p = new Int32Array(20);
-          p.set([run.from, run.to, gx, k, stageCap, 0, 0, 0, t.a0, t.a1, t.s0x, t.s0y, t.w0x, t.w0y, t.d0, t.d1, win, side]);
+          p.set([0, span, gx, k, stageCap, 0, 0, 0, t.a0, t.a1, t.s0x, t.s0y, t.w0x, t.w0y, t.d0, t.d1, win, side]);
           const u = uniform(g, p);
           dispatch(g, pipeline(g, placeKernel, "place"), [u, ...run.out.slice(0, 5), stage, counts], [gx, gy]);
           u.destroy();
@@ -115,7 +115,7 @@ export async function openTile(g: Gpu, tier: number, tile: PlaceTile, seed: numb
           if (hi <= lo) continue;
           const [gx, gy2] = cover(g, hi - lo), p = new Int32Array(20);
           // the block's corner: x west, y at its south edge (the frame's z runs south from the north edge)
-          p.set([lo, hi, gx, k, stageCap, 0, 0, 0, tile.a0, tile.a1, ...fr, win, b.n]);
+          p.set([lo - run.from, hi - run.from, gx, k, stageCap, 0, 0, 0, tile.a0, tile.a1, ...fr, win, b.n]);
           const u = uniform(g, p);
           dispatch(g, pipeline(g, placeKernel, "place"), [u, ...run.out.slice(0, 5), stage, counts], [gx, gy2]);
           u.destroy();
@@ -151,7 +151,7 @@ export async function openTile(g: Gpu, tier: number, tile: PlaceTile, seed: numb
           const lo = run.start[gy * TILES + gxLo], hi = run.start[gy * TILES + gxHi + 1];
           if (hi <= lo) continue;
           const [gx, gy2] = cover(g, hi - lo), p = new Int32Array(20);
-          p.set([lo, hi, gx, ks[i].k, caps[i], 0, 0, 0, tile.a0, tile.a1, ...frames[i], b.n * 5000, b.n]);
+          p.set([lo - run.from, hi - run.from, gx, ks[i].k, caps[i], 0, 0, 0, tile.a0, tile.a1, ...frames[i], b.n * 5000, b.n]);
           const u = uniform(g, p);
           unis.push(u);
           pass.setPipeline(place);

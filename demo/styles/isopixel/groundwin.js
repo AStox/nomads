@@ -286,10 +286,15 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     return { tl, own, at, srcF, srcX, srcY, turn, planes, src, t1 };
   }
 
+  // The window (its id, face and corner) that build lays at (lat, lon): the page-snapped one whose centre is nearest the cell holding it
+  function windowAt(lat, lon) {
+    const loc = G.locateVec(g, G.fromLatLon(lat * D2R, lon * D2R)), face = loc.face, x0 = Math.round((loc.X - N / 2) / PAGE) * PAGE, y0 = Math.round((loc.Y - N / 2) / PAGE) * PAGE;
+    return { id: `${face}:${x0}:${y0}`, face, x0, y0 };
+  }
   // The window of 4 by 4 pages whose centre is nearest the cell holding (lat, lon) degrees (its corner a multiple of a page). Returns what the renderer, the page and the object buffer take.
   async function build(lat, lon) {
     await warming;
-    const t0 = performance.now(), loc = G.locateVec(g, G.fromLatLon(lat * D2R, lon * D2R)), face = loc.face, x0 = Math.round((loc.X - N / 2) / PAGE) * PAGE, y0 = Math.round((loc.Y - N / 2) / PAGE) * PAGE;
+    const t0 = performance.now(), { face, x0, y0 } = windowAt(lat, lon);
     const { tl, own, at, srcF, srcX, srcY, turn, planes, src, t1 } = await gather(face, x0, y0);
     const wp = { face, x0, y0, src };
     wp.made = await ensurePages(wp);
@@ -379,6 +384,18 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
   // denser serves (it draws the thinner share, the sources' third word, kd); a thinner one is made again. The vis blocks are made first and `stage(recs, kds)` called with only them, so no
   // block of the screen is drawn at another share than the rest. Returns { recs, kds, fresh, k, k0, vis, n, estimate }, or null.
   const estOf = new Map();
+  // A buffer the device cannot allocate is an invalid buffer and no exception, so a make that ran short of memory would go on to "succeed" with no objects and cache an empty block: the scope turns it into an error
+  // (one make runs at a time, the worker's pumpMakes, so the scopes never interleave)
+  async function noOom(fn, drop) {
+    const d = gpu.device;
+    d.pushErrorScope("out-of-memory");
+    let r, err;
+    try { r = await fn(); } catch (e) { err = e; }
+    const oom = await d.popErrorScope();
+    if (oom) { if (r !== undefined) drop?.(r); throw Object.assign(new Error(`out of GPU memory: ${oom.message}`), { oom: true }); }
+    if (err) throw err;
+    return r;
+  }
   function layoutBlocks(w, view) {
     const { face, x0, y0, tiles: ts } = w.blockPlan, r = 1.5 * view.ext + 16, need = [];
     for (const t of ts)
@@ -426,48 +443,55 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     // the runs of the tiles with blocks to make (all of them, the first time, for the estimates)
     const todoOf = () => need.filter((r) => { const b = cache.get(r.key); return !b || b.k > needK(r); });
     const open = k0 === null ? need : todoOf();
-    // the runs of the tiles the blocks `recs` stand on, each over the cells its blocks cover
-    const openFor = (recs) => {
-      const byTile = new Map();
+    // the runs of the tiles the blocks `recs` stand on, each over the cells its blocks cover: opened one at a time (a run holds the tile's entries on the GPU, and the counting and scan of four at once are the peak of a window's make)
+    const openFor = async (recs) => {
+      const byTile = new Map(), got = [];
       for (const r of recs) { if (!byTile.has(r.t.tile)) byTile.set(r.t.tile, { t: r.t, rec: [] }); byTile.get(r.t.tile).rec.push(r); }
-      return Promise.all([...byTile.values()].map(async ({ t, rec }) => {
-        const lo = (v) => Math.max(0, Math.min(...rec.map(v)) * BLOCK - 1), hi = (v) => Math.min(256, (Math.max(...rec.map(v)) + 1) * BLOCK + 1);
-        const rx = lo((r) => r.bx), ry = lo((r) => r.by), rect = { x0: rx, y0: ry, w: hi((r) => r.bx) - rx, h: hi((r) => r.by) - ry };
-        const run = await T.openTile(gpu, tier, { tile: t.tile, source: T.tileSource(t.gt), rect, a0: t.tx * 256 * UNITS, a1: t.ty * 256 * UNITS, s0x: 0, s0y: 0, w0x: 0, w0y: 0, d0: 1, d1: 0 }, seed, { caps: BLOCK_CAPS });
-        return { t, rec, run };
-      }));
+      try {
+        for (const { t, rec } of byTile.values()) {
+          const lo = (v) => Math.max(0, Math.min(...rec.map(v)) * BLOCK - 1), hi = (v) => Math.min(256, (Math.max(...rec.map(v)) + 1) * BLOCK + 1);
+          const rx = lo((r) => r.bx), ry = lo((r) => r.by), rect = { x0: rx, y0: ry, w: hi((r) => r.bx) - rx, h: hi((r) => r.by) - ry };
+          const run = await noOom(() => T.openTile(gpu, tier, { tile: t.tile, source: T.tileSource(t.gt), rect, a0: t.tx * 256 * UNITS, a1: t.ty * 256 * UNITS, s0x: 0, s0y: 0, w0x: 0, w0y: 0, d0: 1, d1: 0 }, seed, { caps: BLOCK_CAPS }), (r) => r.close());
+          got.push({ t, rec, run });
+        }
+      } catch (err) { for (const { run } of got) run.close(); throw err; }
+      return got;
     };
-    const opened = await openFor(open);
+    const opened = await openFor(open), held = new Map(), fresh = [];
+    let done = false;
     try {
       for (const { rec, run } of opened) for (const r of rec) { r.run = run; if (!estOf.has(r.key)) estOf.set(r.key, run.est({ bx0: r.bx * BLOCK, by0: r.by * BLOCK, n: BLOCK })); }
       if (k0 === null) k0 = k0Of();
       const total = need.reduce((a, r) => a + estOf.get(r.key), 0);
       need.forEach((r) => { r.k = madeK(r); });
-      const recs = [], fresh = [], kds = new Map();
-      // `held`: the record of every block this call draws, as found in the cache or made here (another window's call may sweep or replace a cache entry while this one awaits)
-      const held = new Map();
+      const kds = new Map();
+      // `held`: the record of every block this call draws, as found in the cache or made here (another window's call may sweep or replace a cache entry while this one awaits), pinned against the worker's sweep
+      // while it is held; a block handed out (collect) stays pinned until the worker has it in a window (unpin)
+      const hold = (key, b) => { const was = held.get(key); if (was) was.pins--; b.pins = (b.pins ?? 0) + 1; held.set(key, b); };
       const make = async (list) => {
         const todo = [];
-        for (const r of list) { const b = cache.get(r.key); if (b && b.k <= needK(r)) held.set(r.key, b); else todo.push(r); }
+        for (const r of list) { const b = cache.get(r.key); if (b && b.k <= needK(r)) hold(r.key, b); else todo.push(r); }
         // a block that was not todo when the runs were opened (its cache entry has gone since) gets a run of its own tile here
         const late = await openFor(todo.filter((r) => !r.run));
         try {
           for (const { rec, run } of late) for (const r of rec) r.run = run;
-          const got = await Promise.all([...new Set(todo.map((r) => r.run))].map(async (run) => {
+          // a few blocks a submit: a block's stage buffer is up to 85 MB, and all of a tile's together were the peak of a make
+          for (const run of new Set(todo.map((r) => r.run))) {
             const mine = todo.filter((r) => r.run === run);
-            const o = await run.makeMany(mine.map((r) => ({ bx0: r.bx * BLOCK, by0: r.by * BLOCK, n: BLOCK, k: r.k, turn: r.turn })));
-            return mine.map((r, i) => ({ r, o: o[i] }));
-          }));
-          for (const { r, o } of got.flat()) {
-            const b = { key: r.key, k: r.k, cap: o.cap, n: o.n, body: o.body, start: o.start, face: plan.face, X: r.X, Y: r.Y };
-            cache.set(r.key, b);
-            held.set(r.key, b);
-            fresh.push(b);
+            for (let i = 0; i < mine.length; i += 4) {
+              const part = mine.slice(i, i + 4), o = await noOom(() => run.makeMany(part.map((r) => ({ bx0: r.bx * BLOCK, by0: r.by * BLOCK, n: BLOCK, k: r.k, turn: r.turn }))), (made) => { for (const b of made) { b.body.destroy(); b.start.destroy(); } });
+              part.forEach((r, j) => {
+                const b = { key: r.key, k: r.k, cap: o[j].cap, n: o[j].n, body: o[j].body, start: o[j].start, face: plan.face, X: r.X, Y: r.Y };
+                cache.set(r.key, b);
+                hold(r.key, b);
+                fresh.push(b);
+              });
+            }
           }
         } finally { for (const { run } of late) run.close(); }
       };
       // the draw exponent is absolute (an object is drawn iff its hash is under 2^-e; a block made at share k holds only hashes under 2^-k, so e >= k)
-      const collect = (list) => { const out = []; for (const r of list) { const b = held.get(r.key); out.push(b); kds.set(r.key, eOf(r)); } return out; };
+      const collect = (list) => { const out = []; for (const r of list) { const b = held.get(r.key); b.pins++; b.staged = true; out.push(b); kds.set(r.key, eOf(r)); } return out; };
       const vis = need.filter((r) => r.vis), out = need.filter((r) => !r.vis);
       await make(vis);
       if (stage && out.length) stage(collect(vis), kds, k0);
@@ -475,11 +499,17 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       const all = collect(need);
       let kept = 0;
       for (const b of all) kept += b.n;
+      done = true;
       return { recs: all, kds, fresh, k: total > 0 ? -Math.log2(Math.max(1e-9, kept / total)) : 0, k0, vis: new Set(vis.map((r) => r.key)), n: kept, estimate: total };
-    } finally { for (const { run } of opened) run.close(); }
+    } finally {
+      for (const { run } of opened) run.close();
+      for (const b of held.values()) b.pins--;
+      // a failed make lets go of the blocks it made that no window was given
+      if (!done) for (const b of fresh) if (!b.staged) { b.dead = true; b.body.destroy(); b.start.destroy(); if (cache.get(b.key) === b) cache.delete(b.key); }
+    }
   }
   // the blocks the view can touch and the share they are drawn at, for the worker to see whether the blocks it holds still serve (null k0: a block's estimate is not known yet)
   const blocksNeed = (w, view) => { const { need, k0Of } = layoutBlocks(w, view); return { vis: need.filter((r) => r.vis).map((r) => r.key), k0: k0Of() }; };
   // pageSet: the window's pages for setGroundPages (made again where one was let go); atlas: the buffers they are in; setDrawn: the window drawn, whose pages are kept
-  return { build, stats, groundTile, makeBlocks, blocksNeed, pageSet, ensureBlock, ensureBlockAt, cellOf, get atlas() { return atlas; }, setDrawn: (w) => { drawn = w; } };
+  return { build, windowAt, stats, groundTile, makeBlocks, unpin: (recs) => { for (const b of recs) b.pins--; }, blocksNeed, pageSet, ensureBlock, ensureBlockAt, cellOf, get atlas() { return atlas; }, setDrawn: (w) => { drawn = w; } };
 }

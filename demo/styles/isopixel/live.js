@@ -85,7 +85,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   const off = glc.transferControlToOffscreen();
   const ex = new URLSearchParams(location.search).get("exag");
   const worker = new Worker(new URL(`./worker.js${ex ? `?exag=${encodeURIComponent(ex)}` : ""}`, import.meta.url), { type: "module" });
-  let fieldsMsg = null, lost = null, info = null, objectsReady = false, lastDone = null, picksWait = new Map(), pickId = 0;
+  let fieldsMsg = null, lost = null, lastError = null, info = null, objectsReady = false, lastDone = null, picksWait = new Map(), pickId = 0;
   // what the worker posts of the sim, held until the page listens (onSim)
   let simTo = null;
   const simEarly = [];
@@ -122,8 +122,9 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     else if (m.type === "pick") { picksWait.get(m.id)?.(m.r); picksWait.delete(m.id); }
     else if (m.type === "check") { checksWait.get(m.id)?.(m.r); checksWait.delete(m.id); }
     else if (m.type === "spritesReset") sentSprites.clear();
-    else if (m.type === "lost" || m.type === "gpuerror") { lost = m.why; console.warn(`WebGPU: ${m.why}`); }
-    else if (m.type === "error") { lost = m.error; console.warn(`render worker: ${m.error}`); }
+    else if (m.type === "lost") { lost = m.why; console.warn(`WebGPU lost: ${m.why}`); }
+    else if (m.type === "gpuerror" || m.type === "error") { lastError = m.why ?? m.error; console.warn(`WebGPU: ${lastError}`); }
+    else if (m.type === "groundFailed") { asked = null; mode = "home"; console.warn("the window could not be shown, asking again"); }
   }
   worker.onmessage = (e) => onWorker(e.data);
   const sentAt = new Map(), checksWait = new Map();
@@ -1149,7 +1150,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     listsReady: (v) => { const L = levelFor(v.zoom).L, b = norm8(v.bearing ?? 0); return !frontLevels.has(L) || !Number.isInteger(b) || fronts.has(`${L}|${b}`); },
     centreOn, camH, screenOf, solveTarget, groundUnder, onGround: (fn) => { onGround = fn; }, get mode() { return mode; },
     // what draws the frames: WebGPU in a worker, on which GPU
-    renderer: () => ({ gpu: !lost, name: [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(" "), why: lost ?? "" }),
+    renderer: () => ({ gpu: !lost, name: [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(" "), why: lost ?? "", error: lastError ?? "" }),
     picks: () => lastPick.map((p) => ({ kind: p.kind, id: p.id, sx: p.sx, sy: p.sy })),
     // the selection's hero-path flags last frame: canvas px, and the event each stands for
     pins: () => pins,

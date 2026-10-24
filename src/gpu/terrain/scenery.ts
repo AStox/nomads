@@ -135,7 +135,7 @@ export async function objectsOn(g: Gpu, L: SceneryLayout, K: SceneryKernels, pac
   let t = performance.now();
   const { idx, out, start, n, oreN, from, to } = await objectsGpu(g, L, K, packed, field, seed, key, window, true);
   t = performance.now();
-  const word = async (b: GPUBuffer) => { const raw = to > from ? await readback(g, b, (to - from) * 4, from * 4) : new ArrayBuffer(0); b.destroy(); return raw; };
+  const word = async (b: GPUBuffer) => { const raw = to > from ? await readback(g, b, (to - from) * 4, 0) : new ArrayBuffer(0); b.destroy(); return raw; };
   const [pxRaw, pyRaw, szRaw, sdRaw, ksRaw] = [await word(out[0]), await word(out[1]), await word(out[2]), await word(out[3]), await word(out[4])];
   const tail = new Uint32Array(await readback(g, idx, (IDX.flag - IDX.seed + 1) * 4, IDX.seed * 4)), oreRaw = new Uint32Array(await readback(g, idx, 4 * Math.max(1, oreN) * 4, IDX.ore * 4));
   t = await lap(g, "readback", t);
@@ -176,21 +176,22 @@ export async function objectsGpu(g: Gpu, L: SceneryLayout, K: SceneryKernels, pa
   if (meta[IDX.flag - IDX.seed] !== 0) throw new Error("a quad's entries have no place in any tile's run");
   const start = Int32Array.from(meta.subarray(IDX.start - IDX.seed, IDX.start - IDX.seed + T + 1)), n = start[T], oreN = meta[IDX.oreTotal - IDX.seed];
   if (oreN > ORE_CAP) throw new Error(`${oreN} loose stones of ore, room for ${ORE_CAP}`);
-  const counted: GpuRun = { idx, out: [], start, n, oreN, from: 0, to: 0 };
+  // the game tiles' rows the window touches (an entry lies in the game tile its place is in, and a game tile is 2 cells): their runs are contiguous in the arrays
+  const rows = window ? { lo: Math.max(0, Math.floor(Math.max(0, window.y0) / 2) - 1), hi: Math.min(TILES - 1, Math.floor((y1 - 1) / 2) + 1) } : { lo: 0, hi: TILES - 1 };
+  const from = window ? (window.w > 0 && window.h > 0 ? start[rows.lo * TILES] : 0) : 0, to = window ? (window.w > 0 && window.h > 0 ? start[(rows.hi + 1) * TILES] : 0) : n;
+  const counted: GpuRun = { idx, out: [], start, n, oreN, from, to };
   if (written) {
     objectsWrite(g, L, K, packed, field, counted);
     t = await lap(g, "write", t);
   }
-  const out = counted.out;
-  // the game tiles' rows the window touches (an entry lies in the game tile its place is in, and a game tile is 2 cells): their runs are contiguous in the arrays
-  const rows = window ? { lo: Math.max(0, Math.floor(Math.max(0, window.y0) / 2) - 1), hi: Math.min(TILES - 1, Math.floor((y1 - 1) / 2) + 1) } : { lo: 0, hi: TILES - 1 };
-  const from = window ? (window.w > 0 && window.h > 0 ? start[rows.lo * TILES] : 0) : 0, to = window ? (window.w > 0 && window.h > 0 ? start[(rows.hi + 1) * TILES] : 0) : n;
-  return { idx, out, start, n, oreN, from, to };
+  return counted;
 }
 
-// The write pass of a run counted with written false: makes the arrays (run.out) and fills them, the quads the window touches only.
+// The write pass of a run counted with written false: makes the arrays (run.out) and fills them, the quads the window touches only. The arrays hold the span [from, to) of the run's entries
+// only (an entry's place in them is its id less `from`, which the kernel reads from IDX.pad), not the whole tile's: 20 to 100 MB an array for a tile.
 export function objectsWrite(g: Gpu, L: SceneryLayout, K: SceneryKernels, packed: GPUBuffer, field: GPUBuffer, r: GpuRun) {
-  r.out = ["px", "py", "size", "seed", "ks"].map(() => storage(g, Math.max(1, r.n) * 4));
+  g.device.queue.writeBuffer(r.idx, L.IDX.pad * 4, Uint32Array.of(r.from));
+  r.out = ["px", "py", "size", "seed", "ks"].map(() => storage(g, Math.max(1, r.to - r.from) * 4));
   run(g, pipeline(g, K.write, "write"), [[0, packed], [1, field], [2, r.idx], ...r.out.map((b, k): [number, GPUBuffer] => [3 + k, b])], [Math.ceil(L.NQ / 64)]);
 }
 

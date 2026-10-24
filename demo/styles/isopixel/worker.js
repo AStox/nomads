@@ -74,7 +74,7 @@ async function init(m) {
   if (!adapter) throw new Error("this browser found no WebGPU adapter");
   const timing = adapter.features.has("timestamp-query");
   device = await adapter.requestDevice({ requiredFeatures: timing ? ["timestamp-query"] : [], requiredLimits: { maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize, maxTextureArrayLayers: adapter.limits.maxTextureArrayLayers } });
-  device.lost.then((info) => post({ type: "lost", why: info.message || info.reason }));
+  device.lost.then((info) => { if (info.reason !== "destroyed") post({ type: "lost", why: info.message || info.reason }); });
   // as src/gpu/device.ts names an adapter, for the sim that runs on this device
   gpuName = [adapter.info?.vendor, adapter.info?.architecture, adapter.info?.description].filter(Boolean).join(" ") || "unknown adapter";
   device.addEventListener?.("uncapturederror", (e) => post({ type: "gpuerror", why: e.error.message }));
@@ -1060,6 +1060,12 @@ const blockSpec = (cap) => {
 const blockCache = new Map(), blockAll = new Set();
 // The blocks the kept windows hold, newest window first, while they fit BLOCK_BYTES (the window drawn and the one coming always do); a window left without its blocks makes them again when it is drawn.
 const BLOCK_BYTES = 600e6;
+// the blocks the renderer's sources hold (union while a switch is under way, then exactly the sources'), which a sweep never destroys: frames go on drawing the old ones until setSources has the new
+let bound = new Set(), lastSrcRecs = [];
+function settleBound() {
+  bound = new Set(S.win?.blocks ? lastSrcRecs : []);
+  sweepBlocks();
+}
 function sweepBlocks() {
   const keep = new Set();
   let bytes = 0;
@@ -1072,14 +1078,17 @@ function sweepBlocks() {
     for (const r of w.blockRecs) keep.add(r);
     bytes += add;
   }
+  // a block a make holds (r.pins, groundwin.js makeBlocks) or the renderer draws from is not let go
   for (const r of [...blockAll]) {
-    if (keep.has(r)) continue;
-    r.body.destroy(); r.start.destroy(); blockAll.delete(r);
+    if (keep.has(r) || bound.has(r) || r.pins > 0) continue;
+    r.dead = true; r.body.destroy(); r.start.destroy(); blockAll.delete(r);
     if (blockCache.get(r.key) === r) blockCache.delete(r.key);
   }
 }
 // the window's blocks written their origins in its frame (mm from its corner: x east, z south to the block's north edge) and as the sources the renderer is given
 function blockSources(w) {
+  lastSrcRecs = w.blockRecs.slice();
+  for (const r of lastSrcRecs) bound.add(r);
   return w.blockRecs.map((r) => {
     const tail = new Int32Array(3), tailF = new Float32Array(tail.buffer);
     tail[0] = (r.X - w.x0) * 75000; tail[1] = (w.y0 + 256 - (r.Y + 64)) * 75000; tailF[2] = w.blockKd?.get(r.key) ?? 0;
@@ -1088,11 +1097,15 @@ function blockSources(w) {
   });
 }
 // where a view's place is in a window's cells (x east, z south from its north-west corner): the page's planeOf for the window's frame, metres of the window being 75 m cells
+let camFn = 0;
 function camCells(w, lat, lon) {
   const D = Math.PI / 180, cl = Math.cos(lat * D), v = [cl * Math.cos(lon * D), cl * Math.sin(lon * D), Math.sin(lat * D)];
-  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2], d = dot(v, w.c);
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2], F = planet.G.FRAMES[w.face], d = dot(v, F.n);
   if (d < 0.1) return { x: 128, z: 128 };
-  return { x: 128 + (planet.radiusM * dot(v, w.e)) / (d * w.scale * 75), z: 128 - (planet.radiusM * dot(v, w.n)) / (d * w.scale * 75) };
+  // the face's own lattice (the cells the sprites stand in), not the isotropic plane: x east and z south from the window's north-west corner
+  camFn ||= planet.G.tierGrid(planet.manifest.tiers - 1).fn;
+  const X = (Math.atan(dot(v, F.ex) / d) / (Math.PI / 2) + 0.5) * camFn, Y = (Math.atan(dot(v, F.ey) / d) / (Math.PI / 2) + 0.5) * camFn;
+  return { x: X - w.x0, z: w.y0 + 256 - Y };
 }
 let lastCam = null;
 // The camera's place and the viewport's reach in a window's cells (ext: the canvas's farthest ground from the target, a window's 75 m cells being plane metres of 75): what groundwin.js blocksNeed and
@@ -1117,7 +1130,8 @@ function refocus(w, m) {
 // every block's exponent word (a float's bits, third of its tail) as the window's map holds it
 function writeExponents(w) {
   const f = new Float32Array(1);
-  for (const r of w.blockRecs) { f[0] = w.blockKd.get(r.key) ?? 0; device.queue.writeBuffer(r.body, (7 * r.cap + 2) * 4, f); }
+  // only the blocks the renderer holds: a block made but not yet attached gets its word when blockSources binds it
+  for (const r of w.blockRecs) { if (r.dead || !bound.has(r)) continue; f[0] = w.blockKd.get(r.key) ?? 0; device.queue.writeBuffer(r.body, (7 * r.cap + 2) * 4, f); }
 }
 // The windows made, the last three kept (the one drawn, and two more a pan back or a zoom out and in finds made), with their ground and objects on the GPU. A window is
 // found again by what it covers: the page's own test (live.js wantGround) of the viewport's reach and the place's distance from the window's centre against the window's half side less its faded edge;
@@ -1125,6 +1139,8 @@ function writeExponents(w) {
 const WIN_NEAR = 600, WIN_EDGE = 1200, WIN_KEEP = 3, winCache = [];
 const arcOf = (a, b) => planet.radiusM * Math.acos(Math.min(1, Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.cos((a.lon - b.lon) * Math.PI / 180) + Math.sin(a.lat * Math.PI / 180) * Math.sin(b.lat * Math.PI / 180)));
 const winNear = (want) => {
+  // the window an ask lands in is the page-snapped one nearest it (windowAt): found by its id, so a camera 3 km off the snapped centre is not "far" from the window it was just given
+  if (want.mode === "win") { const id = planet.wins.windowAt(want.lat, want.lon).id, w = winCache.find((x) => !x.dead && x.id === id); if (w) return w; }
   let best = null, bestD = Infinity;
   for (const w of winCache) {
     if (w.dead) continue;
@@ -1175,11 +1191,11 @@ async function groundWant(m) {
         console.info("[win]", w.id, "pages made", w.stats.made, "ms", JSON.stringify(Object.fromEntries(Object.entries(w.stats.ms).map(([k, v]) => [k, Math.round(v)]))), "t", Math.round(performance.now()));
       }
       // a window made now has its objects made too, and its ground is shown once the blocks the view can touch are made (one level of detail across the screen, plan R6: until then the screen stays as it was)
-      const near = fresh ? startObjects(w, viewCells(w, want)) : null;
+      const near = fresh ? startObjects(w, viewCells(w, want), !spec) : null;
       if (!spec) {
         if (near) await near;
         prepared = { gid: ++gids, mode: "win", win: w };
-        post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon }, fields: w.fields, stats: { ...w.stats, id: w.id, objects: w.blockRecs ? w.blockRecs.reduce((n, b) => n + b.n, 0) : null, share: w.blockK0 !== undefined ? 2 ** -w.blockK0 : null } });
+        post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon, face: w.face, x0: w.x0, y0: w.y0 }, fields: w.fields, stats: { ...w.stats, id: w.id, objects: w.blockRecs ? w.blockRecs.reduce((n, b) => n + b.n, 0) : null, share: w.blockK0 !== undefined ? 2 ** -w.blockK0 : null } });
       }
     }
   } catch (err) {
@@ -1189,7 +1205,24 @@ async function groundWant(m) {
 }
 // the objects of a window (a promise of GPU buffers, groundwin.js startObjects): kept on the window, handed to the drawn source when they arrive, their size told to the page. By block, the promise
 // answered is that of the blocks the view can touch (the others follow); the whole window's objects are not waited for.
-function startObjects(w, view) {
+// One block make at a time on the GPU (each holds up to a gigabyte of stage and tile buffers): the asks of the window to be shown go before the speculative ones, and a window gone while it waits is not made.
+const makeQ = [];
+let makeRunning = false;
+function serialMake(w, urgent, fn) {
+  return new Promise((res, rej) => { const job = { w, fn, res, rej }; if (urgent) makeQ.unshift(job); else makeQ.push(job); pumpMakes(); });
+}
+async function pumpMakes() {
+  if (makeRunning) return;
+  makeRunning = true;
+  try {
+    while (makeQ.length) {
+      const j = makeQ.shift();
+      if (j.w.dead) { j.res(null); continue; }
+      try { j.res(await j.fn()); } catch (err) { j.rej(err); }
+    }
+  } finally { makeRunning = false; }
+}
+function startObjects(w, view, urgent = true) {
   if (!w.blockPlan) return Promise.resolve();
   {
     const near = Promise.withResolvers();
@@ -1200,19 +1233,28 @@ function startObjects(w, view) {
     const stage = (recs, kds, k0) => {
       for (const b of recs) blockAll.add(b);
       w.blockRecs = recs; w.blockKd = kds; w.blockK0 = k0;
+      planet.wins.unpin(recs);
       near.resolve();
-      if (!w.dead) { attachObjects(w); post({ type: "windowObjects", id: w.id, objects: recs.reduce((n, b) => n + b.n, 0), share: 0, ms: performance.now() - tBlocks, estimate: 0, blocks: recs.length, made: 0, stage: 1 }); }
+      if (w.dead) { w.blockRecs = null; queueMicrotask(sweepBlocks); return; }
+      attachObjects(w);
+      post({ type: "windowObjects", id: w.id, objects: recs.reduce((n, b) => n + b.n, 0), share: 0, ms: performance.now() - tBlocks, estimate: 0, blocks: recs.length, made: 0, stage: 1 });
     };
-    planet.wins.makeBlocks(w, blockCache, w.blockView, stage).then((r) => {
+    serialMake(w, urgent, () => planet.wins.makeBlocks(w, blockCache, w.blockView, stage)).then((r) => {
       w.blocksBusy = false;
+      if (!r) { near.resolve(); return; }
       for (const b of r.fresh) blockAll.add(b);
       w.blockRecs = r.recs; w.blockKd = r.kds; w.blockK0 = r.k0;
+      planet.wins.unpin(r.recs);
       near.resolve();
       if (w.dead) { w.blockRecs = null; sweepBlocks(); return; }
       attachObjects(w);
       sweepBlocks();
       post({ type: "windowObjects", id: w.id, objects: r.n, share: 2 ** -r.k, ms: performance.now() - tBlocks, estimate: r.estimate, blocks: r.recs.length, made: r.fresh.length, bytes: [...blockAll].reduce((n, b) => n + (7 * b.cap + 4) * 4, 0) });
-    }).catch((err) => { w.blocksBusy = false; near.resolve(); console.error("window blocks", err); post({ type: "windowError", error: String((err && err.stack) || err) }); });
+    }).catch((err) => {
+      w.blocksBusy = false; near.resolve(); console.error("window blocks", err); post({ type: "windowError", error: String((err && err.stack) || err) });
+      // out of memory is a moment's: the objects are asked for again a little later (up to three times), the window drawn without them until then
+      if (err?.oom && (w.oomTries = (w.oomTries ?? 0) + 1) <= 3) setTimeout(() => { if (!w.dead && !w.blocksBusy && !w.blockRecs) startObjects(w, w.blockView, false); }, 1500 * w.oomTries);
+    });
     return near.promise;
   }
 }
@@ -1227,6 +1269,7 @@ async function applyGround(p) {
       curWin = w;
       planet.wins.setDrawn(w);
       await R.setSources(sources());
+      settleBound();
       // the window's pages (made again if the cache let one go) into the painter's page textures, only those it does not already hold, and the table turned on for the whole screen
       const set = await planet.wins.pageSet(w), r = R.setGroundPages({ ...w.pack, pages: set, top: w.pack.grid.top });
       if (!r.on) throw new Error(`the window's pages are not all there: ${JSON.stringify(r.missing)}`);
@@ -1237,6 +1280,7 @@ async function applyGround(p) {
       S.win = null; curWin = null;
       planet.wins.setDrawn(null);
       await R.setSources(sources());
+      settleBound();
       R.setGround(home.pack);
       if (sim) R.setIce(iceOf(sim.w.ice));
     }
@@ -1264,6 +1308,7 @@ async function attachObjects(w) {
   try {
     S.win = { name: "win", blocks: blockSources(w) };
     await R.setSources(sources());
+    settleBound();
     R.buildCanopy();
     w.canopyK0 = w.blockK0;
     R.farBuild(farLevels());
@@ -1297,7 +1342,16 @@ function render() {
   // a frame names the ground its view's coordinates are in: the one prepared is switched to when the page first sends it, and a frame of an earlier one is stale
   if (f.gid !== undefined && f.gid !== curGid) {
     if (prepared && f.gid === prepared.gid) {
-      if (!switching) applyGround(prepared).then(() => render()).catch((err) => post({ type: "error", error: String((err && err.stack) || err) }));
+      if (switching || performance.now() < (prepared.retryAt ?? 0)) return;
+      const p = prepared;
+      applyGround(p).then(() => render()).catch((err) => {
+        console.error("applyGround", err);
+        post({ type: "windowError", error: String((err && err.stack) || err) });
+        // the page already stands in this ground's frame, so the same ground is tried again after a back-off (a page slot is often only held for a moment by a window being made); past ten tries it is dropped
+        // and the page asked again (groundFailed), which makes a fresh one
+        if ((p.fails = (p.fails ?? 0) + 1) < 10) p.retryAt = performance.now() + 150 * p.fails;
+        else { if (prepared === p) prepared = null; curWin = null; if (S) S.win = null; post({ type: "groundFailed", gid: p.gid }); }
+      });
       return;
     }
     pending = null;

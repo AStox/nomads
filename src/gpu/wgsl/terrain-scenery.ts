@@ -502,7 +502,7 @@ const TSIDE = ${TILES}u;
 const FMAX = ${Math.floor((L.m - 1.001) * 65536)}i;
 const I_CNT = ${IDX.cnt}u; const I_BASE = ${IDX.base}u; const I_ORECNT = ${IDX.oreCnt}u; const I_OREBASE = ${IDX.oreBase}u;
 const I_SEED = ${IDX.seed}u; const I_FLAG = ${IDX.flag}u; const I_ORETOTAL = ${IDX.oreTotal}u; const I_KEY = ${IDX.key}u; const I_WIN = ${IDX.win}u;
-const I_TILEN = ${IDX.tileN}u; const I_START = ${IDX.start}u; const I_ROWT = ${IDX.rowT}u; const I_ROWC = ${IDX.rowC}u; const I_ROWS = ${IDX.rowStart}u; const I_ORE = ${IDX.ore}u;
+const I_TILEN = ${IDX.tileN}u; const I_START = ${IDX.start}u; const I_ROWT = ${IDX.rowT}u; const I_ROWC = ${IDX.rowC}u; const I_ROWS = ${IDX.rowStart}u; const I_ORE = ${IDX.ore}u; const I_FROM = ${IDX.pad}u;
 const W_LO = ${ARR(W_LO, "i32")};
 const W_DIFF = ${ARR(W_DIFF, "i32")};
 const W_EXP = ${ARR(W_EXP, "i32")};
@@ -631,7 +631,7 @@ fn clearQuad() -> bool {
 fn emit(kind: u32, sp: u32, tx4: u32, ty4: u32, size: u32, sd: u32) {
   let tx = min(tx4 / 10000u, TSIDE - 1u); let ty = min(ty4 / 10000u, TSIDE - 1u);
   let d = select(0u, 1u, tx > ((Qu + u32(OFF)) >> 3u)) + select(0u, 2u, ty > ((Qv + u32(OFF)) >> 3u));
-  ${write ? `let at = Qdst[d] + Qloc[d];
+  ${write ? `let at = Qdst[d] + Qloc[d] - IDX[I_FROM];
   if (inWindow(tx4, ty4)) { PX[at] = tx4; PY[at] = ty4; SZ[at] = size; SD[at] = sd; KS[at] = kind | (sp << 8u); }` : `_ = size; _ = sd; _ = kind; _ = sp;`}
   Qloc[d] = Qloc[d] + 1u;
 }
