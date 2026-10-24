@@ -34,7 +34,7 @@ function decode(raw) {
 // G: the globe.js bundle; T: the tile.js bundle (the scatter and the window's fine ground); gpu: the worker's { device, adapter };
 // base: where the planet's files are (its `groundtiles` directory is in it); tier: the finest tier; seed: the world's; radiusM: the planet's
 // radius; quick: the island's runoff by season, for a window whose tiles hold none.
-export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, keep = 6, top = CAPS[CAPS.length - 1], paged = true, onBlockLost = null }) {
+export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, keep = 6, top = CAPS[CAPS.length - 1], paged = true, onBlockLost = null, put = null }) {
   const g = G.tierGrid(tier), fn = g.fn, nT = 2 ** tier, tiles = new Map();
   // the window's kernels compile on the GPU process's own threads from the start, so no window stops the frames to compile one
   const warming = T.warmWindow(gpu);
@@ -56,19 +56,33 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
   const stats = { tiles: 0, bytes: 0, builds: 0, ms: {} };
 
   // ---------- the ground as pages (demo/tile.ts groundPages) ----------
-  // The planet's ground is made in pages of 64 cells, the same ground whichever window holds a page, kept in the slots of one atlas (the painter's page textures hold SLOTS of them); a window is its
+  // The planet's ground is made in pages of 64 cells, the same ground whichever window holds a page, kept in the slots of the painter's page textures (SLOTS of them, `put` writes them); a window is its
   // 16 pages at a corner that is a multiple of a page, so a window that overlaps another makes only the pages it does not share. A page held is not made again; when a window needs a slot and
   // none is free the page least lately used goes, never one of the windows being made or drawn (`pins`), and a window whose page was let go makes it again when it is drawn (it keeps its cells' planes,
-  // `src`). `texHeld` is the page each slot of the painter's own textures holds, so a page is copied into them only when it is not there.
-  const PAGE = 64, SLOTS = 48, SQUARE = 6, MV = 1021, pages = new Map(), texHeld = new Array(SLOTS).fill(null), pins = new Set();
+  // `src`). A page is made in one of STAGE slots of a small atlas of buffers, its heights read, and copied at once into its own slot of the textures, so the buffers cost STAGE pages, not SLOTS.
+  const PAGE = 64, SLOTS = 48, STAGE = 8, SQUARE = 6, MV = 1021, pages = new Map(), pins = new Set();
   let atlas = null, usedAt = 0, drawn = null, blockKeys = new Set();
   // a page the planet pass's block holds is let go: the block is told to go (its slot may be another page's), the caller makes it again
   const lose = (key) => { if (blockKeys.has(key)) { blockKeys = new Set(); onBlockLost?.(); } };
   const pageKey = (face, px, py) => `${face}:${px}:${py}`;
   const pagesOf = (w) => { const out = []; for (let iy = 0; iy < 4; iy++) for (let ix = 0; ix < 4; ix++) out.push({ ix, iy, px: w.x0 + PAGE * ix, py: w.y0 + PAGE * iy, key: pageKey(w.face, w.x0 + PAGE * ix, w.y0 + PAGE * iy) }); return out; };
+  // The pages `recs` (each { px, py, slot, h }) made from the page source `ps`, STAGE at a time in the staging atlas: two pages a submit with the GPU waited on between, so the frames the renderer draws meanwhile are not held
+  // back by the whole window's work (a page is about 5 ms of the GPU), then the stage's heights read (the camera's) and its pages copied into their slots of the painter's textures before the stage is used again.
+  async function makeInto(recs, ps) {
+    for (let i = 0; i < recs.length; i += STAGE) {
+      const chunk = recs.slice(i, i + STAGE);
+      for (let j = 0; j < chunk.length; j += 2) {
+        T.groundPages(gpu, atlas, ps, chunk.slice(j, j + 2).map((r, k) => ({ px: r.px, py: r.py, slot: j + k })));
+        await gpu.device.queue.onSubmittedWorkDone();
+      }
+      const hs = await T.pageHeights(gpu, atlas, chunk.map((_, j) => j));
+      chunk.forEach((r, j) => { r.h = hs[j]; });
+      await put(atlas, chunk.map((r, j) => ({ from: j, to: r.slot })), SLOTS);
+    }
+  }
   // The window's 16 pages are in slots and made. Returns how many were made.
   async function ensurePages(w) {
-    atlas ??= T.pageAtlas(gpu, SLOTS);
+    atlas ??= T.pageAtlas(gpu, STAGE);
     const list = pagesOf(w), mine = new Set(list.map((p) => p.key)), pin = { mine };
     pins.add(pin);
     try {
@@ -95,13 +109,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       if (todo.length) {
         const batch = (async () => {
           const ps = T.pageSource(gpu, w.src, w.face, w.x0, w.y0);
-          // two pages a submit, each waited for, so the frames the renderer draws meanwhile are not held back by the whole window's work (a page is about 5 ms of the GPU)
-          for (let i = 0; i < todo.length; i += 2) {
-            T.groundPages(gpu, atlas, ps, todo.slice(i, i + 2).map((r) => ({ px: r.px, py: r.py, slot: r.slot })));
-            await gpu.device.queue.onSubmittedWorkDone();
-          }
-          const hs = await T.pageHeights(gpu, atlas, todo.map((r) => r.slot));
-          todo.forEach((r, i) => { r.h = hs[i]; });
+          await makeInto(todo, ps);
           ps.destroy();
         })();
         batch.catch(() => { for (const r of todo) if (pages.get(r.key) === r) pages.delete(r.key); });
@@ -112,21 +120,17 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       return todo.length;
     } finally { pins.delete(pin); }
   }
-  // The window's pages as setGroundPages takes them (corner from the window's, slot, whether the painter's textures must be given the page), made first when any has gone.
+  // The window's pages as setGroundPages takes them (corner from the window's, slot), made first when any has gone. They are in the textures already (made into them), so none is to be copied.
   async function pageSet(w) {
     await ensurePages(w);
-    return w.pageList.map((p) => {
-      const copy = texHeld[p.rec.slot] !== p.key;
-      texHeld[p.rec.slot] = p.key;
-      return { ox: p.px - w.x0, oy: p.py - w.y0, slot: p.rec.slot, copy };
-    });
+    return w.pageList.map((p) => ({ ox: p.px - w.x0, oy: p.py - w.y0, slot: p.rec.slot, copy: false }));
   }
   // The pages round a window's, for the planet pass alone (planet.js opts.pages.block): a SQUARE by SQUARE square of pages centred on the window's 16 (the window's own are those made for it, so the ladder's ground is as it was). The ring
   // round them is made from sources of the same 256 cells the window is made from, at most four, each page from the one whose middle is nearest it, two pages a submit with the GPU waited on between as ensurePages does,
-  // and kept in the atlas with the rest (a page is global: a window that needs one finds it, a block that moves makes only the new edge). Returns { pages: [{ slot, copy }], block: { face, x0, y0, n, table } } for the renderer's
-  // setBlockPages: table[row * n + column] the slot of the page, row 0 the northmost (the window's rows run south) and -1 for a page off its face.
+  // and kept in the textures with the rest (a page is global: a window that needs one finds it, a block that moves makes only the new edge). The block is for the renderer's
+  // setBlockPages: table[row * n + column] the slot of the page, row 0 the northmost (the window's rows run south) and -1 for a page off its face. Returns { block }.
   async function ensureBlock(w) {
-    atlas ??= T.pageAtlas(gpu, SLOTS);
+    atlas ??= T.pageAtlas(gpu, STAGE);
     const n = SQUARE, ring = (n - N / PAGE) / 2, bx = w.x0 - ring * PAGE, by = w.y0 - ring * PAGE, list = [];
     for (let iy = 0; iy < n; iy++)
       for (let ix = 0; ix < n; ix++) {
@@ -166,28 +170,17 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       const batch = (async () => {
         for (const { sx, sy, list: recs } of bySrc.values()) {
           const { src } = await gather(w.face, sx, sy), ps = T.pageSource(gpu, src, w.face, sx, sy);
-          for (let i = 0; i < recs.length; i += 2) {
-            T.groundPages(gpu, atlas, ps, recs.slice(i, i + 2).map((r) => ({ px: r.px, py: r.py, slot: r.slot })));
-            await gpu.device.queue.onSubmittedWorkDone();
-          }
+          await makeInto(recs, ps);
           ps.destroy();
         }
-        const hs = await T.pageHeights(gpu, atlas, todo.map((t) => t.rec.slot));
-        todo.forEach((t, i) => { t.rec.h = hs[i]; });
       })();
       batch.catch(() => { for (const t of todo) if (pages.get(t.rec.key) === t.rec) pages.delete(t.rec.key); });
       for (const t of todo) t.rec.ready = batch;
       await Promise.all(list.filter((p) => p.inside).map((p) => p.rec.ready));
-      const table = new Int32Array(n * n).fill(-1), out = [];
-      for (const p of list) {
-        if (!p.inside) continue;
-        table[(n - 1 - p.iy) * n + p.ix] = p.rec.slot;
-        const copy = texHeld[p.rec.slot] !== p.key;
-        texHeld[p.rec.slot] = p.key;
-        out.push({ slot: p.rec.slot, copy });
-      }
+      const table = new Int32Array(n * n).fill(-1);
+      for (const p of list) if (p.inside) table[(n - 1 - p.iy) * n + p.ix] = p.rec.slot;
       blockKeys = new Set(list.filter((p) => p.inside).map((p) => p.key));
-      return { pages: out, block: { face: w.face, x0: bx, y0: by, n, table } };
+      return { block: { face: w.face, x0: bx, y0: by, n, table } };
     } finally { pins.delete(pin); }
   }
   // the window's heights as the camera takes them (1,021 vertices a side, rows south) from its pages' own: vertex v of an axis is the page min((v + 2) / 256, 3)'s at v + 2 - 256 page

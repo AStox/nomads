@@ -19,21 +19,24 @@ export const PAGE_ROW = { fine: 1280, grid: 1792, mask: 1024 };
 // the window's cells (75 m, 256 across) in each field's own lattice: fine vertices a cell is 4 apart from the first cell's centre (1,021 of them), grid nodes 6 a cell from the window's edge (1,537), mask texels 16 a cell
 // from the edge (4,096), the largest position a bilinear read starts from each in a field's own units, and the cells to a page and across a window
 export const PAGE_GEOM = { fine: 4, grid: 6, mask: 16, fineMax: 1019.999, gridMax: 1535.999, pageCells: 64, cells: 256, cellM: 75 };
-export function pageWGSL({ fine = PAGE_LAYERS.fine, grid = PAGE_LAYERS.grid } = {}) {
+// the same for a square of n pages a side (n * 64 cells, 256 n - 3 fine vertices, 384 n + 1 grid nodes, 1,024 n mask texels): the window's is n = 4
+export const pageGeom = (n) => ({ ...PAGE_GEOM, cells: PAGE_GEOM.pageCells * n, fineMax: 256 * n - 5 + 0.999, gridMax: 384 * n - 1 + 0.999 });
+// n: pages a side of the table the module's pgTab(k) holds (k = row * n + column; the window's is 4, the planet pass's block 6)
+export function pageWGSL({ fine = PAGE_LAYERS.fine, grid = PAGE_LAYERS.grid, n = 4 } = {}) {
   return /* wgsl */ `
-// the slot a page (0 to 3 each way) is read from, and the page whose range a position is held to (the page itself when it is resident)
+// the slot a page (0 to ${n - 1} each way) is read from, and the page whose range a position is held to (the page itself when it is resident)
 fn pgOf(p: vec2u) -> vec3i {
   let pi = vec2i(p);
-  let v = pgTab(u32(pi.y * 4 + pi.x));
+  let v = pgTab(u32(pi.y * ${n} + pi.x));
   if (v >= 0) { return vec3i(v, pi.x, pi.y); }
-  let l = vec2i((-v - 2) & 3, (-v - 2) >> 2u);
-  return vec3i(max(pgTab(u32(l.y * 4 + l.x)), 0), l.x, l.y);
+  let l = vec2i((-v - 2) % ${n}, (-v - 2) / ${n});
+  return vec3i(max(pgTab(u32(l.y * ${n} + l.x)), 0), l.x, l.y);
 }
 fn pgTile(s: i32, n: i32) -> vec2i { return vec2i(s & 3, (s >> 2u) & 3) * n; }
 // where the window's fine vertex i lies in the atlas: the texel (x, y) of the page's first layer and the group's first layer; any layer's four texels from it
 fn pgFineAt(i: vec2i) -> vec3i {
   let w = i + vec2i(2);
-  let s = pgOf(min(vec2u(w) >> vec2u(8u), vec2u(3u)));
+  let s = pgOf(min(vec2u(w) >> vec2u(8u), vec2u(${n - 1}u)));
   let c = clamp(w - 256 * s.yz, vec2i(0), vec2i(255));
   let o = pgTile(s.x, 257) + c;
   return vec3i(o.x, o.y, (s.x >> 4u) * ${fine});
@@ -47,7 +50,7 @@ fn pgFineLd(t: texture_2d_array<f32>, a: vec3i, L: i32) -> vec4f {
 fn pgFineQ(t: texture_2d_array<f32>, L: i32, i: vec2i) -> vec4f { return pgFineLd(t, pgFineAt(i), L); }
 // the grid layer L (0 to 4 are the pages', the window's own layers 5 and 6 are not read here) at the window's node i and the next each way, held to the last node
 fn pgGridQ(t: texture_2d_array<f32>, L: i32, i: vec2i) -> vec4f {
-  let s = pgOf(min(vec2u(i) / vec2u(384u), vec2u(3u)));
+  let s = pgOf(min(vec2u(i) / vec2u(384u), vec2u(${n - 1}u)));
   let c = clamp(i - 384 * s.yz, vec2i(0), vec2i(384));
   let c1 = min(c + vec2i(1), vec2i(384));
   let o = pgTile(s.x, 385);
@@ -55,10 +58,10 @@ fn pgGridQ(t: texture_2d_array<f32>, L: i32, i: vec2i) -> vec4f {
   return vec4f(textureLoad(t, o + c, z, 0).x, textureLoad(t, o + vec2i(c1.x, c.y), z, 0).x, textureLoad(t, o + vec2i(c.x, c1.y), z, 0).x, textureLoad(t, o + c1, z, 0).x);
 }
 fn pgGridAt(t: texture_2d_array<f32>, L: i32, i: vec2i) -> f32 { return pgGridQ(t, L, i).x; }
-// the stream mask at texels (x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1), each coordinate held to 0 to 4,095, as bytes: one page lookup when the four lie in one page
+// the stream mask at texels (x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1), each coordinate held to 0 to ${n * 1024 - 1}, as bytes: one page lookup when the four lie in one page
 fn pgRiverQ(t: texture_2d<u32>, i0: vec2i) -> vec4f {
-  let i = clamp(i0, vec2i(0), vec2i(4095));
-  let j = clamp(i0 + vec2i(1), vec2i(0), vec2i(4095));
+  let i = clamp(i0, vec2i(0), vec2i(${n * 1024 - 1}));
+  let j = clamp(i0 + vec2i(1), vec2i(0), vec2i(${n * 1024 - 1}));
   if ((i.x >> 10u) == (j.x >> 10u) && (i.y >> 10u) == (j.y >> 10u)) {
     let s = pgOf(vec2u(i) >> vec2u(10u));
     let o = vec2i(s.x & 7, s.x >> 3u) * 1024 + (i & vec2i(1023));
@@ -69,7 +72,7 @@ fn pgRiverQ(t: texture_2d<u32>, i0: vec2i) -> vec4f {
 }
 // the stream mask at a texel (0 to 4,095 each way)
 fn pgRiver(t: texture_2d<u32>, i: vec2i) -> u32 {
-  let s = pgOf(min(vec2u(i) >> vec2u(10u), vec2u(3u)));
+  let s = pgOf(min(vec2u(i) >> vec2u(10u), vec2u(${n - 1}u)));
   let c = clamp(i - 1024 * s.yz, vec2i(0), vec2i(1023));
   return textureLoad(t, vec2i(s.x & 7, s.x >> 3u) * 1024 + c, 0).x;
 }

@@ -22,7 +22,7 @@
 
 import { GROUND_BINDINGS, groundWGSL } from "./ground.wgsl.js";
 import { NS, ATLAS, META_WORDS, M_WRAP, M_PAGES } from "./atlas.js";
-import { PAGE_LAYERS, PAGE_MAX_SLOTS, PAGE_ROW, PAGE_SLOTS, PAGE_TEX, PAGE_WORDS } from "./pages.js";
+import { PAGE_LAYERS, PAGE_ROW, PAGE_SLOTS, PAGE_TEX, PAGE_WORDS } from "./pages.js";
 import { CELLS_N, CELL_M, CELLS, FAR_LVL, objectWGSL, sourceWGSL, cullWGSL, cacheFillWGSL, CLAMP_WGSL, NEEDS_WGSL, FAR_COUNT_WGSL, FAR_FILE_WGSL, farScanWGSL, frontScanWGSL, cellsOf, CANOPY_WGSL, CANOPY_BYTES_WGSL, CANOPY_WIDE_WGSL, CANOPY_TALL_WGSL } from "./wgsl/objects.js";
 
 // steps of the key light in the light table, each at the fire's four levels, the palette as drawn in a last row
@@ -1069,22 +1069,25 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     };
   }
   // a slot's page, from the atlas buffers into the textures: fine and grid as the 4 by 4 tile of its group of 16 slots, the mask 8 slots across
-  function copySlot(enc, atlas, s) {
+  function copySlot(enc, atlas, from, s) {
     const g = s >> 4, tx = s & 3, ty = (s >> 2) & 3;
-    enc.copyBufferToTexture({ buffer: atlas.fine, offset: s * PAGE_WORDS.fine * 4, bytesPerRow: PAGE_ROW.fine, rowsPerImage: 257 }, { texture: PT.fine, origin: [tx * 257, ty * 257, g * PAGE_LAYERS.fine] }, [257, 257, PAGE_LAYERS.fine]);
-    enc.copyBufferToTexture({ buffer: atlas.grid, offset: s * PAGE_WORDS.grid * 4, bytesPerRow: PAGE_ROW.grid, rowsPerImage: 385 }, { texture: PT.grid, origin: [tx * 385, ty * 385, g * PAGE_LAYERS.grid] }, [385, 385, 5]);
-    enc.copyBufferToTexture({ buffer: atlas.mask, offset: s * PAGE_WORDS.mask * 4, bytesPerRow: PAGE_ROW.mask, rowsPerImage: 1024 }, { texture: PT.river, origin: [(s & 7) * 1024, (s >> 3) * 1024] }, [1024, 1024, 1]);
+    enc.copyBufferToTexture({ buffer: atlas.fine, offset: from * PAGE_WORDS.fine * 4, bytesPerRow: PAGE_ROW.fine, rowsPerImage: 257 }, { texture: PT.fine, origin: [tx * 257, ty * 257, g * PAGE_LAYERS.fine] }, [257, 257, PAGE_LAYERS.fine]);
+    enc.copyBufferToTexture({ buffer: atlas.grid, offset: from * PAGE_WORDS.grid * 4, bytesPerRow: PAGE_ROW.grid, rowsPerImage: 385 }, { texture: PT.grid, origin: [tx * 385, ty * 385, g * PAGE_LAYERS.grid] }, [385, 385, 5]);
+    enc.copyBufferToTexture({ buffer: atlas.mask, offset: from * PAGE_WORDS.mask * 4, bytesPerRow: PAGE_ROW.mask, rowsPerImage: 1024 }, { texture: PT.river, origin: [(s & 7) * 1024, (s >> 3) * 1024] }, [1024, 1024, 1]);
   }
-  // The pages round the window's, for the planet pass alone (planet.js opts.pages.block): p { atlas, pages: [{ slot, copy }] (copy: false for a slot already holding the page), block: { face, x0, y0, n, table } or null }.
-  // The pages are copied into the same textures as the window's (setGroundPages made them), and the block's table (n by n slots, row 0 the northmost, -1 for a page not there) is what pageGround gives.
+  // The block of pages round the window's, for the planet pass alone (planet.js opts.pages.block): p { block: { face, x0, y0, n, table } or null }, the block's table (n by n slots, row 0 the northmost, -1 for a page not there)
+  // being what pageGround gives; its pages are in the textures already (copyPages).
   let blockNow = null;
   function setBlockPages(p) {
-    if (!PT) return false;
-    const enc = device.createCommandEncoder();
-    for (const pg of p.pages) if (pg.copy !== false) copySlot(enc, p.atlas, pg.slot);
-    device.queue.submit([enc.finish()]);
     blockNow = p.block ? { ...p.block, table: Int32Array.from(p.block.table) } : null;
     return true;
+  }
+  // Pages made in the staging atlas (demo/tile.ts pageAtlas) into their slots of the textures: list [{ from, to }], slots how many the textures hold (made by the first call: groundwin.js SLOTS)
+  function copyPages(atlas, list, slots) {
+    PT ??= pageTextures(Math.ceil(slots / PAGE_SLOTS));
+    const enc = device.createCommandEncoder();
+    for (const { from, to } of list) copySlot(enc, atlas, from, to);
+    device.queue.submit([enc.finish()]);
   }
   // p: { atlas: { slots, fine, grid, mask } (demo/tile.ts pageAtlas), pages: [{ ox, oy, slot, copy }] (the page's corner cell from the window's, in the face's axes as groundPages takes it,
   // multiples of 64 up to 192; copy: false for a slot already holding the page), isle: the window's island fields as setGround takes them (they stay one window texture, uploaded when the pages are turned on), top: the highest ground, and the
@@ -1092,21 +1095,17 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // not listed reads as the nearest listed page's edge, which would show as a smear: so while a page under `need` (the whole window when it is not given) is missing, the pages are loaded
   // but not turned on, the whole screen stays on the window's own textures, and the call returns { on: false, missing: [{ ox, oy }] }; once the pages are there, one call turns them on for the whole screen.
   function setGroundPages(p) {
-    const { atlas, pages } = p, groups = Math.ceil(atlas.slots / PAGE_SLOTS), logical = new Int32Array(16).fill(-1);
+    const { pages } = p, logical = new Int32Array(16).fill(-1);
     if (!pages.length) throw new Error("setGroundPages: no pages");
-    if (atlas.slots > PAGE_MAX_SLOTS) throw new Error(`setGroundPages: ${atlas.slots} slots of at most ${PAGE_MAX_SLOTS}`);
-    if (!PT || PT.groups !== groups) { if (PT) for (const t of [PT.fine, PT.grid, PT.river]) t.destroy(); PT = pageTextures(groups); }
-    const enc = device.createCommandEncoder();
+    if (!PT) throw new Error("setGroundPages: no page was copied into the textures (copyPages)");
+    const slots = PT.groups * PAGE_SLOTS;
     for (const pg of pages) {
       if (pg.ox % 64 || pg.oy % 64 || pg.ox < 0 || pg.oy < 0 || pg.ox > 192 || pg.oy > 192) throw new Error(`setGroundPages: the page at ${pg.ox}, ${pg.oy} is not one of the window's 16`);
-      if (!(pg.slot >= 0 && pg.slot < atlas.slots)) throw new Error(`setGroundPages: slot ${pg.slot} of ${atlas.slots}`);
+      if (!(pg.slot >= 0 && pg.slot < slots)) throw new Error(`setGroundPages: slot ${pg.slot} of ${slots}`);
       // the window's rows are turned against the face's: the page at oy cells up the face is the (192 - oy) / 64 th of the window's rows
-      const ix = pg.ox / 64, iy = 3 - pg.oy / 64, s = pg.slot;
-      logical[iy * 4 + ix] = s;
-      if (pg.copy === false) continue;
-      copySlot(enc, atlas, s);
+      const ix = pg.ox / 64, iy = 3 - pg.oy / 64;
+      logical[iy * 4 + ix] = pg.slot;
     }
-    device.queue.submit([enc.finish()]);
     const half = -pal.ORIGIN, pm = half / 2, need = p.need ?? { x0: -half, z0: -half, x1: half, z1: half }, missing = [];
     for (let k = 0; k < 16; k++) {
       const ix = k % 4, iy = k >> 2;
@@ -2110,7 +2109,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     setFadeKeep: (on) => { fadeKeep = on; },
     // the ground's pages as the planet pass reads them (slice H): the textures and the table, on only while the page table is what the painter reads. table: [on, entry 0 to 15], entries as the painter's page table (a slot, or -(2 + n) for a page not resident)
     pageGround: () => ({ on: pgOnNow && !!PT, fine: PT?.fine ?? null, grid: PT?.grid ?? null, river: PT?.river ?? null, table: pageNow, block: blockNow }),
-    setBlockPages,
+    setBlockPages, copyPages,
     setFrontUse: (on) => { frontUse = on; },
     setFrontViews, frontsReady,
     // sources the cull leaves out, by name (the page checks, to time each source's share)
