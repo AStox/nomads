@@ -16,6 +16,9 @@ export const PAGE_LAYERS = { fine: 10, grid: 8 };
 // a page's words in the atlas buffers demo/tile.ts pageAtlas makes (terrain-window.ts PAGE_FINE_WORDS, PAGE_GRID_WORDS, PAGE_MASK_WORDS) and their rows' bytes, which scripts/play/groundpages-live.ts checks against it
 export const PAGE_WORDS = { fine: 10 * 257 * 320, grid: 5 * 385 * 448, mask: (1024 * 1024) / 4 };
 export const PAGE_ROW = { fine: 1280, grid: 1792, mask: 1024 };
+// the window's cells (75 m, 256 across) in each field's own lattice: fine vertices a cell is 4 apart from the first cell's centre (1,021 of them), grid nodes 6 a cell from the window's edge (1,537), mask texels 16 a cell
+// from the edge (4,096), the largest position a bilinear read starts from each in a field's own units, and the cells to a page and across a window
+export const PAGE_GEOM = { fine: 4, grid: 6, mask: 16, fineMax: 1019.999, gridMax: 1535.999, pageCells: 64, cells: 256, cellM: 75 };
 export function pageWGSL({ fine = PAGE_LAYERS.fine, grid = PAGE_LAYERS.grid } = {}) {
   return /* wgsl */ `
 // the slot a page (0 to 3 each way) is read from, and the page whose range a position is held to (the page itself when it is resident)

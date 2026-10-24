@@ -1,4 +1,5 @@
 import { groundWGSL } from "../ground.wgsl.js";
+import { PAGE_GEOM, pageWGSL } from "../pages.js";
 
 // The planet layer's picture (planet.js): each art pixel's ray crosses the shell between the unit sphere and the highest relief (land
 // stands exag times its height above the sphere, the sea is the sphere) and is marched to the surface, so a tilted view shifts a high
@@ -29,6 +30,8 @@ var<private> FACE_X: array<vec3f, 6> = array(${FRAMES.map((f) => v3(f.ex)).join(
 var<private> FACE_Y: array<vec3f, 6> = array(${FRAMES.map((f) => v3(f.ey)).join(", ")});
 // the pyramid's tiers, and where each starts in the page table
 const TIERS = ${tiers}u;
+// the cells across a face at the finest tier, which are the fine pages' window's own 75 m cells
+const FN = ${256 * 2 ** (tiers - 1)}.0;
 var<private> TOFF: array<u32, ${tiers}> = array<u32, ${tiers}>(${offsets.slice(0, tiers).map((o) => `${o}u`).join(", ")});
 const NONE = 0xffffffffu;
 const HALO = 2.0;
@@ -61,8 +64,10 @@ struct U {
   amb: vec4f,               // x: the sky's ambient light where the camera stands, the light tables' row 0 (live.js ambientOf)
   nt: vec4f,                // the noise's frame, the camera's target on its face: x, y the equiangular tangents, z, w the fractions of a metre of its place
   nw: vec4i,                // and the whole metres of that place (noise offsets)
-  cf: vec4f,                // x: the finest level the whole view has tiles for (planet.js), y: the water's frame 0 to 7, z: the season 0 to 3
+  cf: vec4f,                // x: the finest level the whole view has tiles for (planet.js), y: the water's frame 0 to 7, z: the season 0 to 3, w: how far the whole screen has gone over to the fine pages, 0 to 1
   tf: vec4i,                // x: the face of the camera's target
+  pw: vec4i,                // the fine pages (the renderer's, planet.js opts.pages): x: they are all held for the view, y, z, w: their window's face and its first cell's x and y on it
+  pgt: array<vec4i, 4>,     // and their table: a slot for each of the sixteen pages, or -(2 + the page whose range stands in)
 }
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var fieldsT: texture_2d_array<u32>;  // a tile's cells, 16 bytes each (pyramid.js)
@@ -73,6 +78,12 @@ struct U {
 @group(0) @binding(6) var<storage, read> lutT: array<u32>; // the sky's light tables the ladder's shade pass maps its palette through (webgpu.js LUT0 on): LEVELS key light steps by the fire's 4 levels, NC colours each
 @group(0) @binding(7) var<storage, read> gGradT: array<vec2<f32>>; // the painter's noise gradients (ground.wgsl.js noiseGrads)
 @group(0) @binding(8) var artT: texture_2d<f32>;          // the picture at an art pixel, for the blit that shows it by whole pixels
+@group(0) @binding(9) var gFine: texture_2d_array<f32>;   // the fine pages (pages.js): the fine layers, the light grid, the stream mask
+@group(0) @binding(10) var gGrid: texture_2d_array<f32>;
+@group(0) @binding(11) var gRiver: texture_2d<u32>;
+fn pgOn() -> bool { return u.pw.x != 0; }
+fn pgTab(k: u32) -> i32 { return u.pgt[k >> 2u][k & 3u]; }
+${pageWGSL()}
 // the painter's noise is offset by whole metres, here those of the noise frame's origin
 fn g_wrapW(k: u32) -> vec2<i32> { return u.nw.xy; }
 
@@ -248,18 +259,46 @@ fn riverRidge(t: Tl, qc: f32) -> vec2f {
   return vec2f(mix(mix(on.x, on.y, fx), mix(on.z, on.w, fx), fy), qm);
 }
 
-// ---------- the ground sample from the tier's cells (the readers of ground.wgsl.js GSample for the planet) ----------
+// ---------- the ground sample from the tier's cells, or from the fine pages (the readers of ground.wgsl.js GSample for the planet) ----------
 var<private> gTl: Tl;      // the tier's tile at the pixel
-var<private> gH: f32;      // its cells' B-spline height there, m
-var<private> gGl: f32;     // and slope, m a m
+var<private> gH: f32;      // the ground's height there, m: the tier cells' B-spline, or the fine pages' where the pixel reads them
+var<private> gHt: f32;     // the tier cells' B-spline height there, m
+var<private> gGl: f32;     // the slope, m a m
 var<private> gSc: f32;     // metres of ground to a metre of the noise's frame here
 var<private> gCm: f32;     // metres of the noise's frame to a cell of the tier
-var<private> gF: Fv;       // the cells' fields at the pixel
+var<private> gCm5: f32;    // and to a cell of the fine pages' window (a finest tier cell)
+var<private> gF: Fv;       // the tier cells' fields at the pixel
 var<private> gRShore: f32; // how far inside a stream the pixel lies, noise metres
+var<private> gFn: bool;    // this pixel reads the fine pages
+var<private> gFx: vec2f;   // its place in their window's cells: x east, z south
+var<private> gLvl: f32;    // the level of the standing water round it, m
+// a fine page's field at a place in the window's cells: layer L of the fine layers (h, wet, moist, river, tree, shrub, grass, marsh, bare, sand), of the light grid (h, folds, slope, gx, gz), the stream mask 0 to 1
+fn fineLayer(L: i32, c: vec2f) -> f32 {
+  let v = clamp((c - vec2f(0.5)) * ${PAGE_GEOM.fine}.0, vec2f(0.0), vec2f(${PAGE_GEOM.fineMax}));
+  let t = v - floor(v);
+  return pgBil(pgFineQ(gFine, L, vec2i(floor(v))), t.x, t.y);
+}
+fn fineGrid(L: i32, c: vec2f) -> f32 {
+  let v = clamp(c * ${PAGE_GEOM.grid}.0, vec2f(0.0), vec2f(${PAGE_GEOM.gridMax}));
+  let t = v - floor(v);
+  return pgBil(pgGridQ(gGrid, L, vec2i(floor(v))), t.x, t.y);
+}
+fn fineRiver(c: vec2f) -> f32 {
+  let v = c * ${PAGE_GEOM.mask}.0 - vec2f(0.5);
+  let t = v - floor(v);
+  return pgBil(pgRiverQ(gRiver, vec2i(floor(v))), t.x, t.y);
+}
 fn fillTop(S: ptr<function, GSample>, x: f32, z: f32) {
   gF = fieldsAt(gTl);
-  (*S).wet = select(0.0, 1.0, gH < 0.0 || gF.water >= 0.25);
   (*S).river = 0.0;
+  if (gFn) {
+    // standing water as the island's waterAt has it from the cells' level and the fine height: the sea's level is 0, a lake's its cell's height and depth
+    gLvl = max(select(-1.0e4, gHt + gF.water, gF.water >= 0.25), select(-1.0e4, 0.0, gHt < 8.0));
+    (*S).wet = clamp(0.5 + (gLvl - gH) * 0.5, 0.0, 1.0);
+    (*S).river = fineRiver(gFx);
+    return;
+  }
+  (*S).wet = select(0.0, 1.0, gH < 0.0 || gF.water >= 0.25);
   if ((*S).wet > 0.5) { return; }
   // a stream is a line as wide as its flow makes it, as a pixel's share of it where that is under the pixel: the cells that carry one give a ridge, cut where its width
   // is the line's, and the pixels left of a line thinner than 0.7 pixel are dithered out
@@ -283,12 +322,26 @@ fn fillWater(S: ptr<function, GSample>, x: f32, z: f32, ctx: PaintCtx, river: bo
     (*S).kind = 3u;
     (*S).depth = 1.5;
     (*S).shore = gRShore;
+    if (gFn) {
+      // the mask's edge distance as the island has it: its value over its gradient, 3 m each side
+      let dc = 3.0 / gCm5;
+      let gx = (fineRiver(gFx + vec2f(dc, 0.0)) - fineRiver(gFx - vec2f(dc, 0.0))) / 6.0;
+      let gz = (fineRiver(gFx + vec2f(0.0, dc)) - fineRiver(gFx - vec2f(0.0, dc))) / 6.0;
+      let gl = length(vec2f(gx, gz));
+      (*S).shore = select(60.0, ((*S).river - 0.5) / gl, gl > 1e-4);
+    }
     return;
   }
   let sea = gH < 0.5;
   (*S).kind = select(2u, 1u, sea);
   let depth = select(gF.water, max(0.0, -gH), sea);
   (*S).depth = depth;
+  if (gFn) {
+    // inside the first metre of water over the ground the island's wet share runs from 0.5 at the shore to 1: the shore is that depth over the slope
+    let over = gLvl - gH;
+    (*S).shore = select(60.0, over / gGl / gSc, over < 1.0 && gGl > 1e-4);
+    return;
+  }
   // a lake's edge is a gentle one, as the island's lakes
   let gl = select(0.05, gGl, sea);
   (*S).shore = select(60.0, depth / gl, gl > 1e-4) / gSc;
@@ -300,6 +353,26 @@ fn fillLand(S: ptr<function, GSample>, x: f32, z: f32, wx: f32, wz: f32, X: i32,
   t.ly += (wz - z) / gCm;
   let F = fieldsAt(t);
   gF = F;
+  (*S).soil = F.soil;
+  (*S).season = ctx.season;
+  (*S).trail = false;
+  (*S).snowNow = g_smooth(-6.0, -16.0, F.temp);
+  if (gFn) {
+    // the fine pages' covers (grass, tree, shrub, marsh, bare, sand as the island lays them), the critical slope and the ridges' light of the light grid; the window's z runs south against the face's y
+    let c = gFx + vec2f(wx - x, -(wz - z)) / gCm5;
+    let v = clamp((c - vec2f(0.5)) * ${PAGE_GEOM.fine}.0, vec2f(0.0), vec2f(${PAGE_GEOM.fineMax}));
+    let t5 = v - floor(v);
+    let at = pgFineAt(vec2i(floor(v)));
+    (*S).c[0] = pgBil(pgFineLd(gFine, at, 6), t5.x, t5.y);
+    (*S).c[1] = pgBil(pgFineLd(gFine, at, 4), t5.x, t5.y);
+    (*S).c[2] = pgBil(pgFineLd(gFine, at, 5), t5.x, t5.y);
+    (*S).c[3] = pgBil(pgFineLd(gFine, at, 7), t5.x, t5.y);
+    (*S).c[4] = pgBil(pgFineLd(gFine, at, 8), t5.x, t5.y);
+    (*S).c[5] = pgBil(pgFineLd(gFine, at, 9), t5.x, t5.y);
+    (*S).rockS = select(0.0, 1.0, gGl >= 1.25);
+    (*S).s = max(0.0, fineGrid(1, gFx)) * 0.4;
+    return;
+  }
   (*S).c[0] = F.grass;
   (*S).c[1] = F.tree;
   (*S).c[2] = F.shrub;
@@ -307,14 +380,10 @@ fn fillLand(S: ptr<function, GSample>, x: f32, z: f32, wx: f32, wz: f32, X: i32,
   (*S).c[4] = F.bare;
   // meltwater sand is the painter's sand
   (*S).c[5] = select(0.0, 0.8, F.drift == 3u);
-  (*S).soil = F.soil;
   // a cell averages the ground it holds, so the slope that is a cliff at the light grid's 12.5 m (the island's critical slope, 1.25) is gentler the larger the cell: it falls as the root of the cell's size
   let cliff = 1.25 * sqrt(12.5 / max(gCm * gSc, 12.5));
   (*S).rockS = max(g_smooth(3200.0, 4800.0, gH) * g_smooth(0.5 * cliff, cliff, gGl), g_smooth(0.8 * cliff, 1.3 * cliff, gGl));
   (*S).s = 0.0;
-  (*S).snowNow = g_smooth(-6.0, -16.0, F.temp);
-  (*S).season = ctx.season;
-  (*S).trail = false;
 }
 fn fillColour(S: ptr<function, GSample>) {
   let F = gF;
@@ -440,10 +509,22 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
 
   let fc = faceOf(p);
   let f = fc.f;
+  // the fine pages where the view holds them all (U.pw.x) and this pixel lies in their window and one of their resident pages: the whole screen goes over to them as one scalar, U.cf.w,
+  // rises, each pixel when its dither is under it, and fades back out as the pixel grows past two fine vertices (18.75 m), so a zoom is one continuous cross-fade
+  var useFine = false;
+  var fcell = vec2f(0.0);
+  if (pgOn() && f == u.pw.y && u.cf.w > 0.0) {
+    fcell = vec2f(fc.fx * FN - f32(u.pw.z), ${PAGE_GEOM.cells}.0 - (fc.fy * FN - f32(u.pw.w)));
+    let inside = fcell.x > 1.0 && fcell.x < ${PAGE_GEOM.cells - 1}.0 && fcell.y > 1.0 && fcell.y < ${PAGE_GEOM.cells - 1}.0;
+    if (inside && pgTab(u32(i32(fcell.y / ${PAGE_GEOM.pageCells}.0) * 4 + i32(fcell.x / ${PAGE_GEOM.pageCells}.0))) >= 0) {
+      useFine = bayer(gX, gY) < u.cf.w * (1.0 - g_smooth(18.75, 56.0, gMpp));
+    }
+  }
   // one level of detail on the whole screen: the pixel's level as a fraction, held to the finest level every tile the view reads is held at (u.cf.x, which the page eases up
   // as they arrive), the tier below and the tier above it told apart by the art pixel's dither, so that a zoom, or a finer tier arriving, cross-fades the whole picture at once
   let lv = min(levelFor(gMpp), u.cf.x);
-  let want = min(u32(floor(lv)) + select(0u, 1u, bayer(gX, gY) < lv - floor(lv)), TIERS - 1u);
+  var want = min(u32(floor(lv)) + select(0u, 1u, bayer(gX, gY) < lv - floor(lv)), TIERS - 1u);
+  if (useFine) { want = TIERS - 1u; }
   let tl = tileAt(f, fc.fx, fc.fy, want);
   var idx: u32;
   // the camera's light, flat ground at the view's middle unchanged
@@ -478,14 +559,26 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     let east = normalize(cross(north, p));
     let toSun = normalize(north - east);
     // the ladder's shade pass lights a slope by the sun on its normal (the row of the light tables) and picks a brighter tone only for a slope that faces it more than flat ground does: here the tone is the bake's light from the upper left, never darker than flat ground
-    var sl = clamp(-4.4 * u.relief * dot(grad, toSun), 0.0, 2.0);
-    slopeFacing = dot(normalize(p - u.relief * grad), u.sun);
+    // the slope is the tier cells' B-spline, or the fine pages' light grid (metres of its window, 75 to a cell, turned to the ground's own: its x along the face's x, its z against the face's y)
+    var gradU = grad;
+    var hU = h;
+    if (useFine) {
+      let da5 = (PI / 2.0) / FN;
+      gradU = (fineGrid(3, fcell) * 75.0 / (u.radiusM * da5 * length(kx))) * normalize(kx) - (fineGrid(4, fcell) * 75.0 / (u.radiusM * da5 * length(ky))) * normalize(ky);
+      hU = fineLayer(0, fcell);
+    }
+    var sl = clamp(-4.4 * u.relief * dot(gradU, toSun), 0.0, 2.0);
+    slopeFacing = dot(normalize(p - u.relief * gradU), u.sun);
     // the painter's sample: the cells at the pixel, in the metres of the noise's frame (the equiangular map stretches a metre of ground by sc here)
     gSc = sqrt(length(kx) * length(ky));
     gCm = u.radiusM * da;
-    gH = h;
-    gGl = length(grad);
+    gCm5 = u.radiusM * (PI / 2.0) / FN;
+    gHt = h;
+    gH = hU;
+    gGl = length(gradU);
     gTl = tl;
+    gFn = useFine;
+    gFx = fcell;
     let mppN = gMpp / gSc;
     let xz = noiseXZ(u.off + tHit * rd);
     var ctx: PaintCtx;
@@ -493,6 +586,8 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     ctx.frame = u32(u.cf.y);
     ctx.season = u32(u.cf.z);
     ctx.flags = 0u;
+    // no tree is drawn by this pass: the whole of the tree cover is the ground's crowns
+    ctx.canopy = 1.0;
     var S: GSample;
     fillTop(&S, xz.x, xz.y);
     idx = g_paint(&S, xz.x, xz.y, gX, gY, ctx, mppN);

@@ -7,6 +7,7 @@
 // shader the finest level for which every tile the whole view reads is held (`cap`): the whole screen shows one level and a finer one
 // arrives as one cross-fade of all of it.
 import { dqBuild, noiseGrads } from "./ground.wgsl.js";
+import { PAGE_GEOM } from "./pages.js";
 import { faceFrac, tierOffset } from "./pyramid.js";
 import { globeWgsl } from "./wgsl/globe.js";
 
@@ -17,13 +18,16 @@ const sm = (a, b, v) => { const t = Math.max(0, Math.min(1, (v - a) / (b - a)));
 const GRID_X = 14, GRID_Y = 10, MARGIN = 0.12;
 // how fast the level the screen shows rises once the tiles of a finer one are held, in levels a second: a cross-fade of about a third of a second
 const CAP_RATE = 3;
+// how fast the whole screen goes over to the fine pages once the view holds them all, in shares a second: about two thirds of a second
+const FINE_RATE = 1.5;
 
 // G: the globe.js bundle's namespace (FRAMES); pyramid: pyramid.js openPyramid's; pal: pal.js's namespace; radiusM: the planet's radius
 // in metres, which every metre in here follows; the cameras (planetCam's radiusM) must be of the same radius.
 // -> { hmax, draw(enc, targetView, cam, opts) }
 // draw: cam from planetCam; opts { w, h (target px), art (device px an art pixel, 2), sun (unit vector, the light that shades the
 // sphere), relief (the light's exaggeration of slopes, 2.5), exag (the ground's lift, 1.5 as the ladder's), riverCut (m3/s), frame (the
-// water's loop, 0 to 7: the clock's when not given), season (0 spring to 3 winter, 0 when not given), clearRGB (0 to 255),
+// water's loop, 0 to 7: the clock's when not given), season (0 spring to 3 winter, 0 when not given), pages (the renderer's fine pages, webgpu.js pageGround with their window:
+// { on (all of them are held for the view), fine, grid, river (the atlas textures), table (its on word, then the page table), face, x0, y0 }, or null), clearRGB (0 to 255),
 // timestampWrites }. A draw's uniforms are one of RING buffers in turn, so up to RING draws may be recorded before one submit.
 export async function createPlanet({ device, format, G, pyramid, pal, radiusM, hmax, levels }) {
   const R = radiusM, { P, RGB, NCOL, HAZE, SHADOW, TONE, TONE_S } = pal, offsets = Array.from({ length: pyramid.tiers + 1 }, (_, t) => tierOffset(t));
@@ -46,6 +50,9 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       { binding: 5, visibility: F, buffer: { type: "read-only-storage" } },
       { binding: 6, visibility: F, buffer: { type: "read-only-storage" } },
       { binding: 7, visibility: F, buffer: { type: "read-only-storage" } },
+      { binding: 9, visibility: F, texture: { sampleType: "unfilterable-float", viewDimension: "2d-array" } },
+      { binding: 10, visibility: F, texture: { sampleType: "unfilterable-float", viewDimension: "2d-array" } },
+      { binding: 11, visibility: F, texture: { sampleType: "uint", viewDimension: "2d" } },
     ],
   });
   const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
@@ -64,12 +71,19 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
   const dq = store(dqBuild()), tab = store(tables), grads = store(noiseGrads());
   // the sky's light tables (the page sends them as the light changes): levels x 4 fire levels (and a last row) of NCOL colours
   const lutB = device.createBuffer({ size: (levels * 4 + 1) * NCOL * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  const ring = Array.from({ length: RING }, () => {
-    const buffer = device.createBuffer({ size: 240, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const bind = device.createBindGroup({
+  // the renderer's fine pages (opts.pages), or 1 by 1 stand-ins the shader never reads while there are none
+  const stand = { fine: device.createTexture({ size: [1, 1, 1], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING }), river: device.createTexture({ size: [1, 1], format: "r8uint", usage: GPUTextureUsage.TEXTURE_BINDING }) };
+  const ring = Array.from({ length: RING }, () => ({ buffer: device.createBuffer({ size: 320, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }), bind: null, key: null, blit: null }));
+  // a ring slot's bind group for the pages' textures, made again only when they are other ones
+  function bindFor(r, pg) {
+    const fine = pg?.fine ?? stand.fine, grid = pg?.grid ?? stand.fine, river = pg?.river ?? stand.river;
+    if (r.key && r.key[0] === fine && r.key[1] === grid && r.key[2] === river) return r.bind;
+    r.key = [fine, grid, river];
+    const view = (t, dimension) => (t.createView ? t.createView({ dimension }) : t);
+    r.bind = device.createBindGroup({
       layout: bgl,
       entries: [
-        { binding: 0, resource: { buffer } },
+        { binding: 0, resource: { buffer: r.buffer } },
         { binding: 1, resource: pyramid.fieldsT.createView({ dimension: "2d-array" }) },
         { binding: 2, resource: pyramid.heightsT.createView({ dimension: "2d-array" }) },
         { binding: 3, resource: { buffer: pyramid.tableB } },
@@ -77,14 +91,17 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
         { binding: 5, resource: { buffer: dq } },
         { binding: 6, resource: { buffer: lutB } },
         { binding: 7, resource: { buffer: grads } },
+        { binding: 9, resource: view(fine, "2d-array") },
+        { binding: 10, resource: view(grid, "2d-array") },
+        { binding: 11, resource: view(river, "2d") },
       ],
     });
-    return { buffer, bind, blit: null };
-  });
+    return r.bind;
+  }
   // the picture is made at an art pixel (a quarter of the pixels at 2) and shown by whole pixels in a second pass
   let slot = 0, art = null;
-  // wgsl/globe.js U: 44 floats, then the noise frame's fractions and tangents, its whole metres and the target's face, the level cap, the water frame and the season
-  const ub = new ArrayBuffer(240), u = new Float32Array(ub), ui = new Int32Array(ub);
+  // wgsl/globe.js U: 44 floats, then the noise frame's fractions and tangents, its whole metres and the target's face, the level cap, the water frame, the season and the share gone over to the fine pages, the pages' readiness and window, their table
+  const ub = new ArrayBuffer(320), u = new Float32Array(ub), ui = new Int32Array(ub);
   function artFor(aw, ah) {
     if (art && art.w === aw && art.h === ah) return art;
     art?.color.destroy(); art?.depth.destroy();
@@ -131,7 +148,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     return 0;
   }
   // the level the screen shows: down at once (a coarser level is always held), up by CAP_RATE a second
-  let cap = 0, capAt = performance.now();
+  let cap = 0, capAt = performance.now(), fine = 0;
 
   // the noise's frame: the face of the camera's target, the tangents of the target on it and its place in metres along the equiangular axes (wgsl/globe.js noiseXZ)
   function noiseFrame(T) {
@@ -146,8 +163,16 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     const w = opts.w, h = opts.h, artPx = opts.art ?? 2, exag = opts.exag ?? 1.5, sun = opts.sun ?? [0.6, 0.5, 0.62], clear = opts.clearRGB ?? [0, 0, 0];
     const pts = viewPoints(cam, w, h, artPx);
     pyramid.want(wanted(pts));
-    const now = performance.now(), ready = readyLevel(pts);
-    cap = ready < cap ? ready : Math.min(ready, cap + ((now - capAt) / 1000) * CAP_RATE);
+    const now = performance.now(), ready = readyLevel(pts), dt = (now - capAt) / 1000, pg = opts.pages?.on ? opts.pages : null;
+    cap = ready < cap ? ready : Math.min(ready, cap + dt * CAP_RATE);
+    // the whole screen goes over to the fine pages once every point of the view (and its margin) lies in a resident page of the window and the finest tier is held too, never part of it
+    // (a window the view outgrows is a patch on the screen), and back at once when it does not
+    const FN = 256 * 2 ** top, inPages = (p) => {
+      const xc = p.fx * FN - pg.x0, zc = PAGE_GEOM.cells - (p.fy * FN - pg.y0);
+      return p.f === pg.face && xc > 1 && xc < PAGE_GEOM.cells - 1 && zc > 1 && zc < PAGE_GEOM.cells - 1 && pg.table[1 + Math.floor(zc / PAGE_GEOM.pageCells) * 4 + Math.floor(xc / PAGE_GEOM.pageCells)] >= 0;
+    };
+    const goal = pg && ready >= top && pts.every(inPages) ? 1 : 0;
+    fine = goal > fine ? Math.min(1, fine + dt * FINE_RATE) : goal;
     capAt = now;
     const a = artFor(Math.ceil(w / artPx), Math.ceil(h / artPx));
     const hmaxR = (exag * hmax) / R, oLen = Math.hypot(cam.o[0], cam.o[1], cam.o[2]), cut = opts.riverCut ?? 20, nf = noiseFrame(cam.T);
@@ -155,8 +180,11 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       w, h, Math.max(1e-6, 0.4 * (oLen - 1 - hmaxR)), oLen + 1.01, cut, sm(0.05, 0.3, oLen - 1), a.w, a.h, ...(opts.moon ?? [0, 0, 1]), opts.moonMix ?? 0, opts.amb ?? 1, 0, 0, 0,
       nf.ua, nf.vb, nf.fx, nf.fz]);
     ui[48] = nf.ox; ui[49] = nf.oz; ui[50] = 0; ui[51] = 0;
-    u[52] = cap; u[53] = opts.frame ?? (Math.floor(now / 160) & 7); u[54] = opts.season ?? 0; u[55] = 0;
+    u[52] = cap; u[53] = opts.frame ?? (Math.floor(now / 160) & 7); u[54] = opts.season ?? 0; u[55] = fine;
     ui[56] = nf.f; ui[57] = 0; ui[58] = 0; ui[59] = 0;
+    ui[60] = pg ? 1 : 0; ui[61] = pg?.face ?? 0; ui[62] = pg?.x0 ?? 0; ui[63] = pg?.y0 ?? 0;
+    // the renderer's table is its on word, then the sixteen entries
+    for (let k = 0; k < 16; k++) ui[64 + k] = pg ? pg.table[1 + k] : -1;
     const r = ring[slot++ % RING], ts = opts.timestampWrites;
     device.queue.writeBuffer(r.buffer, 0, ub);
     const pass = enc.beginRenderPass({
@@ -164,7 +192,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       depthStencilAttachment: { view: a.depthView, depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "discard" },
       ...(ts ? { timestampWrites: { querySet: ts.querySet, beginningOfPassWriteIndex: ts.beginningOfPassWriteIndex } } : {}),
     });
-    pass.setBindGroup(0, r.bind);
+    pass.setBindGroup(0, bindFor(r, opts.pages));
     pass.setPipeline(planetPipe); pass.draw(3);
     pass.end();
     const blit = enc.beginRenderPass({
