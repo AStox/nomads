@@ -649,6 +649,7 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   var isLit = false;
   var litRow = 0u;
   var litAo = 0u;
+  var crownAo = false;
   if (tl.slot == NONE) {
     // no tile of the planet here (a face that is not baked): the deep sea
     idx = ${u("w0")};
@@ -711,6 +712,13 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     if (S.isCrown) {
       // a pixel painted with the tree sprites' colours is lit as the shade pass lights an upright sprite: half its own light and half the slope's
       facing = 0.5 * (u.sprl.x + slopeFacing);
+      if (lt[6].w > 0.5 && lt[3].y > 0.0) {
+        // the shade of the wood the drawn trees stand in (the ladder's sprite pixels' occlusion, mid-crown): by the cover where the canopy raster is not at hand, so the crowns of the ground read as the forest drawn
+        let cover = max(0.0, 2.0 * S.treeW - lt[4].z) * (lt[4].y + (1.0 - lt[4].y) * 0.5);
+        let occ = 1.0 - exp(-lt[4].x * cover);
+        litAo = u32(min(7.0, floor(occ * lt[3].y * 7.0 + bayer(gX, gY)))) | (3u << 3u);
+        crownAo = true;
+      }
     } else if (useFine && lt[6].w > 0.5) {
       // the ladder's light on every pixel of the fine pages (the block's, where no window is drawn too, so the window's arrival changes no pixel's light), its shadow, folds and canopy cover only where the window's rasters lie
       let Lq = lightFine(fcell, idx, S.isWater, lt[6].z > 0.5 && fcell.x > 1.0 && fcell.x < ${PAGE_GEOM.cells - 1}.0 && fcell.y > 1.0 && fcell.y < ${PAGE_GEOM.cells - 1}.0);
@@ -734,7 +742,7 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   let ambK = min(1.0, ambOf(sd) / max(u.amb.x, 1e-6));
   var row = u32(min(f32(LEVELS - 1), floor(key * f32(LEVELS - 1) + bayer(gX, gY)))) * 4u;
   if (isLit) { row = litRow; }
-  o_.color = vec4f(unpack4x8unorm(lutT[row * NC + idx]).rgb * ambK * select(vec3f(1.0), aoMul(litAo, row), isLit), 1.0);
+  o_.color = vec4f(unpack4x8unorm(lutT[row * NC + idx]).rgb * ambK * select(vec3f(1.0), aoMul(litAo, row), isLit || crownAo), 1.0);
   return o_;
 }
 `;

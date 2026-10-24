@@ -611,7 +611,7 @@ struct GSample {
   c: array<f32, 6>, rockS: f32, soil: f32, s: f32, snowNow: f32, trail: bool, // the six covers, rock's share, soil depth, the ridges' light, snow, a worn path (fillLand)
   cx: vec2<f32>, cy: vec2<f32>, season: u32, cls: u32,
   ex: f32, pet: f32, precip: f32, table: f32, peat: f32, silt: f32, fog: f32, rock: i32, // the climate and soil the colour mixes from (fillColour)
-  isWater: bool, canopy: f32, crownW: f32, isCrown: bool,
+  isWater: bool, canopy: f32, crownW: f32, treeW: f32, isCrown: bool,
 }
 const g_BARE_ROCK = array<vec3<f32>, 5>(${[[118, 104, 92], [176, 140, 96], [204, 196, 176], [164, 144, 138], [92, 88, 84]].map(rgb).join(", ")});
 fn g_mixc(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> { return a + (b - a) * clamp(t, 0.0, 1.0); }
@@ -667,6 +667,7 @@ fn g_rgb(S: ptr<function, GSample>, s: f32, x: f32, z: f32, m60: f32, mpp: f32) 
   let k = ((1.0 + mot - pool) * band * clamp(1.0 + s * 0.3, 0.42, 1.6)) / L0;
   // the share of this pixel the tree sprites would paint: the tree cover's share that no tree is drawn over, once the sprites' histogram is there (g_paint picks the pixel's crown by it)
   (*S).crownW = select(0.0, clamp(L.canopy, 0.0, 1.0) * tr / sum, g_crownCdf(${NCOL - 1}u) > 0.5);
+  (*S).treeW = tr / sum;
   return vec3<f32>(c.x * k, c.y * k, c.z * k);
 }
 // bare earth: soil tones with grit and the odd pale stone
