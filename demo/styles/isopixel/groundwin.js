@@ -300,6 +300,12 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const loc = G.locateVec(g, G.fromLatLon(lat * D2R, lon * D2R)), face = loc.face, x0 = Math.round((loc.X - N / 2) / PAGE) * PAGE, y0 = Math.round((loc.Y - N / 2) / PAGE) * PAGE;
     return { id: `${face}:${x0}:${y0}`, face, x0, y0 };
   }
+  // the ground tiles of the window a place falls in, asked for ahead of the window (a failure is the window's to meet when it is made)
+  function prefetch(lat, lon) {
+    const { face, x0, y0 } = windowAt(lat, lon);
+    for (let ty = Math.max(0, Math.floor(y0 / 256)); ty <= Math.min(nT - 1, Math.floor((y0 + N - 1) / 256)); ty++)
+      for (let tx = Math.max(0, Math.floor(x0 / 256)); tx <= Math.min(nT - 1, Math.floor((x0 + N - 1) / 256)); tx++) groundTile(face, tx, ty).catch(() => {});
+  }
   // The window of 4 by 4 pages whose centre is nearest the cell holding (lat, lon) degrees (its corner a multiple of a page). Returns what the renderer, the page and the object buffer take.
   async function build(lat, lon) {
     await warming;
@@ -527,5 +533,5 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
   // the blocks the view can touch and the share they are drawn at, for the worker to see whether the blocks it holds still serve (null k0: a block's estimate is not known yet)
   const blocksNeed = (w, view) => { const { need, k0Of } = layoutBlocks(w, view); return { vis: need.filter((r) => r.vis).map((r) => r.key), k0: k0Of() }; };
   // pageSet: the window's pages for setGroundPages (made again where one was let go); atlas: the buffers they are in; setDrawn: the window drawn, whose pages are kept
-  return { build, windowAt, stats, groundTile, makeBlocks, unpin: (recs) => { for (const b of recs) b.pins--; }, blocksNeed, pageSet, ensureBlock, ensureBlockAt, cellOf, get atlas() { return atlas; }, setDrawn: (w) => { drawn = w; } };
+  return { build, windowAt, prefetch, stats, groundTile, makeBlocks, unpin: (recs) => { for (const b of recs) b.pins--; }, blocksNeed, pageSet, ensureBlock, ensureBlockAt, cellOf, get atlas() { return atlas; }, setDrawn: (w) => { drawn = w; } };
 }

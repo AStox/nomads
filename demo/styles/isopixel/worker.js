@@ -93,6 +93,11 @@ async function init(m) {
   planet = await planetP;
   const ground = groundP ? await groundP : await closeGround(simB, m.seed, gpu, planetP);
   const { isle, fine: g } = ground;
+  // the windows exist from here (their kernels compile while the renderer's do), and the tiles of the window the page opens in are asked for now: the page asks for that window only after the objects' sprites, 0.8 s on
+  if (planet?.T) {
+    planet.wins = createWindows({ G: planet.G, T: planet.T, gpu, base: planet.base, tier: planet.manifest.tiers - 1, seed: m.seed, radiusM: planet.radiusM, quick: isle.quick, put: (atlas, list, slots) => R.copyPages(atlas, list, slots), onBlockLost: () => { R.setBlockPages({ block: null }); blk = null; } });
+    if (ground.place) planet.wins.prefetch(ground.place.lat, ground.place.lon);
+  }
   const t1 = performance.now();
   say("laying out the ground", 0, 1);
   const pack = packGround(isle, g);
@@ -111,7 +116,6 @@ async function init(m) {
   for (const h of isle.height) peak = Math.max(peak, h);
   home = { pack, fields: { peak, h: g.h, height: isle.height, water: isle.water } };
   if (planet?.T) {
-    planet.wins = createWindows({ G: planet.G, T: planet.T, gpu, base: planet.base, tier: planet.manifest.tiers - 1, seed: m.seed, radiusM: planet.radiusM, quick: isle.quick, put: (atlas, list, slots) => R.copyPages(atlas, list, slots), onBlockLost: () => { R.setBlockPages({ block: null }); blk = null; } });
     // the passes of the empty source a window draws until its blocks come, and of each size a block comes in, compiled now on the GPU process's own threads (a first window then does not wait on them)
     void R.warmSpec("win", winSpec(EMPTY_CAP)).catch((err) => console.warn("warm window passes", err));
     for (const cap of BLOCK_CAPS) void R.warmSpec("block", blockSpec(cap)).catch((err) => console.warn("warm block passes", err));
