@@ -973,9 +973,13 @@ let lastLut = null, lutShown = false;
 let gTopGrid = null, planetQ = null;
 // The pages the planet pass reads where no window is (the view is wider than a window covers, under about zoom 3, or the camera is away from any): a block of them round the camera's page, made behind the frames and
 // moved by whole pages when the camera is more than half a page from its middle. Pages are global, so a window made later finds those that are its own. blk is the block the painter has (first page, in cells)
-let blk = null, blkMaking = false;
+let blk = null, blkMaking = false, blkDist = 0, blkMoved = 0;
 function blockFollow(cam) {
-  if (!planet?.wins || curWin || blkMaking || switching || !cam.T) return;
+  // a window being asked for or made has the GPU first, and so has a zoom still running (the window it ends in is wanted soon): the block waits for either
+  const now = performance.now();
+  if (Math.abs(cam.dist - blkDist) > 1e-3 * cam.dist) blkMoved = now;
+  blkDist = cam.dist;
+  if (!planet?.wins || curWin || blkMaking || switching || building || wantNow || wantSoon || !cam.T || now - blkMoved < 700) return;
   // half the screen's diagonal in metres on the ground: a block (28.8 km) holds a view of this reach with its camera within a page of its middle
   if (cam.hh * planetLayer.radiusM * Math.hypot(cam.aspect, 1) > 15000) return;
   const c = planet.wins.cellOf(cam.T), bx = Math.round((c.x - 192) / 64) * 64, by = Math.round((c.y - 192) / 64) * 64;
