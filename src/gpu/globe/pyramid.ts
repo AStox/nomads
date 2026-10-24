@@ -8,7 +8,9 @@ import { KINDS, typeOf, type Field, type FieldType } from "./stages";
 
 const TILE = 256, CELLS = TILE * TILE;
 // Where a field comes from: global field files of the top tier (one or several: a year's mean of four seasons) and the integer, of the field's own type and in its step, made of their words.
-export interface Source { files: string[]; convert: (raw: number[]) => number }
+// With `across` the integer is made of the cell and its eight neighbours: `raw` holds the files' words of the cell at (dx, dy) = (n % 3 - 1, floor(n / 3) - 1) at raw[n * files + m] (a cell past the
+// face's edge is the edge cell), for a field that is read between the cells' centres (a lake's share of the cell: the part of it the flooded surface stands above the ground).
+export interface Source { files: string[]; convert: (raw: number[]) => number; across?: boolean }
 export type Planes = Record<string, Field>;
 
 const clampTo = (type: FieldType, v: number) => {
@@ -34,6 +36,34 @@ export function pool(kind: "mean" | "mode" | "max", type: FieldType, children: F
       out[y * TILE + x] = r;
     }
   return out;
+}
+
+// The share, 0 to 255, of a cell's area that lies under a lake, from the cell and its eight neighbours (an `across` source of the files water.u16 (cm), height.i32 and flooded.i32, both 1/256 m).
+// A lake cell (water over land) holds its flooded surface less its ground; another land cell holds the level of a lake beside it less its ground (below zero: it stands above the water); a cell with
+// no lake beside it, or under the sea, is dry. Read between the cells' centres as the page reads a tier's cells, the water stands where that sum is above zero, so the shore lies where the flooded
+// surface meets the ground between two cells and not on a cell's edge; the share is the part of 4 by 4 places in the cell where it does [design: 16 places, a share to 1/16].
+const DRY = -1e9, SAMPLES = [-0.375, -0.125, 0.125, 0.375];
+export function lakeShare(raw: number[]): number {
+  const lake = (n: number) => raw[3 * n] > 0 && raw[3 * n + 1] > 0;
+  let any = false, all = true;
+  for (let n = 0; n < 9; n++) { if (lake(n)) any = true; else all = false; }
+  if (!any) return 0;
+  if (all) return 255;
+  const s = new Array<number>(9);
+  for (let n = 0; n < 9; n++) {
+    if (lake(n)) { s[n] = raw[3 * n + 2] - raw[3 * n + 1]; continue; }
+    if (raw[3 * n + 1] <= 0) { s[n] = DRY; continue; }
+    let level = -Infinity;
+    for (let k = 0; k < 9; k++) if (lake(k) && Math.abs((k % 3) - (n % 3)) <= 1 && Math.abs((k / 3 | 0) - (n / 3 | 0)) <= 1) level = Math.max(level, raw[3 * k + 2]);
+    s[n] = level === -Infinity ? DRY : level - raw[3 * n + 1];
+  }
+  let wet = 0;
+  for (const oy of SAMPLES)
+    for (const ox of SAMPLES) {
+      const u = 1 + ox, v = 1 + oy, ix = Math.floor(u), iy = Math.floor(v), fx = u - ix, fy = v - iy, at = (x: number, y: number) => s[y * 3 + x];
+      if ((at(ix, iy) * (1 - fx) + at(ix + 1, iy) * fx) * (1 - fy) + (at(ix, iy + 1) * (1 - fx) + at(ix + 1, iy + 1) * fx) * fy > 0) wet++;
+    }
+  return (255 * wet) / (SAMPLES.length * SAMPLES.length);
 }
 
 export function tilePath(root: string, tier: number, face: number, tx: number, ty: number) { return join(root, "pyramid", `t${tier}`, `f${face}`, `${ty}-${tx}.tile.gz`); }
@@ -82,7 +112,26 @@ export function buildPyramid(dir: BakeDir, o: PyramidOptions): PyramidProgress {
   const read = (f: (typeof PYRAMID_FIELDS)[number], face: number, tx: number, ty: number): Field => {
     const out = new KINDS[f.type](CELLS), s = o.sources[f.name];
     if (!s) return out;
-    const Ks = s.files.map((file) => KINDS[typeOf(file)]), rows = Ks.map((K) => new K(TILE)), raw = new Array<number>(s.files.length);
+    const Ks = s.files.map((file) => KINDS[typeOf(file)]), nf = s.files.length;
+    if (s.across) {
+      const SIDE = TILE + 2, planes = Ks.map((K) => new K(SIDE * SIDE)), raw = new Array<number>(9 * nf), at = (v: number) => Math.min(fn - 1, Math.max(0, v));
+      for (let j = 0; j < SIDE; j++) {
+        const yy = at(ty * TILE + j - 1);
+        s.files.forEach((file, m) => {
+          const K = Ks[m], one = new K(1), row = (xx: number) => ((face * fn + yy) * fn + xx) * K.BYTES_PER_ELEMENT;
+          readSync(fd(file), new Uint8Array(planes[m].buffer, j * SIDE * K.BYTES_PER_ELEMENT + K.BYTES_PER_ELEMENT, TILE * K.BYTES_PER_ELEMENT), 0, TILE * K.BYTES_PER_ELEMENT, row(tx * TILE));
+          readSync(fd(file), new Uint8Array(one.buffer), 0, K.BYTES_PER_ELEMENT, row(at(tx * TILE - 1))); planes[m][j * SIDE] = one[0];
+          readSync(fd(file), new Uint8Array(one.buffer), 0, K.BYTES_PER_ELEMENT, row(at(tx * TILE + TILE))); planes[m][j * SIDE + SIDE - 1] = one[0];
+        });
+      }
+      for (let y = 0; y < TILE; y++)
+        for (let x = 0; x < TILE; x++) {
+          for (let n = 0; n < 9; n++) for (let m = 0; m < nf; m++) raw[n * nf + m] = planes[m][(y + (n / 3 | 0)) * SIDE + x + (n % 3)];
+          out[y * TILE + x] = clampTo(f.type, s.convert(raw));
+        }
+      return out;
+    }
+    const rows = Ks.map((K) => new K(TILE)), raw = new Array<number>(nf);
     for (let y = 0; y < TILE; y++) {
       s.files.forEach((file, m) => readSync(fd(file), new Uint8Array(rows[m].buffer), 0, TILE * Ks[m].BYTES_PER_ELEMENT, ((face * fn + ty * TILE + y) * fn + tx * TILE) * Ks[m].BYTES_PER_ELEMENT));
       for (let x = 0; x < TILE; x++) { for (let m = 0; m < rows.length; m++) raw[m] = rows[m][x]; out[y * TILE + x] = clampTo(f.type, s.convert(raw)); }

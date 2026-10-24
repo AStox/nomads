@@ -85,7 +85,7 @@ export function realStages(c: Cfg): Stage[] {
   const groundIn = [F.height, f("water.u16"), ...F.terrain, f("chn.u8"), f("valley.u8"), f("pwr.u16"), ...season("stb", "u16"), f("dry.u16"), ...season("pr", "u16"), ...season("pe", "u16"), ...season("sun", "u16"), ...season("tmp", "i16"), ...season("hum", "u8")];
   const groundTileIn = [F.height, f("water.u16"), f("rock.u8"), f("moist.u8"), f("tree.u8"), f("shr.u8"), f("grs.u8"), f("mar.u8"), f("bare.u8"), f("sflag.u8"), f("soil.u16"), f("clayey.u8"), f("ph.u8"), f("stb3.u16"), f("tab.u16"),
     ...season("sun", "u16"), ...season("tmp", "i16"), ...season("sw", "u8"), f("pr1.u16"), f("pe1.u16"), f("wsh.u8"), f("fog.u8"), ...season("snp", "u16"), F.to, f("chn.u8"), f("flow.u32"), f("base.u16"), f("under.u16")];
-  const pyramidIn = [F.height, f("rock.u8"), f("drift.u8"), f("dd.u16"), ...season("tmp", "i16"), ...season("pr", "u16"), f("water.u16"), f("flow.u32"), f("tree.u8"), f("shr.u8"), f("grs.u8"), f("mar.u8"), f("bare.u8"), f("soil.u16")];
+  const pyramidIn = [F.height, F.flooded, f("rock.u8"), f("drift.u8"), f("dd.u16"), ...season("tmp", "i16"), ...season("pr", "u16"), f("water.u16"), f("flow.u32"), f("tree.u8"), f("shr.u8"), f("grs.u8"), f("mar.u8"), f("bare.u8"), f("soil.u16")];
   const coarse = T > COARSE_TIER, C = filesAt(COARSE_TIER), csz = (file: string, from?: string): Spent => ({ ...sizedAt(COARSE_TIER, file), from });
   // tier COARSE_TIER's own heights are read by `flow` and `coarse`, so they are spent by `coarse`, not by `tiers`
   const lower = Array.from({ length: T - 1 }, (_, i) => i + 1).filter((k) => !(coarse && k === COARSE_TIER)).map((k): Spent => ({ ...sizedAt(T, tierFile(k, "height.i32"), k), from: "tiers" }));

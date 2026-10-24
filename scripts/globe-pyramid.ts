@@ -5,7 +5,7 @@
 import { bakeDir, tierFile } from "../src/gpu/globe/bakedir";
 import { precipOfWord } from "../src/gpu/globe/air";
 import { PLANET_TIER } from "../src/gpu/globe/grid";
-import { buildPyramid, type Source } from "../src/gpu/globe/pyramid";
+import { buildPyramid, lakeShare, type Source } from "../src/gpu/globe/pyramid";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 const seed = Number(arg("seed", "1")), key = arg("key", process.env.NOMADS_PLANET_KEY ?? ""), dir = bakeDir(seed, key), faces = arg("faces", "") ? arg("faces", "").split(",").map(Number) : undefined;
@@ -26,6 +26,7 @@ const sources: Record<string, Source | undefined> = {
   marsh: { files: [file("mar.u8")], convert: ([v]) => v },
   bare: { files: [file("bare.u8")], convert: ([v]) => v },
   soil: { files: [file("soil.u16")], convert: ([v]) => v / 25.6 },
+  lake: { files: [file("water.u16"), file("height.i32"), file("flooded.i32")], convert: lakeShare, across: true },
 };
 for (const [name, s] of Object.entries(sources)) if (s && !s.files.every((f) => dir.has(f))) delete sources[name];
 const p = buildPyramid(dir, { seed, key, topTier: tier, sources, faces, budgetS });
