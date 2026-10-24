@@ -968,12 +968,13 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   const upload = (t, data, w, h, bpp, layer = 0) => device.queue.writeTexture({ texture: t, origin: [0, 0, layer] }, data, { bytesPerRow: w * bpp, rowsPerImage: h }, [w, h, 1]);
   // the ground's fields
   const gp = ground;
-  const fineW = tex({ size: [gp.fine.size, gp.fine.size, gp.fine.layers], format: "r32float", label: "fine" });
-  for (let l = 0; l < gp.fine.layers; l++) upload(fineW, gp.fine.data.subarray(l * gp.fine.size ** 2, (l + 1) * gp.fine.size ** 2), gp.fine.size, gp.fine.size, 4, l);
+  // an empty ground (ground-at.js emptyGround: a page whose ground is its windows' pages) holds no fine layers: one texel, which reads as 0 wherever the painter loads past it
+  const FS = gp.fine.data ? gp.fine.size : 1, fineW = tex({ size: [FS, FS, gp.fine.layers], format: "r32float", label: "fine" });
+  if (gp.fine.data) for (let l = 0; l < gp.fine.layers; l++) upload(fineW, gp.fine.data.subarray(l * gp.fine.size ** 2, (l + 1) * gp.fine.size ** 2), gp.fine.size, gp.fine.size, 4, l);
   const isleW = tex({ size: [gp.isle.size, gp.isle.size, gp.isle.layers], format: "r32float", label: "isle" });
   for (let l = 0; l < gp.isle.layers; l++) upload(isleW, gp.isle.data.subarray(l * gp.isle.size ** 2, (l + 1) * gp.isle.size ** 2), gp.isle.size, gp.isle.size, 4, l);
   const GN = gp.grid.size, gridW = device.createTexture({ size: [GN, GN, 8], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC, label: "grid" });
-  for (let l = 0; l < 3; l++) upload(gridW, gp.grid.data.subarray(l * GN * GN, (l + 1) * GN * GN), GN, GN, 4, l);
+  if (gp.grid.data) for (let l = 0; l < 3; l++) upload(gridW, gp.grid.data.subarray(l * GN * GN, (l + 1) * GN * GN), GN, GN, 4, l);
   const RMN = Math.round(Math.sqrt(gp.river.length)), riverW = tex({ size: [RMN, RMN], format: "r8uint", label: "river" });
   upload(riverW, gp.river, RMN, RMN, 1);
   // the textures the painter reads: the window's (above), or the pages' atlas (setGroundPages)
@@ -1008,7 +1009,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       }
     upload(gridT, gx, GN, GN, 4, 3); upload(gridT, gz, GN, GN, 4, 4);
   }
-  gradientOf(gp.grid.data.subarray(0, GN * GN));
+  if (gp.grid.data) gradientOf(gp.grid.data.subarray(0, GN * GN)); else gridTop = 0;
   // tables: haze, glow, the ground's tones by light, then the sky's light table
   const tables = new Uint32Array(FONT0 + fontRows.length);
   tables.set(HAZE, 0); tables.set(GLOW, NCOL); tables.set(TONE, 2 * NCOL); tables.set(fontRows, FONT0);
@@ -1271,7 +1272,22 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       default: throw new Error(`no resource ${name}`);
     }
   };
-  const group = (s, v = 0, over = {}) => device.createBindGroup({ layout: s.bgl, entries: s.binds.map((n) => { const name = n.split(":")[0]; return { binding: RES[name][0], resource: over[name] ?? res(name, v) }; }) });
+  // A bind group is made again only when no one made for this pass and view bound the same resources (a frame used to make 100): buffers are compared by the buffer, views by identity. A pass shared by
+  // several sources (the window's blocks of one size) keeps a group for each, up to 64 (the oldest goes, with the buffers it names let go of by the engine's own reference counts).
+  const sameRes = (a, b) => a === b || (a?.buffer !== undefined && a.buffer === b?.buffer && a.offset === b.offset && a.size === b.size);
+  const groupCache = new WeakMap();
+  const group = (s, v = 0, over = {}) => {
+    const rs = s.binds.map((n) => { const name = n.split(":")[0]; return over[name] ?? res(name, v); });
+    let byView = groupCache.get(s);
+    if (!byView) groupCache.set(s, byView = new Map());
+    let list = byView.get(v);
+    if (!list) byView.set(v, list = []);
+    for (const c of list) if (c.layout === s.bgl && c.rs.every((r, i) => sameRes(r, rs[i]))) return c.bg;
+    const bg = device.createBindGroup({ layout: s.bgl, entries: s.binds.map((n, i) => ({ binding: RES[n.split(":")[0]][0], resource: rs[i] })) });
+    list.push({ layout: s.bgl, rs, bg });
+    if (list.length > 64) list.shift();
+    return bg;
+  };
 
   // ---------- the light's fields ----------
   // The ground's wrap (ground.wgsl.js g_wrapW): where its logical cell 0 lies in the fine, isle, grid and mask textures, and the noise's offset in whole metres, an x y

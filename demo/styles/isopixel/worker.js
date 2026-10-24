@@ -100,7 +100,7 @@ async function init(m) {
   }
   const t1 = performance.now();
   say("laying out the ground", 0, 1);
-  const pack = packGround(isle, g);
+  const pack = ground.pack ?? packGround(isle, g);
   const t2 = performance.now();
   // the world takes up residence on the GPU while the shaders build; it draws once the renderer is ready
   if (m.sim) startSim(simB, simC.createSim, m.seed, m.sim).catch((err) => post({ type: "simError", error: String((err && err.stack) || err) }));
@@ -1393,7 +1393,7 @@ function render() {
     pending = null; skips++;
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, cpuMs: 0, gpuMs: 0, passes: R.stats.passes, counts: R.stats.counts, at: 0, fronts, lift: planetLift, q: planetQ, applyMs, skipped: true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, cpuMs: 0, gpuMs: 0, passes: R.stats.passes, counts: R.stats.counts, at: 0, fronts, lift: planetLift, q: planetQ, relief: planetRelief, applyMs, skipped: true, settled: true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     return;
   }
   lastKey = key; lastAnim = anim;
@@ -1438,7 +1438,7 @@ function render() {
     // the levels and bearings whose front lists are built, when they change (live.js listsReady)
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: planetLift, q: planetQ, relief: planetRelief, applyMs, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: planetLift, q: planetQ, relief: planetRelief, applyMs, settled: !planetLayer || planetLayer.settled?.() === true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     if (pending) render();
   });
 }
