@@ -53,9 +53,7 @@ export function packGround(isle, g, onGpu = null) {
   }
 
   // the noise's gradient table, as flora.ts makes it, and after it the place's runoff by season against its mean (times 1.2, flowNow's) which a stream's quick share follows
-  const grad = new Float32Array(8192 + 4 + 10);
-  for (let k = 0; k < 4096; k++) { grad[k * 2] = Math.cos((k / 4096) * 6.2831853); grad[k * 2 + 1] = Math.sin((k / 4096) * 6.2831853); }
-  for (let q = 0; q < 4; q++) grad[8192 + q] = isle.quick[q] * 1.2;
+  const grad = noiseGrads(isle.quick);
 
   // Streams: every vertex as x, z, mean flow, groundwater share, bankfull flow, the flow under its bed, bankfull width
   // (flora.ts FineRiver); a bin's list holds the index of each segment's second vertex, in flora.ts's order, so ties
@@ -88,6 +86,14 @@ export function packGround(isle, g, onGpu = null) {
     streams: new Float32Array(verts.length ? verts : [0, 0, 0, 0, 0]),
     streamBins,
   };
+}
+
+// the noise's gradient table, as flora.ts makes it, and after it the place's runoff by season against its mean (times 1.2, flowNow's) which a stream's quick share follows
+export function noiseGrads(quick = [0, 0, 0, 0]) {
+  const grad = new Float32Array(8192 + 4 + 10);
+  for (let k = 0; k < 4096; k++) { grad[k * 2] = Math.cos((k / 4096) * 6.2831853); grad[k * 2 + 1] = Math.sin((k / 4096) * 6.2831853); }
+  for (let q = 0; q < 4; q++) grad[8192 + q] = quick[q] * 1.2;
+  return grad;
 }
 
 // main.js dqBuild: the nearest pair of natural ground colours for every RGB at 5 bits a channel, and how far along the
@@ -166,9 +172,12 @@ const u = (name) => `${P[name]}u`;
 const ramp = (...names) => arr("u32", names.map(u));
 
 // The ground's WGSL at bind group `group`: the bindings in GROUND_BINDINGS order and the functions the renderer calls.
-export function groundWGSL(group) {
+export function groundWGSL(group, { planet = false } = {}) {
   const G = `@group(${group})`;
+  // planet: the colour code alone, for the planet pass (wgsl/globe.js), which declares gDQ, gGradT and g_wrapW and fills the ground sample from its tier's cells itself
+  const I = (s) => (planet ? "" : s);
   return /* wgsl */ `
+${I(/* wgsl */ `
 ${G} @binding(0) var gFine: texture_2d_array<f32>;
 ${G} @binding(1) var gIsle: texture_2d_array<f32>;
 ${G} @binding(2) var gGrid: texture_2d_array<f32>;
@@ -193,11 +202,13 @@ fn g_wr(v: vec2<i32>, k: u32, n: i32) -> vec2<i32> {
 fn pgOn() -> bool { return bitcast<vec2<i32>>(gGradT[4103u]).x != 0; }
 fn pgTab(k: u32) -> i32 { let v = bitcast<vec2<i32>>(gGradT[4104u + (k >> 1u)]); return select(v.x, v.y, (k & 1u) == 1u); }
 ${pageWGSL()}
+`)}
 
 // k: the level's art pixels per meter; frame 0..7 of the water's loop; season 0 spring .. 3 winter; flags bit 0: worn
 // paths are drawn
 struct PaintCtx { k: f32, frame: u32, season: u32, flags: u32 }
 
+${I(/* wgsl */ `
 const g_N: i32 = ${N};
 const g_M: i32 = ${M};
 const g_RM: i32 = ${RM};
@@ -208,6 +219,7 @@ const g_NB: i32 = ${NB};
 // the island's corner, -ORIGIN, in whole meters
 const g_HALFI: i32 = ${SIZE / 2};
 const g_ORIGIN: f32 = ${lit(ORIGIN)};
+`)}
 
 const g_BAYER = ${arr("f32", [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map((v) => lit((v + 0.5) / 16)))};
 const g_DI = ${ramp("d0", "d1", "d2", "d3", "d4", "d5")};
@@ -216,7 +228,7 @@ const g_RK = ${ramp("r0", "r1", "r2", "r3", "r4", "r5")};
 const g_MUD = ${ramp("d0", "m0", "m1", "m2")};
 const g_WA = ${ramp("w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7")};
 const g_ICE = ${ramp("w6", "haze", "snow")};
-const g_HALF = array<f32, 5>(0.0, 0.45, 0.6, 0.78, 1.0);
+${I(`const g_HALF = array<f32, 5>(0.0, 0.45, 0.6, 0.78, 1.0);`)}
 // main.js's Math.floor(1.4 + 3.9 * 0 + R * 0.4 + C * 0.5) for R -2..2 and C -1..1, as float64 works it out
 const g_OPEN = ${arr("i32", [-2, -1, 0, 1, 2].flatMap((R) => [-1, 0, 1].map((C) => Math.floor(1.4 + 3.9 * 0 + R * 0.4 + C * 0.5))))};
 
@@ -301,6 +313,7 @@ fn g_dq(c: vec3<f32>, X: i32, Y: i32) -> u32 {
   return select(e & 255u, (e >> 8u) & 255u, bayer(X, Y) * 255.0 < f32(e >> 16u));
 }
 
+${I(/* wgsl */ `
 // ---------- the world's fields ----------
 // World meters as coordinates on the fine grid, the island's cells, the 12.5 m light grid, the stream mask's texel
 // centres and the sim's tiles less half a tile: (whole part, fraction), each exact as the JavaScript's
@@ -455,7 +468,9 @@ fn g_streamAt(x: f32, z: f32) -> GStream {
   }
   return best;
 }
+`)}
 
+${I(/* wgsl */ `
 // ---------- ice (the ice edge the CPU bake once drew, main.js iceTex) ----------
 fn g_ice(i: i32, j: i32) -> f32 {
   if (i < 0 || j < 0 || i >= g_TILES || j >= g_TILES) { return 0.0; }
@@ -472,6 +487,7 @@ fn g_iceAt(x: f32, z: f32) -> bool {
   let v = (g_ice(i, j) * (1.0 - a) + g_ice(i + 1, j) * a) * (1.0 - b) + (g_ice(i, j + 1) * (1.0 - a) + g_ice(i + 1, j + 1) * a) * b;
   return v > 0.5 + ${NOISE(40, 40, 77)} * 0.3;
 }
+`)}
 fn g_iceTex(X: i32, Y: i32, x: f32, z: f32) -> u32 {
   if (abs(${NOISE(9, 9, 131)}) < 0.025 || abs(${NOISE(23, 17, 132)}) < 0.015) { return ${u("w5")}; }
   let v = 1.4 + ${FBM(30, 30, 133)} * 1.2 + select(0.0, 1.0, g_h2u(X >> 1u, Y, 134) < ${UT(0.05)});
@@ -490,7 +506,13 @@ fn g_lapAngle(x: f32, z: f32, frame: u32) -> f32 {
   let r = (f32(n) - m * 6.28125) - m * 0.0019353071795864769;
   return f32(frame) / 8.0 * 6.2831855 + r + f;
 }
-fn g_water(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32, kind: u32, wet: f32, river: f32) -> u32 {
+${I(/* wgsl */ `
+// What the water pass needs of the ground at a point: the kind (1 sea, 2 lake, 3 stream), how far inside the water's edge it lies in meters, the depth, whether a stream
+// runs dry here and whether the water is frozen.
+fn fillWater(S: ptr<function, GSample>, x: f32, z: f32, ctx: PaintCtx, river: bool) {
+  var kind = 3u;
+  if (!river) { kind = select(2u, 1u, heightAt(x, z) < 0.5); }
+  (*S).kind = kind;
   var gx: f32;
   var gz: f32;
   var v0: f32;
@@ -499,7 +521,7 @@ fn g_water(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32, kind: u32, w
   if (kind == 3u) {
     gx = (g_riverSmooth(x + 3.0, z) - g_riverSmooth(x - 3.0, z)) / 6.0;
     gz = (g_riverSmooth(x, z + 3.0) - g_riverSmooth(x, z - 3.0)) / 6.0;
-    v0 = river;
+    v0 = (*S).river;
     // the channel is cut to the bankfull width; this season's water runs down the middle of it, as wide as the flow
     // makes it (water.ts widthOf), or not at all where the flow is no more than the valley's fill carries under the bed
     let st = g_streamAt(x, z);
@@ -509,18 +531,27 @@ fn g_water(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32, kind: u32, w
   } else {
     gx = (waterAt(x + 3.0, z) - waterAt(x - 3.0, z)) / 6.0;
     gz = (waterAt(x, z + 3.0) - waterAt(x, z - 3.0)) / 6.0;
-    v0 = wet;
+    v0 = (*S).wet;
     if (kind == 1u) { depth = max(0.0, -heightAt(x, z)); } else { depth = g_bil(${IL.water}, g_cellC(x), g_cellC(z)); }
   }
   let gl = length(vec2<f32>(gx, gz));
-  let shore = select(60.0, (v0 - 0.5) / gl, gl > 1e-4);
-
+  (*S).shore = select(60.0, (v0 - 0.5) / gl, gl > 1e-4);
+  (*S).depth = depth;
+  (*S).bed = bed;
+  (*S).ice = !bed && kind != 1u && g_iceAt(x, z);
+}
+`)}
+// main.js groundAt's shore and depth, then paintWater, from a sample whose water is filled
+fn g_water(S: GSample, x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) -> u32 {
+  let kind = S.kind;
+  let shore = S.shore;
+  let depth = S.depth;
   // a stream's bed where no water runs this season: gravel and cobbles the floods left
-  if (bed) {
+  if (S.bed) {
     if (h2(X, Y, 44) < 0.08 * ${FADE(0.4)}) { return ${u("d5")}; }
     return g_DI[g_toneIndex(3.6 + ${CL(0.8, 45, "0.45")} * 0.8, X, Y, 6)];
   }
-  if (kind != 1u && g_iceAt(x, z)) { return g_iceTex(X, Y, x, z); }
+  if (S.ice) { return g_iceTex(X, Y, x, z); }
   let px = shore * ctx.k;
   let lap = 0.5 + 0.18 * sin(g_lapAngle(x, z, ctx.frame));
   if (px < 1.2 * lap + 0.3) { return ${u("w7")}; }
@@ -533,13 +564,16 @@ fn g_water(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32, kind: u32, w
   } else {
     // a narrow band of shallows along the shore in meters, then open water by depth
     let shallow = max((1.0 - g_smooth(0.0, 2.5, depth)) * 0.8, 1.0 - g_smooth(0.0, 12.0, shore)) * (0.6 + 0.4 * (1.0 - g_smooth(0.0, 9.0, depth)));
-    let R = g_jround(${FBM(90, 90, 41)} * 1.5);
+    let R = g_jround(${FBM(90, 90, 41)} * ${FADE(90)} * 1.5);
     let C = ${CL(3, 42, "0.5")};
     v = 1.4 + 3.9 * shallow + R * 0.4 + C * 0.5;
+    // the sea beyond the shelf darkens with its depth, none of it above 100 m
+    let deep = select(0.0, g_smooth(100.0, 4000.0, depth), kind == 1u);
+    v -= 0.7 * deep;
     // open water's tone is a sum of decimals that float64 leaves a hair under a whole number (1.4 - 0.4 is
     // 0.9999999999999999), so its ripples take main.js's whole part from a table, by the broad swell and the clusters
     vf = i32(floor(v));
-    if (shallow == 0.0 && abs(R) <= 2.0) { vf = g_OPEN[i32(R + 2.0) * 3 + i32(C + 1.0)]; }
+    if (shallow == 0.0 && abs(R) <= 2.0 && deep == 0.0) { vf = g_OPEN[i32(R + 2.0) * 3 + i32(C + 1.0)]; }
   }
   // ripple dashes, 2 or 3 px on every other row, and sparkles, each shown in some frames only
   if ((Y & 1) == 0) {
@@ -560,12 +594,22 @@ fn g_water(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32, kind: u32, w
 }
 
 // ---------- land ----------
-// what groundAt holds for land that the colour needs
-struct g_Land { c: array<f32, 6>, cls: u32, snowNow: f32, ex: f32, cx: vec2<f32>, cy: vec2<f32>, season: u32 }
+// What the colour code reads of the ground at one pixel, in meters of the noise's own frame (the island's, or the planet pass's face metres), filled by the ground's readers
+// (fillTop, fillWater, fillLand, fillColour: the fine pages below for the island, the pyramid tier's cells in wgsl/globe.js for the planet) so that one painter serves every zoom.
+struct GSample {
+  wet: f32, river: f32,                                                      // standing water's share and the stream mask, 0 to 1 (fillTop)
+  kind: u32, shore: f32, depth: f32, bed: bool, ice: bool,                    // the water's kind, distance inside its edge, depth, dry stream bed, frozen (fillWater)
+  c: array<f32, 6>, rockS: f32, soil: f32, s: f32, snowNow: f32, trail: bool, // the six covers, rock's share, soil depth, the ridges' light, snow, a worn path (fillLand)
+  cx: vec2<f32>, cy: vec2<f32>, season: u32, cls: u32,
+  ex: f32, pet: f32, precip: f32, table: f32, peat: f32, silt: f32, fog: f32, rock: i32, // the climate and soil the colour mixes from (fillColour)
+  isWater: bool,
+}
 const g_BARE_ROCK = array<vec3<f32>, 5>(${[[118, 104, 92], [176, 140, 96], [204, 196, 176], [164, 144, 138], [92, 88, 84]].map(rgb).join(", ")});
 fn g_mixc(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> { return a + (b - a) * clamp(t, 0.0, 1.0); }
 // main.js groundRGB: each cover share's paint, the generator's climate and soil, light, mottle and texture
-fn g_rgb(L: g_Land, s: f32, x: f32, z: f32, m60: f32, mpp: f32) -> vec3<f32> {
+fn g_rgb(S: ptr<function, GSample>, s: f32, x: f32, z: f32, m60: f32, mpp: f32) -> vec3<f32> {
+  fillColour(S);
+  let L = *S;
   let hill = L.cls == 6u;
   let tr = L.c[1];
   let sh = L.c[2];
@@ -575,14 +619,14 @@ fn g_rgb(L: g_Land, s: f32, x: f32, z: f32, m60: f32, mpp: f32) -> vec3<f32> {
   let ba = L.c[4] * select(1.0, 0.2, hill);
   var sum = gr + tr + sh + ma + ba;
   if (sum == 0.0) { sum = 1.0; }
-  let pet = g_bil(${IL.pet}, L.cx, L.cy);
-  let bal = (g_bil(${IL.precip}, L.cx, L.cy) - pet) / max(1.0, pet);
-  let lush = max(g_smooth(-0.3, 0.3, bal), exp(-g_bil(${IL.table}, L.cx, L.cy) / 2.5));
-  let peat = g_bil(${IL.peat}, L.cx, L.cy);
-  let soil = g_bil(${IL.soil}, L.cx, L.cy);
-  let silt = g_bil(${IL.silt}, L.cx, L.cy);
-  let fog = g_bil(${IL.fog}, L.cx, L.cy);
-  let rock = i32(g_isleAt(${IL.rock}, g_roundC(L.cx), g_roundC(L.cy)));
+  let pet = L.pet;
+  let bal = (L.precip - pet) / max(1.0, pet);
+  let lush = max(g_smooth(-0.3, 0.3, bal), exp(-L.table / 2.5));
+  let peat = L.peat;
+  let soil = L.soil;
+  let silt = L.silt;
+  let fog = L.fog;
+  let rock = L.rock;
   var grass: vec3<f32>;
   if (lush > 0.5) { grass = g_mixc(${rgb([98, 126, 60])}, ${rgb([56, 96, 48])}, (lush - 0.5) * 2.0); } else { grass = g_mixc(${rgb([160, 150, 90])}, ${rgb([98, 126, 60])}, lush * 2.0); }
   let marsh = g_mixc(${rgb([74, 94, 56])}, ${rgb([48, 50, 38])}, peat);
@@ -621,10 +665,10 @@ fn g_soil(x: f32, z: f32, s: f32, X: i32, Y: i32, mpp: f32) -> u32 {
 }
 // rock: broad planes picked by facing, fissures, cracks and grain, and snow in solid shapes
 fn g_rock(x: f32, z: f32, s: f32, snow: f32, X: i32, Y: i32, mpp: f32) -> u32 {
-  let plane = g_jround(${FBM(30, 30, 27)} * 1.4) * 0.5;
+  let plane = g_jround(${FBM(30, 30, 27)} * ${FADE(30)} * 1.4) * 0.5;
   let face = s * 1.1 + plane + 0.9;
   var snowV = -1.0;
-  if (snow > 0.03) { snowV = ${FBM(20, 40, 29)} + snow * 3.0 - 0.6 + ${CL(2, 30)} * 0.05; }
+  if (snow > 0.03) { snowV = ${FBM(20, 40, 29)} * ${FADE(20)} + snow * 3.0 - 0.6 + ${CL(2, 30)} * 0.05; }
   let lit = select(${u("snow")}, ${u("haze")}, face < -0.2);
   if (snowV > 0.04) { return lit; }
   if (snowV > -0.02) { return select(select(${u("r4")}, ${u("r2")}, face < -0.2), lit, bayer(X, Y) < (snowV + 0.02) / 0.06); }
@@ -639,6 +683,7 @@ fn g_rock(x: f32, z: f32, s: f32, snow: f32, X: i32, Y: i32, mpp: f32) -> u32 {
   return g_RK[g_toneIndex(2.6 + face * 1.3 + ${CL(2.2, 212)} * 0.7 + ${CL(0.5, 213, "0.5")} * 0.8, X, Y, 6)];
 }
 
+${I(/* wgsl */ `
 // ---------- worn paths (main.js trailNear, trailDist, onTrail) ----------
 // a worn cell's step, 0 to 4, in the texel's low bits; bit 7 marks a cell with a worn one within three (webgpu.js)
 fn g_worn(a: i32, b: i32) -> u32 { return textureLoad(gTrail, vec2<i32>(a, b), 0).x & 7u; }
@@ -707,67 +752,44 @@ fn g_onTrail(x: f32, z: f32, mpp: f32, X: i32, Y: i32) -> bool {
   let r = mpp * 0.5;
   return d < r && bayer(X, Y) < min(1.0, 1.6 / mpp) * (1.0 - max(0.0, d) / r) * 1.5;
 }
+`)}
 
 // main.js paintLand, with groundAt's land half (flora.ts groundClass) worked out first
-fn g_land(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32, wet: f32, river: f32) -> u32 {
-  let slope = g_gridAt(2, x, z);
-  let cx = g_cellC(x);
-  let cy = g_cellC(z);
-  let ex = g_bil(${IL.windShare}, cx, cy);
+fn g_land(S: ptr<function, GSample>, x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) -> u32 {
   // biome edges wander in world meters
   let wx = x + ${FBM(40, 40, 64)} * 14.0;
   let wz = z + ${FBM(40, 40, 66)} * 14.0;
-  var L: g_Land;
+  fillLand(S, x, z, wx, wz, X, Y, ctx, mpp);
   // grass, tree, shrub, marsh, bare, sand
-  let layer = array<i32, 6>(6, 4, 5, 7, 8, 9);
   var best = 0u;
   var bs = -1.0;
-  var cc = array<f32, 6>();
-  if (pgOn()) {
-    // one page lookup for the six layers
-    let hi = vec2<f32>(${M - 2}.0, ${lit(M - 1.001 - (M - 2))});
-    let cu = g_clampC(g_fineC(wx), hi);
-    let cv = g_clampC(g_fineC(wz), hi);
-    let at = pgFineAt(vec2<i32>(i32(cu.x), i32(cv.x)));
-    for (var q = 0u; q < 6u; q++) { cc[q] = pgBil(pgFineLd(gFine, at, layer[q]), cu.y, cv.y); }
-  } else {
-    for (var q = 0u; q < 6u; q++) { cc[q] = g_fineAt(layer[q], wx, wz); }
-  }
   for (var q = 0u; q < 6u; q++) {
-    let c = cc[q];
-    L.c[q] = c;
+    let c = (*S).c[q];
     if (c > bs) { bs = c; best = q; }
   }
-  // ground.ts coverClass: past the critical slope bare rock; on a Leptosol's thin soil bare ground is bare rock and grass
+  // ground.ts coverClass: past the critical slope bare rock (a share of the pixel's, dithered, where the ground's reader gives one); on a Leptosol's thin soil bare ground is bare rock and grass
   // or scrub grass with outcrops
   var cls = best;
-  let soil = g_bil(${IL.soil}, cx, cy);
-  if (slope >= ${SC}) { cls = 7u; } else if (soil < ${LEPTOSOL}) {
+  if ((*S).rockS + (bayer(X, Y) - 0.5) * 0.3 > 0.5) { cls = 7u; } else if ((*S).soil < ${LEPTOSOL}) {
     if (best == 4u) { cls = 7u; } else if (best == 0u || best == 2u) { cls = 6u; }
   }
-  L.cls = cls;
-  L.ex = ex;
-  L.cx = cx;
-  L.cy = cy;
-  L.season = ctx.season;
-  L.snowNow = g_smooth(3.0, 30.0, g_bil(${IL.snow0} + i32(ctx.season & 3u), cx, cy));
+  (*S).cls = cls;
   // the light main.js terrainLight leaves to the bake when the GPU lights slopes and hollows: the ridges' share
-  let s = max(0.0, g_gridAt(1, x, z)) * 0.4;
-
-  if ((ctx.flags & 1u) != 0u && g_trailNear(x, z) && g_onTrail(x, z, mpp, X, Y)) { return g_soil(x, z, s + 0.4, X, Y, mpp); }
-  let mot = ${FBM(60, 60, 11)};
-  if (cls == 7u) { return g_rock(x, z, s, 0.6 * L.snowNow, X, Y, mpp); }
+  let s = (*S).s;
+  if ((*S).trail) { return g_soil(x, z, s + 0.4, X, Y, mpp); }
+  let mot = ${FBM(60, 60, 11)} * ${FADE(60)};
+  if (cls == 7u) { return g_rock(x, z, s, 0.6 * (*S).snowNow, X, Y, mpp); }
   switch cls {
     case 1u: {
       // leaf litter in small drifts, a few twigs of dark soil, lit patches where the canopy opens
       let lit = ${CL(4, 3, "0.5")};
       let litter = ${CL(0.7, 4, "0.5")};
       if (litter > 0.0 && ${NF(0.35, 0.35, 5, 0.35)} > 0.3) { return ${u("d2")}; }
-      let c = g_rgb(L, s, x, z, mot, mpp);
+      let c = g_rgb(S, s, x, z, mot, mpp);
       let k = 1.0 + lit * 0.06;
       return g_dq(vec3<f32>(c.x * k, c.y * k, c.z * k), X, Y);
     }
-    case 2u: { return g_dq(g_rgb(L, s, x, z, mot, mpp), X, Y); }
+    case 2u: { return g_dq(g_rgb(S, s, x, z, mot, mpp), X, Y); }
     case 5u: {
       var v = 2.5 + s * 0.7 + g_jround(mot * 2.0) * 0.3 + ${CL(0.4, 8, "0.55")} * 0.8;
       // ripples 3 m apart, fading out once they are narrower than a pixel; (0.6 x + 0.8 z) / 3 is (3 x + 4 z) / 15,
@@ -782,12 +804,12 @@ fn g_land(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32, wet: f32, riv
         let f = r - floor(r);
         if (f < 0.13 * rf) { v -= 1.0; } else if (f < 0.22 * rf) { v += 0.6; }
       }
-      if (wet > 0.2 || river > 0.2) { v -= 0.8; }
+      if ((*S).wet > 0.2 || (*S).river > 0.2) { v -= 0.8; }
       return g_SA[g_toneIndex(v, X, Y, 5)];
     }
     case 3u: {
       // wet hollows gather where a broad wetness field is high, so they come in clusters with firmer ground between
-      let pn = ${NOISE(37, 37, 31)} + 0.3 * ${NOISE(15, 15, 32)} + ${NOISE(110, 110, 33)} * 0.5;
+      let pn = ${NOISE(37, 37, 31)} * ${FADE(37)} + 0.3 * ${NOISE(15, 15, 32)} * ${FADE(15)} + ${NOISE(110, 110, 33)} * 0.5 * ${FADE(110)};
       if (pn > 0.42) {
         if (pn > 0.5 && ${NF(1.6, 1.6, 36, 1.6)} > 0.35) { return select(${u("w0")}, ${u("w1")}, bayer(X, Y) < 0.3); }
         return g_MUD[g_toneIndex(1.8 + s * 0.6 + ${CL(1.2, 9, "0.5")} * 0.8 + ${CL(0.4, 37, "0.5")} * 0.6 - min(1.0, (pn - 0.42) * 6.0) * 0.8, X, Y, 4)];
@@ -797,29 +819,81 @@ fn g_land(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32, wet: f32, riv
         if (${NF(0.5, 2.2, 34, 0.5)} > 0.1) { return ${u("m3")}; }
         return select(${u("m1")}, ${u("a1")}, ${CL(1.5, 35)} > 0.0);
       }
-      return g_dq(g_rgb(L, s, x, z, mot, mpp), X, Y);
+      return g_dq(g_rgb(S, s, x, z, mot, mpp), X, Y);
     }
     default: {
       // meadow: bare patches only where the generator's soil is thin
-      let bareN = ${FBM(14, 14, 55)};
-      if (bareN > 0.3 + L.c[0] * 0.15 + g_smooth(0.3, 1.2, g_bil(${IL.soil}, cx, cy)) * 0.4) { return g_soil(x, z, s + (bareN - 0.5) * 1.5, X, Y, mpp); }
+      let bareN = ${FBM(14, 14, 55)} * ${FADE(14)};
+      if (bareN > 0.3 + (*S).c[0] * 0.15 + g_smooth(0.3, 1.2, (*S).soil) * 0.4) { return g_soil(x, z, s + (bareN - 0.5) * 1.5, X, Y, mpp); }
       // under the woods edge the grass is strewn with leaf litter
-      if (L.c[1] > 0.2 && ${CL(0.6, 15, "0.55 - (L.c[1] - 0.2) * 0.4")} > 0.0) { return ${u("d2")}; }
-      return g_dq(g_rgb(L, s, x, z, mot, mpp), X, Y);
+      if ((*S).c[1] > 0.2 && ${CL(0.6, 15, "0.55 - ((*S).c[1] - 0.2) * 0.4")} > 0.0) { return ${u("d2")}; }
+      return g_dq(g_rgb(S, s, x, z, mot, mpp), X, Y);
     }
   }
+}
+
+// The colour of a ground pixel from a sample whose wet and river are filled: water, a stream or land, the readers filling the rest as it is asked for.
+fn g_paint(S: ptr<function, GSample>, x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) -> u32 {
+  if ((*S).wet > 0.5) { fillWater(S, x, z, ctx, false); (*S).isWater = true; return g_water(*S, x, z, X, Y, ctx, mpp); }
+  if ((*S).river > 0.5) { fillWater(S, x, z, ctx, true); (*S).isWater = true; return g_water(*S, x, z, X, Y, ctx, mpp); }
+  return g_land(S, x, z, X, Y, ctx, mpp);
+}
+
+${I(/* wgsl */ `
+// the island's ground read at a pixel: the fine pages (or the window's textures), the light grid, the island's fields
+fn fillTop(S: ptr<function, GSample>, x: f32, z: f32) {
+  (*S).wet = waterAt(x, z);
+  (*S).river = g_riverSmooth(x, z);
+}
+fn fillLand(S: ptr<function, GSample>, x: f32, z: f32, wx: f32, wz: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) {
+  let slope = g_gridAt(2, x, z);
+  let cx = g_cellC(x);
+  let cy = g_cellC(z);
+  let layer = array<i32, 6>(6, 4, 5, 7, 8, 9);
+  var cc = array<f32, 6>();
+  if (pgOn()) {
+    // one page lookup for the six layers
+    let hi = vec2<f32>(${M - 2}.0, ${lit(M - 1.001 - (M - 2))});
+    let cu = g_clampC(g_fineC(wx), hi);
+    let cv = g_clampC(g_fineC(wz), hi);
+    let at = pgFineAt(vec2<i32>(i32(cu.x), i32(cv.x)));
+    for (var q = 0u; q < 6u; q++) { cc[q] = pgBil(pgFineLd(gFine, at, layer[q]), cu.y, cv.y); }
+  } else {
+    for (var q = 0u; q < 6u; q++) { cc[q] = g_fineAt(layer[q], wx, wz); }
+  }
+  for (var q = 0u; q < 6u; q++) { (*S).c[q] = cc[q]; }
+  (*S).soil = g_bil(${IL.soil}, cx, cy);
+  (*S).rockS = select(0.0, 1.0, slope >= ${SC});
+  (*S).cx = cx;
+  (*S).cy = cy;
+  (*S).season = ctx.season;
+  (*S).snowNow = g_smooth(3.0, 30.0, g_bil(${IL.snow0} + i32(ctx.season & 3u), cx, cy));
+  (*S).s = max(0.0, g_gridAt(1, x, z)) * 0.4;
+  (*S).trail = (ctx.flags & 1u) != 0u && g_trailNear(x, z) && g_onTrail(x, z, mpp, X, Y);
+}
+fn fillColour(S: ptr<function, GSample>) {
+  let cx = (*S).cx;
+  let cy = (*S).cy;
+  (*S).ex = g_bil(${IL.windShare}, cx, cy);
+  (*S).pet = g_bil(${IL.pet}, cx, cy);
+  (*S).precip = g_bil(${IL.precip}, cx, cy);
+  (*S).table = g_bil(${IL.table}, cx, cy);
+  (*S).peat = g_bil(${IL.peat}, cx, cy);
+  (*S).silt = g_bil(${IL.silt}, cx, cy);
+  (*S).fog = g_bil(${IL.fog}, cx, cy);
+  (*S).rock = i32(g_isleAt(${IL.rock}, g_roundC(cx), g_roundC(cy)));
 }
 
 // main.js drawTerrainLive's colour for a ground pixel at world meters x, z and global art pixel X, Y
 fn paintGround(x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx) -> u32 {
   let mpp = 1.0 / ctx.k;
-  let wet = waterAt(x, z);
-  let river = g_riverSmooth(x, z);
-  if (wet > 0.5) { return g_water(x, z, X, Y, ctx, mpp, select(2u, 1u, heightAt(x, z) < 0.5), wet, river); }
-  if (river > 0.5) { return g_water(x, z, X, Y, ctx, mpp, 3u, wet, river); }
-  return g_land(x, z, X, Y, ctx, mpp, wet, river);
+  var S: GSample;
+  fillTop(&S, x, z);
+  return g_paint(&S, x, z, X, Y, ctx, mpp);
 }
+`)}
 
+${I(/* wgsl */ `
 // main.js texWall(V, DIRTW, face, X, Y, depth, hpx, lev, true, 0) with V.lp = lp: an earth bank under a grass lip
 fn bankColour(face: u32, X: i32, Y: i32, depth: f32, hpx: f32, lev: f32, lp: f32) -> u32 {
   let f = face != 0u;
@@ -830,5 +904,6 @@ fn bankColour(face: u32, X: i32, Y: i32, depth: f32, hpx: f32, lev: f32, lp: f32
   let v = select(2.9, 1.8, f) + select(-0.25, 0.35, (band & 1) != 0) + (h2(X, Y, 77) - 0.5) * 0.6 - select(0.0, 1.0, hpx - depth < 1.0);
   return g_DI[g_dithIndex(v, X, Y, 6)];
 }
+`)}
 `;
 }

@@ -192,6 +192,8 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
 
   return {
     fieldsT, heightsT, tableB, tiers, stats, held: () => slotOf.size, flying: () => flying.size,
+    // whether a tile is held, or never will be (its face is not baked, or its file is not there): what the view's finest level waits on (planet.js readyLevel)
+    ready(t, f, tx, ty) { const i = tileIndex(t, f, tx, ty); return slotOf.has(i) || absent.has(i) || !faces.includes(f); },
     // the tile of tier 0 as planes, for choosing a place (held while the planet is)
     planes0: (f) => whole.get(f),
     // the ground's height in metres at a unit point, from the finest tile held there (bilinear between its cells' centres), 0 where none is
