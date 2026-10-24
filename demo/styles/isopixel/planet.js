@@ -75,7 +75,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     device.createRenderPipelineAsync({ layout, vertex: { module, entryPoint: "vs" }, fragment: { module, entryPoint: "fs", targets: artTarget }, primitive: { topology: "triangle-list" }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: "always" } }),
     device.createRenderPipelineAsync({ layout: device.createPipelineLayout({ bindGroupLayouts: [blitBgl] }), vertex: { module, entryPoint: "vs" }, fragment: { module, entryPoint: "bfs", targets: [{ format }] }, primitive: { topology: "triangle-list" } }),
   ]);
-  const dq = store(dqBuild()), tab = store(tables), gradW = noiseGrads([0, 0, 0, 0], CROWN_AT + Math.ceil(NCOL / 2)), grads = store(gradW);
+  const dq = store(dqBuild()), tab = store(tables), gradW = noiseGrads([0, 0, 0, 0], CROWN_AT + Math.ceil((NCOL + 1) / 2)), grads = store(gradW);
   // the sky's light tables (the page sends them as the light changes): levels x 4 fire levels (and a last row) of NCOL colours
   const lutB = device.createBuffer({ size: (levels * 4 + 1) * NCOL * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   // the renderer's fine pages (opts.pages), or 1 by 1 stand-ins the shader never reads while there are none
@@ -173,7 +173,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     return 0;
   }
   // the level the screen shows: down at once (a coarser level is always held), up by CAP_RATE a second
-  let cap = 0, capAt = performance.now(), fine = 0;
+  let cap = 0, capAt = performance.now(), fine = 0, last = null;
 
   // the noise's frame: the face of the camera's target, the tangents of the target on it and its place in metres along the equiangular axes (wgsl/globe.js noiseXZ)
   function noiseFrame(T) {
@@ -187,7 +187,8 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
   function draw(enc, targetView, cam, opts) {
     const w = opts.w, h = opts.h, artPx = opts.art ?? 2, exag = opts.exag ?? 1.5, sun = opts.sun ?? [0.6, 0.5, 0.62], clear = opts.clearRGB ?? [0, 0, 0];
     const pts = viewPoints(cam, w, h, artPx);
-    pyramid.want(wanted(pts));
+    const wantedNow = wanted(pts);
+    pyramid.want(wantedNow);
     const now = performance.now(), ready = readyLevel(pts), dt = (now - capAt) / 1000, pg = opts.pages?.on ? opts.pages : null;
     cap = ready < cap ? ready : Math.min(ready, cap + dt * CAP_RATE);
     // the whole screen goes over to the fine pages once every point of the view (and its margin) lies in a resident page of the block and the finest tier is held too, never part of it
@@ -230,7 +231,9 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       w, h, Math.max(1e-6, 0.4 * (oLen - 1 - hmaxR)), oLen + 1.01, cut, sm(0.05, 0.3, oLen - 1), a.w, a.h, ...(opts.moon ?? [0, 0, 1]), opts.moonMix ?? 0, opts.amb ?? 1, 0, 0, 0,
       nf.ua, nf.vb, nf.fx, nf.fz]);
     ui[48] = nf.ox; ui[49] = nf.oz; ui[50] = 0; ui[51] = 0;
-    u[52] = cap; u[53] = opts.frame ?? (Math.floor(now / 160) & 7); u[54] = opts.season ?? 0; u[55] = fine;
+    const frameV = opts.frame ?? (Math.floor(now / 160) & 7);
+    last = { pts, ready, goal, clocked: opts.frame === undefined, frame: frameV, version: pyramid.version ?? 0, held: wantedNow.map((k) => [k, pyramid.ready(k.t, k.f, k.tx, k.ty)]) };
+    u[52] = cap; u[53] = frameV; u[54] = opts.season ?? 0; u[55] = fine;
     ui[56] = nf.f; u[57] = opts.ortho ?? 0; u[58] = (cam.tanH * cam.dist) / cam.radiusM; ui[59] = 0;
     ui[60] = pg ? 1 : 0; ui[61] = pg?.face ?? 0; ui[62] = pg?.x0 ?? 0; ui[63] = pg?.y0 ?? 0;
     u[80] = opts.spr ?? 0.6; u[81] = opts.canopy ?? 1;
@@ -262,8 +265,31 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     });
     blit.setPipeline(blitPipe); blit.setBindGroup(0, r.blit); blit.draw(3); blit.end();
   }
-  const setLut = (lut) => device.queue.writeBuffer(lutB, 0, lut.subarray(0, Math.min(lut.length, (levels * 4 + 1) * NCOL)));
-  // the tree sprites' palette histogram (crown.js cdf), in the noise table where the painter reads it
-  const setCrown = (cdf) => device.queue.writeBuffer(grads, CROWN_AT * 8, cdf.subarray(0, NCOL));
-  return { hmax, draw, setLut, setCrown, level: () => cap };
+  const setLut = (lut) => { last = null; device.queue.writeBuffer(lutB, 0, lut.subarray(0, Math.min(lut.length, (levels * 4 + 1) * NCOL))); };
+  // the tree sprites' palette histogram (crown.js cdf), in the noise table where the painter reads it, and after it the palette index nearest the histogram's mean colour: what the crowns' colours
+  // narrow to as they fall under a pixel (ground.wgsl.js g_paint)
+  const setCrown = (cdf) => {
+    const out = new Float32Array(NCOL + 1), total = cdf[NCOL - 1];
+    out.set(cdf.subarray(0, NCOL));
+    if (total > 0) {
+      const m = [0, 0, 0];
+      for (let i = 0, prev = 0; i < NCOL; prev = cdf[i++]) for (let c = 0; c < 3; c++) m[c] += ((cdf[i] - prev) / total) * RGB[i][c];
+      let best = Infinity;
+      for (let i = 0; i < NCOL; i++) {
+        const d = (RGB[i][0] - m[0]) ** 2 + (RGB[i][1] - m[1]) ** 2 + (RGB[i][2] - m[2]) ** 2;
+        if (d < best) { best = d; out[NCOL] = i; }
+      }
+    }
+    last = null;
+    device.queue.writeBuffer(grads, CROWN_AT * 8, out);
+  };
+  // True only when drawing again with the same camera and opts would give the same pixels: nothing eased is still moving (the level cap is at the level the view's tiles allow, the share gone over
+  // to the fine pages at its goal), no tile the view wants has arrived since the last draw (pyramid.version too, where pyramid.js keeps one, for a neighbour's halo), and the water's frame, which
+  // is the only clock the shader reads (opts.frame, else performance.now every 160 ms), is the one drawn. Everything else the shader reads comes in by cam and opts, which the caller compares.
+  const settled = () => {
+    if (!last || cap !== last.ready || fine !== last.goal || (pyramid.version ?? 0) !== last.version) return false;
+    if (last.clocked && (Math.floor(performance.now() / 160) & 7) !== last.frame) return false;
+    return last.held.every(([k, was]) => pyramid.ready(k.t, k.f, k.tx, k.ty) === was) && readyLevel(last.pts) === last.ready;
+  };
+  return { hmax, draw, setLut, setCrown, settled, level: () => cap };
 }

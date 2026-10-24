@@ -237,14 +237,14 @@ struct Q { x: f32, z: f32, X: i32, Y: i32, k: f32, frame: u32, season: u32, flag
   let i = id.x + id.y * 4194240u;
   if (i >= qs[0].n) { return; }
   let q = qs[i];
-  let c = PaintCtx(q.k, q.frame, q.season, q.flags);
+  let c = PaintCtx(q.k, q.frame, q.season, q.flags, 0.0);
   outU[i] = vec2<u32>(paintGround(q.x, q.z, q.X, q.Y, c), bankColour(q.face, q.X, q.Y, q.depth, q.hpx, q.lev, q.lp));
   outF[i] = vec4<f32>(heightAt(q.x, q.z), waterAt(q.x, q.z), surfAt(q.x, q.z), 0.0);
 }
 @compute @workgroup_size(64) fn bench(@builtin(global_invocation_id) id: vec3<u32>) {
   let i = id.x + id.y * 4194240u;
   let q = qs[i % qs[0].n];
-  outU[i].x = paintGround(q.x, q.z, q.X, q.Y, PaintCtx(q.k, q.frame, q.season, q.flags));
+  outU[i].x = paintGround(q.x, q.z, q.X, q.Y, PaintCtx(q.k, q.frame, q.season, q.flags, 0.0));
 }`;
 dev.pushErrorScope("validation");
 const module = dev.createShaderModule({ code });

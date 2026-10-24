@@ -51,6 +51,7 @@ const TONE_N = ${lit(TONE_S.length - 1)};
 const g_AIR = ${ramp("ink", "w0", "w1", "w2", "w3", "w4", "w5")};
 // the width of a stream at its mean flow, m (water.ts WIDE_GRASS times the root of the flow)
 const WIDE = 3.75;
+const NIGHT_AMB: f32 = 0.1;
 
 struct U {
   o: vec3f, tanH: f32,      // the camera's place (the target plus off) in radii from the centre, and the tangent of half the vertical field of view
@@ -100,6 +101,17 @@ fn pgTab(k: u32) -> i32 { return ptab[k]; }
 ${pageWGSL({ n: PAGE_BLOCK })}
 // the painter's noise is offset by whole metres, here those of the noise frame's origin
 fn g_wrapW(k: u32) -> vec2<i32> { return u.nw.xy; }
+// the whole cell of a power-of-two grain g (metres) that the point xz (the noise frame's metres less its whole-metre origin) lies in, counted from the face's origin so it stays on the ground
+// as the origin follows the camera
+fn gcellOf(xz: vec2f, g: f32) -> vec2i {
+  let w = g_wrapW(4u);
+  if (g >= 1.0) {
+    let gi = i32(g);
+    let q = vec2i(floor(vec2f(w) / g));
+    return q + vec2i(floor((xz + vec2f(w - q * gi)) / g));
+  }
+  return vec2i(floor(xz / g)) + w * i32(1.0 / g);
+}
 
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
   let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
@@ -618,6 +630,26 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
 
   let fc = faceOf(p);
   let f = fc.f;
+  // the face's metres to the ground's, and the pixel's metres in the noise's frame
+  let n3 = FACE_N[f];
+  let ex = FACE_X[f];
+  let ey = FACE_Y[f];
+  let ql = length(n3 + fc.ua * ex + fc.vb * ey);
+  let kx = (1.0 + fc.ua * fc.ua) * (ex - p * dot(p, ex)) / ql;
+  let ky = (1.0 + fc.vb * fc.vb) * (ey - p * dot(p, ey)) / ql;
+  gSc = sqrt(length(kx) * length(ky));
+  let mppN = gMpp / gSc;
+  let xz = noiseXZ(gOff + tHit * rd);
+  // every dither and hash of the ground is taken on a lattice fixed to the ground, never to the screen: cells of the noise frame, a power of two of metres, the pixel's size and the next one up
+  // trading places over the lower half of each octave of the pixel's size (picked per coarse cell by its own hash, so the choice stays on the ground too), so a cell is never under 0.7 of a pixel; gX, gY from here on are the pixel's cell
+  let lg = log2(max(mppN, 1e-4));
+  let lgi = floor(lg);
+  let gA = exp2(lgi);
+  let cB = gcellOf(xz, 2.0 * gA);
+  let gCell = select(gA, 2.0 * gA, h2(cB.x, cB.y, 91) < smoothstep(0.0, 0.5, lg - lgi));
+  let cell = gcellOf(xz, gCell);
+  gX = cell.x;
+  gY = cell.y;
   // the fine pages where the view holds them all (U.bw.x) and this pixel lies in the block and in one of its resident pages: the whole screen goes over to them as one scalar, U.cf.w,
   // rises, each pixel when its dither is under it, and fades back out as the pixel grows past two fine vertices (18.75 m), so a zoom is one continuous cross-fade. fcell is the pixel's
   // place in the window's cells (the window's own light is in them), bcell in the block's (the pages are)
@@ -656,13 +688,7 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     let hd = heightSpline(tl);
     let h = hd.x;
     // the surface's tangents along the face's coordinates, in metres a cell, and from them the slope as a vector
-    let n3 = FACE_N[f];
-    let ex = FACE_X[f];
-    let ey = FACE_Y[f];
-    let ql = length(n3 + fc.ua * ex + fc.vb * ey);
     let da = (PI / 2.0) / tl.cells;
-    let kx = (1.0 + fc.ua * fc.ua) * (ex - p * dot(p, ex)) / ql;
-    let ky = (1.0 + fc.vb * fc.vb) * (ey - p * dot(p, ey)) / ql;
     let Tx = u.radiusM * da * kx;
     let Ty = u.radiusM * da * ky;
     let E = dot(Tx, Tx);
@@ -687,7 +713,6 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     var sl = clamp(-4.4 * u.relief * dot(gradU, toSun), 0.0, 2.0);
     slopeFacing = dot(normalize(p - u.relief * gradU), u.sun);
     // the painter's sample: the cells at the pixel, in the metres of the noise's frame (the equiangular map stretches a metre of ground by sc here)
-    gSc = sqrt(length(kx) * length(ky));
     gCm = u.radiusM * da;
     gCm5 = u.radiusM * (PI / 2.0) / FN;
     gHt = h;
@@ -696,8 +721,6 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     gTl = tl;
     gFn = useFine;
     gFx = bcell;
-    let mppN = gMpp / gSc;
-    let xz = noiseXZ(gOff + tHit * rd);
     var ctx: PaintCtx;
     ctx.k = 1.0 / mppN;
     ctx.frame = u32(u.cf.y);
@@ -730,11 +753,13 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   // the light the ground has: the key light's share on flat ground here (the sun's height over this place, the moon's once the sun is down), through the same light tables the ladder's shade
   // pass maps its palette through, so the night side, the terminator and the day side show as the close levels show a night, a dusk and a day
   let key = mix(max(facing, 0.0), max(dot(p, u.moon), 0.04), u.moonMix);
-  // the tables' row 0 is the ambient light of the sky where the camera stands: a place with less of it (the night side from a day) shows that much darker
-  let ambK = min(1.0, ambOf(sd) / max(u.amb.x, 1e-6));
+  // the tables' row 0 is the ambient light of the sky where the camera stands: a place with less of it (the night side from a day) shows that much darker, down to the sky's glow
+  // (NIGHT_AMB, a tenth of the day's ambient: the darkest ground tone then lies at about the space's own dark ink) so the dark side keeps its shape and the pole is never black [design]
+  let ambK = max(min(1.0, ambOf(sd) / max(u.amb.x, 1e-6)), NIGHT_AMB);
   var row = u32(min(f32(LEVELS - 1), floor(key * f32(LEVELS - 1) + bayer(gX, gY)))) * 4u;
   if (isLit) { row = litRow; }
-  o_.color = vec4f(unpack4x8unorm(lutT[row * NC + idx]).rgb * ambK * select(vec3f(1.0), aoMul(litAo, row), isLit), 1.0);
+  // never darker than the space beside it: the sky's own darkest ink is the floor of every pixel
+  o_.color = vec4f(max(unpack4x8unorm(lutT[row * NC + idx]).rgb * ambK * select(vec3f(1.0), aoMul(litAo, row), isLit), PAL[g_AIR[0]]), 1.0);
   return o_;
 }
 `;

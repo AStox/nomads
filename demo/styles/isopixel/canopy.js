@@ -16,7 +16,7 @@ export const treeShare = (hpx) => Math.min(hpx * hpx, 1) * treeFade(hpx);
 
 // a tree's height in art px per metre of height and per screen px per metre: the ladder's tree scale (live.js: pv = k * 0.866 * treeK, treeK about 1.2 across the levels) over
 // the screen px an art px covers (the planet pass draws at art = 2, the ladder's levels at 2 to 4)
-const TREE_K = 0.866 * 1.2;
+export const TREE_K = 0.866 * 1.2;
 
 // ppm: screen px per metre at the zoom; e: the exponent of the share the blocks hold (0: every tree); hk: the height in metres of the tree whose share is asked (the wood's mean
 // height, grid layer 5), 12 m by default; art: screen px per art px

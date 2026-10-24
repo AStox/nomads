@@ -10,6 +10,7 @@
 import { CELL, LEPTOSOL, M, N, RM, SC, SIZE, START, STEP, TILES, TILE_M } from "../island.js";
 import { P, RGB } from "./pal.js";
 import { pageWGSL } from "./pages.js";
+import { COVER_PX, TREE_K } from "./canopy.js";
 
 const ORIGIN = -SIZE / 2, WS = 12.5, WN = Math.ceil(SIZE / WS) + 1, TN = Math.round(SIZE / 3);
 // flora.ts streamAt's bins: 50 m across, holding every segment within REACH of them, cell -1 at index 0
@@ -591,14 +592,15 @@ fn g_water(S: GSample, x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) 
     let ru = g_h2u(cell, Y, 47);
     let r = g_hf(ru);
     let nearS = 1.0 - g_smooth(0.0, 40.0, shore);
-    let rate = 0.012 + 0.1 * nearS + 0.03;
+    let rate = (0.012 + 0.1 * nearS + 0.03) * ${planet ? FADE(2) : "1.0"};
     let life = ((ctx.frame + (g_h2u(cell, Y, 48) >> 29u)) & 7u) < 5u;
     if (r < rate && sx - cell * 6 < 2 + g_odd97(ru) && life) {
       if (r < rate * 0.3) { return ${u("w7")}; }
       return g_WA[clamp(vf + 2, 0, 6)];
     }
   }
-  if (g_h2u(X, Y, 43) < ${UT(0.0006)} && ((ctx.frame + (g_h2u(X, Y, 49) >> 29u)) & 7u) != 0u) { return ${u("w7")}; }
+  // a glint is a wave a few metres across (the ripples' own scale, 2 m [design]) and is gone once a pixel is wider
+  if (g_h2u(X, Y, 43) < ${UT(0.0006)} && g_hf(g_h2u(X, Y, 50)) < ${planet ? FADE(2) : "1.0"} && ((ctx.frame + (g_h2u(X, Y, 49) >> 29u)) & 7u) != 0u) { return ${u("w7")}; }
   return g_WA[g_toneIndex(v, X, Y, 8)];
 }
 
@@ -862,7 +864,17 @@ fn g_paint(S: ptr<function, GSample>, x: f32, z: f32, X: i32, Y: i32, ctx: Paint
   if ((*S).wet > 0.5) { fillWater(S, x, z, ctx, false); (*S).isWater = true; return g_water(*S, x, z, X, Y, ctx, mpp); }
   if ((*S).river > 0.5) { fillWater(S, x, z, ctx, true); (*S).isWater = true; return g_water(*S, x, z, X, Y, ctx, mpp); }
   let idx = g_land(S, x, z, X, Y, ctx, mpp);
-  if ((*S).crownW > 0.0 && h2(X, Y, 81) < (*S).crownW) { (*S).isCrown = true; return g_crownIdx(h2(X, Y, 82)); }
+  if ((*S).crownW > 0.0) {
+    // the crowns' colours differ from one crown to the next, and a pixel shows that only where a crown is about a pixel across: over COVER_PX to 1 art px of the wood's mean tree (canopy.js
+    // takes 12 m) the share of crowns that keep their own colour falls to none and the rest take the histogram's mean (planet.js setCrown), and the share of pixels that are crowns, hashed
+    // where they are resolved, is spread in an ordered dither as it is not, so a far forest is one canopy colour and not confetti
+    let spread = g_smooth(1.0, ${lit(COVER_PX)}, ${lit(12 * TREE_K)} / mpp);
+    if (mix(bayer(X, Y), h2(X, Y, 81), spread) < (*S).crownW) {
+      (*S).isCrown = true;
+      if (g_hf(g_h2u(X, Y, 83)) >= spread) { return u32(g_crownCdf(${NCOL}u)); }
+      return g_crownIdx(h2(X, Y, 82));
+    }
+  }
   return idx;
 }
 
