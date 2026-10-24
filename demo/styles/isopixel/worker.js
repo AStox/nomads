@@ -60,7 +60,7 @@ async function openPlanet(seed, device) {
   const res = await fetch(new URL(`../planets/${seed}.json`, import.meta.url));
   if (!res.ok) return null;
   const manifest = await res.json(), G = await import("../globe.js");
-  const pyramid = await openPyramid({ device, base: new URL(`../planets/${manifest.tiles}/pyramid`, import.meta.url).href, tiers: manifest.tiers, faces: manifest.faces, across: G.cellAcross });
+  const pyramid = await openPyramid({ device, base: new URL(`../planets/${manifest.tiles}/${manifest.pyramid ?? "pyramid"}`, import.meta.url).href, tiers: manifest.tiers, faces: manifest.faces, across: G.cellAcross });
   let hmax = 0;
   for (const f of manifest.faces) for (const h of pyramid.planes0(f).height) hmax = Math.max(hmax, h * 0.25);
   const T = manifest.groundtiles ? await import("../tile.js") : null, base = new URL(`../planets/${manifest.tiles}`, import.meta.url).href;

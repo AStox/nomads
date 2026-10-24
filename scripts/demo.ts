@@ -1,7 +1,7 @@
 // Build a demo as a static site: its page files as written, plus the game's generator and simulation bundled for the browser.
 //   bun scripts/demo.ts 3d --out /root/goldclaw/www/nomads-3d
 //   bun scripts/demo.ts styles --out /root/goldclaw/www/nomads-styles
-import { cpSync, existsSync, mkdirSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Where the planets' bakes are (a directory `<seed>-<key>` each): the newest bake of each seed whose pyramid is finished (`pyramid/../pyramid.json`; or the key in NOMADS_PLANET)
@@ -20,9 +20,11 @@ function linkPlanets(out: string): number[] {
   for (const [seed, { name }] of newest) {
     const dir = join(BAKES, name), link = join(out, "planets", `link-${name}`);
     mkdirSync(link, { recursive: true });
-    for (const d of ["pyramid", "groundtiles"]) if (existsSync(join(dir, d)) && !existsSync(join(link, d))) symlinkSync(join(dir, d), join(link, d));
+    // the pyramid is linked under its format's version (pyramid-v2): a visitor's browser cache (tilecache.js keeps files by their path) and any HTTP cache never hand a v1 tile to a v2 page
+    const version = (JSON.parse(readFileSync(join(BAKES, name, "pyramid.json"), "utf8")) as { version?: number }).version ?? 1, pyramid = `pyramid-v${version}`;
+    for (const [d, as] of [["pyramid", pyramid], ["groundtiles", "groundtiles"]]) if (existsSync(join(dir, d)) && !existsSync(join(link, as))) symlinkSync(join(dir, d), join(link, as));
     const tiers = readdirSync(join(dir, "pyramid")).filter((d) => /^t\d+$/.test(d)).length, faces = readdirSync(join(dir, "pyramid", "t0")).map((f) => Number(f.slice(1))).sort();
-    writeFileSync(join(out, "planets", `${seed}.json`), JSON.stringify({ seed, key: name.split("-")[1], tiers, faces, tiles: `link-${name}`, groundtiles: existsSync(join(dir, "groundtiles")) }));
+    writeFileSync(join(out, "planets", `${seed}.json`), JSON.stringify({ seed, key: name.split("-")[1], tiers, faces, tiles: `link-${name}`, pyramid, groundtiles: existsSync(join(dir, "groundtiles")) }));
   }
   return [...newest.keys()];
 }
