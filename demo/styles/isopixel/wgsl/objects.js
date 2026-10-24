@@ -695,13 +695,18 @@ fn needsMain(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups)
     atomicOr(&need[p >> 5u], 1u << (p & 31u));
     return;
   }
+  // only what the view can reach (Kp.vx0 to vz1, in the window's metres): a window holds far more trees than the screen, and every one asked would take room in the dynamic layers
+  let fx = o.x - ORIGIN_M;
+  let fz = o.z - ORIGIN_M;
+  if (fx < Kp.vx0 || fx > Kp.vx1 || fz < Kp.vz0 || fz > Kp.vz1) { return; }
   let F = famOf(o, kf);
   if (F.f == NONE) { return; }
   for (var L = Kp.l0; L < Kp.nl; L++) {
     let hpx = hpxOf(o, kf, bitcast<f32>(looks[${M_LEV}u + L * 4u]), bitcast<f32>(looks[${M_LEV}u + L * 4u + 1u]));
     if (hpx < select(1.0, ${TREE_FADE_MIN}, F.tree)) { continue; }
     let bit = (F.f + select(0u, looks[${M_LEV}u + L * 4u + 2u], F.tree)) * ${NS}u + sizeIdx(hpx, F.tree);
-    if ((bit >> 5u) < arrayLength(&need)) { atomicOr(&need[bit >> 5u], 1u << (bit & 31u)); }
+    let wi = (L - Kp.l0) * Kp.stride + (bit >> 5u);
+    if (wi < arrayLength(&need)) { atomicOr(&need[wi], 1u << (bit & 31u)); }
   }
 }`;
 

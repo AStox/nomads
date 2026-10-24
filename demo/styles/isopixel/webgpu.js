@@ -87,7 +87,7 @@ const VU = struct("U", [
 const TU = struct("Tr", [["n", "u"], ["step", "f"], ["exag", "f"], ["tan", "f"], ["dx", "f"], ["dz", "f"], ["row0", "u"], ["reach", "f"], ["top", "f"]]);
 const PU = struct("Pr", [["dx", "f"], ["dy", "f"], ["sc", "f"], ["nn", "f"], ["alpha", "f"], ["aw", "u"], ["ah", "u"], ["nearest", "u"], ["sr", "f"], ["sg", "f"], ["sb", "f"]]);
 // the object passes outside a frame (wgsl/objects.js): the survey's mode and levels, and the trees' cover's grids
-const KU = struct("Ks", [["mode", "u"], ["nl", "u"], ["l0", "u"], ["canN", "u"], ["canStep", "f"], ["gn", "u"], ["gs", "f"], ["rp", "u"], ["n3", "u"], ["rp3", "u"], ["rpt", "u"]]);
+const KU = struct("Ks", [["mode", "u"], ["nl", "u"], ["l0", "u"], ["stride", "u"], ["vx0", "f"], ["vz0", "f"], ["vx1", "f"], ["vz1", "f"], ["canN", "u"], ["canStep", "f"], ["gn", "u"], ["gs", "f"], ["rp", "u"], ["n3", "u"], ["rp3", "u"], ["rpt", "u"]]);
 // a slice of a far list's build: its first slot, how many, and how many far levels; a front list's level
 const FU = struct("Fs", [["base", "u"], ["n", "u"], ["nf", "u"], ["lvl", "u"]]);
 
@@ -1737,12 +1737,15 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   }
   // The survey (wgsl/objects.js needsMain) over every source: mode 0 the kind and species pairs, mode 1 the families and
   // sizes the first nl levels draw, as bits; words: how many 32-bit words of them.
-  async function survey(mode, nl, words, l0 = 0) {
-    if (needB.size < words * 4) { needB.destroy(); needB = B(words * 4, STOR | GPUBufferUsage.COPY_SRC, "need"); }
-    const read = B(words * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "needRead");
-    device.queue.writeBuffer(kpU, 0, KU.pack({ mode, nl, l0 }));
+  // rect: the part of the sources (their frame, metres from the origin) the families and sizes are asked of, [x0, z0, x1, z1]; none asks of all of them
+  // split: one set of bits for each level from l0 to nl, one after another (words each), not all in one
+  async function survey(mode, nl, words, l0 = 0, rect = null, split = false) {
+    const total = words * (split ? Math.max(1, nl - l0) : 1);
+    if (needB.size < total * 4) { needB.destroy(); needB = B(total * 4, STOR | GPUBufferUsage.COPY_SRC, "need"); }
+    const read = B(total * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "needRead");
+    device.queue.writeBuffer(kpU, 0, KU.pack({ mode, nl, l0, stride: split ? words : 0, vx0: rect ? rect[0] : -1e30, vz0: rect ? rect[1] : -1e30, vx1: rect ? rect[2] : 1e30, vz1: rect ? rect[3] : 1e30 }));
     const enc = device.createCommandEncoder();
-    enc.clearBuffer(needB, 0, words * 4);
+    enc.clearBuffer(needB, 0, total * 4);
     const pass = enc.beginComputePass();
     for (const s of sources) {
       if (!s.needs) continue;
@@ -1750,7 +1753,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       pass.dispatchWorkgroups(...spread(s.spec.cap));
     }
     pass.end();
-    enc.copyBufferToBuffer(needB, 0, read, 0, words * 4);
+    enc.copyBufferToBuffer(needB, 0, read, 0, total * 4);
     device.queue.submit([enc.finish()]);
     await read.mapAsync(GPUMapMode.READ);
     const out = new Uint32Array(read.getMappedRange().slice(0));
