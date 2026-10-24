@@ -20,10 +20,17 @@ function linkPlanets(out: string): number[] {
   for (const [seed, { name }] of newest) {
     const dir = join(BAKES, name), link = join(out, "planets", `link-${name}`);
     mkdirSync(link, { recursive: true });
-    // the pyramid is linked under its format's version (pyramid-v2): a visitor's browser cache (tilecache.js keeps files by their path) and any HTTP cache never hand a v1 tile to a v2 page
-    const version = (JSON.parse(readFileSync(join(BAKES, name, "pyramid.json"), "utf8")) as { version?: number }).version ?? 1, pyramid = `pyramid-v${version}`;
-    for (const [d, as] of [["pyramid", pyramid], ["groundtiles", "groundtiles"]]) if (existsSync(join(dir, d)) && !existsSync(join(link, as))) symlinkSync(join(dir, d), join(link, as));
-    const tiers = readdirSync(join(dir, "pyramid")).filter((d) => /^t\d+$/.test(d)).length, faces = readdirSync(join(dir, "pyramid", "t0")).map((f) => Number(f.slice(1))).sort();
+    // The pyramid is linked under its format's version (pyramid-v2): a visitor's browser cache (tilecache.js keeps files by their path) and any HTTP cache never hand a v1 tile to a v2 page. A bake
+    // holds its pyramid as `pyramid` (marker pyramid.json) or, beside an older one, as `pyramid-v<N>` (marker pyramid-v<N>.json); the highest version is the one linked, so a newer pyramid is put
+    // beside the old and the old stays where it is until the site that shows the new has been checked.
+    const versions = readdirSync(dir).flatMap((d) => {
+      const v = /^pyramid(?:-v(\d+))?$/.exec(d), marker = join(dir, d === "pyramid" ? "pyramid.json" : `${d}.json`);
+      if (!v || !existsSync(marker)) return [];
+      return [{ d, version: (JSON.parse(readFileSync(marker, "utf8")) as { version?: number }).version ?? Number(v[1] ?? 1) }];
+    }).sort((x, y) => y.version - x.version);
+    const { d: src, version } = versions[0], pyramid = `pyramid-v${version}`;
+    for (const [d, as] of [[src, pyramid], ["groundtiles", "groundtiles"]]) if (existsSync(join(dir, d)) && !existsSync(join(link, as))) symlinkSync(join(dir, d), join(link, as));
+    const tiers = readdirSync(join(dir, src)).filter((d) => /^t\d+$/.test(d)).length, faces = readdirSync(join(dir, src, "t0")).map((f) => Number(f.slice(1))).sort();
     writeFileSync(join(out, "planets", `${seed}.json`), JSON.stringify({ seed, key: name.split("-")[1], tiers, faces, tiles: `link-${name}`, pyramid, groundtiles: existsSync(join(dir, "groundtiles")) }));
   }
   return [...newest.keys()];
