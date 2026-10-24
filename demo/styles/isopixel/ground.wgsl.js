@@ -564,8 +564,11 @@ fn g_water(S: GSample, x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) 
   if (S.ice) { return g_iceTex(X, Y, x, z); }
   let px = shore * ctx.k;
   let lap = 0.5 + 0.18 * sin(g_lapAngle(x, z, ctx.frame));
-  if (px < 1.2 * lap + 0.3) { return ${u("w7")}; }
-  if (px < 2.2 * lap + 0.3 && g_h2u(X, Y, 45) < ${UT(0.45)}) { return ${u("w6")}; }
+  // the surf is a band of about a metre of foam (a pixel across at the island's own close view): the planet's pixels grow past it and it thins to nothing by scale, so a coast is not outlined
+  // by a ring a pixel wide at every zoom
+  let foam = ${planet ? FADE(2) : "1.0"};
+  if (px < (1.2 * lap + 0.3) * foam) { return ${u("w7")}; }
+  if (px < (2.2 * lap + 0.3) * foam && g_h2u(X, Y, 45) < ${UT(0.45)}) { return ${u("w6")}; }
   var v: f32;
   var vf: i32;
   if (kind == 3u) {
