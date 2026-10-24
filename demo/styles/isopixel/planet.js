@@ -6,7 +6,7 @@
 // whose cells are about an art pixel across and the two coarser ones), so the finer tier arrives over the coarser, and it tells the
 // shader the finest level for which every tile the whole view reads is held (`cap`): the whole screen shows one level and a finer one
 // arrives as one cross-fade of all of it.
-import { dqBuild, noiseGrads } from "./ground.wgsl.js";
+import { CROWN_AT, dqBuild, noiseGrads } from "./ground.wgsl.js";
 import { PAGE_GEOM } from "./pages.js";
 import { faceFrac, tierOffset } from "./pyramid.js";
 import { globeWgsl } from "./wgsl/globe.js";
@@ -68,12 +68,12 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     device.createRenderPipelineAsync({ layout, vertex: { module, entryPoint: "vs" }, fragment: { module, entryPoint: "fs", targets: artTarget }, primitive: { topology: "triangle-list" }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: "always" } }),
     device.createRenderPipelineAsync({ layout: device.createPipelineLayout({ bindGroupLayouts: [blitBgl] }), vertex: { module, entryPoint: "vs" }, fragment: { module, entryPoint: "bfs", targets: [{ format }] }, primitive: { topology: "triangle-list" } }),
   ]);
-  const dq = store(dqBuild()), tab = store(tables), grads = store(noiseGrads());
+  const dq = store(dqBuild()), tab = store(tables), gradW = noiseGrads([0, 0, 0, 0], CROWN_AT + Math.ceil(NCOL / 2)), grads = store(gradW);
   // the sky's light tables (the page sends them as the light changes): levels x 4 fire levels (and a last row) of NCOL colours
   const lutB = device.createBuffer({ size: (levels * 4 + 1) * NCOL * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   // the renderer's fine pages (opts.pages), or 1 by 1 stand-ins the shader never reads while there are none
   const stand = { fine: device.createTexture({ size: [1, 1, 1], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING }), river: device.createTexture({ size: [1, 1], format: "r8uint", usage: GPUTextureUsage.TEXTURE_BINDING }) };
-  const ring = Array.from({ length: RING }, () => ({ buffer: device.createBuffer({ size: 320, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }), bind: null, key: null, blit: null }));
+  const ring = Array.from({ length: RING }, () => ({ buffer: device.createBuffer({ size: 336, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }), bind: null, key: null, blit: null }));
   // a ring slot's bind group for the pages' textures, made again only when they are other ones
   function bindFor(r, pg) {
     const fine = pg?.fine ?? stand.fine, grid = pg?.grid ?? stand.fine, river = pg?.river ?? stand.river;
@@ -101,7 +101,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
   // the picture is made at an art pixel (a quarter of the pixels at 2) and shown by whole pixels in a second pass
   let slot = 0, art = null;
   // wgsl/globe.js U: 44 floats, then the noise frame's fractions and tangents, its whole metres and the target's face, the level cap, the water frame, the season and the share gone over to the fine pages, the pages' readiness and window, their table
-  const ub = new ArrayBuffer(320), u = new Float32Array(ub), ui = new Int32Array(ub);
+  const ub = new ArrayBuffer(336), u = new Float32Array(ub), ui = new Int32Array(ub);
   function artFor(aw, ah) {
     if (art && art.w === aw && art.h === ah) return art;
     art?.color.destroy(); art?.depth.destroy();
@@ -183,6 +183,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     u[52] = cap; u[53] = opts.frame ?? (Math.floor(now / 160) & 7); u[54] = opts.season ?? 0; u[55] = fine;
     ui[56] = nf.f; ui[57] = 0; ui[58] = 0; ui[59] = 0;
     ui[60] = pg ? 1 : 0; ui[61] = pg?.face ?? 0; ui[62] = pg?.x0 ?? 0; ui[63] = pg?.y0 ?? 0;
+    u[80] = opts.spr ?? 0.6;
     // the renderer's table is its on word, then the sixteen entries
     for (let k = 0; k < 16; k++) ui[64 + k] = pg ? pg.table[1 + k] : -1;
     const r = ring[slot++ % RING], ts = opts.timestampWrites;
@@ -202,5 +203,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     blit.setPipeline(blitPipe); blit.setBindGroup(0, r.blit); blit.draw(3); blit.end();
   }
   const setLut = (lut) => device.queue.writeBuffer(lutB, 0, lut.subarray(0, Math.min(lut.length, (levels * 4 + 1) * NCOL)));
-  return { hmax, draw, setLut, level: () => cap };
+  // the tree sprites' palette histogram (crown.js cdf), in the noise table where the painter reads it
+  const setCrown = (cdf) => device.queue.writeBuffer(grads, CROWN_AT * 8, cdf.subarray(0, NCOL));
+  return { hmax, draw, setLut, setCrown, level: () => cap };
 }

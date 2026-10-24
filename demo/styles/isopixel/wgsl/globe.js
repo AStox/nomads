@@ -68,6 +68,7 @@ struct U {
   tf: vec4i,                // x: the face of the camera's target
   pw: vec4i,                // the fine pages (the renderer's, planet.js opts.pages): x: they are all held for the view, y, z, w: their window's face and its first cell's x and y on it
   pgt: array<vec4i, 4>,     // and their table: a slot for each of the sixteen pages, or -(2 + the page whose range stands in)
+  sprl: vec4f,              // x: an upright sprite's share of the key light (live.js spriteLight)
 }
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var fieldsT: texture_2d_array<u32>;  // a tile's cells, 16 bytes each (pyramid.js)
@@ -591,7 +592,13 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     var S: GSample;
     fillTop(&S, xz.x, xz.y);
     idx = g_paint(&S, xz.x, xz.y, gX, gY, ctx, mppN);
-    if (!S.isWater) { idx = toned(idx, sl + gForm); facing = slopeFacing; }
+    if (S.isCrown) {
+      // a pixel painted with the tree sprites' colours is lit as the shade pass lights an upright sprite: half its own light and half the slope's
+      facing = 0.5 * (u.sprl.x + slopeFacing);
+    } else if (!S.isWater) {
+      idx = toned(idx, sl + gForm);
+      facing = slopeFacing;
+    }
   }
   // the air's haze toward the limb (seen from a height, not from the ground), each dithered
   let mu = max(dot(p, -rd), 0.0);

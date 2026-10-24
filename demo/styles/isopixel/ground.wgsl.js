@@ -15,6 +15,9 @@ const ORIGIN = -SIZE / 2, WS = 12.5, WN = Math.ceil(SIZE / WS) + 1, TN = Math.ro
 // flora.ts streamAt's bins: 50 m across, holding every segment within REACH of them, cell -1 at index 0
 const BIN = 50, REACH = 20, NB = Math.ceil(SIZE / BIN) + 3;
 const COVER_LAYERS = ["tree", "shrub", "grass", "marsh", "bare", "sand"];
+const NCOL = RGB.length;
+// Where the tree sprites' palette histogram (crown.js) lies in gGradT, in entries (two f32 each): after the wrap and page words
+export const CROWN_AT = 4120;
 // The island fields the painter reads, one layer each of the isle texture, in this order.
 const ISLE_LAYERS = ["height", "water", "windShare", "rock", "precip", "pet", "table", "peat", "soil", "silt", "fog", "snow0", "snow1", "snow2", "snow3"];
 const IL = Object.fromEntries(ISLE_LAYERS.map((n, i) => [n, i]));
@@ -89,8 +92,8 @@ export function packGround(isle, g, onGpu = null) {
 }
 
 // the noise's gradient table, as flora.ts makes it, and after it the place's runoff by season against its mean (times 1.2, flowNow's) which a stream's quick share follows
-export function noiseGrads(quick = [0, 0, 0, 0]) {
-  const grad = new Float32Array(8192 + 4 + 10);
+export function noiseGrads(quick = [0, 0, 0, 0], entries = 4103) {
+  const grad = new Float32Array(2 * entries);
   for (let k = 0; k < 4096; k++) { grad[k * 2] = Math.cos((k / 4096) * 6.2831853); grad[k * 2 + 1] = Math.sin((k / 4096) * 6.2831853); }
   for (let q = 0; q < 4; q++) grad[8192 + q] = quick[q] * 1.2;
   return grad;
@@ -206,8 +209,8 @@ ${pageWGSL()}
 
 // k: the level's art pixels per meter; frame 0..7 of the water's loop; season 0 spring .. 3 winter; flags bit 0: worn
 // paths are drawn
-// canopy 0 to 1: the share of the ground's tree cover that no drawn tree covers at this pixel (0, what a zeroed context gives, is the ground as it is: every tree drawn, or none); the ground carries the
-// light of the crowns that are not drawn, the forest's mean being brighter than its floor
+// canopy 0 to 1: the share of the ground's tree cover that no drawn tree covers at this pixel (0, what a zeroed context gives, is the ground as it is: every tree drawn, or none); that share of the
+// cover's pixels is painted with the palette indices the tree sprites paint theirs with, by their histogram (crown.js, gGradT from CROWN_AT), so a forest whose trees are not drawn reads as the forest drawn
 struct PaintCtx { k: f32, frame: u32, season: u32, flags: u32, canopy: f32 }
 
 ${I(/* wgsl */ `
@@ -604,7 +607,7 @@ struct GSample {
   c: array<f32, 6>, rockS: f32, soil: f32, s: f32, snowNow: f32, trail: bool, // the six covers, rock's share, soil depth, the ridges' light, snow, a worn path (fillLand)
   cx: vec2<f32>, cy: vec2<f32>, season: u32, cls: u32,
   ex: f32, pet: f32, precip: f32, table: f32, peat: f32, silt: f32, fog: f32, rock: i32, // the climate and soil the colour mixes from (fillColour)
-  isWater: bool, canopy: f32,
+  isWater: bool, canopy: f32, crownW: f32, isCrown: bool,
 }
 const g_BARE_ROCK = array<vec3<f32>, 5>(${[[118, 104, 92], [176, 140, 96], [204, 196, 176], [164, 144, 138], [92, 88, 84]].map(rgb).join(", ")});
 fn g_mixc(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> { return a + (b - a) * clamp(t, 0.0, 1.0); }
@@ -656,9 +659,10 @@ fn g_rgb(S: ptr<function, GSample>, s: f32, x: f32, z: f32, m60: f32, mpp: f32) 
   let mot = m60 * 0.05 + ${CL(6, 12, "0.4")} * 0.05 + ${CL(1.8, 13)} * 0.08 + ${CL(0.5, 14, "0.5")} * 0.11;
   var L0 = c.x * 0.3 + c.y * 0.59 + c.z * 0.11;
   if (L0 == 0.0) { L0 = 1.0; }
-  // the tree cover's crowns not drawn lift the mix by up to 140% of its light: a frame of dense forest at A reads 1.66 times the same ground with no tree drawn, the tree cover being about half of it
-  let band = 112.0 * (1.0 + (L0 / 112.0 - 1.0) * 0.18) * (1.0 + 1.4 * L.canopy * tr / sum);
+  let band = 112.0 * (1.0 + (L0 / 112.0 - 1.0) * 0.18);
   let k = ((1.0 + mot - pool) * band * clamp(1.0 + s * 0.3, 0.42, 1.6)) / L0;
+  // the share of this pixel the tree sprites would paint: the tree cover's share that no tree is drawn over, once the sprites' histogram is there (g_paint picks the pixel's crown by it)
+  (*S).crownW = select(0.0, clamp(L.canopy, 0.0, 1.0) * tr / sum, g_crownCdf(${NCOL - 1}u) > 0.5);
   return vec3<f32>(c.x * k, c.y * k, c.z * k);
 }
 // bare earth: soil tones with grit and the odd pale stone
@@ -778,6 +782,7 @@ fn g_land(S: ptr<function, GSample>, x: f32, z: f32, X: i32, Y: i32, ctx: PaintC
   }
   (*S).cls = cls;
   (*S).canopy = ctx.canopy;
+  // (the crown's colour is picked by g_paint)
   // the light main.js terrainLight leaves to the bake when the GPU lights slopes and hollows: the ridges' share
   let s = (*S).s;
   if ((*S).trail) { return g_soil(x, z, s + 0.4, X, Y, mpp); }
@@ -836,11 +841,25 @@ fn g_land(S: ptr<function, GSample>, x: f32, z: f32, X: i32, Y: i32, ctx: PaintC
   }
 }
 
+// the palette index the tree sprites paint a pixel with, drawn by their histogram: the cumulative shares from CROWN_AT in gGradT, one f32 each
+fn g_crownCdf(v: u32) -> f32 { let e = gGradT[${CROWN_AT}u + (v >> 1u)]; return select(e.x, e.y, (v & 1u) == 1u); }
+fn g_crownIdx(h: f32) -> u32 {
+  var lo = 0u;
+  var hi = ${NCOL - 1}u;
+  for (var i = 0; i < 8; i++) {
+    if (lo >= hi) { break; }
+    let m = (lo + hi) >> 1u;
+    if (g_crownCdf(m) > h) { hi = m; } else { lo = m + 1u; }
+  }
+  return lo;
+}
 // The colour of a ground pixel from a sample whose wet and river are filled: water, a stream or land, the readers filling the rest as it is asked for.
 fn g_paint(S: ptr<function, GSample>, x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) -> u32 {
   if ((*S).wet > 0.5) { fillWater(S, x, z, ctx, false); (*S).isWater = true; return g_water(*S, x, z, X, Y, ctx, mpp); }
   if ((*S).river > 0.5) { fillWater(S, x, z, ctx, true); (*S).isWater = true; return g_water(*S, x, z, X, Y, ctx, mpp); }
-  return g_land(S, x, z, X, Y, ctx, mpp);
+  let idx = g_land(S, x, z, X, Y, ctx, mpp);
+  if ((*S).crownW > 0.0 && h2(X, Y, 81) < (*S).crownW) { (*S).isCrown = true; return g_crownIdx(h2(X, Y, 82)); }
+  return idx;
 }
 
 ${I(/* wgsl */ `
