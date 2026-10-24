@@ -81,8 +81,10 @@ export function viewFromBytes(bytes: Uint8Array): View {
 // 75 m tier 5: 6,144 tiles, 8,190 over tiers 0 to 5); tier t - 1's cell is the 2 by 2 of tier t's (a box mean, or for a class the commonest and for a river the greatest). One tile is
 // one gzipped file, `pyramid/t<tier>/f<face>/<ty>-<tx>.tile.gz` under the planet's directory: [u32 little-endian header length][header JSON][the planes in field order, each
 // 256 * 256 words of its type, little-endian, row y (north) by row, x (east) along it, the face's own axes]. The header is {version, seed, key, tier, face, tx, ty, size: 256, fields: [{name,
-// type, step, unit}]}; a value is the integer times `step`. `pyramid.json` beside `t0` names the tiers, the fields and the planet's key. A tile is 1.05 MB raw (16 bytes a cell).
-export const PYRAMID_VERSION = 1;
+// type, step, unit}]}; a value is the integer times `step`. `pyramid.json` beside `t0` names the tiers, the fields and the planet's key. A tile is 1.1 MB raw (17 bytes a cell).
+// `water` is the deepest standing water of the cell's children, for the water's depth tint; where the water lies is `lake`, the share of the cell's area under a lake (a box mean, so a lake
+// smaller than a cell is a share of one, not a whole cell of the greatest depth): a reader finds the shore where the share, read between the cells' centres, crosses a half.
+export const PYRAMID_VERSION = 2;
 export const PYRAMID_FIELDS = [
   { name: "height", type: "i16", step: 0.25, unit: "m above the present sea; the sea floor is negative", pool: "mean" },
   { name: "rock", type: "u8", step: 1, unit: "the island's rock class at the surface (terrain/geology.ts ROCKS)", pool: "mode" },
@@ -98,6 +100,7 @@ export const PYRAMID_FIELDS = [
   { name: "marsh", type: "u8", step: 1 / 255, unit: "share of the ground the cover takes", pool: "mean" },
   { name: "bare", type: "u8", step: 1 / 255, unit: "share of the ground the cover takes", pool: "mean" },
   { name: "soil", type: "u8", step: 0.025, unit: "m of soil over the rock, at most 6.4", pool: "mean" },
+  { name: "lake", type: "u8", step: 1 / 255, unit: "share of the cell's area under a lake (standing fresh water over land; the sea is height under 0)", pool: "mean" },
 ] as const;
 export type PyramidField = (typeof PYRAMID_FIELDS)[number];
 
