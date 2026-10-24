@@ -905,7 +905,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the sim's people, animals and things live on the island: elsewhere there are none
     const simUse = mode === "home" ? sim : null;
     const views = pl.parts.map(([cam, w], k) => viewOf(cam, k, w, simUse, clock, now, view));
-    const id = ++frameNo, msg = { type: "frame", id, gid: PLACE ? gid : undefined, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), cam: view.geo && PLACE ? { lat: view.geo.lat, lon: view.geo.lon, ext: viewExtent(view) } : undefined, exag: EXAG, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG }, planet: PLACE && ladderAlpha(view) < 1 ? planetParams(view) : null };
+    const id = ++frameNo, msg = { type: "frame", id, gid: PLACE ? gid : undefined, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), cam: view.geo && PLACE ? { lat: view.geo.lat, lon: view.geo.lon, ext: viewExtent(view) } : undefined, exag: EXAG, relief: sky.relief, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG }, planet: PLACE && ladderAlpha(view) < 1 ? planetParams(view) : null };
     if (lutSent !== sky.id) { msg.lut = T.gpu.slice(); lutSent = sky.id; }
     ownersOf.set(id, pickOwners);
     if (ownersOf.size > 30) ownersOf.delete(ownersOf.keys().next().value);

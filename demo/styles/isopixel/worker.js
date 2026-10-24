@@ -1254,7 +1254,9 @@ function render() {
     // the camera stands above the ground under its target, as drawn (lifted by the relief's exaggeration), never inside it
     const lift = (planetLift = Math.max(0, planet.pyramid.heightAt(planet.G.FRAMES, planet.G.fromLatLon((f.planet.lat * Math.PI) / 180, (f.planet.lon * Math.PI) / 180))) * f.exag);
     const cam = planetCam({ ...f.planet, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM, lift });
-    planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, sun: f.planet.sun, moon: f.planet.moon, moonMix: f.planet.moonMix, amb: f.planet.amb, exag: f.exag, riverCut: f.planet.riverCut });
+    // the page ground the ladder reads, for the planet pass's finest tier (planet.js, the window's face and corner cells are the pages' frame), with the ladder's own season, frame and relief so water, grass and slope light match it
+    const pg = R.pageGround(), pages = curWin && pg.on ? { ...pg, face: curWin.face, x0: curWin.x0, y0: curWin.y0 } : null, v0 = views[0]?.U;
+    planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, sun: f.planet.sun, moon: f.planet.moon, moonMix: f.planet.moonMix, amb: f.planet.amb, exag: f.exag, riverCut: f.planet.riverCut, season: v0?.season, frame: v0?.frame, relief: f.relief, pages });
   });
   R.frame({ ...f, views, under });
   frames++;

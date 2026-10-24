@@ -2092,6 +2092,8 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     get busy() { return inFlight; },
     setFarUse: (on) => { farUse = on; },
     setFadeKeep: (on) => { fadeKeep = on; },
+    // the ground's pages as the planet pass reads them (slice H): the textures and the table, on only while the page table is what the painter reads. table: [on, entry 0 to 15], entries as the painter's page table (a slot, or -(2 + n) for a page not resident)
+    pageGround: () => ({ on: pgOnNow && !!PT, fine: PT?.fine ?? null, grid: PT?.grid ?? null, river: PT?.river ?? null, table: pageNow }),
     setFrontUse: (on) => { frontUse = on; },
     setFrontViews, frontsReady,
     // sources the cull leaves out, by name (the page checks, to time each source's share)
