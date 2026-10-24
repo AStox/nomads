@@ -333,6 +333,14 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     return { dir: h > 1e-9 ? [e / h, -n / h] : [0, 1], el: Math.asin(clamp(u, -1, 1)), tan: u / Math.max(h, 1e-9) };
   }
   const planetSky = (k) => ({ sun: bodyOver(skyVec(k.sun), FRM), moon: { ...bodyOver(skyVec(k.moon), FRM), phase: k.moon.phase, lit: k.moon.lit }, id: gid });
+  // The sky over the camera's target whichever ground the ladder stands on, so the light tables and the ambient the planet pass is drawn through are the target's at every zoom
+  // (the frame's axes are the plane's, turned off the target's up to stand tangent there): the sun and moon are one point of the sky each, seen from the target's own horizon.
+  // Its id changes with the sun's and moon's elevation in steps of an eighth of a degree, which is when the tables are made again.
+  function planetSkyAt(k, geo) {
+    const c = vecOf(geo), tangent = (a) => { const d = dotv(a, c), r = [a[0] - c[0] * d, a[1] - c[1] * d, a[2] - c[2] * d], l = Math.hypot(r[0], r[1], r[2]) || 1; return [r[0] / l, r[1] / l, r[2] / l]; };
+    const F = { c, e: tangent(FRM.e), n: tangent(FRM.n) }, sun = bodyOver(skyVec(k.sun), F), moon = bodyOver(skyVec(k.moon), F);
+    return { sun, moon: { ...moon, phase: k.moon.phase, lit: k.moon.lit }, id: `${gid}|${Math.round(sun.el * 8 / D2R)}|${Math.round(moon.el * 8 / D2R)}` };
+  }
   // the planet camera's look at a zoom: u runs from the whole planet (0) to the ladder's first zoom (1)
   function planetParams(view) {
     const zw = zminNow(), u = clamp((view.zoom - zw) / (ZLAD - zw), 0, 1), k = smooth(0.25, 0.9, u), tanH = 0.414 * (0.05 / 0.414) ** smooth(0.2, 0.9, u);
@@ -343,7 +351,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     iso = ((((iso + Math.PI) % TAU) + TAU) % TAU) - Math.PI;
     // the light is the planet's sun (planetSky): day, night and the terminator between, as the clock stands
     const light = skyVec(homeSky?.sun ?? { el: 0.8, dir: [0.6, 0.8] }), moon = homeSky?.moon ? skyVec(homeSky.moon) : [0, 0, 1];
-    return { lat: view.geo.lat, lon: view.geo.lon, dist, tilt: ISO_TILT * k, heading: iso * k, tanH, sun: light, moon, moonMix: homeSky ? smooth(3, -2, homeSky.e) : 0, amb: ambientOf(Math.sin(sky?.sun?.el ?? 0.8)), riverCut: clamp((720 * ((canvas.height * FRM.scale) / ppm)) / PR, 20, 3000) };
+    return { lat: view.geo.lat, lon: view.geo.lon, dist, tilt: ISO_TILT * k, heading: iso * k, tanH, sun: light, moon, moonMix: sky ? smooth(3, -2, sky.e) : 0, amb: ambientOf(Math.sin(sky?.sun?.el ?? 0.8)), riverCut: clamp((720 * ((canvas.height * FRM.scale) / ppm)) / PR, 20, 3000) };
   }
   // the camera as the worker drew it last frame: stood above the ground under its target (stats.lift), so a pick lands on what is drawn
   const planetCamOf = (view) => { const p = planetParams(view); return planetCam({ ...p, w: canvas.width, h: canvas.height, radiusM: PR, lift: stats.lift ?? 0 }); };
@@ -896,7 +904,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     season = clock.season ?? season;
     if (pendingGround) { const f = fieldsSlice(pendingGround); if (f) { applyGroundMsg(pendingGround, view, f); pendingGround = null; } }
     homeSky = skyFor(clock, now);
-    sky = mode === "win" ? skyFor(clock, now, planetSky(homeSky)) : homeSky;
+    sky = PLACE && view.geo ? skyFor(clock, now, planetSkyAt(homeSky, view.geo)) : homeSky;
     syncGeo(view);
     wantGround(view, now);
     panAhead(view, now);
