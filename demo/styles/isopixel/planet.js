@@ -20,6 +20,9 @@ const GRID_X = 14, GRID_Y = 10, MARGIN = 0.12;
 const CAP_RATE = 3;
 // how fast the whole screen goes over to the fine pages once the view holds them all, in shares a second: about two thirds of a second
 const FINE_RATE = 1.5;
+// the share of a pixel's dither the finer tier must have before its tiles are asked for: under it the screen shows the tier below alone (readyLevel), so a tier asked for over the whole screen at
+// every crossing of a level, for a share of the pixels too small to see, is bytes for nothing [design]
+const FINER_FROM = 0.4;
 // the reach (half the screen's diagonal on the ground, m) a block of pages holds with its camera within half a page of its middle, which is as far as the renderer lets the camera go from the middle before
 // it makes the block again (worker.js blockFollow): a view of more is never drawn from the pages, so the same view is the same picture whether the block was made on the way in or left from the way out
 const FINE_REACH = (PAGE_BLOCK / 2 - 0.5) * PAGE_GEOM.pageCells * PAGE_GEOM.cellM;
@@ -160,7 +163,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
   function wanted(pts) {
     const seen = new Map();
     for (const p of pts) {
-      const want = Math.ceil(p.lv);
+      const want = p.lv - Math.floor(p.lv) > FINER_FROM ? Math.ceil(p.lv) : Math.floor(p.lv);
       for (let t = Math.max(0, want - 2); t <= want; t++) {
         const k = tileOf(p, t), key = ((t * 6 + p.f) * 64 + k.ty) * 64 + k.tx, pri = t * 10 + p.centre;
         const had = seen.get(key);
@@ -176,7 +179,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     return 0;
   }
   // the level the screen shows: down at once (a coarser level is always held), up by CAP_RATE a second
-  let cap = 0, capAt = performance.now(), fine = 0, last = null;
+  let cap = 0, capAt = performance.now(), fine = 0, last = null, drawn = false;
 
   // the noise's frame: the face of the camera's target, the tangents of the target on it and its place in metres along the equiangular axes (wgsl/globe.js noiseXZ)
   function noiseFrame(T) {
@@ -193,6 +196,8 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     const wantedNow = wanted(pts);
     pyramid.want(wantedNow);
     const now = performance.now(), ready = readyLevel(pts), dt = (now - capAt) / 1000, pg = opts.pages?.on ? opts.pages : null;
+    // the first picture starts at the level its tiles allow (the ramp is for tiles that arrive after it, not for a cache that already holds them)
+    if (!drawn) { cap = ready; drawn = true; }
     cap = ready < cap ? ready : Math.min(ready, cap + dt * CAP_RATE);
     // the whole screen goes over to the fine pages once every point of the view (and its margin) lies in a resident page of the block and the finest tier is held too, never part of it
     // (a block the view outgrows is a patch on the screen), and back at once when it does not
