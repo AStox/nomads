@@ -153,10 +153,14 @@ fn flood(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
 }
 
 // ---- receivers: steepest descent on the flooded surface, the sea ending every river ----
-// With the routing parameter P[3] set, the receiver is instead drawn among the lower neighbours with the probability proportional to the fall to each over its distance, anew each step (P[2]):
-// Fairfield and Leymarie's remedy for the grid bias of steepest descent, which sends water down any slope within 22.5 degrees of a lattice direction along that direction [Tarboton 1997 reads
-// and cites it]. Every lower neighbour is a valid receiver (the flooded surface falls strictly along it), so the forest stays a forest; the draw is a Philox word of the cell's own id, so
-// it is the same for the same cell whatever the tiling.
+// With the routing parameter P[3] = 1 the receiver is instead drawn among the lower neighbours with the probability proportional to the fall to each over its distance, anew each step (P[2]):
+// the draw Tarboton 1997 reads Fairfield and Leymarie 1991 to make, their remedy for the grid bias of steepest descent, which sends water down any slope within 22.5 degrees of a lattice
+// direction along that direction. Every lower neighbour is a valid receiver (the flooded surface falls strictly along it), so the forest stays a forest; the draw is a Philox word of the cell's
+// own id, so it is the same for the same cell whatever the tiling.
+// With P[3] = 2 (Rho8, Fairfield and Leymarie 1991 as WhiteboxTools rho8_pointer has it: the fall to a cardinal neighbour over 1, to a diagonal one over 2 - r, r uniform in [0, 1), a draw
+// for each diagonal link and step) the receiver is the steepest of those: the lower neighbours only, so again every receiver is strictly lower on the flooded surface and no chain can loop.
+// On the sphere the diagonal link has its own length (the table's inverse length), so the draw scales that link by (2 - r) / sqrt 2, which is 2 - r on a square grid, where the diagonal
+// is sqrt 2 long: in integers the link's inverse length is multiplied by sqrt 2 x 2^16 / (2 - r) / 2^16 (sqrt 2 x 2^16 = 92682). The incision still reads the link's true length.
 fn philox(c0: vec4u, k0: vec2u) -> vec4u {
   var c = c0; var k = k0;
   for (var r = 0u; r < 10u; r++) {
@@ -172,6 +176,8 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   let k = gk(gid, nwg);
   if (k >= N) { return; }
   var to = k; var rd = 0u; var best = vec2u(0u, 0u);
+  var rw = vec4u(0u, 0u, 0u, 0u);
+  if (P[3] == 2u && interior(k) && is_land(k)) { rw = philox(vec4u(cid(k), P[2], FN, 0x52484f38u), vec2u(0x4c414e44u, 0x524f5554u)); }
   if (interior(k) && is_land(k)) {
     let f = fl(k);
     var share = array<u32, 8>(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u); var total = 0u;
@@ -181,11 +187,14 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
       let dz = f - fl(j);
       if (dz <= 0i) { continue; }
       let iv = invd(k, d);
-      let key = mul64(u32(dz), iv);
+      var ev = iv;
+      if (P[3] == 2u && d >= 4u) { ev = shr64(mul64(iv, (92682u << 15u) / ((131072u - (rw[d - 4u] & 0xffffu)) >> 1u)), 16u).x; }
+      let key = mul64(u32(dz), ev);
       if (lt64(best, key)) { best = key; to = j; rd = iv; }
-      share[d] = max(1u, min(shr64(key, 16u).x, 0x0fffffffu)); total += share[d];
+      let skey = mul64(u32(dz), iv);
+      share[d] = max(1u, min(shr64(skey, 16u).x, 0x0fffffffu)); total += share[d];
     }
-    if (P[3] != 0u && total > 0u) {
+    if (P[3] == 1u && total > 0u) {
       let r = philox(vec4u(cid(k), P[2], 0u, 0x52434456u), vec2u(0x4c414e44u, 0x524f5554u)).x % total;
       var acc = 0u;
       for (var d = 0u; d < NFLOW; d++) {
