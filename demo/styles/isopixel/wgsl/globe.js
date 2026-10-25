@@ -377,12 +377,14 @@ fn fillTop(S: ptr<function, GSample>, x: f32, z: f32) {
     // standing water as the island's waterAt has it from the cells' level and the fine height: the sea's level is 0, a lake's its cell's height and depth
     gLvl = max(select(-1.0e4, gHt + gF.water, gF.water >= 0.25), select(-1.0e4, 0.0, gHt < 8.0));
     (*S).wet = clamp(0.5 + (gLvl - gH) * 0.5, 0.0, 1.0);
-    // a stream is a line a pixel wide at least, as the tier's are (streamAt): over a pixel wider than the mask's texel (PAGE_GEOM.cellM over mask, 4.7 m) the mask is read half a pixel to each side too
+    // over a pixel wider than the mask's texel (PAGE_GEOM.cellM over mask, 4.7 m) a stream is drawn by the share of the pixel it covers (the mask read at the pixel's middle and its four corners), dithered: a stream under
+    // a pixel fades out with the scale in step with its width and a wide one stays whole. As a line a pixel wide at every zoom the parallel furrows of a slope were a hatch of dotted lines (e2e 11)
     var rv = fineRiver(gFx);
     let mppN = gMpp / gSc;
     if (mppN > ${PAGE_GEOM.cellM / PAGE_GEOM.mask}) {
       let o = 0.5 * mppN / gCm5;
-      rv = max(max(rv, fineRiver(gFx + vec2f(o, o))), max(fineRiver(gFx + vec2f(-o, o)), max(fineRiver(gFx + vec2f(o, -o)), fineRiver(gFx - vec2f(o, o)))));
+      let share = 0.2 * (rv + fineRiver(gFx + vec2f(o, o)) + fineRiver(gFx + vec2f(-o, o)) + fineRiver(gFx + vec2f(o, -o)) + fineRiver(gFx - vec2f(o, o)));
+      rv = select(0.0, 1.0, bayer(gX, gY) < share);
     }
     (*S).river = rv;
     return;
@@ -883,15 +885,16 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   // the air's haze toward the limb (seen from a height, not from the ground), each dithered
   let mu = max(dot(p, -rd), 0.0);
   let air = pow(1.0 - mu, 5.0) * 0.9 * u.airK;
-  if (bayer(gX, gY) < air) { idx = tables[idx]; }
-  if (bayer(gX + 2, gY + 1) < air * air) { idx = tables[idx]; }
+  // these two shares and the light rows below vary slowly over the screen, so an ordered dither on the ground-fixed lattice beats against the pixel grid in rings of the lattice's own scale; a hash does not
+  if (h2(gX, gY, 61) < air) { idx = tables[idx]; }
+  if (h2(gX, gY, 62) < air * air) { idx = tables[idx]; }
   // the light the ground has: the key light's share on flat ground here (the sun's height over this place, the moon's once the sun is down), through the same light tables the ladder's shade
   // pass maps its palette through, so the night side, the terminator and the day side show as the close levels show a night, a dusk and a day
   let key = mix(max(facing, 0.0), max(dot(p, u.moon), 0.04), u.moonMix);
   // the tables' row 0 is the ambient light of the sky where the camera stands: a place with less of it (the night side from a day) shows that much darker, down to the sky's glow
   // (NIGHT_AMB, a tenth of the day's ambient) so the dark side keeps its shape and the pole is never black [design]
   let ambK = max(min(1.0, ambOf(sd) / max(u.amb.x, 1e-6)), NIGHT_AMB);
-  var row = u32(min(f32(LEVELS - 1), floor(key * f32(LEVELS - 1) + bayer(gX, gY)))) * 4u;
+  var row = u32(min(f32(LEVELS - 1), floor(key * f32(LEVELS - 1) + h2(gX, gY, 63)))) * 4u;
   if (isLit) { row = litRow; }
   // never darker than the space beside it, the ground's own light at night over it
   let ink = PAL[g_AIR[0]];
