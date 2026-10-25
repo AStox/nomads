@@ -11,7 +11,7 @@ const finite = (...v) => v.every(Number.isFinite);
 
 export function createCamera({ live, view, canvas, onTurn }) {
   view.up ??= 0;
-  let goal = view.zoom, zoomSet = view.zoom, anchor = null, tried = null, turn = null, pinch = null, good = snapshot();
+  let goal = view.zoom, zoomSet = view.zoom, anchor = null, tried = null, turn = null, pinch = null, grab = null, good = snapshot();
   function snapshot() { return { x: view.x, z: view.z, zoom: view.zoom, bearing: view.bearing, up: view.up }; }
   const half = () => [canvas.width / 2, canvas.height / 2];
   // move the target so world point A shows at canvas point (sx, sy) in state st; false, and nothing moved, if it cannot
@@ -47,8 +47,6 @@ export function createCamera({ live, view, canvas, onTurn }) {
       return st;
     },
     setZoom(z) { if (Number.isFinite(z)) { goal = zoomSet = view.zoom = clamp(z, live.zmin, live.zmax); anchor = null; tried = null; } },
-    // the ground a gesture was held on is another now (its coordinates are in the old frame): the gesture lets go
-    dropAnchor() { anchor = null; tried = null; pinch = null; },
     // the mid-screen target point is held at centre + (dx, dy), so the image moves exactly with the cursor
     panBy(dx, dy) {
       if (!finite(dx, dy) || (!dx && !dy && !view.up)) return;
@@ -56,7 +54,25 @@ export function createCamera({ live, view, canvas, onTurn }) {
       const A = { x: view.x, z: view.z, y: live.camH(view.x, view.z) + view.up, geo: view.geo }, [cx, cy] = half();
       if (!hold(A, cx + dx, cy + dy, { ...view, up: 0 })) return;
       view.up = 0;
-      if (anchor) anchor.at = [anchor.at[0] + dx, anchor.at[1] + dy];
+    },
+    // A drag holds the ground picked where the button went down under the cursor, not the target: the target is held where it stands and the ground away from it (the cursor's, at a tilt, on a sphere, through the
+    // cells' lattice) moves by more or less than the cursor, so a drag of any length ended hundreds of px from where it began. The hold is solved once a frame (step), after the lattice has moved for the frame, so
+    // the ground is under the cursor in the picture drawn. Where nothing is under the cursor (the planet's limb) the target is pulled by the cursor's steps as before.
+    grabStart(sx, sy) {
+      const A = live.groundUnder(view, sx, sy);
+      grab = { A: A && finite(A.x, A.z, A.y) ? A : null, at: [sx, sy], on: false };
+    },
+    grabMove(sx, sy) {
+      if (!grab) return;
+      if (!grab.A) cam.panBy(sx - grab.at[0], sy - grab.at[1]);
+      if (!grab.on) { anchor = null; tried = null; }
+      grab.at = [sx, sy]; grab.on = true;
+    },
+    grabEnd() { grab = null; },
+    // the grabbed ground (or a zoom's) under the cursor again: every frame, and when the renderer's ground changes frames (another window may lay its cells at an angle to the last one's, which turns the picture about the target)
+    regrab() {
+      if (grab?.A && grab.on) { if (hold(grab.A, ...grab.at, { ...view, up: 0 })) view.up = 0; }
+      else if (anchor && !hold(anchor.A, ...anchor.at, view)) anchor = null;
     },
     // a turn ends a zoom gesture: its anchor would drag the target round with it
     orbitBy(db) { if (Number.isFinite(db) && db) { view.bearing = norm8(view.bearing + db); anchor = null; } },
@@ -107,11 +123,13 @@ export function createCamera({ live, view, canvas, onTurn }) {
       // a zoom set from outside (a script, the bench) is taken as the new goal
       if (view.zoom !== zoomSet) { goal = zoomSet = view.zoom; anchor = null; tried = null; }
       turnStep(dt, now);
+      if ((grab?.A && grab.on) || anchor) live.tickLattice(view);
+      cam.regrab();
       if (view.zoom === goal) { anchor = null; tried = null; return; }
       let z = view.zoom + (goal - view.zoom) * (1 - Math.exp(-dt / ZOOM_TAU));
       if (Math.abs(goal - z) < 1e-4) z = goal;
       if (anchor) {
-        if (!hold(anchor.A, ...live.screenOf(view, anchor.A.x, anchor.A.z, anchor.A.y, anchor.A.geo).slice(0, 2), { ...view, zoom: z })) anchor = null;
+        if (!hold(anchor.A, ...anchor.at, { ...view, zoom: z })) anchor = null;
       }
       view.zoom = zoomSet = z;
       if (z === goal) { anchor = null; tried = null; }
