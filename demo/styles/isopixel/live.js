@@ -383,10 +383,34 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const x0 = [sc * eE, sc * eN], z0 = [sc * eN, -sc * eE], det = x0[0] * z0[1] - z0[0] * x0[1], inv = [z0[1] / det, -z0[0] / det, -x0[1] / det, x0[0] / det];
     return { sc, turn: Math.atan2(-eN, eE), q: [jx[0] * inv[0] + jz[0] * inv[2], jx[0] * inv[1] + jz[0] * inv[3], jx[1] * inv[0] + jz[1] * inv[2], jx[1] * inv[1] + jz[1] * inv[3]] };
   }
+  // The lattice the planet camera draws with. latticeAt's is a face's, and where the target crosses a cube edge out of a window's reach the cells of the two faces lie at an angle to each other
+  // (47 degrees at 9 degrees from a corner, none at an edge's middle; a cube's square lattice has eight cone points, so no picture that follows the lattice can turn the same way everywhere),
+  // so the picture would turn by all of it in one frame. The camera's lattice follows the exact one with time constant LAT_TAU, once a frame (latTick), and is the exact one where sprites show,
+  // which stand in it (the window's cover), so the ladder and the planet under it always agree and nothing else changes: with the target in one face the two are the same.
+  // [design: 350 ms, a quarter turn in about a third of a second, as the camera's Q and E and planet.js's level rise]
+  const LAT_TAU = 350, LAT_COVER = (view) => (mode === "win" && !simOpts ? winFade() * Math.min(1, LIFT_PER_COVER * coverFade(view)) : 1);
+  let latS = null, latAt = 0;
+  function latTick(view) {
+    if (!PLACE || !view.geo) return;
+    const T = latticeAt(view.geo), now = performance.now();
+    if (!latS || !T.q) { latS = { sc: T.sc, turn: T.turn, q: T.q && [...T.q] }; latAt = now; return; }
+    const a = 1 - Math.exp(-Math.min(1000, now - latAt) / LAT_TAU);
+    latAt = now;
+    latS.turn += (((T.turn - latS.turn + 3 * Math.PI) % TAU) - Math.PI) * a;
+    latS.sc += (T.sc - latS.sc) * a;
+    latS.q = latS.q.map((v, i) => v + (T.q[i] - v) * a);
+  }
+  function latOf(view) {
+    const T = latticeAt(view.geo);
+    if (!T.q) return T;
+    if (!latS) latTick(view);
+    const c = LAT_COVER(view), S = latS;
+    return { sc: S.sc + (T.sc - S.sc) * c, turn: S.turn + (((T.turn - S.turn + 3 * Math.PI) % TAU) - Math.PI) * c, q: S.q.map((v, i) => v + (T.q[i] - v) * c) };
+  }
   // the planet camera's look at a zoom: u runs from the whole planet (0) to the ladder's first zoom (1)
   function planetParams(view) {
     const zw = zminNow(), u = clamp((view.zoom - zw) / (ZLAD - zw), 0, 1), k = smooth(0.25, 0.9, u), tanH = 0.414 * (0.05 / 0.414) ** smooth(0.2, 0.9, u), ortho = smooth(ZLAD - 1.5, ZLAD, view.zoom);
-    const lat = latticeAt(view.geo), scale = 1 + ortho * (lat.sc - 1);
+    const lat = latOf(view), scale = 1 + ortho * (lat.sc - 1);
     // the ladder's screen x runs along (1, -1) of the plane, root 2 px a metre per px a metre of its world axes
     const ppm = ppmOf(clampZ(view.zoom)), dist = (canvas.height * scale) / (2 * Math.SQRT2 * ppm * tanH);
     // screen up on the ground at bearing b is the plane's (-1, -1) turned b * 45 degrees, the plane's north turned from the planet's by the frame's turn (as far as the camera is parallel); the whole planet is north up
@@ -398,7 +422,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the camera stands on the planet's own height under the target until the ladder's sprites show, then eases to the ladder's camera height (they differ by tens of metres on a mountain and by a kilometre at the
   // planet's highest range) as the window's cover grows, so the same view is the same picture whether a window of this place was made on the way (the camera height is the window's, a place's window is kept
   // after a zoom out) or not. It is whole by the time the sprites are a third of the picture, where they must stand on the ground: LIFT_PER_COVER [design: 3, a third]
-    return { lat: view.geo.lat, lon: view.geo.lon, dist, tilt: ISO_TILT * k, heading: iso, tanH, ortho, q: lat.q, scale: lat.sc, liftOrtho: ortho * (mode === "win" && !simOpts ? winFade() * Math.min(1, LIFT_PER_COVER * coverFade(view)) : 1), liftM: mode === "win" || simOpts ? (camH(view.x, view.z) + (view.up || 0)) * EXAG : null, sun: light, moon, moonMix: sky ? smooth(3, -2, sky.e) : 0, amb: ambientOf(Math.sin(sky?.sun?.el ?? 0.8)), riverCut: clamp((720 * ((canvas.height * scale) / ppm)) / PR, 20, 3000) };
+    return { lat: view.geo.lat, lon: view.geo.lon, dist, tilt: ISO_TILT * k, heading: iso, tanH, ortho, q: lat.q, scale: lat.sc, liftOrtho: ortho * LAT_COVER(view), liftM: mode === "win" || simOpts ? (camH(view.x, view.z) + (view.up || 0)) * EXAG : null, sun: light, moon, moonMix: sky ? smooth(3, -2, sky.e) : 0, amb: ambientOf(Math.sin(sky?.sun?.el ?? 0.8)), riverCut: clamp((720 * ((canvas.height * scale) / ppm)) / PR, 20, 3000) };
   }
   // the camera as the worker drew it last frame: stood above the ground under its target (stats.lift), so a pick lands on what is drawn
   const planetCamOf = (view, lift = stats.lift ?? 0) => { const p = planetParams(view); return planetCam({ ...p, w: canvas.width, h: canvas.height, radiusM: PR, lift }); };
@@ -412,7 +436,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     return (v[0] * (1 - a) + v[1] * a) * (1 - b) + (v[2] * (1 - a) + v[3] * a) * b;
   }
   // drawn metres of height a terrain metre is at this view: the relief's exaggeration, times the cells' scale as far as the camera is parallel (worker.js ex)
-  const drawnK = (view) => EXAG * (1 + smooth(ZLAD - 1.5, ZLAD, view.zoom) * (latticeAt(view.geo).sc - 1));
+  const drawnK = (view) => EXAG * (1 + smooth(ZLAD - 1.5, ZLAD, view.zoom) * (latOf(view).sc - 1));
   // where planet place geo is drawn, and the height (drawn metres) it stands at: `y`, terrain metres, when the caller has it (what groundUnder answered); otherwise the height drawn where it lands, found a few times over
   function planetProject(view, geo, y) {
     const cam = planetCamOf(view), P = vecOf(geo), at = (h) => cam.project([P[0] * (1 + h / PR), P[1] * (1 + h / PR), P[2] * (1 + h / PR)]);
@@ -1021,6 +1045,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the drawing's clock (the water's frame, the fires, the smoke), held still by the page checks (debug.hold)
     const t0 = performance.now(), now = held ?? t0;
     if (sim) simRef = sim;
+    latTick(view);
     // the GPU's canvas belongs to the worker once transferred: its size goes there, and is kept here only to compare
     if (glSize[0] !== canvas.width || glSize[1] !== canvas.height) { worker.postMessage({ type: "resize", W: canvas.width, H: canvas.height }); glSize = [canvas.width, canvas.height]; }
     const clock = sim?.clock?.() ?? worldClock;
@@ -1253,7 +1278,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     zmax: ZMAX, get zmin() { return zminNow(); }, named, levels, ppm: (z) => ppmOf(clampZ(z)), levelFor, setTarget,
     // for the page's readout: true metres across a canvas px at the camera's target (east to west, as the planet camera lays the ground: a px is root 2 of a cell metre's ppm), and the angle, clockwise from screen up,
     // that north points on the screen
-    mPerPx: (view) => (PLACE && view.geo ? (1 + smooth(ZLAD - 1.5, ZLAD, view.zoom) * (latticeAt(view.geo).sc - 1)) / (Math.SQRT2 * ppmOf(clampZ(view.zoom))) : null),
+    mPerPx: (view) => (PLACE && view.geo ? (1 + smooth(ZLAD - 1.5, ZLAD, view.zoom) * (latOf(view).sc - 1)) / (Math.SQRT2 * ppmOf(clampZ(view.zoom))) : null),
     northAngle: (view) => (PLACE && view.geo ? (-planetParams(view).heading) / D2R : 0),
     // whether the worker has drawn the view with what it asked of the planet held (three frames in a row, or 30 s from the load, whichever is first): the first picture worth showing, not the noise
     // of a frame drawn before any tile came
