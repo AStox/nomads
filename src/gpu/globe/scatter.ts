@@ -19,13 +19,13 @@
 // belt) and the smoothing of the cells' chain: the stream mask is a polyline of 75 m steps, not the island's smooth curve [gap: R1893]. The rivers of a patch of 8 cells round the tile
 // are drawn (a stream of 1,200 m or wider across lies centred further out; no river of the planet's is that wide at its flow [gap]).
 import { CELL } from "../../terrain/grid";
-import { SIZE, type FineRiver, type Scatter } from "../../terrain/flora";
+import { RM, SIZE, type FineRiver, type Scatter } from "../../terrain/flora";
 import { BANKFULL, WOODED, bankDepth, bankWidth } from "../../terrain/water";
-import { dispatch, pipeline, pipelineSoon, readback, storage } from "../kernel";
+import { dispatchSliced, pipeline, pipelineSoon, readback, storage } from "../kernel";
 import type { Gpu } from "../device";
-import { objectsOn, run, segments, type CellWindow, type SceneryKernels, type WindowedScatter } from "../terrain/scenery";
+import { SLICE_GROUPS, objectsOn, run, segments, type CellWindow, type SceneryKernels, type WindowedScatter } from "../terrain/scenery";
 import {
-  GRADIENTS, ISLE, RASTER, countKernel, fineKernel, layoutOf, tableKernel, tileScenery, writeKernel, type SceneryLayout,
+  GRADIENTS, ISLE, countKernel, fineKernel, layoutOf, rasterKernel, tableKernel, tileScenery, writeKernel, type SceneryLayout,
 } from "../wgsl/terrain-scenery";
 import { TABLE_UNIT, mappedField } from "./ground";
 import { GROUNDTILE_FIELDS } from "./bake";
@@ -35,6 +35,8 @@ import type { Ctx, Field } from "./stages";
 
 const Q16 = 65536, Q24 = 16777216;
 export const SCATTER_HALO = 2;
+// the stream raster over a band of rows (a rectangle of the mask's words), which tileFields makes a slice at a time
+const RASTER_RECT = rasterKernel(true);
 export const RIVER_HALO = 8;
 // The quads of one tile and the first quad's key of tile k.
 export const TILE_QUADS = 1024 * 1024;
@@ -83,7 +85,7 @@ function kernelsOf(halo: number) {
 // Every kernel a tile's scatter and fine ground run, set compiling off the frames' queue (kernel.ts pipelineSoon), so the first window finds them made; resolves when all are.
 export function warmScatter(g: Gpu, halo = SCATTER_HALO): Promise<unknown> {
   const { K } = kernelsOf(halo);
-  return Promise.all([[RASTER, "raster"], [K.fine, "fine"], [K.table, "table"], [K.count, "count"], [K.count, "rank"], [K.count, "rows"], [K.count, "scan"], [K.write, "write"]].map(([src, entry]) => pipelineSoon(g, src, entry)));
+  return Promise.all([[RASTER_RECT, "raster"], [K.fine, "fine"], [K.table, "table"], [K.count, "count"], [K.count, "rank"], [K.count, "rows"], [K.count, "scan"], [K.write, "write"]].map(([src, entry]) => pipelineSoon(g, src, entry)));
 }
 
 // The tile's fields as the kernels hold them (wgsl/terrain-scenery.ts ISLE, in a field of the tile's cells and a halo of `halo`), from the stored words by integer arithmetic alone.
@@ -135,10 +137,13 @@ export function riversOf(source: TileSource, tile: number, tier = 4): FineRiver[
 // `fine` (when asked for): the fine field's heights over the 1,025 by 1,025 vertices, m, and the stream mask (RM by RM texels, 0 to 255).
 export interface TileScatter<F extends Scatter = Scatter> { flora: F; tile: number; segments: number; fine?: { h: Float32Array; mask: Uint8Array } }
 // A tile's streams rasterised and its fine ground made, left on the GPU for the scatter's kernels: the packed fields, the fine buffer, and what to let go of when they are done.
-export function tileFields(ctx: Pick<Ctx, "gpu" | "tier">, tile: number, source: TileSource, halo = SCATTER_HALO) {
+export async function tileFields(ctx: Pick<Ctx, "gpu" | "tier">, tile: number, source: TileSource, halo = SCATTER_HALO) {
   const g = ctx.gpu, { L, K } = kernelsOf(halo), rivers = riversOf(source, tile, ctx.tier), { seg, table } = segments(rivers);
   const segs = storage(g, seg), bins = storage(g, table), field = storage(g, L.FINE_WORDS * 4), packed = storage(g, packTile(source, tile, halo, ctx.tier));
-  dispatch(g, pipeline(g, RASTER, "raster"), [segs, bins, field], [Math.ceil(L.RMW / 256)]);
+  // the mask in bands of SLICE_GROUPS workgroups of 256 words (four texels each) a submit, each band's rows the rectangle's (the kernel writes each word where the whole mask's run would have put it)
+  const across = RM / 4, rows = (SLICE_GROUPS * 256) / across, rect = storage(g, new Uint32Array([0, 0, across, rows]));
+  await dispatchSliced(g, pipeline(g, RASTER_RECT, "raster"), [[0, segs], [1, bins], [2, field], [3, rect]], Math.ceil(L.RMW / 256), SLICE_GROUPS, (first, n) => g.device.queue.writeBuffer(rect, 0, new Uint32Array([0, (first * 256) / across, across, (n * 256) / across])));
+  rect.destroy();
   run(g, pipeline(g, K.fine, "fine"), [[0, packed], [1, field]], [Math.ceil(L.MV / 256)]);
   return { g, L, K, packed, field, segments: seg.length / 8, release: () => { segs.destroy(); bins.destroy(); } };
 }
@@ -151,7 +156,7 @@ export function tileFields(ctx: Pick<Ctx, "gpu" | "tier">, tile: number, source:
 export async function scatterTile(ctx: Pick<Ctx, "gpu" | "dir" | "tier">, tile: number, seed: number, halo: number | undefined, keepFine: boolean | undefined, source: TileSource | undefined, window: CellWindow): Promise<TileScatter<WindowedScatter>>;
 export async function scatterTile(ctx: Pick<Ctx, "gpu" | "dir" | "tier">, tile: number, seed: number, halo?: number, keepFine?: boolean, source?: TileSource): Promise<TileScatter>;
 export async function scatterTile(ctx: Pick<Ctx, "gpu" | "dir" | "tier">, tile: number, seed: number, halo = SCATTER_HALO, keepFine = false, source: TileSource = stageSource(ctx, tile), window?: CellWindow): Promise<TileScatter<Scatter | WindowedScatter>> {
-  const { g, L, K, packed, field, segments: nSeg, release } = tileFields(ctx, tile, source, halo);
+  const { g, L, K, packed, field, segments: nSeg, release } = await tileFields(ctx, tile, source, halo);
   let fine: TileScatter["fine"];
   if (keepFine) {
     const [mask, h] = await Promise.all([readback(g, field, L.RMW * 4), readback(g, field, L.MV * 4, L.FINE_AT * 4)]);

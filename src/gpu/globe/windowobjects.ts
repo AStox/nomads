@@ -17,7 +17,7 @@ export async function windowObjects(g: Gpu, tier: number, tiles: PlaceTile[], se
   const ctx = { gpu: g, tier }, top = o.caps[o.caps.length - 1], side = o.side ?? 256, win = side * 5000;
   // what the draws count, tile by tile, kept on the GPU for the writes
   const held = await Promise.all(tiles.map(async (t) => {
-    const f = tileFields(ctx, t.tile, t.source);
+    const f = await tileFields(ctx, t.tile, t.source);
     const run = await objectsGpu(g, f.L, f.K, f.packed, f.field, seed, keyOf(t.tile), t.rect, false);
     // the entries of the game tiles the rectangle covers: the window's entries and a margin of at most a game tile round them
     let est = 0;
@@ -33,7 +33,7 @@ export async function windowObjects(g: Gpu, tier: number, tiles: PlaceTile[], se
     for (;;) {
       const stage = storage(g, stageCap * STAGE_WORDS * 4), counts = storage(g, (CELLS + 2) * 4);
       for (const { t, f, run } of held) {
-        objectsWrite(g, f.L, f.K, f.packed, f.field, run);
+        await objectsWrite(g, f.L, f.K, f.packed, f.field, run);
         const span = run.to - run.from;
         if (span > 0) {
           const [gx, gy] = cover(g, span);
@@ -87,9 +87,9 @@ const frameOf = (tile: PlaceTile, b: BlockSpec) => b.turn
 // north-west corner; `tile.a0`, `a1` the tile's corner in units, which the blocks' frames hang from), so the tile's tables and counts are made once however many blocks there are. The same
 // entries as the window's, thinned by the same hash: a block at share 2^-k holds exactly those of the window's at 2^-k that lie in it. `close` lets the run go.
 export async function openTile(g: Gpu, tier: number, tile: PlaceTile, seed: number, o: { caps: number[] }) {
-  const ctx = { gpu: g, tier }, top = o.caps[o.caps.length - 1], f = tileFields(ctx, tile.tile, tile.source);
+  const ctx = { gpu: g, tier }, top = o.caps[o.caps.length - 1], f = await tileFields(ctx, tile.tile, tile.source);
   const run = await objectsGpu(g, f.L, f.K, f.packed, f.field, seed, keyOf(tile.tile), tile.rect, false);
-  objectsWrite(g, f.L, f.K, f.packed, f.field, run);
+  await objectsWrite(g, f.L, f.K, f.packed, f.field, run);
   const span = run.to - run.from;
   // the draws a block holds before thinning: the game tiles its cells and a cell of margin cover
   // (w, h: a rectangle of the block's cells instead of the whole block, the part the window holds)

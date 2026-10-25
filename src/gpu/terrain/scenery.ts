@@ -6,7 +6,7 @@ import { CELL } from "../../terrain/grid";
 import { COVERS, M, RM, SIZE, TILES, fineRivers, fineView, type Fine, type FineParts, type FineRiver, type Scatter } from "../../terrain/flora";
 import type { Island } from "../../terrain/island";
 import type { Gpu } from "../device";
-import { dispatch, pipeline, readback, storage } from "../kernel";
+import { dispatch, dispatchSliced, pipeline, readback, storage } from "../kernel";
 import { BIN, CHUNK, COUNT, FINE, FINE_AT, FINE_WORDS, FINE_KERNEL, GEO_AT, GRAD_AT, GRADIENTS, ISLAND_SCENERY, IDX, ISLE, ISLE_WORDS, LEN, MV, NQ, NS, ORE_CAP, RASTER, RMW, T, TAB_AT, TABLE, WRITE, clastKernel, layoutOf, type SceneryLayout } from "../wgsl/terrain-scenery";
 
 // The fields of the island the scenery reads.
@@ -106,6 +106,13 @@ export function run(g: Gpu, p: GPUComputePipeline, binds: [number, GPUBuffer][],
   g.device.queue.submit([enc.finish()]);
 }
 
+// The workgroups of a slice of the whole-tile kernels (the stream raster, count and write: 16,384 workgroups each, 45 to 115 ms of the GPU in one submit, every frame and the browser's own drawing held behind
+// it). [design: 256, a sixty-fourth of each: 1 to 2 ms of the GPU on average on the dev machine, a few more where the streams or the forest are dense, against a 60 Hz frame's 16.7]
+export const SLICE_GROUPS = 256;
+// `groups` workgroups of an entry point whose threads add the word I_SLICE of `idx` (wgsl/terrain-scenery.ts) to their global invocation id, made as slices of SLICE_GROUPS
+const runSliced = (g: Gpu, p: GPUComputePipeline, binds: [number, GPUBuffer][], idx: GPUBuffer, L: SceneryLayout, size: number, groups: number) =>
+  dispatchSliced(g, p, binds, groups, SLICE_GROUPS, (first) => g.device.queue.writeBuffer(idx, (L.IDX.pad + 1) * 4, Uint32Array.of(first * size)));
+
 // The kernels' texts for a layout (the island's, or a tile's: wgsl/terrain-scenery.ts SceneryFormat).
 export interface SceneryKernels { fine: string; table: string; count: string; write: string }
 export const ISLAND_KERNELS: SceneryKernels = { fine: FINE_KERNEL, table: TABLE, count: COUNT, write: WRITE };
@@ -166,7 +173,7 @@ export async function objectsGpu(g: Gpu, L: SceneryLayout, K: SceneryKernels, pa
   const x1 = window ? Math.max(0, window.x0 + window.w) : 0xffff, y1 = window ? Math.max(0, window.y0 + window.h) : 0xffff;
   g.device.queue.writeBuffer(idx, IDX.win * 4, new Uint32Array(window ? [Math.max(0, window.x0), Math.max(0, window.y0), window.w > 0 && window.h > 0 ? x1 : 0, window.w > 0 && window.h > 0 ? y1 : 0] : [0, 0, 0xffff, 0xffff]));
   const base: [number, GPUBuffer][] = [[0, packed], [1, field], [2, idx]], count = pipeline(g, K.count, "count");
-  run(g, count, base, [Math.ceil(NQ / 64)]);
+  await runSliced(g, count, base, idx, L, 64, Math.ceil(NQ / 64));
   run(g, pipeline(g, K.count, "rank"), [[2, idx]], [Math.ceil(T / 64)]);
   run(g, pipeline(g, K.count, "rows"), [[2, idx]], [Math.ceil(Math.sqrt(NQ) / 64)]);
   run(g, pipeline(g, K.count, "scan"), [[2, idx]], [1]);
@@ -181,7 +188,7 @@ export async function objectsGpu(g: Gpu, L: SceneryLayout, K: SceneryKernels, pa
   const from = window ? (window.w > 0 && window.h > 0 ? start[rows.lo * TILES] : 0) : 0, to = window ? (window.w > 0 && window.h > 0 ? start[(rows.hi + 1) * TILES] : 0) : n;
   const counted: GpuRun = { idx, out: [], start, n, oreN, from, to };
   if (written) {
-    objectsWrite(g, L, K, packed, field, counted);
+    await objectsWrite(g, L, K, packed, field, counted);
     t = await lap(g, "write", t);
   }
   return counted;
@@ -189,10 +196,10 @@ export async function objectsGpu(g: Gpu, L: SceneryLayout, K: SceneryKernels, pa
 
 // The write pass of a run counted with written false: makes the arrays (run.out) and fills them, the quads the window touches only. The arrays hold the span [from, to) of the run's entries
 // only (an entry's place in them is its id less `from`, which the kernel reads from IDX.pad), not the whole tile's: 20 to 100 MB an array for a tile.
-export function objectsWrite(g: Gpu, L: SceneryLayout, K: SceneryKernels, packed: GPUBuffer, field: GPUBuffer, r: GpuRun) {
+export async function objectsWrite(g: Gpu, L: SceneryLayout, K: SceneryKernels, packed: GPUBuffer, field: GPUBuffer, r: GpuRun) {
   g.device.queue.writeBuffer(r.idx, L.IDX.pad * 4, Uint32Array.of(r.from));
   r.out = ["px", "py", "size", "seed", "ks"].map(() => storage(g, Math.max(1, r.to - r.from) * 4));
-  run(g, pipeline(g, K.write, "write"), [[0, packed], [1, field], [2, r.idx], ...r.out.map((b, k): [number, GPUBuffer] => [3 + k, b])], [Math.ceil(L.NQ / 64)]);
+  await runSliced(g, pipeline(g, K.write, "write"), [[0, packed], [1, field], [2, r.idx], ...r.out.map((b, k): [number, GPUBuffer] => [3 + k, b])], r.idx, L, 64, Math.ceil(L.NQ / 64));
 }
 
 // The island's fine field and every object on it (flora.ts's fineGround and scatter): the Fine and the Scatter the sim
