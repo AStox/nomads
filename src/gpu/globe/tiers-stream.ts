@@ -27,6 +27,7 @@ import { CORNER_BESIDE, around3, child4, creepSubsOf, routeOf, type RouteLaw } f
 import { FLOW_NEIGHBOURS, SOLVE_SWEEPS } from "../wgsl/globe-regional";
 import { RegionalPatch, TREE, PATCH_HALO } from "./regional-patch";
 import { tierTable } from "./regional";
+import { nucleate } from "./nucleation";
 import { TileStore } from "./tilestore";
 import type { BakeDir } from "./bakedir";
 import { TIER_LAWS, TIER_STEPS, tierParent, tierTableOf, type TierRun } from "./tiers";
@@ -42,7 +43,7 @@ const INF = 0x7fffffff;
 // refineSmooth (regional.ts) for the children of the block of cells `p.interior` square at tier `from`, with p's halo wide enough (the passes reach `passes + 1` cells): the same stencil
 // (child4) on the same neighbours (around3, the corner's missing cell the mean of the two beside it) and the same sums in the same order, so the values are the in-memory function's.
 // Returns the children as an interior * 2 square, row by row.
-export function refineBlock(parent: ArrayLike<number>, from: number, p: Patch, passes = 4): Int32Array {
+export function refineBlock(parent: ArrayLike<number>, from: number, p: Patch, passes = 4, nucSigmaM = 0): Int32Array {
   const S = p.side, gp = tierGrid(from), n = gp.fn, cells = n * n, nc = S * S, ids9 = new Int32Array(9), q = new Float64Array(4), v = new Float64Array(9);
   const across = new Map<number, number>();
   for (let k = 0; k < nc; k++) if (!p.missing[k] && Math.floor(p.ids[k] / cells) !== p.face) across.set(p.ids[k], k);
@@ -89,7 +90,12 @@ export function refineBlock(parent: ArrayLike<number>, from: number, p: Patch, p
       const w = [Math.round(c[4 * k]), Math.round(c[4 * k + 1]), Math.round(c[4 * k + 2]), Math.round(c[4 * k + 3])];
       if (!(w[0] === w[0] && w[1] === w[1] && w[2] === w[2] && w[3] === w[3])) throw new Error("refineBlock: the halo is too narrow for the passes");
       const d = Math.round(val[k] * 4) - (w[0] + w[1] + w[2] + w[3]), base4 = Math.floor(d / 4), rem = d - base4 * 4;
-      out[o] = w[0] + base4 + (0 < rem ? 1 : 0); out[o + 1] = w[1] + base4 + (1 < rem ? 1 : 0); out[o + ic] = w[2] + base4 + (2 < rem ? 1 : 0); out[o + ic + 1] = w[3] + base4 + (3 < rem ? 1 : 0);
+      let v4 = [w[0] + base4 + (0 < rem ? 1 : 0), w[1] + base4 + (1 < rem ? 1 : 0), w[2] + base4 + (2 < rem ? 1 : 0), w[3] + base4 + (3 < rem ? 1 : 0)];
+      if (nucSigmaM > 0) {
+        const id = p.ids[k], f = Math.floor(id / cells), r = id - f * cells, Y = Math.floor(r / n), X = r - Y * n, fc = 2 * n, b = f * 4 * cells + 2 * Y * fc + 2 * X;
+        v4 = nucleate(v4, [b, b + 1, b + fc, b + fc + 1], from + 1, nucSigmaM);
+      }
+      out[o] = v4[0]; out[o + 1] = v4[1]; out[o + ic] = v4[2]; out[o + ic + 1] = v4[3];
     }
   return out;
 }
