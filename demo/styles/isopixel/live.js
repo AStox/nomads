@@ -19,6 +19,7 @@ import { SIZE, TILE_M, CELL, N as WIN_N, crownShare } from "../island.js";
 import { planetCam } from "./planet-cam.js";
 import { canopyHold } from "./canopy.js";
 import { moonLux, skyLux, nightShown, nightDrain } from "./night.js";
+import { treeK as treeKAt, TK_EXP } from "./treek.js";
 
 const SIM = TILE_M, ORIGIN = -SIZE / 2, TAU = Math.PI * 2, NL = LADDER.length, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -138,12 +139,19 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
 
   // ---------- the ground and the levels ----------
   let G = createGround(fieldsMsg), peak = fieldsMsg.peak;
+  // The ladder is drawn from ZLAD up, and a level shows over the screen px per metre from where the level below starts to fade into it (FADE_FROM of its range, plan()) to the
+  // end of its own range (2 screen px per art px of the level above), level 0 from ZLAD on and the last to 4 screen px per art px. The sprites' scale is the camera's, not the
+  // level's (treek.js), so a level's own pv, pw are the law at the middle of that range (in log scale) and a view draws them times treeK(its mpp) / treeK(the middle) (camera()),
+  // which swings by at most m either way; the sprites of the sizes the level was surveyed at stand in for the few percent that moves a size off them (wgsl/objects.js cullEval).
+  const ZLAD = -1.5, FADE_FROM = 0.6, PL0 = LADDER.map((Z) => Z.W / 2 / Z.tileM);
   // a level: its art px per meter across (k) and per tile, its height step, its sprites' scale; a grid of it at a
   // bearing knows its world points and tile map (ground.js)
   const LV = LADDER.map((Z, L) => {
-    const H = Z.W / 2, k = Z.W / (Z.tileM * Math.SQRT2), treeK = 1.15 * (Z.W / 2 / Z.tileM / 0.8533) ** -0.15, levelM = Z.lp / (k * 0.866 * EXAG);
+    const H = Z.W / 2, k = Z.W / (Z.tileM * Math.SQRT2), levelM = Z.lp / (k * 0.866 * EXAG);
+    const lo = L ? 2 * PL0[L - 1] * (PL0[L] / PL0[L - 1]) ** FADE_FROM : 2 * PL0[0] * 2 ** ZLAD, hi = L < LADDER.length - 1 ? 2 * PL0[L + 1] : 4 * PL0[L];
+    const treeK = treeKAt(1 / Math.sqrt(lo * hi)), m = (hi / lo) ** (TK_EXP / 2);
     const pv = k * 0.866 * treeK;
-    return { L, name: Z.name, W: Z.W, H, hb: H / 2, lp: Z.lp, tileM: Z.tileM, k, treeK, levelM, p: H / Z.tileM, pv, pw: k * treeK, shrunk: pv < SP.DIRECT_PV, peakLev: Math.ceil((peak + 10) / levelM), tall: Math.round(34 * k * 0.866 * treeK) + 8 };
+    return { L, name: Z.name, W: Z.W, H, hb: H / 2, lp: Z.lp, tileM: Z.tileM, k, treeK, m, levelM, p: H / Z.tileM, pv, pw: k * treeK, shrunk: pv < SP.DIRECT_PV, peakLev: Math.ceil((peak + 10) / levelM), tall: Math.round(34 * k * 0.866 * treeK * m) + 8 };
   });
   // the levels' sprite scales, which the worker makes the sim's objects' sprites at
   worker.postMessage({ type: "levels", levels: LV.map((l) => ({ pv: l.pv, pw: l.pw, shrunk: l.shrunk })) });
@@ -233,8 +241,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // of view at the end, so the sphere reads as the ladder's parallel projection). view.geo (lat, lon) is the target on the planet
   // and view.x, view.z the same place in the play area's metres; whichever moved last is kept (syncGeo).
   const PGQ = new URLSearchParams(location.search).get("pg"), PG_CANOPY = new URLSearchParams(location.search).get("cn") === null ? null : Number(new URLSearchParams(location.search).get("cn")), PLACE = fieldsMsg.place ?? null, PR = PLACE?.radiusM, D2R = Math.PI / 180, ISO_TILT = Math.PI / 3;
-  // the zoom the ladder is first drawn at (faded in over the next step), and the play area's edge fade [design]
-  const ZLAD = -1.5, PLAY_EDGE_M = 1200, LIFT_PER_COVER = 3;
+  // the play area's edge fade and the lift's rate [design]
+  const PLAY_EDGE_M = 1200, LIFT_PER_COVER = 3;
   // the whole planet fits the canvas at its smallest zoom: 0.4 of the canvas's shorter side across a radius
   const zminNow = () => (PLACE ? Math.min(ZLAD - 0.5, Math.log2((0.4 * Math.min(canvas.width, canvas.height)) / (Math.SQRT2 * PR * PPM0))) : 0);
   const clampZ = (z) => clamp(z, zminNow(), ZMAX);
@@ -572,7 +580,10 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // on the canvas. czc: the depth of its target, which the GPU's depths are taken from. margin: a share of the canvas the
   // buffer reaches past it on every side (a fading level's, so the renderer can present it again a frame later).
   function camera(view, L, beta, margin = 0) {
-    const md = mdOf(L, beta), s = ppmOf(clampZ(view.zoom)) / md.p, [u, v] = md.uv(view.x, view.z), lev = (camH(view.x, view.z) + (view.up || 0)) / md.levelM;
+    const md = mdOf(L, beta), ppm = ppmOf(clampZ(view.zoom)), s = ppm / md.p, [u, v] = md.uv(view.x, view.z), lev = (camH(view.x, view.z) + (view.up || 0)) / md.levelM;
+    // the sprites' scale is the camera's: the same for both levels of a cross-fade (treek.js)
+    const c = treeKAt(1 / ppm) / md.treeK;
+    md.pv *= c; md.pw *= c;
     const W = canvas.width, H = canvas.height, gcx = (u - v) * md.H, gcy = (u + v) * md.hb - lev * md.lp;
     const AW = Math.ceil((W / s) * (1 + 2 * margin)) + 4, AH = Math.ceil((H / s) * (1 + 2 * margin)) + 4, gx0 = Math.floor(gcx - AW / 2), gy0 = Math.floor(gcy - AH / 2);
     return { view, md, L, s, AW, AH, gcx, gcy, gx0, gy0, lev, czc: 1.5 * md.H * (u + v) + lev * md.lp, dx: W / 2 + (gx0 - gcx) * s, dy: H / 2 + (gy0 - gcy) * s };
@@ -1016,7 +1027,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   function plan(view) {
     const lf = levelFor(view.zoom), beta = norm8(view.bearing ?? 0), a = (stats.ladderAlpha = ladderAlpha(view));
     if (a <= 0 || (PLACE && !playAreaShown(view))) return { lf, parts: [], beta };
-    const fade = lf.L < NL - 1 && lf.t > 0.6, m = fade ? FADE_MARGIN : 0, w = fade ? smooth(0.6, 1, lf.t) : 0;
+    const fade = lf.L < NL - 1 && lf.t > FADE_FROM, m = fade ? FADE_MARGIN : 0, w = fade ? smooth(FADE_FROM, 1, lf.t) : 0;
     // Over the planet's ground (the ladder's art is only sprites and shade, clear between them) the two levels share the objects: level L draws those whose swap fate (wgsl/objects.js
     // swapFateOf) is over w and L + 1 the rest, both at the ladder alpha, so no tree is drawn at two sizes at once and the mean colour does not depend on w.
     // Where the art holds its own ground (a game's island) L + 1 would hide L, so it is a cross-fade of the two: L + 1 at a * w over L at a * (1 - w) / (1 - a * w), which leaves each its

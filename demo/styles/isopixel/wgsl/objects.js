@@ -417,7 +417,15 @@ fn cullEval(o: Obj) -> Emit {
   if (ax < -reach || ay < -reach || ax > f32(V.aw) + reach || ay - hpx * 2.0 > f32(V.ah) + reach) { return e; }
   let F = famOf(o, kf);
   if (F.f == NONE) { return e; }
-  var sp = spriteOf(F, F.f + select(0u, V.shrunk, tree), sizeIdx(hpx, tree));
+  let fam = F.f + select(0u, V.shrunk, tree);
+  let si = sizeIdx(hpx, tree);
+  var sp = spriteOf(F, fam, si);
+  // a level draws at the camera's scale, which moves a size off those its level was surveyed at (live.js LV) by a few percent at most: the nearest size made stands in, so the survey need
+  // not ask every size of the swing, which the dynamic layers cannot hold
+  for (var d = 1u; sp == 0u && d < 5u; d++) {
+    if (si > d) { sp = spriteOf(F, fam, si - d); }
+    if (sp == 0u) { sp = spriteOf(F, fam, si + d); }
+  }
   // the level just entered has its own sprites made last; until they are, the tree is drawn as the other style of the pair (direct or shrunk), not left out
   if (sp == 0u && tree) { sp = spriteOf(F, F.f + select(1u, 0u, V.shrunk != 0u), sizeIdx(hpx, tree)); }
   if (sp == 0u || sp == 0xFFFFFFFFu) { return e; }
@@ -544,7 +552,8 @@ fn clampMain() {
 // at these levels. Built in three steps, the first and last a slice of slots at a time so no frame pays for a whole
 // pass: farCount files each slot's cell and coarsest level (fkey) and counts them, farScan lays out the cells, and
 // farFile puts every slot at its place.
-export const FAR_LVL = CELLS_N * CELLS_N + 1, CELLS = CELLS_N * CELLS_N, FAR_MARGIN = 1.1;
+// the margin is 1.1 for the stems' growth between two lists times 1.14, the most the camera's tree scale swings from a level's own (live.js LV m) [design]
+export const FAR_LVL = CELLS_N * CELLS_N + 1, CELLS = CELLS_N * CELLS_N, FAR_MARGIN = 1.1 * 1.14;
 // a source's cells a side (spec.n, 256 unless it says): its cell count and where the far index's levels start
 export const cellsOf = (n = CELLS_N) => ({ N: n, CELLS: n * n, FAR_LVL: n * n + 1 });
 export const FAR_COUNT_WGSL = `
