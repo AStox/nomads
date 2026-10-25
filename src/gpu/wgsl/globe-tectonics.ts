@@ -71,6 +71,9 @@ export const PHYS = {
   // width the step's shortening is spread over (Setup.sweeps.wedge).
   WEDGE_FO: 13107,
 } as const;
+// The cube corners' squares of the move (tectonics-corner.ts): a parcel within CORNER.OUT cells of a corner is shared partly by overlap, wholly by overlap from CORNER.IN cells in; the table covers squares
+// of CORNER.D cells, CORNER.K cells to a parcel.
+export const CORNER = { D: 32, K: 8, IN: 12, OUT: 28 } as const;
 
 export interface TectonicsLayout {
   fn: number; // cells along a face's side
@@ -83,6 +86,7 @@ export interface TectonicsLayout {
   arc: number;
   hot: number;
   words: number;
+  corner: number; // the corner table's offset into Q (tectonics-corner.ts)
   hmax: number; // the foundering depth, m
   hweak: number; // the thickness from which the lower crust flows, m
   foW: number; // the diffusion number of one flow sweep for a link of two weak columns, Q16
@@ -138,6 +142,7 @@ const CH_AX = ${PHYS.CHAMFER_AXIS}u;
 const CH_DG = ${PHYS.CHAMFER_DIAG}u;
 const PLUTONS = ${PHYS.PLUTON_PER_VOLCANIC + 1}u;
 const NONE = 255u;
+const CORNER = ${L.corner}u; const CD = ${CORNER.D}u; const CK = ${CORNER.K}u; const C_IN = ${CORNER.IN}u; const C_OUT = ${CORNER.OUT}u;
 
 const F_VB = ${FLD.VB}u; const F_AGB = ${FLD.AGB}u; const F_ORG = ${FLD.ORG}u; const F_PL = ${FLD.PL}u; const F_Z = ${FLD.Z}u;
 const F_ZR = ${FLD.ZR}u; const F_SUB = ${FLD.SUB}u; const F_DIST = ${FLD.DIST}u; const F_DIST2 = ${FLD.DIST2}u; const F_PL2 = ${FLD.PL2}u; const F_E2 = ${FLD.E2}u; const F_VR = ${FLD.VR}u;
@@ -226,8 +231,9 @@ fn regional(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) 
 }
 
 // ---- the move: where a parcel lands and how it is shared ----
-var<private> hw: array<u32, 4>;
-var<private> hc: array<Src, 4>;
+var<private> hw: array<u32, 12>;
+var<private> hc: array<Src, 12>;
+var<private> hn: u32;
 
 fn rotc(p: u32, row: u32, v: vec3i) -> i32 {
   var s = vec2u(0u, 0u);
@@ -286,6 +292,41 @@ fn stencil(idx: u32, c: Src, p: u32) {
   let w1 = (wxn * wyo) >> 16u; let w2 = (wxo * wyn) >> 16u; let w3 = (wxn * wyn) >> 16u;
   hw[0] = 65536u - w1 - w2 - w3; hw[1] = w1; hw[2] = w2; hw[3] = w3;
   hc[0] = own; hc[1] = cx; hc[2] = cy; hc[3] = cd;
+  hn = 4u;
+  // Round a cube's corner the cloud in cell covers cells unevenly (the faces' lattices are turned against each other), so a parcel near one is shared by overlap as well, from the table the host
+  // builds (tectonics-corner.ts): the more of it the nearer the corner, and the cloud in cell shares all of it from C_OUT cells off.
+  let dist = max(min(c.x, FN - 1u - c.x), min(c.y, FN - 1u - c.y));
+  if (dist < C_OUT) {
+    let tq = min(65536u, ((C_OUT - dist) * 65536u) / (C_OUT - C_IN));
+    let xh = c.x >= FN - CD; let yh = c.y >= FN - CD;
+    let lx = select(c.x, c.x - (FN - CD), xh); let ly = select(c.y, c.y - (FN - CD), yh);
+    let corner = select(0u, 1u, xh) + select(0u, 2u, yh);
+    let base = CORNER + (((p * 24u + c.face * 4u + corner) * CD + ly) * CD + lx) * CK * 2u;
+    hw[1] = part(hw[1], 65536u - tq); hw[2] = part(hw[2], 65536u - tq); hw[3] = part(hw[3], 65536u - tq);
+    hw[0] = 65536u - tq - hw[1] - hw[2] - hw[3];
+    // the overlap's shares of the parcel (the first takes what the others' floors leave of tq), each added to the entry of the same cell where there is one: a cell's plate is claimed by its largest piece, so
+    // a cell's share kept whole in one piece claims as it did under cloud in cell alone
+    var later = 0u;
+    for (var e = 1u; e < CK; e++) {
+      let ww = u32(Q[base + 2u * e + 1u]);
+      if (ww == 0u) { break; }
+      later = later + part(ww, tq);
+    }
+    for (var e = 0u; e < CK; e++) {
+      let ww = u32(Q[base + 2u * e + 1u]);
+      if (ww == 0u) { break; }
+      let id = u32(Q[base + 2u * e]);
+      let r = id % (FN * FN);
+      let cell = Src(true, id / (FN * FN), r % FN, r / FN, 0u);
+      var wq = part(ww, tq);
+      if (e == 0u) { wq = tq - later; }
+      var found = false;
+      for (var j = 0u; j < hn; j++) {
+        if (hc[j].face == cell.face && hc[j].x == cell.x && hc[j].y == cell.y) { hw[j] = hw[j] + wq; found = true; break; }
+      }
+      if (!found) { hc[hn] = cell; hw[hn] = wq; hn = hn + 1u; }
+    }
+  }
 }
 
 fn vtotAt(f: u32, c: Src) -> u32 { return rs(f, c) + rs(f + 1u, c) + rs(f + 2u, c) + rs(f + 3u, c) + rs(f + 4u, c); }
@@ -305,7 +346,7 @@ fn claim(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   let a = areaOf(c);
   let rank = u32(clamp(S[wordOf(P[22], c)] + RANK_BIAS, 0, 65534)) + 1u;
   stencil(idx, c, p);
-  for (var k = 0u; k < 4u; k++) {
+  for (var k = 0u; k < hn; k++) {
     let w = hw[k];
     if (w == 0u) { continue; }
     let cv = (a * w + 32768u) >> 16u;
@@ -338,22 +379,24 @@ fn deposit(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) n
   var v = array<u32, 7>(rs(F_VB, c), rs(F_VB + 1u, c), rs(F_VB + 2u, c), rs(F_VB + 3u, c), rs(F_VB + 4u, c), rs(F_AGB, c), rs(F_ORG, c));
   let a = areaOf(c);
   stencil(idx, c, p);
-  for (var k = 0u; k < 4u; k++) {
+  for (var k = 0u; k < hn; k++) {
     if (hw[k] == 0u) { continue; }
     let d = hc[k];
     let wp = winnerOf(d, areaOf(d), atomicLoad(&A[wordOf(ACC_COV, d)]));
     if (wp == NONE || wp == p) { atomicAdd(&A[wordOf(ACC_COVW, d)], (a * hw[k] + 32768u) >> 16u); }
   }
+  var kf = 0u;
+  for (var k = 0u; k < hn; k++) { if (hw[k] != 0u) { kf = k; break; } }
   for (var j = 0u; j < 7u; j++) {
-    let p1 = part(v[j], hw[1]); let p2 = part(v[j], hw[2]); let p3 = part(v[j], hw[3]);
-    let share = array<u32, 4>(v[j] - p1 - p2 - p3, p1, p2, p3);
-    for (var k = 0u; k < 4u; k++) {
+    var rest = v[j];
+    for (var k = 0u; k < hn; k++) { if (k != kf) { rest = rest - part(v[j], hw[k]); } }
+    for (var k = 0u; k < hn; k++) {
       if (hw[k] == 0u) { continue; }
       let d = hc[k];
       let cov = atomicLoad(&A[wordOf(ACC_COV, d)]);
       let wp = winnerOf(d, areaOf(d), cov);
       let base = select(ACC_L, ACC_W, wp == NONE || wp == p);
-      atomicAdd(&A[wordOf(base + j, d)], share[k]);
+      atomicAdd(&A[wordOf(base + j, d)], select(part(v[j], hw[k]), rest, k == kf));
     }
   }
 }

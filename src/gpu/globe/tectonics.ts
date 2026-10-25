@@ -7,7 +7,8 @@
 // The model in a paragraph. The planet is the tier-0 cube-sphere grid; each cell is one parcel of one of a few rigid
 // plates and holds five volumes of rock (basalt, sediment, metasediment, granitoid, volcanic). A step of a few My carries
 // every parcel by its plate's rotation and shares its volumes among the four cells it lands nearest (cloud in cell: exact,
-// conservative, a diffusion of 1/6 cell^2 a step in each axis when the shift is uniform in its fraction). Where plates part,
+// conservative, a diffusion of 1/6 cell^2 a step in each axis when the shift is uniform in its fraction; within 28 cells of a cube's
+// corner, where the faces' lattices are turned against each other, partly or wholly by the overlap, tectonics-corner.ts). Where plates part,
 // the bare area becomes new basalt (a ridge); where they overlap, the plate that stands higher rides over, the other's
 // basalt goes under (a trench) and its sediment and other rock are scraped on (a wedge, a terrane, a collision), the
 // crust thickening by that sum; which plate rides over is decided by the regional height (a column's height averaged over
@@ -25,7 +26,8 @@ import {
   EDGES, FACES, FRAMES, RADIUS_M, TAB, TILE_WORDS, areaSr, buildTables, cellId, centre, fieldWords, haloSource, inTile, slotOf, step, tierGrid, tileCount, wordAt,
   type Grid, type Tables, type V3,
 } from "./grid";
-import { ACCF, FLD, FLUX, NEXT, PHYS, tectonicsWgsl, type TectonicsLayout } from "../wgsl/globe-tectonics";
+import { ACCF, CORNER, FLD, FLUX, NEXT, PHYS, tectonicsWgsl, type TectonicsLayout } from "../wgsl/globe-tectonics";
+import { cornerCells, cornerIndex, cornerTable } from "./tectonics-corner";
 
 export { ACCF, FLD, FLUX, PHYS };
 import { EARTH_R, similarityOf } from "./similarity";
@@ -222,9 +224,11 @@ export function makeSetup(over: Partial<Params> = {}, sweeps: Sweeps = sweepsFor
   const grid = tierGrid(0, params.radius), steps = Math.round(params.spanMy / params.stepMy);
   const plates = parts.plates ?? makePlates(params), hotspots = parts.hotspots ?? makeHotspots(params), arcM = parts.arcM ?? makeArcs({ ...params, plates: plates.length }, steps);
   const NP = plates.length, NH = hotspots.length, fn = grid.fn;
-  const rot = 0, node = rot + NP * 9, phith = node + fn + 1, arc = phith + PHYS.AGE_MAX + 1, hot = arc + arcM.length, words = hot + NH * 6;
+  const rot = 0, node = rot + NP * 9, phith = node + fn + 1, arc = phith + PHYS.AGE_MAX + 1, hot = arc + arcM.length, corner = hot + NH * 6, words = corner + NP * cornerCells() * CORNER.K * 2;
   const Q = new Int32Array(words);
-  plates.forEach((pl, i) => rotation(pl.pole, pl.rate * params.stepMy).forEach((v, k) => { Q[rot + i * 9 + k] = Math.round(v * Q30); }));
+  const turns = plates.map((pl) => rotation(pl.pole, pl.rate * params.stepMy));
+  turns.forEach((m, i) => m.forEach((v, k) => { Q[rot + i * 9 + k] = Math.round(v * Q30); }));
+  Q.set(cornerTable(grid, turns), corner);
   for (let i = 0; i <= fn; i++) Q[node + i] = Math.round(grid.node[i] * Q30);
   Q.set(thermalTable(), phith);
   Q.set(arcM, arc);
@@ -238,7 +242,7 @@ export function makeSetup(over: Partial<Params> = {}, sweeps: Sweeps = sweepsFor
   const idealW = (dh(params.flowEta) * params.stepMy) / (sweeps.flow * dx2), idealC = (dh(FLOW.etaCold) * params.stepMy) / (sweeps.flow * dx2);
   const foW = Math.min(idealW, FLOW.foMax), foC = Math.min(idealC, FLOW.foMax);
   const cellKm = (params.radius * grid.width) / 1000, arcAt = (km: number, own: number) => (sim.similar ? Math.round((PHYS.CHAMFER_AXIS * km) / cellKm) : own);
-  const layout = { fn, plates: NP, hotspots: NH, steps, rot, node, phith, arc, hot, words, hmax: params.hMax, hweak: FLOW.hWeakM, foW: Math.round(foW * 65536), foC: Math.round(foC * 65536), arcLo: arcAt(ARC_KM.lo, PHYS.ARC_LO), arcHi: arcAt(ARC_KM.hi, PHYS.ARC_HI) };
+  const layout = { fn, plates: NP, hotspots: NH, steps, rot, node, phith, arc, hot, words, corner, hmax: params.hMax, hweak: FLOW.hWeakM, foW: Math.round(foW * 65536), foC: Math.round(foC * 65536), arcLo: arcAt(ARC_KM.lo, PHYS.ARC_LO), arcHi: arcAt(ARC_KM.hi, PHYS.ARC_HI) };
   return { params, grid, plates, hotspots, steps, arcM, layout, Q, sweeps, flow: { foW, foC, idealW, share: foW / idealW } };
 }
 
@@ -530,7 +534,25 @@ export class Twin {
     if (fy < 32768) { ny = Y - 1; wyn = 32768 - fy; wyo = 32768 + fy; }
     const own: Cell = { face, X, Y }, pick = (xx: number, yy: number): Cell => { const s = haloSource(this.g, face, xx, yy); return s ? { face: s.face, X: s.X, Y: s.Y } : own; };
     const w1 = Math.floor((wxn * wyo) / 65536), w2 = Math.floor((wxo * wyn) / 65536), w3 = Math.floor((wxn * wyn) / 65536);
-    return { w: [65536 - w1 - w2 - w3, w1, w2, w3], c: [own, pick(nx, Y), pick(X, ny), pick(nx, ny)] };
+    const out = { w: [65536 - w1 - w2 - w3, w1, w2, w3], c: [own, pick(nx, Y), pick(X, ny), pick(nx, ny)] };
+    // Near a cube's corner the parcel is shared partly by overlap (tectonics-corner.ts), the more the nearer the corner (the kernel's stencil, word for word).
+    const n = this.g.fn, dist = Math.max(Math.min(c.X, n - 1 - c.X), Math.min(c.Y, n - 1 - c.Y));
+    if (dist >= CORNER.OUT) return out;
+    const tq = Math.min(65536, Math.floor(((CORNER.OUT - dist) * 65536) / (CORNER.OUT - CORNER.IN)));
+    const base = (p * cornerCells() + cornerIndex(n, c.face, c.X, c.Y)) * CORNER.K * 2, keep = (v: number) => Math.floor((v * (65536 - tq)) / 65536);
+    out.w[1] = keep(out.w[1]); out.w[2] = keep(out.w[2]); out.w[3] = keep(out.w[3]);
+    out.w[0] = 65536 - tq - out.w[1] - out.w[2] - out.w[3];
+    // the overlap's shares (the first takes what the others' floors leave of tq), each added to the entry of the same cell where there is one: a cell's plate is claimed by its largest piece
+    let later = 0;
+    for (let e = 1; e < CORNER.K && Q[L.corner + base + 2 * e + 1] !== 0; e++) later += Math.floor((Q[L.corner + base + 2 * e + 1] * tq) / 65536);
+    for (let e = 0; e < CORNER.K; e++) {
+      const ww = Q[L.corner + base + 2 * e + 1];
+      if (ww === 0) break;
+      const id = Q[L.corner + base + 2 * e], r = id % (n * n), cell = { face: Math.floor(id / (n * n)), X: r % n, Y: Math.floor(r / n) };
+      const wq = e === 0 ? tq - later : Math.floor((ww * tq) / 65536), at = out.c.findIndex((q) => q.face === cell.face && q.X === cell.X && q.Y === cell.Y);
+      if (at >= 0) out.w[at] += wq; else { out.c.push(cell); out.w.push(wq); }
+    }
+    return out;
   }
   private accAt(f: number, c: Cell) { return f * this.fw + wordAt(this.g, c.face, c.X, c.Y); }
   // The regional height: each column's height averaged over the same plate's cells in the 3 by 3 around it.
@@ -558,7 +580,7 @@ export class Twin {
       if (p >= this.set.layout.plates) continue;
       const a = this.area(c), rank = Math.min(Math.max(this.S[this.at(rankField, c)] + PHYS.RANK_BIAS, 0), 65534) + 1;
       const { w, c: hc } = this.stencil(idx, c, p);
-      for (let k = 0; k < 4; k++) {
+      for (let k = 0; k < w.length; k++) {
         if (w[k] === 0) continue;
         const cv = (a * w[k] + 32768) >>> 16, d = hc[k];
         A[this.accAt(ACCF.COV, d)] += cv;
@@ -580,14 +602,16 @@ export class Twin {
       if (p >= this.set.layout.plates) continue;
       const v = [this.rs(FLD.VB, c), this.rs(FLD.VB + 1, c), this.rs(FLD.VB + 2, c), this.rs(FLD.VB + 3, c), this.rs(FLD.VB + 4, c), this.rs(FLD.AGB, c), this.rs(FLD.ORG, c)];
       const a = this.area(c), { w, c: hc } = this.stencil(idx, c, p);
-      for (let k = 0; k < 4; k++) {
+      for (let k = 0; k < w.length; k++) {
         if (w[k] === 0) continue;
         const d = hc[k], wp = this.winnerOf(d, this.area(d), A[this.accAt(ACCF.COV, d)]);
         if (wp === 255 || wp === p) { const at = this.accAt(ACCF.COVW, d); A[at] = (A[at] + ((a * w[k] + 32768) >>> 16)) >>> 0; }
       }
       for (let j = 0; j < NEXT; j++) {
-        const p1 = part(v[j], w[1]), p2 = part(v[j], w[2]), p3 = part(v[j], w[3]), share = [(v[j] - p1 - p2 - p3) >>> 0, p1, p2, p3];
-        for (let k = 0; k < 4; k++) {
+        // the first cell with a share takes what the others' floors leave
+        const first = w.findIndex((x) => x !== 0), share = w.map((x) => part(v[j], x));
+        share[first] = share.reduce((r, x, k) => (k === first ? r : (r - x) >>> 0), v[j]);
+        for (let k = 0; k < w.length; k++) {
           if (w[k] === 0) continue;
           const d = hc[k], cov = A[this.accAt(ACCF.COV, d)], wp = this.winnerOf(d, this.area(d), cov), base = wp === 255 || wp === p ? ACCF.W : ACCF.L, at = this.accAt(base + j, d);
           A[at] = (A[at] + share[k]) >>> 0;

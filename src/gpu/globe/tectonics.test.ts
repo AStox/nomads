@@ -318,13 +318,13 @@ test("the GPU kernels equal their twins bit for bit over steps, with arcs, a hot
 }, 280_000);
 
 // ---- runs ----
-// Pinned by a deliberate re-record (the sha256 of the five volumes, both age sums and the plate field after 100 steps of 2 My). Re-recorded (second pass) because the crust an overlap
+// Re-recorded (third pass) because the move near a cube's corner is shared by overlap (tectonics-corner.ts): before it: d7bb0eb8..., 3421c0b2..., 4743f5de.... Pinned by a deliberate re-record (the sha256 of the five volumes, both age sums and the plate field after 100 steps of 2 My). Re-recorded (second pass) because the crust an overlap
 // stacks is now spread over the plate as a wedge (54 sweeps) and the channel is driven by the regional thickness (32 sweeps), so the flow no longer smooths a column's departure from its
 // region. First pass: 3bece6bc..., 21dbc9b0..., c9c8736e... (regional ranking, channel flow on each column's thickness, foundering at 65.5 km); before it: f51e247a..., 11d5563f..., 8e7b482e....
 const GOLDEN: Record<number, string> = {
-  1: "d7bb0eb8e06d5cd5db2a076bf25e1b8d512f5875a83dd1827e2256fd436bd102",
-  2: "3421c0b2a634dc9d031d87f9410c0831b966b122acb15cd7cf3dffe7614c84a9",
-  3: "4743f5de2acc972c7076f3f7e08f11099512b2d00c777d301c12e4d5ec607054",
+  1: "24fdcd27778b4a2d9b9f73c98d09b18f32046aedfdb8eef9b72e011e0b2c3d3b",
+  2: "04837cdaa7c84beac2468c0d162b88bc96cbf62a2e7b8ce3edb7822878fdb4fd",
+  3: "ac69b3979d252d0eda734c92d66455e2f9231fdea1092c9bf2176df1921bb3f5",
 };
 
 test("a run is the same twice, and its hash is pinned for seeds 1 to 3", async () => {

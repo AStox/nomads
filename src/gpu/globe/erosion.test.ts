@@ -314,7 +314,8 @@ test("a run is the same twice, and the pinned hash of the columns after four sub
 // Re-recorded deliberately (the sha256 of the five volumes, both age sums, the plates and the plate-relative fields, then the heights): the planet it starts from now spreads a step's stacked
 // crust as a wedge and drives the channel by the regional thickness (second pass of the ranges unit). First pass (regional ranking, channel flow on each column, foundering at 65.5 km, the relief
 // law): e6b26d2806174e70b80e83c4f351aab097f4942cba9900db67174d176b470b3b; before it: b97b4ef3026a12fc3db567aa495480e5288b45b738e25976ec18bb2821a34c1a.
-const PINNED = "54cf848b33511b6ebf7f1e2a67cd5427cb863b9c11ee0e48f3fdfac4c38c7f19";
+// Third pass: the planet it starts from now moves the crust near a cube corner by overlap (tectonics-corner.ts); before it: 54cf848b33511b6ebf7f1e2a67cd5427cb863b9c11ee0e48f3fdfac4c38c7f19.
+const PINNED = "03c587de61dbc030c6bbdcdb9213cc5cb9652a54e79324fe174fb9b898f12fed";
 
 
 // ---- landscape-scale denudation by relief ----

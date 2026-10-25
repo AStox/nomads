@@ -20,7 +20,7 @@ import { heightColor, mix, png, type RGB } from "./globe-maps";
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 
 // The globe's sources whose change makes another planet: the key of a planet's directory.
-const SOURCES = ["grid", "tectonics", "erosion", "atmosphere", "ice"].flatMap((n) => [`src/gpu/globe/${n}.ts`, `src/gpu/wgsl/globe-${n}.ts`]);
+const SOURCES = [...["grid", "tectonics", "erosion", "atmosphere", "ice"].flatMap((n) => [`src/gpu/globe/${n}.ts`, `src/gpu/wgsl/globe-${n}.ts`]), "src/gpu/globe/tectonics-corner.ts"];
 export function sourceKey(root = join(import.meta.dir, ".."), radius = RADIUS_M): string {
   const h = createHash("sha256");
   h.update(String(radius));
