@@ -66,6 +66,8 @@ Bun.serve({
     const url = new URL(req.url);
     // GET /jev: how much the relay has relayed, and whether the token the asker holds would be let through
     if (url.pathname === "/jev") return req.method === "POST" ? relay(req) : reply(200, { calls, tokens, refused, busy, ready: !!(KEY && TOKEN), ok: !!TOKEN && same(req.headers.get("x-nomads-token") ?? "", TOKEN) });
+    // the page names an empty icon, but a browser that never reads the page's links (a tab opened on a bare address, a checker) asks for this: no icon, and no 404 in the console
+    if (url.pathname === "/favicon.ico") return new Response(null, { status: 204, headers: NO_STORE });
     const path = normalize(decodeURIComponent(url.pathname));
     if (path.includes("..")) return new Response("not found", { status: 404, headers: NO_STORE });
     let file = Bun.file(join(ROOT, path));
