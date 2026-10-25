@@ -357,6 +357,8 @@ var<private> gCm: f32;     // metres of the noise's frame to a cell of the tier
 var<private> gCm5: f32;    // and to a cell of the fine pages' window (a finest tier cell)
 var<private> gF: Fv;       // the tier cells' fields at the pixel
 var<private> gRShore: f32; // how far inside a stream the pixel lies, noise metres
+var<private> gRWet: bool;  // the pixel's stream is drawn as its water, not its dry bed (fine pages, by the stream's own widths)
+var<private> gRHeld: bool; // the pixel's stream is the window's own stream list's, so shore and bed come of its widths
 var<private> gFn: bool;    // this pixel reads the fine pages
 var<private> gWo: vec2f;   // the block's cells less the window's, at this pixel (the block need not be centred on the window)
 var<private> gFx: vec2f;   // its place in the block's cells: x east, z south
@@ -377,21 +379,47 @@ fn fineRiver(c: vec2f) -> f32 {
   let t = v - floor(v);
   return pgBil(pgRiverQ(gRiver, vec2i(floor(v))), t.x, t.y);
 }
-fn fillTop(S: ptr<function, GSample>, x: f32, z: f32) {
+// the share of a pixel's span [d - half, d + half] across a stream (d the distance of its middle to the stream's line) that lies inside the stream's width 2 hw
+fn spanShare(d: f32, half: f32, hw: f32) -> f32 {
+  return clamp((min(d + half, hw) - max(d - half, -hw)) / (2.0 * half), 0.0, 1.0);
+}
+fn fillTop(S: ptr<function, GSample>, x: f32, z: f32, ctx: PaintCtx) {
   gF = fieldsAt(gTl);
   (*S).river = 0.0;
+  gRHeld = false;
   if (gFn) {
     // standing water as the island's waterAt has it from the cells' level and the fine height: the sea's level is 0, a lake's its cell's height and depth
     gLvl = max(select(-1.0e4, gHt + gF.water, gF.water >= 0.25), select(-1.0e4, 0.0, gHt < 8.0));
     (*S).wet = clamp(0.5 + (gLvl - gH) * 0.5, 0.0, 1.0);
-    // over a pixel wider than the mask's texel (PAGE_GEOM.cellM over mask, 4.7 m) a stream is drawn by the share of the pixel it covers (the mask read at the pixel's middle and its four corners), dithered: a stream under
-    // a pixel fades out with the scale in step with its width and a wide one stays whole. As a line a pixel wide at every zoom the parallel furrows of a slope were a hatch of dotted lines (e2e 11)
     var rv = fineRiver(gFx);
     let mppN = gMpp / gSc;
+    let wc = gFx - gWo;
+    if (lt[6].z > 0.5 && wc.x > 1.0 && wc.x < ${PAGE_GEOM.cells - 1}.0 && wc.y > 1.0 && wc.y < ${PAGE_GEOM.cells - 1}.0) {
+      // where the window holds its streams each is drawn at its own width, the bankfull width the flow makes (water.ts bankWidth, Leopold and Maddock's w ~ Q^0.5) with the water in it at the
+      // season's flow (the at-a-station w ~ Q^0.26), by the share of the pixel that width covers: the mask's texels (4.7 m) and the stroke's texel of margin are wider than a first-order
+      // channel of a metre or two, so the furrows of a slope were orange sheets. The pixel's span across the stream is its dither's, a hash on the ground's lattice, not the ordered one
+      // (a line a pixel wide or a hatch of dotted lines at a constant share)
+      let h = ${PAGE_GEOM.cells * PAGE_GEOM.cellM / 2}.0;
+      let st = g_streamAt(wc.x * ${PAGE_GEOM.cellM}.0 - h, wc.y * ${PAGE_GEOM.cellM}.0 - h);
+      if (st.ok > 0.0) {
+        let q = st.q * (st.base + (1.0 - st.base) * g_quick(ctx.season & 3u));
+        let wWet = select(0.0, st.wbf * pow(q / st.qbf, 0.26), st.qbf > 0.0 && q > st.under);
+        let half = 0.5 * max(mppN, 1.0e-3);
+        let sBank = spanShare(st.d, half, 0.5 * st.wbf);
+        let sWet = spanShare(st.d, half, 0.5 * wWet);
+        let hu = h2(gX, gY, 97);
+        gRHeld = true;
+        gRWet = hu < sWet;
+        gRShore = 0.5 * st.wbf - st.d;
+        (*S).river = select(0.0, 1.0, hu < sBank);
+        return;
+      }
+    }
+    // outside it a stream is the mask's: over a pixel wider than its texel (PAGE_GEOM.cellM over mask) by the share of the pixel it covers (the mask read at the pixel's middle and its four corners), dithered
     if (mppN > ${PAGE_GEOM.cellM / PAGE_GEOM.mask}) {
       let o = 0.5 * mppN / gCm5;
       let share = 0.2 * (rv + fineRiver(gFx + vec2f(o, o)) + fineRiver(gFx + vec2f(-o, o)) + fineRiver(gFx + vec2f(o, -o)) + fineRiver(gFx - vec2f(o, o)));
-      rv = select(0.0, 1.0, bayer(gX, gY) < share);
+      rv = select(0.0, 1.0, h2(gX, gY, 97) < share);
     }
     (*S).river = rv;
     return;
@@ -415,22 +443,16 @@ fn fillWater(S: ptr<function, GSample>, x: f32, z: f32, ctx: PaintCtx, river: bo
     (*S).depth = 1.5;
     (*S).shore = gRShore;
     if (gFn) {
-      // the mask's edge distance as the island has it: its value over its gradient, 3 m each side
+      if (gRHeld) {
+        (*S).bed = !gRWet;
+        return;
+      }
+      // the mask's edge distance as the island has it: its value over its gradient, 3 m each side; its lines are water at the mask's width
       let dc = 3.0 / gCm5;
       let gx = (fineRiver(gFx + vec2f(dc, 0.0)) - fineRiver(gFx - vec2f(dc, 0.0))) / 6.0;
       let gz = (fineRiver(gFx + vec2f(0.0, dc)) - fineRiver(gFx - vec2f(0.0, dc))) / 6.0;
       let gl = length(vec2f(gx, gz));
       (*S).shore = select(60.0, ((*S).river - 0.5) / gl, gl > 1e-4);
-      // inside the window, where its streams are held, a stream runs as wide as its flow makes it and is a dry bed where it runs no more than the valley's fill carries (the ladder's fillWater); outside, the mask's
-      // lines are water at the mask's width
-      let wc = gFx - gWo;
-      if (lt[6].z > 0.5 && wc.x > 1.0 && wc.x < ${PAGE_GEOM.cells - 1}.0 && wc.y > 1.0 && wc.y < ${PAGE_GEOM.cells - 1}.0) {
-        let h = ${PAGE_GEOM.cells * PAGE_GEOM.cellM / 2}.0;
-        let st = g_streamAt(wc.x * ${PAGE_GEOM.cellM}.0 - h, wc.y * ${PAGE_GEOM.cellM}.0 - h);
-        var q = 0.0;
-        if (st.ok > 0.0) { q = st.q * (st.base + (1.0 - st.base) * g_quick(ctx.season & 3u)); }
-        (*S).bed = st.ok == 0.0 || st.qbf <= 0.0 || q <= st.under || st.d > st.wbf * pow(q / st.qbf, 0.26) / 2.0;
-      }
     }
     return;
   }
@@ -872,7 +894,7 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     // no tree is drawn by this pass: the whole of the tree cover is the ground's crowns
     ctx.canopy = u.sprl.y;
     var S: GSample;
-    fillTop(&S, xz.x, xz.y);
+    fillTop(&S, xz.x, xz.y, ctx);
     idx = g_paint(&S, xz.x, xz.y, gX, gY, ctx, mppN);
     if (S.isCrown) {
       // a pixel painted with the tree sprites' colours is lit as the shade pass lights an upright sprite: half its own light and half the slope's

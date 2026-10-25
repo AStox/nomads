@@ -68,8 +68,10 @@ export function packGround(isle, g, onGpu = null) {
   g.rivers.forEach((line, l) => {
     for (let k = 1; k < line.length; k++) {
       const [ax, az] = line[k - 1], [bx, bz] = line[k];
-      for (let j = cell(Math.min(az, bz) - REACH); j <= cell(Math.max(az, bz) + REACH); j++)
-        for (let i = cell(Math.min(ax, bx) - REACH); i <= cell(Math.max(ax, bx) + REACH); i++)
+      // a stream is found within REACH of its line, and a river's bankfull width is wider than that: its bank, half the width out, is still its own (the planet's streams, g_streamAt)
+      const reach = REACH + 0.5 * Math.max(line[k - 1][7], line[k][7]);
+      for (let j = cell(Math.min(az, bz) - reach); j <= cell(Math.max(az, bz) + reach); j++)
+        for (let i = cell(Math.min(ax, bx) - reach); i <= cell(Math.max(ax, bx) + reach); i++)
           if (i >= -1 && j >= -1 && i < NB - 1 && j < NB - 1) bins[(j + 1) * NB + i + 1].push(starts[l] + k);
     }
   });
@@ -472,7 +474,10 @@ fn g_streamAt(x: f32, z: f32) -> GStream {
     if (l2 == 0.0) { l2 = 1e-9; }
     let t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0.0, 1.0);
     let d = length(vec2<f32>(x - ax - dx * t, z - az - dz * t));
-    if (d <= ${REACH}.0 && (best.ok == 0.0 || d < best.d)) {
+${planet ? `    // the planet's streams are as wide as their flow makes them (a river's bankfull width reaches far past the island's 20 m): the nearest is the one whose bank is, and a pixel inside a river's width is found
+    let wt = mix(gStreams[ka + 6u], gStreams[kb + 6u], t);
+    let e = d - 0.5 * wt;
+    if (d <= ${REACH}.0 + 0.5 * wt && (best.ok == 0.0 || e < best.d - 0.5 * best.wbf)) {` : `    if (d <= ${REACH}.0 && (best.ok == 0.0 || d < best.d)) {`}
       best = GStream(d, mix(gStreams[ka + 2u], gStreams[kb + 2u], t), mix(gStreams[ka + 3u], gStreams[kb + 3u], t), mix(gStreams[ka + 4u], gStreams[kb + 4u], t),
         mix(gStreams[ka + 5u], gStreams[kb + 5u], t), mix(gStreams[ka + 6u], gStreams[kb + 6u], t), 1.0);
     }
