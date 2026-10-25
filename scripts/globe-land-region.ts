@@ -24,7 +24,7 @@ const seed = 1, key = arg("key", "7f6ff6c82cdd");
 const name = arg("name", "range"), face = Number(arg("face", "0")), tx = Number(arg("tx", "20")), ty = Number(arg("ty", "12")), tiles = Number(arg("tiles", "12")), TIER = Number(arg("tier", "5"));
 const down = 2 ** (5 - TIER), size5 = tiles * 256, x05 = tx * 256, y05 = ty * 256;
 const size = size5 / down, x0 = x05 / down, y0 = y05 / down, HL = 2, S = size + 2 * HL, cellM = 75 * down, per = 1 << TIER;
-const bake = `/tmp/planet-75m/${seed}-${key}`, work = `/tmp/planet-75m/land/${name}`;
+const bake = arg("bake", `/tmp/planet-75m/${seed}-${key}`), landDir = arg("land-dir", "/tmp/planet-75m/land"), work = join(landDir, name);
 mkdirSync(work, { recursive: true });
 const dtMy = Number(arg("dt-my", "1")), nflow = Number(arg("nflow", "8")) as 4 | 8, budget = Number(arg("budget", "200")), uniform = flag("uniform-rain");
 const schedule = arg("schedule", "").split(",").filter(Boolean).map((e) => e.split("x").map(Number) as [number, number]);
@@ -40,9 +40,9 @@ const tableOf = (planet: Planet, dt: number) => tierTable(planet, TIER, defaultP
 
 // the start of the interior (a kept state, a tier-4 run's state carried down, or tier 3's heights carried down) and the patch's ring: tier 5 from the bake's heights (held), tier 4 from the carry
 function inputs() {
-  const kept = existsSync(join(work, "state.i32")), t4 = regionBlock4(i32(`${arg("t3dir", "/tmp/planet-75m/land")}/1-7f6ff6c82cdd/t3-height.i32`), face, x05, y05, size5), fn4 = 1024 * 4;
+  const kept = existsSync(join(work, "state.i32")), t4 = regionBlock4(i32(`${arg("t3dir", "/tmp/planet-75m/land")}/${seed}-${key}/t3-height.i32`), face, x05, y05, size5), fn4 = 1024 * 4;
   const from4 = arg("from4", "");
-  if (from4) { const s4 = i32(`/tmp/planet-75m/land/${from4}/state.i32`), n4 = size5 / 2; for (let y = 0; y < n4; y++) for (let x = 0; x < n4; x++) t4[(face * fn4 + y05 / 2 + y) * fn4 + x05 / 2 + x] = s4[y * n4 + x]; }
+  if (from4) { const s4 = i32(join(landDir, from4, "state.i32")), n4 = size5 / 2; for (let y = 0; y < n4; y++) for (let x = 0; x < n4; x++) t4[(face * fn4 + y05 / 2 + y) * fn4 + x05 / 2 + x] = s4[y * n4 + x]; }
   const p = patchAt(TIER, face, x0, y0, HL, size);
   let interior: Int32Array, h: Int32Array, fl: Int32Array;
   if (TIER === 5) { interior = kept ? readI32("state.i32") : regionStart(t4, face, x05, y05, size5); h = readCells(join(bake, "t5-height.i32"), p.ids); fl = readCells(join(bake, "t5-flooded.i32"), p.ids); }
@@ -52,7 +52,7 @@ function inputs() {
 }
 const interiorOf = (h: Int32Array) => { const inner = new Int32Array(size * size); for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) inner[y * size + x] = h[(y + HL) * S + x + HL]; return inner; };
 
-const planet = await readPlanet(seed, diskStore(STORE, key)), gpu = await theGpu();
+const planet = await readPlanet(seed, diskStore(arg("store", STORE), key)), gpu = await theGpu();
 try {
   const m = meta(), { h, fl, kept } = inputs();
   console.log(`tier ${TIER} region ${size}x${size} face ${face} at ${x0},${y0}, planet and start ${spent().toFixed(1)} s, ${m.steps} steps kept`);
@@ -62,6 +62,7 @@ try {
   if (flag("render")) {
     await r.flow();
     const acc = await r.solver.read("ACC"), to = await r.solver.read("TO"), height = await r.solver.read("H");
+    writeI32("flow-acc.i32", Int32Array.from(acc)); writeI32("flow-to.i32", Int32Array.from(to)); writeI32("flow-height.i32", Int32Array.from(height));
     const at = (x: number, y: number) => ((Math.min(size - 1, Math.max(0, y)) + HL) * S + Math.min(size - 1, Math.max(0, x)) + HL);
     const v = arg("view", `0,0,${size}`).split(",").map(Number) as [number, number, number], out = arg("out", join(work, "view.png"));
     writeFileSync(out, renderLand((x, y) => height[at(x, y)] / 256, (x, y) => acc[at(x, y)] / 512, v, Number(arg("scale", "2")), Number(arg("river", "100")), Number(arg("vex", "0")), cellM));
@@ -88,7 +89,7 @@ try {
     for (const b of [per, per / 2, per / 4, per / 8]) res[`blockStep${b}`] = +blockStep(height, S, live, b, 0).toFixed(3);
     if (flag("diff")) {
       // the height difference to another run's state over the land, from the margin in: rms, and of its slopes' rms (the finer texture)
-      const o = i32(`/tmp/planet-75m/land/${arg("diff", "")}/state.i32`);
+      const o = i32(join(landDir, arg("diff", ""), "state.i32"));
       let n = 0, sq = 0, ssq = 0, ssl = 0;
       for (let y = margin; y < size - margin; y++) for (let x = margin; x < size - margin; x++) {
         const k = (y + HL) * S + x + HL, ko = y * size + x;

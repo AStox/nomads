@@ -102,7 +102,7 @@ export function unpackRecord(bytes: Uint8Array): { meta: Record<string, any>; ar
 
 // The atmosphere's four seasons on a height field; its 2 day window is halved where the rain passes its accumulator, as the
 // erosion unit's script does (the rain is scaled to the season by the window's length, so a shorter one is a snapshot of the same state).
-async function climateOf(gpu: Gpu, height: Float32Array, radius: number): Promise<GlobeClimate> {
+export async function climateOf(gpu: Gpu, height: Float32Array, radius: number): Promise<GlobeClimate> {
   const s = similarityOf(radius).s;
   for (let windowDays = 2 * s; ; windowDays /= 2) {
     try { return await climateGpu(gpu, tierGrid(0, radius), height, { seaLevel: 0 }, { windowDays }); }

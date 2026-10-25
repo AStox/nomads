@@ -6,7 +6,8 @@ import { CK, DK, EM1, LN2F, PTRS, SIXTH, T0 } from "../rand";
 const v2 = (a: readonly number[]) => `vec2u(${a[0]}u, ${a[1]}u)`;
 const [B0, B1, A0, A1, I0, I1, I2, V0, V1, K0, US, UT] = PTRS;
 
-export const RAND = /* wgsl */ `
+// Philox4x32-10 alone (needs mul64 of FIXED), for a kernel that draws one word of a counter and nothing more.
+export const PHILOX = /* wgsl */ `
 fn philox(c0: vec4u, k0: vec2u) -> vec4u {
   var c = c0; var k = k0;
   for (var r = 0u; r < 10u; r++) {
@@ -16,6 +17,9 @@ fn philox(c0: vec4u, k0: vec2u) -> vec4u {
   }
   return c;
 }
+`;
+
+export const RAND = PHILOX + /* wgsl */ `
 
 var<private> rkey: vec2u;
 var<private> rid: u32;
