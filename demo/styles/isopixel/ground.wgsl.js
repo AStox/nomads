@@ -608,7 +608,12 @@ fn g_water(S: GSample, x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) 
   if (g_h2u(X, Y, 43) < ${UT(0.0006)} && g_hf(g_h2u(X, Y, 50)) < ${planet ? FADE(2) : "1.0"} && ((ctx.frame + (g_h2u(X, Y, 49) >> 29u)) & 7u) != 0u) { return ${u("w7")}; }
   // open water's tone follows the depth: the planet's pixels dither between its palette steps across the whole step (a tone index's dither is a little over half of it, which stands the ramp up as
   // bands of one colour on a slope that is steep over a pixel)
-  ${planet ? "if (kind != 3u) { return g_WA[clamp(i32(floor(v + g_hf(g_h2u(X, Y, 51)))), 0, 7)]; }" : ""}
+  ${planet ? `if (kind != 3u) {
+    // the dither between palette steps carries a colour gradient, not noise: the ordered one where the ripples show (a pixel under 2.8 m), and as the pixel outgrows them a hash squeezed to a sixth of a step round
+    // the rounding point, so the far sea is a calm colour whose steps meet in a narrow dither (an ordered dither on the ground-fixed lattice beats against the pixel grid in rings, a full-step hash is static)
+    let th = mix(0.5 + (g_hf(g_h2u(X, Y, 51)) - 0.5) * 0.17, bayer(X, Y), ${FADE(2)});
+    return g_WA[clamp(i32(floor(v + th)), 0, 7)];
+  }` : ""}
   return g_WA[g_toneIndex(v, X, Y, 8)];
 }
 

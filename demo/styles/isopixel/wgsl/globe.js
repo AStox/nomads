@@ -886,8 +886,9 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   let mu = max(dot(p, -rd), 0.0);
   let air = pow(1.0 - mu, 5.0) * 0.9 * u.airK;
   // these two shares and the light rows below vary slowly over the screen, so an ordered dither on the ground-fixed lattice beats against the pixel grid in rings of the lattice's own scale; a hash does not
-  if (h2(gX, gY, 61) < air) { idx = tables[idx]; }
-  if (h2(gX, gY, 62) < air * air) { idx = tables[idx]; }
+  // (the two shares of haze are two steps of colour, so their hash is squeezed to a third of a step round the middle: a calm gradient toward the limb, not static)
+  if (0.5 + (h2(gX, gY, 61) - 0.5) * 0.35 < air) { idx = tables[idx]; }
+  if (0.5 + (h2(gX, gY, 62) - 0.5) * 0.35 < air * air) { idx = tables[idx]; }
   // the light the ground has: the key light's share on flat ground here (the sun's height over this place, the moon's once the sun is down), through the same light tables the ladder's shade
   // pass maps its palette through, so the night side, the terminator and the day side show as the close levels show a night, a dusk and a day
   let key = mix(max(facing, 0.0), max(dot(p, u.moon), 0.04), u.moonMix);
