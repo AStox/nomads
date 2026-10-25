@@ -97,7 +97,11 @@ fn fateOf(seed: u32) -> f32 {
   h = (h ^ (h >> 15u)) * 0x846CA68Bu;
   h = h ^ (h >> 16u);
   return f32(h >> 8u) / 16777216.0;
-}`;
+}
+// the share of a cross-fade a view holds: V.swap w over 0 hides the objects whose swap fate is under w (the level fading out keeps the rest), under 0 hides those at or over -w (the level
+// fading in takes the first), so every object is drawn by exactly one of the two levels and the fade is a count of objects, not two silhouettes laid over each other. The fate is a hash of
+// the seed apart from fateOf's (the objects the thinning keeps longest are not the ones that change level first); the salt is any odd word.
+fn swapFateOf(seed: u32) -> f32 { return fateOf(seed ^ 0x68E31DA4u); }`;
 
 // What every object pass shares: the Obj, the tables, and an object's look. g: ORIGIN; GN, WS the 12.5 m light grid
 // (grid layer 1 its hollows' share of the sky); M, FSTART, FSTEP the fine ground (layer 4 its tree cover).
@@ -394,6 +398,7 @@ fn cullEval(o: Obj) -> Emit {
   var e: Emit;
   let kf = kindOf(o.kind);
   if ((kf & ${K_DRAWN}u) == 0u) { return e; }
+  if (V.swap != 0.0 && select(swapFateOf(o.seed) >= -V.swap, swapFateOf(o.seed) < V.swap, V.swap > 0.0)) { return e; }
   let tree = (kf & ${K_TREE}u) != 0u;
   let hpx = hpxOf(o, kf, V.pv, V.pw);
   if (hpx < 1.0 && (!tree || fateOf(o.seed) >= treeShare(hpx))) { return e; }
