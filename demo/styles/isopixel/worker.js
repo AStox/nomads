@@ -1155,6 +1155,9 @@ function refocus(w, m) {
   if (!w.blockPlan || w.blocksBusy || !w.blockRecs || m.lat === undefined) return;
   const view = viewCells(w, m), { vis, k0 } = planet.wins.blocksNeed(w, view);
   if (k0 === null) return;
+  // the share the view draws its trees at, as the page's ground paints crowns for the rest (live.js canopy): kept apart from blockK0, which moves only by 0.005 or more, and told with every frame done
+  // (windowK0), so the picture does not hang on which of the window's messages the page took in first
+  w.k0Live = k0;
   const held = new Map(w.blockRecs.map((b) => [b.key, b])), need = (e) => Math.max(0, Math.floor(e - 0.25));
   if (!vis.every((k) => held.has(k) && held.get(k).k <= need(k0))) { startObjects(w, view); return; }
   if (Math.abs(k0 - w.blockK0) < 0.005) return;
@@ -1170,6 +1173,8 @@ function writeExponents(w) {
   // only the blocks the renderer holds: a block made but not yet attached gets its word when blockSources binds it
   for (const r of w.blockRecs) { if (r.dead || !bound.has(r)) continue; f[0] = w.blockKd.get(r.key) ?? 0; device.queue.writeBuffer(r.body, (7 * r.cap + 2) * 4, f); }
 }
+// the window drawn and the exponent its view draws the trees at (refocus), which every frame done tells the page: its ground paints the crowns of the trees the share leaves out
+const windowK0 = () => ({ win: curWin?.id, k0: curWin ? curWin.k0Live ?? curWin.blockK0 : undefined });
 // The windows made, the last three kept (the one drawn, and two more a pan back or a zoom out and in finds made), with their ground and objects on the GPU. A window is
 // found again by what it covers: the page's own test (live.js wantGround) of the viewport's reach and the place's distance from the window's centre against the window's half side less its faded edge;
 // one made within WIN_NEAR metres of the place asked for serves when the ask names no reach.
@@ -1409,7 +1414,7 @@ function render() {
     pending = null; skips++;
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: 0, gpuMs: 0, passes: R.stats.passes, counts: R.stats.counts, at: 0, fronts, lift: planetLift, liftInfo, q: planetQ, relief: planetRelief, applyMs, skipped: true, settled: true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, ...windowK0(), tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: 0, gpuMs: 0, passes: R.stats.passes, counts: R.stats.counts, at: 0, fronts, lift: planetLift, liftInfo, q: planetQ, relief: planetRelief, applyMs, skipped: true, settled: true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     return;
   }
   lastKey = key; lastAnim = anim;
@@ -1464,7 +1469,7 @@ function render() {
     // the levels and bearings whose front lists are built, when they change (live.js listsReady)
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: planetLift, liftInfo, q: planetQ, relief: planetRelief, applyMs, settled: !planetLayer || planetLayer.settled?.() === true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, ...windowK0(), tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: planetLift, liftInfo, q: planetQ, relief: planetRelief, applyMs, settled: !planetLayer || planetLayer.settled?.() === true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     if (pending) render();
   });
 }

@@ -110,6 +110,9 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     if (m.type.startsWith("sim")) { if (simTo) simTo(m); else simEarly.push(m); }
     else if (m.type === "frameDone") {
       lastDone = m; stats.gpuMs = m.gpuMs; stats.workerMs = m.cpuMs; stats.passes = m.passes; stats.counts = m.counts; stats.tiles = m.tiles; stats.lift = m.lift; stats.liftInfo = m.liftInfo; stats.q = m.q; stats.relief = m.relief; stats.tilesMax = m.tilesMax; stats.tilesCut = m.tilesCut; stats.applyMs = m.applyMs;
+      // the share the window's view draws its trees at, which the ground paints the crowns of the rest by (planet.canopy): the worker's word at every frame, for the window the page holds. The
+      // windows' own messages ("ground" with the share the blocks were made for, "windowObjects" with what all of them kept) race the page's taking the ground in, so neither tells it
+      if (m.k0 !== undefined && stats.window?.id === m.win) stats.window.share = 2 ** -m.k0;
       // settled: the worker's word that what it drew has what the view asked of the planet (or, until it says so, that its tiles are held and none is in flight)
       quietDone = (m.settled ?? (m.tiles ? m.tiles.held > 0 && m.tiles.flying === 0 : true)) ? quietDone + 1 : 0;
       if (m.fronts !== undefined) fronts = new Set(m.fronts ? m.fronts.split(",") : []);
@@ -121,7 +124,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     else if (m.type === "progress") onProgress?.(m.d, m.n, m.what);
     else if (m.type === "ground") pendingGround = m;
     else if (m.type === "windowError") console.warn(`window: ${m.error}`);
-    else if (m.type === "windowObjects") { (stats.objectLog ??= []).push({ id: m.id, objects: m.objects, share: m.share, ms: Math.round(m.ms), blocks: m.blocks, made: m.made, bytes: m.bytes }); if (stats.window?.id === m.id) Object.assign(stats.window, { objects: m.objects, share: m.share, objectsMs: m.ms, objectsAt: performance.now(), blocks: m.blocks, made: m.made }); }
+    else if (m.type === "windowObjects") { (stats.objectLog ??= []).push({ id: m.id, objects: m.objects, share: m.share, ms: Math.round(m.ms), blocks: m.blocks, made: m.made, bytes: m.bytes }); if (stats.window?.id === m.id) Object.assign(stats.window, { objects: m.objects, objectsMs: m.ms, objectsAt: performance.now(), blocks: m.blocks, made: m.made }); }
     else if (m.type === "pick") { picksWait.get(m.id)?.(m.r); picksWait.delete(m.id); }
     else if (m.type === "check") { checksWait.get(m.id)?.(m.r); checksWait.delete(m.id); }
     else if (m.type === "spritesReset") sentSprites.clear();
