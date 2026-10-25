@@ -1,7 +1,7 @@
 import { SC } from "../../island.js";
 import { groundWGSL } from "../ground.wgsl.js";
 import { PAGE_BLOCK, PAGE_GEOM, pageGeom, pageWGSL } from "../pages.js";
-import { NG } from "../night.js";
+import { NG, TWI } from "../night.js";
 
 // The planet layer's picture (planet.js): each art pixel's ray crosses the shell between the unit sphere and the highest relief (land
 // stands exag times its height above the sphere, the sea is the sphere) and is marched to the surface, so a tilted view shifts a high
@@ -57,7 +57,14 @@ const NIGHT_AMB: f32 = 0.1;
 // The night's light is one law at every zoom (night.js: starlight and the moon, radiance rho E / pi against the dark sky, shown at the ink's luminance times the ratio to the power GAM); the light tables
 // the ladder's ground and sprites are drawn through carry the same law (live.js row), here it is evaluated at the pixel's own place so the dark side shows from above too.
 const NG_E_MOON: f32 = ${lit(NG.moon)};
-const NG_E_STAR: f32 = ${lit(NG.star)};
+const NG_TWI = array<f32, 4>(${TWI.map((v) => lit(Math.log(v))).join(", ")});
+// the sky's light by the sun's depression in degrees (night.js skyLux)
+fn ngSky(e: f32) -> f32 {
+  let x = clamp(-e, 0.0, 18.0);
+  let k = min(u32(x / 6.0), 2u);
+  var l = NG_TWI;
+  return exp(mix(l[k], l[k + 1u], (x - 6.0 * f32(k)) / 6.0));
+}
 const NG_L_SKY: f32 = ${lit(NG.sky)};
 const NG_ALB: f32 = ${lit(NG.alb)};
 const NG_GAM: f32 = ${lit(NG.gam)};
@@ -65,7 +72,7 @@ fn nightGround(c: vec3f, p: vec3f, sd: f32, ink: vec3f, facing: f32) -> vec3f {
   let lc = max(dot(c, vec3f(0.3, 0.59, 0.11)), 1e-3);
   let lit = 0.5 * (1.0 - dot(u.sun, u.moon));
   let m = dot(p, u.moon);
-  let E = NG_E_STAR + NG_E_MOON * lit * g_smooth(-0.017, 0.17, m) * max(facing, 0.0);
+  let E = ngSky(degrees(asin(clamp(sd, -1.0, 1.0)))) + NG_E_MOON * lit * g_smooth(-0.017, 0.17, m) * max(facing, 0.0);
   let ratio = NG_ALB * lc * E / (PI * NG_L_SKY);
   var g = c / lc * dot(ink, vec3f(0.3, 0.59, 0.11)) * pow(ratio, NG_GAM);
   // the colour as the ladder's night drains it (live.js row): less saturated, bluer
