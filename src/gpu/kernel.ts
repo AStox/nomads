@@ -76,6 +76,29 @@ export function dispatch(g: Gpu, p: GPUComputePipeline, buffers: GPUBuffer[], gr
   g.device.queue.submit([enc.finish()]);
 }
 
+// A dispatch of `groups` workgroups made as submits of at most `per`, never more than two on the queue at once, so a frame (and the browser's own drawing, which shares the GPU) waits behind at most two
+// slices instead of one kernel of tens of milliseconds, and the GPU is not left idle between slices (one in flight would). `before(first, n)` is called ahead of each slice to tell the kernel where it
+// starts: the kernels read it (an index added to their global invocation id), as a dispatch has no base of its own; a write the queue takes in order with the submits, so a slice already submitted
+// still reads its own. The result is the same as one dispatch's: each thread's own, whatever the order the slices run in.
+const IN_FLIGHT = 2;
+export async function dispatchSliced(g: Gpu, p: GPUComputePipeline, binds: [number, GPUBuffer][], groups: number, per: number, before: (first: number, n: number) => void) {
+  const bind = g.device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: binds.map(([binding, buffer]) => ({ binding, resource: { buffer } })) });
+  const queued: Promise<undefined>[] = [];
+  for (let first = 0; first < groups; first += per) {
+    if (queued.length >= IN_FLIGHT) await queued.shift();
+    const n = Math.min(per, groups - first);
+    before(first, n);
+    const enc = g.device.createCommandEncoder(), pass = enc.beginComputePass();
+    pass.setPipeline(p);
+    pass.setBindGroup(0, bind);
+    pass.dispatchWorkgroups(n);
+    pass.end();
+    g.device.queue.submit([enc.finish()]);
+    queued.push(g.device.queue.onSubmittedWorkDone());
+  }
+  await Promise.all(queued);
+}
+
 // Workgroups of a given size needed to cover n invocations, split over two dimensions when one would pass the limit.
 export function cover(g: Gpu, n: number, size = 256): [number, number] {
   const groups = Math.ceil(n / size), most = g.device.limits.maxComputeWorkgroupsPerDimension;

@@ -502,7 +502,7 @@ const TSIDE = ${TILES}u;
 const FMAX = ${Math.floor((L.m - 1.001) * 65536)}i;
 const I_CNT = ${IDX.cnt}u; const I_BASE = ${IDX.base}u; const I_ORECNT = ${IDX.oreCnt}u; const I_OREBASE = ${IDX.oreBase}u;
 const I_SEED = ${IDX.seed}u; const I_FLAG = ${IDX.flag}u; const I_ORETOTAL = ${IDX.oreTotal}u; const I_KEY = ${IDX.key}u; const I_WIN = ${IDX.win}u;
-const I_TILEN = ${IDX.tileN}u; const I_START = ${IDX.start}u; const I_ROWT = ${IDX.rowT}u; const I_ROWC = ${IDX.rowC}u; const I_ROWS = ${IDX.rowStart}u; const I_ORE = ${IDX.ore}u; const I_FROM = ${IDX.pad}u;
+const I_TILEN = ${IDX.tileN}u; const I_START = ${IDX.start}u; const I_ROWT = ${IDX.rowT}u; const I_ROWC = ${IDX.rowC}u; const I_ROWS = ${IDX.rowStart}u; const I_ORE = ${IDX.ore}u; const I_FROM = ${IDX.pad}u; const I_SLICE = ${IDX.pad + 1}u;
 const W_LO = ${ARR(W_LO, "i32")};
 const W_DIFF = ${ARR(W_DIFF, "i32")};
 const W_EXP = ${ARR(W_EXP, "i32")};
@@ -928,7 +928,7 @@ return /* wgsl */ `
 ${common(false, L)}
 @compute @workgroup_size(64)
 fn count(@builtin(global_invocation_id) gid: vec3u) {
-  let q = gid.x;
+  let q = gid.x + IDX[I_SLICE];
   if (q >= NQ) { return; }
   scatterQuad(q);
   for (var d = 0u; d < 4u; d++) { IDX[I_CNT + q * 4u + d] = Qloc[d]; }
@@ -1001,7 +1001,7 @@ return /* wgsl */ `
 ${common(true, L)}
 @compute @workgroup_size(64)
 fn write(@builtin(global_invocation_id) gid: vec3u) {
-  let q = gid.x;
+  let q = gid.x + IDX[I_SLICE];
   if (q >= NQ) { return; }
   // a quad more than a cell outside the window makes nothing that lies in it (its objects lie within its own cell, 4 quads across)
   let cu = i32((q % QS + u32(OFF)) >> 2u); let cv = i32((q / QS + u32(OFF)) >> 2u);
