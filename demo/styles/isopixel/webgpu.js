@@ -92,9 +92,11 @@ const VU = struct("U", [
   ["aoK", "f"], ["aoTer", "f"], ["aoCan", "f"], ["aoTree", "f"], ["aoTop", "f"], ["aoSelf", "f"], ["aoKey", "f"], ["aoDbg", "f"],
   ["gridN", "u"], ["gridStep", "f"], ["canN", "u"], ["canStep", "f"], ["can3", "u"], ["half", "f"],
   ["hmost", "f"], ["htop", "f"], ["hreach", "f"], ["sea", "u"], ["wlo", "u"], ["whi", "u"], ["nfires", "u"], ["night", "f"], ["ncol", "u"], ["edge", "f"],
+  // the share of a level cross-fade this view draws (wgsl/objects.js swapFateOf): over 0 the objects the fade has not moved on, under 0 the ones it has; 0 draws all
+  ["swap", "f"],
 ]);
 const TU = struct("Tr", [["n", "u"], ["step", "f"], ["exag", "f"], ["tan", "f"], ["dx", "f"], ["dz", "f"], ["row0", "u"], ["reach", "f"], ["top", "f"]]);
-const PU = struct("Pr", [["dx", "f"], ["dy", "f"], ["sc", "f"], ["nn", "f"], ["alpha", "f"], ["aw", "u"], ["ah", "u"], ["nearest", "u"], ["sr", "f"], ["sg", "f"], ["sb", "f"]]);
+const PU = struct("Pr", [["dx", "f"], ["dy", "f"], ["sc", "f"], ["nn", "f"], ["alpha", "f"], ["aw", "u"], ["ah", "u"], ["nearest", "u"], ["sr", "f"], ["sg", "f"], ["sb", "f"], ["part", "u"]]);
 // the object passes outside a frame (wgsl/objects.js): the survey's mode and levels, and the trees' cover's grids
 const KU = struct("Ks", [["mode", "u"], ["nl", "u"], ["l0", "u"], ["stride", "u"], ["vx0", "f"], ["vz0", "f"], ["vx1", "f"], ["vz1", "f"], ["canN", "u"], ["canStep", "f"], ["gn", "u"], ["gs", "f"], ["rp", "u"], ["n3", "u"], ["rp3", "u"], ["rpt", "u"]]);
 // a slice of a far list's build: its first slot, how many, and how many far levels; a front list's level
@@ -938,8 +940,10 @@ fn foldMain(@builtin(global_invocation_id) id: vec3u) {
 const PRESENT_WGSL = `
 @vertex
 fn fullVS(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0); }
-// premultiplied, so the texels a bilinear read blends weigh by their cover and a clear texel leaves no dark fringe on what is next to it
-fn pre(c: vec4f) -> vec4f { return vec4f(c.rgb * c.a, c.a); }
+// premultiplied, so the texels a bilinear read blends weigh by their cover and a clear texel leaves no dark fringe on what is next to it. P.part: 0 every texel, 1 the translucent ones (the
+// shade a level lays on the ground under it), 2 the opaque ones (its sprites): a cross-fade presents every level's shade first and then every level's sprites, so one level's shade never
+// darkens the other's sprites, which stand over the ground it lies on
+fn pre(c: vec4f) -> vec4f { return vec4f(c.rgb * c.a, c.a) * select(select(1.0, select(0.0, 1.0, c.a >= 1.0), P.part == 2u), select(0.0, 1.0, c.a < 1.0), P.part == 1u); }
 fn artAt(k: vec2f) -> vec4f { return pre(textureLoad(art, clamp(vec2i(floor(k / P.nn)), vec2i(0), vec2i(i32(P.aw) - 1, i32(P.ah) - 1)), 0)); }
 @fragment
 fn presentFS(@builtin(position) pos: vec4f) -> @location(0) vec4f {
@@ -1278,7 +1282,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   device.queue.writeBuffer(tcntInit, 0, new Uint32Array([0, 1, 0, 0]));
   // a view's own (two cross-fading views go in one submit, whose queued writes all land before it runs)
   const liveB = [0, 1].map((k) => B(MAX_LIVE * 32, STOR, `live${k}`)), liveRowsB = [0, 1].map((k) => B(MAX_LIVE_ROWS * 16, STOR, `liveRows${k}`)), primsB = [0, 1].map((k) => B(MAX_PRIMS * 32, STOR, `prims${k}`));
-  const viewU = [0, 1].map((k) => B(VU.bytes, UNI, `view${k}`)), firesU = [0, 1].map((k) => B(MAX_FIRES * 16, UNI, `fires${k}`)), presentU = [0, 1].map((k) => B(PU.bytes, UNI, `present${k}`));
+  const viewU = [0, 1].map((k) => B(VU.bytes, UNI, `view${k}`)), firesU = [0, 1].map((k) => B(MAX_FIRES * 16, UNI, `fires${k}`)), presentU = [0, 1, 2, 3].map((k) => B(PU.bytes, UNI, `present${k}`));
   // views of textures that live on, made once (a bind group built at every use made 200 a frame)
   const viewCache = new WeakMap();
   const vw = (t, o) => { let m = viewCache.get(t); if (!m) viewCache.set(t, m = new Map()); const k = o ? "a" : ""; let v = m.get(k); if (!v) m.set(k, v = t.createView(o)); return v; };
@@ -1978,14 +1982,15 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     f.under?.(enc, out.createView());
     const pass = enc.beginRenderPass({ colorAttachments: [{ view: out.createView(), loadOp: f.under ? "load" : "clear", storeOp: "store", clearValue: { r: f.seaRGB[0], g: f.seaRGB[1], b: f.seaRGB[2], a: 1 } }], ...tw("present") });
     pass.setPipeline(S.present.p);
-    views.forEach((v, k) => {
-      const p = v.present, s = slots[k], t = cap.tags[s.slot];
-      // an art buffer drawn for an earlier camera at the same level and bearing lies at its own absolute origin
-      const dx = p.dx + (t.gx0 - v.U.gx0) * p.sc, dy = p.dy + (t.gy0 - v.U.gy0) * p.sc;
-      device.queue.writeBuffer(presentU[k], 0, PU.pack({ dx, dy, sc: p.sc, nn: p.nn, alpha: v.alpha, aw: t.aw, ah: t.ah, nearest: p.nearest, sr: f.seaRGB[0], sg: f.seaRGB[1], sb: f.seaRGB[2] }));
-      pass.setBindGroup(0, group(S.present, k, { art: vw(cap.art[s.slot]) }));
-      pass.draw(3);
-    });
+    for (const part of views.length > 1 ? [1, 2] : [0])
+      views.forEach((v, k) => {
+        const p = v.present, s = slots[k], t = cap.tags[s.slot], pk = k + (part > 1 ? 2 : 0);
+        // an art buffer drawn for an earlier camera at the same level and bearing lies at its own absolute origin
+        const dx = p.dx + (t.gx0 - v.U.gx0) * p.sc, dy = p.dy + (t.gy0 - v.U.gy0) * p.sc;
+        device.queue.writeBuffer(presentU[pk], 0, PU.pack({ dx, dy, sc: p.sc, nn: p.nn, alpha: v.alpha, aw: t.aw, ah: t.ah, nearest: p.nearest, sr: f.seaRGB[0], sg: f.seaRGB[1], sb: f.seaRGB[2], part }));
+        pass.setBindGroup(0, group(S.present, pk, { art: vw(cap.art[s.slot]) }));
+        pass.draw(3);
+      });
     pass.end();
     // the picks asked for, from view 0's G-buffer as it was before the second view reused it: copied in drawView
     let qr = null;

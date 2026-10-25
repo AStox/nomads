@@ -975,8 +975,14 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   function plan(view) {
     const lf = levelFor(view.zoom), beta = norm8(view.bearing ?? 0), a = (stats.ladderAlpha = ladderAlpha(view));
     if (a <= 0 || (PLACE && !playAreaShown(view))) return { lf, parts: [], beta };
-    const fade = lf.L < NL - 1 && lf.t > 0.6, m = fade ? FADE_MARGIN : 0, parts = [[camera(view, lf.L, beta, m), a]];
-    if (fade) parts.push([camera(view, lf.L + 1, beta, m), smooth(0.6, 1, lf.t)]);
+    const fade = lf.L < NL - 1 && lf.t > 0.6, m = fade ? FADE_MARGIN : 0, w = fade ? smooth(0.6, 1, lf.t) : 0;
+    // Over the planet's ground (the ladder's art is only sprites and shade, clear between them) the two levels share the objects: level L draws those whose swap fate (wgsl/objects.js
+    // swapFateOf) is over w and L + 1 the rest, both at the ladder alpha, so no tree is drawn at two sizes at once and the mean colour does not depend on w.
+    // Where the art holds its own ground (a game's island) L + 1 would hide L, so it is a cross-fade of the two: L + 1 at a * w over L at a * (1 - w) / (1 - a * w), which leaves each its
+    // a * (1 - w) and a * w of the picture under the planet's (1 - a); it is a (one level's weight) when w is 0.
+    const swapped = fade && PLACE && (PGQ === null ? mode === "win" : PGQ === "1");
+    const parts = [[camera(view, lf.L, beta, m), swapped ? a : fade ? (a * (1 - w)) / Math.max(1e-6, 1 - a * w) : a, swapped ? w : 0]];
+    if (fade) parts.push([camera(view, lf.L + 1, beta, m), swapped ? a : a * w, swapped ? -w : 0]);
     return { lf, parts, beta };
   }
   // A camera's place on its level and bearing for the GPU (webgpu.js VU): its grid, target, art buffer and tile window
@@ -1010,7 +1016,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   const FRONT_M = 100, frontLevels = new Set(LV.filter((l) => !LADDER[l.L].paged && l.tileM >= FRONT_M).map((l) => l.L));
   worker.postMessage({ type: "frontViews", views: [...frontLevels].flatMap((L) => [0, 1, 2, 3, 4, 5, 6, 7].map((b) => ({ L, b, U: islandView(L, b) }))) });
   // the view's uniforms for the GPU (webgpu.js VU) and what it draws over the ground
-  function viewOf(cam, k, w, sim, clock, now, view) {
+  function viewOf(cam, k, w, swap, sim, clock, now, view) {
     const md = cam.md, cast = sky.cast, vec = cast ? sunStep(md, cast) : [0, 0], win = windowOf(cam, vec);
     const live = [], liveRows = [], xray = [], prims = new Emit(), fires = [];
     owners = [];
@@ -1029,7 +1035,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const hz = hazeOf(cam, clock.hour ?? 8), FR = new Float32Array(fires.length * 4);
     fires.forEach((f, i) => FR.set(f, i * 4));
     const U = {
-      ...placeOf(cam, win),
+      ...placeOf(cam, win), swap,
       frame: Math.floor(now / 160) & 7, season: SEASON_I[season] ?? 0,
       casting: cast ? 1 : 0, sunx: vec[0], suny: vec[1],
       ...groundLight(), spr: spriteLight(view.bearing),
@@ -1069,7 +1075,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     frameSprites = [];
     // the sim's people, animals and things live on the island: elsewhere there are none
     const simUse = mode === "home" ? sim : null;
-    const views = pl.parts.map(([cam, w], k) => viewOf(cam, k, w, simUse, clock, now, view));
+    const views = pl.parts.map(([cam, w, swap], k) => viewOf(cam, k, w, swap, simUse, clock, now, view));
     // the ground is the planet pass's wherever a window of the planet is drawn (the ladder draws the sprites and their shade over it); the island of the game keeps its own (?pg=0 and ?pg=1 force either)
     const groundOff = PLACE && (PGQ === null ? mode === "win" : PGQ === "1");
     const id = frameNo + 1, msg = { type: "frame", id, gid: PLACE ? gid : undefined, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), cam: view.geo && PLACE ? { lat: view.geo.lat, lon: view.geo.lon, ext: viewExtent(view) } : undefined, exag: EXAG, relief: sky.relief, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG }, planet: PLACE && (groundOff || ladderAlpha(view) < 1) ? { ...planetParams(view), light: groundLight(), spr: spriteLight(view.bearing), lightFade: smooth(2.6, 3.8, view.zoom), canopy: PG_CANOPY ?? 1 - ladderAlpha(view) * (1 - canopyHold(ppmOf(clampZ(view.zoom)), -Math.log2(Math.max(1e-3, stats.window?.share ?? 1)))) } : null, groundOff };
