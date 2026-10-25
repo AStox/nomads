@@ -25,7 +25,7 @@ import { dispatchSliced, pipeline, pipelineSoon, readback, storage } from "../ke
 import type { Gpu } from "../device";
 import { SLICE_GROUPS, objectsOn, run, segments, type CellWindow, type SceneryKernels, type WindowedScatter } from "../terrain/scenery";
 import {
-  GRADIENTS, ISLE, countKernel, fineKernel, layoutOf, rasterKernel, tableKernel, tileScenery, writeKernel, type SceneryLayout,
+  ECO_HALO, GRADIENTS, ISLE, countKernel, fineKernel, layoutOf, rasterKernel, tableKernel, tileScenery, writeKernel, type SceneryLayout,
 } from "../wgsl/terrain-scenery";
 import { TABLE_UNIT, mappedField } from "./ground";
 import { GROUNDTILE_FIELDS } from "./bake";
@@ -35,6 +35,8 @@ import type { Ctx, Field } from "./stages";
 
 const Q16 = 65536, Q24 = 16777216;
 export const SCATTER_HALO = 2;
+// a window's halo: the forest's edge reads cells far past the tile (terrain-scenery.ts), so the same vertex is the same whichever window or tile holds it
+export const WINDOW_HALO = ECO_HALO;
 // the stream raster over a band of rows (a rectangle of the mask's words), which tileFields makes a slice at a time
 const RASTER_RECT = rasterKernel(true);
 export const RIVER_HALO = 8;
@@ -71,20 +73,21 @@ const share24 = Int32Array.from({ length: 256 }, (_, v) => Math.round((v * Q24) 
 const ph16 = Int32Array.from({ length: 256 }, (_, v) => Math.round((v * Q16) / 30));
 
 // The kernels' texts by layout, made once.
-const kernels = new Map<number, { L: SceneryLayout; K: SceneryKernels }>();
-function kernelsOf(halo: number) {
-  let k = kernels.get(halo);
+const kernels = new Map<string, { L: SceneryLayout; K: SceneryKernels }>();
+function kernelsOf(halo: number, eco = false) {
+  const key = `${halo}${eco ? "e" : ""}`;
+  let k = kernels.get(key);
   if (!k) {
-    const fmt = tileScenery(halo), L = layoutOf(fmt);
+    const fmt = tileScenery(halo, eco), L = layoutOf(fmt);
     k = { L, K: { fine: fineKernel(L), table: tableKernel(L), count: countKernel(L), write: writeKernel(L) } };
-    kernels.set(halo, k);
+    kernels.set(key, k);
   }
   return k;
 }
 
 // Every kernel a tile's scatter and fine ground run, set compiling off the frames' queue (kernel.ts pipelineSoon), so the first window finds them made; resolves when all are.
-export function warmScatter(g: Gpu, halo = SCATTER_HALO): Promise<unknown> {
-  const { K } = kernelsOf(halo);
+export function warmScatter(g: Gpu, halo = SCATTER_HALO, eco = false): Promise<unknown> {
+  const { K } = kernelsOf(halo, eco);
   return Promise.all([[RASTER_RECT, "raster"], [K.fine, "fine"], [K.table, "table"], [K.count, "count"], [K.count, "rank"], [K.count, "rows"], [K.count, "scan"], [K.write, "write"]].map(([src, entry]) => pipelineSoon(g, src, entry)));
 }
 
@@ -137,8 +140,8 @@ export function riversOf(source: TileSource, tile: number, tier = 4): FineRiver[
 // `fine` (when asked for): the fine field's heights over the 1,025 by 1,025 vertices, m, and the stream mask (RM by RM texels, 0 to 255).
 export interface TileScatter<F extends Scatter = Scatter> { flora: F; tile: number; segments: number; fine?: { h: Float32Array; mask: Uint8Array } }
 // A tile's streams rasterised and its fine ground made, left on the GPU for the scatter's kernels: the packed fields, the fine buffer, and what to let go of when they are done.
-export async function tileFields(ctx: Pick<Ctx, "gpu" | "tier">, tile: number, source: TileSource, halo = SCATTER_HALO) {
-  const g = ctx.gpu, { L, K } = kernelsOf(halo), rivers = riversOf(source, tile, ctx.tier), { seg, table } = segments(rivers);
+export async function tileFields(ctx: Pick<Ctx, "gpu" | "tier">, tile: number, source: TileSource, halo = SCATTER_HALO, eco = false) {
+  const g = ctx.gpu, { L, K } = kernelsOf(halo, eco), rivers = riversOf(source, tile, ctx.tier), { seg, table } = segments(rivers);
   const segs = storage(g, seg), bins = storage(g, table), field = storage(g, L.FINE_WORDS * 4), packed = storage(g, packTile(source, tile, halo, ctx.tier));
   // the mask in bands of SLICE_GROUPS workgroups of 256 words (four texels each) a submit, each band's rows the rectangle's (the kernel writes each word where the whole mask's run would have put it)
   const across = RM / 4, rows = (SLICE_GROUPS * 256) / across, rect = storage(g, new Uint32Array([0, 0, across, rows]));

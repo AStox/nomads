@@ -7,7 +7,7 @@ import { dispatch, pipeline, pipelineSoon, readback, storage } from "../src/gpu/
 import { run, segments } from "../src/gpu/terrain/scenery";
 import { FINE, RASTER, fineKernel, layoutOf, rasterKernel, tileScenery } from "../src/gpu/wgsl/terrain-scenery";
 import { GRID_PITCH, FINE_PITCH, PAGE_CELLS, PAGE_FINE_LAYER_WORDS, PAGE_FINE_PITCH, PAGE_FINE_WORDS, PAGE_GRID_WORDS, PAGE_HALO_NODES, PAGE_HALO_VERTS, PAGE_HN, PAGE_MASK_WORDS, PAGE_NG, PAGE_NV, PAGE_PARAMS, PAGE_SCRATCH_LAYER_WORDS, pageFineKernel, pageGridKernels, pageHeightPlaneKernel, pageMaskKernel } from "../src/gpu/wgsl/terrain-window";
-import { SCATTER_HALO, RIVER_HALO, packTile, scatterTile, warmScatter, type TileSource } from "../src/gpu/globe/scatter";
+import { SCATTER_HALO, WINDOW_HALO, RIVER_HALO, packTile, scatterTile, warmScatter, type TileSource } from "../src/gpu/globe/scatter";
 import { placeKernels } from "../src/gpu/globe/windowobjects";
 import type { Gpu } from "../src/gpu/device";
 
@@ -16,7 +16,7 @@ export { openTile } from "../src/gpu/globe/windowobjects";
 export { SCATTER_HALO, RIVER_HALO, scatterTile, warmScatter };
 
 const Q16 = 65536, Q24 = 16777216;
-const halo = SCATTER_HALO, L = layoutOf(tileScenery(halo)), FINE_K = fineKernel(L), FINE_RECT = fineKernel(L, true), RASTER_RECT = rasterKernel(true);
+const halo = WINDOW_HALO, L = layoutOf(tileScenery(halo, true)), FINE_K = fineKernel(L), FINE_RECT = fineKernel(L, true), RASTER_RECT = rasterKernel(true);
 
 // The streams of a window of cells and the 8 round it: a segment from each channel cell to its receiver, in metres from the window's centre with z along the face's Y (the window's own rows),
 // as scatter.ts riversOf makes them for a tile.
@@ -157,5 +157,5 @@ export function pageEdges(p: { px: number; py: number }): { xm: PageEdge; xp: Pa
 // Every kernel a window's ground and scatter run, compiling off the frames' queue; resolves when all are made.
 export function warmWindow(g: Gpu): Promise<unknown> {
   const own: [string, string][] = [[RASTER_RECT, "raster"], [FINE_RECT, "fine"], [PAGE_FINE, "pageFine"], [PAGE_MASK_K, "pageMask"], [PAGE_HEIGHTS, "pageHeights"], [PAGE_HEIGHT, "pageHeight"], [PAGE_FOLDS, "pageBlurX"], [PAGE_FOLDS, "pageBlurY"], [PAGE_FOLDS, "pageGradient"]];
-  return Promise.all([warmScatter(g, halo), ...own.concat(placeKernels).map(([src, entry]) => pipelineSoon(g, src, entry))]);
+  return Promise.all([warmScatter(g, halo, true), ...own.concat(placeKernels).map(([src, entry]) => pipelineSoon(g, src, entry))]);
 }
