@@ -5,6 +5,13 @@
 // on a face, the share of the moon's light that faces it; L_sky 2.2e-4 cd/m2 (the dark night sky, 22 mag/arcsec2, Leinert et al. 1998); rho from the palette colour's luminance [design: 0.4 of it,
 // a mid land colour 0.15 and the sea 0.05]; GAM is live.js's.
 export const NG = { moon: 0.267, star: 0.0022, sky: 2.2e-4, alb: 0.4, gam: 0.16 };
+// The sky's own light with the sun below the horizon, by its depression: the horizontal illuminance at sunset 400 lx, the end of civil twilight (6 degrees) 3.4 lx, of nautical (12) about 0.01 lx and of astronomical (18) the
+// moonless night sky's 2.2e-3 lx (Allen, Astrophysical Quantities; Janiczek and DeYoung 1987), its logarithm straight between those [design: the values between are read off that table, not measured]
+export const TWI = [400, 3.4, 0.01, NG.star];
+export const skyLux = (e) => {
+  const x = Math.min(18, Math.max(0, -e)), k = Math.min(2, Math.floor(x / 6)), t = (x - 6 * k) / 6;
+  return Math.exp(Math.log(TWI[k]) * (1 - t) + Math.log(TWI[k + 1]) * t);
+};
 const LUM = [0.3, 0.59, 0.11];
 const lum = (c) => c[0] * LUM[0] + c[1] * LUM[1] + c[2] * LUM[2];
 const smooth = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
