@@ -18,6 +18,7 @@ import { LADDER, levelOf } from "./ladder.js";
 import { SIZE, TILE_M, CELL, N as WIN_N, crownShare } from "../island.js";
 import { planetCam } from "./planet-cam.js";
 import { canopyHold } from "./canopy.js";
+import { NG, moonLux, nightShown, nightDrain, nightFloor } from "./night.js";
 
 const SIM = TILE_M, ORIGIN = -SIZE / 2, TAU = Math.PI * 2, NL = LADDER.length, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -927,9 +928,16 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   function row(out, at, s, f, l) {
     const fire = FIRE_W[l] * s.fire, dim = s.dim * (1 - Math.min(1, fire / 0.4)), sat = 1 - 0.45 * dim, pr = 1 - 0.2 * dim, pg = 1 - 0.04 * dim, pb = 1 + 0.15 * dim;
     for (let k = 0; k < 3; k++) { const m = (s.A[k] + s.K[k] * f) * s.gain[k] + FIRE[k] * fire; M[k] = m <= KNEE ? m : KNEE + (TOP - KNEE) * (1 - Math.exp(-(m - KNEE) / (TOP - KNEE))); }
+    // by night the ground shows by the moon's and the stars' light on it (night.js, as the planet pass draws it from above), as dark as the day's row and no darker
+    const nt = s.night * (1 - Math.min(1, fire / 0.4)), E = NG.star + moonLux(Math.sin(s.moon.el), s.moon.lit, f), inkL = lum(RGB[P.ink]) / 255;
     for (let c = 0; c < NCOL; c++) {
       const a = RGB[c], r = a[0] * M[0], g = a[1] * M[1], b = a[2] * M[2], y = r * 0.3 + g * 0.59 + b * 0.11;
-      out[at + c] = 0xff000000 | (clamp(Math.round((y + (b - y) * sat) * pb + 7 * dim), 0, 255) << 16) | (clamp(Math.round((y + (g - y) * sat) * pg + 3 * dim), 0, 255) << 8) | clamp(Math.round((y + (r - y) * sat) * pr + 2 * dim), 0, 255);
+      let R = (y + (r - y) * sat) * pr + 2 * dim, G = (y + (g - y) * sat) * pg + 3 * dim, B = (y + (b - y) * sat) * pb + 7 * dim;
+      if (nt > 0) {
+        const n = nightFloor(nightDrain(nightShown([a[0] / 255, a[1] / 255, a[2] / 255], E, inkL), dim), inkL);
+        R += Math.max(0, 255 * n[0] - R) * nt; G += Math.max(0, 255 * n[1] - G) * nt; B += Math.max(0, 255 * n[2] - B) * nt;
+      }
+      out[at + c] = 0xff000000 | (clamp(Math.round(B), 0, 255) << 16) | (clamp(Math.round(G), 0, 255) << 8) | clamp(Math.round(R), 0, 255);
     }
   }
   function tablesFor(s) {

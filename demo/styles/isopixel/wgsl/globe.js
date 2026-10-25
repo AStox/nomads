@@ -1,6 +1,7 @@
 import { SC } from "../../island.js";
 import { groundWGSL } from "../ground.wgsl.js";
 import { PAGE_BLOCK, PAGE_GEOM, pageGeom, pageWGSL } from "../pages.js";
+import { NG } from "../night.js";
 
 // The planet layer's picture (planet.js): each art pixel's ray crosses the shell between the unit sphere and the highest relief (land
 // stands exag times its height above the sphere, the sea is the sphere) and is marched to the surface, so a tilted view shifts a high
@@ -53,28 +54,29 @@ const g_AIR = ${ramp("ink", "w0", "w1", "w2", "w3", "w4", "w5")};
 // the width of a stream at its mean flow, m (water.ts WIDE_GRASS times the root of the flow)
 const WIDE = 3.75;
 const NIGHT_AMB: f32 = 0.1;
-// The dark side seen from above shows the ground by the light it has: starlight with airglow and the moon, against the space beside it. Radiance of a ground of albedo rho under illuminance E is rho E / pi;
-// the sky's own radiance is the dark sky's, and the display runs as the light to the power GAM (live.js exposure), so the ground shows at the ink's luminance times (rho E / (pi L_sky)) ^ GAM.
-// E: moonless clear night sky 2.2e-3 lx (Allen, Astrophysical Quantities) and the full moon at its zenith 0.267 lx (Allen; Kyba et al. 2017), by the lit share of the disc and the moon's height; L_sky 2.2e-4 cd/m2 (the dark
-// night sky, 22 mag/arcsec2, Leinert et al. 1998); rho from the palette colour's luminance [design: 0.4 of it, a mid land colour 0.15 and the sea 0.05]. It fades out with the air above the camera (u.airK): from the
-// ground the sky's glow is the ladder's own light.
-const NG_E_MOON: f32 = 0.267;
-const NG_E_STAR: f32 = 0.0022;
-const NG_L_SKY: f32 = 2.2e-4;
-const NG_ALB: f32 = 0.4;
-const NG_GAM: f32 = 0.16;
-fn nightGround(c: vec3f, p: vec3f, sd: f32, ink: vec3f) -> vec3f {
+// The night's light is one law at every zoom (night.js: starlight and the moon, radiance rho E / pi against the dark sky, shown at the ink's luminance times the ratio to the power GAM); the light tables
+// the ladder's ground and sprites are drawn through carry the same law (live.js row), here it is evaluated at the pixel's own place so the dark side shows from above too.
+const NG_E_MOON: f32 = ${lit(NG.moon)};
+const NG_E_STAR: f32 = ${lit(NG.star)};
+const NG_L_SKY: f32 = ${lit(NG.sky)};
+const NG_ALB: f32 = ${lit(NG.alb)};
+const NG_GAM: f32 = ${lit(NG.gam)};
+fn nightGround(c: vec3f, p: vec3f, sd: f32, ink: vec3f, facing: f32) -> vec3f {
   let lc = max(dot(c, vec3f(0.3, 0.59, 0.11)), 1e-3);
   let lit = 0.5 * (1.0 - dot(u.sun, u.moon));
   let m = dot(p, u.moon);
-  let E = NG_E_STAR + NG_E_MOON * lit * g_smooth(-0.017, 0.17, m) * max(m, 0.0);
+  let E = NG_E_STAR + NG_E_MOON * lit * g_smooth(-0.017, 0.17, m) * max(facing, 0.0);
   let ratio = NG_ALB * lc * E / (PI * NG_L_SKY);
   var g = c / lc * dot(ink, vec3f(0.3, 0.59, 0.11)) * pow(ratio, NG_GAM);
   // the colour as the ladder's night drains it (live.js row): less saturated, bluer
-  let w = g_smooth(-1.0, -11.0, degrees(asin(clamp(sd, -1.0, 1.0))));
+  let sun = degrees(asin(clamp(sd, -1.0, 1.0)));
+  let w = g_smooth(-1.0, -11.0, sun);
   let y = dot(g, vec3f(0.3, 0.59, 0.11));
   g = (vec3f(y) + (g - vec3f(y)) * (1.0 - 0.45 * w)) * vec3f(1.0 - 0.2 * w, 1.0 - 0.04 * w, 1.0 + 0.15 * w);
-  return g;
+  // never darker than the sky beside it, by luminance so the colour keeps its hue
+  let yn = dot(g, vec3f(0.3, 0.59, 0.11));
+  let yi = dot(ink, vec3f(0.3, 0.59, 0.11));
+  return g * max(1.0, yi / max(yn, 1e-6));
 }
 
 struct U {
@@ -796,6 +798,7 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   gForm = 0.0;
   var facing = sd;
   var slopeFacing = sd;
+  var moonFacing = dot(p, u.moon);
   // where the window's own light lights the pixel (the ground inside the fine pages), its level and occlusion
   var isLit = false;
   var litRow = 0u;
@@ -839,7 +842,10 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
       hU = fineLayer(0, bcell);
     }
     var sl = clamp(-4.4 * u.relief * dot(gradU, toSun), 0.0, 2.0);
-    slopeFacing = dot(normalize(p - u.relief * gradU), u.sun);
+    // the key light's share on the slope: the sun's, the moon's once the sun is down (as the tables' key light is), so the relief is lit by the moon at night in the tiers and the fine pages alike
+    let nSl = normalize(p - u.relief * gradU);
+    moonFacing = dot(nSl, u.moon);
+    slopeFacing = mix(dot(nSl, u.sun), moonFacing, u.moonMix);
     // the painter's sample: the cells at the pixel, in the metres of the noise's frame (the equiangular map stretches a metre of ground by sc here)
     gCm = u.radiusM * da;
     gCm5 = u.radiusM * (PI / 2.0) / FN;
@@ -890,7 +896,11 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   // never darker than the space beside it, the ground's own light at night over it
   let ink = PAL[g_AIR[0]];
   let lit0 = unpack4x8unorm(lutT[row * NC + idx]).rgb * ambK * select(vec3f(1.0), aoMul(litAo, row), isLit);
-  o_.color = vec4f(max(max(lit0, ink), nightGround(ground, p, sd, ink) * u.airK), 1.0);
+  // the night's law at this place (night.js) joins the tables' as the sun goes down (live.js s.night); where the window's own light lies (isLit) the tables carry it, the camera's place being this one
+  let nw = select(g_smooth(1.0, -8.0, degrees(asin(clamp(sd, -1.0, 1.0)))), 0.0, isLit);
+  var shown = max(lit0, ink);
+  if (nw > 0.0) { shown = mix(shown, max(lit0, nightGround(ground, p, sd, ink, moonFacing)), nw); }
+  o_.color = vec4f(shown, 1.0);
   return o_;
 }
 `;
