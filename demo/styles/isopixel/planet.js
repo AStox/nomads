@@ -66,6 +66,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       { binding: 16, visibility: F, buffer: { type: "read-only-storage" } },
       { binding: 17, visibility: F, buffer: { type: "read-only-storage" } },
       { binding: 18, visibility: F, buffer: { type: "read-only-storage" } },
+      { binding: 19, visibility: F, buffer: { type: "read-only-storage" } },
     ],
   });
   const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
@@ -125,6 +126,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
         { binding: 16, resource: { buffer: ptabB } },
         { binding: 17, resource: { buffer: streams } },
         { binding: 18, resource: { buffer: bins } },
+        { binding: 19, resource: { buffer: pyramid.topB } },
       ],
     });
     return r.bind;

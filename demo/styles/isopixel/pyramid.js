@@ -65,6 +65,31 @@ export function haloHeights(across, planeAt, t, f, tx, ty) {
   return out;
 }
 
+// the block maxima of a tile's halo'd heights (haloHeights): BLK cells a block, block b of an edge reaching over the halo, dilated by one block each way inside the tile, the tile's maximum last
+const BLK = 16, NB = TILE / BLK, TOPS = NB * NB + 16;
+function blockTops(H) {
+  const m = new Float32Array(NB * NB).fill(-Infinity), out = new Float32Array(TOPS);
+  for (let by = 0; by < NB; by++) {
+    const y0 = by === 0 ? 0 : by * BLK + HALO, y1 = by === NB - 1 ? HS : by * BLK + BLK + HALO;
+    for (let bx = 0; bx < NB; bx++) {
+      const x0 = bx === 0 ? 0 : bx * BLK + HALO, x1 = bx === NB - 1 ? HS : bx * BLK + BLK + HALO;
+      let top = -Infinity;
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (H[y * HS + x] > top) top = H[y * HS + x];
+      m[by * NB + bx] = top;
+    }
+  }
+  let all = -Infinity;
+  for (let by = 0; by < NB; by++)
+    for (let bx = 0; bx < NB; bx++) {
+      let top = -Infinity;
+      for (let j = Math.max(0, by - 1); j <= Math.min(NB - 1, by + 1); j++) for (let i = Math.max(0, bx - 1); i <= Math.min(NB - 1, bx + 1); i++) if (m[j * NB + i] > top) top = m[j * NB + i];
+      out[by * NB + bx] = top;
+      if (m[by * NB + bx] > all) all = m[by * NB + bx];
+    }
+  out[NB * NB] = all;
+  return out;
+}
+
 // info: the manifest (tiers, the faces that have tiles, where they are); across: the grid's cellAcross for a face of n cells; slots: the
 // atlas layers (each 1 MB of fields and 0.27 MB of heights) [design: 192, a screen's tiles at three tiers and the cache for a pan]
 export async function openPyramid({ device, base, tiers, faces, across: cellAcross, slots = 192, inflight = 6 }) {
@@ -133,7 +158,13 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
     }
     return [...out];
   }
-  const upHeights = (slot, data) => device.queue.writeTexture({ texture: heightsT, origin: [0, 0, slot] }, data, { bytesPerRow: HS * 4, rowsPerImage: HS }, [HS, HS, 1]);
+  // the ray march's skip bound (wgsl/globe.js, planet.js binding 19): per slot TOPS floats, the highest cell in metres of each 16 by 16 cell block of the tile as held (edge blocks reach over the halo), taken over the
+  // block and its eight neighbours inside the tile, then the whole tile's highest cell (halo too) at index 256; a march that stays above it over a block's reach cannot meet a cell the block's heights read
+  const topB = device.createBuffer({ size: slots * TOPS * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, label: "pyramid tops" });
+  const upHeights = (slot, data) => {
+    device.queue.writeTexture({ texture: heightsT, origin: [0, 0, slot] }, data, { bytesPerRow: HS * 4, rowsPerImage: HS }, [HS, HS, 1]);
+    device.queue.writeBuffer(topB, slot * TOPS * 4, blockTops(data));
+  };
   // a tile's heights with the halo from what is held now
   function heightsOf(i) {
     const { t, f, tx, ty } = tileOf(i);
@@ -208,7 +239,7 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
   flush();
 
   return {
-    fieldsT, heightsT, tableB, tiers, stats, get version() { return version; }, held: () => slotOf.size, flying: () => flying.size,
+    fieldsT, heightsT, topB, tableB, tiers, stats, get version() { return version; }, held: () => slotOf.size, flying: () => flying.size,
     // The highest cell, in metres, of the held tiles among `list` ([{ t, f, tx, ty }], as want takes them), and how many of them are not held, and the highest of each tier's (byTier[t]): { top, missing, byTier }. A held tile's cells are the values the
     // planet pass reads there (a coarse tier's are its children's means, so its top is under what its children hold: a bound for a view is taken over the tiles the view reads, at the tiers it reads
     // them, and the caller adds the margin the spline's reach across a tile's edge needs). top is -Infinity when none is held.

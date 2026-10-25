@@ -120,6 +120,7 @@ struct U {
 @group(0) @binding(17) var<storage, read> gStreams: array<f32>;      // the window's streams and their bins (the ladder's, ground.wgsl.js g_streamAt)
 @group(0) @binding(18) var<storage, read> gStreamBins: array<u32>;
 @group(0) @binding(16) var<storage, read> ptab: array<i32>; // the block's table: a slot for each of its pages, row by row from the north, or -1 where there is none
+@group(0) @binding(19) var<storage, read> gTop: array<f32>; // pyramid.js topB: per atlas layer the highest cell of each block of 16 cells (with its neighbours), then of the tile
 fn pgOn() -> bool { return u.bw.x != 0; }
 fn pgTab(k: u32) -> i32 { return ptab[k]; }
 ${pageWGSL({ n: PAGE_BLOCK })}
@@ -554,6 +555,54 @@ fn below(t: f32, rd: vec3f) -> bool {
   let w = gOff + t * rd;
   return radial(w) <= lift(normalize(u.T + w));
 }
+// What a sample of the march learns beyond whether it is under the ground: safe, the distance along the ray past t over which it provably stays above every cell the surface can read there, so the
+// samples inside it need not be taken (the picture is the one the full march draws). Two bounds, the larger kept: the block of 16 cells the sample lies in with its eight neighbours (gTop, pyramid.js),
+// and the whole tile. Over a stretch d the ray's height above the sphere falls by at most -s d (|x| is convex along a line, so its tangent at t lies under it: s = x.rd / |x|), and its direction
+// turns by at most c d, c = |x cross rd| (the rate is c / |x|^2 and |x| >= 1 while the ray is above the ground); the unit point's equiangular coordinates move by at most that over the map's least
+// stretch, SIGMA_MIN = 2/3 [derived: the smallest singular value of the equiangular cube map's Jacobian, at a face's corners; maximum 1.155], a cell is (pi/2) / cells of an angle, and the stretch
+// is held to the cells the bound covers (REACH_CUT of a cell less, for the float error of the face fractions) [design]. MARGIN is the float error of the heights and the radial height [design]
+const SIGMA_MIN: f32 = 0.6666667;
+const REACH_CUT: f32 = 0.5;
+const MARGIN: f32 = 1.0e-6;
+const TOPS = 272u;
+struct Probe { under: bool, safe: f32 }
+fn probe(t: f32, rd: vec3f) -> Probe {
+  let w = gOff + t * rd;
+  let x = u.T + w;
+  let xl = length(x);
+  let rr = radial(w);
+  let c = faceOf(x / xl);
+  let tl = tileAt(c.f, c.fx, c.fy, gMarch);
+  if (tl.slot == NONE) { return Probe(rr <= 0.0, 0.0); }
+  let k = u.exag / u.radiusM;
+  let h = max(hBil(tl), 0.0) * k;
+  var pr = Probe(rr <= h, 0.0);
+  if (pr.under) { return pr; }
+  let s = dot(x, rd) / xl;
+  let turn = length(cross(x, rd));
+  let bx = min(u32(max(tl.lx, 0.0)) >> 4u, 15u);
+  let by = min(u32(max(tl.ly, 0.0)) >> 4u, 15u);
+  let base = tl.slot * TOPS;
+  let cellRad = (PI / 2.0) / tl.cells;
+  // the block's reach in cells (the cells its dilated bound covers and the sample's reads stay inside), then the whole tile's
+  let lo = vec2f(select(0.0, f32(bx) * 16.0 - 15.5, bx > 0u), select(0.0, f32(by) * 16.0 - 15.5, by > 0u));
+  let hi = vec2f(select(256.0, f32(bx) * 16.0 + 31.5, bx < 14u), select(256.0, f32(by) * 16.0 + 31.5, by < 14u));
+  let p = vec2f(tl.lx, tl.ly);
+  let rBlk = min(min(p.x - lo.x, p.y - lo.y), min(hi.x - p.x, hi.y - p.y));
+  let rTile = min(min(p.x, p.y), min(256.0 - p.x, 256.0 - p.y));
+  var best = 0.0;
+  for (var l = 0; l < 2; l++) {
+    let top = max(gTop[base + select(256u, by * 16u + bx, l == 0)], 0.0) * k;
+    let r = select(rTile, rBlk, l == 0) - REACH_CUT;
+    let gap = rr - top - MARGIN;
+    if (gap <= 0.0 || r <= 0.0) { continue; }
+    let dv = select(1.0e9, gap / (-s), s < 0.0);
+    let dh = r * SIGMA_MIN * cellRad / max(turn, 1.0e-9);
+    best = max(best, min(dv, dh));
+  }
+  pr.safe = best;
+  return pr;
+}
 
 // ---------- the window's light (the ladder's shade pass lightAt, for the ground under no sprite) ----------
 fn lgBil(t: texture_2d<f32>, n: f32, p: vec2f) -> f32 {
@@ -671,9 +720,14 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   var tHit = tEnd;
   var hit = sea;
   var tp = tIn;
-  for (var k = 1; k <= n; k++) {
+  let dtk = (tEnd - tIn) / f32(n);
+  // the samples are at fixed places along the shell; those inside a sample's safe distance (probe) are known to be above the ground and are not taken, so the first one under it is the one the full march finds
+  var k = 1;
+  loop {
+    if (k > n) { break; }
     let t = mix(tIn, tEnd, f32(k) / f32(n));
-    if (below(t, rd)) {
+    let pr = probe(t, rd);
+    if (pr.under) {
       var lo = tp;
       var hi = t;
       for (var j = 0; j < 6; j++) {
@@ -684,7 +738,9 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
       hit = true;
       break;
     }
-    tp = t;
+    let skip = i32(min(floor(pr.safe / max(dtk, 1.0e-12)), 64.0));
+    tp = mix(tIn, tEnd, f32(k + skip) / f32(n));
+    k += skip + 1;
   }
   if (!hit) { o_.color = vec4f(PAL[spaceIdx(rd, b)], 1.0); return o_; }
   let p = normalize(u.T + gOff + tHit * rd);
