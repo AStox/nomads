@@ -10,6 +10,7 @@ import { CNT, FLAG, FLOW_NEIGHBOURS, HIST, RF, SOLVE_SWEEPS, SPLIT, XSTRIDE, reg
 import { EDGES, FACES, areaSr, haloSource, tierGrid, type Grid } from "./grid";
 import { SKIN_M, defaultParams, kWord, neighbourTables, rainWord, REF_RAIN_MMYR, type ErosionParams } from "./erosion";
 import { THRESHOLD_DEG } from "../../terrain/geology";
+import { nucleate } from "./nucleation";
 import { packRecord, unpackRecord, ROCK_OF, type Planet, type PlanetStore } from "./window";
 
 // ---------- 1. the settings ----------
@@ -133,7 +134,7 @@ function children2(parent: ArrayLike<number>, from: number, out: Float64Array, a
 // A field at tier `from` (1/256 m) carried to the next tier: the bilinear children, then what is left of each parent's height (its height less the children's mean) is carried
 // down the same way, `passes` times, so that the children's means come to the parents' without a constant to a block (a constant is a step of up to 100 m at the block's
 // edge on a range: measured); the last whole-unit constant, which is then under a unit, makes the children of every cell sum to 4 times its height exactly [design, R1761].
-export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4): Int32Array {
+export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4, nucSigmaM = 0): Int32Array {
   const n = CELLS0 << (2 * from), c = new Float64Array(4 * n), out = new Int32Array(4 * n), fnp = 256 << from, fn = fnp * 2, cells = fnp * fnp;
   if (parent.length !== n) throw new Error(`refineSmooth: tier ${from} holds ${n} cells, got ${parent.length}`);
   children2(parent, from, c, false);
@@ -152,7 +153,9 @@ export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4
       for (let X = 0; X < fnp; X++) {
         const p = f * cells + Y * fnp + X, o = (f * fn + 2 * Y) * fn + 2 * X, v = [Math.round(c[o]), Math.round(c[o + 1]), Math.round(c[o + fn]), Math.round(c[o + fn + 1])];
         const d = Math.round(parent[p] * 4) - (v[0] + v[1] + v[2] + v[3]), base4 = Math.floor(d / 4), rem = d - base4 * 4;
-        out[o] = v[0] + base4 + (0 < rem ? 1 : 0); out[o + 1] = v[1] + base4 + (1 < rem ? 1 : 0); out[o + fn] = v[2] + base4 + (2 < rem ? 1 : 0); out[o + fn + 1] = v[3] + base4 + (3 < rem ? 1 : 0);
+        let w4 = [v[0] + base4 + (0 < rem ? 1 : 0), v[1] + base4 + (1 < rem ? 1 : 0), v[2] + base4 + (2 < rem ? 1 : 0), v[3] + base4 + (3 < rem ? 1 : 0)];
+        if (nucSigmaM > 0) w4 = nucleate(w4, [o, o + 1, o + fn, o + fn + 1], from + 1, nucSigmaM);
+        out[o] = w4[0]; out[o + 1] = w4[1]; out[o + fn] = w4[2]; out[o + fn + 1] = w4[3];
       }
   return out;
 }
