@@ -1364,6 +1364,12 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the last frame's sky (skyFor): sun and moon ({ dir, el in radians; the moon's phase and lit share }), e: the sun's
     // elevation in degrees, cloud: the cover it is lit under, 0 to 1
     sky: () => homeSky,
+    // the local solar time at a place (hours 0 to 24, noon when the sun is over its meridian): the planet has one sun point (skyVec), so a place's hour angle is its longitude less the sun's own, the clock's hour being the home island's
+    solarHour: (geo) => {
+      if (!PLACE || !homeSky) return null;
+      const s = skyVec(homeSky.sun);
+      return ((12 + ((geo.lon * D2R - Math.atan2(s[1], s[0])) * 12) / Math.PI) % 24 + 24) % 24;
+    },
     // the frames the worker finished since the last call: { id, latency (ms from sent to done), gpu, cpu (ms), at (when
     // the page heard it was done), passes (each pass's GPU ms) }
     frameTimes: () => frameMs.splice(0),

@@ -508,7 +508,7 @@ async function main() {
     next: () => next(), paths: () => { view.path = view.path === false; },
   };
   // ---------- the readout: where the camera is, how far in, how big the ground is, which way north lies, and the hour (with no sim it sets the light only) ----------
-  const hud = document.getElementById("hud"), hudOf = (s) => hud.querySelector(s), hourIn = hudOf("input"), hourV = hudOf(".hour-v"), northEl = hudOf(".north span"), scaleEl = hudOf("i.scale"), scaleLabel = hudOf(".scale-label");
+  const hud = document.getElementById("hud"), hudOf = (s) => hud.querySelector(s), hourIn = hudOf("input"), hourV = hudOf(".hour-v"), solarEl = hudOf(".solar"), northEl = hudOf(".north span"), scaleEl = hudOf("i.scale"), scaleLabel = hudOf(".scale-label");
   let hour = num("hour", 13, 0, 24), hudKey = "";
   const hourText = (h) => `${String(Math.floor(h) % 24).padStart(2, "0")}:${String(Math.floor((h % 1) * 60)).padStart(2, "0")}`;
   const setHour = (h) => { hour = ((h % 24) + 24) % 24; if (!sim) live.setClock({ hour }); };
@@ -523,13 +523,14 @@ async function main() {
     const m = niceM(mpp * 100), px = Math.round(m / mpp), north = live.northAngle(view);
     const pos = `${Math.abs(g.lat).toFixed(2)}\u00b0 ${g.lat < 0 ? "S" : "N"}  ${Math.abs(g.lon).toFixed(2)}\u00b0 ${g.lon < 0 ? "W" : "E"}`, zoom = `zoom ${view.zoom.toFixed(2)}`, label = m >= 1000 ? `${m / 1000} km` : `${m} m`;
     hud.hidden = false;
-    const key = `${pos}|${zoom}|${label}|${px}|${Math.round(north)}|${Math.round(hour * 4)}`;
+    const solar = live.solarHour(g), solarMin = solar == null ? "" : Math.floor(solar * 60);
+    const key = `${pos}|${zoom}|${label}|${px}|${Math.round(north)}|${Math.round(hour * 4)}|${solarMin}`;
     if (key === hudKey) return;
     hudKey = key;
     hudOf(".pos").textContent = pos; hudOf(".zoom").textContent = zoom;
     scaleEl.style.width = `${px}px`; scaleLabel.textContent = label;
     northEl.style.display = "inline-block"; northEl.style.transform = `rotate(${north.toFixed(1)}deg)`;
-    if (!sim) { hourIn.value = String(hour); hourV.textContent = hourText(hour); }
+    if (!sim) { hourIn.value = String(hour); hourV.textContent = hourText(hour); solarEl.textContent = solar == null ? "" : `sun ${hourText(solar)}`; }
   }
   for (const b of pad.querySelectorAll("button")) if (!sim && ["pause", "slower", "faster", "next", "paths"].includes(b.dataset.act)) b.hidden = true;
   window.addEventListener("keydown", (e) => {
