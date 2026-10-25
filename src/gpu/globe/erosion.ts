@@ -21,6 +21,7 @@ import { FLD, PHYS } from "../wgsl/globe-tectonics";
 import { EDGES, FACES, GlobeGpu, centre, cellId, fieldWords, haloSource, haloTwin, meanAreaM2, tileCount, wordAt, type Grid, type Tables } from "./grid";
 import { Tectonics, cellAreas, extTables, startingState, type Setup } from "./tectonics";
 import { similarityOf } from "./similarity";
+import { philox } from "../rand";
 
 export { CAP_FACTOR, EF, FLAG, PR };
 
@@ -38,6 +39,7 @@ export interface ErosionParams {
   shelfSlope: number;
   ringMax: number;
   relief: boolean; // landscape-scale denudation by local relief (MONTGOMERY_BRANDON), on or off
+  draw: boolean; // the receiver drawn among the lower neighbours by the fall over the distance, anew each substep (wgsl `recv`), not the steepest
 }
 
 // Erodibility for the stream power law at m = 1/2, n = 1, drainage area in m2 (K in 1/yr), as terrain/geology.ts holds it [cited R523: Stock
@@ -94,14 +96,14 @@ export const SUBSTEP_YR = 5e5;
 // every planet (R1776 to R1778, amended by Unit 4c); the reach is 96 rings of the reference planet's 12.27 km cells, 1,178 km, which is that many times more rings of this planet's smaller
 // cells. The stream power law's K carries no length, the relief law's window (10 km, R1689) is Earth's.
 export function erosionFor(radius: number): Partial<ErosionParams> {
-  const sim = similarityOf(radius);
-  if (!sim.similar) return {};
-  return { ringMax: Math.max(1, Math.round(RING_MAX * sim.cells)) };
+  const sim = similarityOf(radius), draw = process.env.NOMADS_TIER0_DRAW === "1" ? { draw: true } : {};
+  if (!sim.similar) return draw;
+  return { ringMax: Math.max(1, Math.round(RING_MAX * sim.cells)), ...draw };
 }
 export const defaultParams = (over: Partial<ErosionParams> = {}): ErosionParams => ({
   dtYr: SUBSTEP_YR, n: 1,
   K: [K_GRANITE, K_SANDSTONE, K_GRANITE, K_GRANITE, K_VOLCANIC],
-  refRainMmYr: REF_RAIN_MMYR, skinM: SKIN_M, dissolved: DISSOLVED, G: DEPOSITION_G, creepLand: CREEP_LAND, creepSea: CREEP_SEA, shelfSlope: SHELF_SLOPE, ringMax: RING_MAX, relief: true,
+  refRainMmYr: REF_RAIN_MMYR, skinM: SKIN_M, dissolved: DISSOLVED, G: DEPOSITION_G, creepLand: CREEP_LAND, creepSea: CREEP_SEA, shelfSlope: SHELF_SLOPE, ringMax: RING_MAX, relief: true, draw: false,
   ...over,
 });
 
@@ -111,6 +113,7 @@ export function erosionWords(g: Grid, set: Setup, p: ErosionParams): Uint32Array
   const w = new Uint32Array(64), a0 = meanAreaM2(g), sea = Math.round(set.params.seaLevel * 16);
   w[0] = g.tiles; w[1] = g.fn; w[2] = tileCount(g);
   w[PR.sea16] = sea >>> 0; w[PR.eps] = 1; w[PR.ringMax] = p.ringMax; w[PR.diss16] = Math.round(p.dissolved * 65536); w[PR.g8] = Math.round(p.G * 256);
+  w[PR.draw] = p.draw ? 1 : 0; w[PR.drawSeed] = set.params.seed >>> 0;
   w[PR.nExp] = p.n; w[PR.skin] = p.skinM; w[PR.shelf] = Math.round(p.shelfSlope * Math.sqrt(a0) * 256);
   for (let k = 0; k < 5; k++) w[PR.kc + k] = kWord(g, p, p.K[k]);
   if (p.relief) {
@@ -188,6 +191,7 @@ export class Erosion {
   private base: Uint32Array = new Uint32Array(64);
   p: ErosionParams;
   lastRounds = 64;
+  drawKey = 0; // the number of the substep, which keys the receivers' draw when `p.draw` is on
   // S: the tectonics state (FLD fields in the padded layout), which erosion reads and changes.
   constructor(readonly gpu: Gpu, readonly set: Setup, ext: { tab: Tables; T: Int32Array }, readonly S: GPUBuffer, p: Partial<ErosionParams> = {}) {
     this.g = set.grid; this.N = FACES * this.g.fn * this.g.fn;
@@ -263,7 +267,7 @@ export class Erosion {
     }
     this.lastRounds = rounds - chunk;
     this.begin();
-    this.rec("recv"); this.rec("lvinit");
+    this.rec("recv", { [PR.drawKey]: this.drawKey }); this.rec("lvinit");
     for (let r = 0; r < 7; r++) { this.rec("jumpa"); this.rec("jumpb"); }
     this.rec("lvhist"); this.rec("lvscan", {}, 1); this.rec("lvscatter"); this.rec("area", {}, 1);
     this.submit();
@@ -378,6 +382,7 @@ export class Twin {
   readonly words: Uint32Array;
   readonly sea16: number;
   readonly phith: Int32Array;
+  drawKey = 0;
   constructor(readonly set: Setup, readonly ext: { tab: Tables; T: Int32Array }, readonly p: ErosionParams) {
     const g = set.grid;
     this.N = FACES * g.fn * g.fn; this.fw = fieldWords(g);
@@ -436,7 +441,8 @@ export class Twin {
     for (let k = 0; k < N; k++) {
       to[k] = k;
       if (H[k] <= 0) continue;
-      let best = 0n;
+      let best = 0n, total = 0;
+      const share = [0, 0, 0, 0, 0, 0, 0, 0];
       for (let d = 0; d < 8; d++) {
         const j = this.nb[k * 8 + d];
         if (j === NONE) continue;
@@ -444,6 +450,15 @@ export class Twin {
         if (dz <= 0) continue;
         const key = BigInt(dz) * BigInt(this.invd[k * 8 + d]);
         if (key > best) { best = key; to[k] = j; rd[k] = this.invd[k * 8 + d]; }
+        share[d] = Math.max(1, Math.min(Number((key >> 16n) & M32), 0x0fffffff)); total += share[d];
+      }
+      if (this.p.draw && total > 0) {
+        const r = philox([k, this.drawKey, 0, 0x54305256], [this.set.params.seed >>> 0, 0x524f5554])[0] % total;
+        let acc = 0;
+        for (let d = 0; d < 8; d++) {
+          acc += share[d];
+          if (share[d] !== 0 && r < acc) { to[k] = this.nb[k * 8 + d]; rd[k] = this.invd[k * 8 + d]; break; }
+        }
       }
     }
     return { to, rd };
@@ -746,6 +761,7 @@ export async function runChain(gpu: Gpu, set: Setup, o: ChainOptions, from?: Ret
           er.setRain(rain); nextRain = t + o.rainEveryMy;
         }
         for (let q = 0; q < o.substeps; q++) {
+          er.drawKey = s * o.substeps + q;
           const r = await er.substep(true, removedV ? async () => { const [rv, ad] = await Promise.all([er.readE(EF.RV), er.readE(EF.AD)]); for (let i = 0; i < N; i++) { removedV[i] += rv[i] >>> 0; depositedV![i] += ad[i] >>> 0; } } : undefined);
           rounds = Math.max(rounds, r.rounds);
           total.removed += r.ledger!.removed; total.deposited += r.ledger!.deposited; total.dissolved += r.ledger!.dissolved;
@@ -759,12 +775,14 @@ export async function runChain(gpu: Gpu, set: Setup, o: ChainOptions, from?: Ret
     const quietFirst = r0 ? r0.quiet : 0;
     for (let q = quietFirst; q < quiet; q++) {
       if ((q > quietFirst || first >= set.steps) && late()) return await stop(set.steps, q);
+      er.drawKey = set.steps * o.substeps + q;
       const r = await er.substep(true, removedV ? async () => { const [rv, ad] = await Promise.all([er.readE(EF.RV), er.readE(EF.AD)]); for (let i = 0; i < N; i++) { removedV[i] += rv[i] >>> 0; depositedV![i] += ad[i] >>> 0; } } : undefined);
       rounds = Math.max(rounds, r.rounds);
       total.removed += r.ledger!.removed; total.deposited += r.ledger!.deposited; total.dissolved += r.ledger!.dissolved;
     }
     tec.elevate();
     const S = await tec.read();
+    er.drawKey = set.steps * o.substeps + quiet;
     er.heights(); await er.flow();
     return { S, ledger: total, carry: await er.carry(), removedV, depositedV, rain, flow: await er.readFlow(), rounds, seconds: (performance.now() - t0) / 1000 };
   } finally {

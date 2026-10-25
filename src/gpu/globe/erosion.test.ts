@@ -152,6 +152,33 @@ test("the kernels equal their TypeScript twins over three substeps, word for wor
   er.release(); tec.release();
 });
 
+test("with the receivers drawn among the lower neighbours the kernels equal their twin, the draw is a forest and differs from the steepest", async () => {
+  const { set, e, gpu, tec, S } = await planet();
+  const er = new Erosion(gpu, set, e, tec.S, { draw: true }), tw = new Twin(set, e, er.p), N = er.N;
+  const rain = Float32Array.from({ length: N }, (_, i) => 200 + ((i * 7919) % 1800));
+  er.setRain(rain);
+  const rho = Uint32Array.from(rain, (v) => rainWord(v, er.p.refRainMmYr)), carry = new BigUint64Array(N), St = Int32Array.from(S);
+  let differs = 0;
+  for (let step = 0; step < 2; step++) {
+    er.drawKey = tw.drawKey = step;
+    er.heights(); await er.flow();
+    const to = await er.readE(EF.TO), fl = await er.readFlooded(), H = await er.readE(EF.H);
+    for (let k = 0; k < N; k++) if (H[k] > 0 && to[k] !== k) expect(fl[to[k]]).toBeLessThan(fl[k]);
+    const steepest = new Twin(set, e, { ...er.p, draw: false }).receivers(Int32Array.from(H), fl).to;
+    for (let k = 0; k < N; k++) if (to[k] !== steepest[k]) differs++;
+    er.erode(); er.apply();
+    const r = tw.erode(St, rho, carry);
+    for (const [name, field, want] of [["TO", EF.TO, r.to], ["RD", EF.RD, r.rd], ["ACC", EF.ACC, r.acc], ["ER", EF.ER, r.er]] as const) {
+      const got = await er.readE(field);
+      let bad = 0;
+      for (let i = 0; i < N; i++) if (got[i] !== (want[i] | 0)) bad++;
+      expect(`${name} ${bad}`).toBe(`${name} 0`);
+    }
+  }
+  expect(differs).toBeGreaterThan(1000);
+  er.release(); tec.release();
+});
+
 test("creep and the sea floor's diffusion: the grid's flux as whole volume units, limited by what the giver can spare, equals its twin and conserves to the unit", async () => {
   const { set, e, gpu, tec, S } = await planet();
   const er = new Erosion(gpu, set, e, tec.S, { creepLand: 1e5, creepSea: 1e5 }), tw = new Twin(set, e, er.p), N = er.N;

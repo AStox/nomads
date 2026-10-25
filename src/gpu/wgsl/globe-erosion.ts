@@ -29,6 +29,7 @@
 // the mean cell), 62,400 m3 on the mean cell; the discharge area ACC is in 1/512 of a mean cell at the reference rain (u32);
 // the inverse distance to a neighbour RD is Q28 of 1/m; sediment fluxes are two words (lo, hi) of volume units.
 import { SHIFT, TAB, globeWgsl } from "./globe-grid";
+import { PHILOX } from "./rand";
 import { PHYS } from "./globe-tectonics";
 
 // Fields of E (flat cells).
@@ -45,6 +46,7 @@ export const MAXD = 16382; // the deepest flow path the counting sort holds, in 
 // Parameter words (P, u32).
 export const PR = {
   sea16: 16, eps: 17, ringMax: 18, ring: 19, diss16: 20, g8: 21, upl: 22, kconst: 23, shelf: 24, nExp: 25, foLand: 26, foSea: 27, skin: 28, kc: 30, rc: 36, kdt: 37, e0: 38, // kc: five words from kc; rc, kdt, e0: the relief law (see `relief`)
+  draw: 40, drawKey: 41, drawSeed: 42, // draw: 0 steepest descent, 1 the receiver drawn among the lower neighbours (see `recv`); the substep's number and the planet's seed key the draw
 } as const;
 
 // A layer of sediment laid on the water-loaded crust raises the surface by (rho_m - rho_s) / (rho_m - rho_w) of its thickness, 800 / 2300 [derived,
@@ -78,6 +80,7 @@ const VOL_MAX = ${2 ** 28}u;
 const CAPF = ${CAP_FACTOR_Q16}u;
 const P_SEA = ${PR.sea16}u; const P_EPS = ${PR.eps}u; const P_RINGMAX = ${PR.ringMax}u; const P_RING = ${PR.ring}u; const P_DISS = ${PR.diss16}u; const P_G = ${PR.g8}u;
 const P_UPL = ${PR.upl}u; const P_KCONST = ${PR.kconst}u; const P_SHELF = ${PR.shelf}u; const P_NEXP = ${PR.nExp}u; const P_FOL = ${PR.foLand}u; const P_FOS = ${PR.foSea}u;
+const P_DRAW = ${PR.draw}u; const P_DRAWKEY = ${PR.drawKey}u; const P_DRAWSEED = ${PR.drawSeed}u;
 const P_SKIN = ${PR.skin}u; const P_KC = ${PR.kc}u; const P_RC = ${PR.rc}u; const P_KDT = ${PR.kdt}u; const P_E0 = ${PR.e0}u;
 
 fn touch() {
@@ -215,6 +218,10 @@ fn flood(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
 }
 
 // ---- receivers: steepest descent on the flooded surface, the ocean ending every river ----
+// With P[P_DRAW] set the receiver is instead drawn among the lower neighbours with the probability proportional to the fall to each over its distance, anew each substep: steepest
+// descent sends water down any slope within 22.5 degrees of a lattice direction along that direction (Fairfield and Leymarie 1991, Tarboton 1997), so on a planar ramp it carves
+// straight valleys on the lattice. Every lower neighbour is a valid receiver, so the forest stays a forest; the draw is a Philox word of the cell's id, the substep and the seed.
+${PHILOX}
 @compute @workgroup_size(256)
 fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
@@ -223,6 +230,7 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   var to = k; var rd = 0u; var best = vec2u(0u, 0u);
   if (is_land(k)) {
     let f = at_load(A_FL, k);
+    var share = array<u32, 8>(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u); var total = 0u;
     for (var d = 0u; d < 8u; d++) {
       let j = nbr8(k, d);
       if (j == NONE) { continue; }
@@ -230,6 +238,15 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
       if (dz <= 0i) { continue; }
       let key = mul64(u32(dz), invd8(k, d));
       if (lt64(best, key)) { best = key; to = j; rd = invd8(k, d); }
+      share[d] = max(1u, min(shr64(key, 16u).x, 0x0fffffffu)); total += share[d];
+    }
+    if (P[P_DRAW] != 0u && total > 0u) {
+      let r = philox(vec4u(k, P[P_DRAWKEY], 0u, 0x54305256u), vec2u(P[P_DRAWSEED], 0x524f5554u)).x % total;
+      var acc = 0u;
+      for (var d = 0u; d < 8u; d++) {
+        acc += share[d];
+        if (share[d] != 0u && r < acc) { to = nbr8(k, d); rd = invd8(k, d); break; }
+      }
     }
   }
   e_setu(E_TO, k, to);
