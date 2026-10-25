@@ -18,7 +18,7 @@ import { LADDER, levelOf } from "./ladder.js";
 import { SIZE, TILE_M, CELL, N as WIN_N, crownShare } from "../island.js";
 import { planetCam } from "./planet-cam.js";
 import { canopyHold } from "./canopy.js";
-import { moonLux, skyLux, nightShown, nightDrain, nightFloor } from "./night.js";
+import { moonLux, skyLux, nightShown, nightDrain } from "./night.js";
 
 const SIM = TILE_M, ORIGIN = -SIZE / 2, TAU = Math.PI * 2, NL = LADDER.length, NB = 8;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -975,7 +975,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       const a = RGB[c], r = a[0] * M[0], g = a[1] * M[1], b = a[2] * M[2], y = r * 0.3 + g * 0.59 + b * 0.11;
       let R = (y + (r - y) * sat) * pr + 2 * dim, G = (y + (g - y) * sat) * pg + 3 * dim, B = (y + (b - y) * sat) * pb + 7 * dim;
       if (nt > 0) {
-        const n = nightFloor(nightDrain(nightShown([a[0] / 255, a[1] / 255, a[2] / 255], E, inkL), dim), inkL);
+        const n = nightDrain(nightShown([a[0] / 255, a[1] / 255, a[2] / 255], E, inkL), dim);
         R += Math.max(0, 255 * n[0] - R) * nt; G += Math.max(0, 255 * n[1] - G) * nt; B += Math.max(0, 255 * n[2] - B) * nt;
       }
       out[at + c] = 0xff000000 | (clamp(Math.round(B), 0, 255) << 16) | (clamp(Math.round(G), 0, 255) << 8) | clamp(Math.round(R), 0, 255);

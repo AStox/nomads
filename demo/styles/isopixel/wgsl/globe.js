@@ -80,10 +80,7 @@ fn nightGround(c: vec3f, p: vec3f, sd: f32, ink: vec3f, facing: f32) -> vec3f {
   let w = g_smooth(-1.0, -11.0, sun);
   let y = dot(g, vec3f(0.3, 0.59, 0.11));
   g = (vec3f(y) + (g - vec3f(y)) * (1.0 - 0.45 * w)) * vec3f(1.0 - 0.2 * w, 1.0 - 0.04 * w, 1.0 + 0.15 * w);
-  // never darker than the sky beside it, by luminance so the colour keeps its hue
-  let yn = dot(g, vec3f(0.3, 0.59, 0.11));
-  let yi = dot(ink, vec3f(0.3, 0.59, 0.11));
-  return g * max(1.0, yi / max(yn, 1e-6));
+  return g;
 }
 
 struct U {
@@ -926,12 +923,13 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   let ambK = max(min(1.0, ambOf(sd) / max(u.amb.x, 1e-6)), NIGHT_AMB);
   var row = u32(min(f32(LEVELS - 1), floor(key * f32(LEVELS - 1) + h2(gX, gY, 63)))) * 4u;
   if (isLit) { row = litRow; }
-  // never darker than the space beside it, the ground's own light at night over it
+  // never darker than the space beside it by day; at night the ground shows by its own light, under the sky's for a dark albedo (a dark ground is darker than the dark sky)
   let ink = PAL[g_AIR[0]];
   let lit0 = unpack4x8unorm(lutT[row * NC + idx]).rgb * ambK * select(vec3f(1.0), aoMul(litAo, row), isLit);
   // the night's law at this place (night.js) joins the tables' as the sun goes down (live.js s.night); where the window's own light lies (isLit) the tables carry it, the camera's place being this one
-  let nw = select(g_smooth(1.0, -8.0, degrees(asin(clamp(sd, -1.0, 1.0)))), 0.0, isLit);
-  var shown = max(lit0, ink);
+  let dark = g_smooth(1.0, -8.0, degrees(asin(clamp(sd, -1.0, 1.0))));
+  let nw = select(dark, 0.0, isLit);
+  var shown = max(lit0, ink * (1.0 - dark));
   if (nw > 0.0) { shown = mix(shown, max(lit0, nightGround(ground, p, sd, ink, moonFacing)), nw); }
   o_.color = vec4f(shown, 1.0);
   return o_;

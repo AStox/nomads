@@ -30,9 +30,3 @@ export function nightDrain(g, dim) {
   const y = lum(g), sat = 1 - 0.45 * dim;
   return [(y + (g[0] - y) * sat) * (1 - 0.2 * dim), (y + (g[1] - y) * sat) * (1 - 0.04 * dim), (y + (g[2] - y) * sat) * (1 + 0.15 * dim)];
 }
-
-// never darker than the sky beside it, by luminance so the colour keeps its hue (starlight alone puts a ground below the dark sky's luminance, and land and sea would be one flat ink)
-export function nightFloor(g, inkLum) {
-  const y = lum(g), k = y < inkLum ? inkLum / Math.max(y, 1e-6) : 1;
-  return [g[0] * k, g[1] * k, g[2] * k];
-}
