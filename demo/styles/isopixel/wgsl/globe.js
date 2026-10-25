@@ -161,6 +161,9 @@ var<private> gMpp: f32;  // metres to an art pixel at the surface
 var<private> gOff: vec3f; // the pixel's ray origin less the target, radii
 var<private> gOk: f32;
 var<private> gHH: f32;
+// how much of the ordered dither a pixel keeps, 1 under a pixel of a metre or two (the island's own look) to 0 once it outgrows the ripples (the ground's FADE(2), the sea's): the ground's dithers are taken on a lattice
+// fixed to the ground, whose cell is 0.7 to 1.4 of the pixel, so an ordered one beats against the pixel grid in stripes and rings on every slow slope or colour gradient; a hash does not
+var<private> gOrd: f32;
 // radii a device pixel spans at path length t along the pixel's ray
 fn pxR(t: f32) -> f32 { return 2.0 * ((1.0 - gOk) * u.tanH * t + gOk * gHH) / u.size.y; }
 // the sky's ambient light with the sun at sin(elevation) s: live.js lightOf's a (a power of the sun's height by day, an e-fold each 2.2 degrees below the horizon) and AMB, STAR [change both together]
@@ -714,6 +717,7 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
 
 @fragment fn fs(@builtin(position) pos: vec4f) -> Out {
   let a = u.art;
+  gOrd = 1.0;
   gX = i32(floor(pos.x));
   gY = i32(floor(pos.y));
   let at = (vec2f(f32(gX), f32(gY)) + 0.5) * a;
@@ -799,6 +803,7 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   let cell = gcellOf(xz, gCell);
   gX = cell.x;
   gY = cell.y;
+  gOrd = 1.0 - g_smooth(0.9, 2.8, mppN);
   // the fine pages where the view holds them all (U.bw.x) and this pixel lies in the block and in one of its resident pages: the whole screen goes over to them as one scalar, U.cf.w,
   // rises, each pixel when its dither is under it, and fades back out as the pixel grows past two fine vertices (18.75 m), so a zoom is one continuous cross-fade. fcell is the pixel's
   // place in the window's cells (the window's own light is in them), bcell in the block's (the pages are)

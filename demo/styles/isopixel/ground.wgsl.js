@@ -245,7 +245,9 @@ ${I(`const g_HALF = array<f32, 5>(0.0, 0.45, 0.6, 0.78, 1.0);`)}
 const g_OPEN = ${arr("i32", [-2, -1, 0, 1, 2].flatMap((R) => [-1, 0, 1].map((C) => Math.floor(1.4 + 3.9 * 0 + R * 0.4 + C * 0.5))))};
 
 // ---------- px.js ----------
-fn bayer(x: i32, y: i32) -> f32 { return g_BAYER[((y & 3) << 2u) | (x & 3)]; }
+${planet ? `// the planet pass's threshold: each pixel takes the ordered one with the chance gOrd (wgsl/globe.js, 1 under a pixel of a metre or so, 0 over three), else a hash, so the share of pixels over any level stays what it was
+// and the ordered pattern, which beats against the pixel grid once the ground's lattice is not the pixel's, gives way as the pixel outgrows the island's own scale
+fn bayer(x: i32, y: i32) -> f32 { return select(g_hf(g_h2u(x, y, 7)), g_BAYER[((y & 3) << 2u) | (x & 3)], g_hf(g_h2u(x, y, 8)) < gOrd); }` : `fn bayer(x: i32, y: i32) -> f32 { return g_BAYER[((y & 3) << 2u) | (x & 3)]; }`}
 fn g_h2u(x: i32, y: i32, s: i32) -> u32 {
   var h = bitcast<u32>(x * 374761393 + y * 668265263 + s * 1442695041);
   h = (h ^ (h >> 13u)) * 1274126177u;
