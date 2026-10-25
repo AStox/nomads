@@ -2,7 +2,7 @@
 // patch is a cell width apart on the sphere however deep past an edge (the unfolding is continuous). Each case alone: bun test ./src/gpu/globe/patch.test.ts -t "<name>"
 import { describe, expect, test } from "bun:test";
 import { centre, haloSource, tierGrid } from "./grid";
-import { gather, localOf, patchOf, scatter, tileAt, tileCount } from "./patch";
+import { cellAcross, cornerCells, gather, localOf, patchOf, scatter, tileAt, tileCount } from "./patch";
 
 const TIER = 1, HALO = 40, g = tierGrid(TIER), n = g.fn;
 const angle = (a: number[], b: number[]) => Math.acos(Math.min(1, Math.max(-1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2])));
@@ -59,5 +59,38 @@ describe("a patch", () => {
     expect(find(0)).toBe(-1);
     expect(tileCount(TIER)).toBe(24);
     expect(tileAt(TIER, 11)).toEqual({ face: 2, tx: 1, ty: 1 });
+  });
+
+  test("the wedge a flat window has past a cube's corner is continuous with the face across on each side", () => {
+    const R = 24, centreOf = (id: number) => { const c = n * n, ff = Math.floor(id / c), r = id - ff * c, Y = Math.floor(r / n); return centre(g, ff, r - Y * n, Y) as unknown as number[]; };
+    const width = (a: number, b: number) => angle(centreOf(a), centreOf(b)) / g.width;
+    let wedge = 0;
+    for (let f = 0; f < 6; f++)
+      for (const [cx, cy] of [[0, 0], [n, 0], [0, n], [n, n]] as const) {
+        // the corner's wedge is the quadrant past both edges: X < 0 or >= n and Y likewise
+        const at = (i: number, j: number) => [cx === 0 ? -1 - i : n + i, cy === 0 ? -1 - j : n + j] as const;
+        for (let j = 0; j < R; j++)
+          for (let i = 0; i < R; i++) {
+            const [X, Y] = at(i, j), w = cornerCells(g, f, X, Y);
+            expect(w).not.toBeNull();
+            wedge++;
+            expect(w!.t).toBeGreaterThan(0);
+            expect(w!.t).toBeLessThan(1);
+            // next to the wedge's cell one step out along each axis: a lattice continued flat, a cell width from it
+            if (i + 1 < R) { const o = cornerCells(g, f, ...at(i + 1, j))!; expect(width(w!.a, o.a)).toBeGreaterThan(0.6); expect(width(w!.a, o.a)).toBeLessThan(1.25); expect(width(w!.b, o.b)).toBeGreaterThan(0.6); expect(width(w!.b, o.b)).toBeLessThan(1.25); }
+            if (j + 1 < R) { const o = cornerCells(g, f, ...at(i, j + 1))!; expect(width(w!.a, o.a)).toBeGreaterThan(0.6); expect(width(w!.a, o.a)).toBeLessThan(1.25); expect(width(w!.b, o.b)).toBeGreaterThan(0.6); expect(width(w!.b, o.b)).toBeLessThan(1.25); }
+            // the cell beside the wedge across the first edge (the face across's, on the same side of the other edge) is a cell width from `a`, and across the second edge from `b`
+            if (j === 0) { const [bx, by] = at(i, -1), nb = cellAcross(g, f, bx, by); expect(nb).toBeGreaterThanOrEqual(0); expect(width(w!.a, nb)).toBeLessThan(1.25); }
+            if (i === 0) { const [bx, by] = at(-1, j), nb = cellAcross(g, f, bx, by); expect(nb).toBeGreaterThanOrEqual(0); expect(width(w!.b, nb)).toBeLessThan(1.25); }
+          }
+        // the share of `b` runs from 0 beside the first side to 1 beside the second, and half on the diagonal
+        expect(cornerCells(g, f, ...at(R - 1, 0))!.t).toBeLessThan(0.05);
+        expect(cornerCells(g, f, ...at(0, R - 1))!.t).toBeGreaterThan(0.95);
+        expect(cornerCells(g, f, ...at(R - 1, R - 1))!.t).toBeCloseTo(0.5, 5);
+        // a cell that is no wedge's has no wedge ground
+        expect(cornerCells(g, f, cx === 0 ? 3 : n - 4, cy === 0 ? -3 : n + 3)).toBeNull();
+        expect(cornerCells(g, f, cx === 0 ? 3 : n - 4, cy === 0 ? 3 : n - 4)).toBeNull();
+      }
+    expect(wedge).toBe(6 * 4 * R * R);
   });
 });

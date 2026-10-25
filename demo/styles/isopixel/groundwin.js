@@ -215,7 +215,9 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
 
   // Where every cell of a window of N cells at (x0, y0) of `face`, and the halo round it, comes from, and its cells' planes in the window's frame, and the tile source the page kernels read them from. The tiles of the
   // face that its cells lie on hold them, and the 8 cells of halo each holds past its edge (laid flat across a cube's edge in the face's own axes), so a cell is read from them in the window's own frame;
-  // a cell farther past a cube's edge is the face across's: the cell of the tier that stands there, from the tile that holds it.
+  // a cell farther past a cube's edge is the face across's: the cell of the tier that stands there, from the tile that holds it. At a cube's corner the flat lattice has a wedge past both edges where no cell of the
+  // planet stands: its ground (heights blended, the rest from the nearer side) is what each side would continue with (patch.ts cornerCells), so the window's shadows and folds meet no wall there. A wedge
+  // cell is no cell of the window's objects (no tile of it is `interior`) and has no channel.
   async function gather(face, x0, y0) {
     const tl = [], tlOf = new Map(), cover = [];
     const add = (f, tx, ty, direct) => {
@@ -227,9 +229,15 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     for (let ty = Math.max(0, Math.floor(y0 / 256)); ty <= Math.min(nT - 1, Math.floor((y0 + N - 1) / 256)); ty++)
       for (let tx = Math.max(0, Math.floor(x0 / 256)); tx <= Math.min(nT - 1, Math.floor((x0 + N - 1) / 256)); tx++) cover.push(add(face, tx, ty, true));
     const own = new Int16Array(S * S).fill(-1), at = new Int32Array(S * S), srcF = new Int8Array(S * S).fill(-1), srcX = new Int32Array(S * S), srcY = new Int32Array(S * S);
+    const wedge = [];
     for (let j = 0; j < S; j++)
       for (let i = 0; i < S; i++) {
         const k = j * S + i, Xw = x0 - H + i, Yw = y0 - H + j, inner = i >= H && i < H + N && j >= H && j < H + N;
+        if ((Xw < 0 || Xw >= fn) && (Yw < 0 || Yw >= fn)) {
+          const c = G.cornerCells({ fn }, face, Xw, Yw), src = (id) => { const f = Math.floor(id / (fn * fn)), r = id % (fn * fn), yy = Math.floor(r / fn), xx = r % fn; return [add(f, xx >> 8, yy >> 8, false), (yy - (yy >> 8) * 256 + H) * S + (xx - (xx >> 8) * 256 + H)]; };
+          if (c) wedge.push({ k, a: src(c.a), b: src(c.b), t: c.t });
+          continue;
+        }
         let best = -1, bestIn = false;
         for (const q of cover) {
           const t = tl[q], lx = Xw - t.tx * 256, ly = Yw - t.ty * 256;
@@ -276,6 +284,16 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     for (const n of names) {
       const out = planes[n], from = tl.map((t) => t.gt.planes[n]);
       for (let r = 0; r < runs.length; r += 4) out.set(from[runs[r + 2]].subarray(runs[r + 3], runs[r + 3] + runs[r + 1]), runs[r]);
+    }
+    // the wedge's cells: heights between the two sides' ground by the cell's angle across the quarter turn, the other planes from the nearer side
+    if (wedge.length) {
+      for (const n of names) {
+        const out = planes[n], from = tl.map((t) => t.gt.planes[n]), blend = n === "height";
+        for (const { k, a, b, t } of wedge) {
+          const va = from[a[0]][a[1]], vb = from[b[0]][b[1]];
+          out[k] = blend ? Math.round(va + (vb - va) * t) : t < 0.5 ? va : vb;
+        }
+      }
     }
     // a receiver is a step in its own face's cells: turned into the window's
     if (planes.dir) {

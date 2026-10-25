@@ -26,6 +26,26 @@ export function cellAcross(g: Grid, f: number, X: number, Y: number): number {
   return (e.face * n + ny) * n + nx;
 }
 
+// A window of cells laid flat on one face that holds a cube's corner has a quarter turn more than the sphere has round the corner (three faces cut open and laid in a plane): the wedge
+// past both of the face's edges has no cell. It is no place on the sphere, but the window's shadows and folds run across it, so it takes the ground each side would continue with: the
+// cell across the X edge and then the face across's own edge to the third face (`a`), the cell across the Y edge and then across (`b`), each a lattice continued flat, so `a` is beside
+// the cells of the first face across along the wedge's one side and `b` beside the other's. `t` is the share of `b`, the cell's angle from the first side over the quarter turn: the ground is
+// continuous with both sides. Null for a cell that is no wedge's (inside the face, or past one edge only) or lies beyond the third face.
+export function cornerCells(g: Grid, f: number, X: number, Y: number): { a: number; b: number; t: number } | null {
+  const n = g.fn;
+  if (!((X < 0 || X >= n) && (Y < 0 || Y >= n))) return null;
+  const via = (xFirst: boolean) => {
+    const d = xFirst ? (X < 0 ? 2 : 0) : Y < 0 ? 3 : 1, e = EDGES[f][d], run = xFirst ? Y : X, a = e.flip ? n - 1 - run : run;
+    const depth = xFirst ? (X < 0 ? -X - 1 : X - n) : Y < 0 ? -Y - 1 : Y - n;
+    const [nx, ny] = e.side === 0 ? [n - 1 - depth, a] : e.side === 1 ? [a, n - 1 - depth] : e.side === 2 ? [depth, a] : [a, depth];
+    return cellAcross(g, e.face, nx, ny);
+  };
+  const a = via(true), b = via(false);
+  if (a < 0 || b < 0) return null;
+  const dx = (X < 0 ? -X - 1 : X - n) + 0.5, dy = (Y < 0 ? -Y - 1 : Y - n) + 0.5;
+  return { a, b, t: Math.atan2(dy, dx) / (Math.PI / 2) };
+}
+
 // A patch whose interior is the `interior` (a tile's 256) by `interior` cells from face position (x0, y0) (inside the face), for any halo: the tiles' own patches are the ones at multiples of
 // 256, and a patch at another offset is how a test sees whether an answer depends on which tile holds the cell.
 export function patchAt(tier: number, face: number, x0: number, y0: number, halo: number, interior = TILE): Patch {
