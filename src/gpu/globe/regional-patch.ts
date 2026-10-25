@@ -35,7 +35,7 @@ export class RegionalPatch {
   private stepNo = 0;
   readonly flags = FLAG;
 
-  constructor(readonly gpu: Gpu, readonly tier: number, interior: number, table: Uint32Array, creepSubs: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, public route: 0 | 1 = 0, slideN: 8 | 16 = 8, readonly halo = PATCH_HALO) {
+  constructor(readonly gpu: Gpu, readonly tier: number, interior: number, table: Uint32Array, creepSubs: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, public route: 0 | 1 | 2 = 0, slideN: 8 | 16 = 8, readonly halo = PATCH_HALO) {
     this.fn = tierGrid(tier).fn;
     this.side = interior + 2 * halo;
     this.N = this.side * this.side;
@@ -56,8 +56,8 @@ export class RegionalPatch {
     this.gpu.device.queue.writeBuffer(this.X, 0, table);
     this.gpu.device.queue.writeBuffer(this.P, 0, new Uint32Array([1, creepSubs, this.stepNo, this.route]));
   }
-  // Whether a receiver is drawn among the lower neighbours (1) or is the steepest (0).
-  setRoute(route: 0 | 1) {
+  // Whether a receiver is the steepest (0), is drawn among the lower neighbours (1) or is Rho8's steepest by random diagonal lengths (2).
+  setRoute(route: 0 | 1 | 2) {
     this.route = route;
     this.gpu.device.queue.writeBuffer(this.P, 12, new Uint32Array([route]));
   }

@@ -23,7 +23,7 @@ import { join } from "node:path";
 import type { Gpu } from "../device";
 import { TILE, tierGrid, type Grid } from "./grid";
 import { cellAcross, patchAt, type Patch } from "./patch";
-import { CORNER_BESIDE, around3, child4, creepSubsOf, type RouteLaw } from "./regional";
+import { CORNER_BESIDE, around3, child4, creepSubsOf, routeOf, type RouteLaw } from "./regional";
 import { FLOW_NEIGHBOURS, SOLVE_SWEEPS } from "../wgsl/globe-regional";
 import { RegionalPatch, TREE, PATCH_HALO } from "./regional-patch";
 import { tierTable } from "./regional";
@@ -152,7 +152,7 @@ export class StreamedTier {
     this.law = o.law ?? { nflow: FLOW_NEIGHBOURS, stochastic: false };
     this.tableAt = o.tableAt ?? (() => table);
     this.subs = creepSubsOf(table);
-    this.solver = new RegionalPatch(gpu, tier, this.size, table, this.subs, this.law.nflow, this.law.stochastic ? 1 : 0, this.law.slide ?? 8);
+    this.solver = new RegionalPatch(gpu, tier, this.size, table, this.subs, this.law.nflow, routeOf(this.law), this.law.slide ?? 8);
     this.slideSolver = this.law.slide === 16 ? new RegionalPatch(gpu, tier, this.size, table, this.subs, this.law.nflow, 0, 16, 2) : null;
     const ord = Array.from({ length: this.nreg }, (_, i) => i);
     if (o.order === "reverse") ord.reverse();
@@ -531,7 +531,7 @@ export class StreamedTier {
   private arm() {
     const pr = this.prog;
     this.solver.setStep(pr.steps);
-    this.solver.setRoute(pr.job === "flow" || !this.law.stochastic ? 0 : 1);
+    this.solver.setRoute(pr.job === "flow" ? 0 : routeOf(this.law));
     if (pr.job !== "flow") { const t = this.tableAt(pr.steps); this.subs = creepSubsOf(t); this.solver.setTable(t, this.subs); this.slideSolver?.setTable(t, this.subs); }
   }
   // Work for up to `budgetS` seconds: the start (the heights carried from the tier above), `steps` steps in all, and with `finish` the settled flow of the final heights with its
