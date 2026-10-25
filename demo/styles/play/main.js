@@ -77,8 +77,8 @@ async function main() {
   const view = { x: -2738, z: -1838, zoom: zoom0, bearing: norm8(Math.round(num("bearing", 0))), up: 0, selected: null, turnTo: null };
   const metrics = { readyMs: Math.round(ready), revealMs: 0, tabs: [], turns: [] };
   const camera = createCamera({ live, view, canvas, onTurn: (t) => metrics.turns.push({ startMs: Math.round(t.start), totalMs: Math.round(t.total) }) });
-  // away from the island the ground is the planet's and has no people on it: what was selected or followed is let go, and a gesture held on the old frame
-  live.onGround((m) => { camera.dropAnchor(); if (m === "win") select(null); });
+  // away from the island the ground is the planet's and has no people on it: what was selected or followed is let go (a gesture holds a planet place, which a new window names as well as the old)
+  live.onGround((m) => { camera.regrab(); if (m === "win") select(null); });
   let follow = null, openingPerson = null, opening = null, farSince = 0, farDest = null;
   // Open on the person nearest the densest cluster of shelters, fires and stumps, and follow them; with nothing built
   // yet, on whoever has the most going on around them.
@@ -430,11 +430,11 @@ async function main() {
     if (e.button === 2) { orbit = { x: e.clientX }; camera.stopTurn(); return; }
     if (e.button !== 0) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointers.size === 1) drag = { x0: e.clientX, y0: e.clientY, moved: 0, on: false };
+    if (pointers.size === 1) { drag = { x0: e.clientX, y0: e.clientY, moved: 0, on: false }; camera.grabStart(e.clientX, e.clientY); }
     if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       camera.pinchStart((a.x + b.x) / 2, (a.y + b.y) / 2, Math.hypot(a.x - b.x, a.y - b.y), Math.atan2(b.y - a.y, b.x - a.x));
-      pinching = true; drag = null; follow = null;
+      pinching = true; drag = null; follow = null; camera.grabEnd();
     }
   });
   canvas.addEventListener("pointermove", (e) => {
@@ -451,13 +451,14 @@ async function main() {
     if (!drag) return;
     drag.moved += Math.abs(dx) + Math.abs(dy);
     // past the click threshold the world jumps to the cursor, then moves with it exactly
-    if (!drag.on && drag.moved > 5) { drag.on = true; canvas.classList.add("dragging"); follow = null; camera.panBy(e.clientX - drag.x0, e.clientY - drag.y0); }
-    else if (drag.on) camera.panBy(dx, dy);
+    if (!drag.on && drag.moved > 5) { drag.on = true; canvas.classList.add("dragging"); follow = null; }
+    if (drag.on) camera.grabMove(e.clientX, e.clientY);
   });
   const up = (e) => {
     if (orbit) { orbit = null; camera.settle(); return; }
     pointers.delete(e.pointerId);
     canvas.classList.remove("dragging");
+    camera.grabEnd();
     if (pinching) { if (pointers.size < 2) { pinching = false; camera.pinchEnd(); } drag = null; return; }
     if (drag && !drag.on && e.type === "pointerup") click(e.clientX, e.clientY);
     drag = null;
