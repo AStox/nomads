@@ -192,6 +192,22 @@ fn faceOf(p: vec3f) -> FaceAt {
   let vb = dot(p, FACE_Y[f]) / best;
   return FaceAt(f, atan(ua) / (PI / 2.0) + 0.5, atan(vb) / (PI / 2.0) + 0.5, ua, vb);
 }
+// the same fractions on face f extended past its edges (the pages' flat lattice goes on across a cube's edge, as the window lays it); f is -1 where the point is too far round the sphere for the plane
+fn faceAtF(p: vec3f, f: i32) -> FaceAt {
+  let w = dot(p, FACE_N[f]);
+  if (w < 0.2) { return FaceAt(-1, 0.0, 0.0, 0.0, 0.0); }
+  let ua = dot(p, FACE_X[f]) / w;
+  let vb = dot(p, FACE_Y[f]) / w;
+  return FaceAt(f, atan(ua) / (PI / 2.0) + 0.5, atan(vb) / (PI / 2.0) + 0.5, ua, vb);
+}
+// the face's metres to the ground's: the tangents of the unit point p along the face's equiangular axes
+struct Tg { x: vec3f, y: vec3f }
+fn tangentsOf(p: vec3f, f: i32, ua: f32, vb: f32) -> Tg {
+  let ex = FACE_X[f];
+  let ey = FACE_Y[f];
+  let ql = length(FACE_N[f] + ua * ex + vb * ey);
+  return Tg((1.0 + ua * ua) * (ex - p * dot(p, ex)) / ql, (1.0 + vb * vb) * (ey - p * dot(p, ey)) / ql);
+}
 // the mean cell of tier 0 in metres (the cell at a face's middle is the largest, the mean about 0.8 of it): tier t's is this over 2^t
 fn cell0() -> f32 { return u.radiusM * (PI / 2.0) / 256.0 * 0.8; }
 // the level whose cells are an art pixel across, as a fraction of tiers
@@ -784,12 +800,9 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   let fc = faceOf(p);
   let f = fc.f;
   // the face's metres to the ground's, and the pixel's metres in the noise's frame
-  let n3 = FACE_N[f];
-  let ex = FACE_X[f];
-  let ey = FACE_Y[f];
-  let ql = length(n3 + fc.ua * ex + fc.vb * ey);
-  let kx = (1.0 + fc.ua * fc.ua) * (ex - p * dot(p, ex)) / ql;
-  let ky = (1.0 + fc.vb * fc.vb) * (ey - p * dot(p, ey)) / ql;
+  let tg = tangentsOf(p, f, fc.ua, fc.vb);
+  let kx = tg.x;
+  let ky = tg.y;
   gSc = sqrt(length(kx) * length(ky));
   let mppN = gMpp / gSc;
   let xz = noiseXZ(gOff + tHit * rd);
@@ -810,9 +823,16 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   var useFine = false;
   var fcell = vec2f(0.0);
   var bcell = vec2f(0.0);
-  if (pgOn() && f == u.bw.w && u.cf.w > 0.0) {
-    fcell = vec2f(fc.fx * FN - f32(u.pw.z), ${PAGE_GEOM.cells}.0 - (fc.fy * FN - f32(u.pw.w)));
-    bcell = vec2f(fc.fx * FN - f32(u.bw.y), ${GEOM.cells}.0 - (fc.fy * FN - f32(u.bw.z)));
+  // a pixel on the face across a cube's edge from the block's reads the pages by the block's own face extended, where the window lays the ground it holds there (the ladder's sprites stand in that lattice)
+  var fcp = fc;
+  var tgp = tg;
+  if (pgOn() && f != u.bw.w && u.cf.w > 0.0) {
+    fcp = faceAtF(p, u.bw.w);
+    if (fcp.f >= 0) { tgp = tangentsOf(p, fcp.f, fcp.ua, fcp.vb); }
+  }
+  if (pgOn() && fcp.f == u.bw.w && u.cf.w > 0.0) {
+    fcell = vec2f(fcp.fx * FN - f32(u.pw.z), ${PAGE_GEOM.cells}.0 - (fcp.fy * FN - f32(u.pw.w)));
+    bcell = vec2f(fcp.fx * FN - f32(u.bw.y), ${GEOM.cells}.0 - (fcp.fy * FN - f32(u.bw.z)));
     gWo = bcell - fcell;
     let inside = bcell.x > 1.0 && bcell.x < ${GEOM.cells - 1}.0 && bcell.y > 1.0 && bcell.y < ${GEOM.cells - 1}.0;
     if (inside && pgTab(u32(i32(bcell.y / ${PAGE_GEOM.pageCells}.0) * ${PAGE_BLOCK} + i32(bcell.x / ${PAGE_GEOM.pageCells}.0))) >= 0) {
@@ -863,8 +883,8 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     if (useFine) {
       let da5 = (PI / 2.0) / FN;
       // the same solve as the tier's, from the light grid's slopes a cell along the window's x and against its z: the lattice's axes are not at right angles, so each along its own tangent is not the gradient
-      let Tx5 = u.radiusM * da5 * kx;
-      let Ty5 = u.radiusM * da5 * ky;
+      let Tx5 = u.radiusM * da5 * tgp.x;
+      let Ty5 = u.radiusM * da5 * tgp.y;
       let E5 = dot(Tx5, Tx5);
       let F5 = dot(Tx5, Ty5);
       let G5 = dot(Ty5, Ty5);

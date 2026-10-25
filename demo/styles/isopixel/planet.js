@@ -156,7 +156,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
         const x = (((i + 0.5) / GRID_X) * (1 + 2 * MARGIN) - MARGIN) * w, y = (((j + 0.5) / GRID_Y) * (1 + 2 * MARGIN) - MARGIN) * h, p = cam.pick(x, y);
         if (!p) continue;
         const d = Math.hypot(p[0] - cam.o[0], p[1] - cam.o[1], p[2] - cam.o[2]), mpp = ((artPx * 2 * cam.tanH) / h) * d * R, { f, fx, fy } = faceFrac(G.FRAMES, p);
-        pts.push({ f, fx, fy, lv: levelFor(mpp), centre: Math.hypot(x - w / 2, y - h / 2) / w });
+        pts.push({ f, fx, fy, p, lv: levelFor(mpp), centre: Math.hypot(x - w / 2, y - h / 2) / w });
       }
     return pts;
   }
@@ -236,9 +236,19 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       }
       device.queue.writeBuffer(ptabB, 0, ptab);
     }
-    const FN = 256 * 2 ** top, inPages = (p) => {
-      const xc = p.fx * FN - blk.x0, zc = BCELLS - (p.fy * FN - blk.y0);
-      return p.f === blk.face && xc > 1 && xc < BCELLS - 1 && zc > 1 && zc < BCELLS - 1 && resident[Math.floor(zc / PAGE_GEOM.pageCells) * BN + Math.floor(xc / PAGE_GEOM.pageCells)] >= 0;
+    const FN = 256 * 2 ** top;
+    // a point lies in a resident page of the block by the block's face extended past its edges (the pages' flat lattice goes on across a cube's edge as the window lays it, wgsl/globe.js faceAtF): a view
+    // that crosses an edge is as much the pages' as one that does not, or the whole screen would be held at the tiers by a corner of it
+    const inPages = (q) => {
+      let fx = q.fx, fy = q.fy;
+      if (q.f !== blk.face) {
+        const F = G.FRAMES[blk.face], w = q.p[0] * F.n[0] + q.p[1] * F.n[1] + q.p[2] * F.n[2];
+        if (w < 0.2) return false;
+        fx = Math.atan((q.p[0] * F.ex[0] + q.p[1] * F.ex[1] + q.p[2] * F.ex[2]) / w) / (Math.PI / 2) + 0.5;
+        fy = Math.atan((q.p[0] * F.ey[0] + q.p[1] * F.ey[1] + q.p[2] * F.ey[2]) / w) / (Math.PI / 2) + 0.5;
+      }
+      const xc = fx * FN - blk.x0, zc = BCELLS - (fy * FN - blk.y0);
+      return xc > 1 && xc < BCELLS - 1 && zc > 1 && zc < BCELLS - 1 && resident[Math.floor(zc / PAGE_GEOM.pageCells) * BN + Math.floor(xc / PAGE_GEOM.pageCells)] >= 0;
     };
     const goal = blk && ready >= top && cam.hh * R * Math.hypot(cam.aspect, 1) <= FINE_REACH && pts.every(inPages) ? 1 : 0;
     fine = goal > fine ? Math.min(1, fine + dt * FINE_RATE) : goal;

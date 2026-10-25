@@ -145,7 +145,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
   // The pages round a window's, for the planet pass alone (planet.js opts.pages.block): a SQUARE by SQUARE square of pages centred on the window's 16 (the window's own are those made for it, so the ladder's ground is as it was). The ring
   // round them is made from sources of the same 256 cells the window is made from, at most four, each page from the one whose middle is nearest it, two pages a submit with the GPU waited on between as ensurePages does,
   // and kept in the textures with the rest (a page is global: a window that needs one finds it, a block that moves makes only the new edge). The block is for the renderer's
-  // setBlockPages: table[row * n + column] the slot of the page, row 0 the northmost (the window's rows run south) and -1 for a page off its face. Returns { block }.
+  // setBlockPages: table[row * n + column] the slot of the page, row 0 the northmost (the window's rows run south) and -1 for a page not held; a page past a cube's edge is held, made from the face across as the window lays it (gather). Returns { block }.
   const ensureBlock = (w) => ensureBlockAt(w.face, w.x0 - ((SQUARE - N / PAGE) / 2) * PAGE, w.y0 - ((SQUARE - N / PAGE) / 2) * PAGE, w);
   // The same for a block whose first page is at (bx, by) cells of a face, with no window held (or w, the window drawn, whose own pages are held while the ring is made)
   async function ensureBlockAt(face, bx, by, w = null) {
@@ -154,7 +154,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     for (let iy = 0; iy < n; iy++)
       for (let ix = 0; ix < n; ix++) {
         const px = bx + ix * PAGE, py = by + iy * PAGE;
-        list.push({ ix, iy, px, py, key: pageKey(face, px, py), inside: px >= 0 && py >= 0 && px + PAGE <= fn && py + PAGE <= fn });
+        list.push({ ix, iy, px, py, key: pageKey(face, px, py) });
       }
     // only the window's own 16 are held while the ring is made: a ring page is let go to any window that needs the slot (it is then not in the table, and the pages that are get no copy from a made page that has lost its slot)
     const pin = { mine: new Set(w ? pagesOf(w).map((p) => p.key) : []) };
@@ -162,7 +162,6 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     try {
       const stamp = ++usedAt, taken = new Set([...pages.values()].map((r) => r.slot)), held = new Set(drawn?.pageList?.map((p) => p.key)), todo = [];
       for (const p of list) {
-        if (!p.inside) continue;
         let rec = pages.get(p.key);
         if (!rec) {
           let slot = -1;
@@ -197,7 +196,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       batch.catch(() => { for (const t of todo) if (pages.get(t.rec.key) === t.rec) pages.delete(t.rec.key); });
       for (const t of todo) t.rec.ready = batch;
       await Promise.all(list.filter((p) => p.rec).map((p) => p.rec.ready));
-      const table = new Int32Array(n * n).fill(-1), kept = list.filter((p) => p.inside && p.rec && pages.get(p.key) === p.rec);
+      const table = new Int32Array(n * n).fill(-1), kept = list.filter((p) => p.rec && pages.get(p.key) === p.rec);
       for (const p of kept) table[(n - 1 - p.iy) * n + p.ix] = p.rec.slot;
       blockKeys = new Set(kept.map((p) => p.key));
       return { block: { face, x0: bx, y0: by, n, table } };
