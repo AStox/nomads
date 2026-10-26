@@ -14,9 +14,9 @@ export function createCamera({ live, view, canvas, onTurn }) {
   let goal = view.zoom, zoomSet = view.zoom, anchor = null, tried = null, turn = null, pinch = null, grab = null, good = snapshot();
   function snapshot() { return { x: view.x, z: view.z, zoom: view.zoom, bearing: view.bearing, up: view.up }; }
   const half = () => [canvas.width / 2, canvas.height / 2];
-  // move the target so world point A shows at canvas point (sx, sy) in state st; false, and nothing moved, if it cannot
-  function hold(A, sx, sy, st = view) {
-    const [cx, cy] = half(), T = live.solveTarget(st, A.x, A.z, A.y, sx - cx, sy - cy, A.geo);
+  // move the target so world point A shows at canvas point (sx, sy) in state st; false, and nothing moved, if it cannot (a drag's, `edge`, holds the nearest edge of a planet the cursor is off)
+  function hold(A, sx, sy, st = view, edge = false) {
+    const [cx, cy] = half(), T = live.solveTarget(st, A.x, A.z, A.y, sx - cx, sy - cy, A.geo, edge);
     if (!T || !finite(T.x, T.z)) return false;
     live.setTarget(view, T);
     return true;
@@ -54,7 +54,7 @@ export function createCamera({ live, view, canvas, onTurn }) {
       if (!finite(dx, dy) || (!dx && !dy && !view.up)) return;
       // the target's place on the planet is view.geo: its plane coordinates (about the play area) say nothing of a place past a quarter of the planet from it
       const A = { x: view.x, z: view.z, y: live.camH(view.x, view.z) + view.up, geo: view.geo }, [cx, cy] = half();
-      if (!hold(A, cx + dx, cy + dy, { ...view, up: 0 })) return;
+      if (!hold(A, cx + dx, cy + dy, { ...view, up: 0 }, true)) return;
       view.up = 0;
     },
     // A drag holds the ground picked where the button went down under the cursor, not the target: the target is held where it stands and the ground away from it (the cursor's, at a tilt, on a sphere, through the
@@ -73,7 +73,7 @@ export function createCamera({ live, view, canvas, onTurn }) {
     grabEnd() { grab = null; },
     // the grabbed ground (or a zoom's) under the cursor again: every frame, and when the renderer's ground changes frames (another window may lay its cells at an angle to the last one's, which turns the picture about the target)
     regrab() {
-      if (grab?.A && grab.on) { if (hold(grab.A, ...grab.at, { ...view, up: 0 })) view.up = 0; }
+      if (grab?.A && grab.on) { if (hold(grab.A, ...grab.at, { ...view, up: 0 }, true)) view.up = 0; }
       else if (anchor) {
         // the ground under the cursor is held at the height of the surface drawn there now, not the one it was picked at: the tiers arriving and a window's ground change that height under a zoom
         const y = live.surfaceY(view, anchor.A);
