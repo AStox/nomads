@@ -26,7 +26,12 @@ const SCHEDULE = [...Array(4).fill(26), ...Array(6).fill(13), ...Array(10).fill(
 // SCRATCH knob (prototype): NOMADS_SMOOTH=1:1,2:1 smooths the incision's area over a (2r + 1) square at those tiers (tier:r; wgsl/globe-regional.ts acc_s)
 const SMOOTH = new Map((process.env.NOMADS_SMOOTH ?? "").split(",").filter(Boolean).map((e) => e.split(":").map(Number) as [number, number]));
 const ISLAND: TierLaw = { route: { nflow: 8, stochastic: true, slide: 16, rho8: process.env.NOMADS_RHO8 === "1" }, dtMy: SCHEDULE, uniformRain: true };
-const lawOf = (t: number, l: TierLaw): TierLaw => (SMOOTH.has(t) ? { ...l, route: { ...l.route, smooth: SMOOTH.get(t) } } : l);
+// SCRATCH knobs (prototype): NOMADS_HOLD_OFF_TIERS=1 starts those tiers from their parent's carry and does not hold them to the parent's cell means (the uplift of regional.ts step() is skipped: the
+// tier below still holds that tier's own means); with NOMADS_BAND_SPAN=1 or 2 the uplift of those tiers is the band-limited hold of that span instead (wgsl/globe-band-hold.ts). Whole-planet chain only.
+const HOLD_OFF = (process.env.NOMADS_HOLD_OFF_TIERS ?? "").split(",").filter(Boolean).map(Number);
+const BAND_SPAN = process.env.NOMADS_BAND_SPAN === "1" ? 1 : process.env.NOMADS_BAND_SPAN === "2" ? 2 : 0;
+const holdOf = (t: number, route: RouteLaw): RouteLaw => (!HOLD_OFF.includes(t) ? route : BAND_SPAN ? { ...route, band: BAND_SPAN } : { ...route, holdOff: true });
+const lawOf = (t: number, l: TierLaw): TierLaw => ({ ...l, route: holdOf(t, SMOOTH.has(t) ? { ...l.route, smooth: SMOOTH.get(t) } : l.route) });
 export const TIER_LAWS: readonly TierLaw[] = [ISLAND, ISLAND, ISLAND, ISLAND, ISLAND, { ...ISLAND, dtMy: [6.5, 6.5, 3.25, 3.25, 1.6, 1.6] }].map((l, t) => lawOf(t, l));
 export const TIER_STEPS = TIER_LAWS.map((l, t) => (t === 0 ? 0 : l.dtMy.length));
 // A tier's table (the K dt and the creep coefficients) of step number `step`, made once for each step length.

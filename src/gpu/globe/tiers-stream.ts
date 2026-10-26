@@ -588,6 +588,7 @@ export async function streamTier(gpu: Gpu, planet: Planet, dir: BakeDir, tier: n
   const steps = (o.steps ?? TIER_STEPS)[tier], t0 = performance.now(), spent = () => (performance.now() - t0) / 1000;
   const finished = dir.has(`t${tier}-height.i32`) && (tier < last || dir.has(`t${tier}-run.json`));
   if (finished) return { done: true, steps, of: steps, run: dir.json<TierRun>(`t${tier}-run`) ?? undefined };
+  if (TIER_LAWS[tier].route.holdOff || TIER_LAWS[tier].route.band) throw new Error(`streamTier: tier ${tier}'s hold knob (NOMADS_HOLD_OFF_TIERS, NOMADS_BAND_SPAN) is the whole-tier chain's (tiers.ts tiersOf) only`);
   const tableAt = tierTableOf(planet, tier);
   const st = new StreamedTier(gpu, tier, o.work ?? dir.path(`stream-t${tier}`), tableAt(0), { ...o, law: TIER_LAWS[tier].route, tableAt }, log);
   try {

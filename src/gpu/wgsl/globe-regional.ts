@@ -17,6 +17,7 @@
 //   tally    the height each land cell lost, summed by the tier-0 cell it lies in (and the number of land cells it holds);
 //   lift     every land cell of a parent rises by the parent's mean loss, so the parent's total height is what it was (a remainder is carried).
 import { FIXED } from "./fixed";
+import { bandHoldWgsl } from "./globe-band-hold";
 
 // Fields of E (flat cells, one i32 word each).
 export const RF = { H: 0, W: 1, TO: 2, RD: 3, UA: 4, UB: 5, DA: 6, DB: 7, DP: 8, ORD: 9, ACC: 10, ER: 11, RHO: 12, KQ: 13, TQ: 14, COUNT: 15 } as const;
@@ -43,8 +44,9 @@ export const SOLVE_SWEEPS = 128;
 // `patch` lays the kernels on a patch (src/gpu/globe/patch.ts: a block of tiles and a halo of cells all round it, side * side cells flat, the global cell id of each in the IDS binding, a
 // cube corner's missing cell NONE) instead of the whole tier: a cell's neighbours are its neighbours in the patch, its place is read from IDS, and the cells of the halo are read and never
 // written (`interior`). Every law is the same text in both layouts.
-export function regionalWgsl(edges: readonly (readonly { face: number; side: number; flip: boolean }[])[], fn: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, patch?: { side: number; halo: number }, slideN: 8 | 16 = 8): string {
+export function regionalWgsl(edges: readonly (readonly { face: number; side: number; flip: boolean }[])[], fn: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, patch?: { side: number; halo: number }, slideN: 8 | 16 = 8, hold: 0 | 1 | 2 = 0): string {
   const P = patch !== undefined;
+  if (P && hold) throw new Error("regionalWgsl: the band-limited hold is the whole-tier path's");
   const flat = edges.flatMap((e) => e);
   const fields = Object.entries(RF).filter(([k]) => k !== "COUNT").map(([k, v]) => `const E_${k}: u32 = ${v}u;`).join("\n");
   return /* wgsl */ `${FIXED}
@@ -889,5 +891,6 @@ fn inject(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw
   if (interior(k)) { e_setu(E_W, k, e_getu(E_W, k) + e_getu(E_DP, k)); }
 }
 ` : ""}
+${hold ? bandHoldWgsl(hold) : ""}
 `;
 }

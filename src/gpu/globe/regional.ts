@@ -7,8 +7,9 @@
 import type { Gpu } from "../device";
 import { cover, pipeline, readback, storage } from "../kernel";
 import { CNT, FLAG, FLOW_NEIGHBOURS, HIST, RF, SOLVE_SWEEPS, SPLIT, XSTRIDE, regionalWgsl } from "../wgsl/globe-regional";
+import { BAND_CNT, BAND_FLAG_CARRY, BAND_PARENT_WORDS } from "../wgsl/globe-band-hold";
 import { EDGES, FACES, areaSr, haloSource, tierGrid, type Grid } from "./grid";
-import { SKIN_M, defaultParams, kWord, neighbourTables, rainWord, REF_RAIN_MMYR, type ErosionParams } from "./erosion";
+import { SKIN_M, defaultParams, kWord, landDiffusivity, neighbourTables, rainWord, REF_RAIN_MMYR, type ErosionParams } from "./erosion";
 import { THRESHOLD_DEG } from "../../terrain/geology";
 import { nucleate } from "./nucleation";
 import { packRecord, unpackRecord, ROCK_OF, type Planet, type PlanetStore } from "./window";
@@ -193,7 +194,7 @@ export const UNIFORM_RAIN = { word: 64, kScale: 2 };
 // the knight moves in the kernels' order (wgsl/globe-regional.ts KNIGHT)
 const KNIGHT = [[2, 1], [1, 2], [-1, 2], [-2, 1], [-2, -1], [-1, -2], [1, -2], [2, -1]] as const;
 export function tierTable(planet: Planet, tier: number, p: ErosionParams, uniformRain = false): Uint32Array {
-  const g0 = tierGrid(0, planet.radius), gt = tierGrid(tier, planet.radius), X = new Uint32Array(CELLS0 * XSTRIDE), kw = p.K.map((k) => Math.min(0xffffffff, kWord(gt, p, k) * (uniformRain ? UNIFORM_RAIN.kScale : 1))), tanOf = tanOfPools();
+  const g0 = tierGrid(0, planet.radius), gt = tierGrid(tier, planet.radius), creep = landDiffusivity(planet.radius, tier, p.creepLand), X = new Uint32Array(CELLS0 * XSTRIDE), kw = p.K.map((k) => Math.min(0xffffffff, kWord(gt, p, k) * (uniformRain ? UNIFORM_RAIN.kScale : 1))), tanOf = tanOfPools();
   // a planet with no climate (a staged one) rains the reference rain everywhere
   const kf = p.kvar ? kFactors(planet.radius, planet.seed) : null;
   const { invd } = neighbourTables(g0), meanSr = (4 * Math.PI) / CELLS0, rain = planet.seasons && !uniformRain ? annualRain(planet) : new Float32Array(CELLS0).fill(REF_RAIN_MMYR);
@@ -213,7 +214,7 @@ export function tierTable(planet: Planet, tier: number, p: ErosionParams, unifor
       X[c * XSTRIDE + 10 + d] = iv > 0 ? Math.round(2 ** 44 / (iv * 2 ** tier)) : 0;
       // creep: the isotropic 9-point Laplacian's weights, 2/3 along an edge and 1/3 across a corner (over the distance squared), times D dt [derived: Patra and Karttunen's stencil]
       const inv = (iv * 2 ** tier) / 2 ** 28;
-      X[c * XSTRIDE + 20 + d] = Math.round(2 ** 24 * p.creepLand * p.dtYr * (d < 4 ? 2 / 3 : 1 / 3) * inv * inv);
+      X[c * XSTRIDE + 20 + d] = Math.round(2 ** 24 * creep * p.dtYr * (d < 4 ? 2 / 3 : 1 / 3) * inv * inv);
     }
     // the eight knight moves' distances (Q16 m): two steps along one axis and one along the other, each at the table's distance on its side, taken as orthogonal
     for (let q = 0; q < 8; q++) {
@@ -232,7 +233,9 @@ export function creepSubsOf(table: Uint32Array): number {
 
 // ---------- 4. the kernels on a device ----------
 // The routing of a tier's flow: the neighbours the flood and the receivers read, and whether a receiver is drawn among the lower ones (wgsl/globe-regional.ts recv) or is the steepest.
-export interface RouteLaw { nflow: 4 | 8; stochastic: boolean; slide?: 8 | 16; rho8?: boolean; smooth?: number }
+// `holdOff`: the tier's uplift is skipped, so it is not held to its parent's cell means (what its land loses stays lost); `band` (1 or 2): the uplift is the band-limited hold on the tier-0
+// lattice (span 1) or every second tier-0 cell (span 2) in place of the box mean (wgsl/globe-band-hold.ts, whole tier only); the box mean hold is the default.
+export interface RouteLaw { nflow: 4 | 8; stochastic: boolean; slide?: 8 | 16; rho8?: boolean; smooth?: number; holdOff?: boolean; band?: 1 | 2 }
 export const routeOf = (law: RouteLaw): 0 | 1 | 2 => (law.rho8 ? 2 : law.stochastic ? 1 : 0);
 export interface TierState { height: Int32Array; carry: Int32Array; steps: number }
 export interface TierFlow { to: Uint32Array; acc: Uint32Array; rounds: number }
@@ -265,6 +268,9 @@ export class Regional {
     return v;
   }
   creepSubs: number;
+  readonly band: 0 | 1 | 2;
+  clamped = 0; // the band-limited hold: the land cells held at one unit, and the height (1/256 m) it would have taken off them, over the steps made
+  dropped = 0;
   stepNo = 0; // the steps made: the routing's draws are made for it
   private route: 0 | 1 | 2;
   // `rho` (the rain of each cell) is no longer given: the rain, like the rock, is read at a cell from the table of tier-0 cells by interpolation (`smooth`).
@@ -277,14 +283,15 @@ export class Regional {
     this.atCarry = this.atCnt + 16 + 2 * CELLS0;
     this.E = storage(gpu, SPLIT * this.N * 4);
     this.E2 = storage(gpu, (RF.COUNT - SPLIT) * this.N * 4);
-    this.AT = storage(gpu, (this.atCarry + 13 * CELLS0) * 4);
+    this.band = law.band ?? 0;
+    this.AT = storage(gpu, (this.atCarry + (this.band ? BAND_PARENT_WORDS - 2 : 13) * CELLS0) * 4);
     this.creepSubs = creepSubsOf(table);
     this.route = routeOf(law);
     this.P = storage(gpu, new Uint32Array([1, this.creepSubs, 0, this.route, law.smooth ?? 0]));
     this.X = storage(gpu, table);
-    this.wgsl = regionalWgsl(EDGES, this.fn, law.nflow, undefined, law.slide ?? 8);
+    this.wgsl = regionalWgsl(EDGES, this.fn, law.nflow, undefined, law.slide ?? 8, this.band);
     this.write("H", height);
-    this.submit((p) => this.run(p, "cellmeans", this.N));
+    this.submit((p) => { this.run(p, "cellmeans", this.N); if (this.band) this.run(p, "bgnbr", CELLS0); });
   }
   private write(f: keyof typeof RF, data: ArrayBufferView) {
     const [b, o] = this.at(f);
@@ -378,17 +385,30 @@ export class Regional {
     });
     this.lastSlide = slide - chunk;
     await this.lap("creep", () => this.submit((p) => { for (let s = 0; s < this.creepSubs; s++) { this.run(p, "creep", N); this.run(p, "creepapply", N); } }));
-    await this.lap("lift", () => this.submit((p) => {
-      this.run(p, "pzero", CELLS0); this.run(p, "tally", N); this.run(p, "pstzero", CELLS0); this.run(p, "pstencil", N); this.run(p, "pmean", CELLS0);
-      for (let s = 0; s < SOLVE_SWEEPS; s += 2) { this.run(p, "psolve", CELLS0); this.run(p, "psolve2", CELLS0); }
-      this.run(p, "lift", N); this.run(p, "pcarry", CELLS0);
-    }));
+    if (this.law.holdOff && !this.band) { this.stepNo++; return rounds; }
+    if (this.band) {
+      this.clear(this.atCnt + BAND_CNT.clamped, 2);
+      await this.lap("lift", () => this.submit((p) => {
+        this.run(p, "bpzero", CELLS0); this.run(p, "bpstzero", CELLS0); this.run(p, "btally", N); this.run(p, "bpmean", CELLS0);
+        for (let s = 0; s < SOLVE_SWEEPS; s += 2) { this.run(p, "bpsolve", CELLS0); this.run(p, "bpsolve2", CELLS0); }
+        this.run(p, "blift", N); this.run(p, "bpcarry", CELLS0);
+      }));
+      if ((await this.flags()) & BAND_FLAG_CARRY) throw new Error("regional: the band-limited uplift's moments or carry passed 32 bits");
+      const [clamped, dropped] = await readU32(this.gpu, this.AT, 2, this.atCnt + BAND_CNT.clamped);
+      this.clamped += clamped; this.dropped += new Int32Array([dropped])[0];
+    } else {
+      await this.lap("lift", () => this.submit((p) => {
+        this.run(p, "pzero", CELLS0); this.run(p, "tally", N); this.run(p, "pstzero", CELLS0); this.run(p, "pstencil", N); this.run(p, "pmean", CELLS0);
+        for (let s = 0; s < SOLVE_SWEEPS; s += 2) { this.run(p, "psolve", CELLS0); this.run(p, "psolve2", CELLS0); }
+        this.run(p, "lift", N); this.run(p, "pcarry", CELLS0);
+      }));
+    }
     this.stepNo++;
     return rounds;
   }
   async readH(): Promise<Int32Array> { return this.readField("H"); }
   async readField(f: keyof typeof RF): Promise<Int32Array> { return new Int32Array(await this.read(f)); }
-  async readCarry(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, CELLS0 * 4, this.atCarry * 4)); }
+  async readCarry(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, (this.band ? 2 : 1) * CELLS0 * 4, this.atCarry * 4)); }
   // The depth of the deepest flow path of the last flow, in cells (the counting sort holds MAXD).
   async deepest(): Promise<number> { return (await readU32(this.gpu, this.AT, 1, this.atCnt + CNT.top))[0]; }
   async readFlooded(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, this.N * 4, 0)); }

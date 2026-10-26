@@ -46,7 +46,7 @@ export const MAXD = 16382; // the deepest flow path the counting sort holds, in 
 // Parameter words (P, u32).
 export const PR = {
   sea16: 16, eps: 17, ringMax: 18, ring: 19, diss16: 20, g8: 21, upl: 22, kconst: 23, shelf: 24, nExp: 25, foLand: 26, foSea: 27, skin: 28, kc: 30, rc: 36, kdt: 37, e0: 38, // kc: five words from kc; rc, kdt, e0: the relief law (see `relief`)
-  draw: 40, drawKey: 41, drawSeed: 42, kvar: 43, // draw: 0 steepest descent, 1 the receiver drawn among the lower neighbours (see `recv`); the substep's number and the planet's seed key the draw
+  draw: 40, drawKey: 41, drawSeed: 42, kvar: 43, rho8: 44, // draw: 0 steepest descent, 1 the receiver drawn among the lower neighbours (see `recv`); the substep's number and the planet's seed key the draw; rho8: 1 the receiver by Rho8's random diagonal lengths
 } as const;
 
 // A layer of sediment laid on the water-loaded crust raises the surface by (rho_m - rho_s) / (rho_m - rho_w) of its thickness, 800 / 2300 [derived,
@@ -80,7 +80,7 @@ const VOL_MAX = ${2 ** 28}u;
 const CAPF = ${CAP_FACTOR_Q16}u;
 const P_SEA = ${PR.sea16}u; const P_EPS = ${PR.eps}u; const P_RINGMAX = ${PR.ringMax}u; const P_RING = ${PR.ring}u; const P_DISS = ${PR.diss16}u; const P_G = ${PR.g8}u;
 const P_UPL = ${PR.upl}u; const P_KCONST = ${PR.kconst}u; const P_SHELF = ${PR.shelf}u; const P_NEXP = ${PR.nExp}u; const P_FOL = ${PR.foLand}u; const P_FOS = ${PR.foSea}u;
-const P_KVAR = ${PR.kvar}u; const P_DRAW = ${PR.draw}u; const P_DRAWKEY = ${PR.drawKey}u; const P_DRAWSEED = ${PR.drawSeed}u;
+const P_KVAR = ${PR.kvar}u; const P_DRAW = ${PR.draw}u; const P_DRAWKEY = ${PR.drawKey}u; const P_DRAWSEED = ${PR.drawSeed}u; const P_RHO8 = ${PR.rho8}u;
 const P_SKIN = ${PR.skin}u; const P_KC = ${PR.kc}u; const P_RC = ${PR.rc}u; const P_KDT = ${PR.kdt}u; const P_E0 = ${PR.e0}u;
 
 fn touch() {
@@ -221,6 +221,10 @@ fn flood(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
 // With P[P_DRAW] set the receiver is instead drawn among the lower neighbours with the probability proportional to the fall to each over its distance, anew each substep: steepest
 // descent sends water down any slope within 22.5 degrees of a lattice direction along that direction (Fairfield and Leymarie 1991, Tarboton 1997), so on a planar ramp it carves
 // straight valleys on the lattice. Every lower neighbour is a valid receiver, so the forest stays a forest; the draw is a Philox word of the cell's id, the substep and the seed.
+// With P[P_RHO8] set (Rho8, Fairfield and Leymarie 1991 as WhiteboxTools rho8_pointer has it: the fall to a cardinal neighbour over 1, to a diagonal one over 2 - r, r uniform in [0, 1),
+// a draw for each diagonal link and substep) the receiver is the steepest of those among the lower neighbours only, so every receiver is strictly lower on the flooded surface and no chain
+// can loop. The sphere's diagonal link has its own length (the table's inverse length), so the draw scales that link by (2 - r) / sqrt 2, which is 2 - r on a square grid: the link's inverse
+// length is multiplied by sqrt 2 x 2^16 / (2 - r) / 2^16 (sqrt 2 x 2^16 = 92682). The incision still reads the link's true length.
 ${PHILOX}
 @compute @workgroup_size(256)
 fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
@@ -228,6 +232,8 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   let k = flatIndex(gid, nwg);
   if (k >= cnt()) { return; }
   var to = k; var rd = 0u; var best = vec2u(0u, 0u);
+  var rw = vec4u(0u, 0u, 0u, 0u);
+  if (P[P_RHO8] != 0u && is_land(k)) { rw = philox(vec4u(k, P[P_DRAWKEY], 0u, 0x52484f38u), vec2u(P[P_DRAWSEED], 0x524f5554u)); }
   if (is_land(k)) {
     let f = at_load(A_FL, k);
     var share = array<u32, 8>(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u); var total = 0u;
@@ -236,9 +242,13 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
       if (j == NONE) { continue; }
       let dz = f - at_load(A_FL, j);
       if (dz <= 0i) { continue; }
-      let key = mul64(u32(dz), invd8(k, d));
-      if (lt64(best, key)) { best = key; to = j; rd = invd8(k, d); }
-      share[d] = max(1u, min(shr64(key, 16u).x, 0x0fffffffu)); total += share[d];
+      let iv = invd8(k, d);
+      var ev = iv;
+      if (P[P_RHO8] != 0u && d >= 4u) { ev = shr64(mul64(iv, (92682u << 15u) / ((131072u - (rw[d - 4u] & 0xffffu)) >> 1u)), 16u).x; }
+      let key = mul64(u32(dz), ev);
+      if (lt64(best, key)) { best = key; to = j; rd = iv; }
+      let skey = mul64(u32(dz), iv);
+      share[d] = max(1u, min(shr64(skey, 16u).x, 0x0fffffffu)); total += share[d];
     }
     if (P[P_DRAW] != 0u && total > 0u) {
       let r = philox(vec4u(k, P[P_DRAWKEY], 0u, 0x54305256u), vec2u(P[P_DRAWSEED], 0x524f5554u)).x % total;

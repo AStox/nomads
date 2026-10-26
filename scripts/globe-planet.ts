@@ -21,7 +21,7 @@ import { diskStore, sourceKey } from "./globe-window";
 import { equirect, heightColor, mix, ramp, type Layer } from "./globe-maps";
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 const DEG = Math.PI / 180;
-export const STORE = PLANET_STORE;
+export const STORE = process.env.NOMADS_STORE ?? "/tmp/planet-small/store";
 export const smallStore = () => diskStore(STORE, sourceKey(undefined, PLANET_RADIUS_M));
 
 // Connected components over the four neighbours of the cells where `mask` holds: the label of each cell (-1 off the mask) and the cells of each component.

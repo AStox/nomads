@@ -8,11 +8,11 @@ import { afterAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
 import { storage } from "../kernel";
 import { buildGeometry, climateGpu } from "./atmosphere";
-import { FACES, SMALL_RADIUS_M, cellId, fieldWords, fromLatLon, meanAreaM2, tierGrid } from "./grid";
+import { FACES, PLANET_RADIUS_M, SMALL_RADIUS_M, cellId, fieldWords, fromLatLon, meanAreaM2, meanCellM, tierGrid } from "./grid";
 import { Tectonics, cellAreas, cellVectors, extTables, makeSetup, neighbours, startingState, stateFrom, totals, FLD, type Column } from "./tectonics";
 import { ridgePlanet } from "./synthetic";
 import {
-  EF, K_GRANITE, K_SANDSTONE, K_VOLCANIC, MONTGOMERY_BRANDON, N2_REF, NONE, REF_RAIN_MMYR, Erosion, Twin, accToM2, creepIterations, defaultParams, denudationFromRelief, erosionWords, kForN2, kWord, neighbourTables,
+  CREEP_LAND, EF, K_GRANITE, K_SANDSTONE, K_VOLCANIC, MONTGOMERY_BRANDON, N2_REF, NONE, REF_RAIN_MMYR, Erosion, Twin, accToM2, creepIterations, defaultParams, denudationFromRelief, erosionWords, kForN2, kWord, landDiffusivity, neighbourTables,
   rainWord, rivers, runChain, type ChainState,
 } from "./erosion";
 
@@ -57,6 +57,24 @@ test("the eight neighbours of a cell: symmetric, 24 missing diagonals at the cub
   // a cell 12.3 km wide at most: sides from 8.6 km, and the long diagonal of the cell near a cube corner, where the lines cross at 60 degrees, sqrt(3) times a
   // side of 11.5 km, 19.9 km [derived]
   expect(dmin).toBeGreaterThan(8000); expect(dmax).toBeLessThan(20500);
+});
+
+test("scale-aware dissection: the land diffusivity of a listed tier is K (0.625 dx)^2 from its own grid, never under creep's, and the default leaves creep alone", () => {
+  const prev = process.env.NOMADS_DEFF_TIERS;
+  try {
+    delete process.env.NOMADS_DEFF_TIERS;
+    for (const t of [0, 1, 2, 3]) expect(landDiffusivity(PLANET_RADIUS_M, t)).toBe(CREEP_LAND);
+    process.env.NOMADS_DEFF_TIERS = "0,1,2,3";
+    const d = [0, 1, 2, 3].map((t) => landDiffusivity(PLANET_RADIUS_M, t));
+    for (let t = 0; t < 3; t++) expect(d[t]).toBeCloseTo(K_GRANITE * (0.625 * meanCellM(tierGrid(t, PLANET_RADIUS_M))) ** 2, 12);
+    expect(d[0] / d[1]).toBeCloseTo(4, 6); expect(d[1] / d[2]).toBeCloseTo(4, 6);
+    expect(d[3]).toBe(CREEP_LAND); // tier 3 resolves the physical Lc
+    process.env.NOMADS_DEFF_TIERS = "1";
+    expect(landDiffusivity(PLANET_RADIUS_M, 0)).toBe(CREEP_LAND); expect(landDiffusivity(PLANET_RADIUS_M, 1)).toBe(d[1]);
+    // tier 0's explicit step stays under the stable number: a substep's iterations are chosen from it
+    const [its, fo] = creepIterations(tierGrid(0, PLANET_RADIUS_M), d[0], 5e5);
+    expect(fo / 2 ** 24).toBeLessThanOrEqual(0.08 + 1e-6); expect(its).toBeGreaterThanOrEqual(1);
+  } finally { if (prev === undefined) delete process.env.NOMADS_DEFF_TIERS; else process.env.NOMADS_DEFF_TIERS = prev; }
 });
 
 test("parameters become the kernels' words: erodibility by pool, the n = 2 law at the same pace as n = 1 at its reference, rain relative to the reference", () => {
@@ -177,6 +195,42 @@ test("with the receivers drawn among the lower neighbours the kernels equal thei
     }
   }
   expect(differs).toBeGreaterThan(1000);
+  er.release(); tec.release();
+});
+
+test("with Rho8 receivers the kernels equal their twin over two substeps, every receiver is lower on the flooded surface, the draw differs from the steepest and changes with the substep number", async () => {
+  const { set, e, gpu, tec, S } = await planet();
+  const er = new Erosion(gpu, set, e, tec.S, { rho8: true }), tw = new Twin(set, e, er.p), N = er.N;
+  const rain = Float32Array.from({ length: N }, (_, i) => 200 + ((i * 7919) % 1800));
+  er.setRain(rain);
+  const rho = Uint32Array.from(rain, (v) => rainWord(v, er.p.refRainMmYr)), carry = new BigUint64Array(N), St = Int32Array.from(S);
+  let differs = 0;
+  for (let step = 0; step < 2; step++) {
+    er.drawKey = tw.drawKey = step;
+    er.heights(); await er.flow();
+    const to = await er.readE(EF.TO), fl = await er.readFlooded(), H = await er.readE(EF.H);
+    for (let k = 0; k < N; k++) if (H[k] > 0 && to[k] !== k) expect(fl[to[k]]).toBeLessThan(fl[k]);
+    const steepest = new Twin(set, e, { ...er.p, rho8: false }).receivers(Int32Array.from(H), fl).to;
+    for (let k = 0; k < N; k++) if (to[k] !== steepest[k]) differs++;
+    er.erode(); er.apply();
+    const r = tw.erode(St, rho, carry);
+    for (const [name, field, want] of [["TO", EF.TO, r.to], ["RD", EF.RD, r.rd], ["ACC", EF.ACC, r.acc], ["ER", EF.ER, r.er]] as const) {
+      const got = await er.readE(field);
+      let bad = 0;
+      for (let i = 0; i < N; i++) if (got[i] !== (want[i] | 0)) bad++;
+      expect(`${name} ${bad}`).toBe(`${name} 0`);
+    }
+    expect(await er.flags()).toBe(0);
+  }
+  expect(differs).toBeGreaterThan(1000);
+  // the same heights under another substep number: other draws
+  er.drawKey = 100; er.heights(); await er.flow();
+  const a = await er.readE(EF.TO);
+  er.drawKey = 101; await er.flow();
+  const b = await er.readE(EF.TO);
+  let moved = 0;
+  for (let k = 0; k < N; k++) if (a[k] !== b[k]) moved++;
+  expect(moved).toBeGreaterThan(1000);
   er.release(); tec.release();
 });
 
