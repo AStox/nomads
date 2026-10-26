@@ -24,8 +24,9 @@ const seed = 1, key = arg("key", "7f6ff6c82cdd");
 const name = arg("name", "range"), face = Number(arg("face", "0")), tx = Number(arg("tx", "20")), ty = Number(arg("ty", "12")), tiles = Number(arg("tiles", "12")), TIER = Number(arg("tier", "5"));
 const down = 2 ** (5 - TIER), size5 = tiles * 256, x05 = tx * 256, y05 = ty * 256;
 const size = size5 / down, x0 = x05 / down, y0 = y05 / down, HL = 2, S = size + 2 * HL, cellM = 75 * down, per = 1 << TIER;
-const bake = arg("bake", `/tmp/planet-75m/${seed}-${key}`), landDir = arg("land-dir", "/tmp/planet-75m/land"), work = join(landDir, name);
+const bake = arg("bake", `/tmp/planet-75m/${seed}-${key}`), landDir = arg("land-dir", process.env.NOMADS_LAND ?? "/tmp/planet-75m/land"), work = join(landDir, name);
 mkdirSync(work, { recursive: true });
+const nuc = Number(arg("nuc", "0")); // channel nucleation (src/gpu/globe/nucleation.ts): rms metres of the detail added to the start of this run's tier
 const dtMy = Number(arg("dt-my", "1")), nflow = Number(arg("nflow", "8")) as 4 | 8, budget = Number(arg("budget", "200")), uniform = flag("uniform-rain");
 const schedule = arg("schedule", "").split(",").filter(Boolean).map((e) => e.split("x").map(Number) as [number, number]);
 const dtAt = (step: number) => { let n = 0; for (const [dt, k] of schedule) { n += k; if (step < n) return dt; } return dtMy; };
@@ -40,12 +41,12 @@ const tableOf = (planet: Planet, dt: number) => tierTable(planet, TIER, defaultP
 
 // the start of the interior (a kept state, a tier-4 run's state carried down, or tier 3's heights carried down) and the patch's ring: tier 5 from the bake's heights (held), tier 4 from the carry
 function inputs() {
-  const kept = existsSync(join(work, "state.i32")), t4 = regionBlock4(i32(`${arg("t3dir", "/tmp/planet-75m/land")}/${seed}-${key}/t3-height.i32`), face, x05, y05, size5), fn4 = 1024 * 4;
+  const kept = existsSync(join(work, "state.i32")), t4 = regionBlock4(i32(`${arg("t3dir", landDir)}/${seed}-${key}/t3-height.i32`), face, x05, y05, size5, TIER === 4 ? nuc : 0), fn4 = 1024 * 4;
   const from4 = arg("from4", "");
   if (from4) { const s4 = i32(join(landDir, from4, "state.i32")), n4 = size5 / 2; for (let y = 0; y < n4; y++) for (let x = 0; x < n4; x++) t4[(face * fn4 + y05 / 2 + y) * fn4 + x05 / 2 + x] = s4[y * n4 + x]; }
   const p = patchAt(TIER, face, x0, y0, HL, size);
   let interior: Int32Array, h: Int32Array, fl: Int32Array;
-  if (TIER === 5) { interior = kept ? readI32("state.i32") : regionStart(t4, face, x05, y05, size5); h = readCells(join(bake, "t5-height.i32"), p.ids); fl = readCells(join(bake, "t5-flooded.i32"), p.ids); }
+  if (TIER === 5) { interior = kept ? readI32("state.i32") : regionStart(t4, face, x05, y05, size5, nuc); h = readCells(join(bake, "t5-height.i32"), p.ids); fl = readCells(join(bake, "t5-flooded.i32"), p.ids); }
   else { h = Int32Array.from(p.ids, (id) => t4[id]); fl = Int32Array.from(h); interior = kept ? readI32("state.i32") : new Int32Array(size * size); if (!kept) for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) interior[y * size + x] = h[(y + HL) * S + x + HL]; }
   // --ring-carry: the ring round a tier-5 region from the tier-4 cells carried down (the run's own surface), not from a bake of another chain
   if (TIER === 5 && flag("ring-carry")) {
@@ -61,7 +62,7 @@ const planet = await readPlanet(seed, diskStore(arg("store", STORE), key)), gpu 
 try {
   const m = meta(), { h, fl, kept } = inputs();
   console.log(`tier ${TIER} region ${size}x${size} face ${face} at ${x0},${y0}, planet and start ${spent().toFixed(1)} s, ${m.steps} steps kept`);
-  const r = new LandRegion(gpu, TIER, face, x0, y0, size, tableOf(planet, schedule.length ? dtAt(m.steps) : dtMy), h, fl, { nflow, stochastic: flag("stochastic"), slide: flag("slide16") ? 16 : 8 });
+  const r = new LandRegion(gpu, TIER, face, x0, y0, size, tableOf(planet, schedule.length ? dtAt(m.steps) : dtMy), h, fl, { nflow, stochastic: flag("stochastic"), rho8: flag("rho8") || flag("final-rho8"), smooth: Number(arg("smooth", "0")), slide: flag("slide16") ? 16 : 8 });
   if (kept) r.load({ height: h, carry: readI32("carry.i32"), steps: m.steps } as LandState);
 
   if (flag("render")) {

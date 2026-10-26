@@ -13,22 +13,22 @@ const INF = 0x7fffffff;
 const NP = 6 * 256 * 256;
 
 // The children, at the tier above `from`, of a square of tier-`from` cells (interior `size`, from face position (X0, Y0)) of a field kept whole in `parent` (indexed by cell id).
-export function refineRegion(parent: ArrayLike<number>, from: number, face: number, X0: number, Y0: number, size: number): Int32Array {
-  return refineBlock(parent, from, patchAt(from, face, X0, Y0, REFINE_HALO, size), REFINE_PASSES);
+export function refineRegion(parent: ArrayLike<number>, from: number, face: number, X0: number, Y0: number, size: number, nucSigmaM = 0): Int32Array {
+  return refineBlock(parent, from, patchAt(from, face, X0, Y0, REFINE_HALO, size), REFINE_PASSES, nucSigmaM);
 }
 
 // Tier 4 over a tier-5 region (interior `size` cells from (x0, y0) of a face) and the ring the next carry reads, carried down from tier 3's file by refineBlock as the chain carries it, in a
 // tier-4 array (the whole tier's length, zero outside the block).
-export function regionBlock4(t3: ArrayLike<number>, face: number, x0: number, y0: number, size: number): Int32Array {
+export function regionBlock4(t3: ArrayLike<number>, face: number, x0: number, y0: number, size: number, nucSigmaM = 0): Int32Array {
   const fn4 = 256 << 4, t4 = new Int32Array(6 * fn4 * fn4);
   const X4 = x0 / 2 - REFINE_HALO, Y4 = y0 / 2 - REFINE_HALO, S4 = size / 2 + 2 * REFINE_HALO;
   if (X4 < 0 || Y4 < 0 || X4 + S4 > fn4 || Y4 + S4 > fn4 || X4 % 2 || Y4 % 2 || S4 % 2) throw new Error("regionBlock4: the region is too near its face's edge for the carry's rings");
-  const c = refineRegion(t3, 3, face, X4 / 2, Y4 / 2, S4 / 2);
+  const c = refineRegion(t3, 3, face, X4 / 2, Y4 / 2, S4 / 2, nucSigmaM);
   for (let y = 0; y < S4; y++) for (let x = 0; x < S4; x++) t4[(face * fn4 + Y4 + y) * fn4 + X4 + x] = c[y * S4 + x];
   return t4;
 }
 // The tier-5 interior of the region from tier 4's cells (regionBlock4's, or those a tier-4 solve has made).
-export const regionStart = (t4: ArrayLike<number>, face: number, x0: number, y0: number, size: number): Int32Array => refineRegion(t4, 4, face, x0 / 2, y0 / 2, size / 2);
+export const regionStart = (t4: ArrayLike<number>, face: number, x0: number, y0: number, size: number, nucSigmaM = 0): Int32Array => refineRegion(t4, 4, face, x0 / 2, y0 / 2, size / 2, nucSigmaM);
 
 // Cells of a tier's row-major file by id.
 export function readCells(file: string, ids: ArrayLike<number>): Int32Array {
@@ -41,7 +41,7 @@ export function readCells(file: string, ids: ArrayLike<number>): Int32Array {
 
 // The halo of a region's patch: two cells, which the slides of sixteen neighbours read.
 export const LAND_HALO = 2;
-export interface LandOptions { nflow: 4 | 8; stochastic?: boolean; slide?: 8 | 16 }
+export interface LandOptions { nflow: 4 | 8; stochastic?: boolean; slide?: 8 | 16; rho8?: boolean; smooth?: number }
 export interface LandState { height: Int32Array; carry: Int32Array; steps: number }
 
 export class LandRegion {
@@ -61,7 +61,7 @@ export class LandRegion {
     this.patch = patchAt(tier, face, x0, y0, LAND_HALO, size);
     this.side = this.patch.side;
     this.subs = creepSubsOf(table);
-    this.solver = new RegionalPatch(gpu, tier, size, table, this.subs, o.nflow, o.stochastic ? 1 : 0, o.slide ?? 8, LAND_HALO);
+    this.solver = new RegionalPatch(gpu, tier, size, table, this.subs, o.nflow, o.rho8 ? 2 : o.stochastic ? 1 : 0, o.slide ?? 8, LAND_HALO, o.smooth ?? 0);
     this.solver.setPatch(this.patch);
     this.flood0 = new Int32Array(this.side * this.side);
     const S = this.side;

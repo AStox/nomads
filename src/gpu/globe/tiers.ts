@@ -7,7 +7,7 @@
 import type { Gpu } from "../device";
 import { BakeDir } from "./bakedir";
 import { defaultParams } from "./erosion";
-import { Regional, refineSmooth, tierTable, type RouteLaw } from "./regional";
+import { Regional, child4, refineSmooth, tierTable, type RouteLaw } from "./regional";
 import type { Planet } from "./window";
 
 type I32 = Int32Array | Uint32Array;
@@ -22,8 +22,12 @@ export interface TierLaw { route: RouteLaw; dtMy: readonly number[]; uniformRain
 // the island's law the worst tier-0 cell of a 12 by 12 tile range region is 0.95 m off the planet's mean (260 m before) [measured, 2026-10-22: docs/research/globe/2026-10-22-planet-island-law.md].
 // Tier 4 (150 m) does the work of a tier of 75 m cells at a quarter of the cost; tier 5 carries it and settles at the step lengths that end tier 4's.
 const SCHEDULE = [...Array(4).fill(26), ...Array(6).fill(13), ...Array(10).fill(6.5), ...Array(4).fill(3.25), ...Array(4).fill(1.6)] as number[];
-const ISLAND: TierLaw = { route: { nflow: 8, stochastic: true, slide: 16 }, dtMy: SCHEDULE, uniformRain: true };
-export const TIER_LAWS: readonly TierLaw[] = [ISLAND, ISLAND, ISLAND, ISLAND, ISLAND, { ...ISLAND, dtMy: [6.5, 6.5, 3.25, 3.25, 1.6, 1.6] }];
+// SCRATCH knob (prototype, not for a bake): NOMADS_RHO8=1 routes tiers 1 to 5 by Rho8 (wgsl/globe-regional.ts recv)
+// SCRATCH knob (prototype): NOMADS_SMOOTH=1:1,2:1 smooths the incision's area over a (2r + 1) square at those tiers (tier:r; wgsl/globe-regional.ts acc_s)
+const SMOOTH = new Map((process.env.NOMADS_SMOOTH ?? "").split(",").filter(Boolean).map((e) => e.split(":").map(Number) as [number, number]));
+const ISLAND: TierLaw = { route: { nflow: 8, stochastic: true, slide: 16, rho8: process.env.NOMADS_RHO8 === "1" }, dtMy: SCHEDULE, uniformRain: true };
+const lawOf = (t: number, l: TierLaw): TierLaw => (SMOOTH.has(t) ? { ...l, route: { ...l.route, smooth: SMOOTH.get(t) } } : l);
+export const TIER_LAWS: readonly TierLaw[] = [ISLAND, ISLAND, ISLAND, ISLAND, ISLAND, { ...ISLAND, dtMy: [6.5, 6.5, 3.25, 3.25, 1.6, 1.6] }].map((l, t) => lawOf(t, l));
 export const TIER_STEPS = TIER_LAWS.map((l, t) => (t === 0 ? 0 : l.dtMy.length));
 // A tier's table (the K dt and the creep coefficients) of step number `step`, made once for each step length.
 export function tierTableOf(planet: Planet, tier: number): (step: number) => Uint32Array {
@@ -52,7 +56,7 @@ export async function tiersOf(gpu: Gpu, planet: Planet, dir: BakeDir, budgetS = 
   for (let t = 1; t <= last; t++) {
     if (dir.has(`t${t}-height.i32`) && (t < last || dir.has(`t${t}-run.json`))) continue;
     const n = planet.n << (2 * t), resuming = dir.has(`t${t}-state.json`);
-    const start = resuming ? new Int32Array(n) : refineSmooth(tierParent(planet, dir, t), t - 1);
+    const start = resuming ? new Int32Array(n) : refineSmooth(tierParent(planet, dir, t), t - 1, 4, NUC_TIERS.includes(t) ? topOctaveSigmaM(tierParent(planet, dir, t), t - 1) / Math.SQRT2 : 0);
     const tableAt = tierTableOf(planet, t), first = tableAt(0), r = new Regional(gpu, t, first, start, laws[t].route);
     let table = first;
     const run: TierRun = dir.json<TierRun>(`t${t}-partial`) ?? { tier: t, steps: 0, calls: 0, callS: [], rounds: [], slides: [], stepS: [] };
@@ -101,6 +105,42 @@ export async function tiersOf(gpu: Gpu, planet: Planet, dir: BakeDir, budgetS = 
 }
 
 export type { I32 };
+
+// SCRATCH knob (prototype): NOMADS_NUC_TIERS=3,4,5 nucleates the start of those tiers (nucleation.ts) with the detail the carry misses: the last resolved octave's measured detail over sqrt 2.
+const NUC_TIERS = (process.env.NOMADS_NUC_TIERS ?? "").split(",").filter(Boolean).map(Number);
+// The detail of a whole tier's heights (1/256 m, `fn` cells a side per face) that the smooth carry of the heights' own 2 by 2 means cannot predict, rms metres over land (all four
+// children over 1 m), away from the faces' edges (8 parents): the measure of tools/octaves.ts, the last resolved octave of the field.
+export function topOctaveSigmaM(field: ArrayLike<number>, from: number): number {
+  const fn = 256 << from, n = fn / 2, m = fn, quad = new Float64Array(4), cells = fn * fn;
+  const kids = (src: Float64Array, out: Float64Array) => {
+    for (let y = 1; y < n - 1; y++) for (let x = 1; x < n - 1; x++) {
+      const p = y * n + x;
+      child4(src[p], src[p - 1], src[p + 1], src[p - n], src[p + n], src[p - n - 1], src[p - n + 1], src[p + n - 1], src[p + n + 1], quad);
+      const o = 2 * y * m + 2 * x;
+      out[o] = quad[0]; out[o + 1] = quad[1]; out[o + m] = quad[2]; out[o + m + 1] = quad[3];
+    }
+  };
+  let s2 = 0, cnt = 0;
+  const M = new Float64Array(n * n), c = new Float64Array(m * m), corr = new Float64Array(m * m), r = new Float64Array(n * n);
+  for (let f = 0; f < 6; f++) {
+    const F = (y: number, x: number) => field[f * cells + y * fn + x];
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) M[y * n + x] = (F(2 * y, 2 * x) + F(2 * y, 2 * x + 1) + F(2 * y + 1, 2 * x) + F(2 * y + 1, 2 * x + 1)) / 4;
+    c.fill(0); kids(M, c);
+    for (let pass = 0; pass < 4; pass++) {
+      for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { const o = 2 * y * m + 2 * x; r[y * n + x] = M[y * n + x] - (c[o] + c[o + 1] + c[o + m] + c[o + m + 1]) / 4; }
+      corr.fill(0); kids(r, corr);
+      for (let i = 0; i < c.length; i++) c[i] += corr[i];
+    }
+    for (let y = 8; y < n - 8; y++) for (let x = 8; x < n - 8; x++) {
+      const o = 2 * y * m + 2 * x, ids = [o, o + 1, o + m, o + m + 1], v = ids.map((i) => F(Math.floor(i / m), i % m));
+      if (v.some((q) => q <= 256)) continue;
+      const rr = v.map((q, j) => q - c[ids[j]]), mean = (rr[0] + rr[1] + rr[2] + rr[3]) / 4;
+      for (const t of rr) s2 += (t - mean) ** 2;
+      cnt += 4;
+    }
+  }
+  return Math.sqrt(s2 / cnt) / 256;
+}
 
 // Every river of a tier reaches the sea across tile and face edges: each land cell drains to a neighbour whose flooded surface is strictly lower (so no chain can loop, and a
 // chain ends only where a cell drains to itself, which only a sea cell may do) and each sea cell drains to itself. `bad` counts the cells that break either rule.

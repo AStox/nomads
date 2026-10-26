@@ -11,6 +11,7 @@ import { EDGES, FACES, areaSr, haloSource, tierGrid, type Grid } from "./grid";
 import { SKIN_M, defaultParams, kWord, neighbourTables, rainWord, REF_RAIN_MMYR, type ErosionParams } from "./erosion";
 import { THRESHOLD_DEG } from "../../terrain/geology";
 import { kFactors } from "./kfield";
+import { nucleate } from "./nucleation";
 import { packRecord, unpackRecord, ROCK_OF, type Planet, type PlanetStore } from "./window";
 
 // ---------- 1. the settings ----------
@@ -134,7 +135,7 @@ function children2(parent: ArrayLike<number>, from: number, out: Float64Array, a
 // A field at tier `from` (1/256 m) carried to the next tier: the bilinear children, then what is left of each parent's height (its height less the children's mean) is carried
 // down the same way, `passes` times, so that the children's means come to the parents' without a constant to a block (a constant is a step of up to 100 m at the block's
 // edge on a range: measured); the last whole-unit constant, which is then under a unit, makes the children of every cell sum to 4 times its height exactly [design, R1761].
-export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4): Int32Array {
+export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4, nucSigmaM = 0): Int32Array {
   const n = CELLS0 << (2 * from), c = new Float64Array(4 * n), out = new Int32Array(4 * n), fnp = 256 << from, fn = fnp * 2, cells = fnp * fnp;
   if (parent.length !== n) throw new Error(`refineSmooth: tier ${from} holds ${n} cells, got ${parent.length}`);
   children2(parent, from, c, false);
@@ -153,7 +154,9 @@ export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4
       for (let X = 0; X < fnp; X++) {
         const p = f * cells + Y * fnp + X, o = (f * fn + 2 * Y) * fn + 2 * X, v = [Math.round(c[o]), Math.round(c[o + 1]), Math.round(c[o + fn]), Math.round(c[o + fn + 1])];
         const d = Math.round(parent[p] * 4) - (v[0] + v[1] + v[2] + v[3]), base4 = Math.floor(d / 4), rem = d - base4 * 4;
-        out[o] = v[0] + base4 + (0 < rem ? 1 : 0); out[o + 1] = v[1] + base4 + (1 < rem ? 1 : 0); out[o + fn] = v[2] + base4 + (2 < rem ? 1 : 0); out[o + fn + 1] = v[3] + base4 + (3 < rem ? 1 : 0);
+        let w4 = [v[0] + base4 + (0 < rem ? 1 : 0), v[1] + base4 + (1 < rem ? 1 : 0), v[2] + base4 + (2 < rem ? 1 : 0), v[3] + base4 + (3 < rem ? 1 : 0)];
+        if (nucSigmaM > 0) w4 = nucleate(w4, [o, o + 1, o + fn, o + fn + 1], from + 1, nucSigmaM);
+        out[o] = w4[0]; out[o + 1] = w4[1]; out[o + fn] = w4[2]; out[o + fn + 1] = w4[3];
       }
   return out;
 }
@@ -230,7 +233,8 @@ export function creepSubsOf(table: Uint32Array): number {
 
 // ---------- 4. the kernels on a device ----------
 // The routing of a tier's flow: the neighbours the flood and the receivers read, and whether a receiver is drawn among the lower ones (wgsl/globe-regional.ts recv) or is the steepest.
-export interface RouteLaw { nflow: 4 | 8; stochastic: boolean; slide?: 8 | 16 }
+export interface RouteLaw { nflow: 4 | 8; stochastic: boolean; slide?: 8 | 16; rho8?: boolean; smooth?: number }
+export const routeOf = (law: RouteLaw): 0 | 1 | 2 => (law.rho8 ? 2 : law.stochastic ? 1 : 0);
 export interface TierState { height: Int32Array; carry: Int32Array; steps: number }
 export interface TierFlow { to: Uint32Array; acc: Uint32Array; rounds: number }
 const readU32 = async (gpu: Gpu, b: GPUBuffer, words: number, at: number) => new Uint32Array(await readback(gpu, b, words * 4, at * 4));
@@ -263,7 +267,7 @@ export class Regional {
   }
   creepSubs: number;
   stepNo = 0; // the steps made: the routing's draws are made for it
-  private route: 0 | 1;
+  private route: 0 | 1 | 2;
   // `rho` (the rain of each cell) is no longer given: the rain, like the rock, is read at a cell from the table of tier-0 cells by interpolation (`smooth`).
   constructor(readonly gpu: Gpu, readonly tier: number, table: Uint32Array, height: Int32Array, readonly law: RouteLaw = { nflow: FLOW_NEIGHBOURS, stochastic: false }) {
     this.g = tierGrid(tier);
@@ -276,8 +280,8 @@ export class Regional {
     this.E2 = storage(gpu, (RF.COUNT - SPLIT) * this.N * 4);
     this.AT = storage(gpu, (this.atCarry + 13 * CELLS0) * 4);
     this.creepSubs = creepSubsOf(table);
-    this.P = storage(gpu, new Uint32Array([1, this.creepSubs, 0, law.stochastic ? 1 : 0]));
-    this.route = law.stochastic ? 1 : 0;
+    this.route = routeOf(law);
+    this.P = storage(gpu, new Uint32Array([1, this.creepSubs, 0, this.route, law.smooth ?? 0]));
     this.X = storage(gpu, table);
     this.wgsl = regionalWgsl(EDGES, this.fn, law.nflow, undefined, law.slide ?? 8);
     this.write("H", height);
@@ -325,7 +329,7 @@ export class Regional {
   private clear(word: number, count: number) { this.gpu.device.queue.writeBuffer(this.AT, word * 4, new Uint32Array(count)); }
   // Whether the receivers are drawn among the lower neighbours (the law's) or are the steepest: the settled flow of a tier's final heights is the steepest, as the water stages route.
   setRoute(stochastic: boolean) {
-    this.route = stochastic ? 1 : 0;
+    this.route = stochastic ? routeOf(this.law) : 0;
     this.gpu.device.queue.writeBuffer(this.P, 12, new Uint32Array([this.route]));
   }
   async flags(): Promise<number> { return (await readU32(this.gpu, this.AT, 1, this.atCnt + CNT.flags))[0]; }
