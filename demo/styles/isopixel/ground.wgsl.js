@@ -558,6 +558,21 @@ fn fillWater(S: ptr<function, GSample>, x: f32, z: f32, ctx: PaintCtx, river: bo
   (*S).ice = !bed && kind != 1u && g_iceAt(x, z);
 }
 `)}
+${planet ? `// The sea's facets, fixed to the ground: the slope (along the noise frame's x and z) of the waves a pixel of mpp metres resolves, and, in .z, the slope variance of the ones it does not. A wind sea has the
+// same slope variance in every octave (a spectrum falling as k^-3), Cox and Munk's mean square slope 0.003 + 0.00512 W (1954, W = 6 m/s [design]) shared by the four octaves of 1.5 to 40 m a fifth each and a
+// fifth below them; an octave comes out of the resolved slope and into the variance as its wavelength passes the pixel (the painter's own fade of a feature of that size), so the sea's light has the same
+// mean at every zoom and only its texture comes and goes
+const SEA_S2: f32 = ${lit(0.003 + 0.00512 * 6)};
+fn g_seaWave(x: f32, z: f32, mpp: f32) -> vec3<f32> {
+  var s = vec2<f32>(0.0);
+  var un = 0.2;
+${[1.5, 4, 12, 40].map((l, i) => `  {
+    let w = ${FADE(l)};
+    s += w * 0.19 * vec2<f32>(${NOISE(l, l, 71 + 2 * i)}, ${NOISE(l, l, 72 + 2 * i)});
+    un += (1.0 - w) * 0.2;
+  }`).join("\n")}
+  return vec3<f32>(s, un * SEA_S2);
+}` : ""}
 // main.js groundAt's shore and depth, then paintWater, from a sample whose water is filled
 fn g_water(S: GSample, x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) -> u32 {
   let kind = S.kind;

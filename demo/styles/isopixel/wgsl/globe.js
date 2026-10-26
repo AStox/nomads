@@ -68,13 +68,15 @@ fn ngSky(e: f32) -> f32 {
 const NG_L_SKY: f32 = ${lit(NG.sky)};
 const NG_ALB: f32 = ${lit(NG.alb)};
 const NG_GAM: f32 = ${lit(NG.gam)};
-fn nightGround(c: vec3f, p: vec3f, sd: f32, ink: vec3f, facing: f32) -> vec3f {
+fn nightGround(c: vec3f, p: vec3f, sd: f32, ink: vec3f, facing: f32, seaR: f32) -> vec3f {
   let lc = max(dot(c, vec3f(0.3, 0.59, 0.11)), 1e-3);
   let lit = 0.5 * (1.0 - dot(u.sun, u.moon));
   let m = dot(p, u.moon);
   let E = ngSky(degrees(asin(clamp(sd, -1.0, 1.0)))) + NG_E_MOON * lit * g_smooth(-0.017, 0.17, m) * max(facing, 0.0);
   let ratio = NG_ALB * lc * E / (PI * NG_L_SKY);
-  var g = c / lc * dot(ink, vec3f(0.3, 0.59, 0.11)) * pow(ratio, NG_GAM);
+  // seaR: what the sea adds to a ground's radiance, as a share of the dark sky's, the sky it mirrors and the moon's glint (seaShine); it has the light's own colour, not the water's
+  let rs = ratio + seaR;
+  var g = mix(c / lc, vec3f(1.0), seaR / max(rs, 1e-6)) * dot(ink, vec3f(0.3, 0.59, 0.11)) * pow(rs, NG_GAM);
   // the colour as the ladder's night drains it (live.js row): less saturated, bluer
   let sun = degrees(asin(clamp(sd, -1.0, 1.0)));
   let w = g_smooth(-1.0, -11.0, sun);
@@ -725,6 +727,34 @@ fn aoMul(ao: u32, row: u32) -> vec3f {
   return max(vec3f(0.0), 1.0 - a * hue * (A + lt[4].w * key) / (A + key + 1e-4));
 }
 
+// Water's reflectance at normal incidence (n 1.33) and Schlick's law of its rise toward grazing
+const SEA_F0: f32 = 0.02;
+fn seaFresnel(c: f32) -> f32 { return SEA_F0 + (1.0 - SEA_F0) * pow(1.0 - clamp(c, 0.0, 1.0), 5.0); }
+// The sea's own light, from the facets of its waves (ground.wgsl.js g_seaWave: tx, ty the noise frame's axes on the ground, w the slopes along them and the variance of those a pixel does not resolve):
+// the sky mirrored in the facet the eye sees (Fresnel's share of a sky that is a third brighter low than high [design], its mean the tables' ambient light) and the key light's glint, Cox and Munk's
+// Gaussian slopes round the facet, radiance F p E / (4 cos(view) cos^4(tilt)) under the light's illuminance E on a plane across its rays. Out: rgb, what it adds in the light tables' units
+// (ambient or key light on an albedo of 1); a, the same as a share of the dark sky's radiance for the night's law, the moon's E being its own (night.js)
+fn seaShine(p: vec3f, rd: vec3f, tx: vec3f, ty: vec3f, w: vec3f) -> vec4f {
+  let V = -rd;
+  let t1 = normalize(tx);
+  let t2 = normalize(ty - t1 * dot(ty, t1));
+  let n = normalize(p - w.x * t1 - w.y * t2);
+  let F = seaFresnel(dot(V, n));
+  let sky = 1.6 - 0.9 * max(dot(reflect(rd, n), p), 0.0);
+  let Ld = normalize(mix(u.sun, u.moon, u.moonMix));
+  let hv = normalize(Ld + V);
+  let cb = max(dot(hv, n), 0.05);
+  let s2 = max(w.z, 1e-4);
+  let P = exp(-(1.0 - cb * cb) / (cb * cb * s2)) / (PI * s2);
+  // the glint over the light's horizon at this place, and over the facet's own horizon
+  let vis = g_smooth(-0.02, 0.1, dot(Ld, p));
+  let k = seaFresnel(dot(V, hv)) * P * vis / (4.0 * max(dot(V, p), 0.05) * cb * cb * cb * cb);
+  let lit = 0.5 * (1.0 - dot(u.sun, u.moon));
+  let moon = NG_E_MOON * lit * g_smooth(-0.017, 0.17, dot(p, u.moon));
+  // the tables' ambient and key light are those of the camera's place, so it is a near view's, gone as the camera climbs out of the air (u.airK)
+  return vec4f(lt[1].xyz * (sky * F) + lt[2].xyz * (PI * k), sky * F + moon * k / NG_L_SKY) * (1.0 - u.airK);
+}
+
 struct Out {
   @location(0) color: vec4f,
   @builtin(frag_depth) depth: f32,
@@ -852,6 +882,9 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   var facing = sd;
   var slopeFacing = sd;
   var moonFacing = dot(p, u.moon);
+  // open water's facets (g_seaWave) where the pixel is sea or lake, for its own light (seaShine)
+  var seaOn = false;
+  var seaW = vec3f(0.0);
   // where the window's own light lights the pixel (the ground inside the fine pages), its level and occlusion
   var isLit = false;
   var litRow = 0u;
@@ -918,6 +951,10 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
     var S: GSample;
     fillTop(&S, xz.x, xz.y, ctx);
     idx = g_paint(&S, xz.x, xz.y, gX, gY, ctx, mppN);
+    if (S.isWater && S.kind != 3u && !S.bed && !S.ice) {
+      seaOn = true;
+      seaW = g_seaWave(xz.x, xz.y, mppN);
+    }
     if (S.isCrown) {
       // a pixel painted with the tree sprites' colours is lit as the shade pass lights an upright sprite: half its own light and half the slope's
       facing = 0.5 * (u.sprl.x + slopeFacing);
@@ -953,9 +990,12 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   let lit0 = unpack4x8unorm(lutT[row * NC + idx]).rgb * ambK * select(vec3f(1.0), aoMul(litAo, row), isLit);
   // the night's law at this place (night.js) joins the tables' as the sun goes down (live.js s.night); where the window's own light lies (isLit) the tables carry it, the camera's place being this one
   let dark = g_smooth(1.0, -8.0, degrees(asin(clamp(sd, -1.0, 1.0))));
-  let nw = select(dark, 0.0, isLit);
-  var shown = max(lit0, ink * (1.0 - dark));
-  if (nw > 0.0) { shown = mix(shown, max(lit0, nightGround(ground, p, sd, ink, moonFacing)), nw); }
+  // the sea takes the night's law on the pages too (what the moon's glint adds to it is a ratio of radiances, which the tables' display units cannot hold)
+  let nw = select(dark, 0.0, isLit && !seaOn);
+  var seaL = vec4f(0.0);
+  if (seaOn) { seaL = seaShine(p, rd, kx, ky, seaW); }
+  var shown = max(lit0 + seaL.rgb * ambK, ink * (1.0 - dark));
+  if (nw > 0.0) { shown = mix(shown, max(lit0, nightGround(ground, p, sd, ink, moonFacing, seaL.a)), nw); }
   o_.color = vec4f(shown, 1.0);
   return o_;
 }

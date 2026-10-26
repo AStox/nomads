@@ -823,8 +823,9 @@ fn shadeFS(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   var pick = g.y;
   var stand = kind == 1u;
   var groundish = kind == 0u || kind == 3u;
-  // beyond an island-wide level's map the sea runs on, deep and plain, as the CPU bake once laid it under every chunk
-  if (empty) { c = select(V.sea + 1u, V.sea, bay(vec2i(X, Y)) < 0.65); }
+  // beyond an island-wide level's map the sea runs on, deep and plain, as the CPU bake once laid it under every chunk; where the planet pass draws the ground it is that pass's sea (swell, facets, the night's law), so
+  // nothing here but the sprites' shade, as over the rest of the ground: this fill's own dither was fixed to the screen
+  if (empty && (V.gflags & 2u) == 0u) { c = select(V.sea + 1u, V.sea, bay(vec2i(X, Y)) < 0.65); }
   else if (groundish && (V.gflags & 2u) != 0u) {
     // the ground (and the banks between its levels) is left to the planet pass under this one (wgsl/globe.js): nothing is drawn here but the shade the sprites cast on it, as the light's loss over flat ground
     let sh = select(0.0, textureLoad(mask, q, 0).r * V.sunK, V.sunK > 0.0);
