@@ -33,6 +33,8 @@ export { NS, ATLAS };
 // about 0.6 ms of a frame on AMD RDNA-1, measured 2026-10-16 at 1.0 to 1.4 ms for six stripes; a tick's move of the sun
 // is traced in a fifth of a second at 60 Hz]
 const SUN_MOVE = 0.004, SUN_STRIPES = 12;
+// the folds of a ground about to be drawn are traced this many stripes of rows behind the frames (prepareGround) [design: a stripe of the whole trace's 27 ms of the GPU is about 3 ms, as the sun's stripes are about one]
+const FOLD_STRIPES = 8;
 // how far from each cell of the island's heights the ground's folds are looked over for the sky they hide (meters)
 const TER_REACH = 450;
 // the most objects one view draws, their shadow rows, and tiles under a view
@@ -918,8 +920,9 @@ fn sunMain(@builtin(global_invocation_id) id: vec3u) {
 fn sinAt(t: f32) -> f32 { return t * inverseSqrt(1.0 + t * t); }
 @compute @workgroup_size(8, 8)
 fn foldMain(@builtin(global_invocation_id) id: vec3u) {
-  if (id.x >= T.n || id.y >= T.n) { return; }
-  let p = vec2f(f32(id.x), f32(id.y));
+  let y = id.y + T.row0;
+  if (id.x >= T.n || y >= T.n) { return; }
+  let p = vec2f(f32(id.x), f32(y));
   let h0 = hAt(vec2i(p)) * T.exag;
   let g = vec2f(hBil(p + vec2f(2.0, 0.0)) - hBil(p - vec2f(2.0, 0.0)), hBil(p + vec2f(0.0, 2.0)) - hBil(p - vec2f(0.0, 2.0))) * T.exag / (4.0 * T.step);
   var occ = 0.0;
@@ -1056,15 +1059,18 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   const stor = (data, label) => { const b = B(data.byteLength, STOR, label); device.queue.writeBuffer(b, 0, data); return b; };
   // the gradient table's words, then room for the page table's (pages.js): an on word and sixteen entries, as eighteen words
   const GRAD_WORDS = gp.grad.length, withTable = (data, i) => { if (i !== 7) return data; const o = new Float32Array(GRAD_WORDS + 18); o.set(data); return o; };
-  let groundBuffers = GROUND_BINDINGS.map((b, i) => {
+  // a ground's four storage buffers (the quick runoff words, the gradient with room for the wrap and page table, the streams and their bins) and the bind group over them and the textures given
+  const groundBuffersOf = (g) => GROUND_BINDINGS.map((b, i) => {
     if (b.kind !== "storage") return null;
-    const data = [gp.dq, gp.grad, gp.streams, gp.streamBins][i - 6];
+    const data = [g.dq, g.grad, g.streams, g.streamBins][i - 6];
     return stor(data.length ? withTable(data, i) : new Uint32Array(4), `ground${i}`);
   });
-  const makeGroundGroup = () => device.createBindGroup({
+  const groundGroupOf = (fine, isle, grid, river, bufs) => device.createBindGroup({
     layout: groundLayout,
-    entries: [fineT, isleT, gridT, riverT, trailT, iceT].map((t, i) => ({ binding: i, resource: t.createView(i < 3 ? { dimension: "2d-array" } : {}) })).concat(groundBuffers.slice(6).map((b, k) => ({ binding: 6 + k, resource: { buffer: b } }))),
+    entries: [fine, isle, grid, river, trailT, iceT].map((t, i) => ({ binding: i, resource: t.createView(i < 3 ? { dimension: "2d-array" } : {}) })).concat(bufs.slice(6).map((b, k) => ({ binding: 6 + k, resource: { buffer: b } }))),
   });
+  let groundBuffers = groundBuffersOf(gp);
+  const makeGroundGroup = () => groundGroupOf(fineT, isleT, gridT, riverT, groundBuffers);
   let groundGroup = makeGroundGroup();
   // the gradient of the heights for the light (setHeights of old: over two steps each way), into grid layers 3 and 4; the
   // highest of them, under which the sun's trace stops marching
@@ -1112,11 +1118,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       upload(riverT, g2.river, RMN, RMN, 1);
     }
     const old = groundBuffers;
-    groundBuffers = GROUND_BINDINGS.map((b, i) => {
-      if (b.kind !== "storage") return null;
-      const data = [g2.dq, g2.grad, g2.streams, g2.streamBins][i - 6];
-      return stor(data.length ? withTable(data, i) : new Uint32Array(4), `ground${i}`);
-    });
+    groundBuffers = groundBuffersOf(g2);
     groundGroup = makeGroundGroup();
     for (const b of old) b?.destroy();
     setWrap(new Int32Array(10));
@@ -1132,14 +1134,14 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   let PT = null, pgLogical = null, pgTop = 0, pgOnNow = false;
   const pageNow = new Int32Array(17);
   const useTextures = (f, i, g, r) => { fineT = f; isleT = i; gridT = g; riverT = r; };
+  // the table's words as the painter's gradient buffer holds them after its wrap words: an on word, one more, and the sixteen entries
+  const tableWords = (logical) => { const w = new Int32Array(18); if (logical) { w[0] = 1; w.set(logical, 2); } return w; };
   // the table words, to the painter's gradient buffer (after its wrap words) and the looks' table: logical page p read from entry p
   function setPages(logical) {
     pageNow.fill(0);
     pgOnNow = !!logical;
     if (logical) { pageNow[0] = 1; pageNow.set(logical, 1); }
-    const words = new Int32Array(18);
-    words[0] = pageNow[0]; words.set(pageNow.subarray(1), 2);
-    device.queue.writeBuffer(groundBuffers[7], GRAD_WORDS * 4, words);
+    device.queue.writeBuffer(groundBuffers[7], GRAD_WORDS * 4, tableWords(logical));
     metaCPU.set(new Uint32Array(pageNow.buffer), M_PAGES);
     device.queue.writeBuffer(looksB, M_PAGES * 4, pageNow);
   }
@@ -1178,8 +1180,8 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   // not listed reads as the nearest listed page's edge, which would show as a smear: so while a page under `need` (the whole window when it is not given) is missing, the pages are loaded
   // but not turned on, the whole screen stays on the window's own textures, and the call returns { on: false, missing: [{ ox, oy }] }; once the pages are there, one call turns them on for the whole screen.
   let winQuick = new Float32Array(4);
-  function setGroundPages(p) {
-    winQuick = p.grad.slice(8192, 8196);
+  // the table of a pack's pages: logical[k] the slot of the window's k-th page (rows as the shader reads them), or -(2 + the nearest listed page) for one not listed; and the listed-or-not pages under `need` that are missing
+  function pageTable(p) {
     const { pages } = p, logical = new Int32Array(16).fill(-1);
     if (!pages.length) throw new Error("setGroundPages: no pages");
     if (!PT) throw new Error("setGroundPages: no page was copied into the textures (copyPages)");
@@ -1203,27 +1205,62 @@ export async function createRenderer({ device, context, format, pal, ground, tim
       for (let j = 0; j < 16; j++) if (logical[j] >= 0) { const d = (j % 4 - k % 4) ** 2 + ((j >> 2) - (k >> 2)) ** 2; if (d < bd) { bd = d; best = j; } }
       logical[k] = -(2 + best);
     }
+    return { logical, missing };
+  }
+  function setGroundPages(p) {
+    winQuick = p.grad.slice(8192, 8196);
+    const { logical, missing } = pageTable(p);
     if (missing.length) return { on: false, missing };
     pgLogical = logical; pgTop = p.top ?? p.grid?.top ?? 0;
     adoptPages(p);
     return { on: true, missing };
   }
-  // the atlas textures and the table, read from now on; the stream buffers and the trace's top as setGround makes them
+  // The folds of the ground a window is to give (p, a setGroundPages pack whose pages are in the textures), traced behind the frames and kept for the switch: FOLD_STRIPES stripes of rows, each its own submit and
+  // never more than two on the queue, so a frame waits behind two stripes and not behind the whole trace, and the first frame of the new ground finds its folds made (adoptPages copies them into grid layer 6).
+  // The page table, gradient and stream buffers the switch would make are made here and kept for it too. Returns { logical, exag, bufs, group, fold, cancel() }, to be given back as p.prep to setGroundPages
+  // (a prep whose page table is not the one the switch finds is left unused), or null while a page the view needs is missing. cancel() lets it go when the ground is not switched to.
+  async function prepareGround(p, exag) {
+    if (!PT) return null;
+    const { logical, missing } = pageTable(p);
+    if (missing.length) return null;
+    const bufs = groundBuffersOf(p);
+    device.queue.writeBuffer(bufs[7], GRAD_WORDS * 4, tableWords(logical));
+    const prep = {
+      logical, exag, bufs, group: groundGroupOf(PT.fine, isleW, PT.grid, PT.river, bufs), fold: sunTex(), used: false, dead: false,
+      cancel() { if (prep.dead || prep.used) return; prep.dead = true; for (const b of bufs) b?.destroy(); prep.fold.destroy(); },
+    };
+    // two stripes on the queue at once, as dispatchSliced does: one in flight would leave the GPU idle between stripes
+    const rows = Math.ceil(GN / 8), per = Math.ceil(rows / FOLD_STRIPES), queued = [];
+    for (let r0 = 0; r0 < rows; r0 += per) {
+      if (queued.length >= 2) await queued.shift();
+      if (prep.dead) return null;
+      const enc = device.createCommandEncoder();
+      foldPass(enc, exag, prep.group, prep.fold, r0 * 8, Math.min(per, rows - r0), false);
+      device.queue.submit([enc.finish()]);
+      queued.push(device.queue.onSubmittedWorkDone());
+    }
+    await Promise.all(queued);
+    return prep.dead ? null : prep;
+  }
+  // the atlas textures and the table, read from now on; the stream buffers and the trace's top as setGround makes them, or as prepareGround made them (p.prep) with the folds it traced
   function adoptPages(p) {
     for (let l = 0; l < p.isle.layers; l++) upload(isleW, p.isle.data.subarray(l * p.isle.size ** 2, (l + 1) * p.isle.size ** 2), p.isle.size, p.isle.size, 4, l);
     useTextures(PT.fine, isleW, PT.grid, PT.river);
+    const prep = p.prep && !p.prep.dead && !p.prep.used && p.prep.logical.every((v, i) => v === pgLogical[i]) ? p.prep : null;
     const old = groundBuffers;
-    groundBuffers = GROUND_BINDINGS.map((b, i) => {
-      if (b.kind !== "storage") return null;
-      const data = [p.dq, p.grad, p.streams, p.streamBins][i - 6];
-      return stor(data.length ? withTable(data, i) : new Uint32Array(4), `ground${i}`);
-    });
-    groundGroup = makeGroundGroup();
+    if (prep) { groundBuffers = prep.bufs; groundGroup = prep.group; prep.used = true; } else { groundBuffers = groundBuffersOf(p); groundGroup = makeGroundGroup(); }
     for (const b of old) b?.destroy();
     gridTop = pgTop;
     setWrap(new Int32Array(10));
     setPages(pgLogical);
     exagFolded = null; sunShown = null; sunJob = null;
+    if (prep) {
+      const enc = device.createCommandEncoder();
+      gridRects(6, (x0, y0, w, h, dx, dy) => enc.copyTextureToTexture({ texture: prep.fold, origin: [x0, y0] }, { texture: gridT, origin: [dx, dy, 6] }, [w, h, 1]));
+      device.queue.submit([enc.finish()]);
+      prep.fold.destroy();
+      exagFolded = prep.exag;
+    }
   }
   // The pages on or off (the window's own textures read when off), for a check that draws both: false until pages are loaded. The window's textures must hold the window (setGround).
   function setGroundPagesOn(on) {
@@ -1257,7 +1294,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     bytes: B(canopy.rp * canopy.n, STOR | GPUBufferUsage.COPY_SRC, "canBytes"), wide: B(canopy.rp3 * 4 * canopy.n3, STOR | GPUBufferUsage.COPY_SRC, "canWide"),
     tallOut: B(canopy.rpt * 4 * GN, STOR | GPUBufferUsage.COPY_SRC, "canTallOut"),
   });
-  const traceU = B(TU.bytes, UNI, "trace"), kpU = B(KU.bytes, UNI, "objpass");
+  const traceU = B(TU.bytes, UNI, "trace"), foldU = B(TU.bytes, UNI, "fold"), kpU = B(KU.bytes, UNI, "objpass");
 
   // objects and sprites: the drawn kinds' sources (setSources), the tables their looks are read by, the survey's bits
   let sources = [];
@@ -1442,14 +1479,18 @@ export async function createRenderer({ device, context, format, pal, ground, tim
     for (const c of [tmp, ...Object.values(copies)]) c.destroy();
     exagFolded = null; sunShown = null; sunJob = null;
   }
-  // How much sky the ground's folds hide, traced once over the heights at the drawn exaggeration into grid layer 6.
+  // How much sky the ground's folds hide, traced once over the heights at the drawn exaggeration into grid layer 6 (a ground made ready ahead by prepareGround has it already).
+  // foldU is the fold's own uniforms: the sun's trace writes traceU each frame, and a stripe of the folds' trace is submitted between frames.
+  function foldPass(enc, exag, ground, out, row0, groupRows, timed) {
+    device.queue.writeBuffer(foldU, 0, TU.pack({ n: GN, step: pal.GRID_STEP, exag, row0, reach: TER_REACH }));
+    const pass = enc.beginComputePass(timed ? tw("fold") : {});
+    pass.setPipeline(S.fold.p); pass.setBindGroup(0, group(S.fold, 0, { sunOut: vw(out), T: { buffer: foldU } })); pass.setBindGroup(1, ground);
+    pass.dispatchWorkgroups(Math.ceil(GN / 8), groupRows);
+    pass.end();
+  }
   function fold(enc, exag) {
     if (exagFolded === exag) return;
-    device.queue.writeBuffer(traceU, 0, TU.pack({ n: GN, step: pal.GRID_STEP, exag, reach: TER_REACH }));
-    const pass = enc.beginComputePass(tw("fold"));
-    pass.setPipeline(S.fold.p); pass.setBindGroup(0, group(S.fold, 0, { sunOut: vw(foldT) })); pass.setBindGroup(1, groundGroup);
-    pass.dispatchWorkgroups(Math.ceil(GN / 8), Math.ceil(GN / 8));
-    pass.end();
+    foldPass(enc, exag, groundGroup, foldT, 0, Math.ceil(GN / 8), true);
     gridRects(6, (x0, y0, w, h, dx, dy) => enc.copyTextureToTexture({ texture: foldT, origin: [x0, y0] }, { texture: gridT, origin: [dx, dy, 6] }, [w, h, 1]));
     exagFolded = exag;
   }
@@ -2250,7 +2291,7 @@ export async function createRenderer({ device, context, format, pal, ground, tim
   }
   await Promise.all(Object.values(S).map((o) => o.ready));
   const api = {
-    errors, stats, frame, setSources, warmSpec, setGround, setGroundPages, setGroundPagesOn, setWrap, debugRoll, setMeta, survey, buildCanopy, farBuild, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
+    errors, stats, frame, setSources, warmSpec, setGround, setGroundPages, prepareGround, setGroundPagesOn, setWrap, debugRoll, setMeta, survey, buildCanopy, farBuild, setAtlas, setTable, atlasPut, entriesPut, rowsPut, tablePut, setTrails, setTrailRect, setIce,
     get busy() { return inFlight; },
     // whether drawing the last frame's inputs again would draw the same picture: nothing the renderer builds or traces is half done, nothing asked of it (a pick, a check) waits for a frame, and nothing was
     // changed in it since (rev, which the caller compares with the one it saw at that frame)

@@ -13,6 +13,19 @@ const S = N + 16, H = 8, UNITS = 5000;
 const TYPES = { i8: Int8Array, u8: Uint8Array, i16: Int16Array, u16: Uint16Array, i32: Int32Array, u32: Uint32Array, f32: Float32Array };
 const DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
 const D2R = Math.PI / 180;
+// A long stretch of synchronous work holds every frame the page has sent for its whole length (the worker does one thing at a time): work done in stretches of a few ms with `await pause()` between lets the
+// frames waiting run in the gaps. The wake-up goes through a message port, which queues behind the messages already waiting (a timer or a promise would run first), one message a waiter.
+const PAUSE_MS = 6;
+const waiting = [], wakeUp = new MessageChannel();
+wakeUp.port1.onmessage = () => waiting.shift()?.();
+export const sliced = () => {
+  let from = performance.now();
+  return async () => {
+    if (performance.now() - from < PAUSE_MS) return;
+    await new Promise((r) => { waiting.push(r); wakeUp.port2.postMessage(0); });
+    from = performance.now();
+  };
+};
 // The blocks a window's objects can come in (cells a side, and the sizes of body a block comes in)
 export const BLOCK = 64, BLOCK_CAPS = [1 << 17, 1 << 18, 1 << 19, 1 << 20, 1 << 21], BLOCK_TOTAL = 11e6, RING_OUT = 3;
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -60,9 +73,11 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
   // none is free the page least lately used goes, never one of the windows being made or drawn (`pins`), and a window whose page was let go makes it again when it is drawn (it keeps its cells' planes,
   // `src`). A page is made in one of STAGE slots of a small atlas of buffers, its heights read, and copied at once into its own slot of the textures, so the buffers cost STAGE pages, not SLOTS.
   const PAGE = 64, SLOTS = 48, STAGE = 8, SQUARE = 6, MV = 1021, pages = new Map(), pins = new Set();
-  let atlas = null, usedAt = 0, drawn = null, blockKeys = new Set();
+  let atlas = null, usedAt = 0, drawn = null, pending = null, blockKeys = new Set();
   // a page the planet pass's block holds is let go: the block is told to go (its slot may be another page's), the caller makes it again
   const lose = (key) => { if (blockKeys.has(key)) { blockKeys = new Set(); onBlockLost?.(); } };
+  // the pages no window that needs a slot may take: those of the window drawn and of the one the page is to be given next (it switches to that ground at its next frame, and a page let go meanwhile would be made again then, with the frames held back)
+  const heldKeys = () => new Set([...(drawn?.pageList ?? []), ...(pending?.pageList ?? [])].map((p) => p.key));
   const pageKey = (face, px, py) => `${face}:${px}:${py}`;
   const pagesOf = (w) => { const out = []; for (let iy = 0; iy < 4; iy++) for (let ix = 0; ix < 4; ix++) out.push({ ix, iy, px: w.x0 + PAGE * ix, py: w.y0 + PAGE * iy, key: pageKey(w.face, w.x0 + PAGE * ix, w.y0 + PAGE * iy) }); return out; };
   // The pages `recs` (each { key, px, py, slot, h }) made from the page source `ps`, STAGE at a time in the staging atlas: two pages a submit with the GPU waited on between, so the frames the renderer draws meanwhile are not held
@@ -95,7 +110,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const list = pagesOf(w), mine = new Set(list.map((p) => p.key)), pin = { mine };
     pins.add(pin);
     try {
-      const stamp = ++usedAt, todo = [], taken = new Set([...pages.values()].map((r) => r.slot)), held = new Set(drawn?.pageList?.map((p) => p.key));
+      const stamp = ++usedAt, todo = [], taken = new Set([...pages.values()].map((r) => r.slot)), held = heldKeys();
       for (const p of list) {
         let rec = pages.get(p.key);
         if (!rec) {
@@ -117,10 +132,11 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       }
       if (todo.length) {
         const batch = (async () => {
-          const ps = T.pageSource(gpu, w.src, w.face, w.x0, w.y0);
           winBusy++;
-          try { await makeInto(todo, ps); } finally { winBusy--; }
-          ps.destroy();
+          try {
+            const ps = await T.pageSource(gpu, w.src, w.face, w.x0, w.y0, sliced());
+            try { await makeInto(todo, ps); } finally { ps.destroy(); }
+          } finally { winBusy--; }
         })();
         batch.catch(() => { for (const r of todo) if (pages.get(r.key) === r) pages.delete(r.key); });
         for (const r of todo) r.ready = batch;
@@ -160,7 +176,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const pin = { mine: new Set(w ? pagesOf(w).map((p) => p.key) : []) };
     pins.add(pin);
     try {
-      const stamp = ++usedAt, taken = new Set([...pages.values()].map((r) => r.slot)), held = new Set(drawn?.pageList?.map((p) => p.key)), todo = [];
+      const stamp = ++usedAt, taken = new Set([...pages.values()].map((r) => r.slot)), held = heldKeys(), todo = [];
       for (const p of list) {
         let rec = pages.get(p.key);
         if (!rec) {
@@ -188,9 +204,8 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       }
       const batch = (async () => {
         for (const { sx, sy, list: recs } of bySrc.values()) {
-          const { src } = await gather(face, sx, sy), ps = T.pageSource(gpu, src, face, sx, sy);
-          await makeInto(recs, ps, true);
-          ps.destroy();
+          const { src } = await gather(face, sx, sy), ps = await T.pageSource(gpu, src, face, sx, sy, sliced());
+          try { await makeInto(recs, ps, true); } finally { ps.destroy(); }
         }
       })();
       batch.catch(() => { for (const t of todo) if (pages.get(t.rec.key) === t.rec) pages.delete(t.rec.key); });
@@ -218,6 +233,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
   // planet stands: its ground (heights blended, the rest from the nearer side) is what each side would continue with (patch.ts cornerCells), so the window's shadows and folds meet no wall there. A wedge
   // cell is no cell of the window's objects (no tile of it is `interior`) and has no channel.
   async function gather(face, x0, y0) {
+    const pause = sliced();
     const tl = [], tlOf = new Map(), cover = [];
     const add = (f, tx, ty, direct) => {
       const k = tileKey(f, tx, ty);
@@ -229,7 +245,8 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       for (let tx = Math.max(0, Math.floor(x0 / 256)); tx <= Math.min(nT - 1, Math.floor((x0 + N - 1) / 256)); tx++) cover.push(add(face, tx, ty, true));
     const own = new Int16Array(S * S).fill(-1), at = new Int32Array(S * S), srcF = new Int8Array(S * S).fill(-1), srcX = new Int32Array(S * S), srcY = new Int32Array(S * S);
     const wedge = [];
-    for (let j = 0; j < S; j++)
+    for (let j = 0; j < S; j++) {
+      await pause();
       for (let i = 0; i < S; i++) {
         const k = j * S + i, Xw = x0 - H + i, Yw = y0 - H + j, inner = i >= H && i < H + N && j >= H && j < H + N;
         if ((Xw < 0 || Xw >= fn) && (Yw < 0 || Yw >= fn)) {
@@ -251,6 +268,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
         own[k] = q; srcF[k] = f; srcX[k] = xx; srcY[k] = yy; at[k] = (yy - (yy >> 8) * 256 + H) * S + (xx - (xx >> 8) * 256 + H);
         if (inner) tl[q].interior = true;
       }
+    }
     const got = await Promise.all(tl.map((t) => groundTile(t.f, t.tx, t.ty)));
     got.forEach((gt, q) => { tl[q].gt = gt; });
     const t1 = performance.now();
@@ -281,12 +299,14 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       k = e;
     }
     for (const n of names) {
+      await pause();
       const out = planes[n], from = tl.map((t) => t.gt.planes[n]);
       for (let r = 0; r < runs.length; r += 4) out.set(from[runs[r + 2]].subarray(runs[r + 3], runs[r + 3] + runs[r + 1]), runs[r]);
     }
     // the wedge's cells: heights between the two sides' ground by the cell's angle across the quarter turn, the other planes from the nearer side
     if (wedge.length) {
       for (const n of names) {
+        await pause();
         const out = planes[n], from = tl.map((t) => t.gt.planes[n]), blend = n === "height";
         for (const { k, a, b, t } of wedge) {
           const va = from[a[0]][a[1]], vb = from[b[0]][b[1]];
@@ -297,6 +317,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     // a receiver is a step in its own face's cells: turned into the window's
     if (planes.dir) {
       for (let k = 0; k < S * S; k++) {
+        if ((k & 8191) === 8191) await pause();
         const c = planes.dir[k], f = srcF[k];
         if (!c || f === face) continue;
         const d = turn.get(f);
@@ -326,7 +347,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
   // The window of 4 by 4 pages whose centre is nearest the cell holding (lat, lon) degrees (its corner a multiple of a page). Returns what the renderer, the page and the object buffer take.
   async function build(lat, lon) {
     await warming;
-    const t0 = performance.now(), { face, x0, y0 } = windowAt(lat, lon);
+    const t0 = performance.now(), { face, x0, y0 } = windowAt(lat, lon), pause = sliced();
     const { tl, own, at, srcF, srcX, srcY, turn, planes, src, t1 } = await gather(face, x0, y0);
     const wp = { face, x0, y0, src };
     wp.made = await ensurePages(wp);
@@ -338,6 +359,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const inner = tl.filter((t) => t.interior);
     const planTiles = inner.map((t) => ({ tile: t.f * nT * nT + t.ty * nT + t.tx, tx: t.tx, ty: t.ty, gt: t.gt, at: t.f === face ? null : placer(t, face, x0, y0, srcF, srcX, srcY, turn) }));
     const blockPlan = inner.every((t, i) => t.f === face || planTiles[i].at) ? { face, x0, y0, tiles: planTiles } : null;
+    await pause();
 
     // ---------- the painter's inputs, rows turned so that z runs south ----------
     // a plane's cells of the window, rows turned, as float32 (the engine converts across the tiles' array types, the laws below then run over one array type)
@@ -348,26 +370,32 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     const bit = (o, m) => { for (let i = 0; i < o.length; i++) o[i] = o[i] & m ? 1 : 0; return o; };
     const pl = planes;
     const flags = pl.flags;
+    await pause();
     const height = div(flip(pl.height), 256), water = mul(flip(pl.water), 0.01);
     const season = (name, k) => Array.from({ length: 4 }, (_, s) => (pl[`${name}${s}`] ? mul(flip(pl[`${name}${s}`]), k) : null));
     const precip = flip(pl.pr1);
     for (let i = 0; i < precip.length; i++) precip[i] = (precip[i] / 360) ** 2;
     const pet = mul(flip(pl.pe1), 0.1), snow = season("snp", 0.25);
+    await pause();
     // the runoff by season is the tiles' own (the water stage's, per tile), weighted by the window's cells in each; the island's where no tile holds one
     const wq = [0, 0, 0, 0];
     let wn = 0;
     for (let j = H; j < H + N; j++) for (let i = H; i < H + N; i++) { const q = own[j * S + i] >= 0 && tl[own[j * S + i]].gt.meta.quick; if (q) { for (let s = 0; s < 4; s++) wq[s] += q[s]; wn++; } }
     const runoff = wn ? wq.map((v) => v / wn) : quick;
+    await pause();
     const isle = {
       height, water, windShare: div(flip(pl.wsh), 255), rock: flip(pl.rock), table: div(flip(pl.tab), 256),
       peat: bit(flip(flags), 4), soil: div(flip(pl.soil), 1024), silt: bit(flip(flags), 1), fog: div(flip(pl.fog), 255),
       seasons: [0, 1, 2, 3].map((s) => ({ precip: s === 1 ? precip : null, pet: s === 1 ? pet : null, snowpack: snow[s] })), quick: runoff,
     };
     // the window's ground is its pages (ensurePages), given to the painter by setGroundPages, the camera's heights the pages' own and the highest ground theirs. Only the streams are binned here, z turned.
+    await pause();
     const h = heightsOf(wp.pageList);
     let highest = -Infinity;
     for (const v of h) if (v > highest) highest = v;
+    await pause();
     const rivers = T.windowRivers(src).map((line) => line.map((p) => [p[0], -p[1], ...p.slice(2)]));
+    await pause();
     const pack = packGround(isle, { rivers }, { fine: null, grid: null, mask: null, top: highest + 2, finePitch: 0, fineLayerWords: 0, gridPitch: 0, gridLayerWords: 0 });
     const t3 = performance.now();
     let peak = 0;
@@ -549,6 +577,6 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
   }
   // the blocks the view can touch and the share they are drawn at, for the worker to see whether the blocks it holds still serve (null k0: a block's estimate is not known yet)
   const blocksNeed = (w, view) => { const { need, k0Of } = layoutBlocks(w, view); return { vis: need.filter((r) => r.vis).map((r) => r.key), k0: k0Of() }; };
-  // pageSet: the window's pages for setGroundPages (made again where one was let go); atlas: the buffers they are in; setDrawn: the window drawn, whose pages are kept
-  return { build, windowAt, prefetch, stats, groundTile, makeBlocks, unpin: (recs) => { for (const b of recs) b.pins--; }, blocksNeed, pageSet, ensureBlock, ensureBlockAt, cellOf, get atlas() { return atlas; }, setDrawn: (w) => { drawn = w; } };
+  // pageSet: the window's pages for setGroundPages (made again where one was let go); ensure: the same, ahead of the switch; setPending: the window the page is to be given next, whose pages are kept (null once it is drawn or dropped); atlas: the buffers they are in; setDrawn: the window drawn, whose pages are kept
+  return { build, windowAt, prefetch, stats, groundTile, makeBlocks, unpin: (recs) => { for (const b of recs) b.pins--; }, blocksNeed, pageSet, ensure: ensurePages, setPending: (w) => { pending = w; }, ensureBlock, ensureBlockAt, cellOf, get atlas() { return atlas; }, setDrawn: (w) => { drawn = w; if (pending === w) pending = null; } };
 }
