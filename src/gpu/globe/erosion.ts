@@ -18,7 +18,7 @@ import { cover, pipeline, readback, storage } from "../kernel";
 import { ROCKS, SANDSTONE, GRANITE, CREEP } from "../../terrain/geology";
 import { CAP_FACTOR, EF, CNT, FLAG, LED, PR, erosionWgsl } from "../wgsl/globe-erosion";
 import { FLD, PHYS } from "../wgsl/globe-tectonics";
-import { EDGES, FACES, GlobeGpu, centre, cellId, fieldWords, haloSource, haloTwin, meanAreaM2, tileCount, wordAt, type Grid, type Tables } from "./grid";
+import { EDGES, FACES, GlobeGpu, centre, cellId, fieldWords, haloSource, haloTwin, meanAreaM2, meanCellM, tierGrid, tileCount, wordAt, type Grid, type Tables } from "./grid";
 import { Tectonics, cellAreas, extTables, startingState, type Setup } from "./tectonics";
 import { similarityOf } from "./similarity";
 import { philox } from "../rand";
@@ -42,6 +42,7 @@ export interface ErosionParams {
   relief: boolean; // landscape-scale denudation by local relief (MONTGOMERY_BRANDON), on or off
   kvar: boolean; // the erodibility scaled by a spatial field of the rock (kfield.ts)
   draw: boolean; // the receiver drawn among the lower neighbours by the fall over the distance, anew each substep (wgsl `recv`), not the steepest
+  rho8: boolean; // the receiver the steepest by Rho8's random diagonal lengths, anew each substep (wgsl `recv`), not the steepest
 }
 
 // Erodibility for the stream power law at m = 1/2, n = 1, drainage area in m2 (K in 1/yr), as terrain/geology.ts holds it [cited R523: Stock
@@ -97,15 +98,29 @@ export const SUBSTEP_YR = 5e5;
 // The erosion's lengths on a similar planet (similarity.ts): creep's and the sea floor's diffusivities, the shelf's slope and the sediment's reach are rock's, water's and gravity's, Earth's on
 // every planet (R1776 to R1778, amended by Unit 4c); the reach is 96 rings of the reference planet's 12.27 km cells, 1,178 km, which is that many times more rings of this planet's smaller
 // cells. The stream power law's K carries no length, the relief law's window (10 km, R1689) is Earth's.
+// Scale-aware dissection (knob NOMADS_DEFF_TIERS, a list of tiers, default none). Perron, Kirchner and Dietrich 2009 (Nature 460, 502-505): first-order valleys lie 6.4 to 12.7 Lc apart,
+// Lc = (D / K)^(1 / (2 m + 1)) [cited, read]. A grid shows a valley spacing only when it is at least 4 cells (2 is Nyquist; 4 leaves a ridge cell and a valley cell each side) [design], so
+// the Lc a tier resolves is Lc_t = 4 dx_t / 6.4 = 0.625 dx_t, dx_t the side of its mean cell, and the dissection below it is carried by the cell as a land diffusivity
+// D_t = max(D, K Lc_t^(2 m + 1)) with m = 1/2 and K granite's [design]. A tier that resolves the physical Lc keeps the physical D.
+export const RESOLVED_CELLS = 4, VALLEY_LC_MIN = 6.4;
+export const deffTiers = (): number[] => (process.env.NOMADS_DEFF_TIERS ?? "").split(",").filter(Boolean).map(Number);
+export function landDiffusivity(radius: number, tier: number, creep: number = CREEP_LAND, k: number = K_GRANITE): number {
+  if (!deffTiers().includes(tier)) return creep;
+  const lc = (RESOLVED_CELLS / VALLEY_LC_MIN) * meanCellM(tierGrid(tier, radius));
+  return Math.max(creep, k * lc * lc);
+}
 export function erosionFor(radius: number): Partial<ErosionParams> {
-  const sim = similarityOf(radius), draw = process.env.NOMADS_TIER0_DRAW === "1" ? { draw: true } : {};
-  if (!sim.similar) return draw;
-  return { ringMax: Math.max(1, Math.round(RING_MAX * sim.cells)), ...draw };
+  const sim = similarityOf(radius), knobs: Partial<ErosionParams> = {};
+  if (process.env.NOMADS_TIER0_DRAW === "1") knobs.draw = true;
+  if (process.env.NOMADS_T0_RHO8 === "1") knobs.rho8 = true;
+  if (deffTiers().includes(0)) knobs.creepLand = landDiffusivity(radius, 0);
+  if (!sim.similar) return knobs;
+  return { ringMax: Math.max(1, Math.round(RING_MAX * sim.cells)), ...knobs };
 }
 export const defaultParams = (over: Partial<ErosionParams> = {}): ErosionParams => ({
   dtYr: SUBSTEP_YR, n: 1,
   K: [K_GRANITE, K_SANDSTONE, K_GRANITE, K_GRANITE, K_VOLCANIC],
-  refRainMmYr: REF_RAIN_MMYR, skinM: SKIN_M, dissolved: DISSOLVED, G: DEPOSITION_G, creepLand: CREEP_LAND, creepSea: CREEP_SEA, shelfSlope: SHELF_SLOPE, ringMax: RING_MAX, relief: true, draw: false, kvar: process.env.NOMADS_KVAR === "1",
+  refRainMmYr: REF_RAIN_MMYR, skinM: SKIN_M, dissolved: DISSOLVED, G: DEPOSITION_G, creepLand: CREEP_LAND, creepSea: CREEP_SEA, shelfSlope: SHELF_SLOPE, ringMax: RING_MAX, relief: true, draw: false, rho8: false, kvar: process.env.NOMADS_KVAR === "1",
   ...over,
 });
 
@@ -115,7 +130,7 @@ export function erosionWords(g: Grid, set: Setup, p: ErosionParams): Uint32Array
   const w = new Uint32Array(64), a0 = meanAreaM2(g), sea = Math.round(set.params.seaLevel * 16);
   w[0] = g.tiles; w[1] = g.fn; w[2] = tileCount(g);
   w[PR.sea16] = sea >>> 0; w[PR.eps] = 1; w[PR.ringMax] = p.ringMax; w[PR.diss16] = Math.round(p.dissolved * 65536); w[PR.g8] = Math.round(p.G * 256);
-  w[PR.kvar] = p.kvar ? 1 : 0; w[PR.draw] = p.draw ? 1 : 0; w[PR.drawSeed] = set.params.seed >>> 0;
+  w[PR.kvar] = p.kvar ? 1 : 0; w[PR.draw] = p.draw ? 1 : 0; w[PR.rho8] = p.rho8 ? 1 : 0; w[PR.drawSeed] = set.params.seed >>> 0;
   w[PR.nExp] = p.n; w[PR.skin] = p.skinM; w[PR.shelf] = Math.round(p.shelfSlope * Math.sqrt(a0) * 256);
   for (let k = 0; k < 5; k++) w[PR.kc + k] = kWord(g, p, p.K[k]);
   if (p.relief) {
@@ -448,14 +463,19 @@ export class Twin {
       if (H[k] <= 0) continue;
       let best = 0n, total = 0;
       const share = [0, 0, 0, 0, 0, 0, 0, 0];
+      const rw = this.p.rho8 ? philox([k, this.drawKey, 0, 0x52484f38], [this.set.params.seed >>> 0, 0x524f5554]) : [0, 0, 0, 0];
       for (let d = 0; d < 8; d++) {
         const j = this.nb[k * 8 + d];
         if (j === NONE) continue;
         const dz = f[k] - f[j];
         if (dz <= 0) continue;
-        const key = BigInt(dz) * BigInt(this.invd[k * 8 + d]);
-        if (key > best) { best = key; to[k] = j; rd[k] = this.invd[k * 8 + d]; }
-        share[d] = Math.max(1, Math.min(Number((key >> 16n) & M32), 0x0fffffff)); total += share[d];
+        const iv = this.invd[k * 8 + d];
+        let ev = iv;
+        if (this.p.rho8 && d >= 4) ev = Number(((BigInt(iv) * BigInt(Math.floor((92682 * 32768) / ((131072 - (rw[d - 4] & 0xffff)) >> 1)))) >> 16n) & M32);
+        const key = BigInt(dz) * BigInt(ev);
+        if (key > best) { best = key; to[k] = j; rd[k] = iv; }
+        const skey = BigInt(dz) * BigInt(iv);
+        share[d] = Math.max(1, Math.min(Number((skey >> 16n) & M32), 0x0fffffff)); total += share[d];
       }
       if (this.p.draw && total > 0) {
         const r = philox([k, this.drawKey, 0, 0x54305256], [this.set.params.seed >>> 0, 0x524f5554])[0] % total;
