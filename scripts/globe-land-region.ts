@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { releaseGpu, theGpu } from "../src/gpu/device";
 import { defaultParams } from "../src/gpu/globe/erosion";
-import { LAND_HALO, LandRegion, readCells, regionBlock4, regionStart, type LandState } from "../src/gpu/globe/land";
+import { LAND_HALO, LandRegion, readCells, refineRegion, regionBlock4, regionStart, type LandState } from "../src/gpu/globe/land";
 import { tierTable } from "../src/gpu/globe/regional";
 import { readPlanet, type Planet } from "../src/gpu/globe/window";
 import { patchAt } from "../src/gpu/globe/patch";
@@ -48,6 +48,11 @@ function inputs() {
   let interior: Int32Array, h: Int32Array, fl: Int32Array;
   if (TIER === 5) { interior = kept ? readI32("state.i32") : regionStart(t4, face, x05, y05, size5); h = readCells(join(bake, "t5-height.i32"), p.ids); fl = readCells(join(bake, "t5-flooded.i32"), p.ids); }
   else { h = Int32Array.from(p.ids, (id) => t4[id]); fl = Int32Array.from(h); interior = kept ? readI32("state.i32") : new Int32Array(size * size); if (!kept) for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) interior[y * size + x] = h[(y + HL) * S + x + HL]; }
+  // --ring-carry: the ring round a tier-5 region from the tier-4 cells carried down (the run's own surface), not from a bake of another chain
+  if (TIER === 5 && flag("ring-carry")) {
+    const B = refineRegion(t4, 4, face, x05 / 2 - 1, y05 / 2 - 1, size5 / 2 + 2), SB = size5 + 4;
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) { if (x >= HL && x < S - HL && y >= HL && y < S - HL) continue; const v = B[y * SB + x]; h[y * S + x] = v; fl[y * S + x] = v; }
+  }
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) h[(y + HL) * S + x + HL] = interior[y * size + x];
   return { h, fl, kept };
 }
@@ -64,6 +69,8 @@ try {
     await r.flow();
     const acc = await r.solver.read("ACC"), to = await r.solver.read("TO"), height = await r.solver.read("H");
     writeI32("flow-acc.i32", Int32Array.from(acc)); writeI32("flow-to.i32", Int32Array.from(to)); writeI32("flow-height.i32", Int32Array.from(height));
+    const dump = (f: string, v: ArrayLike<number>) => { const o = new Int32Array(1 + v.length); o[0] = S; for (let k = 0; k < v.length; k++) o[k + 1] = v[k]; writeFileSync(join(work, f), new Uint8Array(o.buffer)); };
+    dump("flow.bin", to); dump("acc.bin", acc);
     const at = (x: number, y: number) => ((Math.min(size - 1, Math.max(0, y)) + HL) * S + Math.min(size - 1, Math.max(0, x)) + HL);
     const v = arg("view", `0,0,${size}`).split(",").map(Number) as [number, number, number], out = arg("out", join(work, "view.png"));
     writeFileSync(out, renderLand((x, y) => height[at(x, y)] / 256, (x, y) => acc[at(x, y)] / 512, v, Number(arg("scale", "2")), Number(arg("river", "100")), Number(arg("vex", "0")), cellM));

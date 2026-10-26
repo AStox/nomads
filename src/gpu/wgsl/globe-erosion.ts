@@ -46,7 +46,7 @@ export const MAXD = 16382; // the deepest flow path the counting sort holds, in 
 // Parameter words (P, u32).
 export const PR = {
   sea16: 16, eps: 17, ringMax: 18, ring: 19, diss16: 20, g8: 21, upl: 22, kconst: 23, shelf: 24, nExp: 25, foLand: 26, foSea: 27, skin: 28, kc: 30, rc: 36, kdt: 37, e0: 38, // kc: five words from kc; rc, kdt, e0: the relief law (see `relief`)
-  draw: 40, drawKey: 41, drawSeed: 42, // draw: 0 steepest descent, 1 the receiver drawn among the lower neighbours (see `recv`); the substep's number and the planet's seed key the draw
+  draw: 40, drawKey: 41, drawSeed: 42, kvar: 43, // draw: 0 steepest descent, 1 the receiver drawn among the lower neighbours (see `recv`); the substep's number and the planet's seed key the draw
 } as const;
 
 // A layer of sediment laid on the water-loaded crust raises the surface by (rho_m - rho_s) / (rho_m - rho_w) of its thickness, 800 / 2300 [derived,
@@ -80,7 +80,7 @@ const VOL_MAX = ${2 ** 28}u;
 const CAPF = ${CAP_FACTOR_Q16}u;
 const P_SEA = ${PR.sea16}u; const P_EPS = ${PR.eps}u; const P_RINGMAX = ${PR.ringMax}u; const P_RING = ${PR.ring}u; const P_DISS = ${PR.diss16}u; const P_G = ${PR.g8}u;
 const P_UPL = ${PR.upl}u; const P_KCONST = ${PR.kconst}u; const P_SHELF = ${PR.shelf}u; const P_NEXP = ${PR.nExp}u; const P_FOL = ${PR.foLand}u; const P_FOS = ${PR.foSea}u;
-const P_DRAW = ${PR.draw}u; const P_DRAWKEY = ${PR.drawKey}u; const P_DRAWSEED = ${PR.drawSeed}u;
+const P_KVAR = ${PR.kvar}u; const P_DRAW = ${PR.draw}u; const P_DRAWKEY = ${PR.drawKey}u; const P_DRAWSEED = ${PR.drawSeed}u;
 const P_SKIN = ${PR.skin}u; const P_KC = ${PR.kc}u; const P_RC = ${PR.rc}u; const P_KDT = ${PR.kdt}u; const P_E0 = ${PR.e0}u;
 
 fn touch() {
@@ -376,6 +376,8 @@ fn kappa(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
       acc = add64(acc, mul64(w, P[P_KC + pl]));
     }
     if (wsum_ > 0u) { kc = divw(acc.y, acc.x, wsum_).x; }
+    // with P[P_KVAR] set the class erodibility is scaled by the cell's factor of the spatial field (Q16, the table past the thermal buoyancy: kfield.ts)
+    if (P[P_KVAR] != 0u) { kc = shr64(add64(mul64(kc, X[16u * cnt() + AGE_MAX + 1u + k]), vec2u(32768u, 0u)), 16u).x; }
   }
   e_setu(E_KC, k, kc);
 }

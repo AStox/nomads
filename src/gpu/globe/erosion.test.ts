@@ -3,6 +3,7 @@
 // The cases that need no GPU are the tables and the parameters' words; the rest run the kernels on a planet from tectonics (seed 1, 20 steps) or on a
 // synthetic one, and state the invariants (the receivers a forest, the discharge area the land's, conservation to the unit, the stream power law's
 // own steady state, run to run identity) and a pinned hash. What the runs measured is in docs/research/globe/2026-10-19-erosion-impl.md.
+import { KVAR_SIGMA } from "./kfield";
 import { afterAll, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
 import { storage } from "../kernel";
@@ -176,6 +177,27 @@ test("with the receivers drawn among the lower neighbours the kernels equal thei
     }
   }
   expect(differs).toBeGreaterThan(1000);
+  er.release(); tec.release();
+});
+
+test("with the erodibility field the kernels equal their twin, and the field has the sigma and the mean of its law", async () => {
+  const { set, e, gpu, tec, S } = await planet();
+  const er = new Erosion(gpu, set, e, tec.S, { kvar: true }), tw = new Twin(set, e, er.p), N = er.N;
+  const rain = Float32Array.from({ length: N }, (_, i) => 200 + ((i * 7919) % 1800));
+  er.setRain(rain);
+  const rho = Uint32Array.from(rain, (v) => rainWord(v, er.p.refRainMmYr)), carry = new BigUint64Array(N), St = Int32Array.from(S);
+  er.heights(); await er.flow(); er.erode(); er.apply();
+  const r = tw.erode(St, rho, carry);
+  for (const [name, field, want] of [["KC", EF.KC, r.kc], ["ER", EF.ER, r.er], ["RV", EF.RV, r.rv]] as const) {
+    const got = await er.readE(field);
+    let bad = 0;
+    for (let i = 0; i < N; i++) if (got[i] !== (want[i] | 0)) bad++;
+    expect(`${name} ${bad}`).toBe(`${name} 0`);
+  }
+  const kf = tw.kf!, lg = Array.from(kf, (v) => Math.log(v / 65536)), mean = lg.reduce((a, b) => a + b, 0) / N, sd = Math.sqrt(lg.reduce((a, b) => a + (b - mean) ** 2, 0) / N);
+  expect(Math.abs(mean)).toBeLessThan(0.3);
+  expect(sd / KVAR_SIGMA).toBeGreaterThan(0.6);
+  expect(sd / KVAR_SIGMA).toBeLessThan(1.2);
   er.release(); tec.release();
 });
 

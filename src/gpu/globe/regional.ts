@@ -10,6 +10,7 @@ import { CNT, FLAG, FLOW_NEIGHBOURS, HIST, RF, SOLVE_SWEEPS, SPLIT, XSTRIDE, reg
 import { EDGES, FACES, areaSr, haloSource, tierGrid, type Grid } from "./grid";
 import { SKIN_M, defaultParams, kWord, neighbourTables, rainWord, REF_RAIN_MMYR, type ErosionParams } from "./erosion";
 import { THRESHOLD_DEG } from "../../terrain/geology";
+import { kFactors } from "./kfield";
 import { packRecord, unpackRecord, ROCK_OF, type Planet, type PlanetStore } from "./window";
 
 // ---------- 1. the settings ----------
@@ -192,13 +193,14 @@ const KNIGHT = [[2, 1], [1, 2], [-1, 2], [-2, 1], [-2, -1], [-1, -2], [1, -2], [
 export function tierTable(planet: Planet, tier: number, p: ErosionParams, uniformRain = false): Uint32Array {
   const g0 = tierGrid(0, planet.radius), gt = tierGrid(tier, planet.radius), X = new Uint32Array(CELLS0 * XSTRIDE), kw = p.K.map((k) => Math.min(0xffffffff, kWord(gt, p, k) * (uniformRain ? UNIFORM_RAIN.kScale : 1))), tanOf = tanOfPools();
   // a planet with no climate (a staged one) rains the reference rain everywhere
+  const kf = p.kvar ? kFactors(planet.radius, planet.seed) : null;
   const { invd } = neighbourTables(g0), meanSr = (4 * Math.PI) / CELLS0, rain = planet.seasons && !uniformRain ? annualRain(planet) : new Float32Array(CELLS0).fill(REF_RAIN_MMYR);
   for (let c = 0; c < CELLS0; c++) {
     let rem = SKIN_M, wsum = 0, acc = 0, tanSum = 0;
     for (const pl of STACK) { const w = Math.min(Math.max(0, planet.pools[pl][c]), rem); rem -= w; wsum += w; acc += w * kw[pl]; tanSum += w * tanOf[pl]; }
     const tan = wsum > 0 ? tanSum / wsum : tanOf[3];
     const f = Math.floor(c / 65536), r = c - f * 65536, Y = Math.floor(r / 256), x = r - Y * 256;
-    X[c * XSTRIDE] = wsum > 0 ? Math.floor(acc / wsum) : 0;
+    X[c * XSTRIDE] = wsum > 0 ? Math.floor((acc / wsum) * (kf ? kf[c] / 65536 : 1)) : 0;
     X[c * XSTRIDE + 1] = Math.round((2 ** 15 * areaSr(g0, x, Y)) / meanSr);
     X[c * XSTRIDE + 18] = Math.round(tan * 2 ** 20);
     X[c * XSTRIDE + 19] = uniformRain ? UNIFORM_RAIN.word : rainWord(rain[c], REF_RAIN_MMYR);
