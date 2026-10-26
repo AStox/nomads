@@ -10,7 +10,7 @@ export async function session(vp: [number, number], query: string, fn: (page: an
   const [VW, VH] = vp;
   const browser = await puppeteer.launch({
     executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true, protocolTimeout: 60000,
-    args: ["--headless=new", "--enable-unsafe-webgpu", `--window-size=${VW},${VH + 143}`, `--user-data-dir=/tmp/globe-fix-lead2/chrome`],
+    args: ["--headless=new", "--enable-unsafe-webgpu", `--window-size=${VW},${VH + 143}`, `--user-data-dir=${process.env.PROFILE ?? "/tmp/globe-fix-lead2/chrome"}`],
     defaultViewport: { width: VW, height: VH, deviceScaleFactor: 1 },
   });
   const bye = async () => { try { await browser.close(); } catch {} process.exit(1); };

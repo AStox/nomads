@@ -3,7 +3,7 @@ import { launch, sleep, drag } from "./lib";
 const site = process.env.SITE ?? "http://127.0.0.1:8271";
 const zs = (process.env.ZS ?? "-2.5,-1.5,-0.1,0.49,1.5,2.4").split(",").map(Number), bears = (process.env.BEARINGS ?? "0,1").split(",").map(Number);
 const places: [number, number][] = (process.env.PLACES ?? "0,65;20,40;-30,-40").split(";").map((s) => s.split(",").map(Number) as [number, number]);
-const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome", vw: 1280, vh: 800 });
+const r = await launch({ profile: process.env.PROFILE ?? "/tmp/globe-fix-lead2/chrome", vw: 1280, vh: 800 });
 try {
   await r.page.goto(`${site}/play/?hour=13&warm=0`, { waitUntil: "domcontentloaded", timeout: 60000 });
   await r.page.waitForSelector("body.ready", { timeout: 120000 });
