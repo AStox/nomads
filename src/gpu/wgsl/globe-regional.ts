@@ -387,6 +387,31 @@ fn reach64(@builtin(local_invocation_index) t: u32) {
 // n = 1 (m = 1/2): h' = h_r + (h - h_r) / (1 + f), f = K dt sqrt(A) / d, Braun and Willett 2013. A is the discharge area at the reference rain.
 // a cell the step leaves as it is whatever its receiver does: sea, a lake (the flooded surface above it) or rock with no erodibility
 fn incise_skip(k: u32) -> bool { let hk = e_get(E_H, k); return hk <= 0i || fl(k) > hk || e_getu(E_KQ, k) == 0u; }
+// The area the incision reads. With P[4] = r > 0 the mean of the discharge areas of the land cells of the (2r + 1) by (2r + 1) window round the cell (Perron, Kirchner and Dietrich 2009,
+// Nature 460, supplementary information 1.2: the drainage area field smoothed by a square moving average each step so the valley spacing does not depend on the grid): each cell
+// adds its area over the window's land count, so no sum passes 32 bits. Only the incision reads it; the discharge itself, and the order, are untouched. Cells off the patch's interior
+// and the sea are left out of the window (a river's mouth cell holds the whole river).
+fn walk(k: u32, dx: i32, dy: i32) -> u32 {
+  var j = k;
+  for (var i = 0; i < abs(dx); i++) { if (j == NONE) { break; } j = nbr(j, select(2u, 0u, dx > 0)); }
+  for (var i = 0; i < abs(dy); i++) { if (j == NONE) { break; } j = nbr(j, select(3u, 1u, dy > 0)); }
+  return j;
+}
+fn acc_s(k: u32) -> u32 {
+  let r = i32(P[4]);
+  if (r == 0i) { return e_getu(E_ACC, k); }
+  var n = 0u;
+  for (var dy = -r; dy <= r; dy++) { for (var dx = -r; dx <= r; dx++) {
+    let j = walk(k, dx, dy);
+    if (j != NONE && interior(j) && is_land(j)) { n++; }
+  } }
+  var s = 0u;
+  for (var dy = -r; dy <= r; dy++) { for (var dx = -r; dx <= r; dx++) {
+    let j = walk(k, dx, dy);
+    if (j != NONE && interior(j) && is_land(j)) { s += e_getu(E_ACC, j) / n; }
+  } }
+  return s;
+}
 // the step of a cell that is not skipped, given its receiver j at its final height
 fn incise_one(k: u32, j: u32) {
   let hk = e_get(E_H, k);
@@ -394,7 +419,7 @@ fn incise_one(k: u32, j: u32) {
   if (is_land(j)) { hj = e_get(E_H, j); }
   if (hj >= hk) { return; }
   let kc = e_getu(E_KQ, k);
-  let acc = e_getu(E_ACC, k); let rd = e_getu(E_RD, k);
+  let acc = acc_s(k); let rd = e_getu(E_RD, k);
   let delta = u32(hk - hj);
   var x = delta;
   let s8 = sqrt64(vec2u(acc << 16u, acc >> 16u));
