@@ -35,7 +35,7 @@ export class RegionalPatch {
   private stepNo = 0;
   readonly flags = FLAG;
 
-  constructor(readonly gpu: Gpu, readonly tier: number, interior: number, table: Uint32Array, creepSubs: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, public route: 0 | 1 | 2 = 0, slideN: 8 | 16 = 8, readonly halo = PATCH_HALO) {
+  constructor(readonly gpu: Gpu, readonly tier: number, interior: number, table: Uint32Array, creepSubs: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, public route: 0 | 1 | 2 = 0, slideN: 8 | 16 = 8, readonly halo = PATCH_HALO, smooth = 0) {
     this.fn = tierGrid(tier).fn;
     this.side = interior + 2 * halo;
     this.N = this.side * this.side;
@@ -45,7 +45,7 @@ export class RegionalPatch {
     this.E2 = storage(gpu, 16);
     this.AT = storage(gpu, (this.atParents + PARENT_WORDS * NP) * 4);
     this.creepSubs = creepSubs;
-    this.P = storage(gpu, new Uint32Array([1, creepSubs, 0, route]));
+    this.P = storage(gpu, new Uint32Array([1, creepSubs, 0, route, smooth]));
     this.X = storage(gpu, table);
     this.IDS = storage(gpu, this.N * 4);
     this.wgsl = regionalWgsl(EDGES, this.fn, nflow, { side: this.side, halo }, slideN);

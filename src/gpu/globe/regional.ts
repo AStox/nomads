@@ -232,7 +232,7 @@ export function creepSubsOf(table: Uint32Array): number {
 
 // ---------- 4. the kernels on a device ----------
 // The routing of a tier's flow: the neighbours the flood and the receivers read, and whether a receiver is drawn among the lower ones (wgsl/globe-regional.ts recv) or is the steepest.
-export interface RouteLaw { nflow: 4 | 8; stochastic: boolean; slide?: 8 | 16; rho8?: boolean }
+export interface RouteLaw { nflow: 4 | 8; stochastic: boolean; slide?: 8 | 16; rho8?: boolean; smooth?: number }
 export const routeOf = (law: RouteLaw): 0 | 1 | 2 => (law.rho8 ? 2 : law.stochastic ? 1 : 0);
 export interface TierState { height: Int32Array; carry: Int32Array; steps: number }
 export interface TierFlow { to: Uint32Array; acc: Uint32Array; rounds: number }
@@ -280,7 +280,7 @@ export class Regional {
     this.AT = storage(gpu, (this.atCarry + 13 * CELLS0) * 4);
     this.creepSubs = creepSubsOf(table);
     this.route = routeOf(law);
-    this.P = storage(gpu, new Uint32Array([1, this.creepSubs, 0, this.route]));
+    this.P = storage(gpu, new Uint32Array([1, this.creepSubs, 0, this.route, law.smooth ?? 0]));
     this.X = storage(gpu, table);
     this.wgsl = regionalWgsl(EDGES, this.fn, law.nflow, undefined, law.slide ?? 8);
     this.write("H", height);

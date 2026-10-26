@@ -23,8 +23,11 @@ export interface TierLaw { route: RouteLaw; dtMy: readonly number[]; uniformRain
 // Tier 4 (150 m) does the work of a tier of 75 m cells at a quarter of the cost; tier 5 carries it and settles at the step lengths that end tier 4's.
 const SCHEDULE = [...Array(4).fill(26), ...Array(6).fill(13), ...Array(10).fill(6.5), ...Array(4).fill(3.25), ...Array(4).fill(1.6)] as number[];
 // SCRATCH knob (prototype, not for a bake): NOMADS_RHO8=1 routes tiers 1 to 5 by Rho8 (wgsl/globe-regional.ts recv)
+// SCRATCH knob (prototype): NOMADS_SMOOTH=1:1,2:1 smooths the incision's area over a (2r + 1) square at those tiers (tier:r; wgsl/globe-regional.ts acc_s)
+const SMOOTH = new Map((process.env.NOMADS_SMOOTH ?? "").split(",").filter(Boolean).map((e) => e.split(":").map(Number) as [number, number]));
 const ISLAND: TierLaw = { route: { nflow: 8, stochastic: true, slide: 16, rho8: process.env.NOMADS_RHO8 === "1" }, dtMy: SCHEDULE, uniformRain: true };
-export const TIER_LAWS: readonly TierLaw[] = [ISLAND, ISLAND, ISLAND, ISLAND, ISLAND, { ...ISLAND, dtMy: [6.5, 6.5, 3.25, 3.25, 1.6, 1.6] }];
+const lawOf = (t: number, l: TierLaw): TierLaw => (SMOOTH.has(t) ? { ...l, route: { ...l.route, smooth: SMOOTH.get(t) } } : l);
+export const TIER_LAWS: readonly TierLaw[] = [ISLAND, ISLAND, ISLAND, ISLAND, ISLAND, { ...ISLAND, dtMy: [6.5, 6.5, 3.25, 3.25, 1.6, 1.6] }].map((l, t) => lawOf(t, l));
 export const TIER_STEPS = TIER_LAWS.map((l, t) => (t === 0 ? 0 : l.dtMy.length));
 // A tier's table (the K dt and the creep coefficients) of step number `step`, made once for each step length.
 export function tierTableOf(planet: Planet, tier: number): (step: number) => Uint32Array {

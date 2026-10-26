@@ -41,7 +41,7 @@ export function readCells(file: string, ids: ArrayLike<number>): Int32Array {
 
 // The halo of a region's patch: two cells, which the slides of sixteen neighbours read.
 export const LAND_HALO = 2;
-export interface LandOptions { nflow: 4 | 8; stochastic?: boolean; slide?: 8 | 16; rho8?: boolean }
+export interface LandOptions { nflow: 4 | 8; stochastic?: boolean; slide?: 8 | 16; rho8?: boolean; smooth?: number }
 export interface LandState { height: Int32Array; carry: Int32Array; steps: number }
 
 export class LandRegion {
@@ -61,7 +61,7 @@ export class LandRegion {
     this.patch = patchAt(tier, face, x0, y0, LAND_HALO, size);
     this.side = this.patch.side;
     this.subs = creepSubsOf(table);
-    this.solver = new RegionalPatch(gpu, tier, size, table, this.subs, o.nflow, o.rho8 ? 2 : o.stochastic ? 1 : 0, o.slide ?? 8, LAND_HALO);
+    this.solver = new RegionalPatch(gpu, tier, size, table, this.subs, o.nflow, o.rho8 ? 2 : o.stochastic ? 1 : 0, o.slide ?? 8, LAND_HALO, o.smooth ?? 0);
     this.solver.setPatch(this.patch);
     this.flood0 = new Int32Array(this.side * this.side);
     const S = this.side;
