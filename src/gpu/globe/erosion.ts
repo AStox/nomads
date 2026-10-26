@@ -22,6 +22,7 @@ import { EDGES, FACES, GlobeGpu, centre, cellId, fieldWords, haloSource, haloTwi
 import { Tectonics, cellAreas, extTables, startingState, type Setup } from "./tectonics";
 import { similarityOf } from "./similarity";
 import { philox } from "../rand";
+import { kFactors } from "./kfield";
 
 export { CAP_FACTOR, EF, FLAG, PR };
 
@@ -39,6 +40,7 @@ export interface ErosionParams {
   shelfSlope: number;
   ringMax: number;
   relief: boolean; // landscape-scale denudation by local relief (MONTGOMERY_BRANDON), on or off
+  kvar: boolean; // the erodibility scaled by a spatial field of the rock (kfield.ts)
   draw: boolean; // the receiver drawn among the lower neighbours by the fall over the distance, anew each substep (wgsl `recv`), not the steepest
 }
 
@@ -103,7 +105,7 @@ export function erosionFor(radius: number): Partial<ErosionParams> {
 export const defaultParams = (over: Partial<ErosionParams> = {}): ErosionParams => ({
   dtYr: SUBSTEP_YR, n: 1,
   K: [K_GRANITE, K_SANDSTONE, K_GRANITE, K_GRANITE, K_VOLCANIC],
-  refRainMmYr: REF_RAIN_MMYR, skinM: SKIN_M, dissolved: DISSOLVED, G: DEPOSITION_G, creepLand: CREEP_LAND, creepSea: CREEP_SEA, shelfSlope: SHELF_SLOPE, ringMax: RING_MAX, relief: true, draw: false,
+  refRainMmYr: REF_RAIN_MMYR, skinM: SKIN_M, dissolved: DISSOLVED, G: DEPOSITION_G, creepLand: CREEP_LAND, creepSea: CREEP_SEA, shelfSlope: SHELF_SLOPE, ringMax: RING_MAX, relief: true, draw: false, kvar: process.env.NOMADS_KVAR === "1",
   ...over,
 });
 
@@ -113,7 +115,7 @@ export function erosionWords(g: Grid, set: Setup, p: ErosionParams): Uint32Array
   const w = new Uint32Array(64), a0 = meanAreaM2(g), sea = Math.round(set.params.seaLevel * 16);
   w[0] = g.tiles; w[1] = g.fn; w[2] = tileCount(g);
   w[PR.sea16] = sea >>> 0; w[PR.eps] = 1; w[PR.ringMax] = p.ringMax; w[PR.diss16] = Math.round(p.dissolved * 65536); w[PR.g8] = Math.round(p.G * 256);
-  w[PR.draw] = p.draw ? 1 : 0; w[PR.drawSeed] = set.params.seed >>> 0;
+  w[PR.kvar] = p.kvar ? 1 : 0; w[PR.draw] = p.draw ? 1 : 0; w[PR.drawSeed] = set.params.seed >>> 0;
   w[PR.nExp] = p.n; w[PR.skin] = p.skinM; w[PR.shelf] = Math.round(p.shelfSlope * Math.sqrt(a0) * 256);
   for (let k = 0; k < 5; k++) w[PR.kc + k] = kWord(g, p, p.K[k]);
   if (p.relief) {
@@ -158,9 +160,10 @@ export function neighbourTables(g: Grid): { nb: Uint32Array; invd: Uint32Array }
   return { nb, invd };
 }
 // The read-only table X: neighbours, inverse distances, then the thermal buoyancy by age of tectonics' setup.
-export function erosionTable(set: Setup): Uint32Array {
-  const { nb, invd } = neighbourTables(set.grid), N = nb.length / 8, out = new Uint32Array(16 * N + PHYS.AGE_MAX + 1);
+export function erosionTable(set: Setup, kvar = false): Uint32Array {
+  const { nb, invd } = neighbourTables(set.grid), N = nb.length / 8, out = new Uint32Array(16 * N + PHYS.AGE_MAX + 1 + (kvar ? N : 0));
   out.set(nb); out.set(invd, 8 * N);
+  if (kvar) out.set(kFactors(set.grid.radius, set.params.seed), 16 * N + PHYS.AGE_MAX + 1);
   for (let i = 0; i <= PHYS.AGE_MAX; i++) out[16 * N + i] = set.Q[set.layout.phith + i] >>> 0;
   return out;
 }
@@ -199,7 +202,7 @@ export class Erosion {
     this.p = defaultParams(p);
     this.E = storage(gpu, EF.COUNT * this.N * 4);
     this.AT = storage(gpu, (3 * this.N + CNT.COUNT + 12) * 4);
-    this.X = storage(gpu, erosionTable(set));
+    this.X = storage(gpu, erosionTable(set, this.p.kvar));
     this.T = storage(gpu, ext.T);
     this.gg = new GlobeGpu(gpu, this.g, 3);
     this.wgsl = erosionWgsl(EDGES);
@@ -382,11 +385,13 @@ export class Twin {
   readonly words: Uint32Array;
   readonly sea16: number;
   readonly phith: Int32Array;
+  readonly kf: Uint32Array | null;
   drawKey = 0;
   constructor(readonly set: Setup, readonly ext: { tab: Tables; T: Int32Array }, readonly p: ErosionParams) {
     const g = set.grid;
     this.N = FACES * g.fn * g.fn; this.fw = fieldWords(g);
-    const x = erosionTable(set);
+    const x = erosionTable(set, p.kvar);
+    this.kf = p.kvar ? x.subarray(16 * this.N + PHYS.AGE_MAX + 1) : null;
     this.nb = x.subarray(0, 8 * this.N); this.invd = x.subarray(8 * this.N, 16 * this.N);
     this.phith = new Int32Array(x.buffer, (16 * this.N) * 4, PHYS.AGE_MAX + 1);
     this.area = ext.T.subarray(0, this.N);
@@ -492,6 +497,7 @@ export class Twin {
       let rem = w[PR.skin], num = 0n, den = 0;
       for (const pl of ORDER) { const t = Math.min(this.thickM(this.get(S, pl, k), this.area[k]), rem); rem -= t; den += t; num += BigInt(t) * BigInt(w[PR.kc + pl]); }
       if (den > 0) kc[k] = Number(num / BigInt(den));
+      if (this.kf && den > 0) kc[k] = Number((BigInt(kc[k]) * BigInt(this.kf[k]) + 32768n) >> 16n);
     }
     // landscape-scale denudation by relief, from the heights before the incision
     const wl = new Int32Array(N);
