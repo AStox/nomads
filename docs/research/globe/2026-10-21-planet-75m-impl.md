@@ -73,7 +73,7 @@ Two patches half a tile apart, the cells in both interiors (details in the sub-n
 - The air stage's rain concentration is capped at 4 times a tier-0 cell's rain [design, R1327 gauges and the theory's gain]; the block-mean error above.
 - The water stage's lakes are full or dry (no part-full level); the inflow is the surplus, not the island's final weights (recharge, groundwater return, lake evaporation): flow over the global discharge 0.8 to 1.2 on the tiles measured.
 - The planet has no meltwater valleys (the island's joint valleys are drawn by a window's key); drift is till only.
-- Rivers are 75 m steps of the receivers, with no meanders (the island's `shape` needs a whole river's line); the scatter's noise steps at a cube's edge (keyed per face).
+- Rivers follow the receivers, each step a smooth curve (streamcurve.ts), with no meanders (the island's `shape` needs a whole river's line); the scatter's noise steps at a cube's edge (keyed per face).
 - Ranges are planar faces at the rocks' threshold slopes, with D8 rivers straight down them: the consequence of 6 km of relief on a 195 km planet.
 - Species, densities, the leaf season, bog and day range are Bornholm's.
 - Unit 4b's gaps (the climate's humidity budget, the missing cloud physics) pass through unchanged.

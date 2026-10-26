@@ -13,12 +13,14 @@
 //
 // The stream mask. The island draws each river from the hydrology's polylines (`shape`: the chain of cells smoothed twice, resampled, meandered where the stream is powerful enough to move its
 // banks, with a line joining the one it flows into where that now lies). That is CPU list work over a whole island's lines, and what it needs is every river's whole line, which a tile
-// (which holds only a part of it) does not have. The tile draws instead each channel cell's step to its receiver: a segment from cell centre to cell centre (75 m, or 106 m on a diagonal), stroked
+// (which holds only a part of it) does not have. The tile draws instead each channel cell's step to its receiver, as a smooth curve between the cells' nodes (streamcurve.ts: the cell centres eased along the stream, a centripetal Catmull-Rom spline
+// through them, a pure function of the stream's own cells so that neighbouring tiles agree), stroked
 // at the bankfull width (water.ts bankWidth, the cell's flow times BANKFULL, wider where trees or shrubs hold 5% of the ground) to the depth bankDepth gives (R1892), on the same raster
 // kernel (`raster`: the strokes stack, the nearest texel's coverage, the bed's depth in cm) that the island's lines go through. What this leaves out is the meanders (the stream's swing in its
-// belt) and the smoothing of the cells' chain: the stream mask is a polyline of 75 m steps, not the island's smooth curve [gap: R1893]. The rivers of a patch of 8 cells round the tile
+// belt) [gap: R1893]. The rivers of a patch of 8 cells round the tile
 // are drawn (a stream of 1,200 m or wider across lies centred further out; no river of the planet's is that wide at its flow [gap]).
 import { CELL } from "../../terrain/grid";
+import { streamCurves } from "./streamcurve";
 import { RM, SIZE, type FineRiver, type Scatter } from "../../terrain/flora";
 import { BANKFULL, WOODED, bankDepth, bankWidth } from "../../terrain/water";
 import { dispatchSliced, pipeline, pipelineSoon, readback, storage } from "../kernel";
@@ -119,20 +121,22 @@ export function packTile(source: TileSource, tile: number, halo = SCATTER_HALO, 
   return out;
 }
 
-// The streams of the tile and of the 8 cells round it: a segment from each channel cell to its receiver, in the island's frame (metres from the area's centre, as `segments` takes them).
+// The streams of the tile and of the 8 cells round it: each channel cell's step to its receiver as a smooth curve between the two cells' nodes (streamcurve.ts), in the island's frame (metres from the area's centre, as `segments` takes them).
 export function riversOf(source: TileSource, tile: number, tier = 4): FineRiver[][] {
   const { face, tx, ty } = tileAt(tier, tile), p = patchOf(tier, face, tx, ty, RIVER_HALO), S = p.side, n = p.ids.length;
   const height = source.plane<Int32Array>("height", RIVER_HALO), to = source.recv(RIVER_HALO), chn = source.plane<Uint8Array>("chn", RIVER_HALO), flow = source.plane<Uint32Array>("flow", RIVER_HALO);
   const tree = source.plane<Uint8Array>("tree", RIVER_HALO), shrub = source.plane<Uint8Array>("shrub", RIVER_HALO), lines: FineRiver[][] = [];
   const x = (i: number) => (((i % S) - RIVER_HALO) * CELL + CELL / 2) - SIZE / 2, z = (i: number) => ((Math.floor(i / S) - RIVER_HALO) * CELL + CELL / 2) - SIZE / 2;
+  const ok = (i: number) => !!chn[i] && !p.missing[i] && !!flow[i], curve = streamCurves(n, to, ok, flow, x, z, CELL);
   for (let i = 0; i < n; i++) {
-    if (!chn[i] || p.missing[i] || !flow[i]) continue;
+    if (!ok(i)) continue;
     const j = to[i];
     if (j < 0 || j === i) continue;
     const q = flow[i] / Q16, qbf = q * BANKFULL, wooded = (tree[i] + shrub[i]) / 255 >= WOODED;
     const run = Math.hypot(x(j) - x(i), z(j) - z(i)), s = Math.max((height[i] - height[j]) / 256 / run, 1e-4 / CELL);
-    const point = (k: number): FineRiver => [x(k), z(k), q, 0, qbf, s, 0, bankWidth(qbf, wooded), bankDepth(qbf, s)];
-    lines.push([point(i), point(j)]);
+    const xz = curve(i), line: FineRiver[] = [];
+    for (let k = 0; k < xz.length; k += 2) line.push([xz[k], xz[k + 1], q, 0, qbf, s, 0, bankWidth(qbf, wooded), bankDepth(qbf, s)]);
+    lines.push(line);
   }
   return lines;
 }

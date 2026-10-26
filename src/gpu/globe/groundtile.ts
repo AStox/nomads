@@ -3,8 +3,8 @@
 // the stage files do, so the objects are the same); nothing in it is made up: a field whose stage file does not exist is left out of the file and named in its header (`absent`), a gap, never
 // a zero plane. Not stored, made from these: the fine ground (heights, wetness, moisture, covers, the stream mask: scatter.ts with `keepFine`), the peat's depth (bit 2 of `flags`, ground.ts PEAT_DEPTH).
 //
-// The river lines the painter draws are the cell chain: each channel cell to its receiver, 75 m steps, the segments scatter.ts riversOf makes for the stream mask. The island draws smoothed,
-// meandering polylines (water.ts `shape`) that need a river's whole line; a tile has a part of it [gap: no meanders, no smoothing].
+// The river lines the painter draws are the cell chain, each channel cell's step to its receiver as a smooth curve (streamcurve.ts), the segments scatter.ts riversOf makes for the stream mask. The island
+// draws meandering polylines (water.ts `shape`) that need a river's whole line; a tile has a part of it [gap: no meanders].
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { DIRS, GROUNDTILE_FIELDS, GROUNDTILE_HALO, GROUNDTILE_VERSION, groundTilePath } from "./bake";
