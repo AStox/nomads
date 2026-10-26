@@ -77,10 +77,14 @@ export function pageAtlas(g: Gpu, slots: number): PageAtlas {
 }
 
 // A window as a source of pages: its streams binned, its cells packed and its lattice's field (the window's size, 71 MB), kept between calls so pages asked for at different times from the
-// same window repeat none of it (the CPU's part is 16 ms of the first call). The caller owns it and destroys it when no more of its pages will be asked for.
+// same window repeat none of it (the CPU's part is 16 ms of the first call, done in the stretches `pause` lets the frames run between). The caller owns it and destroys it when no more of its pages will be asked for.
 export interface PageSource { face: number; x0: number; y0: number; rivers: FineRiver[][]; segs: GPUBuffer; bins: GPUBuffer; packed: GPUBuffer; field: GPUBuffer; destroy(): void }
-export function pageSource(g: Gpu, source: TileSource, face: number, x0: number, y0: number): PageSource {
-  const rivers = windowRivers(source), { seg, table } = segments(rivers), words = packTile(source, 0, halo, 4);
+export async function pageSource(g: Gpu, source: TileSource, face: number, x0: number, y0: number, pause: () => Promise<void> = async () => {}): Promise<PageSource> {
+  const rivers = windowRivers(source);
+  await pause();
+  const { seg, table } = segments(rivers);
+  await pause();
+  const words = packTile(source, 0, halo, 4);
   words.set([x0 * 4 * CELL, y0 * 4 * CELL, face], L.GEO_AT);
   const segs = storage(g, seg), bins = storage(g, table), packed = storage(g, words), field = storage(g, L.FINE_WORDS * 4);
   return { face, x0, y0, rivers, segs, bins, packed, field, destroy: () => { for (const b of [segs, bins, packed, field]) b.destroy(); } };

@@ -983,7 +983,7 @@ async function check(m) {
   // the share each block of the drawn window is drawn at (2^-eff of what its ground grew) and where it stands in the window's cells (plan R6: the blocks the screen can touch must all show one share)
   if (m.op === "shares") return curWin?.blockRecs && { k0: curWin.blockK0, view: curWin.blockView, blocks: curWin.blockRecs.map((b) => ({ key: b.key, eff: curWin.blockKd?.get(b.key) ?? b.k, made: b.k, c0: b.X - curWin.x0, z0: curWin.y0 + 256 - (b.Y + 64) })) };
   // whether the page is still making what it draws (sprites made on demand, the window's blocks, a switch): a still taken before it is idle shows the nearest sprite made, so a gate waits for busy to stay false
-  if (m.op === "idle") return { busy: !!refreshing || !!curWin?.blocksBusy || switching || building || !!prepared, sprites: nStatic + (dyn ? dynUsed() : 0), asked: asked.size };
+  if (m.op === "idle") return { busy: !!refreshing || !!curWin?.blocksBusy || switching || building || !!prepared || surveying > 0 || blkMaking, sprites: nStatic + (dyn ? dynUsed() : 0), asked: asked.size };
   if (m.op === "front") { R.setFrontUse(!!m.on); return true; }
   // view 0's G-buffer kept (gsnap), and the next one compared with it pixel by pixel (gdiff): what each pixel shows
   // (kind, colour, flags) and whose it is
@@ -1030,6 +1030,8 @@ async function whereOf(id) {
 // first time) and tells the page its frame and heights; the page puts its view in the new frame and names the ground in every frame after (its gid),
 // and the first frame that names it is the one the renderer switches on (applyGround), so a frame is never drawn on ground its coordinates are not in.
 let lastLut = null, lutShown = false;
+// the exaggeration the last frame drew the relief at, which the folds of a ground made ready ahead are traced at (readyGround)
+let lastExag = null;
 // The map q the page works out for the camera's target (live.js latticeAt) is posted back with each frame done (planetQ), for the checks.
 let planetQ = null, planetRelief = null, reliefAtMs = 0;
 // The relief under a grid of screen points as drawn (heights in drawn metres, -1 off the planet), for the page's picks and zoom anchors (live.js reliefAt): each point's ray meets the sphere raised to the height
@@ -1222,6 +1224,7 @@ const winNear = (want) => {
 };
 function destroyWindow(w) {
   w.dead = true;
+  w.prep?.cancel(); w.prep = null;
   // a window's ground is its pages, which the page cache lets go of when it needs the slots (groundwin.js ensurePages)
   if (w.blockRecs) { w.blockRecs = null; queueMicrotask(sweepBlocks); }
 }
@@ -1248,6 +1251,7 @@ async function groundWant(m) {
       if (want.mode === "home") {
         if (!S.win && !prepared) continue;
         prepared = { gid: ++gids, mode: "home" };
+        planet.wins.setPending(null);
         post({ type: "ground", gid: prepared.gid, mode: "home", frame: null, fields: home.fields });
         continue;
       }
@@ -1263,7 +1267,13 @@ async function groundWant(m) {
       // a window made now has its objects made too, and its ground is shown once the blocks the view can touch are made (one level of detail across the screen, plan R6: until then the screen stays as it was)
       const near = fresh ? startObjects(w, viewCells(w, want), !spec) : null;
       if (!spec) {
+        // the page switches to this ground at its next frame: its pages are kept from here (another window's pages made meanwhile would take them, and the switch would make them again with the frames held), and any
+        // that a kept window had lost are made now, behind the frames; its folds are traced behind the frames too, while the blocks the view can touch are made
+        planet.wins.setPending(w);
+        await planet.wins.ensure(w);
+        const prep = readyGround(w);
         if (near) await near;
+        w.prep = await prep;
         prepared = { gid: ++gids, mode: "win", win: w };
         post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon, face: w.face, x0: w.x0, y0: w.y0 }, fields: w.fields, stats: { ...w.stats, id: w.id, objects: w.blockRecs ? w.blockRecs.reduce((n, b) => n + b.n, 0) : null, share: w.blockK0 !== undefined ? 2 ** -w.blockK0 : null } });
       }
@@ -1272,6 +1282,17 @@ async function groundWant(m) {
     console.error("window", err);
     post({ type: "windowError", error: String((err && err.stack) || err) });
   } finally { building = false; }
+}
+// A window's ground made ready for the switch behind the frames (webgpu.js prepareGround): its folds traced, kept on the window for applyGround. null where there is nothing to hand over (no frame has told the
+// exaggeration yet, a page is missing): the switch then traces the folds in its first frame.
+async function readyGround(w) {
+  w.prep?.cancel(); w.prep = null;
+  if (lastExag === null) return null;
+  try {
+    const prep = await R.prepareGround({ ...w.pack, pages: await planet.wins.pageSet(w), top: w.pack.grid.top }, lastExag);
+    if (w.dead) { prep?.cancel(); return null; }
+    return prep;
+  } catch (err) { console.warn("prepare ground", err); return null; }
 }
 // the objects of a window (a promise of GPU buffers, groundwin.js startObjects): kept on the window, handed to the drawn source when they arrive, their size told to the page. By block, the promise
 // answered is that of the blocks the view can touch (the others follow); the whole window's objects are not waited for.
@@ -1341,7 +1362,8 @@ async function applyGround(p) {
       await R.setSources(sources());
       settleBound();
       // the window's pages (made again if the cache let one go) into the painter's page textures, only those it does not already hold, and the table turned on for the whole screen
-      const set = await planet.wins.pageSet(w), r = R.setGroundPages({ ...w.pack, pages: set, top: w.pack.grid.top });
+      const set = await planet.wins.pageSet(w), r = R.setGroundPages({ ...w.pack, pages: set, top: w.pack.grid.top, prep: w.prep });
+      w.prep?.cancel(); w.prep = null;
       if (!r.on) throw new Error(`the window's pages are not all there: ${JSON.stringify(r.missing)}`);
       // the pages round the window's, for the planet pass: the block held stays until the new one is made behind the frames (a page it loses to another window takes it away, onBlockLost) and is given to the painter when it is there
       planet.wins.ensureBlock(w).then((b) => { if (curWin === w) { R.setBlockPages(b); blk = { face: b.block.face, x: b.block.x0, y: b.block.y0 }; } }).catch((err) => console.warn("block pages", err));
@@ -1359,15 +1381,20 @@ async function applyGround(p) {
     R.farBuild(farLevels());
     curGid = p.gid;
     if (prepared === p) prepared = null;
-    if (p.mode === "win") await surveyWindow();
+    // the looks the new objects want are asked of the GPU and taken in when they come, not waited for: a frame has no need of them to draw what is already known, and the wait held every frame for as long as the GPU was busy
+    if (p.mode === "win") surveyWindow().catch((err) => console.error("survey", err));
     if (p.mode === "win" && p.win.blockPlan && !p.win.blockRecs && !p.win.blocksBusy) startObjects(p.win, lastCam ? viewCells(p.win, lastCam) : undefined);
   } finally { switching = false; applyMs = performance.now() - tApply; }
 }
+let surveying = 0;
 async function surveyWindow() {
-  looks.addAll(await R.survey(0, 0, (CODES * CODES) / 32));
-  R.setMeta(looks.meta());
-  growTable();
-  refreshSprites();
+  surveying++;
+  try {
+    looks.addAll(await R.survey(0, 0, (CODES * CODES) / 32));
+    R.setMeta(looks.meta());
+    growTable();
+    refreshSprites();
+  } finally { surveying--; }
 }
 // the objects of the window drawn arrive: its source takes them in place of the empty one (a window not drawn takes them when it is)
 async function attachObjects(w) {
@@ -1416,6 +1443,7 @@ function liveInstances(list) {
 function render() {
   const f = pending;
   if (!f || rendering) return;
+  if (f.exag !== undefined) lastExag = f.exag;
   // a frame names the ground its view's coordinates are in: the one prepared is switched to when the page first sends it, and a frame of an earlier one is stale
   if (f.gid !== undefined && f.gid !== curGid) {
     if (prepared && f.gid === prepared.gid) {
@@ -1427,7 +1455,7 @@ function render() {
         // the page already stands in this ground's frame, so the same ground is tried again after a back-off (a page slot is often only held for a moment by a window being made); past ten tries it is dropped
         // and the page asked again (groundFailed), which makes a fresh one
         if ((p.fails = (p.fails ?? 0) + 1) < 10) p.retryAt = performance.now() + 150 * p.fails;
-        else { if (prepared === p) prepared = null; curWin = null; if (S) S.win = null; post({ type: "groundFailed", gid: p.gid }); }
+        else { if (prepared === p) { prepared = null; planet.wins.setPending(null); } curWin = null; if (S) S.win = null; post({ type: "groundFailed", gid: p.gid }); }
       });
       return;
     }
