@@ -622,12 +622,13 @@ fn g_water(S: GSample, x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) 
     let rate = (0.012 + 0.1 * nearS + 0.03) * ${planet ? FADE(2) : "1.0"};
     let life = ((ctx.frame + (g_h2u(cell, Y, 48) >> 29u)) & 7u) < 5u;
     if (r < rate && sx - cell * 6 < 2 + g_odd97(ru) && life) {
-      if (r < rate * 0.3) { return ${u("w7")}; }
+      ${planet ? "" : `if (r < rate * 0.3) { return ${u("w7")}; }`}
       return g_WA[clamp(vf + 2, 0, 6)];
     }
   }
-  // a glint is a wave a few metres across (the ripples' own scale, 2 m [design]) and is gone once a pixel is wider
-  if (g_h2u(X, Y, 43) < ${UT(0.0006)} && g_hf(g_h2u(X, Y, 50)) < ${planet ? FADE(2) : "1.0"} && ((ctx.frame + (g_h2u(X, Y, 49) >> 29u)) & 7u) != 0u) { return ${u("w7")}; }
+  // a glint is a wave a few metres across (the ripples' own scale, 2 m [design]) and is gone once a pixel is wider; the planet pass has none of its own (a palette white lit by the key light is a coloured dot
+  // anywhere on the sea): its glint is the light's own, from the waves' facets where one mirrors the light to the eye (wgsl/globe.js seaShine)
+  ${planet ? "" : `if (g_h2u(X, Y, 43) < ${UT(0.0006)} && g_hf(g_h2u(X, Y, 50)) < 1.0 && ((ctx.frame + (g_h2u(X, Y, 49) >> 29u)) & 7u) != 0u) { return ${u("w7")}; }`}
   // open water's tone follows the depth: the planet's pixels dither between its palette steps across the whole step (a tone index's dither is a little over half of it, which stands the ramp up as
   // bands of one colour on a slope that is steep over a pixel)
   ${planet ? `if (kind != 3u) {
