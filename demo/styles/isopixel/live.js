@@ -462,25 +462,46 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // frames ago, while it moves by tens of metres a frame in a wheel zoom and by kilometres where a window's cover grows. So the page makes the lift from the last pyr the worker answered (liftLatch, taken once a frame,
   // after the frame is made: the holds solved before a frame and the frame use one value), solves its holds for that lift, and sends it for the worker to draw with: a held point is then where it was solved to be whatever
   // the worker's pyr did meanwhile, which it answers for the next frame.
-  let liftLatch = null;
+  // The pyr the page uses eases to the worker's with time constant LIFT_TAU: it changes by tens of metres a frame as the target crosses relief and tiles arrive, and a held point solved for each jump moves the target by
+  // as much as the jump is worth in pixels (a lurch in a drag over a mountain); the lift need only stand above the ground, which an average over the view's box does within the relief it smooths.
+  // [design: 350 ms, as LAT_TAU, the lattice's glide]
+  const LIFT_TAU = 350;
+  let liftLatch = null, liftAt = 0;
+  function easeLift(I, now) {
+    if (!I || !Number.isFinite(I.pyr)) return liftLatch;
+    const L = liftLatch, a = 1 - Math.exp(-Math.min(1000, now - liftAt) / LIFT_TAU);
+    liftAt = now;
+    if (!L || !Number.isFinite(L.pyr) || !Number.isFinite(I.box)) return { ...I };
+    const dlon = ((I.lon - L.lon + 540) % 360) - 180;
+    return Math.hypot((I.lat - L.lat) * D2R * PR, dlon * D2R * PR * Math.cos(I.lat * D2R)) < L.box ? { ...I, pyr: L.pyr + (I.pyr - L.pyr) * a } : { ...I };
+  }
   function liftOf(p) {
     const pyr = liftLatch?.pyr;
     if (!Number.isFinite(pyr)) return stats.lift ?? 0;
     const sx = 1 + (p.ortho ?? 0) * ((p.scale ?? 1) - 1);
     return Math.max(0, pyr + (p.liftOrtho ?? p.ortho ?? 0) * (p.liftM != null ? p.liftM * sx - pyr : 0));
   }
-  // the planet pass's frame params with that lift, unless the target has moved more than eight of the pyr's boxes since the frame it was answered for (a jump: the worker's own lift is then the better one; a frame
-  // or ten of a wheel zoom's motion, with the worker busy making a window, is a box at most)
-  function planetFrame(view) {
-    const p = planetParams(view), L = liftLatch;
-    if (!L || !Number.isFinite(L.pyr) || !Number.isFinite(L.box)) return p;
+  // the lift the next frame is drawn at for a view's params: the page's (liftOf) unless the target has moved more than eight of the pyr's boxes since the frame it was answered for (a jump: the worker's own lift is then
+  // the better one; a frame or ten of a wheel zoom's motion, with the worker busy making a window, is a box at most). One rule for what is sent (planetFrame), what a hold is solved for (solveCam) and where a place
+  // is said to be drawn (planetProject, by the lift the last frame sent), so a hold and the measure of it agree.
+  function liftNear(p) {
+    const L = liftLatch;
+    if (!L || !Number.isFinite(L.pyr) || !Number.isFinite(L.box)) return false;
     const dlon = ((p.lon - L.lon + 540) % 360) - 180;
-    return Math.hypot((p.lat - L.lat) * D2R * PR, dlon * D2R * PR * Math.cos(p.lat * D2R)) < 8 * L.box ? { ...p, lift: liftOf(p) } : p;
+    return Math.hypot((p.lat - L.lat) * D2R * PR, dlon * D2R * PR * Math.cos(p.lat * D2R)) < 8 * L.box;
   }
+  const liftNext = (p) => (liftNear(p) ? liftOf(p) : stats.lift ?? 0);
+  function planetFrame(view) {
+    const p = planetParams(view);
+    return liftNear(p) ? { ...p, lift: liftOf(p) } : p;
+  }
+  // where a place is drawn is where the last frame sent draws it: the lift that frame named (the latch moves on once it is sent, to what the worker has answered since)
+  let sentLift = null;
+  const planetCamShown = (view) => { const p = planetParams(view); return planetCam({ ...p, w: canvas.width, h: canvas.height, radiusM: PR, lift: sentLift ?? stats.lift ?? 0 }); };
   // the planet camera for a solve's candidate target g: stood at its plane place, so the window's ground under it is the one the worker will lift to
   function solveCam(view, g) {
     const q = planeOf(g), p = planetParams({ ...view, geo: g, x: q?.x ?? view.x, z: q?.z ?? view.z });
-    return planetCam({ ...p, w: canvas.width, h: canvas.height, radiusM: PR, lift: liftOf(p) });
+    return planetCam({ ...p, w: canvas.width, h: canvas.height, radiusM: PR, lift: liftNext(p) });
   }
   // the drawn relief (drawn metres of height) under canvas point (sx, sy), from the grid the worker posted with the last frame (worker.js reliefGrid); the target's own lift where it has none
   function reliefAt(sx, sy) {
@@ -495,7 +516,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   const drawnK = (view) => EXAG * (1 + smooth(ZLAD - 1.5, ZLAD, view.zoom) * (latOf(view).sc - 1));
   // where planet place geo is drawn, and the height (drawn metres) it stands at: `y`, terrain metres, when the caller has it (what groundUnder answered); otherwise the height drawn where it lands, found a few times over
   function planetProject(view, geo, y) {
-    const cam = planetCamOf(view), P = vecOf(geo), at = (h) => cam.project([P[0] * (1 + h / PR), P[1] * (1 + h / PR), P[2] * (1 + h / PR)]);
+    const cam = planetCamShown(view), P = vecOf(geo), at = (h) => cam.project([P[0] * (1 + h / PR), P[1] * (1 + h / PR), P[2] * (1 + h / PR)]);
     let h = Number.isFinite(y) ? y * drawnK(view) : stats.lift ?? 0, s;
     for (let k = 0; k < (Number.isFinite(y) ? 0 : 3); k++) {
       s = at(h);
@@ -1192,7 +1213,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the ground is the planet pass's wherever a window of the planet is drawn (the ladder draws the sprites and their shade over it); the island of the game keeps its own (?pg=0 and ?pg=1 force either)
     const groundOff = PLACE && (PGQ === null ? mode === "win" : PGQ === "1");
     const id = frameNo + 1, msg = { type: "frame", id, gid: PLACE ? gid : undefined, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), cam: view.geo && PLACE ? { lat: view.geo.lat, lon: view.geo.lon, ext: viewExtent(view) } : undefined, exag: EXAG, relief: sky.relief, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG }, planet: PLACE && (groundOff || ladderAlpha(view) < 1) ? { ...planetFrame(view), light: groundLight(), spr: spriteLight(view.bearing), lightFade: smooth(2.6, 3.8, view.zoom), canopy: PG_CANOPY ?? 1 - ladderAlpha(view) * (1 - canopyHold(ppmOf(clampZ(view.zoom)), -Math.log2(Math.max(1e-3, stats.window?.share ?? 1)))) } : null, groundOff };
-    liftLatch = stats.liftInfo ?? liftLatch;
+    sentLift = msg.planet ? msg.planet.lift ?? stats.lift ?? 0 : null;
+    liftLatch = easeLift(stats.liftInfo, t0);
     stats.canopy = msg.planet?.canopy;
     if (cursorPx && msg.planet) msg.cursor = cursorPx;
     if (probeGeo && msg.planet) msg.probe = [probeGeo.lat, probeGeo.lon];
