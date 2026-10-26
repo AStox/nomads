@@ -1056,6 +1056,34 @@ function reliefGrid(cam, lift, ex) {
     }
   return { w: RELIEF_W, h: RELIEF_H, d };
 }
+// The ground the planet pass draws under canvas point (sx, sy), exactly: the ray's first meeting with the drawn surface. The ray meets the sphere raised to h at a point whose ground is as high as h only where it reaches the
+// surface, so h is marched down from the highest ground there is in steps thinner than a ridge and the first step that is under the ground is bisected. The relief grid above takes two fixed-point steps from the camera's lift
+// (which a steep slope does not settle) and is read between nodes 80 px apart, so a point held by it was off the ground under the cursor by the height it missed times the ray's slope, and moved as the zoom changed it.
+// Drawn metres in, the unit point and its terrain height out; null off the planet.
+const GROUND_TOP_M = 12000, GROUND_STEPS = 384;
+function surfaceUnder(cam, sx, sy, ex) {
+  const top = GROUND_TOP_M * ex, over = (h) => { const P = cam.pick(sx, sy, h); return P ? drawnHeight(P) * ex - h : null; };
+  let hi = top, lo = null;
+  for (let k = 1; k <= GROUND_STEPS && lo === null; k++) {
+    const h = top * (1 - k / GROUND_STEPS), d = over(h);
+    if (d === null) return null;
+    if (d >= 0) lo = h; else hi = h;
+  }
+  if (lo === null) return null;
+  for (let k = 0; k < 24; k++) {
+    const mid = (lo + hi) / 2, d = over(mid);
+    if (d !== null && d >= 0) lo = mid; else hi = mid;
+  }
+  const P = cam.pick(sx, sy, lo);
+  return P && { p: P, y: drawnHeight(P) };
+}
+// the page names a pixel in its frame (live.js setCursor) and has the ground under it as the last picture drew it; and a place (setProbe: the ground its camera holds), and has the height drawn there. The height under a pixel
+// is not the held place's: a point held at the height the cursor shows is not where the ray meets the surface unless the surface is flat, and chasing it up a slope moved the held point by kilometres
+function groundAnswer(f, g) {
+  const c = f.cursor, hit = c && g ? surfaceUnder(g.cam, c[0], c[1], g.ex) : null;
+  const pr = f.probe && planet ? { lat: f.probe[0], lon: f.probe[1], y: drawnHeight(planet.G.fromLatLon((f.probe[0] * Math.PI) / 180, (f.probe[1] * Math.PI) / 180)) } : null;
+  return hit || pr ? { at: hit ? c : null, p: hit?.p, y: hit?.y, probe: pr } : null;
+}
 // The pages the planet pass reads where no window is (the view is wider than a window covers, under about zoom 3, or the camera is away from any): a block of them round the camera's page, made behind the frames and
 // moved by whole pages when the camera is more than half a page from its middle. Pages are global, so a window made later finds those that are its own. blk is the block the painter has (first page, in cells)
 let blk = null, blkMaking = false, blkDist = 0, blkMoved = 0;
@@ -1368,7 +1396,7 @@ let pending = null, rendering = false, frames = 0, frontsSent = "";
 // A frame is not drawn when it cannot differ from the one drawn: its views, planet, light and canvas are those of the last drawn frame, nothing the renderer holds changed since (R.rev), nothing it builds is half
 // done (R.settled), the planet layer says its picture is settled, and it has been so for a second (what the frames' own calls start, as the planet block's follow, has been started by then). The canvas keeps
 // the last picture it showed. The views' animation frame (the sea's and the leaves' clock, live.js) changes about six times a second: that is drawn, and is not a change that restarts the second.
-let liftInfo = null, lastKey = "", lastAnim = "", lastRev = -1, sameSince = 0, skips = 0;
+let liftInfo = null, groundCam = null, lastKey = "", lastAnim = "", lastRev = -1, sameSince = 0, skips = 0;
 function frameKey(f) {
   return JSON.stringify([f.views.map((v) => [{ ...v.U, frame: 0 }, v.alpha, v.present, v.fires, v.xray, v.live?.length, v.prims?.length, v.liveRows?.length]), f.planet, f.exag, f.cast, f.seaRGB, f.relief, f.groundOff, f.gid, f.ahead, canvas.width, canvas.height]);
 }
@@ -1414,7 +1442,7 @@ function render() {
     pending = null; skips++;
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, ...windowK0(), tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: 0, gpuMs: 0, passes: R.stats.passes, counts: R.stats.counts, at: 0, fronts, lift: planetLift, liftInfo, q: planetQ, relief: planetRelief, applyMs, skipped: true, settled: true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, ...windowK0(), tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: 0, gpuMs: 0, passes: R.stats.passes, counts: R.stats.counts, at: 0, fronts, lift: planetLift, liftInfo, ground: f.planet ? groundAnswer(f, groundCam) : null, q: planetQ, relief: planetRelief, applyMs, skipped: true, settled: true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     return;
   }
   lastKey = key; lastAnim = anim;
@@ -1434,13 +1462,15 @@ function render() {
   // the planet under the ladder's views, from the camera the page chose (live.js planetParams)
   const q = f.planet?.q ?? null;
   planetQ = q;
+  let groundAns = null;
   const under = f.planet && planetLayer && ((enc, target) => {
     // the camera stands above the ground under its target, as drawn (lifted by the relief's exaggeration), never inside it
     // the ladder's metre is a cell's 75 m over its own cells and its heights are true metres, so a parallel camera draws the relief as exag times the window's scale to keep their ratio
     const ex = f.exag * (1 + (f.planet.ortho ?? 0) * ((f.planet.scale ?? 1) - 1)), sx = ex / f.exag;
     // from the tier the screen shows (planet.js cap), not the finest held: a place reached zooming out holds finer tiles than one reached zooming in, and the lift (the picture's height) must not carry that history
     // averaged over the ground a half screen reaches round the target (nine points a quarter of a half screen apart, a box the view's own size): the height of the one point under the target varies by tens of metres over the
-    // kilometres a wheel zoom or a drag moves the target on a slope, and each metre is a tenth of a pixel the picture slides by (the page's solve cannot know it, so a held point drifted); the box moves slowly
+    // kilometres a wheel zoom or a drag moves the target on a slope, and each metre is a tenth of a pixel the picture slides by; the box moves slowly. It is answered for the page, which names the lift of a frame from the last
+    // pyr it has (live.js liftOf, the lift the page solved its holds for) and so draws with that; the worker's own lift is used where the page names none (the first frames, a jump of the target)
     const P0 = planet.G.fromLatLon((f.planet.lat * Math.PI) / 180, (f.planet.lon * Math.PI) / 180), [E0, N0] = planet.G.eastNorth(P0), reach = Math.min((f.planet.tanH * f.planet.dist) / planetLayer.radiusM, LIFT_REACH_M / planetLayer.radiusM);
     let hs = 0;
     for (let a = -1; a <= 1; a++)
@@ -1449,10 +1479,12 @@ function render() {
         hs += drawnHeight([v[0] / l, v[1] / l, v[2] / l]);
       }
     const pyr = (hs / 9) * ex;
-    liftInfo = { pyr, tier: planetLayer.level?.() ?? 5, lo: f.planet.liftOrtho, lm: f.planet.liftM, sx, ex };
-    const lift = (planetLift = Math.max(0, pyr + (f.planet.liftOrtho ?? f.planet.ortho ?? 0) * (f.planet.liftM != null ? f.planet.liftM * sx - pyr : 0)));
+    liftInfo = { pyr, tier: planetLayer.level?.() ?? 5, lo: f.planet.liftOrtho, lm: f.planet.liftM, sx, ex, lat: f.planet.lat, lon: f.planet.lon, box: reach * planetLayer.radiusM };
+    const lift = (planetLift = Number.isFinite(f.planet.lift) ? f.planet.lift : Math.max(0, pyr + (f.planet.liftOrtho ?? f.planet.ortho ?? 0) * (f.planet.liftM != null ? f.planet.liftM * sx - pyr : 0)));
     const cam = planetCam({ ...f.planet, q, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM, lift });
     if (performance.now() - reliefAtMs > 100) { planetRelief = reliefGrid(cam, lift, ex); reliefAtMs = performance.now(); }
+    groundCam = { cam, ex };
+    groundAns = groundAnswer(f, groundCam);
     blockFollow(cam);
     // the page ground the ladder reads, for the planet pass's finest tier (planet.js, the window's face and corner cells are the pages' frame), with the ladder's own season, frame and relief so water, grass and slope light match it
     const pg = R.pageGround(), pages = curWin && pg.on && winCovers(cam) ? { ...pg, face: curWin.face, x0: curWin.x0, y0: curWin.y0 } : pg.block ? { ...pg, on: false } : null, v0 = views[0]?.U;
@@ -1465,11 +1497,13 @@ function render() {
   const ms = performance.now() - t0;
   rendering = false;
   lastRev = R.rev;
+  // the lift this frame was drawn with: the next frame may begin (and set planetLift) before this one's work is done, and the page picks against the picture it shows
+  const doneLift = planetLift;
   device.queue.onSubmittedWorkDone().then(() => {
     // the levels and bearings whose front lists are built, when they change (live.js listsReady)
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, ...windowK0(), tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: planetLift, liftInfo, q: planetQ, relief: planetRelief, applyMs, settled: !planetLayer || planetLayer.settled?.() === true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, ...windowK0(), tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: doneLift, liftInfo, ground: groundAns, q: planetQ, relief: planetRelief, applyMs, settled: !planetLayer || planetLayer.settled?.() === true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     if (pending) render();
   });
 }
