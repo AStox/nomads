@@ -33,7 +33,10 @@ const BAND_SPAN = process.env.NOMADS_BAND_SPAN === "1" ? 1 : process.env.NOMADS_
 const holdOf = (t: number, route: RouteLaw): RouteLaw => (!HOLD_OFF.includes(t) ? route : BAND_SPAN ? { ...route, band: BAND_SPAN } : { ...route, holdOff: true });
 const lawOf = (t: number, l: TierLaw): TierLaw => ({ ...l, route: holdOf(t, SMOOTH.has(t) ? { ...l.route, smooth: SMOOTH.get(t) } : l.route) });
 export const TIER_LAWS: readonly TierLaw[] = [ISLAND, ISLAND, ISLAND, ISLAND, ISLAND, { ...ISLAND, dtMy: [6.5, 6.5, 3.25, 3.25, 1.6, 1.6] }].map((l, t) => lawOf(t, l));
-export const TIER_STEPS = TIER_LAWS.map((l, t) => (t === 0 ? 0 : l.dtMy.length));
+// SCRATCH knob (prototype): NOMADS_SKIP_TIERS=1 or 1,2 makes those tiers do no erosion: a skipped tier is the smooth carry of its parent (its cell means are the parent's by construction of
+// refineSmooth) and the next tier holds those means, which are tier 0's. [design] a tier erodes only where its cells resolve a valley spacing (1.25 to 2.5 cells at tier 1 is not enough room).
+const SKIP = (process.env.NOMADS_SKIP_TIERS ?? "").split(",").filter(Boolean).map(Number);
+export const TIER_STEPS = TIER_LAWS.map((l, t) => (t === 0 || SKIP.includes(t) ? 0 : l.dtMy.length));
 // A tier's table (the K dt and the creep coefficients) of step number `step`, made once for each step length.
 export function tierTableOf(planet: Planet, tier: number): (step: number) => Uint32Array {
   const law = TIER_LAWS[tier], made = new Map<number, Uint32Array>();
@@ -62,6 +65,7 @@ export async function tiersOf(gpu: Gpu, planet: Planet, dir: BakeDir, budgetS = 
     if (dir.has(`t${t}-height.i32`) && (t < last || dir.has(`t${t}-run.json`))) continue;
     const n = planet.n << (2 * t), resuming = dir.has(`t${t}-state.json`);
     const start = resuming ? new Int32Array(n) : refineSmooth(tierParent(planet, dir, t), t - 1, 4, NUC_TIERS.includes(t) ? topOctaveSigmaM(tierParent(planet, dir, t), t - 1) / Math.SQRT2 : 0);
+    if (steps[t] === 0 && t < last) { dir.write(`t${t}-height.i32`, start); log(`tier ${t}: no steps, the carry of tier ${t - 1}`); continue; }
     const tableAt = tierTableOf(planet, t), first = tableAt(0), r = new Regional(gpu, t, first, start, laws[t].route);
     let table = first;
     const run: TierRun = dir.json<TierRun>(`t${t}-partial`) ?? { tier: t, steps: 0, calls: 0, callS: [], rounds: [], slides: [], stepS: [] };
