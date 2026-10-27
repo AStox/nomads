@@ -1,6 +1,6 @@
 // Real drags at orbit (button held), per frame: view.geo.hd and the angle the compass north is drawn at from screen up (the roll the operator sees), the grabbed ground's distance from the cursor and its step
 // beyond the mouse's. One line per start latitude and press point: max |hd|, max |roll|, the largest grab distance and the largest step. SITE, PROFILE, VW, VH, LATS, OFFS (press point as a share of the planet's
-// radius, on the side the drag comes from), ZS, STEP (px a mouse step), N (steps each way), DIRS (degrees; the drag's direction), LON.
+// radius, on the side the drag comes from, or with OUT=1 on the side it goes to, so the drag leaves the planet), ZS, STEP (px a mouse step), N (steps each way), BACK=0 (no steps back), TRACE=1 (a line every fourth frame), DIRS (degrees; the drag's direction), LON.
 //   lockf /tmp/nomads-gpu.lock bun scripts/play/audit/perf/rolldrag.ts
 import { launch, sleep, load } from "./lib";
 const num = (k: string, d: string) => (process.env[k] ?? d).split(",").map(Number);
@@ -37,7 +37,8 @@ try {
         await idle();
         const disk = await r.page.evaluate(() => { const P = (window as any).play, L = P.live, cx = innerWidth / 2, cy = innerHeight / 2; let lo = 0, hi = innerHeight; for (let i = 0; i < 20; i++) { const m = (lo + hi) / 2; if (L.groundUnder(P.view, cx, cy + m)) lo = m; else hi = m; } return { cx, cy, R: lo }; });
         const a = (dir * Math.PI) / 180;
-        let x = disk.cx - off * disk.R * Math.cos(a), y = disk.cy - off * disk.R * Math.sin(a);
+        const sg = process.env.OUT ? 1 : -1;
+        let x = disk.cx + sg * off * disk.R * Math.cos(a), y = disk.cy + sg * off * disk.R * Math.sin(a);
         const ok = await r.page.evaluate((px: number, py: number) => !!(window as any).play.live.groundUnder((window as any).play.view, px, py), x, y);
         if (!ok) continue;
         await r.page.mouse.move(x, y); await sleep(120);
@@ -45,10 +46,11 @@ try {
         await r.page.mouse.down();
         const dx = STEP * Math.cos(a), dy = STEP * Math.sin(a);
         for (let i = 0; i < N; i++) { x += dx; y += dy; await r.page.mouse.move(x, y); await sleep(100); }
-        for (let i = 0; i < N; i++) { x -= dx; y -= dy; await r.page.mouse.move(x, y); await sleep(100); }
+        if (process.env.BACK !== "0") for (let i = 0; i < N; i++) { x -= dx; y -= dy; await r.page.mouse.move(x, y); await sleep(100); }
         await sleep(250); await r.page.mouse.up(); await sleep(60);
         const f: number[][] = await r.page.evaluate(() => { const R = (window as any).__rec; (window as any).__rec = null; return R.f; });
         runs++;
+        if (process.env.TRACE) for (let i = 0; i < f.length; i += 4) console.log(`   dir${dir} f${i} mouse ${f[i][2].toFixed(0)},${f[i][3].toFixed(0)} grab ${f[i][0].toFixed(0)},${f[i][1].toFixed(0)} hd ${((f[i][4] * 180) / Math.PI).toFixed(1)} roll ${f[i][5].toFixed(1)}`);
         for (let i = 1; i < f.length; i++) {
           const ms = Math.hypot(f[i][2] - f[i - 1][2], f[i][3] - f[i - 1][3]), pv = Math.hypot(f[i][0] - f[i - 1][0], f[i][1] - f[i - 1][1]);
           step = Math.max(step, pv - ms); err = Math.max(err, Math.hypot(f[i][0] - f[i][2], f[i][1] - f[i][3]));
