@@ -62,7 +62,7 @@ const planet = await readPlanet(seed, diskStore(arg("store", STORE), key)), gpu 
 try {
   const m = meta(), { h, fl, kept } = inputs();
   console.log(`tier ${TIER} region ${size}x${size} face ${face} at ${x0},${y0}, planet and start ${spent().toFixed(1)} s, ${m.steps} steps kept`);
-  const r = new LandRegion(gpu, TIER, face, x0, y0, size, tableOf(planet, schedule.length ? dtAt(m.steps) : dtMy), h, fl, { nflow, stochastic: flag("stochastic"), rho8: flag("rho8") || flag("final-rho8"), smooth: Number(arg("smooth", "0")), slide: flag("slide16") ? 16 : 8 });
+  const r = new LandRegion(gpu, TIER, face, x0, y0, size, tableOf(planet, schedule.length ? dtAt(m.steps) : dtMy), h, fl, { nflow, stochastic: flag("stochastic"), rho8: flag("rho8") || flag("final-rho8"), smooth: Number(arg("smooth", "0")), band: process.env.NOMADS_BAND_SPAN === "1" ? 1 : process.env.NOMADS_BAND_SPAN === "2" ? 2 : undefined, slide: flag("slide16") ? 16 : 8 });
   if (kept) r.load({ height: h, carry: readI32("carry.i32"), steps: m.steps } as LandState);
 
   if (flag("render")) {

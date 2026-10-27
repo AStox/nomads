@@ -4,6 +4,7 @@
 // the regional solve keeps them and stay on the device from one patch to the next.
 import type { Gpu } from "../device";
 import { cover, pipeline, readback, storage } from "../kernel";
+import { BAND_PARENT_WORDS } from "../wgsl/globe-band-hold";
 import { CNT, FLAG, FLOW_NEIGHBOURS, HIST, RF, XSTRIDE, regionalWgsl } from "../wgsl/globe-regional";
 import { EDGES, tierGrid } from "./grid";
 import type { Patch } from "./patch";
@@ -12,7 +13,7 @@ const NP = 6 * 256 * 256;
 export const PATCH_HALO = 1;
 // entry points that run as one workgroup (the walks over the depths) and those over the tier-0 cells
 const SINGLE: Record<string, true> = { lvscan: true, area: true, area64: true, areaS64: true, reach64: true, incise: true, incisep: true };
-const PARENT: Record<string, true> = { pzero: true, pstzero: true, pmean: true, psolve: true, psolve2: true, pcarry: true };
+const PARENT: Record<string, true> = { pzero: true, pstzero: true, pmean: true, psolve: true, psolve2: true, pcarry: true, bgnbr: true, bpzero: true, bpstzero: true, bpmean: true, bpsolve: true, bpsolve2: true, bpcarry: true };
 // the tier-0 tables in AT after the flooded surface's block: loss, land count, carry, coefficients, rises (one word a tier-0 cell each), the stencil (nine words), the second coefficients
 export const PARENT_WORDS = 15;
 export type Step = string | readonly [string, number];
@@ -35,7 +36,7 @@ export class RegionalPatch {
   private stepNo = 0;
   readonly flags = FLAG;
 
-  constructor(readonly gpu: Gpu, readonly tier: number, interior: number, table: Uint32Array, creepSubs: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, public route: 0 | 1 | 2 = 0, slideN: 8 | 16 = 8, readonly halo = PATCH_HALO, smooth = 0) {
+  constructor(readonly gpu: Gpu, readonly tier: number, interior: number, table: Uint32Array, creepSubs: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, public route: 0 | 1 | 2 = 0, slideN: 8 | 16 = 8, readonly halo = PATCH_HALO, smooth = 0, readonly band: 0 | 1 | 2 = 0) {
     this.fn = tierGrid(tier).fn;
     this.side = interior + 2 * halo;
     this.N = this.side * this.side;
@@ -43,12 +44,12 @@ export class RegionalPatch {
     this.atParents = this.atCnt + 16;
     this.E = storage(gpu, RF.COUNT * this.N * 4);
     this.E2 = storage(gpu, 16);
-    this.AT = storage(gpu, (this.atParents + PARENT_WORDS * NP) * 4);
+    this.AT = storage(gpu, (this.atParents + (band ? BAND_PARENT_WORDS : PARENT_WORDS) * NP) * 4);
     this.creepSubs = creepSubs;
     this.P = storage(gpu, new Uint32Array([1, creepSubs, 0, route, smooth]));
     this.X = storage(gpu, table);
     this.IDS = storage(gpu, this.N * 4);
-    this.wgsl = regionalWgsl(EDGES, this.fn, nflow, { side: this.side, halo }, slideN);
+    this.wgsl = regionalWgsl(EDGES, this.fn, nflow, { side: this.side, halo }, slideN, band);
   }
   // Another step's table (its K dt and creep coefficients) and the creep's substeps it needs.
   setTable(table: Uint32Array, creepSubs: number) {
@@ -66,7 +67,7 @@ export class RegionalPatch {
     this.stepNo = n;
     this.gpu.device.queue.writeBuffer(this.P, 8, new Uint32Array([n]));
   }
-  get bytes() { return (RF.COUNT * this.N + this.atParents + PARENT_WORDS * NP + this.N) * 4 + XSTRIDE * NP * 4; }
+  get bytes() { return (RF.COUNT * this.N + this.atParents + (this.band ? BAND_PARENT_WORDS : PARENT_WORDS) * NP + this.N) * 4 + XSTRIDE * NP * 4; }
 
   // The patch the buffers hold: the cell ids (a cube corner's missing cell as 0xffffffff, which the kernels read as no cell).
   setPatch(p: Patch) {
@@ -85,7 +86,7 @@ export class RegionalPatch {
   // The tier-0 tables, five of them (loss, land count, carry, mean, rises), in and out; and the carry alone (what a state keeps).
   writeParents(words: Int32Array) { this.gpu.device.queue.writeBuffer(this.AT, this.atParents * 4, words.buffer, words.byteOffset, words.byteLength); }
   async readParents(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, PARENT_WORDS * NP * 4, this.atParents * 4)); }
-  async readCarry(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, NP * 4, (this.atParents + 2 * NP) * 4)); }
+  async readCarry(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, (this.band ? 2 : 1) * NP * 4, (this.atParents + 2 * NP) * 4)); }
 
   private bind(entry: string) {
     const p = pipeline(this.gpu, this.wgsl, entry);
