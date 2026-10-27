@@ -42,6 +42,7 @@ export interface ErosionParams {
   relief: boolean; // landscape-scale denudation by local relief (MONTGOMERY_BRANDON), on or off
   kvar: boolean; // the erodibility scaled by a spatial field of the rock (kfield.ts)
   draw: boolean; // the receiver drawn among the lower neighbours by the fall over the distance, anew each substep (wgsl `recv`), not the steepest
+  rwin: boolean; // the relief law's R is the height range over the cells within 5 km (Montgomery and Brandon's window), not the height over the lowest axis neighbour (wgsl `relief`)
   rho8: boolean; // the receiver the steepest by Rho8's random diagonal lengths, anew each substep (wgsl `recv`), not the steepest
 }
 
@@ -113,6 +114,7 @@ export function erosionFor(radius: number): Partial<ErosionParams> {
   const sim = similarityOf(radius), knobs: Partial<ErosionParams> = {};
   if (process.env.NOMADS_TIER0_DRAW === "1") knobs.draw = true;
   if (process.env.NOMADS_T0_RHO8 === "1") knobs.rho8 = true;
+  if (process.env.NOMADS_T0_RELIEF_WINDOW === "1") knobs.rwin = true;
   if (deffTiers().includes(0)) knobs.creepLand = landDiffusivity(radius, 0);
   if (!sim.similar) return knobs;
   return { ringMax: Math.max(1, Math.round(RING_MAX * sim.cells)), ...knobs };
@@ -120,7 +122,7 @@ export function erosionFor(radius: number): Partial<ErosionParams> {
 export const defaultParams = (over: Partial<ErosionParams> = {}): ErosionParams => ({
   dtYr: SUBSTEP_YR, n: 1,
   K: [K_GRANITE, K_SANDSTONE, K_GRANITE, K_GRANITE, K_VOLCANIC],
-  refRainMmYr: REF_RAIN_MMYR, skinM: SKIN_M, dissolved: DISSOLVED, G: DEPOSITION_G, creepLand: CREEP_LAND, creepSea: CREEP_SEA, shelfSlope: SHELF_SLOPE, ringMax: RING_MAX, relief: true, draw: false, rho8: false, kvar: process.env.NOMADS_KVAR === "1",
+  refRainMmYr: REF_RAIN_MMYR, skinM: SKIN_M, dissolved: DISSOLVED, G: DEPOSITION_G, creepLand: CREEP_LAND, creepSea: CREEP_SEA, shelfSlope: SHELF_SLOPE, ringMax: RING_MAX, relief: true, draw: false, rho8: false, rwin: false, kvar: process.env.NOMADS_KVAR === "1",
   ...over,
 });
 
@@ -130,7 +132,7 @@ export function erosionWords(g: Grid, set: Setup, p: ErosionParams): Uint32Array
   const w = new Uint32Array(64), a0 = meanAreaM2(g), sea = Math.round(set.params.seaLevel * 16);
   w[0] = g.tiles; w[1] = g.fn; w[2] = tileCount(g);
   w[PR.sea16] = sea >>> 0; w[PR.eps] = 1; w[PR.ringMax] = p.ringMax; w[PR.diss16] = Math.round(p.dissolved * 65536); w[PR.g8] = Math.round(p.G * 256);
-  w[PR.kvar] = p.kvar ? 1 : 0; w[PR.draw] = p.draw ? 1 : 0; w[PR.rho8] = p.rho8 ? 1 : 0; w[PR.drawSeed] = set.params.seed >>> 0;
+  w[PR.kvar] = p.kvar ? 1 : 0; w[PR.draw] = p.draw ? 1 : 0; w[PR.rho8] = p.rho8 ? 1 : 0; w[PR.rwin] = p.rwin ? 1 : 0; w[PR.drawSeed] = set.params.seed >>> 0;
   w[PR.nExp] = p.n; w[PR.skin] = p.skinM; w[PR.shelf] = Math.round(p.shelfSlope * Math.sqrt(a0) * 256);
   for (let k = 0; k < 5; k++) w[PR.kc + k] = kWord(g, p, p.K[k]);
   if (p.relief) {
@@ -525,9 +527,21 @@ export class Twin {
       const rc = w[PR.rc], rcap = (rc * 15) >> 4;
       for (let k = 0; k < N; k++) {
         if (H[k] <= 0) continue;
-        let low = H[k];
-        for (let d = 0; d < 4; d++) { const j = this.nb[k * 8 + d]; if (j !== NONE) low = Math.min(low, Math.max(H[j], 0)); }
-        let r = H[k] - Math.max(low, 0), tot = 0;
+        let low = H[k], high = H[k];
+        if (w[PR.rwin]) {
+          for (let d1 = 0; d1 < 8; d1++) {
+            const j = this.nb[k * 8 + d1];
+            if (j === NONE) continue;
+            low = Math.min(low, Math.max(H[j], 0)); high = Math.max(high, H[j]);
+            for (let d2 = 0; d2 < 8; d2++) {
+              if (d1 >= 4 && d2 === d1) continue;
+              const m = this.nb[j * 8 + d2];
+              if (m === NONE) continue;
+              low = Math.min(low, Math.max(H[m], 0)); high = Math.max(high, H[m]);
+            }
+          }
+        } else for (let d = 0; d < 4; d++) { const j = this.nb[k * 8 + d]; if (j !== NONE) low = Math.min(low, Math.max(H[j], 0)); }
+        let r = high - Math.max(low, 0), tot = 0;
         for (let s = 0; s < 8; s++) {
           const rr = Math.min(r, rcap), q = Number((BigInt(rr) << 16n) / BigInt(rc)), den = 65536 - ((q * q) >>> 16);
           const dh = Math.min(Number((BigInt(rr) * BigInt(w[PR.kdt])) / BigInt(den)) + w[PR.e0], r);

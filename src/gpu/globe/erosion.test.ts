@@ -460,6 +460,44 @@ test("relief denudation (Montgomery and Brandon 2002): E = E0 + K R / (1 - (R / 
   er.release();
 });
 
+test("with the relief window (NOMADS_T0_RELIEF_WINDOW) R is the height range over the 21 cells within 5 km, and the kernels equal their twin over two substeps; the default is unchanged", async () => {
+  const { set, e, gpu, tec, S } = await planet(), mb = MONTGOMERY_BRANDON;
+  // staged heights: a flat plateau at 3,000 m with one spike of 1,000 m two cells east and one north of cell A (inside the window) and one two east and two north of cell B (the corner, outside)
+  const er0 = new Erosion(gpu, set, e, storage(gpu, FLD.COUNT * fieldWords(g0) * 4), { rwin: true }), N = er0.N, H = new Int32Array(N).fill(3000 * 256);
+  const A = cellId(g0, 0, 40, 128), B = cellId(g0, 0, 100, 128);
+  H[cellId(g0, 0, 42, 129)] += 1000 * 256; H[cellId(g0, 0, 102, 130)] += 1000 * 256;
+  er0.loadHeights(H); er0.reliefOnly();
+  const WL = await er0.readE(EF.WL), dt = er0.p.dtYr;
+  const reference = (R: number) => { let r = R, tot = 0; for (let q = 0; q < mb.subIntervals; q++) { const dh = Math.min((denudationFromRelief(r) * 1e-3 * dt) / mb.subIntervals, r); r -= dh; tot += dh; } return tot; };
+  expect(Math.abs(WL[A] / 256 - reference(1000))).toBeLessThan(0.1 + 2e-3 * reference(1000));
+  expect(Math.abs(WL[B] / 256 - reference(0))).toBeLessThan(0.1);
+  er0.release();
+  // the default words and the default relief are unchanged: the word is zero
+  expect(erosionWords(g0, set, defaultParams())[45]).toBe(0);
+  expect(erosionWords(g0, set, defaultParams({ rwin: true }))[45]).toBe(1);
+  const er = new Erosion(gpu, set, e, tec.S, { rwin: true }), tw = new Twin(set, e, er.p), NN = er.N;
+  const rain = Float32Array.from({ length: NN }, (_, i) => 200 + ((i * 7919) % 1800));
+  er.setRain(rain);
+  const rho = Uint32Array.from(rain, (v) => rainWord(v, er.p.refRainMmYr)), carry = new BigUint64Array(NN), St = Int32Array.from(S);
+  let lowered = 0;
+  for (let step = 0; step < 2; step++) {
+    er.drawKey = tw.drawKey = step;
+    er.heights(); await er.flow();
+    er.erode(); er.apply();
+    const r = tw.erode(St, rho, carry);
+    for (const [name, field, want] of [["WL", EF.WL, r.wl], ["ER", EF.ER, r.er]] as const) {
+      const got = await er.readE(field);
+      let bad = 0;
+      for (let i = 0; i < NN; i++) if (got[i] !== (want[i] | 0)) bad++;
+      expect(`${name} ${bad}`).toBe(`${name} 0`);
+    }
+    expect(await er.flags()).toBe(0);
+    const wl = await er.readE(EF.WL); for (let i = 0; i < NN; i++) if (wl[i] > 0) lowered++;
+  }
+  expect(lowered).toBeGreaterThan(1000);
+  er.release(); tec.release();
+});
+
 test("the relief law in a dry land: with no rain there is no river to carry the debris, it stays where it fell, and the books balance", async () => {
   // The atmosphere's dry belts have no rain at all. The stream power law takes nothing from a cell with no discharge, but the relief law does, and Davy and Lague's share G w / (G w + A) is
   // 0 / 0 there: the first version of the chain flagged a pile-up at step 0. The debris of a cell with no water is laid down in that cell.

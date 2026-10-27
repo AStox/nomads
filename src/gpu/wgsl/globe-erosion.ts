@@ -46,7 +46,7 @@ export const MAXD = 16382; // the deepest flow path the counting sort holds, in 
 // Parameter words (P, u32).
 export const PR = {
   sea16: 16, eps: 17, ringMax: 18, ring: 19, diss16: 20, g8: 21, upl: 22, kconst: 23, shelf: 24, nExp: 25, foLand: 26, foSea: 27, skin: 28, kc: 30, rc: 36, kdt: 37, e0: 38, // kc: five words from kc; rc, kdt, e0: the relief law (see `relief`)
-  draw: 40, drawKey: 41, drawSeed: 42, kvar: 43, rho8: 44, // draw: 0 steepest descent, 1 the receiver drawn among the lower neighbours (see `recv`); the substep's number and the planet's seed key the draw; rho8: 1 the receiver by Rho8's random diagonal lengths
+  draw: 40, drawKey: 41, drawSeed: 42, kvar: 43, rho8: 44, rwin: 45, // draw: 0 steepest descent, 1 the receiver drawn among the lower neighbours (see `recv`); the substep's number and the planet's seed key the draw; rho8: 1 the receiver by Rho8's random diagonal lengths
 } as const;
 
 // A layer of sediment laid on the water-loaded crust raises the surface by (rho_m - rho_s) / (rho_m - rho_w) of its thickness, 800 / 2300 [derived,
@@ -80,7 +80,7 @@ const VOL_MAX = ${2 ** 28}u;
 const CAPF = ${CAP_FACTOR_Q16}u;
 const P_SEA = ${PR.sea16}u; const P_EPS = ${PR.eps}u; const P_RINGMAX = ${PR.ringMax}u; const P_RING = ${PR.ring}u; const P_DISS = ${PR.diss16}u; const P_G = ${PR.g8}u;
 const P_UPL = ${PR.upl}u; const P_KCONST = ${PR.kconst}u; const P_SHELF = ${PR.shelf}u; const P_NEXP = ${PR.nExp}u; const P_FOL = ${PR.foLand}u; const P_FOS = ${PR.foSea}u;
-const P_KVAR = ${PR.kvar}u; const P_DRAW = ${PR.draw}u; const P_DRAWKEY = ${PR.drawKey}u; const P_DRAWSEED = ${PR.drawSeed}u; const P_RHO8 = ${PR.rho8}u;
+const P_KVAR = ${PR.kvar}u; const P_DRAW = ${PR.draw}u; const P_DRAWKEY = ${PR.drawKey}u; const P_DRAWSEED = ${PR.drawSeed}u; const P_RHO8 = ${PR.rho8}u; const P_RWIN = ${PR.rwin}u;
 const P_SKIN = ${PR.skin}u; const P_KC = ${PR.kc}u; const P_RC = ${PR.rc}u; const P_KDT = ${PR.kdt}u; const P_E0 = ${PR.e0}u;
 
 fn touch() {
@@ -458,11 +458,30 @@ fn relief(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw
   let hk = e_get(E_H, k);
   if (hk > 0i && P[P_RC] > 0u) {
     var low = hk;
-    for (var d = 0u; d < 4u; d++) {
-      let j = nbr8(k, d);
-      if (j != NONE) { low = min(low, max(e_get(E_H, j), 0i)); }
+    var high = hk;
+    if (P[P_RWIN] != 0u) {
+      // P_RWIN: R is the highest minus the lowest height over the 21 cells whose centres lie within 5 km at the mean cell width: the eight-neighbour table applied twice (5 by 5 cells),
+      // less the four corners reached by two steps of one diagonal (2.83 cells away)
+      for (var d1 = 0u; d1 < 8u; d1++) {
+        let j = nbr8(k, d1);
+        if (j == NONE) { continue; }
+        let hj = e_get(E_H, j);
+        low = min(low, max(hj, 0i)); high = max(high, hj);
+        for (var d2 = 0u; d2 < 8u; d2++) {
+          if (d1 >= 4u && d2 == d1) { continue; }
+          let m = nbr8(j, d2);
+          if (m == NONE) { continue; }
+          let hm = e_get(E_H, m);
+          low = min(low, max(hm, 0i)); high = max(high, hm);
+        }
+      }
+    } else {
+      for (var d = 0u; d < 4u; d++) {
+        let j = nbr8(k, d);
+        if (j != NONE) { low = min(low, max(e_get(E_H, j), 0i)); }
+      }
     }
-    var r = u32(hk - max(low, 0i));
+    var r = u32(high - max(low, 0i));
     let rcap = (P[P_RC] * 15u) >> 4u;
     for (var s = 0u; s < 8u; s++) {
       let rr = min(r, rcap);
