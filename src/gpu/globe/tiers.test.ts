@@ -10,7 +10,7 @@ import { BakeDir } from "./bakedir";
 import { FACES, centre, tierGrid } from "./grid";
 import { defaultParams, landDiffusivity } from "./erosion";
 import { XSTRIDE } from "../wgsl/globe-regional";
-import { creepSubsOf, tierTable } from "./regional";
+import { creepSubsOf, refineSmooth, tierTable } from "./regional";
 import { TIER_LAWS, drainage, tiersOf, type TierLaw } from "./tiers";
 import type { Planet } from "./window";
 
@@ -116,5 +116,24 @@ describe("the land diffusivity of a coarse tier (NOMADS_DEFF_TIERS)", () => {
         expect(most).toBeLessThanOrEqual(0.5 + 1e-9); expect(subs).toBeGreaterThan(subs0[i]);
       }
     } finally { if (prev === undefined) delete process.env.NOMADS_DEFF_TIERS; else process.env.NOMADS_DEFF_TIERS = prev; }
+  });
+});
+
+describe("a skipped tier (NOMADS_SKIP_TIERS: zero steps)", () => {
+  test("tier 1 with no steps is refineSmooth of tier 0 and its 2 by 2 means are tier 0's; tier 2 then holds those means", async () => {
+    const gpu = await theGpu(), dir = fresh();
+    await tiersOf(gpu, planet, dir, Infinity, 2, [0, 0, 3]);
+    const parent = Float32Array.from(height, (v) => v * 256), want = refineSmooth(parent, 0, 4, 0), got = dir.i32("t1-height");
+    expect(got.length).toBe(want.length);
+    let differ = 0;
+    for (let i = 0; i < got.length; i++) if (got[i] !== want[i]) differ++;
+    expect(differ).toBe(0);
+    const m1 = new Float64Array(N0), m2 = new Float64Array(N0), h2 = dir.i32("t2-height");
+    for (let i = 0; i < got.length; i++) { const f = Math.floor(i / 262144), r = i - f * 262144; m1[(f * 256 + (Math.floor(r / 512) >> 1)) * 256 + ((r % 512) >> 1)] += got[i] / 4; }
+    for (let i = 0; i < h2.length; i++) { const f = Math.floor(i / 1048576), r = i - f * 1048576; m2[(f * 256 + (Math.floor(r / 1024) >> 2)) * 256 + ((r % 1024) >> 2)] += h2[i] / 16; }
+    const e1 = Array.from({ length: N0 }, (_, c) => Math.abs(m1[c] - parent[c]) / 256).sort((x, y) => x - y), e2 = Array.from({ length: N0 }, (_, c) => Math.abs(m2[c] - parent[c]) / 256).sort((x, y) => x - y);
+    console.log(`skipped tier 1 means against tier 0: max ${e1[N0 - 1].toFixed(4)} m; tier 2 against tier 0: p99 ${e2[Math.floor(N0 * 0.99)].toFixed(3)} m`);
+    expect(e1[N0 - 1]).toBeLessThan(0.01);
+    expect(e2[Math.floor(N0 * 0.99)]).toBeLessThan(1);
   });
 });
