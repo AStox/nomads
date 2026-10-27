@@ -194,6 +194,8 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
   }
   // the level the screen shows: down at once (a coarser level is always held), up by CAP_RATE a second
   let cap = 0, capAt = performance.now(), fine = 0, last = null, drawn = false;
+  // the shell top and level cap the last draw used: what a CPU read of the surface the ray march meets needs to choose the tier a pixel's rays march at (worker.js drawnTier)
+  let shown = null;
 
   // the noise's frame: the face of the camera's target, the tangents of the target on it and its place in metres along the equiangular axes (wgsl/globe.js noiseXZ)
   function noiseFrame(T) {
@@ -261,6 +263,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     if (viewTop !== null) hmaxR = Math.min(hmaxR, (exag * viewTop) / R);
     if ((opts.ortho ?? 0) > 0.5) hmaxR = Math.min(hmaxR, (cam.lift + cam.hh * R * Math.hypot(cam.aspect, 2) * 1.5) / R);
     const oLen = Math.hypot(cam.o[0], cam.o[1], cam.o[2]), cut = opts.riverCut ?? 20, nf = noiseFrame(cam.T);
+    shown = { hmaxR, cap };
     u.set([...cam.o, cam.tanH, ...cam.fwd, cam.aspect, ...cam.right, opts.relief ?? 2.5, ...cam.up, exag, ...sun, R, ...cam.T, hmaxR, ...cam.off, artPx,
       w, h, Math.max(1e-6, 0.4 * (oLen - 1 - hmaxR)), oLen + 1.01, cut, sm(0.05, 0.3, oLen - 1), a.w, a.h, ...(opts.moon ?? [0, 0, 1]), opts.moonMix ?? 0, opts.amb ?? 1, 0, 0, 0,
       nf.ua, nf.vb, nf.fx, nf.fz]);
@@ -325,5 +328,5 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     if (last.clocked && (Math.floor(performance.now() / 160) & 7) !== last.frame) return false;
     return last.held.every(([k, was]) => pyramid.ready(k.t, k.f, k.tx, k.ty) === was) && readyLevel(last.pts) === last.ready;
   };
-  return { hmax, draw, setLut, setCrown, settled, level: () => cap };
+  return { hmax, draw, setLut, setCrown, settled, level: () => cap, shown: () => shown, rising: () => !!last && (cap !== last.ready || fine !== last.goal) };
 }

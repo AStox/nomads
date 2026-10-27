@@ -982,8 +982,8 @@ async function check(m) {
   if (m.op === "roll") { R.debugRoll(m.kx, m.ky); return true; }
   // the share each block of the drawn window is drawn at (2^-eff of what its ground grew) and where it stands in the window's cells (plan R6: the blocks the screen can touch must all show one share)
   if (m.op === "shares") return curWin?.blockRecs && { k0: curWin.blockK0, view: curWin.blockView, blocks: curWin.blockRecs.map((b) => ({ key: b.key, eff: curWin.blockKd?.get(b.key) ?? b.k, made: b.k, c0: b.X - curWin.x0, z0: curWin.y0 + 256 - (b.Y + 64) })) };
-  // whether the page is still making what it draws (sprites made on demand, the window's blocks, a switch): a still taken before it is idle shows the nearest sprite made, so a gate waits for busy to stay false
-  if (m.op === "idle") return { busy: !!refreshing || !!curWin?.blocksBusy || switching || building || !!prepared || surveying > 0 || blkMaking, sprites: nStatic + (dyn ? dynUsed() : 0), asked: asked.size };
+  // whether the page is still making what it draws (the planet's level and fine pages still rising, sprites made on demand, the window's blocks, a switch): a still taken before it is idle shows the nearest sprite made, so a gate waits for busy to stay false
+  if (m.op === "idle") return { busy: !!planetLayer?.rising?.() || !!refreshing || !!curWin?.blocksBusy || switching || building || !!prepared || surveying > 0 || blkMaking, sprites: nStatic + (dyn ? dynUsed() : 0), asked: asked.size };
   if (m.op === "front") { R.setFrontUse(!!m.on); return true; }
   // view 0's G-buffer kept (gsnap), and the next one compared with it pixel by pixel (gdiff): what each pixel shows
   // (kind, colour, flags) and whose it is
@@ -1041,49 +1041,96 @@ const RELIEF_W = 17, RELIEF_H = 11;
 // held, which depends on the way the place was reached (a place reached zooming out holds finer tiles) and steps as the zoom crosses a level, moving the picture, the camera's lift and the point a wheel zoom holds by tens of px
 // the widest box the lift averages over, where the camera is still a perspective one over a whole planet [design: 100 km]
 const LIFT_REACH_M = 100e3;
-function drawnHeight(P) {
-  const cap = Math.min(5, planetLayer?.level?.() ?? 5), t0 = Math.floor(cap), ft = cap - t0, H = planet.pyramid.heightAt;
+function drawnHeight(P, tier) {
+  const H = planet.pyramid.heightAt;
+  if (tier !== undefined) return Math.max(0, H(planet.G.FRAMES, P, tier));
+  const cap = Math.min(5, planetLayer?.level?.() ?? 5), t0 = Math.floor(cap), ft = cap - t0;
   return Math.max(0, H(planet.G.FRAMES, P, t0) * (1 - ft) + (ft > 0 ? H(planet.G.FRAMES, P, t0 + 1) * ft : 0));
+}
+// The tier the planet pass marches the ray of canvas point (sx, sy) at: the surface it meets is one tier's bilinear cells, the tier whose cells are at most an art pixel across where the ray enters the shell, never finer than
+// the whole view holds (the level cap's ceiling): wgsl/globe.js gMarch, from the same camera, shell top and cap the last draw used (planet.js shown). The per-pixel dither between tiers and the fine pages shade the surface and
+// never move it, so this tier's height is the height the picture is drawn at. The finest tier where the ray misses the shell.
+const ART_PX = 2, TOP_TIER = 5;
+function drawnTier(cam, sx, sy) {
+  const sh = planetLayer?.shown?.();
+  if (!sh) return TOP_TIER;
+  const nx = ((Math.floor(sx / ART_PX) + 0.5) * ART_PX / cam.w) * 2 - 1, ny = 1 - ((Math.floor(sy / ART_PX) + 0.5) * ART_PX / cam.h) * 2, ok = cam.ortho;
+  const lat = [0, 1, 2].map((i) => nx * cam.aspect * cam.right[i] + ny * cam.up[i]);
+  const rd = [0, 1, 2].map((i) => cam.fwd[i] + (1 - ok) * cam.tanH * lat[i]), rl = Math.hypot(rd[0], rd[1], rd[2]);
+  for (let i = 0; i < 3; i++) rd[i] /= rl;
+  const off = [0, 1, 2].map((i) => cam.off[i] + ok * cam.hh * lat[i]), po = [0, 1, 2].map((i) => cam.o[i] + ok * cam.hh * lat[i]);
+  const b = po[0] * rd[0] + po[1] * rd[1] + po[2] * rd[2], s0 = 2 * (cam.T[0] * off[0] + cam.T[1] * off[1] + cam.T[2] * off[2]) + off[0] ** 2 + off[1] ** 2 + off[2] ** 2;
+  const c1 = s0 - sh.hmaxR * (2 + sh.hmaxR), d1 = b * b - c1;
+  if (d1 < 0 || (b > 0 && c1 > 0)) return TOP_TIER;
+  const tIn = Math.max(c1 / (-b + Math.sqrt(d1)), 1e-6);
+  const mpp = ART_PX * ((2 * ((1 - ok) * cam.tanH * tIn + ok * cam.hh)) / cam.h) * cam.radiusM, cell0 = ((cam.radiusM * Math.PI) / 2 / 256) * 0.8;
+  const level = Math.min(TOP_TIER, Math.max(0, Math.log2(cell0 / Math.max(mpp, 1e-3))));
+  return Math.min(Math.ceil(level), Math.ceil(sh.cap), TOP_TIER);
+}
+// The height (metres) the picture draws at unit point P: the surface of the tier its pixel marches at, found where P lands through two fixed-point steps (the pixel depends on the height and the tier on the pixel). The
+// sphere-level height where P is off the screen or behind the planet.
+function drawnHeightAt(cam, P, ex) {
+  let h = drawnHeight(P);
+  for (let k = 0; k < 2; k++) {
+    const s = cam.project([P[0] * (1 + (h * ex) / cam.radiusM), P[1] * (1 + (h * ex) / cam.radiusM), P[2] * (1 + (h * ex) / cam.radiusM)]);
+    if (!s) return h;
+    h = drawnHeight(P, drawnTier(cam, s[0], s[1]));
+  }
+  return h;
 }
 function reliefGrid(cam, lift, ex) {
   const d = new Float32Array(RELIEF_W * RELIEF_H);
   for (let j = 0; j < RELIEF_H; j++)
     for (let i = 0; i < RELIEF_W; i++) {
+      const sx = (i * canvas.width) / (RELIEF_W - 1), sy = (j * canvas.height) / (RELIEF_H - 1), tier = drawnTier(cam, sx, sy);
       let h = lift;
       for (let k = 0; k < 2 && h >= 0; k++) {
-        const P = cam.pick((i * canvas.width) / (RELIEF_W - 1), (j * canvas.height) / (RELIEF_H - 1), h);
-        h = P ? drawnHeight(P) * ex : -1;
+        const P = cam.pick(sx, sy, h);
+        h = P ? drawnHeight(P, tier) * ex : -1;
       }
       d[j * RELIEF_W + i] = h;
     }
   return { w: RELIEF_W, h: RELIEF_H, d };
 }
-// The ground the planet pass draws under canvas point (sx, sy), exactly: the ray's first meeting with the drawn surface. The ray meets the sphere raised to h at a point whose ground is as high as h only where it reaches the
-// surface, so h is marched down from the highest ground there is in steps thinner than a ridge and the first step that is under the ground is bisected. The relief grid above takes two fixed-point steps from the camera's lift
-// (which a steep slope does not settle) and is read between nodes 80 px apart, so a point held by it was off the ground under the cursor by the height it missed times the ray's slope, and moved as the zoom changed it.
-// Drawn metres in, the unit point and its terrain height out; null off the planet.
-const GROUND_TOP_M = 12000, GROUND_STEPS = 384;
+// The ground the planet pass draws under canvas point (sx, sy), exactly: the first meeting of the pixel's ray with the drawn surface (its tier's bilinear cells). The ray is marched from where it enters the shell by the
+// clearance over the ground, which the ray's height and the ground's can close at 1 + SLOPE_MAX ex per metre along it at most, so no ridge between two samples is skipped (sampling the raised spheres a fixed step of height
+// apart did skip them where the ray grazes: the pick landed a hundred metres behind the ridge the picture shows), and the first sample under the ground is bisected. Drawn metres in, the unit point and its terrain
+// height out; null where the ray does not meet the ground.
+const SLOPE_MAX = 1.2, MARCH_MIN_M = 2;
 function surfaceUnder(cam, sx, sy, ex) {
-  const top = GROUND_TOP_M * ex, over = (h) => { const P = cam.pick(sx, sy, h); return P ? drawnHeight(P) * ex - h : null; };
-  let hi = top, lo = null;
-  for (let k = 1; k <= GROUND_STEPS && lo === null; k++) {
-    const h = top * (1 - k / GROUND_STEPS), d = over(h);
-    if (d === null) return null;
-    if (d >= 0) lo = h; else hi = h;
+  const sh = planetLayer?.shown?.();
+  if (!sh) return null;
+  const tier = drawnTier(cam, sx, sy), R = cam.radiusM, ok = cam.ortho;
+  const nx = ((Math.floor(sx / ART_PX) + 0.5) * ART_PX / cam.w) * 2 - 1, ny = 1 - ((Math.floor(sy / ART_PX) + 0.5) * ART_PX / cam.h) * 2;
+  const lat = [0, 1, 2].map((i) => nx * cam.aspect * cam.right[i] + ny * cam.up[i]), rd = [0, 1, 2].map((i) => cam.fwd[i] + (1 - ok) * cam.tanH * lat[i]), rl = Math.hypot(rd[0], rd[1], rd[2]);
+  for (let i = 0; i < 3; i++) rd[i] /= rl;
+  const off = [0, 1, 2].map((i) => cam.off[i] + ok * cam.hh * lat[i]), x0 = [0, 1, 2].map((i) => cam.T[i] + off[i]);
+  const b = x0[0] * rd[0] + x0[1] * rd[1] + x0[2] * rd[2], s0 = 2 * (cam.T[0] * off[0] + cam.T[1] * off[1] + cam.T[2] * off[2]) + off[0] ** 2 + off[1] ** 2 + off[2] ** 2;
+  const c1 = s0 - sh.hmaxR * (2 + sh.hmaxR), d1 = b * b - c1;
+  if (d1 < 0 || (b > 0 && c1 > 0)) return null;
+  const tOut = -b + Math.sqrt(d1), tIn = Math.max(c1 / tOut, 0), at = (t) => [x0[0] + t * rd[0], x0[1] + t * rd[1], x0[2] + t * rd[2]];
+  // the clearance of the ray at t over the ground, drawn metres (negative under it), and the unit point
+  const clear = (t) => { const x = at(t), l = Math.hypot(x[0], x[1], x[2]), u = [x[0] / l, x[1] / l, x[2] / l]; return { c: (l - 1) * R - drawnHeight(u, tier) * ex, u }; };
+  const slope = 1 + SLOPE_MAX * ex;
+  let t = tIn, prev = tIn;
+  for (let k = 0; k < 100000 && t <= tOut; k++) {
+    const { c } = clear(t);
+    if (c <= 0) {
+      let lo = prev, hi = t;
+      for (let j = 0; j < 30; j++) { const m = (lo + hi) / 2; if (clear(m).c > 0) lo = m; else hi = m; }
+      const u = clear(hi).u;
+      return { p: u, y: drawnHeight(u, tier) };
+    }
+    prev = t;
+    t += Math.max(c / slope, MARCH_MIN_M) / R;
   }
-  if (lo === null) return null;
-  for (let k = 0; k < 24; k++) {
-    const mid = (lo + hi) / 2, d = over(mid);
-    if (d !== null && d >= 0) lo = mid; else hi = mid;
-  }
-  const P = cam.pick(sx, sy, lo);
-  return P && { p: P, y: drawnHeight(P) };
+  return null;
 }
 // the page names a pixel in its frame (live.js setCursor) and has the ground under it as the last picture drew it; and a place (setProbe: the ground its camera holds), and has the height drawn there. The height under a pixel
 // is not the held place's: a point held at the height the cursor shows is not where the ray meets the surface unless the surface is flat, and chasing it up a slope moved the held point by kilometres
 function groundAnswer(f, g) {
   const c = f.cursor, hit = c && g ? surfaceUnder(g.cam, c[0], c[1], g.ex) : null;
-  const pr = f.probe && planet ? { lat: f.probe[0], lon: f.probe[1], y: drawnHeight(planet.G.fromLatLon((f.probe[0] * Math.PI) / 180, (f.probe[1] * Math.PI) / 180)) } : null;
+  const pr = f.probe && planet ? (() => { const P = planet.G.fromLatLon((f.probe[0] * Math.PI) / 180, (f.probe[1] * Math.PI) / 180); return { lat: f.probe[0], lon: f.probe[1], y: g ? drawnHeightAt(g.cam, P, g.ex) : drawnHeight(P) }; })() : null;
   return hit || pr ? { at: hit ? c : null, p: hit?.p, y: hit?.y, probe: pr } : null;
 }
 // The pages the planet pass reads where no window is (the view is wider than a window covers, under about zoom 3, or the camera is away from any): a block of them round the camera's page, made behind the frames and
@@ -1512,11 +1559,11 @@ function render() {
     const cam = planetCam({ ...f.planet, q, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM, lift });
     if (performance.now() - reliefAtMs > 100) { planetRelief = reliefGrid(cam, lift, ex); reliefAtMs = performance.now(); }
     groundCam = { cam, ex };
-    groundAns = groundAnswer(f, groundCam);
     blockFollow(cam);
     // the page ground the ladder reads, for the planet pass's finest tier (planet.js, the window's face and corner cells are the pages' frame), with the ladder's own season, frame and relief so water, grass and slope light match it
     const pg = R.pageGround(), pages = curWin && pg.on && winCovers(cam) ? { ...pg, face: curWin.face, x0: curWin.x0, y0: curWin.y0 } : pg.block ? { ...pg, on: false } : null, v0 = views[0]?.U;
     planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, spr: f.planet.spr ?? v0?.spr, canopy: f.planet.canopy, ortho: f.planet.ortho, sun: f.planet.sun, moon: f.planet.moon, moonMix: f.planet.moonMix, amb: f.planet.amb, exag: ex, riverCut: f.planet.riverCut, season: v0?.season, frame: v0?.frame, relief: f.relief, pages, light: f.planet.light, lightFade: f.planet.lightFade, lightGround: pages ? R.lightGround() : null, streams: pages ? R.streamGround() : null });
+    groundAns = groundAnswer(f, groundCam);
   });
   noteLevel(f.cam);
   noteMoved(f.cam);

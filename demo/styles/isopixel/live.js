@@ -410,11 +410,15 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // which stand in it (the window's cover), so the ladder and the planet under it always agree and nothing else changes: with the target in one face the two are the same.
   // [design: 350 ms, a quarter turn in about a third of a second, as the camera's Q and E and planet.js's level rise]
   const LAT_TAU = 350, WIN_COVER = (view) => (mode === "win" && !simOpts ? winFade() * Math.min(1, LIFT_PER_COVER * coverFade(view)) : 1), LAT_COVER = (view) => (simOpts ? 1 : mode === "win" ? WIN_COVER(view) : 0);
-  let latS = null, latAt = 0;
+  // a target that jumps (a teleport, a bookmark, a search) is a new picture, not a camera moving on: the lattice of the place it left would glide into the new one's for ten time constants, and the sea's waves, which
+  // stand in it, slide the whole time [design: a quarter radian, 98 km on a 391 km planet and well past what a frame of a drag or a fly covers]
+  const LAT_JUMP = 0.25;
+  let latS = null, latAt = 0, latFrom = null;
   function latTick(view) {
     if (!PLACE || !view.geo) return;
-    const T = latticeAt(view.geo), now = performance.now();
-    if (!latS || !T.q) { latS = { sc: T.sc, turn: T.turn, q: T.q && [...T.q] }; latAt = now; return; }
+    const T = latticeAt(view.geo), now = performance.now(), v = vecOf(view.geo), jumped = latFrom && Math.acos(Math.min(1, dotv(v, latFrom))) > LAT_JUMP;
+    latFrom = v;
+    if (!latS || !T.q || jumped) { latS = { sc: T.sc, turn: T.turn, q: T.q && [...T.q] }; latAt = now; return; }
     const a = 1 - Math.exp(-Math.min(1000, now - latAt) / LAT_TAU);
     latAt = now;
     latS.turn += (((T.turn - latS.turn + 3 * Math.PI) % TAU) - Math.PI) * a;
