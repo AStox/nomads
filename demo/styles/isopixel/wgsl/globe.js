@@ -741,6 +741,7 @@ const SEA_F0: f32 = 0.02;
 // it (a diffuse share of 0.1 to 0.2, an estimate, not a source's figure); a mirror of that strength changes by only a few percent of the sea's colour under a wave of a few degrees' slope, which at 60 degrees from the
 // vertical (where the view stands) is not seen. The sea mirrors 0.4 of the tables' sky: the waves' contrast the close view had (sky 1, added to the display's values) at every scale
 const SEA_SKY: f32 = ${lit(0.4)};
+const SEA_KNEE: f32 = 0.6;
 fn seaFresnel(c: f32) -> f32 { return SEA_F0 + (1.0 - SEA_F0) * pow(1.0 - clamp(c, 0.0, 1.0), 5.0); }
 // The sea's own light, from the facets of its waves (ground.wgsl.js g_seaWave: tx, ty the noise frame's axes on the ground, w the slopes along them and the variance of those a pixel does not resolve):
 // the sky mirrored in the facet the eye sees (Fresnel's share of a sky that is a third brighter low than high [design], SEA_SKY of the tables' ambient light) and the key light's glint, Cox and Munk's
@@ -1018,7 +1019,9 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   if (seaOn) { seaL = seaShine(p, rd, kx, ky, seaW); }
   // the sea's mirror and glint are light, added to the body's in linear light (the palette and its tables are display values: sRGB's 2.2 [cited])
   var shown = max(lit0, ink * (1.0 - dark));
-  if (seaOn) { shown = pow(max(pow(max(lit0, ink * (1.0 - dark)), vec3f(2.2)) + seaL.rgb * ambK, vec3f(0.0)), vec3f(1.0 / 2.2)); }
+  // a glint over a wide view is a glitter path as bright as the sun's own light on a white face: past SEA_KNEE (0.6 of the light a white face has at noon, in linear light [design]) its sum is held by a soft
+  // knee, so a view into the sun's reflection shows silver and its facets, not a clipped white
+  if (seaOn) { var add = seaL.rgb * ambK; add = add / (1.0 + max(add, vec3f(0.0)) / SEA_KNEE); shown = pow(max(pow(max(lit0, ink * (1.0 - dark)), vec3f(2.2)) + add, vec3f(0.0)), vec3f(1.0 / 2.2)); }
   if (nw > 0.0) { shown = mix(shown, max(lit0, nightGround(ground, p, sd, ink, moonFacing, seaL.a)), nw); }
   o_.color = vec4f(shown, 1.0);
   return o_;
