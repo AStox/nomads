@@ -27,3 +27,18 @@ Chain: `2026-10-26-resolution-aware-coarse-tiers-design.md`, `2026-10-26-straigh
 ## Next
 
 Band span 2 at every tier (1 to 3 and the region path) with Rho8 (V11), to see whether the 7 km carry goes; then, if a variant passes by picture and numbers, the whole-planet tiers 0 to 3 and the rebake plan. No rebake plan until a gate passes.
+
+## Update: V11, V12 and the whole-planet tiers 0 to 3 (2026-10-27, later)
+
+Code: `globe-t3` 7f20964 (band hold on the patch path and region harness; `NOMADS_HOLD_OFF_TIERS=1,2,3` with `NOMADS_BAND_SPAN=2`). The streamed tier path (tiers-stream.ts, the real bake's tiers 4 and 5) has no band kernels yet.
+
+- V11r (Rho8 tier 0, band span 2 at tiers 1 to 5): R1 lock windows 4 of 31 (uniform 5; V0 11 of 28), home 4 of 59 (uniform 11; V0 25 of 60), straight300 R1 .590 to .521, R stem sinuosity 1.31 to 1.18, lattice-straight 300-cell stretches 14 to 4. Regional pictures: arcs, oblique confluences, forked ridges, no 45 degree trunk. Tier-0 mean error p99 580 to 830 m at every tier (signed within 4 m, land share within .01).
+- V12 (V11r plus channel nucleation at tiers 1 to 5): no change (peak ratio 4.98 to 4.51, wavelength 6.6 km at every tier). Nucleated detail does not grow in 266 My under a band hold either.
+- Ridge wavelength: 4.8 km under box holds, 6 to 7 km under band span 2, both 2 to 3 tier-0 cells; the model's own Perron range (Lc 237 m, 6.4 to 12.7 Lc) is 1.5 to 3 km and no variant is inside it. The 7.7 km pattern is already in the tier-0 chain's carry.
+- Slope: at equal 10 km relief the variants are no steeper than V0 (1000 to 1500 m relief: 13.6 to 14.6 degrees against 0.24 tan live; Montgomery and Brandon 2002 S = 4 + 0.014 Rz scaled to a 90 m DEM: 0.28 to 0.39). slope50 rose because more land sits in high-relief windows.
+- Relief (open gap): share of land 10 km windows above 1000/1500/2000 m is .149/.096/.064 at the live tier 0 (real land: under .05 above 1000 m, under .02 above 1500 m), .246/.156/.108 at tier 1, flat after; the band hold adds 3 to 5 points in the tier-0 cell means (V11r .181 against V2 .135 at tier 3 averaged). Rho8 is not the cause. The chain's land mean is 1363 m against Earth's 840.
+- Pyramid: every level is pooled from tier 5 (pyramid.ts 147 to 154); no bake tier below 5 is read.
+- Whole planet, V0 against V11r (tier 3): land share .2553 / .2584, land mean 1354 / 1270 m, p99 4711 / 4867 m, max 5519 / 6458 m; land and sea flip over 2.6% of the planet's area. Test spots: home and E2 keep their place; A becomes a 292 m lowland on a smaller island; the highest range D and the mountain M are gone from their places (nearest summit 181 km away); K3 stays coast; the biggest river is 85 km away.
+- Honest read of the whole-planet maps (`/tmp/globe-fix-t3/impl/png/final-planet-*.png`): V11r removes the diagonal and axial river runs in the regional views, but at planet scale both planets still show a corduroy of ridges about 6 km apart around every massif and along coasts, and V11r adds a bundle of three parallel straight rivers across a plain. It does not pass.
+
+Stage costs (GPU s, live bake): tier-0 chain 343; tiers 1 to 3 in memory 164 to 169; streamed tier 1 30, tier 2 101, tier 3 365, tier 4 1,910, tier 5 2,187; air 10,107 (18.9 GB), water 1,236 (12.1 GB), ground 775 (8.9 GB), groundtiles 384 (3.5 GB), pyramid 455 (0.95 GB), terrain 152 (1.6 GB); about 5 h and 50 GB in all.
