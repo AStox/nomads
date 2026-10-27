@@ -638,23 +638,29 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // the grab by what the turn differs from the hand's, so the rate is what keeps that to a fraction of the mouse's own step; with none to take back, none arises). That roll is held, the grab solved again for
   // it with the screen up fixed at it, walked there from the hand's answer in steps of at most HD_STEP (each warm-started, so the answer stays on the near side of the planet) and stopped, by halving, at the
   // last hd that still holds the place under the cursor within HD_TOL px: the roll is the least the grab needs, none where north up holds it, the limb's and a pole's own where it cannot, continuous in the
-  // place and the cursor. [design: 0.5; 0.1 rad; 0.05 px]
-  const HD_UNWIND = 0.5, HD_STEP = 0.1, HD_TOL = 0.05;
+  // place and the cursor. A roll that would move the target by more than the hand's turn does (plus HD_HOP px of the picture's centre, or HD_FREE times the cursor's own step if that is more) is not taken whole: the walk stops where the target's step is the hand's, so
+  // a roll the grab does not need goes as fast as the target may move and no faster (north up near the limb or at high latitude moves the target many times as far as the mouse), and the picture never hops.
+  // [design: 0.5; 0.1 rad; 0.05 px; 0.1 px; a target that moves 1.5 times as far as the cursor did (its arc at the planet's centre scale: the cursor's step is how far the grab stands from it before the solve) is following it, not hopping]
+  const HD_UNWIND = 0.5, HD_STEP = 0.1, HD_TOL = 0.05, HD_HOP = 0.1, HD_FREE = 1.5;
   const wrapPi = (a) => ((a + 3 * Math.PI) % TAU) - Math.PI;
   function unrolled(view, P, hA, sx, sy, g) {
     const pw = smooth(HD_LAT0, HD_LAT1, Math.abs(g.lat)), prev = view.geo.hd ?? 0, base = prev + pw * wrapPi(g.hd - prev);
     const travel = Math.acos(clamp(dotv(vecOf(view.geo), vecOf(g)), -1, 1)), back = Math.min(Math.abs(base), (1 - pw) * HD_UNWIND * travel);
     const delta = wrapPi(base - Math.sign(base) * back - g.hd);
     if (Math.abs(delta) < 1e-9) return g;
+    const cam0 = solveCam(view, view.geo), T0 = vecOf(view.geo), arc = (h) => Math.acos(clamp(dotv(T0, vecOf(h)), -1, 1));
+    const pxRad = canvas.height / 2 / (cam0.tanH * (cam0.dist / PR)), at = cam0.project(P.map((v) => v * (1 + hA / PR))), mouse = at ? Math.hypot(at[0] - sx, at[1] - sy) / pxRad : 0;
+    const limit = Math.max(arc(g) + HD_HOP / pxRad, HD_FREE * mouse);
+    const fits = (r) => r && r.e <= HD_TOL && arc(r.g) <= limit;
     const n = Math.ceil(Math.abs(delta) / HD_STEP);
     let ok = g, f0 = 0;
     for (let i = 1; i <= n; i++) {
       let f1 = i / n;
       const r = refineTarget(view, P, hA, sx, sy, ok, g.hd + delta * f1);
-      if (r && r.e <= HD_TOL) { ok = r.g; f0 = f1; continue; }
+      if (fits(r)) { ok = r.g; f0 = f1; continue; }
       for (let j = 0; j < 8; j++) {
         const m = (f0 + f1) / 2, rm = refineTarget(view, P, hA, sx, sy, ok, g.hd + delta * m);
-        if (rm && rm.e <= HD_TOL) { ok = rm.g; f0 = m; } else f1 = m;
+        if (fits(rm)) { ok = rm.g; f0 = m; } else f1 = m;
       }
       break;
     }
