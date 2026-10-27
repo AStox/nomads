@@ -76,7 +76,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
       { binding: 8, visibility: F, texture: { sampleType: "float", viewDimension: "2d" } },
     ],
   });
-  const module = device.createShaderModule({ code: globeWgsl({ FRAMES: G.FRAMES, P, RGB, NCOL, TONE_S, offsets, LEVELS: levels }) });
+  const module = device.createShaderModule({ code: globeWgsl({ FRAMES: G.FRAMES, P, RGB, NCOL, TONE_S, offsets, LEVELS: levels, SEA_WIND: G.seaWindTable(R), SEA_WIND_STEP: G.SEA_WIND_STEP_DEG }) });
   const artTarget = [{ format: ART_FORMAT }];
   const [planetPipe, blitPipe] = await Promise.all([
     device.createRenderPipelineAsync({ layout, vertex: { module, entryPoint: "vs" }, fragment: { module, entryPoint: "fs", targets: artTarget }, primitive: { topology: "triangle-list" }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: "always" } }),

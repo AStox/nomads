@@ -558,20 +558,48 @@ fn fillWater(S: ptr<function, GSample>, x: f32, z: f32, ctx: PaintCtx, river: bo
   (*S).ice = !bed && kind != 1u && g_iceAt(x, z);
 }
 `)}
-${planet ? `// The sea's facets, fixed to the ground: the slope (along the noise frame's x and z) of the waves a pixel of mpp metres resolves, and, in .z, the slope variance of the ones it does not. A wind sea has the
-// same slope variance in every octave (a spectrum falling as k^-3), Cox and Munk's mean square slope 0.003 + 0.00512 W (1954, W = 6 m/s [design]) shared by the four octaves of 1.5 to 40 m a fifth each and a
-// fifth below them; an octave comes out of the resolved slope and into the variance as its wavelength passes the pixel (the painter's own fade of a feature of that size), so the sea's light has the same
-// mean at every zoom and only its texture comes and goes
-const SEA_S2: f32 = ${lit(0.003 + 0.00512 * 6)};
-fn g_seaWave(x: f32, z: f32, mpp: f32) -> vec3<f32> {
+${planet ? `// The sea's facets, fixed to the ground: the slope (along the noise frame's x and z) of the waves a pixel of mpp metres resolves, and, in .z, the slope variance of the ones it does not. The wind U (m/s,
+// from the circulation's latitude profile, wgsl/globe.js seaWindAt) and its direction wd (unit, in the noise frame) make the sea: Cox and Munk's mean square slope 0.003 + 0.00512 U (1954) is the sum of
+// its waves' and is kept at every zoom, so the sea's light has the same mean everywhere and only its texture comes and goes. The waves are bands one e-fold of wavenumber wide (0.2 to 300 m, each about 2.7 times
+// the one below); a band of the wind sea carries Phillips' saturation slope variance alpha / 2 (alpha 0.0081, 1958, the k^-3 spectrum) under the Pierson-Moskowitz cut-off exp(-0.74 (L / L0)^2) with
+// L0 = 2 pi U^2 / g (1964: the wind sea has no waves longer than its fetch grew, so a calm sea has only short ones); the swell of far storms, whatever the local wind, is two bands of its own, 110 and 300 m, at
+// a slope of 0.07 rms (a significant height of 3 to 5 m over 100 to 300 m, steepness 0.03 [design]) crossing the wind's direction. A band is three trains of waves, each long-crested along the line of its
+// crests (2 wavelengths of the wind sea, 4 of the swell [design]) and moving along one of three axes 60 degrees apart, fixed in the noise frame (a lattice turned by the wind would shear wherever the wind
+// turns); their amplitudes go as the cosine of the axis to the band's direction (a cos^2 spread of energy, whose squares always sum to the band's variance, three axes at 60 degrees giving 3/2 for any direction).
+// A band comes out of the resolved slope and into the unresolved variance as its wavelength passes two pixels, the least a sampled wave can be (aliasing), by the amplitude (a band's variance goes as the
+// square of its weight)
+const SEA_ALPHA2: f32 = ${lit(0.0081 / 2)};
+const SEA_SWELL: f32 = ${lit(0.07 * 0.07)};
+fn g_seaWave(x: f32, z: f32, mpp: f32, U: f32, wd: vec2<f32>) -> vec3<f32> {
+  // absolute metres of the noise's frame: the whole metres the pages offset it by are put back
+  let X = x + f32(g_wrapW(4u).x);
+  let Z = z + f32(g_wrapW(4u).y);
+  let s2 = 0.003 + 0.00512 * U;
+  let L0 = 0.64 * U * U;
   var s = vec2<f32>(0.0);
-  var un = 0.2;
-${[1.5, 4, 12, 40].map((l, i) => `  {
-    let w = ${FADE(l)};
-    s += w * 0.19 * vec2<f32>(${NOISE(l, l, 71 + 2 * i)}, ${NOISE(l, l, 72 + 2 * i)});
-    un += (1.0 - w) * 0.2;
-  }`).join("\n")}
-  return vec3<f32>(s, un * SEA_S2);
+  var res = 0.0;
+${[[0.2, 0, 98, 2, 0], [0.55, 0, 95, 2, 0], [1.5, 0, 71, 2, 0], [4, 0, 74, 2, 0], [12, 0, 77, 2, 0], [40, 0, 80, 2, 0], [110, 0, 83, 2, 0], [300, 0, 86, 2, 0], [110, 35, 89, 4, 1], [300, -50, 92, 4, 1]].map(([l, deg, sd, kap, swell]) => {
+    const r = (deg * Math.PI) / 180, cr = Math.cos(r), sr = Math.sin(r);
+    const fam = [0, 1, 2].map((k) => {
+      const t = (k * Math.PI) / 3, ck = Math.cos(t), sk = Math.sin(t);
+      return `      {
+        let a = X * ${lit(ck)} + Z * ${lit(sk)};
+        let c = Z * ${lit(ck)} - X * ${lit(sk)};
+        s += A * abs(dot(d, vec2<f32>(${lit(ck)}, ${lit(sk)}))) * g_noiseP(g_dvn(a, ${ratio(+(l * 0.6).toFixed(2))}, 0), g_dvn(c, ${ratio(+(l * 0.6 * kap).toFixed(2))}, 0), ${sd + k}) * vec2<f32>(${lit(ck)}, ${lit(sk)});
+      }`;
+    }).join("\n");
+    return `  {
+    let w = g_fade(${lit(l * 0.25)}, ${lit(l * 0.5)}, mpp);
+    ${swell ? `let v = SEA_SWELL;` : `let v = SEA_ALPHA2 * exp(-0.74 * pow(${lit(l)} / L0, 2.0));`}
+    if (w > 0.0 && v > 1.0e-6) {
+      let d = vec2<f32>(wd.x * ${lit(cr)} - wd.y * ${lit(sr)}, wd.x * ${lit(sr)} + wd.y * ${lit(cr)});
+      let A = w * sqrt(v / 1.5) / 0.3;
+${fam}
+      res += w * w * v;
+    }
+  }`;
+  }).join("\n")}
+  return vec3<f32>(s, max(s2 - res, 0.3 * s2));
 }` : ""}
 // main.js groundAt's shore and depth, then paintWater, from a sample whose water is filled
 fn g_water(S: GSample, x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) -> u32 {
