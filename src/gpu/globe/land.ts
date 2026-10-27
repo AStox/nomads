@@ -7,6 +7,7 @@ import { patchAt, type Patch } from "./patch";
 import { REFINE_HALO, REFINE_PASSES, refineBlock } from "./tiers-stream";
 import { RegionalPatch, TREE } from "./regional-patch";
 import { creepSubsOf } from "./regional";
+import { BAND_FLAG_CARRY } from "../wgsl/globe-band-hold";
 import { SOLVE_SWEEPS } from "../wgsl/globe-regional";
 
 const INF = 0x7fffffff;
@@ -41,7 +42,7 @@ export function readCells(file: string, ids: ArrayLike<number>): Int32Array {
 
 // The halo of a region's patch: two cells, which the slides of sixteen neighbours read.
 export const LAND_HALO = 2;
-export interface LandOptions { nflow: 4 | 8; stochastic?: boolean; slide?: 8 | 16; rho8?: boolean; smooth?: number }
+export interface LandOptions { nflow: 4 | 8; stochastic?: boolean; slide?: 8 | 16; rho8?: boolean; smooth?: number; band?: 1 | 2 }
 export interface LandState { height: Int32Array; carry: Int32Array; steps: number }
 
 export class LandRegion {
@@ -61,7 +62,7 @@ export class LandRegion {
     this.patch = patchAt(tier, face, x0, y0, LAND_HALO, size);
     this.side = this.patch.side;
     this.subs = creepSubsOf(table);
-    this.solver = new RegionalPatch(gpu, tier, size, table, this.subs, o.nflow, o.rho8 ? 2 : o.stochastic ? 1 : 0, o.slide ?? 8, LAND_HALO, o.smooth ?? 0);
+    this.solver = new RegionalPatch(gpu, tier, size, table, this.subs, o.nflow, o.rho8 ? 2 : o.stochastic ? 1 : 0, o.slide ?? 8, LAND_HALO, o.smooth ?? 0, o.band ?? 0);
     this.solver.setPatch(this.patch);
     this.flood0 = new Int32Array(this.side * this.side);
     const S = this.side;
@@ -70,7 +71,7 @@ export class LandRegion {
       this.flood0[k] = inner ? (height[k] <= 0 ? height[k] : INF) : flooded[k];
     }
     this.solver.write("H", height);
-    this.solver.go(["cellmeans"]);
+    this.solver.go(o.band ? ["cellmeans", "bgnbr"] : ["cellmeans"]);
   }
   // A table for another step length: the creep's substeps and every cell's rock, slope and rain read again.
   setTable(table: Uint32Array) {
@@ -81,6 +82,7 @@ export class LandRegion {
   load(s: LandState) {
     this.solver.write("H", s.height);
     const w = new Int32Array(5 * NP);
+    if (s.carry.length > 2 * NP) throw new Error("land: a carry longer than the band hold's two words");
     w.set(s.carry, 2 * NP);
     this.solver.writeParents(w);
     this.steps = s.steps;
@@ -138,6 +140,13 @@ export class LandRegion {
     const er = await s.read("ER"), S = this.side;
     this.loss = 0;
     for (let y = LAND_HALO; y < S - LAND_HALO; y++) for (let x = LAND_HALO; x < S - LAND_HALO; x++) this.loss += er[y * S + x];
+    if (this.solver.band) {
+      s.clearCounter("flags");
+      await this.lap("lift", () => s.go(["bpzero", "bpstzero", "btally", "bpmean", ...Array.from({ length: SOLVE_SWEEPS / 2 }, () => ["bpsolve", "bpsolve2"]).flat(), "blift", "bpcarry"]));
+      if ((await s.counter("flags")) & BAND_FLAG_CARRY) throw new Error("land: the band-limited uplift's moments or carry passed 32 bits");
+      this.steps++;
+      return;
+    }
     await this.lap("lift", () => s.go(["tally", "pstzero", "pstencil", "pmean", ...Array.from({ length: SOLVE_SWEEPS / 2 }, () => ["psolve", "psolve2"]).flat(), "lift", "pcarry"]));
     this.steps++;
   }

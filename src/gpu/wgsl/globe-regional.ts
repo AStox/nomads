@@ -46,7 +46,6 @@ export const SOLVE_SWEEPS = 128;
 // written (`interior`). Every law is the same text in both layouts.
 export function regionalWgsl(edges: readonly (readonly { face: number; side: number; flip: boolean }[])[], fn: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, patch?: { side: number; halo: number }, slideN: 8 | 16 = 8, hold: 0 | 1 | 2 = 0): string {
   const P = patch !== undefined;
-  if (P && hold) throw new Error("regionalWgsl: the band-limited hold is the whole-tier path's");
   const flat = edges.flatMap((e) => e);
   const fields = Object.entries(RF).filter(([k]) => k !== "COUNT").map(([k, v]) => `const E_${k}: u32 = ${v}u;`).join("\n");
   return /* wgsl */ `${FIXED}
