@@ -124,6 +124,21 @@ fn btally_loss(k: u32) {
     if (abs(was) > 0x20000000i) { flag(FLAG_CARRY); }
   }
 }
+// One loss tally adds up to 63 * 4096 * (cells a tier-0 cell's weights reach) to each digit's sum, so a few tallies of a tier 4 or 5 step (an incision, slides, every creep substep, the
+// revisits of a block) pass 32 bits: after each tally the four sums are folded into the same 64-bit moment held as the low 18 bits and the rest in the top sum, which stays small
+@compute @workgroup_size(256)
+fn bpnorm(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let p = gk(gid, nwg);
+  if (p >= NP) { return; }
+  let m = bmoments(B_PS, B_PC, B_PH, B_P3, p);
+  let top15 = m.y >> 17u;
+  if (top15 != 0u && top15 != 0x7fffu) { flag(FLAG_CARRY); }
+  atomicStore(&AT[B_PS + p], bitcast<i32>(m.x & 0x3ffffu));
+  atomicStore(&AT[B_PC + p], 0i);
+  atomicStore(&AT[B_PH + p], 0i);
+  atomicStore(&AT[B_P3 + p], bitcast<i32>((m.x >> 18u) | (m.y << 14u)));
+}
 // the streamed tier's two halves of btally: the Gram counts once, at the step's end, and the loss after each stage's visit (the box hold's tallyc and tallyl)
 @compute @workgroup_size(256)
 fn btallyc(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {

@@ -168,7 +168,7 @@ export class StreamedTier {
     if (this.prog.block !== block) throw new Error(`tiers-stream: the work in ${dir} was begun with blocks of ${this.prog.block} tiles, not ${block}`);
   }
   private path(f: string) { return join(this.dir, f); }
-  private get tallyLoss() { return this.law.band ? "btallyl" : "tallyl"; }
+  private get tallyLoss(): string[] { return this.law.band ? ["btallyl", "bpnorm"] : ["tallyl"]; }
   private fresh(): Progress {
     return { tier: this.tier, block: this.size / TILE, steps: 0, stage: "start", job: "idle", sub: 0, running: false, todo: new Array(this.nreg).fill(1), sea: new Array(this.nreg).fill(0), pending: new Array(this.nreg).fill(-1), minF: new Array(this.nreg).fill(INF),
       visits: {}, seconds: {}, stepS: [], stepVisits: [], curS: 0, calls: 0, callS: [], exportTo: false, clamped: 0, dropped: 0 };
@@ -318,7 +318,7 @@ export class StreamedTier {
       chunk = 64;
       if (rounds > 40000) throw new Error(`tiers-stream: the ${law} did not settle in 40,000 rounds in block ${r}`);
     }
-    if (law === "slide") s.go([this.tallyLoss]);
+    if (law === "slide") s.go([...this.tallyLoss]);
     const after = law === "flood" ? await s.readFlood() : await s.read("H");
     const S = p.side;
     let changed = false;
@@ -347,7 +347,7 @@ export class StreamedTier {
       h1[k] = after[k2]; er[k] = H[k2] - after[k2];
       if (er[k]) changed = true;
     }
-    s.setPatch(p); s.write("H", h1); s.write("ER", er); s.go([this.tallyLoss]);
+    s.setPatch(p); s.write("H", h1); s.write("ER", er); s.go([...this.tallyLoss]);
     if (!changed) return;
     this.store.scatter("H", p2, after);
     const todo = this.prog.todo, reach = [...DIRS, [2, 1], [1, 2], [-1, 2], [-2, 1], [-2, -1], [-1, -2], [1, -2], [2, -1]] as const, lo = 2, hi = 2 + this.size;
@@ -438,7 +438,7 @@ export class StreamedTier {
     s.write("ACC", this.store.gather("ACC", p, undefined, false) as Int32Array);
     s.writeFlood(this.store.gather("F", p, undefined, false) as Int32Array);
     s.clearCounter("flags"); s.clearCounter("pending");
-    s.go(["cellmeans", "erzero", "todfrom", ...TREE, "incisep", this.tallyLoss, "rescount"]);
+    s.go(["cellmeans", "erzero", "todfrom", ...TREE, "incisep", ...this.tallyLoss, "rescount"]);
     const flags = await s.counter("flags");
     if (flags & (s.flags.chain | s.flags.depth)) throw new Error(`tiers-stream: the receivers' chains do not end at the sea in block ${r} (flags ${flags})`);
     if (flags & BAND_FLAG_CARRY) throw new Error("tiers-stream: the band-limited uplift's moments passed 32 bits");
@@ -454,7 +454,7 @@ export class StreamedTier {
   private async visitCreep(r: number) {
     const p = this.patch(r), s = this.solver;
     s.setPatch(p); s.write("H", this.store.gather("H", p) as Int32Array);
-    s.go(["cellmeans", "erzero", "creep", "creepapply", this.tallyLoss]);
+    s.go(["cellmeans", "erzero", "creep", "creepapply", ...this.tallyLoss]);
     this.store.scatter("ACC", p, await s.read("H"));
   }
   // The stencil of the uplift's solve: each land cell adds its interpolation weights to its tier-0 cell's nine slots (the counts of every tier-0 cell's land are all in, from the init visits).
