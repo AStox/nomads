@@ -4,7 +4,7 @@
 // the regional solve keeps them and stay on the device from one patch to the next.
 import type { Gpu } from "../device";
 import { cover, pipeline, readback, storage } from "../kernel";
-import { BAND_PARENT_WORDS } from "../wgsl/globe-band-hold";
+import { BAND_CNT, BAND_PARENT_WORDS } from "../wgsl/globe-band-hold";
 import { CNT, FLAG, FLOW_NEIGHBOURS, HIST, RF, XSTRIDE, regionalWgsl } from "../wgsl/globe-regional";
 import { EDGES, tierGrid } from "./grid";
 import type { Patch } from "./patch";
@@ -81,11 +81,12 @@ export class RegionalPatch {
   writeFlood(data: ArrayBufferView) { this.gpu.device.queue.writeBuffer(this.AT, 0, data.buffer, data.byteOffset, data.byteLength); }
   async read(f: keyof typeof RF): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.E, this.N * 4, RF[f] * this.N * 4)); }
   async readFlood(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, this.N * 4, 0)); }
-  clearCounter(c: keyof typeof CNT) { this.gpu.device.queue.writeBuffer(this.AT, (this.atCnt + CNT[c]) * 4, new Uint32Array(1)); }
-  async counter(c: keyof typeof CNT): Promise<number> { return new Int32Array(await readback(this.gpu, this.AT, 4, (this.atCnt + CNT[c]) * 4))[0]; }
+  private cntAt(c: keyof typeof CNT | keyof typeof BAND_CNT) { return (this.atCnt + (c in CNT ? CNT[c as keyof typeof CNT] : BAND_CNT[c as keyof typeof BAND_CNT])) * 4; }
+  clearCounter(c: keyof typeof CNT | keyof typeof BAND_CNT) { this.gpu.device.queue.writeBuffer(this.AT, this.cntAt(c), new Uint32Array(1)); }
+  async counter(c: keyof typeof CNT | keyof typeof BAND_CNT): Promise<number> { return new Int32Array(await readback(this.gpu, this.AT, 4, this.cntAt(c)))[0]; }
   // The tier-0 tables, five of them (loss, land count, carry, mean, rises), in and out; and the carry alone (what a state keeps).
   writeParents(words: Int32Array) { this.gpu.device.queue.writeBuffer(this.AT, this.atParents * 4, words.buffer, words.byteOffset, words.byteLength); }
-  async readParents(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, PARENT_WORDS * NP * 4, this.atParents * 4)); }
+  async readParents(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, (this.band ? BAND_PARENT_WORDS : PARENT_WORDS) * NP * 4, this.atParents * 4)); }
   async readCarry(): Promise<Int32Array> { return new Int32Array(await readback(this.gpu, this.AT, (this.band ? 2 : 1) * NP * 4, (this.atParents + 2 * NP) * 4)); }
 
   private bind(entry: string) {

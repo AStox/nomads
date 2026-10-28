@@ -124,6 +124,21 @@ fn btally_loss(k: u32) {
     if (abs(was) > 0x20000000i) { flag(FLAG_CARRY); }
   }
 }
+// the streamed tier's two halves of btally: the Gram counts once, at the step's end, and the loss after each stage's visit (the box hold's tallyc and tallyl)
+@compute @workgroup_size(256)
+fn btallyc(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  btally_count(k);
+}
+@compute @workgroup_size(256)
+fn btallyl(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  touch();
+  let k = gk(gid, nwg);
+  if (k >= N) { return; }
+  btally_loss(k);
+}
 @compute @workgroup_size(256)
 fn btally(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
