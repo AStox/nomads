@@ -7,7 +7,7 @@
 //  hypsometry      the share of the planet's area (and of the land's) in height bins (m): <-4000, -4000..-2000, -2000..-1000, -1000..-500, -500..0, 0..200, 200..500, 500..1000, 1000..1500,
 //                  1500..2000, 2000..3000, 3000..4000, above 4000.
 //  components      land components by 4-neighbour connection across the cube's face edges (grid.ts step); the count, the largest five as a share of the planet's area and the land's.
-//  relief10        the share of land windows whose 10 km relief exceeds 1000 / 1500 / 2000 m; relief = maximum minus minimum height of the cells whose centres lie within 5 km of the
+//  relief10        the share of land windows (`inland`: every cell of the disc above sea level; `centred`: centred on a land cell, a coastal disc then reaches the shelf) whose 10 km relief exceeds 1000 / 1500 / 2000 m; relief = maximum minus minimum height of the cells whose centres lie within 5 km of the
 //                  window's centre cell (a disc of radius 5 km in the local cell width, equals the chain's 21-cell window at the mean tier-0 width 2,211 m); windows are the land cells (tier 0) or
 //                  every 4th land cell in X and Y (tier 3, `stride`), area weighted. Earth: under 5 % of land above 1000 m and under 2 % above 1500 m (Montgomery and Brandon 2002, Earth Planet.
 //                  Sci. Lett. 201, 481-489).
@@ -89,12 +89,14 @@ function extended(f: Field, g: Grid, face: number, H: number): Float32Array {
   return e;
 }
 
-export function relief10(f: Field, g: Grid, area: Float64Array, stride = 1, radiusM = 5000) {
+export interface ReliefShares { windows: number; above1000: number; above1500: number; above2000: number; p50M: number; p90M: number }
+export interface Relief10 { stride: number; inland: ReliefShares; centred: ReliefShares }
+
+export function relief10(f: Field, g: Grid, area: Float64Array, stride = 1, radiusM = 5000): Relief10 {
   let amin = Infinity;
   for (let i = 0; i < area.length; i++) if (area[i] < amin) amin = area[i];
   const fn = f.fn, thresholds = [1000, 1500, 2000], widthMin = g.radius * Math.sqrt(amin), H = Math.ceil(radiusM / widthMin) + 2, W = fn + 2 * H;
-  const above = [0, 0, 0], reliefs: { r: number; w: number }[] = [];
-  let wsum = 0;
+  const sets = { inland: [] as { r: number; w: number }[], centred: [] as { r: number; w: number }[] };
   for (let face = 0; face < 6; face++) {
     const e = extended(f, g, face, H);
     for (let Y = 0; Y < fn; Y += stride) for (let X = 0; X < fn; X += stride) {
@@ -105,15 +107,20 @@ export function relief10(f: Field, g: Grid, area: Float64Array, stride = 1, radi
         const hw = Math.floor(Math.sqrt(r * r - dy * dy)), row = (Y + dy + H) * W + X + H;
         for (let dx = -hw; dx <= hw; dx++) { const v = e[row + dx]; if (v > mx) mx = v; if (v < mn) mn = v; }
       }
-      const rel = mx - mn;
-      wsum += w; reliefs.push({ r: rel, w });
-      for (let t = 0; t < 3; t++) if (rel > thresholds[t]) above[t] += w;
+      sets.centred.push({ r: mx - mn, w });
+      if (mn > 0) sets.inland.push({ r: mx - mn, w });
     }
   }
-  reliefs.sort((a, b) => a.r - b.r);
-  let c = 0, p50 = 0, p90 = 0;
-  for (const q of reliefs) { c += q.w; if (!p50 && c >= 0.5 * wsum) p50 = q.r; if (!p90 && c >= 0.9 * wsum) p90 = q.r; }
-  return { windows: reliefs.length, stride, above1000: +(above[0] / wsum).toFixed(4), above1500: +(above[1] / wsum).toFixed(4), above2000: +(above[2] / wsum).toFixed(4), p50M: +p50.toFixed(0), p90M: +p90.toFixed(0) };
+  const shares = (list: { r: number; w: number }[]): ReliefShares => {
+    let wsum = 0;
+    const above = [0, 0, 0];
+    for (const q of list) { wsum += q.w; for (let t = 0; t < 3; t++) if (q.r > thresholds[t]) above[t] += q.w; }
+    list.sort((a, b) => a.r - b.r);
+    let c = 0, p50 = 0, p90 = 0;
+    for (const q of list) { c += q.w; if (!p50 && c >= 0.5 * wsum) p50 = q.r; if (!p90 && c >= 0.9 * wsum) p90 = q.r; }
+    return { windows: list.length, above1000: +(above[0] / wsum).toFixed(4), above1500: +(above[1] / wsum).toFixed(4), above2000: +(above[2] / wsum).toFixed(4), p50M: +p50.toFixed(0), p90M: +p90.toFixed(0) };
+  };
+  return { stride, inland: shares(sets.inland), centred: shares(sets.centred) };
 }
 
 export function summit(f: Field, g: Grid) {

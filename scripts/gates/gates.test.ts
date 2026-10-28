@@ -195,7 +195,7 @@ describe("planet", () => {
     // relief = G * 2 * (5 km / R) * cos(lat) = 2556 cos(lat) m on land (z > 0), above 2000 for sin(lat) < asin-based: |lat| < 38.4 degrees: share sin(38.4) = 0.621
     const want = (lim: number) => Math.sin(Math.acos(lim / (G * 2 * (5000 / R))));
     // the 21-cell window spans 8.8 km of the 10 km diameter at 2.4 km cells, so the shares sit a little under the ideal ramp's
-    expect(r.above2000).toBeLessThan(want(2000) + 0.01); expect(Math.abs(r.above2000 - want(2000))).toBeLessThan(0.12); expect(Math.abs(r.above1500 - want(1500))).toBeLessThan(0.12); expect(r.above1000).toBeGreaterThan(0.85);
+    expect(r.inland.above2000).toBeLessThan(want(2000) + 0.01); expect(Math.abs(r.inland.above2000 - want(2000))).toBeLessThan(0.12); expect(Math.abs(r.inland.above1500 - want(1500))).toBeLessThan(0.12); expect(r.inland.above1000).toBeGreaterThan(0.85);
     expect(locateVec(g, fromLatLon(0.1, 0.1)).face).toBeGreaterThanOrEqual(0);
   });
 });
