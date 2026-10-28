@@ -91,6 +91,7 @@
 9. **[2026-10-22] The Mac slept overnight and every long job died with it**
    Clock jumps of 30+ minutes, shell commands timing out, the bake's calls making no progress, the quick tunnel's "Tunnel not found", Cloudflare's API timing out and agents erroring on stalled API streams were all one cause; the battery was at 9% in the morning. Do instead: before any bake or overnight run, start `caffeinate -dimsu` as a detached service and check `pmset -g batt` shows AC; after a wake, restart the tunnel (new URL), the bake driver from its done markers, and the agents. A new quick tunnel's name can fail locally on cached DNS for a minute (`curl` exit 6) while it already works.
    **[2026-10-25]** Managed services (even with mode `detached`) died twice in a day, once when the Paseo daemon restarted and once with no cause found, taking caffeinate, the play server and the tunnel with them. Do instead: run them as plain processes reparented to launchd, `( nohup <cmd> > /tmp/nomads-svc/<name>.log 2>&1 & )`, and read a new tunnel's URL from its log.
+   **[2026-10-27]** The Mac restarted at 23:52 and macOS wiped /tmp: both 50 GB planet bakes (the live site lost its terrain), the planet stores, every agent worktree, the audit fix list and the e2e harness. Only git branches survived. Do instead: keep bakes in ~/.cache/nomads-bakes and agent worktrees and scratch in ~/.cache/nomads-scratch/<agent>; nothing anyone needs tomorrow goes in /tmp.
 
 ## GPU Sim
 1. **[2026-10-14] tick(w) is async; integer-only arithmetic in gate kernels**
