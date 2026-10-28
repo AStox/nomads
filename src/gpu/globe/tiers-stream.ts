@@ -23,12 +23,11 @@ import { join } from "node:path";
 import type { Gpu } from "../device";
 import { TILE, tierGrid, type Grid } from "./grid";
 import { cellAcross, patchAt, type Patch } from "./patch";
-import { CORNER_BESIDE, around3, child4, creepSubsOf, routeOf, type RouteLaw } from "./regional";
+import { CORNER_BESIDE, around3, child4, creepSubsOf, type RouteLaw } from "./regional";
 import { BAND_FLAG_CARRY } from "../wgsl/globe-band-hold";
 import { FLOW_NEIGHBOURS, SOLVE_SWEEPS } from "../wgsl/globe-regional";
 import { RegionalPatch, TREE, PATCH_HALO } from "./regional-patch";
 import { tierTable } from "./regional";
-import { nucleate } from "./nucleation";
 import { TileStore } from "./tilestore";
 import type { BakeDir } from "./bakedir";
 import { TIER_LAWS, TIER_STEPS, tierParent, tierTableOf, type TierRun } from "./tiers";
@@ -44,7 +43,7 @@ const INF = 0x7fffffff;
 // refineSmooth (regional.ts) for the children of the block of cells `p.interior` square at tier `from`, with p's halo wide enough (the passes reach `passes + 1` cells): the same stencil
 // (child4) on the same neighbours (around3, the corner's missing cell the mean of the two beside it) and the same sums in the same order, so the values are the in-memory function's.
 // Returns the children as an interior * 2 square, row by row.
-export function refineBlock(parent: ArrayLike<number>, from: number, p: Patch, passes = 4, nucSigmaM = 0): Int32Array {
+export function refineBlock(parent: ArrayLike<number>, from: number, p: Patch, passes = 4): Int32Array {
   const S = p.side, gp = tierGrid(from), n = gp.fn, cells = n * n, nc = S * S, ids9 = new Int32Array(9), q = new Float64Array(4), v = new Float64Array(9);
   const across = new Map<number, number>();
   for (let k = 0; k < nc; k++) if (!p.missing[k] && Math.floor(p.ids[k] / cells) !== p.face) across.set(p.ids[k], k);
@@ -91,12 +90,7 @@ export function refineBlock(parent: ArrayLike<number>, from: number, p: Patch, p
       const w = [Math.round(c[4 * k]), Math.round(c[4 * k + 1]), Math.round(c[4 * k + 2]), Math.round(c[4 * k + 3])];
       if (!(w[0] === w[0] && w[1] === w[1] && w[2] === w[2] && w[3] === w[3])) throw new Error("refineBlock: the halo is too narrow for the passes");
       const d = Math.round(val[k] * 4) - (w[0] + w[1] + w[2] + w[3]), base4 = Math.floor(d / 4), rem = d - base4 * 4;
-      let v4 = [w[0] + base4 + (0 < rem ? 1 : 0), w[1] + base4 + (1 < rem ? 1 : 0), w[2] + base4 + (2 < rem ? 1 : 0), w[3] + base4 + (3 < rem ? 1 : 0)];
-      if (nucSigmaM > 0) {
-        const id = p.ids[k], f = Math.floor(id / cells), r = id - f * cells, Y = Math.floor(r / n), X = r - Y * n, fc = 2 * n, b = f * 4 * cells + 2 * Y * fc + 2 * X;
-        v4 = nucleate(v4, [b, b + 1, b + fc, b + fc + 1], from + 1, nucSigmaM);
-      }
-      out[o] = v4[0]; out[o + 1] = v4[1]; out[o + ic] = v4[2]; out[o + ic + 1] = v4[3];
+      out[o] = w[0] + base4 + (0 < rem ? 1 : 0); out[o + 1] = w[1] + base4 + (1 < rem ? 1 : 0); out[o + ic] = w[2] + base4 + (2 < rem ? 1 : 0); out[o + ic + 1] = w[3] + base4 + (3 < rem ? 1 : 0);
     }
   return out;
 }
@@ -160,7 +154,7 @@ export class StreamedTier {
     this.law = o.law ?? { nflow: FLOW_NEIGHBOURS, stochastic: false };
     this.tableAt = o.tableAt ?? (() => table);
     this.subs = creepSubsOf(table);
-    this.solver = new RegionalPatch(gpu, tier, this.size, table, this.subs, this.law.nflow, routeOf(this.law), this.law.slide ?? 8, PATCH_HALO, 0, this.law.band ?? 0);
+    this.solver = new RegionalPatch(gpu, tier, this.size, table, this.subs, this.law.nflow, this.law.stochastic ? 1 : 0, this.law.slide ?? 8, PATCH_HALO, this.law.band ?? 0);
     this.slideSolver = this.law.slide === 16 ? new RegionalPatch(gpu, tier, this.size, table, this.subs, this.law.nflow, 0, 16, 2) : null;
     const ord = Array.from({ length: this.nreg }, (_, i) => i);
     if (o.order === "reverse") ord.reverse();
@@ -545,7 +539,7 @@ export class StreamedTier {
   private arm() {
     const pr = this.prog;
     this.solver.setStep(pr.steps);
-    this.solver.setRoute(pr.job === "flow" ? 0 : routeOf(this.law));
+    this.solver.setRoute(pr.job === "flow" || !this.law.stochastic ? 0 : 1);
     if (pr.job !== "flow") { const t = this.tableAt(pr.steps); this.subs = creepSubsOf(t); this.solver.setTable(t, this.subs); this.slideSolver?.setTable(t, this.subs); }
   }
   // Work for up to `budgetS` seconds: the start (the heights carried from the tier above), `steps` steps in all, and with `finish` the settled flow of the final heights with its
@@ -596,7 +590,6 @@ export async function streamTier(gpu: Gpu, planet: Planet, dir: BakeDir, tier: n
   const steps = (o.steps ?? TIER_STEPS)[tier], t0 = performance.now(), spent = () => (performance.now() - t0) / 1000;
   const finished = dir.has(`t${tier}-height.i32`) && (tier < last || dir.has(`t${tier}-run.json`));
   if (finished) return { done: true, steps, of: steps, run: dir.json<TierRun>(`t${tier}-run`) ?? undefined };
-  if (TIER_LAWS[tier].route.holdOff) throw new Error(`streamTier: tier ${tier}'s box-hold-off knob (NOMADS_HOLD_OFF_TIERS without NOMADS_BAND_SPAN) is the whole-tier chain's (tiers.ts tiersOf) only`);
   const tableAt = tierTableOf(planet, tier);
   const st = new StreamedTier(gpu, tier, o.work ?? dir.path(`stream-t${tier}`), tableAt(0), { ...o, law: TIER_LAWS[tier].route, tableAt }, log);
   try {

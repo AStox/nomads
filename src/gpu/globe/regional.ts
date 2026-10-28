@@ -9,10 +9,8 @@ import { cover, pipeline, readback, storage } from "../kernel";
 import { CNT, FLAG, FLOW_NEIGHBOURS, HIST, RF, SOLVE_SWEEPS, SPLIT, XSTRIDE, regionalWgsl } from "../wgsl/globe-regional";
 import { BAND_CNT, BAND_FLAG_CARRY, BAND_PARENT_WORDS } from "../wgsl/globe-band-hold";
 import { EDGES, FACES, areaSr, haloSource, tierGrid, type Grid } from "./grid";
-import { SKIN_M, defaultParams, kWord, landDiffusivity, neighbourTables, rainWord, REF_RAIN_MMYR, type ErosionParams } from "./erosion";
+import { SKIN_M, defaultParams, kWord, neighbourTables, rainWord, REF_RAIN_MMYR, type ErosionParams } from "./erosion";
 import { THRESHOLD_DEG } from "../../terrain/geology";
-import { kFactors } from "./kfield";
-import { nucleate } from "./nucleation";
 import { packRecord, unpackRecord, ROCK_OF, type Planet, type PlanetStore } from "./window";
 
 // ---------- 1. the settings ----------
@@ -136,7 +134,7 @@ function children2(parent: ArrayLike<number>, from: number, out: Float64Array, a
 // A field at tier `from` (1/256 m) carried to the next tier: the bilinear children, then what is left of each parent's height (its height less the children's mean) is carried
 // down the same way, `passes` times, so that the children's means come to the parents' without a constant to a block (a constant is a step of up to 100 m at the block's
 // edge on a range: measured); the last whole-unit constant, which is then under a unit, makes the children of every cell sum to 4 times its height exactly [design, R1761].
-export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4, nucSigmaM = 0): Int32Array {
+export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4): Int32Array {
   const n = CELLS0 << (2 * from), c = new Float64Array(4 * n), out = new Int32Array(4 * n), fnp = 256 << from, fn = fnp * 2, cells = fnp * fnp;
   if (parent.length !== n) throw new Error(`refineSmooth: tier ${from} holds ${n} cells, got ${parent.length}`);
   children2(parent, from, c, false);
@@ -155,9 +153,7 @@ export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4
       for (let X = 0; X < fnp; X++) {
         const p = f * cells + Y * fnp + X, o = (f * fn + 2 * Y) * fn + 2 * X, v = [Math.round(c[o]), Math.round(c[o + 1]), Math.round(c[o + fn]), Math.round(c[o + fn + 1])];
         const d = Math.round(parent[p] * 4) - (v[0] + v[1] + v[2] + v[3]), base4 = Math.floor(d / 4), rem = d - base4 * 4;
-        let w4 = [v[0] + base4 + (0 < rem ? 1 : 0), v[1] + base4 + (1 < rem ? 1 : 0), v[2] + base4 + (2 < rem ? 1 : 0), v[3] + base4 + (3 < rem ? 1 : 0)];
-        if (nucSigmaM > 0) w4 = nucleate(w4, [o, o + 1, o + fn, o + fn + 1], from + 1, nucSigmaM);
-        out[o] = w4[0]; out[o + 1] = w4[1]; out[o + fn] = w4[2]; out[o + fn + 1] = w4[3];
+        out[o] = v[0] + base4 + (0 < rem ? 1 : 0); out[o + 1] = v[1] + base4 + (1 < rem ? 1 : 0); out[o + fn] = v[2] + base4 + (2 < rem ? 1 : 0); out[o + fn + 1] = v[3] + base4 + (3 < rem ? 1 : 0);
       }
   return out;
 }
@@ -195,16 +191,15 @@ export const UNIFORM_RAIN = { word: 64, kScale: 2 };
 // the knight moves in the kernels' order (wgsl/globe-regional.ts KNIGHT)
 const KNIGHT = [[2, 1], [1, 2], [-1, 2], [-2, 1], [-2, -1], [-1, -2], [1, -2], [2, -1]] as const;
 export function tierTable(planet: Planet, tier: number, p: ErosionParams, uniformRain = false): Uint32Array {
-  const g0 = tierGrid(0, planet.radius), gt = tierGrid(tier, planet.radius), creep = landDiffusivity(planet.radius, tier, p.creepLand), X = new Uint32Array(CELLS0 * XSTRIDE), kw = p.K.map((k) => Math.min(0xffffffff, kWord(gt, p, k) * (uniformRain ? UNIFORM_RAIN.kScale : 1))), tanOf = tanOfPools();
+  const g0 = tierGrid(0, planet.radius), gt = tierGrid(tier, planet.radius), X = new Uint32Array(CELLS0 * XSTRIDE), kw = p.K.map((k) => Math.min(0xffffffff, kWord(gt, p, k) * (uniformRain ? UNIFORM_RAIN.kScale : 1))), tanOf = tanOfPools();
   // a planet with no climate (a staged one) rains the reference rain everywhere
-  const kf = p.kvar ? kFactors(planet.radius, planet.seed) : null;
   const { invd } = neighbourTables(g0), meanSr = (4 * Math.PI) / CELLS0, rain = planet.seasons && !uniformRain ? annualRain(planet) : new Float32Array(CELLS0).fill(REF_RAIN_MMYR);
   for (let c = 0; c < CELLS0; c++) {
     let rem = SKIN_M, wsum = 0, acc = 0, tanSum = 0;
     for (const pl of STACK) { const w = Math.min(Math.max(0, planet.pools[pl][c]), rem); rem -= w; wsum += w; acc += w * kw[pl]; tanSum += w * tanOf[pl]; }
     const tan = wsum > 0 ? tanSum / wsum : tanOf[3];
     const f = Math.floor(c / 65536), r = c - f * 65536, Y = Math.floor(r / 256), x = r - Y * 256;
-    X[c * XSTRIDE] = wsum > 0 ? Math.floor((acc / wsum) * (kf ? kf[c] / 65536 : 1)) : 0;
+    X[c * XSTRIDE] = wsum > 0 ? Math.floor(acc / wsum) : 0;
     X[c * XSTRIDE + 1] = Math.round((2 ** 15 * areaSr(g0, x, Y)) / meanSr);
     X[c * XSTRIDE + 18] = Math.round(tan * 2 ** 20);
     X[c * XSTRIDE + 19] = uniformRain ? UNIFORM_RAIN.word : rainWord(rain[c], REF_RAIN_MMYR);
@@ -215,7 +210,7 @@ export function tierTable(planet: Planet, tier: number, p: ErosionParams, unifor
       X[c * XSTRIDE + 10 + d] = iv > 0 ? Math.round(2 ** 44 / (iv * 2 ** tier)) : 0;
       // creep: the isotropic 9-point Laplacian's weights, 2/3 along an edge and 1/3 across a corner (over the distance squared), times D dt [derived: Patra and Karttunen's stencil]
       const inv = (iv * 2 ** tier) / 2 ** 28;
-      X[c * XSTRIDE + 20 + d] = Math.round(2 ** 24 * creep * p.dtYr * (d < 4 ? 2 / 3 : 1 / 3) * inv * inv);
+      X[c * XSTRIDE + 20 + d] = Math.round(2 ** 24 * p.creepLand * p.dtYr * (d < 4 ? 2 / 3 : 1 / 3) * inv * inv);
     }
     // the eight knight moves' distances (Q16 m): two steps along one axis and one along the other, each at the table's distance on its side, taken as orthogonal
     for (let q = 0; q < 8; q++) {
@@ -234,10 +229,8 @@ export function creepSubsOf(table: Uint32Array): number {
 
 // ---------- 4. the kernels on a device ----------
 // The routing of a tier's flow: the neighbours the flood and the receivers read, and whether a receiver is drawn among the lower ones (wgsl/globe-regional.ts recv) or is the steepest.
-// `holdOff`: the tier's uplift is skipped, so it is not held to its parent's cell means (what its land loses stays lost); `band` (1 or 2): the uplift is the band-limited hold on the tier-0
-// lattice (span 1) or every second tier-0 cell (span 2) in place of the box mean (wgsl/globe-band-hold.ts, whole tier only); the box mean hold is the default.
-export interface RouteLaw { nflow: 4 | 8; stochastic: boolean; slide?: 8 | 16; rho8?: boolean; smooth?: number; holdOff?: boolean; band?: 1 | 2 }
-export const routeOf = (law: RouteLaw): 0 | 1 | 2 => (law.rho8 ? 2 : law.stochastic ? 1 : 0);
+// `band` (1 or 2): the uplift is the band-limited hold on the tier-0 lattice (span 1) or every second tier-0 cell (span 2) in place of the box mean (wgsl/globe-band-hold.ts).
+export interface RouteLaw { nflow: 4 | 8; stochastic: boolean; slide?: 8 | 16; band?: 1 | 2 }
 export interface TierState { height: Int32Array; carry: Int32Array; steps: number }
 export interface TierFlow { to: Uint32Array; acc: Uint32Array; rounds: number }
 const readU32 = async (gpu: Gpu, b: GPUBuffer, words: number, at: number) => new Uint32Array(await readback(gpu, b, words * 4, at * 4));
@@ -273,7 +266,7 @@ export class Regional {
   clamped = 0; // the band-limited hold: the land cells held at one unit, and the height (1/256 m) it would have taken off them, over the steps made
   dropped = 0;
   stepNo = 0; // the steps made: the routing's draws are made for it
-  private route: 0 | 1 | 2;
+  private route: 0 | 1;
   // `rho` (the rain of each cell) is no longer given: the rain, like the rock, is read at a cell from the table of tier-0 cells by interpolation (`smooth`).
   constructor(readonly gpu: Gpu, readonly tier: number, table: Uint32Array, height: Int32Array, readonly law: RouteLaw = { nflow: FLOW_NEIGHBOURS, stochastic: false }) {
     this.g = tierGrid(tier);
@@ -287,8 +280,8 @@ export class Regional {
     this.band = law.band ?? 0;
     this.AT = storage(gpu, (this.atCarry + (this.band ? BAND_PARENT_WORDS - 2 : 13) * CELLS0) * 4);
     this.creepSubs = creepSubsOf(table);
-    this.route = routeOf(law);
-    this.P = storage(gpu, new Uint32Array([1, this.creepSubs, 0, this.route, law.smooth ?? 0]));
+    this.route = law.stochastic ? 1 : 0;
+    this.P = storage(gpu, new Uint32Array([1, this.creepSubs, 0, this.route]));
     this.X = storage(gpu, table);
     this.wgsl = regionalWgsl(EDGES, this.fn, law.nflow, undefined, law.slide ?? 8, this.band);
     this.write("H", height);
@@ -336,7 +329,7 @@ export class Regional {
   private clear(word: number, count: number) { this.gpu.device.queue.writeBuffer(this.AT, word * 4, new Uint32Array(count)); }
   // Whether the receivers are drawn among the lower neighbours (the law's) or are the steepest: the settled flow of a tier's final heights is the steepest, as the water stages route.
   setRoute(stochastic: boolean) {
-    this.route = stochastic ? routeOf(this.law) : 0;
+    this.route = stochastic ? 1 : 0;
     this.gpu.device.queue.writeBuffer(this.P, 12, new Uint32Array([this.route]));
   }
   async flags(): Promise<number> { return (await readU32(this.gpu, this.AT, 1, this.atCnt + CNT.flags))[0]; }
@@ -386,7 +379,6 @@ export class Regional {
     });
     this.lastSlide = slide - chunk;
     await this.lap("creep", () => this.submit((p) => { for (let s = 0; s < this.creepSubs; s++) { this.run(p, "creep", N); this.run(p, "creepapply", N); } }));
-    if (this.law.holdOff && !this.band) { this.stepNo++; return rounds; }
     if (this.band) {
       this.clear(this.atCnt + BAND_CNT.clamped, 2);
       await this.lap("lift", () => this.submit((p) => {

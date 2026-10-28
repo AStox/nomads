@@ -36,7 +36,7 @@ export class RegionalPatch {
   private stepNo = 0;
   readonly flags = FLAG;
 
-  constructor(readonly gpu: Gpu, readonly tier: number, interior: number, table: Uint32Array, creepSubs: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, public route: 0 | 1 | 2 = 0, slideN: 8 | 16 = 8, readonly halo = PATCH_HALO, smooth = 0, readonly band: 0 | 1 | 2 = 0) {
+  constructor(readonly gpu: Gpu, readonly tier: number, interior: number, table: Uint32Array, creepSubs: number, nflow: 4 | 8 = FLOW_NEIGHBOURS, public route: 0 | 1 = 0, slideN: 8 | 16 = 8, readonly halo = PATCH_HALO, readonly band: 0 | 1 | 2 = 0) {
     this.fn = tierGrid(tier).fn;
     this.side = interior + 2 * halo;
     this.N = this.side * this.side;
@@ -46,7 +46,7 @@ export class RegionalPatch {
     this.E2 = storage(gpu, 16);
     this.AT = storage(gpu, (this.atParents + (band ? BAND_PARENT_WORDS : PARENT_WORDS) * NP) * 4);
     this.creepSubs = creepSubs;
-    this.P = storage(gpu, new Uint32Array([1, creepSubs, 0, route, smooth]));
+    this.P = storage(gpu, new Uint32Array([1, creepSubs, 0, route]));
     this.X = storage(gpu, table);
     this.IDS = storage(gpu, this.N * 4);
     this.wgsl = regionalWgsl(EDGES, this.fn, nflow, { side: this.side, halo }, slideN, band);
@@ -57,8 +57,8 @@ export class RegionalPatch {
     this.gpu.device.queue.writeBuffer(this.X, 0, table);
     this.gpu.device.queue.writeBuffer(this.P, 0, new Uint32Array([1, creepSubs, this.stepNo, this.route]));
   }
-  // Whether a receiver is the steepest (0), is drawn among the lower neighbours (1) or is Rho8's steepest by random diagonal lengths (2).
-  setRoute(route: 0 | 1 | 2) {
+  // Whether a receiver is the steepest (0) or is drawn among the lower neighbours (1).
+  setRoute(route: 0 | 1) {
     this.route = route;
     this.gpu.device.queue.writeBuffer(this.P, 12, new Uint32Array([route]));
   }
