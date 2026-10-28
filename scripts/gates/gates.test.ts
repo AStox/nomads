@@ -207,6 +207,6 @@ describe("overlap", () => {
     const r = overlap(a, b, size);
     expect(r.total.cells).toBe(size * size); expect(r.total.equal).toBe(size * size - 2); expect(r.total.maxDiffM).toBe(7);
     expect(r.bands[0].equal).toBe(r.bands[0].cells - 1); expect(r.bands[0].maxDiffM).toBe(7);
-    expect(r.bands[0].cells).toBe(128 * 128 - 112 * 112); expect(r.bands[3].equal).toBe(r.bands[3].cells - 1); expect(r.bands[3].maxDiffM).toBe(1); expect(r.bands[4].cells).toBe(0);
+    expect(r.total.landCells).toBe(size * size - 1); expect(r.total.landEqual).toBe(size * size - 3); expect(r.bands[0].cells).toBe(128 * 128 - 112 * 112); expect(r.bands[3].equal).toBe(r.bands[3].cells - 1); expect(r.bands[3].maxDiffM).toBe(1); expect(r.bands[4].cells).toBe(0);
   });
 });
