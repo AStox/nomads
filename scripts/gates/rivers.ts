@@ -133,7 +133,7 @@ export function sinuosity(path: Pt[], w = 9): number {
 export interface RiverMeasures {
   riverCells: number; minCells: number;
   straight30: number; straight300: number; latticeStraight300: number; longestRunCells: number;
-  stem: { lengthCells: number; lengthKm: number; sinuosity: number; class: string; reachMedian: number; reachClass: string; reaches: number; outlet: [number, number] } | null;
+  stem: { lengthCells: number; lengthKm: number; sinuosity: number; class: string; reachMedian: number; reachClass: string; reaches: number; outlet: [number, number]; head: [number, number] } | null;
 }
 
 // The measures over the cells where `live` is set (a margin in from the region's edge); `cellM` the cell's width; minCells the river threshold in cells.
@@ -159,7 +159,7 @@ export function riverMeasures(h: ArrayLike<number>, side: number, live: Uint8Arr
       let inLive = 0;
       for (let m = a; m <= b; m++) if (live[path[m]]) inLive++;
       if (len >= 30) in30 += inLive;
-      if (len >= 300) {
+      if (len >= 300 && inLive * 2 >= len) {
         in300 += inLive;
         const ang = (Math.atan2(pts[b].y - pts[a].y, pts[b].x - pts[a].x) * 180) / Math.PI, off = Math.abs(((ang % 45) + 45) % 45);
         if (Math.min(off, 45 - off) <= 8) lattice++;
@@ -181,7 +181,7 @@ export function riverMeasures(h: ArrayLike<number>, side: number, live: Uint8Arr
       for (let i = 0; i + 200 <= sm.length; i += 200) reaches.push(length(sm.slice(i, i + 200)) / Math.hypot(sm[i + 199].x - sm[i].x, sm[i + 199].y - sm[i].y));
       reaches.sort((a, b) => a - b);
       const med = reaches.length ? reaches[reaches.length >> 1] : NaN;
-      stem = { lengthCells: path.length, lengthKm: +((length(sm) * cellM) / 1000).toFixed(1), sinuosity: +s.toFixed(3), class: sinuosityClass(s), reachMedian: +med.toFixed(3), reachClass: Number.isNaN(med) ? "n/a" : sinuosityClass(med), reaches: reaches.length, outlet: [top % side, (top / side) | 0] };
+      stem = { lengthCells: path.length, lengthKm: +((length(sm) * cellM) / 1000).toFixed(1), sinuosity: +s.toFixed(3), class: sinuosityClass(s), reachMedian: +med.toFixed(3), reachClass: Number.isNaN(med) ? "n/a" : sinuosityClass(med), reaches: reaches.length, outlet: [top % side, (top / side) | 0], head: [path[0].x, path[0].y] };
     }
   }
   return { riverCells, minCells, straight30: +(in30 / Math.max(1, riverCells)).toFixed(4), straight300: +(in300 / Math.max(1, riverCells)).toFixed(4), latticeStraight300: lattice, longestRunCells: longest, stem };
