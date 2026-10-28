@@ -9,7 +9,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { BAKE, tierFile } from "../src/gpu/globe/bakedir";
+import { BAKE, PLANET_STORE, tierFile } from "../src/gpu/globe/bakedir";
 import { PLANET_TIER, TILE } from "../src/gpu/globe/grid";
 import { tileCount } from "../src/gpu/globe/patch";
 
@@ -23,7 +23,7 @@ const KILL_AFTER_MS = 15000, KILL_AFTER_SIGNAL_MS = 20000;
 const TAIL_LINES = 40;
 // The planet's coarse stages (scripts/globe-planet.ts makes them, not the driver): its STORE, and the three records window.ts readPlanet reads [derived]. The store's path is the script's, not imported
 // because that script pulls the GPU stack; bake-driver.test.ts compares it to the source.
-export const PLANET_STORE = "/tmp/planet-small/store";
+export { PLANET_STORE };
 export const PLANET_STAGES = ["chain", "ice", "climate1"];
 
 // ---------- the stage table's types ----------

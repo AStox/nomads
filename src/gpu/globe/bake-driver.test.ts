@@ -330,7 +330,7 @@ describe("the pieces", () => {
   });
 
   test("the planet store's path and records are the scripts'", () => {
-    expect(readFileSync(join(import.meta.dir, "../../../scripts/globe-planet.ts"), "utf8")).toContain(`export const STORE = "${PLANET_STORE}";`);
+    expect(readFileSync(join(import.meta.dir, "../../../scripts/globe-planet.ts"), "utf8")).toContain("export const STORE = PLANET_STORE;");
     const window = readFileSync(join(import.meta.dir, "window.ts"), "utf8");
     expect(window).toContain('export const STAGES = ["chain", "climate0", "ice", "climate1"]');
     for (const n of PLANET_STAGES) expect(window).toContain(`get("${n}")`);

@@ -1,16 +1,17 @@
 // The planet (391.1 km radius, tier 0 of 256 cells a face of 2.4 km, the 75 m tier being tier 5: grid.ts PLANET_*): a seed's planet built by stages into a store
-// under /tmp/planet-small/store, measured, and drawn. Each stage is its own command and stays under five minutes.
+// under the bake directory's small/store (bakedir.ts PLANET_STORE), measured, and drawn. Each stage is its own command and stays under five minutes.
 //   bun scripts/globe-planet.ts --seed 1 --stage chain       # tectonics with erosion, in parts of --budget 150 s: run it until it says kept
 //   bun scripts/globe-planet.ts --seed 1 --stage climate0
 //   bun scripts/globe-planet.ts --seed 1 --stage ice         # in parts of --budget 240 s: run it until it says kept
 //   bun scripts/globe-planet.ts --seed 1 --stage climate1
-//   bun scripts/globe-planet.ts --seed 1 --report            # statistics (JSON) and equirectangular maps under --out /tmp/planet-small/391km/<seed>
+//   bun scripts/globe-planet.ts --seed 1 --report            # statistics (JSON) and equirectangular maps under --out small/391km/<seed> in the bake directory
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { releaseGpu, theGpu } from "../src/gpu/device";
 import { LAPSE } from "../src/terrain/climate";
 import { SEASON_COUNT, buildStage, readPlanet, type Planet, type Stage } from "../src/gpu/globe/window";
 import { PLANET_RADIUS_M, tierGrid, type Grid } from "../src/gpu/globe/grid";
+import { PLANET_STORE } from "../src/gpu/globe/bakedir";
 import { hypsometry, neighbourTables, rivers } from "../src/gpu/globe/erosion";
 import { cellAreas, cellVectors, neighbours } from "../src/gpu/globe/tectonics";
 import { RANGE_Z_M } from "../src/gpu/globe/tectonics";
@@ -20,7 +21,7 @@ import { diskStore, sourceKey } from "./globe-window";
 import { equirect, heightColor, mix, ramp, type Layer } from "./globe-maps";
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 const DEG = Math.PI / 180;
-export const STORE = "/tmp/planet-small/store";
+export const STORE = PLANET_STORE;
 export const smallStore = () => diskStore(STORE, sourceKey(undefined, PLANET_RADIUS_M));
 
 // Connected components over the four neighbours of the cells where `mask` holds: the label of each cell (-1 off the mask) and the cells of each component.
@@ -182,7 +183,7 @@ async function main() {
     return;
   }
   if (process.argv.includes("--report")) {
-    const p = await readPlanet(seed, store), out = arg("out", join("/tmp/planet-small/391km", String(seed)));
+    const p = await readPlanet(seed, store), out = arg("out", join(PLANET_STORE, "..", "391km", String(seed)));
     mkdirSync(out, { recursive: true });
     const r = report(p);
     writeFileSync(join(out, "summary.json"), JSON.stringify(r, null, 1));

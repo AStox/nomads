@@ -7,7 +7,7 @@ import { join } from "node:path";
 // Where the planets' bakes are (a directory `<seed>-<key>` each): the newest bake of each seed whose pyramid is finished (`pyramid/../pyramid.json`; or the key in NOMADS_PLANET)
 // is linked into the site under `planets/link-<seed>-<key>/` (its tile `pyramid` and its `groundtiles`, symlinks, a bake being a gigabyte or more), with `planets/<seed>.json`
 // naming it: the tiers it has and the faces that hold tiles (a bake in progress has some).
-const BAKES = process.env.NOMADS_BAKES ?? "/tmp/planet-75m";
+const BAKES = process.env.NOMADS_BAKES ?? join(process.env.HOME ?? "/tmp", ".cache", "nomads-bakes");
 function linkPlanets(out: string): number[] {
   const newest = new Map<number, { name: string; t: number }>();
   for (const name of existsSync(BAKES) ? readdirSync(BAKES) : []) {
@@ -63,7 +63,7 @@ if (app === "styles") {
   // the planet layer's share of the generator (isopixel/planet.js) and the baked planets' tile pyramids it streams (src/gpu/globe/pyramid.ts)
   const globe = await Bun.build({ entrypoints: [`${root}/globe.ts`], outdir: out, target: "browser", minify: true, external: ["webgpu"] });
   if (!globe.success) throw new AggregateError(globe.logs, "bundling the globe failed");
-  const tile = await Bun.build({ entrypoints: [`${root}/tile.ts`], outdir: out, target: "browser", minify: true, plugins: [noFs], define: { "process.env.NOMADS_BAKE": "undefined" }, external: ["webgpu"] });
+  const tile = await Bun.build({ entrypoints: [`${root}/tile.ts`], outdir: out, target: "browser", minify: true, plugins: [noFs], define: { "process.env.NOMADS_BAKE": "undefined", "process.env.HOME": "undefined" }, external: ["webgpu"] });
   if (!tile.success) throw new AggregateError(tile.logs, "bundling the tile scatter failed");
   const seeds = linkPlanets(out);
   console.log(seeds.length ? `pyramid of seed ${seeds.join(", ")} in ${out}/planets` : `no finished pyramid under ${BAKES}: build one with scripts/globe-pyramid.ts, then build again`);

@@ -21,8 +21,10 @@ export class BakeDir {
   remove(name: string) { rmSync(this.path(name), { force: true }); }
 }
 
-// The unit's one scratch and store directory (30 GB for the whole unit) and a seed's directory in it, named by the planet's key.
-export const BAKE = process.env.NOMADS_BAKE ?? "/tmp/planet-75m";
+// The unit's one scratch and store directory (about 60 GB for a planet) and a seed's directory in it, named by the planet's key. It is under the home's cache, never /tmp: a restart wipes /tmp
+// (the bakes were lost that way once, 5.5 h of GPU each). `NOMADS_BAKE` moves it (a test's scratch); the coarse stages' store (scripts/globe-planet.ts) is `small/store` in it.
+export const BAKE = process.env.NOMADS_BAKE ?? join(process.env.HOME ?? "/tmp", ".cache", "nomads-bakes");
+export const PLANET_STORE = join(BAKE, "small", "store");
 export const bakeDir = (seed: number, key: string) => new BakeDir(join(BAKE, `${seed}-${key}`));
 
 // A field file of a tier of the bake: `t<tier>-<name>` (name with its type: `height.i32`). The planet's finest tier is grid.ts PLANET_TIER; the 195.6 km planet's was 4.
