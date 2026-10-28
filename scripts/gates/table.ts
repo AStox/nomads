@@ -48,6 +48,7 @@ for (const key of regions) {
   if (r.rivers) {
     add(scope, "straight30 / straight300 (share of river cells in straight runs)", `${fmt(r.rivers.straight30)} / ${fmt(r.rivers.straight300)}`, "none cited", "report", null);
     add(scope, "lattice-straight 300-cell stretches", String(r.rivers.latticeStraight300), "0", "none", r.rivers.latticeStraight300 === 0);
+    if (r.rivers30) add(scope, "straight30 / straight300 at 30 cells (the old harness's threshold); lattice-straight 300", `${fmt(r.rivers30.straight30)} / ${fmt(r.rivers30.straight300)}; ${r.rivers30.latticeStraight300}`, "none cited", "report", null);
     const st = r.rivers.stem;
     if (st) add(scope, "largest river stem sinuosity (length km)", `${fmt(st.sinuosity)} ${st.class} (${st.lengthKm} km); 200-cell reaches median ${fmt(st.reachMedian)} (${st.reachClass})`, "> 1.05 (Leopold and Wolman 1957: under 1.05 straight)", "not straight", st.sinuosity >= 1.05);
   }
@@ -58,7 +59,7 @@ for (const key of regions) {
   if (r.relief10) {
     add(scope, "10 km relief > 1000 / 1500 m", `${fmt(r.relief10.above1000)} / ${fmt(r.relief10.above1500)}`, "< 0.05 / < 0.02", "both below", r.relief10.above1000 < 0.05 && r.relief10.above1500 < 0.02);
   }
-  if (r.slope50 !== undefined) add(scope, "slope50 (share of land cells steeper than 50 %), land p99 (m)", `${fmt(r.slope50)}, ${fmt(r.landP99 ?? NaN, 0)}`, "none cited", "report", null);
+  if (r.slope) add(scope, "land slope p50 (slope50) / p90 / p99 (tan); share steeper than 0.5; land p99 (m)", `${fmt(r.slope.p50)} / ${fmt(r.slope.p90)} / ${fmt(r.slope.p99)}; ${fmt(r.slope.steepShare, 4)}; ${fmt(r.landP99 ?? NaN, 0)}`, "none cited", "report", null);
   if (r.holdError) add(scope, "hold error: box mean p50 / p99 / max (m); 3x3 p99 (m)", `${fmt(r.holdError.box.p50, 1)} / ${fmt(r.holdError.box.p99, 1)} / ${fmt(r.holdError.box.max, 1)}; ${fmt(r.holdError.box3x3.p99, 1)}`, "none cited (exact box hold 0.00 to 0.03 m)", "report", null);
 }
 
