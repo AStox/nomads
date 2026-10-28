@@ -1,13 +1,13 @@
 // The terrain gates as measures, one JSON line per measure ({"measure": "<kind>.<name>", "tier", "run", "value"}); definitions and citations are in each module's header
 // (scripts/gates/planet.ts whole planet, region.ts a region, spectrum.ts lock and ridge spacing, rivers.ts rivers). CPU only; reads the planet's store for tier 0 (NOMADS_STORE).
-//   bun scripts/globe-gates.ts planet --tier 0 --key K [--seed 1] [--run v14] [--jsonl out.jsonl]
+//   bun scripts/globe-gates.ts planet --tier 0 --key K [--seed 1] [--run v14] [--jsonl out.jsonl] [--chain <store>/chain.bin]
 //   bun scripts/globe-gates.ts planet --tier 3 --t3dir DIR --key K            # DIR/<seed>-<key>/t3-height.i32 (1/256 m), cells stride 4 for the relief windows
 //   bun scripts/globe-gates.ts region --name R1-t5 --land-dir DIR --tier 5 --face 0 --tx 23 --ty 17 --tiles 8 --key K [--state path]
 //   bun scripts/globe-gates.ts map --t3dir DIR --key K --out planet.png [--vex 4]   # 4096 x 2048 equirectangular of tier 3, hillshaded
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PLANET_RADIUS_M, fromLatLon, locateVec, makeGrid } from "../src/gpu/globe/grid";
-import { readPlanet } from "../src/gpu/globe/window";
+import { readPlanet, unpackRecord } from "../src/gpu/globe/window";
 import { STORE } from "./globe-planet";
 import { diskStore } from "./globe-window";
 import { heightColor, png } from "./globe-maps";
@@ -32,8 +32,12 @@ if (import.meta.main) {
   if (cmd === "planet") {
     const tier = Number(arg("tier", "0"));
     if (tier === 0) {
-      const p = await readPlanet(seed, diskStore(STORE, key));
-      emit("planet", 0, planetMeasures({ fn: 256, h: p.height, radius: p.radius }, { coast: true, log }));
+      // --chain <chain.bin>: the chain's own heights (before the ice's cut), when the later stages are not there yet
+      const chain = arg("chain", "");
+      let h: Float32Array, radius: number;
+      if (chain) { const b = readFileSync(chain), r = unpackRecord(new Uint8Array(b.buffer, b.byteOffset, b.byteLength)); h = r.arrays.height as Float32Array; radius = Number(r.meta.radius); }
+      else { const p = await readPlanet(seed, diskStore(STORE, key)); h = p.height; radius = p.radius; }
+      emit("planet", 0, planetMeasures({ fn: 256, h, radius }, { coast: true, log }));
     } else if (tier === 3) {
       const raw = t3(), h = new Float32Array(raw.length);
       for (let i = 0; i < raw.length; i++) h[i] = raw[i] / 256;
