@@ -7,7 +7,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
 import { defaultParams } from "./erosion";
 import { FACES, centre, haloSource, tierGrid, type Grid } from "./grid";
-import { Regional, parentOf, refineInts, remapAmounts, remapHeights, remapInts, tierTable, type TierState } from "./regional";
+import { Regional, parentOf, refineInts, refineSmooth, remapAmounts, remapHeights, remapInts, tierTable, type TierState } from "./regional";
 import type { Planet } from "./window";
 
 afterAll(releaseGpu);
@@ -164,5 +164,51 @@ describe("the tiers made one from the one above", () => {
       for (let Y = 0; Y < fn; Y++)
         for (let X = 0; X < fn; X++) total[(f * g1.fn + (Y >> 1)) * g1.fn + (X >> 1)] += fine[(f * fn + Y) * fn + X];
     for (let p = 0; p < N1; p++) expect(total[p]).toBe(4 * heights[p]);
+  });
+});
+
+// The carry's limiter (regional.ts limitChildren, in refineSmooth and in the streamed refineBlock, whose word-for-word equality is tiers-stream.test.ts's): tier 0 to tier 1, CPU.
+describe("the carry's limiter", () => {
+  const fn0 = 256, at = (f: number, X: number, Y: number) => (f * fn0 + Y) * fn0 + X;
+  const rough = (scale: number) => { const a = new Float32Array(N0); for (let i = 0; i < N0; i++) a[i] = ((Math.imul(i, 2654435761) >>> 8) % 4001 - 2000) * scale; return a; };
+  // every child inside the least and the greatest of its parent's 3 x 3 neighbourhood (interior parents), and the four children sum to 4 times the parent rounded, at every parent
+  const check = (parent: ArrayLike<number>, fine: Int32Array) => {
+    const fn1 = 2 * fn0;
+    let outside = 0, missed = 0;
+    for (let f = 0; f < FACES; f++)
+      for (let Y = 0; Y < fn0; Y++)
+        for (let X = 0; X < fn0; X++) {
+          const o = (f * fn1 + 2 * Y) * fn1 + 2 * X, kids = [fine[o], fine[o + 1], fine[o + fn1], fine[o + fn1 + 1]];
+          if (kids[0] + kids[1] + kids[2] + kids[3] !== Math.round(parent[at(f, X, Y)] * 4)) missed++;
+          if (X === 0 || Y === 0 || X === fn0 - 1 || Y === fn0 - 1) continue;
+          let lo = Infinity, hi = -Infinity;
+          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const v = parent[at(f, X + dx, Y + dy)]; lo = Math.min(lo, v); hi = Math.max(hi, v); }
+          for (const k of kids) if (k < Math.floor(lo) || k > Math.ceil(hi)) outside++;
+        }
+    return { outside, missed };
+  };
+  test("the children lie inside the parent's neighbourhood and sum to its mean to the unit, for whole units and for fractions", () => {
+    const whole = rough(1), part = Float32Array.from(rough(0.37), (v) => v + 0.3);
+    for (const parent of [whole, part]) {
+      const { outside, missed } = check(parent, refineSmooth(parent, 0));
+      expect(outside).toBe(0);
+      expect(missed).toBe(0);
+    }
+  });
+  test("a staged 750 m cliff leaves no sea child on the land side and no land child on the sea side (the plain remap does)", () => {
+    const parent = new Int32Array(N0).fill(3 * 256);
+    for (let Y = 0; Y < fn0; Y++) for (let X = 0; X < 128; X++) parent[at(0, X, Y)] = -750 * 256;
+    const fine = refineSmooth(parent, 0), plain = refineInts(0, parent), fn1 = 2 * fn0;
+    let seaOnLand = 0, landOnSea = 0, plainSeaOnLand = 0;
+    for (let Y = 1; Y < fn0 - 1; Y++)
+      for (let X = 1; X < fn0 - 1; X++)
+        for (let dy = 0; dy < 2; dy++)
+          for (let dx = 0; dx < 2; dx++) {
+            const i = (2 * Y + dy) * fn1 + 2 * X + dx;
+            if (X >= 128) { if (fine[i] <= 0) seaOnLand++; if (plain[i] <= 0) plainSeaOnLand++; } else if (fine[i] > 0) landOnSea++;
+          }
+    expect(seaOnLand).toBe(0);
+    expect(landOnSea).toBe(0);
+    expect(plainSeaOnLand).toBeGreaterThan(0);
   });
 });
