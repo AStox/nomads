@@ -151,7 +151,7 @@ describe("region", () => {
   test("a washboard region measures its lock, spacing, slope and relief", () => {
     const side = 512, h = washboard(side, 3000, 0, 100, 0), m = regionMeasures({ h, size: side, tier: 5, face: 0, x0: 0, y0: 0 });
     expect(m.lock.locked).toBe(4);
-    expect(Math.abs(m.ridge.wavelengthKm / 3 - 1)).toBeLessThan(0.12);
+    expect(Math.abs(m.ridge!.wavelengthKm / 3 - 1)).toBeLessThan(0.12);
     // amplitude 100 m, wavelength 3 km: max slope 2 pi 100 / 3000 = 0.209, 12 degrees at 90 m spacing less a little
     const cls = m.slopeByRelief.filter((c) => c.n > 0);
     expect(cls.length).toBe(1); expect(cls[0].meanRzM).toBeGreaterThan(150); expect(cls[0].slopeDeg).toBeGreaterThan(3); expect(cls[0].slopeDeg).toBeLessThan(8);
