@@ -1,7 +1,7 @@
 // The terrain gates as measures, one JSON line per measure ({"measure": "<kind>.<name>", "tier", "run", "value"}); definitions and citations are in each module's header
 // (scripts/gates/planet.ts whole planet, region.ts a region, spectrum.ts lock and ridge spacing, rivers.ts rivers). CPU only; reads the planet's store for tier 0 (NOMADS_STORE).
 //   bun scripts/globe-gates.ts planet --tier 0 --key K [--seed 1] [--run v14] [--jsonl out.jsonl] [--chain <store>/chain.bin]
-//   bun scripts/globe-gates.ts planet --tier 3 --t3dir DIR --key K            # DIR/<seed>-<key>/t3-height.i32 (1/256 m), cells stride 4 for the relief windows
+//   bun scripts/globe-gates.ts planet --tier 3 --t3dir DIR --key K            # DIR/<seed>-<key>/t3-height.i32 (1/256 m), cells stride 2 for the relief windows
 //   bun scripts/globe-gates.ts region --name R1-t5 --land-dir DIR --tier 5 --face 0 --tx 23 --ty 17 --tiles 8 --key K [--state path]
 //   bun scripts/globe-gates.ts map --t3dir DIR --key K --out planet.png [--vex 4]   # 4096 x 2048 equirectangular of tier 3, hillshaded
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
@@ -41,7 +41,7 @@ if (import.meta.main) {
     } else if (tier === 3) {
       const raw = t3(), h = new Float32Array(raw.length);
       for (let i = 0; i < raw.length; i++) h[i] = raw[i] / 256;
-      emit("planet", 3, planetMeasures({ fn: 2048, h, radius: PLANET_RADIUS_M }, { stride: 4, log }));
+      emit("planet", 3, planetMeasures({ fn: 2048, h, radius: PLANET_RADIUS_M }, { stride: 2, log }));
     } else throw new Error(`planet --tier ${tier}: only tiers 0 and 3`);
   } else if (cmd === "region") {
     const tier = Number(arg("tier", "5")), tiles = Number(arg("tiles", "8")), down = 2 ** (5 - tier), size = (tiles * 256) / down;
