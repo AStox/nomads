@@ -16,6 +16,8 @@
 //  rot          the control that the lattice's own bias cannot touch: the block turned by 22.5 and 67.5 degrees (bilinear, rotateField) and its coast and lake shore measured along the lattice axes
 //               again: `axisOverRotated` = the block's axis share over the turned blocks' mean. A run along a row costs no stair jitter and one at 20 degrees does, so a rasterised disc has axis shares
 //               above ctrl shares (L64: .24 against 0 at radius 200); the turned block pays the same bias, so a ratio near 1 means no structure locked to the lattice and one far above 1 means some.
+//  phase        `edgePhase`: the share of the coast's (and the lakes') vertical and horizontal edges lying on a multiple of 2, 4, 8, 16, 32 cells of the tier's grid (the next coarser tiers' cell edges)
+//               against the 1/2 .. 1/32 of a shore with no tie to them.
 //  lakes        `n` lakes (4-connected, of 16 cells or more, not meeting the cut), `areaKm2`; a strip is a lake with an aspect ratio of 4 or more and a width under 12 cells and a length of 16 cells or
 //               more: by `bbox` (axis-aligned bounding box: long side over short side, short side under 12), or by `moment` (the lake's principal axes, length = sqrt(12 l1 + 1), width = sqrt(12 l2 + 1)
 //               of the cells' covariance eigenvalues); `axis`, `diag`, `other` = strips whose principal axis is within 8 degrees of a lattice axis, of a diagonal, or neither (the uniform expectation
@@ -352,6 +354,12 @@ function rotatedControl(h: Int32Array, side: number, cellM: number, degrees: num
   return { degrees, coast: pick((m) => m.coast, axis.coast), lakeShore: pick((m) => m.shore, axis.shore) };
 }
 
+function lakeCells(lake: Uint8Array, side: number): number[] {
+  const { comps, ids } = components(lake, side, false), out: number[] = [];
+  comps.forEach((c, i) => { if (c.cells >= MIN_LAKE) for (const k of ids[i]) out.push(k); });
+  return out;
+}
+
 // The coast and the lake shore (lakes of 16 cells or more, from the flood) of a block.
 function coastAndShore(h: Int32Array, side: number, cellM: number): { coast: ShoreRuns; shore: ShoreRuns } {
   const lk = floodLakes(h, side), sea = new Uint8Array(side * side), inside = new Uint8Array(side * side);
@@ -363,8 +371,23 @@ function coastAndShore(h: Int32Array, side: number, cellM: number): { coast: Sho
   return { coast: shoreRuns(shoreChains(inside, sea, side), side, cellM), shore: shoreRuns(shoreChains(dry, big, side), side, cellM) };
 }
 
-export interface StraightIn { h: Int32Array; size: number; cellM: number; margin: number; flooded?: Int32Array; rotate?: number[] }
-export interface StraightResult { size: number; cellM: number; margin: number; landCells: number; coast: ShoreRuns; lakes: LakeMeasures; lakesFile: LakeMeasures | null; spits: SpitMeasures; rot: RotatedControl | null }
+// Where the shore's straight edges lie against the coarser tiers' cell boundaries: the share of the vertical edges (between horizontal neighbours, one in `mask`, one not) whose boundary lies on a
+// multiple of 2, 4, 8, 16, 32 cells of the tier's own grid (global coordinates: `ox`, `oy` = the block's origin plus margin), and of the horizontal edges likewise. A shore with no tie to the
+// coarser lattices has 1/2, 1/4, ... 1/32; at tier 5 those multiples are tiers 4, 3, 2, 1 and 0's cell edges.
+export interface Phase { edges: { x: number; y: number }; x: number[]; y: number[]; expected: number[] }
+export function edgePhase(mask: Uint8Array, side: number, ox: number, oy: number): Phase {
+  const cx = [0, 0, 0, 0, 0], cy = [0, 0, 0, 0, 0];
+  let nx = 0, ny = 0;
+  for (let y = 0; y < side; y++) for (let x = 0; x < side; x++) {
+    const k = y * side + x;
+    if (x + 1 < side && mask[k] !== mask[k + 1]) { nx++; const g = ox + x + 1; for (let b = 0; b < 5; b++) if (g % (2 << b) === 0) cx[b]++; }
+    if (y + 1 < side && mask[k] !== mask[k + side]) { ny++; const g = oy + y + 1; for (let b = 0; b < 5; b++) if (g % (2 << b) === 0) cy[b]++; }
+  }
+  return { edges: { x: nx, y: ny }, x: cx.map((c) => r4(c / Math.max(1, nx))), y: cy.map((c) => r4(c / Math.max(1, ny))), expected: [0.5, 0.25, 0.125, 0.0625, 0.03125] };
+}
+
+export interface StraightIn { h: Int32Array; size: number; cellM: number; margin: number; flooded?: Int32Array; rotate?: number[]; ox?: number; oy?: number }
+export interface StraightResult { size: number; cellM: number; margin: number; landCells: number; phase: { coast: Phase; lakes: Phase }; coast: ShoreRuns; lakes: LakeMeasures; lakesFile: LakeMeasures | null; spits: SpitMeasures; rot: RotatedControl | null }
 
 export function straightMeasures(r: StraightIn, log: (s: string) => void = () => {}): StraightResult {
   const side = r.size - 2 * r.margin, h = crop(r.h, r.size, r.margin), lk = floodLakes(h, side);
@@ -387,5 +410,8 @@ export function straightMeasures(r: StraightIn, log: (s: string) => void = () =>
   log("spits");
   const degrees = r.rotate ?? [22.5, 67.5], rot = degrees.length ? rotatedControl(h, side, r.cellM, degrees, { coast, shore: lakes.shore }) : null;
   log("rotated");
-  return { size: side, cellM: r.cellM, margin: r.margin, landCells, coast, lakes, lakesFile, spits, rot };
+  const ox = (r.ox ?? 0) + r.margin, oy = (r.oy ?? 0) + r.margin, bigLake = new Uint8Array(side * side);
+  for (const c of lakeCells(lk, side)) bigLake[c] = 1;
+  const phase = { coast: edgePhase(sea, side, ox, oy), lakes: edgePhase(bigLake, side, ox, oy) };
+  return { size: side, cellM: r.cellM, margin: r.margin, landCells, phase, coast, lakes, lakesFile, spits, rot };
 }

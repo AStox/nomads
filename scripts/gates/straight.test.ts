@@ -1,6 +1,6 @@
 // The straight-coast, straight-lake and thin-spit gates against inputs with a known answer (CPU only): a square island, a disc, a square rotated 20 degrees, a thin N-S spit, a lake strip.
 import { describe, expect, test } from "bun:test";
-import { crop, floodLakes, lakeMeasures, shoreChains, spitMeasures, straightMeasures } from "./straight";
+import { crop, edgePhase, floodLakes, lakeMeasures, shoreChains, spitMeasures, straightMeasures } from "./straight";
 
 const CELL = 75;
 // heights in 1/256 m from a function of the cell (metres)
@@ -42,6 +42,11 @@ describe("straight coast", () => {
     const side = 600, t = (22.5 * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
     const r = run(field(side, (x, y) => { const u = (x - 300) * c + (y - 300) * s, v = -(x - 300) * s + (y - 300) * c; return Math.abs(u) < 140 && Math.abs(v) < 140 ? 50 : -50; }), side);
     expect(r.coast.axis.L64).toBeLessThan(0.05); expect(r.rot!.coast.axis.L64).toBeGreaterThan(0.35); expect(r.rot!.coast.axisOverRotated.L64!).toBeLessThan(0.1);
+  });
+  test("edge phase: a square's edges at 100 and 400 lie on multiples of 2 and 4 (both), 8 and 16 (400 only), and a shift of the origin moves them", () => {
+    const side = 512, mask = Uint8Array.from(field(side, (x, y) => (x >= 100 && x < 400 && y >= 100 && y < 400 ? 50 : -50)), (v) => (v > 0 ? 0 : 1)), p = edgePhase(mask, side, 0, 0);
+    expect(p.edges.x).toBe(600); expect(p.x.slice(0, 5)).toEqual([1, 1, 0.5, 0.5, 0]); expect(p.y.slice(0, 5)).toEqual([1, 1, 0.5, 0.5, 0]);
+    expect(edgePhase(mask, side, 1, 0).x[0]).toBe(0); expect(edgePhase(mask, side, 0, 4).y.slice(0, 3)).toEqual([1, 1, 0.5]);
   });
   test("a coast cut by the block's edge is an open chain, and the margin cuts it off", () => {
     const side = 256, h = field(side, (x) => (x < 128 ? 50 : -50)), r = run(h, side);
