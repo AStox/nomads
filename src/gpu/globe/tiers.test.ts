@@ -12,6 +12,7 @@ import { defaultParams, landDiffusivity } from "./erosion";
 import { XSTRIDE } from "../wgsl/globe-regional";
 import { creepSubsOf, refineSmooth, tierTable } from "./regional";
 import { TIER_LAWS, drainage, tiersOf, type TierLaw } from "./tiers";
+import { streamTier } from "./tiers-stream";
 import type { Planet } from "./window";
 
 afterAll(releaseGpu);
@@ -135,5 +136,13 @@ describe("a skipped tier (NOMADS_SKIP_TIERS: zero steps)", () => {
     console.log(`skipped tier 1 means against tier 0: max ${e1[N0 - 1].toFixed(4)} m; tier 2 against tier 0: p99 ${e2[Math.floor(N0 * 0.99)].toFixed(3)} m`);
     expect(e1[N0 - 1]).toBeLessThan(0.01);
     expect(e2[Math.floor(N0 * 0.99)]).toBeLessThan(1);
+  });
+
+  test("the streamed chain with tier 1 skipped (zero steps) writes the in-memory chain's files", async () => {
+    const gpu = await theGpu(), mem = fresh(), str = fresh(), steps = [0, 0, 3];
+    await tiersOf(gpu, planet, mem, Infinity, 2, steps);
+    expect((await streamTier(gpu, planet, str, 1, 2, Infinity, { steps })).done).toBe(true);
+    expect((await streamTier(gpu, planet, str, 2, 2, Infinity, { steps })).done).toBe(true);
+    for (const f of ["t1-height.i32", "t2-height.i32", "t2-to.u32", "t2-acc.u32", "t2-flooded.i32"]) expect(hash(new Uint8Array(str.raw(f)))).toBe(hash(new Uint8Array(mem.raw(f))));
   });
 });

@@ -24,6 +24,7 @@ import type { Gpu } from "../device";
 import { TILE, tierGrid, type Grid } from "./grid";
 import { cellAcross, patchAt, type Patch } from "./patch";
 import { CORNER_BESIDE, around3, child4, creepSubsOf, routeOf, type RouteLaw } from "./regional";
+import { BAND_FLAG_CARRY } from "../wgsl/globe-band-hold";
 import { FLOW_NEIGHBOURS, SOLVE_SWEEPS } from "../wgsl/globe-regional";
 import { RegionalPatch, TREE, PATCH_HALO } from "./regional-patch";
 import { tierTable } from "./regional";
@@ -116,6 +117,7 @@ interface Progress {
   todo: number[]; sea: number[]; pending: number[]; minF: number[];
   visits: Record<string, number>; seconds: Record<string, number>; stepS: number[]; stepVisits: Record<string, number>[]; curS: number;
   calls: number; callS: number[]; exportTo: boolean;
+  clamped?: number; dropped?: number; // the band hold's land cells held at one unit, and the height (1/256 m) it would have taken off them, over the steps made
 }
 interface Ring { halo: Int32Array; hid: Int32Array; hreg: Int32Array; adj: Int32Array; inner: Int32Array; across: Map<number, number> }
 
@@ -158,7 +160,7 @@ export class StreamedTier {
     this.law = o.law ?? { nflow: FLOW_NEIGHBOURS, stochastic: false };
     this.tableAt = o.tableAt ?? (() => table);
     this.subs = creepSubsOf(table);
-    this.solver = new RegionalPatch(gpu, tier, this.size, table, this.subs, this.law.nflow, routeOf(this.law), this.law.slide ?? 8);
+    this.solver = new RegionalPatch(gpu, tier, this.size, table, this.subs, this.law.nflow, routeOf(this.law), this.law.slide ?? 8, PATCH_HALO, 0, this.law.band ?? 0);
     this.slideSolver = this.law.slide === 16 ? new RegionalPatch(gpu, tier, this.size, table, this.subs, this.law.nflow, 0, 16, 2) : null;
     const ord = Array.from({ length: this.nreg }, (_, i) => i);
     if (o.order === "reverse") ord.reverse();
@@ -172,9 +174,10 @@ export class StreamedTier {
     if (this.prog.block !== block) throw new Error(`tiers-stream: the work in ${dir} was begun with blocks of ${this.prog.block} tiles, not ${block}`);
   }
   private path(f: string) { return join(this.dir, f); }
+  private get tallyLoss() { return this.law.band ? "btallyl" : "tallyl"; }
   private fresh(): Progress {
     return { tier: this.tier, block: this.size / TILE, steps: 0, stage: "start", job: "idle", sub: 0, running: false, todo: new Array(this.nreg).fill(1), sea: new Array(this.nreg).fill(0), pending: new Array(this.nreg).fill(-1), minF: new Array(this.nreg).fill(INF),
-      visits: {}, seconds: {}, stepS: [], stepVisits: [], curS: 0, calls: 0, callS: [], exportTo: false };
+      visits: {}, seconds: {}, stepS: [], stepVisits: [], curS: 0, calls: 0, callS: [], exportTo: false, clamped: 0, dropped: 0 };
   }
   get started() { return existsSync(this.path("progress.json")); }
   get stepsMade() { return this.prog.steps; }
@@ -182,6 +185,7 @@ export class StreamedTier {
   // ---- state kept between calls ----
   // Resume: the tier-0 tables, the skeleton, and a step interrupted in the middle of a visit is begun again from the heights it started from.
   async open() {
+    if (this.law.band) this.solver.go(["bgnbr"]);
     if (existsSync(this.path("parents.i32"))) this.solver.writeParents(new Int32Array(readFileSync(this.path("parents.i32")).buffer.slice(0)));
     if (existsSync(this.path("skeleton.f64"))) this.loadSkeleton();
     if (this.prog.running && this.prog.job === "step") {
@@ -299,7 +303,7 @@ export class StreamedTier {
   private async visitInit(r: number) {
     const p = this.patch(r), H = this.store.gather("H", p, undefined, false) as Int32Array, s = this.solver;
     s.setPatch(p); s.write("H", H);
-    s.go(["flinit", "tallyc"]);
+    s.go(this.law.band ? ["flinit"] : ["flinit", "tallyc"]);
     this.store.scatter("F", p, await s.readFlood());
     let sea = 0;
     for (let y = 1; y < p.side - 1 && !sea; y++) for (let x = 1; x < p.side - 1; x++) if (H[y * p.side + x] <= 0) { sea = 1; break; }
@@ -320,7 +324,7 @@ export class StreamedTier {
       chunk = 64;
       if (rounds > 40000) throw new Error(`tiers-stream: the ${law} did not settle in 40,000 rounds in block ${r}`);
     }
-    if (law === "slide") s.go(["tallyl"]);
+    if (law === "slide") s.go([this.tallyLoss]);
     const after = law === "flood" ? await s.readFlood() : await s.read("H");
     const S = p.side;
     let changed = false;
@@ -349,7 +353,7 @@ export class StreamedTier {
       h1[k] = after[k2]; er[k] = H[k2] - after[k2];
       if (er[k]) changed = true;
     }
-    s.setPatch(p); s.write("H", h1); s.write("ER", er); s.go(["tallyl"]);
+    s.setPatch(p); s.write("H", h1); s.write("ER", er); s.go([this.tallyLoss]);
     if (!changed) return;
     this.store.scatter("H", p2, after);
     const todo = this.prog.todo, reach = [...DIRS, [2, 1], [1, 2], [-1, 2], [-2, 1], [-2, -1], [-1, -2], [1, -2], [2, -1]] as const, lo = 2, hi = 2 + this.size;
@@ -440,9 +444,10 @@ export class StreamedTier {
     s.write("ACC", this.store.gather("ACC", p, undefined, false) as Int32Array);
     s.writeFlood(this.store.gather("F", p, undefined, false) as Int32Array);
     s.clearCounter("flags"); s.clearCounter("pending");
-    s.go(["cellmeans", "erzero", "todfrom", ...TREE, "incisep", "tallyl", "rescount"]);
+    s.go(["cellmeans", "erzero", "todfrom", ...TREE, "incisep", this.tallyLoss, "rescount"]);
     const flags = await s.counter("flags");
     if (flags & (s.flags.chain | s.flags.depth)) throw new Error(`tiers-stream: the receivers' chains do not end at the sea in block ${r} (flags ${flags})`);
+    if (flags & BAND_FLAG_CARRY) throw new Error("tiers-stream: the band-limited uplift's moments passed 32 bits");
     this.prog.pending[r] = await s.counter("pending");
     const [w, h] = await Promise.all([s.read("W"), s.read("H")]);
     let any = false;
@@ -455,20 +460,21 @@ export class StreamedTier {
   private async visitCreep(r: number) {
     const p = this.patch(r), s = this.solver;
     s.setPatch(p); s.write("H", this.store.gather("H", p) as Int32Array);
-    s.go(["cellmeans", "erzero", "creep", "creepapply", "tallyl"]);
+    s.go(["cellmeans", "erzero", "creep", "creepapply", this.tallyLoss]);
     this.store.scatter("ACC", p, await s.read("H"));
   }
   // The stencil of the uplift's solve: each land cell adds its interpolation weights to its tier-0 cell's nine slots (the counts of every tier-0 cell's land are all in, from the init visits).
   private async visitStencil(r: number) {
     const p = this.patch(r), s = this.solver;
     s.setPatch(p); s.write("H", this.store.gather("H", p, undefined, false) as Int32Array);
-    s.go(["pstencil"]);
+    s.go([this.law.band ? "btallyc" : "pstencil"]);
   }
   // Every land cell rises by the interpolated coefficients the tier-0 tables hold.
   private async visitLift(r: number) {
     const p = this.patch(r), s = this.solver;
     s.setPatch(p); s.write("H", this.store.gather("H", p, undefined, false) as Int32Array);
-    s.go(["lift"]);
+    s.go([this.law.band ? "blift" : "lift"]);
+    if (this.law.band) { this.prog.clamped = (this.prog.clamped ?? 0) + await s.counter("clamped"); this.prog.dropped = (this.prog.dropped ?? 0) + await s.counter("dropped"); s.clearCounter("clamped"); s.clearCounter("dropped"); }
     this.store.scatter("H", p, await s.read("H"));
   }
 
@@ -502,16 +508,18 @@ export class StreamedTier {
       case "incise": {
         const open = pr.pending.reduce((a, b) => a + Math.max(0, b), 0);
         if (open) throw new Error(`tiers-stream: ${open} cells' incision was never settled`);
+        if (this.law.band) s.clearCounter("flags");
         go("slide"); break;
       }
       case "slide": pr.sub = 0; go("creep"); break;
       case "creep":
         this.store.swap("H", "ACC");
         if (++pr.sub < this.subs) { this.all(); break; }
+        if (this.law.band) { if ((await s.counter("flags")) & BAND_FLAG_CARRY) throw new Error("tiers-stream: the band-limited uplift's moments passed 32 bits"); s.go(["bpstzero"]); go("stencil"); break; }
         s.go(["pstzero"]); go("stencil"); break;
-      case "stencil": s.go(["pmean", ...Array.from({ length: SOLVE_SWEEPS / 2 }, () => ["psolve", "psolve2"]).flat()]); go("lift"); break;
+      case "stencil": s.go(this.law.band ? ["bpmean", ...Array.from({ length: SOLVE_SWEEPS / 2 }, () => ["bpsolve", "bpsolve2"]).flat()] : ["pmean", ...Array.from({ length: SOLVE_SWEEPS / 2 }, () => ["psolve", "psolve2"]).flat()]); go("lift"); break;
       case "lift": {
-        s.go(["pcarry"]);
+        s.go([this.law.band ? "bpcarry" : "pcarry"]);
         pr.steps++; pr.stepS.push(pr.curS); pr.stepVisits.push(pr.visits); pr.curS = 0; pr.visits = {};
         pr.stage = "idle"; pr.job = "idle";
         return true;
@@ -530,7 +538,7 @@ export class StreamedTier {
     }
     pr.job = job; pr.stage = "init"; pr.sub = 0; this.all();
     this.arm();
-    this.solver.go(["pzero"]);
+    this.solver.go([this.law.band ? "bpzero" : "pzero"]);
   }
   // What a step's kernels read of the step: its number (the routing's draws), whether the receivers are drawn (not in the settled flow of the final heights, which is the steepest descent the
   // water stages route by) and its table, whose K dt and creep coefficients are its step length's.
@@ -588,7 +596,7 @@ export async function streamTier(gpu: Gpu, planet: Planet, dir: BakeDir, tier: n
   const steps = (o.steps ?? TIER_STEPS)[tier], t0 = performance.now(), spent = () => (performance.now() - t0) / 1000;
   const finished = dir.has(`t${tier}-height.i32`) && (tier < last || dir.has(`t${tier}-run.json`));
   if (finished) return { done: true, steps, of: steps, run: dir.json<TierRun>(`t${tier}-run`) ?? undefined };
-  if (TIER_LAWS[tier].route.holdOff || TIER_LAWS[tier].route.band) throw new Error(`streamTier: tier ${tier}'s hold knob (NOMADS_HOLD_OFF_TIERS, NOMADS_BAND_SPAN) is the whole-tier chain's (tiers.ts tiersOf) only`);
+  if (TIER_LAWS[tier].route.holdOff) throw new Error(`streamTier: tier ${tier}'s box-hold-off knob (NOMADS_HOLD_OFF_TIERS without NOMADS_BAND_SPAN) is the whole-tier chain's (tiers.ts tiersOf) only`);
   const tableAt = tierTableOf(planet, tier);
   const st = new StreamedTier(gpu, tier, o.work ?? dir.path(`stream-t${tier}`), tableAt(0), { ...o, law: TIER_LAWS[tier].route, tableAt }, log);
   try {
