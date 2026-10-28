@@ -1,6 +1,6 @@
 // The straight-coast, straight-lake and thin-spit gates against inputs with a known answer (CPU only): a square island, a disc, a square rotated 20 degrees, a thin N-S spit, a lake strip.
 import { describe, expect, test } from "bun:test";
-import { crop, edgePhase, floodLakes, lakeMeasures, shoreChains, spitMeasures, straightMeasures } from "./straight";
+import { crop, edgePhase, exactRuns, floodLakes, lakeMeasures, shoreChains, spitMeasures, straightMeasures } from "./straight";
 
 const CELL = 75;
 // heights in 1/256 m from a function of the cell (metres)
@@ -47,6 +47,13 @@ describe("straight coast", () => {
     const side = 512, mask = Uint8Array.from(field(side, (x, y) => (x >= 100 && x < 400 && y >= 100 && y < 400 ? 50 : -50)), (v) => (v > 0 ? 0 : 1)), p = edgePhase(mask, side, 0, 0);
     expect(p.edges.x).toBe(600); expect(p.x.slice(0, 5)).toEqual([1, 1, 0.5, 0.5, 0]); expect(p.y.slice(0, 5)).toEqual([1, 1, 0.5, 0.5, 0]);
     expect(edgePhase(mask, side, 1, 0).x[0]).toBe(0); expect(edgePhase(mask, side, 0, 4).y.slice(0, 3)).toEqual([1, 1, 0.5]);
+  });
+  test("exact runs: a square's four sides are four runs of 300; a disc has none of 64", () => {
+    const side = 512, sq = Uint8Array.from(field(side, (x, y) => (x >= 100 && x < 400 && y >= 100 && y < 400 ? 50 : -50)), (v) => (v > 0 ? 0 : 1)), r = exactRuns(sq, side, 0, 0, CELL);
+    expect(r.edges).toBe(1200); expect(r.share.L128).toBe(1); expect(r.top.length).toBe(4); expect(r.top[0].len).toBe(300); expect(r.longestKm).toBeCloseTo(22.5, 3);
+    expect(r.top.map((t) => t.line).sort()).toEqual([100, 100, 400, 400]);
+    const disc = Uint8Array.from(field(side, (x, y) => (Math.hypot(x - 256, y - 256) < 200 ? 50 : -50)), (v) => (v > 0 ? 0 : 1));
+    expect(exactRuns(disc, side, 0, 0, CELL).share.L64).toBe(0);
   });
   test("a coast cut by the block's edge is an open chain, and the margin cuts it off", () => {
     const side = 256, h = field(side, (x) => (x < 128 ? 50 : -50)), r = run(h, side);

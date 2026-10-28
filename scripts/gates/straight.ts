@@ -18,6 +18,7 @@
 //               above ctrl shares (L64: .24 against 0 at radius 200); the turned block pays the same bias, so a ratio near 1 means no structure locked to the lattice and one far above 1 means some.
 //  phase        `edgePhase`: the share of the coast's (and the lakes') vertical and horizontal edges lying on a multiple of 2, 4, 8, 16, 32 cells of the tier's grid (the next coarser tiers' cell edges)
 //               against the 1/2 .. 1/32 of a shore with no tie to them.
+//  exact        `exactRuns`: edges of the coast (and lakes) in stretches on ONE lattice line with no jitter at all, in 16 / 32 / 64 / 128 cells or more, and the five longest with their place.
 //  lakes        `n` lakes (4-connected, of 16 cells or more, not meeting the cut), `areaKm2`; a strip is a lake with an aspect ratio of 4 or more and a width under 12 cells and a length of 16 cells or
 //               more: by `bbox` (axis-aligned bounding box: long side over short side, short side under 12), or by `moment` (the lake's principal axes, length = sqrt(12 l1 + 1), width = sqrt(12 l2 + 1)
 //               of the cells' covariance eigenvalues); `axis`, `diag`, `other` = strips whose principal axis is within 8 degrees of a lattice axis, of a diagonal, or neither (the uniform expectation
@@ -386,8 +387,35 @@ export function edgePhase(mask: Uint8Array, side: number, ox: number, oy: number
   return { edges: { x: nx, y: ny }, x: cx.map((c) => r4(c / Math.max(1, nx))), y: cy.map((c) => r4(c / Math.max(1, ny))), expected: [0.5, 0.25, 0.125, 0.0625, 0.03125] };
 }
 
+// Exactly straight shore: maximal stretches of edges between mask and non-mask cells lying on one lattice line (no jitter at all: the same column boundary, or row boundary, over consecutive
+// cells), the sharpest sign of a lattice-locked shore. `share` = share of all the shore's edges (both directions) in stretches of 16, 32, 64, 128 or more; `top` the five longest, in the
+// block's global cell coordinates (`line` = the boundary's coordinate across, `from` .. `to` along it).
+export interface ExactRuns { edges: number; share: ShareSet; longestKm: number; top: { dir: "x" | "y"; line: number; from: number; to: number; len: number }[] }
+export function exactRuns(mask: Uint8Array, side: number, ox: number, oy: number, cellM: number): ExactRuns {
+  const lens: number[] = [], top: ExactRuns["top"] = [];
+  let edges = 0;
+  for (const dir of ["x", "y"] as const) {
+    for (let g = 0; g + 1 < side; g++) {
+      let start = -1;
+      for (let t = 0; t <= side; t++) {
+        const on = t < side && (dir === "x" ? mask[t * side + g] !== mask[t * side + g + 1] : mask[g * side + t] !== mask[(g + 1) * side + t]);
+        if (on) { edges++; if (start < 0) start = t; }
+        else if (start >= 0) {
+          const len = t - start;
+          lens.push(len);
+          if (len >= 16) top.push({ dir, line: (dir === "x" ? ox : oy) + g + 1, from: (dir === "x" ? oy : ox) + start, to: (dir === "x" ? oy : ox) + t - 1, len });
+          start = -1;
+        }
+      }
+    }
+  }
+  const share = (L: number) => r4(lens.filter((l) => l >= L).reduce((t, l) => t + l, 0) / Math.max(1, edges));
+  top.sort((a, b) => b.len - a.len);
+  return { edges, share: { L16: share(16), L32: share(32), L64: share(64), L128: share(128) }, longestKm: r4(((top[0]?.len ?? Math.max(0, ...lens)) * cellM) / 1000), top: top.slice(0, 5) };
+}
+
 export interface StraightIn { h: Int32Array; size: number; cellM: number; margin: number; flooded?: Int32Array; rotate?: number[]; ox?: number; oy?: number }
-export interface StraightResult { size: number; cellM: number; margin: number; landCells: number; phase: { coast: Phase; lakes: Phase }; coast: ShoreRuns; lakes: LakeMeasures; lakesFile: LakeMeasures | null; spits: SpitMeasures; rot: RotatedControl | null }
+export interface StraightResult { size: number; cellM: number; margin: number; landCells: number; phase: { coast: Phase; lakes: Phase }; exact: { coast: ExactRuns; lakes: ExactRuns }; coast: ShoreRuns; lakes: LakeMeasures; lakesFile: LakeMeasures | null; spits: SpitMeasures; rot: RotatedControl | null }
 
 export function straightMeasures(r: StraightIn, log: (s: string) => void = () => {}): StraightResult {
   const side = r.size - 2 * r.margin, h = crop(r.h, r.size, r.margin), lk = floodLakes(h, side);
@@ -413,5 +441,6 @@ export function straightMeasures(r: StraightIn, log: (s: string) => void = () =>
   const ox = (r.ox ?? 0) + r.margin, oy = (r.oy ?? 0) + r.margin, bigLake = new Uint8Array(side * side);
   for (const c of lakeCells(lk, side)) bigLake[c] = 1;
   const phase = { coast: edgePhase(sea, side, ox, oy), lakes: edgePhase(bigLake, side, ox, oy) };
-  return { size: side, cellM: r.cellM, margin: r.margin, landCells, phase, coast, lakes, lakesFile, spits, rot };
+  const exact = { coast: exactRuns(sea, side, ox, oy, r.cellM), lakes: exactRuns(bigLake, side, ox, oy, r.cellM) };
+  return { size: side, cellM: r.cellM, margin: r.margin, landCells, phase, exact, coast, lakes, lakesFile, spits, rot };
 }
