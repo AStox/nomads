@@ -31,7 +31,7 @@ for (const tier of [0, 3]) {
   add(scope, "10 km relief > 1000 / 1500 / 2000 (windows centred on land)", `${fmt(rel.centred.above1000)} / ${fmt(rel.centred.above1500)} / ${fmt(rel.centred.above2000)}`, "none cited", "report", null);
   if (comp) add(scope, "land components: count, largest five (share of planet)", `${comp.count}: ${comp.top5PlanetShare.map((s) => fmt(s, 4)).join(", ")}`, "none cited", "report", null);
   if (top) add(scope, "tallest summit", `${fmt(top.heightM, 0)} m at ${fmt(top.latDeg, 1)}, ${fmt(top.lonDeg, 1)}`, "none cited", "report", null);
-  if (coast) add(scope, "coast straight runs >= 40, 100, 150 km (count; share of coast)", ["40km", "100km", "150km"].map((k) => `${coast.runs[k].count}; ${fmt(coast.runs[k].coastShare, 3)}`).join("  ,  "), "none cited", `runs within ${coast.tolKm} km of a great circle; longest ${coast.longestRunKm} km, coast ${coast.coastKm} km`, null);
+  if (coast) add(scope, "coast straight runs >= 40, 100, 150 km (count; share of coast)", ["40km", "100km", "150km"].map((k) => `${k.replace("km", "")} km: ${coast.runs[k].count} runs, ${fmt(coast.runs[k].coastShare, 3)} of coast`).join("; "), "none cited", `runs within ${coast.tolKm} km of a great circle; longest ${coast.longestRunKm} km, coast ${coast.coastKm} km`, null);
 }
 
 const regions = [...new Set(lines.filter((l) => l.measure.startsWith("region.")).map((l) => `${l.name}|${l.tier}`))];
@@ -42,9 +42,9 @@ for (const key of regions) {
   const scope = `region ${name} (tier ${tierText})`;
   if (r.lock) {
     const p = 32 / 180, n = r.lock.allLand, limit = n * p + 2 * Math.sqrt(n * p * (1 - p));
-    add(scope, "lock windows (all-land windows within 8 degrees of an axis)", `${r.lock.locked} of ${n} (ridged ${r.lock.ridged}; uniform ${fmt(r.lock.uniformAll, 1)})`, "uniform 32/180 of the windows", `at most uniform + 2 sigma = ${fmt(limit, 1)}`, r.lock.locked <= limit);
+    add(scope, "lock windows (all-land windows within 8 degrees of an axis)", n ? `${r.lock.locked} of ${n} (ridged ${r.lock.ridged}; uniform ${fmt(r.lock.uniformAll, 1)})` : "no all-land 256-cell window", "uniform 32/180 of the windows", `at most uniform + 2 sigma = ${fmt(limit, 1)}`, n ? r.lock.locked <= limit : null);
   }
-  if (r.ridge) add(scope, "ridge spacing: wavelength (km) of the largest excess over the power-law fit, ratio", `${fmt(r.ridge.wavelengthKm)} km, x${fmt(r.ridge.ratio, 2)}`, "1.5 to 3 km (Perron 2009 range, Lc 237 m)", "wavelength inside", r.ridge.insidePerron);
+  add(scope, "ridge spacing: wavelength (km) of the largest excess over the power-law fit, ratio", r.ridge ? `${fmt(r.ridge.wavelengthKm)} km, x${fmt(r.ridge.ratio, 2)}` : "no all-land 256-cell window", "1.5 to 3 km (Perron 2009 range, Lc 237 m)", "wavelength inside", r.ridge ? r.ridge.insidePerron : null);
   if (r.rivers) {
     add(scope, "straight30 / straight300 (share of river cells in straight runs)", `${fmt(r.rivers.straight30)} / ${fmt(r.rivers.straight300)}`, "none cited", "report", null);
     add(scope, "lattice-straight 300-cell stretches", String(r.rivers.latticeStraight300), "0", "none", r.rivers.latticeStraight300 === 0);
