@@ -19,6 +19,7 @@
 //  phase        `edgePhase`: the share of the coast's (and the lakes') vertical and horizontal edges lying on a multiple of 2, 4, 8, 16, 32 cells of the tier's grid (the next coarser tiers' cell edges)
 //               against the 1/2 .. 1/32 of a shore with no tie to them.
 //  exact        `exactRuns`: edges of the coast (and lakes) in stretches on ONE lattice line with no jitter at all, in 16 / 32 / 64 / 128 cells or more, and the five longest with their place.
+//  inlets       the spit measure on the sea (h <= 0) with 12-cell squares: water narrower than 12 cells (channels, flooded troughs below sea level: inland strips of sea that no lake measure sees).
 //  lakes        `n` lakes (4-connected, of 16 cells or more, not meeting the cut), `areaKm2`; a strip is a lake with an aspect ratio of 4 or more and a width under 12 cells and a length of 16 cells or
 //               more: by `bbox` (axis-aligned bounding box: long side over short side, short side under 12), or by `moment` (the lake's principal axes, length = sqrt(12 l1 + 1), width = sqrt(12 l2 + 1)
 //               of the cells' covariance eigenvalues); `axis`, `diag`, `other` = strips whose principal axis is within 8 degrees of a lattice axis, of a diagonal, or neither (the uniform expectation
@@ -415,7 +416,7 @@ export function exactRuns(mask: Uint8Array, side: number, ox: number, oy: number
 }
 
 export interface StraightIn { h: Int32Array; size: number; cellM: number; margin: number; flooded?: Int32Array; rotate?: number[]; ox?: number; oy?: number }
-export interface StraightResult { size: number; cellM: number; margin: number; landCells: number; phase: { coast: Phase; lakes: Phase }; exact: { coast: ExactRuns; lakes: ExactRuns }; coast: ShoreRuns; lakes: LakeMeasures; lakesFile: LakeMeasures | null; spits: SpitMeasures; rot: RotatedControl | null }
+export interface StraightResult { size: number; cellM: number; margin: number; landCells: number; phase: { coast: Phase; lakes: Phase }; exact: { coast: ExactRuns; lakes: ExactRuns }; inlets: SpitMeasures; coast: ShoreRuns; lakes: LakeMeasures; lakesFile: LakeMeasures | null; spits: SpitMeasures; rot: RotatedControl | null }
 
 export function straightMeasures(r: StraightIn, log: (s: string) => void = () => {}): StraightResult {
   const side = r.size - 2 * r.margin, h = crop(r.h, r.size, r.margin), lk = floodLakes(h, side);
@@ -441,6 +442,8 @@ export function straightMeasures(r: StraightIn, log: (s: string) => void = () =>
   const ox = (r.ox ?? 0) + r.margin, oy = (r.oy ?? 0) + r.margin, bigLake = new Uint8Array(side * side);
   for (const c of lakeCells(lk, side)) bigLake[c] = 1;
   const phase = { coast: edgePhase(sea, side, ox, oy), lakes: edgePhase(bigLake, side, ox, oy) };
+  // inlets: the same measure on the sea (h <= 0, lakes of the flood included as land) with squares of 12 cells: water narrower than 12 cells, in strips of 64 cells or more
+  const inlets = spitMeasures(Int32Array.from(h, (v) => (v <= 0 ? 1 : -1)), side, r.cellM, 12, 64);
   const exact = { coast: exactRuns(sea, side, ox, oy, r.cellM), lakes: exactRuns(bigLake, side, ox, oy, r.cellM) };
-  return { size: side, cellM: r.cellM, margin: r.margin, landCells, phase, exact, coast, lakes, lakesFile, spits, rot };
+  return { size: side, cellM: r.cellM, margin: r.margin, landCells, phase, exact, inlets, coast, lakes, lakesFile, spits, rot };
 }
