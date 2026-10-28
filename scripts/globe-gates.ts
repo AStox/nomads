@@ -3,7 +3,7 @@
 //   bun scripts/globe-gates.ts planet --tier 0 --key K [--seed 1] [--run v14] [--jsonl out.jsonl] [--chain <store>/chain.bin]
 //   bun scripts/globe-gates.ts planet --tier 3 --t3dir DIR --key K            # DIR/<seed>-<key>/t3-height.i32 (1/256 m), cells stride 2 for the relief windows
 //   bun scripts/globe-gates.ts region --name R1-t5 --land-dir DIR --tier 5 --face 0 --tx 23 --ty 17 --tiles 8 --key K [--state path]
-//   bun scripts/globe-gates.ts window --file t5-height.i32 [--flooded t5-flooded.i32] --tier 5 --face 1 --x0 2304 --y0 4096 --size 2048 --name old-Rblk   # straight gates on a window of ANY whole-tier file
+//   bun scripts/globe-gates.ts window --file t5-height.i32 [--flooded t5-flooded.i32] --tier 5 [--down 2] --face 1 --x0 2304 --y0 4096 --size 2048 --name old-Rblk   # straight gates on a window of ANY whole-tier file (--down k: its k x k box means)
 //   bun scripts/globe-gates.ts pick --file t5-height.i32 --tier 5 --size 2048 --min-land 0.3 [--step 1024]   # windows of the file holding at least that share of land (sampled every 8th cell)
 //   (region takes --only straight: the straight-coast / lake / spit gates alone; both print straight.coast, straight.lakes, straight.lakesFile, straight.spits, straight.rot)
 //   bun scripts/globe-gates.ts map --t3dir DIR --key K --out planet.png [--vex 4]   # 4096 x 2048 equirectangular of tier 3, hillshaded
@@ -69,12 +69,19 @@ if (import.meta.main) {
       const p = await readPlanet(seed, diskStore(STORE, key));
       emit("region", tier, regionMeasures({ h, size, tier, face, x0: (tx * 256) / down, y0: (ty * 256) / down, planet0: p.height }, log) as unknown as Record<string, unknown>, { name, face, tx, ty });
     }
-    straightEmit(name, tier, face, (tx * 256) / down, (ty * 256) / down, straightMeasures({ h, size, cellM, margin }, log));
+    straightEmit(name, tier, face, (tx * 256) / down, (ty * 256) / down, straightMeasures({ h, size, cellM, margin, ox: (tx * 256) / down, oy: (ty * 256) / down }, log));
   } else if (cmd === "window") {
-    const tier = Number(arg("tier", "5")), fn = 2048 * 2 ** (tier - 3), size = Number(arg("size", "2048")), face = Number(arg("face", "0")), x0 = Number(arg("x0", "0")), y0 = Number(arg("y0", "0"));
+    // --down k: the window's k x k box means (a coarser tier made of the file's own cells: the old planet's box hold makes its tier 3 the 4 x 4 means of its tier 5); size, margin in output cells
+    const ftier = Number(arg("tier", "5")), down = Number(arg("down", "1")), tier = ftier - Math.log2(down), fn = 2048 * 2 ** (ftier - 3), size = Number(arg("size", "2048")), face = Number(arg("face", "0")), x0 = Number(arg("x0", "0")), y0 = Number(arg("y0", "0"));
     const margin = Number(arg("margin", String(Math.floor(64 / 2 ** (5 - tier))))), flooded = arg("flooded", "");
-    const h = readWindow(arg("file", ""), fn, face, x0, y0, size), fl = flooded ? readWindow(flooded, fn, face, x0, y0, size) : undefined;
-    straightEmit(arg("name", ""), tier, face, x0, y0, straightMeasures({ h, size, cellM: 75 * 2 ** (5 - tier), margin, flooded: fl }, log));
+    const read = (f: string) => {
+      const raw = readWindow(f, fn, face, x0, y0, size * down);
+      if (down === 1) return raw;
+      const out = new Int32Array(size * size);
+      for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) { let t = 0; for (let b = 0; b < down; b++) for (let a = 0; a < down; a++) t += raw[(y * down + b) * size * down + x * down + a]; out[y * size + x] = Math.round(t / (down * down)); }
+      return out;
+    };
+    straightEmit(arg("name", ""), tier, face, x0, y0, straightMeasures({ h: read(arg("file", "")), size, cellM: 75 * 2 ** (5 - tier), margin, flooded: flooded ? read(flooded) : undefined, ox: x0 / down, oy: y0 / down }, log));
   } else if (cmd === "pick") {
     const tier = Number(arg("tier", "5")), fn = 2048 * 2 ** (tier - 3), size = Number(arg("size", "2048")), step = Number(arg("step", String(size / 2))), min = Number(arg("min-land", "0.3")), sample = 8;
     const fd = openSync(arg("file", ""), "r"), per = fn / sample, grid = new Uint8Array(6 * per * per), row = new Int32Array(fn);
