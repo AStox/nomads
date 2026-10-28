@@ -558,19 +558,25 @@ fn fillWater(S: ptr<function, GSample>, x: f32, z: f32, ctx: PaintCtx, river: bo
   (*S).ice = !bed && kind != 1u && g_iceAt(x, z);
 }
 `)}
-${planet ? `// The sea's facets, fixed to the ground: the slope (along the noise frame's x and z) of the waves a pixel of mpp metres resolves, and, in .z, the slope variance of the ones it does not. The wind U (m/s,
-// from the circulation's latitude profile, wgsl/globe.js seaWindAt) and its direction wd (unit, in the noise frame) make the sea: Cox and Munk's mean square slope 0.003 + 0.00512 U (1954) is the sum of
-// its waves' and is kept at every zoom, so the sea's light has the same mean everywhere and only its texture comes and goes. The waves are bands one e-fold of wavenumber wide (0.2 to 300 m, each about 2.7 times
-// the one below); a band of the wind sea carries Phillips' saturation slope variance alpha / 2 (alpha 0.0081, 1958, the k^-3 spectrum) under the Pierson-Moskowitz cut-off exp(-0.74 (L / L0)^2) with
-// L0 = 2 pi U^2 / g (1964: the wind sea has no waves longer than its fetch grew, so a calm sea has only short ones); the swell of far storms, whatever the local wind, is two bands of its own, 110 and 300 m, at
-// a slope of 0.07 rms (a significant height of 3 to 5 m over 100 to 300 m, steepness 0.03 [design]) crossing the wind's direction. A band is three trains of waves, each long-crested along the line of its
-// crests (2 wavelengths of the wind sea, 4 of the swell [design]) and moving along one of three axes 60 degrees apart, fixed in the noise frame (a lattice turned by the wind would shear wherever the wind
-// turns); their amplitudes go as the cosine of the axis to the band's direction (a cos^2 spread of energy, whose squares always sum to the band's variance, three axes at 60 degrees giving 3/2 for any direction).
-// A band comes out of the resolved slope and into the unresolved variance as its wavelength passes two pixels, the least a sampled wave can be (aliasing), by the amplitude (a band's variance goes as the
-// square of its weight)
+${planet ? `// The sea's facets, fixed to the ground: the slope (along the noise frame's x and z) of the waves a pixel resolves, in .z the slope variance of the ones it does not, and in .w the sea's whole mean square slope. The wind U (m/s, from the
+// circulation's latitude profile times a weather field of hundreds of km, wgsl/globe.js seaWindAt) and its direction wd (unit, in the noise frame) make the sea: Cox and Munk's mean square slope 0.003 + 0.00512 U
+// (1954) is the sum of its waves' and is kept at every zoom, so the sea's light has the same mean everywhere and only its texture comes and goes. The waves are bands one e-fold of wavenumber wide (0.2 to 300 m,
+// each about 2.7 times the one below); a band of the wind sea carries Phillips' saturation slope variance alpha / 2 (alpha 0.0081, 1958, the k^-3 spectrum) under the Pierson-Moskowitz cut-off
+// exp(-0.74 (L / L0)^2) with L0 = 2 pi U^2 / g (1964: the wind sea has no waves longer than its fetch grew, so a calm sea has only short ones); the swell of far storms, whatever the local wind, is three bands of
+// its own, 110, 300 and 600 m, each from a storm of its own: its direction (ang, from the wind, 20 to 60 degrees) and its size (amp) are smooth fields over hundreds of km (wgsl/globe.js seaSwellAng, seaSwellAmp),
+// at a slope of 0.07 rms at the design size (a significant height of 3 to 5 m over 100 to 300 m, steepness 0.03; the 600 m one as steep, so that it shows at the zooms where it is a few pixels [design]), none of them
+// over a fifth of the sea's mean square slope (the swell is part of it, never more than a part)
+// A band is three trains of waves, each long-crested along the line of its crests (2 wavelengths of the wind sea, 4 of the swell [design]) and moving along one of three axes 60 degrees apart, fixed in the
+// noise frame (a lattice turned by the wind would shear wherever the wind turns); their amplitudes go as the cosine of the axis to the band's direction (a cos^2 spread of energy, whose squares always sum to the
+// band's variance, three axes at 60 degrees giving 3/2 for any direction). Wind streaks (the Langmuir cells and boundary layer rolls that line the sea up with the wind, 150 m to 1.6 km apart [design]) are three
+// bands of the same trains, long along the wind 8 spacings and weighted by the cos^2 of the axis to the wind, which do not tilt the facets but raise and lower the mean square slope by up to a third [design],
+// the glint's roughness. A band comes out of the resolved slope and into the unresolved variance as its wavelength passes 10 pixels and is gone by 3.5 (the noise a band carries has features of 0.6 of its
+// wavelength, so a sampled feature is never under 2 pixels where the band still has weight, and the window is wide so that a zoom takes a band out slowly, not in a step), by the amplitude (a band's variance
+// goes as the square of its weight); mpp is the pixel's longest side on the ground (a view that is not from above sees it longer across the slope), so a band is never sampled finer than its worst direction allows
 const SEA_ALPHA2: f32 = ${lit(0.0081 / 2)};
 const SEA_SWELL: f32 = ${lit(0.07 * 0.07)};
-fn g_seaWave(x: f32, z: f32, mpp: f32, U: f32, wd: vec2<f32>) -> vec3<f32> {
+const SEA_STREAK: f32 = ${lit(0.18 / 0.3 / Math.sqrt(9 / 8))};
+fn g_seaWave(x: f32, z: f32, mpp: f32, U: f32, wd: vec2<f32>, ang: vec3<f32>, amp: vec3<f32>) -> vec4<f32> {
   // absolute metres of the noise's frame: the whole metres the pages offset it by are put back
   let X = x + f32(g_wrapW(4u).x);
   let Z = z + f32(g_wrapW(4u).y);
@@ -578,8 +584,7 @@ fn g_seaWave(x: f32, z: f32, mpp: f32, U: f32, wd: vec2<f32>) -> vec3<f32> {
   let L0 = 0.64 * U * U;
   var s = vec2<f32>(0.0);
   var res = 0.0;
-${[[0.2, 0, 98, 2, 0], [0.55, 0, 95, 2, 0], [1.5, 0, 71, 2, 0], [4, 0, 74, 2, 0], [12, 0, 77, 2, 0], [40, 0, 80, 2, 0], [110, 0, 83, 2, 0], [300, 0, 86, 2, 0], [110, 35, 89, 4, 1], [300, -50, 92, 4, 1]].map(([l, deg, sd, kap, swell]) => {
-    const r = (deg * Math.PI) / 180, cr = Math.cos(r), sr = Math.sin(r);
+${[[0.2, 98, 2, -1], [0.55, 95, 2, -1], [1.5, 71, 2, -1], [4, 74, 2, -1], [12, 77, 2, -1], [40, 80, 2, -1], [110, 83, 2, -1], [300, 86, 2, -1], [110, 89, 4, 0], [300, 92, 4, 1], [600, 101, 4, 2]].map(([l, sd, kap, swell]) => {
     const fam = [0, 1, 2].map((k) => {
       const t = (k * Math.PI) / 3, ck = Math.cos(t), sk = Math.sin(t);
       return `      {
@@ -589,17 +594,38 @@ ${[[0.2, 0, 98, 2, 0], [0.55, 0, 95, 2, 0], [1.5, 0, 71, 2, 0], [4, 0, 74, 2, 0]
       }`;
     }).join("\n");
     return `  {
-    let w = g_fade(${lit(l * 0.25)}, ${lit(l * 0.5)}, mpp);
-    ${swell ? `let v = SEA_SWELL;` : `let v = SEA_ALPHA2 * exp(-0.74 * pow(${lit(l)} / L0, 2.0));`}
+    let w = g_fade(${lit(l / 10)}, ${lit(l / 3.5)}, mpp);
+    ${swell >= 0 ? `let v = min(SEA_SWELL * amp.${"xyz"[swell]} * amp.${"xyz"[swell]}, 0.2 * s2);` : `let v = SEA_ALPHA2 * exp(-0.74 * pow(${lit(l)} / L0, 2.0));`}
     if (w > 0.0 && v > 1.0e-6) {
-      let d = vec2<f32>(wd.x * ${lit(cr)} - wd.y * ${lit(sr)}, wd.x * ${lit(sr)} + wd.y * ${lit(cr)});
+      ${swell >= 0 ? `let r = ang.${"xyz"[swell]};
+      let d = vec2<f32>(wd.x * cos(r) - wd.y * sin(r), wd.x * sin(r) + wd.y * cos(r));` : "let d = wd;"}
       let A = w * sqrt(v / 1.5) / 0.3;
 ${fam}
       res += w * w * v;
     }
   }`;
   }).join("\n")}
-  return vec3<f32>(s, max(s2 - res, 0.3 * s2));
+  var m = 0.0;
+${[[150, 104], [500, 107], [1600, 110]].map(([S, sd]) => {
+    const fam = [0, 1, 2].map((k) => {
+      const t = (k * Math.PI) / 3, ck = Math.cos(t), sk = Math.sin(t);
+      return `      {
+        let a = Z * ${lit(ck)} - X * ${lit(sk)};
+        let c = X * ${lit(ck)} + Z * ${lit(sk)};
+        let e = dot(wd, vec2<f32>(${lit(ck)}, ${lit(sk)}));
+        m += A * e * e * g_noiseP(g_dvn(a, ${ratio(+(S * 0.5).toFixed(2))}, 0), g_dvn(c, ${ratio(+(S * 4).toFixed(2))}, 0), ${sd + k});
+      }`;
+    }).join("\n");
+    return `  {
+    let w = g_fade(${lit(S / 10)}, ${lit(S / 3.5)}, mpp);
+    if (w > 0.0) {
+      let A = w * SEA_STREAK;
+${fam}
+    }
+  }`;
+  }).join("\n")}
+  let s2m = s2 * clamp(1.0 + m, 0.67, 1.33);
+  return vec4<f32>(s, max(s2m - res, 0.3 * s2m), s2);
 }` : ""}
 // main.js groundAt's shore and depth, then paintWater, from a sample whose water is filled
 fn g_water(S: GSample, x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) -> u32 {
@@ -627,7 +653,9 @@ fn g_water(S: GSample, x: f32, z: f32, X: i32, Y: i32, ctx: PaintCtx, mpp: f32) 
   } else {
     // a narrow band of shallows along the shore in meters, then open water by depth
     let shallow = max((1.0 - g_smooth(0.0, 2.5, depth)) * 0.8, 1.0 - g_smooth(0.0, 12.0, shore)) * (0.6 + 0.4 * (1.0 - g_smooth(0.0, 9.0, depth)));
-    let Rs = ${FBM(90, 90, 41)} * ${FADE(90)} * 1.5;
+    // the planet's tone has its swell only where the dither between tone steps is the ordered one (a pixel under 2.8 m): from there up the swell is the waves' facets (g_seaWave), and a tone that crossed a step on
+    // the hash dither's squeezed band came out as a speckle of one-pixel dots over the whole sea
+    let Rs = ${FBM(90, 90, 41)} * ${FADE(90)} * 1.5${planet ? ` * ${FADE(2)}` : ""};
     let R = g_jround(Rs);
     let C = ${CL(3, 42, "0.5")};
     // the island rounds the swell to whole steps (main.js); the planet keeps its value, since stepped it stands up as rings of one colour round each crest once a pixel outgrows the swell

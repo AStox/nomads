@@ -727,13 +727,39 @@ fn aoMul(ao: u32, row: u32) -> vec3f {
   return max(vec3f(0.0), 1.0 - a * hue * (A + lt[4].w * key) / (A + key + 1e-4));
 }
 
-// The sea's wind at a place on the planet: the zonal-mean surface wind of the planet's circulation by latitude (src/gpu/globe/seawind.ts), x its speed in m/s, yz the direction it blows toward (east, north)
+// A smooth field over the sphere, 0 to 1, whose cells are about 150 km across [design] (value noise on the unit vector scaled by the radius over the cell, the hash of its eight corners under a quintic fade),
+// seeded by s: the weather and the storms of the sea, which vary smoothly so that no edge of a cell is seen
+fn seaField(p: vec3f, s: i32) -> f32 {
+  let q = p * (u.radiusM / ${lit(150000)});
+  let i = vec3i(floor(q));
+  let f = fract(q);
+  let w = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  var c: array<f32, 8>;
+  for (var k = 0u; k < 8u; k++) {
+    let o = vec3i(i32(k & 1u), i32((k >> 1u) & 1u), i32(k >> 2u));
+    let n = i + o;
+    var h = bitcast<u32>(n.x * 374761393 + n.y * 668265263 + n.z * 1274126177 + s * 982451653);
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    c[k] = f32((h ^ (h >> 16u)) >> 8u) / 16777216.0;
+  }
+  return mix(mix(mix(c[0], c[1], w.x), mix(c[2], c[3], w.x), w.y), mix(mix(c[4], c[5], w.x), mix(c[6], c[7], w.x), w.y), w.z);
+}
+// The sea's wind at a place on the planet: the zonal-mean surface wind of the planet's circulation by latitude (src/gpu/globe/seawind.ts) times a weather field of 0.7 to 1.3 (storms and calms a few
+// hundred km across [design]), x its speed in m/s, yz the direction it blows toward (east, north)
 const SEA_WIND = array<vec3f, ${SEA_WIND.speed.length}>(${Array.from(SEA_WIND.speed, (v, i) => `vec3f(${lit(v)}, ${lit(SEA_WIND.east[i])}, ${lit(SEA_WIND.north[i])})`).join(", ")});
 fn seaWindAt(p: vec3f) -> vec3f {
   let f = clamp((degrees(asin(clamp(p.z, -1.0, 1.0))) + 90.0) / ${lit(SEA_WIND_STEP)}, 0.0, ${lit(SEA_WIND.speed.length - 1.001)});
   let i = i32(floor(f));
   let w = mix(SEA_WIND[i], SEA_WIND[i + 1], f - floor(f));
-  return vec3f(w.x, normalize(w.yz + vec2f(1.0e-4, 0.0)));
+  return vec3f(max(2.0, w.x * (0.7 + 0.6 * seaField(p, 7))), normalize(w.yz + vec2f(1.0e-4, 0.0)));
+}
+// The directions of the three swells (110, 300 and 600 m), from the wind: each from a storm of its own, 20 to 60 degrees across the wind's way, the first and last to its left and the second to its right (radians)
+fn seaSwellAng(p: vec3f) -> vec3f {
+  return radians(vec3f(20.0 + 40.0 * seaField(p, 1), -20.0 - 40.0 * seaField(p, 2), 20.0 + 40.0 * seaField(p, 3)));
+}
+// Their sizes, the share of the design slope (0.6 to 1.4) each storm sent this far
+fn seaSwellAmp(p: vec3f) -> vec3f {
+  return vec3f(0.6 + 0.8 * seaField(p, 4), 0.6 + 0.8 * seaField(p, 5), 0.6 + 0.8 * seaField(p, 6));
 }
 // Water's reflectance at normal incidence (n 1.33) and Schlick's law of its rise toward grazing
 const SEA_F0: f32 = 0.02;
@@ -743,20 +769,28 @@ const SEA_F0: f32 = 0.02;
 const SEA_SKY: f32 = ${lit(0.4)};
 const SEA_KNEE: f32 = 0.6;
 fn seaFresnel(c: f32) -> f32 { return SEA_F0 + (1.0 - SEA_F0) * pow(1.0 - clamp(c, 0.0, 1.0), 5.0); }
-// The sea's own light, from the facets of its waves (ground.wgsl.js g_seaWave: tx, ty the noise frame's axes on the ground, w the slopes along them and the variance of those a pixel does not resolve):
-// the sky mirrored in the facet the eye sees (Fresnel's share of a sky that is a third brighter low than high [design], SEA_SKY of the tables' ambient light) and the key light's glint, Cox and Munk's
-// Gaussian slopes round the facet, radiance F p E / (4 cos(view) cos^4(tilt)) under the light's illuminance E on a plane across its rays. The mirror's mean over a flat sea is in the water's colour at every
-// zoom (the palette's, as the ground's colours are), so what the sea adds is the facets' difference from it, a texture with the same mean at every scale. Out: rgb, what it adds in the light tables' units
-// (ambient or key light on an albedo of 1); a, the sky's mirror and the moon's glint as a share of the dark sky's radiance for the night's law, the moon's E being its own (night.js)
-fn seaShine(p: vec3f, rd: vec3f, tx: vec3f, ty: vec3f, w: vec3f) -> vec4f {
+// What a facet of the sea mirrors of the sky: Fresnel's share of a sky that is a third brighter low than high [design]
+fn seaMirror(rd: vec3f, p: vec3f, n: vec3f) -> f32 { return (1.6 - 0.9 * max(dot(reflect(rd, n), p), 0.0)) * seaFresnel(dot(-rd, n)); }
+// The sea's own light, from the facets of its waves (ground.wgsl.js g_seaWave: tx, ty the noise frame's axes on the ground, w the slopes along them, the variance of those a pixel does not resolve and the sea's whole
+// mean square slope): the sky mirrored in the facets the eye sees (SEA_SKY of the tables' ambient light) and the key light's glint, Cox and Munk's Gaussian slopes round the facet, radiance F p E / (4 cos(view) cos^4(tilt))
+// under the light's illuminance E on a plane across its rays. The sea's colour (the palette's, as the ground's colours are) is the mirror of a sea of Cox and Munk's roughness, so what the sea adds is the difference
+// from that: the waves a pixel does not resolve (a Gaussian slope of mean square w.z, whose variance has gone out of the facets and into this) are averaged in by the four points a standard deviation off along the two
+// axes, which match its second moments (Fresnel's law is convex, so a rougher sea mirrors more of the sky, most toward the limb), and whatever the pixel resolves and whatever it does not, the mean over the sea is
+// the palette's at every zoom, only the texture comes and goes. Out: rgb, what it adds in the light tables' units (ambient or key light on an albedo of 1); a, the sky's mirror and the moon's glint as a share of the
+// dark sky's radiance for the night's law, the moon's E being its own (night.js)
+fn seaShine(p: vec3f, rd: vec3f, tx: vec3f, ty: vec3f, w: vec4f) -> vec4f {
   let V = -rd;
   let t1 = normalize(tx);
   let t2 = normalize(ty - t1 * dot(ty, t1));
   let n = normalize(p - w.x * t1 - w.y * t2);
   let F = seaFresnel(dot(V, n));
   let sky = 1.6 - 0.9 * max(dot(reflect(rd, n), p), 0.0);
-  // the mirror's mean over a flat sea is in the water's colour; what the facets add or take is the difference from it
-  let mirror = sky * F - (1.6 - 0.9 * max(dot(reflect(rd, p), p), 0.0)) * seaFresnel(dot(V, p));
+  let hh = sqrt(max(w.z, 0.0));
+  let hr = sqrt(w.w);
+  let nc = p - w.x * t1 - w.y * t2;
+  let mean = 0.25 * (seaMirror(rd, p, normalize(nc + hh * t1)) + seaMirror(rd, p, normalize(nc - hh * t1)) + seaMirror(rd, p, normalize(nc + hh * t2)) + seaMirror(rd, p, normalize(nc - hh * t2)));
+  let base = 0.25 * (seaMirror(rd, p, normalize(p + hr * t1)) + seaMirror(rd, p, normalize(p - hr * t1)) + seaMirror(rd, p, normalize(p + hr * t2)) + seaMirror(rd, p, normalize(p - hr * t2)));
+  let mirror = mean - base;
   let Ld = normalize(mix(u.sun, u.moon, u.moonMix));
   let hv = normalize(Ld + V);
   let cb = max(dot(hv, n), 0.05);
@@ -901,7 +935,7 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
   var moonFacing = dot(p, u.moon);
   // open water's facets (g_seaWave) where the pixel is sea or lake, for its own light (seaShine)
   var seaOn = false;
-  var seaW = vec3f(0.0);
+  var seaW = vec4f(0.0);
   // where the window's own light lights the pixel (the ground inside the fine pages), its level and occlusion
   var isLit = false;
   var litRow = 0u;
@@ -976,7 +1010,8 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
       let w3 = sw.y * normalize(cross(sn, p)) + sw.z * sn;
       let q1 = normalize(kx);
       let q2 = normalize(ky - q1 * dot(ky, q1));
-      seaW = g_seaWave(xz.x, xz.y, mppN, sw.x, normalize(vec2f(dot(w3, q1), dot(w3, q2)) + vec2f(1.0e-5, 0.0)));
+      // the pixel's longest side on the ground: across the slope a pixel of an oblique view covers 1 / cos(view) of what it covers along it
+      seaW = g_seaWave(xz.x, xz.y, mppN / max(dot(p, -rd), 0.25), sw.x, normalize(vec2f(dot(w3, q1), dot(w3, q2)) + vec2f(1.0e-5, 0.0)), seaSwellAng(p), seaSwellAmp(p));
     }
     if (S.isCrown) {
       // a pixel painted with the tree sprites' colours is lit as the shade pass lights an upright sprite: half its own light and half the slope's
